@@ -3453,6 +3453,7 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     QAction* renameAction = menu.addAction(QIcon(":/Icon/process_priority.svg"), QStringLiteral("重命名(F2)"));
     QAction* deleteAction = menu.addAction(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("删除(Delete)"));
     QAction* driverDeleteAction = menu.addAction(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动删除(R0)"));
+    QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_refresh.svg"), QStringLiteral("文件解锁器(R0)"));
     QAction* takeOwnerAction = menu.addAction(QIcon(":/Icon/file_owner.svg"), QStringLiteral("取得所有权"));
     menu.addSeparator();
     QAction* newFileAction = menu.addAction(QIcon(":/Icon/process_details.svg"), QStringLiteral("新建文件"));
@@ -3484,6 +3485,7 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     renameAction->setEnabled(isSingleSelection);
     deleteAction->setEnabled(hasSelection);
     driverDeleteAction->setEnabled(hasSelection);
+    unlockByDriverAction->setEnabled(hasSelection);
     takeOwnerAction->setEnabled(hasSelection);
     detailAction->setEnabled(hasSelection);
     hashAction->setEnabled(hasAnyFile);
@@ -3611,6 +3613,11 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     if (selectedAction == driverDeleteAction)
     {
         deleteSelectedItemByDriver(panel);
+        return;
+    }
+    if (selectedAction == unlockByDriverAction)
+    {
+        unlockSelectedItemsByDriver(panel);
         return;
     }
     if (selectedAction == takeOwnerAction)
@@ -4749,6 +4756,155 @@ void FileDock::deleteSelectedItemByDriver(FilePanelWidgets& panel)
         << ", targetCount="
         << deleteTargets.size()
         << eol;
+}
+
+void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)
+{
+    const std::vector<QString> paths = selectedPaths(panel);
+    if (paths.empty())
+    {
+        return;
+    }
+
+    const QMessageBox::StandardButton userChoice = QMessageBox::question(
+        this,
+        QStringLiteral("文件解锁器确认"),
+        QStringLiteral("将扫描选中路径的占用进程，并通过 KswordARK 驱动结束这些进程以释放文件锁。\n这可能导致相关程序崩溃或数据丢失，是否继续？"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (userChoice != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    std::string openDriverDetailText;
+    const HANDLE driverHandle = openKswordArkDriverHandle(&openDriverDetailText);
+    if (driverHandle == INVALID_HANDLE_VALUE)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("文件解锁器"),
+            QStringLiteral("无法连接 KswordARK 驱动设备，请先启用 R0 驱动。"));
+
+        kLogEvent event;
+        warn << event
+            << "[FileDock] 文件解锁器失败：无法连接驱动, panel="
+            << panel.panelNameText.toStdString()
+            << ", detail="
+            << openDriverDetailText
+            << eol;
+        return;
+    }
+
+    const int progressPid = kPro.add("文件", "文件解锁器");
+    kPro.set(progressPid, "扫描占用进程", 0, 10.0f);
+
+    std::set<std::uint32_t> occupyProcessSet;
+    QStringList scanDetailList;
+    for (const QString& path : paths)
+    {
+        QStringList details;
+        const std::vector<std::uint32_t> processIds = collectOccupyProcessIdsByPath(path, &details);
+        occupyProcessSet.insert(processIds.begin(), processIds.end());
+
+        if (!details.isEmpty())
+        {
+            scanDetailList.push_back(
+                QStringLiteral("%1 => %2")
+                .arg(QDir::toNativeSeparators(path), details.join(QStringLiteral(" ; "))));
+        }
+    }
+
+    if (occupyProcessSet.empty())
+    {
+        ::CloseHandle(driverHandle);
+        kPro.set(progressPid, "未发现占用进程", 0, 100.0f);
+        QMessageBox::information(this, QStringLiteral("文件解锁器"), QStringLiteral("未发现占用进程，无需解锁。"));
+        return;
+    }
+
+    kPro.set(progressPid, "结束占用进程", 0, 50.0f);
+
+    std::size_t terminateSuccessCount = 0U;
+    QStringList terminateFailList;
+    const std::vector<std::uint32_t> processIdList(occupyProcessSet.begin(), occupyProcessSet.end());
+    const std::size_t totalProcessCount = processIdList.size();
+    for (std::size_t index = 0; index < totalProcessCount; ++index)
+    {
+        const std::uint32_t processId = processIdList[index];
+        std::string detailText;
+        const bool terminateOk = terminateProcessByR0Driver(driverHandle, processId, &detailText);
+        if (terminateOk)
+        {
+            terminateSuccessCount += 1U;
+        }
+        else
+        {
+            terminateFailList.push_back(
+                QStringLiteral("pid=%1 | %2")
+                .arg(processId)
+                .arg(QString::fromStdString(detailText)));
+        }
+
+        const float progress =
+            50.0f + (static_cast<float>(index + 1) / static_cast<float>(totalProcessCount)) * 45.0f;
+        kPro.set(progressPid, "结束占用进程", 0, progress);
+    }
+
+    ::CloseHandle(driverHandle);
+    kPro.set(progressPid, "文件解锁器完成", 0, 100.0f);
+    refreshPanel(panel);
+
+    const QString summaryText = QStringLiteral("命中占用进程：%1\n成功结束：%2\n失败：%3")
+        .arg(totalProcessCount)
+        .arg(terminateSuccessCount)
+        .arg(terminateFailList.size());
+    if (terminateFailList.isEmpty())
+    {
+        QMessageBox::information(this, QStringLiteral("文件解锁器"), summaryText);
+    }
+    else
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("文件解锁器"),
+            summaryText + QStringLiteral("\n\n失败明细（节选）：\n%1")
+                .arg(buildLogPreviewText(terminateFailList, 6)));
+    }
+
+    kLogEvent event;
+    if (!terminateFailList.isEmpty())
+    {
+        warn << event
+            << "[FileDock] 文件解锁器部分失败, panel="
+            << panel.panelNameText.toStdString()
+            << ", targetCount="
+            << paths.size()
+            << ", occupyProcessCount="
+            << totalProcessCount
+            << ", successCount="
+            << terminateSuccessCount
+            << ", failCount="
+            << terminateFailList.size()
+            << ", scanPreview=\n"
+            << buildLogPreviewText(scanDetailList).toStdString()
+            << ", failPreview=\n"
+            << buildLogPreviewText(terminateFailList).toStdString()
+            << eol;
+    }
+    else
+    {
+        info << event
+            << "[FileDock] 文件解锁器完成, panel="
+            << panel.panelNameText.toStdString()
+            << ", targetCount="
+            << paths.size()
+            << ", occupyProcessCount="
+            << totalProcessCount
+            << ", successCount="
+            << terminateSuccessCount
+            << eol;
+    }
 }
 
 void FileDock::takeOwnershipSelectedItems(FilePanelWidgets& panel)

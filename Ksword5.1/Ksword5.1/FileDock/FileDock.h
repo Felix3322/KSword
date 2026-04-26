@@ -248,6 +248,11 @@ private:
     // - 说明：调用系统 takeown/icacls，失败信息会汇总提示。
     void takeOwnershipSelectedItems(FilePanelWidgets& panel);
 
+    // unlockSelectedItemsByDriver：
+    // - 作用：扫描选中路径占用进程，并通过 KswordARK 驱动尝试结束占用进程；
+    // - 说明：用于“文件解锁器”右键动作，不直接删除文件。
+    void unlockSelectedItemsByDriver(FilePanelWidgets& panel);
+
     // showColumnManagerDialog：
     // - 作用：弹出列管理器切换列显示状态。
     void showColumnManagerDialog(FilePanelWidgets& panel);
