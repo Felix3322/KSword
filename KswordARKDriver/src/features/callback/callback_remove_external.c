@@ -152,10 +152,6 @@ KswordARKCallbackIoctlRemoveExternalCallback(
     size_t outputBufferLength = 0;
     KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_REQUEST* requestPacket = NULL;
     KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_RESPONSE* responsePacket = NULL;
-    PVOID callbackPointer = NULL;
-    KSWORD_ARK_PROCESS_NOTIFY_EX processNotify = NULL;
-    KSWORD_ARK_THREAD_NOTIFY threadNotify = NULL;
-    KSWORD_ARK_IMAGE_NOTIFY imageNotify = NULL;
     ULONG64 moduleBase = 0ULL;
     ULONG moduleSize = 0UL;
 
@@ -205,7 +201,6 @@ KswordARKCallbackIoctlRemoveExternalCallback(
     responsePacket->moduleBase = 0ULL;
     responsePacket->moduleSize = 0UL;
     responsePacket->mappingFlags = 0UL;
-    callbackPointer = (PVOID)(ULONG_PTR)requestPacket->callbackAddress;
     (VOID)KswordArkCallbackResolveModuleByAddress(
         requestPacket->callbackAddress,
         responsePacket->modulePath,
@@ -220,22 +215,24 @@ KswordARKCallbackIoctlRemoveExternalCallback(
 
     switch (requestPacket->callbackClass) {
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_PROCESS:
-        RtlCopyMemory(&processNotify, &callbackPointer, sizeof(processNotify));
         operationStatus = PsSetCreateProcessNotifyRoutineEx(
-            processNotify,
+            (KSWORD_ARK_PROCESS_NOTIFY_EX)(ULONG_PTR)requestPacket->callbackAddress,
             TRUE);
+        if (operationStatus == STATUS_PROCEDURE_NOT_FOUND) {
+            operationStatus = PsSetCreateProcessNotifyRoutine(
+                (PCREATE_PROCESS_NOTIFY_ROUTINE)(ULONG_PTR)requestPacket->callbackAddress,
+                TRUE);
+        }
         break;
 
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_THREAD:
-        RtlCopyMemory(&threadNotify, &callbackPointer, sizeof(threadNotify));
         operationStatus = PsRemoveCreateThreadNotifyRoutine(
-            threadNotify);
+            (KSWORD_ARK_THREAD_NOTIFY)(ULONG_PTR)requestPacket->callbackAddress);
         break;
 
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_IMAGE:
-        RtlCopyMemory(&imageNotify, &callbackPointer, sizeof(imageNotify));
         operationStatus = PsRemoveLoadImageNotifyRoutine(
-            imageNotify);
+            (KSWORD_ARK_IMAGE_NOTIFY)(ULONG_PTR)requestPacket->callbackAddress);
         break;
 
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_OBJECT:
