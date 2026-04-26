@@ -70,6 +70,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -85,6 +86,26 @@ namespace
         QString path;
         bool isDirectory = false;
     };
+
+    bool isCriticalProcessName(const QString& processName)
+    {
+        const QString normalizedName = processName.trimmed().toLower();
+        if (normalizedName.isEmpty())
+        {
+            return false;
+        }
+
+        static const std::set<QString> criticalNameSet =
+        {
+            QStringLiteral("smss.exe"),
+            QStringLiteral("csrss.exe"),
+            QStringLiteral("wininit.exe"),
+            QStringLiteral("services.exe"),
+            QStringLiteral("lsass.exe"),
+            QStringLiteral("winlogon.exe")
+        };
+        return criticalNameSet.find(normalizedName) != criticalNameSet.end();
+    }
 
     // isPathReparsePoint：
     // - 作用：判断目标路径是否为重解析点（符号链接/Junction 等）；
@@ -1378,6 +1399,23 @@ FileDock::FileDock(QWidget* parent)
     info << event << "[FileDock] 构造开始，初始化双栏资源管理器。" << eol;
 
     initializeUi();
+}
+
+FileDock::~FileDock()
+{
+    m_unlockerWorkerStopRequested.store(true);
+    std::thread workerThread;
+    {
+        std::lock_guard<std::mutex> lock(m_unlockerWorkerMutex);
+        if (m_unlockerWorkerThread.joinable())
+        {
+            workerThread = std::move(m_unlockerWorkerThread);
+        }
+    }
+    if (workerThread.joinable())
+    {
+        workerThread.join();
+    }
 }
 
 void FileDock::initializeUi()
@@ -4822,11 +4860,32 @@ void FileDock::unlockPathsByDriver(
         std::vector<std::uint32_t> processIdList;
         std::size_t terminateSuccessCount = 0U;
         QStringList terminateFailList;
+        QStringList skippedCriticalProcessList;
     };
 
+    {
+        std::lock_guard<std::mutex> lock(m_unlockerWorkerMutex);
+        if (m_unlockerWorkerRunning.load())
+        {
+            QMessageBox::information(this, QStringLiteral("文件解锁器"), QStringLiteral("已有解锁任务正在执行，请稍候。"));
+            return;
+        }
+        if (m_unlockerWorkerThread.joinable())
+        {
+            m_unlockerWorkerThread.join();
+        }
+        m_unlockerWorkerStopRequested.store(false);
+        m_unlockerWorkerRunning.store(true);
+    }
+
     QPointer<FileDock> safeThis(this);
-    std::thread([safeThis, paths, triggerTag, refreshTarget, progressPid]() {
+    {
+        std::lock_guard<std::mutex> lock(m_unlockerWorkerMutex);
+        m_unlockerWorkerThread = std::thread([safeThis, paths, triggerTag, refreshTarget, progressPid, this]() {
         UnlockJobResult jobResult;
+        const auto markWorkerStopped = [this]() {
+            this->m_unlockerWorkerRunning.store(false);
+            };
 
         std::string openDriverDetailText;
         const HANDLE driverHandle = openKswordArkDriverHandle(&openDriverDetailText);
@@ -4843,12 +4902,17 @@ void FileDock::unlockPathsByDriver(
                 filedock::handleusage::scanHandleUsageByPaths(paths, progressPid);
 
             std::set<std::uint32_t> occupyProcessSet;
+            std::map<std::uint32_t, QString> processNameByPid;
             const std::uint32_t currentProcessId = static_cast<std::uint32_t>(::GetCurrentProcessId());
             for (const filedock::handleusage::HandleUsageEntry& entry : scanResult.entries)
             {
                 if (entry.processId > 4U && entry.processId != currentProcessId)
                 {
                     occupyProcessSet.insert(entry.processId);
+                    if (processNameByPid.find(entry.processId) == processNameByPid.end())
+                    {
+                        processNameByPid.emplace(entry.processId, entry.processName.trimmed());
+                    }
                 }
             }
             jobResult.processIdList.assign(occupyProcessSet.begin(), occupyProcessSet.end());
@@ -4866,12 +4930,25 @@ void FileDock::unlockPathsByDriver(
                 const std::size_t totalProcessCount = jobResult.processIdList.size();
                 for (std::size_t index = 0; index < totalProcessCount; ++index)
                 {
-                    if (safeThis.isNull())
+                    if (safeThis.isNull() || this->m_unlockerWorkerStopRequested.load())
                     {
                         break;
                     }
 
                     const std::uint32_t processId = jobResult.processIdList[index];
+                    const auto processNameIter = processNameByPid.find(processId);
+                    const QString processName = (processNameIter != processNameByPid.end())
+                        ? processNameIter->second
+                        : QString();
+                    if (isCriticalProcessName(processName))
+                    {
+                        jobResult.skippedCriticalProcessList.push_back(
+                            QStringLiteral("pid=%1 | %2")
+                            .arg(processId)
+                            .arg(processName.isEmpty() ? QStringLiteral("Unknown") : processName));
+                        continue;
+                    }
+
                     std::string detailText;
                     const bool terminateOk = terminateProcessByR0Driver(driverHandle, processId, &detailText);
                     if (terminateOk)
@@ -4898,12 +4975,13 @@ void FileDock::unlockPathsByDriver(
         if (safeThis.isNull())
         {
             kPro.set(progressPid, "界面已关闭", 0, 100.0f);
+            markWorkerStopped();
             return;
         }
 
         QMetaObject::invokeMethod(
             safeThis.data(),
-            [safeThis, triggerTag, refreshTarget, progressPid, jobResult, paths]() {
+            [safeThis, triggerTag, refreshTarget, progressPid, jobResult, paths, markWorkerStopped]() {
                 if (safeThis.isNull())
                 {
                     kPro.set(progressPid, "界面已关闭", 0, 100.0f);
@@ -4923,8 +5001,9 @@ void FileDock::unlockPathsByDriver(
                         << triggerTag.toStdString()
                         << ", detail="
                         << jobResult.driverErrorText.toStdString()
-                        << eol;
+                    << eol;
                     kPro.set(progressPid, "无法连接驱动", 0, 100.0f);
+                    markWorkerStopped();
                     return;
                 }
 
@@ -4935,6 +5014,7 @@ void FileDock::unlockPathsByDriver(
                         QStringLiteral("文件解锁器"),
                         QStringLiteral("未发现占用进程，无需解锁。"));
                     kPro.set(progressPid, "未发现占用进程", 0, 100.0f);
+                    markWorkerStopped();
                     return;
                 }
 
@@ -4955,10 +5035,16 @@ void FileDock::unlockPathsByDriver(
                 const QString summaryText = QStringLiteral("命中占用进程：%1\n成功结束：%2\n失败：%3")
                     .arg(jobResult.processIdList.size())
                     .arg(jobResult.terminateSuccessCount)
-                    .arg(jobResult.terminateFailList.size());
+                    .arg(jobResult.terminateFailList.size() + jobResult.skippedCriticalProcessList.size());
                 if (jobResult.terminateFailList.isEmpty())
                 {
-                    QMessageBox::information(safeThis.data(), QStringLiteral("文件解锁器"), summaryText);
+                    QMessageBox::information(
+                        safeThis.data(),
+                        QStringLiteral("文件解锁器"),
+                        jobResult.skippedCriticalProcessList.isEmpty()
+                        ? summaryText
+                        : summaryText + QStringLiteral("\n\n已跳过关键系统进程：\n%1")
+                        .arg(buildLogPreviewText(jobResult.skippedCriticalProcessList, 6)));
                 }
                 else
                 {
@@ -4966,7 +5052,7 @@ void FileDock::unlockPathsByDriver(
                         safeThis.data(),
                         QStringLiteral("文件解锁器"),
                         summaryText + QStringLiteral("\n\n失败明细（节选）：\n%1")
-                        .arg(buildLogPreviewText(jobResult.terminateFailList, 6)));
+                        .arg(buildLogPreviewText(jobResult.terminateFailList + jobResult.skippedCriticalProcessList, 6)));
                 }
 
                 kLogEvent event;
@@ -4982,11 +5068,11 @@ void FileDock::unlockPathsByDriver(
                         << ", successCount="
                         << jobResult.terminateSuccessCount
                         << ", failCount="
-                        << jobResult.terminateFailList.size()
+                        << (jobResult.terminateFailList.size() + jobResult.skippedCriticalProcessList.size())
                         << ", scanPreview=\n"
                         << buildLogPreviewText(jobResult.scanDetailList).toStdString()
                         << ", failPreview=\n"
-                        << buildLogPreviewText(jobResult.terminateFailList).toStdString()
+                        << buildLogPreviewText(jobResult.terminateFailList + jobResult.skippedCriticalProcessList).toStdString()
                         << eol;
                 }
                 else
@@ -5004,8 +5090,10 @@ void FileDock::unlockPathsByDriver(
                 }
 
                 kPro.set(progressPid, "文件解锁器完成", 0, 100.0f);
+                markWorkerStopped();
             });
-        }).detach();
+        });
+    }
 }
 
 void FileDock::unlockFileByPath(const QString& targetPath)

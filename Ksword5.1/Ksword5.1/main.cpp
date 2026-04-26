@@ -42,17 +42,20 @@ namespace
         std::vector<wchar_t> pathBuffer(1024, L'\0');
         while (pathBuffer.size() < 32768)
         {
+            ::SetLastError(ERROR_SUCCESS);
             const DWORD copiedLength = ::GetModuleFileNameW(
                 nullptr,
                 pathBuffer.data(),
                 static_cast<DWORD>(pathBuffer.size()));
+            const DWORD lastError = ::GetLastError();
             if (copiedLength == 0)
             {
                 return std::wstring();
             }
 
-            // copiedLength < size-1：完整写入且包含结尾 '\0'。
-            if (copiedLength < pathBuffer.size() - 1)
+            if (copiedLength > 0
+                && copiedLength < pathBuffer.size()
+                && lastError != ERROR_INSUFFICIENT_BUFFER)
             {
                 return std::wstring(pathBuffer.data(), copiedLength);
             }
@@ -724,6 +727,9 @@ int main(int argc, char* argv[])
         if (shouldUnregisterUnlockerMenu)
         {
             unregisterUnlockerContextMenu();
+            startupSettings.unlockerShellContextMenuEnabled = false;
+            QString saveErrorText;
+            ks::settings::saveAppearanceSettings(startupSettings, &saveErrorText);
             QMessageBox::information(
                 nullptr,
                 QStringLiteral("Ksword 文件解锁器"),
@@ -744,6 +750,9 @@ int main(int argc, char* argv[])
         const bool registerOk = registerUnlockerContextMenu(executablePath);
         if (registerOk)
         {
+            startupSettings.unlockerShellContextMenuEnabled = true;
+            QString saveErrorText;
+            ks::settings::saveAppearanceSettings(startupSettings, &saveErrorText);
             QMessageBox::information(
                 nullptr,
                 QStringLiteral("Ksword 文件解锁器"),

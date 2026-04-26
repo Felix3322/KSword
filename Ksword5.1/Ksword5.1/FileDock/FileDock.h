@@ -14,6 +14,9 @@
 #include <QWidget>
 
 #include <cstdint>     // std::uint64_t：文件大小统计。
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <vector>      // std::vector：导航历史记录容器。
 
 // Qt 前置声明：降低头文件耦合。
@@ -55,7 +58,7 @@ public:
 
     // 析构函数：
     // - 作用：默认析构即可，所有子控件由 Qt 父子关系自动释放。
-    ~FileDock() override = default;
+    ~FileDock() override;
 
     // openFileDetailByPath：
     // - 作用：对外暴露文件详情窗口入口（含属性/哈希/签名/PE 等 Tab）；
@@ -342,4 +345,10 @@ private:
     // 跨面板复制/剪切缓存。
     std::vector<QString> m_clipboardPaths;     // 剪贴板中的路径列表。
     bool m_clipboardCutMode = false;           // true=剪切；false=复制。
+
+    // 文件解锁器后台线程状态。
+    std::thread m_unlockerWorkerThread;
+    std::atomic_bool m_unlockerWorkerStopRequested{ false };
+    std::atomic_bool m_unlockerWorkerRunning{ false };
+    mutable std::mutex m_unlockerWorkerMutex;
 };
