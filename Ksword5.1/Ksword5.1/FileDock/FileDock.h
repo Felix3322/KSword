@@ -63,6 +63,11 @@ public:
     // - 参数 filePath：目标文件绝对路径。
     void openFileDetailByPath(const QString& filePath);
 
+    // unlockFileByPath：
+    // - 作用：对外暴露“文件解锁器”入口（单路径）；
+    // - 供系统右键菜单命令启动后跨页联动调用。
+    void unlockFileByPath(const QString& targetPath);
+
 private:
     // FilePanelWidgets：
     // - 作用：聚合单个文件面板的全部控件与运行时状态。
@@ -252,6 +257,15 @@ private:
     // - 作用：扫描选中路径占用进程，并通过 KswordARK 驱动尝试结束占用进程；
     // - 说明：用于“文件解锁器”右键动作，不直接删除文件。
     void unlockSelectedItemsByDriver(FilePanelWidgets& panel);
+
+    // unlockPathsByDriver：
+    // - 作用：执行“文件解锁器”核心流程（扫描占用 + R0 结束进程）；
+    // - 参数 triggerTag：触发来源标签（右键菜单/系统右键）。
+    // - 参数 panelForRefresh：可选，仅刷新指定面板；为空时刷新左右面板。
+    void unlockPathsByDriver(
+        const std::vector<QString>& targetPaths,
+        const QString& triggerTag,
+        FilePanelWidgets* panelForRefresh);
 
     // showColumnManagerDialog：
     // - 作用：弹出列管理器切换列显示状态。

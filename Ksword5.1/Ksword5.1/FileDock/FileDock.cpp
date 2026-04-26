@@ -4766,6 +4766,29 @@ void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)
         return;
     }
 
+    unlockPathsByDriver(paths, QStringLiteral("panel_context_menu"), &panel);
+}
+
+void FileDock::unlockPathsByDriver(
+    const std::vector<QString>& targetPaths,
+    const QString& triggerTag,
+    FilePanelWidgets* panelForRefresh)
+{
+    std::vector<QString> paths;
+    paths.reserve(targetPaths.size());
+    for (const QString& path : targetPaths)
+    {
+        const QString normalizedPath = QDir::toNativeSeparators(path.trimmed());
+        if (!normalizedPath.isEmpty())
+        {
+            paths.push_back(normalizedPath);
+        }
+    }
+    if (paths.empty())
+    {
+        return;
+    }
+
     const QMessageBox::StandardButton userChoice = QMessageBox::question(
         this,
         QStringLiteral("文件解锁器确认"),
@@ -4789,7 +4812,7 @@ void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)
         kLogEvent event;
         warn << event
             << "[FileDock] 文件解锁器失败：无法连接驱动, panel="
-            << panel.panelNameText.toStdString()
+            << triggerTag.toStdString()
             << ", detail="
             << openDriverDetailText
             << eol;
@@ -4853,7 +4876,15 @@ void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)
 
     ::CloseHandle(driverHandle);
     kPro.set(progressPid, "文件解锁器完成", 0, 100.0f);
-    refreshPanel(panel);
+    if (panelForRefresh != nullptr)
+    {
+        refreshPanel(*panelForRefresh);
+    }
+    else
+    {
+        refreshPanel(m_leftPanel);
+        refreshPanel(m_rightPanel);
+    }
 
     const QString summaryText = QStringLiteral("命中占用进程：%1\n成功结束：%2\n失败：%3")
         .arg(totalProcessCount)
@@ -4877,7 +4908,7 @@ void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)
     {
         warn << event
             << "[FileDock] 文件解锁器部分失败, panel="
-            << panel.panelNameText.toStdString()
+            << triggerTag.toStdString()
             << ", targetCount="
             << paths.size()
             << ", occupyProcessCount="
@@ -4896,7 +4927,7 @@ void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)
     {
         info << event
             << "[FileDock] 文件解锁器完成, panel="
-            << panel.panelNameText.toStdString()
+            << triggerTag.toStdString()
             << ", targetCount="
             << paths.size()
             << ", occupyProcessCount="
@@ -4905,6 +4936,17 @@ void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)
             << terminateSuccessCount
             << eol;
     }
+}
+
+void FileDock::unlockFileByPath(const QString& targetPath)
+{
+    const QString normalizedPath = QDir::toNativeSeparators(targetPath.trimmed());
+    if (normalizedPath.isEmpty())
+    {
+        return;
+    }
+
+    unlockPathsByDriver(std::vector<QString>{ normalizedPath }, QStringLiteral("system_context_menu"), nullptr);
 }
 
 void FileDock::takeOwnershipSelectedItems(FilePanelWidgets& panel)
