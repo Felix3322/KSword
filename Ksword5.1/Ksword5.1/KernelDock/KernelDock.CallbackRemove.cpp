@@ -6,6 +6,7 @@
 #include "../theme.h"
 
 #include <QComboBox>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -35,6 +36,112 @@ namespace
         addressOut = normalizedText.toULongLong(&parseOk, 16);
         return parseOk;
     }
+
+    // callbackRemoveNormalizePath：规范化路径，便于匹配驱动服务映射。
+    QString callbackRemoveNormalizePath(const QString& pathText)
+    {
+        QString normalizedText = pathText.trimmed().toLower();
+        normalizedText.replace(QStringLiteral("\""), QString());
+        normalizedText.replace(QStringLiteral("\\??\\"), QStringLiteral(""));
+        normalizedText.replace(QStringLiteral("\\systemroot"), QStringLiteral("c:\\windows"));
+        return normalizedText;
+    }
+
+    // callbackRemoveResolveServiceByModule：根据模块路径推断对应的服务名。
+    QString callbackRemoveResolveServiceByModule(const QString& modulePath)
+    {
+        const QString normalizedModulePath = callbackRemoveNormalizePath(modulePath);
+        if (normalizedModulePath.isEmpty())
+        {
+            return QString();
+        }
+
+        SC_HANDLE scmHandle = ::OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE);
+        if (scmHandle == nullptr)
+        {
+            return QString();
+        }
+
+        DWORD requiredBytes = 0;
+        DWORD serviceCount = 0;
+        DWORD resumeHandle = 0;
+        (void)::EnumServicesStatusExW(
+            scmHandle,
+            SC_ENUM_PROCESS_INFO,
+            SERVICE_DRIVER,
+            SERVICE_STATE_ALL,
+            nullptr,
+            0,
+            &requiredBytes,
+            &serviceCount,
+            &resumeHandle,
+            nullptr);
+        if (requiredBytes == 0)
+        {
+            ::CloseServiceHandle(scmHandle);
+            return QString();
+        }
+
+        QByteArray serviceBuffer;
+        serviceBuffer.resize(static_cast<int>(requiredBytes));
+        auto* serviceArray = reinterpret_cast<ENUM_SERVICE_STATUS_PROCESSW*>(serviceBuffer.data());
+        if (!::EnumServicesStatusExW(
+            scmHandle,
+            SC_ENUM_PROCESS_INFO,
+            SERVICE_DRIVER,
+            SERVICE_STATE_ALL,
+            reinterpret_cast<LPBYTE>(serviceArray),
+            requiredBytes,
+            &requiredBytes,
+            &serviceCount,
+            &resumeHandle,
+            nullptr))
+        {
+            ::CloseServiceHandle(scmHandle);
+            return QString();
+        }
+
+        QString mappedServiceName;
+        for (DWORD index = 0; index < serviceCount; ++index)
+        {
+            SC_HANDLE serviceHandle = ::OpenServiceW(
+                scmHandle,
+                serviceArray[index].lpServiceName,
+                SERVICE_QUERY_CONFIG);
+            if (serviceHandle == nullptr)
+            {
+                continue;
+            }
+
+            DWORD configBytes = 0;
+            (void)::QueryServiceConfigW(serviceHandle, nullptr, 0, &configBytes);
+            if (configBytes == 0)
+            {
+                ::CloseServiceHandle(serviceHandle);
+                continue;
+            }
+
+            QByteArray configBuffer;
+            configBuffer.resize(static_cast<int>(configBytes));
+            auto* configInfo = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(configBuffer.data());
+            if (::QueryServiceConfigW(serviceHandle, configInfo, configBytes, &configBytes) && configInfo->lpBinaryPathName != nullptr)
+            {
+                const QString serviceBinaryPath = callbackRemoveNormalizePath(QString::fromWCharArray(configInfo->lpBinaryPathName));
+                const QString serviceFileName = QFileInfo(serviceBinaryPath).fileName();
+                if (!serviceFileName.isEmpty() && normalizedModulePath.endsWith(serviceFileName))
+                {
+                    mappedServiceName = QString::fromWCharArray(serviceArray[index].lpServiceName);
+                    ::CloseServiceHandle(serviceHandle);
+                    break;
+                }
+            }
+
+            ::CloseServiceHandle(serviceHandle);
+        }
+
+        ::CloseServiceHandle(scmHandle);
+        return mappedServiceName;
+    }
 }
 
 void KernelDock::initializeCallbackRemoveTab()
@@ -53,15 +160,14 @@ void KernelDock::initializeCallbackRemoveTab()
     m_callbackRemoveToolLayout->setSpacing(6);
 
     m_callbackRemoveTypeCombo = new QComboBox(m_callbackRemovePage);
-    m_callbackRemoveTypeCombo->addItem(
-        QStringLiteral("进程创建回调"),
-        static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_PROCESS));
-    m_callbackRemoveTypeCombo->addItem(
-        QStringLiteral("线程创建回调"),
-        static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_THREAD));
-    m_callbackRemoveTypeCombo->addItem(
-        QStringLiteral("镜像加载回调"),
-        static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_IMAGE));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("进程创建/退出 Notify"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_PROCESS));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("线程创建/退出 Notify"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_THREAD));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("镜像加载 Notify"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_IMAGE));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("Object Callback"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_OBJECT));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("Registry Callback"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_REGISTRY));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("Minifilter"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_MINIFILTER));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("WFP Callout"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_WFP_CALLOUT));
+    m_callbackRemoveTypeCombo->addItem(QStringLiteral("ETW Provider/Consumer"), static_cast<quint32>(KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_ETW_PROVIDER));
 
     m_callbackRemoveAddressEdit = new QLineEdit(m_callbackRemovePage);
     m_callbackRemoveAddressEdit->setPlaceholderText(QStringLiteral("输入回调地址（例如 0xFFFFF80012345678）"));
@@ -78,9 +184,8 @@ void KernelDock::initializeCallbackRemoveTab()
         KswordTheme::PrimaryBlueBorderHex,
         KswordTheme::PrimaryBluePressedHex));
 
-    m_callbackRemoveStatusLabel = new QLabel(QStringLiteral("状态：等待操作"), m_callbackRemovePage);
-    m_callbackRemoveStatusLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
+    m_callbackRemoveStatusLabel = new QLabel(QStringLiteral("状态：等待操作（当前仅前三类支持直接移除）"), m_callbackRemovePage);
+    m_callbackRemoveStatusLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
 
     m_callbackRemoveToolLayout->addWidget(new QLabel(QStringLiteral("类型："), m_callbackRemovePage));
     m_callbackRemoveToolLayout->addWidget(m_callbackRemoveTypeCombo, 0);
@@ -91,7 +196,7 @@ void KernelDock::initializeCallbackRemoveTab()
 
     m_callbackRemoveDetailEditor = new CodeEditorWidget(m_callbackRemovePage);
     m_callbackRemoveDetailEditor->setReadOnly(true);
-    m_callbackRemoveDetailEditor->setText(QStringLiteral("提示：该页面通过 KswordARK 驱动调用内核接口移除指定地址的回调。"));
+    m_callbackRemoveDetailEditor->setText(QStringLiteral("提示：该页面通过 KswordARK 驱动调用内核接口移除指定地址的回调，并尝试映射对应模块/服务。"));
     m_callbackRemoveLayout->addWidget(m_callbackRemoveDetailEditor, 1);
 
     connect(m_callbackRemoveButton, &QPushButton::clicked, this, [this]() {
@@ -121,7 +226,7 @@ void KernelDock::initializeCallbackRemoveTab()
 
         KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_REQUEST requestPacket{};
         requestPacket.size = sizeof(requestPacket);
-        requestPacket.version = KSWORD_ARK_CALLBACK_PROTOCOL_VERSION;
+        requestPacket.version = KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_PROTOCOL_VERSION;
         requestPacket.callbackClass = static_cast<quint32>(m_callbackRemoveTypeCombo->currentData().toUInt());
         requestPacket.flags = KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_FLAG_NONE;
         requestPacket.callbackAddress = callbackAddress;
@@ -150,16 +255,26 @@ void KernelDock::initializeCallbackRemoveTab()
             return;
         }
 
+        const QString modulePath = QString::fromWCharArray(responsePacket.modulePath);
+        const QString serviceName = callbackRemoveResolveServiceByModule(modulePath);
         const QString detailText = QStringLiteral(
             "移除请求已执行。\n"
             "- 类型：%1\n"
             "- 地址：0x%2\n"
             "- 返回字节：%3\n"
-            "- NTSTATUS：0x%4")
+            "- NTSTATUS：0x%4\n"
+            "- 模块路径：%5\n"
+            "- 模块基址：0x%6\n"
+            "- 模块大小：0x%7\n"
+            "- 服务映射：%8")
             .arg(m_callbackRemoveTypeCombo->currentText())
             .arg(QString::number(callbackAddress, 16).toUpper())
             .arg(bytesReturned)
-            .arg(QString::number(static_cast<quint32>(responsePacket.ntstatus), 16).rightJustified(8, QLatin1Char('0')).toUpper());
+            .arg(QString::number(static_cast<quint32>(responsePacket.ntstatus), 16).rightJustified(8, QLatin1Char('0')).toUpper())
+            .arg(modulePath.isEmpty() ? QStringLiteral("未解析") : modulePath)
+            .arg(QString::number(responsePacket.moduleBase, 16).toUpper())
+            .arg(QString::number(responsePacket.moduleSize, 16).toUpper())
+            .arg(serviceName.isEmpty() ? QStringLiteral("未匹配") : serviceName);
         m_callbackRemoveDetailEditor->setText(detailText);
 
         if (responsePacket.ntstatus >= 0)
