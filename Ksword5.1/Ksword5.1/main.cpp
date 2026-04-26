@@ -731,6 +731,23 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    // 常规启动下：根据设置页开关同步系统右键“文件解锁器”菜单。
+    {
+        wchar_t executablePathBuffer[MAX_PATH] = {};
+        const DWORD pathLength = ::GetModuleFileNameW(nullptr, executablePathBuffer, MAX_PATH);
+        if (pathLength > 0 && pathLength < MAX_PATH)
+        {
+            if (startupSettings.unlockerShellContextMenuEnabled)
+            {
+                registerUnlockerContextMenu(std::wstring(executablePathBuffer));
+            }
+            else
+            {
+                unregisterUnlockerContextMenu();
+            }
+        }
+    }
+
     QStringList unlockPathList;
     for (int index = 1; index < argumentList.size(); ++index)
     {
