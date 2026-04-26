@@ -69,6 +69,7 @@ KswordArkCallbackResolveModuleByAddress(
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS operationStatus = STATUS_SUCCESS;
     ULONG requiredBytes = 0;
     KSWORD_ARK_SYSTEM_MODULE_INFORMATION* moduleInfo = NULL;
     ULONG moduleIndex = 0;
@@ -144,6 +145,7 @@ KswordARKCallbackIoctlRemoveExternalCallback(
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS operationStatus = STATUS_SUCCESS;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t inputBufferLength = 0;
@@ -219,20 +221,20 @@ KswordARKCallbackIoctlRemoveExternalCallback(
     switch (requestPacket->callbackClass) {
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_PROCESS:
         RtlCopyMemory(&processNotify, &callbackPointer, sizeof(processNotify));
-        status = PsSetCreateProcessNotifyRoutineEx(
+        operationStatus = PsSetCreateProcessNotifyRoutineEx(
             processNotify,
             TRUE);
         break;
 
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_THREAD:
         RtlCopyMemory(&threadNotify, &callbackPointer, sizeof(threadNotify));
-        status = PsRemoveCreateThreadNotifyRoutine(
+        operationStatus = PsRemoveCreateThreadNotifyRoutine(
             threadNotify);
         break;
 
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_IMAGE:
         RtlCopyMemory(&imageNotify, &callbackPointer, sizeof(imageNotify));
-        status = PsRemoveLoadImageNotifyRoutine(
+        operationStatus = PsRemoveLoadImageNotifyRoutine(
             imageNotify);
         break;
 
@@ -241,23 +243,23 @@ KswordARKCallbackIoctlRemoveExternalCallback(
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_MINIFILTER:
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_WFP_CALLOUT:
     case KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_TYPE_ETW_PROVIDER:
-        status = STATUS_NOT_SUPPORTED;
+        operationStatus = STATUS_NOT_SUPPORTED;
         break;
 
     default:
-        status = STATUS_INVALID_PARAMETER;
+        operationStatus = STATUS_INVALID_PARAMETER;
         break;
     }
 
-    responsePacket->ntstatus = status;
+    responsePacket->ntstatus = operationStatus;
     *CompleteBytesOut = sizeof(KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_RESPONSE);
 
     KswordArkCallbackLogFormat(
-        NT_SUCCESS(status) ? "Info" : "Warn",
+        NT_SUCCESS(operationStatus) ? "Info" : "Warn",
         "External callback remove request: class=%lu, callback=0x%llX, status=0x%08lX.",
         (unsigned long)requestPacket->callbackClass,
         requestPacket->callbackAddress,
-        (unsigned long)status);
+        (unsigned long)operationStatus);
 
-    return status;
+    return STATUS_SUCCESS;
 }
