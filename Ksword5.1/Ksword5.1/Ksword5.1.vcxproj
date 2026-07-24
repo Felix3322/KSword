@@ -328,6 +328,7 @@
     <ClCompile Include="UI\HexEditorWidget.Tools.cpp" />
     <ClCompile Include="UI\PerformanceNavCard.cpp" />
     <ClCompile Include="UI\TableColumnAutoFit.cpp" />
+    <ClCompile Include="UI\TableInteractionSupport.cpp" />
     <ClCompile Include="UI\ThemedMessageBox.cpp" />
     <ClCompile Include="UI\UIBaseFunction.cpp" />
     <ClCompile Include="WelcomeDock\WelcomeDock.cpp" />
@@ -445,6 +446,7 @@
     <ClInclude Include="theme.h" />
     <ClInclude Include="UI\FlatTableModel.h" />
     <ClInclude Include="UI\TableColumnAutoFit.h" />
+    <ClInclude Include="UI\TableInteractionSupport.h" />
     <ClInclude Include="UI\VisibleTableWidget.h" />
     <ClInclude Include="UI\UI_All.h" />
     <QtMoc Include="DriverDock\DriverDock.h" />

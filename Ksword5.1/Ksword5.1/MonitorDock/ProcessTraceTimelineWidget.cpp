@@ -196,7 +196,54 @@ void ProcessTraceTimelineWidget::resetSelectionToFullRange()
 void ProcessTraceTimelineWidget::setEventPoints(
     const std::vector<ProcessTraceTimelineEventPoint>& eventPointList)
 {
-    m_eventPointList = eventPointList;
+    // 时间轴高度固定且横向分辨率有限，几千个同像素事件点不会提供更多视觉信息，
+    // 却会让每次重绘执行成千上万次 drawEllipse。表格仍保存完整事件；这里仅对绘制投影做分桶。
+    constexpr int kMaxBucketsPerLane = 96;
+    constexpr int kMaximumDrawablePoints = kLaneCount * kMaxBucketsPerLane;
+
+    if (eventPointList.size() <= static_cast<std::size_t>(kMaximumDrawablePoints)
+        || m_rangeEnd100ns <= m_rangeStart100ns)
+    {
+        m_eventPointList = eventPointList;
+        update();
+        return;
+    }
+
+    std::vector<int> bucketIndexList(static_cast<std::size_t>(kMaximumDrawablePoints), -1);
+    std::vector<ProcessTraceTimelineEventPoint> compactPointList;
+    compactPointList.reserve(static_cast<std::size_t>(kMaximumDrawablePoints));
+    const std::uint64_t rangeDuration100ns = m_rangeEnd100ns - m_rangeStart100ns;
+
+    for (const ProcessTraceTimelineEventPoint& pointValue : eventPointList)
+    {
+        if (pointValue.time100ns < m_rangeStart100ns || pointValue.time100ns > m_rangeEnd100ns)
+        {
+            continue;
+        }
+
+        const int laneIndex = laneForType(pointValue.typeText);
+        const std::uint64_t elapsed100ns = pointValue.time100ns - m_rangeStart100ns;
+        const double bucketPosition = static_cast<double>(elapsed100ns)
+            * static_cast<double>(kMaxBucketsPerLane)
+            / static_cast<double>(rangeDuration100ns);
+        const int bucketIndex = std::min(
+            kMaxBucketsPerLane - 1,
+            static_cast<int>(bucketPosition));
+        const int combinedIndex = laneIndex * kMaxBucketsPerLane + bucketIndex;
+        int& compactIndex = bucketIndexList[static_cast<std::size_t>(combinedIndex)];
+        if (compactIndex < 0)
+        {
+            compactIndex = static_cast<int>(compactPointList.size());
+            compactPointList.push_back(pointValue);
+        }
+        else
+        {
+            // 同一格保留最新事件，使正在发生的活动在时间轴上更容易被观察到。
+            compactPointList[static_cast<std::size_t>(compactIndex)] = pointValue;
+        }
+    }
+
+    m_eventPointList = std::move(compactPointList);
     update();
 }
 

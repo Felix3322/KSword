@@ -11,12 +11,15 @@
 #include "ProcessTraceTimelineWidget.h"
 #include "../Framework.h"
 
+#include <QElapsedTimer>
+#include <QHash>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QWidget>
 
 #include <atomic>      // std::atomic_bool：后台订阅状态控制。
 #include <cstdint>     // std::uint32_t：PID 等固定宽度整数。
+#include <deque>       // std::deque：高频 ETW 事件的有界 FIFO 队列。
 #include <functional>  // std::function：筛选匹配回调。
 #include <memory>      // std::unique_ptr：线程对象托管。
 #include <mutex>       // std::mutex：ETW 待刷新队列并发保护。
@@ -557,7 +560,7 @@ private:
     void rebuildEtwFilterRuleGroupUi(EtwFilterStage stage);
     void clearEtwFilterGroups(EtwFilterStage stage, bool resetTimelineSelection = false);
     void applyEtwFilterRules(EtwFilterStage stage);
-    void applyEtwPostFilterToTable();
+    void applyEtwPostFilterToTable(int firstRow = 0, bool updateStateLabel = true);
     void updateEtwFilterStateLabel(EtwFilterStage stage);
     bool tryCompileEtwFilterGroups(
         EtwFilterStage stage,
@@ -747,9 +750,10 @@ private:
     QVBoxLayout* m_etwPostFilterGroupHostLayout = nullptr; // 后置筛选规则组布局。
     ProcessTraceTimelineWidget* m_etwTimelineWidget = nullptr; // ETW 事件瀑布流时间轴。
     QTableWidget* m_etwEventTable = nullptr;         // ETW 事件表。
-    QTimer* m_etwUiUpdateTimer = nullptr;            // 100ms 刷新节流定时器。
+    QTimer* m_etwUiUpdateTimer = nullptr;            // 高频 ETW 的 UI 批量刷新定时器。
 
     std::vector<EtwProviderEntry> m_etwProviders;    // ETW Provider 缓存。
+    QHash<QString, QString> m_etwCaptureProviderNames; // 当前 ETW 会话的 GUID 到显示名快照。
     std::vector<EtwSessionEntry> m_etwSessions;      // ETW 会话缓存。
     int m_etwPreFilterNextGroupId = 1;               // 前置筛选规则组递增ID。
     int m_etwPostFilterNextGroupId = 1;              // 后置筛选规则组递增ID。
@@ -759,10 +763,13 @@ private:
     std::vector<EtwFilterRuleGroupCompiled> m_etwPostFilterCompiledGroupList; // 后置筛选编译规则组。
     std::shared_ptr<const std::vector<EtwFilterRuleGroupCompiled>> m_etwPreFilterCompiledSnapshot; // ETW回调使用的前置筛选快照。
     std::mutex m_etwPreFilterSnapshotMutex;          // 前置筛选快照互斥锁。
-    std::vector<EtwCapturedEventRow> m_etwPendingRows; // ETW 待刷入 UI 的事件缓存。
-    std::vector<EtwCapturedEventRow> m_etwCapturedRows; // ETW 已捕获事件缓存（后置筛选仅隐藏）。
-    std::vector<ProcessTraceTimelineEventPoint> m_etwTimelineEventPoints; // ETW 时间轴绘制用有效时间点缓存。
+    std::deque<EtwCapturedEventRow> m_etwPendingRows; // ETW 待刷入 UI 的有界 FIFO 队列。
+    std::deque<EtwCapturedEventRow> m_etwCapturedRows; // ETW 已捕获事件缓存（后置筛选仅隐藏）。
+    std::deque<ProcessTraceTimelineEventPoint> m_etwTimelineEventPoints; // ETW 时间轴绘制用有效时间点缓存。
     std::mutex m_etwPendingMutex;                    // ETW 待刷入队列互斥锁。
+    std::atomic<std::uint64_t> m_etwPendingDroppedRows{ 0 }; // UI 队列满时淘汰的旧事件数。
+    std::atomic<std::uint64_t> m_etwPendingOverloadSequence{ 0 }; // 洪峰采样序号。
+    QElapsedTimer m_etwTimelineRefreshTimer;         // 时间轴重绘节流计时器。
     std::atomic_bool m_etwCaptureRunning{ false };   // ETW 捕获运行状态。
     std::atomic_bool m_etwCapturePaused{ false };    // ETW 捕获暂停状态。
     std::atomic_bool m_etwCaptureStopFlag{ false };  // ETW 捕获停止信号。

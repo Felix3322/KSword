@@ -5455,18 +5455,26 @@ void MonitorDock::initializeEtwTab()
     m_etwEventTable->setAlternatingRowColors(true);
     m_etwEventTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_etwEventTable->horizontalHeader()->setStyleSheet(blueHeaderStyle());
-    m_etwEventTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_etwEventTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_etwEventTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_etwEventTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_etwEventTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    // 高频追加时禁止 ResizeToContents：该模式会反复扫描已有行计算列宽，
+    // 大量 ETW 事件到达时会放大每次 insert/setItem 的布局成本。
+    m_etwEventTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_etwEventTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
+    m_etwEventTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
+    m_etwEventTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    m_etwEventTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Interactive);
     m_etwEventTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
-    m_etwEventTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+    m_etwEventTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Interactive);
+    m_etwEventTable->setColumnWidth(0, 190);
+    m_etwEventTable->setColumnWidth(1, 240);
+    m_etwEventTable->setColumnWidth(2, 80);
+    m_etwEventTable->setColumnWidth(3, 190);
+    m_etwEventTable->setColumnWidth(4, 110);
+    m_etwEventTable->setColumnWidth(6, 300);
 
     m_etwLayout->addWidget(m_etwEventTable, 1);
 
     m_etwUiUpdateTimer = new QTimer(this);
-    m_etwUiUpdateTimer->setInterval(100);
+    m_etwUiUpdateTimer->setInterval(33);
     updateEtwCaptureActionState();
     updateEtwCollapseHeight();
 
@@ -6029,7 +6037,7 @@ void MonitorDock::initializeConnections()
     });
 
     connect(m_etwUiUpdateTimer, &QTimer::timeout, this, [this]() {
-        flushEtwPendingRows(false);
+        flushEtwPendingRows(!m_etwCaptureRunning.load());
     });
 
     connect(m_etwEventTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
@@ -6631,7 +6639,7 @@ void MonitorDock::updateEtwFilterStateLabel(const EtwFilterStage stage)
     stateLabel->setStyleSheet(buildStatusStyle(monitorInfoColorHex()));
 }
 
-void MonitorDock::applyEtwPostFilterToTable()
+void MonitorDock::applyEtwPostFilterToTable(const int firstRow, const bool updateStateLabel)
 {
     if (m_etwEventTable == nullptr)
     {
@@ -6644,7 +6652,11 @@ void MonitorDock::applyEtwPostFilterToTable()
 
     const bool hasPostRules = !m_etwPostFilterCompiledGroupList.empty();
     const bool timelineFilterActive = isEtwTimelineFilterActive();
-    for (int row = 0; row < rowCount; ++row)
+    const int firstRowToApply = std::clamp(firstRow, 0, rowCount);
+
+    // 实时追加时只计算新行。规则变更、时间轴选区变化仍走 firstRow=0 的全表重算。
+    // 这避免监听过程中每个批次重复遍历最多 6000 条历史事件。
+    for (int row = firstRowToApply; row < rowCount; ++row)
     {
         bool visible = true;
         const EtwCapturedEventRow& rowData = m_etwCapturedRows[static_cast<std::size_t>(row)];
@@ -6670,12 +6682,15 @@ void MonitorDock::applyEtwPostFilterToTable()
         }
         m_etwEventTable->setRowHidden(row, !visible);
     }
-    for (int row = rowCount; row < m_etwEventTable->rowCount(); ++row)
+    for (int row = std::max(rowCount, firstRowToApply); row < m_etwEventTable->rowCount(); ++row)
     {
         m_etwEventTable->setRowHidden(row, false);
     }
 
-    updateEtwFilterStateLabel(EtwFilterStage::Post);
+    if (updateStateLabel)
+    {
+        updateEtwFilterStateLabel(EtwFilterStage::Post);
+    }
 }
 
 void MonitorDock::applyEtwFilterRules(const EtwFilterStage stage)
@@ -8816,15 +8831,46 @@ void MonitorDock::enqueueEtwEventFromRecord(const struct _EVENT_RECORD* eventRec
         return;
     }
 
+    // UI 刷新速率低于 ETW 峰值速率时，先在高水位执行自适应采样，
+    // 再淘汰最旧待显示事件。容量检查位于完整 payload 解码之前，避免洪峰继续放大回调成本。
+    constexpr std::size_t kMaxEtwPendingRows = 12000;
+    constexpr std::size_t kEtwPendingHighWaterRows = 10800;
+    std::size_t pendingRowCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_etwPendingMutex);
+        pendingRowCount = m_etwPendingRows.size();
+    }
+
+    if (pendingRowCount >= kEtwPendingHighWaterRows)
+    {
+        // 90% 容量后每 4 条保留 1 条，96% 容量后每 8 条保留 1 条。
+        // 表格仍优先展示较新的活动，ETW 回调线程不会为必然无法显示的洪峰事件构造完整 JSON。
+        const std::uint64_t sampleSequence = m_etwPendingOverloadSequence.fetch_add(
+            1,
+            std::memory_order_relaxed);
+        const std::uint64_t sampleDivisor = pendingRowCount >= 11520 ? 8 : 4;
+        if ((sampleSequence % sampleDivisor) != 0)
+        {
+            m_etwPendingDroppedRows.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_etwPendingMutex);
+        if (m_etwPendingRows.size() >= kMaxEtwPendingRows)
+        {
+            m_etwPendingRows.pop_front();
+            m_etwPendingDroppedRows.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     const QString providerGuidText = guidToText(eventRecord->EventHeader.ProviderId);
     QString providerNameText = providerGuidText;
-    for (const EtwProviderEntry& entry : m_etwProviders)
+    const auto providerNameIt = m_etwCaptureProviderNames.constFind(providerGuidText);
+    if (providerNameIt != m_etwCaptureProviderNames.cend())
     {
-        if (entry.providerGuidText.compare(providerGuidText, Qt::CaseInsensitive) == 0)
-        {
-            providerNameText = entry.providerName;
-            break;
-        }
+        providerNameText = providerNameIt.value();
     }
 
     EtwCapturedEventRow rowData;
@@ -9249,6 +9295,13 @@ void MonitorDock::startEtwCapture()
         return;
     }
 
+    // 捕获回调只读取这份本轮会话快照，Provider 刷新不再与回调线程并发访问 m_etwProviders。
+    m_etwCaptureProviderNames.clear();
+    for (const ProviderSelection& provider : selectedProviders)
+    {
+        m_etwCaptureProviderNames.insert(guidToText(provider.guid), provider.name);
+    }
+
     // 新一轮 ETW 监听开始前清空旧结果：
     // - 表格、后置缓存与时间轴点必须同步归零；
     // - 时间轴起点使用启动瞬间的 100ns 时间戳，后续右边界实时跟随。
@@ -9279,6 +9332,8 @@ void MonitorDock::startEtwCapture()
         std::lock_guard<std::mutex> lock(m_etwPendingMutex);
         m_etwPendingRows.clear();
     }
+    m_etwPendingDroppedRows.store(0, std::memory_order_relaxed);
+    m_etwPendingOverloadSequence.store(0, std::memory_order_relaxed);
 
     // 每轮监听开始前刷新一次 schema 缓存：
     // - 这样可以保证本轮会话基于最新事件布局重新建模；
@@ -9809,36 +9864,84 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
         return;
     }
 
+    // 64 行约等于 448 个 QTableWidgetItem。极端 ETW 洪峰下优先保证主线程每帧可响应。
+    constexpr std::size_t kMaxRowsPerFlush = 64;
+    constexpr int kMaxCapturedRows = 6000;
+    constexpr qint64 kTimelineRefreshIntervalMs = 250;
+
     std::vector<EtwCapturedEventRow> rows;
     {
         std::lock_guard<std::mutex> lock(m_etwPendingMutex);
-        rows.swap(m_etwPendingRows);
+        const std::size_t flushCount = std::min(kMaxRowsPerFlush, m_etwPendingRows.size());
+        rows.reserve(flushCount);
+        for (std::size_t rowIndex = 0; rowIndex < flushCount; ++rowIndex)
+        {
+            rows.push_back(std::move(m_etwPendingRows.front()));
+            m_etwPendingRows.pop_front();
+        }
     }
+
+    const bool refreshTimeline = captureFinished
+        || !m_etwTimelineRefreshTimer.isValid()
+        || m_etwTimelineRefreshTimer.hasExpired(kTimelineRefreshIntervalMs);
 
     if (rows.empty())
     {
         // 空刷新在暂停时不推进范围、不重推点集，防止瀑布流右边界持续压缩既有事件。
         const bool paused = m_etwCapturePaused.load();
-        if (captureFinished || !paused)
+        if (refreshTimeline && (captureFinished || !paused))
         {
             refreshEtwTimelineRange(captureFinished);
             refreshEtwTimelinePoints();
+            m_etwTimelineRefreshTimer.restart();
         }
         if (captureFinished || (!paused && isEtwTimelineFilterActive()))
         {
             applyEtwPostFilterToTable();
         }
+
+        if (captureFinished && m_etwUiUpdateTimer != nullptr && m_etwUiUpdateTimer->isActive())
+        {
+            m_etwUiUpdateTimer->stop();
+        }
         return;
     }
 
+    // 一次只追加受限批次。setUpdatesEnabled 仅抑制重绘，真正的限流由 kMaxRowsPerFlush 完成。
     m_etwEventTable->setUpdatesEnabled(false);
-    for (EtwCapturedEventRow& rowData : rows)
+
+    // 先腾出固定结果窗口空间，再批量扩展行数，避免 insertRow/removeRow 循环触发大量模型和布局更新。
+    const int overflowCount = std::max(
+        0,
+        m_etwEventTable->rowCount() + static_cast<int>(rows.size()) - kMaxCapturedRows);
+    if (overflowCount > 0)
     {
+        if (!m_etwEventTable->model()->removeRows(0, overflowCount))
+        {
+            for (int rowIndex = 0; rowIndex < overflowCount; ++rowIndex)
+            {
+                m_etwEventTable->removeRow(0);
+            }
+        }
+        for (int rowIndex = 0; rowIndex < overflowCount && !m_etwCapturedRows.empty(); ++rowIndex)
+        {
+            m_etwCapturedRows.pop_front();
+        }
+        for (int rowIndex = 0; rowIndex < overflowCount && !m_etwTimelineEventPoints.empty(); ++rowIndex)
+        {
+            m_etwTimelineEventPoints.pop_front();
+        }
+    }
+
+    const int firstInsertedRow = m_etwEventTable->rowCount();
+    m_etwEventTable->setRowCount(firstInsertedRow + static_cast<int>(rows.size()));
+    for (std::size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex)
+    {
+        EtwCapturedEventRow& rowData = rows[rowIndex];
         m_etwCapturedRows.push_back(std::move(rowData));
         EtwCapturedEventRow& captured = m_etwCapturedRows.back();
 
-        const int row = m_etwEventTable->rowCount();
-        m_etwEventTable->insertRow(row);
+        const int row = firstInsertedRow + static_cast<int>(rowIndex);
 
         const QStringList rowTextList{
             captured.timestampText,
@@ -9870,25 +9973,47 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
         m_etwTimelineEventPoints.push_back(std::move(pointValue));
     }
 
-    while (m_etwEventTable->rowCount() > 6000)
+    // m_etwCapturedRows 与 m_etwTimelineEventPoints 已在追加前同步批量裁剪，
+    // 行号仍能一一对应，无需逐行 erase(begin())。
+    const bool requiresPostFilter = !m_etwPostFilterCompiledGroupList.empty()
+        || isEtwTimelineFilterActive();
+    if (requiresPostFilter)
     {
-        // 表格、完整事件缓存和时间轴点必须同步裁剪，保证行号与缓存索引继续一一对应。
-        m_etwEventTable->removeRow(0);
-        if (!m_etwCapturedRows.empty())
-        {
-            m_etwCapturedRows.erase(m_etwCapturedRows.begin());
-        }
-        if (!m_etwTimelineEventPoints.empty())
-        {
-            m_etwTimelineEventPoints.erase(m_etwTimelineEventPoints.begin());
-        }
+        applyEtwPostFilterToTable(firstInsertedRow, false);
     }
 
-    refreshEtwTimelineRange(captureFinished);
-    refreshEtwTimelinePoints();
-    applyEtwPostFilterToTable();
+    if (refreshTimeline)
+    {
+        refreshEtwTimelineRange(captureFinished);
+        refreshEtwTimelinePoints();
+        m_etwTimelineRefreshTimer.restart();
+    }
     m_etwEventTable->setUpdatesEnabled(true);
     m_etwEventTable->viewport()->update();
+
+    if (captureFinished)
+    {
+        bool hasPendingRows = false;
+        {
+            std::lock_guard<std::mutex> lock(m_etwPendingMutex);
+            hasPendingRows = !m_etwPendingRows.empty();
+        }
+
+        // 停止监听后仍可能有一个批次在队列中。分帧排空，避免“停止”操作再次卡住 UI。
+        if (hasPendingRows && !m_etwCaptureRunning.load())
+        {
+            QTimer::singleShot(16, this, [this]() {
+                if (!m_etwCaptureRunning.load())
+                {
+                    flushEtwPendingRows(true);
+                }
+            });
+        }
+        else if (!hasPendingRows && m_etwUiUpdateTimer != nullptr && m_etwUiUpdateTimer->isActive())
+        {
+            m_etwUiUpdateTimer->stop();
+        }
+    }
 }
 
 void MonitorDock::applyEtwTimelineSelection(
@@ -9992,8 +10117,15 @@ void MonitorDock::refreshEtwTimelinePoints()
         return;
     }
 
-    // 控件只接收轻量点缓存，完整事件仍保留在 m_etwCapturedRows 中供筛选和导出使用。
-    m_etwTimelineWidget->setEventPoints(m_etwTimelineEventPoints);
+    // 控件保留 vector API，ETW 侧使用 deque 以便 O(1) 淘汰最旧事件。
+    // 时间轴按节流周期刷新，避免每个 UI 批次复制并重绘完整点集。
+    std::vector<ProcessTraceTimelineEventPoint> pointSnapshot;
+    pointSnapshot.reserve(m_etwTimelineEventPoints.size());
+    pointSnapshot.insert(
+        pointSnapshot.end(),
+        m_etwTimelineEventPoints.begin(),
+        m_etwTimelineEventPoints.end());
+    m_etwTimelineWidget->setEventPoints(pointSnapshot);
 }
 
 bool MonitorDock::isEtwTimelineFilterActive() const

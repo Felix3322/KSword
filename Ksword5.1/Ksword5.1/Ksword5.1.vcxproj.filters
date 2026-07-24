@@ -545,6 +545,9 @@
     <ClCompile Include="UI\TableColumnAutoFit.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\TableInteractionSupport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\ThemedMessageBox.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -910,6 +913,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\TableColumnAutoFit.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\TableInteractionSupport.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\VisibleTableWidget.h">
