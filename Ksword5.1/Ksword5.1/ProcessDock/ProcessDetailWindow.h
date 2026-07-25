@@ -13,6 +13,7 @@
 #include <QHash>
 #include <QIcon>
 #include <QPointer>
+#include <QSet>
 #include <QStringList>
 #include <QWidget>
 
@@ -332,6 +333,8 @@ private:
     // - 构建 PEB.KernelCallbackTable 独立审计页；
     // - 表格展示回调名、地址、模块偏移、内存保护和异常状态。
     void initializeKernelCallbackTab();
+    // ensureTabContentInitialized 作用：仅在用户首次访问页面时构造该页控件，避免开窗阶段同步创建全部功能页。
+    void ensureTabContentInitialized(QWidget* tab);
     void initializeConnections();
 
     // ======== 详情页刷新 ========
@@ -590,6 +593,8 @@ private:
     QWidget* m_tabNavigation = nullptr;        // 左侧单列常显的页面导航按钮容器。
     QButtonGroup* m_tabNavigationButtonGroup = nullptr; // 导航按钮与 Tab 索引的映射。
     QTabWidget* m_tabWidget = nullptr;         // 页面栈与现有切换/懒加载逻辑的容器。
+    QSet<QWidget*> m_initializedTabs;           // 已构造控件树的页面，避免重复初始化。
+    QSet<QObject*> m_connectedSignalSources;    // 已连接的 sender，支持页面按需构造后补接信号。
     QWidget* m_detailTab = nullptr;            // “详细信息”页。
     QWidget* m_threadTab = nullptr;            // “线程”页。
     QWidget* m_actionTab = nullptr;            // “操作”页。

@@ -886,7 +886,7 @@ void ProcessDetailWindow::initializeUi()
     m_rootLayout->addWidget(m_tabNavigation);
     m_rootLayout->addWidget(m_tabWidget, 1);
 
-    // 创建各详情页面并分别初始化。
+    // 先创建轻量页面容器，实际控件树在用户首次进入时构造。
     m_detailTab = new QWidget(m_tabWidget);
     m_threadTab = new QWidget(m_tabWidget);
     m_actionTab = new QWidget(m_tabWidget);
@@ -921,22 +921,9 @@ void ProcessDetailWindow::initializeUi()
     m_pebTab->setObjectName(QStringLiteral("ProcessDetailTab_Peb"));
     m_kernelCallbackTab->setObjectName(QStringLiteral("ProcessDetailTab_KernelCallbackTable"));
 
+    // 详细信息是默认页，保留在开窗阶段构建；其余页面均由左侧导航首次访问触发构造。
     initializeDetailTab();
-    initializeThreadTab();
-    initializeActionTab();
-    initializeModuleTab();
-    initializeEmbeddedHandleTab();
-    initializeEmbeddedMemoryTab();
-    initializeEmbeddedNetworkTab();
-    initializeEmbeddedWindowTab();
-    initializeTokenTab();
-    initializeTokenSwitchTab();
-    initializeKernelObjectTab();
-    initializeHotkeyTab();
-    initializeKeyboardTab();
-    initializePluginTab();
-    initializePebTab();
-    initializeKernelCallbackTab();
+    m_initializedTabs.insert(m_detailTab);
 
     // 为 Tab 指定图标与标题文本。
     m_tabWidget->addTab(m_detailTab, QIcon(":/Icon/process_details.svg"), "详细信息");
@@ -984,6 +971,82 @@ void ProcessDetailWindow::initializeUi()
     applyThemeStyle();
 
     updateWindowTitle();
+}
+
+void ProcessDetailWindow::ensureTabContentInitialized(QWidget* const tab)
+{
+    if (tab == nullptr || m_initializedTabs.contains(tab))
+    {
+        return;
+    }
+
+    // 先标记，防止初始化中发生 tab 事件时递归重复创建控件树。
+    m_initializedTabs.insert(tab);
+    if (tab == m_threadTab)
+    {
+        initializeThreadTab();
+    }
+    else if (tab == m_actionTab)
+    {
+        initializeActionTab();
+    }
+    else if (tab == m_moduleTab)
+    {
+        initializeModuleTab();
+    }
+    else if (tab == m_embeddedHandleTab)
+    {
+        initializeEmbeddedHandleTab();
+    }
+    else if (tab == m_embeddedMemoryTab)
+    {
+        initializeEmbeddedMemoryTab();
+    }
+    else if (tab == m_embeddedNetworkTab)
+    {
+        initializeEmbeddedNetworkTab();
+    }
+    else if (tab == m_embeddedWindowTab)
+    {
+        initializeEmbeddedWindowTab();
+    }
+    else if (tab == m_tokenTab)
+    {
+        initializeTokenTab();
+    }
+    else if (tab == m_tokenSwitchTab)
+    {
+        initializeTokenSwitchTab();
+    }
+    else if (tab == m_kernelObjectTab)
+    {
+        initializeKernelObjectTab();
+        refreshKernelObjectTabTexts();
+    }
+    else if (tab == m_hotkeyTab)
+    {
+        initializeHotkeyTab();
+    }
+    else if (tab == m_keyboardTab)
+    {
+        initializeKeyboardTab();
+    }
+    else if (tab == m_pluginTab)
+    {
+        initializePluginTab();
+    }
+    else if (tab == m_pebTab)
+    {
+        initializePebTab();
+    }
+    else if (tab == m_kernelCallbackTab)
+    {
+        initializeKernelCallbackTab();
+    }
+
+    // 新页面创建后补接其信号与统一主题，已存在控件不会重复连接。
+    initializeConnections();
+    applyThemeStyle();
 }
 
 void ProcessDetailWindow::initializePluginTab()
@@ -1079,6 +1142,7 @@ void ProcessDetailWindow::requestInitialRefreshForCurrentTab()
     {
         return;
     }
+    ensureTabContentInitialized(currentTab);
 
     if (currentTab == m_threadTab)
     {
@@ -3432,7 +3496,18 @@ void ProcessDetailWindow::initializeKernelCallbackTab()
 
 void ProcessDetailWindow::initializeConnections()
 {
-    // 连接初始化日志：用于确认所有按钮信号都已挂接。
+    // 页面按需构造后会再次调用本函数。局部 connect 包装器按 sender 去重，
+    // 既能跳过尚未创建的控件，也不会为已存在控件重复连接同一信号。
+    const auto connect = [this](auto* sender, const auto signal, QObject* context, const auto& callback) {
+        if (sender == nullptr || m_connectedSignalSources.contains(sender))
+        {
+            return;
+        }
+        QObject::connect(sender, signal, context, callback);
+        m_connectedSignalSources.insert(sender);
+    };
+
+    // 连接初始化日志：用于确认所有已创建页面的按钮信号都已挂接。
     kLogEvent initConnectionsEvent;
     info << initConnectionsEvent
         << "[ProcessDetailWindow] initializeConnections: 开始连接信号槽。"
@@ -3601,6 +3676,10 @@ void ProcessDetailWindow::initializeConnections()
     // - 进程详情窗口打开路径只构建 UI 和轻量文本；
     // - 这样用户能立即看到窗口，后台扫描不会同时挤占线程池与 UI 回填。
     connect(m_tabWidget, &QTabWidget::currentChanged, this, [this](const int tabIndex) {
+        if (m_tabWidget != nullptr)
+        {
+            ensureTabContentInitialized(m_tabWidget->widget(tabIndex));
+        }
         if (m_tabNavigationButtonGroup != nullptr)
         {
             if (QAbstractButton* navigationButton = m_tabNavigationButtonGroup->button(tabIndex))
