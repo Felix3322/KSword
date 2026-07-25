@@ -1,4 +1,5 @@
 #include "ProcessDock.h"
+#include "ProcessAffinityUtils.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../theme.h"
@@ -80,6 +81,8 @@
 #include <QStringList>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <QToolButton>
+#include <QWidgetAction>
 
 #include <algorithm>
 #include <atomic>
@@ -9151,6 +9154,231 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
     scanHotkeyAction->setToolTip(QStringLiteral("打开进程详细信息并直达“进程热键”页，扫描窗口热键、菜单快捷键、Accelerator、快捷方式和R0热键表。"));
     scanHotkeyAction->setEnabled(!hasBatchSelection);
 
+    // CPU 亲和性矩阵：
+    // - 用 QWidgetAction 承载每一行核心按钮，按钮交互不会触发 QAction::triggered，
+    //   因此子菜单在连续勾选时保持展开，仅由用户点击菜单外区域关闭；
+    // - 多选进程时仅在所有目标均可读取亲和性时开放，避免对部分目标产生不透明的写入；
+    // - 每个目标保留自己的其余核心位，只对用户点击的单一核心位做增减。
+    QMenu* affinitySubMenu = contextMenu.addMenu(
+        blueTintedIcon(":/Icon/process_priority.svg"),
+        processContextText("process.menu.affinity", QStringLiteral("CPU 亲和性")));
+    affinitySubMenu->setToolTipsVisible(true);
+    affinitySubMenu->setToolTip(processContextText(
+        "process.menu.affinity.tooltip",
+        QStringLiteral("按逻辑核心切换选中进程的 CPU 亲和性；蓝色按钮表示该核心已启用。")));
+
+    struct ContextAffinityTargetState
+    {
+        DWORD processId = 0;
+        ULONG_PTR processMask = 0;
+        ULONG_PTR systemMask = 0;
+    };
+    const auto affinityTargetStates = std::make_shared<std::vector<ContextAffinityTargetState>>();
+    affinityTargetStates->reserve(contextActionTargets.size());
+    bool affinityReadable = !contextActionTargets.empty();
+    ULONG_PTR commonSystemMask = std::numeric_limits<ULONG_PTR>::max();
+    std::string affinityReadDetailText;
+    for (const ProcessActionTarget& actionTarget : contextActionTargets)
+    {
+        ks::process::ProcessAffinityMasks affinityMasks;
+        std::string detailText;
+        if (!ks::process::QueryProcessAffinityMasks(
+                static_cast<DWORD>(actionTarget.record.pid),
+                &affinityMasks,
+                &detailText))
+        {
+            affinityReadable = false;
+            affinityReadDetailText = detailText;
+            break;
+        }
+        ContextAffinityTargetState targetState;
+        targetState.processId = static_cast<DWORD>(actionTarget.record.pid);
+        targetState.processMask = affinityMasks.processMask;
+        targetState.systemMask = affinityMasks.systemMask;
+        commonSystemMask &= affinityMasks.systemMask;
+        affinityTargetStates->push_back(targetState);
+    }
+    if (commonSystemMask == 0U)
+    {
+        affinityReadable = false;
+        if (affinityReadDetailText.empty())
+        {
+            affinityReadDetailText = "selected processes do not share an available processor group";
+        }
+    }
+
+    const auto affinityChanged = std::make_shared<bool>(false);
+    if (!affinityReadable)
+    {
+        affinitySubMenu->setEnabled(false);
+        affinitySubMenu->setToolTip(
+            processContextText(
+                "process.menu.affinity.unavailable",
+                QStringLiteral("无法读取全部选中进程的 CPU 亲和性。")) +
+            (affinityReadDetailText.empty()
+                ? QString()
+                : QStringLiteral("\n") + QString::fromStdString(affinityReadDetailText)));
+    }
+    else
+    {
+        constexpr int affinityMatrixColumnCount = 6;
+        const QString affinityCoreButtonStyle = QStringLiteral(
+            "QToolButton {"
+            "  min-width:42px; min-height:28px; padding:2px 6px;"
+            "  color:%1; background:transparent; border:1px solid %2; border-radius:4px;"
+            "}"
+            "QToolButton:hover { border-color:%3; background:%4; }"
+            "QToolButton:checked { color:%5; background:%3; border-color:%3; }"
+            "QToolButton[affinityMixed=\"true\"] { border-color:%3; border-style:dashed; }")
+            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
+            .arg(KswordTheme::SurfaceAltColorHex())
+            .arg(KswordTheme::OnAccentHex());
+
+        const auto affinityCoreButtons = std::make_shared<std::vector<QToolButton*>>(
+            static_cast<std::size_t>(sizeof(ULONG_PTR) * 8U),
+            nullptr);
+        const auto updateAffinityCoreButtons = [affinityTargetStates, affinityCoreButtons]()
+        {
+            for (int coreIndex = 0; coreIndex < static_cast<int>(affinityCoreButtons->size()); ++coreIndex)
+            {
+                QToolButton* const coreButton = (*affinityCoreButtons)[static_cast<std::size_t>(coreIndex)];
+                if (coreButton == nullptr)
+                {
+                    continue;
+                }
+                const ULONG_PTR coreBit = static_cast<ULONG_PTR>(1ULL) << coreIndex;
+                bool availableForAll = !affinityTargetStates->empty();
+                bool enabledForAll = !affinityTargetStates->empty();
+                bool enabledForAny = false;
+                for (const ContextAffinityTargetState& targetState : *affinityTargetStates)
+                {
+                    availableForAll = availableForAll && (targetState.systemMask & coreBit) != 0U;
+                    const bool enabledForTarget = (targetState.processMask & coreBit) != 0U;
+                    enabledForAll = enabledForAll && enabledForTarget;
+                    enabledForAny = enabledForAny || enabledForTarget;
+                }
+
+                const QSignalBlocker signalBlocker(coreButton);
+                coreButton->setEnabled(availableForAll);
+                coreButton->setChecked(availableForAll && enabledForAll);
+                coreButton->setProperty(
+                    "affinityMixed",
+                    availableForAll && enabledForAny && !enabledForAll);
+                coreButton->style()->unpolish(coreButton);
+                coreButton->style()->polish(coreButton);
+                coreButton->update();
+            }
+        };
+
+        std::vector<int> availableCoreIndexes;
+        for (int coreIndex = 0; coreIndex < static_cast<int>(sizeof(ULONG_PTR) * 8U); ++coreIndex)
+        {
+            const ULONG_PTR coreBit = static_cast<ULONG_PTR>(1ULL) << coreIndex;
+            if ((commonSystemMask & coreBit) != 0U)
+            {
+                availableCoreIndexes.push_back(coreIndex);
+            }
+        }
+        for (std::size_t rowStart = 0U; rowStart < availableCoreIndexes.size(); rowStart += affinityMatrixColumnCount)
+        {
+            QWidgetAction* rowAction = new QWidgetAction(affinitySubMenu);
+            QWidget* rowWidget = new QWidget(affinitySubMenu);
+            QHBoxLayout* rowLayout = new QHBoxLayout(rowWidget);
+            rowLayout->setContentsMargins(8, 3, 8, 3);
+            rowLayout->setSpacing(6);
+            const std::size_t rowEnd = std::min(
+                rowStart + static_cast<std::size_t>(affinityMatrixColumnCount),
+                availableCoreIndexes.size());
+            for (std::size_t corePosition = rowStart; corePosition < rowEnd; ++corePosition)
+            {
+                const int coreIndex = availableCoreIndexes[corePosition];
+                QToolButton* coreButton = new QToolButton(rowWidget);
+                coreButton->setText(QStringLiteral("C%1").arg(coreIndex));
+                coreButton->setCheckable(true);
+                coreButton->setAutoRaise(false);
+                coreButton->setFocusPolicy(Qt::NoFocus);
+                coreButton->setToolTip(
+                    processContextText(
+                        "process.menu.affinity.tooltip",
+                        QStringLiteral("按逻辑核心切换选中进程的 CPU 亲和性；蓝色按钮表示该核心已启用。")));
+                coreButton->setStyleSheet(affinityCoreButtonStyle);
+                rowLayout->addWidget(coreButton);
+                (*affinityCoreButtons)[static_cast<std::size_t>(coreIndex)] = coreButton;
+                connect(coreButton, &QToolButton::clicked, affinitySubMenu,
+                    [affinitySubMenu,
+                        affinityTargetStates,
+                        affinityChanged,
+                        updateAffinityCoreButtons,
+                        coreIndex,
+                        coreButton](const bool enabled)
+                    {
+                        const ULONG_PTR coreBit = static_cast<ULONG_PTR>(1ULL) << coreIndex;
+                        if (!enabled)
+                        {
+                            for (const ContextAffinityTargetState& targetState : *affinityTargetStates)
+                            {
+                                if ((targetState.processMask & ~coreBit) == 0U)
+                                {
+                                    const QSignalBlocker signalBlocker(coreButton);
+                                    coreButton->setChecked(true);
+                                    affinitySubMenu->setToolTip(processContextText(
+                                        "process.menu.affinity.last_core",
+                                        QStringLiteral("至少保留一个可用逻辑核心。")));
+                                    return;
+                                }
+                            }
+                        }
+
+                        bool allUpdated = true;
+                        QStringList failedProcessDetails;
+                        for (ContextAffinityTargetState& targetState : *affinityTargetStates)
+                        {
+                            const ULONG_PTR nextMask = enabled
+                                ? (targetState.processMask | coreBit)
+                                : (targetState.processMask & ~coreBit);
+                            std::string detailText;
+                            if (ks::process::SetProcessAffinityMaskByPid(
+                                    targetState.processId,
+                                    nextMask,
+                                    &detailText))
+                            {
+                                targetState.processMask = nextMask;
+                                *affinityChanged = true;
+                                continue;
+                            }
+                            allUpdated = false;
+                            failedProcessDetails << QStringLiteral("PID %1: %2")
+                                .arg(targetState.processId)
+                                .arg(QString::fromStdString(detailText));
+                        }
+                        if (!allUpdated)
+                        {
+                            affinitySubMenu->setToolTip(failedProcessDetails.join(QStringLiteral("\n")));
+                        }
+                        updateAffinityCoreButtons();
+
+                        kLogEvent actionEvent;
+                        (allUpdated ? info : warn) << actionEvent
+                            << "[ProcessDock] 右键 CPU 亲和性更新, core="
+                            << coreIndex
+                            << ", enabled="
+                            << (enabled ? "true" : "false")
+                            << ", targetCount="
+                            << affinityTargetStates->size()
+                            << ", allUpdated="
+                            << (allUpdated ? "true" : "false")
+                            << eol;
+                    });
+            }
+            rowLayout->addStretch(1);
+            rowAction->setDefaultWidget(rowWidget);
+            affinitySubMenu->addAction(rowAction);
+        }
+        updateAffinityCoreButtons();
+    }
+
     // 优先级二级菜单。
     QMenu* prioritySubMenu = contextMenu.addMenu(
         blueTintedIcon(":/Icon/process_priority.svg"),
@@ -9233,6 +9461,12 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
     m_contextMenuVisible = true;
     QAction* selectedAction = contextMenu.exec(m_processTable->viewport()->mapToGlobal(localPosition));
     m_contextMenuVisible = false;
+    if (*affinityChanged)
+    {
+        // 亲和性矩阵按钮在子菜单存续期间直接写入，菜单关闭后再刷新列表，
+        // 避免刷新过程重建右键绑定或导致展开中的矩阵提前收起。
+        requestAsyncRefresh(true);
+    }
     {
         if (selectedAction == nullptr)
         {

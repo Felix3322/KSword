@@ -30,6 +30,7 @@ class QButtonGroup;
 class QComboBox;
 class QEvent;
 class QFormLayout;
+class QGroupBox;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
@@ -525,6 +526,14 @@ private:
     void executeResumeProcessAction();
     void executeSetCriticalAction(bool enableCritical);
     void executeSetPriorityAction();
+    // refreshActionAffinityControls 作用：读取当前进程 CPU 亲和性并回填操作页核心矩阵。
+    void refreshActionAffinityControls();
+    // applyActionAffinityMask 作用：将操作页核心矩阵对应的掩码写入当前进程。
+    void applyActionAffinityMask(std::uint64_t affinityMask);
+    // toggleActionAffinityCore 作用：切换一个逻辑核心，始终保证至少保留一个核心。
+    void toggleActionAffinityCore(int coreIndex, bool enabled);
+    // updateActionAffinityCoreButtons 作用：依据当前缓存掩码刷新核心按钮主题色状态。
+    void updateActionAffinityCoreButtons();
     // executeSetPriorityActionById 作用：
     // - 根据菜单/按钮传入的优先级 ID 设置目标进程优先级；
     // - 输入 priorityActionId 对应 Idle/BelowNormal/Normal/AboveNormal/High/Realtime；
@@ -705,6 +714,15 @@ private:
     QPushButton* m_resumeProcessButton = nullptr; // 恢复进程。
     QPushButton* m_setCriticalButton = nullptr; // 设为关键进程。
     QPushButton* m_clearCriticalButton = nullptr; // 取消关键进程。
+
+    QGroupBox* m_affinityActionGroup = nullptr; // CPU 亲和性操作区域。
+    QLabel* m_affinityStatusLabel = nullptr; // CPU 亲和性当前掩码与操作结果。
+    QPushButton* m_affinityRefreshButton = nullptr; // 重新读取亲和性。
+    QPushButton* m_affinityAllCoresButton = nullptr; // 启用当前 processor group 的全部核心。
+    std::vector<QToolButton*> m_affinityCoreButtons; // 逻辑核心编号对应的切换按钮。
+    std::uint64_t m_actionAffinityMask = 0; // 操作页最近一次读取/设置成功后的进程亲和性掩码。
+    std::uint64_t m_actionAffinitySystemMask = 0; // 操作页当前 processor group 可用核心掩码。
+    bool m_actionAffinityReadable = false; // 当前亲和性是否成功读取。
 
     QComboBox* m_priorityCombo = nullptr;      // 优先级选择框。
     QPushButton* m_applyPriorityButton = nullptr; // 应用优先级按钮。

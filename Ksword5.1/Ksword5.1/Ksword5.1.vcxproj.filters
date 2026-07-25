@@ -835,6 +835,9 @@
     <QtMoc Include="ProcessDock\ProcessDetailWindow.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="ProcessDock\ProcessAffinityUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="PluginHost.h">
       <Filter>Header Files</Filter>
     </ClInclude>

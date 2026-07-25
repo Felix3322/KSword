@@ -1,4 +1,5 @@
 #include "ProcessDetailWindow.InternalCommon.h"
+#include "ProcessAffinityUtils.h"
 #include "../句柄/HandleDock.h"
 #include "../MemoryDock/MemoryDock.h"
 #include "../NetworkDock/NetworkDock.h"
@@ -20,6 +21,25 @@ using namespace process_detail_window_internal;
 namespace
 {
     constexpr int kInitialDetailDataRefreshDelayMs = 350;
+    constexpr int kAffinityMatrixColumnCount = 6;
+
+    QString buildAffinityCoreButtonStyle()
+    {
+        return QStringLiteral(
+            "QToolButton {"
+            "  min-width:42px; min-height:28px; padding:2px 6px;"
+            "  color:%1; background:transparent; border:1px solid %2; border-radius:4px;"
+            "}"
+            "QToolButton:hover { border-color:%3; background:%4; }"
+            "QToolButton:checked { color:%5; background:%3; border-color:%3; }"
+            "QToolButton:disabled { color:%6; border-color:%2; background:transparent; }")
+            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
+            .arg(KswordTheme::SurfaceAltColorHex())
+            .arg(KswordTheme::OnAccentHex())
+            .arg(KswordTheme::TextSecondaryHex());
+    }
 
     QString detailProcessFieldSourceText(const std::uint32_t sourceValue)
     {
@@ -3097,6 +3117,133 @@ void ProcessDetailWindow::initializeActionTab()
     controlLayout->addWidget(m_applyPriorityButton, 3, 4);
     m_actionLayout->addWidget(controlGroup);
 
+    // CPU 亲和性：
+    // - 以 6 列矩阵展示当前 processor group 的逻辑核心，避免长核心列表横向撑开窗口；
+    // - 仅在“操作”页首次进入后读取实际掩码，保持详情窗口首次打开的轻量路径；
+    // - 每个核心按钮独立切换，蓝色主题背景代表该核心在当前进程亲和性中已启用。
+    m_affinityActionGroup = new QGroupBox(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.title"), QString()),
+        m_actionTab);
+    QVBoxLayout* affinityGroupLayout = new QVBoxLayout(m_affinityActionGroup);
+    affinityGroupLayout->setContentsMargins(10, 10, 10, 10);
+    affinityGroupLayout->setSpacing(8);
+
+    const auto installCopyMenu = [](QWidget* widget, const std::function<QString()>& textProvider)
+    {
+        if (widget == nullptr)
+        {
+            return;
+        }
+        widget->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(widget, &QWidget::customContextMenuRequested, widget,
+            [widget, textProvider](const QPoint& localPosition)
+            {
+                const QString copyText = textProvider ? textProvider().trimmed() : QString();
+                if (copyText.isEmpty())
+                {
+                    return;
+                }
+                QMenu contextMenu(widget);
+                contextMenu.setStyleSheet(buildProcessDetailMenuStyle());
+                QAction* copyAction = contextMenu.addAction(
+                    ks::i18n::text(QStringLiteral("process.detail.action.copy"), QString()));
+                if (contextMenu.exec(widget->mapToGlobal(localPosition)) == copyAction)
+                {
+                    QApplication::clipboard()->setText(copyText);
+                }
+            });
+    };
+
+    QLabel* affinityDescriptionLabel = new QLabel(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.description"), QString()),
+        m_affinityActionGroup);
+    affinityDescriptionLabel->setWordWrap(true);
+    affinityDescriptionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    affinityDescriptionLabel->setStyleSheet(
+        QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+    installCopyMenu(affinityDescriptionLabel, [affinityDescriptionLabel]()
+    {
+        return affinityDescriptionLabel->text();
+    });
+    affinityGroupLayout->addWidget(affinityDescriptionLabel);
+
+    QHBoxLayout* affinityTopLayout = new QHBoxLayout();
+    affinityTopLayout->setContentsMargins(0, 0, 0, 0);
+    affinityTopLayout->setSpacing(8);
+    m_affinityStatusLabel = new QLabel(m_affinityActionGroup);
+    m_affinityStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusSecondaryColor(), 600));
+    installCopyMenu(m_affinityStatusLabel, [this]()
+    {
+        return m_affinityStatusLabel != nullptr ? m_affinityStatusLabel->text() : QString();
+    });
+    m_affinityRefreshButton = buildTextActionButton(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.refresh"), QString()),
+        ks::i18n::text(QStringLiteral("process.detail.affinity.refresh"), QString()),
+        m_affinityActionGroup);
+    m_affinityAllCoresButton = buildTextActionButton(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.all_cores"), QString()),
+        ks::i18n::text(QStringLiteral("process.detail.affinity.all_cores"), QString()),
+        m_affinityActionGroup);
+    affinityTopLayout->addWidget(m_affinityStatusLabel, 1);
+    affinityTopLayout->addWidget(m_affinityRefreshButton);
+    affinityTopLayout->addWidget(m_affinityAllCoresButton);
+    affinityGroupLayout->addLayout(affinityTopLayout);
+
+    QGridLayout* affinityMatrixLayout = new QGridLayout();
+    affinityMatrixLayout->setContentsMargins(0, 0, 0, 0);
+    affinityMatrixLayout->setHorizontalSpacing(6);
+    affinityMatrixLayout->setVerticalSpacing(6);
+    m_affinityCoreButtons.clear();
+    m_affinityCoreButtons.resize(static_cast<std::size_t>(sizeof(ULONG_PTR) * 8U), nullptr);
+    const QString affinityCoreButtonStyle = buildAffinityCoreButtonStyle();
+    for (int coreIndex = 0; coreIndex < static_cast<int>(m_affinityCoreButtons.size()); ++coreIndex)
+    {
+        QToolButton* coreButton = new QToolButton(m_affinityActionGroup);
+        coreButton->setText(QStringLiteral("C%1").arg(coreIndex));
+        coreButton->setCheckable(true);
+        coreButton->setAutoRaise(false);
+        coreButton->setVisible(false);
+        coreButton->setToolTip(
+            ks::i18n::text(QStringLiteral("process.detail.affinity.core_tooltip"), QString())
+                .arg(coreIndex));
+        coreButton->setStyleSheet(affinityCoreButtonStyle);
+        installCopyMenu(coreButton, [coreButton]()
+        {
+            return coreButton != nullptr ? coreButton->text() : QString();
+        });
+        connect(coreButton, &QToolButton::clicked, this, [this, coreIndex](const bool enabled)
+        {
+            toggleActionAffinityCore(coreIndex, enabled);
+        });
+        affinityMatrixLayout->addWidget(
+            coreButton,
+            coreIndex / kAffinityMatrixColumnCount,
+            coreIndex % kAffinityMatrixColumnCount);
+        m_affinityCoreButtons[static_cast<std::size_t>(coreIndex)] = coreButton;
+    }
+    affinityMatrixLayout->setColumnStretch(kAffinityMatrixColumnCount, 1);
+    affinityGroupLayout->addLayout(affinityMatrixLayout);
+    m_actionLayout->addWidget(m_affinityActionGroup);
+
+    connect(m_affinityRefreshButton, &QPushButton::clicked, this, [this]()
+    {
+        refreshActionAffinityControls();
+    });
+    connect(m_affinityAllCoresButton, &QPushButton::clicked, this, [this]()
+    {
+        if (!m_actionAffinityReadable || m_actionAffinitySystemMask == 0U)
+        {
+            refreshActionAffinityControls();
+            return;
+        }
+        applyActionAffinityMask(m_actionAffinitySystemMask);
+    });
+    QTimer::singleShot(0, this, [this]()
+    {
+        refreshActionAffinityControls();
+    });
+
     QGroupBox* gotoGroup = new QGroupBox(QStringLiteral("转到"), m_actionTab);
     QGridLayout* gotoLayout = new QGridLayout(gotoGroup);
     gotoLayout->setHorizontalSpacing(8);
@@ -3293,6 +3440,8 @@ void ProcessDetailWindow::initializeActionTab()
         m_setCriticalButton,
         m_clearCriticalButton,
         m_applyPriorityButton,
+        m_affinityRefreshButton,
+        m_affinityAllCoresButton,
         m_openProcessFolderButton,
         m_refreshPplProtectionButton,
         m_enableEfficiencyModeButton,

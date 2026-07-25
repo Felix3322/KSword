@@ -1,4 +1,5 @@
 #include "ProcessDetailWindow.InternalCommon.h"
+#include "ProcessAffinityUtils.h"
 
 using namespace process_detail_window_internal;
 
@@ -262,6 +263,198 @@ void ProcessDetailWindow::executeSetPriorityAction()
         << detailText
         << eol;
     showActionResultMessage("设置进程优先级", actionOk, detailText, actionEvent);
+}
+
+void ProcessDetailWindow::refreshActionAffinityControls()
+{
+    // 亲和性读取只在操作页按需进行：
+    // - 读写统一通过 ProcessAffinityUtils，避免与列表右键入口出现权限和掩码校验差异；
+    // - API 仅描述当前 processor group，超过 ULONG_PTR 位宽的核心不会被渲染为可切换按钮。
+    ks::process::ProcessAffinityMasks affinityMasks;
+    std::string detailText;
+    const bool queryOk = ks::process::QueryProcessAffinityMasks(
+        static_cast<DWORD>(m_baseRecord.pid),
+        &affinityMasks,
+        &detailText);
+    m_actionAffinityReadable = queryOk;
+    m_actionAffinityMask = queryOk
+        ? static_cast<std::uint64_t>(affinityMasks.processMask)
+        : 0U;
+    m_actionAffinitySystemMask = queryOk
+        ? static_cast<std::uint64_t>(affinityMasks.systemMask)
+        : 0U;
+    updateActionAffinityCoreButtons();
+
+    if (m_affinityStatusLabel == nullptr)
+    {
+        return;
+    }
+
+    if (!queryOk)
+    {
+        m_affinityStatusLabel->setText(
+            ks::i18n::text(QStringLiteral("process.detail.affinity.status.unavailable"), QString())
+                .arg(QString::fromStdString(detailText)));
+        m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusWarningColor(), 700));
+        return;
+    }
+
+    QStringList enabledCoreTextList;
+    for (int coreIndex = 0; coreIndex < static_cast<int>(sizeof(ULONG_PTR) * 8U); ++coreIndex)
+    {
+        const std::uint64_t coreBit = (1ULL << coreIndex);
+        if ((m_actionAffinityMask & coreBit) != 0U)
+        {
+            enabledCoreTextList << QString::number(coreIndex);
+        }
+    }
+    const QString maskText = QStringLiteral("0x%1")
+        .arg(static_cast<qulonglong>(m_actionAffinityMask), 0, 16)
+        .toUpper();
+    m_affinityStatusLabel->setText(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.status.current"), QString())
+            .arg(maskText, enabledCoreTextList.join(',')));
+    m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusIdleColor(), 600));
+}
+
+void ProcessDetailWindow::applyActionAffinityMask(const std::uint64_t affinityMask)
+{
+    if (!m_actionAffinityReadable || m_actionAffinitySystemMask == 0U)
+    {
+        refreshActionAffinityControls();
+        return;
+    }
+
+    const std::uint64_t targetMask = affinityMask & m_actionAffinitySystemMask;
+    if (targetMask == 0U)
+    {
+        if (m_affinityStatusLabel != nullptr)
+        {
+            m_affinityStatusLabel->setText(
+                ks::i18n::text(QStringLiteral("process.detail.affinity.status.last_core"), QString()));
+            m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusWarningColor(), 700));
+        }
+        updateActionAffinityCoreButtons();
+        return;
+    }
+    if (targetMask > static_cast<std::uint64_t>(std::numeric_limits<ULONG_PTR>::max()))
+    {
+        if (m_affinityStatusLabel != nullptr)
+        {
+            m_affinityStatusLabel->setText(
+                ks::i18n::text(QStringLiteral("process.detail.affinity.status.unavailable"), QString())
+                    .arg(QStringLiteral("mask exceeds ULONG_PTR width")));
+            m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusWarningColor(), 700));
+        }
+        return;
+    }
+
+    std::string detailText;
+    const bool setOk = ks::process::SetProcessAffinityMaskByPid(
+        static_cast<DWORD>(m_baseRecord.pid),
+        static_cast<ULONG_PTR>(targetMask),
+        &detailText);
+    kLogEvent actionEvent;
+    (setOk ? info : warn) << actionEvent
+        << "[ProcessDetailWindow] CPU affinity update, pid="
+        << m_baseRecord.pid
+        << ", requestedMask=0x"
+        << QString::number(static_cast<qulonglong>(targetMask), 16).toUpper().toStdString()
+        << ", ok="
+        << (setOk ? "true" : "false")
+        << ", detail="
+        << (detailText.empty() ? "none" : detailText)
+        << eol;
+
+    if (!setOk)
+    {
+        if (m_affinityStatusLabel != nullptr)
+        {
+            m_affinityStatusLabel->setText(
+                ks::i18n::text(QStringLiteral("process.detail.affinity.status.unavailable"), QString())
+                    .arg(QString::fromStdString(detailText)));
+            m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusWarningColor(), 700));
+        }
+        refreshActionAffinityControls();
+        return;
+    }
+
+    m_actionAffinityMask = targetMask;
+    updateActionAffinityCoreButtons();
+    if (m_affinityStatusLabel != nullptr)
+    {
+        const QString maskText = QStringLiteral("0x%1")
+            .arg(static_cast<qulonglong>(targetMask), 0, 16)
+            .toUpper();
+        m_affinityStatusLabel->setText(
+            ks::i18n::text(QStringLiteral("process.detail.affinity.status.updated"), QString())
+                .arg(maskText));
+        m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusIdleColor(), 600));
+    }
+}
+
+void ProcessDetailWindow::toggleActionAffinityCore(const int coreIndex, const bool enabled)
+{
+    if (coreIndex < 0 || coreIndex >= static_cast<int>(sizeof(ULONG_PTR) * 8U) ||
+        !m_actionAffinityReadable)
+    {
+        refreshActionAffinityControls();
+        return;
+    }
+
+    const std::uint64_t coreBit = (1ULL << coreIndex);
+    if ((m_actionAffinitySystemMask & coreBit) == 0U)
+    {
+        updateActionAffinityCoreButtons();
+        return;
+    }
+
+    const std::uint64_t nextMask = enabled
+        ? (m_actionAffinityMask | coreBit)
+        : (m_actionAffinityMask & ~coreBit);
+    if (nextMask == 0U)
+    {
+        if (QToolButton* const coreButton = m_affinityCoreButtons[static_cast<std::size_t>(coreIndex)])
+        {
+            const QSignalBlocker signalBlocker(coreButton);
+            coreButton->setChecked(true);
+        }
+        if (m_affinityStatusLabel != nullptr)
+        {
+            m_affinityStatusLabel->setText(
+                ks::i18n::text(QStringLiteral("process.detail.affinity.status.last_core"), QString()));
+            m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusWarningColor(), 700));
+        }
+        return;
+    }
+    applyActionAffinityMask(nextMask);
+}
+
+void ProcessDetailWindow::updateActionAffinityCoreButtons()
+{
+    const int coreCount = std::min(
+        static_cast<int>(m_affinityCoreButtons.size()),
+        static_cast<int>(sizeof(ULONG_PTR) * 8U));
+    for (int coreIndex = 0; coreIndex < coreCount; ++coreIndex)
+    {
+        QToolButton* const coreButton = m_affinityCoreButtons[static_cast<std::size_t>(coreIndex)];
+        if (coreButton == nullptr)
+        {
+            continue;
+        }
+        const std::uint64_t coreBit = (1ULL << coreIndex);
+        const bool available = m_actionAffinityReadable &&
+            (m_actionAffinitySystemMask & coreBit) != 0U;
+        const QSignalBlocker signalBlocker(coreButton);
+        coreButton->setVisible(available);
+        coreButton->setEnabled(available);
+        coreButton->setChecked(available && (m_actionAffinityMask & coreBit) != 0U);
+    }
+    if (m_affinityAllCoresButton != nullptr)
+    {
+        m_affinityAllCoresButton->setEnabled(
+            m_actionAffinityReadable && m_actionAffinitySystemMask != 0U);
+    }
 }
 
 void ProcessDetailWindow::executeInjectDllAction()
