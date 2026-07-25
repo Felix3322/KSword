@@ -24,6 +24,28 @@ void NetworkDock::focusConnectionsByPids(const QVector<quint32>& processIds)
     refreshConnectionTables();
 }
 
+void NetworkDock::setProcessDetailConnectionScope()
+{
+    // 进程详情只提供当前进程 TCP/UDP 连接的查看与管理。
+    // 抓包、防火墙、诊断等全局网络功能继续保留在独立网络 Dock。
+    if (m_sideTabWidget == nullptr)
+    {
+        return;
+    }
+
+    for (int tabIndex = 0; tabIndex < m_sideTabWidget->count(); ++tabIndex)
+    {
+        m_sideTabWidget->setTabVisible(
+            tabIndex,
+            m_sideTabWidget->widget(tabIndex) == m_connectionManagePage);
+    }
+
+    if (m_connectionManagePage != nullptr)
+    {
+        m_sideTabWidget->setCurrentWidget(m_connectionManagePage);
+    }
+}
+
 void NetworkDock::refreshConnectionTables()
 {
     // 连接快照枚举是相对昂贵操作：

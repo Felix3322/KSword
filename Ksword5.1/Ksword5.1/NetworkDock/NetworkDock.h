@@ -89,6 +89,9 @@ public:
     // 切换到连接管理页并以 PID 集合过滤 TCP/UDP，独立于流量监控规则。
     void focusConnectionsByPids(const QVector<quint32>& processIds);
 
+    // setProcessDetailConnectionScope：进程详情内嵌时仅显示连接管理页。
+    void setProcessDetailConnectionScope();
+
 protected:
     // showEvent：
     // - 首次显示时再初始化 HTTPS 代理服务实例；

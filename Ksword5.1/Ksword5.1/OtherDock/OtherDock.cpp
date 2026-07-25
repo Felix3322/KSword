@@ -2887,6 +2887,26 @@ void OtherDock::clearExternalProcessFilter()
     rebuildWindowTreeFromSnapshot();
 }
 
+void OtherDock::setWindowListOnlyScope()
+{
+    if (m_contentTabWidget == nullptr)
+    {
+        return;
+    }
+
+    for (int tabIndex = 0; tabIndex < m_contentTabWidget->count(); ++tabIndex)
+    {
+        m_contentTabWidget->setTabVisible(
+            tabIndex,
+            m_contentTabWidget->widget(tabIndex) == m_windowListPage);
+    }
+
+    if (m_windowListPage != nullptr)
+    {
+        m_contentTabWidget->setCurrentWidget(m_windowListPage);
+    }
+}
+
 void OtherDock::initializeUi()
 {
     // 根布局负责承载“工具栏 + 主分割区 + 状态栏”。

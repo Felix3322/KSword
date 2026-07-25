@@ -3611,6 +3611,24 @@ void ProcessDock::connectDetailWindowNavigation(ProcessDetailWindow* detailWindo
         [this](const std::uint32_t targetPid) {
             (void)invokeMainWindowPidListSlot("focusWindowDockByPids", QString::number(targetPid));
         });
+    connect(detailWindow, &ProcessDetailWindow::requestOpenFileDetailByPath, this,
+        [this](const QString& filePath) {
+            QObject* const receiver = mainWindowActionReceiver();
+            const bool invokeOk = receiver != nullptr &&
+                QMetaObject::invokeMethod(
+                    receiver,
+                    "openFileDetailDockByPath",
+                    Qt::QueuedConnection,
+                    Q_ARG(QString, filePath));
+            if (!invokeOk)
+            {
+                kLogEvent logEvent;
+                warn << logEvent
+                    << "[ProcessDock] requestOpenFileDetailByPath 转发失败, path="
+                    << filePath.toStdString()
+                    << eol;
+            }
+        });
 }
 
 void ProcessDock::refreshThemeVisuals()

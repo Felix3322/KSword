@@ -24,6 +24,7 @@
 
 // 前置声明：减少头文件依赖，提升编译速度。
 class QCheckBox;
+class QButtonGroup;
 class QComboBox;
 class QEvent;
 class QFormLayout;
@@ -44,7 +45,7 @@ class CodeEditorWidget;
 class HandleDock;
 class MemoryDock;
 class NetworkDock;
-class WindowDock;
+class OtherDock;
 
 class ProcessDetailWindow final : public QWidget
 {
@@ -93,6 +94,8 @@ signals:
     void requestOpenMemoryDockByPid(std::uint32_t pid);
     void requestOpenNetworkDockByPid(std::uint32_t pid);
     void requestOpenWindowDockByPid(std::uint32_t pid);
+    // requestOpenFileDetailByPath：将当前映像路径交给主窗口的 FileDock，复用既有文件详情窗口。
+    void requestOpenFileDetailByPath(const QString& filePath);
 
 private:
     // ModuleRefreshResult：模块页后台刷新结果数据结构。
@@ -244,6 +247,17 @@ private:
         bool queryOk = false;                     // true 表示基础静态详情读取成功。
     };
 
+    // DetailOverviewRefreshResult：详细信息页的运行时/安全/GUI 数据后台快照。
+    // values 使用稳定键名，避免 UI 控件数量增加时继续膨胀结果结构。
+    struct DetailOverviewRefreshResult
+    {
+        std::string identityKey;             // PID + 创建时间，用于拒绝 PID 复用后的旧结果。
+        QHash<QString, QString> values;      // 各详细字段的展示文本。
+        QString diagnosticText;              // 权限不足、目标退出等诊断信息。
+        std::uint64_t elapsedMs = 0;         // 后台查询耗时（毫秒）。
+        bool queryOk = false;                // 至少成功读取一项运行时字段。
+    };
+
 private:
     // ======== UI 初始化 ========
     // changeEvent 作用：
@@ -270,10 +284,9 @@ private:
     void initializeEmbeddedHandleTab();
     // ensureEmbeddedHandleView 作用：首次进入句柄页时创建 HandleDock 并锁定当前 PID。
     void ensureEmbeddedHandleView();
-    // initializeEmbeddedMemoryTabs 作用：创建内存管理与内存扫描的惰性容器。
-    void initializeEmbeddedMemoryTabs();
+    // initializeEmbeddedMemoryTab 作用：创建精简内存分析的惰性容器。
+    void initializeEmbeddedMemoryTab();
     void ensureEmbeddedMemoryView();
-    void ensureEmbeddedMemoryScanView();
     // initializeEmbeddedNetworkTab 作用：创建按当前 PID 过滤的网络连接惰性容器。
     void initializeEmbeddedNetworkTab();
     void ensureEmbeddedNetworkView();
@@ -337,6 +350,10 @@ private:
     // 参数 refreshResult：后台查询结果。
     // 返回：无。
     void applyStaticDetailRefreshResult(const StaticDetailRefreshResult& refreshResult);
+    // requestAsyncDetailOverviewRefresh 作用：后台读取详细页的资源、安全、缓解策略与 GUI 统计。
+    void requestAsyncDetailOverviewRefresh();
+    // applyDetailOverviewRefreshResult 作用：校验身份后回填详细页的运行时字段。
+    void applyDetailOverviewRefreshResult(const DetailOverviewRefreshResult& refreshResult);
     // requestInitialRefreshForCurrentTab 作用：
     // - 按当前 Tab 懒启动首次重型刷新；
     // - 打开窗口时只展示“详细信息”页，不立即扫描模块/PEB/令牌。
@@ -569,15 +586,16 @@ private:
     std::string m_identityKey;                 // PID+CreateTime 组成的 identity 字符串。
 
     // ======== 根布局与 Tabs ========
-    QVBoxLayout* m_rootLayout = nullptr;       // 窗口根布局。
-    QTabWidget* m_tabWidget = nullptr;         // 详情窗口全部 Tab 的容器。
+    QHBoxLayout* m_rootLayout = nullptr;       // 左侧导航与右侧页面的根布局。
+    QWidget* m_tabNavigation = nullptr;        // 左侧单列常显的页面导航按钮容器。
+    QButtonGroup* m_tabNavigationButtonGroup = nullptr; // 导航按钮与 Tab 索引的映射。
+    QTabWidget* m_tabWidget = nullptr;         // 页面栈与现有切换/懒加载逻辑的容器。
     QWidget* m_detailTab = nullptr;            // “详细信息”页。
     QWidget* m_threadTab = nullptr;            // “线程”页。
     QWidget* m_actionTab = nullptr;            // “操作”页。
     QWidget* m_moduleTab = nullptr;            // “模块”页。
     QWidget* m_embeddedHandleTab = nullptr;    // 当前进程“句柄”内嵌审计页。
-    QWidget* m_embeddedMemoryTab = nullptr;    // 当前进程“内存管理”内嵌页。
-    QWidget* m_embeddedMemoryScanTab = nullptr; // 当前进程“内存扫描”内嵌页。
+    QWidget* m_embeddedMemoryTab = nullptr;    // 当前进程精简“内存”内嵌页。
     QWidget* m_embeddedNetworkTab = nullptr;   // 当前进程“网络连接”内嵌页。
     QWidget* m_embeddedWindowTab = nullptr;    // 当前进程“窗口列表”内嵌页。
     QWidget* m_tokenTab = nullptr;             // “令牌”页。
@@ -600,6 +618,9 @@ private:
     QLineEdit* m_pathLineEdit = nullptr;       // 程序路径（只读）。
     QPushButton* m_copyPathButton = nullptr;   // 复制路径按钮。
     QPushButton* m_openPathFolderButton = nullptr; // 打开路径按钮。
+    QPushButton* m_openFileDetailButton = nullptr; // 转到文件详细信息窗口。
+    QPushButton* m_refreshDetailOverviewButton = nullptr; // 刷新详细页运行时字段。
+    QLabel* m_detailOverviewStatusLabel = nullptr; // 详细页运行时字段刷新状态。
     QLineEdit* m_commandLineEdit = nullptr;    // 启动命令行（只读）。
     QPushButton* m_copyCommandButton = nullptr; // 复制命令行按钮。
     QLabel* m_parentIconLabel = nullptr;       // 父进程图标（20px）。
@@ -623,6 +644,10 @@ private:
     QLabel* m_detailRamValue = nullptr;        // RAM 当前占用值。
     QLabel* m_detailDiskValue = nullptr;       // DISK 当前占用值。
     QLabel* m_detailSignatureValue = nullptr;  // 数字签名状态值。
+    QHash<QString, QLabel*> m_detailExtraValues; // 详细页扩展字段的值控件映射。
+    DetailOverviewRefreshResult m_detailOverviewResult; // 最近一次运行时扩展字段快照。
+    bool m_detailOverviewRefreshing = false;   // 扩展字段后台查询是否进行中。
+    std::uint64_t m_detailOverviewRefreshTicket = 0; // 防止异步回填乱序。
 
     // ======== 线程页控件 ========
     QVBoxLayout* m_threadLayout = nullptr;     // 线程页总布局。
@@ -677,13 +702,10 @@ private:
     QLabel* m_embeddedHandlePlaceholder = nullptr; // 首次进入前的轻量提示。
     HandleDock* m_embeddedHandleDock = nullptr;    // 复用完整 HandleDock，按当前 PID 过滤。
 
-    // ======== 内嵌内存管理/扫描页 ========
+    // ======== 内嵌精简内存页 ========
     QVBoxLayout* m_embeddedMemoryLayout = nullptr;
     QLabel* m_embeddedMemoryPlaceholder = nullptr;
     MemoryDock* m_embeddedMemoryDock = nullptr;
-    QVBoxLayout* m_embeddedMemoryScanLayout = nullptr;
-    QLabel* m_embeddedMemoryScanPlaceholder = nullptr;
-    MemoryDock* m_embeddedMemoryScanDock = nullptr;
 
     // ======== 内嵌网络连接页 ========
     QVBoxLayout* m_embeddedNetworkLayout = nullptr;
@@ -693,7 +715,7 @@ private:
     // ======== 内嵌窗口列表页 ========
     QVBoxLayout* m_embeddedWindowLayout = nullptr;
     QLabel* m_embeddedWindowPlaceholder = nullptr;
-    WindowDock* m_embeddedWindowDock = nullptr;
+    OtherDock* m_embeddedWindowDock = nullptr;
 
     bool m_moduleRefreshing = false;           // 模块刷新进行中标记。
     bool m_moduleInitialRefreshStarted = false; // 模块页首次刷新是否已经按需启动。

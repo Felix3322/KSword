@@ -60,6 +60,9 @@ public:
     void focusProcessIds(const QVector<quint32>& processIds);
     void clearExternalProcessFilter();
 
+    // setWindowListOnlyScope：隐藏桌面管理页，供进程详情内嵌窗口列表使用。
+    void setWindowListOnlyScope();
+
     // WindowInfo：
     // - 作用：缓存单个窗口的关键属性，供列表与详情弹窗复用。
     struct WindowInfo

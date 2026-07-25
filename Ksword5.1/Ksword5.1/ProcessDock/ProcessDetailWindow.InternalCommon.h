@@ -19,13 +19,16 @@
 #include "../../../shared/driver/KswordArkDynDataIoctl.h"
 
 #include <QAbstractScrollArea>
+#include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QColor>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDialog>
 #include <QDir>
 #include <QDirIterator>
@@ -55,6 +58,7 @@
 #include <QRegularExpression>
 #include <QRunnable>
 #include <QScreen>
+#include <QScrollArea>
 #include <QSet>
 #include <QSizePolicy>
 #include <QStringList>
@@ -62,6 +66,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QThreadPool>
 #include <QToolButton>
 #include <QTreeWidget>

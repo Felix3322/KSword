@@ -74,6 +74,11 @@ public:
     // - 供进程详情的独立“内存扫描”Tab 复用完整搜索能力。
     void focusProcessForSearch(std::uint32_t pid, bool showMessage = false);
 
+    // setProcessDetailMemoryScope：
+    // - 供进程详情窗口内嵌时使用；
+    // - 仅保留进程与模块、内存区域、内存搜索、内存查看器四个页面。
+    void setProcessDetailMemoryScope();
+
 private:
     // ========================================================
     // 内部数据结构定义（用于表格缓存与跨 Tab 共享状态）
