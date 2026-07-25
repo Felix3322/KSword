@@ -10022,7 +10022,8 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
     const QString& actionTitle,
     const std::vector<ProcessActionTarget>& actionTargets,
     const std::function<bool(const ProcessActionTarget&, std::string*)>& actionInvoker,
-    const bool refreshWhenAnySucceeded)
+    const bool refreshWhenAnySucceeded,
+    const bool forceAsyncWithTimeout)
 {
     // 参数检查：没有目标或没有执行体时直接记录并返回。
     if (actionTargets.empty() || !actionInvoker)
@@ -10035,8 +10036,9 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
         return;
     }
 
-    // 单目标沿用同步执行路径，避免简单动作产生不必要线程切换。
-    if (actionTargets.size() == 1U)
+    // R3 结束进程包含外部调试器和会话管理回退，单目标也必须异步执行。
+    // 其它动作沿用原单目标同步语义，避免扩大本次改动范围。
+    if (actionTargets.size() == 1U && !forceAsyncWithTimeout)
     {
         std::string detailText;
         const bool actionOk = actionInvoker(actionTargets.front(), &detailText);
@@ -10057,6 +10059,7 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
     }
 
     // 批量动作：每个 PID 独立线程执行，避免一个目标卡住后阻塞后续目标。
+    static constexpr int kProcessActionTimeoutMs = 15000;
     QPointer<ProcessDock> guard(this);
     const QString localActionTitle = actionTitle;
     const std::size_t targetCount = actionTargets.size();
@@ -10070,6 +10073,49 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
 
     for (const ProcessActionTarget& actionTarget : actionTargets)
     {
+        // resultReported 用途：在“正常完成”和“超时看门狗”之间只允许一方回填 UI。
+        // 超时后的迟到结果仍写日志和参与刷新统计，但不能覆盖已报告的失败结论。
+        std::shared_ptr<std::atomic_bool> resultReported;
+        if (forceAsyncWithTimeout)
+        {
+            resultReported = std::make_shared<std::atomic_bool>(false);
+            QTimer::singleShot(
+                kProcessActionTimeoutMs,
+                this,
+                [guard, localActionTitle, actionTarget, resultReported]()
+                {
+                    bool expected = false;
+                    if (!resultReported->compare_exchange_strong(
+                        expected,
+                        true,
+                        std::memory_order_acq_rel))
+                    {
+                        return;
+                    }
+
+                    const std::string timeoutDetail =
+                        "process action timed out after 15000 ms; target may be PPL-protected or a system API is blocked";
+                    kLogEvent timeoutEvent;
+                    err << timeoutEvent
+                        << "[ProcessDock] 进程动作超时, title="
+                        << localActionTitle.toStdString()
+                        << ", pid="
+                        << actionTarget.record.pid
+                        << ", detail="
+                        << timeoutDetail
+                        << eol;
+
+                    if (guard != nullptr)
+                    {
+                        guard->showActionResultMessage(
+                            localActionTitle,
+                            false,
+                            timeoutDetail,
+                            timeoutEvent);
+                    }
+                });
+        }
+
         std::thread([
             guard,
             localActionTitle,
@@ -10078,7 +10124,8 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
             refreshWhenAnySucceeded,
             targetCount,
             finishedCounter,
-            anySucceeded]()
+            anySucceeded,
+            resultReported]()
         {
             std::string detailText;
             const bool actionOk = actionInvoker(actionTarget, &detailText);
@@ -10100,21 +10147,48 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
                 << ", detail=" << normalizedDetailText
                 << eol;
 
+            bool reportCompletion = true;
+            if (resultReported != nullptr)
+            {
+                bool expected = false;
+                reportCompletion = resultReported->compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_acq_rel);
+            }
+            if (!reportCompletion)
+            {
+                kLogEvent lateResultEvent;
+                warn << lateResultEvent
+                    << "[ProcessDock] 进程动作在超时提示后返回, title="
+                    << localActionTitle.toStdString()
+                    << ", pid="
+                    << actionTarget.record.pid
+                    << ", ok="
+                    << (actionOk ? "true" : "false")
+                    << ", detail="
+                    << normalizedDetailText
+                    << eol;
+            }
+
             if (guard == nullptr)
             {
                 return;
             }
 
-            QMetaObject::invokeMethod(guard, [guard, localActionTitle, actionOk, detailText, refreshWhenAnySucceeded]()
+            if (reportCompletion)
             {
-                if (guard == nullptr)
+                QMetaObject::invokeMethod(guard, [guard, localActionTitle, actionOk, detailText]()
                 {
-                    return;
-                }
+                    if (guard == nullptr)
+                    {
+                        return;
+                    }
 
-                kLogEvent uiEvent;
-                guard->showActionResultMessage(localActionTitle, actionOk, detailText, uiEvent);
-            }, Qt::QueuedConnection);
+                    kLogEvent uiEvent;
+                    guard->showActionResultMessage(localActionTitle, actionOk, detailText, uiEvent);
+                }, Qt::QueuedConnection);
+            }
 
             if (!allTargetsFinished || guard == nullptr)
             {
@@ -10139,6 +10213,12 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
                 }
             }, Qt::QueuedConnection);
         }).detach();
+    }
+
+    // 保持 R3 单目标动作的上下文清理时机，防止后台执行期间右键绑定指向旧行。
+    if (forceAsyncWithTimeout && actionTargets.size() == 1U)
+    {
+        clearContextActionBinding();
     }
 }
 
@@ -12267,6 +12347,7 @@ void ProcessDock::executeTerminateProcessActions(
             }
             return processExited;
         },
+        true,
         true);
 }
 

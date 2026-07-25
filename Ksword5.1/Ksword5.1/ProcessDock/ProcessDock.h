@@ -616,7 +616,8 @@ private:
         const QString& actionTitle,
         const std::vector<ProcessActionTarget>& actionTargets,
         const std::function<bool(const ProcessActionTarget&, std::string*)>& actionInvoker,
-        bool refreshWhenAnySucceeded);
+        bool refreshWhenAnySucceeded,
+        bool forceAsyncWithTimeout = false);
     void executeTerminateProcessActions(
         const QString& actionTitle,
         const std::vector<ProcessActionTarget>& actionTargets);

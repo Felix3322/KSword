@@ -164,7 +164,15 @@ namespace ks::ui
             connect(m_copyButton, &QToolButton::clicked, this, [this]() {
                 if (QClipboard* clipboard = QApplication::clipboard())
                 {
-                    clipboard->setText(m_copyText);
+                    // 先读取系统主剪贴板的当前文本：
+                    // - 内容不同才重新写入，避免对已复制内容产生重复写入；
+                    // - 每次点击仍会检查，卡片内容更新或剪贴板被其它程序改写后可自动补复制。
+                    if (clipboard->text(QClipboard::Clipboard) != m_copyText)
+                    {
+                        clipboard->setText(m_copyText, QClipboard::Clipboard);
+                    }
+                    m_copyButton->setText(
+                        ks::i18n::text(QStringLiteral("notification.copy.done"), QStringLiteral("已复制")));
                 }
             });
 
