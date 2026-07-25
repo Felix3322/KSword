@@ -496,7 +496,7 @@
     "process.detail.status.failed": "● 运行时详细数据不可用：%1",
     "process.detail.tab.performance": "性能",
     "process.detail.performance.title": "进程性能历史",
-    "process.detail.performance.description": "随进程列表刷新记录当前进程的历史占用数据。每张图横向展示时间序列，图表在页面中纵向排列。",
+    "process.detail.performance.description": "复用进程列表已记录的活动快照展示当前进程历史占用。每张图横向展示时间序列，图表在页面中纵向排列。",
     "process.detail.performance.status.empty": "● 等待首个性能样本...",
     "process.detail.performance.status.samples": "● 已记录 %1 个样本 · %2 至 %3",
     "process.detail.performance.chart.empty": "暂无性能历史数据",

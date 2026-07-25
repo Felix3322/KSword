@@ -3599,6 +3599,7 @@ void ProcessDock::connectDetailWindowNavigation(ProcessDetailWindow* detailWindo
     {
         return;
     }
+    synchronizeDetailWindowPerformanceHistory(detailWindow, detailWindow->identityKey());
     connect(detailWindow, &ProcessDetailWindow::requestOpenMemoryDockByPid, this,
         [this](const std::uint32_t targetPid) {
             (void)invokeMainWindowPidSlot("focusMemoryDockByPid", targetPid);
@@ -7232,6 +7233,10 @@ void ProcessDock::appendProcessActivitySample()
 
     m_activitySamples.push_back(std::move(sample));
     const bool sampleIndexShiftedLeft = trimProcessActivitySamples();
+    if (!m_activitySamples.empty())
+    {
+        appendProcessActivitySampleToDetailWindows(m_activitySamples.back());
+    }
     if (m_activityTableSnapshotIndex >= static_cast<int>(m_activitySamples.size()))
     {
         m_activityTableSnapshotIndex = -1;
@@ -7240,6 +7245,76 @@ void ProcessDock::appendProcessActivitySample()
     refreshProcessActivityTimeline(sampleIndexShiftedLeft);
     refreshProcessActivityChart();
     updateProcessActivityStatusLabel();
+}
+
+void ProcessDock::synchronizeDetailWindowPerformanceHistory(
+    ProcessDetailWindow* const detailWindow,
+    const std::string& identityKey) const
+{
+    if (detailWindow == nullptr || identityKey.empty())
+    {
+        return;
+    }
+
+    std::vector<ProcessDetailWindow::PerformanceHistorySample> history;
+    history.reserve(m_activitySamples.size());
+    for (const ProcessActivitySample& activitySample : m_activitySamples)
+    {
+        const auto processPointIt = std::find_if(
+            activitySample.processes.cbegin(),
+            activitySample.processes.cend(),
+            [&identityKey](const ProcessActivityProcessPoint& processPoint) {
+                return processPoint.identityKey == identityKey;
+            });
+        if (processPointIt == activitySample.processes.cend())
+        {
+            continue;
+        }
+
+        ProcessDetailWindow::PerformanceHistorySample detailSample;
+        detailSample.unixMilliseconds = activitySample.unixMilliseconds;
+        detailSample.cpuPercent = processPointIt->cpuPercent;
+        detailSample.memoryMB = processPointIt->memoryMB;
+        detailSample.diskMBps = processPointIt->diskMBps;
+        detailSample.networkRxKBps = processPointIt->netRxKBps;
+        detailSample.networkTxKBps = processPointIt->netTxKBps;
+        detailSample.gpuPercent = processPointIt->gpuPercent;
+        history.push_back(detailSample);
+    }
+    detailWindow->setPerformanceHistory(std::move(history));
+}
+
+void ProcessDock::appendProcessActivitySampleToDetailWindows(const ProcessActivitySample& sample)
+{
+    for (const auto& detailWindowPair : m_detailWindowByIdentity)
+    {
+        ProcessDetailWindow* const detailWindow = detailWindowPair.second.data();
+        if (detailWindow == nullptr)
+        {
+            continue;
+        }
+
+        const auto processPointIt = std::find_if(
+            sample.processes.cbegin(),
+            sample.processes.cend(),
+            [&detailWindowPair](const ProcessActivityProcessPoint& processPoint) {
+                return processPoint.identityKey == detailWindowPair.first;
+            });
+        if (processPointIt == sample.processes.cend())
+        {
+            continue;
+        }
+
+        ProcessDetailWindow::PerformanceHistorySample detailSample;
+        detailSample.unixMilliseconds = sample.unixMilliseconds;
+        detailSample.cpuPercent = processPointIt->cpuPercent;
+        detailSample.memoryMB = processPointIt->memoryMB;
+        detailSample.diskMBps = processPointIt->diskMBps;
+        detailSample.networkRxKBps = processPointIt->netRxKBps;
+        detailSample.networkTxKBps = processPointIt->netTxKBps;
+        detailSample.gpuPercent = processPointIt->gpuPercent;
+        detailWindow->appendPerformanceHistorySample(detailSample);
+    }
 }
 
 bool ProcessDock::trimProcessActivitySamples()

@@ -496,7 +496,7 @@
     "process.detail.status.failed": "● Runtime details unavailable: %1",
     "process.detail.tab.performance": "Performance",
     "process.detail.performance.title": "Process performance history",
-    "process.detail.performance.description": "Records historical usage for the current process as the process list refreshes. Each chart uses a horizontal time axis, and charts are arranged vertically on this page.",
+    "process.detail.performance.description": "Reuses the recorded process-list activity snapshots to show historical usage for the current process. Each chart uses a horizontal time axis, and charts are arranged vertically on this page.",
     "process.detail.performance.status.empty": "● Waiting for the first performance sample...",
     "process.detail.performance.status.samples": "● %1 samples recorded · %2 to %3",
     "process.detail.performance.chart.empty": "No performance history data",

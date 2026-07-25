@@ -68,6 +68,27 @@ public:
     // pid 作用：返回当前窗口绑定进程 PID。
     std::uint32_t pid() const;
 
+    // identityKey 作用：返回 PID + 创建时间组成的稳定进程身份，用于与进程列表活动快照精确匹配。
+    std::string identityKey() const;
+
+    // PerformanceHistorySample：进程列表活动快照投递到详情窗口的单进程性能样本。
+    struct PerformanceHistorySample
+    {
+        std::int64_t unixMilliseconds = 0; // 采样时刻，供横轴格式化。
+        double cpuPercent = 0.0;           // CPU 占用百分比。
+        double memoryMB = 0.0;             // 工作集内存 MB。
+        double diskMBps = 0.0;             // 磁盘吞吐 MB/s。
+        double networkRxKBps = 0.0;        // 网络下行 KB/s。
+        double networkTxKBps = 0.0;        // 网络上行 KB/s。
+        double gpuPercent = 0.0;           // GPU 占用百分比。
+    };
+
+    // setPerformanceHistory：用进程列表已有的活动快照替换当前性能历史，供新开详情窗口立即回溯历史数据。
+    void setPerformanceHistory(std::vector<PerformanceHistorySample> history);
+
+    // appendPerformanceHistorySample：追加进程列表刚生成的一条活动快照，避免每轮刷新重建整个历史序列。
+    void appendPerformanceHistorySample(const PerformanceHistorySample& sample);
+
     // showHotkeyTabAndRefresh 作用：
     // - 将详情窗口切换到“进程热键”页；
     // - 复用详情页已有热键扫描流程，触发一次异步刷新；
@@ -260,18 +281,6 @@ private:
         bool queryOk = false;                // 至少成功读取一项运行时字段。
     };
 
-    // PerformanceHistorySample：详情窗口存储的单进程性能历史采样。
-    struct PerformanceHistorySample
-    {
-        std::int64_t unixMilliseconds = 0; // 采样时刻，供横轴格式化。
-        double cpuPercent = 0.0;           // CPU 占用百分比。
-        double memoryMB = 0.0;             // 工作集内存 MB。
-        double diskMBps = 0.0;             // 磁盘吞吐 MB/s。
-        double networkRxKBps = 0.0;        // 网络下行 KB/s。
-        double networkTxKBps = 0.0;        // 网络上行 KB/s。
-        double gpuPercent = 0.0;           // GPU 占用百分比。
-    };
-
 private:
     // ======== UI 初始化 ========
     // changeEvent 作用：
@@ -354,7 +363,6 @@ private:
 
     // ======== 详情页刷新 ========
     void refreshDetailTabTexts();
-    void appendPerformanceHistorySample(const ks::process::ProcessRecord& processRecord);
     void refreshPerformanceHistoryCharts();
     // requestAsyncStaticDetailRefresh 作用：
     // - 在后台补齐路径、命令行、用户、签名等慢字段；

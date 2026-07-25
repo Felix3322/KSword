@@ -725,7 +725,6 @@ ProcessDetailWindow::ProcessDetailWindow(const ks::process::ProcessRecord& baseR
     m_identityKey = ks::process::BuildProcessIdentityKey(
         m_baseRecord.pid,
         m_baseRecord.creationTime100ns);
-    appendPerformanceHistorySample(m_baseRecord);
 
     // 构造阶段不做同步静态详情查询：
     // - QueryProcessStaticDetailByPid 会读取命令行、令牌、签名等慢字段；
@@ -861,7 +860,6 @@ void ProcessDetailWindow::updateBaseRecord(const ks::process::ProcessRecord& bas
         ++m_keyboardRefreshTicket;
         m_performanceHistory.clear();
     }
-    appendPerformanceHistorySample(m_baseRecord);
     refreshDetailTabTexts();
     if (shouldTryStaticBackgroundRefresh || identityChanged)
     {
@@ -888,6 +886,46 @@ void ProcessDetailWindow::updateBaseRecord(const ks::process::ProcessRecord& bas
 std::uint32_t ProcessDetailWindow::pid() const
 {
     return m_baseRecord.pid;
+}
+
+std::string ProcessDetailWindow::identityKey() const
+{
+    return m_identityKey;
+}
+
+void ProcessDetailWindow::setPerformanceHistory(std::vector<PerformanceHistorySample> history)
+{
+    constexpr std::size_t kMaximumHistorySamples = 1800U;
+    if (history.size() > kMaximumHistorySamples)
+    {
+        history.erase(history.begin(), history.end() - static_cast<std::ptrdiff_t>(kMaximumHistorySamples));
+    }
+
+    m_performanceHistory.clear();
+    for (const PerformanceHistorySample& sample : history)
+    {
+        if (sample.unixMilliseconds > 0)
+        {
+            m_performanceHistory.push_back(sample);
+        }
+    }
+    refreshPerformanceHistoryCharts();
+}
+
+void ProcessDetailWindow::appendPerformanceHistorySample(const PerformanceHistorySample& sample)
+{
+    if (sample.unixMilliseconds <= 0)
+    {
+        return;
+    }
+
+    m_performanceHistory.push_back(sample);
+    constexpr std::size_t kMaximumHistorySamples = 1800U;
+    while (m_performanceHistory.size() > kMaximumHistorySamples)
+    {
+        m_performanceHistory.pop_front();
+    }
+    refreshPerformanceHistoryCharts();
 }
 
 void ProcessDetailWindow::changeEvent(QEvent* event)
@@ -1034,6 +1072,7 @@ void ProcessDetailWindow::applyThemeStyle()
     // 子页面也强制设置背景，避免 tab 内容区域出现白底。
     const std::vector<QWidget*> tabPageList{
         m_detailTab,
+        m_performanceTab,
         m_threadTab,
         m_actionTab,
         m_moduleTab,
@@ -1220,7 +1259,7 @@ void ProcessDetailWindow::initializeUi()
     m_tabWidget->addTab(m_detailTab, QIcon(":/Icon/process_details.svg"), "详细信息");
     m_tabWidget->addTab(
         m_performanceTab,
-        QIcon(":/Icon/chart_line_line.svg"),
+        QIcon(":/Icon/process_performance.svg"),
         ks::i18n::text(QStringLiteral("process.detail.tab.performance"), QString()));
     m_tabWidget->addTab(m_threadTab, QIcon(":/Icon/process_tree.svg"), "线程");
     m_tabWidget->addTab(m_actionTab, QIcon(":/Icon/process_priority.svg"), "操作");
@@ -1246,6 +1285,7 @@ void ProcessDetailWindow::initializeUi()
         navigationButton->setCheckable(true);
         navigationButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         navigationButton->setIcon(m_tabWidget->tabIcon(tabIndex));
+        navigationButton->setIconSize(QSize(18, 18));
         navigationButton->setText(m_tabWidget->tabText(tabIndex));
         navigationButton->setToolTip(m_tabWidget->tabText(tabIndex));
         navigationButton->setMinimumHeight(30);
@@ -2549,9 +2589,11 @@ void ProcessDetailWindow::initializePerformanceTab()
     chartScrollArea->setWidgetResizable(true);
     chartScrollArea->setFrameShape(QFrame::NoFrame);
     auto* chartContent = new QWidget(chartScrollArea);
+    chartContent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
     auto* chartLayout = new QVBoxLayout(chartContent);
     chartLayout->setContentsMargins(0, 0, 0, 0);
     chartLayout->setSpacing(10);
+    chartLayout->setAlignment(Qt::AlignTop);
 
     const auto addChart = [&languageManager, chartContent, chartLayout](
         QWidget*& chartTarget,
@@ -2586,37 +2628,9 @@ void ProcessDetailWindow::initializePerformanceTab()
     addChart(m_performanceGpuChart, QStringLiteral("process.detail.performance.chart.gpu"));
     chartLayout->addStretch(1);
     chartScrollArea->setWidget(chartContent);
+    chartScrollArea->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     layout->addWidget(chartScrollArea, 1);
 
-    refreshPerformanceHistoryCharts();
-}
-
-void ProcessDetailWindow::appendPerformanceHistorySample(const ks::process::ProcessRecord& processRecord)
-{
-    if (processRecord.pid == 0U)
-    {
-        return;
-    }
-
-    const auto normalizedValue = [](const double value) {
-        return std::isfinite(value) ? std::max(0.0, value) : 0.0;
-    };
-    PerformanceHistorySample sample;
-    sample.unixMilliseconds = QDateTime::currentMSecsSinceEpoch();
-    sample.cpuPercent = normalizedValue(processRecord.cpuPercent);
-    sample.memoryMB = normalizedValue(
-        processRecord.workingSetMB > 0.0 ? processRecord.workingSetMB : processRecord.ramMB);
-    sample.diskMBps = normalizedValue(processRecord.diskMBps);
-    sample.networkRxKBps = normalizedValue(processRecord.netRxKBps);
-    sample.networkTxKBps = normalizedValue(processRecord.netTxKBps);
-    sample.gpuPercent = normalizedValue(processRecord.gpuPercent);
-    m_performanceHistory.push_back(sample);
-
-    constexpr std::size_t kMaximumHistorySamples = 1800U;
-    while (m_performanceHistory.size() > kMaximumHistorySamples)
-    {
-        m_performanceHistory.pop_front();
-    }
     refreshPerformanceHistoryCharts();
 }
 

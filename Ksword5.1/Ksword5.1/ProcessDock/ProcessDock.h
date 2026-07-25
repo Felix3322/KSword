@@ -499,6 +499,10 @@ private:
     bool isProcessActivityRecordingAllowedNow() const;
     bool isProcessListPageVisibleForRecording() const;
     void appendProcessActivitySample();
+    void synchronizeDetailWindowPerformanceHistory(
+        ProcessDetailWindow* detailWindow,
+        const std::string& identityKey) const;
+    void appendProcessActivitySampleToDetailWindows(const ProcessActivitySample& sample);
     bool trimProcessActivitySamples();
     void refreshProcessActivityTimeline(bool indexShiftedLeft = false);
     void refreshProcessActivityChart();
