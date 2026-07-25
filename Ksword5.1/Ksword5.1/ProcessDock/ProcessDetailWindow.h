@@ -534,6 +534,8 @@ private:
     void toggleActionAffinityCore(int coreIndex, bool enabled);
     // updateActionAffinityCoreButtons 作用：依据当前缓存掩码刷新核心按钮主题色状态。
     void updateActionAffinityCoreButtons();
+    // refreshActionAffinityPersistenceControl 作用：读取当前可执行文件的注册表亲和性规则并同步开关状态。
+    void refreshActionAffinityPersistenceControl();
     // executeSetPriorityActionById 作用：
     // - 根据菜单/按钮传入的优先级 ID 设置目标进程优先级；
     // - 输入 priorityActionId 对应 Idle/BelowNormal/Normal/AboveNormal/High/Realtime；
@@ -717,6 +719,7 @@ private:
 
     QGroupBox* m_affinityActionGroup = nullptr; // CPU 亲和性操作区域。
     QLabel* m_affinityStatusLabel = nullptr; // CPU 亲和性当前掩码与操作结果。
+    QCheckBox* m_affinityPersistenceCheckBox = nullptr; // 是否为当前完整可执行路径保存 CPU 亲和性规则。
     QPushButton* m_affinityRefreshButton = nullptr; // 重新读取亲和性。
     QPushButton* m_affinityAllCoresButton = nullptr; // 启用当前 processor group 的全部核心。
     std::vector<QToolButton*> m_affinityCoreButtons; // 逻辑核心编号对应的切换按钮。

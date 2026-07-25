@@ -1,5 +1,6 @@
 #include "ProcessDetailWindow.InternalCommon.h"
 #include "ProcessAffinityUtils.h"
+#include "ProcessAffinityPersistence.h"
 #include "../句柄/HandleDock.h"
 #include "../MemoryDock/MemoryDock.h"
 #include "../NetworkDock/NetworkDock.h"
@@ -3167,6 +3168,13 @@ void ProcessDetailWindow::initializeActionTab()
     });
     affinityGroupLayout->addWidget(affinityDescriptionLabel);
 
+    m_affinityPersistenceCheckBox = new QCheckBox(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.persistence"), QString()),
+        m_affinityActionGroup);
+    m_affinityPersistenceCheckBox->setToolTip(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.persistence.tooltip"), QString()));
+    affinityGroupLayout->addWidget(m_affinityPersistenceCheckBox);
+
     QHBoxLayout* affinityTopLayout = new QHBoxLayout();
     affinityTopLayout->setContentsMargins(0, 0, 0, 0);
     affinityTopLayout->setSpacing(8);
@@ -3238,6 +3246,37 @@ void ProcessDetailWindow::initializeActionTab()
             return;
         }
         applyActionAffinityMask(m_actionAffinitySystemMask);
+    });
+    connect(m_affinityPersistenceCheckBox, &QCheckBox::toggled, this, [this](const bool enabled)
+    {
+        std::string detailText;
+        const bool persistenceOk = enabled
+            ? (m_actionAffinityReadable && ks::process::savePersistedProcessAffinityMask(
+                m_baseRecord.imagePath,
+                m_actionAffinityMask,
+                &detailText))
+            : ks::process::removePersistedProcessAffinityMask(m_baseRecord.imagePath, &detailText);
+        if (!persistenceOk)
+        {
+            const QSignalBlocker signalBlocker(m_affinityPersistenceCheckBox);
+            m_affinityPersistenceCheckBox->setChecked(!enabled);
+        }
+        if (m_affinityStatusLabel != nullptr)
+        {
+            m_affinityStatusLabel->setText(
+                persistenceOk
+                    ? ks::i18n::text(
+                        enabled
+                            ? QStringLiteral("process.detail.affinity.persistence.saved")
+                            : QStringLiteral("process.detail.affinity.persistence.removed"),
+                        QString())
+                    : ks::i18n::text(
+                        QStringLiteral("process.detail.affinity.status.unavailable"),
+                        QString()).arg(QString::fromStdString(detailText)));
+            m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(
+                persistenceOk ? statusIdleColor() : statusWarningColor(),
+                persistenceOk ? 600 : 700));
+        }
     });
     QTimer::singleShot(0, this, [this]()
     {

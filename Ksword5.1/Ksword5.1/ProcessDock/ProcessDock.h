@@ -425,6 +425,8 @@ private:
     // ======== 刷新与渲染 ========
     void requestAsyncRefresh(bool forceRefresh);
     void applyRefreshResult(RefreshResult refreshResult, bool forceUiRefresh);
+    // restorePersistedAffinityForNewProcesses 作用：为本轮首次发现的进程实例恢复用户保存的 CPU 亲和性规则。
+    void restorePersistedAffinityForNewProcesses(RefreshResult& refreshResult);
     void rebuildTable();
     bool shouldRebuildProcessTableForRefresh(bool forceUiRefresh) const;
     void requestAsyncThreadRefresh(bool forceRefresh);
@@ -881,6 +883,7 @@ private:
 
     // ======== 数据缓存 ========
     std::unordered_map<std::string, CacheEntry> m_cacheByIdentity; // 进程缓存（PID+CreateTime）。
+    std::unordered_set<std::string> m_affinityRestoreAttemptedIdentityKeys; // 已检查过持久化 CPU 亲和性规则的进程实例。
     std::unordered_map<std::string, ks::process::CounterSample> m_counterSampleByIdentity; // 差值样本。
     std::unique_ptr<ks::network::ProcessNetworkEtwMonitor> m_processNetworkTrafficService; // 进程页内部 ETW 网络累计器。
     bool m_processNetworkTrafficCaptureStarted = false; // ETW 采集器是否已经尝试启动。

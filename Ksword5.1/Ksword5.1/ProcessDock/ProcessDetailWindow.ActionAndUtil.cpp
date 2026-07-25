@@ -1,5 +1,6 @@
 #include "ProcessDetailWindow.InternalCommon.h"
 #include "ProcessAffinityUtils.h"
+#include "ProcessAffinityPersistence.h"
 
 using namespace process_detail_window_internal;
 
@@ -284,6 +285,7 @@ void ProcessDetailWindow::refreshActionAffinityControls()
         ? static_cast<std::uint64_t>(affinityMasks.systemMask)
         : 0U;
     updateActionAffinityCoreButtons();
+    refreshActionAffinityPersistenceControl();
 
     if (m_affinityStatusLabel == nullptr)
     {
@@ -380,17 +382,63 @@ void ProcessDetailWindow::applyActionAffinityMask(const std::uint64_t affinityMa
     }
 
     m_actionAffinityMask = targetMask;
+    bool persistenceOk = true;
+    std::string persistenceDetailText;
+    if (m_affinityPersistenceCheckBox != nullptr && m_affinityPersistenceCheckBox->isChecked())
+    {
+        persistenceOk = ks::process::savePersistedProcessAffinityMask(
+                m_baseRecord.imagePath,
+                targetMask,
+                &persistenceDetailText);
+        if (!persistenceOk)
+        {
+            const QSignalBlocker signalBlocker(m_affinityPersistenceCheckBox);
+            m_affinityPersistenceCheckBox->setChecked(false);
+            kLogEvent persistenceEvent;
+            warn << persistenceEvent
+                << "[ProcessDetailWindow] CPU affinity persistence update failed, pid="
+                << m_baseRecord.pid
+                << ", detail=" << persistenceDetailText << eol;
+        }
+    }
     updateActionAffinityCoreButtons();
     if (m_affinityStatusLabel != nullptr)
     {
-        const QString maskText = QStringLiteral("0x%1")
-            .arg(static_cast<qulonglong>(targetMask), 0, 16)
-            .toUpper();
         m_affinityStatusLabel->setText(
-            ks::i18n::text(QStringLiteral("process.detail.affinity.status.updated"), QString())
-                .arg(maskText));
-        m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(statusIdleColor(), 600));
+            persistenceOk
+                ? ks::i18n::text(QStringLiteral("process.detail.affinity.status.updated"), QString())
+                    .arg(QStringLiteral("0x%1").arg(static_cast<qulonglong>(targetMask), 0, 16).toUpper())
+                : ks::i18n::text(QStringLiteral("process.detail.affinity.persistence.save_failed"), QString())
+                    .arg(QString::fromStdString(persistenceDetailText)));
+        m_affinityStatusLabel->setStyleSheet(buildStateLabelStyle(
+            persistenceOk ? statusIdleColor() : statusWarningColor(),
+            persistenceOk ? 600 : 700));
     }
+}
+
+void ProcessDetailWindow::refreshActionAffinityPersistenceControl()
+{
+    if (m_affinityPersistenceCheckBox == nullptr)
+    {
+        return;
+    }
+
+    std::uint64_t storedMask = 0U;
+    bool ruleFound = false;
+    std::string detailText;
+    const bool readOk = ks::process::loadPersistedProcessAffinityMask(
+        m_baseRecord.imagePath,
+        &storedMask,
+        &ruleFound,
+        &detailText);
+    const QSignalBlocker signalBlocker(m_affinityPersistenceCheckBox);
+    m_affinityPersistenceCheckBox->setEnabled(readOk && !m_baseRecord.imagePath.empty());
+    m_affinityPersistenceCheckBox->setChecked(readOk && ruleFound);
+    m_affinityPersistenceCheckBox->setToolTip(
+        ks::i18n::text(QStringLiteral("process.detail.affinity.persistence.tooltip"), QString()) +
+        (readOk || detailText.empty()
+            ? QString()
+            : QStringLiteral("\n") + QString::fromStdString(detailText)));
 }
 
 void ProcessDetailWindow::toggleActionAffinityCore(const int coreIndex, const bool enabled)

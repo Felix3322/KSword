@@ -1,5 +1,6 @@
 #include "ProcessDock.h"
 #include "ProcessAffinityUtils.h"
+#include "ProcessAffinityPersistence.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../theme.h"
@@ -5798,6 +5799,8 @@ void ProcessDock::applyRefreshResult(RefreshResult refreshResult, const bool for
     const auto elapsedMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(nowTime - m_lastRefreshStartTime).count());
 
+    restorePersistedAffinityForNewProcesses(refreshResult);
+
     // 把最新进程数据同步到已打开的详情窗口（若对应进程仍存在）。
     // 性能策略：
     // 1) 仅同步“可见且未最小化”的详情窗口；
@@ -5893,6 +5896,75 @@ void ProcessDock::applyRefreshResult(RefreshResult refreshResult, const bool for
             << ", cacheNow=" << m_cacheByIdentity.size()
             << ", uiRebuildForced=" << (forceUiRefresh ? "true" : "false")
             << eol;
+    }
+}
+
+void ProcessDock::restorePersistedAffinityForNewProcesses(RefreshResult& refreshResult)
+{
+    std::unordered_set<std::string> currentIdentityKeys;
+    currentIdentityKeys.reserve(refreshResult.nextCache.size());
+    std::size_t restoredRuleCount = 0U;
+    std::size_t failedRuleCount = 0U;
+
+    for (const auto& cachePair : refreshResult.nextCache)
+    {
+        const std::string& identityKey = cachePair.first;
+        const CacheEntry& cacheEntry = cachePair.second;
+        currentIdentityKeys.insert(identityKey);
+        if (cacheEntry.isExitedInLatestRound || cacheEntry.isKernelOnlyInLatestRound ||
+            cacheEntry.record.pid == 0U || cacheEntry.record.imagePath.empty() ||
+            !m_affinityRestoreAttemptedIdentityKeys.insert(identityKey).second)
+        {
+            continue;
+        }
+
+        bool ruleFound = false;
+        std::string detailText;
+        const bool restoreOk = ks::process::restorePersistedProcessAffinityMask(
+            static_cast<DWORD>(cacheEntry.record.pid),
+            cacheEntry.record.imagePath,
+            &ruleFound,
+            &detailText);
+        if (!ruleFound)
+        {
+            continue;
+        }
+
+        kLogEvent restoreEvent;
+        (restoreOk ? info : warn) << restoreEvent
+            << "[ProcessDock] persisted CPU affinity restore, pid=" << cacheEntry.record.pid
+            << ", imagePath=" << cacheEntry.record.imagePath
+            << ", ok=" << (restoreOk ? "true" : "false")
+            << ", detail=" << (detailText.empty() ? "none" : detailText) << eol;
+        if (restoreOk)
+        {
+            ++restoredRuleCount;
+        }
+        else
+        {
+            ++failedRuleCount;
+        }
+    }
+
+    for (auto it = m_affinityRestoreAttemptedIdentityKeys.begin();
+         it != m_affinityRestoreAttemptedIdentityKeys.end();)
+    {
+        if (currentIdentityKeys.find(*it) == currentIdentityKeys.end())
+        {
+            it = m_affinityRestoreAttemptedIdentityKeys.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    if (restoredRuleCount != 0U || failedRuleCount != 0U)
+    {
+        kLogEvent restoreSummaryEvent;
+        (failedRuleCount == 0U ? info : warn) << restoreSummaryEvent
+            << "[ProcessDock] persisted CPU affinity restore summary, restored=" << restoredRuleCount
+            << ", failed=" << failedRuleCount << eol;
     }
 }
 
