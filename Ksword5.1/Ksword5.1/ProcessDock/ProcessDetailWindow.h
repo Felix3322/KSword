@@ -18,6 +18,7 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -259,6 +260,18 @@ private:
         bool queryOk = false;                // 至少成功读取一项运行时字段。
     };
 
+    // PerformanceHistorySample：详情窗口存储的单进程性能历史采样。
+    struct PerformanceHistorySample
+    {
+        std::int64_t unixMilliseconds = 0; // 采样时刻，供横轴格式化。
+        double cpuPercent = 0.0;           // CPU 占用百分比。
+        double memoryMB = 0.0;             // 工作集内存 MB。
+        double diskMBps = 0.0;             // 磁盘吞吐 MB/s。
+        double networkRxKBps = 0.0;        // 网络下行 KB/s。
+        double networkTxKBps = 0.0;        // 网络上行 KB/s。
+        double gpuPercent = 0.0;           // GPU 占用百分比。
+    };
+
 private:
     // ======== UI 初始化 ========
     // changeEvent 作用：
@@ -278,6 +291,8 @@ private:
     // 返回：无。
     void applyThemeStyle();
     void initializeDetailTab();
+    // initializePerformanceTab 作用：创建性能历史页，图表横向绘制并在滚动内容区纵向排列。
+    void initializePerformanceTab();
     void initializeThreadTab();
     void initializeActionTab();
     void initializeModuleTab();
@@ -339,6 +354,8 @@ private:
 
     // ======== 详情页刷新 ========
     void refreshDetailTabTexts();
+    void appendPerformanceHistorySample(const ks::process::ProcessRecord& processRecord);
+    void refreshPerformanceHistoryCharts();
     // requestAsyncStaticDetailRefresh 作用：
     // - 在后台补齐路径、命令行、用户、签名等慢字段；
     // - 避免在窗口构造或周期同步时阻塞 UI 线程。
@@ -596,6 +613,7 @@ private:
     QSet<QWidget*> m_initializedTabs;           // 已构造控件树的页面，避免重复初始化。
     QSet<QObject*> m_connectedSignalSources;    // 已连接的 sender，支持页面按需构造后补接信号。
     QWidget* m_detailTab = nullptr;            // “详细信息”页。
+    QWidget* m_performanceTab = nullptr;       // “性能”页。
     QWidget* m_threadTab = nullptr;            // “线程”页。
     QWidget* m_actionTab = nullptr;            // “操作”页。
     QWidget* m_moduleTab = nullptr;            // “模块”页。
@@ -653,6 +671,15 @@ private:
     DetailOverviewRefreshResult m_detailOverviewResult; // 最近一次运行时扩展字段快照。
     bool m_detailOverviewRefreshing = false;   // 扩展字段后台查询是否进行中。
     std::uint64_t m_detailOverviewRefreshTicket = 0; // 防止异步回填乱序。
+
+    // ======== 性能页控件与历史 ========
+    QLabel* m_performanceHistoryStatusLabel = nullptr; // 性能页历史范围与样本数状态。
+    QWidget* m_performanceCpuChart = nullptr;          // CPU 图表。
+    QWidget* m_performanceMemoryChart = nullptr;       // 内存图表。
+    QWidget* m_performanceDiskChart = nullptr;         // 磁盘图表。
+    QWidget* m_performanceNetworkChart = nullptr;      // 网络收发图表。
+    QWidget* m_performanceGpuChart = nullptr;          // GPU 图表。
+    std::deque<PerformanceHistorySample> m_performanceHistory; // 当前详情窗口的定长历史序列。
 
     // ======== 线程页控件 ========
     QVBoxLayout* m_threadLayout = nullptr;     // 线程页总布局。

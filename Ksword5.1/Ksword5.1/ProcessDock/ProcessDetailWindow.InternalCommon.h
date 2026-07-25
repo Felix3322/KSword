@@ -28,6 +28,7 @@
 #include <QClipboard>
 #include <QColor>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
@@ -38,6 +39,7 @@
 #include <QFileIconProvider>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHeaderView>
@@ -50,6 +52,7 @@
 #include <QModelIndex>
 #include <QPalette>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPointer>
 #include <QPlainTextEdit>
 #include <QPoint>

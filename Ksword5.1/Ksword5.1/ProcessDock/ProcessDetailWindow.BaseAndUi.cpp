@@ -407,6 +407,292 @@ namespace
             return QStringLiteral("%1").arg(subsystemType);
         }
     }
+
+    class ProcessPerformanceHistoryChartWidget final : public QWidget
+    {
+    public:
+        struct Series
+        {
+            QString label;
+            QColor color;
+            std::vector<double> values;
+        };
+
+        explicit ProcessPerformanceHistoryChartWidget(QWidget* parent = nullptr)
+            : QWidget(parent)
+        {
+            setMinimumHeight(168);
+            setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            setContextMenuPolicy(Qt::DefaultContextMenu);
+            setAutoFillBackground(false);
+            setAttribute(Qt::WA_StyledBackground, false);
+            setAttribute(Qt::WA_OpaquePaintEvent, false);
+        }
+
+        void setChartData(
+            std::vector<qint64> timestamps,
+            std::vector<Series> series,
+            const QString& unitText,
+            const double fixedMaximum,
+            const QString& emptyText,
+            const QString& timeHeader,
+            const QString& copyLatestText,
+            const QString& copyHistoryText)
+        {
+            m_timestamps = std::move(timestamps);
+            m_series = std::move(series);
+            m_unitText = unitText;
+            m_fixedMaximum = fixedMaximum;
+            m_emptyText = emptyText;
+            m_timeHeader = timeHeader;
+            m_copyLatestText = copyLatestText;
+            m_copyHistoryText = copyHistoryText;
+            update();
+        }
+
+    protected:
+        void paintEvent(QPaintEvent* eventPointer) override
+        {
+            (void)eventPointer;
+
+            QPainter painter(this);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+
+            const QColor borderColor = KswordTheme::BorderColor();
+            const QColor textColor = KswordTheme::TextSecondaryColor();
+            const QRectF plotRect = chartRect();
+            painter.setPen(QPen(borderColor, 1.0));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(plotRect);
+
+            if (m_timestamps.empty() || m_series.empty())
+            {
+                painter.setPen(textColor);
+                painter.drawText(plotRect, Qt::AlignCenter, m_emptyText);
+                return;
+            }
+
+            const double axisMaximum = chartMaximum();
+            drawGrid(painter, plotRect, axisMaximum, borderColor, textColor);
+            drawLines(painter, plotRect, axisMaximum);
+            drawLegend(painter, textColor);
+            drawTimeRange(painter, plotRect, textColor);
+        }
+
+        void contextMenuEvent(QContextMenuEvent* eventPointer) override
+        {
+            if (eventPointer == nullptr || m_timestamps.empty() || m_series.empty())
+            {
+                return;
+            }
+
+            QMenu menu(this);
+            menu.setStyleSheet(buildProcessDetailMenuStyle());
+            QAction* const copyLatestAction = menu.addAction(m_copyLatestText);
+            QAction* const copyHistoryAction = menu.addAction(m_copyHistoryText);
+            QAction* const selectedAction = menu.exec(eventPointer->globalPos());
+            if (QApplication::clipboard() == nullptr)
+            {
+                return;
+            }
+            if (selectedAction == copyLatestAction)
+            {
+                QApplication::clipboard()->setText(latestValuesText());
+            }
+            else if (selectedAction == copyHistoryAction)
+            {
+                QApplication::clipboard()->setText(historyText());
+            }
+        }
+
+    private:
+        QRectF chartRect() const
+        {
+            return QRectF(rect()).adjusted(62.0, 24.0, -12.0, -29.0);
+        }
+
+        double chartMaximum() const
+        {
+            if (m_fixedMaximum > 0.0)
+            {
+                return m_fixedMaximum;
+            }
+
+            double maximum = 0.0;
+            for (const Series& series : m_series)
+            {
+                for (const double value : series.values)
+                {
+                    maximum = std::max(maximum, std::max(0.0, value));
+                }
+            }
+            if (maximum <= 0.0)
+            {
+                return 1.0;
+            }
+            return std::max(1.0, std::ceil(maximum * 1.1));
+        }
+
+        QString valueText(const double value) const
+        {
+            const int precision = value >= 100.0 ? 0 : (value >= 10.0 ? 1 : 2);
+            const QString numberText = QString::number(std::max(0.0, value), 'f', precision);
+            if (m_unitText == QStringLiteral("%"))
+            {
+                return numberText + m_unitText;
+            }
+            return numberText + QLatin1Char(' ') + m_unitText;
+        }
+
+        QString timeText(const qint64 timestamp) const
+        {
+            return QDateTime::fromMSecsSinceEpoch(timestamp).toString(QStringLiteral("HH:mm:ss"));
+        }
+
+        void drawGrid(
+            QPainter& painter,
+            const QRectF& plotRect,
+            const double axisMaximum,
+            const QColor& borderColor,
+            const QColor& textColor) const
+        {
+            painter.setPen(QPen(borderColor, 1.0, Qt::DotLine));
+            for (int gridIndex = 0; gridIndex <= 4; ++gridIndex)
+            {
+                const double ratio = static_cast<double>(gridIndex) / 4.0;
+                const double y = plotRect.bottom() - plotRect.height() * ratio;
+                painter.drawLine(QPointF(plotRect.left(), y), QPointF(plotRect.right(), y));
+                painter.setPen(textColor);
+                painter.drawText(
+                    QRectF(2.0, y - 9.0, plotRect.left() - 7.0, 18.0),
+                    Qt::AlignRight | Qt::AlignVCenter,
+                    valueText(axisMaximum * ratio));
+                painter.setPen(QPen(borderColor, 1.0, Qt::DotLine));
+            }
+        }
+
+        void drawLines(QPainter& painter, const QRectF& plotRect, const double axisMaximum) const
+        {
+            const std::size_t pointCount = m_timestamps.size();
+            if (pointCount == 0U)
+            {
+                return;
+            }
+
+            for (const Series& series : m_series)
+            {
+                if (series.values.empty())
+                {
+                    continue;
+                }
+                QPainterPath linePath;
+                const std::size_t seriesPointCount = std::min(pointCount, series.values.size());
+                for (std::size_t pointIndex = 0; pointIndex < seriesPointCount; ++pointIndex)
+                {
+                    const double x = seriesPointCount <= 1U
+                        ? plotRect.left()
+                        : plotRect.left() + plotRect.width() * static_cast<double>(pointIndex) /
+                            static_cast<double>(seriesPointCount - 1U);
+                    const double valueRatio = std::min(
+                        1.0,
+                        std::max(0.0, series.values[pointIndex]) / axisMaximum);
+                    const double y = plotRect.bottom() - plotRect.height() * valueRatio;
+                    if (pointIndex == 0U)
+                    {
+                        linePath.moveTo(x, y);
+                    }
+                    else
+                    {
+                        linePath.lineTo(x, y);
+                    }
+                }
+                painter.setPen(QPen(series.color, 2.0));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawPath(linePath);
+            }
+        }
+
+        void drawLegend(QPainter& painter, const QColor& textColor) const
+        {
+            double x = 8.0;
+            constexpr double y = 12.0;
+            painter.setPen(textColor);
+            for (const Series& series : m_series)
+            {
+                painter.setPen(QPen(series.color, 2.0));
+                painter.drawLine(QPointF(x, y), QPointF(x + 15.0, y));
+                x += 20.0;
+                painter.setPen(textColor);
+                const QFontMetrics metrics(painter.font());
+                painter.drawText(QPointF(x, y + 4.0), series.label);
+                x += static_cast<double>(metrics.horizontalAdvance(series.label)) + 16.0;
+            }
+        }
+
+        void drawTimeRange(QPainter& painter, const QRectF& plotRect, const QColor& textColor) const
+        {
+            if (m_timestamps.empty())
+            {
+                return;
+            }
+            painter.setPen(textColor);
+            const QRectF leftTextRect(plotRect.left(), plotRect.bottom() + 5.0, 120.0, 18.0);
+            const QRectF rightTextRect(plotRect.right() - 120.0, plotRect.bottom() + 5.0, 120.0, 18.0);
+            painter.drawText(leftTextRect, Qt::AlignLeft | Qt::AlignVCenter, timeText(m_timestamps.front()));
+            painter.drawText(rightTextRect, Qt::AlignRight | Qt::AlignVCenter, timeText(m_timestamps.back()));
+        }
+
+        QString latestValuesText() const
+        {
+            if (m_timestamps.empty())
+            {
+                return QString();
+            }
+            QStringList lines;
+            lines << (m_timeHeader + QStringLiteral(": ") + timeText(m_timestamps.back()));
+            for (const Series& series : m_series)
+            {
+                if (!series.values.empty())
+                {
+                    lines << (series.label + QStringLiteral(": ") + valueText(series.values.back()));
+                }
+            }
+            return lines.join(QLatin1Char('\n'));
+        }
+
+        QString historyText() const
+        {
+            QStringList headerFields;
+            headerFields << m_timeHeader;
+            for (const Series& series : m_series)
+            {
+                headerFields << series.label;
+            }
+
+            QStringList lines;
+            lines << headerFields.join(QLatin1Char('\t'));
+            for (std::size_t pointIndex = 0; pointIndex < m_timestamps.size(); ++pointIndex)
+            {
+                QStringList rowFields;
+                rowFields << timeText(m_timestamps[pointIndex]);
+                for (const Series& series : m_series)
+                {
+                    rowFields << valueText(pointIndex < series.values.size() ? series.values[pointIndex] : 0.0);
+                }
+                lines << rowFields.join(QLatin1Char('\t'));
+            }
+            return lines.join(QLatin1Char('\n'));
+        }
+
+        std::vector<qint64> m_timestamps;
+        std::vector<Series> m_series;
+        QString m_unitText;
+        QString m_emptyText;
+        QString m_timeHeader;
+        QString m_copyLatestText;
+        QString m_copyHistoryText;
+        double m_fixedMaximum = 0.0;
+    };
 }
 
 ProcessDetailWindow::ProcessDetailWindow(const ks::process::ProcessRecord& baseRecord, QWidget* parent)
@@ -439,6 +725,7 @@ ProcessDetailWindow::ProcessDetailWindow(const ks::process::ProcessRecord& baseR
     m_identityKey = ks::process::BuildProcessIdentityKey(
         m_baseRecord.pid,
         m_baseRecord.creationTime100ns);
+    appendPerformanceHistorySample(m_baseRecord);
 
     // 构造阶段不做同步静态详情查询：
     // - QueryProcessStaticDetailByPid 会读取命令行、令牌、签名等慢字段；
@@ -572,7 +859,9 @@ void ProcessDetailWindow::updateBaseRecord(const ks::process::ProcessRecord& bas
         m_pebInitialRefreshStarted = false;
         ++m_hotkeyRefreshTicket;
         ++m_keyboardRefreshTicket;
+        m_performanceHistory.clear();
     }
+    appendPerformanceHistorySample(m_baseRecord);
     refreshDetailTabTexts();
     if (shouldTryStaticBackgroundRefresh || identityChanged)
     {
@@ -888,6 +1177,7 @@ void ProcessDetailWindow::initializeUi()
 
     // 先创建轻量页面容器，实际控件树在用户首次进入时构造。
     m_detailTab = new QWidget(m_tabWidget);
+    m_performanceTab = new QWidget(m_tabWidget);
     m_threadTab = new QWidget(m_tabWidget);
     m_actionTab = new QWidget(m_tabWidget);
     m_moduleTab = new QWidget(m_tabWidget);
@@ -905,6 +1195,7 @@ void ProcessDetailWindow::initializeUi()
     m_kernelCallbackTab = new QWidget(m_tabWidget);
 
     m_detailTab->setObjectName(QStringLiteral("ProcessDetailTab_Detail"));
+    m_performanceTab->setObjectName(QStringLiteral("ProcessDetailTab_Performance"));
     m_threadTab->setObjectName(QStringLiteral("ProcessDetailTab_Thread"));
     m_actionTab->setObjectName(QStringLiteral("ProcessDetailTab_Action"));
     m_moduleTab->setObjectName(QStringLiteral("ProcessDetailTab_Module"));
@@ -927,6 +1218,10 @@ void ProcessDetailWindow::initializeUi()
 
     // 为 Tab 指定图标与标题文本。
     m_tabWidget->addTab(m_detailTab, QIcon(":/Icon/process_details.svg"), "详细信息");
+    m_tabWidget->addTab(
+        m_performanceTab,
+        QIcon(":/Icon/chart_line_line.svg"),
+        ks::i18n::text(QStringLiteral("process.detail.tab.performance"), QString()));
     m_tabWidget->addTab(m_threadTab, QIcon(":/Icon/process_tree.svg"), "线程");
     m_tabWidget->addTab(m_actionTab, QIcon(":/Icon/process_priority.svg"), "操作");
     m_tabWidget->addTab(m_moduleTab, QIcon(":/Icon/process_list.svg"), "模块");
@@ -985,6 +1280,10 @@ void ProcessDetailWindow::ensureTabContentInitialized(QWidget* const tab)
     if (tab == m_threadTab)
     {
         initializeThreadTab();
+    }
+    else if (tab == m_performanceTab)
+    {
+        initializePerformanceTab();
     }
     else if (tab == m_actionTab)
     {
@@ -2196,6 +2495,251 @@ void ProcessDetailWindow::initializeDetailTab()
     m_detailOpenHandleDockButton->setStyleSheet(buildBlueButtonStyle());
     m_gotoParentButton->setStyleSheet(buttonStyle);
     m_refreshDetailOverviewButton->setStyleSheet(buttonStyle);
+}
+
+void ProcessDetailWindow::initializePerformanceTab()
+{
+    auto& languageManager = ks::i18n::LanguageManager::instance();
+    const auto configureCopyableLabel = [&languageManager](QLabel* label) {
+        if (label == nullptr)
+        {
+            return;
+        }
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        label->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(label, &QWidget::customContextMenuRequested, label,
+            [label, &languageManager](const QPoint& localPosition) {
+                QMenu menu(label);
+                menu.setStyleSheet(buildProcessDetailMenuStyle());
+                QAction* const copyAction = menu.addAction(languageManager.text(
+                    QStringLiteral("process.detail.action.copy"),
+                    QString()));
+                if (menu.exec(label->mapToGlobal(localPosition)) == copyAction &&
+                    QApplication::clipboard() != nullptr)
+                {
+                    QApplication::clipboard()->setText(label->text());
+                }
+            });
+    };
+    auto* layout = new QVBoxLayout(m_performanceTab);
+    layout->setContentsMargins(14, 14, 14, 14);
+    layout->setSpacing(8);
+
+    auto* titleLabel = new QLabel(m_performanceTab);
+    titleLabel->setStyleSheet(QStringLiteral("font-size:16px; font-weight:700; color:%1;")
+        .arg(KswordTheme::TextPrimaryHex()));
+    languageManager.bindText(titleLabel, QStringLiteral("process.detail.performance.title"), QString());
+    configureCopyableLabel(titleLabel);
+    layout->addWidget(titleLabel);
+
+    auto* descriptionLabel = new QLabel(m_performanceTab);
+    descriptionLabel->setWordWrap(true);
+    descriptionLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+    languageManager.bindText(descriptionLabel, QStringLiteral("process.detail.performance.description"), QString());
+    configureCopyableLabel(descriptionLabel);
+    layout->addWidget(descriptionLabel);
+
+    m_performanceHistoryStatusLabel = new QLabel(m_performanceTab);
+    m_performanceHistoryStatusLabel->setWordWrap(true);
+    m_performanceHistoryStatusLabel->setStyleSheet(buildStateLabelStyle(statusSecondaryColor(), 600));
+    configureCopyableLabel(m_performanceHistoryStatusLabel);
+    layout->addWidget(m_performanceHistoryStatusLabel);
+
+    auto* chartScrollArea = new QScrollArea(m_performanceTab);
+    chartScrollArea->setWidgetResizable(true);
+    chartScrollArea->setFrameShape(QFrame::NoFrame);
+    auto* chartContent = new QWidget(chartScrollArea);
+    auto* chartLayout = new QVBoxLayout(chartContent);
+    chartLayout->setContentsMargins(0, 0, 0, 0);
+    chartLayout->setSpacing(10);
+
+    const auto addChart = [&languageManager, chartContent, chartLayout](
+        QWidget*& chartTarget,
+        const QString& titleKey) {
+        auto* group = new QGroupBox(chartContent);
+        languageManager.bindText(group, titleKey, QString());
+        group->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(group, &QWidget::customContextMenuRequested, group,
+            [group, &languageManager](const QPoint& localPosition) {
+                QMenu menu(group);
+                menu.setStyleSheet(buildProcessDetailMenuStyle());
+                QAction* const copyAction = menu.addAction(languageManager.text(
+                    QStringLiteral("process.detail.action.copy"),
+                    QString()));
+                if (menu.exec(group->mapToGlobal(localPosition)) == copyAction &&
+                    QApplication::clipboard() != nullptr)
+                {
+                    QApplication::clipboard()->setText(group->title());
+                }
+            });
+        auto* groupLayout = new QVBoxLayout(group);
+        groupLayout->setContentsMargins(9, 17, 9, 9);
+        chartTarget = new ProcessPerformanceHistoryChartWidget(group);
+        groupLayout->addWidget(chartTarget);
+        chartLayout->addWidget(group);
+    };
+
+    addChart(m_performanceCpuChart, QStringLiteral("process.detail.performance.chart.cpu"));
+    addChart(m_performanceMemoryChart, QStringLiteral("process.detail.performance.chart.memory"));
+    addChart(m_performanceDiskChart, QStringLiteral("process.detail.performance.chart.disk"));
+    addChart(m_performanceNetworkChart, QStringLiteral("process.detail.performance.chart.network"));
+    addChart(m_performanceGpuChart, QStringLiteral("process.detail.performance.chart.gpu"));
+    chartLayout->addStretch(1);
+    chartScrollArea->setWidget(chartContent);
+    layout->addWidget(chartScrollArea, 1);
+
+    refreshPerformanceHistoryCharts();
+}
+
+void ProcessDetailWindow::appendPerformanceHistorySample(const ks::process::ProcessRecord& processRecord)
+{
+    if (processRecord.pid == 0U)
+    {
+        return;
+    }
+
+    const auto normalizedValue = [](const double value) {
+        return std::isfinite(value) ? std::max(0.0, value) : 0.0;
+    };
+    PerformanceHistorySample sample;
+    sample.unixMilliseconds = QDateTime::currentMSecsSinceEpoch();
+    sample.cpuPercent = normalizedValue(processRecord.cpuPercent);
+    sample.memoryMB = normalizedValue(
+        processRecord.workingSetMB > 0.0 ? processRecord.workingSetMB : processRecord.ramMB);
+    sample.diskMBps = normalizedValue(processRecord.diskMBps);
+    sample.networkRxKBps = normalizedValue(processRecord.netRxKBps);
+    sample.networkTxKBps = normalizedValue(processRecord.netTxKBps);
+    sample.gpuPercent = normalizedValue(processRecord.gpuPercent);
+    m_performanceHistory.push_back(sample);
+
+    constexpr std::size_t kMaximumHistorySamples = 1800U;
+    while (m_performanceHistory.size() > kMaximumHistorySamples)
+    {
+        m_performanceHistory.pop_front();
+    }
+    refreshPerformanceHistoryCharts();
+}
+
+void ProcessDetailWindow::refreshPerformanceHistoryCharts()
+{
+    if (m_performanceHistoryStatusLabel == nullptr)
+    {
+        return;
+    }
+
+    const auto text = [](const QString& key) {
+        return ks::i18n::text(key, QString());
+    };
+    if (m_performanceHistory.empty())
+    {
+        m_performanceHistoryStatusLabel->setText(text(QStringLiteral("process.detail.performance.status.empty")));
+        return;
+    }
+
+    std::vector<qint64> timestamps;
+    std::vector<double> cpuValues;
+    std::vector<double> memoryValues;
+    std::vector<double> diskValues;
+    std::vector<double> networkRxValues;
+    std::vector<double> networkTxValues;
+    std::vector<double> gpuValues;
+    timestamps.reserve(m_performanceHistory.size());
+    cpuValues.reserve(m_performanceHistory.size());
+    memoryValues.reserve(m_performanceHistory.size());
+    diskValues.reserve(m_performanceHistory.size());
+    networkRxValues.reserve(m_performanceHistory.size());
+    networkTxValues.reserve(m_performanceHistory.size());
+    gpuValues.reserve(m_performanceHistory.size());
+    for (const PerformanceHistorySample& sample : m_performanceHistory)
+    {
+        timestamps.push_back(sample.unixMilliseconds);
+        cpuValues.push_back(sample.cpuPercent);
+        memoryValues.push_back(sample.memoryMB);
+        diskValues.push_back(sample.diskMBps);
+        networkRxValues.push_back(sample.networkRxKBps);
+        networkTxValues.push_back(sample.networkTxKBps);
+        gpuValues.push_back(sample.gpuPercent);
+    }
+
+    const QString timeHeader = text(QStringLiteral("process.detail.performance.header.time"));
+    const QString emptyText = text(QStringLiteral("process.detail.performance.chart.empty"));
+    const QString copyLatestText = text(QStringLiteral("process.detail.performance.action.copy_current"));
+    const QString copyHistoryText = text(QStringLiteral("process.detail.performance.action.copy_history"));
+    const auto setChartData = [&timestamps, &emptyText, &timeHeader, &copyLatestText, &copyHistoryText](
+        QWidget* chartWidget,
+        std::vector<ProcessPerformanceHistoryChartWidget::Series> series,
+        const QString& unitText,
+        const double fixedMaximum) {
+        auto* chart = static_cast<ProcessPerformanceHistoryChartWidget*>(chartWidget);
+        if (chart == nullptr)
+        {
+            return;
+        }
+        chart->setChartData(
+            timestamps,
+            std::move(series),
+            unitText,
+            fixedMaximum,
+            emptyText,
+            timeHeader,
+            copyLatestText,
+            copyHistoryText);
+    };
+
+    setChartData(
+        m_performanceCpuChart,
+        { ProcessPerformanceHistoryChartWidget::Series{
+            text(QStringLiteral("process.detail.performance.series.cpu")),
+            KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Cpu),
+            std::move(cpuValues) } },
+        QStringLiteral("%"),
+        100.0);
+    setChartData(
+        m_performanceMemoryChart,
+        { ProcessPerformanceHistoryChartWidget::Series{
+            text(QStringLiteral("process.detail.performance.series.memory")),
+            KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Memory),
+            std::move(memoryValues) } },
+        QStringLiteral("MB"),
+        0.0);
+    setChartData(
+        m_performanceDiskChart,
+        { ProcessPerformanceHistoryChartWidget::Series{
+            text(QStringLiteral("process.detail.performance.series.disk")),
+            KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Disk),
+            std::move(diskValues) } },
+        QStringLiteral("MB/s"),
+        0.0);
+    setChartData(
+        m_performanceNetworkChart,
+        {
+            ProcessPerformanceHistoryChartWidget::Series{
+                text(QStringLiteral("process.detail.performance.series.network_rx")),
+                KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Read),
+                std::move(networkRxValues) },
+            ProcessPerformanceHistoryChartWidget::Series{
+                text(QStringLiteral("process.detail.performance.series.network_tx")),
+                KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Write),
+                std::move(networkTxValues) }
+        },
+        QStringLiteral("KB/s"),
+        0.0);
+    setChartData(
+        m_performanceGpuChart,
+        { ProcessPerformanceHistoryChartWidget::Series{
+            text(QStringLiteral("process.detail.performance.series.gpu")),
+            KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Gpu),
+            std::move(gpuValues) } },
+        QStringLiteral("%"),
+        100.0);
+
+    const QString beginTime = QDateTime::fromMSecsSinceEpoch(timestamps.front()).toString(QStringLiteral("HH:mm:ss"));
+    const QString endTime = QDateTime::fromMSecsSinceEpoch(timestamps.back()).toString(QStringLiteral("HH:mm:ss"));
+    m_performanceHistoryStatusLabel->setText(
+        text(QStringLiteral("process.detail.performance.status.samples"))
+            .arg(static_cast<qulonglong>(m_performanceHistory.size()))
+            .arg(beginTime)
+            .arg(endTime));
 }
 
 void ProcessDetailWindow::initializeThreadTab()
