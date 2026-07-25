@@ -12,12 +12,15 @@
 #include "../Framework.h"
 
 #include <QElapsedTimer>
+#include <QByteArray>
 #include <QHash>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QStringList>
 #include <QWidget>
 
 #include <atomic>      // std::atomic_bool：后台订阅状态控制。
+#include <condition_variable> // std::condition_variable：等待 ETW 后台归档扫描安全退出。
 #include <cstdint>     // std::uint32_t：PID 等固定宽度整数。
 #include <deque>       // std::deque：高频 ETW 事件的有界 FIFO 队列。
 #include <functional>  // std::function：筛选匹配回调。
@@ -256,6 +259,34 @@ public:
         QCheckBox* checkBox = nullptr;
     };
 
+    struct EtwSimpleFilterCheckUiState
+    {
+        QString valueText;
+        QCheckBox* checkBox = nullptr;
+    };
+
+    struct EtwSimpleFilterUiState
+    {
+        QWidget* panelWidget = nullptr;
+        QCheckBox* enabledCheck = nullptr;
+        QPushButton* clearButton = nullptr;
+        QLabel* stateLabel = nullptr;
+        QLineEdit* pidEdit = nullptr;
+        QLineEdit* processNameEdit = nullptr;
+        QLineEdit* filePathEdit = nullptr;
+        QLineEdit* eventIdEdit = nullptr;
+        QLineEdit* eventNameEdit = nullptr;
+        QLineEdit* registryPathEdit = nullptr;
+        QLineEdit* networkAddressEdit = nullptr;
+        QLineEdit* networkPortEdit = nullptr;
+        QLineEdit* statusEdit = nullptr;
+        QLineEdit* customProviderEdit = nullptr;
+        QLineEdit* customActionEdit = nullptr;
+        QTimer* applyDebounceTimer = nullptr;
+        std::vector<EtwSimpleFilterCheckUiState> providerCheckList;
+        std::vector<EtwSimpleFilterCheckUiState> actionCheckList;
+    };
+
     struct EtwFilterRuleGroupUiState
     {
         int groupId = 0;
@@ -306,8 +337,65 @@ public:
         }
     };
 
+    struct EtwSimpleFilterCompiled
+    {
+        bool enabled = true;
+        std::vector<EtwFilterNumericRange> pidRangeList;
+        std::vector<EtwFilterNumericRange> eventIdRangeList;
+        std::vector<EtwFilterIpRange> networkAddressRangeList;
+        std::vector<EtwFilterPortRange> networkPortRangeList;
+        QStringList providerPresetNameList;
+        QStringList providerCustomTokenList;
+        QStringList actionPresetList;
+        QStringList actionCustomTokenList;
+        QStringList processNameTokenList;
+        QStringList filePathTokenList;
+        QStringList eventNameTokenList;
+        QStringList registryPathTokenList;
+        QStringList statusTokenList;
+
+        bool hasAnyCondition() const
+        {
+            return enabled
+                && (!pidRangeList.empty()
+                    || !eventIdRangeList.empty()
+                    || !networkAddressRangeList.empty()
+                    || !networkPortRangeList.empty()
+                    || !providerPresetNameList.empty()
+                    || !providerCustomTokenList.empty()
+                    || !actionPresetList.empty()
+                    || !actionCustomTokenList.empty()
+                    || !processNameTokenList.empty()
+                    || !filePathTokenList.empty()
+                    || !eventNameTokenList.empty()
+                    || !registryPathTokenList.empty()
+                    || !statusTokenList.empty());
+        }
+
+        bool requiresDecodedPayload() const
+        {
+            return hasAnyCondition()
+                && (!pidRangeList.empty()
+                    || !networkAddressRangeList.empty()
+                    || !networkPortRangeList.empty()
+                    || !actionPresetList.empty()
+                    || !actionCustomTokenList.empty()
+                    || !processNameTokenList.empty()
+                    || !filePathTokenList.empty()
+                    || !registryPathTokenList.empty()
+                    || !statusTokenList.empty());
+        }
+    };
+
+    struct EtwFilterStageCompiledSnapshot
+    {
+        EtwSimpleFilterCompiled simpleFilter;
+        std::vector<EtwFilterRuleGroupCompiled> detailedGroupList;
+    };
+
     struct EtwCapturedEventRow
     {
+        std::uint64_t archiveSequence = 0;
         bool decodedReady = false;
         QString timestampText;
         std::uint64_t timestampValue = 0;
@@ -535,6 +623,26 @@ private:
     // - 作用：判断用户是否已经通过 ETW 时间轴启用时间窗口筛选；
     // - 返回：true 表示后置筛选需要额外叠加时间范围判断。
     bool isEtwTimelineFilterActive() const;
+    // prepareEtwArchiveSession：创建本轮 ETW 全量归档目录并重置 10 秒分段状态。
+    bool prepareEtwArchiveSession(QString* errorTextOut);
+    // archiveEtwCapturedRow：把一条完成前置筛选和解码的事件写入磁盘归档，再允许进入 UI 镜像队列。
+    bool archiveEtwCapturedRow(EtwCapturedEventRow* rowData);
+    // finishEtwArchiveSession：刷出缓冲区并封存当前分段；可重复调用。
+    void finishEtwArchiveSession(bool flushToPhysicalDisk = true);
+    // rebuildEtwArchiveFilterAsync：流式扫描已封存分段，只保留最近 6000 条命中结果。
+    void rebuildEtwArchiveFilterAsync();
+    // scheduleEtwArchiveFilterRebuild：合并连续规则/时间轴变更，避免重复并发扫描归档。
+    void scheduleEtwArchiveFilterRebuild();
+    // ETW 归档扫描使用计数式生命周期保护，析构时取消并等待后台任务退出。
+    bool beginEtwArchiveBackgroundTask();
+    void endEtwArchiveBackgroundTask();
+    void cancelAndWaitEtwArchiveBackgroundTasks();
+    // replaceEtwRowsWithSnapshot：用后台筛选结果替换 UI 窗口，完整归档仍留在磁盘。
+    void replaceEtwRowsWithSnapshot(
+        std::deque<EtwCapturedEventRow> rows,
+        std::uint64_t totalMatchCount,
+        std::uint64_t scannedRowCount,
+        std::uint64_t scannedMaxSequence);
     // updateEtwCollapseHeight：
     // - 作用：触发 ETW 独立折叠区重新计算几何尺寸；
     // - 说明：当前折叠区不再使用 QToolBox，因此不会强制保留一个展开页。
@@ -555,6 +663,16 @@ private:
 
     // ========================= ETW 双筛选 ========================
     void initializeEtwFilterPanels();
+    QWidget* createEtwSimpleFilterPanel(EtwFilterStage stage, QWidget* parentWidget);
+    EtwSimpleFilterUiState& etwSimpleFilterUi(EtwFilterStage stage);
+    const EtwSimpleFilterUiState& etwSimpleFilterUi(EtwFilterStage stage) const;
+    void scheduleEtwSimpleFilterApply(EtwFilterStage stage);
+    void clearEtwSimpleFilter(EtwFilterStage stage, bool applyRules = true);
+    void updateEtwSimpleFilterStateLabel(EtwFilterStage stage);
+    bool tryCompileEtwSimpleFilter(
+        EtwFilterStage stage,
+        EtwSimpleFilterCompiled& compiledFilterOut,
+        QString& errorTextOut) const;
     void addEtwFilterRuleGroup(EtwFilterStage stage);
     void removeEtwFilterRuleGroup(EtwFilterStage stage, int groupId);
     void rebuildEtwFilterRuleGroupUi(EtwFilterStage stage);
@@ -722,6 +840,8 @@ private:
     QPushButton* m_etwPauseButton = nullptr;         // ETW 暂停按钮。
     QPushButton* m_etwExportButton = nullptr;        // ETW 导出按钮。
     QLabel* m_etwCaptureStatusLabel = nullptr;       // ETW 状态文本。
+    EtwSimpleFilterUiState m_etwPreSimpleFilterUi;    // ETW 简易前置筛选控件。
+    EtwSimpleFilterUiState m_etwPostSimpleFilterUi;   // ETW 简易后置筛选控件。
     QWidget* m_etwPreFilterPanel = nullptr;          // 前置筛选面板。
     QWidget* m_etwPostFilterPanel = nullptr;         // 后置筛选面板。
     QVBoxLayout* m_etwPreFilterPanelLayout = nullptr; // 前置筛选布局。
@@ -751,6 +871,7 @@ private:
     ProcessTraceTimelineWidget* m_etwTimelineWidget = nullptr; // ETW 事件瀑布流时间轴。
     QTableWidget* m_etwEventTable = nullptr;         // ETW 事件表。
     QTimer* m_etwUiUpdateTimer = nullptr;            // 高频 ETW 的 UI 批量刷新定时器。
+    QTimer* m_etwArchiveFilterDebounceTimer = nullptr; // ETW 全量后置筛选防抖定时器。
 
     std::vector<EtwProviderEntry> m_etwProviders;    // ETW Provider 缓存。
     QHash<QString, QString> m_etwCaptureProviderNames; // 当前 ETW 会话的 GUID 到显示名快照。
@@ -759,17 +880,35 @@ private:
     int m_etwPostFilterNextGroupId = 1;              // 后置筛选规则组递增ID。
     std::vector<std::unique_ptr<EtwFilterRuleGroupUiState>> m_etwPreFilterRuleGroupUiList; // 前置筛选UI原始规则组。
     std::vector<std::unique_ptr<EtwFilterRuleGroupUiState>> m_etwPostFilterRuleGroupUiList; // 后置筛选UI原始规则组。
+    EtwSimpleFilterCompiled m_etwPreSimpleFilterCompiled; // 已编译的简易前置筛选。
+    EtwSimpleFilterCompiled m_etwPostSimpleFilterCompiled; // 已编译的简易后置筛选。
     std::vector<EtwFilterRuleGroupCompiled> m_etwPreFilterCompiledGroupList; // 前置筛选编译规则组。
     std::vector<EtwFilterRuleGroupCompiled> m_etwPostFilterCompiledGroupList; // 后置筛选编译规则组。
-    std::shared_ptr<const std::vector<EtwFilterRuleGroupCompiled>> m_etwPreFilterCompiledSnapshot; // ETW回调使用的前置筛选快照。
+    std::shared_ptr<const EtwFilterStageCompiledSnapshot> m_etwPreFilterCompiledSnapshot; // ETW回调使用的前置筛选快照。
     std::mutex m_etwPreFilterSnapshotMutex;          // 前置筛选快照互斥锁。
     std::deque<EtwCapturedEventRow> m_etwPendingRows; // ETW 待刷入 UI 的有界 FIFO 队列。
     std::deque<EtwCapturedEventRow> m_etwCapturedRows; // ETW 已捕获事件缓存（后置筛选仅隐藏）。
     std::deque<ProcessTraceTimelineEventPoint> m_etwTimelineEventPoints; // ETW 时间轴绘制用有效时间点缓存。
     std::mutex m_etwPendingMutex;                    // ETW 待刷入队列互斥锁。
-    std::atomic<std::uint64_t> m_etwPendingDroppedRows{ 0 }; // UI 队列满时淘汰的旧事件数。
-    std::atomic<std::uint64_t> m_etwPendingOverloadSequence{ 0 }; // 洪峰采样序号。
+    std::atomic<std::uint64_t> m_etwUiSkippedRows{ 0 }; // 仅 UI 镜像未展示的事件数，归档中仍完整保留。
+    std::atomic<std::uint64_t> m_etwSourceEventsLost{ 0 }; // ETW 会话自身报告的源事件丢失数，必须显式告警。
     QElapsedTimer m_etwTimelineRefreshTimer;         // 时间轴重绘节流计时器。
+    QString m_etwArchiveDirectory;                  // 当前捕获会话的全量归档目录。
+    QString m_etwArchiveActiveSegmentPath;          // 当前正在写入的 10 秒分段。
+    QStringList m_etwArchiveClosedSegmentPaths;     // 已封存、可供后台筛选读取的分段。
+    QByteArray m_etwArchiveWriteBuffer;              // 顺序写盘聚合缓冲区。
+    std::mutex m_etwArchiveMutex;                    // 写入、封存与筛选快照互斥锁。
+    std::uintptr_t m_etwArchiveFileHandle = 0;       // Win32 归档文件句柄，0 表示未打开。
+    std::uint64_t m_etwArchiveSegmentStart100ns = 0; // 当前分段首条事件时间。
+    std::uint64_t m_etwArchiveNextSequence = 0;      // 本轮全量归档事件序号。
+    std::uint32_t m_etwArchiveSegmentIndex = 0;      // 分段文件递增编号。
+    std::atomic_bool m_etwArchiveWriteFailed{ false }; // 任一归档写入失败后停止继续接收事件。
+    std::atomic<std::uint64_t> m_etwArchiveFilterTicket{ 0 }; // 后台全量筛选取消票据。
+    std::atomic<std::uint64_t> m_etwArchiveSessionGeneration{ 0 }; // 捕获会话代次，阻止旧任务读取新会话。
+    std::mutex m_etwArchiveTaskMutex;                // 后台筛选/导出任务生命周期互斥锁。
+    std::condition_variable m_etwArchiveTaskCondition; // 析构等待后台归档任务退出。
+    std::size_t m_etwArchiveBackgroundTaskCount = 0; // 当前仍可能访问本对象的归档后台任务数。
+    bool m_etwArchiveTaskShutdown = false;            // 析构开始后禁止创建新归档后台任务。
     std::atomic_bool m_etwCaptureRunning{ false };   // ETW 捕获运行状态。
     std::atomic_bool m_etwCapturePaused{ false };    // ETW 捕获暂停状态。
     std::atomic_bool m_etwCaptureStopFlag{ false };  // ETW 捕获停止信号。

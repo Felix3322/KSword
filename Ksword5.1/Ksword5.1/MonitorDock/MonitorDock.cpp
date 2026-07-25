@@ -14,12 +14,14 @@
 
 #include <QApplication>
 #include <QAbstractItemModel>
+#include <QBuffer>
 #include <QByteArray>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDataStream>
 #include <QDir>
 #include <QEvent>
 #include <QFileInfo>
@@ -47,12 +49,15 @@
 #include <QPushButton>
 #include <QPainter>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSortFilterProxyModel>
 #include <QSpinBox>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTableWidget>
@@ -60,6 +65,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QtEndian>
 
 #include <QtCharts/QBarCategoryAxis>
 #include <QtCharts/QBarSeries>
@@ -76,6 +82,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <limits>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -101,6 +108,349 @@
 
 namespace
 {
+    constexpr char kEtwArchiveMagic[] = "KSWETW1";
+    constexpr std::uint32_t kEtwArchiveFileVersion = 1;
+    constexpr std::uint32_t kEtwArchiveRowVersion = 2;
+    constexpr std::uint32_t kEtwArchiveMaximumRecordBytes = 64U * 1024U * 1024U;
+
+    QByteArray serializeEtwArchiveRow(const MonitorDock::EtwCapturedEventRow& row)
+    {
+        const QByteArray detailJsonUtf8 = row.detailJson.toUtf8();
+        QByteArray payload;
+        payload.reserve(detailJsonUtf8.size() + 4096);
+        QDataStream stream(&payload, QIODevice::WriteOnly);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream.setVersion(QDataStream::Qt_6_0);
+        stream
+            << static_cast<quint32>(kEtwArchiveRowVersion)
+            << static_cast<quint64>(row.archiveSequence)
+            << row.decodedReady
+            << row.timestampText
+            << static_cast<quint64>(row.timestampValue)
+            << row.providerName << row.providerGuid << row.providerCategory
+            << static_cast<qint32>(row.eventId) << row.eventName
+            << static_cast<qint32>(row.task) << row.taskName
+            << static_cast<qint32>(row.opcode) << row.opcodeName
+            << static_cast<qint32>(row.level) << row.levelText
+            << static_cast<quint64>(row.keywordMaskValue) << row.keywordMaskText
+            << static_cast<quint32>(row.headerPid) << static_cast<quint32>(row.headerTid)
+            << row.activityId << row.pidTidText
+            << row.detailSummary << detailJsonUtf8
+            << row.resourceTypeText << row.actionText << row.targetText << row.statusText
+            << static_cast<quint32>(row.targetPid) << row.targetPidValid
+            << static_cast<quint32>(row.parentPid) << row.parentPidValid
+            << static_cast<quint32>(row.targetTid) << row.targetTidValid
+            << row.processNameText << row.imagePathText << row.commandLineText
+            << row.filePathText << row.fileOldPathText << row.fileNewPathText
+            << row.fileOperationText << row.fileStatusCodeText << row.fileAccessMaskText
+            << row.registryKeyPathText << row.registryValueNameText << row.registryHiveText
+            << row.registryOperationText << row.registryStatusText
+            << row.sourceIpText << static_cast<quint32>(row.sourceIpValue) << row.sourceIpValid
+            << static_cast<quint16>(row.sourcePort) << row.sourcePortValid
+            << row.destinationIpText << static_cast<quint32>(row.destinationIpValue) << row.destinationIpValid
+            << static_cast<quint16>(row.destinationPort) << row.destinationPortValid
+            << row.protocolText << row.directionText << row.domainText << row.hostText
+            << row.auditResultText << row.userText << row.sidText
+            << static_cast<quint32>(row.securityPid) << row.securityPidValid
+            << static_cast<quint32>(row.securityTid) << row.securityTidValid
+            << row.securityLevelText
+            << row.scriptHostProcessText << row.scriptKeywordText << row.scriptTaskNameText
+            << row.wmiClassNameText << row.wmiNamespaceText;
+        return stream.status() == QDataStream::Ok ? payload : QByteArray();
+    }
+
+    bool deserializeEtwArchiveRow(
+        const QByteArray& payload,
+        MonitorDock::EtwCapturedEventRow* rowOut)
+    {
+        if (payload.isEmpty() || rowOut == nullptr)
+        {
+            return false;
+        }
+
+        QBuffer buffer;
+        buffer.setData(payload);
+        if (!buffer.open(QIODevice::ReadOnly))
+        {
+            return false;
+        }
+
+        QDataStream stream(&buffer);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream.setVersion(QDataStream::Qt_6_0);
+
+        quint32 rowVersion = 0;
+        quint64 archiveSequence = 0;
+        quint64 timestampValue = 0;
+        qint32 eventId = 0;
+        qint32 task = 0;
+        qint32 opcode = 0;
+        qint32 level = 0;
+        quint64 keywordMaskValue = 0;
+        quint32 headerPid = 0;
+        quint32 headerTid = 0;
+        quint32 targetPid = 0;
+        quint32 parentPid = 0;
+        quint32 targetTid = 0;
+        quint32 sourceIpValue = 0;
+        quint16 sourcePort = 0;
+        quint32 destinationIpValue = 0;
+        quint16 destinationPort = 0;
+        quint32 securityPid = 0;
+        quint32 securityTid = 0;
+        QByteArray detailJsonUtf8;
+
+        MonitorDock::EtwCapturedEventRow row;
+        stream
+            >> rowVersion
+            >> archiveSequence
+            >> row.decodedReady
+            >> row.timestampText
+            >> timestampValue
+            >> row.providerName >> row.providerGuid >> row.providerCategory
+            >> eventId >> row.eventName
+            >> task >> row.taskName
+            >> opcode >> row.opcodeName
+            >> level >> row.levelText
+            >> keywordMaskValue >> row.keywordMaskText
+            >> headerPid >> headerTid
+            >> row.activityId >> row.pidTidText
+            >> row.detailSummary >> detailJsonUtf8
+            >> row.resourceTypeText >> row.actionText >> row.targetText >> row.statusText
+            >> targetPid >> row.targetPidValid
+            >> parentPid >> row.parentPidValid
+            >> targetTid >> row.targetTidValid
+            >> row.processNameText >> row.imagePathText >> row.commandLineText
+            >> row.filePathText >> row.fileOldPathText >> row.fileNewPathText
+            >> row.fileOperationText >> row.fileStatusCodeText >> row.fileAccessMaskText
+            >> row.registryKeyPathText >> row.registryValueNameText >> row.registryHiveText
+            >> row.registryOperationText >> row.registryStatusText
+            >> row.sourceIpText >> sourceIpValue >> row.sourceIpValid
+            >> sourcePort >> row.sourcePortValid
+            >> row.destinationIpText >> destinationIpValue >> row.destinationIpValid
+            >> destinationPort >> row.destinationPortValid
+            >> row.protocolText >> row.directionText >> row.domainText >> row.hostText
+            >> row.auditResultText >> row.userText >> row.sidText
+            >> securityPid >> row.securityPidValid
+            >> securityTid >> row.securityTidValid
+            >> row.securityLevelText
+            >> row.scriptHostProcessText >> row.scriptKeywordText >> row.scriptTaskNameText
+            >> row.wmiClassNameText >> row.wmiNamespaceText;
+
+        if (stream.status() != QDataStream::Ok || rowVersion != kEtwArchiveRowVersion)
+        {
+            return false;
+        }
+
+        row.archiveSequence = static_cast<std::uint64_t>(archiveSequence);
+        row.timestampValue = static_cast<std::uint64_t>(timestampValue);
+        row.eventId = static_cast<int>(eventId);
+        row.task = static_cast<int>(task);
+        row.opcode = static_cast<int>(opcode);
+        row.level = static_cast<int>(level);
+        row.keywordMaskValue = static_cast<std::uint64_t>(keywordMaskValue);
+        row.headerPid = static_cast<std::uint32_t>(headerPid);
+        row.headerTid = static_cast<std::uint32_t>(headerTid);
+        row.targetPid = static_cast<std::uint32_t>(targetPid);
+        row.parentPid = static_cast<std::uint32_t>(parentPid);
+        row.targetTid = static_cast<std::uint32_t>(targetTid);
+        row.sourceIpValue = static_cast<std::uint32_t>(sourceIpValue);
+        row.sourcePort = static_cast<std::uint16_t>(sourcePort);
+        row.destinationIpValue = static_cast<std::uint32_t>(destinationIpValue);
+        row.destinationPort = static_cast<std::uint16_t>(destinationPort);
+        row.securityPid = static_cast<std::uint32_t>(securityPid);
+        row.securityTid = static_cast<std::uint32_t>(securityTid);
+        row.detailJson = QString::fromUtf8(detailJsonUtf8);
+        row.detailVisibleText = QStringLiteral("%1 %2 %3 %4 %5 %6 %7")
+            .arg(row.timestampText)
+            .arg(row.providerName)
+            .arg(row.eventId)
+            .arg(row.eventName)
+            .arg(row.pidTidText)
+            .arg(row.detailSummary)
+            .arg(row.activityId);
+        row.detailAllText = QStringLiteral("%1 %2 %3 %4 %5 %6 %7 %8 %9 %10")
+            .arg(row.detailVisibleText)
+            .arg(row.resourceTypeText)
+            .arg(row.actionText)
+            .arg(row.targetText)
+            .arg(row.statusText)
+            .arg(row.processNameText)
+            .arg(row.filePathText)
+            .arg(row.registryKeyPathText)
+            .arg(row.scriptKeywordText)
+            .arg(row.detailJson);
+        row.detailAllText.replace(QChar(u'\r'), QChar(u' '));
+        row.detailAllText.replace(QChar(u'\n'), QChar(u' '));
+        row.detailAllText = row.detailAllText.simplified();
+        *rowOut = std::move(row);
+        return true;
+    }
+
+    QByteArray buildEtwArchiveFileHeader()
+    {
+        QByteArray header;
+        QDataStream stream(&header, QIODevice::WriteOnly);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        stream.writeRawData(kEtwArchiveMagic, static_cast<int>(sizeof(kEtwArchiveMagic) - 1));
+        stream << static_cast<quint32>(kEtwArchiveFileVersion);
+        return header;
+    }
+
+    bool writeAllToHandle(const HANDLE fileHandle, const QByteArray& data)
+    {
+        if (fileHandle == nullptr || fileHandle == INVALID_HANDLE_VALUE || data.isEmpty())
+        {
+            return data.isEmpty();
+        }
+
+        qsizetype writtenTotal = 0;
+        while (writtenTotal < data.size())
+        {
+            const qsizetype remaining = data.size() - writtenTotal;
+            const DWORD requestBytes = static_cast<DWORD>(std::min<qsizetype>(
+                remaining,
+                static_cast<qsizetype>(std::numeric_limits<DWORD>::max())));
+            DWORD writtenBytes = 0;
+            if (::WriteFile(
+                fileHandle,
+                data.constData() + writtenTotal,
+                requestBytes,
+                &writtenBytes,
+                nullptr) == FALSE
+                || writtenBytes == 0)
+            {
+                return false;
+            }
+            writtenTotal += static_cast<qsizetype>(writtenBytes);
+        }
+        return true;
+    }
+
+    bool scanEtwArchiveFile(
+        const QString& filePath,
+        const std::function<bool(const MonitorDock::EtwCapturedEventRow&)>& rowVisitor,
+        const std::function<bool()>& shouldCancel,
+        std::uint64_t* scannedRowsInOut,
+        std::uint64_t* maxSequenceInOut,
+        QString* errorTextOut)
+    {
+        QFile file(filePath);
+        if (!file.open(QIODevice::ReadOnly))
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("无法读取 ETW 归档分段：%1").arg(filePath);
+            }
+            return false;
+        }
+
+        constexpr qint64 kMagicBytes = static_cast<qint64>(sizeof(kEtwArchiveMagic) - 1);
+        constexpr qint64 kHeaderBytes = kMagicBytes + static_cast<qint64>(sizeof(quint32));
+        const qint64 fileSize = file.size();
+        if (fileSize < kHeaderBytes)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("ETW 归档分段格式无效：%1").arg(filePath);
+            }
+            return false;
+        }
+
+        uchar* mappedData = file.map(0, fileSize);
+        if (mappedData == nullptr)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("无法读取 ETW 归档分段：%1").arg(filePath);
+            }
+            return false;
+        }
+        const auto mappedGuard = std::unique_ptr<uchar, std::function<void(uchar*)>>(
+            mappedData,
+            [&file](uchar* data) {
+                file.unmap(data);
+            });
+
+        const quint32 fileVersion = qFromLittleEndian<quint32>(mappedData + kMagicBytes);
+        if (std::memcmp(mappedData, kEtwArchiveMagic, static_cast<std::size_t>(kMagicBytes)) != 0
+            || fileVersion != kEtwArchiveFileVersion)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("ETW 归档分段格式无效：%1").arg(filePath);
+            }
+            return false;
+        }
+
+        qint64 offset = kHeaderBytes;
+        while (offset < fileSize)
+        {
+            if (shouldCancel && shouldCancel())
+            {
+                return true;
+            }
+
+            if (fileSize - offset < static_cast<qint64>(sizeof(quint32)))
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = QStringLiteral("ETW 归档分段尾部不完整：%1").arg(filePath);
+                }
+                return false;
+            }
+
+            const quint32 payloadSize = qFromLittleEndian<quint32>(mappedData + offset);
+            offset += static_cast<qint64>(sizeof(quint32));
+            if (payloadSize == 0
+                || payloadSize > kEtwArchiveMaximumRecordBytes)
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = QStringLiteral("ETW 归档记录长度无效：%1").arg(filePath);
+                }
+                return false;
+            }
+
+            if (static_cast<qint64>(payloadSize) > fileSize - offset)
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = QStringLiteral("ETW 归档记录内容不完整：%1").arg(filePath);
+                }
+                return false;
+            }
+
+            const QByteArray payload = QByteArray::fromRawData(
+                reinterpret_cast<const char*>(mappedData + offset),
+                static_cast<qsizetype>(payloadSize));
+            offset += static_cast<qint64>(payloadSize);
+            MonitorDock::EtwCapturedEventRow row;
+            if (!deserializeEtwArchiveRow(payload, &row))
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = QStringLiteral("ETW 归档记录解析失败：%1").arg(filePath);
+                }
+                return false;
+            }
+
+            if (scannedRowsInOut != nullptr)
+            {
+                ++(*scannedRowsInOut);
+            }
+            if (maxSequenceInOut != nullptr)
+            {
+                *maxSequenceInOut = std::max(*maxSequenceInOut, row.archiveSequence);
+            }
+            if (rowVisitor && !rowVisitor(row))
+            {
+                return true;
+            }
+        }
+        return true;
+    }
+
     // 按主题统一按钮风格。
     QString blueButtonStyle()
     {
@@ -372,9 +722,11 @@ namespace
                 contentHostWidget->setVisible(checked);
                 sectionWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
                 sectionWidget->updateGeometry();
-                if (QWidget* parentWidget = sectionWidget->parentWidget())
+                QWidget* parentWidget = sectionWidget->parentWidget();
+                while (parentWidget != nullptr)
                 {
                     parentWidget->updateGeometry();
+                    parentWidget = parentWidget->parentWidget();
                 }
             });
 
@@ -927,6 +1279,64 @@ namespace
     constexpr const char* kEtwFilterJsonFieldKey = "key";
     constexpr const char* kEtwFilterJsonFieldValue = "value";
     constexpr const char* kEtwFilterJsonProviderCategoriesKey = "provider_categories";
+    constexpr const char* kEtwFilterJsonSimplePreKey = "simple_pre";
+    constexpr const char* kEtwFilterJsonSimplePostKey = "simple_post";
+    constexpr const char* kEtwFilterJsonSimplePidKey = "pid";
+    constexpr const char* kEtwFilterJsonSimpleProcessNameKey = "process_name";
+    constexpr const char* kEtwFilterJsonSimpleFilePathKey = "file_path";
+    constexpr const char* kEtwFilterJsonSimpleEventIdKey = "event_id";
+    constexpr const char* kEtwFilterJsonSimpleEventNameKey = "event_name";
+    constexpr const char* kEtwFilterJsonSimpleRegistryPathKey = "registry_path";
+    constexpr const char* kEtwFilterJsonSimpleNetworkAddressKey = "network_address";
+    constexpr const char* kEtwFilterJsonSimpleNetworkPortKey = "network_port";
+    constexpr const char* kEtwFilterJsonSimpleStatusKey = "status";
+    constexpr const char* kEtwFilterJsonSimpleCustomProviderKey = "custom_provider";
+    constexpr const char* kEtwFilterJsonSimpleCustomActionKey = "custom_action";
+    constexpr const char* kEtwFilterJsonSimpleProvidersKey = "providers";
+    constexpr const char* kEtwFilterJsonSimpleActionsKey = "actions";
+
+    struct EtwPresetProviderDescriptor
+    {
+        QString categoryText;
+        QString providerNameText;
+    };
+
+    const std::vector<EtwPresetProviderDescriptor>& etwPresetProviderDescriptorList()
+    {
+        static const std::vector<EtwPresetProviderDescriptor> kProviderList{
+            { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Process") },
+            { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Thread") },
+            { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Image") },
+            { QStringLiteral("文件注册表"), QStringLiteral("Microsoft-Windows-Kernel-File") },
+            { QStringLiteral("文件注册表"), QStringLiteral("Microsoft-Windows-Kernel-Registry") },
+            { QStringLiteral("网络通信"), QStringLiteral("Microsoft-Windows-TCPIP") },
+            { QStringLiteral("网络通信"), QStringLiteral("Microsoft-Windows-DNS-Client") },
+            { QStringLiteral("网络通信"), QStringLiteral("Microsoft-Windows-Winsock-AFD") },
+            { QStringLiteral("安全审计"), QStringLiteral("Microsoft-Windows-Security-Auditing") },
+            { QStringLiteral("安全审计"), QStringLiteral("Microsoft-Windows-Defender") },
+            { QStringLiteral("脚本管理"), QStringLiteral("Microsoft-Windows-PowerShell") },
+            { QStringLiteral("脚本管理"), QStringLiteral("Microsoft-Windows-WMI-Activity") },
+            { QStringLiteral("脚本管理"), QStringLiteral("Microsoft-Windows-TaskScheduler") }
+        };
+        return kProviderList;
+    }
+
+    const QStringList& etwSimpleActionList()
+    {
+        static const QStringList kActionList{
+            QStringLiteral("创建/启动"),
+            QStringLiteral("打开"),
+            QStringLiteral("关闭"),
+            QStringLiteral("读取/查询"),
+            QStringLiteral("写入/设置"),
+            QStringLiteral("删除"),
+            QStringLiteral("重命名"),
+            QStringLiteral("连接"),
+            QStringLiteral("发送"),
+            QStringLiteral("接收")
+        };
+        return kActionList;
+    }
 
     QString etwFilterStageText(const EtwFilterStage stage)
     {
@@ -1764,6 +2174,253 @@ namespace
             matched = !matched;
         }
         return matched;
+    }
+
+    QStringList splitEtwSimpleFilterTokens(const QString& inputText)
+    {
+        static const QRegularExpression separatorRegex(QStringLiteral("[,;]+"));
+        QStringList result;
+        for (const QString& tokenText : inputText.split(separatorRegex, Qt::SkipEmptyParts))
+        {
+            const QString trimmed = tokenText.trimmed();
+            if (!trimmed.isEmpty())
+            {
+                result.push_back(trimmed);
+            }
+        }
+        return result;
+    }
+
+    bool etwTextContainsAnyToken(const QString& valueText, const QStringList& tokenList)
+    {
+        if (tokenList.isEmpty())
+        {
+            return true;
+        }
+        return std::any_of(
+            tokenList.begin(),
+            tokenList.end(),
+            [&valueText](const QString& tokenText) {
+                return valueText.contains(tokenText, Qt::CaseInsensitive);
+            });
+    }
+
+    bool etwAnyTextValueContainsAnyToken(
+        const std::initializer_list<const QString*> valueList,
+        const QStringList& tokenList)
+    {
+        if (tokenList.isEmpty())
+        {
+            return true;
+        }
+        for (const QString& tokenText : tokenList)
+        {
+            for (const QString* valuePointer : valueList)
+            {
+                if (valuePointer != nullptr
+                    && valuePointer->contains(tokenText, Qt::CaseInsensitive))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool etwSimpleProviderMatches(
+        const MonitorDock::EtwSimpleFilterCompiled& simpleFilter,
+        const MonitorDock::EtwCapturedEventRow& rowData)
+    {
+        if (simpleFilter.providerPresetNameList.isEmpty()
+            && simpleFilter.providerCustomTokenList.isEmpty())
+        {
+            return true;
+        }
+
+        for (const QString& presetName : simpleFilter.providerPresetNameList)
+        {
+            if (rowData.providerName.compare(presetName, Qt::CaseInsensitive) == 0)
+            {
+                return true;
+            }
+        }
+        if (simpleFilter.providerCustomTokenList.isEmpty())
+        {
+            return false;
+        }
+        return etwAnyTextValueContainsAnyToken(
+            { &rowData.providerName, &rowData.providerGuid },
+            simpleFilter.providerCustomTokenList);
+    }
+
+    bool etwSimplePidMatches(
+        const MonitorDock::EtwSimpleFilterCompiled& simpleFilter,
+        const MonitorDock::EtwCapturedEventRow& rowData)
+    {
+        if (simpleFilter.pidRangeList.empty())
+        {
+            return true;
+        }
+        if (etwNumericInRanges(rowData.headerPid, simpleFilter.pidRangeList))
+        {
+            return true;
+        }
+        return (rowData.targetPidValid && etwNumericInRanges(rowData.targetPid, simpleFilter.pidRangeList))
+            || (rowData.parentPidValid && etwNumericInRanges(rowData.parentPid, simpleFilter.pidRangeList))
+            || (rowData.securityPidValid && etwNumericInRanges(rowData.securityPid, simpleFilter.pidRangeList));
+    }
+
+    bool etwSimpleFilterMatchesHeaderFields(
+        const MonitorDock::EtwSimpleFilterCompiled& simpleFilter,
+        const MonitorDock::EtwCapturedEventRow& rowData,
+        bool* decodedPayloadRequiredOut)
+    {
+        if (decodedPayloadRequiredOut != nullptr)
+        {
+            *decodedPayloadRequiredOut = false;
+        }
+        if (!simpleFilter.hasAnyCondition())
+        {
+            return true;
+        }
+        if (!etwSimpleProviderMatches(simpleFilter, rowData))
+        {
+            return false;
+        }
+        if (!simpleFilter.eventIdRangeList.empty()
+            && !etwNumericInRanges(static_cast<std::uint64_t>(rowData.eventId), simpleFilter.eventIdRangeList))
+        {
+            return false;
+        }
+        if (!etwTextContainsAnyToken(rowData.eventName, simpleFilter.eventNameTokenList))
+        {
+            return false;
+        }
+
+        bool decodedPayloadRequired = false;
+        if (!simpleFilter.pidRangeList.empty()
+            && !etwNumericInRanges(rowData.headerPid, simpleFilter.pidRangeList))
+        {
+            decodedPayloadRequired = true;
+        }
+        decodedPayloadRequired = decodedPayloadRequired
+            || !simpleFilter.networkAddressRangeList.empty()
+            || !simpleFilter.networkPortRangeList.empty()
+            || !simpleFilter.actionPresetList.empty()
+            || !simpleFilter.actionCustomTokenList.empty()
+            || !simpleFilter.processNameTokenList.empty()
+            || !simpleFilter.filePathTokenList.empty()
+            || !simpleFilter.registryPathTokenList.empty()
+            || !simpleFilter.statusTokenList.empty();
+        if (decodedPayloadRequiredOut != nullptr)
+        {
+            *decodedPayloadRequiredOut = decodedPayloadRequired;
+        }
+        return true;
+    }
+
+    bool etwSimpleFilterMatches(
+        const MonitorDock::EtwSimpleFilterCompiled& simpleFilter,
+        const MonitorDock::EtwCapturedEventRow& rowData)
+    {
+        if (!simpleFilter.hasAnyCondition())
+        {
+            return true;
+        }
+        if (!etwSimpleProviderMatches(simpleFilter, rowData)
+            || (!simpleFilter.eventIdRangeList.empty()
+                && !etwNumericInRanges(
+                    static_cast<std::uint64_t>(rowData.eventId),
+                    simpleFilter.eventIdRangeList))
+            || !etwTextContainsAnyToken(rowData.eventName, simpleFilter.eventNameTokenList)
+            || !etwSimplePidMatches(simpleFilter, rowData)
+            || !etwTextContainsAnyToken(rowData.processNameText, simpleFilter.processNameTokenList)
+            || !etwAnyTextValueContainsAnyToken(
+                { &rowData.filePathText, &rowData.fileOldPathText, &rowData.fileNewPathText },
+                simpleFilter.filePathTokenList)
+            || !etwAnyTextValueContainsAnyToken(
+                { &rowData.registryKeyPathText, &rowData.registryValueNameText },
+                simpleFilter.registryPathTokenList)
+            || !etwAnyTextValueContainsAnyToken(
+                { &rowData.statusText, &rowData.fileStatusCodeText, &rowData.registryStatusText,
+                  &rowData.auditResultText },
+                simpleFilter.statusTokenList))
+        {
+            return false;
+        }
+
+        if (!simpleFilter.networkAddressRangeList.empty())
+        {
+            const bool addressMatched = (rowData.sourceIpValid
+                    && etwIpInRanges(rowData.sourceIpValue, simpleFilter.networkAddressRangeList))
+                || (rowData.destinationIpValid
+                    && etwIpInRanges(rowData.destinationIpValue, simpleFilter.networkAddressRangeList));
+            if (!addressMatched)
+            {
+                return false;
+            }
+        }
+        if (!simpleFilter.networkPortRangeList.empty())
+        {
+            const bool portMatched = (rowData.sourcePortValid
+                    && etwPortInRanges(rowData.sourcePort, simpleFilter.networkPortRangeList))
+                || (rowData.destinationPortValid
+                    && etwPortInRanges(rowData.destinationPort, simpleFilter.networkPortRangeList));
+            if (!portMatched)
+            {
+                return false;
+            }
+        }
+
+        if (!simpleFilter.actionPresetList.isEmpty()
+            || !simpleFilter.actionCustomTokenList.isEmpty())
+        {
+            bool actionMatched = false;
+            for (const QString& actionText : simpleFilter.actionPresetList)
+            {
+                if (rowData.actionText.compare(actionText, Qt::CaseInsensitive) == 0)
+                {
+                    actionMatched = true;
+                    break;
+                }
+            }
+            if (!actionMatched && !simpleFilter.actionCustomTokenList.isEmpty())
+            {
+                actionMatched = etwTextContainsAnyToken(
+                    rowData.actionText,
+                    simpleFilter.actionCustomTokenList);
+            }
+            if (!actionMatched)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool etwDetailedFilterMatches(
+        const std::vector<MonitorDock::EtwFilterRuleGroupCompiled>& groupList,
+        const MonitorDock::EtwCapturedEventRow& rowData)
+    {
+        if (groupList.empty())
+        {
+            return true;
+        }
+        return std::any_of(
+            groupList.begin(),
+            groupList.end(),
+            [&rowData](const MonitorDock::EtwFilterRuleGroupCompiled& groupRule) {
+                return etwFilterGroupMatches(groupRule, rowData);
+            });
+    }
+
+    bool etwFilterStageMatches(
+        const MonitorDock::EtwSimpleFilterCompiled& simpleFilter,
+        const std::vector<MonitorDock::EtwFilterRuleGroupCompiled>& detailedGroupList,
+        const MonitorDock::EtwCapturedEventRow& rowData)
+    {
+        return etwSimpleFilterMatches(simpleFilter, rowData)
+            && etwDetailedFilterMatches(detailedGroupList, rowData);
     }
 
     // EtwSchemaPropertyEntry：
@@ -4187,6 +4844,7 @@ MonitorDock::~MonitorDock()
     // 析构阶段必须同步等待线程退出，防止对象释放后后台线程仍访问成员。
     stopWmiSubscriptionInternal(true);
     stopEtwCaptureInternal(true);
+    cancelAndWaitEtwArchiveBackgroundTasks();
 
     if (m_wmiUiUpdateTimer != nullptr)
     {
@@ -5216,36 +5874,14 @@ void MonitorDock::initializeEtwTab()
     m_etwPresetProviderList->setMinimumHeight(180);
     etwPresetLayout->addWidget(m_etwPresetProviderList, 1);
 
-    // 预置模板条目：按分类提供最常用 Provider，便于一键勾选常见监控场景。
-    struct EtwPresetTemplate
+    // 捕获选择与简易筛选复用同一份常用 Provider 描述，避免两处列表逐渐不一致。
+    for (const EtwPresetProviderDescriptor& preset : etwPresetProviderDescriptorList())
     {
-        const wchar_t* categoryText;
-        const wchar_t* providerNameText;
-    };
-    const std::vector<EtwPresetTemplate> presetTemplateList{
-        { L"进程线程", L"Microsoft-Windows-Kernel-Process" },
-        { L"进程线程", L"Microsoft-Windows-Kernel-Thread" },
-        { L"进程线程", L"Microsoft-Windows-Kernel-Image" },
-        { L"文件注册表", L"Microsoft-Windows-Kernel-File" },
-        { L"文件注册表", L"Microsoft-Windows-Kernel-Registry" },
-        { L"网络通信", L"Microsoft-Windows-TCPIP" },
-        { L"网络通信", L"Microsoft-Windows-DNS-Client" },
-        { L"网络通信", L"Microsoft-Windows-Winsock-AFD" },
-        { L"安全审计", L"Microsoft-Windows-Security-Auditing" },
-        { L"安全审计", L"Microsoft-Windows-Defender" },
-        { L"脚本管理", L"Microsoft-Windows-PowerShell" },
-        { L"脚本管理", L"Microsoft-Windows-WMI-Activity" },
-        { L"脚本管理", L"Microsoft-Windows-TaskScheduler" }
-    };
-    for (const EtwPresetTemplate& preset : presetTemplateList)
-    {
-        const QString categoryText = QString::fromWCharArray(preset.categoryText);
-        const QString providerNameText = QString::fromWCharArray(preset.providerNameText);
         QListWidgetItem* item = new QListWidgetItem(
-            QStringLiteral("[%1] %2").arg(categoryText, providerNameText),
+            QStringLiteral("[%1] %2").arg(preset.categoryText, preset.providerNameText),
             m_etwPresetProviderList);
-        item->setData(Qt::UserRole, providerNameText);
-        item->setData(Qt::UserRole + 1, categoryText);
+        item->setData(Qt::UserRole, preset.providerNameText);
+        item->setData(Qt::UserRole + 1, preset.categoryText);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(Qt::Checked);
     }
@@ -5453,6 +6089,10 @@ void MonitorDock::initializeEtwTab()
     m_etwEventTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_etwEventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_etwEventTable->setAlternatingRowColors(true);
+    m_etwEventTable->setWordWrap(false);
+    m_etwEventTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_etwEventTable->verticalHeader()->setDefaultSectionSize(22);
+    m_etwEventTable->verticalHeader()->setMinimumWidth(78);
     m_etwEventTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_etwEventTable->horizontalHeader()->setStyleSheet(blueHeaderStyle());
     // 高频追加时禁止 ResizeToContents：该模式会反复扫描已有行计算列宽，
@@ -5474,7 +6114,15 @@ void MonitorDock::initializeEtwTab()
     m_etwLayout->addWidget(m_etwEventTable, 1);
 
     m_etwUiUpdateTimer = new QTimer(this);
-    m_etwUiUpdateTimer->setInterval(33);
+    m_etwUiUpdateTimer->setInterval(50);
+
+    // 规则编辑和时间轴拖动可能连续触发几十次变更。只在输入稳定后启动一次磁盘扫描。
+    m_etwArchiveFilterDebounceTimer = new QTimer(this);
+    m_etwArchiveFilterDebounceTimer->setSingleShot(true);
+    m_etwArchiveFilterDebounceTimer->setInterval(250);
+    connect(m_etwArchiveFilterDebounceTimer, &QTimer::timeout, this, [this]() {
+        rebuildEtwArchiveFilterAsync();
+    });
     updateEtwCaptureActionState();
     updateEtwCollapseHeight();
 
@@ -5483,9 +6131,312 @@ void MonitorDock::initializeEtwTab()
         m_sideTabWidget, m_etwPage, QStringLiteral("monitor.tab.etw"), QStringLiteral("ETW监控"));
 }
 
+MonitorDock::EtwSimpleFilterUiState& MonitorDock::etwSimpleFilterUi(const EtwFilterStage stage)
+{
+    return stage == EtwFilterStage::Pre ? m_etwPreSimpleFilterUi : m_etwPostSimpleFilterUi;
+}
+
+const MonitorDock::EtwSimpleFilterUiState& MonitorDock::etwSimpleFilterUi(const EtwFilterStage stage) const
+{
+    return stage == EtwFilterStage::Pre ? m_etwPreSimpleFilterUi : m_etwPostSimpleFilterUi;
+}
+
+QWidget* MonitorDock::createEtwSimpleFilterPanel(const EtwFilterStage stage, QWidget* parentWidget)
+{
+    EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+    uiState.panelWidget = new QWidget(parentWidget);
+    QVBoxLayout* rootLayout = new QVBoxLayout(uiState.panelWidget);
+    rootLayout->setContentsMargins(4, 4, 4, 4);
+    rootLayout->setSpacing(6);
+
+    QHBoxLayout* headerLayout = new QHBoxLayout();
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(6);
+    QLabel* titleLabel = new QLabel(
+        stage == EtwFilterStage::Pre ? QStringLiteral("简易前置筛选") : QStringLiteral("简易后置筛选"),
+        uiState.panelWidget);
+    titleLabel->setStyleSheet(
+        QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::PrimaryBlueHex));
+    uiState.enabledCheck = new QCheckBox(QStringLiteral("启用"), uiState.panelWidget);
+    uiState.enabledCheck->setChecked(true);
+    uiState.clearButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/log_clear.svg")),
+        QStringLiteral("清空"),
+        uiState.panelWidget);
+    uiState.clearButton->setStyleSheet(blueButtonStyle());
+    headerLayout->addWidget(titleLabel);
+    headerLayout->addWidget(uiState.enabledCheck);
+    headerLayout->addStretch(1);
+    headerLayout->addWidget(uiState.clearButton);
+    rootLayout->addLayout(headerLayout);
+
+    QLabel* semanticHintLabel = new QLabel(uiState.panelWidget);
+    semanticHintLabel->setWordWrap(true);
+    semanticHintLabel->setText(stage == EtwFilterStage::Pre
+        ? QStringLiteral("前置筛选会主动排除未命中事件；这些事件不会进入全量归档或表格。")
+        : QStringLiteral("后置筛选只改变显示结果；完整事件仍保留在磁盘归档中。"));
+    semanticHintLabel->setStyleSheet(
+        QStringLiteral("color:%1;font-size:12px;").arg(KswordTheme::TextSecondaryHex()));
+    rootLayout->addWidget(semanticHintLabel);
+
+    QGridLayout* fieldGrid = new QGridLayout();
+    fieldGrid->setContentsMargins(0, 0, 0, 0);
+    fieldGrid->setHorizontalSpacing(8);
+    fieldGrid->setVerticalSpacing(4);
+    int fieldIndex = 0;
+    const auto addTextField = [this, &fieldGrid, &fieldIndex, &uiState](
+        const QString& labelText,
+        const QString& placeholderText,
+        QLineEdit*& editOut) {
+        QWidget* cellWidget = new QWidget(uiState.panelWidget);
+        QVBoxLayout* cellLayout = new QVBoxLayout(cellWidget);
+        cellLayout->setContentsMargins(0, 0, 0, 0);
+        cellLayout->setSpacing(2);
+        QLabel* label = new QLabel(labelText, cellWidget);
+        editOut = new QLineEdit(cellWidget);
+        editOut->setPlaceholderText(placeholderText);
+        editOut->setStyleSheet(blueInputStyle());
+        cellLayout->addWidget(label);
+        cellLayout->addWidget(editOut);
+        fieldGrid->addWidget(cellWidget, fieldIndex / 2, fieldIndex % 2);
+        ++fieldIndex;
+    };
+
+    addTextField(QStringLiteral("PID"), QStringLiteral("多个PID用逗号或分号分隔"), uiState.pidEdit);
+    addTextField(QStringLiteral("进程名"), QStringLiteral("不区分大小写，包含匹配"), uiState.processNameEdit);
+    addTextField(QStringLiteral("文件路径"), QStringLiteral("当前/旧/新路径，允许空格"), uiState.filePathEdit);
+    addTextField(QStringLiteral("事件ID"), QStringLiteral("多个ID用逗号或分号分隔"), uiState.eventIdEdit);
+    addTextField(QStringLiteral("事件名"), QStringLiteral("不区分大小写，包含匹配"), uiState.eventNameEdit);
+    addTextField(QStringLiteral("注册表路径"), QStringLiteral("键路径或值名"), uiState.registryPathEdit);
+    addTextField(QStringLiteral("网络地址"), QStringLiteral("IPv4、CIDR或地址范围"), uiState.networkAddressEdit);
+    addTextField(QStringLiteral("网络端口"), QStringLiteral("端口或端口范围"), uiState.networkPortEdit);
+    addTextField(QStringLiteral("状态"), QStringLiteral("状态码或结果文本"), uiState.statusEdit);
+    fieldGrid->setColumnStretch(0, 1);
+    fieldGrid->setColumnStretch(1, 1);
+    rootLayout->addLayout(fieldGrid);
+
+    QLabel* providerLabel = new QLabel(QStringLiteral("Provider来源"), uiState.panelWidget);
+    providerLabel->setStyleSheet(QStringLiteral("font-weight:600;"));
+    rootLayout->addWidget(providerLabel);
+    QGridLayout* providerGrid = new QGridLayout();
+    providerGrid->setContentsMargins(0, 0, 0, 0);
+    providerGrid->setHorizontalSpacing(8);
+    providerGrid->setVerticalSpacing(2);
+    int providerIndex = 0;
+    for (const EtwPresetProviderDescriptor& descriptor : etwPresetProviderDescriptorList())
+    {
+        QCheckBox* checkBox = new QCheckBox(descriptor.providerNameText, uiState.panelWidget);
+        checkBox->setToolTip(QStringLiteral("[%1] %2").arg(
+            descriptor.categoryText,
+            descriptor.providerNameText));
+        uiState.providerCheckList.push_back({ descriptor.providerNameText, checkBox });
+        providerGrid->addWidget(checkBox, providerIndex / 2, providerIndex % 2);
+        ++providerIndex;
+    }
+    providerGrid->setColumnStretch(0, 1);
+    providerGrid->setColumnStretch(1, 1);
+    rootLayout->addLayout(providerGrid);
+    uiState.customProviderEdit = new QLineEdit(uiState.panelWidget);
+    uiState.customProviderEdit->setPlaceholderText(
+        QStringLiteral("自定义Provider：名称或GUID，多值用逗号/分号分隔"));
+    uiState.customProviderEdit->setStyleSheet(blueInputStyle());
+    rootLayout->addWidget(uiState.customProviderEdit);
+
+    QLabel* actionLabel = new QLabel(QStringLiteral("行为"), uiState.panelWidget);
+    actionLabel->setStyleSheet(QStringLiteral("font-weight:600;"));
+    rootLayout->addWidget(actionLabel);
+    QGridLayout* actionGrid = new QGridLayout();
+    actionGrid->setContentsMargins(0, 0, 0, 0);
+    actionGrid->setHorizontalSpacing(8);
+    actionGrid->setVerticalSpacing(2);
+    int actionIndex = 0;
+    for (const QString& actionText : etwSimpleActionList())
+    {
+        QCheckBox* checkBox = new QCheckBox(actionText, uiState.panelWidget);
+        uiState.actionCheckList.push_back({ actionText, checkBox });
+        actionGrid->addWidget(checkBox, actionIndex / 5, actionIndex % 5);
+        ++actionIndex;
+    }
+    for (int column = 0; column < 5; ++column)
+    {
+        actionGrid->setColumnStretch(column, 1);
+    }
+    rootLayout->addLayout(actionGrid);
+    uiState.customActionEdit = new QLineEdit(uiState.panelWidget);
+    uiState.customActionEdit->setPlaceholderText(
+        QStringLiteral("自定义行为，多值用逗号/分号分隔"));
+    uiState.customActionEdit->setStyleSheet(blueInputStyle());
+    rootLayout->addWidget(uiState.customActionEdit);
+
+    uiState.stateLabel = new QLabel(QStringLiteral("简易筛选：无条件"), uiState.panelWidget);
+    uiState.stateLabel->setWordWrap(true);
+    uiState.stateLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
+    rootLayout->addWidget(uiState.stateLabel);
+
+    uiState.applyDebounceTimer = new QTimer(this);
+    uiState.applyDebounceTimer->setSingleShot(true);
+    uiState.applyDebounceTimer->setInterval(250);
+    connect(uiState.applyDebounceTimer, &QTimer::timeout, this, [this, stage]() {
+        applyEtwFilterRules(stage);
+    });
+    connect(uiState.enabledCheck, &QCheckBox::toggled, this, [this, stage]() {
+        applyEtwFilterRules(stage);
+    });
+    connect(uiState.clearButton, &QPushButton::clicked, this, [this, stage]() {
+        clearEtwSimpleFilter(stage);
+    });
+
+    const std::initializer_list<QLineEdit*> editList{
+        uiState.pidEdit,
+        uiState.processNameEdit,
+        uiState.filePathEdit,
+        uiState.eventIdEdit,
+        uiState.eventNameEdit,
+        uiState.registryPathEdit,
+        uiState.networkAddressEdit,
+        uiState.networkPortEdit,
+        uiState.statusEdit,
+        uiState.customProviderEdit,
+        uiState.customActionEdit
+    };
+    for (QLineEdit* edit : editList)
+    {
+        connect(edit, &QLineEdit::textChanged, this, [this, stage](const QString&) {
+            scheduleEtwSimpleFilterApply(stage);
+        });
+    }
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+    {
+        connect(checkState.checkBox, &QCheckBox::toggled, this, [this, stage]() {
+            applyEtwFilterRules(stage);
+        });
+    }
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+    {
+        connect(checkState.checkBox, &QCheckBox::toggled, this, [this, stage]() {
+            applyEtwFilterRules(stage);
+        });
+    }
+    return uiState.panelWidget;
+}
+
+void MonitorDock::scheduleEtwSimpleFilterApply(const EtwFilterStage stage)
+{
+    EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+    if (uiState.applyDebounceTimer != nullptr)
+    {
+        uiState.applyDebounceTimer->start();
+    }
+}
+
+void MonitorDock::clearEtwSimpleFilter(const EtwFilterStage stage, const bool applyRules)
+{
+    EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+    if (uiState.applyDebounceTimer != nullptr)
+    {
+        uiState.applyDebounceTimer->stop();
+    }
+    const std::initializer_list<QLineEdit*> editList{
+        uiState.pidEdit,
+        uiState.processNameEdit,
+        uiState.filePathEdit,
+        uiState.eventIdEdit,
+        uiState.eventNameEdit,
+        uiState.registryPathEdit,
+        uiState.networkAddressEdit,
+        uiState.networkPortEdit,
+        uiState.statusEdit,
+        uiState.customProviderEdit,
+        uiState.customActionEdit
+    };
+    for (QLineEdit* edit : editList)
+    {
+        if (edit != nullptr)
+        {
+            const QSignalBlocker blocker(edit);
+            edit->clear();
+        }
+    }
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+    {
+        if (checkState.checkBox != nullptr)
+        {
+            const QSignalBlocker blocker(checkState.checkBox);
+            checkState.checkBox->setChecked(false);
+        }
+    }
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+    {
+        if (checkState.checkBox != nullptr)
+        {
+            const QSignalBlocker blocker(checkState.checkBox);
+            checkState.checkBox->setChecked(false);
+        }
+    }
+    if (applyRules)
+    {
+        applyEtwFilterRules(stage);
+    }
+}
+
+void MonitorDock::updateEtwSimpleFilterStateLabel(const EtwFilterStage stage)
+{
+    EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+    if (uiState.stateLabel == nullptr)
+    {
+        return;
+    }
+    const EtwSimpleFilterCompiled& compiledFilter = stage == EtwFilterStage::Pre
+        ? m_etwPreSimpleFilterCompiled
+        : m_etwPostSimpleFilterCompiled;
+    if (!compiledFilter.enabled)
+    {
+        uiState.stateLabel->setText(QStringLiteral("简易筛选：已停用"));
+        uiState.stateLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
+        return;
+    }
+    int conditionCount = 0;
+    conditionCount += !compiledFilter.pidRangeList.empty();
+    conditionCount += !compiledFilter.eventIdRangeList.empty();
+    conditionCount += !compiledFilter.networkAddressRangeList.empty();
+    conditionCount += !compiledFilter.networkPortRangeList.empty();
+    conditionCount += !compiledFilter.providerPresetNameList.isEmpty()
+        || !compiledFilter.providerCustomTokenList.isEmpty();
+    conditionCount += !compiledFilter.actionPresetList.isEmpty()
+        || !compiledFilter.actionCustomTokenList.isEmpty();
+    conditionCount += !compiledFilter.processNameTokenList.isEmpty();
+    conditionCount += !compiledFilter.filePathTokenList.isEmpty();
+    conditionCount += !compiledFilter.eventNameTokenList.isEmpty();
+    conditionCount += !compiledFilter.registryPathTokenList.isEmpty();
+    conditionCount += !compiledFilter.statusTokenList.isEmpty();
+    if (conditionCount == 0)
+    {
+        uiState.stateLabel->setText(stage == EtwFilterStage::Pre
+            ? QStringLiteral("简易筛选：无条件（全部捕获）")
+            : QStringLiteral("简易筛选：无条件（全部显示）"));
+        uiState.stateLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
+        return;
+    }
+    uiState.stateLabel->setText(QStringLiteral("简易筛选：已应用 %1 项条件").arg(conditionCount));
+    uiState.stateLabel->setStyleSheet(buildStatusStyle(monitorInfoColorHex()));
+}
+
 void MonitorDock::initializeEtwFilterPanels()
 {
-    QWidget* etwFilterPanel = new QWidget(m_etwCollapseHostWidget);
+    QWidget* outerFilterPanel = new QWidget(m_etwCollapseHostWidget);
+    QVBoxLayout* outerFilterLayout = new QVBoxLayout(outerFilterPanel);
+    outerFilterLayout->setContentsMargins(4, 4, 4, 4);
+    outerFilterLayout->setSpacing(6);
+
+    QWidget* simpleFilterPanel = new QWidget(outerFilterPanel);
+    QHBoxLayout* simpleFilterLayout = new QHBoxLayout(simpleFilterPanel);
+    simpleFilterLayout->setContentsMargins(0, 0, 0, 0);
+    simpleFilterLayout->setSpacing(6);
+    simpleFilterLayout->addWidget(createEtwSimpleFilterPanel(EtwFilterStage::Pre, simpleFilterPanel), 1);
+    simpleFilterLayout->addWidget(createEtwSimpleFilterPanel(EtwFilterStage::Post, simpleFilterPanel), 1);
+    outerFilterLayout->addWidget(simpleFilterPanel);
+
+    QWidget* etwFilterPanel = new QWidget(outerFilterPanel);
     QHBoxLayout* etwFilterPanelLayout = new QHBoxLayout(etwFilterPanel);
     etwFilterPanelLayout->setContentsMargins(4, 4, 4, 4);
     etwFilterPanelLayout->setSpacing(6);
@@ -5522,7 +6473,7 @@ void MonitorDock::initializeEtwFilterPanels()
             semanticHintLabel->setWordWrap(true);
             semanticHintLabel->setText(stage == EtwFilterStage::Pre
                 ? QStringLiteral("前置筛选 = 不捕获：未命中事件不会入队、不会进入表格、不会参与导出。")
-                : QStringLiteral("后置筛选 = 仅隐藏显示：事件仍保留在已捕获缓存中，可随时恢复显示。"));
+                : QStringLiteral("后置筛选 = 仅改变显示：完整事件仍保留在磁盘归档中，可随时恢复显示。"));
             semanticHintLabel->setStyleSheet(
                 QStringLiteral("color:%1;font-size:12px;").arg(KswordTheme::TextSecondaryHex()));
             panelLayoutOut->addWidget(semanticHintLabel, 0);
@@ -5604,19 +6555,23 @@ void MonitorDock::initializeEtwFilterPanels()
 
     etwFilterPanelLayout->addWidget(m_etwPreFilterPanel, 1);
     etwFilterPanelLayout->addWidget(m_etwPostFilterPanel, 1);
+    outerFilterLayout->addWidget(createIndependentCollapseSection(
+        outerFilterPanel,
+        QStringLiteral("ETW筛选器详细配置"),
+        etwFilterPanel,
+        false));
     if (m_etwCollapseHostLayout != nullptr)
     {
         m_etwCollapseHostLayout->addWidget(createIndependentCollapseSection(
             m_etwCollapseHostWidget,
-            QStringLiteral("ETW筛选"),
-            etwFilterPanel,
+            QStringLiteral("ETW筛选器"),
+            outerFilterPanel,
             false), 0);
     }
 
     addEtwFilterRuleGroup(EtwFilterStage::Pre);
     addEtwFilterRuleGroup(EtwFilterStage::Post);
-    applyEtwFilterRules(EtwFilterStage::Pre);
-    applyEtwFilterRules(EtwFilterStage::Post);
+    // 必须先加载配置再应用。旧流程会在启动时先保存空规则，从而覆盖用户的默认配置。
     loadEtwFilterConfigFromDefaultPath(false);
     updateEtwCollapseHeight();
 }
@@ -6349,6 +7304,126 @@ void MonitorDock::clearEtwFilterGroups(const EtwFilterStage stage, const bool re
     rebuildEtwFilterRuleGroupUi(stage);
 }
 
+bool MonitorDock::tryCompileEtwSimpleFilter(
+    const EtwFilterStage stage,
+    EtwSimpleFilterCompiled& compiledFilterOut,
+    QString& errorTextOut) const
+{
+    compiledFilterOut = EtwSimpleFilterCompiled{};
+    errorTextOut.clear();
+    const EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+    compiledFilterOut.enabled = uiState.enabledCheck == nullptr || uiState.enabledCheck->isChecked();
+    if (!compiledFilterOut.enabled)
+    {
+        return true;
+    }
+
+    const auto compileNumericRanges = [stage, &errorTextOut](
+        QLineEdit* edit,
+        const QString& fieldLabel,
+        std::vector<EtwFilterNumericRange>& rangesOut,
+        const std::uint64_t maximumValue) {
+        if (edit == nullptr)
+        {
+            return true;
+        }
+        for (const QString& tokenText : splitEtwSimpleFilterTokens(edit->text()))
+        {
+            EtwFilterNumericRange rangeValue;
+            if (!tryParseUInt64RangeToken(tokenText, rangeValue)
+                || rangeValue.maxValue > maximumValue)
+            {
+                errorTextOut = QStringLiteral("%1简易筛选字段[%2]无效值：%3")
+                    .arg(etwFilterStageText(stage), fieldLabel, tokenText);
+                return false;
+            }
+            rangesOut.push_back(rangeValue);
+        }
+        return true;
+    };
+
+    if (!compileNumericRanges(
+            uiState.pidEdit,
+            QStringLiteral("PID"),
+            compiledFilterOut.pidRangeList,
+            std::numeric_limits<std::uint32_t>::max())
+        || !compileNumericRanges(
+            uiState.eventIdEdit,
+            QStringLiteral("事件ID"),
+            compiledFilterOut.eventIdRangeList,
+            std::numeric_limits<std::uint16_t>::max()))
+    {
+        return false;
+    }
+
+    if (uiState.networkAddressEdit != nullptr)
+    {
+        for (const QString& tokenText : splitEtwSimpleFilterTokens(uiState.networkAddressEdit->text()))
+        {
+            EtwFilterIpRange rangeValue;
+            if (!tryParseIpv4RangeToken(tokenText, rangeValue))
+            {
+                errorTextOut = QStringLiteral("%1简易筛选字段[网络地址]无效值：%2")
+                    .arg(etwFilterStageText(stage), tokenText);
+                return false;
+            }
+            compiledFilterOut.networkAddressRangeList.push_back(rangeValue);
+        }
+    }
+    if (uiState.networkPortEdit != nullptr)
+    {
+        for (const QString& tokenText : splitEtwSimpleFilterTokens(uiState.networkPortEdit->text()))
+        {
+            EtwFilterPortRange rangeValue;
+            if (!tryParsePortRangeToken(tokenText, rangeValue))
+            {
+                errorTextOut = QStringLiteral("%1简易筛选字段[网络端口]无效值：%2")
+                    .arg(etwFilterStageText(stage), tokenText);
+                return false;
+            }
+            compiledFilterOut.networkPortRangeList.push_back(rangeValue);
+        }
+    }
+
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+    {
+        if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
+        {
+            compiledFilterOut.providerPresetNameList.push_back(checkState.valueText);
+        }
+    }
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+    {
+        if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
+        {
+            compiledFilterOut.actionPresetList.push_back(checkState.valueText);
+        }
+    }
+
+    compiledFilterOut.providerCustomTokenList = uiState.customProviderEdit == nullptr
+        ? QStringList{}
+        : splitEtwSimpleFilterTokens(uiState.customProviderEdit->text());
+    compiledFilterOut.actionCustomTokenList = uiState.customActionEdit == nullptr
+        ? QStringList{}
+        : splitEtwSimpleFilterTokens(uiState.customActionEdit->text());
+    compiledFilterOut.processNameTokenList = uiState.processNameEdit == nullptr
+        ? QStringList{}
+        : splitEtwSimpleFilterTokens(uiState.processNameEdit->text());
+    compiledFilterOut.filePathTokenList = uiState.filePathEdit == nullptr
+        ? QStringList{}
+        : splitEtwSimpleFilterTokens(uiState.filePathEdit->text());
+    compiledFilterOut.eventNameTokenList = uiState.eventNameEdit == nullptr
+        ? QStringList{}
+        : splitEtwSimpleFilterTokens(uiState.eventNameEdit->text());
+    compiledFilterOut.registryPathTokenList = uiState.registryPathEdit == nullptr
+        ? QStringList{}
+        : splitEtwSimpleFilterTokens(uiState.registryPathEdit->text());
+    compiledFilterOut.statusTokenList = uiState.statusEdit == nullptr
+        ? QStringList{}
+        : splitEtwSimpleFilterTokens(uiState.statusEdit->text());
+    return true;
+}
+
 bool MonitorDock::tryCompileEtwFilterGroups(
     const EtwFilterStage stage,
     std::vector<EtwFilterRuleGroupCompiled>& compiledGroupsOut,
@@ -6577,13 +7652,22 @@ void MonitorDock::updateEtwFilterStateLabel(const EtwFilterStage stage)
 
     const std::vector<EtwFilterRuleGroupCompiled>& compiledGroupList =
         stage == EtwFilterStage::Pre ? m_etwPreFilterCompiledGroupList : m_etwPostFilterCompiledGroupList;
+    bool archiveAvailable = false;
+    if (stage == EtwFilterStage::Post)
+    {
+        std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+        archiveAvailable = !m_etwArchiveDirectory.trimmed().isEmpty();
+    }
 
     if (compiledGroupList.empty())
     {
         const QString tailText = stage == EtwFilterStage::Pre
             ? QStringLiteral("前置筛选当前无规则（全部捕获）")
             : QStringLiteral("后置筛选当前无规则（全部显示）");
-        if (stage == EtwFilterStage::Post && m_etwEventTable != nullptr && isEtwTimelineFilterActive())
+        if (stage == EtwFilterStage::Post
+            && !archiveAvailable
+            && m_etwEventTable != nullptr
+            && isEtwTimelineFilterActive())
         {
             int visibleCount = 0;
             for (int row = 0; row < m_etwEventTable->rowCount(); ++row)
@@ -6618,7 +7702,7 @@ void MonitorDock::updateEtwFilterStateLabel(const EtwFilterStage stage)
     QString summaryText = QStringLiteral("%1：%2")
         .arg(etwFilterStageText(stage))
         .arg(groupSummaryList.join(QStringLiteral(" OR ")));
-    if (stage == EtwFilterStage::Post && m_etwEventTable != nullptr)
+    if (stage == EtwFilterStage::Post && !archiveAvailable && m_etwEventTable != nullptr)
     {
         int visibleCount = 0;
         for (int row = 0; row < m_etwEventTable->rowCount(); ++row)
@@ -6650,7 +7734,8 @@ void MonitorDock::applyEtwPostFilterToTable(const int firstRow, const bool updat
         m_etwEventTable->rowCount(),
         static_cast<int>(m_etwCapturedRows.size()));
 
-    const bool hasPostRules = !m_etwPostFilterCompiledGroupList.empty();
+    const bool hasPostRules = m_etwPostSimpleFilterCompiled.hasAnyCondition()
+        || !m_etwPostFilterCompiledGroupList.empty();
     const bool timelineFilterActive = isEtwTimelineFilterActive();
     const int firstRowToApply = std::clamp(firstRow, 0, rowCount);
 
@@ -6662,15 +7747,10 @@ void MonitorDock::applyEtwPostFilterToTable(const int firstRow, const bool updat
         const EtwCapturedEventRow& rowData = m_etwCapturedRows[static_cast<std::size_t>(row)];
         if (hasPostRules)
         {
-            visible = false;
-            for (const EtwFilterRuleGroupCompiled& groupRule : m_etwPostFilterCompiledGroupList)
-            {
-                if (etwFilterGroupMatches(groupRule, rowData))
-                {
-                    visible = true;
-                    break;
-                }
-            }
+            visible = etwFilterStageMatches(
+                m_etwPostSimpleFilterCompiled,
+                m_etwPostFilterCompiledGroupList,
+                rowData);
         }
         if (visible && timelineFilterActive)
         {
@@ -6695,29 +7775,59 @@ void MonitorDock::applyEtwPostFilterToTable(const int firstRow, const bool updat
 
 void MonitorDock::applyEtwFilterRules(const EtwFilterStage stage)
 {
-    std::vector<EtwFilterRuleGroupCompiled> compiledGroupList;
+    EtwSimpleFilterCompiled simpleFilter;
     QString compileErrorText;
+    if (!tryCompileEtwSimpleFilter(stage, simpleFilter, compileErrorText))
+    {
+        EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+        if (uiState.stateLabel != nullptr)
+        {
+            uiState.stateLabel->setText(compileErrorText);
+            uiState.stateLabel->setStyleSheet(buildStatusStyle(monitorErrorColorHex()));
+        }
+        return;
+    }
+
+    std::vector<EtwFilterRuleGroupCompiled> compiledGroupList;
     if (!tryCompileEtwFilterGroups(stage, compiledGroupList, compileErrorText))
     {
-        QMessageBox::warning(this, QStringLiteral("ETW筛选"), compileErrorText);
+        QMessageBox::warning(this, QStringLiteral("ETW筛选器"), compileErrorText);
         return;
     }
 
     if (stage == EtwFilterStage::Pre)
     {
+        m_etwPreSimpleFilterCompiled = simpleFilter;
         m_etwPreFilterCompiledGroupList = std::move(compiledGroupList);
+        EtwFilterStageCompiledSnapshot stageSnapshot;
+        stageSnapshot.simpleFilter = m_etwPreSimpleFilterCompiled;
+        stageSnapshot.detailedGroupList = m_etwPreFilterCompiledGroupList;
         {
             std::lock_guard<std::mutex> lock(m_etwPreFilterSnapshotMutex);
             m_etwPreFilterCompiledSnapshot =
-                std::make_shared<const std::vector<EtwFilterRuleGroupCompiled>>(m_etwPreFilterCompiledGroupList);
+                std::make_shared<const EtwFilterStageCompiledSnapshot>(std::move(stageSnapshot));
         }
     }
     else
     {
+        m_etwPostSimpleFilterCompiled = simpleFilter;
         m_etwPostFilterCompiledGroupList = std::move(compiledGroupList);
-        applyEtwPostFilterToTable();
+        QString archiveDirectory;
+        {
+            std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+            archiveDirectory = m_etwArchiveDirectory;
+        }
+        if (archiveDirectory.trimmed().isEmpty())
+        {
+            applyEtwPostFilterToTable();
+        }
+        else
+        {
+            scheduleEtwArchiveFilterRebuild();
+        }
     }
 
+    updateEtwSimpleFilterStateLabel(stage);
     updateEtwFilterStateLabel(stage);
     saveEtwFilterConfigToPath(etwFilterConfigPath(), false);
     updateEtwCollapseHeight();
@@ -6730,6 +7840,8 @@ void MonitorDock::applyEtwFilterRules(const EtwFilterStage stage)
         << (stage == EtwFilterStage::Pre
             ? m_etwPreFilterCompiledGroupList.size()
             : m_etwPostFilterCompiledGroupList.size())
+        << ", simpleActive="
+        << (simpleFilter.hasAnyCondition() ? 1 : 0)
         << eol;
 }
 
@@ -6816,8 +7928,76 @@ bool MonitorDock::saveEtwFilterConfigToPath(const QString& filePath, const bool 
         return groupsArray;
     };
 
+    const auto serializeSimpleFilter = [](const EtwSimpleFilterUiState& uiState) {
+        const auto editText = [](QLineEdit* edit) {
+            return edit == nullptr ? QString() : edit->text().trimmed();
+        };
+        QJsonObject simpleObject;
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonEnabledKey),
+            uiState.enabledCheck == nullptr || uiState.enabledCheck->isChecked());
+        simpleObject.insert(QString::fromLatin1(kEtwFilterJsonSimplePidKey), editText(uiState.pidEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleProcessNameKey),
+            editText(uiState.processNameEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleFilePathKey),
+            editText(uiState.filePathEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleEventIdKey),
+            editText(uiState.eventIdEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleEventNameKey),
+            editText(uiState.eventNameEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleRegistryPathKey),
+            editText(uiState.registryPathEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleNetworkAddressKey),
+            editText(uiState.networkAddressEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleNetworkPortKey),
+            editText(uiState.networkPortEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleStatusKey),
+            editText(uiState.statusEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleCustomProviderKey),
+            editText(uiState.customProviderEdit));
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleCustomActionKey),
+            editText(uiState.customActionEdit));
+
+        QJsonArray providerArray;
+        for (const EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+        {
+            if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
+            {
+                providerArray.append(checkState.valueText);
+            }
+        }
+        simpleObject.insert(QString::fromLatin1(kEtwFilterJsonSimpleProvidersKey), providerArray);
+
+        QJsonArray actionArray;
+        for (const EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+        {
+            if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
+            {
+                actionArray.append(checkState.valueText);
+            }
+        }
+        simpleObject.insert(QString::fromLatin1(kEtwFilterJsonSimpleActionsKey), actionArray);
+        return simpleObject;
+    };
+
     QJsonObject rootObject;
-    rootObject.insert(QString::fromLatin1(kEtwFilterJsonVersionKey), 1);
+    rootObject.insert(QString::fromLatin1(kEtwFilterJsonVersionKey), 2);
+    rootObject.insert(
+        QString::fromLatin1(kEtwFilterJsonSimplePreKey),
+        serializeSimpleFilter(m_etwPreSimpleFilterUi));
+    rootObject.insert(
+        QString::fromLatin1(kEtwFilterJsonSimplePostKey),
+        serializeSimpleFilter(m_etwPostSimpleFilterUi));
     rootObject.insert(
         QString::fromLatin1(kEtwFilterJsonPreGroupsKey),
         serializeStageGroups(m_etwPreFilterRuleGroupUiList));
@@ -6895,6 +8075,77 @@ bool MonitorDock::loadEtwFilterConfigFromPath(const QString& filePath, const boo
 
     clearEtwFilterGroups(EtwFilterStage::Pre);
     clearEtwFilterGroups(EtwFilterStage::Post);
+
+    const auto loadSimpleFilter = [this, &rootObject](
+        const EtwFilterStage stage,
+        const char* objectKey) {
+        EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+        clearEtwSimpleFilter(stage, false);
+        const QJsonObject simpleObject = rootObject.value(QString::fromLatin1(objectKey)).toObject();
+
+        if (uiState.enabledCheck != nullptr)
+        {
+            const QSignalBlocker blocker(uiState.enabledCheck);
+            uiState.enabledCheck->setChecked(
+                simpleObject.isEmpty()
+                    || simpleObject.value(QString::fromLatin1(kEtwFilterJsonEnabledKey)).toBool(true));
+        }
+        const auto setEditText = [&simpleObject](QLineEdit* edit, const char* key) {
+            if (edit == nullptr)
+            {
+                return;
+            }
+            const QSignalBlocker blocker(edit);
+            edit->setText(simpleObject.value(QString::fromLatin1(key)).toString());
+        };
+        setEditText(uiState.pidEdit, kEtwFilterJsonSimplePidKey);
+        setEditText(uiState.processNameEdit, kEtwFilterJsonSimpleProcessNameKey);
+        setEditText(uiState.filePathEdit, kEtwFilterJsonSimpleFilePathKey);
+        setEditText(uiState.eventIdEdit, kEtwFilterJsonSimpleEventIdKey);
+        setEditText(uiState.eventNameEdit, kEtwFilterJsonSimpleEventNameKey);
+        setEditText(uiState.registryPathEdit, kEtwFilterJsonSimpleRegistryPathKey);
+        setEditText(uiState.networkAddressEdit, kEtwFilterJsonSimpleNetworkAddressKey);
+        setEditText(uiState.networkPortEdit, kEtwFilterJsonSimpleNetworkPortKey);
+        setEditText(uiState.statusEdit, kEtwFilterJsonSimpleStatusKey);
+        setEditText(uiState.customProviderEdit, kEtwFilterJsonSimpleCustomProviderKey);
+        setEditText(uiState.customActionEdit, kEtwFilterJsonSimpleCustomActionKey);
+
+        QStringList providerList;
+        for (const QJsonValue& providerValue :
+             simpleObject.value(QString::fromLatin1(kEtwFilterJsonSimpleProvidersKey)).toArray())
+        {
+            providerList.push_back(providerValue.toString());
+        }
+        for (EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+        {
+            if (checkState.checkBox != nullptr)
+            {
+                const QSignalBlocker blocker(checkState.checkBox);
+                checkState.checkBox->setChecked(
+                    providerList.contains(checkState.valueText, Qt::CaseInsensitive));
+            }
+        }
+
+        QStringList actionList;
+        for (const QJsonValue& actionValue :
+             simpleObject.value(QString::fromLatin1(kEtwFilterJsonSimpleActionsKey)).toArray())
+        {
+            actionList.push_back(actionValue.toString());
+        }
+        for (EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+        {
+            if (checkState.checkBox != nullptr)
+            {
+                const QSignalBlocker blocker(checkState.checkBox);
+                checkState.checkBox->setChecked(
+                    actionList.contains(checkState.valueText, Qt::CaseInsensitive));
+            }
+        }
+    };
+
+    // v1 没有简易筛选对象，按“启用但无条件”加载，详细规则保持原样。
+    loadSimpleFilter(EtwFilterStage::Pre, kEtwFilterJsonSimplePreKey);
+    loadSimpleFilter(EtwFilterStage::Post, kEtwFilterJsonSimplePostKey);
 
     const auto loadStageGroups = [this](const EtwFilterStage stage, const QJsonArray& groupArray) {
         if (groupArray.isEmpty())
@@ -8801,6 +10052,619 @@ void MonitorDock::stopSelectedEtwSessions()
     }).detach();
 }
 
+bool MonitorDock::beginEtwArchiveBackgroundTask()
+{
+    std::lock_guard<std::mutex> lock(m_etwArchiveTaskMutex);
+    if (m_etwArchiveTaskShutdown)
+    {
+        return false;
+    }
+    ++m_etwArchiveBackgroundTaskCount;
+    return true;
+}
+
+void MonitorDock::endEtwArchiveBackgroundTask()
+{
+    std::lock_guard<std::mutex> lock(m_etwArchiveTaskMutex);
+    if (m_etwArchiveBackgroundTaskCount > 0)
+    {
+        --m_etwArchiveBackgroundTaskCount;
+    }
+    if (m_etwArchiveBackgroundTaskCount == 0)
+    {
+        m_etwArchiveTaskCondition.notify_all();
+    }
+}
+
+void MonitorDock::cancelAndWaitEtwArchiveBackgroundTasks()
+{
+    m_etwArchiveFilterTicket.fetch_add(1, std::memory_order_relaxed);
+    m_etwArchiveSessionGeneration.fetch_add(1, std::memory_order_relaxed);
+    if (m_etwArchiveFilterDebounceTimer != nullptr)
+    {
+        m_etwArchiveFilterDebounceTimer->stop();
+    }
+
+    std::unique_lock<std::mutex> lock(m_etwArchiveTaskMutex);
+    m_etwArchiveTaskShutdown = true;
+    m_etwArchiveTaskCondition.wait(lock, [this]() {
+        return m_etwArchiveBackgroundTaskCount == 0;
+    });
+}
+
+void MonitorDock::scheduleEtwArchiveFilterRebuild()
+{
+    QString archiveDirectory;
+    {
+        std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+        archiveDirectory = m_etwArchiveDirectory;
+    }
+    if (archiveDirectory.trimmed().isEmpty())
+    {
+        applyEtwPostFilterToTable();
+        return;
+    }
+
+    // 立即取消旧扫描，再防抖启动新扫描。连续拖动时间轴时不会叠加磁盘 I/O。
+    m_etwArchiveFilterTicket.fetch_add(1, std::memory_order_relaxed);
+    if (m_etwArchiveFilterDebounceTimer != nullptr)
+    {
+        m_etwArchiveFilterDebounceTimer->start();
+    }
+}
+
+bool MonitorDock::prepareEtwArchiveSession(QString* errorTextOut)
+{
+    m_etwArchiveFilterTicket.fetch_add(1, std::memory_order_relaxed);
+    m_etwArchiveSessionGeneration.fetch_add(1, std::memory_order_relaxed);
+    if (m_etwArchiveFilterDebounceTimer != nullptr)
+    {
+        m_etwArchiveFilterDebounceTimer->stop();
+    }
+    finishEtwArchiveSession();
+
+    QString baseDirectory = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (baseDirectory.trimmed().isEmpty())
+    {
+        baseDirectory = QCoreApplication::applicationDirPath();
+    }
+
+    const QString sessionDirectory = QDir(baseDirectory).filePath(
+        QString::fromLatin1("etw_archive/KswordEtw_%1_%2")
+            .arg(QDateTime::currentDateTime().toString(QString::fromLatin1("yyyyMMdd_HHmmss_zzz")))
+            .arg(QCoreApplication::applicationPid()));
+    if (!QDir().mkpath(sessionDirectory))
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = QStringLiteral("无法创建 ETW 全量归档目录：%1").arg(sessionDirectory);
+        }
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+    m_etwArchiveDirectory = QDir::cleanPath(sessionDirectory);
+    m_etwArchiveActiveSegmentPath.clear();
+    m_etwArchiveClosedSegmentPaths.clear();
+    m_etwArchiveWriteBuffer.clear();
+    m_etwArchiveWriteBuffer.reserve(1024 * 1024);
+    m_etwArchiveFileHandle = 0;
+    m_etwArchiveSegmentStart100ns = 0;
+    m_etwArchiveNextSequence = 0;
+    m_etwArchiveSegmentIndex = 0;
+    m_etwArchiveWriteFailed = false;
+    return true;
+}
+
+bool MonitorDock::archiveEtwCapturedRow(EtwCapturedEventRow* rowData)
+{
+    if (rowData == nullptr)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+    if (m_etwArchiveWriteFailed || m_etwArchiveDirectory.trimmed().isEmpty())
+    {
+        return false;
+    }
+
+    rowData->archiveSequence = ++m_etwArchiveNextSequence;
+    const QByteArray payload = serializeEtwArchiveRow(*rowData);
+    if (payload.isEmpty()
+        || payload.size() > static_cast<qsizetype>(kEtwArchiveMaximumRecordBytes))
+    {
+        m_etwArchiveWriteFailed = true;
+        return false;
+    }
+
+    const auto closeActiveSegment = [this]() -> bool {
+        if (m_etwArchiveFileHandle == 0)
+        {
+            return true;
+        }
+
+        HANDLE fileHandle = reinterpret_cast<HANDLE>(m_etwArchiveFileHandle);
+        bool success = writeAllToHandle(fileHandle, m_etwArchiveWriteBuffer);
+        m_etwArchiveWriteBuffer.clear();
+        if (success)
+        {
+            success = ::FlushFileBuffers(fileHandle) != FALSE;
+        }
+        ::CloseHandle(fileHandle);
+        m_etwArchiveFileHandle = 0;
+        m_etwArchiveSegmentStart100ns = 0;
+        if (!m_etwArchiveActiveSegmentPath.isEmpty())
+        {
+            m_etwArchiveClosedSegmentPaths.push_back(m_etwArchiveActiveSegmentPath);
+            m_etwArchiveActiveSegmentPath.clear();
+        }
+        return success;
+    };
+
+    constexpr std::uint64_t kSegmentDuration100ns = 10ULL * 1000ULL * 1000ULL * 10ULL;
+    const bool needsRotation = m_etwArchiveFileHandle != 0
+        && m_etwArchiveSegmentStart100ns != 0
+        && rowData->timestampValue >= m_etwArchiveSegmentStart100ns + kSegmentDuration100ns;
+    if (needsRotation && !closeActiveSegment())
+    {
+        m_etwArchiveWriteFailed = true;
+        return false;
+    }
+
+    if (m_etwArchiveFileHandle == 0)
+    {
+        const QString segmentPath = QDir(m_etwArchiveDirectory).filePath(
+            QString::fromLatin1("segment_%1.ketw")
+                .arg(m_etwArchiveSegmentIndex++, 6, 10, QChar(u'0')));
+        HANDLE fileHandle = ::CreateFileW(
+            reinterpret_cast<LPCWSTR>(segmentPath.utf16()),
+            GENERIC_WRITE,
+            FILE_SHARE_READ,
+            nullptr,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+            nullptr);
+        if (fileHandle == INVALID_HANDLE_VALUE)
+        {
+            m_etwArchiveWriteFailed = true;
+            return false;
+        }
+
+        const QByteArray fileHeader = buildEtwArchiveFileHeader();
+        if (!writeAllToHandle(fileHandle, fileHeader))
+        {
+            ::CloseHandle(fileHandle);
+            m_etwArchiveWriteFailed = true;
+            return false;
+        }
+
+        m_etwArchiveFileHandle = reinterpret_cast<std::uintptr_t>(fileHandle);
+        m_etwArchiveActiveSegmentPath = QDir::cleanPath(segmentPath);
+        m_etwArchiveSegmentStart100ns = rowData->timestampValue;
+    }
+
+    const quint32 payloadSizeLittleEndian = qToLittleEndian(static_cast<quint32>(payload.size()));
+    m_etwArchiveWriteBuffer.append(
+        reinterpret_cast<const char*>(&payloadSizeLittleEndian),
+        static_cast<qsizetype>(sizeof(payloadSizeLittleEndian)));
+    m_etwArchiveWriteBuffer.append(payload);
+    constexpr qsizetype kWriteBufferBytes = 1024 * 1024;
+    if (m_etwArchiveWriteBuffer.size() >= kWriteBufferBytes)
+    {
+        HANDLE fileHandle = reinterpret_cast<HANDLE>(m_etwArchiveFileHandle);
+        if (!writeAllToHandle(fileHandle, m_etwArchiveWriteBuffer))
+        {
+            m_etwArchiveWriteFailed = true;
+            return false;
+        }
+        m_etwArchiveWriteBuffer.clear();
+    }
+    return true;
+}
+
+void MonitorDock::finishEtwArchiveSession(const bool flushToPhysicalDisk)
+{
+    HANDLE fileHandle = nullptr;
+    bool success = true;
+    {
+        std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+        if (m_etwArchiveFileHandle == 0)
+        {
+            return;
+        }
+
+        fileHandle = reinterpret_cast<HANDLE>(m_etwArchiveFileHandle);
+        const bool alreadyFailed = m_etwArchiveWriteFailed.load(std::memory_order_relaxed);
+        success = !alreadyFailed && writeAllToHandle(fileHandle, m_etwArchiveWriteBuffer);
+        m_etwArchiveWriteBuffer.clear();
+        m_etwArchiveFileHandle = 0;
+        m_etwArchiveSegmentStart100ns = 0;
+        if (!m_etwArchiveActiveSegmentPath.isEmpty())
+        {
+            m_etwArchiveClosedSegmentPaths.push_back(m_etwArchiveActiveSegmentPath);
+            m_etwArchiveActiveSegmentPath.clear();
+        }
+    }
+
+    if (success && flushToPhysicalDisk)
+    {
+        success = ::FlushFileBuffers(fileHandle) != FALSE;
+    }
+    ::CloseHandle(fileHandle);
+    if (!success)
+    {
+        m_etwArchiveWriteFailed.store(true, std::memory_order_relaxed);
+    }
+}
+
+void MonitorDock::rebuildEtwArchiveFilterAsync()
+{
+    QString archiveDirectory;
+    {
+        std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+        archiveDirectory = m_etwArchiveDirectory;
+    }
+    if (archiveDirectory.trimmed().isEmpty() || !beginEtwArchiveBackgroundTask())
+    {
+        return;
+    }
+
+    const std::uint64_t ticket = m_etwArchiveFilterTicket.fetch_add(
+        1,
+        std::memory_order_relaxed) + 1;
+    const std::uint64_t sessionGeneration = m_etwArchiveSessionGeneration.load(
+        std::memory_order_relaxed);
+    const EtwSimpleFilterCompiled postSimpleFilter = m_etwPostSimpleFilterCompiled;
+    const std::vector<EtwFilterRuleGroupCompiled> postFilterGroups = m_etwPostFilterCompiledGroupList;
+    const bool timelineFilterActive = isEtwTimelineFilterActive();
+    const std::uint64_t captureStart100ns = m_etwCaptureStartTime100ns;
+    const std::uint64_t selectionStart100ns = m_etwTimelineSelectionStart100ns;
+    const std::uint64_t selectionEnd100ns = m_etwTimelineSelectionEnd100ns;
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>> pauseIntervals =
+        m_etwTimelinePauseIntervals;
+    const bool capturePaused = m_etwCapturePaused.load();
+    const std::uint64_t activePauseStart100ns = m_etwTimelinePauseTime100ns;
+
+    MonitorDock* taskOwner = this;
+    const auto taskCompletion = std::shared_ptr<void>(
+        reinterpret_cast<void*>(1),
+        [taskOwner](void*) {
+            taskOwner->endEtwArchiveBackgroundTask();
+        });
+    QPointer<MonitorDock> guardThis(this);
+    std::thread([
+        taskOwner,
+        taskCompletion,
+        guardThis,
+        ticket,
+        sessionGeneration,
+        postSimpleFilter,
+        postFilterGroups,
+        timelineFilterActive,
+        captureStart100ns,
+        selectionStart100ns,
+        selectionEnd100ns,
+        pauseIntervals,
+        capturePaused,
+        activePauseStart100ns]() mutable {
+        const auto shouldCancel = [taskOwner, ticket, sessionGeneration]() {
+            return taskOwner->m_etwArchiveFilterTicket.load(std::memory_order_relaxed) != ticket
+                || taskOwner->m_etwArchiveSessionGeneration.load(std::memory_order_relaxed) != sessionGeneration;
+        };
+        if (shouldCancel())
+        {
+            return;
+        }
+
+        // 封存当前不足 10 秒的活动分段，使本次筛选拥有明确且完整的磁盘快照。
+        taskOwner->finishEtwArchiveSession();
+        if (shouldCancel())
+        {
+            return;
+        }
+
+        QStringList segmentPaths;
+        {
+            std::lock_guard<std::mutex> lock(taskOwner->m_etwArchiveMutex);
+            segmentPaths = taskOwner->m_etwArchiveClosedSegmentPaths;
+        }
+        const auto rawToTimelineTimestamp = [
+            captureStart100ns,
+            pauseIntervals,
+            capturePaused,
+            activePauseStart100ns](const std::uint64_t rawTimestamp100ns) {
+            if (captureStart100ns == 0 || rawTimestamp100ns <= captureStart100ns)
+            {
+                return captureStart100ns;
+            }
+
+            std::uint64_t pausedDuration100ns = 0;
+            for (const auto& pauseInterval : pauseIntervals)
+            {
+                if (pauseInterval.second <= pauseInterval.first
+                    || rawTimestamp100ns <= pauseInterval.first)
+                {
+                    continue;
+                }
+                pausedDuration100ns += std::min(rawTimestamp100ns, pauseInterval.second)
+                    - pauseInterval.first;
+            }
+            if (capturePaused
+                && activePauseStart100ns != 0
+                && rawTimestamp100ns > activePauseStart100ns)
+            {
+                pausedDuration100ns += rawTimestamp100ns - activePauseStart100ns;
+            }
+
+            const std::uint64_t elapsed100ns = rawTimestamp100ns - captureStart100ns;
+            return captureStart100ns
+                + (elapsed100ns > pausedDuration100ns
+                    ? elapsed100ns - pausedDuration100ns
+                    : 0);
+        };
+
+        std::deque<EtwCapturedEventRow> matchingRows;
+        std::uint64_t totalMatchCount = 0;
+        std::uint64_t scannedRowCount = 0;
+        std::uint64_t scannedMaxSequence = 0;
+        QString scanErrorText;
+        constexpr std::size_t kMaximumVisibleRows = 6000;
+
+        const auto rowVisitor = [&](const EtwCapturedEventRow& row) {
+            bool matches = etwFilterStageMatches(postSimpleFilter, postFilterGroups, row);
+            if (matches && timelineFilterActive)
+            {
+                const std::uint64_t timelineTimestamp100ns = rawToTimelineTimestamp(row.timestampValue);
+                matches = timelineTimestamp100ns >= selectionStart100ns
+                    && timelineTimestamp100ns <= selectionEnd100ns;
+            }
+            if (!matches)
+            {
+                return true;
+            }
+
+            ++totalMatchCount;
+            matchingRows.push_back(row);
+            if (matchingRows.size() > kMaximumVisibleRows)
+            {
+                matchingRows.pop_front();
+            }
+            return true;
+        };
+
+        std::size_t scannedSegmentCount = 0;
+        const auto scanNewSegments = [&]() -> bool {
+            while (scannedSegmentCount < static_cast<std::size_t>(segmentPaths.size()))
+            {
+                if (shouldCancel())
+                {
+                    return false;
+                }
+                const QString segmentPath = segmentPaths.at(static_cast<qsizetype>(scannedSegmentCount));
+                ++scannedSegmentCount;
+                if (!scanEtwArchiveFile(
+                    segmentPath,
+                    rowVisitor,
+                    shouldCancel,
+                    &scannedRowCount,
+                    &scannedMaxSequence,
+                    &scanErrorText))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        if (!scanNewSegments() && scanErrorText.isEmpty())
+        {
+            return;
+        }
+
+        // 初次全量扫描可能持续较久。最多再追三轮仅包含新增事件的分段，
+        // 让最终 UI 窗口尽量贴近扫描完成时刻，同时避免持续监听导致扫描永不结束。
+        for (int catchUpPass = 0;
+             catchUpPass < 3 && scanErrorText.isEmpty() && taskOwner->m_etwCaptureRunning.load();
+             ++catchUpPass)
+        {
+            taskOwner->finishEtwArchiveSession();
+            if (shouldCancel())
+            {
+                return;
+            }
+
+            QStringList latestSegmentPaths;
+            {
+                std::lock_guard<std::mutex> lock(taskOwner->m_etwArchiveMutex);
+                latestSegmentPaths = taskOwner->m_etwArchiveClosedSegmentPaths;
+            }
+            if (latestSegmentPaths.size() <= static_cast<qsizetype>(scannedSegmentCount))
+            {
+                break;
+            }
+            segmentPaths = std::move(latestSegmentPaths);
+            if (!scanNewSegments() && scanErrorText.isEmpty())
+            {
+                return;
+            }
+        }
+
+        if (shouldCancel())
+        {
+            return;
+        }
+
+        QMetaObject::invokeMethod(qApp, [
+            guardThis,
+            ticket,
+            sessionGeneration,
+            rows = std::move(matchingRows),
+            totalMatchCount,
+            scannedRowCount,
+            scannedMaxSequence,
+            scanErrorText]() mutable {
+            if (guardThis == nullptr
+                || guardThis->m_etwArchiveFilterTicket.load(std::memory_order_relaxed) != ticket
+                || guardThis->m_etwArchiveSessionGeneration.load(std::memory_order_relaxed) != sessionGeneration)
+            {
+                return;
+            }
+            if (!scanErrorText.isEmpty())
+            {
+                if (guardThis->m_etwPostSimpleFilterUi.stateLabel != nullptr)
+                {
+                    guardThis->m_etwPostSimpleFilterUi.stateLabel->setText(scanErrorText);
+                    guardThis->m_etwPostSimpleFilterUi.stateLabel->setStyleSheet(
+                        buildStatusStyle(monitorErrorColorHex()));
+                }
+                return;
+            }
+            guardThis->replaceEtwRowsWithSnapshot(
+                std::move(rows),
+                totalMatchCount,
+                scannedRowCount,
+                scannedMaxSequence);
+        }, Qt::QueuedConnection);
+    }).detach();
+}
+
+void MonitorDock::replaceEtwRowsWithSnapshot(
+    std::deque<EtwCapturedEventRow> rows,
+    const std::uint64_t totalMatchCount,
+    const std::uint64_t scannedRowCount,
+    const std::uint64_t scannedMaxSequence)
+{
+    if (m_etwEventTable == nullptr)
+    {
+        return;
+    }
+
+    constexpr std::size_t kMaximumVisibleRows = 6000;
+    for (const EtwCapturedEventRow& liveRow : m_etwCapturedRows)
+    {
+        if (liveRow.archiveSequence <= scannedMaxSequence)
+        {
+            continue;
+        }
+
+        bool matches = etwFilterStageMatches(
+            m_etwPostSimpleFilterCompiled,
+            m_etwPostFilterCompiledGroupList,
+            liveRow);
+        if (matches && isEtwTimelineFilterActive())
+        {
+            const std::uint64_t timestamp100ns = etwRawTimestampToTimelineTimestamp(liveRow.timestampValue);
+            matches = timestamp100ns >= m_etwTimelineSelectionStart100ns
+                && timestamp100ns <= m_etwTimelineSelectionEnd100ns;
+        }
+        if (matches)
+        {
+            rows.push_back(liveRow);
+            if (rows.size() > kMaximumVisibleRows)
+            {
+                rows.pop_front();
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_etwPendingMutex);
+        while (!m_etwPendingRows.empty()
+            && m_etwPendingRows.front().archiveSequence <= scannedMaxSequence)
+        {
+            m_etwPendingRows.pop_front();
+        }
+    }
+
+    const bool hasPostRules = m_etwPostSimpleFilterCompiled.hasAnyCondition()
+        || !m_etwPostFilterCompiledGroupList.empty();
+    const bool timelineFilterActive = isEtwTimelineFilterActive();
+    if (hasPostRules || timelineFilterActive)
+    {
+        rows.erase(
+            std::remove_if(
+                rows.begin(),
+                rows.end(),
+                [this, timelineFilterActive](const EtwCapturedEventRow& rowData) {
+                    bool matches = etwFilterStageMatches(
+                        m_etwPostSimpleFilterCompiled,
+                        m_etwPostFilterCompiledGroupList,
+                        rowData);
+                    if (matches && timelineFilterActive)
+                    {
+                        const std::uint64_t timestamp100ns = etwRawTimestampToTimelineTimestamp(
+                            rowData.timestampValue);
+                        matches = timestamp100ns >= m_etwTimelineSelectionStart100ns
+                            && timestamp100ns <= m_etwTimelineSelectionEnd100ns;
+                    }
+                    return !matches;
+                }),
+            rows.end());
+    }
+
+    m_etwEventTable->setUpdatesEnabled(false);
+    m_etwEventTable->clearContents();
+    m_etwEventTable->setRowCount(static_cast<int>(rows.size()));
+    m_etwCapturedRows.clear();
+    m_etwTimelineEventPoints.clear();
+
+    int tableRow = 0;
+    for (EtwCapturedEventRow& rowData : rows)
+    {
+        m_etwCapturedRows.push_back(std::move(rowData));
+        const EtwCapturedEventRow& captured = m_etwCapturedRows.back();
+        QTableWidgetItem* sequenceItem = new QTableWidgetItem(QString::number(
+            static_cast<qulonglong>(captured.archiveSequence != 0
+                ? captured.archiveSequence
+                : static_cast<std::uint64_t>(tableRow + 1))));
+        sequenceItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_etwEventTable->setVerticalHeaderItem(tableRow, sequenceItem);
+        const QStringList rowTextList{
+            captured.timestampText,
+            captured.providerName,
+            QString::number(captured.eventId),
+            captured.eventName,
+            captured.pidTidText,
+            captured.detailSummary,
+            captured.activityId
+        };
+        for (int column = 0; column < rowTextList.size(); ++column)
+        {
+            QTableWidgetItem* item = new QTableWidgetItem(rowTextList.at(column));
+            item->setToolTip(rowTextList.at(column));
+            if (column == 5)
+            {
+                item->setData(Qt::UserRole, captured.detailJson);
+            }
+            m_etwEventTable->setItem(tableRow, column, item);
+        }
+
+        ProcessTraceTimelineEventPoint timelinePoint;
+        timelinePoint.time100ns = etwRawTimestampToTimelineTimestamp(captured.timestampValue);
+        timelinePoint.typeText = etwTimelineTypeFromCapturedRow(captured);
+        m_etwTimelineEventPoints.push_back(std::move(timelinePoint));
+        ++tableRow;
+    }
+
+    refreshEtwTimelineRange(!m_etwCaptureRunning.load());
+    refreshEtwTimelinePoints();
+    m_etwEventTable->setUpdatesEnabled(true);
+    m_etwEventTable->scrollToBottom();
+    m_etwEventTable->viewport()->update();
+
+    if (m_etwPostSimpleFilterUi.stateLabel != nullptr)
+    {
+        m_etwPostSimpleFilterUi.stateLabel->setText(
+            QStringLiteral("全量匹配: %1 | 当前显示最近: %2 | 已扫描: %3 | UI镜像跳过: %4（已归档）")
+                .arg(static_cast<qulonglong>(totalMatchCount))
+                .arg(m_etwEventTable->rowCount())
+                .arg(static_cast<qulonglong>(scannedRowCount))
+                .arg(static_cast<qulonglong>(m_etwUiSkippedRows.load(std::memory_order_relaxed))));
+        m_etwPostSimpleFilterUi.stateLabel->setStyleSheet(buildStatusStyle(monitorInfoColorHex()));
+    }
+}
+
 void WINAPI MonitorDock::etwEventRecordCallback(struct _EVENT_RECORD* eventRecordPtr)
 {
     if (eventRecordPtr == nullptr)
@@ -8829,40 +10693,6 @@ void MonitorDock::enqueueEtwEventFromRecord(const struct _EVENT_RECORD* eventRec
     if (m_etwCaptureStopFlag.load() || m_etwCapturePaused.load())
     {
         return;
-    }
-
-    // UI 刷新速率低于 ETW 峰值速率时，先在高水位执行自适应采样，
-    // 再淘汰最旧待显示事件。容量检查位于完整 payload 解码之前，避免洪峰继续放大回调成本。
-    constexpr std::size_t kMaxEtwPendingRows = 12000;
-    constexpr std::size_t kEtwPendingHighWaterRows = 10800;
-    std::size_t pendingRowCount = 0;
-    {
-        std::lock_guard<std::mutex> lock(m_etwPendingMutex);
-        pendingRowCount = m_etwPendingRows.size();
-    }
-
-    if (pendingRowCount >= kEtwPendingHighWaterRows)
-    {
-        // 90% 容量后每 4 条保留 1 条，96% 容量后每 8 条保留 1 条。
-        // 表格仍优先展示较新的活动，ETW 回调线程不会为必然无法显示的洪峰事件构造完整 JSON。
-        const std::uint64_t sampleSequence = m_etwPendingOverloadSequence.fetch_add(
-            1,
-            std::memory_order_relaxed);
-        const std::uint64_t sampleDivisor = pendingRowCount >= 11520 ? 8 : 4;
-        if ((sampleSequence % sampleDivisor) != 0)
-        {
-            m_etwPendingDroppedRows.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(m_etwPendingMutex);
-        if (m_etwPendingRows.size() >= kMaxEtwPendingRows)
-        {
-            m_etwPendingRows.pop_front();
-            m_etwPendingDroppedRows.fetch_add(1, std::memory_order_relaxed);
-        }
     }
 
     const QString providerGuidText = guidToText(eventRecord->EventHeader.ProviderId);
@@ -9048,43 +10878,60 @@ void MonitorDock::enqueueEtwEventFromRecord(const struct _EVENT_RECORD* eventRec
         return true;
     };
 
-    std::shared_ptr<const std::vector<EtwFilterRuleGroupCompiled>> preFilterSnapshot;
+    std::shared_ptr<const EtwFilterStageCompiledSnapshot> preFilterSnapshot;
     {
         std::lock_guard<std::mutex> lock(m_etwPreFilterSnapshotMutex);
         preFilterSnapshot = m_etwPreFilterCompiledSnapshot;
     }
 
     bool preMatched = true;
-    if (preFilterSnapshot != nullptr && !preFilterSnapshot->empty())
+    if (preFilterSnapshot != nullptr)
     {
-        preMatched = false;
-        for (const EtwFilterRuleGroupCompiled& groupRule : *preFilterSnapshot)
+        bool simpleRequiresDecodedPayload = false;
+        preMatched = etwSimpleFilterMatchesHeaderFields(
+            preFilterSnapshot->simpleFilter,
+            rowData,
+            &simpleRequiresDecodedPayload);
+        if (preMatched && simpleRequiresDecodedPayload && !rowData.decodedReady)
         {
-            bool groupMatched = true;
-            for (const EtwFilterRuleFieldCompiled& fieldRule : groupRule.fieldList)
+            ensureDecodedPayload();
+        }
+        if (preMatched)
+        {
+            preMatched = etwSimpleFilterMatches(preFilterSnapshot->simpleFilter, rowData);
+        }
+
+        if (preMatched && !preFilterSnapshot->detailedGroupList.empty())
+        {
+            preMatched = false;
+            for (const EtwFilterRuleGroupCompiled& groupRule : preFilterSnapshot->detailedGroupList)
             {
-                if (fieldRule.requiresDecodedPayload && !rowData.decodedReady)
+                bool groupMatched = true;
+                for (const EtwFilterRuleFieldCompiled& fieldRule : groupRule.fieldList)
                 {
-                    ensureDecodedPayload();
+                    if (fieldRule.requiresDecodedPayload && !rowData.decodedReady)
+                    {
+                        ensureDecodedPayload();
+                    }
+                    if (!etwFilterFieldMatches(
+                        fieldRule,
+                        rowData,
+                        groupRule.detailVisibleColumnsOnly,
+                        groupRule.detailMatchAllFields))
+                    {
+                        groupMatched = false;
+                        break;
+                    }
                 }
-                if (!etwFilterFieldMatches(
-                    fieldRule,
-                    rowData,
-                    groupRule.detailVisibleColumnsOnly,
-                    groupRule.detailMatchAllFields))
+                if (groupRule.invertMatch)
                 {
-                    groupMatched = false;
+                    groupMatched = !groupMatched;
+                }
+                if (groupMatched)
+                {
+                    preMatched = true;
                     break;
                 }
-            }
-            if (groupRule.invertMatch)
-            {
-                groupMatched = !groupMatched;
-            }
-            if (groupMatched)
-            {
-                preMatched = true;
-                break;
             }
         }
     }
@@ -9096,8 +10943,40 @@ void MonitorDock::enqueueEtwEventFromRecord(const struct _EVENT_RECORD* eventRec
 
     ensureDecodedPayload();
 
+    // 全量归档先于 UI 镜像入队。后续即使 UI 追不上事件洪峰，磁盘记录仍完整。
+    if (!archiveEtwCapturedRow(&rowData))
     {
-        std::lock_guard<std::mutex> lock(m_etwPendingMutex);
+        m_etwCaptureStopFlag.store(true);
+        QPointer<MonitorDock> guardThis(this);
+        QMetaObject::invokeMethod(qApp, [guardThis]() {
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (guardThis->m_etwCaptureStatusLabel != nullptr)
+            {
+                guardThis->m_etwCaptureStatusLabel->setText(
+                    QStringLiteral("● 处理结束:%1").arg(ERROR_WRITE_FAULT));
+                guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorErrorColorHex()));
+            }
+            guardThis->stopEtwCaptureInternal(false);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    constexpr std::size_t kMaxEtwUiPendingRows = 2048;
+    {
+        std::unique_lock<std::mutex> lock(m_etwPendingMutex, std::try_to_lock);
+        if (!lock.owns_lock())
+        {
+            m_etwUiSkippedRows.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (m_etwPendingRows.size() >= kMaxEtwUiPendingRows)
+        {
+            m_etwPendingRows.pop_front();
+            m_etwUiSkippedRows.fetch_add(1, std::memory_order_relaxed);
+        }
         m_etwPendingRows.push_back(std::move(rowData));
     }
 }
@@ -9126,15 +11005,19 @@ void MonitorDock::startEtwCapture()
         m_etwCaptureThread.reset();
     }
 
+    EtwSimpleFilterCompiled preSimpleCheck;
+    EtwSimpleFilterCompiled postSimpleCheck;
     std::vector<EtwFilterRuleGroupCompiled> preCheckGroupList;
     std::vector<EtwFilterRuleGroupCompiled> postCheckGroupList;
     QString filterCompileError;
-    if (!tryCompileEtwFilterGroups(EtwFilterStage::Pre, preCheckGroupList, filterCompileError))
+    if (!tryCompileEtwSimpleFilter(EtwFilterStage::Pre, preSimpleCheck, filterCompileError)
+        || !tryCompileEtwFilterGroups(EtwFilterStage::Pre, preCheckGroupList, filterCompileError))
     {
         QMessageBox::warning(this, QStringLiteral("ETW前置筛选"), filterCompileError);
         return;
     }
-    if (!tryCompileEtwFilterGroups(EtwFilterStage::Post, postCheckGroupList, filterCompileError))
+    if (!tryCompileEtwSimpleFilter(EtwFilterStage::Post, postSimpleCheck, filterCompileError)
+        || !tryCompileEtwFilterGroups(EtwFilterStage::Post, postCheckGroupList, filterCompileError))
     {
         QMessageBox::warning(this, QStringLiteral("ETW后置筛选"), filterCompileError);
         return;
@@ -9302,6 +11185,13 @@ void MonitorDock::startEtwCapture()
         m_etwCaptureProviderNames.insert(guidToText(provider.guid), provider.name);
     }
 
+    QString archiveErrorText;
+    if (!prepareEtwArchiveSession(&archiveErrorText))
+    {
+        QMessageBox::warning(this, QStringLiteral("ETW监听"), archiveErrorText);
+        return;
+    }
+
     // 新一轮 ETW 监听开始前清空旧结果：
     // - 表格、后置缓存与时间轴点必须同步归零；
     // - 时间轴起点使用启动瞬间的 100ns 时间戳，后续右边界实时跟随。
@@ -9332,8 +11222,8 @@ void MonitorDock::startEtwCapture()
         std::lock_guard<std::mutex> lock(m_etwPendingMutex);
         m_etwPendingRows.clear();
     }
-    m_etwPendingDroppedRows.store(0, std::memory_order_relaxed);
-    m_etwPendingOverloadSequence.store(0, std::memory_order_relaxed);
+    m_etwUiSkippedRows.store(0, std::memory_order_relaxed);
+    m_etwSourceEventsLost.store(0, std::memory_order_relaxed);
 
     // 每轮监听开始前刷新一次 schema 缓存：
     // - 这样可以保证本轮会话基于最新事件布局重新建模；
@@ -9427,6 +11317,7 @@ void MonitorDock::startEtwCapture()
 
         if (startStatus != ERROR_SUCCESS)
         {
+            guardThis->finishEtwArchiveSession();
             QMetaObject::invokeMethod(qApp, [guardThis, startStatus]() {
                 if (guardThis == nullptr)
                 {
@@ -9484,6 +11375,7 @@ void MonitorDock::startEtwCapture()
         {
             ::ControlTraceW(sessionHandle, loggerNamePtr, properties, EVENT_TRACE_CONTROL_STOP);
             guardThis->m_etwSessionHandle.store(0);
+            guardThis->finishEtwArchiveSession();
             QMetaObject::invokeMethod(qApp, [guardThis]() {
                 if (guardThis == nullptr)
                 {
@@ -9512,6 +11404,7 @@ void MonitorDock::startEtwCapture()
         {
             ::ControlTraceW(sessionHandle, loggerNamePtr, properties, EVENT_TRACE_CONTROL_STOP);
             guardThis->m_etwSessionHandle.store(0);
+            guardThis->finishEtwArchiveSession();
 
             const ULONG lastError = ::GetLastError();
             QMetaObject::invokeMethod(qApp, [guardThis, lastError]() {
@@ -9534,6 +11427,9 @@ void MonitorDock::startEtwCapture()
         kPro.set(guardThis->m_etwCaptureProgressPid, "ETW事件接收中", 0, 55.0f);
 
         const ULONG processStatus = ::ProcessTrace(&traceHandle, 1, nullptr, nullptr);
+        const ULONG eventsLost = logFile.EventsLost;
+        guardThis->m_etwSourceEventsLost.store(eventsLost, std::memory_order_relaxed);
+        guardThis->finishEtwArchiveSession();
         const std::uint64_t ownedTraceHandle = guardThis->m_etwTraceHandle.exchange(0);
         if (ownedTraceHandle != 0)
         {
@@ -9550,7 +11446,7 @@ void MonitorDock::startEtwCapture()
                 EVENT_TRACE_CONTROL_STOP);
         }
 
-        QMetaObject::invokeMethod(qApp, [guardThis, processStatus]() {
+        QMetaObject::invokeMethod(qApp, [guardThis, processStatus, eventsLost]() {
             if (guardThis == nullptr)
             {
                 return;
@@ -9571,7 +11467,18 @@ void MonitorDock::startEtwCapture()
             }
             guardThis->m_etwTimelinePauseTime100ns = 0;
 
-            if (processStatus == ERROR_SUCCESS)
+            if (guardThis->m_etwArchiveWriteFailed.load(std::memory_order_relaxed))
+            {
+                guardThis->m_etwCaptureStatusLabel->setText(QStringLiteral("● ETW归档写入失败"));
+                guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorErrorColorHex()));
+            }
+            else if (eventsLost != 0)
+            {
+                guardThis->m_etwCaptureStatusLabel->setText(
+                    QStringLiteral("● ETW源事件丢失:%1").arg(eventsLost));
+                guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorErrorColorHex()));
+            }
+            else if (processStatus == ERROR_SUCCESS)
             {
                 guardThis->m_etwCaptureStatusLabel->setText(QStringLiteral("● 已停止"));
                 guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
@@ -9587,6 +11494,15 @@ void MonitorDock::startEtwCapture()
                 guardThis->m_etwUiUpdateTimer->stop();
             }
             guardThis->flushEtwPendingRows(true);
+            guardThis->scheduleEtwArchiveFilterRebuild();
+            if (eventsLost != 0)
+            {
+                kLogEvent lostEvent;
+                err << lostEvent
+                    << "[MonitorDock] ETW源报告事件丢失, eventsLost="
+                    << eventsLost
+                    << eol;
+            }
             kPro.set(guardThis->m_etwCaptureProgressPid, "ETW监听结束", 0, 100.0f);
         }, Qt::QueuedConnection);
     });
@@ -9667,14 +11583,22 @@ void MonitorDock::stopEtwCaptureInternal(bool waitForThread)
         m_etwTimelinePauseTime100ns = 0;
         if (m_etwCaptureStatusLabel != nullptr)
         {
-            m_etwCaptureStatusLabel->setText(QStringLiteral("● 已停止"));
-            m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
+            const std::uint64_t eventsLost = m_etwSourceEventsLost.load(std::memory_order_relaxed);
+            const bool archiveFailed = m_etwArchiveWriteFailed.load(std::memory_order_relaxed);
+            m_etwCaptureStatusLabel->setText(archiveFailed
+                ? QStringLiteral("● ETW归档写入失败")
+                : (eventsLost == 0
+                    ? QStringLiteral("● 已停止")
+                    : QStringLiteral("● ETW源事件丢失:%1").arg(static_cast<qulonglong>(eventsLost))));
+            m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(
+                !archiveFailed && eventsLost == 0 ? monitorIdleColorHex() : monitorErrorColorHex()));
         }
         if (m_etwUiUpdateTimer != nullptr && m_etwUiUpdateTimer->isActive())
         {
             m_etwUiUpdateTimer->stop();
         }
         flushEtwPendingRows(true);
+        scheduleEtwArchiveFilterRebuild();
         updateEtwCaptureActionState();
         kLogEvent event;
         dbg << event
@@ -9704,14 +11628,22 @@ void MonitorDock::stopEtwCaptureInternal(bool waitForThread)
         m_etwTimelinePauseTime100ns = 0;
         if (m_etwCaptureStatusLabel != nullptr)
         {
-            m_etwCaptureStatusLabel->setText(QStringLiteral("● 已停止"));
-            m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
+            const std::uint64_t eventsLost = m_etwSourceEventsLost.load(std::memory_order_relaxed);
+            const bool archiveFailed = m_etwArchiveWriteFailed.load(std::memory_order_relaxed);
+            m_etwCaptureStatusLabel->setText(archiveFailed
+                ? QStringLiteral("● ETW归档写入失败")
+                : (eventsLost == 0
+                    ? QStringLiteral("● 已停止")
+                    : QStringLiteral("● ETW源事件丢失:%1").arg(static_cast<qulonglong>(eventsLost))));
+            m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(
+                !archiveFailed && eventsLost == 0 ? monitorIdleColorHex() : monitorErrorColorHex()));
         }
         if (m_etwUiUpdateTimer != nullptr && m_etwUiUpdateTimer->isActive())
         {
             m_etwUiUpdateTimer->stop();
         }
         flushEtwPendingRows(true);
+        scheduleEtwArchiveFilterRebuild();
         updateEtwCaptureActionState();
         kLogEvent event;
         info << event
@@ -9754,14 +11686,24 @@ void MonitorDock::stopEtwCaptureInternal(bool waitForThread)
             guardThis->m_etwTimelinePauseTime100ns = 0;
             if (guardThis->m_etwCaptureStatusLabel != nullptr)
             {
-                guardThis->m_etwCaptureStatusLabel->setText(QStringLiteral("● 已停止"));
-                guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
+                const std::uint64_t eventsLost = guardThis->m_etwSourceEventsLost.load(
+                    std::memory_order_relaxed);
+                const bool archiveFailed = guardThis->m_etwArchiveWriteFailed.load(
+                    std::memory_order_relaxed);
+                guardThis->m_etwCaptureStatusLabel->setText(archiveFailed
+                    ? QStringLiteral("● ETW归档写入失败")
+                    : (eventsLost == 0
+                        ? QStringLiteral("● 已停止")
+                        : QStringLiteral("● ETW源事件丢失:%1").arg(static_cast<qulonglong>(eventsLost))));
+                guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(
+                    !archiveFailed && eventsLost == 0 ? monitorIdleColorHex() : monitorErrorColorHex()));
             }
             if (guardThis->m_etwUiUpdateTimer != nullptr && guardThis->m_etwUiUpdateTimer->isActive())
             {
                 guardThis->m_etwUiUpdateTimer->stop();
             }
             guardThis->flushEtwPendingRows(true);
+            guardThis->scheduleEtwArchiveFilterRebuild();
             guardThis->updateEtwCaptureActionState();
 
             kLogEvent event;
@@ -9802,6 +11744,16 @@ void MonitorDock::setEtwCapturePaused(bool paused)
             m_etwTimelinePauseTime100ns = m_etwCaptureStartTime100ns + 1;
         }
         m_etwCapturePaused.store(true);
+        // 立即冻结 UI 镜像。待刷新队列完整保留，继续监听后再恢复分批显示。
+        if (m_etwUiUpdateTimer != nullptr && m_etwUiUpdateTimer->isActive())
+        {
+            m_etwUiUpdateTimer->stop();
+        }
+        m_etwArchiveFilterTicket.fetch_add(1, std::memory_order_relaxed);
+        if (m_etwArchiveFilterDebounceTimer != nullptr)
+        {
+            m_etwArchiveFilterDebounceTimer->stop();
+        }
         refreshEtwTimelineRange(false);
         m_etwCaptureStatusLabel->setText(QStringLiteral("● 已暂停"));
         m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorWarningColorHex()));
@@ -9813,9 +11765,18 @@ void MonitorDock::setEtwCapturePaused(bool paused)
         closeEtwTimelinePauseInterval(resumeTime100ns);
         m_etwCapturePaused.store(false);
         m_etwTimelinePauseTime100ns = 0;
+        if (m_etwUiUpdateTimer != nullptr && !m_etwUiUpdateTimer->isActive())
+        {
+            m_etwUiUpdateTimer->start();
+        }
         refreshEtwTimelineRange(false);
         refreshEtwTimelinePoints();
-        applyEtwPostFilterToTable();
+        if (m_etwPostSimpleFilterCompiled.hasAnyCondition()
+            || !m_etwPostFilterCompiledGroupList.empty()
+            || isEtwTimelineFilterActive())
+        {
+            scheduleEtwArchiveFilterRebuild();
+        }
         m_etwCaptureStatusLabel->setText(QStringLiteral("● 监听中"));
         m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorInfoColorHex()));
     }
@@ -9863,10 +11824,17 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
     {
         return;
     }
+    if (!captureFinished && m_etwCapturePaused.load())
+    {
+        // 防止暂停前已经投递到事件循环的最后一次 timeout 继续排空队列。
+        return;
+    }
 
-    // 64 行约等于 448 个 QTableWidgetItem。极端 ETW 洪峰下优先保证主线程每帧可响应。
-    constexpr std::size_t kMaxRowsPerFlush = 64;
+    // 每 50ms 最多创建 32 行（224 个 QTableWidgetItem），将主线程表格构造控制在约 640 行/秒。
+    // UI 队列只承担实时镜像，未显示事件仍完整保存在磁盘归档中。
+    constexpr std::size_t kMaxRowsPerFlush = 32;
     constexpr int kMaxCapturedRows = 6000;
+    constexpr int kTrimThresholdRows = 6200;
     constexpr qint64 kTimelineRefreshIntervalMs = 250;
 
     std::vector<EtwCapturedEventRow> rows;
@@ -9879,6 +11847,34 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
             rows.push_back(std::move(m_etwPendingRows.front()));
             m_etwPendingRows.pop_front();
         }
+    }
+
+    // 当前规则可能在事件进入 UI 队列后发生变化。只筛选本帧的少量镜像行，
+    // 全量结果仍由后台归档扫描负责，避免在主线程反复遍历历史表格。
+    const bool hasPostRules = m_etwPostSimpleFilterCompiled.hasAnyCondition()
+        || !m_etwPostFilterCompiledGroupList.empty();
+    const bool timelineFilterActive = isEtwTimelineFilterActive();
+    if (hasPostRules || timelineFilterActive)
+    {
+        rows.erase(
+            std::remove_if(
+                rows.begin(),
+                rows.end(),
+                [this, timelineFilterActive](const EtwCapturedEventRow& rowData) {
+                    bool matches = etwFilterStageMatches(
+                        m_etwPostSimpleFilterCompiled,
+                        m_etwPostFilterCompiledGroupList,
+                        rowData);
+                    if (matches && timelineFilterActive)
+                    {
+                        const std::uint64_t timestamp100ns = etwRawTimestampToTimelineTimestamp(
+                            rowData.timestampValue);
+                        matches = timestamp100ns >= m_etwTimelineSelectionStart100ns
+                            && timestamp100ns <= m_etwTimelineSelectionEnd100ns;
+                    }
+                    return !matches;
+                }),
+            rows.end());
     }
 
     const bool refreshTimeline = captureFinished
@@ -9911,9 +11907,10 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
     m_etwEventTable->setUpdatesEnabled(false);
 
     // 先腾出固定结果窗口空间，再批量扩展行数，避免 insertRow/removeRow 循环触发大量模型和布局更新。
-    const int overflowCount = std::max(
-        0,
-        m_etwEventTable->rowCount() + static_cast<int>(rows.size()) - kMaxCapturedRows);
+    const int projectedRowCount = m_etwEventTable->rowCount() + static_cast<int>(rows.size());
+    const int overflowCount = projectedRowCount > kTrimThresholdRows
+        ? projectedRowCount - kMaxCapturedRows
+        : 0;
     if (overflowCount > 0)
     {
         if (!m_etwEventTable->model()->removeRows(0, overflowCount))
@@ -9942,6 +11939,12 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
         EtwCapturedEventRow& captured = m_etwCapturedRows.back();
 
         const int row = firstInsertedRow + static_cast<int>(rowIndex);
+        QTableWidgetItem* sequenceItem = new QTableWidgetItem(QString::number(
+            static_cast<qulonglong>(captured.archiveSequence != 0
+                ? captured.archiveSequence
+                : static_cast<std::uint64_t>(row + 1))));
+        sequenceItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_etwEventTable->setVerticalHeaderItem(row, sequenceItem);
 
         const QStringList rowTextList{
             captured.timestampText,
@@ -9975,13 +11978,6 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
 
     // m_etwCapturedRows 与 m_etwTimelineEventPoints 已在追加前同步批量裁剪，
     // 行号仍能一一对应，无需逐行 erase(begin())。
-    const bool requiresPostFilter = !m_etwPostFilterCompiledGroupList.empty()
-        || isEtwTimelineFilterActive();
-    if (requiresPostFilter)
-    {
-        applyEtwPostFilterToTable(firstInsertedRow, false);
-    }
-
     if (refreshTimeline)
     {
         refreshEtwTimelineRange(captureFinished);
@@ -9989,6 +11985,7 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
         m_etwTimelineRefreshTimer.restart();
     }
     m_etwEventTable->setUpdatesEnabled(true);
+    m_etwEventTable->scrollToBottom();
     m_etwEventTable->viewport()->update();
 
     if (captureFinished)
@@ -10025,7 +12022,7 @@ void MonitorDock::applyEtwTimelineSelection(
     m_etwTimelineSelectionStart100ns = std::min(start100ns, end100ns);
     m_etwTimelineSelectionEnd100ns = std::max(start100ns, end100ns);
     m_etwTimelineUserSelectionActive = true;
-    applyEtwPostFilterToTable();
+    scheduleEtwArchiveFilterRebuild();
 }
 
 std::uint64_t MonitorDock::etwRawTimestampToTimelineTimestamp(const std::uint64_t rawTimestamp100ns) const
@@ -10202,6 +12199,286 @@ void MonitorDock::appendEtwEventRow(
 
 void MonitorDock::exportEtwRowsToTsv(const bool visibleOnly)
 {
+    bool hasArchiveRows = false;
+    {
+        std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+        hasArchiveRows = !m_etwArchiveDirectory.trimmed().isEmpty()
+            && m_etwArchiveNextSequence != 0;
+    }
+
+    if (hasArchiveRows)
+    {
+        const QString defaultName = QStringLiteral("etw_events_%1.tsv")
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss")));
+        const QString path = QFileDialog::getSaveFileName(
+            this,
+            QStringLiteral("导出ETW结果"),
+            defaultName,
+            QStringLiteral("TSV文件 (*.tsv);;文本文件 (*.txt)"));
+        if (path.trimmed().isEmpty())
+        {
+            return;
+        }
+
+        QStringList header;
+        if (m_etwEventTable != nullptr)
+        {
+            for (int col = 0; col < m_etwEventTable->columnCount(); ++col)
+            {
+                QTableWidgetItem* item = m_etwEventTable->horizontalHeaderItem(col);
+                header << (item != nullptr ? item->text() : QString());
+            }
+        }
+        if (header.isEmpty())
+        {
+            header = QStringList{
+                QStringLiteral("时间"), QStringLiteral("Provider"), QStringLiteral("事件ID"),
+                QStringLiteral("事件名称"), QStringLiteral("PID/TID"), QStringLiteral("详情"),
+                QStringLiteral("ActivityId")
+            };
+        }
+
+        const EtwSimpleFilterCompiled postSimpleFilter = m_etwPostSimpleFilterCompiled;
+        const std::vector<EtwFilterRuleGroupCompiled> postFilterGroups = m_etwPostFilterCompiledGroupList;
+        const bool timelineFilterActive = visibleOnly && isEtwTimelineFilterActive();
+        const std::uint64_t captureStart100ns = m_etwCaptureStartTime100ns;
+        const std::uint64_t selectionStart100ns = m_etwTimelineSelectionStart100ns;
+        const std::uint64_t selectionEnd100ns = m_etwTimelineSelectionEnd100ns;
+        const std::vector<std::pair<std::uint64_t, std::uint64_t>> pauseIntervals =
+            m_etwTimelinePauseIntervals;
+        const bool capturePaused = m_etwCapturePaused.load();
+        const std::uint64_t activePauseStart100ns = m_etwTimelinePauseTime100ns;
+        const std::uint64_t sessionGeneration = m_etwArchiveSessionGeneration.load(
+            std::memory_order_relaxed);
+
+        if (!beginEtwArchiveBackgroundTask())
+        {
+            return;
+        }
+        MonitorDock* taskOwner = this;
+        const auto taskCompletion = std::shared_ptr<void>(
+            reinterpret_cast<void*>(1),
+            [taskOwner](void*) {
+                taskOwner->endEtwArchiveBackgroundTask();
+            });
+        QPointer<MonitorDock> guardThis(this);
+        std::thread([
+            taskOwner,
+            taskCompletion,
+            guardThis,
+            path,
+            header,
+            visibleOnly,
+            postSimpleFilter,
+            postFilterGroups,
+            timelineFilterActive,
+            captureStart100ns,
+            selectionStart100ns,
+            selectionEnd100ns,
+            pauseIntervals,
+            capturePaused,
+            activePauseStart100ns,
+            sessionGeneration]() {
+            const auto shouldCancel = [taskOwner, sessionGeneration]() {
+                return taskOwner->m_etwArchiveSessionGeneration.load(std::memory_order_relaxed)
+                    != sessionGeneration;
+            };
+            const auto rawToTimelineTimestamp = [
+                captureStart100ns,
+                pauseIntervals,
+                capturePaused,
+                activePauseStart100ns](const std::uint64_t rawTimestamp100ns) {
+                if (captureStart100ns == 0 || rawTimestamp100ns <= captureStart100ns)
+                {
+                    return captureStart100ns;
+                }
+                std::uint64_t pausedDuration100ns = 0;
+                for (const auto& pauseInterval : pauseIntervals)
+                {
+                    if (pauseInterval.second <= pauseInterval.first
+                        || rawTimestamp100ns <= pauseInterval.first)
+                    {
+                        continue;
+                    }
+                    pausedDuration100ns += std::min(rawTimestamp100ns, pauseInterval.second)
+                        - pauseInterval.first;
+                }
+                if (capturePaused
+                    && activePauseStart100ns != 0
+                    && rawTimestamp100ns > activePauseStart100ns)
+                {
+                    pausedDuration100ns += rawTimestamp100ns - activePauseStart100ns;
+                }
+                const std::uint64_t elapsed100ns = rawTimestamp100ns - captureStart100ns;
+                return captureStart100ns
+                    + (elapsed100ns > pausedDuration100ns
+                        ? elapsed100ns - pausedDuration100ns
+                        : 0);
+            };
+
+            if (shouldCancel())
+            {
+                return;
+            }
+            taskOwner->finishEtwArchiveSession();
+            if (shouldCancel())
+            {
+                return;
+            }
+
+            QStringList segmentPaths;
+            bool archiveWriteFailed = false;
+            {
+                std::lock_guard<std::mutex> lock(taskOwner->m_etwArchiveMutex);
+                segmentPaths = taskOwner->m_etwArchiveClosedSegmentPaths;
+                archiveWriteFailed = taskOwner->m_etwArchiveWriteFailed;
+            }
+
+            QString errorText;
+            std::uint64_t exportedRows = 0;
+            std::uint64_t scannedRows = 0;
+            std::uint64_t maxSequence = 0;
+            QSaveFile file(path);
+            if (archiveWriteFailed)
+            {
+                errorText = QStringLiteral("ETW 全量归档写入失败，无法保证导出完整性。");
+            }
+            else if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+            {
+                errorText = QStringLiteral("无法写入文件：%1").arg(path);
+            }
+
+            bool streamWriteFailed = false;
+            if (errorText.isEmpty())
+            {
+                QTextStream out(&file);
+                out << header.join(QChar(u'\t')) << QChar(u'\n');
+                const auto cleanTsvField = [](QString value) {
+                    value.replace(QChar(u'\t'), QChar(u' '));
+                    value.replace(QChar(u'\r'), QChar(u' '));
+                    value.replace(QChar(u'\n'), QChar(u' '));
+                    return value;
+                };
+                const auto rowVisitor = [&](const EtwCapturedEventRow& row) {
+                    bool matches = !visibleOnly
+                        || etwFilterStageMatches(postSimpleFilter, postFilterGroups, row);
+                    if (matches && timelineFilterActive)
+                    {
+                        const std::uint64_t timelineTimestamp100ns = rawToTimelineTimestamp(row.timestampValue);
+                        matches = timelineTimestamp100ns >= selectionStart100ns
+                            && timelineTimestamp100ns <= selectionEnd100ns;
+                    }
+                    if (!matches)
+                    {
+                        return true;
+                    }
+
+                    const QStringList values{
+                        cleanTsvField(row.timestampText),
+                        cleanTsvField(row.providerName),
+                        QString::number(row.eventId),
+                        cleanTsvField(row.eventName),
+                        cleanTsvField(row.pidTidText),
+                        cleanTsvField(row.detailSummary),
+                        cleanTsvField(row.activityId)
+                    };
+                    out << values.join(QChar(u'\t')) << QChar(u'\n');
+                    ++exportedRows;
+                    if (out.status() != QTextStream::Ok)
+                    {
+                        streamWriteFailed = true;
+                        return false;
+                    }
+                    return true;
+                };
+
+                for (const QString& segmentPath : segmentPaths)
+                {
+                    if (shouldCancel())
+                    {
+                        break;
+                    }
+                    if (!scanEtwArchiveFile(
+                        segmentPath,
+                        rowVisitor,
+                        shouldCancel,
+                        &scannedRows,
+                        &maxSequence,
+                        &errorText))
+                    {
+                        break;
+                    }
+                    if (streamWriteFailed)
+                    {
+                        errorText = QStringLiteral("写入 ETW 导出文件失败：%1").arg(path);
+                        break;
+                    }
+                }
+                out.flush();
+                if (out.status() != QTextStream::Ok)
+                {
+                    errorText = QStringLiteral("写入 ETW 导出文件失败：%1").arg(path);
+                }
+            }
+
+            bool committed = false;
+            if (!shouldCancel() && errorText.isEmpty())
+            {
+                committed = file.commit();
+                if (!committed)
+                {
+                    errorText = QStringLiteral("提交 ETW 导出文件失败：%1").arg(path);
+                }
+            }
+            else
+            {
+                file.cancelWriting();
+            }
+            if (shouldCancel())
+            {
+                return;
+            }
+
+            QMetaObject::invokeMethod(qApp, [
+                guardThis,
+                path,
+                exportedRows,
+                scannedRows,
+                committed,
+                errorText]() {
+                if (guardThis == nullptr)
+                {
+                    return;
+                }
+                if (!committed)
+                {
+                    QMessageBox::warning(
+                        guardThis,
+                        QStringLiteral("导出ETW"),
+                        errorText.isEmpty() ? QStringLiteral("ETW 导出失败。") : errorText);
+                    return;
+                }
+
+                kLogEvent event;
+                info << event
+                    << "[MonitorDock] ETW全量归档导出完成, path="
+                    << path.toStdString()
+                    << ", exportedRows="
+                    << exportedRows
+                    << ", scannedRows="
+                    << scannedRows
+                    << eol;
+                QMessageBox::information(
+                    guardThis,
+                    QStringLiteral("导出ETW"),
+                    QStringLiteral("导出完成：%1 条事件 -> %2")
+                        .arg(static_cast<qulonglong>(exportedRows))
+                        .arg(path));
+            }, Qt::QueuedConnection);
+        }).detach();
+        return;
+    }
+
     if (m_etwEventTable == nullptr || m_etwEventTable->rowCount() == 0)
     {
         kLogEvent event;
