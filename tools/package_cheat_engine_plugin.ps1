@@ -85,7 +85,11 @@ Copy-Item -LiteralPath $bridgeWin32 -Destination (
     Join-Path $bridgeRoot 'Win32\KswordCheatEnginePlugin.dll') -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'plugin.json') -Destination $pluginRoot -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'README.md') -Destination $pluginRoot -Force
-Copy-Item -LiteralPath (Join-Path $sourceRoot 'NOTICE.md') -Destination $pluginRoot -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'SOURCE.md') -Destination $pluginRoot -Force
+Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination (
+    Join-Path $pluginRoot 'LICENSE.txt') -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'NOTICE.md') -Destination (
+    Join-Path $pluginRoot 'NOTICE') -Force
 Copy-Item -LiteralPath (
     Join-Path $sourceRoot 'integration\00_ksword_bridge.lua') -Destination (
     Join-Path $payloadRoot 'autorun\00_ksword_bridge.lua') -Force

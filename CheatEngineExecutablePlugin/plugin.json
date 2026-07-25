@@ -25,6 +25,6 @@
       "description": "Print plugin capabilities as JSON Lines."
     }
   ],
-  "license": "NOTICE.md",
-  "notice": "NOTICE.md"
+  "license": "LICENSE.txt",
+  "notice": "NOTICE"
 }

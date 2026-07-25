@@ -39,5 +39,8 @@
     <None Include="README.md">
       <Filter>Plugin Files</Filter>
     </None>
+    <None Include="SOURCE.md">
+      <Filter>Plugin Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

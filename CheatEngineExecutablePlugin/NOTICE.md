@@ -1,6 +1,8 @@
 # KSword Cheat Engine executable plugin
 
 The launcher and `KswordCheatEnginePlugin.dll` are KSword project components.
+Those KSword components are distributed under GNU GPL version 3 only; the
+package retains the corresponding `LICENSE.txt`.
 
 The packaged `payload/Cheat Engine/` directory is copied from the user's
 locally installed Cheat Engine 7.6 distribution. Cheat Engine remains the work
