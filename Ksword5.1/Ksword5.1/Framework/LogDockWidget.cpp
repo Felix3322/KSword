@@ -500,7 +500,7 @@ void LogDockWidget::initializeUi()
         },
         this);
 
-    m_logTable = new QTableView(this);
+    m_logTable = new ks::ui::TableActionTableView(this);
     m_logTable->setModel(m_logModel);
     m_logTable->setItemDelegate(new LogContentWrapDelegate(m_logTable));
     m_logTable->setProperty("ksword_preserve_custom_table_delegate", true);

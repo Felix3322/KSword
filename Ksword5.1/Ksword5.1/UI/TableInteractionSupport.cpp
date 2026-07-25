@@ -1,15 +1,20 @@
 #include "TableInteractionSupport.h"
 
 #include "../Internationalization/LanguageManager.h"
+#include "TableSnapshotCompare.h"
+#include "VisibleTableWidget.h"
 
-#include <QApplication>
 #include <QAbstractItemModel>
+#include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QDateTime>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
 #include <QItemSelectionModel>
@@ -17,26 +22,38 @@
 #include <QKeySequence>
 #include <QMenu>
 #include <QMessageBox>
-#include <QModelIndex>
+#include <QPalette>
 #include <QPointer>
 #include <QSaveFile>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QStringConverter>
-#include <QSize>
 #include <QTableView>
 #include <QTextStream>
+#include <QTimer>
 #include <QToolButton>
 #include <QVariant>
+#include <QWheelEvent>
 #include <QWidget>
 
 #include <algorithm>
 
 namespace
 {
+    using ks::ui::TableComparisonModel;
+    using ks::ui::TableComparisonResult;
+    using ks::ui::TableSnapshot;
+    using ks::ui::TableSnapshotColumn;
+    using ks::ui::TableSnapshotCompareEngine;
+
     constexpr char kInstalledProperty[] = "KSWORD_TABLE_INTERACTION_SUPPORT_INSTALLED";
-    constexpr char kExportButtonProperty[] = "KSWORD_TABLE_INTERACTION_EXPORT_BUTTON";
+    constexpr char kActionBarProperty[] = "KSWORD_TABLE_INTERACTION_ACTION_BAR";
     constexpr char kStandardContextMenuProperty[] = "KSWORD_TABLE_INTERACTION_STANDARD_CONTEXT_MENU";
     constexpr char kContextActionsInstalledProperty[] = "KSWORD_TABLE_INTERACTION_CONTEXT_ACTIONS_INSTALLED";
-    constexpr int kExportButtonSize = 26;
+    constexpr char kComparisonActiveProperty[] = "KSWORD_TABLE_INTERACTION_COMPARISON_ACTIVE";
+    constexpr int kActionBarHeight = 32;
 
     QString localizedSourceText(const char* sourceText)
     {
@@ -101,10 +118,10 @@ namespace
         return rowList;
     }
 
-    QVector<int> exportRows(QTableView* tableView)
+    QVector<int> allVisibleRows(QTableView* tableView)
     {
-        QVector<int> rowList = selectedVisibleRows(tableView, false);
-        if (tableView == nullptr || tableView->model() == nullptr || !rowList.isEmpty())
+        QVector<int> rowList;
+        if (tableView == nullptr || tableView->model() == nullptr)
         {
             return rowList;
         }
@@ -192,14 +209,11 @@ namespace
         return lineList.join(QLatin1Char('\n'));
     }
 
-    void copySelectedRowsToClipboard(QTableView* tableView)
+    void copyRowsToClipboard(QTableView* tableView, const QVector<int>& rowList)
     {
         if (QClipboard* clipboardObject = QApplication::clipboard())
         {
-            const QString text = tableRowsToTsv(
-                tableView,
-                selectedVisibleRows(tableView, true),
-                false);
+            const QString text = tableRowsToTsv(tableView, rowList, false);
             if (!text.isEmpty())
             {
                 clipboardObject->setText(text);
@@ -207,10 +221,19 @@ namespace
         }
     }
 
+    void copySelectedRowsToClipboard(QTableView* tableView)
+    {
+        copyRowsToClipboard(tableView, selectedVisibleRows(tableView, true));
+    }
+
+    void copyVisibleRowsToClipboard(QTableView* tableView)
+    {
+        copyRowsToClipboard(tableView, allVisibleRows(tableView));
+    }
+
     void exportTableToTsv(QTableView* tableView)
     {
-        const QVector<int> rowList = exportRows(tableView);
-        const QString tableText = tableRowsToTsv(tableView, rowList, true);
+        const QString tableText = tableRowsToTsv(tableView, allVisibleRows(tableView), true);
         if (tableText.isEmpty())
         {
             QMessageBox::information(
@@ -258,52 +281,886 @@ namespace
         }
     }
 
-    void positionExportButton(QTableView* tableView)
+    class ComparisonTableView final : public QTableView
     {
-        if (tableView == nullptr || tableView->horizontalHeader() == nullptr)
+    public:
+        using QTableView::QTableView;
+
+    protected:
+        void wheelEvent(QWheelEvent* eventObject) override
         {
-            return;
+            if (eventObject == nullptr)
+            {
+                return;
+            }
+
+            const QPoint pixelDeltaPoint = eventObject->pixelDelta();
+            const QPoint angleDeltaPoint = eventObject->angleDelta();
+            const bool horizontal = eventObject->modifiers().testFlag(Qt::ShiftModifier) ||
+                std::abs(pixelDeltaPoint.x()) > std::abs(pixelDeltaPoint.y()) ||
+                std::abs(angleDeltaPoint.x()) > std::abs(angleDeltaPoint.y());
+            QScrollBar* scrollBar = horizontal ? horizontalScrollBar() : verticalScrollBar();
+            if (scrollBar == nullptr || scrollBar->minimum() == scrollBar->maximum())
+            {
+                QTableView::wheelEvent(eventObject);
+                return;
+            }
+
+            const int pixelDelta = horizontal
+                ? (pixelDeltaPoint.x() != 0 ? pixelDeltaPoint.x() : pixelDeltaPoint.y())
+                : (pixelDeltaPoint.y() != 0 ? pixelDeltaPoint.y() : pixelDeltaPoint.x());
+            if (pixelDelta != 0)
+            {
+                scrollBar->setValue(std::clamp(
+                    scrollBar->value() - pixelDelta,
+                    scrollBar->minimum(),
+                    scrollBar->maximum()));
+                eventObject->accept();
+                return;
+            }
+
+            const int angleDelta = horizontal
+                ? (angleDeltaPoint.x() != 0 ? angleDeltaPoint.x() : angleDeltaPoint.y())
+                : (angleDeltaPoint.y() != 0 ? angleDeltaPoint.y() : angleDeltaPoint.x());
+            if (angleDelta == 0)
+            {
+                QTableView::wheelEvent(eventObject);
+                return;
+            }
+
+            const int wheelSteps = angleDelta / 120 != 0
+                ? angleDelta / 120
+                : (angleDelta > 0 ? 1 : -1);
+            const int distance = std::max(24, scrollBar->singleStep() * 3);
+            scrollBar->setValue(std::clamp(
+                scrollBar->value() - wheelSteps * distance,
+                scrollBar->minimum(),
+                scrollBar->maximum()));
+            eventObject->accept();
         }
 
-        QHeaderView* horizontalHeader = tableView->horizontalHeader();
-        QToolButton* exportButton = horizontalHeader->findChild<QToolButton*>(
-            QString::fromLatin1(kExportButtonProperty),
-            Qt::FindDirectChildrenOnly);
-        if (exportButton == nullptr)
+    };
+
+    class TableActionBar final : public QFrame
+    {
+    public:
+        explicit TableActionBar(QTableView* tableView)
+            : QFrame(tableView)
+            , m_table(tableView)
         {
-            return;
+            setObjectName(QString::fromLatin1(kActionBarProperty));
+            setFrameShape(QFrame::NoFrame);
+            setFixedHeight(kActionBarHeight);
+            setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+            auto* layout = new QHBoxLayout(this);
+            layout->setContentsMargins(4, 2, 4, 2);
+            layout->setSpacing(4);
+
+            m_copyAllButton = createButton("复制全表", QStringLiteral(":/Icon/log_copy.svg"));
+            m_exportButton = createButton("导出", QStringLiteral(":/Icon/log_export.svg"));
+            layout->addWidget(m_copyAllButton);
+            layout->addWidget(m_exportButton);
+
+            m_snapshotScrollArea = new QScrollArea(this);
+            m_snapshotScrollArea->setFrameShape(QFrame::NoFrame);
+            m_snapshotScrollArea->setWidgetResizable(false);
+            m_snapshotScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            m_snapshotScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            m_snapshotScrollArea->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            m_snapshotScrollArea->setMinimumWidth(96);
+            m_snapshotScrollArea->setFixedHeight(kActionBarHeight - 4);
+            m_snapshotContent = new QWidget(m_snapshotScrollArea);
+            m_snapshotLayout = new QHBoxLayout(m_snapshotContent);
+            m_snapshotLayout->setContentsMargins(0, 0, 0, 0);
+            m_snapshotLayout->setSpacing(2);
+            m_snapshotScrollArea->setWidget(m_snapshotContent);
+            layout->addWidget(m_snapshotScrollArea, 1);
+
+            m_addSnapshotButton = createButton("增加快照");
+            m_cleanupButton = createButton("清理");
+            m_doneCleanupButton = createButton("完成");
+            m_deleteSelectedButton = createButton("清理选中");
+            m_clearAllButton = createButton("清除全部");
+            layout->addWidget(m_addSnapshotButton);
+            layout->addWidget(m_cleanupButton);
+            layout->addWidget(m_doneCleanupButton);
+            layout->addWidget(m_deleteSelectedButton);
+            layout->addWidget(m_clearAllButton);
+
+            m_differenceOnlyCheckBox = new QCheckBox(localizedSourceText("只显示差异项"), this);
+            m_differenceOnlyCheckBox->setChecked(true);
+            m_ignoreColumnsButton = createButton("忽略列");
+            layout->addWidget(m_differenceOnlyCheckBox);
+            layout->addWidget(m_ignoreColumnsButton);
+
+            m_currentViewButton = createButton("当前视图");
+            m_currentViewButton->setCheckable(true);
+            m_compareViewButton = createButton("比对视图");
+            m_compareViewButton->setCheckable(true);
+            layout->addWidget(m_currentViewButton);
+            layout->addWidget(m_compareViewButton);
+
+            connect(m_copyAllButton, &QToolButton::clicked, this, [this]()
+                {
+                    copyVisibleRowsToClipboard(activeTableView());
+                });
+            connect(m_exportButton, &QToolButton::clicked, this, [this]()
+                {
+                    exportTableToTsv(activeTableView());
+                });
+            connect(m_addSnapshotButton, &QToolButton::clicked, this, [this]()
+                {
+                    addSnapshot();
+                });
+            connect(m_cleanupButton, &QToolButton::clicked, this, [this]()
+                {
+                    enterCleanupMode();
+                });
+            connect(m_doneCleanupButton, &QToolButton::clicked, this, [this]()
+                {
+                    leaveCleanupMode();
+                });
+            connect(m_deleteSelectedButton, &QToolButton::clicked, this, [this]()
+                {
+                    deleteSelectedSnapshots();
+                });
+            connect(m_clearAllButton, &QToolButton::clicked, this, [this]()
+                {
+                    clearAllSnapshots();
+                });
+            connect(m_differenceOnlyCheckBox, &QCheckBox::toggled, this, [this](const bool checked)
+                {
+                    if (!m_comparisonModel.isNull())
+                    {
+                        m_comparisonModel->setShowDifferencesOnly(checked);
+                    }
+                });
+            connect(m_ignoreColumnsButton, &QToolButton::clicked, this, [this]()
+                {
+                    showIgnoredColumnsMenu();
+                });
+            connect(m_currentViewButton, &QToolButton::clicked, this, [this]()
+                {
+                    showCurrentView();
+                });
+            connect(m_compareViewButton, &QToolButton::clicked, this, [this]()
+                {
+                    showComparisonView();
+                });
+
+            rebuildSnapshotControls();
+            updateControls();
         }
 
-        const int x = std::max(0, horizontalHeader->width() - exportButton->width() - 2);
-        const int y = std::max(0, (horizontalHeader->height() - exportButton->height()) / 2);
-        exportButton->move(x, y);
-        exportButton->raise();
+        void updatePosition()
+        {
+            if (m_table.isNull())
+            {
+                return;
+            }
+
+            if (ks::ui::TableActionBarHost* host = ks::ui::TableActionBarHostFor(m_table.data()))
+            {
+                host->setTopActionBarHeight(kActionBarHeight);
+                setGeometry(host->topActionBarGeometry());
+                raise();
+            }
+            hideSourceViewportWidgets();
+            updateComparisonOverlayGeometry();
+        }
+
+    private:
+        QToolButton* createButton(const char* text, const QString& iconPath = QString())
+        {
+            auto* button = new QToolButton(this);
+            button->setText(localizedSourceText(text));
+            button->setAutoRaise(true);
+            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            if (!iconPath.isEmpty())
+            {
+                button->setIcon(QIcon(iconPath));
+            }
+            return button;
+        }
+
+        QToolButton* createSnapshotButton(const QString& label, const bool checked)
+        {
+            auto* button = new QToolButton(m_snapshotContent);
+            button->setText(label);
+            button->setCheckable(true);
+            button->setChecked(checked);
+            button->setAutoRaise(false);
+            button->setMinimumWidth(28);
+            button->setStyleSheet(QStringLiteral(
+                "QToolButton {"
+                "  padding: 2px 7px;"
+                "  border: 1px solid palette(mid);"
+                "  border-radius: 3px;"
+                "  background-color: transparent;"
+                "  color: palette(button-text);"
+                "}"
+                "QToolButton:hover {"
+                "  border-color: palette(highlight);"
+                "}"
+                "QToolButton:checked {"
+                "  background-color: palette(highlight);"
+                "  border-color: palette(highlight);"
+                "  color: palette(highlighted-text);"
+                "}"));
+            return button;
+        }
+
+        QTableView* activeTableView() const
+        {
+            return m_comparisonOverlay.isNull() ? m_table.data() : m_comparisonOverlay.data();
+        }
+
+        const TableSnapshot* snapshotForSequence(const quint64 sequence) const
+        {
+            const auto iterator = std::find_if(
+                m_snapshots.cbegin(),
+                m_snapshots.cend(),
+                [sequence](const TableSnapshot& snapshot)
+                {
+                    return snapshot.sequence == sequence;
+                });
+            return iterator == m_snapshots.cend() ? nullptr : &*iterator;
+        }
+
+        QVector<const TableSnapshot*> selectedSnapshots() const
+        {
+            QVector<const TableSnapshot*> result;
+            result.reserve(m_selectedSnapshotSequences.size());
+            for (const quint64 sequence : m_selectedSnapshotSequences)
+            {
+                if (const TableSnapshot* snapshot = snapshotForSequence(sequence))
+                {
+                    result.push_back(snapshot);
+                }
+            }
+            return result;
+        }
+
+        void addSnapshot()
+        {
+            if (m_table.isNull() || m_inComparison || m_table->model() == nullptr)
+            {
+                return;
+            }
+
+            const quint64 sequence = m_nextSnapshotOrdinal++;
+            const QString label = TableSnapshotCompareEngine::snapshotLabelForOrdinal(sequence);
+            m_snapshots.push_back(TableSnapshotCompareEngine::capture(m_table.data(), label, sequence));
+            rebuildSnapshotControls();
+            updateControls();
+        }
+
+        void enterCleanupMode()
+        {
+            showCurrentView();
+            m_cleanupMode = true;
+            m_cleanupSelections.clear();
+            rebuildSnapshotControls();
+            updateControls();
+        }
+
+        void leaveCleanupMode()
+        {
+            m_cleanupMode = false;
+            m_cleanupSelections.clear();
+            rebuildSnapshotControls();
+            updateControls();
+        }
+
+        void deleteSelectedSnapshots()
+        {
+            if (m_cleanupSelections.isEmpty())
+            {
+                QMessageBox::information(
+                    this,
+                    localizedSourceText("清理快照"),
+                    localizedSourceText("没有选中的快照。"));
+                return;
+            }
+
+            const int count = m_cleanupSelections.size();
+            if (QMessageBox::question(
+                    this,
+                    localizedSourceText("清理快照"),
+                    localizedSourceText("确定清理选中的 %1 份快照吗？").arg(count),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No) != QMessageBox::Yes)
+            {
+                return;
+            }
+
+            m_snapshots.erase(
+                std::remove_if(
+                    m_snapshots.begin(),
+                    m_snapshots.end(),
+                    [this](const TableSnapshot& snapshot)
+                    {
+                        return m_cleanupSelections.contains(snapshot.sequence);
+                    }),
+                m_snapshots.end());
+            pruneSnapshotSelections();
+            m_cleanupSelections.clear();
+            rebuildSnapshotControls();
+            updateControls();
+        }
+
+        void clearAllSnapshots()
+        {
+            if (m_snapshots.isEmpty())
+            {
+                return;
+            }
+
+            const int count = m_snapshots.size();
+            if (QMessageBox::question(
+                    this,
+                    localizedSourceText("清理快照"),
+                    localizedSourceText("确定清除该表的全部 %1 份快照吗？").arg(count),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No) != QMessageBox::Yes)
+            {
+                return;
+            }
+
+            showCurrentView();
+            m_snapshots.clear();
+            m_selectedSnapshotSequences.clear();
+            m_cleanupSelections.clear();
+            rebuildSnapshotControls();
+            updateControls();
+        }
+
+        void pruneSnapshotSelections()
+        {
+            m_selectedSnapshotSequences.erase(
+                std::remove_if(
+                    m_selectedSnapshotSequences.begin(),
+                    m_selectedSnapshotSequences.end(),
+                    [this](const quint64 sequence)
+                    {
+                        return snapshotForSequence(sequence) == nullptr;
+                    }),
+                m_selectedSnapshotSequences.end());
+        }
+
+        void rebuildSnapshotControls()
+        {
+            while (QLayoutItem* item = m_snapshotLayout->takeAt(0))
+            {
+                delete item->widget();
+                delete item;
+            }
+            m_snapshotButtons.clear();
+
+            for (const TableSnapshot& snapshot : m_snapshots)
+            {
+                QToolButton* button = createSnapshotButton(
+                    snapshot.label,
+                    m_cleanupMode
+                        ? m_cleanupSelections.contains(snapshot.sequence)
+                        : m_selectedSnapshotSequences.contains(snapshot.sequence));
+                if (m_cleanupMode)
+                {
+                    connect(button, &QToolButton::toggled, this, [this, sequence = snapshot.sequence](const bool checked)
+                        {
+                            if (checked)
+                            {
+                                m_cleanupSelections.insert(sequence);
+                            }
+                            else
+                            {
+                                m_cleanupSelections.remove(sequence);
+                            }
+                            updateControls();
+                        });
+                }
+                else
+                {
+                    connect(button, &QToolButton::toggled, this, [this, sequence = snapshot.sequence](const bool checked)
+                        {
+                            selectSnapshot(sequence, checked);
+                        });
+                }
+                m_snapshotLayout->addWidget(button);
+                m_snapshotButtons.insert(snapshot.sequence, button);
+            }
+            m_snapshotLayout->addStretch(1);
+            updateSnapshotContentSize();
+            QTimer::singleShot(0, this, [this]()
+                {
+                    updateSnapshotContentSize();
+                });
+        }
+
+        void updateSnapshotContentSize()
+        {
+            if (m_snapshotContent == nullptr || m_snapshotLayout == nullptr ||
+                m_snapshotScrollArea == nullptr)
+            {
+                return;
+            }
+
+            m_snapshotLayout->invalidate();
+            m_snapshotLayout->activate();
+            QSize desiredSize = m_snapshotLayout->sizeHint().expandedTo(
+                m_snapshotLayout->minimumSize());
+            desiredSize.setWidth(std::max(1, desiredSize.width()));
+            desiredSize.setHeight(std::max(
+                desiredSize.height(),
+                m_snapshotScrollArea->viewport()->height()));
+            m_snapshotContent->setMinimumSize(desiredSize);
+            m_snapshotContent->resize(desiredSize);
+            m_snapshotContent->updateGeometry();
+        }
+
+        void selectSnapshot(const quint64 sequence, const bool checked)
+        {
+            if (m_inComparison)
+            {
+                showCurrentView();
+            }
+
+            if (checked)
+            {
+                if (!m_selectedSnapshotSequences.contains(sequence))
+                {
+                    m_selectedSnapshotSequences.push_back(sequence);
+                }
+                if (m_selectedSnapshotSequences.size() > 2)
+                {
+                    m_selectedSnapshotSequences = { sequence };
+                }
+            }
+            else
+            {
+                m_selectedSnapshotSequences.removeAll(sequence);
+            }
+
+            for (auto iterator = m_snapshotButtons.begin(); iterator != m_snapshotButtons.end(); ++iterator)
+            {
+                if (iterator.value() != nullptr)
+                {
+                    const QSignalBlocker blocker(iterator.value());
+                    iterator.value()->setChecked(m_selectedSnapshotSequences.contains(iterator.key()));
+                }
+            }
+            updateControls();
+        }
+
+        void hideSourceViewportWidgets()
+        {
+            if (!m_originalTablePaintingSuspended || m_table.isNull() ||
+                m_table->viewport() == nullptr)
+            {
+                return;
+            }
+
+            for (QWidget* childWidget : m_table->viewport()->findChildren<QWidget*>(
+                    QString(),
+                    Qt::FindDirectChildrenOnly))
+            {
+                if (childWidget != nullptr && !childWidget->isHidden())
+                {
+                    childWidget->hide();
+                    const bool alreadyTracked = std::any_of(
+                        m_hiddenSourceViewportWidgets.cbegin(),
+                        m_hiddenSourceViewportWidgets.cend(),
+                        [childWidget](const QPointer<QWidget>& guardedWidget)
+                        {
+                            return guardedWidget.data() == childWidget;
+                        });
+                    if (!alreadyTracked)
+                    {
+                        m_hiddenSourceViewportWidgets.push_back(childWidget);
+                    }
+                }
+            }
+        }
+
+        void suspendOriginalTablePainting()
+        {
+            if (m_table.isNull() || m_originalTablePaintingSuspended)
+            {
+                return;
+            }
+
+            QTableView* tableView = m_table.data();
+            m_originalTablePaintingSuspended = true;
+            m_originalHorizontalHeaderHidden = tableView->horizontalHeader()->isHidden();
+            m_originalVerticalHeaderHidden = tableView->verticalHeader()->isHidden();
+            m_originalHorizontalScrollBarPolicy = tableView->horizontalScrollBarPolicy();
+            m_originalVerticalScrollBarPolicy = tableView->verticalScrollBarPolicy();
+            m_originalViewportOpaquePaint = tableView->viewport()->testAttribute(Qt::WA_OpaquePaintEvent);
+            m_hiddenSourceViewportWidgets.clear();
+
+            tableView->setProperty(
+                ks::ui::visible_table_detail::ComparisonSourceActiveProperty,
+                true);
+            tableView->viewport()->setAttribute(Qt::WA_OpaquePaintEvent, false);
+            hideSourceViewportWidgets();
+            tableView->horizontalHeader()->hide();
+            tableView->verticalHeader()->hide();
+            tableView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            tableView->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            tableView->viewport()->update();
+        }
+
+        void resumeOriginalTablePainting()
+        {
+            if (!m_originalTablePaintingSuspended)
+            {
+                return;
+            }
+
+            if (!m_table.isNull())
+            {
+                QTableView* tableView = m_table.data();
+                tableView->setProperty(
+                    ks::ui::visible_table_detail::ComparisonSourceActiveProperty,
+                    false);
+                tableView->setHorizontalScrollBarPolicy(m_originalHorizontalScrollBarPolicy);
+                tableView->setVerticalScrollBarPolicy(m_originalVerticalScrollBarPolicy);
+                tableView->horizontalHeader()->setHidden(m_originalHorizontalHeaderHidden);
+                tableView->verticalHeader()->setHidden(m_originalVerticalHeaderHidden);
+                tableView->viewport()->setAttribute(
+                    Qt::WA_OpaquePaintEvent,
+                    m_originalViewportOpaquePaint);
+                for (const QPointer<QWidget>& guardedWidget : m_hiddenSourceViewportWidgets)
+                {
+                    if (!guardedWidget.isNull())
+                    {
+                        guardedWidget->show();
+                    }
+                }
+                tableView->doItemsLayout();
+                tableView->viewport()->update();
+            }
+
+            m_hiddenSourceViewportWidgets.clear();
+            m_originalTablePaintingSuspended = false;
+        }
+
+        void configureComparisonOverlay(
+            ComparisonTableView* comparisonView,
+            const TableComparisonResult& comparison)
+        {
+            if (comparisonView == nullptr || m_table.isNull())
+            {
+                return;
+            }
+
+            QTableView* sourceTable = m_table.data();
+            comparisonView->setModel(m_comparisonModel);
+            comparisonView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+            comparisonView->setSelectionBehavior(QAbstractItemView::SelectRows);
+            comparisonView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            comparisonView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+            comparisonView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+            comparisonView->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+            comparisonView->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            comparisonView->verticalScrollBar()->setSingleStep(std::max(20, sourceTable->verticalScrollBar()->singleStep()));
+            comparisonView->horizontalScrollBar()->setSingleStep(std::max(20, sourceTable->horizontalScrollBar()->singleStep()));
+            comparisonView->setAlternatingRowColors(sourceTable->alternatingRowColors());
+            comparisonView->setShowGrid(sourceTable->showGrid());
+            comparisonView->setGridStyle(sourceTable->gridStyle());
+            comparisonView->setTextElideMode(sourceTable->textElideMode());
+            comparisonView->setWordWrap(false);
+            comparisonView->setSortingEnabled(false);
+            comparisonView->setFrameShape(QFrame::NoFrame);
+            comparisonView->setFocusPolicy(Qt::StrongFocus);
+            comparisonView->setFont(sourceTable->font());
+            comparisonView->setAutoFillBackground(false);
+            comparisonView->setPalette(sourceTable->palette());
+            if (comparisonView->viewport() != nullptr)
+            {
+                comparisonView->viewport()->setAutoFillBackground(false);
+                comparisonView->viewport()->setPalette(sourceTable->viewport()->palette());
+            }
+
+            comparisonView->verticalHeader()->hide();
+            const int readableRowHeight = std::max(
+                sourceTable->verticalHeader()->defaultSectionSize(),
+                comparisonView->fontMetrics().lineSpacing() + 8);
+            comparisonView->verticalHeader()->setMinimumSectionSize(readableRowHeight);
+            comparisonView->verticalHeader()->setDefaultSectionSize(readableRowHeight);
+            comparisonView->horizontalHeader()->setSectionsMovable(false);
+            comparisonView->horizontalHeader()->setSectionsClickable(false);
+            comparisonView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+            comparisonView->horizontalHeader()->setStretchLastSection(
+                sourceTable->horizontalHeader()->stretchLastSection());
+
+            comparisonView->setColumnWidth(0, 56);
+            for (int columnIndex = 0; columnIndex < comparison.columns.size(); ++columnIndex)
+            {
+                const int sourceColumn = comparison.columns.at(columnIndex).sourceColumn;
+                const int sourceWidth = sourceColumn >= 0 && sourceColumn < sourceTable->model()->columnCount()
+                    ? sourceTable->columnWidth(sourceColumn)
+                    : sourceTable->horizontalHeader()->defaultSectionSize();
+                comparisonView->setColumnWidth(columnIndex + 1, std::max(48, sourceWidth));
+            }
+        }
+
+        void showComparisonView()
+        {
+            if (m_table.isNull() || m_cleanupMode || m_selectedSnapshotSequences.size() != 2)
+            {
+                return;
+            }
+
+            const QVector<const TableSnapshot*> snapshots = selectedSnapshots();
+            if (snapshots.size() != 2)
+            {
+                pruneSnapshotSelections();
+                updateControls();
+                return;
+            }
+
+            const TableSnapshot* earlier = snapshots.at(0);
+            const TableSnapshot* later = snapshots.at(1);
+            if (earlier->sequence > later->sequence)
+            {
+                std::swap(earlier, later);
+            }
+
+            if (m_inComparison)
+            {
+                showCurrentView();
+            }
+
+            m_ignoredSourceColumns = TableSnapshotCompareEngine::defaultIgnoredColumnIndexes(*earlier);
+            m_ignoredSourceColumns.unite(TableSnapshotCompareEngine::defaultIgnoredColumnIndexes(*later));
+            const TableComparisonResult comparison = TableSnapshotCompareEngine::compare(
+                *earlier,
+                *later,
+                m_ignoredSourceColumns);
+            m_comparisonModel = new TableComparisonModel(comparison, this);
+            m_comparisonModel->setShowDifferencesOnly(m_differenceOnlyCheckBox->isChecked());
+
+            auto* comparisonView = new ComparisonTableView(m_table.data());
+            m_comparisonOverlay = comparisonView;
+            configureComparisonOverlay(comparisonView, comparison);
+            comparisonView->setProperty(kComparisonActiveProperty, true);
+
+            suspendOriginalTablePainting();
+            m_inComparison = true;
+            comparisonView->show();
+            updatePosition();
+            comparisonView->raise();
+            comparisonView->setFocus(Qt::OtherFocusReason);
+            updateControls();
+        }
+
+        void showCurrentView()
+        {
+            if (!m_inComparison)
+            {
+                return;
+            }
+
+            if (!m_comparisonOverlay.isNull())
+            {
+                m_comparisonOverlay->setProperty(kComparisonActiveProperty, false);
+                m_comparisonOverlay->hide();
+                m_comparisonOverlay->deleteLater();
+                m_comparisonOverlay.clear();
+            }
+            resumeOriginalTablePainting();
+            if (!m_comparisonModel.isNull())
+            {
+                m_comparisonModel->deleteLater();
+                m_comparisonModel.clear();
+            }
+
+            m_inComparison = false;
+            updatePosition();
+            updateControls();
+        }
+
+        void refreshComparison()
+        {
+            if (!m_inComparison || m_comparisonModel.isNull() || m_selectedSnapshotSequences.size() != 2)
+            {
+                return;
+            }
+            const QVector<const TableSnapshot*> snapshots = selectedSnapshots();
+            if (snapshots.size() != 2)
+            {
+                return;
+            }
+            const TableSnapshot* earlier = snapshots.at(0);
+            const TableSnapshot* later = snapshots.at(1);
+            if (earlier->sequence > later->sequence)
+            {
+                std::swap(earlier, later);
+            }
+            m_comparisonModel->setComparison(TableSnapshotCompareEngine::compare(
+                *earlier,
+                *later,
+                m_ignoredSourceColumns));
+            m_comparisonModel->setShowDifferencesOnly(m_differenceOnlyCheckBox->isChecked());
+        }
+
+        void showIgnoredColumnsMenu()
+        {
+            if (!m_inComparison || m_comparisonModel.isNull())
+            {
+                return;
+            }
+
+            QMenu menu(this);
+            menu.addSection(localizedSourceText("当前比对的忽略列"));
+            const QStringList keywords = TableSnapshotCompareEngine::defaultIgnoredColumnKeywords();
+            const TableComparisonResult& comparison = m_comparisonModel->comparison();
+            QHash<QAction*, int> columnActions;
+            for (const TableSnapshotColumn& column : comparison.columns)
+            {
+                QStringList matchedKeywords;
+                for (const QString& keyword : keywords)
+                {
+                    if (column.headerText.contains(keyword, Qt::CaseInsensitive))
+                    {
+                        matchedKeywords.push_back(keyword);
+                    }
+                }
+
+                QString title = column.headerText.isEmpty()
+                    ? localizedSourceText("列 %1").arg(column.sourceColumn + 1)
+                    : column.headerText;
+                if (!matchedKeywords.isEmpty())
+                {
+                    title += QStringLiteral("  ")
+                        + localizedSourceText("自动匹配：%1").arg(matchedKeywords.join(QStringLiteral(", ")));
+                }
+                QAction* action = menu.addAction(title);
+                action->setCheckable(true);
+                action->setChecked(m_ignoredSourceColumns.contains(column.sourceColumn));
+                columnActions.insert(action, column.sourceColumn);
+            }
+
+            QAction* selectedAction = menu.exec(m_ignoreColumnsButton->mapToGlobal(
+                QPoint(0, m_ignoreColumnsButton->height())));
+            if (selectedAction == nullptr || !columnActions.contains(selectedAction))
+            {
+                return;
+            }
+
+            const int sourceColumn = columnActions.value(selectedAction);
+            if (selectedAction->isChecked())
+            {
+                m_ignoredSourceColumns.insert(sourceColumn);
+            }
+            else
+            {
+                m_ignoredSourceColumns.remove(sourceColumn);
+            }
+            refreshComparison();
+        }
+
+        void updateComparisonOverlayGeometry()
+        {
+            if (m_table.isNull() || m_comparisonOverlay.isNull())
+            {
+                return;
+            }
+
+            const int frameWidth = m_table->frameWidth();
+            const int top = std::max(frameWidth, geometry().bottom() + 1);
+            m_comparisonOverlay->setGeometry(
+                frameWidth,
+                top,
+                std::max(0, m_table->width() - frameWidth * 2),
+                std::max(0, m_table->height() - top - frameWidth));
+            m_comparisonOverlay->raise();
+            raise();
+        }
+
+        void updateControls()
+        {
+            const bool hasSnapshots = !m_snapshots.isEmpty();
+            const bool exactlyTwoSnapshotsSelected = m_selectedSnapshotSequences.size() == 2;
+            const bool hasVisibleRows = activeTableView() != nullptr &&
+                !allVisibleRows(activeTableView()).isEmpty();
+            m_copyAllButton->setEnabled(hasVisibleRows);
+            m_exportButton->setEnabled(hasVisibleRows);
+            m_addSnapshotButton->setEnabled(!m_cleanupMode && !m_inComparison && m_table != nullptr && m_table->model() != nullptr);
+            m_cleanupButton->setVisible(!m_cleanupMode);
+            m_cleanupButton->setEnabled(hasSnapshots && !m_inComparison);
+            m_doneCleanupButton->setVisible(m_cleanupMode);
+            m_deleteSelectedButton->setVisible(m_cleanupMode);
+            m_deleteSelectedButton->setEnabled(m_cleanupMode && !m_cleanupSelections.isEmpty());
+            m_clearAllButton->setVisible(m_cleanupMode);
+            m_clearAllButton->setEnabled(m_cleanupMode && hasSnapshots);
+            m_differenceOnlyCheckBox->setVisible(m_inComparison);
+            m_ignoreColumnsButton->setVisible(m_inComparison);
+            m_currentViewButton->setEnabled(m_inComparison);
+            m_currentViewButton->setChecked(!m_inComparison);
+            m_compareViewButton->setEnabled(!m_cleanupMode && exactlyTwoSnapshotsSelected);
+            m_compareViewButton->setChecked(m_inComparison);
+        }
+
+        QPointer<QTableView> m_table;
+        QPointer<QTableView> m_comparisonOverlay;
+        QPointer<TableComparisonModel> m_comparisonModel;
+        QVector<TableSnapshot> m_snapshots;
+        QVector<quint64> m_selectedSnapshotSequences;
+        QSet<quint64> m_cleanupSelections;
+        QSet<int> m_ignoredSourceColumns;
+        QHash<quint64, QToolButton*> m_snapshotButtons;
+        QVector<QPointer<QWidget>> m_hiddenSourceViewportWidgets;
+        quint64 m_nextSnapshotOrdinal = 0;
+        Qt::ScrollBarPolicy m_originalHorizontalScrollBarPolicy = Qt::ScrollBarAsNeeded;
+        Qt::ScrollBarPolicy m_originalVerticalScrollBarPolicy = Qt::ScrollBarAsNeeded;
+        bool m_originalTablePaintingSuspended = false;
+        bool m_originalHorizontalHeaderHidden = false;
+        bool m_originalVerticalHeaderHidden = false;
+        bool m_originalViewportOpaquePaint = false;
+        bool m_cleanupMode = false;
+        bool m_inComparison = false;
+        QToolButton* m_copyAllButton = nullptr;
+        QToolButton* m_exportButton = nullptr;
+        QToolButton* m_addSnapshotButton = nullptr;
+        QToolButton* m_cleanupButton = nullptr;
+        QToolButton* m_doneCleanupButton = nullptr;
+        QToolButton* m_deleteSelectedButton = nullptr;
+        QToolButton* m_clearAllButton = nullptr;
+        QToolButton* m_ignoreColumnsButton = nullptr;
+        QToolButton* m_currentViewButton = nullptr;
+        QToolButton* m_compareViewButton = nullptr;
+        QCheckBox* m_differenceOnlyCheckBox = nullptr;
+        QScrollArea* m_snapshotScrollArea = nullptr;
+        QWidget* m_snapshotContent = nullptr;
+        QHBoxLayout* m_snapshotLayout = nullptr;
+    };
+
+    TableActionBar* actionBarForTable(QTableView* tableView)
+    {
+        if (tableView == nullptr)
+        {
+            return nullptr;
+        }
+        return dynamic_cast<TableActionBar*>(tableView->findChild<QObject*>(
+            QString::fromLatin1(kActionBarProperty),
+            Qt::FindDirectChildrenOnly));
     }
 
-    void installExportButton(QTableView* tableView)
+    void installActionBar(QTableView* tableView)
     {
-        if (tableView == nullptr || tableView->horizontalHeader() == nullptr ||
-            tableView->horizontalHeader()->findChild<QToolButton*>(
-                QString::fromLatin1(kExportButtonProperty),
-                Qt::FindDirectChildrenOnly) != nullptr)
+        if (tableView == nullptr || ks::ui::TableActionBarHostFor(tableView) == nullptr)
         {
             return;
         }
-
-        auto* exportButton = new QToolButton(tableView->horizontalHeader());
-        exportButton->setObjectName(QString::fromLatin1(kExportButtonProperty));
-        exportButton->setIcon(QIcon(QStringLiteral(":/Icon/log_export.svg")));
-        exportButton->setIconSize(QSize(18, 18));
-        exportButton->setFixedSize(kExportButtonSize, kExportButtonSize);
-        exportButton->setAutoRaise(true);
-        exportButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
-        exportButton->setToolTip(localizedSourceText("导出 TSV"));
-        exportButton->setAccessibleName(localizedSourceText("导出 TSV"));
-        QObject::connect(exportButton, &QToolButton::clicked, tableView, [tableView]()
-            {
-                exportTableToTsv(tableView);
-            });
-        positionExportButton(tableView);
+        TableActionBar* actionBar = actionBarForTable(tableView);
+        if (actionBar == nullptr)
+        {
+            actionBar = new TableActionBar(tableView);
+        }
+        actionBar->updatePosition();
     }
 
     void showMultiSelectionContextMenu(QTableView* tableView, const QPoint& globalPosition)
@@ -322,9 +1179,8 @@ namespace
             QIcon(QStringLiteral(":/Icon/log_export.svg")),
             localizedSourceText("导出 TSV"));
 
-        const bool hasSelectedRows = !selectedVisibleRows(tableView, true).isEmpty();
-        copyAction->setEnabled(hasSelectedRows);
-        exportAction->setEnabled(!exportRows(tableView).isEmpty());
+        copyAction->setEnabled(!selectedVisibleRows(tableView, true).isEmpty());
+        exportAction->setEnabled(!allVisibleRows(tableView).isEmpty());
 
         QAction* selectedAction = menu.exec(globalPosition);
         if (selectedAction == copyAction)
@@ -363,7 +1219,7 @@ namespace
 
         const QPointer<QTableView> guardedTable(tableView);
         copyAction->setEnabled(!selectedVisibleRows(tableView, true).isEmpty());
-        exportAction->setEnabled(!exportRows(tableView).isEmpty());
+        exportAction->setEnabled(!allVisibleRows(tableView).isEmpty());
         QObject::connect(copyAction, &QAction::triggered, menu, [guardedTable]()
             {
                 if (!guardedTable.isNull())
@@ -429,9 +1285,8 @@ namespace
         }
 
         tableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
-        installExportButton(tableView);
+        installActionBar(tableView);
         installDefaultContextMenu(tableView);
-        positionExportButton(tableView);
     }
 
     class GlobalTableInteractionSupportFilter final : public QObject
@@ -462,16 +1317,35 @@ namespace
             }
 
             const QEvent::Type eventType = eventObject->type();
+            const bool comparisonActive = tableView->property(kComparisonActiveProperty).toBool();
+            if (tableView->property(
+                    ks::ui::visible_table_detail::ComparisonSourceActiveProperty).toBool() &&
+                watchedObject == tableView->viewport() &&
+                (eventType == QEvent::Paint || eventType == QEvent::UpdateRequest))
+            {
+                if (TableActionBar* actionBar = actionBarForTable(tableView))
+                {
+                    actionBar->updatePosition();
+                }
+            }
+            if (comparisonActive && eventType == QEvent::ContextMenu)
+            {
+                auto* contextMenuEvent = static_cast<QContextMenuEvent*>(eventObject);
+                const QPoint viewportPosition = watchedObject == tableView
+                    ? tableView->viewport()->mapFrom(tableView, contextMenuEvent->pos())
+                    : contextMenuEvent->pos();
+                selectContextRow(tableView, tableView->indexAt(viewportPosition));
+                showMultiSelectionContextMenu(tableView, contextMenuEvent->globalPos());
+                contextMenuEvent->accept();
+                return true;
+            }
             if (eventType == QEvent::Show ||
                 eventType == QEvent::Polish ||
                 eventType == QEvent::LayoutRequest ||
-                eventType == QEvent::StyleChange)
+                eventType == QEvent::StyleChange ||
+                eventType == QEvent::Resize)
             {
                 configureTable(tableView);
-            }
-            else if (eventType == QEvent::Resize)
-            {
-                positionExportButton(tableView);
             }
             else if (eventType == QEvent::KeyPress)
             {
@@ -479,6 +1353,14 @@ namespace
                 if (keyEvent->matches(QKeySequence::Copy))
                 {
                     copySelectedRowsToClipboard(tableView);
+                    keyEvent->accept();
+                    return true;
+                }
+                if (comparisonActive &&
+                    (keyEvent->key() == Qt::Key_Return ||
+                        keyEvent->key() == Qt::Key_Enter ||
+                        keyEvent->key() == Qt::Key_Space))
+                {
                     keyEvent->accept();
                     return true;
                 }

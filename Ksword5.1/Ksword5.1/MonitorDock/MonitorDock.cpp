@@ -4821,7 +4821,7 @@ void MonitorDock::initializeWmiTab()
     m_wmiProviderProxyModel->setFilterCaseSensitivity(Qt::CaseInsensitive);
     m_wmiProviderProxyModel->setFilterKeyColumn(-1);
 
-    m_wmiProviderTableView = new QTableView(m_wmiProviderPanel);
+    m_wmiProviderTableView = new ks::ui::TableActionTableView(m_wmiProviderPanel);
     m_wmiProviderTableView->setModel(m_wmiProviderProxyModel);
     m_wmiProviderTableView->setSortingEnabled(true);
     m_wmiProviderTableView->setSelectionBehavior(QAbstractItemView::SelectRows);

@@ -2523,7 +2523,7 @@ void ProcessDetailWindow::initializeKernelCallbackTab()
     descriptionLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
     m_kernelCallbackLayout->addWidget(descriptionLabel);
 
-    m_kernelCallbackTable = new QTableWidget(m_kernelCallbackTab);
+    m_kernelCallbackTable = new ks::ui::VisibleTableWidget(m_kernelCallbackTab);
     m_kernelCallbackTable->setColumnCount(7);
     m_kernelCallbackTable->setHorizontalHeaderLabels(QStringList()
         << QStringLiteral("索引")

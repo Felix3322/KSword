@@ -4177,7 +4177,7 @@ void ProcessDock::initializeProcessTable()
     // - 行数据只保存在模型的轻量 ProcessTableRow 中；
     // - 每轮刷新通过稳定行键增量发布删除/插入/重排/数据变化，避免 reset 整张表；
     // - 树状视图仍通过 Name 列缩进文本模拟，保持旧外观和交互语义。
-    m_processTable = new QTableView(this);
+    m_processTable = new ks::ui::TableActionTableView(this);
     // 进程表刷新频率和行数都较高：
     // - 禁用 MainWindow 全局 smooth-scroll 接管，避免滚轮事件被 QPropertyAnimation 重写；
     // - 保持 QTableView/滚动条默认滚动手感，不额外添加惯性或延迟；
