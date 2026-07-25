@@ -18,14 +18,13 @@
       width="49%"
     />
   </a>
-  <a href="https://github.com/user-attachments/assets/98556440-9583-4daa-818b-a04546610a2e">
+  <a href="https://github.com/user-attachments/assets/aeda0d71-c2c0-4317-abac-0fac811c153d">
     <img
-      src="https://github.com/user-attachments/assets/98556440-9583-4daa-818b-a04546610a2e"
+      src="https://github.com/user-attachments/assets/aeda0d71-c2c0-4317-abac-0fac811c153d"
       alt="KSword ARK light interface"
       width="49%"
     />
   </a>
-
 
   <br>
 
