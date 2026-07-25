@@ -10,11 +10,97 @@ namespace ksword::ark
 {
     namespace
     {
+        // kMappedFileNameChars 用途：限制共享响应中 UTF-16 路径的扫描长度。
+        constexpr std::size_t kMappedFileNameChars =
+            KSWORD_ARK_MEMORY_MAPPED_FILE_NAME_CHARS;
+
         constexpr std::size_t kReadResponseHeaderSize =
             offsetof(KSWORD_ARK_READ_VIRTUAL_MEMORY_RESPONSE, data);
 
         constexpr std::size_t kWriteRequestHeaderSize =
             offsetof(KSWORD_ARK_WRITE_VIRTUAL_MEMORY_REQUEST, data);
+    }
+
+    VirtualMemoryQueryResult DriverClient::queryVirtualMemory(
+        const std::uint32_t processId,
+        const std::uint64_t baseAddress,
+        const unsigned long flags) const
+    {
+        // request/response 用途：承载一次固定大小的 R3/R0 虚拟内存区域查询。
+        VirtualMemoryQueryResult queryResult{};
+        KSWORD_ARK_QUERY_VIRTUAL_MEMORY_REQUEST request{};
+        KSWORD_ARK_QUERY_VIRTUAL_MEMORY_RESPONSE response{};
+        request.flags = flags;
+        request.processId = processId;
+        request.baseAddress = baseAddress;
+
+        // 所有设备访问都继续走 DriverClient，外部调用方不接触 DeviceIoControl。
+        queryResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_QUERY_VIRTUAL_MEMORY,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &response,
+            static_cast<unsigned long>(sizeof(response)));
+        if (!queryResult.io.ok)
+        {
+            queryResult.io.message =
+                "DeviceIoControl(IOCTL_KSWORD_ARK_QUERY_VIRTUAL_MEMORY) failed, error=" +
+                std::to_string(queryResult.io.win32Error);
+            return queryResult;
+        }
+
+        // 固定响应长度不完整时拒绝解析，避免不同协议版本之间错误解释字段。
+        if (queryResult.io.bytesReturned < sizeof(response))
+        {
+            queryResult.io.ok = false;
+            queryResult.io.message =
+                "query-vm response too small, bytesReturned=" +
+                std::to_string(queryResult.io.bytesReturned);
+            return queryResult;
+        }
+
+        // 下列字段逐项转换为稳定的 R3 类型，插件和主界面可共享同一结果模型。
+        queryResult.version = static_cast<std::uint32_t>(response.version);
+        queryResult.processId = static_cast<std::uint32_t>(response.processId);
+        queryResult.fieldFlags = static_cast<std::uint32_t>(response.fieldFlags);
+        queryResult.queryStatus = static_cast<std::uint32_t>(response.queryStatus);
+        queryResult.openStatus = static_cast<long>(response.openStatus);
+        queryResult.basicStatus = static_cast<long>(response.basicStatus);
+        queryResult.mappedFileNameStatus = static_cast<long>(response.mappedFileNameStatus);
+        queryResult.source = static_cast<std::uint32_t>(response.source);
+        queryResult.requestedBaseAddress =
+            static_cast<std::uint64_t>(response.requestedBaseAddress);
+        queryResult.baseAddress = static_cast<std::uint64_t>(response.baseAddress);
+        queryResult.allocationBase = static_cast<std::uint64_t>(response.allocationBase);
+        queryResult.regionSize = static_cast<std::uint64_t>(response.regionSize);
+        queryResult.allocationProtect =
+            static_cast<std::uint32_t>(response.allocationProtect);
+        queryResult.state = static_cast<std::uint32_t>(response.state);
+        queryResult.protect = static_cast<std::uint32_t>(response.protect);
+        queryResult.type = static_cast<std::uint32_t>(response.type);
+
+        // mappedFileNameLength 用途：在固定数组内寻找 NUL，不依赖驱动一定写终止符。
+        std::size_t mappedFileNameLength = 0U;
+        while (mappedFileNameLength < kMappedFileNameChars &&
+               response.mappedFileName[mappedFileNameLength] != L'\0')
+        {
+            ++mappedFileNameLength;
+        }
+        queryResult.mappedFileName.assign(
+            response.mappedFileName,
+            response.mappedFileName + mappedFileNameLength);
+
+        // message 用途：保留关键状态，供非 Qt 调用方直接写入诊断日志。
+        std::ostringstream stream;
+        stream << "pid=" << queryResult.processId
+            << ", requested=0x" << std::hex << std::uppercase
+            << queryResult.requestedBaseAddress
+            << ", base=0x" << queryResult.baseAddress
+            << std::dec << ", size=" << queryResult.regionSize
+            << ", status=" << queryResult.queryStatus
+            << ", source=" << queryResult.source;
+        queryResult.io.message = stream.str();
+        return queryResult;
     }
 
     VirtualMemoryReadResult DriverClient::readVirtualMemory(

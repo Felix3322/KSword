@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{ED7D404F-79F0-456B-9C3A-0AA01B60BA6F}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx</Extensions>
+    </Filter>
+    <Filter Include="ArkDriverClient">
+      <UniqueIdentifier>{C9C15781-972C-4B4E-A731-D70181142B88}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Plugin Files">
+      <UniqueIdentifier>{A9435C89-28C8-4AA9-A466-86AF94469742}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="LauncherMain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverClient.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverError.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ksword\string\string.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="integration\00_ksword_bridge.lua">
+      <Filter>Plugin Files</Filter>
+    </None>
+    <None Include="NOTICE.md">
+      <Filter>Plugin Files</Filter>
+    </None>
+    <None Include="plugin.json">
+      <Filter>Plugin Files</Filter>
+    </None>
+    <None Include="README.md">
+      <Filter>Plugin Files</Filter>
+    </None>
+  </ItemGroup>
+</Project>

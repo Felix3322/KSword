@@ -1,0 +1,30 @@
+{
+  "ksword_plugin_api": "1",
+  "id": "cheat-engine",
+  "name": "Cheat Engine（KSword R0）",
+  "version": "1.0.0",
+  "description": "Launches the bundled Cheat Engine with process open, memory query, read and write routed through the KSword driver.",
+  "runtime": "executable",
+  "entrypoint": "KswordCheatEngineLauncher.exe",
+  "default_command": "launch",
+  "targets": [
+    "process"
+  ],
+  "commands": [
+    {
+      "name": "launch",
+      "description": "Verify KSword R0, initialize the CE bridge and open the selected process.",
+      "syntax": "--target-kind process --pid PID [--path IMAGE_PATH] [--process-name NAME]"
+    },
+    {
+      "name": "check",
+      "description": "Check whether the KSword R0 device is available without showing UI."
+    },
+    {
+      "name": "info",
+      "description": "Print plugin capabilities as JSON Lines."
+    }
+  ],
+  "license": "NOTICE.md",
+  "notice": "NOTICE.md"
+}

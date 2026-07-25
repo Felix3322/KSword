@@ -34,6 +34,10 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "KswordARKLight", "..\Ksword
 		{E4B6A5CC-D9ED-FCA2-46D5-5035E8728524} = {E4B6A5CC-D9ED-FCA2-46D5-5035E8728524}
 	EndProjectSection
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "KswordCheatEnginePlugin", "..\CheatEnginePlugin\KswordCheatEnginePlugin.vcxproj", "{2BA78D7E-71C4-43C1-B75B-36BD96978D2E}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "KswordCheatEngineLauncher", "..\CheatEngineExecutablePlugin\KswordCheatEngineLauncher.vcxproj", "{9E6D1A65-D747-47ED-A8C7-6C637DE6C9E8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -76,6 +80,14 @@ Global
 		{44CC7D72-182E-4B28-9D88-531B09C77C41}.Debug|x64.Build.0 = Debug|x64
 		{44CC7D72-182E-4B28-9D88-531B09C77C41}.Release|x64.ActiveCfg = Release|x64
 		{44CC7D72-182E-4B28-9D88-531B09C77C41}.Release|x64.Build.0 = Release|x64
+		{2BA78D7E-71C4-43C1-B75B-36BD96978D2E}.Debug|x64.ActiveCfg = Debug|x64
+		{2BA78D7E-71C4-43C1-B75B-36BD96978D2E}.Debug|x64.Build.0 = Debug|x64
+		{2BA78D7E-71C4-43C1-B75B-36BD96978D2E}.Release|x64.ActiveCfg = Release|x64
+		{2BA78D7E-71C4-43C1-B75B-36BD96978D2E}.Release|x64.Build.0 = Release|x64
+		{9E6D1A65-D747-47ED-A8C7-6C637DE6C9E8}.Debug|x64.ActiveCfg = Debug|x64
+		{9E6D1A65-D747-47ED-A8C7-6C637DE6C9E8}.Debug|x64.Build.0 = Debug|x64
+		{9E6D1A65-D747-47ED-A8C7-6C637DE6C9E8}.Release|x64.ActiveCfg = Release|x64
+		{9E6D1A65-D747-47ED-A8C7-6C637DE6C9E8}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

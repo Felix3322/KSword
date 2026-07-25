@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{392E21F7-EA89-4DCB-8F88-D7BDC652ADBD}</UniqueIdentifier>
+      <Extensions>cpp;c</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{59ED9805-748B-4E63-997B-F4AFA6CE12E6}</UniqueIdentifier>
+      <Extensions>h;hpp</Extensions>
+    </Filter>
+    <Filter Include="ArkDriverClient">
+      <UniqueIdentifier>{CBFF3346-D837-44B6-B8F4-6B45C45DFEB8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Project Files">
+      <UniqueIdentifier>{A5B08F84-CA27-4B88-8128-17879395E0D4}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CePluginSdk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KswordCeBridge.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="KswordCeBridge.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PluginExports.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverClient.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverError.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverMemory.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ksword\string\string.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="KswordCheatEnginePlugin.def">
+      <Filter>Project Files</Filter>
+    </None>
+    <None Include="README.md">
+      <Filter>Project Files</Filter>
+    </None>
+  </ItemGroup>
+</Project>

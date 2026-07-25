@@ -83,6 +83,7 @@ namespace ksword::ark
         AlpcPortQueryResult queryAlpcPort(std::uint32_t processId, std::uint64_t handleValue, unsigned long flags = KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_ALL) const;
         ProcessSectionQueryResult queryProcessSection(std::uint32_t processId, unsigned long flags = KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_ALL, unsigned long maxMappings = KSWORD_ARK_SECTION_MAPPING_LIMIT_DEFAULT) const;
         FileSectionMappingsQueryResult queryFileSectionMappings(const std::wstring& ntPath, unsigned long flags = KSWORD_ARK_FILE_SECTION_QUERY_FLAG_INCLUDE_ALL, unsigned long maxMappings = KSWORD_ARK_SECTION_MAPPING_LIMIT_DEFAULT) const;
+        VirtualMemoryQueryResult queryVirtualMemory(std::uint32_t processId, std::uint64_t baseAddress, unsigned long flags = 0UL) const;
         VirtualMemoryReadResult readVirtualMemory(std::uint32_t processId, std::uint64_t baseAddress, std::uint32_t bytesToRead, unsigned long flags = KSWORD_ARK_MEMORY_READ_FLAG_ZERO_FILL_UNREADABLE) const;
         VirtualMemoryWriteResult writeVirtualMemory(std::uint32_t processId, std::uint64_t baseAddress, const std::vector<std::uint8_t>& bytes, unsigned long flags = 0UL) const;
         // queryKernelMemoryEvidence：

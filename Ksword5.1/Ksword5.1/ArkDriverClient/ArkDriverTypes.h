@@ -622,6 +622,28 @@ namespace ksword::ark
     };
 
     // VirtualMemoryReadResult 是 R0 读目标进程虚拟内存的 R3 模型。
+    struct VirtualMemoryQueryResult
+    {
+        IoResult io;                    // io：DeviceIoControl 调用状态。
+        std::uint32_t version = 0;      // version：协议版本。
+        std::uint32_t processId = 0;    // processId：目标 PID。
+        std::uint32_t fieldFlags = 0;   // fieldFlags：KSWORD_ARK_MEMORY_FIELD_*。
+        std::uint32_t queryStatus = KSWORD_ARK_MEMORY_QUERY_STATUS_UNAVAILABLE; // queryStatus：R0 查询聚合状态。
+        long openStatus = 0;            // openStatus：R0 打开目标进程的 NTSTATUS。
+        long basicStatus = 0;           // basicStatus：ZwQueryVirtualMemory 的 NTSTATUS。
+        long mappedFileNameStatus = 0;  // mappedFileNameStatus：映射文件名查询状态。
+        std::uint32_t source = 0;       // source：数据来源。
+        std::uint64_t requestedBaseAddress = 0; // requestedBaseAddress：请求地址。
+        std::uint64_t baseAddress = 0;          // baseAddress：区域起始地址。
+        std::uint64_t allocationBase = 0;       // allocationBase：原始分配基址。
+        std::uint64_t regionSize = 0;           // regionSize：区域长度。
+        std::uint32_t allocationProtect = 0;    // allocationProtect：初始保护属性。
+        std::uint32_t state = 0;                // state：MEM_COMMIT/MEM_RESERVE/MEM_FREE。
+        std::uint32_t protect = 0;              // protect：当前页面保护属性。
+        std::uint32_t type = 0;                 // type：MEM_IMAGE/MEM_MAPPED/MEM_PRIVATE。
+        std::wstring mappedFileName;            // mappedFileName：可选映射文件路径。
+    };
+
     struct VirtualMemoryReadResult
     {
         IoResult io;                    // io：DeviceIoControl 调用状态。
