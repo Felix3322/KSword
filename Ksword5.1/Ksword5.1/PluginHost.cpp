@@ -96,6 +96,7 @@ namespace
     struct PluginTabPresentation
     {
         bool enabled = false;
+        QString command;
         QString title;
         QString readyEvent;
         int startupTimeoutMs = 15000;
@@ -455,6 +456,7 @@ namespace
     bool parseTabPresentation(
         const QJsonObject& manifest,
         const QString& pluginType,
+        const QString& defaultCommand,
         PluginTabPresentation* presentationOut,
         QString* errorOut)
     {
@@ -464,11 +466,13 @@ namespace
         }
         *presentationOut = {};
         const QJsonValue tabValue = manifest.value(QStringLiteral("tab"));
-        if (pluginType != QStringLiteral("tab"))
+        const bool supportsTab = pluginType == QStringLiteral("tab") ||
+            pluginType == QStringLiteral("hybrid");
+        if (!supportsTab)
         {
             if (!tabValue.isUndefined())
             {
-                *errorOut = QStringLiteral("tab 配置只允许用于 plugin_type=tab 的插件。");
+                *errorOut = QStringLiteral("tab 配置只允许用于 plugin_type=tab 或 hybrid 的插件。");
                 return false;
             }
             return true;
@@ -481,9 +485,19 @@ namespace
 
         const QJsonObject tabObject = tabValue.toObject();
         PluginTabPresentation presentation;
+        presentation.command = tabObject.value(QStringLiteral("command")).toString().trimmed();
+        if (presentation.command.isEmpty())
+        {
+            presentation.command = defaultCommand;
+        }
         if (!readRequiredString(tabObject, "title", &presentation.title, errorOut) ||
             !readRequiredString(tabObject, "ready_event", &presentation.readyEvent, errorOut))
         {
+            return false;
+        }
+        if (!isSafeCommandToken(presentation.command))
+        {
+            *errorOut = QStringLiteral("tab.command 不合法。");
             return false;
         }
         if (presentation.title.size() > 96 || !isValidProtocolName(presentation.readyEvent))
@@ -639,9 +653,11 @@ namespace
             return false;
         }
         descriptor.pluginType = object.value(QStringLiteral("plugin_type")).toString(QStringLiteral("command")).trimmed().toLower();
-        if (descriptor.pluginType != QStringLiteral("command") && descriptor.pluginType != QStringLiteral("tab"))
+        if (descriptor.pluginType != QStringLiteral("command") &&
+            descriptor.pluginType != QStringLiteral("tab") &&
+            descriptor.pluginType != QStringLiteral("hybrid"))
         {
-            *errorOut = QStringLiteral("plugin_type 只能是 command 或 tab。");
+            *errorOut = QStringLiteral("plugin_type 只能是 command、tab 或 hybrid。");
             return false;
         }
         if (descriptor.id != pluginId || !isValidPluginId(descriptor.id))
@@ -664,15 +680,22 @@ namespace
         for (const QJsonValue& target : targets)
         {
             const QString targetText = target.toString().trimmed().toLower();
+            const bool commandTarget =
+                targetText == QStringLiteral("file") ||
+                targetText == QStringLiteral("process") ||
+                targetText == QStringLiteral("network");
             const bool allowedTarget = descriptor.pluginType == QStringLiteral("tab")
                 ? targetText == QStringLiteral("tab")
-                : (targetText == QStringLiteral("file") || targetText == QStringLiteral("process") ||
-                    targetText == QStringLiteral("network"));
+                : descriptor.pluginType == QStringLiteral("hybrid")
+                    ? commandTarget || targetText == QStringLiteral("tab")
+                    : commandTarget;
             if (!allowedTarget)
             {
                 *errorOut = descriptor.pluginType == QStringLiteral("tab")
                     ? QStringLiteral("Tab 型插件的 targets 只能包含 tab。")
-                    : QStringLiteral("命令型插件的 targets 只能包含 file、process 和/或 network。");
+                    : descriptor.pluginType == QStringLiteral("hybrid")
+                        ? QStringLiteral("Hybrid 型插件的 targets 只能包含 file、process、network 和/或 tab。")
+                        : QStringLiteral("命令型插件的 targets 只能包含 file、process 和/或 network。");
                 return false;
             }
             if (!descriptor.targets.contains(targetText))
@@ -687,11 +710,28 @@ namespace
                 : QStringLiteral("targets 必须包含 file、process 和/或 network。");
             return false;
         }
+        if (descriptor.pluginType == QStringLiteral("hybrid"))
+        {
+            const bool hasCommandTarget =
+                descriptor.targets.contains(QStringLiteral("file")) ||
+                descriptor.targets.contains(QStringLiteral("process")) ||
+                descriptor.targets.contains(QStringLiteral("network"));
+            if (!descriptor.targets.contains(QStringLiteral("tab")) || !hasCommandTarget)
+            {
+                *errorOut = QStringLiteral("Hybrid 型插件的 targets 必须包含 tab 和至少一个命令目标。");
+                return false;
+            }
+        }
         if (!parseVisualization(object, &descriptor.visualization, errorOut))
         {
             return false;
         }
-        if (!parseTabPresentation(object, descriptor.pluginType, &descriptor.tabPresentation, errorOut))
+        if (!parseTabPresentation(
+                object,
+                descriptor.pluginType,
+                descriptor.defaultCommand,
+                &descriptor.tabPresentation,
+                errorOut))
         {
             return false;
         }
@@ -861,7 +901,9 @@ namespace
         QString* errorOut)
     {
         if (programOut == nullptr || argumentsOut == nullptr || errorOut == nullptr ||
-            descriptor.pluginType != QStringLiteral("tab") || !descriptor.tabPresentation.enabled)
+            (descriptor.pluginType != QStringLiteral("tab") &&
+             descriptor.pluginType != QStringLiteral("hybrid")) ||
+            !descriptor.tabPresentation.enabled)
         {
             return false;
         }
@@ -895,7 +937,7 @@ namespace
             *programOut = descriptor.entrypointPath;
         }
 
-        arguments << QStringLiteral("--ksword-plugin") << descriptor.defaultCommand << QStringLiteral("--")
+        arguments << QStringLiteral("--ksword-plugin") << descriptor.tabPresentation.command << QStringLiteral("--")
             << QStringLiteral("--parent-hwnd") << QString::number(static_cast<qulonglong>(parentWindowId))
             << QStringLiteral("--host-pid") << QString::number(QCoreApplication::applicationPid());
         *argumentsOut = arguments;
@@ -2290,7 +2332,9 @@ int ks::plugin_host::populateTabPlugins(QTabWidget* tabWidget, QWidget* owner)
     int addedTabs = 0;
     for (const PluginDescriptor& descriptor : result.plugins)
     {
-        if (descriptor.pluginType != QStringLiteral("tab") || !descriptor.tabPresentation.enabled ||
+        if ((descriptor.pluginType != QStringLiteral("tab") &&
+             descriptor.pluginType != QStringLiteral("hybrid")) ||
+            !descriptor.tabPresentation.enabled ||
             !descriptor.targets.contains(QStringLiteral("tab")))
         {
             continue;

@@ -40,7 +40,7 @@ namespace ks::plugin_host
     void populateTargetMenu(QMenu* menu, QWidget* owner, const InvocationContext& context);
 
     // populateTabPlugins：
-    // - 发现 plugin_type=tab 的外部进程插件；
+    // - 发现 plugin_type=tab 或 hybrid 的外部进程插件；
     // - 在宿主 QTabWidget 中建立原生子窗口容器，不把插件 DLL/代码加载进 KSword；
     // - 插件窗口句柄必须属于刚启动的插件进程，且必须直接挂到宿主提供的 HWND。
     // - 返回成功加入宿主的 Tab 数量。

@@ -4,6 +4,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cwchar>
 #include <fstream>
 #include <string>
@@ -13,14 +14,19 @@
 namespace
 {
     constexpr wchar_t kPluginTitle[] = L"KSword Cheat Engine";
+    constexpr wchar_t kTabWindowClass[] = L"KSwordCheatEngineTabWindow";
     constexpr char kProtocol[] = "ksword-plugin/1";
     constexpr char kPluginId[] = "cheat-engine";
+    constexpr UINT kInitializeTabMessage = WM_APP + 1U;
+    constexpr UINT_PTR kHostWatchTimerId = 1U;
 
     // ParsedArguments：保存 KSword 插件协议命令及目标进程参数。
     struct ParsedArguments
     {
         std::wstring command;
         DWORD targetProcessId = 0U;
+        HWND parentWindow = nullptr;
+        DWORD hostProcessId = 0U;
         bool valid = false;
     };
 
@@ -32,6 +38,13 @@ namespace
         timeout,
         launchFailed
     };
+
+    HWND gTabWindow = nullptr;
+    HWND gStatusWindow = nullptr;
+    HWND gCheatEngineWindow = nullptr;
+    HANDLE gCheatEngineProcess = nullptr;
+    DWORD gHostProcessId = 0U;
+    int gTabExitCode = 0;
 
     // emitJsonLine：只向 stdout 写入 UTF-8 JSON Lines，供 KSword 宿主解析。
     void emitJsonLine(const std::string& eventName, const std::string& fields)
@@ -90,10 +103,33 @@ namespace
         return true;
     }
 
+    // parseWindowHandle：严格解析宿主以十进制传入的 HWND。
+    bool parseWindowHandle(const std::wstring& text, HWND* const valueOut)
+    {
+        if (valueOut == nullptr || text.empty())
+        {
+            return false;
+        }
+        wchar_t* end = nullptr;
+        errno = 0;
+        const unsigned long long value = std::wcstoull(text.c_str(), &end, 10);
+        if (errno != 0 || end == text.c_str() || *end != L'\0' || value == 0ULL)
+        {
+            return false;
+        }
+        const auto numericHandle = static_cast<std::uintptr_t>(value);
+        if (static_cast<unsigned long long>(numericHandle) != value)
+        {
+            return false;
+        }
+        *valueOut = reinterpret_cast<HWND>(numericHandle);
+        return true;
+    }
+
     // parseArguments：
     // - 输入：wmain 原始参数。
     // - 处理：识别 --ksword-plugin <command> -- 后的稳定目标参数。
-    // - 返回：仅接受 info、check 和带有效 PID 的 launch。
+    // - 返回：接受 info、check、带有效 PID 的 launch，以及带受校验父窗口的 tab。
     ParsedArguments parseArguments(const int argc, wchar_t* const argv[])
     {
         ParsedArguments parsed;
@@ -107,21 +143,58 @@ namespace
             parsed.valid = true;
             return parsed;
         }
-        if (parsed.command != L"launch")
+        if (parsed.command != L"launch" && parsed.command != L"tab")
         {
             return parsed;
         }
 
-        // 只消费宿主提供的 PID；其它稳定上下文字段保持向前兼容并忽略。
+        // 只消费宿主提供的稳定目标/Tab 上下文字段；其它字段保持向前兼容并忽略。
         for (int index = 3; index + 1 < argc; ++index)
         {
-            if (std::wstring(argv[index]) == L"--pid")
+            const std::wstring argument = argv[index];
+            if (argument == L"--pid")
             {
-                parsed.valid =
-                    parseUnsignedProcessId(argv[index + 1], &parsed.targetProcessId);
-                return parsed;
+                if (!parseUnsignedProcessId(argv[index + 1], &parsed.targetProcessId))
+                {
+                    return parsed;
+                }
+                ++index;
+            }
+            else if (argument == L"--parent-hwnd")
+            {
+                if (!parseWindowHandle(argv[index + 1], &parsed.parentWindow))
+                {
+                    return parsed;
+                }
+                ++index;
+            }
+            else if (argument == L"--host-pid")
+            {
+                if (!parseUnsignedProcessId(argv[index + 1], &parsed.hostProcessId))
+                {
+                    return parsed;
+                }
+                ++index;
             }
         }
+        if (parsed.command == L"launch")
+        {
+            parsed.valid = parsed.targetProcessId != 0U;
+            return parsed;
+        }
+
+        DWORD parentOwnerProcessId = 0U;
+        if (parsed.parentWindow == nullptr ||
+            parsed.hostProcessId == 0U ||
+            !::IsWindow(parsed.parentWindow) ||
+            ::GetWindowThreadProcessId(
+                parsed.parentWindow,
+                &parentOwnerProcessId) == 0U ||
+            parentOwnerProcessId != parsed.hostProcessId)
+        {
+            return parsed;
+        }
+        parsed.valid = true;
         return parsed;
     }
 
@@ -175,7 +248,9 @@ namespace
     // - 首次失败：要求用户回到 KSword 启用 R0 并加载驱动。
     // - 重试仍失败：按需求明确提示 R0 未启用并要求谨慎使用。
     // - 返回：用户是否允许继续启动；driverReadyOut 保存最终探测状态。
-    bool confirmR0OrWarn(bool* const driverReadyOut)
+    bool confirmR0OrWarn(
+        const HWND ownerWindow,
+        bool* const driverReadyOut)
     {
         if (driverReadyOut == nullptr)
         {
@@ -188,7 +263,7 @@ namespace
         }
 
         const int retryResult = ::MessageBoxW(
-            nullptr,
+            ownerWindow,
             L"KSword R0 驱动当前不可用。\n\n"
             L"请回到 KSword 启用 R0 模式并加载驱动，然后点击“重试”。",
             kPluginTitle,
@@ -204,7 +279,7 @@ namespace
             return true;
         }
         const int warningResult = ::MessageBoxW(
-            nullptr,
+            ownerWindow,
             L"R0 模式未启用，Cheat Engine 的进程交互无法保证通过 "
             L"KSword 驱动，请小心使用。\n\n是否仍要继续启动？",
             kPluginTitle,
@@ -269,8 +344,17 @@ namespace
     BridgeStatus launchCheatEngine(
         const std::wstring& pluginDirectory,
         const DWORD targetProcessId,
-        DWORD* const cheatEngineProcessIdOut)
+        DWORD* const cheatEngineProcessIdOut,
+        HANDLE* const cheatEngineProcessHandleOut)
     {
+        if (cheatEngineProcessIdOut != nullptr)
+        {
+            *cheatEngineProcessIdOut = 0U;
+        }
+        if (cheatEngineProcessHandleOut != nullptr)
+        {
+            *cheatEngineProcessHandleOut = nullptr;
+        }
         const std::wstring ceDirectory =
             joinPath(pluginDirectory, L"payload\\Cheat Engine");
         const std::wstring ceExecutable =
@@ -331,10 +415,379 @@ namespace
             *cheatEngineProcessIdOut = processInformation.dwProcessId;
         }
         ::CloseHandle(processInformation.hThread);
-        ::CloseHandle(processInformation.hProcess);
+        if (cheatEngineProcessHandleOut != nullptr)
+        {
+            *cheatEngineProcessHandleOut = processInformation.hProcess;
+        }
         const BridgeStatus status = waitForBridgeStatus(statusPath);
+        if (cheatEngineProcessHandleOut == nullptr)
+        {
+            ::CloseHandle(processInformation.hProcess);
+        }
         (void)::DeleteFileW(statusPath.c_str());
         return status;
+    }
+
+    struct WindowSearchContext
+    {
+        DWORD processId = 0U;
+        HWND window = nullptr;
+    };
+
+    BOOL CALLBACK findProcessTopLevelWindow(
+        const HWND window,
+        const LPARAM contextValue)
+    {
+        auto* const context =
+            reinterpret_cast<WindowSearchContext*>(contextValue);
+        if (context == nullptr || !::IsWindowVisible(window) ||
+            ::GetWindow(window, GW_OWNER) != nullptr)
+        {
+            return TRUE;
+        }
+        DWORD ownerProcessId = 0U;
+        (void)::GetWindowThreadProcessId(window, &ownerProcessId);
+        if (ownerProcessId != context->processId)
+        {
+            return TRUE;
+        }
+        context->window = window;
+        return FALSE;
+    }
+
+    // waitForCheatEngineWindow：等待 CE 创建可见顶层窗口，供 Tab 容器嵌入。
+    HWND waitForCheatEngineWindow(const DWORD processId)
+    {
+        constexpr std::size_t kAttemptCount = 200U;
+        for (std::size_t attempt = 0U; attempt < kAttemptCount; ++attempt)
+        {
+            WindowSearchContext context{};
+            context.processId = processId;
+            (void)::EnumWindows(
+                findProcessTopLevelWindow,
+                reinterpret_cast<LPARAM>(&context));
+            if (context.window != nullptr)
+            {
+                return context.window;
+            }
+            if (gCheatEngineProcess != nullptr &&
+                ::WaitForSingleObject(gCheatEngineProcess, 0U) == WAIT_OBJECT_0)
+            {
+                return nullptr;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return nullptr;
+    }
+
+    void resizeEmbeddedWindow(const HWND containerWindow)
+    {
+        if (!::IsWindow(containerWindow) ||
+            !::IsWindow(gCheatEngineWindow))
+        {
+            return;
+        }
+        RECT clientRectangle{};
+        if (::GetClientRect(containerWindow, &clientRectangle) == FALSE)
+        {
+            return;
+        }
+        (void)::MoveWindow(
+            gCheatEngineWindow,
+            0,
+            0,
+            clientRectangle.right - clientRectangle.left,
+            clientRectangle.bottom - clientRectangle.top,
+            TRUE);
+    }
+
+    bool embedCheatEngineWindow(
+        const HWND containerWindow,
+        const HWND cheatEngineWindow)
+    {
+        if (!::IsWindow(containerWindow) ||
+            !::IsWindow(cheatEngineWindow))
+        {
+            return false;
+        }
+        ::SetLastError(ERROR_SUCCESS);
+        const HWND previousParent =
+            ::SetParent(cheatEngineWindow, containerWindow);
+        if (previousParent == nullptr &&
+            ::GetLastError() != ERROR_SUCCESS)
+        {
+            return false;
+        }
+
+        LONG_PTR style = ::GetWindowLongPtrW(cheatEngineWindow, GWL_STYLE);
+        style &= ~(static_cast<LONG_PTR>(
+            WS_POPUP | WS_CAPTION | WS_THICKFRAME |
+            WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU));
+        style |= WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        (void)::SetWindowLongPtrW(
+            cheatEngineWindow,
+            GWL_STYLE,
+            style);
+        (void)::SetWindowPos(
+            cheatEngineWindow,
+            nullptr,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE |
+            SWP_NOSIZE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        gCheatEngineWindow = cheatEngineWindow;
+        resizeEmbeddedWindow(containerWindow);
+        return true;
+    }
+
+    void closeCheatEngine()
+    {
+        if (::IsWindow(gCheatEngineWindow))
+        {
+            (void)::PostMessageW(gCheatEngineWindow, WM_CLOSE, 0U, 0);
+        }
+        gCheatEngineWindow = nullptr;
+        if (gCheatEngineProcess != nullptr)
+        {
+            ::CloseHandle(gCheatEngineProcess);
+            gCheatEngineProcess = nullptr;
+        }
+    }
+
+    void failTab(
+        const HWND window,
+        const char* const code,
+        const char* const message)
+    {
+        emitError(code, message);
+        gTabExitCode = 2;
+        if (::IsWindow(window))
+        {
+            (void)::DestroyWindow(window);
+        }
+    }
+
+    LRESULT CALLBACK tabWindowProcedure(
+        const HWND window,
+        const UINT message,
+        const WPARAM wParam,
+        const LPARAM lParam)
+    {
+        switch (message)
+        {
+        case WM_CREATE:
+            gStatusWindow = ::CreateWindowExW(
+                0U,
+                L"STATIC",
+                L"正在初始化 KSword R0 与 Cheat Engine 桥接…",
+                WS_CHILD | WS_VISIBLE | SS_CENTER,
+                0,
+                0,
+                1,
+                1,
+                window,
+                nullptr,
+                ::GetModuleHandleW(nullptr),
+                nullptr);
+            if (gStatusWindow != nullptr)
+            {
+                (void)::SendMessageW(
+                    gStatusWindow,
+                    WM_SETFONT,
+                    reinterpret_cast<WPARAM>(
+                        ::GetStockObject(DEFAULT_GUI_FONT)),
+                    TRUE);
+            }
+            return 0;
+        case WM_SIZE:
+            if (::IsWindow(gStatusWindow))
+            {
+                (void)::MoveWindow(
+                    gStatusWindow,
+                    16,
+                    16,
+                    LOWORD(lParam) > 32U ? LOWORD(lParam) - 32 : 1,
+                    48,
+                    TRUE);
+            }
+            resizeEmbeddedWindow(window);
+            return 0;
+        case kInitializeTabMessage:
+        {
+            bool driverReady = false;
+            if (!confirmR0OrWarn(window, &driverReady))
+            {
+                failTab(
+                    window,
+                    "r0_required",
+                    "Enable KSword R0 mode and load the driver before launching.");
+                return 0;
+            }
+            const std::wstring pluginDirectory =
+                parentDirectory(currentExecutablePath());
+            DWORD cheatEngineProcessId = 0U;
+            const BridgeStatus bridgeStatus = launchCheatEngine(
+                pluginDirectory,
+                0U,
+                &cheatEngineProcessId,
+                &gCheatEngineProcess);
+            if (bridgeStatus == BridgeStatus::launchFailed)
+            {
+                failTab(
+                    window,
+                    "launch_failed",
+                    "The bundled Cheat Engine payload is incomplete or failed to start.");
+                return 0;
+            }
+            if (bridgeStatus != BridgeStatus::ready)
+            {
+                (void)::MessageBoxW(
+                    window,
+                    L"R0 模式未启用或 KSword 桥接初始化失败，进程交互无法保证"
+                    L"通过 KSword 驱动，请小心使用。",
+                    kPluginTitle,
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+                emitJsonLine(
+                    "warning",
+                    "\"code\":\"bridge_not_ready\","
+                    "\"message\":\"R0 mode is not enabled; use carefully.\"");
+            }
+
+            const HWND cheatEngineWindow =
+                waitForCheatEngineWindow(cheatEngineProcessId);
+            if (cheatEngineWindow == nullptr ||
+                !embedCheatEngineWindow(window, cheatEngineWindow))
+            {
+                if (gCheatEngineProcess != nullptr)
+                {
+                    (void)::TerminateProcess(gCheatEngineProcess, 2U);
+                }
+                failTab(
+                    window,
+                    "embed_failed",
+                    "Cheat Engine started but its main window could not be embedded.");
+                return 0;
+            }
+            if (::IsWindow(gStatusWindow))
+            {
+                (void)::ShowWindow(gStatusWindow, SW_HIDE);
+            }
+            emitJsonLine(
+                "tab_embedded",
+                "\"cheat_engine_pid\":" +
+                std::to_string(cheatEngineProcessId) +
+                ",\"r0_ready\":" +
+                (driverReady ? "true" : "false") +
+                ",\"bridge_ready\":" +
+                (bridgeStatus == BridgeStatus::ready ? "true" : "false"));
+            (void)::SetTimer(
+                window,
+                kHostWatchTimerId,
+                1000U,
+                nullptr);
+            return 0;
+        }
+        case WM_TIMER:
+            if (wParam == kHostWatchTimerId)
+            {
+                HANDLE hostProcess = ::OpenProcess(
+                    SYNCHRONIZE,
+                    FALSE,
+                    gHostProcessId);
+                const bool hostExited =
+                    hostProcess == nullptr ||
+                    ::WaitForSingleObject(hostProcess, 0U) == WAIT_OBJECT_0;
+                if (hostProcess != nullptr)
+                {
+                    ::CloseHandle(hostProcess);
+                }
+                const bool cheatEngineExited =
+                    gCheatEngineProcess != nullptr &&
+                    ::WaitForSingleObject(
+                        gCheatEngineProcess,
+                        0U) == WAIT_OBJECT_0;
+                if (hostExited || cheatEngineExited)
+                {
+                    gTabExitCode = hostExited ? 0 : 2;
+                    (void)::DestroyWindow(window);
+                }
+            }
+            return 0;
+        case WM_DESTROY:
+            (void)::KillTimer(window, kHostWatchTimerId);
+            closeCheatEngine();
+            gStatusWindow = nullptr;
+            gTabWindow = nullptr;
+            ::PostQuitMessage(gTabExitCode);
+            return 0;
+        default:
+            return ::DefWindowProcW(window, message, wParam, lParam);
+        }
+    }
+
+    int runTab(const ParsedArguments& arguments)
+    {
+        WNDCLASSEXW windowClass{};
+        windowClass.cbSize = sizeof(windowClass);
+        windowClass.lpfnWndProc = tabWindowProcedure;
+        windowClass.hInstance = ::GetModuleHandleW(nullptr);
+        windowClass.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+        windowClass.hbrBackground =
+            reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        windowClass.lpszClassName = kTabWindowClass;
+        if (::RegisterClassExW(&windowClass) == 0U &&
+            ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        {
+            emitError(
+                "window_class_failed",
+                "The Cheat Engine Tab window class could not be registered.");
+            return 2;
+        }
+
+        gHostProcessId = arguments.hostProcessId;
+        gTabExitCode = 0;
+        gTabWindow = ::CreateWindowExW(
+            WS_EX_CONTROLPARENT,
+            kTabWindowClass,
+            kPluginTitle,
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            0,
+            0,
+            1,
+            1,
+            arguments.parentWindow,
+            nullptr,
+            ::GetModuleHandleW(nullptr),
+            nullptr);
+        if (gTabWindow == nullptr)
+        {
+            emitError(
+                "tab_window_failed",
+                "The Cheat Engine Tab child window could not be created.");
+            return 2;
+        }
+
+        emitJsonLine(
+            "tab_ready",
+            "\"hwnd\":\"" +
+            std::to_string(
+                reinterpret_cast<std::uintptr_t>(gTabWindow)) +
+            "\"");
+        (void)::PostMessageW(
+            gTabWindow,
+            kInitializeTabMessage,
+            0U,
+            0);
+
+        MSG message{};
+        while (::GetMessageW(&message, nullptr, 0U, 0U) > 0)
+        {
+            ::TranslateMessage(&message);
+            ::DispatchMessageW(&message);
+        }
+        return gTabExitCode;
     }
 
     // runInfo：输出插件能力，便于离线校验入口和协议。
@@ -342,7 +795,9 @@ namespace
     {
         emitJsonLine(
             "info",
-            "\"runtime\":\"executable\",\"commands\":[\"launch\",\"check\",\"info\"],"
+            "\"runtime\":\"executable\",\"plugin_type\":\"hybrid\","
+            "\"targets\":[\"process\",\"tab\"],"
+            "\"commands\":[\"launch\",\"tab\",\"check\",\"info\"],"
             "\"driver_transport\":\"KswordARK\",\"bridge_api\":6");
         return 0;
     }
@@ -375,12 +830,16 @@ int wmain(const int argc, wchar_t* const argv[])
     {
         return runDriverCheck();
     }
+    if (arguments.command == L"tab")
+    {
+        return runTab(arguments);
+    }
 
     emitJsonLine(
         "launch_started",
         "\"target_pid\":" + std::to_string(arguments.targetProcessId));
     bool driverReady = false;
-    if (!confirmR0OrWarn(&driverReady))
+    if (!confirmR0OrWarn(nullptr, &driverReady))
     {
         emitError(
             "r0_required",
@@ -395,7 +854,8 @@ int wmain(const int argc, wchar_t* const argv[])
     const BridgeStatus bridgeStatus = launchCheatEngine(
         pluginDirectory,
         arguments.targetProcessId,
-        &cheatEngineProcessId);
+        &cheatEngineProcessId,
+        nullptr);
     if (bridgeStatus == BridgeStatus::launchFailed)
     {
         ::MessageBoxW(

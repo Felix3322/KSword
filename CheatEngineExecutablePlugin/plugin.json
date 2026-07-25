@@ -2,19 +2,31 @@
   "ksword_plugin_api": "1",
   "id": "cheat-engine",
   "name": "Cheat Engine（KSword R0）",
-  "version": "1.0.0",
-  "description": "Launches the bundled Cheat Engine with process open, memory query, read and write routed through the KSword driver.",
+  "version": "1.1.0",
+  "description": "Runs the bundled Cheat Engine as a process action or embedded KSword Tab, with memory interaction routed through the KSword driver.",
+  "plugin_type": "hybrid",
   "runtime": "executable",
   "entrypoint": "KswordCheatEngineLauncher.exe",
   "default_command": "launch",
   "targets": [
-    "process"
+    "process",
+    "tab"
   ],
+  "tab": {
+    "title": "Cheat Engine",
+    "command": "tab",
+    "ready_event": "tab_ready",
+    "startup_timeout_ms": 20000
+  },
   "commands": [
     {
       "name": "launch",
       "description": "Verify KSword R0, initialize the CE bridge and open the selected process.",
       "syntax": "--target-kind process --pid PID [--path IMAGE_PATH] [--process-name NAME]"
+    },
+    {
+      "name": "tab",
+      "description": "Create a verified native child window and embed Cheat Engine in the KSword Plugins Tab."
     },
     {
       "name": "check",
