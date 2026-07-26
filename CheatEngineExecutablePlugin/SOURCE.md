@@ -3,7 +3,7 @@
 The KSword launcher, Cheat Engine bridge, and ArkDriverClient changes used by
 this package are available in the KSword repository at commit:
 
-`a239e94c11dbc332ec14c0c6ba9d488916fcae7b`
+`5b796af2681af623449af3150db64a6ce372711c`
 
 Repository:
 
