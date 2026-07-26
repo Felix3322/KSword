@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cwchar>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -432,6 +433,7 @@ namespace
     {
         DWORD processId = 0U;
         HWND window = nullptr;
+        int score = 0;
     };
 
     BOOL CALLBACK findProcessTopLevelWindow(
@@ -440,8 +442,7 @@ namespace
     {
         auto* const context =
             reinterpret_cast<WindowSearchContext*>(contextValue);
-        if (context == nullptr || !::IsWindowVisible(window) ||
-            ::GetWindow(window, GW_OWNER) != nullptr)
+        if (context == nullptr || !::IsWindowVisible(window))
         {
             return TRUE;
         }
@@ -451,8 +452,39 @@ namespace
         {
             return TRUE;
         }
-        context->window = window;
-        return FALSE;
+
+        // Cheat Engine/Lazarus 会先创建一个类名为 Window 的应用宿主，再创建真正的
+        // TCustomForm 主窗体并把前者设为 owner。只取第一个顶层窗口会嵌入隐藏宿主，
+        // 留下带标题栏的真实主窗体悬浮在 Tab 上。这里对真实主窗体进行确定性评分。
+        wchar_t className[128] = {};
+        wchar_t windowTitle[256] = {};
+        (void)::GetClassNameW(
+            window,
+            className,
+            static_cast<int>(std::size(className)));
+        (void)::GetWindowTextW(
+            window,
+            windowTitle,
+            static_cast<int>(std::size(windowTitle)));
+        int score = 0;
+        if (std::wcscmp(className, L"TCustomForm") == 0)
+        {
+            score += 1000;
+        }
+        if (std::wcsstr(windowTitle, L"Cheat Engine") != nullptr)
+        {
+            score += 500;
+        }
+        if ((::GetWindowLongPtrW(window, GWL_STYLE) & WS_CAPTION) != 0)
+        {
+            score += 10;
+        }
+        if (score > context->score)
+        {
+            context->window = window;
+            context->score = score;
+        }
+        return TRUE;
     }
 
     // waitForCheatEngineWindow：等待 CE 创建可见顶层窗口，供 Tab 容器嵌入。
@@ -466,7 +498,7 @@ namespace
             (void)::EnumWindows(
                 findProcessTopLevelWindow,
                 reinterpret_cast<LPARAM>(&context));
-            if (context.window != nullptr)
+            if (context.window != nullptr && context.score >= 1500)
             {
                 return context.window;
             }
@@ -528,14 +560,25 @@ namespace
             cheatEngineWindow,
             GWL_STYLE,
             style);
+
+        LONG_PTR extendedStyle =
+            ::GetWindowLongPtrW(cheatEngineWindow, GWL_EXSTYLE);
+        extendedStyle &= ~(static_cast<LONG_PTR>(
+            WS_EX_APPWINDOW | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE |
+            WS_EX_DLGMODALFRAME | WS_EX_STATICEDGE));
+        extendedStyle |= WS_EX_CONTROLPARENT;
+        (void)::SetWindowLongPtrW(
+            cheatEngineWindow,
+            GWL_EXSTYLE,
+            extendedStyle);
         (void)::SetWindowPos(
             cheatEngineWindow,
-            nullptr,
+            HWND_TOP,
             0,
             0,
             0,
             0,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE |
+            SWP_NOACTIVATE | SWP_NOMOVE |
             SWP_NOSIZE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         gCheatEngineWindow = cheatEngineWindow;
         resizeEmbeddedWindow(containerWindow);
@@ -692,6 +735,14 @@ namespace
         case WM_TIMER:
             if (wParam == kHostWatchTimerId)
             {
+                // Lazarus 可能在窗体初始化或显示状态变化后重新应用顶层样式。
+                // 定时重申嵌入关系和客户区尺寸，确保 CE 始终无边框铺满 Tab。
+                if (::IsWindow(gCheatEngineWindow))
+                {
+                    (void)embedCheatEngineWindow(
+                        window,
+                        gCheatEngineWindow);
+                }
                 HANDLE hostProcess = ::OpenProcess(
                     SYNCHRONIZE,
                     FALSE,

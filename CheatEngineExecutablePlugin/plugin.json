@@ -2,7 +2,7 @@
   "ksword_plugin_api": "1",
   "id": "cheat-engine",
   "name": "Cheat Engine（KSword R0）",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Runs the bundled Cheat Engine as a process action or embedded KSword Tab, with memory interaction routed through the KSword driver.",
   "plugin_type": "hybrid",
   "runtime": "executable",
