@@ -471,6 +471,10 @@ void ProcessTraceMonitorWidget::updateActionState()
     {
         m_availableRefreshButton->setEnabled(!running && !m_availableRefreshPending.load());
     }
+    if (m_createTargetButton != nullptr)
+    {
+        m_createTargetButton->setEnabled(!running);
+    }
     if (m_addSelectedButton != nullptr)
     {
         m_addSelectedButton->setEnabled(!running && m_availableTable != nullptr && m_availableTable->selectedItems().size() > 0);

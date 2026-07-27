@@ -148,6 +148,49 @@ namespace ks::process
         std::uint32_t dwThreadId = 0;
     };
 
+    // SuspendedProcessLaunchFailure：进程定向监控创建挂起目标时的失败分类。
+    // - 供 UI 区分“需要管理员”“无法降级令牌”和普通 CreateProcess 失败。
+    enum class SuspendedProcessLaunchFailure
+    {
+        None = 0,
+        InvalidArgument,
+        AdministratorRequired,
+        UnelevatedTokenUnavailable,
+        CreateFailed
+    };
+
+    // SuspendedProcessLaunchRequest：进程定向监控的受控创建参数。
+    // - imagePath：目标可执行文件绝对路径；
+    // - argumentText：原样追加到命令行的可选参数；
+    // - workingDirectory：目标进程工作目录，空值表示由 Windows 决定；
+    // - runAsAdministrator：true 时要求调用方当前已提升，不发起 UAC；
+    // - allowElevatedFallback：普通权限令牌不可用时，允许显式回退到当前提升令牌。
+    struct SuspendedProcessLaunchRequest
+    {
+        std::string imagePath;
+        std::string argumentText;
+        std::string workingDirectory;
+        bool runAsAdministrator = false;
+        bool allowElevatedFallback = false;
+    };
+
+    // SuspendedProcessLaunchResult：受控挂起创建结果。
+    // - initialThreadHandle 为有效 Win32 句柄快照，必须由调用方通过
+    //   CloseSuspendedProcessInitialThreadHandle 关闭；
+    // - process handle 已由实现层关闭，调用方只保留 PID/TID 和主线程句柄。
+    struct SuspendedProcessLaunchResult
+    {
+        bool success = false;
+        SuspendedProcessLaunchFailure failure = SuspendedProcessLaunchFailure::None;
+        std::uint32_t win32Error = 0;
+        std::string detailText;
+        std::uint32_t processId = 0;
+        std::uint32_t threadId = 0;
+        std::uint64_t initialThreadHandle = 0;
+        bool usedUnelevatedToken = false;
+        bool usedElevatedFallback = false;
+    };
+
     // ProcessRecord：单进程快照数据结构。
     struct ProcessRecord
     {
@@ -556,6 +599,23 @@ namespace ks::process
     bool LaunchProcess(
         const CreateProcessRequest& request,
         CreateProcessResult* resultOut);
+
+    // LaunchSuspendedProcess：以 CREATE_SUSPENDED 创建进程定向监控目标。
+    // - 当前进程已提升且 request.runAsAdministrator=false 时，优先使用 TokenLinkedToken
+    //   创建普通权限目标；
+    // - 成功时保留主线程句柄供 ResumeSuspendedProcessInitialThread 精确恢复。
+    bool LaunchSuspendedProcess(
+        const SuspendedProcessLaunchRequest& request,
+        SuspendedProcessLaunchResult* resultOut);
+
+    // ResumeSuspendedProcessInitialThread：恢复由 LaunchSuspendedProcess 保留的主线程一次。
+    bool ResumeSuspendedProcessInitialThread(
+        std::uint64_t initialThreadHandle,
+        std::string* errorMessage);
+
+    // CloseSuspendedProcessInitialThreadHandle：关闭受控挂起创建返回的主线程句柄。
+    void CloseSuspendedProcessInitialThreadHandle(std::uint64_t initialThreadHandle);
+
     std::wstring GetCurrentProcessPath();
 
 }

@@ -224,7 +224,9 @@ private:
     void applyAvailableProcessFilter();
     void addSelectedAvailableProcesses();
     void addManualProcessByPid();
+    void createSuspendedTargetProcess();
     void addTargetProcessByPid(std::uint32_t pidValue, const QString& sourceText);
+    void updateTargetProcessRemarkByPid(std::uint32_t pidValue, const QString& remarkText);
     // upsertAutoTrackedProcessInTargetList：
     // - 作用：把 ETW 识别到的新子进程同步到“监控目标”列表；
     // - 调用：ETW 线程通过 QueuedConnection 回到 UI 线程后调用；
@@ -355,6 +357,7 @@ private:
     // ========================= 可选进程区 =======================
     QLineEdit* m_availableFilterEdit = nullptr;          // m_availableFilterEdit：可选进程过滤框。
     QPushButton* m_availableRefreshButton = nullptr;     // m_availableRefreshButton：刷新进程列表按钮。
+    QPushButton* m_createTargetButton = nullptr;         // m_createTargetButton：创建并挂起监控目标按钮。
     QPushButton* m_addSelectedButton = nullptr;          // m_addSelectedButton：添加选中进程按钮。
     QLineEdit* m_manualPidEdit = nullptr;                // m_manualPidEdit：手动输入 PID 框。
     QPushButton* m_addManualPidButton = nullptr;         // m_addManualPidButton：按 PID 添加按钮。

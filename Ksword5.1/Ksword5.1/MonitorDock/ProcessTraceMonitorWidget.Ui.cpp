@@ -189,6 +189,13 @@ void ProcessTraceMonitorWidget::initializeUi()
     m_availableRefreshButton->setStyleSheet(blueButtonStyle());
     availableHeaderLayout->addWidget(m_availableRefreshButton, 0);
 
+    m_createTargetButton = createIconButton(
+        m_availablePanel,
+        ":/Icon/plus.svg",
+        QStringLiteral("创建并挂起监控目标"));
+    m_createTargetButton->setStyleSheet(blueButtonStyle());
+    availableHeaderLayout->addWidget(m_createTargetButton, 0);
+
     m_addSelectedButton = createIconButton(
         m_availablePanel,
         ":/Icon/process_start.svg",

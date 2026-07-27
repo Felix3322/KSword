@@ -17,7 +17,14 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFormLayout>
+#include <QHBoxLayout>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
@@ -30,9 +37,11 @@
 #include <QTableWidgetItem>
 #include <QTimer>
 #include <QVariant>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -293,6 +302,95 @@ namespace
         }
         return record;
     }
+
+    // SuspendedTargetDialogInput：创建并挂起监控目标弹窗的收集结果。
+    struct SuspendedTargetDialogInput
+    {
+        QString imagePath;
+        QString argumentText;
+        bool runAsAdministrator = false;
+    };
+
+    // showSuspendedTargetDialog：显示程序路径、原样参数和管理员选项。
+    // 返回 true 表示用户确认创建，false 表示取消，不产生任何进程副作用。
+    bool showSuspendedTargetDialog(
+        QWidget* const parentWidget,
+        SuspendedTargetDialogInput* const inputOut)
+    {
+        if (inputOut == nullptr)
+        {
+            return false;
+        }
+
+        QDialog dialog(parentWidget);
+        dialog.setWindowTitle(QStringLiteral("创建并挂起监控目标"));
+        dialog.setModal(true);
+        dialog.setMinimumWidth(560);
+
+        QVBoxLayout* rootLayout = new QVBoxLayout(&dialog);
+        rootLayout->setContentsMargins(16, 16, 16, 16);
+        rootLayout->setSpacing(10);
+
+        QFormLayout* formLayout = new QFormLayout();
+        formLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+        formLayout->setHorizontalSpacing(10);
+        formLayout->setVerticalSpacing(8);
+
+        QLineEdit* imagePathEdit = new QLineEdit(&dialog);
+        imagePathEdit->setPlaceholderText(QStringLiteral("选择要创建的可执行文件"));
+        imagePathEdit->setClearButtonEnabled(true);
+
+        QPushButton* browseButton = new QPushButton(QStringLiteral("浏览…"), &dialog);
+        QHBoxLayout* imagePathLayout = new QHBoxLayout();
+        imagePathLayout->setContentsMargins(0, 0, 0, 0);
+        imagePathLayout->setSpacing(6);
+        imagePathLayout->addWidget(imagePathEdit, 1);
+        imagePathLayout->addWidget(browseButton, 0);
+
+        QWidget* imagePathWidget = new QWidget(&dialog);
+        imagePathWidget->setLayout(imagePathLayout);
+        formLayout->addRow(QStringLiteral("程序路径:"), imagePathWidget);
+
+        QLineEdit* argumentEdit = new QLineEdit(&dialog);
+        argumentEdit->setPlaceholderText(QStringLiteral("将按原样传递给目标进程"));
+        argumentEdit->setClearButtonEnabled(true);
+        formLayout->addRow(QStringLiteral("进程参数（可选）"), argumentEdit);
+
+        QCheckBox* runAsAdministratorCheck = new QCheckBox(QStringLiteral("以管理员运行"), &dialog);
+        formLayout->addRow(QString(), runAsAdministratorCheck);
+        rootLayout->addLayout(formLayout);
+
+        QDialogButtonBox* buttonBox = new QDialogButtonBox(&dialog);
+        QPushButton* createButton = buttonBox->addButton(
+            QStringLiteral("创建并挂起"),
+            QDialogButtonBox::AcceptRole);
+        buttonBox->addButton(QStringLiteral("取消"), QDialogButtonBox::RejectRole);
+        rootLayout->addWidget(buttonBox);
+
+        QObject::connect(browseButton, &QPushButton::clicked, &dialog, [&dialog, imagePathEdit]() {
+            const QString imagePath = QFileDialog::getOpenFileName(
+                &dialog,
+                QStringLiteral("选择可执行文件"),
+                imagePathEdit->text().trimmed(),
+                QStringLiteral("可执行文件 (*.exe);;所有文件 (*.*)"));
+            if (!imagePath.isEmpty())
+            {
+                imagePathEdit->setText(QDir::toNativeSeparators(imagePath));
+            }
+        });
+        QObject::connect(createButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+        QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+        if (dialog.exec() != QDialog::Accepted)
+        {
+            return false;
+        }
+
+        inputOut->imagePath = imagePathEdit->text().trimmed();
+        inputOut->argumentText = argumentEdit->text();
+        inputOut->runAsAdministrator = runAsAdministratorCheck->isChecked();
+        return true;
+    }
 }
 
 void ProcessTraceMonitorWidget::initializeConnections()
@@ -313,6 +411,13 @@ void ProcessTraceMonitorWidget::initializeConnections()
             kLogEvent event;
             info << event << "[ProcessTraceMonitorWidget] 用户请求刷新可选进程列表。" << eol;
             refreshAvailableProcessListAsync();
+        });
+    }
+
+    if (m_createTargetButton != nullptr)
+    {
+        connect(m_createTargetButton, &QPushButton::clicked, this, [this]() {
+            createSuspendedTargetProcess();
         });
     }
 
@@ -699,6 +804,187 @@ void ProcessTraceMonitorWidget::addManualProcessByPid()
     addTargetProcessByPid(pidValue, QStringLiteral("手动输入 PID"));
 }
 
+void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
+{
+    // 运行期不接受修改根目标集合，和现有“手动添加 / 批量添加”保持同一约束。
+    if (m_captureRunning.load())
+    {
+        return;
+    }
+
+    SuspendedTargetDialogInput dialogInput;
+    if (!showSuspendedTargetDialog(this, &dialogInput))
+    {
+        return;
+    }
+
+    if (dialogInput.imagePath.isEmpty())
+    {
+        QMessageBox::information(this, QStringLiteral("创建并挂起监控目标"), QStringLiteral("程序路径不能为空。"));
+        return;
+    }
+
+    const QFileInfo imageInfo(dialogInput.imagePath);
+    if (!imageInfo.exists() || !imageInfo.isFile())
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("创建并挂起监控目标"),
+            QStringLiteral("程序路径无效或不是文件：%1").arg(dialogInput.imagePath));
+        return;
+    }
+
+    const auto launchTarget = [this, &dialogInput, &imageInfo](const bool allowElevatedFallback) {
+        ks::process::SuspendedProcessLaunchRequest request;
+        request.imagePath = QDir::toNativeSeparators(imageInfo.absoluteFilePath()).toUtf8().toStdString();
+        request.argumentText = dialogInput.argumentText.toUtf8().toStdString();
+        request.workingDirectory = QDir::toNativeSeparators(imageInfo.absolutePath()).toUtf8().toStdString();
+        request.runAsAdministrator = dialogInput.runAsAdministrator;
+        request.allowElevatedFallback = allowElevatedFallback;
+
+        ks::process::SuspendedProcessLaunchResult launchResult;
+        const bool launchOk = ks::process::LaunchSuspendedProcess(request, &launchResult);
+        return std::pair<bool, ks::process::SuspendedProcessLaunchResult>(launchOk, std::move(launchResult));
+    };
+
+    auto [launchOk, launchResult] = launchTarget(false);
+    if (!launchOk && launchResult.failure == ks::process::SuspendedProcessLaunchFailure::AdministratorRequired)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("创建并挂起监控目标"),
+            QStringLiteral("以管理员运行需要当前 KSword 已提升。请手动以管理员身份启动 KSword 后重试。"));
+        return;
+    }
+
+    if (!launchOk && launchResult.failure == ks::process::SuspendedProcessLaunchFailure::UnelevatedTokenUnavailable)
+    {
+        QMessageBox fallbackDialog(this);
+        fallbackDialog.setWindowTitle(QStringLiteral("普通权限令牌不可用"));
+        fallbackDialog.setIcon(QMessageBox::Warning);
+        fallbackDialog.setText(
+            QStringLiteral("无法将目标降级为普通权限：%1\n\n是否继续以管理员权限创建？")
+            .arg(QString::fromUtf8(launchResult.detailText.c_str())));
+        QPushButton* continueButton = fallbackDialog.addButton(
+            QStringLiteral("继续以管理员权限创建"),
+            QMessageBox::AcceptRole);
+        fallbackDialog.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+        fallbackDialog.exec();
+        if (fallbackDialog.clickedButton() != continueButton)
+        {
+            return;
+        }
+
+        std::tie(launchOk, launchResult) = launchTarget(true);
+    }
+
+    if (!launchOk)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("创建进程失败"),
+            QStringLiteral("创建并挂起目标进程失败：%1")
+            .arg(QString::fromUtf8(launchResult.detailText.c_str())));
+        return;
+    }
+
+    const QString processName = imageInfo.fileName().isEmpty()
+        ? QStringLiteral("<Unknown>")
+        : imageInfo.fileName();
+    const QString privilegeText = launchResult.usedUnelevatedToken
+        || (!dialogInput.runAsAdministrator && !launchResult.usedElevatedFallback)
+        ? QStringLiteral("普通权限")
+        : QStringLiteral("管理员权限");
+    const QString initialRemark = QStringLiteral("定向创建（已挂起，%1）").arg(privilegeText);
+    addTargetProcessByPid(launchResult.processId, initialRemark);
+
+    const int progressTaskId = kPro.add(
+        QStringLiteral("创建并挂起目标进程").toUtf8().toStdString(),
+        QStringLiteral("已加入监控目标，等待选择").toUtf8().toStdString());
+    kPro.set(
+        progressTaskId,
+        QStringLiteral("目标 PID=%1，%2 已创建并保持挂起").arg(launchResult.processId).arg(processName).toUtf8().toStdString(),
+        0,
+        40.0f);
+
+    const QString choicePrompt = QStringLiteral(
+        "对于进程 pid:%1，%2，选择选项 1 以取消挂起，选择选项 2 以放弃追踪。")
+        .arg(launchResult.processId)
+        .arg(processName);
+    const int selectedOption = kPro.UI(
+        progressTaskId,
+        choicePrompt.toUtf8().toStdString(),
+        QStringLiteral("选项 1：取消挂起").toUtf8().toStdString(),
+        QStringLiteral("选项 2：放弃追踪").toUtf8().toStdString());
+
+    if (selectedOption == 1)
+    {
+        std::string resumeError;
+        const bool resumeOk = ks::process::ResumeSuspendedProcessInitialThread(
+            launchResult.initialThreadHandle,
+            &resumeError);
+        ks::process::CloseSuspendedProcessInitialThreadHandle(launchResult.initialThreadHandle);
+
+        if (resumeOk)
+        {
+            updateTargetProcessRemarkByPid(
+                launchResult.processId,
+                QStringLiteral("已恢复，等待手动开始监听"));
+            kPro.set(
+                progressTaskId,
+                QStringLiteral("已取消挂起，等待手动开始监听").toUtf8().toStdString(),
+                0,
+                100.0f);
+
+            kLogEvent event;
+            info << event
+                << "[ProcessTraceMonitorWidget] 已创建并恢复监控目标, pid="
+                << launchResult.processId
+                << ", process="
+                << processName.toStdString()
+                << eol;
+        }
+        else
+        {
+            const QString errorText = QString::fromUtf8(resumeError.c_str());
+            updateTargetProcessRemarkByPid(
+                launchResult.processId,
+                QStringLiteral("恢复失败，目标仍保持挂起：%1").arg(errorText));
+            kPro.set(
+                progressTaskId,
+                QStringLiteral("取消挂起失败，目标仍保持挂起").toUtf8().toStdString(),
+                0,
+                90.0f);
+            QMessageBox::warning(
+                this,
+                QStringLiteral("恢复新建目标失败"),
+                QStringLiteral("恢复进程 pid:%1 失败，目标仍保持挂起：%2")
+                .arg(launchResult.processId)
+                .arg(errorText));
+        }
+    }
+    else
+    {
+        ks::process::CloseSuspendedProcessInitialThreadHandle(launchResult.initialThreadHandle);
+        removeTrackedProcessFromTargetListByPid(
+            launchResult.processId,
+            QStringLiteral("用户放弃追踪，目标保持 CREATE_SUSPENDED"));
+        updateActionState();
+        kPro.set(
+            progressTaskId,
+            QStringLiteral("已放弃追踪，目标保持挂起").toUtf8().toStdString(),
+            0,
+            100.0f);
+
+        kLogEvent event;
+        info << event
+            << "[ProcessTraceMonitorWidget] 用户放弃新建目标追踪, pid="
+            << launchResult.processId
+            << ", process remains suspended"
+            << eol;
+    }
+}
+
 void ProcessTraceMonitorWidget::addTargetProcessByPid(const std::uint32_t pidValue, const QString& sourceText)
 {
     if (pidValue == 0)
@@ -772,6 +1058,27 @@ void ProcessTraceMonitorWidget::addTargetProcessByPid(const std::uint32_t pidVal
         << ", source="
         << sourceText.toStdString()
         << eol;
+}
+
+void ProcessTraceMonitorWidget::updateTargetProcessRemarkByPid(
+    const std::uint32_t pidValue,
+    const QString& remarkText)
+{
+    const auto found = std::find_if(
+        m_targetProcessList.begin(),
+        m_targetProcessList.end(),
+        [pidValue](const TargetProcessEntry& entry) {
+            return entry.pid == pidValue;
+        });
+    if (found == m_targetProcessList.end())
+    {
+        return;
+    }
+
+    found->remarkText = remarkText;
+    refreshTargetTable();
+    updateActionState();
+    updateStatusLabel();
 }
 
 void ProcessTraceMonitorWidget::upsertAutoTrackedProcessInTargetList(

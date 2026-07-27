@@ -5257,6 +5257,329 @@ namespace ks::process
         }
         return false;
     }
+
+    bool LaunchSuspendedProcess(
+        const SuspendedProcessLaunchRequest& request,
+        SuspendedProcessLaunchResult* const resultOut)
+    {
+        SuspendedProcessLaunchResult localResult{};
+        const auto finish = [&localResult, resultOut](const bool success) {
+            localResult.success = success;
+            if (resultOut != nullptr)
+            {
+                *resultOut = localResult;
+            }
+            return success;
+        };
+
+        const std::wstring imagePathWide = ks::str::Utf8ToUtf16(request.imagePath);
+        if (imagePathWide.empty())
+        {
+            localResult.failure = SuspendedProcessLaunchFailure::InvalidArgument;
+            localResult.detailText = "Target image path is empty or cannot be converted to UTF-16.";
+            return finish(false);
+        }
+
+        // quoteCommandLineArgument：只负责 argv[0] 的 Windows 反斜杠/引号规则。
+        // 用户填写的参数文本保持原样追加，避免改变其既有命令行语义。
+        const auto quoteCommandLineArgument = [](const std::wstring& argumentText) {
+            std::wstring quotedText;
+            quotedText.reserve(argumentText.size() + 2);
+            quotedText.push_back(L'\"');
+
+            std::size_t slashCount = 0;
+            for (const wchar_t characterValue : argumentText)
+            {
+                if (characterValue == L'\\')
+                {
+                    ++slashCount;
+                    continue;
+                }
+
+                if (characterValue == L'\"')
+                {
+                    quotedText.append(slashCount * 2 + 1, L'\\');
+                    quotedText.push_back(L'\"');
+                    slashCount = 0;
+                    continue;
+                }
+
+                if (slashCount > 0)
+                {
+                    quotedText.append(slashCount, L'\\');
+                    slashCount = 0;
+                }
+                quotedText.push_back(characterValue);
+            }
+
+            if (slashCount > 0)
+            {
+                quotedText.append(slashCount * 2, L'\\');
+            }
+            quotedText.push_back(L'\"');
+            return quotedText;
+        };
+
+        std::wstring commandLineWide = quoteCommandLineArgument(imagePathWide);
+        if (!request.argumentText.empty())
+        {
+            commandLineWide.push_back(L' ');
+            commandLineWide += ks::str::Utf8ToUtf16(request.argumentText);
+        }
+
+        std::wstring workingDirectoryWide;
+        LPCWSTR workingDirectoryPointer = nullptr;
+        if (!request.workingDirectory.empty())
+        {
+            workingDirectoryWide = ks::str::Utf8ToUtf16(request.workingDirectory);
+            if (!workingDirectoryWide.empty())
+            {
+                workingDirectoryPointer = workingDirectoryWide.c_str();
+            }
+        }
+
+        HANDLE currentTokenHandle = nullptr;
+        bool currentProcessElevated = false;
+        if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &currentTokenHandle) == FALSE)
+        {
+            localResult.failure = SuspendedProcessLaunchFailure::CreateFailed;
+            localResult.win32Error = static_cast<std::uint32_t>(::GetLastError());
+            localResult.detailText = "OpenProcessToken(current process) failed: "
+                + FormatLastErrorMessage(localResult.win32Error);
+            return finish(false);
+        }
+
+        TOKEN_ELEVATION tokenElevation{};
+        DWORD returnedLength = 0;
+        const BOOL elevationQueryOk = ::GetTokenInformation(
+            currentTokenHandle,
+            TokenElevation,
+            &tokenElevation,
+            sizeof(tokenElevation),
+            &returnedLength);
+        const DWORD elevationQueryError = elevationQueryOk == FALSE ? ::GetLastError() : ERROR_SUCCESS;
+        if (elevationQueryOk == FALSE)
+        {
+            ::CloseHandle(currentTokenHandle);
+            localResult.failure = SuspendedProcessLaunchFailure::CreateFailed;
+            localResult.win32Error = static_cast<std::uint32_t>(elevationQueryError);
+            localResult.detailText = "GetTokenInformation(TokenElevation) failed: "
+                + FormatLastErrorMessage(elevationQueryError);
+            return finish(false);
+        }
+        currentProcessElevated = elevationQueryOk != FALSE && tokenElevation.TokenIsElevated != 0;
+
+        if (request.runAsAdministrator && !currentProcessElevated)
+        {
+            ::CloseHandle(currentTokenHandle);
+            localResult.failure = SuspendedProcessLaunchFailure::AdministratorRequired;
+            localResult.win32Error = static_cast<std::uint32_t>(
+                elevationQueryOk != FALSE ? ERROR_ELEVATION_REQUIRED : elevationQueryError);
+            localResult.detailText = elevationQueryOk != FALSE
+                ? "Current KSword process is not elevated."
+                : "GetTokenInformation(TokenElevation) failed: " + FormatLastErrorMessage(elevationQueryError);
+            return finish(false);
+        }
+
+        HANDLE unelevatedPrimaryTokenHandle = nullptr;
+        std::string unelevatedTokenError;
+        if (currentProcessElevated && !request.runAsAdministrator && !request.allowElevatedFallback)
+        {
+            TOKEN_LINKED_TOKEN linkedTokenInfo{};
+            returnedLength = 0;
+            const BOOL linkedTokenQueryOk = ::GetTokenInformation(
+                currentTokenHandle,
+                TokenLinkedToken,
+                &linkedTokenInfo,
+                sizeof(linkedTokenInfo),
+                &returnedLength);
+            if (linkedTokenQueryOk == FALSE || linkedTokenInfo.LinkedToken == nullptr)
+            {
+                const DWORD linkedTokenError = ::GetLastError();
+                unelevatedTokenError = "GetTokenInformation(TokenLinkedToken) failed: "
+                    + FormatLastErrorMessage(linkedTokenError);
+            }
+            else
+            {
+                const DWORD primaryTokenAccess = TOKEN_ASSIGN_PRIMARY
+                    | TOKEN_DUPLICATE
+                    | TOKEN_QUERY
+                    | TOKEN_ADJUST_DEFAULT
+                    | TOKEN_ADJUST_SESSIONID
+                    | TOKEN_IMPERSONATE;
+                if (::DuplicateTokenEx(
+                    linkedTokenInfo.LinkedToken,
+                    primaryTokenAccess,
+                    nullptr,
+                    SecurityImpersonation,
+                    TokenPrimary,
+                    &unelevatedPrimaryTokenHandle) == FALSE
+                    || unelevatedPrimaryTokenHandle == nullptr)
+                {
+                    const DWORD duplicateError = ::GetLastError();
+                    unelevatedTokenError = "DuplicateTokenEx(TokenLinkedToken) failed: "
+                        + FormatLastErrorMessage(duplicateError);
+                }
+                ::CloseHandle(linkedTokenInfo.LinkedToken);
+            }
+
+            if (unelevatedPrimaryTokenHandle == nullptr)
+            {
+                ::CloseHandle(currentTokenHandle);
+                localResult.failure = SuspendedProcessLaunchFailure::UnelevatedTokenUnavailable;
+                localResult.detailText = unelevatedTokenError.empty()
+                    ? "No unelevated linked token is available."
+                    : unelevatedTokenError;
+                return finish(false);
+            }
+        }
+        ::CloseHandle(currentTokenHandle);
+
+        const auto initializeProcessInformation = []() {
+            PROCESS_INFORMATION processInformation{};
+            return processInformation;
+        };
+        const auto finalizeSuccess = [&localResult](PROCESS_INFORMATION& processInformation) {
+            localResult.processId = static_cast<std::uint32_t>(processInformation.dwProcessId);
+            localResult.threadId = static_cast<std::uint32_t>(processInformation.dwThreadId);
+            localResult.initialThreadHandle = reinterpret_cast<std::uint64_t>(processInformation.hThread);
+            if (processInformation.hProcess != nullptr)
+            {
+                ::CloseHandle(processInformation.hProcess);
+                processInformation.hProcess = nullptr;
+            }
+            processInformation.hThread = nullptr;
+        };
+        const auto buildMutableCommandLine = [&commandLineWide]() {
+            std::vector<wchar_t> commandLineBuffer(commandLineWide.begin(), commandLineWide.end());
+            commandLineBuffer.push_back(L'\0');
+            return commandLineBuffer;
+        };
+
+        STARTUPINFOW startupInfo{};
+        startupInfo.cb = sizeof(startupInfo);
+        const DWORD creationFlags = CREATE_SUSPENDED;
+
+        if (unelevatedPrimaryTokenHandle == nullptr)
+        {
+            PROCESS_INFORMATION processInformation = initializeProcessInformation();
+            std::vector<wchar_t> commandLineBuffer = buildMutableCommandLine();
+            const BOOL createOk = ::CreateProcessW(
+                imagePathWide.c_str(),
+                commandLineBuffer.data(),
+                nullptr,
+                nullptr,
+                FALSE,
+                creationFlags,
+                nullptr,
+                workingDirectoryPointer,
+                &startupInfo,
+                &processInformation);
+            if (createOk == FALSE)
+            {
+                localResult.failure = SuspendedProcessLaunchFailure::CreateFailed;
+                localResult.win32Error = static_cast<std::uint32_t>(::GetLastError());
+                localResult.detailText = "CreateProcessW(CREATE_SUSPENDED) failed: "
+                    + FormatLastErrorMessage(localResult.win32Error);
+                return finish(false);
+            }
+
+            localResult.usedElevatedFallback = currentProcessElevated
+                && !request.runAsAdministrator
+                && request.allowElevatedFallback;
+            localResult.detailText = "CreateProcessW(CREATE_SUSPENDED) succeeded.";
+            finalizeSuccess(processInformation);
+            return finish(true);
+        }
+
+        PROCESS_INFORMATION processInformation = initializeProcessInformation();
+        std::vector<wchar_t> commandLineBuffer = buildMutableCommandLine();
+        BOOL createOk = ::CreateProcessAsUserW(
+            unelevatedPrimaryTokenHandle,
+            imagePathWide.c_str(),
+            commandLineBuffer.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            creationFlags,
+            nullptr,
+            workingDirectoryPointer,
+            &startupInfo,
+            &processInformation);
+        if (createOk == FALSE)
+        {
+            const DWORD createAsUserError = ::GetLastError();
+            processInformation = initializeProcessInformation();
+            commandLineBuffer = buildMutableCommandLine();
+            createOk = ::CreateProcessWithTokenW(
+                unelevatedPrimaryTokenHandle,
+                LOGON_WITH_PROFILE,
+                imagePathWide.c_str(),
+                commandLineBuffer.data(),
+                creationFlags,
+                nullptr,
+                workingDirectoryPointer,
+                &startupInfo,
+                &processInformation);
+            if (createOk == FALSE)
+            {
+                const DWORD createWithTokenError = ::GetLastError();
+                ::CloseHandle(unelevatedPrimaryTokenHandle);
+                localResult.failure = SuspendedProcessLaunchFailure::UnelevatedTokenUnavailable;
+                localResult.win32Error = static_cast<std::uint32_t>(createWithTokenError);
+                localResult.detailText = "CreateProcessAsUserW(TokenLinkedToken) failed: "
+                    + FormatLastErrorMessage(createAsUserError)
+                    + " | CreateProcessWithTokenW fallback failed: "
+                    + FormatLastErrorMessage(createWithTokenError);
+                return finish(false);
+            }
+            localResult.detailText = "CreateProcessAsUserW(TokenLinkedToken) failed; CreateProcessWithTokenW(CREATE_SUSPENDED) succeeded.";
+        }
+        else
+        {
+            localResult.detailText = "CreateProcessAsUserW(TokenLinkedToken, CREATE_SUSPENDED) succeeded.";
+        }
+
+        ::CloseHandle(unelevatedPrimaryTokenHandle);
+        localResult.usedUnelevatedToken = true;
+        finalizeSuccess(processInformation);
+        return finish(true);
+    }
+
+    bool ResumeSuspendedProcessInitialThread(
+        const std::uint64_t initialThreadHandle,
+        std::string* const errorMessage)
+    {
+        const HANDLE threadHandle = reinterpret_cast<HANDLE>(initialThreadHandle);
+        if (threadHandle == nullptr || threadHandle == INVALID_HANDLE_VALUE)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "Initial thread handle is invalid.";
+            }
+            return false;
+        }
+
+        if (::ResumeThread(threadHandle) == static_cast<DWORD>(-1))
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "ResumeThread failed: " + FormatLastErrorMessage(::GetLastError());
+            }
+            return false;
+        }
+        return true;
+    }
+
+    void CloseSuspendedProcessInitialThreadHandle(const std::uint64_t initialThreadHandle)
+    {
+        const HANDLE threadHandle = reinterpret_cast<HANDLE>(initialThreadHandle);
+        if (threadHandle != nullptr && threadHandle != INVALID_HANDLE_VALUE)
+        {
+            ::CloseHandle(threadHandle);
+        }
+    }
+
     std::wstring GetCurrentProcessPath()
     {
         wchar_t szPath[MAX_PATH] = { 0 };
