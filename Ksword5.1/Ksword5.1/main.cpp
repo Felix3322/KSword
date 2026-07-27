@@ -1723,6 +1723,13 @@ int main(int argc, char* argv[])
     {
         window.show();
     }
+
+    // 启动主窗口前置：
+    // - 仅在主窗口首次 show/showMaximized 完成后执行一次；
+    // - 让正常启动与 --unlock 启动都获得一致的前台激活行为。
+    window.raise();
+    window.activateWindow();
+
     startupTraceRaw("window.show invoked");
     {
         kLogEvent showEvent;
@@ -1750,8 +1757,6 @@ int main(int argc, char* argv[])
         QTimer::singleShot(1600, &window, [&window, pendingUnlockPathList]()
             {
                 kSplash.hide();
-                window.raise();
-                window.activateWindow();
                 for (const QString& targetPath : pendingUnlockPathList)
                 {
                     QTimer::singleShot(0, &window, [&window, targetPath]()
