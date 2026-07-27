@@ -1,6 +1,10 @@
 #include "NetworkDock.InternalCommon.h"
 #include "HttpsProxyService.h"
 
+#include <WinInet.h>
+
+#pragma comment(lib, "Wininet.lib")
+
 // ============================================================
 // NetworkDock.cpp
 // 作用：
@@ -150,6 +154,20 @@ NetworkDock::~NetworkDock()
     if (m_httpsProxyService != nullptr)
     {
         m_httpsProxyService->stop();
+    }
+    if (m_httpsSystemProxySnapshotCaptured)
+    {
+        QString restoreErrorText;
+        if (restoreHttpsSystemProxySnapshot(&restoreErrorText))
+        {
+            ::InternetSetOptionW(nullptr, INTERNET_OPTION_SETTINGS_CHANGED, nullptr, 0);
+            ::InternetSetOptionW(nullptr, INTERNET_OPTION_REFRESH, nullptr, 0);
+        }
+        else
+        {
+            kLogEvent restoreEvent;
+            warn << restoreEvent << "[NetworkDock] HTTPS 系统代理恢复失败：" << restoreErrorText << eol;
+        }
     }
 
     kLogEvent destroyEvent;

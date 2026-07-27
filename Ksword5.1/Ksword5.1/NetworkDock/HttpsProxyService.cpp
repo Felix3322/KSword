@@ -1,4 +1,5 @@
 #include "HttpsProxyService.h"
+#include "../ksword/network/network_connection_tools.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDateTime>
@@ -9,6 +10,7 @@
 #include <QtCore/QStandardPaths>
 #include <QtCore/QThread>
 #include <QtNetwork/QSslCertificate>
+#include <QtNetwork/QSslCipher>
 #include <QtNetwork/QSslConfiguration>
 #include <QtNetwork/QSslError>
 #include <QtNetwork/QSslKey>
@@ -27,6 +29,10 @@ namespace ks::network
         constexpr const char* kPfxPasswordText = "KswordHttpsProxy!2026";
         // kMaxConnectHeaderBytes 用途：限制 CONNECT 头缓存大小，避免恶意堆积。
         constexpr int kMaxConnectHeaderBytes = 32 * 1024;
+        // kMaxHttpHeaderBytes 用途：限制单个 HTTP 请求或响应头大小，避免异常流量持续占用会话内存。
+        constexpr int kMaxHttpHeaderBytes = 64 * 1024;
+        // kMaxPendingPlainBytes 用途：限制 TLS 握手完成前的待转发明文，避免慢握手造成无界缓存。
+        constexpr int kMaxPendingPlainBytes = 4 * 1024 * 1024;
 
         // quoteForPowerShell 作用：
         // - 把文本包装成 PowerShell 单引号字面量。
@@ -159,6 +165,59 @@ namespace ks::network
             return outputLineList.join("\r\n");
         }
 
+        // headerValue 作用：从 HTTP 头块读取指定字段值，字段名比较不区分大小写。
+        QByteArray headerValue(const QByteArray& headerBlock, const QByteArray& headerName)
+        {
+            const QList<QByteArray> lineList = headerBlock.split('\n');
+            for (int lineIndex = 1; lineIndex < lineList.size(); ++lineIndex)
+            {
+                const QByteArray lineText = lineList.at(lineIndex).trimmed();
+                const int colonIndex = lineText.indexOf(':');
+                if (colonIndex <= 0)
+                {
+                    continue;
+                }
+                if (lineText.left(colonIndex).trimmed().compare(headerName, Qt::CaseInsensitive) == 0)
+                {
+                    return lineText.mid(colonIndex + 1).trimmed();
+                }
+            }
+            return {};
+        }
+
+        // contentLengthFromHeader 作用：解析 HTTP Content-Length；未知、缺失或非法时返回 -1。
+        qint64 contentLengthFromHeader(const QByteArray& headerBlock)
+        {
+            bool parseOk = false;
+            const qlonglong contentLength = QString::fromLatin1(headerValue(headerBlock, QByteArrayLiteral("Content-Length"))).toLongLong(&parseOk, 10);
+            return parseOk && contentLength >= 0 ? static_cast<qint64>(contentLength) : -1;
+        }
+
+        // populateRemoteTlsMetadata 作用：把已验证远端 TLS 会话与证书信息写入解析记录。
+        void populateRemoteTlsMetadata(HttpsProxyParsedEntry* parsedEntry, const QSslSocket* remoteSocket)
+        {
+            if (parsedEntry == nullptr || remoteSocket == nullptr)
+            {
+                return;
+            }
+
+            parsedEntry->tlsVersionText = sslProtocolToText(remoteSocket->sessionProtocol());
+            parsedEntry->alpnText = QString::fromLatin1(remoteSocket->sslConfiguration().nextNegotiatedProtocol());
+            parsedEntry->cipherSuiteText = remoteSocket->sessionCipher().name();
+
+            const QSslCertificate peerCertificate = remoteSocket->peerCertificate();
+            if (peerCertificate.isNull())
+            {
+                return;
+            }
+
+            parsedEntry->certificateSubjectText = peerCertificate.subjectInfo(QSslCertificate::CommonName).join(QStringLiteral(", "));
+            parsedEntry->certificateIssuerText = peerCertificate.issuerInfo(QSslCertificate::CommonName).join(QStringLiteral(", "));
+            parsedEntry->certificateExpiryText = peerCertificate.expiryDate().toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            parsedEntry->certificateSha256Text = QString::fromLatin1(
+                QCryptographicHash::hash(peerCertificate.toDer(), QCryptographicHash::Sha256).toHex(':'));
+        }
+
         class ProxySession final : public QObject
         {
         public:
@@ -241,6 +300,11 @@ namespace ks::network
                 if (!m_requestHeaderHandled)
                 {
                     m_requestHeaderBuffer += plainBytes;
+                    if (m_requestHeaderBuffer.size() > kMaxHttpHeaderBytes)
+                    {
+                        failWithError(QStringLiteral("HTTP 请求头过大。"));
+                        return;
+                    }
                     const int headerEndIndex = m_requestHeaderBuffer.indexOf("\r\n\r\n");
                     if (headerEndIndex < 0)
                     {
@@ -249,8 +313,8 @@ namespace ks::network
 
                     const QByteArray originalHeaderBlock = m_requestHeaderBuffer.left(headerEndIndex + 4);
                     const QByteArray bodyRemainder = m_requestHeaderBuffer.mid(headerEndIndex + 4);
-                    emitRequestParsedEvent(originalHeaderBlock);
                     forwardToRemote(rewriteRequestHeaderToCloseConnection(originalHeaderBlock) + bodyRemainder);
+                    emitRequestParsedEvent(originalHeaderBlock);
                     m_requestHeaderBuffer.clear();
                     m_requestHeaderHandled = true;
                     return;
@@ -281,8 +345,10 @@ namespace ks::network
                     return false;
                 }
 
+                m_clientProcessText = resolveClientProcessText();
                 emitConnectEvent(headerBlock);
                 m_connectReady = true;
+                m_sessionStartedTimestampMs = currentTimestampMs();
                 m_clientSocket->write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: Ksword\r\n\r\n");
                 m_clientSocket->flush();
 
@@ -308,10 +374,11 @@ namespace ks::network
                 connect(m_remoteSocket, &QSslSocket::encrypted, this, [this]() { onRemoteEncrypted(); });
                 connect(m_remoteSocket, &QSslSocket::readyRead, this, [this]() { onRemoteReadyRead(); });
                 connect(m_remoteSocket, &QSslSocket::disconnected, this, [this]() { closePeerAndDelete(); });
-                connect(m_remoteSocket, &QSslSocket::sslErrors, this, [this](const QList<QSslError>&) {
+                connect(m_remoteSocket, &QSslSocket::sslErrors, this, [this](const QList<QSslError>& errorList) {
                     if (m_remoteSocket != nullptr)
                     {
-                        m_remoteSocket->ignoreSslErrors();
+                        failWithError(QStringLiteral("远端 TLS 证书验证失败：%1")
+                            .arg(errorList.isEmpty() ? m_remoteSocket->errorString() : errorList.first().errorString()));
                     }
                 });
                 connect(m_remoteSocket, &QSslSocket::errorOccurred, this, [this](const QAbstractSocket::SocketError) {
@@ -323,7 +390,7 @@ namespace ks::network
 
                 QSslConfiguration remoteConfiguration = QSslConfiguration::defaultConfiguration();
                 remoteConfiguration.setProtocol(QSsl::TlsV1_2OrLater);
-                remoteConfiguration.setPeerVerifyMode(QSslSocket::VerifyNone);
+                remoteConfiguration.setPeerVerifyMode(QSslSocket::VerifyPeer);
                 remoteConfiguration.setAllowedNextProtocols({ QByteArrayLiteral("http/1.1") });
                 m_remoteSocket->setSslConfiguration(remoteConfiguration);
                 m_remoteSocket->setPeerVerifyName(m_targetHostText);
@@ -340,13 +407,13 @@ namespace ks::network
                 parsedEntry.timestampMs = currentTimestampMs();
                 parsedEntry.sessionId = m_sessionId;
                 parsedEntry.clientEndpointText = clientEndpointText();
+                parsedEntry.clientProcessText = m_clientProcessText;
                 parsedEntry.targetHostText = m_targetHostText;
                 parsedEntry.targetPort = static_cast<int>(m_targetPort);
                 parsedEntry.eventTypeText = QStringLiteral("TLS");
-                parsedEntry.tlsVersionText = sslProtocolToText(m_remoteSocket->sessionProtocol());
-                parsedEntry.alpnText = QString::fromLatin1(m_remoteSocket->sslConfiguration().nextNegotiatedProtocol());
                 parsedEntry.sniText = m_targetHostText;
-                parsedEntry.detailText = QStringLiteral("远端 TLS 握手完成。");
+                populateRemoteTlsMetadata(&parsedEntry, m_remoteSocket);
+                parsedEntry.detailText = QStringLiteral("远端 TLS 握手完成，证书已验证。");
                 emitParsedEntry(parsedEntry);
                 emitStatusLine(QStringLiteral("HTTPS 会话 #%1 已建立：%2:%3").arg(m_sessionId).arg(m_targetHostText).arg(m_targetPort));
                 flushPendingToRemote();
@@ -368,6 +435,11 @@ namespace ks::network
                 if (!m_responseHeaderHandled)
                 {
                     m_responseHeaderBuffer += plainBytes;
+                    if (m_responseHeaderBuffer.size() > kMaxHttpHeaderBytes)
+                    {
+                        failWithError(QStringLiteral("HTTP 响应头过大。"));
+                        return;
+                    }
                     const int headerEndIndex = m_responseHeaderBuffer.indexOf("\r\n\r\n");
                     if (headerEndIndex < 0)
                     {
@@ -376,8 +448,8 @@ namespace ks::network
 
                     const QByteArray headerBlock = m_responseHeaderBuffer.left(headerEndIndex + 4);
                     const QByteArray bodyRemainder = m_responseHeaderBuffer.mid(headerEndIndex + 4);
-                    emitResponseParsedEvent(headerBlock);
                     forwardToClient(headerBlock + bodyRemainder);
+                    emitResponseParsedEvent(headerBlock);
                     m_responseHeaderBuffer.clear();
                     m_responseHeaderHandled = true;
                     return;
@@ -398,8 +470,14 @@ namespace ks::network
                 }
                 else
                 {
+                    if (m_pendingToRemoteBytes.size() + plainBytes.size() > kMaxPendingPlainBytes)
+                    {
+                        failWithError(QStringLiteral("等待远端 TLS 握手的请求数据过多。"));
+                        return;
+                    }
                     m_pendingToRemoteBytes += plainBytes;
                 }
+                m_uploadBytes += static_cast<std::uint64_t>(plainBytes.size());
             }
 
             void forwardToClient(const QByteArray& plainBytes)
@@ -414,8 +492,14 @@ namespace ks::network
                 }
                 else
                 {
+                    if (m_pendingToClientBytes.size() + plainBytes.size() > kMaxPendingPlainBytes)
+                    {
+                        failWithError(QStringLiteral("等待客户端 TLS 握手的响应数据过多。"));
+                        return;
+                    }
                     m_pendingToClientBytes += plainBytes;
                 }
+                m_downloadBytes += static_cast<std::uint64_t>(plainBytes.size());
             }
 
             void flushPendingToRemote()
@@ -442,16 +526,19 @@ namespace ks::network
                 parsedEntry.timestampMs = currentTimestampMs();
                 parsedEntry.sessionId = m_sessionId;
                 parsedEntry.clientEndpointText = clientEndpointText();
+                parsedEntry.clientProcessText = m_clientProcessText;
                 parsedEntry.targetHostText = m_targetHostText;
                 parsedEntry.targetPort = static_cast<int>(m_targetPort);
                 parsedEntry.eventTypeText = QStringLiteral("CONNECT");
                 parsedEntry.sniText = m_targetHostText;
+                parsedEntry.uploadBytes = m_uploadBytes;
+                parsedEntry.downloadBytes = m_downloadBytes;
                 parsedEntry.detailText = QStringLiteral("收到 CONNECT 请求。");
                 parsedEntry.rawBytes = rawHeaderBlock;
                 emitParsedEntry(parsedEntry);
             }
 
-            void emitRequestParsedEvent(const QByteArray& headerBlock) const
+            void emitRequestParsedEvent(const QByteArray& headerBlock)
             {
                 QString methodText;
                 QString pathText;
@@ -467,13 +554,19 @@ namespace ks::network
                 parsedEntry.timestampMs = currentTimestampMs();
                 parsedEntry.sessionId = m_sessionId;
                 parsedEntry.clientEndpointText = clientEndpointText();
+                parsedEntry.clientProcessText = m_clientProcessText;
                 parsedEntry.targetHostText = m_targetHostText;
                 parsedEntry.targetPort = static_cast<int>(m_targetPort);
                 parsedEntry.eventTypeText = QStringLiteral("REQUEST");
                 parsedEntry.methodText = methodText;
                 parsedEntry.pathText = pathText;
                 parsedEntry.sniText = m_targetHostText;
-                parsedEntry.detailText = QStringLiteral("请求头已解析。");
+                parsedEntry.contentTypeText = QString::fromUtf8(headerValue(headerBlock, QByteArrayLiteral("Content-Type")));
+                parsedEntry.contentLength = contentLengthFromHeader(headerBlock);
+                parsedEntry.uploadBytes = m_uploadBytes;
+                parsedEntry.downloadBytes = m_downloadBytes;
+                m_requestTimestampMs = parsedEntry.timestampMs;
+                parsedEntry.detailText = QStringLiteral("请求头已解析，内容正文仅转发，不保存。");
                 parsedEntry.rawBytes = headerBlock;
                 emitParsedEntry(parsedEntry);
             }
@@ -497,26 +590,41 @@ namespace ks::network
                 parsedEntry.timestampMs = currentTimestampMs();
                 parsedEntry.sessionId = m_sessionId;
                 parsedEntry.clientEndpointText = clientEndpointText();
+                parsedEntry.clientProcessText = m_clientProcessText;
                 parsedEntry.targetHostText = m_targetHostText;
                 parsedEntry.targetPort = static_cast<int>(m_targetPort);
                 parsedEntry.eventTypeText = QStringLiteral("RESPONSE");
                 parsedEntry.statusCode = statusCode;
-                parsedEntry.tlsVersionText = (m_remoteSocket != nullptr) ? sslProtocolToText(m_remoteSocket->sessionProtocol()) : QStringLiteral("Unknown");
-                parsedEntry.alpnText = (m_remoteSocket != nullptr) ? QString::fromLatin1(m_remoteSocket->sslConfiguration().nextNegotiatedProtocol()) : QString();
-                parsedEntry.detailText = QStringLiteral("响应头已解析。");
+                parsedEntry.contentTypeText = QString::fromUtf8(headerValue(headerBlock, QByteArrayLiteral("Content-Type")));
+                parsedEntry.contentLength = contentLengthFromHeader(headerBlock);
+                parsedEntry.uploadBytes = m_uploadBytes;
+                parsedEntry.downloadBytes = m_downloadBytes;
+                parsedEntry.elapsedMs = m_requestTimestampMs > 0 && parsedEntry.timestampMs >= m_requestTimestampMs
+                    ? parsedEntry.timestampMs - m_requestTimestampMs
+                    : 0;
+                populateRemoteTlsMetadata(&parsedEntry, m_remoteSocket);
+                parsedEntry.detailText = QStringLiteral("响应头已解析，内容正文仅转发，不保存。");
                 parsedEntry.rawBytes = headerBlock;
                 emitParsedEntry(parsedEntry);
             }
 
             void failWithError(const QString& errorText)
             {
+                if (m_closing)
+                {
+                    return;
+                }
                 HttpsProxyParsedEntry parsedEntry;
                 parsedEntry.timestampMs = currentTimestampMs();
                 parsedEntry.sessionId = m_sessionId;
                 parsedEntry.clientEndpointText = clientEndpointText();
+                parsedEntry.clientProcessText = m_clientProcessText;
                 parsedEntry.targetHostText = m_targetHostText;
                 parsedEntry.targetPort = static_cast<int>(m_targetPort);
                 parsedEntry.eventTypeText = QStringLiteral("ERROR");
+                parsedEntry.uploadBytes = m_uploadBytes;
+                parsedEntry.downloadBytes = m_downloadBytes;
+                populateRemoteTlsMetadata(&parsedEntry, m_remoteSocket);
                 parsedEntry.detailText = errorText;
                 emitParsedEntry(parsedEntry);
                 emitStatusLine(QStringLiteral("HTTPS 会话 #%1 失败：%2").arg(m_sessionId).arg(errorText));
@@ -530,6 +638,47 @@ namespace ks::network
                     return QStringLiteral("N/A");
                 }
                 return QStringLiteral("%1:%2").arg(m_clientSocket->peerAddress().toString()).arg(m_clientSocket->peerPort());
+            }
+
+            // resolveClientProcessText 作用：按本地代理连接四元组关联 Windows TCP 所有者，补足进程维度。
+            QString resolveClientProcessText() const
+            {
+                if (m_clientSocket == nullptr)
+                {
+                    return QStringLiteral("未知");
+                }
+
+                std::vector<ks::network::TcpConnectionRecord> connectionRecordList;
+                std::string errorText;
+                if (!ks::network::EnumerateTcpConnectionRecords(connectionRecordList, &errorText))
+                {
+                    return QStringLiteral("未知");
+                }
+
+                const QHostAddress clientAddress = m_clientSocket->peerAddress();
+                const QHostAddress proxyAddress = m_clientSocket->localAddress();
+                const std::uint16_t clientPort = m_clientSocket->peerPort();
+                const std::uint16_t proxyPort = m_clientSocket->localPort();
+                for (const ks::network::TcpConnectionRecord& connectionRecord : connectionRecordList)
+                {
+                    if (connectionRecord.localPort != clientPort || connectionRecord.remotePort != proxyPort)
+                    {
+                        continue;
+                    }
+
+                    const QHostAddress recordLocalAddress(QString::fromStdString(connectionRecord.localAddressText));
+                    const QHostAddress recordRemoteAddress(QString::fromStdString(connectionRecord.remoteAddressText));
+                    if (recordLocalAddress != clientAddress || recordRemoteAddress != proxyAddress)
+                    {
+                        continue;
+                    }
+
+                    const QString processNameText = QString::fromUtf8(connectionRecord.processName.c_str());
+                    return processNameText.isEmpty()
+                        ? QStringLiteral("PID %1").arg(connectionRecord.processId)
+                        : QStringLiteral("%1 (PID %2)").arg(processNameText).arg(connectionRecord.processId);
+                }
+                return QStringLiteral("未知");
             }
 
             void emitParsedEntry(const HttpsProxyParsedEntry& parsedEntry) const
@@ -550,6 +699,12 @@ namespace ks::network
 
             void closePeerAndDelete()
             {
+                if (m_closing)
+                {
+                    return;
+                }
+                m_closing = true;
+                emitSessionSummary();
                 if (m_clientSocket != nullptr && m_clientSocket->state() != QAbstractSocket::UnconnectedState)
                 {
                     m_clientSocket->disconnectFromHost();
@@ -559,6 +714,34 @@ namespace ks::network
                     m_remoteSocket->disconnectFromHost();
                 }
                 deleteLater();
+            }
+
+            // emitSessionSummary 作用：在会话结束时补充可读的总耗时、上下行字节与 TLS 证书信息。
+            void emitSessionSummary()
+            {
+                if (m_summaryEmitted || !m_connectReady)
+                {
+                    return;
+                }
+                m_summaryEmitted = true;
+
+                HttpsProxyParsedEntry parsedEntry;
+                parsedEntry.timestampMs = currentTimestampMs();
+                parsedEntry.sessionId = m_sessionId;
+                parsedEntry.clientEndpointText = clientEndpointText();
+                parsedEntry.clientProcessText = m_clientProcessText;
+                parsedEntry.targetHostText = m_targetHostText;
+                parsedEntry.targetPort = static_cast<int>(m_targetPort);
+                parsedEntry.eventTypeText = QStringLiteral("SUMMARY");
+                parsedEntry.sniText = m_targetHostText;
+                parsedEntry.uploadBytes = m_uploadBytes;
+                parsedEntry.downloadBytes = m_downloadBytes;
+                parsedEntry.elapsedMs = m_sessionStartedTimestampMs > 0 && parsedEntry.timestampMs >= m_sessionStartedTimestampMs
+                    ? parsedEntry.timestampMs - m_sessionStartedTimestampMs
+                    : 0;
+                populateRemoteTlsMetadata(&parsedEntry, m_remoteSocket);
+                parsedEntry.detailText = QStringLiteral("HTTPS 会话已结束。");
+                emitParsedEntry(parsedEntry);
             }
 
         private:
@@ -575,12 +758,19 @@ namespace ks::network
             QByteArray m_pendingToRemoteBytes;        // m_pendingToRemoteBytes：等待转发到远端的字节。
             QByteArray m_pendingToClientBytes;        // m_pendingToClientBytes：等待转发到客户端的字节。
             QString m_targetHostText;                // m_targetHostText：目标主机名。
+            QString m_clientProcessText;             // m_clientProcessText：客户端进程归属文本。
             std::uint16_t m_targetPort = 0;          // m_targetPort：目标端口。
+            std::uint64_t m_sessionStartedTimestampMs = 0; // m_sessionStartedTimestampMs：CONNECT 完成时间。
+            std::uint64_t m_requestTimestampMs = 0;  // m_requestTimestampMs：首个请求头解析时间。
+            std::uint64_t m_uploadBytes = 0;         // m_uploadBytes：已转发到远端的明文字节数。
+            std::uint64_t m_downloadBytes = 0;       // m_downloadBytes：已转发给客户端的明文字节数。
             bool m_connectReady = false;             // m_connectReady：CONNECT 阶段是否完成。
             bool m_requestHeaderHandled = false;     // m_requestHeaderHandled：是否已解析首个请求头。
             bool m_responseHeaderHandled = false;    // m_responseHeaderHandled：是否已解析首个响应头。
             bool m_clientEncrypted = false;          // m_clientEncrypted：客户端 TLS 是否已建立。
             bool m_remoteEncrypted = false;          // m_remoteEncrypted：远端 TLS 是否已建立。
+            bool m_summaryEmitted = false;           // m_summaryEmitted：是否已派发会话汇总记录。
+            bool m_closing = false;                  // m_closing：是否正在结束会话，防止重复发出错误或汇总。
         };
 
         class ProxyServer final : public QTcpServer

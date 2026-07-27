@@ -1,8 +1,12 @@
 #include "ProcessDetailWindow.InternalCommon.h"
+#include "ProcessHotkeyEnumerator.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
+#include <algorithm>
+#include <atomic>
 #include <limits>
+#include <thread>
 
 using namespace process_detail_window_internal;
 
@@ -712,6 +716,7 @@ namespace
         if (!appData.isEmpty())
         {
             appendRoot(QDir::fromNativeSeparators(appData + QStringLiteral("/Microsoft/Windows/Start Menu/Programs")));
+            appendRoot(QDir::fromNativeSeparators(appData + QStringLiteral("/Microsoft/Internet Explorer/Quick Launch")));
         }
 
         const QString programData = qEnvironmentVariable("PROGRAMDATA");
@@ -737,6 +742,11 @@ namespace
             return true;
         }
 
+        if (!normalizedProcessImage.isEmpty())
+        {
+            return false;
+        }
+
         if (!processName.trimmed().isEmpty())
         {
             const QString targetName = QFileInfo(shortcutTarget).fileName();
@@ -748,12 +758,16 @@ namespace
         return false;
     }
 
-    void collectShellShortcutHotkeys(
-        const std::uint32_t processId,
-        const QString& processName,
-        const QString& processImagePath,
-        std::vector<HotkeyCandidate>& rows,
-        QSet<QString>& dedupeSet,
+    struct ShellShortcutHotkeyCandidate
+    {
+        QString shortcutPath;
+        QString targetPath;
+        std::uint32_t modifiers = 0;
+        std::uint32_t virtualKey = 0;
+    };
+
+    void collectShellShortcutHotkeyCandidates(
+        std::vector<ShellShortcutHotkeyCandidate>& candidates,
         QString& diagnosticText)
     {
         HRESULT comResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -807,24 +821,14 @@ namespace
                             SLGP_UNCPRIORITY);
 
                         const QString targetPath = QString::fromWCharArray(targetPathBuffer).trimmed();
-                        if (hotkeyValue != 0 &&
-                            !targetPath.isEmpty() &&
-                            shortcutTargetMatchesProcess(targetPath, processImagePath, processName))
+                        if (hotkeyValue != 0 && !targetPath.isEmpty())
                         {
-                            const std::uint32_t virtualKey = LOBYTE(hotkeyValue);
-                            const std::uint32_t modifiers = hotkeyModifiersFromHotkeyf(HIBYTE(hotkeyValue));
-                            HotkeyCandidate row{};
-                            row.objectText = shortcutPath;
-                            row.hotkeyId = 0;
-                            row.modifiers = modifiers;
-                            row.virtualKey = virtualKey;
-                            row.hotkeyText = hotkeyTextFromParts(row.modifiers, row.virtualKey);
-                            row.processId = processId;
-                            row.threadId = 0;
-                            row.processName = processName;
-                            row.sourceText = QStringLiteral("快捷方式热键");
-                            row.detailText = targetPath;
-                            appendCandidate(rows, dedupeSet, std::move(row));
+                            ShellShortcutHotkeyCandidate candidate{};
+                            candidate.shortcutPath = shortcutPath;
+                            candidate.targetPath = targetPath;
+                            candidate.modifiers = hotkeyModifiersFromHotkeyf(HIBYTE(hotkeyValue));
+                            candidate.virtualKey = LOBYTE(hotkeyValue);
+                            candidates.push_back(std::move(candidate));
                         }
                     }
                     persistFile->Release();
@@ -837,6 +841,55 @@ namespace
         {
             ::CoUninitialize();
         }
+    }
+
+    void appendShellShortcutHotkeys(
+        const std::uint32_t processId,
+        const QString& processName,
+        const QString& processImagePath,
+        std::vector<HotkeyCandidate>& rows,
+        QSet<QString>& dedupeSet,
+        const std::vector<ShellShortcutHotkeyCandidate>& candidates)
+    {
+        for (const ShellShortcutHotkeyCandidate& candidate : candidates)
+        {
+            if (!shortcutTargetMatchesProcess(candidate.targetPath, processImagePath, processName))
+            {
+                continue;
+            }
+
+            HotkeyCandidate row{};
+            row.objectText = candidate.shortcutPath;
+            row.hotkeyId = 0;
+            row.modifiers = candidate.modifiers;
+            row.virtualKey = candidate.virtualKey;
+            row.hotkeyText = hotkeyTextFromParts(row.modifiers, row.virtualKey);
+            row.processId = processId;
+            row.threadId = 0;
+            row.processName = processName;
+            row.sourceText = QStringLiteral("快捷方式热键");
+            row.detailText = candidate.targetPath;
+            appendCandidate(rows, dedupeSet, std::move(row));
+        }
+    }
+
+    void collectShellShortcutHotkeys(
+        const std::uint32_t processId,
+        const QString& processName,
+        const QString& processImagePath,
+        std::vector<HotkeyCandidate>& rows,
+        QSet<QString>& dedupeSet,
+        QString& diagnosticText)
+    {
+        std::vector<ShellShortcutHotkeyCandidate> candidates;
+        collectShellShortcutHotkeyCandidates(candidates, diagnosticText);
+        appendShellShortcutHotkeys(
+            processId,
+            processName,
+            processImagePath,
+            rows,
+            dedupeSet,
+            candidates);
     }
 
     struct AcceleratorEnumContext
@@ -1128,11 +1181,12 @@ namespace
         return rows;
     }
 
-    std::vector<HotkeyCandidate> collectHotkeysForProcess(
+    std::vector<HotkeyCandidate> collectUserModeHotkeysForProcess(
         const std::uint32_t processId,
         QString processName,
         QString processImagePath,
-        QString& diagnosticText)
+        QString& diagnosticText,
+        const std::vector<ShellShortcutHotkeyCandidate>* const sharedShortcutCandidates = nullptr)
     {
         if (processName.trimmed().isEmpty())
         {
@@ -1149,8 +1203,20 @@ namespace
         collectWindowActivationHotkeys(processId, processName, rows, dedupeSet);
         collectMenuHotkeys(processId, processName, rows, dedupeSet);
         collectAcceleratorResourceHotkeys(processId, processName, processImagePath, rows, dedupeSet, diagnosticText);
-        collectShellShortcutHotkeys(processId, processName, processImagePath, rows, dedupeSet, diagnosticText);
-        collectDriverHotkeyTable(processId, processName, rows, diagnosticText);
+        if (sharedShortcutCandidates != nullptr)
+        {
+            appendShellShortcutHotkeys(
+                processId,
+                processName,
+                processImagePath,
+                rows,
+                dedupeSet,
+                *sharedShortcutCandidates);
+        }
+        else
+        {
+            collectShellShortcutHotkeys(processId, processName, processImagePath, rows, dedupeSet, diagnosticText);
+        }
 
         std::sort(
             rows.begin(),
@@ -1162,6 +1228,40 @@ namespace
                 return left.objectText < right.objectText;
             });
 
+        return rows;
+    }
+
+    std::vector<HotkeyCandidate> collectHotkeysForProcess(
+        const std::uint32_t processId,
+        QString processName,
+        QString processImagePath,
+        QString& diagnosticText)
+    {
+        std::vector<HotkeyCandidate> rows = collectUserModeHotkeysForProcess(
+            processId,
+            std::move(processName),
+            std::move(processImagePath),
+            diagnosticText);
+        QString resolvedProcessName;
+        if (!rows.empty())
+        {
+            resolvedProcessName = rows.front().processName;
+        }
+        if (resolvedProcessName.isEmpty())
+        {
+            resolvedProcessName = QString::fromStdString(ks::process::GetProcessNameByPID(processId));
+        }
+        collectDriverHotkeyTable(processId, resolvedProcessName, rows, diagnosticText);
+
+        std::sort(
+            rows.begin(),
+            rows.end(),
+            [](const HotkeyCandidate& left, const HotkeyCandidate& right)
+            {
+                if (left.hotkeyText != right.hotkeyText) return left.hotkeyText < right.hotkeyText;
+                if (left.sourceText != right.sourceText) return left.sourceText < right.sourceText;
+                return left.objectText < right.objectText;
+            });
         return rows;
     }
 
@@ -1320,6 +1420,139 @@ namespace
                     ks::ui::OpenProcessDetailByPid(processId);
                 }
             });
+    }
+}
+
+std::vector<ks::process::UserModeHotkeyRecord> ks::process::EnumerateUserModeHotkeysForProcess(
+    const std::uint32_t processId,
+    QString processName,
+    QString processImagePath,
+    QString* const diagnosticTextOut)
+{
+    QString diagnosticText = QStringLiteral("R3 窗口/菜单/资源/.lnk");
+    const std::vector<HotkeyCandidate> candidates = collectUserModeHotkeysForProcess(
+        processId,
+        std::move(processName),
+        std::move(processImagePath),
+        diagnosticText);
+
+    std::vector<UserModeHotkeyRecord> records;
+    records.reserve(candidates.size());
+    for (const HotkeyCandidate& candidate : candidates)
+    {
+        UserModeHotkeyRecord record{};
+        record.objectText = candidate.objectText;
+        record.hotkeyId = candidate.hotkeyId;
+        record.modifiers = candidate.modifiers;
+        record.virtualKey = candidate.virtualKey;
+        record.hotkeyText = candidate.hotkeyText;
+        record.processId = candidate.processId;
+        record.threadId = candidate.threadId;
+        record.processName = candidate.processName;
+        record.sourceText = candidate.sourceText;
+        record.detailText = candidate.detailText;
+        records.push_back(std::move(record));
+    }
+
+    if (diagnosticTextOut != nullptr)
+    {
+        *diagnosticTextOut = diagnosticText;
+    }
+    return records;
+}
+
+void ks::process::EnumerateUserModeHotkeysForProcesses(
+    const std::vector<UserModeHotkeyProcessTarget>& targets,
+    const UserModeHotkeyBatchCallback& progressCallback,
+    QString* const diagnosticTextOut)
+{
+    QString sharedDiagnosticText = QStringLiteral("R3 窗口/菜单/资源/.lnk");
+    std::vector<ShellShortcutHotkeyCandidate> sharedShortcutCandidates;
+    collectShellShortcutHotkeyCandidates(sharedShortcutCandidates, sharedDiagnosticText);
+
+    const std::uint32_t totalProcessCount = static_cast<std::uint32_t>(targets.size());
+    if (totalProcessCount == 0U)
+    {
+        if (diagnosticTextOut != nullptr)
+        {
+            *diagnosticTextOut = sharedDiagnosticText;
+        }
+        return;
+    }
+
+    const unsigned int hardwareConcurrency = std::thread::hardware_concurrency();
+    const unsigned int workerCount = std::min<unsigned int>(
+        totalProcessCount,
+        std::clamp(hardwareConcurrency == 0U ? 2U : hardwareConcurrency / 2U, 2U, 4U));
+    std::atomic_size_t nextTargetIndex{ 0U };
+    std::atomic_uint32_t completedProcessCount{ 0U };
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+
+    for (unsigned int workerIndex = 0U; workerIndex < workerCount; ++workerIndex)
+    {
+        workers.emplace_back([&targets,
+                              &progressCallback,
+                              &sharedShortcutCandidates,
+                              &nextTargetIndex,
+                              &completedProcessCount,
+                              totalProcessCount]()
+        {
+            for (;;)
+            {
+                const std::size_t targetIndex = nextTargetIndex.fetch_add(1U);
+                if (targetIndex >= targets.size())
+                {
+                    return;
+                }
+
+                const UserModeHotkeyProcessTarget& target = targets.at(targetIndex);
+                QString diagnosticText = QStringLiteral("R3 窗口/菜单/资源/.lnk");
+                const std::vector<HotkeyCandidate> candidates = collectUserModeHotkeysForProcess(
+                    target.processId,
+                    target.processName,
+                    target.processImagePath,
+                    diagnosticText,
+                    &sharedShortcutCandidates);
+
+                UserModeHotkeyBatchProgress progress{};
+                progress.completedProcessCount = completedProcessCount.fetch_add(1U) + 1U;
+                progress.totalProcessCount = totalProcessCount;
+                progress.processName = target.processName;
+                progress.diagnosticText = diagnosticText;
+                progress.records.reserve(candidates.size());
+                for (const HotkeyCandidate& candidate : candidates)
+                {
+                    UserModeHotkeyRecord record{};
+                    record.objectText = candidate.objectText;
+                    record.hotkeyId = candidate.hotkeyId;
+                    record.modifiers = candidate.modifiers;
+                    record.virtualKey = candidate.virtualKey;
+                    record.hotkeyText = candidate.hotkeyText;
+                    record.processId = candidate.processId;
+                    record.threadId = candidate.threadId;
+                    record.processName = candidate.processName;
+                    record.sourceText = candidate.sourceText;
+                    record.detailText = candidate.detailText;
+                    progress.records.push_back(std::move(record));
+                }
+
+                if (progressCallback)
+                {
+                    progressCallback(std::move(progress));
+                }
+            }
+        });
+    }
+
+    for (std::thread& worker : workers)
+    {
+        worker.join();
+    }
+
+    if (diagnosticTextOut != nullptr)
+    {
+        *diagnosticTextOut = sharedDiagnosticText;
     }
 }
 

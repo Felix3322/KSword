@@ -32,6 +32,7 @@ namespace ks::network
         std::uint64_t timestampMs = 0;  // timestampMs：事件时间戳（Unix ms）。
         std::uint64_t sessionId = 0;    // sessionId：代理会话编号。
         QString clientEndpointText;     // clientEndpointText：客户端端点文本。
+        QString clientProcessText;      // clientProcessText：匹配到的客户端进程名与 PID。
         QString targetHostText;         // targetHostText：目标主机名。
         int targetPort = 0;             // targetPort：目标端口号。
         QString eventTypeText;          // eventTypeText：事件类型（CONNECT/REQUEST/RESPONSE/ERROR）。
@@ -41,6 +42,16 @@ namespace ks::network
         QString tlsVersionText;         // tlsVersionText：TLS 版本文本。
         QString alpnText;               // alpnText：ALPN 协商结果。
         QString sniText;                // sniText：SNI 或 CONNECT 主机名。
+        QString contentTypeText;        // contentTypeText：HTTP Content-Type。
+        qint64 contentLength = -1;      // contentLength：HTTP Content-Length，未知时为 -1。
+        std::uint64_t elapsedMs = 0;    // elapsedMs：从请求发出到首个响应头的耗时。
+        std::uint64_t uploadBytes = 0;  // uploadBytes：本会话已转发到远端的明文字节数。
+        std::uint64_t downloadBytes = 0;// downloadBytes：本会话已转发给客户端的明文字节数。
+        QString cipherSuiteText;        // cipherSuiteText：远端 TLS 协商密码套件。
+        QString certificateSubjectText; // certificateSubjectText：远端证书主体。
+        QString certificateIssuerText;  // certificateIssuerText：远端证书签发者。
+        QString certificateExpiryText;  // certificateExpiryText：远端证书到期时间。
+        QString certificateSha256Text;  // certificateSha256Text：远端证书 SHA-256 指纹。
         QString detailText;             // detailText：补充说明或错误详情。
         QByteArray rawBytes;            // rawBytes：本次事件对应的原始明文字节。
     };

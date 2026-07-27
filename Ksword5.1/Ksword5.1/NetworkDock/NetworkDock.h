@@ -1053,9 +1053,19 @@ private:
     void applyHttpsSystemProxy();
 
     // clearHttpsSystemProxy：
-    // - 作用：清除系统代理配置并恢复直连。
+    // - 作用：恢复本页应用 HTTPS 代理前的系统代理配置。
     // - 返回：无。
     void clearHttpsSystemProxy();
+
+    // captureHttpsSystemProxySnapshot：
+    // - 作用：在改写当前用户代理项前保存原值，以便仅恢复本页造成的修改。
+    // - 返回：true=已保存或已有快照；false=读取失败。
+    bool captureHttpsSystemProxySnapshot(QString* errorTextOut);
+
+    // restoreHttpsSystemProxySnapshot：
+    // - 作用：恢复本页应用 HTTPS 代理前保存的当前用户代理项。
+    // - 返回：true=恢复成功；false=恢复失败。
+    bool restoreHttpsSystemProxySnapshot(QString* errorTextOut);
 
     // onHttpsProxyParsedEntryArrived：
     // - 作用：接收代理层解析结果并写入表格。
@@ -1080,6 +1090,26 @@ private:
     // - 参数 statusText：状态说明文本。
     // - 返回：无。
     void updateHttpsProxyStatusLabel(const QString& statusText);
+
+    // applyHttpsParsedTableFilter：
+    // - 作用：按关键字与事件类型过滤 HTTPS 解析表，仅影响显示结果。
+    // - 返回：无。
+    void applyHttpsParsedTableFilter();
+
+    // clearHttpsParsedEntries：
+    // - 作用：清空 HTTPS 解析表及对应详情缓存。
+    // - 返回：无。
+    void clearHttpsParsedEntries();
+
+    // exportVisibleHttpsParsedEntries：
+    // - 作用：将当前筛选后的 HTTPS 解析记录导出为 UTF-8 CSV。
+    // - 返回：无。
+    void exportVisibleHttpsParsedEntries();
+
+    // updateHttpsParsedSummary：
+    // - 作用：刷新 HTTPS 解析表的可见条数与请求/响应/错误统计。
+    // - 返回：无。
+    void updateHttpsParsedSummary();
 
     // flushPendingPacketsToUi：
     // - 作用：批量消费后台积压报文并刷新 UI。
@@ -1375,6 +1405,12 @@ private:
     QPushButton* m_httpsApplyProxyButton = nullptr; // 应用系统代理按钮。
     QPushButton* m_httpsClearProxyButton = nullptr; // 清除系统代理按钮。
     QLabel* m_httpsProxyStatusLabel = nullptr;      // HTTPS代理状态标签。
+    QLineEdit* m_httpsParsedFilterEdit = nullptr;   // HTTPS解析表关键字筛选框。
+    QComboBox* m_httpsParsedEventFilterCombo = nullptr; // HTTPS解析表事件类型筛选框。
+    QPushButton* m_httpsClearParsedButton = nullptr;// HTTPS解析结果清空按钮。
+    QPushButton* m_httpsExportParsedButton = nullptr;// HTTPS解析结果导出按钮。
+    QCheckBox* m_httpsAutoScrollCheck = nullptr;    // HTTPS解析表自动滚动开关。
+    QLabel* m_httpsParsedSummaryLabel = nullptr;    // HTTPS解析表统计标签。
     QTableWidget* m_httpsParsedTable = nullptr;     // HTTPS解析结果表格。
     QPlainTextEdit* m_httpsProxyLogOutput = nullptr;// HTTPS代理日志输出框。
     std::vector<ks::network::HttpsProxyParsedEntry> m_httpsParsedEntryCache; // HTTPS解析结果缓存，行号与表格一一对应。
@@ -1395,6 +1431,12 @@ private:
     bool m_monitorRunning = false;             // 抓包运行状态缓存。
     bool m_httpsProxyRunning = false;          // HTTPS代理运行状态缓存。
     bool m_httpsProxyServiceInitialized = false; // HTTPS代理服务是否已延后初始化。
+    bool m_httpsSystemProxySnapshotCaptured = false; // 是否已保存本页改写前的代理配置。
+    std::optional<std::uint32_t> m_httpsPreviousProxyEnable; // 原 ProxyEnable，缺省表示原值不存在。
+    std::optional<std::uint32_t> m_httpsPreviousAutoDetect;  // 原 AutoDetect，缺省表示原值不存在。
+    std::optional<QString> m_httpsPreviousProxyServer;       // 原 ProxyServer，缺省表示原值不存在。
+    std::optional<QString> m_httpsPreviousProxyOverride;     // 原 ProxyOverride，缺省表示原值不存在。
+    std::optional<QString> m_httpsPreviousAutoConfigUrl;     // 原 AutoConfigURL，缺省表示原值不存在。
     std::atomic_bool m_monitorStopInProgress{ false }; // 停止流程进行中，避免重复 stop 导致 UI 抖动。
     std::unique_ptr<std::thread> m_monitorStopThread;  // 异步 stop 的 join 线程，防止主线程等待卡顿。
 

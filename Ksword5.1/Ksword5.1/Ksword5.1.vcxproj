@@ -340,6 +340,7 @@
     <ClCompile Include="MonitorDock\WinAPIDock.Ui.cpp" />
     <ClCompile Include="WindowDock\WindowDock.cpp" />
     <ClCompile Include="WindowDock\WindowEventHookTab.cpp" />
+    <ClCompile Include="WindowDock\WindowGlobalHotkeyTab.cpp" />
     <ClCompile Include="WindowDock\WindowGuiHandleTab.cpp" />
     <ClCompile Include="WindowDock\WindowTimerTab.cpp" />
     <ClCompile Include="ksword\log\log.cpp">
@@ -520,11 +521,13 @@
     <QtMoc Include="StartupDock\StartupDock.h" />
     <ClInclude Include="StartupDock\StartupDock.Internal.h" />
     <ClInclude Include="ProcessDock\Process_Tool.h" />
+    <ClInclude Include="ProcessDock\ProcessHotkeyEnumerator.h" />
     <ClInclude Include="UI\UI.css\UI_css.h" />
     <ClInclude Include="MonitorDock\WinAPIDock.h" />
     <ClInclude Include="MonitorDock\WinApiMonitorProtocol.h" />
     <ClInclude Include="WindowDock\WindowDock.h" />
     <ClInclude Include="WindowDock\WindowEventHookTab.h" />
+    <ClInclude Include="WindowDock\WindowGlobalHotkeyTab.h" />
     <ClInclude Include="WindowDock\WindowGuiHandleTab.h" />
     <ClInclude Include="WindowDock\WindowTimerTab.h" />
     <QtMoc Include="WelcomeDock\WelcomeDock.h" />

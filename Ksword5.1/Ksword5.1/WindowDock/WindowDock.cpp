@@ -1,5 +1,6 @@
 #include "WindowDock.h"
 #include "WindowEventHookTab.h"
+#include "WindowGlobalHotkeyTab.h"
 #include "WindowGuiHandleTab.h"
 #include "WindowTimerTab.h"
 #include "../UI/TableInteractionSupport.h"
@@ -3076,6 +3077,15 @@ void WindowDock::initializeUi()
         ks::i18n::contextText(
             QStringLiteral("window.timer.tab.tooltip"),
             QStringLiteral("只读遍历 win32k gTimerHashTable，显示定时器对象、间隔、Flags、回调和 PID/TID 归属。")));
+
+    const int globalHotkeyTabIndex = m_tabWidget->addTab(
+        new WindowGlobalHotkeyTab(m_tabWidget),
+        ks::i18n::contextText(QStringLiteral("window.global_hotkey.tab"), QStringLiteral("全部热键")));
+    m_tabWidget->setTabToolTip(
+        globalHotkeyTabIndex,
+        ks::i18n::contextText(
+            QStringLiteral("window.global_hotkey.tab.tooltip"),
+            QStringLiteral("只读汇总全部进程的窗口热键、菜单快捷键、PE Accelerator 和快捷方式热键。")));
 
     const int eventHookTabIndex = m_tabWidget->addTab(
         new WindowEventHookTab(m_tabWidget),

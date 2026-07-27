@@ -4,6 +4,9 @@
 #include "../theme.h"
 
 #include <QApplication>
+#include <QFileDialog>
+#include <QSaveFile>
+#include <QTextStream>
 #include <WinInet.h>
 
 #pragma comment(lib, "Wininet.lib")
@@ -18,16 +21,24 @@ namespace
         HttpsParsedColumnTime = 0,
         HttpsParsedColumnSession,
         HttpsParsedColumnClient,
+        HttpsParsedColumnProcess,
         HttpsParsedColumnHost,
         HttpsParsedColumnEvent,
         HttpsParsedColumnMethod,
         HttpsParsedColumnPath,
         HttpsParsedColumnStatus,
+        HttpsParsedColumnContentType,
         HttpsParsedColumnTls,
         HttpsParsedColumnAlpn,
+        HttpsParsedColumnElapsed,
+        HttpsParsedColumnUpload,
+        HttpsParsedColumnDownload,
         HttpsParsedColumnDetail,
         HttpsParsedColumnCount
     };
+
+    // kMaxHttpsParsedEntries 用途：限制 UI 和详情缓存的记录数，避免长期监控导致内存持续增长。
+    constexpr int kMaxHttpsParsedEntries = 10000;
 
     // buildHttpsDetailWindowStyle 作用：
     // - 为 HTTPS 详情窗生成独立主题样式；
@@ -148,18 +159,29 @@ namespace
             metaLabel->setStyleSheet(QStringLiteral("padding:6px 8px;border:1px solid %1;border-radius:4px;")
                 .arg(KswordTheme::BorderHex()));
             metaLabel->setText(QStringLiteral(
-                "时间: %1<br/>客户端: %2<br/>目标: %3:%4<br/>事件: %5<br/>方法: %6<br/>路径: %7<br/>状态码: %8<br/>TLS: %9<br/>ALPN: %10<br/>SNI: %11<br/>详情: %12")
+                "时间: %1<br/>客户端: %2<br/>进程: %3<br/>目标: %4:%5<br/>事件: %6<br/>方法: %7<br/>路径: %8<br/>状态码: %9<br/>内容类型: %10<br/>内容长度: %11<br/>耗时: %12 ms<br/>上行/下行: %13 / %14 字节<br/>TLS: %15<br/>ALPN: %16<br/>密码套件: %17<br/>SNI: %18<br/>证书主体: %19<br/>证书签发者: %20<br/>证书到期: %21<br/>证书 SHA-256: %22<br/>详情: %23")
                 .arg(QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(parsedEntry.timestampMs)).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz")))
                 .arg(wrapFieldHtml(parsedEntry.clientEndpointText))
+                .arg(wrapFieldHtml(parsedEntry.clientProcessText))
                 .arg(wrapFieldHtml(parsedEntry.targetHostText))
                 .arg(parsedEntry.targetPort)
                 .arg(wrapFieldHtml(parsedEntry.eventTypeText))
                 .arg(wrapFieldHtml(parsedEntry.methodText))
                 .arg(wrapFieldHtml(parsedEntry.pathText))
                 .arg(parsedEntry.statusCode)
+                .arg(wrapFieldHtml(parsedEntry.contentTypeText))
+                .arg(parsedEntry.contentLength >= 0 ? QString::number(parsedEntry.contentLength) : QStringLiteral("未知"))
+                .arg(parsedEntry.elapsedMs)
+                .arg(parsedEntry.uploadBytes)
+                .arg(parsedEntry.downloadBytes)
                 .arg(wrapFieldHtml(parsedEntry.tlsVersionText))
                 .arg(wrapFieldHtml(parsedEntry.alpnText))
+                .arg(wrapFieldHtml(parsedEntry.cipherSuiteText))
                 .arg(wrapFieldHtml(parsedEntry.sniText))
+                .arg(wrapFieldHtml(parsedEntry.certificateSubjectText))
+                .arg(wrapFieldHtml(parsedEntry.certificateIssuerText))
+                .arg(wrapFieldHtml(parsedEntry.certificateExpiryText))
+                .arg(wrapFieldHtml(parsedEntry.certificateSha256Text))
                 .arg(wrapFieldHtml(parsedEntry.detailText)));
             rootLayout->addWidget(metaLabel);
 
@@ -257,6 +279,172 @@ namespace
         }
         return true;
     }
+
+    // readInternetSettingString 作用：读取当前用户 Internet Settings 下可选的字符串配置项。
+    bool readInternetSettingString(const wchar_t* valueName, std::optional<QString>* valueOut, QString* errorTextOut)
+    {
+        if (valueOut == nullptr)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("代理配置输出对象为空。");
+            }
+            return false;
+        }
+
+        DWORD dataSize = 0;
+        const LONG sizeResult = ::RegGetValueW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            valueName,
+            RRF_RT_REG_SZ,
+            nullptr,
+            nullptr,
+            &dataSize);
+        if (sizeResult == ERROR_FILE_NOT_FOUND)
+        {
+            valueOut->reset();
+            return true;
+        }
+        if (sizeResult != ERROR_SUCCESS || dataSize > 64 * 1024 || dataSize % sizeof(wchar_t) != 0)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("读取代理配置失败：%1").arg(sizeResult);
+            }
+            return false;
+        }
+
+        std::vector<wchar_t> valueBuffer(static_cast<std::size_t>(dataSize / sizeof(wchar_t)) + 1, L'\0');
+        DWORD readSize = dataSize;
+        const LONG readResult = ::RegGetValueW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            valueName,
+            RRF_RT_REG_SZ,
+            nullptr,
+            valueBuffer.data(),
+            &readSize);
+        if (readResult != ERROR_SUCCESS)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("读取代理配置失败：%1").arg(readResult);
+            }
+            return false;
+        }
+
+        *valueOut = QString::fromWCharArray(valueBuffer.data());
+        return true;
+    }
+
+    // readInternetSettingDword 作用：读取当前用户 Internet Settings 下可选的 DWORD 配置项。
+    bool readInternetSettingDword(const wchar_t* valueName, std::optional<std::uint32_t>* valueOut, QString* errorTextOut)
+    {
+        if (valueOut == nullptr)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("代理配置输出对象为空。");
+            }
+            return false;
+        }
+
+        DWORD valueData = 0;
+        DWORD dataSize = sizeof(valueData);
+        const LONG readResult = ::RegGetValueW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            valueName,
+            RRF_RT_REG_DWORD,
+            nullptr,
+            &valueData,
+            &dataSize);
+        if (readResult == ERROR_FILE_NOT_FOUND)
+        {
+            valueOut->reset();
+            return true;
+        }
+        if (readResult != ERROR_SUCCESS || dataSize != sizeof(valueData))
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("读取代理配置失败：%1").arg(readResult);
+            }
+            return false;
+        }
+
+        *valueOut = static_cast<std::uint32_t>(valueData);
+        return true;
+    }
+
+    // deleteInternetSetting 作用：删除当前用户 Internet Settings 下指定值，使其恢复为不存在状态。
+    bool deleteInternetSetting(const wchar_t* valueName, QString* errorTextOut)
+    {
+        const LONG deleteResult = ::RegDeleteKeyValueW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            valueName);
+        if (deleteResult != ERROR_SUCCESS && deleteResult != ERROR_FILE_NOT_FOUND)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("删除代理配置失败：%1").arg(deleteResult);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    // buildHttpsProxyServerText 作用：在保留已有协议专属代理项的前提下，仅替换 HTTPS 代理端点。
+    QString buildHttpsProxyServerText(const QString& originalProxyServerText, const QString& httpsEndpointText)
+    {
+        const QString trimmedOriginalText = originalProxyServerText.trimmed();
+        if (trimmedOriginalText.isEmpty())
+        {
+            return QStringLiteral("https=%1").arg(httpsEndpointText);
+        }
+
+        const QStringList entryList = trimmedOriginalText.split(';', Qt::SkipEmptyParts);
+        QStringList outputEntryList;
+        outputEntryList.reserve(entryList.size() + 1);
+        bool hasProtocolSpecificEntry = false;
+        bool httpsEntryReplaced = false;
+        for (const QString& rawEntryText : entryList)
+        {
+            const QString entryText = rawEntryText.trimmed();
+            const int equalIndex = entryText.indexOf('=');
+            if (equalIndex <= 0)
+            {
+                outputEntryList.append(entryText);
+                continue;
+            }
+
+            hasProtocolSpecificEntry = true;
+            const QString protocolText = entryText.left(equalIndex).trimmed();
+            if (protocolText.compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0)
+            {
+                outputEntryList.append(QStringLiteral("https=%1").arg(httpsEndpointText));
+                httpsEntryReplaced = true;
+            }
+            else
+            {
+                outputEntryList.append(entryText);
+            }
+        }
+
+        if (hasProtocolSpecificEntry)
+        {
+            if (!httpsEntryReplaced)
+            {
+                outputEntryList.append(QStringLiteral("https=%1").arg(httpsEndpointText));
+            }
+            return outputEntryList.join(';');
+        }
+
+        // 原配置是作用于全部协议的单端点。HTTPS 监控期间把该端点显式保留给 HTTP，避免直接丢失原 HTTP 代理。
+        return QStringLiteral("http=%1;https=%2").arg(trimmedOriginalText, httpsEndpointText);
+    }
 }
 
 void NetworkDock::initializeHttpsAnalyzeTab()
@@ -294,9 +482,9 @@ void NetworkDock::initializeHttpsAnalyzeTab()
     m_httpsApplyProxyButton->setIcon(QIcon(":/Icon/process_main.svg"));
     m_httpsApplyProxyButton->setToolTip(QStringLiteral("把系统代理切换到本地 HTTPS 代理。"));
 
-    m_httpsClearProxyButton = new QPushButton(QStringLiteral("清理系统代理"), m_httpsAnalyzePage);
+    m_httpsClearProxyButton = new QPushButton(QStringLiteral("还原系统代理"), m_httpsAnalyzePage);
     m_httpsClearProxyButton->setIcon(QIcon(":/Icon/log_clear.svg"));
-    m_httpsClearProxyButton->setToolTip(QStringLiteral("清除系统代理配置，恢复直连。"));
+    m_httpsClearProxyButton->setToolTip(QStringLiteral("恢复本页应用 HTTPS 代理前保存的系统代理配置。"));
 
     m_httpsProxyStatusLabel = new QLabel(QStringLiteral("状态：HTTPS代理未启动"), m_httpsAnalyzePage);
     m_httpsProxyStatusLabel->setWordWrap(true);
@@ -314,19 +502,66 @@ void NetworkDock::initializeHttpsAnalyzeTab()
     m_httpsAnalyzeControlLayout->addWidget(m_httpsProxyStatusLabel, 1);
     m_httpsAnalyzeLayout->addLayout(m_httpsAnalyzeControlLayout);
 
+    QLabel* captureScopeLabel = new QLabel(
+        QStringLiteral("范围：仅记录经过本地系统代理的 HTTP/1.1 流量。QUIC/HTTP/3、直连流量和启用证书锁定的应用不会进入本表。"),
+        m_httpsAnalyzePage);
+    captureScopeLabel->setWordWrap(true);
+    captureScopeLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+    m_httpsAnalyzeLayout->addWidget(captureScopeLabel);
+
+    QHBoxLayout* parsedFilterLayout = new QHBoxLayout();
+    parsedFilterLayout->setSpacing(6);
+    m_httpsParsedFilterEdit = new QLineEdit(m_httpsAnalyzePage);
+    m_httpsParsedFilterEdit->setClearButtonEnabled(true);
+    m_httpsParsedFilterEdit->setPlaceholderText(QStringLiteral("筛选主机、路径、方法、状态码、内容类型、TLS 或详情..."));
+    m_httpsParsedFilterEdit->setToolTip(QStringLiteral("实时筛选当前 HTTPS 解析记录，不影响代理转发或完整缓存。"));
+    m_httpsParsedEventFilterCombo = new QComboBox(m_httpsAnalyzePage);
+    m_httpsParsedEventFilterCombo->addItem(QStringLiteral("全部事件"));
+    m_httpsParsedEventFilterCombo->addItem(QStringLiteral("CONNECT"));
+    m_httpsParsedEventFilterCombo->addItem(QStringLiteral("TLS"));
+    m_httpsParsedEventFilterCombo->addItem(QStringLiteral("REQUEST"));
+    m_httpsParsedEventFilterCombo->addItem(QStringLiteral("RESPONSE"));
+    m_httpsParsedEventFilterCombo->addItem(QStringLiteral("SUMMARY"));
+    m_httpsParsedEventFilterCombo->addItem(QStringLiteral("ERROR"));
+    m_httpsParsedEventFilterCombo->setToolTip(QStringLiteral("按 HTTPS 代理事件类型筛选。"));
+    m_httpsClearParsedButton = new QPushButton(QStringLiteral("清空解析结果"), m_httpsAnalyzePage);
+    m_httpsClearParsedButton->setIcon(QIcon(":/Icon/log_clear.svg"));
+    m_httpsClearParsedButton->setToolTip(QStringLiteral("清空解析表和详情缓存，不停止 HTTPS 代理。"));
+    m_httpsExportParsedButton = new QPushButton(QStringLiteral("导出可见 CSV"), m_httpsAnalyzePage);
+    m_httpsExportParsedButton->setIcon(QIcon(":/Icon/log_copy.svg"));
+    m_httpsExportParsedButton->setToolTip(QStringLiteral("将当前筛选后可见的 HTTPS 解析记录导出为 UTF-8 CSV。"));
+    m_httpsAutoScrollCheck = new QCheckBox(QStringLiteral("自动滚动"), m_httpsAnalyzePage);
+    m_httpsAutoScrollCheck->setChecked(true);
+    m_httpsAutoScrollCheck->setToolTip(QStringLiteral("新记录到达时自动定位到最后一条可见记录。"));
+    m_httpsParsedSummaryLabel = new QLabel(QStringLiteral("显示 0 / 0，请求 0，响应 0，错误 0"), m_httpsAnalyzePage);
+    m_httpsParsedSummaryLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    parsedFilterLayout->addWidget(new QLabel(QStringLiteral("筛选:"), m_httpsAnalyzePage));
+    parsedFilterLayout->addWidget(m_httpsParsedFilterEdit, 1);
+    parsedFilterLayout->addWidget(m_httpsParsedEventFilterCombo);
+    parsedFilterLayout->addWidget(m_httpsAutoScrollCheck);
+    parsedFilterLayout->addWidget(m_httpsExportParsedButton);
+    parsedFilterLayout->addWidget(m_httpsClearParsedButton);
+    parsedFilterLayout->addWidget(m_httpsParsedSummaryLabel);
+    m_httpsAnalyzeLayout->addLayout(parsedFilterLayout);
+
     m_httpsParsedTable = new ks::ui::VisibleTableWidget(m_httpsAnalyzePage);
     m_httpsParsedTable->setColumnCount(HttpsParsedColumnCount);
     m_httpsParsedTable->setHorizontalHeaderLabels({
         QStringLiteral("时间"),
         QStringLiteral("会话"),
         QStringLiteral("客户端"),
+        QStringLiteral("进程"),
         QStringLiteral("主机"),
         QStringLiteral("事件"),
         QStringLiteral("方法"),
         QStringLiteral("路径"),
         QStringLiteral("状态码"),
+        QStringLiteral("内容类型"),
         QStringLiteral("TLS"),
         QStringLiteral("ALPN"),
+        QStringLiteral("耗时"),
+        QStringLiteral("上行"),
+        QStringLiteral("下行"),
         QStringLiteral("详情")
         });
     m_httpsParsedTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -339,13 +574,18 @@ void NetworkDock::initializeHttpsAnalyzeTab()
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnTime, 120);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnSession, 70);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnClient, 140);
+    m_httpsParsedTable->setColumnWidth(HttpsParsedColumnProcess, 180);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnHost, 160);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnEvent, 90);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnMethod, 70);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnPath, 220);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnStatus, 70);
+    m_httpsParsedTable->setColumnWidth(HttpsParsedColumnContentType, 160);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnTls, 80);
     m_httpsParsedTable->setColumnWidth(HttpsParsedColumnAlpn, 80);
+    m_httpsParsedTable->setColumnWidth(HttpsParsedColumnElapsed, 80);
+    m_httpsParsedTable->setColumnWidth(HttpsParsedColumnUpload, 100);
+    m_httpsParsedTable->setColumnWidth(HttpsParsedColumnDownload, 100);
     m_httpsAnalyzeLayout->addWidget(m_httpsParsedTable, 1);
 
     m_httpsProxyLogOutput = new QPlainTextEdit(m_httpsAnalyzePage);
@@ -357,6 +597,12 @@ void NetworkDock::initializeHttpsAnalyzeTab()
 
     m_sideTabWidget->addTab(m_httpsAnalyzePage, QIcon(":/Icon/process_details.svg"), QStringLiteral("HTTPS解析"));
     updateHttpsProxyStatusLabel(QStringLiteral("状态：HTTPS代理未启动"));
+    updateHttpsParsedSummary();
+
+    connect(m_httpsParsedFilterEdit, &QLineEdit::textChanged, this, [this](const QString&) { applyHttpsParsedTableFilter(); });
+    connect(m_httpsParsedEventFilterCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](const int) { applyHttpsParsedTableFilter(); });
+    connect(m_httpsClearParsedButton, &QPushButton::clicked, this, [this]() { clearHttpsParsedEntries(); });
+    connect(m_httpsExportParsedButton, &QPushButton::clicked, this, [this]() { exportVisibleHttpsParsedEntries(); });
 
     connect(m_httpsParsedTable, &QTableWidget::cellDoubleClicked, this, [this](const int row, const int /*column*/)
         {
@@ -454,6 +700,10 @@ void NetworkDock::stopHttpsProxyService()
 
     m_httpsProxyService->stop();
     m_httpsProxyRunning = false;
+    if (m_httpsSystemProxySnapshotCaptured)
+    {
+        clearHttpsSystemProxy();
+    }
     updateHttpsProxyStatusLabel(QStringLiteral("状态：HTTPS代理已停止"));
 }
 
@@ -462,6 +712,18 @@ void NetworkDock::ensureHttpsRootCertificateTrusted()
     if (m_httpsProxyService == nullptr)
     {
         appendHttpsProxyLogLine(QStringLiteral("HTTPS代理服务尚未初始化。"));
+        return;
+    }
+
+    const QMessageBox::StandardButton confirmation = QMessageBox::question(
+        this,
+        QStringLiteral("信任 HTTPS 根证书"),
+        QStringLiteral("此操作会将 Ksword 根证书加入“当前用户”的受信任根证书颁发机构。\n\n"
+            "仅在你拥有或获授权分析的流量环境中继续。是否信任该证书？"),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (confirmation != QMessageBox::Yes)
+    {
         return;
     }
 
@@ -479,18 +741,55 @@ void NetworkDock::ensureHttpsRootCertificateTrusted()
 
 void NetworkDock::applyHttpsSystemProxy()
 {
+    if (m_httpsProxyService == nullptr || !m_httpsProxyService->isRunning())
+    {
+        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("请先启动 HTTPS 代理，再应用系统代理。"));
+        return;
+    }
+    if (!m_httpsProxyService->isRootTrusted())
+    {
+        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("请先信任 HTTPS 根证书，否则客户端会拒绝代理证书。"));
+        return;
+    }
+
     const QString listenAddressText = (m_httpsListenAddressEdit != nullptr)
         ? m_httpsListenAddressEdit->text().trimmed()
         : QStringLiteral("127.0.0.1");
-    const QString proxyServerText = QStringLiteral("https=%1:%2")
-        .arg(listenAddressText)
-        .arg(m_httpsListenPortSpin != nullptr ? m_httpsListenPortSpin->value() : 8889);
+
+    const QMessageBox::StandardButton confirmation = QMessageBox::question(
+        this,
+        QStringLiteral("应用 HTTPS 系统代理"),
+        QStringLiteral("将把当前用户的 HTTPS 系统代理切换到 %1:%2。\n\n"
+            "该代理会解密并显示通过此代理的 HTTPS 请求头和响应头，正文只转发不保存。停止代理或点击“还原系统代理”会恢复当前配置。是否继续？")
+            .arg(listenAddressText)
+            .arg(m_httpsListenPortSpin != nullptr ? m_httpsListenPortSpin->value() : 8889),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (confirmation != QMessageBox::Yes)
+    {
+        return;
+    }
 
     QString errorText;
+    if (!captureHttpsSystemProxySnapshot(&errorText))
+    {
+        appendHttpsProxyLogLine(QStringLiteral("保存系统代理配置失败：%1").arg(errorText));
+        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("保存原系统代理配置失败：\n%1").arg(errorText));
+        return;
+    }
+
+    const QString originalProxyServerText = m_httpsPreviousProxyServer.value_or(QString());
+    const QString proxyServerText = buildHttpsProxyServerText(
+        originalProxyServerText,
+        QStringLiteral("%1:%2").arg(listenAddressText).arg(m_httpsListenPortSpin != nullptr ? m_httpsListenPortSpin->value() : 8889));
     if (!writeInternetSettingString(L"ProxyServer", proxyServerText, &errorText)
         || !writeInternetSettingString(L"ProxyOverride", QStringLiteral("localhost;127.*;<local>"), &errorText)
-        || !writeInternetSettingDword(L"ProxyEnable", 1, &errorText))
+        || !writeInternetSettingDword(L"ProxyEnable", 1, &errorText)
+        || !writeInternetSettingDword(L"AutoDetect", 0, &errorText)
+        || !writeInternetSettingString(L"AutoConfigURL", QString(), &errorText))
     {
+        QString restoreErrorText;
+        restoreHttpsSystemProxySnapshot(&restoreErrorText);
         appendHttpsProxyLogLine(QStringLiteral("应用系统代理失败：%1").arg(errorText));
         QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("应用系统代理失败：\n%1").arg(errorText));
         return;
@@ -502,16 +801,100 @@ void NetworkDock::applyHttpsSystemProxy()
 
 void NetworkDock::clearHttpsSystemProxy()
 {
-    QString errorText;
-    if (!writeInternetSettingDword(L"ProxyEnable", 0, &errorText))
+    if (!m_httpsSystemProxySnapshotCaptured)
     {
-        appendHttpsProxyLogLine(QStringLiteral("清理系统代理失败：%1").arg(errorText));
-        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("清理系统代理失败：\n%1").arg(errorText));
+        appendHttpsProxyLogLine(QStringLiteral("未发现由 HTTPS 解析页保存的系统代理快照，不修改当前系统代理。"));
+        return;
+    }
+
+    QString errorText;
+    if (!restoreHttpsSystemProxySnapshot(&errorText))
+    {
+        appendHttpsProxyLogLine(QStringLiteral("还原系统代理失败：%1").arg(errorText));
+        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("还原系统代理失败：\n%1").arg(errorText));
         return;
     }
 
     refreshInternetSettings();
-    appendHttpsProxyLogLine(QStringLiteral("系统代理已关闭。"));
+    appendHttpsProxyLogLine(QStringLiteral("系统代理已恢复为 HTTPS 解析页应用前的配置。"));
+}
+
+bool NetworkDock::captureHttpsSystemProxySnapshot(QString* errorTextOut)
+{
+    if (m_httpsSystemProxySnapshotCaptured)
+    {
+        return true;
+    }
+
+    std::optional<std::uint32_t> previousProxyEnable;
+    std::optional<std::uint32_t> previousAutoDetect;
+    std::optional<QString> previousProxyServer;
+    std::optional<QString> previousProxyOverride;
+    std::optional<QString> previousAutoConfigUrl;
+    QString errorText;
+    if (!readInternetSettingDword(L"ProxyEnable", &previousProxyEnable, &errorText)
+        || !readInternetSettingDword(L"AutoDetect", &previousAutoDetect, &errorText)
+        || !readInternetSettingString(L"ProxyServer", &previousProxyServer, &errorText)
+        || !readInternetSettingString(L"ProxyOverride", &previousProxyOverride, &errorText)
+        || !readInternetSettingString(L"AutoConfigURL", &previousAutoConfigUrl, &errorText))
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = errorText;
+        }
+        return false;
+    }
+
+    m_httpsPreviousProxyEnable = previousProxyEnable;
+    m_httpsPreviousAutoDetect = previousAutoDetect;
+    m_httpsPreviousProxyServer = previousProxyServer;
+    m_httpsPreviousProxyOverride = previousProxyOverride;
+    m_httpsPreviousAutoConfigUrl = previousAutoConfigUrl;
+    m_httpsSystemProxySnapshotCaptured = true;
+    return true;
+}
+
+bool NetworkDock::restoreHttpsSystemProxySnapshot(QString* errorTextOut)
+{
+    if (!m_httpsSystemProxySnapshotCaptured)
+    {
+        return true;
+    }
+
+    QString errorText;
+    const auto restoreDword = [&errorText](const wchar_t* valueName, const std::optional<std::uint32_t>& value) -> bool
+        {
+            return value.has_value()
+                ? writeInternetSettingDword(valueName, static_cast<DWORD>(*value), &errorText)
+                : deleteInternetSetting(valueName, &errorText);
+        };
+    const auto restoreString = [&errorText](const wchar_t* valueName, const std::optional<QString>& value) -> bool
+        {
+            return value.has_value()
+                ? writeInternetSettingString(valueName, *value, &errorText)
+                : deleteInternetSetting(valueName, &errorText);
+        };
+
+    if (!restoreDword(L"ProxyEnable", m_httpsPreviousProxyEnable)
+        || !restoreDword(L"AutoDetect", m_httpsPreviousAutoDetect)
+        || !restoreString(L"ProxyServer", m_httpsPreviousProxyServer)
+        || !restoreString(L"ProxyOverride", m_httpsPreviousProxyOverride)
+        || !restoreString(L"AutoConfigURL", m_httpsPreviousAutoConfigUrl))
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = errorText;
+        }
+        return false;
+    }
+
+    m_httpsPreviousProxyEnable.reset();
+    m_httpsPreviousAutoDetect.reset();
+    m_httpsPreviousProxyServer.reset();
+    m_httpsPreviousProxyOverride.reset();
+    m_httpsPreviousAutoConfigUrl.reset();
+    m_httpsSystemProxySnapshotCaptured = false;
+    return true;
 }
 
 void NetworkDock::onHttpsProxyParsedEntryArrived(const ks::network::HttpsProxyParsedEntry& parsedEntry)
@@ -519,6 +902,15 @@ void NetworkDock::onHttpsProxyParsedEntryArrived(const ks::network::HttpsProxyPa
     if (m_httpsParsedTable == nullptr)
     {
         return;
+    }
+
+    if (m_httpsParsedTable->rowCount() >= kMaxHttpsParsedEntries)
+    {
+        m_httpsParsedTable->removeRow(0);
+        if (!m_httpsParsedEntryCache.empty())
+        {
+            m_httpsParsedEntryCache.erase(m_httpsParsedEntryCache.begin());
+        }
     }
 
     m_httpsParsedEntryCache.push_back(parsedEntry);
@@ -529,15 +921,190 @@ void NetworkDock::onHttpsProxyParsedEntryArrived(const ks::network::HttpsProxyPa
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnTime, createPacketCell(timeText));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnSession, createPacketCell(QString::number(parsedEntry.sessionId)));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnClient, createPacketCell(parsedEntry.clientEndpointText));
+    m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnProcess, createPacketCell(parsedEntry.clientProcessText));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnHost, createPacketCell(QStringLiteral("%1:%2").arg(parsedEntry.targetHostText).arg(parsedEntry.targetPort)));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnEvent, createPacketCell(parsedEntry.eventTypeText));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnMethod, createPacketCell(parsedEntry.methodText));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnPath, createPacketCell(parsedEntry.pathText));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnStatus, createPacketCell(parsedEntry.statusCode > 0 ? QString::number(parsedEntry.statusCode) : QString()));
+    m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnContentType, createPacketCell(parsedEntry.contentTypeText));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnTls, createPacketCell(parsedEntry.tlsVersionText));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnAlpn, createPacketCell(parsedEntry.alpnText));
+    m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnElapsed, createPacketCell(parsedEntry.elapsedMs > 0 ? QStringLiteral("%1 ms").arg(parsedEntry.elapsedMs) : QString()));
+    m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnUpload, createPacketCell(parsedEntry.uploadBytes > 0 ? QString::number(parsedEntry.uploadBytes) : QString()));
+    m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnDownload, createPacketCell(parsedEntry.downloadBytes > 0 ? QString::number(parsedEntry.downloadBytes) : QString()));
     m_httpsParsedTable->setItem(rowIndex, HttpsParsedColumnDetail, createPacketCell(parsedEntry.detailText));
-    m_httpsParsedTable->scrollToBottom();
+    applyHttpsParsedTableFilter();
+    if (m_httpsAutoScrollCheck != nullptr && m_httpsAutoScrollCheck->isChecked() && !m_httpsParsedTable->isRowHidden(rowIndex))
+    {
+        m_httpsParsedTable->scrollToBottom();
+    }
+}
+
+void NetworkDock::applyHttpsParsedTableFilter()
+{
+    if (m_httpsParsedTable == nullptr)
+    {
+        return;
+    }
+
+    const QString keywordText = m_httpsParsedFilterEdit != nullptr
+        ? m_httpsParsedFilterEdit->text().trimmed()
+        : QString();
+    const QString eventTypeText = m_httpsParsedEventFilterCombo != nullptr
+        ? m_httpsParsedEventFilterCombo->currentText()
+        : QStringLiteral("全部事件");
+    const bool filterByEventType = !eventTypeText.isEmpty() && eventTypeText != QStringLiteral("全部事件");
+
+    for (int rowIndex = 0; rowIndex < m_httpsParsedTable->rowCount(); ++rowIndex)
+    {
+        bool keywordMatched = keywordText.isEmpty();
+        if (!keywordMatched)
+        {
+            for (int columnIndex = 0; columnIndex < HttpsParsedColumnCount; ++columnIndex)
+            {
+                const QTableWidgetItem* cellItem = m_httpsParsedTable->item(rowIndex, columnIndex);
+                if (cellItem != nullptr && cellItem->text().contains(keywordText, Qt::CaseInsensitive))
+                {
+                    keywordMatched = true;
+                    break;
+                }
+            }
+        }
+
+        const QTableWidgetItem* eventItem = m_httpsParsedTable->item(rowIndex, HttpsParsedColumnEvent);
+        const bool eventMatched = !filterByEventType
+            || (eventItem != nullptr && eventItem->text().compare(eventTypeText, Qt::CaseInsensitive) == 0);
+        m_httpsParsedTable->setRowHidden(rowIndex, !keywordMatched || !eventMatched);
+    }
+
+    updateHttpsParsedSummary();
+}
+
+void NetworkDock::clearHttpsParsedEntries()
+{
+    if (m_httpsParsedTable == nullptr)
+    {
+        return;
+    }
+
+    m_httpsParsedEntryCache.clear();
+    m_httpsParsedTable->setRowCount(0);
+    updateHttpsParsedSummary();
+    appendHttpsProxyLogLine(QStringLiteral("HTTPS 解析结果和详情缓存已清空。"));
+}
+
+void NetworkDock::exportVisibleHttpsParsedEntries()
+{
+    if (m_httpsParsedTable == nullptr)
+    {
+        return;
+    }
+
+    const QString filePath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("导出 HTTPS 解析记录"),
+        QStringLiteral("https-analysis.csv"),
+        QStringLiteral("CSV 文件 (*.csv)"));
+    if (filePath.isEmpty())
+    {
+        return;
+    }
+
+    QSaveFile outputFile(filePath);
+    if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text))
+    {
+        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("无法创建导出文件：%1").arg(outputFile.errorString()));
+        return;
+    }
+
+    const auto escapeCsvField = [](QString fieldText) -> QString
+        {
+            fieldText.replace('"', QStringLiteral("\"\""));
+            return QStringLiteral("\"%1\"").arg(fieldText);
+        };
+
+    outputFile.write("\xEF\xBB\xBF");
+    QTextStream outputStream(&outputFile);
+    QStringList headerTextList;
+    for (int columnIndex = 0; columnIndex < HttpsParsedColumnCount; ++columnIndex)
+    {
+        const QTableWidgetItem* headerItem = m_httpsParsedTable->horizontalHeaderItem(columnIndex);
+        headerTextList.append(escapeCsvField(headerItem != nullptr ? headerItem->text() : QString()));
+    }
+    outputStream << headerTextList.join(',') << Qt::endl;
+
+    int exportedRowCount = 0;
+    for (int rowIndex = 0; rowIndex < m_httpsParsedTable->rowCount(); ++rowIndex)
+    {
+        if (m_httpsParsedTable->isRowHidden(rowIndex))
+        {
+            continue;
+        }
+
+        QStringList rowTextList;
+        rowTextList.reserve(HttpsParsedColumnCount);
+        for (int columnIndex = 0; columnIndex < HttpsParsedColumnCount; ++columnIndex)
+        {
+            const QTableWidgetItem* cellItem = m_httpsParsedTable->item(rowIndex, columnIndex);
+            rowTextList.append(escapeCsvField(cellItem != nullptr ? cellItem->text() : QString()));
+        }
+        outputStream << rowTextList.join(',') << Qt::endl;
+        ++exportedRowCount;
+    }
+
+    if (!outputFile.commit())
+    {
+        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("写入导出文件失败：%1").arg(outputFile.errorString()));
+        return;
+    }
+    appendHttpsProxyLogLine(QStringLiteral("已导出 %1 条可见 HTTPS 解析记录：%2").arg(exportedRowCount).arg(filePath));
+}
+
+void NetworkDock::updateHttpsParsedSummary()
+{
+    if (m_httpsParsedSummaryLabel == nullptr || m_httpsParsedTable == nullptr)
+    {
+        return;
+    }
+
+    int visibleCount = 0;
+    int requestCount = 0;
+    int responseCount = 0;
+    int errorCount = 0;
+    for (int rowIndex = 0; rowIndex < m_httpsParsedTable->rowCount(); ++rowIndex)
+    {
+        if (!m_httpsParsedTable->isRowHidden(rowIndex))
+        {
+            ++visibleCount;
+        }
+
+        const QTableWidgetItem* eventItem = m_httpsParsedTable->item(rowIndex, HttpsParsedColumnEvent);
+        if (eventItem == nullptr)
+        {
+            continue;
+        }
+        const QString eventText = eventItem->text();
+        if (eventText == QStringLiteral("REQUEST"))
+        {
+            ++requestCount;
+        }
+        else if (eventText == QStringLiteral("RESPONSE"))
+        {
+            ++responseCount;
+        }
+        else if (eventText == QStringLiteral("ERROR"))
+        {
+            ++errorCount;
+        }
+    }
+
+    m_httpsParsedSummaryLabel->setText(QStringLiteral("显示 %1 / %2，请求 %3，响应 %4，错误 %5")
+        .arg(visibleCount)
+        .arg(m_httpsParsedTable->rowCount())
+        .arg(requestCount)
+        .arg(responseCount)
+        .arg(errorCount));
 }
 
 void NetworkDock::openHttpsParsedDetailByRow(const int row)
