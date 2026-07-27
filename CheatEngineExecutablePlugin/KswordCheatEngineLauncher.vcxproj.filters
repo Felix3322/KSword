@@ -27,7 +27,10 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="integration\00_ksword_bridge.lua">
+    <None Include="integration\00_ksword_theme.lua">
+      <Filter>Plugin Files</Filter>
+    </None>
+    <None Include="integration\10_ksword_bridge.lua">
       <Filter>Plugin Files</Filter>
     </None>
     <None Include="NOTICE.md">

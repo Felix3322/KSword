@@ -96,7 +96,8 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="integration\00_ksword_bridge.lua" />
+    <None Include="integration\00_ksword_theme.lua" />
+    <None Include="integration\10_ksword_bridge.lua" />
     <None Include="NOTICE.md" />
     <None Include="plugin.json" />
     <None Include="README.md" />

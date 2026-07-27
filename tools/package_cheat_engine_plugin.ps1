@@ -91,8 +91,11 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination (
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'NOTICE.md') -Destination (
     Join-Path $pluginRoot 'NOTICE') -Force
 Copy-Item -LiteralPath (
-    Join-Path $sourceRoot 'integration\00_ksword_bridge.lua') -Destination (
-    Join-Path $payloadRoot 'autorun\00_ksword_bridge.lua') -Force
+    Join-Path $sourceRoot 'integration\00_ksword_theme.lua') -Destination (
+    Join-Path $payloadRoot 'autorun\00_ksword_theme.lua') -Force
+Copy-Item -LiteralPath (
+    Join-Path $sourceRoot 'integration\10_ksword_bridge.lua') -Destination (
+    Join-Path $payloadRoot 'autorun\10_ksword_bridge.lua') -Force
 
 # 输出机器可读摘要，便于构建日志核对插件文件是否真实包含。
 $allFiles = Get-ChildItem -LiteralPath $pluginRoot -Recurse -File

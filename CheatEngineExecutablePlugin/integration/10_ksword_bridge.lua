@@ -1,9 +1,8 @@
 -- KSword Cheat Engine 自动初始化脚本。
--- 本文件由打包脚本放入 CE autorun；它只加载 KSword 桥接并打开宿主提供的 PID。
+-- UI 主题脚本先注册延迟初始化；本脚本只加载桥接并打开宿主提供的 PID。
 
 local statusPath = os.getenv("KSWORD_CE_BRIDGE_STATUS_FILE")
 
--- writeStatus：向独立启动器回报桥接初始化结果。
 local function writeStatus(value)
     if statusPath == nil or statusPath == "" then
         return
@@ -15,7 +14,6 @@ local function writeStatus(value)
     end
 end
 
--- 优先使用启动器给出的绝对路径；回退路径便于直接启动插件内置 CE。
 local bridgePath = os.getenv("KSWORD_CE_BRIDGE_DLL")
 if bridgePath == nil or bridgePath == "" then
     local architecture = cheatEngineIs64Bit() and "x64" or "Win32"
@@ -30,9 +28,15 @@ if not loadOk or pluginId == nil then
     return
 end
 
--- 在桥接函数槽已安装后再打开目标，确保首个进程句柄也经过 KSword。
+-- 在桥接函数槽安装后再打开目标，确保首个进程句柄也经过 KSword。
 local targetPid = tonumber(os.getenv("KSWORD_CE_TARGET_PID") or "")
 if targetPid ~= nil and targetPid > 0 then
-    pcall(openProcess, targetPid)
+    local openOk = pcall(openProcess, targetPid)
+    if not openOk then
+        writeStatus("failed")
+        return
+    end
 end
-writeStatus("ready")
+
+-- 主题定时器会在全部 autorun 脚本完成后执行，并把 bridge-ready 汇总成 ready。
+writeStatus("bridge-ready")
