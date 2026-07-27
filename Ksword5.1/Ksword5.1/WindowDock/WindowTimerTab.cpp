@@ -2,6 +2,7 @@
 
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
@@ -476,9 +477,18 @@ void WindowTimerTab::showCopyMenu(const QPoint& position)
     QAction* copyCell = menu.addAction(timerText("window.timer.copy.cell", QStringLiteral("复制单元格")));
     QAction* copyRow = menu.addAction(timerText("window.timer.copy.row", QStringLiteral("复制当前行")));
     QAction* copyAll = menu.addAction(timerText("window.timer.copy.all", QStringLiteral("复制全部行")));
+    const QTableWidgetItem* processIdItem = row >= 0 ? m_table->item(row, ColumnPid) : nullptr;
+    bool processIdOk = false;
+    const quint32 processId = processIdItem != nullptr
+        ? processIdItem->text().trimmed().toUInt(&processIdOk, 10)
+        : 0U;
+    QAction* openProcessAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_details.svg")),
+        QStringLiteral("转到进程详细信息"));
     copyCell->setEnabled(index.isValid());
     copyRow->setEnabled(row >= 0);
     copyAll->setEnabled(m_table->rowCount() > 0);
+    openProcessAction->setEnabled(processIdOk && processId != 0U);
     QAction* selected = menu.exec(m_table->viewport()->mapToGlobal(position));
     if (selected == copyCell && index.isValid())
     {
@@ -497,5 +507,9 @@ void WindowTimerTab::showCopyMenu(const QPoint& position)
             lines << rowClipboardText(m_table, tableRow, tableRow == 0);
         }
         QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
+    }
+    else if (selected == openProcessAction)
+    {
+        ks::ui::OpenProcessDetailByPid(processId);
     }
 }

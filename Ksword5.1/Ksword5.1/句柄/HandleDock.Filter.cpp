@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../theme.h"
+#include "../UI/TableInteractionSupport.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -343,6 +344,11 @@ void HandleDock::showHandleTableContextMenu(const QPoint& localPosition)
     QAction* copyCellAction = menu.addAction(QIcon(":/Icon/handle_copy.svg"), QStringLiteral("复制单元格"));
     QAction* copyRowAction = menu.addAction(QIcon(":/Icon/handle_copy_row.svg"), QStringLiteral("复制整行"));
     menu.addSeparator();
+    HandleRow* selectedRow = selectedHandleRow();
+    QAction* openProcessAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_details.svg")),
+        QStringLiteral("转到进程详细信息"));
+    openProcessAction->setEnabled(selectedRow != nullptr && selectedRow->processId != 0U);
     QAction* gotoTypeAction = menu.addAction(QIcon(":/Icon/process_tree.svg"), QStringLiteral("转到对象类型"));
     QAction* refreshAction = menu.addAction(QIcon(":/Icon/handle_refresh.svg"), QStringLiteral("刷新"));
 
@@ -359,6 +365,14 @@ void HandleDock::showHandleTableContextMenu(const QPoint& localPosition)
     if (selectedAction == copyRowAction)
     {
         copyCurrentHandleRow();
+        return;
+    }
+    if (selectedAction == openProcessAction)
+    {
+        if (selectedRow != nullptr)
+        {
+            ks::ui::OpenProcessDetailByPid(selectedRow->processId);
+        }
         return;
     }
     if (selectedAction == gotoTypeAction)

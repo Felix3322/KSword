@@ -1,5 +1,6 @@
 #include "WinAPIDock.h"
 #include "../OnlineScan/SandboxUploadActions.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 // ============================================================
@@ -1444,6 +1445,13 @@ void WinAPIDock::showEventContextMenu(const QPoint& position)
     menu.setStyleSheet(KswordTheme::ContextMenuStyle());
     QAction* copyCellAction = menu.addAction(QStringLiteral("复制单元格"));
     QAction* copyRowAction = menu.addAction(QStringLiteral("复制整行"));
+    const QTableWidgetItem* processIdItem = m_eventTable->item(row, EventColumnPidTid);
+    std::uint32_t processId = 0;
+    const bool hasProcessId = processIdItem != nullptr &&
+        ks::online_scan::tryParsePidFromText(processIdItem->text(), &processId) &&
+        processId != 0U;
+    QAction* openProcessDetailAction = menu.addAction(QStringLiteral("转到进程详细信息"));
+    openProcessDetailAction->setEnabled(hasProcessId);
     menu.addSeparator();
     ks::online_scan::addVirusTotalSandboxMenu(
         &menu,
@@ -1495,6 +1503,12 @@ void WinAPIDock::showEventContextMenu(const QPoint& position)
         {
             QApplication::clipboard()->setText(itemPointer->text());
         }
+        return;
+    }
+
+    if (selectedAction == openProcessDetailAction)
+    {
+        ks::ui::OpenProcessDetailByPid(processId);
         return;
     }
 

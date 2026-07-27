@@ -165,7 +165,7 @@ private:
     // ===================== UI 初始化 =====================
     void initializeUi();
     void initializeConnections();
-    void configureTableWidget(QTableWidget* tableWidget) const;
+    void configureTableWidget(QTableWidget* tableWidget, int processIdColumn = -1) const;
 
     // startInitialSampling 作用：
     // - 输入：无，构造后由 QTimer 延迟调用；

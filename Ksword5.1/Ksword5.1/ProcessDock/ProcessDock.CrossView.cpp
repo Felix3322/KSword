@@ -5,6 +5,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -31,6 +32,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <sstream>
 
 namespace
@@ -323,19 +326,21 @@ namespace
         QGuiApplication::clipboard()->setText(fields.join(QLatin1Char('\t')));
     }
 
-    void installCrossViewCopyMenu(QTableWidget* table)
+    void installCrossViewContextMenu(
+        QTableWidget* table,
+        const std::function<quint32(const QTableWidget*, int)>& processIdForRow)
     {
-        // installCrossViewCopyMenu：
+        // installCrossViewContextMenu：
         // - 输入：Cross-View 表；
-        // - 处理：安装复制当前行右键菜单；
-        // - 返回：无，菜单仅用于复制审计证据。
+        // - 处理：安装复制当前行和按表格明确 PID 来源跳转详情的右键菜单；
+        // - 返回：无。
         if (table == nullptr)
         {
             return;
         }
 
         table->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(table, &QTableWidget::customContextMenuRequested, table, [table](const QPoint& localPosition) {
+        QObject::connect(table, &QTableWidget::customContextMenuRequested, table, [table, processIdForRow](const QPoint& localPosition) {
             const QModelIndex clickedIndex = table->indexAt(localPosition);
             if (clickedIndex.isValid())
             {
@@ -348,9 +353,22 @@ namespace
                 QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
                 QStringLiteral("复制当前行"));
             copyRowAction->setEnabled(table->currentRow() >= 0);
-            if (contextMenu.exec(table->viewport()->mapToGlobal(localPosition)) == copyRowAction)
+            const quint32 processId = processIdForRow != nullptr
+                ? processIdForRow(table, table->currentRow())
+                : 0U;
+            QAction* openProcessAction = contextMenu.addAction(
+                QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                QStringLiteral("转到进程详细信息"));
+            openProcessAction->setEnabled(processId != 0U);
+
+            QAction* selectedAction = contextMenu.exec(table->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == copyRowAction)
             {
                 copyCrossViewCurrentRow(table);
+            }
+            else if (selectedAction == openProcessAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
             }
         });
     }
@@ -453,8 +471,39 @@ void ProcessDock::initializeCrossViewPage()
         table->verticalHeader()->setVisible(false);
         table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
         table->horizontalHeader()->setSectionResizeMode(columnIndex(CrossViewColumn::Detail), QHeaderView::Stretch);
-        installCrossViewCopyMenu(table);
     }
+    installCrossViewContextMenu(
+        m_processCrossViewTable,
+        [](const QTableWidget* table, const int rowIndex)
+        {
+            const QTableWidgetItem* processIdItem = table != nullptr
+                ? table->item(rowIndex, columnIndex(CrossViewColumn::Id))
+                : nullptr;
+            bool ok = false;
+            const qulonglong processId = processIdItem != nullptr
+                ? processIdItem->data(Qt::UserRole).toULongLong(&ok)
+                : 0ULL;
+            return ok && processId <= std::numeric_limits<quint32>::max()
+                ? static_cast<quint32>(processId)
+                : 0U;
+        });
+    installCrossViewContextMenu(
+        m_threadCrossViewTable,
+        [this](const QTableWidget* table, const int rowIndex)
+        {
+            const QTableWidgetItem* threadIdItem = table != nullptr
+                ? table->item(rowIndex, columnIndex(CrossViewColumn::Id))
+                : nullptr;
+            bool ok = false;
+            const qulonglong cacheIndex = threadIdItem != nullptr
+                ? threadIdItem->data(Qt::UserRole + 1).toULongLong(&ok)
+                : 0ULL;
+            if (!ok || cacheIndex >= static_cast<qulonglong>(m_threadCrossViewCache.size()))
+            {
+                return 0U;
+            }
+            return static_cast<quint32>(m_threadCrossViewCache[static_cast<std::size_t>(cacheIndex)].processId);
+        });
     innerTabs->addTab(m_processCrossViewTable, QStringLiteral("Process Cross-View"));
     innerTabs->addTab(m_threadCrossViewTable, QStringLiteral("Thread Cross-View"));
     ks::i18n::LanguageManager::instance().bindTab(

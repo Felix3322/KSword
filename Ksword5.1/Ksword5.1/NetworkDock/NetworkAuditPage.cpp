@@ -1,4 +1,5 @@
 #include "NetworkAuditPage.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -117,9 +118,9 @@ namespace
 
     // installCopyMenu 作用：
     // - 给只读审计表格安装“复制当前行”菜单；
-    // - 输入 table：需要安装菜单的表格；
+    // - processIdColumn 为显式指定的 PID 列，-1 表示该表没有 PID；
     // - 返回：无，菜单只读，不改变网络栈状态。
-    void installCopyMenu(QTableWidget* table)
+    void installCopyMenu(QTableWidget* table, const int processIdColumn = -1)
     {
         if (table == nullptr)
         {
@@ -127,7 +128,7 @@ namespace
         }
 
         table->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(table, &QTableWidget::customContextMenuRequested, table, [table](const QPoint& localPosition)
+        QObject::connect(table, &QTableWidget::customContextMenuRequested, table, [table, processIdColumn](const QPoint& localPosition)
         {
             const QModelIndex clickedIndex = table->indexAt(localPosition);
             if (clickedIndex.isValid())
@@ -140,9 +141,37 @@ namespace
             menu.setStyleSheet(tableMenuStyle());
             QAction* copyRowAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), QStringLiteral("复制当前行"));
             copyRowAction->setEnabled(table->currentRow() >= 0);
-            if (menu.exec(table->viewport()->mapToGlobal(localPosition)) == copyRowAction)
+            quint32 processId = 0;
+            if (processIdColumn >= 0 && processIdColumn < table->columnCount() &&
+                table->currentRow() >= 0 && table->currentRow() < table->rowCount())
+            {
+                const QTableWidgetItem* processIdItem = table->item(table->currentRow(), processIdColumn);
+                bool parseOk = false;
+                const uint parsedProcessId = processIdItem != nullptr
+                    ? processIdItem->text().toUInt(&parseOk, 10)
+                    : 0U;
+                if (parseOk && parsedProcessId != 0U)
+                {
+                    processId = static_cast<quint32>(parsedProcessId);
+                }
+            }
+            QAction* openProcessDetailAction = nullptr;
+            if (processIdColumn >= 0)
+            {
+                openProcessDetailAction = menu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                    QStringLiteral("转到进程详细信息"));
+                openProcessDetailAction->setEnabled(processId != 0U);
+            }
+
+            const QAction* selectedAction = menu.exec(table->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == copyRowAction)
             {
                 copyCurrentTableRow(table);
+            }
+            else if (selectedAction == openProcessDetailAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
             }
         });
     }
@@ -669,7 +698,7 @@ void NetworkAuditPage::initializeUi()
     m_tcpTable->verticalHeader()->setVisible(false);
     m_tcpTable->horizontalHeader()->setStretchLastSection(true);
     m_tcpTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    installCopyMenu(m_tcpTable);
+    installCopyMenu(m_tcpTable, 0);
 
     m_udpTable = new ks::ui::VisibleTableWidget(m_crossViewTopSplitter);
     m_udpTable->setColumnCount(5);
@@ -686,7 +715,7 @@ void NetworkAuditPage::initializeUi()
     m_udpTable->verticalHeader()->setVisible(false);
     m_udpTable->horizontalHeader()->setStretchLastSection(true);
     m_udpTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    installCopyMenu(m_udpTable);
+    installCopyMenu(m_udpTable, 0);
 
     m_crossSummaryTable = new ks::ui::VisibleTableWidget(m_crossViewSplitter);
     m_crossSummaryTable->setColumnCount(5);
@@ -697,7 +726,7 @@ void NetworkAuditPage::initializeUi()
     m_crossSummaryTable->verticalHeader()->setVisible(false);
     m_crossSummaryTable->horizontalHeader()->setStretchLastSection(true);
     m_crossSummaryTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    installCopyMenu(m_crossSummaryTable);
+    installCopyMenu(m_crossSummaryTable, 0);
 
     m_crossViewSplitter->addWidget(m_crossViewTopSplitter);
     m_crossViewSplitter->addWidget(m_crossSummaryTable);
@@ -729,7 +758,7 @@ void NetworkAuditPage::initializeUi()
     m_afdTable->verticalHeader()->setVisible(false);
     m_afdTable->horizontalHeader()->setStretchLastSection(true);
     m_afdTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    installCopyMenu(m_afdTable);
+    installCopyMenu(m_afdTable, 0);
     afdLayout->addWidget(m_afdTable, 1);
     m_sectionTabWidget->addTab(m_afdPage, QStringLiteral("AFD"));
 

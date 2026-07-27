@@ -3,6 +3,7 @@
 #include "NetworkFirewallPage.h"
 #include "../PluginHost.h"
 #include "../OnlineScan/SandboxUploadActions.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <string>
@@ -115,6 +116,17 @@ void NetworkDock::initializeConnections()
             contextMenu.setStyleSheet(KswordTheme::ContextMenuStyle());
             QAction* detailAction = contextMenu.addAction(QIcon(":/Icon/process_details.svg"), QStringLiteral("查看关联报文详情"));
             QAction* copyRowAction = contextMenu.addAction(QIcon(":/Icon/process_copy_row.svg"), QStringLiteral("复制告警行"));
+            const QTableWidgetItem* processIdItem = m_nidsAlertTable->item(
+                index.row(),
+                toNidsAlertColumn(NidsAlertTableColumn::Pid));
+            std::uint32_t processId = 0;
+            const bool hasProcessId = processIdItem != nullptr &&
+                ks::online_scan::tryParsePidFromText(processIdItem->text(), &processId) &&
+                processId != 0U;
+            QAction* openProcessDetailAction = contextMenu.addAction(
+                QIcon(":/Icon/process_details.svg"),
+                QStringLiteral("转到进程详细信息"));
+            openProcessDetailAction->setEnabled(hasProcessId);
             QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
                 &contextMenu,
                 this,
@@ -167,6 +179,10 @@ void NetworkDock::initializeConnections()
                 {
                     QGuiApplication::clipboard()->setText(rowTextList.join('\t'));
                 }
+            }
+            else if (selectedAction == openProcessDetailAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
             }
             if (selectedAction == uploadVirusTotalAction)
             {

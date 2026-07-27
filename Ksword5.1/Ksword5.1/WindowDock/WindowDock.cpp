@@ -2,6 +2,7 @@
 #include "WindowEventHookTab.h"
 #include "WindowGuiHandleTab.h"
 #include "WindowTimerTab.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
@@ -55,6 +56,7 @@
 #include <QTabWidget>
 #include <QThread>
 #include <QVBoxLayout>
+#include <QVariant>
 #include <QWidget>
 
 #include <algorithm>
@@ -1691,6 +1693,7 @@ namespace
 
     // installTableCopyMenu 作用：
     // - 给只读表格安装“复制当前行”右键菜单；
+    // - 各业务表显式设置 ksword_process_detail_pid_column 时，按该列 PID 添加“转到进程详细信息”；
     // - 如果表格设置了 kswordSandboxPidColumn 属性，则额外添加“上传到沙箱 -> VT”并按该列 PID 上传进程 EXE；
     // - 输入 table：需要安装菜单的表格；
     // - 返回：无，菜单 action 只读，不触发任何系统修改。
@@ -1715,6 +1718,27 @@ namespace
             menu.setStyleSheet(tableCopyMenuStyle());
             QAction* copyRowAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), QStringLiteral("复制当前行"));
             copyRowAction->setEnabled(table->currentRow() >= 0);
+
+            QAction* openProcessAction = nullptr;
+            quint32 processId = 0U;
+            const QVariant processDetailPidColumnValue = table->property("ksword_process_detail_pid_column");
+            if (processDetailPidColumnValue.isValid())
+            {
+                const int processDetailPidColumn = processDetailPidColumnValue.toInt();
+                const QTableWidgetItem* processIdItem =
+                    processDetailPidColumn >= 0 && processDetailPidColumn < table->columnCount() && table->currentRow() >= 0
+                    ? table->item(table->currentRow(), processDetailPidColumn)
+                    : nullptr;
+                bool processIdOk = false;
+                processId = processIdItem != nullptr
+                    ? processIdItem->text().trimmed().toUInt(&processIdOk, 10)
+                    : 0U;
+                openProcessAction = menu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                    QStringLiteral("转到进程详细信息"));
+                openProcessAction->setEnabled(processIdOk && processId != 0U);
+            }
+
             QAction* uploadVirusTotalAction = nullptr;
             const int sandboxPidColumn = table->property("kswordSandboxPidColumn").toInt();
             if (sandboxPidColumn >= 0 && sandboxPidColumn < table->columnCount())
@@ -1753,6 +1777,10 @@ namespace
             if (selectedAction == copyRowAction)
             {
                 copyTableCurrentRow(table);
+            }
+            else if (selectedAction == openProcessAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
             }
         });
     }
@@ -2817,10 +2845,12 @@ WindowDock::WindowDock(QWidget* parent)
     if (m_windowsTable != nullptr)
     {
         m_windowsTable->setProperty("kswordSandboxPidColumn", 1);
+        m_windowsTable->setProperty("ksword_process_detail_pid_column", 1);
     }
     if (m_guiThreadsTable != nullptr)
     {
         m_guiThreadsTable->setProperty("kswordSandboxPidColumn", 1);
+        m_guiThreadsTable->setProperty("ksword_process_detail_pid_column", 1);
     }
     m_cachedSessionRows = buildPendingRows(m_sessionTable, QStringLiteral("<等待刷新>"), manualRefreshText);
     m_cachedHotkeyRows = buildPendingRows(m_hotkeysTable, QStringLiteral("<等待刷新>"), manualRefreshText);
@@ -3168,6 +3198,7 @@ void WindowDock::initializeUi()
         {
             m_hotkeysTable->setProperty("kswordProcessIconColumn", HotkeyColumnName);
             m_hotkeysTable->setProperty("kswordProcessPathColumn", HotkeyColumnPath);
+            m_hotkeysTable->setProperty("ksword_process_detail_pid_column", HotkeyColumnProcessId);
             m_hotkeysTable->setIconSize(QSize(16, 16));
         }
         innerTabWidget->addTab(makeTableGroup(
@@ -3185,6 +3216,10 @@ void WindowDock::initializeUi()
             QVector<int>{ 0, 8, 9, 11, 13, 15, 16, 17, 18, 19, 21, 25 },
             &m_hooksTable),
             QStringLiteral("消息 Hook 表"));
+        if (m_hooksTable != nullptr)
+        {
+            m_hooksTable->setProperty("ksword_process_detail_pid_column", 2);
+        }
     }
     m_tabWidget->addTab(m_hotkeyHookPage, QStringLiteral("热键/钩子"));
 

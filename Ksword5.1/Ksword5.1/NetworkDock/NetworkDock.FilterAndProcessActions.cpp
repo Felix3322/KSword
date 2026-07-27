@@ -57,7 +57,10 @@ namespace
         return outputList;
     }
 
-    void configureRuleValueTable(QTableWidget* tableWidget, const QStringList& headers)
+    void configureRuleValueTable(
+        QTableWidget* tableWidget,
+        const QStringList& headers,
+        const int processIdColumn = -1)
     {
         if (tableWidget == nullptr)
         {
@@ -73,7 +76,10 @@ namespace
         tableWidget->horizontalHeader()->setStretchLastSection(true);
         tableWidget->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         tableWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-        installCopyCurrentRowMenu(tableWidget);
+        installCopyCurrentRowMenu(
+            tableWidget,
+            QStringLiteral("复制当前行"),
+            processIdColumn);
     }
 
     QTableWidgetItem* createReadonlyItem(const QString& text)
@@ -430,7 +436,7 @@ void NetworkDock::addMonitorFilterRuleGroup()
         QStringLiteral("进程"),
         QStringLiteral("PID"),
         QStringLiteral("操作")
-        });
+        }, 1);
 
     processBlockLayout->addLayout(processTopLayout);
     processBlockLayout->addWidget(groupState->processTable);

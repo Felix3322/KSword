@@ -12,6 +12,7 @@
 
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -600,10 +601,19 @@ void KernelDockCidTab::showContextMenu(const QPoint& localPosition)
     menu.setStyleSheet(menuStyle());
     QAction* copyRowAction = menu.addAction(kernelText("kernel.cid.menu.copy_row", QStringLiteral("复制当前行")));
     copyRowAction->setEnabled(m_table->currentRow() >= 0);
+    const CidEvidenceRow* evidenceRow = selectedRow();
+    QAction* openProcessAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_details.svg")),
+        QStringLiteral("转到进程详细信息"));
+    openProcessAction->setEnabled(evidenceRow != nullptr && evidenceRow->processId != 0U);
     const QAction* selectedAction = menu.exec(m_table->viewport()->mapToGlobal(localPosition));
     if (selectedAction == copyRowAction)
     {
         copyCurrentRow();
+    }
+    else if (selectedAction == openProcessAction && evidenceRow != nullptr)
+    {
+        ks::ui::OpenProcessDetailByPid(evidenceRow->processId);
     }
 }
 

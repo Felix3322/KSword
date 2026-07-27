@@ -1,5 +1,8 @@
 #include "ProcessDetailWindow.InternalCommon.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
+
+#include <limits>
 
 using namespace process_detail_window_internal;
 
@@ -1248,12 +1251,32 @@ namespace
         QApplication::clipboard()->setText(rowFields.join(QLatin1Char('\t')));
     }
 
-    void installHotkeyTableCopyMenu(QTableWidget* tableWidget)
+    quint32 hotkeyTableProcessId(
+        const QTableWidget* tableWidget,
+        const int rowIndex,
+        const int processIdColumn)
     {
-        // installHotkeyTableCopyMenu 作用：
+        if (tableWidget == nullptr || rowIndex < 0 || processIdColumn < 0)
+        {
+            return 0U;
+        }
+
+        const QTableWidgetItem* processIdItem = tableWidget->item(rowIndex, processIdColumn);
+        bool ok = false;
+        const qulonglong processId = processIdItem != nullptr
+            ? processIdItem->text().trimmed().toULongLong(&ok)
+            : 0ULL;
+        return ok && processId <= std::numeric_limits<quint32>::max()
+            ? static_cast<quint32>(processId)
+            : 0U;
+    }
+
+    void installHotkeyTableContextMenu(QTableWidget* tableWidget, const int processIdColumn)
+    {
+        // installHotkeyTableContextMenu 作用：
         // - 输入：需要补齐右键复制能力的热键/钩子表格；
-        // - 处理：安装显式不透明样式的右键菜单，并在点击处同步当前行；
-        // - 返回：无。菜单只暴露“复制当前行”，保持详情页只读审计语义。
+        // - 处理：安装现有样式的右键菜单，并在点击处同步当前行；
+        // - 返回：无。菜单提供复制与按当前行 PID 打开进程详情。
         if (tableWidget == nullptr)
         {
             return;
@@ -1264,7 +1287,7 @@ namespace
             tableWidget,
             &QTableWidget::customContextMenuRequested,
             tableWidget,
-            [tableWidget](const QPoint& localPosition)
+            [tableWidget, processIdColumn](const QPoint& localPosition)
             {
                 const QModelIndex clickedIndex = tableWidget->indexAt(localPosition);
                 if (clickedIndex.isValid())
@@ -1278,9 +1301,23 @@ namespace
                     QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
                     QStringLiteral("复制当前行"));
                 copyRowAction->setEnabled(tableWidget->currentRow() >= 0);
-                if (contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition)) == copyRowAction)
+                const quint32 processId = hotkeyTableProcessId(
+                    tableWidget,
+                    tableWidget->currentRow(),
+                    processIdColumn);
+                QAction* openProcessAction = contextMenu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                    QStringLiteral("转到进程详细信息"));
+                openProcessAction->setEnabled(processId != 0U);
+
+                QAction* selectedAction = contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition));
+                if (selectedAction == copyRowAction)
                 {
                     copyHotkeyTableCurrentRow(tableWidget);
+                }
+                else if (selectedAction == openProcessAction)
+                {
+                    ks::ui::OpenProcessDetailByPid(processId);
                 }
             });
     }
@@ -1343,7 +1380,7 @@ void ProcessDetailWindow::initializeHotkeyTab()
     m_hotkeyTable->setColumnWidth(5, 120);
     m_hotkeyTable->setColumnWidth(6, 130);
     m_hotkeyTable->setColumnWidth(7, 120);
-    installHotkeyTableCopyMenu(m_hotkeyTable);
+    installHotkeyTableContextMenu(m_hotkeyTable, 3);
     hotkeyGroupLayout->addWidget(m_hotkeyTable, 1);
 
     m_hotkeyLayout->addWidget(hotkeyGroup, 1);
@@ -1641,7 +1678,7 @@ void ProcessDetailWindow::initializeKeyboardTab()
     m_keyboardHotkeyTable->setColumnWidth(5, 120);
     m_keyboardHotkeyTable->setColumnWidth(6, 150);
     m_keyboardHotkeyTable->setColumnWidth(7, 120);
-    installHotkeyTableCopyMenu(m_keyboardHotkeyTable);
+    installHotkeyTableContextMenu(m_keyboardHotkeyTable, 3);
     hotkeyLayout->addWidget(m_keyboardHotkeyTable, 1);
 
     m_keyboardHookTable = new ks::ui::VisibleTableWidget(hookPage);
@@ -1674,7 +1711,7 @@ void ProcessDetailWindow::initializeKeyboardTab()
     m_keyboardHookTable->setColumnWidth(6, 130);
     m_keyboardHookTable->setColumnWidth(7, 160);
     m_keyboardHookTable->setColumnWidth(8, 80);
-    installHotkeyTableCopyMenu(m_keyboardHookTable);
+    installHotkeyTableContextMenu(m_keyboardHookTable, 3);
     hookLayout->addWidget(m_keyboardHookTable, 1);
 
     m_keyboardInnerTabWidget->addTab(hotkeyPage, QIcon(":/Icon/process_hotkey.svg"), QStringLiteral("热键"));

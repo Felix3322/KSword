@@ -14,6 +14,7 @@
 #include "KernelNamedPipeTab.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -456,9 +457,25 @@ void KernelDockIpcTab::initializeAlpcPage()
         menu.setStyleSheet(KswordTheme::ContextMenuStyle());
         QAction* copyRowAction = menu.addAction(kernelText("kernel.ipc.menu.copy_row", QStringLiteral("复制当前行")));
         copyRowAction->setEnabled(m_alpcTable->currentRow() >= 0);
-        if (menu.exec(m_alpcTable->viewport()->mapToGlobal(localPosition)) == copyRowAction)
+        const QTableWidgetItem* ownerProcessIdItem = m_alpcTable->currentRow() >= 0
+            ? m_alpcTable->item(m_alpcTable->currentRow(), static_cast<int>(AlpcColumn::OwnerProcessId))
+            : nullptr;
+        bool processIdOk = false;
+        const quint32 processId = ownerProcessIdItem != nullptr
+            ? ownerProcessIdItem->text().trimmed().toUInt(&processIdOk, 10)
+            : 0U;
+        QAction* openProcessAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_details.svg")),
+            QStringLiteral("转到进程详细信息"));
+        openProcessAction->setEnabled(processIdOk && processId != 0U);
+        QAction* selectedAction = menu.exec(m_alpcTable->viewport()->mapToGlobal(localPosition));
+        if (selectedAction == copyRowAction)
         {
             copyAlpcCurrentRow();
+        }
+        else if (selectedAction == openProcessAction)
+        {
+            ks::ui::OpenProcessDetailByPid(processId);
         }
     });
 }

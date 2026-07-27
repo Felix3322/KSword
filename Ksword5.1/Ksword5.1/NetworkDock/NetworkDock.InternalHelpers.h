@@ -99,12 +99,13 @@ namespace network_dock_detail
     QTableWidgetItem* createPacketCell(const QString& cellText);
 
     // installCopyCurrentRowMenu 作用：
-    // - 输入 tableWidget 为需要右键复制的只读/审计表格，actionText 为菜单文本；
-    // - 处理：安装显式主题样式的右键菜单，把当前行按 TSV 写入剪贴板；
-    // - 返回：无。该 helper 不触发任何网络动作，只复制 UI 可见证据。
+    // - 输入 tableWidget 为需要右键复制的只读/审计表格，actionText 为菜单文本，processIdColumn 为显式 PID 列；
+    // - 处理：安装显式主题样式的右键菜单，把当前行按 TSV 写入剪贴板；有 PID 列时可打开进程详情；
+    // - 返回：无。该 helper 不触发网络动作，只复制 UI 可见证据或打开关联进程详情。
     void installCopyCurrentRowMenu(
         QTableWidget* tableWidget,
-        const QString& actionText = QStringLiteral("复制当前行"));
+        const QString& actionText = QStringLiteral("复制当前行"),
+        int processIdColumn = -1);
 
     // populatePacketRow 作用：
     // - 把报文实体按统一列定义写入目标表格行。

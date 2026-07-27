@@ -23,6 +23,7 @@
 #include <QKeySequence>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QPalette>
 #include <QPointer>
 #include <QSaveFile>
@@ -1463,6 +1464,27 @@ namespace
 
 namespace ks::ui
 {
+    void OpenProcessDetailByPid(const quint32 pid)
+    {
+        if (pid == 0U)
+        {
+            return;
+        }
+
+        for (QWidget* topLevelWidget : QApplication::topLevelWidgets())
+        {
+            if (topLevelWidget != nullptr &&
+                QMetaObject::invokeMethod(
+                    topLevelWidget,
+                    "openProcessDetailByPid",
+                    Qt::QueuedConnection,
+                    Q_ARG(quint32, pid)))
+            {
+                return;
+            }
+        }
+    }
+
     void InstallGlobalTableInteractionSupport(QApplication* appInstance)
     {
         if (appInstance == nullptr || appInstance->property(kInstalledProperty).toBool())

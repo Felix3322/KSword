@@ -1,5 +1,6 @@
 #include "NetworkDock.InternalCommon.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/TableInteractionSupport.h"
 
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../theme.h"
@@ -215,6 +216,18 @@ void NetworkDock::initializeNidsTab()
         QAction* copyCellAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_copy.svg")), QStringLiteral("复制单元格"));
         QAction* copyRowAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), QStringLiteral("复制当前行"));
         QAction* copySelectedRowsAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_clipboard.svg")), QStringLiteral("复制选中行"));
+        const int currentRow = m_nidsAlertTable->currentRow();
+        const QTableWidgetItem* processIdItem = currentRow >= 0
+            ? m_nidsAlertTable->item(currentRow, toNidsAlertColumn(NidsAlertTableColumn::Pid))
+            : nullptr;
+        std::uint32_t processId = 0;
+        const bool hasProcessId = processIdItem != nullptr &&
+            ks::online_scan::tryParsePidFromText(processIdItem->text(), &processId) &&
+            processId != 0U;
+        QAction* openProcessDetailAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_details.svg")),
+            QStringLiteral("转到进程详细信息"));
+        openProcessDetailAction->setEnabled(hasProcessId);
         menu.addSeparator();
         QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
             &menu,
@@ -269,6 +282,10 @@ void NetworkDock::initializeNidsTab()
         else if (selectedAction == copySelectedRowsAction)
         {
             copyNidsRowsToClipboard(m_nidsAlertTable, nidsSelectedRows(m_nidsAlertTable));
+        }
+        else if (selectedAction == openProcessDetailAction)
+        {
+            ks::ui::OpenProcessDetailByPid(processId);
         }
         else if (selectedAction == uploadVirusTotalAction)
         {

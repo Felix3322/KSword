@@ -5,6 +5,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -43,12 +44,16 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
 namespace
 {
     enum class RiskColumn : int { Score = 0, Source, Category, Title, Detail, Count };
+
+    constexpr int kRiskEntryIndexRole = Qt::UserRole + 1;
+    constexpr int kRiskProcessIdRole = Qt::UserRole + 2;
 
     int riskColumnIndex(const RiskColumn column)
     {
@@ -172,7 +177,7 @@ namespace
     void installArkRiskTableCopyMenu(QTableWidget* table)
     {
         // 输入：需要右键复制能力的风险中心表格。
-        // 处理：安装只读“复制当前行”菜单；右键点击行时同步当前单元格。
+        // 处理：安装复制当前行和按风险 payload 中 PID 打开进程详情的右键菜单；右键点击行时同步当前单元格。
         // 返回：无返回值；不触发任何审计动作或系统修改。
         if (table == nullptr)
         {
@@ -191,11 +196,47 @@ namespace
             menu.setStyleSheet(arkRiskTableMenuStyle());
             QAction* copyRowAction = menu.addAction(QStringLiteral("复制当前行"));
             copyRowAction->setEnabled(table->currentRow() >= 0);
-            if (menu.exec(table->viewport()->mapToGlobal(localPosition)) == copyRowAction)
+
+            quint32 processId = 0U;
+            const QTableWidgetItem* scoreItem = table->currentRow() >= 0
+                ? table->item(table->currentRow(), riskColumnIndex(RiskColumn::Score))
+                : nullptr;
+            bool processIdOk = false;
+            const qulonglong storedProcessId = scoreItem != nullptr
+                ? scoreItem->data(kRiskProcessIdRole).toULongLong(&processIdOk)
+                : 0ULL;
+            if (processIdOk && storedProcessId > 0ULL &&
+                storedProcessId <= static_cast<qulonglong>(std::numeric_limits<quint32>::max()))
+            {
+                processId = static_cast<quint32>(storedProcessId);
+            }
+
+            QAction* openProcessAction = menu.addAction(
+                QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                QStringLiteral("转到进程详细信息"));
+            openProcessAction->setEnabled(processId != 0U);
+
+            const QAction* selectedAction = menu.exec(table->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == copyRowAction)
             {
                 copyArkRiskTableCurrentRow(table);
             }
+            else if (selectedAction == openProcessAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
+            }
         });
+    }
+
+    quint32 payloadProcessId(const QJsonObject& payload)
+    {
+        const QJsonValue processIdValue = payload.value(QStringLiteral("processId"));
+        bool processIdOk = false;
+        const qulonglong processId = processIdValue.toVariant().toULongLong(&processIdOk);
+        return processIdOk && processId > 0ULL &&
+            processId <= static_cast<qulonglong>(std::numeric_limits<quint32>::max())
+            ? static_cast<quint32>(processId)
+            : 0U;
     }
 
     QJsonObject payloadBase(const QString& source, const QString& category, const QString& title, const QString& detail, const double score)
@@ -691,6 +732,7 @@ namespace
             payload.insert(QStringLiteral("sequence"), QString::number(static_cast<qulonglong>(row.sequence)));
             payload.insert(QStringLiteral("targetAddress"), hex64(row.targetAddress));
             payload.insert(QStringLiteral("bytes"), static_cast<int>(row.bytes));
+            payload.insert(QStringLiteral("processId"), static_cast<int>(row.processId));
             payload.insert(QStringLiteral("flags"), hex32(row.flags));
             payload.insert(QStringLiteral("riskFlags"), hex32(row.riskFlags));
             entries.push_back(makeEntry(QStringLiteral("Mutation Audit"), QStringLiteral("Mutation"), title, detail, risk, payload));
@@ -924,7 +966,8 @@ void MonitorDock::rebuildArkRiskCenterTable()
         const std::size_t cacheIndex = visibleIndexes[static_cast<std::size_t>(row)];
         const auto& entry = m_arkRiskCenterEntries[cacheIndex];
         QTableWidgetItem* scoreItem = new ScoreItem(entry.riskScore);
-        scoreItem->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(static_cast<qulonglong>(cacheIndex)));
+        scoreItem->setData(kRiskEntryIndexRole, QVariant::fromValue<qulonglong>(static_cast<qulonglong>(cacheIndex)));
+        scoreItem->setData(kRiskProcessIdRole, QVariant::fromValue<qulonglong>(payloadProcessId(entry.payload)));
         m_arkRiskTable->setItem(row, riskColumnIndex(RiskColumn::Score), scoreItem);
         m_arkRiskTable->setItem(row, riskColumnIndex(RiskColumn::Source), textItem(entry.sourceName));
         m_arkRiskTable->setItem(row, riskColumnIndex(RiskColumn::Category), textItem(entry.category));
@@ -956,7 +999,7 @@ void MonitorDock::showArkRiskCenterDetailForCurrentRow() const
     }
     const QTableWidgetItem* scoreItem = m_arkRiskTable->item(row, riskColumnIndex(RiskColumn::Score));
     bool ok = false;
-    const qulonglong cacheIndex = scoreItem != nullptr ? scoreItem->data(Qt::UserRole + 1).toULongLong(&ok) : 0ULL;
+    const qulonglong cacheIndex = scoreItem != nullptr ? scoreItem->data(kRiskEntryIndexRole).toULongLong(&ok) : 0ULL;
     if (!ok || cacheIndex >= static_cast<qulonglong>(m_arkRiskCenterEntries.size()))
     {
         m_arkRiskDetailEdit->setText(QStringLiteral("当前行缓存索引无效。"));

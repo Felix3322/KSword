@@ -15,6 +15,7 @@
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/HexEditorWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../PluginHost.h"
 #include "../ksword/file/file_handle_tools.h"
@@ -190,7 +191,7 @@ namespace
     // - 输入：FileDock 内临时弹窗或工具页表格；
     // - 处理：安装只读复制当前行右键菜单；
     // - 返回：无。前置声明用于上方文件解锁选择弹窗复用后文 helper。
-    void installFileTableCopyMenu(QTableWidget* tableWidget);
+    void installFileTableCopyMenu(QTableWidget* tableWidget, int processIdColumn = -1);
 
     // UnlockSelectionSharedState：
     // - 作用：在线程与 UI 队列之间传递解锁器选择结果；
@@ -2415,7 +2416,7 @@ namespace
         handleTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         handleTable->verticalHeader()->setVisible(false);
         handleTable->horizontalHeader()->setStretchLastSection(true);
-        installFileTableCopyMenu(handleTable);
+        installFileTableCopyMenu(handleTable, 1);
 
         QTableWidget* const processTable = new ks::ui::VisibleTableWidget(static_cast<int>(processCandidateList.size()), 6, &dialog);
         processTable->setHorizontalHeaderLabels(QStringList{
@@ -2430,7 +2431,7 @@ namespace
         processTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         processTable->verticalHeader()->setVisible(false);
         processTable->horizontalHeader()->setStretchLastSection(true);
-        installFileTableCopyMenu(processTable);
+        installFileTableCopyMenu(processTable, 1);
 
         auto makeTableItem = [](const QString& text, const bool enabled) {
             QTableWidgetItem* const item = new QTableWidgetItem(text);
@@ -2834,7 +2835,7 @@ namespace
             .arg(KswordTheme::OnAccentHex());
     }
 
-    void installFileTableCopyMenu(QTableWidget* tableWidget)
+    void installFileTableCopyMenu(QTableWidget* tableWidget, const int processIdColumn)
     {
         // installFileTableCopyMenu：
         // - 输入：FileDock 内临时弹窗或工具页表格；
@@ -2846,7 +2847,7 @@ namespace
         }
 
         tableWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(tableWidget, &QTableWidget::customContextMenuRequested, tableWidget, [tableWidget](const QPoint& localPosition)
+        QObject::connect(tableWidget, &QTableWidget::customContextMenuRequested, tableWidget, [tableWidget, processIdColumn](const QPoint& localPosition)
         {
             const auto clickedIndex = tableWidget->indexAt(localPosition);
             if (clickedIndex.isValid())
@@ -2860,7 +2861,30 @@ namespace
                 QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
                 QStringLiteral("复制当前行"));
             copyRowAction->setEnabled(tableWidget->currentRow() >= 0);
-            if (menu.exec(tableWidget->viewport()->mapToGlobal(localPosition)) != copyRowAction)
+            const QTableWidgetItem* processIdItem =
+                processIdColumn >= 0 && processIdColumn < tableWidget->columnCount() && tableWidget->currentRow() >= 0
+                ? tableWidget->item(tableWidget->currentRow(), processIdColumn)
+                : nullptr;
+            bool processIdOk = false;
+            const quint32 processId = processIdItem != nullptr
+                ? processIdItem->text().trimmed().toUInt(&processIdOk, 10)
+                : 0U;
+            QAction* openProcessAction = nullptr;
+            if (processIdColumn >= 0)
+            {
+                openProcessAction = menu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                    QStringLiteral("转到进程详细信息"));
+                openProcessAction->setEnabled(processIdOk && processId != 0U);
+            }
+
+            QAction* selectedAction = menu.exec(tableWidget->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == openProcessAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
+                return;
+            }
+            if (selectedAction != copyRowAction)
             {
                 return;
             }
@@ -2887,7 +2911,7 @@ namespace
     // - 输入 treeWidget：FileDock 内以树表展示的只读结果；
     // - 处理：右键选中当前行，并把该行所有列按 TSV 复制到剪贴板；
     // - 返回：无。只读复制，不执行解锁、关闭句柄、删除文件等动作。
-    void installFileTreeCopyMenu(QTreeWidget* treeWidget)
+    void installFileTreeCopyMenu(QTreeWidget* treeWidget, const int processIdColumn)
     {
         if (treeWidget == nullptr)
         {
@@ -2895,7 +2919,7 @@ namespace
         }
 
         treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(treeWidget, &QTreeWidget::customContextMenuRequested, treeWidget, [treeWidget](const QPoint& localPosition)
+        QObject::connect(treeWidget, &QTreeWidget::customContextMenuRequested, treeWidget, [treeWidget, processIdColumn](const QPoint& localPosition)
         {
             QTreeWidgetItem* clickedItem = treeWidget->itemAt(localPosition);
             if (clickedItem != nullptr)
@@ -2909,7 +2933,24 @@ namespace
                 QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
                 QStringLiteral("复制当前行"));
             copyRowAction->setEnabled(treeWidget->currentItem() != nullptr);
-            if (menu.exec(treeWidget->viewport()->mapToGlobal(localPosition)) != copyRowAction)
+            QTreeWidgetItem* const processIdItem = treeWidget->currentItem();
+            bool processIdOk = false;
+            const quint32 processId =
+                processIdItem != nullptr && processIdColumn >= 0 && processIdColumn < treeWidget->columnCount()
+                ? processIdItem->text(processIdColumn).trimmed().toUInt(&processIdOk, 10)
+                : 0U;
+            QAction* openProcessAction = menu.addAction(
+                QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                QStringLiteral("转到进程详细信息"));
+            openProcessAction->setEnabled(processIdOk && processId != 0U);
+
+            QAction* selectedAction = menu.exec(treeWidget->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == openProcessAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
+                return;
+            }
+            if (selectedAction != copyRowAction)
             {
                 return;
             }
@@ -6067,7 +6108,7 @@ namespace
             {
                 table->header()->setStretchLastSection(true);
             }
-            installFileTreeCopyMenu(table);
+            installFileTreeCopyMenu(table, 0);
             layout->addWidget(table, 1);
 
             connect(refreshButton, &QPushButton::clicked, this, [this, table, statusLabel, refreshButton]()
@@ -10954,7 +10995,7 @@ void FileDock::showSelectedFileOplockAccessRecords(FilePanelWidgets& panel)
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->verticalHeader()->setVisible(false);
     table->horizontalHeader()->setStretchLastSection(true);
-    installFileTableCopyMenu(table);
+    installFileTableCopyMenu(table, 0);
 
     auto makeItem = [](const QString& text) {
         auto* item = new QTableWidgetItem(text);

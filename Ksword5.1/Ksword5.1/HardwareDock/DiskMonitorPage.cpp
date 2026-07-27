@@ -1,4 +1,5 @@
 #include "DiskMonitorPage.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -87,7 +88,7 @@ namespace
     constexpr USHORT kKernelFileTaskOperationEnd = 24;        // kKernelFileTaskOperationEnd：请求完成，用于响应时间。
     constexpr int kProcessIoPriorityInformationClass = 33;    // kProcessIoPriorityInformationClass：NtQueryInformationProcess(ProcessIoPriority)。
 
-    void installDiskMonitorTableCopyMenu(QTableWidget* tableWidget)
+    void installDiskMonitorTableCopyMenu(QTableWidget* tableWidget, const int processIdColumn)
     {
         // installDiskMonitorTableCopyMenu：
         // - 输入：硬盘监控页的进程速率表或文件活动表；
@@ -99,7 +100,7 @@ namespace
         }
 
         tableWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(tableWidget, &QTableWidget::customContextMenuRequested, tableWidget, [tableWidget](const QPoint& localPosition)
+        QObject::connect(tableWidget, &QTableWidget::customContextMenuRequested, tableWidget, [tableWidget, processIdColumn](const QPoint& localPosition)
         {
             const QModelIndex clickedIndex = tableWidget->indexAt(localPosition);
             if (clickedIndex.isValid())
@@ -113,7 +114,38 @@ namespace
                 QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
                 QStringLiteral("复制当前行"));
             copyRowAction->setEnabled(tableWidget->currentRow() >= 0);
-            if (contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition)) != copyRowAction)
+            quint32 processId = 0;
+            if (processIdColumn >= 0 && processIdColumn < tableWidget->columnCount() &&
+                tableWidget->currentRow() >= 0 && tableWidget->currentRow() < tableWidget->rowCount())
+            {
+                const QTableWidgetItem* processIdItem = tableWidget->item(
+                    tableWidget->currentRow(),
+                    processIdColumn);
+                bool parseOk = false;
+                const uint parsedProcessId = processIdItem != nullptr
+                    ? processIdItem->text().toUInt(&parseOk, 10)
+                    : 0U;
+                if (parseOk && parsedProcessId != 0U)
+                {
+                    processId = static_cast<quint32>(parsedProcessId);
+                }
+            }
+            QAction* openProcessDetailAction = nullptr;
+            if (processIdColumn >= 0)
+            {
+                openProcessDetailAction = contextMenu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                    QStringLiteral("转到进程详细信息"));
+                openProcessDetailAction->setEnabled(processId != 0U);
+            }
+
+            const QAction* selectedAction = contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == openProcessDetailAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
+                return;
+            }
+            if (selectedAction != copyRowAction)
             {
                 return;
             }
@@ -869,7 +901,7 @@ void DiskMonitorPage::initializeUi()
     m_splitter->addWidget(m_processTable);
 
     m_activityTable = new ks::ui::VisibleTableWidget(this);
-    configureTableWidget(m_activityTable);
+    configureTableWidget(m_activityTable, ActivityColumnPid);
     m_activityTable->setColumnCount(ActivityColumnCount);
     m_activityTable->setHorizontalHeaderLabels({
         QStringLiteral("PID"),
@@ -986,7 +1018,7 @@ void DiskMonitorPage::initializeConnections()
     }
 }
 
-void DiskMonitorPage::configureTableWidget(QTableWidget* tableWidget) const
+void DiskMonitorPage::configureTableWidget(QTableWidget* tableWidget, const int processIdColumn) const
 {
     if (tableWidget == nullptr)
     {
@@ -1011,7 +1043,7 @@ void DiskMonitorPage::configureTableWidget(QTableWidget* tableWidget) const
     tableWidget->verticalHeader()->setDefaultSectionSize(24);
     tableWidget->horizontalHeader()->setStretchLastSection(false);
     tableWidget->setStyleSheet(tableHeaderStyle());
-    installDiskMonitorTableCopyMenu(tableWidget);
+    installDiskMonitorTableCopyMenu(tableWidget, processIdColumn);
 }
 
 void DiskMonitorPage::refreshNow()

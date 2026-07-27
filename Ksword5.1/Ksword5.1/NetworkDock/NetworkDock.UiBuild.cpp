@@ -288,7 +288,10 @@ void NetworkDock::initializeRateLimitTab()
     // 限速表也使用 Stretch，降低定时刷新时的 UI 重排开销。
     m_rateLimitTable->horizontalHeader()->setStretchLastSection(true);
     m_rateLimitTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    installCopyCurrentRowMenu(m_rateLimitTable);
+    installCopyCurrentRowMenu(
+        m_rateLimitTable,
+        QStringLiteral("复制当前行"),
+        toRateLimitColumn(RateLimitTableColumn::Pid));
     m_rateLimitLayout->addWidget(m_rateLimitTable, 1);
 
     // 限速动作日志：便于查看挂起/恢复执行结果。

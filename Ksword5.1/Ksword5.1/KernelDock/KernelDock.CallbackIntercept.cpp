@@ -4,6 +4,7 @@
 #include "KernelDock.CallbackIntercept.h"
 #include "KernelDock.CallbackPromptManager.h"
 #include "../SettingsDock/AppearanceSettings.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 
@@ -658,7 +659,7 @@ namespace
         return trimmedText;
     }
 
-    void installCallbackTableCopyMenu(QTableWidget* tableWidget)
+    void installCallbackTableCopyMenu(QTableWidget* tableWidget, const int processIdColumn)
     {
         // installCallbackTableCopyMenu：
         // - 输入：回调拦截页内需要复制证据行的表格；
@@ -670,7 +671,7 @@ namespace
         }
 
         tableWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(tableWidget, &QTableWidget::customContextMenuRequested, tableWidget, [tableWidget](const QPoint& localPosition)
+        QObject::connect(tableWidget, &QTableWidget::customContextMenuRequested, tableWidget, [tableWidget, processIdColumn](const QPoint& localPosition)
         {
             const auto clickedIndex = tableWidget->indexAt(localPosition);
             if (clickedIndex.isValid())
@@ -684,7 +685,30 @@ namespace
                 QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
                 kernelText("kernel.callback.intercept.menu.copy_current_row", QStringLiteral("复制当前行")));
             copyRowAction->setEnabled(tableWidget->currentRow() >= 0);
-            if (contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition)) != copyRowAction)
+            const QTableWidgetItem* processIdItem =
+                processIdColumn >= 0 && processIdColumn < tableWidget->columnCount() && tableWidget->currentRow() >= 0
+                ? tableWidget->item(tableWidget->currentRow(), processIdColumn)
+                : nullptr;
+            bool processIdOk = false;
+            const quint32 processId = processIdItem != nullptr
+                ? processIdItem->text().trimmed().toUInt(&processIdOk, 10)
+                : 0U;
+            QAction* openProcessAction = nullptr;
+            if (processIdColumn >= 0)
+            {
+                openProcessAction = contextMenu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                    QStringLiteral("转到进程详细信息"));
+                openProcessAction->setEnabled(processIdOk && processId != 0U);
+            }
+
+            QAction* selectedAction = contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == openProcessAction)
+            {
+                ks::ui::OpenProcessDetailByPid(processId);
+                return;
+            }
+            if (selectedAction != copyRowAction)
             {
                 return;
             }
@@ -1626,7 +1650,7 @@ private:
         m_groupTable->horizontalHeader()->setSectionResizeMode(static_cast<int>(GroupColumn::Comment), QHeaderView::Stretch);
         m_groupTable->setStyleSheet(callbackRuleTableStyle());
         applyCallbackTableTransparency(m_groupTable);
-        installCallbackTableCopyMenu(m_groupTable);
+        installCallbackTableCopyMenu(m_groupTable, -1);
         groupLayout->addWidget(m_groupTable, 1);
 
         auto* rightPane = new QWidget(mainSplitter);
@@ -1739,7 +1763,7 @@ private:
         m_fileMonitorTable->horizontalHeader()->setSectionResizeMode(static_cast<int>(FileMonitorColumn::Path), QHeaderView::Stretch);
         m_fileMonitorTable->setStyleSheet(callbackRuleTableStyle());
         applyCallbackTableTransparency(m_fileMonitorTable);
-        installCallbackTableCopyMenu(m_fileMonitorTable);
+        installCallbackTableCopyMenu(m_fileMonitorTable, static_cast<int>(FileMonitorColumn::Pid));
         fileMonitorLayout->addWidget(m_fileMonitorTable, 1);
         rootLayout->addWidget(fileMonitorFrame, 1);
 
@@ -2132,7 +2156,7 @@ private:
         m_minifilterBypassPidTable->horizontalHeader()->setSectionResizeMode(static_cast<int>(MinifilterBypassPidColumn::Process), QHeaderView::Stretch);
         m_minifilterBypassPidTable->setStyleSheet(callbackRuleTableStyle());
         applyCallbackTableTransparency(m_minifilterBypassPidTable);
-        installCallbackTableCopyMenu(m_minifilterBypassPidTable);
+        installCallbackTableCopyMenu(m_minifilterBypassPidTable, static_cast<int>(MinifilterBypassPidColumn::Pid));
         tabLayout->addWidget(m_minifilterBypassPidTable, 1);
 
         m_minifilterBypassStatusLabel = new QLabel(kernelText("kernel.callback.intercept.minifilter.status.not_refreshed", QStringLiteral("尚未从驱动刷新；编辑后点击“应用到驱动”生效。")), tabPage);

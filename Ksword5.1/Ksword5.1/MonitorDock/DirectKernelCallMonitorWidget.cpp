@@ -11,6 +11,7 @@
 
 #include "MonitorTextViewer.h"
 #include "../OnlineScan/SandboxUploadActions.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -2112,6 +2113,13 @@ void DirectKernelCallMonitorWidget::showEventContextMenu(const QPoint& position)
     QAction* detailAction = menu.addAction(QStringLiteral("查看详情"));
     QAction* copyRowAction = menu.addAction(QStringLiteral("复制当前行"));
     QAction* copyDetailAction = menu.addAction(QStringLiteral("复制详情"));
+    const QTableWidgetItem* processIdItem = m_eventTable->item(row, EventColumnPidTid);
+    std::uint32_t processId = 0;
+    const bool hasProcessId = processIdItem != nullptr &&
+        ks::online_scan::tryParsePidFromText(processIdItem->text(), &processId) &&
+        processId != 0U;
+    QAction* openProcessDetailAction = menu.addAction(QStringLiteral("转到进程详细信息"));
+    openProcessDetailAction->setEnabled(hasProcessId);
     menu.addSeparator();
     ks::online_scan::addVirusTotalSandboxMenu(
         &menu,
@@ -2158,6 +2166,12 @@ void DirectKernelCallMonitorWidget::showEventContextMenu(const QPoint& position)
     if (selectedAction == detailAction)
     {
         openEventDetailViewerForRow(row);
+        return;
+    }
+
+    if (selectedAction == openProcessDetailAction)
+    {
+        ks::ui::OpenProcessDetailByPid(processId);
         return;
     }
 

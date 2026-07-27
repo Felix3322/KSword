@@ -1,6 +1,7 @@
 #include "NetworkDock.InternalHelpers.h"
 
 #include "../UI/HexEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../ksword/network/network_format_tools.h"
 #include "../theme.h"
 
@@ -21,7 +22,10 @@
 
 namespace network_dock_detail
 {
-    void installCopyCurrentRowMenu(QTableWidget* tableWidget, const QString& actionText)
+    void installCopyCurrentRowMenu(
+        QTableWidget* tableWidget,
+        const QString& actionText,
+        const int processIdColumn)
     {
         // installCopyCurrentRowMenu 作用：
         // - 输入：任意 NetworkDock 表格和菜单项文本；
@@ -37,7 +41,7 @@ namespace network_dock_detail
             tableWidget,
             &QTableWidget::customContextMenuRequested,
             tableWidget,
-            [tableWidget, actionText](const QPoint& localPosition)
+            [tableWidget, actionText, processIdColumn](const QPoint& localPosition)
             {
                 const QModelIndex clickedIndex = tableWidget->indexAt(localPosition);
                 if (clickedIndex.isValid())
@@ -51,7 +55,38 @@ namespace network_dock_detail
                     QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
                     actionText);
                 copyRowAction->setEnabled(tableWidget->currentRow() >= 0);
-                if (contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition)) != copyRowAction)
+                quint32 processId = 0;
+                if (processIdColumn >= 0 && processIdColumn < tableWidget->columnCount() &&
+                    tableWidget->currentRow() >= 0 && tableWidget->currentRow() < tableWidget->rowCount())
+                {
+                    const QTableWidgetItem* processIdItem = tableWidget->item(
+                        tableWidget->currentRow(),
+                        processIdColumn);
+                    bool parseOk = false;
+                    const uint parsedProcessId = processIdItem != nullptr
+                        ? processIdItem->text().toUInt(&parseOk, 10)
+                        : 0U;
+                    if (parseOk && parsedProcessId != 0U)
+                    {
+                        processId = static_cast<quint32>(parsedProcessId);
+                    }
+                }
+                QAction* openProcessDetailAction = nullptr;
+                if (processIdColumn >= 0)
+                {
+                    openProcessDetailAction = contextMenu.addAction(
+                        QIcon(QStringLiteral(":/Icon/process_details.svg")),
+                        QStringLiteral("转到进程详细信息"));
+                    openProcessDetailAction->setEnabled(processId != 0U);
+                }
+
+                const QAction* selectedAction = contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPosition));
+                if (selectedAction == openProcessDetailAction)
+                {
+                    ks::ui::OpenProcessDetailByPid(processId);
+                    return;
+                }
+                if (selectedAction != copyRowAction)
                 {
                     return;
                 }
