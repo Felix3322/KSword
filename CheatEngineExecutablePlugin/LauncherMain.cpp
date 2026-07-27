@@ -520,10 +520,16 @@ namespace
             return false;
         }
 
-        // 只做 Win32 子窗口所需的最小样式转换。CE 自己的标题栏、菜单、
-        // 控件和消息处理全部保留，避免再次破坏 Lazarus 的菜单/焦点状态。
+        // TAB 内只保留 CE 的客户区。清除标题栏和所有窗口边缘，但不替换
+        // CE 自己的控件或消息处理，避免再次破坏 Lazarus 的焦点状态。
         LONG_PTR style = ::GetWindowLongPtrW(cheatEngineWindow, GWL_STYLE);
-        style &= ~static_cast<LONG_PTR>(WS_POPUP);
+        style &= ~static_cast<LONG_PTR>(
+            WS_POPUP |
+            WS_CAPTION |
+            WS_THICKFRAME |
+            WS_SYSMENU |
+            WS_MINIMIZEBOX |
+            WS_MAXIMIZEBOX);
         style |= WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
         (void)::SetWindowLongPtrW(
             cheatEngineWindow,
@@ -532,7 +538,12 @@ namespace
 
         LONG_PTR extendedStyle =
             ::GetWindowLongPtrW(cheatEngineWindow, GWL_EXSTYLE);
-        extendedStyle &= ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
+        extendedStyle &= ~static_cast<LONG_PTR>(
+            WS_EX_APPWINDOW |
+            WS_EX_DLGMODALFRAME |
+            WS_EX_WINDOWEDGE |
+            WS_EX_CLIENTEDGE |
+            WS_EX_STATICEDGE);
         extendedStyle |= WS_EX_CONTROLPARENT;
         (void)::SetWindowLongPtrW(
             cheatEngineWindow,
