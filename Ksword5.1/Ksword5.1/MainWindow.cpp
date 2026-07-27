@@ -6,6 +6,7 @@
 #include <QAbstractItemView>
 #include <QAbstractItemModel>
 #include <QAbstractSlider>
+#include <QComboBox>
 #include <QTextEdit>
 #include <QTextStream>
 #include <QTabWidget>
@@ -142,6 +143,7 @@ namespace
     constexpr const char* kKswordCustomTableDelegatePropertyName = "ksword_preserve_custom_table_delegate";
     constexpr const char* kKswordTableSelectionOutlineDelegatePropertyName = "ksword_table_selection_outline_delegate";
     constexpr const char* kKswordTableSelectionOutlineStylePropertyName = "ksword_table_selection_outline_style";
+    constexpr const char* kKswordComboPopupAutoThemedPropertyName = "ksword_combo_popup_auto_themed";
     constexpr int kResizeBorderOverlayWidth = 3;
     constexpr int kResizeCornerTriangleLeg = 6;
 
@@ -1139,6 +1141,200 @@ namespace
         return true;
     }
 
+    // comboBoxForPopupView 作用：
+    // - 输入：QComboBox 弹出列表使用的 QAbstractItemView；
+    // - 处理：先按 QObject 父链定位所属组合框，再以 QApplication 控件集合兜底；
+    // - 返回：所属组合框，无法确认时返回 nullptr。
+    QComboBox* comboBoxForPopupView(QAbstractItemView* const itemView)
+    {
+        if (itemView == nullptr)
+        {
+            return nullptr;
+        }
+
+        for (QObject* currentObject = itemView; currentObject != nullptr; currentObject = currentObject->parent())
+        {
+            if (QComboBox* const comboBox = qobject_cast<QComboBox*>(currentObject))
+            {
+                return comboBox;
+            }
+        }
+
+        QWidget* const popupWindow = itemView->window();
+        if (popupWindow == nullptr || !popupWindow->windowFlags().testFlag(Qt::Popup))
+        {
+            return nullptr;
+        }
+
+        const QWidgetList allWidgetList = QApplication::allWidgets();
+        for (QWidget* const widget : allWidgetList)
+        {
+            QComboBox* const comboBox = qobject_cast<QComboBox*>(widget);
+            if (comboBox != nullptr && comboBox->view() == itemView)
+            {
+                return comboBox;
+            }
+        }
+        return nullptr;
+    }
+
+    // applyOpaqueComboPopupPalette 作用：
+    // - 输入：组合框 Popup 容器、列表视图或 viewport；
+    // - 处理：写入不透明背景与完整前景/选中态调色板，并启用背景填充；
+    // - 返回：无。QSS 不生效或平台 style 回退时，调色板仍能避免黑底。
+    void applyOpaqueComboPopupPalette(QWidget* const targetWidget)
+    {
+        if (targetWidget == nullptr)
+        {
+            return;
+        }
+
+        const QColor backgroundColor = KswordTheme::SurfaceColor();
+        QPalette popupPalette = targetWidget->palette();
+        popupPalette.setColor(QPalette::Window, backgroundColor);
+        popupPalette.setColor(QPalette::Base, backgroundColor);
+        popupPalette.setColor(QPalette::AlternateBase, backgroundColor);
+        popupPalette.setColor(QPalette::Text, KswordTheme::TextPrimaryColor());
+        popupPalette.setColor(QPalette::WindowText, KswordTheme::TextPrimaryColor());
+        popupPalette.setColor(QPalette::ButtonText, KswordTheme::TextPrimaryColor());
+        popupPalette.setColor(QPalette::Highlight, KswordTheme::PrimaryBlueColor);
+        popupPalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
+        popupPalette.setColor(QPalette::Mid, KswordTheme::BorderColor());
+        targetWidget->setPalette(popupPalette);
+        targetWidget->setAutoFillBackground(true);
+        targetWidget->setAttribute(Qt::WA_StyledBackground, true);
+    }
+
+    // comboPopupViewStyle 作用：
+    // - 生成直接写入 QComboBox Popup 视图的局部样式；
+    // - Popup 是独立顶层窗口，不能依赖 MainWindow 的后代选择器继承背景；
+    // - 所有普通组合框使用当前主题的不透明列表底色，局部手写样式的组合框不受影响。
+    QString comboPopupViewStyle()
+    {
+        const QString backgroundColor = KswordTheme::SurfaceColorHex();
+        const QString textColor = KswordTheme::TextPrimaryColorHex();
+        const QString borderColor = KswordTheme::BorderColorHex();
+        const QString hoverColor = KswordTheme::ThemeColorName(
+            KswordTheme::IsDarkModeEnabled()
+                ? KswordTheme::PrimaryBlueSubtleColor()
+                : KswordTheme::SurfaceMutedColor());
+
+        return QStringLiteral(
+            "QAbstractItemView{"
+            "  background-color:%1 !important;"
+            "  color:%2 !important;"
+            "  border:1px solid %3 !important;"
+            "  selection-background-color:%4 !important;"
+            "  selection-color:%5 !important;"
+            "  outline:0;"
+            "}"
+            "QAbstractScrollArea::viewport{"
+            "  background-color:%1 !important;"
+            "}"
+            "QAbstractItemView::item{"
+            "  background-color:%1 !important;"
+            "  color:%2 !important;"
+            "  min-height:22px;"
+            "  padding:2px 6px;"
+            "}"
+            "QAbstractItemView::item:hover{"
+            "  background-color:%6 !important;"
+            "  color:%2 !important;"
+            "}"
+            "QAbstractItemView::item:selected{"
+            "  background-color:%4 !important;"
+            "  color:%5 !important;"
+            "}")
+            .arg(backgroundColor)
+            .arg(textColor)
+            .arg(borderColor)
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::OnAccentHex())
+            .arg(hoverColor);
+    }
+
+    // applyOpaqueComboPopupTheme 作用：
+    // - 输入：普通 QComboBox；
+    // - 处理：直接主题化其 Popup QFrame、列表视图及 viewport；
+    // - 返回：无。绕开 Qt Popup 顶层窗口不继承主窗口 QSS 的限制。
+    void applyOpaqueComboPopupTheme(QComboBox* const comboBox)
+    {
+        if (comboBox == nullptr || !comboBox->styleSheet().trimmed().isEmpty())
+        {
+            return;
+        }
+
+        QAbstractItemView* const itemView = comboBox->view();
+        if (itemView == nullptr)
+        {
+            return;
+        }
+
+        const bool autoThemed = itemView->property(kKswordComboPopupAutoThemedPropertyName).toBool();
+        if (!autoThemed && !itemView->styleSheet().trimmed().isEmpty())
+        {
+            return;
+        }
+
+        QWidget* const popupContainer = itemView->window();
+        const bool hasDedicatedPopupContainer =
+            popupContainer != nullptr &&
+            popupContainer != comboBox &&
+            popupContainer->windowFlags().testFlag(Qt::Popup);
+        if (hasDedicatedPopupContainer)
+        {
+            applyOpaqueComboPopupPalette(popupContainer);
+            popupContainer->setStyleSheet(QStringLiteral(
+                "QFrame{"
+                "  background-color:%1 !important;"
+                "  color:%2 !important;"
+                "  border:1px solid %3 !important;"
+                "}")
+                .arg(KswordTheme::SurfaceColorHex())
+                .arg(KswordTheme::TextPrimaryColorHex())
+                .arg(KswordTheme::BorderColorHex()));
+        }
+
+        applyOpaqueComboPopupPalette(itemView);
+        itemView->setStyleSheet(comboPopupViewStyle());
+        applyOpaqueComboPopupPalette(itemView->viewport());
+        itemView->setProperty(kKswordComboPopupAutoThemedPropertyName, true);
+    }
+
+    // GlobalComboPopupThemeFilter 作用：
+    // - 监听应用范围内的 Popup 显示事件；
+    // - 对新建、懒加载和主题切换后的普通组合框，重新执行不透明列表背景主题化；
+    // - 不处理业务控件已设置局部样式的组合框，保持其专用视觉设计。
+    class GlobalComboPopupThemeFilter final : public QObject
+    {
+    public:
+        explicit GlobalComboPopupThemeFilter(QObject* parent = nullptr)
+            : QObject(parent)
+        {
+        }
+
+    protected:
+        bool eventFilter(QObject* watchedObject, QEvent* eventObject) override
+        {
+            if (watchedObject == nullptr || eventObject == nullptr || eventObject->type() != QEvent::Show)
+            {
+                return QObject::eventFilter(watchedObject, eventObject);
+            }
+
+            QAbstractItemView* itemView = qobject_cast<QAbstractItemView*>(watchedObject);
+            if (itemView == nullptr)
+            {
+                if (QWidget* const widget = qobject_cast<QWidget*>(watchedObject))
+                {
+                    itemView = widget->findChild<QAbstractItemView*>();
+                }
+            }
+
+            applyOpaqueComboPopupTheme(comboBoxForPopupView(itemView));
+            return QObject::eventFilter(watchedObject, eventObject);
+        }
+    };
+
     // GlobalContextMenuThemeFilter 作用：
     // - 在应用层拦截所有 QMenu 的显示/样式变化事件；
     // - 对“未显式设置样式”的菜单自动套用统一主题样式，避免遗漏单点 setStyleSheet。
@@ -1860,6 +2056,31 @@ namespace
         {
             topLevelTopMostFilter = new GlobalTopLevelTopMostFilter(appInstance);
             appInstance->installEventFilter(topLevelTopMostFilter);
+        }
+    }
+
+    // ensureGlobalComboPopupThemeFilterInstalled 作用：
+    // - 安装一次应用级组合框 Popup 主题过滤器；
+    // - 同时刷新已创建组合框，保证主题切换后下一次展开立即使用不透明背景。
+    void ensureGlobalComboPopupThemeFilterInstalled()
+    {
+        QApplication* appInstance = qobject_cast<QApplication*>(QCoreApplication::instance());
+        if (appInstance == nullptr)
+        {
+            return;
+        }
+
+        static GlobalComboPopupThemeFilter* comboPopupThemeFilter = nullptr;
+        if (comboPopupThemeFilter == nullptr)
+        {
+            comboPopupThemeFilter = new GlobalComboPopupThemeFilter(appInstance);
+            appInstance->installEventFilter(comboPopupThemeFilter);
+        }
+
+        const QWidgetList allWidgetList = appInstance->allWidgets();
+        for (QWidget* const widget : allWidgetList)
+        {
+            applyOpaqueComboPopupTheme(qobject_cast<QComboBox*>(widget));
         }
     }
 
@@ -3614,6 +3835,7 @@ MainWindow::MainWindow(
     // - 统一兜底所有右键菜单背景；
     // - 避免后续新增菜单遗漏 setStyleSheet 导致浅色模式黑底。
     ensureGlobalContextMenuThemeFilterInstalled();
+    ensureGlobalComboPopupThemeFilterInstalled();
     ensureGlobalSliderWheelFilterInstalled();
     ensureGlobalTableSelectionOutlineFilterInstalled();
 
@@ -9200,6 +9422,7 @@ void MainWindow::applyAppearanceSettings(
     // 表格多在 Dock 初始化阶段创建，而全局过滤器首次安装发生在此之前。
     // 在父级 QSS 就绪后扫描现有表格，确保统一代理覆盖已创建的 QTableView/QTableWidget。
     ensureGlobalTableSelectionOutlineFilterInstalled();
+    ensureGlobalComboPopupThemeFilterInstalled();
     applyResizeBorderOverlayStyle();
     updateResizeBorderOverlays();
     if (m_pDockManager != nullptr)
@@ -9717,14 +9940,20 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
         "  image:url(%7);"
         "}"
         "QComboBox QAbstractItemView{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  alternate-background-color:transparent !important;"
+        // 下拉列表是独立 Popup，不会继承组合框所在 Dock 的背景画刷。
+        // 不能设为透明，否则浅色主题会回退到平台 Popup 的黑色底。
+        "  background:%8 !important;"
+        "  background-color:%8 !important;"
+        "  alternate-background-color:%8 !important;"
         "  color:%1 !important;"
         "  border:1px solid %2 !important;"
         "  selection-background-color:%3 !important;"
         "  selection-color:%5 !important;"
         "  outline:0;"
+        "}"
+        "QComboBox QAbstractItemView::viewport{"
+        "  background:%8 !important;"
+        "  background-color:%8 !important;"
         "}"
         "QComboBox QAbstractItemView::item{"
         "  background:transparent !important;"
@@ -9745,7 +9974,8 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
         .arg(comboPopupHoverColor)
         .arg(selectedTextColor)
         .arg(disabledTextColor)
-        .arg(comboArrowIconPath);
+        .arg(comboArrowIconPath)
+        .arg(surfaceBackgroundText);
 
     // tabStyle 作用：统一普通 Tab 与 ADS Dock Tab 的颜色、边距和选中态。
     // 字号不在这里设置，保证所有 Tab 栏继承 Qt 默认应用字号。
