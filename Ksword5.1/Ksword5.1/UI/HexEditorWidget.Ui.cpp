@@ -200,6 +200,10 @@ void HexEditorWidget::initializeUi()
     // 表格字体加大并固定等宽，便于编辑十六进制内容。
     QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     fixedFont.setPointSize(std::max(fixedFont.pointSize(), 12));
+    // kswordPreserveCustomFont 作用：阻止全局表格字体刷新覆盖 HEX 对齐所需的等宽字体。
+    m_hexTable->setProperty("kswordPreserveCustomFont", true);
+    m_hexTable->horizontalHeader()->setProperty("kswordPreserveCustomFont", true);
+    m_hexTable->verticalHeader()->setProperty("kswordPreserveCustomFont", true);
     m_hexTable->setFont(fixedFont);
     m_hexTable->horizontalHeader()->setFont(fixedFont);
     m_hexTable->verticalHeader()->setFont(fixedFont);

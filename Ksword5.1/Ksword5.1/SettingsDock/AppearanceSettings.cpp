@@ -377,6 +377,7 @@ namespace
         defaultSettings.useWideScrollBars = false;
         defaultSettings.scrollBarAutoHideEnabled = false;
         defaultSettings.sliderWheelAdjustEnabled = false;
+        defaultSettings.fontFamily.clear();
         defaultSettings.textAntialiasingEnabled = true;
         defaultSettings.notificationCardsEnabled = true;
         defaultSettings.notificationMinimumLevel = 2;
@@ -557,6 +558,10 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     loadedSettings.sliderWheelAdjustEnabled = rootObject
         .value(QStringLiteral("slider_wheel_adjust_enabled"))
         .toBool(loadedSettings.sliderWheelAdjustEnabled);
+    loadedSettings.fontFamily = rootObject
+        .value(QStringLiteral("font_family"))
+        .toString(loadedSettings.fontFamily)
+        .trimmed();
     loadedSettings.textAntialiasingEnabled = rootObject
         .value(QStringLiteral("text_antialiasing_enabled"))
         .toBool(loadedSettings.textAntialiasingEnabled);
@@ -648,6 +653,9 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(
         QStringLiteral("slider_wheel_adjust_enabled"),
         settings.sliderWheelAdjustEnabled);
+    rootObject.insert(
+        QStringLiteral("font_family"),
+        settings.fontFamily.trimmed());
     rootObject.insert(
         QStringLiteral("text_antialiasing_enabled"),
         settings.textAntialiasingEnabled);

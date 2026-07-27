@@ -4,6 +4,7 @@
 #include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
 
+#include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
@@ -12,6 +13,7 @@
 #include <QEvent>
 #include <QFileInfo>
 #include <QFileDialog>
+#include <QFontComboBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -344,6 +346,20 @@ void SettingsDock::initializeAppearanceTab()
     themeButtonLayout->addStretch();
     themeLayout->addLayout(themeButtonLayout);
 
+    QHBoxLayout* fontLayout = new QHBoxLayout();
+    fontLayout->setSpacing(6);
+    QLabel* fontLabel = new QLabel(QStringLiteral("设置字体"), themeGroupBox);
+    languageManager.bindText(fontLabel, QStringLiteral("settings.font.label"), QStringLiteral("设置字体"));
+    fontLayout->addWidget(fontLabel, 0);
+    m_fontCombo = new QFontComboBox(themeGroupBox);
+    m_fontCombo->setToolTip(QStringLiteral("选择系统中已安装的字体；点击“应用”后立即生效"));
+    languageManager.bindToolTip(
+        m_fontCombo,
+        QStringLiteral("settings.font.tooltip"),
+        QStringLiteral("选择系统中已安装的字体；点击“应用”后立即生效"));
+    fontLayout->addWidget(m_fontCombo, 1);
+    themeLayout->addLayout(fontLayout);
+
     m_textAntialiasingCheckBox = new QCheckBox(QStringLiteral("启用文本抗锯齿"), themeGroupBox);
     languageManager.bindText(
         m_textAntialiasingCheckBox,
@@ -667,6 +683,10 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QStringLiteral("主题按钮切换"));
         });
 
+    connect(m_fontCombo, &QFontComboBox::currentFontChanged, this, [this](const QFont& /*font*/) {
+        markPendingChanges(QString());
+        });
+
     connect(m_textAntialiasingCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
         markPendingChanges(QString());
         });
@@ -788,6 +808,14 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     else if (m_followSystemButton != nullptr)
     {
         m_followSystemButton->setChecked(true);
+    }
+
+    if (m_fontCombo != nullptr)
+    {
+        const QFont selectedFont = settings.fontFamily.trimmed().isEmpty()
+            ? QApplication::font()
+            : QFont(settings.fontFamily.trimmed());
+        m_fontCombo->setCurrentFont(selectedFont);
     }
 
     m_backgroundPathEdit->setText(settings.backgroundImagePath);
@@ -934,6 +962,9 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         (m_scrollBarAutoHideCheckBox != nullptr) && m_scrollBarAutoHideCheckBox->isChecked();
     collectedSettings.sliderWheelAdjustEnabled =
         (m_sliderWheelAdjustCheckBox != nullptr) && m_sliderWheelAdjustCheckBox->isChecked();
+    collectedSettings.fontFamily = m_fontCombo != nullptr
+        ? m_fontCombo->currentFont().family().trimmed()
+        : m_currentAppearanceSettings.fontFamily;
     collectedSettings.textAntialiasingEnabled =
         (m_textAntialiasingCheckBox != nullptr) && m_textAntialiasingCheckBox->isChecked();
     collectedSettings.notificationCardsEnabled =
@@ -1032,6 +1063,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.useWideScrollBars == m_currentAppearanceSettings.useWideScrollBars
         && nextSettings.scrollBarAutoHideEnabled == m_currentAppearanceSettings.scrollBarAutoHideEnabled
         && nextSettings.sliderWheelAdjustEnabled == m_currentAppearanceSettings.sliderWheelAdjustEnabled
+        && nextSettings.fontFamily.compare(m_currentAppearanceSettings.fontFamily, Qt::CaseInsensitive) == 0
         && nextSettings.textAntialiasingEnabled == m_currentAppearanceSettings.textAntialiasingEnabled
         && nextSettings.notificationCardsEnabled == m_currentAppearanceSettings.notificationCardsEnabled
         && nextSettings.notificationMinimumLevel == m_currentAppearanceSettings.notificationMinimumLevel

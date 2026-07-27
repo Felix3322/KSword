@@ -7,6 +7,7 @@
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
+class QFontComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -180,6 +181,9 @@ private:
 
     // m_textAntialiasingCheckBox 作用：控制应用默认字体是否启用文本抗锯齿。
     QCheckBox* m_textAntialiasingCheckBox = nullptr;
+
+    // m_fontCombo 作用：以下拉菜单列出系统已安装字体并选择全局界面字体。
+    QFontComboBox* m_fontCombo = nullptr;
 
     // m_followSystemButton 作用：选择“跟随系统主题”模式。
     QToolButton* m_followSystemButton = nullptr;

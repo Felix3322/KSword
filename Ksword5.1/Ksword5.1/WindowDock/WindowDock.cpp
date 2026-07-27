@@ -8,6 +8,7 @@
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../OtherDock/OtherDock.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../ksword/process/process.h"
 #include "../ksword/profile/ProfileJsonLoader.h"
 #include "../theme.h"
 
@@ -22,7 +23,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileIconProvider>
 #include <QGuiApplication>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
@@ -62,14 +65,49 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <Windows.h>
 
+#pragma comment(lib, "Version.lib")
+
 namespace
 {
+    enum HotkeyTableColumn : int
+    {
+        HotkeyColumnName = 0,
+        HotkeyColumnProcessThread,
+        HotkeyColumnDisplay,
+        HotkeyColumnPath,
+        HotkeyColumnDescription,
+        HotkeyColumnObject,
+        HotkeyColumnId,
+        HotkeyColumnVirtualKey,
+        HotkeyColumnModifiers,
+        HotkeyColumnProcessId,
+        HotkeyColumnThreadId,
+        HotkeyColumnSession,
+        HotkeyColumnHwnd,
+        HotkeyColumnNext,
+        HotkeyColumnThreadInfo,
+        HotkeyColumnDepth,
+        HotkeyColumnSource,
+        HotkeyColumnStatus,
+        HotkeyColumnLastStatus,
+        HotkeyColumnDiagnostic,
+        HotkeyColumnCount
+    };
+
+    struct HotkeyProcessDisplayInfo
+    {
+        QString processName;
+        QString imagePath;
+        QString description;
+    };
+
     // boolText 作用：
     // - 把布尔值转换为“是/否”；
     // - 供只读审计页直接展示。
@@ -210,6 +248,272 @@ namespace
         return QStringLiteral("%1 (%2)")
             .arg(parts.join('+'))
             .arg(formatUInt64Hex(modifiers));
+    }
+
+    // virtualKeyName 作用：
+    // - 把 RegisterHotKey 的 VK 数值按 WinUser.h 固定值解析成人可读键名；
+    // - 字母、数字和 F1-F24 按区间处理，其余常用 VK 使用显式映射；
+    // - 未知值保留 VK_0xNN，避免把无法识别的键误标成别的按键。
+    QString virtualKeyName(const std::uint32_t virtualKey)
+    {
+        if (virtualKey >= '0' && virtualKey <= '9')
+        {
+            return QString(QChar(static_cast<ushort>(virtualKey)));
+        }
+        if (virtualKey >= 'A' && virtualKey <= 'Z')
+        {
+            return QString(QChar(static_cast<ushort>(virtualKey)));
+        }
+        if (virtualKey >= VK_NUMPAD0 && virtualKey <= VK_NUMPAD9)
+        {
+            return QStringLiteral("Num%1").arg(virtualKey - VK_NUMPAD0);
+        }
+        if (virtualKey >= VK_F1 && virtualKey <= VK_F24)
+        {
+            return QStringLiteral("F%1").arg(virtualKey - VK_F1 + 1U);
+        }
+
+        switch (virtualKey)
+        {
+        case VK_LBUTTON: return QStringLiteral("MouseLeft");
+        case VK_RBUTTON: return QStringLiteral("MouseRight");
+        case VK_CANCEL: return QStringLiteral("Break");
+        case VK_MBUTTON: return QStringLiteral("MouseMiddle");
+        case VK_XBUTTON1: return QStringLiteral("MouseX1");
+        case VK_XBUTTON2: return QStringLiteral("MouseX2");
+        case VK_BACK: return QStringLiteral("Backspace");
+        case VK_TAB: return QStringLiteral("Tab");
+        case VK_CLEAR: return QStringLiteral("Clear");
+        case VK_RETURN: return QStringLiteral("Enter");
+        case VK_SHIFT: return QStringLiteral("Shift");
+        case VK_CONTROL: return QStringLiteral("Ctrl");
+        case VK_MENU: return QStringLiteral("Alt");
+        case VK_PAUSE: return QStringLiteral("Pause");
+        case VK_CAPITAL: return QStringLiteral("CapsLock");
+        case VK_KANA: return QStringLiteral("Kana/Hangul");
+        case VK_IME_ON: return QStringLiteral("ImeOn");
+        case VK_JUNJA: return QStringLiteral("Junja");
+        case VK_FINAL: return QStringLiteral("Final");
+        case VK_HANJA: return QStringLiteral("Hanja/Kanji");
+        case VK_IME_OFF: return QStringLiteral("ImeOff");
+        case VK_ESCAPE: return QStringLiteral("Esc");
+        case VK_CONVERT: return QStringLiteral("Convert");
+        case VK_NONCONVERT: return QStringLiteral("NonConvert");
+        case VK_ACCEPT: return QStringLiteral("Accept");
+        case VK_MODECHANGE: return QStringLiteral("ModeChange");
+        case VK_SPACE: return QStringLiteral("Space");
+        case VK_PRIOR: return QStringLiteral("PageUp");
+        case VK_NEXT: return QStringLiteral("PageDown");
+        case VK_END: return QStringLiteral("End");
+        case VK_HOME: return QStringLiteral("Home");
+        case VK_LEFT: return QStringLiteral("Left");
+        case VK_UP: return QStringLiteral("Up");
+        case VK_RIGHT: return QStringLiteral("Right");
+        case VK_DOWN: return QStringLiteral("Down");
+        case VK_SELECT: return QStringLiteral("Select");
+        case VK_PRINT: return QStringLiteral("Print");
+        case VK_EXECUTE: return QStringLiteral("Execute");
+        case VK_SNAPSHOT: return QStringLiteral("Snapshot");
+        case VK_INSERT: return QStringLiteral("Insert");
+        case VK_DELETE: return QStringLiteral("Delete");
+        case VK_HELP: return QStringLiteral("Help");
+        case VK_LWIN: return QStringLiteral("LeftWin");
+        case VK_RWIN: return QStringLiteral("RightWin");
+        case VK_APPS: return QStringLiteral("Apps");
+        case VK_SLEEP: return QStringLiteral("Sleep");
+        case VK_MULTIPLY: return QStringLiteral("NumMultiply");
+        case VK_ADD: return QStringLiteral("NumAdd");
+        case VK_SEPARATOR: return QStringLiteral("NumSeparator");
+        case VK_SUBTRACT: return QStringLiteral("NumSubtract");
+        case VK_DECIMAL: return QStringLiteral("NumDecimal");
+        case VK_DIVIDE: return QStringLiteral("NumDivide");
+        case VK_NUMLOCK: return QStringLiteral("NumLock");
+        case VK_SCROLL: return QStringLiteral("ScrollLock");
+        case VK_LSHIFT: return QStringLiteral("LeftShift");
+        case VK_RSHIFT: return QStringLiteral("RightShift");
+        case VK_LCONTROL: return QStringLiteral("LeftCtrl");
+        case VK_RCONTROL: return QStringLiteral("RightCtrl");
+        case VK_LMENU: return QStringLiteral("LeftAlt");
+        case VK_RMENU: return QStringLiteral("RightAlt");
+        case VK_BROWSER_BACK: return QStringLiteral("BrowserBack");
+        case VK_BROWSER_FORWARD: return QStringLiteral("BrowserForward");
+        case VK_BROWSER_REFRESH: return QStringLiteral("BrowserRefresh");
+        case VK_BROWSER_STOP: return QStringLiteral("BrowserStop");
+        case VK_BROWSER_SEARCH: return QStringLiteral("BrowserSearch");
+        case VK_BROWSER_FAVORITES: return QStringLiteral("BrowserFavorites");
+        case VK_BROWSER_HOME: return QStringLiteral("BrowserHome");
+        case VK_VOLUME_MUTE: return QStringLiteral("VolumeMute");
+        case VK_VOLUME_DOWN: return QStringLiteral("VolumeDown");
+        case VK_VOLUME_UP: return QStringLiteral("VolumeUp");
+        case VK_MEDIA_NEXT_TRACK: return QStringLiteral("MediaNext");
+        case VK_MEDIA_PREV_TRACK: return QStringLiteral("MediaPrevious");
+        case VK_MEDIA_STOP: return QStringLiteral("MediaStop");
+        case VK_MEDIA_PLAY_PAUSE: return QStringLiteral("MediaPlayPause");
+        case VK_LAUNCH_MAIL: return QStringLiteral("LaunchMail");
+        case VK_LAUNCH_MEDIA_SELECT: return QStringLiteral("LaunchMedia");
+        case VK_LAUNCH_APP1: return QStringLiteral("LaunchApp1");
+        case VK_LAUNCH_APP2: return QStringLiteral("LaunchApp2");
+        case VK_OEM_1: return QStringLiteral(";");
+        case VK_OEM_PLUS: return QStringLiteral("+");
+        case VK_OEM_COMMA: return QStringLiteral(",");
+        case VK_OEM_MINUS: return QStringLiteral("-");
+        case VK_OEM_PERIOD: return QStringLiteral(".");
+        case VK_OEM_2: return QStringLiteral("/");
+        case VK_OEM_3: return QStringLiteral("`");
+        case VK_OEM_4: return QStringLiteral("[");
+        case VK_OEM_5: return QStringLiteral("\\");
+        case VK_OEM_6: return QStringLiteral("]");
+        case VK_OEM_7: return QStringLiteral("'");
+        case VK_OEM_8: return QStringLiteral("OEM8");
+        case VK_OEM_102: return QStringLiteral("OEM102");
+        case VK_PROCESSKEY: return QStringLiteral("ProcessKey");
+        case VK_PACKET: return QStringLiteral("Packet");
+        case VK_ATTN: return QStringLiteral("Attn");
+        case VK_CRSEL: return QStringLiteral("CrSel");
+        case VK_EXSEL: return QStringLiteral("ExSel");
+        case VK_EREOF: return QStringLiteral("EraseEof");
+        case VK_PLAY: return QStringLiteral("Play");
+        case VK_ZOOM: return QStringLiteral("Zoom");
+        case VK_NONAME: return QStringLiteral("NoName");
+        case VK_PA1: return QStringLiteral("Pa1");
+        case VK_OEM_CLEAR: return QStringLiteral("OemClear");
+        default:
+            return QStringLiteral("VK_0x%1")
+                .arg(virtualKey, 2, 16, QChar('0'))
+                .toUpper();
+        }
+    }
+
+    // hotkeyDisplayText 作用：组合修饰键与硬编码 VK 名称，生成 OpenARK 风格的人读热键。
+    QString hotkeyDisplayText(const std::uint32_t modifiers, const std::uint32_t virtualKey)
+    {
+        QStringList parts;
+        if ((modifiers & MOD_WIN) != 0U) parts.push_back(QStringLiteral("Win"));
+        if ((modifiers & MOD_CONTROL) != 0U) parts.push_back(QStringLiteral("Ctrl"));
+        if ((modifiers & MOD_ALT) != 0U) parts.push_back(QStringLiteral("Alt"));
+        if ((modifiers & MOD_SHIFT) != 0U) parts.push_back(QStringLiteral("Shift"));
+        parts.push_back(virtualKeyName(virtualKey));
+        return parts.join(QChar('+'));
+    }
+
+    QString rawVirtualKeyText(const std::uint32_t virtualKey)
+    {
+        const QString hexText = QStringLiteral("0x%1")
+            .arg(virtualKey, 2, 16, QChar('0'))
+            .toUpper();
+        return QStringLiteral("%1 (%2)").arg(hexText, virtualKeyName(virtualKey));
+    }
+
+    // queryFileDescription 作用：从进程映像版本资源读取 FileDescription，失败时返回空文本。
+    QString queryFileDescription(const QString& imagePath)
+    {
+        if (imagePath.trimmed().isEmpty())
+        {
+            return QString();
+        }
+
+        DWORD ignoredHandle = 0;
+        const DWORD versionBytes = ::GetFileVersionInfoSizeW(
+            reinterpret_cast<LPCWSTR>(imagePath.utf16()),
+            &ignoredHandle);
+        if (versionBytes == 0U)
+        {
+            return QString();
+        }
+
+        std::vector<std::uint8_t> versionBuffer(versionBytes, 0U);
+        if (::GetFileVersionInfoW(
+            reinterpret_cast<LPCWSTR>(imagePath.utf16()),
+            0,
+            versionBytes,
+            versionBuffer.data()) == FALSE)
+        {
+            return QString();
+        }
+
+        struct LanguageCodePage
+        {
+            WORD language;
+            WORD codePage;
+        };
+        LanguageCodePage* translations = nullptr;
+        UINT translationBytes = 0;
+        if (::VerQueryValueW(
+            versionBuffer.data(),
+            L"\\VarFileInfo\\Translation",
+            reinterpret_cast<LPVOID*>(&translations),
+            &translationBytes) != FALSE &&
+            translations != nullptr)
+        {
+            const UINT translationCount = translationBytes / sizeof(LanguageCodePage);
+            for (UINT index = 0; index < translationCount; ++index)
+            {
+                const QString queryPath = QStringLiteral("\\StringFileInfo\\%1%2\\FileDescription")
+                    .arg(translations[index].language, 4, 16, QChar('0'))
+                    .arg(translations[index].codePage, 4, 16, QChar('0'));
+                wchar_t* description = nullptr;
+                UINT descriptionChars = 0;
+                if (::VerQueryValueW(
+                    versionBuffer.data(),
+                    reinterpret_cast<LPCWSTR>(queryPath.utf16()),
+                    reinterpret_cast<LPVOID*>(&description),
+                    &descriptionChars) != FALSE &&
+                    description != nullptr &&
+                    descriptionChars > 1U)
+                {
+                    return QString::fromWCharArray(description).trimmed();
+                }
+            }
+        }
+
+        constexpr const wchar_t* fallbackQueries[] = {
+            L"\\StringFileInfo\\040904B0\\FileDescription",
+            L"\\StringFileInfo\\000004B0\\FileDescription"
+        };
+        for (const wchar_t* queryPath : fallbackQueries)
+        {
+            wchar_t* description = nullptr;
+            UINT descriptionChars = 0;
+            if (::VerQueryValueW(
+                versionBuffer.data(),
+                queryPath,
+                reinterpret_cast<LPVOID*>(&description),
+                &descriptionChars) != FALSE &&
+                description != nullptr &&
+                descriptionChars > 1U)
+            {
+                return QString::fromWCharArray(description).trimmed();
+            }
+        }
+        return QString();
+    }
+
+    HotkeyProcessDisplayInfo queryHotkeyProcessDisplayInfo(const std::uint32_t processId)
+    {
+        HotkeyProcessDisplayInfo displayInfo;
+        if (processId == 0U)
+        {
+            return displayInfo;
+        }
+
+        displayInfo.imagePath = QString::fromStdString(ks::process::QueryProcessPathByPid(processId));
+        if (!displayInfo.imagePath.isEmpty())
+        {
+            displayInfo.processName = QFileInfo(displayInfo.imagePath).fileName();
+            displayInfo.description = queryFileDescription(displayInfo.imagePath);
+        }
+        if (displayInfo.processName.isEmpty())
+        {
+            displayInfo.processName = QString::fromStdString(ks::process::GetProcessNameByPID(processId));
+        }
+        return displayInfo;
+    }
+
+    QString processThreadDisplayText(const std::uint32_t processId, const std::uint32_t threadId)
+    {
+        return QStringLiteral("%1.%2")
+            .arg(processId)
+            .arg(threadId == 0U ? QStringLiteral("-") : QString::number(threadId));
     }
 
     // keyboardSourceText 作用：
@@ -1999,22 +2303,41 @@ namespace
         const ksword::ark::KeyboardHotkeyEnumResult* const fallbackResult)
     {
         QVector<QStringList> rows;
+        QHash<std::uint32_t, HotkeyProcessDisplayInfo> processInfoCache;
+        const auto processInfoForPid = [&processInfoCache](const std::uint32_t processId) -> HotkeyProcessDisplayInfo
+        {
+            const auto cachedInfo = processInfoCache.constFind(processId);
+            if (cachedInfo != processInfoCache.cend())
+            {
+                return cachedInfo.value();
+            }
+            const HotkeyProcessDisplayInfo displayInfo = queryHotkeyProcessDisplayInfo(processId);
+            processInfoCache.insert(processId, displayInfo);
+            return displayInfo;
+        };
+
         rows.reserve(static_cast<int>(result.entries.size()));
         for (const KSWORD_ARK_WIN32K_HOTKEY_ENTRY& entry : result.entries)
         {
             const QString driverDetailText = readableDriverDetailText(
                 wideArrayToQString(entry.detail, KSWORD_ARK_WIN32K_DETAIL_CHARS),
                 QStringLiteral("热键快照未提供额外驱动说明"));
+            const HotkeyProcessDisplayInfo processInfo = processInfoForPid(entry.processId);
 
             rows.push_back(QStringList{
-                QString::number(entry.hotkeyId),
-                QString::number(entry.virtualKey),
+                processInfo.processName,
+                processThreadDisplayText(entry.processId, entry.threadId),
+                hotkeyDisplayText(entry.modifiers, entry.virtualKey),
+                processInfo.imagePath,
+                processInfo.description,
+                formatUInt64Hex(entry.hotkeyObject),
+                formatUInt64Hex(entry.hotkeyId),
+                rawVirtualKeyText(entry.virtualKey),
                 hotkeyModifierText(entry.modifiers),
                 QString::number(entry.processId),
                 QString::number(entry.threadId),
                 QString::number(entry.sessionId),
                 formatUInt64Hex(entry.hwnd),
-                formatUInt64Hex(entry.hotkeyObject),
                 formatUInt64Hex(entry.nextHotkeyObject),
                 formatUInt64Hex(entry.threadInfo),
                 QString::number(entry.depth),
@@ -2041,16 +2364,22 @@ namespace
                 const QString driverDetailText = readableDriverDetailText(
                     stdWideToQString(entry.detail),
                     QStringLiteral("键盘热键 fallback 未提供额外驱动说明"));
+                const HotkeyProcessDisplayInfo processInfo = processInfoForPid(entry.processId);
 
                 rows.push_back(QStringList{
-                    QString::number(entry.hotkeyId),
-                    QString::number(entry.virtualKey),
+                    processInfo.processName,
+                    processThreadDisplayText(entry.processId, entry.threadId),
+                    hotkeyDisplayText(entry.modifiers, entry.virtualKey),
+                    processInfo.imagePath,
+                    processInfo.description,
+                    formatUInt64Hex(entry.hotkeyObject),
+                    formatUInt64Hex(entry.hotkeyId),
+                    rawVirtualKeyText(entry.virtualKey),
                     hotkeyModifierText(entry.modifiers),
                     QString::number(entry.processId),
                     QString::number(entry.threadId),
                     QStringLiteral("N/A"),
                     formatUInt64Hex(entry.windowObject),
-                    formatUInt64Hex(entry.hotkeyObject),
                     formatUInt64Hex(entry.nextHotkeyObject),
                     formatUInt64Hex(entry.threadInfo),
                     QString::number(entry.depth),
@@ -2080,14 +2409,17 @@ namespace
                 .arg(keyboardMessageText(QStringLiteral("enumerateKeyboardHotkeys"), *fallbackResult))
             : QStringLiteral("PDB=%1；fallback 未执行；解释：未枚举到结构化热键行不等于系统无热键，当前路径受 profile/字段映射限制。")
                 .arg(auditMessageText(QStringLiteral("queryWin32kHotkeysPdb"), result));
-        rows.push_back(QStringList{
-            QStringLiteral("<无热键行>"), QStringLiteral("N/A"), QStringLiteral("N/A"),
-            QStringLiteral("N/A"), QStringLiteral("N/A"), QStringLiteral("N/A"),
-            QStringLiteral("N/A"), QStringLiteral("N/A"), QStringLiteral("N/A"),
-            QStringLiteral("N/A"), QStringLiteral("N/A"), QStringLiteral("N/A"),
-            QStringLiteral("%1 / %2").arg(pdbStateText).arg(fallbackStateText),
-            formatNtStatusText(result.lastStatus),
-            emptyDetailText });
+        QStringList emptyRow;
+        emptyRow.reserve(HotkeyColumnCount);
+        for (int column = 0; column < HotkeyColumnCount; ++column)
+        {
+            emptyRow.push_back(QStringLiteral("N/A"));
+        }
+        emptyRow[HotkeyColumnName] = QStringLiteral("<无热键行>");
+        emptyRow[HotkeyColumnStatus] = QStringLiteral("%1 / %2").arg(pdbStateText).arg(fallbackStateText);
+        emptyRow[HotkeyColumnLastStatus] = formatNtStatusText(result.lastStatus);
+        emptyRow[HotkeyColumnDiagnostic] = emptyDetailText;
+        rows.push_back(std::move(emptyRow));
         return rows;
     }
 
@@ -2358,6 +2690,12 @@ namespace
         table->clearContents();
         applyAuditTablePalette(table);
         table->setRowCount(rows.size());
+        bool hasProcessIconColumn = false;
+        bool hasProcessPathColumn = false;
+        const int processIconColumn = table->property("kswordProcessIconColumn").toInt(&hasProcessIconColumn);
+        const int processPathColumn = table->property("kswordProcessPathColumn").toInt(&hasProcessPathColumn);
+        static QFileIconProvider fileIconProvider;
+        static QHash<QString, QIcon> processIconCache;
         for (int rowIndex = 0; rowIndex < rows.size(); ++rowIndex)
         {
             const QStringList& columns = rows.at(rowIndex);
@@ -2376,6 +2714,28 @@ namespace
                     (rowIndex % 2) == 0
                     ? KswordTheme::SurfaceColor()
                     : KswordTheme::SurfaceAltColor()));
+                if (hasProcessIconColumn &&
+                    hasProcessPathColumn &&
+                    columnIndex == processIconColumn &&
+                    processPathColumn >= 0 &&
+                    processPathColumn < columns.size() &&
+                    !cellText.startsWith(QChar('<')) &&
+                    cellText != QStringLiteral("N/A"))
+                {
+                    const QString imagePath = columns.at(processPathColumn).trimmed();
+                    const QString cacheKey = QDir::fromNativeSeparators(imagePath).toLower();
+                    QIcon processIcon = processIconCache.value(cacheKey);
+                    if (processIcon.isNull() && QFileInfo::exists(imagePath))
+                    {
+                        processIcon = fileIconProvider.icon(QFileInfo(imagePath));
+                    }
+                    if (processIcon.isNull())
+                    {
+                        processIcon = QIcon(QStringLiteral(":/Icon/process_main.svg"));
+                    }
+                    processIconCache.insert(cacheKey, processIcon);
+                    item->setIcon(processIcon);
+                }
                 table->setItem(rowIndex, columnIndex, item);
             }
         }
@@ -2786,17 +3146,30 @@ void WindowDock::initializeUi()
 
         innerTabWidget->addTab(makeTableGroup(
             QStringLiteral("热键（只读审计，不删除热键）"),
-            QStringList{ QStringLiteral("ID"), QStringLiteral("VK"), QStringLiteral("修饰键"),
+            QStringList{ QStringLiteral("名称"), QStringLiteral("进程ID.线程ID"), QStringLiteral("热键"),
+                         QStringLiteral("路径"), QStringLiteral("描述"), QStringLiteral("热键对象地址"),
+                         QStringLiteral("热键ID"), QStringLiteral("VK"), QStringLiteral("修饰键"),
                          QStringLiteral("PID"), QStringLiteral("TID"), QStringLiteral("Session"),
-                         QStringLiteral("HWND"), QStringLiteral("HotkeyObject"),
+                         QStringLiteral("HWND"),
                          QStringLiteral("NextHotkey"), QStringLiteral("ThreadInfo"),
                          QStringLiteral("Depth"), QStringLiteral("Source"),
                          QStringLiteral("状态"), QStringLiteral("LastStatus"),
                          QStringLiteral("诊断") },
-            QVector<int>{ 0, 1, 2, 3, 4, 5, 6, 12 },
-            QVector<int>{ 0, 7, 8, 9, 10, 11, 13, 14 },
+            QVector<int>{ HotkeyColumnName, HotkeyColumnProcessThread, HotkeyColumnDisplay,
+                          HotkeyColumnPath, HotkeyColumnDescription, HotkeyColumnObject, HotkeyColumnId },
+            QVector<int>{ HotkeyColumnName, HotkeyColumnVirtualKey, HotkeyColumnModifiers,
+                          HotkeyColumnProcessId, HotkeyColumnThreadId, HotkeyColumnSession,
+                          HotkeyColumnHwnd, HotkeyColumnNext, HotkeyColumnThreadInfo,
+                          HotkeyColumnDepth, HotkeyColumnSource, HotkeyColumnStatus,
+                          HotkeyColumnLastStatus, HotkeyColumnDiagnostic },
             &m_hotkeysTable),
             QStringLiteral("热键表"));
+        if (m_hotkeysTable != nullptr)
+        {
+            m_hotkeysTable->setProperty("kswordProcessIconColumn", HotkeyColumnName);
+            m_hotkeysTable->setProperty("kswordProcessPathColumn", HotkeyColumnPath);
+            m_hotkeysTable->setIconSize(QSize(16, 16));
+        }
         innerTabWidget->addTab(makeTableGroup(
             QStringLiteral("消息 Hook（只读审计，不 remove/unlink hook 链）"),
             QStringList{ QStringLiteral("类型"), QStringLiteral("范围"), QStringLiteral("所有者 PID"),

@@ -644,9 +644,9 @@ private:
     void refreshProcessTableRowsForIcon(const QString& imagePath);
     QIcon extractProcessIconFromPath(const QString& imagePath) const;
     QIcon blueTintedIcon(const char* iconPath, const QSize& iconSize = QSize(16, 16)) const;
-    // tintedProcessTabIcon 作用：按指定颜色重绘进程页侧栏图标，避免选中态蓝底蓝图标。
+    // tintedProcessTabIcon 作用：按指定颜色重绘进程页 Tab 图标，避免选中态蓝底蓝图标。
     QIcon tintedProcessTabIcon(const char* iconPath, const QColor& tintColor, const QSize& iconSize = QSize(16, 16)) const;
-    // refreshSideTabIconContrast 作用：刷新左侧 Tab 选中态图标颜色，提升当前页识别度。
+    // refreshSideTabIconContrast 作用：刷新顶部 Tab 选中态图标颜色，提升当前页识别度。
     void refreshSideTabIconContrast();
     QString buildThreadContextMenuStyle() const;
     // showActionResultMessage 作用：统一记录进程动作结果日志（不弹窗），复用同一 kLogEvent 保持调用链连续。
@@ -717,8 +717,8 @@ private:
     QPointer<QObject> m_mainWindowActionReceiver; // 构造时的 MainWindow 接收者，避免 ADS 重挂载后 parent() 变成 Dock 容器。
 
     // ======== 顶层布局 ========
-    QVBoxLayout* m_rootLayout = nullptr;      // 根布局：只包含侧边栏 Tab。
-    QTabWidget* m_sideTabWidget = nullptr;    // 左侧 tab 栏（West），包含“进程列表”页。
+    QVBoxLayout* m_rootLayout = nullptr;      // 根布局：只包含顶部 Tab。
+    QTabWidget* m_sideTabWidget = nullptr;    // 顶部 tab 栏（North），包含四个进程功能页。
     QWidget* m_processListPage = nullptr;     // “进程列表”页容器。
     QVBoxLayout* m_processPageLayout = nullptr; // 进程页主布局。
     QWidget* m_createProcessPage = nullptr;   // “创建进程”页容器。

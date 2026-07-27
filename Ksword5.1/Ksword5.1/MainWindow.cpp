@@ -1908,6 +1908,37 @@ namespace
         }
     }
 
+    // applyApplicationFontToItemViews 作用：
+    // - 对表格、树和列表显式刷新当前应用字体，解决局部 QSS 导致字体继承停留在启动默认值的问题；
+    // - 标记 kswordPreserveCustomFont 的控件保持专用字体，例如十六进制编辑器的等宽字体；
+    // - 调用方式：每次 applyAppearanceSettings 更新 QApplication 字体后调用。
+    // 入参 applicationFont：当前应用字体族与抗锯齿策略；无返回值。
+    void applyApplicationFontToItemViews(const QFont& applicationFont)
+    {
+        QApplication* appInstance = qobject_cast<QApplication*>(QCoreApplication::instance());
+        if (appInstance == nullptr)
+        {
+            return;
+        }
+
+        constexpr const char* preserveCustomFontProperty = "kswordPreserveCustomFont";
+        for (QWidget* widget : appInstance->allWidgets())
+        {
+            QAbstractItemView* itemView = qobject_cast<QAbstractItemView*>(widget);
+            if (itemView == nullptr)
+            {
+                continue;
+            }
+
+            if (itemView->property(preserveCustomFontProperty).toBool())
+            {
+                continue;
+            }
+
+            itemView->setFont(applicationFont);
+        }
+    }
+
     // kTooltipStyleBeginMarker / kTooltipStyleEndMarker 作用：
     // - 在 QApplication 样式表中标记“Tooltip 主题片段”的起止位置；
     // - 便于主题切换时精准替换旧 Tooltip 样式，避免重复拼接。
@@ -9036,16 +9067,26 @@ void MainWindow::applyAppearanceSettings(
     const bool enableDockTransparencyForBackgroundImage =
         isBackgroundImageReady(settings.backgroundImagePath);
 
-    // 统一控制应用默认字体的抗锯齿策略：关闭时显式禁用，避免配置缺失时回退到系统默认抗锯齿。
+    // 统一控制应用字体族与抗锯齿策略。
     QFont applicationFont = QApplication::font();
+    const QString requestedFontFamily = settings.fontFamily.trimmed();
+    if (!requestedFontFamily.isEmpty())
+    {
+        applicationFont.setFamily(requestedFontFamily);
+    }
     const QFont::StyleStrategy requestedFontStyleStrategy = settings.textAntialiasingEnabled
         ? QFont::PreferAntialias
         : QFont::NoAntialias;
-    if (applicationFont.styleStrategy() != requestedFontStyleStrategy)
+    const bool applicationFontChanged =
+        (!requestedFontFamily.isEmpty()
+            && QApplication::font().family().compare(requestedFontFamily, Qt::CaseInsensitive) != 0)
+        || applicationFont.styleStrategy() != requestedFontStyleStrategy;
+    if (applicationFontChanged)
     {
         applicationFont.setStyleStrategy(requestedFontStyleStrategy);
         QApplication::setFont(applicationFont);
     }
+    applyApplicationFontToItemViews(applicationFont);
 
     // 把深浅色状态和文本渲染策略写入全局属性，供各 Dock 在绘制/交互时读取。
     if (QApplication* appInstance = qobject_cast<QApplication*>(QCoreApplication::instance()))

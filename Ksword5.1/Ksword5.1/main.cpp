@@ -6,6 +6,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QStringList>
 #include <QtCore/QTimer>
+#include <QtGui/QFont>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QWidget>
@@ -1510,6 +1511,22 @@ int main(int argc, char* argv[])
     startupTraceRaw("before QApplication construction");
     QApplication app(argc, argv);
     startupTraceRaw("QApplication constructed");
+
+    // startupApplicationFont 作用：
+    // - 在 MainWindow 与各 Dock/表格创建前恢复已保存字体；
+    // - 避免表格先绑定系统默认字体，随后再改 QApplication 字体时只更新部分控件。
+    QFont startupApplicationFont = app.font();
+    const QString startupFontFamily = startupSettings.fontFamily.trimmed();
+    if (!startupFontFamily.isEmpty())
+    {
+        startupApplicationFont.setFamily(startupFontFamily);
+    }
+    startupApplicationFont.setStyleStrategy(
+        startupSettings.textAntialiasingEnabled
+        ? QFont::PreferAntialias
+        : QFont::NoAntialias);
+    QApplication::setFont(startupApplicationFont);
+
     QString languageLoadMessage;
     const bool languagePackLoaded = ks::i18n::LanguageManager::instance().initialize(
         startupSettings.uiLanguage,
