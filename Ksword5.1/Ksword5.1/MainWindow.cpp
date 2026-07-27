@@ -1910,7 +1910,7 @@ namespace
 
     // applyApplicationFontToItemViews 作用：
     // - 对表格、树和列表显式刷新当前应用字体，解决局部 QSS 导致字体继承停留在启动默认值的问题；
-    // - 标记 kswordPreserveCustomFont 的控件保持专用字体，例如十六进制编辑器的等宽字体；
+    // - 标记 ksword_preserve_custom_font 的控件保持专用字体，例如十六进制编辑器的等宽字体；
     // - 调用方式：每次 applyAppearanceSettings 更新 QApplication 字体后调用。
     // 入参 applicationFont：当前应用字体族与抗锯齿策略；无返回值。
     void applyApplicationFontToItemViews(const QFont& applicationFont)
@@ -1921,7 +1921,7 @@ namespace
             return;
         }
 
-        constexpr const char* preserveCustomFontProperty = "kswordPreserveCustomFont";
+        constexpr const char* preserveCustomFontProperty = "ksword_preserve_custom_font";
         for (QWidget* widget : appInstance->allWidgets())
         {
             QAbstractItemView* itemView = qobject_cast<QAbstractItemView*>(widget);

@@ -2,9 +2,7 @@
 
 #include "../theme.h"
 
-#include <QAction>
 #include <QApplication>
-#include <QClipboard>
 #include <QCoreApplication>
 #include <QDate>
 #include <QFileIconProvider>
@@ -16,7 +14,6 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -367,6 +364,10 @@ namespace ks::ui
         {
             return false;
         }
+        if (widgetBelongsTo(hitWidget, m_systemVersionLabel))
+        {
+            return true;
+        }
         if (widgetBelongsTo(hitWidget, m_rightWidget))
         {
             return false;
@@ -612,8 +613,6 @@ namespace ks::ui
         m_systemVersionLabel->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
         m_systemVersionLabel->setFixedHeight(kControlButtonHeight);
         m_systemVersionLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        m_systemVersionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        m_systemVersionLabel->setContextMenuPolicy(Qt::CustomContextMenu);
 
         m_captureProtectionButton = new QPushButton(m_rightWidget);
         m_pinButton = new QPushButton(m_rightWidget);
@@ -664,19 +663,6 @@ namespace ks::ui
 
     void CustomTitleBar::initializeConnections()
     {
-        connect(m_systemVersionLabel, &QLabel::customContextMenuRequested, this, [this](const QPoint& localPos) {
-            if (m_systemVersionLabel == nullptr || m_systemVersionLabel->text().isEmpty())
-            {
-                return;
-            }
-
-            QMenu contextMenu(m_systemVersionLabel);
-            QAction* copyAction = contextMenu.addAction(QStringLiteral("复制"));
-            connect(copyAction, &QAction::triggered, this, [this]() {
-                QApplication::clipboard()->setText(m_systemVersionLabel->text());
-            });
-            contextMenu.exec(m_systemVersionLabel->mapToGlobal(localPos));
-        });
         connect(m_captureProtectionButton, &QPushButton::clicked, this, [this]() {
             emit requestToggleCaptureProtection();
         });
