@@ -59,7 +59,7 @@ namespace
             QStringLiteral("Microsoft-Windows-WMI-Activity"),
             QStringLiteral("Microsoft-Windows-TaskScheduler"),
             QStringLiteral("Microsoft-Windows-Security-Auditing"),
-            QStringLiteral("Microsoft-Windows-Defender")
+            QStringLiteral("Microsoft-Windows-Windows Defender")
         };
     }
 

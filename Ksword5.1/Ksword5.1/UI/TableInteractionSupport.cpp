@@ -1,6 +1,7 @@
 #include "TableInteractionSupport.h"
 
 #include "../Internationalization/LanguageManager.h"
+#include "../theme.h"
 #include "TableSnapshotCompare.h"
 #include "VisibleTableWidget.h"
 
@@ -231,9 +232,17 @@ namespace
         copyRowsToClipboard(tableView, allVisibleRows(tableView));
     }
 
-    void exportTableToTsv(QTableView* tableView)
+    // exportRowsToTsv 作用：
+    // - 将指定的可见表格行连同表头保存为 UTF-8 TSV 文件；
+    // - 输入为表格对象、待导出行号及默认文件名前缀；
+    // - 行集合为空或写入失败时展示提示，成功时由 QSaveFile 原子提交文件。
+    void exportRowsToTsv(
+        QTableView* tableView,
+        const QVector<int>& rowList,
+        const QString& defaultFileNamePrefix)
     {
-        const QString tableText = tableRowsToTsv(tableView, allVisibleRows(tableView), true);
+        // tableText 用途：保存已按当前可见列序列化的 TSV 正文。
+        const QString tableText = tableRowsToTsv(tableView, rowList, true);
         if (tableText.isEmpty())
         {
             QMessageBox::information(
@@ -243,10 +252,11 @@ namespace
             return;
         }
 
+        // outputPath 用途：保存用户确认后的目标文件完整路径。
         QString outputPath = QFileDialog::getSaveFileName(
             tableView,
             localizedSourceText("导出 TSV"),
-            QStringLiteral("table_export_")
+            defaultFileNamePrefix
                 + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))
                 + QStringLiteral(".tsv"),
             localizedSourceText("TSV 文件 (*.tsv)"));
@@ -259,6 +269,7 @@ namespace
             outputPath += QStringLiteral(".tsv");
         }
 
+        // fileObject 用途：以原子替换方式写入用户选择的 TSV 文件。
         QSaveFile fileObject(outputPath);
         if (!fileObject.open(QIODevice::WriteOnly | QIODevice::Text))
         {
@@ -269,6 +280,7 @@ namespace
             return;
         }
 
+        // outputStream 用途：以 UTF-8 编码将 TSV 正文写入临时文件。
         QTextStream outputStream(&fileObject);
         outputStream.setEncoding(QStringConverter::Utf8);
         outputStream << tableText << Qt::endl;
@@ -279,6 +291,21 @@ namespace
                 localizedSourceText("导出 TSV"),
                 localizedSourceText("导出失败：%1").arg(fileObject.errorString()));
         }
+    }
+
+    // exportTableToTsv 作用：导出当前表格全部可见行，供顶部全量导出按钮使用。
+    void exportTableToTsv(QTableView* tableView)
+    {
+        exportRowsToTsv(tableView, allVisibleRows(tableView), QStringLiteral("table_export_"));
+    }
+
+    // exportSelectedRowsToTsv 作用：导出当前选中行，未选中时回退到当前焦点行。
+    void exportSelectedRowsToTsv(QTableView* tableView)
+    {
+        exportRowsToTsv(
+            tableView,
+            selectedVisibleRows(tableView, true),
+            QStringLiteral("table_selected_export_"));
     }
 
     class ComparisonTableView final : public QTableView
@@ -1163,7 +1190,17 @@ namespace
         actionBar->updatePosition();
     }
 
-    void showMultiSelectionContextMenu(QTableView* tableView, const QPoint& globalPosition)
+    // applyContextMenuStyle 作用：为全局创建或扩展的菜单补齐不透明主题样式。
+    void applyContextMenuStyle(QMenu* menu)
+    {
+        if (menu != nullptr && menu->styleSheet().trimmed().isEmpty())
+        {
+            menu->setStyleSheet(KswordTheme::ContextMenuStyle());
+        }
+    }
+
+    // showStandardTableContextMenu 作用：显示无业务右键表格使用的复制和导出菜单。
+    void showStandardTableContextMenu(QTableView* tableView, const QPoint& globalPosition)
     {
         if (tableView == nullptr)
         {
@@ -1172,15 +1209,16 @@ namespace
 
         QMenu menu(tableView);
         menu.setProperty(kStandardContextMenuProperty, true);
+        applyContextMenuStyle(&menu);
         QAction* copyAction = menu.addAction(
             QIcon(QStringLiteral(":/Icon/log_copy.svg")),
             localizedSourceText("复制选中行（TSV）"));
         QAction* exportAction = menu.addAction(
             QIcon(QStringLiteral(":/Icon/log_export.svg")),
-            localizedSourceText("导出 TSV"));
+            localizedSourceText("导出选中行（TSV）"));
 
         copyAction->setEnabled(!selectedVisibleRows(tableView, true).isEmpty());
-        exportAction->setEnabled(!allVisibleRows(tableView).isEmpty());
+        exportAction->setEnabled(!selectedVisibleRows(tableView, true).isEmpty());
 
         QAction* selectedAction = menu.exec(globalPosition);
         if (selectedAction == copyAction)
@@ -1189,11 +1227,12 @@ namespace
         }
         else if (selectedAction == exportAction)
         {
-            exportTableToTsv(tableView);
+            exportSelectedRowsToTsv(tableView);
         }
     }
 
-    void appendTableContextActions(QMenu* menu)
+    // appendTableContextActions 作用：向业务右键菜单追加选中行复制和导出动作。
+    void appendTableContextActions(QMenu* menu, QTableView* contextTableView = nullptr)
     {
         if (menu == nullptr ||
             menu->property(kStandardContextMenuProperty).toBool() ||
@@ -1202,24 +1241,35 @@ namespace
             return;
         }
 
-        QTableView* tableView = qobject_cast<QTableView*>(menu->parent());
+        // tableView 用途：保存本次菜单对应的表格，优先使用右键事件来源。
+        QTableView* tableView = contextTableView;
+        if (tableView == nullptr)
+        {
+            tableView = qobject_cast<QTableView*>(menu->parent());
+        }
         if (tableView == nullptr)
         {
             return;
         }
 
+        // 已存在业务菜单项后再添加分隔线，使全局动作保持在菜单末尾。
         menu->setProperty(kContextActionsInstalledProperty, true);
-        menu->addSeparator();
+        if (!menu->actions().isEmpty())
+        {
+            menu->addSeparator();
+        }
+        applyContextMenuStyle(menu);
         QAction* copyAction = menu->addAction(
             QIcon(QStringLiteral(":/Icon/log_copy.svg")),
             localizedSourceText("复制选中行（TSV）"));
         QAction* exportAction = menu->addAction(
             QIcon(QStringLiteral(":/Icon/log_export.svg")),
-            localizedSourceText("导出 TSV"));
+            localizedSourceText("导出选中行（TSV）"));
 
+        // guardedTable 用途：在菜单存续期间安全引用其来源表格。
         const QPointer<QTableView> guardedTable(tableView);
         copyAction->setEnabled(!selectedVisibleRows(tableView, true).isEmpty());
-        exportAction->setEnabled(!allVisibleRows(tableView).isEmpty());
+        exportAction->setEnabled(!selectedVisibleRows(tableView, true).isEmpty());
         QObject::connect(copyAction, &QAction::triggered, menu, [guardedTable]()
             {
                 if (!guardedTable.isNull())
@@ -1231,7 +1281,7 @@ namespace
             {
                 if (!guardedTable.isNull())
                 {
-                    exportTableToTsv(guardedTable.data());
+                    exportSelectedRowsToTsv(guardedTable.data());
                 }
             });
     }
@@ -1271,7 +1321,7 @@ namespace
             {
                 const QModelIndex clickedIndex = tableView->indexAt(localPosition);
                 selectContextRow(tableView, clickedIndex);
-                showMultiSelectionContextMenu(
+                showStandardTableContextMenu(
                     tableView,
                     tableView->viewport()->mapToGlobal(localPosition));
             });
@@ -1307,7 +1357,19 @@ namespace
 
             if (eventObject->type() == QEvent::Show)
             {
-                appendTableContextActions(qobject_cast<QMenu*>(watchedObject));
+                // shownMenu 用途：识别业务代码刚刚显示的右键菜单。
+                QMenu* shownMenu = qobject_cast<QMenu*>(watchedObject);
+                if (shownMenu != nullptr)
+                {
+                    // contextTableView 用途：绑定当前菜单到最近一次普通表格右键来源。
+                    QTableView* contextTableView = m_pendingContextTable.data();
+                    appendTableContextActions(shownMenu, contextTableView);
+                    if (contextTableView != nullptr)
+                    {
+                        m_pendingContextTable.clear();
+                        ++m_pendingContextSequence;
+                    }
+                }
             }
 
             QTableView* tableView = tableForEventObject(watchedObject);
@@ -1335,7 +1397,7 @@ namespace
                     ? tableView->viewport()->mapFrom(tableView, contextMenuEvent->pos())
                     : contextMenuEvent->pos();
                 selectContextRow(tableView, tableView->indexAt(viewportPosition));
-                showMultiSelectionContextMenu(tableView, contextMenuEvent->globalPos());
+                showStandardTableContextMenu(tableView, contextMenuEvent->globalPos());
                 contextMenuEvent->accept();
                 return true;
             }
@@ -1373,16 +1435,29 @@ namespace
                     : contextMenuEvent->pos();
                 const QModelIndex clickedIndex = tableView->indexAt(viewportPosition);
                 selectContextRow(tableView, clickedIndex);
-                if (selectedVisibleRows(tableView, false).size() > 1)
-                {
-                    showMultiSelectionContextMenu(tableView, contextMenuEvent->globalPos());
-                    contextMenuEvent->accept();
-                    return true;
-                }
+
+                // 记录当前右键来源，业务 QMenu 显示时再追加复制和导出动作。
+                m_pendingContextTable = tableView;
+                ++m_pendingContextSequence;
+                // pendingContextSequence 用途：防止延迟清理误删后续右键事件的来源表格。
+                const unsigned long long pendingContextSequence = m_pendingContextSequence;
+                QTimer::singleShot(0, this, [this, pendingContextSequence]()
+                    {
+                        if (m_pendingContextSequence == pendingContextSequence)
+                        {
+                            m_pendingContextTable.clear();
+                        }
+                    });
             }
 
             return QObject::eventFilter(watchedObject, eventObject);
         }
+
+    private:
+        // m_pendingContextTable 用途：保存当前业务右键菜单应绑定的表格来源。
+        QPointer<QTableView> m_pendingContextTable;
+        // m_pendingContextSequence 用途：区分连续右键事件，保证延迟清理仅影响同一次事件。
+        unsigned long long m_pendingContextSequence = 0ULL;
     };
 }
 

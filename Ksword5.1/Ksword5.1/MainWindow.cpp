@@ -2160,6 +2160,57 @@ namespace
         }
     }
 
+    // RuntimeAppearanceProgress 作用：
+    // - 在运行期主题、背景或字体切换前复用原生 kSplash；
+    // - kSplash 使用独立 Win32 分层窗口同步绘制，即使 Qt 主线程正在重设样式也能保留可见进度；
+    // - 析构时自动隐藏窗口，避免异常路径或后续提前返回遗留启动页。
+    class RuntimeAppearanceProgress final
+    {
+    public:
+        explicit RuntimeAppearanceProgress(const bool shouldShow)
+        {
+            if (!shouldShow)
+            {
+                return;
+            }
+
+            m_visible = kSplash.show(progressText(
+                QStringLiteral("main.runtime_appearance.progress.start"),
+                QStringLiteral("正在应用界面设置...")).toUtf8().toStdString());
+        }
+
+        ~RuntimeAppearanceProgress()
+        {
+            if (m_visible)
+            {
+                kSplash.hide();
+            }
+        }
+
+        RuntimeAppearanceProgress(const RuntimeAppearanceProgress&) = delete;
+        RuntimeAppearanceProgress& operator=(const RuntimeAppearanceProgress&) = delete;
+
+        void update(const int progressPercent, const QString& textKey, const QString& fallbackText) const
+        {
+            if (!m_visible)
+            {
+                return;
+            }
+
+            kSplash.progress(
+                progressText(textKey, fallbackText).toUtf8().toStdString(),
+                progressPercent);
+        }
+
+    private:
+        static QString progressText(const QString& textKey, const QString& fallbackText)
+        {
+            return ks::i18n::contextText(textKey, fallbackText);
+        }
+
+        bool m_visible = false;
+    };
+
     // kTooltipStyleBeginMarker / kTooltipStyleEndMarker 作用：
     // - 在 QApplication 样式表中标记“Tooltip 主题片段”的起止位置；
     // - 便于主题切换时精准替换旧 Tooltip 样式，避免重复拼接。
@@ -9264,183 +9315,261 @@ void MainWindow::applyAppearanceSettings(
     const ks::settings::AppearanceSettings& settings,
     const QString& triggerReason)
 {
-    // appearanceApplyEvent 作用：本次“外观应用”过程统一日志事件对象。
     kLogEvent appearanceApplyEvent;
     QElapsedTimer appearanceApplyTimer;
     appearanceApplyTimer.start();
 
-    m_currentAppearanceSettings = settings;
+    const ks::settings::AppearanceSettings previousSettings = m_currentAppearanceSettings;
     const bool isInitialAppearanceApply = (triggerReason == QStringLiteral("初始化加载"));
-
-    // startupTopMostEnabled 作用：设置页和启动配置统一控制主窗口最高级置顶。
-    setPinnedWindowState(m_currentAppearanceSettings.startupTopMostEnabled, false);
-
     const bool darkModeEnabled = isDarkModeEffective(settings);
-    KswordTheme::SetDarkModeEnabled(darkModeEnabled);
-    const QColor windowBackgroundColor = KswordTheme::WindowColor();
-    const QColor textColor = KswordTheme::TextPrimaryColor();
-    const QColor baseColor = KswordTheme::SurfaceColor();
-    const QColor alternateBaseColor = KswordTheme::SurfaceAltColor();
-    const QColor midColor = KswordTheme::BorderColor();
+    // 系统颜色方案通知已抵达时，previousSettings 再计算会得到新颜色方案；
+    // 直接读取主题模块当前状态，才能识别 FollowSystem 的真实深浅色切换。
+    const bool effectiveThemeChanged =
+        isInitialAppearanceApply || KswordTheme::IsDarkModeEnabled() != darkModeEnabled;
+    const bool backgroundPathChanged =
+        isInitialAppearanceApply
+        || previousSettings.backgroundImagePath.compare(
+            settings.backgroundImagePath,
+            Qt::CaseInsensitive) != 0;
+    const bool backgroundChanged =
+        backgroundPathChanged
+        || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent;
+    const bool fontChanged =
+        isInitialAppearanceApply
+        || previousSettings.fontFamily.compare(settings.fontFamily, Qt::CaseInsensitive) != 0
+        || previousSettings.textAntialiasingEnabled != settings.textAntialiasingEnabled;
+    const bool scrollBarStyleChanged =
+        isInitialAppearanceApply
+        || previousSettings.useWideScrollBars != settings.useWideScrollBars
+        || previousSettings.scrollBarAutoHideEnabled != settings.scrollBarAutoHideEnabled;
+    const bool sliderWheelChanged =
+        isInitialAppearanceApply
+        || previousSettings.sliderWheelAdjustEnabled != settings.sliderWheelAdjustEnabled;
+    const bool topMostChanged =
+        isInitialAppearanceApply
+        || previousSettings.startupTopMostEnabled != settings.startupTopMostEnabled;
+    const bool notificationSettingsChanged =
+        isInitialAppearanceApply
+        || previousSettings.notificationCardsEnabled != settings.notificationCardsEnabled
+        || previousSettings.notificationMinimumLevel != settings.notificationMinimumLevel
+        || previousSettings.notificationLogDisplaySeconds != settings.notificationLogDisplaySeconds
+        || previousSettings.notificationDisplayPlacement != settings.notificationDisplayPlacement
+        || previousSettings.notificationStackDirection != settings.notificationStackDirection;
+    const bool runtimeProgressRequired =
+        !isInitialAppearanceApply
+        && (effectiveThemeChanged || backgroundChanged || fontChanged);
 
-    // enableDockTransparencyForBackgroundImage 作用：
-    // - 当背景图可用时，把 Dock 系统背景整体切换为透明；
-    // - 满足“加载背景图后 Dock 黑白底必须全部透明”的需求。
-    const bool enableDockTransparencyForBackgroundImage =
-        isBackgroundImageReady(settings.backgroundImagePath);
+    m_currentAppearanceSettings = settings;
+    RuntimeAppearanceProgress runtimeProgress(runtimeProgressRequired);
 
-    // 统一控制应用字体族与抗锯齿策略。
-    QFont applicationFont = QApplication::font();
-    const QString requestedFontFamily = settings.fontFamily.trimmed();
-    if (!requestedFontFamily.isEmpty())
+    // 非视觉设置保存不再探测背景路径。网络路径或不可访问驱动器的 QFileInfo 查询可能阻塞，
+    // 之前即使只修改“下次启动”选项也会同步触发这条路径。
+    bool enableDockTransparencyForBackgroundImage = false;
+    bool dockTransparencyChanged = isInitialAppearanceApply;
+    if (isInitialAppearanceApply || backgroundPathChanged)
     {
-        applicationFont.setFamily(requestedFontFamily);
+        runtimeProgress.update(
+            8,
+            QStringLiteral("main.runtime_appearance.progress.background"),
+            QStringLiteral("正在应用界面设置..."));
+        enableDockTransparencyForBackgroundImage = isBackgroundImageReady(settings.backgroundImagePath);
+        if (!isInitialAppearanceApply)
+        {
+            const bool previousDockTransparencyEnabled =
+                isBackgroundImageReady(previousSettings.backgroundImagePath);
+            dockTransparencyChanged =
+                previousDockTransparencyEnabled != enableDockTransparencyForBackgroundImage;
+        }
     }
-    const QFont::StyleStrategy requestedFontStyleStrategy = settings.textAntialiasingEnabled
-        ? QFont::PreferAntialias
-        : QFont::NoAntialias;
-    const bool applicationFontChanged =
-        (!requestedFontFamily.isEmpty()
-            && QApplication::font().family().compare(requestedFontFamily, Qt::CaseInsensitive) != 0)
-        || applicationFont.styleStrategy() != requestedFontStyleStrategy;
-    if (applicationFontChanged)
+    else if (effectiveThemeChanged || scrollBarStyleChanged)
     {
-        applicationFont.setStyleStrategy(requestedFontStyleStrategy);
-        QApplication::setFont(applicationFont);
+        // 主题或滚动条样式需要重建 QSS，保持当前背景透明策略即可。
+        enableDockTransparencyForBackgroundImage = isBackgroundImageReady(settings.backgroundImagePath);
     }
-    applyApplicationFontToItemViews(applicationFont);
-
-    // 把深浅色状态和文本渲染策略写入全局属性，供各 Dock 在绘制/交互时读取。
-    if (QApplication* appInstance = qobject_cast<QApplication*>(QCoreApplication::instance()))
-    {
-        appInstance->setProperty("ksword_slider_wheel_adjust_enabled", settings.sliderWheelAdjustEnabled);
-        appInstance->setProperty("ksword_text_antialiasing_enabled", settings.textAntialiasingEnabled);
-    }
-
-    // Windows 11 背景控制要求：
-    // 即使是纯黑/纯白，也必须显式设置 Window 颜色，避免系统接管背景。
-    QPalette mainPalette = palette();
-    mainPalette.setColor(QPalette::Window, windowBackgroundColor);
-    mainPalette.setColor(QPalette::WindowText, textColor);
-    mainPalette.setColor(QPalette::Base, baseColor);
-    mainPalette.setColor(QPalette::AlternateBase, alternateBaseColor);
-    mainPalette.setColor(QPalette::Mid, midColor);
-    mainPalette.setColor(QPalette::Midlight, KswordTheme::BorderStrongColor());
-    mainPalette.setColor(QPalette::Dark, KswordTheme::PaletteDarkColor());
-    mainPalette.setColor(QPalette::Text, textColor);
-    mainPalette.setColor(QPalette::Button, alternateBaseColor);
-    mainPalette.setColor(QPalette::ButtonText, textColor);
-    mainPalette.setColor(QPalette::ToolTipBase, baseColor);
-    mainPalette.setColor(QPalette::ToolTipText, textColor);
-    mainPalette.setColor(QPalette::Highlight, KswordTheme::PrimaryBlueColor);
-    mainPalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
-    QApplication::setPalette(mainPalette);
-    setPalette(mainPalette);
-    setAutoFillBackground(true);
-
-    // 全局提示框样式：
-    // - 通过 QToolTip 静态调色板强制应用深浅色提示框；
-    // - 修复深色模式下 Tooltip 仍是白底的问题。
-    QPalette toolTipPalette = mainPalette;
-    toolTipPalette.setColor(QPalette::ToolTipBase, baseColor);
-    toolTipPalette.setColor(QPalette::ToolTipText, textColor);
-    QToolTip::setPalette(toolTipPalette);
-    QToolTip::setFont(QApplication::font());
-
-    // 同步写入 QApplication 样式表中的 QToolTip/QMenu 规则：
-    // - 覆盖所有顶层窗口（含浮动 Dock 与后续新建窗口）；
-    // - 两个片段必须合并后只 setStyleSheet 一次，否则启动后期会全局 repolish 两遍。
-    // - 相同内容会跳过 QApplication::setStyleSheet，避免重复应用外观设置时产生样式风暴。
+    const bool mainStyleRefreshRequired =
+        isInitialAppearanceApply
+        || effectiveThemeChanged
+        || dockTransparencyChanged
+        || scrollBarStyleChanged;
+    const bool backgroundRefreshRequired =
+        isInitialAppearanceApply || effectiveThemeChanged || backgroundChanged;
+    const bool floatingDockRefreshRequired = mainStyleRefreshRequired || backgroundRefreshRequired;
     qint64 globalAppStyleApplyMs = 0;
     int globalAppStyleWidgetCount = 0;
     int globalAppStyleLength = 0;
-    const bool globalAppStyleChanged = applyGlobalApplicationStyleBlocks(
-        buildGlobalTooltipStyleBlock(darkModeEnabled),
-        buildGlobalContextMenuStyleBlock(darkModeEnabled),
-        &globalAppStyleApplyMs,
-        &globalAppStyleWidgetCount,
-        &globalAppStyleLength);
-    if (globalAppStyleChanged || triggerReason == QStringLiteral("初始化加载"))
+    qint64 styleSheetApplyElapsedMs = 0;
+    bool globalAppStyleChanged = false;
+    bool mainStyleSheetChanged = false;
+
+    if (topMostChanged)
     {
-        dbg << appearanceApplyEvent
-            << "[MainWindow] QApplication 全局 Tooltip/QMenu 样式"
-            << (globalAppStyleChanged ? "已应用" : "未变化跳过")
-            << ", elapsedMs=" << globalAppStyleApplyMs
-            << ", widgetCount=" << globalAppStyleWidgetCount
-            << ", styleLength=" << globalAppStyleLength
-            << eol;
+        setPinnedWindowState(m_currentAppearanceSettings.startupTopMostEnabled, false);
     }
 
-    // 全局 QMessageBox 主题刷新：
-    // - 深浅色切换后，已打开的消息框也同步改为当前主题；
-    // - 修复深色模式下消息框仍残留白底的问题。
-    ks::ui::RefreshGlobalMessageBoxTheme();
-    // 全局普通弹窗主题刷新：
-    // - 深浅色切换后，QInputDialog 和普通 QDialog 同步纯黑/纯白背景；
-    // - 业务代码后续无需逐个对话框手写背景样式。
-    ks::ui::RefreshGlobalDialogTheme();
-
-    if (menuBar() != nullptr)
+    if (effectiveThemeChanged)
     {
-        QPalette menuPalette = menuBar()->palette();
-        menuPalette.setColor(QPalette::Window, windowBackgroundColor);
-        menuPalette.setColor(QPalette::WindowText, textColor);
-        menuPalette.setColor(QPalette::Text, textColor);
-        menuBar()->setPalette(menuPalette);
-        menuBar()->setAutoFillBackground(true);
-    }
+        runtimeProgress.update(
+            16,
+            QStringLiteral("main.runtime_appearance.progress.theme"),
+            QStringLiteral("正在应用界面设置..."));
 
-    if (m_pDockManager != nullptr)
-    {
-        QPalette dockPalette = m_pDockManager->palette();
-        dockPalette.setColor(QPalette::Window, windowBackgroundColor);
-        dockPalette.setColor(QPalette::WindowText, textColor);
-        dockPalette.setColor(QPalette::Text, textColor);
-        m_pDockManager->setPalette(dockPalette);
-        m_pDockManager->setAutoFillBackground(true);
-    }
+        KswordTheme::SetDarkModeEnabled(darkModeEnabled);
+        const QColor windowBackgroundColor = KswordTheme::WindowColor();
+        const QColor textColor = KswordTheme::TextPrimaryColor();
+        const QColor baseColor = KswordTheme::SurfaceColor();
+        const QColor alternateBaseColor = KswordTheme::SurfaceAltColor();
+        const QColor midColor = KswordTheme::BorderColor();
 
-    // appearanceStyleSheet 作用：
-    // - 聚合基础样式与深浅色覆盖样式；
-    // - 同时应用到 MainWindow 与 ADS DockManager，覆盖其默认白色样式。
-    const QString appearanceStyleSheet =
-        QSS_MainWindow_TabWidget
-        + QSS_MainWindow_dockStyle
-        + buildAppearanceOverlayStyleSheet(
-            m_currentAppearanceSettings,
-            darkModeEnabled,
-            enableDockTransparencyForBackgroundImage);
+        // Windows 11 背景控制要求：
+        // 即使是纯黑/纯白，也必须显式设置 Window 颜色，避免系统接管背景。
+        QPalette mainPalette = palette();
+        mainPalette.setColor(QPalette::Window, windowBackgroundColor);
+        mainPalette.setColor(QPalette::WindowText, textColor);
+        mainPalette.setColor(QPalette::Base, baseColor);
+        mainPalette.setColor(QPalette::AlternateBase, alternateBaseColor);
+        mainPalette.setColor(QPalette::Mid, midColor);
+        mainPalette.setColor(QPalette::Midlight, KswordTheme::BorderStrongColor());
+        mainPalette.setColor(QPalette::Dark, KswordTheme::PaletteDarkColor());
+        mainPalette.setColor(QPalette::Text, textColor);
+        mainPalette.setColor(QPalette::Button, alternateBaseColor);
+        mainPalette.setColor(QPalette::ButtonText, textColor);
+        mainPalette.setColor(QPalette::ToolTipBase, baseColor);
+        mainPalette.setColor(QPalette::ToolTipText, textColor);
+        mainPalette.setColor(QPalette::Highlight, KswordTheme::PrimaryBlueColor);
+        mainPalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
+        QApplication::setPalette(mainPalette);
+        setPalette(mainPalette);
+        setAutoFillBackground(true);
 
-    QElapsedTimer styleSheetApplyTimer;
-    styleSheetApplyTimer.start();
-    const bool mainStyleSheetChanged = (styleSheet() != appearanceStyleSheet);
-    if (mainStyleSheetChanged)
-    {
-        setStyleSheet(appearanceStyleSheet);
-    }
+        QPalette toolTipPalette = mainPalette;
+        toolTipPalette.setColor(QPalette::ToolTipBase, baseColor);
+        toolTipPalette.setColor(QPalette::ToolTipText, textColor);
+        QToolTip::setPalette(toolTipPalette);
 
-    // 表格多在 Dock 初始化阶段创建，而全局过滤器首次安装发生在此之前。
-    // 在父级 QSS 就绪后扫描现有表格，确保统一代理覆盖已创建的 QTableView/QTableWidget。
-    ensureGlobalTableSelectionOutlineFilterInstalled();
-    ensureGlobalComboPopupThemeFilterInstalled();
-    applyResizeBorderOverlayStyle();
-    updateResizeBorderOverlays();
-    if (m_pDockManager != nullptr)
-    {
-        // DockManager 清空局部样式表，改为继承 MainWindow 的统一样式；
-        // 避免局部样式覆盖背景画刷导致背景图不可见。
-        if (!m_pDockManager->styleSheet().isEmpty())
+        globalAppStyleChanged = applyGlobalApplicationStyleBlocks(
+            buildGlobalTooltipStyleBlock(darkModeEnabled),
+            buildGlobalContextMenuStyleBlock(darkModeEnabled),
+            &globalAppStyleApplyMs,
+            &globalAppStyleWidgetCount,
+            &globalAppStyleLength);
+        if (globalAppStyleChanged || isInitialAppearanceApply)
         {
-            m_pDockManager->setStyleSheet(QString());
+            dbg << appearanceApplyEvent
+                << "[MainWindow] QApplication 全局 Tooltip/QMenu 样式"
+                << (globalAppStyleChanged ? "已应用" : "未变化跳过")
+                << ", elapsedMs=" << globalAppStyleApplyMs
+                << ", widgetCount=" << globalAppStyleWidgetCount
+                << ", styleLength=" << globalAppStyleLength
+                << eol;
         }
-        m_pDockManager->setAttribute(Qt::WA_StyledBackground, false);
-        refreshAdsDockTabVisualIdentities(m_pDockManager);
-    }
-    const qint64 styleSheetApplyElapsedMs = styleSheetApplyTimer.elapsed();
 
-    // 启动进度拆分：
-    // - applyAppearanceSettings 不只设置 QPalette/QSS，还会刷新若干主题关联控件；
-    // - 仅在初始化加载时上报，避免用户运行期切换主题时干扰启动画面状态。
+        // 深浅色变化时，已打开的标准和自定义对话框也应同步主题。
+        ks::ui::RefreshGlobalMessageBoxTheme();
+        ks::ui::RefreshGlobalDialogTheme();
+
+        if (menuBar() != nullptr)
+        {
+            QPalette menuPalette = menuBar()->palette();
+            menuPalette.setColor(QPalette::Window, windowBackgroundColor);
+            menuPalette.setColor(QPalette::WindowText, textColor);
+            menuPalette.setColor(QPalette::Text, textColor);
+            menuBar()->setPalette(menuPalette);
+            menuBar()->setAutoFillBackground(true);
+        }
+
+        if (m_pDockManager != nullptr)
+        {
+            QPalette dockPalette = m_pDockManager->palette();
+            dockPalette.setColor(QPalette::Window, windowBackgroundColor);
+            dockPalette.setColor(QPalette::WindowText, textColor);
+            dockPalette.setColor(QPalette::Text, textColor);
+            m_pDockManager->setPalette(dockPalette);
+            m_pDockManager->setAutoFillBackground(true);
+        }
+    }
+
+    if (fontChanged)
+    {
+        runtimeProgress.update(
+            46,
+            QStringLiteral("main.runtime_appearance.progress.font"),
+            QStringLiteral("正在应用界面设置..."));
+
+        QFont applicationFont = QApplication::font();
+        const QString requestedFontFamily = settings.fontFamily.trimmed();
+        if (!requestedFontFamily.isEmpty())
+        {
+            applicationFont.setFamily(requestedFontFamily);
+        }
+        const QFont::StyleStrategy requestedFontStyleStrategy = settings.textAntialiasingEnabled
+            ? QFont::PreferAntialias
+            : QFont::NoAntialias;
+        const bool applicationFontChanged =
+            (!requestedFontFamily.isEmpty()
+                && QApplication::font().family().compare(requestedFontFamily, Qt::CaseInsensitive) != 0)
+            || applicationFont.styleStrategy() != requestedFontStyleStrategy;
+        if (applicationFontChanged)
+        {
+            applicationFont.setStyleStrategy(requestedFontStyleStrategy);
+            QApplication::setFont(applicationFont);
+        }
+        applyApplicationFontToItemViews(applicationFont);
+        QToolTip::setFont(QApplication::font());
+    }
+
+    // 把滚轮和文本渲染策略写入全局属性。无关配置保存时不再写入这些属性。
+    if ((sliderWheelChanged || fontChanged)
+        && qobject_cast<QApplication*>(QCoreApplication::instance()) != nullptr)
+    {
+        QApplication* const appInstance = qobject_cast<QApplication*>(QCoreApplication::instance());
+        if (sliderWheelChanged)
+        {
+            appInstance->setProperty("ksword_slider_wheel_adjust_enabled", settings.sliderWheelAdjustEnabled);
+        }
+        if (fontChanged)
+        {
+            appInstance->setProperty("ksword_text_antialiasing_enabled", settings.textAntialiasingEnabled);
+        }
+    }
+
+    if (mainStyleRefreshRequired)
+    {
+        runtimeProgress.update(
+            66,
+            QStringLiteral("main.runtime_appearance.progress.refresh"),
+            QStringLiteral("正在应用界面设置..."));
+
+        const QString appearanceStyleSheet =
+            QSS_MainWindow_TabWidget
+            + QSS_MainWindow_dockStyle
+            + buildAppearanceOverlayStyleSheet(
+                m_currentAppearanceSettings,
+                darkModeEnabled,
+                enableDockTransparencyForBackgroundImage);
+
+        QElapsedTimer styleSheetApplyTimer;
+        styleSheetApplyTimer.start();
+        mainStyleSheetChanged = (styleSheet() != appearanceStyleSheet);
+        if (mainStyleSheetChanged)
+        {
+            setStyleSheet(appearanceStyleSheet);
+        }
+        ensureGlobalTableSelectionOutlineFilterInstalled();
+        ensureGlobalComboPopupThemeFilterInstalled();
+        applyResizeBorderOverlayStyle();
+        updateResizeBorderOverlays();
+        if (m_pDockManager != nullptr)
+        {
+            if (!m_pDockManager->styleSheet().isEmpty())
+            {
+                m_pDockManager->setStyleSheet(QString());
+            }
+            m_pDockManager->setAttribute(Qt::WA_StyledBackground, false);
+            refreshAdsDockTabVisualIdentities(m_pDockManager);
+        }
+        styleSheetApplyElapsedMs = styleSheetApplyTimer.elapsed();
+    }
+
     if (isInitialAppearanceApply)
     {
         reportStartupProgress(
@@ -9449,14 +9578,11 @@ void MainWindow::applyAppearanceSettings(
             QStringLiteral("正在应用界面设置..."));
     }
 
-    // 主题切换后主动刷新“按主题着色的表格行”，避免墨绿色残留到浅色模式。
-    if (m_processWidget != nullptr)
+    if (effectiveThemeChanged && m_processWidget != nullptr)
     {
         m_processWidget->refreshThemeVisuals();
     }
 
-    // 内核 Dock 修复是为了避免 ADS 恢复布局后出现黑屏占位页。它属于启动布局校正，
-    // 不是单纯的“应用样式”，因此启动提示单独拆出，便于判断耗时是否来自这里。
     if (isInitialAppearanceApply)
     {
         reportStartupProgress(
@@ -9468,25 +9594,40 @@ void MainWindow::applyAppearanceSettings(
                 repairKernelDockAfterLayoutRestore(QStringLiteral("applyAppearanceSettings-deferred-0"));
             });
     }
-    else
+    else if (dockTransparencyChanged)
     {
         repairKernelDockAfterLayoutRestore(QStringLiteral("applyAppearanceSettings"));
     }
 
-    if (m_customTitleBar != nullptr)
+    if (m_customTitleBar != nullptr && (effectiveThemeChanged || topMostChanged))
     {
-        m_customTitleBar->setDarkModeEnabled(darkModeEnabled);
+        if (effectiveThemeChanged)
+        {
+            m_customTitleBar->setDarkModeEnabled(darkModeEnabled);
+        }
         m_customTitleBar->setPinnedState(m_windowPinned);
-        m_customTitleBar->setCaptureProtectionState(m_captureProtectionEnabled);
-        syncCustomTitleBarMaximizedState();
+        if (effectiveThemeChanged)
+        {
+            m_customTitleBar->setCaptureProtectionState(m_captureProtectionEnabled);
+            syncCustomTitleBarMaximizedState();
+        }
     }
 
-    applyNativeWindowFrameVisualStyle();
-    rebuildWindowBackgroundBrush(true);
-    if (m_pDockManager != nullptr)
+    if (effectiveThemeChanged)
     {
-        // restoreState() 创建的浮动窗口在外观初始化前已经脱离 MainWindow，
-        // 无法继承随后设置到主窗口的 QSS，因此在当前主题与背景参数就绪后显式同步一次。
+        applyNativeWindowFrameVisualStyle();
+    }
+
+    if (backgroundRefreshRequired)
+    {
+        runtimeProgress.update(
+            78,
+            QStringLiteral("main.runtime_appearance.progress.background"),
+            QStringLiteral("正在应用界面设置..."));
+        rebuildWindowBackgroundBrush(true);
+    }
+    if (floatingDockRefreshRequired && m_pDockManager != nullptr)
+    {
         const QList<ads::CFloatingDockContainer*> floatingWidgets = m_pDockManager->floatingWidgets();
         for (ads::CFloatingDockContainer* floatingWidget : floatingWidgets)
         {
@@ -9497,17 +9638,31 @@ void MainWindow::applyAppearanceSettings(
             }
         }
     }
-    refreshPrivilegeStatusButtons();
-    refreshTopActionButtonStyles();
-    if (m_progressWidget != nullptr)
+    if (effectiveThemeChanged)
     {
-        m_progressWidget->refreshThemeVisuals();
+        refreshPrivilegeStatusButtons();
+        refreshTopActionButtonStyles();
+        if (m_progressWidget != nullptr)
+        {
+            m_progressWidget->refreshThemeVisuals();
+        }
     }
     if (m_notificationCardManager != nullptr)
     {
-        m_notificationCardManager->applySettings(m_currentAppearanceSettings);
-        m_notificationCardManager->refreshVisuals();
+        if (notificationSettingsChanged)
+        {
+            m_notificationCardManager->applySettings(m_currentAppearanceSettings);
+        }
+        if (effectiveThemeChanged)
+        {
+            m_notificationCardManager->refreshVisuals();
+        }
     }
+
+    runtimeProgress.update(
+        100,
+        QStringLiteral("main.runtime_appearance.progress.complete"),
+        QStringLiteral("正在应用界面设置..."));
 
     const QString effectiveModeText = darkModeEnabled ? QStringLiteral("dark") : QStringLiteral("light");
     info << appearanceApplyEvent
@@ -9517,13 +9672,19 @@ void MainWindow::applyAppearanceSettings(
         << ks::settings::themeModeToJsonText(settings.themeMode).toStdString()
         << "，effective_mode="
         << effectiveModeText.toStdString()
-        << "，dock_transparent="
-        << (enableDockTransparencyForBackgroundImage ? "true" : "false")
         << "，background_path="
         << settings.backgroundImagePath.toStdString()
         << "，opacity="
         << settings.backgroundOpacityPercent
-        << "%，styleChanged="
+        << "%, themeChanged="
+        << (effectiveThemeChanged ? "true" : "false")
+        << ", backgroundChanged="
+        << (backgroundChanged ? "true" : "false")
+        << ", fontChanged="
+        << (fontChanged ? "true" : "false")
+        << ", mainStyleRefresh="
+        << (mainStyleRefreshRequired ? "true" : "false")
+        << ", styleChanged="
         << (mainStyleSheetChanged ? "true" : "false")
         << "，styleElapsedMs="
         << styleSheetApplyElapsedMs

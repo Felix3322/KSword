@@ -1192,6 +1192,15 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         << eol;
 
     emit appearanceSettingsChanged(m_currentAppearanceSettings);
+
+    QMessageBox::information(
+        this,
+        ks::i18n::text(
+            QStringLiteral("settings.apply.success.title"),
+            QStringLiteral("应用")),
+        ks::i18n::text(
+            QStringLiteral("settings.apply.success.message"),
+            QStringLiteral("当前设置已应用，无待提交改动")));
 }
 
 void SettingsDock::updateThemeButtonStyle()

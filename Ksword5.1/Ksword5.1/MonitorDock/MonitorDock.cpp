@@ -1299,26 +1299,44 @@ namespace
     {
         QString categoryText;
         QString providerNameText;
+        ULONG legacyKernelEnableFlags = 0;
     };
+
+    constexpr GUID kKswordEtwKernelSessionGuid =
+        { 0x0c3225e0, 0x7f4b, 0x4c2a, { 0x96, 0xae, 0x18, 0x23, 0x47, 0x42, 0xe6, 0xca } };
+    constexpr GUID kWindowsKernelTraceProviderGuid =
+        { 0x9e814aad, 0x3204, 0x11d2, { 0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39 } };
 
     const std::vector<EtwPresetProviderDescriptor>& etwPresetProviderDescriptorList()
     {
         static const std::vector<EtwPresetProviderDescriptor> kProviderList{
             { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Process") },
-            { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Thread") },
-            { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Image") },
+            { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Thread"), EVENT_TRACE_FLAG_THREAD },
+            { QStringLiteral("进程线程"), QStringLiteral("Microsoft-Windows-Kernel-Image"), EVENT_TRACE_FLAG_IMAGE_LOAD },
             { QStringLiteral("文件注册表"), QStringLiteral("Microsoft-Windows-Kernel-File") },
             { QStringLiteral("文件注册表"), QStringLiteral("Microsoft-Windows-Kernel-Registry") },
             { QStringLiteral("网络通信"), QStringLiteral("Microsoft-Windows-TCPIP") },
             { QStringLiteral("网络通信"), QStringLiteral("Microsoft-Windows-DNS-Client") },
             { QStringLiteral("网络通信"), QStringLiteral("Microsoft-Windows-Winsock-AFD") },
             { QStringLiteral("安全审计"), QStringLiteral("Microsoft-Windows-Security-Auditing") },
-            { QStringLiteral("安全审计"), QStringLiteral("Microsoft-Windows-Defender") },
+            { QStringLiteral("安全审计"), QStringLiteral("Microsoft-Windows-Windows Defender") },
             { QStringLiteral("脚本管理"), QStringLiteral("Microsoft-Windows-PowerShell") },
             { QStringLiteral("脚本管理"), QStringLiteral("Microsoft-Windows-WMI-Activity") },
             { QStringLiteral("脚本管理"), QStringLiteral("Microsoft-Windows-TaskScheduler") }
         };
         return kProviderList;
+    }
+
+    const EtwPresetProviderDescriptor* findEtwPresetProviderDescriptor(const QString& providerNameText)
+    {
+        const std::vector<EtwPresetProviderDescriptor>& descriptorList = etwPresetProviderDescriptorList();
+        const auto found = std::find_if(
+            descriptorList.cbegin(),
+            descriptorList.cend(),
+            [&providerNameText](const EtwPresetProviderDescriptor& descriptor) {
+                return descriptor.providerNameText.compare(providerNameText, Qt::CaseInsensitive) == 0;
+            });
+        return found == descriptorList.cend() ? nullptr : &*found;
     }
 
     const QStringList& etwSimpleActionList()
@@ -1362,7 +1380,8 @@ namespace
         const QString lower = providerNameText.toLower();
         if (lower.contains(QStringLiteral("kernel-process"))
             || lower.contains(QStringLiteral("kernel-thread"))
-            || lower.contains(QStringLiteral("kernel-image")))
+            || lower.contains(QStringLiteral("kernel-image"))
+            || lower.contains(QStringLiteral("windows kernel trace")))
         {
             return QStringLiteral("进程线程");
         }
@@ -11076,9 +11095,10 @@ void MonitorDock::startEtwCapture()
         tryAppendProvider(providerName, providerGuid);
     }
 
-    // 预置模板勾选项：按名称到系统 Provider 列表里映射并追加 GUID。
+    // 预置模板勾选项：普通 Provider 按名称映射 GUID；线程/镜像使用经典内核标志。
     int presetCheckedCount = 0;
     int presetMatchedCount = 0;
+    ULONG legacyKernelEnableFlags = 0;
     if (m_etwPresetProviderList != nullptr)
     {
         for (int i = 0; i < m_etwPresetProviderList->count(); ++i)
@@ -11093,6 +11113,15 @@ void MonitorDock::startEtwCapture()
             const QString presetProviderName = item->data(Qt::UserRole).toString().trimmed();
             if (presetProviderName.isEmpty())
             {
+                continue;
+            }
+
+            const EtwPresetProviderDescriptor* presetDescriptor =
+                findEtwPresetProviderDescriptor(presetProviderName);
+            if (presetDescriptor != nullptr && presetDescriptor->legacyKernelEnableFlags != 0)
+            {
+                legacyKernelEnableFlags |= presetDescriptor->legacyKernelEnableFlags;
+                ++presetMatchedCount;
                 continue;
             }
 
@@ -11168,7 +11197,7 @@ void MonitorDock::startEtwCapture()
             << eol;
     }
 
-    if (selectedProviders.empty())
+    if (selectedProviders.empty() && legacyKernelEnableFlags == 0)
     {
         kLogEvent event;
         warn << event
@@ -11183,6 +11212,12 @@ void MonitorDock::startEtwCapture()
     for (const ProviderSelection& provider : selectedProviders)
     {
         m_etwCaptureProviderNames.insert(guidToText(provider.guid), provider.name);
+    }
+    if (legacyKernelEnableFlags != 0)
+    {
+        m_etwCaptureProviderNames.insert(
+            guidToText(kWindowsKernelTraceProviderGuid),
+            QStringLiteral("Windows Kernel Trace"));
     }
 
     QString archiveErrorText;
@@ -11280,7 +11315,7 @@ void MonitorDock::startEtwCapture()
 
     QPointer<MonitorDock> guardThis(this);
     m_etwCaptureThread = std::make_unique<std::thread>(
-        [guardThis, selectedProviders, traceLevel, keywordMask, bufferSizeKb, minBuffer, maxBuffer]() {
+        [guardThis, selectedProviders, legacyKernelEnableFlags, traceLevel, keywordMask, bufferSizeKb, minBuffer, maxBuffer]() {
         if (guardThis == nullptr)
         {
             return;
@@ -11296,6 +11331,15 @@ void MonitorDock::startEtwCapture()
         properties->Wnode.ClientContext = 2; // 2=SystemTime（100ns）。
         properties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
         properties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+        if (legacyKernelEnableFlags != 0)
+        {
+            // Kernel-Thread 与 Kernel-Image 是经典内核事件，不会出现在
+            // TdhEnumerateProviders 的清单中。以私有 SystemTraceProvider 会话启用它们，
+            // 同时保留普通 manifest Provider 的 EnableTraceEx2 订阅能力。
+            properties->Wnode.Guid = kKswordEtwKernelSessionGuid;
+            properties->LogFileMode |= EVENT_TRACE_SYSTEM_LOGGER_MODE;
+            properties->EnableFlags = legacyKernelEnableFlags;
+        }
         properties->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
         properties->BufferSize = bufferSizeKb;
         properties->MinimumBuffers = minBuffer;
@@ -11337,7 +11381,7 @@ void MonitorDock::startEtwCapture()
         guardThis->m_etwSessionHandle.store(static_cast<std::uint64_t>(sessionHandle));
         kPro.set(guardThis->m_etwCaptureProgressPid, "启用Provider", 0, 30.0f);
 
-        int enableSuccessCount = 0;
+        int enableSuccessCount = legacyKernelEnableFlags != 0 ? 1 : 0;
         for (const ProviderSelection& provider : selectedProviders)
         {
             if (guardThis == nullptr || guardThis->m_etwCaptureStopFlag.load())
