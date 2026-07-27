@@ -88,7 +88,7 @@ namespace ksword::ce
         // - 输入：CE 的 OpenProcess 参数。
         // - 处理：先保留正常句柄语义；权限不足时创建可 CloseHandle 的代理句柄。
         // - 返回：真实句柄或映射到 PID 的事件句柄。
-        HANDLE WINAPI bridgeOpenProcess(
+        HANDLE bridgeOpenProcessImpl(
             const DWORD desiredAccess,
             const BOOL inheritHandle,
             const DWORD processId)
@@ -139,7 +139,7 @@ namespace ksword::ce
         // - 输入：CE 目标句柄、地址、输出缓冲和长度。
         // - 处理：按 R0 单次 1 MiB 上限分片，通过 DriverClient 读取。
         // - 返回：全部完成时 TRUE；部分复制时设置 ERROR_PARTIAL_COPY。
-        BOOL WINAPI bridgeReadProcessMemory(
+        BOOL bridgeReadProcessMemoryImpl(
             const HANDLE processHandle,
             const LPCVOID baseAddress,
             const LPVOID buffer,
@@ -218,7 +218,7 @@ namespace ksword::ce
         // - 输入：CE 目标句柄、地址、源缓冲和长度。
         // - 处理：按 R0 256 KiB 上限分片，标记为 CE 用户已确认的写操作。
         // - 返回：全部写入时 TRUE；不自动启用 FORCE，保留驱动安全边界。
-        BOOL WINAPI bridgeWriteProcessMemory(
+        BOOL bridgeWriteProcessMemoryImpl(
             const HANDLE processHandle,
             const LPVOID baseAddress,
             const LPCVOID buffer,
@@ -297,7 +297,7 @@ namespace ksword::ce
         // - 输入：CE 目标句柄、查询地址和 MEMORY_BASIC_INFORMATION 缓冲。
         // - 处理：调用 KSword R0 ZwQueryVirtualMemory 路径并转换固定响应。
         // - 返回：成功时返回结构大小；失败时返回 0。
-        SIZE_T WINAPI bridgeVirtualQueryEx(
+        SIZE_T bridgeVirtualQueryExImpl(
             const HANDLE processHandle,
             const LPCVOID address,
             PMEMORY_BASIC_INFORMATION const information,
@@ -349,6 +349,107 @@ namespace ksword::ce
             *information = result;
             ::SetLastError(ERROR_SUCCESS);
             return sizeof(MEMORY_BASIC_INFORMATION);
+        }
+
+        // 以下 WINAPI 包装器是 CE/Lazarus 与 C++ 桥接的异常边界。
+        // 任何 C++ 异常都必须在 DLL 内转换成 Win32 失败，不能穿过插件 ABI。
+        HANDLE WINAPI bridgeOpenProcess(
+            const DWORD desiredAccess,
+            const BOOL inheritHandle,
+            const DWORD processId) noexcept
+        {
+            try
+            {
+                return bridgeOpenProcessImpl(
+                    desiredAccess,
+                    inheritHandle,
+                    processId);
+            }
+            catch (...)
+            {
+                ::SetLastError(ERROR_GEN_FAILURE);
+                return nullptr;
+            }
+        }
+
+        BOOL WINAPI bridgeReadProcessMemory(
+            const HANDLE processHandle,
+            const LPCVOID baseAddress,
+            const LPVOID buffer,
+            const SIZE_T bytesToRead,
+            SIZE_T* const bytesRead) noexcept
+        {
+            try
+            {
+                return bridgeReadProcessMemoryImpl(
+                    processHandle,
+                    baseAddress,
+                    buffer,
+                    bytesToRead,
+                    bytesRead);
+            }
+            catch (...)
+            {
+                if (bytesRead != nullptr)
+                {
+                    *bytesRead = 0U;
+                }
+                ::SetLastError(ERROR_GEN_FAILURE);
+                return FALSE;
+            }
+        }
+
+        BOOL WINAPI bridgeWriteProcessMemory(
+            const HANDLE processHandle,
+            const LPVOID baseAddress,
+            const LPCVOID buffer,
+            const SIZE_T bytesToWrite,
+            SIZE_T* const bytesWritten) noexcept
+        {
+            try
+            {
+                return bridgeWriteProcessMemoryImpl(
+                    processHandle,
+                    baseAddress,
+                    buffer,
+                    bytesToWrite,
+                    bytesWritten);
+            }
+            catch (...)
+            {
+                if (bytesWritten != nullptr)
+                {
+                    *bytesWritten = 0U;
+                }
+                ::SetLastError(ERROR_GEN_FAILURE);
+                return FALSE;
+            }
+        }
+
+        SIZE_T WINAPI bridgeVirtualQueryEx(
+            const HANDLE processHandle,
+            const LPCVOID address,
+            PMEMORY_BASIC_INFORMATION const information,
+            const SIZE_T informationLength) noexcept
+        {
+            try
+            {
+                return bridgeVirtualQueryExImpl(
+                    processHandle,
+                    address,
+                    information,
+                    informationLength);
+            }
+            catch (...)
+            {
+                if (information != nullptr &&
+                    informationLength >= sizeof(MEMORY_BASIC_INFORMATION))
+                {
+                    *information = MEMORY_BASIC_INFORMATION{};
+                }
+                ::SetLastError(ERROR_GEN_FAILURE);
+                return 0U;
+            }
         }
 
         // installFunctionPointerHooks：保存当前实现并原子式覆盖 CE 函数槽。

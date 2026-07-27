@@ -15,16 +15,23 @@ extern "C" BOOL __stdcall CEPlugin_GetVersion(
     ksword::ce::PluginVersion* const pluginVersion,
     const int pluginVersionSize)
 {
-    if (pluginVersion == nullptr ||
-        pluginVersionSize < static_cast<int>(
-            sizeof(ksword::ce::PluginVersion)))
+    try
+    {
+        if (pluginVersion == nullptr ||
+            pluginVersionSize < static_cast<int>(
+                sizeof(ksword::ce::PluginVersion)))
+        {
+            return FALSE;
+        }
+
+        pluginVersion->version = ksword::ce::kCeSdkVersion;
+        pluginVersion->pluginName = g_pluginName;
+        return TRUE;
+    }
+    catch (...)
     {
         return FALSE;
     }
-
-    pluginVersion->version = ksword::ce::kCeSdkVersion;
-    pluginVersion->pluginName = g_pluginName;
-    return TRUE;
 }
 
 // CEPlugin_InitializePlugin：
@@ -35,7 +42,15 @@ extern "C" BOOL __stdcall CEPlugin_InitializePlugin(
     ksword::ce::ExportedFunctions* const exportedFunctions,
     const int pluginId)
 {
-    return ksword::ce::initializeBridge(exportedFunctions, pluginId);
+    try
+    {
+        return ksword::ce::initializeBridge(exportedFunctions, pluginId);
+    }
+    catch (...)
+    {
+        ::SetLastError(ERROR_GEN_FAILURE);
+        return FALSE;
+    }
 }
 
 // CEPlugin_DisablePlugin：
@@ -44,7 +59,15 @@ extern "C" BOOL __stdcall CEPlugin_InitializePlugin(
 // - 返回：清理完成时 TRUE。
 extern "C" BOOL __stdcall CEPlugin_DisablePlugin()
 {
-    return ksword::ce::disableBridge();
+    try
+    {
+        return ksword::ce::disableBridge();
+    }
+    catch (...)
+    {
+        ::SetLastError(ERROR_GEN_FAILURE);
+        return FALSE;
+    }
 }
 
 // DllMain：
