@@ -83,9 +83,23 @@ namespace ksword::ark
         AlpcPortQueryResult queryAlpcPort(std::uint32_t processId, std::uint64_t handleValue, unsigned long flags = KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_ALL) const;
         ProcessSectionQueryResult queryProcessSection(std::uint32_t processId, unsigned long flags = KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_ALL, unsigned long maxMappings = KSWORD_ARK_SECTION_MAPPING_LIMIT_DEFAULT) const;
         FileSectionMappingsQueryResult queryFileSectionMappings(const std::wstring& ntPath, unsigned long flags = KSWORD_ARK_FILE_SECTION_QUERY_FLAG_INCLUDE_ALL, unsigned long maxMappings = KSWORD_ARK_SECTION_MAPPING_LIMIT_DEFAULT) const;
-        VirtualMemoryQueryResult queryVirtualMemory(std::uint32_t processId, std::uint64_t baseAddress, unsigned long flags = 0UL) const;
-        VirtualMemoryReadResult readVirtualMemory(std::uint32_t processId, std::uint64_t baseAddress, std::uint32_t bytesToRead, unsigned long flags = KSWORD_ARK_MEMORY_READ_FLAG_ZERO_FILL_UNREADABLE) const;
-        VirtualMemoryWriteResult writeVirtualMemory(std::uint32_t processId, std::uint64_t baseAddress, const std::vector<std::uint8_t>& bytes, unsigned long flags = 0UL) const;
+        VirtualMemoryQueryResult queryVirtualMemory(
+            std::uint32_t processId,
+            std::uint64_t baseAddress,
+            unsigned long flags = 0UL,
+            DriverHandle* existingHandle = nullptr) const;
+        VirtualMemoryReadResult readVirtualMemory(
+            std::uint32_t processId,
+            std::uint64_t baseAddress,
+            std::uint32_t bytesToRead,
+            unsigned long flags = KSWORD_ARK_MEMORY_READ_FLAG_ZERO_FILL_UNREADABLE,
+            DriverHandle* existingHandle = nullptr) const;
+        VirtualMemoryWriteResult writeVirtualMemory(
+            std::uint32_t processId,
+            std::uint64_t baseAddress,
+            const std::vector<std::uint8_t>& bytes,
+            unsigned long flags = 0UL,
+            DriverHandle* existingHandle = nullptr) const;
         // queryKernelMemoryEvidence：
         // - 输入：只读采集 flags、行数/字节预算和可选地址半开区间。
         // - 处理：封装 IOCTL_KSWORD_ARK_SCAN_KERNEL_MEMORY_EVIDENCE，解析变长 evidence rows。

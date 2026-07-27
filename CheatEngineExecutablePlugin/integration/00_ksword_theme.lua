@@ -163,7 +163,14 @@ local function installTheme()
 
     local originalCaption = safeGet(mainForm, "Caption", "Cheat Engine")
     local originalSuffix = originalCaption:match("%s*(%b())%s*$") or ""
-    if readBridgeStatus() == "bridge-ready" then
+    _G.KSwordApplyR0Caption = function()
+        local currentMainForm = getMainForm()
+        if currentMainForm ~= nil then
+            currentMainForm.Caption = "KSword CE (R0)"
+        end
+    end
+    if readBridgeStatus() == "bridge-ready" or
+        readBridgeStatus() == "ready" then
         mainForm.Caption = "KSword CE (R0)"
     else
         mainForm.Caption = "KSword CE" .. originalSuffix
@@ -185,7 +192,7 @@ local function finishThemeInitialization()
         writeThemeStatus("ready")
         if readBridgeStatus() == "bridge-ready" then
             writeBridgeStatus("ready")
-        elseif readBridgeStatus() ~= "failed" then
+        elseif readBridgeStatus() == "failed" then
             writeBridgeStatus("failed")
         end
     else

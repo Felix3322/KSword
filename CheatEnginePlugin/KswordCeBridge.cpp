@@ -8,6 +8,7 @@
 #include <limits>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ksword::ce
@@ -18,6 +19,7 @@ namespace ksword::ce
         struct BridgeState
         {
             std::mutex mutex;
+            std::mutex driverIoMutex;
             ExportedFunctions* exportedFunctions = nullptr;
             int pluginId = -1;
             int pointerChangeRegistrationId = -1;
@@ -25,29 +27,13 @@ namespace ksword::ce
             WriteProcessMemoryFunction originalWriteProcessMemory = nullptr;
             OpenProcessFunction originalOpenProcess = nullptr;
             VirtualQueryExFunction originalVirtualQueryEx = nullptr;
+            ksword::ark::DriverHandle driverHandle;
             std::unordered_map<HANDLE, DWORD> proxyProcessIds;
             bool initialized = false;
         };
 
         BridgeState g_bridgeState; // g_bridgeState：插件进程内唯一桥接状态。
         const ksword::ark::DriverClient g_driverClient; // g_driverClient：统一 KSword R3 驱动入口。
-
-        // showCeMessage：调用 CE 自带消息框，避免插件引入额外 GUI 框架。
-        void showCeMessage(char* const message)
-        {
-            ShowMessageFunction showMessage = nullptr;
-            {
-                std::lock_guard<std::mutex> lock(g_bridgeState.mutex);
-                if (g_bridgeState.exportedFunctions != nullptr)
-                {
-                    showMessage = g_bridgeState.exportedFunctions->showMessage;
-                }
-            }
-            if (showMessage != nullptr)
-            {
-                showMessage(message);
-            }
-        }
 
         // resolveProcessId：
         // - 输入：CE 传入的真实进程句柄或代理事件句柄。
@@ -86,38 +72,36 @@ namespace ksword::ce
 
         // bridgeOpenProcess：
         // - 输入：CE 的 OpenProcess 参数。
-        // - 处理：先保留正常句柄语义；权限不足时创建可 CloseHandle 的代理句柄。
-        // - 返回：真实句柄或映射到 PID 的事件句柄。
+        // - 处理：只申请查询/同步权限；实际内存访问始终交给 KSword R0。
+        // - 返回：受限真实句柄或映射到 PID 的事件句柄。
         HANDLE bridgeOpenProcessImpl(
             const DWORD desiredAccess,
             const BOOL inheritHandle,
             const DWORD processId)
         {
+            UNREFERENCED_PARAMETER(desiredAccess);
             OpenProcessFunction originalOpenProcess = nullptr;
             {
                 std::lock_guard<std::mutex> lock(g_bridgeState.mutex);
                 originalOpenProcess = g_bridgeState.originalOpenProcess;
             }
 
-            // processHandle 用途：优先保存 CE 原有 OpenProcess 返回的正常句柄。
+            // processHandle 用途：仅给 CE 提供架构识别、退出等待等非内存能力。
+            // 不得转发 desiredAccess，否则 CE 会重新获得用户态 VM_READ/VM_WRITE 通道。
             HANDLE processHandle = nullptr;
             if (originalOpenProcess != nullptr)
             {
-                processHandle =
-                    originalOpenProcess(desiredAccess, inheritHandle, processId);
-                if (processHandle == nullptr)
-                {
-                    processHandle = originalOpenProcess(
-                        PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
-                        inheritHandle,
-                        processId);
-                }
+                processHandle = originalOpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                    inheritHandle,
+                    processId);
             }
             if (processHandle != nullptr)
             {
-                // 真实句柄值可能复用旧代理句柄数值，先删除可能过期的 PID 映射。
+                // 即使 GetProcessId 可用也显式映射 PID，避免 CE 后续替换句柄语义。
                 std::lock_guard<std::mutex> lock(g_bridgeState.mutex);
-                g_bridgeState.proxyProcessIds.erase(processHandle);
+                g_bridgeState.proxyProcessIds[processHandle] = processId;
+                ::SetLastError(ERROR_SUCCESS);
                 return processHandle;
             }
 
@@ -179,11 +163,23 @@ namespace ksword::ce
                 const auto currentAddress =
                     reinterpret_cast<std::uintptr_t>(baseAddress) +
                     totalBytesRead;
-                const auto readResult = g_driverClient.readVirtualMemory(
-                    processId,
-                    static_cast<std::uint64_t>(currentAddress),
-                    static_cast<std::uint32_t>(chunkSize),
-                    0UL);
+                ksword::ark::VirtualMemoryReadResult readResult{};
+                {
+                    // CE 会并发查询/读取；同一同步设备句柄必须串行使用。
+                    std::lock_guard<std::mutex> driverLock(
+                        g_bridgeState.driverIoMutex);
+                    if (!g_bridgeState.driverHandle.isValid())
+                    {
+                        ::SetLastError(ERROR_INVALID_HANDLE);
+                        break;
+                    }
+                    readResult = g_driverClient.readVirtualMemory(
+                        processId,
+                        static_cast<std::uint64_t>(currentAddress),
+                        static_cast<std::uint32_t>(chunkSize),
+                        0UL,
+                        &g_bridgeState.driverHandle);
+                }
 
                 // copiedBytes 用途：同时受响应计数、数据数组和当前分片长度约束。
                 const SIZE_T copiedBytes = std::min<SIZE_T>(
@@ -264,11 +260,22 @@ namespace ksword::ce
                 const auto currentAddress =
                     reinterpret_cast<std::uintptr_t>(baseAddress) +
                     totalBytesWritten;
-                const auto writeResult = g_driverClient.writeVirtualMemory(
-                    processId,
-                    static_cast<std::uint64_t>(currentAddress),
-                    chunk,
-                    KSWORD_ARK_MEMORY_WRITE_FLAG_UI_CONFIRMED);
+                ksword::ark::VirtualMemoryWriteResult writeResult{};
+                {
+                    std::lock_guard<std::mutex> driverLock(
+                        g_bridgeState.driverIoMutex);
+                    if (!g_bridgeState.driverHandle.isValid())
+                    {
+                        ::SetLastError(ERROR_INVALID_HANDLE);
+                        break;
+                    }
+                    writeResult = g_driverClient.writeVirtualMemory(
+                        processId,
+                        static_cast<std::uint64_t>(currentAddress),
+                        chunk,
+                        KSWORD_ARK_MEMORY_WRITE_FLAG_UI_CONFIRMED,
+                        &g_bridgeState.driverHandle);
+                }
 
                 // currentWritten 用途：限制驱动返回值不超过本次请求长度。
                 const SIZE_T currentWritten = std::min<SIZE_T>(
@@ -317,11 +324,23 @@ namespace ksword::ce
                 ::SetLastError(ERROR_INVALID_HANDLE);
                 return 0U;
             }
-            const auto queryResult = g_driverClient.queryVirtualMemory(
-                processId,
-                static_cast<std::uint64_t>(
-                    reinterpret_cast<std::uintptr_t>(address)),
-                0UL);
+            const std::uint64_t requestedAddress = static_cast<std::uint64_t>(
+                reinterpret_cast<std::uintptr_t>(address));
+            ksword::ark::VirtualMemoryQueryResult queryResult{};
+            {
+                std::lock_guard<std::mutex> driverLock(
+                    g_bridgeState.driverIoMutex);
+                if (!g_bridgeState.driverHandle.isValid())
+                {
+                    ::SetLastError(ERROR_INVALID_HANDLE);
+                    return 0U;
+                }
+                queryResult = g_driverClient.queryVirtualMemory(
+                    processId,
+                    requestedAddress,
+                    0UL,
+                    &g_bridgeState.driverHandle);
+            }
             if (!queryResult.io.ok ||
                 (queryResult.fieldFlags & KSWORD_ARK_MEMORY_FIELD_BASIC_PRESENT) == 0U ||
                 (queryResult.queryStatus != KSWORD_ARK_MEMORY_QUERY_STATUS_OK &&
@@ -331,6 +350,30 @@ namespace ksword::ce
                     queryResult.io.win32Error != ERROR_SUCCESS
                         ? queryResult.io.win32Error
                         : ERROR_PARTIAL_COPY);
+                return 0U;
+            }
+
+            // CE 依赖 BaseAddress + RegionSize 推进枚举游标。驱动若返回空区间、
+            // 越界区间或无法收窄到当前架构的地址，必须失败而不是让 CE 无限循环。
+            const std::uint64_t regionEnd =
+                queryResult.baseAddress + queryResult.regionSize;
+            if (queryResult.regionSize == 0U ||
+                queryResult.baseAddress > requestedAddress ||
+                queryResult.baseAddress >
+                    (std::numeric_limits<std::uint64_t>::max)() -
+                        queryResult.regionSize ||
+                requestedAddress >= regionEnd ||
+                queryResult.baseAddress >
+                    static_cast<std::uint64_t>(
+                        (std::numeric_limits<std::uintptr_t>::max)()) ||
+                queryResult.allocationBase >
+                    static_cast<std::uint64_t>(
+                        (std::numeric_limits<std::uintptr_t>::max)()) ||
+                queryResult.regionSize >
+                    static_cast<std::uint64_t>(
+                        (std::numeric_limits<SIZE_T>::max)()))
+            {
+                ::SetLastError(ERROR_INVALID_DATA);
                 return 0U;
             }
 
@@ -522,6 +565,11 @@ namespace ksword::ce
             }
             return FALSE;
         }
+        {
+            std::lock_guard<std::mutex> driverLock(
+                g_bridgeState.driverIoMutex);
+            g_bridgeState.driverHandle = std::move(driverHandle);
+        }
 
         // 初始化状态与 hook 安装在同一临界区完成，避免 CE 工作线程看到半状态。
         {
@@ -532,6 +580,9 @@ namespace ksword::ce
             {
                 g_bridgeState.exportedFunctions = nullptr;
                 g_bridgeState.pluginId = -1;
+                std::lock_guard<std::mutex> driverLock(
+                    g_bridgeState.driverIoMutex);
+                g_bridgeState.driverHandle.reset();
                 return FALSE;
             }
             g_bridgeState.initialized = true;
@@ -550,10 +601,6 @@ namespace ksword::ce
             g_bridgeState.pointerChangeRegistrationId = registrationId;
         }
 
-        char message[] =
-            "KSword CE Bridge enabled: process open, memory query, read and "
-            "write now use the KSword driver.";
-        showCeMessage(message);
         return TRUE;
     }
 
@@ -611,6 +658,11 @@ namespace ksword::ce
         if (registrationId >= 0 && unregisterFunction != nullptr)
         {
             unregisterFunction(pluginId, registrationId);
+        }
+        {
+            std::lock_guard<std::mutex> driverLock(
+                g_bridgeState.driverIoMutex);
+            g_bridgeState.driverHandle.reset();
         }
         return TRUE;
     }

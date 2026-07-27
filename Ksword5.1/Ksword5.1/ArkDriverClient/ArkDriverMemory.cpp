@@ -24,7 +24,8 @@ namespace ksword::ark
     VirtualMemoryQueryResult DriverClient::queryVirtualMemory(
         const std::uint32_t processId,
         const std::uint64_t baseAddress,
-        const unsigned long flags) const
+        const unsigned long flags,
+        DriverHandle* const existingHandle) const
     {
         // request/response 用途：承载一次固定大小的 R3/R0 虚拟内存区域查询。
         VirtualMemoryQueryResult queryResult{};
@@ -40,7 +41,8 @@ namespace ksword::ark
             &request,
             static_cast<unsigned long>(sizeof(request)),
             &response,
-            static_cast<unsigned long>(sizeof(response)));
+            static_cast<unsigned long>(sizeof(response)),
+            existingHandle);
         if (!queryResult.io.ok)
         {
             queryResult.io.message =
@@ -107,7 +109,8 @@ namespace ksword::ark
         const std::uint32_t processId,
         const std::uint64_t baseAddress,
         const std::uint32_t bytesToRead,
-        const unsigned long flags) const
+        const unsigned long flags,
+        DriverHandle* const existingHandle) const
     {
         // request 用途：承载 R3 对 R0 的读取参数，数据缓冲单独从响应中解析。
         VirtualMemoryReadResult readResult{};
@@ -137,7 +140,8 @@ namespace ksword::ark
             &request,
             static_cast<unsigned long>(sizeof(request)),
             responseBuffer.data(),
-            static_cast<unsigned long>(responseBuffer.size()));
+            static_cast<unsigned long>(responseBuffer.size()),
+            existingHandle);
         if (!readResult.io.ok)
         {
             readResult.io.message =
@@ -202,7 +206,8 @@ namespace ksword::ark
         const std::uint32_t processId,
         const std::uint64_t baseAddress,
         const std::vector<std::uint8_t>& bytes,
-        const unsigned long flags) const
+        const unsigned long flags,
+        DriverHandle* const existingHandle) const
     {
         // writeResult 用途：承载 R0 固定响应和 DeviceIoControl 状态。
         VirtualMemoryWriteResult writeResult{};
@@ -233,7 +238,8 @@ namespace ksword::ark
             inputBuffer.data(),
             static_cast<unsigned long>(inputBuffer.size()),
             &response,
-            static_cast<unsigned long>(sizeof(response)));
+            static_cast<unsigned long>(sizeof(response)),
+            existingHandle);
         if (!writeResult.io.ok)
         {
             writeResult.io.message =
