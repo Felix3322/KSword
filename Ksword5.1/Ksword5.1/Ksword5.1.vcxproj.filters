@@ -434,6 +434,9 @@
     <ClCompile Include="ProcessDock\ProcessDock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ProcessDock\ProcessDock.Icon.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ProcessDock\ProcessDock.CrossView.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

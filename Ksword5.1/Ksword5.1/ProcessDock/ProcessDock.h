@@ -18,6 +18,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QSize>
+#include <QThreadPool>
 #include <QVariant>
 #include <QWidget>
 
@@ -38,6 +39,7 @@ class QCheckBox;
 class QFormLayout;
 class QGroupBox;
 class QHeaderView;
+class QImage;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -638,11 +640,13 @@ private:
     QString threadStateText(std::uint32_t stateValue) const;
     QString threadWaitReasonText(std::uint32_t waitReasonValue) const;
     QIcon resolveProcessIcon(const ks::process::ProcessRecord& processRecord);
+    void queueProcessIconExtractionsForCurrentProcesses();
     void queueProcessIconExtraction(const QString& imagePath);
-    void schedulePendingProcessIconExtraction(int delayMilliseconds);
-    void extractNextPendingProcessIcon();
+    void applyProcessIconExtractionResult(
+        const QString& imagePath,
+        QImage iconImage,
+        std::uint64_t extractionGeneration);
     void refreshProcessTableRowsForIcon(const QString& imagePath);
-    QIcon extractProcessIconFromPath(const QString& imagePath) const;
     QIcon blueTintedIcon(const char* iconPath, const QSize& iconSize = QSize(16, 16)) const;
     // tintedProcessTabIcon 作用：按指定颜色重绘进程页 Tab 图标，避免选中态蓝底蓝图标。
     QIcon tintedProcessTabIcon(const char* iconPath, const QColor& tintColor, const QSize& iconSize = QSize(16, 16)) const;
@@ -889,9 +893,9 @@ private:
     bool m_processNetworkTrafficCaptureStarted = false; // ETW 采集器是否已经尝试启动。
     QHash<QString, QIcon> m_iconCacheByPath;  // 进程图标缓存，避免重复提取。
     QHash<QString, QIcon> m_activityIconCacheByProcessKey; // 历史活动图标缓存：进程名+路径 -> 图标。
-    QSet<QString> m_pendingProcessIconPathSet; // 待延迟提取的 EXE 图标路径集合，去重避免滚动期间重复查询。
-    bool m_processIconLoadScheduled = false; // 图标延迟提取任务是否已排队，保证单次只处理一个路径。
-    std::chrono::steady_clock::time_point m_lastProcessTableScrollTime{}; // 最近一次进程表滚动事件，用于把图标提取推迟到滚动空闲后。
+    QSet<QString> m_processIconPathsInFlight; // 已投递后台线程池、尚未回传结果的 EXE 路径集合。
+    std::uint64_t m_processIconExtractionGeneration = 0; // 图标任务代次，暂停后使旧任务回传结果失效。
+    QThreadPool m_processIconExtractionPool; // 专属图标线程池，避免大量 Shell 查询占满通用后台任务池。
     std::unordered_map<std::string, QPointer<ProcessDetailWindow>> m_detailWindowByIdentity; // 详情窗口缓存（同进程复用窗口）。
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> m_detailWindowLastSyncTimeByIdentity; // 详情窗口最近一次同步时间，避免每轮刷新都触发重型解析。
     std::string m_trackedSelectedIdentityKey; // 当前选中进程 identityKey；表格刷新重建后用于恢复高亮。

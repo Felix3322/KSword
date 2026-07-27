@@ -26,7 +26,6 @@
 #include <QDir>
 #include <QEvent>
 #include <QFileDialog>
-#include <QFileIconProvider>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -242,21 +241,8 @@ namespace
     constexpr int ActivityMaximumIntervalMilliseconds = 60000;
     constexpr int ProcessTableMinimumIntervalMilliseconds = 500;
     constexpr int ProcessTableMaximumIntervalMilliseconds = 60000;
-    constexpr int ProcessIconExtractionQuietPeriodMilliseconds = 180;
-    constexpr int ProcessIconExtractionRetryMilliseconds = 16;
-    constexpr int ProcessIconExtractionPointerBusyRetryMilliseconds = 250;
     constexpr std::size_t ActivityMaximumSampleCount = 1800;
-    constexpr qsizetype ProcessIconCacheMaximumCount = 4096;
     constexpr qsizetype ActivityIconCacheMaximumCount = 8192;
-
-    // processPlaceholderIcon：
-    // - 进程表在真实 EXE 图标尚未进入缓存时复用同一个 SVG 图标对象；
-    // - 避免滚动绘制时为每个未命中单元格重复构造 QIcon 并重新走资源查找。
-    const QIcon& processPlaceholderIcon()
-    {
-        static const QIcon icon(QStringLiteral(":/Icon/process_main.svg"));
-        return icon;
-    }
 
     // formatProcessWin32Error 作用：
     // - 输入：stepText 表示失败步骤，errorCode 为 Win32 错误码；
@@ -3322,6 +3308,12 @@ ProcessDock::ProcessDock(QWidget* parent)
     // 初始化硬件并发参数：至少按 1 核处理，避免除零。
     m_logicalCpuCount = std::max<std::uint32_t>(1, std::thread::hardware_concurrency());
 
+    // Shell 图标解析可能阻塞磁盘或图标处理程序，使用独立线程池并限制并发数。
+    // 至少保留两个工作线程以并行处理应用图标，上限八个避免短时间创建过多 Shell 查询。
+    const int iconExtractionWorkerCount = std::clamp(static_cast<int>(m_logicalCpuCount), 2, 8);
+    m_processIconExtractionPool.setMaxThreadCount(iconExtractionWorkerCount);
+    m_processIconExtractionPool.setExpiryTimeout(1000);
+
     // 构造阶段按“UI -> 连接 -> 定时器 -> 首次刷新”顺序执行。
     m_activityTotalPhysicalMemoryMB = totalPhysicalMemoryMB();
     initializeUi();
@@ -3336,6 +3328,12 @@ ProcessDock::ProcessDock(QWidget* parent)
 
 ProcessDock::~ProcessDock()
 {
+    // 使已运行任务的回传结果失效，并取消尚未开始的图标查询任务。
+    // 线程池析构会等待已运行任务结束，任务只使用自己的路径副本，不再访问 Dock 成员。
+    ++m_processIconExtractionGeneration;
+    m_processIconExtractionPool.clear();
+    m_processIconPathsInFlight.clear();
+
     // 析构阶段先停止内部 ETW 消费线程：
     // - 输入：无；
     // - 处理：请求 ProcessNetworkEtwMonitor 退出并等待线程 join；
@@ -3458,24 +3456,6 @@ bool ProcessDock::eventFilter(QObject* watched, QEvent* event)
 {
     if (event == nullptr)
     {
-        return QWidget::eventFilter(watched, event);
-    }
-
-    // 进程表滚动期间不执行同步图标提取：
-    // - 记录表格及其 viewport/滚动条收到的滚轮事件；
-    // - 延迟图标任务据此等待一小段空闲窗口，保证滚动优先得到 UI 线程；
-    // - 不修改或拦截 Qt 原始滚轮处理。
-    if (event->type() == QEvent::Wheel)
-    {
-        QWidget* watchedWidget = qobject_cast<QWidget*>(watched);
-        const bool fromProcessTable =
-            watchedWidget != nullptr &&
-            m_processTable != nullptr &&
-            ((watchedWidget == m_processTable) || m_processTable->isAncestorOf(watchedWidget));
-        if (fromProcessTable)
-        {
-            m_lastProcessTableScrollTime = std::chrono::steady_clock::now();
-        }
         return QWidget::eventFilter(watched, event);
     }
 
@@ -4892,8 +4872,10 @@ void ProcessDock::initializeConnections()
         {
             m_refreshTimer->stop();
         }
-        // 未缓存图标只属于显示增强。暂停后取消剩余队列，避免 Shell 图标解析继续占用 GUI 线程。
-        m_pendingProcessIconPathSet.clear();
+        // 未缓存图标只属于显示增强。暂停后取消未开始任务，并丢弃在途任务的回传结果。
+        ++m_processIconExtractionGeneration;
+        m_processIconExtractionPool.clear();
+        m_processIconPathsInFlight.clear();
         stopProcessNetworkTrafficCapture();
         updateProcessActivityStatusLabel();
     });
@@ -5852,6 +5834,9 @@ void ProcessDock::applyRefreshResult(RefreshResult refreshResult, const bool for
     m_counterSampleByIdentity = std::move(refreshResult.nextCounters);
     pruneProcessNetworkTrafficCounters();
 
+    // 每轮刷新立即为全部进程映像投递后台图标查询，表格不再等待滚动空闲期。
+    queueProcessIconExtractionsForCurrentProcesses();
+
     appendProcessActivitySample();
     if (isProcessActivityTableSnapshotActive())
     {
@@ -6361,14 +6346,10 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
         refreshResult.staticFilledCount += staticFillIndices.size();
     }
 
-    // 第二阶段补充：单独为 imagePath 做更高预算的快速补齐。
+    // 第二阶段补充：单独全量补齐 imagePath。
     // 说明：
     // 1) 图标展示只依赖 imagePath，且路径查询比“命令行/签名”更轻；
-    // 2) 因此即使静态详情预算较低，也要额外补齐路径，避免整表图标都退化成占位图。
-    const bool isFirstRound = previousCache.empty();
-    int remainingImagePathBudget = detailModeEnabled
-        ? (isFirstRound ? 640 : 320)
-        : (isFirstRound ? 320 : 160);
+    // 2) 不受静态详情预算限制，确保每轮已枚举进程都能进入后台图标采集。
     std::vector<std::size_t> imagePathFillIndices;
     imagePathFillIndices.reserve(latestProcessList.size());
     for (std::size_t recordIndex = 0; recordIndex < latestProcessList.size(); ++recordIndex)
@@ -6378,12 +6359,7 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
         {
             continue;
         }
-        if (remainingImagePathBudget <= 0)
-        {
-            break;
-        }
         imagePathFillIndices.push_back(recordIndex);
-        --remainingImagePathBudget;
     }
 
     if (progressTaskPid > 0)
@@ -7284,9 +7260,9 @@ void ProcessDock::appendProcessActivitySample()
         sample.totalNetKBps += processRecord.netKBps;
         sample.totalGpuPercent += processRecord.gpuPercent;
 
-        // 历史快照只保存轻量数据，采样路径不得同步提取新 EXE 图标：
-        // - QFileIconProvider 在首次访问某些路径时可能阻塞 UI 线程，影响表格滚动；
-        // - 这里只复用实时列表已经就绪的图标，未命中时由历史表格真正显示该行时按需解析；
+        // 历史快照只保存轻量数据，不在采样循环重复投递图标查询：
+        // - 当前进程列表会在每轮刷新时全量提交后台 Shell 图标任务；
+        // - 这里复用已经就绪的路径缓存，历史行未命中时由其显示路径补投后台任务；
         // - 图标仍完全基于快照中的进程名和路径，不会额外按 PID 查询。
         if (!processPoint.iconCacheKey.empty())
         {
@@ -10378,196 +10354,6 @@ QString ProcessDock::formatColumnText(const ks::process::ProcessRecord& processR
     default:
         return QString();
     }
-}
-
-QIcon ProcessDock::resolveProcessIcon(const ks::process::ProcessRecord& processRecord)
-{
-    const QString processNameText = QString::fromStdString(processRecord.processName).trimmed();
-    // 仅使用后台缓存中的 imagePath：
-    // - 禁止在 UI 线程里按 PID 再查路径，避免刷新阶段出现卡顿。
-    QString pathText = QString::fromStdString(processRecord.imagePath);
-    pathText = pathText.trimmed();
-
-    // 历史快照表格没有实时 PID 查询能力：
-    // - 采样时已维护“进程名+路径 -> 图标”的稳定映射；
-    // - 查看旧时间点时优先命中该映射，避免所有行退化成同一个占位图标。
-    const QString activityIconKey = processNameText + QStringLiteral("|") + pathText;
-    const auto activityIconIt = m_activityIconCacheByProcessKey.find(activityIconKey);
-    if (activityIconIt != m_activityIconCacheByProcessKey.end())
-    {
-        return activityIconIt.value();
-    }
-
-    if (pathText.isEmpty() || pathText.startsWith('[') || pathText == QStringLiteral("历史快照"))
-    {
-        return processPlaceholderIcon();
-    }
-
-    auto iconIt = m_iconCacheByPath.find(pathText);
-    if (iconIt != m_iconCacheByPath.end())
-    {
-        return iconIt.value();
-    }
-
-    // 未命中时先返回占位图，并把可能阻塞的 Shell 图标提取放到滚动空闲后的单独事件中。
-    queueProcessIconExtraction(pathText);
-    return processPlaceholderIcon();
-}
-
-void ProcessDock::queueProcessIconExtraction(const QString& imagePath)
-{
-    // 输入：后台枚举阶段已获取的 imagePath；处理：路径去重后排队；返回：无，不在当前绘制调用中访问 Shell。
-    if (!m_monitoringEnabled)
-    {
-        return;
-    }
-    const QString normalizedPath = imagePath.trimmed();
-    if (normalizedPath.isEmpty() ||
-        normalizedPath.startsWith('[') ||
-        normalizedPath == QStringLiteral("历史快照") ||
-        m_iconCacheByPath.contains(normalizedPath))
-    {
-        return;
-    }
-
-    m_pendingProcessIconPathSet.insert(normalizedPath);
-    schedulePendingProcessIconExtraction(ProcessIconExtractionRetryMilliseconds);
-}
-
-void ProcessDock::schedulePendingProcessIconExtraction(const int delayMilliseconds)
-{
-    // 输入：下一次提取前的最小等待时间；处理：只保留一个延迟任务；返回：无，避免滚动中排入大量重复定时器。
-    if (m_processIconLoadScheduled || m_pendingProcessIconPathSet.isEmpty())
-    {
-        return;
-    }
-
-    m_processIconLoadScheduled = true;
-    const int safeDelayMilliseconds = std::max(0, delayMilliseconds);
-    QPointer<ProcessDock> guard(this);
-    QTimer::singleShot(safeDelayMilliseconds, this, [guard]()
-        {
-            if (guard != nullptr)
-            {
-                guard->extractNextPendingProcessIcon();
-            }
-        });
-}
-
-void ProcessDock::extractNextPendingProcessIcon()
-{
-    // 单次只处理一个图标：
-    // - 若用户仍在进程表滚动，继续等待空闲窗口；
-    // - 避免 QFileIconProvider 解析多个 EXE 时独占 GUI 线程；
-    // - 每次完成后仅重绘 viewport，让已解析图标自然替换占位图。
-    m_processIconLoadScheduled = false;
-    if (!m_monitoringEnabled || m_pendingProcessIconPathSet.isEmpty())
-    {
-        if (!m_monitoringEnabled)
-        {
-            m_pendingProcessIconPathSet.clear();
-        }
-        return;
-    }
-
-    const auto nowTime = std::chrono::steady_clock::now();
-    if (m_lastProcessTableScrollTime.time_since_epoch().count() != 0)
-    {
-        const auto scrollIdleElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            nowTime - m_lastProcessTableScrollTime).count();
-        if (scrollIdleElapsed < ProcessIconExtractionQuietPeriodMilliseconds)
-        {
-            const int remainingQuietPeriod = static_cast<int>(
-                ProcessIconExtractionQuietPeriodMilliseconds - scrollIdleElapsed);
-            schedulePendingProcessIconExtraction(remainingQuietPeriod);
-            return;
-        }
-    }
-
-    // QFileIconProvider / Shell 图标解析可能读取 EXE 资源、查询图标处理程序，单次调用可明显阻塞 GUI 线程。
-    // 鼠标位于表格 viewport 内时用户随时可能继续滚动，因此不在这一交互区域内启动解析。
-    // 真实图标仍会在鼠标移出表格后的空闲期逐个补齐，业务数据和图标缓存语义不变。
-    if (m_processTable != nullptr && m_processTable->viewport() != nullptr)
-    {
-        QWidget* const tableViewport = m_processTable->viewport();
-        const QPoint viewportCursorPosition = tableViewport->mapFromGlobal(QCursor::pos());
-        if (tableViewport->rect().contains(viewportCursorPosition))
-        {
-            schedulePendingProcessIconExtraction(ProcessIconExtractionPointerBusyRetryMilliseconds);
-            return;
-        }
-    }
-
-    const auto pendingPathIt = m_pendingProcessIconPathSet.cbegin();
-    const QString imagePath = *pendingPathIt;
-    m_pendingProcessIconPathSet.erase(pendingPathIt);
-    if (!m_iconCacheByPath.contains(imagePath))
-    {
-        if (m_iconCacheByPath.size() >= ProcessIconCacheMaximumCount)
-        {
-            m_iconCacheByPath.erase(m_iconCacheByPath.begin());
-        }
-        m_iconCacheByPath.insert(imagePath, extractProcessIconFromPath(imagePath));
-    }
-
-    refreshProcessTableRowsForIcon(imagePath);
-    schedulePendingProcessIconExtraction(ProcessIconExtractionRetryMilliseconds);
-}
-
-void ProcessDock::refreshProcessTableRowsForIcon(const QString& imagePath)
-{
-    // 输入：刚写入图标缓存的规范 EXE 路径。
-    // 处理：仅重绘当前 viewport 中引用该路径的 Name 单元格，避免每补一个图标都刷新整张表。
-    // 返回：无。不可见行在之后自然进入绘制路径时读取新缓存。
-    if (m_processTable == nullptr ||
-        m_processTableModel == nullptr ||
-        m_processSortProxy == nullptr ||
-        m_processTable->viewport() == nullptr)
-    {
-        return;
-    }
-
-    const QString normalizedImagePath = imagePath.trimmed();
-    if (normalizedImagePath.isEmpty())
-    {
-        return;
-    }
-
-    QWidget* const tableViewport = m_processTable->viewport();
-    const std::vector<ProcessTableRow>& tableRows = m_processTableModel->rows();
-    const int nameColumn = toColumnIndex(TableColumn::Name);
-    for (int sourceRow = 0; sourceRow < static_cast<int>(tableRows.size()); ++sourceRow)
-    {
-        const ProcessTableRow& tableRow = tableRows[static_cast<std::size_t>(sourceRow)];
-        if (QString::fromStdString(tableRow.record.imagePath).trimmed() != normalizedImagePath)
-        {
-            continue;
-        }
-
-        const QModelIndex sourceIndex = m_processTableModel->index(sourceRow, nameColumn);
-        const QModelIndex viewIndex = m_processSortProxy->mapFromSource(sourceIndex);
-        const QRect visibleRect = m_processTable->visualRect(viewIndex);
-        if (visibleRect.isValid() && visibleRect.intersects(tableViewport->rect()))
-        {
-            tableViewport->update(visibleRect);
-        }
-    }
-}
-
-QIcon ProcessDock::extractProcessIconFromPath(const QString& imagePath) const
-{
-    // 输入：已去重且非空的 EXE 路径；处理：先尝试 Qt 图标，再回退 Shell 图标提供器；返回：真实图标或稳定占位图。
-    QIcon processIcon(imagePath);
-    if (processIcon.isNull())
-    {
-        QFileIconProvider iconProvider;
-        processIcon = iconProvider.icon(QFileInfo(imagePath));
-    }
-    if (processIcon.isNull())
-    {
-        processIcon = processPlaceholderIcon();
-    }
-    return processIcon;
 }
 
 QIcon ProcessDock::blueTintedIcon(const char* iconPath, const QSize& iconSize) const
