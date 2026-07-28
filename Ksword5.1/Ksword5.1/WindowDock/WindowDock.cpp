@@ -1638,6 +1638,42 @@ namespace
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
     }
 
+    // transparentAuditTableStyle 作用：
+    // - 为 WindowDock 的透明结构化表格保留父级 Tab 页背景；
+    // - 表格本体、viewport 和交替行均不绘制独立底色，避免遮住 Dock 背景；
+    // - 返回：可直接应用到 QTableWidget 的透明样式文本。
+    QString transparentAuditTableStyle()
+    {
+        const QString borderColor = KswordTheme::BorderColorHex();
+        const QString textColor = KswordTheme::TextPrimaryColorHex();
+
+        return QStringLiteral(
+            "QTableWidget{"
+            "  background:transparent;"
+            "  background-color:transparent;"
+            "  alternate-background-color:transparent;"
+            "  color:%1;"
+            "  gridline-color:%2;"
+            "}"
+            "QTableWidget::viewport{"
+            "  background:transparent;"
+            "  background-color:transparent;"
+            "}"
+            "QTableWidget::item{"
+            "  color:%1;"
+            "  padding:3px 5px;"
+            "}"
+            "QHeaderView::section{"
+            "  background:transparent;"
+            "  background-color:transparent;"
+            "  color:%1;"
+            "  border:1px solid %2;"
+            "  padding:4px 6px;"
+            "}")
+            .arg(textColor)
+            .arg(borderColor);
+    }
+
     // applyAuditTablePalette 作用：
     // - 输入 table：WindowDock 审计页中的只读表格；
     // - 处理：同时写 QPalette 和 viewport 背景，避免父级透明 Dock 或异常 QSS 让表格“有行但看不见”；
@@ -1649,6 +1685,8 @@ namespace
             return;
         }
 
+        const bool usesTransparentBackground =
+            table->property("ksword_transparent_audit_table").toBool();
         QPalette tablePalette = table->palette();
         tablePalette.setColor(QPalette::Base, KswordTheme::SurfaceColor());
         tablePalette.setColor(QPalette::AlternateBase, KswordTheme::SurfaceAltColor());
@@ -1657,12 +1695,31 @@ namespace
         tablePalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
         tablePalette.setColor(QPalette::Highlight, KswordTheme::AccentColor(KswordTheme::AccentRole::Blue));
         table->setPalette(tablePalette);
-        table->setAutoFillBackground(true);
+        table->setAlternatingRowColors(!usesTransparentBackground);
+        table->setAutoFillBackground(!usesTransparentBackground);
+        table->setAttribute(Qt::WA_StyledBackground, usesTransparentBackground);
         if (table->viewport() != nullptr)
         {
             table->viewport()->setPalette(tablePalette);
-            table->viewport()->setAutoFillBackground(true);
+            table->viewport()->setAutoFillBackground(!usesTransparentBackground);
+            table->viewport()->setAttribute(Qt::WA_StyledBackground, usesTransparentBackground);
         }
+    }
+
+    // applyTransparentAuditTableBackground 作用：
+    // - 输入 table：需要穿透父级背景的 WindowDock 审计表；
+    // - 处理：写入持久化属性、透明 QSS 和绘制属性；
+    // - 返回：无。后续刷新调用 applyAuditTablePalette 时会保留透明状态。
+    void applyTransparentAuditTableBackground(QTableWidget* table)
+    {
+        if (table == nullptr)
+        {
+            return;
+        }
+
+        table->setProperty("ksword_transparent_audit_table", true);
+        table->setStyleSheet(transparentAuditTableStyle());
+        applyAuditTablePalette(table);
     }
 
     // copyTableCurrentRow 作用：
@@ -2714,6 +2771,8 @@ namespace
             return;
         }
         const bool wasSorting = table->isSortingEnabled();
+        const bool usesTransparentBackground =
+            table->property("ksword_transparent_audit_table").toBool();
         table->setSortingEnabled(false);
         table->setVisible(true);
         table->clearContents();
@@ -2734,15 +2793,18 @@ namespace
                 QTableWidgetItem* item = new QTableWidgetItem(cellText);
                 item->setFlags(item->flags() & ~Qt::ItemIsEditable);
                 item->setToolTip(cellText);
-                // 单元格显式前景/背景：
-                // - 输入：主题色与当前行号；
-                // - 处理：给每个 item 写入非透明颜色，防止父级 Dock/QSS 让表格“有行但不可见”；
-                // - 返回：无，item 仍由 QTableWidget 接管生命周期。
+                // 单元格前景/背景：
+                // - 透明审计表不写入 item 背景刷，让每格穿透到父级 Tab 页；
+                // - 其它审计表保留交替底色，保证独立页面的行可读性；
+                // - item 仍由 QTableWidget 接管生命周期。
                 item->setForeground(QBrush(KswordTheme::TextPrimaryColor()));
-                item->setBackground(QBrush(
-                    (rowIndex % 2) == 0
-                    ? KswordTheme::SurfaceColor()
-                    : KswordTheme::SurfaceAltColor()));
+                if (!usesTransparentBackground)
+                {
+                    item->setBackground(QBrush(
+                        (rowIndex % 2) == 0
+                        ? KswordTheme::SurfaceColor()
+                        : KswordTheme::SurfaceAltColor()));
+                }
                 if (hasProcessIconColumn &&
                     hasProcessPathColumn &&
                     columnIndex == processIconColumn &&
@@ -3121,6 +3183,7 @@ void WindowDock::initializeUi()
             QVector<int>{ 0, 1, 6, 7, 9, 10, 11 },
             &m_windowsTable),
             QStringLiteral("窗口表"));
+        applyTransparentAuditTableBackground(m_windowsTable);
         innerTabWidget->addTab(makeTableGroup(
             QStringLiteral("GUI 线程（tagQ / focus / capture / caret）"),
             QStringList{ QStringLiteral("TID"), QStringLiteral("PID"), QStringLiteral("Session"),
@@ -3131,6 +3194,7 @@ void WindowDock::initializeUi()
             QVector<int>{ 0, 1, 6, 7, 8, 9 },
             &m_guiThreadsTable),
             QStringLiteral("GUI线程"));
+        applyTransparentAuditTableBackground(m_guiThreadsTable);
         innerTabWidget->addTab(makeTableGroup(
             QStringLiteral("Session 就绪状态"),
             QStringList{ QStringLiteral("SessionId"), QStringLiteral("状态"), QStringLiteral("进程数"),
@@ -3139,6 +3203,7 @@ void WindowDock::initializeUi()
             QVector<int>{ 0, 1, 4 },
             &m_sessionTable),
             QStringLiteral("Session"));
+        applyTransparentAuditTableBackground(m_sessionTable);
 
         // 当前窗口详情：
         // - 默认只展示窗口表可见列快照，帮助用户确认当前选中 HWND；
@@ -3204,6 +3269,7 @@ void WindowDock::initializeUi()
                           HotkeyColumnLastStatus, HotkeyColumnDiagnostic },
             &m_hotkeysTable),
             QStringLiteral("热键表"));
+        applyTransparentAuditTableBackground(m_hotkeysTable);
         if (m_hotkeysTable != nullptr)
         {
             m_hotkeysTable->setProperty("kswordProcessIconColumn", HotkeyColumnName);
@@ -3226,6 +3292,7 @@ void WindowDock::initializeUi()
             QVector<int>{ 0, 8, 9, 11, 13, 15, 16, 17, 18, 19, 21, 25 },
             &m_hooksTable),
             QStringLiteral("消息 Hook 表"));
+        applyTransparentAuditTableBackground(m_hooksTable);
         if (m_hooksTable != nullptr)
         {
             m_hooksTable->setProperty("ksword_process_detail_pid_column", 2);
@@ -3250,6 +3317,7 @@ void WindowDock::initializeUi()
             QVector<int>{ 0, 1 },
             QVector<int>{ 0, 1 },
             &m_clipboardTable);
+        applyTransparentAuditTableBackground(m_clipboardTable);
         innerTabWidget->addTab(group, QStringLiteral("剪贴板表"));
     }
     m_tabWidget->addTab(m_clipboardPage, QStringLiteral("剪贴板"));
@@ -3282,6 +3350,7 @@ void WindowDock::initializeUi()
             QVector<int>{ 0, 1, 2, 3, 4, 5, 10, 11 },
             QVector<int>{ 0, 2, 6, 7, 8, 9, 14, 16 },
             &m_deviceTable);
+        applyTransparentAuditTableBackground(m_deviceTable);
         innerTabWidget->addTab(group, QStringLiteral("设备表"));
     }
     m_tabWidget->addTab(m_displayPage, QStringLiteral("显示"));
