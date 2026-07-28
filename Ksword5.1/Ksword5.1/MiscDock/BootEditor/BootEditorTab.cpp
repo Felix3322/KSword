@@ -1,4 +1,6 @@
 #include "BootEditorTab.h"
+
+#include "../../Framework/PrivilegeElevationPrompt.h"
 #include "../../UI/VisibleTableWidget.h"
 
 #include "../../theme.h"
@@ -489,22 +491,47 @@ void BootEditorTab::initializeConnections()
         });
     connect(m_importButton, &QToolButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("导入 BCD 存储"));
+                return;
+            }
             importBcdStore();
         });
     connect(m_copyEntryButton, &QToolButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("复制 BCD 启动项"));
+                return;
+            }
             createCopyFromSelectedEntry();
         });
     connect(m_deleteEntryButton, &QToolButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("删除 BCD 启动项"));
+                return;
+            }
             deleteSelectedEntry();
         });
     connect(m_setDefaultButton, &QToolButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("设置默认 BCD 启动项"));
+                return;
+            }
             setSelectedAsDefaultEntry();
         });
     connect(m_bootOnceButton, &QToolButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("设置一次性 BCD 启动项"));
+                return;
+            }
             addSelectedToBootSequence();
         });
     connect(m_copyRowButton, &QToolButton::clicked, this, [this]()
@@ -517,22 +544,47 @@ void BootEditorTab::initializeConnections()
         });
     connect(m_applyEntryButton, &QPushButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("应用 BCD 启动项修改"));
+                return;
+            }
             applySelectedEntryChanges();
         });
     connect(m_applyBootMgrButton, &QPushButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("应用 BCD 启动管理器修改"));
+                return;
+            }
             applyBootManagerChanges();
         });
     connect(m_setLegacyForSelectedButton, &QPushButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("设置 Legacy 启动菜单策略"));
+                return;
+            }
             setLegacyBootForSelectedEntry();
         });
     connect(m_setLegacyForDefaultButton, &QPushButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("设置默认项 Legacy 启动菜单策略"));
+                return;
+            }
             setLegacyBootForDefaultEntry();
         });
     connect(m_setStandardForSelectedButton, &QPushButton::clicked, this, [this]()
         {
+            if (!ks::ui::isCurrentProcessElevated())
+            {
+                (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("设置 Standard 启动菜单策略"));
+                return;
+            }
             setStandardBootForSelectedEntry();
         });
     connect(m_reloadOneButton, &QPushButton::clicked, this, [this]()

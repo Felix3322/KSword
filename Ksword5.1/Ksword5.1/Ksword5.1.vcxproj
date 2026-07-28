@@ -405,6 +405,7 @@
     <ClInclude Include="FileDock\FilePropertyPeAnalyzer.Internal.h" />
     <ClInclude Include="Framework\LogDockWidget.h" />
     <ClInclude Include="Framework\NotificationCardManager.h" />
+    <ClInclude Include="Framework\PrivilegeElevationPrompt.h" />
     <ClInclude Include="Framework\ProgressDockWidget.h" />
     <ClInclude Include="Framework\StartupSplash.h" />
     <ClInclude Include="KernelDock\KernelDockAtomWorker.h" />

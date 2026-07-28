@@ -3,6 +3,8 @@
 #include "ArkDriverCapabilities.h"
 #include "ArkDriverTypes.h"
 
+#include <functional>
+
 namespace ksword::ark
 {
     // Format the immutable R0 evidence packet as a stable diagnostic block.
@@ -16,6 +18,13 @@ namespace ksword::ark
     class DriverClient
     {
     public:
+        // setR0UnavailableHandler：
+        // - 为整个 R0 客户端注册一个“控制设备不存在”的 UI 通知入口；
+        // - handler 可能从工作线程调用，接收方必须自行切回 UI 线程；
+        // - 仅用于驱动未启用，不把旧驱动/业务 IOCTL 失败误报为“请启用 R0”。
+        using R0UnavailableHandler = std::function<void(unsigned long win32Error)>;
+        static void setR0UnavailableHandler(R0UnavailableHandler handler);
+
         DriverClient() = default;
 
         // Best-effort branding upload for the VMware-only bugcheck panel.

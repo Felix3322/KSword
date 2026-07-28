@@ -1,5 +1,6 @@
 #include "ProcessTraceMonitorWidget.h"
 #include "../theme.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 // ============================================================
 // ProcessTraceMonitorWidget.Actions.cpp
@@ -850,10 +851,9 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
     auto [launchOk, launchResult] = launchTarget(false);
     if (!launchOk && launchResult.failure == ks::process::SuspendedProcessLaunchFailure::AdministratorRequired)
     {
-        QMessageBox::warning(
+        (void)ks::ui::requestAdministratorRestartForFeature(
             this,
-            QStringLiteral("创建并挂起监控目标"),
-            QStringLiteral("以管理员运行需要当前 KSword 已提升。请手动以管理员身份启动 KSword 后重试。"));
+            QStringLiteral("以管理员权限创建并挂起监控目标"));
         return;
     }
 

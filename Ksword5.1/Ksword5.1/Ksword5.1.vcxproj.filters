@@ -954,6 +954,9 @@
     <ClInclude Include="Framework\NotificationCardManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Framework\PrivilegeElevationPrompt.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Framework\ProgressDockWidget.h">
       <Filter>Header Files</Filter>
     </ClInclude>
