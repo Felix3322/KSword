@@ -179,6 +179,7 @@ private:
     void refreshPrivilegeStatusButtons();
     void applyPrivilegeButtonStyle(QPushButton* button, bool activeState);
     void handleR0DriverUnavailable(unsigned long win32Error);
+    void handleR0PermissionRequired(unsigned long win32Error);
     void enableR0ForUserRequest();
 
     // handleUiAccessButtonClicked 作用：
@@ -538,6 +539,7 @@ private:
     bool m_r0DriverServiceRunning = false;      // m_r0DriverServiceRunning：KswordARK 驱动服务当前是否运行。
     bool m_r0UnavailablePromptArmed = false;   // 主窗口显示后才允许 R0 缺失提示，避免启动后台探测造成无意义弹窗。
     bool m_r0UnavailablePromptShowing = false; // 合并同一时间到达的多个 Dock/后台 R0 请求。
+    bool m_r0PermissionPromptShowing = false; // 合并短时间内多个 R0 IOCTL 权限不足提示。
     std::atomic_bool m_r0DriverLogPollerRunning{ false }; // m_r0DriverLogPollerRunning：R0 日志轮询线程运行标记。
     std::unique_ptr<std::thread> m_r0DriverLogPollerThread; // m_r0DriverLogPollerThread：R0 日志轮询线程对象。
     QTimer* m_privilegeStatusTimer = nullptr;

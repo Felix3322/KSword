@@ -1,4 +1,5 @@
 #include "FileDock.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/VisibleTableWidget.h"
 #include "FilePropertyPeAnalyzer.h"
 #include "FileHandleUsageScanner.h"
@@ -5990,6 +5991,7 @@ namespace
                     }
                     if (result != ERROR_SUCCESS)
                     {
+                        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑文件权限"), detailText);
                         QMessageBox::warning(this, QStringLiteral("权限编辑"), detailText);
                         refreshSecurityUi();
                         return;
@@ -6018,6 +6020,7 @@ namespace
                     }
                     if (result != ERROR_SUCCESS)
                     {
+                        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除文件权限项"), detailText);
                         QMessageBox::warning(this, QStringLiteral("删除 ACE"), detailText);
                         refreshSecurityUi();
                         return;
@@ -8156,6 +8159,10 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
     panel.lastManualFsType = fsType;
     if (!parseOk)
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("读取原始文件系统数据"),
+            errorText);
         panel.manualLoadedPath.clear();
         if (panel.parserStatusLabel != nullptr)
         {
@@ -11649,6 +11656,11 @@ void FileDock::unlockPathsByDriver(
                 }
                 else
                 {
+                    const QString failurePreview = buildLogPreviewText(jobResult.operationFailList + jobResult.skippedTargetList, 8);
+                    (void)ks::ui::promptForPrivilegeFailure(
+                        unlockerDialogParent,
+                        QStringLiteral("文件解锁器"),
+                        failurePreview);
                     QMessageBox::warning(
                         unlockerDialogParent,
                         QStringLiteral("文件解锁器"),
@@ -11731,6 +11743,14 @@ void FileDock::takeOwnershipSelectedItems(FilePanelWidgets& panel)
     const std::vector<QString> paths = selectedPaths(panel);
     if (paths.empty())
     {
+        return;
+    }
+
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("取得文件所有权并授予完全控制"));
         return;
     }
 
@@ -11890,6 +11910,10 @@ void FileDock::setSelectedFileIntegrityLevel(
         }
         else
         {
+            (void)ks::ui::promptForPrivilegeFailure(
+                this,
+                QStringLiteral("设置文件完整性级别"),
+                result);
             failureDetails.push_back(QStringLiteral("%1 | code=%2 | %3")
                 .arg(QDir::toNativeSeparators(targetPath))
                 .arg(result)

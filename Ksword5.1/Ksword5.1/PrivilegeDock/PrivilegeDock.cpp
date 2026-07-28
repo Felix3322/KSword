@@ -1,6 +1,7 @@
 #include "PrivilegeDock.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 // ============================================================
 // PrivilegeDock.cpp
@@ -676,6 +677,14 @@ void PrivilegeDock::createUserByInputs()
         return;
     }
 
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("创建本地用户"));
+        return;
+    }
+
     // 二次确认：避免误触导致系统新增账号。
     const int confirm = QMessageBox::question(
         this,
@@ -709,6 +718,10 @@ void PrivilegeDock::createUserByInputs()
             << ", error="
             << errorText.toStdString()
             << eol;
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("创建本地用户"),
+            errorText);
         QMessageBox::warning(
             this,
             privilegeText("privilege.dialog.create.title", QStringLiteral("创建用户")),
@@ -761,6 +774,14 @@ void PrivilegeDock::resetPasswordByInputs()
         return;
     }
 
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("重置本地用户密码"));
+        return;
+    }
+
     const int confirm = QMessageBox::question(
         this,
         privilegeText("privilege.dialog.reset.title", QStringLiteral("重置密码")),
@@ -793,6 +814,10 @@ void PrivilegeDock::resetPasswordByInputs()
             << ", error="
             << errorText.toStdString()
             << eol;
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("重置本地用户密码"),
+            errorText);
         QMessageBox::warning(
             this,
             privilegeText("privilege.dialog.reset.title", QStringLiteral("重置密码")),

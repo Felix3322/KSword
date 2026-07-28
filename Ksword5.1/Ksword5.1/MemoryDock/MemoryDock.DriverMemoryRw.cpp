@@ -1,4 +1,5 @@
 #include "MemoryDock.h"
+#include "MemoryDock.Internal.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/HexEditorWidget.h"
@@ -647,6 +648,10 @@ void MemoryDock::driverReadMemoryFromUi()
     {
         resetDriverMemoryRwState();
         const QString readableIoMessage = driverMemoryIoMessageText(readResult.io.message);
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("R0读取进程内存"),
+            readResult.io.win32Error);
         if (m_driverMemoryRangeLabel != nullptr)
         {
             m_driverMemoryRangeLabel->setText(requestRangeText + QStringLiteral(" | IOCTL失败"));
@@ -663,6 +668,10 @@ void MemoryDock::driverReadMemoryFromUi()
     const QString copyStatusText = driverMemoryNtStatusText(readResult.copyStatus);
     if (!driverMemoryReadStatusHasUsableBytes(readResult.readStatus))
     {
+        (void)ks::ui::promptForPrivilegeNtStatus(
+            this,
+            QStringLiteral("R0读取进程内存"),
+            static_cast<long>(readResult.copyStatus));
         const QString failureText = QString(
             "R0读取未取得可用字节：%1。\n\n"
             "目标=%2\n"
@@ -919,6 +928,14 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
                 writeResult.writeStatus != KSWORD_ARK_MEMORY_WRITE_STATUS_OK ||
                 writeResult.bytesWritten != static_cast<std::uint32_t>(chunkBytes))
             {
+                (void)ks::ui::promptForPrivilegeFailure(
+                    this,
+                    QStringLiteral("R0写入进程内存"),
+                    writeResult.io.win32Error);
+                (void)ks::ui::promptForPrivilegeNtStatus(
+                    this,
+                    QStringLiteral("R0写入进程内存"),
+                    static_cast<long>(writeResult.copyStatus));
                 ++failedBlockCount;
                 lastFailureText = QString("地址=%1 请求=%2 写入=%3 状态=%4 NT=0x%5 信息=%6")
                     .arg(formatAddress(chunkAddress))

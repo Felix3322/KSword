@@ -1,4 +1,5 @@
 #include "OtherDock.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/VisibleTableWidget.h"
 
@@ -1451,6 +1452,10 @@ private:
         const bool exStyleWriteOk = (exStyleError == ERROR_SUCCESS);
         if (!styleWriteOk || !exStyleWriteOk)
         {
+            (void)ks::ui::promptForPrivilegeFailure(
+                this,
+                QStringLiteral("修改窗口样式"),
+                styleWriteOk ? exStyleError : styleError);
             QMessageBox::warning(
                 this,
                 QStringLiteral("样式应用提示"),

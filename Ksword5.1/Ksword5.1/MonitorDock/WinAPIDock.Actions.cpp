@@ -1,4 +1,5 @@
 #include "WinAPIDock.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
@@ -1178,9 +1179,14 @@ void WinAPIDock::startMonitoring()
     const bool injectOk = ks::process::InjectDllByPath(pidValue, dllPathText.toStdString(), &detailText);
     if (!injectOk)
     {
+        const QString injectErrorText = QString::fromStdString(detailText);
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("注入 API 监控 DLL"),
+            injectErrorText);
         appendInternalEvent(QStringLiteral("内部"), QStringLiteral("InjectDllByPath"), QString::fromStdString(detailText));
         stopMonitoringInternal(false);
-        QMessageBox::warning(this, QStringLiteral("WinAPI 监控"), QStringLiteral("DLL 注入失败：%1").arg(QString::fromStdString(detailText)));
+        QMessageBox::warning(this, QStringLiteral("WinAPI 监控"), QStringLiteral("DLL 注入失败：%1").arg(injectErrorText));
         return;
     }
 

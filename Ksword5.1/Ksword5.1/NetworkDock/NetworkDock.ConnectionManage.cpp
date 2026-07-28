@@ -1,4 +1,5 @@
 #include "NetworkDock.InternalCommon.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 using namespace network_dock_detail;
 
@@ -433,6 +434,10 @@ void NetworkDock::terminateSelectedTcpConnection()
     }
     else
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("终止 TCP 连接"),
+            QString::fromStdString(detailText));
         QMessageBox::warning(this, QStringLiteral("连接管理"),
             QStringLiteral("终止连接失败：%1").arg(toQString(detailText)));
 

@@ -1,5 +1,6 @@
 #include "OtherDock.h"
 #include "WindowCaptureProtection.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 // ============================================================
 // OtherDock.WindowProtection.cpp
@@ -151,6 +152,14 @@ void OtherDock::setCaptureProtectionForWindow(
     }
     else
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            result.requestedProtection ? QStringLiteral("启用窗口防截图保护") : QStringLiteral("取消窗口防截图保护"),
+            result.win32Error);
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            result.requestedProtection ? QStringLiteral("启用窗口防截图保护") : QStringLiteral("取消窗口防截图保护"),
+            QString::fromStdString(result.detail));
         err << actionEvent
             << "[OtherDock] 窗口防截图保护操作失败, requestedHwnd="
             << formatHwndText(result.requestedHwnd).toStdString()

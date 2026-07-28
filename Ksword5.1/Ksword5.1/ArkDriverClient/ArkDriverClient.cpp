@@ -24,6 +24,8 @@ namespace ksword::ark
         std::mutex g_r0UnavailableHandlerMutex;
         DriverClient::R0UnavailableHandler g_r0UnavailableHandler;
         std::chrono::steady_clock::time_point g_lastR0UnavailableNotification;
+        DriverClient::R0PermissionRequiredHandler g_r0PermissionRequiredHandler;
+        std::chrono::steady_clock::time_point g_lastR0PermissionNotification;
 
         bool isR0DriverNotEnabledError(const unsigned long win32Error)
         {
@@ -55,6 +57,37 @@ namespace ksword::ark
             }
 
             // 不在锁内执行 UI 回调，避免回调启动服务时重入 ArkDriverClient 造成死锁。
+            handler(win32Error);
+        }
+
+        bool isR0PermissionRequiredError(const unsigned long win32Error)
+        {
+            return win32Error == ERROR_ACCESS_DENIED ||
+                win32Error == ERROR_PRIVILEGE_NOT_HELD ||
+                win32Error == ERROR_ELEVATION_REQUIRED ||
+                win32Error == ERROR_NOT_ALL_ASSIGNED;
+        }
+
+        void notifyR0PermissionRequired(const unsigned long win32Error)
+        {
+            if (!isR0PermissionRequiredError(win32Error))
+            {
+                return;
+            }
+
+            DriverClient::R0PermissionRequiredHandler handler;
+            {
+                std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+                const auto now = std::chrono::steady_clock::now();
+                if (!g_r0PermissionRequiredHandler ||
+                    (g_lastR0PermissionNotification.time_since_epoch().count() != 0 &&
+                        now - g_lastR0PermissionNotification < std::chrono::seconds(2)))
+                {
+                    return;
+                }
+                g_lastR0PermissionNotification = now;
+                handler = g_r0PermissionRequiredHandler;
+            }
             handler(win32Error);
         }
 
@@ -175,6 +208,13 @@ namespace ksword::ark
         g_lastR0UnavailableNotification = {};
     }
 
+    void DriverClient::setR0PermissionRequiredHandler(R0PermissionRequiredHandler handler)
+    {
+        std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+        g_r0PermissionRequiredHandler = std::move(handler);
+        g_lastR0PermissionNotification = {};
+    }
+
     DriverHandle::DriverHandle(const HANDLE handleValue) noexcept
         : m_handle(handleValue)
     {
@@ -237,7 +277,9 @@ namespace ksword::ark
             nullptr));
         if (!handle.isValid())
         {
-            notifyR0DriverUnavailable(::GetLastError());
+            const unsigned long openError = ::GetLastError();
+            notifyR0DriverUnavailable(openError);
+            notifyR0PermissionRequired(openError);
         }
         return handle;
     }
@@ -254,7 +296,9 @@ namespace ksword::ark
             nullptr));
         if (!handle.isValid())
         {
-            notifyR0DriverUnavailable(::GetLastError());
+            const unsigned long openError = ::GetLastError();
+            notifyR0DriverUnavailable(openError);
+            notifyR0PermissionRequired(openError);
         }
         return handle;
     }
@@ -278,6 +322,7 @@ namespace ksword::ark
         if (activeHandle == nullptr || !activeHandle->isValid())
         {
             const unsigned long openError = ::GetLastError();
+            notifyR0PermissionRequired(openError);
             IoResult result = makeWin32IoResult(false, openError, 0, "CreateFileW(KswordARK)");
             return result;
         }
@@ -293,6 +338,10 @@ namespace ksword::ark
             &bytesReturned,
             nullptr);
         const unsigned long ioctlError = ioctlOk ? ERROR_SUCCESS : ::GetLastError();
+        if (ioctlOk == FALSE)
+        {
+            notifyR0PermissionRequired(ioctlError);
+        }
         return makeWin32IoResult(ioctlOk != FALSE, ioctlError, bytesReturned, "KswordARK DeviceIoControl");
     }
 
@@ -325,6 +374,10 @@ namespace ksword::ark
             overlapped);
         result.issued = (ioctlOk != FALSE);
         result.win32Error = result.issued ? ERROR_SUCCESS : ::GetLastError();
+        if (!result.issued)
+        {
+            notifyR0PermissionRequired(result.win32Error);
+        }
         result.bytesReturned = bytesReturned;
         return result;
     }

@@ -10,6 +10,7 @@
 #include "../UI/FlatTableModel.h"
 #include "../UI/TableColumnAutoFit.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../ksword/network/network_process_etw_monitor.h"
 
 #include <QAbstractItemModel>
@@ -10435,6 +10436,13 @@ void ProcessDock::showActionResultMessage(
     const std::string& detailText,
     const kLogEvent& actionEvent)
 {
+    if (!actionOk)
+    {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            title,
+            QString::fromStdString(detailText));
+    }
     // 统一动作结果日志：按照规范不再弹窗，避免频繁打断用户流程。
     const std::string normalizedDetailText = detailText.empty() ? "无附加信息" : detailText;
     (actionOk ? info : err) << actionEvent

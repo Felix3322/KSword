@@ -1,4 +1,5 @@
 #include "DiskMonitorPage.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
@@ -936,6 +937,12 @@ void DiskMonitorPage::startInitialSampling()
     }
 
     m_initialSamplingStarted = true;
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("文件级磁盘活动监控"));
+    }
     startFileActivityEtw();
     refreshNow();
 

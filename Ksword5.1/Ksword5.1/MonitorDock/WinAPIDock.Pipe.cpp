@@ -1,5 +1,6 @@
 #include "WinAPIDock.h"
 #include "../theme.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 // ============================================================
 // WinAPIDock.Pipe.cpp
@@ -200,6 +201,10 @@ void WinAPIDock::startPipeReadThread()
                     {
                         return;
                     }
+                    (void)ks::ui::promptForPrivilegeFailure(
+                        guardThis,
+                        QStringLiteral("连接 API 监控命名管道"),
+                        lastError);
                     guardThis->appendInternalEvent(
                         QStringLiteral("内部"),
                         QStringLiteral("命名管道连接失败"),
@@ -367,6 +372,10 @@ void WinAPIDock::startChildPipeReadThread(const std::uint32_t childPidValue)
                     {
                         return;
                     }
+                    (void)ks::ui::promptForPrivilegeFailure(
+                        guardThis,
+                        QStringLiteral("连接子进程 API 监控命名管道"),
+                        lastError);
                     guardThis->appendInternalEvent(
                         QStringLiteral("内部"),
                         QStringLiteral("子进程管道连接失败"),

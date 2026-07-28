@@ -1,4 +1,5 @@
 #include "ProcessDetailWindow.InternalCommon.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 using namespace process_detail_window_internal;
 
@@ -4035,6 +4036,7 @@ void ProcessDetailWindow::refreshTokenSwitchStates()
     if (processHandle == nullptr)
     {
         const DWORD openProcessError = GetLastError();
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("修改目标进程令牌"), openProcessError);
         setStatusLabel(
             QStringLiteral("● 刷新失败：OpenProcess(%1)").arg(openProcessError),
             statusWarningColor(),
@@ -4054,6 +4056,7 @@ void ProcessDetailWindow::refreshTokenSwitchStates()
     if (OpenProcessToken(processHandle, TOKEN_QUERY, &tokenHandle) == FALSE || tokenHandle == nullptr)
     {
         const DWORD openTokenError = GetLastError();
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("读取目标进程令牌"), openTokenError);
         CloseHandle(processHandle);
         processHandle = nullptr;
         setStatusLabel(
@@ -4263,6 +4266,7 @@ void ProcessDetailWindow::applyTokenSwitchStates()
     if (processHandle == nullptr)
     {
         const DWORD openProcessError = GetLastError();
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("修改目标进程令牌"), openProcessError);
         setStatusLabel(
             QStringLiteral("● 应用失败：OpenProcess(%1)").arg(openProcessError),
             statusWarningColor(),
@@ -4282,6 +4286,7 @@ void ProcessDetailWindow::applyTokenSwitchStates()
     if (OpenProcessToken(processHandle, TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, &tokenHandle) == FALSE || tokenHandle == nullptr)
     {
         const DWORD openTokenError = GetLastError();
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("修改目标进程令牌"), openTokenError);
         CloseHandle(processHandle);
         processHandle = nullptr;
         setStatusLabel(
@@ -4303,9 +4308,10 @@ void ProcessDetailWindow::applyTokenSwitchStates()
     // - 读取复选框状态并调用 NtSetInformationToken；
     // - 每项失败都会记录 NTSTATUS，最终统一汇总到状态栏。
     int successCount = 0;
+    long privilegeDeniedStatus = 0;
     QStringList failItemList;
     const auto applyBoolFromCheckBox =
-        [setInformationToken, tokenHandle, &successCount, &failItemList](
+        [setInformationToken, tokenHandle, &successCount, &failItemList, &privilegeDeniedStatus](
             QCheckBox* checkBox,
             const TOKEN_INFORMATION_CLASS infoClass,
             const QString& itemName)
@@ -4323,6 +4329,10 @@ void ProcessDetailWindow::applyTokenSwitchStates()
             checkBox->isChecked());
         if (!NT_SUCCESS(setStatus))
         {
+            if (static_cast<unsigned long>(setStatus) == 0xC0000022UL)
+            {
+                privilegeDeniedStatus = static_cast<long>(setStatus);
+            }
             failItemList << QStringLiteral("%1(%2)").arg(itemName).arg(formatNtStatusHex(setStatus));
             return;
         }
@@ -4378,6 +4388,10 @@ void ProcessDetailWindow::applyTokenSwitchStates()
         }
         else
         {
+            if (static_cast<unsigned long>(policyStatus) == 0xC0000022UL)
+            {
+                privilegeDeniedStatus = static_cast<long>(policyStatus);
+            }
             failItemList << QStringLiteral("MandatoryPolicy(%1)").arg(formatNtStatusHex(policyStatus));
         }
     }
@@ -4390,6 +4404,14 @@ void ProcessDetailWindow::applyTokenSwitchStates()
     if (m_applyTokenSwitchButton != nullptr)
     {
         m_applyTokenSwitchButton->setEnabled(true);
+    }
+
+    if (privilegeDeniedStatus != 0)
+    {
+        (void)ks::ui::promptForPrivilegeNtStatus(
+            this,
+            QStringLiteral("修改目标进程令牌"),
+            privilegeDeniedStatus);
     }
 
     // 应用结果反馈：
@@ -4613,6 +4635,7 @@ void ProcessDetailWindow::applyRawTokenInformation()
     if (processHandle == nullptr)
     {
         const DWORD openProcessError = GetLastError();
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("应用原始进程令牌设置"), openProcessError);
         setStatusLabel(
             QStringLiteral("● 原始设置失败：OpenProcess(%1)").arg(openProcessError),
             statusWarningColor(),
@@ -4635,6 +4658,7 @@ void ProcessDetailWindow::applyRawTokenInformation()
         &tokenHandle) == FALSE || tokenHandle == nullptr)
     {
         const DWORD openTokenError = GetLastError();
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("应用原始进程令牌设置"), openTokenError);
         CloseHandle(processHandle);
         processHandle = nullptr;
         setStatusLabel(
@@ -4691,6 +4715,7 @@ void ProcessDetailWindow::applyRawTokenInformation()
     }
     else
     {
+        (void)ks::ui::promptForPrivilegeNtStatus(this, QStringLiteral("应用原始进程令牌设置"), static_cast<long>(setStatus));
         setStatusLabel(
             QStringLiteral("● 原始设置失败：[%1] %2, status=%3")
             .arg(classId)
@@ -5898,6 +5923,7 @@ void ProcessDetailWindow::applyPebEditableFields()
     if (processHandle == nullptr)
     {
         const DWORD errorCode = GetLastError();
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("修改远程进程 PEB"), errorCode);
         QMessageBox::critical(
             this,
             QStringLiteral("PEB 修改失败"),

@@ -770,6 +770,13 @@ void ProcessDetailWindow::showActionResultMessage(
     const std::string& detailText,
     const kLogEvent& actionEvent)
 {
+    if (!actionOk)
+    {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            title,
+            QString::fromStdString(detailText));
+    }
     // 动作反馈日志：按照规范不再弹窗，只输出日志，避免打断用户流程。
     const std::string normalizedDetailText = detailText.empty() ? "无附加信息" : detailText;
     (actionOk ? info : err) << actionEvent

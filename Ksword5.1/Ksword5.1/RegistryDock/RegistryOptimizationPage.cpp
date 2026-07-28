@@ -1,4 +1,5 @@
 #include "RegistryOptimizationPage.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../theme.h"
@@ -1938,6 +1939,14 @@ void RegistryOptimizationPage::continueStateApply()
 void RegistryOptimizationPage::completePendingAction(const bool actionOk, const QString& errorText)
 {
     if (!m_stateApplyInProgress || m_stateApplyActiveAction.isEmpty()) return;
+
+    if (!actionOk)
+    {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("执行系统优化"),
+            errorText);
+    }
 
     bool actionRestartExplorer = false;
     QStringList actionDetailLines;

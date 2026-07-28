@@ -7,13 +7,21 @@
 #include <QStringList>
 #include <QWidget>
 
-#include <shellapi.h>
 #include <windows.h>
+#include <shellapi.h>
 
 #include "../Internationalization/LanguageManager.h"
 
 namespace ks::ui
 {
+    inline bool isPrivilegeRequiredError(const unsigned long errorCode)
+    {
+        return errorCode == ERROR_ACCESS_DENIED ||
+            errorCode == ERROR_PRIVILEGE_NOT_HELD ||
+            errorCode == ERROR_ELEVATION_REQUIRED ||
+            errorCode == ERROR_NOT_ALL_ASSIGNED;
+    }
+
     inline bool isCurrentProcessElevated()
     {
         HANDLE tokenHandle = nullptr;
@@ -114,5 +122,64 @@ namespace ks::ui
 
         QCoreApplication::quit();
         return false;
+    }
+
+    // promptForPrivilegeFailure：
+    // - 把“功能执行后才发现权限不足”的错误统一转换为功能级提权提示；
+    // - 已经是管理员时返回 false，让调用方继续展示原始错误，不掩盖驱动/对象自身的拒绝。
+    inline bool promptForPrivilegeFailure(
+        QWidget* const parent,
+        const QString& featureName,
+        const unsigned long errorCode)
+    {
+        if (!isPrivilegeRequiredError(errorCode) || isCurrentProcessElevated())
+        {
+            return false;
+        }
+        (void)requestAdministratorRestartForFeature(parent, featureName);
+        return true;
+    }
+
+    inline bool promptForPrivilegeFailure(
+        QWidget* const parent,
+        const QString& featureName,
+        const QString& errorText)
+    {
+        const QString normalized = errorText.trimmed();
+        if (isCurrentProcessElevated() ||
+            !(normalized.contains(QStringLiteral("access is denied"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("拒绝访问"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("权限不足"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("error=5"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("win32=5"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("0x80070005"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("0x80320005"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("0x00000005"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("code=5"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("错误码=5"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("错误码：5"), Qt::CaseInsensitive) ||
+                normalized.contains(QStringLiteral("错误码 5"), Qt::CaseInsensitive)))
+        {
+            return false;
+        }
+        (void)requestAdministratorRestartForFeature(parent, featureName);
+        return true;
+    }
+
+    inline bool promptForPrivilegeNtStatus(
+        QWidget* const parent,
+        const QString& featureName,
+        const long statusValue)
+    {
+        const unsigned long status = static_cast<unsigned long>(statusValue);
+        if (isCurrentProcessElevated() ||
+            (status != 0xC0000022UL && // STATUS_ACCESS_DENIED
+                status != 0xC0000061UL && // STATUS_PRIVILEGE_NOT_HELD
+                status != 0xC000042CUL)) // STATUS_INVALID_IMAGE_HASH/elevation policy denial
+        {
+            return false;
+        }
+        (void)requestAdministratorRestartForFeature(parent, featureName);
+        return true;
     }
 }

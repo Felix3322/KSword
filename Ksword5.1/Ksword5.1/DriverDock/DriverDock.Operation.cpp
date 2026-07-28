@@ -1,4 +1,5 @@
 #include "DriverDock.Internal.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
@@ -525,6 +526,10 @@ void DriverDock::stopDriverServiceFromServiceRow(const int rowIndex)
                     }
                     else
                     {
+                        (void)ks::ui::promptForPrivilegeFailure(
+                            guardThis,
+                            QStringLiteral("停止驱动服务"),
+                            errorCode);
                         guardThis->appendOperateLogLine(
                             driverText(
                                 "driver.operation.stop.failed",
@@ -1654,6 +1659,10 @@ void DriverDock::registerOrUpdateDriverService()
         &errorText,
         &errorCode))
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("注册或更新驱动服务"),
+            errorCode);
         appendOperateLogLine(
             driverText("driver.operation.register.failed", QStringLiteral("注册/更新失败：%1"))
             .arg(QString::fromUtf8(errorText.c_str())));
@@ -1713,6 +1722,10 @@ void DriverDock::loadSelectedDriverService()
         &errorText,
         &errorCode))
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("挂载驱动服务"),
+            errorCode);
         if (isDriverSignatureLoadError(static_cast<DWORD>(errorCode)))
         {
             const QString binaryPathText =
@@ -1790,6 +1803,10 @@ void DriverDock::unloadSelectedDriverService()
         &errorText,
         &errorCode))
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("卸载驱动服务"),
+            errorCode);
         appendOperateLogLine(
             driverText("driver.operation.unload.failed", QStringLiteral("卸载失败：%1"))
             .arg(QString::fromUtf8(errorText.c_str())));
@@ -1847,6 +1864,10 @@ void DriverDock::deleteSelectedDriverService()
         &errorText,
         &errorCode))
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("删除驱动服务"),
+            errorCode);
         appendOperateLogLine(
             driverText("driver.operation.delete.failed", QStringLiteral("删除失败：%1"))
             .arg(QString::fromUtf8(errorText.c_str())));

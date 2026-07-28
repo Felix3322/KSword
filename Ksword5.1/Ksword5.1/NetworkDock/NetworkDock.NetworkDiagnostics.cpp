@@ -1,4 +1,5 @@
 #include "NetworkDock.InternalCommon.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 #include "../Internationalization/LanguageManager.h"
@@ -535,11 +536,19 @@ void NetworkDock::addRouteEntry()
     const DWORD createStatus = CreateIpForwardEntry2(&nativeRow);
     if (createStatus != NO_ERROR)
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("新增系统路由"),
+            createStatus);
         QMessageBox::warning(this, QStringLiteral("新增路由"), QStringLiteral("CreateIpForwardEntry2 失败，错误码=%1").arg(createStatus));
         return;
     }
     if (persistent && !runNetshRouteCommand(QStringLiteral("add"), record, &errorText))
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("持久化新增路由"),
+            errorText);
         (void)DeleteIpForwardEntry2(&nativeRow);
         QMessageBox::warning(this, QStringLiteral("新增路由"), QStringLiteral("持久化写入失败，已回滚活动路由。\n%1").arg(errorText));
         return;
@@ -600,6 +609,10 @@ void NetworkDock::editSelectedRouteEntry()
     }
     if (operationStatus != NO_ERROR)
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("编辑系统路由"),
+            operationStatus);
         QMessageBox::warning(this, QStringLiteral("编辑路由"), QStringLiteral("更新活动路由失败，错误码=%1").arg(operationStatus));
         return;
     }
@@ -610,12 +623,20 @@ void NetworkDock::editSelectedRouteEntry()
             (void)runNetshRouteCommand(QStringLiteral("delete"), original, nullptr);
             if (!runNetshRouteCommand(QStringLiteral("add"), target, &errorText))
             {
+                (void)ks::ui::promptForPrivilegeFailure(
+                    this,
+                    QStringLiteral("持久化编辑路由"),
+                    errorText);
                 QMessageBox::warning(this, QStringLiteral("编辑路由"), QStringLiteral("活动路由已更新，但持久化写入失败：%1").arg(errorText));
             }
         }
         else if (!runNetshRouteCommand(QStringLiteral("set"), target, &errorText) &&
                  !runNetshRouteCommand(QStringLiteral("add"), target, &errorText))
         {
+            (void)ks::ui::promptForPrivilegeFailure(
+                this,
+                QStringLiteral("持久化编辑路由"),
+                errorText);
             QMessageBox::warning(this, QStringLiteral("编辑路由"), QStringLiteral("活动路由已更新，但持久化写入失败：%1").arg(errorText));
         }
     }
@@ -657,6 +678,10 @@ void NetworkDock::deleteSelectedRouteEntry()
     const DWORD deleteStatus = DeleteIpForwardEntry2(&nativeRow);
     if (deleteStatus != NO_ERROR)
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("删除系统路由"),
+            deleteStatus);
         QMessageBox::warning(this, QStringLiteral("删除路由"), QStringLiteral("DeleteIpForwardEntry2 失败，错误码=%1").arg(deleteStatus));
         return;
     }
@@ -1055,6 +1080,7 @@ void NetworkDock::addArpCacheEntry()
     const DWORD createResult = CreateIpNetEntry(&row);
     if (createResult != NO_ERROR)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新增 ARP 项"), createResult);
         kLogEvent event;
         err << event
             << "[NetworkDock] 新增ARP失败, errorCode="
@@ -1115,6 +1141,7 @@ void NetworkDock::removeSelectedArpCacheEntry()
     const DWORD deleteResult = DeleteIpNetEntry(&deleteRow);
     if (deleteResult != NO_ERROR)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除 ARP 项"), deleteResult);
         kLogEvent event;
         err << event
             << "[NetworkDock] 删除ARP失败, ip="

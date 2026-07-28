@@ -1,4 +1,5 @@
 #include "ContextMenuCleanerTab.h"
+#include "../../Framework/PrivilegeElevationPrompt.h"
 #include "../../UI/VisibleTableWidget.h"
 
 #include "ContextMenuCleanerTab.Internal.h"
@@ -341,6 +342,10 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
         }
         else
         {
+            (void)ks::ui::promptForPrivilegeFailure(
+                this,
+                QStringLiteral("清理右键菜单注册表项"),
+                errorText);
             failedMessages.push_back(QStringLiteral("%1：%2")
                 .arg(rootPathText(entry.rootLabel, entry.subKeyPath), errorText));
             kLogEvent event;

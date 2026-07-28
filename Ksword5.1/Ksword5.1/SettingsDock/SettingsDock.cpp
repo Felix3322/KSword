@@ -2,6 +2,7 @@
 
 #include "../Framework.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../theme.h"
 
 #include <QApplication>
@@ -1285,6 +1286,14 @@ void SettingsDock::updateWindowScaleFactorHintLabel(const double normalizedScale
 
 void SettingsDock::launchTaskmgrHijackScript(const bool install)
 {
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("任务管理器映像劫持"));
+        return;
+    }
+
     // scriptPath 作用：
     // - 固定从应用当前目录查找 TaskmgrHijack.ps1，匹配 Release 包复制脚本的部署方式；
     // - 不回退仓库路径，避免发布包和开发目录行为不一致。

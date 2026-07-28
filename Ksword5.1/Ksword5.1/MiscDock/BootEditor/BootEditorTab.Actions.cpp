@@ -1,4 +1,5 @@
 #include "BootEditorTab.h"
+#include "../../Framework/PrivilegeElevationPrompt.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -779,6 +780,20 @@ BootEditorTab::BcdCommandResult BootEditorTab::runBcdEdit(
     const QString& commandDescription)
 {
     BcdCommandResult result;
+    const QString commandVerb = argumentList.value(0).trimmed().toLower();
+    const bool readOnlyCommand = commandVerb == QStringLiteral("/enum") ||
+        commandVerb == QStringLiteral("/enumall") ||
+        commandVerb == QStringLiteral("/v");
+    if (!readOnlyCommand && !ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("修改 BCD 启动配置"));
+        result.startSucceeded = false;
+        result.standardErrorText = QStringLiteral("需要管理员权限。请在管理员实例中重试。");
+        result.mergedOutputText = result.standardErrorText;
+        return result;
+    }
     QProcess process(this);
 
     process.setProgram(QStringLiteral("bcdedit"));
@@ -901,6 +916,10 @@ bool BootEditorTab::runBcdAndExpectSuccess(
     }
     if (result.exitCode != 0)
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            operationText,
+            result.mergedOutputText);
         QMessageBox::warning(
             this,
             QStringLiteral("引导编辑器"),

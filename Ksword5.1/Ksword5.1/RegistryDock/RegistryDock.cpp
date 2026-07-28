@@ -1,4 +1,5 @@
 #include "RegistryDock.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/VisibleTableWidget.h"
 
@@ -669,6 +670,7 @@ void RegistryDock::ensureTreeItemLoaded(QTreeWidgetItem* item)
     item->takeChildren();
     if (openResult != ERROR_SUCCESS)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("读取注册表子键"), static_cast<unsigned long>(openResult));
         kLogEvent event;
         warn << event
             << "[RegistryDock] 加载子键失败, path="
@@ -913,6 +915,7 @@ void RegistryDock::createSubKey()
     LONG openResult = ::RegOpenKeyExW(root, subPath.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(subPath.utf16()), 0, KEY_CREATE_SUB_KEY, &key);
     if (openResult != ERROR_SUCCESS)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新建注册表子键"), static_cast<unsigned long>(openResult));
         kLogEvent event;
         warn << event << "[RegistryDock] 新建子键失败：打开父键失败, error=" << winErrorText(openResult).toStdString() << eol;
         QMessageBox::warning(this, QStringLiteral("新建子键"), winErrorText(openResult));
@@ -926,6 +929,7 @@ void RegistryDock::createSubKey()
 
     if (createResult != ERROR_SUCCESS)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新建注册表子键"), static_cast<unsigned long>(createResult));
         kLogEvent event;
         warn << event << "[RegistryDock] 新建子键失败：创建失败, error=" << winErrorText(createResult).toStdString() << eol;
         QMessageBox::warning(this, QStringLiteral("新建子键"), winErrorText(createResult));
@@ -1023,6 +1027,7 @@ void RegistryDock::createValue()
     QString errorText;
     if (!writeRegistryValue(root, subPath, valueName, type, data, &errorText))
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新建注册表值"), errorText);
         kLogEvent event;
         warn << event << "[RegistryDock] 新建值失败, path=" << m_currentPath.toStdString() << ", error=" << errorText.toStdString() << eol;
         QMessageBox::warning(this, QStringLiteral("新建值"), errorText);
@@ -1078,6 +1083,7 @@ void RegistryDock::renameSelectedObject()
 
         if (!writeRegistryValue(root, subPath, newName, type, data, &errorText))
         {
+            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("重命名注册表值"), errorText);
             kLogEvent event;
             warn << event << "[RegistryDock] 重命名值失败：写入新值失败, error=" << errorText.toStdString() << eol;
             QMessageBox::warning(this, QStringLiteral("重命名值"), errorText);
@@ -1125,6 +1131,7 @@ void RegistryDock::renameSelectedObject()
     LONG openResult = ::RegOpenKeyExW(root, parentPath.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(parentPath.utf16()), 0, KEY_WRITE, &parentKey);
     if (openResult != ERROR_SUCCESS)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("重命名注册表键"), static_cast<unsigned long>(openResult));
         QMessageBox::warning(this, QStringLiteral("重命名键"), winErrorText(openResult));
         return;
     }
@@ -1142,6 +1149,7 @@ void RegistryDock::renameSelectedObject()
     ::RegCloseKey(parentKey);
     if (renameResult != ERROR_SUCCESS)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("重命名注册表键"), static_cast<unsigned long>(renameResult));
         kLogEvent event;
         warn << event << "[RegistryDock] 重命名键失败, error=" << winErrorText(renameResult).toStdString() << eol;
         QMessageBox::warning(this, QStringLiteral("重命名键"), winErrorText(renameResult));
@@ -1198,6 +1206,7 @@ void RegistryDock::deleteSelectedObject()
         LONG openResult = ::RegOpenKeyExW(root, subPath.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(subPath.utf16()), 0, KEY_SET_VALUE, &key);
         if (openResult != ERROR_SUCCESS)
         {
+            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表值"), static_cast<unsigned long>(openResult));
             QMessageBox::warning(this, QStringLiteral("删除值"), winErrorText(openResult));
             return;
         }
@@ -1206,6 +1215,7 @@ void RegistryDock::deleteSelectedObject()
         ::RegCloseKey(key);
         if (deleteResult != ERROR_SUCCESS)
         {
+            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表值"), static_cast<unsigned long>(deleteResult));
             kLogEvent event;
             warn << event << "[RegistryDock] 删除值失败, error=" << winErrorText(deleteResult).toStdString() << eol;
             QMessageBox::warning(this, QStringLiteral("删除值"), winErrorText(deleteResult));
@@ -1243,6 +1253,7 @@ void RegistryDock::deleteSelectedObject()
     LONG openResult = ::RegOpenKeyExW(root, parentPath.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(parentPath.utf16()), 0, KEY_WRITE, &parentKey);
     if (openResult != ERROR_SUCCESS)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表键"), static_cast<unsigned long>(openResult));
         QMessageBox::warning(this, QStringLiteral("删除键"), winErrorText(openResult));
         return;
     }
@@ -1251,6 +1262,7 @@ void RegistryDock::deleteSelectedObject()
     ::RegCloseKey(parentKey);
     if (deleteResult != ERROR_SUCCESS)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表键"), static_cast<unsigned long>(deleteResult));
         kLogEvent event;
         warn << event << "[RegistryDock] 删除键失败, error=" << winErrorText(deleteResult).toStdString() << eol;
         QMessageBox::warning(this, QStringLiteral("删除键"), winErrorText(deleteResult));
@@ -1355,6 +1367,7 @@ void RegistryDock::editSelectedValue()
 
     if (!writeRegistryValue(root, subPath, valueName, type, outputData, &errorText))
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑注册表值"), errorText);
         kLogEvent event;
         warn << event << "[RegistryDock] 编辑值失败：写入失败, error=" << errorText.toStdString() << eol;
         QMessageBox::warning(this, QStringLiteral("编辑值"), errorText);

@@ -2670,6 +2670,11 @@ bool NetworkFirewallPage::deleteFirewallRuleFromSystem(
 
 void NetworkFirewallPage::addFirewallRule()
 {
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("新增防火墙规则"));
+        return;
+    }
     FirewallRuleEditorDialog dialog(nullptr, this);
     if (dialog.exec() != QDialog::Accepted)
     {
@@ -2680,6 +2685,7 @@ void NetworkFirewallPage::addFirewallRule()
     QString errorText;
     if (!addFirewallRuleEntryToSystem(ruleEntry, &errorText))
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新增防火墙规则"), errorText);
         QMessageBox::warning(this, QStringLiteral("新增规则失败"), errorText);
         setStatusText(errorText);
         return;
@@ -2691,6 +2697,11 @@ void NetworkFirewallPage::addFirewallRule()
 
 void NetworkFirewallPage::editSelectedFirewallRule()
 {
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("编辑防火墙规则"));
+        return;
+    }
     FirewallRuleEntry originalRuleEntry;
     if (!selectedRuleEntry(&originalRuleEntry))
     {
@@ -2707,6 +2718,7 @@ void NetworkFirewallPage::editSelectedFirewallRule()
     QString errorText;
     if (!updateFirewallRuleEntryInSystem(originalRuleEntry.fingerprintText, updatedRuleEntry, &errorText))
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑防火墙规则"), errorText);
         QMessageBox::warning(this, QStringLiteral("编辑规则失败"), errorText);
         setStatusText(errorText);
         return;
@@ -2718,6 +2730,11 @@ void NetworkFirewallPage::editSelectedFirewallRule()
 
 void NetworkFirewallPage::toggleSelectedFirewallRuleEnabled()
 {
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("切换防火墙规则状态"));
+        return;
+    }
     FirewallRuleEntry selectedRuleEntryValue;
     if (!selectedRuleEntry(&selectedRuleEntryValue))
     {
@@ -2728,6 +2745,7 @@ void NetworkFirewallPage::toggleSelectedFirewallRuleEnabled()
     const bool targetEnabled = !selectedRuleEntryValue.enabled;
     if (!setFirewallRuleEnabledInSystem(selectedRuleEntryValue.fingerprintText, targetEnabled, &errorText))
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("切换防火墙规则状态"), errorText);
         QMessageBox::warning(this, QStringLiteral("更新规则状态失败"), errorText);
         setStatusText(errorText);
         return;
@@ -2741,6 +2759,11 @@ void NetworkFirewallPage::toggleSelectedFirewallRuleEnabled()
 
 void NetworkFirewallPage::deleteSelectedFirewallRules()
 {
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("删除防火墙规则"));
+        return;
+    }
     if (m_ruleTable == nullptr || m_ruleTable->selectionModel() == nullptr)
     {
         return;
@@ -2791,6 +2814,7 @@ void NetworkFirewallPage::deleteSelectedFirewallRules()
         QString errorText;
         if (!deleteFirewallRuleFromSystem(ruleNameText, &errorText))
         {
+            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除防火墙规则"), errorText);
             QMessageBox::warning(this, QStringLiteral("删除规则失败"), errorText);
             setStatusText(errorText);
             refreshRulesAsync(true);

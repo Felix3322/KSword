@@ -1,5 +1,6 @@
 #include "StartupDock.Internal.h"
 #include "../OnlineScan/SandboxUploadActions.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 #include <QMetaObject>
 #include <QPointer>
@@ -886,6 +887,10 @@ void StartupDock::deleteSelectedEntry(const StartupCategory category, QTableWidg
                     if (safeThis.isNull()) return;
                     if (!taskDeleteOk)
                     {
+                        (void)ks::ui::promptForPrivilegeFailure(
+                            safeThis.data(),
+                            QStringLiteral("删除计划任务启动项"),
+                            taskErrorText);
                         QMessageBox::warning(
                             safeThis.data(),
                             startupText("startup.dialog.title", QStringLiteral("启动项")),
@@ -915,6 +920,7 @@ void StartupDock::deleteSelectedEntry(const StartupCategory category, QTableWidg
 
     if (!deleteOk)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除启动项"), errorText);
         QMessageBox::warning(
             this,
             startupText("startup.dialog.title", QStringLiteral("启动项")),

@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "Framework/PrivilegeElevationPrompt.h"
 #include <QMenu>
 #include <QAction>
 #include <QEasingCurve>
@@ -4034,6 +4035,7 @@ MainWindow::MainWindow(
 MainWindow::~MainWindow()
 {
     ksword::ark::DriverClient::setR0UnavailableHandler({});
+    ksword::ark::DriverClient::setR0PermissionRequiredHandler({});
     clearSingleInstanceMessageReception(reinterpret_cast<HWND>(winId()));
     CallbackPromptManager::shutdownGlobalManager();
     stopR0DriverLogPoller();
@@ -4453,6 +4455,13 @@ void MainWindow::showEvent(QShowEvent* event)
                 QMetaObject::invokeMethod(this, [this, win32Error]()
                     {
                         handleR0DriverUnavailable(win32Error);
+                    }, Qt::QueuedConnection);
+            });
+        ksword::ark::DriverClient::setR0PermissionRequiredHandler([this](const unsigned long win32Error)
+            {
+                QMetaObject::invokeMethod(this, [this, win32Error]()
+                    {
+                        handleR0PermissionRequired(win32Error);
                     }, Qt::QueuedConnection);
             });
 
@@ -6090,6 +6099,10 @@ void MainWindow::initPrivilegeStatusButtons()
         {
             kLogEvent logEvent;
             err << logEvent << "[MainWindow] SeDebugPrivilege 申请失败: " << errorText << eol;
+            (void)ks::ui::promptForPrivilegeFailure(
+                this,
+                QStringLiteral("启用 SeDebugPrivilege"),
+                QString::fromStdString(errorText));
             QMessageBox::warning(this, "Debug", QString("SeDebugPrivilege 启用失败。\n%1").arg(QString::fromStdString(errorText)));
         }
         refreshPrivilegeStatusButtons();
@@ -6352,6 +6365,18 @@ void MainWindow::handleR0DriverUnavailable(const unsigned long win32Error)
     }
 
     enableR0ForUserRequest();
+    Q_UNUSED(win32Error);
+}
+
+void MainWindow::handleR0PermissionRequired(const unsigned long win32Error)
+{
+    if (!m_r0UnavailablePromptArmed || m_r0PermissionPromptShowing || hasAdminPrivilege())
+    {
+        return;
+    }
+    m_r0PermissionPromptShowing = true;
+    (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("当前内核功能"));
+    m_r0PermissionPromptShowing = false;
     Q_UNUSED(win32Error);
 }
 
@@ -7192,11 +7217,16 @@ bool MainWindow::queryR0DriverServiceRunning(bool& runningOut, const bool fatalO
     ScopedServiceHandle scmHandle(::OpenSCManagerW(nullptr, SERVICES_ACTIVE_DATABASE, SC_MANAGER_CONNECT));
     if (!scmHandle.isValid())
     {
+        const DWORD scmError = ::GetLastError();
         if (fatalOnError)
         {
+            if (ks::ui::promptForPrivilegeFailure(this, QStringLiteral("查询 R0 服务状态"), scmError))
+            {
+                return false;
+            }
             showR0FatalError(
                 QStringLiteral("查询 KswordARK 驱动服务状态失败：无法连接服务控制管理器。"),
-                ::GetLastError());
+                scmError);
         }
         return false;
     }
@@ -7215,6 +7245,10 @@ bool MainWindow::queryR0DriverServiceRunning(bool& runningOut, const bool fatalO
         }
         if (fatalOnError)
         {
+            if (ks::ui::promptForPrivilegeFailure(this, QStringLiteral("查询 R0 服务状态"), openError))
+            {
+                return false;
+            }
             showR0FatalError(
                 QStringLiteral("查询 KswordARK 驱动服务状态失败：无法打开服务。"),
                 openError,
@@ -7229,6 +7263,10 @@ bool MainWindow::queryR0DriverServiceRunning(bool& runningOut, const bool fatalO
     {
         if (fatalOnError)
         {
+            if (ks::ui::promptForPrivilegeFailure(this, QStringLiteral("查询 R0 服务状态"), queryError))
+            {
+                return false;
+            }
             showR0FatalError(
                 QStringLiteral("查询 KswordARK 驱动服务状态失败：读取服务状态失败。"),
                 queryError);
@@ -7252,6 +7290,10 @@ bool MainWindow::stopR0DriverService(const bool suppressErrorDialog)
         {
             if (!suppressErrorDialog)
             {
+                if (ks::ui::promptForPrivilegeFailure(this, QStringLiteral("卸载 R0"), errorCode))
+                {
+                    return;
+                }
                 showR0FatalError(stageText, errorCode, detailText);
                 return;
             }
@@ -7517,10 +7559,9 @@ bool MainWindow::enableWindowsTestModeAndPromptReboot()
 {
     if (!hasAdminPrivilege())
     {
-        showR0FatalError(
-            QStringLiteral("开启测试模式失败：当前进程没有管理员权限。"),
-            ERROR_ACCESS_DENIED,
-            QStringLiteral("请先以管理员身份运行 Ksword5.1。"));
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("开启 Windows 测试模式"));
         return false;
     }
 
@@ -7610,6 +7651,18 @@ bool MainWindow::enableWindowsTestModeAndPromptReboot()
 
 bool MainWindow::startR0DriverService()
 {
+    const auto reportStartFailure = [this](
+        const QString& stageText,
+        const unsigned long errorCode,
+        const QString& detailText = QString())
+    {
+        if (ks::ui::promptForPrivilegeFailure(this, QStringLiteral("启用 R0"), errorCode))
+        {
+            return;
+        }
+        showR0FatalError(stageText, errorCode, detailText);
+    };
+
     const QString driverPath = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("KswordARK.sys"));
     const QString nativeDriverPath = QDir::toNativeSeparators(driverPath);
     const QFileInfo driverFileInfo(driverPath);
@@ -7628,7 +7681,7 @@ bool MainWindow::startR0DriverService()
         SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
     if (!scmHandle.isValid())
     {
-        showR0FatalError(
+        reportStartFailure(
             QStringLiteral("R0 启动失败：无法连接服务控制管理器。"),
             ::GetLastError());
         return false;
@@ -7643,7 +7696,7 @@ bool MainWindow::startR0DriverService()
         const DWORD openError = ::GetLastError();
         if (openError != ERROR_SERVICE_DOES_NOT_EXIST)
         {
-            showR0FatalError(
+            reportStartFailure(
                 QStringLiteral("R0 启动失败：无法打开已有驱动服务。"),
                 openError);
             return false;
@@ -7666,7 +7719,7 @@ bool MainWindow::startR0DriverService()
             nullptr));
         if (!serviceHandle.isValid())
         {
-            showR0FatalError(
+            reportStartFailure(
                 QStringLiteral("R0 启动失败：创建驱动服务失败。"),
                 ::GetLastError(),
                 QStringLiteral("驱动路径：%1").arg(nativeDriverPath));
@@ -7689,7 +7742,7 @@ bool MainWindow::startR0DriverService()
             nullptr,
             kR0DriverDisplayName) == FALSE)
         {
-            showR0FatalError(
+            reportStartFailure(
                 QStringLiteral("R0 启动失败：更新驱动服务配置失败。"),
                 ::GetLastError());
             return false;
@@ -7700,7 +7753,7 @@ bool MainWindow::startR0DriverService()
     DWORD queryError = ERROR_SUCCESS;
     if (!queryServiceStatus(serviceHandle.get(), status, queryError))
     {
-        showR0FatalError(
+        reportStartFailure(
             QStringLiteral("R0 启动失败：读取服务状态失败。"),
             queryError);
         return false;
@@ -7736,7 +7789,7 @@ bool MainWindow::startR0DriverService()
             return false;
         }
 
-        showR0FatalError(
+        reportStartFailure(
             QStringLiteral("R0 启动失败：驱动服务启动失败。"),
             startError,
             QStringLiteral("驱动路径：%1").arg(nativeDriverPath));
@@ -7754,7 +7807,7 @@ bool MainWindow::startR0DriverService()
     {
         if (waitError != ERROR_SUCCESS)
         {
-            showR0FatalError(
+            reportStartFailure(
                 QStringLiteral("R0 启动失败：等待服务运行时查询状态失败。"),
                 waitError);
         }

@@ -1,4 +1,5 @@
 #include "DiskEditorTab.h"
+#include "../../Framework/PrivilegeElevationPrompt.h"
 #include "../../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -950,6 +951,7 @@ namespace ks::misc
             rebuildStructureTable();
             rebuildVolumeTable();
             rebuildHealthTable();
+            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("枚举物理磁盘"), errorText);
             m_statusLabel->setText(QStringLiteral("状态：磁盘枚举失败：%1").arg(errorText));
             appendLog(QStringLiteral("磁盘枚举失败：%1").arg(errorText));
         }
@@ -1250,6 +1252,7 @@ namespace ks::misc
     {
         if (!errorText.isEmpty())
         {
+            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("读取物理磁盘扇区"), errorText);
             m_statusLabel->setText(QStringLiteral("状态：读取失败：%1").arg(errorText));
             appendLog(QStringLiteral("读取失败：%1").arg(errorText));
             QMessageBox::warning(this, QStringLiteral("磁盘编辑"), QStringLiteral("读取失败：%1").arg(errorText));
@@ -1273,6 +1276,11 @@ namespace ks::misc
 
     void DiskEditorTab::writeCurrentBuffer()
     {
+        if (!ks::ui::isCurrentProcessElevated())
+        {
+            (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("写入物理磁盘扇区"));
+            return;
+        }
         const DiskDeviceInfo* disk = currentDisk();
         if (disk == nullptr)
         {
@@ -1399,6 +1407,7 @@ namespace ks::misc
     {
         if (!errorText.isEmpty())
         {
+            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("解析物理磁盘结构"), errorText);
             appendLog(QStringLiteral("结构解析失败：%1").arg(errorText));
             m_statusLabel->setText(QStringLiteral("状态：结构解析失败：%1").arg(errorText));
         }
@@ -1874,6 +1883,7 @@ namespace ks::misc
     {
         if (!result.errorText.isEmpty())
         {
+            (void)ks::ui::promptForPrivilegeFailure(this, taskName, result.errorText);
             appendLog(QStringLiteral("%1失败：%2").arg(taskName, result.errorText));
             m_statusLabel->setText(QStringLiteral("状态：%1失败：%2").arg(taskName, result.errorText));
             QMessageBox::warning(this, QStringLiteral("磁盘工具"), QStringLiteral("%1失败：%2").arg(taskName, result.errorText));

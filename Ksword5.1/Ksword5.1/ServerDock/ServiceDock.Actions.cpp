@@ -1,4 +1,5 @@
 #include "ServiceDock.Internal.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../theme.h"
 
 #include <chrono>
@@ -344,6 +345,10 @@ bool ServiceDock::controlSelectedService(
 
     if (!actionOk)
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            actionText,
+            errorCode);
         err << actionEvent
             << "[ServiceDock] 服务动作执行失败, action="
             << actionText.toStdString()
@@ -455,6 +460,10 @@ void ServiceDock::applySelectedStartType()
         &errorText,
         &errorCode))
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("修改服务启动类型"),
+            errorCode);
         err << changeEvent
             << "[ServiceDock] 修改启动类型失败, error="
             << errorCode
@@ -478,6 +487,10 @@ void ServiceDock::applySelectedStartType()
         &delayedErrorText,
         &delayedErrorCode))
     {
+        (void)ks::ui::promptForPrivilegeFailure(
+            this,
+            QStringLiteral("修改服务延迟启动"),
+            delayedErrorCode);
         warn << changeEvent
             << "[ServiceDock] 设置 DelayedAutoStart 失败，继续后续流程, error="
             << delayedErrorCode

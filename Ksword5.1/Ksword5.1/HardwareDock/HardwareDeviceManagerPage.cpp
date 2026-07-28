@@ -1496,6 +1496,7 @@ void HardwareDeviceManagerPage::uninstallSelectedDevice()
     const bool uninstallOk = uninstallDeviceByInstanceId(entryPointer->instanceIdText, &errorText);
     if (!uninstallOk)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("卸载设备"), errorText);
         QMessageBox::critical(
             this,
             QStringLiteral("卸载设备失败"),
@@ -1557,6 +1558,7 @@ void HardwareDeviceManagerPage::deleteSelectedDeviceDriverPackage()
     const bool deleteOk = uninstallOemInfPackage(oemInfName, &errorText);
     if (!deleteOk)
     {
+        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除驱动包"), errorText);
         QMessageBox::critical(
             this,
             QStringLiteral("删除驱动包失败"),

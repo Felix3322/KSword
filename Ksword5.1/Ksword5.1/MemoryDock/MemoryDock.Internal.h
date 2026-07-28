@@ -10,6 +10,7 @@
 
 #include "MemoryDock.h"
 #include "../theme.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/HexEditorWidget.h"

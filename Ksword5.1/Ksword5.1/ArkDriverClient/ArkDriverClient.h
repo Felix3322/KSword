@@ -25,6 +25,12 @@ namespace ksword::ark
         using R0UnavailableHandler = std::function<void(unsigned long win32Error)>;
         static void setR0UnavailableHandler(R0UnavailableHandler handler);
 
+        // setR0PermissionRequiredHandler：
+        // - 统一通知“驱动已存在，但当前用户无权执行该 R0 IOCTL”的情况；
+        // - handler 可能从工作线程调用，接收方必须自行切回 UI 线程。
+        using R0PermissionRequiredHandler = std::function<void(unsigned long win32Error)>;
+        static void setR0PermissionRequiredHandler(R0PermissionRequiredHandler handler);
+
         DriverClient() = default;
 
         // Best-effort branding upload for the VMware-only bugcheck panel.

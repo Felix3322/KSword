@@ -929,6 +929,10 @@ void MemoryDock::requestDumpProcessMemoryByPid(const std::uint32_t pid, const QS
                     << errorText.toStdString()
                     << eol;
 
+                (void)ks::ui::promptForPrivilegeFailure(
+                    guardThis,
+                    QStringLiteral("导出进程内存"),
+                    errorText);
                 QMessageBox::warning(
                     guardThis,
                     QStringLiteral("Dump失败"),
@@ -1143,6 +1147,10 @@ void MemoryDock::refreshMemoryRegionList(const bool forceRequery)
                 << "[MemoryDock] refreshMemoryRegionList: 枚举区域失败, error="
                 << errorText.toStdString()
                 << eol;
+            (void)ks::ui::promptForPrivilegeFailure(
+                this,
+                QStringLiteral("枚举进程内存区域"),
+                errorText);
             QMessageBox::warning(this, "区域刷新", errorText);
             return;
         }
