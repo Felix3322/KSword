@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../theme.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/CodeEditorWidget.h"
 
 #include <QAction>
@@ -1471,10 +1472,7 @@ void HardwareDeviceManagerPage::uninstallSelectedDevice()
     }
     if (!currentProcessIsElevated())
     {
-        QMessageBox::warning(
-            this,
-            QStringLiteral("卸载设备"),
-            QStringLiteral("卸载设备需要管理员权限。请以管理员身份运行程序后重试。"));
+        (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("卸载设备"));
         return;
     }
 
@@ -1525,10 +1523,7 @@ void HardwareDeviceManagerPage::deleteSelectedDeviceDriverPackage()
     }
     if (!currentProcessIsElevated())
     {
-        QMessageBox::warning(
-            this,
-            QStringLiteral("删除驱动包"),
-            QStringLiteral("删除驱动包需要管理员权限。请以管理员身份运行程序后重试。"));
+        (void)ks::ui::requestAdministratorRestartForFeature(this, QStringLiteral("删除驱动包"));
         return;
     }
 

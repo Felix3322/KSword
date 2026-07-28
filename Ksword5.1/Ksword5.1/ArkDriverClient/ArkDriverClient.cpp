@@ -3,8 +3,11 @@
 #include "ArkDriverError.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cwchar>
 #include <cstring>
+#include <functional>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -17,6 +20,43 @@ namespace ksword::ark
     namespace
     {
         constexpr unsigned long kDefaultShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
+
+        std::mutex g_r0UnavailableHandlerMutex;
+        DriverClient::R0UnavailableHandler g_r0UnavailableHandler;
+        std::chrono::steady_clock::time_point g_lastR0UnavailableNotification;
+
+        bool isR0DriverNotEnabledError(const unsigned long win32Error)
+        {
+            // ERROR_FILE_NOT_FOUND 是 CreateFile(\\\\.\\KswordARKLog) 在服务未运行时的正常表现。
+            // PATH_NOT_FOUND 覆盖异常的设备命名空间状态；其余错误仍交给调用方按权限、签名或
+            // 协议问题处理，避免把“驱动已启用但操作失败”误导为“请启用 R0”。
+            return win32Error == ERROR_FILE_NOT_FOUND || win32Error == ERROR_PATH_NOT_FOUND;
+        }
+
+        void notifyR0DriverUnavailable(const unsigned long win32Error)
+        {
+            if (!isR0DriverNotEnabledError(win32Error))
+            {
+                return;
+            }
+
+            DriverClient::R0UnavailableHandler handler;
+            {
+                std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+                const auto now = std::chrono::steady_clock::now();
+                if (!g_r0UnavailableHandler ||
+                    (g_lastR0UnavailableNotification.time_since_epoch().count() != 0 &&
+                        now - g_lastR0UnavailableNotification < std::chrono::seconds(2)))
+                {
+                    return;
+                }
+                g_lastR0UnavailableNotification = now;
+                handler = g_r0UnavailableHandler;
+            }
+
+            // 不在锁内执行 UI 回调，避免回调启动服务时重入 ArkDriverClient 造成死锁。
+            handler(win32Error);
+        }
 
         std::string fixedAnsiToString(const char* textBuffer, const std::size_t maxBytes)
         {
@@ -128,6 +168,13 @@ namespace ksword::ark
         }
     }
 
+    void DriverClient::setR0UnavailableHandler(R0UnavailableHandler handler)
+    {
+        std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+        g_r0UnavailableHandler = std::move(handler);
+        g_lastR0UnavailableNotification = {};
+    }
+
     DriverHandle::DriverHandle(const HANDLE handleValue) noexcept
         : m_handle(handleValue)
     {
@@ -180,7 +227,7 @@ namespace ksword::ark
 
     DriverHandle DriverClient::open(const unsigned long desiredAccess) const
     {
-        return DriverHandle(::CreateFileW(
+        DriverHandle handle(::CreateFileW(
             KSWORD_ARK_LOG_WIN32_PATH,
             desiredAccess,
             kDefaultShareMode,
@@ -188,11 +235,16 @@ namespace ksword::ark
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
             nullptr));
+        if (!handle.isValid())
+        {
+            notifyR0DriverUnavailable(::GetLastError());
+        }
+        return handle;
     }
 
     DriverHandle DriverClient::openOverlapped(const unsigned long desiredAccess) const
     {
-        return DriverHandle(::CreateFileW(
+        DriverHandle handle(::CreateFileW(
             KSWORD_ARK_LOG_WIN32_PATH,
             desiredAccess,
             kDefaultShareMode,
@@ -200,6 +252,11 @@ namespace ksword::ark
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
             nullptr));
+        if (!handle.isValid())
+        {
+            notifyR0DriverUnavailable(::GetLastError());
+        }
+        return handle;
     }
 
     IoResult DriverClient::deviceIoControl(

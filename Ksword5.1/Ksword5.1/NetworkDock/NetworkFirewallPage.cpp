@@ -10,6 +10,7 @@
 // ============================================================
 
 #include "../theme.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/GlobalDialogTheme.h"
 
 #include <QAbstractItemView>
@@ -1418,6 +1419,14 @@ void NetworkFirewallPage::startLiveMonitor()
     if (m_liveRunning.load())
     {
         setStatusText(QStringLiteral("实时防火墙监控已经启动。"));
+        return;
+    }
+
+    if (!ks::ui::isCurrentProcessElevated())
+    {
+        (void)ks::ui::requestAdministratorRestartForFeature(
+            this,
+            QStringLiteral("实时防火墙事件监控"));
         return;
     }
 

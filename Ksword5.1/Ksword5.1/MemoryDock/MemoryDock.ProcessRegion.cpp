@@ -1,4 +1,5 @@
 #include "MemoryDock.Internal.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::memory_dock_internal;
@@ -522,19 +523,29 @@ bool MemoryDock::attachToProcess(
             toDwordPid(pid));
         if (processHandle == nullptr)
         {
+            const DWORD openError = ::GetLastError();
             kLogEvent attachOpenFailEvent;
             err << attachOpenFailEvent
                 << "[MemoryDock] attachToProcess: 读写+只读权限均失败, pid="
                 << pid
                 << ", error="
-                << ::GetLastError()
+                << openError
                 << eol;
             if (showMessage)
             {
-                QMessageBox::warning(
-                    this,
-                    "附加失败",
-                    "OpenProcess 失败，可能权限不足。\n请尝试以管理员身份运行。");
+                if (openError == ERROR_ACCESS_DENIED)
+                {
+                    (void)ks::ui::requestAdministratorRestartForFeature(
+                        this,
+                        QStringLiteral("附加进程内存"));
+                }
+                else
+                {
+                    QMessageBox::warning(
+                        this,
+                        "附加失败",
+                        "OpenProcess 失败，目标进程可能已退出或不可访问。");
+                }
             }
             updateStatusBarText();
             return false;

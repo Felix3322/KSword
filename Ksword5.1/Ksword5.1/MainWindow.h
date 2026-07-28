@@ -178,6 +178,8 @@ private:
     void initPrivilegeStatusButtons();
     void refreshPrivilegeStatusButtons();
     void applyPrivilegeButtonStyle(QPushButton* button, bool activeState);
+    void handleR0DriverUnavailable(unsigned long win32Error);
+    void enableR0ForUserRequest();
 
     // handleUiAccessButtonClicked 作用：
     // - 处理标题栏 UIAccess 按钮点击；
@@ -227,7 +229,7 @@ private:
     bool enableWindowsTestModeAndPromptReboot();
     bool isR0DriverSignatureFailure(unsigned long errorCode) const;
     void showR0FatalError(const QString& stageText, unsigned long errorCode, const QString& detailText = QString());
-    void requestAdminElevationRestart();
+    void requestAdminElevationRestart(bool enableR0AfterRestart = false);
     bool hasAdminPrivilege() const;
     bool hasDebugPrivilege() const;
     bool hasSystemPrivilege() const;
@@ -534,6 +536,8 @@ private:
     QPushButton* m_systemStatusButton = nullptr;
     QPushButton* m_r0StatusButton = nullptr;
     bool m_r0DriverServiceRunning = false;      // m_r0DriverServiceRunning：KswordARK 驱动服务当前是否运行。
+    bool m_r0UnavailablePromptArmed = false;   // 主窗口显示后才允许 R0 缺失提示，避免启动后台探测造成无意义弹窗。
+    bool m_r0UnavailablePromptShowing = false; // 合并同一时间到达的多个 Dock/后台 R0 请求。
     std::atomic_bool m_r0DriverLogPollerRunning{ false }; // m_r0DriverLogPollerRunning：R0 日志轮询线程运行标记。
     std::unique_ptr<std::thread> m_r0DriverLogPollerThread; // m_r0DriverLogPollerThread：R0 日志轮询线程对象。
     QTimer* m_privilegeStatusTimer = nullptr;

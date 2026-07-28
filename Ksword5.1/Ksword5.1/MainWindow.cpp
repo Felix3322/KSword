@@ -50,6 +50,7 @@
 #include <QDialog>
 #include <QIODevice>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QProcess>
 #include <QStringList>
@@ -114,6 +115,7 @@
 namespace
 {
     constexpr wchar_t kKswordPrivilegeRestartArgument[] = L"--ksword-privilege-restart";
+    constexpr wchar_t kKswordEnableR0AfterElevationArgument[] = L"--ksword-enable-r0-after-elevation";
     constexpr wchar_t kKswordMainWindowPropertyName[] = L"KswordARK.MainWindow.Singleton.Release";
     constexpr ULONG_PTR kUnlockerCopyDataMessageId = 0x4B535755; // "KSWU"：Ksword shell unlocker IPC。
 
@@ -4031,6 +4033,7 @@ MainWindow::MainWindow(
 
 MainWindow::~MainWindow()
 {
+    ksword::ark::DriverClient::setR0UnavailableHandler({});
     clearSingleInstanceMessageReception(reinterpret_cast<HWND>(winId()));
     CallbackPromptManager::shutdownGlobalManager();
     stopR0DriverLogPoller();
@@ -4439,6 +4442,31 @@ void MainWindow::moveEvent(QMoveEvent* event)
 void MainWindow::showEvent(QShowEvent* event)
 {
     QMainWindow::showEvent(event);
+
+    // 主窗口真正可交互后再接管 R0 缺失通知。启动期存在日志轮询等 best-effort
+    // 探测，它们不应在用户尚未操作任何内核功能时弹出“启用 R0”对话框。
+    if (!m_r0UnavailablePromptArmed)
+    {
+        m_r0UnavailablePromptArmed = true;
+        ksword::ark::DriverClient::setR0UnavailableHandler([this](const unsigned long win32Error)
+            {
+                QMetaObject::invokeMethod(this, [this, win32Error]()
+                    {
+                        handleR0DriverUnavailable(win32Error);
+                    }, Qt::QueuedConnection);
+            });
+
+        const QString enableAfterElevationArgument =
+            QString::fromWCharArray(kKswordEnableR0AfterElevationArgument);
+        if (QCoreApplication::arguments().contains(enableAfterElevationArgument, Qt::CaseInsensitive))
+        {
+            QTimer::singleShot(0, this, [this]()
+                {
+                    enableR0ForUserRequest();
+                });
+        }
+    }
+
     ensureNativeFramelessWindowStyle();
     applyNativeWindowFrameVisualStyle();
     syncCustomTitleBarMaximizedState();
@@ -6262,6 +6290,88 @@ void MainWindow::initPrivilegeStatusButtons()
     refreshPrivilegeStatusButtons();
 }
 
+void MainWindow::handleR0DriverUnavailable(const unsigned long win32Error)
+{
+    // 所有 ArkDriverClient 调用都会汇聚到这里。只在窗口已可交互时提示，且把短时间内
+    // 多个页面/后台任务的失败合并为一个选择，避免用户刚打开一个 R0 页面就被连续打断。
+    if (!m_r0UnavailablePromptArmed || m_r0UnavailablePromptShowing)
+    {
+        return;
+    }
+
+    bool serviceRunning = false;
+    if (!queryR0DriverServiceRunning(serviceRunning, false))
+    {
+        return;
+    }
+    if (serviceRunning)
+    {
+        m_r0DriverServiceRunning = true;
+        refreshPrivilegeStatusButtons();
+        return;
+    }
+
+    m_r0DriverServiceRunning = false;
+    m_r0UnavailablePromptShowing = true;
+
+    const bool isAdmin = hasAdminPrivilege();
+    QMessageBox prompt(this);
+    prompt.setIcon(QMessageBox::Warning);
+    prompt.setWindowTitle(ks::i18n::text(
+        QStringLiteral("r0.enable_required.title"),
+        QStringLiteral("需要启用 R0")));
+    prompt.setText(ks::i18n::text(
+        QStringLiteral("r0.enable_required.message"),
+        QStringLiteral("当前操作需要 R0 驱动，但 KswordARK 驱动服务尚未启用。\n\n是否现在启用 R0？")));
+    prompt.setInformativeText(ks::i18n::text(
+        QStringLiteral("r0.enable_required.hint"),
+        QStringLiteral("启用后可继续使用依赖内核权限的功能；R0 状态按钮会显示为已启用。")));
+    QPushButton* const enableButton = prompt.addButton(
+        ks::i18n::text(
+            isAdmin
+            ? QStringLiteral("r0.enable_required.enable_now")
+            : QStringLiteral("r0.enable_required.elevate_and_enable"),
+            isAdmin ? QStringLiteral("启用 R0") : QStringLiteral("以管理员身份重启并启用 R0")),
+        QMessageBox::AcceptRole);
+    prompt.addButton(
+        ks::i18n::text(QStringLiteral("r0.enable_required.cancel"), QStringLiteral("暂不启用")),
+        QMessageBox::RejectRole);
+    prompt.exec();
+
+    m_r0UnavailablePromptShowing = false;
+    if (prompt.clickedButton() != enableButton)
+    {
+        refreshPrivilegeStatusButtons();
+        return;
+    }
+
+    if (!isAdmin)
+    {
+        requestAdminElevationRestart(true);
+        return;
+    }
+
+    enableR0ForUserRequest();
+    Q_UNUSED(win32Error);
+}
+
+void MainWindow::enableR0ForUserRequest()
+{
+    if (!startR0DriverService())
+    {
+        m_r0DriverServiceRunning = false;
+        refreshPrivilegeStatusButtons();
+        return;
+    }
+
+    bool finalRunningState = false;
+    if (queryR0DriverServiceRunning(finalRunningState, true))
+    {
+        m_r0DriverServiceRunning = finalRunningState;
+    }
+    refreshPrivilegeStatusButtons();
+}
+
 void MainWindow::refreshPrivilegeStatusButtons()
 {
     // 读取当前权限状态。
@@ -6849,10 +6959,14 @@ void MainWindow::startR0RuntimeConsumersAfterServiceStart()
     // 输入：无。
     // 处理：复用各模块幂等 start 语义，避免重复启动线程。
     // 返回：无返回值；启动失败只写日志，不影响主流程状态查询。
-    if (m_r0DriverServiceRunning)
+    if (!m_r0DriverServiceRunning)
     {
-        queueBugcheckBitmapUpload();
+        // 启动期不能为日志轮询/回调等待等后台消费者反复探测一个未启用的设备。
+        // 用户真正触发 R0 功能时，ArkDriverClient 才会给出明确的启用提示。
+        return;
     }
+
+    queueBugcheckBitmapUpload();
     startR0DriverLogPoller();
 
     if (CallbackPromptManager* callbackPromptManager = CallbackPromptManager::ensureGlobalManager(this))
@@ -7699,7 +7813,7 @@ void MainWindow::handleR0StatusButtonClicked()
     refreshPrivilegeStatusButtons();
 }
 
-void MainWindow::requestAdminElevationRestart()
+void MainWindow::requestAdminElevationRestart(const bool enableR0AfterRestart)
 {
     // 获取当前可执行文件路径，作为 runas 重启目标。
     wchar_t exePathBuffer[MAX_PATH] = {};
@@ -7711,12 +7825,21 @@ void MainWindow::requestAdminElevationRestart()
         return;
     }
 
-    // 使用 ShellExecute("runas") 触发 UAC 提权。
+    QString elevationParameters = QString::fromWCharArray(kKswordPrivilegeRestartArgument);
+    if (enableR0AfterRestart)
+    {
+        elevationParameters += QLatin1Char(' ');
+        elevationParameters += QString::fromWCharArray(kKswordEnableR0AfterElevationArgument);
+    }
+    const std::wstring elevationParametersWide = elevationParameters.toStdWString();
+
+    // 使用 ShellExecute("runas") 触发 UAC 提权；R0 请求会带内部参数，让提升后的实例
+    // 直接执行用户刚刚确认的启用动作，而不是要求用户重启后再重复点击一次。
     HINSTANCE shellResult = ::ShellExecuteW(
         nullptr,
         L"runas",
         exePathBuffer,
-        kKswordPrivilegeRestartArgument,
+        elevationParametersWide.c_str(),
         nullptr,
         SW_SHOWNORMAL);
     if (reinterpret_cast<std::intptr_t>(shellResult) <= 32)
