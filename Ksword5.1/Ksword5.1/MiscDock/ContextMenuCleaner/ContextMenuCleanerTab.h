@@ -3,9 +3,9 @@
 // ============================================================
 // ContextMenuCleanerTab.h
 // 作用：
-// 1) 提供“右键菜单清理”杂项页；
-// 2) 按 IE、桌面、文件三类 Shell/IE 右键菜单注册表入口分组展示；
-// 3) 支持刷新、筛选、复制注册表位置，并在用户确认后删除选中注册表子树。
+// 1) 提供“Shell 关联管理”杂项页；
+// 2) 展示右键菜单、URL 绑定、文件打开方式和 Explorer 第三方命名空间；
+// 3) 支持刷新、筛选、复制注册表位置，并在用户确认后删除选中注册表项目。
 // ============================================================
 
 #include "../../Framework.h"
@@ -30,14 +30,14 @@ namespace ks::misc
 {
     // ContextMenuCleanerTab：
     // - 输入：由 Qt 父控件传入 parent，运行时读取当前系统注册表；
-    // - 处理：枚举常见 IE/桌面/文件右键菜单注册表位置，填充三个子页表格；
+    // - 处理：枚举 Shell 菜单、文件关联和 Explorer 命名空间，填充七个子页表格；
     // - 输出：本控件不返回值，清理动作通过注册表删除、界面刷新与日志反馈结果。
     class ContextMenuCleanerTab final : public QWidget
     {
     public:
         // 构造函数：
         // - 参数 parent：Qt 父控件，可为空；
-        // - 处理逻辑：创建三类子 Tab，并立即执行一次注册表枚举；
+        // - 处理逻辑：创建七类子 Tab，并立即执行一次注册表枚举；
         // - 返回值：无。
         explicit ContextMenuCleanerTab(QWidget* parent = nullptr);
         ~ContextMenuCleanerTab() override = default;
@@ -48,7 +48,18 @@ namespace ks::misc
         {
             InternetExplorer, // IE 右键菜单：Internet Explorer MenuExt。
             Desktop,          // 桌面右键菜单：DesktopBackground/Directory Background。
-            File              // 文件右键菜单：*、AllFilesystemObjects、Directory/Folder/Drive。
+            File,             // 文件右键菜单：*、AllFilesystemObjects、Directory/Folder/Drive。
+            UrlBinding,       // URL 绑定：协议注册和当前用户默认协议绑定。
+            OpenWith,         // 打开方式：扩展名对应的候选应用与 ProgID。
+            FormatMenu,       // 格式右键菜单：扩展名、ProgID 和 SystemFileAssociations。
+            ExplorerHome      // 资源管理器主页：第三方或用户注册的 Shell 命名空间。
+        };
+
+        // DeleteKind：标识删除整棵注册表子树还是单个注册表值。
+        enum class DeleteKind
+        {
+            RegistryTree, // RegistryTree：删除 subKeyPath 指向的完整子树。
+            RegistryValue // RegistryValue：仅删除 subKeyPath 下 valueName 指向的值。
         };
 
         // ContextMenuEntry：单条右键菜单注册表项快照。
@@ -67,6 +78,9 @@ namespace ks::misc
             QString clsidText;                    // clsidText：COM 右键处理器 CLSID。
             QString detailText;                   // detailText：状态标记、Icon、AppliesTo 等补充信息。
             QString statusText;                   // statusText：启用/禁用/扩展菜单等状态。
+            DeleteKind deleteKind = DeleteKind::RegistryTree; // deleteKind：当前行的精确删除粒度。
+            QString valueName;                    // valueName：删除注册表值时使用的命名值。
+            bool cleanupOpenWithMru = false;      // cleanupOpenWithMru：删除历史打开方式后同步 MRUList。
             bool canDelete = false;               // canDelete：当前行是否允许从 UI 发起删除。
         };
 
@@ -83,12 +97,13 @@ namespace ks::misc
             QTableWidget* table = nullptr;        // table：右键菜单项列表。
             QLabel* statusLabel = nullptr;        // statusLabel：当前分类统计与提示。
             QVector<ContextMenuEntry> entries;    // entries：当前分类最近一次完整枚举结果。
+            bool hasLoaded = false;               // hasLoaded：该分类是否至少完成过一次按需枚举。
         };
 
     private:
         // initializeUi：
         // - 输入：无；
-        // - 处理：创建整体布局、说明文本、三类子页；
+        // - 处理：创建整体布局、说明文本、七类子页；
         // - 返回：无。
         void initializeUi();
 
@@ -97,12 +112,6 @@ namespace ks::misc
         // - 处理：初始化该分区工具栏、表格、状态栏和信号连接；
         // - 返回：无。
         void createAreaPage(MenuArea area);
-
-        // refreshAllAreas：
-        // - 输入：无；
-        // - 处理：依次刷新 IE、桌面、文件三个分区；
-        // - 返回：无。
-        void refreshAllAreas();
 
         // refreshArea：
         // - 输入 area：目标分区；
@@ -136,9 +145,27 @@ namespace ks::misc
 
         // enumerateEntriesForArea：
         // - 输入 area：目标分区；
-        // - 处理：按内置注册表目录清单枚举右键菜单项；
+        // - 处理：按分区分派到右键菜单、关联或命名空间枚举器；
         // - 返回：该分区当前可见的注册表项快照。
         QVector<ContextMenuEntry> enumerateEntriesForArea(MenuArea area) const;
+
+        // enumerateUrlBindingEntries：
+        // - 输入：无；
+        // - 处理：枚举 URL Protocol 注册和当前用户 UrlAssociations\UserChoice；
+        // - 返回：URL 绑定页的注册表项目快照。
+        QVector<ContextMenuEntry> enumerateUrlBindingEntries() const;
+
+        // enumerateOpenWithEntries：
+        // - 输入：无；
+        // - 处理：枚举 Explorer 历史打开方式与 Classes 下候选处理器；
+        // - 返回：打开方式页的注册表值或子树快照。
+        QVector<ContextMenuEntry> enumerateOpenWithEntries() const;
+
+        // enumerateExplorerHomeEntries：
+        // - 输入：无；
+        // - 处理：枚举 Explorer Desktop/MyComputer/HomeFolder 中的第三方命名空间；
+        // - 返回：资源管理器主页第三方程序项目快照。
+        QVector<ContextMenuEntry> enumerateExplorerHomeEntries() const;
 
         // selectedEntryIndexes：
         // - 输入 area：目标分区；
@@ -168,9 +195,13 @@ namespace ks::misc
     private:
         QVBoxLayout* m_rootLayout = nullptr;   // m_rootLayout：本页根布局。
         QLabel* m_hintLabel = nullptr;         // m_hintLabel：注册表清理风险说明。
-        QTabWidget* m_areaTabWidget = nullptr; // m_areaTabWidget：IE/桌面/文件三个子 Tab 容器。
+        QTabWidget* m_areaTabWidget = nullptr; // m_areaTabWidget：七类 Shell 关联子 Tab 容器。
         AreaWidgets m_ieWidgets;               // m_ieWidgets：IE 右键菜单子页控件组。
         AreaWidgets m_desktopWidgets;          // m_desktopWidgets：桌面右键菜单子页控件组。
         AreaWidgets m_fileWidgets;             // m_fileWidgets：文件右键菜单子页控件组。
+        AreaWidgets m_urlBindingWidgets;        // m_urlBindingWidgets：URL 绑定子页控件组。
+        AreaWidgets m_openWithWidgets;          // m_openWithWidgets：文件打开方式子页控件组。
+        AreaWidgets m_formatMenuWidgets;        // m_formatMenuWidgets：格式右键菜单子页控件组。
+        AreaWidgets m_explorerHomeWidgets;      // m_explorerHomeWidgets：Explorer 主页第三方程序子页控件组。
     };
 }

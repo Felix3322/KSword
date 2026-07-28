@@ -103,7 +103,7 @@ The current codebase focuses on R3/R0 cross-view evidence, PDB/DynData-driven of
 | Handles | Handle list, object types, object details | PID/keyword/type filtering, named-object resolution, object-type statistics, and HandleTable/ObjectHeader/ObjectType evidence. |
 | Startup | Overview, logon, services, drivers, scheduled tasks, advanced registry, WMI | Categorized startup overview, icon rendering, filtering/export, file and registry location lookup, actionable deletion, and navigation to service management. |
 | Services | Main service table, general, logon, recovery, dependencies, audit | Service filtering/sorting, startup-type changes, start/stop/pause/continue, property editing, dependency/audit information, and TSV/JSON export. |
-| Miscellaneous | Boot, context-menu cleanup, disk editing, application control | BCD/boot entry points, Shell context-menu cleanup, read-only disk editing by default (writes require unlocking), and AppLocker/WDAC/Defender/ASR/platform-security/event-log diagnostics. |
+| Miscellaneous | Boot, Shell association management, disk editing, application control | BCD/boot entry points; management of context menus, URL bindings, file Open With handlers, format-specific menus, and third-party Explorer Home entries; read-only disk editing by default (writes require unlocking); and AppLocker/WDAC/Defender/ASR/platform-security/event-log diagnostics. |
 
 ### Auxiliary Panel Docks
 

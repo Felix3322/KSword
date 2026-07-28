@@ -353,6 +353,103 @@ namespace ks::misc::context_menu_cleaner_detail
         return resultList;
     }
 
+    // enumerateRegistryValues：
+    // - 输入 root/subKey/viewFlag：目标注册表键与 WOW64 视图；
+    // - 处理：先查询最大名称/数据尺寸，再逐值读取并转换为可展示文本；
+    // - 返回：按值名不区分大小写排序的快照，打开失败时返回空数组。
+    QVector<RegistryValueSnapshot> enumerateRegistryValues(
+        HKEY rootKey,
+        const QString& subKeyPath,
+        const REGSAM viewFlag)
+    {
+        QVector<RegistryValueSnapshot> resultList;
+        HKEY openedKey = nullptr;
+        const LONG openResult = ::RegOpenKeyExW(
+            rootKey,
+            reinterpret_cast<const wchar_t*>(subKeyPath.utf16()),
+            0,
+            KEY_QUERY_VALUE | viewFlag,
+            &openedKey);
+        if (openResult != ERROR_SUCCESS || openedKey == nullptr)
+        {
+            return resultList;
+        }
+
+        // 尺寸查询：
+        // - maxValueNameChars 不包含结尾 NUL，因此分配时额外加一；
+        // - maxValueDataBytes 允许为零，仍保留一个字节避免 data() 为空。
+        DWORD valueCount = 0;
+        DWORD maxValueNameChars = 0;
+        DWORD maxValueDataBytes = 0;
+        const LONG infoResult = ::RegQueryInfoKeyW(
+            openedKey,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            &valueCount,
+            &maxValueNameChars,
+            &maxValueDataBytes,
+            nullptr,
+            nullptr);
+        if (infoResult != ERROR_SUCCESS)
+        {
+            ::RegCloseKey(openedKey);
+            return resultList;
+        }
+
+        // 值枚举：
+        // - 每轮重置缓冲区长度，因为 RegEnumValueW 会写回实际长度；
+        // - REG_NONE 空数据仍保留值名，打开方式 ProgID 正是这种常见形式。
+        std::vector<wchar_t> nameBuffer(
+            static_cast<std::size_t>(maxValueNameChars) + 2,
+            L'\0');
+        std::vector<std::uint8_t> dataBuffer(
+            static_cast<std::size_t>(std::max<DWORD>(maxValueDataBytes, 1)),
+            0);
+        for (DWORD valueIndex = 0; valueIndex < valueCount; ++valueIndex)
+        {
+            DWORD nameChars = static_cast<DWORD>(nameBuffer.size());
+            DWORD dataBytes = static_cast<DWORD>(dataBuffer.size());
+            DWORD valueType = REG_NONE;
+            const LONG enumResult = ::RegEnumValueW(
+                openedKey,
+                valueIndex,
+                nameBuffer.data(),
+                &nameChars,
+                nullptr,
+                &valueType,
+                dataBuffer.data(),
+                &dataBytes);
+            if (enumResult != ERROR_SUCCESS)
+            {
+                continue;
+            }
+
+            RegistryValueSnapshot snapshot;
+            snapshot.valueName = QString::fromWCharArray(
+                nameBuffer.data(),
+                static_cast<int>(nameChars));
+            snapshot.valueType = valueType;
+            const std::vector<std::uint8_t> rawData(
+                dataBuffer.begin(),
+                dataBuffer.begin() + static_cast<std::ptrdiff_t>(dataBytes));
+            snapshot.valueText = registryDataToText(valueType, rawData);
+            resultList.push_back(snapshot);
+        }
+
+        ::RegCloseKey(openedKey);
+        std::sort(
+            resultList.begin(),
+            resultList.end(),
+            [](const RegistryValueSnapshot& left, const RegistryValueSnapshot& right) {
+                return QString::compare(left.valueName, right.valueName, Qt::CaseInsensitive) < 0;
+            });
+        return resultList;
+    }
+
     // rootPathText：
     // - 输入 rootLabel/subKeyPath：显示根键与子键；
     // - 处理：拼接成完整注册表路径；
@@ -360,6 +457,27 @@ namespace ks::misc::context_menu_cleaner_detail
     QString rootPathText(const QString& rootLabel, const QString& subKeyPath)
     {
         return QStringLiteral("%1\\%2").arg(rootLabel, subKeyPath);
+    }
+
+    // registryTargetPathText：
+    // - 输入 rootLabel/subKeyPath/valueTarget/valueName：删除目标组成部分；
+    // - 处理：子树沿用普通路径，注册表值追加清晰的“值”标记；
+    // - 返回：不会被误解为整棵子树的精确 UI/剪贴板路径。
+    QString registryTargetPathText(
+        const QString& rootLabel,
+        const QString& subKeyPath,
+        const bool valueTarget,
+        const QString& valueName)
+    {
+        const QString keyPath = rootPathText(rootLabel, subKeyPath);
+        if (!valueTarget)
+        {
+            return keyPath;
+        }
+        const QString shownValueName = valueName.isEmpty()
+            ? QStringLiteral("(默认)")
+            : valueName;
+        return QStringLiteral("%1 [值: %2]").arg(keyPath, shownValueName);
     }
 
     // firstNonEmpty：
@@ -534,6 +652,115 @@ namespace ks::misc::context_menu_cleaner_detail
             *errorTextOut = winErrorText(static_cast<DWORD>(deleteResult));
         }
         return false;
+    }
+
+    // deleteRegistryValueWithView：
+    // - 输入 root/subKey/valueName/viewFlag/cleanupOpenWithMru：精确值位置和清理策略；
+    // - 处理：删除单个值；若它来自 Explorer OpenWithList，则同步移除 MRUList 中的槽位字母；
+    // - 返回：目标已不存在或删除成功返回 true，失败返回 false 并写 Win32 错误。
+    bool deleteRegistryValueWithView(
+        HKEY rootKey,
+        const QString& subKeyPath,
+        const QString& valueName,
+        const REGSAM viewFlag,
+        const bool cleanupOpenWithMru,
+        QString* errorTextOut)
+    {
+        if (errorTextOut != nullptr)
+        {
+            errorTextOut->clear();
+        }
+        if (subKeyPath.trimmed().isEmpty() || valueName.isEmpty())
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("注册表键路径或值名称为空。");
+            }
+            return false;
+        }
+
+        HKEY openedKey = nullptr;
+        const LONG openResult = ::RegOpenKeyExW(
+            rootKey,
+            reinterpret_cast<const wchar_t*>(subKeyPath.utf16()),
+            0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | viewFlag,
+            &openedKey);
+        if (openResult == ERROR_FILE_NOT_FOUND)
+        {
+            return true;
+        }
+        if (openResult != ERROR_SUCCESS || openedKey == nullptr)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = winErrorText(static_cast<DWORD>(openResult));
+            }
+            return false;
+        }
+
+        // 删除值：
+        // - valueName 始终是命名值，避免误删整个 OpenWithList/OpenWithProgids 键；
+        // - 已不存在按幂等成功处理，便于重复刷新或批量操作。
+        const LONG deleteResult = ::RegDeleteValueW(
+            openedKey,
+            reinterpret_cast<const wchar_t*>(valueName.utf16()));
+        if (deleteResult != ERROR_SUCCESS && deleteResult != ERROR_FILE_NOT_FOUND)
+        {
+            ::RegCloseKey(openedKey);
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = winErrorText(static_cast<DWORD>(deleteResult));
+            }
+            return false;
+        }
+
+        // MRU 修复：
+        // - Explorer 历史列表用 a/b/c 槽位和值 MRUList 保存顺序；
+        // - 删除槽位后尽力同步字符串，失败不回滚已经完成的精确删除。
+        if (cleanupOpenWithMru)
+        {
+            DWORD mruType = REG_NONE;
+            DWORD mruBytes = 0;
+            const LONG sizeResult = ::RegQueryValueExW(
+                openedKey,
+                L"MRUList",
+                nullptr,
+                &mruType,
+                nullptr,
+                &mruBytes);
+            if (sizeResult == ERROR_SUCCESS && mruType == REG_SZ && mruBytes >= sizeof(wchar_t))
+            {
+                std::vector<wchar_t> mruBuffer(
+                    static_cast<std::size_t>(mruBytes / sizeof(wchar_t)) + 1,
+                    L'\0');
+                DWORD copiedBytes = mruBytes;
+                const LONG queryResult = ::RegQueryValueExW(
+                    openedKey,
+                    L"MRUList",
+                    nullptr,
+                    &mruType,
+                    reinterpret_cast<LPBYTE>(mruBuffer.data()),
+                    &copiedBytes);
+                if (queryResult == ERROR_SUCCESS)
+                {
+                    QString mruText = QString::fromWCharArray(mruBuffer.data());
+                    mruText.remove(valueName, Qt::CaseInsensitive);
+                    const DWORD updatedBytes = static_cast<DWORD>(
+                        (mruText.size() + 1) * sizeof(wchar_t));
+                    (void)::RegSetValueExW(
+                        openedKey,
+                        L"MRUList",
+                        0,
+                        REG_SZ,
+                        reinterpret_cast<const BYTE*>(mruText.utf16()),
+                        updatedBytes);
+                }
+            }
+        }
+
+        ::RegCloseKey(openedKey);
+        return true;
     }
 
     // addUserAndMachineClassLocations：

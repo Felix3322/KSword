@@ -33,14 +33,14 @@ void MiscDock::initializeUi()
     m_bootEditorTab = new BootEditorTab(m_mainTabWidget);
     m_mainTabWidget->addTab(m_bootEditorTab, QStringLiteral("引导"));
 
-    // 右键菜单清理页：
-    // - 分为 IE / 桌面 / 文件三个子 Tab；
-    // - 仅做注册表枚举与显式删除，不自动动任何系统项。
+    // Shell 关联管理页：
+    // - 覆盖右键菜单、URL 绑定、打开方式和 Explorer 第三方主页项；
+    // - 仅在用户确认后删除表格绑定的精确注册表子树或值。
     m_contextMenuCleanerTab = new ks::misc::ContextMenuCleanerTab(m_mainTabWidget);
     m_mainTabWidget->addTab(
         m_contextMenuCleanerTab,
-        QIcon(QStringLiteral(":/Icon/process_terminate.svg")),
-        QStringLiteral("右键菜单清理"));
+        QIcon(QStringLiteral(":/Icon/log_track.svg")),
+        QStringLiteral("Shell 关联管理"));
 
     // 磁盘编辑页：
     // - 参考 DiskGenius 类工具布局，提供横向柱形分区图；

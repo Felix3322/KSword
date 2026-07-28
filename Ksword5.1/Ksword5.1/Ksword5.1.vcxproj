@@ -224,6 +224,8 @@
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorTab.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskMapWidget.cpp" />
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.cpp" />
+    <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Associations.cpp" />
+    <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Explorer.cpp" />
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Helpers.cpp" />
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Registry.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.cpp" />

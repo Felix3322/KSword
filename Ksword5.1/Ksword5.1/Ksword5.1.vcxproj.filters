@@ -86,6 +86,12 @@
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Associations.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Explorer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Helpers.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -11,6 +11,22 @@ using namespace context_menu_cleaner_detail;
 
 QVector<ContextMenuCleanerTab::ContextMenuEntry> ContextMenuCleanerTab::enumerateEntriesForArea(const MenuArea area) const
 {
+    // 关联/命名空间分区：
+    // - 这三类需要枚举注册表值或执行第三方判定，使用独立实现文件；
+    // - 格式右键菜单仍复用下方 shell/shellex 统一解析链路。
+    if (area == MenuArea::UrlBinding)
+    {
+        return enumerateUrlBindingEntries();
+    }
+    if (area == MenuArea::OpenWith)
+    {
+        return enumerateOpenWithEntries();
+    }
+    if (area == MenuArea::ExplorerHome)
+    {
+        return enumerateExplorerHomeEntries();
+    }
+
     std::vector<RegistryLocationDefinition> locations;
     if (area == MenuArea::InternetExplorer)
     {
@@ -23,7 +39,7 @@ QVector<ContextMenuCleanerTab::ContextMenuEntry> ContextMenuCleanerTab::enumerat
         addUserAndMachineClassLocations(&locations, QStringLiteral("Directory\\Background\\shell"), QStringLiteral("目录背景"), QStringLiteral("shell"), true, false);
         addUserAndMachineClassLocations(&locations, QStringLiteral("Directory\\Background\\shellex\\ContextMenuHandlers"), QStringLiteral("目录背景处理器"), QStringLiteral("shellex"), false, true);
     }
-    else
+    else if (area == MenuArea::File)
     {
         addUserAndMachineClassLocations(&locations, QStringLiteral("*\\shell"), QStringLiteral("所有文件"), QStringLiteral("shell"), true, false);
         addUserAndMachineClassLocations(&locations, QStringLiteral("*\\shellex\\ContextMenuHandlers"), QStringLiteral("所有文件处理器"), QStringLiteral("shellex"), false, true);
@@ -35,6 +51,10 @@ QVector<ContextMenuCleanerTab::ContextMenuEntry> ContextMenuCleanerTab::enumerat
         addUserAndMachineClassLocations(&locations, QStringLiteral("Folder\\shellex\\ContextMenuHandlers"), QStringLiteral("文件夹处理器"), QStringLiteral("shellex"), false, true);
         addUserAndMachineClassLocations(&locations, QStringLiteral("Drive\\shell"), QStringLiteral("磁盘驱动器"), QStringLiteral("shell"), true, false);
         addUserAndMachineClassLocations(&locations, QStringLiteral("Drive\\shellex\\ContextMenuHandlers"), QStringLiteral("磁盘驱动器处理器"), QStringLiteral("shellex"), false, true);
+    }
+    else if (area == MenuArea::FormatMenu)
+    {
+        addFormatContextMenuLocations(&locations);
     }
 
     QVector<ContextMenuEntry> entries;

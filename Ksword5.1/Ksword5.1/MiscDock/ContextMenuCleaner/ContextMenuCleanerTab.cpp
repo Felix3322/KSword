@@ -24,6 +24,8 @@
 #include <QVBoxLayout>
 #include <QStringList>
 
+#include <array>
+
 namespace ks::misc
 {
 
@@ -33,7 +35,7 @@ ContextMenuCleanerTab::ContextMenuCleanerTab(QWidget* parent)
     : QWidget(parent)
 {
     initializeUi();
-    refreshAllAreas();
+    refreshArea(MenuArea::InternetExplorer);
 
     kLogEvent event;
     info << event << "[ContextMenuCleanerTab] 右键菜单清理页初始化完成。" << eol;
@@ -41,14 +43,13 @@ ContextMenuCleanerTab::ContextMenuCleanerTab(QWidget* parent)
 
 void ContextMenuCleanerTab::initializeUi()
 {
-    // 根布局：上方风险说明，下方三类子页。
+    // 根布局：上方风险说明，下方七类 Shell 关联子页。
     m_rootLayout = new QVBoxLayout(this);
     m_rootLayout->setContentsMargins(6, 6, 6, 6);
     m_rootLayout->setSpacing(6);
 
     m_hintLabel = new QLabel(
-        QStringLiteral("提示：本页枚举常见 IE/桌面/文件右键菜单注册表入口。删除会移除对应注册表子树，"
-                       "请确认条目来源后再操作；系统项或第三方 Shell 扩展删除后通常需要重启 Explorer 才能完全刷新。"),
+        QStringLiteral("提示：本页统一管理右键菜单、URL 绑定、文件打开方式和资源管理器主页第三方程序。删除会精确移除表格所示注册表子树或值且不会自动备份；操作前请确认来源，更改后通常需要重启 Explorer 或相关程序才会完全刷新。"),
         this);
     m_hintLabel->setWordWrap(true);
     m_hintLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
@@ -61,6 +62,40 @@ void ContextMenuCleanerTab::initializeUi()
     createAreaPage(MenuArea::InternetExplorer);
     createAreaPage(MenuArea::Desktop);
     createAreaPage(MenuArea::File);
+    createAreaPage(MenuArea::UrlBinding);
+    createAreaPage(MenuArea::OpenWith);
+    createAreaPage(MenuArea::FormatMenu);
+    createAreaPage(MenuArea::ExplorerHome);
+
+    // 页签按需加载：
+    // - URL/格式菜单会扫描大量 Classes 子键，不在杂项页构造时一次性阻塞 UI；
+    // - 用户首次切换到分类时枚举一次，之后仅由刷新按钮主动重扫。
+    const std::array<MenuArea, 7> orderedAreas{
+        MenuArea::InternetExplorer,
+        MenuArea::Desktop,
+        MenuArea::File,
+        MenuArea::UrlBinding,
+        MenuArea::OpenWith,
+        MenuArea::FormatMenu,
+        MenuArea::ExplorerHome
+    };
+    connect(
+        m_areaTabWidget,
+        &QTabWidget::currentChanged,
+        this,
+        [this, orderedAreas](const int tabIndex) {
+            if (tabIndex < 0
+                || tabIndex >= static_cast<int>(orderedAreas.size()))
+            {
+                return;
+            }
+            const MenuArea area = orderedAreas[static_cast<std::size_t>(tabIndex)];
+            AreaWidgets* areaWidgets = widgetsForArea(area);
+            if (areaWidgets != nullptr && !areaWidgets->hasLoaded)
+            {
+                refreshArea(area);
+            }
+        });
 }
 
 void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
@@ -83,9 +118,9 @@ void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
     areaWidgets->layout->addWidget(areaWidgets->toolbarWidget);
 
     areaWidgets->refreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QStringLiteral("刷新"), areaWidgets->toolbarWidget);
-    areaWidgets->refreshButton->setToolTip(QStringLiteral("重新枚举当前分类的右键菜单注册表项"));
+    areaWidgets->refreshButton->setToolTip(QStringLiteral("重新枚举当前分类的 Shell 关联注册表项目"));
     areaWidgets->deleteButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_terminate.svg")), QStringLiteral("删除选中"), areaWidgets->toolbarWidget);
-    areaWidgets->deleteButton->setToolTip(QStringLiteral("删除表格选中项对应的注册表子树"));
+    areaWidgets->deleteButton->setToolTip(QStringLiteral("删除表格选中项对应的注册表子树或值"));
     areaWidgets->copyButton = new QPushButton(QIcon(QStringLiteral(":/Icon/log_copy.svg")), QStringLiteral("复制路径"), areaWidgets->toolbarWidget);
     areaWidgets->copyButton->setToolTip(QStringLiteral("复制选中项的注册表路径"));
     areaWidgets->filterEdit = new QLineEdit(areaWidgets->toolbarWidget);
@@ -155,13 +190,6 @@ void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
     m_areaTabWidget->addTab(areaWidgets->page, QIcon(areaIconPath(area)), areaTitle(area));
 }
 
-void ContextMenuCleanerTab::refreshAllAreas()
-{
-    refreshArea(MenuArea::InternetExplorer);
-    refreshArea(MenuArea::Desktop);
-    refreshArea(MenuArea::File);
-}
-
 void ContextMenuCleanerTab::refreshArea(const MenuArea area)
 {
     AreaWidgets* areaWidgets = widgetsForArea(area);
@@ -172,6 +200,7 @@ void ContextMenuCleanerTab::refreshArea(const MenuArea area)
 
     const QVector<ContextMenuEntry> newEntries = enumerateEntriesForArea(area);
     areaWidgets->entries = newEntries;
+    areaWidgets->hasLoaded = true;
     rebuildAreaTable(area);
 
     kLogEvent event;
@@ -208,7 +237,11 @@ void ContextMenuCleanerTab::rebuildAreaTable(const MenuArea area)
             entry.entryKind,
             entry.sourceGroup,
             entry.commandOrHandler,
-            rootPathText(entry.rootLabel, entry.subKeyPath),
+            registryTargetPathText(
+                entry.rootLabel,
+                entry.subKeyPath,
+                entry.deleteKind == DeleteKind::RegistryValue,
+                entry.valueName),
             entry.statusText,
             entry.detailText,
             entry.clsidText }.join('\n').toLower();
@@ -233,7 +266,14 @@ void ContextMenuCleanerTab::rebuildAreaTable(const MenuArea area)
         areaWidgets->table->setItem(row, kColumnKind, makeItem(entry.entryKind));
         areaWidgets->table->setItem(row, kColumnSource, makeItem(entry.sourceGroup));
         areaWidgets->table->setItem(row, kColumnCommandOrHandler, makeItem(entry.commandOrHandler));
-        areaWidgets->table->setItem(row, kColumnRegistryPath, makeItem(rootPathText(entry.rootLabel, entry.subKeyPath)));
+        areaWidgets->table->setItem(
+            row,
+            kColumnRegistryPath,
+            makeItem(registryTargetPathText(
+                entry.rootLabel,
+                entry.subKeyPath,
+                entry.deleteKind == DeleteKind::RegistryValue,
+                entry.valueName)));
         areaWidgets->table->setItem(row, kColumnStatus, makeItem(entry.statusText));
         areaWidgets->table->setItem(row, kColumnDetail, makeItem(entry.detailText));
     }
@@ -262,8 +302,19 @@ void ContextMenuCleanerTab::showAreaContextMenu(const MenuArea area, const QPoin
     QAction* deleteAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_terminate.svg")), QStringLiteral("删除选中项"));
 
     const QVector<int> selectedIndexes = selectedEntryIndexes(area);
+    bool hasDeleteableEntry = false;
+    for (const int entryIndex : selectedIndexes)
+    {
+        if (entryIndex >= 0
+            && entryIndex < areaWidgets->entries.size()
+            && areaWidgets->entries.at(entryIndex).canDelete)
+        {
+            hasDeleteableEntry = true;
+            break;
+        }
+    }
     copyAction->setEnabled(!selectedIndexes.isEmpty());
-    deleteAction->setEnabled(!selectedIndexes.isEmpty());
+    deleteAction->setEnabled(hasDeleteableEntry);
 
     QAction* selectedAction = menu.exec(areaWidgets->table->viewport()->mapToGlobal(localPosition));
     if (selectedAction == copyAction)
@@ -287,11 +338,12 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
     const QVector<int> selectedIndexes = selectedEntryIndexes(area);
     if (selectedIndexes.isEmpty())
     {
-        QMessageBox::information(this, QStringLiteral("右键菜单清理"), QStringLiteral("请先选择需要删除的右键菜单项。"));
+        QMessageBox::information(this, QStringLiteral("Shell 关联管理"), QStringLiteral("请先选择需要删除的注册表项目。"));
         return;
     }
 
     QStringList targetPaths;
+    QVector<int> deleteableIndexes;
     for (const int entryIndex : selectedIndexes)
     {
         if (entryIndex < 0 || entryIndex >= areaWidgets->entries.size())
@@ -299,7 +351,24 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
             continue;
         }
         const ContextMenuEntry& entry = areaWidgets->entries.at(entryIndex);
-        targetPaths.push_back(rootPathText(entry.rootLabel, entry.subKeyPath));
+        if (!entry.canDelete)
+        {
+            continue;
+        }
+        deleteableIndexes.push_back(entryIndex);
+        targetPaths.push_back(registryTargetPathText(
+            entry.rootLabel,
+            entry.subKeyPath,
+            entry.deleteKind == DeleteKind::RegistryValue,
+            entry.valueName));
+    }
+    if (deleteableIndexes.isEmpty())
+    {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Shell 关联管理"),
+            QStringLiteral("选中项属于受保护的系统注册，当前页面不允许删除。"));
+        return;
     }
 
     const QString previewText = targetPaths.mid(0, 8).join('\n');
@@ -308,8 +377,8 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
         : QString();
     const QMessageBox::StandardButton confirmButton = QMessageBox::warning(
         this,
-        QStringLiteral("确认删除右键菜单项"),
-        QStringLiteral("将删除 %1 个注册表子树。此操作不会自动备份，删除后通常需要重启 Explorer 或相关程序才会完全生效。\n\n%2%3")
+        QStringLiteral("确认删除注册表项目"),
+        QStringLiteral("将删除 %1 个注册表子树或值。此操作不会自动备份，删除后通常需要重启 Explorer 或相关程序才会完全生效。\n\n%2%3")
             .arg(targetPaths.size())
             .arg(previewText)
             .arg(moreText),
@@ -322,7 +391,7 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
 
     QStringList failedMessages;
     int successCount = 0;
-    for (const int entryIndex : selectedIndexes)
+    for (const int entryIndex : deleteableIndexes)
     {
         if (entryIndex < 0 || entryIndex >= areaWidgets->entries.size())
         {
@@ -330,28 +399,45 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
         }
         const ContextMenuEntry& entry = areaWidgets->entries.at(entryIndex);
         QString errorText;
-        const bool deleteOk = deleteRegistryTreeWithView(entry.rootKey, entry.subKeyPath, entry.viewFlag, &errorText);
+        const bool deleteOk = entry.deleteKind == DeleteKind::RegistryValue
+            ? deleteRegistryValueWithView(
+                entry.rootKey,
+                entry.subKeyPath,
+                entry.valueName,
+                entry.viewFlag,
+                entry.cleanupOpenWithMru,
+                &errorText)
+            : deleteRegistryTreeWithView(
+                entry.rootKey,
+                entry.subKeyPath,
+                entry.viewFlag,
+                &errorText);
+        const QString targetPath = registryTargetPathText(
+            entry.rootLabel,
+            entry.subKeyPath,
+            entry.deleteKind == DeleteKind::RegistryValue,
+            entry.valueName);
         if (deleteOk)
         {
             ++successCount;
             kLogEvent event;
             warn << event
-                << "[ContextMenuCleanerTab] 删除右键菜单注册表项成功, path="
-                << rootPathText(entry.rootLabel, entry.subKeyPath).toStdString()
+                << "[ContextMenuCleanerTab] 删除 Shell 关联注册表项目成功, path="
+                << targetPath.toStdString()
                 << eol;
         }
         else
         {
             (void)ks::ui::promptForPrivilegeFailure(
                 this,
-                QStringLiteral("清理右键菜单注册表项"),
+                QStringLiteral("清理 Shell 关联注册表项目"),
                 errorText);
             failedMessages.push_back(QStringLiteral("%1：%2")
-                .arg(rootPathText(entry.rootLabel, entry.subKeyPath), errorText));
+                .arg(targetPath, errorText));
             kLogEvent event;
             err << event
-                << "[ContextMenuCleanerTab] 删除右键菜单注册表项失败, path="
-                << rootPathText(entry.rootLabel, entry.subKeyPath).toStdString()
+                << "[ContextMenuCleanerTab] 删除 Shell 关联注册表项目失败, path="
+                << targetPath.toStdString()
                 << ", error="
                 << errorText.toStdString()
                 << eol;
@@ -364,14 +450,14 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
     {
         QMessageBox::information(
             this,
-            QStringLiteral("右键菜单清理"),
-            QStringLiteral("已删除 %1 项。建议重启 Explorer 后确认右键菜单变化。").arg(successCount));
+            QStringLiteral("Shell 关联管理"),
+            QStringLiteral("已删除 %1 项。建议重启 Explorer 或相关程序后确认变化。").arg(successCount));
     }
     else
     {
         QMessageBox::warning(
             this,
-            QStringLiteral("右键菜单清理"),
+            QStringLiteral("Shell 关联管理"),
             QStringLiteral("成功删除 %1 项，失败 %2 项：\n\n%3")
                 .arg(successCount)
                 .arg(failedMessages.size())
@@ -402,7 +488,11 @@ void ContextMenuCleanerTab::copySelectedEntries(const MenuArea area) const
             continue;
         }
         const ContextMenuEntry& entry = areaWidgets->entries.at(entryIndex);
-        lines.push_back(rootPathText(entry.rootLabel, entry.subKeyPath));
+        lines.push_back(registryTargetPathText(
+            entry.rootLabel,
+            entry.subKeyPath,
+            entry.deleteKind == DeleteKind::RegistryValue,
+            entry.valueName));
     }
 
     if (QClipboard* clipboard = QApplication::clipboard())
@@ -448,6 +538,14 @@ ContextMenuCleanerTab::AreaWidgets* ContextMenuCleanerTab::widgetsForArea(const 
         return &m_desktopWidgets;
     case MenuArea::File:
         return &m_fileWidgets;
+    case MenuArea::UrlBinding:
+        return &m_urlBindingWidgets;
+    case MenuArea::OpenWith:
+        return &m_openWithWidgets;
+    case MenuArea::FormatMenu:
+        return &m_formatMenuWidgets;
+    case MenuArea::ExplorerHome:
+        return &m_explorerHomeWidgets;
     }
     return &m_fileWidgets;
 }
@@ -462,6 +560,14 @@ const ContextMenuCleanerTab::AreaWidgets* ContextMenuCleanerTab::widgetsForArea(
         return &m_desktopWidgets;
     case MenuArea::File:
         return &m_fileWidgets;
+    case MenuArea::UrlBinding:
+        return &m_urlBindingWidgets;
+    case MenuArea::OpenWith:
+        return &m_openWithWidgets;
+    case MenuArea::FormatMenu:
+        return &m_formatMenuWidgets;
+    case MenuArea::ExplorerHome:
+        return &m_explorerHomeWidgets;
     }
     return &m_fileWidgets;
 }
@@ -476,6 +582,14 @@ QString ContextMenuCleanerTab::areaTitle(const MenuArea area)
         return QStringLiteral("桌面右键菜单");
     case MenuArea::File:
         return QStringLiteral("文件右键菜单");
+    case MenuArea::UrlBinding:
+        return QStringLiteral("URL 绑定");
+    case MenuArea::OpenWith:
+        return QStringLiteral("文件打开方式");
+    case MenuArea::FormatMenu:
+        return QStringLiteral("格式右键菜单");
+    case MenuArea::ExplorerHome:
+        return QStringLiteral("资源管理器主页第三方程序");
     }
     return QStringLiteral("文件右键菜单");
 }
@@ -490,6 +604,14 @@ QString ContextMenuCleanerTab::areaIconPath(const MenuArea area)
         return QStringLiteral(":/Icon/desktop_switch.svg");
     case MenuArea::File:
         return QStringLiteral(":/Icon/process_open_folder.svg");
+    case MenuArea::UrlBinding:
+        return QStringLiteral(":/Icon/log_track.svg");
+    case MenuArea::OpenWith:
+        return QStringLiteral(":/Icon/process_open_folder.svg");
+    case MenuArea::FormatMenu:
+        return QStringLiteral(":/Icon/process_list.svg");
+    case MenuArea::ExplorerHome:
+        return QStringLiteral(":/Icon/desktop_switch.svg");
     }
     return QStringLiteral(":/Icon/process_open_folder.svg");
 }

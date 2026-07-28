@@ -10,6 +10,7 @@
 
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 #include <initializer_list>
 #include <optional>
@@ -53,6 +54,17 @@ namespace ks::misc::context_menu_cleaner_detail
         bool ieMenuExt = false;       // ieMenuExt：true 表示子键是 IE MenuExt。
     };
 
+    // RegistryValueSnapshot：
+    // - 输入：由 enumerateRegistryValues 从注册表读取；
+    // - 处理：保留值名、显示文本和原始类型，供打开方式等页面精确删除；
+    // - 返回：普通数据快照，不持有注册表句柄。
+    struct RegistryValueSnapshot
+    {
+        QString valueName;       // valueName：命名值名称，默认值为空字符串。
+        QString valueText;       // valueText：转换后的可读数据。
+        DWORD valueType = REG_NONE; // valueType：原始 Win32 注册表类型。
+    };
+
     // buildInputStyle：输入无；处理为筛选框生成主题样式；返回可直接 setStyleSheet 的文本。
     QString buildInputStyle();
 
@@ -68,8 +80,18 @@ namespace ks::misc::context_menu_cleaner_detail
     // enumerateRegistrySubKeys：输入父键位置；处理枚举一级子键；返回排序后的子键名列表。
     QStringList enumerateRegistrySubKeys(HKEY rootKey, const QString& subKeyPath, REGSAM viewFlag);
 
+    // enumerateRegistryValues：输入父键位置；处理枚举当前键的全部值；返回按值名排序的快照。
+    QVector<RegistryValueSnapshot> enumerateRegistryValues(HKEY rootKey, const QString& subKeyPath, REGSAM viewFlag);
+
     // rootPathText：输入显示根键与子键；处理拼接完整路径；返回 UI/剪贴板文本。
     QString rootPathText(const QString& rootLabel, const QString& subKeyPath);
+
+    // registryTargetPathText：输入键和值目标；处理拼接精确删除位置；返回 UI/剪贴板文本。
+    QString registryTargetPathText(
+        const QString& rootLabel,
+        const QString& subKeyPath,
+        bool valueTarget,
+        const QString& valueName);
 
     // firstNonEmpty：输入候选文本列表；处理选择第一个非空值；返回非空候选或空字符串。
     QString firstNonEmpty(const std::initializer_list<QString>& values);
@@ -89,6 +111,15 @@ namespace ks::misc::context_menu_cleaner_detail
     // deleteRegistryTreeWithView：输入待删注册表子树；处理按指定视图删除；返回成功布尔值并可写错误文本。
     bool deleteRegistryTreeWithView(HKEY rootKey, const QString& subKeyPath, REGSAM viewFlag, QString* errorTextOut);
 
+    // deleteRegistryValueWithView：输入待删注册表值；处理精确删除并可清理 OpenWith MRU；返回成功布尔值。
+    bool deleteRegistryValueWithView(
+        HKEY rootKey,
+        const QString& subKeyPath,
+        const QString& valueName,
+        REGSAM viewFlag,
+        bool cleanupOpenWithMru,
+        QString* errorTextOut);
+
     // addUserAndMachineClassLocations：输入 classes 相对路径；处理追加 HKCU/HKLM 32/64 扫描项；无返回值。
     void addUserAndMachineClassLocations(
         std::vector<RegistryLocationDefinition>* outputList,
@@ -100,4 +131,7 @@ namespace ks::misc::context_menu_cleaner_detail
 
     // addIeMenuExtLocations：输入扫描项数组；处理追加 IE MenuExt 常见位置；无返回值。
     void addIeMenuExtLocations(std::vector<RegistryLocationDefinition>* outputList);
+
+    // addFormatContextMenuLocations：输入扫描项数组；处理追加扩展名/ProgID/SystemFileAssociations 菜单位置；无返回值。
+    void addFormatContextMenuLocations(std::vector<RegistryLocationDefinition>* outputList);
 }
