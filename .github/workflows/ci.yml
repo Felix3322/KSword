@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-integrity:
+    name: Source integrity
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check changed-file whitespace
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
+            git diff --check "origin/$env:GITHUB_BASE_REF...HEAD"
+          }
+          elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_EVENT_BEFORE -and $env:GITHUB_EVENT_BEFORE -ne ('0' * 40 -join '')) {
+            git diff --check $env:GITHUB_EVENT_BEFORE $env:GITHUB_SHA
+          }
+          else {
+            git diff --check HEAD~1 HEAD
+          }
+
+      - name: Validate tracked JSON
+        shell: pwsh
+        run: |
+          @'
+          import json
+          import subprocess
+          import sys
+
+          paths = subprocess.check_output(
+              ["git", "ls-files", "--", "*.json"], text=True
+          ).splitlines()
+          for raw_path in paths:
+              with open(raw_path, encoding="utf-8") as source:
+                  json.load(source)
+          print(f"Validated {len(paths)} tracked JSON file(s).")
+          '@ | python -
+
+      - name: Audit language packs
+        run: >-
+          python tools/i18n_language_pack.py audit
+          --source-root Ksword5.1/Ksword5.1
+          --zh-pack Ksword5.1/Ksword5.1/languages/zh-CN.json
+          --en-pack Ksword5.1/Ksword5.1/languages/en-US.json
+
+      - name: Audit IOCTL registry and access policy
+        run: >-
+          python tools/ioctl_audit/ksword_ioctl_audit.py
+          --repo-root .
+          --format markdown
+          --out artifacts/ioctl-audit.md
+
+      - name: Upload IOCTL audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ioctl-audit
+          path: artifacts/ioctl-audit.md
+          if-no-files-found: warn
+
+  usermode-release:
+    name: User-mode Release build
+    needs: source-integrity
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.3'
+          arch: win64_msvc2022_64
+          modules: 'qtcharts qtmultimedia'
+          cache: true
+
+      - name: Install Qt MSBuild files
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'qt-msbuild.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'qt-msbuild'
+          Invoke-WebRequest `
+            -Uri 'https://download.qt.io/official_releases/vsaddin/3.5.0/qt-vsaddin-msbuild-3.5.0.zip' `
+            -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $destination -Force
+          $targets = Get-ChildItem -Path $destination -Filter qt.targets -Recurse -File |
+            Select-Object -First 1
+          if ($null -eq $targets) {
+            throw 'Qt MSBuild archive did not contain qt.targets.'
+          }
+          "KSWORD_QT_MSBUILD=$($targets.Directory.FullName)" | Add-Content -Path $env:GITHUB_ENV
+
+      - name: Build supported user-mode Release targets
+        shell: pwsh
+        run: |
+          $env:KSWORD_QT_DIR = $env:QT_ROOT_DIR
+          $env:QTDIR = $env:QT_ROOT_DIR
+          if (-not (Test-Path (Join-Path $env:KSWORD_QT_MSBUILD 'qt.targets'))) {
+            throw "Qt MSBuild path is invalid: $env:KSWORD_QT_MSBUILD"
+          }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+            Select-Object -First 1
+          if (-not $msbuild -or -not (Test-Path $msbuild)) {
+            throw 'Could not locate MSBuild through vswhere.'
+          }
+          $properties = @(
+            '/t:Build',
+            '/p:Configuration=Release',
+            '/p:Platform=x64',
+            "/p:QtMsBuild=$env:KSWORD_QT_MSBUILD",
+            '/p:KswordArkSkipAutoTestSign=true',
+            '/m:1',
+            '/v:minimal'
+          )
+          $projects = @(
+            'Ksword5.1/Ksword5.1/Ksword5.1.vcxproj',
+            'Launcher/Launcher.vcxproj',
+            'Taskbar/Taskbar.vcxproj',
+            'KswordHUD/KswordHUD.vcxproj',
+            'APIMonitor_x64/APIMonitor_x64.vcxproj',
+            'KswordCLI/KswordCLI.vcxproj'
+          )
+          foreach ($project in $projects) {
+            & $msbuild $project @properties
+            if ($LASTEXITCODE -ne 0) {
+              throw "MSBuild failed for $project with exit code $LASTEXITCODE."
+            }
+          }
+
+      - name: Verify primary build artifacts
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            'Ksword5.1/Ksword5.1/x64/Release/Ksword5.1.exe',
+            'Ksword5.1/Ksword5.1/x64/Release/Launcher.exe',
+            'Taskbar/x64/Release/Taskbar.exe',
+            'KswordHUD/x64/Release/KswordHUD.exe',
+            'APIMonitor_x64/x64/Release/APIMonitor_x64.dll',
+            'KswordCLI/x64/Release/KswordCLI.exe'
+          )
+          $missing = $artifacts | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            throw "Expected Release artifact(s) missing: $($missing -join ', ')"
+          }

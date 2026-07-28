@@ -1,0 +1,76 @@
+name: Driver CI
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: driver-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  driver-release:
+    name: Driver Release build
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify WDK integration
+        shell: pwsh
+        run: |
+          $wdkTargets = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\build' `
+            -Filter WindowsDriver.Common.targets -Recurse -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($null -eq $wdkTargets) {
+            throw 'The windows-2022 runner does not expose WindowsKernelModeDriver10.0. Update the runner image or add an explicit WDK installation step.'
+          }
+          Write-Host "Using WDK targets: $($wdkTargets.FullName)"
+
+      - name: Build unsigned Release driver
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+            Select-Object -First 1
+          if (-not $msbuild -or -not (Test-Path $msbuild)) {
+            throw 'Could not locate MSBuild through vswhere.'
+          }
+          & $msbuild 'KswordARKDriver/KswordARKDriver.vcxproj' `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:KswordArkSkipAutoVariantSign=true `
+            /p:KswordArkSkipAutoTestSign=true `
+            /m:1 `
+            /v:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "Driver MSBuild failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Verify driver artifacts
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            'KswordARKDriver/x64/Release/KswordARK.sys',
+            'KswordARKDriver/x64/Release/KswordARK.pdb',
+            'KswordARKDriver/x64/Release/KswordARKDriver.inf'
+          )
+          $missing = $artifacts | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            throw "Expected driver artifact(s) missing: $($missing -join ', ')"
+          }
+
+      - name: Upload driver artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KswordARKDriver-unsigned-Release
+          path: |
+            KswordARKDriver/x64/Release/KswordARK.sys
+            KswordARKDriver/x64/Release/KswordARK.pdb
+            KswordARKDriver/x64/Release/KswordARKDriver.inf
+          if-no-files-found: error
