@@ -65,6 +65,26 @@ function Resolve-ReleaseType {
     }
 }
 
+# Invoke-GitOrThrow 作用：
+# - 在指定仓库目录执行 Git 命令，并把失败转换为包含命令内容的明确错误；
+# - 调用方式：Invoke-GitOrThrow -RepositoryRootPath $path -Arguments @('tag', '--annotate', ...)。
+# - 入参 RepositoryRootPath：Git 仓库根目录。
+# - 入参 Arguments：传给 git 的参数数组。
+# - 出参：无；Git 返回非零时抛错。
+function Invoke-GitOrThrow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepositoryRootPath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    & git -C $RepositoryRootPath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Git 命令执行失败（退出码 {0}）：git -C `"{1}`" {2}" -f $LASTEXITCODE, $RepositoryRootPath, ($Arguments -join ' '))
+    }
+}
+
 # Update-QStringLiteralByMarker 作用：
 # - 通过“同一行注释标记”定位并替换 QStringLiteral("...") 内容；
 # - 调用方式：Update-QStringLiteralByMarker -FilePath xxx -Marker xxx -NewValue xxx；
@@ -186,6 +206,18 @@ $scriptRootPath = Split-Path -Parent $MyInvocation.MyCommand.Path
 # sourceRootPath 作用：Ksword5.1 项目源目录（包含 WelcomeDock / qrc / rc）。
 $sourceRootPath = Join-Path $scriptRootPath 'Ksword5.1'
 
+# gitRepositoryRootPath 作用：当前发布脚本所属 Git 仓库的绝对根目录。
+$gitRepositoryRootPath = (& git -C $scriptRootPath rev-parse --show-toplevel).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitRepositoryRootPath)) {
+    throw "发布脚本所在目录不在可用的 Git 仓库中：$scriptRootPath"
+}
+
+# gitHeadCommitHash 作用：发布开始时的最新提交；新 tag 始终精确指向该提交。
+$gitHeadCommitHash = (& git -C $gitRepositoryRootPath rev-parse --verify HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitHeadCommitHash)) {
+    throw "无法确定 Git 最新提交（HEAD）：$gitRepositoryRootPath"
+}
+
 # welcomeDockFilePath 作用：欢迎页源码目标文件。
 $welcomeDockFilePath = Join-Path $sourceRootPath 'WelcomeDock\WelcomeDock.cpp'
 # appIconRcFilePath 作用：原生 Win32 资源脚本文件（用于替换 EXE 图标）。
@@ -204,6 +236,21 @@ if ([string]::IsNullOrWhiteSpace($versionInputText)) {
 $releaseTypeInputText = Read-Host '请输入发布类型（1=普通, 2=预览, 3=开发；也支持 normal/preview/dev）'
 # releaseTypeKey 作用：发布类型规范化结果，仅取 normal/preview/dev 之一。
 $releaseTypeKey = Resolve-ReleaseType -InputText $releaseTypeInputText
+
+# gitTagName 作用：发布 Git tag 名，直接复用版本号，确保发布版本和提交标签一致。
+$gitTagName = $versionInputText.Trim()
+Invoke-GitOrThrow `
+    -RepositoryRootPath $gitRepositoryRootPath `
+    -Arguments @('check-ref-format', '--allow-onelevel', "refs/tags/$gitTagName")
+
+# 检查同名 tag，防止发布脚本覆盖既有标签。
+& git -C $gitRepositoryRootPath show-ref --verify --quiet "refs/tags/$gitTagName"
+if ($LASTEXITCODE -eq 0) {
+    throw "Git tag 已存在，发布已停止以避免覆盖：$gitTagName"
+}
+if ($LASTEXITCODE -ne 1) {
+    throw "无法检查 Git tag 是否已存在：$gitTagName"
+}
 
 # buildTimeText 作用：记录脚本执行时的精确构建时间文本（含毫秒与时区）。
 $buildTimeText = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff K')
@@ -226,6 +273,7 @@ Write-Stage "版本号：$versionInputText"
 Write-Stage "发布类型：$releaseTypeKey"
 Write-Stage "编译时间：$buildTimeText"
 Write-Stage "应用程序图标：$appIconRelativePath"
+Write-Stage "Git tag：$gitTagName -> $gitHeadCommitHash"
 
 # 1) 更新欢迎页版本号（更大字号显示，文本源位于 WelcomeDock.cpp 标记行）。
 Update-QStringLiteralByMarker `
@@ -246,6 +294,13 @@ Update-NextLineByMarker `
     -Marker 'RELEASE_APP_ICON_FILE_MARKER' `
     -NewLine $appIconResourceLine
 
+# 4) 为发布开始时的最新提交创建注释 tag；不推送，由发布者按需执行 git push origin <tag>。
+$gitTagMessage = "Release $gitTagName ($releaseTypeKey)"
+Invoke-GitOrThrow `
+    -RepositoryRootPath $gitRepositoryRootPath `
+    -Arguments @('tag', '--annotate', $gitTagName, $gitHeadCommitHash, '--message', $gitTagMessage)
+
 Write-Stage '发布信息更新完成。'
 Write-Stage "已更新：$welcomeDockFilePath"
 Write-Stage "已更新：$appIconRcFilePath"
+Write-Stage "已创建 Git tag：$gitTagName -> $gitHeadCommitHash"
