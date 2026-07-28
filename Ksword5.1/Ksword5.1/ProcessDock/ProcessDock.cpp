@@ -9287,6 +9287,13 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         const auto affinityCoreButtons = std::make_shared<std::vector<QToolButton*>>(
             static_cast<std::size_t>(sizeof(ULONG_PTR) * 8U),
             nullptr);
+        const auto affinityCoreLabels = std::make_shared<std::vector<std::string>>();
+        if (!affinityTargetStates->empty())
+        {
+            ks::process::QueryProcessAffinityCoreLabels(
+                affinityTargetStates->front().processId,
+                affinityCoreLabels.get());
+        }
         const auto updateAffinityCoreButtons = [affinityTargetStates, affinityCoreButtons]()
         {
             for (int coreIndex = 0; coreIndex < static_cast<int>(affinityCoreButtons->size()); ++coreIndex)
@@ -9343,7 +9350,10 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
             {
                 const int coreIndex = availableCoreIndexes[corePosition];
                 QToolButton* coreButton = new QToolButton(rowWidget);
-                coreButton->setText(QStringLiteral("C%1").arg(coreIndex));
+                const QString coreLabel = static_cast<std::size_t>(coreIndex) < affinityCoreLabels->size()
+                    ? QString::fromStdString((*affinityCoreLabels)[static_cast<std::size_t>(coreIndex)])
+                    : QStringLiteral("C%1").arg(coreIndex);
+                coreButton->setText(coreLabel);
                 coreButton->setCheckable(true);
                 coreButton->setAutoRaise(false);
                 coreButton->setFocusPolicy(Qt::NoFocus);

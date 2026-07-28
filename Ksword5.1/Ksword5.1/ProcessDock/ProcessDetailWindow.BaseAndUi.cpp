@@ -3214,7 +3214,7 @@ void ProcessDetailWindow::initializeActionTab()
         coreButton->setVisible(false);
         coreButton->setToolTip(
             ks::i18n::text(QStringLiteral("process.detail.affinity.core_tooltip"), QString())
-                .arg(coreIndex));
+                .arg(QStringLiteral("C%1").arg(coreIndex)));
         coreButton->setStyleSheet(affinityCoreButtonStyle);
         installCopyMenu(coreButton, [coreButton]()
         {

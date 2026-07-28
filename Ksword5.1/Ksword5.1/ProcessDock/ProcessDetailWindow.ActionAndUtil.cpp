@@ -480,6 +480,10 @@ void ProcessDetailWindow::toggleActionAffinityCore(const int coreIndex, const bo
 
 void ProcessDetailWindow::updateActionAffinityCoreButtons()
 {
+    std::vector<std::string> coreLabels;
+    ks::process::QueryProcessAffinityCoreLabels(
+        static_cast<DWORD>(m_baseRecord.pid),
+        &coreLabels);
     const int coreCount = std::min(
         static_cast<int>(m_affinityCoreButtons.size()),
         static_cast<int>(sizeof(ULONG_PTR) * 8U));
@@ -491,9 +495,16 @@ void ProcessDetailWindow::updateActionAffinityCoreButtons()
             continue;
         }
         const std::uint64_t coreBit = (1ULL << coreIndex);
+        const QString coreLabel = static_cast<std::size_t>(coreIndex) < coreLabels.size()
+            ? QString::fromStdString(coreLabels[static_cast<std::size_t>(coreIndex)])
+            : QStringLiteral("C%1").arg(coreIndex);
         const bool available = m_actionAffinityReadable &&
             (m_actionAffinitySystemMask & coreBit) != 0U;
         const QSignalBlocker signalBlocker(coreButton);
+        coreButton->setText(coreLabel);
+        coreButton->setToolTip(
+            ks::i18n::text(QStringLiteral("process.detail.affinity.core_tooltip"), QString())
+                .arg(coreLabel));
         coreButton->setVisible(available);
         coreButton->setEnabled(available);
         coreButton->setChecked(available && (m_actionAffinityMask & coreBit) != 0U);
