@@ -17,7 +17,9 @@ HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 LATIN_RE = re.compile(r"[A-Za-z]")
 PLACEHOLDER_RE = re.compile(r"%(?:L?\d+|n)|\{\d+\}")
 SOURCE_SUFFIXES = {".cpp", ".h", ".hpp", ".cc", ".cxx", ".ui"}
-SKIPPED_SOURCE_DIRS = {"backup"}
+# x64 is a generated build-output tree.  It can contain bundled third-party
+# plugin payloads whose implementation strings are not application UI text.
+SKIPPED_SOURCE_DIRS = {"backup", "x64"}
 SKIPPED_SOURCE_LINE_MARKERS = {
     "RELEASE_META_BUILD_TIME_MARKER",
     "RELEASE_META_VERSION_MARKER",
