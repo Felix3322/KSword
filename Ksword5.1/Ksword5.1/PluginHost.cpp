@@ -160,8 +160,8 @@ namespace
             return MarketplaceUpdateState::NotInstalled;
         }
 
-        int installedSuffix = 0;
-        int marketplaceSuffix = 0;
+        qsizetype installedSuffix = 0;
+        qsizetype marketplaceSuffix = 0;
         const QVersionNumber installed = QVersionNumber::fromString(installedVersion.trimmed(), &installedSuffix);
         const QVersionNumber marketplace = QVersionNumber::fromString(marketplaceVersion.trimmed(), &marketplaceSuffix);
         if (installed.segments().isEmpty() || marketplace.segments().isEmpty() ||
