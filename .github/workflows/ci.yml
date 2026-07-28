@@ -172,7 +172,7 @@ jobs:
         run: |
           $artifacts = @(
             'Ksword5.1/Ksword5.1/x64/Release/Ksword5.1.exe',
-            'Ksword5.1/Ksword5.1/x64/Release/Launcher.exe',
+            'Ksword5.1/x64/Release/Launcher.exe',
             'Taskbar/x64/Release/Taskbar.exe',
             'KswordHUD/x64/Release/KswordHUD.exe',
             'APIMonitor_x64/x64/Release/APIMonitor_x64.dll',
