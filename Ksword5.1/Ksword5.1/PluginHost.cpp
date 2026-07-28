@@ -39,6 +39,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
 #include <QShowEvent>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -47,9 +48,12 @@
 #include <QTextDocument>
 #include <QTimer>
 #include <QUrl>
+#include <QVersionNumber>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <functional>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -138,6 +142,48 @@ namespace
         QString licenseName;
         QUrl licenseUrl;
     };
+
+    enum class MarketplaceUpdateState
+    {
+        NotInstalled,
+        Current,
+        Available,
+        NotComparable,
+    };
+
+    MarketplaceUpdateState marketplaceUpdateState(
+        const QString& installedVersion,
+        const QString& marketplaceVersion)
+    {
+        if (installedVersion.isEmpty())
+        {
+            return MarketplaceUpdateState::NotInstalled;
+        }
+
+        int installedSuffix = 0;
+        int marketplaceSuffix = 0;
+        const QVersionNumber installed = QVersionNumber::fromString(installedVersion.trimmed(), &installedSuffix);
+        const QVersionNumber marketplace = QVersionNumber::fromString(marketplaceVersion.trimmed(), &marketplaceSuffix);
+        if (installed.segments().isEmpty() || marketplace.segments().isEmpty() ||
+            installedSuffix != installedVersion.trimmed().size() ||
+            marketplaceSuffix != marketplaceVersion.trimmed().size())
+        {
+            return MarketplaceUpdateState::NotComparable;
+        }
+        return QVersionNumber::compare(marketplace, installed) > 0
+            ? MarketplaceUpdateState::Available
+            : MarketplaceUpdateState::Current;
+    }
+
+    QString marketplaceLicenseAcceptanceKey(const MarketplacePlugin& plugin)
+    {
+        return QStringLiteral("PluginMarketplace/AcceptedLicenses/%1").arg(plugin.id);
+    }
+
+    QString marketplaceLicenseFingerprint(const MarketplacePlugin& plugin)
+    {
+        return plugin.licenseName + QChar('\n') + plugin.licenseUrl.toString(QUrl::FullyEncoded);
+    }
 
     bool isValidPluginId(const QString& id)
     {
@@ -1900,9 +1946,9 @@ namespace
             auto* marketplacePage = new QWidget(tabWidget);
             auto* marketplaceLayout = new QVBoxLayout(marketplacePage);
             m_marketplaceTable = new ks::ui::VisibleTableWidget(marketplacePage);
-            m_marketplaceTable->setColumnCount(5);
+            m_marketplaceTable->setColumnCount(6);
             m_marketplaceTable->setHorizontalHeaderLabels(QStringList{
-                QStringLiteral("名称"), QStringLiteral("版本"), QStringLiteral("目标"), QStringLiteral("许可证"), QStringLiteral("说明") });
+                QStringLiteral("名称"), QStringLiteral("版本"), QStringLiteral("安装状态"), QStringLiteral("目标"), QStringLiteral("许可证"), QStringLiteral("说明") });
             m_marketplaceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
             m_marketplaceTable->setSelectionBehavior(QAbstractItemView::SelectRows);
             m_marketplaceTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1915,40 +1961,63 @@ namespace
             m_status = new QLabel(this);
             m_status->setWordWrap(true);
             layout->addWidget(m_status);
+            m_installProgress = new QProgressBar(this);
+            m_installProgress->setTextVisible(true);
+            m_installProgress->setVisible(false);
+            layout->addWidget(m_installProgress);
             auto* buttons = new QHBoxLayout();
             auto* refreshButton = new QPushButton(QStringLiteral("重新扫描本地"), this);
             auto* refreshMarketplaceButton = new QPushButton(QStringLiteral("刷新商城"), this);
+            auto* checkUpdatesButton = new QPushButton(QStringLiteral("检查插件更新"), this);
             auto* detailButton = new QPushButton(QStringLiteral("查看清单详情"), this);
             auto* installButton = new QPushButton(QStringLiteral("同意许可证并一键安装"), this);
+            m_autoUpdateCheck = new QCheckBox(QStringLiteral("自动更新已授权插件"), this);
+            m_autoUpdateCheck->setToolTip(QStringLiteral("检查更新时，自动安装已确认当前许可证且有新版本的插件。许可证变化时会要求重新确认。"));
+            QSettings settings;
+            m_autoUpdateCheck->setChecked(settings.value(QStringLiteral("PluginMarketplace/AutoUpdate"), false).toBool());
             m_openFolderButton = new QPushButton(QStringLiteral("打开插件目录"), this);
             auto* closeButton = new QPushButton(QStringLiteral("关闭"), this);
             buttons->addWidget(refreshButton);
             buttons->addWidget(refreshMarketplaceButton);
+            buttons->addWidget(checkUpdatesButton);
             buttons->addWidget(detailButton);
             buttons->addWidget(installButton);
+            buttons->addWidget(m_autoUpdateCheck);
             buttons->addWidget(m_openFolderButton);
             buttons->addStretch(1);
             buttons->addWidget(closeButton);
             layout->addLayout(buttons);
             connect(refreshButton, &QPushButton::clicked, this, [this]() { refreshPlugins(); });
             connect(refreshMarketplaceButton, &QPushButton::clicked, this, [this]() { refreshMarketplace(); });
+            connect(checkUpdatesButton, &QPushButton::clicked, this, [this]() { checkForUpdates(); });
             connect(detailButton, &QPushButton::clicked, this, [this]() { showSelectedDetails(); });
             connect(installButton, &QPushButton::clicked, this, [this]() { requestSelectedMarketplaceLicense(); });
+            connect(m_autoUpdateCheck, &QCheckBox::toggled, this, [this](const bool enabled) {
+                QSettings settings;
+                settings.setValue(QStringLiteral("PluginMarketplace/AutoUpdate"), enabled);
+                if (enabled)
+                {
+                    checkForUpdates();
+                }
+            });
             connect(m_openFolderButton, &QPushButton::clicked, this, [this]() {
                 if (!m_pluginRoot.isEmpty()) QDesktopServices::openUrl(QUrl::fromLocalFile(m_pluginRoot));
             });
             connect(closeButton, &QPushButton::clicked, this, &QDialog::close);
             refreshPlugins();
-            refreshMarketplace();
+            refreshMarketplace(true);
         }
 
     private:
+        using InstallCompletion = std::function<void(bool, const QString&)>;
+
         void refreshPlugins()
         {
             PluginListResult result;
             QString errorText;
             m_table->setRowCount(0);
             m_plugins.clear();
+            m_installedPluginsById.clear();
             m_pluginRoot.clear();
             if (!discoverPlugins(&result, &errorText))
             {
@@ -1957,6 +2026,10 @@ namespace
                 return;
             }
             m_plugins = result.plugins;
+            for (const PluginDescriptor& descriptor : m_plugins)
+            {
+                m_installedPluginsById.insert(descriptor.id, descriptor);
+            }
             m_pluginRoot = result.pluginRoot;
             for (const PluginDescriptor& descriptor : m_plugins)
             {
@@ -2002,7 +2075,7 @@ namespace
             QMessageBox::information(this, QStringLiteral("插件清单：%1").arg(descriptor.name), detailText);
         }
 
-        void refreshMarketplace()
+        void refreshMarketplace(const bool checkForUpdates = false)
         {
             m_marketplaceTable->setRowCount(0);
             m_marketplacePlugins.clear();
@@ -2011,7 +2084,7 @@ namespace
             request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("KSword-PluginMarketplace/1"));
             request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferNetwork);
             QNetworkReply* reply = m_networkManager->get(request);
-            connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+            connect(reply, &QNetworkReply::finished, this, [this, reply, checkForUpdates]() {
                 const QByteArray payload = reply->readAll();
                 const bool networkOk = reply->error() == QNetworkReply::NoError;
                 const QString networkError = networkOk ? QString() : networkReplyErrorText(reply);
@@ -2048,25 +2121,213 @@ namespace
                         ignoredEntries.push_back(errorText.isEmpty() ? QStringLiteral("无效条目") : errorText);
                     }
                 }
-                for (const MarketplacePlugin& plugin : m_marketplacePlugins)
-                {
-                    const int row = m_marketplaceTable->rowCount();
-                    m_marketplaceTable->insertRow(row);
-                    m_marketplaceTable->setItem(row, 0, new QTableWidgetItem(plugin.name));
-                    m_marketplaceTable->setItem(row, 1, new QTableWidgetItem(plugin.version));
-                    m_marketplaceTable->setItem(row, 2, new QTableWidgetItem(plugin.targets.join(QStringLiteral(", "))));
-                    m_marketplaceTable->setItem(row, 3, new QTableWidgetItem(plugin.licenseName));
-                    m_marketplaceTable->setItem(row, 4, new QTableWidgetItem(plugin.description));
-                }
+                populateMarketplaceTable();
                 if (!m_marketplacePlugins.isEmpty()) m_marketplaceTable->selectRow(0);
-                QString status = QStringLiteral("插件商城已从 KSwordDEV/Plugins 刷新：%1 个可下载插件。").arg(m_marketplacePlugins.size());
+                const QList<MarketplacePlugin> updates = availableMarketplaceUpdates();
+                QString status = QStringLiteral("插件商城已从 KSwordDEV/Plugins 刷新：%1 个可下载插件，%2 个插件可更新。")
+                    .arg(m_marketplacePlugins.size())
+                    .arg(updates.size());
                 if (!ignoredEntries.isEmpty()) status += QStringLiteral(" 已忽略 %1 个无效条目。").arg(ignoredEntries.size());
                 m_status->setText(status);
+                if (checkForUpdates && !m_autoUpdateInProgress &&
+                    m_autoUpdateCheck != nullptr && m_autoUpdateCheck->isChecked())
+                {
+                    beginAutomaticUpdates(updates);
+                }
+            });
+        }
+
+        void checkForUpdates()
+        {
+            if (m_autoUpdateInProgress)
+            {
+                m_status->setText(QStringLiteral("插件自动更新正在进行，请等待当前队列完成。"));
+                return;
+            }
+            refreshPlugins();
+            refreshMarketplace(true);
+        }
+
+        QString installedVersionFor(const MarketplacePlugin& plugin) const
+        {
+            const auto installed = m_installedPluginsById.constFind(plugin.id);
+            return installed == m_installedPluginsById.cend() ? QString() : installed->version;
+        }
+
+        MarketplaceUpdateState updateStateFor(const MarketplacePlugin& plugin) const
+        {
+            return marketplaceUpdateState(installedVersionFor(plugin), plugin.version);
+        }
+
+        QString updateStateText(const MarketplacePlugin& plugin) const
+        {
+            const QString installedVersion = installedVersionFor(plugin);
+            switch (updateStateFor(plugin))
+            {
+            case MarketplaceUpdateState::NotInstalled:
+                return QStringLiteral("未安装");
+            case MarketplaceUpdateState::Current:
+                return QStringLiteral("已是最新（%1）").arg(installedVersion);
+            case MarketplaceUpdateState::Available:
+                return QStringLiteral("可更新：%1 → %2").arg(installedVersion, plugin.version);
+            case MarketplaceUpdateState::NotComparable:
+                return QStringLiteral("版本无法比较（本地 %1）").arg(installedVersion);
+            }
+            return QStringLiteral("未知");
+        }
+
+        QList<MarketplacePlugin> availableMarketplaceUpdates() const
+        {
+            QList<MarketplacePlugin> updates;
+            for (const MarketplacePlugin& plugin : m_marketplacePlugins)
+            {
+                if (updateStateFor(plugin) == MarketplaceUpdateState::Available)
+                {
+                    updates.push_back(plugin);
+                }
+            }
+            return updates;
+        }
+
+        void populateMarketplaceTable()
+        {
+            m_marketplaceTable->setRowCount(0);
+            for (const MarketplacePlugin& plugin : m_marketplacePlugins)
+            {
+                const int row = m_marketplaceTable->rowCount();
+                m_marketplaceTable->insertRow(row);
+                m_marketplaceTable->setItem(row, 0, new QTableWidgetItem(plugin.name));
+                m_marketplaceTable->setItem(row, 1, new QTableWidgetItem(plugin.version));
+                m_marketplaceTable->setItem(row, 2, new QTableWidgetItem(updateStateText(plugin)));
+                m_marketplaceTable->setItem(row, 3, new QTableWidgetItem(plugin.targets.join(QStringLiteral(", "))));
+                m_marketplaceTable->setItem(row, 4, new QTableWidgetItem(plugin.licenseName));
+                m_marketplaceTable->setItem(row, 5, new QTableWidgetItem(plugin.description));
+            }
+        }
+
+        bool hasAcceptedMarketplaceLicense(const MarketplacePlugin& plugin) const
+        {
+            QSettings settings;
+            return settings.value(marketplaceLicenseAcceptanceKey(plugin)).toString() ==
+                marketplaceLicenseFingerprint(plugin);
+        }
+
+        void updateInstallProgress(const QString& stage, const int percent)
+        {
+            m_installProgress->setVisible(true);
+            m_installProgress->setRange(0, 100);
+            m_installProgress->setValue(qBound(0, percent, 100));
+            m_installProgress->setFormat(stage + QStringLiteral("：%p%"));
+        }
+
+        void updateDownloadProgress(const MarketplacePlugin& plugin, const qint64 received, const qint64 total)
+        {
+            if (total <= 0)
+            {
+                m_installProgress->setVisible(true);
+                m_installProgress->setRange(0, 0);
+                m_installProgress->setFormat(QStringLiteral("正在下载 %1…").arg(plugin.name));
+                return;
+            }
+            const int overallPercent = qBound(0, static_cast<int>((received * 70) / total), 70);
+            updateInstallProgress(
+                QStringLiteral("正在下载 %1（%2 / %3 MiB）")
+                    .arg(plugin.name)
+                    .arg(QString::number(received / (1024.0 * 1024.0), 'f', 1))
+                    .arg(QString::number(total / (1024.0 * 1024.0), 'f', 1)),
+                overallPercent);
+        }
+
+        void finishInstallProgress(const bool keepVisible = false)
+        {
+            if (keepVisible)
+            {
+                return;
+            }
+            QTimer::singleShot(1400, this, [this]() {
+                if (!m_autoUpdateInProgress)
+                {
+                    m_installProgress->setVisible(false);
+                }
+            });
+        }
+
+        void beginAutomaticUpdates(const QList<MarketplacePlugin>& updates)
+        {
+            m_autoUpdateQueue.clear();
+            int pendingLicenseConfirmation = 0;
+            for (const MarketplacePlugin& plugin : updates)
+            {
+                if (hasAcceptedMarketplaceLicense(plugin))
+                {
+                    m_autoUpdateQueue.push_back(plugin);
+                }
+                else
+                {
+                    ++pendingLicenseConfirmation;
+                }
+            }
+            if (m_autoUpdateQueue.isEmpty())
+            {
+                m_status->setText(pendingLicenseConfirmation > 0
+                    ? QStringLiteral("发现 %1 个更新；其中 %2 个需要确认当前许可证，未自动安装。")
+                        .arg(updates.size())
+                        .arg(pendingLicenseConfirmation)
+                    : QStringLiteral("插件已是最新。"));
+                return;
+            }
+
+            m_autoUpdateInProgress = true;
+            m_autoUpdateTotal = m_autoUpdateQueue.size();
+            m_autoUpdateCompleted = 0;
+            m_autoUpdateFailures.clear();
+            m_status->setText(QStringLiteral("开始自动更新 %1 个已授权插件。").arg(m_autoUpdateTotal));
+            startNextAutomaticUpdate();
+        }
+
+        void startNextAutomaticUpdate()
+        {
+            if (m_autoUpdateQueue.isEmpty())
+            {
+                m_autoUpdateInProgress = false;
+                refreshPlugins();
+                populateMarketplaceTable();
+                if (m_autoUpdateFailures.isEmpty())
+                {
+                    m_status->setText(QStringLiteral("已自动更新 %1 个插件。").arg(m_autoUpdateCompleted));
+                    updateInstallProgress(QStringLiteral("自动更新完成"), 100);
+                }
+                else
+                {
+                    m_status->setText(QStringLiteral("自动更新完成：%1 个成功，%2 个失败。%3")
+                        .arg(m_autoUpdateCompleted - m_autoUpdateFailures.size())
+                        .arg(m_autoUpdateFailures.size())
+                        .arg(m_autoUpdateFailures.join(QStringLiteral("；"))));
+                }
+                finishInstallProgress();
+                return;
+            }
+
+            const MarketplacePlugin plugin = m_autoUpdateQueue.takeFirst();
+            const int current = m_autoUpdateTotal - m_autoUpdateQueue.size();
+            updateInstallProgress(QStringLiteral("自动更新 %1（%2 / %3）").arg(plugin.name).arg(current).arg(m_autoUpdateTotal), 0);
+            downloadMarketplaceArchive(plugin, [this, plugin](const bool success, const QString& message) {
+                ++m_autoUpdateCompleted;
+                if (!success)
+                {
+                    m_autoUpdateFailures.push_back(QStringLiteral("%1：%2").arg(plugin.name, message));
+                }
+                startNextAutomaticUpdate();
             });
         }
 
         void requestSelectedMarketplaceLicense()
         {
+            if (m_autoUpdateInProgress)
+            {
+                m_status->setText(QStringLiteral("插件自动更新正在进行，请等待当前队列完成。"));
+                return;
+            }
             const int row = m_marketplaceTable->currentRow();
             if (row < 0 || row >= m_marketplacePlugins.size())
             {
@@ -2120,51 +2381,90 @@ namespace
                 m_status->setText(QStringLiteral("未同意许可证，未下载或安装 %1。").arg(plugin.name));
                 return;
             }
+            QSettings settings;
+            settings.setValue(marketplaceLicenseAcceptanceKey(plugin), marketplaceLicenseFingerprint(plugin));
             downloadMarketplaceArchive(plugin);
         }
 
-        void downloadMarketplaceArchive(const MarketplacePlugin& plugin)
+        void completeMarketplaceInstall(
+            const InstallCompletion& completion,
+            const bool success,
+            const QString& message)
+        {
+            if (!success)
+            {
+                m_status->setText(QStringLiteral("插件安装失败：%1").arg(message));
+                updateInstallProgress(QStringLiteral("安装失败"), 0);
+                if (!completion)
+                {
+                    QMessageBox::warning(this, QStringLiteral("插件商城"), message);
+                }
+            }
+            if (completion)
+            {
+                completion(success, message);
+            }
+            else
+            {
+                finishInstallProgress();
+            }
+        }
+
+        void downloadMarketplaceArchive(
+            const MarketplacePlugin& plugin,
+            InstallCompletion completion = {})
         {
             m_status->setText(QStringLiteral("正在下载 %1；将校验 SHA-256 后一键安装。").arg(plugin.name));
+            updateInstallProgress(QStringLiteral("正在下载 %1").arg(plugin.name), 0);
             QNetworkRequest request(plugin.archiveUrl);
             request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("KSword-PluginMarketplace/1"));
             QNetworkReply* reply = m_networkManager->get(request);
-            connect(reply, &QNetworkReply::finished, this, [this, reply, plugin]() {
+            connect(reply, &QNetworkReply::downloadProgress, this,
+                [this, plugin](const qint64 received, const qint64 total) {
+                    updateDownloadProgress(plugin, received, total);
+                });
+            connect(reply, &QNetworkReply::finished, this, [this, reply, plugin, completion]() {
                 const QByteArray archiveBytes = reply->readAll();
                 const bool networkOk = reply->error() == QNetworkReply::NoError;
                 const QString networkError = networkOk ? QString() : networkReplyErrorText(reply);
                 reply->deleteLater();
                 if (!networkOk)
                 {
-                    QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("插件下载失败：%1").arg(networkError));
+                    completeMarketplaceInstall(completion, false, QStringLiteral("插件下载失败：%1").arg(networkError));
                     return;
                 }
                 if (archiveBytes.isEmpty() || archiveBytes.size() > kMaxMarketplaceArchiveBytes)
                 {
-                    QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("插件包为空或超过 256 MiB 限制。"));
+                    completeMarketplaceInstall(completion, false, QStringLiteral("插件包为空或超过 256 MiB 限制。"));
                     return;
                 }
+                updateInstallProgress(QStringLiteral("正在校验 %1 的 SHA-256").arg(plugin.name), 75);
                 const QString actualSha256 = QString::fromLatin1(QCryptographicHash::hash(archiveBytes, QCryptographicHash::Sha256).toHex());
                 if (actualSha256.compare(plugin.sha256, Qt::CaseInsensitive) != 0)
                 {
-                    QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("SHA-256 校验失败，已拒绝安装插件。"));
+                    completeMarketplaceInstall(completion, false, QStringLiteral("SHA-256 校验失败，已拒绝安装插件。"));
                     return;
                 }
-                installMarketplaceArchive(plugin, archiveBytes);
+                updateInstallProgress(QStringLiteral("SHA-256 校验通过"), 80);
+                installMarketplaceArchive(plugin, archiveBytes, completion);
             });
         }
 
-        void installMarketplaceArchive(const MarketplacePlugin& plugin, const QByteArray& archiveBytes)
+        void installMarketplaceArchive(
+            const MarketplacePlugin& plugin,
+            const QByteArray& archiveBytes,
+            const InstallCompletion& completion)
         {
             const QString pluginRoot = resolvePluginInstallRoot();
             if (!QDir().mkpath(pluginRoot))
             {
-                QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("无法创建插件目录：%1")
+                completeMarketplaceInstall(completion, false, QStringLiteral("无法创建插件目录：%1")
                     .arg(QDir::toNativeSeparators(pluginRoot)));
                 return;
             }
 
             {
+                updateInstallProgress(QStringLiteral("正在准备 %1 的已验证安装包").arg(plugin.name), 84);
                 const QString archivePath = QDir(pluginRoot).filePath(
                     QStringLiteral(".ksword-plugin-download-%1.zip")
                         .arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
@@ -2173,19 +2473,20 @@ namespace
                     archiveFile.write(archiveBytes) != archiveBytes.size() ||
                     !archiveFile.commit())
                 {
-                    QMessageBox::warning(this, QStringLiteral("插件商城"),
-                        QStringLiteral("无法准备已验证的插件包：%1").arg(archiveFile.errorString()));
                     QFile::remove(archivePath);
+                    completeMarketplaceInstall(completion, false,
+                        QStringLiteral("无法准备已验证的插件包：%1").arg(archiveFile.errorString()));
                     return;
                 }
-                installVerifiedMarketplaceArchive(plugin, pluginRoot, archivePath);
+                installVerifiedMarketplaceArchive(plugin, pluginRoot, archivePath, completion);
             }
         }
 
         void installVerifiedMarketplaceArchive(
             const MarketplacePlugin& plugin,
             const QString& pluginRoot,
-            const QString& archivePath)
+            const QString& archivePath,
+            const InstallCompletion& completion)
         {
             const QString stagingName = QStringLiteral(".ksword-plugin-stage-%1-%2")
                 .arg(plugin.installDirectory, QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -2193,7 +2494,7 @@ namespace
             if (!QDir().mkpath(stagingPath))
             {
                 QFile::remove(archivePath);
-                QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("无法创建插件安装暂存目录。"));
+                completeMarketplaceInstall(completion, false, QStringLiteral("无法创建插件安装暂存目录。"));
                 return;
             }
 
@@ -2202,7 +2503,7 @@ namespace
             {
                 QDir(stagingPath).removeRecursively();
                 QFile::remove(archivePath);
-                QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("未找到 Windows PowerShell，无法解压插件包。"));
+                completeMarketplaceInstall(completion, false, QStringLiteral("未找到 Windows PowerShell，无法解压插件包。"));
                 return;
             }
 
@@ -2215,46 +2516,51 @@ namespace
                 QStringLiteral("-NoLogo"), QStringLiteral("-NoProfile"), QStringLiteral("-NonInteractive"),
                 QStringLiteral("-Command"), command });
             m_status->setText(QStringLiteral("已验证 %1，正在安全解压并安装…").arg(plugin.name));
+            updateInstallProgress(QStringLiteral("正在安全解压 %1").arg(plugin.name), 90);
             connect(extractor, &QProcess::errorOccurred, this,
-                [this, extractor, archivePath, stagingPath](const QProcess::ProcessError error) {
+                [this, extractor, archivePath, stagingPath, completion](const QProcess::ProcessError error) {
                     if (error != QProcess::FailedToStart) return;
                     QDir(stagingPath).removeRecursively();
                     QFile::remove(archivePath);
-                    QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("无法启动插件解压器：%1")
+                    completeMarketplaceInstall(completion, false, QStringLiteral("无法启动插件解压器：%1")
                         .arg(extractor->errorString()));
                     extractor->deleteLater();
                 });
             connect(extractor, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
-                [this, extractor, archivePath, plugin, pluginRoot, stagingPath](const int exitCode, const QProcess::ExitStatus exitStatus) {
+                [this, extractor, archivePath, plugin, pluginRoot, stagingPath, completion](const int exitCode, const QProcess::ExitStatus exitStatus) {
                     const QString details = QString::fromLocal8Bit(extractor->readAllStandardError()).trimmed();
                     extractor->deleteLater();
                     QFile::remove(archivePath);
                     if (exitStatus != QProcess::NormalExit || exitCode != 0)
                     {
                         QDir(stagingPath).removeRecursively();
-                        QMessageBox errorBox(QMessageBox::Warning,
-                            QStringLiteral("插件商城"),
-                            QStringLiteral("插件包解压失败（退出码 %1）。").arg(exitCode),
-                            QMessageBox::Ok,
-                            this);
-                        if (!details.isEmpty()) errorBox.setDetailedText(details);
-                        errorBox.exec();
+                        QString message = QStringLiteral("插件包解压失败（退出码 %1）。").arg(exitCode);
+                        if (!details.isEmpty()) message += QStringLiteral("\n%1").arg(details);
+                        completeMarketplaceInstall(completion, false, message);
                         return;
                     }
 
+                    updateInstallProgress(QStringLiteral("正在验证并替换 %1").arg(plugin.name), 95);
                     QString installError;
                     const bool installed = promoteExtractedPlugin(plugin, pluginRoot, stagingPath, &installError);
                     QDir(stagingPath).removeRecursively();
                     if (!installed)
                     {
-                        QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("插件包已验证，但安装被拒绝：%1").arg(installError));
+                        completeMarketplaceInstall(completion, false,
+                            QStringLiteral("插件包已验证，但安装被拒绝：%1").arg(installError));
                         return;
                     }
                     refreshPlugins();
-                    m_status->setText(QStringLiteral("已一键安装并验证 %1 到 %2。")
-                        .arg(plugin.name, QDir::toNativeSeparators(QDir(pluginRoot).filePath(plugin.installDirectory))));
-                    QMessageBox::information(this, QStringLiteral("插件商城"), QStringLiteral("%1 已安装，可立即从“插件”菜单调用。")
-                        .arg(plugin.name));
+                    const QString message = QStringLiteral("已一键安装并验证 %1 到 %2。")
+                        .arg(plugin.name, QDir::toNativeSeparators(QDir(pluginRoot).filePath(plugin.installDirectory)));
+                    m_status->setText(message);
+                    updateInstallProgress(QStringLiteral("%1 安装完成").arg(plugin.name), 100);
+                    if (!completion)
+                    {
+                        QMessageBox::information(this, QStringLiteral("插件商城"), QStringLiteral("%1 已安装，可立即从“插件”菜单调用。")
+                            .arg(plugin.name));
+                    }
+                    completeMarketplaceInstall(completion, true, message);
                 });
             extractor->start();
         }
@@ -2262,10 +2568,18 @@ namespace
         QTableWidget* m_table = nullptr;
         QTableWidget* m_marketplaceTable = nullptr;
         QLabel* m_status = nullptr;
+        QProgressBar* m_installProgress = nullptr;
+        QCheckBox* m_autoUpdateCheck = nullptr;
         QPushButton* m_openFolderButton = nullptr;
         QNetworkAccessManager* m_networkManager = nullptr;
         QList<PluginDescriptor> m_plugins;
+        QHash<QString, PluginDescriptor> m_installedPluginsById;
         QList<MarketplacePlugin> m_marketplacePlugins;
+        QList<MarketplacePlugin> m_autoUpdateQueue;
+        QStringList m_autoUpdateFailures;
+        int m_autoUpdateTotal = 0;
+        int m_autoUpdateCompleted = 0;
+        bool m_autoUpdateInProgress = false;
         QString m_pluginRoot;
     };
 }
