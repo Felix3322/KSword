@@ -38,6 +38,7 @@ namespace ks::settings
 
     // AppearanceSettings：界面与启动设置结构体。
     // themeMode：当前主题策略；
+    // customThemeColor：用户自定义的主主题色（#RRGGBB）；空值表示使用内置默认色。
     // backgroundImagePath：背景图路径（可相对可绝对）；
     // backgroundOpacityPercent：背景图透明度（0~100）；
     // startupDefaultTabKey：应用启动时默认激活的主页签 key（如 welcome/process/network）；
@@ -57,6 +58,7 @@ namespace ks::settings
     struct AppearanceSettings
     {
         ThemeMode themeMode = ThemeMode::FollowSystem;
+        QString customThemeColor;
         QString uiLanguage = QStringLiteral("system");
         QString backgroundImagePath = QStringLiteral("Style/ksword_background.png");
         int backgroundOpacityPercent = 35;

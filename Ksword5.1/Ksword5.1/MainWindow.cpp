@@ -9498,6 +9498,11 @@ void MainWindow::applyAppearanceSettings(
     const ks::settings::AppearanceSettings previousSettings = m_currentAppearanceSettings;
     const bool isInitialAppearanceApply = (triggerReason == QStringLiteral("初始化加载"));
     const bool darkModeEnabled = isDarkModeEffective(settings);
+    const bool themeColorChanged =
+        isInitialAppearanceApply
+        || previousSettings.customThemeColor.compare(settings.customThemeColor, Qt::CaseInsensitive) != 0;
+    // 必须在读取任一 AccentColor 前更新种子，确保调色板、QSS 与绘制控件使用同一主题色。
+    KswordTheme::SetPrimaryAccentColor(settings.customThemeColor);
     // 系统颜色方案通知已抵达时，previousSettings 再计算会得到新颜色方案；
     // 直接读取主题模块当前状态，才能识别 FollowSystem 的真实深浅色切换。
     const bool effectiveThemeChanged =
@@ -9533,7 +9538,7 @@ void MainWindow::applyAppearanceSettings(
         || previousSettings.notificationStackDirection != settings.notificationStackDirection;
     const bool runtimeProgressRequired =
         !isInitialAppearanceApply
-        && (effectiveThemeChanged || backgroundChanged || fontChanged);
+        && (effectiveThemeChanged || themeColorChanged || backgroundChanged || fontChanged);
 
     m_currentAppearanceSettings = settings;
     RuntimeAppearanceProgress runtimeProgress(runtimeProgressRequired);
@@ -9557,7 +9562,7 @@ void MainWindow::applyAppearanceSettings(
                 previousDockTransparencyEnabled != enableDockTransparencyForBackgroundImage;
         }
     }
-    else if (effectiveThemeChanged || scrollBarStyleChanged)
+    else if (effectiveThemeChanged || themeColorChanged || scrollBarStyleChanged)
     {
         // 主题或滚动条样式需要重建 QSS，保持当前背景透明策略即可。
         enableDockTransparencyForBackgroundImage = isBackgroundImageReady(settings.backgroundImagePath);
@@ -9565,6 +9570,7 @@ void MainWindow::applyAppearanceSettings(
     const bool mainStyleRefreshRequired =
         isInitialAppearanceApply
         || effectiveThemeChanged
+        || themeColorChanged
         || dockTransparencyChanged
         || scrollBarStyleChanged;
     const bool backgroundRefreshRequired =
@@ -9582,7 +9588,7 @@ void MainWindow::applyAppearanceSettings(
         setPinnedWindowState(m_currentAppearanceSettings.startupTopMostEnabled, false);
     }
 
-    if (effectiveThemeChanged)
+    if (effectiveThemeChanged || themeColorChanged)
     {
         runtimeProgress.update(
             16,

@@ -152,7 +152,14 @@
     "settings.theme.group": "主题模式",
     "settings.theme.hint": "可选择跟随系统、浅色或深色主题。",
     "settings.theme.light.tooltip": "强制浅色模式（白底深色字）",
-    "settings.theme.system.tooltip": "跟随系统主题（Windows 深浅切换时自动同步）"
+    "settings.theme.system.tooltip": "跟随系统主题（Windows 深浅切换时自动同步）",
+    "settings.theme.color.group": "主题色",
+    "settings.theme.color.hint": "自定义主主题色会保留现有深浅主题偏移；修改前会显示兼容性提示。",
+    "settings.theme.color.choose": "自定义主题色",
+    "settings.theme.color.reset": "一键复原",
+    "settings.theme.color.warning.title": "自定义主题色提示",
+    "settings.theme.color.warning.message": "当前界面所有颜色均基于偏移量设计，便于修改主题色；但尚未覆盖测试所有颜色组合。若选择过于极端的颜色，部分界面仍可能无法正常显示。是否继续？",
+    "settings.theme.color.dialog.title": "选择主题色"
   },
   "context_translations": {
     "window.gui_handle.copy.all": "复制全部行",
@@ -2975,6 +2982,16 @@
     "kernel.object_directory.header.type": "类型"
   },
   "source_translations": {
+    ", customThemeColor=": ", customThemeColor=",
+    "一键复原": "一键复原",
+    "custom theme color restored": "主题色已恢复默认",
+    "custom theme color selected": "已选择自定义主题色",
+    "主题色": "主题色",
+    "当前界面所有颜色均基于偏移量设计，便于修改主题色；但尚未覆盖测试所有颜色组合。若选择过于极端的颜色，部分界面仍可能无法正常显示。是否继续？": "当前界面所有颜色均基于偏移量设计，便于修改主题色；但尚未覆盖测试所有颜色组合。若选择过于极端的颜色，部分界面仍可能无法正常显示。是否继续？",
+    "自定义主主题色会保留现有深浅主题偏移；修改前会显示兼容性提示。": "自定义主主题色会保留现有深浅主题偏移；修改前会显示兼容性提示。",
+    "自定义主题色": "自定义主题色",
+    "自定义主题色提示": "自定义主题色提示",
+    "选择主题色": "选择主题色",
     "需要启用 R0": "需要启用 R0",
     "当前操作需要 R0 驱动，但 KswordARK 驱动服务尚未启用。\n\n是否现在启用 R0？": "当前操作需要 R0 驱动，但 KswordARK 驱动服务尚未启用。\n\n是否现在启用 R0？",
     "启用后可继续使用依赖内核权限的功能；R0 状态按钮会显示为已启用。": "启用后可继续使用依赖内核权限的功能；R0 状态按钮会显示为已启用。",

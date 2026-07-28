@@ -152,7 +152,14 @@
     "settings.theme.group": "Theme",
     "settings.theme.hint": "Follow the system theme or force light or dark mode.",
     "settings.theme.light.tooltip": "Always use light mode",
-    "settings.theme.system.tooltip": "Follow the Windows light or dark theme"
+    "settings.theme.system.tooltip": "Follow the Windows light or dark theme",
+    "settings.theme.color.group": "Theme Color",
+    "settings.theme.color.hint": "A custom primary theme color keeps the existing light and dark offsets; a compatibility warning is shown before changes.",
+    "settings.theme.color.choose": "Customize Theme Color",
+    "settings.theme.color.reset": "Restore Default",
+    "settings.theme.color.warning.title": "Custom Theme Color Warning",
+    "settings.theme.color.warning.message": "All interface colors are based on offsets to make theme-color customization practical, but not every color combination has been tested. Extremely unusual colors may still leave parts of the interface unreadable. Continue?",
+    "settings.theme.color.dialog.title": "Choose Theme Color"
   },
   "context_translations": {
     "window.gui_handle.copy.all": "Copy all rows",
@@ -2975,6 +2982,16 @@
     "kernel.object_directory.header.type": "Type"
   },
   "source_translations": {
+    ", customThemeColor=": ", customThemeColor=",
+    "一键复原": "Restore Default",
+    "custom theme color restored": "Theme color restored",
+    "custom theme color selected": "Custom theme color selected",
+    "主题色": "Theme Color",
+    "当前界面所有颜色均基于偏移量设计，便于修改主题色；但尚未覆盖测试所有颜色组合。若选择过于极端的颜色，部分界面仍可能无法正常显示。是否继续？": "All interface colors are based on offsets to make theme-color customization practical, but not every color combination has been tested. Extremely unusual colors may still leave parts of the interface unreadable. Continue?",
+    "自定义主主题色会保留现有深浅主题偏移；修改前会显示兼容性提示。": "A custom primary theme color keeps the existing light and dark offsets; a compatibility warning is shown before changes.",
+    "自定义主题色": "Customize Theme Color",
+    "自定义主题色提示": "Custom Theme Color Warning",
+    "选择主题色": "Choose Theme Color",
     "需要启用 R0": "R0 Required",
     "当前操作需要 R0 驱动，但 KswordARK 驱动服务尚未启用。\n\n是否现在启用 R0？": "This operation requires the R0 driver, but the KswordARK driver service is not enabled.\n\nEnable R0 now?",
     "启用后可继续使用依赖内核权限的功能；R0 状态按钮会显示为已启用。": "After it is enabled, kernel-privileged features can continue and the R0 status button will show it as enabled.",

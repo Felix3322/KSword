@@ -352,11 +352,33 @@ namespace KswordTheme
         Violet
     };
 
+    inline QColor DefaultPrimaryAccentColor()
+    {
+        return QColor(67, 160, 255);
+    }
+
+    // PrimaryBlueColor 是所有蓝色强调控件的运行期种子。用户自定义时只替换该种子，
+    // 原有深浅主题偏移仍会继续作用，其他语义色不受影响。
+    inline QColor PrimaryBlueColor = DefaultPrimaryAccentColor();
+
+    inline QColor PrimaryAccentColor()
+    {
+        return PrimaryBlueColor;
+    }
+
+    inline void SetPrimaryAccentColor(const QString& customColorText)
+    {
+        const QColor requestedColor(customColorText.trimmed());
+        PrimaryBlueColor = requestedColor.isValid()
+            ? requestedColor.toRgb()
+            : DefaultPrimaryAccentColor();
+    }
+
     inline QColor AccentSeed(const AccentRole role)
     {
         switch (role)
         {
-        case AccentRole::Blue: return QColor(67, 160, 255);
+        case AccentRole::Blue: return PrimaryAccentColor();
         case AccentRole::Purple: return QColor(184, 99, 255);
         case AccentRole::Green: return QColor(47, 125, 50);
         case AccentRole::Orange: return QColor(217, 119, 6);
@@ -370,7 +392,7 @@ namespace KswordTheme
         case AccentRole::Slate: return QColor(96, 125, 139);
         case AccentRole::Violet: return QColor(121, 76, 210);
         }
-        return QColor(67, 160, 255);
+        return PrimaryAccentColor();
     }
 
     // AccentColor 作用：按深色、浅色两套独立亮度偏移生成强调色。
@@ -582,7 +604,6 @@ namespace KswordTheme
     // Compatibility helpers used by existing style builders
     // ==============================
 
-    inline const QColor PrimaryBlueColor = AccentSeed(AccentRole::Blue);
     // These compatibility values are intentionally palette roles: existing QSS
     // builders therefore follow the active light/dark palette at render time.
     inline const QString PrimaryBlueHex = QStringLiteral("palette(highlight)");

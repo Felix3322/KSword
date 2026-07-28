@@ -1,6 +1,7 @@
 #include "AppearanceSettings.h"
 
 #include <QCoreApplication>
+#include <QColor>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -270,6 +271,16 @@ namespace
         return std::clamp(rawSeconds, 0, 60);
     }
 
+    // normalizeCustomThemeColor 作用：只接受完整的 RGB 色值，避免无效配置进入主题计算。
+    // 空值代表使用产品默认主题色。
+    QString normalizeCustomThemeColor(const QString& rawColorText)
+    {
+        const QColor colorValue(rawColorText.trimmed());
+        return colorValue.isValid()
+            ? colorValue.name(QColor::HexRgb).toUpper()
+            : QString();
+    }
+
     // clampWindowScaleFactorInternal 作用：
     // - 把窗口缩放因子约束到 0.50~2.00；
     // - 非法输入回退到 1.0。
@@ -364,6 +375,7 @@ namespace
     {
         ks::settings::AppearanceSettings defaultSettings;
         defaultSettings.themeMode = ks::settings::ThemeMode::FollowSystem;
+        defaultSettings.customThemeColor.clear();
         defaultSettings.uiLanguage = QStringLiteral("system");
         defaultSettings.backgroundImagePath = QStringLiteral("Style/ksword_background.png");
         defaultSettings.backgroundOpacityPercent = 35;
@@ -481,6 +493,9 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     const QString themeText = rootObject.value(QStringLiteral("theme_mode"))
         .toString(themeModeToJsonText(loadedSettings.themeMode));
     loadedSettings.themeMode = themeModeFromJsonText(themeText);
+    loadedSettings.customThemeColor = normalizeCustomThemeColor(
+        rootObject.value(QStringLiteral("custom_theme_color"))
+        .toString(loadedSettings.customThemeColor));
 
     const QString uiLanguageText = rootObject.value(QStringLiteral("ui_language"))
         .toString(loadedSettings.uiLanguage)
@@ -622,6 +637,9 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
 
     QJsonObject rootObject;
     rootObject.insert(QStringLiteral("theme_mode"), themeModeToJsonText(settings.themeMode));
+    rootObject.insert(
+        QStringLiteral("custom_theme_color"),
+        normalizeCustomThemeColor(settings.customThemeColor));
     rootObject.insert(
         QStringLiteral("ui_language"),
         settings.uiLanguage.trimmed().isEmpty() ? QStringLiteral("system") : settings.uiLanguage.trimmed());

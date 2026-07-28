@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
@@ -347,6 +348,40 @@ void SettingsDock::initializeAppearanceTab()
     themeButtonLayout->addStretch();
     themeLayout->addLayout(themeButtonLayout);
 
+    // ===== 自定义主题色分组 =====
+    QGroupBox* themeColorGroupBox = new QGroupBox(QStringLiteral("主题色"), themeGroupBox);
+    languageManager.bindText(themeColorGroupBox, QStringLiteral("settings.theme.color.group"), QStringLiteral("主题色"));
+    QVBoxLayout* themeColorLayout = new QVBoxLayout(themeColorGroupBox);
+    themeColorLayout->setSpacing(6);
+
+    QLabel* themeColorHintLabel = new QLabel(
+        QStringLiteral("自定义主主题色会保留现有深浅主题偏移；修改前会显示兼容性提示。"),
+        themeColorGroupBox);
+    themeColorHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        themeColorHintLabel,
+        QStringLiteral("settings.theme.color.hint"),
+        QStringLiteral("自定义主主题色会保留现有深浅主题偏移；修改前会显示兼容性提示。"));
+    themeColorLayout->addWidget(themeColorHintLabel);
+
+    QHBoxLayout* themeColorActionLayout = new QHBoxLayout();
+    themeColorActionLayout->setSpacing(6);
+    m_themeColorPreviewLabel = new QLabel(themeColorGroupBox);
+    m_themeColorPreviewLabel->setMinimumWidth(112);
+    m_themeColorPreviewLabel->setAlignment(Qt::AlignCenter);
+    themeColorActionLayout->addWidget(m_themeColorPreviewLabel, 0);
+
+    m_chooseThemeColorButton = new QPushButton(QStringLiteral("自定义主题色"), themeColorGroupBox);
+    languageManager.bindText(m_chooseThemeColorButton, QStringLiteral("settings.theme.color.choose"), QStringLiteral("自定义主题色"));
+    themeColorActionLayout->addWidget(m_chooseThemeColorButton, 0);
+
+    m_resetThemeColorButton = new QPushButton(QStringLiteral("一键复原"), themeColorGroupBox);
+    languageManager.bindText(m_resetThemeColorButton, QStringLiteral("settings.theme.color.reset"), QStringLiteral("一键复原"));
+    themeColorActionLayout->addWidget(m_resetThemeColorButton, 0);
+    themeColorActionLayout->addStretch();
+    themeColorLayout->addLayout(themeColorActionLayout);
+    themeLayout->addWidget(themeColorGroupBox);
+
     QHBoxLayout* fontLayout = new QHBoxLayout();
     fontLayout->setSpacing(6);
     QLabel* fontLabel = new QLabel(QStringLiteral("设置字体"), themeGroupBox);
@@ -684,6 +719,14 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QStringLiteral("主题按钮切换"));
         });
 
+    connect(m_chooseThemeColorButton, &QPushButton::clicked, this, [this]() {
+        chooseCustomThemeColor();
+        });
+
+    connect(m_resetThemeColorButton, &QPushButton::clicked, this, [this]() {
+        resetThemeColorToDefault();
+        });
+
     connect(m_fontCombo, &QFontComboBox::currentFontChanged, this, [this](const QFont& /*font*/) {
         markPendingChanges(QString());
         });
@@ -819,6 +862,9 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
         m_fontCombo->setCurrentFont(selectedFont);
     }
 
+    m_pendingCustomThemeColor = settings.customThemeColor;
+    updateThemeColorPreview();
+
     m_backgroundPathEdit->setText(settings.backgroundImagePath);
     m_backgroundOpacitySlider->setValue(settings.backgroundOpacityPercent);
     if (m_textAntialiasingCheckBox != nullptr)
@@ -921,6 +967,7 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
     collectedSettings.uiLanguage = (m_languageCombo != nullptr && m_languageCombo->currentIndex() >= 0)
         ? m_languageCombo->currentData().toString()
         : m_currentAppearanceSettings.uiLanguage;
+    collectedSettings.customThemeColor = m_pendingCustomThemeColor;
 
     // checkedThemeId 作用：读取当前选中的主题按钮 ID。
     const int checkedThemeId = m_themeButtonGroup->checkedId();
@@ -1036,6 +1083,82 @@ void SettingsDock::updateApplyButtonState()
     }
 }
 
+void SettingsDock::updateThemeColorPreview()
+{
+    if (m_themeColorPreviewLabel == nullptr)
+    {
+        return;
+    }
+
+    const QColor previewColor = m_pendingCustomThemeColor.isEmpty()
+        ? KswordTheme::DefaultPrimaryAccentColor()
+        : QColor(m_pendingCustomThemeColor);
+    const QColor readableTextColor = KswordTheme::EnsureTextContrast(
+        KswordTheme::WhiteColor(),
+        previewColor);
+    const QString colorText = previewColor.name(QColor::HexRgb).toUpper();
+    m_themeColorPreviewLabel->setText(colorText);
+    m_themeColorPreviewLabel->setStyleSheet(
+        QStringLiteral("QLabel{background:%1;color:%2;border:1px solid %3;border-radius:3px;padding:5px;font-weight:600;}")
+        .arg(colorText)
+        .arg(KswordTheme::ThemeColorName(readableTextColor))
+        .arg(KswordTheme::BorderColorHex()));
+
+    if (m_resetThemeColorButton != nullptr)
+    {
+        m_resetThemeColorButton->setEnabled(!m_pendingCustomThemeColor.isEmpty());
+    }
+}
+
+void SettingsDock::chooseCustomThemeColor()
+{
+    const QMessageBox::StandardButton warningResult = QMessageBox::warning(
+        this,
+        ks::i18n::text(
+            QStringLiteral("settings.theme.color.warning.title"),
+            QStringLiteral("自定义主题色提示")),
+        ks::i18n::text(
+            QStringLiteral("settings.theme.color.warning.message"),
+            QStringLiteral("当前界面所有颜色均基于偏移量设计，便于修改主题色；但尚未覆盖测试所有颜色组合。若选择过于极端的颜色，部分界面仍可能无法正常显示。是否继续？")),
+        QMessageBox::Ok | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (warningResult != QMessageBox::Ok)
+    {
+        return;
+    }
+
+    const QColor initialColor = m_pendingCustomThemeColor.isEmpty()
+        ? KswordTheme::DefaultPrimaryAccentColor()
+        : QColor(m_pendingCustomThemeColor);
+    const QColor selectedColor = QColorDialog::getColor(
+        initialColor,
+        this,
+        ks::i18n::text(
+            QStringLiteral("settings.theme.color.dialog.title"),
+            QStringLiteral("选择主题色")),
+        QColorDialog::ShowAlphaChannel);
+    if (!selectedColor.isValid())
+    {
+        return;
+    }
+
+    m_pendingCustomThemeColor = selectedColor.name(QColor::HexRgb).toUpper();
+    updateThemeColorPreview();
+    markPendingChanges(QStringLiteral("custom theme color selected"));
+}
+
+void SettingsDock::resetThemeColorToDefault()
+{
+    if (m_pendingCustomThemeColor.isEmpty())
+    {
+        return;
+    }
+
+    m_pendingCustomThemeColor.clear();
+    updateThemeColorPreview();
+    markPendingChanges(QStringLiteral("custom theme color restored"));
+}
+
 void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
 {
     if (m_isApplyingUiState)
@@ -1052,6 +1175,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         std::fabs(nextSettings.startupWindowScaleFactor - m_currentAppearanceSettings.startupWindowScaleFactor) < 0.0001;
 
     if (nextSettings.themeMode == m_currentAppearanceSettings.themeMode
+        && nextSettings.customThemeColor.compare(m_currentAppearanceSettings.customThemeColor, Qt::CaseInsensitive) == 0
         && nextSettings.uiLanguage.compare(m_currentAppearanceSettings.uiLanguage, Qt::CaseInsensitive) == 0
         && nextSettings.backgroundImagePath == m_currentAppearanceSettings.backgroundImagePath
         && nextSettings.backgroundOpacityPercent == m_currentAppearanceSettings.backgroundOpacityPercent
@@ -1162,6 +1286,10 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         << triggerReason.toStdString()
         << "，主题模式="
         << ks::settings::themeModeToJsonText(m_currentAppearanceSettings.themeMode).toStdString()
+        << ", customThemeColor="
+        << (m_currentAppearanceSettings.customThemeColor.isEmpty()
+            ? "default"
+            : m_currentAppearanceSettings.customThemeColor.toStdString())
         << "，界面语言="
         << m_currentAppearanceSettings.uiLanguage.toStdString()
         << "，背景路径="

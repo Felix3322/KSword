@@ -118,6 +118,18 @@ private:
     // 调用方式：按钮点击后、配置加载后调用。
     void updateThemeButtonStyle();
 
+    // updateThemeColorPreview 作用：刷新当前主题色预览与“恢复默认”按钮状态。
+    // 调用方式：载入配置、选择颜色或恢复默认后调用。
+    void updateThemeColorPreview();
+
+    // chooseCustomThemeColor 作用：先展示极端颜色风险提示，再打开颜色选择器。
+    // 调用方式：点击“自定义主题色”按钮时调用。
+    void chooseCustomThemeColor();
+
+    // resetThemeColorToDefault 作用：清除自定义主题色，恢复内置默认主题色。
+    // 调用方式：点击“一键复原”按钮时调用。
+    void resetThemeColorToDefault();
+
     // updateOpacityValueLabel 作用：
     // - 同步透明度百分比文本标签。
     // 调用方式：滑条值变化时调用。
@@ -194,6 +206,13 @@ private:
     // m_darkModeButton 作用：选择“深色主题”模式。
     QToolButton* m_darkModeButton = nullptr;
 
+    // m_themeColorPreviewLabel 作用：显示当前主主题色及其 #RRGGBB 值。
+    QLabel* m_themeColorPreviewLabel = nullptr;
+
+    // m_chooseThemeColorButton / m_resetThemeColorButton：主题色选择与一键恢复按钮。
+    QPushButton* m_chooseThemeColorButton = nullptr;
+    QPushButton* m_resetThemeColorButton = nullptr;
+
     // m_backgroundPathEdit 作用：编辑背景图路径文本。
     QLineEdit* m_backgroundPathEdit = nullptr;
 
@@ -263,6 +282,9 @@ private:
 
     // m_currentAppearanceSettings 作用：缓存当前有效界面与启动配置。
     ks::settings::AppearanceSettings m_currentAppearanceSettings;
+
+    // m_pendingCustomThemeColor 作用：保存尚未点击“应用”的自定义主题色色值；空值表示默认色。
+    QString m_pendingCustomThemeColor;
 
     // m_isApplyingUiState 作用：标记“正在回填 UI”，防止触发递归保存。
     bool m_isApplyingUiState = false;
