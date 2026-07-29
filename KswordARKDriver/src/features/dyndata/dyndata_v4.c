@@ -703,6 +703,61 @@ Return Value:
 }
 
 NTSTATUS
+KswordARKDynDataV4SnapshotFltMgrMinifilterLayout(
+    _Out_ KSW_DYN_V4_FLTMGR_MINIFILTER_LAYOUT* LayoutOut
+    )
+/*++
+
+Routine Description:
+
+    Copy the PDB-derived _FLT_FILTER.Operations offset for the currently loaded
+    fltMgr.sys image. 中文说明：仅接受已通过模块 PE/PDB 身份校验的 v4 项，避免
+    把其它系统版本的私有结构偏移用于当前 Filter 对象。
+
+Return Value:
+
+    STATUS_SUCCESS when item 1101 is available and valid; otherwise
+    STATUS_NOT_SUPPORTED.
+
+--*/
+{
+    ULONG moduleIndex = 0UL;
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
+
+    if (LayoutOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
+
+    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    for (moduleIndex = 0UL; moduleIndex < KSW_DYN_V4_MAX_MODULES; ++moduleIndex) {
+        KSW_DYN_V4_MODULE_STATE* moduleState = &g_KswordDynDataV4State.Modules[moduleIndex];
+        ULONG itemIndex = 0UL;
+
+        if (!moduleState->Occupied ||
+            moduleState->PublicEntry.module.image.classId != KSW_DYN_PROFILE_CLASS_FLTMGR ||
+            moduleState->StoredItemCount > KSW_DYN_V4_MAX_ITEMS_PER_MODULE) {
+            continue;
+        }
+
+        for (itemIndex = 0UL; itemIndex < moduleState->StoredItemCount; ++itemIndex) {
+            const KSW_DYN_V4_ITEM_PACKET* item = &moduleState->Items[itemIndex];
+            if (item->itemId == KSW_DYN_V4_ITEM_ID_FLT_FILTER_OPERATIONS &&
+                item->itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET &&
+                item->valueLow != 0UL &&
+                item->valueLow <= KSW_DYN_PROFILE_OFFSET_MAX) {
+                LayoutOut->FltFilterOperations = item->valueLow;
+                status = STATUS_SUCCESS;
+                break;
+            }
+        }
+        break;
+    }
+    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    return status;
+}
+
+NTSTATUS
 KswordARKDynDataV4SnapshotTimerDpcLayout(
     _Out_ KSW_DYN_V4_TIMER_DPC_LAYOUT* LayoutOut
     )

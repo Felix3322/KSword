@@ -282,6 +282,13 @@ KswordArkCallbackEnumIsKernelModuleAddress(
     _In_ ULONG64 CandidateAddress
     );
 
+BOOLEAN
+KswordArkCallbackEnumReadMemory(
+    _In_ const VOID* SourceAddress,
+    _Out_writes_bytes_(BytesToRead) VOID* DestinationBuffer,
+    _In_ SIZE_T BytesToRead
+    );
+
 KSWORD_ARK_CALLBACK_ENUM_ENTRY*
 KswordArkCallbackEnumReserveEntry(
     _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
@@ -304,6 +311,15 @@ KswordArkCallbackEnumAddUnsupportedRow(
 VOID
 KswordArkCallbackEnumAddMinifilters(
     _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
+    );
+
+NTSTATUS
+KswordArkMinifilterQueryFirstCallbackOwner(
+    _In_ PFLT_FILTER FilterObject,
+    _Out_writes_(ModulePathChars) PWCHAR ModulePath,
+    _In_ ULONG ModulePathChars,
+    _Out_opt_ ULONG64* ModuleBaseOut,
+    _Out_opt_ ULONG* ModuleSizeOut
     );
 
 VOID

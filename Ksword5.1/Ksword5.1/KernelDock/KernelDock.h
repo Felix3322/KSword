@@ -766,6 +766,10 @@ private:
     // - 作用：根据当前选中行显示回调遍历详情。
     void showCallbackEnumDetailByCurrentRow();
 
+    // showCallbackEnumDetail：
+    // - 作用：显示表格或 Minifilter 树传入的同一份回调详情。
+    void showCallbackEnumDetail(const KernelCallbackEnumEntry* entry);
+
     // showShadowSsdtDetailByCurrentRow：
     // - 作用：根据当前选中行显示 SSSDT 详情。
     void showShadowSsdtDetailByCurrentRow();
@@ -1089,6 +1093,7 @@ private:
     QLineEdit* m_callbackEnumFilterEdit = nullptr;                  // m_callbackEnumFilterEdit：回调遍历筛选输入框。
     QLabel* m_callbackEnumStatusLabel = nullptr;                    // m_callbackEnumStatusLabel：回调遍历状态文本。
     QTableWidget* m_callbackEnumTable = nullptr;                    // m_callbackEnumTable：回调遍历表。
+    QTreeWidget* m_minifilterCallbackTree = nullptr;                // m_minifilterCallbackTree：Filter -> Pre/Post 回调树。
     CodeEditorWidget* m_callbackEnumDetailEditor = nullptr;         // m_callbackEnumDetailEditor：回调遍历详情文本框。
     QWidget* m_callbackRemoveContentWidget = nullptr;               // m_callbackRemoveContentWidget：嵌入在回调遍历页底部的移除面板容器。
     QVBoxLayout* m_callbackRemoveLayout = nullptr;                  // m_callbackRemoveLayout：回调移除面板内部布局。

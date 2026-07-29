@@ -6,17 +6,18 @@ Module Name:
 
 Abstract:
 
-    Read-only Filter Manager minifilter inventory IOCTL implementation.
+    Read-only Filter Manager minifilter inventory and callback-owner hint IOCTL.
 
 Environment:
 
-    Kernel-mode Driver Framework / Filter Manager public API
+    Kernel-mode Driver Framework / Filter Manager
 
 --*/
 
 #include <fltKernel.h>
 #include "ark/ark_driver.h"
 #include "driver/KswordArkFilterIoctl.h"
+#include "callback_internal.h"
 #include "../../dispatch/ioctl_validation.h"
 
 #include <ntstrsafe.h>
@@ -523,8 +524,8 @@ KswordARKMinifilterInventoryBuild(
 Routine Description:
 
     Build the read-only minifilter inventory response by using Filter Manager
-    public enumeration APIs. Private fltMgr lists and callback pointers are not
-    dereferenced in this MVP path.
+    public enumeration APIs. When requested, the first validated Pre/Post
+    callback supplies a module-owner hint without modifying fltMgr state.
 
 Arguments:
 
@@ -617,6 +618,18 @@ Return Value:
         status = KswordARKMinifilterInventoryQueryFilterInfo(filterList[filterIndex], &filterInfo);
         response->lastStatus = status;
         KswordARKMinifilterInventorySeedRow(filterList[filterIndex], filterInfo, &row);
+        if ((Request->flags & KSWORD_ARK_MINIFILTER_INVENTORY_FLAG_INCLUDE_CALLBACK_OWNER_HINT) != 0UL) {
+            row.callbackOwnerStatus = KswordArkMinifilterQueryFirstCallbackOwner(
+                filterList[filterIndex],
+                row.callbackOwnerModule,
+                RTL_NUMBER_OF(row.callbackOwnerModule),
+                &row.callbackOwnerModuleBase,
+                &row.callbackOwnerModuleSize);
+            if (NT_SUCCESS(row.callbackOwnerStatus)) {
+                row.fieldFlags &= ~KSWORD_ARK_MINIFILTER_INVENTORY_ROW_FLAG_CALLBACK_OWNER_UNSUPPORTED;
+                row.fieldFlags |= KSWORD_ARK_MINIFILTER_INVENTORY_ROW_FLAG_CALLBACK_OWNER_PRESENT;
+            }
+        }
         if (!NT_SUCCESS(status)) {
             row.status = KSWORD_ARK_MINIFILTER_INVENTORY_STATUS_PARTIAL;
             response->flags |= KSWORD_ARK_MINIFILTER_INVENTORY_RESPONSE_FLAG_PARTIAL;

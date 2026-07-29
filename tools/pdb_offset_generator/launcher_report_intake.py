@@ -384,8 +384,15 @@ def canonical_pdb_path(corpus_root: Path, module: dict[str, Any]) -> Path:
 
 def run_profile_generator(module: dict[str, Any], normalized_pe: Path, pdb_path: Path, output_dir: Path, llvm_pdbutil: Path) -> Path:
     generator = Path(__file__).with_name("ksword_pdb_profile_generator.py")
+    profile_class = {
+        0: "ntoskrnl",
+        1: "ntkrla57",
+        48: "fltmgr",
+    }.get(module["classId"])
+    if profile_class is None:
+        raise IntakeError(f"unsupported profile class: {module['classId']}")
     profile_name = (
-        f"{'ntkrla57' if module['classId'] == 1 else 'ntoskrnl'}_"
+        f"{profile_class}_"
         f"{module['arch']}_{module['version'].replace('.', '_')}_{module['pdb']['symbolKey'].lower()}.json"
     )
     output_path = output_dir / profile_name
@@ -503,7 +510,7 @@ def commit_report(result: dict[str, Any], corpus_root: Path, report_dir: Path, s
 
     generated_profiles: list[tuple[dict[str, Any], Path]] = []
     for module in result["modules"]:
-        if module["classId"] not in {0, 1}:
+        if module["classId"] not in {0, 1, 48}:
             continue
         print(f"[profile generate] {module['fileName']}", flush=True)
         profile_path = run_profile_generator(

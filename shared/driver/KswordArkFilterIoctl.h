@@ -6,7 +6,7 @@
 // KswordArkFilterIoctl.h
 // Purpose:
 // - Define read-only R3 <-> R0 minifilter inventory packets.
-// - The protocol reports Filter Manager public API evidence only.
+// - The protocol reports public inventory plus a validated callback-owner hint.
 // - It never unloads filters, detaches instances, patches callbacks, or
 //   modifies fltMgr private lists.
 // ============================================================
@@ -37,6 +37,7 @@
 #define KSWORD_ARK_MINIFILTER_INVENTORY_ROW_FLAG_VOLUME_PRESENT 0x00000008UL
 #define KSWORD_ARK_MINIFILTER_INVENTORY_ROW_FLAG_VOLUME_NAME_PRESENT 0x00000010UL
 #define KSWORD_ARK_MINIFILTER_INVENTORY_ROW_FLAG_CALLBACK_OWNER_UNSUPPORTED 0x00000020UL
+#define KSWORD_ARK_MINIFILTER_INVENTORY_ROW_FLAG_CALLBACK_OWNER_PRESENT 0x00000040UL
 
 #define KSWORD_ARK_MINIFILTER_INVENTORY_STATUS_UNAVAILABLE 0UL
 #define KSWORD_ARK_MINIFILTER_INVENTORY_STATUS_OK 1UL
@@ -83,9 +84,9 @@ typedef struct _KSWORD_ARK_MINIFILTER_INVENTORY_ENTRY
     unsigned long long filterObject;
     // volumeObject is the PFLT_VOLUME value when the row represents a binding.
     unsigned long long volumeObject;
-    // callbackOwnerModuleBase is reserved for a future PDB-backed owner resolver.
+    // callbackOwnerModuleBase is the first validated Pre/Post callback owner base.
     unsigned long long callbackOwnerModuleBase;
-    // callbackOwnerModuleSize is reserved for a future PDB-backed owner resolver.
+    // callbackOwnerModuleSize is the loaded size of callbackOwnerModule.
     unsigned long callbackOwnerModuleSize;
     // callbackOwnerStatus explains whether callback owner data is available.
     long callbackOwnerStatus;
@@ -95,7 +96,7 @@ typedef struct _KSWORD_ARK_MINIFILTER_INVENTORY_ENTRY
     wchar_t altitude[KSWORD_ARK_MINIFILTER_INVENTORY_ALTITUDE_CHARS];
     // volumeName is present for per-volume binding rows.
     wchar_t volumeName[KSWORD_ARK_MINIFILTER_INVENTORY_VOLUME_NAME_CHARS];
-    // callbackOwnerModule is reserved for future PDB/module ownership evidence.
+    // callbackOwnerModule is the loaded path owning the first validated callback.
     wchar_t callbackOwnerModule[KSWORD_ARK_MINIFILTER_INVENTORY_MODULE_NAME_CHARS];
 } KSWORD_ARK_MINIFILTER_INVENTORY_ENTRY;
 

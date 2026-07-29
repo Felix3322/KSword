@@ -377,6 +377,7 @@ V4_ITEM_KIND_IDS = {
 V4_ITEM_KIND_NAMES = set(V4_ITEM_KIND_IDS)
 V4_CORE_GROUP_ID = 1
 V4_TIMER_GROUP_ID = 2
+V4_FLTMGR_MINIFILTER_GROUP_ID = 3
 V4_SPECIAL_ITEM_IDS = {
     "EthActiveExWorker": 1001,
     "KprcbTimerTable": 1002,
@@ -395,8 +396,13 @@ V4_SPECIAL_ITEM_IDS = {
     "KtimerTableEntryTypeSize": 1015,
     "KtimerTypeSize": 1016,
     "KdpcTypeSize": 1017,
+    "FltFilterOperations": 1101,
 }
 V4_ITEM_IDS_BY_NAME = {**KNOWN_FIELD_IDS, **V4_SPECIAL_ITEM_IDS}
+V4_SPECIAL_ITEM_GROUPS = {
+    **{name: V4_TIMER_GROUP_ID for name in V4_SPECIAL_ITEM_IDS if name != "FltFilterOperations"},
+    "FltFilterOperations": V4_FLTMGR_MINIFILTER_GROUP_ID,
+}
 
 
 @dataclass(frozen=True)
@@ -927,7 +933,8 @@ def validate_v4_items(path: Path, data: dict[str, Any], state: ValidationState) 
         group_id = parse_uint32(item.get("capabilityGroupId"))
         value = parse_uint32(item.get("value"))
         aux_values = [parse_uint32(item.get(f"aux{aux_index}", 0)) for aux_index in range(4)]
-        if item_kind is None or group_id != V4_TIMER_GROUP_ID or value is None or any(aux is None for aux in aux_values):
+        expected_group_id = V4_SPECIAL_ITEM_GROUPS.get(name)
+        if item_kind is None or group_id != expected_group_id or value is None or any(aux is None for aux in aux_values):
             reject(state, path, f"v4_item_shape_invalid:{name}")
             return None
 
@@ -1024,7 +1031,7 @@ def validate_profile(path: Path, state: ValidationState) -> ProfileRecord | None
         return None
 
     module_class = str(module.get("class", "")).strip().lower()
-    if module_class not in {"ntoskrnl", "ntkrla57"}:
+    if module_class not in {"ntoskrnl", "ntkrla57", "fltmgr"}:
         reject(state, path, f"unsupported_module_class:{module_class}")
         return None
 
@@ -1164,6 +1171,8 @@ def module_class_id_from_text(module_class: str) -> int | None:
         return 1
     if normalized in {"lxcore", "lxcore.exe"}:
         return 2
+    if normalized in {"fltmgr", "fltmgr.sys"}:
+        return 48
     return None
 
 
@@ -1276,6 +1285,7 @@ def build_pack_v4_capability_groups(items: list[dict[str, Any]]) -> list[dict[st
     names = {
         V4_CORE_GROUP_ID: "ntos.core",
         V4_TIMER_GROUP_ID: "timer.dpc",
+        V4_FLTMGR_MINIFILTER_GROUP_ID: "fltmgr.minifilter",
     }
     groups: list[dict[str, Any]] = []
     for group_id in sorted({int(item["capabilityGroupId"]) for item in items}):

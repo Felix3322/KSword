@@ -58,6 +58,12 @@ typedef struct _KSW_DYN_V4_TIMER_DPC_LAYOUT
     ULONG DpcTypeSize;
 } KSW_DYN_V4_TIMER_DPC_LAYOUT;
 
+// Minifilter 回调枚举只消费 _FLT_FILTER.Operations，不直接持有 v4 状态锁。
+typedef struct _KSW_DYN_V4_FLTMGR_MINIFILTER_LAYOUT
+{
+    ULONG FltFilterOperations;
+} KSW_DYN_V4_FLTMGR_MINIFILTER_LAYOUT;
+
 // 位域消费者使用固定快照，Offset 是对象内存偏移，BitOffset/BitCount 描述
 // StorageBytes 宽度整数中的位范围。
 typedef struct _KSW_DYN_V4_BIT_FIELD_LAYOUT
@@ -71,6 +77,12 @@ typedef struct _KSW_DYN_V4_BIT_FIELD_LAYOUT
 NTSTATUS
 KswordARKDynDataV4SnapshotTimerDpcLayout(
     _Out_ KSW_DYN_V4_TIMER_DPC_LAYOUT* LayoutOut
+    );
+
+// 获取与当前 fltMgr.sys 身份精确匹配的 _FLT_FILTER.Operations 偏移。
+NTSTATUS
+KswordARKDynDataV4SnapshotFltMgrMinifilterLayout(
+    _Out_ KSW_DYN_V4_FLTMGR_MINIFILTER_LAYOUT* LayoutOut
     );
 
 // 线程消费者获取 _ETHREAD.ActiveExWorker 的精确 PDB 位域布局。

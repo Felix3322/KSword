@@ -320,6 +320,9 @@
     <ClCompile Include="src\features\callback\callback_enum.c">
       <Filter>Source Files\Features\Callback</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\callback\callback_minifilter_enum.c">
+      <Filter>Source Files\Features\Callback</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\callback\minifilter_callback.c">
       <Filter>Source Files\Features\Callback</Filter>
     </ClCompile>

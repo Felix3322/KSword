@@ -27,6 +27,7 @@
     <ClCompile Include="src\features\callback\callback_waiter.c" />
     <ClCompile Include="src\features\callback\callback_remove_external.c" />
     <ClCompile Include="src\features\callback\callback_enum.c" />
+    <ClCompile Include="src\features\callback\callback_minifilter_enum.c" />
     <ClCompile Include="src\features\callback\minifilter_callback.c" />
     <ClCompile Include="src\features\callback\minifilter_inventory.c" />
     <ClCompile Include="src\features\callback\minifilter_runtime_link.c" />

@@ -234,7 +234,7 @@ TYPE_SIZE_MAP: dict[str, str] = {
     "RtlAvlTypeSize": "_RTL_AVL_TABLE",
 }
 
-# v4-only timer/DPC items. 这些字段不进入旧 v1/v2/v3 fields，
+# v4-only module items. 这些字段不进入旧 v1/v2/v3 fields，
 # 通过独立的 v4Items 数组携带结构偏移、类型大小和位域元数据。
 V4_FIELD_MAP: dict[str, tuple[str, str]] = {
     "KprcbTimerTable": ("_KPRCB", "TimerTable"),
@@ -249,6 +249,7 @@ V4_FIELD_MAP: dict[str, tuple[str, str]] = {
     "KtimerPeriod": ("_KTIMER", "Period"),
     "KdpcDeferredRoutine": ("_KDPC", "DeferredRoutine"),
     "KdpcDeferredContext": ("_KDPC", "DeferredContext"),
+    "FltFilterOperations": ("_FLT_FILTER", "Operations"),
 }
 
 # Older public PDBs describe the timer kind through the embedded dispatcher
@@ -288,6 +289,7 @@ V4_ITEM_DEFINITIONS: dict[str, tuple[int, str, int]] = {
     "KtimerTableEntryTypeSize": (1015, "TypeSize", 2),
     "KtimerTypeSize": (1016, "TypeSize", 2),
     "KdpcTypeSize": (1017, "TypeSize", 2),
+    "FltFilterOperations": (1101, "StructOffset", 3),
 }
 
 CALLBACK_GLOBAL_RVA_NAMES: tuple[str, ...] = (
@@ -497,6 +499,8 @@ def module_class_for_file(file_name: str) -> str:
     lowered = file_name.lower()
     if lowered == "ntkrla57.exe":
         return "ntkrla57"
+    if lowered == "fltmgr.sys":
+        return "fltmgr"
     return "ntoskrnl"
 
 
