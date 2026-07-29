@@ -1,5 +1,6 @@
 
 #include "MonitorDock.h"
+#include <MonitorDock/EtwArchiveCompression.h>
 #include "../UI/VisibleTableWidget.h"
 #include "DirectKernelCallMonitorWidget.h"
 #include "MonitorTextViewer.h"
@@ -80,6 +81,7 @@
 #include <cstring>
 #include <memory>
 #include <set>
+#include <span>
 #include <thread>
 #include <unordered_map>
 #include <limits>
@@ -109,9 +111,16 @@
 namespace
 {
     constexpr char kEtwArchiveMagic[] = "KSWETW1";
-    constexpr std::uint32_t kEtwArchiveFileVersion = 1;
+    constexpr std::uint32_t kEtwArchiveLegacyFileVersion = 1;
+    constexpr std::uint32_t kEtwArchiveFileVersion = 2;
     constexpr std::uint32_t kEtwArchiveRowVersion = 2;
     constexpr std::uint32_t kEtwArchiveMaximumRecordBytes = 64U * 1024U * 1024U;
+    constexpr qsizetype kEtwArchiveWriteBufferBytes = 1024 * 1024;
+    constexpr std::uint32_t kEtwArchiveMaximumBlockBytes =
+        kEtwArchiveMaximumRecordBytes + static_cast<std::uint32_t>(kEtwArchiveWriteBufferBytes)
+        + static_cast<std::uint32_t>(sizeof(quint32));
+    constexpr std::uint32_t kEtwArchiveMaximumStoredBlockBytes =
+        kEtwArchiveMaximumBlockBytes + 1024U * 1024U;
 
     QByteArray serializeEtwArchiveRow(const MonitorDock::EtwCapturedEventRow& row)
     {
@@ -327,6 +336,54 @@ namespace
         return true;
     }
 
+    bool writeEtwArchiveBlockToHandle(const HANDLE fileHandle, const QByteArray& uncompressedData)
+    {
+        if (uncompressedData.isEmpty())
+        {
+            return true;
+        }
+        if (uncompressedData.size() > static_cast<qsizetype>(kEtwArchiveMaximumBlockBytes))
+        {
+            return false;
+        }
+
+        KswordEtwArchiveCompression::EncodedBlock encodedBlock;
+        if (!KswordEtwArchiveCompression::compressBlock(
+            std::span<const char>(
+                uncompressedData.constData(),
+                static_cast<std::size_t>(uncompressedData.size())),
+            &encodedBlock)
+            || encodedBlock.payload.empty()
+            || encodedBlock.payload.size() > kEtwArchiveMaximumStoredBlockBytes)
+        {
+            return false;
+        }
+
+        QByteArray blockHeader;
+        blockHeader.reserve(static_cast<qsizetype>(sizeof(quint32) * 3));
+        const quint32 methodLittleEndian = qToLittleEndian(
+            static_cast<quint32>(encodedBlock.method));
+        const quint32 uncompressedSizeLittleEndian = qToLittleEndian(
+            static_cast<quint32>(uncompressedData.size()));
+        const quint32 storedSizeLittleEndian = qToLittleEndian(
+            static_cast<quint32>(encodedBlock.payload.size()));
+        blockHeader.append(
+            reinterpret_cast<const char*>(&methodLittleEndian),
+            static_cast<qsizetype>(sizeof(methodLittleEndian)));
+        blockHeader.append(
+            reinterpret_cast<const char*>(&uncompressedSizeLittleEndian),
+            static_cast<qsizetype>(sizeof(uncompressedSizeLittleEndian)));
+        blockHeader.append(
+            reinterpret_cast<const char*>(&storedSizeLittleEndian),
+            static_cast<qsizetype>(sizeof(storedSizeLittleEndian)));
+
+        const QByteArray storedData = QByteArray::fromRawData(
+            encodedBlock.payload.data(),
+            static_cast<qsizetype>(encodedBlock.payload.size()));
+        return writeAllToHandle(fileHandle, blockHeader)
+            && writeAllToHandle(fileHandle, storedData);
+    }
+
     bool scanEtwArchiveFile(
         const QString& filePath,
         const std::function<bool(const MonitorDock::EtwCapturedEventRow&)>& rowVisitor,
@@ -374,7 +431,8 @@ namespace
 
         const quint32 fileVersion = qFromLittleEndian<quint32>(mappedData + kMagicBytes);
         if (std::memcmp(mappedData, kEtwArchiveMagic, static_cast<std::size_t>(kMagicBytes)) != 0
-            || fileVersion != kEtwArchiveFileVersion)
+            || (fileVersion != kEtwArchiveLegacyFileVersion
+                && fileVersion != kEtwArchiveFileVersion))
         {
             if (errorTextOut != nullptr)
             {
@@ -383,15 +441,94 @@ namespace
             return false;
         }
 
-        qint64 offset = kHeaderBytes;
-        while (offset < fileSize)
+        bool stopRequested = false;
+        const auto scanRecordBuffer = [&](
+            const char* recordData,
+            const qint64 recordBytes) -> bool {
+            qint64 recordOffset = 0;
+            while (recordOffset < recordBytes)
+            {
+                if (shouldCancel && shouldCancel())
+                {
+                    stopRequested = true;
+                    return true;
+                }
+                if (recordBytes - recordOffset < static_cast<qint64>(sizeof(quint32)))
+                {
+                    if (errorTextOut != nullptr)
+                    {
+                        *errorTextOut = QStringLiteral("ETW 归档分段尾部不完整：%1").arg(filePath);
+                    }
+                    return false;
+                }
+
+                const quint32 payloadSize = qFromLittleEndian<quint32>(
+                    reinterpret_cast<const uchar*>(recordData + recordOffset));
+                recordOffset += static_cast<qint64>(sizeof(quint32));
+                if (payloadSize == 0 || payloadSize > kEtwArchiveMaximumRecordBytes)
+                {
+                    if (errorTextOut != nullptr)
+                    {
+                        *errorTextOut = QStringLiteral("ETW 归档记录长度无效：%1").arg(filePath);
+                    }
+                    return false;
+                }
+                if (static_cast<qint64>(payloadSize) > recordBytes - recordOffset)
+                {
+                    if (errorTextOut != nullptr)
+                    {
+                        *errorTextOut = QStringLiteral("ETW 归档记录内容不完整：%1").arg(filePath);
+                    }
+                    return false;
+                }
+
+                const QByteArray payload = QByteArray::fromRawData(
+                    recordData + recordOffset,
+                    static_cast<qsizetype>(payloadSize));
+                recordOffset += static_cast<qint64>(payloadSize);
+                MonitorDock::EtwCapturedEventRow row;
+                if (!deserializeEtwArchiveRow(payload, &row))
+                {
+                    if (errorTextOut != nullptr)
+                    {
+                        *errorTextOut = QStringLiteral("ETW 归档记录解析失败：%1").arg(filePath);
+                    }
+                    return false;
+                }
+
+                if (scannedRowsInOut != nullptr)
+                {
+                    ++(*scannedRowsInOut);
+                }
+                if (maxSequenceInOut != nullptr)
+                {
+                    *maxSequenceInOut = std::max(*maxSequenceInOut, row.archiveSequence);
+                }
+                if (rowVisitor && !rowVisitor(row))
+                {
+                    stopRequested = true;
+                    return true;
+                }
+            }
+            return true;
+        };
+
+        if (fileVersion == kEtwArchiveLegacyFileVersion)
+        {
+            return scanRecordBuffer(
+                reinterpret_cast<const char*>(mappedData + kHeaderBytes),
+                fileSize - kHeaderBytes);
+        }
+
+        qint64 blockOffset = kHeaderBytes;
+        constexpr qint64 kBlockHeaderBytes = static_cast<qint64>(sizeof(quint32) * 3);
+        while (blockOffset < fileSize)
         {
             if (shouldCancel && shouldCancel())
             {
                 return true;
             }
-
-            if (fileSize - offset < static_cast<qint64>(sizeof(quint32)))
+            if (fileSize - blockOffset < kBlockHeaderBytes)
             {
                 if (errorTextOut != nullptr)
                 {
@@ -400,50 +537,50 @@ namespace
                 return false;
             }
 
-            const quint32 payloadSize = qFromLittleEndian<quint32>(mappedData + offset);
-            offset += static_cast<qint64>(sizeof(quint32));
-            if (payloadSize == 0
-                || payloadSize > kEtwArchiveMaximumRecordBytes)
+            const quint32 methodValue = qFromLittleEndian<quint32>(mappedData + blockOffset);
+            blockOffset += static_cast<qint64>(sizeof(quint32));
+            const quint32 uncompressedSize = qFromLittleEndian<quint32>(mappedData + blockOffset);
+            blockOffset += static_cast<qint64>(sizeof(quint32));
+            const quint32 storedSize = qFromLittleEndian<quint32>(mappedData + blockOffset);
+            blockOffset += static_cast<qint64>(sizeof(quint32));
+
+            if (uncompressedSize == 0
+                || uncompressedSize > kEtwArchiveMaximumBlockBytes
+                || storedSize == 0
+                || storedSize > kEtwArchiveMaximumStoredBlockBytes
+                || static_cast<qint64>(storedSize) > fileSize - blockOffset)
             {
                 if (errorTextOut != nullptr)
                 {
-                    *errorTextOut = QStringLiteral("ETW 归档记录长度无效：%1").arg(filePath);
+                    *errorTextOut = QStringLiteral("ETW 归档分段格式无效：%1").arg(filePath);
                 }
                 return false;
             }
 
-            if (static_cast<qint64>(payloadSize) > fileSize - offset)
+            std::vector<char> decodedBlock;
+            if (!KswordEtwArchiveCompression::decompressBlock(
+                static_cast<KswordEtwArchiveCompression::BlockMethod>(methodValue),
+                std::span<const char>(
+                    reinterpret_cast<const char*>(mappedData + blockOffset),
+                    static_cast<std::size_t>(storedSize)),
+                static_cast<std::size_t>(uncompressedSize),
+                &decodedBlock))
             {
                 if (errorTextOut != nullptr)
                 {
-                    *errorTextOut = QStringLiteral("ETW 归档记录内容不完整：%1").arg(filePath);
+                    *errorTextOut = QStringLiteral("ETW 归档分段格式无效：%1").arg(filePath);
                 }
                 return false;
             }
+            blockOffset += static_cast<qint64>(storedSize);
 
-            const QByteArray payload = QByteArray::fromRawData(
-                reinterpret_cast<const char*>(mappedData + offset),
-                static_cast<qsizetype>(payloadSize));
-            offset += static_cast<qint64>(payloadSize);
-            MonitorDock::EtwCapturedEventRow row;
-            if (!deserializeEtwArchiveRow(payload, &row))
+            if (!scanRecordBuffer(
+                decodedBlock.data(),
+                static_cast<qint64>(decodedBlock.size())))
             {
-                if (errorTextOut != nullptr)
-                {
-                    *errorTextOut = QStringLiteral("ETW 归档记录解析失败：%1").arg(filePath);
-                }
                 return false;
             }
-
-            if (scannedRowsInOut != nullptr)
-            {
-                ++(*scannedRowsInOut);
-            }
-            if (maxSequenceInOut != nullptr)
-            {
-                *maxSequenceInOut = std::max(*maxSequenceInOut, row.archiveSequence);
-            }
-            if (rowVisitor && !rowVisitor(row))
+            if (stopRequested)
             {
                 return true;
             }
@@ -10166,7 +10303,7 @@ bool MonitorDock::prepareEtwArchiveSession(QString* errorTextOut)
     m_etwArchiveActiveSegmentPath.clear();
     m_etwArchiveClosedSegmentPaths.clear();
     m_etwArchiveWriteBuffer.clear();
-    m_etwArchiveWriteBuffer.reserve(1024 * 1024);
+    m_etwArchiveWriteBuffer.reserve(kEtwArchiveWriteBufferBytes);
     m_etwArchiveFileHandle = 0;
     m_etwArchiveSegmentStart100ns = 0;
     m_etwArchiveNextSequence = 0;
@@ -10204,7 +10341,7 @@ bool MonitorDock::archiveEtwCapturedRow(EtwCapturedEventRow* rowData)
         }
 
         HANDLE fileHandle = reinterpret_cast<HANDLE>(m_etwArchiveFileHandle);
-        bool success = writeAllToHandle(fileHandle, m_etwArchiveWriteBuffer);
+        bool success = writeEtwArchiveBlockToHandle(fileHandle, m_etwArchiveWriteBuffer);
         m_etwArchiveWriteBuffer.clear();
         if (success)
         {
@@ -10268,11 +10405,10 @@ bool MonitorDock::archiveEtwCapturedRow(EtwCapturedEventRow* rowData)
         reinterpret_cast<const char*>(&payloadSizeLittleEndian),
         static_cast<qsizetype>(sizeof(payloadSizeLittleEndian)));
     m_etwArchiveWriteBuffer.append(payload);
-    constexpr qsizetype kWriteBufferBytes = 1024 * 1024;
-    if (m_etwArchiveWriteBuffer.size() >= kWriteBufferBytes)
+    if (m_etwArchiveWriteBuffer.size() >= kEtwArchiveWriteBufferBytes)
     {
         HANDLE fileHandle = reinterpret_cast<HANDLE>(m_etwArchiveFileHandle);
-        if (!writeAllToHandle(fileHandle, m_etwArchiveWriteBuffer))
+        if (!writeEtwArchiveBlockToHandle(fileHandle, m_etwArchiveWriteBuffer))
         {
             m_etwArchiveWriteFailed = true;
             return false;
@@ -10295,7 +10431,8 @@ void MonitorDock::finishEtwArchiveSession(const bool flushToPhysicalDisk)
 
         fileHandle = reinterpret_cast<HANDLE>(m_etwArchiveFileHandle);
         const bool alreadyFailed = m_etwArchiveWriteFailed.load(std::memory_order_relaxed);
-        success = !alreadyFailed && writeAllToHandle(fileHandle, m_etwArchiveWriteBuffer);
+        success = !alreadyFailed
+            && writeEtwArchiveBlockToHandle(fileHandle, m_etwArchiveWriteBuffer);
         m_etwArchiveWriteBuffer.clear();
         m_etwArchiveFileHandle = 0;
         m_etwArchiveSegmentStart100ns = 0;

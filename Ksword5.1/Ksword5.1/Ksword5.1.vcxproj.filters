@@ -275,7 +275,13 @@
     <ClCompile Include="MiscDock\MiscDock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MonitorDock\EtwArchiveCompression.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MonitorDock\MonitorDock.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\third_party\zstd\zstd.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="MonitorDock\DirectKernelCallMonitorWidget.cpp">
@@ -823,9 +829,18 @@
     <QtMoc Include="MiscDock\MiscDock.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="MonitorDock\EtwArchiveCompression.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <QtMoc Include="MonitorDock\MonitorDock.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="..\..\third_party\zstd\zstd.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\third_party\zstd\zstd_errors.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <QtMoc Include="NetworkDock\NetworkDock.h">
       <Filter>Header Files</Filter>
     </QtMoc>
@@ -1210,6 +1225,12 @@
       <Filter>Profile Files</Filter>
     </None>
     <None Include="..\..\COMMUNITY_COVENANT.md">
+      <Filter>Profile Files</Filter>
+    </None>
+    <None Include="..\..\third_party\zstd\LICENSE.txt">
+      <Filter>Profile Files</Filter>
+    </None>
+    <None Include="..\..\third_party\zstd\NOTICE.md">
       <Filter>Profile Files</Filter>
     </None>
     <None Include="..\..\tools\i18n_language_pack.py">

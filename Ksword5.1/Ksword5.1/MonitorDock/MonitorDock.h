@@ -627,7 +627,7 @@ private:
     bool prepareEtwArchiveSession(QString* errorTextOut);
     // archiveEtwCapturedRow：把一条完成前置筛选和解码的事件写入磁盘归档，再允许进入 UI 镜像队列。
     bool archiveEtwCapturedRow(EtwCapturedEventRow* rowData);
-    // finishEtwArchiveSession：刷出缓冲区并封存当前分段；可重复调用。
+    // finishEtwArchiveSession：将待写数据压缩成块并封存当前分段；可重复调用。
     void finishEtwArchiveSession(bool flushToPhysicalDisk = true);
     // rebuildEtwArchiveFilterAsync：流式扫描已封存分段，只保留最近 6000 条命中结果。
     void rebuildEtwArchiveFilterAsync();
@@ -896,7 +896,7 @@ private:
     QString m_etwArchiveDirectory;                  // 当前捕获会话的全量归档目录。
     QString m_etwArchiveActiveSegmentPath;          // 当前正在写入的 10 秒分段。
     QStringList m_etwArchiveClosedSegmentPaths;     // 已封存、可供后台筛选读取的分段。
-    QByteArray m_etwArchiveWriteBuffer;              // 顺序写盘聚合缓冲区。
+    QByteArray m_etwArchiveWriteBuffer;              // 未压缩聚合缓冲区，约 1 MiB 时写成 Zstandard 块。
     std::mutex m_etwArchiveMutex;                    // 写入、封存与筛选快照互斥锁。
     std::uintptr_t m_etwArchiveFileHandle = 0;       // Win32 归档文件句柄，0 表示未打开。
     std::uint64_t m_etwArchiveSegmentStart100ns = 0; // 当前分段首条事件时间。
