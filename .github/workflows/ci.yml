@@ -329,6 +329,7 @@ jobs:
             '/t:Build',
             '/p:Configuration=Release',
             '/p:Platform=x64',
+            "/p:SolutionDir=$((Resolve-Path 'Ksword5.1').Path)\",
             "/p:QtMsBuild=$env:KSWORD_QT_MSBUILD",
             '/p:KswordArkSkipAutoTestSign=true',
             '/m:1',
