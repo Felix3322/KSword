@@ -17,6 +17,7 @@ Environment:
 #include "ark/ark_driver.h"
 #include "..\kernel\hook_scan_support.h"
 #include "../../dispatch/ioctl_validation.h"
+#include "../../platform/pool_compat.h"
 
 #include <ntstrsafe.h>
 #include <stdarg.h>
@@ -247,8 +248,7 @@ KswordARKDriverQueueTerminateSystemThreadApc(
         return STATUS_PROCEDURE_NOT_FOUND;
     }
 
-    context = (KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT*)ExAllocatePoolWithTag(
-        NonPagedPoolNx,
+    context = (KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT*)KswordARKAllocateNonPagedPool(
         sizeof(*context),
         KSWORD_ARK_THREAD_APC_POOL_TAG);
     if (context == NULL) {
