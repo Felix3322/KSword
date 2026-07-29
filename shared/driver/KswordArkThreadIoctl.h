@@ -17,6 +17,8 @@
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_THREAD_DETAIL 0x83DUL
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_THREAD_RUNTIME_FIELDS 0x83FUL
 #define KSWORD_ARK_IOCTL_FUNCTION_TERMINATE_THREAD 0x84FUL
+#define KSWORD_ARK_IOCTL_FUNCTION_SET_THREAD_SUSPENDED 0x850UL
+#define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_THREAD 0x851UL
 
 #define IOCTL_KSWORD_ARK_ENUM_THREAD \
     CTL_CODE( \
@@ -68,6 +70,66 @@ typedef struct _KSWORD_ARK_TERMINATE_THREAD_REQUEST
     long exitStatus;
     unsigned long reserved;
 } KSWORD_ARK_TERMINATE_THREAD_REQUEST;
+
+// 指定线程挂起/恢复协议：
+// - 输入：TID、所属 PID 和 action；R0 重新引用 ETHREAD 并验证所属关系；
+// - action：KSWORD_ARK_THREAD_SUSPEND_ACTION_SUSPEND 或 RESUME；
+// - 输出：无；驱动日志记录操作前的 suspend count。
+#define IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_SET_THREAD_SUSPENDED, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
+
+#define KSWORD_ARK_THREAD_SUSPEND_ACTION_SUSPEND 1UL
+#define KSWORD_ARK_THREAD_SUSPEND_ACTION_RESUME  2UL
+
+typedef struct _KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST
+{
+    unsigned long threadId;
+    unsigned long processId;
+    unsigned long action;
+    unsigned long reserved;
+} KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST;
+
+// 驱动/System 线程控制协议：
+// - 只接受 PID 4 的系统线程；R0 自行读取真实启动地址并匹配已加载驱动模块；
+// - 拒绝 ntoskrnl 第一模块、KswordARK 自身、当前 IOCTL 执行线程和地址不一致请求；
+// - terminate/suspend 必须携带 UI_CONFIRMED，resume 作为恢复动作可直接执行。
+#define IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_THREAD, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
+
+#define KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND   1UL
+#define KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME    2UL
+#define KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE 3UL
+
+#define KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_UI_CONFIRMED 0x00000001UL
+
+// terminateMethod 只在 ACTION_TERMINATE 时生效。所有后端均为实验性：
+// - PspTerminateThreadByPointer：未文档化、按 ETHREAD 指针进入终止流程；
+// - Zw/NtTerminateThread：按内核句柄请求线程终止；
+// - Normal APC：在目标系统线程 PASSIVE_LEVEL 上调用 PsTerminateSystemThread；
+// - Special -> Normal APC：Special Kernel APC 只负责在 APC_LEVEL 排入下一段，
+//   最终仍由 PASSIVE_LEVEL 的 Normal Kernel APC 调用 PsTerminateSystemThread。
+#define KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NONE                   0UL
+#define KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_PSP_BY_POINTER         1UL
+#define KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_ZW_OR_NT               2UL
+#define KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NORMAL_APC             3UL
+#define KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_SPECIAL_TO_NORMAL_APC  4UL
+
+typedef struct _KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST
+{
+    unsigned long threadId;
+    unsigned long action;
+    unsigned long flags;
+    unsigned long terminateMethod;
+    unsigned long long expectedStartAddress;
+} KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST;
 
 // 线程 runtime field sample 请求：
 // - 输入：threadId 定位 ETHREAD，processId 只做可选一致性上下文展示；

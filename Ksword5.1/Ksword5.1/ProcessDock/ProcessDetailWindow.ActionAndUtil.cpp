@@ -51,6 +51,306 @@ void ProcessDetailWindow::executeTerminateThreadsAction()
     showActionResultMessage("TerminateThread(全部线程)", actionOk, detailText, actionEvent);
 }
 
+void ProcessDetailWindow::executeR0SuspendSelectedThreadAction()
+{
+    if (m_threadInspectTable == nullptr)
+    {
+        return;
+    }
+
+    const int currentRow = m_threadInspectTable->currentRow();
+    const QTableWidgetItem* threadIdItem = currentRow >= 0
+        ? m_threadInspectTable->item(currentRow, toThreadColumnIndex(ThreadRowColumn::ThreadId))
+        : nullptr;
+    const std::size_t cacheIndex = threadIdItem != nullptr
+        ? static_cast<std::size_t>(threadIdItem->data(Qt::UserRole).toULongLong())
+        : static_cast<std::size_t>(m_threadInspectRows.size());
+    if (cacheIndex >= m_threadInspectRows.size())
+    {
+        return;
+    }
+
+    const ThreadInspectItem& selectedThread = m_threadInspectRows[cacheIndex];
+    const std::uint32_t processId = selectedThread.processId != 0U
+        ? selectedThread.processId
+        : m_baseRecord.pid;
+    if (processId <= 4U || selectedThread.threadId == 0U)
+    {
+        return;
+    }
+
+    const QMessageBox::StandardButton confirmation = QMessageBox::warning(
+        this,
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.r0_suspend.confirm.title"),
+            QStringLiteral("R0挂起线程")),
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.r0_suspend.confirm.body"),
+            QStringLiteral("将通过 R0 挂起 PID %2 的线程 %1。目标程序可能失去响应，是否继续？"))
+            .arg(selectedThread.threadId)
+            .arg(processId),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (confirmation != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    kLogEvent actionEvent;
+    const ksword::ark::DriverClient driverClient;
+    const ksword::ark::IoResult result = driverClient.setThreadSuspended(
+        selectedThread.threadId,
+        processId,
+        true);
+    (result.ok ? info : err) << actionEvent
+        << "[ProcessDetailWindow] executeR0SuspendSelectedThreadAction: pid="
+        << processId
+        << ", tid="
+        << selectedThread.threadId
+        << ", actionOk="
+        << (result.ok ? "true" : "false")
+        << ", detail="
+        << result.message
+        << eol;
+    showActionResultMessage(
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.r0_suspend.result.title"),
+            QStringLiteral("R0挂起线程")),
+        result.ok,
+        result.message,
+        actionEvent);
+    requestAsyncThreadInspectRefresh();
+}
+
+void ProcessDetailWindow::executeR0ResumeSelectedThreadAction()
+{
+    if (m_threadInspectTable == nullptr)
+    {
+        return;
+    }
+
+    const int currentRow = m_threadInspectTable->currentRow();
+    const QTableWidgetItem* threadIdItem = currentRow >= 0
+        ? m_threadInspectTable->item(currentRow, toThreadColumnIndex(ThreadRowColumn::ThreadId))
+        : nullptr;
+    const std::size_t cacheIndex = threadIdItem != nullptr
+        ? static_cast<std::size_t>(threadIdItem->data(Qt::UserRole).toULongLong())
+        : static_cast<std::size_t>(m_threadInspectRows.size());
+    if (cacheIndex >= m_threadInspectRows.size())
+    {
+        return;
+    }
+
+    const ThreadInspectItem& selectedThread = m_threadInspectRows[cacheIndex];
+    const std::uint32_t processId = selectedThread.processId != 0U
+        ? selectedThread.processId
+        : m_baseRecord.pid;
+    if (processId <= 4U || selectedThread.threadId == 0U)
+    {
+        return;
+    }
+
+    kLogEvent actionEvent;
+    const ksword::ark::DriverClient driverClient;
+    const ksword::ark::IoResult result = driverClient.setThreadSuspended(
+        selectedThread.threadId,
+        processId,
+        false);
+    (result.ok ? info : err) << actionEvent
+        << "[ProcessDetailWindow] executeR0ResumeSelectedThreadAction: pid="
+        << processId
+        << ", tid="
+        << selectedThread.threadId
+        << ", actionOk="
+        << (result.ok ? "true" : "false")
+        << ", detail="
+        << result.message
+        << eol;
+    showActionResultMessage(
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.r0_resume.result.title"),
+            QStringLiteral("R0恢复线程")),
+        result.ok,
+        result.message,
+        actionEvent);
+    requestAsyncThreadInspectRefresh();
+}
+
+void ProcessDetailWindow::executeDriverThreadAction(
+    const unsigned long action,
+    const unsigned long terminateMethod)
+{
+    if (m_threadInspectTable == nullptr)
+    {
+        return;
+    }
+
+    const int currentRow = m_threadInspectTable->currentRow();
+    const QTableWidgetItem* threadIdItem = currentRow >= 0
+        ? m_threadInspectTable->item(currentRow, toThreadColumnIndex(ThreadRowColumn::ThreadId))
+        : nullptr;
+    const std::size_t cacheIndex = threadIdItem != nullptr
+        ? static_cast<std::size_t>(threadIdItem->data(Qt::UserRole).toULongLong())
+        : static_cast<std::size_t>(m_threadInspectRows.size());
+    if (cacheIndex >= m_threadInspectRows.size())
+    {
+        return;
+    }
+
+    const ThreadInspectItem& selectedThread = m_threadInspectRows[cacheIndex];
+    const std::uint64_t startAddress = selectedThread.startAddress != 0ULL
+        ? selectedThread.startAddress
+        : selectedThread.win32StartAddress;
+    if (m_baseRecord.pid != 4U || selectedThread.threadId == 0U || startAddress == 0ULL)
+    {
+        return;
+    }
+
+    QString resultTitle;
+    if (action == KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND)
+    {
+        resultTitle = ks::i18n::contextText(
+            QStringLiteral("process.thread.driver_suspend.result.title"),
+            QStringLiteral("挂起驱动线程"));
+        const QMessageBox::StandardButton confirmation = QMessageBox::critical(
+            this,
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.driver_suspend.confirm.title"),
+                QStringLiteral("挂起驱动线程")),
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.driver_suspend.confirm.body"),
+                QStringLiteral("即将挂起 System(PID 4) 的驱动线程 %1。此操作可能冻结磁盘、网络或安全组件，并可能导致系统死锁或蓝屏。仅在已保存工作且可强制重启时继续。"))
+                .arg(selectedThread.threadId),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirmation != QMessageBox::Yes)
+        {
+            return;
+        }
+    }
+    else if (action == KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME)
+    {
+        resultTitle = ks::i18n::contextText(
+            QStringLiteral("process.thread.driver_resume.result.title"),
+            QStringLiteral("恢复驱动线程"));
+    }
+    else if (action == KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE)
+    {
+        QString rawApiText;
+        switch (terminateMethod)
+        {
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_PSP_BY_POINTER:
+            rawApiText = QStringLiteral("PspTerminateThreadByPointer");
+            break;
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_ZW_OR_NT:
+            rawApiText = QStringLiteral("ZwTerminateThread / NtTerminateThread");
+            break;
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NORMAL_APC:
+            rawApiText = QStringLiteral("KeInsertQueueApc → Normal Kernel APC → PsTerminateSystemThread");
+            break;
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_SPECIAL_TO_NORMAL_APC:
+            rawApiText = QStringLiteral("KeInsertQueueApc → Special Kernel APC → Normal Kernel APC → PsTerminateSystemThread");
+            break;
+        default:
+            return;
+        }
+        resultTitle = ks::i18n::contextText(
+            QStringLiteral("process.thread.driver_terminate.result.title"),
+            QStringLiteral("强制结束驱动线程"));
+        const QMessageBox::StandardButton confirmation = QMessageBox::critical(
+            this,
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.driver_terminate.confirm.title"),
+                QStringLiteral("强制结束驱动线程")),
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.driver_terminate.confirm.body"),
+                QStringLiteral("即将使用实验性原始 API“%2”结束 System(PID 4) 的驱动线程 %1。此操作不可撤销，可能立即造成数据损坏、系统死锁或蓝屏。APC 方法只表示成功排队，不保证送达或终止。仅在隔离测试环境并准备强制重启时继续。"))
+                .arg(selectedThread.threadId)
+                .arg(rawApiText),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirmation != QMessageBox::Yes)
+        {
+            return;
+        }
+    }
+    else
+    {
+        return;
+    }
+
+    kLogEvent actionEvent;
+    const ksword::ark::DriverClient driverClient;
+    const ksword::ark::IoResult result = driverClient.controlDriverThread(
+        selectedThread.threadId,
+        startAddress,
+        action,
+        terminateMethod,
+        action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME);
+    (result.ok ? info : err) << actionEvent
+        << "[ProcessDetailWindow] executeDriverThreadAction: tid="
+        << selectedThread.threadId
+        << ", action="
+        << action
+        << ", terminateMethod="
+        << terminateMethod
+        << ", actionOk="
+        << (result.ok ? "true" : "false")
+        << ", detail="
+        << result.message
+        << eol;
+    showActionResultMessage(resultTitle, result.ok, result.message, actionEvent);
+    requestAsyncThreadInspectRefresh();
+}
+
+void ProcessDetailWindow::executeExperimentalFirmwareRebootAction()
+{
+    const QMessageBox::StandardButton firstConfirmation = QMessageBox::critical(
+        this,
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.hal_return.confirm.title"),
+            QStringLiteral("HalReturnToFirmware 实验性整机动作")),
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.hal_return.confirm.body"),
+            QStringLiteral("HalReturnToFirmware(HalRebootRoutine) 不是线程终止 API，而是不受支持的整机固件返回动作。它会绕过所选线程和进程保护，可能立即重启、丢失所有未保存数据，或在当前平台失败/崩溃。是否进入最终确认？")),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (firstConfirmation != QMessageBox::Yes)
+    {
+        return;
+    }
+    const QMessageBox::StandardButton finalConfirmation = QMessageBox::critical(
+        this,
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.hal_return.final.title"),
+            QStringLiteral("最终确认：立即调用原始 API")),
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.hal_return.final.body"),
+            QStringLiteral("最后确认：立即调用 HalReturnToFirmware(HalRebootRoutine)。成功时系统不会返回本程序。")),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (finalConfirmation != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    kLogEvent actionEvent;
+    const ksword::ark::DriverClient driverClient;
+    const ksword::ark::IoResult result = driverClient.experimentalReturnToFirmware();
+    (result.ok ? warn : err) << actionEvent
+        << "[ProcessDetailWindow] executeExperimentalFirmwareRebootAction: actionOk="
+        << (result.ok ? "true" : "false")
+        << ", detail=" << result.message
+        << eol;
+    showActionResultMessage(
+        ks::i18n::contextText(
+            QStringLiteral("process.thread.hal_return.result.title"),
+            QStringLiteral("HalReturnToFirmware 实验性整机动作")),
+        result.ok,
+        result.message,
+        actionEvent);
+}
+
 void ProcessDetailWindow::executeR0TerminateSelectedThreadAction()
 {
     if (m_threadInspectTable == nullptr)

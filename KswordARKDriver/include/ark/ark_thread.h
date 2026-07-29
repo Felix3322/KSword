@@ -34,6 +34,35 @@ KswordARKDriverTerminateThreadById(
     _In_ NTSTATUS ExitStatus
     );
 
+// 对已引用 ETHREAD 执行强制终止；调用方负责身份/模块安全校验和对象引用生命周期。
+NTSTATUS
+KswordARKDriverTerminateReferencedThread(
+    _In_ PETHREAD ThreadObject,
+    _In_ NTSTATUS ExitStatus
+    );
+
+// 实验性原始后端：不在两种 API 之间自动回退，便于 UI/日志准确显示实际调用。
+NTSTATUS
+KswordARKDriverTerminateReferencedThreadPsp(
+    _In_ PETHREAD ThreadObject,
+    _In_ NTSTATUS ExitStatus
+    );
+
+NTSTATUS
+KswordARKDriverTerminateReferencedThreadZwOrNt(
+    _In_ PETHREAD ThreadObject,
+    _In_ NTSTATUS ExitStatus
+    );
+
+// 将 PsTerminateSystemThread 安排到目标系统线程自身上下文执行。
+// SpecialToNormal=FALSE：直接排入 Normal Kernel APC；
+// SpecialToNormal=TRUE：先排 Special Kernel APC，再由其排入 Normal Kernel APC。
+NTSTATUS
+KswordARKDriverQueueTerminateSystemThreadApc(
+    _In_ PETHREAD ThreadObject,
+    _In_ BOOLEAN SpecialToNormal
+    );
+
 /*
  * KswordARKThreadIoctlTerminate
  * Inputs:
@@ -46,6 +75,44 @@ KswordARKDriverTerminateThreadById(
  */
 NTSTATUS
 KswordARKThreadIoctlTerminate(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    );
+
+/*
+ * KswordARKThreadIoctlSetSuspended
+ * Inputs:
+ * - WDF request buffer for IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED.
+ * Processing:
+ * - Validates PID/TID/action, applies suspend safety policy when needed, then
+ *   opens a kernel thread handle after verifying ETHREAD ownership.
+ * Return behavior:
+ * - Returns validation, safety, ownership, or Zw/Nt suspend/resume status.
+ */
+NTSTATUS
+KswordARKThreadIoctlSetSuspended(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    );
+
+/*
+ * KswordARKThreadIoctlControlDriverThread
+ * Inputs:
+ * - Fixed IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD request.
+ * Processing:
+ * - Revalidates PID 4 identity, live start address, loaded-driver ownership,
+ *   protected-module exclusions, and central safety policy before mutation.
+ * Return behavior:
+ * - Returns validation, policy, or suspend/resume/terminate backend status.
+ */
+NTSTATUS
+KswordARKThreadIoctlControlDriverThread(
     _In_ WDFDEVICE Device,
     _In_ WDFREQUEST Request,
     _In_ size_t InputBufferLength,

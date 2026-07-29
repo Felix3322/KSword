@@ -2970,13 +2970,80 @@ void ProcessDetailWindow::initializeThreadTab()
             QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
             QStringLiteral("复制当前行"));
         copyRowAction->setEnabled(m_threadInspectTable->currentRow() >= 0);
+        QAction* r0SuspendThreadAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_suspend.svg")),
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.r0_suspend"),
+                QStringLiteral("R0挂起线程")));
+        QAction* r0ResumeThreadAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_resume.svg")),
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.r0_resume"),
+                QStringLiteral("R0恢复线程")));
+        QAction* suspendDriverThreadAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_suspend.svg")),
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.driver_suspend"),
+                QStringLiteral("ZwSuspendThread / NtSuspendThread（实验性）")));
+        QAction* resumeDriverThreadAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_resume.svg")),
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.driver_resume"),
+                QStringLiteral("ZwResumeThread / NtResumeThread（实验性）")));
+        QMenu* terminateDriverThreadMenu = menu.addMenu(
+            QIcon(QStringLiteral(":/Icon/process_terminate.svg")),
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.driver_terminate_experimental"),
+                QStringLiteral("结束驱动线程（实验性原始 API）")));
+        QAction* terminateDriverThreadPspAction = terminateDriverThreadMenu->addAction(
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.driver_terminate.psp"),
+                QStringLiteral("PspTerminateThreadByPointer（实验性/未文档化）")));
+        QAction* terminateDriverThreadZwAction = terminateDriverThreadMenu->addAction(
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.driver_terminate.zw"),
+                QStringLiteral("ZwTerminateThread / NtTerminateThread（实验性）")));
+        QAction* terminateDriverThreadNormalApcAction = terminateDriverThreadMenu->addAction(
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.driver_terminate.normal_apc"),
+                QStringLiteral("KeInsertQueueApc → Normal Kernel APC → PsTerminateSystemThread（实验性）")));
+        QAction* terminateDriverThreadSpecialApcAction = terminateDriverThreadMenu->addAction(
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.driver_terminate.special_apc"),
+                QStringLiteral("KeInsertQueueApc → Special Kernel APC → Normal Kernel APC → PsTerminateSystemThread（实验性）")));
+        terminateDriverThreadMenu->addSeparator();
+        QAction* firmwareRebootAction = terminateDriverThreadMenu->addAction(
+            ks::i18n::contextText(
+                QStringLiteral("process.thread.menu.hal_return_to_firmware"),
+                QStringLiteral("HalReturnToFirmware(HalRebootRoutine)（实验性/整机动作）")));
         QAction* r0TerminateThreadAction = menu.addAction(
             QIcon(QStringLiteral(":/Icon/process_terminate.svg")),
             ks::i18n::contextText(
                 QStringLiteral("process.thread.menu.r0_terminate"),
                 QStringLiteral("R0结束线程")));
-        r0TerminateThreadAction->setEnabled(
-            m_threadInspectTable->currentRow() >= 0 && m_baseRecord.pid > 4U);
+        const bool hasR0ThreadControlTarget =
+            m_threadInspectTable->currentRow() >= 0 && m_baseRecord.pid > 4U;
+        r0SuspendThreadAction->setEnabled(hasR0ThreadControlTarget);
+        r0ResumeThreadAction->setEnabled(hasR0ThreadControlTarget);
+        r0TerminateThreadAction->setEnabled(hasR0ThreadControlTarget);
+        bool hasDriverThreadTarget = false;
+        if (m_threadInspectTable->currentRow() >= 0 && m_baseRecord.pid == 4U)
+        {
+            const QTableWidgetItem* selectedThreadIdItem = m_threadInspectTable->item(
+                m_threadInspectTable->currentRow(),
+                toThreadColumnIndex(ThreadRowColumn::ThreadId));
+            const std::size_t selectedCacheIndex = selectedThreadIdItem != nullptr
+                ? static_cast<std::size_t>(selectedThreadIdItem->data(Qt::UserRole).toULongLong())
+                : static_cast<std::size_t>(m_threadInspectRows.size());
+            hasDriverThreadTarget =
+                selectedCacheIndex < m_threadInspectRows.size() &&
+                m_threadInspectRows[selectedCacheIndex].threadId != 0U &&
+                (m_threadInspectRows[selectedCacheIndex].startAddress != 0ULL ||
+                 m_threadInspectRows[selectedCacheIndex].win32StartAddress != 0ULL);
+        }
+        suspendDriverThreadAction->setVisible(hasDriverThreadTarget);
+        resumeDriverThreadAction->setVisible(hasDriverThreadTarget);
+        terminateDriverThreadMenu->menuAction()->setVisible(hasDriverThreadTarget);
         menu.addSeparator();
         QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
             &menu,
@@ -3001,6 +3068,59 @@ void ProcessDetailWindow::initializeThreadTab()
         QAction* selectedAction = menu.exec(m_threadInspectTable->viewport()->mapToGlobal(localPosition));
         if (selectedAction == uploadVirusTotalAction)
         {
+            return;
+        }
+        if (selectedAction == r0SuspendThreadAction)
+        {
+            executeR0SuspendSelectedThreadAction();
+            return;
+        }
+        if (selectedAction == r0ResumeThreadAction)
+        {
+            executeR0ResumeSelectedThreadAction();
+            return;
+        }
+        if (selectedAction == suspendDriverThreadAction)
+        {
+            executeDriverThreadAction(KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND);
+            return;
+        }
+        if (selectedAction == resumeDriverThreadAction)
+        {
+            executeDriverThreadAction(KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME);
+            return;
+        }
+        if (selectedAction == terminateDriverThreadPspAction)
+        {
+            executeDriverThreadAction(
+                KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE,
+                KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_PSP_BY_POINTER);
+            return;
+        }
+        if (selectedAction == terminateDriverThreadZwAction)
+        {
+            executeDriverThreadAction(
+                KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE,
+                KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_ZW_OR_NT);
+            return;
+        }
+        if (selectedAction == terminateDriverThreadNormalApcAction)
+        {
+            executeDriverThreadAction(
+                KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE,
+                KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NORMAL_APC);
+            return;
+        }
+        if (selectedAction == terminateDriverThreadSpecialApcAction)
+        {
+            executeDriverThreadAction(
+                KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE,
+                KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_SPECIAL_TO_NORMAL_APC);
+            return;
+        }
+        if (selectedAction == firmwareRebootAction)
+        {
+            executeExperimentalFirmwareRebootAction();
             return;
         }
         if (selectedAction == r0TerminateThreadAction)

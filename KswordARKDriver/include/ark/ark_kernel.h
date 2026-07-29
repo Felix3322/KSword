@@ -77,6 +77,15 @@ typedef struct _KSW_DRIVER_UNLOAD_DIAGNOSTICS
 } KSW_DRIVER_UNLOAD_DIAGNOSTICS, *PKSW_DRIVER_UNLOAD_DIAGNOSTICS;
 
 NTSTATUS
+KswordARKKernelIoctlExperimentalReturnToFirmware(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    );
+
+NTSTATUS
 KswordARKDriverEnumerateSsdt(
     _Out_writes_bytes_to_(outputBufferLength, *bytesWrittenOut) PVOID outputBuffer,
     _In_ size_t outputBufferLength,

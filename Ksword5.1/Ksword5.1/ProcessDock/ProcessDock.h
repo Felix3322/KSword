@@ -493,6 +493,12 @@ private:
     void openThreadStackWindow();
     void executeSuspendThreadAction();
     void executeResumeThreadAction();
+    void executeR0SuspendThreadAction();
+      void executeR0ResumeThreadAction();
+      void executeSuspendDriverThreadAction();
+      void executeResumeDriverThreadAction();
+      void executeTerminateDriverThreadAction(unsigned long terminateMethod);
+      void executeExperimentalFirmwareRebootAction();
     void executeTerminateThreadAction();
     void executeR0TerminateThreadAction();
     void updateUsageSummaryInHeader(const std::vector<DisplayRow>& displayRows);

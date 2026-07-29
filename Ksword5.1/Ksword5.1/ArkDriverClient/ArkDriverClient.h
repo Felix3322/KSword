@@ -71,6 +71,11 @@ namespace ksword::ark
         IoResult terminateProcess(DriverHandle& handle, std::uint32_t processId, long exitStatus) const;
         IoResult terminateThread(std::uint32_t threadId, std::uint32_t processId, long exitStatus) const;
         IoResult terminateThread(DriverHandle& handle, std::uint32_t threadId, std::uint32_t processId, long exitStatus) const;
+        IoResult setThreadSuspended(std::uint32_t threadId, std::uint32_t processId, bool suspended) const;
+        IoResult setThreadSuspended(DriverHandle& handle, std::uint32_t threadId, std::uint32_t processId, bool suspended) const;
+        IoResult controlDriverThread(std::uint32_t threadId, std::uint64_t expectedStartAddress, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
+        IoResult controlDriverThread(DriverHandle& handle, std::uint32_t threadId, std::uint64_t expectedStartAddress, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
+        IoResult experimentalReturnToFirmware() const;
         IoResult suspendProcess(std::uint32_t processId) const;
         IoResult setProcessProtection(std::uint32_t processId, std::uint8_t protectionLevel) const;
         ProcessVisibilityResult setProcessVisibility(std::uint32_t processId, unsigned long action, unsigned long flags = 0UL) const;

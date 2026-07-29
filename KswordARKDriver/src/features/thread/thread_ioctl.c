@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "ark/ark_driver.h"
+#include "..\kernel\hook_scan_support.h"
 #include "../../dispatch/ioctl_validation.h"
 
 #include <ntstrsafe.h>
@@ -22,6 +23,277 @@ Environment:
 
 #define KSWORD_ARK_THREAD_ENUM_RESPONSE_HEADER_SIZE \
     (sizeof(KSWORD_ARK_ENUM_THREAD_RESPONSE) - sizeof(KSWORD_ARK_THREAD_ENTRY))
+
+#ifndef THREAD_SUSPEND_RESUME
+#define THREAD_SUSPEND_RESUME (0x0002)
+#endif
+
+typedef NTSTATUS(NTAPI* KSWORD_ZW_OR_NT_THREAD_SUSPEND_FN)(
+    _In_ HANDLE ThreadHandle,
+    _Out_opt_ PULONG PreviousSuspendCount
+    );
+
+typedef VOID(NTAPI* KSWORD_APC_NORMAL_ROUTINE)(
+    _In_opt_ PVOID NormalContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2
+    );
+
+typedef VOID(NTAPI* KSWORD_APC_KERNEL_ROUTINE)(
+    _In_ PKAPC Apc,
+    _Inout_ KSWORD_APC_NORMAL_ROUTINE* NormalRoutine,
+    _Inout_ PVOID* NormalContext,
+    _Inout_ PVOID* SystemArgument1,
+    _Inout_ PVOID* SystemArgument2
+    );
+
+typedef VOID(NTAPI* KSWORD_APC_RUNDOWN_ROUTINE)(
+    _In_ PKAPC Apc
+    );
+
+typedef VOID(NTAPI* KSWORD_KE_INITIALIZE_APC_FN)(
+    _Out_ PKAPC Apc,
+    _In_ PKTHREAD Thread,
+    _In_ LONG Environment,
+    _In_ KSWORD_APC_KERNEL_ROUTINE KernelRoutine,
+    _In_opt_ KSWORD_APC_RUNDOWN_ROUTINE RundownRoutine,
+    _In_opt_ KSWORD_APC_NORMAL_ROUTINE NormalRoutine,
+    _In_ KPROCESSOR_MODE ApcMode,
+    _In_opt_ PVOID NormalContext
+    );
+
+typedef BOOLEAN(NTAPI* KSWORD_KE_INSERT_QUEUE_APC_FN)(
+    _Inout_ PKAPC Apc,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2,
+    _In_ KPRIORITY Increment
+    );
+
+#define KSWORD_ARK_THREAD_APC_POOL_TAG 'pAsK'
+#define KSWORD_ARK_APC_ENVIRONMENT_ORIGINAL 0L
+
+typedef struct _KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT
+{
+    KAPC SpecialApc;
+    KAPC NormalApc;
+    PETHREAD ThreadObject;
+    KSWORD_KE_INITIALIZE_APC_FN KeInitializeApc;
+    KSWORD_KE_INSERT_QUEUE_APC_FN KeInsertQueueApc;
+    volatile LONG Released;
+} KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT;
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+PsLookupThreadByThreadId(
+    _In_ HANDLE ThreadId,
+    _Outptr_ PETHREAD* Thread
+    );
+
+NTKERNELAPI
+NTSTATUS
+ObOpenObjectByPointer(
+    _In_ PVOID Object,
+    _In_ ULONG HandleAttributes,
+    _In_opt_ PACCESS_STATE PassedAccessState,
+    _In_opt_ ACCESS_MASK DesiredAccess,
+    _In_opt_ POBJECT_TYPE ObjectType,
+    _In_ KPROCESSOR_MODE AccessMode,
+    _Out_ PHANDLE Handle
+    );
+
+static KSWORD_KE_INITIALIZE_APC_FN
+KswordARKResolveKeInitializeApc(VOID)
+{
+    UNICODE_STRING routineName;
+    RtlInitUnicodeString(&routineName, L"KeInitializeApc");
+    return (KSWORD_KE_INITIALIZE_APC_FN)MmGetSystemRoutineAddress(&routineName);
+}
+
+static KSWORD_KE_INSERT_QUEUE_APC_FN
+KswordARKResolveKeInsertQueueApc(VOID)
+{
+    UNICODE_STRING routineName;
+    RtlInitUnicodeString(&routineName, L"KeInsertQueueApc");
+    return (KSWORD_KE_INSERT_QUEUE_APC_FN)MmGetSystemRoutineAddress(&routineName);
+}
+
+static VOID
+KswordARKReleaseThreadTerminateApcContext(
+    _In_opt_ KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT* Context
+    )
+{
+    if (Context == NULL || InterlockedCompareExchange(&Context->Released, 1L, 0L) != 0L) {
+        return;
+    }
+    if (Context->ThreadObject != NULL) {
+        ObDereferenceObject(Context->ThreadObject);
+        Context->ThreadObject = NULL;
+    }
+    ExFreePoolWithTag(Context, KSWORD_ARK_THREAD_APC_POOL_TAG);
+}
+
+static VOID
+NTAPI
+KswordARKTerminateSystemThreadNormalRoutine(
+    _In_opt_ PVOID NormalContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2
+    )
+{
+    KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT* context =
+        (KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT*)NormalContext;
+
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+
+    // Normal Kernel APC 在目标线程上下文的 PASSIVE_LEVEL 执行。先释放 APC
+    // 资源，再调用只终止“当前系统线程”的公开 PsTerminateSystemThread。
+    KswordARKReleaseThreadTerminateApcContext(context);
+    (VOID)PsTerminateSystemThread(STATUS_CANCELLED);
+}
+
+static VOID
+NTAPI
+KswordARKTerminateSystemThreadNormalKernelRoutine(
+    _In_ PKAPC Apc,
+    _Inout_ KSWORD_APC_NORMAL_ROUTINE* NormalRoutine,
+    _Inout_ PVOID* NormalContext,
+    _Inout_ PVOID* SystemArgument1,
+    _Inout_ PVOID* SystemArgument2
+    )
+{
+    UNREFERENCED_PARAMETER(Apc);
+    UNREFERENCED_PARAMETER(NormalRoutine);
+    UNREFERENCED_PARAMETER(NormalContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+}
+
+static VOID
+NTAPI
+KswordARKTerminateSystemThreadNormalRundownRoutine(
+    _In_ PKAPC Apc
+    )
+{
+    KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT* context =
+        CONTAINING_RECORD(Apc, KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT, NormalApc);
+    KswordARKReleaseThreadTerminateApcContext(context);
+}
+
+static VOID
+NTAPI
+KswordARKTerminateSystemThreadSpecialRundownRoutine(
+    _In_ PKAPC Apc
+    )
+{
+    KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT* context =
+        CONTAINING_RECORD(Apc, KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT, SpecialApc);
+    KswordARKReleaseThreadTerminateApcContext(context);
+}
+
+static VOID
+NTAPI
+KswordARKTerminateSystemThreadSpecialKernelRoutine(
+    _In_ PKAPC Apc,
+    _Inout_ KSWORD_APC_NORMAL_ROUTINE* NormalRoutine,
+    _Inout_ PVOID* NormalContext,
+    _Inout_ PVOID* SystemArgument1,
+    _Inout_ PVOID* SystemArgument2
+    )
+{
+    KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT* context =
+        CONTAINING_RECORD(Apc, KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT, SpecialApc);
+
+    UNREFERENCED_PARAMETER(NormalRoutine);
+    UNREFERENCED_PARAMETER(NormalContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+
+    // Special Kernel APC 在 APC_LEVEL 执行，绝不能直接调用
+    // PsTerminateSystemThread。这里只排入 Normal Kernel APC。
+    context->KeInitializeApc(
+        &context->NormalApc,
+        (PKTHREAD)context->ThreadObject,
+        KSWORD_ARK_APC_ENVIRONMENT_ORIGINAL,
+        KswordARKTerminateSystemThreadNormalKernelRoutine,
+        KswordARKTerminateSystemThreadNormalRundownRoutine,
+        KswordARKTerminateSystemThreadNormalRoutine,
+        KernelMode,
+        context);
+    if (!context->KeInsertQueueApc(&context->NormalApc, NULL, NULL, 0)) {
+        KswordARKReleaseThreadTerminateApcContext(context);
+    }
+}
+
+NTSTATUS
+KswordARKDriverQueueTerminateSystemThreadApc(
+    _In_ PETHREAD ThreadObject,
+    _In_ BOOLEAN SpecialToNormal
+    )
+{
+    KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT* context = NULL;
+    KSWORD_KE_INITIALIZE_APC_FN keInitializeApc = NULL;
+    KSWORD_KE_INSERT_QUEUE_APC_FN keInsertQueueApc = NULL;
+    PKAPC firstApc = NULL;
+
+    if (ThreadObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    keInitializeApc = KswordARKResolveKeInitializeApc();
+    keInsertQueueApc = KswordARKResolveKeInsertQueueApc();
+    if (keInitializeApc == NULL || keInsertQueueApc == NULL) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+
+    context = (KSWORD_ARK_THREAD_TERMINATE_APC_CONTEXT*)ExAllocatePoolWithTag(
+        NonPagedPoolNx,
+        sizeof(*context),
+        KSWORD_ARK_THREAD_APC_POOL_TAG);
+    if (context == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(context, sizeof(*context));
+    ObReferenceObject(ThreadObject);
+    context->ThreadObject = ThreadObject;
+    context->KeInitializeApc = keInitializeApc;
+    context->KeInsertQueueApc = keInsertQueueApc;
+
+    if (SpecialToNormal) {
+        firstApc = &context->SpecialApc;
+        keInitializeApc(
+            firstApc,
+            (PKTHREAD)ThreadObject,
+            KSWORD_ARK_APC_ENVIRONMENT_ORIGINAL,
+            KswordARKTerminateSystemThreadSpecialKernelRoutine,
+            KswordARKTerminateSystemThreadSpecialRundownRoutine,
+            NULL,
+            KernelMode,
+            NULL);
+    }
+    else {
+        firstApc = &context->NormalApc;
+        keInitializeApc(
+            firstApc,
+            (PKTHREAD)ThreadObject,
+            KSWORD_ARK_APC_ENVIRONMENT_ORIGINAL,
+            KswordARKTerminateSystemThreadNormalKernelRoutine,
+            KswordARKTerminateSystemThreadNormalRundownRoutine,
+            KswordARKTerminateSystemThreadNormalRoutine,
+            KernelMode,
+            context);
+    }
+
+    if (!keInsertQueueApc(firstApc, NULL, NULL, 0)) {
+        KswordARKReleaseThreadTerminateApcContext(context);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    // 排队成功只代表 APC 已进入目标线程队列；Normal Kernel APC 被禁用时，
+    // PsTerminateSystemThread 可能延迟或永不执行。
+    return STATUS_SUCCESS;
+}
 
 static VOID
 KswordARKThreadIoctlLog(
@@ -277,5 +549,553 @@ Return Value:
             (unsigned int)status);
     }
 
+    return status;
+}
+
+static KSWORD_ZW_OR_NT_THREAD_SUSPEND_FN
+KswordARKResolveThreadSuspendRoutine(
+    _In_ BOOLEAN Suspend
+    )
+{
+    UNICODE_STRING routineName;
+    KSWORD_ZW_OR_NT_THREAD_SUSPEND_FN routine = NULL;
+
+    RtlInitUnicodeString(&routineName, Suspend ? L"ZwSuspendThread" : L"ZwResumeThread");
+    routine = (KSWORD_ZW_OR_NT_THREAD_SUSPEND_FN)MmGetSystemRoutineAddress(&routineName);
+    if (routine != NULL) {
+        return routine;
+    }
+
+    RtlInitUnicodeString(&routineName, Suspend ? L"NtSuspendThread" : L"NtResumeThread");
+    return (KSWORD_ZW_OR_NT_THREAD_SUSPEND_FN)MmGetSystemRoutineAddress(&routineName);
+}
+
+static NTSTATUS
+KswordARKDriverSetThreadSuspendedById(
+    _In_ WDFDEVICE Device,
+    _In_ ULONG ProcessId,
+    _In_ ULONG ThreadId,
+    _In_ BOOLEAN Suspend
+    )
+/*++
+
+Routine Description:
+
+    Reference one ETHREAD by TID, verify that it still belongs to the requested
+    user process, then suspend or resume it through a kernel thread handle.
+
+Arguments:
+
+    Device - WDF device used for diagnostics.
+    ProcessId - Expected owner PID.
+    ThreadId - Target TID.
+    Suspend - TRUE to increment the suspend count, FALSE to decrement it.
+
+Return Value:
+
+    NTSTATUS from validation, ownership checking, handle creation, or the
+    resolved Zw/Nt thread control routine.
+
+--*/
+{
+    KSWORD_ZW_OR_NT_THREAD_SUSPEND_FN controlRoutine = NULL;
+    PETHREAD threadObject = NULL;
+    HANDLE threadHandle = NULL;
+    ULONG actualProcessId = 0UL;
+    ULONG previousSuspendCount = 0UL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (ProcessId <= 4UL || ThreadId == 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = PsLookupThreadByThreadId(ULongToHandle(ThreadId), &threadObject);
+    if (!NT_SUCCESS(status)) {
+        KswordARKThreadIoctlLog(
+            Device,
+            "Warn",
+            "R0 thread-control lookup failed: pid=%lu, tid=%lu, status=0x%08X.",
+            (unsigned long)ProcessId,
+            (unsigned long)ThreadId,
+            (unsigned int)status);
+        return status;
+    }
+
+    actualProcessId = HandleToULong(PsGetThreadProcessId(threadObject));
+    if (actualProcessId != ProcessId) {
+        status = STATUS_NOT_FOUND;
+        KswordARKThreadIoctlLog(
+            Device,
+            "Warn",
+            "R0 thread-control ownership mismatch: requestPid=%lu, actualPid=%lu, tid=%lu.",
+            (unsigned long)ProcessId,
+            (unsigned long)actualProcessId,
+            (unsigned long)ThreadId);
+        goto Exit;
+    }
+
+    // 挂起当前正在处理本 IOCTL 的线程会让请求永远无法完成，因此明确拒绝。
+    if (Suspend && threadObject == PsGetCurrentThread()) {
+        status = STATUS_INVALID_DEVICE_STATE;
+        KswordARKThreadIoctlLog(
+            Device,
+            "Warn",
+            "R0 suspend-thread rejected current request thread: pid=%lu, tid=%lu.",
+            (unsigned long)ProcessId,
+            (unsigned long)ThreadId);
+        goto Exit;
+    }
+
+    controlRoutine = KswordARKResolveThreadSuspendRoutine(Suspend);
+    if (controlRoutine == NULL) {
+        status = STATUS_PROCEDURE_NOT_FOUND;
+        goto Exit;
+    }
+
+    status = ObOpenObjectByPointer(
+        threadObject,
+        OBJ_KERNEL_HANDLE,
+        NULL,
+        THREAD_SUSPEND_RESUME,
+        *PsThreadType,
+        KernelMode,
+        &threadHandle);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
+    status = controlRoutine(threadHandle, &previousSuspendCount);
+    KswordARKThreadIoctlLog(
+        Device,
+        NT_SUCCESS(status) ? "Info" : "Warn",
+        "R0 %s-thread result: pid=%lu, tid=%lu, previousSuspendCount=%lu, status=0x%08X.",
+        Suspend ? "suspend" : "resume",
+        (unsigned long)ProcessId,
+        (unsigned long)ThreadId,
+        (unsigned long)previousSuspendCount,
+        (unsigned int)status);
+
+Exit:
+    if (threadHandle != NULL) {
+        ZwClose(threadHandle);
+        threadHandle = NULL;
+    }
+    if (threadObject != NULL) {
+        ObDereferenceObject(threadObject);
+        threadObject = NULL;
+    }
+    return status;
+}
+
+NTSTATUS
+KswordARKThreadIoctlSetSuspended(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+/*++
+
+Routine Description:
+
+    Handle IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED. Suspend requests reuse the
+    destructive suspend safety policy; resume remains available as recovery.
+
+Arguments:
+
+    Device - WDF device used for logging and safety-policy evaluation.
+    Request - Current IOCTL request.
+    InputBufferLength - Caller input length; validated through WDF retrieval.
+    OutputBufferLength - Caller output length; unused.
+    BytesReturned - Receives request size on success and zero on failure.
+
+Return Value:
+
+    NTSTATUS from validation, safety policy, or the thread-control backend.
+
+--*/
+{
+    KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST* controlRequest = NULL;
+    PVOID inputBuffer = NULL;
+    size_t actualInputLength = 0;
+    BOOLEAN suspend = FALSE;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0;
+
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST),
+        &inputBuffer,
+        &actualInputLength);
+    if (!NT_SUCCESS(status)) {
+        KswordARKThreadIoctlLog(
+            Device,
+            "Error",
+            "R0 thread-control ioctl: input buffer invalid, status=0x%08X.",
+            (unsigned int)status);
+        return status;
+    }
+
+    controlRequest = (KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST*)inputBuffer;
+    status = KswordARKValidateUserPid((ULONG)controlRequest->processId);
+    if (!NT_SUCCESS(status) || controlRequest->threadId == 0UL) {
+        return NT_SUCCESS(status) ? STATUS_INVALID_PARAMETER : status;
+    }
+    if (controlRequest->action == KSWORD_ARK_THREAD_SUSPEND_ACTION_SUSPEND) {
+        suspend = TRUE;
+    }
+    else if (controlRequest->action != KSWORD_ARK_THREAD_SUSPEND_ACTION_RESUME) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (suspend) {
+        KSWORD_ARK_SAFETY_CONTEXT safetyContext;
+        RtlZeroMemory(&safetyContext, sizeof(safetyContext));
+        safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_PROCESS_SUSPEND;
+        safetyContext.TargetProcessId = (ULONG)controlRequest->processId;
+        safetyContext.ContextFlags = KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED;
+        status = KswordARKSafetyEvaluate(Device, &safetyContext);
+        if (!NT_SUCCESS(status)) {
+            KswordARKThreadIoctlLog(
+                Device,
+                "Warn",
+                "R0 suspend-thread denied by safety policy: pid=%lu, tid=%lu, status=0x%08X.",
+                (unsigned long)controlRequest->processId,
+                (unsigned long)controlRequest->threadId,
+                (unsigned int)status);
+            return status;
+        }
+    }
+
+    status = KswordARKDriverSetThreadSuspendedById(
+        Device,
+        (ULONG)controlRequest->processId,
+        (ULONG)controlRequest->threadId,
+        suspend);
+    if (NT_SUCCESS(status)) {
+        *BytesReturned = sizeof(KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST);
+    }
+    return status;
+}
+
+static BOOLEAN
+KswordARKDriverThreadIsProtectedModuleName(
+    _In_reads_bytes_(FileNameBytes) const UCHAR* FileName,
+    _In_ ULONG FileNameBytes
+    )
+{
+    static const PCSTR protectedNames[] = {
+        "ntoskrnl.exe",
+        "ntkrnlmp.exe",
+        "ntkrnlpa.exe",
+        "ntkrpamp.exe",
+        "ntkrla57.exe",
+        "KswordARK.sys"
+    };
+    ULONG index = 0UL;
+
+    if (FileName == NULL || FileNameBytes == 0UL) {
+        return TRUE;
+    }
+    for (index = 0UL; index < RTL_NUMBER_OF(protectedNames); ++index) {
+        if (KswordARKHookBoundedAnsiEqualsInsensitive(
+                FileName,
+                FileNameBytes,
+                protectedNames[index])) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static NTSTATUS
+KswordARKDriverControlDriverThread(
+    _In_ WDFDEVICE Device,
+    _In_ const KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST* ControlRequest
+    )
+/*++
+
+Routine Description:
+
+    Validate one PID 4 system thread against its live R0 start address and the
+    loaded-driver module snapshot, then suspend, resume, or terminate it.
+
+Arguments:
+
+    Device - WDF device used for diagnostics and safety evaluation.
+    ControlRequest - Fixed request containing TID, action, confirmation, and
+    the R3-observed start address used as an anti-stale consistency check.
+
+Return Value:
+
+    NTSTATUS from identity/module validation, safety policy, or thread control.
+
+--*/
+{
+    KSWORD_ARK_THREAD_DETAIL_REQUEST detailRequest;
+    KSWORD_ARK_THREAD_DETAIL_RESPONSE detailResponse;
+    KSW_HOOK_SYSTEM_MODULE_INFORMATION* moduleInfo = NULL;
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* ownerModule = NULL;
+    const UCHAR* moduleFileName = NULL;
+    ULONG moduleFileNameBytes = 0UL;
+    ULONG moduleInfoBytes = 0UL;
+    WCHAR moduleNameWide[128] = { 0 };
+    USHORT moduleNameChars = 0U;
+    size_t detailBytes = 0;
+    PETHREAD threadObject = NULL;
+    HANDLE threadHandle = NULL;
+    ULONG previousSuspendCount = 0UL;
+    ULONG64 actualStartAddress = 0ULL;
+    KSWORD_ZW_OR_NT_THREAD_SUSPEND_FN suspendRoutine = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (ControlRequest == NULL ||
+        ControlRequest->threadId == 0UL ||
+        (ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND &&
+         ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME &&
+         ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE) {
+        if (ControlRequest->terminateMethod <
+                KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_PSP_BY_POINTER ||
+            ControlRequest->terminateMethod >
+                KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_SPECIAL_TO_NORMAL_APC) {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+    else if (ControlRequest->terminateMethod !=
+             KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NONE) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // 先持有目标 ETHREAD，直到地址/模块校验和动作全部完成，阻止 TID 回收竞态。
+    status = PsLookupThreadByThreadId(
+        ULongToHandle(ControlRequest->threadId),
+        &threadObject);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (HandleToULong(PsGetThreadProcessId(threadObject)) != 4UL) {
+        status = STATUS_OBJECT_NAME_NOT_FOUND;
+        goto Exit;
+    }
+    if (threadObject == PsGetCurrentThread() &&
+        ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME) {
+        status = STATUS_INVALID_DEVICE_STATE;
+        goto Exit;
+    }
+
+    RtlZeroMemory(&detailRequest, sizeof(detailRequest));
+    RtlZeroMemory(&detailResponse, sizeof(detailResponse));
+    detailRequest.version = KSWORD_ARK_THREAD_PROTOCOL_VERSION;
+    detailRequest.flags = KSWORD_ARK_THREAD_DETAIL_FLAG_INCLUDE_START;
+    detailRequest.threadId = ControlRequest->threadId;
+    detailRequest.processId = 4UL;
+    status = KswordARKDriverQueryThreadDetail(
+        &detailResponse,
+        sizeof(detailResponse),
+        &detailRequest,
+        &detailBytes);
+    if ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_WIN32_START_ADDRESS) != 0UL) {
+        actualStartAddress = detailResponse.win32StartAddress;
+    }
+    else if ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL) {
+        actualStartAddress = detailResponse.startAddress;
+    }
+    if (!NT_SUCCESS(status) ||
+        detailResponse.processId != 4UL ||
+        actualStartAddress == 0ULL) {
+        KswordARKThreadIoctlLog(
+            Device,
+            "Warn",
+            "Driver-thread control rejected: tid=%lu, detailStatus=%lu, lastStatus=0x%08X, start=0x%I64X.",
+            (unsigned long)ControlRequest->threadId,
+            (unsigned long)detailResponse.status,
+            (unsigned int)detailResponse.lastStatus,
+            actualStartAddress);
+        status = NT_SUCCESS(status) ? STATUS_NOT_FOUND : status;
+        goto Exit;
+    }
+    if (ControlRequest->expectedStartAddress != 0ULL) {
+        const BOOLEAN expectedMatchesStart =
+            ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL &&
+             ControlRequest->expectedStartAddress == detailResponse.startAddress) ||
+            ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_WIN32_START_ADDRESS) != 0UL &&
+             ControlRequest->expectedStartAddress == detailResponse.win32StartAddress);
+        if (!expectedMatchesStart) {
+            KswordARKThreadIoctlLog(
+                Device,
+                "Warn",
+                "Driver-thread control stale target: tid=%lu, expected=0x%I64X, start=0x%I64X, win32Start=0x%I64X.",
+                (unsigned long)ControlRequest->threadId,
+                ControlRequest->expectedStartAddress,
+                detailResponse.startAddress,
+                detailResponse.win32StartAddress);
+            status = STATUS_OBJECT_NAME_NOT_FOUND;
+            goto Exit;
+        }
+        actualStartAddress = ControlRequest->expectedStartAddress;
+    }
+
+    status = KswordARKHookBuildModuleSnapshot(&moduleInfo, &moduleInfoBytes);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+    ownerModule = KswordARKHookFindModuleForAddress(
+        moduleInfo,
+        (ULONG_PTR)actualStartAddress);
+    if (ownerModule == NULL || ownerModule == &moduleInfo->Modules[0]) {
+        status = STATUS_ACCESS_DENIED;
+        goto Exit;
+    }
+    KswordARKHookGetModuleFileName(ownerModule, &moduleFileName, &moduleFileNameBytes);
+    if (KswordARKDriverThreadIsProtectedModuleName(moduleFileName, moduleFileNameBytes)) {
+        status = STATUS_ACCESS_DENIED;
+        goto Exit;
+    }
+    KswordARKHookCopyBoundedAnsiToWide(
+        moduleFileName,
+        moduleFileNameBytes,
+        moduleNameWide,
+        RTL_NUMBER_OF(moduleNameWide));
+    while (moduleNameChars + 1U < RTL_NUMBER_OF(moduleNameWide) &&
+           moduleNameWide[moduleNameChars] != L'\0') {
+        ++moduleNameChars;
+    }
+
+    if (ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME) {
+        KSWORD_ARK_SAFETY_CONTEXT safetyContext;
+        RtlZeroMemory(&safetyContext, sizeof(safetyContext));
+        safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_DRIVER_THREAD_CONTROL;
+        safetyContext.ContextFlags =
+            (ControlRequest->flags & KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_UI_CONFIRMED) != 0UL
+            ? KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED
+            : 0UL;
+        safetyContext.TargetText = moduleNameWide;
+        safetyContext.TargetTextChars = moduleNameChars;
+        status = KswordARKSafetyEvaluate(Device, &safetyContext);
+        if (!NT_SUCCESS(status)) {
+            goto Exit;
+        }
+    }
+
+    if (ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE) {
+        switch (ControlRequest->terminateMethod) {
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_PSP_BY_POINTER:
+            status = KswordARKDriverTerminateReferencedThreadPsp(
+                threadObject,
+                STATUS_CANCELLED);
+            break;
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_ZW_OR_NT:
+            status = KswordARKDriverTerminateReferencedThreadZwOrNt(
+                threadObject,
+                STATUS_CANCELLED);
+            break;
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NORMAL_APC:
+            status = KswordARKDriverQueueTerminateSystemThreadApc(
+                threadObject,
+                FALSE);
+            break;
+        case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_SPECIAL_TO_NORMAL_APC:
+            status = KswordARKDriverQueueTerminateSystemThreadApc(
+                threadObject,
+                TRUE);
+            break;
+        default:
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+    }
+    else {
+        status = ObOpenObjectByPointer(
+            threadObject,
+            OBJ_KERNEL_HANDLE,
+            NULL,
+            THREAD_SUSPEND_RESUME,
+            *PsThreadType,
+            KernelMode,
+            &threadHandle);
+        if (!NT_SUCCESS(status)) {
+            goto Exit;
+        }
+        suspendRoutine = KswordARKResolveThreadSuspendRoutine(
+            ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND);
+        status = suspendRoutine != NULL
+            ? suspendRoutine(threadHandle, &previousSuspendCount)
+            : STATUS_PROCEDURE_NOT_FOUND;
+    }
+
+    KswordARKThreadIoctlLog(
+        Device,
+        NT_SUCCESS(status) ? "Info" : "Warn",
+        "Driver-thread control result: tid=%lu, action=%lu, terminateMethod=%lu, module=%ws, start=0x%I64X, previousSuspendCount=%lu, status=0x%08X.",
+        (unsigned long)ControlRequest->threadId,
+        (unsigned long)ControlRequest->action,
+        (unsigned long)ControlRequest->terminateMethod,
+        moduleNameWide,
+        actualStartAddress,
+        (unsigned long)previousSuspendCount,
+        (unsigned int)status);
+
+Exit:
+    if (threadHandle != NULL) {
+        ZwClose(threadHandle);
+        threadHandle = NULL;
+    }
+    if (threadObject != NULL) {
+        ObDereferenceObject(threadObject);
+        threadObject = NULL;
+    }
+    if (moduleInfo != NULL) {
+        ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+        moduleInfo = NULL;
+    }
+    return status;
+}
+
+NTSTATUS
+KswordARKThreadIoctlControlDriverThread(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+{
+    KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST* controlRequest = NULL;
+    PVOID inputBuffer = NULL;
+    size_t actualInputLength = 0;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0;
+
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST),
+        &inputBuffer,
+        &actualInputLength);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    controlRequest = (KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST*)inputBuffer;
+    status = KswordARKDriverControlDriverThread(Device, controlRequest);
+    if (NT_SUCCESS(status)) {
+        *BytesReturned = sizeof(KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST);
+    }
     return status;
 }

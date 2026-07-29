@@ -35,6 +35,10 @@ Environment:
 #define KSWORD_ARK_IAT_EAT_HOOK_RESPONSE_HEADER_SIZE \
     (sizeof(KSWORD_ARK_ENUM_IAT_EAT_HOOKS_RESPONSE) - sizeof(KSWORD_ARK_IAT_EAT_HOOK_ENTRY))
 
+typedef VOID(NTAPI* KSWORD_HAL_RETURN_TO_FIRMWARE_FN)(
+    _In_ LONG FirmwareAction
+    );
+
 static VOID
 KswordARKKernelIoctlLog(
     _In_ WDFDEVICE Device,
@@ -69,6 +73,88 @@ Return Value:
         (void)KswordARKDriverEnqueueLogFrame(Device, LevelText, logMessage);
     }
     va_end(arguments);
+}
+
+NTSTATUS
+KswordARKKernelIoctlExperimentalReturnToFirmware(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+{
+    KSWORD_ARK_EXPERIMENTAL_RETURN_TO_FIRMWARE_REQUEST* firmwareRequest = NULL;
+    KSWORD_ARK_SAFETY_CONTEXT safetyContext;
+    KSWORD_HAL_RETURN_TO_FIRMWARE_FN halReturnToFirmware = NULL;
+    UNICODE_STRING routineName;
+    size_t actualInputLength = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0U;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    status = KswordARKValidateDeviceIoControlWriteAccess(Request);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(*firmwareRequest),
+        (PVOID*)&firmwareRequest,
+        &actualInputLength);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (firmwareRequest->action !=
+            KSWORD_ARK_FIRMWARE_RETURN_ACTION_HAL_REBOOT_ROUTINE ||
+        (firmwareRequest->flags &
+            KSWORD_ARK_FIRMWARE_RETURN_FLAG_UI_CONFIRMED) == 0UL ||
+        firmwareRequest->confirmationToken !=
+            KSWORD_ARK_FIRMWARE_RETURN_CONFIRMATION_TOKEN ||
+        firmwareRequest->reserved != 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(&safetyContext, sizeof(safetyContext));
+    safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_FIRMWARE_RETURN;
+    safetyContext.ContextFlags = KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED;
+    safetyContext.TargetText = L"HalReturnToFirmware(HalRebootRoutine)";
+    safetyContext.TargetTextChars =
+        (USHORT)(RTL_NUMBER_OF(L"HalReturnToFirmware(HalRebootRoutine)") - 1U);
+    status = KswordARKSafetyEvaluate(Device, &safetyContext);
+    if (!NT_SUCCESS(status)) {
+        KswordARKKernelIoctlLog(
+            Device,
+            "Warn",
+            "Experimental HalReturnToFirmware denied by safety policy: status=0x%08X.",
+            (unsigned int)status);
+        return status;
+    }
+
+    RtlInitUnicodeString(&routineName, L"HalReturnToFirmware");
+    halReturnToFirmware =
+        (KSWORD_HAL_RETURN_TO_FIRMWARE_FN)MmGetSystemRoutineAddress(&routineName);
+    if (halReturnToFirmware == NULL) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+
+    KswordARKKernelIoctlLog(
+        Device,
+        "Warn",
+        "Experimental raw API call starting: HalReturnToFirmware(HalRebootRoutine). This is a machine-wide unsupported action, not thread termination.");
+    halReturnToFirmware(KSWORD_ARK_FIRMWARE_RETURN_ACTION_HAL_REBOOT_ROUTINE);
+
+    // 成功路径通常不返回；若 HAL 拒绝或实现返回，则不能报告为已重启。
+    return STATUS_UNSUCCESSFUL;
 }
 
 NTSTATUS

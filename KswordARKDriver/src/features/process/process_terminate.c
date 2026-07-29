@@ -1710,6 +1710,81 @@ Exit:
 }
 
 NTSTATUS
+KswordARKDriverTerminateReferencedThreadPsp(
+    _In_ PETHREAD ThreadObject,
+    _In_ NTSTATUS ExitStatus
+    )
+{
+    KSWORD_PSP_TERMINATE_THREAD_BY_POINTER_FN pspTerminateThreadByPointer = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (ThreadObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    pspTerminateThreadByPointer = KswordARKDriverResolvePspTerminateThreadByPointer();
+    if (pspTerminateThreadByPointer == NULL) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+    status = pspTerminateThreadByPointer(ThreadObject, ExitStatus, FALSE, NULL);
+    if (status == STATUS_THREAD_IS_TERMINATING || status == STATUS_PROCESS_IS_TERMINATING) {
+        status = STATUS_SUCCESS;
+    }
+    return status;
+}
+
+NTSTATUS
+KswordARKDriverTerminateReferencedThreadZwOrNt(
+    _In_ PETHREAD ThreadObject,
+    _In_ NTSTATUS ExitStatus
+    )
+{
+    KSWORD_ZW_OR_NT_TERMINATE_THREAD_FN zwOrNtTerminateThread = NULL;
+    HANDLE threadHandle = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (ThreadObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    zwOrNtTerminateThread = KswordARKDriverResolveZwOrNtTerminateThread();
+    if (zwOrNtTerminateThread == NULL) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+    status = ObOpenObjectByPointer(
+        ThreadObject,
+        OBJ_KERNEL_HANDLE,
+        NULL,
+        THREAD_TERMINATE,
+        *PsThreadType,
+        KernelMode,
+        &threadHandle);
+    if (NT_SUCCESS(status)) {
+        status = zwOrNtTerminateThread(threadHandle, ExitStatus);
+    }
+    if (threadHandle != NULL) {
+        ZwClose(threadHandle);
+    }
+    if (status == STATUS_THREAD_IS_TERMINATING || status == STATUS_PROCESS_IS_TERMINATING) {
+        status = STATUS_SUCCESS;
+    }
+    return status;
+}
+
+NTSTATUS
+KswordARKDriverTerminateReferencedThread(
+    _In_ PETHREAD ThreadObject,
+    _In_ NTSTATUS ExitStatus
+    )
+{
+    NTSTATUS status = KswordARKDriverTerminateReferencedThreadPsp(ThreadObject, ExitStatus);
+    if (status == STATUS_PROCEDURE_NOT_FOUND) {
+        status = KswordARKDriverTerminateReferencedThreadZwOrNt(ThreadObject, ExitStatus);
+    }
+    return status;
+}
+
+NTSTATUS
 KswordARKDriverTerminateThreadById(
     _In_opt_ WDFDEVICE device,
     _In_ ULONG processId,

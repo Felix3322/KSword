@@ -520,6 +520,10 @@ private:
     // - 返回值：无，动作结果统一写日志。
     void executeTerminateProcessComboAction();
     void executeTerminateThreadsAction();
+    void executeR0SuspendSelectedThreadAction();
+    void executeR0ResumeSelectedThreadAction();
+      void executeDriverThreadAction(unsigned long action, unsigned long terminateMethod = KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NONE);
+      void executeExperimentalFirmwareRebootAction();
     void executeR0TerminateSelectedThreadAction();
     void executeSelectedTerminateAction();
     void executeSuspendProcessAction();
