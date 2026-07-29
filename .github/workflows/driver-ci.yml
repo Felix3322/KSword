@@ -13,8 +13,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect driver impact
+    runs-on: ubuntu-latest
+    outputs:
+      driver: ${{ steps.detect.outputs.driver }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed driver inputs
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_SHA: ${{ github.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            changed='__all__'
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git fetch --no-tags origin "$BASE_REF" --depth=1
+            base_sha="$(git merge-base "origin/$BASE_REF" "$EVENT_SHA")"
+            changed="$(git diff --name-only "$base_sha" "$EVENT_SHA")"
+          elif [[ -n "${EVENT_BEFORE:-}" && "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
+          else
+            changed="$(git diff --name-only HEAD~1 HEAD)"
+          fi
+
+          driver=false
+          if [[ "$changed" == '__all__' ]] || printf '%s\n' "$changed" | grep -Eq '^(KswordARKDriver/|shared/driver/|\.github/workflows/driver-ci\.yml$)'; then
+            driver=true
+          fi
+          echo "driver=$driver" >> "$GITHUB_OUTPUT"
+          echo 'Changed paths:'
+          printf '%s\n' "$changed"
+          echo "Affected driver project: $driver"
+
   driver-release:
     name: Driver Release build
+    needs: changes
+    if: needs.changes.outputs.driver == 'true'
     runs-on: windows-2022
     steps:
       - name: Check out source

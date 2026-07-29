@@ -15,8 +15,90 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect affected projects
+    runs-on: ubuntu-latest
+    outputs:
+      any: ${{ steps.detect.outputs.any }}
+      usermode: ${{ steps.detect.outputs.usermode }}
+      setup: ${{ steps.detect.outputs.setup }}
+      arklight: ${{ steps.detect.outputs.arklight }}
+      ce_plugin: ${{ steps.detect.outputs.ce_plugin }}
+      ce_launcher: ${{ steps.detect.outputs.ce_launcher }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed project inputs
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_SHA: ${{ github.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            changed='__all__'
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git fetch --no-tags origin "$BASE_REF" --depth=1
+            base_sha="$(git merge-base "origin/$BASE_REF" "$EVENT_SHA")"
+            changed="$(git diff --name-only "$base_sha" "$EVENT_SHA")"
+          elif [[ -n "${EVENT_BEFORE:-}" && "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
+          else
+            changed="$(git diff --name-only HEAD~1 HEAD)"
+          fi
+
+          matches() {
+            if [[ "$changed" == '__all__' ]]; then
+              return 0
+            fi
+            printf '%s\n' "$changed" | grep -Eq "$1"
+          }
+
+          common='(^tools/|^scripts/|^shared/|^third_party/|^\.deps/|^\.github/workflows/|^.*\.sln$|(^|/)(Directory\.Build\..*|.*\.props|.*\.targets)$)'
+          usermode_re="^(Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/)|$common"
+          setup_re="^(KswordSetup/|Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/|KswordARKDriver/|KswordARKLight/)|$common"
+          arklight_re="^(KswordARKLight/|KswordARKDriver/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|Resource/)|shared/driver/|scripts/Sign-KswordArkDriverVariant\.ps1)|$common"
+          ce_plugin_re="^(CheatEnginePlugin/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|ksword/string/)|shared/driver/)|$common"
+          ce_launcher_re="^(CheatEngineExecutablePlugin/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|ksword/string/))|$common"
+
+          usermode=false
+          setup=false
+          arklight=false
+          ce_plugin=false
+          ce_launcher=false
+          matches "$usermode_re" && usermode=true || true
+          matches "$setup_re" && setup=true || true
+          matches "$arklight_re" && arklight=true || true
+          matches "$ce_plugin_re" && ce_plugin=true || true
+          matches "$ce_launcher_re" && ce_launcher=true || true
+
+          any=false
+          [[ "$usermode" == true || "$setup" == true || "$arklight" == true || "$ce_plugin" == true || "$ce_launcher" == true ]] && any=true
+
+          {
+            echo "any=$any"
+            echo "usermode=$usermode"
+            echo "setup=$setup"
+            echo "arklight=$arklight"
+            echo "ce_plugin=$ce_plugin"
+            echo "ce_launcher=$ce_launcher"
+          } >> "$GITHUB_OUTPUT"
+
+          echo 'Changed paths:'
+          printf '%s\n' "$changed"
+          echo "Affected projects: usermode=$usermode setup=$setup arklight=$arklight ce_plugin=$ce_plugin ce_launcher=$ce_launcher"
+
   source-integrity:
     name: Source integrity
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
     runs-on: windows-2022
     steps:
       - name: Check out source
@@ -83,7 +165,10 @@ jobs:
 
   usermode-release:
     name: User-mode Release build
-    needs: source-integrity
+    needs:
+      - changes
+      - source-integrity
+    if: needs.changes.outputs.usermode == 'true' && needs.source-integrity.result == 'success'
     runs-on: windows-2022
     steps:
       - name: Check out source
@@ -182,3 +267,274 @@ jobs:
           if ($missing) {
             throw "Expected Release artifact(s) missing: $($missing -join ', ')"
           }
+
+  ksword-setup:
+    name: KswordSetup Release build
+    needs: changes
+    if: needs.changes.outputs.setup == 'true'
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Qt for payload prerequisite
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.3'
+          arch: win64_msvc2022_64
+          modules: 'qtcharts qtmultimedia'
+          cache: true
+
+      - name: Install Qt MSBuild files
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'qt-msbuild.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'qt-msbuild'
+          Invoke-WebRequest `
+            -Uri 'https://download.qt.io/official_releases/vsaddin/3.5.0/qt-vsaddin-msbuild-3.5.0.zip' `
+            -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $destination -Force
+          $targets = Get-ChildItem -Path $destination -Filter qt.targets -Recurse -File |
+            Select-Object -First 1
+          if ($null -eq $targets) {
+            throw 'Qt MSBuild archive did not contain qt.targets.'
+          }
+          "KSWORD_QT_MSBUILD=$($targets.Directory.FullName)" | Add-Content -Path $env:GITHUB_ENV
+
+      - name: Build payload prerequisite and installer
+        shell: pwsh
+        run: |
+          $env:KSWORD_QT_DIR = $env:QT_ROOT_DIR
+          $env:QTDIR = $env:QT_ROOT_DIR
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+            Select-Object -First 1
+          if (-not $msbuild -or -not (Test-Path $msbuild)) {
+            throw 'Could not locate MSBuild through vswhere.'
+          }
+
+          # KswordSetup embeds the Release payload generated by the main project.
+          # The private profile corpus is not tracked, so provide the same
+          # compile-only fixture used by the regular user-mode CI.
+          $ciProfiles = 'Ksword5.1/Ksword5.1/profiles'
+          New-Item -ItemType Directory -Path $ciProfiles -Force | Out-Null
+          @'
+          {
+            "packVersion": 3,
+            "profiles": []
+          }
+          '@ | Set-Content -LiteralPath (Join-Path $ciProfiles 'ark_dyndata_pack_v3.json') -Encoding utf8
+
+          $properties = @(
+            '/t:Build',
+            '/p:Configuration=Release',
+            '/p:Platform=x64',
+            "/p:QtMsBuild=$env:KSWORD_QT_MSBUILD",
+            '/p:KswordArkSkipAutoTestSign=true',
+            '/m:1',
+            '/v:minimal'
+          )
+          & $msbuild 'Ksword5.1/Ksword5.1/Ksword5.1.vcxproj' @properties
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed for Ksword5.1 payload prerequisite with exit code $LASTEXITCODE."
+          }
+
+          & $msbuild 'KswordSetup/KswordSetup.vcxproj' `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m:1 `
+            /v:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed for KswordSetup with exit code $LASTEXITCODE."
+          }
+
+      - name: Verify KswordSetup artifacts
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            'KswordSetup/x64/Release/KswordSetup.exe',
+            'KswordSetup/x64/Release/KswordSetup.pdb'
+          )
+          $missing = $artifacts | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            throw "Expected KswordSetup artifact(s) missing: $($missing -join ', ')"
+          }
+
+      - name: Upload KswordSetup artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KswordSetup-unsigned-Release
+          path: |
+            KswordSetup/x64/Release/KswordSetup.exe
+            KswordSetup/x64/Release/KswordSetup.pdb
+          if-no-files-found: error
+
+  ksword-arklight:
+    name: KswordARKLight Release build
+    needs: changes
+    if: needs.changes.outputs.arklight == 'true'
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build driver prerequisite and KswordARKLight
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+            Select-Object -First 1
+          if (-not $msbuild -or -not (Test-Path $msbuild)) {
+            throw 'Could not locate MSBuild through vswhere.'
+          }
+
+          $solutionDir = (Resolve-Path 'Ksword5.1').Path + '\'
+          & $msbuild 'KswordARKDriver/KswordARKDriver.vcxproj' `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            "/p:SolutionDir=$solutionDir" `
+            /p:KswordArkSkipAutoVariantSign=true `
+            /p:KswordArkSkipAutoTestSign=true `
+            /m:1 `
+            /v:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed for KswordARKDriver prerequisite with exit code $LASTEXITCODE."
+          }
+
+          & $msbuild 'KswordARKLight/KswordARKLight.vcxproj' `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:KswordArkLightEnsureDriverBuilt=false `
+            /p:KswordArkLightSkipDriverSign=true `
+            /p:KswordArkLightReuseSignedDriver=true `
+            /m:1 `
+            /v:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed for KswordARKLight with exit code $LASTEXITCODE."
+          }
+
+      - name: Verify KswordARKLight artifacts
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            'Ksword5.1/x64/Release/KswordARKLight.exe',
+            'KswordARKLight/generated/KswordARK.sys'
+          )
+          $missing = $artifacts | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            throw "Expected KswordARKLight artifact(s) missing: $($missing -join ', ')"
+          }
+
+      - name: Upload KswordARKLight artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KswordARKLight-unsigned-Release
+          path: |
+            Ksword5.1/x64/Release/KswordARKLight.exe
+            KswordARKLight/generated/KswordARK.sys
+          if-no-files-found: error
+
+  ksword-ce-plugin:
+    name: KswordCheatEnginePlugin Release build (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.ce_plugin == 'true'
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, Win32]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build KswordCheatEnginePlugin
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+            Select-Object -First 1
+          if (-not $msbuild -or -not (Test-Path $msbuild)) {
+            throw 'Could not locate MSBuild through vswhere.'
+          }
+          & $msbuild 'CheatEnginePlugin/KswordCheatEnginePlugin.vcxproj' `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform='${{ matrix.platform }}' `
+            /m:1 `
+            /v:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed for KswordCheatEnginePlugin (${{ matrix.platform }}) with exit code $LASTEXITCODE."
+          }
+
+      - name: Verify KswordCheatEnginePlugin artifacts
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            'CheatEnginePlugin/${{ matrix.platform }}/Release/KswordCheatEnginePlugin.dll',
+            'CheatEnginePlugin/${{ matrix.platform }}/Release/KswordCheatEnginePlugin.pdb'
+          )
+          $missing = $artifacts | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            throw "Expected KswordCheatEnginePlugin artifact(s) missing: $($missing -join ', ')"
+          }
+
+      - name: Upload KswordCheatEnginePlugin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KswordCheatEnginePlugin-${{ matrix.platform }}-Release
+          path: |
+            CheatEnginePlugin/${{ matrix.platform }}/Release/KswordCheatEnginePlugin.dll
+            CheatEnginePlugin/${{ matrix.platform }}/Release/KswordCheatEnginePlugin.pdb
+          if-no-files-found: error
+
+  ksword-ce-launcher:
+    name: KswordCheatEngineLauncher Release build
+    needs: changes
+    if: needs.changes.outputs.ce_launcher == 'true'
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build KswordCheatEngineLauncher
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+            Select-Object -First 1
+          if (-not $msbuild -or -not (Test-Path $msbuild)) {
+            throw 'Could not locate MSBuild through vswhere.'
+          }
+          & $msbuild 'CheatEngineExecutablePlugin/KswordCheatEngineLauncher.vcxproj' `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /m:1 `
+            /v:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed for KswordCheatEngineLauncher with exit code $LASTEXITCODE."
+          }
+
+      - name: Verify KswordCheatEngineLauncher artifacts
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            'CheatEngineExecutablePlugin/x64/Release/KswordCheatEngineLauncher.exe',
+            'CheatEngineExecutablePlugin/x64/Release/KswordCheatEngineLauncher.pdb'
+          )
+          $missing = $artifacts | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            throw "Expected KswordCheatEngineLauncher artifact(s) missing: $($missing -join ', ')"
+          }
+
+      - name: Upload KswordCheatEngineLauncher artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KswordCheatEngineLauncher-Release
+          path: |
+            CheatEngineExecutablePlugin/x64/Release/KswordCheatEngineLauncher.exe
+            CheatEngineExecutablePlugin/x64/Release/KswordCheatEngineLauncher.pdb
+          if-no-files-found: error
