@@ -18,6 +18,7 @@ Environment:
 #include "../callback/callback_external_core.h"
 
 #include "ark/ark_driver.h"
+#include "ark/ark_thread.h"
 #include "driver_integrity.h"
 
 #include <ntstrsafe.h>
@@ -40,8 +41,12 @@ Environment:
 #define KSW_DRIVER_UNLOAD_MAX_CALLBACK_CLEANUP_COUNT 256UL
 /* 中文说明：线程证据扫描最多遍历 4096 个进程，避免异常系统链路拖死 IOCTL。 */
 #define KSW_DRIVER_UNLOAD_THREAD_SCAN_MAX_PROCESSES 4096UL
-/* 中文说明：线程证据扫描最多遍历 65536 个线程，只做证据，不终止线程。 */
+/* 中文说明：线程扫描/强拆终止最多遍历 65536 个线程。 */
 #define KSW_DRIVER_UNLOAD_THREAD_SCAN_MAX_THREADS 65536UL
+/* 中文说明：强拆逐线程等待 1 秒；未确认退出时不继续调用目标 DriverUnload。 */
+#define KSW_DRIVER_UNLOAD_THREAD_TERMINATE_WAIT_MS 1000UL
+/* 中文说明：封入口后最多做三轮终止/复扫，收敛并发新建的目标驱动线程。 */
+#define KSW_DRIVER_UNLOAD_THREAD_TERMINATE_PASSES 3UL
 
 /* 中文说明：SystemModuleInformation 用于把回调地址映射到内核模块基址。 */
 #define KSW_DRIVER_UNLOAD_SYSTEM_MODULE_CLASS 11UL
@@ -178,10 +183,30 @@ typedef struct _KSW_DRIVER_UNLOAD_CONTEXT
     NTSTATUS CleanupStatus;
     PDRIVER_UNLOAD DriverUnload;
     ULONG DeletedDeviceCount;
+    ULONG DetachedDeviceCount;
+    ULONG ThreadCandidates;
+    ULONG ThreadsTerminated;
+    ULONG ThreadFailures;
+    NTSTATUS ThreadLastStatus;
+    ULONG CallbackCandidates;
+    ULONG CallbacksRemoved;
+    ULONG CallbackFailures;
+    NTSTATUS CallbackLastStatus;
     ULONG CleanupFlagsApplied;
     BOOLEAN AttemptDirectUnload;
+    ULONGLONG DriverStart;
+    ULONGLONG DriverEnd;
     WCHAR ServiceRegistryPath[KSWORD_ARK_DRIVER_IMAGE_PATH_CHARS];
 } KSW_DRIVER_UNLOAD_CONTEXT, *PKSW_DRIVER_UNLOAD_CONTEXT;
+
+/* 中文说明：DriverObject 强拆阶段的目标镜像驻留线程处理结果。 */
+typedef struct _KSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT
+{
+    ULONG Candidates;
+    ULONG Terminated;
+    ULONG Failures;
+    NTSTATUS LastStatus;
+} KSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT, *PKSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT;
 
 /* 中文说明：ZwUnloadDriver 线程上下文不保存 DriverObject，避免额外对象引用阻塞系统卸载。 */
 typedef struct _KSW_DRIVER_UNLOAD_ZW_CONTEXT
@@ -1946,19 +1971,23 @@ KswordARKDriverUnloadBlockNewDeviceCreatesUnsafe(
 static NTSTATUS
 KswordARKDriverUnloadDeleteDeviceObjectsUnsafe(
     _Inout_ PDRIVER_OBJECT DriverObject,
-    _Out_ ULONG* DeletedDeviceCountOut
+    _In_ BOOLEAN DetachDeviceStacks,
+    _Out_ ULONG* DeletedDeviceCountOut,
+    _Out_ ULONG* DetachedDeviceCountOut
     )
 {
     PDEVICE_OBJECT deviceCursor = NULL;
     PDEVICE_OBJECT deviceList[KSW_DRIVER_UNLOAD_MAX_DEVICE_DELETE_COUNT];
     ULONG deviceCount = 0UL;
     ULONG deletedDeviceCount = 0UL;
+    ULONG detachedDeviceCount = 0UL;
     NTSTATUS validationStatus = STATUS_SUCCESS;
 
-    if (DeletedDeviceCountOut == NULL) {
+    if (DeletedDeviceCountOut == NULL || DetachedDeviceCountOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *DeletedDeviceCountOut = 0UL;
+    *DetachedDeviceCountOut = 0UL;
 
     if (DriverObject == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -1993,8 +2022,9 @@ KswordARKDriverUnloadDeleteDeviceObjectsUnsafe(
                 validationStatus = STATUS_OBJECT_TYPE_MISMATCH;
                 break;
             }
-            if (deviceCursor->AttachedDevice != NULL ||
-                deviceCursor->ReferenceCount != 0) {
+            if (!DetachDeviceStacks &&
+                (deviceCursor->AttachedDevice != NULL ||
+                    deviceCursor->ReferenceCount != 0)) {
                 validationStatus = STATUS_DEVICE_BUSY;
                 break;
             }
@@ -2016,17 +2046,47 @@ KswordARKDriverUnloadDeleteDeviceObjectsUnsafe(
     __try {
         ULONG deleteIndex = 0UL;
         for (deleteIndex = 0UL; deleteIndex < deviceCount; ++deleteIndex) {
+            if (DetachDeviceStacks) {
+                PDEVICE_OBJECT lowerDevice = NULL;
+                ULONG detachGuard = 0UL;
+
+                /*
+                 * 先从当前目标设备向上逐层断开，再断开目标设备和下层的关联。
+                 * IoDetachDevice 只接受下层 DeviceObject；IoGetLowerDeviceObject
+                 * 返回的引用必须在解除关联后释放。
+                 */
+                while (deviceList[deleteIndex]->AttachedDevice != NULL &&
+                    detachGuard < KSW_DRIVER_UNLOAD_MAX_DEVICE_DELETE_COUNT) {
+                    IoDetachDevice(deviceList[deleteIndex]);
+                    detachedDeviceCount += 1UL;
+                    detachGuard += 1UL;
+                }
+                if (deviceList[deleteIndex]->AttachedDevice != NULL) {
+                    *DeletedDeviceCountOut = deletedDeviceCount;
+                    *DetachedDeviceCountOut = detachedDeviceCount;
+                    return STATUS_BUFFER_OVERFLOW;
+                }
+
+                lowerDevice = IoGetLowerDeviceObject(deviceList[deleteIndex]);
+                if (lowerDevice != NULL) {
+                    IoDetachDevice(lowerDevice);
+                    detachedDeviceCount += 1UL;
+                    ObDereferenceObject(lowerDevice);
+                }
+            }
             IoDeleteDevice(deviceList[deleteIndex]);
             deletedDeviceCount += 1UL;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         *DeletedDeviceCountOut = deletedDeviceCount;
+        *DetachedDeviceCountOut = detachedDeviceCount;
         return GetExceptionCode();
     }
 
     *DeletedDeviceCountOut = deletedDeviceCount;
-    return STATUS_SUCCESS;
+    *DetachedDeviceCountOut = detachedDeviceCount;
+    return DriverObject->DeviceObject == NULL ? STATUS_SUCCESS : STATUS_DEVICE_BUSY;
 }
 
 /* Verify one DeviceObject chain entry is not busy before destructive fallback. */
@@ -2314,6 +2374,27 @@ KswordARKDriverUnloadAddressInImageRange(
     return (Address >= ImageStart && Address < ImageEnd) ? TRUE : FALSE;
 }
 
+static BOOLEAN
+KswordARKDriverUnloadThreadIsTerminated(
+    _In_ PETHREAD ThreadObject
+    )
+{
+    LARGE_INTEGER zeroTimeout;
+    NTSTATUS waitStatus = STATUS_SUCCESS;
+
+    if (ThreadObject == NULL) {
+        return TRUE;
+    }
+    zeroTimeout.QuadPart = 0LL;
+    waitStatus = KeWaitForSingleObject(
+        ThreadObject,
+        Executive,
+        KernelMode,
+        FALSE,
+        &zeroTimeout);
+    return waitStatus == STATUS_SUCCESS ? TRUE : FALSE;
+}
+
 /* 中文说明：只读扫描仍从目标模块入口运行的线程，作为强卸载阻断证据。 */
 static NTSTATUS
 KswordARKDriverUnloadScanModuleResidentThreads(
@@ -2393,6 +2474,15 @@ KswordARKDriverUnloadScanModuleResidentThreads(
                 KswordARKDriverUnloadAddressInImageRange(win32StartAddress, ImageStart, ImageEnd)) {
                 matchesTarget = TRUE;
             }
+            if (matchesTarget &&
+                (PsGetThreadProcess(threadCursor) != PsInitialSystemProcess ||
+                    KswordARKDriverUnloadThreadIsTerminated(threadCursor))) {
+                /*
+                 * 中文说明：强拆只把 System 进程内、尚未退出且入口属于目标镜像的
+                 * 线程认定为“驱动创建的线程”；用户线程和已终止 ETHREAD 不计入。
+                 */
+                matchesTarget = FALSE;
+            }
             if (matchesTarget) {
                 residentThreads += 1UL;
             }
@@ -2428,6 +2518,163 @@ KswordARKDriverUnloadScanModuleResidentThreads(
     *ScannedThreadCountOut = scannedThreads;
     *ResidentThreadCountOut = residentThreads;
     return status;
+}
+
+static NTSTATUS
+KswordARKDriverUnloadTerminateModuleThreadsUnsafe(
+    _In_ const KSW_DYN_STATE* DynState,
+    _In_ ULONGLONG ImageStart,
+    _In_ ULONGLONG ImageEnd,
+    _Out_ PKSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT Result
+    )
+{
+    KSW_DRIVER_UNLOAD_PS_GET_NEXT_PROCESS_FN psGetNextProcess = NULL;
+    KSW_DRIVER_UNLOAD_PS_GET_NEXT_PROCESS_THREAD_FN psGetNextProcessThread = NULL;
+    PEPROCESS processCursor = NULL;
+    ULONG scannedProcesses = 0UL;
+    ULONG scannedThreads = 0UL;
+    NTSTATUS aggregateStatus = STATUS_SUCCESS;
+
+    /*
+     * 输入：经 loader/PDB 证据确认的目标镜像范围。
+     * 处理：只处理 System 进程中入口仍位于目标镜像、且尚未退出的线程；
+     *      逐个强制终止并等待 ETHREAD 进入 signaled 状态。任何一个线程未确认
+     *      退出都返回失败，调用方不得继续进入 DriverUnload。
+     * 返回：全部候选均确认退出时 STATUS_SUCCESS，并回填候选/成功/失败计数。
+     */
+    if (Result == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(Result, sizeof(*Result));
+    Result->LastStatus = STATUS_SUCCESS;
+
+    if (DynState == NULL || ImageStart == 0ULL || ImageEnd <= ImageStart) {
+        Result->LastStatus = STATUS_INVALID_PARAMETER;
+        return Result->LastStatus;
+    }
+    if (!KswordARKDriverUnloadHasPdbBackedThreadDynData(DynState)) {
+        Result->LastStatus = STATUS_REQUEST_NOT_ACCEPTED;
+        return Result->LastStatus;
+    }
+
+    psGetNextProcess = KswordARKDriverUnloadResolvePsGetNextProcess();
+    psGetNextProcessThread = KswordARKDriverUnloadResolvePsGetNextProcessThread();
+    if (psGetNextProcess == NULL || psGetNextProcessThread == NULL) {
+        Result->LastStatus = STATUS_NOT_SUPPORTED;
+        return Result->LastStatus;
+    }
+
+    processCursor = psGetNextProcess(NULL);
+    while (processCursor != NULL) {
+        PEPROCESS nextProcess = NULL;
+        PETHREAD threadCursor = NULL;
+        BOOLEAN stopScan = FALSE;
+
+        scannedProcesses += 1UL;
+        threadCursor = psGetNextProcessThread(processCursor, NULL);
+        while (threadCursor != NULL) {
+            PETHREAD nextThread = NULL;
+            ULONGLONG startAddress = 0ULL;
+            ULONGLONG win32StartAddress = 0ULL;
+            BOOLEAN matchesTarget = FALSE;
+
+            /*
+             * 先取得下一条引用，再终止当前线程；目标退出可能从进程线程链摘除，
+             * 不能在终止后再以当前 ETHREAD 继续枚举。
+             */
+            nextThread = psGetNextProcessThread(processCursor, threadCursor);
+            scannedThreads += 1UL;
+
+            if (PsGetThreadProcess(threadCursor) == PsInitialSystemProcess &&
+                !KswordARKDriverUnloadThreadIsTerminated(threadCursor)) {
+                if (KswordARKDriverUnloadReadThreadAddressField(
+                        threadCursor,
+                        DynState->Kernel.EtStartAddress,
+                        &startAddress) &&
+                    KswordARKDriverUnloadAddressInImageRange(startAddress, ImageStart, ImageEnd)) {
+                    matchesTarget = TRUE;
+                }
+                if (!matchesTarget &&
+                    KswordARKDriverIntegrityOffsetPresent(DynState->Kernel.EtWin32StartAddress) &&
+                    KswordARKDriverUnloadReadThreadAddressField(
+                        threadCursor,
+                        DynState->Kernel.EtWin32StartAddress,
+                        &win32StartAddress) &&
+                    KswordARKDriverUnloadAddressInImageRange(
+                        win32StartAddress,
+                        ImageStart,
+                        ImageEnd)) {
+                    matchesTarget = TRUE;
+                }
+            }
+
+            if (matchesTarget) {
+                LARGE_INTEGER waitInterval;
+                NTSTATUS terminateStatus = STATUS_SUCCESS;
+                NTSTATUS waitStatus = STATUS_SUCCESS;
+
+                Result->Candidates += 1UL;
+                terminateStatus = KswordARKDriverTerminateReferencedThread(
+                    threadCursor,
+                    STATUS_CANCELLED);
+                if (NT_SUCCESS(terminateStatus)) {
+                    waitInterval.QuadPart =
+                        -((LONGLONG)KSW_DRIVER_UNLOAD_THREAD_TERMINATE_WAIT_MS * 10LL * 1000LL);
+                    waitStatus = KeWaitForSingleObject(
+                        threadCursor,
+                        Executive,
+                        KernelMode,
+                        FALSE,
+                        &waitInterval);
+                }
+                if (NT_SUCCESS(terminateStatus) && NT_SUCCESS(waitStatus)) {
+                    Result->Terminated += 1UL;
+                }
+                else {
+                    Result->Failures += 1UL;
+                    Result->LastStatus = !NT_SUCCESS(terminateStatus)
+                        ? terminateStatus
+                        : waitStatus;
+                    aggregateStatus = Result->LastStatus;
+                }
+            }
+
+            ObDereferenceObject(threadCursor);
+            threadCursor = nextThread;
+
+            if (scannedThreads >= KSW_DRIVER_UNLOAD_THREAD_SCAN_MAX_THREADS) {
+                aggregateStatus = STATUS_BUFFER_OVERFLOW;
+                Result->LastStatus = aggregateStatus;
+                if (threadCursor != NULL) {
+                    ObDereferenceObject(threadCursor);
+                    threadCursor = NULL;
+                }
+                stopScan = TRUE;
+                break;
+            }
+        }
+
+        if (scannedProcesses >= KSW_DRIVER_UNLOAD_THREAD_SCAN_MAX_PROCESSES) {
+            aggregateStatus = STATUS_BUFFER_OVERFLOW;
+            Result->LastStatus = aggregateStatus;
+            stopScan = TRUE;
+        }
+        if (!stopScan) {
+            nextProcess = psGetNextProcess(processCursor);
+        }
+        ObDereferenceObject(processCursor);
+        if (stopScan) {
+            break;
+        }
+        processCursor = nextProcess;
+    }
+
+    if (Result->Failures != 0UL && NT_SUCCESS(aggregateStatus)) {
+        aggregateStatus = Result->LastStatus != STATUS_SUCCESS
+            ? Result->LastStatus
+            : STATUS_UNSUCCESSFUL;
+    }
+    return aggregateStatus;
 }
 
 /* 中文说明：只读校验 loader 链表节点的前后向链接是否仍互相指回目标节点。 */
@@ -2634,6 +2881,11 @@ KswordARKDriverUnloadBuildPreflightResult(
     NTSTATUS evidenceStatus = STATUS_SUCCESS;
     ULONGLONG driverStart = 0ULL;
     ULONGLONG driverEnd = 0ULL;
+    const BOOLEAN teardownRequested =
+        ((Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN) != 0UL &&
+            (Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_ALLOW_DESTRUCTIVE_CLEANUP) != 0UL)
+        ? TRUE
+        : FALSE;
 
     if (DriverObject == NULL || Result == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -2927,14 +3179,18 @@ KswordARKDriverUnloadBuildPreflightResult(
         }
         Result->AllowDestructiveCleanup = FALSE;
     }
-    if (Result->HasAttachedDevice || Result->HasBusyDeviceReference) {
+    if ((Result->HasAttachedDevice || Result->HasBusyDeviceReference) &&
+        (!teardownRequested ||
+            (Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DETACH_DEVICE_STACKS) == 0UL)) {
         if (evidenceStatus == STATUS_SUCCESS) {
             evidenceStatus = STATUS_DEVICE_BUSY;
         }
         Result->AllowDestructiveCleanup = FALSE;
         Result->AllowDirectUnload = FALSE;
     }
-    if (Result->HasModuleResidentThreads) {
+    if (Result->HasModuleResidentThreads &&
+        (!teardownRequested ||
+            (Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_TERMINATE_MODULE_THREADS) == 0UL)) {
         if (evidenceStatus == STATUS_SUCCESS) {
             evidenceStatus = STATUS_DEVICE_BUSY;
         }
@@ -2980,6 +3236,118 @@ KswordARKDriverUnloadBuildPreflightResult(
         ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
     }
     Result->Status = evidenceStatus;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(
+    _Inout_ PKSW_DRIVER_UNLOAD_CONTEXT UnloadContext
+    )
+{
+    KSW_DYN_STATE dynState;
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG terminatePass = 0UL;
+    ULONG remainingThreads = 0UL;
+
+    /*
+     * DriverObject 强拆的不可变前半段：
+     * 1. 先封 MajorFunction/FastIo，阻止新的外部入口；
+     * 2. 再终止目标镜像驻留的系统线程并逐个确认退出；
+     * 3. 全部成功后调用方才允许进入 DriverUnload。
+     */
+    if (UnloadContext == NULL || UnloadContext->DriverObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if ((UnloadContext->Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN) == 0UL) {
+        return STATUS_SUCCESS;
+    }
+    if ((UnloadContext->Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_ALLOW_DESTRUCTIVE_CLEANUP) == 0UL ||
+        (UnloadContext->Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD) == 0UL ||
+        (UnloadContext->Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_TERMINATE_MODULE_THREADS) == 0UL) {
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+
+    KswordARKDriverUnloadClearDispatchUnsafe(UnloadContext->DriverObject);
+    UnloadContext->CleanupFlagsApplied |=
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD;
+    status = KswordARKDriverUnloadBlockNewDeviceCreatesUnsafe(
+        UnloadContext->DriverObject,
+        NULL);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    RtlZeroMemory(&dynState, sizeof(dynState));
+    KswordARKDynDataSnapshot(&dynState);
+    for (terminatePass = 0UL;
+        terminatePass < KSW_DRIVER_UNLOAD_THREAD_TERMINATE_PASSES;
+        ++terminatePass) {
+        KSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT threadResult;
+        ULONG scannedProcesses = 0UL;
+        ULONG scannedThreads = 0UL;
+
+        RtlZeroMemory(&threadResult, sizeof(threadResult));
+        threadResult.LastStatus = STATUS_SUCCESS;
+        status = KswordARKDriverUnloadTerminateModuleThreadsUnsafe(
+            &dynState,
+            UnloadContext->DriverStart,
+            UnloadContext->DriverEnd,
+            &threadResult);
+        UnloadContext->ThreadCandidates += threadResult.Candidates;
+        UnloadContext->ThreadsTerminated += threadResult.Terminated;
+        UnloadContext->ThreadFailures += threadResult.Failures;
+        if (threadResult.LastStatus != STATUS_SUCCESS) {
+            UnloadContext->ThreadLastStatus = threadResult.LastStatus;
+        }
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+
+        remainingThreads = 0UL;
+        status = KswordARKDriverUnloadScanModuleResidentThreads(
+            &dynState,
+            UnloadContext->DriverStart,
+            UnloadContext->DriverEnd,
+            &scannedProcesses,
+            &scannedThreads,
+            &remainingThreads);
+        if (!NT_SUCCESS(status)) {
+            UnloadContext->ThreadLastStatus = status;
+            return status;
+        }
+        if (remainingThreads == 0UL) {
+            break;
+        }
+    }
+    if (remainingThreads != 0UL) {
+        UnloadContext->ThreadCandidates += remainingThreads;
+        UnloadContext->ThreadFailures += remainingThreads;
+        UnloadContext->ThreadLastStatus = STATUS_DEVICE_BUSY;
+        return STATUS_DEVICE_BUSY;
+    }
+
+    UnloadContext->CleanupFlagsApplied |=
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_TERMINATE_MODULE_THREADS;
+
+    if ((UnloadContext->Flags &
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE) != 0UL) {
+        KSW_DRIVER_UNLOAD_CALLBACK_CLEANUP_RESULT callbackResult;
+
+        RtlZeroMemory(&callbackResult, sizeof(callbackResult));
+        callbackResult.LastStatus = STATUS_SUCCESS;
+        status = KswordARKDriverUnloadRemoveCallbacksByModuleBase(
+            UnloadContext->DriverStart,
+            &callbackResult);
+        UnloadContext->CallbackCandidates = callbackResult.Candidates;
+        UnloadContext->CallbacksRemoved = callbackResult.Removed;
+        UnloadContext->CallbackFailures = callbackResult.Failures;
+        UnloadContext->CallbackLastStatus = callbackResult.LastStatus;
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+        UnloadContext->CleanupFlagsApplied |=
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -3051,14 +3419,26 @@ KswordARKDriverUnloadApplyCleanupUnsafe(
 
     if (deleteDeviceObjects) {
         ULONG deletedDeviceCount = 0UL;
+        ULONG detachedDeviceCount = 0UL;
+        const BOOLEAN detachDeviceStacks =
+            (UnloadContext->Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DETACH_DEVICE_STACKS) != 0UL
+            ? TRUE
+            : FALSE;
         NTSTATUS deleteStatus = KswordARKDriverUnloadDeleteDeviceObjectsUnsafe(
             UnloadContext->DriverObject,
-            &deletedDeviceCount);
+            detachDeviceStacks,
+            &deletedDeviceCount,
+            &detachedDeviceCount);
         UnloadContext->DeletedDeviceCount = deletedDeviceCount;
+        UnloadContext->DetachedDeviceCount = detachedDeviceCount;
         UnloadContext->CleanupFlagsApplied |=
             (UnloadContext->Flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ALWAYS) != 0UL
             ? KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ALWAYS
             : KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ON_NO_UNLOAD;
+        if (detachDeviceStacks) {
+            UnloadContext->CleanupFlagsApplied |=
+                KSWORD_ARK_DRIVER_UNLOAD_FLAG_DETACH_DEVICE_STACKS;
+        }
         if (!NT_SUCCESS(deleteStatus)) {
             return deleteStatus;
         }
@@ -3120,7 +3500,11 @@ KswordARKDriverUnloadSanitizeFlags(
         KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ON_NO_UNLOAD |
         KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ALWAYS |
         KSWORD_ARK_DRIVER_UNLOAD_FLAG_MAKE_TEMPORARY_OBJECT |
-        KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE;
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_TERMINATE_MODULE_THREADS |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_DETACH_DEVICE_STACKS |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN;
 
     if ((RequestedFlags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_ALLOW_DESTRUCTIVE_CLEANUP) == 0UL) {
         return RequestedFlags & ~mutatingMask;
@@ -3174,7 +3558,11 @@ KswordARKDriverUnloadHasCleanupRequest(
         KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ON_NO_UNLOAD |
         KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ALWAYS |
         KSWORD_ARK_DRIVER_UNLOAD_FLAG_MAKE_TEMPORARY_OBJECT |
-        KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE;
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_TERMINATE_MODULE_THREADS |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_DETACH_DEVICE_STACKS |
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN;
 
     return ((Flags & cleanupMask) != 0UL) ? TRUE : FALSE;
 }
@@ -3605,7 +3993,12 @@ KswordARKDriverUnloadThreadRoutine(
     unloadContext->CleanupStatus = STATUS_SUCCESS;
     unloadContext->DriverUnload = unloadContext->DriverObject->DriverUnload;
 
-    if (unloadContext->AttemptDirectUnload && unloadContext->DriverUnload != NULL) {
+    unloadContext->CleanupStatus =
+        KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(unloadContext);
+    if (!NT_SUCCESS(unloadContext->CleanupStatus)) {
+        unloadContext->UnloadStatus = unloadContext->CleanupStatus;
+    }
+    else if (unloadContext->AttemptDirectUnload && unloadContext->DriverUnload != NULL) {
         __try {
             unloadContext->DriverUnload(unloadContext->DriverObject);
             unloadContext->UnloadStatus = STATUS_SUCCESS;
@@ -3646,6 +4039,15 @@ KswordARKDriverUnloadRunThread(
     _Out_ PDRIVER_UNLOAD* DriverUnloadOut,
     _Out_ ULONG* CleanupFlagsAppliedOut,
     _Out_ ULONG* DeletedDeviceCountOut,
+    _Out_ ULONG* DetachedDeviceCountOut,
+    _Out_ ULONG* ThreadCandidatesOut,
+    _Out_ ULONG* ThreadsTerminatedOut,
+    _Out_ ULONG* ThreadFailuresOut,
+    _Out_ NTSTATUS* ThreadLastStatusOut,
+    _Out_ ULONG* CallbackCandidatesOut,
+    _Out_ ULONG* CallbacksRemovedOut,
+    _Out_ ULONG* CallbackFailuresOut,
+    _Out_ NTSTATUS* CallbackLastStatusOut,
     _In_opt_ const KSW_DRIVER_UNLOAD_PREFLIGHT_RESULT* Preflight
     )
 {
@@ -3661,7 +4063,16 @@ KswordARKDriverUnloadRunThread(
         CleanupStatusOut == NULL ||
         DriverUnloadOut == NULL ||
         CleanupFlagsAppliedOut == NULL ||
-        DeletedDeviceCountOut == NULL) {
+        DeletedDeviceCountOut == NULL ||
+        DetachedDeviceCountOut == NULL ||
+        ThreadCandidatesOut == NULL ||
+        ThreadsTerminatedOut == NULL ||
+        ThreadFailuresOut == NULL ||
+        ThreadLastStatusOut == NULL ||
+        CallbackCandidatesOut == NULL ||
+        CallbacksRemovedOut == NULL ||
+        CallbackFailuresOut == NULL ||
+        CallbackLastStatusOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -3671,6 +4082,15 @@ KswordARKDriverUnloadRunThread(
     *DriverUnloadOut = DriverObject->DriverUnload;
     *CleanupFlagsAppliedOut = 0UL;
     *DeletedDeviceCountOut = 0UL;
+    *DetachedDeviceCountOut = 0UL;
+    *ThreadCandidatesOut = 0UL;
+    *ThreadsTerminatedOut = 0UL;
+    *ThreadFailuresOut = 0UL;
+    *ThreadLastStatusOut = STATUS_SUCCESS;
+    *CallbackCandidatesOut = 0UL;
+    *CallbacksRemovedOut = 0UL;
+    *CallbackFailuresOut = 0UL;
+    *CallbackLastStatusOut = STATUS_SUCCESS;
 
 #pragma warning(push)
 #pragma warning(disable:4996)
@@ -3690,15 +4110,18 @@ KswordARKDriverUnloadRunThread(
     unloadContext->UnloadStatus = STATUS_PENDING;
     unloadContext->CleanupStatus = STATUS_SUCCESS;
     unloadContext->DriverUnload = DriverObject->DriverUnload;
+    unloadContext->ThreadLastStatus = STATUS_SUCCESS;
+    unloadContext->CallbackLastStatus = STATUS_SUCCESS;
     unloadContext->AttemptDirectUnload =
         (Preflight != NULL &&
             Preflight->AllowDirectUnload &&
-            Preflight->AllowDestructiveCleanup &&
             Preflight->HasValidDynData &&
             Preflight->HasPdbBackedDynData &&
             Preflight->HasValidDriverObjectOffsets &&
             Preflight->HasValidLoaderEvidence) ? TRUE : FALSE;
     if (Preflight != NULL) {
+        unloadContext->DriverStart = Preflight->DriverStart;
+        unloadContext->DriverEnd = Preflight->DriverEnd;
         (VOID)RtlStringCchCopyW(
             unloadContext->ServiceRegistryPath,
             RTL_NUMBER_OF(unloadContext->ServiceRegistryPath),
@@ -3753,6 +4176,15 @@ KswordARKDriverUnloadRunThread(
     *DriverUnloadOut = unloadContext->DriverUnload;
     *CleanupFlagsAppliedOut = unloadContext->CleanupFlagsApplied;
     *DeletedDeviceCountOut = unloadContext->DeletedDeviceCount;
+    *DetachedDeviceCountOut = unloadContext->DetachedDeviceCount;
+    *ThreadCandidatesOut = unloadContext->ThreadCandidates;
+    *ThreadsTerminatedOut = unloadContext->ThreadsTerminated;
+    *ThreadFailuresOut = unloadContext->ThreadFailures;
+    *ThreadLastStatusOut = unloadContext->ThreadLastStatus;
+    *CallbackCandidatesOut = unloadContext->CallbackCandidates;
+    *CallbacksRemovedOut = unloadContext->CallbacksRemoved;
+    *CallbackFailuresOut = unloadContext->CallbackFailures;
+    *CallbackLastStatusOut = unloadContext->CallbackLastStatus;
     ObDereferenceObject(threadObject);
     ZwClose(threadHandle);
 
@@ -3826,8 +4258,16 @@ Return Value:
     PDRIVER_UNLOAD driverUnload = NULL;
     ULONG cleanupFlagsApplied = 0UL;
     ULONG deletedDeviceCount = 0UL;
+    ULONG detachedDeviceCount = 0UL;
+    ULONG threadCandidates = 0UL;
+    ULONG threadsTerminated = 0UL;
+    ULONG threadFailures = 0UL;
+    NTSTATUS threadLastStatus = STATUS_SUCCESS;
     ULONG requestedFlags = 0UL;
+    BOOLEAN directCallRequested = FALSE;
+    BOOLEAN teardownRequested = FALSE;
     KSW_DRIVER_UNLOAD_CALLBACK_CLEANUP_RESULT callbackCleanupResult;
+    KSW_DRIVER_UNLOAD_CALLBACK_CLEANUP_RESULT teardownCallbackCleanupResult;
 
     if (Diagnostics != NULL) {
         RtlZeroMemory(Diagnostics, sizeof(*Diagnostics));
@@ -3838,6 +4278,8 @@ Return Value:
     }
     RtlZeroMemory(&callbackCleanupResult, sizeof(callbackCleanupResult));
     callbackCleanupResult.LastStatus = STATUS_SUCCESS;
+    RtlZeroMemory(&teardownCallbackCleanupResult, sizeof(teardownCallbackCleanupResult));
+    teardownCallbackCleanupResult.LastStatus = STATUS_SUCCESS;
     *BytesWrittenOut = 0U;
     if (OutputBufferLength < sizeof(KSWORD_ARK_FORCE_UNLOAD_DRIVER_RESPONSE)) {
         return STATUS_BUFFER_TOO_SMALL;
@@ -3860,6 +4302,23 @@ Return Value:
     response->status = KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNKNOWN;
     response->reserved = requestedFlags;
     requestSnapshot.flags = KswordARKDriverUnloadSanitizeFlags(requestSnapshot.flags);
+    if ((requestSnapshot.flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN) != 0UL) {
+        /*
+         * 一个强拆模式位对应一条固定、不可重排的 R0 流程。调用方不能只挑
+         * 某几个阶段，避免出现“删设备但未封入口”或“调 unload 但线程仍驻留”。
+         */
+        requestSnapshot.flags |=
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_DIRECT_UNLOAD_CALL |
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN_STAGES;
+    }
+    directCallRequested =
+        (requestSnapshot.flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DIRECT_UNLOAD_CALL) != 0UL
+        ? TRUE
+        : FALSE;
+    teardownRequested =
+        (requestSnapshot.flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN) != 0UL
+        ? TRUE
+        : FALSE;
     if (Diagnostics != NULL) {
         Diagnostics->sanitizedFlags = requestSnapshot.flags;
     }
@@ -3951,8 +4410,13 @@ Return Value:
             KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ALWAYS |
             KSWORD_ARK_DRIVER_UNLOAD_FLAG_MAKE_TEMPORARY_OBJECT |
             KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE |
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD |
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_TERMINATE_MODULE_THREADS |
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_DETACH_DEVICE_STACKS |
+            KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN |
             KSWORD_ARK_DRIVER_UNLOAD_FLAG_ALLOW_DESTRUCTIVE_CLEANUP;
         requestSnapshot.flags &= ~destructiveMask;
+        teardownRequested = FALSE;
     }
     if (Diagnostics != NULL) {
         Diagnostics->finalFlags = requestSnapshot.flags;
@@ -3967,7 +4431,7 @@ Return Value:
     ObDereferenceObject(driverObject);
     driverObject = NULL;
 
-    if (preflightResult.AllowZwUnload) {
+    if (preflightResult.AllowZwUnload && !directCallRequested) {
         status = KswordARKDriverUnloadRunZwOnly(
             preflightResult.ServiceRegistryPath,
             requestSnapshot.timeoutMilliseconds,
@@ -4029,7 +4493,12 @@ Return Value:
         }
     }
 
-    if (!KswordARKDriverUnloadCanUseDestructiveFallback(&preflightResult, requestSnapshot.flags)) {
+    if ((KswordARKDriverUnloadHasCleanupRequest(requestSnapshot.flags) &&
+            !KswordARKDriverUnloadCanUseDestructiveFallback(
+                &preflightResult,
+                requestSnapshot.flags)) ||
+        (!KswordARKDriverUnloadHasCleanupRequest(requestSnapshot.flags) &&
+            (!directCallRequested || !preflightResult.AllowDirectUnload))) {
         const NTSTATUS denyStatus = KswordARKDriverUnloadPreflightDenyStatus(&preflightResult);
         if (Diagnostics != NULL) {
             Diagnostics->preflightDenyStatus = denyStatus;
@@ -4046,7 +4515,9 @@ Return Value:
      * temporary，并释放本驱动持有的最后引用，才有机会进入对象删除与镜像卸载
      * 闭环。因此进入强制 fallback 后 R0 自动补上 MAKE_TEMPORARY_OBJECT。
      */
-    requestSnapshot.flags |= KSWORD_ARK_DRIVER_UNLOAD_FLAG_MAKE_TEMPORARY_OBJECT;
+    if (KswordARKDriverUnloadHasCleanupRequest(requestSnapshot.flags)) {
+        requestSnapshot.flags |= KSWORD_ARK_DRIVER_UNLOAD_FLAG_MAKE_TEMPORARY_OBJECT;
+    }
     if ((requestSnapshot.flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE) != 0UL &&
         requestSnapshot.targetModuleBase == 0ULL &&
         preflightResult.DriverStart != 0ULL) {
@@ -4082,7 +4553,8 @@ Return Value:
     response->driverObjectAddress = (ULONGLONG)(ULONG_PTR)driverObject;
     response->driverUnloadAddress = (ULONGLONG)(ULONG_PTR)driverObject->DriverUnload;
 
-    if (KswordARKDriverUnloadCanPreCleanupCallbacks(&preflightResult, &requestSnapshot)) {
+    if (!teardownRequested &&
+        KswordARKDriverUnloadCanPreCleanupCallbacks(&preflightResult, &requestSnapshot)) {
         callbackCleanupStatus = KswordARKDriverUnloadRemoveCallbacksByModuleBase(
             requestSnapshot.targetModuleBase,
             &callbackCleanupResult);
@@ -4106,6 +4578,15 @@ Return Value:
         &driverUnload,
         &cleanupFlagsApplied,
         &deletedDeviceCount,
+        &detachedDeviceCount,
+        &threadCandidates,
+        &threadsTerminated,
+        &threadFailures,
+        &threadLastStatus,
+        &teardownCallbackCleanupResult.Candidates,
+        &teardownCallbackCleanupResult.Removed,
+        &teardownCallbackCleanupResult.Failures,
+        &teardownCallbackCleanupResult.LastStatus,
         &preflightResult);
     if (Diagnostics != NULL) {
         Diagnostics->stages |= KSW_DRIVER_UNLOAD_DIAG_STAGE_DIRECT;
@@ -4120,6 +4601,18 @@ Return Value:
     response->waitStatus = waitStatus;
     response->cleanupFlagsApplied = cleanupFlagsApplied;
     response->deletedDeviceCount = deletedDeviceCount;
+    response->detachedDeviceCount = detachedDeviceCount;
+    response->threadCandidates = threadCandidates;
+    response->threadsTerminated = threadsTerminated;
+    response->threadFailures = threadFailures;
+    response->threadLastStatus = threadLastStatus;
+    if (teardownRequested) {
+        callbackCleanupResult = teardownCallbackCleanupResult;
+    }
+    response->callbackCandidates = callbackCleanupResult.Candidates;
+    response->callbacksRemoved = callbackCleanupResult.Removed;
+    response->callbackFailures = callbackCleanupResult.Failures;
+    response->callbackLastStatus = callbackCleanupResult.LastStatus;
 
     if (driverObject != NULL) {
         ObDereferenceObject(driverObject);
@@ -4157,9 +4650,11 @@ Return Value:
             : KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNLOAD_ROUTINE_MISSING;
     }
     else if (NT_SUCCESS(status)) {
-        response->status = KswordARKDriverUnloadHasCleanupRequest(requestSnapshot.flags)
+        response->status = teardownRequested
             ? KSWORD_ARK_DRIVER_UNLOAD_STATUS_FORCED_CLEANUP
-            : KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNLOADED;
+            : (directCallRequested
+                ? KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNLOAD_ROUTINE_CALLED
+                : KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNLOADED);
     }
     else {
         response->status = KSWORD_ARK_DRIVER_UNLOAD_STATUS_OPERATION_FAILED;

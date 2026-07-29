@@ -210,6 +210,8 @@ namespace ksword::driver_dock_internal
             return driverText("driver.unload.status.forced_cleanup", QStringLiteral("已强制清理"));
         case KSWORD_ARK_DRIVER_UNLOAD_STATUS_CLEANUP_FAILED:
             return driverText("driver.unload.status.cleanup_failed", QStringLiteral("清理失败"));
+        case KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNLOAD_ROUTINE_CALLED:
+            return driverText("driver.unload.status.routine_called", QStringLiteral("已直接调用 DriverUnload"));
         default:
             return driverText("driver.unload.status.unknown", QStringLiteral("未知状态"));
         }

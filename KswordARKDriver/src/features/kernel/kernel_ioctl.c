@@ -1201,19 +1201,21 @@ Return Value:
             (KSWORD_ARK_FORCE_UNLOAD_DRIVER_RESPONSE*)outputBuffer;
         const char* logLevel =
             (response->status == KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNLOADED ||
-                response->status == KSWORD_ARK_DRIVER_UNLOAD_STATUS_FORCED_CLEANUP)
+                response->status == KSWORD_ARK_DRIVER_UNLOAD_STATUS_FORCED_CLEANUP ||
+                response->status == KSWORD_ARK_DRIVER_UNLOAD_STATUS_UNLOAD_ROUTINE_CALLED)
             ? "Info"
             : "Warn";
 
         KswordARKKernelIoctlLog(
             Device,
             logLevel,
-            "R0 force-unload-driver response: status=%lu, requested=0x%08X, effective=0x%08X, applied=0x%08X, deleted=%lu, object=0x%I64X, unload=0x%I64X, last=0x%08X, wait=0x%08X, callbacks=%lu/%lu, cbfail=%lu, cblast=0x%08X.",
+            "R0 force-unload-driver response: status=%lu, requested=0x%08X, effective=0x%08X, applied=0x%08X, deleted=%lu, detached=%lu, object=0x%I64X, unload=0x%I64X, last=0x%08X, wait=0x%08X, callbacks=%lu/%lu, cbfail=%lu, cblast=0x%08X, threads=%lu/%lu, thfail=%lu, thlast=0x%08X.",
             (unsigned long)response->status,
             (unsigned int)response->reserved,
             (unsigned int)response->flags,
             (unsigned int)response->cleanupFlagsApplied,
             (unsigned long)response->deletedDeviceCount,
+            (unsigned long)response->detachedDeviceCount,
             response->driverObjectAddress,
             response->driverUnloadAddress,
             (unsigned int)response->lastStatus,
@@ -1221,7 +1223,11 @@ Return Value:
             (unsigned long)response->callbacksRemoved,
             (unsigned long)response->callbackCandidates,
             (unsigned long)response->callbackFailures,
-            (unsigned int)response->callbackLastStatus);
+            (unsigned int)response->callbackLastStatus,
+            (unsigned long)response->threadsTerminated,
+            (unsigned long)response->threadCandidates,
+            (unsigned long)response->threadFailures,
+            (unsigned int)response->threadLastStatus);
 
         KswordARKKernelIoctlLog(
             Device,

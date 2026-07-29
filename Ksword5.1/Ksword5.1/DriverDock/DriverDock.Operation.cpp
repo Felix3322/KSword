@@ -350,7 +350,7 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
 {
     // 右键菜单入口：
     // - 普通 SCM 操作仍使用既有按钮/函数；
-    // - R0 DriverObject 操作分为“仅调用 DriverUnload”和“显式确认后的实验强拆”两档。
+    // - 三种卸载互相独立：SCM 标准卸载、直接调用 DriverUnload、DriverObject 强拆。
     if (m_serviceTable == nullptr)
     {
         return;
@@ -386,25 +386,25 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
     contextMenu.addSeparator();
     QAction* stopServiceAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
-        driverText("driver.menu.stop_service", QStringLiteral("停止驱动服务（SCM 安全路径）")));
+        driverText("driver.menu.stop_service", QStringLiteral("标准卸载（SCM / sc stop）")));
     stopServiceAction->setToolTip(
         driverText(
             "driver.menu.stop_service.tooltip",
-            QStringLiteral("通过服务控制管理器发送 SERVICE_CONTROL_STOP；不直接调用 DriverObject->DriverUnload。")));
+            QStringLiteral("通过服务控制管理器发送 SERVICE_CONTROL_STOP，走 Windows 标准驱动卸载路径。")));
     QAction* forceUnloadAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
-        driverText("driver.menu.force_unload_driver_object", QStringLiteral("R0 强制卸载 DriverObject")));
+        driverText("driver.menu.force_unload_driver_object", QStringLiteral("直接调用 DriverUnload")));
     forceUnloadAction->setToolTip(
         driverText(
             "driver.menu.force_unload_driver_object.tooltip",
-            QStringLiteral("仅调用 DriverObject->DriverUnload，不清 dispatch/unload/device；高危后处理需二次确认。")));
+            QStringLiteral("跳过 SCM/ZwUnloadDriver，仅调用 DriverObject->DriverUnload；不修改 MajorFunction，不强停线程，不强删设备。")));
     QAction* forceDestructiveUnloadAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
-        driverText("driver.menu.destructive_unload_driver_object", QStringLiteral("R0 实验性破坏强拆 DriverObject")));
+        driverText("driver.menu.destructive_unload_driver_object", QStringLiteral("DriverObject 强拆")));
     forceDestructiveUnloadAction->setToolTip(
         driverText(
             "driver.menu.destructive_unload_driver_object.tooltip",
-            QStringLiteral("允许中和 DriverObject；目标无 DriverUnload 时才删 DeviceObject。仅用于恶意驱动且可能蓝屏。")));
+            QStringLiteral("固定顺序：封 MajorFunction → 终止目标驱动线程 → 调 DriverUnload → 解除并删除设备链至 DeviceObject 为空。")));
 
     QAction* selectedAction = contextMenu.exec(m_serviceTable->viewport()->mapToGlobal(localPosition));
     if (selectedAction == nullptr)
@@ -442,10 +442,10 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
     {
         const QMessageBox::StandardButton confirmResult = QMessageBox::warning(
             this,
-            driverText("driver.confirm.destructive_unload.title", QStringLiteral("R0 实验性破坏强拆")),
+            driverText("driver.confirm.destructive_unload.title", QStringLiteral("DriverObject 强拆")),
             driverText(
                 "driver.confirm.destructive_unload.body",
-                QStringLiteral("该操作会绕过 SCM/PnP 生命周期，允许 R0 中和目标 DriverObject；目标缺少 DriverUnload 时还会尝试删除 DeviceObject 并将 DriverObject 临时化。\n\n这可能立即导致蓝屏，仅建议用于确认恶意驱动且普通强制卸载无效的场景。\n\n是否继续？")),
+                QStringLiteral("该操作会绕过 SCM/PnP 生命周期，并严格按以下顺序执行：\n\n1. 将 MajorFunction/FastIo 改为拒绝入口\n2. 强制终止并等待该驱动镜像内的所有系统线程退出\n3. 调用 DriverObject->DriverUnload（若存在）\n4. 解除上下层设备关联并删除全部 DeviceObject，直至 DriverObject->DeviceObject 为空\n\n任一线程无法确认退出时不会继续调用 DriverUnload。该操作可能立即导致蓝屏，仅用于恶意驱动处置。\n\n是否继续？")),
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
         if (confirmResult == QMessageBox::Yes)
@@ -552,8 +552,8 @@ void DriverDock::forceUnloadDriverFromServiceRow(const int rowIndex, const bool 
     // 强制卸载流程：
     // - 使用服务名推导 \Driver\ServiceName；
     // - R0 内部再通过 ObReferenceObjectByName 引用对象；
-    // - 默认只调用 DriverUnload，不再清 unload/dispatch，避免失败后把真实驱动留在半清理状态；
-    // - 只有 destructiveCleanup 为 true 时，才允许持久中和 DriverObject、删 DeviceObject 和临时化对象。
+    // - destructiveCleanup=false：跳过系统路径，只调用 DriverUnload；
+    // - destructiveCleanup=true：执行固定顺序的 DriverObject 强拆。
     if (m_serviceTable == nullptr || rowIndex < 0 || rowIndex >= m_serviceTable->rowCount())
     {
         return;
@@ -582,15 +582,11 @@ void DriverDock::forceUnloadDriverFromServiceRow(const int rowIndex, const bool 
     const std::wstring driverObjectNameWide = driverObjectNameText.toStdWString();
     auto* unloadTask = QRunnable::create([guardThis, driverObjectNameText, driverObjectNameWide, destructiveCleanup]()
         {
-            unsigned long cleanupFlags = 0UL;
+            unsigned long cleanupFlags = KSWORD_ARK_DRIVER_UNLOAD_FLAG_DIRECT_UNLOAD_CALL;
             if (destructiveCleanup)
             {
-                cleanupFlags |= KSWORD_ARK_DRIVER_UNLOAD_FLAG_ALLOW_DESTRUCTIVE_CLEANUP |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_ON_NO_UNLOAD |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_AFTER_UNLOAD |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_UNLOAD_POINTER |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ON_NO_UNLOAD |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_MAKE_TEMPORARY_OBJECT;
+                cleanupFlags = KSWORD_ARK_DRIVER_UNLOAD_FLAG_ALLOW_DESTRUCTIVE_CLEANUP |
+                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN;
             }
             const ksword::ark::DriverForceUnloadResult result =
                 ksword::ark::DriverClient().forceUnloadDriver(
@@ -610,13 +606,18 @@ void DriverDock::forceUnloadDriverFromServiceRow(const int rowIndex, const bool 
                     const QString resultLine = driverText(
                         "driver.operation.force_unload.result",
                         QStringLiteral(
-                            "R0 强制卸载完成：%1 | IO说明=%2 | Status=%3 | Flags=%4 | Applied=%5 | Deleted=%6 | Last=%7 | Wait=%8 | Object=%9 | Unload=%10 | Name=%11"))
+                            "驱动卸载完成：%1 | IO说明=%2 | Status=%3 | Flags=%4 | Applied=%5 | Deleted=%6 | Detached=%7 | Threads=%8/%9 fail=%10 last=%11 | Last=%12 | Wait=%13 | Object=%14 | Unload=%15 | Name=%16"))
                         .arg(driverObjectNameText)
                         .arg(friendlyDriverIoMessage(result.io.message))
                         .arg(driverForceUnloadStatusText(result.status))
                         .arg(formatHex32(result.flags))
                         .arg(formatHex32(result.cleanupFlagsApplied))
                         .arg(result.deletedDeviceCount)
+                        .arg(result.detachedDeviceCount)
+                        .arg(result.threadsTerminated)
+                        .arg(result.threadCandidates)
+                        .arg(result.threadFailures)
+                        .arg(formatNtStatusText(result.threadLastStatus))
                         .arg(formatNtStatusText(result.lastStatus))
                         .arg(formatNtStatusText(result.waitStatus))
                         .arg(formatCompactAddress(result.driverObjectAddress))
@@ -628,7 +629,7 @@ void DriverDock::forceUnloadDriverFromServiceRow(const int rowIndex, const bool 
                         guardThis->appendOperateLogLine(
                             driverText(
                                 "driver.operation.high_risk_notice",
-                                QStringLiteral("已请求实验性高危后处理：允许 DriverObject 中和 / 删 DeviceObject / 临时对象。")));
+                                QStringLiteral("已执行 DriverObject 强拆请求：封 MajorFunction → 停目标线程 → 调 DriverUnload → 拆空 DeviceObject 链。")));
                     }
                     guardThis->refreshDriverServiceRecords();
                     guardThis->refreshLoadedKernelModuleRecords();
@@ -710,18 +711,18 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     contextMenu.addSeparator();
     QAction* forceCleanupByBaseAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
-        driverText("driver.menu.force_unload_by_base", QStringLiteral("R0 按模块基址强制卸载 DriverObject")));
+        driverText("driver.menu.force_unload_by_base", QStringLiteral("按模块基址直接调用 DriverUnload")));
     forceCleanupByBaseAction->setToolTip(
         driverText(
             "driver.menu.force_unload_by_base.tooltip",
-            QStringLiteral("按模块基址反查 DriverObject，仅调用 DriverUnload；高危后处理需二次确认。")));
+            QStringLiteral("按模块基址反查 DriverObject，跳过系统卸载路径，仅调用 DriverUnload。")));
     QAction* forceDeepCleanupByBaseAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
-        driverText("driver.menu.deep_cleanup_by_base", QStringLiteral("R0 强力清理模块回调 + DriverObject")));
+        driverText("driver.menu.deep_cleanup_by_base", QStringLiteral("按模块基址 DriverObject 强拆")));
     forceDeepCleanupByBaseAction->setToolTip(
         driverText(
             "driver.menu.deep_cleanup_by_base.tooltip",
-            QStringLiteral("DriverObject 处理成功后再移除可验证回调；该路径有明显系统不稳定风险。")));
+            QStringLiteral("先封 MajorFunction、终止并确认目标线程退出，再清理可验证回调、调用 DriverUnload，并解除/删除设备链。")));
 
     QAction* selectedAction = contextMenu.exec(m_moduleTable->viewport()->mapToGlobal(localPosition));
     if (selectedAction == refreshEvidenceAction)
@@ -768,7 +769,7 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
             driverText("driver.confirm.deep_cleanup.title", QStringLiteral("R0 强力清理")),
             driverText(
                 "driver.confirm.deep_cleanup.body",
-                QStringLiteral("该操作会按模块基址清理 DriverObject；仅在 DriverObject 处理成功后，才继续移除进程/线程/镜像/Minifilter/WFP 等可验证回调。\n\n不会摘 PsLoadedModuleList，但目标驱动若正在处理请求仍可能导致系统不稳定。\n\n是否继续？")),
+                QStringLiteral("该操作会按模块基址反查 DriverObject，并执行完整强拆：封 MajorFunction、终止并等待目标驱动线程、清理可验证回调、调用 DriverUnload、解除并删除全部设备对象。\n\n不会摘 PsLoadedModuleList，但可能立即导致系统崩溃。\n\n是否继续？")),
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
         if (confirmResult == QMessageBox::Yes)
@@ -880,8 +881,8 @@ void DriverDock::forceUnloadDriverFromModuleRow(
     // - R3 只传模块基址和模块名兜底文本；
     // - R0 先按 DriverStart 反查真实 DriverObject，再执行分级强制卸载；
     // - removeCallbacksFirst 为 true 时请求 R0 在 DriverObject 处理成功后移除可验证回调；
-    // - destructiveCleanup 为 false 时只调用 DriverUnload，不改写 dispatch/unload/device；
-    // - destructiveCleanup 为 true 时才允许持久中和 DriverObject、删设备对象和临时化对象。
+    // - destructiveCleanup=false：按模块基址反查后只调用 DriverUnload；
+    // - destructiveCleanup=true：执行封 dispatch、停线程、调 unload、拆设备的固定强拆顺序。
     if (m_moduleTable == nullptr || rowIndex < 0 || rowIndex >= m_moduleTable->rowCount())
     {
         return;
@@ -925,15 +926,12 @@ void DriverDock::forceUnloadDriverFromModuleRow(
     auto* unloadTask = QRunnable::create([guardThis, moduleNameText, moduleBaseValue, fallbackNameWide, removeCallbacksFirst, destructiveCleanup]()
         {
             unsigned long cleanupFlags =
-                KSWORD_ARK_DRIVER_UNLOAD_FLAG_TARGET_MODULE_BASE_PRESENT;
+                KSWORD_ARK_DRIVER_UNLOAD_FLAG_TARGET_MODULE_BASE_PRESENT |
+                KSWORD_ARK_DRIVER_UNLOAD_FLAG_DIRECT_UNLOAD_CALL;
             if (destructiveCleanup)
             {
                 cleanupFlags |= KSWORD_ARK_DRIVER_UNLOAD_FLAG_ALLOW_DESTRUCTIVE_CLEANUP |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_ON_NO_UNLOAD |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_AFTER_UNLOAD |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_UNLOAD_POINTER |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_DELETE_DEVICE_OBJECTS_ON_NO_UNLOAD |
-                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_MAKE_TEMPORARY_OBJECT;
+                    KSWORD_ARK_DRIVER_UNLOAD_FLAG_DRIVER_OBJECT_TEARDOWN;
             }
             if (removeCallbacksFirst)
             {
@@ -958,7 +956,7 @@ void DriverDock::forceUnloadDriverFromModuleRow(
                     const QString resultLine = driverText(
                         "driver.operation.module_cleanup.result",
                         QStringLiteral(
-                            "R0 模块基址%1完成：%2 | Base=%3 | IO说明=%4 | Status=%5 | Flags=%6 | Applied=%7 | Deleted=%8 | Last=%9 | Wait=%10 | Object=%11 | Unload=%12 | Callbacks=%13/%14 fail=%15 last=%16 | Name=%17"))
+                            "R0 模块基址%1完成：%2 | Base=%3 | IO说明=%4 | Status=%5 | Flags=%6 | Applied=%7 | Deleted=%8 | Detached=%9 | Threads=%10/%11 fail=%12 last=%13 | Last=%14 | Wait=%15 | Object=%16 | Unload=%17 | Callbacks=%18/%19 fail=%20 last=%21 | Name=%22"))
                         .arg(removeCallbacksFirst
                             ? driverText("driver.operation.module_cleanup.mode.deep", QStringLiteral("强力清理"))
                             : driverText("driver.operation.module_cleanup.mode.clean", QStringLiteral("清理")))
@@ -969,6 +967,11 @@ void DriverDock::forceUnloadDriverFromModuleRow(
                         .arg(formatHex32(result.flags))
                         .arg(formatHex32(result.cleanupFlagsApplied))
                         .arg(result.deletedDeviceCount)
+                        .arg(result.detachedDeviceCount)
+                        .arg(result.threadsTerminated)
+                        .arg(result.threadCandidates)
+                        .arg(result.threadFailures)
+                        .arg(formatNtStatusText(result.threadLastStatus))
                         .arg(formatNtStatusText(result.lastStatus))
                         .arg(formatNtStatusText(result.waitStatus))
                         .arg(formatCompactAddress(result.driverObjectAddress))
@@ -984,7 +987,7 @@ void DriverDock::forceUnloadDriverFromModuleRow(
                         guardThis->appendOperateLogLine(
                             driverText(
                                 "driver.operation.high_risk_notice",
-                                QStringLiteral("已请求实验性高危后处理：允许 DriverObject 中和 / 删 DeviceObject / 临时对象。")));
+                                QStringLiteral("已执行 DriverObject 强拆请求：封 MajorFunction → 停目标线程 → 调 DriverUnload → 拆空 DeviceObject 链。")));
                     }
                     guardThis->refreshDriverServiceRecords();
                     guardThis->refreshLoadedKernelModuleRecords();

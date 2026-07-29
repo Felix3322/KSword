@@ -1249,6 +1249,11 @@ namespace ksword::ark
         unloadResult.callbacksRemoved = static_cast<std::uint32_t>(response.callbacksRemoved);
         unloadResult.callbackFailures = static_cast<std::uint32_t>(response.callbackFailures);
         unloadResult.callbackLastStatus = static_cast<long>(response.callbackLastStatus);
+        unloadResult.threadCandidates = static_cast<std::uint32_t>(response.threadCandidates);
+        unloadResult.threadsTerminated = static_cast<std::uint32_t>(response.threadsTerminated);
+        unloadResult.threadFailures = static_cast<std::uint32_t>(response.threadFailures);
+        unloadResult.threadLastStatus = static_cast<long>(response.threadLastStatus);
+        unloadResult.detachedDeviceCount = static_cast<std::uint32_t>(response.detachedDeviceCount);
         unloadResult.driverName = fixedKernelWideToString(
             response.driverName,
             KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS);
@@ -1266,7 +1271,12 @@ namespace ksword::ark
             << ", callbackCandidates=" << std::dec << unloadResult.callbackCandidates
             << ", callbacksRemoved=" << unloadResult.callbacksRemoved
             << ", callbackFailures=" << unloadResult.callbackFailures
-            << ", callbackLast=0x" << std::hex << static_cast<unsigned long>(unloadResult.callbackLastStatus);
+            << ", callbackLast=0x" << std::hex << static_cast<unsigned long>(unloadResult.callbackLastStatus)
+            << ", threadCandidates=" << std::dec << unloadResult.threadCandidates
+            << ", threadsTerminated=" << unloadResult.threadsTerminated
+            << ", threadFailures=" << unloadResult.threadFailures
+            << ", threadLast=0x" << std::hex << static_cast<unsigned long>(unloadResult.threadLastStatus)
+            << ", detachedDevices=" << std::dec << unloadResult.detachedDeviceCount;
         unloadResult.io.message = stream.str();
         return unloadResult;
     }
@@ -1326,6 +1336,11 @@ namespace ksword::ark
         unloadResult.callbacksRemoved = static_cast<std::uint32_t>(response.callbacksRemoved);
         unloadResult.callbackFailures = static_cast<std::uint32_t>(response.callbackFailures);
         unloadResult.callbackLastStatus = static_cast<long>(response.callbackLastStatus);
+        unloadResult.threadCandidates = static_cast<std::uint32_t>(response.threadCandidates);
+        unloadResult.threadsTerminated = static_cast<std::uint32_t>(response.threadsTerminated);
+        unloadResult.threadFailures = static_cast<std::uint32_t>(response.threadFailures);
+        unloadResult.threadLastStatus = static_cast<long>(response.threadLastStatus);
+        unloadResult.detachedDeviceCount = static_cast<std::uint32_t>(response.detachedDeviceCount);
         unloadResult.driverName = fixedKernelWideToString(
             response.driverName,
             KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS);
@@ -1344,7 +1359,12 @@ namespace ksword::ark
             << ", callbackCandidates=" << std::dec << unloadResult.callbackCandidates
             << ", callbacksRemoved=" << unloadResult.callbacksRemoved
             << ", callbackFailures=" << unloadResult.callbackFailures
-            << ", callbackLast=0x" << std::hex << static_cast<unsigned long>(unloadResult.callbackLastStatus);
+            << ", callbackLast=0x" << std::hex << static_cast<unsigned long>(unloadResult.callbackLastStatus)
+            << ", threadCandidates=" << std::dec << unloadResult.threadCandidates
+            << ", threadsTerminated=" << unloadResult.threadsTerminated
+            << ", threadFailures=" << unloadResult.threadFailures
+            << ", threadLast=0x" << std::hex << static_cast<unsigned long>(unloadResult.threadLastStatus)
+            << ", detachedDevices=" << std::dec << unloadResult.detachedDeviceCount;
         unloadResult.io.message = stream.str();
         return unloadResult;
     }

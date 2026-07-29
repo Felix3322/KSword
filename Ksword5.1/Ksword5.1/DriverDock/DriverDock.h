@@ -305,7 +305,7 @@ private:
 
     // forceUnloadDriverFromServiceRow：
     // - 将当前服务名规范化为 \Driver\Name 并调用 ArkDriverClient；
-    // - 默认只调用 DriverUnload；destructiveCleanup 为 true 时才允许持久中和/删 DeviceObject。
+    // - false 仅直接调用 DriverUnload；true 执行固定顺序的 DriverObject 强拆。
     void forceUnloadDriverFromServiceRow(int rowIndex, bool destructiveCleanup = false);
 
     // forceUnloadDriverFromModuleRow：

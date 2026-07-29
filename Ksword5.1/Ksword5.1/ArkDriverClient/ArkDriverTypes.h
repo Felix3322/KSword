@@ -1455,6 +1455,11 @@ namespace ksword::ark
         std::uint32_t callbacksRemoved = 0;    // callbacksRemoved：R0 成功移除的回调数。
         std::uint32_t callbackFailures = 0;    // callbackFailures：R0 移除失败或不支持的回调数。
         long callbackLastStatus = 0;           // callbackLastStatus：最后一个回调移除失败状态。
+        std::uint32_t threadCandidates = 0;    // threadCandidates：目标镜像驻留系统线程数。
+        std::uint32_t threadsTerminated = 0;   // threadsTerminated：已终止并确认退出的线程数。
+        std::uint32_t threadFailures = 0;      // threadFailures：终止或等待失败的线程数。
+        long threadLastStatus = 0;             // threadLastStatus：最后一个线程处理失败状态。
+        std::uint32_t detachedDeviceCount = 0; // detachedDeviceCount：强拆时解除的上下层设备关联数。
         std::wstring driverName;             // driverName：R0 规范化对象名。
     };
 
