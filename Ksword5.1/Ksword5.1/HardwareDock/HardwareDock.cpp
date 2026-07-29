@@ -7062,6 +7062,12 @@ void HardwareDock::updateTaskManagerDetailLabels(
             .arg(m_cpuL3CacheBytes > 0 ? bytesToReadableText(static_cast<double>(m_cpuL3CacheBytes)) : QStringLiteral("N/A")));
     }
 
+    // CPU 详情标签在首帧只显示一行“采样中”文本，随后会替换为多行实时数据。
+    // 此处重新计算图表区与详情区高度，确保图表主动收缩而不是裁切底部文字。
+    // 调用方式：两组详情文本均写入后调用；函数内部仅在尺寸变化时更新布局。
+    // 返回行为：无返回值，CPU 页面会在当前事件循环内按最新文本高度完成重排。
+    adjustUtilizationChartHeights();
+
     MEMORYSTATUSEX memoryStatus{};
     memoryStatus.dwLength = sizeof(memoryStatus);
     const bool memoryStatusOk = (::GlobalMemoryStatusEx(&memoryStatus) == TRUE);
