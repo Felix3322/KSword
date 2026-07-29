@@ -264,7 +264,8 @@ private:
 
     // showSettingsPanelFromMenu：
     // - 作用：从顶部菜单栏打开设置内容，替代主 Dock Tab 中的“设置”页签。
-    void showSettingsPanelFromMenu();
+    // - showLanguageTab=true 时直接定位到语言设置页。
+    void showSettingsPanelFromMenu(bool showLanguageTab = false);
     void toggleLogOutputWindow();
     void persistLogOutputWindowGeometry();
     void restoreLogOutputWindowGeometry();

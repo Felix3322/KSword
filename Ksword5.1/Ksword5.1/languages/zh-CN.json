@@ -377,6 +377,8 @@
     "welcome.donors": "<b>捐赠者：</b>%1",
     "welcome.github": "Github仓库",
     "welcome.github.tooltip": "打开项目 Github 仓库主页",
+    "welcome.language_settings": "🌍language setting 语言设置",
+    "welcome.language_settings.tooltip": "打开设置中的语言设置",
     "welcome.logo_fallback": "左侧图片区域",
     "welcome.pplcontrol.tooltip": "打开 PPLcontrol 参考项目仓库",
     "welcome.qq_group": "QQ群",
@@ -19045,6 +19047,9 @@
     "回调列表": "回调列表",
     "按 Filter 展开真实 IRP_MJ_* Pre/Post 回调；双击回调可查看驱动文件详情": "按 Filter 展开真实 IRP_MJ_* Pre/Post 回调；双击回调可查看驱动文件详情",
     "来源/可信状态": "来源/可信状态",
-    "驱动路径": "驱动路径"
+    "驱动路径": "驱动路径",
+    "welcomeLanguageSettingsButton": "welcomeLanguageSettingsButton",
+    "打开设置中的语言设置": "打开设置中的语言设置",
+    "🌍language setting 语言设置": "🌍language setting 语言设置"
   }
 }

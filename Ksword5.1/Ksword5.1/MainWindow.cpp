@@ -5838,7 +5838,7 @@ void MainWindow::showLicenseFromMenu()
 
     licenseDialog.exec();
 }
-void MainWindow::showSettingsPanelFromMenu()
+void MainWindow::showSettingsPanelFromMenu(bool showLanguageTab)
 {
     QDialog settingsDialog(this);
     settingsDialog.setWindowTitle(QStringLiteral("设置"));
@@ -5898,6 +5898,10 @@ void MainWindow::showSettingsPanelFromMenu()
 
     // 设置面板改为顶部菜单即时对话框，每次打开读取当前 JSON，避免占用主 Tab 栏空间。
     SettingsDock settingsPanel(&settingsDialog);
+    if (showLanguageTab)
+    {
+        settingsPanel.showLanguageSettingsTab();
+    }
     connect(
         &settingsPanel,
         &SettingsDock::appearanceSettingsChanged,
@@ -8683,6 +8687,13 @@ void MainWindow::initDockWidgets()
         QStringLiteral("main.startup.progress.first_page"),
         QStringLiteral("正在加载功能模块..."));
     m_welcomeWidget = new WelcomeDock(this);
+    connect(
+        m_welcomeWidget,
+        &WelcomeDock::languageSettingsRequested,
+        this,
+        [this]() {
+            showSettingsPanelFromMenu(true);
+        });
     if (shouldEagerLoad(QStringLiteral("process"))) { m_processWidget = new ProcessDock(this); }
     if (shouldEagerLoad(QStringLiteral("network"))) { m_networkWidget = new NetworkDock(this); }
     if (shouldEagerLoad(QStringLiteral("memory"))) { m_memoryWidget = new MemoryDock(this); }

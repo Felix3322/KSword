@@ -706,6 +706,14 @@ void SettingsDock::initializeAppearanceTab()
     updateApplyButtonState();
 }
 
+void SettingsDock::showLanguageSettingsTab()
+{
+    if (m_tabWidget != nullptr && m_languageTab != nullptr)
+    {
+        m_tabWidget->setCurrentWidget(m_languageTab);
+    }
+}
+
 void SettingsDock::initializeFeaturesTab()
 {
     m_featuresTab = new QWidget(m_tabWidget);

@@ -377,6 +377,8 @@
     "welcome.donors": "<b>Donors:</b> %1",
     "welcome.github": "GitHub Repository",
     "welcome.github.tooltip": "Open the project's GitHub repository",
+    "welcome.language_settings": "🌍 Language Settings",
+    "welcome.language_settings.tooltip": "Open Language Settings",
     "welcome.logo_fallback": "Logo image area",
     "welcome.pplcontrol.tooltip": "Open the PPLcontrol reference repository",
     "welcome.qq_group": "QQ Group",
@@ -19045,6 +19047,9 @@
     "回调列表": "Callback list",
     "按 Filter 展开真实 IRP_MJ_* Pre/Post 回调；双击回调可查看驱动文件详情": "Expand actual IRP_MJ_* Pre/Post callbacks by filter; double-click a callback to inspect its driver file",
     "来源/可信状态": "Source/trust",
-    "驱动路径": "Driver path"
+    "驱动路径": "Driver path",
+    "welcomeLanguageSettingsButton": "welcomeLanguageSettingsButton",
+    "打开设置中的语言设置": "Open Language Settings",
+    "🌍language setting 语言设置": "🌍 Language Settings"
   }
 }

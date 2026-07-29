@@ -15,6 +15,7 @@ public:
     explicit WelcomeDock(QWidget* parent = nullptr);
 
     QLabel* m_leftImage;       // 左侧图片：展示欢迎页主 Logo。
+    QPushButton* m_languageSettingsBtn; // 语言设置按钮：打开设置对话框中的语言页签。
     QLabel* m_copyright;       // 版权信息：展示版权、版本号和编译时间。
     QLabel* m_contributors;    // 贡献者信息：展示当前参与名单。
     QLabel* m_referenceTitle;  // 参考项目标题：说明下方按钮均为外部参考仓库入口。
@@ -31,9 +32,16 @@ public:
     QHBoxLayout* m_btnLayout;       // 按钮水平布局：放置 Github 与 QQ 群按钮。
     QHBoxLayout* m_referenceLayout; // 参考项目布局：横向放置外部参考仓库按钮。
 
+signals:
+    // languageSettingsRequested 作用：通知主窗口打开设置对话框并定位到语言页签。
+    void languageSettingsRequested();
+
 protected:
     void changeEvent(QEvent* event) override;
 
 private:
     void retranslateUi();
+    void updateLanguageButtonRgbStyle();
+
+    int m_languageButtonHue = 0; // RGB 动效当前色相，范围为 0~359。
 };

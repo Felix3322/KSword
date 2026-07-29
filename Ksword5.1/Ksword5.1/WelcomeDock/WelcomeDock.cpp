@@ -2,8 +2,10 @@
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/UI.css/UI_css.h"
 #include "../theme.h"
+#include <QColor>
 #include <QEvent>
 #include <QPixmap>
+#include <QTimer>
 
 namespace
 {
@@ -51,6 +53,22 @@ WelcomeDock::WelcomeDock(QWidget* parent) : QWidget(parent) {
     // 关闭自动扩展，保持欢迎页视觉中心稳定。
     m_leftImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     m_leftImage->setAlignment(Qt::AlignCenter);
+
+    // 语言设置入口：固定放在 Logo 下方，并以 RGB 循环边框突出显示。
+    m_languageSettingsBtn = new QPushButton(QStringLiteral("🌍language setting 语言设置"), this);
+    m_languageSettingsBtn->setObjectName(QStringLiteral("welcomeLanguageSettingsButton"));
+    m_languageSettingsBtn->setMinimumHeight(48);
+    m_languageSettingsBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_languageSettingsBtn->setCursor(Qt::PointingHandCursor);
+    updateLanguageButtonRgbStyle();
+
+    QTimer* languageButtonColorTimer = new QTimer(this);
+    languageButtonColorTimer->setInterval(80);
+    connect(languageButtonColorTimer, &QTimer::timeout, this, [this]() {
+        m_languageButtonHue = (m_languageButtonHue + 4) % 360;
+        updateLanguageButtonRgbStyle();
+    });
+    languageButtonColorTimer->start();
 
     // 版权信息：展示团队信息、版本号和编译时间。
     m_copyright = new QLabel(this);
@@ -147,6 +165,7 @@ WelcomeDock::WelcomeDock(QWidget* parent) : QWidget(parent) {
     // 左侧布局：按 Logo、版权发布信息、按钮区排列。
     m_leftLayout = new QVBoxLayout();
     m_leftLayout->addWidget(m_leftImage);
+    m_leftLayout->addWidget(m_languageSettingsBtn);
     m_leftLayout->addWidget(m_copyright);
     m_leftLayout->addLayout(m_btnLayout);
     // 贡献者：添加在现有项目入口下面，满足“在现有的东西下面加”的位置要求。
@@ -172,6 +191,13 @@ WelcomeDock::WelcomeDock(QWidget* parent) : QWidget(parent) {
     retranslateUi();
 
     // ==== 3. 信号连接 ====
+    // 语言设置按钮：由主窗口复用顶部设置对话框，并直接定位到语言页签。
+    connect(
+        m_languageSettingsBtn,
+        &QPushButton::clicked,
+        this,
+        &WelcomeDock::languageSettingsRequested);
+
     // Github 按钮：点击后交给系统默认浏览器打开项目仓库；无返回值。
     connect(m_githubBtn, &QPushButton::clicked, this, [=]() {
         QDesktopServices::openUrl(QUrl("https://github.com/WangWei-CM/KSword"));
@@ -196,6 +222,35 @@ WelcomeDock::WelcomeDock(QWidget* parent) : QWidget(parent) {
     connect(m_skt64Btn, &QPushButton::clicked, this, [=]() {
         QDesktopServices::openUrl(QUrl(kSkt64RepositoryUrl));
         });
+}
+
+void WelcomeDock::updateLanguageButtonRgbStyle()
+{
+    if (m_languageSettingsBtn == nullptr)
+    {
+        return;
+    }
+
+    const QColor rgbBorderColor = QColor::fromHsv(m_languageButtonHue, 255, 255);
+    m_languageSettingsBtn->setStyleSheet(QStringLiteral(
+        "QPushButton#welcomeLanguageSettingsButton{"
+        "  background-color:#111827;"
+        "  color:#FFFFFF;"
+        "  border:3px solid %1;"
+        "  border-radius:10px;"
+        "  padding:8px 16px;"
+        "  font-size:16px;"
+        "  font-weight:700;"
+        "}"
+        "QPushButton#welcomeLanguageSettingsButton:hover{"
+        "  background-color:#1F2937;"
+        "}"
+        "QPushButton#welcomeLanguageSettingsButton:pressed{"
+        "  background-color:#030712;"
+        "  padding-top:9px;"
+        "  padding-bottom:7px;"
+        "}")
+        .arg(rgbBorderColor.name(QColor::HexRgb)));
 }
 
 void WelcomeDock::changeEvent(QEvent* event)
@@ -272,6 +327,15 @@ void WelcomeDock::retranslateUi()
         m_githubBtn->setToolTip(welcomeText(
             "welcome.github.tooltip",
             QStringLiteral("打开项目 Github 仓库主页")));
+    }
+    if (m_languageSettingsBtn != nullptr)
+    {
+        m_languageSettingsBtn->setText(welcomeText(
+            "welcome.language_settings",
+            QStringLiteral("🌍language setting 语言设置")));
+        m_languageSettingsBtn->setToolTip(welcomeText(
+            "welcome.language_settings.tooltip",
+            QStringLiteral("打开设置中的语言设置")));
     }
     if (m_qqBtn != nullptr)
     {

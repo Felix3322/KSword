@@ -35,6 +35,9 @@ public:
     // 返回：AppearanceSettings 配置结构体副本。
     ks::settings::AppearanceSettings currentAppearanceSettings() const;
 
+    // showLanguageSettingsTab 作用：切换到“语言”页签，供欢迎页快捷入口调用。
+    void showLanguageSettingsTab();
+
 protected:
     void changeEvent(QEvent* event) override;
 
