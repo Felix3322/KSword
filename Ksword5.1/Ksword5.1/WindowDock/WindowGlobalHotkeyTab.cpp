@@ -19,16 +19,19 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMetaObject>
-#include <QPointer>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -37,6 +40,9 @@
 
 namespace
 {
+    // MaxRowsPerUiFlush：单次最多创建 128 行表格项，保证极端结果集也不会形成一次超长 UI 任务。
+    constexpr qsizetype MaxRowsPerUiFlush = 128;
+
     enum AllHotkeyColumn : int
     {
         ColumnHotkey = 0,
@@ -118,6 +124,33 @@ namespace
     }
 }
 
+// PendingRefreshState：工作线程只写入该缓冲，UI 定时批量取走结果，避免逐进程事件淹没主线程。
+struct WindowGlobalHotkeyTab::PendingRefreshState
+{
+    // mutex：保护下列跨线程共享字段，调用方只能在短临界区内持有。
+    std::mutex mutex;
+    // pendingRows：尚未合并到表格的数据行，由 UI 刷新定时器批量取走。
+    std::deque<QStringList> pendingRows;
+    // currentProcessName：最近完成扫描的进程名，用于展示实时进度。
+    QString currentProcessName;
+    // ticket：绑定发起本轮刷新的编号，防止旧任务结果污染新任务。
+    std::uint64_t ticket = 0;
+    // revision：每次后台状态变化时递增，避免 UI 重复处理同一快照。
+    std::uint64_t revision = 0;
+    // completedProcessCount：后台已经完成扫描的进程总数。
+    std::uint32_t completedProcessCount = 0;
+    // totalProcessCount：本轮枚举到的进程总数。
+    std::uint32_t totalProcessCount = 0;
+    // diagnosticProcessCount：包含诊断信息的进程累计数量。
+    std::uint32_t diagnosticProcessCount = 0;
+    // enumerationReady：表示进程枚举已经完成，可以展示总进度。
+    bool enumerationReady = false;
+    // completed：表示所有扫描线程都已退出，UI 可执行最终收尾。
+    bool completed = false;
+    // elapsedMs：整轮后台扫描耗时，仅在 completed 为 true 时有效。
+    qint64 elapsedMs = 0;
+};
+
 WindowGlobalHotkeyTab::WindowGlobalHotkeyTab(QWidget* parent)
     : QWidget(parent)
 {
@@ -182,6 +215,8 @@ void WindowGlobalHotkeyTab::initializeUi()
     m_table->verticalHeader()->setVisible(false);
     m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     m_table->horizontalHeader()->setStretchLastSection(true);
+    // 限制自动列宽只采样少量行，避免大结果集在扫描完成时再次长时间占用 UI。
+    m_table->horizontalHeader()->setResizeContentsPrecision(100);
     m_table->setStyleSheet(QStringLiteral(
         "QTableWidget{background:transparent;color:%1;}"
         "QHeaderView::section{color:%2;background:transparent;border:1px solid %3;font-weight:600;}")
@@ -190,9 +225,15 @@ void WindowGlobalHotkeyTab::initializeUi()
         .arg(KswordTheme::BorderHex()));
     rootLayout->addWidget(m_table, 1);
 
+    // m_flushTimer：以固定节奏合并后台结果，使主线程每次处理的工作量保持有界。
+    m_flushTimer = new QTimer(this);
+    m_flushTimer->setInterval(100);
+    m_flushTimer->setTimerType(Qt::CoarseTimer);
+
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() { refreshAsync(); });
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this](const QString&) { rebuildTable(); });
     connect(m_table, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& position) { showCopyMenu(position); });
+    connect(m_flushTimer, &QTimer::timeout, this, [this]() { flushPendingSnapshot(); });
 }
 
 void WindowGlobalHotkeyTab::refreshAsync()
@@ -209,6 +250,10 @@ void WindowGlobalHotkeyTab::refreshAsync()
     m_scannedProcessCount = 0U;
     m_totalProcessCount = 0U;
     m_diagnosticProcessCount = 0U;
+    m_appliedRefreshRevision = 0U;
+    // 扫描期间暂停自动排序，避免每批增量插入都触发一次全表重排。
+    m_sortingEnabledBeforeRefresh = m_table->isSortingEnabled();
+    m_table->setSortingEnabled(false);
     m_refreshButton->setEnabled(false);
     m_statusLabel->setText(allHotkeyText(
         "window.global_hotkey.summary.refreshing",
@@ -224,88 +269,153 @@ void WindowGlobalHotkeyTab::refreshAsync()
         "window.global_hotkey.progress.enumerating",
         QStringLiteral("正在枚举进程")).toStdString(), 0, 0.0f);
 
-    QPointer<WindowGlobalHotkeyTab> safeThis(this);
-    std::thread([safeThis, ticket]()
+    // refreshState：后台只持有独立共享状态，页面销毁后不会再访问 QWidget。
+    const std::shared_ptr<PendingRefreshState> refreshState = std::make_shared<PendingRefreshState>();
+    refreshState->ticket = ticket;
+    m_refreshState = refreshState;
+    m_flushTimer->start();
+
+    std::thread([refreshState]()
     {
+        // beginTime：统计完整的进程枚举、快捷方式索引和热键扫描耗时。
         const auto beginTime = std::chrono::steady_clock::now();
         const std::vector<ks::process::UserModeHotkeyProcessTarget> targets = collectProcessTargets();
-        if (safeThis == nullptr)
+
+        {
+            // stateLock：发布进程总数，UI 会在下一次定时刷新时读取。
+            const std::lock_guard<std::mutex> stateLock(refreshState->mutex);
+            refreshState->totalProcessCount = static_cast<std::uint32_t>(targets.size());
+            refreshState->enumerationReady = true;
+            ++refreshState->revision;
+        }
+
+        ks::process::EnumerateUserModeHotkeysForProcesses(
+            targets,
+            [refreshState](ks::process::UserModeHotkeyBatchProgress progress)
+            {
+                // rows：在工作线程完成字符串格式化，避免把转换成本转移给 UI。
+                QVector<QStringList> rows = formatRows(progress.records);
+                const bool hasDiagnostic = progress.diagnosticText.contains(QLatin1Char('|'));
+
+                // stateLock：一次性合并本进程结果和进度，临界区内不执行任何 UI 操作。
+                const std::lock_guard<std::mutex> stateLock(refreshState->mutex);
+                for (QStringList& row : rows)
+                {
+                    refreshState->pendingRows.push_back(std::move(row));
+                }
+                refreshState->completedProcessCount = std::max(
+                    refreshState->completedProcessCount,
+                    progress.completedProcessCount);
+                refreshState->totalProcessCount = std::max(
+                    refreshState->totalProcessCount,
+                    progress.totalProcessCount);
+                refreshState->currentProcessName = std::move(progress.processName);
+                if (hasDiagnostic)
+                {
+                    ++refreshState->diagnosticProcessCount;
+                }
+                ++refreshState->revision;
+            });
+
+        // elapsedMs：所有扫描工作线程退出后再记录，保证完成状态对应完整结果。
+        const qint64 elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - beginTime).count();
+        {
+            // stateLock：最终状态和剩余结果一起由 UI 定时器读取，确保完成事件不会越过结果事件。
+            const std::lock_guard<std::mutex> stateLock(refreshState->mutex);
+            refreshState->completed = true;
+            refreshState->elapsedMs = elapsedMs;
+            ++refreshState->revision;
+        }
+    }).detach();
+}
+
+void WindowGlobalHotkeyTab::flushPendingSnapshot()
+{
+    // refreshState：在锁外保留共享状态，避免 finishRefresh 释放成员后对象提前销毁。
+    const std::shared_ptr<PendingRefreshState> refreshState = m_refreshState;
+    if (!m_refreshing || refreshState == nullptr)
+    {
+        m_flushTimer->stop();
+        return;
+    }
+
+    QVector<QStringList> rows;
+    QString currentProcessName;
+    std::uint64_t ticket = 0;
+    std::uint64_t revision = 0;
+    std::uint32_t completedProcessCount = 0;
+    std::uint32_t totalProcessCount = 0;
+    std::uint32_t diagnosticProcessCount = 0;
+    bool enumerationReady = false;
+    bool completed = false;
+    qint64 elapsedMs = 0;
+
+    {
+        // stateLock：读取一致快照并取走待显示行，后台可立即继续写入下一批。
+        const std::lock_guard<std::mutex> stateLock(refreshState->mutex);
+        ticket = refreshState->ticket;
+        revision = refreshState->revision;
+        const bool hasPendingRows = !refreshState->pendingRows.empty();
+        if (ticket != m_refreshTicket ||
+            (revision == m_appliedRefreshRevision && !hasPendingRows))
         {
             return;
         }
 
-        const std::uint32_t totalProcessCount = static_cast<std::uint32_t>(targets.size());
-        QMetaObject::invokeMethod(safeThis, [safeThis, ticket, totalProcessCount]()
+        // batchRowCount：只取走有界数量的行，剩余数据由下一次定时刷新继续处理。
+        const qsizetype batchRowCount = std::min(
+            MaxRowsPerUiFlush,
+            static_cast<qsizetype>(refreshState->pendingRows.size()));
+        rows.reserve(batchRowCount);
+        for (qsizetype rowIndex = 0; rowIndex < batchRowCount; ++rowIndex)
         {
-            if (safeThis == nullptr || safeThis->m_refreshTicket != ticket)
-            {
-                return;
-            }
-
-            safeThis->m_totalProcessCount = totalProcessCount;
-            safeThis->m_statusLabel->setText(allHotkeyText(
-                "window.global_hotkey.summary.indexing_shortcuts",
-                QStringLiteral("状态：已找到 %1 个进程，正在读取快捷方式索引...")).arg(totalProcessCount));
-            if (safeThis->m_progressTaskId != 0)
-            {
-                kPro.set(
-                    safeThis->m_progressTaskId,
-                    allHotkeyText(
-                        "window.global_hotkey.progress.indexing_shortcuts",
-                        QStringLiteral("正在读取快捷方式索引")).toStdString(),
-                    0,
-                    0.0f);
-            }
-        }, Qt::QueuedConnection);
-
-        ks::process::EnumerateUserModeHotkeysForProcesses(
-            targets,
-            [safeThis, ticket](ks::process::UserModeHotkeyBatchProgress progress)
-            {
-                if (safeThis == nullptr)
-                {
-                    return;
-                }
-
-                const QVector<QStringList> rows = formatRows(progress.records);
-                const bool hasDiagnostic = progress.diagnosticText.contains(QLatin1Char('|'));
-                QMetaObject::invokeMethod(
-                    safeThis,
-                    [safeThis,
-                     ticket,
-                     rows,
-                     completedProcessCount = progress.completedProcessCount,
-                     totalProcessCount = progress.totalProcessCount,
-                     processName = std::move(progress.processName),
-                     hasDiagnostic]() mutable
-                    {
-                        if (safeThis != nullptr)
-                        {
-                            safeThis->appendSnapshotRows(
-                                ticket,
-                                std::move(rows),
-                                completedProcessCount,
-                                totalProcessCount,
-                                processName,
-                                hasDiagnostic);
-                        }
-                    },
-                    Qt::QueuedConnection);
-            });
-
-        const qint64 elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - beginTime).count();
-        if (safeThis != nullptr)
-        {
-            QMetaObject::invokeMethod(safeThis, [safeThis, ticket, elapsedMs]()
-            {
-                if (safeThis != nullptr)
-                {
-                    safeThis->finishRefresh(ticket, elapsedMs);
-                }
-            }, Qt::QueuedConnection);
+            rows.push_back(std::move(refreshState->pendingRows.front()));
+            refreshState->pendingRows.pop_front();
         }
-    }).detach();
+        currentProcessName = refreshState->currentProcessName;
+        completedProcessCount = refreshState->completedProcessCount;
+        totalProcessCount = refreshState->totalProcessCount;
+        diagnosticProcessCount = refreshState->diagnosticProcessCount;
+        enumerationReady = refreshState->enumerationReady;
+        // 后台完成且缓冲已经排空时才结束，避免最终状态越过尚未显示的结果。
+        completed = refreshState->completed && refreshState->pendingRows.empty();
+        elapsedMs = refreshState->elapsedMs;
+    }
+
+    m_appliedRefreshRevision = revision;
+    if (enumerationReady && completedProcessCount == 0U)
+    {
+        m_totalProcessCount = totalProcessCount;
+        m_statusLabel->setText(allHotkeyText(
+            "window.global_hotkey.summary.indexing_shortcuts",
+            QStringLiteral("状态：已找到 %1 个进程，正在读取快捷方式索引...")).arg(totalProcessCount));
+        if (m_progressTaskId != 0)
+        {
+            kPro.set(
+                m_progressTaskId,
+                allHotkeyText(
+                    "window.global_hotkey.progress.indexing_shortcuts",
+                    QStringLiteral("正在读取快捷方式索引")).toStdString(),
+                0,
+                0.0f);
+        }
+    }
+
+    if (completedProcessCount > 0U || !rows.isEmpty())
+    {
+        appendSnapshotRows(
+            ticket,
+            std::move(rows),
+            completedProcessCount,
+            totalProcessCount,
+            currentProcessName,
+            diagnosticProcessCount);
+    }
+    if (completed)
+    {
+        finishRefresh(ticket, elapsedMs);
+    }
 }
 
 void WindowGlobalHotkeyTab::appendSnapshotRows(
@@ -314,7 +424,7 @@ void WindowGlobalHotkeyTab::appendSnapshotRows(
     const std::uint32_t completedProcessCount,
     const std::uint32_t totalProcessCount,
     const QString& processName,
-    const bool hasDiagnostic)
+    const std::uint32_t diagnosticProcessCount)
 {
     if (ticket != m_refreshTicket || !m_refreshing)
     {
@@ -323,15 +433,13 @@ void WindowGlobalHotkeyTab::appendSnapshotRows(
 
     m_scannedProcessCount = std::max(m_scannedProcessCount, completedProcessCount);
     m_totalProcessCount = std::max(m_totalProcessCount, totalProcessCount);
-    if (hasDiagnostic)
-    {
-        ++m_diagnosticProcessCount;
-    }
+    m_diagnosticProcessCount = std::max(m_diagnosticProcessCount, diagnosticProcessCount);
 
     if (!rows.isEmpty())
     {
+        // 新数据只追加到当前视图；筛选变化时仍可依据 m_rows 重建完整结果。
+        appendVisibleRows(rows);
         m_rows += std::move(rows);
-        rebuildTable();
     }
 
     const QString currentProcessName = processName.trimmed().isEmpty()
@@ -345,9 +453,11 @@ void WindowGlobalHotkeyTab::appendSnapshotRows(
         .arg(m_rows.size()));
     if (m_progressTaskId != 0)
     {
-        const float progress = m_totalProcessCount == 0U
+        const float rawProgress = m_totalProcessCount == 0U
             ? 0.0f
             : static_cast<float>(m_scannedProcessCount) / static_cast<float>(m_totalProcessCount);
+        // kProgress 在 1.0 时会隐藏任务；最终一批 UI 数据落表前最多只报告 99%。
+        const float progress = std::min(rawProgress, 0.99f);
         kPro.set(
             m_progressTaskId,
             allHotkeyText(
@@ -370,7 +480,12 @@ void WindowGlobalHotkeyTab::finishRefresh(const std::uint64_t ticket, const qint
     }
 
     m_refreshing = false;
+    m_flushTimer->stop();
     m_refreshButton->setEnabled(true);
+    // 扫描结束后恢复用户原有排序状态，仅触发这一次全表排序。
+    m_table->setSortingEnabled(m_sortingEnabledBeforeRefresh);
+    // 扫描期间不反复测量列宽；完成后仅基于有界样本调整一次。
+    m_table->resizeColumnsToContents();
     m_statusLabel->setText(allHotkeyText(
         "window.global_hotkey.summary.completed",
         QStringLiteral("状态：已扫描 %1 个进程，发现 %2 条热键，耗时 %3 ms。%4"))
@@ -395,11 +510,43 @@ void WindowGlobalHotkeyTab::finishRefresh(const std::uint64_t ticket, const qint
             100,
             1.0f);
     }
+    m_refreshState.reset();
+}
+
+void WindowGlobalHotkeyTab::appendVisibleRows(const QVector<QStringList>& rows)
+{
+    // keyword：沿用当前筛选条件，只把匹配的新行增量插入表格。
+    const QString keyword = m_filterEdit->text().trimmed();
+    const bool sortingEnabled = m_table->isSortingEnabled();
+    m_table->setUpdatesEnabled(false);
+    m_table->setSortingEnabled(false);
+
+    for (const QStringList& sourceRow : rows)
+    {
+        if (sourceRow.size() < ColumnCount ||
+            (!keyword.isEmpty() && !sourceRow.join(QLatin1Char(' ')).contains(keyword, Qt::CaseInsensitive)))
+        {
+            continue;
+        }
+
+        const int tableRow = m_table->rowCount();
+        m_table->insertRow(tableRow);
+        for (int column = 0; column < ColumnCount; ++column)
+        {
+            m_table->setItem(tableRow, column, readOnlyItem(sourceRow.at(column)));
+        }
+    }
+
+    m_table->setSortingEnabled(sortingEnabled);
+    m_table->setUpdatesEnabled(true);
+    m_table->viewport()->update();
 }
 
 void WindowGlobalHotkeyTab::rebuildTable()
 {
     const QString keyword = m_filterEdit->text().trimmed();
+    const bool sortingEnabled = m_table->isSortingEnabled();
+    m_table->setUpdatesEnabled(false);
     m_table->setSortingEnabled(false);
     m_table->setRowCount(0);
     for (const QStringList& sourceRow : m_rows)
@@ -417,8 +564,10 @@ void WindowGlobalHotkeyTab::rebuildTable()
             m_table->setItem(tableRow, column, readOnlyItem(sourceRow.at(column)));
         }
     }
-    m_table->setSortingEnabled(true);
+    m_table->setSortingEnabled(sortingEnabled);
     m_table->resizeColumnsToContents();
+    m_table->setUpdatesEnabled(true);
+    m_table->viewport()->update();
 }
 
 QString WindowGlobalHotkeyTab::rowClipboardText(
