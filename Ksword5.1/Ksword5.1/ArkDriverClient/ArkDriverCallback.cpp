@@ -49,6 +49,36 @@ namespace ksword::ark
             wchar_t modulePath[KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS];
             wchar_t detail[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
         };
+
+        struct CallbackEnumV1Entry
+        {
+            // 输入：无；该结构固定镜像分页协议之前的完整 v1 行布局。
+            // 处理：仅在旧驱动返回 v1 entrySize 时用于兼容解析。
+            // 返回：无；新协议不会写入此结构。
+            unsigned long size;
+            unsigned long callbackClass;
+            unsigned long source;
+            unsigned long status;
+            unsigned long fieldFlags;
+            unsigned long operationMask;
+            unsigned long objectTypeMask;
+            long lastStatus;
+            unsigned long long callbackAddress;
+            unsigned long long contextAddress;
+            unsigned long long registrationAddress;
+            unsigned long long rawStorageValue;
+            unsigned long long enumerationGeneration;
+            unsigned long long identityHash;
+            unsigned long trustFlags;
+            unsigned long removeBehavior;
+            unsigned long long moduleBase;
+            unsigned long moduleSize;
+            unsigned long ownerRangeState;
+            wchar_t name[KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS];
+            wchar_t altitude[KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS];
+            wchar_t modulePath[KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS];
+            wchar_t detail[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
+        };
     }
 
     AsyncIoResult DriverClient::waitCallbackEventAsync(
@@ -250,122 +280,236 @@ namespace ksword::ark
     CallbackEnumResult DriverClient::enumerateCallbacks(const unsigned long flags) const
     {
         CallbackEnumResult enumResult{};
-        KSWORD_ARK_ENUM_CALLBACKS_REQUEST request{};
-        request.size = sizeof(request);
-        request.version = KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION;
-        request.flags = flags;
-        request.maxEntries = 2048UL;
-
-        std::vector<std::uint8_t> responseBuffer(2U * 1024U * 1024U, 0U);
-        enumResult.io = deviceIoControl(
-            IOCTL_KSWORD_ARK_ENUM_CALLBACKS,
-            &request,
-            static_cast<unsigned long>(sizeof(request)),
-            responseBuffer.data(),
-            static_cast<unsigned long>(responseBuffer.size()));
-        if (!enumResult.io.ok)
-        {
-            enumResult.io.message = "DeviceIoControl(IOCTL_KSWORD_ARK_ENUM_CALLBACKS) failed, error=" + std::to_string(enumResult.io.win32Error);
-            return enumResult;
-        }
-
         constexpr std::size_t headerSize =
             sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE) -
             sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY);
-        if (enumResult.io.bytesReturned < headerSize)
-        {
-            enumResult.io.ok = false;
-            enumResult.io.win32Error = ERROR_INSUFFICIENT_BUFFER;
-            enumResult.io.message = "callback enum response too small, bytesReturned=" + std::to_string(enumResult.io.bytesReturned);
-            return enumResult;
-        }
-
-        const auto* responseHeader =
-            reinterpret_cast<const KSWORD_ARK_ENUM_CALLBACKS_RESPONSE*>(responseBuffer.data());
+        constexpr unsigned long pageEntryCount = 512UL;
+        constexpr std::size_t maximumResultRows = 32768U;
+        constexpr std::size_t maximumPageCount = 128U;
         constexpr std::size_t legacyEntrySize = sizeof(CallbackEnumLegacyEntry);
-        if (responseHeader->entrySize < legacyEntrySize)
-        {
-            enumResult.io.ok = false;
-            enumResult.io.win32Error = ERROR_INVALID_DATA;
-            enumResult.io.message = "callback enum entrySize invalid, entrySize=" + std::to_string(responseHeader->entrySize);
-            return enumResult;
-        }
+        constexpr std::size_t v1EntrySize = sizeof(CallbackEnumV1Entry);
+        const std::size_t responseBufferBytes =
+            headerSize + (static_cast<std::size_t>(pageEntryCount) * sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
+        std::vector<std::uint8_t> responseBuffer(responseBufferBytes, 0U);
+        unsigned long startIndex = 0UL;
+        std::size_t pageCount = 0U;
+        std::uint64_t totalResponseBytes = 0U;
+        bool useLegacyProtocol = false;
 
-        enumResult.version = static_cast<std::uint32_t>(responseHeader->version);
-        enumResult.totalCount = static_cast<std::uint32_t>(responseHeader->totalCount);
-        enumResult.returnedCount = static_cast<std::uint32_t>(responseHeader->returnedCount);
-        enumResult.flags = static_cast<std::uint32_t>(responseHeader->flags);
-        enumResult.lastStatus = static_cast<long>(responseHeader->lastStatus);
-        enumResult.io.ntStatus = enumResult.lastStatus;
-
-        const std::size_t availableCount =
-            (enumResult.io.bytesReturned - headerSize) /
-            static_cast<std::size_t>(responseHeader->entrySize);
-        const std::size_t parsedCount = std::min<std::size_t>(
-            static_cast<std::size_t>(responseHeader->returnedCount),
-            availableCount);
-        enumResult.entries.reserve(parsedCount);
-        for (std::size_t index = 0U; index < parsedCount; ++index)
+        while (pageCount < maximumPageCount)
         {
-            const std::size_t entryOffset =
-                headerSize + (index * static_cast<std::size_t>(responseHeader->entrySize));
-            if (entryOffset + legacyEntrySize > enumResult.io.bytesReturned)
+            KSWORD_ARK_ENUM_CALLBACKS_REQUEST request{};
+            request.size = sizeof(request);
+            request.version = useLegacyProtocol
+                ? 1UL
+                : KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION;
+            request.flags = flags;
+            request.maxEntries = pageEntryCount;
+            request.startIndex = startIndex;
+            std::fill(responseBuffer.begin(), responseBuffer.end(), 0U);
+
+            enumResult.io = deviceIoControl(
+                IOCTL_KSWORD_ARK_ENUM_CALLBACKS,
+                &request,
+                static_cast<unsigned long>(sizeof(request)),
+                responseBuffer.data(),
+                static_cast<unsigned long>(responseBuffer.size()));
+            if (!enumResult.io.ok)
             {
+                // 中文说明：v1/v2 请求大小相同；旧驱动会以 ERROR_INVALID_PARAMETER
+                // 拒绝 v2。仅首请求回退一次，保留旧驱动的一页只读兼容能力。
+                if (!useLegacyProtocol &&
+                    pageCount == 0U &&
+                    startIndex == 0UL &&
+                    enumResult.io.win32Error == ERROR_INVALID_PARAMETER)
+                {
+                    useLegacyProtocol = true;
+                    continue;
+                }
+                enumResult.io.message =
+                    "DeviceIoControl(IOCTL_KSWORD_ARK_ENUM_CALLBACKS) failed, page=" +
+                    std::to_string(pageCount) +
+                    ", startIndex=" + std::to_string(startIndex) +
+                    ", error=" + std::to_string(enumResult.io.win32Error);
+                return enumResult;
+            }
+            totalResponseBytes += enumResult.io.bytesReturned;
+            if (enumResult.io.bytesReturned < headerSize)
+            {
+                enumResult.io.ok = false;
+                enumResult.io.win32Error = ERROR_INSUFFICIENT_BUFFER;
+                enumResult.io.message =
+                    "callback enum response too small, bytesReturned=" +
+                    std::to_string(enumResult.io.bytesReturned);
+                return enumResult;
+            }
+
+            const auto* responseHeader =
+                reinterpret_cast<const KSWORD_ARK_ENUM_CALLBACKS_RESPONSE*>(responseBuffer.data());
+            if (responseHeader->entrySize < legacyEntrySize)
+            {
+                enumResult.io.ok = false;
+                enumResult.io.win32Error = ERROR_INVALID_DATA;
+                enumResult.io.message =
+                    "callback enum entrySize invalid, entrySize=" +
+                    std::to_string(responseHeader->entrySize);
+                return enumResult;
+            }
+
+            enumResult.version = static_cast<std::uint32_t>(responseHeader->version);
+            enumResult.totalCount = static_cast<std::uint32_t>(responseHeader->totalCount);
+            enumResult.flags |= static_cast<std::uint32_t>(responseHeader->flags);
+            enumResult.lastStatus = static_cast<long>(responseHeader->lastStatus);
+            enumResult.io.ntStatus = enumResult.lastStatus;
+
+            const std::size_t availableCount =
+                (enumResult.io.bytesReturned - headerSize) /
+                static_cast<std::size_t>(responseHeader->entrySize);
+            const std::size_t parsedCount = std::min<std::size_t>(
+                static_cast<std::size_t>(responseHeader->returnedCount),
+                availableCount);
+            if (parsedCount != static_cast<std::size_t>(responseHeader->returnedCount))
+            {
+                enumResult.io.ok = false;
+                enumResult.io.win32Error = ERROR_INVALID_DATA;
+                enumResult.io.message = "callback enum page returnedCount exceeds available bytes";
+                return enumResult;
+            }
+
+            if (enumResult.entries.size() + parsedCount > maximumResultRows)
+            {
+                enumResult.io.ok = false;
+                enumResult.io.win32Error = ERROR_BUFFER_OVERFLOW;
+                enumResult.io.message = "callback enum result exceeds safety row limit";
+                return enumResult;
+            }
+            enumResult.entries.reserve(std::min<std::size_t>(
+                static_cast<std::size_t>(enumResult.totalCount),
+                maximumResultRows));
+
+            for (std::size_t index = 0U; index < parsedCount; ++index)
+            {
+                const std::size_t entryOffset =
+                    headerSize + (index * static_cast<std::size_t>(responseHeader->entrySize));
+                CallbackEnumEntry row{};
+
+                if (responseHeader->entrySize >= sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY))
+                {
+                    const auto* sourceEntry =
+                        reinterpret_cast<const KSWORD_ARK_CALLBACK_ENUM_ENTRY*>(responseBuffer.data() + entryOffset);
+                    row.callbackClass = static_cast<std::uint32_t>(sourceEntry->callbackClass);
+                    row.source = static_cast<std::uint32_t>(sourceEntry->source);
+                    row.status = static_cast<std::uint32_t>(sourceEntry->status);
+                    row.fieldFlags = static_cast<std::uint32_t>(sourceEntry->fieldFlags);
+                    row.operationMask = static_cast<std::uint32_t>(sourceEntry->operationMask);
+                    row.objectTypeMask = static_cast<std::uint32_t>(sourceEntry->objectTypeMask);
+                    row.registrationType = static_cast<std::uint32_t>(sourceEntry->registrationType);
+                    row.lastStatus = static_cast<long>(sourceEntry->lastStatus);
+                    row.callbackAddress = static_cast<std::uint64_t>(sourceEntry->callbackAddress);
+                    row.contextAddress = static_cast<std::uint64_t>(sourceEntry->contextAddress);
+                    row.registrationAddress = static_cast<std::uint64_t>(sourceEntry->registrationAddress);
+                    row.rawStorageValue = static_cast<std::uint64_t>(sourceEntry->rawStorageValue);
+                    row.generation = static_cast<std::uint64_t>(sourceEntry->enumerationGeneration);
+                    row.identityHash = static_cast<std::uint64_t>(sourceEntry->identityHash);
+                    row.trustFlags = static_cast<std::uint32_t>(sourceEntry->trustFlags);
+                    row.removeBehavior = static_cast<std::uint32_t>(sourceEntry->removeBehavior);
+                    row.removeFlags = row.removeBehavior;
+                    row.moduleBase = static_cast<std::uint64_t>(sourceEntry->moduleBase);
+                    row.moduleSize = static_cast<std::uint32_t>(sourceEntry->moduleSize);
+                    row.name = fixedCallbackWideToString(sourceEntry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS);
+                    row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
+                    row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
+                    row.detail = fixedCallbackWideToString(sourceEntry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS);
+                }
+                else if (responseHeader->entrySize >= v1EntrySize)
+                {
+                    const auto* sourceEntry =
+                        reinterpret_cast<const CallbackEnumV1Entry*>(responseBuffer.data() + entryOffset);
+                    row.callbackClass = static_cast<std::uint32_t>(sourceEntry->callbackClass);
+                    row.source = static_cast<std::uint32_t>(sourceEntry->source);
+                    row.status = static_cast<std::uint32_t>(sourceEntry->status);
+                    row.fieldFlags = static_cast<std::uint32_t>(sourceEntry->fieldFlags);
+                    row.operationMask = static_cast<std::uint32_t>(sourceEntry->operationMask);
+                    row.objectTypeMask = static_cast<std::uint32_t>(sourceEntry->objectTypeMask);
+                    row.lastStatus = static_cast<long>(sourceEntry->lastStatus);
+                    row.callbackAddress = static_cast<std::uint64_t>(sourceEntry->callbackAddress);
+                    row.contextAddress = static_cast<std::uint64_t>(sourceEntry->contextAddress);
+                    row.registrationAddress = static_cast<std::uint64_t>(sourceEntry->registrationAddress);
+                    row.rawStorageValue = static_cast<std::uint64_t>(sourceEntry->rawStorageValue);
+                    row.generation = static_cast<std::uint64_t>(sourceEntry->enumerationGeneration);
+                    row.identityHash = static_cast<std::uint64_t>(sourceEntry->identityHash);
+                    row.trustFlags = static_cast<std::uint32_t>(sourceEntry->trustFlags);
+                    row.removeBehavior = static_cast<std::uint32_t>(sourceEntry->removeBehavior);
+                    row.removeFlags = row.removeBehavior;
+                    row.moduleBase = static_cast<std::uint64_t>(sourceEntry->moduleBase);
+                    row.moduleSize = static_cast<std::uint32_t>(sourceEntry->moduleSize);
+                    row.name = fixedCallbackWideToString(sourceEntry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS);
+                    row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
+                    row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
+                    row.detail = fixedCallbackWideToString(sourceEntry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS);
+                }
+                else
+                {
+                    const auto* sourceEntry =
+                        reinterpret_cast<const CallbackEnumLegacyEntry*>(responseBuffer.data() + entryOffset);
+                    row.callbackClass = static_cast<std::uint32_t>(sourceEntry->callbackClass);
+                    row.source = static_cast<std::uint32_t>(sourceEntry->source);
+                    row.status = static_cast<std::uint32_t>(sourceEntry->status);
+                    row.fieldFlags = static_cast<std::uint32_t>(sourceEntry->fieldFlags);
+                    row.operationMask = static_cast<std::uint32_t>(sourceEntry->operationMask);
+                    row.objectTypeMask = static_cast<std::uint32_t>(sourceEntry->objectTypeMask);
+                    row.lastStatus = static_cast<long>(sourceEntry->lastStatus);
+                    row.callbackAddress = static_cast<std::uint64_t>(sourceEntry->callbackAddress);
+                    row.contextAddress = static_cast<std::uint64_t>(sourceEntry->contextAddress);
+                    row.registrationAddress = static_cast<std::uint64_t>(sourceEntry->registrationAddress);
+                    row.moduleBase = static_cast<std::uint64_t>(sourceEntry->moduleBase);
+                    row.moduleSize = static_cast<std::uint32_t>(sourceEntry->moduleSize);
+                    row.name = fixedCallbackWideToString(sourceEntry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS);
+                    row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
+                    row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
+                    row.detail = fixedCallbackWideToString(sourceEntry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS);
+                }
+                enumResult.entries.push_back(std::move(row));
+            }
+
+            ++pageCount;
+            const bool pagedProtocol = responseHeader->version >= 2UL;
+            const unsigned long nextIndex = pagedProtocol
+                ? responseHeader->nextIndex
+                : startIndex + static_cast<unsigned long>(parsedCount);
+            const bool moreData =
+                pagedProtocol &&
+                (((responseHeader->flags & KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_MORE_DATA) != 0UL) ||
+                    nextIndex < responseHeader->totalCount);
+            if (!moreData)
+            {
+                startIndex = nextIndex;
                 break;
             }
+            if (nextIndex <= startIndex)
+            {
+                enumResult.io.ok = false;
+                enumResult.io.win32Error = ERROR_INVALID_DATA;
+                enumResult.io.message = "callback enum pagination made no forward progress";
+                return enumResult;
+            }
+            startIndex = nextIndex;
+        }
 
-            CallbackEnumEntry row{};
-            if (responseHeader->entrySize >= sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY))
-            {
-                const auto* sourceEntry =
-                    reinterpret_cast<const KSWORD_ARK_CALLBACK_ENUM_ENTRY*>(responseBuffer.data() + entryOffset);
-                row.callbackClass = static_cast<std::uint32_t>(sourceEntry->callbackClass);
-                row.source = static_cast<std::uint32_t>(sourceEntry->source);
-                row.status = static_cast<std::uint32_t>(sourceEntry->status);
-                row.fieldFlags = static_cast<std::uint32_t>(sourceEntry->fieldFlags);
-                row.operationMask = static_cast<std::uint32_t>(sourceEntry->operationMask);
-                row.objectTypeMask = static_cast<std::uint32_t>(sourceEntry->objectTypeMask);
-                row.lastStatus = static_cast<long>(sourceEntry->lastStatus);
-                row.callbackAddress = static_cast<std::uint64_t>(sourceEntry->callbackAddress);
-                row.contextAddress = static_cast<std::uint64_t>(sourceEntry->contextAddress);
-                row.registrationAddress = static_cast<std::uint64_t>(sourceEntry->registrationAddress);
-#if defined(KSWORD_ARK_CALLBACK_ENUM_FIELD_RAW_STORAGE_VALUE)
-                row.rawStorageValue = static_cast<std::uint64_t>(sourceEntry->rawStorageValue);
-                row.generation = static_cast<std::uint64_t>(sourceEntry->enumerationGeneration);
-                row.identityHash = static_cast<std::uint64_t>(sourceEntry->identityHash);
-                row.trustFlags = static_cast<std::uint32_t>(sourceEntry->trustFlags);
-                row.removeBehavior = static_cast<std::uint32_t>(sourceEntry->removeBehavior);
-                row.removeFlags = row.removeBehavior;
-#endif
-                row.moduleBase = static_cast<std::uint64_t>(sourceEntry->moduleBase);
-                row.moduleSize = static_cast<std::uint32_t>(sourceEntry->moduleSize);
-                row.name = fixedCallbackWideToString(sourceEntry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS);
-                row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
-                row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
-                row.detail = fixedCallbackWideToString(sourceEntry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS);
-            }
-            else
-            {
-                const auto* sourceEntry =
-                    reinterpret_cast<const CallbackEnumLegacyEntry*>(responseBuffer.data() + entryOffset);
-                row.callbackClass = static_cast<std::uint32_t>(sourceEntry->callbackClass);
-                row.source = static_cast<std::uint32_t>(sourceEntry->source);
-                row.status = static_cast<std::uint32_t>(sourceEntry->status);
-                row.fieldFlags = static_cast<std::uint32_t>(sourceEntry->fieldFlags);
-                row.operationMask = static_cast<std::uint32_t>(sourceEntry->operationMask);
-                row.objectTypeMask = static_cast<std::uint32_t>(sourceEntry->objectTypeMask);
-                row.lastStatus = static_cast<long>(sourceEntry->lastStatus);
-                row.callbackAddress = static_cast<std::uint64_t>(sourceEntry->callbackAddress);
-                row.contextAddress = static_cast<std::uint64_t>(sourceEntry->contextAddress);
-                row.registrationAddress = static_cast<std::uint64_t>(sourceEntry->registrationAddress);
-                row.moduleBase = static_cast<std::uint64_t>(sourceEntry->moduleBase);
-                row.moduleSize = static_cast<std::uint32_t>(sourceEntry->moduleSize);
-                row.name = fixedCallbackWideToString(sourceEntry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS);
-                row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
-                row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
-                row.detail = fixedCallbackWideToString(sourceEntry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS);
-            }
-            enumResult.entries.push_back(std::move(row));
+        if (pageCount >= maximumPageCount && startIndex < enumResult.totalCount)
+        {
+            enumResult.io.ok = false;
+            enumResult.io.win32Error = ERROR_BUFFER_OVERFLOW;
+            enumResult.io.message = "callback enum exceeded safety page limit";
+            return enumResult;
+        }
+
+        enumResult.returnedCount = static_cast<std::uint32_t>(enumResult.entries.size());
+        if (enumResult.returnedCount >= enumResult.totalCount)
+        {
+            enumResult.flags &= ~static_cast<std::uint32_t>(
+                KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_TRUNCATED |
+                KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_MORE_DATA);
         }
 
         std::ostringstream stream;
@@ -373,8 +517,9 @@ namespace ksword::ark
             << ", total=" << enumResult.totalCount
             << ", returned=" << enumResult.returnedCount
             << ", parsed=" << enumResult.entries.size()
+            << ", pages=" << pageCount
             << ", flags=0x" << std::hex << enumResult.flags
-            << ", bytesReturned=" << std::dec << enumResult.io.bytesReturned;
+            << ", bytesReturned=" << std::dec << totalResponseBytes;
         enumResult.io.message = stream.str();
         return enumResult;
     }

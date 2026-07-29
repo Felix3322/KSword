@@ -3,6 +3,7 @@
 #include "callback_internal.h"
 
 #if defined(KSWORD_ARK_CALLBACK_EXTERNAL_ENABLE_FULL)
+#include "callback_extended_kernel.h"
 #include "callback_external_minifilter.h"
 #include "callback_external_safe.h"
 #include "callback_external_wfp.h"
@@ -35,6 +36,9 @@ Return Value:
     }
 
 #if defined(KSWORD_ARK_CALLBACK_EXTERNAL_ENABLE_FULL)
+    KswordArkCallbackExtendedAddBugcheckCallbacks(Builder);
+    KswordArkCallbackExtendedAddObjectCallbacks(Builder);
+    KswordArkCallbackExtendedAddSystemCallbacks(Builder);
     KswordArkCallbackExternalWfpAddCallbacks(Builder);
     KswordArkCallbackExternalSafeAddCallbacks(Builder);
     KswordArkCallbackExternalMinifilterAddCallbacks(Builder);

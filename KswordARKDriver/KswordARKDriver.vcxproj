@@ -27,6 +27,10 @@
     <ClCompile Include="src\features\callback\callback_waiter.c" />
     <ClCompile Include="src\features\callback\callback_remove_external.c" />
     <ClCompile Include="src\features\callback\callback_enum.c" />
+    <ClCompile Include="src\features\callback\callback_extended_support.c" />
+    <ClCompile Include="src\features\callback\callback_extended_bugcheck.c" />
+    <ClCompile Include="src\features\callback\callback_extended_object.c" />
+    <ClCompile Include="src\features\callback\callback_extended_system.c" />
     <ClCompile Include="src\features\callback\callback_minifilter_enum.c" />
     <ClCompile Include="src\features\callback\minifilter_callback.c" />
     <ClCompile Include="src\features\callback\minifilter_inventory.c" />
@@ -166,6 +170,8 @@
     <ClInclude Include="src\features\process\process_extended.h" />
     <ClInclude Include="src\features\process\process_crossview.h" />
     <ClInclude Include="src\features\callback\callback_internal.h" />
+    <ClInclude Include="src\features\callback\callback_extended_internal.h" />
+    <ClInclude Include="src\features\callback\callback_extended_kernel.h" />
     <ClInclude Include="Public.h" />
     <ClInclude Include="Queue.h" />
     <ClInclude Include="src\platform\process_resolver.h" />

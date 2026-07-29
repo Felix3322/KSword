@@ -282,6 +282,8 @@
       <Filter>Header Files</Filter>
     </ClInclude>
   <ClInclude Include="src\features\callback\callback_external_core.h"><Filter>Header Files</Filter></ClInclude><ClInclude Include="src\features\callback\callback_external_wfp.h"><Filter>Header Files</Filter></ClInclude><ClInclude Include="src\features\callback\callback_external_minifilter.h"><Filter>Header Files</Filter></ClInclude><ClInclude Include="src\features\callback\callback_external_safe.h"><Filter>Header Files</Filter></ClInclude>    <ClInclude Include="include\ark\ark_memory_evidence.h"><Filter>Header Files\Ark</Filter></ClInclude><ClInclude Include="src\features\memory\memory_evidence_enrichment.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\callback\callback_extended_internal.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\callback\callback_extended_kernel.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\memory\memory_kernel_exec_scan_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="include\ark\ark_mutation.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkKernelObjectIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
@@ -318,6 +320,18 @@
       <Filter>Source Files\Features\Callback</Filter>
     </ClCompile>
     <ClCompile Include="src\features\callback\callback_enum.c">
+      <Filter>Source Files\Features\Callback</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\callback\callback_extended_support.c">
+      <Filter>Source Files\Features\Callback</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\callback\callback_extended_bugcheck.c">
+      <Filter>Source Files\Features\Callback</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\callback\callback_extended_object.c">
+      <Filter>Source Files\Features\Callback</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\callback\callback_extended_system.c">
       <Filter>Source Files\Features\Callback</Filter>
     </ClCompile>
     <ClCompile Include="src\features\callback\callback_minifilter_enum.c">

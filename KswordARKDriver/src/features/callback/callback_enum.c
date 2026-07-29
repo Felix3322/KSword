@@ -18,6 +18,7 @@ Environment:
 #include "callback_internal.h"
 #define KSWORD_ARK_CALLBACK_EXTERNAL_ENABLE_FULL 1
 #include "callback_external_core.h"
+#include "callback_extended_kernel.h"
 #include "ark/ark_dyndata.h"
 
 #define KSWORD_ARK_CALLBACK_ENUM_TAG 'eCbK'
@@ -1218,15 +1219,27 @@ KswordArkCallbackEnumReserveEntry(
     )
 {
     KSWORD_ARK_CALLBACK_ENUM_ENTRY* entry = NULL;
+    ULONG entryIndex = 0UL;
 
     if (Builder == NULL || Builder->Response == NULL) {
         return NULL;
     }
 
+    /* 中文说明：先记录全量序号；分页前的行仍要完整枚举，保证 totalCount 稳定。 */
+    entryIndex = Builder->TotalCount;
     Builder->TotalCount += 1UL;
+    if (entryIndex < Builder->StartIndex) {
+        RtlZeroMemory(&Builder->ScratchEntry, sizeof(Builder->ScratchEntry));
+        Builder->ScratchEntry.size = sizeof(Builder->ScratchEntry);
+        return &Builder->ScratchEntry;
+    }
+
+    /* 中文说明：当前页写满后继续用 scratch 行完成只读遍历和总数统计。 */
     if (Builder->ReturnedCount >= Builder->EntryCapacity) {
         Builder->Flags |= KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_TRUNCATED;
-        return NULL;
+        RtlZeroMemory(&Builder->ScratchEntry, sizeof(Builder->ScratchEntry));
+        Builder->ScratchEntry.size = sizeof(Builder->ScratchEntry);
+        return &Builder->ScratchEntry;
     }
 
     entry = &Builder->Response->entries[Builder->ReturnedCount];
@@ -1381,6 +1394,7 @@ KswordArkCallbackEnumAddSelfRow(
     _In_ ULONG RegisteredMask,
     _In_ ULONG RequiredMask,
     _In_ ULONG CallbackClass,
+    _In_ ULONG RegistrationType,
     _In_ ULONG OperationMask,
     _In_ ULONG ObjectTypeMask,
     _In_ ULONG64 CallbackAddress,
@@ -1403,6 +1417,7 @@ Arguments:
     RegisteredMask - runtime 中的已注册回调位图。
     RequiredMask - 当前记录对应的必需位。
     CallbackClass - 回调类别。
+    RegistrationType - 具体注册 API 类型。
     OperationMask - 回调操作掩码。
     ObjectTypeMask - 对象类型掩码。
     CallbackAddress - 回调函数地址。
@@ -1426,6 +1441,7 @@ Return Value:
     }
 
     entry->callbackClass = CallbackClass;
+    entry->registrationType = RegistrationType;
     entry->source = KSWORD_ARK_CALLBACK_ENUM_SOURCE_KSWORD_SELF;
     entry->status = ((RegisteredMask & RequiredMask) != 0UL)
         ? KSWORD_ARK_CALLBACK_ENUM_STATUS_OK
@@ -1433,6 +1449,10 @@ Return Value:
     entry->fieldFlags = KSWORD_ARK_CALLBACK_ENUM_FIELD_OWNED_BY_KSWORD;
     entry->operationMask = OperationMask;
     entry->objectTypeMask = ObjectTypeMask;
+    if ((ObjectTypeMask & KSWORD_ARK_OBJECT_OP_TYPE_DESKTOP) != 0UL) {
+        entry->registrationType = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_DESKTOP_OBJECT;
+        entry->fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_REGISTRATION_TYPE;
+    }
     entry->callbackAddress = CallbackAddress;
     entry->contextAddress = ContextAddress;
     entry->registrationAddress = RegistrationAddress;
@@ -1452,6 +1472,9 @@ Return Value:
     }
     if (ObjectTypeMask != 0UL) {
         entry->fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_OBJECT_TYPE_MASK;
+    }
+    if (RegistrationType != KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN) {
+        entry->fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_REGISTRATION_TYPE;
     }
     if (NameText != NULL) {
         entry->fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_NAME;
@@ -1526,6 +1549,7 @@ Return Value:
         registeredMask,
         KSWORD_ARK_CALLBACK_REGISTERED_REGISTRY,
         KSWORD_ARK_CALLBACK_ENUM_CLASS_REGISTRY,
+        KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN,
         KSWORD_ARK_REG_OP_ALL,
         0UL,
         (ULONG64)(ULONG_PTR)KswordArkRegistryCallback,
@@ -1540,6 +1564,7 @@ Return Value:
         registeredMask,
         KSWORD_ARK_CALLBACK_REGISTERED_PROCESS,
         KSWORD_ARK_CALLBACK_ENUM_CLASS_PROCESS,
+        KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX,
         KSWORD_ARK_PROCESS_OP_CREATE,
         0UL,
         (ULONG64)(ULONG_PTR)KswordArkProcessCreateNotifyEx,
@@ -1554,6 +1579,7 @@ Return Value:
         registeredMask,
         KSWORD_ARK_CALLBACK_REGISTERED_THREAD,
         KSWORD_ARK_CALLBACK_ENUM_CLASS_THREAD,
+        KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN,
         KSWORD_ARK_THREAD_OP_CREATE | KSWORD_ARK_THREAD_OP_EXIT,
         0UL,
         (ULONG64)(ULONG_PTR)KswordArkThreadCreateNotify,
@@ -1568,6 +1594,7 @@ Return Value:
         registeredMask,
         KSWORD_ARK_CALLBACK_REGISTERED_IMAGE,
         KSWORD_ARK_CALLBACK_ENUM_CLASS_IMAGE,
+        KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN,
         KSWORD_ARK_IMAGE_OP_LOAD,
         0UL,
         (ULONG64)(ULONG_PTR)KswordArkLoadImageNotify,
@@ -1582,6 +1609,7 @@ Return Value:
         registeredMask,
         KSWORD_ARK_CALLBACK_REGISTERED_OBJECT,
         KSWORD_ARK_CALLBACK_ENUM_CLASS_OBJECT,
+        KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN,
         KSWORD_ARK_OBJECT_OP_HANDLE_CREATE | KSWORD_ARK_OBJECT_OP_HANDLE_DUPLICATE,
         KSWORD_ARK_OBJECT_OP_TYPE_PROCESS | KSWORD_ARK_OBJECT_OP_TYPE_THREAD,
         (ULONG64)(ULONG_PTR)KswordArkObjectPreOperation,
@@ -1596,6 +1624,7 @@ Return Value:
         registeredMask,
         KSWORD_ARK_CALLBACK_REGISTERED_MINIFILTER,
         KSWORD_ARK_CALLBACK_ENUM_CLASS_MINIFILTER,
+        KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN,
         KSWORD_ARK_MINIFILTER_OP_ALL,
         0UL,
         (ULONG64)(ULONG_PTR)KswordArkMinifilterPreOperation,
@@ -1604,6 +1633,8 @@ Return Value:
         L"KswordArkMinifilterPreOperation",
         L"385210",
         L"FltRegisterFilter 文件系统微过滤器回调；同时服务文件监控和自定义回调规则。");
+
+    KswordArkCallbackExtendedAddSelfBugcheckCallbacks(Builder);
 }
 
 static VOID
@@ -2024,6 +2055,66 @@ Return Value:
 }
 
 static VOID
+KswordArkCallbackEnumClassifyProcessNotifyRegistration(
+    _In_ ULONG CallbackClass,
+    _In_ ULONG64 ContextAddress,
+    _Out_ ULONG* RegistrationTypeOut,
+    _Outptr_ PCWSTR* RegistrationNameOut
+    )
+/*++
+
+Routine Description:
+
+    识别进程 Notify 的注册 API。中文说明：PspSetCreateProcessNotifyRoutine
+    把 Legacy/Ex/Ex2 模式编码在 EX_CALLBACK_ROUTINE_BLOCK.Context 中，
+    当前内核注册态分别为 0、2、6；未知值保守保留为 Unknown。
+
+Arguments:
+
+    CallbackClass - 回调类别。
+    ContextAddress - routine block 的 Context 原始值。
+    RegistrationTypeOut - 输出共享协议注册类型。
+    RegistrationNameOut - 输出名称后缀。
+
+Return Value:
+
+    无返回值。
+
+--*/
+{
+    if (RegistrationTypeOut == NULL || RegistrationNameOut == NULL) {
+        return;
+    }
+
+    *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN;
+    *RegistrationNameOut = L"N/A";
+    if (CallbackClass != KSWORD_ARK_CALLBACK_ENUM_CLASS_PROCESS) {
+        return;
+    }
+    *RegistrationNameOut = L"Unknown";
+
+    switch (ContextAddress) {
+    case 0ULL:
+        *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_LEGACY;
+        *RegistrationNameOut = L"Legacy";
+        break;
+
+    case 2ULL:
+        *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX;
+        *RegistrationNameOut = L"Ex";
+        break;
+
+    case 6ULL:
+        *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX2;
+        *RegistrationNameOut = L"Ex2";
+        break;
+
+    default:
+        break;
+    }
+}
+
+static VOID
 KswordArkCallbackEnumAddNotifyArrayEntry(
     _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder,
     _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
@@ -2069,6 +2160,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_CALLBACK_ENUM_ENTRY* entry = NULL;
+    ULONG registrationType = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN;
+    PCWSTR registrationName = L"Unknown";
 
     entry = KswordArkCallbackEnumReserveEntry(Builder);
     if (entry == NULL) {
@@ -2086,6 +2179,15 @@ Return Value:
         KSWORD_ARK_CALLBACK_ENUM_FIELD_OPERATION_MASK |
         KSWORD_ARK_CALLBACK_ENUM_FIELD_STORAGE_ADDRESS;
     entry->operationMask = OperationMask;
+    KswordArkCallbackEnumClassifyProcessNotifyRegistration(
+        CallbackClass,
+        ContextAddress,
+        &registrationType,
+        &registrationName);
+    entry->registrationType = registrationType;
+    if (registrationType != KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN) {
+        entry->fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_REGISTRATION_TYPE;
+    }
     entry->callbackAddress = FunctionAddress;
     entry->contextAddress = ContextAddress;
     entry->registrationAddress = SlotAddress;
@@ -2098,18 +2200,30 @@ Return Value:
         entry->trustFlags |= KSWORD_ARK_CALLBACK_TRUST_FALLBACK_PATTERN;
     }
 
-    (VOID)RtlStringCbPrintfW(
-        entry->name,
-        sizeof(entry->name),
-        L"%ws[%lu]",
-        (NamePrefix != NULL) ? NamePrefix : L"PspNotify",
-        (unsigned long)SlotIndex);
+    if (CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_PROCESS) {
+        (VOID)RtlStringCbPrintfW(
+            entry->name,
+            sizeof(entry->name),
+            L"%ws/%ws[%lu]",
+            (NamePrefix != NULL) ? NamePrefix : L"PspNotify",
+            registrationName,
+            (unsigned long)SlotIndex);
+    }
+    else {
+        (VOID)RtlStringCbPrintfW(
+            entry->name,
+            sizeof(entry->name),
+            L"%ws[%lu]",
+            (NamePrefix != NULL) ? NamePrefix : L"PspNotify",
+            (unsigned long)SlotIndex);
+    }
     if (SourceContext != NULL && SourceContext->Source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_PDB_PROFILE) {
         (VOID)RtlStringCbPrintfW(
             entry->detail,
             sizeof(entry->detail),
-            L"%ws；RVA=0x%08lX，slot=0x%p，EX_FAST_REF=0x%llX，RoutineBlock=0x%p，Function=0x%p，Context=0x%p。",
+            L"%ws；RegistrationType=%ws，RVA=0x%08lX，slot=0x%p，EX_FAST_REF=0x%llX，RoutineBlock=0x%p，Function=0x%p，Context=0x%p。",
             (SourceContext->DetailPrefix != NULL) ? SourceContext->DetailPrefix : L"PDB callback profile trusted notify array",
+            registrationName,
             (unsigned long)SourceRva,
             (PVOID)(ULONG_PTR)SlotAddress,
             FastRefValue,
@@ -2121,7 +2235,8 @@ Return Value:
         (VOID)RtlStringCbPrintfW(
             entry->detail,
             sizeof(entry->detail),
-            L"Psp notify 私有数组项；fallback=pattern scan，slot=0x%p，EX_FAST_REF=0x%llX，RoutineBlock=0x%p，Function=0x%p，Context=0x%p。",
+            L"Psp notify 私有数组项；RegistrationType=%ws，fallback=pattern scan，slot=0x%p，EX_FAST_REF=0x%llX，RoutineBlock=0x%p，Function=0x%p，Context=0x%p。",
+            registrationName,
             (PVOID)(ULONG_PTR)SlotAddress,
             FastRefValue,
             (PVOID)(ULONG_PTR)RoutineBlock,
@@ -3002,6 +3117,10 @@ Return Value:
         KSWORD_ARK_CALLBACK_ENUM_FIELD_STORAGE_ADDRESS;
     entry->operationMask = OperationMask;
     entry->objectTypeMask = ObjectTypeMask;
+    if ((ObjectTypeMask & KSWORD_ARK_OBJECT_OP_TYPE_DESKTOP) != 0UL) {
+        entry->registrationType = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_DESKTOP_OBJECT;
+        entry->fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_REGISTRATION_TYPE;
+    }
     entry->callbackAddress = CallbackAddress;
     entry->registrationAddress = NodeAddress;
     entry->contextAddress = RegistrationBlock;
@@ -3552,6 +3671,16 @@ Return Value:
             &pdbProfile,
             pdbProfile.Active ? &g_KswordArkCallbackEnumPdbObjectSourceContext : NULL);
     }
+    if (ExDesktopObjectType != NULL && *ExDesktopObjectType != NULL) {
+        addedCount += KswordArkCallbackEnumAddObjectTypeCallbackList(
+            Builder,
+            &moduleCache,
+            *ExDesktopObjectType,
+            KSWORD_ARK_OBJECT_OP_TYPE_DESKTOP,
+            L"Desktop",
+            &pdbProfile,
+            pdbProfile.Active ? &g_KswordArkCallbackEnumPdbObjectSourceContext : NULL);
+    }
     if (addedCount == 0UL) {
         if (pdbProfile.Active &&
             KswordArkCallbackEnumPdbOffsetAvailable(
@@ -3579,7 +3708,7 @@ Return Value:
                 Builder,
                 KSWORD_ARK_CALLBACK_ENUM_CLASS_OBJECT,
                 L"OBJECT_TYPE CallbackList empty",
-                L"未能在 Process/Thread OBJECT_TYPE 私有区域识别非空 CallbackList；对象回调结构随版本变化较大。");
+                L"未能在 Process/Thread/Desktop OBJECT_TYPE 私有区域识别非空 CallbackList；对象回调结构随版本变化较大。");
         }
     }
 
@@ -3725,7 +3854,9 @@ Return Value:
     size_t outputLength = 0U;
     ULONG requestFlags = KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_ALL;
     ULONG requestMaxEntries = KSWORD_ARK_CALLBACK_ENUM_MAX_ENTRIES;
+    ULONG requestStartIndex = 0UL;
     ULONG outputCapacity = 0UL;
+    ULONG nextIndex = 0UL;
     KSWORD_ARK_ENUM_CALLBACKS_REQUEST* requestPacket = NULL;
     KSWORD_ARK_ENUM_CALLBACKS_RESPONSE* responsePacket = NULL;
     KSWORD_ARK_CALLBACK_ENUM_BUILDER builder;
@@ -3780,6 +3911,7 @@ Return Value:
     if (requestPacket->maxEntries != 0UL) {
         requestMaxEntries = requestPacket->maxEntries;
     }
+    requestStartIndex = requestPacket->startIndex;
     if (requestMaxEntries > KSWORD_ARK_CALLBACK_ENUM_MAX_ENTRIES) {
         requestMaxEntries = KSWORD_ARK_CALLBACK_ENUM_MAX_ENTRIES;
     }
@@ -3800,6 +3932,7 @@ Return Value:
     RtlZeroMemory(&builder, sizeof(builder));
     builder.Response = responsePacket;
     builder.EntryCapacity = outputCapacity;
+    builder.StartIndex = requestStartIndex;
     builder.LastStatus = STATUS_SUCCESS;
 
     if ((requestFlags & KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_KSWORD_SELF) != 0UL) {
@@ -3820,6 +3953,17 @@ Return Value:
     responsePacket->returnedCount = builder.ReturnedCount;
     responsePacket->flags = builder.Flags;
     responsePacket->lastStatus = builder.LastStatus;
+    if (requestStartIndex <= builder.TotalCount &&
+        builder.ReturnedCount <= (builder.TotalCount - requestStartIndex)) {
+        nextIndex = requestStartIndex + builder.ReturnedCount;
+    }
+    else {
+        nextIndex = builder.TotalCount;
+    }
+    responsePacket->nextIndex = nextIndex;
+    if (nextIndex < builder.TotalCount) {
+        responsePacket->flags |= KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_MORE_DATA;
+    }
     *CompleteBytesOut = (size_t)g_KswordArkCallbackEnumHeaderBytes +
         ((size_t)builder.ReturnedCount * sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
 

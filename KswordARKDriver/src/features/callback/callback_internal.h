@@ -141,10 +141,12 @@ typedef struct _KSWORD_ARK_CALLBACK_ENUM_BUILDER
 {
     KSWORD_ARK_ENUM_CALLBACKS_RESPONSE* Response;
     ULONG EntryCapacity;
+    ULONG StartIndex;
     ULONG TotalCount;
     ULONG ReturnedCount;
     ULONG Flags;
     NTSTATUS LastStatus;
+    KSWORD_ARK_CALLBACK_ENUM_ENTRY ScratchEntry;
 } KSWORD_ARK_CALLBACK_ENUM_BUILDER;
 
 typedef struct _KSWORD_ARK_CALLBACK_MODULE_ENTRY

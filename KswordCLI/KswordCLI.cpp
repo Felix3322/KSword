@@ -4757,10 +4757,10 @@ namespace
         dumpWideText(L"ruleName", fixedWide(packet.ruleName, KSWORD_ARK_CALLBACK_EVENT_MAX_NAME_CHARS));
     }
 
-    // queryCallbackInventory prints read-only callback/hook/filter evidence rows.
-    // Inputs: parsed args for flags/max entries/visible limit.
-    // Processing: sends callback enum IOCTL; it never calls removal controls.
-    // Returns: CLI exit code.
+    // queryCallbackInventory：分页打印只读 callback/hook/filter 证据，绝不调用移除控制。
+    // 输入：flags、每页最大条目数以及控制台可见条目上限。
+    // 处理：依据 nextIndex 连续请求，直到达到可见上限或驱动明确返回末页。
+    // 返回：成功返回 0；协议或 IOCTL 失败返回对应 CLI 错误码。
     int queryCallbackInventory(const NamedArgs& args)
     {
         KSWORD_ARK_ENUM_CALLBACKS_REQUEST request{};
@@ -4768,35 +4768,98 @@ namespace
         request.version = KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION;
         request.flags = getOptionU32(args, L"--flags", KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_ALL);
         request.maxEntries = getOptionU32(args, L"--max-entries", 512U);
-        IoctlResult io{};
+        const std::size_t visibleLimit = getOptionU32(args, L"--limit", 128U);
         std::vector<std::uint8_t> buffer(kLargeResponseBytes, 0U);
-        const int rc = sendRawIoctl(L"IOCTL_KSWORD_ARK_ENUM_CALLBACKS", IOCTL_KSWORD_ARK_ENUM_CALLBACKS, &request, sizeof(request), buffer, io);
-        if (rc != 0) return normalizeIoctlRc(L"callback inventory", io, rc);
         constexpr std::size_t headerSize = sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE) - sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY);
-        const auto* response = reinterpret_cast<const KSWORD_ARK_ENUM_CALLBACKS_RESPONSE*>(buffer.data());
-        std::size_t available = 0U;
-        try { available = validateVariable(io.bytesReturned, headerSize, response->entrySize, sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY), L"callback enum"); }
-        catch (...) { return 4; }
-        printResponseBanner(response->version, response->flags, response->lastStatus, io.bytesReturned);
-        printCountHeader(response->version, response->totalCount, response->returnedCount, response->entrySize, io.bytesReturned);
-        const std::size_t parsed = responseCountLimit(response->returnedCount, available, getOptionU32(args, L"--limit", 128U));
-        for (std::size_t i = 0; i < parsed; ++i)
+        std::size_t printedCount = 0U;
+        std::uint32_t pageCount = 0U;
+        std::uint32_t startIndex = 0U;
+
+        while (printedCount < visibleLimit)
         {
-            const auto* entry = reinterpret_cast<const KSWORD_ARK_CALLBACK_ENUM_ENTRY*>(buffer.data() + headerSize + (i * response->entrySize));
-            std::wcout << L"  [" << i << L"] class=" << entry->callbackClass
-                       << L" source=" << entry->source
-                       << L" status=" << entry->status
-                       << L" fields=0x" << std::hex << entry->fieldFlags
-                       << L" callback=" << hex64(entry->callbackAddress)
-                       << L" context=" << hex64(entry->contextAddress)
-                       << L" registration=" << hex64(entry->registrationAddress)
-                       << L" rawStorage=" << hex64(entry->rawStorageValue)
-                       << L" moduleBase=" << hex64(entry->moduleBase)
-                       << std::dec << L" operationMask=0x" << std::hex << entry->operationMask
-                       << L" objectTypeMask=0x" << entry->objectTypeMask
-                       << std::dec << L" name='" << fixedWide(entry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS)
-                       << L"' altitude='" << fixedWide(entry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS)
-                       << L"' detail='" << fixedWide(entry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS) << L"'\n";
+            IoctlResult io{};
+            std::fill(buffer.begin(), buffer.end(), 0U);
+            request.startIndex = startIndex;
+
+            const int rc = sendRawIoctl(
+                L"IOCTL_KSWORD_ARK_ENUM_CALLBACKS",
+                IOCTL_KSWORD_ARK_ENUM_CALLBACKS,
+                &request,
+                sizeof(request),
+                buffer,
+                io);
+            if (rc != 0)
+            {
+                return normalizeIoctlRc(L"callback inventory", io, rc);
+            }
+
+            const auto* response = reinterpret_cast<const KSWORD_ARK_ENUM_CALLBACKS_RESPONSE*>(buffer.data());
+            std::size_t available = 0U;
+            try
+            {
+                available = validateVariable(
+                    io.bytesReturned,
+                    headerSize,
+                    response->entrySize,
+                    sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY),
+                    L"callback enum");
+            }
+            catch (...)
+            {
+                return 4;
+            }
+
+            if (pageCount == 0U)
+            {
+                printResponseBanner(response->version, response->flags, response->lastStatus, io.bytesReturned);
+                printCountHeader(
+                    response->version,
+                    response->totalCount,
+                    response->returnedCount,
+                    response->entrySize,
+                    io.bytesReturned);
+            }
+
+            const std::size_t remainingVisible = visibleLimit - printedCount;
+            const std::size_t parsed = responseCountLimit(
+                response->returnedCount,
+                available,
+                remainingVisible);
+            for (std::size_t i = 0U; i < parsed; ++i)
+            {
+                const auto* entry = reinterpret_cast<const KSWORD_ARK_CALLBACK_ENUM_ENTRY*>(
+                    buffer.data() + headerSize + (i * response->entrySize));
+                std::wcout << L"  [" << (static_cast<std::size_t>(startIndex) + i)
+                           << L"] class=" << entry->callbackClass
+                           << L" registrationType=" << entry->registrationType
+                           << L" source=" << entry->source
+                           << L" status=" << entry->status
+                           << L" fields=0x" << std::hex << entry->fieldFlags
+                           << L" callback=" << hex64(entry->callbackAddress)
+                           << L" context=" << hex64(entry->contextAddress)
+                           << L" registration=" << hex64(entry->registrationAddress)
+                           << L" rawStorage=" << hex64(entry->rawStorageValue)
+                           << L" moduleBase=" << hex64(entry->moduleBase)
+                           << std::dec << L" operationMask=0x" << std::hex << entry->operationMask
+                           << L" objectTypeMask=0x" << entry->objectTypeMask
+                           << std::dec << L" name='" << fixedWide(entry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS)
+                           << L"' altitude='" << fixedWide(entry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS)
+                           << L"' detail='" << fixedWide(entry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS) << L"'\n";
+            }
+            printedCount += parsed;
+            ++pageCount;
+
+            const bool hasMore = (response->flags & KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_MORE_DATA) != 0UL;
+            if (!hasMore || printedCount >= visibleLimit)
+            {
+                break;
+            }
+            if (response->returnedCount == 0UL || response->nextIndex <= startIndex || pageCount >= 128U)
+            {
+                std::wcerr << L"error: callback enum pagination did not make forward progress\n";
+                return 4;
+            }
+            startIndex = response->nextIndex;
         }
         return 0;
     }

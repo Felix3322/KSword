@@ -41,6 +41,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
+#include <QVector>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -63,12 +64,13 @@ namespace
     struct CallbackEnumVersionText
     {
         QString company;
+        QString fileVersion;
         QString description;
     };
 
     QString callbackEnumQueryVersionString(const QString& filePath, const wchar_t* valueName)
     {
-        // 作用：读取驱动版本资源中的 CompanyName/FileDescription。
+        // 作用：读取驱动版本资源中的 CompanyName/FileVersion/FileDescription。
         // 返回：首个匹配翻译表的值；资源缺失时返回空字符串。
         DWORD ignoredHandle = 0;
         const std::wstring nativePath = QDir::toNativeSeparators(filePath).toStdWString();
@@ -130,10 +132,11 @@ namespace
 
     CallbackEnumVersionText callbackEnumQueryVersionText(const QString& filePath)
     {
-        // 作用：一次性读取 Minifilter 驱动公司与文件描述。
+        // 作用：一次性读取任意回调模块的公司、文件版本与文件描述。
         // 返回：允许字段分别为空的版本文本。
         CallbackEnumVersionText result;
         result.company = callbackEnumQueryVersionString(filePath, L"CompanyName");
+        result.fileVersion = callbackEnumQueryVersionString(filePath, L"FileVersion");
         result.description = callbackEnumQueryVersionString(filePath, L"FileDescription");
         return result;
     }
@@ -436,6 +439,20 @@ namespace
             return QStringLiteral("WFP Callout");
         case KSWORD_ARK_CALLBACK_ENUM_CLASS_ETW_PROVIDER:
             return QStringLiteral("ETW Provider/Consumer");
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_GENERIC_KERNEL:
+            return kernelText("kernel.callback.enum.class.generic_kernel", QStringLiteral("通用内核 CallbackObject"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_BUGCHECK:
+            return kernelText("kernel.callback.enum.class.bugcheck", QStringLiteral("BugCheck 回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_BUGCHECK_REASON:
+            return kernelText("kernel.callback.enum.class.bugcheck_reason", QStringLiteral("BugCheckReason 回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_SHUTDOWN:
+            return kernelText("kernel.callback.enum.class.shutdown", QStringLiteral("Shutdown 回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_FILE_SYSTEM:
+            return kernelText("kernel.callback.enum.class.file_system", QStringLiteral("文件系统注册变化"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_LOGON_SESSION:
+            return kernelText("kernel.callback.enum.class.logon_session", QStringLiteral("登录会话终止"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_IMAGE_VERIFICATION:
+            return kernelText("kernel.callback.enum.class.image_verification", QStringLiteral("镜像验证回调"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(callbackClass);
@@ -468,9 +485,96 @@ namespace
             return kernelText("kernel.callback.enum.source.pdb_profile", QStringLiteral("PDB 可信 profile"));
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PUBLIC_API:
             return kernelText("kernel.callback.enum.source.public_api", QStringLiteral("公开 API"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_BUGCHECK_LIST:
+            return kernelText("kernel.callback.enum.source.bugcheck_list", QStringLiteral("BugCheck 记录链"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_FILESYSTEM_LIST:
+            return kernelText("kernel.callback.enum.source.filesystem_list", QStringLiteral("文件系统通知链"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_LOGON_LIST:
+            return kernelText("kernel.callback.enum.source.logon_list", QStringLiteral("登录会话通知链"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_CALLBACK_OBJECT:
+            return kernelText("kernel.callback.enum.source.callback_object", QStringLiteral("CallbackObject 注册链"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_DRIVER_OBJECT_SCAN:
+            return kernelText("kernel.callback.enum.source.driver_object_scan", QStringLiteral("DriverObject/DeviceObject 扫描"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_OBJECT_DIRECTORY:
+            return kernelText("kernel.callback.enum.source.object_directory", QStringLiteral("对象目录枚举"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(source);
+        }
+    }
+
+    QString callbackEnumRegistrationTypeText(const std::uint32_t registrationType)
+    {
+        // 作用：把协议 v2 的具体注册 API 类型映射为可筛选文本。
+        // 返回：未知或旧协议行显示“未分类”。
+        switch (registrationType)
+        {
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_LEGACY:
+            return kernelText(
+                "kernel.callback.enum.registration_type.process_legacy",
+                QStringLiteral("进程 Notify（Legacy）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX:
+            return kernelText(
+                "kernel.callback.enum.registration_type.process_ex",
+                QStringLiteral("进程 Notify（Ex）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX2:
+            return kernelText(
+                "kernel.callback.enum.registration_type.process_ex2",
+                QStringLiteral("进程 Notify（Ex2）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_CLASSIC:
+            return kernelText(
+                "kernel.callback.enum.registration_type.bugcheck_classic",
+                QStringLiteral("BugCheck（经典）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_SECONDARY_DUMP:
+            return kernelText(
+                "kernel.callback.enum.registration_type.bugcheck_secondary_dump",
+                QStringLiteral("BugCheckReason（SecondaryDump）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_DUMP_IO:
+            return kernelText(
+                "kernel.callback.enum.registration_type.bugcheck_dump_io",
+                QStringLiteral("BugCheckReason（DumpIo）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_TRIAGE_DUMP:
+            return kernelText(
+                "kernel.callback.enum.registration_type.bugcheck_triage_dump",
+                QStringLiteral("BugCheckReason（TriageDump）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_REASON_OTHER:
+            return kernelText(
+                "kernel.callback.enum.registration_type.bugcheck_reason_other",
+                QStringLiteral("BugCheckReason（其他）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_SHUTDOWN:
+            return kernelText(
+                "kernel.callback.enum.registration_type.shutdown",
+                QStringLiteral("Shutdown 通知"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_FILE_SYSTEM_CHANGE:
+            return kernelText(
+                "kernel.callback.enum.registration_type.file_system_change",
+                QStringLiteral("文件系统注册变化"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LOGON_LEGACY:
+            return kernelText(
+                "kernel.callback.enum.registration_type.logon_legacy",
+                QStringLiteral("登录会话（Legacy）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LOGON_EX:
+            return kernelText(
+                "kernel.callback.enum.registration_type.logon_ex",
+                QStringLiteral("登录会话（Ex）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_VERIFY_INFORMATIONAL:
+            return kernelText(
+                "kernel.callback.enum.registration_type.image_verify_informational",
+                QStringLiteral("镜像验证（Informational）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_VERIFY_BLOCK:
+            return kernelText(
+                "kernel.callback.enum.registration_type.image_verify_block",
+                QStringLiteral("镜像验证（Block）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_GENERIC_CALLBACK_OBJECT:
+            return kernelText(
+                "kernel.callback.enum.registration_type.generic_callback_object",
+                QStringLiteral("通用 CallbackObject"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_DESKTOP_OBJECT:
+            return kernelText(
+                "kernel.callback.enum.registration_type.desktop_object",
+                QStringLiteral("Desktop 对象回调"));
+        default:
+            return kernelText("kernel.callback.enum.registration_type.unclassified", QStringLiteral("未分类"));
         }
     }
 
@@ -592,7 +696,9 @@ namespace
         // Processing: maps sources that came from documented management/enumeration APIs.
         // Return: true for public API backed sources; false for private/fallback diagnostics.
         return source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_FLTMGR_ENUMERATION
-            || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_WFP_MGMT_API;
+            || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_WFP_MGMT_API
+            || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_PUBLIC_API
+            || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_DRIVER_OBJECT_SCAN;
     }
 
     bool callbackEnumIsFallbackPatternSource(const std::uint32_t source)
@@ -607,6 +713,11 @@ namespace
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_REGISTRY_LIST:
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_OBJECT_TYPE_LIST:
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_ETW_DYNDATA:
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_BUGCHECK_LIST:
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_FILESYSTEM_LIST:
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_LOGON_LIST:
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_CALLBACK_OBJECT:
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_OBJECT_DIRECTORY:
             return true;
         default:
             return false;
@@ -1297,6 +1408,7 @@ namespace
         row.removeFlags = source.removeBehavior;
         row.operationMask = source.operationMask;
         row.objectTypeMask = source.objectTypeMask;
+        row.registrationType = source.registrationType;
         row.generation = source.generation;
         row.lastStatus = source.lastStatus;
         row.callbackAddress = source.callbackAddress;
@@ -1307,6 +1419,7 @@ namespace
         row.moduleBase = source.moduleBase;
         row.moduleSize = source.moduleSize;
         row.classText = callbackEnumClassText(source.callbackClass);
+        row.registrationTypeText = callbackEnumRegistrationTypeText(source.registrationType);
         row.sourceText = callbackEnumSourceText(source.source);
         row.sourceTrustText = callbackEnumSourceTrustText(row);
         row.removePolicyText = callbackEnumRemovePolicyText(row);
@@ -1323,6 +1436,7 @@ namespace
     enum class CallbackEnumColumn : int
     {
         Class = 0,
+        RegistrationType,
         Source,
         Trust,
         Status,
@@ -1330,6 +1444,9 @@ namespace
         Name,
         CallbackAddress,
         Module,
+        Company,
+        FileVersion,
+        FileDescription,
         Altitude,
         Count
     };
@@ -1342,6 +1459,8 @@ namespace
         {
         case CallbackEnumColumn::Class:
             return kernelText("kernel.callback.enum.header.class", QStringLiteral("类别"));
+        case CallbackEnumColumn::RegistrationType:
+            return kernelText("kernel.callback.enum.header.registration_type", QStringLiteral("注册类型"));
         case CallbackEnumColumn::Source:
             return kernelText("kernel.callback.enum.header.source", QStringLiteral("来源"));
         case CallbackEnumColumn::Trust:
@@ -1356,11 +1475,252 @@ namespace
             return kernelText("kernel.callback.enum.header.callback_address", QStringLiteral("回调/对象地址"));
         case CallbackEnumColumn::Module:
             return kernelText("kernel.callback.enum.header.module", QStringLiteral("模块"));
+        case CallbackEnumColumn::Company:
+            return kernelText("kernel.callback.enum.header.company", QStringLiteral("公司"));
+        case CallbackEnumColumn::FileVersion:
+            return kernelText("kernel.callback.enum.header.file_version", QStringLiteral("文件版本"));
+        case CallbackEnumColumn::FileDescription:
+            return kernelText("kernel.callback.enum.header.file_description", QStringLiteral("文件描述"));
         case CallbackEnumColumn::Altitude:
             return QStringLiteral("Altitude");
         default:
             return kernelText("kernel.callback.enum.header.unknown", QStringLiteral("未知列"));
         }
+    }
+
+    bool callbackEnumContainsColumn(
+        const QVector<int>& columnGroup,
+        const int columnIndex)
+    {
+        // 作用：判断列号是否属于一个 A/B/C 逻辑列组。
+        // 返回：属于列组返回 true。
+        return std::find(
+            columnGroup.cbegin(),
+            columnGroup.cend(),
+            columnIndex) != columnGroup.cend();
+    }
+
+    QString callbackEnumPresetButtonStyle(const bool selected)
+    {
+        // 作用：生成 A/B/C 列预设按钮的选中和普通样式。
+        // 返回：显式主题化 QPushButton 样式。
+        const QString backgroundText = selected
+            ? KswordTheme::PrimaryBlueHex
+            : QStringLiteral("transparent");
+        const QString borderText = selected
+            ? KswordTheme::PrimaryBlueHex
+            : KswordTheme::BorderHex();
+        const QString textColor = selected
+            ? KswordTheme::OnAccentHex()
+            : KswordTheme::TextPrimaryHex();
+        return QStringLiteral(
+            "QPushButton{min-width:24px;max-width:24px;padding:3px 0;border:1px solid %1;"
+            "border-radius:0;color:%2;background:%3;font-weight:700;}"
+            "QPushButton:hover{border-color:%4;}"
+            "QPushButton:pressed{background:%4;color:%5;}")
+            .arg(borderText)
+            .arg(textColor)
+            .arg(backgroundText)
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::OnAccentHex());
+    }
+
+    void callbackEnumUpdatePresetButtons(
+        QTableWidget* table,
+        QPushButton* buttonA,
+        QPushButton* buttonB,
+        QPushButton* buttonC)
+    {
+        // 作用：根据表格属性刷新 A/B/C 高亮；Custom 会清除全部高亮。
+        // 返回：无，空指针安全忽略。
+        if (table == nullptr ||
+            buttonA == nullptr ||
+            buttonB == nullptr ||
+            buttonC == nullptr)
+        {
+            return;
+        }
+
+        const QString presetText = table->property("kswordColumnPreset").toString();
+        buttonA->setStyleSheet(callbackEnumPresetButtonStyle(presetText == QStringLiteral("A")));
+        buttonB->setStyleSheet(callbackEnumPresetButtonStyle(presetText == QStringLiteral("B")));
+        buttonC->setStyleSheet(callbackEnumPresetButtonStyle(presetText == QStringLiteral("C")));
+    }
+
+    void callbackEnumApplyColumnPreset(
+        QTableWidget* table,
+        const QVector<int>& columnGroup,
+        const QString& presetText,
+        QPushButton* buttonA,
+        QPushButton* buttonB,
+        QPushButton* buttonC)
+    {
+        // 作用：只显示指定列组，并同步按钮高亮。
+        // 返回：无。
+        if (table == nullptr)
+        {
+            return;
+        }
+
+        for (int columnIndex = 0; columnIndex < table->columnCount(); ++columnIndex)
+        {
+            table->setColumnHidden(
+                columnIndex,
+                !callbackEnumContainsColumn(columnGroup, columnIndex));
+        }
+        table->setProperty("kswordColumnPreset", presetText);
+        callbackEnumUpdatePresetButtons(table, buttonA, buttonB, buttonC);
+    }
+
+    int callbackEnumVisibleColumnCount(QTableWidget* table)
+    {
+        // 作用：统计可见列，防止表头菜单隐藏最后一列。
+        // 返回：当前可见列数。
+        if (table == nullptr)
+        {
+            return 0;
+        }
+
+        int visibleCount = 0;
+        for (int columnIndex = 0; columnIndex < table->columnCount(); ++columnIndex)
+        {
+            if (!table->isColumnHidden(columnIndex))
+            {
+                ++visibleCount;
+            }
+        }
+        return visibleCount;
+    }
+
+    QPushButton* callbackEnumCreatePresetButton(
+        QWidget* parentWidget,
+        const QString& text,
+        const QString& tooltipText)
+    {
+        // 作用：创建紧邻的单字母列预设按钮。
+        // 返回：由 Qt 父对象释放的 QPushButton。
+        QPushButton* button = new QPushButton(text, parentWidget);
+        button->setToolTip(tooltipText);
+        button->setStyleSheet(callbackEnumPresetButtonStyle(false));
+        button->setCursor(Qt::PointingHandCursor);
+        return button;
+    }
+
+    void callbackEnumInstallHeaderColumnMenu(
+        QTableWidget* table,
+        QPushButton* buttonA,
+        QPushButton* buttonB,
+        QPushButton* buttonC)
+    {
+        // 作用：安装表头右键列显隐菜单；手动调整后进入 Custom 状态。
+        // 返回：无。
+        if (table == nullptr || table->horizontalHeader() == nullptr)
+        {
+            return;
+        }
+
+        QHeaderView* headerView = table->horizontalHeader();
+        headerView->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(
+            headerView,
+            &QHeaderView::customContextMenuRequested,
+            table,
+            [table, headerView, buttonA, buttonB, buttonC](const QPoint& localPosition)
+            {
+                QMenu menu(table);
+                menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+                for (int columnIndex = 0; columnIndex < table->columnCount(); ++columnIndex)
+                {
+                    const QTableWidgetItem* headerItem =
+                        table->horizontalHeaderItem(columnIndex);
+                    QAction* columnAction = menu.addAction(
+                        headerItem != nullptr
+                            ? headerItem->text()
+                            : QStringLiteral("Column %1").arg(columnIndex));
+                    columnAction->setCheckable(true);
+                    columnAction->setChecked(!table->isColumnHidden(columnIndex));
+                    columnAction->setData(columnIndex);
+                }
+
+                QAction* selectedAction =
+                    menu.exec(headerView->viewport()->mapToGlobal(localPosition));
+                if (selectedAction == nullptr)
+                {
+                    return;
+                }
+
+                const int columnIndex = selectedAction->data().toInt();
+                const bool shouldShow = selectedAction->isChecked();
+                if (!shouldShow && callbackEnumVisibleColumnCount(table) <= 1)
+                {
+                    table->setColumnHidden(columnIndex, false);
+                    return;
+                }
+
+                table->setColumnHidden(columnIndex, !shouldShow);
+                table->setProperty("kswordColumnPreset", QStringLiteral("Custom"));
+                callbackEnumUpdatePresetButtons(table, buttonA, buttonB, buttonC);
+            });
+    }
+
+    void callbackEnumInstallPresetControls(
+        QTableWidget* table,
+        QPushButton* buttonA,
+        QPushButton* buttonB,
+        QPushButton* buttonC,
+        const QVector<int>& groupA,
+        const QVector<int>& groupB,
+        const QVector<int>& groupC)
+    {
+        // 作用：连接 A/B/C 列组，安装表头菜单，并默认应用 A 组。
+        // 返回：无。
+        if (table == nullptr ||
+            buttonA == nullptr ||
+            buttonB == nullptr ||
+            buttonC == nullptr)
+        {
+            return;
+        }
+
+        QObject::connect(buttonA, &QPushButton::clicked, table, [=]()
+        {
+            callbackEnumApplyColumnPreset(
+                table,
+                groupA,
+                QStringLiteral("A"),
+                buttonA,
+                buttonB,
+                buttonC);
+        });
+        QObject::connect(buttonB, &QPushButton::clicked, table, [=]()
+        {
+            callbackEnumApplyColumnPreset(
+                table,
+                groupB,
+                QStringLiteral("B"),
+                buttonA,
+                buttonB,
+                buttonC);
+        });
+        QObject::connect(buttonC, &QPushButton::clicked, table, [=]()
+        {
+            callbackEnumApplyColumnPreset(
+                table,
+                groupC,
+                QStringLiteral("C"),
+                buttonA,
+                buttonB,
+                buttonC);
+        });
+
+        callbackEnumInstallHeaderColumnMenu(table, buttonA, buttonB, buttonC);
+        callbackEnumApplyColumnPreset(
+            table,
+            groupA,
+            QStringLiteral("A"),
+            buttonA,
+            buttonB,
+            buttonC);
     }
 
     QString callbackEnumEntryColumnText(
@@ -1373,6 +1733,8 @@ namespace
         {
         case CallbackEnumColumn::Class:
             return entry.classText;
+        case CallbackEnumColumn::RegistrationType:
+            return entry.registrationTypeText;
         case CallbackEnumColumn::Source:
             return entry.sourceText;
         case CallbackEnumColumn::Trust:
@@ -1389,6 +1751,12 @@ namespace
             return entry.modulePathText.isEmpty()
                 ? kernelText("kernel.callback.enum.placeholder.unresolved", QStringLiteral("<未解析>"))
                 : entry.modulePathText;
+        case CallbackEnumColumn::Company:
+            return callbackEnumSafeText(entry.companyText);
+        case CallbackEnumColumn::FileVersion:
+            return callbackEnumSafeText(entry.fileVersionText);
+        case CallbackEnumColumn::FileDescription:
+            return callbackEnumSafeText(entry.fileDescriptionText);
         case CallbackEnumColumn::Altitude:
             return callbackEnumSafeText(entry.altitudeText);
         default:
@@ -1523,8 +1891,33 @@ void KernelDock::initializeCallbackEnumTab()
     m_refreshCallbackEnumButton->setStyleSheet(callbackEnumButtonStyle());
     m_refreshCallbackEnumButton->setFixedWidth(34);
 
+    QHBoxLayout* callbackPresetLayout = new QHBoxLayout();
+    callbackPresetLayout->setContentsMargins(0, 0, 0, 0);
+    callbackPresetLayout->setSpacing(0);
+    QPushButton* callbackPresetAButton = callbackEnumCreatePresetButton(
+        m_callbackEnumPage,
+        QStringLiteral("A"),
+        kernelText(
+            "kernel.callback.enum.preset.a.tooltip",
+            QStringLiteral("A 组：总览，显示类别、注册类型、状态、名称和模块。")));
+    QPushButton* callbackPresetBButton = callbackEnumCreatePresetButton(
+        m_callbackEnumPage,
+        QStringLiteral("B"),
+        kernelText(
+            "kernel.callback.enum.preset.b.tooltip",
+            QStringLiteral("B 组：链路，显示来源、可信状态、地址和 Altitude。")));
+    QPushButton* callbackPresetCButton = callbackEnumCreatePresetButton(
+        m_callbackEnumPage,
+        QStringLiteral("C"),
+        kernelText(
+            "kernel.callback.enum.preset.c.tooltip",
+            QStringLiteral("C 组：文件来源，显示公司、版本、描述和移除策略。")));
+    callbackPresetLayout->addWidget(callbackPresetAButton, 0);
+    callbackPresetLayout->addWidget(callbackPresetBButton, 0);
+    callbackPresetLayout->addWidget(callbackPresetCButton, 0);
+
     m_callbackEnumFilterEdit = new QLineEdit(m_callbackEnumPage);
-    m_callbackEnumFilterEdit->setPlaceholderText(kernelText("kernel.callback.enum.toolbar.filter.placeholder", QStringLiteral("按类别/来源/可信状态/移除策略/名称/地址/模块/Altitude筛选")));
+    m_callbackEnumFilterEdit->setPlaceholderText(kernelText("kernel.callback.enum.toolbar.filter.placeholder", QStringLiteral("按类别/注册类型/来源/名称/地址/模块/公司/版本/描述筛选")));
     m_callbackEnumFilterEdit->setToolTip(kernelText("kernel.callback.enum.toolbar.filter.tooltip", QStringLiteral("输入关键字后实时过滤回调遍历结果")));
     m_callbackEnumFilterEdit->setClearButtonEnabled(true);
     m_callbackEnumFilterEdit->setStyleSheet(callbackEnumInputStyle());
@@ -1533,6 +1926,7 @@ void KernelDock::initializeCallbackEnumTab()
     m_callbackEnumStatusLabel->setStyleSheet(callbackEnumStatusLabelStyle(KswordTheme::TextSecondaryHex()));
 
     m_callbackEnumToolLayout->addWidget(m_refreshCallbackEnumButton, 0);
+    m_callbackEnumToolLayout->addLayout(callbackPresetLayout, 0);
     m_callbackEnumToolLayout->addWidget(m_callbackEnumFilterEdit, 1);
     m_callbackEnumToolLayout->addWidget(m_callbackEnumStatusLabel, 0);
     m_callbackEnumLayout->addLayout(m_callbackEnumToolLayout);
@@ -1545,6 +1939,7 @@ void KernelDock::initializeCallbackEnumTab()
     m_callbackEnumTable->setColumnCount(static_cast<int>(CallbackEnumColumn::Count));
     m_callbackEnumTable->setHorizontalHeaderLabels(QStringList{
         callbackEnumColumnHeaderText(CallbackEnumColumn::Class),
+        callbackEnumColumnHeaderText(CallbackEnumColumn::RegistrationType),
         callbackEnumColumnHeaderText(CallbackEnumColumn::Source),
         callbackEnumColumnHeaderText(CallbackEnumColumn::Trust),
         callbackEnumColumnHeaderText(CallbackEnumColumn::Status),
@@ -1552,7 +1947,10 @@ void KernelDock::initializeCallbackEnumTab()
         callbackEnumColumnHeaderText(CallbackEnumColumn::Name),
         callbackEnumColumnHeaderText(CallbackEnumColumn::CallbackAddress),
         callbackEnumColumnHeaderText(CallbackEnumColumn::Module),
-        QStringLiteral("Altitude")
+        callbackEnumColumnHeaderText(CallbackEnumColumn::Company),
+        callbackEnumColumnHeaderText(CallbackEnumColumn::FileVersion),
+        callbackEnumColumnHeaderText(CallbackEnumColumn::FileDescription),
+        callbackEnumColumnHeaderText(CallbackEnumColumn::Altitude)
         });
     m_callbackEnumTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_callbackEnumTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -1569,12 +1967,44 @@ void KernelDock::initializeCallbackEnumTab()
     m_callbackEnumTable->setColumnWidth(static_cast<int>(CallbackEnumColumn::RemovePolicy), 200);
     m_callbackEnumTable->setColumnWidth(static_cast<int>(CallbackEnumColumn::CallbackAddress), 180);
     m_callbackEnumTable->setColumnWidth(static_cast<int>(CallbackEnumColumn::Module), 220);
+    m_callbackEnumTable->setColumnWidth(static_cast<int>(CallbackEnumColumn::FileDescription), 220);
+    callbackEnumInstallPresetControls(
+        m_callbackEnumTable,
+        callbackPresetAButton,
+        callbackPresetBButton,
+        callbackPresetCButton,
+        QVector<int>{
+            static_cast<int>(CallbackEnumColumn::Class),
+            static_cast<int>(CallbackEnumColumn::RegistrationType),
+            static_cast<int>(CallbackEnumColumn::Status),
+            static_cast<int>(CallbackEnumColumn::Name),
+            static_cast<int>(CallbackEnumColumn::Module)
+        },
+        QVector<int>{
+            static_cast<int>(CallbackEnumColumn::Class),
+            static_cast<int>(CallbackEnumColumn::RegistrationType),
+            static_cast<int>(CallbackEnumColumn::Source),
+            static_cast<int>(CallbackEnumColumn::Trust),
+            static_cast<int>(CallbackEnumColumn::Name),
+            static_cast<int>(CallbackEnumColumn::CallbackAddress),
+            static_cast<int>(CallbackEnumColumn::Altitude)
+        },
+        QVector<int>{
+            static_cast<int>(CallbackEnumColumn::Class),
+            static_cast<int>(CallbackEnumColumn::RegistrationType),
+            static_cast<int>(CallbackEnumColumn::Name),
+            static_cast<int>(CallbackEnumColumn::Module),
+            static_cast<int>(CallbackEnumColumn::Company),
+            static_cast<int>(CallbackEnumColumn::FileVersion),
+            static_cast<int>(CallbackEnumColumn::FileDescription),
+            static_cast<int>(CallbackEnumColumn::RemovePolicy)
+        });
     callbackViewTabs->addTab(
         m_callbackEnumTable,
         kernelText("kernel.callback.enum.view.list", QStringLiteral("回调列表")));
 
     m_minifilterCallbackTree = new QTreeWidget(callbackViewTabs);
-    m_minifilterCallbackTree->setColumnCount(9);
+    m_minifilterCallbackTree->setColumnCount(10);
     m_minifilterCallbackTree->setHeaderLabels(QStringList{
         kernelText("kernel.callback.enum.minifilter.header.filter_operation", QStringLiteral("Filter / 操作")),
         kernelText("kernel.callback.enum.minifilter.header.stage", QStringLiteral("类型")),
@@ -1582,6 +2012,7 @@ void KernelDock::initializeCallbackEnumTab()
         kernelText("kernel.callback.enum.minifilter.header.driver", QStringLiteral("驱动")),
         kernelText("kernel.callback.enum.minifilter.header.path", QStringLiteral("驱动路径")),
         kernelText("kernel.callback.enum.minifilter.header.company", QStringLiteral("公司")),
+        kernelText("kernel.callback.enum.minifilter.header.file_version", QStringLiteral("文件版本")),
         kernelText("kernel.callback.enum.minifilter.header.description", QStringLiteral("描述")),
         QStringLiteral("Altitude"),
         kernelText("kernel.callback.enum.minifilter.header.source", QStringLiteral("来源/可信状态"))
@@ -1683,11 +2114,30 @@ void KernelDock::refreshCallbackEnumAsync()
 
         if (success)
         {
+            QHash<QString, CallbackEnumVersionText> versionCache;
             responseFlags = enumResult.flags;
             resultRows.reserve(enumResult.entries.size());
             for (const ksword::ark::CallbackEnumEntry& entry : enumResult.entries)
             {
-                resultRows.push_back(callbackEnumConvertEntry(entry));
+                KernelCallbackEnumEntry row = callbackEnumConvertEntry(entry);
+                const QString modulePath = callbackEnumNormalizeModulePath(row.modulePathText);
+                if (!modulePath.isEmpty() && QFileInfo::exists(modulePath))
+                {
+                    const QString cacheKey = modulePath.toLower();
+                    auto versionIterator = versionCache.constFind(cacheKey);
+                    if (versionIterator == versionCache.cend())
+                    {
+                        versionCache.insert(
+                            cacheKey,
+                            callbackEnumQueryVersionText(modulePath));
+                        versionIterator = versionCache.constFind(cacheKey);
+                    }
+                    const CallbackEnumVersionText versionText = versionIterator.value();
+                    row.companyText = versionText.company;
+                    row.fileVersionText = versionText.fileVersion;
+                    row.fileDescriptionText = versionText.description;
+                }
+                resultRows.push_back(std::move(row));
             }
         }
         else
@@ -1769,6 +2219,7 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
             : entry.modulePathText;
         const bool matched = filterKeyword.isEmpty()
             || entry.classText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.registrationTypeText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.sourceText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.sourceTrustText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.statusText.contains(filterKeyword, Qt::CaseInsensitive)
@@ -1776,6 +2227,9 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
             || entry.nameText.contains(filterKeyword, Qt::CaseInsensitive)
             || addressText.contains(filterKeyword, Qt::CaseInsensitive)
             || moduleText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.companyText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.fileVersionText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.fileDescriptionText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.altitudeText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.detailText.contains(filterKeyword, Qt::CaseInsensitive);
         if (!matched)
@@ -1788,6 +2242,7 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
 
         auto* classItem = new QTableWidgetItem(entry.classText);
         classItem->setData(Qt::UserRole, static_cast<qulonglong>(sourceIndex));
+        auto* registrationTypeItem = new QTableWidgetItem(entry.registrationTypeText);
         auto* sourceItem = new QTableWidgetItem(entry.sourceText);
         auto* trustItem = new QTableWidgetItem(entry.sourceTrustText);
         auto* statusItem = new QTableWidgetItem(entry.statusText);
@@ -1795,6 +2250,9 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
         auto* nameItem = new QTableWidgetItem(callbackEnumSafeText(entry.nameText));
         auto* addressItem = new QTableWidgetItem(addressText);
         auto* moduleItem = new QTableWidgetItem(moduleText);
+        auto* companyItem = new QTableWidgetItem(callbackEnumSafeText(entry.companyText));
+        auto* fileVersionItem = new QTableWidgetItem(callbackEnumSafeText(entry.fileVersionText));
+        auto* fileDescriptionItem = new QTableWidgetItem(callbackEnumSafeText(entry.fileDescriptionText));
         auto* altitudeItem = new QTableWidgetItem(callbackEnumSafeText(entry.altitudeText));
 
         if (callbackEnumIsTrustedSource(entry))
@@ -1835,6 +2293,7 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
         }
 
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Class), classItem);
+        m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::RegistrationType), registrationTypeItem);
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Source), sourceItem);
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Trust), trustItem);
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Status), statusItem);
@@ -1842,6 +2301,9 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Name), nameItem);
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::CallbackAddress), addressItem);
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Module), moduleItem);
+        m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Company), companyItem);
+        m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::FileVersion), fileVersionItem);
+        m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::FileDescription), fileDescriptionItem);
         m_callbackEnumTable->setItem(rowIndex, static_cast<int>(CallbackEnumColumn::Altitude), altitudeItem);
     }
 
@@ -1855,17 +2317,20 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
     m_minifilterCallbackTree->setUpdatesEnabled(false);
     m_minifilterCallbackTree->clear();
     QHash<qulonglong, QTreeWidgetItem*> filterParents;
-    QHash<QString, CallbackEnumVersionText> versionCache;
     const auto entryMatchesFilter = [&filterKeyword](const KernelCallbackEnumEntry& entry) {
         const QString addressText = callbackEnumPrimaryAddressText(entry);
         return filterKeyword.isEmpty()
             || entry.classText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.registrationTypeText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.sourceText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.sourceTrustText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.statusText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.nameText.contains(filterKeyword, Qt::CaseInsensitive)
             || addressText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.modulePathText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.companyText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.fileVersionText.contains(filterKeyword, Qt::CaseInsensitive)
+            || entry.fileDescriptionText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.altitudeText.contains(filterKeyword, Qt::CaseInsensitive)
             || entry.detailText.contains(filterKeyword, Qt::CaseInsensitive);
     };
@@ -1888,8 +2353,8 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
         parentItem->setText(
             1,
             kernelText("kernel.callback.enum.minifilter.type.filter", QStringLiteral("Filter")));
-        parentItem->setText(7, callbackEnumSafeText(entry.altitudeText));
-        parentItem->setText(8, entry.sourceText + QStringLiteral(" / ") + entry.sourceTrustText);
+        parentItem->setText(8, callbackEnumSafeText(entry.altitudeText));
+        parentItem->setText(9, entry.sourceText + QStringLiteral(" / ") + entry.sourceTrustText);
         parentItem->setData(0, Qt::UserRole, static_cast<qulonglong>(sourceIndex));
         parentItem->setData(0, Qt::UserRole + 1, entryMatchesFilter(entry));
         parentItem->setData(0, Qt::UserRole + 2, false);
@@ -1922,18 +2387,6 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
         const QString moduleFileName = modulePath.isEmpty()
             ? QString()
             : QFileInfo(modulePath).fileName();
-        CallbackEnumVersionText versionText;
-        if (!modulePath.isEmpty() && QFileInfo::exists(modulePath))
-        {
-            auto versionIterator = versionCache.constFind(modulePath);
-            if (versionIterator == versionCache.cend())
-            {
-                versionCache.insert(modulePath, callbackEnumQueryVersionText(modulePath));
-                versionIterator = versionCache.constFind(modulePath);
-            }
-            versionText = versionIterator.value();
-        }
-
         QString stageText;
         if (entry.nameText.endsWith(QStringLiteral("/ PreOperation"), Qt::CaseInsensitive))
         {
@@ -1958,10 +2411,11 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
                 : callbackEnumFormatAddress(entry.callbackAddress));
         callbackItem->setText(3, moduleFileName);
         callbackItem->setText(4, modulePath);
-        callbackItem->setText(5, versionText.company);
-        callbackItem->setText(6, versionText.description);
-        callbackItem->setText(7, callbackEnumSafeText(entry.altitudeText));
-        callbackItem->setText(8, entry.sourceText + QStringLiteral(" / ") + entry.sourceTrustText);
+        callbackItem->setText(5, entry.companyText);
+        callbackItem->setText(6, entry.fileVersionText);
+        callbackItem->setText(7, entry.fileDescriptionText);
+        callbackItem->setText(8, callbackEnumSafeText(entry.altitudeText));
+        callbackItem->setText(9, entry.sourceText + QStringLiteral(" / ") + entry.sourceTrustText);
         callbackItem->setData(0, Qt::UserRole, static_cast<qulonglong>(sourceIndex));
         callbackItem->setData(0, Qt::UserRole + 1, entryMatchesFilter(entry));
         callbackItem->setToolTip(0, entry.detailText);
@@ -1972,15 +2426,16 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
                 QStringLiteral("双击此回调可查看驱动文件常规信息和 PE 明细")));
         if (entry.fallbackPatternOnly)
         {
-            callbackItem->setForeground(8, QBrush(KswordTheme::WarningColor()));
+            callbackItem->setForeground(9, QBrush(KswordTheme::WarningColor()));
         }
 
         if (parentItem->text(4).isEmpty() && !modulePath.isEmpty())
         {
             parentItem->setText(3, moduleFileName);
             parentItem->setText(4, modulePath);
-            parentItem->setText(5, versionText.company);
-            parentItem->setText(6, versionText.description);
+            parentItem->setText(5, entry.companyText);
+            parentItem->setText(6, entry.fileVersionText);
+            parentItem->setText(7, entry.fileDescriptionText);
         }
         if (entryMatchesFilter(entry))
         {
@@ -2057,37 +2512,42 @@ void KernelDock::showCallbackEnumDetail(const KernelCallbackEnumEntry* entry)
     }
 
     const QString win32ModulePath = callbackEnumNormalizeModulePath(entry->modulePathText);
-        const QString detailText = kernelText("kernel.callback.enum.detail.full", QStringLiteral(
+    const QString detailText = kernelText("kernel.callback.enum.detail.full_v2", QStringLiteral(
         "类别: %1\n"
-        "来源: %2\n"
-        "可信状态: %3\n"
-        "移除策略: %4\n"
-        "是否需要二次确认: %5\n"
-        "是否仅为定位线索: %6\n"
-        "状态: %7\n"
-        "名称: %8\n"
-        "Altitude: %9\n"
-        "主地址显示: %10\n"
-        "真实回调地址: %11\n"
-        "上下文/诊断值: %12\n"
-        "注册句柄/Cookie/全局节点: %13\n"
-        "模块路径: %14\n"
-        "Win32模块路径: %15\n"
-        "模块基址: %16\n"
-        "模块大小: 0x%17\n"
-        "操作掩码: 0x%18\n"
-        "对象类型掩码: 0x%19\n"
-        "字段标志: 0x%20\n"
-        "可信标志(预留): 0x%21\n"
-        "移除行为(预留): 0x%22\n"
-        "移除标志(预留): 0x%23\n"
-        "Generation(预留): %24\n"
-        "IdentityHash(预留): %25\n"
-        "RawStorageValue(预留): %26\n"
-        "LastStatus: 0x%27\n\n"
+        "注册类型: %2\n"
+        "来源: %3\n"
+        "可信状态: %4\n"
+        "移除策略: %5\n"
+        "是否需要二次确认: %6\n"
+        "是否仅为定位线索: %7\n"
+        "状态: %8\n"
+        "名称: %9\n"
+        "Altitude: %10\n"
+        "主地址显示: %11\n"
+        "真实回调地址: %12\n"
+        "上下文/诊断值: %13\n"
+        "注册句柄/Cookie/全局节点: %14\n"
+        "模块路径: %15\n"
+        "Win32模块路径: %16\n"
+        "公司: %17\n"
+        "文件版本: %18\n"
+        "文件描述: %19\n"
+        "模块基址: %20\n"
+        "模块大小: 0x%21\n"
+        "操作掩码: 0x%22\n"
+        "对象类型掩码: 0x%23\n"
+        "字段标志: 0x%24\n"
+        "可信标志: 0x%25\n"
+        "移除行为: 0x%26\n"
+        "移除标志: 0x%27\n"
+        "Generation: %28\n"
+        "IdentityHash: %29\n"
+        "RawStorageValue: %30\n"
+        "LastStatus: 0x%31\n\n"
         "说明: 主地址优先显示真实回调函数；无法获取时会显示可用于定位的节点或标识值。\n\n"
-        "详情:\n%28"))
+        "详情:\n%32"))
         .arg(entry->classText)
+        .arg(entry->registrationTypeText)
         .arg(entry->sourceText)
         .arg(entry->sourceTrustText)
         .arg(entry->removePolicyText)
@@ -2106,6 +2566,9 @@ void KernelDock::showCallbackEnumDetail(const KernelCallbackEnumEntry* entry)
         .arg(win32ModulePath.isEmpty()
             ? kernelText("kernel.callback.enum.placeholder.unmapped", QStringLiteral("<不可映射或不存在>"))
             : win32ModulePath)
+        .arg(callbackEnumSafeText(entry->companyText))
+        .arg(callbackEnumSafeText(entry->fileVersionText))
+        .arg(callbackEnumSafeText(entry->fileDescriptionText))
         .arg(callbackEnumFormatAddress(entry->moduleBase))
         .arg(QString::number(static_cast<qulonglong>(entry->moduleSize), 16).toUpper())
         .arg(static_cast<qulonglong>(entry->operationMask), 8, 16, QChar('0'))

@@ -1511,6 +1511,7 @@ namespace ksword::ark
         std::uint32_t removeFlags = 0;       // removeFlags：兼容旧 UI 命名，始终镜像 removeBehavior。
         std::uint32_t operationMask = 0;
         std::uint32_t objectTypeMask = 0;
+        std::uint32_t registrationType = 0; // registrationType：Legacy/Ex/Ex2 等具体注册 API 类型。
         std::uint64_t generation = 0;        // generation：R0 枚举代次，用于 EX 移除前重验证。
         long lastStatus = 0;
         std::uint64_t callbackAddress = 0;
