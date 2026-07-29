@@ -720,8 +720,9 @@ void KernelDock::initializeObjectNamespaceTab()
         new KernelDeviceDriverObjectsTab(m_objectNamespaceInnerTabWidget),
         tabIcon(QStringLiteral(":/Icon/process_details.svg")),
         kernelText("kernel.main.inner_tab.device_driver", QStringLiteral("设备与驱动")));
+    auto* ioctlAuditTab = new KernelIoctlAuditTab(m_objectNamespaceInnerTabWidget);
     m_objectNamespaceInnerTabWidget->addTab(
-        new KernelIoctlAuditTab(m_objectNamespaceInnerTabWidget),
+        ioctlAuditTab,
         tabIcon(QStringLiteral(":/Icon/process_list.svg")),
         kernelText("kernel.main.inner_tab.ioctl_audit", QStringLiteral("IOCTL 派遣表")));
     m_objectNamespaceInnerTabWidget->addTab(
@@ -732,6 +733,16 @@ void KernelDock::initializeObjectNamespaceTab()
         new KernelCommunicationEndpointTab(m_objectNamespaceInnerTabWidget),
         tabIcon(QStringLiteral(":/Icon/process_critical.svg")),
         kernelText("kernel.main.inner_tab.communication_endpoint", QStringLiteral("通信端点")));
+
+    // IOCTL 审计会对每个 DriverObject 发起 R0 查询。KernelDock 即使不是当前主 Dock
+    // 也会为布局恢复而创建，因此只能在用户实际切入该子页后再开始首轮采集。
+    connect(m_objectNamespaceInnerTabWidget, &QTabWidget::currentChanged, this,
+        [this, ioctlAuditTab](const int tabIndex) {
+            if (m_objectNamespaceInnerTabWidget->widget(tabIndex) == ioctlAuditTab)
+            {
+                ioctlAuditTab->requestInitialRefresh();
+            }
+        });
 
     m_objectNamespaceToolLayout = new QHBoxLayout();
     m_objectNamespaceToolLayout->setContentsMargins(0, 0, 0, 0);

@@ -396,6 +396,7 @@ namespace
         defaultSettings.notificationLogDisplaySeconds = 10;
         defaultSettings.notificationDisplayPlacement = ks::settings::NotificationDisplayPlacement::Screen;
         defaultSettings.notificationStackDirection = ks::settings::NotificationStackDirection::BottomUp;
+        defaultSettings.suppressR0FeaturePrompts = false;
         defaultSettings.logWindowGeometryBase64.clear();
         defaultSettings.virusTotalApiKey.clear();
         defaultSettings.threatBookApiKey.clear();
@@ -599,6 +600,9 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
         == QStringLiteral("top_down")
         ? NotificationStackDirection::TopDown
         : NotificationStackDirection::BottomUp;
+    loadedSettings.suppressR0FeaturePrompts = rootObject
+        .value(QStringLiteral("suppress_r0_feature_prompts"))
+        .toBool(loadedSettings.suppressR0FeaturePrompts);
     loadedSettings.logWindowGeometryBase64 = rootObject
         .value(QStringLiteral("log_window_geometry_base64"))
         .toString();
@@ -696,6 +700,9 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
         settings.notificationStackDirection == NotificationStackDirection::TopDown
         ? QStringLiteral("top_down")
         : QStringLiteral("bottom_up"));
+    rootObject.insert(
+        QStringLiteral("suppress_r0_feature_prompts"),
+        settings.suppressR0FeaturePrompts);
     rootObject.insert(
         QStringLiteral("log_window_geometry_base64"),
         settings.logWindowGeometryBase64.trimmed());

@@ -182,6 +182,7 @@ SettingsDock::SettingsDock(QWidget* parent)
 
     initializeUi();
     initializeAppearanceTab();
+    initializeFeaturesTab();
     initializeOnlineScanTab();
     loadSettingsFromJson();
 
@@ -705,6 +706,65 @@ void SettingsDock::initializeAppearanceTab()
     updateApplyButtonState();
 }
 
+void SettingsDock::initializeFeaturesTab()
+{
+    m_featuresTab = new QWidget(m_tabWidget);
+    QVBoxLayout* featuresRootLayout = new QVBoxLayout(m_featuresTab);
+    featuresRootLayout->setContentsMargins(8, 8, 8, 8);
+    featuresRootLayout->setSpacing(12);
+
+    ks::i18n::LanguageManager& languageManager = ks::i18n::LanguageManager::instance();
+    QGroupBox* r0PromptGroupBox = new QGroupBox(QStringLiteral("R0 功能提示"), m_featuresTab);
+    languageManager.bindText(
+        r0PromptGroupBox,
+        QStringLiteral("settings.features.r0.group"),
+        QStringLiteral("R0 功能提示"));
+    QVBoxLayout* r0PromptLayout = new QVBoxLayout(r0PromptGroupBox);
+    r0PromptLayout->setSpacing(8);
+
+    QLabel* r0PromptHintLabel = new QLabel(
+        QStringLiteral("勾选后，R0 驱动未启用或当前权限不足时不再自动弹出提示；仍可通过标题栏 R0 按钮手动管理驱动。"),
+        r0PromptGroupBox);
+    r0PromptHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        r0PromptHintLabel,
+        QStringLiteral("settings.features.r0.hint"),
+        QStringLiteral("勾选后，R0 驱动未启用或当前权限不足时不再自动弹出提示；仍可通过标题栏 R0 按钮手动管理驱动。"));
+    r0PromptLayout->addWidget(r0PromptHintLabel);
+
+    m_suppressR0FeaturePromptsCheckBox = new QCheckBox(
+        QStringLiteral("永远不提示 R0 功能"),
+        r0PromptGroupBox);
+    languageManager.bindText(
+        m_suppressR0FeaturePromptsCheckBox,
+        QStringLiteral("settings.features.r0.suppress_prompts"),
+        QStringLiteral("永远不提示 R0 功能"));
+    m_suppressR0FeaturePromptsCheckBox->setToolTip(
+        QStringLiteral("关闭 R0 驱动未启用和权限不足时的自动提示"));
+    languageManager.bindToolTip(
+        m_suppressR0FeaturePromptsCheckBox,
+        QStringLiteral("settings.features.r0.suppress_prompts.tooltip"),
+        QStringLiteral("关闭 R0 驱动未启用和权限不足时的自动提示"));
+    r0PromptLayout->addWidget(m_suppressR0FeaturePromptsCheckBox);
+
+    featuresRootLayout->addWidget(r0PromptGroupBox);
+    featuresRootLayout->addStretch();
+    m_tabWidget->addTab(m_featuresTab, QStringLiteral("功能"));
+    languageManager.bindTab(
+        m_tabWidget,
+        m_featuresTab,
+        QStringLiteral("settings.tab.features"),
+        QStringLiteral("功能"));
+
+    connect(
+        m_suppressR0FeaturePromptsCheckBox,
+        &QCheckBox::toggled,
+        this,
+        [this](const bool /*checkedState*/) {
+            markPendingChanges(QString());
+        });
+}
+
 void SettingsDock::bindAppearanceSignals()
 {
     if (m_languageCombo != nullptr)
@@ -890,6 +950,10 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     {
         m_unlockerShellContextMenuCheckBox->setChecked(settings.unlockerShellContextMenuEnabled);
     }
+    if (m_suppressR0FeaturePromptsCheckBox != nullptr)
+    {
+        m_suppressR0FeaturePromptsCheckBox->setChecked(settings.suppressR0FeaturePrompts);
+    }
 
     if (m_scrollBarWidthCombo != nullptr)
     {
@@ -1004,6 +1068,9 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         m_currentAppearanceSettings.startupScaleRecommendPromptDisabled;
     collectedSettings.unlockerShellContextMenuEnabled =
         (m_unlockerShellContextMenuCheckBox != nullptr) && m_unlockerShellContextMenuCheckBox->isChecked();
+    collectedSettings.suppressR0FeaturePrompts =
+        (m_suppressR0FeaturePromptsCheckBox != nullptr)
+        && m_suppressR0FeaturePromptsCheckBox->isChecked();
     collectedSettings.useWideScrollBars =
         (m_scrollBarWidthCombo != nullptr) && m_scrollBarWidthCombo->currentData().toBool();
     collectedSettings.scrollBarAutoHideEnabled =
@@ -1185,6 +1252,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && sameScaleFactor
         && nextSettings.startupScaleRecommendPromptDisabled == m_currentAppearanceSettings.startupScaleRecommendPromptDisabled
         && nextSettings.unlockerShellContextMenuEnabled == m_currentAppearanceSettings.unlockerShellContextMenuEnabled
+        && nextSettings.suppressR0FeaturePrompts == m_currentAppearanceSettings.suppressR0FeaturePrompts
         && nextSettings.useWideScrollBars == m_currentAppearanceSettings.useWideScrollBars
         && nextSettings.scrollBarAutoHideEnabled == m_currentAppearanceSettings.scrollBarAutoHideEnabled
         && nextSettings.sliderWheelAdjustEnabled == m_currentAppearanceSettings.sliderWheelAdjustEnabled

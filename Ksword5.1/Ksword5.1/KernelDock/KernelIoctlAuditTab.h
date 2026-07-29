@@ -25,6 +25,12 @@ public:
     explicit KernelIoctlAuditTab(QWidget* parent = nullptr);
     ~KernelIoctlAuditTab() override = default;
 
+    // requestInitialRefresh：
+    // - 仅在用户首次切入“IOCTL 派遣表”子页时发起 R0 查询；
+    // - 禁止构造期间的后台预取触发“未启用 R0”提示；
+    // - 重复调用保持幂等，不影响工具栏的手动刷新。
+    void requestInitialRefresh();
+
 private:
     struct DriverRow
     {
@@ -118,4 +124,5 @@ private:
     QString m_errorText;
     bool m_registryOk = false;
     bool m_refreshRunning = false;
+    bool m_initialRefreshRequested = false;
 };

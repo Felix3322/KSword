@@ -58,7 +58,17 @@ KernelIoctlAuditTab::KernelIoctlAuditTab(QWidget* parent)
     : QWidget(parent)
 {
     initializeUi();
-    QMetaObject::invokeMethod(this, [this]() { refreshAsync(); }, Qt::QueuedConnection);
+}
+
+void KernelIoctlAuditTab::requestInitialRefresh()
+{
+    if (m_initialRefreshRequested)
+    {
+        return;
+    }
+
+    m_initialRefreshRequested = true;
+    refreshAsync();
 }
 
 void KernelIoctlAuditTab::initializeUi()

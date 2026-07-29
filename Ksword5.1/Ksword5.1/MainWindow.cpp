@@ -17,6 +17,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QCheckBox>
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
@@ -6325,6 +6326,11 @@ void MainWindow::handleR0DriverUnavailable(const unsigned long win32Error)
     }
 
     m_r0DriverServiceRunning = false;
+    if (m_suppressR0PromptsForSession || m_currentAppearanceSettings.suppressR0FeaturePrompts)
+    {
+        refreshPrivilegeStatusButtons();
+        return;
+    }
     m_r0UnavailablePromptShowing = true;
 
     const bool isAdmin = hasAdminPrivilege();
@@ -6339,6 +6345,11 @@ void MainWindow::handleR0DriverUnavailable(const unsigned long win32Error)
     prompt.setInformativeText(ks::i18n::text(
         QStringLiteral("r0.enable_required.hint"),
         QStringLiteral("启用后可继续使用依赖内核权限的功能；R0 状态按钮会显示为已启用。")));
+    QCheckBox* const suppressForSessionCheckBox = new QCheckBox(
+        ks::i18n::text(
+            QStringLiteral("r0.enable_required.suppress_session"),
+            QStringLiteral("本次不再提醒")));
+    prompt.setCheckBox(suppressForSessionCheckBox);
     QPushButton* const enableButton = prompt.addButton(
         ks::i18n::text(
             isAdmin
@@ -6352,6 +6363,10 @@ void MainWindow::handleR0DriverUnavailable(const unsigned long win32Error)
     prompt.exec();
 
     m_r0UnavailablePromptShowing = false;
+    if (suppressForSessionCheckBox->isChecked())
+    {
+        m_suppressR0PromptsForSession = true;
+    }
     if (prompt.clickedButton() != enableButton)
     {
         refreshPrivilegeStatusButtons();
@@ -6370,7 +6385,11 @@ void MainWindow::handleR0DriverUnavailable(const unsigned long win32Error)
 
 void MainWindow::handleR0PermissionRequired(const unsigned long win32Error)
 {
-    if (!m_r0UnavailablePromptArmed || m_r0PermissionPromptShowing || hasAdminPrivilege())
+    if (!m_r0UnavailablePromptArmed
+        || m_r0PermissionPromptShowing
+        || hasAdminPrivilege()
+        || m_suppressR0PromptsForSession
+        || m_currentAppearanceSettings.suppressR0FeaturePrompts)
     {
         return;
     }

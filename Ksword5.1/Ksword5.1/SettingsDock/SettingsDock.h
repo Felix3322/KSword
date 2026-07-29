@@ -57,6 +57,12 @@ private:
     // 调用方式：initializeUi 内部调用。
     void initializeAppearanceTab();
 
+    // initializeFeaturesTab 作用：
+    // - 创建“功能”标签页，承载 R0 功能提示等运行行为开关；
+    // - 控件沿用统一的“应用”保存流程。
+    // 调用方式：initializeAppearanceTab 后、读取配置前调用。
+    void initializeFeaturesTab();
+
     // initializeOnlineScanTab 作用：
     // - 创建“在线扫描”标签页控件（VirusTotal/ThreatBook API Key 输入与保存按钮）。
     // 调用方式：initializeUi 后、读取配置前调用。
@@ -182,6 +188,9 @@ private:
     // m_startupTab 作用：启动行为设置页 QWidget 容器。
     QWidget* m_startupTab = nullptr;
 
+    // m_featuresTab 作用：功能设置页 QWidget 容器。
+    QWidget* m_featuresTab = nullptr;
+
     // m_onlineScanTab 作用：在线扫描 API Key 设置页 QWidget 容器。
     QWidget* m_onlineScanTab = nullptr;
 
@@ -246,6 +255,9 @@ private:
 
     // m_unlockerShellContextMenuCheckBox 作用：设置是否启用系统右键“文件解锁器”菜单。
     QCheckBox* m_unlockerShellContextMenuCheckBox = nullptr;
+
+    // m_suppressR0FeaturePromptsCheckBox 作用：设置是否关闭 R0 驱动未启用或权限不足时的自动提示。
+    QCheckBox* m_suppressR0FeaturePromptsCheckBox = nullptr;
 
     // m_installTaskmgrHijackButton 作用：调用当前目录 TaskmgrHijack.ps1 安装 taskmgr.exe IFEO 映像劫持。
     QPushButton* m_installTaskmgrHijackButton = nullptr;

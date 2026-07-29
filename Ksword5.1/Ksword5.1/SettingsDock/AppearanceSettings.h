@@ -53,6 +53,7 @@ namespace ks::settings
     // sliderWheelAdjustEnabled：是否允许滚轮直接调整滑块值。
     // fontFamily：应用界面字体族；空值表示沿用系统默认字体。
     // textAntialiasingEnabled：是否以应用默认字体启用文本抗锯齿。
+    // suppressR0FeaturePrompts：是否关闭 R0 驱动未启用或权限不足时的自动提示。
     // virusTotalApiKey：VirusTotal 在线扫描 API Key，供 OnlineScan 模块运行时读取。
     // threatBookApiKey：ThreatBook（微步在线）在线扫描 API Key，供 OnlineScan 模块运行时读取。
     struct AppearanceSettings
@@ -79,6 +80,7 @@ namespace ks::settings
         int notificationLogDisplaySeconds = 10;
         NotificationDisplayPlacement notificationDisplayPlacement = NotificationDisplayPlacement::Screen;
         NotificationStackDirection notificationStackDirection = NotificationStackDirection::BottomUp;
+        bool suppressR0FeaturePrompts = false;
         QString logWindowGeometryBase64;
         QString virusTotalApiKey;
         QString threatBookApiKey;
