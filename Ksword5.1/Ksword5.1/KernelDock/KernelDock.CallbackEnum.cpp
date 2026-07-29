@@ -453,6 +453,8 @@ namespace
             return kernelText("kernel.callback.enum.class.logon_session", QStringLiteral("登录会话终止"));
         case KSWORD_ARK_CALLBACK_ENUM_CLASS_IMAGE_VERIFICATION:
             return kernelText("kernel.callback.enum.class.image_verification", QStringLiteral("镜像验证回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_NMI:
+            return kernelText("kernel.callback.enum.class.nmi", QStringLiteral("NMI 回调"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(callbackClass);
@@ -497,6 +499,8 @@ namespace
             return kernelText("kernel.callback.enum.source.driver_object_scan", QStringLiteral("DriverObject/DeviceObject 扫描"));
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_OBJECT_DIRECTORY:
             return kernelText("kernel.callback.enum.source.object_directory", QStringLiteral("对象目录枚举"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_NMI_LIST:
+            return kernelText("kernel.callback.enum.source.nmi_list", QStringLiteral("NMI 私有注册链"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(source);
@@ -505,7 +509,7 @@ namespace
 
     QString callbackEnumRegistrationTypeText(const std::uint32_t registrationType)
     {
-        // 作用：把协议 v2 的具体注册 API 类型映射为可筛选文本。
+        // 作用：把当前协议的具体注册 API 类型映射为可筛选文本。
         // 返回：未知或旧协议行显示“未分类”。
         switch (registrationType)
         {
@@ -521,6 +525,26 @@ namespace
             return kernelText(
                 "kernel.callback.enum.registration_type.process_ex2",
                 QStringLiteral("进程 Notify（Ex2）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_LEGACY:
+            return kernelText(
+                "kernel.callback.enum.registration_type.thread_legacy",
+                QStringLiteral("线程 Notify（Legacy）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_EX_NON_SYSTEM:
+            return kernelText(
+                "kernel.callback.enum.registration_type.thread_ex_non_system",
+                QStringLiteral("线程 Notify（Ex/NonSystem）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_EX_SUBSYSTEMS:
+            return kernelText(
+                "kernel.callback.enum.registration_type.thread_ex_subsystems",
+                QStringLiteral("线程 Notify（Ex/Subsystems）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_LEGACY_OR_EX_DEFAULT:
+            return kernelText(
+                "kernel.callback.enum.registration_type.image_legacy_or_ex_default",
+                QStringLiteral("镜像 Notify（Legacy/Ex 默认）"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_EX_CONFLICTING_ARCHITECTURE:
+            return kernelText(
+                "kernel.callback.enum.registration_type.image_ex_conflicting_architecture",
+                QStringLiteral("镜像 Notify（Ex/冲突架构）"));
         case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_CLASSIC:
             return kernelText(
                 "kernel.callback.enum.registration_type.bugcheck_classic",
@@ -569,6 +593,10 @@ namespace
             return kernelText(
                 "kernel.callback.enum.registration_type.generic_callback_object",
                 QStringLiteral("通用 CallbackObject"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_NMI:
+            return kernelText(
+                "kernel.callback.enum.registration_type.nmi",
+                QStringLiteral("NMI 回调"));
         case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_DESKTOP_OBJECT:
             return kernelText(
                 "kernel.callback.enum.registration_type.desktop_object",
@@ -718,6 +746,7 @@ namespace
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_LOGON_LIST:
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_CALLBACK_OBJECT:
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_OBJECT_DIRECTORY:
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_NMI_LIST:
             return true;
         default:
             return false;
@@ -2108,6 +2137,11 @@ void KernelDock::refreshCallbackEnumAsync()
         std::vector<KernelCallbackEnumEntry> resultRows;
         QString errorText;
         std::uint32_t responseFlags = 0;
+        std::uint32_t responseVersion = 0;
+        std::uint32_t snapshotPageCount = 0;
+        std::uint32_t snapshotRetryCount = 0;
+        std::uint64_t snapshotHash = 0;
+        bool snapshotConsistent = false;
         const ksword::ark::DriverClient driverClient;
         const ksword::ark::CallbackEnumResult enumResult = driverClient.enumerateCallbacks();
         const bool success = enumResult.io.ok;
@@ -2116,6 +2150,11 @@ void KernelDock::refreshCallbackEnumAsync()
         {
             QHash<QString, CallbackEnumVersionText> versionCache;
             responseFlags = enumResult.flags;
+            responseVersion = enumResult.version;
+            snapshotPageCount = enumResult.pageCount;
+            snapshotRetryCount = enumResult.snapshotRetryCount;
+            snapshotHash = enumResult.snapshotHash;
+            snapshotConsistent = enumResult.snapshotConsistent;
             resultRows.reserve(enumResult.entries.size());
             for (const ksword::ark::CallbackEnumEntry& entry : enumResult.entries)
             {
@@ -2147,7 +2186,18 @@ void KernelDock::refreshCallbackEnumAsync()
                 .arg(callbackEnumIoMessageText(QString::fromStdString(enumResult.io.message)));
         }
 
-        QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, responseFlags, resultRows = std::move(resultRows)]() mutable {
+        QMetaObject::invokeMethod(
+            guardThis,
+            [guardThis,
+             success,
+             errorText,
+             responseFlags,
+             responseVersion,
+             snapshotPageCount,
+             snapshotRetryCount,
+             snapshotHash,
+             snapshotConsistent,
+             resultRows = std::move(resultRows)]() mutable {
             if (guardThis == nullptr)
             {
                 return;
@@ -2180,13 +2230,26 @@ void KernelDock::refreshCallbackEnumAsync()
             }
 
             const bool truncated = (responseFlags & KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_TRUNCATED) != 0U;
+            const QString snapshotSuffix =
+                responseVersion >= KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION && snapshotConsistent
+                ? kernelText(
+                    "kernel.callback.enum.status.snapshot_consistent_suffix",
+                    QStringLiteral("，快照一致（%1 页，重试 %2 次，Hash %3）"))
+                    .arg(snapshotPageCount)
+                    .arg(snapshotRetryCount)
+                    .arg(callbackEnumFormatAddress(snapshotHash))
+                : kernelText(
+                    "kernel.callback.enum.status.snapshot_legacy_suffix",
+                    QStringLiteral("，旧协议未提供快照一致性校验（%1 页）"))
+                    .arg(snapshotPageCount);
             guardThis->m_callbackEnumStatusLabel->setText(
-                kernelText("kernel.callback.enum.status.summary", QStringLiteral("状态：已刷新 %1 项，私有未支持 %2 项%3"))
+                kernelText("kernel.callback.enum.status.summary", QStringLiteral("状态：已刷新 %1 项，私有未支持 %2 项%3%4"))
                 .arg(guardThis->m_callbackEnumRows.size())
                 .arg(unsupportedCount)
-                .arg(truncated ? kernelText("kernel.callback.enum.status.truncated_suffix", QStringLiteral("，响应截断")) : QString()));
+                .arg(truncated ? kernelText("kernel.callback.enum.status.truncated_suffix", QStringLiteral("，响应截断")) : QString())
+                .arg(snapshotSuffix));
             guardThis->m_callbackEnumStatusLabel->setStyleSheet(callbackEnumStatusLabelStyle(
-                truncated ? KswordTheme::WarningHex() : KswordTheme::SuccessHex()));
+                truncated || !snapshotConsistent ? KswordTheme::WarningHex() : KswordTheme::SuccessHex()));
 
             if (guardThis->m_callbackEnumTable->rowCount() > 0)
             {

@@ -4774,12 +4774,19 @@ namespace
         std::size_t printedCount = 0U;
         std::uint32_t pageCount = 0U;
         std::uint32_t startIndex = 0U;
+        std::uint64_t snapshotHash = 0U;
+        std::uint32_t snapshotTotalCount = 0U;
 
         while (printedCount < visibleLimit)
         {
             IoctlResult io{};
             std::fill(buffer.begin(), buffer.end(), 0U);
             request.startIndex = startIndex;
+            request.expectedSnapshotHash = snapshotHash;
+            request.expectedTotalCount = snapshotTotalCount;
+            request.snapshotPolicy = snapshotHash == 0U
+                ? KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_NONE
+                : KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_REQUIRE_MATCH;
 
             const int rc = sendRawIoctl(
                 L"IOCTL_KSWORD_ARK_ENUM_CALLBACKS",
@@ -4794,6 +4801,28 @@ namespace
             }
 
             const auto* response = reinterpret_cast<const KSWORD_ARK_ENUM_CALLBACKS_RESPONSE*>(buffer.data());
+            if ((response->flags & KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_SNAPSHOT_CHANGED) != 0UL)
+            {
+                std::wcerr << L"error: callback inventory changed during pagination; rerun the command\n";
+                return 4;
+            }
+            if ((response->flags & KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_SNAPSHOT_HASH_VALID) == 0UL ||
+                response->snapshotHash == 0ULL)
+            {
+                std::wcerr << L"error: callback enum v3 response omitted snapshot metadata\n";
+                return 4;
+            }
+            if (snapshotHash == 0U)
+            {
+                snapshotHash = response->snapshotHash;
+                snapshotTotalCount = response->totalCount;
+            }
+            else if (snapshotHash != response->snapshotHash ||
+                snapshotTotalCount != response->totalCount)
+            {
+                std::wcerr << L"error: callback inventory snapshot metadata is inconsistent\n";
+                return 4;
+            }
             std::size_t available = 0U;
             try
             {
@@ -4818,6 +4847,11 @@ namespace
                     response->returnedCount,
                     response->entrySize,
                     io.bytesReturned);
+                std::wcout << L"snapshotGeneration=" << hex64(response->enumerationGeneration)
+                           << L" snapshotHash=" << hex64(response->snapshotHash)
+                           << L" snapshotHashValid=1 identityHashValid="
+                           << (((response->flags & KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_IDENTITY_HASH_VALID) != 0UL) ? 1 : 0)
+                           << L"\n";
             }
 
             const std::size_t remainingVisible = visibleLimit - printedCount;
@@ -4839,6 +4873,8 @@ namespace
                            << L" context=" << hex64(entry->contextAddress)
                            << L" registration=" << hex64(entry->registrationAddress)
                            << L" rawStorage=" << hex64(entry->rawStorageValue)
+                           << L" generation=" << hex64(entry->enumerationGeneration)
+                           << L" identityHash=" << hex64(entry->identityHash)
                            << L" moduleBase=" << hex64(entry->moduleBase)
                            << std::dec << L" operationMask=0x" << std::hex << entry->operationMask
                            << L" objectTypeMask=0x" << entry->objectTypeMask
@@ -4861,6 +4897,9 @@ namespace
             }
             startIndex = response->nextIndex;
         }
+        std::wcout << L"pages=" << pageCount
+                   << L" snapshotHash=" << hex64(snapshotHash)
+                   << L" rowsPrinted=" << printedCount << L"\n";
         return 0;
     }
 

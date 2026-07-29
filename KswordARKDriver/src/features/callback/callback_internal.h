@@ -139,13 +139,22 @@ typedef struct _KSWORD_ARK_PENDING_DECISION
 
 typedef struct _KSWORD_ARK_CALLBACK_ENUM_BUILDER
 {
-    KSWORD_ARK_ENUM_CALLBACKS_RESPONSE* Response;
+    // Entries 指向当前分页的实际输出数组，容量由 METHOD_BUFFERED 长度限定。
+    KSWORD_ARK_CALLBACK_ENUM_ENTRY* Entries;
     ULONG EntryCapacity;
+    // StartIndex 和计数器共同把全量逻辑枚举投影到当前分页。
     ULONG StartIndex;
     ULONG TotalCount;
     ULONG ReturnedCount;
+    // Flags 与 LastStatus 汇总本页及完整快照状态。
     ULONG Flags;
     NTSTATUS LastStatus;
+    // SnapshotRowCount 和 SnapshotHash 覆盖全部逻辑行，而不只覆盖当前页。
+    ULONG SnapshotRowCount;
+    ULONG64 SnapshotHash;
+    // PendingEntry 在调用方填完一行后延迟计算身份哈希。
+    KSWORD_ARK_CALLBACK_ENUM_ENTRY* PendingEntry;
+    // 分页范围外的行在 ScratchEntry 中构建，使其仍能参与快照哈希。
     KSWORD_ARK_CALLBACK_ENUM_ENTRY ScratchEntry;
 } KSWORD_ARK_CALLBACK_ENUM_BUILDER;
 
@@ -293,6 +302,21 @@ KswordArkCallbackEnumReadMemory(
 
 KSWORD_ARK_CALLBACK_ENUM_ENTRY*
 KswordArkCallbackEnumReserveEntry(
+    _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
+    );
+
+VOID
+KswordArkCallbackEnumSnapshotBegin(
+    _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
+    );
+
+VOID
+KswordArkCallbackEnumSnapshotCommitPending(
+    _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
+    );
+
+VOID
+KswordArkCallbackEnumSnapshotFinalize(
     _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
     );
 

@@ -75,6 +75,12 @@ typedef struct _KSWORD_ARK_CALLBACK_ENUM_DYNDATA_PROFILE
     ULONG NtosImageSize;
 } KSWORD_ARK_CALLBACK_ENUM_DYNDATA_PROFILE;
 
+/* 中文说明：编译期锁定 V2/V3 的线缆布局，避免 R0/R3 因对齐差异解析错页。 */
+C_ASSERT(sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2) == 24U);
+C_ASSERT(FIELD_OFFSET(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2, entries) == 32U);
+C_ASSERT(sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST) == 40U);
+C_ASSERT(FIELD_OFFSET(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE, entries) == 48U);
+
 typedef enum _KSWORD_ARK_CALLBACK_ENUM_OBJECT_LIST_STATE
 {
     KswordArkCallbackEnumObjectListInvalid = 0,
@@ -120,8 +126,11 @@ static const KSWORD_ARK_CALLBACK_ENUM_SOURCE_CONTEXT g_KswordArkCallbackEnumPdbO
     L"PDB callback profile trusted object list"
 };
 
-static const ULONG g_KswordArkCallbackEnumHeaderBytes =
+/* 中文说明：两个常量分别限定兼容 V2 和快照 V3 响应的 entries 起始偏移。 */
+static const ULONG g_KswordArkCallbackEnumHeaderBytesV3 =
     (ULONG)(sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE) - sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
+static const ULONG g_KswordArkCallbackEnumHeaderBytesV2 =
+    (ULONG)(sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2) - sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
 
 _Must_inspect_result_
 static NTSTATUS
@@ -1221,9 +1230,12 @@ KswordArkCallbackEnumReserveEntry(
     KSWORD_ARK_CALLBACK_ENUM_ENTRY* entry = NULL;
     ULONG entryIndex = 0UL;
 
-    if (Builder == NULL || Builder->Response == NULL) {
+    if (Builder == NULL ||
+        (Builder->EntryCapacity != 0UL && Builder->Entries == NULL)) {
         return NULL;
     }
+
+    KswordArkCallbackEnumSnapshotCommitPending(Builder);
 
     /* 中文说明：先记录全量序号；分页前的行仍要完整枚举，保证 totalCount 稳定。 */
     entryIndex = Builder->TotalCount;
@@ -1231,6 +1243,7 @@ KswordArkCallbackEnumReserveEntry(
     if (entryIndex < Builder->StartIndex) {
         RtlZeroMemory(&Builder->ScratchEntry, sizeof(Builder->ScratchEntry));
         Builder->ScratchEntry.size = sizeof(Builder->ScratchEntry);
+        Builder->PendingEntry = &Builder->ScratchEntry;
         return &Builder->ScratchEntry;
     }
 
@@ -1239,13 +1252,15 @@ KswordArkCallbackEnumReserveEntry(
         Builder->Flags |= KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_TRUNCATED;
         RtlZeroMemory(&Builder->ScratchEntry, sizeof(Builder->ScratchEntry));
         Builder->ScratchEntry.size = sizeof(Builder->ScratchEntry);
+        Builder->PendingEntry = &Builder->ScratchEntry;
         return &Builder->ScratchEntry;
     }
 
-    entry = &Builder->Response->entries[Builder->ReturnedCount];
+    entry = &Builder->Entries[Builder->ReturnedCount];
     Builder->ReturnedCount += 1UL;
     RtlZeroMemory(entry, sizeof(*entry));
     entry->size = sizeof(*entry);
+    Builder->PendingEntry = entry;
     return entry;
 }
 
@@ -2055,7 +2070,7 @@ Return Value:
 }
 
 static VOID
-KswordArkCallbackEnumClassifyProcessNotifyRegistration(
+KswordArkCallbackEnumClassifyNotifyRegistration(
     _In_ ULONG CallbackClass,
     _In_ ULONG64 ContextAddress,
     _Out_ ULONG* RegistrationTypeOut,
@@ -2065,9 +2080,9 @@ KswordArkCallbackEnumClassifyProcessNotifyRegistration(
 
 Routine Description:
 
-    识别进程 Notify 的注册 API。中文说明：PspSetCreateProcessNotifyRoutine
-    把 Legacy/Ex/Ex2 模式编码在 EX_CALLBACK_ROUTINE_BLOCK.Context 中，
-    当前内核注册态分别为 0、2、6；未知值保守保留为 Unknown。
+    识别进程、线程与镜像 Notify 的注册 API。中文说明：这些 Psp 数组把
+    Legacy/Ex 变体编码在 EX_CALLBACK_ROUTINE_BLOCK.Context 中；未知值
+    保守保留为 Unknown，不把私有布局推断伪装成已确认类型。
 
 Arguments:
 
@@ -2087,30 +2102,66 @@ Return Value:
     }
 
     *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN;
-    *RegistrationNameOut = L"N/A";
-    if (CallbackClass != KSWORD_ARK_CALLBACK_ENUM_CLASS_PROCESS) {
-        return;
-    }
     *RegistrationNameOut = L"Unknown";
 
-    switch (ContextAddress) {
-    case 0ULL:
-        *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_LEGACY;
-        *RegistrationNameOut = L"Legacy";
-        break;
+    if (CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_PROCESS) {
+        switch (ContextAddress) {
+        case 0ULL:
+            *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_LEGACY;
+            *RegistrationNameOut = L"Legacy";
+            break;
 
-    case 2ULL:
-        *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX;
-        *RegistrationNameOut = L"Ex";
-        break;
+        case 2ULL:
+            *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX;
+            *RegistrationNameOut = L"Ex";
+            break;
 
-    case 6ULL:
-        *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX2;
-        *RegistrationNameOut = L"Ex2";
-        break;
+        case 6ULL:
+            *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX2;
+            *RegistrationNameOut = L"Ex2";
+            break;
 
-    default:
-        break;
+        default:
+            break;
+        }
+    }
+    else if (CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_THREAD) {
+        switch (ContextAddress) {
+        case 0ULL:
+            *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_LEGACY;
+            *RegistrationNameOut = L"Legacy";
+            break;
+
+        case 1ULL:
+            *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_EX_NON_SYSTEM;
+            *RegistrationNameOut = L"Ex/NonSystem";
+            break;
+
+        case 2ULL:
+            *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_EX_SUBSYSTEMS;
+            *RegistrationNameOut = L"Ex/Subsystems";
+            break;
+
+        default:
+            break;
+        }
+    }
+    else if (CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_IMAGE) {
+        switch (ContextAddress) {
+        case 0ULL:
+            *RegistrationTypeOut = KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_LEGACY_OR_EX_DEFAULT;
+            *RegistrationNameOut = L"Legacy/ExDefault";
+            break;
+
+        case 1ULL:
+            *RegistrationTypeOut =
+                KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_EX_CONFLICTING_ARCHITECTURE;
+            *RegistrationNameOut = L"Ex/ConflictingArchitecture";
+            break;
+
+        default:
+            break;
+        }
     }
 }
 
@@ -2179,7 +2230,7 @@ Return Value:
         KSWORD_ARK_CALLBACK_ENUM_FIELD_OPERATION_MASK |
         KSWORD_ARK_CALLBACK_ENUM_FIELD_STORAGE_ADDRESS;
     entry->operationMask = OperationMask;
-    KswordArkCallbackEnumClassifyProcessNotifyRegistration(
+    KswordArkCallbackEnumClassifyNotifyRegistration(
         CallbackClass,
         ContextAddress,
         &registrationType,
@@ -2200,7 +2251,9 @@ Return Value:
         entry->trustFlags |= KSWORD_ARK_CALLBACK_TRUST_FALLBACK_PATTERN;
     }
 
-    if (CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_PROCESS) {
+    if (CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_PROCESS ||
+        CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_THREAD ||
+        CallbackClass == KSWORD_ARK_CALLBACK_ENUM_CLASS_IMAGE) {
         (VOID)RtlStringCbPrintfW(
             entry->name,
             sizeof(entry->name),
@@ -3848,93 +3901,158 @@ Return Value:
 
 --*/
 {
+    /* 中文说明：下列变量先按最保守默认值初始化，完成协议协商后才写响应。 */
     NTSTATUS status = STATUS_SUCCESS;
     PVOID inputBuffer = NULL;
+    PVOID outputBuffer = NULL;
     size_t inputLength = 0U;
     size_t outputLength = 0U;
     ULONG requestFlags = KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_ALL;
     ULONG requestMaxEntries = KSWORD_ARK_CALLBACK_ENUM_MAX_ENTRIES;
     ULONG requestStartIndex = 0UL;
+    ULONG requestVersion = 0UL;
+    ULONG snapshotPolicy = KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_NONE;
+    ULONG expectedTotalCount = 0UL;
+    ULONG responseHeaderBytes = 0UL;
     ULONG outputCapacity = 0UL;
     ULONG nextIndex = 0UL;
+    ULONG legacyEntryIndex = 0UL;
+    ULONG64 expectedSnapshotHash = 0ULL;
+    BOOLEAN snapshotChanged = FALSE;
+    KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2* requestPacketV2 = NULL;
     KSWORD_ARK_ENUM_CALLBACKS_REQUEST* requestPacket = NULL;
+    KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2* responsePacketV2 = NULL;
     KSWORD_ARK_ENUM_CALLBACKS_RESPONSE* responsePacket = NULL;
     KSWORD_ARK_CALLBACK_ENUM_BUILDER builder;
 
+    /* 中文说明：WDF 完成长度是必需输出，所有失败路径都保持其为零。 */
     if (CompleteBytesOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *CompleteBytesOut = 0U;
 
-    if (InputBufferLength < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST) ||
-        OutputBufferLength < g_KswordArkCallbackEnumHeaderBytes) {
+    if (InputBufferLength < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2) ||
+        OutputBufferLength < g_KswordArkCallbackEnumHeaderBytesV2) {
         return STATUS_BUFFER_TOO_SMALL;
     }
 
+    /* 中文说明：先按最短 V2 请求取缓冲，以允许新驱动服务旧 R3。 */
     status = WdfRequestRetrieveInputBuffer(
         Request,
-        sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST),
+        sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2),
         &inputBuffer,
         &inputLength);
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    if (inputLength < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST)) {
+    if (inputLength < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2)) {
         return STATUS_BUFFER_TOO_SMALL;
     }
 
+    requestPacketV2 = (KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2*)inputBuffer;
+    requestVersion = requestPacketV2->version;
+    /* 中文说明：V3 才读取快照契约字段；V2 严格保持历史 24 字节布局。 */
+    if (requestVersion == KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION) {
+        if (inputLength < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST)) {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        requestPacket = (KSWORD_ARK_ENUM_CALLBACKS_REQUEST*)inputBuffer;
+        if (requestPacket->size < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST)) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        expectedSnapshotHash = requestPacket->expectedSnapshotHash;
+        expectedTotalCount = requestPacket->expectedTotalCount;
+        snapshotPolicy = requestPacket->snapshotPolicy;
+        responseHeaderBytes = g_KswordArkCallbackEnumHeaderBytesV3;
+    }
+    else if (requestVersion == KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION_V2) {
+        if (requestPacketV2->size < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2)) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        responseHeaderBytes = g_KswordArkCallbackEnumHeaderBytesV2;
+    }
+    else {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* 中文说明：未知快照策略以及缺少期望哈希的强匹配请求均直接拒绝。 */
+    if (snapshotPolicy != KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_NONE &&
+        snapshotPolicy != KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_REQUIRE_MATCH) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (snapshotPolicy == KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_REQUIRE_MATCH &&
+        expectedSnapshotHash == 0ULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (OutputBufferLength < responseHeaderBytes) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    /* 中文说明：响应头长度跟随协商版本，禁止把 V3 字段写入 V2 缓冲。 */
     status = WdfRequestRetrieveOutputBuffer(
         Request,
-        g_KswordArkCallbackEnumHeaderBytes,
-        (PVOID*)&responsePacket,
+        responseHeaderBytes,
+        &outputBuffer,
         &outputLength);
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    if (outputLength < g_KswordArkCallbackEnumHeaderBytes) {
+    if (outputLength < responseHeaderBytes) {
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    requestPacket = (KSWORD_ARK_ENUM_CALLBACKS_REQUEST*)inputBuffer;
-    if (requestPacket->size < sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST) ||
-        requestPacket->version != KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    requestFlags = requestPacket->flags;
+    /* 中文说明：规范化枚举类别、页大小和起始索引，限制单次内核工作量。 */
+    requestFlags = requestPacketV2->flags;
     if (requestFlags == 0UL) {
         requestFlags = KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_ALL;
     }
     if ((requestFlags & (~KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_ALL)) != 0UL) {
         return STATUS_INVALID_PARAMETER;
     }
-    if (requestPacket->maxEntries != 0UL) {
-        requestMaxEntries = requestPacket->maxEntries;
+    if (requestPacketV2->maxEntries != 0UL) {
+        requestMaxEntries = requestPacketV2->maxEntries;
     }
-    requestStartIndex = requestPacket->startIndex;
+    requestStartIndex = requestPacketV2->startIndex;
     if (requestMaxEntries > KSWORD_ARK_CALLBACK_ENUM_MAX_ENTRIES) {
         requestMaxEntries = KSWORD_ARK_CALLBACK_ENUM_MAX_ENTRIES;
     }
 
-    RtlZeroMemory(responsePacket, outputLength);
-    responsePacket->size = sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE);
-    responsePacket->version = KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION;
-    responsePacket->entrySize = sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY);
-    responsePacket->lastStatus = STATUS_SUCCESS;
+    /* 中文说明：输出先整体清零，再仅按协商版本初始化对应响应头。 */
+    RtlZeroMemory(outputBuffer, outputLength);
+    if (requestVersion == KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION) {
+        responsePacket = (KSWORD_ARK_ENUM_CALLBACKS_RESPONSE*)outputBuffer;
+        responsePacket->size = sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE);
+        responsePacket->version = requestVersion;
+        responsePacket->entrySize = sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY);
+        responsePacket->lastStatus = STATUS_SUCCESS;
+    }
+    else {
+        responsePacketV2 = (KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2*)outputBuffer;
+        responsePacketV2->size = sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2);
+        responsePacketV2->version = requestVersion;
+        responsePacketV2->entrySize = sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY);
+        responsePacketV2->lastStatus = STATUS_SUCCESS;
+    }
 
-    if (outputLength > g_KswordArkCallbackEnumHeaderBytes) {
-        outputCapacity = (ULONG)((outputLength - g_KswordArkCallbackEnumHeaderBytes) / sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
+    /* 中文说明：实际页容量同时受输出缓冲和请求上限约束。 */
+    if (outputLength > responseHeaderBytes) {
+        outputCapacity = (ULONG)((outputLength - responseHeaderBytes) / sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
     }
     if (outputCapacity > requestMaxEntries) {
         outputCapacity = requestMaxEntries;
     }
 
+    /* 中文说明：所有类别必须完整逻辑枚举，分页外行通过 ScratchEntry 参与哈希。 */
     RtlZeroMemory(&builder, sizeof(builder));
-    builder.Response = responsePacket;
+    builder.Entries = (requestVersion == KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION)
+        ? responsePacket->entries
+        : responsePacketV2->entries;
     builder.EntryCapacity = outputCapacity;
     builder.StartIndex = requestStartIndex;
     builder.LastStatus = STATUS_SUCCESS;
+    KswordArkCallbackEnumSnapshotBegin(&builder);
 
+    /* 中文说明：类别标志只影响逻辑数据集组成，不改变快照算法。 */
     if ((requestFlags & KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_KSWORD_SELF) != 0UL) {
         KswordArkCallbackEnumAddSelfCallbacks(&builder);
     }
@@ -3949,27 +4067,76 @@ Return Value:
         KswordArkCallbackEnumAddUnsupportedKinds(&builder);
     }
 
-    responsePacket->totalCount = builder.TotalCount;
-    responsePacket->returnedCount = builder.ReturnedCount;
-    responsePacket->flags = builder.Flags;
-    responsePacket->lastStatus = builder.LastStatus;
-    if (requestStartIndex <= builder.TotalCount &&
+    /* 中文说明：最终化会提交尾行、发布行身份以及整份有序快照哈希。 */
+    KswordArkCallbackEnumSnapshotFinalize(&builder);
+    /* 中文说明：内部计数不一致表示枚举器漏提交了行，向 R3 暴露数据错误。 */
+    if (builder.SnapshotRowCount != builder.TotalCount) {
+        builder.LastStatus = STATUS_DATA_ERROR;
+    }
+    /* 中文说明：续页契约不匹配时不返回混合数据，并提示 R3 从第一页重试。 */
+    if (snapshotPolicy == KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_REQUIRE_MATCH &&
+        (builder.SnapshotHash != expectedSnapshotHash ||
+         builder.TotalCount != expectedTotalCount)) {
+        snapshotChanged = TRUE;
+        builder.Flags |= KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_SNAPSHOT_CHANGED;
+        builder.LastStatus = STATUS_RETRY;
+        builder.ReturnedCount = 0UL;
+    }
+    /* 中文说明：旧协议不得发布 V3 独占标志，保持旧客户端行为可预测。 */
+    if (requestVersion == KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION_V2) {
+        /* 中文说明：V2 行中的哈希字段历史上保留为零，兼容响应必须清除 V3 派生值。 */
+        for (legacyEntryIndex = 0UL;
+             legacyEntryIndex < builder.ReturnedCount;
+             ++legacyEntryIndex) {
+            builder.Entries[legacyEntryIndex].enumerationGeneration = 0ULL;
+            builder.Entries[legacyEntryIndex].identityHash = 0ULL;
+            builder.Entries[legacyEntryIndex].fieldFlags &=
+                ~(KSWORD_ARK_CALLBACK_ENUM_FIELD_IDENTITY_HASH |
+                  KSWORD_ARK_CALLBACK_ENUM_FIELD_ENUMERATION_GENERATION);
+        }
+        builder.Flags &=
+            ~(KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_SNAPSHOT_HASH_VALID |
+              KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_IDENTITY_HASH_VALID |
+              KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_SNAPSHOT_CHANGED);
+    }
+
+    /* 中文说明：计算下一页索引；快照变化时显式归零以触发整轮重启。 */
+    if (!snapshotChanged &&
+        requestStartIndex <= builder.TotalCount &&
         builder.ReturnedCount <= (builder.TotalCount - requestStartIndex)) {
         nextIndex = requestStartIndex + builder.ReturnedCount;
+    }
+    else if (snapshotChanged) {
+        nextIndex = 0UL;
     }
     else {
         nextIndex = builder.TotalCount;
     }
-    responsePacket->nextIndex = nextIndex;
-    if (nextIndex < builder.TotalCount) {
-        responsePacket->flags |= KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_MORE_DATA;
+    if (!snapshotChanged && nextIndex < builder.TotalCount) {
+        builder.Flags |= KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_MORE_DATA;
     }
-    *CompleteBytesOut = (size_t)g_KswordArkCallbackEnumHeaderBytes +
+
+    /* 中文说明：根据协商版本分别写头，V3 额外发布代次和快照哈希。 */
+    if (requestVersion == KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION) {
+        responsePacket->totalCount = builder.TotalCount;
+        responsePacket->returnedCount = builder.ReturnedCount;
+        responsePacket->flags = builder.Flags;
+        responsePacket->lastStatus = builder.LastStatus;
+        responsePacket->nextIndex = nextIndex;
+        responsePacket->enumerationGeneration = builder.SnapshotHash;
+        responsePacket->snapshotHash = builder.SnapshotHash;
+    }
+    else {
+        responsePacketV2->totalCount = builder.TotalCount;
+        responsePacketV2->returnedCount = builder.ReturnedCount;
+        responsePacketV2->flags = builder.Flags;
+        responsePacketV2->lastStatus = builder.LastStatus;
+        responsePacketV2->nextIndex = nextIndex;
+    }
+    /* 中文说明：WDF 完成长度仅包含响应头和实际返回的连续条目。 */
+    *CompleteBytesOut = (size_t)responseHeaderBytes +
         ((size_t)builder.ReturnedCount * sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
 
-    if ((builder.Flags & KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_TRUNCATED) != 0UL) {
-        return STATUS_SUCCESS;
-    }
-
+    /* 中文说明：枚举级异常通过响应 lastStatus 表达，IOCTL 传输本身保持成功。 */
     return STATUS_SUCCESS;
 }

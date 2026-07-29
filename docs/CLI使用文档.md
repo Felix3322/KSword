@@ -138,7 +138,7 @@ Inspect SSDT, hooks, driver objects, CPU, physical layout, CID, and IPC state.
 | `kernel cid` | `KswordCLI.exe kernel cid [--flags 0xN] [--max-entries N] [--max-visits N] [--start-cid CID] [--end-cid CID] [--limit N]` | Enumerate CID table evidence. | Optional: --flags, --max-entries, --max-visits, --start-cid, --end-cid, --limit. |  |
 | `kernel object-summary` | `KswordCLI.exe kernel object-summary --target-kind KIND [--cid CID] [--object ADDRESS] [--flags 0xN]` | Query object header/type/counter summary for CID or object evidence. | Required: --target-kind. Optional: --cid, --object, --flags. | Uses `IOCTL_KSWORD_ARK_QUERY_KERNEL_OBJECT_SUMMARY`. |
 | `kernel ipc` | `KswordCLI.exe kernel ipc [--flags 0xN] [--pid PID] [--handle HANDLE] [--max-entries N]` | Query IPC summary for a process/handle context. | Optional: --flags, --pid, --handle, --max-entries. |  |
-| `kernel callbacks` | `KswordCLI.exe kernel callbacks [--flags 0xN] [--max-entries N] [--limit N]` | Alias for callback inventory. | Optional: --flags, --max-entries, --limit. |  |
+| `kernel callbacks` | `KswordCLI.exe kernel callbacks [--flags 0xN] [--max-entries N] [--limit N]` | Alias for callback inventory. | Optional: --flags, --max-entries, --limit. | Uses callback protocol v3 snapshot validation. |
 | `kernel hooks` | `KswordCLI.exe kernel hooks [--flags 0xN] [--max-entries N] [--module NAME] [--limit N]` | Alias-style inline hook scan. | Optional: --flags, --max-entries, --module, --limit. |  |
 
 ### `callback`
@@ -156,7 +156,7 @@ Manage callback rules, pending decisions, callback inventory, and bypass PIDs.
 | `callback remove-ex` | `KswordCLI.exe callback remove-ex --class N --callback VA [--registration VA] [--raw-storage VA] [--generation N] [--identity-hash N] [--source N] [--operation-mask 0xN] [--object-type-mask 0xN] [--trust-flags 0xN] [--remove-behavior N] [--flags 0xN]` | Remove an external callback with extended identity hints. | Required: --class, --callback. Optional: extended identity, source, masks, trust, behavior, --flags. |  |
 | `callback set-minifilter-bypass-pids` | `KswordCLI.exe callback set-minifilter-bypass-pids --pids PID[,PID...] [--flags 0xN]` | Set minifilter bypass PID list. | Required: --pids. Optional: --flags. |  |
 | `callback query-minifilter-bypass-pids` | `KswordCLI.exe callback query-minifilter-bypass-pids` | Query minifilter bypass PID list. | No options. |  |
-| `callback enum` | `KswordCLI.exe callback enum [--flags 0xN] [--max-entries N] [--limit N]` | Enumerate callback inventory. | Optional: --flags, --max-entries, --limit. |  |
+| `callback enum` | `KswordCLI.exe callback enum [--flags 0xN] [--max-entries N] [--limit N]` | Enumerate callback inventory. | Optional: --flags, --max-entries, --limit. | Uses protocol v3; prints snapshot generation/hash and per-row identity hashes, and stops if a continuation page no longer matches the first-page snapshot. |
 
 ### `dyn`
 
@@ -382,4 +382,3 @@ WSL silo and Linux PID/TID diagnostics.
 | 命令 | 语法 | 用途 | 参数 | 备注 |
 | --- | --- | --- | --- | --- |
 | `wsl query-silo` | `KswordCLI.exe wsl query-silo [--pid PID] [--tid TID] [--flags 0xN]` | Query WSL silo process/thread evidence. | Optional: --pid, --tid, --flags. |  |
-

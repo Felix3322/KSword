@@ -118,8 +118,9 @@
 // External callback remove protocol version.
 #define KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_PROTOCOL_VERSION 1UL
 
-// Callback enumeration protocol version.
-#define KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION 2UL
+// Callback enumeration protocol version. V3 adds optimistic snapshot validation.
+#define KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION_V2 2UL
+#define KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION 3UL
 
 // Callback enumeration request flags.
 #define KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_KSWORD_SELF 0x00000001UL
@@ -132,9 +133,16 @@
      KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_UNSUPPORTED | \
      KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_PRIVATE)
 
-// Callback enumeration response flags.
+// Callback enumeration response flags. Hash flags are valid only on V3 responses.
 #define KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_TRUNCATED 0x00000001UL
 #define KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_MORE_DATA 0x00000002UL
+#define KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_SNAPSHOT_HASH_VALID 0x00000004UL
+#define KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_IDENTITY_HASH_VALID 0x00000008UL
+#define KSWORD_ARK_ENUM_CALLBACK_RESPONSE_FLAG_SNAPSHOT_CHANGED 0x00000010UL
+
+// Callback enumeration snapshot policy. REQUIRE_MATCH compares the whole logical result.
+#define KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_NONE 0UL
+#define KSWORD_ARK_CALLBACK_SNAPSHOT_POLICY_REQUIRE_MATCH 1UL
 
 // Callback enumeration classes.
 #define KSWORD_ARK_CALLBACK_ENUM_CLASS_REGISTRY 1UL
@@ -152,12 +160,18 @@
 #define KSWORD_ARK_CALLBACK_ENUM_CLASS_FILE_SYSTEM 13UL
 #define KSWORD_ARK_CALLBACK_ENUM_CLASS_LOGON_SESSION 14UL
 #define KSWORD_ARK_CALLBACK_ENUM_CLASS_IMAGE_VERIFICATION 15UL
+#define KSWORD_ARK_CALLBACK_ENUM_CLASS_NMI 16UL
 
 // Callback registration subtypes.
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_UNKNOWN 0UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_LEGACY 1UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX 2UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PROCESS_EX2 3UL
+#define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_LEGACY 4UL
+#define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_EX_NON_SYSTEM 5UL
+#define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_THREAD_EX_SUBSYSTEMS 6UL
+#define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_LEGACY_OR_EX_DEFAULT 7UL
+#define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_EX_CONFLICTING_ARCHITECTURE 8UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_CLASSIC 10UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_SECONDARY_DUMP 11UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_BUGCHECK_DUMP_IO 12UL
@@ -170,6 +184,7 @@
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_VERIFY_INFORMATIONAL 50UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_IMAGE_VERIFY_BLOCK 51UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_GENERIC_CALLBACK_OBJECT 60UL
+#define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_NMI 61UL
 #define KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_DESKTOP_OBJECT 70UL
 
 // Callback enumeration sources.
@@ -190,6 +205,7 @@
 #define KSWORD_ARK_CALLBACK_ENUM_SOURCE_CALLBACK_OBJECT 15UL
 #define KSWORD_ARK_CALLBACK_ENUM_SOURCE_DRIVER_OBJECT_SCAN 16UL
 #define KSWORD_ARK_CALLBACK_ENUM_SOURCE_OBJECT_DIRECTORY 17UL
+#define KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_NMI_LIST 18UL
 
 // Callback enumeration row status.
 #define KSWORD_ARK_CALLBACK_ENUM_STATUS_OK 1UL
@@ -219,6 +235,9 @@
 #define KSWORD_ARK_CALLBACK_ENUM_FIELD_OWNER_MODULE_RANGE 0x00020000UL
 #define KSWORD_ARK_CALLBACK_ENUM_FIELD_PROFILE_GATED 0x00040000UL
 #define KSWORD_ARK_CALLBACK_ENUM_FIELD_REGISTRATION_TYPE 0x00080000UL
+// Identity hash is stable for one logical row; generation identifies the whole ordered snapshot.
+#define KSWORD_ARK_CALLBACK_ENUM_FIELD_IDENTITY_HASH 0x00100000UL
+#define KSWORD_ARK_CALLBACK_ENUM_FIELD_ENUMERATION_GENERATION 0x00200000UL
 
 // Callback enumeration trust flags.
 #define KSWORD_ARK_CALLBACK_TRUST_NONE 0x00000000UL
@@ -567,6 +586,17 @@ typedef struct _KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_EX_RESPONSE
     wchar_t message[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
 } KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_EX_RESPONSE;
 
+// V2 wire layout is retained verbatim so newer R0/R3 binaries can negotiate with older peers.
+typedef struct _KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long flags;
+    unsigned long reserved;
+    unsigned long maxEntries;
+    unsigned long startIndex;
+} KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2;
+
 typedef struct _KSWORD_ARK_ENUM_CALLBACKS_REQUEST
 {
     unsigned long size;
@@ -575,6 +605,10 @@ typedef struct _KSWORD_ARK_ENUM_CALLBACKS_REQUEST
     unsigned long reserved;
     unsigned long maxEntries;
     unsigned long startIndex;
+    // V3 continuation pages echo the first page's complete ordered snapshot identity.
+    unsigned long long expectedSnapshotHash;
+    unsigned long expectedTotalCount;
+    unsigned long snapshotPolicy;
 } KSWORD_ARK_ENUM_CALLBACKS_REQUEST;
 
 typedef struct _KSWORD_ARK_CALLBACK_ENUM_ENTRY
@@ -591,6 +625,7 @@ typedef struct _KSWORD_ARK_CALLBACK_ENUM_ENTRY
     unsigned long long contextAddress;
     unsigned long long registrationAddress;
     unsigned long long rawStorageValue;
+    // V3 publishes a whole-snapshot generation plus a stable identity for this logical row.
     unsigned long long enumerationGeneration;
     unsigned long long identityHash;
     unsigned long trustFlags;
@@ -606,6 +641,33 @@ typedef struct _KSWORD_ARK_CALLBACK_ENUM_ENTRY
     wchar_t detail[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
 } KSWORD_ARK_CALLBACK_ENUM_ENTRY;
 
+// V2 header excludes snapshot metadata and therefore remains 32 bytes on both R0 and R3.
+typedef struct _KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_HEADER_V2
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long totalCount;
+    unsigned long returnedCount;
+    unsigned long entrySize;
+    unsigned long flags;
+    long lastStatus;
+    unsigned long nextIndex;
+} KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_HEADER_V2;
+
+// V2 response keeps the historical flexible-array wire offset for binary compatibility.
+typedef struct _KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long totalCount;
+    unsigned long returnedCount;
+    unsigned long entrySize;
+    unsigned long flags;
+    long lastStatus;
+    unsigned long nextIndex;
+    KSWORD_ARK_CALLBACK_ENUM_ENTRY entries[1];
+} KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2;
+
 typedef struct _KSWORD_ARK_ENUM_CALLBACKS_RESPONSE
 {
     unsigned long size;
@@ -616,5 +678,8 @@ typedef struct _KSWORD_ARK_ENUM_CALLBACKS_RESPONSE
     unsigned long flags;
     long lastStatus;
     unsigned long nextIndex;
+    // Both values currently identify the same ordered snapshot; separate fields preserve semantics.
+    unsigned long long enumerationGeneration;
+    unsigned long long snapshotHash;
     KSWORD_ARK_CALLBACK_ENUM_ENTRY entries[1];
 } KSWORD_ARK_ENUM_CALLBACKS_RESPONSE;

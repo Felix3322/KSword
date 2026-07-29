@@ -39,6 +39,7 @@ Return Value:
     KswordArkCallbackExtendedAddBugcheckCallbacks(Builder);
     KswordArkCallbackExtendedAddObjectCallbacks(Builder);
     KswordArkCallbackExtendedAddSystemCallbacks(Builder);
+    KswordArkCallbackExtendedAddNmiCallbacks(Builder);
     KswordArkCallbackExternalWfpAddCallbacks(Builder);
     KswordArkCallbackExternalSafeAddCallbacks(Builder);
     KswordArkCallbackExternalMinifilterAddCallbacks(Builder);

@@ -90,7 +90,7 @@ Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工
 | 内存 | 进程与模块、区域、搜索、查看器、断点/书签、R0 读写、Kernel Exec Scan、Memory Evidence、PTE | R3 内存浏览与搜索、R0 区域读取、内核可执行内存扫描、内核/进程内存证据、页表项与虚拟地址翻译。 |
 | 文件 | 文件管理、文件恢复、属性、解锁、Minifilter、FileObject、Section、Storage/BitLocker | 双面板管理、权限接管、哈希/签名/PE/字符串/Hex、NTFS 恢复、文件占用与 Section 映射、存储栈与 BitLocker 只读证据。 |
 | 驱动 | 驱动概览、驱动操作、调试输出、对象信息、完整性、模块 Cross-View、Unloaded/PiDDB | 驱动服务注册/加载/卸载/删除、已加载模块、DBWIN 输出、DriverObject/DeviceObject/MajorFunction/FastIo、Driver Integrity 和只读证据页。 |
-| 内核 | 对象命名空间、原子表、NtQuery、SSDT、SSSDT、Inline Hook、IAT/EAT、CID、IPC、DynData、驱动状态、回调 | 对象目录递归、BaseNamedObjects、NamedPipe、符号链接、设备/驱动对象、对象类型矩阵、CID/cross-view、ALPC/IPC、动态偏移、能力矩阵和回调遍历/管理。 |
+| 内核 | 对象命名空间、原子表、NtQuery、SSDT、SSSDT、Inline Hook、IAT/EAT、CID、IPC、DynData、驱动状态、回调 | 对象目录递归、BaseNamedObjects、NamedPipe、符号链接、设备/驱动对象、对象类型矩阵、CID/cross-view、ALPC/IPC、动态偏移、能力矩阵和回调遍历/管理。回调清单覆盖 Notify、注册表、对象、过滤器、BugCheck、Shutdown、文件系统、登录会话、CallbackObject、镜像验证与 NMI 来源，并展示模块归属及 v3 快照/逐行身份诊断。 |
 | 监控 | 进程定向、直接内核调用、WinAPI、WMI、ETW、Risk Center | 目标进程树 ETW、syscall 采集、WinAPI Agent、WMI 订阅、ETW Provider/Session 管理、ARK 风险聚合。 |
 | 硬件 | 利用率、概览、CPU、GPU、内存、硬盘监控、设备管理、R0 设备审计 | 任务管理器风格性能页、磁盘/网络/GPU 动态卡片、进程 IO 与 ETW 文件活动、SetupAPI/CfgMgr 设备树、DevNode/USB/HID/PCI/ACPI/GPU/display/watchdog 审计。 |
 | 权限 | 账号、权限 | 本地用户、创建用户/重置密码、组信息和当前进程权限快照。 |

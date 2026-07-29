@@ -32,7 +32,7 @@
 | Kernel 入口 | 部分覆盖 | KSword 通过 `KswordARKDriver` 和共享 IOCTL 执行 R0 功能，主程序有驱动日志读取，并在驱动装载后自动触发 DynData profile 下发。 | 缺少 OpenArk 式统一“进入/退出 KernelMode”状态页和所有依赖项的集中提示。 |
 | DriverKit 驱动安装器 | 部分覆盖 | 驱动服务注册/更新、加载、卸载、删除、状态查询。 | 缺 NT/WDF Installer、无签/过期签名安装、签名、写/清理注册表向导。 |
 | Driver Manager | 部分覆盖 | 驱动服务列表、已加载内核模块、路径、基址、DBWIN 调试输出。 | 缺签名/版本/公司/描述字段完整表、DriverObject/DeviceObject/Dispatch/FastIo/IRP Hook 检查。 |
-| System Notify | 部分覆盖 | 回调拦截支持注册表、进程、线程、镜像、对象规则；外部回调移除支持进程/线程/镜像 notify。 | 缺全量回调枚举表、模块归属、入口反汇编；注册表/Ob/Minifilter/WFP/ETW 外部删除未完整支持。 |
+| System Notify | 已覆盖并扩展 | 已提供进程、线程、镜像、注册表、Ob、Minifilter、WFP、BugCheck、Shutdown、文件系统、登录会话、CallbackObject、镜像验证与 NMI 回调清单；展示模块归属、注册类型、可信来源、移除策略、逐项身份哈希，并以 v3 快照哈希校验分页一致性。 | 回调入口反汇编仍待补齐；注册表/Ob/Minifilter/WFP/ETW 外部删除继续按高风险能力单独门禁。 |
 | System Hotkey | 未覆盖 | 未发现系统热键枚举/删除模块。 | 放入 TODO。 |
 | Kernel Memory | 未覆盖 | 进程内存模块为 R3 进程内存；未发现通用 R0 地址读写页。 | 放入 TODO，写内存需默认高级模式关闭。 |
 | Storage / UnlockFile | 已覆盖并超越 | 文件占用扫描、解锁、按驱动删除、结束占用进程、文件详情、NTFS 删除项恢复。 | OpenArk 的 FileObject/DllBase/FileHandle 字段可进一步补齐。 |
@@ -82,7 +82,7 @@
 
 - [ ] Scanner 联动：进程、模块、驱动、网络连接、文件占用等右键增加 `发送到文件详情/Scanner`，统一打开可疑文件分析页。
 - [ ] 进程详情联动页：在进程详情页补“句柄/窗口/内存区域”快捷 Tab 或跳转按钮，对齐 OpenArk 的进程聚合视图。
-- [ ] System Notify 枚举：增加进程/线程/镜像/注册表/Ob 回调枚举表，展示回调地址、所属模块、服务名、签名状态和风险说明。
+- [x] System Notify 枚举：已覆盖进程/线程/镜像/注册表/Ob 及扩展内核回调清单，并提供模块归属、可信来源、风险/移除策略、身份哈希和分页快照一致性诊断。
 - [ ] 回调入口反汇编：对回调地址提供只读字节 Dump 和反汇编预览；删除回调前展示模块归属和风险确认。
 - [ ] Kernel Memory：新增内核内存页，先做系统信息、R0/R3 地址范围、页大小、物理内存、只读 `ReadMemory` 和 `DumpToFile`。
 - [ ] System Hotkey：新增系统热键枚举/删除页，展示 HotkeyObject、HotkeyID、HWND、标题、类名和输入法提示。
@@ -134,4 +134,3 @@
 2. 补 `System Hotkey`、`ObjectSections`、`DriverObject/IRP Hook`、`过滤链枚举`，提高 ARK 技术辨识度。
 3. 把已有文件详情 PE 能力抽象成独立 `Scanner`，再补 ELF/RVA/表格化子页。
 4. 最后做 CoderKit、Bundler、ToolRepo、Cleaner、Console、Utilities 等工具箱类能力。
-

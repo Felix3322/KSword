@@ -24,4 +24,9 @@ KswordArkCallbackExtendedAddSystemCallbacks(
     _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
     );
 
+VOID
+KswordArkCallbackExtendedAddNmiCallbacks(
+    _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
+    );
+
 EXTERN_C_END

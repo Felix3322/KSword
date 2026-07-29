@@ -242,19 +242,19 @@ struct KernelCallbackEnumEntry
     std::uint32_t source = 0;              // source：枚举来源。
     std::uint32_t status = 0;              // status：R0 行状态。
     std::uint32_t fieldFlags = 0;          // fieldFlags：有效字段位图。
-    std::uint32_t trustFlags = 0;          // trustFlags：预留的可信来源标志；旧协议未返回时保持 0。
-    std::uint32_t removeBehavior = 0;      // removeBehavior：预留的移除行为标志；旧协议未返回时保持 0。
-    std::uint32_t removeFlags = 0;         // removeFlags：预留的移除能力标志；旧协议未返回时保持 0。
+    std::uint32_t trustFlags = 0;          // trustFlags：可信来源位；旧协议未返回时保持 0。
+    std::uint32_t removeBehavior = 0;      // removeBehavior：R0 推荐的移除行为；旧协议未返回时保持 0。
+    std::uint32_t removeFlags = 0;         // removeFlags：兼容旧 UI 命名，镜像 removeBehavior。
     std::uint32_t operationMask = 0;       // operationMask：操作掩码。
     std::uint32_t objectTypeMask = 0;      // objectTypeMask：对象类型掩码。
     std::uint32_t registrationType = 0;    // registrationType：具体注册 API/链类型。
-    std::uint64_t generation = 0;          // generation：预留的枚举代次；旧协议未返回时保持 0。
+    std::uint64_t generation = 0;          // generation：v3 稳定快照令牌；旧协议未返回时保持 0。
     long lastStatus = 0;                   // lastStatus：底层 NTSTATUS。
     std::uint64_t callbackAddress = 0;     // callbackAddress：回调函数或对象地址。
     std::uint64_t contextAddress = 0;      // contextAddress：上下文或扩展诊断值。
     std::uint64_t registrationAddress = 0; // registrationAddress：注册句柄/cookie。
-    std::uint64_t identityHash = 0;        // identityHash：预留的回调身份哈希；旧协议未返回时保持 0/空。
-    std::uint64_t rawStorageValue = 0;     // rawStorageValue：预留的原始存储值；旧协议未返回时保持 0。
+    std::uint64_t identityHash = 0;        // identityHash：v3 稳定逐行身份哈希；旧协议未返回时保持 0。
+    std::uint64_t rawStorageValue = 0;     // rawStorageValue：R0 原始注册槽值；旧协议未返回时保持 0。
     std::uint64_t moduleBase = 0;          // moduleBase：所属模块基址。
     std::uint32_t moduleSize = 0;          // moduleSize：所属模块大小。
     QString classText;                     // classText：类别文本。

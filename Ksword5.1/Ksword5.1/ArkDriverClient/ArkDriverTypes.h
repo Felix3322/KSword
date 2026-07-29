@@ -1517,8 +1517,8 @@ namespace ksword::ark
         std::uint64_t callbackAddress = 0;
         std::uint64_t contextAddress = 0;
         std::uint64_t registrationAddress = 0;
-        std::uint64_t identityHash = 0;      // Reserved identity hash; v1 protocol leaves it empty/zero.
-        std::uint64_t rawStorageValue = 0;   // Reserved raw storage value; v1 protocol leaves it zero.
+        std::uint64_t identityHash = 0;      // identityHash：协议 v3 的稳定逐行身份哈希；旧协议保持 0。
+        std::uint64_t rawStorageValue = 0;   // rawStorageValue：R0 原始注册槽值；旧协议未提供时为 0。
         std::uint64_t moduleBase = 0;
         std::uint32_t moduleSize = 0;
         std::wstring name;
@@ -1536,6 +1536,11 @@ namespace ksword::ark
         std::uint32_t returnedCount = 0;
         std::uint32_t flags = 0;
         long lastStatus = 0;
+        std::uint64_t snapshotGeneration = 0; // snapshotGeneration：本次稳定快照令牌。
+        std::uint64_t snapshotHash = 0;       // snapshotHash：全量有序回调集合哈希。
+        std::uint32_t pageCount = 0;          // pageCount：成功接收的数据页数。
+        std::uint32_t snapshotRetryCount = 0; // snapshotRetryCount：检测到并发变化后的重试次数。
+        bool snapshotConsistent = false;      // snapshotConsistent：v3 最终校验探针已确认一致。
         std::vector<CallbackEnumEntry> entries;
     };
 

@@ -1693,16 +1693,20 @@ KswordARKDriverUnloadInspectCallbacksByModuleBase(
         KSWORD_ARK_CALLBACK_ENUM_BUILDER builder;
 
         RtlZeroMemory(&builder, sizeof(builder));
-        builder.Response = enumResponse;
+        builder.Entries = enumResponse->entries;
         builder.EntryCapacity = KSW_DRIVER_UNLOAD_MAX_CALLBACK_CLEANUP_COUNT;
         builder.LastStatus = STATUS_SUCCESS;
+        KswordArkCallbackEnumSnapshotBegin(&builder);
         KswordArkCallbackEnumAddMinifilters(&builder);
         KswordArkCallbackEnumAddPrivateCallbacks(&builder);
         KswordArkCallbackExternalAddCallbacks(&builder);
+        KswordArkCallbackEnumSnapshotFinalize(&builder);
         enumResponse->totalCount = builder.TotalCount;
         enumResponse->returnedCount = builder.ReturnedCount;
         enumResponse->flags = builder.Flags;
         enumResponse->lastStatus = builder.LastStatus;
+        enumResponse->enumerationGeneration = builder.SnapshotHash;
+        enumResponse->snapshotHash = builder.SnapshotHash;
     }
 
     parsedEntries = enumResponse->returnedCount;
@@ -1794,16 +1798,20 @@ KswordARKDriverUnloadRemoveCallbacksByModuleBase(
         KSWORD_ARK_CALLBACK_ENUM_BUILDER builder;
 
         RtlZeroMemory(&builder, sizeof(builder));
-        builder.Response = enumResponse;
+        builder.Entries = enumResponse->entries;
         builder.EntryCapacity = KSW_DRIVER_UNLOAD_MAX_CALLBACK_CLEANUP_COUNT;
         builder.LastStatus = STATUS_SUCCESS;
+        KswordArkCallbackEnumSnapshotBegin(&builder);
         KswordArkCallbackEnumAddMinifilters(&builder);
         KswordArkCallbackEnumAddPrivateCallbacks(&builder);
         KswordArkCallbackExternalAddCallbacks(&builder);
+        KswordArkCallbackEnumSnapshotFinalize(&builder);
         enumResponse->totalCount = builder.TotalCount;
         enumResponse->returnedCount = builder.ReturnedCount;
         enumResponse->flags = builder.Flags;
         enumResponse->lastStatus = builder.LastStatus;
+        enumResponse->enumerationGeneration = builder.SnapshotHash;
+        enumResponse->snapshotHash = builder.SnapshotHash;
     }
 
     parsedEntries = enumResponse->returnedCount;
