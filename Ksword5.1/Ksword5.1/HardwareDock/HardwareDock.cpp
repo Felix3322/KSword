@@ -8278,7 +8278,6 @@ void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMas
             return;
         }
 
-        HardwareDock* const dock = safeThis.data();
         DeviceAuditViewSnapshot deviceStackSnapshot;
         DeviceAuditViewSnapshot inputStackSnapshot;
         DeviceAuditViewSnapshot usbTopologySnapshot;
@@ -8290,20 +8289,20 @@ void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMas
             const std::lock_guard<std::mutex> r0QueryLock(hardwareR0QueryMutex);
             if ((requestedMask & DeviceStackAuditRefresh) != 0U)
             {
-                deviceStackSnapshot = dock->buildDeviceStackAuditViewSnapshot();
+                deviceStackSnapshot = HardwareDock::buildDeviceStackAuditViewSnapshot();
             }
             if ((requestedMask & InputStackAuditRefresh) != 0U)
             {
-                inputStackSnapshot = dock->buildKeyboardMouseHidAuditViewSnapshot();
+                inputStackSnapshot = HardwareDock::buildKeyboardMouseHidAuditViewSnapshot();
             }
             if ((requestedMask & UsbTopologyAuditRefresh) != 0U)
             {
-                usbTopologySnapshot = dock->buildUsbTopologyAuditViewSnapshot();
+                usbTopologySnapshot = HardwareDock::buildUsbTopologyAuditViewSnapshot();
             }
         }
         if ((requestedMask & PnpAcpiPciRefresh) != 0U)
         {
-            pnpAcpiPciText = dock->buildPnpAcpiPciStaticText();
+            pnpAcpiPciText = HardwareDock::buildPnpAcpiPciStaticText();
         }
 
         if (safeThis.isNull())
@@ -8499,7 +8498,7 @@ QString HardwareDock::buildDeviceStackStaticText() const
     return buildDeviceStackAuditViewSnapshot().summaryText;
 }
 
-HardwareDock::DeviceAuditViewSnapshot HardwareDock::buildDeviceStackAuditViewSnapshot() const
+HardwareDock::DeviceAuditViewSnapshot HardwareDock::buildDeviceStackAuditViewSnapshot()
 {
     // scriptText 用途：保留原有 Win32_PnPEntity / PnP cross-view 输出；
     // r0AuditResult 用途：通过 ArkDriverClient 追加 R0 设备栈审计摘要和结构化行。
@@ -8530,7 +8529,7 @@ QString HardwareDock::buildKeyboardMouseHidStaticText() const
     return buildKeyboardMouseHidAuditViewSnapshot().summaryText;
 }
 
-HardwareDock::DeviceAuditViewSnapshot HardwareDock::buildKeyboardMouseHidAuditViewSnapshot() const
+HardwareDock::DeviceAuditViewSnapshot HardwareDock::buildKeyboardMouseHidAuditViewSnapshot()
 {
     // scriptText 用途：保留原有 Keyboard/Mouse/HIDClass 的 WMI/PnP 输出；
     // r0AuditResult 用途：追加 R0 输入设备链只读审计摘要和结构化行。
@@ -8561,7 +8560,7 @@ QString HardwareDock::buildUsbTopologyStaticText() const
     return buildUsbTopologyAuditViewSnapshot().summaryText;
 }
 
-HardwareDock::DeviceAuditViewSnapshot HardwareDock::buildUsbTopologyAuditViewSnapshot() const
+HardwareDock::DeviceAuditViewSnapshot HardwareDock::buildUsbTopologyAuditViewSnapshot()
 {
     // scriptText 用途：保留 USB controller/hub/link 的 WMI 拓扑输出；
     // r0AuditResult 用途：追加 R0 USB 拓扑只读审计摘要和结构化行。
@@ -8589,7 +8588,7 @@ HardwareDock::DeviceAuditViewSnapshot HardwareDock::buildUsbTopologyAuditViewSna
     return snapshot;
 }
 
-QString HardwareDock::buildPnpAcpiPciStaticText() const
+QString HardwareDock::buildPnpAcpiPciStaticText()
 {
     const QString scriptText = QStringLiteral(
         "$ErrorActionPreference='SilentlyContinue'; "

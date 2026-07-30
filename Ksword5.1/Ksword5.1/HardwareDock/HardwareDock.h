@@ -492,10 +492,10 @@ private:
     QString buildDeviceStackStaticText() const;
     QString buildKeyboardMouseHidStaticText() const;
     QString buildUsbTopologyStaticText() const;
-    DeviceAuditViewSnapshot buildDeviceStackAuditViewSnapshot() const;
-    DeviceAuditViewSnapshot buildKeyboardMouseHidAuditViewSnapshot() const;
-    DeviceAuditViewSnapshot buildUsbTopologyAuditViewSnapshot() const;
-    QString buildPnpAcpiPciStaticText() const;
+    static DeviceAuditViewSnapshot buildDeviceStackAuditViewSnapshot();
+    static DeviceAuditViewSnapshot buildKeyboardMouseHidAuditViewSnapshot();
+    static DeviceAuditViewSnapshot buildUsbTopologyAuditViewSnapshot();
+    static QString buildPnpAcpiPciStaticText();
 
 private:
     // DeviceAuditRefreshFlag：静态诊断页按需刷新位，供快速切页时合并请求。
