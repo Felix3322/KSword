@@ -588,6 +588,78 @@ namespace
         entry.canDelete = true;
     }
 
+    LONG QueryRegistryTreeSnapshot(
+        HKEY rootKey,
+        const std::wstring& subKeyText,
+        ks::startup::StartupActionLocator& locator)
+    {
+        locator.registryTreeSnapshotValid = false;
+        HKEY openedKey = nullptr;
+        const LONG openResult = ::RegOpenKeyExW(
+            rootKey,
+            subKeyText.c_str(),
+            0,
+            KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS,
+            &openedKey);
+        if (openResult != ERROR_SUCCESS)
+        {
+            return openResult;
+        }
+        DWORD subKeyCount = 0;
+        DWORD valueCount = 0;
+        FILETIME lastWriteTime{};
+        const LONG queryResult = ::RegQueryInfoKeyW(
+            openedKey,
+            nullptr,
+            nullptr,
+            nullptr,
+            &subKeyCount,
+            nullptr,
+            nullptr,
+            &valueCount,
+            nullptr,
+            nullptr,
+            nullptr,
+            &lastWriteTime);
+        ::RegCloseKey(openedKey);
+        if (queryResult != ERROR_SUCCESS)
+        {
+            return queryResult;
+        }
+        ULARGE_INTEGER lastWriteValue{};
+        lastWriteValue.HighPart = lastWriteTime.dwHighDateTime;
+        lastWriteValue.LowPart = lastWriteTime.dwLowDateTime;
+        locator.registryTreeSubKeyCount = subKeyCount;
+        locator.registryTreeValueCount = valueCount;
+        locator.registryTreeLastWriteTime = lastWriteValue.QuadPart;
+        locator.registryTreeSnapshotValid = true;
+        return ERROR_SUCCESS;
+    }
+
+    bool CaptureRegistryTreeSnapshot(
+        HKEY rootKey,
+        const std::wstring& subKeyText,
+        ks::startup::StartupActionLocator& locator)
+    {
+        return QueryRegistryTreeSnapshot(rootKey, subKeyText, locator) == ERROR_SUCCESS;
+    }
+
+    void ConfigureRegistryTreeDeletion(
+        ks::startup::StartupEntry& entry,
+        HKEY rootKey,
+        const std::wstring& subKeyText)
+    {
+        entry.actionLocator.registryRoot = PublicRegistryRoot(rootKey);
+        entry.actionLocator.registrySubKeyText = FromWide(subKeyText);
+        if (entry.actionKind == ks::startup::StartupActionKind::None)
+        {
+            entry.actionKind = ks::startup::StartupActionKind::RegistryTree;
+        }
+        CaptureRegistryTreeSnapshot(rootKey, subKeyText, entry.actionLocator);
+        entry.canDelete = entry.actionLocator.registryRoot != ks::startup::StartupRegistryRoot::None;
+        entry.deleteRegistryTree = entry.canDelete;
+    }
+
     // RegistryDataToText converts common registry types into compact UTF-8 display strings.
     std::string RegistryDataToText(DWORD valueType, const std::vector<std::uint8_t>& rawBuffer)
     {
@@ -2080,8 +2152,10 @@ namespace
                     entry.riskLevel = ks::startup::StartupRiskLevel::Critical;
                     entry.riskReasonCode = "critical_registry";
                     entry.riskReasonText = FromWide(L"该持久化项由整个注册表子键表示；只能在不可恢复警告后永久删除。");
-                    entry.canDelete = true;
-                    entry.deleteRegistryTree = true;
+                }
+                if (spec.deleteRegistryTree)
+                {
+                    ConfigureRegistryTreeDeletion(entry, spec.rootKey, itemSubKey);
                 }
                 entries.push_back(std::move(entry));
             }
@@ -2187,7 +2261,9 @@ namespace
             entry.actionKind = ks::startup::StartupActionKind::ScmStartType;
             entry.actionLocator.serviceNameText = serviceName;
             entry.actionLocator.serviceIsDriver = drivers;
+            entry.actionLocator.serviceType = config->dwServiceType;
             entry.actionLocator.serviceStartType = startType;
+            entry.actionLocator.serviceBinaryPathText = commandText;
             entry.canEnable = !entry.enabled;
             entry.canDisable = entry.enabled;
             entry.riskLevel = drivers
@@ -4677,6 +4753,72 @@ try {
         return script;
     }
 
+    std::wstring BuildDeleteTaskPowerShellScript(
+        const std::wstring& taskPath,
+        const std::wstring& taskName,
+        const std::wstring& expectedHash)
+    {
+        std::wstring script = LR"PS(
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+)PS";
+        script += TaskIdentityPowerShellFunction();
+        script += LR"PS(
+function Test-KSwordTaskNotFoundError($record) {
+  $hresult = [int]$record.Exception.HResult
+  $errorId = [string]$record.FullyQualifiedErrorId
+  return ($hresult -eq -2147024894) -or
+    ($hresult -eq -2147024893) -or
+    ($errorId -match 'NoMatchingMSFT_Task|CmdletizationQuery_NotFound|ObjectNotFound')
+}
+$taskPath = )PS";
+        script += QuotePowerShellLiteral(taskPath);
+        script += L"\n$taskName = ";
+        script += QuotePowerShellLiteral(taskName);
+        script += L"\n$expectedHash = ";
+        script += QuotePowerShellLiteral(expectedHash);
+        script += LR"PS(
+$hasExpectedHash = -not [string]::IsNullOrWhiteSpace($expectedHash)
+try {
+  $scheduledTasksModule = Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1'
+  Microsoft.PowerShell.Core\Import-Module -Name $scheduledTasksModule -Force -ErrorAction Stop
+  try {
+    $tasks = @(ScheduledTasks\Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop)
+  } catch {
+    if (Test-KSwordTaskNotFoundError $_) { 'KSWORD_TASK_NOT_FOUND'; exit 0 }
+    throw
+  }
+  if ($tasks.Count -eq 0) { 'KSWORD_TASK_NOT_FOUND'; exit 0 }
+  if ($tasks.Count -ne 1) { 'KSWORD_TASK_AMBIGUOUS'; exit 14 }
+  $task = $tasks[0]
+  if (-not (Test-KSwordBootOrLogon $task)) { 'KSWORD_UNSUPPORTED'; exit 12 }
+  if ($hasExpectedHash -and (Get-KSwordTaskIdentityHash $task) -ne $expectedHash) {
+    'KSWORD_STALE'
+    exit 13
+  }
+  ScheduledTasks\Unregister-ScheduledTask -InputObject $task -Confirm:$false -ErrorAction Stop
+  try {
+    $remaining = @(ScheduledTasks\Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop)
+  } catch {
+    if (Test-KSwordTaskNotFoundError $_) { 'KSWORD_TASK_DELETED'; exit 0 }
+    throw
+  }
+  if ($remaining.Count -eq 0) { 'KSWORD_TASK_DELETED'; exit 0 }
+  throw 'KSWORD_TASK_VERIFY'
+} catch {
+  $hresult = [int]$_.Exception.HResult
+  $accessDenied = ($_.Exception -is [System.UnauthorizedAccessException]) -or
+    ($hresult -eq -2147024891) -or
+    ([string]$_.FullyQualifiedErrorId -match 'AccessDenied|UnauthorizedAccess')
+  if ($accessDenied) { 'KSWORD_ACCESS_DENIED'; exit 5 }
+  'KSWORD_TASK_ERROR'
+  exit 1
+}
+)PS";
+        return script;
+    }
+
     bool QueryScmStartType(SC_HANDLE serviceHandle, DWORD& startTypeOut)
     {
         startTypeOut = SERVICE_NO_CHANGE;
@@ -5113,6 +5255,592 @@ try {
         }
         return failure;
     }
+
+    bool IsMissingStartupSourceError(const DWORD errorCode)
+    {
+        return errorCode == ERROR_FILE_NOT_FOUND
+            || errorCode == ERROR_PATH_NOT_FOUND
+            || errorCode == ERROR_KEY_DELETED
+            || errorCode == ERROR_SERVICE_DOES_NOT_EXIST;
+    }
+
+    ks::startup::ActionResult DeleteStartupFolderFile(
+        const ks::startup::StartupEntry& entry)
+    {
+        const std::wstring pathText = ToWide(entry.actionLocator.originalFilePathText);
+        if (pathText.empty()
+            || !entry.actionLocator.parkedFilePathText.empty()
+            || !IsKnownStartupFolderFile(pathText))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"启动文件删除定位器无效。"));
+        }
+
+        HANDLE fileHandle = ::CreateFileW(
+            pathText.c_str(),
+            DELETE | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (fileHandle == INVALID_HANDLE_VALUE)
+        {
+            const DWORD errorCode = ::GetLastError();
+            if (IsMissingStartupSourceError(errorCode))
+            {
+                return MakeActionResult(
+                    ks::startup::StartupActionStatus::NoChange,
+                    true,
+                    false,
+                    ERROR_SUCCESS,
+                    FromWide(L"启动文件已经不存在。"));
+            }
+            return MakeActionResult(
+                StatusFromWin32(errorCode, ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                errorCode,
+                FromWide(L"无法打开要永久删除的启动文件。"));
+        }
+
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (::GetFileInformationByHandle(fileHandle, &information) == FALSE)
+        {
+            const DWORD errorCode = ::GetLastError();
+            ::CloseHandle(fileHandle);
+            return MakeActionResult(
+                StatusFromWin32(errorCode, ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                errorCode,
+                FromWide(L"无法读取启动文件身份。"));
+        }
+        if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+            || (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            ::CloseHandle(fileHandle);
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_REPARSE_TAG_INVALID,
+                FromWide(L"启动文件已变成目录或重解析点；未执行删除。"));
+        }
+
+        ULARGE_INTEGER fileIndex{};
+        fileIndex.HighPart = information.nFileIndexHigh;
+        fileIndex.LowPart = information.nFileIndexLow;
+        ULARGE_INTEGER fileSize{};
+        fileSize.HighPart = information.nFileSizeHigh;
+        fileSize.LowPart = information.nFileSizeLow;
+        ULARGE_INTEGER lastWriteTime{};
+        lastWriteTime.HighPart = information.ftLastWriteTime.dwHighDateTime;
+        lastWriteTime.LowPart = information.ftLastWriteTime.dwLowDateTime;
+        if (entry.actionLocator.fileIdentitySnapshotValid
+            && (entry.actionLocator.fileVolumeSerial != information.dwVolumeSerialNumber
+                || entry.actionLocator.fileIndex != fileIndex.QuadPart
+                || entry.actionLocator.fileSize != fileSize.QuadPart
+                || entry.actionLocator.fileLastWriteTime != lastWriteTime.QuadPart))
+        {
+            ::CloseHandle(fileHandle);
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_REVISION_MISMATCH,
+                FromWide(L"启动文件已在枚举后被替换或修改；请刷新后重试。"));
+        }
+
+        FILE_DISPOSITION_INFO disposition{};
+        disposition.DeleteFile = TRUE;
+        if (::SetFileInformationByHandle(
+                fileHandle,
+                FileDispositionInfo,
+                &disposition,
+                sizeof(disposition)) == FALSE)
+        {
+            const DWORD errorCode = ::GetLastError();
+            ::CloseHandle(fileHandle);
+            return MakeActionResult(
+                StatusFromWin32(errorCode, ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                errorCode,
+                FromWide(L"无法永久删除启动文件。"));
+        }
+        ::CloseHandle(fileHandle);
+
+        FileIdentitySnapshot remainingIdentity;
+        DWORD verifyError = ERROR_SUCCESS;
+        if (!QueryFileIdentityNoReparse(pathText, remainingIdentity, verifyError)
+            && IsMissingStartupSourceError(verifyError))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Success,
+                true,
+                true,
+                ERROR_SUCCESS,
+                FromWide(L"启动文件已按句柄永久删除并验证。"));
+        }
+        return MakeActionResult(
+            ks::startup::StartupActionStatus::VerificationFailed,
+            false,
+            true,
+            verifyError == ERROR_SUCCESS ? ERROR_ALREADY_EXISTS : verifyError,
+            FromWide(L"已提交启动文件删除，但无法确认目标路径保持不存在。"));
+    }
+
+    ks::startup::ActionResult DeleteRegistryValueEntry(
+        const ks::startup::StartupEntry& entry)
+    {
+        const HKEY rootKey = NativeRegistryRoot(entry.actionLocator.registryRoot);
+        const std::wstring subKey = ToWide(entry.actionLocator.registrySubKeyText);
+        const std::wstring valueName = ToWide(entry.actionLocator.registryValueNameText);
+        if (rootKey == nullptr
+            || !IsSupportedRunLocation(rootKey, subKey)
+            || !entry.actionLocator.backupIdText.empty())
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"注册表删除定位器无效。"));
+        }
+
+        DWORD expectedType = entry.actionLocator.registryValueType;
+        std::vector<std::uint8_t> expectedData = entry.actionLocator.registryRawData;
+        if (!entry.actionLocator.registryValueSnapshotValid)
+        {
+            const LONG queryResult = QueryRegistryValueRaw(
+                rootKey,
+                subKey,
+                valueName,
+                expectedType,
+                expectedData);
+            if (IsMissingStartupSourceError(static_cast<DWORD>(queryResult)))
+            {
+                return MakeActionResult(
+                    ks::startup::StartupActionStatus::NoChange,
+                    true,
+                    false,
+                    ERROR_SUCCESS,
+                    FromWide(L"注册表启动值已经不存在。"));
+            }
+            if (queryResult != ERROR_SUCCESS)
+            {
+                return MakeActionResult(
+                    StatusFromWin32(
+                        static_cast<DWORD>(queryResult),
+                        ks::startup::StartupActionStatus::WriteFailed),
+                    false,
+                    false,
+                    static_cast<DWORD>(queryResult),
+                    FromWide(L"无法读取要永久删除的注册表值。"));
+            }
+        }
+
+        const LONG deleteResult = DeleteRegistryValueIfExact(
+            rootKey,
+            subKey,
+            valueName,
+            expectedType,
+            expectedData);
+        if (deleteResult == ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Success,
+                true,
+                true,
+                ERROR_SUCCESS,
+                FromWide(L"注册表启动值已按原始数据快照永久删除并验证。"));
+        }
+        if (IsMissingStartupSourceError(static_cast<DWORD>(deleteResult)))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"注册表启动值已经不存在。"));
+        }
+        if (deleteResult == ERROR_ALREADY_EXISTS)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_REVISION_MISMATCH,
+                FromWide(L"注册表值已在枚举后变化；未删除陈旧目标。"));
+        }
+        return MakeActionResult(
+            StatusFromWin32(
+                static_cast<DWORD>(deleteResult),
+                ks::startup::StartupActionStatus::WriteFailed),
+            false,
+            false,
+            static_cast<DWORD>(deleteResult),
+            FromWide(L"无法永久删除注册表启动值。"));
+    }
+
+    ks::startup::ActionResult DeleteRegistryTreeEntry(
+        const ks::startup::StartupEntry& entry)
+    {
+        const HKEY rootKey = NativeRegistryRoot(entry.actionLocator.registryRoot);
+        const std::wstring subKey = ToWide(entry.actionLocator.registrySubKeyText);
+        if (rootKey == nullptr
+            || !IsSupportedRunLocation(rootKey, subKey)
+            || !entry.actionLocator.backupIdText.empty())
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"注册表子树删除定位器无效。"));
+        }
+
+        ks::startup::StartupActionLocator currentSnapshot;
+        const LONG snapshotResult = QueryRegistryTreeSnapshot(rootKey, subKey, currentSnapshot);
+        if (IsMissingStartupSourceError(static_cast<DWORD>(snapshotResult)))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"注册表子树已经不存在。"));
+        }
+        if (snapshotResult != ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                StatusFromWin32(
+                    static_cast<DWORD>(snapshotResult),
+                    ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(snapshotResult),
+                FromWide(L"无法读取要永久删除的注册表子树快照。"));
+        }
+        if (entry.actionLocator.registryTreeSnapshotValid
+            && (entry.actionLocator.registryTreeSubKeyCount
+                    != currentSnapshot.registryTreeSubKeyCount
+                || entry.actionLocator.registryTreeValueCount
+                    != currentSnapshot.registryTreeValueCount
+                || entry.actionLocator.registryTreeLastWriteTime
+                    != currentSnapshot.registryTreeLastWriteTime))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_REVISION_MISMATCH,
+                FromWide(L"注册表子树已在枚举后变化；未删除陈旧目标。"));
+        }
+
+        const LONG deleteResult = ::RegDeleteTreeW(rootKey, subKey.c_str());
+        if (IsMissingStartupSourceError(static_cast<DWORD>(deleteResult)))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"注册表子树已经不存在。"));
+        }
+        if (deleteResult != ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                StatusFromWin32(
+                    static_cast<DWORD>(deleteResult),
+                    ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(deleteResult),
+                FromWide(L"无法永久删除注册表子树。"));
+        }
+
+        HKEY verifyKey = nullptr;
+        const LONG verifyResult = ::RegOpenKeyExW(
+            rootKey,
+            subKey.c_str(),
+            0,
+            KEY_QUERY_VALUE,
+            &verifyKey);
+        if (verifyKey != nullptr)
+        {
+            ::RegCloseKey(verifyKey);
+        }
+        if (IsMissingStartupSourceError(static_cast<DWORD>(verifyResult)))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Success,
+                true,
+                true,
+                ERROR_SUCCESS,
+                FromWide(L"注册表子树已按结构化定位器永久删除并验证。"));
+        }
+        return MakeActionResult(
+            ks::startup::StartupActionStatus::VerificationFailed,
+            false,
+            true,
+            verifyResult == ERROR_SUCCESS
+                ? ERROR_ALREADY_EXISTS
+                : static_cast<DWORD>(verifyResult),
+            FromWide(L"已提交注册表子树删除，但无法确认目标保持不存在。"));
+    }
+
+    bool QueryScmConfigurationSnapshot(
+        SC_HANDLE serviceHandle,
+        DWORD& serviceTypeOut,
+        DWORD& startTypeOut,
+        std::string& binaryPathTextOut,
+        DWORD& errorCodeOut)
+    {
+        serviceTypeOut = 0;
+        startTypeOut = SERVICE_NO_CHANGE;
+        binaryPathTextOut.clear();
+        errorCodeOut = ERROR_SUCCESS;
+        DWORD requiredBytes = 0;
+        ::QueryServiceConfigW(serviceHandle, nullptr, 0, &requiredBytes);
+        if (requiredBytes == 0)
+        {
+            errorCodeOut = ::GetLastError();
+            return false;
+        }
+        std::vector<std::uint8_t> buffer(requiredBytes);
+        auto* config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buffer.data());
+        if (::QueryServiceConfigW(
+                serviceHandle,
+                config,
+                requiredBytes,
+                &requiredBytes) == FALSE)
+        {
+            errorCodeOut = ::GetLastError();
+            return false;
+        }
+        serviceTypeOut = config->dwServiceType;
+        startTypeOut = config->dwStartType;
+        binaryPathTextOut = QueryServiceBinaryPathText(*config);
+        return true;
+    }
+
+    ks::startup::ActionResult DeleteScmEntry(
+        const ks::startup::StartupEntry& entry)
+    {
+        const std::wstring serviceName = ToWide(entry.actionLocator.serviceNameText);
+        if (serviceName.empty()
+            || serviceName.find(L'\0') != std::wstring::npos
+            || serviceName.find_first_of(L"\\/") != std::wstring::npos
+            || entry.actionLocator.serviceType == 0)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"服务删除定位器无效。"));
+        }
+
+        SC_HANDLE scmHandle = ::OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+        if (scmHandle == nullptr)
+        {
+            const DWORD errorCode = ::GetLastError();
+            return MakeActionResult(
+                StatusFromWin32(errorCode, ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                errorCode,
+                FromWide(L"无法打开服务控制管理器。"));
+        }
+        SC_HANDLE serviceHandle = ::OpenServiceW(
+            scmHandle,
+            serviceName.c_str(),
+            SERVICE_QUERY_CONFIG | DELETE);
+        if (serviceHandle == nullptr)
+        {
+            const DWORD errorCode = ::GetLastError();
+            ::CloseServiceHandle(scmHandle);
+            if (IsMissingStartupSourceError(errorCode)
+                || errorCode == ERROR_SERVICE_MARKED_FOR_DELETE)
+            {
+                return MakeActionResult(
+                    ks::startup::StartupActionStatus::NoChange,
+                    true,
+                    false,
+                    ERROR_SUCCESS,
+                    FromWide(L"服务或驱动已经不存在，或已标记为删除。"));
+            }
+            return MakeActionResult(
+                StatusFromWin32(errorCode, ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                errorCode,
+                FromWide(L"无法打开要永久删除的服务或驱动。"));
+        }
+
+        DWORD currentServiceType = 0;
+        DWORD currentStartType = SERVICE_NO_CHANGE;
+        DWORD queryError = ERROR_SUCCESS;
+        std::string currentBinaryPathText;
+        if (!QueryScmConfigurationSnapshot(
+                serviceHandle,
+                currentServiceType,
+                currentStartType,
+                currentBinaryPathText,
+                queryError))
+        {
+            ::CloseServiceHandle(serviceHandle);
+            ::CloseServiceHandle(scmHandle);
+            return MakeActionResult(
+                StatusFromWin32(queryError, ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                queryError,
+                FromWide(L"无法读取服务或驱动配置快照。"));
+        }
+        if (currentServiceType != entry.actionLocator.serviceType
+            || currentStartType != entry.actionLocator.serviceStartType
+            || !EqualWideI(
+                ToWide(currentBinaryPathText),
+                ToWide(entry.actionLocator.serviceBinaryPathText)))
+        {
+            ::CloseServiceHandle(serviceHandle);
+            ::CloseServiceHandle(scmHandle);
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_REVISION_MISMATCH,
+                FromWide(L"服务或驱动配置已在枚举后变化；未删除陈旧目标。"));
+        }
+
+        const BOOL deleteOk = ::DeleteService(serviceHandle);
+        const DWORD deleteError = deleteOk == FALSE ? ::GetLastError() : ERROR_SUCCESS;
+        ::CloseServiceHandle(serviceHandle);
+        ::CloseServiceHandle(scmHandle);
+        if (deleteOk != FALSE)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Success,
+                true,
+                true,
+                ERROR_SUCCESS,
+                FromWide(L"服务或驱动已由原始 SCM 句柄标记为永久删除。"));
+        }
+        if (deleteError == ERROR_SERVICE_MARKED_FOR_DELETE
+            || IsMissingStartupSourceError(deleteError))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"服务或驱动已经不存在，或已标记为删除。"));
+        }
+        return MakeActionResult(
+            StatusFromWin32(deleteError, ks::startup::StartupActionStatus::WriteFailed),
+            false,
+            false,
+            deleteError,
+            FromWide(L"无法永久删除服务或驱动。"));
+    }
+
+    ks::startup::ActionResult DeleteScheduledTaskEntry(
+        const ks::startup::StartupEntry& entry)
+    {
+        const std::wstring taskPath = ToWide(entry.actionLocator.taskPathText);
+        const std::wstring taskName = ToWide(entry.actionLocator.taskNameText);
+        const std::wstring expectedHash =
+            ToWide(LowerAsciiCopy(entry.actionLocator.taskDefinitionSha256Text));
+        const bool hashProvided = !expectedHash.empty();
+        const bool validHash = expectedHash.size() == 64
+            && std::all_of(expectedHash.begin(), expectedHash.end(), [](const wchar_t ch) {
+                return (ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f');
+            });
+        if (!IsValidScheduledTaskLocator(taskPath, taskName)
+            || (hashProvided && !validHash))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"计划任务删除定位器无效。"));
+        }
+
+        const ProcessOutput output = RunPowerShellScript(
+            BuildDeleteTaskPowerShellScript(taskPath, taskName, expectedHash),
+            20000);
+        const std::string stdoutText =
+            StripUtf8Bom(ks::str::TrimCopy(output.stdoutText));
+        if (output.started && output.finished && output.exitCode == 0
+            && stdoutText.find("KSWORD_TASK_NOT_FOUND") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"计划任务已经不存在。"));
+        }
+        if (output.started && output.finished && output.exitCode == 0
+            && stdoutText.find("KSWORD_TASK_DELETED") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Success,
+                true,
+                true,
+                ERROR_SUCCESS,
+                FromWide(L"计划任务已按路径、名称和定义快照永久删除并验证。"));
+        }
+        if (stdoutText.find("KSWORD_STALE") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_REVISION_MISMATCH,
+                FromWide(L"计划任务定义已在枚举后变化；未删除陈旧目标。"));
+        }
+        if (stdoutText.find("KSWORD_UNSUPPORTED") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_NOT_SUPPORTED,
+                FromWide(L"计划任务已不再包含 Boot 或 Logon 触发器；请刷新启动项列表。"));
+        }
+        if (stdoutText.find("KSWORD_TASK_AMBIGUOUS") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_DUP_NAME,
+                FromWide(L"计划任务定位器匹配到多个对象；未执行删除。"));
+        }
+
+        const bool accessDenied =
+            stdoutText.find("KSWORD_ACCESS_DENIED") != std::string::npos;
+        const DWORD errorCode = accessDenied
+            ? ERROR_ACCESS_DENIED
+            : ProcessFailureCode(output);
+        return MakeActionResult(
+            accessDenied
+                ? ks::startup::StartupActionStatus::AccessDenied
+                : ks::startup::StartupActionStatus::ProcessFailed,
+            false,
+            false,
+            errorCode,
+            FromWide(L"永久删除计划任务失败。"));
+    }
 }
 
 namespace ks::startup
@@ -5378,8 +6106,7 @@ namespace ks::startup
                 entry.enabled = true;
                 entry.canOpenFileLocation = false;
                 entry.canOpenRegistryLocation = true;
-                entry.canDelete = true;
-                entry.deleteRegistryTree = true;
+                ConfigureRegistryTreeDeletion(entry, spec.rootKey, itemSubKey);
                 entry.uniqueIdText = "WINSOCK|" + entry.locationText;
                 entry.riskLevel = StartupRiskLevel::Critical;
                 entry.riskReasonCode = "winsock";
@@ -5455,6 +6182,8 @@ namespace ks::startup
         {
         case StartupActionKind::RegistryRunValue:
             return enabled ? EnableRegistryRunEntry(entry) : DisableRegistryRunEntry(entry);
+        case StartupActionKind::RegistryTree:
+            break;
         case StartupActionKind::StartupFolderFile:
             return enabled ? EnableStartupFolderEntry(entry) : DisableStartupFolderEntry(entry);
         case StartupActionKind::ScheduledTask:
@@ -5472,5 +6201,45 @@ namespace ks::startup
             false,
             ERROR_NOT_SUPPORTED,
             FromWide(L"此启动项没有可逆的后端操作。"));
+    }
+
+    ActionResult DeleteStartupEntry(const StartupEntry& entry)
+    {
+        if (!entry.canDelete)
+        {
+            return MakeActionResult(
+                StartupActionStatus::NotSupported,
+                false,
+                false,
+                ERROR_NOT_SUPPORTED,
+                FromWide(L"此启动项没有可用的永久删除操作。"));
+        }
+        if (entry.deleteRegistryTree)
+        {
+            return DeleteRegistryTreeEntry(entry);
+        }
+
+        switch (entry.actionKind)
+        {
+        case StartupActionKind::RegistryRunValue:
+            return DeleteRegistryValueEntry(entry);
+        case StartupActionKind::RegistryTree:
+            return DeleteRegistryTreeEntry(entry);
+        case StartupActionKind::StartupFolderFile:
+            return DeleteStartupFolderFile(entry);
+        case StartupActionKind::ScheduledTask:
+            return DeleteScheduledTaskEntry(entry);
+        case StartupActionKind::ScmStartType:
+            return DeleteScmEntry(entry);
+        case StartupActionKind::WmiEntryRemoval:
+        case StartupActionKind::None:
+            break;
+        }
+        return MakeActionResult(
+            StartupActionStatus::NotSupported,
+            false,
+            false,
+            ERROR_NOT_SUPPORTED,
+            FromWide(L"此启动项来源不支持永久删除。"));
     }
 }

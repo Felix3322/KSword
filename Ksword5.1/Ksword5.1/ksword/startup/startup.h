@@ -32,6 +32,7 @@ namespace ks::startup
     {
         None = 0,
         RegistryRunValue,
+        RegistryTree,
         StartupFolderFile,
         ScheduledTask,
         ScmStartType,
@@ -64,6 +65,10 @@ namespace ks::startup
         bool registryValueSnapshotValid = false;
         std::uint32_t registryValueType = 0;
         std::vector<std::uint8_t> registryRawData;
+        bool registryTreeSnapshotValid = false;
+        std::uint32_t registryTreeSubKeyCount = 0;
+        std::uint32_t registryTreeValueCount = 0;
+        std::uint64_t registryTreeLastWriteTime = 0;
         std::string originalFilePathText;
         std::string parkedFilePathText;
         bool fileIdentitySnapshotValid = false;
@@ -76,7 +81,9 @@ namespace ks::startup
         std::string taskDefinitionSha256Text;
         std::string serviceNameText;
         bool serviceIsDriver = false;
+        std::uint32_t serviceType = 0;
         std::uint32_t serviceStartType = 0;
+        std::string serviceBinaryPathText;
         std::string wmiClassNameText;
         std::string wmiNameText;
         std::string wmiFilterText;
@@ -191,4 +198,7 @@ namespace ks::startup
 
     // SetStartupEntryEnabled performs a warning-gated operation using actionKind/actionLocator only.
     ActionResult SetStartupEntryEnabled(const StartupEntry& entry, bool enabled);
+
+    // DeleteStartupEntry permanently removes an entry after revalidating its structured locator.
+    ActionResult DeleteStartupEntry(const StartupEntry& entry);
 }

@@ -4,140 +4,10 @@
 
 #include <QMetaObject>
 
-#include <winsvc.h>
-
-#pragma comment(lib, "Advapi32.lib")
-
 using namespace startup_dock_detail;
 
 namespace
 {
-    // splitRegistryLocation 作用：
-    // - 把 "HKLM\\..." 形式位置拆成根键与子键。
-    bool splitRegistryLocation(const QString& locationText, HKEY* rootKeyOut, QString* subKeyOut)
-    {
-        if (rootKeyOut == nullptr || subKeyOut == nullptr)
-        {
-            return false;
-        }
-
-        const int slashIndex = locationText.indexOf('\\');
-        if (slashIndex <= 0)
-        {
-            return false;
-        }
-
-        const QString rootKeyText = locationText.left(slashIndex).trimmed().toUpper();
-        *subKeyOut = locationText.mid(slashIndex + 1).trimmed();
-        if (rootKeyText == QStringLiteral("HKCU"))
-        {
-            *rootKeyOut = HKEY_CURRENT_USER;
-            return true;
-        }
-        if (rootKeyText == QStringLiteral("HKLM"))
-        {
-            *rootKeyOut = HKEY_LOCAL_MACHINE;
-            return true;
-        }
-        if (rootKeyText == QStringLiteral("HKCR"))
-        {
-            *rootKeyOut = HKEY_CLASSES_ROOT;
-            return true;
-        }
-        return false;
-    }
-
-    // deleteRegistryValueByPath 作用：
-    // - 删除指定注册表值。
-    bool deleteRegistryValueByPath(HKEY rootKey, const QString& subKeyText, const QString& valueNameText, QString* errorTextOut)
-    {
-        HKEY openedKey = nullptr;
-        const LONG openResult = ::RegOpenKeyExW(
-            rootKey,
-            reinterpret_cast<LPCWSTR>(subKeyText.utf16()),
-            0,
-            KEY_SET_VALUE,
-            &openedKey);
-        if (openResult != ERROR_SUCCESS || openedKey == nullptr)
-        {
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = winErrorText(static_cast<DWORD>(openResult));
-            }
-            return false;
-        }
-
-        const LONG deleteResult = ::RegDeleteValueW(
-            openedKey,
-            valueNameText.trimmed().isEmpty() ? nullptr : reinterpret_cast<LPCWSTR>(valueNameText.utf16()));
-        ::RegCloseKey(openedKey);
-        if (deleteResult != ERROR_SUCCESS)
-        {
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = winErrorText(static_cast<DWORD>(deleteResult));
-            }
-            return false;
-        }
-        return true;
-    }
-
-    // deleteRegistryTreeByPath 作用：
-    // - 删除指定注册表子树。
-    bool deleteRegistryTreeByPath(HKEY rootKey, const QString& subKeyText, QString* errorTextOut)
-    {
-        const LONG deleteResult = ::RegDeleteTreeW(
-            rootKey,
-            reinterpret_cast<LPCWSTR>(subKeyText.utf16()));
-        if (deleteResult != ERROR_SUCCESS)
-        {
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = winErrorText(static_cast<DWORD>(deleteResult));
-            }
-            return false;
-        }
-        return true;
-    }
-
-    // deleteScmObjectByName 作用：
-    // - 删除服务或驱动服务注册项。
-    bool deleteScmObjectByName(const QString& serviceNameText, QString* errorTextOut)
-    {
-        SC_HANDLE scmHandle = ::OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-        if (scmHandle == nullptr)
-        {
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = winErrorText(::GetLastError());
-            }
-            return false;
-        }
-
-        SC_HANDLE serviceHandle = ::OpenServiceW(
-            scmHandle,
-            reinterpret_cast<LPCWSTR>(serviceNameText.utf16()),
-            DELETE);
-        if (serviceHandle == nullptr)
-        {
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = winErrorText(::GetLastError());
-            }
-            ::CloseServiceHandle(scmHandle);
-            return false;
-        }
-
-        const BOOL deleteOk = ::DeleteService(serviceHandle);
-        if (deleteOk == FALSE && errorTextOut != nullptr)
-        {
-            *errorTextOut = winErrorText(::GetLastError());
-        }
-        ::CloseServiceHandle(serviceHandle);
-        ::CloseServiceHandle(scmHandle);
-        return deleteOk != FALSE;
-    }
-
     QString startupToggleActionText(const bool enabled)
     {
         return enabled
@@ -159,6 +29,10 @@ namespace
                 : startupText(
                     "startup.dialog.toggle.impact.registry.disable",
                     QStringLiteral("将 Run 注册表值移入 KSword 的可恢复备份；原值数据会保留，便于重新启用。"));
+        case ks::startup::StartupActionKind::RegistryTree:
+            return startupText(
+                "startup.dialog.toggle.impact.registry_tree",
+                QStringLiteral("永久删除精确定位的注册表子树；此操作不会创建可恢复备份。"));
         case ks::startup::StartupActionKind::StartupFolderFile:
             return enabled
                 ? startupText(
@@ -213,6 +87,7 @@ namespace
             return startupText(
                 "startup.dialog.toggle.recovery.scm",
                 QStringLiteral("重新启用会使用默认的自动/系统启动类型，不保证恢复修改前的精确启动类型。"));
+        case ks::startup::StartupActionKind::RegistryTree:
         case ks::startup::StartupActionKind::WmiEntryRemoval:
             return startupText(
                 "startup.dialog.toggle.recovery.irreversible",
@@ -347,34 +222,6 @@ namespace
         }
         return fieldList.join(QChar('\t'));
     }
-
-    class StartupActionFlagReset final
-    {
-    public:
-        explicit StartupActionFlagReset(std::atomic_bool& actionFlag)
-            : m_actionFlag(&actionFlag)
-        {
-        }
-
-        ~StartupActionFlagReset()
-        {
-            if (m_actionFlag != nullptr)
-            {
-                m_actionFlag->store(false);
-            }
-        }
-
-        StartupActionFlagReset(const StartupActionFlagReset&) = delete;
-        StartupActionFlagReset& operator=(const StartupActionFlagReset&) = delete;
-
-        void dismiss()
-        {
-            m_actionFlag = nullptr;
-        }
-
-    private:
-        std::atomic_bool* m_actionFlag;
-    };
 
 }
 
@@ -1178,11 +1025,14 @@ void StartupDock::setStartupEntryEnabled(StartupEntry entry, const bool enabled)
 
 void StartupDock::deleteStartupEntry(StartupEntry entry)
 {
-    if (!entry.canDelete)
+    const QString operationTitle = startupText(
+        "startup.dialog.delete.operation.title",
+        QStringLiteral("删除启动项"));
+    if (!entry.canDelete || !entry.backendEntry.canDelete)
     {
         QMessageBox::information(
             this,
-            startupText("startup.dialog.title", QStringLiteral("启动项")),
+            operationTitle,
             startupText("startup.dialog.delete.unsupported", QStringLiteral("该条目当前不支持删除。")));
         return;
     }
@@ -1211,191 +1061,107 @@ void StartupDock::deleteStartupEntry(StartupEntry entry)
     {
         QMessageBox::information(
             this,
-            startupText("startup.dialog.title", QStringLiteral("启动项")),
+            operationTitle,
             startupText(
                 "startup.dialog.operation.busy",
                 QStringLiteral("已有一个启动项修改操作正在执行，请等待其完成后重试。")));
         return;
     }
-    StartupActionFlagReset actionFlagReset(m_startupActionInProgress);
 
-    QString errorText;
-    bool deleteOk = false;
-
-    if (entry.sourceTypeText == QStringLiteral("StartupFolder"))
+    const ks::startup::StartupEntry backendEntry = entry.backendEntry;
+    const QString itemNameText = entry.itemNameText;
+    const QString sourceTypeText = entry.sourceTypeText;
+    const QString entryLocationText = entry.locationText;
+    if (m_actionThread != nullptr && m_actionThread->joinable())
     {
-        deleteOk = QFile::remove(entry.imagePathText);
-        if (!deleteOk)
-        {
-            errorText = startupText("startup.delete.file_failed", QStringLiteral("删除文件失败：%1"))
-                .arg(entry.imagePathText);
-        }
+        m_actionThread->join();
     }
-    else if (entry.category == StartupCategory::Logon || entry.category == StartupCategory::Registry)
+    m_actionThread = std::make_unique<std::thread>(
+        [this,
+         backendEntry,
+         operationTitle,
+         itemNameText,
+         sourceTypeText,
+         entryLocationText]()
     {
-        HKEY rootKey = nullptr;
-        QString subKeyText;
-        if (!splitRegistryLocation(entry.locationText, &rootKey, &subKeyText))
+        const ks::startup::ActionResult actionResult =
+            ks::startup::DeleteStartupEntry(backendEntry);
+        if (m_destroying.load())
         {
-            errorText = startupText(
-                "startup.delete.registry_location_failed",
-                QStringLiteral("解析注册表位置失败。"));
-            deleteOk = false;
-        }
-        else if (entry.deleteRegistryTree)
-        {
-            deleteOk = deleteRegistryTreeByPath(rootKey, subKeyText, &errorText);
-        }
-        else
-        {
-            const QString valueNameText = entry.registryValueNameText.trimmed().isEmpty()
-                ? entry.itemNameText
-                : entry.registryValueNameText;
-            deleteOk = deleteRegistryValueByPath(rootKey, subKeyText, valueNameText, &errorText);
+            return;
         }
 
-        if (!deleteOk && errorText.isEmpty())
-        {
-            errorText = startupText(
-                "startup.delete.registry_failed",
-                QStringLiteral("删除注册表启动项失败。"));
-        }
-    }
-    else if (entry.sourceTypeText == QStringLiteral("AutoService")
-        || entry.sourceTypeText == QStringLiteral("Driver"))
-    {
-        const int lastSlashIndex = entry.locationText.lastIndexOf('\\');
-        const QString serviceNameText = (lastSlashIndex >= 0)
-            ? entry.locationText.mid(lastSlashIndex + 1)
-            : entry.itemNameText;
-        deleteOk = deleteScmObjectByName(serviceNameText, &errorText);
-    }
-    else if (entry.sourceTypeText == QStringLiteral("ScheduledTask"))
-    {
-        const StartupEntry taskEntry = entry;
-        if (m_actionThread != nullptr && m_actionThread->joinable())
-        {
-            m_actionThread->join();
-        }
-        m_actionThread = std::make_unique<std::thread>([this, taskEntry]()
-        {
-            QProcess processObject;
-            processObject.setProgram(QStringLiteral("schtasks.exe"));
-            processObject.setArguments({
-                QStringLiteral("/Delete"),
-                QStringLiteral("/TN"),
-                taskEntry.locationText,
-                QStringLiteral("/F")
-                });
-            processObject.start();
-            bool taskDeleteOk = processObject.waitForStarted(1500) && processObject.waitForFinished(10000)
-                && processObject.exitStatus() == QProcess::NormalExit
-                && processObject.exitCode() == 0;
-            QString taskErrorText;
-            if (!taskDeleteOk)
+        const bool callbackQueued = QMetaObject::invokeMethod(
+            this,
+            [this,
+             actionResult,
+             operationTitle,
+             itemNameText,
+             sourceTypeText,
+             entryLocationText]()
             {
-                taskErrorText = QString::fromLocal8Bit(processObject.readAllStandardError()).trimmed();
-                if (taskErrorText.isEmpty())
+                if (m_destroying.load())
                 {
-                    taskErrorText = QString::fromLocal8Bit(processObject.readAllStandardOutput()).trimmed();
+                    return;
                 }
-                if (taskErrorText.isEmpty())
-                {
-                    taskErrorText = startupText("startup.delete.schtasks_failed", QStringLiteral("schtasks 删除失败。"));
-                }
-            }
 
-            if (m_destroying.load())
-            {
-                return;
-            }
-            const bool callbackQueued = QMetaObject::invokeMethod(
-                this,
-                [this, taskEntry, taskDeleteOk, taskErrorText]()
+                m_startupActionInProgress.store(false);
+                refreshAllStartupEntries();
+                if (!actionResult.success)
                 {
-                    if (m_destroying.load())
+                    const QString failureText = startupActionFailureText(actionResult);
+                    bool privilegePromptHandled = false;
+                    if (isStartupPrivilegeFailure(actionResult))
                     {
-                        return;
-                    }
-                    m_startupActionInProgress.store(false);
-                    if (!taskDeleteOk)
-                    {
-                        // privilegePromptHandled：恢复提示已覆盖失败时不再叠加删除错误框。
-                        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
-                            this,
-                            startupText(
-                                "startup.dialog.delete.operation.title",
-                                QStringLiteral("删除启动项")),
-                            taskErrorText);
+                        if (actionResult.errorCode != ERROR_SUCCESS)
+                        {
+                            privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                                this,
+                                operationTitle,
+                                static_cast<unsigned long>(actionResult.errorCode));
+                        }
                         if (!privilegePromptHandled)
                         {
-                            QMessageBox::warning(
+                            privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
                                 this,
-                                startupText("startup.dialog.title", QStringLiteral("启动项")),
-                                startupText("startup.dialog.delete.failed", QStringLiteral("删除失败：%1"))
-                                    .arg(taskErrorText));
+                                operationTitle,
+                                failureText);
                         }
-                        return;
                     }
+                    if (!privilegePromptHandled)
+                    {
+                        QMessageBox::warning(
+                            this,
+                            operationTitle,
+                            startupText(
+                                "startup.dialog.delete.failed",
+                                QStringLiteral("删除失败：%1"))
+                                .arg(failureText));
+                    }
+                    return;
+                }
 
-                    kLogEvent deleteEvent;
-                    info << deleteEvent
-                        << startupText(
-                            "startup.log.delete.succeeded",
-                            QStringLiteral("[StartupDock] 删除启动项成功, type="))
-                               .toStdString()
-                        << taskEntry.sourceTypeText.toStdString()
-                        << ", name="
-                        << taskEntry.itemNameText.toStdString()
-                        << ", location="
-                        << taskEntry.locationText.toStdString()
-                        << eol;
-                    refreshAllStartupEntries();
-                },
-                Qt::QueuedConnection);
-            if (!callbackQueued)
-            {
-                m_startupActionInProgress.store(false);
-            }
-        });
-        actionFlagReset.dismiss();
-        return;
-    }
-
-    if (!deleteOk)
-    {
-        // privilegePromptHandled：恢复提示已覆盖失败时不再叠加删除错误框。
-        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
-            this,
-            startupText(
-                "startup.dialog.delete.operation.title",
-                QStringLiteral("删除启动项")),
-            errorText);
-        if (!privilegePromptHandled)
+                kLogEvent deleteEvent;
+                info << deleteEvent
+                    << startupText(
+                        "startup.log.delete.succeeded",
+                        QStringLiteral("[StartupDock] 删除启动项成功, type="))
+                           .toStdString()
+                    << sourceTypeText.toStdString()
+                    << ", name="
+                    << itemNameText.toStdString()
+                    << ", location="
+                    << entryLocationText.toStdString()
+                    << ", changed="
+                    << (actionResult.changed ? "true" : "false")
+                    << eol;
+            },
+            Qt::QueuedConnection);
+        if (!callbackQueued)
         {
-            QMessageBox::warning(
-                this,
-                startupText("startup.dialog.title", QStringLiteral("启动项")),
-                startupText("startup.dialog.delete.failed", QStringLiteral("删除失败：%1"))
-                    .arg(errorText));
+            m_startupActionInProgress.store(false);
         }
-        return;
-    }
-
-    kLogEvent deleteEvent;
-    info << deleteEvent
-        << startupText(
-            "startup.log.delete.succeeded",
-            QStringLiteral("[StartupDock] 删除启动项成功, type="))
-               .toStdString()
-        << entry.sourceTypeText.toStdString()
-        << ", name="
-        << entry.itemNameText.toStdString()
-        << ", location="
-        << entry.locationText.toStdString()
-        << eol;
-
-    refreshAllStartupEntries();
+    });
 }
 
 int StartupDock::findEntryIndexByTableRow(const StartupCategory category, const int row) const
