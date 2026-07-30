@@ -395,7 +395,7 @@ Return Value:
     status = ObReferenceObjectByHandle(
         FileHandle,
         0,
-        NULL,
+        *IoFileObjectType,
         KernelMode,
         (PVOID*)FileObjectOut,
         NULL);

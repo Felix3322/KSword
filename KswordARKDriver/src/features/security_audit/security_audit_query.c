@@ -521,7 +521,7 @@ Arguments:
     status = ObReferenceObjectByHandle(
         fileHandle,
         0,
-        NULL,
+        *IoFileObjectType,
         KernelMode,
         (PVOID*)&fileObject,
         NULL);

@@ -4160,7 +4160,7 @@ KswordARKDriverUnloadRunZwOnly(
     status = ObReferenceObjectByHandle(
         threadHandle,
         SYNCHRONIZE,
-        NULL,
+        *PsThreadType,
         KernelMode,
         (PVOID*)&threadObject,
         NULL);
@@ -4546,7 +4546,7 @@ KswordARKDriverUnloadRunThread(
     status = ObReferenceObjectByHandle(
         threadHandle,
         SYNCHRONIZE,
-        NULL,
+        *PsThreadType,
         KernelMode,
         (PVOID*)&threadObject,
         NULL);

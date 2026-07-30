@@ -200,7 +200,7 @@ Return Value:
     status = ObReferenceObjectByHandle(
         targetHandle,
         0,
-        NULL,
+        *CmKeyObjectType,
         KernelMode,
         &targetObject,
         NULL);
