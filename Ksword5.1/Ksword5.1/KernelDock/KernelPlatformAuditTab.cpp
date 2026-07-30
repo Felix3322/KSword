@@ -1,5 +1,6 @@
 #include "KernelPlatformAuditTab.h"
 
+#include "KernelCleanImageBaseline.h"
 #include "KernelDock.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/TableInteractionSupport.h"
@@ -9,6 +10,7 @@
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QDir>
+#include <QEvent>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QHash>
@@ -16,6 +18,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMetaObject>
+#include <QPointer>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QStringList>
@@ -24,7 +27,10 @@
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -45,6 +51,7 @@ namespace
         ColumnName = 0,
         ColumnIndex,
         ColumnLiveAddress,
+        ColumnOriginalAddress,
         ColumnHook,
         ColumnModule,
         ColumnVendor,
@@ -61,6 +68,151 @@ namespace
         auto* item = new QTableWidgetItem(text);
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         return item;
+    }
+
+    bool rebaseCleanPointer(
+        const ks::kernel::CleanImageBaselineResult& baseline,
+        const std::uint64_t diskPointer,
+        std::uint64_t& runtimeAddressOut)
+    {
+        runtimeAddressOut = 0U;
+        if (!baseline.available ||
+            !baseline.identityMatched ||
+            baseline.preferredImageBase == 0U ||
+            baseline.moduleBase == 0U ||
+            baseline.moduleSize == 0U ||
+            diskPointer < baseline.preferredImageBase)
+        {
+            return false;
+        }
+        const std::uint64_t rva =
+            diskPointer - baseline.preferredImageBase;
+        if (rva >= baseline.moduleSize ||
+            baseline.moduleBase >
+                std::numeric_limits<std::uint64_t>::max() - rva)
+        {
+            return false;
+        }
+        runtimeAddressOut = baseline.moduleBase + rva;
+        return true;
+    }
+
+    void enrichWdfFunctionBaselines(
+        ksword::ark::PlatformAuditResult& result)
+    {
+        std::uint64_t tableAddress = 0U;
+        std::size_t functionCount = 0U;
+        for (const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry : result.entries)
+        {
+            if (entry.scope !=
+                    KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_FUNCTIONS ||
+                entry.rowKind != KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION ||
+                entry.tableAddress == 0U ||
+                entry.entryIndex >= KSWORD_ARK_PLATFORM_HARD_MAX_ROWS)
+            {
+                continue;
+            }
+            if (tableAddress == 0U)
+            {
+                tableAddress = entry.tableAddress;
+            }
+            else if (tableAddress != entry.tableAddress)
+            {
+                // 同一响应出现两个绑定表时拒绝建立混合基线。
+                return;
+            }
+            functionCount = std::max(
+                functionCount,
+                static_cast<std::size_t>(entry.entryIndex) + 1U);
+        }
+        if (tableAddress == 0U ||
+            functionCount == 0U ||
+            functionCount >
+                std::numeric_limits<std::uint32_t>::max() /
+                    sizeof(std::uint64_t))
+        {
+            return;
+        }
+
+        const std::uint32_t tableBytes = static_cast<std::uint32_t>(
+            functionCount * sizeof(std::uint64_t));
+        const ks::kernel::CleanImageBaselineResult baseline =
+            ks::kernel::KernelCleanImageBaseline::compareAddress(
+                tableAddress,
+                tableBytes);
+        if (!baseline.available ||
+            baseline.cleanBytes.size() != tableBytes)
+        {
+            return;
+        }
+
+        for (KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry : result.entries)
+        {
+            if (entry.scope !=
+                    KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_FUNCTIONS ||
+                entry.rowKind != KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION ||
+                entry.tableAddress != tableAddress ||
+                entry.entryIndex >= functionCount)
+            {
+                continue;
+            }
+            const std::size_t byteOffset =
+                static_cast<std::size_t>(entry.entryIndex) *
+                sizeof(std::uint64_t);
+            if (byteOffset > baseline.cleanBytes.size() ||
+                sizeof(std::uint64_t) >
+                    baseline.cleanBytes.size() - byteOffset)
+            {
+                continue;
+            }
+
+            std::uint64_t diskPointer = 0U;
+            std::memcpy(
+                &diskPointer,
+                baseline.cleanBytes.data() + byteOffset,
+                sizeof(diskPointer));
+            std::uint64_t originalAddress = 0U;
+            if (!rebaseCleanPointer(
+                    baseline,
+                    diskPointer,
+                    originalAddress))
+            {
+                continue;
+            }
+
+            entry.originalAddress = originalAddress;
+            entry.originalAddressSource =
+                KSWORD_ARK_PLATFORM_ORIGINAL_SOURCE_DISK_IMAGE;
+            entry.fieldFlags |=
+                KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS |
+                KSWORD_ARK_PLATFORM_FIELD_BASELINE_VALIDATED |
+                KSWORD_ARK_PLATFORM_FIELD_DETAIL_ARGS;
+            entry.detailArgs[0] = entry.liveAddress;
+            entry.detailArgs[1] = entry.originalAddress;
+            entry.detailArgs[2] = baseline.relativeVirtualAddress;
+            entry.detailArgs[3] = entry.entryIndex;
+            if (entry.liveAddress == entry.originalAddress)
+            {
+                entry.hookStatus = KSWORD_ARK_PLATFORM_HOOK_CLEAN;
+                entry.confidence = KSWORD_ARK_PLATFORM_CONFIDENCE_HIGH;
+                entry.status = KSWORD_ARK_PLATFORM_AUDIT_STATUS_OK;
+                entry.lastStatus = 0L;
+                entry.detailCode =
+                    KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MATCH;
+            }
+            else
+            {
+                entry.hookStatus =
+                    KSWORD_ARK_PLATFORM_HOOK_SUSPICIOUS;
+                entry.confidence = KSWORD_ARK_PLATFORM_CONFIDENCE_HIGH;
+                entry.status =
+                    KSWORD_ARK_PLATFORM_AUDIT_STATUS_SIGNATURE_MISMATCH;
+                entry.lastStatus =
+                    static_cast<long>(0xC000003EUL);
+                entry.detailCode =
+                    KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MISMATCH;
+            }
+        }
     }
 }
 
@@ -89,6 +241,15 @@ KernelPlatformAuditTab::~KernelPlatformAuditTab()
     }
 }
 
+void KernelPlatformAuditTab::changeEvent(QEvent* event)
+{
+    QWidget::changeEvent(event);
+    if (event != nullptr && event->type() == QEvent::LanguageChange)
+    {
+        retranslateUi();
+    }
+}
+
 void KernelPlatformAuditTab::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
@@ -105,21 +266,21 @@ void KernelPlatformAuditTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    auto* explanationLabel = new QLabel(
+    m_explanationLabel = new QLabel(
         m_mode == Mode::Hal
             ? kernelText(
                   "kernel.platform.hal.explanation",
                   QStringLiteral("只读 HAL 审计：公开表逐字段按 WDK 结构解析；私有表按受支持 Build/Version/ByteSize 描述解析，ACPI 与子组件仅接受可信锚点小窗口内唯一且完整验证的 RIP-relative 候选。没有独立基线时只报告 owner/执行节一致性，不把运行时地址判为 Clean。"))
             : kernelText(
                   "kernel.platform.wdf.explanation",
-                  QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表，并显示本驱动实际注册的 WDF 回调；没有独立基线时只报告 owner/执行节一致性。")),
+                  QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像与加载映像身份匹配并成功重定位对应槽位时有效；只有逐项相等才标记 Clean，否则保持 Unknown 或标记 Suspicious。")),
         this);
-    explanationLabel->setWordWrap(true);
-    explanationLabel->setStyleSheet(
+    m_explanationLabel->setWordWrap(true);
+    m_explanationLabel->setStyleSheet(
         QStringLiteral("QLabel{padding:6px;border:1px solid %1;border-radius:4px;color:%2;}")
             .arg(KswordTheme::BorderColorHex())
             .arg(KswordTheme::TextSecondaryHex()));
-    rootLayout->addWidget(explanationLabel);
+    rootLayout->addWidget(m_explanationLabel);
 
     auto* toolbar = new QHBoxLayout();
     m_refreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), this);
@@ -182,6 +343,160 @@ void KernelPlatformAuditTab::initializeUi()
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this]() { applyFilter(); });
 }
 
+void KernelPlatformAuditTab::retranslateUi()
+{
+    QList<QTableView*> platformTables;
+    platformTables.reserve(m_pages.size());
+    for (const Page& page : m_pages)
+    {
+        platformTables.push_back(page.table);
+    }
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu(platformTables))
+    {
+        const QPointer<KernelPlatformAuditTab> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("kernel-platform-audit-retranslate"),
+            platformTables,
+            [safeThis]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->retranslateUi();
+                }
+            });
+        return;
+    }
+
+    if (m_explanationLabel != nullptr)
+    {
+        m_explanationLabel->setText(
+            m_mode == Mode::Hal
+                ? kernelText(
+                      "kernel.platform.hal.explanation",
+                      QStringLiteral("只读 HAL 审计：公开表逐字段按 WDK 结构解析；私有表按受支持 Build/Version/ByteSize 描述解析，ACPI 与子组件仅接受可信锚点小窗口内唯一且完整验证的 RIP-relative 候选。没有独立基线时只报告 owner/执行节一致性，不把运行时地址判为 Clean。"))
+                : kernelText(
+                      "kernel.platform.wdf.explanation",
+                      QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像与加载映像身份匹配并成功重定位对应槽位时有效；只有逐项相等才标记 Clean，否则保持 Unknown 或标记 Suspicious。")));
+    }
+    if (m_refreshButton != nullptr)
+    {
+        m_refreshButton->setToolTip(kernelText(
+            "kernel.platform.toolbar.refresh.tooltip",
+            QStringLiteral("重新读取经过结构与模块边界验证的只读审计快照")));
+    }
+    if (m_columnGroupCombo != nullptr &&
+        m_columnGroupCombo->count() >= 3)
+    {
+        m_columnGroupCombo->setItemText(
+            0,
+            kernelText(
+                "kernel.platform.columns.a",
+                QStringLiteral("列组 A：定位")));
+        m_columnGroupCombo->setItemText(
+            1,
+            kernelText(
+                "kernel.platform.columns.b",
+                QStringLiteral("列组 B：验证")));
+        m_columnGroupCombo->setItemText(
+            2,
+            kernelText(
+                "kernel.platform.columns.c",
+                QStringLiteral("列组 C：全部")));
+        m_columnGroupCombo->setToolTip(kernelText(
+            "kernel.platform.columns.tooltip",
+            QStringLiteral("在地址定位、签名验证和全部字段三种紧凑视图间切换")));
+    }
+    if (m_filterEdit != nullptr)
+    {
+        m_filterEdit->setPlaceholderText(kernelText(
+            "kernel.platform.filter.placeholder",
+            QStringLiteral("过滤名称 / 模块 / 厂商 / 状态 / 备注")));
+    }
+
+    const QStringList headers = {
+        kernelText("kernel.platform.header.name", QStringLiteral("函数 / 回调")),
+        kernelText("kernel.platform.header.index", QStringLiteral("索引")),
+        kernelText("kernel.platform.header.live", QStringLiteral("当前地址")),
+        kernelText("kernel.platform.header.original", QStringLiteral("原始地址")),
+        kernelText("kernel.platform.header.hook", QStringLiteral("Hook")),
+        kernelText("kernel.platform.header.module", QStringLiteral("模块")),
+        kernelText("kernel.platform.header.vendor", QStringLiteral("厂商")),
+        kernelText("kernel.platform.header.table", QStringLiteral("表地址")),
+        kernelText("kernel.platform.header.signature", QStringLiteral("签名策略")),
+        kernelText("kernel.platform.header.confidence", QStringLiteral("置信度")),
+        kernelText("kernel.platform.header.status", QStringLiteral("状态")),
+        kernelText("kernel.platform.header.detail", QStringLiteral("备注"))
+    };
+    for (std::size_t index = 0U; index < m_pages.size(); ++index)
+    {
+        Page& page = m_pages[index];
+        if (page.table != nullptr)
+        {
+            page.table->setHorizontalHeaderLabels(headers);
+        }
+        QString title;
+        switch (page.scope)
+        {
+        case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH:
+            title = kernelText(
+                "kernel.platform.hal.dispatch",
+                QStringLiteral("HalDispatchTable"));
+            break;
+        case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE:
+            title = kernelText(
+                "kernel.platform.hal.private",
+                QStringLiteral("HalPrivateDispatchTable"));
+            break;
+        case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI:
+            title = kernelText(
+                "kernel.platform.hal.acpi",
+                QStringLiteral("HalAcpiDispatchTable"));
+            break;
+        case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS:
+            title = kernelText(
+                "kernel.platform.hal.subcomponents",
+                QStringLiteral("HalSubComponents"));
+            break;
+        case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_FUNCTIONS:
+            title = kernelText(
+                "kernel.platform.wdf.functions",
+                QStringLiteral("WDF 函数"));
+            break;
+        case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_CALLBACKS:
+            title = kernelText(
+                "kernel.platform.wdf.callbacks",
+                QStringLiteral("WDF 回调"));
+            break;
+        default:
+            break;
+        }
+        if (m_innerTabs != nullptr &&
+            index < static_cast<std::size_t>(m_innerTabs->count()) &&
+            !title.isEmpty())
+        {
+            m_innerTabs->setTabText(static_cast<int>(index), title);
+        }
+    }
+
+    if (m_refreshRunning)
+    {
+        m_statusLabel->setText(kernelText(
+            "kernel.platform.status.refreshing",
+            QStringLiteral("状态：正在读取只读审计快照...")));
+    }
+    else if (m_hasResult)
+    {
+        applyResult(m_lastResult);
+    }
+    else
+    {
+        m_statusLabel->setText(kernelText(
+            "kernel.platform.status.waiting",
+            QStringLiteral("状态：等待刷新")));
+    }
+}
+
 void KernelPlatformAuditTab::addPage(const unsigned long scope, const QString& title)
 {
     auto* table = new ks::ui::VisibleTableWidget(m_innerTabs);
@@ -190,6 +505,7 @@ void KernelPlatformAuditTab::addPage(const unsigned long scope, const QString& t
         kernelText("kernel.platform.header.name", QStringLiteral("函数 / 回调")),
         kernelText("kernel.platform.header.index", QStringLiteral("索引")),
         kernelText("kernel.platform.header.live", QStringLiteral("当前地址")),
+        kernelText("kernel.platform.header.original", QStringLiteral("原始地址")),
         kernelText("kernel.platform.header.hook", QStringLiteral("Hook")),
         kernelText("kernel.platform.header.module", QStringLiteral("模块")),
         kernelText("kernel.platform.header.vendor", QStringLiteral("厂商")),
@@ -256,6 +572,10 @@ void KernelPlatformAuditTab::refreshAsync()
         {
             ksword::ark::DriverClient client;
             auto result = client.queryPlatformAudit(scope);
+            if (result.io.ok)
+            {
+                enrichWdfFunctionBaselines(result);
+            }
             {
                 const std::lock_guard workerLock(m_refreshMutex);
                 if (m_closing)
@@ -310,6 +630,8 @@ void KernelPlatformAuditTab::applyResult(ksword::ark::PlatformAuditResult result
         return;
     }
 
+    m_lastResult = result;
+    m_hasResult = true;
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
     for (Page& page : m_pages)
@@ -374,6 +696,7 @@ void KernelPlatformAuditTab::populatePage(
             fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS),
             QString::number(entry.entryIndex),
             addressText(entry.liveAddress),
+            addressText(entry.originalAddress),
             hookText(entry.hookStatus),
             modulePath,
             companyCache.value(modulePath),
@@ -406,6 +729,7 @@ void KernelPlatformAuditTab::applyColumnGroup()
             {
                 visible = column == ColumnName ||
                     column == ColumnLiveAddress ||
+                    column == ColumnOriginalAddress ||
                     column == ColumnHook ||
                     column == ColumnModule ||
                     column == ColumnStatus;
@@ -501,6 +825,8 @@ QString KernelPlatformAuditTab::hookText(const unsigned long hookStatus)
 {
     switch (hookStatus)
     {
+    case KSWORD_ARK_PLATFORM_HOOK_CLEAN:
+        return kernelText("kernel.platform.hook.clean", QStringLiteral("Clean"));
     case KSWORD_ARK_PLATFORM_HOOK_SUSPICIOUS:
         return kernelText("kernel.platform.hook.suspicious", QStringLiteral("Suspicious"));
     case KSWORD_ARK_PLATFORM_HOOK_UNSUPPORTED:
@@ -655,6 +981,18 @@ QString KernelPlatformAuditTab::detailText(
         return kernelText(
             "kernel.platform.detail.subcomponent_validated",
             QStringLiteral("22 对函数/UTF-16 名称（含 Qos）已完整验证。"));
+    case KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MATCH:
+        return kernelText(
+            "kernel.platform.detail.baseline_match",
+            QStringLiteral("已验证磁盘映像基线匹配：当前地址 %1，原始地址 %2。"))
+            .arg(hex(entry.detailArgs[0]))
+            .arg(hex(entry.detailArgs[1]));
+    case KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MISMATCH:
+        return kernelText(
+            "kernel.platform.detail.baseline_mismatch",
+            QStringLiteral("已验证磁盘映像基线不匹配：当前地址 %1，原始地址 %2。"))
+            .arg(hex(entry.detailArgs[0]))
+            .arg(hex(entry.detailArgs[1]));
     default:
         return QStringLiteral("-");
     }

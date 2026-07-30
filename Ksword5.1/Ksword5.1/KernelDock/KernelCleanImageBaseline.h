@@ -13,6 +13,7 @@ namespace ks::kernel
         bool identityMatched = false;
         bool differs = false;
         std::uint64_t moduleBase = 0;
+        std::uint64_t preferredImageBase = 0;
         std::uint32_t moduleSize = 0;
         std::uint32_t relativeVirtualAddress = 0;
         QString moduleName;

@@ -250,6 +250,7 @@ namespace
     {
         bool valid = false;
         std::uint32_t timestamp = 0;
+        std::uint64_t imageBase = 0;
         std::uint32_t sizeOfImage = 0;
         std::uint32_t checkSum = 0;
         std::uint32_t sizeOfHeaders = 0;
@@ -304,6 +305,7 @@ namespace
                 return false;
             }
             identityOut.sizeOfImage = optional.SizeOfImage;
+            identityOut.imageBase = optional.ImageBase;
             identityOut.checkSum = optional.CheckSum;
             identityOut.sizeOfHeaders = optional.SizeOfHeaders;
         }
@@ -316,6 +318,7 @@ namespace
                 return false;
             }
             identityOut.sizeOfImage = optional.SizeOfImage;
+            identityOut.imageBase = optional.ImageBase;
             identityOut.checkSum = optional.CheckSum;
             identityOut.sizeOfHeaders = optional.SizeOfHeaders;
         }
@@ -547,6 +550,7 @@ namespace ks::kernel
             result.statusText = errorText;
             return result;
         }
+        result.preferredImageBase = diskIdentity.imageBase;
 
         const std::vector<std::uint8_t> memoryHeader =
             loadedHeaderBytes(module->base, errorText);

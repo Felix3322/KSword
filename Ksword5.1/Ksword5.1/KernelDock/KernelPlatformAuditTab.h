@@ -9,6 +9,7 @@
 #include <vector>
 
 class QComboBox;
+class QEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -33,6 +34,7 @@ public:
     ~KernelPlatformAuditTab() override;
 
 protected:
+    void changeEvent(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
 
 private:
@@ -43,6 +45,7 @@ private:
     };
 
     void initializeUi();
+    void retranslateUi();
     void addPage(unsigned long scope, const QString& title);
     void refreshAsync();
     void applyResult(ksword::ark::PlatformAuditResult result);
@@ -63,11 +66,14 @@ private:
     QPushButton* m_refreshButton = nullptr;
     QComboBox* m_columnGroupCombo = nullptr;
     QLineEdit* m_filterEdit = nullptr;
+    QLabel* m_explanationLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     std::vector<Page> m_pages;
+    ksword::ark::PlatformAuditResult m_lastResult;
     std::thread m_refreshThread;
     std::mutex m_refreshMutex;
     bool m_closing = false;
     bool m_firstRefreshStarted = false;
     bool m_refreshRunning = false;
+    bool m_hasResult = false;
 };

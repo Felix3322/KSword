@@ -10,7 +10,7 @@
 // - 本协议不提供 patch、restore、unhook 或任意内存读写能力。
 // ============================================================
 
-#define KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION 2UL
+#define KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION 3UL
 
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PLATFORM_AUDIT 0x8E4UL
 #define IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT \
@@ -42,6 +42,7 @@
 #define KSWORD_ARK_PLATFORM_AUDIT_ROW_DIAGNOSTIC           4UL
 
 #define KSWORD_ARK_PLATFORM_HOOK_UNKNOWN                   0UL
+#define KSWORD_ARK_PLATFORM_HOOK_CLEAN                     1UL
 #define KSWORD_ARK_PLATFORM_HOOK_SUSPICIOUS                2UL
 #define KSWORD_ARK_PLATFORM_HOOK_UNSUPPORTED               3UL
 
@@ -51,6 +52,7 @@
 #define KSWORD_ARK_PLATFORM_CONFIDENCE_HIGH               90UL
 
 #define KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS             0x00000001UL
+#define KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS         0x00000002UL
 #define KSWORD_ARK_PLATFORM_FIELD_TABLE_ADDRESS            0x00000004UL
 #define KSWORD_ARK_PLATFORM_FIELD_MODULE                   0x00000008UL
 #define KSWORD_ARK_PLATFORM_FIELD_PROLOGUE_FORMAT          0x00000020UL
@@ -60,6 +62,8 @@
 #define KSWORD_ARK_PLATFORM_FIELD_EXECUTABLE_VALIDATED     0x00000200UL
 #define KSWORD_ARK_PLATFORM_FIELD_READ_ONLY_RANGE          0x00000400UL
 #define KSWORD_ARK_PLATFORM_FIELD_DETAIL_ARGS              0x00000800UL
+#define KSWORD_ARK_PLATFORM_FIELD_BASELINE_VALIDATED       0x00001000UL
+#define KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED        0x00002000UL
 
 #define KSWORD_ARK_PLATFORM_RESPONSE_TRUNCATED              0x00000001UL
 #define KSWORD_ARK_PLATFORM_RESPONSE_PARTIAL                0x00000002UL
@@ -90,6 +94,9 @@
 #define KSWORD_ARK_PLATFORM_OWNER_WDF                       4UL
 #define KSWORD_ARK_PLATFORM_OWNER_KSWORD                    5UL
 
+#define KSWORD_ARK_PLATFORM_ORIGINAL_SOURCE_NONE            0UL
+#define KSWORD_ARK_PLATFORM_ORIGINAL_SOURCE_DISK_IMAGE      1UL
+
 // R0 只返回稳定 detailCode/参数；自然语言由 R3 根据当前语言包生成。
 #define KSWORD_ARK_PLATFORM_DETAIL_NONE                     0UL
 #define KSWORD_ARK_PLATFORM_DETAIL_OWNER_CONSISTENT         1UL
@@ -114,6 +121,8 @@
 #define KSWORD_ARK_PLATFORM_DETAIL_WDF_INDEX_INVALID       20UL
 #define KSWORD_ARK_PLATFORM_DETAIL_ACPI_V5_VALIDATED       21UL
 #define KSWORD_ARK_PLATFORM_DETAIL_SUBCOMPONENT_VALIDATED  22UL
+#define KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MATCH          23UL
+#define KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MISMATCH       24UL
 
 #define KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS 1024UL
 #define KSWORD_ARK_PLATFORM_HARD_MAX_ROWS    1024UL
@@ -150,12 +159,15 @@ typedef struct _KSWORD_ARK_PLATFORM_AUDIT_ENTRY
     long lastStatus;
     unsigned long moduleSize;
     unsigned long prologueSignatureId;
+    unsigned long originalAddressSource;
+    unsigned long reserved0;
     unsigned long long liveAddress;
+    unsigned long long originalAddress;
     unsigned long long tableAddress;
     unsigned long long moduleBase;
     unsigned long long detailArgs[KSWORD_ARK_PLATFORM_DETAIL_ARG_COUNT];
     unsigned long detailCode;
-    unsigned long reserved0;
+    unsigned long reserved1;
     wchar_t name[KSWORD_ARK_PLATFORM_NAME_CHARS];
     wchar_t modulePath[KSWORD_ARK_PLATFORM_MODULE_PATH_CHARS];
 } KSWORD_ARK_PLATFORM_AUDIT_ENTRY;

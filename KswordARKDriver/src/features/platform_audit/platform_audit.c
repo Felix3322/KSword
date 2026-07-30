@@ -1215,6 +1215,15 @@ KswPlatformFindPrivateBuild(
     return NULL;
 }
 
+static NTSTATUS
+KswPlatformLocateHalPrivateBySignature(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG BuildNumber,
+    _In_ const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR* Build,
+    _Outptr_ PVOID* TableAddressOut,
+    _Out_ ULONG* VersionOut
+    );
+
 static VOID
 KswPlatformAddHalPrivate(
     _Inout_ KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE* Response,
@@ -1227,9 +1236,9 @@ KswPlatformAddHalPrivate(
     const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR* build =
         KswPlatformFindPrivateBuild(BuildNumber);
     PVOID tableAddress = NULL;
-    const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
     ULONG version = 0UL;
     ULONG index = 0UL;
+    NTSTATUS locateStatus = STATUS_NOT_SUPPORTED;
     KSWORD_ARK_PLATFORM_AUDIT_ENTRY versionEntry;
 
     if (build == NULL) {
@@ -1245,38 +1254,38 @@ KswPlatformAddHalPrivate(
         return;
     }
 
-    tableAddress = KswPlatformGetRoutine(L"HalPrivateDispatchTable");
-    tableOwner = KswordARKHookFindModuleForAddress(ModuleInfo, (ULONG_PTR)tableAddress);
-    if (tableAddress == NULL ||
-        !KswPlatformIsExpectedHalOwner(tableOwner) ||
-        !KswPlatformRangeInSection(
-            tableOwner,
-            (ULONG_PTR)tableAddress,
-            build->ByteSize,
-            FALSE,
-            FALSE) ||
-        !KswordARKHookReadMemorySafe(tableAddress, &version, sizeof(version))) {
+    // 中文说明：私有表地址不再直接取 HalPrivateDispatchTable 导出。
+    // 每个受支持 Build 都从 HalTranslateBusAddress 的小窗口内，以经过
+    // byte/mask 描述的 RIP-relative 槽引用反推出表基址；候选必须唯一，
+    // 且完整结构范围和 Version/ByteSize 同时通过才会继续枚举。
+    locateStatus = KswPlatformLocateHalPrivateBySignature(
+        ModuleInfo,
+        BuildNumber,
+        build,
+        &tableAddress,
+        &version);
+    if (!NT_SUCCESS(locateStatus)) {
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
-            KSWORD_ARK_PLATFORM_AUDIT_STATUS_SIGNATURE_MISMATCH,
-            STATUS_DATA_ERROR,
+            locateStatus == STATUS_NOT_SUPPORTED ?
+                KSWORD_ARK_PLATFORM_AUDIT_STATUS_UNSUPPORTED :
+                KSWORD_ARK_PLATFORM_AUDIT_STATUS_SIGNATURE_MISMATCH,
+            locateStatus,
             L"HalPrivateDispatchTable",
-            KSWORD_ARK_PLATFORM_DETAIL_RANGE_INVALID,
-            build->ByteSize,
-            BuildNumber);
-        return;
-    }
-    if (version != build->Version) {
-        KswPlatformAddDiagnostic(
-            Response, Capacity, MaxRows,
-            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
-            KSWORD_ARK_PLATFORM_AUDIT_STATUS_UNSUPPORTED,
-            STATUS_REVISION_MISMATCH,
-            L"HalPrivateDispatchTable",
-            KSWORD_ARK_PLATFORM_DETAIL_VERSION_MISMATCH,
-            build->Version,
-            version);
+            locateStatus == STATUS_OBJECT_NAME_COLLISION ?
+                KSWORD_ARK_PLATFORM_DETAIL_LOCATOR_NOT_UNIQUE :
+                (locateStatus == STATUS_REVISION_MISMATCH ?
+                    KSWORD_ARK_PLATFORM_DETAIL_VERSION_MISMATCH :
+                    (locateStatus == STATUS_NOT_SUPPORTED ?
+                        KSWORD_ARK_PLATFORM_DETAIL_BUILD_UNSUPPORTED :
+                        KSWORD_ARK_PLATFORM_DETAIL_LOCATOR_NOT_FOUND)),
+            locateStatus == STATUS_REVISION_MISMATCH ?
+                build->Version :
+                BuildNumber,
+            locateStatus == STATUS_REVISION_MISMATCH ?
+                version :
+                build->ByteSize);
         return;
     }
 
@@ -1291,7 +1300,7 @@ KswPlatformAddHalPrivate(
         tableAddress,
         L"Version");
     versionEntry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
-        KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT;
+        KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
     KswPlatformSetDetail(
         &versionEntry,
         KSWORD_ARK_PLATFORM_DETAIL_SCALAR_VALUE,
@@ -1322,7 +1331,7 @@ KswPlatformAddHalPrivate(
             tableAddress,
             descriptor->Name);
         entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
-            KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT;
+            KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
 
         if (!KswordARKHookReadMemorySafe(
                 (const UCHAR*)tableAddress + descriptor->Offset,
@@ -1369,24 +1378,97 @@ KswPlatformAddHalPrivate(
 typedef struct _KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR
 {
     ULONG BuildNumber;
+    PCWSTR AnchorName;
+    ULONG ScanOffset;
     ULONG ScanBytes;
-    UCHAR Bytes[3];
-    UCHAR Mask[3];
+    LONG CandidateAdjustment;
+    ULONG TableByteSize;
+    ULONG ExpectedVersion;
+    UCHAR Bytes[7];
+    UCHAR Mask[7];
 } KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR;
 
 typedef BOOLEAN
 (*KSW_PLATFORM_VALIDATE_TABLE_ROUTINE)(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
-    _In_ PVOID Candidate
+    _In_ PVOID Candidate,
+    _In_ const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* Locator
     );
 
+// HalTranslateBusAddress 通过 HalPrivateDispatchTable+0x38 分派。
+// 表基址必须由该受信导出的有界代码窗口内唯一的 RIP-relative 读取反推，
+// 不允许回退到 HalPrivateDispatchTable 导出，也不扫描整个内核映像。
+static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalPrivateLocators[] = {
+    {
+        22000UL, L"HalTranslateBusAddress", 0x00UL, 0x80UL, -0x38L,
+        0x4D8UL, 54UL,
+        { 0x48U, 0x8BU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
+    },
+    {
+        22621UL, L"HalTranslateBusAddress", 0x00UL, 0x80UL, -0x38L,
+        0x4F0UL, 58UL,
+        { 0x48U, 0x8BU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
+    },
+    {
+        26100UL, L"HalTranslateBusAddress", 0x00UL, 0x80UL, -0x38L,
+        0x518UL, 61UL,
+        { 0x48U, 0x8BU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
+    },
+    {
+        26220UL, L"HalTranslateBusAddress", 0x00UL, 0x80UL, -0x38L,
+        0x518UL, 61UL,
+        { 0x48U, 0x8BU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
+    }
+};
+
 static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalAcpiLocators[] = {
-    { 26100UL, 0x80UL, { 0x48U, 0x8DU, 0x05U }, { 0xF8U, 0xFFU, 0xC7U } },
-    { 26220UL, 0x80UL, { 0x48U, 0x8DU, 0x05U }, { 0xF8U, 0xFFU, 0xC7U } }
+    {
+        22000UL, NULL, 0x00UL, 0xC0UL, 0L,
+        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
+    },
+    {
+        22621UL, NULL, 0x00UL, 0xC0UL, 0L,
+        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
+    },
+    {
+        26100UL, NULL, 0x00UL, 0x80UL, 0L,
+        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
+    },
+    {
+        26220UL, NULL, 0x00UL, 0x80UL, 0L,
+        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
+    }
 };
 
 static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalSubcomponentLocators[] = {
-    { 26100UL, 0x90UL, { 0x48U, 0x8DU, 0x05U }, { 0xF8U, 0xFFU, 0xC7U } }
+    {
+        26100UL, L"HalInitSystem", 0x00UL, 0x90UL, 0L,
+        sizeof(KSW_PLATFORM_HAL_SUBCOMPONENT) *
+            KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+        KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+        { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
+    },
+    {
+        26220UL, L"HalInitSystem", 0x70UL, 0x20UL, 0L,
+        sizeof(KSW_PLATFORM_HAL_SUBCOMPONENT) *
+            KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+        KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+        { 0x4CU, 0x8DU, 0x25U, 0U, 0U, 0U, 0U },
+        { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
+    }
 };
 
 static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR*
@@ -1421,7 +1503,10 @@ KswPlatformLocateRipTable(
     PVOID uniqueCandidate = NULL;
 
     if (ModuleInfo == NULL || Anchor == NULL || Locator == NULL ||
-        ValidateCandidate == NULL || TableAddressOut == NULL) {
+        ValidateCandidate == NULL || TableAddressOut == NULL ||
+        Locator->ScanBytes < RTL_NUMBER_OF(Locator->Bytes) ||
+        Locator->ScanOffset > MAXULONG - Locator->ScanBytes ||
+        Locator->TableByteSize == 0UL) {
         return STATUS_INVALID_PARAMETER;
     }
     *TableAddressOut = NULL;
@@ -1430,7 +1515,7 @@ KswPlatformLocateRipTable(
         !KswPlatformRangeInSection(
             anchorOwner,
             (ULONG_PTR)Anchor,
-            Locator->ScanBytes,
+            Locator->ScanOffset + Locator->ScanBytes,
             TRUE,
             FALSE)) {
         return STATUS_INVALID_ADDRESS;
@@ -1438,7 +1523,9 @@ KswPlatformLocateRipTable(
 
     // 中文说明：只检查 build descriptor 指定的小窗口，并要求完整结构验证后
     // 恰好产生一个候选；不会扫描内核映像的其它区域。
-    for (offset = 0UL; offset + 7UL <= Locator->ScanBytes; ++offset) {
+    for (offset = 0UL;
+         offset + RTL_NUMBER_OF(Locator->Bytes) <= Locator->ScanBytes;
+         ++offset) {
         UCHAR instruction[7];
         LONG displacement = 0;
         ULONG_PTR candidateAddress = 0U;
@@ -1448,7 +1535,7 @@ KswPlatformLocateRipTable(
 
         RtlZeroMemory(instruction, sizeof(instruction));
         if (!KswordARKHookReadMemorySafe(
-                (const UCHAR*)Anchor + offset,
+                (const UCHAR*)Anchor + Locator->ScanOffset + offset,
                 instruction,
                 sizeof(instruction)) ||
             !KswPlatformMaskedBytesMatch(
@@ -1460,21 +1547,31 @@ KswPlatformLocateRipTable(
         }
         RtlCopyMemory(&displacement, instruction + 3UL, sizeof(displacement));
         if ((ULONG64)(ULONG_PTR)Anchor >
-            MAXULONGLONG - (ULONG64)offset - 7ULL) {
+            MAXULONGLONG -
+                (ULONG64)Locator->ScanOffset -
+                (ULONG64)offset -
+                (ULONG64)RTL_NUMBER_OF(Locator->Bytes)) {
             continue;
         }
         instructionEnd =
-            (ULONG64)(ULONG_PTR)Anchor + (ULONG64)offset + 7ULL;
+            (ULONG64)(ULONG_PTR)Anchor +
+            (ULONG64)Locator->ScanOffset +
+            (ULONG64)offset +
+            (ULONG64)RTL_NUMBER_OF(Locator->Bytes);
         if (!KswPlatformAddSignedDisplacement(
                 instructionEnd,
                 (LONGLONG)displacement,
+                &candidateAddress64) ||
+            !KswPlatformAddSignedDisplacement(
+                candidateAddress64,
+                (LONGLONG)Locator->CandidateAdjustment,
                 &candidateAddress64) ||
             candidateAddress64 > MAXULONG_PTR) {
             continue;
         }
         candidateAddress = (ULONG_PTR)candidateAddress64;
         candidate = (PVOID)candidateAddress;
-        if (!ValidateCandidate(ModuleInfo, candidate)) {
+        if (!ValidateCandidate(ModuleInfo, candidate, Locator)) {
             continue;
         }
         if (candidate == uniqueCandidate) {
@@ -1495,16 +1592,102 @@ KswPlatformLocateRipTable(
 }
 
 static BOOLEAN
+KswPlatformValidateHalPrivateCandidate(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ PVOID Candidate,
+    _In_ const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* Locator
+    )
+{
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
+    ULONG version = 0UL;
+
+    if (ModuleInfo == NULL || Candidate == NULL || Locator == NULL ||
+        Locator->TableByteSize < sizeof(version)) {
+        return FALSE;
+    }
+    tableOwner = KswordARKHookFindModuleForAddress(
+        ModuleInfo,
+        (ULONG_PTR)Candidate);
+    return KswPlatformIsExpectedHalOwner(tableOwner) &&
+        KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)Candidate,
+            Locator->TableByteSize,
+            FALSE,
+            FALSE) &&
+        KswordARKHookReadMemorySafe(Candidate, &version, sizeof(version)) &&
+        version == Locator->ExpectedVersion;
+}
+
+static NTSTATUS
+KswPlatformLocateHalPrivateBySignature(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG BuildNumber,
+    _In_ const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR* Build,
+    _Outptr_ PVOID* TableAddressOut,
+    _Out_ ULONG* VersionOut
+    )
+{
+    const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* locator = NULL;
+    PVOID anchor = NULL;
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
+
+    if (ModuleInfo == NULL || Build == NULL ||
+        TableAddressOut == NULL || VersionOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *TableAddressOut = NULL;
+    *VersionOut = 0UL;
+    locator = KswPlatformFindRipLocator(
+        g_KswHalPrivateLocators,
+        RTL_NUMBER_OF(g_KswHalPrivateLocators),
+        BuildNumber);
+    if (locator == NULL ||
+        locator->AnchorName == NULL ||
+        locator->TableByteSize != Build->ByteSize ||
+        locator->ExpectedVersion != Build->Version) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    anchor = KswPlatformGetRoutine(locator->AnchorName);
+    if (anchor == NULL) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    status = KswPlatformLocateRipTable(
+        ModuleInfo,
+        anchor,
+        locator,
+        KswPlatformValidateHalPrivateCandidate,
+        TableAddressOut);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (!KswordARKHookReadMemorySafe(
+            *TableAddressOut,
+            VersionOut,
+            sizeof(*VersionOut))) {
+        *TableAddressOut = NULL;
+        return STATUS_PARTIAL_COPY;
+    }
+    if (*VersionOut != Build->Version) {
+        *TableAddressOut = NULL;
+        return STATUS_REVISION_MISMATCH;
+    }
+    return STATUS_SUCCESS;
+}
+
+static BOOLEAN
 KswPlatformValidateHalAcpiCandidate(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
-    _In_ PVOID Candidate
+    _In_ PVOID Candidate,
+    _In_ const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* Locator
     )
 {
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
     KSW_PLATFORM_HAL_ACPI_VIEW view;
-    ULONG index = 0UL;
 
-    if (ModuleInfo == NULL || Candidate == NULL) {
+    if (ModuleInfo == NULL || Candidate == NULL || Locator == NULL ||
+        Locator->TableByteSize != sizeof(view) ||
+        Locator->ExpectedVersion != KSW_PLATFORM_HAL_ACPI_VERSION) {
         return FALSE;
     }
     tableOwner = KswordARKHookFindModuleForAddress(ModuleInfo, (ULONG_PTR)Candidate);
@@ -1521,28 +1704,8 @@ KswPlatformValidateHalAcpiCandidate(
         view.Version != KSW_PLATFORM_HAL_ACPI_VERSION) {
         return FALSE;
     }
-
-    for (index = 0UL; index < RTL_NUMBER_OF(view.Functions); ++index) {
-        const KSW_HOOK_SYSTEM_MODULE_ENTRY* owner = NULL;
-        ULONG ownerPolicy =
-            (index == 5UL || index == 6UL || index == 8UL) ?
-                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_PCI :
-                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_ACPI;
-
-        if (view.Functions[index] == NULL) {
-            return FALSE;
-        }
-        owner = KswordARKHookFindModuleForAddress(
-            ModuleInfo,
-            (ULONG_PTR)view.Functions[index]);
-        if (!KswPlatformOwnerMatchesPolicy(owner, ownerPolicy) ||
-            !KswPlatformAddressSectionMatches(
-                owner,
-                (ULONG_PTR)view.Functions[index],
-                TRUE)) {
-            return FALSE;
-        }
-    }
+    // 函数槽内容不是表身份条件：外部 owner、非执行地址或 NULL 正是需要
+    // 逐行保留并报告的异常证据，不能让它们把整个候选吞成 locator-not-found。
     return TRUE;
 }
 
@@ -1592,14 +1755,17 @@ KswPlatformValidateBoundedWideName(
 static BOOLEAN
 KswPlatformValidateHalSubcomponentCandidate(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
-    _In_ PVOID Candidate
+    _In_ PVOID Candidate,
+    _In_ const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* Locator
     )
 {
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
     KSW_PLATFORM_HAL_SUBCOMPONENT entries[KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT];
     ULONG index = 0UL;
 
-    if (ModuleInfo == NULL || Candidate == NULL) {
+    if (ModuleInfo == NULL || Candidate == NULL || Locator == NULL ||
+        Locator->TableByteSize != sizeof(entries) ||
+        Locator->ExpectedVersion != KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT) {
         return FALSE;
     }
     tableOwner = KswordARKHookFindModuleForAddress(ModuleInfo, (ULONG_PTR)Candidate);
@@ -1616,26 +1782,15 @@ KswPlatformValidateHalSubcomponentCandidate(
     }
 
     for (index = 0UL; index < RTL_NUMBER_OF(entries); ++index) {
-        const KSW_HOOK_SYSTEM_MODULE_ENTRY* functionOwner = NULL;
-
-        if (entries[index].Function == NULL ||
-            !KswPlatformValidateBoundedWideName(
+        if (!KswPlatformValidateBoundedWideName(
                 ModuleInfo,
                 entries[index].Name,
                 g_KswHalSubcomponentNames[index])) {
             return FALSE;
         }
-        functionOwner = KswordARKHookFindModuleForAddress(
-            ModuleInfo,
-            (ULONG_PTR)entries[index].Function);
-        if (!KswPlatformIsExpectedHalOwner(functionOwner) ||
-            !KswPlatformAddressSectionMatches(
-                functionOwner,
-                (ULONG_PTR)entries[index].Function,
-                TRUE)) {
-            return FALSE;
-        }
     }
+    // 22 个只读名称对和受界表范围负责候选身份；函数槽逐项分类。
+    // 因此被替换到外部模块、未知地址或 NULL 的函数仍会作为对应行返回。
     return TRUE;
 }
 
@@ -1766,10 +1921,23 @@ KswPlatformAddHalAcpi(
             tableAddress,
             g_KswHalAcpiFunctionNames[index]);
         entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
-            KSWORD_ARK_PLATFORM_FIELD_READ_ONLY_RANGE;
-        entry.liveAddress = (ULONGLONG)(ULONG_PTR)view.Functions[index];
-        entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS;
-        KswPlatformClassifyFunction(&entry, ModuleInfo, ownerPolicy);
+            KSWORD_ARK_PLATFORM_FIELD_READ_ONLY_RANGE |
+            KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
+        if (view.Functions[index] == NULL) {
+            entry.status = KSWORD_ARK_PLATFORM_AUDIT_STATUS_UNAVAILABLE;
+            KswPlatformSetDetail(
+                &entry,
+                KSWORD_ARK_PLATFORM_DETAIL_NULL_SLOT,
+                index,
+                BuildNumber,
+                KSW_PLATFORM_HAL_ACPI_VERSION,
+                0ULL);
+        }
+        else {
+            entry.liveAddress = (ULONGLONG)(ULONG_PTR)view.Functions[index];
+            entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS;
+            KswPlatformClassifyFunction(&entry, ModuleInfo, ownerPolicy);
+        }
         KswPlatformAppend(Response, Capacity, MaxRows, &entry);
     }
 }
@@ -1806,7 +1974,9 @@ KswPlatformAddHalSubcomponents(
             26100ULL);
         return;
     }
-    anchor = KswPlatformGetRoutine(L"HalInitSystem");
+    anchor = locator->AnchorName != NULL ?
+        KswPlatformGetRoutine(locator->AnchorName) :
+        NULL;
     locateStatus = KswPlatformLocateRipTable(
         ModuleInfo,
         anchor,
@@ -1856,13 +2026,27 @@ KswPlatformAddHalSubcomponents(
             tableAddress,
             g_KswHalSubcomponentNames[index]);
         entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
-            KSWORD_ARK_PLATFORM_FIELD_READ_ONLY_RANGE;
-        entry.liveAddress = (ULONGLONG)(ULONG_PTR)entries[index].Function;
-        entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS;
-        KswPlatformClassifyFunction(
-            &entry,
-            ModuleInfo,
-            KSWORD_ARK_PLATFORM_OWNER_NT_HAL);
+            KSWORD_ARK_PLATFORM_FIELD_READ_ONLY_RANGE |
+            KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
+        if (entries[index].Function == NULL) {
+            entry.status = KSWORD_ARK_PLATFORM_AUDIT_STATUS_UNAVAILABLE;
+            KswPlatformSetDetail(
+                &entry,
+                KSWORD_ARK_PLATFORM_DETAIL_NULL_SLOT,
+                index,
+                BuildNumber,
+                KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+                0ULL);
+        }
+        else {
+            entry.liveAddress =
+                (ULONGLONG)(ULONG_PTR)entries[index].Function;
+            entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS;
+            KswPlatformClassifyFunction(
+                &entry,
+                ModuleInfo,
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL);
+        }
         KswPlatformAppend(Response, Capacity, MaxRows, &entry);
     }
 }
@@ -2113,7 +2297,8 @@ KswordARKPlatformAuditIoctlQuery(
         KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT |
         KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
         KSWORD_ARK_PLATFORM_FIELD_OWNER_VALIDATED |
-        KSWORD_ARK_PLATFORM_FIELD_PROLOGUE_FORMAT;
+        KSWORD_ARK_PLATFORM_FIELD_PROLOGUE_FORMAT |
+        KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
     response->lastStatus = STATUS_SUCCESS;
     capacity = KswPlatformOutputCapacity(actualOutputBytes);
     (VOID)PsGetVersion(&majorVersion, &minorVersion, &buildNumber, NULL);
