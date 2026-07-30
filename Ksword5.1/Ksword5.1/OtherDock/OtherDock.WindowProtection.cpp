@@ -152,14 +152,18 @@ void OtherDock::setCaptureProtectionForWindow(
     }
     else
     {
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：先消费结构化 Win32 错误，未命中时再检查文字详情。
+        bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             result.requestedProtection ? QStringLiteral("启用窗口防截图保护") : QStringLiteral("取消窗口防截图保护"),
             result.win32Error);
-        (void)ks::ui::promptForPrivilegeFailure(
-            this,
-            result.requestedProtection ? QStringLiteral("启用窗口防截图保护") : QStringLiteral("取消窗口防截图保护"),
-            QString::fromStdString(result.detail));
+        if (!privilegePromptHandled)
+        {
+            privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                this,
+                result.requestedProtection ? QStringLiteral("启用窗口防截图保护") : QStringLiteral("取消窗口防截图保护"),
+                QString::fromStdString(result.detail));
+        }
         err << actionEvent
             << "[OtherDock] 窗口防截图保护操作失败, requestedHwnd="
             << formatHwndText(result.requestedHwnd).toStdString()
@@ -172,10 +176,13 @@ void OtherDock::setCaptureProtectionForWindow(
             << ", detail="
             << result.detail
             << eol;
-        QMessageBox::warning(
-            this,
-            QStringLiteral("窗口防截图保护"),
-            messageText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("窗口防截图保护"),
+                messageText);
+        }
     }
 
     refreshWindowListAsync();

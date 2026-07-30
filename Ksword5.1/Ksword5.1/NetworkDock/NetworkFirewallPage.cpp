@@ -2685,8 +2685,13 @@ void NetworkFirewallPage::addFirewallRule()
     QString errorText;
     if (!addFirewallRuleEntryToSystem(ruleEntry, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新增防火墙规则"), errorText);
-        QMessageBox::warning(this, QStringLiteral("新增规则失败"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时仅保留页面状态，不重复弹窗。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新增防火墙规则"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("新增规则失败"), errorText);
+        }
         setStatusText(errorText);
         return;
     }
@@ -2718,8 +2723,13 @@ void NetworkFirewallPage::editSelectedFirewallRule()
     QString errorText;
     if (!updateFirewallRuleEntryInSystem(originalRuleEntry.fingerprintText, updatedRuleEntry, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑防火墙规则"), errorText);
-        QMessageBox::warning(this, QStringLiteral("编辑规则失败"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时仅保留页面状态，不重复弹窗。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑防火墙规则"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("编辑规则失败"), errorText);
+        }
         setStatusText(errorText);
         return;
     }
@@ -2745,8 +2755,13 @@ void NetworkFirewallPage::toggleSelectedFirewallRuleEnabled()
     const bool targetEnabled = !selectedRuleEntryValue.enabled;
     if (!setFirewallRuleEnabledInSystem(selectedRuleEntryValue.fingerprintText, targetEnabled, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("切换防火墙规则状态"), errorText);
-        QMessageBox::warning(this, QStringLiteral("更新规则状态失败"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时仅保留页面状态，不重复弹窗。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("切换防火墙规则状态"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("更新规则状态失败"), errorText);
+        }
         setStatusText(errorText);
         return;
     }
@@ -2814,8 +2829,13 @@ void NetworkFirewallPage::deleteSelectedFirewallRules()
         QString errorText;
         if (!deleteFirewallRuleFromSystem(ruleNameText, &errorText))
         {
-            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除防火墙规则"), errorText);
-            QMessageBox::warning(this, QStringLiteral("删除规则失败"), errorText);
+            // privilegePromptHandled：权限恢复提示已展示时仅保留页面状态，不重复弹窗。
+            const bool privilegePromptHandled =
+                ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除防火墙规则"), errorText);
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(this, QStringLiteral("删除规则失败"), errorText);
+            }
             setStatusText(errorText);
             refreshRulesAsync(true);
             return;

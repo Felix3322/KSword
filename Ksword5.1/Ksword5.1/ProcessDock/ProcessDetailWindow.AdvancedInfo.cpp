@@ -5923,11 +5923,16 @@ void ProcessDetailWindow::applyPebEditableFields()
     if (processHandle == nullptr)
     {
         const DWORD errorCode = GetLastError();
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("修改远程进程 PEB"), errorCode);
-        QMessageBox::critical(
-            this,
-            QStringLiteral("PEB 修改失败"),
-            QStringLiteral("OpenProcess失败：%1").arg(errorCode));
+        // privilegePromptHandled：记录权限恢复入口是否已完整处理 OpenProcess 失败。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("修改远程进程 PEB"), errorCode);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("PEB 修改失败"),
+                QStringLiteral("OpenProcess失败：%1").arg(errorCode));
+        }
         return;
     }
 

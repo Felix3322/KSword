@@ -2234,7 +2234,10 @@ namespace
             + FromWide(L"\uff1b\u89e6\u53d1\u5668=") + GetJsonField(taskObject, "Triggers")
             + FromWide(L"\uff1b\u63cf\u8ff0=") + GetJsonField(taskObject, "Description");
         entry.canOpenFileLocation = !entry.imagePathText.empty();
-        entry.canDelete = false;
+        // Identity-valid tasks remain deletable after the explicit irreversible
+        // warning. ProtectEntry below revokes this capability if the stable task
+        // definition identity cannot be established.
+        entry.canDelete = true;
         entry.imagePathExists = FileExists(entry.imagePathText);
         entry.uniqueIdText = "TASK|" + entry.locationText;
         entry.actionKind = ks::startup::StartupActionKind::ScheduledTask;

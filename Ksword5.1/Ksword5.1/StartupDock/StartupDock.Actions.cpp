@@ -302,20 +302,28 @@ namespace
     {
     public:
         explicit StartupActionFlagReset(std::atomic_bool& actionFlag)
-            : m_actionFlag(actionFlag)
+            : m_actionFlag(&actionFlag)
         {
         }
 
         ~StartupActionFlagReset()
         {
-            m_actionFlag.store(false);
+            if (m_actionFlag != nullptr)
+            {
+                m_actionFlag->store(false);
+            }
         }
 
         StartupActionFlagReset(const StartupActionFlagReset&) = delete;
         StartupActionFlagReset& operator=(const StartupActionFlagReset&) = delete;
 
+        void dismiss()
+        {
+            m_actionFlag = nullptr;
+        }
+
     private:
-        std::atomic_bool& m_actionFlag;
+        std::atomic_bool* m_actionFlag;
     };
 
 }
@@ -1240,14 +1248,99 @@ void StartupDock::deleteStartupEntry(StartupEntry entry)
     }
     else if (entry.sourceTypeText == QStringLiteral("ScheduledTask"))
     {
-        errorText = startupText(
-            "startup.dialog.delete.task_use_disable",
-            QStringLiteral("计划任务不支持从启动项页永久删除；请使用“禁用”，或在 Windows 任务计划程序中管理。"));
-        deleteOk = false;
+        const StartupEntry taskEntry = entry;
+        if (m_actionThread != nullptr && m_actionThread->joinable())
+        {
+            m_actionThread->join();
+        }
+        m_actionThread = std::make_unique<std::thread>([this, taskEntry]()
+        {
+            QProcess processObject;
+            processObject.setProgram(QStringLiteral("schtasks.exe"));
+            processObject.setArguments({
+                QStringLiteral("/Delete"),
+                QStringLiteral("/TN"),
+                taskEntry.locationText,
+                QStringLiteral("/F")
+                });
+            processObject.start();
+            bool taskDeleteOk = processObject.waitForStarted(1500) && processObject.waitForFinished(10000)
+                && processObject.exitStatus() == QProcess::NormalExit
+                && processObject.exitCode() == 0;
+            QString taskErrorText;
+            if (!taskDeleteOk)
+            {
+                taskErrorText = QString::fromLocal8Bit(processObject.readAllStandardError()).trimmed();
+                if (taskErrorText.isEmpty())
+                {
+                    taskErrorText = QString::fromLocal8Bit(processObject.readAllStandardOutput()).trimmed();
+                }
+                if (taskErrorText.isEmpty())
+                {
+                    taskErrorText = startupText("startup.delete.schtasks_failed", QStringLiteral("schtasks 删除失败。"));
+                }
+            }
+
+            if (m_destroying.load())
+            {
+                return;
+            }
+            const bool callbackQueued = QMetaObject::invokeMethod(
+                this,
+                [this, taskEntry, taskDeleteOk, taskErrorText]()
+                {
+                    if (m_destroying.load())
+                    {
+                        return;
+                    }
+                    m_startupActionInProgress.store(false);
+                    if (!taskDeleteOk)
+                    {
+                        // privilegePromptHandled：恢复提示已覆盖失败时不再叠加删除错误框。
+                        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                            this,
+                            startupText(
+                                "startup.dialog.delete.operation.title",
+                                QStringLiteral("删除启动项")),
+                            taskErrorText);
+                        if (!privilegePromptHandled)
+                        {
+                            QMessageBox::warning(
+                                this,
+                                startupText("startup.dialog.title", QStringLiteral("启动项")),
+                                startupText("startup.dialog.delete.failed", QStringLiteral("删除失败：%1"))
+                                    .arg(taskErrorText));
+                        }
+                        return;
+                    }
+
+                    kLogEvent deleteEvent;
+                    info << deleteEvent
+                        << startupText(
+                            "startup.log.delete.succeeded",
+                            QStringLiteral("[StartupDock] 删除启动项成功, type="))
+                               .toStdString()
+                        << taskEntry.sourceTypeText.toStdString()
+                        << ", name="
+                        << taskEntry.itemNameText.toStdString()
+                        << ", location="
+                        << taskEntry.locationText.toStdString()
+                        << eol;
+                    refreshAllStartupEntries();
+                },
+                Qt::QueuedConnection);
+            if (!callbackQueued)
+            {
+                m_startupActionInProgress.store(false);
+            }
+        });
+        actionFlagReset.dismiss();
+        return;
     }
 
     if (!deleteOk)
     {
+        // privilegePromptHandled：恢复提示已覆盖失败时不再叠加删除错误框。
         const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             startupText(

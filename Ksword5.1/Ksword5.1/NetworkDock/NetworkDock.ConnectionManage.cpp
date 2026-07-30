@@ -434,12 +434,18 @@ void NetworkDock::terminateSelectedTcpConnection()
     }
     else
     {
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：提权恢复提示已解释失败时不再显示通用连接错误。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             QStringLiteral("终止 TCP 连接"),
             QString::fromStdString(detailText));
-        QMessageBox::warning(this, QStringLiteral("连接管理"),
-            QStringLiteral("终止连接失败：%1").arg(toQString(detailText)));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("连接管理"),
+                QStringLiteral("终止连接失败：%1").arg(toQString(detailText)));
+        }
 
         kLogEvent terminateFailEvent;
         warn << terminateFailEvent

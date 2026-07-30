@@ -850,17 +850,28 @@ void MemoryDock::initializeConnections()
 
                 // 写入失败时把控件数据回滚到旧值，保证显示与目标进程一致。
                 m_hexEditorWidget->setByteAtAbsoluteAddress(absoluteAddress, oldValue, true);
-                if (m_attachedProcessHandle != nullptr && !m_canReadWriteMemory)
+                // privilegePromptHandled：合并已知无写权限与错误文本两条恢复路径。
+                bool privilegePromptHandled = false;
+                if (m_attachedProcessHandle != nullptr &&
+                    !m_canReadWriteMemory &&
+                    !ks::ui::isCurrentProcessElevated())
                 {
                     (void)ks::ui::requestAdministratorRestartForFeature(
                         this,
                         QStringLiteral("编辑进程内存"));
+                    privilegePromptHandled = true;
                 }
-                (void)ks::ui::promptForPrivilegeFailure(
-                    this,
-                    QStringLiteral("编辑进程内存"),
-                    errorText);
-                QMessageBox::warning(this, "内存编辑", errorText);
+                if (!privilegePromptHandled)
+                {
+                    privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                        this,
+                        QStringLiteral("编辑进程内存"),
+                        errorText);
+                }
+                if (!privilegePromptHandled)
+                {
+                    QMessageBox::warning(this, "内存编辑", errorText);
+                }
                 return;
             }
 
@@ -916,17 +927,28 @@ void MemoryDock::initializeConnections()
                         << ", error="
                         << errorText.toStdString()
                         << eol;
-                    if (m_attachedProcessHandle != nullptr && !m_canReadWriteMemory)
+                    // privilegePromptHandled：合并已知无写权限与错误文本两条恢复路径。
+                    bool privilegePromptHandled = false;
+                    if (m_attachedProcessHandle != nullptr &&
+                        !m_canReadWriteMemory &&
+                        !ks::ui::isCurrentProcessElevated())
                     {
                         (void)ks::ui::requestAdministratorRestartForFeature(
                             this,
                             QStringLiteral("设置进程断点"));
+                        privilegePromptHandled = true;
                     }
-                    (void)ks::ui::promptForPrivilegeFailure(
-                        this,
-                        QStringLiteral("设置进程断点"),
-                        errorText);
-                    QMessageBox::warning(this, "添加断点", errorText);
+                    if (!privilegePromptHandled)
+                    {
+                        privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                            this,
+                            QStringLiteral("设置进程断点"),
+                            errorText);
+                    }
+                    if (!privilegePromptHandled)
+                    {
+                        QMessageBox::warning(this, "添加断点", errorText);
+                    }
                 }
                 else
                 {
@@ -984,17 +1006,28 @@ void MemoryDock::initializeConnections()
                 << ", error="
                 << errorText.toStdString()
                 << eol;
-            if (m_attachedProcessHandle != nullptr && !m_canReadWriteMemory)
+            // privilegePromptHandled：合并已知无写权限与错误文本两条恢复路径。
+            bool privilegePromptHandled = false;
+            if (m_attachedProcessHandle != nullptr &&
+                !m_canReadWriteMemory &&
+                !ks::ui::isCurrentProcessElevated())
             {
                 (void)ks::ui::requestAdministratorRestartForFeature(
                     this,
                     QStringLiteral("设置进程断点"));
+                privilegePromptHandled = true;
             }
-            (void)ks::ui::promptForPrivilegeFailure(
-                this,
-                QStringLiteral("设置进程断点"),
-                errorText);
-            QMessageBox::warning(this, "添加断点", errorText);
+            if (!privilegePromptHandled)
+            {
+                privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                    this,
+                    QStringLiteral("设置进程断点"),
+                    errorText);
+            }
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(this, "添加断点", errorText);
+            }
             return;
         }
         kLogEvent addBreakpointSuccessEvent;

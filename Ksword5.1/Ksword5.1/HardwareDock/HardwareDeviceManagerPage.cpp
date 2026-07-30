@@ -1496,11 +1496,16 @@ void HardwareDeviceManagerPage::uninstallSelectedDevice()
     const bool uninstallOk = uninstallDeviceByInstanceId(entryPointer->instanceIdText, &errorText);
     if (!uninstallOk)
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("卸载设备"), errorText);
-        QMessageBox::critical(
-            this,
-            QStringLiteral("卸载设备失败"),
-            errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+        // privilegePromptHandled：记录设备卸载失败是否已由权限恢复流程处理。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("卸载设备"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("卸载设备失败"),
+                errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+        }
         return;
     }
 
@@ -1558,11 +1563,16 @@ void HardwareDeviceManagerPage::deleteSelectedDeviceDriverPackage()
     const bool deleteOk = uninstallOemInfPackage(oemInfName, &errorText);
     if (!deleteOk)
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除驱动包"), errorText);
-        QMessageBox::critical(
-            this,
-            QStringLiteral("删除驱动包失败"),
-            errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+        // privilegePromptHandled：记录驱动包删除失败是否已由权限恢复流程处理。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除驱动包"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("删除驱动包失败"),
+                errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+        }
         return;
     }
 

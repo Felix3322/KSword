@@ -929,17 +929,21 @@ void MemoryDock::requestDumpProcessMemoryByPid(const std::uint32_t pid, const QS
                     << errorText.toStdString()
                     << eol;
 
-                (void)ks::ui::promptForPrivilegeFailure(
+                // privilegePromptHandled：记录 Dump 失败是否已由权限恢复提示处理。
+                const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
                     guardThis,
                     QStringLiteral("导出进程内存"),
                     errorText);
-                QMessageBox::warning(
-                    guardThis,
-                    QStringLiteral("Dump失败"),
-                    QStringLiteral("进程 %1 (PID=%2) Dump失败：\n%3")
-                    .arg(processName)
-                    .arg(pid)
-                    .arg(errorText));
+                if (!privilegePromptHandled)
+                {
+                    QMessageBox::warning(
+                        guardThis,
+                        QStringLiteral("Dump失败"),
+                        QStringLiteral("进程 %1 (PID=%2) Dump失败：\n%3")
+                        .arg(processName)
+                        .arg(pid)
+                        .arg(errorText));
+                }
             }
         }, Qt::QueuedConnection);
     }).detach();
@@ -1147,11 +1151,15 @@ void MemoryDock::refreshMemoryRegionList(const bool forceRequery)
                 << "[MemoryDock] refreshMemoryRegionList: 枚举区域失败, error="
                 << errorText.toStdString()
                 << eol;
-            (void)ks::ui::promptForPrivilegeFailure(
+            // privilegePromptHandled：记录区域枚举失败是否已由权限恢复提示处理。
+            const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
                 this,
                 QStringLiteral("枚举进程内存区域"),
                 errorText);
-            QMessageBox::warning(this, "区域刷新", errorText);
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(this, "区域刷新", errorText);
+            }
             return;
         }
         m_regionCache = std::move(regionList);

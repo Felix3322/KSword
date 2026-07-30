@@ -443,6 +443,8 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
 
     QStringList failedMessages;
     int successCount = 0;
+    // privilegePromptHandled：批量删除中最多显示一次权限恢复提示，并抑制最终重复失败框。
+    bool privilegePromptHandled = false;
     for (const int entryIndex : deleteableIndexes)
     {
         if (entryIndex < 0 || entryIndex >= areaWidgets->entries.size())
@@ -490,10 +492,13 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
         }
         else
         {
-            (void)ks::ui::promptForPrivilegeFailure(
-                this,
-                QStringLiteral("清理 Shell 关联注册表项目"),
-                errorText);
+            if (!privilegePromptHandled)
+            {
+                privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                    this,
+                    QStringLiteral("清理 Shell 关联注册表项目"),
+                    errorText);
+            }
             failedMessages.push_back(QStringLiteral("%1：%2")
                 .arg(targetPath, errorText));
             kLogEvent event;
@@ -517,13 +522,16 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
     }
     else
     {
-        QMessageBox::warning(
-            this,
-            QStringLiteral("Shell 关联管理"),
-            QStringLiteral("成功删除 %1 项，失败 %2 项：\n\n%3")
-                .arg(successCount)
-                .arg(failedMessages.size())
-                .arg(failedMessages.join('\n')));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Shell 关联管理"),
+                QStringLiteral("成功删除 %1 项，失败 %2 项：\n\n%3")
+                    .arg(successCount)
+                    .arg(failedMessages.size())
+                    .arg(failedMessages.join('\n')));
+        }
     }
 }
 

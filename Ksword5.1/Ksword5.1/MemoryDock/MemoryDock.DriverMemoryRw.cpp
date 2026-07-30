@@ -648,7 +648,8 @@ void MemoryDock::driverReadMemoryFromUi()
     {
         resetDriverMemoryRwState();
         const QString readableIoMessage = driverMemoryIoMessageText(readResult.io.message);
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：记录 IOCTL 权限错误是否已由恢复提示处理。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             QStringLiteral("R0读取进程内存"),
             readResult.io.win32Error);
@@ -660,7 +661,13 @@ void MemoryDock::driverReadMemoryFromUi()
         {
             m_driverMemoryStatusLabel->setText(QString("R0读取失败：%1").arg(readableIoMessage));
         }
-        QMessageBox::warning(this, "驱动内存读写", QString("R0读取失败：\n%1").arg(readableIoMessage));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                "驱动内存读写",
+                QString("R0读取失败：\n%1").arg(readableIoMessage));
+        }
         return;
     }
 
@@ -668,7 +675,8 @@ void MemoryDock::driverReadMemoryFromUi()
     const QString copyStatusText = driverMemoryNtStatusText(readResult.copyStatus);
     if (!driverMemoryReadStatusHasUsableBytes(readResult.readStatus))
     {
-        (void)ks::ui::promptForPrivilegeNtStatus(
+        // privilegePromptHandled：记录 NTSTATUS 权限错误是否已由恢复提示处理。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeNtStatus(
             this,
             QStringLiteral("R0读取进程内存"),
             static_cast<long>(readResult.copyStatus));
@@ -701,7 +709,10 @@ void MemoryDock::driverReadMemoryFromUi()
             compactFailureText.replace(QLatin1Char('\n'), QLatin1Char(' '));
             m_driverMemoryStatusLabel->setText(compactFailureText);
         }
-        QMessageBox::warning(this, "驱动内存读写", failureText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, "驱动内存读写", failureText);
+        }
         return;
     }
 
@@ -860,6 +871,8 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
     std::uint64_t totalWritten = 0;
     int failedBlockCount = 0;
     bool forceWriteApproved = false;
+    // privilegePromptHandled：跨写入块记录是否已经展示过一次权限恢复提示。
+    bool privilegePromptHandled = false;
     QString lastFailureText;
 
     for (const DriverDiffBlock& block : diffBlocks)
@@ -928,14 +941,17 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
                 writeResult.writeStatus != KSWORD_ARK_MEMORY_WRITE_STATUS_OK ||
                 writeResult.bytesWritten != static_cast<std::uint32_t>(chunkBytes))
             {
-                (void)ks::ui::promptForPrivilegeFailure(
+                privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
                     this,
                     QStringLiteral("R0写入进程内存"),
                     writeResult.io.win32Error);
-                (void)ks::ui::promptForPrivilegeNtStatus(
-                    this,
-                    QStringLiteral("R0写入进程内存"),
-                    static_cast<long>(writeResult.copyStatus));
+                if (!privilegePromptHandled)
+                {
+                    privilegePromptHandled = ks::ui::promptForPrivilegeNtStatus(
+                        this,
+                        QStringLiteral("R0写入进程内存"),
+                        static_cast<long>(writeResult.copyStatus));
+                }
                 ++failedBlockCount;
                 lastFailureText = QString("地址=%1 请求=%2 写入=%3 状态=%4 NT=0x%5 信息=%6")
                     .arg(formatAddress(chunkAddress))
@@ -980,7 +996,10 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
                 .arg(static_cast<qulonglong>(totalWritten))
                 .arg(failedBlockCount)
                 .arg(lastFailureText));
-            QMessageBox::warning(this, "驱动内存读写", m_driverMemoryStatusLabel->text());
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(this, "驱动内存读写", m_driverMemoryStatusLabel->text());
+            }
         }
     }
 }

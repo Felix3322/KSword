@@ -1180,13 +1180,20 @@ void WinAPIDock::startMonitoring()
     if (!injectOk)
     {
         const QString injectErrorText = QString::fromStdString(detailText);
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：权限恢复提示已处理时只保留内部日志与会话清理。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             QStringLiteral("注入 API 监控 DLL"),
             injectErrorText);
         appendInternalEvent(QStringLiteral("内部"), QStringLiteral("InjectDllByPath"), QString::fromStdString(detailText));
         stopMonitoringInternal(false);
-        QMessageBox::warning(this, QStringLiteral("WinAPI 监控"), QStringLiteral("DLL 注入失败：%1").arg(injectErrorText));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("WinAPI 监控"),
+                QStringLiteral("DLL 注入失败：%1").arg(injectErrorText));
+        }
         return;
     }
 

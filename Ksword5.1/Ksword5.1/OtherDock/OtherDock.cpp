@@ -1452,16 +1452,20 @@ private:
         const bool exStyleWriteOk = (exStyleError == ERROR_SUCCESS);
         if (!styleWriteOk || !exStyleWriteOk)
         {
-            (void)ks::ui::promptForPrivilegeFailure(
+            // privilegePromptHandled：权限恢复提示已覆盖失败时不再显示部分写入提示。
+            const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
                 this,
                 QStringLiteral("修改窗口样式"),
                 styleWriteOk ? exStyleError : styleError);
-            QMessageBox::warning(
-                this,
-                QStringLiteral("样式应用提示"),
-                QStringLiteral("样式写入完成，但部分位返回错误码：Style=%1, ExStyle=%2。")
-                .arg(styleError)
-                .arg(exStyleError));
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("样式应用提示"),
+                    QStringLiteral("样式写入完成，但部分位返回错误码：Style=%1, ExStyle=%2。")
+                    .arg(styleError)
+                    .arg(exStyleError));
+            }
         }
         else if (showSuccessDialog)
         {

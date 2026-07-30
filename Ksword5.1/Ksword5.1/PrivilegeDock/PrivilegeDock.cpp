@@ -718,14 +718,18 @@ void PrivilegeDock::createUserByInputs()
             << ", error="
             << errorText.toStdString()
             << eol;
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：提权恢复提示已展示时跳过旧的创建失败弹窗。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             QStringLiteral("创建本地用户"),
             errorText);
-        QMessageBox::warning(
-            this,
-            privilegeText("privilege.dialog.create.title", QStringLiteral("创建用户")),
-            errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                privilegeText("privilege.dialog.create.title", QStringLiteral("创建用户")),
+                errorText);
+        }
         return;
     }
 
@@ -814,14 +818,18 @@ void PrivilegeDock::resetPasswordByInputs()
             << ", error="
             << errorText.toStdString()
             << eol;
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：提权恢复提示已展示时跳过旧的重置失败弹窗。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             QStringLiteral("重置本地用户密码"),
             errorText);
-        QMessageBox::warning(
-            this,
-            privilegeText("privilege.dialog.reset.title", QStringLiteral("重置密码")),
-            errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                privilegeText("privilege.dialog.reset.title", QStringLiteral("重置密码")),
+                errorText);
+        }
         return;
     }
 

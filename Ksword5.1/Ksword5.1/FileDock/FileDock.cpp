@@ -5991,8 +5991,15 @@ namespace
                     }
                     if (result != ERROR_SUCCESS)
                     {
-                        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑文件权限"), detailText);
-                        QMessageBox::warning(this, QStringLiteral("权限编辑"), detailText);
+                        // privilegePromptHandled：记录权限恢复提示是否已经解释当前编辑失败。
+                        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                            this,
+                            QStringLiteral("编辑文件权限"),
+                            detailText);
+                        if (!privilegePromptHandled)
+                        {
+                            QMessageBox::warning(this, QStringLiteral("权限编辑"), detailText);
+                        }
                         refreshSecurityUi();
                         return;
                     }
@@ -6020,8 +6027,15 @@ namespace
                     }
                     if (result != ERROR_SUCCESS)
                     {
-                        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除文件权限项"), detailText);
-                        QMessageBox::warning(this, QStringLiteral("删除 ACE"), detailText);
+                        // privilegePromptHandled：记录权限恢复提示是否已经解释当前删除失败。
+                        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                            this,
+                            QStringLiteral("删除文件权限项"),
+                            detailText);
+                        if (!privilegePromptHandled)
+                        {
+                            QMessageBox::warning(this, QStringLiteral("删除 ACE"), detailText);
+                        }
                         refreshSecurityUi();
                         return;
                     }
@@ -8159,7 +8173,8 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
     panel.lastManualFsType = fsType;
     if (!parseOk)
     {
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：恢复提示已处理权限问题时不再显示手动解析通用错误。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             QStringLiteral("读取原始文件系统数据"),
             errorText);
@@ -8168,7 +8183,7 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
         {
             panel.parserStatusLabel->setText(QStringLiteral("解析器: 手动解析失败"));
         }
-        if (showWarningMessage)
+        if (showWarningMessage && !privilegePromptHandled)
         {
             QMessageBox::warning(
                 this,
@@ -11657,15 +11672,19 @@ void FileDock::unlockPathsByDriver(
                 else
                 {
                     const QString failurePreview = buildLogPreviewText(jobResult.operationFailList + jobResult.skippedTargetList, 8);
-                    (void)ks::ui::promptForPrivilegeFailure(
+                    // privilegePromptHandled：恢复提示已解释失败时不再显示汇总警告框。
+                    const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
                         unlockerDialogParent,
                         QStringLiteral("文件解锁器"),
                         failurePreview);
-                    QMessageBox::warning(
-                        unlockerDialogParent,
-                        QStringLiteral("文件解锁器"),
-                        summaryText + QStringLiteral("\n\n明细（节选）：\n%1")
-                        .arg(buildLogPreviewText(jobResult.operationFailList + jobResult.skippedTargetList, 8)));
+                    if (!privilegePromptHandled)
+                    {
+                        QMessageBox::warning(
+                            unlockerDialogParent,
+                            QStringLiteral("文件解锁器"),
+                            summaryText + QStringLiteral("\n\n明细（节选）：\n%1")
+                            .arg(buildLogPreviewText(jobResult.operationFailList + jobResult.skippedTargetList, 8)));
+                    }
                 }
 
                 kLogEvent event;
@@ -11885,6 +11904,8 @@ void FileDock::setSelectedFileIntegrityLevel(
 
     QStringList failureDetails;
     std::size_t successCount = 0U;
+    // privilegePromptHandled：多个目标失败时最多展示一次权限恢复提示，并抑制最终重复弹窗。
+    bool privilegePromptHandled = false;
     for (std::size_t index = 0; index < paths.size(); ++index)
     {
         const QString& targetPath = paths[index];
@@ -11910,10 +11931,13 @@ void FileDock::setSelectedFileIntegrityLevel(
         }
         else
         {
-            (void)ks::ui::promptForPrivilegeFailure(
-                this,
-                QStringLiteral("设置文件完整性级别"),
-                result);
+            if (!privilegePromptHandled)
+            {
+                privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                    this,
+                    QStringLiteral("设置文件完整性级别"),
+                    result);
+            }
             failureDetails.push_back(QStringLiteral("%1 | code=%2 | %3")
                 .arg(QDir::toNativeSeparators(targetPath))
                 .arg(result)
@@ -11944,10 +11968,13 @@ void FileDock::setSelectedFileIntegrityLevel(
             << ", detailPreview=\n"
             << buildLogPreviewText(failureDetails).toStdString()
             << eol;
-        QMessageBox::warning(
-            this,
-            QStringLiteral("设置文件完整性"),
-            summaryText + QStringLiteral("\n\n失败明细：\n") + failureDetails.join('\n'));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("设置文件完整性"),
+                summaryText + QStringLiteral("\n\n失败明细：\n") + failureDetails.join('\n'));
+        }
         return;
     }
 

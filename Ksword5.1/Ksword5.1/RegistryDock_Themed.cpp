@@ -2293,10 +2293,15 @@ void RegistryDock::createSubKey()
     const QString fullKeyPath = m_currentPath + QStringLiteral("\\") + keyName;
     if (!createRegistryKeyAny(fullKeyPath, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新建注册表子键"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新建注册表子键"), errorText);
         kLogEvent event;
         warn << event << "[RegistryDock] 新建子键失败, error=" << errorText.toStdString() << eol;
-        QMessageBox::warning(this, QStringLiteral("新建子键"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("新建子键"), errorText);
+        }
         return;
     }
 
@@ -2340,10 +2345,15 @@ void RegistryDock::createValue()
     QString errorText;
     if (!writeRegistryValueAny(m_currentPath, valueName, type, data, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新建注册表值"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("新建注册表值"), errorText);
         kLogEvent event;
         warn << event << "[RegistryDock] 新建值失败, path=" << m_currentPath.toStdString() << ", error=" << errorText.toStdString() << eol;
-        QMessageBox::warning(this, QStringLiteral("新建值"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("新建值"), errorText);
+        }
         return;
     }
 
@@ -2384,10 +2394,15 @@ void RegistryDock::renameSelectedObject()
         QString errorText;
         if (!renameRegistryValueAny(m_currentPath, oldName, newName, &errorText))
         {
-            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("重命名注册表值"), errorText);
+            // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+            const bool privilegePromptHandled =
+                ks::ui::promptForPrivilegeFailure(this, QStringLiteral("重命名注册表值"), errorText);
             kLogEvent event;
             warn << event << "[RegistryDock] 重命名值失败, error=" << errorText.toStdString() << eol;
-            QMessageBox::warning(this, QStringLiteral("重命名值"), errorText);
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(this, QStringLiteral("重命名值"), errorText);
+            }
             return;
         }
 
@@ -2424,10 +2439,15 @@ void RegistryDock::renameSelectedObject()
     QString errorText;
     if (!renameRegistryKeyAny(m_currentPath, newKeyName, &newPath, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("重命名注册表键"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("重命名注册表键"), errorText);
         kLogEvent event;
         warn << event << "[RegistryDock] 重命名键失败, error=" << errorText.toStdString() << eol;
-        QMessageBox::warning(this, QStringLiteral("重命名键"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("重命名键"), errorText);
+        }
         return;
     }
 
@@ -2472,10 +2492,15 @@ void RegistryDock::deleteSelectedObject()
         QString errorText;
         if (!deleteRegistryValueAny(m_currentPath, valueName, &errorText))
         {
-            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表值"), errorText);
+            // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+            const bool privilegePromptHandled =
+                ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表值"), errorText);
             kLogEvent event;
             warn << event << "[RegistryDock] 删除值失败, error=" << errorText.toStdString() << eol;
-            QMessageBox::warning(this, QStringLiteral("删除值"), errorText);
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(this, QStringLiteral("删除值"), errorText);
+            }
             return;
         }
 
@@ -2509,10 +2534,15 @@ void RegistryDock::deleteSelectedObject()
     QString errorText;
     if (!deleteRegistryKeyAny(m_currentPath, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表键"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除注册表键"), errorText);
         kLogEvent event;
         warn << event << "[RegistryDock] 删除键失败, error=" << errorText.toStdString() << eol;
-        QMessageBox::warning(this, QStringLiteral("删除键"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("删除键"), errorText);
+        }
         return;
     }
 
@@ -2610,10 +2640,15 @@ void RegistryDock::editSelectedValue()
 
     if (!writeRegistryValueAny(m_currentPath, valueName, type, outputData, &errorText))
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑注册表值"), errorText);
+        // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+        const bool privilegePromptHandled =
+            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("编辑注册表值"), errorText);
         kLogEvent event;
         warn << event << "[RegistryDock] 编辑值失败：写入失败, error=" << errorText.toStdString() << eol;
-        QMessageBox::warning(this, QStringLiteral("编辑值"), errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(this, QStringLiteral("编辑值"), errorText);
+        }
         return;
     }
 
@@ -2821,10 +2856,18 @@ void RegistryDock::exportCurrentKeyAsync()
             }
             else
             {
-                (void)ks::ui::promptForPrivilegeFailure(guardThis, QStringLiteral("导出注册表文件"), errText);
+                // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+                const bool privilegePromptHandled =
+                    ks::ui::promptForPrivilegeFailure(guardThis, QStringLiteral("导出注册表文件"), errText);
                 kLogEvent event;
                 warn << event << "[RegistryDock] 导出失败, error=" << errText.toStdString() << eol;
-                QMessageBox::warning(guardThis, QStringLiteral("导出 .reg"), QStringLiteral("导出失败：\n%1").arg(errText));
+                if (!privilegePromptHandled)
+                {
+                    QMessageBox::warning(
+                        guardThis,
+                        QStringLiteral("导出 .reg"),
+                        QStringLiteral("导出失败：\n%1").arg(errText));
+                }
             }
         }, Qt::QueuedConnection);
     }).detach();
@@ -2862,10 +2905,18 @@ void RegistryDock::importRegFileAsync()
             }
             else
             {
-                (void)ks::ui::promptForPrivilegeFailure(guardThis, QStringLiteral("导入注册表文件"), errText);
+                // privilegePromptHandled：权限恢复提示已展示时抑制旧失败框。
+                const bool privilegePromptHandled =
+                    ks::ui::promptForPrivilegeFailure(guardThis, QStringLiteral("导入注册表文件"), errText);
                 kLogEvent event;
                 warn << event << "[RegistryDock] 导入失败, error=" << errText.toStdString() << eol;
-                QMessageBox::warning(guardThis, QStringLiteral("导入 .reg"), QStringLiteral("导入失败：\n%1").arg(errText));
+                if (!privilegePromptHandled)
+                {
+                    QMessageBox::warning(
+                        guardThis,
+                        QStringLiteral("导入 .reg"),
+                        QStringLiteral("导入失败：\n%1").arg(errText));
+                }
             }
         }, Qt::QueuedConnection);
     }).detach();

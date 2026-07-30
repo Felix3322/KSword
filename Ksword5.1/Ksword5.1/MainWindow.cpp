@@ -6128,11 +6128,18 @@ void MainWindow::initPrivilegeStatusButtons()
         {
             kLogEvent logEvent;
             err << logEvent << "[MainWindow] SeDebugPrivilege 申请失败: " << errorText << eol;
-            (void)ks::ui::promptForPrivilegeFailure(
+            // privilegePromptHandled：权限恢复提示已展示时抑制旧 Debug 失败框。
+            const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
                 this,
                 QStringLiteral("启用 SeDebugPrivilege"),
                 QString::fromStdString(errorText));
-            QMessageBox::warning(this, "Debug", QString("SeDebugPrivilege 启用失败。\n%1").arg(QString::fromStdString(errorText)));
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(
+                    this,
+                    "Debug",
+                    QString("SeDebugPrivilege 启用失败。\n%1").arg(QString::fromStdString(errorText)));
+            }
         }
         refreshPrivilegeStatusButtons();
     });

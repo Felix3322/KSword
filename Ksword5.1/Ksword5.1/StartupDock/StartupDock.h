@@ -212,6 +212,6 @@ private:
     std::atomic_bool m_startupActionInProgress{ false }; // m_startupActionInProgress：可逆启停动作是否进行中。
     std::atomic_bool m_destroying{ false };        // m_destroying：析构已开始，后台线程不再投递 UI 回调。
     std::unique_ptr<std::thread> m_refreshThread;  // m_refreshThread：后台枚举线程对象。
-    std::unique_ptr<std::thread> m_actionThread;   // m_actionThread：受管理的可逆启停工作线程。
+    std::unique_ptr<std::thread> m_actionThread;   // m_actionThread：受管理的启动项修改工作线程。
     int m_progressPid = 0;                         // m_progressPid：启动项枚举进度任务 PID。
 };

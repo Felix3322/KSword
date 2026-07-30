@@ -1252,10 +1252,18 @@ namespace ks::misc
     {
         if (!errorText.isEmpty())
         {
-            (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("读取物理磁盘扇区"), errorText);
+            // privilegePromptHandled：标记权限恢复路径是否已经向用户解释本次失败。
+            const bool privilegePromptHandled =
+                ks::ui::promptForPrivilegeFailure(this, QStringLiteral("读取物理磁盘扇区"), errorText);
             m_statusLabel->setText(QStringLiteral("状态：读取失败：%1").arg(errorText));
             appendLog(QStringLiteral("读取失败：%1").arg(errorText));
-            QMessageBox::warning(this, QStringLiteral("磁盘编辑"), QStringLiteral("读取失败：%1").arg(errorText));
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("磁盘编辑"),
+                    QStringLiteral("读取失败：%1").arg(errorText));
+            }
         }
         else
         {
@@ -1883,10 +1891,18 @@ namespace ks::misc
     {
         if (!result.errorText.isEmpty())
         {
-            (void)ks::ui::promptForPrivilegeFailure(this, taskName, result.errorText);
+            // privilegePromptHandled：避免提权提示后紧接着显示相互冲突的旧失败框。
+            const bool privilegePromptHandled =
+                ks::ui::promptForPrivilegeFailure(this, taskName, result.errorText);
             appendLog(QStringLiteral("%1失败：%2").arg(taskName, result.errorText));
             m_statusLabel->setText(QStringLiteral("状态：%1失败：%2").arg(taskName, result.errorText));
-            QMessageBox::warning(this, QStringLiteral("磁盘工具"), QStringLiteral("%1失败：%2").arg(taskName, result.errorText));
+            if (!privilegePromptHandled)
+            {
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("磁盘工具"),
+                    QStringLiteral("%1失败：%2").arg(taskName, result.errorText));
+            }
         }
         else
         {

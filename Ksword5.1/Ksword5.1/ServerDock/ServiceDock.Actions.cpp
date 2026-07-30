@@ -345,7 +345,8 @@ bool ServiceDock::controlSelectedService(
 
     if (!actionOk)
     {
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：权限恢复提示已展示时不再弹出通用服务失败框。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             actionText,
             errorCode);
@@ -360,10 +361,13 @@ bool ServiceDock::controlSelectedService(
             << errorText
             << eol;
         kPro.set(progressPid, "执行失败", 0, 100.0f);
-        QMessageBox::warning(
-            this,
-            QStringLiteral("服务管理"),
-            QStringLiteral("操作失败：\n%1").arg(QString::fromUtf8(errorText.c_str())));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("服务管理"),
+                QStringLiteral("操作失败：\n%1").arg(QString::fromUtf8(errorText.c_str())));
+        }
         return false;
     }
 
@@ -460,7 +464,8 @@ void ServiceDock::applySelectedStartType()
         &errorText,
         &errorCode))
     {
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：权限恢复提示已展示时不再弹出通用服务失败框。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             QStringLiteral("修改服务启动类型"),
             errorCode);
@@ -471,10 +476,13 @@ void ServiceDock::applySelectedStartType()
             << errorText
             << eol;
         kPro.set(progressPid, "执行失败", 0, 100.0f);
-        QMessageBox::warning(
-            this,
-            QStringLiteral("服务管理"),
-            QStringLiteral("修改启动类型失败：\n%1").arg(QString::fromUtf8(errorText.c_str())));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("服务管理"),
+                QStringLiteral("修改启动类型失败：\n%1").arg(QString::fromUtf8(errorText.c_str())));
+        }
         return;
     }
 

@@ -916,14 +916,18 @@ bool BootEditorTab::runBcdAndExpectSuccess(
     }
     if (result.exitCode != 0)
     {
-        (void)ks::ui::promptForPrivilegeFailure(
+        // privilegePromptHandled：权限恢复提示已覆盖本次失败时不再显示通用命令错误框。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             operationText,
             result.mergedOutputText);
-        QMessageBox::warning(
-            this,
-            QStringLiteral("引导编辑器"),
-            QStringLiteral("%1失败：\n%2").arg(operationText, result.mergedOutputText.trimmed()));
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("引导编辑器"),
+                QStringLiteral("%1失败：\n%2").arg(operationText, result.mergedOutputText.trimmed()));
+        }
         return false;
     }
 
