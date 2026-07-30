@@ -3816,8 +3816,10 @@ namespace
 
 MainWindow::MainWindow(
     QWidget* parent,
-    StartupProgressCallback startupProgressCallback)
+    StartupProgressCallback startupProgressCallback,
+    const QFont& startupSystemFont)
     : QMainWindow(parent)
+    , m_startupSystemFont(startupSystemFont)
     , m_startupProgressCallback(startupProgressCallback)
 {
     // 安装全局 QMenu 主题过滤器：
@@ -9674,8 +9676,11 @@ void MainWindow::applyAppearanceSettings(
             QStringLiteral("main.runtime_appearance.progress.font"),
             QStringLiteral("正在应用界面设置..."));
 
-        QFont applicationFont = QApplication::font();
         const QString requestedFontFamily = settings.fontFamily.trimmed();
+        // applicationFont 用途：空 family 恢复启动时系统基线；具体 family 继续沿用当前字体其它属性。
+        QFont applicationFont = requestedFontFamily.isEmpty()
+            ? m_startupSystemFont
+            : QApplication::font();
         if (!requestedFontFamily.isEmpty())
         {
             applicationFont.setFamily(requestedFontFamily);
@@ -9683,13 +9688,11 @@ void MainWindow::applyAppearanceSettings(
         const QFont::StyleStrategy requestedFontStyleStrategy = settings.textAntialiasingEnabled
             ? QFont::PreferAntialias
             : QFont::NoAntialias;
-        const bool applicationFontChanged =
-            (!requestedFontFamily.isEmpty()
-                && QApplication::font().family().compare(requestedFontFamily, Qt::CaseInsensitive) != 0)
-            || applicationFont.styleStrategy() != requestedFontStyleStrategy;
+        applicationFont.setStyleStrategy(requestedFontStyleStrategy);
+        // applicationFontChanged 用途：比较完整字体，确保从自定义字体恢复全部系统基线属性。
+        const bool applicationFontChanged = QApplication::font() != applicationFont;
         if (applicationFontChanged)
         {
-            applicationFont.setStyleStrategy(requestedFontStyleStrategy);
             QApplication::setFont(applicationFont);
         }
         applyApplicationFontToItemViews(applicationFont);

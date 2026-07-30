@@ -7,7 +7,6 @@
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
-class QFontComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -115,6 +114,12 @@ private:
     // 调用方式：标记待应用后、保存成功后、加载配置后调用。
     void updateApplyButtonState();
 
+    // updateSystemDefaultFontItemText 作用：
+    // - 按当前语言刷新字体下拉框第 0 项“系统默认”的显示文本；
+    // - 只修改显示角色，稳定的 Qt::UserRole 空字符串语义保持不变。
+    // 调用方式：初始化字体列表及 LanguageChange 时调用；传入传出：无。
+    void updateSystemDefaultFontItemText();
+
     // saveAndEmitFromUi 作用：
     // - 从 UI 采集配置并写入 JSON；
     // - 保存成功后发出变更信号。
@@ -206,8 +211,10 @@ private:
     // m_textAntialiasingCheckBox 作用：控制应用默认字体是否启用文本抗锯齿。
     QCheckBox* m_textAntialiasingCheckBox = nullptr;
 
-    // m_fontCombo 作用：以下拉菜单列出系统已安装字体并选择全局界面字体。
-    QFontComboBox* m_fontCombo = nullptr;
+    // m_fontCombo 作用：
+    // - 第 0 项以空 itemData 表示“系统默认”，其余项保存系统字体 family；
+    // - 显示文本可以随语言变化，但持久化语义不依赖翻译文本。
+    QComboBox* m_fontCombo = nullptr;
 
     // m_followSystemButton 作用：选择“跟随系统主题”模式。
     QToolButton* m_followSystemButton = nullptr;

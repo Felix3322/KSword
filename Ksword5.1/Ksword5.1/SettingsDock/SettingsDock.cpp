@@ -5,7 +5,6 @@
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../theme.h"
 
-#include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QColorDialog>
@@ -15,7 +14,7 @@
 #include <QEvent>
 #include <QFileInfo>
 #include <QFileDialog>
-#include <QFontComboBox>
+#include <QFontDatabase>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -199,6 +198,7 @@ void SettingsDock::changeEvent(QEvent* event)
     QWidget::changeEvent(event);
     if (event != nullptr && event->type() == QEvent::LanguageChange)
     {
+        updateSystemDefaultFontItemText();
         updateWindowScaleFactorHintLabel(parseWindowScaleFactorFromUi());
         updateApplyButtonState();
     }
@@ -388,7 +388,18 @@ void SettingsDock::initializeAppearanceTab()
     QLabel* fontLabel = new QLabel(QStringLiteral("设置字体"), themeGroupBox);
     languageManager.bindText(fontLabel, QStringLiteral("settings.font.label"), QStringLiteral("设置字体"));
     fontLayout->addWidget(fontLabel, 0);
-    m_fontCombo = new QFontComboBox(themeGroupBox);
+    m_fontCombo = new QComboBox(themeGroupBox);
+    // 第 0 项 itemData 固定为空字符串；显示文字通过独立刷新函数本地化。
+    m_fontCombo->addItem(QString(), QString());
+    updateSystemDefaultFontItemText();
+    // fontFamilies 用途：快照系统当前安装字体，并为每项保存稳定 family 数据。
+    const QStringList fontFamilies = QFontDatabase::families();
+    for (const QString& fontFamily : fontFamilies)
+    {
+        const int fontIndex = m_fontCombo->count();
+        m_fontCombo->addItem(fontFamily, fontFamily);
+        m_fontCombo->setItemData(fontIndex, QFont(fontFamily), Qt::FontRole);
+    }
     m_fontCombo->setToolTip(QStringLiteral("选择系统中已安装的字体；点击“应用”后立即生效"));
     languageManager.bindToolTip(
         m_fontCombo,
@@ -795,7 +806,7 @@ void SettingsDock::bindAppearanceSignals()
         resetThemeColorToDefault();
         });
 
-    connect(m_fontCombo, &QFontComboBox::currentFontChanged, this, [this](const QFont& /*font*/) {
+    connect(m_fontCombo, &QComboBox::currentIndexChanged, this, [this](const int /*fontIndex*/) {
         markPendingChanges(QString());
         });
 
@@ -924,10 +935,20 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
 
     if (m_fontCombo != nullptr)
     {
-        const QFont selectedFont = settings.fontFamily.trimmed().isEmpty()
-            ? QApplication::font()
-            : QFont(settings.fontFamily.trimmed());
-        m_fontCombo->setCurrentFont(selectedFont);
+        // configuredFontFamily 用途：空值稳定映射到第 0 项“系统默认”。
+        const QString configuredFontFamily = settings.fontFamily.trimmed();
+        int fontIndex = m_fontCombo->findData(
+            configuredFontFamily,
+            Qt::UserRole,
+            Qt::MatchFixedString);
+        if (fontIndex < 0 && !configuredFontFamily.isEmpty())
+        {
+            // 配置字体暂未安装时保留 family，避免一次应用就静默覆盖用户配置。
+            m_fontCombo->addItem(configuredFontFamily, configuredFontFamily);
+            fontIndex = m_fontCombo->count() - 1;
+            m_fontCombo->setItemData(fontIndex, QFont(configuredFontFamily), Qt::FontRole);
+        }
+        m_fontCombo->setCurrentIndex(fontIndex >= 0 ? fontIndex : 0);
     }
 
     m_pendingCustomThemeColor = settings.customThemeColor;
@@ -1086,7 +1107,7 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
     collectedSettings.sliderWheelAdjustEnabled =
         (m_sliderWheelAdjustCheckBox != nullptr) && m_sliderWheelAdjustCheckBox->isChecked();
     collectedSettings.fontFamily = m_fontCombo != nullptr
-        ? m_fontCombo->currentFont().family().trimmed()
+        ? m_fontCombo->currentData(Qt::UserRole).toString().trimmed()
         : m_currentAppearanceSettings.fontFamily;
     collectedSettings.textAntialiasingEnabled =
         (m_textAntialiasingCheckBox != nullptr) && m_textAntialiasingCheckBox->isChecked();
@@ -1131,6 +1152,27 @@ void SettingsDock::markPendingChanges(const QString& triggerReason)
 
     m_hasPendingChanges = true;
     updateApplyButtonState();
+}
+
+void SettingsDock::updateSystemDefaultFontItemText()
+{
+    if (m_fontCombo == nullptr || m_fontCombo->count() <= 0)
+    {
+        return;
+    }
+
+    // systemDefaultData 用途：验证第 0 项仍是稳定的空 family 语义。
+    const QString systemDefaultData =
+        m_fontCombo->itemData(0, Qt::UserRole).toString();
+    if (!systemDefaultData.isEmpty())
+    {
+        return;
+    }
+    m_fontCombo->setItemText(
+        0,
+        ks::i18n::text(
+            QStringLiteral("settings.font.system_default"),
+            QStringLiteral("系统默认")));
 }
 
 void SettingsDock::updateApplyButtonState()

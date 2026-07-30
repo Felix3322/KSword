@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QShowEvent>
 #include <QEvent>
+#include <QFont>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -81,9 +82,11 @@ public:
     // - 可选地持续回传启动阶段进度给 splash。
     // 参数 parent：Qt 父对象。
     // 参数 startupProgressCallback：启动进度回调；为空时忽略。
+    // 参数 startupSystemFont：读取持久化外观配置前捕获的系统字体基线。
     explicit MainWindow(
-        QWidget* parent = nullptr,
-        StartupProgressCallback startupProgressCallback = StartupProgressCallback());
+        QWidget* parent,
+        StartupProgressCallback startupProgressCallback,
+        const QFont& startupSystemFont);
     ~MainWindow();
 
 public slots:
@@ -574,6 +577,8 @@ private:
     QTimer* m_privilegeStatusTimer = nullptr;
     QTimer* m_logWindowGeometrySaveTimer = nullptr;
 
+    // m_startupSystemFont 作用：保存任何用户外观配置生效前的系统字体基线。
+    QFont m_startupSystemFont;
     // m_currentAppearanceSettings 作用：缓存当前外观配置（主题/背景图/透明度）。
     ks::settings::AppearanceSettings m_currentAppearanceSettings;
     QString m_backgroundImageCacheKey; // m_backgroundImageCacheKey：当前异步验证对应的原始路径键。

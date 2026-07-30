@@ -1512,10 +1512,14 @@ int main(int argc, char* argv[])
     QApplication app(argc, argv);
     startupTraceRaw("QApplication constructed");
 
+    // startupSystemFont 作用：
+    // - 在读取并应用任何持久化字体 family 前保存 Qt/系统提供的完整字体基线；
+    // - 后续“系统默认”恢复必须使用该值，不能从已被配置污染的 QApplication::font() 反推。
+    const QFont startupSystemFont = app.font();
     // startupApplicationFont 作用：
     // - 在 MainWindow 与各 Dock/表格创建前恢复已保存字体；
     // - 避免表格先绑定系统默认字体，随后再改 QApplication 字体时只更新部分控件。
-    QFont startupApplicationFont = app.font();
+    QFont startupApplicationFont = startupSystemFont;
     const QString startupFontFamily = startupSettings.fontFamily.trimmed();
     if (!startupFontFamily.isEmpty())
     {
@@ -1682,7 +1686,7 @@ int main(int argc, char* argv[])
             QStringLiteral("正在准备主界面..."));
     }
 
-    MainWindow window(nullptr, startupProgressCallback);
+    MainWindow window(nullptr, startupProgressCallback, startupSystemFont);
     startupTraceRaw("MainWindow constructed");
     {
         kLogEvent windowConstructEvent;

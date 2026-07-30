@@ -82,6 +82,7 @@
     "settings.background.path_hint": "Choose an image for the window background (PNG, JPG, or BMP).",
     "settings.background.reset.tooltip": "Restore the default background path",
     "settings.font.label": "Font",
+    "settings.font.system_default": "System Default",
     "settings.font.tooltip": "Choose an installed system font; click Apply to use it immediately",
     "settings.features.r0.group": "R0 Feature Prompts",
     "settings.features.r0.hint": "When enabled, the app will not automatically prompt when the R0 driver is unavailable or the current process lacks permission. You can still manage the driver from the R0 button in the title bar.",

@@ -82,6 +82,7 @@
     "settings.background.path_hint": "选择一张图片作为窗口背景（支持 PNG/JPG/BMP）。",
     "settings.background.reset.tooltip": "恢复默认背景路径",
     "settings.font.label": "设置字体",
+    "settings.font.system_default": "系统默认",
     "settings.font.tooltip": "选择系统中已安装的字体；点击“应用”后立即生效",
     "settings.features.r0.group": "R0 功能提示",
     "settings.features.r0.hint": "勾选后，R0 驱动未启用或当前权限不足时不再自动弹出提示；仍可通过标题栏 R0 按钮手动管理驱动。",
