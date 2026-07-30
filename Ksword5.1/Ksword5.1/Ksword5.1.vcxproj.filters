@@ -848,6 +848,9 @@
     <ClCompile Include="HardwareDock\DiskMonitorPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="HardwareDock\DiskMonitorStoragePanel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1042,6 +1045,9 @@
     <QtMoc Include="HardwareDock\DiskMonitorPage.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="HardwareDock\DiskMonitorStoragePanel.h">
       <Filter>Header Files</Filter>
     </ClInclude>

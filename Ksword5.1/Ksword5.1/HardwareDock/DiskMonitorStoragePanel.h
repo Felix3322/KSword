@@ -91,7 +91,7 @@ public:
         const std::atomic_bool* stopRequested = nullptr);
 
     // retirePerformanceCountersAsync：
-    // - 处理：把 active lease 移交给按值自持的后台退役线程；
+    // - 处理：把 active lease 移交给进程期唯一的后台退役协调器；
     // - 不在 GUI 线程执行 IOCTL/OFF，可重复执行。
     void retirePerformanceCountersAsync(const QString& reason);
 

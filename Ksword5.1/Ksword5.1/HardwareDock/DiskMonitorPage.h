@@ -43,7 +43,7 @@ struct _EVENT_RECORD;
 
 // DiskMonitorPage 说明：
 // - 输入：Qt 父控件；
-// - 处理：周期枚举进程 IO_COUNTERS，计算读/写/总速率，按勾选 PID 刷新文件级磁盘活动表；
+// - 处理：周期枚举进程 IO_COUNTERS，计算读/写/总速率；空选择显示全部文件活动，勾选后按 PID 过滤；
 // - 返回：该控件无业务返回值，结果直接显示在表格中。
 class DiskMonitorPage final : public QWidget
 {
@@ -141,7 +141,7 @@ private:
 
     // FileActivityHistoryEntry：
     // - 作用：保存已完成的文件活动样本，避免每秒清空导致表格频繁闪空；
-    // - 处理：UI 线程按时间窗口裁剪，再按所选 PID 展示最近活动；
+    // - 处理：UI 线程按时间窗口裁剪；空选择展示全部，勾选后按所选 PID 过滤；
     // - 返回：结构体只参与内存内聚合，不直接返回系统资源。
     struct FileActivityHistoryEntry
     {
@@ -241,7 +241,7 @@ private:
     QPushButton* m_processViewAButton = nullptr;   // m_processViewAButton：资源监视器式概览列组。
     QPushButton* m_processViewBButton = nullptr;   // m_processViewBButton：诊断列组。
     QTableWidget* m_processTable = nullptr;        // m_processTable：进程级磁盘速率表。
-    QTableWidget* m_activityTable = nullptr;       // m_activityTable：勾选进程磁盘活动表。
+    QTableWidget* m_activityTable = nullptr;       // m_activityTable：全部或按勾选 PID 过滤的磁盘活动表。
     DiskMonitorStoragePanel* m_storagePanel = nullptr; // m_storagePanel：固定卷容量与性能区。
     QTimer* m_refreshTimer = nullptr;              // m_refreshTimer：周期刷新定时器。
     bool m_initialSamplingStarted = false;         // m_initialSamplingStarted：是否已经启动 ETW 与首轮采样。

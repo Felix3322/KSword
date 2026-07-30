@@ -171,6 +171,7 @@
     <ClCompile Include="句柄\HandleObjectTypeWorker.cpp" />
     <ClCompile Include="HardwareDock\HardwareDock.cpp" />
     <ClCompile Include="HardwareDock\DiskMonitorPage.cpp" />
+    <ClCompile Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.cpp" />
     <ClCompile Include="HardwareDock\DiskMonitorStoragePanel.cpp" />
     <ClCompile Include="HardwareDock\MemoryCompositionHistoryWidget.cpp" />
     <ClCompile Include="HardwareDock\HardwareR0EvidencePage.cpp" />
@@ -515,6 +516,7 @@
     <ClInclude Include="句柄\HandleObjectTypeWorker.h" />
     <QtMoc Include="HardwareDock\HardwareDock.h" />
     <QtMoc Include="HardwareDock\DiskMonitorPage.h" />
+    <ClInclude Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.h" />
     <ClInclude Include="HardwareDock\DiskMonitorStoragePanel.h" />
     <ClInclude Include="HardwareDock\MemoryCompositionHistoryWidget.h" />
     <ClInclude Include="HardwareDock\HardwareR0EvidencePage.h" />

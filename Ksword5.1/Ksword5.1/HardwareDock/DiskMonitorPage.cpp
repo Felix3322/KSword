@@ -1934,11 +1934,15 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
 
     const bool updatesEnabled = m_activityTable->updatesEnabled();
     m_activityTable->setUpdatesEnabled(false);
+    // filterBySelectedPid：至少勾选一个进程时才启用 PID 过滤；
+    // 空选择与资源监视器一致，表示展示最近捕获到的全部文件活动。
+    const bool filterBySelectedPid = !m_selectedPidSet.empty();
     std::vector<FileActivitySample> selectedFileActivityList;
     selectedFileActivityList.reserve(m_lastFileActivityList.size() + m_fileActivityHistory.size());
     for (const FileActivitySample& fileActivity : m_lastFileActivityList)
     {
-        if (m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end())
+        if (!filterBySelectedPid ||
+            m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end())
         {
             selectedFileActivityList.push_back(fileActivity);
         }
@@ -1946,7 +1950,8 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
     for (const FileActivityHistoryEntry& historyEntry : m_fileActivityHistory)
     {
         const FileActivitySample& fileActivity = historyEntry.sample;
-        if (m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end())
+        if (!filterBySelectedPid ||
+            m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end())
         {
             selectedFileActivityList.push_back(fileActivity);
         }
@@ -2048,19 +2053,16 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
     // 这样用户能明确区分“最近几秒没有文件级事件”和“只采集到进程总量”。
     m_activityTable->setSortingEnabled(false);
     m_activityTable->clearContents();
-    if (m_selectedPidSet.empty())
-    {
-        m_activityTable->setRowCount(0);
-        m_activityTable->setSortingEnabled(true);
-        m_activityTable->setUpdatesEnabled(updatesEnabled);
-        if (updatesEnabled) m_activityTable->viewport()->update();
-        return;
-    }
-
     m_activityTable->setRowCount(1);
+    // stateText：区分“全部活动”与“勾选 PID”两种视角，
+    // 避免空选择时仍提示用户必须勾选进程。
     const QString stateText = m_fileActivityEtwRunning.load()
-        ? QStringLiteral("<最近 5 秒未捕获到所选 PID 的文件级 Read/Write 事件>")
-        : QStringLiteral("<文件级 ETW 未运行；请用管理员权限启动以捕获 PID 对应文件活动>");
+        ? (filterBySelectedPid
+            ? QStringLiteral("<最近 5 秒未捕获到所选 PID 的文件级 Read/Write 事件>")
+            : QStringLiteral("<最近 5 秒未捕获到文件级 Read/Write 事件>"))
+        : (filterBySelectedPid
+            ? QStringLiteral("<文件级 ETW 未运行；请用管理员权限启动以捕获 PID 对应文件活动>")
+            : QStringLiteral("<文件级 ETW 未运行；请用管理员权限启动以捕获文件活动>"));
     setTableItemText(m_activityTable, 0, ActivityColumnPid, createReadOnlyItem(QStringLiteral("-")));
     setTableItemText(m_activityTable, 0, ActivityColumnProcess, createReadOnlyItem(QStringLiteral("-")));
     setTableItemText(m_activityTable, 0, ActivityColumnFile, createReadOnlyItem(stateText));
