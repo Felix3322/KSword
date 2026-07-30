@@ -11,6 +11,7 @@
 #include <ShlObj.h>
 #include <Softpub.h>
 #include <WinTrust.h>
+#include <sddl.h>
 #include <winsvc.h>
 #include <winver.h>
 
@@ -510,6 +511,12 @@ namespace
             break;
         }
         return nullptr;
+    }
+
+    // Registry backup metadata lives at the same integrity scope as its restore target.
+    HKEY RegistryBackupMetadataHive(const ks::startup::StartupRegistryRoot root)
+    {
+        return NativeRegistryRoot(root);
     }
 
     // IsKnownRunLocation recognizes records created by older builds so they remain visible.
@@ -2703,24 +2710,80 @@ namespace
         return true;
     }
 
+    LONG OpenMetadataRootForCreate(
+        HKEY metadataHive,
+        const wchar_t* metadataRoot,
+        HKEY& rootKeyOut)
+    {
+        rootKeyOut = nullptr;
+        if ((metadataHive != HKEY_CURRENT_USER && metadataHive != HKEY_LOCAL_MACHINE)
+            || metadataRoot == nullptr
+            || metadataRoot[0] == L'\0')
+        {
+            return ERROR_INVALID_PARAMETER;
+        }
+
+        PSECURITY_DESCRIPTOR machineDescriptor = nullptr;
+        SECURITY_ATTRIBUTES machineAttributes{};
+        SECURITY_ATTRIBUTES* securityAttributes = nullptr;
+        REGSAM desiredAccess = KEY_CREATE_SUB_KEY;
+        if (metadataHive == HKEY_LOCAL_MACHINE)
+        {
+            // Machine-scope journals must not be writable by the medium-integrity user.
+            if (::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    L"D:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)",
+                    SDDL_REVISION_1,
+                    &machineDescriptor,
+                    nullptr) == FALSE)
+            {
+                return static_cast<LONG>(::GetLastError());
+            }
+            machineAttributes.nLength = sizeof(machineAttributes);
+            machineAttributes.lpSecurityDescriptor = machineDescriptor;
+            machineAttributes.bInheritHandle = FALSE;
+            securityAttributes = &machineAttributes;
+            desiredAccess |= WRITE_DAC;
+        }
+
+        LONG result = ::RegCreateKeyExW(
+            metadataHive,
+            metadataRoot,
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            desiredAccess,
+            securityAttributes,
+            &rootKeyOut,
+            nullptr);
+        if (result == ERROR_SUCCESS && metadataHive == HKEY_LOCAL_MACHINE)
+        {
+            result = ::RegSetKeySecurity(
+                rootKeyOut,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                machineDescriptor);
+        }
+        if (machineDescriptor != nullptr)
+        {
+            ::LocalFree(machineDescriptor);
+        }
+        if (result != ERROR_SUCCESS && rootKeyOut != nullptr)
+        {
+            ::RegCloseKey(rootKeyOut);
+            rootKeyOut = nullptr;
+        }
+        return result;
+    }
+
     // CreateUniqueMetadataKey never opens an existing backup record for writing.
     LONG CreateUniqueMetadataKey(
+        HKEY metadataHive,
         const wchar_t* metadataRoot,
         std::wstring& backupIdOut,
         HKEY& recordKeyOut)
     {
         recordKeyOut = nullptr;
         HKEY rootKey = nullptr;
-        LONG result = ::RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            metadataRoot,
-            0,
-            nullptr,
-            REG_OPTION_NON_VOLATILE,
-            KEY_CREATE_SUB_KEY,
-            nullptr,
-            &rootKey,
-            nullptr);
+        LONG result = OpenMetadataRootForCreate(metadataHive, metadataRoot, rootKey);
         if (result != ERROR_SUCCESS)
         {
             return result;
@@ -2761,14 +2824,17 @@ namespace
         return ERROR_ALREADY_EXISTS;
     }
 
-    LONG DeleteMetadataRecord(const wchar_t* metadataRoot, const std::wstring& backupId)
+    LONG DeleteMetadataRecord(
+        HKEY metadataHive,
+        const wchar_t* metadataRoot,
+        const std::wstring& backupId)
     {
         if (!IsSafeBackupId(backupId))
         {
             return ERROR_INVALID_NAME;
         }
         const LONG result = ::RegDeleteTreeW(
-            HKEY_CURRENT_USER,
+            metadataHive,
             MetadataRecordPath(metadataRoot, backupId).c_str());
         return result == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : result;
     }
@@ -2787,6 +2853,7 @@ namespace
     }
 
     LONG CommitMetadataStateById(
+        HKEY metadataHive,
         const wchar_t* metadataRoot,
         const std::wstring& backupId,
         const DWORD state)
@@ -2797,7 +2864,7 @@ namespace
         }
         HKEY recordKey = nullptr;
         LONG result = ::RegOpenKeyExW(
-            HKEY_CURRENT_USER,
+            metadataHive,
             MetadataRecordPath(metadataRoot, backupId).c_str(),
             0,
             KEY_QUERY_VALUE | KEY_SET_VALUE,
@@ -2990,6 +3057,7 @@ namespace
     }
 
     bool ReadRegistryBackupById(
+        HKEY metadataHive,
         const std::wstring& backupId,
         RegistryBackupRecord& recordOut,
         DWORD& errorCodeOut)
@@ -3002,7 +3070,7 @@ namespace
         }
         HKEY recordKey = nullptr;
         const LONG openResult = ::RegOpenKeyExW(
-            HKEY_CURRENT_USER,
+            metadataHive,
             MetadataRecordPath(kRegistryBackupRoot, backupId).c_str(),
             0,
             KEY_QUERY_VALUE,
@@ -3012,7 +3080,8 @@ namespace
             errorCodeOut = static_cast<DWORD>(openResult);
             return false;
         }
-        const bool readOk = ReadRegistryBackupMetadata(recordKey, backupId, recordOut);
+        const bool readOk = ReadRegistryBackupMetadata(recordKey, backupId, recordOut)
+            && RegistryBackupMetadataHive(recordOut.root) == metadataHive;
         ::RegCloseKey(recordKey);
         if (!readOk)
         {
@@ -3111,9 +3180,23 @@ namespace
         record.valueType = valueType;
         record.rawData = rawData;
         record.state = kBackupStatePrepared;
+        const HKEY metadataHive = RegistryBackupMetadataHive(record.root);
+        if (metadataHive == nullptr)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"注册表备份的完整性范围无效。"));
+        }
 
         HKEY recordKey = nullptr;
-        result = CreateUniqueMetadataKey(kRegistryBackupRoot, record.backupId, recordKey);
+        result = CreateUniqueMetadataKey(
+            metadataHive,
+            kRegistryBackupRoot,
+            record.backupId,
+            recordKey);
         if (result != ERROR_SUCCESS)
         {
             return MakeActionResult(
@@ -3137,7 +3220,7 @@ namespace
         {
             const DWORD failureCode = result == ERROR_SUCCESS ? ERROR_INVALID_DATA : static_cast<DWORD>(result);
             ::RegCloseKey(recordKey);
-            DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+            DeleteMetadataRecord(metadataHive, kRegistryBackupRoot, record.backupId);
             return MakeActionResult(
                 StatusFromWin32(failureCode, ks::startup::StartupActionStatus::VerificationFailed),
                 false,
@@ -3152,7 +3235,7 @@ namespace
         if (result != ERROR_SUCCESS || !RawRegistryValuesEqual(valueType, rawData, currentType, currentData))
         {
             ::RegCloseKey(recordKey);
-            DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+            DeleteMetadataRecord(metadataHive, kRegistryBackupRoot, record.backupId);
             return MakeActionResult(
                 ks::startup::StartupActionStatus::Conflict,
                 false,
@@ -3177,7 +3260,10 @@ namespace
             failure.rollbackAttempted = true;
             if (observeResult == ERROR_SUCCESS && RawRegistryValuesEqual(valueType, rawData, observedType, observedData))
             {
-                failure.rollbackSucceeded = DeleteMetadataRecord(kRegistryBackupRoot, record.backupId) == ERROR_SUCCESS;
+                failure.rollbackSucceeded = DeleteMetadataRecord(
+                    metadataHive,
+                    kRegistryBackupRoot,
+                    record.backupId) == ERROR_SUCCESS;
             }
             else if (observeResult == ERROR_FILE_NOT_FOUND)
             {
@@ -3185,7 +3271,7 @@ namespace
                 failure.rollbackSucceeded = RollbackDisabledRegistryValue(record, rollbackError);
                 if (failure.rollbackSucceeded)
                 {
-                    DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+                    DeleteMetadataRecord(metadataHive, kRegistryBackupRoot, record.backupId);
                 }
                 else
                 {
@@ -3225,7 +3311,7 @@ namespace
             failure.rollbackSucceeded = rollbackOk;
             if (rollbackOk)
             {
-                DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+                DeleteMetadataRecord(metadataHive, kRegistryBackupRoot, record.backupId);
             }
             return failure;
         }
@@ -3241,9 +3327,19 @@ namespace
     ks::startup::ActionResult EnableRegistryRunEntry(const ks::startup::StartupEntry& entry)
     {
         const std::wstring backupId = ToWide(entry.actionLocator.backupIdText);
+        const HKEY metadataHive = RegistryBackupMetadataHive(entry.actionLocator.registryRoot);
+        if (metadataHive == nullptr)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"注册表恢复记录的完整性范围无效。"));
+        }
         RegistryBackupRecord record;
         DWORD readError = ERROR_SUCCESS;
-        if (!ReadRegistryBackupById(backupId, record, readError))
+        if (!ReadRegistryBackupById(metadataHive, backupId, record, readError))
         {
             return MakeActionResult(
                 StatusFromWin32(readError, ks::startup::StartupActionStatus::InvalidEntry),
@@ -3303,7 +3399,7 @@ namespace
 
         HKEY recordKey = nullptr;
         result = ::RegOpenKeyExW(
-            HKEY_CURRENT_USER,
+            metadataHive,
             MetadataRecordPath(kRegistryBackupRoot, backupId).c_str(),
             0,
             KEY_QUERY_VALUE | KEY_SET_VALUE,
@@ -3344,7 +3440,10 @@ namespace
             return failure;
         }
 
-        const LONG cleanupResult = DeleteMetadataRecord(kRegistryBackupRoot, backupId);
+        const LONG cleanupResult = DeleteMetadataRecord(
+            metadataHive,
+            kRegistryBackupRoot,
+            backupId);
         return MakeActionResult(
             ks::startup::StartupActionStatus::Success,
             true,
@@ -3358,29 +3457,35 @@ namespace
     // AppendDisabledRegistryRunEntries exposes valid app-owned backups as enabled=false records.
     void AppendDisabledRegistryRunEntries(std::vector<ks::startup::StartupEntry>& entries)
     {
-        for (const std::wstring& backupId : EnumerateRegistrySubKeys(HKEY_CURRENT_USER, kRegistryBackupRoot))
+        const std::array<HKEY, 2> metadataHives{ HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE };
+        for (const HKEY metadataHive : metadataHives)
         {
-            RegistryBackupRecord record;
-            DWORD readError = ERROR_SUCCESS;
-            if (!ReadRegistryBackupById(backupId, record, readError))
+            const std::string metadataScope = metadataHive == HKEY_LOCAL_MACHINE ? "HKLM" : "HKCU";
+            for (const std::wstring& backupId : EnumerateRegistrySubKeys(metadataHive, kRegistryBackupRoot))
             {
-                ks::startup::StartupEntry invalidEntry;
-                invalidEntry.category = ks::startup::StartupCategory::Logon;
-                invalidEntry.categoryText = ks::startup::CategoryToText(invalidEntry.category);
-                invalidEntry.itemNameText = FromWide(L"KSword 注册表恢复记录 ") + FromWide(backupId);
-                invalidEntry.detailText = FromWide(L"KSword 备份=") + FromWide(backupId);
-                invalidEntry.sourceTypeText = "RunBackup";
-                invalidEntry.enabled = false;
-                invalidEntry.uniqueIdText = "REGLOGON-RECOVERY-INVALID|" + FromWide(backupId);
-                invalidEntry.lastErrorCode = readError;
-                MarkEntryActionUnavailable(
-                    invalidEntry,
-                    ks::startup::StartupRiskLevel::Critical,
-                    "backup_record",
-                    FromWide(L"注册表恢复元数据损坏或版本不受支持，无法构造可执行的恢复定位器。"));
-                entries.push_back(std::move(invalidEntry));
-                continue;
-            }
+                RegistryBackupRecord record;
+                DWORD readError = ERROR_SUCCESS;
+                if (!ReadRegistryBackupById(metadataHive, backupId, record, readError))
+                {
+                    ks::startup::StartupEntry invalidEntry;
+                    invalidEntry.category = ks::startup::StartupCategory::Logon;
+                    invalidEntry.categoryText = ks::startup::CategoryToText(invalidEntry.category);
+                    invalidEntry.itemNameText = FromWide(L"KSword 注册表恢复记录 ") + FromWide(backupId);
+                    invalidEntry.detailText =
+                        metadataScope + "|" + FromWide(L"KSword 备份=") + FromWide(backupId);
+                    invalidEntry.sourceTypeText = "RunBackup";
+                    invalidEntry.enabled = false;
+                    invalidEntry.uniqueIdText =
+                        "REGLOGON-RECOVERY-INVALID|" + metadataScope + "|" + FromWide(backupId);
+                    invalidEntry.lastErrorCode = readError;
+                    MarkEntryActionUnavailable(
+                        invalidEntry,
+                        ks::startup::StartupRiskLevel::Critical,
+                        "backup_record",
+                        FromWide(L"注册表恢复元数据损坏、版本不受支持，或元数据完整性范围与目标不匹配。"));
+                    entries.push_back(std::move(invalidEntry));
+                    continue;
+                }
             const HKEY rootKey = NativeRegistryRoot(record.root);
             DWORD sourceType = REG_NONE;
             std::vector<std::uint8_t> sourceData;
@@ -3405,7 +3510,7 @@ namespace
                 if (sourceMatchesBackup)
                 {
                     reconciliationError = static_cast<DWORD>(
-                        DeleteMetadataRecord(kRegistryBackupRoot, backupId));
+                        DeleteMetadataRecord(metadataHive, kRegistryBackupRoot, backupId));
                     if (reconciliationError == ERROR_SUCCESS)
                     {
                         continue;
@@ -3415,6 +3520,7 @@ namespace
                 {
                     reconciliationError = static_cast<DWORD>(
                         CommitMetadataStateById(
+                            metadataHive,
                             kRegistryBackupRoot,
                             backupId,
                             kBackupStateDisabled));
@@ -3427,7 +3533,7 @@ namespace
             else if (record.state == kBackupStateRestored && sourceMatchesBackup)
             {
                 reconciliationError = static_cast<DWORD>(
-                    DeleteMetadataRecord(kRegistryBackupRoot, backupId));
+                    DeleteMetadataRecord(metadataHive, kRegistryBackupRoot, backupId));
                 if (reconciliationError == ERROR_SUCCESS)
                 {
                     continue;
@@ -3452,8 +3558,10 @@ namespace
             entry.sourceTypeText = logonSource
                 ? RunSourceTypeForSubKey(record.subKey)
                 : "RegistryBackup";
-            entry.detailText = FromWide(L"KSword 备份=") + FromWide(backupId);
-            entry.uniqueIdText = "REGLOGON-RECOVERY|" + FromWide(backupId);
+            entry.detailText =
+                metadataScope + "|" + FromWide(L"KSword 备份=") + FromWide(backupId);
+            entry.uniqueIdText =
+                "REGLOGON-RECOVERY|" + metadataScope + "|" + FromWide(backupId);
             FinalizeRegistryEntry(
                 entry,
                 RegistryDataToText(record.valueType, record.rawData),
@@ -3519,6 +3627,7 @@ namespace
                     reasonText);
             }
             entries.push_back(std::move(entry));
+            }
         }
     }
 }
@@ -3715,7 +3824,11 @@ namespace
             record.itemName = std::filesystem::path(record.originalPath).filename().wstring();
             record.state = kBackupStatePrepared;
             HKEY recordKey = nullptr;
-            LONG result = CreateUniqueMetadataKey(kStartupFolderBackupRoot, record.backupId, recordKey);
+            LONG result = CreateUniqueMetadataKey(
+                HKEY_CURRENT_USER,
+                kStartupFolderBackupRoot,
+                record.backupId,
+                recordKey);
             if (result != ERROR_SUCCESS)
             {
                 return result;
@@ -3732,7 +3845,7 @@ namespace
             }
             result = static_cast<LONG>(::GetLastError());
             ::RegCloseKey(recordKey);
-            DeleteMetadataRecord(kStartupFolderBackupRoot, record.backupId);
+            DeleteMetadataRecord(HKEY_CURRENT_USER, kStartupFolderBackupRoot, record.backupId);
             if (result != ERROR_ALREADY_EXISTS)
             {
                 return result;
@@ -3765,7 +3878,7 @@ namespace
             const DWORD errorCode = ::GetLastError();
             if (errorCode == ERROR_FILE_NOT_FOUND || errorCode == ERROR_PATH_NOT_FOUND)
             {
-                DeleteMetadataRecord(kStartupFolderBackupRoot, record.backupId);
+                DeleteMetadataRecord(HKEY_CURRENT_USER, kStartupFolderBackupRoot, record.backupId);
             }
             return;
         }
@@ -3776,7 +3889,7 @@ namespace
         }
         if (::RemoveDirectoryW(expectedDirectory.c_str()) != FALSE)
         {
-            DeleteMetadataRecord(kStartupFolderBackupRoot, record.backupId);
+            DeleteMetadataRecord(HKEY_CURRENT_USER, kStartupFolderBackupRoot, record.backupId);
         }
     }
 
@@ -4046,7 +4159,10 @@ namespace
             return failure;
         }
 
-        const LONG cleanupResult = DeleteMetadataRecord(kStartupFolderBackupRoot, backupId);
+        const LONG cleanupResult = DeleteMetadataRecord(
+            HKEY_CURRENT_USER,
+            kStartupFolderBackupRoot,
+            backupId);
         ::RemoveDirectoryW(std::filesystem::path(record.parkedPath).parent_path().c_str());
         return MakeActionResult(
             ks::startup::StartupActionStatus::Success,
@@ -4123,6 +4239,7 @@ namespace
                 {
                     reconciliationError = static_cast<DWORD>(
                         CommitMetadataStateById(
+                            HKEY_CURRENT_USER,
                             kStartupFolderBackupRoot,
                             backupId,
                             kBackupStateDisabled));
