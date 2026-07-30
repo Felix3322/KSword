@@ -1053,7 +1053,7 @@ namespace ks::file
         if (optionalMagic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
         {
             IMAGE_OPTIONAL_HEADER64 optionalHeader{};
-            constexpr std::size_t fixedHeaderBytes =
+            const std::size_t fixedHeaderBytes =
                 FIELD_OFFSET(
                     IMAGE_OPTIONAL_HEADER64,
                     DataDirectory);
@@ -1099,7 +1099,7 @@ namespace ks::file
         else if (optionalMagic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
         {
             IMAGE_OPTIONAL_HEADER32 optionalHeader{};
-            constexpr std::size_t fixedHeaderBytes =
+            const std::size_t fixedHeaderBytes =
                 FIELD_OFFSET(
                     IMAGE_OPTIONAL_HEADER32,
                     DataDirectory);
