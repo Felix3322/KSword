@@ -220,12 +220,25 @@ typedef struct _KSWORD_ARK_FWPM_CALLOUT0
     UINT32 calloutId;
 } KSWORD_ARK_FWPM_CALLOUT0;
 
-typedef union _KSWORD_ARK_FWPM_ACTION0
+// 中文说明：FWPM_ACTION0 的 type 是独立字段，后面才是按 type 解释的 GUID 联合体。
+// 中文说明：不能把整个对象声明成 union，否则写 calloutKey 会覆盖 type 并触发
+// STATUS_FWP_INVALID_ACTION_TYPE。
+typedef struct _KSWORD_ARK_FWPM_ACTION0
 {
+    // 中文说明：type 保存 BFE 校验的 FWP_ACTION_TYPE，不与 GUID 共享存储。
     KSWORD_ARK_FWP_ACTION_TYPE type;
-    GUID filterType;
-    GUID calloutKey;
+    union
+    {
+        // 中文说明：filterType 仅供普通 filter action 使用。
+        GUID filterType;
+        // 中文说明：calloutKey 标识 CALLOUT action 对应的内核 callout。
+        GUID calloutKey;
+    } actionKey;
 } KSWORD_ARK_FWPM_ACTION0;
+
+// 中文说明：固定检查 WDK FWPM_ACTION0 ABI，避免后续重构再次让 GUID 覆盖 type。
+C_ASSERT(FIELD_OFFSET(KSWORD_ARK_FWPM_ACTION0, actionKey) == sizeof(KSWORD_ARK_FWP_ACTION_TYPE));
+C_ASSERT(sizeof(KSWORD_ARK_FWPM_ACTION0) == (sizeof(KSWORD_ARK_FWP_ACTION_TYPE) + sizeof(GUID)));
 
 typedef struct _KSWORD_ARK_FWPM_FILTER0
 {
@@ -870,7 +883,7 @@ Return Value:
     filter.layerKey = *LayerKey;
     filter.displayData.name = (PWSTR)DisplayName;
     filter.action.type = KSWORD_ARK_FWP_ACTION_CALLOUT_TERMINATING;
-    filter.action.calloutKey = *CalloutKey;
+    filter.action.actionKey.calloutKey = *CalloutKey;
     filter.subLayerKey = KSWORD_ARK_WFP_SUBLAYER;
     filter.weight.type = KSWORD_ARK_FWP_EMPTY;
     filter.numFilterConditions = 0U;
