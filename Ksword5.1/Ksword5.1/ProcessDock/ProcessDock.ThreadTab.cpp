@@ -1795,11 +1795,13 @@ void ProcessDock::executeResumeThreadAction()
 
 void ProcessDock::executeR0SuspendThreadAction()
 {
-    const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid <= 4U || threadRecord->threadId == 0U)
+    const ks::process::SystemThreadRecord* selectedThread = selectedThreadRecord();
+    if (selectedThread == nullptr || selectedThread->ownerPid <= 4U ||
+        selectedThread->threadId == 0U)
     {
         return;
     }
+    const ks::process::SystemThreadRecord threadRecord = *selectedThread;
 
     const QMessageBox::StandardButton confirmation = QMessageBox::warning(
         this,
@@ -1809,8 +1811,8 @@ void ProcessDock::executeR0SuspendThreadAction()
         ks::i18n::contextText(
             QStringLiteral("process.thread.r0_suspend.confirm.body"),
             QStringLiteral("将通过 R0 挂起 PID %2 的线程 %1。目标程序可能失去响应，是否继续？"))
-            .arg(threadRecord->threadId)
-            .arg(threadRecord->ownerPid),
+            .arg(threadRecord.threadId)
+            .arg(threadRecord.ownerPid),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (confirmation != QMessageBox::Yes)
@@ -1821,15 +1823,15 @@ void ProcessDock::executeR0SuspendThreadAction()
     kLogEvent actionEvent;
     const ksword::ark::DriverClient driverClient;
     const ksword::ark::IoResult result = driverClient.setThreadSuspended(
-        threadRecord->threadId,
-        threadRecord->ownerPid,
+        threadRecord.threadId,
+        threadRecord.ownerPid,
         true);
     const std::string detailText = threadIoMessageStdString(result.message);
     (result.ok ? info : err) << actionEvent
         << "[ProcessDock] executeR0SuspendThreadAction: pid="
-        << threadRecord->ownerPid
+        << threadRecord.ownerPid
         << ", tid="
-        << threadRecord->threadId
+        << threadRecord.threadId
         << ", actionOk="
         << (result.ok ? "true" : "false")
         << ", detail="
@@ -2138,11 +2140,13 @@ void ProcessDock::executeTerminateThreadAction()
 
 void ProcessDock::executeR0TerminateThreadAction()
 {
-    const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid <= 4U || threadRecord->threadId == 0U)
+    const ks::process::SystemThreadRecord* selectedThread = selectedThreadRecord();
+    if (selectedThread == nullptr || selectedThread->ownerPid <= 4U ||
+        selectedThread->threadId == 0U)
     {
         return;
     }
+    const ks::process::SystemThreadRecord threadRecord = *selectedThread;
 
     const QMessageBox::StandardButton confirmation = QMessageBox::warning(
         this,
@@ -2152,8 +2156,8 @@ void ProcessDock::executeR0TerminateThreadAction()
         ks::i18n::contextText(
             QStringLiteral("process.thread.r0_terminate.confirm.body"),
             QStringLiteral("将通过 R0 结束 PID %2 的线程 %1。该操作不可撤销，是否继续？"))
-            .arg(threadRecord->threadId)
-            .arg(threadRecord->ownerPid),
+            .arg(threadRecord.threadId)
+            .arg(threadRecord.ownerPid),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (confirmation != QMessageBox::Yes)
@@ -2164,15 +2168,15 @@ void ProcessDock::executeR0TerminateThreadAction()
     kLogEvent actionEvent;
     const ksword::ark::DriverClient driverClient;
     const ksword::ark::IoResult result = driverClient.terminateThread(
-        threadRecord->threadId,
-        threadRecord->ownerPid,
+        threadRecord.threadId,
+        threadRecord.ownerPid,
         static_cast<long>(0xC0000005u));
     const std::string detailText = threadIoMessageStdString(result.message);
     (result.ok ? info : err) << actionEvent
         << "[ProcessDock] executeR0TerminateThreadAction: pid="
-        << threadRecord->ownerPid
+        << threadRecord.ownerPid
         << ", tid="
-        << threadRecord->threadId
+        << threadRecord.threadId
         << ", actionOk="
         << (result.ok ? "true" : "false")
         << ", detail="
