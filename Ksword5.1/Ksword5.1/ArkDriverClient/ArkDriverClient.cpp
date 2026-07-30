@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cwchar>
 #include <cstring>
 #include <functional>
@@ -21,11 +22,61 @@ namespace ksword::ark
     {
         constexpr unsigned long kDefaultShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
 
-        std::mutex g_r0UnavailableHandlerMutex;
+        // g_r0NotificationMutex：串行化全局 handler、去重时间与在途回调计数。
+        std::mutex g_r0NotificationMutex;
+        // g_r0NotificationIdleCondition：让窗口析构等待所有已取得租约的工作线程。
+        std::condition_variable g_r0NotificationIdleCondition;
+        // g_r0NotificationInvocationCount：记录已经复制 handler、尚未执行完毕的回调数量。
+        std::size_t g_r0NotificationInvocationCount = 0U;
         DriverClient::R0UnavailableHandler g_r0UnavailableHandler;
         std::chrono::steady_clock::time_point g_lastR0UnavailableNotification;
         DriverClient::R0PermissionRequiredHandler g_r0PermissionRequiredHandler;
         std::chrono::steady_clock::time_point g_lastR0PermissionNotification;
+
+        // finishR0NotificationInvocation：
+        // - 在一个锁外 handler 调用结束时归还租约；
+        // - 最后一个租约归还后唤醒正在析构的主窗口。
+        void finishR0NotificationInvocation()
+        {
+            std::lock_guard<std::mutex> lock(g_r0NotificationMutex);
+            if (g_r0NotificationInvocationCount > 0U)
+            {
+                --g_r0NotificationInvocationCount;
+            }
+            if (g_r0NotificationInvocationCount == 0U)
+            {
+                g_r0NotificationIdleCondition.notify_all();
+            }
+        }
+
+        // R0NotificationInvocationLease：
+        // - handler 从全局状态复制成功后取得一个在途租约；
+        // - 析构自动归还，确保 handler 抛出异常时等待者也不会永久阻塞。
+        class R0NotificationInvocationLease final
+        {
+        public:
+            R0NotificationInvocationLease() = default;
+            R0NotificationInvocationLease(const R0NotificationInvocationLease&) = delete;
+            R0NotificationInvocationLease& operator=(const R0NotificationInvocationLease&) = delete;
+
+            ~R0NotificationInvocationLease()
+            {
+                if (m_active)
+                {
+                    finishR0NotificationInvocation();
+                }
+            }
+
+            // activate：仅在全局计数已经递增后标记本地租约，调用方无须传入参数。
+            void activate() noexcept
+            {
+                m_active = true;
+            }
+
+        private:
+            // m_active：区分提前返回路径与真正取得全局在途引用的调用。
+            bool m_active = false;
+        };
 
         bool isR0DriverNotEnabledError(const unsigned long win32Error)
         {
@@ -43,8 +94,9 @@ namespace ksword::ark
             }
 
             DriverClient::R0UnavailableHandler handler;
+            R0NotificationInvocationLease invocationLease;
             {
-                std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+                std::lock_guard<std::mutex> lock(g_r0NotificationMutex);
                 const auto now = std::chrono::steady_clock::now();
                 if (!g_r0UnavailableHandler ||
                     (g_lastR0UnavailableNotification.time_since_epoch().count() != 0 &&
@@ -54,9 +106,11 @@ namespace ksword::ark
                 }
                 g_lastR0UnavailableNotification = now;
                 handler = g_r0UnavailableHandler;
+                ++g_r0NotificationInvocationCount;
+                invocationLease.activate();
             }
 
-            // 不在锁内执行 UI 回调，避免回调启动服务时重入 ArkDriverClient 造成死锁。
+            // 不在锁内执行 UI 回调；租约保证清空 handler 后仍会等待本次调用结束。
             handler(win32Error);
         }
 
@@ -76,8 +130,9 @@ namespace ksword::ark
             }
 
             DriverClient::R0PermissionRequiredHandler handler;
+            R0NotificationInvocationLease invocationLease;
             {
-                std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+                std::lock_guard<std::mutex> lock(g_r0NotificationMutex);
                 const auto now = std::chrono::steady_clock::now();
                 if (!g_r0PermissionRequiredHandler ||
                     (g_lastR0PermissionNotification.time_since_epoch().count() != 0 &&
@@ -87,6 +142,8 @@ namespace ksword::ark
                 }
                 g_lastR0PermissionNotification = now;
                 handler = g_r0PermissionRequiredHandler;
+                ++g_r0NotificationInvocationCount;
+                invocationLease.activate();
             }
             handler(win32Error);
         }
@@ -203,16 +260,32 @@ namespace ksword::ark
 
     void DriverClient::setR0UnavailableHandler(R0UnavailableHandler handler)
     {
-        std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+        std::lock_guard<std::mutex> lock(g_r0NotificationMutex);
         g_r0UnavailableHandler = std::move(handler);
         g_lastR0UnavailableNotification = {};
     }
 
     void DriverClient::setR0PermissionRequiredHandler(R0PermissionRequiredHandler handler)
     {
-        std::lock_guard<std::mutex> lock(g_r0UnavailableHandlerMutex);
+        std::lock_guard<std::mutex> lock(g_r0NotificationMutex);
         g_r0PermissionRequiredHandler = std::move(handler);
         g_lastR0PermissionNotification = {};
+    }
+
+    void DriverClient::clearR0NotificationHandlersAndWait()
+    {
+        // 先在同一临界区撤销两个入口，后续工作线程无法再取得新租约。
+        std::unique_lock<std::mutex> lock(g_r0NotificationMutex);
+        g_r0UnavailableHandler = {};
+        g_r0PermissionRequiredHandler = {};
+        g_lastR0UnavailableNotification = {};
+        g_lastR0PermissionNotification = {};
+
+        // 已复制 handler 的线程会在锁外完成投递，并由租约析构唤醒这里。
+        g_r0NotificationIdleCondition.wait(lock, []()
+            {
+                return g_r0NotificationInvocationCount == 0U;
+            });
     }
 
     DriverHandle::DriverHandle(const HANDLE handleValue) noexcept

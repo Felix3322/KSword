@@ -31,6 +31,12 @@ namespace ksword::ark
         using R0PermissionRequiredHandler = std::function<void(unsigned long win32Error)>;
         static void setR0PermissionRequiredHandler(R0PermissionRequiredHandler handler);
 
+        // clearR0NotificationHandlersAndWait：
+        // - 同时停止两类 R0 全局通知，并等待已经复制到工作线程的回调执行完毕；
+        // - 主窗口析构必须先调用本函数，保证返回后不再有回调向该窗口投递事件；
+        // - 不得从上述 handler 内部调用，否则调用线程会等待自身结束。
+        static void clearR0NotificationHandlersAndWait();
+
         DriverClient() = default;
 
         // Best-effort branding upload for the VMware-only bugcheck panel.

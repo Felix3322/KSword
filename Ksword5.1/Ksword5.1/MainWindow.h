@@ -542,6 +542,9 @@ private:
     bool m_r0UnavailablePromptShowing = false; // 合并同一时间到达的多个 Dock/后台 R0 请求。
     bool m_r0PermissionPromptShowing = false; // 合并短时间内多个 R0 IOCTL 权限不足提示。
     bool m_suppressR0PromptsForSession = false; // “本次不再提醒”仅在当前进程内生效。
+    // m_r0NotificationLifetime：让已排队的 R0 通知在窗口析构开始后自行失效。
+    std::shared_ptr<std::atomic_bool> m_r0NotificationLifetime =
+        std::make_shared<std::atomic_bool>(true);
     std::atomic_bool m_r0DriverLogPollerRunning{ false }; // m_r0DriverLogPollerRunning：R0 日志轮询线程运行标记。
     std::unique_ptr<std::thread> m_r0DriverLogPollerThread; // m_r0DriverLogPollerThread：R0 日志轮询线程对象。
     QTimer* m_privilegeStatusTimer = nullptr;

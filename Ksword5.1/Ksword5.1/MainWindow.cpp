@@ -4035,8 +4035,10 @@ MainWindow::MainWindow(
 
 MainWindow::~MainWindow()
 {
-    ksword::ark::DriverClient::setR0UnavailableHandler({});
-    ksword::ark::DriverClient::setR0PermissionRequiredHandler({});
+    // 先使已进入 Qt 队列的通知失效，再等待工作线程已经复制的 handler 归还租约。
+    // 返回后不会再有线程使用 this 投递新事件，随后才能安全拆除窗口成员。
+    m_r0NotificationLifetime->store(false, std::memory_order_release);
+    ksword::ark::DriverClient::clearR0NotificationHandlersAndWait();
     clearSingleInstanceMessageReception(reinterpret_cast<HWND>(winId()));
     CallbackPromptManager::shutdownGlobalManager();
     stopR0DriverLogPoller();
@@ -4451,17 +4453,39 @@ void MainWindow::showEvent(QShowEvent* event)
     if (!m_r0UnavailablePromptArmed)
     {
         m_r0UnavailablePromptArmed = true;
-        ksword::ark::DriverClient::setR0UnavailableHandler([this](const unsigned long win32Error)
+        // weakLifetime 在窗口成员销毁后仍可安全检查，不依赖 QObject 裸指针存活。
+        const std::weak_ptr<std::atomic_bool> weakLifetime = m_r0NotificationLifetime;
+        ksword::ark::DriverClient::setR0UnavailableHandler([this, weakLifetime](const unsigned long win32Error)
             {
-                QMetaObject::invokeMethod(this, [this, win32Error]()
+                const std::shared_ptr<std::atomic_bool> lifetime = weakLifetime.lock();
+                if (!lifetime || !lifetime->load(std::memory_order_acquire))
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(this, [this, weakLifetime, win32Error]()
                     {
+                        const std::shared_ptr<std::atomic_bool> queuedLifetime = weakLifetime.lock();
+                        if (!queuedLifetime || !queuedLifetime->load(std::memory_order_acquire))
+                        {
+                            return;
+                        }
                         handleR0DriverUnavailable(win32Error);
                     }, Qt::QueuedConnection);
             });
-        ksword::ark::DriverClient::setR0PermissionRequiredHandler([this](const unsigned long win32Error)
+        ksword::ark::DriverClient::setR0PermissionRequiredHandler([this, weakLifetime](const unsigned long win32Error)
             {
-                QMetaObject::invokeMethod(this, [this, win32Error]()
+                const std::shared_ptr<std::atomic_bool> lifetime = weakLifetime.lock();
+                if (!lifetime || !lifetime->load(std::memory_order_acquire))
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(this, [this, weakLifetime, win32Error]()
                     {
+                        const std::shared_ptr<std::atomic_bool> queuedLifetime = weakLifetime.lock();
+                        if (!queuedLifetime || !queuedLifetime->load(std::memory_order_acquire))
+                        {
+                            return;
+                        }
                         handleR0PermissionRequired(win32Error);
                     }, Qt::QueuedConnection);
             });
