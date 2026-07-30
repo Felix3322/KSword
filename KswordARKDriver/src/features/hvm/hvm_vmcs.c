@@ -500,15 +500,20 @@ KswordARKHvmConfigureVmcs(
     gs.Base = gsBase;
     /* Keep guest CR0 within the fixed-bit envelope advertised by the CPU. */
     guestCr0 = (__readcr0() | Input->Cr0Fixed0) & Input->Cr0Fixed1;
-    /* Keep guest CR4 within fixed bits while hiding VMXE from the guest. */
+    /* Keep guest CR4 within fixed bits under explicit nested-VMX policy. */
     guestCr4 =
-        ((__readcr4() & ~(1ULL << 13)) | Input->Cr4Fixed0) &
+        (((Input->EnableNestedVmx != 0U
+            ? (__readcr4() | (1ULL << 13))
+            : (__readcr4() & ~(1ULL << 13))) |
+            Input->Cr4Fixed0)) &
         Input->Cr4Fixed1;
     /* Request only the pin controls required by the capability MSR. */
     pinControls = KswordARKHvmAdjustControls(0UL, pinCapability);
-    /* Request deterministic HLT exits and activate secondary controls. */
+    /* Activate secondary controls and reserve HLT exits for one-shot guests. */
     primaryControls = KswordARKHvmAdjustControls(
-        KSW_VMX_PRIMARY_HLT_EXITING |
+        (Input->ResidentMode == 0U
+            ? KSW_VMX_PRIMARY_HLT_EXITING
+            : 0UL) |
             KSW_VMX_PRIMARY_SECONDARY_CONTROLS,
         primaryCapability);
     /* Request EPT as the only secondary execution control. */
@@ -609,7 +614,10 @@ KswordARKHvmConfigureVmcs(
             { KSW_VMCS_GUEST_DR7, (SIZE_T)__readdr(7) },
             { KSW_VMCS_GUEST_RSP, (SIZE_T)Input->GuestStackPointer },
             { KSW_VMCS_GUEST_RIP, (SIZE_T)Input->GuestInstructionPointer },
-            { KSW_VMCS_GUEST_RFLAGS, 0x2U },
+            { KSW_VMCS_GUEST_RFLAGS,
+                (SIZE_T)(Input->GuestRflags != 0ULL
+                    ? (Input->GuestRflags | 0x2ULL)
+                    : 0x2ULL) },
             { KSW_VMCS_GUEST_PENDING_DEBUG, 0U },
             { KSW_VMCS_GUEST_SYSENTER_CS, (SIZE_T)sysenterCs },
             { KSW_VMCS_GUEST_SYSENTER_ESP, (SIZE_T)sysenterEsp },

@@ -15,7 +15,6 @@
 #include "KernelCommunicationEndpointTab.h"
 #include "KernelDockCidTab.h"
 #include "KernelDescriptorTableTab.h"
-#include "KernelHvmTab.h"
 #include "KernelDockIpcTab.h"
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelIoctlAuditTab.h"
@@ -507,16 +506,6 @@ void KernelDock::initializeUi()
         QStringLiteral("IAT/EAT"));
     m_tabWidget->setTabToolTip(m_iatEatHookTabIndex, kernelText("kernel.main.tab.iat_eat.tooltip", QStringLiteral("检测内核模块导入表和导出表可疑目标指针")));
 
-    m_hvmTabIndex = m_tabWidget->addTab(
-        new KernelHvmTab(m_tabWidget),
-        tabIcon(QStringLiteral(":/Icon/process_priority.svg")),
-        QStringLiteral("VT-x/EPT"));
-    m_tabWidget->setTabToolTip(
-        m_hvmTabIndex,
-        kernelText(
-            "kernel.main.tab.hvm.tooltip",
-            QStringLiteral("VT-x/嵌套能力、每 CPU VMX 区域、EPT RAM 映射与受控 VMXON/VMXOFF 自检")));
-
     m_timerDpcTabIndex = m_tabWidget->addTab(
         m_timerDpcPage,
         tabIcon(QStringLiteral(":/Icon/process_threads.svg")),
@@ -609,7 +598,6 @@ void KernelDock::updateTabIconContrast()
     m_tabWidget->setTabIcon(m_ioManagementTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
     m_tabWidget->setTabIcon(m_inlineHookTabIndex, tabIcon(QStringLiteral(":/Icon/process_critical.svg")));
     m_tabWidget->setTabIcon(m_iatEatHookTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    m_tabWidget->setTabIcon(m_hvmTabIndex, tabIcon(QStringLiteral(":/Icon/process_priority.svg")));
     m_tabWidget->setTabIcon(m_timerDpcTabIndex, tabIcon(QStringLiteral(":/Icon/process_threads.svg")));
     m_tabWidget->setTabIcon(m_crossViewTabIndex, tabIcon(QStringLiteral(":/Icon/process_list.svg")));
     m_tabWidget->setTabIcon(m_ipcTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
@@ -641,10 +629,6 @@ void KernelDock::updateTabIconContrast()
     else if (currentIndex == m_iatEatHookTabIndex)
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    }
-    else if (currentIndex == m_hvmTabIndex)
-    {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_priority.svg")));
     }
     else if (currentIndex == m_timerDpcTabIndex)
     {

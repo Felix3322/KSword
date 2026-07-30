@@ -26,4 +26,16 @@ KswordARKHvmControl(
     _Out_ KSWORD_ARK_CONTROL_HVM_RESPONSE* Response
     );
 
+NTSTATUS
+KswordARKHvmEptRuleControl(
+    _In_ const KSWORD_ARK_HVM_EPT_RULE_REQUEST* Request,
+    _Out_ KSWORD_ARK_HVM_EPT_RULE_RESPONSE* Response
+    );
+
+NTSTATUS
+KswordARKHvmEventControl(
+    _In_ const KSWORD_ARK_HVM_EVENT_QUERY_REQUEST* Request,
+    _Out_ KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE* Response
+    );
+
 EXTERN_C_END

@@ -57,6 +57,8 @@ NTSTATUS KswordARKKernelIoctlQueryPiDdb(_In_ WDFDEVICE Device, _In_ WDFREQUEST R
 NTSTATUS KswordARKKernelIoctlDeletePiDdb(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHvmIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHvmIoctlControl(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKHvmIoctlEptRule(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKHvmIoctlEvents(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlEnumIatEatHooks(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlForceUnloadDriver(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlControlDriverCommunication(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -198,6 +200,8 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_DELETE_PIDDB, KswordARKKernelIoctlDeletePiDdb, "IOCTL_KSWORD_ARK_DELETE_PIDDB", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_HVM, KswordARKHvmIoctlQuery, "IOCTL_KSWORD_ARK_QUERY_HVM", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_CONTROL_HVM, KswordARKHvmIoctlControl, "IOCTL_KSWORD_ARK_CONTROL_HVM", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_HVM_EPT_RULE, KswordARKHvmIoctlEptRule, "IOCTL_KSWORD_ARK_HVM_EPT_RULE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_HVM_EVENTS, KswordARKHvmIoctlEvents, "IOCTL_KSWORD_ARK_HVM_EVENTS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_ENUM_IAT_EAT_HOOKS, KswordARKKernelIoctlEnumIatEatHooks, "IOCTL_KSWORD_ARK_ENUM_IAT_EAT_HOOKS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_FORCE_UNLOAD_DRIVER, KswordARKKernelIoctlForceUnloadDriver, "IOCTL_KSWORD_ARK_FORCE_UNLOAD_DRIVER", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION, KswordARKKernelIoctlControlDriverCommunication, "IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },

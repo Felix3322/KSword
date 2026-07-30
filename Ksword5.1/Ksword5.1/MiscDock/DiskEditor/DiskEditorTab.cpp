@@ -1,4 +1,5 @@
 #include "DiskEditorTab.h"
+#include "../../SettingsDock/AppearanceSettings.h"
 #include "../../Framework/PrivilegeElevationPrompt.h"
 #include "../../UI/VisibleTableWidget.h"
 
@@ -15,6 +16,7 @@
 #include "DiskRangeTools.h"
 #include "DiskMapWidget.h"
 #include "DiskStructureParser.h"
+#include "StorageControllerResearchDialog.h"
 
 #include "../../theme.h"
 #include "../../UI/HexEditorWidget.h"
@@ -699,6 +701,22 @@ namespace ks::misc
             });
         toolLayout->addWidget(m_searchResultTable, 1);
         m_advancedTabs->addTab(toolPage, QIcon(QStringLiteral(":/Icon/disk_tools.svg")), QStringLiteral("搜索/镜像/扫描"));
+
+        // 控制器研究只出现在现有工具页的多级右键菜单中，不占据顶层页签或主工具栏。
+        toolPage->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(toolPage, &QWidget::customContextMenuRequested, this, [this, toolPage](const QPoint& point)
+        {
+            QMenu menu(toolPage);
+            menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+            QMenu* moreMenu = menu.addMenu(QStringLiteral("更多操作"));
+            QMenu* rawAccessMenu = moreMenu->addMenu(QStringLiteral("原始访问"));
+            QAction* controllerAction = rawAccessMenu->addAction(QStringLiteral("控制器研究"));
+            if (menu.exec(toolPage->mapToGlobal(point)) == controllerAction)
+            {
+                StorageControllerResearchDialog dialog(this);
+                dialog.exec();
+            }
+        });
     }
 
     void DiskEditorTab::initializeConnections()
@@ -1457,45 +1475,56 @@ namespace ks::misc
             : m_backendCombo->currentText();
         const bool systemDisk =
             (disk->rawCapabilityFlags & KSWORD_ARK_RAW_DISK_CAP_SYSTEM_DISK) != 0U;
-        const QMessageBox::StandardButton riskDecision = QMessageBox::warning(
-            this,
-            QStringLiteral("高风险：即将写入物理磁盘"),
-            QStringLiteral(
-                "目标：%1\n访问层：%2\n偏移：%3\n长度：%4 字节\n\n"
-                "物理写入可能立即破坏分区表、文件系统或启动数据。"
-                "断电、控制器异常或选错磁盘都可能导致不可恢复的数据损坏。"
-                "%5\n\n是否进入最终文本确认？")
-                .arg(disk->devicePath)
-                .arg(backendText)
-                .arg(hexOffsetText(m_loadedBaseOffset))
-                .arg(currentBytes.size())
-                .arg(systemDisk
-                    ? QStringLiteral("\n该磁盘包含当前启动或系统分区，风险等级为最高。")
-                    : QString()),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No);
-        if (riskDecision != QMessageBox::Yes)
+        const bool suppressDangerousConfirmation =
+            ks::settings::dangerousActionConfirmationsSuppressed();
+        if (!suppressDangerousConfirmation)
         {
-            appendLog(QStringLiteral("写回已取消：用户未通过风险预检。"));
-            return;
-        }
+            const QMessageBox::StandardButton riskDecision = QMessageBox::warning(
+                this,
+                QStringLiteral("高风险：即将写入物理磁盘"),
+                QStringLiteral(
+                    "目标：%1\n访问层：%2\n偏移：%3\n长度：%4 字节\n\n"
+                    "物理写入可能立即破坏分区表、文件系统或启动数据。"
+                    "断电、控制器异常或选错磁盘都可能导致不可恢复的数据损坏。"
+                    "%5\n\n是否进入最终文本确认？")
+                    .arg(disk->devicePath)
+                    .arg(backendText)
+                    .arg(hexOffsetText(m_loadedBaseOffset))
+                    .arg(currentBytes.size())
+                    .arg(systemDisk
+                        ? QStringLiteral("\n该磁盘包含当前启动或系统分区，风险等级为最高。")
+                        : QString()),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+            if (riskDecision != QMessageBox::Yes)
+            {
+                appendLog(QStringLiteral("写回已取消：用户未通过风险预检。"));
+                return;
+            }
 
-        const QString confirmationPhrase = systemDisk
-            ? QStringLiteral("SYSTEM DISK WRITE")
-            : QStringLiteral("WRITE");
-        const QString confirmText = QInputDialog::getText(
-            this,
-            QStringLiteral("确认写回物理磁盘"),
-            QStringLiteral("该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。\n请输入 %5 确认：")
-                .arg(backendText)
-                .arg(disk->devicePath)
-                .arg(hexOffsetText(m_loadedBaseOffset))
-                .arg(currentBytes.size())
-                .arg(confirmationPhrase));
-        if (confirmText != confirmationPhrase)
+            const QString confirmationPhrase = systemDisk
+                ? QStringLiteral("SYSTEM DISK WRITE")
+                : QStringLiteral("WRITE");
+            const QString confirmText = QInputDialog::getText(
+                this,
+                QStringLiteral("确认写回物理磁盘"),
+                QStringLiteral("该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。\n请输入 %5 确认：")
+                    .arg(backendText)
+                    .arg(disk->devicePath)
+                    .arg(hexOffsetText(m_loadedBaseOffset))
+                    .arg(currentBytes.size())
+                    .arg(confirmationPhrase));
+            if (confirmText != confirmationPhrase)
+            {
+                appendLog(QStringLiteral("写回已取消：确认文本不匹配。"));
+                return;
+            }
+        }
+        else
         {
-            appendLog(QStringLiteral("写回已取消：确认文本不匹配。"));
-            return;
+            appendLog(QStringLiteral(
+                "高风险提示：重复危险确认已关闭；仍将执行驱动确认令牌、目标边界检查、FUA 和写入审计。"
+                "物理磁盘写入可能造成永久数据损坏、无法启动、设备掉线或蓝屏。"));
         }
 
         QString errorText;
@@ -1916,17 +1945,25 @@ namespace ks::misc
             return;
         }
 
-        const QString confirmText = QInputDialog::getText(
-            this,
-            QStringLiteral("确认导入写盘"),
-            QStringLiteral("该操作会把文件直接写入 %1 @ %2。\n文件：%3\n请输入 WRITE 确认：")
-                .arg(disk->devicePath)
-                .arg(hexOffsetText(offset))
-                .arg(filePath));
-        if (confirmText != QStringLiteral("WRITE"))
+        if (!ks::settings::dangerousActionConfirmationsSuppressed())
         {
-            appendLog(QStringLiteral("导入已取消：确认文本不匹配。"));
-            return;
+            const QString confirmText = QInputDialog::getText(
+                this,
+                QStringLiteral("确认导入写盘"),
+                QStringLiteral("该操作会把文件直接写入 %1 @ %2。\n文件：%3\n请输入 WRITE 确认：")
+                    .arg(disk->devicePath)
+                    .arg(hexOffsetText(offset))
+                    .arg(filePath));
+            if (confirmText != QStringLiteral("WRITE"))
+            {
+                appendLog(QStringLiteral("导入已取消：确认文本不匹配。"));
+                return;
+            }
+        }
+        else
+        {
+            appendLog(QStringLiteral(
+                "高风险提示：重复危险确认已关闭；镜像导入仍可能破坏分区表、文件系统或启动数据。"));
         }
 
         const QString devicePath = disk->devicePath;

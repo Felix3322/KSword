@@ -52,10 +52,48 @@
     <ClCompile Include="src\features\kernel\kernel_idt_baseline_ioctl.c" />
     <ClCompile Include="src\features\kernel\kernel_piddb.c" />
     <ClCompile Include="src\features\kernel\kernel_piddb_ioctl.c" />
-    <ClCompile Include="src\features\hvm\hvm_runtime.c" />
-    <ClCompile Include="src\features\hvm\hvm_vmcs.c" />
-    <ClCompile Include="src\features\hvm\hvm_guest.c" />
-    <ClCompile Include="src\features\hvm\hvm_ioctl.c" />
+    <ClCompile Include="src\features\hvm\hvm_runtime.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_mtrr.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_event.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_ept.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_ept_builder.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_evmcs.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_nested_vmcs.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_nested_ept.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_nested.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_exit.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_resident.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_vmcs.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_guest.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_ioctl.c">
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
     <ClCompile Include="src\features\kernel\cpu_hardware_query.c" />
     <ClCompile Include="src\features\kernel\driver_unload.c" />
     <ClCompile Include="src\features\kernel\driver_blind.c" />
@@ -261,6 +299,16 @@
     <ClInclude Include="..\shared\driver\KswordArkKernelBaselineIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_piddb.h" />
     <ClInclude Include="src\features\hvm\hvm_runtime.h" />
+    <ClInclude Include="src\features\hvm\hvm_internal.h" />
+    <ClInclude Include="src\features\hvm\hvm_mtrr.h" />
+    <ClInclude Include="src\features\hvm\hvm_event.h" />
+    <ClInclude Include="src\features\hvm\hvm_ept.h" />
+    <ClInclude Include="src\features\hvm\hvm_evmcs.h" />
+    <ClInclude Include="src\features\hvm\hvm_nested_vmcs.h" />
+    <ClInclude Include="src\features\hvm\hvm_nested_ept.h" />
+    <ClInclude Include="src\features\hvm\hvm_nested.h" />
+    <ClInclude Include="src\features\hvm\hvm_exit.h" />
+    <ClInclude Include="src\features\hvm\hvm_resident.h" />
     <ClInclude Include="src\features\hvm\hvm_vmcs.h" />
     <ClInclude Include="src\features\hvm\hvm_guest.h" />
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h" />

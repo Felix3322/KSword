@@ -1019,6 +1019,19 @@ namespace ks::file
         }
 
         const std::uint64_t optionalHeaderOffset = fileHeaderOffset + sizeof(IMAGE_FILE_HEADER);
+        if (fileHeader.SizeOfOptionalHeader < sizeof(std::uint16_t)
+            || optionalHeaderOffset
+                > static_cast<std::uint64_t>(
+                    fileBytes.size())
+            || static_cast<std::uint64_t>(
+                   fileHeader.SizeOfOptionalHeader)
+                > static_cast<std::uint64_t>(
+                    fileBytes.size())
+                    - optionalHeaderOffset)
+        {
+            result.reportText = L"PE解析失败：Optional Header 声明范围超出文件边界。";
+            return result;
+        }
         std::uint16_t optionalMagic = 0;
         if (!ReadPodAtOffset(fileBytes, optionalHeaderOffset, optionalMagic))
         {
@@ -1040,11 +1053,24 @@ namespace ks::file
         if (optionalMagic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
         {
             IMAGE_OPTIONAL_HEADER64 optionalHeader{};
-            if (!ReadPodAtOffset(fileBytes, optionalHeaderOffset, optionalHeader))
+            constexpr std::size_t fixedHeaderBytes =
+                FIELD_OFFSET(
+                    IMAGE_OPTIONAL_HEADER64,
+                    DataDirectory);
+            if (fileHeader.SizeOfOptionalHeader
+                < fixedHeaderBytes)
             {
-                result.reportText = L"PE解析失败：PE32+ Optional Header 读取失败。";
+                result.reportText = L"PE解析失败：PE32+ Optional Header 不足以覆盖固定字段和 NumberOfRvaAndSizes。";
                 return result;
             }
+            std::memcpy(
+                &optionalHeader,
+                fileBytes.data()
+                    + static_cast<std::size_t>(
+                        optionalHeaderOffset),
+                std::min<std::size_t>(
+                    sizeof(optionalHeader),
+                    fileHeader.SizeOfOptionalHeader));
             isPe64 = true;
             imageBaseValue = optionalHeader.ImageBase;
             entryPointRva = optionalHeader.AddressOfEntryPoint;
@@ -1054,7 +1080,17 @@ namespace ks::file
             sectionAlignmentValue = optionalHeader.SectionAlignment;
             fileAlignmentValue = optionalHeader.FileAlignment;
             checksumValue = optionalHeader.CheckSum;
-            const std::uint32_t count = std::min<std::uint32_t>(optionalHeader.NumberOfRvaAndSizes, IMAGE_NUMBEROF_DIRECTORY_ENTRIES);
+            const std::size_t directoryCapacity =
+                (fileHeader.SizeOfOptionalHeader
+                 - fixedHeaderBytes)
+                / sizeof(IMAGE_DATA_DIRECTORY);
+            const std::uint32_t count =
+                std::min<std::uint32_t>(
+                    std::min<std::uint32_t>(
+                        optionalHeader.NumberOfRvaAndSizes,
+                        IMAGE_NUMBEROF_DIRECTORY_ENTRIES),
+                    static_cast<std::uint32_t>(
+                        directoryCapacity));
             for (std::uint32_t index = 0; index < count; ++index)
             {
                 dataDirectoryList[static_cast<std::size_t>(index)] = optionalHeader.DataDirectory[index];
@@ -1063,11 +1099,24 @@ namespace ks::file
         else if (optionalMagic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
         {
             IMAGE_OPTIONAL_HEADER32 optionalHeader{};
-            if (!ReadPodAtOffset(fileBytes, optionalHeaderOffset, optionalHeader))
+            constexpr std::size_t fixedHeaderBytes =
+                FIELD_OFFSET(
+                    IMAGE_OPTIONAL_HEADER32,
+                    DataDirectory);
+            if (fileHeader.SizeOfOptionalHeader
+                < fixedHeaderBytes)
             {
-                result.reportText = L"PE解析失败：PE32 Optional Header 读取失败。";
+                result.reportText = L"PE解析失败：PE32 Optional Header 不足以覆盖固定字段和 NumberOfRvaAndSizes。";
                 return result;
             }
+            std::memcpy(
+                &optionalHeader,
+                fileBytes.data()
+                    + static_cast<std::size_t>(
+                        optionalHeaderOffset),
+                std::min<std::size_t>(
+                    sizeof(optionalHeader),
+                    fileHeader.SizeOfOptionalHeader));
             isPe64 = false;
             imageBaseValue = optionalHeader.ImageBase;
             entryPointRva = optionalHeader.AddressOfEntryPoint;
@@ -1077,7 +1126,17 @@ namespace ks::file
             sectionAlignmentValue = optionalHeader.SectionAlignment;
             fileAlignmentValue = optionalHeader.FileAlignment;
             checksumValue = optionalHeader.CheckSum;
-            const std::uint32_t count = std::min<std::uint32_t>(optionalHeader.NumberOfRvaAndSizes, IMAGE_NUMBEROF_DIRECTORY_ENTRIES);
+            const std::size_t directoryCapacity =
+                (fileHeader.SizeOfOptionalHeader
+                 - fixedHeaderBytes)
+                / sizeof(IMAGE_DATA_DIRECTORY);
+            const std::uint32_t count =
+                std::min<std::uint32_t>(
+                    std::min<std::uint32_t>(
+                        optionalHeader.NumberOfRvaAndSizes,
+                        IMAGE_NUMBEROF_DIRECTORY_ENTRIES),
+                    static_cast<std::uint32_t>(
+                        directoryCapacity));
             for (std::uint32_t index = 0; index < count; ++index)
             {
                 dataDirectoryList[static_cast<std::size_t>(index)] = optionalHeader.DataDirectory[index];
@@ -1091,7 +1150,33 @@ namespace ks::file
 
         // Read and summarize the section table before any directory parsing uses RVA mapping.
         // The structured summaries are returned alongside the human-readable report.
-        const std::uint64_t sectionTableOffset = optionalHeaderOffset + fileHeader.SizeOfOptionalHeader;
+        const std::uint64_t optionalHeaderEnd =
+            optionalHeaderOffset
+            + static_cast<std::uint64_t>(
+                fileHeader.SizeOfOptionalHeader);
+        const std::uint64_t sectionTableOffset =
+            optionalHeaderEnd;
+        const std::uint64_t sectionTableBytes =
+            static_cast<std::uint64_t>(
+                fileHeader.NumberOfSections)
+            * sizeof(IMAGE_SECTION_HEADER);
+        /*
+         * The PE section table begins exactly at the end declared by
+         * SizeOfOptionalHeader, so construction prevents overlap. Recheck the
+         * addition for wraparound and the complete table for file containment.
+         */
+        if (optionalHeaderEnd < optionalHeaderOffset
+            || sectionTableOffset
+                > static_cast<std::uint64_t>(
+                    fileBytes.size())
+            || sectionTableBytes
+                > static_cast<std::uint64_t>(
+                    fileBytes.size())
+                    - sectionTableOffset)
+        {
+            result.reportText = L"PE解析失败：区段表与 Optional Header 重叠或超出文件边界。";
+            return result;
+        }
         std::vector<IMAGE_SECTION_HEADER> sectionList;
         sectionList.reserve(fileHeader.NumberOfSections);
         for (std::uint16_t sectionIndex = 0; sectionIndex < fileHeader.NumberOfSections; ++sectionIndex)
@@ -1102,6 +1187,24 @@ namespace ks::file
             if (!ReadPodAtOffset(fileBytes, currentOffset, sectionHeader))
             {
                 result.reportText = L"PE解析失败：区段表读取失败，索引=" + std::to_wstring(sectionIndex);
+                return result;
+            }
+            const std::uint64_t rawOffset =
+                sectionHeader.PointerToRawData;
+            const std::uint64_t rawSize =
+                sectionHeader.SizeOfRawData;
+            if (rawSize != 0U
+                && (rawOffset
+                        > static_cast<std::uint64_t>(
+                            fileBytes.size())
+                    || rawSize
+                        > static_cast<std::uint64_t>(
+                            fileBytes.size())
+                            - rawOffset))
+            {
+                result.reportText =
+                    L"PE解析失败：区段原始数据范围超出文件边界，索引="
+                    + std::to_wstring(sectionIndex);
                 return result;
             }
             sectionList.push_back(sectionHeader);

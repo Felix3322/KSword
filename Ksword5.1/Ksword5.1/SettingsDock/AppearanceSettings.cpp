@@ -397,6 +397,7 @@ namespace
         defaultSettings.notificationDisplayPlacement = ks::settings::NotificationDisplayPlacement::Screen;
         defaultSettings.notificationStackDirection = ks::settings::NotificationStackDirection::BottomUp;
         defaultSettings.suppressR0FeaturePrompts = false;
+        defaultSettings.suppressDangerousActionConfirmations = false;
         defaultSettings.logWindowGeometryBase64.clear();
         defaultSettings.virusTotalApiKey.clear();
         defaultSettings.threatBookApiKey.clear();
@@ -603,6 +604,9 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     loadedSettings.suppressR0FeaturePrompts = rootObject
         .value(QStringLiteral("suppress_r0_feature_prompts"))
         .toBool(loadedSettings.suppressR0FeaturePrompts);
+    loadedSettings.suppressDangerousActionConfirmations = rootObject
+        .value(QStringLiteral("suppress_dangerous_action_confirmations"))
+        .toBool(loadedSettings.suppressDangerousActionConfirmations);
     loadedSettings.logWindowGeometryBase64 = rootObject
         .value(QStringLiteral("log_window_geometry_base64"))
         .toString();
@@ -704,6 +708,9 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
         QStringLiteral("suppress_r0_feature_prompts"),
         settings.suppressR0FeaturePrompts);
     rootObject.insert(
+        QStringLiteral("suppress_dangerous_action_confirmations"),
+        settings.suppressDangerousActionConfirmations);
+    rootObject.insert(
         QStringLiteral("log_window_geometry_base64"),
         settings.logWindowGeometryBase64.trimmed());
     // 在线扫描 API Key 保存：
@@ -741,6 +748,11 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     }
 
     return true;
+}
+
+bool ks::settings::dangerousActionConfirmationsSuppressed()
+{
+    return loadAppearanceSettings().suppressDangerousActionConfirmations;
 }
 
 double ks::settings::normalizeWindowScaleFactor(const double rawScaleFactor)

@@ -130,6 +130,10 @@ namespace ks::misc::rawfs
                 m_logicalSectorSize,
                 alignedLength)
             || !rangeIsValid(alignedStart, alignedLength)
+            || m_partitionOffset
+                > std::numeric_limits<std::uint64_t>::max()
+                    - alignedStart
+                    - alignedLength
             || alignedLength
                 > static_cast<std::uint64_t>(
                     std::numeric_limits<int>::max()))
@@ -246,6 +250,21 @@ namespace ks::misc
 
         switch (fileSystem)
         {
+        case ForensicFileSystemKind::Ntfs:
+            return rawfs::listNtfs(reader, normalized, bounded);
+        case ForensicFileSystemKind::Fat12:
+        case ForensicFileSystemKind::Fat16:
+        case ForensicFileSystemKind::Fat32:
+            return rawfs::listFat(
+                reader,
+                fileSystem,
+                normalized,
+                bounded);
+        case ForensicFileSystemKind::ExFat:
+            return rawfs::listExFat(
+                reader,
+                normalized,
+                bounded);
         case ForensicFileSystemKind::Ext2:
         case ForensicFileSystemKind::Ext3:
         case ForensicFileSystemKind::Ext4:
@@ -293,6 +312,27 @@ namespace ks::misc
 
         switch (fileSystem)
         {
+        case ForensicFileSystemKind::Ntfs:
+            return rawfs::readNtfs(
+                reader,
+                normalized,
+                offset,
+                length);
+        case ForensicFileSystemKind::Fat12:
+        case ForensicFileSystemKind::Fat16:
+        case ForensicFileSystemKind::Fat32:
+            return rawfs::readFat(
+                reader,
+                fileSystem,
+                normalized,
+                offset,
+                length);
+        case ForensicFileSystemKind::ExFat:
+            return rawfs::readExFat(
+                reader,
+                normalized,
+                offset,
+                length);
         case ForensicFileSystemKind::Ext2:
         case ForensicFileSystemKind::Ext3:
         case ForensicFileSystemKind::Ext4:
@@ -404,6 +444,8 @@ namespace ks::misc
             return QStringLiteral("符号链接");
         case RawFileObjectType::Special:
             return QStringLiteral("特殊对象");
+        case RawFileObjectType::NamedStream:
+            return QStringLiteral("NTFS 命名流");
         default:
             return QStringLiteral("未知");
         }

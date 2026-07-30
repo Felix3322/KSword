@@ -54,6 +54,7 @@ namespace ks::settings
     // fontFamily：应用界面字体族；空值表示沿用系统默认字体。
     // textAntialiasingEnabled：是否以应用默认字体启用文本抗锯齿。
     // suppressR0FeaturePrompts：是否关闭 R0 驱动未启用或权限不足时的自动提示。
+    // suppressDangerousActionConfirmations：是否跳过危险操作的重复模态确认；风险信息、预检和审计不受影响。
     // virusTotalApiKey：VirusTotal 在线扫描 API Key，供 OnlineScan 模块运行时读取。
     // threatBookApiKey：ThreatBook（微步在线）在线扫描 API Key，供 OnlineScan 模块运行时读取。
     struct AppearanceSettings
@@ -81,6 +82,7 @@ namespace ks::settings
         NotificationDisplayPlacement notificationDisplayPlacement = NotificationDisplayPlacement::Screen;
         NotificationStackDirection notificationStackDirection = NotificationStackDirection::BottomUp;
         bool suppressR0FeaturePrompts = false;
+        bool suppressDangerousActionConfirmations = false;
         QString logWindowGeometryBase64;
         QString virusTotalApiKey;
         QString threatBookApiKey;
@@ -140,11 +142,18 @@ namespace ks::settings
 
     // saveAppearanceSettings 作用：
     // - 把界面与启动设置写入 JSON 文件（自动创建目录）。
-    // 调用方式：用户在设置页修改后调用。
+    // 调用方式：用户在设置页修改后调用；深层危险确认策略菜单也复用该持久化入口。
     // 入参 settings：待保存配置；
     // 入参 errorTextOut：可选错误文本输出指针。
     // 返回：true=保存成功；false=保存失败。
     bool saveAppearanceSettings(const AppearanceSettings& settings, QString* errorTextOut = nullptr);
+
+    // dangerousActionConfirmationsSuppressed 作用：
+    // - 返回当前持久设置是否允许跳过危险操作的重复模态确认；
+    // - 仅影响 UI 模态框，不绕过驱动确认令牌、SafetyPolicy、目标复核或审计。
+    // 调用方式：危险操作入口在决定是否弹窗前调用。
+    // 返回：true=可跳过重复模态确认；false=仍需逐次询问。
+    bool dangerousActionConfirmationsSuppressed();
 
     // normalizeWindowScaleFactor 作用：
     // - 统一校正窗口缩放因子到合法范围；

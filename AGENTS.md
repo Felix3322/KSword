@@ -22,6 +22,23 @@ $qtMsBuild=(Resolve-Path '.deps\QtVsTools\msbuild').Path
 
 驱动项目依赖 WDK。如果当前机器无法构建驱动，不要阻塞发行包制作；沿用已有未签名 R0 Release 产物：`KswordARKDriver\x64\Release\KswordARK.sys`、`KswordARKDriver\x64\Release\KswordARK.pdb`、`KswordARKDriver\x64\Release\KswordARKDriver.inf`。
 
+控制器研究 companion 同样依赖 WDK，但不能从发行包中省略。WDK 可用时构建：
+
+```powershell
+& $msbuild 'KswordARKControllerDriver\KswordARKControllerDriver.vcxproj' /t:Build /p:Configuration=Release /p:Platform=x64 /m:1 /v:minimal
+
+$inf2Cat=Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Filter Inf2Cat.exe -Recurse -File |
+    Where-Object { $_.FullName -match '\\x86\\Inf2Cat\.exe$' } |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+if ($null -eq $inf2Cat) { throw 'Inf2Cat.exe was not found in the installed WDK.' }
+$controllerPackage=(Resolve-Path 'KswordARKControllerDriver\x64\Release').Path
+& $inf2Cat.FullName "/driver:$controllerPackage" '/os:10_X64'
+if ($LASTEXITCODE -ne 0) { throw "Inf2Cat failed with exit code $LASTEXITCODE." }
+```
+
+如果本机无法构建，从同一提交成功完成的 `Driver CI` 产物取得 `KswordARKController.sys`、`KswordARKController.pdb`、`KswordARKControllerDriver.inf` 与 `KswordARKController.cat`，放入 `KswordARKControllerDriver\x64\Release\` 后再继续打包；不得沿用其它提交或省略该 companion。该 PnP INF 声明了 `CatalogFile=KswordARKController.cat`，因此即使评估包保持未签名，也必须同时分发由 Inf2Cat 生成的未签名目录文件。
+
 ### 2. 搭建发行目录
 
 推荐从参考包提取完整 Qt 依赖与插件目录，再覆盖最新构建产物。这样能保持 `platforms`、`styles`、`imageformats`、`iconengines`、`generic`、`networkinformation`、`tls`、`translations`、`qtadvanceddocking.dll` 等布局一致。
@@ -57,6 +74,9 @@ Copy-Item 'third_party\easy_hwid_spoofer\NOTICE.md' (Join-Path $licenseDir 'easy
 Copy-Item 'third_party\fltk\LICENSE.txt' (Join-Path $licenseDir 'fltk-LICENSE.txt') -Force
 Copy-Item 'third_party\qt_advanced_docking_system\LICENSE.txt' (Join-Path $licenseDir 'qt-advanced-docking-system-LICENSE.txt') -Force
 Copy-Item 'third_party\zstd\LICENSE.txt' (Join-Path $licenseDir 'zstd-LICENSE.txt') -Force
+Copy-Item 'third_party\zydis\LICENSE-Zydis.txt' (Join-Path $licenseDir 'zydis-LICENSE.txt') -Force
+Copy-Item 'third_party\zydis\LICENSE-Zycore.txt' (Join-Path $licenseDir 'zycore-LICENSE.txt') -Force
+Copy-Item 'third_party\zydis\NOTICE.md' (Join-Path $licenseDir 'zydis-NOTICE.md') -Force
 
 $profileDir=Join-Path $stage 'profiles'
 if (!(Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir | Out-Null }
@@ -74,6 +94,14 @@ $driverDir=Join-Path $stage 'KswordARKDriver'
 if (!(Test-Path $driverDir)) { New-Item -ItemType Directory -Path $driverDir | Out-Null }
 Copy-Item 'KswordARKDriver\x64\Release\KswordARK.sys' $driverDir -Force
 Copy-Item 'KswordARKDriver\x64\Release\KswordARKDriver.inf' $driverDir -Force
+
+$controllerDriverDir=Join-Path $stage 'KswordARKControllerDriver'
+if (!(Test-Path $controllerDriverDir)) { New-Item -ItemType Directory -Path $controllerDriverDir | Out-Null }
+Copy-Item 'KswordARKControllerDriver\x64\Release\KswordARKController.sys' $controllerDriverDir -Force
+Copy-Item 'KswordARKControllerDriver\x64\Release\KswordARKController.pdb' $controllerDriverDir -Force
+Copy-Item 'KswordARKControllerDriver\x64\Release\KswordARKControllerDriver.inf' $controllerDriverDir -Force
+Copy-Item 'KswordARKControllerDriver\x64\Release\KswordARKController.cat' $controllerDriverDir -Force
+Copy-Item 'KswordARKControllerDriver\README.md' $controllerDriverDir -Force
 ```
 
 ### 3. 生成 7z 包
@@ -100,7 +128,7 @@ if ($exit -ne 0) { exit $exit }
 ```powershell
 $seven='C:\Users\Felix\CLionProjects\Wisdom-Weasel\7z.exe'
 & $seven t $archive
-& $seven l $archive 'Release\Launcher.exe' 'Release\Ksword5.1.exe' 'Release\KswordARKLight.exe' 'Release\Taskbar.exe' 'Release\KswordHUD.exe' 'Release\APIMonitor_x64.dll' 'Release\KswordARK.sys' 'Release\KswordARKDriver\KswordARK.sys' 'Release\LICENSE' 'Release\COMMUNITY_COVENANT.md' 'Release\licenses\third_party\systeminformer-LICENSE.txt' 'Release\licenses\third_party\easy-hwid-spoofer-LICENSE.txt' 'Release\licenses\third_party\fltk-LICENSE.txt' 'Release\licenses\third_party\qt-advanced-docking-system-LICENSE.txt' 'Release\licenses\third_party\zstd-LICENSE.txt' 'Release\profiles\launcher_support_manifest.json' 'Release\profiles\ark_dyndata_pack_v3.json' 'Release\profiles\registry_optimization_items.json' 'Release\profiles\registry_optimization_assets\Config\Data.zip' 'Release\languages\zh-CN.json' 'Release\languages\en-US.json' 'Release\platforms\qwindows.dll'
+& $seven l $archive 'Release\Launcher.exe' 'Release\Ksword5.1.exe' 'Release\KswordARKLight.exe' 'Release\Taskbar.exe' 'Release\KswordHUD.exe' 'Release\APIMonitor_x64.dll' 'Release\KswordARK.sys' 'Release\KswordARKDriver\KswordARK.sys' 'Release\KswordARKControllerDriver\KswordARKController.sys' 'Release\KswordARKControllerDriver\KswordARKController.pdb' 'Release\KswordARKControllerDriver\KswordARKControllerDriver.inf' 'Release\KswordARKControllerDriver\KswordARKController.cat' 'Release\KswordARKControllerDriver\README.md' 'Release\LICENSE' 'Release\COMMUNITY_COVENANT.md' 'Release\licenses\third_party\systeminformer-LICENSE.txt' 'Release\licenses\third_party\easy-hwid-spoofer-LICENSE.txt' 'Release\licenses\third_party\fltk-LICENSE.txt' 'Release\licenses\third_party\qt-advanced-docking-system-LICENSE.txt' 'Release\licenses\third_party\zstd-LICENSE.txt' 'Release\licenses\third_party\zydis-LICENSE.txt' 'Release\licenses\third_party\zycore-LICENSE.txt' 'Release\licenses\third_party\zydis-NOTICE.md' 'Release\profiles\launcher_support_manifest.json' 'Release\profiles\ark_dyndata_pack_v3.json' 'Release\profiles\registry_optimization_items.json' 'Release\profiles\registry_optimization_assets\Config\Data.zip' 'Release\languages\zh-CN.json' 'Release\languages\en-US.json' 'Release\platforms\qwindows.dll'
 ```
 
 校验通过时，`7z t` 输出应包含 `Everything is Ok`；主程序顶部“许可证”页面从 exe 同目录读取根 `LICENSE`。本流程生成的包根目录必须是 `Release\`，不要把 `dist\KswordARK-release-work\` 或其它临时目录打进包里。

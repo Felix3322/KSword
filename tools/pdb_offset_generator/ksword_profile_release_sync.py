@@ -484,6 +484,7 @@ class ProfileRecord:
     callback_items: list[dict[str, Any]] = field(default_factory=list)
     typed_items: list[dict[str, Any]] = field(default_factory=list)
     v4_items: list[dict[str, Any]] = field(default_factory=list)
+    idt_baseline: dict[str, Any] | None = None
     missing_fields: list[str] = field(default_factory=list)
     missing_globals: list[str] = field(default_factory=list)
     coverage_percent: float = 0.0
@@ -1026,6 +1027,73 @@ def reject(state: ValidationState, path: Path, reason: str) -> None:
     state.rejected.append({"path": str(path), "reason": reason})
 
 
+def validate_idt_baseline(
+    path: Path,
+    data: dict[str, Any],
+    module_class: str,
+    machine: int,
+    state: ValidationState,
+) -> dict[str, Any] | None:
+    """Validate optional exact-PDB KiInterruptInitTable metadata."""
+    raw = data.get("idtBaseline")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        reject(state, path, "idt_baseline_not_object")
+        return None
+    if module_class != "ntoskrnl" or machine != 0x8664:
+        reject(state, path, "idt_baseline_module_or_machine_invalid")
+        return None
+    table_rva = parse_uint32(raw.get("tableRva"))
+    handlers = raw.get("handlers")
+    if (
+        raw.get("schemaVersion") != 2
+        or str(raw.get("sourceSymbol", "")).strip() != "KiInterruptInitTable"
+        or table_rva is None
+        or table_rva == 0
+        or table_rva > KSW_DYN_PROFILE_GLOBAL_RVA_MAX
+        or not isinstance(handlers, list)
+        or not handlers
+    ):
+        reject(state, path, "idt_baseline_shape_invalid")
+        return None
+    normalized_handlers: list[dict[str, Any]] = []
+    seen_handlers: set[tuple[int, str]] = set()
+    for index, handler in enumerate(handlers):
+        if not isinstance(handler, dict):
+            reject(state, path, f"idt_handler_not_object:{index}")
+            return None
+        vector = parse_uint32(handler.get("vector"))
+        rva = parse_uint32(handler.get("rva"))
+        symbol = str(handler.get("symbol", "")).strip()
+        identity = (vector or 0, symbol)
+        if (
+            vector is None
+            or vector > 0xFF
+            or rva is None
+            or rva == 0
+            or rva > KSW_DYN_PROFILE_GLOBAL_RVA_MAX
+            or not symbol.startswith("Ki")
+            or identity in seen_handlers
+        ):
+            reject(state, path, f"idt_handler_invalid:{index}")
+            return None
+        seen_handlers.add(identity)
+        normalized_handlers.append(
+            {
+                "vector": vector,
+                "symbol": symbol,
+                "rva": rva,
+            }
+        )
+    return {
+        "schemaVersion": 2,
+        "sourceSymbol": "KiInterruptInitTable",
+        "tableRva": table_rva,
+        "handlers": normalized_handlers,
+    }
+
+
 def validate_profile(path: Path, state: ValidationState) -> ProfileRecord | None:
     """Validate one JSON profile and return a publishable record.
 
@@ -1092,6 +1160,22 @@ def validate_profile(path: Path, state: ValidationState) -> ProfileRecord | None
     v4_items = validate_v4_items(path, data, state)
     if v4_items is None:
         return None
+    idt_baseline = validate_idt_baseline(
+        path,
+        data,
+        module_class,
+        machine,
+        state,
+    )
+    if data.get("idtBaseline") is not None and idt_baseline is None:
+        return None
+    module_sha256 = str(module.get("sha256", "")).strip().lower()
+    if idt_baseline is not None and (
+        len(module_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in module_sha256)
+    ):
+        reject(state, path, "idt_baseline_sha256_invalid")
+        return None
     if not fields and not typed_items and not v4_items:
         reject(state, path, "fields_and_typed_items_empty")
         return None
@@ -1114,6 +1198,7 @@ def validate_profile(path: Path, state: ValidationState) -> ProfileRecord | None
         callback_items=callback_items,
         typed_items=typed_items,
         v4_items=v4_items,
+        idt_baseline=idt_baseline,
         missing_fields=missing_fields,
         missing_globals=missing_globals,
         coverage_percent=coverage_percent,
@@ -1130,6 +1215,7 @@ def choose_duplicate_winner(records: list[ProfileRecord]) -> ProfileRecord:
     - Prefers the record with more fields.
     - For equal field coverage, prefers the record with more callbackItems so
       v2 publishing does not discard newer callback metadata.
+    - For otherwise equal records, preserves exact-PDB IDT baseline metadata.
     - Uses profileName and path as stable tie-breakers to avoid nondeterminism.
 
     Return behavior:
@@ -1141,6 +1227,7 @@ def choose_duplicate_winner(records: list[ProfileRecord]) -> ProfileRecord:
             -item.field_count,
             -len(item.typed_items),
             -len(item.callback_items),
+            -int(item.idt_baseline is not None),
             -item.coverage_percent,
             item.profile_name,
             str(item.path),
@@ -1384,8 +1471,11 @@ def build_pack_profile_entry(record: ProfileRecord, field_index: dict[str, int],
         "pdbName": str(module.get("pdbName", "")),
         "pdbGuid": str(module.get("pdbGuid", "")),
         "pdbAge": pdb_age,
+        "sha256": str(module.get("sha256", "")).strip().lower(),
         "fields": packed_fields,
     }
+    if record.idt_baseline is not None:
+        profile_entry["idtBaseline"] = record.idt_baseline
     if pack_version == KSW_PACK_VERSION_V2:
         profile_entry["callbackItems"] = record.callback_items
     elif pack_version == KSW_PACK_VERSION_V3:

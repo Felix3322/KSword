@@ -7,11 +7,12 @@
 // Purpose:
 // - Defines the shared R3/R0 protocol for controlled kernel mutation
 //   transactions.
-// - The protocol is intentionally not registered in this phase; a later
-//   integration pass must add the IOCTL table entries.
-// - All future inline hook restore, process protection byte restore, and
-//   callback unlink actions should be represented as prepare/snapshot,
-//   commit, rollback, and audit operations before any write is attempted.
+// - The registered PREPARE/COMMIT/ROLLBACK/AUDIT path carries exact before
+//   snapshots for arbitrary small kernel ranges and supported structured
+//   targets.
+// - Inline hook restore, process protection byte restore, and future callback
+//   actions use prepare/snapshot, commit, rollback, and audit operations before
+//   any write is attempted.
 // ============================================================
 
 #define KSWORD_ARK_MUTATION_PROTOCOL_VERSION 1UL
@@ -47,7 +48,7 @@
         KSWORD_ARK_IOCTL_DEVICE_TYPE, \
         KSWORD_ARK_IOCTL_FUNCTION_MUTATION_QUERY_AUDIT, \
         METHOD_BUFFERED, \
-        FILE_ANY_ACCESS)
+        FILE_READ_ACCESS)
 
 #define KSWORD_ARK_MUTATION_MAX_BYTES 64U
 #define KSWORD_ARK_MUTATION_PROCESS_PROTECTION_MAX_BYTES 3U
@@ -108,6 +109,9 @@
 #define KSWORD_ARK_MUTATION_RISK_CALLBACK_UNLINK_SURFACE 0x00010000UL
 #define KSWORD_ARK_MUTATION_RISK_SIZE_LIMITED 0x00020000UL
 #define KSWORD_ARK_MUTATION_RISK_TARGET_CHANGED 0x00040000UL
+#define KSWORD_ARK_MUTATION_RISK_WRITABLE_MDL_ALIAS 0x00080000UL
+#define KSWORD_ARK_MUTATION_RISK_EXECUTABLE_BYTES_MAY_BE_LIVE 0x00100000UL
+#define KSWORD_ARK_MUTATION_RISK_WRITE_VERIFY_REQUIRED 0x00200000UL
 
 #define KSWORD_ARK_MUTATION_QUERY_AUDIT_FLAG_INCLUDE_BYTES 0x00000001UL
 
@@ -203,3 +207,6 @@ typedef struct _KSWORD_ARK_MUTATION_QUERY_AUDIT_RESPONSE
     unsigned long long nextSequence;
     KSWORD_ARK_MUTATION_AUDIT_ENTRY entries[1];
 } KSWORD_ARK_MUTATION_QUERY_AUDIT_RESPONSE;
+
+#define KSWORD_ARK_MUTATION_AUDIT_RESPONSE_HEADER_SIZE \
+    FIELD_OFFSET(KSWORD_ARK_MUTATION_QUERY_AUDIT_RESPONSE, entries)

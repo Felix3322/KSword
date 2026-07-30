@@ -974,7 +974,6 @@ private:
     int m_callbackEnumTabIndex = -1;     // m_callbackEnumTabIndex：回调遍历页签索引。
     int m_inlineHookTabIndex = -1;       // m_inlineHookTabIndex：Inline Hook 页签索引。
     int m_iatEatHookTabIndex = -1;       // m_iatEatHookTabIndex：IAT/EAT Hook 页签索引。
-    int m_hvmTabIndex = -1;              // m_hvmTabIndex：VT-x/EPT 生命周期与证据页签索引。
     int m_timerDpcTabIndex = -1;          // m_timerDpcTabIndex：KTIMER/DPC 页签索引。
     int m_crossViewTabIndex = -1;        // m_crossViewTabIndex：CID/交叉视图页签索引。
     int m_ipcTabIndex = -1;              // m_ipcTabIndex：IPC/NamedPipe/ALPC 页签索引。

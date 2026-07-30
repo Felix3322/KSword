@@ -16,7 +16,8 @@ namespace ks::misc
         RegularFile,
         Directory,
         SymbolicLink,
-        Special
+        Special,
+        NamedStream
     };
 
     struct RawFileExtent
@@ -34,6 +35,7 @@ namespace ks::misc
     {
         QString name;
         QString fullPath;
+        QString streamName;
         RawFileObjectType type = RawFileObjectType::Unknown;
         std::uint64_t objectId = 0;
         std::uint64_t parentObjectId = 0;

@@ -2,6 +2,7 @@
 
 #include "KernelDock.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../UI/KernelDisassemblyDialog.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
@@ -53,6 +54,7 @@ namespace
         ColumnOwner,
         ColumnRisk,
         ColumnBaseline,
+        ColumnTrustedImageBaseline,
         ColumnRaw,
         ColumnCount
     };
@@ -156,6 +158,7 @@ void KernelDescriptorTableTab::initializeUi()
         kernelText("kernel.descriptor.header.owner", QStringLiteral("归属模块")),
         kernelText("kernel.descriptor.header.risk", QStringLiteral("完整性")),
         kernelText("kernel.descriptor.header.baseline", QStringLiteral("启动期基线")),
+        kernelText("kernel.descriptor.header.trusted_image_baseline", QStringLiteral("可信映像基线")),
         kernelText("kernel.descriptor.header.raw", QStringLiteral("原始值"))});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -250,20 +253,51 @@ void KernelDescriptorTableTab::refreshAsync()
             queryFlags,
             KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_MAX_ROWS,
             KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_IDT_VECTORS);
+        std::vector<ks::kernel::IdtHandlerObservation> observations;
+        if (result.io.ok
+            && (queryFlags
+                & KSWORD_ARK_DRIVER_INTEGRITY_FLAG_IDT_ENTRIES) != 0U)
+        {
+            for (const ksword::ark::DriverIntegrityEvidenceEntry& row
+                 : result.entries)
+            {
+                if (row.evidenceClass
+                    == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER)
+                {
+                    observations.push_back({
+                        row.vector,
+                        row.descriptorBase
+                    });
+                }
+            }
+        }
+        std::vector<ks::kernel::TrustedIdtBaselineResult>
+            trustedIdtBaselines =
+                ks::kernel::KernelCleanImageBaseline::compareIdtHandlers(
+                    observations);
         if (safeThis == nullptr)
         {
             return;
         }
-        QMetaObject::invokeMethod(safeThis, [safeThis, result = std::move(result)]() mutable {
+        QMetaObject::invokeMethod(safeThis, [
+            safeThis,
+            result = std::move(result),
+            trustedIdtBaselines = std::move(trustedIdtBaselines)
+        ]() mutable {
             if (safeThis != nullptr)
             {
-                safeThis->applyResult(std::move(result));
+                safeThis->applyResult(
+                    std::move(result),
+                    std::move(trustedIdtBaselines));
             }
         }, Qt::QueuedConnection);
     }).detach();
 }
 
-void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult result)
+void KernelDescriptorTableTab::applyResult(
+    ksword::ark::DriverIntegrityResult result,
+    std::vector<ks::kernel::TrustedIdtBaselineResult>
+        trustedIdtBaselines)
 {
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
@@ -272,6 +306,7 @@ void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult re
         m_restoreIdtButton->setEnabled(false);
     }
     m_rows.clear();
+    m_trustedIdtBaselines.clear();
     if (!result.io.ok)
     {
         // failureKey 与 fallbackText 由固定子页类型决定，避免错误信息仍写成 IDT/GDT 混合查询。
@@ -290,17 +325,30 @@ void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult re
 
     std::size_t idtCount = 0U;
     std::size_t gdtCount = 0U;
+    std::size_t trustedIdtIndex = 0U;
     for (ksword::ark::DriverIntegrityEvidenceEntry& row : result.entries)
     {
         if (row.evidenceClass == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER)
         {
             ++idtCount;
             m_rows.push_back(std::move(row));
+            if (trustedIdtIndex < trustedIdtBaselines.size())
+            {
+                m_trustedIdtBaselines.push_back(
+                    std::move(
+                        trustedIdtBaselines[trustedIdtIndex]));
+            }
+            else
+            {
+                m_trustedIdtBaselines.emplace_back();
+            }
+            ++trustedIdtIndex;
         }
         else if (row.evidenceClass == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_GDT_DESCRIPTOR)
         {
             ++gdtCount;
             m_rows.push_back(std::move(row));
+            m_trustedIdtBaselines.emplace_back();
         }
     }
     // summary 只报告当前子页的表项数，CPU 和协议版本仍保留用于定位采集环境。
@@ -323,11 +371,41 @@ void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult re
     {
         summary += kernelText("kernel.descriptor.status.truncated", QStringLiteral("；响应已截断，部分 CPU 表项未返回"));
     }
+    if (idtOnly)
+    {
+        const std::size_t trustedAvailable = static_cast<std::size_t>(
+            std::count_if(
+                m_trustedIdtBaselines.cbegin(),
+                m_trustedIdtBaselines.cend(),
+                [](const ks::kernel::TrustedIdtBaselineResult& baseline)
+                {
+                    return baseline.available;
+                }));
+        const std::size_t trustedMismatch = static_cast<std::size_t>(
+            std::count_if(
+                m_trustedIdtBaselines.cbegin(),
+                m_trustedIdtBaselines.cend(),
+                [](const ks::kernel::TrustedIdtBaselineResult& baseline)
+                {
+                    return baseline.available
+                        && !baseline.handlerMatches;
+                }));
+        summary += kernelText(
+            "kernel.descriptor.status.trusted_baseline_summary",
+            QStringLiteral(
+                "；可信映像/PDB 基线可用 %1，偏离 %2，unsupported %3"))
+            .arg(static_cast<qulonglong>(trustedAvailable))
+            .arg(static_cast<qulonglong>(trustedMismatch))
+            .arg(static_cast<qulonglong>(
+                m_trustedIdtBaselines.size() - trustedAvailable));
+    }
     m_statusLabel->setText(summary);
     rebuildTable();
 }
 
-bool KernelDescriptorTableTab::rowMatchesFilter(const ksword::ark::DriverIntegrityEvidenceEntry& row) const
+bool KernelDescriptorTableTab::rowMatchesFilter(
+    const ksword::ark::DriverIntegrityEvidenceEntry& row,
+    const std::size_t sourceIndex) const
 {
     // expectedClass 把实例固定为单一表类型，即使旧驱动意外返回混合证据也不会串页。
     const std::uint32_t expectedClass = m_tableKind == KernelDescriptorTableKind::Idt
@@ -345,7 +423,7 @@ bool KernelDescriptorTableTab::rowMatchesFilter(const ksword::ark::DriverIntegri
     QStringList values;
     for (int column = 0; column < ColumnCount; ++column)
     {
-        values.push_back(columnText(row, column));
+        values.push_back(columnText(row, column, sourceIndex));
     }
     values.push_back(QString::fromStdWString(row.detail));
     return values.join(QLatin1Char(' ')).contains(keyword, Qt::CaseInsensitive);
@@ -357,7 +435,7 @@ void KernelDescriptorTableTab::rebuildTable()
     for (std::size_t sourceIndex = 0U; sourceIndex < m_rows.size(); ++sourceIndex)
     {
         const ksword::ark::DriverIntegrityEvidenceEntry& row = m_rows[sourceIndex];
-        if (!rowMatchesFilter(row))
+        if (!rowMatchesFilter(row, sourceIndex))
         {
             continue;
         }
@@ -365,7 +443,8 @@ void KernelDescriptorTableTab::rebuildTable()
         m_table->insertRow(tableRow);
         for (int column = 0; column < ColumnCount; ++column)
         {
-            QTableWidgetItem* item = readOnlyItem(columnText(row, column));
+            QTableWidgetItem* item = readOnlyItem(
+                columnText(row, column, sourceIndex));
             if (column == ColumnTable)
             {
                 item->setData(Qt::UserRole, static_cast<qulonglong>(sourceIndex));
@@ -375,6 +454,15 @@ void KernelDescriptorTableTab::rebuildTable()
                 item->setForeground(row.riskFlags == 0U
                     ? KswordTheme::SuccessColor()
                     : KswordTheme::ErrorColor());
+            }
+            if (column == ColumnTrustedImageBaseline
+                && sourceIndex < m_trustedIdtBaselines.size()
+                && m_trustedIdtBaselines[sourceIndex].available)
+            {
+                item->setForeground(
+                    m_trustedIdtBaselines[sourceIndex].handlerMatches
+                        ? KswordTheme::SuccessColor()
+                        : KswordTheme::ErrorColor());
             }
             m_table->setItem(tableRow, column, item);
         }
@@ -466,7 +554,10 @@ QString KernelDescriptorTableTab::riskText(const std::uint32_t riskFlags)
     return risks.join(QStringLiteral(" / "));
 }
 
-QString KernelDescriptorTableTab::columnText(const ksword::ark::DriverIntegrityEvidenceEntry& row, const int column) const
+QString KernelDescriptorTableTab::columnText(
+    const ksword::ark::DriverIntegrityEvidenceEntry& row,
+    const int column,
+    const std::size_t sourceIndex) const
 {
     const bool isIdt = row.evidenceClass == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER;
     switch (column)
@@ -501,6 +592,24 @@ QString KernelDescriptorTableTab::columnText(const ksword::ark::DriverIntegrityE
         return (row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_DIFFERS) != 0U
             ? hex64(row.descriptorBaselineRawLow) + QStringLiteral(" / ") + hex64(row.descriptorBaselineRawHigh)
             : kernelText("kernel.descriptor.baseline.matches", QStringLiteral("一致"));
+    case ColumnTrustedImageBaseline:
+        if (!isIdt || sourceIndex >= m_trustedIdtBaselines.size())
+        {
+            return QStringLiteral("-");
+        }
+        if (!m_trustedIdtBaselines[sourceIndex].available)
+        {
+            return kernelText(
+                "kernel.descriptor.trusted_baseline.unsupported",
+                QStringLiteral("Unsupported"));
+        }
+        return m_trustedIdtBaselines[sourceIndex].handlerMatches
+            ? kernelText(
+                "kernel.descriptor.trusted_baseline.matches",
+                QStringLiteral("一致"))
+            : kernelText(
+                "kernel.descriptor.trusted_baseline.differs",
+                QStringLiteral("偏离"));
     case ColumnRaw:
         return row.descriptorSize > 8U
             ? hex64(row.descriptorRawLow) + QStringLiteral(" / ") + hex64(row.descriptorRawHigh)
@@ -509,7 +618,9 @@ QString KernelDescriptorTableTab::columnText(const ksword::ark::DriverIntegrityE
     }
 }
 
-QString KernelDescriptorTableTab::detailText(const ksword::ark::DriverIntegrityEvidenceEntry& row) const
+QString KernelDescriptorTableTab::detailText(
+    const ksword::ark::DriverIntegrityEvidenceEntry& row,
+    const std::size_t sourceIndex) const
 {
     QStringList lines;
     lines << kernelText("kernel.descriptor.detail.table", QStringLiteral("表: %1")).arg(tableName(row));
@@ -531,6 +642,37 @@ QString KernelDescriptorTableTab::detailText(const ksword::ark::DriverIntegrityE
             .arg(hex64(row.descriptorBaselineHandler))
             .arg(hex64(row.descriptorBaselineRawLow))
             .arg(hex64(row.descriptorBaselineRawHigh));
+    }
+    if (row.evidenceClass
+            == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER
+        && sourceIndex < m_trustedIdtBaselines.size())
+    {
+        const ks::kernel::TrustedIdtBaselineResult& trusted =
+            m_trustedIdtBaselines[sourceIndex];
+        lines << kernelText(
+            "kernel.descriptor.detail.trusted_baseline",
+            QStringLiteral(
+                "可信映像基线: %1\n主预期 Handler: %2\nPDB 候选数: %3\n观察 Handler: %4\n"
+                "映像: %5\nSHA256: %6\nProfile: %7\n来源符号: %8\n状态: %9"))
+            .arg(trusted.available
+                ? QStringLiteral("AVAILABLE")
+                : QStringLiteral("UNSUPPORTED"))
+            .arg(hex64(trusted.expectedHandler))
+            .arg(trusted.expectedCandidateCount)
+            .arg(hex64(trusted.observedHandler))
+            .arg(trusted.imagePath.isEmpty()
+                ? QStringLiteral("<unavailable>")
+                : trusted.imagePath)
+            .arg(trusted.imageSha256.isEmpty()
+                ? QStringLiteral("<unavailable>")
+                : trusted.imageSha256)
+            .arg(trusted.profilePath.isEmpty()
+                ? QStringLiteral("<unavailable>")
+                : trusted.profilePath)
+            .arg(trusted.sourceSymbol.isEmpty()
+                ? QStringLiteral("<unavailable>")
+                : trusted.sourceSymbol)
+            .arg(trusted.statusText);
     }
     if (!row.ownerModule.empty())
     {
@@ -558,7 +700,10 @@ void KernelDescriptorTableTab::showCurrentDetail()
         return;
     }
     const std::size_t sourceIndex = static_cast<std::size_t>(item->data(Qt::UserRole).toULongLong());
-    m_detailEdit->setPlainText(sourceIndex < m_rows.size() ? detailText(m_rows[sourceIndex]) : QString());
+    m_detailEdit->setPlainText(
+        sourceIndex < m_rows.size()
+            ? detailText(m_rows[sourceIndex], sourceIndex)
+            : QString());
 }
 
 void KernelDescriptorTableTab::restoreSelectedIdtBaseline()
@@ -708,9 +853,31 @@ void KernelDescriptorTableTab::showCopyMenu(const QPoint& position)
     QAction* copyCell = menu.addAction(kernelText("kernel.descriptor.copy.cell", QStringLiteral("复制单元格")));
     QAction* copyRow = menu.addAction(kernelText("kernel.descriptor.copy.row", QStringLiteral("复制当前行")));
     QAction* copyAll = menu.addAction(kernelText("kernel.descriptor.copy.all", QStringLiteral("复制全部行")));
+    menu.addSeparator();
+    QMenu* advancedAnalysis = menu.addMenu(
+        QStringLiteral("高级分析"));
+    QAction* instructionView = advancedAnalysis->addAction(
+        QStringLiteral("指令视图…"));
     copyCell->setEnabled(index.isValid());
     copyRow->setEnabled(row >= 0);
     copyAll->setEnabled(m_table->rowCount() > 0);
+    std::size_t sourceIndex = m_rows.size();
+    if (row >= 0)
+    {
+        const QTableWidgetItem* sourceItem =
+            m_table->item(row, ColumnTable);
+        if (sourceItem != nullptr)
+        {
+            sourceIndex = static_cast<std::size_t>(
+                sourceItem->data(Qt::UserRole).toULongLong());
+        }
+    }
+    const bool canOpenInstructionView =
+        sourceIndex < m_rows.size()
+        && m_rows[sourceIndex].evidenceClass
+            == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER
+        && m_rows[sourceIndex].descriptorBase != 0U;
+    instructionView->setEnabled(canOpenInstructionView);
     QAction* selected = menu.exec(m_table->viewport()->mapToGlobal(position));
     if (selected == copyCell && index.isValid())
     {
@@ -729,5 +896,18 @@ void KernelDescriptorTableTab::showCopyMenu(const QPoint& position)
             lines << rowClipboardText(m_table, tableRow, tableRow == 0);
         }
         QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
+    }
+    else if (selected == instructionView
+        && canOpenInstructionView)
+    {
+        const auto& descriptor = m_rows[sourceIndex];
+        ks::ui::KernelDisassemblyDialog::openKernelAddress(
+            this,
+            descriptor.descriptorBase,
+            QStringLiteral(
+                "IDT 向量 %1（CPU %2:%3）Handler")
+                .arg(descriptor.vector)
+                .arg(descriptor.processorGroup)
+                .arg(descriptor.processorNumber));
     }
 }

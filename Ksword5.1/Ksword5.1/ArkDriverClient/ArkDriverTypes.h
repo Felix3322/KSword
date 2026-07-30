@@ -28,6 +28,7 @@
 #include "../../../shared/driver/KswordArkNetworkIoctl.h"
 #include "../../../shared/driver/KswordArkStorageIoctl.h"
 #include "../../../shared/driver/KswordArkStorageForensicsIoctl.h"
+#include "../../../shared/driver/KswordArkStorageControllerIoctl.h"
 #include "../../../shared/driver/KswordArkKernelBaselineIoctl.h"
 #include "../../../shared/driver/KswordArkPiDdbIoctl.h"
 #include "../../../shared/driver/KswordArkHvmIoctl.h"
@@ -1136,6 +1137,25 @@ namespace ksword::ark
         KSWORD_ARK_CONTROL_HVM_RESPONSE response{};
     };
 
+    // HvmEptRuleResult preserves one generation-bound EPT rule mutation or
+    // query. The response exposes explicit implementation maturity and never
+    // treats a prepared table as an active resident monitor.
+    struct HvmEptRuleResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_HVM_EPT_RULE_RESPONSE response{};
+    };
+
+    // HvmEventResult carries a bounded event-ring page. Clearing the ring is a
+    // separate explicit operation and does not alter EPT rules or VMX state.
+    struct HvmEventResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE response{};
+    };
+
     // DriverIntegrityResult carries DriverObject/LDR/CPU integrity evidence.
     // Input: produced by queryDriverIntegrity or queryKernelCpuIntegrity.
     // Processing: unsupported provides graceful UI fallback for older R0 drivers.
@@ -1969,11 +1989,11 @@ namespace ksword::ark
     // 返回行为：io.ok 表示传输和协议解析成功，unsupported 表示旧驱动缺入口。
     struct NetworkEndpointAuditResult : VariableAuditResultBase
     {
+        bool partial = false;                 // partial：APPLIED 但只返回预算内子集。
+        bool truncated = false;               // truncated：totalCount 大于 returnedCount。
         std::uint32_t sourceFlags = 0;        // sourceFlags：tcpip/netio/runtime 等证据来源。
         std::uint32_t budgetRows = 0;         // budgetRows：R0 实际接受的行预算。
         std::uint32_t generation = 0;         // generation：R0 快照代数。
-        bool partial = false;                 // partial：APPLIED 但只返回预算内子集。
-        bool truncated = false;               // truncated：totalCount 大于 returnedCount。
         std::vector<KSWORD_ARK_NETWORK_ENDPOINT_ROW> entries;
     };
 
@@ -1983,11 +2003,11 @@ namespace ksword::ark
     // 返回行为：不包含任何禁用、detach 或删除动作。
     struct NetworkWfpInventoryResult : VariableAuditResultBase
     {
+        bool partial = false;                 // partial：collector 部分失败，或 APPLIED 但仅返回子集。
+        bool truncated = false;               // truncated：总数/返回数或 BUFFER_OVERFLOW 表示结果不完整。
         std::uint32_t sourceFlags = 0;
         std::uint32_t budgetRows = 0;
         std::uint32_t generation = 0;
-        bool partial = false;                 // partial：collector 部分失败，或 APPLIED 但仅返回子集。
-        bool truncated = false;               // truncated：总数/返回数或 BUFFER_OVERFLOW 表示结果不完整。
         std::vector<KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW> entries;
     };
 
@@ -2012,11 +2032,11 @@ namespace ksword::ark
     // 返回行为：不执行 NDIS detach、pause、restart 或 filter 操作。
     struct NetworkNdisChainResult : VariableAuditResultBase
     {
+        bool partial = false;                 // partial：collector 部分失败，或 APPLIED 但仅返回子集。
+        bool truncated = false;               // truncated：总数/返回数或 BUFFER_OVERFLOW 表示结果不完整。
         std::uint32_t sourceFlags = 0;
         std::uint32_t budgetRows = 0;
         std::uint32_t generation = 0;
-        bool partial = false;                 // partial：collector 部分失败，或 APPLIED 但仅返回子集。
-        bool truncated = false;               // truncated：总数/返回数或 BUFFER_OVERFLOW 表示结果不完整。
         std::vector<KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW> entries;
     };
 

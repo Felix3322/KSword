@@ -1,10 +1,16 @@
 #include "DiskFileSystemForensicsPanel.h"
 
 #include "../../ArkDriverClient/ArkDriverTypes.h"
+#include "../../UI/CodeEditorWidget.h"
+#include "../../UI/KernelDisassemblyDialog.h"
+#include "../../ksword/file/pe_analyzer.h"
 #include "../../theme.h"
 #include "../../UI/VisibleTableWidget.h"
 
 #include <QAbstractItemView>
+#include <QAction>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -13,14 +19,17 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMenu>
 #include <QMetaObject>
 #include <QPointer>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <limits>
 #include <thread>
 #include <utility>
 
@@ -90,6 +99,11 @@ namespace
     {
         switch (kind)
         {
+        case ks::misc::ForensicFileSystemKind::Ntfs:
+        case ks::misc::ForensicFileSystemKind::Fat12:
+        case ks::misc::ForensicFileSystemKind::Fat16:
+        case ks::misc::ForensicFileSystemKind::Fat32:
+        case ks::misc::ForensicFileSystemKind::ExFat:
         case ks::misc::ForensicFileSystemKind::ReFs:
         case ks::misc::ForensicFileSystemKind::Ext2:
         case ks::misc::ForensicFileSystemKind::Ext3:
@@ -210,18 +224,32 @@ namespace ks::misc
         m_rawExportButton = new QPushButton(
             QStringLiteral("导出选中文件"),
             rawGroup);
+        m_rawMoreButton = new QToolButton(rawGroup);
+        m_rawMoreButton->setText(QStringLiteral("更多操作"));
+        m_rawMoreButton->setPopupMode(
+            QToolButton::InstantPopup);
+        auto* rawMoreMenu = new QMenu(m_rawMoreButton);
+        auto* rawAdvancedMenu = rawMoreMenu->addMenu(
+            QStringLiteral("高级分析"));
+        m_rawPeAction = rawAdvancedMenu->addAction(
+            QStringLiteral("分析并反汇编原始 PE…"));
+        m_rawMoreButton->setMenu(rawMoreMenu);
         m_rawUpButton->setEnabled(false);
         m_rawListButton->setEnabled(false);
         m_rawPreviewButton->setEnabled(false);
         m_rawExportButton->setEnabled(false);
+        m_rawPeAction->setEnabled(false);
         m_rawUpButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
         m_rawListButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
         m_rawPreviewButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
         m_rawExportButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+        m_rawMoreButton->setStyleSheet(
+            KswordTheme::ThemedButtonStyle());
         m_rawSummaryLabel = new QLabel(
             QStringLiteral(
-                "先探测当前分区；ReFS、Ext2/3/4、BtrFS、APFS、"
-                "HFS/HFS+ 可直接浏览目录、查看物理区段并导出文件。"),
+                "先探测当前分区；NTFS（含命名流/ADS）、FAT12/16/32、"
+                "exFAT、ReFS、Ext2/3/4、BtrFS、APFS、HFS/HFS+ "
+                "可直接浏览目录、查看物理区段并导出文件。"),
             rawGroup);
         m_rawSummaryLabel->setWordWrap(true);
         rawToolbar->addWidget(m_rawPathEdit, 0, 0);
@@ -229,7 +257,8 @@ namespace ks::misc
         rawToolbar->addWidget(m_rawListButton, 0, 2);
         rawToolbar->addWidget(m_rawPreviewButton, 0, 3);
         rawToolbar->addWidget(m_rawExportButton, 0, 4);
-        rawToolbar->addWidget(m_rawSummaryLabel, 1, 0, 1, 5);
+        rawToolbar->addWidget(m_rawMoreButton, 0, 5);
+        rawToolbar->addWidget(m_rawSummaryLabel, 1, 0, 1, 6);
         rawLayout->addLayout(rawToolbar);
         m_rawTable = createTable(rawGroup, {
             QStringLiteral("名称"),
@@ -397,6 +426,10 @@ namespace ks::misc
         {
             exportSelectedRawFile();
         });
+        connect(m_rawPeAction, &QAction::triggered, this, [this]()
+        {
+            analyzeSelectedRawPe();
+        });
         connect(
             m_rawTable,
             &QTableWidget::itemSelectionChanged,
@@ -412,6 +445,8 @@ namespace ks::misc
                 m_rawPreviewButton->setEnabled(
                     !m_busy && fileSelected);
                 m_rawExportButton->setEnabled(
+                    !m_busy && fileSelected);
+                m_rawPeAction->setEnabled(
                     !m_busy && fileSelected);
             });
         connect(
@@ -603,6 +638,7 @@ namespace ks::misc
         m_rawListButton->setEnabled(false);
         m_rawPreviewButton->setEnabled(false);
         m_rawExportButton->setEnabled(false);
+        m_rawPeAction->setEnabled(false);
         m_rawSummaryLabel->setText(
             QStringLiteral("正在解析 %1 的原始目录 %2 ...")
                 .arg(selection.displayText)
@@ -678,6 +714,7 @@ namespace ks::misc
         m_rawListButton->setEnabled(false);
         m_rawPreviewButton->setEnabled(false);
         m_rawExportButton->setEnabled(false);
+        m_rawPeAction->setEnabled(false);
         m_rawSummaryLabel->setText(
             QStringLiteral("正在读取 %1 的前 %2 字节 ...")
                 .arg(entry.fullPath)
@@ -750,6 +787,7 @@ namespace ks::misc
         m_rawListButton->setEnabled(false);
         m_rawPreviewButton->setEnabled(false);
         m_rawExportButton->setEnabled(false);
+        m_rawPeAction->setEnabled(false);
         m_rawSummaryLabel->setText(
             QStringLiteral("正在导出 %1 ...").arg(entry.fullPath));
         QPointer<DiskFileSystemForensicsPanel> safeThis(this);
@@ -783,6 +821,256 @@ namespace ks::misc
                             safeThis->applyRawExportResult(
                                 std::move(result));
                         }
+                    },
+                    Qt::QueuedConnection);
+            }).detach();
+    }
+
+    void DiskFileSystemForensicsPanel::analyzeSelectedRawPe()
+    {
+        if (m_busy || !m_rawSelection.has_value())
+        {
+            return;
+        }
+        const int row = m_rawTable->currentRow();
+        if (row < 0 || row >= static_cast<int>(m_rawEntries.size()))
+        {
+            return;
+        }
+        const RawFileEntry entry =
+            m_rawEntries[static_cast<std::size_t>(row)];
+        if (entry.type == RawFileObjectType::Directory)
+        {
+            return;
+        }
+        constexpr std::uint64_t kMaximumPeBytes =
+            512ULL * 1024ULL * 1024ULL;
+        constexpr std::uint32_t kReadChunkBytes =
+            4U * 1024U * 1024U;
+        if (entry.fileSizeBytes == 0U
+            || entry.fileSizeBytes > kMaximumPeBytes
+            || entry.fileSizeBytes
+                > static_cast<std::uint64_t>(
+                    std::numeric_limits<int>::max()))
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("原始 PE 分析"),
+                QStringLiteral(
+                    "PE 字节长度必须在 1 字节到 512 MiB 之间。"));
+            return;
+        }
+
+        const DiskForensicsSelection selection = *m_rawSelection;
+        const ForensicFileSystemKind fileSystem = m_rawFileSystem;
+        m_busy = true;
+        m_rawListButton->setEnabled(false);
+        m_rawPreviewButton->setEnabled(false);
+        m_rawExportButton->setEnabled(false);
+        m_rawPeAction->setEnabled(false);
+        m_rawSummaryLabel->setText(
+            QStringLiteral("正在读取并分析原始 PE：%1 ...")
+                .arg(entry.fullPath));
+        QPointer<DiskFileSystemForensicsPanel> safeThis(this);
+        std::thread(
+            [safeThis,
+                selection,
+                fileSystem,
+                entry]()
+            {
+                std::vector<std::uint8_t> fileBytes;
+                fileBytes.reserve(
+                    static_cast<std::size_t>(
+                        entry.fileSizeBytes));
+                QString readError;
+                std::uint64_t offset = 0U;
+                while (offset < entry.fileSizeBytes)
+                {
+                    const std::uint32_t length =
+                        static_cast<std::uint32_t>(
+                            std::min<std::uint64_t>(
+                                kReadChunkBytes,
+                                entry.fileSizeBytes - offset));
+                    RawFileReadResult chunk =
+                        DiskRawFileSystemBrowser::readFile(
+                            selection.diskIndex,
+                            selection.backend,
+                            selection.partitionOffset,
+                            selection.partitionLength,
+                            selection.logicalSectorSize,
+                            fileSystem,
+                            entry.fullPath,
+                            offset,
+                            length);
+                    if (!chunk.success
+                        || chunk.bytes.size()
+                            != static_cast<qsizetype>(length))
+                    {
+                        readError = chunk.errorText.isEmpty()
+                            ? QStringLiteral(
+                                "原始文件读取在 0x%1 处被截断。")
+                                .arg(
+                                    static_cast<qulonglong>(offset),
+                                    0,
+                                    16)
+                            : chunk.errorText;
+                        break;
+                    }
+                    const auto* chunkBegin =
+                        reinterpret_cast<
+                            const std::uint8_t*>(
+                            chunk.bytes.constData());
+                    fileBytes.insert(
+                        fileBytes.end(),
+                        chunkBegin,
+                        chunkBegin
+                            + static_cast<std::size_t>(
+                                chunk.bytes.size()));
+                    offset += length;
+                }
+
+                ks::file::PeAnalysisResult analysis;
+                if (readError.isEmpty())
+                {
+                    analysis =
+                        ks::file::AnalyzePeBytes(fileBytes);
+                }
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    safeThis.data(),
+                    [safeThis,
+                        sourcePath = entry.fullPath,
+                        readError,
+                        fileBytes = std::move(fileBytes),
+                        analysis = std::move(analysis)]() mutable
+                    {
+                        if (safeThis.isNull())
+                        {
+                            return;
+                        }
+                        safeThis->m_busy = false;
+                        safeThis->m_rawListButton->setEnabled(
+                            safeThis->m_rawSelection.has_value());
+                        const int selectedRow =
+                            safeThis->m_rawTable->currentRow();
+                        const bool fileSelected =
+                            selectedRow >= 0
+                            && selectedRow
+                                < static_cast<int>(
+                                    safeThis->m_rawEntries.size())
+                            && safeThis->m_rawEntries[
+                                static_cast<std::size_t>(
+                                    selectedRow)].type
+                                != RawFileObjectType::Directory;
+                        safeThis->m_rawPreviewButton->setEnabled(
+                            fileSelected);
+                        safeThis->m_rawExportButton->setEnabled(
+                            fileSelected);
+                        safeThis->m_rawPeAction->setEnabled(
+                            fileSelected);
+                        if (!readError.isEmpty())
+                        {
+                            safeThis->m_rawSummaryLabel->setText(
+                                QStringLiteral(
+                                    "原始 PE 读取失败：%1")
+                                    .arg(readError));
+                            QMessageBox::warning(
+                                safeThis.data(),
+                                QStringLiteral("原始 PE 分析"),
+                                readError);
+                            return;
+                        }
+
+                        safeThis->m_rawSummaryLabel->setText(
+                            analysis.success
+                                ? QStringLiteral(
+                                    "原始 PE 分析完成：%1")
+                                    .arg(sourcePath)
+                                : QStringLiteral(
+                                    "原始 PE 解析失败：%1")
+                                    .arg(sourcePath));
+                        QDialog dialog(safeThis.data());
+                        dialog.setWindowTitle(
+                            QStringLiteral("原始 PE 分析"));
+                        dialog.resize(980, 700);
+                        auto* layout = new QVBoxLayout(&dialog);
+                        auto* editor =
+                            new CodeEditorWidget(&dialog);
+                        editor->setReadOnly(true);
+                        editor->setLocalizedText(
+                            QString::fromStdWString(
+                                analysis.reportText));
+                        layout->addWidget(editor, 1);
+                        auto* buttons = new QDialogButtonBox(
+                            QDialogButtonBox::Close,
+                            &dialog);
+                        auto* disassembleButton =
+                            buttons->addButton(
+                                QStringLiteral("反汇编入口点"),
+                                QDialogButtonBox::ActionRole);
+                        disassembleButton->setEnabled(
+                            analysis.success
+                            && analysis.entryPointFileOffsetValid
+                            && analysis.imageBase
+                                <= std::numeric_limits<
+                                    std::uint64_t>::max()
+                                    - analysis.entryPointRva
+                            && analysis.entryPointFileOffset
+                                < static_cast<std::uint64_t>(
+                                    fileBytes.size()));
+                        QObject::connect(
+                            buttons,
+                            &QDialogButtonBox::rejected,
+                            &dialog,
+                            &QDialog::reject);
+                        QObject::connect(
+                            disassembleButton,
+                            &QPushButton::clicked,
+                            &dialog,
+                            [&dialog,
+                                sourcePath,
+                                &fileBytes,
+                                &analysis]()
+                            {
+                                const qsizetype entryOffset =
+                                    static_cast<qsizetype>(
+                                        analysis
+                                            .entryPointFileOffset);
+                                const qsizetype codeLength =
+                                    std::min<qsizetype>(
+                                        64 * 1024,
+                                        static_cast<qsizetype>(
+                                            fileBytes.size())
+                                            - entryOffset);
+                                const QByteArray codeBytes(
+                                    reinterpret_cast<const char*>(
+                                        fileBytes.data()
+                                        + static_cast<std::size_t>(
+                                            entryOffset)),
+                                    codeLength);
+                                ks::ui::KernelDisassemblyDialog
+                                    disassembly(&dialog);
+                                disassembly.setSnapshot(
+                                    codeBytes,
+                                    analysis.imageBase
+                                        + analysis.entryPointRva,
+                                    analysis.isPe64
+                                        ? ks::ui::
+                                            DisassemblyArchitecture::
+                                                X64
+                                        : ks::ui::
+                                            DisassemblyArchitecture::
+                                                X86,
+                                    QStringLiteral(
+                                        "原始文件 %1 的 PE 入口点")
+                                        .arg(sourcePath));
+                                disassembly.exec();
+                            });
+                        layout->addWidget(buttons);
+                        dialog.exec();
                     },
                     Qt::QueuedConnection);
             }).detach();
@@ -1063,6 +1351,7 @@ namespace ks::misc
         m_rawListButton->setEnabled(false);
         m_rawPreviewButton->setEnabled(false);
         m_rawExportButton->setEnabled(false);
+        m_rawPeAction->setEnabled(false);
         if (!result.success)
         {
             m_probeSummaryLabel->setText(
@@ -1131,6 +1420,7 @@ namespace ks::misc
         m_rawEntries.clear();
         m_rawPreviewButton->setEnabled(false);
         m_rawExportButton->setEnabled(false);
+        m_rawPeAction->setEnabled(false);
         if (!result.success)
         {
             m_rawUpButton->setEnabled(
@@ -1235,6 +1525,11 @@ namespace ks::misc
                             ? QString()
                             : QStringLiteral("[%1]").arg(state)));
             }
+            if (entry.extentsTruncated)
+            {
+                extentTexts.push_back(
+                    QStringLiteral("…[物理映射未完整展开]"));
+            }
             auto* physicalItem = readOnlyItem(
                 firstPhysicalExact
                     ? hexOffset(firstPhysical)
@@ -1271,6 +1566,7 @@ namespace ks::misc
                 != RawFileObjectType::Directory;
         m_rawPreviewButton->setEnabled(fileSelected);
         m_rawExportButton->setEnabled(fileSelected);
+        m_rawPeAction->setEnabled(fileSelected);
         if (!result.success)
         {
             m_rawSummaryLabel->setText(
@@ -1316,6 +1612,7 @@ namespace ks::misc
                 != RawFileObjectType::Directory;
         m_rawPreviewButton->setEnabled(fileSelected);
         m_rawExportButton->setEnabled(fileSelected);
+        m_rawPeAction->setEnabled(fileSelected);
         if (!result.success)
         {
             m_rawSummaryLabel->setText(

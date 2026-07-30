@@ -58,6 +58,12 @@ KswordARKHvmIoctlQuery(
         queryRequest->size != sizeof(*queryRequest)) {
         return STATUS_REVISION_MISMATCH;
     }
+    /* Reject unknown query flags and reserved fields in this protocol version. */
+    if (queryRequest->flags != 0UL ||
+        queryRequest->reserved != 0UL) {
+        /* Return the exact fixed-field contract failure. */
+        return STATUS_INVALID_PARAMETER;
+    }
 
     /* Retrieve the complete fixed status response. */
     status = WdfRequestRetrieveOutputBuffer(
@@ -148,7 +154,13 @@ KswordARKHvmIoctlControl(
     if (controlRequest->command ==
             KSWORD_ARK_HVM_CONTROL_SELF_TEST ||
         controlRequest->command ==
-            KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST) {
+            KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST ||
+        controlRequest->command ==
+            KSWORD_ARK_HVM_CONTROL_START_RESIDENT ||
+        controlRequest->command ==
+            KSWORD_ARK_HVM_CONTROL_VALIDATE_NESTED ||
+        controlRequest->command ==
+            KSWORD_ARK_HVM_CONTROL_RESET_FAULT) {
         KSWORD_ARK_SAFETY_CONTEXT safetyContext = { 0 };
 
         /* Bind policy auditing to the exact high-risk operation class. */
@@ -167,12 +179,41 @@ KswordARKHvmIoctlControl(
             safetyContext.TargetTextChars =
                 (USHORT)(RTL_NUMBER_OF(
                     L"One-shot VT-x VMLAUNCH and VMCALL VM-exit test") - 1U);
-        } else {
+        } else if (controlRequest->command ==
+            KSWORD_ARK_HVM_CONTROL_SELF_TEST) {
             safetyContext.TargetText =
                 L"Per-processor VT-x VMXON and VMXOFF self-test";
             safetyContext.TargetTextChars =
                 (USHORT)(RTL_NUMBER_OF(
                     L"Per-processor VT-x VMXON and VMXOFF self-test") - 1U);
+        } else if (controlRequest->command ==
+            KSWORD_ARK_HVM_CONTROL_START_RESIDENT) {
+            /* Describe all-processor resident VMX entry and rollback. */
+            safetyContext.TargetText =
+                L"Resident all-processor VT-x VMM and EPT activation";
+            /* Publish the exact bounded target text length. */
+            safetyContext.TargetTextChars =
+                (USHORT)(RTL_NUMBER_OF(
+                    L"Resident all-processor VT-x VMM and EPT activation") -
+                    1U);
+        } else if (controlRequest->command ==
+            KSWORD_ARK_HVM_CONTROL_VALIDATE_NESTED) {
+            /* Describe partial nested-VMX and eVMCS validation explicitly. */
+            safetyContext.TargetText =
+                L"Partial nested VMX dispatch and Hyper-V eVMCS validation";
+            /* Publish the exact bounded target text length. */
+            safetyContext.TargetTextChars =
+                (USHORT)(RTL_NUMBER_OF(
+                    L"Partial nested VMX dispatch and Hyper-V eVMCS validation") -
+                    1U);
+        } else {
+            /* Describe recoverable HVM fault-state reset explicitly. */
+            safetyContext.TargetText =
+                L"Reset stopped HVM fault and rollback state";
+            /* Publish the exact bounded target text length. */
+            safetyContext.TargetTextChars =
+                (USHORT)(RTL_NUMBER_OF(
+                    L"Reset stopped HVM fault and rollback state") - 1U);
         }
         status = KswordARKSafetyEvaluate(Device, &safetyContext);
         if (!NT_SUCCESS(status)) {
@@ -191,5 +232,224 @@ KswordARKHvmIoctlControl(
     /* Execute the versioned lifecycle command and return its stable summary. */
     status = KswordARKHvmControl(controlRequest, controlResponse);
     *BytesReturned = sizeof(*controlResponse);
+    return status;
+}
+
+NTSTATUS
+KswordARKHvmIoctlEptRule(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+{
+    PVOID inputBuffer = NULL;
+    PVOID outputBuffer = NULL;
+    size_t actualInputLength = 0U;
+    size_t actualOutputLength = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+    const KSWORD_ARK_HVM_EPT_RULE_REQUEST* ruleRequest = NULL;
+    KSWORD_ARK_HVM_EPT_RULE_RESPONSE* ruleResponse = NULL;
+
+    /* Reject an invalid completion contract before touching request buffers. */
+    if (BytesReturned == NULL) {
+        /* Return the exact dispatcher-contract failure. */
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* Initialize the completion size on every path. */
+    *BytesReturned = 0U;
+    /* EPT rule control requires a write-authorized device handle. */
+    status = KswordARKValidateDeviceIoControlWriteAccess(Request);
+    /* Stop before buffer access when handle authorization fails. */
+    if (!NT_SUCCESS(status)) {
+        /* Return the exact authorization failure. */
+        return status;
+    }
+    /* Retrieve the complete fixed EPT rule request. */
+    status = WdfRequestRetrieveInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_HVM_EPT_RULE_REQUEST),
+        &inputBuffer,
+        &actualInputLength);
+    /* Reject truncated or unavailable input buffers. */
+    if (!NT_SUCCESS(status) ||
+        InputBufferLength <
+            sizeof(KSWORD_ARK_HVM_EPT_RULE_REQUEST) ||
+        actualInputLength <
+            sizeof(KSWORD_ARK_HVM_EPT_RULE_REQUEST)) {
+        /* Return the exact WDF or fixed-size failure. */
+        return NT_SUCCESS(status)
+            ? STATUS_INFO_LENGTH_MISMATCH
+            : status;
+    }
+    /* Retrieve the complete fixed EPT rule response. */
+    status = WdfRequestRetrieveOutputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_HVM_EPT_RULE_RESPONSE),
+        &outputBuffer,
+        &actualOutputLength);
+    /* Reject truncated or unavailable output buffers. */
+    if (!NT_SUCCESS(status) ||
+        OutputBufferLength <
+            sizeof(KSWORD_ARK_HVM_EPT_RULE_RESPONSE) ||
+        actualOutputLength <
+            sizeof(KSWORD_ARK_HVM_EPT_RULE_RESPONSE)) {
+        /* Return the exact WDF or fixed-size failure. */
+        return NT_SUCCESS(status)
+            ? STATUS_BUFFER_TOO_SMALL
+            : status;
+    }
+    /* Bind fixed protocol views after both buffers are validated. */
+    ruleRequest =
+        (const KSWORD_ARK_HVM_EPT_RULE_REQUEST*)inputBuffer;
+    /* Bind the fixed protocol output view. */
+    ruleResponse =
+        (KSWORD_ARK_HVM_EPT_RULE_RESPONSE*)outputBuffer;
+    /* Apply central high-risk policy to every mutating EPT rule operation. */
+    if (ruleRequest->operation !=
+        KSWORD_ARK_HVM_EPT_RULE_QUERY) {
+        KSWORD_ARK_SAFETY_CONTEXT safetyContext = { 0 };
+
+        /* Bind policy auditing to the kernel-patch operation class. */
+        safetyContext.Operation =
+            KSWORD_ARK_SAFETY_OPERATION_KERNEL_PATCH;
+        /* Preserve explicit UI confirmation in central policy evidence. */
+        safetyContext.ContextFlags =
+            (ruleRequest->flags &
+                KSWORD_ARK_HVM_EPT_RULE_FLAG_UI_CONFIRMED) != 0UL
+            ? KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED
+            : 0UL;
+        /* Describe the exact EPT permission mutation class. */
+        safetyContext.TargetText =
+            L"Resident EPT R/W/X rule and cross-processor invalidation";
+        /* Publish the exact bounded target text length. */
+        safetyContext.TargetTextChars =
+            (USHORT)(RTL_NUMBER_OF(
+                L"Resident EPT R/W/X rule and cross-processor invalidation") -
+                1U);
+        /* Evaluate central policy without weakening protocol confirmation. */
+        status = KswordARKSafetyEvaluate(
+            Device,
+            &safetyContext);
+        /* Return a complete confirmation-required response on denial. */
+        if (!NT_SUCCESS(status)) {
+            /* Initialize the complete fixed response. */
+            RtlZeroMemory(
+                ruleResponse,
+                sizeof(*ruleResponse));
+            /* Publish the response protocol identity. */
+            ruleResponse->version =
+                KSWORD_ARK_HVM_PROTOCOL_VERSION;
+            /* Publish the complete response size. */
+            ruleResponse->size =
+                sizeof(*ruleResponse);
+            /* Publish stable confirmation-required status. */
+            ruleResponse->status =
+                KSWORD_ARK_HVM_EPT_RULE_STATUS_CONFIRMATION_REQUIRED;
+            /* Publish the authoritative policy failure. */
+            ruleResponse->lastStatus = status;
+            /* Publish the fixed completion size. */
+            *BytesReturned =
+                sizeof(*ruleResponse);
+            /* Return the authoritative policy failure. */
+            return status;
+        }
+    }
+    /* Execute the serialized EPT rule operation. */
+    status = KswordARKHvmEptRuleControl(
+        ruleRequest,
+        ruleResponse);
+    /* Publish the fixed completion size on protocol-level results. */
+    *BytesReturned = sizeof(*ruleResponse);
+    /* Return the complete EPT rule operation result. */
+    return status;
+}
+
+NTSTATUS
+KswordARKHvmIoctlEvents(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+{
+    PVOID inputBuffer = NULL;
+    PVOID outputBuffer = NULL;
+    size_t actualInputLength = 0U;
+    size_t actualOutputLength = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+    const KSWORD_ARK_HVM_EVENT_QUERY_REQUEST* eventRequest = NULL;
+
+    /* Event queries do not use the device object directly. */
+    UNREFERENCED_PARAMETER(Device);
+    /* Reject an invalid completion contract before touching request buffers. */
+    if (BytesReturned == NULL) {
+        /* Return the exact dispatcher-contract failure. */
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* Initialize the completion size on every path. */
+    *BytesReturned = 0U;
+    /* Retrieve the complete fixed event query request. */
+    status = WdfRequestRetrieveInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_HVM_EVENT_QUERY_REQUEST),
+        &inputBuffer,
+        &actualInputLength);
+    /* Reject truncated or unavailable input buffers. */
+    if (!NT_SUCCESS(status) ||
+        InputBufferLength <
+            sizeof(KSWORD_ARK_HVM_EVENT_QUERY_REQUEST) ||
+        actualInputLength <
+            sizeof(KSWORD_ARK_HVM_EVENT_QUERY_REQUEST)) {
+        /* Return the exact WDF or fixed-size failure. */
+        return NT_SUCCESS(status)
+            ? STATUS_INFO_LENGTH_MISMATCH
+            : status;
+    }
+    /* Bind the fixed protocol request after length validation. */
+    eventRequest =
+        (const KSWORD_ARK_HVM_EVENT_QUERY_REQUEST*)inputBuffer;
+    /* Require write authorization before clearing retained events. */
+    if (eventRequest->operation ==
+        KSWORD_ARK_HVM_EVENT_QUERY_CLEAR) {
+        /* Validate write access on the current device handle. */
+        status = KswordARKValidateDeviceIoControlWriteAccess(
+            Request);
+        /* Stop before response access when authorization fails. */
+        if (!NT_SUCCESS(status)) {
+            /* Return the exact authorization failure. */
+            return status;
+        }
+    }
+    /* Retrieve the complete fixed event query response. */
+    status = WdfRequestRetrieveOutputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE),
+        &outputBuffer,
+        &actualOutputLength);
+    /* Reject truncated or unavailable output buffers. */
+    if (!NT_SUCCESS(status) ||
+        OutputBufferLength <
+            sizeof(KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE) ||
+        actualOutputLength <
+            sizeof(KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE)) {
+        /* Return the exact WDF or fixed-size failure. */
+        return NT_SUCCESS(status)
+            ? STATUS_BUFFER_TOO_SMALL
+            : status;
+    }
+    /* Execute the read or stopped clear operation. */
+    status = KswordARKHvmEventControl(
+        eventRequest,
+        (KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE*)outputBuffer);
+    /* Publish the fixed completion size only on success. */
+    if (NT_SUCCESS(status)) {
+        /* Publish the complete fixed response size. */
+        *BytesReturned =
+            sizeof(KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE);
+    }
+    /* Return the complete event operation result. */
     return status;
 }

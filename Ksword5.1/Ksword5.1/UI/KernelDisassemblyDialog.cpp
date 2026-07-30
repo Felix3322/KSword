@@ -1,0 +1,1516 @@
+#include "KernelDisassemblyDialog.h"
+
+#include "../ArkDriverClient/ArkDriverClient.h"
+#include "../SettingsDock/AppearanceSettings.h"
+#include "../theme.h"
+#include "VisibleTableWidget.h"
+
+#include <QAbstractItemView>
+#include <QAction>
+#include <QApplication>
+#include <QClipboard>
+#include <QDialogButtonBox>
+#include <QHeaderView>
+#include <QLabel>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QRegularExpression>
+#include <QStringList>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QVBoxLayout>
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <utility>
+#include <vector>
+
+#if __has_include(<Zydis.h>)
+#define KSWORD_HAS_ZYDIS 1
+#include <Zydis.h>
+#elif __has_include(<Zydis/Zydis.h>)
+#define KSWORD_HAS_ZYDIS 1
+#include <Zydis/Zydis.h>
+#else
+#define KSWORD_HAS_ZYDIS 0
+#endif
+
+namespace
+{
+    QString bytesText(const QByteArray& bytes)
+    {
+        QStringList parts;
+        parts.reserve(bytes.size());
+        for (const char value : bytes)
+        {
+            parts.push_back(
+                QStringLiteral("%1")
+                    .arg(
+                        static_cast<unsigned char>(value),
+                        2,
+                        16,
+                        QChar('0'))
+                    .toUpper());
+        }
+        return parts.join(QChar(' '));
+    }
+
+    QString addressText(const std::uint64_t address)
+    {
+        return QStringLiteral("0x%1")
+            .arg(
+                static_cast<qulonglong>(address),
+                16,
+                16,
+                QChar('0'))
+            .toUpper();
+    }
+
+    bool parseHexBytes(
+        const QString& text,
+        QByteArray& bytesOut,
+        QString& errorTextOut)
+    {
+        bytesOut.clear();
+        errorTextOut.clear();
+        QString normalized = text.trimmed();
+        normalized.replace(QChar(','), QChar(' '));
+        normalized.replace(QChar(';'), QChar(' '));
+        normalized.replace(QChar('-'), QChar(' '));
+        const QStringList tokens = normalized.split(
+            QRegularExpression(QStringLiteral("\\s+")),
+            Qt::SkipEmptyParts);
+        for (QString token : tokens)
+        {
+            if (token.startsWith(
+                    QStringLiteral("0x"),
+                    Qt::CaseInsensitive))
+            {
+                token.remove(0, 2);
+            }
+            if (token.isEmpty() || (token.size() % 2) != 0)
+            {
+                errorTextOut = QStringLiteral(
+                    "十六进制字节必须由完整的两位数构成。");
+                return false;
+            }
+            for (qsizetype index = 0; index < token.size(); index += 2)
+            {
+                bool ok = false;
+                const unsigned int value =
+                    token.mid(index, 2).toUInt(&ok, 16);
+                if (!ok || value > 0xFFU)
+                {
+                    errorTextOut = QStringLiteral(
+                        "输入包含无效十六进制字节。");
+                    bytesOut.clear();
+                    return false;
+                }
+                bytesOut.append(static_cast<char>(value));
+                if (bytesOut.size()
+                    > static_cast<qsizetype>(
+                        KSWORD_ARK_MUTATION_MAX_BYTES))
+                {
+                    errorTextOut = QStringLiteral(
+                        "单次事务最多修改 %1 字节。")
+                        .arg(KSWORD_ARK_MUTATION_MAX_BYTES);
+                    bytesOut.clear();
+                    return false;
+                }
+            }
+        }
+        if (bytesOut.isEmpty())
+        {
+            errorTextOut = QStringLiteral(
+                "请输入至少一个十六进制字节。");
+            return false;
+        }
+        return true;
+    }
+
+    std::vector<std::uint8_t> byteVector(
+        const QByteArray& bytes)
+    {
+        const auto* begin = reinterpret_cast<const std::uint8_t*>(
+            bytes.constData());
+        return std::vector<std::uint8_t>(
+            begin,
+            begin + static_cast<std::size_t>(bytes.size()));
+    }
+
+    bool bytePrefixMatches(
+        const std::vector<std::uint8_t>& bytes,
+        const QByteArray& expected)
+    {
+        if (bytes.size()
+            < static_cast<std::size_t>(expected.size()))
+        {
+            return false;
+        }
+        return std::equal(
+            expected.cbegin(),
+            expected.cend(),
+            bytes.cbegin(),
+            [](const char left, const std::uint8_t right)
+            {
+                return static_cast<std::uint8_t>(
+                    static_cast<unsigned char>(left)) == right;
+            });
+    }
+
+    QString mutationResponseText(
+        const QString& stage,
+        const ksword::ark::MutationResponseResult& response)
+    {
+        return QStringLiteral(
+            "%1：tx=%2，status=%3，risk=0x%4，"
+            "NTSTATUS=0x%5，后端=%6")
+            .arg(stage)
+            .arg(
+                static_cast<qulonglong>(
+                    response.transactionId))
+            .arg(response.status)
+            .arg(response.riskFlags, 8, 16, QChar('0'))
+            .arg(
+                static_cast<unsigned long>(
+                    response.lastStatus),
+                8,
+                16,
+                QChar('0'))
+            .arg(QString::fromStdString(response.io.message));
+    }
+
+    QTableWidgetItem* readOnlyItem(const QString& text)
+    {
+        auto* item = new QTableWidgetItem(text);
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+        return item;
+    }
+
+    ks::ui::DisassemblyRow fallbackDecodeOne(
+        const QByteArray& bytes,
+        std::uint32_t offset,
+        std::uint64_t baseAddress,
+        ks::ui::DisassemblyArchitecture architecture);
+
+    bool tryZydis(
+        const QByteArray& bytes,
+        const std::uint64_t baseAddress,
+        const ks::ui::DisassemblyArchitecture architecture,
+        const std::uint32_t maximumInstructions,
+        ks::ui::DisassemblyResult& resultOut)
+    {
+#if KSWORD_HAS_ZYDIS
+        ks::ui::DisassemblyResult result;
+        result.backendName = QStringLiteral(
+            "Zydis v4（编译期固定依赖）");
+        std::uint32_t offset = 0U;
+        while (offset < static_cast<std::uint32_t>(bytes.size())
+            && result.rows.size()
+                < static_cast<qsizetype>(maximumInstructions))
+        {
+            ZydisDisassembledInstruction instruction{};
+            const ZydisMachineMode mode =
+                architecture
+                    == ks::ui::DisassemblyArchitecture::X64
+                ? ZYDIS_MACHINE_MODE_LONG_64
+                : ZYDIS_MACHINE_MODE_LEGACY_32;
+            const ZyanStatus status = ZydisDisassembleIntel(
+                mode,
+                baseAddress + offset,
+                bytes.constData() + static_cast<qsizetype>(offset),
+                static_cast<ZyanUSize>(
+                    bytes.size() - static_cast<qsizetype>(offset)),
+                &instruction);
+            if (!ZYAN_SUCCESS(status)
+                || instruction.info.length == 0U)
+            {
+                break;
+            }
+            const std::uint32_t length =
+                instruction.info.length;
+            if (length
+                > static_cast<std::uint32_t>(bytes.size()) - offset)
+            {
+                break;
+            }
+            const QString text =
+                QString::fromLatin1(instruction.text).trimmed();
+            const qsizetype separator =
+                text.indexOf(QChar(' '));
+            ks::ui::DisassemblyRow row;
+            row.address = baseAddress + offset;
+            row.byteOffset = offset;
+            row.bytes = bytes.mid(
+                static_cast<qsizetype>(offset),
+                static_cast<qsizetype>(length));
+            if (separator < 0)
+            {
+                row.mnemonic = text;
+            }
+            else
+            {
+                row.mnemonic = text.left(separator);
+                row.operands = text.mid(separator + 1).trimmed();
+            }
+            row.decoded = true;
+            result.rows.push_back(std::move(row));
+            offset += length;
+        }
+        result.complete =
+            offset >= static_cast<std::uint32_t>(bytes.size());
+        if (!result.rows.isEmpty())
+        {
+            if (!result.complete)
+            {
+                result.diagnosticText = QStringLiteral(
+                    "Zydis 在快照尾部遇到截断或无效指令；"
+                    "剩余字节将由有界降级解码器保留。");
+                while (offset
+                        < static_cast<std::uint32_t>(bytes.size())
+                    && result.rows.size()
+                        < static_cast<qsizetype>(
+                            maximumInstructions))
+                {
+                    ks::ui::DisassemblyRow row =
+                        fallbackDecodeOne(
+                            bytes,
+                            offset,
+                            baseAddress,
+                            architecture);
+                    const std::uint32_t consumed = std::max(
+                        1U,
+                        static_cast<std::uint32_t>(
+                            row.bytes.size()));
+                    result.rows.push_back(std::move(row));
+                    offset += consumed;
+                }
+                result.complete =
+                    offset
+                    >= static_cast<std::uint32_t>(bytes.size());
+            }
+            resultOut = std::move(result);
+            return true;
+        }
+#else
+        Q_UNUSED(bytes);
+        Q_UNUSED(baseAddress);
+        Q_UNUSED(architecture);
+        Q_UNUSED(maximumInstructions);
+        Q_UNUSED(resultOut);
+#endif
+        return false;
+    }
+
+    QString registerName(
+        const unsigned int registerIndex,
+        const bool wide)
+    {
+        static constexpr std::array<const char*, 16> kRegisters64{
+            "rax", "rcx", "rdx", "rbx",
+            "rsp", "rbp", "rsi", "rdi",
+            "r8", "r9", "r10", "r11",
+            "r12", "r13", "r14", "r15"
+        };
+        static constexpr std::array<const char*, 16> kRegisters32{
+            "eax", "ecx", "edx", "ebx",
+            "esp", "ebp", "esi", "edi",
+            "r8d", "r9d", "r10d", "r11d",
+            "r12d", "r13d", "r14d", "r15d"
+        };
+        const unsigned int bounded = registerIndex & 0x0FU;
+        return QString::fromLatin1(
+            wide ? kRegisters64[bounded] : kRegisters32[bounded]);
+    }
+
+    std::uint32_t modRmLength(
+        const QByteArray& bytes,
+        const std::uint32_t offset,
+        const bool address64)
+    {
+        if (offset >= static_cast<std::uint32_t>(bytes.size()))
+        {
+            return 0U;
+        }
+        const unsigned char modRm =
+            static_cast<unsigned char>(bytes.at(offset));
+        const unsigned int mod = modRm >> 6U;
+        const unsigned int rm = modRm & 7U;
+        std::uint32_t length = 1U;
+        if (mod != 3U && rm == 4U)
+        {
+            if (offset + length
+                >= static_cast<std::uint32_t>(bytes.size()))
+            {
+                return 0U;
+            }
+            const unsigned char sib =
+                static_cast<unsigned char>(
+                    bytes.at(offset + length));
+            ++length;
+            if (mod == 0U && (sib & 7U) == 5U)
+            {
+                length += 4U;
+            }
+        }
+        if (mod == 0U && rm == 5U)
+        {
+            length += address64 ? 4U : 4U;
+        }
+        else if (mod == 1U)
+        {
+            ++length;
+        }
+        else if (mod == 2U)
+        {
+            length += 4U;
+        }
+        return offset + length
+                <= static_cast<std::uint32_t>(bytes.size())
+            ? length
+            : 0U;
+    }
+
+    ks::ui::DisassemblyRow fallbackDecodeOne(
+        const QByteArray& bytes,
+        const std::uint32_t offset,
+        const std::uint64_t baseAddress,
+        const ks::ui::DisassemblyArchitecture architecture)
+    {
+        ks::ui::DisassemblyRow row;
+        row.address = baseAddress + offset;
+        row.byteOffset = offset;
+        const std::uint32_t remaining =
+            static_cast<std::uint32_t>(bytes.size()) - offset;
+        const unsigned char first =
+            static_cast<unsigned char>(bytes.at(offset));
+        std::uint32_t cursor = offset;
+        bool rexWide = false;
+        unsigned int rexBits = 0U;
+        if (architecture == ks::ui::DisassemblyArchitecture::X64
+            && first >= 0x40U && first <= 0x4FU)
+        {
+            rexBits = first & 0x0FU;
+            rexWide = (rexBits & 0x08U) != 0U;
+            ++cursor;
+            if (cursor >= static_cast<std::uint32_t>(bytes.size()))
+            {
+                row.bytes = bytes.mid(offset, 1);
+                row.mnemonic = QStringLiteral("db");
+                row.operands = QStringLiteral("0x%1")
+                    .arg(first, 2, 16, QChar('0'))
+                    .toUpper();
+                return row;
+            }
+        }
+        const unsigned char opcode =
+            static_cast<unsigned char>(bytes.at(cursor));
+        const std::uint32_t prefixBytes = cursor - offset;
+        auto finish = [&row, &bytes, offset](
+            const std::uint32_t length,
+            const QString& mnemonic,
+            const QString& operands = QString())
+        {
+            row.bytes = bytes.mid(
+                static_cast<qsizetype>(offset),
+                static_cast<qsizetype>(length));
+            row.mnemonic = mnemonic;
+            row.operands = operands;
+            row.decoded = true;
+        };
+        if (opcode == 0x90U)
+        {
+            finish(prefixBytes + 1U, QStringLiteral("nop"));
+            return row;
+        }
+        if (opcode == 0xCCU)
+        {
+            finish(prefixBytes + 1U, QStringLiteral("int3"));
+            return row;
+        }
+        if (opcode == 0xC3U)
+        {
+            finish(prefixBytes + 1U, QStringLiteral("ret"));
+            return row;
+        }
+        if (opcode == 0xF4U)
+        {
+            finish(prefixBytes + 1U, QStringLiteral("hlt"));
+            return row;
+        }
+        if (opcode == 0xFAU || opcode == 0xFBU)
+        {
+            finish(
+                prefixBytes + 1U,
+                opcode == 0xFAU
+                    ? QStringLiteral("cli")
+                    : QStringLiteral("sti"));
+            return row;
+        }
+        if (opcode >= 0x50U && opcode <= 0x5FU)
+        {
+            const bool pop = opcode >= 0x58U;
+            const unsigned int index =
+                (opcode & 7U)
+                + ((rexBits & 1U) != 0U ? 8U : 0U);
+            finish(
+                prefixBytes + 1U,
+                pop ? QStringLiteral("pop") : QStringLiteral("push"),
+                registerName(
+                    index,
+                    architecture
+                        == ks::ui::DisassemblyArchitecture::X64));
+            return row;
+        }
+        if ((opcode == 0xE8U || opcode == 0xE9U)
+            && remaining >= prefixBytes + 5U)
+        {
+            std::int32_t displacement = 0;
+            std::memcpy(
+                &displacement,
+                bytes.constData()
+                    + static_cast<qsizetype>(cursor + 1U),
+                sizeof(displacement));
+            const std::uint32_t length = prefixBytes + 5U;
+            finish(
+                length,
+                opcode == 0xE8U
+                    ? QStringLiteral("call")
+                    : QStringLiteral("jmp"),
+                addressText(
+                    row.address + length + displacement));
+            return row;
+        }
+        if (opcode == 0xEBU
+            && remaining >= prefixBytes + 2U)
+        {
+            const auto displacement = static_cast<std::int8_t>(
+                bytes.at(static_cast<qsizetype>(cursor + 1U)));
+            const std::uint32_t length = prefixBytes + 2U;
+            finish(
+                length,
+                QStringLiteral("jmp"),
+                addressText(
+                    row.address + length + displacement));
+            return row;
+        }
+        static constexpr std::array<const char*, 16> kConditions{
+            "jo", "jno", "jb", "jae",
+            "je", "jne", "jbe", "ja",
+            "js", "jns", "jp", "jnp",
+            "jl", "jge", "jle", "jg"
+        };
+        if (opcode >= 0x70U
+            && opcode <= 0x7FU
+            && remaining >= prefixBytes + 2U)
+        {
+            const auto displacement = static_cast<std::int8_t>(
+                bytes.at(static_cast<qsizetype>(cursor + 1U)));
+            const std::uint32_t length = prefixBytes + 2U;
+            finish(
+                length,
+                QString::fromLatin1(
+                    kConditions[opcode - 0x70U]),
+                addressText(
+                    row.address + length + displacement));
+            return row;
+        }
+        if (opcode == 0x0FU
+            && remaining >= prefixBytes + 2U)
+        {
+            const unsigned char second =
+                static_cast<unsigned char>(
+                    bytes.at(static_cast<qsizetype>(cursor + 1U)));
+            if (second == 0x05U
+                || second == 0x07U
+                || second == 0x0BU)
+            {
+                finish(
+                    prefixBytes + 2U,
+                    second == 0x05U
+                        ? QStringLiteral("syscall")
+                        : second == 0x07U
+                            ? QStringLiteral("sysret")
+                            : QStringLiteral("ud2"));
+                return row;
+            }
+            if (second >= 0x80U
+                && second <= 0x8FU
+                && remaining >= prefixBytes + 6U)
+            {
+                std::int32_t displacement = 0;
+                std::memcpy(
+                    &displacement,
+                    bytes.constData()
+                        + static_cast<qsizetype>(cursor + 2U),
+                    sizeof(displacement));
+                const std::uint32_t length = prefixBytes + 6U;
+                finish(
+                    length,
+                    QString::fromLatin1(
+                        kConditions[second - 0x80U]),
+                    addressText(
+                        row.address + length + displacement));
+                return row;
+            }
+        }
+        if (opcode >= 0xB8U
+            && opcode <= 0xBFU)
+        {
+            const std::uint32_t immediateBytes =
+                rexWide ? 8U : 4U;
+            if (remaining >= prefixBytes + 1U + immediateBytes)
+            {
+                std::uint64_t immediate = 0U;
+                std::memcpy(
+                    &immediate,
+                    bytes.constData()
+                        + static_cast<qsizetype>(cursor + 1U),
+                    immediateBytes);
+                const unsigned int index =
+                    (opcode & 7U)
+                    + ((rexBits & 1U) != 0U ? 8U : 0U);
+                finish(
+                    prefixBytes + 1U + immediateBytes,
+                    QStringLiteral("mov"),
+                    QStringLiteral("%1, 0x%2")
+                        .arg(registerName(index, rexWide))
+                        .arg(
+                            static_cast<qulonglong>(immediate),
+                            0,
+                            16)
+                        .toUpper());
+                return row;
+            }
+        }
+        const bool hasModRm =
+            opcode == 0x89U || opcode == 0x8BU
+            || opcode == 0x8DU || opcode == 0x31U
+            || opcode == 0x33U || opcode == 0x85U
+            || opcode == 0x81U || opcode == 0x83U
+            || opcode == 0xFFU;
+        if (hasModRm)
+        {
+            const std::uint32_t modRmBytes =
+                modRmLength(
+                    bytes,
+                    cursor + 1U,
+                    architecture
+                        == ks::ui::DisassemblyArchitecture::X64);
+            std::uint32_t immediateBytes = 0U;
+            if (opcode == 0x81U)
+            {
+                immediateBytes = 4U;
+            }
+            else if (opcode == 0x83U)
+            {
+                immediateBytes = 1U;
+            }
+            const std::uint32_t length =
+                prefixBytes + 1U + modRmBytes + immediateBytes;
+            if (modRmBytes != 0U && remaining >= length)
+            {
+                const unsigned char modRm =
+                    static_cast<unsigned char>(
+                        bytes.at(static_cast<qsizetype>(
+                            cursor + 1U)));
+                const unsigned int extension =
+                    (modRm >> 3U) & 7U;
+                QString mnemonic;
+                if (opcode == 0x89U || opcode == 0x8BU)
+                {
+                    mnemonic = QStringLiteral("mov");
+                }
+                else if (opcode == 0x8DU)
+                {
+                    mnemonic = QStringLiteral("lea");
+                }
+                else if (opcode == 0x31U || opcode == 0x33U)
+                {
+                    mnemonic = QStringLiteral("xor");
+                }
+                else if (opcode == 0x85U)
+                {
+                    mnemonic = QStringLiteral("test");
+                }
+                else if (opcode == 0xFFU)
+                {
+                    mnemonic = extension == 2U
+                        ? QStringLiteral("call")
+                        : extension == 4U
+                            ? QStringLiteral("jmp")
+                            : extension == 6U
+                                ? QStringLiteral("push")
+                                : QStringLiteral("ff-group");
+                }
+                else
+                {
+                    static constexpr std::array<
+                        const char*, 8> kGroupOne{
+                        "add", "or", "adc", "sbb",
+                        "and", "sub", "xor", "cmp"
+                    };
+                    mnemonic = QString::fromLatin1(
+                        kGroupOne[extension]);
+                }
+                finish(
+                    length,
+                    mnemonic,
+                    QStringLiteral("<ModR/M %1>")
+                        .arg(
+                            modRm,
+                            2,
+                            16,
+                            QChar('0'))
+                        .toUpper());
+                return row;
+            }
+        }
+        row.bytes = bytes.mid(
+            static_cast<qsizetype>(offset),
+            1);
+        row.mnemonic = QStringLiteral("db");
+        row.operands = QStringLiteral("0x%1")
+            .arg(first, 2, 16, QChar('0'))
+            .toUpper();
+        row.decoded = false;
+        return row;
+    }
+}
+
+namespace ks::ui
+{
+    DisassemblyResult InstructionDecoder::decode(
+        const QByteArray& bytes,
+        const std::uint64_t baseAddress,
+        const DisassemblyArchitecture architecture,
+        const std::uint32_t maximumInstructions)
+    {
+        DisassemblyResult result;
+        if (bytes.isEmpty())
+        {
+            result.backendName = QStringLiteral("无输入");
+            result.diagnosticText =
+                QStringLiteral("没有可解码的字节。");
+            return result;
+        }
+        if (baseAddress
+            > std::numeric_limits<std::uint64_t>::max()
+                - static_cast<std::uint64_t>(
+                    bytes.size() - 1))
+        {
+            result.backendName =
+                QStringLiteral("输入校验");
+            result.diagnosticText =
+                QStringLiteral("指令快照地址范围发生 64 位溢出。");
+            return result;
+        }
+        const std::uint32_t boundedMaximum =
+            std::clamp(maximumInstructions, 1U, 65536U);
+        if (tryZydis(
+                bytes,
+                baseAddress,
+                architecture,
+                boundedMaximum,
+                result))
+        {
+            return result;
+        }
+        result.backendName =
+            QStringLiteral("内置 x86/x64 有界解码器");
+        result.diagnosticText = QStringLiteral(
+            "编译时未启用 Zydis v4.1.1，或输入首条指令无效；"
+            "常见控制流、序言、尾声和 ModR/M 指令已解码，"
+            "未知指令以 db 保留原始字节，不猜测语义。");
+        std::uint32_t offset = 0U;
+        while (offset < static_cast<std::uint32_t>(bytes.size())
+            && result.rows.size()
+                < static_cast<qsizetype>(boundedMaximum))
+        {
+            DisassemblyRow row = fallbackDecodeOne(
+                bytes,
+                offset,
+                baseAddress,
+                architecture);
+            const std::uint32_t consumed = std::max(
+                1U,
+                static_cast<std::uint32_t>(row.bytes.size()));
+            result.rows.push_back(std::move(row));
+            offset += consumed;
+        }
+        result.complete =
+            offset >= static_cast<std::uint32_t>(bytes.size());
+        return result;
+    }
+
+    KernelDisassemblyDialog::KernelDisassemblyDialog(
+        QWidget* parent)
+        : QDialog(parent)
+    {
+        setWindowTitle(QStringLiteral("指令视图"));
+        resize(980, 640);
+        auto* layout = new QVBoxLayout(this);
+        m_sourceLabel = new QLabel(this);
+        m_sourceLabel->setWordWrap(true);
+        layout->addWidget(m_sourceLabel);
+        m_backendLabel = new QLabel(this);
+        m_backendLabel->setWordWrap(true);
+        layout->addWidget(m_backendLabel);
+        m_mutationRiskLabel = new QLabel(this);
+        m_mutationRiskLabel->setWordWrap(true);
+        m_mutationRiskLabel->setTextInteractionFlags(
+            Qt::TextSelectableByMouse);
+        m_mutationRiskLabel->setStyleSheet(QStringLiteral(
+            "QLabel{border:1px solid #b3261e;border-radius:6px;"
+            "padding:8px;color:#b3261e;font-weight:600;}"));
+        m_mutationRiskLabel->hide();
+        layout->addWidget(m_mutationRiskLabel);
+        m_mutationStatusLabel = new QLabel(this);
+        m_mutationStatusLabel->setWordWrap(true);
+        m_mutationStatusLabel->setTextInteractionFlags(
+            Qt::TextSelectableByMouse);
+        m_mutationStatusLabel->hide();
+        layout->addWidget(m_mutationStatusLabel);
+        m_table = new ks::ui::VisibleTableWidget(this);
+        m_table->setColumnCount(5);
+        m_table->setHorizontalHeaderLabels({
+            QStringLiteral("地址"),
+            QStringLiteral("偏移"),
+            QStringLiteral("原始字节"),
+            QStringLiteral("助记符"),
+            QStringLiteral("操作数")
+        });
+        m_table->setSelectionBehavior(
+            QAbstractItemView::SelectRows);
+        m_table->setSelectionMode(
+            QAbstractItemView::SingleSelection);
+        m_table->setEditTriggers(
+            QAbstractItemView::NoEditTriggers);
+        m_table->setContextMenuPolicy(
+            Qt::CustomContextMenu);
+        m_table->horizontalHeader()->setStretchLastSection(true);
+        layout->addWidget(m_table, 1);
+        auto* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Close,
+            this);
+        layout->addWidget(buttons);
+        connect(
+            buttons,
+            &QDialogButtonBox::rejected,
+            this,
+            &QDialog::reject);
+        connect(
+            this,
+            &KernelDisassemblyDialog::requestModifyBytes,
+            this,
+            [this](
+                const std::uint64_t address,
+                const QByteArray& originalBytes)
+            {
+                if (m_kernelMutationEnabled)
+                {
+                    executeKernelMutation(
+                        address,
+                        originalBytes);
+                }
+            });
+        connect(
+            m_table,
+            &QTableWidget::customContextMenuRequested,
+            this,
+            [this](const QPoint& position)
+            {
+                if (QTableWidgetItem* item =
+                        m_table->itemAt(position);
+                    item != nullptr)
+                {
+                    m_table->setCurrentCell(
+                        item->row(),
+                        0);
+                }
+                const auto selection = selectedByteRange();
+                if (!selection.has_value())
+                {
+                    return;
+                }
+                QMenu menu(this);
+                menu.setStyleSheet(
+                    KswordTheme::ContextMenuStyle());
+                QAction* copyAddress = menu.addAction(
+                    QStringLiteral("复制地址"));
+                QAction* copyBytes = menu.addAction(
+                    QStringLiteral("复制原始字节"));
+                QAction* modify = nullptr;
+                QAction* suppressConfirmations = nullptr;
+                if (m_kernelMutationEnabled)
+                {
+                    menu.addSeparator();
+                    QMenu* mutationMenu = menu.addMenu(
+                        QStringLiteral("字节事务"));
+                    modify = mutationMenu->addAction(
+                        QStringLiteral("修改所选字节…"));
+                    QMenu* policyMenu = mutationMenu->addMenu(
+                        QStringLiteral("确认策略"));
+                    suppressConfirmations =
+                        policyMenu->addAction(
+                        QStringLiteral("跳过重复危险确认"));
+                    suppressConfirmations->setCheckable(true);
+                    suppressConfirmations->setChecked(
+                        ks::settings::
+                            dangerousActionConfirmationsSuppressed());
+                    QAction* policyBoundary =
+                        policyMenu->addAction(
+                            QStringLiteral(
+                                "仅跳过 UI 模态框；事务校验与审计始终保留"));
+                    policyBoundary->setEnabled(false);
+                }
+                QAction* selected = menu.exec(
+                    m_table->viewport()->mapToGlobal(position));
+                if (selected == copyAddress)
+                {
+                    QApplication::clipboard()->setText(
+                        addressText(selection->address));
+                }
+                else if (selected == copyBytes)
+                {
+                    QApplication::clipboard()->setText(
+                        bytesText(selection->originalBytes));
+                }
+                else if (modify != nullptr
+                    && selected == modify)
+                {
+                    emitModifyRequest();
+                }
+                else if (suppressConfirmations != nullptr
+                    && selected == suppressConfirmations)
+                {
+                    const bool requested =
+                        suppressConfirmations->isChecked();
+                    if (requested)
+                    {
+                        const auto confirmation =
+                            QMessageBox::warning(
+                                this,
+                                QStringLiteral("确认策略"),
+                                QStringLiteral(
+                                    "启用后只会跳过后续重复的 UI 模态询问。"
+                                    "这是应用级持久策略，会影响所有使用同一"
+                                    "确认策略的危险操作。"
+                                    "不会绕过 R0 安全策略、PREPARE、"
+                                    "expected-before 双重比较与写前复核、dry-run、"
+                                    "FORCE+UI_CONFIRMED、写后校验、"
+                                    "回滚或审计。\n\n是否启用？"),
+                                QMessageBox::Yes
+                                    | QMessageBox::No,
+                                QMessageBox::No);
+                        if (confirmation
+                            != QMessageBox::Yes)
+                        {
+                            return;
+                        }
+                    }
+                    ks::settings::AppearanceSettings settings =
+                        ks::settings::loadAppearanceSettings();
+                    settings
+                        .suppressDangerousActionConfirmations =
+                        requested;
+                    QString saveError;
+                    if (!ks::settings::saveAppearanceSettings(
+                            settings,
+                            &saveError))
+                    {
+                        QMessageBox::critical(
+                            this,
+                            QStringLiteral("确认策略"),
+                            QStringLiteral(
+                                "确认策略保存失败：%1")
+                                .arg(saveError));
+                        return;
+                    }
+                    m_mutationStatusLabel->setText(
+                        requested
+                            ? QStringLiteral(
+                                "确认策略：应用级跳过重复 UI 模态询问；"
+                                "R0 事务校验、验证、回滚和审计仍启用。")
+                            : QStringLiteral(
+                                "确认策略：每次危险操作均显示 UI 模态询问；"
+                                "R0 事务校验、验证、回滚和审计仍启用。"));
+                }
+            });
+    }
+
+    void KernelDisassemblyDialog::openKernelAddress(
+        QWidget* parent,
+        const std::uint64_t address,
+        const QString& sourceDescription,
+        const std::uint32_t byteCount)
+    {
+        if (address == 0U || byteCount == 0U)
+        {
+            QMessageBox::warning(
+                parent,
+                QStringLiteral("指令视图"),
+                QStringLiteral("目标内核地址或读取长度无效。"));
+            return;
+        }
+        const std::uint32_t boundedBytes = std::min<std::uint32_t>(
+            byteCount,
+            KSWORD_ARK_MEMORY_READ_MAX_BYTES);
+        const ksword::ark::DriverClient client;
+        const ksword::ark::VirtualMemoryReadResult read =
+            client.readVirtualMemory(
+                0U,
+                address,
+                boundedBytes,
+                KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS
+                    | KSWORD_ARK_MEMORY_READ_FLAG_ZERO_FILL_UNREADABLE);
+        if (!read.io.ok
+            || read.data.empty()
+            || read.bytesRead == 0U)
+        {
+            QMessageBox::warning(
+                parent,
+                QStringLiteral("指令视图"),
+                QStringLiteral(
+                    "R0 内核字节读取失败。\n"
+                    "Win32=%1，NTSTATUS=0x%2，读取=%3/%4。\n%5")
+                    .arg(read.io.win32Error)
+                    .arg(
+                        static_cast<unsigned long>(
+                            read.copyStatus),
+                        8,
+                        16,
+                        QChar('0'))
+                    .arg(read.bytesRead)
+                    .arg(boundedBytes)
+                    .arg(QString::fromStdString(
+                        read.io.message)));
+            return;
+        }
+        const qsizetype snapshotBytes =
+            static_cast<qsizetype>(std::min<std::size_t>(
+                read.data.size(),
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max())));
+        const QByteArray snapshot(
+            reinterpret_cast<const char*>(read.data.data()),
+            snapshotBytes);
+        KernelDisassemblyDialog dialog(parent);
+        dialog.setSnapshot(
+            snapshot,
+            address,
+            DisassemblyArchitecture::X64,
+            sourceDescription);
+        dialog.setKernelMutationEnabled(true);
+        dialog.exec();
+    }
+
+    void KernelDisassemblyDialog::setSnapshot(
+        const QByteArray& bytes,
+        const std::uint64_t baseAddress,
+        const DisassemblyArchitecture architecture,
+        const QString& sourceDescription)
+    {
+        m_originalBytes = bytes;
+        m_baseAddress = baseAddress;
+        m_architecture = architecture;
+        m_sourceLabel->setText(
+            QStringLiteral(
+                "证据源：%1\n基址：%2；架构：%3；快照：%4 字节。"
+                "本窗口只解码传入快照；是否允许事务修改由当前证据源策略决定。")
+                .arg(sourceDescription)
+                .arg(addressText(baseAddress))
+                .arg(
+                    architecture == DisassemblyArchitecture::X64
+                        ? QStringLiteral("x64")
+                        : QStringLiteral("x86"))
+                .arg(bytes.size()));
+        rebuildRows();
+    }
+
+    void KernelDisassemblyDialog::setKernelMutationEnabled(
+        const bool enabled)
+    {
+        m_kernelMutationEnabled = enabled;
+        m_mutationRiskLabel->setVisible(enabled);
+        m_mutationStatusLabel->setVisible(enabled);
+        if (enabled)
+        {
+            m_mutationRiskLabel->setText(QStringLiteral(
+                "风险：此入口可通过 R0 事务修改当前指令对应的内核虚拟字节。"
+                "目标可能是正在执行的代码或关键内核数据；错误修改可能立即导致"
+                "权限边界失效、数据损坏、系统挂起或蓝屏。"
+                "1–64 字节活体内核补丁不是硬件原子操作，其他 CPU 仍可能"
+                "在写入过程中并发执行或修改目标。"
+                "应用级关闭重复危险确认只会跳过模态询问，不会跳过原始快照比对、"
+                "PREPARE、dry-run、FORCE+UI_CONFIRMED、写后校验、回滚和审计。"
+                "在指令行上右键可进入“字节事务”二级菜单。"));
+            m_mutationRiskLabel->setToolTip(QStringLiteral(
+                "在指令行上右键，进入“字节事务”二级菜单。"));
+            m_mutationStatusLabel->setText(
+                QStringLiteral(
+                    "事务后端：尚未执行；等待选择一条指令。"
+                    "当前确认策略：%1。")
+                    .arg(
+                        ks::settings::
+                            dangerousActionConfirmationsSuppressed()
+                            ? QStringLiteral(
+                                "跳过重复 UI 模态框，完整事务校验保留")
+                            : QStringLiteral(
+                                "逐次显示危险确认")));
+        }
+    }
+
+    QByteArray KernelDisassemblyDialog::originalBytes() const
+    {
+        return m_originalBytes;
+    }
+
+    std::uint64_t KernelDisassemblyDialog::baseAddress() const
+    {
+        return m_baseAddress;
+    }
+
+    std::optional<DisassemblySelection>
+    KernelDisassemblyDialog::selectedByteRange() const
+    {
+        if (m_table == nullptr)
+        {
+            return std::nullopt;
+        }
+        const int rowIndex = m_table->currentRow();
+        if (rowIndex < 0
+            || rowIndex >= static_cast<int>(m_rows.size()))
+        {
+            return std::nullopt;
+        }
+        const DisassemblyRow& row = m_rows.at(rowIndex);
+        DisassemblySelection selection;
+        selection.address = row.address;
+        selection.byteOffset = row.byteOffset;
+        selection.originalBytes = row.bytes;
+        return selection;
+    }
+
+    void KernelDisassemblyDialog::rebuildRows()
+    {
+        const DisassemblyResult result =
+            InstructionDecoder::decode(
+                m_originalBytes,
+                m_baseAddress,
+                m_architecture);
+        m_rows = result.rows;
+        m_backendLabel->setText(
+            QStringLiteral("解码后端：%1%2")
+                .arg(result.backendName)
+                .arg(
+                    result.diagnosticText.isEmpty()
+                        ? QString()
+                        : QStringLiteral("\n%1")
+                            .arg(result.diagnosticText)));
+        m_table->setRowCount(
+            static_cast<int>(m_rows.size()));
+        for (qsizetype index = 0; index < m_rows.size(); ++index)
+        {
+            const DisassemblyRow& row = m_rows.at(index);
+            m_table->setItem(
+                static_cast<int>(index),
+                0,
+                readOnlyItem(addressText(row.address)));
+            m_table->setItem(
+                static_cast<int>(index),
+                1,
+                readOnlyItem(
+                    QStringLiteral("0x%1")
+                        .arg(
+                            row.byteOffset,
+                            8,
+                            16,
+                            QChar('0'))
+                        .toUpper()));
+            m_table->setItem(
+                static_cast<int>(index),
+                2,
+                readOnlyItem(bytesText(row.bytes)));
+            m_table->setItem(
+                static_cast<int>(index),
+                3,
+                readOnlyItem(row.mnemonic));
+            m_table->setItem(
+                static_cast<int>(index),
+                4,
+                readOnlyItem(row.operands));
+        }
+        m_table->resizeColumnsToContents();
+    }
+
+    void KernelDisassemblyDialog::emitModifyRequest()
+    {
+        const auto selection = selectedByteRange();
+        if (!selection.has_value())
+        {
+            return;
+        }
+        emit requestModifyBytes(
+            selection->address,
+            selection->originalBytes);
+    }
+
+    void KernelDisassemblyDialog::executeKernelMutation(
+        const std::uint64_t address,
+        const QByteArray& originalBytes)
+    {
+        if (!m_kernelMutationEnabled
+            || originalBytes.isEmpty()
+            || originalBytes.size()
+                > static_cast<qsizetype>(
+                    KSWORD_ARK_MUTATION_MAX_BYTES))
+        {
+            return;
+        }
+
+        QDialog editor(this);
+        editor.setWindowTitle(QStringLiteral("内核字节事务"));
+        editor.resize(680, 360);
+        auto* layout = new QVBoxLayout(&editor);
+        auto* risk = new QLabel(
+            QStringLiteral(
+                "目标：%1；快照长度：%2 字节。\n"
+                "修改可能作用于正在执行的内核代码。错误字节可能导致系统崩溃、"
+                "安全边界失效或不可恢复的数据损坏。事务会先核对原始字节并"
+                "执行 dry-run，只有最终 FORCE+UI_CONFIRMED 阶段才写入；"
+                "写后校验失败会立即请求回滚。多字节写入不是硬件原子操作，"
+                "其他 CPU 仍可能并发执行或修改目标。")
+                .arg(addressText(address))
+                .arg(originalBytes.size()),
+            &editor);
+        risk->setWordWrap(true);
+        risk->setStyleSheet(QStringLiteral(
+            "QLabel{border:1px solid #b3261e;border-radius:6px;"
+            "padding:8px;color:#b3261e;font-weight:600;}"));
+        layout->addWidget(risk);
+        auto* inputHint = new QLabel(
+            QStringLiteral(
+                "输入与原始快照等长的十六进制字节；"
+                "可使用空格、逗号或连续十六进制。"),
+            &editor);
+        inputHint->setWordWrap(true);
+        layout->addWidget(inputHint);
+        auto* input = new QPlainTextEdit(&editor);
+        input->setPlainText(bytesText(originalBytes));
+        input->selectAll();
+        layout->addWidget(input, 1);
+        auto* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+            &editor);
+        layout->addWidget(buttons);
+        connect(
+            buttons,
+            &QDialogButtonBox::accepted,
+            &editor,
+            &QDialog::accept);
+        connect(
+            buttons,
+            &QDialogButtonBox::rejected,
+            &editor,
+            &QDialog::reject);
+        if (editor.exec() != QDialog::Accepted)
+        {
+            return;
+        }
+
+        QByteArray replacementBytes;
+        QString parseError;
+        if (!parseHexBytes(
+                input->toPlainText(),
+                replacementBytes,
+                parseError))
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("内核字节事务"),
+                parseError);
+            return;
+        }
+        if (replacementBytes.size() != originalBytes.size())
+        {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("内核字节事务"),
+                QStringLiteral(
+                    "替换长度必须与所选原始指令一致（%1 字节），"
+                    "以便完整执行 expected-before 校验。")
+                    .arg(originalBytes.size()));
+            return;
+        }
+        if (replacementBytes == originalBytes)
+        {
+            m_mutationStatusLabel->setText(QStringLiteral(
+                "事务后端：替换字节与快照一致，未创建事务。"));
+            return;
+        }
+
+        const bool confirmationSuppressed =
+            ks::settings::
+                dangerousActionConfirmationsSuppressed();
+        if (!confirmationSuppressed)
+        {
+            const QMessageBox::StandardButton confirmed =
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("确认内核字节事务"),
+                    QStringLiteral(
+                        "即将修改内核虚拟地址 %1 的 %2 字节。\n"
+                        "原始：%3\n替换：%4\n\n"
+                        "这可能立即造成系统挂起、蓝屏、数据损坏或"
+                        "安全边界失效。是否继续执行 PREPARE 和 dry-run？")
+                        .arg(addressText(address))
+                        .arg(originalBytes.size())
+                        .arg(bytesText(originalBytes))
+                        .arg(bytesText(replacementBytes)),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No);
+            if (confirmed != QMessageBox::Yes)
+            {
+                m_mutationStatusLabel->setText(
+                    QStringLiteral("事务后端：用户取消。"));
+                return;
+            }
+        }
+
+        const ksword::ark::DriverClient client;
+        const unsigned long finalFlags =
+            KSWORD_ARK_MUTATION_FLAG_FORCE
+            | KSWORD_ARK_MUTATION_FLAG_UI_CONFIRMED;
+        ksword::ark::MutationPrepareInput prepareInput;
+        prepareInput.flags =
+            KSWORD_ARK_MUTATION_FLAG_DRY_RUN
+            | KSWORD_ARK_MUTATION_FLAG_EXPECTED_BEFORE_PRESENT;
+        prepareInput.targetKind =
+            KSWORD_ARK_MUTATION_TARGET_KERNEL_VIRTUAL_BYTES_SMALL;
+        prepareInput.bytes =
+            static_cast<std::uint32_t>(
+                replacementBytes.size());
+        prepareInput.targetAddress = address;
+        prepareInput.afterBytes =
+            byteVector(replacementBytes);
+        prepareInput.expectedBeforeBytes =
+            byteVector(originalBytes);
+
+        m_mutationStatusLabel->setText(QStringLiteral(
+            "事务后端：正在 PREPARE 并核对原始快照…"));
+        const ksword::ark::MutationResponseResult prepared =
+            client.prepareMutation(prepareInput);
+        if (!prepared.io.ok
+            || prepared.status
+                != KSWORD_ARK_MUTATION_STATUS_PREPARED
+            || prepared.transactionId == 0U
+            || prepared.bytes
+                != static_cast<std::uint32_t>(
+                    originalBytes.size())
+            || !bytePrefixMatches(
+                prepared.beforeBytes,
+                originalBytes))
+        {
+            const QString detail = mutationResponseText(
+                QStringLiteral("PREPARE 失败"),
+                prepared);
+            m_mutationStatusLabel->setText(
+                QStringLiteral("事务后端：%1").arg(detail));
+            QMessageBox::critical(
+                this,
+                QStringLiteral("内核字节事务"),
+                QStringLiteral(
+                    "PREPARE 未通过；没有发出写入。\n%1")
+                    .arg(detail));
+            return;
+        }
+
+        const auto readKernelBytesMatches =
+            [&client, address](
+                const QByteArray& expected,
+                ksword::ark::VirtualMemoryReadResult& readResult)
+            {
+                readResult = client.readVirtualMemory(
+                    0U,
+                    address,
+                    static_cast<std::uint32_t>(
+                        expected.size()),
+                    KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS);
+                return readResult.io.ok
+                    && readResult.readStatus
+                        == KSWORD_ARK_MEMORY_READ_STATUS_OK
+                    && readResult.bytesRead
+                        == static_cast<std::uint32_t>(
+                            expected.size())
+                    && readResult.data.size()
+                        == static_cast<std::size_t>(
+                            expected.size())
+                    && bytePrefixMatches(
+                        readResult.data,
+                        expected);
+            };
+
+        m_mutationStatusLabel->setText(QStringLiteral(
+            "事务后端：PREPARE 完成；正在执行 dry-run…"));
+        const ksword::ark::MutationResponseResult dryRun =
+            client.commitMutation(
+                prepared.transactionId,
+                KSWORD_ARK_MUTATION_FLAG_DRY_RUN);
+        if (!dryRun.io.ok
+            || dryRun.status
+                != KSWORD_ARK_MUTATION_STATUS_DRY_RUN)
+        {
+            const QString detail = mutationResponseText(
+                QStringLiteral("dry-run 失败"),
+                dryRun);
+            m_mutationStatusLabel->setText(
+                QStringLiteral("事务后端：%1").arg(detail));
+            QMessageBox::critical(
+                this,
+                QStringLiteral("内核字节事务"),
+                QStringLiteral(
+                    "dry-run 未通过；没有发出 FORCE 写入。\n%1")
+                    .arg(detail));
+            return;
+        }
+
+        m_mutationStatusLabel->setText(QStringLiteral(
+            "事务后端：dry-run 通过；正在提交 "
+            "FORCE+UI_CONFIRMED 并由 R0 写后校验…"));
+        const ksword::ark::MutationResponseResult committed =
+            client.commitMutation(
+                prepared.transactionId,
+                finalFlags);
+        if (!committed.io.ok
+            || committed.status
+                != KSWORD_ARK_MUTATION_STATUS_COMMITTED)
+        {
+            const QString detail = mutationResponseText(
+                QStringLiteral("FORCE 提交失败"),
+                committed);
+            ksword::ark::VirtualMemoryReadResult recoveryRead;
+            bool restored = readKernelBytesMatches(
+                originalBytes,
+                recoveryRead);
+            QString rollbackDetail;
+            if (restored)
+            {
+                rollbackDetail = QStringLiteral(
+                    "R3 复读确认原始快照仍完整，无需发出回滚写入。");
+            }
+            else
+            {
+                const ksword::ark::MutationResponseResult rollback =
+                    client.rollbackMutation(
+                        prepared.transactionId,
+                        finalFlags);
+                restored = readKernelBytesMatches(
+                    originalBytes,
+                    recoveryRead);
+                rollbackDetail = mutationResponseText(
+                    QStringLiteral("自动回滚"),
+                    rollback)
+                    + QChar('\n')
+                    + (restored
+                        ? QStringLiteral(
+                            "R3 复读已确认原始快照恢复。")
+                        : QStringLiteral(
+                            "警告：回滚后 R3 复读未确认原始快照，"
+                            "目标可能处于部分修改状态。"));
+            }
+            m_mutationStatusLabel->setText(
+                QStringLiteral("事务后端：%1；%2")
+                    .arg(detail, rollbackDetail));
+            QMessageBox::critical(
+                this,
+                QStringLiteral("内核字节事务"),
+                (restored
+                    ? QStringLiteral(
+                        "提交未完成，但已通过 R3 复读确认原始快照。\n"
+                        "%1\n%2")
+                    : QStringLiteral(
+                        "提交未完成，且无法确认原始快照已经恢复。"
+                        "请立即停止继续修改并审查事务审计。\n"
+                        "%1\n%2"))
+                    .arg(detail, rollbackDetail));
+            return;
+        }
+
+        ksword::ark::VirtualMemoryReadResult verify;
+        const bool verified = readKernelBytesMatches(
+            replacementBytes,
+            verify);
+        if (!verified)
+        {
+            const ksword::ark::MutationResponseResult rollback =
+                client.rollbackMutation(
+                    prepared.transactionId,
+                    finalFlags);
+            ksword::ark::VirtualMemoryReadResult rollbackRead;
+            const bool rollbackVerified =
+                readKernelBytesMatches(
+                    originalBytes,
+                    rollbackRead);
+            const QString commitDetail = mutationResponseText(
+                QStringLiteral("FORCE 已返回"),
+                committed);
+            const QString rollbackDetail = mutationResponseText(
+                QStringLiteral("校验失败后回滚"),
+                rollback)
+                + QChar('\n')
+                + (rollbackVerified
+                    ? QStringLiteral(
+                        "R3 复读已确认原始快照恢复。")
+                    : QStringLiteral(
+                        "警告：回滚后 R3 复读未确认原始快照，"
+                        "目标可能处于部分修改状态。"));
+            m_mutationStatusLabel->setText(
+                (rollbackVerified
+                    ? QStringLiteral(
+                        "事务后端：R3 写后复读不一致；%1")
+                    : QStringLiteral(
+                        "事务后端：R3 写后复读不一致且回滚未验证；%1"))
+                    .arg(rollbackDetail));
+            QMessageBox::critical(
+                this,
+                QStringLiteral("内核字节事务"),
+                (rollbackVerified
+                    ? QStringLiteral(
+                        "R3 写后复读未得到预期字节，回滚后已确认"
+                        "原始快照恢复。\n%1\n复读后端：%2\n%3")
+                    : QStringLiteral(
+                        "R3 写后复读未得到预期字节，且回滚后仍无法"
+                        "确认原始快照。请立即停止继续修改并审查事务"
+                        "审计。\n%1\n复读后端：%2\n%3"))
+                    .arg(commitDetail)
+                    .arg(QString::fromStdString(
+                        verify.io.message))
+                    .arg(rollbackDetail));
+            return;
+        }
+
+        const QString completedText =
+            QStringLiteral(
+                "事务后端：完成。%1；R3 复读与替换字节一致。"
+                "%2原始证据快照仍保留在当前表格中。")
+                .arg(mutationResponseText(
+                    QStringLiteral("COMMIT"),
+                    committed))
+                .arg(
+                    confirmationSuppressed
+                        ? QStringLiteral(
+                            "重复危险确认已按持久设置跳过；"
+                            "所有事务校验和审计仍已执行。")
+                        : QString());
+        m_mutationStatusLabel->setText(completedText);
+        QMessageBox::information(
+            this,
+            QStringLiteral("内核字节事务"),
+            completedText);
+    }
+}

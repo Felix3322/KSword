@@ -40,6 +40,10 @@ typedef struct _KSW_HVM_VMCS_INPUT
     ULONGLONG HostStackPointer;
     ULONGLONG GuestInstructionPointer;
     ULONGLONG HostInstructionPointer;
+    ULONGLONG GuestRflags;
+    UCHAR ResidentMode;
+    UCHAR EnableNestedVmx;
+    USHORT Reserved;
 } KSW_HVM_VMCS_INPUT;
 
 typedef struct _KSW_HVM_VMEXIT_TELEMETRY

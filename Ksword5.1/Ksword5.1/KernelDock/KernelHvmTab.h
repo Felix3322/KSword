@@ -6,7 +6,6 @@
 
 #include <cstdint>
 
-class QCheckBox;
 class QLabel;
 class QPushButton;
 class QShowEvent;
@@ -18,7 +17,15 @@ class QTextEdit;
 class KernelHvmTab final : public QWidget
 {
 public:
+    enum class FeatureArea
+    {
+        Ept,
+        NestedVmx,
+        Evmcs
+    };
+
     explicit KernelHvmTab(QWidget* parent = nullptr);
+    KernelHvmTab(FeatureArea featureArea, QWidget* parent);
     ~KernelHvmTab() override = default;
 
 protected:
@@ -28,7 +35,12 @@ private:
     void initializeUi();
     void refreshAsync();
     void applyStatus(ksword::ark::HvmStatusResult result);
-    void runControlAsync(unsigned long command, bool force);
+    void runControlAsync(
+        unsigned long command,
+        bool force,
+        bool enableEptEvents = false,
+        bool enableNestedVmx = false,
+        bool enableEvmcs = false);
     void applyControl(
         unsigned long command,
         ksword::ark::HvmControlResult control,
@@ -37,12 +49,39 @@ private:
     void selfTestBackend();
     void launchControlledGuest();
     void teardownBackend();
+    void startResident();
+    void stopResident();
+    void validateNested();
+    void validateEvmcs();
+    void addEptRule();
+    void queryEptRule();
+    void removeEptRule();
+    void clearEptRules();
+    void queryEvents();
+    void clearEvents();
+    void runEptRuleAsync(
+        unsigned long operation,
+        unsigned long ruleId,
+        unsigned long deniedAccess,
+        std::uint64_t physicalAddress,
+        std::uint64_t pageCount,
+        bool log,
+        bool allowOnce);
+    void applyEptRule(
+        unsigned long operation,
+        ksword::ark::HvmEptRuleResult result,
+        ksword::ark::HvmStatusResult status);
+    void runEventQueryAsync(bool clear);
+    void applyEvents(
+        bool clear,
+        ksword::ark::HvmEventResult result);
     bool confirmTyped(const QString& warning, const QString& phrase);
     void updateButtons();
     QString buildDetail(
         const KSWORD_ARK_QUERY_HVM_RESPONSE& response) const;
     static QString featureText(std::uint64_t flags);
     static QString stateText(std::uint32_t flags);
+    static QString implementationText(std::uint32_t implementation);
     static QString ntStatusText(long status);
     static QString fixedAscii(const char* text, int capacity);
 
@@ -54,9 +93,12 @@ private:
     QPushButton* m_selfTestButton = nullptr;
     QPushButton* m_launchButton = nullptr;
     QPushButton* m_teardownButton = nullptr;
-    QCheckBox* m_allowNestedCheck = nullptr;
+    QPushButton* m_startResidentButton = nullptr;
+    QPushButton* m_stopResidentButton = nullptr;
+    QPushButton* m_featureActionButton = nullptr;
     QTableWidget* m_cpuTable = nullptr;
     QTextEdit* m_detailEdit = nullptr;
+    FeatureArea m_featureArea = FeatureArea::Ept;
     KSWORD_ARK_QUERY_HVM_RESPONSE m_snapshot{};
     bool m_firstRefreshStarted = false;
     bool m_operationRunning = false;

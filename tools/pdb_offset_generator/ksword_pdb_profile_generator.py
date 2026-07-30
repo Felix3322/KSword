@@ -385,6 +385,50 @@ KERNEL_GLOBAL_RVA_NAMES: tuple[str, ...] = (
     "MmLastUnloadedDriver",
 )
 
+IDT_BASELINE_GLOBAL_RVA_NAMES: tuple[str, ...] = (
+    "KiInterruptInitTable",
+)
+
+IDT_VECTOR_BASE_SYMBOLS: dict[int, tuple[str, ...]] = {
+    0x00: ("KiDivideErrorFault",),
+    0x01: ("KiDebugTrapOrFault",),
+    0x02: ("KiNmiInterrupt",),
+    0x03: ("KiBreakpointTrap",),
+    0x04: ("KiOverflowTrap",),
+    0x05: ("KiBoundFault",),
+    0x06: ("KiInvalidOpcodeFault",),
+    0x07: ("KiNpxNotAvailableFault",),
+    0x08: ("KiDoubleFaultAbort",),
+    0x09: ("KiNpxSegmentOverrunAbort",),
+    0x0A: ("KiInvalidTssFault",),
+    0x0B: ("KiSegmentNotPresentFault",),
+    0x0C: ("KiStackFault",),
+    0x0D: ("KiGeneralProtectionFault",),
+    0x0E: ("KiPageFault",),
+    0x10: ("KiFloatingErrorFault",),
+    0x11: ("KiAlignmentFault",),
+    0x12: ("KiMcheckAbort",),
+    0x13: ("KiXmmException",),
+    0x14: ("KiVirtualizationException",),
+    0x15: ("KiControlProtectionFault",),
+    0x1F: ("KiApcInterrupt",),
+    0x20: ("KiSwInterrupt",),
+    0x29: ("KiRaiseSecurityCheckFailure",),
+    0x2C: ("KiRaiseAssertion",),
+    0x2D: ("KiDebugServiceTrap",),
+    # Vector 0x2E is selected dynamically on modern KPTI systems.  A symbol
+    # address alone cannot prove whether this build installs the historical
+    # system-service entry or the default thunk, so leave it unsupported
+    # instead of producing a deterministic false-positive baseline.
+    0x2F: ("KiDpcInterrupt",),
+    0x30: ("KiHvInterrupt",),
+    0x31: ("KiVmbusInterrupt0",),
+    0x32: ("KiVmbusInterrupt1",),
+    0x33: ("KiVmbusInterrupt2",),
+    0x34: ("KiVmbusInterrupt3",),
+    0xE1: ("KiIpiInterrupt",),
+}
+
 GLOBAL_RVA_SYMBOL_ALIASES: dict[str, tuple[str, ...]] = {
     # Microsoft public ntoskrnl PDBs commonly publish the registry callback
     # list as `CallbackListHead` next to `CmpCallbackListLock`, while KswordARK
@@ -1446,6 +1490,86 @@ def build_global_rva_items(
     return items, missing_globals
 
 
+def build_idt_baseline(
+    pe_path: Path,
+    symbol_addresses: dict[str, list[SymbolAddress]],
+    machine: int,
+) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    """Build the exact-PDB IDT initialization-table descriptor.
+
+    The runtime intentionally accepts only the named KiInterruptInitTable
+    symbol from an identity-matched PDB.  No byte-pattern or nearby-symbol
+    fallback is emitted because those guesses are not stable across kernels.
+    """
+    if machine != 0x8664:
+        return None, [
+            {
+                "kind": "IdtBaseline",
+                "name": "KiInterruptInitTable",
+                "reason": "unsupported_machine",
+            }
+        ]
+
+    items, missing = build_global_rva_items(
+        pe_path=pe_path,
+        symbol_addresses=symbol_addresses,
+        symbol_names=IDT_BASELINE_GLOBAL_RVA_NAMES,
+    )
+    if not items:
+        return None, missing
+
+    item = items[0]
+    handler_records: list[dict[str, Any]] = []
+    for vector, base_symbols in sorted(IDT_VECTOR_BASE_SYMBOLS.items()):
+        candidate_names: list[str] = []
+        for base_symbol in base_symbols:
+            candidate_names.extend((base_symbol, f"{base_symbol}Shadow"))
+        for symbol_name in candidate_names:
+            matches = symbol_addresses.get(symbol_name, [])
+            if not matches:
+                continue
+            address = choose_symbol_address(matches)
+            rva = rva_from_section_offset(
+                pe_path,
+                address.section,
+                address.offset,
+            )
+            if rva is None:
+                missing.append(
+                    {
+                        "kind": "IdtHandlerRva",
+                        "name": symbol_name,
+                        "reason": "section_offset_unmapped",
+                    }
+                )
+                continue
+            handler_records.append(
+                {
+                    "vector": vector,
+                    "symbol": symbol_name,
+                    "rva": f"0x{rva:08X}",
+                }
+            )
+    if not handler_records:
+        missing.append(
+            {
+                "kind": "IdtBaseline",
+                "name": "KiInterruptInitTable",
+                "reason": "no_exact_vector_symbols",
+            }
+        )
+        return None, missing
+
+    return {
+        "schemaVersion": 2,
+        "sourceSymbol": "KiInterruptInitTable",
+        "source": item.get("source", ""),
+        "sourceSymbolName": item.get("sourceSymbol", ""),
+        "tableRva": item["value"],
+        "handlers": handler_records,
+    }, missing
+
+
 def build_callback_items(
     types_text: str,
     pe_path: Path,
@@ -1878,6 +2002,14 @@ def build_profile(
         symbol_addresses=symbol_addresses or {},
         symbol_names=KERNEL_GLOBAL_RVA_NAMES,
     )
+    if entry.class_name.strip().lower() == "ntoskrnl":
+        idt_baseline, missing_idt_baseline = build_idt_baseline(
+            pe_path=pe_path,
+            symbol_addresses=symbol_addresses or {},
+            machine=entry.machine,
+        )
+    else:
+        idt_baseline, missing_idt_baseline = None, []
     missing_globals = [str(item.get("name", "")) for item in missing_global_details if str(item.get("name", "")).strip()]
     v4_items, v4_missing_items = build_v4_items(
         types_text,
@@ -1889,6 +2021,7 @@ def build_profile(
         module_class=entry.class_name,
     )
     diagnostics["v4MissingItems"] = v4_missing_items
+    diagnostics["missingIdtBaseline"] = missing_idt_baseline
     typed_items: list[dict[str, Any]] = []
     for field_name, offset_text in sorted(resolved_fields.items()):
         typed_items.append({"kind": "StructOffset", "name": field_name, "value": offset_text})
@@ -1902,7 +2035,12 @@ def build_profile(
         len(TYPE_SIZE_MAP) +
         len(CALLBACK_GLOBAL_RVA_NAMES) +
         len(CALLBACK_STRUCT_FIELD_MAP) +
-        len(KERNEL_GLOBAL_RVA_NAMES)
+        len(KERNEL_GLOBAL_RVA_NAMES) +
+        (
+            len(IDT_BASELINE_GLOBAL_RVA_NAMES)
+            if entry.class_name.strip().lower() == "ntoskrnl"
+            else 0
+        )
     )
     coverage_percent = 0.0 if total_candidates == 0 else (len(typed_items) / float(total_candidates)) * 100.0
 
@@ -1935,6 +2073,7 @@ def build_profile(
         "callbackItems": callback_items,
         "typedItems": typed_items,
         "v4Items": v4_items,
+        "idtBaseline": idt_baseline,
         "v4MissingItems": v4_missing_items,
         "missingGlobals": missing_globals,
         "coveragePercent": round(coverage_percent, 1),

@@ -1,5 +1,6 @@
 #include "MemoryDock.h"
 #include "MemoryDock.Internal.h"
+#include "../SettingsDock/AppearanceSettings.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/HexEditorWidget.h"
@@ -843,26 +844,47 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
         return;
     }
 
-    // 写入前二次确认，明确这是修改真实进程内存。
-    const QMessageBox::StandardButton confirmResult = QMessageBox::question(
-        this,
-        "应用内存差异",
-        QString("将通过 R0 写入 %1 个差异块到 %2。\n只写入和原始备份不同的字节，是否继续？")
-        .arg(diffBlocks.size())
-        .arg(kernelAddressSnapshot
-            ? QStringLiteral("内核虚拟地址")
-            : QStringLiteral("PID=%1%2")
-                .arg(m_driverMemorySnapshotPid)
-                .arg(m_driverMemorySnapshotProcessName.isEmpty() ? QString() : QString(" (%1)").arg(m_driverMemorySnapshotProcessName))),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (confirmResult != QMessageBox::Yes)
+    // 危险确认策略只允许跳过重复模态框；R0 确认标志、快照比对和写后状态仍然执行。
+    const bool suppressDangerousConfirmation =
+        ks::settings::dangerousActionConfirmationsSuppressed();
+    if (!suppressDangerousConfirmation)
     {
-        if (m_driverMemoryStatusLabel != nullptr)
+        const QMessageBox::StandardButton confirmResult = QMessageBox::question(
+            this,
+            "应用内存差异",
+            QString(
+                "将通过 R0 写入 %1 个差异块到 %2。\n"
+                "内核或进程内存修改可能立即造成数据损坏、权限边界失效、进程崩溃或系统蓝屏。\n"
+                "只写入和原始备份不同的字节，是否继续？")
+            .arg(diffBlocks.size())
+            .arg(kernelAddressSnapshot
+                ? QStringLiteral("内核虚拟地址")
+                : QStringLiteral("PID=%1%2")
+                    .arg(m_driverMemorySnapshotPid)
+                    .arg(m_driverMemorySnapshotProcessName.isEmpty()
+                        ? QString()
+                        : QString(" (%1)").arg(m_driverMemorySnapshotProcessName))),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirmResult != QMessageBox::Yes)
         {
-            m_driverMemoryStatusLabel->setText("用户取消应用差异。");
+            if (m_driverMemoryStatusLabel != nullptr)
+            {
+                m_driverMemoryStatusLabel->setText("用户取消应用差异。");
+            }
+            return;
         }
-        return;
+    }
+    else
+    {
+        kLogEvent suppressedConfirmationEvent;
+        warn << suppressedConfirmationEvent
+            << "[MemoryDock] dangerous confirmation suppressed by persistent setting; "
+               "R0 snapshot verification and audit remain active, target="
+            << (kernelAddressSnapshot ? "kernel-va" : "process-va")
+            << ", blocks="
+            << diffBlocks.size()
+            << eol;
     }
 
     // 按块调用驱动写入，单块超过驱动上限时拆分。
@@ -871,6 +893,15 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
     std::uint64_t totalWritten = 0;
     int failedBlockCount = 0;
     bool forceWriteApproved = false;
+    struct KernelMutationChunk
+    {
+        std::uint64_t transactionId = 0U;
+        std::uint64_t address = 0U;
+        std::vector<std::uint8_t> beforeBytes;
+    };
+    std::vector<KernelMutationChunk> kernelMutationChunks;
+    std::uint64_t rollbackVerifiedBytes = 0U;
+    int rollbackFailedCount = 0;
     // privilegePromptHandled：跨写入块记录是否已经展示过一次权限恢复提示。
     bool privilegePromptHandled = false;
     QString lastFailureText;
@@ -882,7 +913,10 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
         {
             const int chunkBytes = std::min<int>(
                 block.bytes.size() - offset,
-                static_cast<int>(KSWORD_ARK_MEMORY_WRITE_MAX_BYTES));
+                static_cast<int>(
+                    kernelAddressSnapshot
+                        ? KSWORD_ARK_MUTATION_MAX_BYTES
+                        : KSWORD_ARK_MEMORY_WRITE_MAX_BYTES));
             std::vector<std::uint8_t> chunk;
             chunk.resize(static_cast<std::size_t>(chunkBytes));
             std::copy_n(
@@ -892,16 +926,172 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
 
             const std::uint64_t chunkAddress =
                 block.address + static_cast<std::uint64_t>(offset);
-            unsigned long writeFlags = kernelAddressSnapshot
-                ? KSWORD_ARK_MEMORY_WRITE_FLAG_KERNEL_ADDRESS
-                : 0UL;
+            totalRequested += static_cast<std::uint64_t>(chunkBytes);
+
+            if (kernelAddressSnapshot)
+            {
+                const std::uint64_t snapshotOffset =
+                    chunkAddress - m_driverMemoryBaseAddress;
+                if (snapshotOffset
+                        > static_cast<std::uint64_t>(
+                            m_driverMemoryOriginalBytes.size())
+                    || static_cast<std::uint64_t>(chunkBytes)
+                        > static_cast<std::uint64_t>(
+                            m_driverMemoryOriginalBytes.size())
+                            - snapshotOffset)
+                {
+                    ++failedBlockCount;
+                    lastFailureText = QStringLiteral(
+                        "内核字节事务的 expected-before 超出原始快照边界。");
+                    break;
+                }
+
+                std::vector<std::uint8_t> expectedBefore(
+                    static_cast<std::size_t>(chunkBytes));
+                std::copy_n(
+                    reinterpret_cast<const std::uint8_t*>(
+                        m_driverMemoryOriginalBytes.constData()
+                        + static_cast<qsizetype>(
+                            snapshotOffset)),
+                    static_cast<std::size_t>(chunkBytes),
+                    expectedBefore.begin());
+
+                ksword::ark::MutationPrepareInput prepareInput{};
+                prepareInput.flags =
+                    KSWORD_ARK_MUTATION_FLAG_DRY_RUN |
+                    KSWORD_ARK_MUTATION_FLAG_EXPECTED_BEFORE_PRESENT;
+                prepareInput.targetKind =
+                    KSWORD_ARK_MUTATION_TARGET_KERNEL_VIRTUAL_BYTES_SMALL;
+                prepareInput.bytes =
+                    static_cast<std::uint32_t>(chunkBytes);
+                prepareInput.targetAddress = chunkAddress;
+                prepareInput.afterBytes = chunk;
+                prepareInput.expectedBeforeBytes = expectedBefore;
+                const ksword::ark::MutationResponseResult prepareResult =
+                    driverClient.prepareMutation(prepareInput);
+                if (!prepareResult.io.ok
+                    || prepareResult.status
+                        != KSWORD_ARK_MUTATION_STATUS_PREPARED
+                    || prepareResult.transactionId == 0U
+                    || prepareResult.bytes
+                        != static_cast<std::uint32_t>(chunkBytes)
+                    || prepareResult.beforeBytes.size()
+                        < static_cast<std::size_t>(chunkBytes)
+                    || !std::equal(
+                        expectedBefore.cbegin(),
+                        expectedBefore.cend(),
+                        prepareResult.beforeBytes.cbegin()))
+                {
+                    privilegePromptHandled =
+                        ks::ui::promptForPrivilegeFailure(
+                            this,
+                            QStringLiteral("R0内核字节事务 PREPARE"),
+                            prepareResult.io.win32Error);
+                    ++failedBlockCount;
+                    lastFailureText = QString(
+                        "内核字节事务 PREPARE 失败：地址=%1 请求=%2 状态=%3 NT=%4 信息=%5")
+                        .arg(formatAddress(chunkAddress))
+                        .arg(chunkBytes)
+                        .arg(prepareResult.status)
+                        .arg(driverMemoryNtStatusText(
+                            prepareResult.lastStatus))
+                        .arg(driverMemoryIoMessageText(
+                            prepareResult.io.message));
+                    break;
+                }
+
+                KernelMutationChunk mutationChunk;
+                mutationChunk.transactionId =
+                    prepareResult.transactionId;
+                mutationChunk.address = chunkAddress;
+                mutationChunk.beforeBytes = expectedBefore;
+                kernelMutationChunks.push_back(
+                    std::move(mutationChunk));
+
+                const ksword::ark::MutationResponseResult dryRunResult =
+                    driverClient.commitMutation(
+                        prepareResult.transactionId,
+                        KSWORD_ARK_MUTATION_FLAG_DRY_RUN);
+                if (!dryRunResult.io.ok
+                    || dryRunResult.status
+                        != KSWORD_ARK_MUTATION_STATUS_DRY_RUN)
+                {
+                    ++failedBlockCount;
+                    lastFailureText = QString(
+                        "内核字节事务 dry-run 失败：地址=%1 tx=%2 状态=%3 NT=%4 信息=%5")
+                        .arg(formatAddress(chunkAddress))
+                        .arg(prepareResult.transactionId)
+                        .arg(dryRunResult.status)
+                        .arg(driverMemoryNtStatusText(
+                            dryRunResult.lastStatus))
+                        .arg(driverMemoryIoMessageText(
+                            dryRunResult.io.message));
+                    break;
+                }
+
+                const ksword::ark::MutationResponseResult commitResult =
+                    driverClient.commitMutation(
+                        prepareResult.transactionId,
+                        KSWORD_ARK_MUTATION_FLAG_FORCE |
+                        KSWORD_ARK_MUTATION_FLAG_UI_CONFIRMED);
+                if (!commitResult.io.ok
+                    || commitResult.status
+                        != KSWORD_ARK_MUTATION_STATUS_COMMITTED)
+                {
+                    ++failedBlockCount;
+                    lastFailureText = QString(
+                        "内核字节事务 FORCE 提交失败：地址=%1 tx=%2 状态=%3 NT=%4 信息=%5")
+                        .arg(formatAddress(chunkAddress))
+                        .arg(prepareResult.transactionId)
+                        .arg(commitResult.status)
+                        .arg(driverMemoryNtStatusText(
+                            commitResult.lastStatus))
+                        .arg(driverMemoryIoMessageText(
+                            commitResult.io.message));
+                    break;
+                }
+
+                const ksword::ark::VirtualMemoryReadResult verifyResult =
+                    driverClient.readVirtualMemory(
+                        0U,
+                        chunkAddress,
+                        static_cast<std::uint32_t>(chunkBytes),
+                        KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS);
+                if (!verifyResult.io.ok
+                    || verifyResult.readStatus
+                        != KSWORD_ARK_MEMORY_READ_STATUS_OK
+                    || verifyResult.data.size()
+                        != static_cast<std::size_t>(chunkBytes)
+                    || !std::equal(
+                        chunk.cbegin(),
+                        chunk.cend(),
+                        verifyResult.data.cbegin()))
+                {
+                    ++failedBlockCount;
+                    lastFailureText = QString(
+                        "内核字节事务提交后 R3 复读不一致：地址=%1 tx=%2 读取状态=%3 NT=%4")
+                        .arg(formatAddress(chunkAddress))
+                        .arg(prepareResult.transactionId)
+                        .arg(verifyResult.readStatus)
+                        .arg(driverMemoryNtStatusText(
+                            verifyResult.copyStatus));
+                    break;
+                }
+
+                totalWritten +=
+                    static_cast<std::uint64_t>(chunkBytes);
+                offset += chunkBytes;
+                continue;
+            }
+
+            unsigned long writeFlags = 0UL;
             if (forceWriteApproved)
             {
                 writeFlags |= KSWORD_ARK_MEMORY_WRITE_FLAG_FORCE;
             }
             ksword::ark::VirtualMemoryWriteResult writeResult =
                 driverClient.writeVirtualMemory(
-                    kernelAddressSnapshot ? 0U : m_driverMemorySnapshotPid,
+                    m_driverMemorySnapshotPid,
                     chunkAddress,
                     chunk,
                     writeFlags);
@@ -929,13 +1119,12 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
                 forceWriteApproved = true;
                 writeFlags |= KSWORD_ARK_MEMORY_WRITE_FLAG_FORCE;
                 writeResult = driverClient.writeVirtualMemory(
-                    kernelAddressSnapshot ? 0U : m_driverMemorySnapshotPid,
+                    m_driverMemorySnapshotPid,
                     chunkAddress,
                     chunk,
                     writeFlags);
             }
 
-            totalRequested += static_cast<std::uint64_t>(chunkBytes);
             totalWritten += static_cast<std::uint64_t>(writeResult.bytesWritten);
             if (!writeResult.io.ok ||
                 writeResult.writeStatus != KSWORD_ARK_MEMORY_WRITE_STATUS_OK ||
@@ -970,6 +1159,70 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
         {
             break;
         }
+    }
+
+    if (kernelAddressSnapshot && failedBlockCount != 0)
+    {
+        for (auto transaction =
+                 kernelMutationChunks.crbegin();
+             transaction != kernelMutationChunks.crend();
+             ++transaction)
+        {
+            bool restored = false;
+            const auto readExpectedBefore = [&driverClient,
+                                             &transaction,
+                                             &restored]()
+            {
+                const ksword::ark::VirtualMemoryReadResult readResult =
+                    driverClient.readVirtualMemory(
+                        0U,
+                        transaction->address,
+                        static_cast<std::uint32_t>(
+                            transaction->beforeBytes.size()),
+                        KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS);
+                restored =
+                    readResult.io.ok
+                    && readResult.readStatus
+                        == KSWORD_ARK_MEMORY_READ_STATUS_OK
+                    && readResult.data.size()
+                        == transaction->beforeBytes.size()
+                    && std::equal(
+                        transaction->beforeBytes.cbegin(),
+                        transaction->beforeBytes.cend(),
+                        readResult.data.cbegin());
+            };
+            readExpectedBefore();
+            if (!restored)
+            {
+                const ksword::ark::MutationResponseResult rollbackResult =
+                    driverClient.rollbackMutation(
+                        transaction->transactionId,
+                        KSWORD_ARK_MUTATION_FLAG_FORCE |
+                        KSWORD_ARK_MUTATION_FLAG_UI_CONFIRMED);
+                if (rollbackResult.io.ok
+                    && (rollbackResult.status
+                            == KSWORD_ARK_MUTATION_STATUS_ROLLED_BACK
+                        || rollbackResult.status
+                            == KSWORD_ARK_MUTATION_STATUS_ALREADY_AT_BEFORE))
+                {
+                    readExpectedBefore();
+                }
+            }
+            if (restored)
+            {
+                rollbackVerifiedBytes +=
+                    transaction->beforeBytes.size();
+            }
+            else
+            {
+                ++rollbackFailedCount;
+            }
+        }
+        lastFailureText += QString(
+            "；回滚复核恢复=%1 字节，未恢复事务=%2")
+            .arg(static_cast<qulonglong>(
+                rollbackVerifiedBytes))
+            .arg(rollbackFailedCount);
     }
 
     // 成功写入的情况下，把当前编辑缓存提升为新备份，避免重复应用同一差异。
@@ -1045,6 +1298,21 @@ bool MemoryDock::confirmForceDriverMemoryWrite(
     const std::uint32_t requestedBytes,
     const QString& failureText)
 {
+    // 全局策略允许跳过重复模态框，但不会改变 force 标志、目标范围和驱动端验证。
+    if (ks::settings::dangerousActionConfirmationsSuppressed())
+    {
+        kLogEvent suppressedForceConfirmationEvent;
+        warn << suppressedForceConfirmationEvent
+            << "[MemoryDock] force-write modal confirmation suppressed; address="
+            << formatAddress(blockAddress).toStdString()
+            << ", bytes="
+            << requestedBytes
+            << ", reason="
+            << failureText.toStdString()
+            << eol;
+        return true;
+    }
+
     // 强制确认入口：普通写入被 R0 拒绝后才会走到这里。
     QMessageBox warningBox(this);
     warningBox.setIcon(QMessageBox::Warning);

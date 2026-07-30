@@ -10,8 +10,7 @@ namespace ksword::ark
         constexpr std::size_t kMutationResponseHeaderSize =
             sizeof(KSWORD_ARK_MUTATION_RESPONSE);
         constexpr std::size_t kMutationAuditResponseHeaderSize =
-            sizeof(KSWORD_ARK_MUTATION_QUERY_AUDIT_RESPONSE) -
-            sizeof(KSWORD_ARK_MUTATION_AUDIT_ENTRY);
+            KSWORD_ARK_MUTATION_AUDIT_RESPONSE_HEADER_SIZE;
 
         bool isUnsupportedIoctlError(const unsigned long win32Error)
         {
