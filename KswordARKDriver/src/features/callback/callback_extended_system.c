@@ -957,6 +957,447 @@ Return Value:
         L"\\FileSystem");
 }
 
+typedef struct _KSWORD_ARK_LEGACY_FS_CLASS_INIT_MATCH
+{
+    ULONG ExtensionOffset;
+    ULONG64 ClassInitAddress;
+    FS_FILTER_CALLBACKS Callbacks;
+    ULONG CallbackCount;
+} KSWORD_ARK_LEGACY_FS_CLASS_INIT_MATCH;
+
+static const PCWSTR g_KswordArkLegacyFsCallbackNames[] = {
+    L"PreAcquireForSectionSynchronization",
+    L"PostAcquireForSectionSynchronization",
+    L"PreReleaseForSectionSynchronization",
+    L"PostReleaseForSectionSynchronization",
+    L"PreAcquireForCcFlush",
+    L"PostAcquireForCcFlush",
+    L"PreReleaseForCcFlush",
+    L"PostReleaseForCcFlush",
+    L"PreAcquireForModifiedPageWriter",
+    L"PostAcquireForModifiedPageWriter",
+    L"PreReleaseForModifiedPageWriter",
+    L"PostReleaseForModifiedPageWriter",
+    L"PreQueryOpen",
+    L"PostQueryOpen"
+};
+
+static VOID
+KswordArkCallbackLegacyFsBuildSlots(
+    _In_ const FS_FILTER_CALLBACKS* Callbacks,
+    _Out_writes_(14) PVOID* Slots
+    )
+{
+    if (Callbacks == NULL || Slots == NULL) {
+        return;
+    }
+
+    Slots[0] = (PVOID)Callbacks->PreAcquireForSectionSynchronization;
+    Slots[1] = (PVOID)Callbacks->PostAcquireForSectionSynchronization;
+    Slots[2] = (PVOID)Callbacks->PreReleaseForSectionSynchronization;
+    Slots[3] = (PVOID)Callbacks->PostReleaseForSectionSynchronization;
+    Slots[4] = (PVOID)Callbacks->PreAcquireForCcFlush;
+    Slots[5] = (PVOID)Callbacks->PostAcquireForCcFlush;
+    Slots[6] = (PVOID)Callbacks->PreReleaseForCcFlush;
+    Slots[7] = (PVOID)Callbacks->PostReleaseForCcFlush;
+    Slots[8] = (PVOID)Callbacks->PreAcquireForModifiedPageWriter;
+    Slots[9] = (PVOID)Callbacks->PostAcquireForModifiedPageWriter;
+    Slots[10] = (PVOID)Callbacks->PreReleaseForModifiedPageWriter;
+    Slots[11] = (PVOID)Callbacks->PostReleaseForModifiedPageWriter;
+    Slots[12] = (PVOID)Callbacks->PreQueryOpen;
+    Slots[13] = (PVOID)Callbacks->PostQueryOpen;
+}
+
+static BOOLEAN
+KswordArkCallbackLegacyFsValidateCandidate(
+    _In_ ULONG64 CandidateAddress,
+    _In_ ULONG64 ExpectedDriverModuleBase,
+    _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Out_ FS_FILTER_CALLBACKS* CallbacksOut,
+    _Out_ ULONG* CallbackCountOut
+    )
+{
+    FS_FILTER_CALLBACKS callbacks;
+    PVOID slots[14];
+    ULONG index = 0UL;
+    ULONG callbackCount = 0UL;
+    BOOLEAN ownerMatched = FALSE;
+
+    if (CandidateAddress == 0ULL ||
+        ModuleCache == NULL ||
+        CallbacksOut == NULL ||
+        CallbackCountOut == NULL ||
+        (CandidateAddress & (sizeof(PVOID) - 1ULL)) != 0ULL) {
+        return FALSE;
+    }
+
+    RtlZeroMemory(&callbacks, sizeof(callbacks));
+    RtlZeroMemory(slots, sizeof(slots));
+    if (!KswordArkCallbackEnumReadMemory(
+            (const VOID*)(ULONG_PTR)CandidateAddress,
+            &callbacks,
+            sizeof(callbacks)) ||
+        callbacks.SizeOfFsFilterCallbacks != (ULONG)sizeof(FS_FILTER_CALLBACKS) ||
+        callbacks.Reserved != 0UL) {
+        return FALSE;
+    }
+
+    KswordArkCallbackLegacyFsBuildSlots(&callbacks, slots);
+    for (index = 0UL; index < RTL_NUMBER_OF(slots); ++index) {
+        WCHAR modulePath[KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS];
+        ULONG64 moduleBase = 0ULL;
+        ULONG moduleSize = 0UL;
+
+        if (slots[index] == NULL) {
+            continue;
+        }
+        if (!KswordArkCallbackEnumIsKernelModuleAddress(
+                ModuleCache,
+                (ULONG64)(ULONG_PTR)slots[index])) {
+            return FALSE;
+        }
+
+        RtlZeroMemory(modulePath, sizeof(modulePath));
+        if (!NT_SUCCESS(KswordArkCallbackEnumResolveModuleByAddressCached(
+                ModuleCache,
+                (ULONG64)(ULONG_PTR)slots[index],
+                modulePath,
+                RTL_NUMBER_OF(modulePath),
+                &moduleBase,
+                &moduleSize))) {
+            return FALSE;
+        }
+        UNREFERENCED_PARAMETER(moduleSize);
+        if (moduleBase == ExpectedDriverModuleBase) {
+            ownerMatched = TRUE;
+        }
+        callbackCount += 1UL;
+    }
+
+    // 中文说明：旧式 FS filter 的回调应至少有一项落回登记它的驱动映像；
+    // 否则即使 Size 字段碰巧匹配，也不能把任意池内存误判为 ClassInitData。
+    if (callbackCount == 0UL || !ownerMatched) {
+        return FALSE;
+    }
+
+    *CallbacksOut = callbacks;
+    *CallbackCountOut = callbackCount;
+    return TRUE;
+}
+
+static NTSTATUS
+KswordArkCallbackLegacyFsLocateClassInitData(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Out_ KSWORD_ARK_LEGACY_FS_CLASS_INIT_MATCH* MatchOut
+    )
+{
+    DRIVER_OBJECT driverView;
+    ULONG offset = 0UL;
+    ULONG matchCount = 0UL;
+    const ULONG startOffset = (ULONG)sizeof(DRIVER_EXTENSION);
+    const ULONG endOffset = startOffset + 0x60UL;
+
+    if (DriverObject == NULL || ModuleCache == NULL || MatchOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(MatchOut, sizeof(*MatchOut));
+    RtlZeroMemory(&driverView, sizeof(driverView));
+    if (!KswordArkCallbackEnumReadMemory(DriverObject, &driverView, sizeof(driverView)) ||
+        driverView.DriverExtension == NULL ||
+        driverView.DriverStart == NULL ||
+        driverView.DriverSize == 0UL) {
+        return STATUS_DATA_ERROR;
+    }
+
+    // 中文说明：公开 DRIVER_EXTENSION 之后只检查 0x60 字节的指针对齐槽位。
+    // 每个候选都必须通过完整 FS_FILTER_CALLBACKS 大小、Reserved、全部回调模块
+    // 归属和至少一个回调回到当前驱动映像的联合签名，绝不直接使用固定裸偏移。
+    for (offset = startOffset; offset < endOffset; offset += (ULONG)sizeof(PVOID)) {
+        ULONG64 candidateAddress = 0ULL;
+        FS_FILTER_CALLBACKS callbacks;
+        ULONG callbackCount = 0UL;
+
+        if (!KswordArkCallbackEnumReadMemory(
+                (const UCHAR*)driverView.DriverExtension + offset,
+                &candidateAddress,
+                sizeof(candidateAddress)) ||
+            candidateAddress == 0ULL) {
+            continue;
+        }
+        RtlZeroMemory(&callbacks, sizeof(callbacks));
+        if (!KswordArkCallbackLegacyFsValidateCandidate(
+                candidateAddress,
+                (ULONG64)(ULONG_PTR)driverView.DriverStart,
+                ModuleCache,
+                &callbacks,
+                &callbackCount)) {
+            continue;
+        }
+
+        matchCount += 1UL;
+        if (matchCount == 1UL) {
+            MatchOut->ExtensionOffset = offset;
+            MatchOut->ClassInitAddress = candidateAddress;
+            MatchOut->Callbacks = callbacks;
+            MatchOut->CallbackCount = callbackCount;
+        }
+    }
+
+    if (matchCount == 0UL) {
+        return STATUS_NOT_FOUND;
+    }
+    if (matchCount != 1UL) {
+        RtlZeroMemory(MatchOut, sizeof(*MatchOut));
+        return STATUS_OBJECT_NAME_COLLISION;
+    }
+    return STATUS_SUCCESS;
+}
+
+static VOID
+KswordArkCallbackLegacyFsAddDriver(
+    _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder,
+    _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _In_ PDRIVER_OBJECT DriverObject
+    )
+{
+    DRIVER_OBJECT driverView;
+    KSWORD_ARK_LEGACY_FS_CLASS_INIT_MATCH match;
+    PVOID slots[14];
+    WCHAR driverName[KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS];
+    WCHAR nameText[KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS];
+    WCHAR detailText[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG index = 0UL;
+
+    RtlZeroMemory(&driverView, sizeof(driverView));
+    RtlZeroMemory(&match, sizeof(match));
+    RtlZeroMemory(slots, sizeof(slots));
+    RtlZeroMemory(driverName, sizeof(driverName));
+    if (!KswordArkCallbackEnumReadMemory(DriverObject, &driverView, sizeof(driverView))) {
+        return;
+    }
+    KswordArkCallbackEnumCopyUnicode(
+        driverName,
+        RTL_NUMBER_OF(driverName),
+        &driverView.DriverName);
+    if (driverName[0] == L'\0') {
+        KswordArkCallbackEnumCopyWide(
+            driverName,
+            RTL_NUMBER_OF(driverName),
+            L"<unnamed legacy FS filter>");
+    }
+
+    status = KswordArkCallbackLegacyFsLocateClassInitData(
+        DriverObject,
+        ModuleCache,
+        &match);
+    if (!NT_SUCCESS(status)) {
+        RtlZeroMemory(detailText, sizeof(detailText));
+        (VOID)RtlStringCchPrintfW(
+            detailText,
+            RTL_NUMBER_OF(detailText),
+            status == STATUS_OBJECT_NAME_COLLISION
+                ? L"%ws：DriverExtension 小窗口出现多个结构候选；为避免误判，ClassInitData 与 pre/post 链均失败关闭。"
+                : L"%ws：公开枚举确认旧式 FS filter，但未找到唯一且完整校验的 ClassInitData；可能未注册 FsRtl 回调或当前系统布局不受支持。",
+            driverName);
+        KswordArkCallbackExtendedAddRow(
+            Builder,
+            ModuleCache,
+            KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER,
+            KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL,
+            status == STATUS_NOT_FOUND
+                ? KSWORD_ARK_CALLBACK_ENUM_STATUS_NOT_REGISTERED
+                : KSWORD_ARK_CALLBACK_ENUM_STATUS_QUERY_FAILED,
+            status,
+            KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_CLASS_INIT,
+            0UL,
+            0UL,
+            0ULL,
+            (ULONG64)(ULONG_PTR)DriverObject,
+            0ULL,
+            0UL,
+            driverName,
+            detailText);
+        return;
+    }
+
+    RtlZeroMemory(nameText, sizeof(nameText));
+    RtlZeroMemory(detailText, sizeof(detailText));
+    (VOID)RtlStringCchPrintfW(
+        nameText,
+        RTL_NUMBER_OF(nameText),
+        L"%ws!ClassInitData",
+        driverName);
+    (VOID)RtlStringCchPrintfW(
+        detailText,
+        RTL_NUMBER_OF(detailText),
+        L"ClassInitData=0x%llX；DriverExtension+0x%lX；Size=%lu；已解析 %lu 个 pre/post 回调；所有非空地址均归属已加载模块，且至少一项回到登记驱动。",
+        match.ClassInitAddress,
+        match.ExtensionOffset,
+        match.Callbacks.SizeOfFsFilterCallbacks,
+        match.CallbackCount);
+    KswordArkCallbackExtendedAddRow(
+        Builder,
+        ModuleCache,
+        KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER,
+        KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL,
+        KSWORD_ARK_CALLBACK_ENUM_STATUS_OK,
+        STATUS_SUCCESS,
+        KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_CLASS_INIT,
+        0UL,
+        0UL,
+        0ULL,
+        (ULONG64)(ULONG_PTR)DriverObject,
+        match.ClassInitAddress,
+        KSWORD_ARK_CALLBACK_ENUM_FIELD_CLASS_INIT_DATA_VALIDATED,
+        nameText,
+        detailText);
+
+    KswordArkCallbackLegacyFsBuildSlots(&match.Callbacks, slots);
+    for (index = 0UL; index < RTL_NUMBER_OF(slots); ++index) {
+        ULONG fieldFlags = KSWORD_ARK_CALLBACK_ENUM_FIELD_CLASS_INIT_DATA_VALIDATED;
+        const ULONG pairBase = index & ~1UL;
+
+        if (slots[index] == NULL) {
+            continue;
+        }
+        if (slots[pairBase] != NULL && slots[pairBase + 1UL] != NULL) {
+            fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_PRE_POST_PAIR;
+        }
+        RtlZeroMemory(nameText, sizeof(nameText));
+        RtlZeroMemory(detailText, sizeof(detailText));
+        (VOID)RtlStringCchPrintfW(
+            nameText,
+            RTL_NUMBER_OF(nameText),
+            L"%ws!%ws",
+            driverName,
+            g_KswordArkLegacyFsCallbackNames[index]);
+        (VOID)RtlStringCchPrintfW(
+            detailText,
+            RTL_NUMBER_OF(detailText),
+            L"ClassInitData=0x%llX；DriverExtension+0x%lX；%ws；pair=%lu；地址完整性已由已加载模块范围验证。",
+            match.ClassInitAddress,
+            match.ExtensionOffset,
+            (fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_PRE_POST_PAIR) != 0UL
+                ? L"pre/post 成对"
+                : L"单边回调",
+            index / 2UL);
+        KswordArkCallbackExtendedAddRow(
+            Builder,
+            ModuleCache,
+            KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER,
+            KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL,
+            KSWORD_ARK_CALLBACK_ENUM_STATUS_OK,
+            STATUS_SUCCESS,
+            (index & 1UL) == 0UL
+                ? KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_PRE
+                : KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_POST,
+            1UL << (index / 2UL),
+            0UL,
+            (ULONG64)(ULONG_PTR)slots[index],
+            (ULONG64)(ULONG_PTR)DriverObject,
+            match.ClassInitAddress,
+            fieldFlags,
+            nameText,
+            detailText);
+    }
+}
+
+static VOID
+KswordArkCallbackExtendedAddLegacyFsFilterCallbacks(
+    _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder,
+    _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache
+    )
+{
+    PDRIVER_OBJECT* driverObjects = NULL;
+    ULONG actualCount = 0UL;
+    ULONG allocatedCount = 0UL;
+    ULONG index = 0UL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    status = IoEnumerateRegisteredFiltersList(NULL, 0UL, &actualCount);
+    if (actualCount == 0UL) {
+        KswordArkCallbackExtendedAddRow(
+            Builder,
+            ModuleCache,
+            KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER,
+            KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL,
+            NT_SUCCESS(status)
+                ? KSWORD_ARK_CALLBACK_ENUM_STATUS_NOT_REGISTERED
+                : KSWORD_ARK_CALLBACK_ENUM_STATUS_QUERY_FAILED,
+            status,
+            KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_CLASS_INIT,
+            0UL, 0UL, 0ULL, 0ULL, 0ULL, 0UL,
+            L"IoEnumerateRegisteredFiltersList",
+            L"公开 API 未返回旧式文件系统过滤驱动；没有进行对象目录或全内核扫描。");
+        return;
+    }
+    if (actualCount > KSWORD_ARK_CALLBACK_SYSTEM_WALK_LIMIT) {
+        KswordArkCallbackExtendedAddRow(
+            Builder,
+            ModuleCache,
+            KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER,
+            KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL,
+            KSWORD_ARK_CALLBACK_ENUM_STATUS_BUFFER_TRUNCATED,
+            STATUS_BUFFER_OVERFLOW,
+            KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_CLASS_INIT,
+            0UL, 0UL, 0ULL, 0ULL, 0ULL, 0UL,
+            L"IoEnumerateRegisteredFiltersList",
+            L"公开 API 报告的过滤驱动数量超过 512 行安全上限；为避免部分引用生命周期歧义，本轮失败关闭。");
+        return;
+    }
+
+#pragma warning(push)
+#pragma warning(disable:4996)
+    allocatedCount = actualCount;
+    driverObjects = (PDRIVER_OBJECT*)ExAllocatePoolWithTag(
+        NonPagedPoolNx,
+        (SIZE_T)allocatedCount * sizeof(PDRIVER_OBJECT),
+        KSWORD_ARK_CALLBACK_SYSTEM_TAG);
+#pragma warning(pop)
+    if (driverObjects == NULL) {
+        return;
+    }
+    RtlZeroMemory(driverObjects, (SIZE_T)allocatedCount * sizeof(PDRIVER_OBJECT));
+    status = IoEnumerateRegisteredFiltersList(
+        driverObjects,
+        allocatedCount * sizeof(PDRIVER_OBJECT),
+        &actualCount);
+    if (NT_SUCCESS(status) && actualCount <= allocatedCount) {
+        for (index = 0UL; index < actualCount; ++index) {
+            if (driverObjects[index] != NULL) {
+                KswordArkCallbackLegacyFsAddDriver(
+                    Builder,
+                    ModuleCache,
+                    driverObjects[index]);
+            }
+        }
+    }
+    else {
+        KswordArkCallbackExtendedAddRow(
+            Builder,
+            ModuleCache,
+            KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER,
+            KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL,
+            KSWORD_ARK_CALLBACK_ENUM_STATUS_QUERY_FAILED,
+            status,
+            KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_CLASS_INIT,
+            0UL, 0UL, 0ULL, 0ULL, 0ULL, 0UL,
+            L"IoEnumerateRegisteredFiltersList",
+            L"第二次公开枚举失败；未解释可能不完整的 DriverObject 数组。");
+    }
+
+    // 中文说明：IoEnumerateRegisteredFiltersList 为每个返回对象增加引用，
+    // 无论后续结构解析是否成功，都必须在当前快照结束前逐项释放。
+    for (index = 0UL; index < allocatedCount; ++index) {
+        if (driverObjects[index] != NULL) {
+            ObDereferenceObject(driverObjects[index]);
+        }
+    }
+    ExFreePoolWithTag(driverObjects, KSWORD_ARK_CALLBACK_SYSTEM_TAG);
+}
+
 VOID
 KswordArkCallbackExtendedAddSystemCallbacks(
     _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder
@@ -990,6 +1431,7 @@ Return Value:
     }
 
     KswordArkCallbackExtendedAddFsRegistrationCallbacks(Builder, &moduleCache);
+    KswordArkCallbackExtendedAddLegacyFsFilterCallbacks(Builder, &moduleCache);
     KswordArkCallbackExtendedAddLogonCallbacks(Builder, &moduleCache);
     KswordArkCallbackExtendedAddShutdownCallbacks(Builder, &moduleCache);
     KswordArkCallbackEnumFreeModuleCache(&moduleCache);

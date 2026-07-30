@@ -6,6 +6,7 @@
 #include "HardwareOtherDevicesPage.h"
 #include "HardwareDeviceManagerPage.h"
 #include "HardwareHwidDispatchPage.h"
+#include "HardwareI8042AuditPage.h"
 #include "../Internationalization/LanguageManager.h"
 
 // ============================================================
@@ -2778,6 +2779,7 @@ void HardwareDock::initializeUi()
     initializeR0EvidenceTab();
     initializeDeviceStackTab();
     initializeKeyboardMouseHidTab();
+    initializeI8042AuditTab();
     initializeUsbTopologyTab();
     initializePnpAcpiPciTab();
 
@@ -4260,6 +4262,27 @@ void HardwareDock::initializeKeyboardMouseHidTab()
     m_sideTabWidget->setTabToolTip(tabIndex, QStringLiteral("检查键盘、鼠标与其他输入设备状态"));
     ks::i18n::LanguageManager::instance().bindTabToolTip(
         m_sideTabWidget, m_keyboardMouseHidPage, QStringLiteral("hardware.tooltip.keyboard_mouse"), QStringLiteral("检查键盘、鼠标与其他输入设备状态"));
+}
+
+void HardwareDock::initializeI8042AuditTab()
+{
+    m_i8042AuditPage = new HardwareI8042AuditPage(m_sideTabWidget);
+    const int tabIndex = m_sideTabWidget->addTab(
+        m_i8042AuditPage,
+        QStringLiteral("i8042prt 审计"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_sideTabWidget,
+        m_i8042AuditPage,
+        QStringLiteral("hardware.tab.i8042_audit"),
+        QStringLiteral("i8042prt 审计"));
+    m_sideTabWidget->setTabToolTip(
+        tabIndex,
+        QStringLiteral("组合检查 i8042prt 派遣表、输入设备栈、类/HID 邻接驱动和相关回调"));
+    ks::i18n::LanguageManager::instance().bindTabToolTip(
+        m_sideTabWidget,
+        m_i8042AuditPage,
+        QStringLiteral("hardware.tooltip.i8042_audit"),
+        QStringLiteral("组合检查 i8042prt 派遣表、输入设备栈、类/HID 邻接驱动和相关回调"));
 }
 
 void HardwareDock::initializeUsbTopologyTab()

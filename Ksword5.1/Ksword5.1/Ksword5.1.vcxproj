@@ -177,6 +177,7 @@
     <ClCompile Include="HardwareDock\HardwareDeviceManagerPage.cpp" />
     <ClCompile Include="HardwareDock\HardwareOtherDevicesPage.cpp" />
     <ClCompile Include="HardwareDock\HardwareHwidDispatchPage.cpp" />
+    <ClCompile Include="HardwareDock\HardwareI8042AuditPage.cpp" />
     <ClCompile Include="Framework\Log.cpp" />
     <ClCompile Include="Framework\LogDockWidget.cpp" />
     <ClCompile Include="Framework\NotificationCardManager.cpp" />
@@ -208,6 +209,7 @@
     <ClCompile Include="KernelDock\KernelDockCidTab.cpp" />
     <ClCompile Include="KernelDock\KernelDescriptorTableTab.cpp" />
     <ClCompile Include="KernelDock\KernelHvmTab.cpp" />
+    <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp" />
     <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp" />
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp" />
     <ClCompile Include="KernelDock\KernelBaseNamedObjectsTab.cpp" />
@@ -467,6 +469,7 @@
     <ClInclude Include="KernelDock\KernelDockCidTab.h" />
     <ClInclude Include="KernelDock\KernelDescriptorTableTab.h" />
     <ClInclude Include="KernelDock\KernelHvmTab.h" />
+    <ClInclude Include="KernelDock\KernelPlatformAuditTab.h" />
     <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h" />
     <ClInclude Include="KernelDock\KernelDockIpcTab.h" />
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepTab.h" />
@@ -515,6 +518,7 @@
     <ClInclude Include="HardwareDock\DiskMonitorStoragePanel.h" />
     <ClInclude Include="HardwareDock\MemoryCompositionHistoryWidget.h" />
     <ClInclude Include="HardwareDock\HardwareR0EvidencePage.h" />
+    <ClInclude Include="HardwareDock\HardwareI8042AuditPage.h" />
     <QtMoc Include="HardwareDock\HardwareDeviceManagerPage.h" />
     <QtMoc Include="HardwareDock\HardwareOtherDevicesPage.h" />
     <QtMoc Include="HardwareDock\HardwareHwidDispatchPage.h" />

@@ -35,6 +35,7 @@
 #include "../../../shared/driver/KswordArkTrustIoctl.h"
 #include "../../../shared/driver/KswordArkWin32kIoctl.h"
 #include "../../../shared/driver/KswordArkDeviceAuditIoctl.h"
+#include "../../../shared/driver/KswordArkPlatformAuditIoctl.h"
 #include "../../../shared/driver/KswordArkDriverBlindIoctl.h"
 #include "../../../shared/driver/KswordArkFilterIoctl.h"
 #include "../../../shared/driver/KswordArkKernelObjectIoctl.h"
@@ -2307,6 +2308,19 @@ namespace ksword::ark
         std::uint32_t driverCount = 0;
         std::uint32_t deviceCount = 0;
         std::vector<KSWORD_ARK_DEVICE_AUDIT_ENTRY> entries;
+    };
+
+    // PlatformAuditResult 承载 HAL/WDF 统一只读审计结果。
+    // 输入：queryPlatformAudit 返回，scopeMask 指定 HAL 表或 WDF 表/回调。
+    // 处理：entries 保留地址、运行时结构基线、模块、厂商和 fail-closed 诊断。
+    // 返回行为：只读，不提供 patch、restore、unhook 或任意内存访问。
+    struct PlatformAuditResult : VariableAuditResultBase
+    {
+        std::uint32_t scopeMask = 0;
+        std::uint32_t responseFlags = 0;
+        std::uint32_t buildNumber = 0;
+        std::uint32_t signaturePolicyFlags = 0;
+        std::vector<KSWORD_ARK_PLATFORM_AUDIT_ENTRY> entries;
     };
 
     // CidTableAuditResult 承载 PspCidTable 只读枚举行。

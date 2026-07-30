@@ -1,0 +1,66 @@
+#pragma once
+
+#include "../ArkDriverClient/ArkDriverTypes.h"
+
+#include <QWidget>
+
+#include <vector>
+
+class QComboBox;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QShowEvent;
+class QTabWidget;
+class QTableWidget;
+
+// KernelPlatformAuditTab：
+// - Hal 模式提供四个明确的 HAL 子表；
+// - Wdf 模式提供 KMDF 函数表和本驱动回调表；
+// - 所有数据都来自 ArkDriverClient 的只读、失败关闭协议。
+class KernelPlatformAuditTab final : public QWidget
+{
+public:
+    enum class Mode
+    {
+        Hal,
+        Wdf
+    };
+
+    explicit KernelPlatformAuditTab(Mode mode, QWidget* parent = nullptr);
+    ~KernelPlatformAuditTab() override = default;
+
+protected:
+    void showEvent(QShowEvent* event) override;
+
+private:
+    struct Page
+    {
+        unsigned long scope = 0;
+        QTableWidget* table = nullptr;
+    };
+
+    void initializeUi();
+    void addPage(unsigned long scope, const QString& title);
+    void refreshAsync();
+    void applyResult(ksword::ark::PlatformAuditResult result);
+    void populatePage(Page& page, const ksword::ark::PlatformAuditResult& result);
+    void applyColumnGroup();
+    void applyFilter();
+
+    static QString fixedWide(const wchar_t* text, int capacity);
+    static QString addressText(unsigned long long address);
+    static QString statusText(unsigned long status, long lastStatus);
+    static QString hookText(unsigned long hookStatus);
+    static QString signatureText(unsigned long signatureId);
+
+    Mode m_mode;
+    QTabWidget* m_innerTabs = nullptr;
+    QPushButton* m_refreshButton = nullptr;
+    QComboBox* m_columnGroupCombo = nullptr;
+    QLineEdit* m_filterEdit = nullptr;
+    QLabel* m_statusLabel = nullptr;
+    std::vector<Page> m_pages;
+    bool m_firstRefreshStarted = false;
+    bool m_refreshRunning = false;
+};

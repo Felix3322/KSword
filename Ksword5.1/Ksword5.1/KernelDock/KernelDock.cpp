@@ -21,6 +21,7 @@
 #include "KernelIoctlDecoderTab.h"
 #include "KernelObjectDirectoryDeepTab.h"
 #include "KernelObjectTypeMatrixTab.h"
+#include "KernelPlatformAuditTab.h"
 #include "KernelSymbolicLinkTab.h"
 #include "KernelThreadAuditTab.h"
 #include "../SettingsDock/AppearanceSettings.h"
@@ -560,6 +561,26 @@ void KernelDock::initializeUi()
         kernelText(
             "kernel.main.tab.audit_callbacks.tooltip",
             QStringLiteral("集中查看 Inline Hook、IAT/EAT、回调遍历和驱动回调")));
+
+    const int halAuditTabIndex = m_tabWidget->addTab(
+        new KernelPlatformAuditTab(KernelPlatformAuditTab::Mode::Hal, m_tabWidget),
+        tabIcon(QStringLiteral(":/Icon/process_details.svg")),
+        kernelText("kernel.main.tab.hal_audit.title", QStringLiteral("HAL")));
+    m_tabWidget->setTabToolTip(
+        halAuditTabIndex,
+        kernelText(
+            "kernel.main.tab.hal_audit.tooltip",
+            QStringLiteral("只读审计 HalDispatchTable、HalPrivateDispatchTable、HalAcpiDispatchTable 与 HalSubComponents")));
+
+    const int wdfAuditTabIndex = m_tabWidget->addTab(
+        new KernelPlatformAuditTab(KernelPlatformAuditTab::Mode::Wdf, m_tabWidget),
+        tabIcon(QStringLiteral(":/Icon/process_list.svg")),
+        kernelText("kernel.main.tab.wdf_audit.title", QStringLiteral("WDF")));
+    m_tabWidget->setTabToolTip(
+        wdfAuditTabIndex,
+        kernelText(
+            "kernel.main.tab.wdf_audit.tooltip",
+            QStringLiteral("只读审计 KMDF 绑定函数地址、运行时结构基线、模块归属与 WDF 回调")));
 
     m_hvmTabIndex = m_tabWidget->addTab(
         new KernelHvmTab(m_tabWidget),

@@ -31,6 +31,7 @@
 #include "driver/KswordArkKernelObjectIoctl.h"
 #include "driver/KswordArkFilterIoctl.h"
 #include "driver/KswordArkDeviceAuditIoctl.h"
+#include "driver/KswordArkPlatformAuditIoctl.h"
 #include "driver/KswordArkHwidIoctl.h"
 #include "driver/KswordArkDebugOutputIoctl.h"
 #include "driver/KswordArkBugcheckIoctl.h"

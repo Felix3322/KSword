@@ -1641,6 +1641,71 @@ namespace ksword::ark
         return queryDeviceAuditRows(*this, IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT, KSWORD_ARK_DEVICE_AUDIT_PROFILE_GPU_DISPLAY_WATCHDOG, targetName, maxRows, maxAttachedDepth, "IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT");
     }
 
+    PlatformAuditResult DriverClient::queryPlatformAudit(const unsigned long scopeMask, const unsigned long maxRows) const
+    {
+        constexpr const char* operationName = "IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT";
+        PlatformAuditResult result{};
+        KSWORD_ARK_QUERY_PLATFORM_AUDIT_REQUEST request{};
+        request.size = sizeof(request);
+        request.version = KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION;
+        request.scopeMask = scopeMask;
+        request.maxRows = maxRows;
+
+        std::vector<std::uint8_t> responseBuffer(kDefaultAuditBufferBytes, 0U);
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT,
+            &request,
+            sizeof(request),
+            responseBuffer.data(),
+            static_cast<unsigned long>(responseBuffer.size()));
+        if (!result.io.ok)
+        {
+            markUnsupportedIfNeeded(result, operationName);
+            return result;
+        }
+
+        constexpr std::size_t headerSize =
+            sizeof(KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE) -
+            sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY);
+        const auto* response =
+            reinterpret_cast<const KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE*>(responseBuffer.data());
+        const std::size_t parsedCount = validateAuditRows(
+            result.io,
+            headerSize,
+            response->entrySize,
+            sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY),
+            response->returnedCount,
+            operationName);
+        if (!result.io.ok)
+        {
+            return result;
+        }
+
+        result.version = response->version;
+        result.status = response->queryStatus;
+        result.scopeMask = response->scopeMask;
+        result.responseFlags = response->responseFlags;
+        result.totalCount = response->totalCount;
+        result.returnedCount = response->returnedCount;
+        result.entrySize = response->entrySize;
+        result.buildNumber = response->buildNumber;
+        result.signaturePolicyFlags = response->signaturePolicyFlags;
+        result.lastStatus = response->lastStatus;
+        result.io.ntStatus = response->lastStatus;
+        result.entries = parseVariableRows<KSWORD_ARK_PLATFORM_AUDIT_ENTRY>(
+            responseBuffer,
+            headerSize,
+            response->entrySize,
+            parsedCount);
+        result.io.message = appendAuditSummary(
+            operationName,
+            result.totalCount,
+            result.returnedCount,
+            result.entries.size(),
+            result.io.bytesReturned);
+        return result;
+    }
+
     CidTableAuditResult DriverClient::enumCidTable(const unsigned long flags, const unsigned long maxEntries, const unsigned long maxVisitCount, const unsigned long startCid, const unsigned long endCid) const
     {
         constexpr const char* operationName = "IOCTL_KSWORD_ARK_ENUM_CID_TABLE";

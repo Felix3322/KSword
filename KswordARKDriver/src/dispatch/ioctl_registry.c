@@ -18,6 +18,7 @@ Environment:
 #include "ark/ark_ioctl.h"
 #include "driver/KswordArkMutationIoctl.h"
 #include "driver/KswordArkDeviceAuditIoctl.h"
+#include "driver/KswordArkPlatformAuditIoctl.h"
 #include "driver/KswordArkHwidIoctl.h"
 
 // Feature handler declarations live here instead of in the central dispatch file.
@@ -157,6 +158,7 @@ NTSTATUS KswordARKDeviceAuditIoctlQueryDeviceStack(_In_ WDFDEVICE Device, _In_ W
 NTSTATUS KswordARKDeviceAuditIoctlQueryInputStack(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDeviceAuditIoctlQueryUsbTopology(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDeviceAuditIoctlQueryGpuDisplayWatchdog(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKPlatformAuditIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHwidIoctlQueryDispatch(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHwidIoctlControlDispatch(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDebugOutputIoctlControl(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -307,6 +309,8 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_QUERY_INPUT_STACK_AUDIT, KswordARKDeviceAuditIoctlQueryInputStack, "IOCTL_KSWORD_ARK_QUERY_INPUT_STACK_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_USB_TOPOLOGY_AUDIT, KswordARKDeviceAuditIoctlQueryUsbTopology, "IOCTL_KSWORD_ARK_QUERY_USB_TOPOLOGY_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT, KswordARKDeviceAuditIoctlQueryGpuDisplayWatchdog, "IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    // HAL/WDF 审计仅返回经导出、边界和结构签名验证的只读证据。
+    { IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT, KswordARKPlatformAuditIoctlQuery, "IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     // 调试输出轮询频率较高，成功路径静默，避免驱动自有日志被无意义放大。
     { IOCTL_KSWORD_ARK_DEBUG_OUTPUT_CONTROL, KswordARKDebugOutputIoctlControl, "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_CONTROL", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN, KswordARKDebugOutputIoctlDrain, "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },

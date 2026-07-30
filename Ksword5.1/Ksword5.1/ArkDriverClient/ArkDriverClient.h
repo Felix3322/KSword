@@ -408,6 +408,11 @@ namespace ksword::ark
         DeviceAuditResult queryInputStackAudit(const std::wstring& targetName = std::wstring(), unsigned long maxRows = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ROWS, unsigned long maxAttachedDepth = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ATTACHED_DEPTH) const;
         DeviceAuditResult queryUsbTopologyAudit(const std::wstring& targetName = std::wstring(), unsigned long maxRows = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ROWS, unsigned long maxAttachedDepth = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ATTACHED_DEPTH) const;
         DeviceAuditResult queryGpuDisplayWatchdogAudit(const std::wstring& targetName = std::wstring(), unsigned long maxRows = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ROWS, unsigned long maxAttachedDepth = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ATTACHED_DEPTH) const;
+        // queryPlatformAudit：
+        // - 输入：HAL/WDF scope 和最大行数；
+        // - 处理：只通过受控 IOCTL 获取结构签名与模块边界验证后的证据；
+        // - 返回：未知系统布局显式 unsupported/partial，不尝试裸偏移扫描。
+        PlatformAuditResult queryPlatformAudit(unsigned long scopeMask = KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL, unsigned long maxRows = KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS) const;
         // queryHwidDispatchState / controlHwidDispatch：
         // - 输入：无输入查询或完整 HWID Dispatch 控制包；
         // - 处理：只通过 ArkDriverClient 访问新增 IOCTL，Dock 不直接 DeviceIoControl；

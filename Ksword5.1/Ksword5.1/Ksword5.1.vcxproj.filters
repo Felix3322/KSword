@@ -221,6 +221,9 @@
     <ClCompile Include="KernelDock\KernelHvmTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -860,6 +863,9 @@
     <ClCompile Include="HardwareDock\HardwareHwidDispatchPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="HardwareDock\HardwareI8042AuditPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <QtMoc Include="Ksword5.cpp">
@@ -1042,6 +1048,9 @@
     <ClInclude Include="HardwareDock\HardwareR0EvidencePage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="HardwareDock\HardwareI8042AuditPage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <QtMoc Include="HardwareDock\HardwareDeviceManagerPage.h">
       <Filter>Header Files</Filter>
     </QtMoc>
@@ -1129,6 +1138,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelHvmTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelPlatformAuditTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h">

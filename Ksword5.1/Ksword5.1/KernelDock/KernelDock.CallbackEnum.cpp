@@ -455,6 +455,10 @@ namespace
             return kernelText("kernel.callback.enum.class.image_verification", QStringLiteral("镜像验证回调"));
         case KSWORD_ARK_CALLBACK_ENUM_CLASS_NMI:
             return kernelText("kernel.callback.enum.class.nmi", QStringLiteral("NMI 回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER:
+            return kernelText(
+                "kernel.callback.enum.class.legacy_fs_filter",
+                QStringLiteral("旧式 FS Filter pre/post 链"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(callbackClass);
@@ -501,6 +505,10 @@ namespace
             return kernelText("kernel.callback.enum.source.object_directory", QStringLiteral("对象目录枚举"));
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_NMI_LIST:
             return kernelText("kernel.callback.enum.source.nmi_list", QStringLiteral("NMI 私有注册链"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL:
+            return kernelText(
+                "kernel.callback.enum.source.legacy_fs_public_structural",
+                QStringLiteral("公开 FS Filter 枚举 + ClassInitData 结构签名"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(source);
@@ -601,6 +609,18 @@ namespace
             return kernelText(
                 "kernel.callback.enum.registration_type.desktop_object",
                 QStringLiteral("Desktop 对象回调"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_CLASS_INIT:
+            return kernelText(
+                "kernel.callback.enum.registration_type.legacy_fs_class_init",
+                QStringLiteral("Legacy FS ClassInitData"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_PRE:
+            return kernelText(
+                "kernel.callback.enum.registration_type.legacy_fs_pre",
+                QStringLiteral("Legacy FS Pre 回调"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_POST:
+            return kernelText(
+                "kernel.callback.enum.registration_type.legacy_fs_post",
+                QStringLiteral("Legacy FS Post 回调"));
         default:
             return kernelText("kernel.callback.enum.registration_type.unclassified", QStringLiteral("未分类"));
         }
@@ -726,7 +746,8 @@ namespace
         return source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_FLTMGR_ENUMERATION
             || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_WFP_MGMT_API
             || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_PUBLIC_API
-            || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_DRIVER_OBJECT_SCAN;
+            || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_DRIVER_OBJECT_SCAN
+            || source == KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL;
     }
 
     bool callbackEnumIsFallbackPatternSource(const std::uint32_t source)

@@ -25,6 +25,7 @@ class HardwareR0EvidencePage;
 class HardwareDeviceManagerPage;
 class HardwareOtherDevicesPage;
 class HardwareHwidDispatchPage;
+class HardwareI8042AuditPage;
 class PerformanceNavCard;
 class QChartView;
 class QAreaSeries;
@@ -334,6 +335,7 @@ private:
     void initializeOtherDevicesTab();
     void initializeDeviceStackTab();
     void initializeKeyboardMouseHidTab();
+    void initializeI8042AuditTab();
     void initializeUsbTopologyTab();
     void initializePnpAcpiPciTab();
 
@@ -636,6 +638,7 @@ private:
     QWidget* m_keyboardMouseHidPage = nullptr;     // m_keyboardMouseHidPage：键鼠/HID 只读页。
     CodeEditorWidget* m_keyboardMouseHidEditor = nullptr; // m_keyboardMouseHidEditor：键鼠/HID 文本。
     QTableWidget* m_keyboardMouseHidTable = nullptr; // m_keyboardMouseHidTable：输入设备 R0 明细表。
+    HardwareI8042AuditPage* m_i8042AuditPage = nullptr; // m_i8042AuditPage：i8042prt/键鼠类驱动组合审计页。
     QWidget* m_usbTopologyPage = nullptr;          // m_usbTopologyPage：USB 拓扑只读页。
     CodeEditorWidget* m_usbTopologyEditor = nullptr; // m_usbTopologyEditor：USB 拓扑文本。
     QTableWidget* m_usbTopologyTable = nullptr;     // m_usbTopologyTable：USB 拓扑 R0 明细表。
