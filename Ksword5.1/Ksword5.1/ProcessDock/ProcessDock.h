@@ -301,6 +301,16 @@ private:
         std::uint32_t staticFillFailureCount = 0; // 静态详情连续失败次数（用于退避重试）。
     };
 
+    // AffinityRestoreRetryState：
+    // - 作用：记录某个进程实例恢复持久化亲和性失败后的退避状态；
+    // - 调用方式：restorePersistedAffinityForNewProcesses 在下一轮刷新前检查；
+    // - 返回行为：本结构只保存连续失败次数和下一次允许尝试的时间。
+    struct AffinityRestoreRetryState
+    {
+        std::uint32_t consecutiveFailureCount = 0U; // consecutiveFailureCount：连续恢复失败次数。
+        std::chrono::steady_clock::time_point nextAttemptTime{}; // nextAttemptTime：下一次允许恢复的单调时钟时间。
+    };
+
     // ProcessActionTarget：
     // - 作用：保存一次右键动作绑定的进程快照；
     // - identityKey 用于回写缓存与保持选择，record 是跨线程执行时使用的只读副本。
@@ -427,7 +437,9 @@ private:
     // ======== 刷新与渲染 ========
     void requestAsyncRefresh(bool forceRefresh);
     void applyRefreshResult(RefreshResult refreshResult, bool forceUiRefresh);
-    // restorePersistedAffinityForNewProcesses 作用：为本轮首次发现的进程实例恢复用户保存的 CPU 亲和性规则。
+    // restorePersistedAffinityForNewProcesses 作用：
+    // - 为本轮新发现或上次恢复失败的进程实例恢复用户保存的 CPU 亲和性规则；
+    // - 成功或明确不存在规则后完成记账，暂时失败则按有上限的指数退避重试。
     void restorePersistedAffinityForNewProcesses(RefreshResult& refreshResult);
     void rebuildTable();
     bool shouldRebuildProcessTableForRefresh(bool forceUiRefresh) const;
@@ -893,7 +905,8 @@ private:
 
     // ======== 数据缓存 ========
     std::unordered_map<std::string, CacheEntry> m_cacheByIdentity; // 进程缓存（PID+CreateTime）。
-    std::unordered_set<std::string> m_affinityRestoreAttemptedIdentityKeys; // 已检查过持久化 CPU 亲和性规则的进程实例。
+    std::unordered_set<std::string> m_affinityRestoreCompletedIdentityKeys; // 已成功恢复或明确无规则的进程实例。
+    std::unordered_map<std::string, AffinityRestoreRetryState> m_affinityRestoreRetryByIdentity; // 暂时失败且等待重试的进程实例。
     std::unordered_map<std::string, ks::process::CounterSample> m_counterSampleByIdentity; // 差值样本。
     std::unique_ptr<ks::network::ProcessNetworkEtwMonitor> m_processNetworkTrafficService; // 进程页内部 ETW 网络累计器。
     bool m_processNetworkTrafficCaptureStarted = false; // ETW 采集器是否已经尝试启动。

@@ -121,6 +121,35 @@
 
 namespace
 {
+    // 亲和性恢复失败后从 1 秒开始退避，避免短暂拒绝导致每轮刷新都重复打开句柄。
+    constexpr std::uint32_t AffinityRestoreRetryBaseMilliseconds = 1000U;
+
+    // 退避上限固定为 60 秒；达到上限后仍会继续重试，不会永久放弃该进程实例。
+    constexpr std::uint32_t AffinityRestoreRetryMaximumMilliseconds = 60000U;
+
+    // affinityRestoreRetryDelay 作用：
+    // - 根据连续失败次数计算 1、2、4、8……秒的指数退避；
+    // - 入参 consecutiveFailureCount：至少为 1 的连续失败次数；
+    // - 返回：不超过 60 秒的下一次等待时长。
+    std::chrono::milliseconds affinityRestoreRetryDelay(
+        const std::uint32_t consecutiveFailureCount)
+    {
+        // exponent：限制左移位数，避免极端长生命周期进程触发整数溢出。
+        const std::uint32_t exponent = std::min<std::uint32_t>(
+            consecutiveFailureCount > 0U ? consecutiveFailureCount - 1U : 0U,
+            6U);
+
+        // scaledDelayMilliseconds：保存本轮指数增长后的毫秒值。
+        const std::uint32_t scaledDelayMilliseconds =
+            AffinityRestoreRetryBaseMilliseconds << exponent;
+
+        // boundedDelayMilliseconds：将实际等待时间限制在明确的最大值内。
+        const std::uint32_t boundedDelayMilliseconds = std::min(
+            scaledDelayMilliseconds,
+            AffinityRestoreRetryMaximumMilliseconds);
+        return std::chrono::milliseconds(boundedDelayMilliseconds);
+    }
+
     // 列标题文本常量，索引与 ProcessDock::TableColumn 一一对应。
     const QStringList ProcessTableHeaders{
         "进程名",
@@ -5887,35 +5916,65 @@ void ProcessDock::applyRefreshResult(RefreshResult refreshResult, const bool for
 
 void ProcessDock::restorePersistedAffinityForNewProcesses(RefreshResult& refreshResult)
 {
+    // currentIdentityKeys：用于清理已经退出进程的完成与退避记录。
     std::unordered_set<std::string> currentIdentityKeys;
     currentIdentityKeys.reserve(refreshResult.nextCache.size());
+
+    // nowTime：整轮恢复共用单调时间，保证同一刷新中的退避判断一致。
+    const std::chrono::steady_clock::time_point nowTime = std::chrono::steady_clock::now();
+
+    // restoredRuleCount：统计本轮成功应用的持久化规则数量。
     std::size_t restoredRuleCount = 0U;
+
+    // failedRuleCount：统计本轮实际尝试后失败的规则数量。
     std::size_t failedRuleCount = 0U;
 
     for (const auto& cachePair : refreshResult.nextCache)
     {
+        // identityKey：PID 与创建时间组成的进程实例稳定标识。
         const std::string& identityKey = cachePair.first;
+
+        // cacheEntry：本轮刷新得到的进程缓存条目。
         const CacheEntry& cacheEntry = cachePair.second;
         currentIdentityKeys.insert(identityKey);
         if (cacheEntry.isExitedInLatestRound || cacheEntry.isKernelOnlyInLatestRound ||
             cacheEntry.record.pid == 0U || cacheEntry.record.imagePath.empty() ||
-            !m_affinityRestoreAttemptedIdentityKeys.insert(identityKey).second)
+            m_affinityRestoreCompletedIdentityKeys.find(identityKey) !=
+                m_affinityRestoreCompletedIdentityKeys.end())
         {
             continue;
         }
 
+        // retryIt：若上次恢复失败，用于判断本轮是否已到重试时间。
+        const auto retryIt = m_affinityRestoreRetryByIdentity.find(identityKey);
+        if (retryIt != m_affinityRestoreRetryByIdentity.end() &&
+            nowTime < retryIt->second.nextAttemptTime)
+        {
+            continue;
+        }
+
+        // ruleFound：区分“明确无规则”和读取/应用失败，避免把失败误记为完成。
         bool ruleFound = false;
+
+        // detailText：接收注册表读取、句柄打开或亲和性设置的诊断信息。
         std::string detailText;
+
+        // restoreOk：仅当规则读取与实际应用均成功时为 true。
         const bool restoreOk = ks::process::restorePersistedProcessAffinityMask(
             static_cast<DWORD>(cacheEntry.record.pid),
             cacheEntry.record.imagePath,
             &ruleFound,
             &detailText);
-        if (!ruleFound)
+
+        // 成功且明确没有规则时完成记账，不再重复查询同一进程实例。
+        if (restoreOk && !ruleFound)
         {
+            m_affinityRestoreCompletedIdentityKeys.insert(identityKey);
+            m_affinityRestoreRetryByIdentity.erase(identityKey);
             continue;
         }
 
+        // restoreEvent：让每次实际恢复及其诊断信息共享一个可追踪日志事件。
         kLogEvent restoreEvent;
         (restoreOk ? info : warn) << restoreEvent
             << "[ProcessDock] persisted CPU affinity restore, pid=" << cacheEntry.record.pid
@@ -5924,20 +5983,58 @@ void ProcessDock::restorePersistedAffinityForNewProcesses(RefreshResult& refresh
             << ", detail=" << (detailText.empty() ? "none" : detailText) << eol;
         if (restoreOk)
         {
+            m_affinityRestoreCompletedIdentityKeys.insert(identityKey);
+            m_affinityRestoreRetryByIdentity.erase(identityKey);
             ++restoredRuleCount;
         }
         else
         {
+            // retryState：保存本进程实例的连续失败次数与下一次重试时间。
+            AffinityRestoreRetryState& retryState =
+                m_affinityRestoreRetryByIdentity[identityKey];
+            if (retryState.consecutiveFailureCount < std::numeric_limits<std::uint32_t>::max())
+            {
+                ++retryState.consecutiveFailureCount;
+            }
+
+            // retryDelay：失败次数对应的有上限指数退避时长。
+            const std::chrono::milliseconds retryDelay =
+                affinityRestoreRetryDelay(retryState.consecutiveFailureCount);
+            retryState.nextAttemptTime = nowTime + retryDelay;
+
+            // retryEvent：记录自动恢复仍会继续，以及下一次允许尝试的等待时间。
+            kLogEvent retryEvent;
+            warn << retryEvent
+                << "[ProcessDock] persisted CPU affinity restore will retry, pid="
+                << cacheEntry.record.pid
+                << ", failureCount=" << retryState.consecutiveFailureCount
+                << ", retryAfterMs=" << retryDelay.count()
+                << eol;
             ++failedRuleCount;
         }
     }
 
-    for (auto it = m_affinityRestoreAttemptedIdentityKeys.begin();
-         it != m_affinityRestoreAttemptedIdentityKeys.end();)
+    // 进程退出后清除完成记录，使未来复用 PID 但创建时间不同的实例独立判断。
+    for (auto it = m_affinityRestoreCompletedIdentityKeys.begin();
+         it != m_affinityRestoreCompletedIdentityKeys.end();)
     {
         if (currentIdentityKeys.find(*it) == currentIdentityKeys.end())
         {
-            it = m_affinityRestoreAttemptedIdentityKeys.erase(it);
+            it = m_affinityRestoreCompletedIdentityKeys.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    // 同步清理退出进程的失败退避状态，避免长时间运行后积累无效 identity。
+    for (auto it = m_affinityRestoreRetryByIdentity.begin();
+         it != m_affinityRestoreRetryByIdentity.end();)
+    {
+        if (currentIdentityKeys.find(it->first) == currentIdentityKeys.end())
+        {
+            it = m_affinityRestoreRetryByIdentity.erase(it);
         }
         else
         {
