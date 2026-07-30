@@ -16,6 +16,7 @@ Environment:
 
 #include "ark/ark_driver.h"
 #include "ark/ark_thread.h"
+#include "driver/KswordArkWorkQueueIoctl.h"
 #include "../dyndata/dyndata_v4_internal.h"
 #include "../kernel/hook_scan_support.h"
 #include "../../dispatch/ioctl_validation.h"

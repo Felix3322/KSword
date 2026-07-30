@@ -24,6 +24,33 @@ Environment:
 #include <ntimage.h>
 #include <ntstrsafe.h>
 
+// These exported I/O-manager routines are declared by ntifs.h but not by
+// ntddk.h in WDK 10.0.26100.  Keep this driver translation unit on ntddk.h and
+// provide the matching public prototypes locally.
+NTKERNELAPI
+NTSTATUS
+IoEnumerateDeviceObjectList(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _Out_writes_bytes_to_opt_(
+        DeviceObjectListSize,
+        (*ActualNumberDeviceObjects) * sizeof(PDEVICE_OBJECT))
+        PDEVICE_OBJECT* DeviceObjectList,
+    _In_ ULONG DeviceObjectListSize,
+    _Out_ PULONG ActualNumberDeviceObjects
+    );
+
+NTKERNELAPI
+PDEVICE_OBJECT
+IoGetLowerDeviceObject(
+    _In_ PDEVICE_OBJECT DeviceObject
+    );
+
+NTKERNELAPI
+PDEVICE_OBJECT
+IoGetDeviceAttachmentBaseRef(
+    _In_ PDEVICE_OBJECT DeviceObject
+    );
+
 #define KSW_I8042_RESPONSE_HEADER_SIZE \
     (FIELD_OFFSET(KSWORD_ARK_QUERY_I8042_AUDIT_RESPONSE, entries))
 #define KSW_I8042_POOL_TAG '24iK'

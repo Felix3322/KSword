@@ -22,6 +22,29 @@ Environment:
 #include <ntimage.h>
 #include <ntstrsafe.h>
 
+// ntddk.h exposes these HAL_DISPATCH members as object-like convenience
+// macros.  Undefine the aliases in this translation unit so FIELD_OFFSET and
+// member-size expressions below refer to the actual structure fields.
+#undef HalQuerySystemInformation
+#undef HalSetSystemInformation
+#undef HalQueryBusSlots
+#undef HalReferenceHandlerForBus
+#undef HalReferenceBusHandler
+#undef HalDereferenceBusHandler
+#undef HalInitPnpDriver
+#undef HalInitPowerManagement
+#undef HalGetDmaAdapter
+#undef HalGetInterruptTranslator
+#undef HalStartMirroring
+#undef HalEndMirroring
+#undef HalMirrorPhysicalMemory
+#undef HalEndOfBoot
+#undef HalMirrorVerify
+#undef HalGetCachedAcpiTable
+#undef HalSetPciErrorHandlerCallback
+#undef HalGetPrmCache
+#undef HalInvokePrmFwHandler
+
 #define KSW_PLATFORM_RESPONSE_HEADER_SIZE \
     (FIELD_OFFSET(KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE, entries))
 #define KSW_PLATFORM_HAL_ACPI_SIGNATURE 0x204C4148UL
