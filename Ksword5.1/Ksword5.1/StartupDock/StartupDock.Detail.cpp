@@ -63,7 +63,7 @@ namespace
         detailText += startupText("startup.detail.type", QStringLiteral("类型：%1\n"))
             .arg(entry.sourceTypeText.isEmpty() ? emptyValueText() : ks::i18n::sourceText(entry.sourceTypeText));
         detailText += startupText("startup.detail.status", QStringLiteral("状态：%1\n"))
-            .arg(buildStatusText(entry.enabled));
+            .arg(buildStatusText(entry.backendEntry));
         detailText += startupText("startup.detail.can_enable", QStringLiteral("可启用：%1\n"))
             .arg(boolText(entry.backendEntry.canEnable));
         detailText += startupText("startup.detail.can_disable", QStringLiteral("可禁用：%1\n"))

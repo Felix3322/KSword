@@ -2172,6 +2172,25 @@ namespace
         return ToNativeSeparators(FromWide(TrimWide(serviceConfig.lpBinaryPathName)));
     }
 
+    ks::startup::StartupScmStartMode PublicScmStartMode(const DWORD startType)
+    {
+        switch (startType)
+        {
+        case SERVICE_BOOT_START:
+            return ks::startup::StartupScmStartMode::Boot;
+        case SERVICE_SYSTEM_START:
+            return ks::startup::StartupScmStartMode::System;
+        case SERVICE_AUTO_START:
+            return ks::startup::StartupScmStartMode::Automatic;
+        case SERVICE_DEMAND_START:
+            return ks::startup::StartupScmStartMode::Manual;
+        case SERVICE_DISABLED:
+            return ks::startup::StartupScmStartMode::Disabled;
+        default:
+            return ks::startup::StartupScmStartMode::None;
+        }
+    }
+
     // EnumerateScmEntries implements the shared service/driver backend with category-specific filters.
     std::vector<ks::startup::StartupEntry> EnumerateScmEntries(bool drivers)
     {
@@ -2223,6 +2242,8 @@ namespace
                 continue;
             }
             const DWORD startType = config->dwStartType;
+            const ks::startup::StartupScmStartMode startMode =
+                PublicScmStartMode(startType);
             const std::string serviceName = serviceItem.lpServiceName == nullptr ? std::string() : FromWide(serviceItem.lpServiceName);
             const std::string displayName = serviceItem.lpDisplayName == nullptr ? std::string() : FromWide(TrimWide(serviceItem.lpDisplayName));
             const std::string commandText = QueryServiceBinaryPathText(*config);
@@ -2235,9 +2256,8 @@ namespace
             entry.publisherText = ks::startup::QueryPublisherTextByPath(entry.imagePathText);
             entry.locationText = std::string(drivers ? "SCM\\Driver\\" : "SCM\\Service\\") + serviceName;
             entry.userText = drivers ? FromWide(L"内核") : (config->lpServiceStartName == nullptr ? "N/A" : FromWide(config->lpServiceStartName));
-            entry.enabled = startType == SERVICE_AUTO_START
-                || (drivers && (startType == SERVICE_SYSTEM_START || startType == SERVICE_BOOT_START));
-            entry.sourceTypeText = drivers ? "Driver" : "AutoService";
+            entry.enabled = startMode != ks::startup::StartupScmStartMode::Disabled;
+            entry.sourceTypeText = drivers ? "Driver" : "SCM Service";
             if (drivers && startType == SERVICE_BOOT_START)
             {
                 entry.detailText = FromWide(L"引导启动驱动");
@@ -2246,13 +2266,23 @@ namespace
             {
                 entry.detailText = FromWide(L"系统启动驱动");
             }
+            else if (startType == SERVICE_AUTO_START)
+            {
+                entry.detailText = drivers
+                    ? FromWide(L"自动启动驱动")
+                    : FromWide(L"自动启动服务");
+            }
+            else if (startType == SERVICE_DEMAND_START)
+            {
+                entry.detailText = FromWide(L"手动启动的服务控制管理器项");
+            }
+            else if (startType == SERVICE_DISABLED)
+            {
+                entry.detailText = FromWide(L"已禁用的服务控制管理器启动项");
+            }
             else
             {
-                entry.detailText = entry.enabled
-                    ? (drivers ? FromWide(L"自动启动驱动") : FromWide(L"自动启动服务"))
-                    : (startType == SERVICE_DISABLED
-                        ? FromWide(L"已禁用的服务控制管理器启动项")
-                        : FromWide(L"手动启动的服务控制管理器项"));
+                entry.detailText = FromWide(L"未知的服务控制管理器启动类型");
             }
             entry.canOpenFileLocation = !entry.imagePathText.empty();
             entry.canDelete = true;
@@ -2261,11 +2291,13 @@ namespace
             entry.actionKind = ks::startup::StartupActionKind::ScmStartType;
             entry.actionLocator.serviceNameText = serviceName;
             entry.actionLocator.serviceIsDriver = drivers;
+            entry.actionLocator.serviceStartMode = startMode;
             entry.actionLocator.serviceType = config->dwServiceType;
             entry.actionLocator.serviceStartType = startType;
             entry.actionLocator.serviceBinaryPathText = commandText;
-            entry.canEnable = !entry.enabled;
-            entry.canDisable = entry.enabled;
+            entry.canEnable = startMode == ks::startup::StartupScmStartMode::Disabled;
+            entry.canDisable = startMode != ks::startup::StartupScmStartMode::Disabled
+                && startMode != ks::startup::StartupScmStartMode::None;
             entry.riskLevel = drivers
                 ? ks::startup::StartupRiskLevel::Critical
                 : ks::startup::StartupRiskLevel::Elevated;

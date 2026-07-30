@@ -396,7 +396,10 @@ void StartupDock::appendEntryRow(
         rowIndex,
         toStartupColumn(StartupColumn::User),
         createReadOnlyItem(ks::i18n::sourceText(entry.userText)));
-    tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::Enabled), createReadOnlyItem(buildStatusText(entry.enabled)));
+    tableWidget->setItem(
+        rowIndex,
+        toStartupColumn(StartupColumn::Enabled),
+        createReadOnlyItem(buildStatusText(entry.backendEntry)));
     tableWidget->setItem(
         rowIndex,
         toStartupColumn(StartupColumn::Type),
@@ -442,7 +445,9 @@ void StartupDock::appendRegistryTreeLeaf(
     entryItem->setText(toStartupColumn(StartupColumn::Command), entry.commandText);
     entryItem->setText(toStartupColumn(StartupColumn::Location), entry.locationText);
     entryItem->setText(toStartupColumn(StartupColumn::User), ks::i18n::sourceText(entry.userText));
-    entryItem->setText(toStartupColumn(StartupColumn::Enabled), buildStatusText(entry.enabled));
+    entryItem->setText(
+        toStartupColumn(StartupColumn::Enabled),
+        buildStatusText(entry.backendEntry));
     entryItem->setText(toStartupColumn(StartupColumn::Type), ks::i18n::sourceText(entry.sourceTypeText));
     entryItem->setText(toStartupColumn(StartupColumn::Detail), startupLocalizedDetailText(entry.detailText));
     entryItem->setIcon(toStartupColumn(StartupColumn::Name), resolveEntryIcon(entry));

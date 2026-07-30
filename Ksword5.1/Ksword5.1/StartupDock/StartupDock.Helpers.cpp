@@ -67,6 +67,30 @@ namespace startup_dock_detail
             : startupText("startup.value.disabled", QStringLiteral("禁用"));
     }
 
+    QString buildStatusText(const ks::startup::StartupEntry& entry)
+    {
+        if (entry.actionKind != ks::startup::StartupActionKind::ScmStartType)
+        {
+            return buildStatusText(entry.enabled);
+        }
+        switch (entry.actionLocator.serviceStartMode)
+        {
+        case ks::startup::StartupScmStartMode::Boot:
+            return startupText("startup.value.scm.boot", QStringLiteral("引导启动"));
+        case ks::startup::StartupScmStartMode::System:
+            return startupText("startup.value.scm.system", QStringLiteral("系统启动"));
+        case ks::startup::StartupScmStartMode::Automatic:
+            return startupText("startup.value.scm.automatic", QStringLiteral("自动启动"));
+        case ks::startup::StartupScmStartMode::Manual:
+            return startupText("startup.value.scm.manual", QStringLiteral("手动启动"));
+        case ks::startup::StartupScmStartMode::Disabled:
+            return startupText("startup.value.scm.disabled", QStringLiteral("已禁用"));
+        case ks::startup::StartupScmStartMode::None:
+        default:
+            return buildStatusText(entry.enabled);
+        }
+    }
+
     QString startupRiskReasonText(const ks::startup::StartupEntry& backendEntry)
     {
         QString fallbackText = QString::fromUtf8(

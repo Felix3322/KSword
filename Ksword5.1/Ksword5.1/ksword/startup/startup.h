@@ -47,6 +47,17 @@ namespace ks::startup
         LocalMachine
     };
 
+    // StartupScmStartMode preserves the native SCM mode instead of collapsing Manual into Disabled.
+    enum class StartupScmStartMode : int
+    {
+        None = 0,
+        Boot,
+        System,
+        Automatic,
+        Manual,
+        Disabled
+    };
+
     // StartupRiskLevel lets UI layers select warning treatment without parsing diagnostics.
     enum class StartupRiskLevel : int
     {
@@ -81,6 +92,7 @@ namespace ks::startup
         std::string taskDefinitionSha256Text;
         std::string serviceNameText;
         bool serviceIsDriver = false;
+        StartupScmStartMode serviceStartMode = StartupScmStartMode::None;
         std::uint32_t serviceType = 0;
         std::uint32_t serviceStartType = 0;
         std::string serviceBinaryPathText;
@@ -110,7 +122,7 @@ namespace ks::startup
         std::string sourceTypeText;        // Source subtype such as Run, ScheduledTask, WMI-EventFilter.
         StartupActionKind actionKind = StartupActionKind::None; // Structured backend operation.
         StartupActionLocator actionLocator; // Structured coordinates consumed by action APIs.
-        bool enabled = true;               // Whether the source is enabled.
+        bool enabled = true;               // Whether the source is enabled; for SCM, whether it is not Disabled.
         bool canEnable = false;             // Whether SetStartupEntryEnabled(entry, true) is supported.
         bool canDisable = false;            // Whether SetStartupEntryEnabled(entry, false) is supported.
         StartupRiskLevel riskLevel = StartupRiskLevel::Elevated; // Structured warning severity.

@@ -212,7 +212,7 @@ namespace
             entry.commandText,
             entry.locationText,
             ks::i18n::sourceText(entry.userText),
-            buildStatusText(entry.enabled),
+            buildStatusText(entry.backendEntry),
             ks::i18n::sourceText(entry.sourceTypeText),
             startupLocalizedDetailText(entry.detailText)
         };
@@ -401,8 +401,7 @@ void StartupDock::showEntryContextMenu(
     }
     openRegistryAction->setEnabled(entry.canOpenRegistryLocation);
     gotoServiceAction->setEnabled(
-        entry.category == StartupCategory::Services
-        || entry.sourceTypeText == QStringLiteral("AutoService"));
+        entry.category == StartupCategory::Services);
     const bool toggleSupported = targetEnabled
         ? entry.backendEntry.canEnable
         : entry.backendEntry.canDisable;
@@ -1236,6 +1235,7 @@ bool StartupDock::entryMatchesCurrentFilter(const StartupEntry& entry) const
         + ks::i18n::sourceText(entry.userText) + QLatin1Char('\n')
         + entry.sourceTypeText + QLatin1Char('\n')
         + ks::i18n::sourceText(entry.sourceTypeText) + QLatin1Char('\n')
+        + buildStatusText(entry.backendEntry) + QLatin1Char('\n')
         + entry.detailText + QLatin1Char('\n')
         + startupLocalizedDetailText(entry.detailText);
     return haystackText.contains(keywordText, Qt::CaseInsensitive);

@@ -65,8 +65,8 @@ public:
     {
         All = 0,       // 总览。
         Logon,         // 登录项（Run/RunOnce/Startup Folder）。
-        Services,      // 自动启动服务。
-        Drivers,       // 自动/系统/引导驱动。
+        Services,      // SCM 服务（自动、手动或已禁用）。
+        Drivers,       // SCM 驱动（引导、系统、自动、手动或已禁用）。
         Tasks,         // 计划任务。
         Registry,      // 高级注册表持久化项。
         Wmi            // WMI 持久化项。
@@ -77,7 +77,7 @@ public:
     // - 供所有枚举器输出和所有表格渲染复用。
     struct StartupEntry
     {
-        ks::startup::StartupEntry backendEntry; // backendEntry：完整后端记录，启停动作只使用结构化定位信息。
+        ks::startup::StartupEntry backendEntry; // backendEntry：完整后端记录，修改和删除只使用结构化定位信息。
         QString uniqueIdText;           // uniqueIdText：全局唯一键，便于缓存定位。
         StartupCategory category = StartupCategory::All; // category：所属分类。
         QString categoryText;           // categoryText：分类显示文本。
@@ -91,7 +91,7 @@ public:
         QString userText;               // userText：归属用户或上下文。
         QString detailText;             // detailText：补充说明。
         QString sourceTypeText;         // sourceTypeText：来源类型（Run/Service/Task...）。
-        bool enabled = true;            // enabled：是否启用。
+        bool enabled = true;            // enabled：是否未被禁用；SCM 精确模式保存在 backendEntry。
         bool canOpenFileLocation = false; // canOpenFileLocation：是否支持打开文件位置。
         bool canOpenRegistryLocation = false; // canOpenRegistryLocation：是否支持打开注册表位置。
         bool canDelete = false;         // canDelete：是否支持删除来源项。

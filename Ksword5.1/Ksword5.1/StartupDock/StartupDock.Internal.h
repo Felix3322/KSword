@@ -101,6 +101,7 @@ namespace startup_dock_detail
     // buildStatusText 作用：
     // - 把启用状态转成统一文本。
     QString buildStatusText(bool enabled);
+    QString buildStatusText(const ks::startup::StartupEntry& entry);
 
     // startupRiskReasonText 作用：
     // - 优先按后端稳定原因码读取本地化文本；
