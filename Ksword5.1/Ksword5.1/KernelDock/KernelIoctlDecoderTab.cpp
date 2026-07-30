@@ -11,7 +11,6 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QRegularExpression>
-#include <QRegularExpressionValidator>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
 
@@ -20,8 +19,8 @@
 using ksword::kernel_dock_internal::kernelText;
 
 // KernelIoctlBitLayoutWidget：
-// - 作用：按 CTL_CODE 的 1/15/2/1/11/2 位分区绘制 Common、Device、Access、
-//   Custom、Function、Method，与 issue 参考图的 32 位布局保持一致；
+// - 作用：逐位绘制 31 到 0 标尺，并按 CTL_CODE 的 1/15/2/1/11/2 位分区标记
+//   Common、Device、Access、Custom、Function、Method，与 issue 参考图保持一致；
 // - 输入输出：setCode 接收解析状态，paintEvent 只负责主题化只读展示。
 class KernelIoctlBitLayoutWidget final : public QWidget
 {
@@ -29,7 +28,7 @@ public:
     explicit KernelIoctlBitLayoutWidget(QWidget* parent = nullptr)
         : QWidget(parent)
     {
-        setMinimumSize(560, 180);
+        setMinimumSize(560, 190);
         setToolTip(kernelText(
             "kernel.ioctl_decoder.layout.tooltip",
             QStringLiteral("CTL_CODE：Common[31]、Device[30:16]、Access[15:14]、Custom[13]、Function[12:2]、Method[1:0]")));
@@ -64,7 +63,7 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.fillRect(rect(), KswordTheme::SurfaceColor());
 
-        // diagramRect 保留顶部位号和底部图例空间，中间矩形严格按位宽比例分配。
+        // diagramRect 保留顶部逐位编号和底部图例空间，中间固定绘制 32 个 bit cell。
         const QRectF diagramRect = QRectF(rect()).adjusted(18.0, 34.0, -18.0, -86.0);
         if (diagramRect.width() <= 0.0 || diagramRect.height() <= 0.0)
         {
@@ -75,76 +74,91 @@ protected:
         {
             int highBit = 0;              // highBit：当前区段最高位。
             int lowBit = 0;               // lowBit：当前区段最低位。
-            int bitCount = 0;             // bitCount：用于按 32 位总宽度分配像素。
-            std::uint32_t value = 0U;     // value：从控制码提取的当前区段值。
             QString labelText;            // labelText：主题语言下的区段名称。
             QColor accentColor;           // accentColor：区分六个位段的主题强调色。
         };
 
-        // segments 严格按参考图从 bit 31 排到 bit 0；Common/Custom 单列，
-        // Device 与 Function 在图中展示其剩余位，而左侧表单仍展示 CTL_CODE 宏的完整字段。
+        // segments 严格按参考图从 bit 31 排到 bit 0；Common/Custom 单列。左侧
+        // Device/Function 仍展示标准 CTL_CODE 的完整 16/12 位参数。
         const std::array<Segment, 6> segments = {{
-            { 31, 31, 1, (m_codeValue >> 31U) & 0x1U,
+            { 31, 31,
                 kernelText("kernel.ioctl_decoder.flag.common", QStringLiteral("Common")),
                 KswordTheme::AccentColor(KswordTheme::AccentRole::Red) },
-            { 30, 16, 15, (m_codeValue >> 16U) & 0x7FFFU,
+            { 30, 16,
                 kernelText("kernel.ioctl_decoder.field.device", QStringLiteral("Device")),
                 KswordTheme::PrimaryAccentColor() },
-            { 15, 14, 2, (m_codeValue >> 14U) & 0x3U,
+            { 15, 14,
                 kernelText("kernel.ioctl_decoder.field.access", QStringLiteral("Access")),
                 KswordTheme::AccentColor(KswordTheme::AccentRole::Green) },
-            { 13, 13, 1, (m_codeValue >> 13U) & 0x1U,
+            { 13, 13,
                 kernelText("kernel.ioctl_decoder.flag.custom", QStringLiteral("Custom")),
                 KswordTheme::AccentColor(KswordTheme::AccentRole::Yellow) },
-            { 12, 2, 11, (m_codeValue >> 2U) & 0x7FFU,
+            { 12, 2,
                 kernelText("kernel.ioctl_decoder.field.function", QStringLiteral("Function")),
                 KswordTheme::AccentColor(KswordTheme::AccentRole::Orange) },
-            { 1, 0, 2, m_codeValue & 0x3U,
+            { 1, 0,
                 kernelText("kernel.ioctl_decoder.field.method", QStringLiteral("Method")),
                 KswordTheme::AccentColor(KswordTheme::AccentRole::Purple) }
         }};
 
-        // valueFont 仅用于位段中的十六进制结果，窄区段仍保持紧凑可读。
-        QFont valueFont = painter.font();
-        valueFont.setBold(true);
-        valueFont.setPointSizeF(qMax(8.0, valueFont.pointSizeF() - 1.0));
-        painter.setFont(valueFont);
+        // 位号使用紧凑字体，使窄窗口中 31..0 仍逐位可见。
+        const QFont baseFont = painter.font();
+        QFont bitNumberFont = baseFont;
+        bitNumberFont.setPointSizeF(qMax(6.0, bitNumberFont.pointSizeF() - 3.0));
+        painter.setFont(bitNumberFont);
 
-        qreal cursorX = diagramRect.left();
-        for (std::size_t index = 0U; index < segments.size(); ++index)
+        const qreal bitCellWidth = diagramRect.width() / 32.0;
+        for (int displayIndex = 0; displayIndex < 32; ++displayIndex)
         {
-            const Segment& segment = segments[index];
-            const qreal segmentWidth = index + 1U == segments.size()
-                ? diagramRect.right() - cursorX
-                : diagramRect.width() * static_cast<qreal>(segment.bitCount) / 32.0;
-            const QRectF segmentRect(cursorX, diagramRect.top(), segmentWidth, diagramRect.height());
+            const int bitIndex = 31 - displayIndex;
+            const Segment* ownerSegment = nullptr;
+            for (const Segment& segment : segments)
+            {
+                if (bitIndex <= segment.highBit && bitIndex >= segment.lowBit)
+                {
+                    ownerSegment = &segment;
+                    break;
+                }
+            }
+            if (ownerSegment == nullptr)
+            {
+                continue;
+            }
 
-            // 无合法输入时保留结构图但降低填充强度，避免把零值误认为真实解析结果。
-            const int fillAlpha = m_valid ? 64 : 24;
-            painter.setPen(QPen(segment.accentColor, 1.5));
-            painter.setBrush(KswordTheme::WithAlpha(segment.accentColor, fillAlpha));
-            painter.drawRect(segmentRect);
+            const qreal cellLeft =
+                diagramRect.left() + bitCellWidth * static_cast<qreal>(displayIndex);
+            const qreal cellRight = displayIndex == 31
+                ? diagramRect.right()
+                : diagramRect.left() +
+                    bitCellWidth * static_cast<qreal>(displayIndex + 1);
+            const QRectF cellRect(
+                cellLeft,
+                diagramRect.top(),
+                cellRight - cellLeft,
+                diagramRect.height());
+            painter.setPen(QPen(ownerSegment->accentColor, 1.0));
+            painter.setBrush(KswordTheme::WithAlpha(
+                ownerSegment->accentColor,
+                m_valid ? 64 : 24));
+            painter.drawRect(cellRect);
 
             painter.setPen(KswordTheme::TextSecondaryColor());
             painter.drawText(
-                QRectF(segmentRect.left(), diagramRect.top() - 25.0, segmentRect.width(), 20.0),
+                QRectF(cellRect.left(), diagramRect.top() - 25.0, cellRect.width(), 20.0),
                 Qt::AlignCenter,
-                segment.highBit == segment.lowBit
-                    ? QString::number(segment.highBit)
-                    : QStringLiteral("%1:%2").arg(segment.highBit).arg(segment.lowBit));
+                QString::number(bitIndex));
 
-            const int hexWidth = (segment.bitCount + 3) / 4;
-            const QString valueText = m_valid
-                ? (segment.bitCount == 1
-                    ? QString::number(segment.value)
-                    : QStringLiteral("0x%1")
-                        .arg(segment.value, hexWidth, 16, QLatin1Char('0'))
-                        .toUpper())
-                : QStringLiteral("—");
             painter.setPen(KswordTheme::TextPrimaryColor());
-            painter.drawText(segmentRect.adjusted(3.0, 3.0, -3.0, -3.0), Qt::AlignCenter, valueText);
-            cursorX += segmentWidth;
+            painter.drawText(
+                cellRect.adjusted(1.0, 1.0, -1.0, -1.0),
+                Qt::AlignCenter,
+                m_valid
+                    ? QString::number((m_codeValue >> bitIndex) & 0x1U)
+                    : QStringLiteral("—"));
         }
+
+        // 图例恢复原字号，给六个字段提供完整名称和位范围。
+        painter.setFont(baseFont);
 
         // 图例使用等宽六列，不受 Common/Custom 只有一位造成的窄区段限制。
         const qreal legendTop = diagramRect.bottom() + 12.0;
@@ -246,14 +260,10 @@ void KernelIoctlDecoderTab::initializeUi()
 
     m_codeEdit = new QLineEdit(decoderGroup);
     m_codeEdit->setClearButtonEnabled(true);
-    m_codeEdit->setMaxLength(10);
     m_codeEdit->setPlaceholderText(
         kernelText("kernel.ioctl_decoder.input.placeholder", QStringLiteral("例如：0x222004")));
     m_codeEdit->setToolTip(
         kernelText("kernel.ioctl_decoder.input.tooltip", QStringLiteral("输入 0 到 FFFFFFFF，可选 0x 前缀")));
-    m_codeEdit->setValidator(new QRegularExpressionValidator(
-        QRegularExpression(QStringLiteral("^(?:0[xX])?[0-9A-Fa-f]{0,8}$")),
-        m_codeEdit));
     m_deviceEdit = createOutputEdit();
     m_functionEdit = createOutputEdit();
     m_accessEdit = createOutputEdit();
@@ -330,9 +340,15 @@ void KernelIoctlDecoderTab::updateDecodedFields(const QString& inputText)
     }
 
     // parsedValue 使用 64 位临时量检测越界，最终合法值必须完全落在 32 位范围。
+    static const QRegularExpression exactHexCodeExpression(
+        QStringLiteral("^[0-9A-Fa-f]{1,8}$"));
+    const bool inputShapeOk =
+        exactHexCodeExpression.match(normalizedText).hasMatch();
     bool parseOk = false;
-    const qulonglong parsedValue = normalizedText.toULongLong(&parseOk, 16);
-    if (!parseOk || normalizedText.size() > 8 || parsedValue > 0xFFFFFFFFULL)
+    const qulonglong parsedValue = inputShapeOk
+        ? normalizedText.toULongLong(&parseOk, 16)
+        : 0ULL;
+    if (!inputShapeOk || !parseOk || parsedValue > 0xFFFFFFFFULL)
     {
         m_deviceEdit->setText(QStringLiteral("—"));
         m_functionEdit->setText(QStringLiteral("—"));
@@ -383,9 +399,15 @@ void KernelIoctlDecoderTab::normalizeInput()
         normalizedText.remove(0, 2);
     }
 
+    static const QRegularExpression exactHexCodeExpression(
+        QStringLiteral("^[0-9A-Fa-f]{1,8}$"));
+    const bool inputShapeOk =
+        exactHexCodeExpression.match(normalizedText).hasMatch();
     bool parseOk = false;
-    const qulonglong parsedValue = normalizedText.toULongLong(&parseOk, 16);
-    if (!parseOk || normalizedText.isEmpty() || normalizedText.size() > 8 || parsedValue > 0xFFFFFFFFULL)
+    const qulonglong parsedValue = inputShapeOk
+        ? normalizedText.toULongLong(&parseOk, 16)
+        : 0ULL;
+    if (!inputShapeOk || !parseOk || parsedValue > 0xFFFFFFFFULL)
     {
         return;
     }

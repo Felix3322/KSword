@@ -519,6 +519,8 @@ Return Value:
     KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_REQUEST localRequest = { 0 };
     // 中文说明：接收 METHOD_BUFFERED 输出 SystemBuffer。
     PVOID outputBuffer = NULL;
+    // 中文说明：保存 WDF 返回的实际输入长度，helper 不接受空长度输出参数。
+    size_t actualInputLength = 0U;
     // 中文说明：保存 WDF 实际输出缓冲长度。
     size_t actualOutputLength = 0U;
     // 中文说明：保存检索或后端状态。
@@ -544,7 +546,7 @@ Return Value:
         Request,
         sizeof(KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_REQUEST),
         (PVOID*)&inputRequest,
-        NULL);
+        &actualInputLength);
     // 中文说明：输入检索失败时不访问 SystemBuffer。
     if (!NT_SUCCESS(status)) {
         // 中文说明：只记录失败，不在轮询成功路径制造高频日志。
@@ -557,7 +559,8 @@ Return Value:
         return status;
     }
     // 中文说明：dispatch 提供的输入长度也必须覆盖稳定请求 ABI。
-    if (InputBufferLength < sizeof(localRequest)) {
+    if (InputBufferLength < sizeof(localRequest) ||
+        actualInputLength < sizeof(localRequest)) {
         // 中文说明：长度不一致时拒绝，避免复制截断请求。
         return STATUS_BUFFER_TOO_SMALL;
     }
