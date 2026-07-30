@@ -7,6 +7,11 @@
 #include <QDesktopServices>
 #include <QUrl>
 
+class QEvent;
+class QHideEvent;
+class QShowEvent;
+class QTimer;
+
 class WelcomeDock : public QWidget
 {
     Q_OBJECT
@@ -38,10 +43,14 @@ signals:
 
 protected:
     void changeEvent(QEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 private:
     void retranslateUi();
-    void updateLanguageButtonRgbStyle();
+    void initializeLanguageButtonStyle();
+    void updateLanguageButtonRgbBorder();
 
     int m_languageButtonHue = 0; // RGB 动效当前色相，范围为 0~359。
+    QTimer* m_languageButtonColorTimer = nullptr; // 语言按钮动画计时器：仅 WelcomeDock 可见时运行。
 };

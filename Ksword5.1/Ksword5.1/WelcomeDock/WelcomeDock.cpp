@@ -4,11 +4,56 @@
 #include "../theme.h"
 #include <QColor>
 #include <QEvent>
+#include <QHideEvent>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QPixmap>
+#include <QShowEvent>
 #include <QTimer>
 
 namespace
 {
+    // WelcomeRgbBorderButton 作用：
+    // - 常规背景、文字及交互状态继续交给 QPushButton/QSS 绘制；
+    // - RGB 动画每帧只更新边框颜色并重绘按钮，不重复解析整段样式表。
+    class WelcomeRgbBorderButton final : public QPushButton
+    {
+    public:
+        using QPushButton::QPushButton;
+
+        // setBorderColor 作用：更新当前 RGB 边框颜色；相同颜色不触发重复绘制。
+        void setBorderColor(const QColor& borderColor)
+        {
+            if (m_borderColor == borderColor)
+            {
+                return;
+            }
+            m_borderColor = borderColor;
+            update();
+        }
+
+    protected:
+        // paintEvent 作用：在 QPushButton 完成基础绘制后叠加当前 RGB 圆角边框。
+        void paintEvent(QPaintEvent* event) override
+        {
+            QPushButton::paintEvent(event);
+
+            QPainter painter(this);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(m_borderColor, 3.0));
+
+            // borderRect 用途：让 3px 画笔完全落在按钮内部，避免边缘被裁剪。
+            constexpr qreal halfPenWidth = 1.5;
+            const QRectF borderRect =
+                QRectF(rect()).adjusted(halfPenWidth, halfPenWidth, -halfPenWidth, -halfPenWidth);
+            painter.drawRoundedRect(borderRect, 9.0, 9.0);
+        }
+
+    private:
+        QColor m_borderColor = QColor::fromHsv(0, 255, 255); // 当前 RGB 边框颜色。
+    };
+
     // kReleaseVersionText 作用：
     // - 欢迎页显示的版本号文本；
     // - 由发布脚本按注释标记替换。
@@ -55,20 +100,23 @@ WelcomeDock::WelcomeDock(QWidget* parent) : QWidget(parent) {
     m_leftImage->setAlignment(Qt::AlignCenter);
 
     // 语言设置入口：固定放在 Logo 下方，并以 RGB 循环边框突出显示。
-    m_languageSettingsBtn = new QPushButton(QStringLiteral("🌍language setting 语言设置"), this);
+    m_languageSettingsBtn = new WelcomeRgbBorderButton(
+        QStringLiteral("🌍language setting 语言设置"),
+        this);
     m_languageSettingsBtn->setObjectName(QStringLiteral("welcomeLanguageSettingsButton"));
     m_languageSettingsBtn->setMinimumHeight(48);
     m_languageSettingsBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_languageSettingsBtn->setCursor(Qt::PointingHandCursor);
-    updateLanguageButtonRgbStyle();
+    initializeLanguageButtonStyle();
+    updateLanguageButtonRgbBorder();
 
-    QTimer* languageButtonColorTimer = new QTimer(this);
-    languageButtonColorTimer->setInterval(80);
-    connect(languageButtonColorTimer, &QTimer::timeout, this, [this]() {
+    m_languageButtonColorTimer = new QTimer(this);
+    m_languageButtonColorTimer->setInterval(80);
+    m_languageButtonColorTimer->setTimerType(Qt::CoarseTimer);
+    connect(m_languageButtonColorTimer, &QTimer::timeout, this, [this]() {
         m_languageButtonHue = (m_languageButtonHue + 4) % 360;
-        updateLanguageButtonRgbStyle();
+        updateLanguageButtonRgbBorder();
     });
-    languageButtonColorTimer->start();
 
     // 版权信息：展示团队信息、版本号和编译时间。
     m_copyright = new QLabel(this);
@@ -224,19 +272,19 @@ WelcomeDock::WelcomeDock(QWidget* parent) : QWidget(parent) {
         });
 }
 
-void WelcomeDock::updateLanguageButtonRgbStyle()
+void WelcomeDock::initializeLanguageButtonStyle()
 {
     if (m_languageSettingsBtn == nullptr)
     {
         return;
     }
 
-    const QColor rgbBorderColor = QColor::fromHsv(m_languageButtonHue, 255, 255);
+    // 静态样式只设置一次；透明边框为自绘 RGB 边框预留固定布局空间。
     m_languageSettingsBtn->setStyleSheet(QStringLiteral(
         "QPushButton#welcomeLanguageSettingsButton{"
         "  background-color:#111827;"
         "  color:#FFFFFF;"
-        "  border:3px solid %1;"
+        "  border:3px solid transparent;"
         "  border-radius:10px;"
         "  padding:8px 16px;"
         "  font-size:16px;"
@@ -249,8 +297,19 @@ void WelcomeDock::updateLanguageButtonRgbStyle()
         "  background-color:#030712;"
         "  padding-top:9px;"
         "  padding-bottom:7px;"
-        "}")
-        .arg(rgbBorderColor.name(QColor::HexRgb)));
+        "}"));
+}
+
+void WelcomeDock::updateLanguageButtonRgbBorder()
+{
+    if (m_languageSettingsBtn == nullptr)
+    {
+        return;
+    }
+
+    // 按钮始终由本类创建为 WelcomeRgbBorderButton；仅更新颜色并触发局部重绘。
+    auto* rgbBorderButton = static_cast<WelcomeRgbBorderButton*>(m_languageSettingsBtn);
+    rgbBorderButton->setBorderColor(QColor::fromHsv(m_languageButtonHue, 255, 255));
 }
 
 void WelcomeDock::changeEvent(QEvent* event)
@@ -260,6 +319,25 @@ void WelcomeDock::changeEvent(QEvent* event)
     {
         retranslateUi();
     }
+}
+
+void WelcomeDock::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    updateLanguageButtonRgbBorder();
+    if (m_languageButtonColorTimer != nullptr && !m_languageButtonColorTimer->isActive())
+    {
+        m_languageButtonColorTimer->start();
+    }
+}
+
+void WelcomeDock::hideEvent(QHideEvent* event)
+{
+    if (m_languageButtonColorTimer != nullptr)
+    {
+        m_languageButtonColorTimer->stop();
+    }
+    QWidget::hideEvent(event);
 }
 
 void WelcomeDock::retranslateUi()
