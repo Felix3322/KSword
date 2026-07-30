@@ -1,4 +1,10 @@
 #include "DriverDock.Internal.h"
+#include "../OnlineScan/SandboxUploadActions.h"
+
+#include <Softpub.h>
+#include <WinTrust.h>
+
+#pragma comment(lib, "Wintrust.lib")
 
 using namespace ksword::driver_dock_internal;
 
@@ -229,6 +235,76 @@ namespace
         }
         return bitCount;
     }
+
+    // ModuleSignatureVerification：单个已加载模块的 Windows 信任链校验结果。
+    struct ModuleSignatureVerification
+    {
+        QString statusText;       // statusText：表格数字签名列的短结论。
+        QString detailText;       // detailText：路径与 WinVerifyTrust 状态码。
+        bool trusted = false;     // trusted：只有完整信任策略返回 ERROR_SUCCESS 时为 true。
+    };
+
+    // verifyLoadedModuleSignature 作用：
+    // - 输入：EnumDeviceDrivers 返回的内核路径；
+    // - 处理：规范为可访问 Win32 路径并用 WinVerifyTrust 验证 Authenticode 信任链；
+    // - 返回：无法访问、无签名、链不受信任或策略失败均统一视为“无效”。
+    ModuleSignatureVerification verifyLoadedModuleSignature(const QString& rawImagePath)
+    {
+        ModuleSignatureVerification verification;
+        // normalizedPath 用途：把 \SystemRoot/\Device 等内核路径转换成磁盘文件路径。
+        const QString normalizedPath =
+            ks::online_scan::normalizeKernelImagePathForUpload(rawImagePath).trimmed();
+        if (normalizedPath.isEmpty() || !QFileInfo::exists(normalizedPath))
+        {
+            verification.statusText = driverText(
+                "driver.signature.invalid",
+                QStringLiteral("无效"));
+            verification.detailText = driverText(
+                "driver.signature.path_unavailable",
+                QStringLiteral("签名无效：模块映像路径不可访问。\n路径：%1"))
+                .arg(normalizedPath.isEmpty() ? rawImagePath : normalizedPath);
+            return verification;
+        }
+
+        // fileInfo 用途：向 WinVerifyTrust 提供本轮只读文件对象。
+        WINTRUST_FILE_INFO fileInfo{};
+        fileInfo.cbStruct = sizeof(fileInfo);
+        fileInfo.pcwszFilePath = reinterpret_cast<LPCWSTR>(normalizedPath.utf16());
+
+        // trustData 用途：禁止 UI 与网络下载，按本机信任存储验证完整 Authenticode 链。
+        WINTRUST_DATA trustData{};
+        trustData.cbStruct = sizeof(trustData);
+        trustData.dwUIChoice = WTD_UI_NONE;
+        trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+        trustData.dwUnionChoice = WTD_CHOICE_FILE;
+        trustData.pFile = &fileInfo;
+        trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+        trustData.dwProvFlags = WTD_SAFER_FLAG | WTD_CACHE_ONLY_URL_RETRIEVAL;
+
+        GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2; // policyGuid：Windows 通用 Authenticode 策略。
+        const LONG trustStatus = ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+        ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+
+        verification.trusted = trustStatus == ERROR_SUCCESS;
+        verification.statusText = verification.trusted
+            ? driverText("driver.signature.valid", QStringLiteral("有效"))
+            : driverText("driver.signature.invalid", QStringLiteral("无效"));
+        verification.detailText = verification.trusted
+            ? driverText(
+                "driver.signature.valid.detail",
+                QStringLiteral("数字签名有效，Windows 已验证 Authenticode 信任链。\n路径：%1"))
+                .arg(normalizedPath)
+            : driverText(
+                "driver.signature.invalid.detail",
+                QStringLiteral("数字签名无效或信任链无法验证。\n路径：%1\nWinVerifyTrust：0x%2"))
+                .arg(normalizedPath)
+                .arg(
+                    QString::number(static_cast<std::uint32_t>(trustStatus), 16)
+                    .rightJustified(8, QLatin1Char('0'))
+                    .toUpper());
+        return verification;
+    }
 }
 
 
@@ -239,6 +315,10 @@ DriverDock::LoadedModuleEvidenceRecord DriverDock::buildPendingModuleEvidenceRec
     LoadedModuleEvidenceRecord evidence;
     evidence.moduleName = moduleRecord.moduleName;
     const QString pendingScanText = driverText("driver.evidence.pending", QStringLiteral("待扫描"));
+    evidence.signatureStatusText = pendingScanText;
+    evidence.signatureDetailText = driverText(
+        "driver.signature.pending.detail",
+        QStringLiteral("数字签名信任链等待后台验证。"));
     evidence.driverObjectStatusText = pendingScanText;
     evidence.driverStartMatchText = pendingScanText;
     evidence.majorFunctionStatusText = pendingScanText;
@@ -259,7 +339,8 @@ QColor DriverDock::moduleEvidenceStatusColor(const LoadedModuleEvidenceRecord& e
     {
         return KswordTheme::TextSecondaryColor();
     }
-    if (evidence.hasMajorFunctionExternalJump ||
+    if ((evidence.signatureCheckAttempted && !evidence.signatureTrusted) ||
+        evidence.hasMajorFunctionExternalJump ||
         evidence.hasIatEatSuspicious ||
         evidence.hasInlineHookSuspicious ||
         evidence.communicationConflict)
@@ -355,6 +436,13 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
     {
         LoadedModuleEvidenceRecord evidence = buildPendingModuleEvidenceRecord(moduleRecord);
         evidence.queryAttempted = true;
+        // signatureVerification 用途：把模块文件的 Windows 信任链结论纳入同一后台证据快照。
+        const ModuleSignatureVerification signatureVerification =
+            verifyLoadedModuleSignature(moduleRecord.imagePath);
+        evidence.signatureCheckAttempted = true;
+        evidence.signatureTrusted = signatureVerification.trusted;
+        evidence.signatureStatusText = signatureVerification.statusText;
+        evidence.signatureDetailText = signatureVerification.detailText;
 
         QStringList detailLines;
         detailLines << driverText("driver.evidence.detail.title", QStringLiteral("模块证据聚合"))
@@ -363,6 +451,11 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
                         .arg(formatCompactAddress(moduleRecord.baseAddress))
                     << driverText("driver.evidence.detail.image_path", QStringLiteral("映像路径: %1"))
                         .arg(moduleRecord.imagePath)
+                    << driverText(
+                        "driver.evidence.detail.signature",
+                        QStringLiteral("数字签名: %1"))
+                        .arg(evidence.signatureStatusText)
+                    << evidence.signatureDetailText
                     << driverText(
                         "driver.evidence.detail.read_only_note",
                         QStringLiteral("说明: 本结果仅聚合证据，不执行卸载、移除或修复。"))
@@ -845,6 +938,7 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
                     std::size_t suspiciousCount = 0U;
                     std::size_t callbackCount = 0U;
                     std::size_t errorCount = 0U;
+                    std::size_t invalidSignatureCount = 0U;
                     for (const auto& evidence : resultRecords)
                     {
                         if (evidence.hasMajorFunctionExternalJump ||
@@ -862,20 +956,27 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
                         {
                             ++errorCount;
                         }
+                        if (evidence.signatureCheckAttempted &&
+                            !evidence.signatureTrusted)
+                        {
+                            ++invalidSignatureCount;
+                        }
                     }
 
                     guardThis->m_loadedModuleEvidenceCache = std::move(resultRecords);
-                    guardThis->rebuildLoadedModuleEvidenceViews();
+                    // 签名状态本身也是搜索字段，因此后台完成后必须重新应用共享过滤器。
+                    guardThis->rebuildLoadedModuleTable();
                     if (guardThis->m_moduleEvidenceStatusLabel != nullptr)
                     {
                         guardThis->m_moduleEvidenceStatusLabel->setText(
                             driverText(
                                 "driver.evidence.status.completed",
-                                QStringLiteral("证据：已聚合 %1 个模块，可疑=%2，Callback引用=%3，错误=%4"))
+                                QStringLiteral("证据：已聚合 %1 个模块，可疑=%2，Callback引用=%3，错误=%4，签名无效=%5"))
                             .arg(guardThis->m_loadedModuleEvidenceCache.size())
                             .arg(suspiciousCount)
                             .arg(callbackCount)
-                            .arg(errorCount));
+                            .arg(errorCount)
+                            .arg(invalidSignatureCount));
                     }
                 },
                 Qt::QueuedConnection);
@@ -908,6 +1009,45 @@ void DriverDock::rebuildLoadedModuleEvidenceViews()
         }
 
         const LoadedModuleEvidenceRecord& evidence = m_loadedModuleEvidenceCache[sourceIndex];
+        // invalidSignature 用途：只有后台确实完成校验且信任链失败时才整行标红。
+        const bool invalidSignature =
+            evidence.signatureCheckAttempted &&
+            !evidence.signatureTrusted;
+        QColor invalidSignatureBackgroundColor = KswordTheme::ErrorColor();
+        invalidSignatureBackgroundColor.setAlpha(48);
+        for (int columnIndex = 0;
+            columnIndex < m_moduleTable->columnCount();
+            ++columnIndex)
+        {
+            QTableWidgetItem* rowItem = m_moduleTable->item(rowIndex, columnIndex);
+            if (rowItem != nullptr)
+            {
+                rowItem->setBackground(
+                    invalidSignature
+                    ? QBrush(invalidSignatureBackgroundColor)
+                    : QBrush());
+            }
+        }
+
+        QTableWidgetItem* signatureItem =
+            m_moduleTable->item(rowIndex, ModuleSignatureColumn);
+        if (signatureItem == nullptr)
+        {
+            signatureItem = createReadOnlyItem(evidence.signatureStatusText);
+            m_moduleTable->setItem(rowIndex, ModuleSignatureColumn, signatureItem);
+        }
+        else
+        {
+            signatureItem->setText(evidence.signatureStatusText);
+        }
+        const QColor signatureColor = !evidence.signatureCheckAttempted
+            ? KswordTheme::TextSecondaryColor()
+            : (evidence.signatureTrusted
+                ? KswordTheme::SuccessColor()
+                : KswordTheme::ErrorColor());
+        signatureItem->setForeground(QBrush(signatureColor));
+        signatureItem->setToolTip(evidence.signatureDetailText.left(4000));
+
         const QStringList columnTexts = {
             evidence.driverObjectStatusText,
             evidence.driverStartMatchText,
@@ -919,11 +1059,12 @@ void DriverDock::rebuildLoadedModuleEvidenceViews()
         const QColor foregroundColor = moduleEvidenceStatusColor(evidence);
         for (int columnOffset = 0; columnOffset < columnTexts.size(); ++columnOffset)
         {
-            QTableWidgetItem* cellItem = m_moduleTable->item(rowIndex, 2 + columnOffset);
+            const int columnIndex = ModuleEvidenceFirstColumn + columnOffset;
+            QTableWidgetItem* cellItem = m_moduleTable->item(rowIndex, columnIndex);
             if (cellItem == nullptr)
             {
                 cellItem = createReadOnlyItem(columnTexts[columnOffset]);
-                m_moduleTable->setItem(rowIndex, 2 + columnOffset, cellItem);
+                m_moduleTable->setItem(rowIndex, columnIndex, cellItem);
             }
             else
             {

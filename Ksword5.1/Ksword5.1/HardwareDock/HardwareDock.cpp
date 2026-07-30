@@ -71,6 +71,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <thread>
 
 #ifndef NOMINMAX
@@ -94,6 +95,11 @@
 
 namespace
 {
+    // hardwareR0QueryMutex 用途：
+    // - 串行化 HardwareDock 内的健康快照与设备审计 IOCTL；
+    // - 避免自动刷新和快速切页同时向同一驱动设备提交大体积查询。
+    std::mutex hardwareR0QueryMutex;
+
     // queryPowerShellTextSync 前置声明：
     // - 供下方硬件摘要函数调用；
     // - 实际定义位于同命名空间后半段。
@@ -3163,9 +3169,11 @@ void HardwareDock::adjustUtilizationChartHeights()
         const int summaryHeight = m_utilizationSummaryLabel != nullptr
             ? m_utilizationSummaryLabel->sizeHint().height()
             : 16;
-        const int detailHeight = std::max(
+        const int detailHeight = std::max({
             m_cpuUtilPrimaryDetailLabel != nullptr ? m_cpuUtilPrimaryDetailLabel->sizeHint().height() : 0,
-            m_cpuUtilSecondaryDetailLabel != nullptr ? m_cpuUtilSecondaryDetailLabel->sizeHint().height() : 0);
+            m_cpuUtilSecondaryDetailLabel != nullptr ? m_cpuUtilSecondaryDetailLabel->sizeHint().height() : 0,
+            m_cpuUtilTertiaryDetailLabel != nullptr ? m_cpuUtilTertiaryDetailLabel->sizeHint().height() : 0
+        });
         // availableChartAreaHeight 用途：核心图可用高度；允许极小高度，保证页面整体不冒滚动条。
         const int availableChartAreaHeight = std::max(
             1,
@@ -3242,6 +3250,7 @@ void HardwareDock::adjustUtilizationChartHeights()
 
         applyMaxHeightIfChanged(m_cpuUtilPrimaryDetailLabel, std::max(1, m_cpuUtilPrimaryDetailLabel != nullptr ? m_cpuUtilPrimaryDetailLabel->sizeHint().height() : 1));
         applyMaxHeightIfChanged(m_cpuUtilSecondaryDetailLabel, std::max(1, m_cpuUtilSecondaryDetailLabel != nullptr ? m_cpuUtilSecondaryDetailLabel->sizeHint().height() : 1));
+        applyMaxHeightIfChanged(m_cpuUtilTertiaryDetailLabel, std::max(1, m_cpuUtilTertiaryDetailLabel != nullptr ? m_cpuUtilTertiaryDetailLabel->sizeHint().height() : 1));
     }
 
     // ===================== 其他页：按页面高度比例压缩主图 =====================
@@ -3512,16 +3521,30 @@ void HardwareDock::initializeUtilizationCpuSubTab()
             QStringLiteral("hardware.utilization.cpu.detail.secondary_sampling"),
             QStringLiteral("硬件参数读取中...")),
         m_utilizationCpuSubPage);
+    m_cpuUtilTertiaryDetailLabel = new QLabel(
+        ks::i18n::contextText(
+            QStringLiteral("hardware.utilization.cpu.detail.tertiary_sampling"),
+            QStringLiteral("缓存与 R0 状态读取中...")),
+        m_utilizationCpuSubPage);
     configureCompressibleLabel(m_cpuUtilPrimaryDetailLabel);
     configureCompressibleLabel(m_cpuUtilSecondaryDetailLabel);
+    configureCompressibleLabel(m_cpuUtilTertiaryDetailLabel);
     m_cpuUtilPrimaryDetailLabel->setWordWrap(false);
     m_cpuUtilSecondaryDetailLabel->setWordWrap(false);
+    m_cpuUtilTertiaryDetailLabel->setWordWrap(false);
+    m_cpuUtilPrimaryDetailLabel->setTextFormat(Qt::RichText);
     m_cpuUtilPrimaryDetailLabel->setStyleSheet(
-        QStringLiteral("font-size:14px;color:%1;").arg(KswordTheme::TextPrimaryHex()));
+        QStringLiteral("font-size:13px;color:%1;").arg(KswordTheme::TextPrimaryHex()));
     m_cpuUtilSecondaryDetailLabel->setStyleSheet(
         QStringLiteral("font-size:14px;color:%1;").arg(KswordTheme::TextPrimaryHex()));
-    detailLayout->addWidget(m_cpuUtilPrimaryDetailLabel, 1);
-    detailLayout->addWidget(m_cpuUtilSecondaryDetailLabel, 1);
+    m_cpuUtilTertiaryDetailLabel->setStyleSheet(
+        QStringLiteral("font-size:14px;color:%1;").arg(KswordTheme::TextPrimaryHex()));
+    m_cpuUtilPrimaryDetailLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_cpuUtilSecondaryDetailLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_cpuUtilTertiaryDetailLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    detailLayout->addWidget(m_cpuUtilPrimaryDetailLabel, 5);
+    detailLayout->addWidget(m_cpuUtilSecondaryDetailLabel, 3);
+    detailLayout->addWidget(m_cpuUtilTertiaryDetailLabel, 3);
     cpuSubLayout->addLayout(detailLayout, 0);
 
     m_utilizationDetailStack->addWidget(m_utilizationCpuSubPage);
@@ -6309,14 +6332,12 @@ void HardwareDock::updateUtilizationView(
         m_utilizationSummaryLabel->setText(
             ks::i18n::contextText(
                 QStringLiteral("hardware.utilization.cpu.summary"),
-                QStringLiteral("CPU 总体：%1%    均值：%2%    峰值：%3%    趋势：%4    逻辑处理器：%5    %6    %7"))
+                QStringLiteral("30 秒内的利用率 %    总体：%1%    均值：%2%    峰值：%3%    趋势：%4    逻辑处理器：%5"))
             .arg(averageCpuUsage, 0, 'f', 1)
             .arg(cpuStats.averageValue, 0, 'f', 1)
             .arg(cpuStats.peakValue, 0, 'f', 1)
             .arg(buildTrendText(cpuStats, true))
-            .arg(coreUsageList.size())
-            .arg(m_r0HardwareHealthSummaryText)
-            .arg(m_r0CpuHardwareSummaryText));
+            .arg(coreUsageList.size()));
     }
 
     if (m_cpuModelLabel != nullptr && !m_cpuModelText.isEmpty())
@@ -7012,26 +7033,74 @@ void HardwareDock::updateTaskManagerDetailLabels(
     const std::uint64_t uptimeSeconds = static_cast<std::uint64_t>(::GetTickCount64() / 1000ULL);
     if (m_cpuUtilPrimaryDetailLabel != nullptr)
     {
-        m_cpuUtilPrimaryDetailLabel->setText(
+        // buildMetricCellHtml 用途：把一个任务管理器式“灰色标签 + 大号数值”生成表格单元格。
+        // 输入为已本地化标签、已格式化数值和字号；返回可直接交给 QLabel 的安全富文本。
+        const auto buildMetricCellHtml =
+            [](const QString& labelText, const QString& valueText, const int valueFontSize)
+            {
+                return QStringLiteral(
+                    "<td style=\"padding-right:18px;vertical-align:top;\">"
+                    "<span style=\"color:%1;font-size:13px;\">%2</span><br/>"
+                    "<span style=\"color:%3;font-size:%4px;font-weight:400;\">%5</span>"
+                    "</td>")
+                    .arg(KswordTheme::TextSecondaryHex())
+                    .arg(labelText.toHtmlEscaped())
+                    .arg(KswordTheme::TextPrimaryHex())
+                    .arg(valueFontSize)
+                    .arg(valueText.toHtmlEscaped());
+            };
+
+        // primaryHtml 用途：把关键指标按截图分成利用率/速度、计数和运行时间三行。
+        const QString primaryHtml =
+            QStringLiteral("<table cellspacing=\"0\" cellpadding=\"0\">"
+                "<tr>%1%2</tr>"
+                "<tr>%3%4%5</tr>"
+                "<tr>%6</tr>"
+                "</table>")
+            .arg(buildMetricCellHtml(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.utilization.cpu.metric.utilization"),
+                    QStringLiteral("利用率")),
+                QStringLiteral("%1%").arg(averageCpuUsage, 0, 'f', 0),
+                30))
+            .arg(buildMetricCellHtml(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.utilization.cpu.metric.speed"),
+                    QStringLiteral("速度")),
+                QStringLiteral("%1 GHz").arg(currentCpuGhz, 0, 'f', 2),
+                30))
+            .arg(buildMetricCellHtml(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.utilization.cpu.metric.processes"),
+                    QStringLiteral("进程")),
+                perfOk ? QString::number(perfSnapshot.processCount) : QStringLiteral("N/A"),
+                25))
+            .arg(buildMetricCellHtml(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.utilization.cpu.metric.threads"),
+                    QStringLiteral("线程")),
+                perfOk ? QString::number(perfSnapshot.threadCount) : QStringLiteral("N/A"),
+                25))
+            .arg(buildMetricCellHtml(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.utilization.cpu.metric.handles"),
+                    QStringLiteral("句柄")),
+                perfOk ? QString::number(perfSnapshot.handleCount) : QStringLiteral("N/A"),
+                25))
+            .arg(buildMetricCellHtml(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.utilization.cpu.metric.uptime"),
+                    QStringLiteral("正常运行时间")),
+                formatDurationText(uptimeSeconds),
+                25));
+        m_cpuUtilPrimaryDetailLabel->setText(primaryHtml);
+        m_cpuUtilPrimaryDetailLabel->setToolTip(
             ks::i18n::contextText(
-                QStringLiteral("hardware.utilization.cpu.detail.primary"),
-                QStringLiteral(
-                "利用率: %1%\n"
-                "均值: %2%   峰值: %3%   趋势: %4\n"
-                "速度: %5 GHz\n"
-                "进程: %6\n"
-                "线程: %7\n"
-                "句柄: %8\n"
-                "正常运行时间: %9"))
-            .arg(averageCpuUsage, 0, 'f', 1)
+                QStringLiteral("hardware.utilization.cpu.metric.statistics.tooltip"),
+                QStringLiteral("均值：%1% | 峰值：%2% | 趋势：%3"))
             .arg(cpuStats.averageValue, 0, 'f', 1)
             .arg(cpuStats.peakValue, 0, 'f', 1)
-            .arg(buildTrendText(cpuStats, true))
-            .arg(currentCpuGhz, 0, 'f', 2)
-            .arg(perfOk ? QString::number(perfSnapshot.processCount) : QStringLiteral("N/A"))
-            .arg(perfOk ? QString::number(perfSnapshot.threadCount) : QStringLiteral("N/A"))
-            .arg(perfOk ? QString::number(perfSnapshot.handleCount) : QStringLiteral("N/A"))
-            .arg(formatDurationText(uptimeSeconds)));
+            .arg(buildTrendText(cpuStats, true)));
     }
 
     if (m_cpuUtilSecondaryDetailLabel != nullptr)
@@ -7041,25 +7110,40 @@ void HardwareDock::updateTaskManagerDetailLabels(
                 QStringLiteral("hardware.utilization.cpu.detail.secondary"),
                 QStringLiteral(
                 "基准速度: %1 GHz\n"
-                "压力等级: %2\n"
-                "%3\n"
-                "%4\n"
-                "插槽: %5\n"
-                "内核: %6\n"
-                "逻辑处理器: %7\n"
-                "L1缓存: %8\n"
-                "L2缓存: %9\n"
-                "L3缓存: %10"))
+                "插槽: %2\n"
+                "内核: %3\n"
+                "逻辑处理器: %4\n"
+                "压力等级: %5"))
             .arg(baseCpuGhz, 0, 'f', 2)
-            .arg(buildPressureLevelText(averageCpuUsage))
-            .arg(m_r0HardwareHealthDetailText)
-            .arg(m_r0CpuHardwareDetailText)
             .arg(m_cpuPackageCount > 0 ? QString::number(m_cpuPackageCount) : QStringLiteral("N/A"))
             .arg(m_cpuPhysicalCoreCount > 0 ? QString::number(m_cpuPhysicalCoreCount) : QStringLiteral("N/A"))
             .arg(m_cpuLogicalCoreCount > 0 ? QString::number(m_cpuLogicalCoreCount) : QStringLiteral("N/A"))
+            .arg(buildPressureLevelText(averageCpuUsage)));
+    }
+
+    if (m_cpuUtilTertiaryDetailLabel != nullptr)
+    {
+        m_cpuUtilTertiaryDetailLabel->setText(
+            ks::i18n::contextText(
+                QStringLiteral("hardware.utilization.cpu.detail.tertiary"),
+                QStringLiteral(
+                "L1缓存: %1\n"
+                "L2缓存: %2\n"
+                "L3缓存: %3\n"
+                "%4\n"
+                "%5"))
             .arg(m_cpuL1CacheBytes > 0 ? bytesToReadableText(static_cast<double>(m_cpuL1CacheBytes)) : QStringLiteral("N/A"))
             .arg(m_cpuL2CacheBytes > 0 ? bytesToReadableText(static_cast<double>(m_cpuL2CacheBytes)) : QStringLiteral("N/A"))
-            .arg(m_cpuL3CacheBytes > 0 ? bytesToReadableText(static_cast<double>(m_cpuL3CacheBytes)) : QStringLiteral("N/A")));
+            .arg(m_cpuL3CacheBytes > 0 ? bytesToReadableText(static_cast<double>(m_cpuL3CacheBytes)) : QStringLiteral("N/A"))
+            .arg(m_r0HardwareHealthSummaryText)
+            .arg(m_r0CpuHardwareSummaryText));
+
+        // r0AuditToolTip 用途：保留完整审计文本，同时避免长行重新挤高任务管理器式主视图。
+        const QString r0AuditToolTip = m_r0HardwareHealthDetailText
+            + QStringLiteral("\n\n")
+            + m_r0CpuHardwareDetailText;
+        m_cpuUtilSecondaryDetailLabel->setToolTip(r0AuditToolTip);
+        m_cpuUtilTertiaryDetailLabel->setToolTip(r0AuditToolTip);
     }
 
     // CPU 详情标签在首帧只显示一行“采样中”文本，随后会替换为多行实时数据。
@@ -7762,6 +7846,8 @@ void HardwareDock::requestAsyncR0HardwareHealthRefresh()
 
     QPointer<HardwareDock> safeThis(this);
     std::thread([safeThis, nowMs]() {
+        // r0QueryLock 用途：健康查询与按需设备审计共用一条串行 R0 请求通道。
+        const std::lock_guard<std::mutex> r0QueryLock(hardwareR0QueryMutex);
         const ksword::ark::DriverClient client;
         const ksword::ark::DriverCapabilitiesQueryResult capabilityResult = client.queryDriverCapabilities();
         const ksword::ark::DynDataCapabilitiesResult dynDataResult = client.queryDynDataCapabilities();
@@ -8032,7 +8118,37 @@ void HardwareDock::refreshStaticHardwareTexts(const bool forceRefresh)
 {
     if (forceRefresh)
     {
-        requestAsyncStaticInfoRefresh();
+        // 当前诊断页只请求自身需要的数据；普通页面仍只更新轻量静态概览。
+        // 这样自动刷新不再每 60 秒连续提交 Device/Input/USB 三个大体积 R0 查询。
+        std::uint32_t deviceAuditRefreshMask = 0U;
+        QWidget* const currentPage = m_sideTabWidget != nullptr
+            ? m_sideTabWidget->currentWidget()
+            : nullptr;
+        if (currentPage == m_deviceStackPage)
+        {
+            deviceAuditRefreshMask = DeviceStackAuditRefresh;
+        }
+        else if (currentPage == m_keyboardMouseHidPage)
+        {
+            deviceAuditRefreshMask = InputStackAuditRefresh;
+        }
+        else if (currentPage == m_usbTopologyPage)
+        {
+            deviceAuditRefreshMask = UsbTopologyAuditRefresh;
+        }
+        else if (currentPage == m_pnpAcpiPciPage)
+        {
+            deviceAuditRefreshMask = PnpAcpiPciRefresh;
+        }
+
+        if (deviceAuditRefreshMask != 0U)
+        {
+            requestAsyncDeviceAuditRefresh(deviceAuditRefreshMask);
+        }
+        else
+        {
+            requestAsyncStaticInfoRefresh();
+        }
     }
 
     if (m_overviewEditor != nullptr && !m_cachedOverviewStaticText.isEmpty())
@@ -8084,7 +8200,6 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
             return;
         }
 
-        HardwareDock* const dock = safeThis.data();
         const QString overviewBaseText = buildOverviewStaticTextSnapshot();
         const QString peripheralOverviewText = buildOverviewPeripheralTextSnapshot();
         const QString overviewText = overviewBaseText
@@ -8092,13 +8207,6 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
             + peripheralOverviewText;
         const QString gpuText = buildGpuStaticTextSnapshot();
         const QString memoryText = buildMemoryStaticTextSnapshot();
-        const DeviceAuditViewSnapshot deviceStackSnapshot =
-            dock->buildDeviceStackAuditViewSnapshot();
-        const DeviceAuditViewSnapshot keyboardMouseHidSnapshot =
-            dock->buildKeyboardMouseHidAuditViewSnapshot();
-        const DeviceAuditViewSnapshot usbTopologySnapshot =
-            dock->buildUsbTopologyAuditViewSnapshot();
-        const QString pnpAcpiPciText = dock->buildPnpAcpiPciStaticText();
         const MemoryHardwareSummarySnapshot memorySummary = queryMemoryHardwareSummarySnapshot();
         const GpuHardwareSummarySnapshot gpuSummary = queryGpuHardwareSummarySnapshot();
 
@@ -8109,7 +8217,7 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
 
         const bool invokeOk = QMetaObject::invokeMethod(
             safeThis.data(),
-            [safeThis, overviewText, gpuText, memoryText, deviceStackSnapshot, keyboardMouseHidSnapshot, usbTopologySnapshot, pnpAcpiPciText, memorySummary, gpuSummary]()
+            [safeThis, overviewText, gpuText, memoryText, memorySummary, gpuSummary]()
             {
                 if (safeThis.isNull())
                 {
@@ -8119,13 +8227,6 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
                 safeThis->m_cachedOverviewStaticText = overviewText;
                 safeThis->m_cachedGpuStaticText = gpuText;
                 safeThis->m_cachedMemoryStaticText = memoryText;
-                safeThis->m_cachedDeviceStackStaticText = deviceStackSnapshot.summaryText;
-                safeThis->m_cachedKeyboardMouseHidStaticText = keyboardMouseHidSnapshot.summaryText;
-                safeThis->m_cachedUsbTopologyStaticText = usbTopologySnapshot.summaryText;
-                safeThis->m_cachedDeviceStackRows = deviceStackSnapshot.rows;
-                safeThis->m_cachedKeyboardMouseHidRows = keyboardMouseHidSnapshot.rows;
-                safeThis->m_cachedUsbTopologyRows = usbTopologySnapshot.rows;
-                safeThis->m_cachedPnpAcpiPciStaticText = pnpAcpiPciText;
                 safeThis->m_memorySpeedMhz = memorySummary.speedMhz;
                 safeThis->m_memorySlotUsed = memorySummary.usedSlots;
                 safeThis->m_memorySlotTotal = memorySummary.totalSlots;
@@ -8145,6 +8246,118 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
             safeThis->m_staticInfoRefreshing.store(false);
         }
         }).detach();
+}
+
+void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMask)
+{
+    // normalizedMask 用途：剔除调用方意外传入的未知位，避免无意义后台任务。
+    const std::uint32_t normalizedMask = refreshMask &
+        static_cast<std::uint32_t>(AllDeviceAuditRefresh);
+    if (normalizedMask == 0U)
+    {
+        return;
+    }
+
+    // pending mask 先合并再争抢执行权；快速切页不会丢请求，也不会并发启动多个线程。
+    m_pendingDeviceAuditRefreshMask.fetch_or(normalizedMask);
+    bool expectedFlag = false;
+    if (!m_deviceAuditRefreshing.compare_exchange_strong(expectedFlag, true))
+    {
+        return;
+    }
+
+    // requestedMask 用途：本轮一次性取得已合并页面位；后续重入会留在 pending 等下一轮。
+    const std::uint32_t requestedMask =
+        m_pendingDeviceAuditRefreshMask.exchange(0U) &
+        static_cast<std::uint32_t>(AllDeviceAuditRefresh);
+    QPointer<HardwareDock> safeThis(this);
+    std::thread([safeThis, requestedMask]()
+    {
+        if (safeThis.isNull())
+        {
+            return;
+        }
+
+        HardwareDock* const dock = safeThis.data();
+        DeviceAuditViewSnapshot deviceStackSnapshot;
+        DeviceAuditViewSnapshot inputStackSnapshot;
+        DeviceAuditViewSnapshot usbTopologySnapshot;
+        QString pnpAcpiPciText;
+
+        // 三类 R0 审计共享串行锁，并且只查询当前真正打开过的页面。
+        // PnP/ACPI/PCI 是 R3 文本采集，不占用驱动通道。
+        {
+            const std::lock_guard<std::mutex> r0QueryLock(hardwareR0QueryMutex);
+            if ((requestedMask & DeviceStackAuditRefresh) != 0U)
+            {
+                deviceStackSnapshot = dock->buildDeviceStackAuditViewSnapshot();
+            }
+            if ((requestedMask & InputStackAuditRefresh) != 0U)
+            {
+                inputStackSnapshot = dock->buildKeyboardMouseHidAuditViewSnapshot();
+            }
+            if ((requestedMask & UsbTopologyAuditRefresh) != 0U)
+            {
+                usbTopologySnapshot = dock->buildUsbTopologyAuditViewSnapshot();
+            }
+        }
+        if ((requestedMask & PnpAcpiPciRefresh) != 0U)
+        {
+            pnpAcpiPciText = dock->buildPnpAcpiPciStaticText();
+        }
+
+        if (safeThis.isNull())
+        {
+            return;
+        }
+
+        const bool invokeOk = QMetaObject::invokeMethod(
+            safeThis.data(),
+            [safeThis, requestedMask, deviceStackSnapshot, inputStackSnapshot, usbTopologySnapshot, pnpAcpiPciText]()
+            {
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+
+                if ((requestedMask & DeviceStackAuditRefresh) != 0U)
+                {
+                    safeThis->m_cachedDeviceStackStaticText = deviceStackSnapshot.summaryText;
+                    safeThis->m_cachedDeviceStackRows = deviceStackSnapshot.rows;
+                }
+                if ((requestedMask & InputStackAuditRefresh) != 0U)
+                {
+                    safeThis->m_cachedKeyboardMouseHidStaticText = inputStackSnapshot.summaryText;
+                    safeThis->m_cachedKeyboardMouseHidRows = inputStackSnapshot.rows;
+                }
+                if ((requestedMask & UsbTopologyAuditRefresh) != 0U)
+                {
+                    safeThis->m_cachedUsbTopologyStaticText = usbTopologySnapshot.summaryText;
+                    safeThis->m_cachedUsbTopologyRows = usbTopologySnapshot.rows;
+                }
+                if ((requestedMask & PnpAcpiPciRefresh) != 0U)
+                {
+                    safeThis->m_cachedPnpAcpiPciStaticText = pnpAcpiPciText;
+                }
+
+                safeThis->refreshStaticHardwareTexts(false);
+                safeThis->m_deviceAuditRefreshing.store(false);
+
+                // pendingMask 用途：接住工作线程期间发生的切页请求，下一轮仍保持串行。
+                const std::uint32_t pendingMask =
+                    safeThis->m_pendingDeviceAuditRefreshMask.load();
+                if (pendingMask != 0U)
+                {
+                    safeThis->requestAsyncDeviceAuditRefresh(pendingMask);
+                }
+            },
+            Qt::QueuedConnection);
+
+        if (!invokeOk && !safeThis.isNull())
+        {
+            safeThis->m_deviceAuditRefreshing.store(false);
+        }
+    }).detach();
 }
 
 void HardwareDock::requestAsyncSensorRefresh()

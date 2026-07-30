@@ -29,6 +29,7 @@ namespace ksword::driver_dock_internal
         return {
             driverText("driver.header.module_name", QStringLiteral("模块名")),
             driverText("driver.header.base_address", QStringLiteral("基址")),
+            driverText("driver.header.digital_signature", QStringLiteral("数字签名")),
             driverText("driver.header.driver_object", QStringLiteral("DriverObject")),
             driverText("driver.header.driver_start", QStringLiteral("DriverStart")),
             driverText("driver.header.major_function", QStringLiteral("MajorFunction")),
@@ -224,6 +225,17 @@ void DriverDock::applyTranslatedHeaders()
     {
         m_moduleTable->setHorizontalHeaderLabels(driverModuleTableHeaders());
     }
+    if (m_serviceFilterEdit != nullptr)
+    {
+        m_serviceFilterEdit->setPlaceholderText(
+            driverText(
+                "driver.overview.filter.placeholder",
+                QStringLiteral("搜索驱动服务或已加载模块")));
+        m_serviceFilterEdit->setToolTip(
+            driverText(
+                "driver.overview.filter.tooltip",
+                QStringLiteral("同时按服务名、显示名、描述、模块名、签名状态和映像路径模糊过滤")));
+    }
     if (m_driverObjectEvidenceTable != nullptr)
     {
         m_driverObjectEvidenceTable->setHorizontalHeaderLabels(driverObjectEvidenceTableHeaders());
@@ -316,11 +328,11 @@ void DriverDock::initializeOverviewTab()
 
     m_serviceFilterEdit = new QLineEdit(m_overviewPage);
     m_serviceFilterEdit->setPlaceholderText(
-        driverText("driver.overview.filter.placeholder", QStringLiteral("输入服务名/显示名/路径过滤")));
+        driverText("driver.overview.filter.placeholder", QStringLiteral("搜索驱动服务或已加载模块")));
     m_serviceFilterEdit->setToolTip(
         driverText(
             "driver.overview.filter.tooltip",
-            QStringLiteral("支持按服务名、显示名、路径、描述模糊过滤")));
+            QStringLiteral("同时按服务名、显示名、描述、模块名、签名状态和映像路径模糊过滤")));
 
     m_overviewStatusLabel = new QLabel(
         driverText("driver.status.waiting_refresh", QStringLiteral("状态：等待刷新")),
@@ -372,7 +384,7 @@ void DriverDock::initializeOverviewTab()
         moduleContainer));
 
     m_moduleTable = new ks::ui::VisibleTableWidget(moduleContainer);
-    m_moduleTable->setColumnCount(9);
+    m_moduleTable->setColumnCount(ModuleTableColumnCount);
     m_moduleTable->setHorizontalHeaderLabels(driverModuleTableHeaders());
     m_moduleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_moduleTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -381,7 +393,7 @@ void DriverDock::initializeOverviewTab()
     m_moduleTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_moduleTable->verticalHeader()->setVisible(false);
     m_moduleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_moduleTable->horizontalHeader()->setSectionResizeMode(8, QHeaderView::Stretch);
+    m_moduleTable->horizontalHeader()->setSectionResizeMode(ModuleImagePathColumn, QHeaderView::Stretch);
     moduleLayout->addWidget(m_moduleTable, 3);
 
     m_moduleEvidenceStatusLabel = new QLabel(
@@ -899,6 +911,7 @@ void DriverDock::initializeConnections()
     connect(m_serviceFilterEdit, &QLineEdit::textChanged, this, [this](const QString&)
         {
             rebuildDriverServiceTableByFilter();
+            rebuildLoadedModuleTable();
         });
 
     // 服务列表：选择变更后回填操作页。

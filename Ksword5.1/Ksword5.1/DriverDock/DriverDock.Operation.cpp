@@ -1586,9 +1586,13 @@ void DriverDock::refreshDriverServiceRecords()
     if (m_overviewStatusLabel != nullptr)
     {
         m_overviewStatusLabel->setText(
-            driverText("driver.overview.count", QStringLiteral("状态：驱动服务 %1 条，模块 %2 条"))
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
             .arg(m_driverServiceCache.size())
-            .arg(m_loadedModuleCache.size()));
+            .arg(m_serviceTable != nullptr ? m_serviceTable->rowCount() : 0)
+            .arg(m_loadedModuleCache.size())
+            .arg(m_moduleTable != nullptr ? m_moduleTable->rowCount() : 0));
     }
 
     info << refreshEvent
@@ -1652,9 +1656,13 @@ void DriverDock::refreshLoadedKernelModuleRecords()
     if (m_overviewStatusLabel != nullptr)
     {
         m_overviewStatusLabel->setText(
-            driverText("driver.overview.count", QStringLiteral("状态：驱动服务 %1 条，模块 %2 条"))
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
             .arg(m_driverServiceCache.size())
-            .arg(m_loadedModuleCache.size()));
+            .arg(m_serviceTable != nullptr ? m_serviceTable->rowCount() : 0)
+            .arg(m_loadedModuleCache.size())
+            .arg(m_moduleTable != nullptr ? m_moduleTable->rowCount() : 0));
     }
     if (m_moduleEvidenceStatusLabel != nullptr)
     {
@@ -2426,7 +2434,9 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
             ks::online_scan::SandboxUploadTarget uploadTarget;
             const int rowIndex = m_moduleTable != nullptr ? m_moduleTable->currentRow() : -1;
             const QTableWidgetItem* pathItem =
-                (m_moduleTable != nullptr && rowIndex >= 0) ? m_moduleTable->item(rowIndex, 8) : nullptr;
+                (m_moduleTable != nullptr && rowIndex >= 0)
+                ? m_moduleTable->item(rowIndex, ModuleImagePathColumn)
+                : nullptr;
             const QTableWidgetItem* nameItem =
                 (m_moduleTable != nullptr && rowIndex >= 0) ? m_moduleTable->item(rowIndex, 0) : nullptr;
             if (pathItem == nullptr)
@@ -2498,7 +2508,7 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         const QTableWidgetItem* selectedModuleBaseItem =
             m_moduleTable->item(selectedRowIndex, 1);
         const QTableWidgetItem* selectedModulePathItem =
-            m_moduleTable->item(selectedRowIndex, 8);
+            m_moduleTable->item(selectedRowIndex, ModuleImagePathColumn);
         selectedModuleName =
             selectedModuleNameItem != nullptr
             ? selectedModuleNameItem->text().trimmed()
@@ -2942,7 +2952,9 @@ void DriverDock::querySelectedModuleKernelSignature()
     const int rowIndex = m_moduleTable->currentRow();
     const QTableWidgetItem* nameItem = rowIndex >= 0 ? m_moduleTable->item(rowIndex, 0) : nullptr;
     const QTableWidgetItem* baseItem = rowIndex >= 0 ? m_moduleTable->item(rowIndex, 1) : nullptr;
-    const QTableWidgetItem* pathItem = rowIndex >= 0 ? m_moduleTable->item(rowIndex, 8) : nullptr;
+    const QTableWidgetItem* pathItem = rowIndex >= 0
+        ? m_moduleTable->item(rowIndex, ModuleImagePathColumn)
+        : nullptr;
     const QString moduleName = nameItem != nullptr ? nameItem->text().trimmed() : QString();
     const QString rawPath = pathItem != nullptr ? pathItem->text().trimmed() : QString();
     const QString ntPath = buildKernelSignatureNtPath(rawPath);
@@ -3578,11 +3590,18 @@ void DriverDock::rebuildDriverServiceTableByFilter()
 
     if (m_overviewStatusLabel != nullptr)
     {
+        // visibleModuleCount 用途：同一搜索框对下方模块表的当前筛选数量。
+        const int visibleModuleCount = m_moduleTable != nullptr
+            ? m_moduleTable->rowCount()
+            : 0;
         m_overviewStatusLabel->setText(
-            driverText("driver.overview.count.filtered", QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条"))
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
             .arg(m_driverServiceCache.size())
             .arg(visibleCount)
-            .arg(m_loadedModuleCache.size()));
+            .arg(m_loadedModuleCache.size())
+            .arg(visibleModuleCount));
     }
 }
 
@@ -3593,22 +3612,50 @@ void DriverDock::rebuildLoadedModuleTable()
         return;
     }
 
+    // filterText 用途：与服务表共享概览搜索框，同时匹配模块名、路径和签名结论。
+    const QString filterText = m_serviceFilterEdit != nullptr
+        ? m_serviceFilterEdit->text().trimmed()
+        : QString();
     m_moduleTable->setRowCount(0);
     for (std::size_t sourceIndex = 0U; sourceIndex < m_loadedModuleCache.size(); ++sourceIndex)
     {
         const LoadedKernelModuleRecord& moduleRecord = m_loadedModuleCache[sourceIndex];
+        // evidencePointer 用途：签名后台扫描完成后让搜索立即覆盖签名状态文本。
+        const LoadedModuleEvidenceRecord* evidencePointer =
+            sourceIndex < m_loadedModuleEvidenceCache.size()
+            ? &m_loadedModuleEvidenceCache[sourceIndex]
+            : nullptr;
+        const QString signatureStatusText = evidencePointer != nullptr
+            ? evidencePointer->signatureStatusText
+            : driverText("driver.evidence.pending", QStringLiteral("待扫描"));
+        const bool matchesFilter =
+            filterText.isEmpty() ||
+            moduleRecord.moduleName.contains(filterText, Qt::CaseInsensitive) ||
+            moduleRecord.imagePath.contains(filterText, Qt::CaseInsensitive) ||
+            signatureStatusText.contains(filterText, Qt::CaseInsensitive);
+        if (!matchesFilter)
+        {
+            continue;
+        }
+
         const int rowIndex = m_moduleTable->rowCount();
         m_moduleTable->insertRow(rowIndex);
         QTableWidgetItem* moduleNameItem = createReadOnlyItem(moduleRecord.moduleName);
         moduleNameItem->setData(
             ModuleRecordIndexRole,
             QVariant::fromValue<qulonglong>(static_cast<qulonglong>(sourceIndex)));
-        m_moduleTable->setItem(rowIndex, 0, moduleNameItem);
+        m_moduleTable->setItem(rowIndex, ModuleNameColumn, moduleNameItem);
         QTableWidgetItem* baseItem = createReadOnlyItem(formatAddress(moduleRecord.baseAddress));
         baseItem->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(
             static_cast<qulonglong>(moduleRecord.baseAddress)));
-        m_moduleTable->setItem(rowIndex, 1, baseItem);
-        for (int evidenceColumn = 2; evidenceColumn <= 7; ++evidenceColumn)
+        m_moduleTable->setItem(rowIndex, ModuleBaseColumn, baseItem);
+        m_moduleTable->setItem(
+            rowIndex,
+            ModuleSignatureColumn,
+            createReadOnlyItem(signatureStatusText));
+        for (int evidenceColumn = ModuleEvidenceFirstColumn;
+            evidenceColumn <= ModuleEvidenceLastColumn;
+            ++evidenceColumn)
         {
             m_moduleTable->setItem(
                 rowIndex,
@@ -3617,13 +3664,28 @@ void DriverDock::rebuildLoadedModuleTable()
         }
         QTableWidgetItem* pathItem = createReadOnlyItem(moduleRecord.imagePath);
         pathItem->setToolTip(moduleRecord.imagePath);
-        m_moduleTable->setItem(rowIndex, 8, pathItem);
+        m_moduleTable->setItem(rowIndex, ModuleImagePathColumn, pathItem);
     }
     if (m_moduleTable->rowCount() > 0)
     {
         m_moduleTable->setCurrentCell(0, 0);
     }
     rebuildLoadedModuleEvidenceViews();
+    if (m_overviewStatusLabel != nullptr)
+    {
+        // visibleServiceCount 用途：状态栏同步展示服务与模块两个表格的筛选数量。
+        const int visibleServiceCount = m_serviceTable != nullptr
+            ? m_serviceTable->rowCount()
+            : 0;
+        m_overviewStatusLabel->setText(
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
+            .arg(m_driverServiceCache.size())
+            .arg(visibleServiceCount)
+            .arg(m_loadedModuleCache.size())
+            .arg(m_moduleTable->rowCount()));
+    }
 }
 
 void DriverDock::syncOperateFormBySelectedService()

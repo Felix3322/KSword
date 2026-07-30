@@ -15,6 +15,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
@@ -37,6 +38,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVariant>
+#include <QVector>
 #include <QWheelEvent>
 #include <QWidget>
 
@@ -60,11 +62,180 @@ namespace
     constexpr char kStandardContextMenuProperty[] = "KSWORD_TABLE_INTERACTION_STANDARD_CONTEXT_MENU";
     constexpr char kContextActionsInstalledProperty[] = "KSWORD_TABLE_INTERACTION_CONTEXT_ACTIONS_INSTALLED";
     constexpr char kComparisonActiveProperty[] = "KSWORD_TABLE_INTERACTION_COMPARISON_ACTIVE";
+    constexpr char kContextMenuDepthProperty[] = "KSWORD_TABLE_CONTEXT_MENU_DEPTH";
     constexpr int kActionBarHeight = 32;
     constexpr quint64 kBytesPerMiB = 1024ULL * 1024ULL;
     constexpr TableSnapshotCaptureLimits kSnapshotCaptureLimits{};
     constexpr TableSnapshotComparisonLimits kSnapshotComparisonLimits{};
     constexpr TableSnapshotRetentionLimits kSnapshotRetentionLimits{};
+
+    // DeferredTableUiCommit：
+    // - 保存右键菜单打开期间被覆盖合并的 UI 提交；
+    // - owner/key 共同标识一类刷新，tableList 决定何时可以安全回投。
+    struct DeferredTableUiCommit
+    {
+        QPointer<QObject> owner;                         // owner：接收延迟回调的生命周期对象。
+        QString commitKey;                              // commitKey：同一所有者内的刷新去重键。
+        QList<QPointer<QTableView>> tableList;           // tableList：本次提交可能重建的表格。
+        std::function<void()> commitAction;              // commitAction：菜单关闭后执行的最新 UI 提交。
+    };
+
+    // deferredTableUiCommits 作用：
+    // - 返回 GUI 线程内共享的待提交队列；
+    // - 队列只由全局表格事件过滤器和刷新入口访问，不跨线程调用。
+    QVector<DeferredTableUiCommit>& deferredTableUiCommits()
+    {
+        static QVector<DeferredTableUiCommit> commitList;
+        return commitList;
+    }
+
+    // isTableContextMenuOpen 作用：
+    // - 根据全局事件过滤器维护的深度属性判断表格右键菜单是否仍在嵌套事件循环中；
+    // - 空表格与深度为零均返回 false。
+    bool isTableContextMenuOpen(const QTableView* tableView)
+    {
+        return tableView != nullptr &&
+            tableView->property(kContextMenuDepthProperty).toInt() > 0;
+    }
+
+    // beginTableContextMenu 作用：
+    // - 在业务菜单进入 exec/popup 后增加表格菜单深度；
+    // - 多层菜单或连续弹出时使用计数而不是简单布尔值。
+    void beginTableContextMenu(QTableView* tableView)
+    {
+        if (tableView == nullptr)
+        {
+            return;
+        }
+
+        const int currentDepth = tableView->property(kContextMenuDepthProperty).toInt();
+        tableView->setProperty(kContextMenuDepthProperty, currentDepth + 1);
+    }
+
+    // flushDeferredTableUiCommits 作用：
+    // - 菜单关闭后扫描待提交队列；
+    // - 只有相关表格全部退出菜单状态时才把最新提交排入 owner 的事件队列。
+    void flushDeferredTableUiCommits()
+    {
+        QVector<DeferredTableUiCommit>& commitList = deferredTableUiCommits();
+        QVector<DeferredTableUiCommit> readyCommitList;
+        for (int commitIndex = 0; commitIndex < commitList.size();)
+        {
+            DeferredTableUiCommit& pendingCommit = commitList[commitIndex];
+            if (pendingCommit.owner.isNull())
+            {
+                commitList.removeAt(commitIndex);
+                continue;
+            }
+
+            bool contextMenuStillOpen = false;
+            for (const QPointer<QTableView>& guardedTable : pendingCommit.tableList)
+            {
+                if (!guardedTable.isNull() && isTableContextMenuOpen(guardedTable.data()))
+                {
+                    contextMenuStillOpen = true;
+                    break;
+                }
+            }
+            if (contextMenuStillOpen)
+            {
+                ++commitIndex;
+                continue;
+            }
+
+            // readyCommitList 按真实到达顺序保存；重叠表格始终由较新的快照最后覆盖。
+            readyCommitList.push_back(std::move(pendingCommit));
+            commitList.removeAt(commitIndex);
+        }
+
+        for (DeferredTableUiCommit& readyCommit : readyCommitList)
+        {
+            // owner/commitAction 用途：移出队列后仍保持生命周期保护与唯一的最新提交。
+            const QPointer<QObject> owner = readyCommit.owner;
+            std::function<void()> commitAction = std::move(readyCommit.commitAction);
+            QTimer::singleShot(0, owner.data(), [owner, commitAction = std::move(commitAction)]() mutable
+                {
+                    if (!owner.isNull() && commitAction)
+                    {
+                        commitAction();
+                    }
+                });
+        }
+    }
+
+    // endTableContextMenu 作用：
+    // - 菜单隐藏或销毁时减少深度；
+    // - 最后一层菜单关闭后尝试回投被合并的表格刷新。
+    void endTableContextMenu(QTableView* tableView)
+    {
+        if (tableView == nullptr)
+        {
+            flushDeferredTableUiCommits();
+            return;
+        }
+
+        const int currentDepth = tableView->property(kContextMenuDepthProperty).toInt();
+        tableView->setProperty(kContextMenuDepthProperty, std::max(0, currentDepth - 1));
+        flushDeferredTableUiCommits();
+    }
+
+    // deferTableUiCommitIfNeeded 作用：
+    // - 任一目标表格菜单打开时，按 owner/key 覆盖旧提交，防止高频刷新积压；
+    // - 没有菜单打开时返回 false，调用方继续当前 UI 提交流程。
+    bool deferTableUiCommitIfNeeded(
+        QObject* owner,
+        const QString& commitKey,
+        const QList<QTableView*>& tableList,
+        std::function<void()> commitAction)
+    {
+        if (owner == nullptr || commitKey.isEmpty() || !commitAction)
+        {
+            return false;
+        }
+
+        bool contextMenuOpen = false;
+        QList<QPointer<QTableView>> guardedTableList;
+        guardedTableList.reserve(tableList.size());
+        for (QTableView* tableView : tableList)
+        {
+            if (tableView == nullptr)
+            {
+                continue;
+            }
+            guardedTableList.push_back(QPointer<QTableView>(tableView));
+            contextMenuOpen = contextMenuOpen || isTableContextMenuOpen(tableView);
+        }
+        if (!contextMenuOpen)
+        {
+            return false;
+        }
+
+        QVector<DeferredTableUiCommit>& commitList = deferredTableUiCommits();
+        for (int commitIndex = 0; commitIndex < commitList.size(); ++commitIndex)
+        {
+            DeferredTableUiCommit& pendingCommit = commitList[commitIndex];
+            if (pendingCommit.owner.data() == owner && pendingCommit.commitKey == commitKey)
+            {
+                // 同键更新移动到队尾，确保 flush 以后按最后到达时间提交。
+                DeferredTableUiCommit updatedCommit;
+                updatedCommit.owner = owner;
+                updatedCommit.commitKey = commitKey;
+                updatedCommit.tableList = std::move(guardedTableList);
+                updatedCommit.commitAction = std::move(commitAction);
+                commitList.removeAt(commitIndex);
+                commitList.push_back(std::move(updatedCommit));
+                return true;
+            }
+        }
+
+        DeferredTableUiCommit pendingCommit;
+        pendingCommit.owner = owner;
+        pendingCommit.commitKey = commitKey;
+        pendingCommit.tableList = std::move(guardedTableList);
+        pendingCommit.commitAction = std::move(commitAction);
+        commitList.push_back(std::move(pendingCommit));
+        return true;
+    }
 
     QString localizedSourceText(const char* sourceText)
     {
@@ -1685,8 +1856,43 @@ namespace
                     appendTableContextActions(shownMenu, contextTableView);
                     if (contextTableView != nullptr)
                     {
+                        // 同一个菜单对象一次显示只登记一次；Hide/销毁都会解除刷新屏障。
+                        if (!m_openContextMenuTables.contains(shownMenu))
+                        {
+                            m_openContextMenuTables.insert(shownMenu, contextTableView);
+                            beginTableContextMenu(contextTableView);
+
+                            // guardedTable 用途：菜单销毁时安全结束对应表格的刷新屏障。
+                            const QPointer<QTableView> guardedTable(contextTableView);
+                            QObject::connect(
+                                shownMenu,
+                                &QObject::destroyed,
+                                this,
+                                [this, shownMenu, guardedTable]()
+                                {
+                                    if (m_openContextMenuTables.remove(shownMenu) > 0)
+                                    {
+                                        endTableContextMenu(guardedTable.data());
+                                    }
+                                });
+                        }
                         m_pendingContextTable.clear();
                         ++m_pendingContextSequence;
+                    }
+                }
+            }
+            else if (eventObject->type() == QEvent::Hide)
+            {
+                // hiddenMenu 用途：业务菜单退出嵌套事件循环后释放对应表格的 UI 提交屏障。
+                QMenu* hiddenMenu = qobject_cast<QMenu*>(watchedObject);
+                if (hiddenMenu != nullptr)
+                {
+                    const auto menuIterator = m_openContextMenuTables.find(hiddenMenu);
+                    if (menuIterator != m_openContextMenuTables.end())
+                    {
+                        const QPointer<QTableView> guardedTable = menuIterator.value();
+                        m_openContextMenuTables.erase(menuIterator);
+                        endTableContextMenu(guardedTable.data());
                     }
                 }
             }
@@ -1777,6 +1983,8 @@ namespace
         QPointer<QTableView> m_pendingContextTable;
         // m_pendingContextSequence 用途：区分连续右键事件，保证延迟清理仅影响同一次事件。
         unsigned long long m_pendingContextSequence = 0ULL;
+        // m_openContextMenuTables 用途：把当前可见业务菜单绑定到触发它的表格。
+        QHash<QMenu*, QPointer<QTableView>> m_openContextMenuTables;
     };
 }
 
@@ -1844,5 +2052,18 @@ namespace ks::ui
         {
             configureTable(qobject_cast<QTableView*>(widget));
         }
+    }
+
+    bool DeferTableUiCommitIfContextMenuOpen(
+        QObject* owner,
+        const QString& commitKey,
+        const QList<QTableView*>& tableList,
+        std::function<void()> commitAction)
+    {
+        return deferTableUiCommitIfNeeded(
+            owner,
+            commitKey,
+            tableList,
+            std::move(commitAction));
     }
 }

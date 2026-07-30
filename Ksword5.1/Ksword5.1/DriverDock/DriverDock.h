@@ -103,6 +103,8 @@ private:
     struct LoadedModuleEvidenceRecord
     {
         QString moduleName;            // moduleName：被聚合的模块名。
+        QString signatureStatusText;   // signatureStatusText：WinVerifyTrust 信任链结论。
+        QString signatureDetailText;   // signatureDetailText：签名路径与状态码详情。
         QString driverObjectName;      // driverObjectName：成功解析到的 DriverObject 名称。
         QString driverObjectStatusText;// driverObjectStatusText：DriverObject 查询状态展示文本。
         QString driverStartMatchText;  // driverStartMatchText：DriverStart 与模块基址比对文本。
@@ -114,6 +116,8 @@ private:
         std::uint64_t driverObjectAddress = 0; // driverObjectAddress：只读证据查询返回的精确对象地址。
         std::uint64_t communicationRejectDispatchAddress = 0; // communicationRejectDispatchAddress：R0 系统拒绝入口。
         bool queryAttempted = false;   // queryAttempted：是否已经尝试聚合。
+        bool signatureCheckAttempted = false; // signatureCheckAttempted：是否已执行签名信任链校验。
+        bool signatureTrusted = false; // signatureTrusted：仅 WinVerifyTrust 成功时为 true。
         bool driverObjectResolved = false; // driverObjectResolved：DriverObject 是否解析成功。
         bool driverStartKnown = false; // driverStartKnown：DriverStart 是否有有效值。
         bool driverStartMatchesBase = false; // driverStartMatchesBase：DriverStart 是否等于模块基址。
