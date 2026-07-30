@@ -1,4 +1,5 @@
 #include "NetworkDock.InternalCommon.h"
+#include "NetworkAuditPage.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 
 using namespace network_dock_detail;
