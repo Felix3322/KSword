@@ -907,26 +907,73 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
         0,
         40.0f);
 
-    const QString choicePrompt = QStringLiteral(
-        "对于进程 pid:%1，%2，选择选项 1 以取消挂起，选择选项 2 以放弃追踪。")
+    QString choicePrompt = QStringLiteral(
+        "对于进程 pid:%1，%2，请明确选择恢复进程并继续追踪，或终止进程并放弃追踪。关闭窗口只会取消本次选择，不会丢失恢复句柄。")
         .arg(launchResult.processId)
         .arg(processName);
-    const int selectedOption = kPro.UI(
-        progressTaskId,
-        choicePrompt.toUtf8().toStdString(),
-        QStringLiteral("选项 1：取消挂起").toUtf8().toStdString(),
-        QStringLiteral("选项 2：放弃追踪").toUtf8().toStdString());
+    const std::string resumeOptionText =
+        QStringLiteral("选项 1：恢复进程并继续追踪").toUtf8().toStdString();
+    const std::string terminateOptionText =
+        QStringLiteral("选项 2：终止进程并放弃追踪").toUtf8().toStdString();
 
-    if (selectedOption == 1)
+    // 初始线程句柄所有权：
+    // - 只有 ResumeThread 或 TerminateProcess 成功后才关闭；
+    // - 关闭选项窗口、恢复失败或终止失败都返回选择循环，保证仍可重试；
+    // - 因此任何正常 UI 退出路径都不会留下失去恢复句柄的 CREATE_SUSPENDED 进程。
+    for (;;)
     {
-        std::string resumeError;
-        const bool resumeOk = ks::process::ResumeSuspendedProcessInitialThread(
-            launchResult.initialThreadHandle,
-            &resumeError);
-        ks::process::CloseSuspendedProcessInitialThreadHandle(launchResult.initialThreadHandle);
+        const int selectedOption = kPro.UI(
+            progressTaskId,
+            choicePrompt.toUtf8().toStdString(),
+            resumeOptionText,
+            terminateOptionText);
 
-        if (resumeOk)
+        if (selectedOption == 0)
         {
+            updateTargetProcessRemarkByPid(
+                launchResult.processId,
+                QStringLiteral("选择已取消，目标仍挂起且恢复句柄已保留"));
+            kPro.set(
+                progressTaskId,
+                QStringLiteral("已取消本次选择；目标仍挂起，可继续选择恢复或终止").toUtf8().toStdString(),
+                0,
+                40.0f);
+            choicePrompt = QStringLiteral(
+                "已取消关闭选项窗口。进程 pid:%1 仍处于挂起状态，恢复句柄已保留；请选择恢复进程或终止进程。")
+                .arg(launchResult.processId);
+            continue;
+        }
+
+        if (selectedOption == 1)
+        {
+            std::string resumeError;
+            const bool resumeOk = ks::process::ResumeSuspendedProcessInitialThread(
+                launchResult.initialThreadHandle,
+                &resumeError);
+            if (!resumeOk)
+            {
+                const QString errorText = QString::fromUtf8(resumeError.c_str());
+                updateTargetProcessRemarkByPid(
+                    launchResult.processId,
+                    QStringLiteral("恢复失败，目标仍挂起且句柄已保留：%1").arg(errorText));
+                kPro.set(
+                    progressTaskId,
+                    QStringLiteral("恢复失败；句柄已保留，可重试恢复或终止").toUtf8().toStdString(),
+                    0,
+                    90.0f);
+                choicePrompt = QStringLiteral(
+                    "恢复进程 pid:%1 失败：%2\n\n目标仍处于挂起状态，恢复句柄已保留；请选择重试恢复或终止进程。")
+                    .arg(launchResult.processId)
+                    .arg(errorText);
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("恢复新建目标失败"),
+                    choicePrompt);
+                continue;
+            }
+
+            ks::process::CloseSuspendedProcessInitialThreadHandle(
+                launchResult.initialThreadHandle);
             updateTargetProcessRemarkByPid(
                 launchResult.processId,
                 QStringLiteral("已恢复，等待手动开始监听"));
@@ -935,7 +982,6 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
                 QStringLiteral("已取消挂起，等待手动开始监听").toUtf8().toStdString(),
                 0,
                 100.0f);
-
             kLogEvent event;
             info << event
                 << "[ProcessTraceMonitorWidget] 已创建并恢复监控目标, pid="
@@ -943,45 +989,65 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
                 << ", process="
                 << processName.toStdString()
                 << eol;
+            break;
         }
-        else
+
+        if (selectedOption == 2)
         {
-            const QString errorText = QString::fromUtf8(resumeError.c_str());
-            updateTargetProcessRemarkByPid(
+            std::string terminateError;
+            const bool terminateOk = ks::process::TerminateProcessByWin32(
                 launchResult.processId,
-                QStringLiteral("恢复失败，目标仍保持挂起：%1").arg(errorText));
+                &terminateError);
+            if (!terminateOk)
+            {
+                const QString errorText = QString::fromUtf8(terminateError.c_str());
+                updateTargetProcessRemarkByPid(
+                    launchResult.processId,
+                    QStringLiteral("终止失败，目标仍挂起且句柄已保留：%1").arg(errorText));
+                kPro.set(
+                    progressTaskId,
+                    QStringLiteral("终止失败；句柄已保留，可重试恢复或终止").toUtf8().toStdString(),
+                    0,
+                    90.0f);
+                choicePrompt = QStringLiteral(
+                    "终止进程 pid:%1 失败：%2\n\n目标仍处于挂起状态，恢复句柄已保留；请选择恢复进程或重试终止。")
+                    .arg(launchResult.processId)
+                    .arg(errorText);
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("终止新建目标失败"),
+                    choicePrompt);
+                continue;
+            }
+
+            ks::process::CloseSuspendedProcessInitialThreadHandle(
+                launchResult.initialThreadHandle);
+            removeTrackedProcessFromTargetListByPid(
+                launchResult.processId,
+                QStringLiteral("用户终止进程并放弃追踪"));
+            updateActionState();
             kPro.set(
                 progressTaskId,
-                QStringLiteral("取消挂起失败，目标仍保持挂起").toUtf8().toStdString(),
+                QStringLiteral("已终止进程并放弃追踪").toUtf8().toStdString(),
                 0,
-                90.0f);
-            QMessageBox::warning(
-                this,
-                QStringLiteral("恢复新建目标失败"),
-                QStringLiteral("恢复进程 pid:%1 失败，目标仍保持挂起：%2")
-                .arg(launchResult.processId)
-                .arg(errorText));
+                100.0f);
+
+            kLogEvent event;
+            info << event
+                << "[ProcessTraceMonitorWidget] 用户终止新建目标并放弃追踪, pid="
+                << launchResult.processId
+                << ", process="
+                << processName.toStdString()
+                << eol;
+            break;
         }
-    }
-    else
-    {
-        ks::process::CloseSuspendedProcessInitialThreadHandle(launchResult.initialThreadHandle);
-        removeTrackedProcessFromTargetListByPid(
-            launchResult.processId,
-            QStringLiteral("用户放弃追踪，目标保持 CREATE_SUSPENDED"));
-        updateActionState();
+
+        // 未知返回值与关闭窗口同样按取消处理，绝不释放句柄或移除目标。
         kPro.set(
             progressTaskId,
-            QStringLiteral("已放弃追踪，目标保持挂起").toUtf8().toStdString(),
+            QStringLiteral("选项返回值无效；目标仍挂起，可继续选择恢复或终止").toUtf8().toStdString(),
             0,
-            100.0f);
-
-        kLogEvent event;
-        info << event
-            << "[ProcessTraceMonitorWidget] 用户放弃新建目标追踪, pid="
-            << launchResult.processId
-            << ", process remains suspended"
-            << eol;
+            40.0f);
     }
 }
 
