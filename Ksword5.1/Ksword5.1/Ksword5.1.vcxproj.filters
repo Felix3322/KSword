@@ -880,6 +880,9 @@
     <ClInclude Include="ProcessDock\ProcessAffinityPersistence.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ProcessDock\ProcessAffinityModel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="ProcessDock\ProcessHotkeyEnumerator.h">
       <Filter>Header Files</Filter>
     </ClInclude>

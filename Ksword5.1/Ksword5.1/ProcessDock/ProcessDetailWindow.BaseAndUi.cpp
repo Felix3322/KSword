@@ -716,6 +716,125 @@ namespace
     };
 }
 
+void ProcessDetailWindow::rebuildActionAffinityCoreButtons()
+{
+    if (m_affinityMatrixLayout == nullptr)
+    {
+        return;
+    }
+
+    while (QLayoutItem* const layoutItem =
+           m_affinityMatrixLayout->takeAt(0))
+    {
+        if (QWidget* const childWidget = layoutItem->widget())
+        {
+            childWidget->deleteLater();
+        }
+        delete layoutItem;
+    }
+    m_affinityCoreButtons.clear();
+    if (!m_actionAffinityReadable)
+    {
+        return;
+    }
+
+    const QString affinityCoreButtonStyle =
+        buildAffinityCoreButtonStyle();
+    std::uint16_t currentGroup =
+        std::numeric_limits<std::uint16_t>::max();
+    int matrixRow = 0;
+    int matrixColumn = 0;
+    for (const ks::process::LogicalProcessorState& processor :
+         m_actionAffinitySnapshot.processors)
+    {
+        if (processor.coordinate.group != currentGroup)
+        {
+            if (matrixColumn != 0)
+            {
+                ++matrixRow;
+            }
+            currentGroup = processor.coordinate.group;
+            matrixColumn = 0;
+            QLabel* const groupLabel = new QLabel(
+                ks::i18n::text(
+                    QStringLiteral("process.detail.affinity.group"),
+                    QString())
+                    .arg(currentGroup),
+                m_affinityActionGroup);
+            groupLabel->setStyleSheet(
+                QStringLiteral("color:%1;font-weight:700;")
+                    .arg(KswordTheme::TextSecondaryHex()));
+            m_affinityMatrixLayout->addWidget(
+                groupLabel,
+                matrixRow++,
+                0,
+                1,
+                kAffinityMatrixColumnCount);
+        }
+
+        QToolButton* const coreButton =
+            new QToolButton(m_affinityActionGroup);
+        const QString identityText = QStringLiteral("G%1:L%2")
+            .arg(processor.coordinate.group)
+            .arg(processor.coordinate.logicalIndex);
+        const QString topologyText =
+            QString::fromStdString(processor.topologyLabel);
+        coreButton->setText(
+            topologyText.isEmpty()
+                ? identityText
+                : identityText + QStringLiteral("\n") + topologyText);
+        coreButton->setCheckable(true);
+        coreButton->setAutoRaise(false);
+        coreButton->setFocusPolicy(Qt::NoFocus);
+        coreButton->setStyleSheet(affinityCoreButtonStyle);
+        QString processorToolTip = ks::i18n::text(
+                QStringLiteral("process.detail.affinity.core_tooltip"),
+                QString())
+                .arg(identityText, topologyText);
+        if (processor.constrainedByHardAffinity)
+        {
+            processorToolTip += QStringLiteral("\n") +
+                ks::i18n::text(
+                    QStringLiteral(
+                        "process.detail.affinity.constraint_tooltip"),
+                    QString());
+        }
+        else if (!processor.available)
+        {
+            processorToolTip += QStringLiteral("\n") +
+                ks::i18n::text(
+                    QStringLiteral(
+                        "process.detail.affinity.allocated_tooltip"),
+                    QString());
+        }
+        coreButton->setToolTip(processorToolTip);
+        const ks::process::LogicalProcessorCoordinate coordinate =
+            processor.coordinate;
+        connect(
+            coreButton,
+            &QToolButton::clicked,
+            this,
+            [this, coordinate](const bool enabled)
+            {
+                toggleActionAffinityCore(coordinate, enabled);
+            });
+        m_affinityMatrixLayout->addWidget(
+            coreButton,
+            matrixRow,
+            matrixColumn);
+        m_affinityCoreButtons.push_back(coreButton);
+        ++matrixColumn;
+        if (matrixColumn == kAffinityMatrixColumnCount)
+        {
+            matrixColumn = 0;
+            ++matrixRow;
+        }
+    }
+    m_affinityMatrixLayout->setColumnStretch(
+        kAffinityMatrixColumnCount,
+        1);
+}
+
 ProcessDetailWindow::ProcessDetailWindow(const ks::process::ProcessRecord& baseRecord, QWidget* parent)
     : QWidget(parent)
     , m_baseRecord(baseRecord)
@@ -3239,9 +3358,9 @@ void ProcessDetailWindow::initializeActionTab()
     m_actionLayout->addWidget(controlGroup);
 
     // CPU 亲和性：
-    // - 以 6 列矩阵展示当前 processor group 的逻辑核心，避免长核心列表横向撑开窗口；
-    // - 仅在“操作”页首次进入后读取实际掩码，保持详情窗口首次打开的轻量路径；
-    // - 每个核心按钮独立切换，蓝色主题背景代表该核心在当前进程亲和性中已启用。
+    // - 按 processor group 分段，以 6 列矩阵展示稳定 Gx:Ly 身份；
+    // - 仅在“操作”页首次进入后读取实际 CPU Set，保持详情窗口首次打开的轻量路径；
+    // - 每个按钮独立切换，蓝色主题背景代表该逻辑处理器已启用。
     m_affinityActionGroup = new QGroupBox(
         ks::i18n::text(QStringLiteral("process.detail.affinity.title"), QString()),
         m_actionTab);
@@ -3318,40 +3437,12 @@ void ProcessDetailWindow::initializeActionTab()
     affinityTopLayout->addWidget(m_affinityAllCoresButton);
     affinityGroupLayout->addLayout(affinityTopLayout);
 
-    QGridLayout* affinityMatrixLayout = new QGridLayout();
-    affinityMatrixLayout->setContentsMargins(0, 0, 0, 0);
-    affinityMatrixLayout->setHorizontalSpacing(6);
-    affinityMatrixLayout->setVerticalSpacing(6);
+    m_affinityMatrixLayout = new QGridLayout();
+    m_affinityMatrixLayout->setContentsMargins(0, 0, 0, 0);
+    m_affinityMatrixLayout->setHorizontalSpacing(6);
+    m_affinityMatrixLayout->setVerticalSpacing(6);
     m_affinityCoreButtons.clear();
-    m_affinityCoreButtons.resize(static_cast<std::size_t>(sizeof(ULONG_PTR) * 8U), nullptr);
-    const QString affinityCoreButtonStyle = buildAffinityCoreButtonStyle();
-    for (int coreIndex = 0; coreIndex < static_cast<int>(m_affinityCoreButtons.size()); ++coreIndex)
-    {
-        QToolButton* coreButton = new QToolButton(m_affinityActionGroup);
-        coreButton->setText(QStringLiteral("C%1").arg(coreIndex));
-        coreButton->setCheckable(true);
-        coreButton->setAutoRaise(false);
-        coreButton->setVisible(false);
-        coreButton->setToolTip(
-            ks::i18n::text(QStringLiteral("process.detail.affinity.core_tooltip"), QString())
-                .arg(QStringLiteral("C%1").arg(coreIndex)));
-        coreButton->setStyleSheet(affinityCoreButtonStyle);
-        installCopyMenu(coreButton, [coreButton]()
-        {
-            return coreButton != nullptr ? coreButton->text() : QString();
-        });
-        connect(coreButton, &QToolButton::clicked, this, [this, coreIndex](const bool enabled)
-        {
-            toggleActionAffinityCore(coreIndex, enabled);
-        });
-        affinityMatrixLayout->addWidget(
-            coreButton,
-            coreIndex / kAffinityMatrixColumnCount,
-            coreIndex % kAffinityMatrixColumnCount);
-        m_affinityCoreButtons[static_cast<std::size_t>(coreIndex)] = coreButton;
-    }
-    affinityMatrixLayout->setColumnStretch(kAffinityMatrixColumnCount, 1);
-    affinityGroupLayout->addLayout(affinityMatrixLayout);
+    affinityGroupLayout->addLayout(m_affinityMatrixLayout);
     m_actionLayout->addWidget(m_affinityActionGroup);
 
     connect(m_affinityRefreshButton, &QPushButton::clicked, this, [this]()
@@ -3360,22 +3451,37 @@ void ProcessDetailWindow::initializeActionTab()
     });
     connect(m_affinityAllCoresButton, &QPushButton::clicked, this, [this]()
     {
-        if (!m_actionAffinityReadable || m_actionAffinitySystemMask == 0U)
+        if (!m_actionAffinityReadable ||
+            m_actionAffinitySnapshot.processors.empty())
         {
             refreshActionAffinityControls();
             return;
         }
-        applyActionAffinityMask(m_actionAffinitySystemMask);
+        ks::process::ProcessAffinityRule affinityRule;
+        affinityRule.selectAllAvailable = true;
+        applyActionAffinityRule(affinityRule);
     });
     connect(m_affinityPersistenceCheckBox, &QCheckBox::toggled, this, [this](const bool enabled)
     {
+        if (enabled && !confirmActionAffinityRisk(true))
+        {
+            const QSignalBlocker signalBlocker(
+                m_affinityPersistenceCheckBox);
+            m_affinityPersistenceCheckBox->setChecked(false);
+            return;
+        }
+
         std::string detailText;
         const bool persistenceOk = enabled
-            ? (m_actionAffinityReadable && ks::process::savePersistedProcessAffinityMask(
+            ? (m_actionAffinityReadable &&
+                ks::process::savePersistedProcessAffinityRule(
+                    m_baseRecord.imagePath,
+                    ks::process::affinityRuleFromSnapshot(
+                        m_actionAffinitySnapshot),
+                    &detailText))
+            : ks::process::removePersistedProcessAffinityRule(
                 m_baseRecord.imagePath,
-                m_actionAffinityMask,
-                &detailText))
-            : ks::process::removePersistedProcessAffinityMask(m_baseRecord.imagePath, &detailText);
+                &detailText);
         if (!persistenceOk)
         {
             const QSignalBlocker signalBlocker(m_affinityPersistenceCheckBox);
