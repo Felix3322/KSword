@@ -2313,7 +2313,7 @@ namespace ksword::ark
 
     // PlatformAuditResult 承载 HAL/WDF 统一只读审计结果。
     // 输入：queryPlatformAudit 返回，scopeMask 指定 HAL 表或 WDF 表/回调。
-    // 处理：entries 保留地址、运行时结构基线、模块、厂商和 fail-closed 诊断。
+    // 处理：entries 保留地址、模块、结构/owner 证据和本地化 detailCode 参数。
     // 返回行为：只读，不提供 patch、restore、unhook 或任意内存访问。
     struct PlatformAuditResult : VariableAuditResultBase
     {

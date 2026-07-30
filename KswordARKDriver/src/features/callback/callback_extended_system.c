@@ -1111,8 +1111,9 @@ KswordArkCallbackLegacyFsLocateClassInitData(
     }
 
     // 中文说明：公开 DRIVER_EXTENSION 之后只检查 0x60 字节的指针对齐槽位。
-    // 每个候选都必须通过完整 FS_FILTER_CALLBACKS 大小、Reserved、全部回调模块
-    // 归属和至少一个回调回到当前驱动映像的联合签名，绝不直接使用固定裸偏移。
+    // 每个候选都必须通过完整 FS_FILTER_CALLBACKS 大小、Reserved、全部非空
+    // 回调均可解析到已加载模块，以及至少一个回调回到当前驱动映像的联合签名。
+    // 该联合签名只验证 ClassInitData 候选；每个 pre/post 的 owner 仍会单独判定。
     for (offset = startOffset; offset < endOffset; offset += (ULONG)sizeof(PVOID)) {
         ULONG64 candidateAddress = 0ULL;
         FS_FILTER_CALLBACKS callbacks;
@@ -1232,7 +1233,7 @@ KswordArkCallbackLegacyFsAddDriver(
     (VOID)RtlStringCchPrintfW(
         detailText,
         RTL_NUMBER_OF(detailText),
-        L"ClassInitData=0x%llX；DriverExtension+0x%lX；Size=%lu；已解析 %lu 个 pre/post 回调；所有非空地址均归属已加载模块，且至少一项回到登记驱动。",
+        L"ClassInitData=0x%llX；DriverExtension+0x%lX；Size=%lu；已解析 %lu 个 pre/post 回调；ClassInitData 结构已验证，各回调 owner 将逐项判定。",
         match.ClassInitAddress,
         match.ExtensionOffset,
         match.Callbacks.SizeOfFsFilterCallbacks,
@@ -1256,12 +1257,45 @@ KswordArkCallbackLegacyFsAddDriver(
 
     KswordArkCallbackLegacyFsBuildSlots(&match.Callbacks, slots);
     for (index = 0UL; index < RTL_NUMBER_OF(slots); ++index) {
-        ULONG fieldFlags = KSWORD_ARK_CALLBACK_ENUM_FIELD_CLASS_INIT_DATA_VALIDATED;
+        WCHAR ownerModulePath[KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS];
+        ULONG64 ownerModuleBase = 0ULL;
+        ULONG ownerModuleSize = 0UL;
+        NTSTATUS ownerStatus = STATUS_SUCCESS;
+        BOOLEAN ownerMatched = FALSE;
+        ULONG rowStatus = KSWORD_ARK_CALLBACK_ENUM_STATUS_UNSUPPORTED;
+        NTSTATUS rowLastStatus = STATUS_NOT_FOUND;
+        ULONG fieldFlags = 0UL;
         const ULONG pairBase = index & ~1UL;
 
         if (slots[index] == NULL) {
             continue;
         }
+
+        RtlZeroMemory(ownerModulePath, sizeof(ownerModulePath));
+        ownerStatus = KswordArkCallbackEnumResolveModuleByAddressCached(
+            ModuleCache,
+            (ULONG64)(ULONG_PTR)slots[index],
+            ownerModulePath,
+            RTL_NUMBER_OF(ownerModulePath),
+            &ownerModuleBase,
+            &ownerModuleSize);
+        if (NT_SUCCESS(ownerStatus)) {
+            ownerMatched =
+                ownerModuleBase == (ULONG64)(ULONG_PTR)driverView.DriverStart;
+            if (ownerMatched) {
+                fieldFlags |=
+                    KSWORD_ARK_CALLBACK_ENUM_FIELD_CALLBACK_OWNER_MATCH;
+                rowStatus = KSWORD_ARK_CALLBACK_ENUM_STATUS_OK;
+                rowLastStatus = STATUS_SUCCESS;
+            }
+            else {
+                rowLastStatus = STATUS_OBJECT_TYPE_MISMATCH;
+            }
+        }
+        else {
+            rowLastStatus = ownerStatus;
+        }
+
         if (slots[pairBase] != NULL && slots[pairBase + 1UL] != NULL) {
             fieldFlags |= KSWORD_ARK_CALLBACK_ENUM_FIELD_PRE_POST_PAIR;
         }
@@ -1273,23 +1307,53 @@ KswordArkCallbackLegacyFsAddDriver(
             L"%ws!%ws",
             driverName,
             g_KswordArkLegacyFsCallbackNames[index]);
-        (VOID)RtlStringCchPrintfW(
-            detailText,
-            RTL_NUMBER_OF(detailText),
-            L"ClassInitData=0x%llX；DriverExtension+0x%lX；%ws；pair=%lu；地址完整性已由已加载模块范围验证。",
-            match.ClassInitAddress,
-            match.ExtensionOffset,
-            (fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_PRE_POST_PAIR) != 0UL
-                ? L"pre/post 成对"
-                : L"单边回调",
-            index / 2UL);
+        if (ownerMatched) {
+            (VOID)RtlStringCchPrintfW(
+                detailText,
+                RTL_NUMBER_OF(detailText),
+                L"ClassInitData=0x%llX；DriverExtension+0x%lX；%ws；pair=%lu；回调 owner 与登记驱动匹配（base=0x%llX）。",
+                match.ClassInitAddress,
+                match.ExtensionOffset,
+                (fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_PRE_POST_PAIR) != 0UL
+                    ? L"pre/post 成对"
+                    : L"单边回调",
+                index / 2UL,
+                ownerModuleBase);
+        }
+        else if (NT_SUCCESS(ownerStatus)) {
+            (VOID)RtlStringCchPrintfW(
+                detailText,
+                RTL_NUMBER_OF(detailText),
+                L"ClassInitData=0x%llX；DriverExtension+0x%lX；%ws；pair=%lu；回调模块 base=0x%llX，与登记驱动 base=0x%llX 不匹配，可信状态保持未知。",
+                match.ClassInitAddress,
+                match.ExtensionOffset,
+                (fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_PRE_POST_PAIR) != 0UL
+                    ? L"pre/post 成对"
+                    : L"单边回调",
+                index / 2UL,
+                ownerModuleBase,
+                (ULONG64)(ULONG_PTR)driverView.DriverStart);
+        }
+        else {
+            (VOID)RtlStringCchPrintfW(
+                detailText,
+                RTL_NUMBER_OF(detailText),
+                L"ClassInitData=0x%llX；DriverExtension+0x%lX；%ws；pair=%lu；无法独立解析回调 owner（0x%08X），可信状态保持未知。",
+                match.ClassInitAddress,
+                match.ExtensionOffset,
+                (fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_PRE_POST_PAIR) != 0UL
+                    ? L"pre/post 成对"
+                    : L"单边回调",
+                index / 2UL,
+                (ULONG)ownerStatus);
+        }
         KswordArkCallbackExtendedAddRow(
             Builder,
             ModuleCache,
             KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER,
             KSWORD_ARK_CALLBACK_ENUM_SOURCE_LEGACY_FS_PUBLIC_AND_STRUCTURAL,
-            KSWORD_ARK_CALLBACK_ENUM_STATUS_OK,
-            STATUS_SUCCESS,
+            rowStatus,
+            rowLastStatus,
             (index & 1UL) == 0UL
                 ? KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_PRE
                 : KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_LEGACY_FS_POST,
@@ -1301,6 +1365,7 @@ KswordArkCallbackLegacyFsAddDriver(
             fieldFlags,
             nameText,
             detailText);
+        UNREFERENCED_PARAMETER(ownerModuleSize);
     }
 }
 

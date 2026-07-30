@@ -580,7 +580,7 @@ void KernelDock::initializeUi()
         wdfAuditTabIndex,
         kernelText(
             "kernel.main.tab.wdf_audit.tooltip",
-            QStringLiteral("只读审计 KMDF 绑定函数地址、运行时结构基线、模块归属与 WDF 回调")));
+            QStringLiteral("只读审计 KMDF 绑定函数地址、模块归属/执行节一致性与 WDF 回调")));
 
     m_hvmTabIndex = m_tabWidget->addTab(
         new KernelHvmTab(m_tabWidget),

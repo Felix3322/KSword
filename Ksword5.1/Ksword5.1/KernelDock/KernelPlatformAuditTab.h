@@ -4,6 +4,8 @@
 
 #include <QWidget>
 
+#include <mutex>
+#include <thread>
 #include <vector>
 
 class QComboBox;
@@ -28,7 +30,7 @@ public:
     };
 
     explicit KernelPlatformAuditTab(Mode mode, QWidget* parent = nullptr);
-    ~KernelPlatformAuditTab() override = default;
+    ~KernelPlatformAuditTab() override;
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -53,6 +55,8 @@ private:
     static QString statusText(unsigned long status, long lastStatus);
     static QString hookText(unsigned long hookStatus);
     static QString signatureText(unsigned long signatureId);
+    static QString detailText(const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry);
+    static QString companyNameForModule(const QString& modulePath);
 
     Mode m_mode;
     QTabWidget* m_innerTabs = nullptr;
@@ -61,6 +65,9 @@ private:
     QLineEdit* m_filterEdit = nullptr;
     QLabel* m_statusLabel = nullptr;
     std::vector<Page> m_pages;
+    std::thread m_refreshThread;
+    std::mutex m_refreshMutex;
+    bool m_closing = false;
     bool m_firstRefreshStarted = false;
     bool m_refreshRunning = false;
 };

@@ -1645,14 +1645,46 @@ namespace ksword::ark
     PlatformAuditResult DriverClient::queryPlatformAudit(const unsigned long scopeMask, const unsigned long maxRows) const
     {
         constexpr const char* operationName = "IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT";
+        constexpr std::size_t headerSize =
+            offsetof(KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE, entries);
+        constexpr std::uint32_t knownResponseFlags =
+            KSWORD_ARK_PLATFORM_RESPONSE_TRUNCATED |
+            KSWORD_ARK_PLATFORM_RESPONSE_PARTIAL |
+            KSWORD_ARK_PLATFORM_RESPONSE_FAIL_CLOSED |
+            KSWORD_ARK_PLATFORM_RESPONSE_NO_PDB;
+        constexpr std::uint32_t knownFieldFlags =
+            KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS |
+            KSWORD_ARK_PLATFORM_FIELD_TABLE_ADDRESS |
+            KSWORD_ARK_PLATFORM_FIELD_MODULE |
+            KSWORD_ARK_PLATFORM_FIELD_PROLOGUE_FORMAT |
+            KSWORD_ARK_PLATFORM_FIELD_OWNER_VALIDATED |
+            KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
+            KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT |
+            KSWORD_ARK_PLATFORM_FIELD_EXECUTABLE_VALIDATED |
+            KSWORD_ARK_PLATFORM_FIELD_READ_ONLY_RANGE |
+            KSWORD_ARK_PLATFORM_FIELD_DETAIL_ARGS;
+        constexpr std::uint32_t expectedSignaturePolicyFlags =
+            KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT |
+            KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
+            KSWORD_ARK_PLATFORM_FIELD_OWNER_VALIDATED |
+            KSWORD_ARK_PLATFORM_FIELD_PROLOGUE_FORMAT;
         PlatformAuditResult result{};
         KSWORD_ARK_QUERY_PLATFORM_AUDIT_REQUEST request{};
         request.size = sizeof(request);
         request.version = KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION;
         request.scopeMask = scopeMask;
         request.maxRows = maxRows;
+        request.flags = 0UL;
+        request.reserved0 = 0UL;
 
-        std::vector<std::uint8_t> responseBuffer(kDefaultAuditBufferBytes, 0U);
+        constexpr std::size_t responseBufferBytes =
+            headerSize +
+            (static_cast<std::size_t>(KSWORD_ARK_PLATFORM_HARD_MAX_ROWS) *
+             sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY));
+        static_assert(
+            responseBufferBytes <= std::numeric_limits<unsigned long>::max(),
+            "platform audit buffer must fit DeviceIoControl");
+        std::vector<std::uint8_t> responseBuffer(responseBufferBytes, 0U);
         result.io = deviceIoControl(
             IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT,
             &request,
@@ -1665,39 +1697,156 @@ namespace ksword::ark
             return result;
         }
 
-        constexpr std::size_t headerSize =
-            sizeof(KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE) -
-            sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY);
-        const auto* response =
-            reinterpret_cast<const KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE*>(responseBuffer.data());
-        const std::size_t parsedCount = validateAuditRows(
-            result.io,
-            headerSize,
-            response->entrySize,
-            sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY),
-            response->returnedCount,
-            operationName);
-        if (!result.io.ok)
+        const auto failProtocol = [&result, operationName](const std::string& reason)
         {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message = std::string(operationName) + " invalid response: " + reason;
+            result.entries.clear();
+        };
+        if (result.io.bytesReturned < headerSize ||
+            result.io.bytesReturned > responseBuffer.size())
+        {
+            failProtocol("header/bytesReturned out of range");
             return result;
         }
 
-        result.version = response->version;
-        result.status = response->queryStatus;
-        result.scopeMask = response->scopeMask;
-        result.responseFlags = response->responseFlags;
-        result.totalCount = response->totalCount;
-        result.returnedCount = response->returnedCount;
-        result.entrySize = response->entrySize;
-        result.buildNumber = response->buildNumber;
-        result.signaturePolicyFlags = response->signaturePolicyFlags;
-        result.lastStatus = response->lastStatus;
-        result.io.ntStatus = response->lastStatus;
-        result.entries = parseVariableRows<KSWORD_ARK_PLATFORM_AUDIT_ENTRY>(
-            responseBuffer,
-            headerSize,
-            response->entrySize,
-            parsedCount);
+        KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE response{};
+        std::memcpy(&response, responseBuffer.data(), headerSize);
+        const unsigned long expectedScope =
+            scopeMask == 0UL ? KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL : scopeMask;
+        const unsigned long requestedRows =
+            maxRows == 0UL
+                ? KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS
+                : std::min(maxRows, KSWORD_ARK_PLATFORM_HARD_MAX_ROWS);
+        const auto validStatus = [](const unsigned long value)
+        {
+            return value <= KSWORD_ARK_PLATFORM_AUDIT_STATUS_BUFFER_TRUNCATED;
+        };
+        const auto validSignature = [](const unsigned long value)
+        {
+            return value == KSWORD_ARK_PLATFORM_SIGNATURE_NONE ||
+                value == KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V6 ||
+                (value >= KSWORD_ARK_PLATFORM_SIGNATURE_WDF_BINDING_TABLE &&
+                 value <= KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_22);
+        };
+        const bool headerValid =
+            response.size == headerSize &&
+            response.version == KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION &&
+            response.reserved0 == 0UL &&
+            response.scopeMask == expectedScope &&
+            validStatus(response.queryStatus) &&
+            (response.responseFlags & ~knownResponseFlags) == 0UL &&
+            (response.responseFlags & KSWORD_ARK_PLATFORM_RESPONSE_NO_PDB) != 0UL &&
+            response.totalCount >= response.returnedCount &&
+            response.totalCount <= KSWORD_ARK_PLATFORM_HARD_MAX_ROWS &&
+            response.returnedCount <= requestedRows &&
+            response.returnedCount <= KSWORD_ARK_PLATFORM_HARD_MAX_ROWS &&
+            response.entrySize == sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY) &&
+            response.signaturePolicyFlags == expectedSignaturePolicyFlags &&
+            (((response.responseFlags & KSWORD_ARK_PLATFORM_RESPONSE_TRUNCATED) != 0UL) ==
+             (response.returnedCount < response.totalCount));
+        if (!headerValid)
+        {
+            failProtocol("header fields rejected");
+            return result;
+        }
+        if (response.returnedCount >
+            (std::numeric_limits<std::size_t>::max() - headerSize) /
+                sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY))
+        {
+            failProtocol("row byte count overflow");
+            return result;
+        }
+        const std::size_t requiredBytes =
+            headerSize +
+            (static_cast<std::size_t>(response.returnedCount) *
+             sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY));
+        if (requiredBytes != result.io.bytesReturned)
+        {
+            failProtocol("returnedCount/bytesReturned mismatch");
+            return result;
+        }
+
+        result.entries.reserve(response.returnedCount);
+        for (std::size_t index = 0U; index < response.returnedCount; ++index)
+        {
+            KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry{};
+            const std::size_t offset =
+                headerSize + (index * sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY));
+            std::memcpy(&entry, responseBuffer.data() + offset, sizeof(entry));
+
+            const bool scopeValid =
+                entry.scope != 0UL &&
+                (entry.scope & ~KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL) == 0UL &&
+                (entry.scope & ~response.scopeMask) == 0UL;
+            const bool rowKindValid =
+                entry.rowKind >= KSWORD_ARK_PLATFORM_AUDIT_ROW_TABLE &&
+                entry.rowKind <= KSWORD_ARK_PLATFORM_AUDIT_ROW_DIAGNOSTIC;
+            const bool hookValid =
+                entry.hookStatus == KSWORD_ARK_PLATFORM_HOOK_UNKNOWN ||
+                entry.hookStatus == KSWORD_ARK_PLATFORM_HOOK_SUSPICIOUS ||
+                entry.hookStatus == KSWORD_ARK_PLATFORM_HOOK_UNSUPPORTED;
+            const bool confidenceValid =
+                entry.confidence == KSWORD_ARK_PLATFORM_CONFIDENCE_NONE ||
+                entry.confidence == KSWORD_ARK_PLATFORM_CONFIDENCE_LOW ||
+                entry.confidence == KSWORD_ARK_PLATFORM_CONFIDENCE_MEDIUM ||
+                entry.confidence == KSWORD_ARK_PLATFORM_CONFIDENCE_HIGH;
+            const bool stringsValid =
+                std::find(
+                    std::begin(entry.name),
+                    std::end(entry.name),
+                    L'\0') != std::end(entry.name) &&
+                std::find(
+                    std::begin(entry.modulePath),
+                    std::end(entry.modulePath),
+                    L'\0') != std::end(entry.modulePath);
+            const bool entryValid =
+                entry.size == sizeof(entry) &&
+                entry.reserved0 == 0UL &&
+                scopeValid &&
+                rowKindValid &&
+                validStatus(entry.status) &&
+                hookValid &&
+                confidenceValid &&
+                (entry.fieldFlags & ~knownFieldFlags) == 0UL &&
+                validSignature(entry.signatureId) &&
+                entry.slotKind <= KSWORD_ARK_PLATFORM_SLOT_DUMMY &&
+                entry.ownerPolicy <= KSWORD_ARK_PLATFORM_OWNER_KSWORD &&
+                entry.detailCode <= KSWORD_ARK_PLATFORM_DETAIL_SUBCOMPONENT_VALIDATED &&
+                entry.prologueSignatureId <= 8UL &&
+                stringsValid &&
+                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_DETAIL_ARGS) != 0UL) ==
+                 (entry.detailCode != KSWORD_ARK_PLATFORM_DETAIL_NONE)) &&
+                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS) != 0UL) ==
+                 (entry.liveAddress != 0ULL)) &&
+                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_TABLE_ADDRESS) != 0UL) ==
+                 (entry.tableAddress != 0ULL)) &&
+                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_MODULE) != 0UL) ==
+                 (entry.moduleBase != 0ULL)) &&
+                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_MODULE) != 0UL) ==
+                 (entry.moduleSize != 0UL)) &&
+                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_PROLOGUE_FORMAT) != 0UL) ==
+                 (entry.prologueSignatureId != 0UL));
+            if (!entryValid)
+            {
+                failProtocol("entry[" + std::to_string(index) + "] rejected");
+                return result;
+            }
+            result.entries.push_back(entry);
+        }
+
+        result.version = response.version;
+        result.status = response.queryStatus;
+        result.scopeMask = response.scopeMask;
+        result.responseFlags = response.responseFlags;
+        result.totalCount = response.totalCount;
+        result.returnedCount = response.returnedCount;
+        result.entrySize = response.entrySize;
+        result.buildNumber = response.buildNumber;
+        result.signaturePolicyFlags = response.signaturePolicyFlags;
+        result.lastStatus = response.lastStatus;
+        result.io.ntStatus = response.lastStatus;
         result.io.message = appendAuditSummary(
             operationName,
             result.totalCount,
