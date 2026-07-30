@@ -8160,12 +8160,30 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     }
     else if (dockKey == QStringLiteral("driver"))
     {
-        if (m_driverWidget == nullptr) { m_driverWidget = new DriverDock(this); }
+        if (m_driverWidget == nullptr)
+        {
+            m_driverWidget = new DriverDock(this);
+            if (m_kernelWidget != nullptr)
+            {
+                m_driverWidget->attachKswordSelfDriverPage(
+                    m_kernelWidget->kswordSelfDriverPage(),
+                    m_kernelWidget);
+            }
+        }
         realWidget = m_driverWidget;
     }
     else if (dockKey == QStringLiteral("kernel"))
     {
-        if (m_kernelWidget == nullptr) { m_kernelWidget = new KernelDock(this); }
+        if (m_kernelWidget == nullptr)
+        {
+            m_kernelWidget = new KernelDock(this);
+            if (m_driverWidget != nullptr)
+            {
+                m_driverWidget->attachKswordSelfDriverPage(
+                    m_kernelWidget->kswordSelfDriverPage(),
+                    m_kernelWidget);
+            }
+        }
         realWidget = m_kernelWidget;
     }
     else if (dockKey == QStringLiteral("monitor"))
@@ -8678,6 +8696,12 @@ void MainWindow::initDockWidgets()
     // - 它是启动恢复黑屏的唯一复现场景；
     // - 真实创建成本可控，且能避免 ADS restoreState 把占位页/空容器恢复为当前页。
     m_kernelWidget = new KernelDock(this);
+    if (m_driverWidget != nullptr)
+    {
+        m_driverWidget->attachKswordSelfDriverPage(
+            m_kernelWidget->kswordSelfDriverPage(),
+            m_kernelWidget);
+    }
     if (shouldEagerLoad(QStringLiteral("monitor"))) { m_monitorWidget = new MonitorDock(this); }
     if (shouldEagerLoad(QStringLiteral("hardware"))) { m_hardwareWidget = new HardwareDock(this); }
     if (shouldEagerLoad(QStringLiteral("privilege"))) { m_privilegeWidget = new PrivilegeDock(this); }

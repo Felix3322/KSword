@@ -3452,8 +3452,8 @@ void KernelDock::requestDynDataRefresh()
 {
     if (!m_dynDataTabInitialized)
     {
-        ensureTabInitialized(m_dynDataTabIndex);
-        return;
+        initializeDynDataTab();
+        m_dynDataTabInitialized = true;
     }
 
     refreshDynDataAsync();

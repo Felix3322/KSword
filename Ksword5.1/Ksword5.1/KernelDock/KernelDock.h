@@ -522,6 +522,12 @@ public:
     // - 作用：对外触发 DynData 页初始化和异步刷新。
     void requestDynDataRefresh();
 
+    // kswordSelfDriverPage：
+    // - 输入：无；
+    // - 处理：返回包含“动态偏移/驱动状态”二级页的容器；
+    // - 输出：非拥有指针，由 MainWindow 挂到 DriverDock，业务逻辑仍由 KernelDock 管理。
+    QWidget* kswordSelfDriverPage() const;
+
     // ensureCurrentTabReadyForDisplay：
     // - 输入：无，使用当前顶层 Tab 索引；
     // - 处理：确保当前 Tab 的真实 UI 已初始化，并安排一次重绘；
@@ -967,17 +973,19 @@ private:
     int m_ioIdtTabIndex = -1;            // m_ioIdtTabIndex：内部 IDT 子页索引。
     int m_ioGdtTabIndex = -1;            // m_ioGdtTabIndex：内部 GDT 子页索引。
     int m_ioIoctlTabIndex = -1;          // m_ioIoctlTabIndex：内部 IOCTLS 解码器子页索引。
-    int m_dynDataTabIndex = -1;          // m_dynDataTabIndex：动态偏移页签索引。
-    int m_driverStatusTabIndex = -1;      // m_driverStatusTabIndex：驱动状态页签索引。
+    int m_dynDataTabIndex = -1;          // m_dynDataTabIndex：自身驱动内部动态偏移页索引。
+    int m_driverStatusTabIndex = -1;      // m_driverStatusTabIndex：自身驱动内部状态页索引。
     int m_ntQueryTabIndex = -1;          // m_ntQueryTabIndex：历史 NtQuery 页签索引。
-    int m_callbackTabIndex = -1;         // m_callbackTabIndex：驱动回调页签索引。
-    int m_callbackEnumTabIndex = -1;     // m_callbackEnumTabIndex：回调遍历页签索引。
-    int m_inlineHookTabIndex = -1;       // m_inlineHookTabIndex：Inline Hook 页签索引。
-    int m_iatEatHookTabIndex = -1;       // m_iatEatHookTabIndex：IAT/EAT Hook 页签索引。
+    int m_kernelAuditTabIndex = -1;       // m_kernelAuditTabIndex：内核审计与回调顶层页索引。
+    int m_callbackTabIndex = -1;         // m_callbackTabIndex：审计内部驱动回调页索引。
+    int m_callbackEnumTabIndex = -1;     // m_callbackEnumTabIndex：审计内部回调遍历页索引。
+    int m_inlineHookTabIndex = -1;       // m_inlineHookTabIndex：审计内部 Inline Hook 页索引。
+    int m_iatEatHookTabIndex = -1;       // m_iatEatHookTabIndex：审计内部 IAT/EAT 页索引。
     int m_hvmTabIndex = -1;              // m_hvmTabIndex：VT-x/EPT 生命周期与证据页签索引。
     int m_timerDpcTabIndex = -1;          // m_timerDpcTabIndex：KTIMER/DPC 页签索引。
     int m_crossViewTabIndex = -1;        // m_crossViewTabIndex：CID/交叉视图页签索引。
     int m_ipcTabIndex = -1;              // m_ipcTabIndex：IPC/NamedPipe/ALPC 页签索引。
+    int m_workQueueThreadTabIndex = -1;   // m_workQueueThreadTabIndex：工作队列线程审计页索引。
     bool m_objectNamespaceTabInitialized = false; // m_objectNamespaceTabInitialized：对象命名空间页是否已初始化。
     bool m_atomTabInitialized = false;            // m_atomTabInitialized：原子表页是否已初始化。
     bool m_ssdtTabInitialized = false;            // m_ssdtTabInitialized：SSDT 页是否已初始化。
@@ -1030,6 +1038,16 @@ private:
     QWidget* m_ioManagementPage = nullptr;              // m_ioManagementPage：I/O 管理顶层页容器。
     QVBoxLayout* m_ioManagementLayout = nullptr;         // m_ioManagementLayout：I/O 管理根布局。
     QTabWidget* m_ioManagementInnerTabWidget = nullptr;  // m_ioManagementInnerTabWidget：横向五子页容器。
+
+    // ==================== 内核审计与回调聚合页 ====================
+    QWidget* m_kernelAuditPage = nullptr;                // m_kernelAuditPage：四项审计业务的顶层容器。
+    QVBoxLayout* m_kernelAuditLayout = nullptr;           // m_kernelAuditLayout：聚合页根布局。
+    QTabWidget* m_kernelAuditInnerTabWidget = nullptr;    // m_kernelAuditInnerTabWidget：Inline/IAT/回调二级页。
+
+    // ==================== Ksword自身驱动迁移容器 ====================
+    QWidget* m_selfDriverPage = nullptr;                 // m_selfDriverPage：交给 DriverDock 展示的容器。
+    QVBoxLayout* m_selfDriverLayout = nullptr;            // m_selfDriverLayout：自身驱动容器布局。
+    QTabWidget* m_selfDriverInnerTabWidget = nullptr;     // m_selfDriverInnerTabWidget：动态偏移/状态二级页。
 
     // ==================== SSDT 子页 ====================
     QWidget* m_ssdtPage = nullptr;                     // m_ssdtPage：SSDT 页容器。

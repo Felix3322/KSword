@@ -1,4 +1,5 @@
 #include "DriverDock.Internal.h"
+#include "../KernelDock/KernelThreadAuditTab.h"
 #include "../UI/VisibleTableWidget.h"
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
@@ -275,6 +276,32 @@ void DriverDock::applyTranslatedHeaders()
                 "driver.unloaded.delete_exact",
                 QStringLiteral("删除选中 PiDDB 表项")));
     }
+    if (m_systemThreadAuditTab != nullptr)
+    {
+        const int systemThreadTabIndex = m_tabWidget->indexOf(m_systemThreadAuditTab);
+        if (systemThreadTabIndex >= 0)
+        {
+            m_tabWidget->setTabText(
+                systemThreadTabIndex,
+                driverText("driver.tab.system_threads", QStringLiteral("系统线程")));
+            m_tabWidget->setTabToolTip(
+                systemThreadTabIndex,
+                driverText(
+                    "driver.tab.system_threads.tooltip",
+                    QStringLiteral("枚举 System(PID 4) 线程并提供受保护的第三方驱动线程管理")));
+        }
+    }
+    if (m_kswordSelfDriverPage != nullptr && m_kswordSelfDriverTabIndex >= 0)
+    {
+        m_tabWidget->setTabText(
+            m_kswordSelfDriverTabIndex,
+            driverText("driver.tab.self_driver", QStringLiteral("Ksword自身驱动")));
+        m_tabWidget->setTabToolTip(
+            m_kswordSelfDriverTabIndex,
+            driverText(
+                "driver.tab.self_driver.tooltip",
+                QStringLiteral("KswordARK 动态偏移与驱动状态")));
+    }
 }
 
 void DriverDock::initializeUi()
@@ -293,6 +320,29 @@ void DriverDock::initializeUi()
     initializeModuleCrossViewTab();
     initializeIntegrityTab();
     initializeUnloadedPiddbTab();
+    initializeSystemThreadTab();
+}
+
+void DriverDock::initializeSystemThreadTab()
+{
+    if (m_tabWidget == nullptr || m_systemThreadAuditTab != nullptr)
+    {
+        return;
+    }
+
+    // 系统线程页只负责展示与确认；所有 KswordARK 操作由组件内 ArkDriverClient 完成。
+    m_systemThreadAuditTab = new KernelThreadAuditTab(
+        KernelThreadAuditTab::Mode::SystemThreads,
+        m_tabWidget);
+    const int tabIndex = m_tabWidget->addTab(
+        m_systemThreadAuditTab,
+        QIcon(QStringLiteral(":/Icon/process_threads.svg")),
+        driverText("driver.tab.system_threads", QStringLiteral("系统线程")));
+    m_tabWidget->setTabToolTip(
+        tabIndex,
+        driverText(
+            "driver.tab.system_threads.tooltip",
+            QStringLiteral("枚举 System(PID 4) 线程并提供受保护的第三方驱动线程管理")));
 }
 
 void DriverDock::initializeOverviewTab()

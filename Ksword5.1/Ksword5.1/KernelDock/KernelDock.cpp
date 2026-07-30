@@ -12,7 +12,6 @@
 
 #include "../UI/CodeEditorWidget.h"
 #include "KernelBaseNamedObjectsTab.h"
-#include "KernelCommunicationEndpointTab.h"
 #include "KernelDockCidTab.h"
 #include "KernelDescriptorTableTab.h"
 #include "KernelHvmTab.h"
@@ -20,10 +19,10 @@
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelIoctlAuditTab.h"
 #include "KernelIoctlDecoderTab.h"
-#include "KernelNamedPipeTab.h"
 #include "KernelObjectDirectoryDeepTab.h"
 #include "KernelObjectTypeMatrixTab.h"
 #include "KernelSymbolicLinkTab.h"
+#include "KernelThreadAuditTab.h"
 #include "../SettingsDock/AppearanceSettings.h"
 #include "../theme.h"
 
@@ -299,6 +298,12 @@ KernelDock::KernelDock(QWidget* parent)
     info << initEvent << "[KernelDock] 构造完成。" << eol;
 }
 
+QWidget* KernelDock::kswordSelfDriverPage() const
+{
+    // 返回非拥有指针：页面业务状态仍由当前 KernelDock 实例维护。
+    return m_selfDriverPage;
+}
+
 void KernelDock::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
@@ -454,16 +459,35 @@ void KernelDock::initializeUi()
     m_objectNamespacePage = new QWidget(m_tabWidget);
     m_atomPage = new QWidget(m_tabWidget);
     m_ioManagementPage = new QWidget(m_tabWidget);
-    m_dynDataPage = new QWidget(m_tabWidget);
-    m_driverStatusPage = new QWidget(m_tabWidget);
     m_ntQueryPage = new QWidget(m_tabWidget);
-    m_callbackInterceptPage = new QWidget(m_tabWidget);
-    m_callbackEnumPage = new QWidget(m_tabWidget);
-    m_inlineHookPage = new QWidget(m_tabWidget);
-    m_iatEatHookPage = new QWidget(m_tabWidget);
     m_timerDpcPage = new QWidget(m_tabWidget);
     m_crossViewPage = new QWidget(m_tabWidget);
     m_ipcPage = new QWidget(m_tabWidget);
+
+    // 内核审计与回调聚合页：
+    // - 仅改变四个现有业务页面的 UI 层级；
+    // - 页面对象和初始化/刷新函数保持原样，避免业务逻辑漂移。
+    m_kernelAuditPage = new QWidget(m_tabWidget);
+    m_kernelAuditLayout = new QVBoxLayout(m_kernelAuditPage);
+    m_kernelAuditLayout->setContentsMargins(4, 4, 4, 4);
+    m_kernelAuditInnerTabWidget = new QTabWidget(m_kernelAuditPage);
+    m_kernelAuditInnerTabWidget->setIconSize(QSize(16, 16));
+    m_kernelAuditLayout->addWidget(m_kernelAuditInnerTabWidget, 1);
+    m_inlineHookPage = new QWidget(m_kernelAuditInnerTabWidget);
+    m_iatEatHookPage = new QWidget(m_kernelAuditInnerTabWidget);
+    m_callbackEnumPage = new QWidget(m_kernelAuditInnerTabWidget);
+    m_callbackInterceptPage = new QWidget(m_kernelAuditInnerTabWidget);
+
+    // “Ksword自身驱动”容器不加入 KernelDock 顶层；
+    // MainWindow 会把整个容器交给 DriverDock，原业务方法仍由 KernelDock 执行。
+    m_selfDriverPage = new QWidget(this);
+    m_selfDriverLayout = new QVBoxLayout(m_selfDriverPage);
+    m_selfDriverLayout->setContentsMargins(4, 4, 4, 4);
+    m_selfDriverInnerTabWidget = new QTabWidget(m_selfDriverPage);
+    m_selfDriverInnerTabWidget->setIconSize(QSize(16, 16));
+    m_selfDriverLayout->addWidget(m_selfDriverInnerTabWidget, 1);
+    m_dynDataPage = new QWidget(m_selfDriverInnerTabWidget);
+    m_driverStatusPage = new QWidget(m_selfDriverInnerTabWidget);
 
     m_objectNamespaceTabIndex = m_tabWidget->addTab(
         m_objectNamespacePage,
@@ -495,17 +519,47 @@ void KernelDock::initializeUi()
             QStringLiteral("集中查看 SSDT、ShadowSSDT、IDT、GDT 并解析 IOCTL 控制码")));
     initializeIoManagementTab();
 
-    m_inlineHookTabIndex = m_tabWidget->addTab(
+    m_inlineHookTabIndex = m_kernelAuditInnerTabWidget->addTab(
         m_inlineHookPage,
         tabIcon(QStringLiteral(":/Icon/process_critical.svg")),
         QStringLiteral("Inline Hook"));
-    m_tabWidget->setTabToolTip(m_inlineHookTabIndex, kernelText("kernel.main.tab.inline_hook.tooltip", QStringLiteral("扫描内核模块导出函数头部跳转补丁，并提供 force 后 NOP 摘除")));
+    m_kernelAuditInnerTabWidget->setTabToolTip(m_inlineHookTabIndex, kernelText("kernel.main.tab.inline_hook.tooltip", QStringLiteral("扫描内核模块导出函数头部跳转补丁，并提供 force 后 NOP 摘除")));
 
-    m_iatEatHookTabIndex = m_tabWidget->addTab(
+    m_iatEatHookTabIndex = m_kernelAuditInnerTabWidget->addTab(
         m_iatEatHookPage,
         tabIcon(QStringLiteral(":/Icon/process_details.svg")),
         QStringLiteral("IAT/EAT"));
-    m_tabWidget->setTabToolTip(m_iatEatHookTabIndex, kernelText("kernel.main.tab.iat_eat.tooltip", QStringLiteral("检测内核模块导入表和导出表可疑目标指针")));
+    m_kernelAuditInnerTabWidget->setTabToolTip(m_iatEatHookTabIndex, kernelText("kernel.main.tab.iat_eat.tooltip", QStringLiteral("检测内核模块导入表和导出表可疑目标指针")));
+
+    m_callbackEnumTabIndex = m_kernelAuditInnerTabWidget->addTab(
+        m_callbackEnumPage,
+        tabIcon(QStringLiteral(":/Icon/process_list.svg")),
+        kernelText("kernel.main.tab.callback_enum.title", QStringLiteral("回调遍历")));
+    m_kernelAuditInnerTabWidget->setTabToolTip(
+        m_callbackEnumTabIndex,
+        kernelText(
+            "kernel.main.tab.callback_enum.tooltip",
+            QStringLiteral("遍历 KswordARK 可见的系统回调、minifilter 和 System Informer DynData 诊断项")));
+
+    m_callbackTabIndex = m_kernelAuditInnerTabWidget->addTab(
+        m_callbackInterceptPage,
+        tabIcon(QStringLiteral(":/Icon/process_critical.svg")),
+        kernelText("kernel.main.tab.callback.title", QStringLiteral("驱动回调")));
+    m_kernelAuditInnerTabWidget->setTabToolTip(
+        m_callbackTabIndex,
+        kernelText(
+            "kernel.main.tab.callback.tooltip",
+            QStringLiteral("驱动回调拦截规则管理与询问事件处理")));
+
+    m_kernelAuditTabIndex = m_tabWidget->addTab(
+        m_kernelAuditPage,
+        tabIcon(QStringLiteral(":/Icon/process_critical.svg")),
+        kernelText("kernel.main.tab.audit_callbacks.title", QStringLiteral("内核审计与回调")));
+    m_tabWidget->setTabToolTip(
+        m_kernelAuditTabIndex,
+        kernelText(
+            "kernel.main.tab.audit_callbacks.tooltip",
+            QStringLiteral("集中查看 Inline Hook、IAT/EAT、回调遍历和驱动回调")));
 
     m_hvmTabIndex = m_tabWidget->addTab(
         new KernelHvmTab(m_tabWidget),
@@ -523,6 +577,18 @@ void KernelDock::initializeUi()
         kernelText("kernel.main.tab.timer_dpc.title", QStringLiteral("定时器/DPC")));
     m_tabWidget->setTabToolTip(m_timerDpcTabIndex, kernelText("kernel.main.tab.timer_dpc.tooltip", QStringLiteral("按 CPU 只读遍历 KTIMER 表并解析关联 KDPC 例程")));
 
+    // 工作队列线程页只使用系统线程快照、WrQueue 和可信 ActiveExWorker 标志；
+    // 不读取或猜测 Critical/Delayed/HyperCritical 队列的未公开链表结构。
+    m_workQueueThreadTabIndex = m_tabWidget->addTab(
+        new KernelThreadAuditTab(KernelThreadAuditTab::Mode::WorkQueueThreads, m_tabWidget),
+        tabIcon(QStringLiteral(":/Icon/process_threads.svg")),
+        kernelText("kernel.main.tab.work_queue_threads.title", QStringLiteral("内核工作队列线程")));
+    m_tabWidget->setTabToolTip(
+        m_workQueueThreadTabIndex,
+        kernelText(
+            "kernel.main.tab.work_queue_threads.tooltip",
+            QStringLiteral("基于安全线程证据审计工作队列候选、入口和模块归属")));
+
     m_crossViewTabIndex = m_tabWidget->addTab(
         m_crossViewPage,
         tabIcon(QStringLiteral(":/Icon/process_list.svg")),
@@ -535,29 +601,32 @@ void KernelDock::initializeUi()
         QStringLiteral("IPC"));
     m_tabWidget->setTabToolTip(m_ipcTabIndex, kernelText("kernel.main.tab.ipc.tooltip", QStringLiteral("只读 NamedPipe / ALPC / 通信对象")));
 
-    m_dynDataTabIndex = m_tabWidget->addTab(
+    m_dynDataTabIndex = m_selfDriverInnerTabWidget->addTab(
         m_dynDataPage,
         tabIcon(QStringLiteral(":/Icon/process_priority.svg")),
         kernelText("kernel.main.tab.dyn_data.title", QStringLiteral("动态偏移")));
-    m_tabWidget->setTabToolTip(m_dynDataTabIndex, kernelText("kernel.main.tab.dyn_data.tooltip", QStringLiteral("System Informer DynData 精确匹配状态与字段列表")));
+    m_selfDriverInnerTabWidget->setTabToolTip(
+        m_dynDataTabIndex,
+        kernelText(
+            "kernel.main.tab.dyn_data.tooltip",
+            QStringLiteral("System Informer DynData 精确匹配状态与字段列表")));
 
-    m_driverStatusTabIndex = m_tabWidget->addTab(
+    m_driverStatusTabIndex = m_selfDriverInnerTabWidget->addTab(
         m_driverStatusPage,
         tabIcon(QStringLiteral(":/Icon/process_details.svg")),
         kernelText("kernel.main.tab.driver_status.title", QStringLiteral("驱动状态")));
-    m_tabWidget->setTabToolTip(m_driverStatusTabIndex, kernelText("kernel.main.tab.driver_status.tooltip", QStringLiteral("KswordARK 驱动加载、协议、安全策略、DynData 和功能能力矩阵")));
+    m_selfDriverInnerTabWidget->setTabToolTip(
+        m_driverStatusTabIndex,
+        kernelText(
+            "kernel.main.tab.driver_status.tooltip",
+            QStringLiteral("KswordARK 驱动加载、协议、安全策略、DynData 和功能能力矩阵")));
 
-    m_callbackTabIndex = m_tabWidget->addTab(
-        m_callbackInterceptPage,
-        tabIcon(QStringLiteral(":/Icon/process_critical.svg")),
-        kernelText("kernel.main.tab.callback.title", QStringLiteral("驱动回调")));
-    m_tabWidget->setTabToolTip(m_callbackTabIndex, kernelText("kernel.main.tab.callback.tooltip", QStringLiteral("驱动回调拦截规则管理与询问事件处理")));
-
-    m_callbackEnumTabIndex = m_tabWidget->addTab(
-        m_callbackEnumPage,
-        tabIcon(QStringLiteral(":/Icon/process_list.svg")),
-        kernelText("kernel.main.tab.callback_enum.title", QStringLiteral("回调遍历")));
-    m_tabWidget->setTabToolTip(m_callbackEnumTabIndex, kernelText("kernel.main.tab.callback_enum.tooltip", QStringLiteral("遍历 KswordARK 可见的系统回调、minifilter 和 System Informer DynData 诊断项")));
+    // 迁移页离开 KernelDock 顶层后仍需先构建真实内容；
+    // 后续自动/手工刷新继续调用原成员函数，不复制驱动状态业务逻辑。
+    initializeDynDataTab();
+    m_dynDataTabInitialized = true;
+    initializeDriverStatusTab();
+    m_driverStatusTabInitialized = true;
 
     m_tabWidget->setCurrentIndex(m_objectNamespaceTabIndex);
     updateTabIconContrast();
@@ -607,16 +676,12 @@ void KernelDock::updateTabIconContrast()
     m_tabWidget->setTabIcon(m_atomTabIndex, tabIcon(QStringLiteral(":/Icon/process_threads.svg")));
     m_tabWidget->setTabIcon(m_ntQueryTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
     m_tabWidget->setTabIcon(m_ioManagementTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    m_tabWidget->setTabIcon(m_inlineHookTabIndex, tabIcon(QStringLiteral(":/Icon/process_critical.svg")));
-    m_tabWidget->setTabIcon(m_iatEatHookTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
+    m_tabWidget->setTabIcon(m_kernelAuditTabIndex, tabIcon(QStringLiteral(":/Icon/process_critical.svg")));
     m_tabWidget->setTabIcon(m_hvmTabIndex, tabIcon(QStringLiteral(":/Icon/process_priority.svg")));
     m_tabWidget->setTabIcon(m_timerDpcTabIndex, tabIcon(QStringLiteral(":/Icon/process_threads.svg")));
+    m_tabWidget->setTabIcon(m_workQueueThreadTabIndex, tabIcon(QStringLiteral(":/Icon/process_threads.svg")));
     m_tabWidget->setTabIcon(m_crossViewTabIndex, tabIcon(QStringLiteral(":/Icon/process_list.svg")));
     m_tabWidget->setTabIcon(m_ipcTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    m_tabWidget->setTabIcon(m_dynDataTabIndex, tabIcon(QStringLiteral(":/Icon/process_priority.svg")));
-    m_tabWidget->setTabIcon(m_driverStatusTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    m_tabWidget->setTabIcon(m_callbackTabIndex, tabIcon(QStringLiteral(":/Icon/process_critical.svg")));
-    m_tabWidget->setTabIcon(m_callbackEnumTabIndex, tabIcon(QStringLiteral(":/Icon/process_list.svg")));
 
     if (currentIndex == m_objectNamespaceTabIndex)
     {
@@ -634,19 +699,19 @@ void KernelDock::updateTabIconContrast()
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
     }
-    else if (currentIndex == m_inlineHookTabIndex)
+    else if (currentIndex == m_kernelAuditTabIndex)
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_critical.svg")));
-    }
-    else if (currentIndex == m_iatEatHookTabIndex)
-    {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
     }
     else if (currentIndex == m_hvmTabIndex)
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_priority.svg")));
     }
     else if (currentIndex == m_timerDpcTabIndex)
+    {
+        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_threads.svg")));
+    }
+    else if (currentIndex == m_workQueueThreadTabIndex)
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_threads.svg")));
     }
@@ -657,22 +722,6 @@ void KernelDock::updateTabIconContrast()
     else if (currentIndex == m_ipcTabIndex)
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    }
-    else if (currentIndex == m_dynDataTabIndex)
-    {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_priority.svg")));
-    }
-    else if (currentIndex == m_driverStatusTabIndex)
-    {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    }
-    else if (currentIndex == m_callbackTabIndex)
-    {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_critical.svg")));
-    }
-    else if (currentIndex == m_callbackEnumTabIndex)
-    {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_list.svg")));
     }
 }
 
@@ -772,10 +821,6 @@ void KernelDock::initializeObjectNamespaceTab()
         tabIcon(QStringLiteral(":/Icon/process_tree.svg")),
         kernelText("kernel.main.inner_tab.directory_recursion", QStringLiteral("目录递归")));
     m_objectNamespaceInnerTabWidget->addTab(
-        new KernelNamedPipeTab(m_objectNamespaceInnerTabWidget),
-        tabIcon(QStringLiteral(":/Icon/process_details.svg")),
-        kernelText("kernel.main.inner_tab.named_pipe", QStringLiteral("命名管道")));
-    m_objectNamespaceInnerTabWidget->addTab(
         new KernelBaseNamedObjectsTab(m_objectNamespaceInnerTabWidget),
         tabIcon(QStringLiteral(":/Icon/process_threads.svg")),
         QStringLiteral("BaseNamedObjects"));
@@ -796,10 +841,6 @@ void KernelDock::initializeObjectNamespaceTab()
         new KernelObjectTypeMatrixTab(m_objectNamespaceInnerTabWidget),
         tabIcon(QStringLiteral(":/Icon/process_list.svg")),
         kernelText("kernel.main.inner_tab.object_type", QStringLiteral("对象类型")));
-    m_objectNamespaceInnerTabWidget->addTab(
-        new KernelCommunicationEndpointTab(m_objectNamespaceInnerTabWidget),
-        tabIcon(QStringLiteral(":/Icon/process_critical.svg")),
-        kernelText("kernel.main.inner_tab.communication_endpoint", QStringLiteral("通信端点")));
 
     // IOCTL 审计会对每个 DriverObject 发起 R0 查询。KernelDock 即使不是当前主 Dock
     // 也会为布局恢复而创建，因此只能在用户实际切入该子页后再开始首轮采集。
@@ -1085,6 +1126,24 @@ void KernelDock::initializeConnections()
                 }
             });
     }
+
+    // 内核审计与回调内部切换继续复用原惰性初始化入口；
+    // 顶层只识别聚合页，具体业务由当前二级 Tab 决定。
+    if (m_kernelAuditInnerTabWidget != nullptr)
+    {
+        connect(
+            m_kernelAuditInnerTabWidget,
+            &QTabWidget::currentChanged,
+            this,
+            [this](const int)
+            {
+                if (m_tabWidget != nullptr &&
+                    m_tabWidget->currentIndex() == m_kernelAuditTabIndex)
+                {
+                    ensureTabInitialized(m_kernelAuditTabIndex);
+                }
+            });
+    }
 }
 
 void KernelDock::initializeCrossViewTab()
@@ -1160,23 +1219,46 @@ void KernelDock::ensureTabInitialized(const int tabIndex)
         return;
     }
 
-    if (tabIndex == m_inlineHookTabIndex && !m_inlineHookTabInitialized)
+    if (tabIndex == m_kernelAuditTabIndex)
     {
-        showTabInitializingProgress(tabIndex, QStringLiteral("Inline Hook"));
-        initializeInlineHookTab();
-        m_inlineHookTabInitialized = true;
-        hideTabInitializingProgress();
-        refreshInlineHooksAsync();
-        return;
-    }
-
-    if (tabIndex == m_iatEatHookTabIndex && !m_iatEatHookTabInitialized)
-    {
-        showTabInitializingProgress(tabIndex, QStringLiteral("IAT/EAT"));
-        initializeIatEatHookTab();
-        m_iatEatHookTabInitialized = true;
-        hideTabInitializingProgress();
-        refreshIatEatHooksAsync();
+        const int innerTabIndex = m_kernelAuditInnerTabWidget != nullptr
+            ? m_kernelAuditInnerTabWidget->currentIndex()
+            : -1;
+        if (innerTabIndex == m_inlineHookTabIndex && !m_inlineHookTabInitialized)
+        {
+            showTabInitializingProgress(tabIndex, QStringLiteral("Inline Hook"));
+            initializeInlineHookTab();
+            m_inlineHookTabInitialized = true;
+            hideTabInitializingProgress();
+            refreshInlineHooksAsync();
+        }
+        else if (innerTabIndex == m_iatEatHookTabIndex && !m_iatEatHookTabInitialized)
+        {
+            showTabInitializingProgress(tabIndex, QStringLiteral("IAT/EAT"));
+            initializeIatEatHookTab();
+            m_iatEatHookTabInitialized = true;
+            hideTabInitializingProgress();
+            refreshIatEatHooksAsync();
+        }
+        else if (innerTabIndex == m_callbackEnumTabIndex && !m_callbackEnumTabInitialized)
+        {
+            showTabInitializingProgress(
+                tabIndex,
+                kernelText("kernel.main.tab.callback_enum.title", QStringLiteral("回调遍历")));
+            initializeCallbackEnumTab();
+            m_callbackEnumTabInitialized = true;
+            hideTabInitializingProgress();
+            refreshCallbackEnumAsync();
+        }
+        else if (innerTabIndex == m_callbackTabIndex && !m_callbackTabInitialized)
+        {
+            showTabInitializingProgress(
+                tabIndex,
+                kernelText("kernel.main.tab.callback.title", QStringLiteral("驱动回调")));
+            initializeCallbackInterceptTab();
+            m_callbackTabInitialized = true;
+            hideTabInitializingProgress();
+        }
         return;
     }
 
@@ -1205,45 +1287,6 @@ void KernelDock::ensureTabInitialized(const int tabIndex)
         initializeIpcTab();
         m_ipcTabInitialized = true;
         hideTabInitializingProgress();
-        return;
-    }
-
-    if (tabIndex == m_dynDataTabIndex && !m_dynDataTabInitialized)
-    {
-        showTabInitializingProgress(tabIndex, kernelText("kernel.main.tab.dyn_data.title", QStringLiteral("动态偏移")));
-        initializeDynDataTab();
-        m_dynDataTabInitialized = true;
-        hideTabInitializingProgress();
-        refreshDynDataAsync();
-        return;
-    }
-
-    if (tabIndex == m_driverStatusTabIndex && !m_driverStatusTabInitialized)
-    {
-        showTabInitializingProgress(tabIndex, kernelText("kernel.main.tab.driver_status.title", QStringLiteral("驱动状态")));
-        initializeDriverStatusTab();
-        m_driverStatusTabInitialized = true;
-        hideTabInitializingProgress();
-        refreshDriverStatusAsync();
-        return;
-    }
-
-    if (tabIndex == m_callbackTabIndex && !m_callbackTabInitialized)
-    {
-        showTabInitializingProgress(tabIndex, kernelText("kernel.main.tab.callback.title", QStringLiteral("驱动回调")));
-        initializeCallbackInterceptTab();
-        m_callbackTabInitialized = true;
-        hideTabInitializingProgress();
-        return;
-    }
-
-    if (tabIndex == m_callbackEnumTabIndex && !m_callbackEnumTabInitialized)
-    {
-        showTabInitializingProgress(tabIndex, kernelText("kernel.main.tab.callback_enum.title", QStringLiteral("回调遍历")));
-        initializeCallbackEnumTab();
-        m_callbackEnumTabInitialized = true;
-        hideTabInitializingProgress();
-        refreshCallbackEnumAsync();
         return;
     }
 

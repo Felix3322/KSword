@@ -227,6 +227,8 @@
     <ClCompile Include="KernelDock\KernelObjectTypeMatrixTab.cpp" />
     <ClCompile Include="KernelDock\KernelSymbolicLinkTab.cpp" />
     <ClCompile Include="KernelDock\KernelSymbolicLinkWorker.cpp" />
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.cpp" />
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.Snapshot.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="MiscDock\BootEditor\BootEditorTab.Actions.cpp" />
     <ClCompile Include="MiscDock\ApplicationControlPage.cpp" />
@@ -472,6 +474,7 @@
     <ClInclude Include="KernelDock\KernelObjectTypeMatrixTab.h" />
     <ClInclude Include="KernelDock\KernelSymbolicLinkTab.h" />
     <ClInclude Include="KernelDock\KernelSymbolicLinkWorker.h" />
+    <ClInclude Include="KernelDock\KernelThreadAuditTab.h" />
     <ClInclude Include="ksword\ksword.h" />
     <ClInclude Include="ksword\file\file.h" />
     <ClInclude Include="ksword\file\file_handle_tools.h" />

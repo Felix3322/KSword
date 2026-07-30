@@ -14,6 +14,7 @@
 #include "../Framework.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 
+#include <QPointer>
 #include <QWidget>
 
 #include <atomic>   // std::atomic_bool：调试捕获线程运行标记。
@@ -42,6 +43,7 @@ class QSpinBox;
 class QTableWidget;
 class QTabWidget;
 class QVBoxLayout;
+class KernelThreadAuditTab;
 
 // DriverDock：
 // - 驱动页主控件；
@@ -60,6 +62,13 @@ public:
     // 析构函数：
     // - 作用：停止调试捕获线程并回收资源。
     ~DriverDock() override;
+
+    // attachKswordSelfDriverPage：
+    // - 输入 page：KernelDock 持有的“Ksword自身驱动”容器；
+    // - 输入 fallbackOwner：DriverDock 析构时接回页面的原始所有者；
+    // - 处理：将动态偏移/驱动状态作为驱动 Dock 一级页展示，不复制业务逻辑；
+    // - 输出：无，重复调用同一页面时保持幂等。
+    void attachKswordSelfDriverPage(QWidget* page, QWidget* fallbackOwner);
 
 protected:
     // showEvent：
@@ -189,6 +198,11 @@ private:
     // - 支持 MmUnloadedDrivers / PiDDBCacheTable / g_KernelHashBucketList 三来源；
     // - 查询/过滤/详情保持只读；PiDDB 来源另提供强确认的精确表项管理动作。
     void initializeUnloadedPiddbTab();
+
+    // initializeSystemThreadTab：
+    // - 构建“系统线程”一级页；
+    // - 复用 KernelThreadAuditTab 与 ArkDriverClient 现有线程协议。
+    void initializeSystemThreadTab();
 
     // initializeConnections：
     // - 作用：连接全部控件信号与业务槽函数。
@@ -531,6 +545,10 @@ private:
     // ========================= 顶层布局 =========================
     QVBoxLayout* m_rootLayout = nullptr; // 根布局。
     QTabWidget* m_tabWidget = nullptr;   // 子页签容器。
+    KernelThreadAuditTab* m_systemThreadAuditTab = nullptr; // 系统线程一级审计页。
+    QWidget* m_kswordSelfDriverPage = nullptr; // 从 KernelDock 迁移的自身驱动容器。
+    QPointer<QWidget> m_kswordSelfDriverFallbackOwner; // 析构时接回自身驱动容器的所有者。
+    int m_kswordSelfDriverTabIndex = -1; // 自身驱动页在 DriverDock 中的索引。
 
     // ========================= 页签1：驱动概览 =========================
     QWidget* m_overviewPage = nullptr;            // 概览页容器。

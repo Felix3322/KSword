@@ -227,6 +227,12 @@
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.Snapshot.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="KernelDock\KernelDock.KernelHooks.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1159,6 +1165,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelDockIpcTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelThreadAuditTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepTab.h">
