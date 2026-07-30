@@ -97,6 +97,11 @@ namespace ksword::driver_dock_internal
     // - 返回：当前语言下的界面文本。
     QString driverText(const char* contextKey, const QString& sourceText);
 
+    // swapDriverEvidenceSourceTextMode：
+    // - 后台证据线程启用时让 driverText 只返回调用点源文本，不访问 LanguageManager；
+    // - 返回调用前模式，供 RAII 在离开工作线程采集范围时恢复。
+    bool swapDriverEvidenceSourceTextMode(bool sourceTextOnly);
+
     // DriverDock 表头工厂：集中维护各只读表格的列语义，便于语言切换时重绘。
     QStringList driverServiceTableHeaders();
     QStringList driverModuleTableHeaders();

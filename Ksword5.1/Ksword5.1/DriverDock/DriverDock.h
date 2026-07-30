@@ -106,14 +106,38 @@ private:
         std::uint64_t baseAddress = 0; // 基址（十六进制展示）。
     };
 
+    enum class LoadedModuleSignatureState : std::uint32_t
+    {
+        Pending = 0U,
+        PathUnavailable,
+        InvalidTrust,
+        TrustedEmbedded,
+        TrustedCatalog
+    };
+
+    // LoadedModuleSignatureEvidence：
+    // - 只缓存不依赖当前语言的签名语义、错误码和文件标识；
+    // - UI 线程按当前语言生成表格、筛选文本、提示与详情，语言切换无需重新扫描。
+    struct LoadedModuleSignatureEvidence
+    {
+        LoadedModuleSignatureState state = LoadedModuleSignatureState::Pending;
+        QString verificationPath;
+        QString fileIdentifier;
+        QString catalogPath;
+        std::int32_t embeddedTrustStatus = 0;
+        std::int32_t catalogTrustStatus = 0;
+        std::uint32_t catalogLookupError = 0U;
+        bool catalogAttempted = false;
+        bool catalogTrustStatusAvailable = false;
+    };
+
     // LoadedModuleEvidenceRecord：
     // - 作用：保存单个已加载模块的 R0 证据聚合结果；
     // - 数据只用于 DriverDock 展示，不触发卸载、移除或修复动作。
     struct LoadedModuleEvidenceRecord
     {
         QString moduleName;            // moduleName：被聚合的模块名。
-        QString signatureStatusText;   // signatureStatusText：WinVerifyTrust 信任链结论。
-        QString signatureDetailText;   // signatureDetailText：签名路径与状态码详情。
+        LoadedModuleSignatureEvidence signatureEvidence; // signatureEvidence：语言无关的 embedded/catalog 信任证据。
         QString driverObjectName;      // driverObjectName：成功解析到的 DriverObject 名称。
         QString driverObjectStatusText;// driverObjectStatusText：DriverObject 查询状态展示文本。
         QString driverStartMatchText;  // driverStartMatchText：DriverStart 与模块基址比对文本。
@@ -125,8 +149,6 @@ private:
         std::uint64_t driverObjectAddress = 0; // driverObjectAddress：只读证据查询返回的精确对象地址。
         std::uint64_t communicationRejectDispatchAddress = 0; // communicationRejectDispatchAddress：R0 系统拒绝入口。
         bool queryAttempted = false;   // queryAttempted：是否已经尝试聚合。
-        bool signatureCheckAttempted = false; // signatureCheckAttempted：是否已执行签名信任链校验。
-        bool signatureTrusted = false; // signatureTrusted：仅 WinVerifyTrust 成功时为 true。
         bool driverObjectResolved = false; // driverObjectResolved：DriverObject 是否解析成功。
         bool driverStartKnown = false; // driverStartKnown：DriverStart 是否有有效值。
         bool driverStartMatchesBase = false; // driverStartMatchesBase：DriverStart 是否等于模块基址。
@@ -231,6 +253,11 @@ private:
     // - 处理逻辑：逐行按源索引更新证据列，并刷新当前选中模块详情；
     // - 返回：无。
     void rebuildLoadedModuleEvidenceViews();
+
+    // updateLoadedModuleEvidenceStatusText：
+    // - 按缓存语义重新生成聚合摘要；
+    // - 语言切换时无需重跑 R0/签名后台扫描。
+    void updateLoadedModuleEvidenceStatusText();
 
     // showSelectedModuleEvidenceDetail：
     // - 作用：展示当前选中模块的证据明细；
@@ -414,6 +441,12 @@ private:
     static std::vector<LoadedModuleEvidenceRecord> collectEvidenceForLoadedModules(
         const std::vector<LoadedKernelModuleRecord>& moduleRecords);
 
+    // verifyLoadedModuleSignature：
+    // - 先验证 embedded Authenticode，再用系统 Catalog 进行 catalog-only fallback；
+    // - 仅完整链与 whole-chain revocation 都成功时标记可信，离线/未知均保持无效。
+    static LoadedModuleSignatureEvidence verifyLoadedModuleSignature(
+        const QString& rawImagePath);
+
     // buildPendingModuleEvidenceRecord：
     // - 作用：构造尚未聚合证据时的占位记录；
     // - 处理逻辑：所有证据列填入“待扫描”，详情区说明后台查询方式；
@@ -426,6 +459,16 @@ private:
     // - 处理逻辑：可疑为红色，解析失败/引用为橙色，正常为绿色；
     // - 返回：可直接设置到 QBrush 的 QColor。
     static QColor moduleEvidenceStatusColor(const LoadedModuleEvidenceRecord& evidence);
+
+    static bool moduleSignatureCheckAttempted(
+        const LoadedModuleEvidenceRecord& evidence);
+    static bool moduleSignatureTrusted(
+        const LoadedModuleEvidenceRecord& evidence);
+    static QString moduleSignatureStatusText(
+        const LoadedModuleEvidenceRecord& evidence);
+    static QString moduleSignatureDetailText(
+        const LoadedModuleEvidenceRecord& evidence);
+    static QString localizedModuleEvidenceText(const QString& sourceText);
 
     // rebuildDriverServiceTableByFilter：
     // - 作用：按过滤关键词重建驱动服务表格。

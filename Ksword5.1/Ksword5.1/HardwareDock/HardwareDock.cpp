@@ -28,6 +28,7 @@
 #include <QAction>
 #include <QBrush>
 #include <QClipboard>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QFrame>
 #include <QGuiApplication>
@@ -50,6 +51,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QResizeEvent>
+#include <QRunnable>
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QSizePolicy>
@@ -58,6 +60,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -683,6 +686,60 @@ namespace
     constexpr int kCpuCoreChartCellMarginPx = 2;
     constexpr int kCpuCoreChartInnerSpacingPx = 1;
     constexpr int kCpuCoreChartChromeReservePx = 5;
+
+    struct CpuCoreGridShape
+    {
+        int columnCount = 1;
+        int rowCount = 1;
+    };
+
+    // chooseCpuCoreGridShape 作用：
+    // - 输入：当前逻辑处理器数量；
+    // - 处理：以 2:1 宽屏网格为目标搜索稳定的行列因子，允许少量尾部空位；
+    // - 返回：32 线程稳定得到 8x4，高核数最多使用 8 行，避免把 CPU 页面纵向撑高。
+    CpuCoreGridShape chooseCpuCoreGridShape(const int logicalProcessorCount)
+    {
+        const int coreCount = std::max(1, logicalProcessorCount);
+        const int squareRootRows = std::max(
+            1,
+            static_cast<int>(std::ceil(std::sqrt(static_cast<double>(coreCount)))));
+        const int maximumRowCount = std::min(8, squareRootRows);
+        constexpr double targetWideAspectRatio = 2.0;
+
+        CpuCoreGridShape bestShape{coreCount, 1};
+        double bestScore = std::numeric_limits<double>::max();
+        for (int candidateRows = 1; candidateRows <= maximumRowCount; ++candidateRows)
+        {
+            const int candidateColumns = std::max(
+                candidateRows,
+                static_cast<int>(std::ceil(
+                    static_cast<double>(coreCount) /
+                    static_cast<double>(candidateRows))));
+            const int emptyCellCount =
+                candidateColumns * candidateRows - coreCount;
+            const double aspectRatio =
+                static_cast<double>(candidateColumns) /
+                static_cast<double>(candidateRows);
+            const double aspectPenalty =
+                std::abs(std::log(aspectRatio / targetWideAspectRatio));
+            const double emptyCellPenalty =
+                static_cast<double>(emptyCellCount) /
+                static_cast<double>(coreCount);
+            const double candidateScore =
+                aspectPenalty + emptyCellPenalty * 0.65;
+
+            // 同分时选择更少的行，保证非方数与超高核数机器上的页面高度不抖动。
+            if (candidateScore < bestScore - 0.000001 ||
+                (std::abs(candidateScore - bestScore) <= 0.000001 &&
+                    candidateRows < bestShape.rowCount))
+            {
+                bestScore = candidateScore;
+                bestShape.columnCount = candidateColumns;
+                bestShape.rowCount = candidateRows;
+            }
+        }
+        return bestShape;
+    }
 
     // buildStatusColor 作用：
     // - 深浅色模式下返回统一可读的次级文本颜色。
@@ -4397,11 +4454,9 @@ void HardwareDock::initializeCoreCharts()
 
     const DWORD logicalProcessorCount = std::max<DWORD>(1, ::GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
     const int coreCount = static_cast<int>(logicalProcessorCount);
-    const int columnCount = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(coreCount)))));
-    const int rowCount = std::max(1, static_cast<int>(std::ceil(
-        static_cast<double>(coreCount) / static_cast<double>(columnCount))));
-    m_cpuCoreGridColumnCount = columnCount;
-    m_cpuCoreGridRowCount = rowCount;
+    const CpuCoreGridShape gridShape = chooseCpuCoreGridShape(coreCount);
+    m_cpuCoreGridColumnCount = gridShape.columnCount;
+    m_cpuCoreGridRowCount = gridShape.rowCount;
 
     m_coreChartEntries.clear();
     m_coreChartEntries.reserve(coreCount);
@@ -4481,8 +4536,8 @@ void HardwareDock::initializeCoreCharts()
         chartEntry.chartView = createPlotBackgroundChartView(chart, chartEntry.containerWidget);
         containerLayout->addWidget(chartEntry.chartView, 1);
 
-        const int rowIndex = coreIndex / columnCount;
-        const int columnIndex = coreIndex % columnCount;
+        const int rowIndex = coreIndex / gridShape.columnCount;
+        const int columnIndex = coreIndex % gridShape.columnCount;
         m_coreChartGridLayout->addWidget(chartEntry.containerWidget, rowIndex, columnIndex);
         m_coreChartEntries.push_back(chartEntry);
     }
@@ -8314,14 +8369,17 @@ void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMas
     const std::uint32_t requestedMask =
         m_pendingDeviceAuditRefreshMask.exchange(0U) &
         static_cast<std::uint32_t>(AllDeviceAuditRefresh);
-    QPointer<HardwareDock> safeThis(this);
-    std::thread([safeThis, requestedMask]()
+    QObject* const applicationContext = QCoreApplication::instance();
+    if (applicationContext == nullptr)
     {
-        if (safeThis.isNull())
-        {
-            return;
-        }
+        m_deviceAuditRefreshing.store(false);
+        return;
+    }
 
+    QPointer<HardwareDock> safeThis(this);
+    auto* deviceAuditTask = QRunnable::create(
+        [applicationContext, safeThis, requestedMask]()
+    {
         DeviceAuditViewSnapshot deviceStackSnapshot;
         DeviceAuditViewSnapshot inputStackSnapshot;
         DeviceAuditViewSnapshot usbTopologySnapshot;
@@ -8349,13 +8407,9 @@ void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMas
             pnpAcpiPciText = HardwareDock::buildPnpAcpiPciStaticText();
         }
 
-        if (safeThis.isNull())
-        {
-            return;
-        }
-
-        const bool invokeOk = QMetaObject::invokeMethod(
-            safeThis.data(),
+        // applicationContext 与事件循环同寿命；工作线程不读取页面 QPointer，更不解引用页面成员。
+        QMetaObject::invokeMethod(
+            applicationContext,
             [safeThis,
                 requestedMask,
                 deviceStackSnapshot = std::move(deviceStackSnapshot),
@@ -8376,12 +8430,9 @@ void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMas
                     std::move(pnpAcpiPciText));
             },
             Qt::QueuedConnection);
-
-        if (!invokeOk && !safeThis.isNull())
-        {
-            safeThis->m_deviceAuditRefreshing.store(false);
-        }
-    }).detach();
+    });
+    deviceAuditTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(deviceAuditTask);
 }
 
 void HardwareDock::applyDeviceAuditRefreshResult(

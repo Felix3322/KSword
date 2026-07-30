@@ -7,9 +7,26 @@ using namespace ksword::driver_dock_internal;
 
 namespace ksword::driver_dock_internal
 {
+    namespace
+    {
+        // 证据采集工作线程只生成稳定源文本；该标记按线程隔离，不改变 GUI 线程语言状态。
+        thread_local bool driverEvidenceSourceTextOnly = false;
+    }
+
     QString driverText(const char* const contextKey, const QString& sourceText)
     {
+        if (driverEvidenceSourceTextOnly)
+        {
+            return sourceText;
+        }
         return ks::i18n::contextText(QString::fromLatin1(contextKey), sourceText);
+    }
+
+    bool swapDriverEvidenceSourceTextMode(const bool sourceTextOnly)
+    {
+        const bool previousMode = driverEvidenceSourceTextOnly;
+        driverEvidenceSourceTextOnly = sourceTextOnly;
+        return previousMode;
     }
 
     QStringList driverServiceTableHeaders()
@@ -213,6 +230,9 @@ void DriverDock::changeEvent(QEvent* event)
         applyTranslatedHeaders();
         updateDebugCaptureButtonState();
         refreshDebugOutputLines();
+        // 签名缓存只保存语义；切换语言时同步重建行文本、筛选结果、详情和摘要。
+        rebuildLoadedModuleTable();
+        updateLoadedModuleEvidenceStatusText();
     }
 }
 

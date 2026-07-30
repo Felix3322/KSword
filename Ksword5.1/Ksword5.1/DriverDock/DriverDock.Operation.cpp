@@ -3684,7 +3684,7 @@ void DriverDock::rebuildLoadedModuleTable()
             ? &m_loadedModuleEvidenceCache[sourceIndex]
             : nullptr;
         const QString signatureStatusText = evidencePointer != nullptr
-            ? evidencePointer->signatureStatusText
+            ? moduleSignatureStatusText(*evidencePointer)
             : driverText("driver.evidence.pending", QStringLiteral("待扫描"));
         const bool matchesFilter =
             filterText.isEmpty() ||
