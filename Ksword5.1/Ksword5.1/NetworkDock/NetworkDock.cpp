@@ -1,9 +1,7 @@
 #include "NetworkDock.InternalCommon.h"
 #include "HttpsProxyService.h"
 
-#include <WinInet.h>
-
-#pragma comment(lib, "Wininet.lib")
+#include <QMessageBox>
 
 // ============================================================
 // NetworkDock.cpp
@@ -16,6 +14,13 @@
 NetworkDock::NetworkDock(QWidget* parent)
     : QWidget(parent)
 {
+    // 在任何网络页初始化和新代理应用之前，先恢复上次崩溃/强杀遗留的代理事务。
+    bool recoveredPreviousProxy = false;
+    QString recoveryErrorText;
+    const bool recoveryOk = recoverPendingHttpsSystemProxyTransaction(
+        &recoveredPreviousProxy,
+        &recoveryErrorText);
+
     // 创建后台服务对象：负责抓包、PID 映射、限速逻辑。
     m_trafficService = std::make_unique<ks::network::TrafficMonitorService>();
 
@@ -23,6 +28,34 @@ NetworkDock::NetworkDock(QWidget* parent)
     initializeUi();
     initializeConnections();
     loadMonitorFilterConfigFromDefaultPath();
+
+    if (recoveredPreviousProxy)
+    {
+        appendHttpsProxyLogLine(QStringLiteral(
+            "检测到上次异常退出遗留的 HTTPS 系统代理，已自动恢复原配置。"));
+        kLogEvent recoveryEvent;
+        info << recoveryEvent
+            << "[NetworkDock] 已从持久化事务恢复上次 HTTPS 系统代理配置。"
+            << eol;
+    }
+    else if (!recoveryOk)
+    {
+        appendHttpsProxyLogLine(
+            QStringLiteral("自动恢复上次 HTTPS 系统代理失败：%1")
+                .arg(recoveryErrorText));
+        kLogEvent recoveryEvent;
+        warn << recoveryEvent
+            << "[NetworkDock] 启动时恢复 HTTPS 系统代理失败："
+            << recoveryErrorText
+            << eol;
+        QMessageBox::warning(
+            this,
+            QStringLiteral("HTTPS 系统代理恢复失败"),
+            QStringLiteral(
+                "检测到未完成的 HTTPS 代理恢复事务，但自动恢复失败：\n%1\n\n"
+                "在恢复成功前将禁止再次应用 HTTPS 系统代理，以免覆盖原始配置。")
+                .arg(recoveryErrorText));
+    }
 
     // “进程限速”页当前不暴露给用户，因此不创建该页专用的轮询刷新定时器。
     // 处理逻辑：
@@ -158,12 +191,7 @@ NetworkDock::~NetworkDock()
     if (m_httpsSystemProxySnapshotCaptured)
     {
         QString restoreErrorText;
-        if (restoreHttpsSystemProxySnapshot(&restoreErrorText))
-        {
-            ::InternetSetOptionW(nullptr, INTERNET_OPTION_SETTINGS_CHANGED, nullptr, 0);
-            ::InternetSetOptionW(nullptr, INTERNET_OPTION_REFRESH, nullptr, 0);
-        }
-        else
+        if (!restoreHttpsSystemProxySnapshot(&restoreErrorText))
         {
             kLogEvent restoreEvent;
             warn << restoreEvent << "[NetworkDock] HTTPS 系统代理恢复失败：" << restoreErrorText << eol;

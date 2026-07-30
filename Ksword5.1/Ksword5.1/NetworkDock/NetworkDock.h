@@ -1062,6 +1062,41 @@ private:
     // - 返回：true=已保存或已有快照；false=读取失败。
     bool captureHttpsSystemProxySnapshot(QString* errorTextOut);
 
+    // persistHttpsSystemProxyRecoveryTransaction：
+    // - 作用：在改写系统代理前持久化五项原值，最后发布并落盘 Pending 标记；
+    // - 返回：true=事务已持久化；false=未达到可安全改写代理的状态。
+    bool persistHttpsSystemProxyRecoveryTransaction(
+        const std::optional<std::uint32_t>& proxyEnable,
+        const std::optional<std::uint32_t>& autoDetect,
+        const std::optional<QString>& proxyServer,
+        const std::optional<QString>& proxyOverride,
+        const std::optional<QString>& autoConfigUrl,
+        QString* errorTextOut) const;
+
+    // loadHttpsSystemProxyRecoveryTransaction：
+    // - 作用：启动时读取并严格校验 Pending 恢复事务；
+    // - 返回：true=无事务或快照有效；false=读取/校验失败。
+    bool loadHttpsSystemProxyRecoveryTransaction(
+        bool* pendingOut,
+        std::optional<std::uint32_t>* proxyEnableOut,
+        std::optional<std::uint32_t>* autoDetectOut,
+        std::optional<QString>* proxyServerOut,
+        std::optional<QString>* proxyOverrideOut,
+        std::optional<QString>* autoConfigUrlOut,
+        QString* errorTextOut) const;
+
+    // clearHttpsSystemProxyRecoveryTransaction：
+    // - 作用：仅在代理原值写回且 WinINet 刷新成功后删除持久化事务；
+    // - 返回：true=删除并落盘成功或记录不存在；false=仍须保留事务。
+    bool clearHttpsSystemProxyRecoveryTransaction(QString* errorTextOut) const;
+
+    // recoverPendingHttpsSystemProxyTransaction：
+    // - 作用：启动时加载上次异常退出遗留的持久化事务并自动恢复系统代理；
+    // - 返回：true=没有待恢复事务或恢复成功；false=事务损坏或恢复失败。
+    bool recoverPendingHttpsSystemProxyTransaction(
+        bool* recoveredOut,
+        QString* errorTextOut);
+
     // restoreHttpsSystemProxySnapshot：
     // - 作用：恢复本页应用 HTTPS 代理前保存的当前用户代理项。
     // - 返回：true=恢复成功；false=恢复失败。
@@ -1432,6 +1467,7 @@ private:
     bool m_httpsProxyRunning = false;          // HTTPS代理运行状态缓存。
     bool m_httpsProxyServiceInitialized = false; // HTTPS代理服务是否已延后初始化。
     bool m_httpsSystemProxySnapshotCaptured = false; // 是否已保存本页改写前的代理配置。
+    bool m_httpsProxyRecoveryRequired = false; // 是否存在尚未成功恢复/清除的持久化代理事务。
     std::optional<std::uint32_t> m_httpsPreviousProxyEnable; // 原 ProxyEnable，缺省表示原值不存在。
     std::optional<std::uint32_t> m_httpsPreviousAutoDetect;  // 原 AutoDetect，缺省表示原值不存在。
     std::optional<QString> m_httpsPreviousProxyServer;       // 原 ProxyServer，缺省表示原值不存在。

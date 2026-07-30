@@ -227,11 +227,34 @@ namespace
     };
 
     // refreshInternetSettings 作用：
-    // - 通知 WinINet 刷新代理配置。
-    void refreshInternetSettings()
+    // - 通知 WinINet 刷新代理配置；
+    // - 两个通知都成功才返回 true，恢复事务据此决定能否安全清除。
+    bool refreshInternetSettings(QString* errorTextOut)
     {
-        ::InternetSetOptionW(nullptr, INTERNET_OPTION_SETTINGS_CHANGED, nullptr, 0);
-        ::InternetSetOptionW(nullptr, INTERNET_OPTION_REFRESH, nullptr, 0);
+        const BOOL changedOk = ::InternetSetOptionW(
+            nullptr,
+            INTERNET_OPTION_SETTINGS_CHANGED,
+            nullptr,
+            0);
+        const DWORD changedError = changedOk ? ERROR_SUCCESS : ::GetLastError();
+        const BOOL refreshOk = ::InternetSetOptionW(
+            nullptr,
+            INTERNET_OPTION_REFRESH,
+            nullptr,
+            0);
+        const DWORD refreshError = refreshOk ? ERROR_SUCCESS : ::GetLastError();
+        if (changedOk && refreshOk)
+        {
+            return true;
+        }
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = QStringLiteral(
+                "刷新 WinINet 代理配置失败：SETTINGS_CHANGED=%1，REFRESH=%2")
+                .arg(changedError)
+                .arg(refreshError);
+        }
+        return false;
     }
 
     // writeInternetSettingString 作用：
@@ -741,6 +764,16 @@ void NetworkDock::ensureHttpsRootCertificateTrusted()
 
 void NetworkDock::applyHttpsSystemProxy()
 {
+    if (m_httpsProxyRecoveryRequired)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("HTTPS解析"),
+            QStringLiteral(
+                "存在尚未成功恢复的 HTTPS 系统代理事务。请先重新启动 KSword 完成自动恢复，"
+                "当前不会覆盖原始代理快照。"));
+        return;
+    }
     if (m_httpsProxyService == nullptr || !m_httpsProxyService->isRunning())
     {
         QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("请先启动 HTTPS 代理，再应用系统代理。"));
@@ -788,14 +821,34 @@ void NetworkDock::applyHttpsSystemProxy()
         || !writeInternetSettingDword(L"AutoDetect", 0, &errorText)
         || !writeInternetSettingString(L"AutoConfigURL", QString(), &errorText))
     {
+        const QString applyErrorText = errorText;
         QString restoreErrorText;
-        restoreHttpsSystemProxySnapshot(&restoreErrorText);
+        const bool restoreOk = restoreHttpsSystemProxySnapshot(&restoreErrorText);
+        errorText = restoreOk
+            ? applyErrorText
+            : QStringLiteral("%1\n回滚原系统代理也失败：%2")
+                .arg(applyErrorText, restoreErrorText);
         appendHttpsProxyLogLine(QStringLiteral("应用系统代理失败：%1").arg(errorText));
         QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("应用系统代理失败：\n%1").arg(errorText));
         return;
     }
 
-    refreshInternetSettings();
+    if (!refreshInternetSettings(&errorText))
+    {
+        const QString applyErrorText = errorText;
+        QString restoreErrorText;
+        const bool restoreOk = restoreHttpsSystemProxySnapshot(&restoreErrorText);
+        errorText = restoreOk
+            ? applyErrorText
+            : QStringLiteral("%1\n回滚原系统代理也失败：%2")
+                .arg(applyErrorText, restoreErrorText);
+        appendHttpsProxyLogLine(QStringLiteral("应用系统代理失败：%1").arg(errorText));
+        QMessageBox::warning(
+            this,
+            QStringLiteral("HTTPS解析"),
+            QStringLiteral("应用系统代理失败：\n%1").arg(errorText));
+        return;
+    }
     appendHttpsProxyLogLine(QStringLiteral("系统代理已切换到 %1。").arg(proxyServerText));
 }
 
@@ -815,12 +868,20 @@ void NetworkDock::clearHttpsSystemProxy()
         return;
     }
 
-    refreshInternetSettings();
     appendHttpsProxyLogLine(QStringLiteral("系统代理已恢复为 HTTPS 解析页应用前的配置。"));
 }
 
 bool NetworkDock::captureHttpsSystemProxySnapshot(QString* errorTextOut)
 {
+    if (m_httpsProxyRecoveryRequired)
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = QStringLiteral(
+                "存在尚未完成的 HTTPS 代理恢复事务，不能覆盖原始代理快照。");
+        }
+        return false;
+    }
     if (m_httpsSystemProxySnapshotCaptured)
     {
         return true;
@@ -838,6 +899,22 @@ bool NetworkDock::captureHttpsSystemProxySnapshot(QString* errorTextOut)
         || !readInternetSettingString(L"ProxyOverride", &previousProxyOverride, &errorText)
         || !readInternetSettingString(L"AutoConfigURL", &previousAutoConfigUrl, &errorText))
     {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = errorText;
+        }
+        return false;
+    }
+
+    if (!persistHttpsSystemProxyRecoveryTransaction(
+            previousProxyEnable,
+            previousAutoDetect,
+            previousProxyServer,
+            previousProxyOverride,
+            previousAutoConfigUrl,
+            &errorText))
+    {
+        m_httpsProxyRecoveryRequired = true;
         if (errorTextOut != nullptr)
         {
             *errorTextOut = errorText;
@@ -888,12 +965,30 @@ bool NetworkDock::restoreHttpsSystemProxySnapshot(QString* errorTextOut)
         return false;
     }
 
+    if (!refreshInternetSettings(&errorText))
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = errorText;
+        }
+        return false;
+    }
+    if (!clearHttpsSystemProxyRecoveryTransaction(&errorText))
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = errorText;
+        }
+        return false;
+    }
+
     m_httpsPreviousProxyEnable.reset();
     m_httpsPreviousAutoDetect.reset();
     m_httpsPreviousProxyServer.reset();
     m_httpsPreviousProxyOverride.reset();
     m_httpsPreviousAutoConfigUrl.reset();
     m_httpsSystemProxySnapshotCaptured = false;
+    m_httpsProxyRecoveryRequired = false;
     return true;
 }
 

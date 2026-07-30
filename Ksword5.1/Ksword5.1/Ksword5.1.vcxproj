@@ -268,6 +268,7 @@
     <ClCompile Include="NetworkDock\NetworkDock.MultiThreadDownload.cpp" />
     <ClCompile Include="NetworkDock\NetworkDock.MultiThreadDownload.Clipboard.cpp" />
     <ClCompile Include="NetworkDock\NetworkDock.HttpsAnalyze.cpp" />
+    <ClCompile Include="NetworkDock\NetworkDock.HttpsProxyRecovery.cpp" />
     <ClCompile Include="NetworkDock\NetworkDock.NetworkDiagnostics.cpp" />
     <ClCompile Include="NetworkDock\NetworkDock.Nids.cpp" />
     <ClCompile Include="NetworkDock\NetworkDock.DetailAndUtils.cpp" />
