@@ -76,7 +76,7 @@ namespace startup_dock_detail
         {
             fallbackText = startupText(
                 "startup.risk_reason.unspecified",
-                QStringLiteral("后端未提供保护或风险原因"));
+                QStringLiteral("后端未提供风险说明"));
         }
 
         if (backendEntry.riskReasonCode.empty())

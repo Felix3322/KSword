@@ -175,6 +175,18 @@ namespace
                 : startupText(
                     "startup.dialog.toggle.impact.task.disable",
                     QStringLiteral("禁用计划任务，但保留任务定义、触发器与操作配置，之后可以重新启用。"));
+        case ks::startup::StartupActionKind::ScmStartType:
+            return enabled
+                ? startupText(
+                    "startup.dialog.toggle.impact.scm.enable",
+                    QStringLiteral("把服务设置为自动启动，或把驱动设置为系统启动；不会立即启动当前服务或驱动。"))
+                : startupText(
+                    "startup.dialog.toggle.impact.scm.disable",
+                    QStringLiteral("把服务控制管理器启动类型设为“已禁用”；当前正在运行的实例不会被停止。"));
+        case ks::startup::StartupActionKind::WmiEntryRemoval:
+            return startupText(
+                "startup.dialog.toggle.impact.wmi.disable",
+                QStringLiteral("永久删除精确匹配的 WMI 永久事件对象；此操作不会创建可恢复备份。"));
         case ks::startup::StartupActionKind::None:
         default:
             return enabled
@@ -184,6 +196,46 @@ namespace
                 : startupText(
                     "startup.dialog.toggle.impact.generic.disable",
                     QStringLiteral("后端将保留恢复信息并以可逆方式禁用该启动项。"));
+        }
+    }
+
+    QString startupToggleRecoveryText(const ks::startup::StartupActionKind actionKind)
+    {
+        switch (actionKind)
+        {
+        case ks::startup::StartupActionKind::RegistryRunValue:
+        case ks::startup::StartupActionKind::StartupFolderFile:
+        case ks::startup::StartupActionKind::ScheduledTask:
+            return startupText(
+                "startup.dialog.toggle.recovery.reversible",
+                QStringLiteral("此操作保留恢复信息或原始对象，可通过右键菜单尝试改回原状态。"));
+        case ks::startup::StartupActionKind::ScmStartType:
+            return startupText(
+                "startup.dialog.toggle.recovery.scm",
+                QStringLiteral("重新启用会使用默认的自动/系统启动类型，不保证恢复修改前的精确启动类型。"));
+        case ks::startup::StartupActionKind::WmiEntryRemoval:
+            return startupText(
+                "startup.dialog.toggle.recovery.irreversible",
+                QStringLiteral("此操作不可由 KSword 恢复；继续前请自行确认已有可用备份。"));
+        case ks::startup::StartupActionKind::None:
+        default:
+            return startupText(
+                "startup.dialog.toggle.recovery.generic",
+                QStringLiteral("该修改可能不可恢复，请在继续前确认影响和备份。"));
+        }
+    }
+
+    QString startupRiskLevelText(const ks::startup::StartupRiskLevel riskLevel)
+    {
+        switch (riskLevel)
+        {
+        case ks::startup::StartupRiskLevel::Normal:
+            return startupText("startup.risk_level.normal", QStringLiteral("普通"));
+        case ks::startup::StartupRiskLevel::Critical:
+            return startupText("startup.risk_level.critical", QStringLiteral("严重"));
+        case ks::startup::StartupRiskLevel::Elevated:
+        default:
+            return startupText("startup.risk_level.elevated", QStringLiteral("较高"));
         }
     }
 
@@ -199,8 +251,6 @@ namespace
             return startupText("startup.dialog.toggle.status.invalid_entry", QStringLiteral("条目无效"));
         case ks::startup::StartupActionStatus::NotSupported:
             return startupText("startup.dialog.toggle.status.not_supported", QStringLiteral("来源类型不受支持"));
-        case ks::startup::StartupActionStatus::ProtectedEntry:
-            return startupText("startup.dialog.toggle.status.protected", QStringLiteral("条目受保护"));
         case ks::startup::StartupActionStatus::Conflict:
             return startupText("startup.dialog.toggle.status.conflict", QStringLiteral("目标位置存在冲突"));
         case ks::startup::StartupActionStatus::NotFound:
@@ -482,16 +532,16 @@ void StartupDock::showEntryContextMenu(
     QAction* toggleAction = contextMenu.addAction(
         createBlueIcon(targetEnabled ? ":/Icon/process_start.svg" : ":/Icon/process_pause.svg"),
         startupToggleActionText(targetEnabled));
-    QAction* protectedReasonAction = nullptr;
-    if (entry.backendEntry.isProtected)
+    QAction* riskReasonAction = nullptr;
+    if (!startupRiskReasonText(entry.backendEntry).trimmed().isEmpty())
     {
-        protectedReasonAction = contextMenu.addAction(
+        riskReasonAction = contextMenu.addAction(
             createBlueIcon(":/Icon/process_details.svg"),
             startupText(
-                "startup.menu.protected_reason",
-                QStringLiteral("受保护：%1"))
+                "startup.menu.risk_warning",
+                QStringLiteral("风险提示：%1"))
                 .arg(startupRiskReasonText(entry.backendEntry)));
-        protectedReasonAction->setEnabled(false);
+        riskReasonAction->setEnabled(false);
     }
     QAction* deleteAction = contextMenu.addAction(
         createBlueIcon(":/Icon/log_clear.svg"),
@@ -511,11 +561,9 @@ void StartupDock::showEntryContextMenu(
         : entry.backendEntry.canDisable;
     toggleAction->setEnabled(
         toggleSupported
-        && !entry.backendEntry.isProtected
         && !m_startupActionInProgress.load());
     deleteAction->setEnabled(
         entry.canDelete
-        && !entry.backendEntry.isProtected
         && !m_startupActionInProgress.load());
 
     QAction* selectedAction = contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPos));
@@ -649,16 +697,17 @@ void StartupDock::showRegistryContextMenu(const QPoint& localPos)
     QAction* toggleAction = contextMenu.addAction(
         createBlueIcon(targetEnabled ? ":/Icon/process_start.svg" : ":/Icon/process_pause.svg"),
         startupToggleActionText(targetEnabled));
-    QAction* protectedReasonAction = nullptr;
-    if (hasRegistryEntry && registryEntry.backendEntry.isProtected)
+    QAction* riskReasonAction = nullptr;
+    if (hasRegistryEntry
+        && !startupRiskReasonText(registryEntry.backendEntry).trimmed().isEmpty())
     {
-        protectedReasonAction = contextMenu.addAction(
+        riskReasonAction = contextMenu.addAction(
             createBlueIcon(":/Icon/process_details.svg"),
             startupText(
-                "startup.menu.protected_reason",
-                QStringLiteral("受保护：%1"))
+                "startup.menu.risk_warning",
+                QStringLiteral("风险提示：%1"))
                 .arg(startupRiskReasonText(registryEntry.backendEntry)));
-        protectedReasonAction->setEnabled(false);
+        riskReasonAction->setEnabled(false);
     }
     QAction* deleteAction = contextMenu.addAction(
         createBlueIcon(":/Icon/log_clear.svg"),
@@ -692,11 +741,9 @@ void StartupDock::showRegistryContextMenu(const QPoint& localPos)
             : entry.backendEntry.canDisable;
         toggleAction->setEnabled(
             toggleSupported
-            && !entry.backendEntry.isProtected
             && !m_startupActionInProgress.load());
         deleteAction->setEnabled(
             entry.canDelete
-            && !entry.backendEntry.isProtected
             && !m_startupActionInProgress.load());
     }
     else
@@ -977,19 +1024,6 @@ void StartupDock::setStartupEntryEnabled(StartupEntry entry, const bool enabled)
         QStringLiteral("%1启动项"))
         .arg(actionText);
 
-    if (entry.backendEntry.isProtected)
-    {
-        QMessageBox::information(
-            this,
-            operationTitle,
-            startupText(
-                "startup.dialog.toggle.protected",
-                QStringLiteral("该条目受保护，不能更改启用状态。\n\n条目：%1\n保护原因：%2"))
-                .arg(entry.itemNameText)
-                .arg(startupRiskReasonText(entry.backendEntry)));
-        return;
-    }
-
     const bool actionSupported = enabled
         ? entry.backendEntry.canEnable
         : entry.backendEntry.canDisable;
@@ -1016,12 +1050,14 @@ void StartupDock::setStartupEntryEnabled(StartupEntry entry, const bool enabled)
             .arg(operationTitle),
         startupText(
             "startup.dialog.toggle.confirm.message",
-            QStringLiteral("%1\n\n条目：%2\n来源：%3\n目标状态：%4\n风险提示：%5\n\n此操作可恢复；完成后可以通过右键菜单改回原状态。是否继续？"))
+            QStringLiteral("%1\n\n条目：%2\n来源：%3\n目标状态：%4\n风险等级：%5\n风险提示：%6\n\n%7\n是否继续？"))
             .arg(startupToggleImpactText(entry.backendEntry.actionKind, enabled))
             .arg(entry.itemNameText)
             .arg(locationText)
             .arg(buildStatusText(enabled))
-            .arg(startupRiskReasonText(entry.backendEntry)),
+            .arg(startupRiskLevelText(entry.backendEntry.riskLevel))
+            .arg(startupRiskReasonText(entry.backendEntry))
+            .arg(startupToggleRecoveryText(entry.backendEntry.actionKind)),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (confirmButton != QMessageBox::Yes)
@@ -1122,7 +1158,7 @@ void StartupDock::setStartupEntryEnabled(StartupEntry entry, const bool enabled)
                 info << actionEvent
                     << startupText(
                         "startup.log.toggle.succeeded",
-                        QStringLiteral("[StartupDock] 可逆启停成功, action=%1, changed=%2, targetEnabled=%3, type=%4, name=%5, location=%6"))
+                        QStringLiteral("[StartupDock] 启动项修改成功, action=%1, changed=%2, targetEnabled=%3, type=%4, name=%5, location=%6"))
                            .arg(actionText)
                            .arg(actionResult.changed ? QStringLiteral("true") : QStringLiteral("false"))
                            .arg(enabled ? QStringLiteral("true") : QStringLiteral("false"))
@@ -1142,20 +1178,6 @@ void StartupDock::setStartupEntryEnabled(StartupEntry entry, const bool enabled)
 
 void StartupDock::deleteStartupEntry(StartupEntry entry)
 {
-    if (entry.backendEntry.isProtected)
-    {
-        QMessageBox::warning(
-            this,
-            startupText(
-                "startup.dialog.delete.protected.title",
-                QStringLiteral("受保护的启动项")),
-            startupText(
-                "startup.dialog.delete.protected.message",
-                QStringLiteral("该条目受保护，永久删除已被阻止。\n\n条目：%1\n保护原因：%2"))
-                .arg(entry.itemNameText)
-                .arg(startupRiskReasonText(entry.backendEntry)));
-        return;
-    }
     if (!entry.canDelete)
     {
         QMessageBox::information(
@@ -1172,9 +1194,11 @@ void StartupDock::deleteStartupEntry(StartupEntry entry)
             QStringLiteral("永久删除启动项")),
         startupText(
             "startup.dialog.delete.confirm.irreversible.message",
-            QStringLiteral("即将永久删除以下启动项及其来源记录：\n\n%1\n来源：%2\n\n此操作不可通过 KSword 恢复。若只是暂时停止启动，请取消并使用“禁用”。\n\n确定仍要永久删除吗？"))
+            QStringLiteral("即将永久删除以下启动项及其来源记录：\n\n%1\n来源：%2\n风险等级：%3\n风险提示：%4\n\n此操作不可通过 KSword 恢复。若只是暂时停止启动，请取消并使用“禁用”。\n\n确定仍要永久删除吗？"))
             .arg(entry.itemNameText)
-            .arg(entry.locationText),
+            .arg(entry.locationText)
+            .arg(startupRiskLevelText(entry.backendEntry.riskLevel))
+            .arg(startupRiskReasonText(entry.backendEntry)),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (confirmButton != QMessageBox::Yes)

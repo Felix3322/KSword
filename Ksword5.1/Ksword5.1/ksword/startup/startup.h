@@ -27,16 +27,18 @@ namespace ks::startup
         Wmi
     };
 
-    // StartupActionKind identifies a reversible backend operation without parsing display text.
+    // StartupActionKind identifies a backend operation without parsing display text.
     enum class StartupActionKind : int
     {
         None = 0,
         RegistryRunValue,
         StartupFolderFile,
-        ScheduledTask
+        ScheduledTask,
+        ScmStartType,
+        WmiEntryRemoval
     };
 
-    // StartupRegistryRoot is deliberately limited to roots accepted by reversible Run actions.
+    // StartupRegistryRoot identifies the registry hives accepted by warning-gated value actions.
     enum class StartupRegistryRoot : int
     {
         None = 0,
@@ -72,6 +74,13 @@ namespace ks::startup
         std::string taskPathText;
         std::string taskNameText;
         std::string taskDefinitionSha256Text;
+        std::string serviceNameText;
+        bool serviceIsDriver = false;
+        std::uint32_t serviceStartType = 0;
+        std::string wmiClassNameText;
+        std::string wmiNameText;
+        std::string wmiFilterText;
+        std::string wmiConsumerText;
         std::string backupIdText;
     };
 
@@ -92,18 +101,17 @@ namespace ks::startup
         std::string userText;              // User/context text.
         std::string detailText;            // Additional diagnostics or source details.
         std::string sourceTypeText;        // Source subtype such as Run, ScheduledTask, WMI-EventFilter.
-        StartupActionKind actionKind = StartupActionKind::None; // Reversible backend operation.
+        StartupActionKind actionKind = StartupActionKind::None; // Structured backend operation.
         StartupActionLocator actionLocator; // Structured coordinates consumed by action APIs.
         bool enabled = true;               // Whether the source is enabled.
         bool canEnable = false;             // Whether SetStartupEntryEnabled(entry, true) is supported.
         bool canDisable = false;            // Whether SetStartupEntryEnabled(entry, false) is supported.
-        bool isProtected = true;            // Protected entries reject enable/disable/delete operations.
         StartupRiskLevel riskLevel = StartupRiskLevel::Elevated; // Structured warning severity.
         // Stable i18n codes: registry_user, registry_machine, startup_folder,
         // scheduled_task, backup_record, service, driver, critical_registry,
         // policy, winsock, wmi, unsupported_source.
         std::string riskReasonCode;
-        std::string riskReasonText;         // Stable backend reason for protection or elevated risk.
+        std::string riskReasonText;         // Stable backend warning or unavailability reason.
         bool canOpenFileLocation = false;  // Whether imagePathText can be opened in Explorer.
         bool canOpenRegistryLocation = false; // Whether locationText points to a registry location.
         bool canDelete = false;            // Whether the caller can delete this source entry.
@@ -113,14 +121,13 @@ namespace ks::startup
         std::uint32_t lastErrorCode = 0;   // Optional Win32 error for synthetic/error records.
     };
 
-    // StartupActionStatus is a caller-facing classification for reversible startup actions.
+    // StartupActionStatus is a caller-facing classification for startup actions.
     enum class StartupActionStatus : int
     {
         Success = 0,
         NoChange,
         InvalidEntry,
         NotSupported,
-        ProtectedEntry,
         Conflict,
         NotFound,
         AccessDenied,
@@ -161,10 +168,10 @@ namespace ks::startup
     // EnumerateLogonEntries returns Run/RunOnce/RunOnceEx and Startup Folder records.
     std::vector<StartupEntry> EnumerateLogonEntries();
 
-    // EnumerateServiceEntries returns auto-start Win32 service records.
+    // EnumerateServiceEntries returns Win32 service records with mutable SCM start types.
     std::vector<StartupEntry> EnumerateServiceEntries();
 
-    // EnumerateDriverEntries returns boot/system/auto-start driver service records.
+    // EnumerateDriverEntries returns driver service records with mutable SCM start types.
     std::vector<StartupEntry> EnumerateDriverEntries();
 
     // EnumerateTaskEntries returns Scheduled Task records collected through PowerShell.
@@ -182,6 +189,6 @@ namespace ks::startup
     // EnumerateAllStartupEntries runs every backend enumerator in the standard StartupDock order.
     std::vector<StartupEntry> EnumerateAllStartupEntries();
 
-    // SetStartupEntryEnabled performs a reversible operation using actionKind/actionLocator only.
+    // SetStartupEntryEnabled performs a warning-gated operation using actionKind/actionLocator only.
     ActionResult SetStartupEntryEnabled(const StartupEntry& entry, bool enabled);
 }

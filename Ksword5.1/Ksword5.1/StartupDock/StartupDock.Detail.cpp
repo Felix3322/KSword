@@ -68,9 +68,14 @@ namespace
             .arg(boolText(entry.backendEntry.canEnable));
         detailText += startupText("startup.detail.can_disable", QStringLiteral("可禁用：%1\n"))
             .arg(boolText(entry.backendEntry.canDisable));
-        detailText += startupText("startup.detail.protected", QStringLiteral("受保护：%1\n"))
-            .arg(boolText(entry.backendEntry.isProtected));
-        detailText += startupText("startup.detail.protection_reason", QStringLiteral("保护/风险原因：%1\n"))
+        const bool actionAvailable = entry.backendEntry.canEnable
+            || entry.backendEntry.canDisable
+            || entry.canDelete;
+        detailText += startupText("startup.detail.modification_policy", QStringLiteral("修改策略：%1\n"))
+            .arg(actionAvailable
+                ? startupText("startup.value.warning_gated", QStringLiteral("警告后允许"))
+                : startupText("startup.value.action_unavailable", QStringLiteral("没有可执行的来源定位器")));
+        detailText += startupText("startup.detail.risk_warning", QStringLiteral("风险提示：%1\n"))
             .arg(startupRiskReasonText(entry.backendEntry));
         detailText += startupText("startup.detail.risk_level", QStringLiteral("风险等级：%1\n"))
             .arg(startupRiskLevelText(entry.backendEntry.riskLevel));
