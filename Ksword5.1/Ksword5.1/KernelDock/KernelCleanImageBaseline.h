@@ -11,6 +11,7 @@ namespace ks::kernel
     {
         bool available = false;
         bool identityMatched = false;
+        bool diskTrustVerified = false;
         bool differs = false;
         std::uint64_t moduleBase = 0;
         std::uint64_t preferredImageBase = 0;
@@ -29,7 +30,8 @@ namespace ks::kernel
         static CleanImageBaselineResult compareAddress(
             std::uint64_t kernelAddress,
             std::uint32_t byteCount,
-            const std::vector<std::uint8_t>& observedBytes = {});
+            const std::vector<std::uint8_t>& observedBytes = {},
+            bool requireTrustedDiskImage = false);
 
         static bool readKernelBytes(
             std::uint64_t kernelAddress,

@@ -1789,7 +1789,6 @@ namespace ksword::ark
                 entry.rowKind <= KSWORD_ARK_PLATFORM_AUDIT_ROW_DIAGNOSTIC;
             const bool hookValid =
                 entry.hookStatus == KSWORD_ARK_PLATFORM_HOOK_UNKNOWN ||
-                entry.hookStatus == KSWORD_ARK_PLATFORM_HOOK_CLEAN ||
                 entry.hookStatus == KSWORD_ARK_PLATFORM_HOOK_SUSPICIOUS ||
                 entry.hookStatus == KSWORD_ARK_PLATFORM_HOOK_UNSUPPORTED;
             const bool confidenceValid =
@@ -1819,20 +1818,20 @@ namespace ksword::ark
                 validSignature(entry.signatureId) &&
                 entry.slotKind <= KSWORD_ARK_PLATFORM_SLOT_DUMMY &&
                 entry.ownerPolicy <= KSWORD_ARK_PLATFORM_OWNER_KSWORD &&
-                entry.originalAddressSource <=
-                    KSWORD_ARK_PLATFORM_ORIGINAL_SOURCE_DISK_IMAGE &&
-                entry.detailCode <= KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MISMATCH &&
+                entry.originalAddressSource ==
+                    KSWORD_ARK_PLATFORM_ORIGINAL_SOURCE_NONE &&
+                entry.detailCode <=
+                    KSWORD_ARK_PLATFORM_DETAIL_SUBCOMPONENT_VALIDATED &&
                 entry.prologueSignatureId <= 8UL &&
                 stringsValid &&
+                (entry.fieldFlags &
+                 (KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS |
+                  KSWORD_ARK_PLATFORM_FIELD_BASELINE_VALIDATED)) == 0UL &&
+                entry.originalAddress == 0ULL &&
                 (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_DETAIL_ARGS) != 0UL) ==
                  (entry.detailCode != KSWORD_ARK_PLATFORM_DETAIL_NONE)) &&
                 (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS) != 0UL) ==
                  (entry.liveAddress != 0ULL)) &&
-                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS) != 0UL) ==
-                 (entry.originalAddress != 0ULL)) &&
-                (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS) != 0UL) ==
-                 (entry.originalAddressSource !=
-                  KSWORD_ARK_PLATFORM_ORIGINAL_SOURCE_NONE)) &&
                 (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_TABLE_ADDRESS) != 0UL) ==
                  (entry.tableAddress != 0ULL)) &&
                 (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_MODULE) != 0UL) ==
@@ -1840,15 +1839,7 @@ namespace ksword::ark
                 (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_MODULE) != 0UL) ==
                  (entry.moduleSize != 0UL)) &&
                 (((entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_PROLOGUE_FORMAT) != 0UL) ==
-                 (entry.prologueSignatureId != 0UL)) &&
-                (((entry.fieldFlags &
-                   KSWORD_ARK_PLATFORM_FIELD_BASELINE_VALIDATED) == 0UL) ||
-                 ((entry.fieldFlags &
-                   KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS) != 0UL)) &&
-                (entry.hookStatus != KSWORD_ARK_PLATFORM_HOOK_CLEAN ||
-                 (((entry.fieldFlags &
-                    KSWORD_ARK_PLATFORM_FIELD_BASELINE_VALIDATED) != 0UL) &&
-                  entry.liveAddress == entry.originalAddress));
+                 (entry.prologueSignatureId != 0UL));
             if (!entryValid)
             {
                 failProtocol("entry[" + std::to_string(index) + "] rejected");

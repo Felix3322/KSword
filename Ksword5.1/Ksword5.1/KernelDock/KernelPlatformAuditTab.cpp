@@ -139,8 +139,11 @@ namespace
         const ks::kernel::CleanImageBaselineResult baseline =
             ks::kernel::KernelCleanImageBaseline::compareAddress(
                 tableAddress,
-                tableBytes);
+                tableBytes,
+                {},
+                true);
         if (!baseline.available ||
+            !baseline.diskTrustVerified ||
             baseline.cleanBytes.size() != tableBytes)
         {
             return;
@@ -185,23 +188,22 @@ namespace
                 KSWORD_ARK_PLATFORM_ORIGINAL_SOURCE_DISK_IMAGE;
             entry.fieldFlags |=
                 KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS |
-                KSWORD_ARK_PLATFORM_FIELD_BASELINE_VALIDATED |
-                KSWORD_ARK_PLATFORM_FIELD_DETAIL_ARGS;
-            entry.detailArgs[0] = entry.liveAddress;
-            entry.detailArgs[1] = entry.originalAddress;
-            entry.detailArgs[2] = baseline.relativeVirtualAddress;
-            entry.detailArgs[3] = entry.entryIndex;
-            if (entry.liveAddress == entry.originalAddress)
+                KSWORD_ARK_PLATFORM_FIELD_BASELINE_VALIDATED;
+            const bool liveSlotObserved =
+                (entry.fieldFlags &
+                 KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS) != 0UL ||
+                entry.detailCode ==
+                    KSWORD_ARK_PLATFORM_DETAIL_NULL_SLOT;
+            if (liveSlotObserved &&
+                entry.liveAddress != entry.originalAddress &&
+                entry.hookStatus != KSWORD_ARK_PLATFORM_HOOK_SUSPICIOUS)
             {
-                entry.hookStatus = KSWORD_ARK_PLATFORM_HOOK_CLEAN;
-                entry.confidence = KSWORD_ARK_PLATFORM_CONFIDENCE_HIGH;
-                entry.status = KSWORD_ARK_PLATFORM_AUDIT_STATUS_OK;
-                entry.lastStatus = 0L;
-                entry.detailCode =
-                    KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MATCH;
-            }
-            else
-            {
+                entry.fieldFlags |=
+                    KSWORD_ARK_PLATFORM_FIELD_DETAIL_ARGS;
+                entry.detailArgs[0] = entry.liveAddress;
+                entry.detailArgs[1] = entry.originalAddress;
+                entry.detailArgs[2] = baseline.relativeVirtualAddress;
+                entry.detailArgs[3] = entry.entryIndex;
                 entry.hookStatus =
                     KSWORD_ARK_PLATFORM_HOOK_SUSPICIOUS;
                 entry.confidence = KSWORD_ARK_PLATFORM_CONFIDENCE_HIGH;
@@ -212,6 +214,9 @@ namespace
                 entry.detailCode =
                     KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MISMATCH;
             }
+            // 槽位值相等只能证明绑定表指针未被替换，不能证明函数入口未被
+            // inline hook；已有 Suspicious 也携带更具体的 owner/执行节/跳转
+            // 证据。两种情况都保留 R0 结论，只补充独立磁盘基线字段。
         }
     }
 }
@@ -273,7 +278,7 @@ void KernelPlatformAuditTab::initializeUi()
                   QStringLiteral("只读 HAL 审计：公开表逐字段按 WDK 结构解析；私有表按受支持 Build/Version/ByteSize 描述解析，ACPI 与子组件仅接受可信锚点小窗口内唯一且完整验证的 RIP-relative 候选。没有独立基线时只报告 owner/执行节一致性，不把运行时地址判为 Clean。"))
             : kernelText(
                   "kernel.platform.wdf.explanation",
-                  QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像与加载映像身份匹配并成功重定位对应槽位时有效；只有逐项相等才标记 Clean，否则保持 Unknown 或标记 Suspicious。")),
+                  QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")),
         this);
     m_explanationLabel->setWordWrap(true);
     m_explanationLabel->setStyleSheet(
@@ -377,7 +382,7 @@ void KernelPlatformAuditTab::retranslateUi()
                       QStringLiteral("只读 HAL 审计：公开表逐字段按 WDK 结构解析；私有表按受支持 Build/Version/ByteSize 描述解析，ACPI 与子组件仅接受可信锚点小窗口内唯一且完整验证的 RIP-relative 候选。没有独立基线时只报告 owner/执行节一致性，不把运行时地址判为 Clean。"))
                 : kernelText(
                       "kernel.platform.wdf.explanation",
-                      QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像与加载映像身份匹配并成功重定位对应槽位时有效；只有逐项相等才标记 Clean，否则保持 Unknown 或标记 Suspicious。")));
+                      QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")));
     }
     if (m_refreshButton != nullptr)
     {

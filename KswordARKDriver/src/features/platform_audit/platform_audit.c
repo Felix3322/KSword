@@ -1676,6 +1676,16 @@ KswPlatformLocateHalPrivateBySignature(
 }
 
 static BOOLEAN
+KswPlatformHalAcpiIdentityMatches(
+    _In_ const KSW_PLATFORM_HAL_ACPI_VIEW* View
+    )
+{
+    return View != NULL &&
+        View->Signature == KSW_PLATFORM_HAL_ACPI_SIGNATURE &&
+        View->Version == KSW_PLATFORM_HAL_ACPI_VERSION;
+}
+
+static BOOLEAN
 KswPlatformValidateHalAcpiCandidate(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
     _In_ PVOID Candidate,
@@ -1700,8 +1710,7 @@ KswPlatformValidateHalAcpiCandidate(
             FALSE,
             TRUE) ||
         !KswordARKHookReadMemorySafe(Candidate, &view, sizeof(view)) ||
-        view.Signature != KSW_PLATFORM_HAL_ACPI_SIGNATURE ||
-        view.Version != KSW_PLATFORM_HAL_ACPI_VERSION) {
+        !KswPlatformHalAcpiIdentityMatches(&view)) {
         return FALSE;
     }
     // 函数槽内容不是表身份条件：外部 owner、非执行地址或 NULL 正是需要
@@ -1753,6 +1762,31 @@ KswPlatformValidateBoundedWideName(
 }
 
 static BOOLEAN
+KswPlatformHalSubcomponentIdentityMatches(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_reads_(KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT)
+        const KSW_PLATFORM_HAL_SUBCOMPONENT* Entries
+    )
+{
+    ULONG index = 0UL;
+
+    if (ModuleInfo == NULL || Entries == NULL) {
+        return FALSE;
+    }
+    for (index = 0UL;
+         index < KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT;
+         ++index) {
+        if (!KswPlatformValidateBoundedWideName(
+                ModuleInfo,
+                Entries[index].Name,
+                g_KswHalSubcomponentNames[index])) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static BOOLEAN
 KswPlatformValidateHalSubcomponentCandidate(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
     _In_ PVOID Candidate,
@@ -1761,8 +1795,6 @@ KswPlatformValidateHalSubcomponentCandidate(
 {
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
     KSW_PLATFORM_HAL_SUBCOMPONENT entries[KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT];
-    ULONG index = 0UL;
-
     if (ModuleInfo == NULL || Candidate == NULL || Locator == NULL ||
         Locator->TableByteSize != sizeof(entries) ||
         Locator->ExpectedVersion != KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT) {
@@ -1781,13 +1813,8 @@ KswPlatformValidateHalSubcomponentCandidate(
         return FALSE;
     }
 
-    for (index = 0UL; index < RTL_NUMBER_OF(entries); ++index) {
-        if (!KswPlatformValidateBoundedWideName(
-                ModuleInfo,
-                entries[index].Name,
-                g_KswHalSubcomponentNames[index])) {
-            return FALSE;
-        }
+    if (!KswPlatformHalSubcomponentIdentityMatches(ModuleInfo, entries)) {
+        return FALSE;
     }
     // 22 个只读名称对和受界表范围负责候选身份；函数槽逐项分类。
     // 因此被替换到外部模块、未知地址或 NULL 的函数仍会作为对应行返回。
@@ -1902,6 +1929,18 @@ KswPlatformAddHalAcpi(
             sizeof(view));
         return;
     }
+    if (!KswPlatformHalAcpiIdentityMatches(&view)) {
+        KswPlatformAddDiagnostic(
+            Response, Capacity, MaxRows,
+            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+            KSWORD_ARK_PLATFORM_AUDIT_STATUS_QUERY_FAILED,
+            STATUS_REVISION_MISMATCH,
+            L"HalAcpiDispatchTable",
+            KSWORD_ARK_PLATFORM_DETAIL_TABLE_INVALID,
+            view.Signature,
+            view.Version);
+        return;
+    }
 
     for (index = 0UL; index < RTL_NUMBER_OF(view.Functions); ++index) {
         KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry;
@@ -2009,6 +2048,18 @@ KswPlatformAddHalSubcomponents(
             KSWORD_ARK_PLATFORM_DETAIL_READ_FAILED,
             (ULONGLONG)(ULONG_PTR)tableAddress,
             sizeof(entries));
+        return;
+    }
+    if (!KswPlatformHalSubcomponentIdentityMatches(ModuleInfo, entries)) {
+        KswPlatformAddDiagnostic(
+            Response, Capacity, MaxRows,
+            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
+            KSWORD_ARK_PLATFORM_AUDIT_STATUS_QUERY_FAILED,
+            STATUS_REVISION_MISMATCH,
+            L"HalSubComponents",
+            KSWORD_ARK_PLATFORM_DETAIL_TABLE_INVALID,
+            (ULONGLONG)(ULONG_PTR)tableAddress,
+            KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT);
         return;
     }
 

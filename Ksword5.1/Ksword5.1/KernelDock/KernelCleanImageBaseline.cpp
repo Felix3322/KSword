@@ -6,6 +6,10 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <bcrypt.h>
+#include <mscat.h>
+#include <Softpub.h>
+#include <WinTrust.h>
 #include <winternl.h>
 
 #include <QByteArray>
@@ -19,6 +23,8 @@
 #include <iterator>
 #include <limits>
 #include <vector>
+
+#pragma comment(lib, "Wintrust.lib")
 
 namespace
 {
@@ -55,6 +61,285 @@ namespace
 
     using NtQuerySystemInformationFunction =
         NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
+
+    class ReadOnlyTrustFile final
+    {
+    public:
+        explicit ReadOnlyTrustFile(const QString& path)
+            : handle(::CreateFileW(
+                  reinterpret_cast<LPCWSTR>(path.utf16()),
+                  GENERIC_READ,
+                  FILE_SHARE_READ,
+                  nullptr,
+                  OPEN_EXISTING,
+                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                  nullptr))
+        {
+        }
+
+        ~ReadOnlyTrustFile()
+        {
+            if (handle != INVALID_HANDLE_VALUE)
+            {
+                ::CloseHandle(handle);
+            }
+        }
+
+        ReadOnlyTrustFile(const ReadOnlyTrustFile&) = delete;
+        ReadOnlyTrustFile& operator=(const ReadOnlyTrustFile&) = delete;
+
+        HANDLE handle = INVALID_HANDLE_VALUE;
+    };
+
+    class CatalogAdminContext final
+    {
+    public:
+        ~CatalogAdminContext()
+        {
+            if (handle != nullptr)
+            {
+                ::CryptCATAdminReleaseContext(handle, 0);
+            }
+        }
+
+        CatalogAdminContext(const CatalogAdminContext&) = delete;
+        CatalogAdminContext& operator=(const CatalogAdminContext&) = delete;
+        CatalogAdminContext() = default;
+
+        HCATADMIN handle = nullptr;
+    };
+
+    void initializeStrictTrustData(WINTRUST_DATA& trustData)
+    {
+        trustData = WINTRUST_DATA{};
+        trustData.cbStruct = sizeof(trustData);
+        trustData.dwUIChoice = WTD_UI_NONE;
+        trustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+        trustData.dwProvFlags =
+            WTD_SAFER_FLAG |
+            WTD_CACHE_ONLY_URL_RETRIEVAL |
+            WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT |
+            WTD_DISABLE_MD2_MD4;
+    }
+
+    LONG runWinTrustAndClose(WINTRUST_DATA& trustData)
+    {
+        GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+        const LONG status =
+            ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+        ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        trustData.hWVTStateData = nullptr;
+        return status;
+    }
+
+    bool calculateCatalogHash(
+        const HCATADMIN catalogAdmin,
+        const HANDLE fileHandle,
+        std::vector<BYTE>& hashOut)
+    {
+        LARGE_INTEGER fileStart{};
+        hashOut.clear();
+        ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
+        DWORD hashBytes = 0U;
+        if (!::CryptCATAdminCalcHashFromFileHandle2(
+                catalogAdmin,
+                fileHandle,
+                &hashBytes,
+                nullptr,
+                0) ||
+            hashBytes == 0U)
+        {
+            return false;
+        }
+        hashOut.resize(hashBytes);
+        ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
+        if (!::CryptCATAdminCalcHashFromFileHandle2(
+                catalogAdmin,
+                fileHandle,
+                &hashBytes,
+                hashOut.data(),
+                0))
+        {
+            hashOut.clear();
+            return false;
+        }
+        hashOut.resize(hashBytes);
+        return true;
+    }
+
+    bool verifyCatalogTrust(
+        const QString& path,
+        const HANDLE fileHandle)
+    {
+        CatalogAdminContext catalogAdmin;
+        GUID driverActionVerify = DRIVER_ACTION_VERIFY;
+        if (!::CryptCATAdminAcquireContext2(
+                &catalogAdmin.handle,
+                &driverActionVerify,
+                BCRYPT_SHA256_ALGORITHM,
+                nullptr,
+                0))
+        {
+            return false;
+        }
+
+        std::vector<BYTE> hash;
+        if (!calculateCatalogHash(
+                catalogAdmin.handle,
+                fileHandle,
+                hash))
+        {
+            return false;
+        }
+        const QByteArray fileHashBytes(
+            reinterpret_cast<const char*>(hash.data()),
+            static_cast<qsizetype>(hash.size()));
+        const QByteArray memberTagBytes =
+            fileHashBytes.toHex().toUpper();
+        const QString memberTag = QString::fromLatin1(
+            memberTagBytes.constData(),
+            memberTagBytes.size());
+
+        HCATINFO previousCatalog = nullptr;
+        for (;;)
+        {
+            HCATINFO currentCatalog =
+                ::CryptCATAdminEnumCatalogFromHash(
+                    catalogAdmin.handle,
+                    hash.data(),
+                    static_cast<DWORD>(hash.size()),
+                    0,
+                    &previousCatalog);
+            if (currentCatalog == nullptr)
+            {
+                // Enum consumes/releases the previous context when advancing.
+                // Natural exhaustion therefore leaves no caller-owned HCATINFO.
+                return false;
+            }
+            previousCatalog = currentCatalog;
+
+            CATALOG_INFO catalogInfo{};
+            catalogInfo.cbStruct = sizeof(catalogInfo);
+            if (!::CryptCATCatalogInfoFromContext(
+                    currentCatalog,
+                    &catalogInfo,
+                    0))
+            {
+                continue;
+            }
+
+            WINTRUST_CATALOG_INFO trustCatalogInfo{};
+            trustCatalogInfo.cbStruct = sizeof(trustCatalogInfo);
+            trustCatalogInfo.pcwszCatalogFilePath =
+                catalogInfo.wszCatalogFile;
+            trustCatalogInfo.pcwszMemberTag =
+                reinterpret_cast<LPCWSTR>(memberTag.utf16());
+            trustCatalogInfo.pcwszMemberFilePath =
+                reinterpret_cast<LPCWSTR>(path.utf16());
+            trustCatalogInfo.hMemberFile = fileHandle;
+            trustCatalogInfo.pbCalculatedFileHash = hash.data();
+            trustCatalogInfo.cbCalculatedFileHash =
+                static_cast<DWORD>(hash.size());
+            trustCatalogInfo.hCatAdmin = catalogAdmin.handle;
+
+            LARGE_INTEGER fileStart{};
+            ::SetFilePointerEx(
+                fileHandle,
+                fileStart,
+                nullptr,
+                FILE_BEGIN);
+            WINTRUST_DATA trustData{};
+            initializeStrictTrustData(trustData);
+            trustData.dwUnionChoice = WTD_CHOICE_CATALOG;
+            trustData.pCatalog = &trustCatalogInfo;
+            if (runWinTrustAndClose(trustData) == ERROR_SUCCESS)
+            {
+                ::CryptCATAdminReleaseCatalogContext(
+                    catalogAdmin.handle,
+                    currentCatalog,
+                    0);
+                previousCatalog = nullptr;
+                return true;
+            }
+        }
+    }
+
+    bool readTrustedDiskImage(
+        const QString& path,
+        QByteArray& bytesOut)
+    {
+        bytesOut.clear();
+        ReadOnlyTrustFile file(path);
+        if (file.handle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        WINTRUST_FILE_INFO fileInfo{};
+        fileInfo.cbStruct = sizeof(fileInfo);
+        fileInfo.pcwszFilePath =
+            reinterpret_cast<LPCWSTR>(path.utf16());
+        fileInfo.hFile = file.handle;
+
+        WINTRUST_DATA trustData{};
+        initializeStrictTrustData(trustData);
+        trustData.dwUnionChoice = WTD_CHOICE_FILE;
+        trustData.pFile = &fileInfo;
+        const bool trusted =
+            runWinTrustAndClose(trustData) == ERROR_SUCCESS ||
+            verifyCatalogTrust(path, file.handle);
+        if (!trusted)
+        {
+            return false;
+        }
+
+        LARGE_INTEGER fileSize{};
+        constexpr LONGLONG maximumTrustedImageBytes =
+            512LL * 1024LL * 1024LL;
+        if (!::GetFileSizeEx(file.handle, &fileSize) ||
+            fileSize.QuadPart <= 0 ||
+            fileSize.QuadPart > maximumTrustedImageBytes ||
+            fileSize.QuadPart >
+                static_cast<LONGLONG>(
+                    std::numeric_limits<qsizetype>::max()))
+        {
+            return false;
+        }
+        LARGE_INTEGER fileStart{};
+        if (!::SetFilePointerEx(
+                file.handle,
+                fileStart,
+                nullptr,
+                FILE_BEGIN))
+        {
+            return false;
+        }
+
+        bytesOut.resize(static_cast<qsizetype>(fileSize.QuadPart));
+        qsizetype offset = 0;
+        while (offset < bytesOut.size())
+        {
+            const qsizetype remaining = bytesOut.size() - offset;
+            const DWORD requestBytes = static_cast<DWORD>(
+                std::min<qsizetype>(remaining, MAXDWORD));
+            DWORD bytesRead = 0U;
+            if (!::ReadFile(
+                    file.handle,
+                    bytesOut.data() + offset,
+                    requestBytes,
+                    &bytesRead,
+                    nullptr) ||
+                bytesRead == 0U)
+            {
+                bytesOut.clear();
+                return false;
+            }
+            offset += static_cast<qsizetype>(bytesRead);
+        }
+        return true;
+    }
 
     QString normalizeKernelPath(const QString& input)
     {
@@ -487,7 +772,8 @@ namespace ks::kernel
     CleanImageBaselineResult KernelCleanImageBaseline::compareAddress(
         const std::uint64_t kernelAddress,
         const std::uint32_t byteCount,
-        const std::vector<std::uint8_t>& observedBytes)
+        const std::vector<std::uint8_t>& observedBytes,
+        const bool requireTrustedDiskImage)
     {
         CleanImageBaselineResult result;
         if (kernelAddress == 0U
@@ -533,17 +819,32 @@ namespace ks::kernel
                 "模块磁盘路径不可用：%1").arg(module->ntPath);
             return result;
         }
-
-        QFile imageFile(module->filePath);
-        if (!imageFile.open(QIODevice::ReadOnly))
+        QByteArray diskImage;
+        if (requireTrustedDiskImage)
         {
-            result.statusText = QStringLiteral(
-                "无法读取模块磁盘映像：%1")
-                .arg(QDir::toNativeSeparators(module->filePath));
-            return result;
+            if (!readTrustedDiskImage(
+                    module->filePath,
+                    diskImage))
+            {
+                result.statusText = QStringLiteral(
+                    "磁盘映像未通过 embedded/catalog 完整链信任验证，拒绝建立安全基线。");
+                return result;
+            }
+            result.diskTrustVerified = true;
         }
-        const QByteArray diskImage = imageFile.readAll();
-        imageFile.close();
+        else
+        {
+            QFile imageFile(module->filePath);
+            if (!imageFile.open(QIODevice::ReadOnly))
+            {
+                result.statusText = QStringLiteral(
+                    "无法读取模块磁盘映像：%1")
+                    .arg(QDir::toNativeSeparators(module->filePath));
+                return result;
+            }
+            diskImage = imageFile.readAll();
+            imageFile.close();
+        }
         PeIdentity diskIdentity;
         if (!parsePeIdentity(diskImage, diskIdentity, errorText))
         {
