@@ -34,6 +34,7 @@ NTSTATUS KswordARKProcessIoctlDkomProcess(_In_ WDFDEVICE Device, _In_ WDFREQUEST
 NTSTATUS KswordARKProcessIoctlInjectProcess(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKThreadIoctlSetSuspended(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKThreadIoctlControlDriverThread(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKWorkQueueIoctlEnum(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMemoryIoctlQueryVirtualMemory(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMemoryIoctlReadVirtualMemory(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMemoryIoctlWriteVirtualMemory(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -238,6 +239,8 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_TERMINATE_THREAD, KswordARKThreadIoctlTerminate, "IOCTL_KSWORD_ARK_TERMINATE_THREAD", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED, KswordARKThreadIoctlSetSuspended, "IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD, KswordARKThreadIoctlControlDriverThread, "IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    // Work-queue enumeration is read-only and reports identity/layout gaps in its fixed response.
+    { IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE, KswordARKWorkQueueIoctlEnum, "IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
     // Process cross-view performs its own per-source capability checks, so dispatch must allow degraded read-only results.
     { IOCTL_KSWORD_ARK_QUERY_PROCESS_CROSSVIEW, KswordARKProcessIoctlQueryCrossView, "IOCTL_KSWORD_ARK_QUERY_PROCESS_CROSSVIEW", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     // Thread cross-view performs its own per-source capability checks, so dispatch must allow degraded read-only results.

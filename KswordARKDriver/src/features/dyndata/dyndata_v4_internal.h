@@ -91,6 +91,37 @@ typedef struct _KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT
     ULONG EntryTypeSize;
 } KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT;
 
+// Ex 工作队列消费者只接收与当前 ntoskrnl PE/PDB 身份匹配的完整布局。
+// Global 字段为当前映像 RVA；其余字段均为 PDB 结构偏移、类型大小或枚举值。
+typedef struct _KSW_DYN_V4_WORK_QUEUE_LAYOUT
+{
+    ULONGLONG ModuleBase;
+    ULONG ModuleSize;
+    ULONG PspSystemPartitionRva;
+    ULONG ExpBuiltinPrioritiesRva;
+    ULONG EpartitionExPartition;
+    ULONG ExPartitionWorkQueues;
+    ULONG ExWorkQueueWorkPriQueue;
+    ULONG ExWorkQueueQueueIndex;
+    ULONG KpriQueueEntryListHead;
+    ULONG KpriQueueThreadListHead;
+    ULONG KthreadQueue;
+    ULONG KthreadQueueListEntry;
+    ULONG EthreadTcb;
+    ULONG EthreadStartAddress;
+    ULONG WorkItemList;
+    ULONG WorkItemRoutine;
+    ULONG WorkItemParameter;
+    ULONG ExPoolUntrusted;
+    ULONG EpartitionTypeSize;
+    ULONG ExPartitionTypeSize;
+    ULONG ExWorkQueueTypeSize;
+    ULONG KpriQueueTypeSize;
+    ULONG KthreadTypeSize;
+    ULONG EthreadTypeSize;
+    ULONG WorkItemTypeSize;
+} KSW_DYN_V4_WORK_QUEUE_LAYOUT;
+
 NTSTATUS
 KswordARKDynDataV4SnapshotTimerDpcLayout(
     _Out_ KSW_DYN_V4_TIMER_DPC_LAYOUT* LayoutOut
@@ -112,6 +143,12 @@ KswordARKDynDataV4SnapshotActiveExWorkerField(
 NTSTATUS
 KswordARKDynDataV4SnapshotCiKernelHashLayout(
     _Out_ KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT* LayoutOut
+    );
+
+// 获取当前 ntoskrnl 精确 PDB 描述的 Ex 工作队列布局；任一必需项缺失即不支持。
+NTSTATUS
+KswordARKDynDataV4SnapshotWorkQueueLayout(
+    _Out_ KSW_DYN_V4_WORK_QUEUE_LAYOUT* LayoutOut
     );
 
 // 枚举当前已加载且受 v4 支持的模块身份，并叠加已经应用的 profile 状态。

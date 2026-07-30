@@ -1,7 +1,6 @@
 #include "KernelThreadAuditTab.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
-#include "../Internationalization/LanguageManager.h"
 
 #include <Windows.h>
 
@@ -16,22 +15,12 @@
 
 namespace
 {
-    // threadAuditSnapshotText：
-    // - 输入语言键和中文回退文本；
-    // - 返回后台快照中需要持久化的本地化保护原因。
-    QString threadAuditSnapshotText(const char* key, const QString& fallbackText)
-    {
-        return ks::i18n::contextText(QString::fromLatin1(key), fallbackText);
-    }
-
-    // NtQuerySystemInformationFunction：查询安全模块范围所需的 ntdll 入口。
     using NtQuerySystemInformationFunction = LONG(NTAPI*)(
         unsigned long,
         void*,
         unsigned long,
         unsigned long*);
 
-    // RawModuleEntry：SystemModuleInformation 固定模块行布局。
     struct RawModuleEntry
     {
         HANDLE section;
@@ -46,30 +35,26 @@ namespace
         unsigned char fullPathName[256];
     };
 
-    // RawModuleInformation：模块数量和首行。
     struct RawModuleInformation
     {
         unsigned long moduleCount;
         RawModuleEntry modules[1];
     };
 
-    constexpr unsigned long kSystemModuleInformationClass = 11UL; // SystemModuleInformation。
-    constexpr LONG kStatusInfoLengthMismatch = static_cast<LONG>(0xC0000004UL); // 缓冲长度状态。
-    constexpr std::size_t kMaximumModuleSnapshotBytes = 16U * 1024U * 1024U; // 最大安全分配。
-    constexpr std::uint32_t kSystemProcessId = 4U; // Windows System PID。
-    constexpr std::uint32_t kWaitReasonQueue = 15U; // KWAIT_REASON::WrQueue。
+    constexpr unsigned long kSystemModuleInformationClass = 11UL;
+    constexpr LONG kStatusInfoLengthMismatch = static_cast<LONG>(0xC0000004UL);
+    constexpr std::size_t kMaximumModuleSnapshotBytes = 16U * 1024U * 1024U;
+    constexpr std::uint32_t kSystemProcessId = 4U;
 
-    // boundedAnsiLength：
-    // - 输入固定 ANSI 缓冲和上限；
-    // - 返回首个 NUL 前长度，避免依赖非标准 strnlen；
-    // - 缓冲无 NUL 时返回上限。
-    std::size_t boundedAnsiLength(const unsigned char* text, const std::size_t capacity)
+    std::size_t boundedAnsiLength(
+        const unsigned char* const text,
+        const std::size_t capacity)
     {
         if (text == nullptr)
         {
             return 0U;
         }
-        for (std::size_t index = 0; index < capacity; ++index)
+        for (std::size_t index = 0U; index < capacity; ++index)
         {
             if (text[index] == 0U)
             {
@@ -79,10 +64,9 @@ namespace
         return capacity;
     }
 
-    // checkedAddressEnd：
-    // - 输入模块基址和大小；
-    // - 返回饱和计算后的末地址，防止范围加法回绕。
-    std::uint64_t checkedAddressEnd(const std::uint64_t baseAddress, const std::uint32_t imageSize)
+    std::uint64_t checkedAddressEnd(
+        const std::uint64_t baseAddress,
+        const std::uint32_t imageSize)
     {
         const std::uint64_t sizeValue = static_cast<std::uint64_t>(imageSize);
         if (baseAddress > (std::numeric_limits<std::uint64_t>::max)() - sizeValue)
@@ -96,26 +80,120 @@ namespace
 KernelThreadAuditTab::Snapshot KernelThreadAuditTab::collectSnapshot(const Mode mode)
 {
     Snapshot snapshot;
-    bool usedNtQuery = false;
-    std::string r3Diagnostic;
-    std::vector<ks::process::SystemThreadRecord> systemThreads =
-        ks::process::EnumerateSystemThreads(&usedNtQuery, &r3Diagnostic);
-    snapshot.usedNtQuery = usedNtQuery;
-    snapshot.diagnosticText = QString::fromStdString(r3Diagnostic);
-
-    // R0 扩展只查询 PID 4，并只请求 worker 标志，避免无关 KTHREAD 字段读取。
     const ksword::ark::DriverClient driverClient;
+
+    if (mode == Mode::WorkQueueThreads)
+    {
+        const ksword::ark::WorkQueueEnumResult result =
+            driverClient.enumerateWorkQueues();
+        snapshot.r0Available = result.io.ok;
+        snapshot.r0Win32Error = result.io.win32Error;
+        snapshot.workQueueQueryStatus = result.queryStatus;
+        snapshot.workQueueStatusFlags = result.statusFlags;
+        snapshot.workQueueTotalCount = result.totalCount;
+        snapshot.workQueueNodeCount = result.nodeCount;
+        snapshot.workQueueQueuesVisited = result.queuesVisited;
+        snapshot.workQueueCorruptCount = result.corruptListCount;
+        snapshot.workQueueReadFailureCount = result.readFailureCount;
+        snapshot.workQueueReferenceFailureCount = result.referenceFailureCount;
+        snapshot.workQueueLastStatus = result.lastStatus;
+
+        if (!result.io.ok)
+        {
+            snapshot.diagnosticFlags |= DiagnosticWorkQueueTransportFailed;
+            if (result.unsupported)
+            {
+                snapshot.diagnosticFlags |= DiagnosticWorkQueueUnsupported;
+            }
+            return snapshot;
+        }
+        if (result.unsupported ||
+            result.queryStatus == KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED ||
+            result.queryStatus == KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_INVALID_LAYOUT ||
+            result.queryStatus == KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_IDENTITY_MISMATCH)
+        {
+            snapshot.diagnosticFlags |= DiagnosticWorkQueueUnsupported;
+        }
+        if (result.queryStatus == KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_PARTIAL)
+        {
+            snapshot.diagnosticFlags |= DiagnosticWorkQueuePartial;
+        }
+
+        snapshot.rows.reserve(result.entries.size());
+        for (const ksword::ark::WorkQueueEntry& source : result.entries)
+        {
+            ThreadRow row;
+            row.threadId = source.threadId;
+            row.createTime100ns = source.threadCreateTime100ns;
+            row.startAddress = source.routineAddress;
+            row.queueAddress = source.queueAddress;
+            row.workItemAddress = source.workItemAddress;
+            row.parameterAddress = source.parameterAddress;
+            row.threadObject = source.threadObject;
+            row.workQueueRowKind = source.rowKind;
+            row.queueType = source.queueType;
+            row.queuePriorityIndex = source.priorityIndex;
+            row.nodeIndex = source.nodeIndex;
+            row.workQueueFlags = source.flags;
+            row.workQueueStatus = source.status;
+            row.module.name = QString::fromLocal8Bit(
+                source.moduleName.data(),
+                static_cast<int>(source.moduleName.size()));
+            row.module.path = QString::fromLocal8Bit(
+                source.modulePath.data(),
+                static_cast<int>(source.modulePath.size()));
+            row.module.baseAddress = source.moduleBase;
+            row.module.imageSize = source.moduleSize;
+            row.moduleResolved =
+                (source.flags & KSWORD_ARK_WORK_QUEUE_ENTRY_MODULE_RESOLVED) != 0U;
+            row.protectedTarget = true;
+            row.protectionKind = ProtectionKind::ReadOnlyWorkQueueEvidence;
+            snapshot.rows.push_back(std::move(row));
+        }
+
+        std::sort(
+            snapshot.rows.begin(),
+            snapshot.rows.end(),
+            [](const ThreadRow& left, const ThreadRow& right) {
+                if (left.nodeIndex != right.nodeIndex)
+                {
+                    return left.nodeIndex < right.nodeIndex;
+                }
+                if (left.queueType != right.queueType)
+                {
+                    return left.queueType < right.queueType;
+                }
+                if (left.workQueueRowKind != right.workQueueRowKind)
+                {
+                    return left.workQueueRowKind < right.workQueueRowKind;
+                }
+                const std::uint64_t leftIdentity =
+                    left.workItemAddress != 0U ? left.workItemAddress : left.threadObject;
+                const std::uint64_t rightIdentity =
+                    right.workItemAddress != 0U ? right.workItemAddress : right.threadObject;
+                return leftIdentity < rightIdentity;
+            });
+        return snapshot;
+    }
+
+    bool usedNtQuery = false;
+    std::string ignoredR3Diagnostic;
+    const std::vector<ks::process::SystemThreadRecord> systemThreads =
+        ks::process::EnumerateSystemThreads(&usedNtQuery, &ignoredR3Diagnostic);
+    snapshot.usedNtQuery = usedNtQuery;
+    if (systemThreads.empty())
+    {
+        snapshot.diagnosticFlags |= DiagnosticR3EnumerationEmpty;
+    }
+
     const ksword::ark::ThreadEnumResult r0Result = driverClient.enumerateThreads(
         KSWORD_ARK_ENUM_THREAD_FLAG_INCLUDE_WORKER_STATE,
         kSystemProcessId);
     snapshot.r0Available = r0Result.io.ok;
+    snapshot.r0Win32Error = r0Result.io.win32Error;
     if (!r0Result.io.ok)
     {
-        const QString r0Diagnostic = QString::fromStdString(r0Result.io.message);
-        if (!r0Diagnostic.trimmed().isEmpty())
-        {
-            snapshot.diagnosticText += QStringLiteral(" | R0: %1").arg(r0Diagnostic);
-        }
+        snapshot.diagnosticFlags |= DiagnosticR0ThreadUnavailable;
     }
 
     std::unordered_map<std::uint32_t, const ksword::ark::ThreadEntry*> r0ByTid;
@@ -127,14 +205,15 @@ KernelThreadAuditTab::Snapshot KernelThreadAuditTab::collectSnapshot(const Mode 
         }
     }
 
-    QString moduleErrorText;
-    const std::vector<ModuleRecord> modules = queryKernelModules(&moduleErrorText);
-    if (!moduleErrorText.isEmpty())
+    const std::vector<ModuleRecord> modules = queryKernelModules(
+        &snapshot.moduleQueryStatus,
+        &snapshot.moduleNativeStatus,
+        &snapshot.moduleRequiredBytes);
+    if (snapshot.moduleQueryStatus != ModuleQueryStatus::Ok)
     {
-        snapshot.diagnosticText += QStringLiteral(" | Modules: %1").arg(moduleErrorText);
+        snapshot.diagnosticFlags |= DiagnosticModuleUnavailable;
     }
 
-    // 只合并 System(PID 4)；工作队列模式再按可靠候选标志过滤。
     for (const ks::process::SystemThreadRecord& sourceThread : systemThreads)
     {
         if (sourceThread.ownerPid != kSystemProcessId || sourceThread.threadId == 0U)
@@ -144,6 +223,7 @@ KernelThreadAuditTab::Snapshot KernelThreadAuditTab::collectSnapshot(const Mode 
 
         ThreadRow row;
         row.threadId = sourceThread.threadId;
+        row.createTime100ns = sourceThread.createTime100ns;
         row.startAddress = sourceThread.startAddress != 0U
             ? sourceThread.startAddress
             : sourceThread.win32StartAddress;
@@ -165,43 +245,25 @@ KernelThreadAuditTab::Snapshot KernelThreadAuditTab::collectSnapshot(const Mode 
                 (r0Entry.flags & KSWORD_ARK_THREAD_FLAG_ACTIVE_EX_WORKER) != 0U;
         }
 
-        row.workerCandidate = row.activeWorker || row.waitReason == kWaitReasonQueue;
         row.module = findOwnerModule(modules, row.startAddress, &row.moduleResolved);
-
-        // R3 前置保护：未知归属、内核映像和 KswordARK 自身一律禁用操作。
-        if (!row.moduleResolved)
+        if (row.createTime100ns == 0U || row.startAddress == 0U)
         {
-            row.protectedTarget = true;
-            row.protectionReason = threadAuditSnapshotText(
-                "thread_audit.protection.unknown",
-                QStringLiteral("启动入口归属未知"));
+            row.protectionKind = ProtectionKind::MissingThreadIdentity;
+        }
+        else if (!row.moduleResolved)
+        {
+            row.protectionKind = ProtectionKind::UnknownModule;
         }
         else if (row.module.kernelImage)
         {
-            row.protectedTarget = true;
-            row.protectionReason = threadAuditSnapshotText(
-                "thread_audit.protection.kernel",
-                QStringLiteral("Windows 内核线程"));
-        }
-        else if (row.module.name.contains(QStringLiteral("KswordARK"), Qt::CaseInsensitive))
-        {
-            row.protectedTarget = true;
-            row.protectionReason = threadAuditSnapshotText(
-                "thread_audit.protection.self",
-                QStringLiteral("KswordARK 自身线程"));
+            row.protectionKind = ProtectionKind::KernelImage;
         }
         else
         {
             row.protectedTarget = false;
-            row.protectionReason = threadAuditSnapshotText(
-                "thread_audit.protection.r0_recheck",
-                QStringLiteral("第三方模块；操作时由 R0 再校验"));
+            row.protectionKind = ProtectionKind::ThirdPartyR0Recheck;
         }
-
-        if (mode == Mode::SystemThreads || row.workerCandidate)
-        {
-            snapshot.rows.push_back(std::move(row));
-        }
+        snapshot.rows.push_back(std::move(row));
     }
 
     std::sort(
@@ -213,11 +275,23 @@ KernelThreadAuditTab::Snapshot KernelThreadAuditTab::collectSnapshot(const Mode 
     return snapshot;
 }
 
-std::vector<KernelThreadAuditTab::ModuleRecord> KernelThreadAuditTab::queryKernelModules(QString* errorTextOut)
+std::vector<KernelThreadAuditTab::ModuleRecord>
+KernelThreadAuditTab::queryKernelModules(
+    ModuleQueryStatus* const queryStatusOut,
+    long* const nativeStatusOut,
+    unsigned long* const requiredBytesOut)
 {
-    if (errorTextOut != nullptr)
+    if (queryStatusOut != nullptr)
     {
-        errorTextOut->clear();
+        *queryStatusOut = ModuleQueryStatus::Ok;
+    }
+    if (nativeStatusOut != nullptr)
+    {
+        *nativeStatusOut = 0L;
+    }
+    if (requiredBytesOut != nullptr)
+    {
+        *requiredBytesOut = 0UL;
     }
 
     HMODULE ntdllModule = ::GetModuleHandleW(L"ntdll.dll");
@@ -227,9 +301,9 @@ std::vector<KernelThreadAuditTab::ModuleRecord> KernelThreadAuditTab::queryKerne
         : nullptr;
     if (querySystemInformation == nullptr)
     {
-        if (errorTextOut != nullptr)
+        if (queryStatusOut != nullptr)
         {
-            *errorTextOut = QStringLiteral("NtQuerySystemInformation unavailable");
+            *queryStatusOut = ModuleQueryStatus::ApiUnavailable;
         }
         return {};
     }
@@ -240,46 +314,62 @@ std::vector<KernelThreadAuditTab::ModuleRecord> KernelThreadAuditTab::queryKerne
         nullptr,
         0UL,
         &requiredBytes);
-    if (status != kStatusInfoLengthMismatch || requiredBytes < sizeof(RawModuleInformation) ||
+    if (requiredBytesOut != nullptr)
+    {
+        *requiredBytesOut = requiredBytes;
+    }
+    if (nativeStatusOut != nullptr)
+    {
+        *nativeStatusOut = status;
+    }
+    if (status != kStatusInfoLengthMismatch ||
+        requiredBytes < sizeof(RawModuleInformation) ||
         requiredBytes > kMaximumModuleSnapshotBytes)
     {
-        if (errorTextOut != nullptr)
+        if (queryStatusOut != nullptr)
         {
-            *errorTextOut = QStringLiteral("module length query failed, status=0x%1, bytes=%2")
-                .arg(static_cast<unsigned long>(status), 8, 16, QLatin1Char('0'))
-                .arg(requiredBytes);
+            *queryStatusOut = ModuleQueryStatus::LengthQueryFailed;
         }
         return {};
     }
 
-    std::vector<unsigned char> buffer(static_cast<std::size_t>(requiredBytes) + 4096U);
+    std::vector<unsigned char> buffer(
+        static_cast<std::size_t>(requiredBytes) + 4096U);
     unsigned long returnedBytes = 0UL;
     status = querySystemInformation(
         kSystemModuleInformationClass,
         buffer.data(),
         static_cast<unsigned long>(buffer.size()),
         &returnedBytes);
-    if (status != 0L || returnedBytes < offsetof(RawModuleInformation, modules))
+    if (nativeStatusOut != nullptr)
     {
-        if (errorTextOut != nullptr)
+        *nativeStatusOut = status;
+    }
+    if (status != 0L ||
+        returnedBytes < offsetof(RawModuleInformation, modules))
+    {
+        if (queryStatusOut != nullptr)
         {
-            *errorTextOut = QStringLiteral("module query failed, status=0x%1")
-                .arg(static_cast<unsigned long>(status), 8, 16, QLatin1Char('0'));
+            *queryStatusOut = ModuleQueryStatus::SnapshotFailed;
         }
         return {};
     }
 
-    const auto* rawInformation = reinterpret_cast<const RawModuleInformation*>(buffer.data());
+    const auto* const rawInformation =
+        reinterpret_cast<const RawModuleInformation*>(buffer.data());
     const std::size_t headerBytes = offsetof(RawModuleInformation, modules);
     const std::size_t availableEntries =
-        (static_cast<std::size_t>(returnedBytes) - headerBytes) / sizeof(RawModuleEntry);
+        (static_cast<std::size_t>(returnedBytes) - headerBytes) /
+        sizeof(RawModuleEntry);
     const std::size_t safeEntryCount = (std::min)(
         static_cast<std::size_t>(rawInformation->moduleCount),
         availableEntries);
 
     std::vector<ModuleRecord> modules;
     modules.reserve(safeEntryCount);
-    for (std::size_t moduleIndex = 0; moduleIndex < safeEntryCount; ++moduleIndex)
+    for (std::size_t moduleIndex = 0U;
+         moduleIndex < safeEntryCount;
+         ++moduleIndex)
     {
         const RawModuleEntry& rawModule = rawInformation->modules[moduleIndex];
         const std::size_t pathLength = boundedAnsiLength(
@@ -313,7 +403,7 @@ std::vector<KernelThreadAuditTab::ModuleRecord> KernelThreadAuditTab::queryKerne
 KernelThreadAuditTab::ModuleRecord KernelThreadAuditTab::findOwnerModule(
     const std::vector<ModuleRecord>& modules,
     const std::uint64_t address,
-    bool* matchedOut)
+    bool* const matchedOut)
 {
     if (matchedOut != nullptr)
     {
@@ -326,8 +416,11 @@ KernelThreadAuditTab::ModuleRecord KernelThreadAuditTab::findOwnerModule(
 
     for (const ModuleRecord& module : modules)
     {
-        const std::uint64_t moduleEnd = checkedAddressEnd(module.baseAddress, module.imageSize);
-        if (module.baseAddress != 0U && address >= module.baseAddress && address < moduleEnd)
+        const std::uint64_t moduleEnd =
+            checkedAddressEnd(module.baseAddress, module.imageSize);
+        if (module.baseAddress != 0U &&
+            address >= module.baseAddress &&
+            address < moduleEnd)
         {
             if (matchedOut != nullptr)
             {

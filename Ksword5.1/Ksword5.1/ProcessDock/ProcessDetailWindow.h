@@ -146,6 +146,7 @@ private:
         QString registerSummaryText;       // 寄存器摘要文本。
         std::uint64_t startAddress = 0;    // 起始地址原始值。
         std::uint64_t win32StartAddress = 0; // Win32StartAddress 原始值。
+        std::uint64_t createTime100ns = 0; // 创建时间；驱动线程危险动作的反复用身份字段。
         std::uint64_t tebAddress = 0;      // TEB 地址原始值。
         std::uint64_t userStackBase = 0;   // 用户栈基址。
         std::uint64_t userStackLimit = 0;  // 用户栈边界。

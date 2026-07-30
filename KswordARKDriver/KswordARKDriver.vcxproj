@@ -110,6 +110,7 @@
     <ClCompile Include="src\features\thread\thread_detail.c" />
     <ClCompile Include="src\features\thread\thread_apc.c" />
     <ClCompile Include="src\features\thread\thread_ioctl.c" />
+    <ClCompile Include="src\features\thread\work_queue_query.c" />
     <ClCompile Include="src\features\handle\handle_support.c" />
     <ClCompile Include="src\features\handle\handle_object_query.c" />
     <ClCompile Include="src\features\handle\handle_query.c" />
@@ -211,6 +212,7 @@
     <ClInclude Include="include\ark\ark_dyndata_fields.h" />
     <ClInclude Include="include\ark\ark_capability.h" />
     <ClInclude Include="include\ark\ark_thread.h" />
+    <ClInclude Include="..\shared\driver\KswordArkWorkQueueIoctl.h" />
     <ClInclude Include="include\ark\ark_thread_crossview.h" />
     <ClInclude Include="include\ark\ark_handle.h" />
     <ClInclude Include="src\features\handle\handle_support.h" />

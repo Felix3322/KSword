@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace
@@ -161,6 +162,10 @@ void KernelThreadAuditTab::initializeUi()
         actionButton->setFixedSize(30, 30);
         actionButton->setIconSize(QSize(16, 16));
     }
+    const bool managementVisible = m_mode == Mode::SystemThreads;
+    m_suspendButton->setVisible(managementVisible);
+    m_resumeButton->setVisible(managementVisible);
+    m_terminateButton->setVisible(managementVisible);
 
     m_overviewButton = new QPushButton(QStringLiteral("A"), this);
     m_evidenceButton = new QPushButton(QStringLiteral("B"), this);
@@ -240,12 +245,12 @@ void KernelThreadAuditTab::applyTranslatedText()
         const QString safetyText = m_mode == Mode::SystemThreads
             ? threadAuditText(
                 "thread_audit.system.safety",
-                QStringLiteral("安全边界：只允许管理启动入口明确归属于第三方驱动的 System 线程；"
-                               "ntoskrnl、KswordARK、未知归属和当前执行线程由 UI 与 R0 双重拒绝。"))
+                QStringLiteral("安全边界：只允许管理启动入口明确归属于第三方驱动且创建时间可靠的 System 线程；"
+                               "R0 在动作前精确复核 TID、入口、创建时间，并按当前 DriverObject 的 DriverStart/DriverSize 保护自身实体。"))
             : threadAuditText(
                 "thread_audit.work_queue.safety",
-                QStringLiteral("安全边界：本页只用 WrQueue 与可信 ActiveExWorker 标志识别候选；"
-                               "不会猜测未公开工作队列链表、队列类型或工作项参数。"));
+                QStringLiteral("只读证据：仅在当前 ntoskrnl 的 PE/PDB 身份和完整 DynData 结构描述精确匹配时读取工作队列；"
+                               "缺字段或身份不一致会显式关闭，不扫描全局内存、不猜偏移，也不提供管理动作。"));
         safetyLabel->setText(safetyText);
     }
 
@@ -336,15 +341,30 @@ void KernelThreadAuditTab::applySnapshot(const Snapshot& snapshot)
     m_refreshButton->setEnabled(true);
     rebuildTable();
 
-    // 状态栏同时暴露 R3 枚举路径、R0 可用性和降级诊断。
-    m_statusLabel->setText(
-        threadAuditText(
-            "thread_audit.status.completed",
-            QStringLiteral("状态：%1 条；R3=%2；R0=%3；%4"))
-            .arg(static_cast<qulonglong>(m_rows.size()))
-            .arg(snapshot.usedNtQuery ? QStringLiteral("NtQuery") : QStringLiteral("Toolhelp"))
-            .arg(snapshot.r0Available ? QStringLiteral("OK") : QStringLiteral("Unavailable"))
-            .arg(snapshot.diagnosticText));
+    const QString diagnosticText = snapshotDiagnosticText(snapshot, m_mode);
+    if (m_mode == Mode::WorkQueueThreads)
+    {
+        m_statusLabel->setText(
+            threadAuditText(
+                "thread_audit.status.work_queue_completed",
+                QStringLiteral("状态：%1 条；队列=%2；节点=%3；查询=%4；%5"))
+                .arg(static_cast<qulonglong>(m_rows.size()))
+                .arg(snapshot.workQueueQueuesVisited)
+                .arg(snapshot.workQueueNodeCount)
+                .arg(snapshot.workQueueQueryStatus)
+                .arg(diagnosticText));
+    }
+    else
+    {
+        m_statusLabel->setText(
+            threadAuditText(
+                "thread_audit.status.completed",
+                QStringLiteral("状态：%1 条；R3=%2；R0=%3；%4"))
+                .arg(static_cast<qulonglong>(m_rows.size()))
+                .arg(snapshot.usedNtQuery ? QStringLiteral("NtQuery") : QStringLiteral("Toolhelp"))
+                .arg(snapshot.r0Available ? QStringLiteral("OK") : QStringLiteral("Unavailable"))
+                .arg(diagnosticText));
+    }
 }
 
 void KernelThreadAuditTab::rebuildTable()
@@ -353,38 +373,53 @@ void KernelThreadAuditTab::rebuildTable()
     m_table->setSortingEnabled(false);
     m_table->setRowCount(0);
 
-    // appendTextItem：统一创建不可编辑单元格并保存源行索引。
     for (std::size_t sourceIndex = 0; sourceIndex < m_rows.size(); ++sourceIndex)
     {
         const ThreadRow& row = m_rows[sourceIndex];
-        const QString categoryText = row.activeWorker
-            ? threadAuditText("thread_audit.category.worker", QStringLiteral("Ex工作线程"))
-            : threadAuditText("thread_audit.category.system", QStringLiteral("系统线程"));
-        const QString queueTypeText = row.activeWorker
-            ? threadAuditText("thread_audit.queue.ex_worker", QStringLiteral("Ex worker（具体队列不可安全区分）"))
-            : (row.waitReason == kWaitReasonQueue
-                ? threadAuditText("thread_audit.queue.waiting", QStringLiteral("队列等待（具体类型不可安全区分）"))
-                : threadAuditText("thread_audit.queue.unconfirmed", QStringLiteral("未确认")));
-        const QString parameterText = threadAuditText("thread_audit.parameter.unavailable", QStringLiteral("<公开接口无法安全获取>"));
+        const bool workItem =
+            row.workQueueRowKind == KSWORD_ARK_WORK_QUEUE_ROW_WORK_ITEM;
+        const bool workerThread =
+            row.workQueueRowKind == KSWORD_ARK_WORK_QUEUE_ROW_WORKER_THREAD;
+        const QString categoryText = workItem
+            ? threadAuditText("thread_audit.category.work_item", QStringLiteral("工作项"))
+            : (workerThread
+                ? threadAuditText("thread_audit.category.worker", QStringLiteral("关联工作线程"))
+                : threadAuditText("thread_audit.category.system", QStringLiteral("系统线程")));
+        const QString queueText = m_mode == Mode::WorkQueueThreads
+            ? queueTypeText(row.queueType)
+            : threadAuditText("thread_audit.value.not_applicable", QStringLiteral("不适用"));
+        const QString parameterText = workItem
+            ? pointerText(row.parameterAddress)
+            : threadAuditText("thread_audit.value.not_applicable", QStringLiteral("不适用"));
         const QString moduleText = row.moduleResolved
             ? row.module.name
             : threadAuditText("thread_audit.module.unknown", QStringLiteral("<未知归属>"));
         const QString protectionText = row.protectedTarget
-            ? threadAuditText("thread_audit.protection.blocked", QStringLiteral("已保护：%1")).arg(row.protectionReason)
+            ? threadAuditText("thread_audit.protection.blocked", QStringLiteral("已保护：%1"))
+                .arg(protectionReasonText(row.protectionKind))
             : threadAuditText("thread_audit.protection.allowed", QStringLiteral("第三方驱动线程（需确认）"));
+        const QString stateValue = m_mode == Mode::WorkQueueThreads
+            ? threadAuditText("thread_audit.value.not_applicable", QStringLiteral("不适用"))
+            : stateText(row.state);
+        const QString waitValue = m_mode == Mode::WorkQueueThreads
+            ? threadAuditText("thread_audit.value.not_applicable", QStringLiteral("不适用"))
+            : waitReasonText(row.waitReason);
+        const QString r0Value = m_mode == Mode::WorkQueueThreads
+            ? workQueueEntryStatusText(row.workQueueStatus)
+            : r0StatusText(row.r0Status);
 
         const QStringList cellTexts{
             QString::number(row.threadId),
             categoryText,
-            queueTypeText,
-            stateText(row.state),
-            waitReasonText(row.waitReason),
+            queueText,
+            stateValue,
+            waitValue,
             addressText(row.startAddress),
             parameterText,
             moduleText,
             addressText(row.module.baseAddress),
             row.module.path,
-            r0StatusText(row.r0Status),
+            r0Value,
             protectionText
         };
         if (!filterText.isEmpty() &&
@@ -414,8 +449,8 @@ void KernelThreadAuditTab::rebuildTable()
 
 void KernelThreadAuditTab::updateDetail()
 {
-    const ThreadRow* row = selectedRow();
-    if (row == nullptr)
+    const ThreadRow* selected = selectedRow();
+    if (selected == nullptr)
     {
         m_detailEditor->setText(threadAuditText("thread_audit.detail.initial", QStringLiteral("请选择一条线程记录查看证据与安全边界。")));
         m_suspendButton->setEnabled(false);
@@ -423,43 +458,86 @@ void KernelThreadAuditTab::updateDetail()
         m_terminateButton->setEnabled(false);
         return;
     }
+    const ThreadRow row = *selected;
 
-    // 管理按钮只在 R3 已解析第三方模块且 R0 允许再次校验时启用。
-    const bool actionAllowed = !row->protectedTarget && row->startAddress != 0U;
+    const bool actionAllowed =
+        m_mode == Mode::SystemThreads &&
+        !row.protectedTarget &&
+        row.threadId != 0U &&
+        row.startAddress != 0U &&
+        row.createTime100ns != 0U;
     m_suspendButton->setEnabled(actionAllowed);
     m_resumeButton->setEnabled(actionAllowed);
     m_terminateButton->setEnabled(actionAllowed);
 
     QStringList detailLines;
+    detailLines << threadAuditText("thread_audit.detail.identity", QStringLiteral("[线程身份]"));
+    if (m_mode == Mode::WorkQueueThreads)
+    {
+        detailLines
+            << QStringLiteral("RowKind: %1").arg(
+                row.workQueueRowKind == KSWORD_ARK_WORK_QUEUE_ROW_WORK_ITEM
+                    ? threadAuditText("thread_audit.category.work_item", QStringLiteral("工作项"))
+                    : threadAuditText("thread_audit.category.worker", QStringLiteral("关联工作线程")))
+            << QStringLiteral("TID: %1").arg(row.threadId)
+            << QStringLiteral("ETHREAD: %1").arg(addressText(row.threadObject))
+            << QStringLiteral("CreateTime100ns: %1").arg(
+                static_cast<qulonglong>(row.createTime100ns))
+            << QString()
+            << threadAuditText("thread_audit.detail.queue", QStringLiteral("[工作队列证据]"))
+            << QStringLiteral("QueueType: %1 (%2)")
+                .arg(queueTypeText(row.queueType))
+                .arg(row.queueType)
+            << QStringLiteral("Node/Priority: %1/%2")
+                .arg(row.nodeIndex)
+                .arg(row.queuePriorityIndex)
+            << QStringLiteral("EX_WORK_QUEUE: %1").arg(addressText(row.queueAddress))
+            << QStringLiteral("WORK_QUEUE_ITEM: %1").arg(addressText(row.workItemAddress))
+            << QStringLiteral("WorkerRoutine: %1").arg(addressText(row.startAddress))
+            << QStringLiteral("Parameter: %1").arg(pointerText(row.parameterAddress))
+            << QStringLiteral("EvidenceFlags: 0x%1")
+                .arg(row.workQueueFlags, 0, 16)
+            << QStringLiteral("EntryStatus: %1 (%2)")
+                .arg(workQueueEntryStatusText(row.workQueueStatus))
+                .arg(row.workQueueStatus)
+            << threadAuditText(
+                "thread_audit.detail.queue_boundary",
+                QStringLiteral("证据来自当前构建精确匹配的 PDB/DynData 结构描述；未知字段、身份不匹配、链表损坏或读取失败均显式降级。"));
+    }
+    else
+    {
+        detailLines
+            << QStringLiteral("TID: %1").arg(row.threadId)
+            << QStringLiteral("CreateTime100ns: %1").arg(
+                static_cast<qulonglong>(row.createTime100ns))
+            << QStringLiteral("Priority/BasePriority: %1/%2").arg(row.priority).arg(row.basePriority)
+            << QStringLiteral("State: %1 (%2)").arg(stateText(row.state)).arg(row.state)
+            << QStringLiteral("WaitReason: %1 (%2)").arg(waitReasonText(row.waitReason)).arg(row.waitReason)
+            << QString()
+            << threadAuditText("thread_audit.detail.scheduling", QStringLiteral("[调度证据]"))
+            << QStringLiteral("ActiveExWorkerKnown: %1").arg(row.workerKnown ? QStringLiteral("true") : QStringLiteral("false"))
+            << QStringLiteral("ActiveExWorker: %1").arg(row.activeWorker ? QStringLiteral("true") : QStringLiteral("false"))
+            << threadAuditText(
+                "thread_audit.detail.system_queue_boundary",
+                QStringLiteral("队列归属不适用于系统线程管理视图；请在只读工作队列页查看精确队列与工作项证据。"));
+    }
+
     detailLines
-        << threadAuditText("thread_audit.detail.identity", QStringLiteral("[线程身份]"))
-        << QStringLiteral("TID: %1").arg(row->threadId)
-        << QStringLiteral("Priority/BasePriority: %1/%2").arg(row->priority).arg(row->basePriority)
-        << QStringLiteral("State: %1 (%2)").arg(stateText(row->state)).arg(row->state)
-        << QStringLiteral("WaitReason: %1 (%2)").arg(waitReasonText(row->waitReason)).arg(row->waitReason)
-        << QString()
-        << threadAuditText("thread_audit.detail.queue", QStringLiteral("[工作队列证据]"))
-        << QStringLiteral("ActiveExWorkerKnown: %1").arg(row->workerKnown ? QStringLiteral("true") : QStringLiteral("false"))
-        << QStringLiteral("ActiveExWorker: %1").arg(row->activeWorker ? QStringLiteral("true") : QStringLiteral("false"))
-        << QStringLiteral("WrQueue: %1").arg(row->waitReason == kWaitReasonQueue ? QStringLiteral("true") : QStringLiteral("false"))
-        << threadAuditText(
-            "thread_audit.detail.queue_boundary",
-            QStringLiteral("QueueType/WorkItemParameter: 未读取未公开链表或参数，避免错误偏移导致系统崩溃。"))
         << QString()
         << threadAuditText("thread_audit.detail.module", QStringLiteral("[入口与模块归属]"))
-        << QStringLiteral("StartRoutine: %1").arg(addressText(row->startAddress))
-        << QStringLiteral("Module: %1").arg(row->moduleResolved ? row->module.name : QStringLiteral("<unresolved>"))
+        << QStringLiteral("StartRoutine: %1").arg(addressText(row.startAddress))
+        << QStringLiteral("Module: %1").arg(row.moduleResolved ? row.module.name : QStringLiteral("<unresolved>"))
         << QStringLiteral("ModuleBase/Size: %1 / 0x%2")
-            .arg(addressText(row->module.baseAddress))
-            .arg(row->module.imageSize, 0, 16)
-        << QStringLiteral("ModulePath: %1").arg(row->module.path)
+            .arg(addressText(row.module.baseAddress))
+            .arg(row.module.imageSize, 0, 16)
+        << QStringLiteral("ModulePath: %1").arg(row.module.path)
         << QString()
         << threadAuditText("thread_audit.detail.safety", QStringLiteral("[管理安全]"))
-        << QStringLiteral("Protected: %1").arg(row->protectedTarget ? QStringLiteral("true") : QStringLiteral("false"))
-        << QStringLiteral("Reason: %1").arg(row->protectionReason)
+        << QStringLiteral("Protected: %1").arg(row.protectedTarget ? QStringLiteral("true") : QStringLiteral("false"))
+        << QStringLiteral("Reason: %1").arg(protectionReasonText(row.protectionKind))
         << threadAuditText(
             "thread_audit.detail.safety_boundary",
-            QStringLiteral("所有操作仍由 R0 重新核对 PID=4、真实启动地址、模块范围、内核/KswordARK/当前线程保护。"));
+            QStringLiteral("危险操作仅限系统线程页；R0 动作入口前重新核对精确 TID、启动地址、创建时间，并按当前 DriverObject 实体范围保护自身。"));
     m_detailEditor->setText(detailLines.join(QLatin1Char('\n')));
 }
 
@@ -540,8 +618,16 @@ void KernelThreadAuditTab::showRowMenu(const QPoint& localPosition)
     {
         m_table->selectRow(m_table->itemAt(localPosition)->row());
     }
+    if (m_mode != Mode::SystemThreads)
+    {
+        return;
+    }
 
-    const ThreadRow* row = selectedRow();
+    std::optional<ThreadRow> rowCopy;
+    if (const ThreadRow* const selected = selectedRow(); selected != nullptr)
+    {
+        rowCopy = *selected;
+    }
     QMenu actionMenu(this);
     actionMenu.setStyleSheet(menuStyle());
     QAction* suspendAction = actionMenu.addAction(
@@ -554,46 +640,71 @@ void KernelThreadAuditTab::showRowMenu(const QPoint& localPosition)
         QIcon(QStringLiteral(":/Icon/process_terminate.svg")),
         threadAuditText("thread_audit.menu.terminate", QStringLiteral("终止第三方驱动线程（高风险）")));
 
-    const bool actionAllowed = row != nullptr && !row->protectedTarget && row->startAddress != 0U;
+    const bool actionAllowed =
+        m_mode == Mode::SystemThreads &&
+        rowCopy.has_value() &&
+        !rowCopy->protectedTarget &&
+        rowCopy->threadId != 0U &&
+        rowCopy->startAddress != 0U &&
+        rowCopy->createTime100ns != 0U;
     suspendAction->setEnabled(actionAllowed);
     resumeAction->setEnabled(actionAllowed);
     terminateAction->setEnabled(actionAllowed);
     QAction* selectedAction = actionMenu.exec(m_table->viewport()->mapToGlobal(localPosition));
+    if (!rowCopy.has_value())
+    {
+        return;
+    }
     if (selectedAction == suspendAction)
     {
-        runControlAction(KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND);
+        runControlAction(*rowCopy, KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND);
     }
     else if (selectedAction == resumeAction)
     {
-        runControlAction(KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME);
+        runControlAction(*rowCopy, KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME);
     }
     else if (selectedAction == terminateAction)
     {
-        runControlAction(KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE);
+        runControlAction(*rowCopy, KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE);
     }
 }
 
 void KernelThreadAuditTab::runControlAction(const unsigned long action)
 {
-    const ThreadRow* row = selectedRow();
-    if (row == nullptr)
+    const ThreadRow* const selected = selectedRow();
+    if (selected == nullptr)
     {
         return;
     }
-    if (row->protectedTarget || row->startAddress == 0U)
+    const ThreadRow row = *selected;
+    runControlAction(row, action);
+}
+
+void KernelThreadAuditTab::runControlAction(
+    const ThreadRow& row,
+    const unsigned long action)
+{
+    if (m_mode != Mode::SystemThreads ||
+        row.protectedTarget ||
+        row.threadId == 0U ||
+        row.startAddress == 0U ||
+        row.createTime100ns == 0U)
     {
         showResultMessage(
             this,
             false,
             threadAuditText("thread_audit.dialog.blocked.title", QStringLiteral("系统线程操作已阻止")),
-            threadAuditText("thread_audit.dialog.blocked.body", QStringLiteral("该线程受到保护：%1")).arg(row->protectionReason));
+            threadAuditText("thread_audit.dialog.blocked.body", QStringLiteral("该线程受到保护：%1"))
+                .arg(protectionReasonText(row.protectionKind)));
         return;
     }
 
-    const QString targetText = QStringLiteral("TID=%1\nStart=%2\nModule=%3")
-        .arg(row->threadId)
-        .arg(addressText(row->startAddress))
-        .arg(row->module.name);
+    const QString targetText = QStringLiteral(
+        "TID=%1\nStart=%2\nCreateTime100ns=%3\nModule=%4")
+        .arg(row.threadId)
+        .arg(addressText(row.startAddress))
+        .arg(static_cast<qulonglong>(row.createTime100ns))
+        .arg(row.module.name);
     const bool terminating = action == KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE;
     const QString actionTitle = terminating
         ? threadAuditText("thread_audit.dialog.terminate.title", QStringLiteral("终止系统线程"))
@@ -620,7 +731,7 @@ void KernelThreadAuditTab::runControlAction(const unsigned long action)
             threadAuditText(
                 "thread_audit.dialog.terminate.second.body",
                 QStringLiteral("这是不可逆操作。R0 会再次校验线程身份，但无法保证目标驱动可以安全恢复。\n\n再次确认终止 TID %1？"))
-                .arg(row->threadId)))
+                .arg(row.threadId)))
     {
         return;
     }
@@ -631,8 +742,9 @@ void KernelThreadAuditTab::runControlAction(const unsigned long action)
     const bool uiConfirmed = action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME;
     const ksword::ark::DriverClient driverClient;
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
-        row->threadId,
-        row->startAddress,
+        row.threadId,
+        row.startAddress,
+        row.createTime100ns,
         action,
         terminateMethod,
         uiConfirmed);
@@ -642,7 +754,7 @@ void KernelThreadAuditTab::runControlAction(const unsigned long action)
     {
         info << controlEvent
             << "[KernelThreadAuditTab] 系统线程控制完成, tid="
-            << row->threadId
+            << row.threadId
             << ", action="
             << action
             << eol;
@@ -651,7 +763,7 @@ void KernelThreadAuditTab::runControlAction(const unsigned long action)
     {
         err << controlEvent
             << "[KernelThreadAuditTab] 系统线程控制失败, tid="
-            << row->threadId
+            << row.threadId
             << ", action="
             << action
             << ", detail="
@@ -762,6 +874,189 @@ QString KernelThreadAuditTab::addressText(const std::uint64_t addressValue)
     return QStringLiteral("0x%1")
         .arg(static_cast<qulonglong>(addressValue), 0, 16)
         .toUpper();
+}
+
+QString KernelThreadAuditTab::pointerText(const std::uint64_t addressValue)
+{
+    return QStringLiteral("0x%1")
+        .arg(static_cast<qulonglong>(addressValue), 0, 16)
+        .toUpper();
+}
+
+QString KernelThreadAuditTab::protectionReasonText(
+    const ProtectionKind protectionKind)
+{
+    switch (protectionKind)
+    {
+    case ProtectionKind::UnknownModule:
+        return threadAuditText(
+            "thread_audit.protection.unknown",
+            QStringLiteral("启动入口归属未知"));
+    case ProtectionKind::KernelImage:
+        return threadAuditText(
+            "thread_audit.protection.kernel",
+            QStringLiteral("Windows 内核线程"));
+    case ProtectionKind::MissingThreadIdentity:
+        return threadAuditText(
+            "thread_audit.protection.identity_missing",
+            QStringLiteral("启动地址或创建时间缺失，危险操作已关闭"));
+    case ProtectionKind::ThirdPartyR0Recheck:
+        return threadAuditText(
+            "thread_audit.protection.r0_recheck",
+            QStringLiteral("第三方模块；操作时由 R0 精确复核身份"));
+    case ProtectionKind::ReadOnlyWorkQueueEvidence:
+        return threadAuditText(
+            "thread_audit.protection.read_only",
+            QStringLiteral("只读工作队列证据，不提供管理动作"));
+    default:
+        return threadAuditText(
+            "thread_audit.protection.unknown",
+            QStringLiteral("启动入口归属未知"));
+    }
+}
+
+QString KernelThreadAuditTab::queueTypeText(const std::uint32_t queueType)
+{
+    switch (queueType)
+    {
+    case KSWORD_ARK_WORK_QUEUE_TYPE_CRITICAL:
+        return threadAuditText(
+            "thread_audit.queue.critical",
+            QStringLiteral("Critical"));
+    case KSWORD_ARK_WORK_QUEUE_TYPE_DELAYED:
+        return threadAuditText(
+            "thread_audit.queue.delayed",
+            QStringLiteral("Delayed"));
+    case KSWORD_ARK_WORK_QUEUE_TYPE_HYPERCRITICAL:
+        return threadAuditText(
+            "thread_audit.queue.hypercritical",
+            QStringLiteral("HyperCritical"));
+    case KSWORD_ARK_WORK_QUEUE_TYPE_SHARED_WORKER:
+        return threadAuditText(
+            "thread_audit.queue.shared_worker",
+            QStringLiteral("关联工作线程"));
+    default:
+        return QStringLiteral("Unknown(%1)").arg(queueType);
+    }
+}
+
+QString KernelThreadAuditTab::workQueueEntryStatusText(
+    const std::uint32_t status)
+{
+    switch (status)
+    {
+    case KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_OK:
+        return QStringLiteral("OK");
+    case KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_READ_FAILED:
+        return threadAuditText(
+            "thread_audit.work_queue.entry.read_failed",
+            QStringLiteral("读取失败"));
+    case KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_ROUTINE_UNRESOLVED:
+        return threadAuditText(
+            "thread_audit.work_queue.entry.module_unresolved",
+            QStringLiteral("例程模块未解析"));
+    case KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_ROUTINE_NOT_EXECUTABLE:
+        return threadAuditText(
+            "thread_audit.work_queue.entry.not_executable",
+            QStringLiteral("例程不在可执行节"));
+    case KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_REFERENCE_FAILED:
+        return threadAuditText(
+            "thread_audit.work_queue.entry.reference_failed",
+            QStringLiteral("线程对象引用失败"));
+    case KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_IDENTITY_FAILED:
+        return threadAuditText(
+            "thread_audit.work_queue.entry.identity_failed",
+            QStringLiteral("线程身份验证失败"));
+    default:
+        return QStringLiteral("Unknown(%1)").arg(status);
+    }
+}
+
+QString KernelThreadAuditTab::snapshotDiagnosticText(
+    const Snapshot& snapshot,
+    const Mode mode)
+{
+    QStringList diagnostics;
+    if (mode == Mode::WorkQueueThreads)
+    {
+        switch (snapshot.workQueueQueryStatus)
+        {
+        case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_OK:
+            diagnostics << threadAuditText(
+                "thread_audit.work_queue.query.ok",
+                QStringLiteral("精确身份与布局已验证"));
+            break;
+        case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED:
+            diagnostics << threadAuditText(
+                "thread_audit.work_queue.query.unsupported",
+                QStringLiteral("当前构建缺少完整精确描述，已关闭枚举"));
+            break;
+        case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_PARTIAL:
+            diagnostics << threadAuditText(
+                "thread_audit.work_queue.query.partial",
+                QStringLiteral("快照部分完成，异常已计数"));
+            break;
+        case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_INVALID_LAYOUT:
+            diagnostics << threadAuditText(
+                "thread_audit.work_queue.query.invalid_layout",
+                QStringLiteral("结构描述边界无效，已关闭枚举"));
+            break;
+        case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_IDENTITY_MISMATCH:
+            diagnostics << threadAuditText(
+                "thread_audit.work_queue.query.identity_mismatch",
+                QStringLiteral("PE/PDB 身份不匹配，已关闭枚举"));
+            break;
+        case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_READ_FAILED:
+            diagnostics << threadAuditText(
+                "thread_audit.work_queue.query.read_failed",
+                QStringLiteral("内核证据读取失败"));
+            break;
+        default:
+            diagnostics << QStringLiteral("QueryStatus=%1")
+                .arg(snapshot.workQueueQueryStatus);
+            break;
+        }
+        if ((snapshot.diagnosticFlags & DiagnosticWorkQueueTransportFailed) != 0U)
+        {
+            diagnostics << QStringLiteral("Win32=%1").arg(snapshot.r0Win32Error);
+        }
+        if ((snapshot.diagnosticFlags & DiagnosticWorkQueuePartial) != 0U)
+        {
+            diagnostics << QStringLiteral(
+                "corrupt=%1, read=%2, reference=%3, NTSTATUS=0x%4")
+                .arg(snapshot.workQueueCorruptCount)
+                .arg(snapshot.workQueueReadFailureCount)
+                .arg(snapshot.workQueueReferenceFailureCount)
+                .arg(static_cast<unsigned long>(snapshot.workQueueLastStatus), 8, 16, QLatin1Char('0'));
+        }
+    }
+    else
+    {
+        if ((snapshot.diagnosticFlags & DiagnosticR3EnumerationEmpty) != 0U)
+        {
+            diagnostics << threadAuditText(
+                "thread_audit.diagnostic.r3_empty",
+                QStringLiteral("R3 未返回 System 线程"));
+        }
+        if ((snapshot.diagnosticFlags & DiagnosticR0ThreadUnavailable) != 0U)
+        {
+            diagnostics << QStringLiteral("R0 Win32=%1").arg(snapshot.r0Win32Error);
+        }
+        if ((snapshot.diagnosticFlags & DiagnosticModuleUnavailable) != 0U)
+        {
+            diagnostics << QStringLiteral("ModuleStatus=%1, NTSTATUS=0x%2, bytes=%3")
+                .arg(static_cast<std::uint32_t>(snapshot.moduleQueryStatus))
+                .arg(static_cast<unsigned long>(snapshot.moduleNativeStatus), 8, 16, QLatin1Char('0'))
+                .arg(snapshot.moduleRequiredBytes);
+        }
+        if (diagnostics.isEmpty())
+        {
+            diagnostics << threadAuditText(
+                "thread_audit.diagnostic.complete",
+                QStringLiteral("身份与模块证据完整"));
+        }
+    }
+    return diagnostics.join(QStringLiteral(" | "));
 }
 
 void KernelThreadAuditTab::changeEvent(QEvent* event)

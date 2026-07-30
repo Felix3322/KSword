@@ -79,8 +79,8 @@ namespace ksword::ark
         IoResult terminateThread(DriverHandle& handle, std::uint32_t threadId, std::uint32_t processId, long exitStatus) const;
         IoResult setThreadSuspended(std::uint32_t threadId, std::uint32_t processId, bool suspended) const;
         IoResult setThreadSuspended(DriverHandle& handle, std::uint32_t threadId, std::uint32_t processId, bool suspended) const;
-        IoResult controlDriverThread(std::uint32_t threadId, std::uint64_t expectedStartAddress, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
-        IoResult controlDriverThread(DriverHandle& handle, std::uint32_t threadId, std::uint64_t expectedStartAddress, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
+        IoResult controlDriverThread(std::uint32_t threadId, std::uint64_t expectedStartAddress, std::uint64_t expectedCreateTime100ns, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
+        IoResult controlDriverThread(DriverHandle& handle, std::uint32_t threadId, std::uint64_t expectedStartAddress, std::uint64_t expectedCreateTime100ns, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
         IoResult experimentalReturnToFirmware() const;
         IoResult suspendProcess(std::uint32_t processId) const;
         IoResult setProcessProtection(std::uint32_t processId, std::uint8_t protectionLevel) const;
@@ -104,6 +104,9 @@ namespace ksword::ark
 
         ProcessEnumResult enumerateProcesses(unsigned long flags) const;
         ThreadEnumResult enumerateThreads(unsigned long flags, std::uint32_t processId = 0) const;
+        WorkQueueEnumResult enumerateWorkQueues(
+            unsigned long flags = KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_ALL,
+            unsigned long maxEntries = KSWORD_ARK_WORK_QUEUE_DEFAULT_MAX_ENTRIES) const;
         HandleEnumResult enumerateProcessHandles(std::uint32_t processId, unsigned long flags = KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_ALL) const;
         HandleObjectQueryResult queryHandleObject(std::uint32_t processId, std::uint64_t handleValue, unsigned long flags = KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL, unsigned long requestedAccess = 0) const;
         AlpcPortQueryResult queryAlpcPort(std::uint32_t processId, std::uint64_t handleValue, unsigned long flags = KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_ALL) const;

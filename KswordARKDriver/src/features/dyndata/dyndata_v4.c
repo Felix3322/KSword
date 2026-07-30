@@ -1002,6 +1002,186 @@ Return Value:
 }
 
 NTSTATUS
+KswordARKDynDataV4SnapshotWorkQueueLayout(
+    _Out_ KSW_DYN_V4_WORK_QUEUE_LAYOUT* LayoutOut
+    )
+/*++
+
+Routine Description:
+
+    Copy the complete, identity-matched ntoskrnl work-queue layout. Every item
+    is required; consumers never substitute fixed offsets or scan for globals.
+
+Return Value:
+
+    STATUS_SUCCESS only when all twenty-three PDB-derived items are present with the
+    expected kinds. Missing or malformed descriptors fail closed.
+
+--*/
+{
+    KSW_DYN_V4_MODULE_STATE* moduleState = NULL;
+    ULONG itemIndex = 0UL;
+    ULONG foundMask = 0UL;
+
+    if (LayoutOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
+
+    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    moduleState = &g_KswordDynDataV4State.Modules[0];
+    if (!moduleState->Occupied ||
+        moduleState->PublicEntry.module.image.classId != KSW_DYN_PROFILE_CLASS_NTOSKRNL ||
+        moduleState->StoredItemCount > KSW_DYN_V4_MAX_ITEMS_PER_MODULE) {
+        ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    LayoutOut->ModuleBase = moduleState->PublicEntry.module.image.imageBase;
+    LayoutOut->ModuleSize = moduleState->PublicEntry.module.image.sizeOfImage;
+    for (itemIndex = 0UL; itemIndex < moduleState->StoredItemCount; ++itemIndex) {
+        const KSW_DYN_V4_ITEM_PACKET* item = &moduleState->Items[itemIndex];
+        ULONG* destination = NULL;
+        ULONG expectedKind = KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET;
+        ULONG bit = 0UL;
+
+        if (item->capabilityGroupId != KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE ||
+            item->valueHigh != 0UL ||
+            item->aux1 != 0UL ||
+            item->aux2 != 0UL ||
+            item->aux3 != 0UL) {
+            continue;
+        }
+        switch (item->itemId) {
+        case KSW_DYN_V4_ITEM_ID_WQ_PSP_SYSTEM_PARTITION:
+            destination = &LayoutOut->PspSystemPartitionRva;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_GLOBAL_RVA;
+            bit = 0x00000001UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EXP_BUILTIN_PRIORITIES:
+            destination = &LayoutOut->ExpBuiltinPrioritiesRva;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_GLOBAL_RVA;
+            bit = 0x00000002UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EPARTITION_EX_PARTITION:
+            destination = &LayoutOut->EpartitionExPartition;
+            bit = 0x00000004UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EX_PARTITION_WORK_QUEUES:
+            destination = &LayoutOut->ExPartitionWorkQueues;
+            bit = 0x00000008UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_WORK_PRI_QUEUE:
+            destination = &LayoutOut->ExWorkQueueWorkPriQueue;
+            bit = 0x00000010UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_QUEUE_INDEX:
+            destination = &LayoutOut->ExWorkQueueQueueIndex;
+            bit = 0x00000020UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_ENTRY_LIST_HEAD:
+            destination = &LayoutOut->KpriQueueEntryListHead;
+            bit = 0x00000040UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_THREAD_LIST_HEAD:
+            destination = &LayoutOut->KpriQueueThreadListHead;
+            bit = 0x00000080UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_QUEUE:
+            destination = &LayoutOut->KthreadQueue;
+            bit = 0x00000100UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_QUEUE_LIST_ENTRY:
+            destination = &LayoutOut->KthreadQueueListEntry;
+            bit = 0x00000200UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_LIST:
+            destination = &LayoutOut->WorkItemList;
+            bit = 0x00000400UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_ROUTINE:
+            destination = &LayoutOut->WorkItemRoutine;
+            bit = 0x00000800UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_PARAMETER:
+            destination = &LayoutOut->WorkItemParameter;
+            bit = 0x00001000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EX_POOL_UNTRUSTED:
+            destination = &LayoutOut->ExPoolUntrusted;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_ENUM_VALUE;
+            bit = 0x00002000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EPARTITION_TYPE_SIZE:
+            destination = &LayoutOut->EpartitionTypeSize;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_TYPE_SIZE;
+            bit = 0x00004000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EX_PARTITION_TYPE_SIZE:
+            destination = &LayoutOut->ExPartitionTypeSize;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_TYPE_SIZE;
+            bit = 0x00008000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_TYPE_SIZE:
+            destination = &LayoutOut->ExWorkQueueTypeSize;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_TYPE_SIZE;
+            bit = 0x00010000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_TYPE_SIZE:
+            destination = &LayoutOut->KpriQueueTypeSize;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_TYPE_SIZE;
+            bit = 0x00020000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_TYPE_SIZE:
+            destination = &LayoutOut->KthreadTypeSize;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_TYPE_SIZE;
+            bit = 0x00040000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_TYPE_SIZE:
+            destination = &LayoutOut->WorkItemTypeSize;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_TYPE_SIZE;
+            bit = 0x00080000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_START_ADDRESS:
+            destination = &LayoutOut->EthreadStartAddress;
+            bit = 0x00100000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_TYPE_SIZE:
+            destination = &LayoutOut->EthreadTypeSize;
+            expectedKind = KSW_DYN_V4_ITEM_KIND_TYPE_SIZE;
+            bit = 0x00200000UL;
+            break;
+        case KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_TCB:
+            destination = &LayoutOut->EthreadTcb;
+            bit = 0x00400000UL;
+            break;
+        default:
+            break;
+        }
+
+        if (destination != NULL &&
+            item->itemKind == expectedKind &&
+            (foundMask & bit) == 0UL &&
+            ((expectedKind == KSW_DYN_V4_ITEM_KIND_ENUM_VALUE &&
+              item->aux0 == sizeof(ULONG)) ||
+             (expectedKind != KSW_DYN_V4_ITEM_KIND_ENUM_VALUE &&
+              item->aux0 == 0UL))) {
+            *destination = item->valueLow;
+            foundMask |= bit;
+        }
+    }
+    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+
+    if (foundMask != 0x007FFFFFUL ||
+        LayoutOut->ModuleBase == 0ULL ||
+        LayoutOut->ModuleSize == 0UL) {
+        RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
+        return STATUS_NOT_SUPPORTED;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
 KswordARKDynDataV4SnapshotCiKernelHashLayout(
     _Out_ KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT* LayoutOut
     )

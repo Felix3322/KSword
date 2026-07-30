@@ -1568,6 +1568,7 @@ void ProcessDock::showThreadTableContextMenu(const QPoint& localPosition)
         clickedThreadRecord != nullptr &&
         clickedThreadRecord->ownerPid == 4U &&
         clickedThreadRecord->threadId != 0U &&
+        clickedThreadRecord->createTime100ns != 0ULL &&
         (clickedThreadRecord->startAddress != 0ULL ||
          clickedThreadRecord->win32StartAddress != 0ULL);
     r0SuspendThreadAction->setEnabled(hasR0ThreadControlTarget);
@@ -1882,7 +1883,8 @@ void ProcessDock::executeR0ResumeThreadAction()
 void ProcessDock::executeSuspendDriverThreadAction()
 {
     const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid != 4U || threadRecord->threadId == 0U)
+    if (threadRecord == nullptr || threadRecord->ownerPid != 4U ||
+        threadRecord->threadId == 0U || threadRecord->createTime100ns == 0ULL)
     {
         return;
     }
@@ -1915,6 +1917,7 @@ void ProcessDock::executeSuspendDriverThreadAction()
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
         threadRecord->threadId,
         startAddress,
+        threadRecord->createTime100ns,
         KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND,
         KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NONE,
         true);
@@ -1938,7 +1941,8 @@ void ProcessDock::executeSuspendDriverThreadAction()
 void ProcessDock::executeResumeDriverThreadAction()
 {
     const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid != 4U || threadRecord->threadId == 0U)
+    if (threadRecord == nullptr || threadRecord->ownerPid != 4U ||
+        threadRecord->threadId == 0U || threadRecord->createTime100ns == 0ULL)
     {
         return;
     }
@@ -1955,6 +1959,7 @@ void ProcessDock::executeResumeDriverThreadAction()
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
         threadRecord->threadId,
         startAddress,
+        threadRecord->createTime100ns,
         KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME,
         KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NONE,
         false);
@@ -1978,7 +1983,8 @@ void ProcessDock::executeResumeDriverThreadAction()
 void ProcessDock::executeTerminateDriverThreadAction(const unsigned long terminateMethod)
 {
     const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid != 4U || threadRecord->threadId == 0U)
+    if (threadRecord == nullptr || threadRecord->ownerPid != 4U ||
+        threadRecord->threadId == 0U || threadRecord->createTime100ns == 0ULL)
     {
         return;
     }
@@ -2031,6 +2037,7 @@ void ProcessDock::executeTerminateDriverThreadAction(const unsigned long termina
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
         threadRecord->threadId,
         startAddress,
+        threadRecord->createTime100ns,
         KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE,
         terminateMethod,
         true);

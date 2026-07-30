@@ -3108,6 +3108,21 @@ void ProcessDetailWindow::requestAsyncThreadInspectRefresh()
                             threadEntry.th32ThreadID);
                         if (threadHandle != nullptr)
                         {
+                            FILETIME createTime{};
+                            FILETIME exitTime{};
+                            FILETIME kernelTime{};
+                            FILETIME userTime{};
+                            if (GetThreadTimes(
+                                threadHandle,
+                                &createTime,
+                                &exitTime,
+                                &kernelTime,
+                                &userTime) != FALSE)
+                            {
+                                rowItem.createTime100ns =
+                                    (static_cast<std::uint64_t>(createTime.dwHighDateTime) << 32U) |
+                                    static_cast<std::uint64_t>(createTime.dwLowDateTime);
+                            }
                             rowItem.priorityValue = GetThreadPriority(threadHandle);
                             if (ntQueryThread != nullptr)
                             {

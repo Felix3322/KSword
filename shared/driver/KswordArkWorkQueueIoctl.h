@@ -1,0 +1,150 @@
+#pragma once
+
+#include "KswordArkThreadIoctl.h"
+
+// ============================================================
+// KswordArkWorkQueueIoctl.h
+// 作用：
+// - 定义只读 Ex 工作队列审计协议；
+// - R0 只接受与当前 ntoskrnl PE/PDB 身份匹配的 DynData v4 布局；
+// - 未知结构、缺失字段和不一致链表均显式降级，不做全局扫描或偏移猜测。
+// ============================================================
+
+#define KSWORD_ARK_WORK_QUEUE_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_IOCTL_FUNCTION_ENUM_WORK_QUEUE 0x852UL
+
+#define IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_ENUM_WORK_QUEUE, \
+        METHOD_BUFFERED, \
+        FILE_READ_ACCESS)
+
+#define KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORK_ITEMS     0x00000001UL
+#define KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORKER_THREADS 0x00000002UL
+#define KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_ALL \
+    (KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORK_ITEMS | \
+     KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORKER_THREADS)
+#define KSWORD_ARK_WORK_QUEUE_FLAG_VALID_MASK KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_ALL
+
+#define KSWORD_ARK_WORK_QUEUE_DEFAULT_MAX_ENTRIES 1024UL
+#define KSWORD_ARK_WORK_QUEUE_MAX_ENTRIES 4096UL
+#define KSWORD_ARK_WORK_QUEUE_MAX_NODES 256UL
+#define KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT 32UL
+#define KSWORD_ARK_WORK_QUEUE_MODULE_NAME_BYTES 96U
+#define KSWORD_ARK_WORK_QUEUE_MODULE_PATH_BYTES 256U
+
+// queueType 与 Windows WORK_QUEUE_TYPE 的前三种语义保持一致，但协议使用
+// 独立稳定值，避免把私有内核枚举值直接暴露为 ABI。
+#define KSWORD_ARK_WORK_QUEUE_TYPE_CRITICAL      1UL
+#define KSWORD_ARK_WORK_QUEUE_TYPE_DELAYED       2UL
+#define KSWORD_ARK_WORK_QUEUE_TYPE_HYPERCRITICAL 3UL
+#define KSWORD_ARK_WORK_QUEUE_TYPE_SHARED_WORKER 4UL
+
+#define KSWORD_ARK_WORK_QUEUE_ROW_WORK_ITEM     1UL
+#define KSWORD_ARK_WORK_QUEUE_ROW_WORKER_THREAD 2UL
+
+#define KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_OK               0UL
+#define KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED      1UL
+#define KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_PARTIAL          2UL
+#define KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_INVALID_LAYOUT   3UL
+#define KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_IDENTITY_MISMATCH 4UL
+#define KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_READ_FAILED      5UL
+
+#define KSWORD_ARK_WORK_QUEUE_STATUS_IDENTITY_MATCHED 0x00000001UL
+#define KSWORD_ARK_WORK_QUEUE_STATUS_LAYOUT_VALIDATED 0x00000002UL
+#define KSWORD_ARK_WORK_QUEUE_STATUS_PARTIAL          0x00000004UL
+#define KSWORD_ARK_WORK_QUEUE_STATUS_TRUNCATED        0x00000008UL
+#define KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST     0x00000010UL
+#define KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE     0x00000020UL
+#define KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE 0x00000040UL
+#define KSWORD_ARK_WORK_QUEUE_STATUS_VALID_MASK \
+    (KSWORD_ARK_WORK_QUEUE_STATUS_IDENTITY_MATCHED | \
+     KSWORD_ARK_WORK_QUEUE_STATUS_LAYOUT_VALIDATED | \
+     KSWORD_ARK_WORK_QUEUE_STATUS_PARTIAL | \
+     KSWORD_ARK_WORK_QUEUE_STATUS_TRUNCATED | \
+     KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST | \
+     KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE | \
+     KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE)
+
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_QUEUE_VALIDATED      0x00000001UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_ROUTINE_PRESENT       0x00000002UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_PARAMETER_PRESENT     0x00000004UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_MODULE_RESOLVED       0x00000008UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_EXECUTABLE_SECTION    0x00000010UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_REFERENCED     0x00000020UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_IDENTITY_VALID 0x00000040UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_VALID_MASK \
+    (KSWORD_ARK_WORK_QUEUE_ENTRY_QUEUE_VALIDATED | \
+     KSWORD_ARK_WORK_QUEUE_ENTRY_ROUTINE_PRESENT | \
+     KSWORD_ARK_WORK_QUEUE_ENTRY_PARAMETER_PRESENT | \
+     KSWORD_ARK_WORK_QUEUE_ENTRY_MODULE_RESOLVED | \
+     KSWORD_ARK_WORK_QUEUE_ENTRY_EXECUTABLE_SECTION | \
+     KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_REFERENCED | \
+     KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_IDENTITY_VALID)
+
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_OK                 0UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_READ_FAILED        1UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_ROUTINE_UNRESOLVED  2UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_ROUTINE_NOT_EXECUTABLE 3UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_REFERENCE_FAILED 4UL
+#define KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_IDENTITY_FAILED  5UL
+
+typedef struct _KSWORD_ARK_ENUM_WORK_QUEUE_REQUEST
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long flags;
+    unsigned long maxEntries;
+    unsigned long reserved0;
+    unsigned long reserved1;
+    unsigned long reserved2;
+    unsigned long reserved3;
+} KSWORD_ARK_ENUM_WORK_QUEUE_REQUEST;
+
+typedef struct _KSWORD_ARK_WORK_QUEUE_ENTRY
+{
+    unsigned long size;
+    unsigned long rowKind;
+    unsigned long queueType;
+    unsigned long priorityIndex;
+    unsigned long nodeIndex;
+    unsigned long flags;
+    unsigned long status;
+    unsigned long reserved0;
+    unsigned long long queueAddress;
+    unsigned long long workItemAddress;
+    unsigned long long routineAddress;
+    unsigned long long parameterAddress;
+    unsigned long long threadObject;
+    unsigned long threadId;
+    unsigned long moduleSize;
+    unsigned long long threadCreateTime100ns;
+    unsigned long long moduleBase;
+    char moduleName[KSWORD_ARK_WORK_QUEUE_MODULE_NAME_BYTES];
+    char modulePath[KSWORD_ARK_WORK_QUEUE_MODULE_PATH_BYTES];
+} KSWORD_ARK_WORK_QUEUE_ENTRY;
+
+typedef struct _KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long queryStatus;
+    unsigned long statusFlags;
+    unsigned long totalCount;
+    unsigned long returnedCount;
+    unsigned long entrySize;
+    unsigned long nodeCount;
+    unsigned long queuesVisited;
+    unsigned long corruptListCount;
+    unsigned long readFailureCount;
+    unsigned long referenceFailureCount;
+    long lastStatus;
+    unsigned long reserved0;
+    unsigned long reserved1;
+    unsigned long reserved2;
+    KSWORD_ARK_WORK_QUEUE_ENTRY entries[1];
+} KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE;
+
+#define KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE \
+    (sizeof(KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE) - sizeof(KSWORD_ARK_WORK_QUEUE_ENTRY))

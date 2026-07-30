@@ -8,6 +8,7 @@
 #include "driver/KswordArkDynDataIoctl.h"
 #include "driver/KswordArkCapabilityIoctl.h"
 #include "driver/KswordArkThreadIoctl.h"
+#include "driver/KswordArkWorkQueueIoctl.h"
 #include "driver/KswordArkHandleIoctl.h"
 #include "driver/KswordArkAlpcIoctl.h"
 #include "driver/KswordArkSectionIoctl.h"

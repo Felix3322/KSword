@@ -203,6 +203,9 @@
     <ClInclude Include="include\ark\ark_thread.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkWorkQueueIoctl.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="include\ark\ark_handle.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -595,6 +598,9 @@
       <Filter>Source Files\Features\Thread</Filter>
     </ClCompile>
     <ClCompile Include="src\features\thread\thread_ioctl.c">
+      <Filter>Source Files\Features\Thread</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\thread\work_queue_query.c">
       <Filter>Source Files\Features\Thread</Filter>
     </ClCompile>
     <ClCompile Include="src\features\handle\handle_support.c">

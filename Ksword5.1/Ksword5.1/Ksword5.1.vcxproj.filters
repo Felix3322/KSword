@@ -788,6 +788,9 @@
     <ClCompile Include="ArkDriverClient\ArkDriverProcess.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverWorkQueue.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverHandle.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>

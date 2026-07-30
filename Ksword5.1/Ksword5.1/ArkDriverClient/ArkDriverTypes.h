@@ -22,6 +22,7 @@
 #include "../../../shared/driver/KswordArkMutationIoctl.h"
 #include "../../../shared/driver/KswordArkProcessIoctl.h"
 #include "../../../shared/driver/KswordArkThreadIoctl.h"
+#include "../../../shared/driver/KswordArkWorkQueueIoctl.h"
 #include "../../../shared/driver/KswordArkAlpcIoctl.h"
 #include "../../../shared/driver/KswordArkSectionIoctl.h"
 #include "../../../shared/driver/KswordArkRegistryIoctl.h"
@@ -249,6 +250,47 @@ namespace ksword::ark
         std::uint32_t totalCount = 0;
         std::uint32_t returnedCount = 0;
         std::vector<ThreadEntry> entries;
+    };
+
+    // WorkQueueEntry preserves one validated read-only R0 work-item or worker-thread row.
+    struct WorkQueueEntry
+    {
+        std::uint32_t rowKind = 0;
+        std::uint32_t queueType = 0;
+        std::uint32_t priorityIndex = 0;
+        std::uint32_t nodeIndex = 0;
+        std::uint32_t flags = 0;
+        std::uint32_t status = 0;
+        std::uint64_t queueAddress = 0;
+        std::uint64_t workItemAddress = 0;
+        std::uint64_t routineAddress = 0;
+        std::uint64_t parameterAddress = 0;
+        std::uint64_t threadObject = 0;
+        std::uint32_t threadId = 0;
+        std::uint64_t threadCreateTime100ns = 0;
+        std::uint64_t moduleBase = 0;
+        std::uint32_t moduleSize = 0;
+        std::string moduleName;
+        std::string modulePath;
+    };
+
+    // WorkQueueEnumResult separates transport success from explicit fail-closed R0 status.
+    struct WorkQueueEnumResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t version = 0;
+        std::uint32_t queryStatus = KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED;
+        std::uint32_t statusFlags = 0;
+        std::uint32_t totalCount = 0;
+        std::uint32_t returnedCount = 0;
+        std::uint32_t nodeCount = 0;
+        std::uint32_t queuesVisited = 0;
+        std::uint32_t corruptListCount = 0;
+        std::uint32_t readFailureCount = 0;
+        std::uint32_t referenceFailureCount = 0;
+        long lastStatus = 0;
+        std::vector<WorkQueueEntry> entries;
     };
 
     // HandleEntry 是 R0 HandleTable 直接枚举的 R3 侧模型。

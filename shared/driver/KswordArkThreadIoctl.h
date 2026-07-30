@@ -94,8 +94,9 @@ typedef struct _KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST
 } KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST;
 
 // 驱动/System 线程控制协议：
-// - 只接受 PID 4 的系统线程；R0 自行读取真实启动地址并匹配已加载驱动模块；
-// - 拒绝 ntoskrnl 第一模块、KswordARK 自身、当前 IOCTL 执行线程和地址不一致请求；
+// - 只接受 PID 4 的系统线程；R0 自行读取真实启动地址和创建时间；
+// - 危险动作执行前必须精确匹配 TID + StartAddress + CreateTime100ns；
+// - 拒绝 ntoskrnl 第一模块、当前 WDF 驱动实体范围、当前 IOCTL 执行线程和身份不一致请求；
 // - terminate/suspend 必须携带 UI_CONFIRMED，resume 作为恢复动作可直接执行。
 #define IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD \
     CTL_CODE( \
@@ -108,7 +109,10 @@ typedef struct _KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST
 #define KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME    2UL
 #define KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE 3UL
 
+#define KSWORD_ARK_DRIVER_THREAD_CONTROL_PROTOCOL_VERSION 1UL
 #define KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_UI_CONFIRMED 0x00000001UL
+#define KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_VALID_MASK \
+    KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_UI_CONFIRMED
 
 // terminateMethod 只在 ACTION_TERMINATE 时生效。所有后端均为实验性：
 // - PspTerminateThreadByPointer：未文档化、按 ETHREAD 指针进入终止流程；
@@ -124,11 +128,16 @@ typedef struct _KSWORD_ARK_SET_THREAD_SUSPENDED_REQUEST
 
 typedef struct _KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST
 {
+    unsigned long size;
+    unsigned long version;
     unsigned long threadId;
     unsigned long action;
     unsigned long flags;
     unsigned long terminateMethod;
     unsigned long long expectedStartAddress;
+    unsigned long long expectedCreateTime100ns;
+    unsigned long reserved0;
+    unsigned long reserved1;
 } KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST;
 
 // 线程 runtime field sample 请求：
