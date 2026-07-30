@@ -92,6 +92,7 @@ namespace ks::misc
             QWidget* toolbarWidget = nullptr;     // toolbarWidget：刷新/删除/复制/筛选工具栏。
             QPushButton* refreshButton = nullptr; // refreshButton：刷新当前分类按钮。
             QPushButton* deleteButton = nullptr;  // deleteButton：删除选中项按钮。
+            QPushButton* restoreButton = nullptr; // restoreButton：恢复 URL 绑定页上一次删除前的注册表备份。
             QPushButton* copyButton = nullptr;    // copyButton：复制选中注册表路径按钮。
             QLineEdit* filterEdit = nullptr;      // filterEdit：当前分类关键词筛选框。
             QTableWidget* table = nullptr;        // table：右键菜单项列表。
@@ -136,6 +137,30 @@ namespace ks::misc
         // - 处理：收集表格选中行，确认后删除对应注册表子树并刷新；
         // - 返回：无，失败信息通过 QMessageBox 与日志反馈。
         void deleteSelectedEntries(MenuArea area);
+
+        // isUrlBindingDeletionAllowed：
+        // - 输入 entry：准备删除的 URL 绑定快照；
+        // - 处理：放行 HKCU 精确协议/UserChoice，以及未命中系统保护规则的 HKLM 第三方协议；
+        // - 返回：通过不可绕过的执行时安全边界返回 true。
+        static bool isUrlBindingDeletionAllowed(const ContextMenuEntry& entry);
+
+        // isProtectedUrlBindingEntry：
+        // - 输入 entry：URL 协议注册快照；
+        // - 处理：识别已知 Windows 协议、NoRemove、DelegateExecute 与 Packaged COM 标记；
+        // - 返回：属于系统/封装协议且必须避免误删时返回 true。
+        static bool isProtectedUrlBindingEntry(const ContextMenuEntry& entry);
+
+        // createUrlBindingBackup：
+        // - 输入 entryIndexes：即将删除的 URL 绑定条目下标；
+        // - 处理：把完整注册表树复制到当前用户 KSword 备份区并原子切换“最近备份”；
+        // - 返回：全部备份成功返回 true，否则返回 false 并写错误文本。
+        bool createUrlBindingBackup(const QVector<int>& entryIndexes, QString* errorTextOut) const;
+
+        // restoreLastUrlBindingBackup：
+        // - 输入：无；
+        // - 处理：验证备份元数据后把最近一次 URL 绑定删除批次复制回原位置；
+        // - 返回：无，结果通过界面和日志反馈。
+        void restoreLastUrlBindingBackup();
 
         // copySelectedEntries：
         // - 输入 area：目标分区；

@@ -49,7 +49,7 @@ void ContextMenuCleanerTab::initializeUi()
     m_rootLayout->setSpacing(6);
 
     m_hintLabel = new QLabel(
-        QStringLiteral("提示：本页统一管理右键菜单、URL 绑定、文件打开方式和资源管理器主页第三方程序。删除会精确移除表格所示注册表子树或值且不会自动备份；操作前请确认来源，更改后通常需要重启 Explorer 或相关程序才会完全刷新。"),
+        QStringLiteral("提示：本页统一管理右键菜单、URL 绑定、文件打开方式和资源管理器主页第三方程序。URL 绑定删除前会自动备份并可一键恢复；其他分类不会自动备份。操作前请确认来源，更改后通常需要重启 Explorer 或相关程序才会完全刷新。"),
         this);
     m_hintLabel->setWordWrap(true);
     m_hintLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
@@ -121,6 +121,14 @@ void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
     areaWidgets->refreshButton->setToolTip(QStringLiteral("重新枚举当前分类的 Shell 关联注册表项目"));
     areaWidgets->deleteButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_terminate.svg")), QStringLiteral("删除选中"), areaWidgets->toolbarWidget);
     areaWidgets->deleteButton->setToolTip(QStringLiteral("删除表格选中项对应的注册表子树或值"));
+    if (area == MenuArea::UrlBinding)
+    {
+        areaWidgets->restoreButton = new QPushButton(
+            QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+            QStringLiteral("恢复上次删除"),
+            areaWidgets->toolbarWidget);
+        areaWidgets->restoreButton->setToolTip(QStringLiteral("恢复上一次 URL 绑定删除前自动保存的注册表树"));
+    }
     areaWidgets->copyButton = new QPushButton(QIcon(QStringLiteral(":/Icon/log_copy.svg")), QStringLiteral("复制路径"), areaWidgets->toolbarWidget);
     areaWidgets->copyButton->setToolTip(QStringLiteral("复制选中项的注册表路径"));
     areaWidgets->filterEdit = new QLineEdit(areaWidgets->toolbarWidget);
@@ -130,10 +138,18 @@ void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
 
     areaWidgets->refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
     areaWidgets->deleteButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+    if (areaWidgets->restoreButton != nullptr)
+    {
+        areaWidgets->restoreButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+    }
     areaWidgets->copyButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
     toolbarLayout->addWidget(areaWidgets->refreshButton);
     toolbarLayout->addWidget(areaWidgets->deleteButton);
+    if (areaWidgets->restoreButton != nullptr)
+    {
+        toolbarLayout->addWidget(areaWidgets->restoreButton);
+    }
     toolbarLayout->addWidget(areaWidgets->copyButton);
     toolbarLayout->addWidget(areaWidgets->filterEdit, 1);
 
@@ -177,6 +193,12 @@ void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
     connect(areaWidgets->deleteButton, &QPushButton::clicked, this, [this, area]() {
         deleteSelectedEntries(area);
     });
+    if (areaWidgets->restoreButton != nullptr)
+    {
+        connect(areaWidgets->restoreButton, &QPushButton::clicked, this, [this]() {
+            restoreLastUrlBindingBackup();
+        });
+    }
     connect(areaWidgets->copyButton, &QPushButton::clicked, this, [this, area]() {
         copySelectedEntries(area);
     });
@@ -344,6 +366,7 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
 
     QStringList targetPaths;
     QVector<int> deleteableIndexes;
+    int machineScopeTargetCount = 0;
     for (const int entryIndex : selectedIndexes)
     {
         if (entryIndex < 0 || entryIndex >= areaWidgets->entries.size())
@@ -351,11 +374,16 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
             continue;
         }
         const ContextMenuEntry& entry = areaWidgets->entries.at(entryIndex);
-        if (!entry.canDelete)
+        if (!entry.canDelete
+            || (area == MenuArea::UrlBinding && !isUrlBindingDeletionAllowed(entry)))
         {
             continue;
         }
         deleteableIndexes.push_back(entryIndex);
+        if (entry.rootKey == HKEY_LOCAL_MACHINE)
+        {
+            ++machineScopeTargetCount;
+        }
         targetPaths.push_back(registryTargetPathText(
             entry.rootLabel,
             entry.subKeyPath,
@@ -375,18 +403,42 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
     const QString moreText = targetPaths.size() > 8
         ? QStringLiteral("\n... 另有 %1 项").arg(targetPaths.size() - 8)
         : QString();
+    const QString machineScopeWarning = machineScopeTargetCount > 0
+        ? QStringLiteral("\n\n高风险警告：其中 %1 项位于 HKLM，修改会影响所有用户，错误删除可能使协议、应用入口或系统功能失效。KSword 不限制此操作，但只应在确认目标属于第三方软件时继续；恢复 HKLM 备份需要管理员权限。")
+            .arg(machineScopeTargetCount)
+        : QString();
+    const QString confirmationText = area == MenuArea::UrlBinding
+        ? QStringLiteral("将删除 %1 个 URL 绑定注册表子树。删除前会自动备份，可通过“恢复上次删除”还原。%2\n\n%3%4")
+            .arg(targetPaths.size())
+            .arg(machineScopeWarning)
+            .arg(previewText)
+            .arg(moreText)
+        : QStringLiteral("将删除 %1 个注册表子树或值。此操作不会自动备份，删除后通常需要重启 Explorer 或相关程序才会完全生效。\n\n%2%3")
+            .arg(targetPaths.size())
+            .arg(previewText)
+            .arg(moreText);
     const QMessageBox::StandardButton confirmButton = QMessageBox::warning(
         this,
         QStringLiteral("确认删除注册表项目"),
-        QStringLiteral("将删除 %1 个注册表子树或值。此操作不会自动备份，删除后通常需要重启 Explorer 或相关程序才会完全生效。\n\n%2%3")
-            .arg(targetPaths.size())
-            .arg(previewText)
-            .arg(moreText),
+        confirmationText,
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (confirmButton != QMessageBox::Yes)
     {
         return;
+    }
+
+    if (area == MenuArea::UrlBinding)
+    {
+        QString backupError;
+        if (!createUrlBindingBackup(deleteableIndexes, &backupError))
+        {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("URL 绑定备份失败"),
+                QStringLiteral("删除已取消，因为无法建立可恢复备份：\n\n%1").arg(backupError));
+            return;
+        }
     }
 
     QStringList failedMessages;
@@ -398,6 +450,16 @@ void ContextMenuCleanerTab::deleteSelectedEntries(const MenuArea area)
             continue;
         }
         const ContextMenuEntry& entry = areaWidgets->entries.at(entryIndex);
+        if (area == MenuArea::UrlBinding && !isUrlBindingDeletionAllowed(entry))
+        {
+            failedMessages.push_back(QStringLiteral("%1：执行时安全校验拒绝删除")
+                .arg(registryTargetPathText(
+                    entry.rootLabel,
+                    entry.subKeyPath,
+                    entry.deleteKind == DeleteKind::RegistryValue,
+                    entry.valueName)));
+            continue;
+        }
         QString errorText;
         const bool deleteOk = entry.deleteKind == DeleteKind::RegistryValue
             ? deleteRegistryValueWithView(

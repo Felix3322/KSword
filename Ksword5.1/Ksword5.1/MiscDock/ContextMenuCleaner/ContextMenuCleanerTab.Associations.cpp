@@ -2,7 +2,6 @@
 
 #include "ContextMenuCleanerTab.Internal.h"
 
-#include <QDir>
 #include <QSet>
 #include <QStringList>
 
@@ -160,43 +159,87 @@ namespace
         return queryMergedClassValue(relativePath, QString(), viewFlag);
     }
 
-    // isProtectedMachineProtocol：
-    // - 输入 scheme/command：URL scheme 与实际启动命令；
-    // - 处理：识别常见 Windows 核心协议和 Windows 目录内处理器；
-    // - 返回：true 表示机器级系统协议只展示不开放删除。
-    bool isProtectedMachineProtocol(
-        const QString& scheme,
-        const QString& command)
-    {
-        static const QSet<QString> protectedSchemes{
-            QStringLiteral("file"),
-            QStringLiteral("http"),
-            QStringLiteral("https"),
-            QStringLiteral("mailto"),
-            QStringLiteral("ms-settings"),
-            QStringLiteral("search"),
-            QStringLiteral("search-ms"),
-            QStringLiteral("shell")
-        };
-        if (protectedSchemes.contains(scheme.trimmed().toLower()))
-        {
-            return true;
-        }
+}
 
-        // 命令路径判断：
-        // - queryRegistryValueText 已展开 REG_EXPAND_SZ；
-        // - 同时匹配常见环境变量文本，覆盖 REG_SZ 未展开的安装方式。
-        const QString normalizedCommand = QDir::fromNativeSeparators(command).toLower();
-        return normalizedCommand.contains(QStringLiteral("/windows/"))
-            || normalizedCommand.contains(QStringLiteral("%systemroot%"))
-            || normalizedCommand.contains(QStringLiteral("%windir%"));
+bool ContextMenuCleanerTab::isProtectedUrlBindingEntry(const ContextMenuEntry& entry)
+{
+    if (entry.area != MenuArea::UrlBinding
+        || entry.rootKey != HKEY_LOCAL_MACHINE
+        || entry.deleteKind != DeleteKind::RegistryTree)
+    {
+        return false;
     }
+
+    const QString classesPrefix = QStringLiteral("Software\\Classes\\");
+    if (!entry.subKeyPath.startsWith(classesPrefix, Qt::CaseInsensitive))
+    {
+        return true;
+    }
+    const QString schemeName = entry.subKeyPath.mid(classesPrefix.size()).trimmed();
+    if (schemeName.isEmpty() || schemeName.contains('\\'))
+    {
+        return true;
+    }
+
+    // 明确覆盖审计复现项；ms-* 是 Windows 保留 URI 命名空间。
+    static const QSet<QString> protectedSchemes = {
+        QStringLiteral("windowsdefender"),
+        QStringLiteral("ms-device-enrollment"),
+        QStringLiteral("ms-search"),
+        QStringLiteral("ms-windows-search"),
+        QStringLiteral("ms-actioncenter"),
+        QStringLiteral("ms-print-addprinter"),
+        QStringLiteral("explorer.zipselection")
+    };
+    if (protectedSchemes.contains(schemeName.toLower())
+        || schemeName.startsWith(QStringLiteral("ms-"), Qt::CaseInsensitive))
+    {
+        return true;
+    }
+
+    const QString openPath = entry.subKeyPath + QStringLiteral("\\shell\\open");
+    const QString commandPath = openPath + QStringLiteral("\\command");
+    if (registryValueExists(
+            entry.rootKey,
+            entry.subKeyPath,
+            QStringLiteral("EditFlags"),
+            entry.viewFlag)
+        || registryValueExists(
+            entry.rootKey,
+            commandPath,
+            QStringLiteral("DelegateExecute"),
+            entry.viewFlag)
+        || registryValueExists(
+            entry.rootKey,
+            openPath,
+            QStringLiteral("PackageId"),
+            entry.viewFlag)
+        || registryValueExists(
+            entry.rootKey,
+            openPath,
+            QStringLiteral("ActivatableClassId"),
+            entry.viewFlag)
+        || registryValueExists(
+            entry.rootKey,
+            openPath,
+            QStringLiteral("ContractId"),
+            entry.viewFlag)
+        || registryValueExists(
+            entry.rootKey,
+            entry.subKeyPath + QStringLiteral("\\Application"),
+            QStringLiteral("AppUserModelId"),
+            entry.viewFlag))
+    {
+        return true;
+    }
+
+    return false;
 }
 
 // enumerateUrlBindingEntries：
 // - 枚举 Classes 中带 URL Protocol 值的协议注册；
 // - 额外枚举当前用户 UrlAssociations\UserChoice，允许单独清除默认绑定；
-// - 机器级 Windows 核心协议只读保护，当前用户覆盖和第三方协议可删除。
+// - 系统/Packaged COM/DelegateExecute 协议只读，第三方机器级协议保留高风险删除能力。
 QVector<ContextMenuCleanerTab::ContextMenuEntry> ContextMenuCleanerTab::enumerateUrlBindingEntries() const
 {
     QVector<ContextMenuEntry> entries;
@@ -241,9 +284,6 @@ QVector<ContextMenuCleanerTab::ContextMenuEntry> ContextMenuCleanerTab::enumerat
                 protocolPath + QStringLiteral("\\DefaultIcon"),
                 QString(),
                 root.viewFlag).value_or(QString());
-            const bool protectedProtocol = !root.userScope
-                && isProtectedMachineProtocol(schemeName, command);
-
             ContextMenuEntry entry;
             entry.area = MenuArea::UrlBinding;
             entry.rootKey = root.rootKey;
@@ -257,9 +297,12 @@ QVector<ContextMenuCleanerTab::ContextMenuEntry> ContextMenuCleanerTab::enumerat
             entry.itemName = schemeName;
             entry.displayName = firstNonEmpty({ displayName, schemeName });
             entry.commandOrHandler = command;
+            const bool protectedProtocol = isProtectedUrlBindingEntry(entry);
             entry.statusText = protectedProtocol
-                ? QStringLiteral("系统协议（保护）")
-                : (command.trimmed().isEmpty()
+                ? QStringLiteral("系统/封装协议（保护）")
+                : (!root.userScope
+                    ? QStringLiteral("全局第三方协议（高风险，可删除）")
+                    : command.trimmed().isEmpty()
                     ? QStringLiteral("打开命令为空")
                     : QStringLiteral("协议已注册"));
             QStringList details;

@@ -108,6 +108,9 @@ namespace ks::misc::context_menu_cleaner_detail
     // appendOptionalDetail：输入详情列表与键值；处理非空值追加；无返回值。
     void appendOptionalDetail(QStringList* detailList, const QString& name, const QString& value);
 
+    // winErrorText：输入 Win32 错误码；处理解析系统错误文本；返回可读错误信息。
+    QString winErrorText(DWORD errorCode);
+
     // deleteRegistryTreeWithView：输入待删注册表子树；处理按指定视图删除；返回成功布尔值并可写错误文本。
     bool deleteRegistryTreeWithView(HKEY rootKey, const QString& subKeyPath, REGSAM viewFlag, QString* errorTextOut);
 
