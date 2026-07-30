@@ -7460,30 +7460,134 @@ void MonitorDock::clearEtwFilterGroups(const EtwFilterStage stage, const bool re
     rebuildEtwFilterRuleGroupUi(stage);
 }
 
-bool MonitorDock::tryCompileEtwSimpleFilter(
+MonitorDock::EtwSimpleFilterModel MonitorDock::captureEtwSimpleFilterModel(
+    const EtwFilterStage stage) const
+{
+    const EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+    const auto editText = [](QLineEdit* edit) {
+        return edit == nullptr ? QString() : edit->text().trimmed();
+    };
+
+    EtwSimpleFilterModel filterModel;
+    filterModel.enabled = uiState.enabledCheck == nullptr || uiState.enabledCheck->isChecked();
+    filterModel.pidText = editText(uiState.pidEdit);
+    filterModel.processNameText = editText(uiState.processNameEdit);
+    filterModel.filePathText = editText(uiState.filePathEdit);
+    filterModel.eventIdText = editText(uiState.eventIdEdit);
+    filterModel.eventNameText = editText(uiState.eventNameEdit);
+    filterModel.registryPathText = editText(uiState.registryPathEdit);
+    filterModel.networkAddressText = editText(uiState.networkAddressEdit);
+    filterModel.networkPortText = editText(uiState.networkPortEdit);
+    filterModel.statusText = editText(uiState.statusEdit);
+    filterModel.customProviderText = editText(uiState.customProviderEdit);
+    filterModel.customActionText = editText(uiState.customActionEdit);
+
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+    {
+        if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
+        {
+            filterModel.providerPresetNameList.push_back(checkState.valueText);
+        }
+    }
+    for (const EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+    {
+        if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
+        {
+            filterModel.actionPresetList.push_back(checkState.valueText);
+        }
+    }
+    return filterModel;
+}
+
+std::vector<MonitorDock::EtwFilterRuleGroupModel> MonitorDock::captureEtwFilterGroupModels(
+    const EtwFilterStage stage) const
+{
+    const std::vector<std::unique_ptr<EtwFilterRuleGroupUiState>>& groupList =
+        stage == EtwFilterStage::Pre ? m_etwPreFilterRuleGroupUiList : m_etwPostFilterRuleGroupUiList;
+    std::vector<EtwFilterRuleGroupModel> groupModelList;
+    groupModelList.reserve(groupList.size());
+
+    for (const std::unique_ptr<EtwFilterRuleGroupUiState>& groupState : groupList)
+    {
+        if (groupState == nullptr)
+        {
+            continue;
+        }
+
+        EtwFilterRuleGroupModel groupModel;
+        groupModel.groupId = groupState->groupId;
+        groupModel.enabled = groupState->enabledCheck == nullptr || groupState->enabledCheck->isChecked();
+        groupModel.stringMode = etwFilterStringModeFromText(
+            groupState->stringModeCombo == nullptr
+                ? QStringLiteral("regex")
+                : groupState->stringModeCombo->currentData().toString());
+        groupModel.caseSensitive = groupState->caseSensitiveCheck != nullptr
+            && groupState->caseSensitiveCheck->isChecked();
+        groupModel.invertMatch = groupState->invertCheck != nullptr
+            && groupState->invertCheck->isChecked();
+        groupModel.detailVisibleColumnsOnly = groupState->detailVisibleColumnsCheck != nullptr
+            && groupState->detailVisibleColumnsCheck->isChecked();
+        groupModel.detailMatchAllFields = groupState->detailMatchAllFieldsCheck == nullptr
+            || groupState->detailMatchAllFieldsCheck->isChecked();
+
+        for (const EtwFilterCategoryCheckUiState& categoryUi : groupState->categoryCheckList)
+        {
+            if (categoryUi.checkBox != nullptr && categoryUi.checkBox->isChecked())
+            {
+                groupModel.providerCategoryList.push_back(categoryUi.categoryText);
+            }
+        }
+        for (const EtwFilterFieldUiState& fieldUi : groupState->fieldList)
+        {
+            if (fieldUi.inputEdit == nullptr)
+            {
+                continue;
+            }
+
+            const QString inputText = fieldUi.inputEdit->text().trimmed();
+            if (inputText.isEmpty())
+            {
+                continue;
+            }
+
+            EtwFilterRuleFieldModel fieldModel;
+            fieldModel.fieldId = fieldUi.fieldId;
+            fieldModel.fieldKey = fieldUi.fieldKey;
+            fieldModel.fieldLabel = fieldUi.fieldLabel;
+            fieldModel.inputText = inputText;
+            groupModel.fieldList.push_back(std::move(fieldModel));
+        }
+        groupModelList.push_back(std::move(groupModel));
+    }
+    return groupModelList;
+}
+
+MonitorDock::EtwFilterConfigModel MonitorDock::captureEtwFilterConfigModel() const
+{
+    EtwFilterConfigModel filterModel;
+    filterModel.preSimpleFilter = captureEtwSimpleFilterModel(EtwFilterStage::Pre);
+    filterModel.postSimpleFilter = captureEtwSimpleFilterModel(EtwFilterStage::Post);
+    filterModel.preGroupList = captureEtwFilterGroupModels(EtwFilterStage::Pre);
+    filterModel.postGroupList = captureEtwFilterGroupModels(EtwFilterStage::Post);
+    return filterModel;
+}
+
+bool MonitorDock::tryCompileEtwSimpleFilterModel(
     const EtwFilterStage stage,
+    const EtwSimpleFilterModel& filterModel,
     EtwSimpleFilterCompiled& compiledFilterOut,
     QString& errorTextOut) const
 {
     compiledFilterOut = EtwSimpleFilterCompiled{};
     errorTextOut.clear();
-    const EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
-    compiledFilterOut.enabled = uiState.enabledCheck == nullptr || uiState.enabledCheck->isChecked();
-    if (!compiledFilterOut.enabled)
-    {
-        return true;
-    }
+    compiledFilterOut.enabled = filterModel.enabled;
 
     const auto compileNumericRanges = [stage, &errorTextOut](
-        QLineEdit* edit,
+        const QString& inputText,
         const QString& fieldLabel,
         std::vector<EtwFilterNumericRange>& rangesOut,
         const std::uint64_t maximumValue) {
-        if (edit == nullptr)
-        {
-            return true;
-        }
-        for (const QString& tokenText : splitEtwSimpleFilterTokens(edit->text()))
+        for (const QString& tokenText : splitEtwSimpleFilterTokens(inputText))
         {
             EtwFilterNumericRange rangeValue;
             if (!tryParseUInt64RangeToken(tokenText, rangeValue)
@@ -7499,12 +7603,12 @@ bool MonitorDock::tryCompileEtwSimpleFilter(
     };
 
     if (!compileNumericRanges(
-            uiState.pidEdit,
+            filterModel.pidText,
             QStringLiteral("PID"),
             compiledFilterOut.pidRangeList,
             std::numeric_limits<std::uint32_t>::max())
         || !compileNumericRanges(
-            uiState.eventIdEdit,
+            filterModel.eventIdText,
             QStringLiteral("事件ID"),
             compiledFilterOut.eventIdRangeList,
             std::numeric_limits<std::uint16_t>::max()))
@@ -7512,146 +7616,112 @@ bool MonitorDock::tryCompileEtwSimpleFilter(
         return false;
     }
 
-    if (uiState.networkAddressEdit != nullptr)
+    for (const QString& tokenText : splitEtwSimpleFilterTokens(filterModel.networkAddressText))
     {
-        for (const QString& tokenText : splitEtwSimpleFilterTokens(uiState.networkAddressEdit->text()))
+        EtwFilterIpRange rangeValue;
+        if (!tryParseIpv4RangeToken(tokenText, rangeValue))
         {
-            EtwFilterIpRange rangeValue;
-            if (!tryParseIpv4RangeToken(tokenText, rangeValue))
-            {
-                errorTextOut = QStringLiteral("%1简易筛选字段[网络地址]无效值：%2")
-                    .arg(etwFilterStageText(stage), tokenText);
-                return false;
-            }
-            compiledFilterOut.networkAddressRangeList.push_back(rangeValue);
+            errorTextOut = QStringLiteral("%1简易筛选字段[网络地址]无效值：%2")
+                .arg(etwFilterStageText(stage), tokenText);
+            return false;
         }
+        compiledFilterOut.networkAddressRangeList.push_back(rangeValue);
     }
-    if (uiState.networkPortEdit != nullptr)
+    for (const QString& tokenText : splitEtwSimpleFilterTokens(filterModel.networkPortText))
     {
-        for (const QString& tokenText : splitEtwSimpleFilterTokens(uiState.networkPortEdit->text()))
+        EtwFilterPortRange rangeValue;
+        if (!tryParsePortRangeToken(tokenText, rangeValue))
         {
-            EtwFilterPortRange rangeValue;
-            if (!tryParsePortRangeToken(tokenText, rangeValue))
-            {
-                errorTextOut = QStringLiteral("%1简易筛选字段[网络端口]无效值：%2")
-                    .arg(etwFilterStageText(stage), tokenText);
-                return false;
-            }
-            compiledFilterOut.networkPortRangeList.push_back(rangeValue);
+            errorTextOut = QStringLiteral("%1简易筛选字段[网络端口]无效值：%2")
+                .arg(etwFilterStageText(stage), tokenText);
+            return false;
         }
+        compiledFilterOut.networkPortRangeList.push_back(rangeValue);
     }
 
-    for (const EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
-    {
-        if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
-        {
-            compiledFilterOut.providerPresetNameList.push_back(checkState.valueText);
-        }
-    }
-    for (const EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
-    {
-        if (checkState.checkBox != nullptr && checkState.checkBox->isChecked())
-        {
-            compiledFilterOut.actionPresetList.push_back(checkState.valueText);
-        }
-    }
-
-    compiledFilterOut.providerCustomTokenList = uiState.customProviderEdit == nullptr
-        ? QStringList{}
-        : splitEtwSimpleFilterTokens(uiState.customProviderEdit->text());
-    compiledFilterOut.actionCustomTokenList = uiState.customActionEdit == nullptr
-        ? QStringList{}
-        : splitEtwSimpleFilterTokens(uiState.customActionEdit->text());
-    compiledFilterOut.processNameTokenList = uiState.processNameEdit == nullptr
-        ? QStringList{}
-        : splitEtwSimpleFilterTokens(uiState.processNameEdit->text());
-    compiledFilterOut.filePathTokenList = uiState.filePathEdit == nullptr
-        ? QStringList{}
-        : splitEtwSimpleFilterTokens(uiState.filePathEdit->text());
-    compiledFilterOut.eventNameTokenList = uiState.eventNameEdit == nullptr
-        ? QStringList{}
-        : splitEtwSimpleFilterTokens(uiState.eventNameEdit->text());
-    compiledFilterOut.registryPathTokenList = uiState.registryPathEdit == nullptr
-        ? QStringList{}
-        : splitEtwSimpleFilterTokens(uiState.registryPathEdit->text());
-    compiledFilterOut.statusTokenList = uiState.statusEdit == nullptr
-        ? QStringList{}
-        : splitEtwSimpleFilterTokens(uiState.statusEdit->text());
+    compiledFilterOut.providerPresetNameList = filterModel.providerPresetNameList;
+    compiledFilterOut.actionPresetList = filterModel.actionPresetList;
+    compiledFilterOut.providerCustomTokenList =
+        splitEtwSimpleFilterTokens(filterModel.customProviderText);
+    compiledFilterOut.actionCustomTokenList =
+        splitEtwSimpleFilterTokens(filterModel.customActionText);
+    compiledFilterOut.processNameTokenList =
+        splitEtwSimpleFilterTokens(filterModel.processNameText);
+    compiledFilterOut.filePathTokenList =
+        splitEtwSimpleFilterTokens(filterModel.filePathText);
+    compiledFilterOut.eventNameTokenList =
+        splitEtwSimpleFilterTokens(filterModel.eventNameText);
+    compiledFilterOut.registryPathTokenList =
+        splitEtwSimpleFilterTokens(filterModel.registryPathText);
+    compiledFilterOut.statusTokenList =
+        splitEtwSimpleFilterTokens(filterModel.statusText);
     return true;
 }
 
-bool MonitorDock::tryCompileEtwFilterGroups(
+bool MonitorDock::tryCompileEtwFilterGroupModels(
     const EtwFilterStage stage,
+    const std::vector<EtwFilterRuleGroupModel>& groupModelList,
     std::vector<EtwFilterRuleGroupCompiled>& compiledGroupsOut,
     QString& errorTextOut) const
 {
     compiledGroupsOut.clear();
     errorTextOut.clear();
 
-    const std::vector<std::unique_ptr<EtwFilterRuleGroupUiState>>& groupList =
-        stage == EtwFilterStage::Pre ? m_etwPreFilterRuleGroupUiList : m_etwPostFilterRuleGroupUiList;
-
     int displayIndex = 1;
-    for (const std::unique_ptr<EtwFilterRuleGroupUiState>& groupState : groupList)
+    for (const EtwFilterRuleGroupModel& groupModel : groupModelList)
     {
-        if (groupState == nullptr)
-        {
-            ++displayIndex;
-            continue;
-        }
-
-        const bool enabled = groupState->enabledCheck == nullptr ? true : groupState->enabledCheck->isChecked();
-        if (!enabled)
-        {
-            ++displayIndex;
-            continue;
-        }
-
         EtwFilterRuleGroupCompiled compiledGroup;
-        compiledGroup.groupId = groupState->groupId;
+        compiledGroup.groupId = groupModel.groupId;
         compiledGroup.displayIndex = displayIndex;
-        compiledGroup.enabled = true;
-        compiledGroup.stringMode = etwFilterStringModeFromText(
-            groupState->stringModeCombo != nullptr
-            ? groupState->stringModeCombo->currentData().toString()
-            : QStringLiteral("regex"));
-        compiledGroup.caseSensitive = groupState->caseSensitiveCheck != nullptr
-            && groupState->caseSensitiveCheck->isChecked();
-        compiledGroup.invertMatch = groupState->invertCheck != nullptr
-            && groupState->invertCheck->isChecked();
-        compiledGroup.detailVisibleColumnsOnly = groupState->detailVisibleColumnsCheck != nullptr
-            && groupState->detailVisibleColumnsCheck->isChecked();
-        compiledGroup.detailMatchAllFields = groupState->detailMatchAllFieldsCheck == nullptr
-            || groupState->detailMatchAllFieldsCheck->isChecked();
+        compiledGroup.enabled = groupModel.enabled;
+        compiledGroup.stringMode = groupModel.stringMode;
+        compiledGroup.caseSensitive = groupModel.caseSensitive;
+        compiledGroup.invertMatch = groupModel.invertMatch;
+        compiledGroup.detailVisibleColumnsOnly = groupModel.detailVisibleColumnsOnly;
+        compiledGroup.detailMatchAllFields = groupModel.detailMatchAllFields;
 
-        for (const EtwFilterFieldUiState& fieldUi : groupState->fieldList)
+        std::vector<EtwFilterRuleFieldModel> fieldModelList = groupModel.fieldList;
+        const auto providerCategoryField = std::find_if(
+            fieldModelList.begin(),
+            fieldModelList.end(),
+            [](const EtwFilterRuleFieldModel& fieldModel) {
+                return fieldModel.fieldId == EtwFilterFieldId::ProviderCategory;
+            });
+        if (providerCategoryField == fieldModelList.end()
+            && !groupModel.providerCategoryList.isEmpty())
         {
-            const EtwFilterFieldDescriptor* descriptor = findEtwFilterFieldDescriptorById(fieldUi.fieldId);
-            if (descriptor == nullptr || fieldUi.inputEdit == nullptr)
+            const EtwFilterFieldDescriptor* descriptor =
+                findEtwFilterFieldDescriptorById(EtwFilterFieldId::ProviderCategory);
+            if (descriptor != nullptr)
+            {
+                EtwFilterRuleFieldModel fieldModel;
+                fieldModel.fieldId = descriptor->fieldId;
+                fieldModel.fieldKey = QString::fromLatin1(descriptor->key);
+                fieldModel.fieldLabel = QString::fromUtf8(descriptor->label);
+                fieldModelList.push_back(std::move(fieldModel));
+            }
+        }
+
+        for (const EtwFilterRuleFieldModel& fieldModel : fieldModelList)
+        {
+            const EtwFilterFieldDescriptor* descriptor =
+                findEtwFilterFieldDescriptorById(fieldModel.fieldId);
+            if (descriptor == nullptr)
             {
                 continue;
             }
 
-            QString inputText = fieldUi.inputEdit->text().trimmed();
-            if (fieldUi.fieldId == EtwFilterFieldId::ProviderCategory)
+            QString inputText = fieldModel.inputText.trimmed();
+            if (fieldModel.fieldId == EtwFilterFieldId::ProviderCategory
+                && !groupModel.providerCategoryList.isEmpty())
             {
-                QStringList enabledCategoryList;
-                for (const EtwFilterCategoryCheckUiState& categoryUi : groupState->categoryCheckList)
-                {
-                    if (categoryUi.checkBox != nullptr && categoryUi.checkBox->isChecked())
-                    {
-                        enabledCategoryList.push_back(categoryUi.categoryText);
-                    }
-                }
-                if (!enabledCategoryList.isEmpty())
-                {
-                    inputText = inputText.trimmed().isEmpty()
-                        ? enabledCategoryList.join(QStringLiteral(","))
-                        : inputText + QStringLiteral(",") + enabledCategoryList.join(QStringLiteral(","));
-                }
+                inputText = inputText.isEmpty()
+                    ? groupModel.providerCategoryList.join(QStringLiteral(","))
+                    : inputText + QStringLiteral(",")
+                        + groupModel.providerCategoryList.join(QStringLiteral(","));
             }
 
-            if (inputText.trimmed().isEmpty())
+            if (inputText.isEmpty())
             {
                 continue;
             }
@@ -7663,9 +7733,9 @@ bool MonitorDock::tryCompileEtwFilterGroups(
             }
 
             EtwFilterRuleFieldCompiled compiledField;
-            compiledField.fieldId = fieldUi.fieldId;
-            compiledField.fieldKey = fieldUi.fieldKey;
-            compiledField.fieldLabel = fieldUi.fieldLabel;
+            compiledField.fieldId = fieldModel.fieldId;
+            compiledField.fieldKey = fieldModel.fieldKey;
+            compiledField.fieldLabel = fieldModel.fieldLabel;
             compiledField.fieldType = descriptor->fieldType;
             compiledField.requiresDecodedPayload = descriptor->requiresDecodedPayload;
 
@@ -7690,7 +7760,7 @@ bool MonitorDock::tryCompileEtwFilterGroups(
                         errorTextOut = QStringLiteral("%1 规则组%2 字段[%3] 无效值：%4")
                             .arg(etwFilterStageText(stage))
                             .arg(displayIndex)
-                            .arg(fieldUi.fieldLabel)
+                            .arg(fieldModel.fieldLabel)
                             .arg(tokenText);
                         return false;
                     }
@@ -7707,7 +7777,7 @@ bool MonitorDock::tryCompileEtwFilterGroups(
                         errorTextOut = QStringLiteral("%1 规则组%2 字段[%3] 无效值：%4")
                             .arg(etwFilterStageText(stage))
                             .arg(displayIndex)
-                            .arg(fieldUi.fieldLabel)
+                            .arg(fieldModel.fieldLabel)
                             .arg(tokenText);
                         return false;
                     }
@@ -7731,7 +7801,7 @@ bool MonitorDock::tryCompileEtwFilterGroups(
                         errorTextOut = QStringLiteral("%1 规则组%2 字段[%3] 无效值：%4")
                             .arg(etwFilterStageText(stage))
                             .arg(displayIndex)
-                            .arg(fieldUi.fieldLabel)
+                            .arg(fieldModel.fieldLabel)
                             .arg(tokenText);
                         return false;
                     }
@@ -7747,7 +7817,7 @@ bool MonitorDock::tryCompileEtwFilterGroups(
                         errorTextOut = QStringLiteral("%1 规则组%2 字段[%3] 无效值：%4")
                             .arg(etwFilterStageText(stage))
                             .arg(displayIndex)
-                            .arg(fieldUi.fieldLabel)
+                            .arg(fieldModel.fieldLabel)
                             .arg(tokenText);
                         return false;
                     }
@@ -7763,7 +7833,7 @@ bool MonitorDock::tryCompileEtwFilterGroups(
                         errorTextOut = QStringLiteral("%1 规则组%2 字段[%3] 无效值：%4")
                             .arg(etwFilterStageText(stage))
                             .arg(displayIndex)
-                            .arg(fieldUi.fieldLabel)
+                            .arg(fieldModel.fieldLabel)
                             .arg(tokenText);
                         return false;
                     }
@@ -7787,7 +7857,7 @@ bool MonitorDock::tryCompileEtwFilterGroups(
             compiledGroup.fieldList.push_back(std::move(compiledField));
         }
 
-        if (compiledGroup.hasAnyCondition())
+        if (compiledGroup.enabled && compiledGroup.hasAnyCondition())
         {
             compiledGroupsOut.push_back(std::move(compiledGroup));
         }
@@ -7796,6 +7866,62 @@ bool MonitorDock::tryCompileEtwFilterGroups(
     }
 
     return true;
+}
+
+bool MonitorDock::tryCompileEtwFilterConfigModel(
+    const EtwFilterConfigModel& filterModel,
+    EtwFilterConfigCompiledModel& compiledModelOut,
+    QString& errorTextOut) const
+{
+    compiledModelOut = EtwFilterConfigCompiledModel{};
+    errorTextOut.clear();
+    return tryCompileEtwSimpleFilterModel(
+            EtwFilterStage::Pre,
+            filterModel.preSimpleFilter,
+            compiledModelOut.preSimpleFilter,
+            errorTextOut)
+        && tryCompileEtwFilterGroupModels(
+            EtwFilterStage::Pre,
+            filterModel.preGroupList,
+            compiledModelOut.preGroupList,
+            errorTextOut)
+        && tryCompileEtwSimpleFilterModel(
+            EtwFilterStage::Post,
+            filterModel.postSimpleFilter,
+            compiledModelOut.postSimpleFilter,
+            errorTextOut)
+        && tryCompileEtwFilterGroupModels(
+            EtwFilterStage::Post,
+            filterModel.postGroupList,
+            compiledModelOut.postGroupList,
+            errorTextOut);
+}
+
+bool MonitorDock::tryCompileEtwSimpleFilter(
+    const EtwFilterStage stage,
+    EtwSimpleFilterCompiled& compiledFilterOut,
+    QString& errorTextOut) const
+{
+    const EtwSimpleFilterModel filterModel = captureEtwSimpleFilterModel(stage);
+    return tryCompileEtwSimpleFilterModel(
+        stage,
+        filterModel,
+        compiledFilterOut,
+        errorTextOut);
+}
+
+bool MonitorDock::tryCompileEtwFilterGroups(
+    const EtwFilterStage stage,
+    std::vector<EtwFilterRuleGroupCompiled>& compiledGroupsOut,
+    QString& errorTextOut) const
+{
+    const std::vector<EtwFilterRuleGroupModel> groupModelList =
+        captureEtwFilterGroupModels(stage);
+    return tryCompileEtwFilterGroupModels(
+        stage,
+        groupModelList,
+        compiledGroupsOut,
+        errorTextOut);
 }
 
 void MonitorDock::updateEtwFilterStateLabel(const EtwFilterStage stage)
@@ -8007,6 +8133,792 @@ QString MonitorDock::etwFilterConfigPath() const
         .absoluteFilePath(QString::fromLatin1(kEtwFilterConfigRelativePath));
 }
 
+bool MonitorDock::tryParseEtwFilterConfigModel(
+    const QByteArray& jsonData,
+    EtwFilterConfigModel& filterModelOut) const
+{
+    QJsonParseError parseError;
+    const QJsonDocument jsonDocument = QJsonDocument::fromJson(jsonData, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !jsonDocument.isObject())
+    {
+        return false;
+    }
+
+    const QJsonObject rootObject = jsonDocument.object();
+    const QJsonValue versionValue =
+        rootObject.value(QString::fromLatin1(kEtwFilterJsonVersionKey));
+    if (!versionValue.isUndefined())
+    {
+        if (!versionValue.isDouble())
+        {
+            return false;
+        }
+        const double versionNumber = versionValue.toDouble(-1.0);
+        const int version = versionValue.toInt(-1);
+        if (versionNumber != static_cast<double>(version)
+            || (version != 1 && version != 2))
+        {
+            return false;
+        }
+    }
+
+    const auto readBoolean = [](
+        const QJsonObject& object,
+        const char* key,
+        const bool defaultValue,
+        bool& valueOut) {
+        const QJsonValue value = object.value(QString::fromLatin1(key));
+        if (value.isUndefined())
+        {
+            valueOut = defaultValue;
+            return true;
+        }
+        if (!value.isBool())
+        {
+            return false;
+        }
+        valueOut = value.toBool(defaultValue);
+        return true;
+    };
+    const auto readString = [](
+        const QJsonObject& object,
+        const char* key,
+        QString& valueOut) {
+        const QJsonValue value = object.value(QString::fromLatin1(key));
+        if (value.isUndefined())
+        {
+            valueOut.clear();
+            return true;
+        }
+        if (!value.isString())
+        {
+            return false;
+        }
+        valueOut = value.toString().trimmed();
+        return true;
+    };
+    const auto readStringList = [](
+        const QJsonObject& object,
+        const char* key,
+        QStringList& valueListOut) {
+        valueListOut.clear();
+        const QJsonValue value = object.value(QString::fromLatin1(key));
+        if (value.isUndefined())
+        {
+            return true;
+        }
+        if (!value.isArray())
+        {
+            return false;
+        }
+        for (const QJsonValue& itemValue : value.toArray())
+        {
+            if (!itemValue.isString())
+            {
+                return false;
+            }
+            const QString itemText = itemValue.toString().trimmed();
+            if (!itemText.isEmpty())
+            {
+                valueListOut.push_back(itemText);
+            }
+        }
+        return true;
+    };
+    const auto normalizeKnownStringList = [](
+        QStringList& valueList,
+        const QStringList& knownValueList) {
+        QStringList normalizedValueList;
+        for (const QString& valueText : valueList)
+        {
+            const auto found = std::find_if(
+                knownValueList.cbegin(),
+                knownValueList.cend(),
+                [&valueText](const QString& knownValue) {
+                    return knownValue.compare(valueText, Qt::CaseInsensitive) == 0;
+                });
+            if (found == knownValueList.cend())
+            {
+                return false;
+            }
+            if (!normalizedValueList.contains(*found, Qt::CaseInsensitive))
+            {
+                normalizedValueList.push_back(*found);
+            }
+        }
+        valueList = std::move(normalizedValueList);
+        return true;
+    };
+
+    EtwFilterConfigModel candidateModel;
+    const auto parseSimpleFilter = [
+        this,
+        &rootObject,
+        &readBoolean,
+        &readString,
+        &readStringList,
+        &normalizeKnownStringList](
+        const EtwFilterStage stage,
+        const char* objectKey,
+        EtwSimpleFilterModel& simpleModelOut) {
+        const QJsonValue simpleValue = rootObject.value(QString::fromLatin1(objectKey));
+        if (simpleValue.isUndefined())
+        {
+            simpleModelOut = EtwSimpleFilterModel{};
+            return true;
+        }
+        if (!simpleValue.isObject())
+        {
+            return false;
+        }
+
+        const QJsonObject simpleObject = simpleValue.toObject();
+        if (!readBoolean(
+                simpleObject,
+                kEtwFilterJsonEnabledKey,
+                true,
+                simpleModelOut.enabled)
+            || !readString(simpleObject, kEtwFilterJsonSimplePidKey, simpleModelOut.pidText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleProcessNameKey,
+                simpleModelOut.processNameText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleFilePathKey,
+                simpleModelOut.filePathText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleEventIdKey,
+                simpleModelOut.eventIdText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleEventNameKey,
+                simpleModelOut.eventNameText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleRegistryPathKey,
+                simpleModelOut.registryPathText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleNetworkAddressKey,
+                simpleModelOut.networkAddressText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleNetworkPortKey,
+                simpleModelOut.networkPortText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleStatusKey,
+                simpleModelOut.statusText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleCustomProviderKey,
+                simpleModelOut.customProviderText)
+            || !readString(
+                simpleObject,
+                kEtwFilterJsonSimpleCustomActionKey,
+                simpleModelOut.customActionText)
+            || !readStringList(
+                simpleObject,
+                kEtwFilterJsonSimpleProvidersKey,
+                simpleModelOut.providerPresetNameList)
+            || !readStringList(
+                simpleObject,
+                kEtwFilterJsonSimpleActionsKey,
+                simpleModelOut.actionPresetList))
+        {
+            return false;
+        }
+
+        QStringList knownProviderList;
+        QStringList knownActionList;
+        const EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+        for (const EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+        {
+            knownProviderList.push_back(checkState.valueText);
+        }
+        for (const EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+        {
+            knownActionList.push_back(checkState.valueText);
+        }
+        return normalizeKnownStringList(
+                simpleModelOut.providerPresetNameList,
+                knownProviderList)
+            && normalizeKnownStringList(
+                simpleModelOut.actionPresetList,
+                knownActionList);
+    };
+
+    if (!parseSimpleFilter(
+            EtwFilterStage::Pre,
+            kEtwFilterJsonSimplePreKey,
+            candidateModel.preSimpleFilter)
+        || !parseSimpleFilter(
+            EtwFilterStage::Post,
+            kEtwFilterJsonSimplePostKey,
+            candidateModel.postSimpleFilter))
+    {
+        return false;
+    }
+
+    const auto parseGroupList = [
+        &rootObject,
+        &readBoolean,
+        &readStringList,
+        &normalizeKnownStringList](
+        const char* arrayKey,
+        std::vector<EtwFilterRuleGroupModel>& groupModelListOut) {
+        groupModelListOut.clear();
+        const QJsonValue groupListValue = rootObject.value(QString::fromLatin1(arrayKey));
+        if (groupListValue.isUndefined())
+        {
+            return true;
+        }
+        if (!groupListValue.isArray())
+        {
+            return false;
+        }
+
+        const QStringList knownCategoryList = etwFilterProviderCategoryList();
+        const QStringList knownStringModeList{
+            QStringLiteral("regex"),
+            QStringLiteral("exact"),
+            QStringLiteral("contains"),
+            QStringLiteral("prefix"),
+            QStringLiteral("suffix")
+        };
+        const QJsonArray groupArray = groupListValue.toArray();
+        groupModelListOut.reserve(static_cast<std::size_t>(groupArray.size()));
+        for (const QJsonValue& groupValue : groupArray)
+        {
+            if (!groupValue.isObject())
+            {
+                return false;
+            }
+
+            const QJsonObject groupObject = groupValue.toObject();
+            EtwFilterRuleGroupModel groupModel;
+            groupModel.groupId = static_cast<int>(groupModelListOut.size()) + 1;
+            if (!readBoolean(
+                    groupObject,
+                    kEtwFilterJsonEnabledKey,
+                    true,
+                    groupModel.enabled)
+                || !readBoolean(
+                    groupObject,
+                    kEtwFilterJsonCaseSensitiveKey,
+                    false,
+                    groupModel.caseSensitive)
+                || !readBoolean(
+                    groupObject,
+                    kEtwFilterJsonInvertKey,
+                    false,
+                    groupModel.invertMatch)
+                || !readBoolean(
+                    groupObject,
+                    kEtwFilterJsonDetailVisibleOnlyKey,
+                    false,
+                    groupModel.detailVisibleColumnsOnly)
+                || !readBoolean(
+                    groupObject,
+                    kEtwFilterJsonDetailAllFieldsKey,
+                    true,
+                    groupModel.detailMatchAllFields)
+                || !readStringList(
+                    groupObject,
+                    kEtwFilterJsonProviderCategoriesKey,
+                    groupModel.providerCategoryList)
+                || !normalizeKnownStringList(
+                    groupModel.providerCategoryList,
+                    knownCategoryList))
+            {
+                return false;
+            }
+
+            const QJsonValue modeValue =
+                groupObject.value(QString::fromLatin1(kEtwFilterJsonStringModeKey));
+            QString modeText = QStringLiteral("regex");
+            if (!modeValue.isUndefined())
+            {
+                if (!modeValue.isString())
+                {
+                    return false;
+                }
+                modeText = modeValue.toString().trimmed().toLower();
+            }
+            if (!knownStringModeList.contains(modeText, Qt::CaseInsensitive))
+            {
+                return false;
+            }
+            groupModel.stringMode = etwFilterStringModeFromText(modeText);
+
+            const QJsonValue fieldListValue =
+                groupObject.value(QString::fromLatin1(kEtwFilterJsonFieldsKey));
+            if (!fieldListValue.isUndefined() && !fieldListValue.isArray())
+            {
+                return false;
+            }
+            const QJsonArray fieldArray = fieldListValue.toArray();
+            QStringList loadedFieldKeyList;
+            groupModel.fieldList.reserve(static_cast<std::size_t>(fieldArray.size()));
+            for (const QJsonValue& fieldValue : fieldArray)
+            {
+                if (!fieldValue.isObject())
+                {
+                    return false;
+                }
+                const QJsonObject fieldObject = fieldValue.toObject();
+                const QJsonValue fieldKeyValue =
+                    fieldObject.value(QString::fromLatin1(kEtwFilterJsonFieldKey));
+                const QJsonValue fieldTextValue =
+                    fieldObject.value(QString::fromLatin1(kEtwFilterJsonFieldValue));
+                if (!fieldKeyValue.isString() || !fieldTextValue.isString())
+                {
+                    return false;
+                }
+
+                const QString fieldKey = fieldKeyValue.toString().trimmed().toLower();
+                const EtwFilterFieldDescriptor* descriptor =
+                    findEtwFilterFieldDescriptorByKey(fieldKey);
+                if (descriptor == nullptr
+                    || loadedFieldKeyList.contains(fieldKey, Qt::CaseInsensitive))
+                {
+                    return false;
+                }
+                loadedFieldKeyList.push_back(fieldKey);
+
+                const QString fieldText = fieldTextValue.toString().trimmed();
+                if (fieldText.isEmpty())
+                {
+                    continue;
+                }
+                EtwFilterRuleFieldModel fieldModel;
+                fieldModel.fieldId = descriptor->fieldId;
+                fieldModel.fieldKey = QString::fromLatin1(descriptor->key);
+                fieldModel.fieldLabel = QString::fromUtf8(descriptor->label);
+                fieldModel.inputText = fieldText;
+                groupModel.fieldList.push_back(std::move(fieldModel));
+            }
+            groupModelListOut.push_back(std::move(groupModel));
+        }
+        return true;
+    };
+
+    if (!parseGroupList(kEtwFilterJsonPreGroupsKey, candidateModel.preGroupList)
+        || !parseGroupList(kEtwFilterJsonPostGroupsKey, candidateModel.postGroupList))
+    {
+        return false;
+    }
+
+    filterModelOut = std::move(candidateModel);
+    return true;
+}
+
+QJsonObject MonitorDock::serializeEtwFilterConfigModel(
+    const EtwFilterConfigModel& filterModel) const
+{
+    const auto serializeSimpleFilter = [](const EtwSimpleFilterModel& simpleModel) {
+        QJsonObject simpleObject;
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonEnabledKey),
+            simpleModel.enabled);
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimplePidKey),
+            simpleModel.pidText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleProcessNameKey),
+            simpleModel.processNameText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleFilePathKey),
+            simpleModel.filePathText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleEventIdKey),
+            simpleModel.eventIdText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleEventNameKey),
+            simpleModel.eventNameText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleRegistryPathKey),
+            simpleModel.registryPathText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleNetworkAddressKey),
+            simpleModel.networkAddressText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleNetworkPortKey),
+            simpleModel.networkPortText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleStatusKey),
+            simpleModel.statusText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleCustomProviderKey),
+            simpleModel.customProviderText.trimmed());
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleCustomActionKey),
+            simpleModel.customActionText.trimmed());
+
+        QJsonArray providerArray;
+        for (const QString& providerName : simpleModel.providerPresetNameList)
+        {
+            providerArray.append(providerName);
+        }
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleProvidersKey),
+            providerArray);
+
+        QJsonArray actionArray;
+        for (const QString& actionText : simpleModel.actionPresetList)
+        {
+            actionArray.append(actionText);
+        }
+        simpleObject.insert(
+            QString::fromLatin1(kEtwFilterJsonSimpleActionsKey),
+            actionArray);
+        return simpleObject;
+    };
+    const auto serializeGroupList = [](
+        const std::vector<EtwFilterRuleGroupModel>& groupModelList) {
+        QJsonArray groupArray;
+        for (const EtwFilterRuleGroupModel& groupModel : groupModelList)
+        {
+            QJsonObject groupObject;
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonEnabledKey),
+                groupModel.enabled);
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonStringModeKey),
+                etwFilterStringModeToText(groupModel.stringMode));
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonCaseSensitiveKey),
+                groupModel.caseSensitive);
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonInvertKey),
+                groupModel.invertMatch);
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonDetailVisibleOnlyKey),
+                groupModel.detailVisibleColumnsOnly);
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonDetailAllFieldsKey),
+                groupModel.detailMatchAllFields);
+
+            QJsonArray categoryArray;
+            for (const QString& categoryText : groupModel.providerCategoryList)
+            {
+                categoryArray.append(categoryText);
+            }
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonProviderCategoriesKey),
+                categoryArray);
+
+            QJsonArray fieldArray;
+            for (const EtwFilterRuleFieldModel& fieldModel : groupModel.fieldList)
+            {
+                const QString inputText = fieldModel.inputText.trimmed();
+                if (inputText.isEmpty())
+                {
+                    continue;
+                }
+                QJsonObject fieldObject;
+                fieldObject.insert(
+                    QString::fromLatin1(kEtwFilterJsonFieldKey),
+                    fieldModel.fieldKey);
+                fieldObject.insert(
+                    QString::fromLatin1(kEtwFilterJsonFieldValue),
+                    inputText);
+                fieldArray.append(fieldObject);
+            }
+            groupObject.insert(
+                QString::fromLatin1(kEtwFilterJsonFieldsKey),
+                fieldArray);
+            groupArray.append(groupObject);
+        }
+        return groupArray;
+    };
+
+    QJsonObject rootObject;
+    rootObject.insert(QString::fromLatin1(kEtwFilterJsonVersionKey), 2);
+    rootObject.insert(
+        QString::fromLatin1(kEtwFilterJsonSimplePreKey),
+        serializeSimpleFilter(filterModel.preSimpleFilter));
+    rootObject.insert(
+        QString::fromLatin1(kEtwFilterJsonSimplePostKey),
+        serializeSimpleFilter(filterModel.postSimpleFilter));
+    rootObject.insert(
+        QString::fromLatin1(kEtwFilterJsonPreGroupsKey),
+        serializeGroupList(filterModel.preGroupList));
+    rootObject.insert(
+        QString::fromLatin1(kEtwFilterJsonPostGroupsKey),
+        serializeGroupList(filterModel.postGroupList));
+    return rootObject;
+}
+
+bool MonitorDock::saveEtwFilterConfigModelToPath(
+    const EtwFilterConfigModel& filterModel,
+    const QString& filePath,
+    const bool showErrorDialog) const
+{
+    const QString normalizedPath = QFileInfo(filePath).absoluteFilePath();
+    if (normalizedPath.trimmed().isEmpty())
+    {
+        if (showErrorDialog)
+        {
+            QMessageBox::warning(nullptr, QStringLiteral("ETW筛选"), QStringLiteral("配置保存路径无效。"));
+        }
+        return false;
+    }
+
+    const QFileInfo fileInfo(normalizedPath);
+    QDir outputDirectory(fileInfo.absolutePath());
+    if (!outputDirectory.exists() && !outputDirectory.mkpath(QStringLiteral(".")))
+    {
+        if (showErrorDialog)
+        {
+            QMessageBox::warning(
+                nullptr,
+                QStringLiteral("ETW筛选"),
+                QStringLiteral("创建配置目录失败：%1").arg(outputDirectory.absolutePath()));
+        }
+        return false;
+    }
+
+    const QByteArray serializedData =
+        QJsonDocument(serializeEtwFilterConfigModel(filterModel))
+            .toJson(QJsonDocument::Indented);
+    QSaveFile outputFile(normalizedPath);
+    if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text)
+        || outputFile.write(serializedData) != serializedData.size()
+        || !outputFile.commit())
+    {
+        if (showErrorDialog)
+        {
+            QMessageBox::warning(
+                nullptr,
+                QStringLiteral("ETW筛选"),
+                QStringLiteral("打开配置文件失败：%1").arg(normalizedPath));
+        }
+        return false;
+    }
+    return true;
+}
+
+void MonitorDock::commitEtwFilterConfigModel(
+    const EtwFilterConfigModel& filterModel,
+    EtwFilterConfigCompiledModel compiledModel)
+{
+    EtwFilterStageCompiledSnapshot preStageSnapshot;
+    preStageSnapshot.simpleFilter = compiledModel.preSimpleFilter;
+    preStageSnapshot.detailedGroupList = compiledModel.preGroupList;
+    const std::shared_ptr<const EtwFilterStageCompiledSnapshot> preSnapshotPointer =
+        std::make_shared<const EtwFilterStageCompiledSnapshot>(std::move(preStageSnapshot));
+
+    const auto applySimpleModel = [this](
+        const EtwFilterStage stage,
+        const EtwSimpleFilterModel& simpleModel) {
+        EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
+        if (uiState.applyDebounceTimer != nullptr)
+        {
+            uiState.applyDebounceTimer->stop();
+        }
+        if (uiState.enabledCheck != nullptr)
+        {
+            const QSignalBlocker blocker(uiState.enabledCheck);
+            uiState.enabledCheck->setChecked(simpleModel.enabled);
+        }
+        const auto setEditText = [](QLineEdit* edit, const QString& text) {
+            if (edit == nullptr)
+            {
+                return;
+            }
+            const QSignalBlocker blocker(edit);
+            edit->setText(text);
+        };
+        setEditText(uiState.pidEdit, simpleModel.pidText);
+        setEditText(uiState.processNameEdit, simpleModel.processNameText);
+        setEditText(uiState.filePathEdit, simpleModel.filePathText);
+        setEditText(uiState.eventIdEdit, simpleModel.eventIdText);
+        setEditText(uiState.eventNameEdit, simpleModel.eventNameText);
+        setEditText(uiState.registryPathEdit, simpleModel.registryPathText);
+        setEditText(uiState.networkAddressEdit, simpleModel.networkAddressText);
+        setEditText(uiState.networkPortEdit, simpleModel.networkPortText);
+        setEditText(uiState.statusEdit, simpleModel.statusText);
+        setEditText(uiState.customProviderEdit, simpleModel.customProviderText);
+        setEditText(uiState.customActionEdit, simpleModel.customActionText);
+
+        for (EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
+        {
+            if (checkState.checkBox == nullptr)
+            {
+                continue;
+            }
+            const QSignalBlocker blocker(checkState.checkBox);
+            checkState.checkBox->setChecked(
+                simpleModel.providerPresetNameList.contains(
+                    checkState.valueText,
+                    Qt::CaseInsensitive));
+        }
+        for (EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
+        {
+            if (checkState.checkBox == nullptr)
+            {
+                continue;
+            }
+            const QSignalBlocker blocker(checkState.checkBox);
+            checkState.checkBox->setChecked(
+                simpleModel.actionPresetList.contains(
+                    checkState.valueText,
+                    Qt::CaseInsensitive));
+        }
+    };
+    const auto applyGroupModels = [this](
+        const EtwFilterStage stage,
+        const std::vector<EtwFilterRuleGroupModel>& groupModelList) {
+        std::vector<std::unique_ptr<EtwFilterRuleGroupUiState>>& targetGroupList =
+            stage == EtwFilterStage::Pre
+                ? m_etwPreFilterRuleGroupUiList
+                : m_etwPostFilterRuleGroupUiList;
+        for (const std::unique_ptr<EtwFilterRuleGroupUiState>& groupState : targetGroupList)
+        {
+            if (groupState != nullptr && groupState->containerWidget != nullptr)
+            {
+                delete groupState->containerWidget;
+            }
+        }
+        targetGroupList.clear();
+        if (stage == EtwFilterStage::Pre)
+        {
+            m_etwPreFilterNextGroupId = 1;
+        }
+        else
+        {
+            m_etwPostFilterNextGroupId = 1;
+        }
+
+        const std::size_t groupCount = std::max<std::size_t>(groupModelList.size(), 1U);
+        for (std::size_t groupIndex = 0; groupIndex < groupCount; ++groupIndex)
+        {
+            addEtwFilterRuleGroup(stage);
+            if (groupIndex >= groupModelList.size() || targetGroupList.empty())
+            {
+                continue;
+            }
+
+            EtwFilterRuleGroupUiState* groupState = targetGroupList.back().get();
+            if (groupState == nullptr)
+            {
+                continue;
+            }
+            const EtwFilterRuleGroupModel& groupModel = groupModelList[groupIndex];
+            if (groupState->enabledCheck != nullptr)
+            {
+                const QSignalBlocker blocker(groupState->enabledCheck);
+                groupState->enabledCheck->setChecked(groupModel.enabled);
+            }
+            if (groupState->stringModeCombo != nullptr)
+            {
+                const QString modeText = etwFilterStringModeToText(groupModel.stringMode);
+                const QSignalBlocker blocker(groupState->stringModeCombo);
+                for (int index = 0; index < groupState->stringModeCombo->count(); ++index)
+                {
+                    if (groupState->stringModeCombo->itemData(index).toString()
+                            .compare(modeText, Qt::CaseInsensitive) == 0)
+                    {
+                        groupState->stringModeCombo->setCurrentIndex(index);
+                        break;
+                    }
+                }
+            }
+            if (groupState->caseSensitiveCheck != nullptr)
+            {
+                const QSignalBlocker blocker(groupState->caseSensitiveCheck);
+                groupState->caseSensitiveCheck->setChecked(groupModel.caseSensitive);
+            }
+            if (groupState->invertCheck != nullptr)
+            {
+                const QSignalBlocker blocker(groupState->invertCheck);
+                groupState->invertCheck->setChecked(groupModel.invertMatch);
+            }
+            if (groupState->detailVisibleColumnsCheck != nullptr)
+            {
+                const QSignalBlocker blocker(groupState->detailVisibleColumnsCheck);
+                groupState->detailVisibleColumnsCheck->setChecked(
+                    groupModel.detailVisibleColumnsOnly);
+            }
+            if (groupState->detailMatchAllFieldsCheck != nullptr)
+            {
+                const QSignalBlocker blocker(groupState->detailMatchAllFieldsCheck);
+                groupState->detailMatchAllFieldsCheck->setChecked(
+                    groupModel.detailMatchAllFields);
+            }
+
+            for (EtwFilterCategoryCheckUiState& categoryUi : groupState->categoryCheckList)
+            {
+                if (categoryUi.checkBox == nullptr)
+                {
+                    continue;
+                }
+                const QSignalBlocker blocker(categoryUi.checkBox);
+                categoryUi.checkBox->setChecked(
+                    groupModel.providerCategoryList.contains(
+                        categoryUi.categoryText,
+                        Qt::CaseInsensitive));
+            }
+            for (EtwFilterFieldUiState& fieldUi : groupState->fieldList)
+            {
+                if (fieldUi.inputEdit == nullptr)
+                {
+                    continue;
+                }
+                const auto found = std::find_if(
+                    groupModel.fieldList.cbegin(),
+                    groupModel.fieldList.cend(),
+                    [&fieldUi](const EtwFilterRuleFieldModel& fieldModel) {
+                        return fieldModel.fieldId == fieldUi.fieldId;
+                    });
+                const QSignalBlocker blocker(fieldUi.inputEdit);
+                fieldUi.inputEdit->setText(
+                    found == groupModel.fieldList.cend()
+                        ? QString()
+                        : found->inputText);
+            }
+        }
+        rebuildEtwFilterRuleGroupUi(stage);
+    };
+
+    applySimpleModel(EtwFilterStage::Pre, filterModel.preSimpleFilter);
+    applySimpleModel(EtwFilterStage::Post, filterModel.postSimpleFilter);
+    applyGroupModels(EtwFilterStage::Pre, filterModel.preGroupList);
+    applyGroupModels(EtwFilterStage::Post, filterModel.postGroupList);
+
+    m_etwPreSimpleFilterCompiled = std::move(compiledModel.preSimpleFilter);
+    m_etwPreFilterCompiledGroupList = std::move(compiledModel.preGroupList);
+    m_etwPostSimpleFilterCompiled = std::move(compiledModel.postSimpleFilter);
+    m_etwPostFilterCompiledGroupList = std::move(compiledModel.postGroupList);
+    {
+        std::lock_guard<std::mutex> lock(m_etwPreFilterSnapshotMutex);
+        m_etwPreFilterCompiledSnapshot = preSnapshotPointer;
+    }
+
+    QString archiveDirectory;
+    {
+        std::lock_guard<std::mutex> lock(m_etwArchiveMutex);
+        archiveDirectory = m_etwArchiveDirectory;
+    }
+    if (archiveDirectory.trimmed().isEmpty())
+    {
+        applyEtwPostFilterToTable(0, false);
+    }
+    else
+    {
+        scheduleEtwArchiveFilterRebuild();
+    }
+
+    updateEtwSimpleFilterStateLabel(EtwFilterStage::Pre);
+    updateEtwSimpleFilterStateLabel(EtwFilterStage::Post);
+    updateEtwFilterStateLabel(EtwFilterStage::Pre);
+    updateEtwFilterStateLabel(EtwFilterStage::Post);
+    updateEtwCollapseHeight();
+}
+
 bool MonitorDock::saveEtwFilterConfigToPath(const QString& filePath, const bool showErrorDialog) const
 {
     const QString normalizedPath = QFileInfo(filePath).absoluteFilePath();
@@ -8175,8 +9087,12 @@ bool MonitorDock::saveEtwFilterConfigToPath(const QString& filePath, const bool 
         return false;
     }
 
-    QFile outputFile(normalizedPath);
-    if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+    const QByteArray serializedData =
+        QJsonDocument(rootObject).toJson(QJsonDocument::Indented);
+    QSaveFile outputFile(normalizedPath);
+    if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text)
+        || outputFile.write(serializedData) != serializedData.size()
+        || !outputFile.commit())
     {
         if (showErrorDialog)
         {
@@ -8187,13 +9103,13 @@ bool MonitorDock::saveEtwFilterConfigToPath(const QString& filePath, const bool 
         }
         return false;
     }
-
-    outputFile.write(QJsonDocument(rootObject).toJson(QJsonDocument::Indented));
-    outputFile.close();
     return true;
 }
 
-bool MonitorDock::loadEtwFilterConfigFromPath(const QString& filePath, const bool showErrorDialog)
+bool MonitorDock::loadEtwFilterConfigFromPath(
+    const QString& filePath,
+    const bool showErrorDialog,
+    const bool persistAsDefault)
 {
     const QString normalizedPath = QFileInfo(filePath).absoluteFilePath();
     QFile inputFile(normalizedPath);
@@ -8215,10 +9131,10 @@ bool MonitorDock::loadEtwFilterConfigFromPath(const QString& filePath, const boo
         return false;
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument jsonDocument = QJsonDocument::fromJson(inputFile.readAll(), &parseError);
+    const QByteArray jsonData = inputFile.readAll();
     inputFile.close();
-    if (parseError.error != QJsonParseError::NoError || !jsonDocument.isObject())
+    EtwFilterConfigModel candidateModel;
+    if (!tryParseEtwFilterConfigModel(jsonData, candidateModel))
     {
         if (showErrorDialog)
         {
@@ -8227,226 +9143,31 @@ bool MonitorDock::loadEtwFilterConfigFromPath(const QString& filePath, const boo
         return false;
     }
 
-    const QJsonObject rootObject = jsonDocument.object();
-
-    clearEtwFilterGroups(EtwFilterStage::Pre);
-    clearEtwFilterGroups(EtwFilterStage::Post);
-
-    const auto loadSimpleFilter = [this, &rootObject](
-        const EtwFilterStage stage,
-        const char* objectKey) {
-        EtwSimpleFilterUiState& uiState = etwSimpleFilterUi(stage);
-        clearEtwSimpleFilter(stage, false);
-        const QJsonObject simpleObject = rootObject.value(QString::fromLatin1(objectKey)).toObject();
-
-        if (uiState.enabledCheck != nullptr)
+    EtwFilterConfigCompiledModel compiledModel;
+    QString compileErrorText;
+    if (!tryCompileEtwFilterConfigModel(
+            candidateModel,
+            compiledModel,
+            compileErrorText))
+    {
+        if (showErrorDialog)
         {
-            const QSignalBlocker blocker(uiState.enabledCheck);
-            uiState.enabledCheck->setChecked(
-                simpleObject.isEmpty()
-                    || simpleObject.value(QString::fromLatin1(kEtwFilterJsonEnabledKey)).toBool(true));
+            QMessageBox::warning(this, QStringLiteral("ETW筛选器"), compileErrorText);
         }
-        const auto setEditText = [&simpleObject](QLineEdit* edit, const char* key) {
-            if (edit == nullptr)
-            {
-                return;
-            }
-            const QSignalBlocker blocker(edit);
-            edit->setText(simpleObject.value(QString::fromLatin1(key)).toString());
-        };
-        setEditText(uiState.pidEdit, kEtwFilterJsonSimplePidKey);
-        setEditText(uiState.processNameEdit, kEtwFilterJsonSimpleProcessNameKey);
-        setEditText(uiState.filePathEdit, kEtwFilterJsonSimpleFilePathKey);
-        setEditText(uiState.eventIdEdit, kEtwFilterJsonSimpleEventIdKey);
-        setEditText(uiState.eventNameEdit, kEtwFilterJsonSimpleEventNameKey);
-        setEditText(uiState.registryPathEdit, kEtwFilterJsonSimpleRegistryPathKey);
-        setEditText(uiState.networkAddressEdit, kEtwFilterJsonSimpleNetworkAddressKey);
-        setEditText(uiState.networkPortEdit, kEtwFilterJsonSimpleNetworkPortKey);
-        setEditText(uiState.statusEdit, kEtwFilterJsonSimpleStatusKey);
-        setEditText(uiState.customProviderEdit, kEtwFilterJsonSimpleCustomProviderKey);
-        setEditText(uiState.customActionEdit, kEtwFilterJsonSimpleCustomActionKey);
+        return false;
+    }
 
-        QStringList providerList;
-        for (const QJsonValue& providerValue :
-             simpleObject.value(QString::fromLatin1(kEtwFilterJsonSimpleProvidersKey)).toArray())
-        {
-            providerList.push_back(providerValue.toString());
-        }
-        for (EtwSimpleFilterCheckUiState& checkState : uiState.providerCheckList)
-        {
-            if (checkState.checkBox != nullptr)
-            {
-                const QSignalBlocker blocker(checkState.checkBox);
-                checkState.checkBox->setChecked(
-                    providerList.contains(checkState.valueText, Qt::CaseInsensitive));
-            }
-        }
+    // 用户导入时先原子写入默认配置。持久化失败则不触碰 UI 和运行时筛选器。
+    if (persistAsDefault
+        && !saveEtwFilterConfigModelToPath(
+            candidateModel,
+            etwFilterConfigPath(),
+            showErrorDialog))
+    {
+        return false;
+    }
 
-        QStringList actionList;
-        for (const QJsonValue& actionValue :
-             simpleObject.value(QString::fromLatin1(kEtwFilterJsonSimpleActionsKey)).toArray())
-        {
-            actionList.push_back(actionValue.toString());
-        }
-        for (EtwSimpleFilterCheckUiState& checkState : uiState.actionCheckList)
-        {
-            if (checkState.checkBox != nullptr)
-            {
-                const QSignalBlocker blocker(checkState.checkBox);
-                checkState.checkBox->setChecked(
-                    actionList.contains(checkState.valueText, Qt::CaseInsensitive));
-            }
-        }
-    };
-
-    // v1 没有简易筛选对象，按“启用但无条件”加载，详细规则保持原样。
-    loadSimpleFilter(EtwFilterStage::Pre, kEtwFilterJsonSimplePreKey);
-    loadSimpleFilter(EtwFilterStage::Post, kEtwFilterJsonSimplePostKey);
-
-    const auto loadStageGroups = [this](const EtwFilterStage stage, const QJsonArray& groupArray) {
-        if (groupArray.isEmpty())
-        {
-            return;
-        }
-
-        clearEtwFilterGroups(stage);
-        std::vector<std::unique_ptr<EtwFilterRuleGroupUiState>>& targetGroupList =
-            stage == EtwFilterStage::Pre ? m_etwPreFilterRuleGroupUiList : m_etwPostFilterRuleGroupUiList;
-        if (!targetGroupList.empty())
-        {
-            if (targetGroupList.front() != nullptr && targetGroupList.front()->containerWidget != nullptr)
-            {
-                delete targetGroupList.front()->containerWidget;
-            }
-            targetGroupList.clear();
-        }
-
-        for (const QJsonValue& groupValue : groupArray)
-        {
-            if (!groupValue.isObject())
-            {
-                continue;
-            }
-
-            addEtwFilterRuleGroup(stage);
-            EtwFilterRuleGroupUiState* groupState = targetGroupList.empty()
-                ? nullptr
-                : targetGroupList.back().get();
-            if (groupState == nullptr)
-            {
-                continue;
-            }
-
-            const QJsonObject groupObject = groupValue.toObject();
-            if (groupState->enabledCheck != nullptr)
-            {
-                QSignalBlocker blocker(groupState->enabledCheck);
-                groupState->enabledCheck->setChecked(groupObject.value(QString::fromLatin1(kEtwFilterJsonEnabledKey)).toBool(true));
-            }
-            if (groupState->stringModeCombo != nullptr)
-            {
-                const QString modeText = groupObject.value(QString::fromLatin1(kEtwFilterJsonStringModeKey)).toString();
-                const QSignalBlocker blocker(groupState->stringModeCombo);
-                for (int index = 0; index < groupState->stringModeCombo->count(); ++index)
-                {
-                    if (groupState->stringModeCombo->itemData(index).toString().compare(modeText, Qt::CaseInsensitive) == 0)
-                    {
-                        groupState->stringModeCombo->setCurrentIndex(index);
-                        break;
-                    }
-                }
-            }
-            if (groupState->caseSensitiveCheck != nullptr)
-            {
-                QSignalBlocker blocker(groupState->caseSensitiveCheck);
-                groupState->caseSensitiveCheck->setChecked(
-                    groupObject.value(QString::fromLatin1(kEtwFilterJsonCaseSensitiveKey)).toBool(false));
-            }
-            if (groupState->invertCheck != nullptr)
-            {
-                QSignalBlocker blocker(groupState->invertCheck);
-                groupState->invertCheck->setChecked(
-                    groupObject.value(QString::fromLatin1(kEtwFilterJsonInvertKey)).toBool(false));
-            }
-            if (groupState->detailVisibleColumnsCheck != nullptr)
-            {
-                QSignalBlocker blocker(groupState->detailVisibleColumnsCheck);
-                groupState->detailVisibleColumnsCheck->setChecked(
-                    groupObject.value(QString::fromLatin1(kEtwFilterJsonDetailVisibleOnlyKey)).toBool(false));
-            }
-            if (groupState->detailMatchAllFieldsCheck != nullptr)
-            {
-                QSignalBlocker blocker(groupState->detailMatchAllFieldsCheck);
-                groupState->detailMatchAllFieldsCheck->setChecked(
-                    groupObject.value(QString::fromLatin1(kEtwFilterJsonDetailAllFieldsKey)).toBool(true));
-            }
-
-            const QJsonArray categoryArray =
-                groupObject.value(QString::fromLatin1(kEtwFilterJsonProviderCategoriesKey)).toArray();
-            QStringList categoryList;
-            for (const QJsonValue& categoryValue : categoryArray)
-            {
-                categoryList.push_back(categoryValue.toString().trimmed());
-            }
-            for (EtwFilterCategoryCheckUiState& categoryUi : groupState->categoryCheckList)
-            {
-                if (categoryUi.checkBox == nullptr)
-                {
-                    continue;
-                }
-                QSignalBlocker blocker(categoryUi.checkBox);
-                categoryUi.checkBox->setChecked(categoryList.contains(categoryUi.categoryText, Qt::CaseInsensitive));
-            }
-
-            std::unordered_map<std::string, QString> fieldValueMap;
-            const QJsonArray fieldArray = groupObject.value(QString::fromLatin1(kEtwFilterJsonFieldsKey)).toArray();
-            for (const QJsonValue& fieldValue : fieldArray)
-            {
-                if (!fieldValue.isObject())
-                {
-                    continue;
-                }
-                const QJsonObject fieldObject = fieldValue.toObject();
-                const QString fieldKey = fieldObject.value(QString::fromLatin1(kEtwFilterJsonFieldKey)).toString().trimmed().toLower();
-                const QString fieldText = fieldObject.value(QString::fromLatin1(kEtwFilterJsonFieldValue)).toString();
-                if (fieldKey.isEmpty())
-                {
-                    continue;
-                }
-                fieldValueMap[fieldKey.toStdString()] = fieldText;
-            }
-            for (EtwFilterFieldUiState& fieldUi : groupState->fieldList)
-            {
-                if (fieldUi.inputEdit == nullptr)
-                {
-                    continue;
-                }
-                const auto found = fieldValueMap.find(fieldUi.fieldKey.toLower().toStdString());
-                if (found == fieldValueMap.end())
-                {
-                    fieldUi.inputEdit->clear();
-                    continue;
-                }
-                fieldUi.inputEdit->setText(found->second);
-            }
-        }
-
-        if (targetGroupList.empty())
-        {
-            addEtwFilterRuleGroup(stage);
-        }
-        rebuildEtwFilterRuleGroupUi(stage);
-    };
-
-    loadStageGroups(
-        EtwFilterStage::Pre,
-        rootObject.value(QString::fromLatin1(kEtwFilterJsonPreGroupsKey)).toArray());
-    loadStageGroups(
-        EtwFilterStage::Post,
-        rootObject.value(QString::fromLatin1(kEtwFilterJsonPostGroupsKey)).toArray());
-
-    applyEtwFilterRules(EtwFilterStage::Pre);
-    applyEtwFilterRules(EtwFilterStage::Post);
+    commitEtwFilterConfigModel(candidateModel, std::move(compiledModel));
     return true;
 }
 
@@ -8466,11 +9187,20 @@ void MonitorDock::saveEtwFilterConfigToDefaultPath(const bool showDialog) const
 void MonitorDock::loadEtwFilterConfigFromDefaultPath(const bool showDialog)
 {
     const QString defaultPath = etwFilterConfigPath();
-    const bool loaded = loadEtwFilterConfigFromPath(defaultPath, showDialog);
+    const bool loaded = loadEtwFilterConfigFromPath(defaultPath, showDialog, false);
     if (!loaded)
     {
-        applyEtwFilterRules(EtwFilterStage::Pre);
-        applyEtwFilterRules(EtwFilterStage::Post);
+        // 默认文件缺失或无效时只编译当前 UI 默认值，不回写并覆盖原文件。
+        const EtwFilterConfigModel currentModel = captureEtwFilterConfigModel();
+        EtwFilterConfigCompiledModel compiledModel;
+        QString compileErrorText;
+        if (tryCompileEtwFilterConfigModel(
+                currentModel,
+                compiledModel,
+                compileErrorText))
+        {
+            commitEtwFilterConfigModel(currentModel, std::move(compiledModel));
+        }
     }
 }
 
@@ -8486,9 +9216,8 @@ void MonitorDock::importEtwFilterConfigFromUserSelectedPath()
         return;
     }
 
-    if (loadEtwFilterConfigFromPath(selectedPath, true))
+    if (loadEtwFilterConfigFromPath(selectedPath, true, true))
     {
-        saveEtwFilterConfigToPath(etwFilterConfigPath(), false);
         QMessageBox::information(
             this,
             QStringLiteral("ETW筛选"),

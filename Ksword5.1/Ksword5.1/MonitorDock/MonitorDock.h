@@ -305,6 +305,63 @@ public:
         std::vector<EtwFilterCategoryCheckUiState> categoryCheckList;
     };
 
+    // EtwSimpleFilterModel：
+    // - 作用：保存与 Qt 控件解耦的简易筛选输入；
+    // - 导入时先在临时模型中完成解析和编译，避免无效配置污染当前界面。
+    struct EtwSimpleFilterModel
+    {
+        bool enabled = true;                         // enabled：是否启用本阶段简易筛选。
+        QString pidText;                             // pidText：PID 单值或范围列表。
+        QString processNameText;                     // processNameText：进程名包含条件。
+        QString filePathText;                        // filePathText：文件路径包含条件。
+        QString eventIdText;                         // eventIdText：事件 ID 单值或范围列表。
+        QString eventNameText;                       // eventNameText：事件名包含条件。
+        QString registryPathText;                    // registryPathText：注册表路径包含条件。
+        QString networkAddressText;                  // networkAddressText：IPv4、CIDR 或地址范围。
+        QString networkPortText;                     // networkPortText：网络端口单值或范围。
+        QString statusText;                          // statusText：状态文本包含条件。
+        QString customProviderText;                  // customProviderText：自定义 Provider 名称或 GUID。
+        QString customActionText;                    // customActionText：自定义行为文本。
+        QStringList providerPresetNameList;          // providerPresetNameList：已选 Provider 预设。
+        QStringList actionPresetList;                // actionPresetList：已选行为预设。
+    };
+
+    // EtwFilterRuleFieldModel：
+    // - 作用：保存详细规则组中的一个字段输入及其稳定字段身份。
+    struct EtwFilterRuleFieldModel
+    {
+        EtwFilterFieldId fieldId = EtwFilterFieldId::ProviderName; // fieldId：运行时字段枚举。
+        QString fieldKey;                           // fieldKey：配置文件中的稳定字段键。
+        QString fieldLabel;                         // fieldLabel：编译错误中使用的字段名称。
+        QString inputText;                          // inputText：用户输入的原始规则文本。
+    };
+
+    // EtwFilterRuleGroupModel：
+    // - 作用：保存一个与控件无关的详细筛选规则组。
+    struct EtwFilterRuleGroupModel
+    {
+        int groupId = 0;                            // groupId：本次模型内的规则组标识。
+        bool enabled = true;                        // enabled：是否启用当前规则组。
+        EtwStringMatchMode stringMode = EtwStringMatchMode::Regex; // stringMode：字符串匹配方式。
+        bool caseSensitive = false;                 // caseSensitive：字符串是否区分大小写。
+        bool invertMatch = false;                   // invertMatch：是否反向匹配规则组。
+        bool detailVisibleColumnsOnly = false;      // detailVisibleColumnsOnly：Detail 是否仅匹配可见列。
+        bool detailMatchAllFields = true;           // detailMatchAllFields：Detail 是否匹配全部字段。
+        QStringList providerCategoryList;           // providerCategoryList：已选 Provider 分类。
+        std::vector<EtwFilterRuleFieldModel> fieldList; // fieldList：非空字段规则列表。
+    };
+
+    // EtwFilterConfigModel：
+    // - 作用：一次性承载前置/后置简易规则和详细规则；
+    // - 该模型通过全部编译后才允许提交到 UI、运行时和默认配置。
+    struct EtwFilterConfigModel
+    {
+        EtwSimpleFilterModel preSimpleFilter;        // preSimpleFilter：前置简易筛选模型。
+        EtwSimpleFilterModel postSimpleFilter;       // postSimpleFilter：后置简易筛选模型。
+        std::vector<EtwFilterRuleGroupModel> preGroupList;  // preGroupList：前置详细规则。
+        std::vector<EtwFilterRuleGroupModel> postGroupList; // postGroupList：后置详细规则。
+    };
+
     struct EtwFilterRuleFieldCompiled
     {
         EtwFilterFieldId fieldId = EtwFilterFieldId::ProviderName;
@@ -391,6 +448,17 @@ public:
     {
         EtwSimpleFilterCompiled simpleFilter;
         std::vector<EtwFilterRuleGroupCompiled> detailedGroupList;
+    };
+
+    // EtwFilterConfigCompiledModel：
+    // - 作用：保存临时配置模型四条路径的完整编译结果；
+    // - 只有四条路径都成功时才会替换当前运行时筛选器。
+    struct EtwFilterConfigCompiledModel
+    {
+        EtwSimpleFilterCompiled preSimpleFilter;     // preSimpleFilter：前置简易规则编译结果。
+        EtwSimpleFilterCompiled postSimpleFilter;    // postSimpleFilter：后置简易规则编译结果。
+        std::vector<EtwFilterRuleGroupCompiled> preGroupList;  // preGroupList：前置详细规则编译结果。
+        std::vector<EtwFilterRuleGroupCompiled> postGroupList; // postGroupList：后置详细规则编译结果。
     };
 
     struct EtwCapturedEventRow
@@ -669,6 +737,27 @@ private:
     void scheduleEtwSimpleFilterApply(EtwFilterStage stage);
     void clearEtwSimpleFilter(EtwFilterStage stage, bool applyRules = true);
     void updateEtwSimpleFilterStateLabel(EtwFilterStage stage);
+    // captureEtwSimpleFilterModel / captureEtwFilterGroupModels：
+    // - 作用：只读快照当前控件值，供编译和持久化复用。
+    EtwSimpleFilterModel captureEtwSimpleFilterModel(EtwFilterStage stage) const;
+    std::vector<EtwFilterRuleGroupModel> captureEtwFilterGroupModels(EtwFilterStage stage) const;
+    EtwFilterConfigModel captureEtwFilterConfigModel() const;
+    // tryCompileEtwSimpleFilterModel / tryCompileEtwFilterGroupModels：
+    // - 作用：不访问 Qt 控件，在临时模型上完成全部语义验证与编译。
+    bool tryCompileEtwSimpleFilterModel(
+        EtwFilterStage stage,
+        const EtwSimpleFilterModel& filterModel,
+        EtwSimpleFilterCompiled& compiledFilterOut,
+        QString& errorTextOut) const;
+    bool tryCompileEtwFilterGroupModels(
+        EtwFilterStage stage,
+        const std::vector<EtwFilterRuleGroupModel>& groupModelList,
+        std::vector<EtwFilterRuleGroupCompiled>& compiledGroupsOut,
+        QString& errorTextOut) const;
+    bool tryCompileEtwFilterConfigModel(
+        const EtwFilterConfigModel& filterModel,
+        EtwFilterConfigCompiledModel& compiledModelOut,
+        QString& errorTextOut) const;
     bool tryCompileEtwSimpleFilter(
         EtwFilterStage stage,
         EtwSimpleFilterCompiled& compiledFilterOut,
@@ -687,8 +776,26 @@ private:
     EtwFilterRuleGroupUiState* findEtwFilterRuleGroupById(EtwFilterStage stage, int groupId);
     const EtwFilterRuleGroupUiState* findEtwFilterRuleGroupById(EtwFilterStage stage, int groupId) const;
     QString etwFilterConfigPath() const;
+    // tryParseEtwFilterConfigModel：
+    // - 作用：严格解析支持版本的 JSON，并在临时模型中规范化字段和预设值。
+    bool tryParseEtwFilterConfigModel(
+        const QByteArray& jsonData,
+        EtwFilterConfigModel& filterModelOut) const;
+    QJsonObject serializeEtwFilterConfigModel(const EtwFilterConfigModel& filterModel) const;
+    bool saveEtwFilterConfigModelToPath(
+        const EtwFilterConfigModel& filterModel,
+        const QString& filePath,
+        bool showErrorDialog) const;
+    // commitEtwFilterConfigModel：
+    // - 作用：在 UI 线程中一次性切换界面、运行时规则和前置线程快照。
+    void commitEtwFilterConfigModel(
+        const EtwFilterConfigModel& filterModel,
+        EtwFilterConfigCompiledModel compiledModel);
     bool saveEtwFilterConfigToPath(const QString& filePath, bool showErrorDialog) const;
-    bool loadEtwFilterConfigFromPath(const QString& filePath, bool showErrorDialog);
+    bool loadEtwFilterConfigFromPath(
+        const QString& filePath,
+        bool showErrorDialog,
+        bool persistAsDefault = false);
     void saveEtwFilterConfigToDefaultPath(bool showDialog) const;
     void loadEtwFilterConfigFromDefaultPath(bool showDialog);
     void importEtwFilterConfigFromUserSelectedPath();
