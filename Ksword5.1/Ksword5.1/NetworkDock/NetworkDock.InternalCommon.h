@@ -13,6 +13,7 @@
 
 #include "../ProcessDock/ProcessDetailWindow.h"
 #include "../UI/HexEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../ksword/network/network_diagnostics_tools.h"
 #include "../ksword/network/network_download_tools.h"
 #include "../ksword/network/network_format_tools.h"

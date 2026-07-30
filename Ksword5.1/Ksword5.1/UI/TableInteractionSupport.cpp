@@ -6,6 +6,7 @@
 #include "VisibleTableWidget.h"
 
 #include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -71,12 +72,12 @@ namespace
 
     // DeferredTableUiCommit：
     // - 保存右键菜单打开期间被覆盖合并的 UI 提交；
-    // - owner/key 共同标识一类刷新，tableList 决定何时可以安全回投。
+    // - owner/key 共同标识一类刷新，itemViewList 决定何时可以安全回投。
     struct DeferredTableUiCommit
     {
         QPointer<QObject> owner;                         // owner：接收延迟回调的生命周期对象。
         QString commitKey;                              // commitKey：同一所有者内的刷新去重键。
-        QList<QPointer<QTableView>> tableList;           // tableList：本次提交可能重建的表格。
+        QList<QPointer<QAbstractItemView>> itemViewList; // itemViewList：本次提交可能重建的表格或树。
         std::function<void()> commitAction;              // commitAction：菜单关闭后执行的最新 UI 提交。
     };
 
@@ -89,36 +90,51 @@ namespace
         return commitList;
     }
 
-    // isTableContextMenuOpen 作用：
-    // - 根据全局事件过滤器维护的深度属性判断表格右键菜单是否仍在嵌套事件循环中；
-    // - 空表格与深度为零均返回 false。
-    bool isTableContextMenuOpen(const QTableView* tableView)
+    // isDeferredTableUiCommitBlocked 作用：
+    // - 返回一次延迟提交关联的任一表格/树是否仍处于菜单生命周期内；
+    // - 每次真正执行前重新检查，覆盖 flush 过程中同步打开新菜单的重入场景。
+    bool isDeferredTableUiCommitBlocked(const DeferredTableUiCommit& pendingCommit)
     {
-        return tableView != nullptr &&
-            tableView->property(kContextMenuDepthProperty).toInt() > 0;
+        return std::any_of(
+            pendingCommit.itemViewList.cbegin(),
+            pendingCommit.itemViewList.cend(),
+            [](const QPointer<QAbstractItemView>& guardedItemView)
+            {
+                return !guardedItemView.isNull() &&
+                    guardedItemView->property(kContextMenuDepthProperty).toInt() > 0;
+            });
     }
 
-    // beginTableContextMenu 作用：
-    // - 在业务菜单进入 exec/popup 后增加表格菜单深度；
-    // - 多层菜单或连续弹出时使用计数而不是简单布尔值。
-    void beginTableContextMenu(QTableView* tableView)
+    // isItemViewContextMenuOpen 作用：
+    // - 根据全局事件过滤器维护的深度属性判断表格/树右键菜单是否仍在嵌套事件循环中；
+    // - 空视图与深度为零均返回 false。
+    bool isItemViewContextMenuOpen(const QAbstractItemView* itemView)
     {
-        if (tableView == nullptr)
+        return itemView != nullptr &&
+            itemView->property(kContextMenuDepthProperty).toInt() > 0;
+    }
+
+    // beginItemViewContextMenu 作用：
+    // - 在业务菜单进入 exec/popup 后增加表格/树菜单深度；
+    // - 多层菜单或连续弹出时使用计数而不是简单布尔值。
+    void beginItemViewContextMenu(QAbstractItemView* itemView)
+    {
+        if (itemView == nullptr)
         {
             return;
         }
 
-        const int currentDepth = tableView->property(kContextMenuDepthProperty).toInt();
-        tableView->setProperty(kContextMenuDepthProperty, currentDepth + 1);
+        const int currentDepth = itemView->property(kContextMenuDepthProperty).toInt();
+        itemView->setProperty(kContextMenuDepthProperty, currentDepth + 1);
     }
 
     // flushDeferredTableUiCommits 作用：
     // - 菜单关闭后扫描待提交队列；
-    // - 只有相关表格全部退出菜单状态时才把最新提交排入 owner 的事件队列。
+    // - 只有相关表格全部退出菜单状态时才执行最新提交；
+    // - 执行前逐项复查菜单状态，避免 flush 与二次投递之间重新打开菜单。
     void flushDeferredTableUiCommits()
     {
         QVector<DeferredTableUiCommit>& commitList = deferredTableUiCommits();
-        QVector<DeferredTableUiCommit> readyCommitList;
         for (int commitIndex = 0; commitIndex < commitList.size();)
         {
             DeferredTableUiCommit& pendingCommit = commitList[commitIndex];
@@ -128,64 +144,68 @@ namespace
                 continue;
             }
 
-            bool contextMenuStillOpen = false;
-            for (const QPointer<QTableView>& guardedTable : pendingCommit.tableList)
-            {
-                if (!guardedTable.isNull() && isTableContextMenuOpen(guardedTable.data()))
-                {
-                    contextMenuStillOpen = true;
-                    break;
-                }
-            }
-            if (contextMenuStillOpen)
+            if (isDeferredTableUiCommitBlocked(pendingCommit))
             {
                 ++commitIndex;
                 continue;
             }
 
-            // readyCommitList 按真实到达顺序保存；重叠表格始终由较新的快照最后覆盖。
-            readyCommitList.push_back(std::move(pendingCommit));
+            // 先移出当前提交，再执行用户回调；回调即使重入并修改队列也不会悬空引用。
+            const QPointer<QObject> owner = pendingCommit.owner;
+            std::function<void()> commitAction = std::move(pendingCommit.commitAction);
             commitList.removeAt(commitIndex);
-        }
+            if (!owner.isNull() && commitAction)
+            {
+                commitAction();
+            }
 
-        for (DeferredTableUiCommit& readyCommit : readyCommitList)
-        {
-            // owner/commitAction 用途：移出队列后仍保持生命周期保护与唯一的最新提交。
-            const QPointer<QObject> owner = readyCommit.owner;
-            std::function<void()> commitAction = std::move(readyCommit.commitAction);
-            QTimer::singleShot(0, owner.data(), [owner, commitAction = std::move(commitAction)]() mutable
-                {
-                    if (!owner.isNull() && commitAction)
-                    {
-                        commitAction();
-                    }
-                });
+            // commitAction 允许进入嵌套事件循环并改变队列；从头复查避免跳过被移动的项。
+            commitIndex = 0;
         }
     }
 
-    // endTableContextMenu 作用：
-    // - 菜单隐藏或销毁时减少深度；
-    // - 最后一层菜单关闭后尝试回投被合并的表格刷新。
-    void endTableContextMenu(QTableView* tableView)
+    // scheduleItemViewContextMenuEnd 作用：
+    // - 菜单 Hide 事件发生在 QMenu::exec 返回之前；
+    // - 把减深度和回投一起排到外层事件循环，确保业务槽先完成旧行/节点动作；
+    // - Hide 到回投之间的新刷新仍能看到正深度，因此也会进入延迟队列。
+    void scheduleItemViewContextMenuEnd(QAbstractItemView* itemView)
     {
-        if (tableView == nullptr)
+        const QPointer<QAbstractItemView> guardedItemView(itemView);
+        const auto finishContextMenu = [guardedItemView]()
+            {
+                if (!guardedItemView.isNull())
+                {
+                    const int currentDepth =
+                        guardedItemView->property(kContextMenuDepthProperty).toInt();
+                    guardedItemView->setProperty(
+                        kContextMenuDepthProperty,
+                        std::max(0, currentDepth - 1));
+                }
+                flushDeferredTableUiCommits();
+            };
+        if (qApp == nullptr)
         {
-            flushDeferredTableUiCommits();
+            finishContextMenu();
             return;
         }
-
-        const int currentDepth = tableView->property(kContextMenuDepthProperty).toInt();
-        tableView->setProperty(kContextMenuDepthProperty, std::max(0, currentDepth - 1));
-        flushDeferredTableUiCommits();
+        QTimer::singleShot(0, qApp, finishContextMenu);
     }
 
-    // deferTableUiCommitIfNeeded 作用：
-    // - 任一目标表格菜单打开时，按 owner/key 覆盖旧提交，防止高频刷新积压；
+    // endItemViewContextMenu 作用：
+    // - 菜单隐藏或销毁时安排在业务 action handler 完成后减少深度；
+    // - 最后一层菜单完成退出后回投被合并的表格/树刷新。
+    void endItemViewContextMenu(QAbstractItemView* itemView)
+    {
+        scheduleItemViewContextMenuEnd(itemView);
+    }
+
+    // deferItemViewUiCommitIfNeeded 作用：
+    // - 任一目标表格/树菜单打开时，按 owner/key 覆盖旧提交，防止高频刷新积压；
     // - 没有菜单打开时返回 false，调用方继续当前 UI 提交流程。
-    bool deferTableUiCommitIfNeeded(
+    bool deferItemViewUiCommitIfNeeded(
         QObject* owner,
         const QString& commitKey,
-        const QList<QTableView*>& tableList,
+        const QList<QAbstractItemView*>& itemViewList,
         std::function<void()> commitAction)
     {
         if (owner == nullptr || commitKey.isEmpty() || !commitAction)
@@ -194,16 +214,17 @@ namespace
         }
 
         bool contextMenuOpen = false;
-        QList<QPointer<QTableView>> guardedTableList;
-        guardedTableList.reserve(tableList.size());
-        for (QTableView* tableView : tableList)
+        QList<QPointer<QAbstractItemView>> guardedItemViewList;
+        guardedItemViewList.reserve(itemViewList.size());
+        for (QAbstractItemView* itemView : itemViewList)
         {
-            if (tableView == nullptr)
+            if (itemView == nullptr)
             {
                 continue;
             }
-            guardedTableList.push_back(QPointer<QTableView>(tableView));
-            contextMenuOpen = contextMenuOpen || isTableContextMenuOpen(tableView);
+            guardedItemViewList.push_back(QPointer<QAbstractItemView>(itemView));
+            contextMenuOpen =
+                contextMenuOpen || isItemViewContextMenuOpen(itemView);
         }
         if (!contextMenuOpen)
         {
@@ -220,7 +241,7 @@ namespace
                 DeferredTableUiCommit updatedCommit;
                 updatedCommit.owner = owner;
                 updatedCommit.commitKey = commitKey;
-                updatedCommit.tableList = std::move(guardedTableList);
+                updatedCommit.itemViewList = std::move(guardedItemViewList);
                 updatedCommit.commitAction = std::move(commitAction);
                 commitList.removeAt(commitIndex);
                 commitList.push_back(std::move(updatedCommit));
@@ -231,7 +252,7 @@ namespace
         DeferredTableUiCommit pendingCommit;
         pendingCommit.owner = owner;
         pendingCommit.commitKey = commitKey;
-        pendingCommit.tableList = std::move(guardedTableList);
+        pendingCommit.itemViewList = std::move(guardedItemViewList);
         pendingCommit.commitAction = std::move(commitAction);
         commitList.push_back(std::move(pendingCommit));
         return true;
@@ -255,6 +276,25 @@ namespace
         if (tableView != nullptr && watchedObject == tableView->viewport())
         {
             return tableView;
+        }
+        return nullptr;
+    }
+
+    // itemViewForEventObject 作用：
+    // - 把 QTableView/QTreeView 本体或其 viewport 统一还原为 QAbstractItemView；
+    // - 仅用于菜单生命周期屏障，不改变全局表格操作栏的适用范围。
+    QAbstractItemView* itemViewForEventObject(QObject* watchedObject)
+    {
+        if (QAbstractItemView* itemView = qobject_cast<QAbstractItemView*>(watchedObject))
+        {
+            return itemView;
+        }
+
+        QAbstractItemView* itemView = qobject_cast<QAbstractItemView*>(
+            watchedObject != nullptr ? watchedObject->parent() : nullptr);
+        if (itemView != nullptr && watchedObject == itemView->viewport())
+        {
+            return itemView;
         }
         return nullptr;
     }
@@ -1851,32 +1891,38 @@ namespace
                 QMenu* shownMenu = qobject_cast<QMenu*>(watchedObject);
                 if (shownMenu != nullptr)
                 {
-                    // contextTableView 用途：绑定当前菜单到最近一次普通表格右键来源。
-                    QTableView* contextTableView = m_pendingContextTable.data();
+                    // contextItemView 用途：绑定当前菜单到最近一次表格或树右键来源。
+                    QAbstractItemView* contextItemView = m_pendingContextItemView.data();
+                    QTableView* contextTableView =
+                        qobject_cast<QTableView*>(contextItemView);
                     appendTableContextActions(shownMenu, contextTableView);
-                    if (contextTableView != nullptr)
+                    if (contextItemView != nullptr)
                     {
                         // 同一个菜单对象一次显示只登记一次；Hide/销毁都会解除刷新屏障。
-                        if (!m_openContextMenuTables.contains(shownMenu))
+                        if (!m_openContextMenuItemViews.contains(shownMenu))
                         {
-                            m_openContextMenuTables.insert(shownMenu, contextTableView);
-                            beginTableContextMenu(contextTableView);
+                            m_openContextMenuItemViews.insert(shownMenu, contextItemView);
+                            beginItemViewContextMenu(contextItemView);
 
-                            // guardedTable 用途：菜单销毁时安全结束对应表格的刷新屏障。
-                            const QPointer<QTableView> guardedTable(contextTableView);
+                            // 菜单可被不同视图复用；销毁时读取当下映射，避免旧连接解除新视图深度。
                             QObject::connect(
                                 shownMenu,
                                 &QObject::destroyed,
                                 this,
-                                [this, shownMenu, guardedTable]()
+                                [this, shownMenu]()
                                 {
-                                    if (m_openContextMenuTables.remove(shownMenu) > 0)
+                                    const auto menuIterator =
+                                        m_openContextMenuItemViews.find(shownMenu);
+                                    if (menuIterator != m_openContextMenuItemViews.end())
                                     {
-                                        endTableContextMenu(guardedTable.data());
+                                        const QPointer<QAbstractItemView> guardedItemView =
+                                            menuIterator.value();
+                                        m_openContextMenuItemViews.erase(menuIterator);
+                                        endItemViewContextMenu(guardedItemView.data());
                                     }
                                 });
                         }
-                        m_pendingContextTable.clear();
+                        m_pendingContextItemView.clear();
                         ++m_pendingContextSequence;
                     }
                 }
@@ -1887,14 +1933,31 @@ namespace
                 QMenu* hiddenMenu = qobject_cast<QMenu*>(watchedObject);
                 if (hiddenMenu != nullptr)
                 {
-                    const auto menuIterator = m_openContextMenuTables.find(hiddenMenu);
-                    if (menuIterator != m_openContextMenuTables.end())
+                    const auto menuIterator = m_openContextMenuItemViews.find(hiddenMenu);
+                    if (menuIterator != m_openContextMenuItemViews.end())
                     {
-                        const QPointer<QTableView> guardedTable = menuIterator.value();
-                        m_openContextMenuTables.erase(menuIterator);
-                        endTableContextMenu(guardedTable.data());
+                        const QPointer<QAbstractItemView> guardedItemView = menuIterator.value();
+                        m_openContextMenuItemViews.erase(menuIterator);
+                        endItemViewContextMenu(guardedItemView.data());
                     }
                 }
+            }
+
+            const QEvent::Type eventType = eventObject->type();
+            QAbstractItemView* contextItemView = itemViewForEventObject(watchedObject);
+            if (contextItemView != nullptr && eventType == QEvent::ContextMenu)
+            {
+                // 业务菜单显示前记录来源；QTableView 与 QTreeView 共用同一生命周期屏障。
+                m_pendingContextItemView = contextItemView;
+                ++m_pendingContextSequence;
+                const unsigned long long pendingContextSequence = m_pendingContextSequence;
+                QTimer::singleShot(0, this, [this, pendingContextSequence]()
+                    {
+                        if (m_pendingContextSequence == pendingContextSequence)
+                        {
+                            m_pendingContextItemView.clear();
+                        }
+                    });
             }
 
             QTableView* tableView = tableForEventObject(watchedObject);
@@ -1903,7 +1966,6 @@ namespace
                 return QObject::eventFilter(watchedObject, eventObject);
             }
 
-            const QEvent::Type eventType = eventObject->type();
             const bool comparisonActive = tableView->property(kComparisonActiveProperty).toBool();
             if (tableView->property(
                     ks::ui::visible_table_detail::ComparisonSourceActiveProperty).toBool() &&
@@ -1961,30 +2023,19 @@ namespace
                 const QModelIndex clickedIndex = tableView->indexAt(viewportPosition);
                 selectContextRow(tableView, clickedIndex);
 
-                // 记录当前右键来源，业务 QMenu 显示时再追加复制和导出动作。
-                m_pendingContextTable = tableView;
-                ++m_pendingContextSequence;
-                // pendingContextSequence 用途：防止延迟清理误删后续右键事件的来源表格。
-                const unsigned long long pendingContextSequence = m_pendingContextSequence;
-                QTimer::singleShot(0, this, [this, pendingContextSequence]()
-                    {
-                        if (m_pendingContextSequence == pendingContextSequence)
-                        {
-                            m_pendingContextTable.clear();
-                        }
-                    });
+                // 菜单来源已由通用 item-view 分支记录；这里仅处理表格行选中语义。
             }
 
             return QObject::eventFilter(watchedObject, eventObject);
         }
 
     private:
-        // m_pendingContextTable 用途：保存当前业务右键菜单应绑定的表格来源。
-        QPointer<QTableView> m_pendingContextTable;
+        // m_pendingContextItemView 用途：保存当前业务右键菜单应绑定的表格或树来源。
+        QPointer<QAbstractItemView> m_pendingContextItemView;
         // m_pendingContextSequence 用途：区分连续右键事件，保证延迟清理仅影响同一次事件。
         unsigned long long m_pendingContextSequence = 0ULL;
-        // m_openContextMenuTables 用途：把当前可见业务菜单绑定到触发它的表格。
-        QHash<QMenu*, QPointer<QTableView>> m_openContextMenuTables;
+        // m_openContextMenuItemViews 用途：把当前可见业务菜单绑定到触发它的表格或树。
+        QHash<QMenu*, QPointer<QAbstractItemView>> m_openContextMenuItemViews;
     };
 }
 
@@ -2060,10 +2111,53 @@ namespace ks::ui
         const QList<QTableView*>& tableList,
         std::function<void()> commitAction)
     {
-        return deferTableUiCommitIfNeeded(
+        QList<QAbstractItemView*> itemViewList;
+        itemViewList.reserve(tableList.size());
+        for (QTableView* tableView : tableList)
+        {
+            itemViewList.push_back(tableView);
+        }
+        return deferItemViewUiCommitIfNeeded(
             owner,
             commitKey,
-            tableList,
+            itemViewList,
             std::move(commitAction));
+    }
+
+    bool IsTableUiCommitBlockedByContextMenu(
+        const QList<QTableView*>& tableList)
+    {
+        QList<QAbstractItemView*> itemViewList;
+        itemViewList.reserve(tableList.size());
+        for (QTableView* tableView : tableList)
+        {
+            itemViewList.push_back(tableView);
+        }
+        return IsItemViewUiCommitBlockedByContextMenu(itemViewList);
+    }
+
+    bool DeferItemViewUiCommitIfContextMenuOpen(
+        QObject* owner,
+        const QString& commitKey,
+        const QList<QAbstractItemView*>& itemViewList,
+        std::function<void()> commitAction)
+    {
+        return deferItemViewUiCommitIfNeeded(
+            owner,
+            commitKey,
+            itemViewList,
+            std::move(commitAction));
+    }
+
+    bool IsItemViewUiCommitBlockedByContextMenu(
+        const QList<QAbstractItemView*>& itemViewList)
+    {
+        return std::any_of(
+            itemViewList.cbegin(),
+            itemViewList.cend(),
+            [](const QAbstractItemView* itemView)
+            {
+                return isItemViewContextMenuOpen(itemView);
+            });
     }
 }

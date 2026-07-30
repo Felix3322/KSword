@@ -1,4 +1,5 @@
 #include "HardwareDock.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "DiskMonitorPage.h"
 #include "MemoryCompositionHistoryWidget.h"
@@ -8139,6 +8140,26 @@ void HardwareDock::requestAsyncR0HardwareHealthRefresh()
 
 void HardwareDock::refreshStaticHardwareTexts(const bool forceRefresh)
 {
+    const QPointer<HardwareDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("hardware-device-audit-tables-refresh"),
+        {
+            m_deviceStackTable,
+            m_keyboardMouseHidTable,
+            m_usbTopologyTable
+        },
+        [safeThis, forceRefresh]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshStaticHardwareTexts(forceRefresh);
+            }
+        }))
+    {
+        return;
+    }
+
     if (forceRefresh)
     {
         // 当前诊断页只请求自身需要的数据；普通页面仍只更新轻量静态概览。
@@ -8335,43 +8356,24 @@ void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMas
 
         const bool invokeOk = QMetaObject::invokeMethod(
             safeThis.data(),
-            [safeThis, requestedMask, deviceStackSnapshot, inputStackSnapshot, usbTopologySnapshot, pnpAcpiPciText]()
+            [safeThis,
+                requestedMask,
+                deviceStackSnapshot = std::move(deviceStackSnapshot),
+                inputStackSnapshot = std::move(inputStackSnapshot),
+                usbTopologySnapshot = std::move(usbTopologySnapshot),
+                pnpAcpiPciText = std::move(pnpAcpiPciText)]() mutable
             {
                 if (safeThis.isNull())
                 {
                     return;
                 }
 
-                if ((requestedMask & DeviceStackAuditRefresh) != 0U)
-                {
-                    safeThis->m_cachedDeviceStackStaticText = deviceStackSnapshot.summaryText;
-                    safeThis->m_cachedDeviceStackRows = deviceStackSnapshot.rows;
-                }
-                if ((requestedMask & InputStackAuditRefresh) != 0U)
-                {
-                    safeThis->m_cachedKeyboardMouseHidStaticText = inputStackSnapshot.summaryText;
-                    safeThis->m_cachedKeyboardMouseHidRows = inputStackSnapshot.rows;
-                }
-                if ((requestedMask & UsbTopologyAuditRefresh) != 0U)
-                {
-                    safeThis->m_cachedUsbTopologyStaticText = usbTopologySnapshot.summaryText;
-                    safeThis->m_cachedUsbTopologyRows = usbTopologySnapshot.rows;
-                }
-                if ((requestedMask & PnpAcpiPciRefresh) != 0U)
-                {
-                    safeThis->m_cachedPnpAcpiPciStaticText = pnpAcpiPciText;
-                }
-
-                safeThis->refreshStaticHardwareTexts(false);
-                safeThis->m_deviceAuditRefreshing.store(false);
-
-                // pendingMask 用途：接住工作线程期间发生的切页请求，下一轮仍保持串行。
-                const std::uint32_t pendingMask =
-                    safeThis->m_pendingDeviceAuditRefreshMask.load();
-                if (pendingMask != 0U)
-                {
-                    safeThis->requestAsyncDeviceAuditRefresh(pendingMask);
-                }
+                safeThis->applyDeviceAuditRefreshResult(
+                    requestedMask,
+                    std::move(deviceStackSnapshot),
+                    std::move(inputStackSnapshot),
+                    std::move(usbTopologySnapshot),
+                    std::move(pnpAcpiPciText));
             },
             Qt::QueuedConnection);
 
@@ -8380,6 +8382,76 @@ void HardwareDock::requestAsyncDeviceAuditRefresh(const std::uint32_t refreshMas
             safeThis->m_deviceAuditRefreshing.store(false);
         }
     }).detach();
+}
+
+void HardwareDock::applyDeviceAuditRefreshResult(
+    const std::uint32_t requestedMask,
+    DeviceAuditViewSnapshot deviceStackSnapshot,
+    DeviceAuditViewSnapshot inputStackSnapshot,
+    DeviceAuditViewSnapshot usbTopologySnapshot,
+    QString pnpAcpiPciText)
+{
+    const QList<QTableView*> deviceAuditTables = {
+        m_deviceStackTable,
+        m_keyboardMouseHidTable,
+        m_usbTopologyTable
+    };
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu(deviceAuditTables))
+    {
+        const QPointer<HardwareDock> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("hardware-device-audit-snapshot-apply"),
+            deviceAuditTables,
+            [safeThis,
+                requestedMask,
+                deviceStackSnapshot = std::move(deviceStackSnapshot),
+                inputStackSnapshot = std::move(inputStackSnapshot),
+                usbTopologySnapshot = std::move(usbTopologySnapshot),
+                pnpAcpiPciText = std::move(pnpAcpiPciText)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyDeviceAuditRefreshResult(
+                        requestedMask,
+                        std::move(deviceStackSnapshot),
+                        std::move(inputStackSnapshot),
+                        std::move(usbTopologySnapshot),
+                        std::move(pnpAcpiPciText));
+                }
+            });
+        return;
+    }
+
+    if ((requestedMask & DeviceStackAuditRefresh) != 0U)
+    {
+        m_cachedDeviceStackStaticText = std::move(deviceStackSnapshot.summaryText);
+        m_cachedDeviceStackRows = std::move(deviceStackSnapshot.rows);
+    }
+    if ((requestedMask & InputStackAuditRefresh) != 0U)
+    {
+        m_cachedKeyboardMouseHidStaticText = std::move(inputStackSnapshot.summaryText);
+        m_cachedKeyboardMouseHidRows = std::move(inputStackSnapshot.rows);
+    }
+    if ((requestedMask & UsbTopologyAuditRefresh) != 0U)
+    {
+        m_cachedUsbTopologyStaticText = std::move(usbTopologySnapshot.summaryText);
+        m_cachedUsbTopologyRows = std::move(usbTopologySnapshot.rows);
+    }
+    if ((requestedMask & PnpAcpiPciRefresh) != 0U)
+    {
+        m_cachedPnpAcpiPciStaticText = std::move(pnpAcpiPciText);
+    }
+
+    refreshStaticHardwareTexts(false);
+    m_deviceAuditRefreshing.store(false);
+
+    // pendingMask 用途：接住工作线程期间发生的切页请求，下一轮仍保持串行。
+    const std::uint32_t pendingMask = m_pendingDeviceAuditRefreshMask.load();
+    if (pendingMask != 0U)
+    {
+        requestAsyncDeviceAuditRefresh(pendingMask);
+    }
 }
 
 void HardwareDock::requestAsyncSensorRefresh()

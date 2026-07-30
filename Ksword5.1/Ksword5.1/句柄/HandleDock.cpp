@@ -1,6 +1,7 @@
 #include "HandleDock.h"
 
 #include "../Internationalization/LanguageManager.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -30,6 +31,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <memory>
 #include <set>
 #include <string>
 
@@ -826,6 +828,26 @@ void HandleDock::applyHandleRefreshResult(
         return;
     }
 
+    if (ks::ui::IsItemViewUiCommitBlockedByContextMenu({ m_tableWidget }))
+    {
+        const auto refreshSnapshot = std::make_shared<HandleRefreshResult>(refreshResult);
+        const QPointer<HandleDock> safeThis(this);
+        if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("handle-dock-main-snapshot"),
+            { m_tableWidget },
+            [safeThis, refreshTicket, refreshSnapshot]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyHandleRefreshResult(refreshTicket, *refreshSnapshot);
+                }
+            }))
+        {
+            return;
+        }
+    }
+
     m_allRows = refreshResult.rows;
     m_typeNameCacheByIndex = refreshResult.updatedTypeNameCacheByIndex;
     const bool canRenderAfterTypeMapping = !m_typeNameMapByIndexFromObjectTab.empty();
@@ -938,6 +960,31 @@ void HandleDock::applyObjectTypeRefreshResult(
     if (refreshTicket < m_objectTypeRefreshTicket)
     {
         return;
+    }
+
+    const QList<QAbstractItemView*> affectedViews{
+        m_objectTypeTable,
+        m_objectTypeDetailTable,
+        m_tableWidget
+    };
+    if (ks::ui::IsItemViewUiCommitBlockedByContextMenu(affectedViews))
+    {
+        const auto refreshSnapshot = std::make_shared<ObjectTypeRefreshResult>(refreshResult);
+        const QPointer<HandleDock> safeThis(this);
+        if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("handle-dock-object-type-snapshot"),
+            affectedViews,
+            [safeThis, refreshTicket, refreshSnapshot]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyObjectTypeRefreshResult(refreshTicket, *refreshSnapshot);
+                }
+            }))
+        {
+            return;
+        }
     }
 
     m_objectTypeRows = refreshResult.rows;

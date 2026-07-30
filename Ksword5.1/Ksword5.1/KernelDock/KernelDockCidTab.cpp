@@ -453,6 +453,22 @@ void KernelDockCidTab::refreshAsync()
 
 void KernelDockCidTab::applyRefreshResult(std::vector<CidEvidenceRow> rows, const QString& errorText, const bool success)
 {
+    const QPointer<KernelDockCidTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-cid-snapshot"),
+        { m_table },
+        [safeThis, rows, errorText, success]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applyRefreshResult(std::move(rows), errorText, success);
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing.store(false);
     m_refreshButton->setEnabled(true);
     m_rows = std::move(rows);

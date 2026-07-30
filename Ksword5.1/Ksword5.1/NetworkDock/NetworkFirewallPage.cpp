@@ -1,5 +1,6 @@
 #include "NetworkFirewallPage.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -1535,6 +1536,24 @@ void NetworkFirewallPage::appendEventsToTable(
     {
         return;
     }
+
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_eventTable}))
+    {
+        const QPointer<NetworkFirewallPage> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("firewall-event-table-append"),
+            {m_eventTable},
+            [safeThis, eventList, clearBeforeAppend]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->appendEventsToTable(eventList, clearBeforeAppend);
+                }
+            });
+        return;
+    }
+
     if (clearBeforeAppend)
     {
         m_eventTable->setRowCount(0);
@@ -1612,6 +1631,23 @@ void NetworkFirewallPage::applyFilterToRows()
 
 void NetworkFirewallPage::flushLiveEventsToUi()
 {
+    // 菜单打开时不提前 drain：实时队列保留原始顺序，关闭后一次性消费。
+    const QPointer<NetworkFirewallPage> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("firewall-live-event-flush"),
+        {m_eventTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->flushLiveEventsToUi();
+            }
+        }))
+    {
+        return;
+    }
+
     std::vector<FirewallEventEntry> eventList;
     {
         std::lock_guard<std::mutex> guard(m_liveEventMutex);
@@ -1740,6 +1776,24 @@ void NetworkFirewallPage::appendRulesToTable(
     {
         return;
     }
+
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_ruleTable}))
+    {
+        const QPointer<NetworkFirewallPage> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("firewall-rule-table-append"),
+            {m_ruleTable},
+            [safeThis, ruleList, clearBeforeAppend]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->appendRulesToTable(ruleList, clearBeforeAppend);
+                }
+            });
+        return;
+    }
+
     if (clearBeforeAppend)
     {
         m_ruleTable->setRowCount(0);

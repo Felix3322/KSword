@@ -1,6 +1,9 @@
 #include "MemoryDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+
+#include <memory>
 
 using namespace ksword::memory_dock_internal;
 
@@ -461,31 +464,47 @@ void MemoryDock::refreshProcessPteTranslateAsync()
         QMetaObject::invokeMethod(
             guardThis.data(),
             [guardThis, ticket, entries = std::move(entries)]() mutable {
-                if (guardThis == nullptr || ticket < guardThis->m_processPteTranslateRefreshTicket.load())
+                auto entriesSnapshot =
+                    std::make_shared<std::vector<ProcessMemoryEvidenceEntry>>(std::move(entries));
+                auto commitSnapshot = [guardThis, ticket, entriesSnapshot]() mutable
+                {
+                    if (guardThis == nullptr ||
+                        ticket < guardThis->m_processPteTranslateRefreshTicket.load())
+                    {
+                        return;
+                    }
+
+                    guardThis->m_processPteTranslateRefreshInProgress.store(false);
+                    if (guardThis->m_processPteTranslateRefreshButton != nullptr)
+                    {
+                        guardThis->m_processPteTranslateRefreshButton->setEnabled(true);
+                    }
+
+                    guardThis->m_processPteTranslateCache = std::move(*entriesSnapshot);
+                    guardThis->rebuildProcessPteTranslateTable();
+                    guardThis->showProcessPteTranslateDetailByCurrentRow();
+
+                    if (guardThis->m_processPteTranslateStatusLabel != nullptr)
+                    {
+                        guardThis->m_processPteTranslateStatusLabel->setText(
+                            QStringLiteral("状态：采样 %1 行").arg(guardThis->m_processPteTranslateCache.size()));
+                        guardThis->m_processPteTranslateStatusLabel->setStyleSheet(QStringLiteral(
+                            "color:%1; font-weight:600;")
+                            .arg(guardThis->m_processPteTranslateCache.empty()
+                                ? KswordTheme::ErrorColor().name(QColor::HexRgb)
+                                : KswordTheme::SuccessColor().name(QColor::HexRgb)));
+                    }
+                };
+
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    guardThis.data(),
+                    QStringLiteral("memory-process-pte-snapshot"),
+                    { guardThis->m_processPteTranslateTable },
+                    commitSnapshot))
                 {
                     return;
                 }
-
-                guardThis->m_processPteTranslateRefreshInProgress.store(false);
-                if (guardThis->m_processPteTranslateRefreshButton != nullptr)
-                {
-                    guardThis->m_processPteTranslateRefreshButton->setEnabled(true);
-                }
-
-                guardThis->m_processPteTranslateCache = std::move(entries);
-                guardThis->rebuildProcessPteTranslateTable();
-                guardThis->showProcessPteTranslateDetailByCurrentRow();
-
-                if (guardThis->m_processPteTranslateStatusLabel != nullptr)
-                {
-                    guardThis->m_processPteTranslateStatusLabel->setText(
-                        QStringLiteral("状态：采样 %1 行").arg(guardThis->m_processPteTranslateCache.size()));
-                    guardThis->m_processPteTranslateStatusLabel->setStyleSheet(QStringLiteral(
-                        "color:%1; font-weight:600;")
-                        .arg(guardThis->m_processPteTranslateCache.empty()
-                            ? KswordTheme::ErrorColor().name(QColor::HexRgb)
-                            : KswordTheme::SuccessColor().name(QColor::HexRgb)));
-                }
+                commitSnapshot();
             },
             Qt::QueuedConnection);
     }).detach();

@@ -1,4 +1,5 @@
 #include "MemoryDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::memory_dock_internal;
@@ -520,6 +521,22 @@ void MemoryDock::rebuildBookmarkTable()
 
 void MemoryDock::refreshBookmarkValues()
 {
+    const QPointer<MemoryDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("memory-bookmark-periodic-values"),
+        { m_bookmarkTable },
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshBookmarkValues();
+            }
+        }))
+    {
+        return;
+    }
+
     // 刷新书签值入口日志：记录当前书签规模。
     kLogEvent refreshBookmarkStartEvent;
     dbg << refreshBookmarkStartEvent

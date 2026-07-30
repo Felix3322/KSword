@@ -481,6 +481,15 @@ private:
     // - 按位请求当前可见的设备栈/输入栈/USB/PnP 页面，避免周期刷新全量查询；
     // - 重入请求会合并到 pending mask，始终只有一个设备审计工作线程。
     void requestAsyncDeviceAuditRefresh(std::uint32_t refreshMask);
+    // applyDeviceAuditRefreshResult 作用：
+    // - 在 GUI 线程原子替换三组设备审计缓存并刷新关联表；
+    // - 任一关联表菜单打开时延迟完整结果，避免缓存与表行代次错位。
+    void applyDeviceAuditRefreshResult(
+        std::uint32_t requestedMask,
+        DeviceAuditViewSnapshot deviceStackSnapshot,
+        DeviceAuditViewSnapshot inputStackSnapshot,
+        DeviceAuditViewSnapshot usbTopologySnapshot,
+        QString pnpAcpiPciText);
     void requestAsyncSensorRefresh();
     void requestAsyncR0HardwareHealthRefresh();
     void refreshCpuTopologyStaticInfo();

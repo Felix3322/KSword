@@ -1,4 +1,7 @@
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 #include "../UI/VisibleTableWidget.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
@@ -2219,6 +2222,21 @@ void KernelDock::refreshCallbackEnumAsync()
              snapshotHash,
              snapshotConsistent,
              resultRows = std::move(resultRows)]() mutable {
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelCallbackEnumEntry>>(std::move(resultRows));
+            const auto commitResult = [
+                guardThis,
+                success,
+                errorText,
+                responseFlags,
+                responseVersion,
+                snapshotPageCount,
+                snapshotRetryCount,
+                snapshotHash,
+                snapshotConsistent,
+                deferredRows]() mutable
+            {
+            std::vector<KernelCallbackEnumEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
             {
                 return;
@@ -2280,6 +2298,21 @@ void KernelDock::refreshCallbackEnumAsync()
             {
                 guardThis->m_callbackEnumDetailEditor->setText(kernelText("kernel.callback.enum.empty", QStringLiteral("当前环境未返回可见回调记录。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-callback-enum-snapshot-apply"),
+                { guardThis->m_callbackEnumTable, guardThis->m_minifilterCallbackTree },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }

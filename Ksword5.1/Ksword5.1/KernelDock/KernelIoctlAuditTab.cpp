@@ -3,6 +3,7 @@
 #include "KernelDeviceDriverObjectsWorker.h"
 #include "KernelDock.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
@@ -329,6 +330,22 @@ void KernelIoctlAuditTab::refreshAsync()
 
 void KernelIoctlAuditTab::applySnapshot(Snapshot snapshot)
 {
+    const QPointer<KernelIoctlAuditTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-ioctl-audit-snapshot"),
+        { m_driverTable, m_deviceTable, m_dispatchTable, m_registryTable },
+        [safeThis, snapshot]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applySnapshot(std::move(snapshot));
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
     m_driverRows = std::move(snapshot.driverRows);

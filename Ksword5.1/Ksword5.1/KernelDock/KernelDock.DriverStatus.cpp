@@ -1,4 +1,7 @@
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 #include "../UI/VisibleTableWidget.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
@@ -1444,6 +1447,14 @@ void KernelDock::refreshDriverStatusAsync()
         const bool success = queryDriverStatusSnapshot(summary, rows);
 
         QMetaObject::invokeMethod(guardThis, [guardThis, success, summary = std::move(summary), rows = std::move(rows)]() mutable {
+            const auto deferredSummary =
+                std::make_shared<KernelDriverStatusSummary>(std::move(summary));
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelDriverCapabilityEntry>>(std::move(rows));
+            const auto commitResult = [guardThis, success, deferredSummary, deferredRows]() mutable
+            {
+            KernelDriverStatusSummary& summary = *deferredSummary;
+            std::vector<KernelDriverCapabilityEntry>& rows = *deferredRows;
             if (guardThis == nullptr) { return; }
 
             guardThis->m_driverStatusRefreshRunning.store(false);
@@ -1483,6 +1494,21 @@ void KernelDock::refreshDriverStatusAsync()
             {
                 guardThis->m_driverCapabilityDetailEditor->setText(kernelText("kernel.driver_status.empty.filtered", QStringLiteral("当前筛选条件下没有驱动能力记录。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-driver-status-snapshot-apply"),
+                { guardThis->m_driverStatusSummaryTable, guardThis->m_driverCapabilityTable },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }

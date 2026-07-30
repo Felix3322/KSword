@@ -653,6 +653,22 @@ void ProcessDock::refreshCrossViewAsync()
 
 void ProcessDock::rebuildCrossViewTables()
 {
+    const QPointer<ProcessDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("process-cross-view-tables-rebuild"),
+        {m_processCrossViewTable, m_threadCrossViewTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->rebuildCrossViewTables();
+            }
+        }))
+    {
+        return;
+    }
+
     // 输入：无，读取 cross-view 缓存和过滤控件。
     // 处理：分别重绘进程/线程来源矩阵。
     // 返回：无。

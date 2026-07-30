@@ -653,6 +653,22 @@ void WindowGuiHandleTab::refreshAsync()
 
 void WindowGuiHandleTab::applySnapshot(QVector<QStringList> rows, const QString& statusText)
 {
+    const QPointer<WindowGuiHandleTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("window-gui-handle-snapshot-apply"),
+        { m_table },
+        [safeThis, rows, statusText]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applySnapshot(std::move(rows), statusText);
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing = false;
     m_refreshButton->setEnabled(true);
     m_rows = std::move(rows);

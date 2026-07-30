@@ -1,6 +1,7 @@
 #include "OtherDock.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -70,6 +71,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -1191,6 +1193,19 @@ private:
         QCheckBox* checkBox = nullptr;    // checkBox：与样式位绑定的勾选控件。
     };
 
+    // PendingMessageRow：右键菜单打开期间暂存的消息行。
+    // 消息流不能使用 latest-wins 丢弃中间事件，因此先保存在对话框队列中。
+    struct PendingMessageRow
+    {
+        QString channelText;
+        quint64 hwndValue = 0;
+        quint64 messageId = 0;
+        quint64 wParamValue = 0;
+        quint64 lParamValue = 0;
+        quint64 resultValue = 0;
+        QString extraText;
+    };
+
     // appendStyleCheckBoxGroup：
     // - 作用：把一组样式定义转为复选框网格并加入布局；
     // - 调用：initializeUi 创建“窗口样式/扩展样式”两组控件时各调用一次；
@@ -2162,6 +2177,7 @@ private:
     // 清空消息表：重置可视列表与计数器。
     void clearMessageTable()
     {
+        m_deferredMessageRows.clear();
         if (m_messageTable != nullptr)
         {
             m_messageTable->setRowCount(0);
@@ -2362,6 +2378,41 @@ private:
             return;
         }
 
+        if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_messageTable}))
+        {
+            const int maxDeferredRows =
+                (m_messageMaxRowsSpin == nullptr) ? 5000 : m_messageMaxRowsSpin->value();
+            while (static_cast<int>(m_deferredMessageRows.size()) >= maxDeferredRows)
+            {
+                m_deferredMessageRows.pop_front();
+                ++m_droppedMessageCount;
+            }
+            m_deferredMessageRows.push_back({
+                channelText,
+                hwndValue,
+                messageId,
+                wParamValue,
+                lParamValue,
+                resultValue,
+                extraText
+            });
+
+            const QPointer<WindowDetailDialog> safeThis(this);
+            ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                this,
+                QStringLiteral("window-message-stream-flush"),
+                {m_messageTable},
+                [safeThis]()
+                {
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->flushDeferredMessageRows();
+                    }
+                });
+            updateMessageMonitorUiState();
+            return;
+        }
+
         const int maxRows = (m_messageMaxRowsSpin == nullptr) ? 5000 : m_messageMaxRowsSpin->value();
         while (m_messageTable->rowCount() >= maxRows)
         {
@@ -2399,6 +2450,47 @@ private:
         if (m_messageAutoScrollCheck != nullptr && m_messageAutoScrollCheck->isChecked())
         {
             m_messageTable->scrollToBottom();
+        }
+    }
+
+    // flushDeferredMessageRows 作用：
+    // - 菜单关闭后按原始顺序补写全部暂存消息；
+    // - 若另一个菜单已打开，继续保留队列并等待下一次安全回投。
+    void flushDeferredMessageRows()
+    {
+        if (m_deferredMessageRows.empty())
+        {
+            return;
+        }
+
+        const QPointer<WindowDetailDialog> safeThis(this);
+        if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("window-message-stream-flush"),
+            {m_messageTable},
+            [safeThis]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->flushDeferredMessageRows();
+                }
+            }))
+        {
+            return;
+        }
+
+        std::deque<PendingMessageRow> pendingRows;
+        pendingRows.swap(m_deferredMessageRows);
+        for (const PendingMessageRow& pendingRow : pendingRows)
+        {
+            appendMessageRow(
+                pendingRow.channelText,
+                pendingRow.hwndValue,
+                pendingRow.messageId,
+                pendingRow.wParamValue,
+                pendingRow.lParamValue,
+                pendingRow.resultValue,
+                pendingRow.extraText);
         }
     }
 
@@ -2819,6 +2911,7 @@ private:
     bool m_eventRegistered = false;            // 是否已注册 eventHook->dialog 映射。
     int m_capturedMessageCount = 0;            // 已写入消息表的消息数量。
     int m_droppedMessageCount = 0;             // 因超过最大行数而丢弃的消息数量。
+    std::deque<PendingMessageRow> m_deferredMessageRows; // 菜单期间保持顺序的待提交消息。
     QString m_messageMonitorMode = QStringLiteral("未启动"); // 当前监控模式文本。
 
     static std::mutex s_monitorRegistryMutex;  // 回调映射表互斥锁，防止并发竞态。

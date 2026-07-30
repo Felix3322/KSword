@@ -1,6 +1,9 @@
 #include "MemoryDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+
+#include <memory>
 
 using namespace ksword::memory_dock_internal;
 
@@ -613,53 +616,72 @@ void MemoryDock::refreshKernelMemoryEvidenceAsync()
         QMetaObject::invokeMethod(
             guardThis.data(),
             [guardThis, ticket, result = std::move(result)]() mutable {
-                if (guardThis == nullptr || ticket < guardThis->m_kernelMemoryEvidenceRefreshTicket.load())
+                auto resultSnapshot =
+                    std::make_shared<ksword::ark::KernelMemoryEvidenceResult>(std::move(result));
+                auto commitSnapshot = [guardThis, ticket, resultSnapshot]()
                 {
-                    return;
-                }
+                    if (guardThis == nullptr ||
+                        ticket < guardThis->m_kernelMemoryEvidenceRefreshTicket.load())
+                    {
+                        return;
+                    }
 
-                guardThis->m_kernelMemoryEvidenceRefreshInProgress.store(false);
-                if (guardThis->m_kernelMemoryEvidenceRefreshButton != nullptr)
-                {
-                    guardThis->m_kernelMemoryEvidenceRefreshButton->setEnabled(true);
-                }
+                    guardThis->m_kernelMemoryEvidenceRefreshInProgress.store(false);
+                    if (guardThis->m_kernelMemoryEvidenceRefreshButton != nullptr)
+                    {
+                        guardThis->m_kernelMemoryEvidenceRefreshButton->setEnabled(true);
+                    }
 
-                if (!result.io.ok)
-                {
-                    guardThis->m_kernelMemoryEvidenceCache.clear();
-                    guardThis->m_kernelMemoryEvidenceVisibleCount = 0U;
+                    const ksword::ark::KernelMemoryEvidenceResult& snapshot = *resultSnapshot;
+                    if (!snapshot.io.ok)
+                    {
+                        guardThis->m_kernelMemoryEvidenceCache.clear();
+                        guardThis->m_kernelMemoryEvidenceVisibleCount = 0U;
+                        guardThis->rebuildKernelMemoryEvidenceTable();
+                        const QString message = snapshot.unsupported
+                            ? QStringLiteral("未集成/驱动过旧，等待 R0 支持")
+                            : QStringLiteral("查询失败: %1").arg(
+                                memoryEvidenceIoMessageText(snapshot.io.message));
+                        if (guardThis->m_kernelMemoryEvidenceStatusLabel != nullptr)
+                        {
+                            guardThis->m_kernelMemoryEvidenceStatusLabel->setText(
+                                QStringLiteral("状态：%1").arg(message));
+                            guardThis->m_kernelMemoryEvidenceStatusLabel->setStyleSheet(
+                                statusStyle(KswordTheme::ErrorColor().name(QColor::HexRgb)));
+                        }
+                        if (guardThis->m_kernelMemoryEvidenceDetailEditor != nullptr)
+                        {
+                            guardThis->m_kernelMemoryEvidenceDetailEditor->setText(message);
+                        }
+                        return;
+                    }
+
+                    guardThis->m_kernelMemoryEvidenceCache = snapshot.entries;
                     guardThis->rebuildKernelMemoryEvidenceTable();
-                    const QString message = result.unsupported
-                        ? QStringLiteral("未集成/驱动过旧，等待 R0 支持")
-                        : QStringLiteral("查询失败: %1").arg(memoryEvidenceIoMessageText(result.io.message));
+                    guardThis->showKernelMemoryEvidenceDetailByCurrentRow();
                     if (guardThis->m_kernelMemoryEvidenceStatusLabel != nullptr)
                     {
-                        guardThis->m_kernelMemoryEvidenceStatusLabel->setText(QStringLiteral("状态：%1").arg(message));
+                        guardThis->m_kernelMemoryEvidenceStatusLabel->setText(
+                            QStringLiteral("状态：总计 %1，返回 %2，显示 %3，模块 %4，BigPool seen %5")
+                            .arg(snapshot.totalRows)
+                            .arg(snapshot.returnedRows)
+                            .arg(guardThis->m_kernelMemoryEvidenceVisibleCount)
+                            .arg(snapshot.moduleCount)
+                            .arg(snapshot.bigPoolRowsSeen));
                         guardThis->m_kernelMemoryEvidenceStatusLabel->setStyleSheet(
-                            statusStyle(KswordTheme::ErrorColor().name(QColor::HexRgb)));
+                            statusStyle(KswordTheme::SuccessColor().name(QColor::HexRgb)));
                     }
-                    if (guardThis->m_kernelMemoryEvidenceDetailEditor != nullptr)
-                    {
-                        guardThis->m_kernelMemoryEvidenceDetailEditor->setText(message);
-                    }
+                };
+
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    guardThis.data(),
+                    QStringLiteral("memory-kernel-evidence-snapshot"),
+                    { guardThis->m_kernelMemoryEvidenceTable },
+                    commitSnapshot))
+                {
                     return;
                 }
-
-                guardThis->m_kernelMemoryEvidenceCache = result.entries;
-                guardThis->rebuildKernelMemoryEvidenceTable();
-                guardThis->showKernelMemoryEvidenceDetailByCurrentRow();
-                if (guardThis->m_kernelMemoryEvidenceStatusLabel != nullptr)
-                {
-                    guardThis->m_kernelMemoryEvidenceStatusLabel->setText(
-                        QStringLiteral("状态：总计 %1，返回 %2，显示 %3，模块 %4，BigPool seen %5")
-                        .arg(result.totalRows)
-                        .arg(result.returnedRows)
-                        .arg(guardThis->m_kernelMemoryEvidenceVisibleCount)
-                        .arg(result.moduleCount)
-                        .arg(result.bigPoolRowsSeen));
-                    guardThis->m_kernelMemoryEvidenceStatusLabel->setStyleSheet(
-                        statusStyle(KswordTheme::SuccessColor().name(QColor::HexRgb)));
-                }
+                commitSnapshot();
             },
             Qt::QueuedConnection);
     }).detach();

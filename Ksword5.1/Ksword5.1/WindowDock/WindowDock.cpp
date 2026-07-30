@@ -3525,6 +3525,32 @@ void WindowDock::setRefreshingPlaceholderRows()
 
 void WindowDock::requestAsyncRefresh()
 {
+    // 一轮窗口审计会同步替换七张关联表；任一表格菜单打开时，启动阶段的
+    // 占位缓存和七表提交都必须作为一个整体延后。
+    const QPointer<WindowDock> deferredGuard(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("window-audit-refresh-start"),
+        {
+            m_windowsTable,
+            m_guiThreadsTable,
+            m_sessionTable,
+            m_hotkeysTable,
+            m_hooksTable,
+            m_clipboardTable,
+            m_deviceTable
+        },
+        [deferredGuard]()
+        {
+            if (!deferredGuard.isNull())
+            {
+                deferredGuard->requestAsyncRefresh();
+            }
+        }))
+    {
+        return;
+    }
+
     bool expectedFlag = false;
     if (!m_refreshing.compare_exchange_strong(expectedFlag, true))
     {
@@ -3573,6 +3599,8 @@ void WindowDock::requestAsyncRefresh()
                 safeThis.data(),
                 [safeThis, failureText]()
                 {
+                    const auto commitFailure = [safeThis, failureText]()
+                    {
                     if (safeThis.isNull())
                     {
                         return;
@@ -3620,6 +3648,29 @@ void WindowDock::requestAsyncRefresh()
                         safeThis->m_statusLabel->setText(QStringLiteral("窗口审计刷新异常：%1").arg(failureText));
                     }
                     safeThis->m_refreshing.store(false);
+                    };
+
+                    if (safeThis.isNull())
+                    {
+                        return;
+                    }
+                    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        safeThis.data(),
+                        QStringLiteral("window-audit-failure-apply"),
+                        {
+                            safeThis->m_windowsTable,
+                            safeThis->m_guiThreadsTable,
+                            safeThis->m_sessionTable,
+                            safeThis->m_hotkeysTable,
+                            safeThis->m_hooksTable,
+                            safeThis->m_clipboardTable,
+                            safeThis->m_deviceTable
+                        },
+                        commitFailure))
+                    {
+                        return;
+                    }
+                    commitFailure();
                 },
                 Qt::QueuedConnection);
 
@@ -3769,6 +3820,19 @@ void WindowDock::requestAsyncRefresh()
                 [safeThis, sessionSummary, hotkeyHookSummary, displaySummary,
                  windowsRows, guiThreadRows, sessionRows, hotkeyRows, hookRows, deviceRows, clipboardRows]()
                 {
+                    const auto commitSnapshot = [
+                        safeThis,
+                        sessionSummary,
+                        hotkeyHookSummary,
+                        displaySummary,
+                        windowsRows,
+                        guiThreadRows,
+                        sessionRows,
+                        hotkeyRows,
+                        hookRows,
+                        deviceRows,
+                        clipboardRows]()
+                    {
                     if (safeThis.isNull())
                     {
                         return;
@@ -3792,6 +3856,29 @@ void WindowDock::requestAsyncRefresh()
                             .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
                     }
                     safeThis->m_refreshing.store(false);
+                    };
+
+                    if (safeThis.isNull())
+                    {
+                        return;
+                    }
+                    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        safeThis.data(),
+                        QStringLiteral("window-audit-seven-table-apply"),
+                        {
+                            safeThis->m_windowsTable,
+                            safeThis->m_guiThreadsTable,
+                            safeThis->m_sessionTable,
+                            safeThis->m_hotkeysTable,
+                            safeThis->m_hooksTable,
+                            safeThis->m_clipboardTable,
+                            safeThis->m_deviceTable
+                        },
+                        commitSnapshot))
+                    {
+                        return;
+                    }
+                    commitSnapshot();
                 },
                 Qt::QueuedConnection);
 

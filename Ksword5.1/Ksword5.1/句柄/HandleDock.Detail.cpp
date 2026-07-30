@@ -1,4 +1,5 @@
 #include "HandleDock.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 // ============================================================
@@ -18,6 +19,8 @@
 #include <QThreadPool>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+
+#include <memory>
 
 void HandleDock::requestHandleDetailRefresh(const bool forceRefresh)
 {
@@ -83,6 +86,26 @@ void HandleDock::applyHandleDetailRefreshResult(
     if (refreshTicket < m_handleDetailRefreshTicket)
     {
         return;
+    }
+
+    if (ks::ui::IsItemViewUiCommitBlockedByContextMenu({ m_handleDetailTable }))
+    {
+        const auto refreshSnapshot = std::make_shared<HandleDetailRefreshResult>(refreshResult);
+        const QPointer<HandleDock> safeThis(this);
+        if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("handle-dock-detail-snapshot"),
+            { m_handleDetailTable },
+            [safeThis, refreshTicket, refreshSnapshot]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyHandleDetailRefreshResult(refreshTicket, *refreshSnapshot);
+                }
+            }))
+        {
+            return;
+        }
     }
 
     m_handleDetailRefreshInProgress = false;

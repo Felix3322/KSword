@@ -1,4 +1,5 @@
 #include "ApplicationControlPage.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../UI/CodeEditorWidget.h"
@@ -1894,6 +1895,53 @@ namespace ks::misc
         QVector<KeyValueRecord> defenderRows,
         QVector<KeyValueRecord> platformRows)
     {
+        const QList<QTableView*> applicationControlTables = {
+            m_appLockerTable,
+            m_policyFileTable,
+            m_codeIntegrityEventTable,
+            m_defenderTable,
+            m_platformTable,
+            m_eventTable
+        };
+        if (ks::ui::IsTableUiCommitBlockedByContextMenu(applicationControlTables))
+        {
+            const QPointer<ApplicationControlPage> safeThis(this);
+            ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                this,
+                QStringLiteral("application-control-refresh-apply"),
+                applicationControlTables,
+                [safeThis,
+                    statusText = std::move(statusText),
+                    appLockerSummary = std::move(appLockerSummary),
+                    wdacSummary = std::move(wdacSummary),
+                    defenderSummary = std::move(defenderSummary),
+                    platformSummary = std::move(platformSummary),
+                    eventSummary = std::move(eventSummary),
+                    appLockerRules = std::move(appLockerRules),
+                    policyFiles = std::move(policyFiles),
+                    events = std::move(events),
+                    defenderRows = std::move(defenderRows),
+                    platformRows = std::move(platformRows)]() mutable
+                {
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->applyRefreshResult(
+                            std::move(statusText),
+                            std::move(appLockerSummary),
+                            std::move(wdacSummary),
+                            std::move(defenderSummary),
+                            std::move(platformSummary),
+                            std::move(eventSummary),
+                            std::move(appLockerRules),
+                            std::move(policyFiles),
+                            std::move(events),
+                            std::move(defenderRows),
+                            std::move(platformRows));
+                    }
+                });
+            return;
+        }
+
         m_appLockerRules = std::move(appLockerRules);
 
         if (m_statusLabel != nullptr)
@@ -2067,6 +2115,22 @@ namespace ks::misc
 
     void ApplicationControlPage::rebuildEventTable()
     {
+        const QPointer<ApplicationControlPage> safeThis(this);
+        if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("application-control-event-filter-rebuild"),
+            {m_eventTable},
+            [safeThis]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->rebuildEventTable();
+                }
+            }))
+        {
+            return;
+        }
+
         const QString selectedVerdictText = m_eventVerdictFilterCombo != nullptr
             ? m_eventVerdictFilterCombo->currentText()
             : QStringLiteral("全部分类");
@@ -2312,6 +2376,27 @@ namespace ks::misc
 
     void ApplicationControlPage::applyFileDiagnosisResult(QString summaryText, QVector<KeyValueRecord> rows)
     {
+        if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_fileDiagnosisTable}))
+        {
+            const QPointer<ApplicationControlPage> safeThis(this);
+            ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                this,
+                QStringLiteral("application-control-file-diagnosis-apply"),
+                {m_fileDiagnosisTable},
+                [safeThis,
+                    summaryText = std::move(summaryText),
+                    rows = std::move(rows)]() mutable
+                {
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->applyFileDiagnosisResult(
+                            std::move(summaryText),
+                            std::move(rows));
+                    }
+                });
+            return;
+        }
+
         if (m_fileDiagnosisSummary != nullptr)
         {
             m_fileDiagnosisSummary->setText(summaryText);

@@ -1,5 +1,8 @@
 #include "MemoryDock.Internal.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::memory_dock_internal;
@@ -435,55 +438,83 @@ bool MemoryDock::refreshModuleListForPid(const std::uint32_t pid)
                     return;
                 }
 
-                // 先覆盖缓存，再按当前过滤条件重建可见列表。
-                selfGuard->m_moduleCache = std::move(moduleCache);
-                selfGuard->rebuildModuleTableFromCache();
-
-                // 刷新收尾：恢复按钮并更新状态标签。
-                selfGuard->m_moduleRefreshInProgress.store(false);
-                if (selfGuard->m_moduleRefreshButton != nullptr)
+                auto moduleCacheSnapshot =
+                    std::make_shared<std::vector<ModuleEntry>>(std::move(moduleCache));
+                auto commitModuleSnapshot = [
+                    selfGuard,
+                    pid,
+                    includeSignatureCheck,
+                    refreshTicket,
+                    elapsedMs,
+                    moduleCount,
+                    threadCount,
+                    diagnosticText,
+                    moduleCacheSnapshot]() mutable
                 {
-                    selfGuard->m_moduleRefreshButton->setEnabled(true);
-                }
-
-                if (selfGuard->m_moduleStatusLabel != nullptr)
-                {
-                    QString statusText = QString("● %1 ms | 模块:%2 线程:%3 显示:%4")
-                        .arg(elapsedMs)
-                        .arg(moduleCount)
-                        .arg(threadCount)
-                        .arg(selfGuard->m_moduleTable->topLevelItemCount());
-                    if (!diagnosticText.isEmpty())
+                    if (selfGuard == nullptr ||
+                        refreshTicket < selfGuard->m_moduleRefreshTicket.load())
                     {
-                        statusText += QString(" | %1").arg(diagnosticText);
+                        return;
                     }
-                    selfGuard->m_moduleStatusLabel->setText(statusText);
-                    selfGuard->m_moduleStatusLabel->setStyleSheet(
-                        QStringLiteral("color:%1; font-weight:%2;")
-                            .arg(moduleCount == 0
-                                ? KswordTheme::ErrorColor().name(QColor::HexRgb)
-                                : KswordTheme::SuccessColor().name(QColor::HexRgb))
-                            .arg(moduleCount == 0 ? 700 : 600));
-                }
 
-                // 刷新完成日志：包含耗时、总数、过滤后数量和诊断文本。
-                kLogEvent refreshModuleFinishEvent;
-                info << refreshModuleFinishEvent
-                    << "[MemoryDock] refreshModuleListForPid: 刷新完成, pid="
-                    << pid
-                    << ", elapsedMs="
-                    << elapsedMs
-                    << ", moduleCount="
-                    << moduleCount
-                    << ", threadCount="
-                    << threadCount
-                    << ", visibleCount="
-                    << selfGuard->m_moduleTable->topLevelItemCount()
-                    << ", includeSignatureCheck="
-                    << (includeSignatureCheck ? "true" : "false")
-                    << ", diagnostic="
-                    << diagnosticText.toStdString()
-                    << eol;
+                    // 缓存和树必须原子落地；菜单打开时不能先换缓存再保留旧节点。
+                    selfGuard->m_moduleCache = std::move(*moduleCacheSnapshot);
+                    selfGuard->rebuildModuleTableFromCache();
+
+                    selfGuard->m_moduleRefreshInProgress.store(false);
+                    if (selfGuard->m_moduleRefreshButton != nullptr)
+                    {
+                        selfGuard->m_moduleRefreshButton->setEnabled(true);
+                    }
+
+                    if (selfGuard->m_moduleStatusLabel != nullptr)
+                    {
+                        QString statusText = QString("● %1 ms | 模块:%2 线程:%3 显示:%4")
+                            .arg(elapsedMs)
+                            .arg(moduleCount)
+                            .arg(threadCount)
+                            .arg(selfGuard->m_moduleTable->topLevelItemCount());
+                        if (!diagnosticText.isEmpty())
+                        {
+                            statusText += QString(" | %1").arg(diagnosticText);
+                        }
+                        selfGuard->m_moduleStatusLabel->setText(statusText);
+                        selfGuard->m_moduleStatusLabel->setStyleSheet(
+                            QStringLiteral("color:%1; font-weight:%2;")
+                                .arg(moduleCount == 0
+                                    ? KswordTheme::ErrorColor().name(QColor::HexRgb)
+                                    : KswordTheme::SuccessColor().name(QColor::HexRgb))
+                                .arg(moduleCount == 0 ? 700 : 600));
+                    }
+
+                    kLogEvent refreshModuleFinishEvent;
+                    info << refreshModuleFinishEvent
+                        << "[MemoryDock] refreshModuleListForPid: 刷新完成, pid="
+                        << pid
+                        << ", elapsedMs="
+                        << elapsedMs
+                        << ", moduleCount="
+                        << moduleCount
+                        << ", threadCount="
+                        << threadCount
+                        << ", visibleCount="
+                        << selfGuard->m_moduleTable->topLevelItemCount()
+                        << ", includeSignatureCheck="
+                        << (includeSignatureCheck ? "true" : "false")
+                        << ", diagnostic="
+                        << diagnosticText.toStdString()
+                        << eol;
+                };
+
+                if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                        selfGuard.data(),
+                        QStringLiteral("memory-process-modules-snapshot-apply"),
+                        {selfGuard->m_moduleTable},
+                        commitModuleSnapshot))
+                {
+                    return;
+                }
+                commitModuleSnapshot();
             }, Qt::QueuedConnection);
         }).detach();
 

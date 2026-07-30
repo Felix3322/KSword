@@ -61,6 +61,15 @@ private:
     // - 返回：无，结果通过 queued connection 回填 UI。
     void refreshEvidenceAsync(bool forceRefresh);
 
+    // applyEvidenceQueryResults 作用：
+    // - 按 ticket 原子替换 R0 能力、DynData 与 CPU evidence 缓存；
+    // - 表格菜单打开时延迟整组结果，确保 UserRole 缓存索引仍有效。
+    void applyEvidenceQueryResults(
+        std::uint64_t ticket,
+        ksword::ark::DriverCapabilitiesQueryResult capabilityResult,
+        ksword::ark::DynDataCapabilitiesResult dynDataResult,
+        ksword::ark::DriverIntegrityResult integrityResult);
+
     // rebuildEvidenceTable 作用：
     // - 输入：无，读取 m_evidenceCache 与过滤控件；
     // - 处理：重建表格显示，不访问驱动；

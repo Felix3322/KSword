@@ -1,5 +1,6 @@
 #include "KernelSymbolicLinkTab.h"
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -199,6 +200,22 @@ void KernelSymbolicLinkTab::applySnapshotResult(
     const QString& errorText,
     const bool ok)
 {
+    const QPointer<KernelSymbolicLinkTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-symbolic-link-snapshot"),
+        { m_table },
+        [safeThis, rows, errorText, ok]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applySnapshotResult(std::move(rows), errorText, ok);
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing = false;
     m_refreshButton->setEnabled(true);
 

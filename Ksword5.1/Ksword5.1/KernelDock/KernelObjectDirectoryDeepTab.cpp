@@ -1,6 +1,9 @@
 
 #include "KernelObjectDirectoryDeepTab.h"
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 
 // ============================================================
 // KernelObjectDirectoryDeepTab.cpp
@@ -339,6 +342,22 @@ void KernelObjectDirectoryDeepTab::setRefreshRunning(const bool running)
 
 void KernelObjectDirectoryDeepTab::startRefresh()
 {
+    const QPointer<KernelObjectDirectoryDeepTab> deferredGuard(this);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-object-directory-refresh-start"),
+        { m_resultTree },
+        [deferredGuard]()
+        {
+            if (!deferredGuard.isNull())
+            {
+                deferredGuard->startRefresh();
+            }
+        }))
+    {
+        return;
+    }
+
     if (m_refreshRunning.exchange(true))
     {
         return;
@@ -366,6 +385,11 @@ void KernelObjectDirectoryDeepTab::startRefresh()
             runKernelObjectDirectoryDeepSnapshotTask(options);
 
         QMetaObject::invokeMethod(guardThis, [guardThis, result = std::move(result)]() mutable {
+            const auto deferredResult =
+                std::make_shared<KernelObjectDirectoryDeepResult>(std::move(result));
+            const auto commitResult = [guardThis, deferredResult]() mutable
+            {
+            KernelObjectDirectoryDeepResult& result = *deferredResult;
             if (guardThis == nullptr)
             {
                 return;
@@ -424,6 +448,21 @@ void KernelObjectDirectoryDeepTab::startRefresh()
             {
                 guardThis->m_detailEditor->setText(kernelText("kernel.object_directory.detail.no_records", QStringLiteral("当前根路径没有返回可显示记录。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-object-directory-snapshot-apply"),
+                { guardThis->m_resultTree },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }

@@ -1,4 +1,5 @@
 #include "DriverDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include <QTimeZone>
@@ -567,6 +568,30 @@ void DriverDock::applyUnloadedDriverQueryResult(
     {
         return;
     }
+
+    // 查询结果包含可变长行缓存；菜单打开时连 cache replacement 一起延后，
+    // 避免 rebuild 前先让动作依赖的来源索引失效。
+    const QPointer<DriverDock> guardThis(this);
+    const auto deferredResult =
+        std::make_shared<ksword::ark::UnloadedDriverQueryResult>(std::move(result));
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("driver-unloaded-snapshot-apply"),
+        { m_unloadedPiddbTable },
+        [guardThis, ticket, deferredResult]() mutable
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->applyUnloadedDriverQueryResult(
+                    ticket,
+                    std::move(*deferredResult));
+            }
+        }))
+    {
+        return;
+    }
+    result = std::move(*deferredResult);
+
     m_unloadedDriverQuerying = false;
     if (m_unloadedPiddbRefreshButton != nullptr)
     {

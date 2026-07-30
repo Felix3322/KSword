@@ -1,6 +1,7 @@
 #include "DriverDock.Internal.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../OnlineScan/SandboxUploadActions.h"
+#include "../UI/TableInteractionSupport.h"
 
 #include <QDesktopServices>
 #include <QUrl>
@@ -1552,6 +1553,22 @@ namespace
 
 void DriverDock::refreshDriverServiceRecords()
 {
+    const QPointer<DriverDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("driver-service-record-refresh"),
+        { m_serviceTable, m_moduleTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->refreshDriverServiceRecords();
+            }
+        }))
+    {
+        return;
+    }
+
     kLogEvent refreshEvent;
     info << refreshEvent
         << driverText("driver.log.refresh_services_start", QStringLiteral("[DriverDock] 开始刷新驱动服务列表。"))
@@ -1602,6 +1619,22 @@ void DriverDock::refreshDriverServiceRecords()
 
 void DriverDock::refreshLoadedKernelModuleRecords()
 {
+    const QPointer<DriverDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("driver-loaded-module-refresh"),
+        { m_serviceTable, m_moduleTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->refreshLoadedKernelModuleRecords();
+            }
+        }))
+    {
+        return;
+    }
+
     kLogEvent refreshEvent;
     info << refreshEvent
         << driverText("driver.log.refresh_modules_start", QStringLiteral("[DriverDock] 开始刷新已加载模块列表。"))
@@ -3226,6 +3259,31 @@ void DriverDock::querySelectedDriverObjectInfo()
 
 void DriverDock::applyDriverObjectQueryResult(const ksword::ark::DriverObjectQueryResult& result)
 {
+    // DriverObject 查询会一次重建对象、派遣、设备、扩展、Fast I/O 五张证据表。
+    const QPointer<DriverDock> guardThis(this);
+    const auto deferredResult =
+        std::make_shared<ksword::ark::DriverObjectQueryResult>(result);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("driver-object-evidence-apply"),
+        {
+            m_driverObjectEvidenceTable,
+            m_majorFunctionTable,
+            m_deviceObjectTable,
+            m_driverExtensionEvidenceTable,
+            m_fastIoEvidenceTable
+        },
+        [guardThis, deferredResult]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->applyDriverObjectQueryResult(*deferredResult);
+            }
+        }))
+    {
+        return;
+    }
+
     // 查询结果回填：
     // - 所有地址都作为诊断文本展示；
     // - 不在 UI 中将地址作为任何二次操作输入。

@@ -411,6 +411,24 @@ void WindowTimerTab::refreshAsync()
 
 void WindowTimerTab::applySnapshot(QVector<QStringList> rows, const QString& statusText)
 {
+    // 后台快照到达时先保护缓存和表格；QVector/QString 为隐式共享，
+    // latest-wins 延迟不会为未打开菜单的常规路径制造深拷贝。
+    const QPointer<WindowTimerTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("window-timer-snapshot-apply"),
+        { m_table },
+        [safeThis, rows, statusText]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applySnapshot(std::move(rows), statusText);
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing = false;
     m_refreshButton->setEnabled(true);
     m_rows = std::move(rows);

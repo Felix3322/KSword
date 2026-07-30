@@ -3,6 +3,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -314,6 +315,22 @@ void KernelThreadAuditTab::requestRefresh()
 
 void KernelThreadAuditTab::applySnapshot(const Snapshot& snapshot)
 {
+    const QPointer<KernelThreadAuditTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-thread-audit-snapshot"),
+        { m_table },
+        [safeThis, snapshot]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applySnapshot(snapshot);
+            }
+        }))
+    {
+        return;
+    }
+
     m_rows = snapshot.rows;
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);

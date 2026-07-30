@@ -4,6 +4,7 @@
 #include "../Internationalization/LanguageManager.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -33,6 +34,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <unordered_map>
 #include <utility>
@@ -897,7 +899,9 @@ void ProcessDock::requestAsyncThreadRefresh(const bool forceRefresh)
             ks::process::EnumerateSystemThreads(&usedNtQuery, &diagnosticText);
         const bool r0ThreadExtensionMerged = mergeThreadR0Snapshot(threadList, &diagnosticText);
 
-        QMetaObject::invokeMethod(guardThis, [guardThis, localTicket, usedNtQuery, r0ThreadExtensionMerged, diagnosticText, threadList = std::move(threadList)]() mutable {
+        auto deferredThreadList =
+            std::make_shared<std::vector<ks::process::SystemThreadRecord>>(std::move(threadList));
+        QMetaObject::invokeMethod(guardThis, [guardThis, localTicket, usedNtQuery, r0ThreadExtensionMerged, diagnosticText, deferredThreadList]() {
             if (guardThis == nullptr)
             {
                 return;
@@ -913,26 +917,49 @@ void ProcessDock::requestAsyncThreadRefresh(const bool forceRefresh)
                 return;
             }
 
-            guardThis->m_threadRecordList = std::move(threadList);
-            guardThis->m_threadDiagnosticText = diagnosticText;
-            guardThis->rebuildThreadTable();
-
+            auto commit = [
+                guardThis,
+                localTicket,
+                usedNtQuery,
+                r0ThreadExtensionMerged,
+                diagnosticText,
+                deferredThreadList]() mutable
             {
-                kLogEvent logEvent;
-                info << logEvent
-                    << "[ProcessDock] 线程列表刷新完成, ticket=" << localTicket
-                    << ", count=" << guardThis->m_threadRecordList.size()
-                    << ", usedNtQuery=" << (usedNtQuery ? "true" : "false")
-                    << ", r0ThreadExtensionMerged=" << (r0ThreadExtensionMerged ? "true" : "false")
-                    << ", diagnostic=" << guardThis->m_threadDiagnosticText
-                    << eol;
-            }
+                if (guardThis == nullptr || guardThis->m_threadRefreshTicket != localTicket)
+                {
+                    return;
+                }
 
-            guardThis->m_threadRefreshInProgress = false;
-            if (guardThis->m_threadRefreshButton != nullptr)
+                guardThis->m_threadRecordList = std::move(*deferredThreadList);
+                guardThis->m_threadDiagnosticText = diagnosticText;
+                guardThis->rebuildThreadTable();
+
+                {
+                    kLogEvent logEvent;
+                    info << logEvent
+                        << "[ProcessDock] 线程列表刷新完成, ticket=" << localTicket
+                        << ", count=" << guardThis->m_threadRecordList.size()
+                        << ", usedNtQuery=" << (usedNtQuery ? "true" : "false")
+                        << ", r0ThreadExtensionMerged=" << (r0ThreadExtensionMerged ? "true" : "false")
+                        << ", diagnostic=" << guardThis->m_threadDiagnosticText
+                        << eol;
+                }
+
+                guardThis->m_threadRefreshInProgress = false;
+                if (guardThis->m_threadRefreshButton != nullptr)
+                {
+                    guardThis->m_threadRefreshButton->setEnabled(true);
+                }
+            };
+            if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                    guardThis.data(),
+                    QStringLiteral("process-thread-snapshot-apply"),
+                    {guardThis->m_threadTable},
+                    commit))
             {
-                guardThis->m_threadRefreshButton->setEnabled(true);
+                return;
             }
+            commit();
         }, Qt::QueuedConnection);
     });
     backgroundTask->setAutoDelete(true);

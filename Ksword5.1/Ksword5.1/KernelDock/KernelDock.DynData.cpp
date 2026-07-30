@@ -1,4 +1,7 @@
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 #include "../UI/VisibleTableWidget.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
@@ -3480,6 +3483,22 @@ void KernelDock::refreshDynDataAsync()
         const bool success = queryDynDataSnapshot(summary, rows, v4ItemRows);
 
         QMetaObject::invokeMethod(guardThis, [guardThis, success, summary = std::move(summary), rows = std::move(rows), v4ItemRows = std::move(v4ItemRows)]() mutable {
+            const auto deferredSummary =
+                std::make_shared<KernelDynDataSummary>(std::move(summary));
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelDynDataFieldEntry>>(std::move(rows));
+            const auto deferredV4Rows =
+                std::make_shared<std::vector<KernelDynDataV4ItemEntry>>(std::move(v4ItemRows));
+            const auto commitResult = [
+                guardThis,
+                success,
+                deferredSummary,
+                deferredRows,
+                deferredV4Rows]() mutable
+            {
+            KernelDynDataSummary& summary = *deferredSummary;
+            std::vector<KernelDynDataFieldEntry>& rows = *deferredRows;
+            std::vector<KernelDynDataV4ItemEntry>& v4ItemRows = *deferredV4Rows;
             if (guardThis == nullptr)
             {
                 return;
@@ -3579,6 +3598,26 @@ void KernelDock::refreshDynDataAsync()
             {
                 guardThis->refreshTimerDpcAsync();
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-dyndata-snapshot-apply"),
+                {
+                    guardThis->m_dynDataSummaryTable,
+                    guardThis->m_dynDataFieldTable,
+                    guardThis->m_dynDataProfileSummaryTable,
+                    guardThis->m_dynDataV4ItemTable
+                },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }

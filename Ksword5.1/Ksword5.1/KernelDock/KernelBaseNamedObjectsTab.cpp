@@ -1,5 +1,6 @@
 #include "KernelBaseNamedObjectsTab.h"
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -325,6 +326,22 @@ void KernelBaseNamedObjectsTab::refreshSnapshotAsync(const bool forceRefresh)
 
 void KernelBaseNamedObjectsTab::populateTable(const std::vector<KernelBaseNamedObjectEntry>& rows)
 {
+    const QPointer<KernelBaseNamedObjectsTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-base-named-objects-snapshot"),
+        { m_table },
+        [safeThis, rows]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->populateTable(rows);
+            }
+        }))
+    {
+        return;
+    }
+
     m_rows = rows;
     rebuildFilterOptions();
 

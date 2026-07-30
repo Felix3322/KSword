@@ -1,4 +1,5 @@
 #include "DriverDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../UI/TableColumnAutoFit.h"
 
@@ -540,6 +541,11 @@ void DriverDock::refreshDriverIntegrityAsync(const bool cpuOnly)
                 KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_IDT_VECTORS);
 
         QMetaObject::invokeMethod(guardThis.data(), [guardThis, ticket, result = std::move(result)]() mutable {
+            const auto deferredResult =
+                std::make_shared<ksword::ark::DriverIntegrityResult>(std::move(result));
+            const auto commitIntegrity = [guardThis, ticket, deferredResult]()
+            {
+            const ksword::ark::DriverIntegrityResult& result = *deferredResult;
             if (guardThis == nullptr || guardThis->m_integrityQueryTicket != ticket)
             {
                 return;
@@ -595,6 +601,21 @@ void DriverDock::refreshDriverIntegrityAsync(const bool cpuOnly)
                                 .name(QColor::HexRgb)));
                 }
             }
+            };
+
+            if (guardThis == nullptr || guardThis->m_integrityQueryTicket != ticket)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("driver-integrity-cross-view-apply"),
+                { guardThis->m_integrityTable, guardThis->m_moduleCrossViewTable },
+                commitIntegrity))
+            {
+                return;
+            }
+            commitIntegrity();
         }, Qt::QueuedConnection);
     });
     task->setAutoDelete(true);

@@ -7,6 +7,7 @@
 #include "ProcessTraceMonitorWidget.h"
 #include "WinAPIDock.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../UI/TableInteractionSupport.h"
 
 // 监控页实现：包含 WMI/ETW 两个标签页，所有重活走异步线程。
 #include "../OnlineScan/SandboxUploadActions.h"
@@ -9389,46 +9390,80 @@ void MonitorDock::refreshWmiProvidersAsync()
         ::CoUninitialize();
 
         QMetaObject::invokeMethod(qApp, [guardThis, providers]() {
+            const auto commitProviders = [guardThis, providers]()
+            {
+                if (guardThis == nullptr)
+                {
+                    return;
+                }
+
+                guardThis->m_wmiProviders = providers;
+                guardThis->m_wmiProviderModel->removeRows(0, guardThis->m_wmiProviderModel->rowCount());
+
+                for (const WmiProviderEntry& entry : guardThis->m_wmiProviders)
+                {
+                    QList<QStandardItem*> rowItems;
+                    rowItems << new QStandardItem(entry.providerName)
+                        << new QStandardItem(entry.nameSpaceText)
+                        << new QStandardItem(entry.clsidText)
+                        << new QStandardItem(QString::number(entry.eventClassCount))
+                        << new QStandardItem(entry.subscribable ? QStringLiteral("可订阅") : QStringLiteral("受限"));
+                    guardThis->m_wmiProviderModel->appendRow(rowItems);
+                }
+
+                guardThis->applyWmiProviderFilter();
+                guardThis->m_wmiProviderStatusLabel->setText(
+                    QStringLiteral("● 已刷新 %1 项").arg(guardThis->m_wmiProviders.size()));
+                guardThis->m_wmiProviderStatusLabel->setStyleSheet(buildStatusStyle(monitorSuccessColorHex()));
+                if (guardThis->m_wmiProviderRefreshProgressPid != 0)
+                {
+                    kPro.set(guardThis->m_wmiProviderRefreshProgressPid, "WMI Provider完成", 0, 100.0f);
+                    guardThis->m_wmiProviderRefreshProgressPid = 0;
+                }
+
+                kLogEvent event;
+                info << event
+                    << "[MonitorDock] WMI Provider刷新完成, providerCount="
+                    << guardThis->m_wmiProviders.size()
+                    << eol;
+            };
+
             if (guardThis == nullptr)
             {
                 return;
             }
-
-            guardThis->m_wmiProviders = providers;
-            guardThis->m_wmiProviderModel->removeRows(0, guardThis->m_wmiProviderModel->rowCount());
-
-            for (const WmiProviderEntry& entry : guardThis->m_wmiProviders)
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("monitor-wmi-provider-apply"),
+                { guardThis->m_wmiProviderTableView },
+                commitProviders))
             {
-                QList<QStandardItem*> rowItems;
-                rowItems << new QStandardItem(entry.providerName)
-                    << new QStandardItem(entry.nameSpaceText)
-                    << new QStandardItem(entry.clsidText)
-                    << new QStandardItem(QString::number(entry.eventClassCount))
-                    << new QStandardItem(entry.subscribable ? QStringLiteral("可订阅") : QStringLiteral("受限"));
-                guardThis->m_wmiProviderModel->appendRow(rowItems);
+                return;
             }
-
-            guardThis->applyWmiProviderFilter();
-            guardThis->m_wmiProviderStatusLabel->setText(
-                QStringLiteral("● 已刷新 %1 项").arg(guardThis->m_wmiProviders.size()));
-            guardThis->m_wmiProviderStatusLabel->setStyleSheet(buildStatusStyle(monitorSuccessColorHex()));
-            if (guardThis->m_wmiProviderRefreshProgressPid != 0)
-            {
-                kPro.set(guardThis->m_wmiProviderRefreshProgressPid, "WMI Provider完成", 0, 100.0f);
-                guardThis->m_wmiProviderRefreshProgressPid = 0;
-            }
-
-            kLogEvent event;
-            info << event
-                << "[MonitorDock] WMI Provider刷新完成, providerCount="
-                << guardThis->m_wmiProviders.size()
-                << eol;
+            commitProviders();
         }, Qt::QueuedConnection);
     }).detach();
 }
 
 void MonitorDock::refreshWmiEventClassesAsync()
 {
+    // 该刷新会先清空表格，再由后台结果整表回填；菜单打开时连启动阶段也延后。
+    const QPointer<MonitorDock> deferredGuard(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("monitor-wmi-event-class-refresh-start"),
+        { m_wmiEventClassTable },
+        [deferredGuard]()
+        {
+            if (!deferredGuard.isNull())
+            {
+                deferredGuard->refreshWmiEventClassesAsync();
+            }
+        }))
+    {
+        return;
+    }
+
     kLogEvent startEvent;
     info << startEvent
         << "[MonitorDock] 开始异步刷新WMI事件类。"
@@ -9507,39 +9542,56 @@ void MonitorDock::refreshWmiEventClassesAsync()
         ::CoUninitialize();
 
         QMetaObject::invokeMethod(qApp, [guardThis, classes]() {
+            const auto commitClasses = [guardThis, classes]()
+            {
+                if (guardThis == nullptr)
+                {
+                    return;
+                }
+
+                guardThis->m_wmiEventClassTable->setRowCount(static_cast<int>(classes.size()));
+                for (int row = 0; row < static_cast<int>(classes.size()); ++row)
+                {
+                    const QString className = classes[static_cast<std::size_t>(row)];
+
+                    QTableWidgetItem* checkItem = new QTableWidgetItem();
+                    checkItem->setFlags(checkItem->flags() | Qt::ItemIsUserCheckable);
+                    checkItem->setCheckState(className.startsWith(QStringLiteral("Win32_"), Qt::CaseInsensitive)
+                        ? Qt::Checked
+                        : Qt::Unchecked);
+
+                    guardThis->m_wmiEventClassTable->setItem(row, 0, checkItem);
+                    guardThis->m_wmiEventClassTable->setItem(row, 1, new QTableWidgetItem(className));
+                    guardThis->m_wmiEventClassTable->setItem(
+                        row,
+                        2,
+                        new QTableWidgetItem(className.startsWith(QStringLiteral("Win32_"), Qt::CaseInsensitive)
+                            ? QStringLiteral("Win32")
+                            : QStringLiteral("其他")));
+                }
+                // 事件类刷新后重新计算折叠页目标高度，确保“WMI订阅”页不会因为行数变化撑爆折叠栏。
+                guardThis->updateWmiSubscribePanelCompactLayout();
+
+                kLogEvent event;
+                info << event
+                    << "[MonitorDock] WMI事件类刷新完成, classCount="
+                    << classes.size()
+                    << eol;
+            };
+
             if (guardThis == nullptr)
             {
                 return;
             }
-
-            guardThis->m_wmiEventClassTable->setRowCount(static_cast<int>(classes.size()));
-            for (int row = 0; row < static_cast<int>(classes.size()); ++row)
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("monitor-wmi-event-class-apply"),
+                { guardThis->m_wmiEventClassTable },
+                commitClasses))
             {
-                const QString className = classes[static_cast<std::size_t>(row)];
-
-                QTableWidgetItem* checkItem = new QTableWidgetItem();
-                checkItem->setFlags(checkItem->flags() | Qt::ItemIsUserCheckable);
-                checkItem->setCheckState(className.startsWith(QStringLiteral("Win32_"), Qt::CaseInsensitive)
-                    ? Qt::Checked
-                    : Qt::Unchecked);
-
-                guardThis->m_wmiEventClassTable->setItem(row, 0, checkItem);
-                guardThis->m_wmiEventClassTable->setItem(row, 1, new QTableWidgetItem(className));
-                guardThis->m_wmiEventClassTable->setItem(
-                    row,
-                    2,
-                    new QTableWidgetItem(className.startsWith(QStringLiteral("Win32_"), Qt::CaseInsensitive)
-                        ? QStringLiteral("Win32")
-                        : QStringLiteral("其他")));
+                return;
             }
-            // 事件类刷新后重新计算折叠页目标高度，确保“WMI订阅”页不会因为行数变化撑爆折叠栏。
-            guardThis->updateWmiSubscribePanelCompactLayout();
-
-            kLogEvent event;
-            info << event
-                << "[MonitorDock] WMI事件类刷新完成, classCount="
-                << classes.size()
-                << eol;
+            commitClasses();
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -10192,6 +10244,24 @@ void MonitorDock::enqueueWmiEventRow(
 
 void MonitorDock::flushWmiPendingRows()
 {
+    // 先进入菜单提交门，再从共享队列移走事件；latest-wins 仅合并 timeout，
+    // 不会覆盖已经取出的 WMI 数据。
+    const QPointer<MonitorDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("monitor-wmi-event-flush"),
+        { m_wmiEventTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->flushWmiPendingRows();
+            }
+        }))
+    {
+        return;
+    }
+
     // 主线程批量刷入：每个周期限制条数，防止一次性插入过多行阻塞 UI。
     std::vector<QStringList> rowsToFlush;
     {
@@ -10754,60 +10824,77 @@ void MonitorDock::refreshEtwSessionsAsync()
         }
 
         QMetaObject::invokeMethod(qApp, [guardThis, sessionList = std::move(sessionList), queryStatus]() {
+            const auto commitSessions = [guardThis, sessionList, queryStatus]()
+            {
+                if (guardThis == nullptr)
+                {
+                    return;
+                }
+
+                guardThis->m_etwSessions = sessionList;
+                if (guardThis->m_etwSessionTable != nullptr)
+                {
+                    guardThis->m_etwSessionTable->clearContents();
+                    guardThis->m_etwSessionTable->setRowCount(static_cast<int>(guardThis->m_etwSessions.size()));
+                    for (int row = 0; row < static_cast<int>(guardThis->m_etwSessions.size()); ++row)
+                    {
+                        const EtwSessionEntry& entry = guardThis->m_etwSessions[static_cast<std::size_t>(row)];
+                        QTableWidgetItem* nameItem = new QTableWidgetItem(entry.sessionName);
+                        nameItem->setToolTip(entry.sessionName);
+                        guardThis->m_etwSessionTable->setItem(row, 0, nameItem);
+
+                        QTableWidgetItem* modeItem = new QTableWidgetItem(entry.modeText);
+                        modeItem->setToolTip(entry.modeText);
+                        guardThis->m_etwSessionTable->setItem(row, 1, modeItem);
+
+                        QTableWidgetItem* bufferItem = new QTableWidgetItem(entry.bufferText);
+                        bufferItem->setToolTip(entry.bufferText);
+                        guardThis->m_etwSessionTable->setItem(row, 2, bufferItem);
+
+                        QTableWidgetItem* lostItem = new QTableWidgetItem(QString::number(entry.eventsLost));
+                        lostItem->setToolTip(lostItem->text());
+                        guardThis->m_etwSessionTable->setItem(row, 3, lostItem);
+
+                        QTableWidgetItem* logItem = new QTableWidgetItem(entry.logFilePath);
+                        logItem->setToolTip(entry.logFilePath);
+                        guardThis->m_etwSessionTable->setItem(row, 4, logItem);
+                    }
+                }
+
+                if (guardThis->m_etwSessionStatusLabel != nullptr)
+                {
+                    if (queryStatus == ERROR_SUCCESS || queryStatus == ERROR_MORE_DATA)
+                    {
+                        guardThis->m_etwSessionStatusLabel->setText(
+                            QStringLiteral("● 已刷新 %1 项").arg(guardThis->m_etwSessions.size()));
+                        guardThis->m_etwSessionStatusLabel->setStyleSheet(buildStatusStyle(monitorSuccessColorHex()));
+                        kPro.set(guardThis->m_etwSessionRefreshProgressPid, "ETW会话刷新完成", 0, 100.0f);
+                    }
+                    else
+                    {
+                        guardThis->m_etwSessionStatusLabel->setText(
+                            QStringLiteral("● 刷新失败:%1").arg(queryStatus));
+                        guardThis->m_etwSessionStatusLabel->setStyleSheet(buildStatusStyle(monitorErrorColorHex()));
+                        kPro.set(guardThis->m_etwSessionRefreshProgressPid, "ETW会话刷新失败", 0, 100.0f);
+                    }
+                }
+
+                guardThis->updateEtwCollapseHeight();
+            };
+
             if (guardThis == nullptr)
             {
                 return;
             }
-
-            guardThis->m_etwSessions = sessionList;
-            if (guardThis->m_etwSessionTable != nullptr)
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("monitor-etw-session-apply"),
+                { guardThis->m_etwSessionTable },
+                commitSessions))
             {
-                guardThis->m_etwSessionTable->clearContents();
-                guardThis->m_etwSessionTable->setRowCount(static_cast<int>(guardThis->m_etwSessions.size()));
-                for (int row = 0; row < static_cast<int>(guardThis->m_etwSessions.size()); ++row)
-                {
-                    const EtwSessionEntry& entry = guardThis->m_etwSessions[static_cast<std::size_t>(row)];
-                    QTableWidgetItem* nameItem = new QTableWidgetItem(entry.sessionName);
-                    nameItem->setToolTip(entry.sessionName);
-                    guardThis->m_etwSessionTable->setItem(row, 0, nameItem);
-
-                    QTableWidgetItem* modeItem = new QTableWidgetItem(entry.modeText);
-                    modeItem->setToolTip(entry.modeText);
-                    guardThis->m_etwSessionTable->setItem(row, 1, modeItem);
-
-                    QTableWidgetItem* bufferItem = new QTableWidgetItem(entry.bufferText);
-                    bufferItem->setToolTip(entry.bufferText);
-                    guardThis->m_etwSessionTable->setItem(row, 2, bufferItem);
-
-                    QTableWidgetItem* lostItem = new QTableWidgetItem(QString::number(entry.eventsLost));
-                    lostItem->setToolTip(lostItem->text());
-                    guardThis->m_etwSessionTable->setItem(row, 3, lostItem);
-
-                    QTableWidgetItem* logItem = new QTableWidgetItem(entry.logFilePath);
-                    logItem->setToolTip(entry.logFilePath);
-                    guardThis->m_etwSessionTable->setItem(row, 4, logItem);
-                }
+                return;
             }
-
-            if (guardThis->m_etwSessionStatusLabel != nullptr)
-            {
-                if (queryStatus == ERROR_SUCCESS || queryStatus == ERROR_MORE_DATA)
-                {
-                    guardThis->m_etwSessionStatusLabel->setText(
-                        QStringLiteral("● 已刷新 %1 项").arg(guardThis->m_etwSessions.size()));
-                    guardThis->m_etwSessionStatusLabel->setStyleSheet(buildStatusStyle(monitorSuccessColorHex()));
-                    kPro.set(guardThis->m_etwSessionRefreshProgressPid, "ETW会话刷新完成", 0, 100.0f);
-                }
-                else
-                {
-                    guardThis->m_etwSessionStatusLabel->setText(
-                        QStringLiteral("● 刷新失败:%1").arg(queryStatus));
-                    guardThis->m_etwSessionStatusLabel->setStyleSheet(buildStatusStyle(monitorErrorColorHex()));
-                    kPro.set(guardThis->m_etwSessionRefreshProgressPid, "ETW会话刷新失败", 0, 100.0f);
-                }
-            }
-
-            guardThis->updateEtwCollapseHeight();
+            commitSessions();
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -11424,6 +11511,46 @@ void MonitorDock::replaceEtwRowsWithSnapshot(
     {
         return;
     }
+
+    // 后台归档扫描会整表替换。使用共享快照避免“未延后”路径额外复制数千行，
+    // 并确保菜单打开时连 pending 队列裁剪也不会提前发生。
+    const QPointer<MonitorDock> guardThis(this);
+    const std::uint64_t filterTicketSnapshot =
+        m_etwArchiveFilterTicket.load(std::memory_order_relaxed);
+    const std::uint64_t sessionGenerationSnapshot =
+        m_etwArchiveSessionGeneration.load(std::memory_order_relaxed);
+    const auto deferredRows =
+        std::make_shared<std::deque<EtwCapturedEventRow>>(std::move(rows));
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("monitor-etw-snapshot-replace"),
+        { m_etwEventTable },
+        [
+            guardThis,
+            deferredRows,
+            totalMatchCount,
+            scannedRowCount,
+            scannedMaxSequence,
+            filterTicketSnapshot,
+            sessionGenerationSnapshot]() mutable
+        {
+            if (!guardThis.isNull()
+                && guardThis->m_etwArchiveFilterTicket.load(std::memory_order_relaxed)
+                    == filterTicketSnapshot
+                && guardThis->m_etwArchiveSessionGeneration.load(std::memory_order_relaxed)
+                    == sessionGenerationSnapshot)
+            {
+                guardThis->replaceEtwRowsWithSnapshot(
+                    std::move(*deferredRows),
+                    totalMatchCount,
+                    scannedRowCount,
+                    scannedMaxSequence);
+            }
+        }))
+    {
+        return;
+    }
+    rows = std::move(*deferredRows);
 
     constexpr std::size_t kMaximumVisibleRows = 6000;
     for (const EtwCapturedEventRow& liveRow : m_etwCapturedRows)
@@ -12737,6 +12864,26 @@ void MonitorDock::flushEtwPendingRows(const bool captureFinished)
     if (!captureFinished && m_etwCapturePaused.load())
     {
         // 防止暂停前已经投递到事件循环的最后一次 timeout 继续排空队列。
+        return;
+    }
+
+    // 菜单屏障必须位于 pending drain 和时间轴/表格任何变更之前。周期 timeout
+    // 只保留最新重试；captureFinished 也随最后一次重试传递。
+    const QPointer<MonitorDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        captureFinished
+            ? QStringLiteral("monitor-etw-event-flush-final")
+            : QStringLiteral("monitor-etw-event-flush-periodic"),
+        { m_etwEventTable },
+        [guardThis, captureFinished]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->flushEtwPendingRows(captureFinished);
+            }
+        }))
+    {
         return;
     }
 

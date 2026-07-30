@@ -2,6 +2,7 @@
 
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
@@ -214,6 +215,23 @@ void HardwareI8042AuditPage::refreshAsync()
 
 void HardwareI8042AuditPage::applySnapshot(Snapshot snapshot)
 {
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_table}))
+    {
+        const QPointer<HardwareI8042AuditPage> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("hardware-i8042-audit-apply"),
+            {m_table},
+            [safeThis, snapshot = std::move(snapshot)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applySnapshot(std::move(snapshot));
+                }
+            });
+        return;
+    }
+
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
     m_table->setRowCount(0);

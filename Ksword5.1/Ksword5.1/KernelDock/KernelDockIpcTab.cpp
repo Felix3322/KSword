@@ -531,6 +531,36 @@ void KernelDockIpcTab::refreshAlpcQuery()
             {
                 return;
             }
+
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-ipc-alpc-snapshot"),
+                { guardThis->m_ipcSummaryTable, guardThis->m_alpcTable },
+                [guardThis, summaryResult, alpcResult, hasAlpcTarget]() mutable
+                {
+                    if (guardThis.isNull())
+                    {
+                        return;
+                    }
+
+                    guardThis->m_lastIpcSummaryResult = summaryResult;
+                    guardThis->m_lastAlpcResult = alpcResult;
+                    guardThis->m_alpcRefreshButton->setEnabled(true);
+                    guardThis->applyIpcSummaryResult();
+                    guardThis->applyAlpcQueryResult();
+                    if (!hasAlpcTarget)
+                    {
+                        guardThis->m_alpcStatusLabel->setText(kernelText(
+                            "kernel.ipc.status.global_refreshed",
+                            QStringLiteral("状态：已刷新 R0 IPC summary；ALPC 详情等待 PID/Handle")));
+                        guardThis->m_alpcStatusLabel->setStyleSheet(
+                            statusLabelStyle(KswordTheme::WarningHex()));
+                    }
+                }))
+            {
+                return;
+            }
+
             guardThis->m_lastIpcSummaryResult = summaryResult;
             guardThis->m_lastAlpcResult = alpcResult;
             guardThis->m_alpcRefreshButton->setEnabled(true);

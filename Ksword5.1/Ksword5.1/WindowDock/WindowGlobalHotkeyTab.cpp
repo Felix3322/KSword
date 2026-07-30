@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMetaObject>
+#include <QPointer>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QTableWidget>
@@ -243,6 +244,23 @@ void WindowGlobalHotkeyTab::refreshAsync()
         return;
     }
 
+    // 启动刷新会立即清空缓存并重建表格，菜单打开时连启动阶段一起延后。
+    const QPointer<WindowGlobalHotkeyTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("window-global-hotkey-refresh-start"),
+        { m_table },
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshAsync();
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing = true;
     m_firstRefreshStarted = true;
     const std::uint64_t ticket = ++m_refreshTicket;
@@ -337,6 +355,24 @@ void WindowGlobalHotkeyTab::flushPendingSnapshot()
     if (!m_refreshing || refreshState == nullptr)
     {
         m_flushTimer->stop();
+        return;
+    }
+
+    // 必须先于 stateLock 下的 pendingRows.pop_front() 延迟；同键 timeout 合并后，
+    // 后台结果仍完整保留在共享队列，菜单关闭再按有界批次刷入。
+    const QPointer<WindowGlobalHotkeyTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("window-global-hotkey-stream-flush"),
+        { m_table },
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->flushPendingSnapshot();
+            }
+        }))
+    {
         return;
     }
 

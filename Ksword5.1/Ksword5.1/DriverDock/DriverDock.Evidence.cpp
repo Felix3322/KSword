@@ -1,5 +1,6 @@
 #include "DriverDock.Internal.h"
 #include "../OnlineScan/SandboxUploadActions.h"
+#include "../UI/TableInteractionSupport.h"
 
 #include <Softpub.h>
 #include <WinTrust.h>
@@ -923,6 +924,11 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
                 guardThis,
                 [guardThis, ticketValue, resultRecords = std::move(resultRecords)]() mutable
                 {
+                    const auto deferredRecords =
+                        std::make_shared<std::vector<LoadedModuleEvidenceRecord>>(
+                            std::move(resultRecords));
+                    const auto commitEvidence = [guardThis, ticketValue, deferredRecords]()
+                    {
                     if (guardThis == nullptr ||
                         guardThis->m_moduleEvidenceQueryTicket != ticketValue)
                     {
@@ -939,7 +945,7 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
                     std::size_t callbackCount = 0U;
                     std::size_t errorCount = 0U;
                     std::size_t invalidSignatureCount = 0U;
-                    for (const auto& evidence : resultRecords)
+                    for (const auto& evidence : *deferredRecords)
                     {
                         if (evidence.hasMajorFunctionExternalJump ||
                             evidence.hasIatEatSuspicious ||
@@ -963,7 +969,7 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
                         }
                     }
 
-                    guardThis->m_loadedModuleEvidenceCache = std::move(resultRecords);
+                    guardThis->m_loadedModuleEvidenceCache = std::move(*deferredRecords);
                     // 签名状态本身也是搜索字段，因此后台完成后必须重新应用共享过滤器。
                     guardThis->rebuildLoadedModuleTable();
                     if (guardThis->m_moduleEvidenceStatusLabel != nullptr)
@@ -978,6 +984,22 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
                             .arg(errorCount)
                             .arg(invalidSignatureCount));
                     }
+                    };
+
+                    if (guardThis == nullptr ||
+                        guardThis->m_moduleEvidenceQueryTicket != ticketValue)
+                    {
+                        return;
+                    }
+                    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        guardThis.data(),
+                        QStringLiteral("driver-loaded-module-evidence-apply"),
+                        { guardThis->m_moduleTable },
+                        commitEvidence))
+                    {
+                        return;
+                    }
+                    commitEvidence();
                 },
                 Qt::QueuedConnection);
         });

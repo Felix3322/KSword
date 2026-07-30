@@ -2,6 +2,7 @@
 
 #include "KernelDock.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
@@ -233,6 +234,30 @@ void KernelPlatformAuditTab::refreshAsync()
 
 void KernelPlatformAuditTab::applyResult(ksword::ark::PlatformAuditResult result)
 {
+    QList<QTableView*> platformTables;
+    platformTables.reserve(m_pages.size());
+    for (const Page& page : m_pages)
+    {
+        platformTables.push_back(page.table);
+    }
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu(platformTables))
+    {
+        // 所有平台审计页来自同一 R0 返回，必须保持同一代次原子提交。
+        const QPointer<KernelPlatformAuditTab> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("kernel-platform-audit-apply"),
+            platformTables,
+            [safeThis, result = std::move(result)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyResult(std::move(result));
+                }
+            });
+        return;
+    }
+
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
     for (Page& page : m_pages)

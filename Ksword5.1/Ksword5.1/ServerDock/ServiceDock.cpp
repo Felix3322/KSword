@@ -1,4 +1,5 @@
 #include "ServiceDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 
 using namespace service_dock_detail;
 
@@ -170,6 +171,29 @@ void ServiceDock::applyRefreshResult(
     const QString& errorText,
     const bool success)
 {
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_serviceTable}))
+    {
+        const QPointer<ServiceDock> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("service-table-refresh-apply"),
+            {m_serviceTable},
+            [safeThis,
+                serviceList = std::move(serviceList),
+                errorText,
+                success]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyRefreshResult(
+                        std::move(serviceList),
+                        errorText,
+                        success);
+                }
+            });
+        return;
+    }
+
     std::sort(
         serviceList.begin(),
         serviceList.end(),

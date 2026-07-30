@@ -1,6 +1,7 @@
 #include "WinAPIDock.h"
 #include "../theme.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../UI/TableInteractionSupport.h"
 
 // ============================================================
 // WinAPIDock.Pipe.cpp
@@ -532,6 +533,24 @@ void WinAPIDock::enqueuePendingRow(EventRow rowValue)
 
 void WinAPIDock::flushPendingRows()
 {
+    // 表格菜单打开时不提前取走管道事件；否则同键刷新被覆盖后，已经 drain 的
+    // EventRow 会丢失，同时 removeRows(0, ...) 会让菜单保存的行号失效。
+    const QPointer<WinAPIDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("winapi-event-flush"),
+        { m_eventTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->flushPendingRows();
+            }
+        }))
+    {
+        return;
+    }
+
     std::vector<EventRow> rowList;
     {
         std::lock_guard<std::mutex> lock(m_pendingMutex);

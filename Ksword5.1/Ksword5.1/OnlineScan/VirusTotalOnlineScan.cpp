@@ -5,6 +5,7 @@
 #include "../Framework.h"
 #include "../SettingsDock/AppearanceSettings.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -1467,6 +1468,26 @@ void VirusTotalOnlineScan::refreshApiPlaceholder(const VtApiKind apiKind, const 
         ? apiStateText(apiState)
         : statusText.trimmed();
     ApiPaneUi& pane = m_apiPanes[static_cast<std::size_t>(index)];
+    const QList<QAbstractItemView*> itemViews{
+        pane.fileInfoTable.data(),
+        pane.engineTable.data(),
+        pane.reportTree.data()
+    };
+    QPointer<VirusTotalOnlineScan> safeThis(this);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("virus-total-api-placeholder-%1").arg(index),
+            itemViews,
+            [safeThis, apiKind, statusText]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->refreshApiPlaceholder(apiKind, statusText);
+                }
+            }))
+    {
+        return;
+    }
     if (!pane.overviewLabel.isNull())
     {
         pane.overviewLabel->setText(QStringLiteral(
@@ -3496,6 +3517,27 @@ void VirusTotalOnlineScan::refreshReadableResult(const QJsonObject& analysisObje
     // 返回：无；只刷新已创建的报告页控件。
     ensureResultDialog();
 
+    const QList<QAbstractItemView*> itemViews{
+        m_fileInfoTable.data(),
+        m_engineTable.data(),
+        m_staticAnalysisTree.data()
+    };
+    QPointer<VirusTotalOnlineScan> safeThis(this);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("virus-total-readable-result"),
+            itemViews,
+            [safeThis, analysisObject]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->refreshReadableResult(analysisObject);
+                }
+            }))
+    {
+        return;
+    }
+
     const QJsonObject dataObject = analysisObject.value(QStringLiteral("data")).toObject();
     const QJsonObject attributesObject = dataObject.value(QStringLiteral("attributes")).toObject();
     const QJsonObject statsObject = attributesObject.value(QStringLiteral("stats")).toObject();
@@ -3682,6 +3724,21 @@ void VirusTotalOnlineScan::refreshFileProfileResult(const QJsonObject& fileObjec
 {
     ensureResultDialog();
     ApiPaneUi& pane = m_apiPanes[static_cast<std::size_t>(apiIndex(VtApiKind::FileProfile))];
+    QPointer<VirusTotalOnlineScan> safeThis(this);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("virus-total-file-profile-result"),
+            {pane.reportTree.data()},
+            [safeThis, fileObject]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->refreshFileProfileResult(fileObject);
+                }
+            }))
+    {
+        return;
+    }
     if (pane.startButton)
     {
         pane.startButton->setVisible(false);
@@ -3767,6 +3824,21 @@ void VirusTotalOnlineScan::refreshIocResult()
 {
     ensureResultDialog();
     ApiPaneUi& pane = m_apiPanes[static_cast<std::size_t>(apiIndex(VtApiKind::Ioc))];
+    QPointer<VirusTotalOnlineScan> safeThis(this);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("virus-total-ioc-result"),
+            {pane.reportTree.data()},
+            [safeThis]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->refreshIocResult();
+                }
+            }))
+    {
+        return;
+    }
     if (pane.startButton)
     {
         pane.startButton->setVisible(m_apiStates[static_cast<std::size_t>(apiIndex(VtApiKind::Ioc))] != VtApiState::Completed);
@@ -3830,6 +3902,21 @@ void VirusTotalOnlineScan::refreshSandboxResult()
 {
     ensureResultDialog();
     ApiPaneUi& pane = m_apiPanes[static_cast<std::size_t>(apiIndex(VtApiKind::Sandbox))];
+    QPointer<VirusTotalOnlineScan> safeThis(this);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("virus-total-sandbox-result"),
+            {pane.reportTree.data()},
+            [safeThis]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->refreshSandboxResult();
+                }
+            }))
+    {
+        return;
+    }
     const QJsonArray behavioursArray = m_sandboxBehavioursObject.value(QStringLiteral("data")).toArray();
     int htmlAvailableCount = 0;
     for (const QJsonValue& behaviourValue : behavioursArray)

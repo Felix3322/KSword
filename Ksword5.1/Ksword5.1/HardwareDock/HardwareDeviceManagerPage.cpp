@@ -11,6 +11,7 @@
 #include "../theme.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -1106,35 +1107,9 @@ void HardwareDeviceManagerPage::refreshDevicesAsync(const bool forceRefresh)
                     return;
                 }
 
-                safeThis->m_deviceList = std::move(deviceList);
-                safeThis->rebuildDeviceTree(safeThis->m_deviceList);
-
-                int problemCount = 0;
-                for (const DeviceEntry& entry : safeThis->m_deviceList)
-                {
-                    if (entry.hasProblem)
-                    {
-                        ++problemCount;
-                    }
-                }
-                if (safeThis->m_statusLabel != nullptr)
-                {
-                    safeThis->m_statusLabel->setText(
-                        QStringLiteral("%1设备：%2 项，异常：%3，刷新：%4")
-                        .arg(includeAllDevices ? QStringLiteral("全部") : QStringLiteral("当前"))
-                        .arg(static_cast<int>(safeThis->m_deviceList.size()))
-                        .arg(problemCount)
-                        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
-                }
-                if (safeThis->m_refreshButton != nullptr)
-                {
-                    safeThis->m_refreshButton->setEnabled(true);
-                }
-                if (safeThis->m_showAllDevicesCheck != nullptr)
-                {
-                    safeThis->m_showAllDevicesCheck->setEnabled(true);
-                }
-                safeThis->m_refreshing.store(false);
+                safeThis->applyDeviceSnapshot(
+                    std::move(deviceList),
+                    includeAllDevices);
             },
             Qt::QueuedConnection);
 
@@ -1143,6 +1118,62 @@ void HardwareDeviceManagerPage::refreshDevicesAsync(const bool forceRefresh)
             safeThis->m_refreshing.store(false);
         }
     }).detach();
+}
+
+void HardwareDeviceManagerPage::applyDeviceSnapshot(
+    std::vector<DeviceEntry> deviceList,
+    const bool includeAllDevices)
+{
+    if (ks::ui::IsItemViewUiCommitBlockedByContextMenu({m_deviceTree}))
+    {
+        const QPointer<HardwareDeviceManagerPage> safeThis(this);
+        ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("hardware-device-tree-snapshot-apply"),
+            {m_deviceTree},
+            [safeThis,
+                deviceList = std::move(deviceList),
+                includeAllDevices]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyDeviceSnapshot(
+                        std::move(deviceList),
+                        includeAllDevices);
+                }
+            });
+        return;
+    }
+
+    m_deviceList = std::move(deviceList);
+    rebuildDeviceTree(m_deviceList);
+
+    int problemCount = 0;
+    for (const DeviceEntry& entry : m_deviceList)
+    {
+        if (entry.hasProblem)
+        {
+            ++problemCount;
+        }
+    }
+    if (m_statusLabel != nullptr)
+    {
+        m_statusLabel->setText(
+            QStringLiteral("%1设备：%2 项，异常：%3，刷新：%4")
+            .arg(includeAllDevices ? QStringLiteral("全部") : QStringLiteral("当前"))
+            .arg(static_cast<int>(m_deviceList.size()))
+            .arg(problemCount)
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
+    }
+    if (m_refreshButton != nullptr)
+    {
+        m_refreshButton->setEnabled(true);
+    }
+    if (m_showAllDevicesCheck != nullptr)
+    {
+        m_showAllDevicesCheck->setEnabled(true);
+    }
+    m_refreshing.store(false);
 }
 
 void HardwareDeviceManagerPage::rebuildDeviceTree(const std::vector<DeviceEntry>& deviceList)
