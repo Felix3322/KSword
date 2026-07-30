@@ -447,6 +447,18 @@ namespace ks::process
     // GetProcessNameByPID 作用：按 PID 读取进程名（失败返回空串）。
     std::string GetProcessNameByPID(std::uint32_t pid);
 
+    // QueryProcessCreationTimeByPid 作用：
+    // - 读取目标 PID 当前进程实例的 FILETIME 创建时间；
+    // - 调用方式：历史事件保存 identity 或跳转前检查 PID 是否已复用；
+    // - 入参 pid：目标进程 PID；
+    // - 出参 creationTime100nsOut：成功时返回非零的 100ns 创建时间；
+    // - 出参 detailTextOut：失败时返回 Win32 诊断信息，可为空；
+    // - 返回：成功读取创建时间为 true，否则为 false。
+    bool QueryProcessCreationTimeByPid(
+        std::uint32_t pid,
+        std::uint64_t* creationTime100nsOut,
+        std::string* detailTextOut = nullptr);
+
     // QueryProcessPathByPid 作用：按 PID 读取可执行路径（失败返回空串）。
     std::string QueryProcessPathByPid(std::uint32_t pid);
 

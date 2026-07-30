@@ -9189,6 +9189,42 @@ void MainWindow::openProcessDetailByPid(const quint32 pid)
     }
 }
 
+void MainWindow::openProcessDetailByIdentity(
+    const quint32 pid,
+    const quint64 creationTime100ns)
+{
+    // openProcessDetailEvent：记录历史事件携带的完整进程 identity。
+    kLogEvent openProcessDetailEvent;
+    info << openProcessDetailEvent
+        << "[MainWindow] openProcessDetailByIdentity: pid="
+        << pid
+        << ", creationTime100ns="
+        << creationTime100ns
+        << eol;
+
+    // m_dockProcess：先确保延迟加载的进程页已经创建。
+    if (m_dockProcess != nullptr)
+    {
+        ensureDockContentInitialized(m_dockProcess);
+    }
+    if (m_processWidget != nullptr)
+    {
+        m_processWidget->requestOpenProcessDetailByIdentity(
+            static_cast<std::uint32_t>(pid),
+            static_cast<std::uint64_t>(creationTime100ns));
+    }
+
+    // 历史目标失效时 ProcessDock 会弹出明确提示，仍置顶进程页供用户查看当前状态。
+    if (m_dockProcess != nullptr)
+    {
+        withTemporaryNonTopMostForDockSwitch([this]()
+            {
+                m_dockProcess->raise();
+            });
+        m_dockProcess->setVisible(true);
+    }
+}
+
 void MainWindow::focusServiceDockByName(const QString& serviceNameText)
 {
     const QString normalizedServiceName = serviceNameText.trimmed();

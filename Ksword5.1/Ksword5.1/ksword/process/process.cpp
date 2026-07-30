@@ -2298,6 +2298,81 @@ namespace ks::process
         return std::to_string(pid) + "#" + std::to_string(creationTime100ns);
     }
 
+    bool QueryProcessCreationTimeByPid(
+        const std::uint32_t pid,
+        std::uint64_t* const creationTime100nsOut,
+        std::string* const detailTextOut)
+    {
+        // creationTime100nsOut：调用方必须提供有效输出地址，且失败时保持为 0。
+        if (creationTime100nsOut == nullptr)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "process creation time output is null";
+            }
+            return false;
+        }
+        *creationTime100nsOut = 0U;
+
+        // processHandle：只申请身份校验所需的受限查询权限，不扩大目标进程访问面。
+        const HANDLE processHandle = ::OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            ToDwordPid(pid));
+        if (processHandle == nullptr)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "OpenProcess failed(" + std::to_string(::GetLastError()) + ")";
+            }
+            return false;
+        }
+
+        // 四个 FILETIME 输出由 GetProcessTimes 一次填充；这里只消费 creationTime。
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        const BOOL queryResult = ::GetProcessTimes(
+            processHandle,
+            &creationTime,
+            &exitTime,
+            &kernelTime,
+            &userTime);
+
+        // queryError：必须在关闭句柄前保存，防止 CloseHandle 覆盖线程错误码。
+        const DWORD queryError = queryResult != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        ::CloseHandle(processHandle);
+        if (queryResult == FALSE)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "GetProcessTimes failed(" + std::to_string(queryError) + ")";
+            }
+            return false;
+        }
+
+        // creationTimeValue：将 FILETIME 高低位转换为项目统一的 100ns identity 值。
+        const std::uint64_t creationTimeValue = ks::str::FileTimeToUint64(
+            creationTime.dwHighDateTime,
+            creationTime.dwLowDateTime);
+        if (creationTimeValue == 0U)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "process creation time is zero";
+            }
+            return false;
+        }
+
+        *creationTime100nsOut = creationTimeValue;
+        if (detailTextOut != nullptr)
+        {
+            detailTextOut->clear();
+        }
+        return true;
+    }
+
     bool RefreshProcessDynamicCounters(ProcessRecord& processRecord)
     {
         // PID 为 0/4 等系统保留进程时，很多 API 可能无法打开句柄。

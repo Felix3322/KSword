@@ -113,6 +113,16 @@ public slots:
     // 入参 pid：目标进程 PID。
     void openProcessDetailByPid(quint32 pid);
 
+    // openProcessDetailByIdentity 作用：
+    // - 将“进程”Dock 置顶，并按 PID+创建时间打开历史记录对应的进程实例；
+    // - 调用方式：TableInteractionSupport 的历史事件跳转入口调用；
+    // - 入参 pid：历史记录 PID；
+    // - 入参 creationTime100ns：捕获时的进程创建时间；
+    // - 返回：无；ProcessDock 负责拒绝已退出或 PID 已复用的目标。
+    void openProcessDetailByIdentity(
+        quint32 pid,
+        quint64 creationTime100ns);
+
     // focusServiceDockByName 作用：
     // - 将“服务”Dock 置顶并按服务名定位到目标行；
     // - 供 StartupDock 的“转到服务管理”入口调用。

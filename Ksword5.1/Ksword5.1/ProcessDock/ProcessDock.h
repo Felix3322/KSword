@@ -116,6 +116,16 @@ public:
     // 返回：无。
     void requestOpenProcessDetailByPid(std::uint32_t pid);
 
+    // requestOpenProcessDetailByIdentity 作用：
+    // - 按历史事件保存的 PID+创建时间打开确切进程实例；
+    // - 调用方式：MainWindow 的 identity-aware 跳转槽调用；
+    // - 入参 pid：历史记录 PID；
+    // - 入参 creationTime100ns：捕获时的进程创建时间；
+    // - 返回：无；目标已退出、不可验证或 PID 已复用时明确提示并拒绝打开。
+    void requestOpenProcessDetailByIdentity(
+        std::uint32_t pid,
+        std::uint64_t creationTime100ns);
+
 protected:
     // eventFilter 作用：
     // - 捕获进程页内的鼠标点击；
@@ -497,6 +507,14 @@ private:
     // - 自动切换到“操作”页，直达 DLL/Shellcode 注入区域；
     // - 仅支持单进程，避免批量菜单误触发多个详情窗口。
     void openSelectedProcessInjectionPage();
+    // showProcessDetailWindowForRecord 作用：
+    // - 按已验证的 identity 与记录复用或创建进程详情窗口；
+    // - 入参 identityKey：PID+创建时间稳定键；
+    // - 入参 detailRecord：用于详情窗口的进程记录；
+    // - 返回：无。
+    void showProcessDetailWindowForRecord(
+        const std::string& identityKey,
+        const ks::process::ProcessRecord& detailRecord);
     void openProcessDetailWindowByPid(std::uint32_t pid);
     void openThreadOwnerProcessDetails();
     // openThreadStackWindow 作用：

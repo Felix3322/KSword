@@ -75,6 +75,7 @@ namespace
     constexpr int kRoleProcessSearchText = Qt::UserRole + 1;
     constexpr int kRoleServiceSearchText = Qt::UserRole + 2;
     constexpr int kRoleDetailText = Qt::UserRole + 3;
+    constexpr int kRoleProcessCreationTime100ns = Qt::UserRole + 4;
 
     constexpr GUID kKswordDirectKernelCallSessionGuid =
         { 0xd22e25bd, 0x51fe, 0x4219, { 0x9a, 0xcf, 0x81, 0xc8, 0xaa, 0x73, 0xc7, 0x8d } };
@@ -1426,7 +1427,9 @@ DirectKernelCallMonitorWidget::CapturedEventRow DirectKernelCallMonitorWidget::b
     row.pid = static_cast<std::uint32_t>(eventRecord->EventHeader.ProcessId);
     row.tid = static_cast<std::uint32_t>(eventRecord->EventHeader.ThreadId);
     row.pidTidText = QStringLiteral("%1 / %2").arg(row.pid).arg(row.tid);
-    row.processText = processNameForPid(row.pid);
+    row.processText = processNameForPid(
+        row.pid,
+        &row.processCreationTime100ns);
     row.eventName = QStringLiteral("Event_%1").arg(eventRecord->EventHeader.EventDescriptor.Id);
 
     QString decodedEventName;
@@ -1681,42 +1684,121 @@ QString DirectKernelCallMonitorWidget::serviceNameForNumber(std::uint32_t syscal
     return found->second.serviceName;
 }
 
-QString DirectKernelCallMonitorWidget::processNameForPid(std::uint32_t pid)
+QString DirectKernelCallMonitorWidget::processNameForPid(
+    const std::uint32_t pid,
+    std::uint64_t* const creationTime100nsOut)
 {
-    if (pid == 0)
+    // creationTime100nsOut：默认写 0，只有缓存或实时查询成功时才返回可验证 identity。
+    if (creationTime100nsOut != nullptr)
+    {
+        *creationTime100nsOut = 0U;
+    }
+    if (pid == 0U)
     {
         return QStringLiteral("System");
     }
 
+    // nowTime：使用单调时钟决定本 PID 是否需要重新验证。
+    const std::chrono::steady_clock::time_point nowTime =
+        std::chrono::steady_clock::now();
+
+    // cachedEntry：锁外查询系统时保留上一份缓存，避免持有互斥量执行 Win32 调用。
+    ProcessIdentityCacheEntry cachedEntry;
+
+    // hasCachedEntry：标记 cachedEntry 是否来自有效缓存。
+    bool hasCachedEntry = false;
     {
         std::lock_guard<std::mutex> lock(m_cacheMutex);
         const auto found = m_processNameCache.find(pid);
         if (found != m_processNameCache.end())
         {
-            return found->second;
+            cachedEntry = found->second;
+            hasCachedEntry = true;
+
+            // cacheAge：一秒内复用已验证 identity，避免高频 ETW 事件重复打开句柄。
+            const auto cacheAge = std::chrono::duration_cast<std::chrono::milliseconds>(
+                nowTime - found->second.lastValidationTime);
+            if (cacheAge.count() < kProcessIdentityValidationIntervalMs)
+            {
+                if (creationTime100nsOut != nullptr)
+                {
+                    *creationTime100nsOut = found->second.creationTime100ns;
+                }
+                return found->second.processText;
+            }
         }
     }
 
-    QString processText = QStringLiteral("PID %1").arg(pid);
-    HANDLE processHandle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
-    if (processHandle != nullptr)
+    // observedCreationTime100ns：本轮重新验证得到的当前进程创建时间。
+    std::uint64_t observedCreationTime100ns = 0U;
+
+    // identityDetailText：接收底层查询诊断；高频捕获路径不直接向 UI 弹窗。
+    std::string identityDetailText;
+
+    // identityQueryOk：决定是否能安全更新 PID 对应的 identity。
+    const bool identityQueryOk = ks::process::QueryProcessCreationTimeByPid(
+        pid,
+        &observedCreationTime100ns,
+        &identityDetailText);
+
+    // identityChanged：创建时间变化表示 PID 已复用，必须重新解析名称并清理模块缓存。
+    const bool identityChanged = identityQueryOk &&
+        (!hasCachedEntry || cachedEntry.creationTime100ns != observedCreationTime100ns);
+
+    // processText：查询失败时沿用旧名称；首次失败则显示纯 PID。
+    QString processText = hasCachedEntry
+        ? cachedEntry.processText
+        : QStringLiteral("PID %1").arg(pid);
+    if (identityChanged)
     {
-        std::vector<wchar_t> pathBuffer(32768, L'\0');
-        DWORD pathLength = static_cast<DWORD>(pathBuffer.size());
-        if (::QueryFullProcessImageNameW(processHandle, 0, pathBuffer.data(), &pathLength) != FALSE && pathLength > 0)
+        // processHandle：仅在首次发现或 PID 复用时查询一次映像名称。
+        const HANDLE processHandle = ::OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            static_cast<DWORD>(pid));
+        if (processHandle != nullptr)
         {
-            const QString imagePath = QString::fromWCharArray(pathBuffer.data(), static_cast<int>(pathLength));
-            const QString fileName = QFileInfo(imagePath).fileName();
-            processText = fileName.isEmpty()
-                ? QStringLiteral("PID %1").arg(pid)
-                : QStringLiteral("%1 (%2)").arg(fileName).arg(pid);
+            // pathBuffer/pathLength：接收目标进程完整映像路径。
+            std::vector<wchar_t> pathBuffer(32768, L'\0');
+            DWORD pathLength = static_cast<DWORD>(pathBuffer.size());
+            if (::QueryFullProcessImageNameW(
+                    processHandle,
+                    0,
+                    pathBuffer.data(),
+                    &pathLength) != FALSE &&
+                pathLength > 0U)
+            {
+                // imagePath/fileName：将完整路径转换为事件表中的短名称。
+                const QString imagePath = QString::fromWCharArray(
+                    pathBuffer.data(),
+                    static_cast<int>(pathLength));
+                const QString fileName = QFileInfo(imagePath).fileName();
+                processText = fileName.isEmpty()
+                    ? QStringLiteral("PID %1").arg(pid)
+                    : QStringLiteral("%1 (%2)").arg(fileName).arg(pid);
+            }
+            ::CloseHandle(processHandle);
         }
-        ::CloseHandle(processHandle);
     }
 
+    // nextCacheEntry：查询失败时保留旧 identity，最多拒绝跳转而不会误开新进程。
+    ProcessIdentityCacheEntry nextCacheEntry;
+    nextCacheEntry.processText = processText;
+    nextCacheEntry.creationTime100ns = identityQueryOk
+        ? observedCreationTime100ns
+        : (hasCachedEntry ? cachedEntry.creationTime100ns : 0U);
+    nextCacheEntry.lastValidationTime = nowTime;
     {
         std::lock_guard<std::mutex> lock(m_cacheMutex);
-        m_processNameCache[pid] = processText;
+        if (identityChanged)
+        {
+            m_moduleRangeCache.erase(pid);
+        }
+        m_processNameCache[pid] = nextCacheEntry;
+    }
+    if (creationTime100nsOut != nullptr)
+    {
+        *creationTime100nsOut = nextCacheEntry.creationTime100ns;
     }
     return processText;
 }
@@ -1899,6 +1981,9 @@ void DirectKernelCallMonitorWidget::appendEventRow(const CapturedEventRow& rowVa
     timeItem->setData(kRoleServiceSearchText, QStringLiteral("%1 | %2").arg(rowValue.syscallNumberText, rowValue.serviceName));
     timeItem->setData(kRoleGlobalSearchText, rowValue.globalSearchText);
     timeItem->setData(kRoleDetailText, rowValue.detailAllText);
+    timeItem->setData(
+        kRoleProcessCreationTime100ns,
+        QVariant::fromValue<qulonglong>(rowValue.processCreationTime100ns));
 
     m_eventTable->setItem(row, EventColumnTime100ns, timeItem);
     m_eventTable->setItem(row, EventColumnPidTid, createReadOnlyItem(rowValue.pidTidText));
@@ -2118,8 +2203,23 @@ void DirectKernelCallMonitorWidget::showEventContextMenu(const QPoint& position)
     const bool hasProcessId = processIdItem != nullptr &&
         ks::online_scan::tryParsePidFromText(processIdItem->text(), &processId) &&
         processId != 0U;
+
+    // processCreationTime100ns：从事件行角色读取捕获时的进程 identity。
+    const QTableWidgetItem* const identityItem =
+        m_eventTable->item(row, EventColumnTime100ns);
+    const quint64 processCreationTime100ns = identityItem != nullptr
+        ? identityItem->data(kRoleProcessCreationTime100ns).toULongLong()
+        : 0U;
+
+    // hasProcessIdentity：只有 PID 与创建时间都存在时才允许历史记录跳转。
+    const bool hasProcessIdentity = hasProcessId && processCreationTime100ns != 0U;
     QAction* openProcessDetailAction = menu.addAction(QStringLiteral("转到进程详细信息"));
-    openProcessDetailAction->setEnabled(hasProcessId);
+    openProcessDetailAction->setEnabled(hasProcessIdentity);
+    if (hasProcessId && !hasProcessIdentity)
+    {
+        openProcessDetailAction->setToolTip(QStringLiteral(
+            "无法验证该历史事件的进程创建时间；为避免 PID 复用后打开无关进程，已禁用跳转。"));
+    }
     menu.addSeparator();
     ks::online_scan::addVirusTotalSandboxMenu(
         &menu,
@@ -2171,7 +2271,9 @@ void DirectKernelCallMonitorWidget::showEventContextMenu(const QPoint& position)
 
     if (selectedAction == openProcessDetailAction)
     {
-        ks::ui::OpenProcessDetailByPid(processId);
+        ks::ui::OpenProcessDetailByIdentity(
+            processId,
+            processCreationTime100ns);
         return;
     }
 

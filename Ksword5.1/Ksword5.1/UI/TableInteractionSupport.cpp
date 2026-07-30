@@ -1485,6 +1485,32 @@ namespace ks::ui
         }
     }
 
+    void OpenProcessDetailByIdentity(
+        const quint32 pid,
+        const quint64 creationTime100ns)
+    {
+        // 历史记录不得静默退化为纯 PID，否则 PID 复用后可能打开无关进程。
+        if (pid == 0U || creationTime100ns == 0U)
+        {
+            return;
+        }
+
+        // topLevelWidget：逐个寻找拥有 identity-aware 槽的主窗口实例。
+        for (QWidget* topLevelWidget : QApplication::topLevelWidgets())
+        {
+            if (topLevelWidget != nullptr &&
+                QMetaObject::invokeMethod(
+                    topLevelWidget,
+                    "openProcessDetailByIdentity",
+                    Qt::QueuedConnection,
+                    Q_ARG(quint32, pid),
+                    Q_ARG(quint64, creationTime100ns)))
+            {
+                return;
+            }
+        }
+    }
+
     void InstallGlobalTableInteractionSupport(QApplication* appInstance)
     {
         if (appInstance == nullptr || appInstance->property(kInstalledProperty).toBool())

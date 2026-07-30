@@ -12615,6 +12615,118 @@ void ProcessDock::requestOpenProcessDetailByPid(const std::uint32_t pid)
     openProcessDetailWindowByPid(pid);
 }
 
+void ProcessDock::requestOpenProcessDetailByIdentity(
+    const std::uint32_t pid,
+    const std::uint64_t creationTime100ns)
+{
+    // requestDetailEvent：记录跨模块传入的完整历史 identity。
+    kLogEvent requestDetailEvent;
+    info << requestDetailEvent
+        << "[ProcessDock] requestOpenProcessDetailByIdentity: pid="
+        << pid
+        << ", creationTime100ns="
+        << creationTime100ns
+        << eol;
+
+    // rejectHistoricalTarget：统一记录并提示拒绝原因，不允许静默退化为纯 PID 跳转。
+    const auto rejectHistoricalTarget = [this, pid](
+        const QString& messageText,
+        const std::string& diagnosticText)
+    {
+        // rejectEvent：串联本次历史跳转被拒绝的 PID 与底层诊断。
+        kLogEvent rejectEvent;
+        warn << rejectEvent
+            << "[ProcessDock] historical process identity rejected, pid="
+            << pid
+            << ", detail="
+            << diagnosticText
+            << eol;
+        QMessageBox::information(
+            this,
+            QStringLiteral("历史进程已退出"),
+            messageText);
+    };
+
+    // identity 缺失本身即不可验证，必须拒绝而不是打开当前占用该 PID 的进程。
+    if (pid == 0U || creationTime100ns == 0U)
+    {
+        rejectHistoricalTarget(
+            QStringLiteral(
+                "该历史记录缺少可验证的进程身份。为避免 PID 复用后打开无关进程，本次跳转已取消。"),
+            "historical process identity is incomplete");
+        return;
+    }
+
+    // currentCreationTime100ns：跳转瞬间重新读取当前 PID 的创建时间。
+    std::uint64_t currentCreationTime100ns = 0U;
+
+    // identityDetailText：接收 OpenProcess/GetProcessTimes 失败原因。
+    std::string identityDetailText;
+
+    // identityQueryOk：只有实时身份查询成功才能继续打开历史目标。
+    const bool identityQueryOk = ks::process::QueryProcessCreationTimeByPid(
+        pid,
+        &currentCreationTime100ns,
+        &identityDetailText);
+    if (!identityQueryOk)
+    {
+        rejectHistoricalTarget(
+            QStringLiteral(
+                "该历史记录对应的原进程已退出，或当前无法验证其进程身份。"
+                "为避免 PID 复用后打开无关进程，本次跳转已取消。"),
+            identityDetailText.empty()
+                ? std::string("current process identity is unavailable")
+                : identityDetailText);
+        return;
+    }
+    if (currentCreationTime100ns != creationTime100ns)
+    {
+        rejectHistoricalTarget(
+            QStringLiteral(
+                "该历史记录对应的原进程已退出，PID %1 已被其他进程复用。"
+                "为避免打开无关进程，本次跳转已取消。").arg(pid),
+            "process creation time mismatch");
+        return;
+    }
+
+    // identityKey：严格定位缓存中的同一进程实例，不按 PID 取任意首项。
+    const std::string identityKey = ks::process::BuildProcessIdentityKey(
+        pid,
+        creationTime100ns);
+
+    // cachedEntryIt：若本轮缓存仍标记目标退出，则遵循历史状态拒绝打开。
+    const auto cachedEntryIt = m_cacheByIdentity.find(identityKey);
+    if (cachedEntryIt != m_cacheByIdentity.end())
+    {
+        if (cachedEntryIt->second.isExitedInLatestRound)
+        {
+            rejectHistoricalTarget(
+                QStringLiteral(
+                    "该历史记录对应的原进程已退出。为避免 PID 复用后打开无关进程，本次跳转已取消。"),
+                "cached process record is marked exited");
+            return;
+        }
+        if (!cachedEntryIt->second.isKernelOnlyInLatestRound)
+        {
+            showProcessDetailWindowForRecord(
+                identityKey,
+                cachedEntryIt->second.record);
+            return;
+        }
+    }
+
+    // queriedRecord：缓存未覆盖但实时 identity 匹配时构造轻量记录，详情页后台补齐字段。
+    ks::process::ProcessRecord queriedRecord{};
+    queriedRecord.pid = pid;
+    queriedRecord.creationTime100ns = creationTime100ns;
+    queriedRecord.processName = ks::process::GetProcessNameByPID(pid);
+    if (queriedRecord.processName.empty())
+    {
+        queriedRecord.processName = "PID_" + std::to_string(pid);
+    }
+    showProcessDetailWindowForRecord(identityKey, queriedRecord);
+}
+
 void ProcessDock::openProcessDetailsPlaceholder()
 {
     const std::vector<ProcessActionTarget> actionTargets = selectedActionTargets();
@@ -12880,64 +12992,148 @@ void ProcessDock::openSelectedProcessInjectionPage()
         << eol;
 }
 
-void ProcessDock::openProcessDetailWindowByPid(const std::uint32_t pid)
+void ProcessDock::showProcessDetailWindowForRecord(
+    const std::string& identityKey,
+    const ks::process::ProcessRecord& detailRecord)
 {
-    // 优先从当前缓存中查找对应 PID（可避免额外系统调用）。
-    for (const auto& cachePair : m_cacheByIdentity)
+    // existingWindowIt：同一 PID+创建时间只复用一扇详情窗口。
+    const auto existingWindowIt = m_detailWindowByIdentity.find(identityKey);
+    if (existingWindowIt != m_detailWindowByIdentity.end() &&
+        existingWindowIt->second != nullptr)
     {
-        const ks::process::ProcessRecord& cacheRecord = cachePair.second.record;
-        if (cacheRecord.pid != pid)
+        existingWindowIt->second->updateBaseRecord(detailRecord);
+        m_detailWindowLastSyncTimeByIdentity[identityKey] =
+            std::chrono::steady_clock::now();
+        existingWindowIt->second->show();
+        existingWindowIt->second->raise();
+        existingWindowIt->second->activateWindow();
+        return;
+    }
+
+    // detailWindow：缺失的静态字段由窗口后台补齐，避免阻塞 UI 跳转路径。
+    ProcessDetailWindow* const detailWindow =
+        new ProcessDetailWindow(detailRecord, nullptr);
+    detailWindow->setAttribute(Qt::WA_DeleteOnClose, true);
+    m_detailWindowByIdentity[identityKey] = detailWindow;
+    m_detailWindowLastSyncTimeByIdentity[identityKey] =
+        std::chrono::steady_clock::now();
+    connect(
+        detailWindow,
+        &QObject::destroyed,
+        this,
+        [this, identityKey]()
         {
-            continue;
-        }
-
-        auto existingWindowIt = m_detailWindowByIdentity.find(cachePair.first);
-        if (existingWindowIt != m_detailWindowByIdentity.end() && existingWindowIt->second != nullptr)
-        {
-            existingWindowIt->second->updateBaseRecord(cacheRecord);
-            m_detailWindowLastSyncTimeByIdentity[cachePair.first] = std::chrono::steady_clock::now();
-            existingWindowIt->second->show();
-            existingWindowIt->second->raise();
-            existingWindowIt->second->activateWindow();
-            return;
-        }
-
-        // 与当前选中逻辑一致：直接使用缓存开窗。
-        // 缺失的静态字段由详情窗口后台补齐，避免这里阻塞 UI 线程。
-        ks::process::ProcessRecord detailRecord = cacheRecord;
-
-        ProcessDetailWindow* detailWindow = new ProcessDetailWindow(detailRecord, nullptr);
-        detailWindow->setAttribute(Qt::WA_DeleteOnClose, true);
-        m_detailWindowByIdentity[cachePair.first] = detailWindow;
-        m_detailWindowLastSyncTimeByIdentity[cachePair.first] = std::chrono::steady_clock::now();
-        connect(detailWindow, &QObject::destroyed, this, [this, identityKey = cachePair.first]() {
             m_detailWindowByIdentity.erase(identityKey);
             m_detailWindowLastSyncTimeByIdentity.erase(identityKey);
         });
-        connect(detailWindow, &ProcessDetailWindow::requestOpenProcessByPid, this, [this](const std::uint32_t parentPid) {
+    connect(
+        detailWindow,
+        &ProcessDetailWindow::requestOpenProcessByPid,
+        this,
+        [this](const std::uint32_t parentPid)
+        {
             openProcessDetailWindowByPid(parentPid);
         });
-        connect(detailWindow, &ProcessDetailWindow::requestOpenHandleDockByPid, this, [this](const std::uint32_t targetPid) {
-            const bool invokeOk = invokeMainWindowPidSlot("focusHandleDockByPid", targetPid);
+    connect(
+        detailWindow,
+        &ProcessDetailWindow::requestOpenHandleDockByPid,
+        this,
+        [this](const std::uint32_t targetPid)
+        {
+            // invokeOk：将详情窗口的句柄页跳转请求交给主窗口。
+            const bool invokeOk =
+                invokeMainWindowPidSlot("focusHandleDockByPid", targetPid);
             if (!invokeOk)
             {
                 kLogEvent logEvent;
                 warn << logEvent
                     << "[ProcessDock] requestOpenHandleDockByPid 转发失败, pid="
                     << targetPid
-                << eol;
+                    << eol;
             }
         });
-        connectDetailWindowNavigation(detailWindow);
-        detailWindow->show();
-        detailWindow->raise();
-        detailWindow->activateWindow();
+    connectDetailWindowNavigation(detailWindow);
+    detailWindow->show();
+    detailWindow->raise();
+    detailWindow->activateWindow();
+}
+
+void ProcessDock::openProcessDetailWindowByPid(const std::uint32_t pid)
+{
+    // currentCreationTime100ns：实时身份查询成功时精确选择当前 PID 的缓存项。
+    std::uint64_t currentCreationTime100ns = 0U;
+
+    // identityDetailText：普通实时表跳转不弹身份错误，仅用于决定是否回退缓存。
+    std::string identityDetailText;
+
+    // identityQueryOk：成功时避免在新旧 identity 重叠期间选择退出项。
+    const bool identityQueryOk = ks::process::QueryProcessCreationTimeByPid(
+        pid,
+        &currentCreationTime100ns,
+        &identityDetailText);
+    if (identityQueryOk)
+    {
+        // currentIdentityKey：实时 PID 对应的唯一缓存键。
+        const std::string currentIdentityKey = ks::process::BuildProcessIdentityKey(
+            pid,
+            currentCreationTime100ns);
+
+        // currentCacheIt：只接受未退出、非内核占位的当前进程记录。
+        const auto currentCacheIt = m_cacheByIdentity.find(currentIdentityKey);
+        if (currentCacheIt != m_cacheByIdentity.end() &&
+            !currentCacheIt->second.isExitedInLatestRound &&
+            !currentCacheIt->second.isKernelOnlyInLatestRound)
+        {
+            showProcessDetailWindowForRecord(
+                currentIdentityKey,
+                currentCacheIt->second.record);
+            return;
+        }
+
+        // queriedRecord：缓存尚未刷新时用实时 identity 构造轻量记录。
+        ks::process::ProcessRecord queriedRecord{};
+        queriedRecord.pid = pid;
+        queriedRecord.creationTime100ns = currentCreationTime100ns;
+        queriedRecord.processName = ks::process::GetProcessNameByPID(pid);
+        if (queriedRecord.processName.empty())
+        {
+            queriedRecord.processName = "PID_" + std::to_string(pid);
+        }
+        showProcessDetailWindowForRecord(currentIdentityKey, queriedRecord);
         return;
     }
 
-    // 缓存不存在时只读取轻量名称并打开窗口：
-    // - QueryProcessStaticDetailByPid 默认包含签名校验，不能放在 UI 开窗路径；
-    // - 详情窗口会在后台补齐路径、命令行、用户和签名。
+    // fallbackCacheEntry：受保护进程无法实时查询时，仅从未退出缓存中选择最新 identity。
+    const CacheEntry* fallbackCacheEntry = nullptr;
+
+    // fallbackIdentityKey：与 fallbackCacheEntry 同步保存其稳定键。
+    std::string fallbackIdentityKey;
+    for (const auto& cachePair : m_cacheByIdentity)
+    {
+        const CacheEntry& cacheEntry = cachePair.second;
+        if (cacheEntry.record.pid != pid ||
+            cacheEntry.isExitedInLatestRound ||
+            cacheEntry.isKernelOnlyInLatestRound)
+        {
+            continue;
+        }
+        if (fallbackCacheEntry == nullptr ||
+            cacheEntry.record.creationTime100ns >
+                fallbackCacheEntry->record.creationTime100ns)
+        {
+            fallbackCacheEntry = &cacheEntry;
+            fallbackIdentityKey = cachePair.first;
+        }
+    }
+    if (fallbackCacheEntry != nullptr)
+    {
+        showProcessDetailWindowForRecord(
+            fallbackIdentityKey,
+            fallbackCacheEntry->record);
+        return;
+    }
+
+    // queriedRecord：保留纯 PID 实时入口兼容性；历史入口不会走到此降级路径。
     ks::process::ProcessRecord queriedRecord{};
     queriedRecord.pid = pid;
     queriedRecord.processName = ks::process::GetProcessNameByPID(pid);
@@ -12945,35 +13141,8 @@ void ProcessDock::openProcessDetailWindowByPid(const std::uint32_t pid)
     {
         queriedRecord.processName = "PID_" + std::to_string(pid);
     }
-
     const std::string identityKey = ks::process::BuildProcessIdentityKey(
         queriedRecord.pid,
         queriedRecord.creationTime100ns);
-
-    ProcessDetailWindow* detailWindow = new ProcessDetailWindow(queriedRecord, nullptr);
-    detailWindow->setAttribute(Qt::WA_DeleteOnClose, true);
-    m_detailWindowByIdentity[identityKey] = detailWindow;
-    m_detailWindowLastSyncTimeByIdentity[identityKey] = std::chrono::steady_clock::now();
-    connect(detailWindow, &QObject::destroyed, this, [this, identityKey]() {
-        m_detailWindowByIdentity.erase(identityKey);
-        m_detailWindowLastSyncTimeByIdentity.erase(identityKey);
-    });
-    connect(detailWindow, &ProcessDetailWindow::requestOpenProcessByPid, this, [this](const std::uint32_t parentPid) {
-        openProcessDetailWindowByPid(parentPid);
-    });
-    connect(detailWindow, &ProcessDetailWindow::requestOpenHandleDockByPid, this, [this](const std::uint32_t targetPid) {
-        const bool invokeOk = invokeMainWindowPidSlot("focusHandleDockByPid", targetPid);
-        if (!invokeOk)
-        {
-            kLogEvent logEvent;
-            warn << logEvent
-                << "[ProcessDock] requestOpenHandleDockByPid 转发失败, pid="
-                << targetPid
-            << eol;
-        }
-    });
-    connectDetailWindowNavigation(detailWindow);
-    detailWindow->show();
-    detailWindow->raise();
-    detailWindow->activateWindow();
+    showProcessDetailWindowForRecord(identityKey, queriedRecord);
 }
