@@ -98,6 +98,7 @@
     <ClCompile Include="src\features\thread\thread_worker_state.c" />
     <ClCompile Include="src\features\thread\thread_crossview.c" />
     <ClCompile Include="src\features\thread\thread_detail.c" />
+    <ClCompile Include="src\features\thread\thread_apc.c" />
     <ClCompile Include="src\features\thread\thread_ioctl.c" />
     <ClCompile Include="src\features\handle\handle_support.c" />
     <ClCompile Include="src\features\handle\handle_object_query.c" />

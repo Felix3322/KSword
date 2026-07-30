@@ -6,6 +6,18 @@
 
 EXTERN_C_START
 
+// DriverEntry 调用一次以初始化线程终止 APC 的全局生命周期注册表。
+VOID
+KswordARKThreadApcInitialize(
+    VOID
+    );
+
+// 驱动卸载最前阶段调用；停止排队、取消队列项并等待所有 APC 回调退出。
+VOID
+KswordARKThreadApcUninitialize(
+    VOID
+    );
+
 NTSTATUS
 KswordARKDriverEnumerateThreads(
     _Out_writes_bytes_to_(OutputBufferLength, *BytesWrittenOut) PVOID OutputBuffer,

@@ -537,6 +537,9 @@
     <ClCompile Include="src\features\thread\thread_detail.c">
       <Filter>Source Files\Features\Thread</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\thread\thread_apc.c">
+      <Filter>Source Files\Features\Thread</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\thread\thread_ioctl.c">
       <Filter>Source Files\Features\Thread</Filter>
     </ClCompile>
