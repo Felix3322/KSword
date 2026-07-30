@@ -89,6 +89,7 @@ KERNEL_GLOBAL_RVA_FIELD_IDS = {
     "PsLoadedModuleList": 83,
     "MmUnloadedDrivers": 84,
     "PiDDBCacheTable": 85,
+    "PiDDBLock": 231,
     "KeServiceDescriptorTableShadow": 86,
     "MmLastUnloadedDriver": 87,
 }
@@ -312,6 +313,10 @@ KNOWN_FIELD_IDS = {
     "RtlAvlRestartKey": 98,
     "RtlAvlDeleteCount": 99,
     "RtlAvlTypeSize": 100,
+    "PiDdbDriverName": 227,
+    "PiDdbTimeDateStamp": 228,
+    "PiDdbLoadStatus": 229,
+    "PiDdbTypeSize": 230,
 }
 
 LXCORE_FIELD_NAMES = {
@@ -323,7 +328,15 @@ LXCORE_FIELD_NAMES = {
 }
 
 TYPED_KERNEL_STRUCT_OFFSET_FIELD_IDS = {
-    name: field_id for name, field_id in KNOWN_FIELD_IDS.items() if name not in LXCORE_FIELD_NAMES
+    name: field_id
+    for name, field_id in KNOWN_FIELD_IDS.items()
+    if name not in LXCORE_FIELD_NAMES and not name.endswith("TypeSize")
+}
+
+TYPED_TYPE_SIZE_FIELD_IDS = {
+    name: field_id
+    for name, field_id in KNOWN_FIELD_IDS.items()
+    if name.endswith("TypeSize")
 }
 
 # The generator historically emitted the concrete PDB member spelling
@@ -700,7 +713,7 @@ def normalize_typed_item_name(name: str, kind: str) -> tuple[str, int] | None:
         field_id = TYPED_STRUCT_OFFSET_FIELD_IDS.get(name)
         return (name, field_id) if field_id is not None else None
     if kind == CALLBACK_ITEM_KIND_TYPE_SIZE:
-        field_id = TYPED_STRUCT_OFFSET_FIELD_IDS.get(name)
+        field_id = TYPED_TYPE_SIZE_FIELD_IDS.get(name)
         return (name, field_id) if field_id is not None else None
     return None
 

@@ -239,6 +239,31 @@ namespace ksword::ark
             unsigned long flags = KSWORD_ARK_DRIVER_INTEGRITY_FLAG_CPU | KSWORD_ARK_DRIVER_INTEGRITY_FLAG_IDT_ENTRIES,
             unsigned long maxRows = KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_MAX_ROWS,
             unsigned long maxIdtVectorsPerCpu = KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_IDT_VECTORS) const;
+        // restoreIdtBaseline：对指定 CPU/向量执行不可变启动期基线的只读预检或原子恢复。
+        // force=false 只返回 FORCE_REQUIRED/当前状态；force=true 时调用方还必须显式传入 uiConfirmed。
+        IdtBaselineRestoreResult restoreIdtBaseline(
+            std::uint16_t processorGroup,
+            std::uint8_t processorNumber,
+            std::uint8_t vector,
+            std::uint64_t expectedRawLow,
+            std::uint64_t expectedRawHigh,
+            bool force,
+            bool uiConfirmed) const;
+        PiDdbQueryResult queryPiDdb(
+            unsigned long maxRows = KSWORD_ARK_PIDDB_DEFAULT_ROWS) const;
+        PiDdbDeleteResult deletePiDdbEntry(
+            const PiDdbEntry& expectedEntry,
+            bool force,
+            bool uiConfirmed) const;
+        // queryHvmStatus/controlHvm：读取 VT-x/EPT 能力并执行受控准备、自检或释放。
+        // self-test 只做逐 CPU VMXON/VMXOFF 验证，不代表 VMLAUNCH 或虚拟机已运行。
+        HvmStatusResult queryHvmStatus() const;
+        HvmControlResult controlHvm(
+            unsigned long command,
+            unsigned long expectedGeneration,
+            bool force,
+            bool allowNested,
+            bool uiConfirmed) const;
         // queryCpuHardwareSnapshot：
         // - 输入：无；R0 只执行 CPUID 与处理器数量查询。
         // - 处理：封装 IOCTL_KSWORD_ARK_QUERY_CPU_HARDWARE，解析 vendor/brand/family/model/feature mask。
@@ -327,6 +352,26 @@ namespace ksword::ark
         StorageBitlockerFveAuditResult queryBitlockerFveAudit(const std::wstring& volumePath = std::wstring(), unsigned long flags = KSWORD_ARK_STORAGE_AUDIT_FLAG_INCLUDE_DEFAULT, unsigned long maxRows = KSWORD_ARK_STORAGE_DEFAULT_MAX_ROWS, unsigned long maxDepth = KSWORD_ARK_STORAGE_DEFAULT_STACK_DEPTH) const;
         StorageMountMgrMappingAuditResult queryMountMgrMappingAudit(const std::wstring& volumePath = std::wstring(), unsigned long flags = KSWORD_ARK_STORAGE_AUDIT_FLAG_INCLUDE_DEFAULT, unsigned long maxRows = KSWORD_ARK_STORAGE_DEFAULT_MAX_ROWS, unsigned long maxDepth = KSWORD_ARK_STORAGE_DEFAULT_STACK_DEPTH) const;
         StorageFilesystemIntegrityAuditResult queryFilesystemIntegrityAudit(const std::wstring& volumePath = std::wstring(), unsigned long flags = KSWORD_ARK_STORAGE_AUDIT_FLAG_INCLUDE_DEFAULT, unsigned long maxRows = KSWORD_ARK_STORAGE_DEFAULT_MAX_ROWS, unsigned long maxDepth = KSWORD_ARK_STORAGE_DEFAULT_STACK_DEPTH) const;
+        // query/read/writeRawDisk：
+        // - 输入：物理磁盘号、显式后端、对齐偏移/长度和安全确认标志；
+        // - 处理：只在 ArkDriverClient 内封装三层磁盘 IOCTL，不在 Dock 中直接访问控制设备；
+        // - 返回：R0 能力、读取字节或安全策略审计后的写入结果。
+        RawDiskBackendResult queryRawDiskBackend(
+            unsigned long diskNumber,
+            unsigned long requestedBackend = 0UL,
+            unsigned long flags = 0UL) const;
+        RawDiskReadResult readRawDisk(
+            unsigned long diskNumber,
+            unsigned long backend,
+            std::uint64_t offset,
+            unsigned long length,
+            unsigned long flags = 0UL) const;
+        RawDiskWriteResult writeRawDisk(
+            unsigned long diskNumber,
+            unsigned long backend,
+            std::uint64_t offset,
+            const std::vector<std::uint8_t>& bytes,
+            unsigned long flags) const;
         // Security audit wrappers：
         // - 输入：只读 flags 或行预算；
         // - 处理：封装 Security/CI/VBS/Hyper-V/AppControl IOCTL；

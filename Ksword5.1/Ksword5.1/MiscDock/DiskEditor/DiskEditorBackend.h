@@ -50,6 +50,18 @@ namespace ks::misc
             QByteArray& bytesOut,
             QString& errorTextOut);
 
+        // readBytesWithBackend：
+        // - 使用选定 R0 磁盘后端读取，backend 对应三层协议值；
+        // - 后端 1 在旧驱动不可用时允许回退到现有 Windows 存储栈；
+        // - 后端 2/3 绝不隐式降级，确保用户看到的访问层与实际一致。
+        static bool readBytesWithBackend(
+            int diskIndex,
+            unsigned long backend,
+            std::uint64_t offsetBytes,
+            std::uint32_t bytesToRead,
+            QByteArray& bytesOut,
+            QString& errorTextOut);
+
         // writeBytes：
         // - 向物理磁盘指定偏移写入字节；
         // - requireSectorAligned 为 true 时强制偏移和长度按扇区对齐；
@@ -62,6 +74,18 @@ namespace ks::misc
             const QByteArray& bytes,
             std::uint32_t bytesPerSector,
             bool requireSectorAligned,
+            QString& errorTextOut);
+
+        // writeBytesWithBackend：
+        // - 通过 ArkDriverClient 写入选定后端；
+        // - callerFlags 必须来自已完成的 UI 风险确认；
+        // - 所有后端均执行 R0 安全策略、系统盘和扇区边界复核。
+        static bool writeBytesWithBackend(
+            int diskIndex,
+            unsigned long backend,
+            std::uint64_t offsetBytes,
+            const QByteArray& bytes,
+            unsigned long callerFlags,
             QString& errorTextOut);
 
         // queryVolumeMappings：

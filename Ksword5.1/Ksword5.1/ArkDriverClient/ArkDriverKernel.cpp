@@ -93,7 +93,10 @@ namespace ksword::ark
                 return;
             }
 
-            std::fill(destination, destination + destinationBytes, 0U);
+            std::fill(
+                destination,
+                destination + destinationBytes,
+                static_cast<unsigned char>(0));
             const std::size_t copyBytes = std::min<std::size_t>(destinationBytes, sourceBytes.size());
             if (copyBytes != 0U)
             {
@@ -136,7 +139,9 @@ namespace ksword::ark
             }
 
             const auto* responseHeader = reinterpret_cast<const KSWORD_ARK_ENUM_SSDT_RESPONSE*>(responseBuffer.data());
-            if (responseHeader->entrySize < sizeof(KSWORD_ARK_SSDT_ENTRY))
+            constexpr std::size_t minimumSsdtEntryBytes =
+                offsetof(KSWORD_ARK_SSDT_ENTRY, tableEntryAddress);
+            if (responseHeader->entrySize < minimumSsdtEntryBytes)
             {
                 enumResult.io.ok = false;
                 enumResult.io.message = std::string(operationName) + " entrySize invalid, entrySize=" + std::to_string(responseHeader->entrySize);
@@ -161,7 +166,7 @@ namespace ksword::ark
                 const std::size_t entryOffset =
                     kSsdtResponseHeaderSize +
                     (index * static_cast<std::size_t>(responseHeader->entrySize));
-                if (entryOffset + sizeof(KSWORD_ARK_SSDT_ENTRY) > responseBuffer.size())
+                if (entryOffset + minimumSsdtEntryBytes > responseBuffer.size())
                 {
                     break;
                 }
@@ -173,6 +178,20 @@ namespace ksword::ark
                 row.flags = static_cast<std::uint32_t>(sourceEntry->flags);
                 row.zwRoutineAddress = static_cast<std::uint64_t>(sourceEntry->zwRoutineAddress);
                 row.serviceRoutineAddress = static_cast<std::uint64_t>(sourceEntry->serviceRoutineAddress);
+                if (responseHeader->entrySize >= sizeof(KSWORD_ARK_SSDT_ENTRY)
+                    && entryOffset + sizeof(KSWORD_ARK_SSDT_ENTRY)
+                        <= responseBuffer.size())
+                {
+                    row.tableEntryAddress =
+                        static_cast<std::uint64_t>(
+                            sourceEntry->tableEntryAddress);
+                    row.currentTableValue =
+                        static_cast<std::uint64_t>(
+                            sourceEntry->currentTableValue);
+                    row.tableEntrySize =
+                        static_cast<std::uint32_t>(
+                            sourceEntry->tableEntrySize);
+                }
                 row.serviceName = fixedKernelAnsiToString(sourceEntry->serviceName, sizeof(sourceEntry->serviceName));
                 row.moduleName = fixedKernelAnsiToString(sourceEntry->moduleName, sizeof(sourceEntry->moduleName));
                 enumResult.entries.push_back(std::move(row));
@@ -1028,6 +1047,16 @@ namespace ksword::ark
                 row.descriptorLimit = static_cast<std::uint64_t>(sourceEntry->descriptorLimit);
                 row.descriptorRawLow = static_cast<std::uint64_t>(sourceEntry->descriptorRawLow);
                 row.descriptorRawHigh = static_cast<std::uint64_t>(sourceEntry->descriptorRawHigh);
+            }
+            if (hasTypedField(
+                    offsetof(KSWORD_ARK_DRIVER_INTEGRITY_EVIDENCE, baselineDescriptorRawHigh),
+                    sizeof(sourceEntry->baselineDescriptorRawHigh)))
+            {
+                row.descriptorBaselineFlags = static_cast<std::uint32_t>(sourceEntry->baselineDescriptorFlags);
+                row.descriptorBaselineGeneration = static_cast<std::uint32_t>(sourceEntry->baselineGeneration);
+                row.descriptorBaselineHandler = static_cast<std::uint64_t>(sourceEntry->baselineDescriptorBase);
+                row.descriptorBaselineRawLow = static_cast<std::uint64_t>(sourceEntry->baselineDescriptorRawLow);
+                row.descriptorBaselineRawHigh = static_cast<std::uint64_t>(sourceEntry->baselineDescriptorRawHigh);
             }
             integrityResult.entries.push_back(std::move(row));
         }

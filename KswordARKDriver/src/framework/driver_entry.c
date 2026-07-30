@@ -15,6 +15,8 @@ Environment:
 --*/
 
 #include "ark/ark_driver.h"
+#include "src/features/kernel/kernel_idt_baseline.h"
+#include "src/features/hvm/hvm_runtime.h"
 #include "driver_entry.tmh"
 
 #ifdef ALLOC_PRAGMA
@@ -58,6 +60,19 @@ Return Value:
     KswordARKCapabilityInitialize();
     KswordARKTrustInitialize();
     KswordARKSafetyInitialize();
+    // 在控制设备可见前捕获每 CPU 的不可变 IDT 基线；失败只禁用该诊断功能。
+    status = KswordARKIdtBaselineInitialize();
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKIdtBaselineInitialize unavailable %!STATUS!", status);
+    }
+    /*
+     * HVM startup is read-only: capture CPU/MSR capability state now, while
+     * all VMX/EPT allocations and tests remain explicit UI lifecycle actions.
+     */
+    status = KswordARKHvmInitialize();
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKHvmInitialize unavailable %!STATUS!", status);
+    }
     // 在线程控制 IOCTL 可见前初始化 APC 注册表和卸载排空事件。
     KswordARKThreadApcInitialize();
 
@@ -89,6 +104,10 @@ Return Value:
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfDriverCreate failed %!STATUS!", status);
         // 中文说明：框架创建失败时撤销通信控制状态和所有潜在引用。
         KswordARKDriverCommunicationUninitialize();
+        // Release the optional HVM capability state on early framework failure.
+        KswordARKHvmUninitialize();
+        // Release the boot-captured IDT table when framework creation fails.
+        KswordARKIdtBaselineUninitialize();
         // DriverEntry 失败时关闭 APC 接收状态，保持初始化与退出路径对称。
         KswordARKThreadApcUninitialize();
         WPP_CLEANUP(DriverObject);
@@ -100,6 +119,10 @@ Return Value:
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKDriverCreateControlDevice failed %!STATUS!", status);
         // 中文说明：控制设备创建失败时不保留通信控制全局状态。
         KswordARKDriverCommunicationUninitialize();
+        // Release the optional HVM capability state on early device failure.
+        KswordARKHvmUninitialize();
+        // Release the boot-captured IDT table when the control device is absent.
+        KswordARKIdtBaselineUninitialize();
         // 控制设备不可用时不会接受线程请求，立即关闭 APC 生命周期管理。
         KswordARKThreadApcUninitialize();
         WPP_CLEANUP(DriverObject);
@@ -112,6 +135,10 @@ Return Value:
         WdfObjectDelete(controlDevice);
         // 中文说明：回调初始化失败返回前撤销通信控制状态。
         KswordARKDriverCommunicationUninitialize();
+        // Release any explicit HVM resources before returning initialization failure.
+        KswordARKHvmUninitialize();
+        // Release the boot-captured IDT table on callback initialization rollback.
+        KswordARKIdtBaselineUninitialize();
         // 初始化回滚必须排空潜在并发请求，防止失败返回后遗留回调。
         KswordARKThreadApcUninitialize();
         WPP_CLEANUP(DriverObject);
@@ -167,6 +194,10 @@ Return Value:
 
     // 中文说明：最先恢复仍由本功能持有的 MajorFunction，并释放目标 DriverObject 引用。
     KswordARKDriverCommunicationUninitialize();
+    // Release all VMX/VMCS/EPT pages before the driver image can leave memory.
+    KswordARKHvmUninitialize();
+    // IOCTL 已停止后释放只读 IDT 基线，避免卸载后保留本驱动分配。
+    KswordARKIdtBaselineUninitialize();
     // 随后停止并排空所有可能回调到本驱动映像的线程终止 APC。
     KswordARKThreadApcUninitialize();
 

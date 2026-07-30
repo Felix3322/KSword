@@ -11,12 +11,14 @@
 // ============================================================
 
 #include "DiskEditorBackend.h"
+#include "DiskFileSystemForensicsPanel.h"
 #include "DiskRangeTools.h"
 #include "DiskMapWidget.h"
 #include "DiskStructureParser.h"
 
 #include "../../theme.h"
 #include "../../UI/HexEditorWidget.h"
+#include "../../../../shared/driver/KswordArkStorageForensicsIoctl.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -365,6 +367,11 @@ namespace ks::misc
         m_diskCombo->setStyleSheet(buildInputStyle());
         m_diskCombo->setToolTip(QStringLiteral("选择要查看的物理磁盘"));
 
+        m_backendCombo = new QComboBox(m_toolbarWidget);
+        m_backendCombo->setMinimumWidth(170);
+        m_backendCombo->setStyleSheet(buildInputStyle());
+        m_backendCombo->setToolTip(QStringLiteral("选择实际磁盘访问层；端口直达绕过上层磁盘对象，控制器直达仅允许离线磁盘"));
+
         m_refreshButton = new QPushButton(QStringLiteral("刷新磁盘"), m_toolbarWidget);
         m_readButton = new QPushButton(QStringLiteral("读取"), m_toolbarWidget);
         m_writeButton = new QPushButton(QStringLiteral("写回"), m_toolbarWidget);
@@ -395,12 +402,15 @@ namespace ks::misc
         m_readOnlyCheck->setChecked(true);
         m_readOnlyCheck->setToolTip(QStringLiteral("开启时禁用 HEX 编辑和写回按钮"));
 
-        m_requireAlignedCheck = new QCheckBox(QStringLiteral("扇区对齐写入"), m_toolbarWidget);
+        m_requireAlignedCheck = new QCheckBox(QStringLiteral("R0 强制扇区对齐"), m_toolbarWidget);
         m_requireAlignedCheck->setChecked(true);
-        m_requireAlignedCheck->setToolTip(QStringLiteral("写回时要求偏移和长度按逻辑扇区大小对齐"));
+        m_requireAlignedCheck->setEnabled(false);
+        m_requireAlignedCheck->setToolTip(QStringLiteral("所有访问层都由 R0 强制按逻辑扇区对齐，界面不能关闭此保护"));
 
         m_toolbarLayout->addWidget(new QLabel(QStringLiteral("磁盘"), m_toolbarWidget), 0);
         m_toolbarLayout->addWidget(m_diskCombo, 2);
+        m_toolbarLayout->addWidget(new QLabel(QStringLiteral("访问层"), m_toolbarWidget), 0);
+        m_toolbarLayout->addWidget(m_backendCombo, 0);
         m_toolbarLayout->addWidget(m_refreshButton, 0);
         m_toolbarLayout->addWidget(new QLabel(QStringLiteral("偏移"), m_toolbarWidget), 0);
         m_toolbarLayout->addWidget(m_offsetEdit, 1);
@@ -556,6 +566,42 @@ namespace ks::misc
         healthLayout->addWidget(m_healthTable, 1);
         m_advancedTabs->addTab(healthPage, QIcon(QStringLiteral(":/Icon/disk_health.svg")), QStringLiteral("健康/能力"));
 
+        auto* fileSystemForensicsPanel = new DiskFileSystemForensicsPanel(
+            [this]() -> std::optional<DiskForensicsSelection>
+            {
+                const DiskDeviceInfo* disk = currentDisk();
+                const DiskPartitionInfo* partition = currentPartition();
+                if (disk == nullptr
+                    || partition == nullptr
+                    || partition->lengthBytes == 0U
+                    || partition->kind == DiskPartitionKind::Unallocated)
+                {
+                    return std::nullopt;
+                }
+                DiskForensicsSelection selection;
+                selection.diskIndex = disk->diskIndex;
+                selection.backend = currentRawBackend();
+                selection.partitionOffset = partition->offsetBytes;
+                selection.partitionLength = partition->lengthBytes;
+                selection.logicalSectorSize = disk->bytesPerSector;
+                selection.backendMask = disk->rawBackendMask;
+                selection.capabilityFlags = disk->rawCapabilityFlags;
+                selection.displayText = QStringLiteral("%1 / %2")
+                    .arg(disk->devicePath)
+                    .arg(partition->name);
+                return selection;
+            },
+            [this](const std::uint64_t absoluteOffset)
+            {
+                m_offsetEdit->setText(hexOffsetText(absoluteOffset));
+                readCurrentRangeAsync(QStringLiteral("文件系统取证跳转读取"));
+            },
+            parent);
+        m_advancedTabs->addTab(
+            fileSystemForensicsPanel,
+            QIcon(QStringLiteral(":/Icon/disk_volume.svg")),
+            QStringLiteral("文件系统取证"));
+
         QWidget* toolPage = new QWidget(parent);
         QVBoxLayout* toolLayout = new QVBoxLayout(toolPage);
         toolLayout->setContentsMargins(4, 4, 4, 4);
@@ -668,6 +714,7 @@ namespace ks::misc
             updateDirtyState(false);
             m_structureReport = DiskStructureReport{};
             updateDiskSummary();
+            rebuildRawBackendSelector();
             rebuildPartitionTable();
             rebuildStructureTable();
             rebuildVolumeTable();
@@ -727,6 +774,13 @@ namespace ks::misc
         connect(m_readButton, &QPushButton::clicked, this, [this]()
         {
             readCurrentRangeAsync(QStringLiteral("手动读取"));
+        });
+
+        connect(m_backendCombo, &QComboBox::currentIndexChanged, this, [this](const int index)
+        {
+            Q_UNUSED(index);
+            appendLog(QStringLiteral("磁盘访问层切换为：%1。")
+                .arg(m_backendCombo->currentText()));
         });
 
         connect(m_writeButton, &QPushButton::clicked, this, [this]()
@@ -933,6 +987,7 @@ namespace ks::misc
         {
             m_diskCombo->setCurrentIndex(0);
             updateDiskSummary();
+            rebuildRawBackendSelector();
             rebuildPartitionTable();
             m_diskMapWidget->setDisk(m_disks.front());
             if (!m_disks.front().partitions.empty())
@@ -1001,6 +1056,59 @@ namespace ks::misc
         return nullptr;
     }
 
+    void DiskEditorTab::rebuildRawBackendSelector()
+    {
+        if (m_backendCombo == nullptr)
+        {
+            return;
+        }
+
+        const QSignalBlocker blocker(m_backendCombo);
+        m_backendCombo->clear();
+        const DiskDeviceInfo* disk = currentDisk();
+        const std::uint32_t backendMask = disk == nullptr ? 1U : disk->rawBackendMask;
+        if ((backendMask & 0x1U) != 0U)
+        {
+            m_backendCombo->addItem(
+                QStringLiteral("Windows 存储栈"),
+                static_cast<int>(KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK));
+        }
+        if ((backendMask & 0x2U) != 0U)
+        {
+            m_backendCombo->addItem(
+                QStringLiteral("存储端口直达"),
+                static_cast<int>(KSWORD_ARK_RAW_DISK_BACKEND_STORAGE_PORT));
+        }
+        if ((backendMask & 0x4U) != 0U)
+        {
+            m_backendCombo->addItem(
+                QStringLiteral("离线控制器直达"),
+                static_cast<int>(KSWORD_ARK_RAW_DISK_BACKEND_CONTROLLER));
+        }
+        if (m_backendCombo->count() == 0)
+        {
+            m_backendCombo->addItem(
+                QStringLiteral("Windows 存储栈"),
+                static_cast<int>(KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK));
+        }
+        m_backendCombo->setCurrentIndex(0);
+        if (disk != nullptr)
+        {
+            m_backendCombo->setToolTip(disk->rawBackendDetail);
+        }
+    }
+
+    unsigned long DiskEditorTab::currentRawBackend() const
+    {
+        if (m_backendCombo == nullptr
+            || !m_backendCombo->currentData().isValid())
+        {
+            return KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK;
+        }
+        return static_cast<unsigned long>(
+            m_backendCombo->currentData().toULongLong());
+    }
+
     void DiskEditorTab::updateDiskSummary()
     {
         const DiskDeviceInfo* disk = currentDisk();
@@ -1022,7 +1130,8 @@ namespace ks::misc
                 "分区表：%9\n"
                 "逻辑扇区：%10 B\n"
                 "物理扇区：%11 B\n"
-                "打开状态：%12")
+                "打开状态：%12\n"
+                "访问层预检：%13")
             .arg(disk->devicePath)
             .arg(disk->model.isEmpty() ? QStringLiteral("<未知>") : disk->model)
             .arg(disk->vendor.isEmpty() ? QStringLiteral("<未知>") : disk->vendor)
@@ -1034,7 +1143,10 @@ namespace ks::misc
             .arg(DiskEditorBackend::partitionStyleText(disk->partitionStyle))
             .arg(disk->bytesPerSector)
             .arg(disk->physicalBytesPerSector == 0 ? disk->bytesPerSector : disk->physicalBytesPerSector)
-            .arg(disk->openErrorText.isEmpty() ? QStringLiteral("可读") : disk->openErrorText));
+            .arg(disk->openErrorText.isEmpty() ? QStringLiteral("可读") : disk->openErrorText)
+            .arg(disk->rawBackendDetail.isEmpty()
+                ? QStringLiteral("未返回 R0 预检")
+                : disk->rawBackendDetail));
     }
 
     void DiskEditorTab::rebuildPartitionTable()
@@ -1194,23 +1306,55 @@ namespace ks::misc
 
         const std::uint32_t bytesToRead = static_cast<std::uint32_t>(m_lengthSpin->value());
         const QString devicePath = disk->devicePath;
+        const int diskIndex = disk->diskIndex;
+        const unsigned long backend = currentRawBackend();
+        const QString backendText = m_backendCombo == nullptr
+            ? QStringLiteral("Windows 存储栈")
+            : m_backendCombo->currentText();
+        if (backend != KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK
+            && (disk->rawCapabilityFlags & KSWORD_ARK_RAW_DISK_CAP_SYSTEM_DISK) != 0U)
+        {
+            const QMessageBox::StandardButton decision = QMessageBox::warning(
+                this,
+                QStringLiteral("确认系统盘绕过读取"),
+                QStringLiteral(
+                    "当前目标是系统盘，所选“%1”会绕过部分上层存储对象。"
+                    "异常硬件、过滤驱动或休眠状态可能导致系统不稳定。\n\n"
+                    "本次只读取 %2 字节，不会写盘。是否继续？")
+                    .arg(backendText)
+                    .arg(bytesToRead),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+            if (decision != QMessageBox::Yes)
+            {
+                appendLog(QStringLiteral("已取消系统盘绕过读取。"));
+                return;
+            }
+        }
         m_busy = true;
         setControlsEnabledForBusy(true);
         m_statusLabel->setText(QStringLiteral("状态：正在读取 %1 @ %2 ...")
             .arg(DiskEditorBackend::formatBytes(bytesToRead))
             .arg(hexOffsetText(offsetValue)));
-        appendLog(QStringLiteral("%1：%2 offset=%3 length=%4")
+        appendLog(QStringLiteral("%1：%2 access=%3 offset=%4 length=%5")
             .arg(reasonText)
             .arg(devicePath)
+            .arg(backendText)
             .arg(hexOffsetText(offsetValue))
             .arg(bytesToRead));
 
         QPointer<DiskEditorTab> safeThis(this);
-        std::thread([safeThis, devicePath, offsetValue, bytesToRead]()
+        std::thread([safeThis, diskIndex, backend, offsetValue, bytesToRead]()
         {
             QByteArray bytes;
             QString errorText;
-            DiskEditorBackend::readBytes(devicePath, offsetValue, bytesToRead, bytes, errorText);
+            DiskEditorBackend::readBytesWithBackend(
+                diskIndex,
+                backend,
+                offsetValue,
+                bytesToRead,
+                bytes,
+                errorText);
 
             if (safeThis.isNull())
             {
@@ -1307,26 +1451,67 @@ namespace ks::misc
         }
 
         const QByteArray currentBytes = m_hexEditor->data();
+        const unsigned long backend = currentRawBackend();
+        const QString backendText = m_backendCombo == nullptr
+            ? QStringLiteral("Windows 存储栈")
+            : m_backendCombo->currentText();
+        const bool systemDisk =
+            (disk->rawCapabilityFlags & KSWORD_ARK_RAW_DISK_CAP_SYSTEM_DISK) != 0U;
+        const QMessageBox::StandardButton riskDecision = QMessageBox::warning(
+            this,
+            QStringLiteral("高风险：即将写入物理磁盘"),
+            QStringLiteral(
+                "目标：%1\n访问层：%2\n偏移：%3\n长度：%4 字节\n\n"
+                "物理写入可能立即破坏分区表、文件系统或启动数据。"
+                "断电、控制器异常或选错磁盘都可能导致不可恢复的数据损坏。"
+                "%5\n\n是否进入最终文本确认？")
+                .arg(disk->devicePath)
+                .arg(backendText)
+                .arg(hexOffsetText(m_loadedBaseOffset))
+                .arg(currentBytes.size())
+                .arg(systemDisk
+                    ? QStringLiteral("\n该磁盘包含当前启动或系统分区，风险等级为最高。")
+                    : QString()),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (riskDecision != QMessageBox::Yes)
+        {
+            appendLog(QStringLiteral("写回已取消：用户未通过风险预检。"));
+            return;
+        }
+
+        const QString confirmationPhrase = systemDisk
+            ? QStringLiteral("SYSTEM DISK WRITE")
+            : QStringLiteral("WRITE");
         const QString confirmText = QInputDialog::getText(
             this,
             QStringLiteral("确认写回物理磁盘"),
-            QStringLiteral("该操作会直接写入 %1 @ %2，长度 %3 字节。\n请输入 WRITE 确认：")
+            QStringLiteral("该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。\n请输入 %5 确认：")
+                .arg(backendText)
                 .arg(disk->devicePath)
                 .arg(hexOffsetText(m_loadedBaseOffset))
-                .arg(currentBytes.size()));
-        if (confirmText != QStringLiteral("WRITE"))
+                .arg(currentBytes.size())
+                .arg(confirmationPhrase));
+        if (confirmText != confirmationPhrase)
         {
             appendLog(QStringLiteral("写回已取消：确认文本不匹配。"));
             return;
         }
 
         QString errorText;
-        const bool writeOk = DiskEditorBackend::writeBytes(
-            disk->devicePath,
+        unsigned long writeFlags =
+            KSWORD_ARK_RAW_DISK_FLAG_UI_CONFIRMED_WRITE |
+            KSWORD_ARK_RAW_DISK_FLAG_FUA;
+        if (systemDisk)
+        {
+            writeFlags |= KSWORD_ARK_RAW_DISK_FLAG_ALLOW_SYSTEM_DISK_WRITE;
+        }
+        const bool writeOk = DiskEditorBackend::writeBytesWithBackend(
+            disk->diskIndex,
+            backend,
             m_loadedBaseOffset,
             currentBytes,
-            disk->bytesPerSector,
-            m_requireAlignedCheck->isChecked(),
+            writeFlags,
             errorText);
         if (!writeOk)
         {
@@ -1337,7 +1522,10 @@ namespace ks::misc
 
         m_loadedBytes = currentBytes;
         updateDirtyState(false);
-        appendLog(QStringLiteral("写回完成：%1 字节 @ %2。").arg(currentBytes.size()).arg(hexOffsetText(m_loadedBaseOffset)));
+        appendLog(QStringLiteral("写回完成：访问层=%1，%2 字节 @ %3。")
+            .arg(backendText)
+            .arg(currentBytes.size())
+            .arg(hexOffsetText(m_loadedBaseOffset)));
         QMessageBox::information(this, QStringLiteral("磁盘编辑"), QStringLiteral("写回完成。"));
         refreshStructureReportAsync(QStringLiteral("写回后刷新结构解析"));
     }
@@ -1357,6 +1545,7 @@ namespace ks::misc
         }
 
         const DiskDeviceInfo diskSnapshot = *disk;
+        const unsigned long backend = currentRawBackend();
         const std::uint64_t diskLimit = diskSnapshot.sizeBytes == 0
             ? 16ULL * 1024ULL * 1024ULL
             : diskSnapshot.sizeBytes;
@@ -1375,11 +1564,17 @@ namespace ks::misc
             .arg(DiskEditorBackend::formatBytes(bytesToRead)));
 
         QPointer<DiskEditorTab> safeThis(this);
-        std::thread([safeThis, diskSnapshot, bytesToRead]()
+        std::thread([safeThis, diskSnapshot, backend, bytesToRead]()
         {
             QByteArray leadingBytes;
             QString readError;
-            DiskEditorBackend::readBytes(diskSnapshot.devicePath, 0, bytesToRead, leadingBytes, readError);
+            DiskEditorBackend::readBytesWithBackend(
+                diskSnapshot.diskIndex,
+                backend,
+                0,
+                bytesToRead,
+                leadingBytes,
+                readError);
 
             DiskStructureReport report;
             QString parseError;
@@ -2094,6 +2289,10 @@ namespace ks::misc
         if (m_diskCombo != nullptr)
         {
             m_diskCombo->setEnabled(!busy);
+        }
+        if (m_backendCombo != nullptr)
+        {
+            m_backendCombo->setEnabled(!busy);
         }
         if (m_writeButton != nullptr)
         {

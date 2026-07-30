@@ -241,7 +241,14 @@ void DriverDock::applyTranslatedHeaders()
     }
     if (m_unloadedPiddbTable != nullptr)
     {
-        m_unloadedPiddbTable->setHorizontalHeaderLabels(driverModuleCrossViewTableHeaders());
+        m_unloadedPiddbTable->setHorizontalHeaderLabels({
+            driverText("driver.piddb.header.type", QStringLiteral("类型")),
+            driverText("driver.piddb.header.name", QStringLiteral("驱动名")),
+            driverText("driver.piddb.header.timestamp", QStringLiteral("时间戳")),
+            driverText("driver.piddb.header.load_status", QStringLiteral("加载状态")),
+            driverText("driver.piddb.header.entry", QStringLiteral("表项地址")),
+            driverText("driver.piddb.header.state", QStringLiteral("状态")),
+            driverText("driver.piddb.header.detail", QStringLiteral("详情"))});
     }
 }
 
@@ -863,9 +870,7 @@ void DriverDock::initializeModuleCrossViewTab()
 
 void DriverDock::initializeUnloadedPiddbTab()
 {
-    // Unloaded / PiDDB 页：
-    // - 当前阶段仅展示 Driver Integrity 中与 OptionalGlobal/DynData 相关的只读证据；
-    // - 页面不提供清理、删除或修复动作。
+    // Unloaded / PiDDB 页同时展示精确缓存行和全局完整性摘要。
     m_unloadedPiddbPage = new QWidget(m_tabWidget);
     m_unloadedPiddbLayout = new QVBoxLayout(m_unloadedPiddbPage);
     m_unloadedPiddbLayout->setContentsMargins(4, 4, 4, 4);
@@ -880,6 +885,11 @@ void DriverDock::initializeUnloadedPiddbTab()
     m_unloadedPiddbRefreshButton->setToolTip(
         driverText("driver.unloaded.refresh.tooltip", QStringLiteral("刷新 Driver Integrity 并重建 Unloaded / PiDDB 证据")));
     m_unloadedPiddbRefreshButton->setFixedWidth(34);
+    m_unloadedPiddbDeleteButton = new QPushButton(
+        driverText("driver.unloaded.delete_exact", QStringLiteral("删除选中 PiDDB 表项")),
+        m_unloadedPiddbPage);
+    m_unloadedPiddbDeleteButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+    m_unloadedPiddbDeleteButton->setEnabled(false);
 
     m_unloadedPiddbFilterEdit = new QLineEdit(m_unloadedPiddbPage);
     m_unloadedPiddbFilterEdit->setPlaceholderText(
@@ -903,6 +913,7 @@ void DriverDock::initializeUnloadedPiddbTab()
     m_unloadedPiddbStatusLabel->setWordWrap(true);
 
     m_unloadedPiddbToolLayout->addWidget(m_unloadedPiddbRefreshButton);
+    m_unloadedPiddbToolLayout->addWidget(m_unloadedPiddbDeleteButton);
     m_unloadedPiddbToolLayout->addWidget(m_unloadedPiddbFilterEdit, 1);
     m_unloadedPiddbToolLayout->addWidget(m_unloadedPiddbRiskOnlyCheck);
     m_unloadedPiddbToolLayout->addWidget(m_unloadedPiddbStatusLabel, 1);
@@ -910,7 +921,14 @@ void DriverDock::initializeUnloadedPiddbTab()
 
     m_unloadedPiddbTable = new ks::ui::VisibleTableWidget(m_unloadedPiddbPage);
     m_unloadedPiddbTable->setColumnCount(7);
-    m_unloadedPiddbTable->setHorizontalHeaderLabels(driverModuleCrossViewTableHeaders());
+    m_unloadedPiddbTable->setHorizontalHeaderLabels({
+        driverText("driver.piddb.header.type", QStringLiteral("类型")),
+        driverText("driver.piddb.header.name", QStringLiteral("驱动名")),
+        driverText("driver.piddb.header.timestamp", QStringLiteral("时间戳")),
+        driverText("driver.piddb.header.load_status", QStringLiteral("加载状态")),
+        driverText("driver.piddb.header.entry", QStringLiteral("表项地址")),
+        driverText("driver.piddb.header.state", QStringLiteral("状态")),
+        driverText("driver.piddb.header.detail", QStringLiteral("详情"))});
     m_unloadedPiddbTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_unloadedPiddbTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_unloadedPiddbTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1096,7 +1114,11 @@ void DriverDock::initializeConnections()
         });
     connect(m_unloadedPiddbRefreshButton, &QPushButton::clicked, this, [this]()
         {
-            refreshDriverIntegrityAsync(false);
+            refreshPiDdbAsync();
+        });
+    connect(m_unloadedPiddbDeleteButton, &QPushButton::clicked, this, [this]()
+        {
+            deleteSelectedPiDdbEntry();
         });
     connect(m_unloadedPiddbFilterEdit, &QLineEdit::textChanged, this, [this](const QString&)
         {
@@ -1113,5 +1135,19 @@ void DriverDock::initializeConnections()
     connect(m_unloadedPiddbTable, &QTableWidget::cellDoubleClicked, this, [this](int, int)
         {
             showSelectedUnloadedPiddbDetailDialog();
+        });
+    connect(m_unloadedPiddbTable, &QTableWidget::currentCellChanged, this, [this](int currentRow, int, int, int)
+        {
+            bool canDelete = false;
+            if (currentRow >= 0 && m_unloadedPiddbTable != nullptr)
+            {
+                const QTableWidgetItem* typeItem = m_unloadedPiddbTable->item(currentRow, 0);
+                canDelete = typeItem != nullptr &&
+                    typeItem->data(Qt::UserRole + 2).toString() == QStringLiteral("piddb");
+            }
+            if (m_unloadedPiddbDeleteButton != nullptr)
+            {
+                m_unloadedPiddbDeleteButton->setEnabled(canDelete && !m_piddbQuerying);
+            }
         });
 }

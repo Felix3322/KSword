@@ -300,6 +300,12 @@
     <ClInclude Include="src\features\kernel\driver_integrity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\driver_blind_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_cpu_integrity.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\kernel_idt_baseline.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkKernelBaselineIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\kernel_piddb.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_runtime.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_object_audit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\mutation\mutation_transaction.h"><Filter>Header Files</Filter></ClInclude>
@@ -388,6 +394,24 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_cpu_integrity.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\kernel_idt_baseline.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\kernel_idt_baseline_ioctl.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\kernel_piddb.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\kernel_piddb_ioctl.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_runtime.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_ioctl.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\cpu_hardware_query.c">
@@ -672,5 +696,7 @@
     <ClCompile Include="src\features\device_audit\device_audit_targets.c"><Filter>Source Files\Features\DeviceAudit</Filter></ClCompile>
     <ClCompile Include="src\features\hwid\hwid_dispatch_hooks.c"><Filter>Source Files\Features\Hwid</Filter></ClCompile>
     <ClCompile Include="src\features\hwid\hwid_dispatch_ioctl.c"><Filter>Source Files\Features\Hwid</Filter></ClCompile>
+    <ClCompile Include="src\features\storage\storage_forensics.c"><Filter>Source Files\Features\Storage</Filter></ClCompile>
+    <ClCompile Include="src\features\storage\storage_forensics_ioctl.c"><Filter>Source Files\Features\Storage</Filter></ClCompile>
     <ClInclude Include="src\features\device_audit\device_audit_internal.h"><Filter>Header Files</Filter></ClInclude></ItemGroup>
 </Project>

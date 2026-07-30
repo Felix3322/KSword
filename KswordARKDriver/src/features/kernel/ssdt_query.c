@@ -601,6 +601,75 @@ KswordARKDriverResolveServiceRoutineAddress(
 #endif
 }
 
+static VOID
+KswordARKDriverFillServiceTableEntryMetadata(
+    _In_opt_ PVOID ServiceTableBase,
+    _In_ ULONG ServiceCount,
+    _In_ ULONG ServiceIndex,
+    _Inout_ KSWORD_ARK_SSDT_ENTRY* Entry
+    )
+/*++
+
+Routine Description:
+
+    采集服务表槽位地址和编码值。中文说明：该元数据让 R3 能用同 RVA 的磁盘
+    映像字节建立独立基线；本函数只读当前槽位，不执行任何表项写入。
+
+Arguments:
+
+    ServiceTableBase - 当前服务表基址。
+    ServiceCount - 当前服务表项数。
+    ServiceIndex - 目标服务索引。
+    Entry - 待补充的协议行。
+
+Return Value:
+
+    None. 读取失败时保留零值且不设置 TABLE_VALUE_CAPTURED。
+
+--*/
+{
+    if (ServiceTableBase == NULL ||
+        Entry == NULL ||
+        ServiceCount == 0UL ||
+        ServiceIndex >= ServiceCount) {
+        return;
+    }
+
+    __try {
+#if defined(_M_AMD64)
+        const volatile LONG* table =
+            (const volatile LONG*)ServiceTableBase;
+        Entry->tableEntryAddress =
+            (ULONGLONG)(ULONG_PTR)&table[ServiceIndex];
+        Entry->currentTableValue =
+            (ULONGLONG)(ULONG)(table[ServiceIndex]);
+        Entry->tableEntrySize = sizeof(LONG);
+#elif defined(_M_IX86)
+        const volatile ULONG_PTR* table =
+            (const volatile ULONG_PTR*)ServiceTableBase;
+        Entry->tableEntryAddress =
+            (ULONGLONG)(ULONG_PTR)&table[ServiceIndex];
+        Entry->currentTableValue =
+            (ULONGLONG)table[ServiceIndex];
+        Entry->tableEntrySize = sizeof(ULONG_PTR);
+#else
+        UNREFERENCED_PARAMETER(ServiceTableBase);
+        UNREFERENCED_PARAMETER(ServiceCount);
+        UNREFERENCED_PARAMETER(ServiceIndex);
+#endif
+        if (Entry->tableEntryAddress != 0ULL &&
+            Entry->tableEntrySize != 0UL) {
+            Entry->flags |=
+                KSWORD_ARK_SSDT_ENTRY_FLAG_TABLE_VALUE_CAPTURED;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        Entry->tableEntryAddress = 0ULL;
+        Entry->currentTableValue = 0ULL;
+        Entry->tableEntrySize = 0UL;
+    }
+}
+
 NTSTATUS
 KswordARKDriverEnumerateSsdt(
     _Out_writes_bytes_to_(outputBufferLength, *bytesWrittenOut) PVOID outputBuffer,
@@ -760,6 +829,11 @@ KswordARKDriverEnumerateSsdt(
                 entry->serviceRoutineAddress = (ULONGLONG)serviceRoutineAddress;
                 entry->flags |= KSWORD_ARK_SSDT_ENTRY_FLAG_TABLE_ADDRESS_VALID;
             }
+            KswordARKDriverFillServiceTableEntryMetadata(
+                serviceTableBase,
+                serviceCountFromTable,
+                serviceIndex,
+                entry);
         }
         else {
             entry->serviceIndex = 0U;
@@ -951,6 +1025,11 @@ Return Value:
                         entry->serviceRoutineAddress = (ULONGLONG)serviceRoutineAddress;
                         entry->flags |= KSWORD_ARK_SSDT_ENTRY_FLAG_TABLE_ADDRESS_VALID;
                     }
+                    KswordARKDriverFillServiceTableEntryMetadata(
+                        shadowServiceTableBase,
+                        shadowServiceCount,
+                        entry->serviceIndex,
+                        entry);
                 }
                 KswordARKDriverCopyAnsiText(entry->serviceName, sizeof(entry->serviceName), exportNameText);
                 if (KswordARKDriverStartsWithAnsi(entry->serviceName, "__win32kstub_")) {

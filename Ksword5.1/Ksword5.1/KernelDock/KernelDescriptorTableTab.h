@@ -35,6 +35,7 @@ private:
     void applyResult(ksword::ark::DriverIntegrityResult result);
     void rebuildTable();
     void showCurrentDetail();
+    void restoreSelectedIdtBaseline();
     void showCopyMenu(const QPoint& position);
     bool rowMatchesFilter(const ksword::ark::DriverIntegrityEvidenceEntry& row) const;
     QString columnText(const ksword::ark::DriverIntegrityEvidenceEntry& row, int column) const;
@@ -49,6 +50,7 @@ private:
     QComboBox* m_tableFilterCombo = nullptr;
     QLineEdit* m_filterEdit = nullptr;
     QPushButton* m_refreshButton = nullptr;
+    QPushButton* m_restoreIdtButton = nullptr;
     QLabel* m_statusLabel = nullptr;
     QTableWidget* m_table = nullptr;
     QTextEdit* m_detailEdit = nullptr;

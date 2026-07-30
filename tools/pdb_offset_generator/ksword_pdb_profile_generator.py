@@ -227,11 +227,15 @@ FIELD_MAP: dict[str, tuple[str, str]] = {
     "RtlAvlDepthOfTree": ("_RTL_AVL_TABLE", "DepthOfTree"),
     "RtlAvlRestartKey": ("_RTL_AVL_TABLE", "RestartKey"),
     "RtlAvlDeleteCount": ("_RTL_AVL_TABLE", "DeleteCount"),
+    "PiDdbDriverName": ("_PIDDB_CACHE_ENTRY", "DriverName"),
+    "PiDdbTimeDateStamp": ("_PIDDB_CACHE_ENTRY", "TimeDateStamp"),
+    "PiDdbLoadStatus": ("_PIDDB_CACHE_ENTRY", "LoadStatus"),
 }
 
 TYPE_SIZE_MAP: dict[str, str] = {
     "UldTypeSize": "_UNLOADED_DRIVERS",
     "RtlAvlTypeSize": "_RTL_AVL_TABLE",
+    "PiDdbTypeSize": "_PIDDB_CACHE_ENTRY",
 }
 
 # v4-only module items. 这些字段不进入旧 v1/v2/v3 fields，
@@ -305,6 +309,7 @@ KERNEL_GLOBAL_RVA_NAMES: tuple[str, ...] = (
     "PsLoadedModuleList",
     "MmUnloadedDrivers",
     "PiDDBCacheTable",
+    "PiDDBLock",
     "KeServiceDescriptorTableShadow",
     "MmLastUnloadedDriver",
 )

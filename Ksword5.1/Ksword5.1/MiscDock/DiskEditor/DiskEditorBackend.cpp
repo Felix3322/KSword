@@ -1,4 +1,5 @@
 #include "DiskEditorBackend.h"
+#include "../../ArkDriverClient/ArkDriverClient.h"
 #include "../../theme.h"
 
 // ============================================================
@@ -811,6 +812,28 @@ namespace ks::misc
             readStorageDescriptor(handleValue, diskInfo);
             readDiskGeometry(handleValue, diskInfo);
             readDriveLayout(handleValue, diskInfo);
+            const ksword::ark::RawDiskBackendResult backendResult =
+                ksword::ark::DriverClient().queryRawDiskBackend(
+                    static_cast<unsigned long>(diskIndex));
+            if (backendResult.io.ok)
+            {
+                diskInfo.rawBackendMask = backendResult.response.availableBackendMask;
+                diskInfo.rawCapabilityFlags = backendResult.response.capabilityFlags;
+                diskInfo.rawBackendDetail = QString::fromWCharArray(backendResult.response.detail);
+                if (backendResult.response.logicalSectorSize != 0U)
+                {
+                    diskInfo.bytesPerSector = backendResult.response.logicalSectorSize;
+                }
+                if (backendResult.response.physicalSectorSize != 0U)
+                {
+                    diskInfo.physicalBytesPerSector = backendResult.response.physicalSectorSize;
+                }
+            }
+            else
+            {
+                diskInfo.rawBackendMask = 1U;
+                diskInfo.rawBackendDetail = QStringLiteral("R0 后端不可用；仅保留 Windows 存储栈兼容读取。");
+            }
             diskInfo.displayName = buildDisplayName(diskInfo);
             ::CloseHandle(handleValue);
 
@@ -880,6 +903,66 @@ namespace ks::misc
 
         buffer.resize(static_cast<int>(readBytesValue));
         bytesOut = buffer;
+        return true;
+    }
+
+    bool DiskEditorBackend::readBytesWithBackend(
+        const int diskIndex,
+        const unsigned long backend,
+        const std::uint64_t offsetBytes,
+        const std::uint32_t bytesToRead,
+        QByteArray& bytesOut,
+        QString& errorTextOut)
+    {
+        bytesOut.clear();
+        errorTextOut.clear();
+        if (diskIndex < 0
+            || backend < KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK
+            || backend > KSWORD_ARK_RAW_DISK_BACKEND_CONTROLLER)
+        {
+            errorTextOut = QStringLiteral("磁盘号或访问层无效。");
+            return false;
+        }
+
+        const ksword::ark::RawDiskReadResult result =
+            ksword::ark::DriverClient().readRawDisk(
+                static_cast<unsigned long>(diskIndex),
+                backend,
+                offsetBytes,
+                bytesToRead,
+                backend == KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK
+                    ? 0UL
+                    : KSWORD_ARK_RAW_DISK_FLAG_ALLOW_SYSTEM_DISK_READ);
+        if (!result.io.ok)
+        {
+            if (backend == KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK
+                && result.unsupported)
+            {
+                return readBytes(
+                    QStringLiteral("\\\\.\\PhysicalDrive%1").arg(diskIndex),
+                    offsetBytes,
+                    bytesToRead,
+                    bytesOut,
+                    errorTextOut);
+            }
+
+            errorTextOut = QStringLiteral(
+                "R0 磁盘读取失败：访问层=%1，协议状态=%2，NTSTATUS=0x%3，Win32=%4。")
+                .arg(backend)
+                .arg(result.status)
+                .arg(static_cast<qulonglong>(
+                    static_cast<unsigned long>(result.io.ntStatus)),
+                    8,
+                    16,
+                    QChar('0'))
+                .arg(result.io.win32Error)
+                .toUpper();
+            return false;
+        }
+
+        bytesOut = QByteArray(
+            reinterpret_cast<const char*>(result.bytes.data()),
+            static_cast<int>(result.bytes.size()));
         return true;
     }
 
@@ -953,6 +1036,56 @@ namespace ks::misc
             errorTextOut = QStringLiteral("写入长度不足：期望 %1 字节，实际 %2 字节。")
                 .arg(requestedBytes)
                 .arg(writtenBytes);
+            return false;
+        }
+        return true;
+    }
+
+    bool DiskEditorBackend::writeBytesWithBackend(
+        const int diskIndex,
+        const unsigned long backend,
+        const std::uint64_t offsetBytes,
+        const QByteArray& bytes,
+        const unsigned long callerFlags,
+        QString& errorTextOut)
+    {
+        errorTextOut.clear();
+        if (diskIndex < 0
+            || backend < KSWORD_ARK_RAW_DISK_BACKEND_WINDOWS_STACK
+            || backend > KSWORD_ARK_RAW_DISK_BACKEND_CONTROLLER
+            || bytes.isEmpty())
+        {
+            errorTextOut = QStringLiteral("磁盘号、访问层或写入数据无效。");
+            return false;
+        }
+
+        std::vector<std::uint8_t> requestBytes(
+            reinterpret_cast<const std::uint8_t*>(bytes.constData()),
+            reinterpret_cast<const std::uint8_t*>(bytes.constData()) + bytes.size());
+        const ksword::ark::RawDiskWriteResult result =
+            ksword::ark::DriverClient().writeRawDisk(
+                static_cast<unsigned long>(diskIndex),
+                backend,
+                offsetBytes,
+                requestBytes,
+                callerFlags);
+        if (!result.io.ok
+            || result.response.status != KSWORD_ARK_RAW_DISK_STATUS_OK
+            || result.response.bytesTransferred != static_cast<unsigned long>(bytes.size()))
+        {
+            errorTextOut = QStringLiteral(
+                "R0 磁盘写入失败：访问层=%1，协议状态=%2，完成=%3/%4，NTSTATUS=0x%5，Win32=%6。")
+                .arg(backend)
+                .arg(result.response.status)
+                .arg(result.response.bytesTransferred)
+                .arg(bytes.size())
+                .arg(static_cast<qulonglong>(
+                    static_cast<unsigned long>(result.io.ntStatus)),
+                    8,
+                    16,
+                    QChar('0'))
+                .arg(result.io.win32Error)
+                .toUpper();
             return false;
         }
         return true;

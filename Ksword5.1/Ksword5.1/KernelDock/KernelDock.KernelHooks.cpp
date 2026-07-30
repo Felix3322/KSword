@@ -1,6 +1,7 @@
 #include "KernelDock.h"
 #include "../UI/VisibleTableWidget.h"
 
+#include "KernelCleanImageBaseline.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../UI/CodeEditorWidget.h"
@@ -21,6 +22,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QIODevice>
 #include <QLabel>
@@ -823,7 +825,9 @@ namespace
         ServiceName,
         StubAddress,
         ServiceAddress,
+        SlotAddress,
         Module,
+        Baseline,
         Status,
         Count
     };
@@ -1026,8 +1030,16 @@ namespace
             return kernelText("kernel.hooks.shadow.header.stub_address", QStringLiteral("Stub地址"));
         case ShadowSsdtColumn::ServiceAddress:
             return kernelText("kernel.hooks.shadow.header.service_routine", QStringLiteral("服务例程"));
+        case ShadowSsdtColumn::SlotAddress:
+            return kernelText(
+                "kernel.hooks.shadow.header.slot_address",
+                QStringLiteral("槽位地址"));
         case ShadowSsdtColumn::Module:
             return kernelText("kernel.ssdt.header.module", QStringLiteral("模块"));
+        case ShadowSsdtColumn::Baseline:
+            return kernelText(
+                "kernel.hooks.shadow.header.baseline",
+                QStringLiteral("磁盘基线"));
         case ShadowSsdtColumn::Status:
             return kernelText("kernel.ssdt.header.status", QStringLiteral("状态"));
         default:
@@ -1207,8 +1219,22 @@ namespace
             return kernelHookFormatAddress(entry.zwRoutineAddress);
         case ShadowSsdtColumn::ServiceAddress:
             return kernelHookFormatAddress(entry.serviceRoutineAddress);
+        case ShadowSsdtColumn::SlotAddress:
+            return kernelHookFormatAddress(entry.tableEntryAddress);
         case ShadowSsdtColumn::Module:
             return kernelHookSafeText(entry.moduleNameText);
+        case ShadowSsdtColumn::Baseline:
+            return entry.cleanBaselineAvailable
+                ? (entry.cleanBaselineDiffers
+                    ? kernelText(
+                        "kernel.hooks.shadow.baseline.differs",
+                        QStringLiteral("差异"))
+                    : kernelText(
+                        "kernel.hooks.shadow.baseline.clean",
+                        QStringLiteral("一致")))
+                : kernelText(
+                    "kernel.hooks.shadow.baseline.unavailable",
+                    QStringLiteral("不可用"));
         case ShadowSsdtColumn::Status:
             return kernelHookSafeText(entry.statusText);
         default:
@@ -1460,9 +1486,42 @@ namespace
         row->detailText = buildInlineHookDetailText(*row);
     }
 
+    std::vector<std::uint8_t> shadowTableValueBytes(
+        const std::uint64_t value,
+        const std::uint32_t byteCount)
+    {
+        std::vector<std::uint8_t> bytes;
+        const std::uint32_t safeCount = std::min<std::uint32_t>(
+            byteCount,
+            sizeof(value));
+        bytes.reserve(safeCount);
+        for (std::uint32_t index = 0; index < safeCount; ++index)
+        {
+            bytes.push_back(static_cast<std::uint8_t>(
+                (value >> (index * 8U)) & 0xFFU));
+        }
+        return bytes;
+    }
+
+    std::uint64_t shadowTableValueFromBytes(
+        const std::vector<std::uint8_t>& bytes)
+    {
+        std::uint64_t value = 0U;
+        const std::size_t count = std::min<std::size_t>(
+            bytes.size(),
+            sizeof(value));
+        for (std::size_t index = 0; index < count; ++index)
+        {
+            value |= static_cast<std::uint64_t>(bytes[index])
+                << (index * 8U);
+        }
+        return value;
+    }
+
     KernelSsdtEntry convertShadowSsdtEntry(
         const ksword::ark::SsdtEntry& source,
-        const ksword::ark::SsdtEnumResult& enumResult)
+        const ksword::ark::SsdtEnumResult& enumResult,
+        const ks::kernel::CleanImageBaselineResult& tableBaseline)
     {
         KernelSsdtEntry row{};
         row.serviceIndex = source.serviceIndex;
@@ -1470,6 +1529,45 @@ namespace
         row.zwRoutineAddress = source.zwRoutineAddress;
         row.serviceRoutineAddress = source.serviceRoutineAddress;
         row.serviceTableBase = enumResult.serviceTableBase;
+        row.tableEntryAddress = source.tableEntryAddress;
+        row.currentTableValue = source.currentTableValue;
+        row.tableEntrySize = source.tableEntrySize;
+        row.currentTableBytes = shadowTableValueBytes(
+            row.currentTableValue,
+            row.tableEntrySize);
+        row.cleanBaselineStatus = tableBaseline.statusText;
+        row.cleanBaselinePath = tableBaseline.imagePath;
+        if (tableBaseline.available
+            && row.tableEntryAddress >= enumResult.serviceTableBase)
+        {
+            const std::uint64_t byteOffset =
+                row.tableEntryAddress - enumResult.serviceTableBase;
+            if (byteOffset <= tableBaseline.cleanBytes.size()
+                && row.tableEntrySize
+                    <= tableBaseline.cleanBytes.size() - byteOffset)
+            {
+                const auto first =
+                    tableBaseline.cleanBytes.cbegin()
+                    + static_cast<std::ptrdiff_t>(byteOffset);
+                row.cleanTableBytes.assign(
+                    first,
+                    first + row.tableEntrySize);
+                row.cleanTableValue =
+                    shadowTableValueFromBytes(row.cleanTableBytes);
+                row.cleanBaselineAvailable = true;
+                row.cleanBaselineDiffers =
+                    row.cleanTableBytes != row.currentTableBytes;
+                row.cleanBaselineStatus = row.cleanBaselineDiffers
+                    ? kernelText(
+                        "kernel.hooks.shadow.baseline.status.differs",
+                        QStringLiteral(
+                            "当前编码槽值与已验证磁盘映像不同"))
+                    : kernelText(
+                        "kernel.hooks.shadow.baseline.status.clean",
+                        QStringLiteral(
+                            "当前编码槽值与已验证磁盘映像一致"));
+            }
+        }
         row.serviceNameText = QString::fromLocal8Bit(source.serviceName.data(), static_cast<int>(source.serviceName.size()));
         row.moduleNameText = QString::fromLocal8Bit(source.moduleName.data(), static_cast<int>(source.moduleName.size()));
         row.indexResolved = (row.flags & KSWORD_ARK_SSDT_ENTRY_FLAG_INDEX_RESOLVED) != 0U;
@@ -1486,6 +1584,17 @@ namespace
         statusParts.push_back(row.serviceRoutineAddress != 0U
             ? kernelText("kernel.hooks.shadow.status.entry_resolved", QStringLiteral("表项已解析"))
             : kernelText("kernel.hooks.shadow.status.entry_unavailable", QStringLiteral("表项地址暂不可用")));
+        statusParts.push_back(row.cleanBaselineAvailable
+            ? (row.cleanBaselineDiffers
+                ? kernelText(
+                    "kernel.hooks.shadow.baseline.differs",
+                    QStringLiteral("磁盘基线差异"))
+                : kernelText(
+                    "kernel.hooks.shadow.baseline.clean",
+                    QStringLiteral("磁盘基线一致")))
+            : kernelText(
+                "kernel.hooks.shadow.baseline.unavailable",
+                QStringLiteral("磁盘基线不可用")));
         row.statusText = statusParts.join(QStringLiteral(" | "));
         row.detailText = kernelText("kernel.hooks.shadow.detail", QStringLiteral(
             "SSSDT/Shadow SSDT 解析\n"
@@ -1498,7 +1607,14 @@ namespace
             "Stub地址: %7\n"
             "Shadow服务表基址: %8\n"
             "服务例程地址: %9\n"
-            "驱动标志: 0x%10\n\n"
+            "槽位地址: %10\n"
+            "当前编码槽值: 0x%11\n"
+            "磁盘基线槽值: 0x%12\n"
+            "当前槽字节: %13\n"
+            "基线槽字节: %14\n"
+            "基线状态: %15\n"
+            "基线映像: %16\n"
+            "驱动标志: 0x%17\n\n"
             "说明: 服务例程地址为 0 表示当前资料不足或该表项暂不可读。"))
             .arg(enumResult.version)
             .arg(enumResult.totalCount)
@@ -1509,6 +1625,17 @@ namespace
             .arg(kernelHookFormatAddress(row.zwRoutineAddress))
             .arg(kernelHookFormatAddress(row.serviceTableBase))
             .arg(kernelHookFormatAddress(row.serviceRoutineAddress))
+            .arg(kernelHookFormatAddress(row.tableEntryAddress))
+            .arg(static_cast<qulonglong>(row.currentTableValue), 0, 16)
+            .arg(static_cast<qulonglong>(row.cleanTableValue), 0, 16)
+            .arg(kernelHookBytesToText(
+                row.currentTableBytes,
+                row.tableEntrySize))
+            .arg(kernelHookBytesToText(
+                row.cleanTableBytes,
+                row.tableEntrySize))
+            .arg(row.cleanBaselineStatus)
+            .arg(row.cleanBaselinePath)
             .arg(static_cast<qulonglong>(row.flags), 8, 16, QChar('0'));
         return row;
     }
@@ -1949,10 +2076,37 @@ void KernelDock::refreshShadowSsdtAsync()
         {
             totalCount = enumResult.totalCount;
             returnedCount = enumResult.returnedCount;
+            std::uint32_t tableEntrySize = 0U;
+            for (const ksword::ark::SsdtEntry& entry : enumResult.entries)
+            {
+                if (entry.tableEntrySize != 0U)
+                {
+                    tableEntrySize = entry.tableEntrySize;
+                    break;
+                }
+            }
+            ks::kernel::CleanImageBaselineResult tableBaseline;
+            if (enumResult.serviceTableBase != 0U
+                && enumResult.serviceCountFromTable != 0U
+                && tableEntrySize != 0U
+                && tableEntrySize <= sizeof(std::uint64_t)
+                && static_cast<std::uint64_t>(
+                    enumResult.serviceCountFromTable)
+                    * tableEntrySize <= 64U * 1024U)
+            {
+                tableBaseline =
+                    ks::kernel::KernelCleanImageBaseline::compareAddress(
+                        enumResult.serviceTableBase,
+                        enumResult.serviceCountFromTable
+                            * tableEntrySize);
+            }
             resultRows.reserve(enumResult.entries.size());
             for (const ksword::ark::SsdtEntry& sourceEntry : enumResult.entries)
             {
-                resultRows.push_back(convertShadowSsdtEntry(sourceEntry, enumResult));
+                resultRows.push_back(convertShadowSsdtEntry(
+                    sourceEntry,
+                    enumResult,
+                    tableBaseline));
             }
             std::sort(resultRows.begin(), resultRows.end(), [](const KernelSsdtEntry& left, const KernelSsdtEntry& right) {
                 if (left.indexResolved != right.indexResolved)
@@ -2667,6 +2821,151 @@ void KernelDock::showShadowSsdtDetailByCurrentRow()
     m_shadowSsdtDetailEditor->setText(entry != nullptr ? entry->detailText : kernelText("kernel.hooks.shadow.detail.initial", QStringLiteral("请选择一条 SSSDT 记录查看详情。")));
 }
 
+void KernelDock::restoreSelectedShadowSsdtBaseline()
+{
+    const KernelSsdtEntry* selected = currentShadowSsdtEntry();
+    if (selected == nullptr
+        || !selected->cleanBaselineAvailable
+        || !selected->cleanBaselineDiffers
+        || selected->tableEntryAddress == 0U
+        || selected->tableEntrySize == 0U
+        || selected->currentTableBytes.size() != selected->tableEntrySize
+        || selected->cleanTableBytes.size() != selected->tableEntrySize)
+    {
+        QMessageBox::information(
+            this,
+            kernelText(
+                "kernel.hooks.shadow.restore.title",
+                QStringLiteral("ShadowSSDT 槽位恢复")),
+            kernelText(
+                "kernel.hooks.shadow.restore.unavailable",
+                QStringLiteral(
+                    "当前行没有通过映像身份校验的差异基线，不能恢复。")));
+        return;
+    }
+
+    const KernelSsdtEntry snapshot = *selected;
+    const ksword::ark::DriverClient client;
+    const ksword::ark::KernelInlinePatchResult preflight =
+        client.patchInlineHook(
+            snapshot.tableEntryAddress,
+            KSWORD_ARK_INLINE_PATCH_MODE_RESTORE_BYTES,
+            snapshot.tableEntrySize,
+            snapshot.currentTableBytes,
+            snapshot.cleanTableBytes,
+            0UL);
+    if (!preflight.io.ok
+        || preflight.status
+            != KSWORD_ARK_KERNEL_HOOK_STATUS_FORCE_REQUIRED)
+    {
+        QMessageBox::critical(
+            this,
+            kernelText(
+                "kernel.hooks.shadow.restore.title",
+                QStringLiteral("ShadowSSDT 槽位恢复")),
+            kernelText(
+                "kernel.hooks.shadow.restore.preflight_failed",
+                QStringLiteral(
+                    "R0 恢复预检失败，未写入任何内容。\nWin32=%1\n状态=%2\nNT=0x%3"))
+                .arg(preflight.io.win32Error)
+                .arg(preflight.status)
+                .arg(static_cast<unsigned long>(preflight.lastStatus),
+                    8,
+                    16,
+                    QChar('0')));
+        return;
+    }
+
+    const QMessageBox::StandardButton warning =
+        QMessageBox::warning(
+            this,
+            kernelText(
+                "kernel.hooks.shadow.restore.warning.title",
+                QStringLiteral("高风险图形系统调用表恢复")),
+            kernelText(
+                "kernel.hooks.shadow.restore.warning.body",
+                QStringLiteral(
+                    "即将把 ShadowSSDT[%1] 从当前编码值 0x%2 恢复为磁盘基线 0x%3。\n\n"
+                    "R0 写入前会再次逐字节比较当前值；任何并发变化都会拒绝操作。"
+                    "错误恢复可能立即导致图形会话或系统崩溃。\n\n映像：%4"))
+                .arg(snapshot.serviceIndex)
+                .arg(static_cast<qulonglong>(snapshot.currentTableValue),
+                    0,
+                    16)
+                .arg(static_cast<qulonglong>(snapshot.cleanTableValue),
+                    0,
+                    16)
+                .arg(snapshot.cleanBaselinePath),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel);
+    if (warning != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    bool accepted = false;
+    const QString confirmation = QInputDialog::getText(
+        this,
+        kernelText(
+            "kernel.hooks.shadow.restore.confirm.title",
+            QStringLiteral("最终确认")),
+        kernelText(
+            "kernel.hooks.shadow.restore.confirm.prompt",
+            QStringLiteral("请输入 RESTORE SHADOW SSDT 继续：")),
+        QLineEdit::Normal,
+        QString(),
+        &accepted);
+    if (!accepted
+        || confirmation.trimmed()
+            != QStringLiteral("RESTORE SHADOW SSDT"))
+    {
+        return;
+    }
+
+    const ksword::ark::KernelInlinePatchResult applied =
+        client.patchInlineHook(
+            snapshot.tableEntryAddress,
+            KSWORD_ARK_INLINE_PATCH_MODE_RESTORE_BYTES,
+            snapshot.tableEntrySize,
+            snapshot.currentTableBytes,
+            snapshot.cleanTableBytes,
+            KSWORD_ARK_KERNEL_PATCH_FLAG_FORCE);
+    if (!applied.io.ok
+        || applied.status != KSWORD_ARK_KERNEL_HOOK_STATUS_PATCHED
+        || applied.bytesPatched != snapshot.tableEntrySize)
+    {
+        QMessageBox::critical(
+            this,
+            kernelText(
+                "kernel.hooks.shadow.restore.title",
+                QStringLiteral("ShadowSSDT 槽位恢复")),
+            kernelText(
+                "kernel.hooks.shadow.restore.failed",
+                QStringLiteral(
+                    "恢复失败或当前槽值已变化。\nWin32=%1\n状态=%2\nNT=0x%3\n写入=%4"))
+                .arg(applied.io.win32Error)
+                .arg(applied.status)
+                .arg(static_cast<unsigned long>(applied.lastStatus),
+                    8,
+                    16,
+                    QChar('0'))
+                .arg(applied.bytesPatched));
+        refreshShadowSsdtAsync();
+        return;
+    }
+
+    QMessageBox::information(
+        this,
+        kernelText(
+            "kernel.hooks.shadow.restore.title",
+            QStringLiteral("ShadowSSDT 槽位恢复")),
+        kernelText(
+            "kernel.hooks.shadow.restore.success",
+            QStringLiteral(
+                "槽位已按验证基线恢复，并已触发重新扫描。")));
+    refreshShadowSsdtAsync();
+}
+
 void KernelDock::showInlineHookDetailByCurrentRow()
 {
     if (m_inlineHookDetailEditor == nullptr)
@@ -2780,6 +3079,17 @@ void KernelDock::showShadowSsdtContextMenu(const QPoint& localPosition)
     QMenu menu(this);
     menu.setStyleSheet(KswordTheme::ContextMenuStyle());
     QAction* refreshAction = menu.addAction(QIcon(":/Icon/process_refresh.svg"), kernelText("kernel.hooks.shadow.menu.refresh", QStringLiteral("刷新 SSSDT")));
+    QAction* restoreAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_terminate.svg")),
+        kernelText(
+            "kernel.hooks.shadow.menu.restore",
+            QStringLiteral("恢复选中槽位为磁盘基线")));
+    const KernelSsdtEntry* currentEntry = currentShadowSsdtEntry();
+    restoreAction->setEnabled(
+        currentEntry != nullptr
+        && currentEntry->cleanBaselineAvailable
+        && currentEntry->cleanBaselineDiffers
+        && selectedIndices.size() == 1U);
     menu.addSeparator();
     QMenu* copyMenu = menu.addMenu(QIcon(":/Icon/process_copy_row.svg"), kernelText("kernel.context.menu.copy", QStringLiteral("复制")));
     QAction* copyCurrentColumnAction = copyMenu->addAction(QIcon(":/Icon/process_copy_cell.svg"), kernelText("kernel.hooks.menu.copy_current_column", QStringLiteral("复制当前列（选中行）")));
@@ -2807,6 +3117,11 @@ void KernelDock::showShadowSsdtContextMenu(const QPoint& localPosition)
     if (selectedAction == refreshAction)
     {
         refreshShadowSsdtAsync();
+        return;
+    }
+    if (selectedAction == restoreAction)
+    {
+        restoreSelectedShadowSsdtBaseline();
         return;
     }
     if (!hasSelection)

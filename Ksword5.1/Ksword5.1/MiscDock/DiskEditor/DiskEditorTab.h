@@ -175,6 +175,16 @@ namespace ks::misc
         // - 无输入参数，无返回值。
         void rebuildHealthTable();
 
+        // rebuildRawBackendSelector：
+        // - 根据当前磁盘 R0 预检结果重建三层访问下拉框；
+        // - 不可用层不会加入列表，避免界面宣称与实际后端不一致。
+        void rebuildRawBackendSelector();
+
+        // currentRawBackend：
+        // - 返回当前显式选中的 R0 磁盘后端；
+        // - 未选择时回到 Windows 存储栈后端。
+        unsigned long currentRawBackend() const;
+
         // runSearchAsync：
         // - 按工具区输入执行磁盘范围搜索；
         // - 无输入参数，无返回值。
@@ -267,6 +277,7 @@ namespace ks::misc
         QWidget* m_toolbarWidget = nullptr;         // m_toolbarWidget：顶部工具栏容器。
         QHBoxLayout* m_toolbarLayout = nullptr;     // m_toolbarLayout：顶部工具栏布局。
         QComboBox* m_diskCombo = nullptr;           // m_diskCombo：物理磁盘选择框。
+        QComboBox* m_backendCombo = nullptr;        // m_backendCombo：三层 R0 磁盘访问后端选择框。
         QPushButton* m_refreshButton = nullptr;     // m_refreshButton：刷新磁盘列表按钮。
         QPushButton* m_readButton = nullptr;        // m_readButton：读取当前范围按钮。
         QPushButton* m_writeButton = nullptr;       // m_writeButton：写回当前缓冲按钮。

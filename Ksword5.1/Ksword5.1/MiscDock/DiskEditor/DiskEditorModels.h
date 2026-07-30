@@ -82,6 +82,9 @@ namespace ks::misc
         std::uint32_t physicalBytesPerSector = 0;    // physicalBytesPerSector：物理扇区大小，未知为 0。
         bool canRead = false;                        // canRead：枚举阶段是否成功以读权限打开。
         bool removable = false;                      // removable：设备是否报告为可移动介质。
+        std::uint32_t rawBackendMask = 0;             // rawBackendMask：R0 三层磁盘访问后端可用位。
+        std::uint32_t rawCapabilityFlags = 0;         // rawCapabilityFlags：系统盘、离线、总线和读写能力位。
+        QString rawBackendDetail;                     // rawBackendDetail：R0 后端预检摘要或兼容回退原因。
         std::vector<DiskPartitionInfo> partitions;   // partitions：有效分区列表，不包含空槽。
     };
 }

@@ -304,6 +304,10 @@ Return Value:
     Offsets->RtlAvlRestartKey = KSW_DYN_OFFSET_UNAVAILABLE;
     Offsets->RtlAvlDeleteCount = KSW_DYN_OFFSET_UNAVAILABLE;
     Offsets->RtlAvlTypeSize = KSW_DYN_OFFSET_UNAVAILABLE;
+    Offsets->PiDdbDriverName = KSW_DYN_OFFSET_UNAVAILABLE;
+    Offsets->PiDdbTimeDateStamp = KSW_DYN_OFFSET_UNAVAILABLE;
+    Offsets->PiDdbLoadStatus = KSW_DYN_OFFSET_UNAVAILABLE;
+    Offsets->PiDdbTypeSize = KSW_DYN_OFFSET_UNAVAILABLE;
 }
 
 static VOID
@@ -367,6 +371,7 @@ Return Value:
     Globals->PsLoadedModuleList = KSW_DYN_OFFSET_UNAVAILABLE;
     Globals->MmUnloadedDrivers = KSW_DYN_OFFSET_UNAVAILABLE;
     Globals->PiDDBCacheTable = KSW_DYN_OFFSET_UNAVAILABLE;
+    Globals->PiDDBLock = KSW_DYN_OFFSET_UNAVAILABLE;
     Globals->KeServiceDescriptorTableShadow = KSW_DYN_OFFSET_UNAVAILABLE;
     Globals->MmLastUnloadedDriver = KSW_DYN_OFFSET_UNAVAILABLE;
 }
@@ -2163,6 +2168,22 @@ Return Value:
         *OffsetOut = &State->Kernel.RtlAvlTypeSize;
         *SourceOut = &State->KernelSources.RtlAvlTypeSize;
         break;
+    case KSW_DYN_FIELD_ID_PIDDB_DRIVER_NAME:
+        *OffsetOut = &State->Kernel.PiDdbDriverName;
+        *SourceOut = &State->KernelSources.PiDdbDriverName;
+        break;
+    case KSW_DYN_FIELD_ID_PIDDB_TIME_DATE_STAMP:
+        *OffsetOut = &State->Kernel.PiDdbTimeDateStamp;
+        *SourceOut = &State->KernelSources.PiDdbTimeDateStamp;
+        break;
+    case KSW_DYN_FIELD_ID_PIDDB_LOAD_STATUS:
+        *OffsetOut = &State->Kernel.PiDdbLoadStatus;
+        *SourceOut = &State->KernelSources.PiDdbLoadStatus;
+        break;
+    case KSW_DYN_FIELD_ID_PIDDB_TYPE_SIZE:
+        *OffsetOut = &State->Kernel.PiDdbTypeSize;
+        *SourceOut = &State->KernelSources.PiDdbTypeSize;
+        break;
     default:
         return FALSE;
     }
@@ -2222,6 +2243,10 @@ Return Value:
     case KSW_DYN_FIELD_ID_KG_PIDDB_CACHE_TABLE:
         *RvaOut = &State->KernelGlobals.PiDDBCacheTable;
         *SourceOut = &State->KernelGlobalSources.PiDDBCacheTable;
+        break;
+    case KSW_DYN_FIELD_ID_KG_PIDDB_LOCK:
+        *RvaOut = &State->KernelGlobals.PiDDBLock;
+        *SourceOut = &State->KernelGlobalSources.PiDDBLock;
         break;
     case KSW_DYN_FIELD_ID_KG_KE_SERVICE_DESCRIPTOR_TABLE_SHADOW:
         *RvaOut = &State->KernelGlobals.KeServiceDescriptorTableShadow;

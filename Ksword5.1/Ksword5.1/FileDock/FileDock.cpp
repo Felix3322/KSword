@@ -18,6 +18,7 @@
 #include "../UI/TableColumnAutoFit.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../KernelDock/KernelCleanImageBaseline.h"
 #include "../PluginHost.h"
 #include "../ksword/file/file_handle_tools.h"
 #include "../ksword/file/file.h"
@@ -4006,10 +4007,36 @@ namespace
             content += QStringLiteral("fieldFlags: 0x%1\n")
                 .arg(result.fieldFlags, 8, 16, QChar('0'))
                 .toUpper();
-            const std::size_t rowLimit = std::min<std::size_t>(result.rows.size(), 16U);
+            const auto byteText = [](const std::vector<std::uint8_t>& bytes) {
+                QString text;
+                for (const std::uint8_t byte : bytes)
+                {
+                    if (!text.isEmpty())
+                    {
+                        text += QLatin1Char(' ');
+                    }
+                    text += QStringLiteral("%1").arg(byte, 2, 16, QLatin1Char('0')).toUpper();
+                }
+                return text;
+            };
+            const std::size_t rowLimit = result.rows.size();
+            std::map<std::uint64_t, ks::kernel::CleanImageBaselineResult> baselineCache;
             for (std::size_t index = 0U; index < rowLimit; ++index)
             {
                 const KSWORD_ARK_FILESYSTEM_INTEGRITY_ROW& row = result.rows[index];
+                if (row.targetAddress != 0U &&
+                    baselineCache.find(row.targetAddress) == baselineCache.end())
+                {
+                    baselineCache.emplace(
+                        row.targetAddress,
+                        ks::kernel::KernelCleanImageBaseline::compareAddress(
+                            row.targetAddress,
+                            16U));
+                }
+                const ks::kernel::CleanImageBaselineResult baseline =
+                    row.targetAddress == 0U
+                    ? ks::kernel::CleanImageBaselineResult{}
+                    : baselineCache.at(row.targetAddress);
                 content += QStringLiteral("  #%1 FsKind=%2 SlotType=%3 SlotIndex=%4 Driver=%5 Owner=%6 Confidence=%7 Risk=0x%8\n")
                     .arg(static_cast<qulonglong>(index))
                     .arg(row.fileSystemKind)
@@ -4031,11 +4058,19 @@ namespace
                     .arg(formatNtStatus(row.lastStatus))
                     .arg(fixedWideAuditText(row.detail))
                     .toUpper();
-            }
-            if (result.rows.size() > rowLimit)
-            {
-                content += QStringLiteral("  ... 已省略 %1 行，完整数量见 returnedCount。\n")
-                    .arg(static_cast<qulonglong>(result.rows.size() - rowLimit));
+                content += QStringLiteral("     CleanImageBaseline=%1 IdentityMatched=%2 Differs=%3 Image=%4 RVA=0x%5\n")
+                    .arg(baseline.available ? QStringLiteral("AVAILABLE") : QStringLiteral("UNAVAILABLE"))
+                    .arg(baseline.identityMatched ? QStringLiteral("YES") : QStringLiteral("NO"))
+                    .arg(baseline.available
+                        ? (baseline.differs ? QStringLiteral("YES") : QStringLiteral("NO"))
+                        : QStringLiteral("UNKNOWN"))
+                    .arg(baseline.imagePath.isEmpty() ? QStringLiteral("<unavailable>") : baseline.imagePath)
+                    .arg(baseline.relativeVirtualAddress, 8, 16, QChar('0'))
+                    .toUpper();
+                content += QStringLiteral("     ObservedBytes=%1\n     CleanBytes=%2\n     BaselineDetail=%3\n")
+                    .arg(byteText(baseline.observedBytes))
+                    .arg(byteText(baseline.cleanBytes))
+                    .arg(baseline.statusText);
             }
             return content;
         }

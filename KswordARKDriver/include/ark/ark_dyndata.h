@@ -213,6 +213,10 @@ typedef struct _KSW_DYN_KERNEL_OFFSETS
     ULONG RtlAvlRestartKey;
     ULONG RtlAvlDeleteCount;
     ULONG RtlAvlTypeSize;
+    ULONG PiDdbDriverName;
+    ULONG PiDdbTimeDateStamp;
+    ULONG PiDdbLoadStatus;
+    ULONG PiDdbTypeSize;
 } KSW_DYN_KERNEL_OFFSETS, *PKSW_DYN_KERNEL_OFFSETS;
 
 typedef struct _KSW_DYN_LXCORE_OFFSETS
@@ -241,6 +245,7 @@ typedef struct _KSW_DYN_KERNEL_GLOBALS
     ULONG PsLoadedModuleList;
     ULONG MmUnloadedDrivers;
     ULONG PiDDBCacheTable;
+    ULONG PiDDBLock;
     ULONG KeServiceDescriptorTableShadow;
     ULONG MmLastUnloadedDriver;
 } KSW_DYN_KERNEL_GLOBALS, *PKSW_DYN_KERNEL_GLOBALS;

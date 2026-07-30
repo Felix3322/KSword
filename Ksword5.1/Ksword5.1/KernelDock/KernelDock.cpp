@@ -15,6 +15,7 @@
 #include "KernelCommunicationEndpointTab.h"
 #include "KernelDockCidTab.h"
 #include "KernelDescriptorTableTab.h"
+#include "KernelHvmTab.h"
 #include "KernelDockIpcTab.h"
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelIoctlAuditTab.h"
@@ -511,6 +512,16 @@ void KernelDock::initializeUi()
         tabIcon(QStringLiteral(":/Icon/process_details.svg")),
         QStringLiteral("IDT/GDT"));
     m_tabWidget->setTabToolTip(m_descriptorTableTabIndex, kernelText("kernel.main.tab.descriptor.tooltip", QStringLiteral("按 CPU 读取并解码 IDT/GDT 描述符及完整性风险")));
+
+    m_hvmTabIndex = m_tabWidget->addTab(
+        new KernelHvmTab(m_tabWidget),
+        tabIcon(QStringLiteral(":/Icon/process_priority.svg")),
+        QStringLiteral("VT-x/EPT"));
+    m_tabWidget->setTabToolTip(
+        m_hvmTabIndex,
+        kernelText(
+            "kernel.main.tab.hvm.tooltip",
+            QStringLiteral("VT-x/嵌套能力、每 CPU VMX 区域、EPT RAM 映射与受控 VMXON/VMXOFF 自检")));
 
     m_timerDpcTabIndex = m_tabWidget->addTab(
         m_timerDpcPage,

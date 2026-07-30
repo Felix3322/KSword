@@ -71,6 +71,15 @@
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorBackend.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MiscDock\DiskEditor\DiskRangeTools.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -182,10 +191,16 @@
     <ClCompile Include="KernelDock\KernelDescriptorTableTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="KernelDock\KernelHvmTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="KernelDock\KernelDock.KernelHooks.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KernelDock\KernelCleanImageBaseline.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="KernelDock\KernelDock.Runtime.cpp">
@@ -695,6 +710,9 @@
     <ClCompile Include="ArkDriverClient\ArkDriverAudit.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverStorageForensics.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverError.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
@@ -732,6 +750,15 @@
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverKernel.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverKernelBaseline.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverPiDdb.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverHvm.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverIoctlRegistry.cpp">
@@ -868,6 +895,18 @@
     <QtMoc Include="RegistryDock\RegistryDock.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelCleanImageBaseline.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="RegistryDock\RegistryOptimizationPage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1012,6 +1051,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelDescriptorTableTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelHvmTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelBaseNamedObjectsTab.h">

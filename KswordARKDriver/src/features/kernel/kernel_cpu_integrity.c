@@ -8,6 +8,7 @@ Environment:
     Kernel-mode Driver Framework
 --*/
 #include "kernel_cpu_integrity.h"
+#include "kernel_idt_baseline.h"
 #include <intrin.h>
 #include <ntstrsafe.h>
 #include <stdarg.h>
@@ -659,6 +660,13 @@ Return Value:
         ULONGLONG handler = 0ULL;
         ULONGLONG rawLow = 0ULL;
         ULONGLONG rawHigh = 0ULL;
+        ULONGLONG baselineTableBase = 0ULL;
+        ULONGLONG baselineHandler = 0ULL;
+        ULONGLONG baselineRawLow = 0ULL;
+        ULONGLONG baselineRawHigh = 0ULL;
+        ULONG baselineTableLimit = 0UL;
+        ULONG baselineGeneration = 0UL;
+        BOOLEAN baselineAvailable = FALSE;
         ULONG riskFlags = KSWORD_ARK_DRIVER_INTEGRITY_RISK_NONE;
         ULONG descriptorFlags = 0UL;
         ULONG descriptorType = 0UL;
@@ -696,13 +704,61 @@ Return Value:
         else if (!KswordARKDriverIntegrityIsCoreKernelModule(owner)) {
             riskFlags |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_NON_CORE_OWNER;
         }
-        KswordARKCpuIntegrityFormatDetail(detail, RTL_NUMBER_OF(detail), L"IDT[%lu] gate=0x%llX handler=0x%llX selector=0x%04X attr=0x%04X.", vector, entryAddress, handler, entry.Selector, entry.IstAndType);
+        baselineAvailable = KswordARKIdtBaselineQuery(
+            (USHORT)Sample->Group,
+            (UCHAR)Sample->Number,
+            (UCHAR)vector,
+            &baselineTableBase,
+            &baselineTableLimit,
+            NULL,
+            &baselineRawLow,
+            &baselineRawHigh,
+            &baselineHandler,
+            &baselineGeneration);
+        if (baselineAvailable &&
+            (baselineRawLow != rawLow ||
+             baselineRawHigh != rawHigh)) {
+            riskFlags |=
+                KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_BASELINE_CHANGED;
+        }
+        KswordARKCpuIntegrityFormatDetail(
+            detail,
+            RTL_NUMBER_OF(detail),
+            L"IDT[%lu] gate=0x%llX handler=0x%llX selector=0x%04X attr=0x%04X; baseline=%ls handler=0x%llX generation=%lu.",
+            vector,
+            entryAddress,
+            handler,
+            entry.Selector,
+            entry.IstAndType,
+            baselineAvailable ? L"available" : L"unavailable",
+            baselineHandler,
+            baselineGeneration);
         row = KswordARKDriverIntegrityAddEvidence(Builder, KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER, entryAddress, handler, riskFlags,
             KSWORD_ARK_DRIVER_INTEGRITY_SOURCE_IDT | KSWORD_ARK_DRIVER_INTEGRITY_SOURCE_SYSTEM_MODULE, 85UL, Sample->Group, Sample->Number, vector, owner, detail);
         KswordARKCpuIntegrityPopulateDescriptorFields(
             row, entry.Selector, descriptorType, descriptorDpl, descriptorFlags,
             KSW_CPU_INTEGRITY_IDT_ENTRY_BYTES, (ULONGLONG)Sample->Idtr.Base,
             Sample->Idtr.Limit, handler, 0ULL, rawLow, rawHigh);
+        if (row != NULL && baselineAvailable) {
+            row->fieldMask |=
+                KSWORD_ARK_DRIVER_INTEGRITY_FIELD_DESCRIPTOR_BASELINE;
+            row->baselineDescriptorFlags =
+                KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_AVAILABLE;
+            if (baselineTableBase == (ULONGLONG)Sample->Idtr.Base &&
+                baselineTableLimit == Sample->Idtr.Limit) {
+                row->baselineDescriptorFlags |=
+                    KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_SAME_TABLE;
+            }
+            if (baselineRawLow != rawLow ||
+                baselineRawHigh != rawHigh) {
+                row->baselineDescriptorFlags |=
+                    KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_DIFFERS;
+            }
+            row->baselineGeneration = baselineGeneration;
+            row->baselineDescriptorBase = baselineHandler;
+            row->baselineDescriptorRawLow = baselineRawLow;
+            row->baselineDescriptorRawHigh = baselineRawHigh;
+        }
     }
 }
 

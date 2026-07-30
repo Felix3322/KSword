@@ -1114,6 +1114,11 @@ namespace
             { "PsLoadedModuleList", KSW_DYN_FIELD_ID_KG_PS_LOADED_MODULE_LIST },
             { "MmUnloadedDrivers", KSW_DYN_FIELD_ID_KG_MM_UNLOADED_DRIVERS },
             { "PiDDBCacheTable", KSW_DYN_FIELD_ID_KG_PIDDB_CACHE_TABLE },
+            { "PiDDBLock", KSW_DYN_FIELD_ID_KG_PIDDB_LOCK },
+            { "PiDdbDriverName", KSW_DYN_FIELD_ID_PIDDB_DRIVER_NAME },
+            { "PiDdbTimeDateStamp", KSW_DYN_FIELD_ID_PIDDB_TIME_DATE_STAMP },
+            { "PiDdbLoadStatus", KSW_DYN_FIELD_ID_PIDDB_LOAD_STATUS },
+            { "PiDdbTypeSize", KSW_DYN_FIELD_ID_PIDDB_TYPE_SIZE },
             // Kernel Global RVA 映射：
             // - 输入：PDB profile pack 中的 Shadow SSDT 全局符号名；
             // - 处理：映射到 shared DynData 字段 ID，避免 EX apply 将该项计入 ignored；

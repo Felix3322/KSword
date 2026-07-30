@@ -27,6 +27,10 @@
 #include "../../../shared/driver/KswordArkRegistryIoctl.h"
 #include "../../../shared/driver/KswordArkNetworkIoctl.h"
 #include "../../../shared/driver/KswordArkStorageIoctl.h"
+#include "../../../shared/driver/KswordArkStorageForensicsIoctl.h"
+#include "../../../shared/driver/KswordArkKernelBaselineIoctl.h"
+#include "../../../shared/driver/KswordArkPiDdbIoctl.h"
+#include "../../../shared/driver/KswordArkHvmIoctl.h"
 #include "../../../shared/driver/KswordArkSecurityAuditIoctl.h"
 #include "../../../shared/driver/KswordArkTrustIoctl.h"
 #include "../../../shared/driver/KswordArkWin32kIoctl.h"
@@ -1057,6 +1061,77 @@ namespace ksword::ark
         std::uint64_t descriptorLimit = 0;          // descriptorLimit：GDT 有效 limit。
         std::uint64_t descriptorRawLow = 0;         // descriptorRawLow：前 8 字节原始值。
         std::uint64_t descriptorRawHigh = 0;        // descriptorRawHigh：16 字节描述符后 8 字节。
+        std::uint32_t descriptorBaselineFlags = 0;  // descriptorBaselineFlags：启动期基线的存在/一致性状态。
+        std::uint32_t descriptorBaselineGeneration = 0; // descriptorBaselineGeneration：本次驱动加载生成的基线代次。
+        std::uint64_t descriptorBaselineHandler = 0; // descriptorBaselineHandler：启动期 IDT handler。
+        std::uint64_t descriptorBaselineRawLow = 0;  // descriptorBaselineRawLow：启动期表项低 8 字节。
+        std::uint64_t descriptorBaselineRawHigh = 0; // descriptorBaselineRawHigh：启动期表项高 8 字节。
+    };
+
+    // IdtBaselineRestoreResult carries an IDT restore preflight or mutation response.
+    // The caller must first issue a non-force request and may only force after an
+    // explicit UI confirmation while preserving the exact-current descriptor pair.
+    struct IdtBaselineRestoreResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t status = KSWORD_ARK_IDT_RESTORE_STATUS_INVALID_REQUEST;
+        std::uint32_t baselineGeneration = 0;
+        long lastStatus = 0;
+        std::uint64_t entryAddress = 0;
+        std::uint64_t beforeRawLow = 0;
+        std::uint64_t beforeRawHigh = 0;
+        std::uint64_t baselineRawLow = 0;
+        std::uint64_t baselineRawHigh = 0;
+        std::uint64_t afterRawLow = 0;
+        std::uint64_t afterRawHigh = 0;
+    };
+
+    struct PiDdbEntry
+    {
+        std::uint64_t entryAddress = 0;
+        std::uint32_t timeDateStamp = 0;
+        long loadStatus = 0;
+        std::wstring driverName;
+    };
+
+    struct PiDdbQueryResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t queryStatus = KSWORD_ARK_PIDDB_QUERY_STATUS_INVALID_LAYOUT;
+        std::uint32_t responseFlags = 0;
+        std::uint32_t totalRows = 0;
+        long lastStatus = 0;
+        std::vector<PiDdbEntry> entries;
+    };
+
+    struct PiDdbDeleteResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t status = KSWORD_ARK_PIDDB_DELETE_STATUS_INVALID_REQUEST;
+        std::uint32_t remainingRows = 0;
+        long lastStatus = 0;
+        PiDdbEntry matchedEntry;
+    };
+
+    // HvmStatusResult preserves the complete VT-x/EPT capability and lifecycle
+    // snapshot. A prepared or self-tested response is not an active hypervisor.
+    struct HvmStatusResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_QUERY_HVM_RESPONSE response{};
+    };
+
+    // HvmControlResult carries one generation-bound prepare, self-test, or
+    // teardown result. The UI owns all persistent warnings and typed consent.
+    struct HvmControlResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_CONTROL_HVM_RESPONSE response{};
     };
 
     // DriverIntegrityResult carries DriverObject/LDR/CPU integrity evidence.
@@ -1231,6 +1306,9 @@ namespace ksword::ark
         std::uint32_t flags = 0;
         std::uint64_t zwRoutineAddress = 0;
         std::uint64_t serviceRoutineAddress = 0;
+        std::uint64_t tableEntryAddress = 0;
+        std::uint64_t currentTableValue = 0;
+        std::uint32_t tableEntrySize = 0;
         std::string serviceName;
         std::string moduleName;
     };
@@ -1947,6 +2025,42 @@ namespace ksword::ark
         std::uint32_t fieldFlags = 0;
         std::uint32_t maxRows = 0;
         std::vector<KSWORD_ARK_FILESYSTEM_INTEGRITY_ROW> rows;
+    };
+
+    // RawDiskBackendResult 承载一个物理磁盘的三层访问能力与安全边界。
+    // 输入：queryRawDiskBackend 返回。
+    // 处理：response 保存 R0 探测到的扇区、容量、总线、离线和系统盘信息。
+    // 返回行为：unsupported 表示当前驱动未实现协议；不隐式降级到其它后端。
+    struct RawDiskBackendResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_QUERY_RAW_DISK_BACKEND_RESPONSE response{};
+    };
+
+    // RawDiskReadResult 承载一个有界、扇区对齐的物理磁盘读取结果。
+    // 输入：readRawDisk 返回。
+    // 处理：bytes 只保存 R0 明确报告已完成的字节。
+    // 返回行为：失败时仍保留 protocol status、backendUsed 与 lastStatus。
+    struct RawDiskReadResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t status = KSWORD_ARK_RAW_DISK_STATUS_INVALID_REQUEST;
+        std::uint32_t backendUsed = 0;
+        std::uint32_t logicalSectorSize = 0;
+        std::vector<std::uint8_t> bytes;
+    };
+
+    // RawDiskWriteResult 承载显式确认后的物理磁盘写入结果。
+    // 输入：writeRawDisk 返回。
+    // 处理：response 保留中央安全策略和实际后端的最终状态。
+    // 返回行为：bytesTransferred 只表示底层明确报告完成的字节。
+    struct RawDiskWriteResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_RAW_DISK_WRITE_RESPONSE response{};
     };
 
     // SecurityStatusAuditResult 承载 CI/SecureBoot/VBS/SKCI/调试态固定响应。

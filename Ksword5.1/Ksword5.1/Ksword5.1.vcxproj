@@ -194,10 +194,12 @@
     <ClCompile Include="KernelDock\KernelDock.DriverStatus.cpp" />
     <ClCompile Include="KernelDock\KernelDock.DynData.cpp" />
     <ClCompile Include="KernelDock\KernelDock.KernelHooks.cpp" />
+    <ClCompile Include="KernelDock\KernelCleanImageBaseline.cpp" />
     <ClCompile Include="KernelDock\KernelDock.Runtime.cpp" />
     <ClCompile Include="KernelDock\KernelDock.Ssdt.cpp" />
     <ClCompile Include="KernelDock\KernelDockCidTab.cpp" />
     <ClCompile Include="KernelDock\KernelDescriptorTableTab.cpp" />
+    <ClCompile Include="KernelDock\KernelHvmTab.cpp" />
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp" />
     <ClCompile Include="KernelDock\KernelBaseNamedObjectsTab.cpp" />
     <ClCompile Include="KernelDock\KernelBaseNamedObjectsWorker.cpp" />
@@ -220,6 +222,9 @@
     <ClCompile Include="MiscDock\BootEditor\BootEditorTab.Actions.cpp" />
     <ClCompile Include="MiscDock\ApplicationControlPage.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorBackend.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensics.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskRangeTools.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskStructureParser.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorTab.cpp" />
@@ -374,6 +379,7 @@
     <QtUic Include="WelcomeDock\Welcome.ui" />
     <ClCompile Include="ArkDriverClient\ArkDriverClient.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverAudit.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverStorageForensics.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverError.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverCapability.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverDynData.cpp" />
@@ -387,6 +393,9 @@
     <ClCompile Include="ArkDriverClient\ArkDriverRegistry.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverBlind.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverKernel.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverKernelBaseline.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverPiDdb.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverHvm.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverIoctlRegistry.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverKeyboard.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverCallback.cpp" />
@@ -435,6 +444,7 @@
     <ClInclude Include="KernelDock\KernelNamedPipeWorker.h" />
     <ClInclude Include="KernelDock\KernelDockCidTab.h" />
     <ClInclude Include="KernelDock\KernelDescriptorTableTab.h" />
+    <ClInclude Include="KernelDock\KernelHvmTab.h" />
     <ClInclude Include="KernelDock\KernelDockIpcTab.h" />
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepTab.h" />
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepWorker.h" />
@@ -515,6 +525,10 @@
     <ClInclude Include="OtherDock\WindowCaptureProtection.h" />
     <QtMoc Include="PrivilegeDock\PrivilegeDock.h" />
     <QtMoc Include="RegistryDock\RegistryDock.h" />
+    <ClInclude Include="KernelDock\KernelCleanImageBaseline.h" />
+    <ClInclude Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.h" />
+    <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensics.h" />
+    <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.h" />
     <ClInclude Include="RegistryDock\RegistryOptimizationPage.h" />
     <QtMoc Include="ProcessDock\ProcessDetailWindow.h" />
     <ClInclude Include="ProcessDock\ProcessDetailWindow.InternalCommon.h" />

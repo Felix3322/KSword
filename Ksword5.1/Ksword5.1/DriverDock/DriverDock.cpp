@@ -338,6 +338,7 @@ void DriverDock::showEvent(QShowEvent* event)
         {
             refreshDriverServiceRecords();
             refreshLoadedKernelModuleRecords();
+            refreshPiDdbAsync();
         });
 }
 

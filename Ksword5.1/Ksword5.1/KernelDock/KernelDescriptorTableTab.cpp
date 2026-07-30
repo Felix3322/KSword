@@ -12,10 +12,12 @@
 #include <QComboBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMetaObject>
+#include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
 #include <QShowEvent>
@@ -51,6 +53,7 @@ namespace
         ColumnGranularity,
         ColumnOwner,
         ColumnRisk,
+        ColumnBaseline,
         ColumnRaw,
         ColumnCount
     };
@@ -96,6 +99,11 @@ void KernelDescriptorTableTab::initializeUi()
     auto* toolbar = new QHBoxLayout();
     m_refreshButton = new QPushButton(kernelText("kernel.descriptor.refresh", QStringLiteral("刷新 IDT/GDT")), this);
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+    m_restoreIdtButton = new QPushButton(
+        kernelText("kernel.descriptor.restore_idt", QStringLiteral("恢复选中 IDT 基线")),
+        this);
+    m_restoreIdtButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+    m_restoreIdtButton->setEnabled(false);
     m_tableFilterCombo = new QComboBox(this);
     m_tableFilterCombo->addItem(kernelText("kernel.descriptor.filter.all", QStringLiteral("全部")), 0);
     m_tableFilterCombo->addItem(QStringLiteral("IDT"), QVariant::fromValue(static_cast<quint32>(KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER)));
@@ -106,6 +114,7 @@ void KernelDescriptorTableTab::initializeUi()
     m_statusLabel = new QLabel(kernelText("kernel.descriptor.status.waiting", QStringLiteral("状态：等待刷新")), this);
     m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     toolbar->addWidget(m_refreshButton);
+    toolbar->addWidget(m_restoreIdtButton);
     toolbar->addWidget(m_tableFilterCombo);
     toolbar->addWidget(m_filterEdit, 1);
     toolbar->addWidget(m_statusLabel);
@@ -131,6 +140,7 @@ void KernelDescriptorTableTab::initializeUi()
         kernelText("kernel.descriptor.header.granularity", QStringLiteral("Granularity")),
         kernelText("kernel.descriptor.header.owner", QStringLiteral("归属模块")),
         kernelText("kernel.descriptor.header.risk", QStringLiteral("完整性")),
+        kernelText("kernel.descriptor.header.baseline", QStringLiteral("启动期基线")),
         kernelText("kernel.descriptor.header.raw", QStringLiteral("原始值"))});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -152,9 +162,30 @@ void KernelDescriptorTableTab::initializeUi()
     rootLayout->addWidget(splitter, 1);
 
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() { refreshAsync(); });
+    connect(m_restoreIdtButton, &QPushButton::clicked, this, [this]() { restoreSelectedIdtBaseline(); });
     connect(m_tableFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { rebuildTable(); });
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this](const QString&) { rebuildTable(); });
-    connect(m_table, &QTableWidget::currentCellChanged, this, [this](int, int, int, int) { showCurrentDetail(); });
+    connect(m_table, &QTableWidget::currentCellChanged, this, [this](int, int, int, int) {
+        showCurrentDetail();
+        bool canRestore = false;
+        if (m_table->currentRow() >= 0)
+        {
+            const QTableWidgetItem* item = m_table->item(m_table->currentRow(), ColumnTable);
+            if (item != nullptr)
+            {
+                const std::size_t sourceIndex = static_cast<std::size_t>(item->data(Qt::UserRole).toULongLong());
+                if (sourceIndex < m_rows.size())
+                {
+                    const auto& row = m_rows[sourceIndex];
+                    canRestore =
+                        row.evidenceClass == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER &&
+                        (row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_AVAILABLE) != 0U &&
+                        (row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_DIFFERS) != 0U;
+                }
+            }
+        }
+        m_restoreIdtButton->setEnabled(canRestore && !m_refreshRunning);
+    });
     connect(m_table, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& position) { showCopyMenu(position); });
 }
 
@@ -361,6 +392,10 @@ QString KernelDescriptorTableTab::riskText(const std::uint32_t riskFlags)
     {
         risks.push_back(kernelText("kernel.descriptor.risk.read_failed", QStringLiteral("读取失败")));
     }
+    if ((riskFlags & KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_BASELINE_CHANGED) != 0U)
+    {
+        risks.push_back(kernelText("kernel.descriptor.risk.baseline_changed", QStringLiteral("偏离启动期基线")));
+    }
     if (risks.isEmpty())
     {
         risks.push_back(hex32(riskFlags));
@@ -395,6 +430,14 @@ QString KernelDescriptorTableTab::columnText(const ksword::ark::DriverIntegrityE
             : ((row.descriptorFlags & KSWORD_ARK_DESCRIPTOR_FLAG_GRANULARITY_PAGE) != 0U ? QStringLiteral("PAGE") : QStringLiteral("BYTE"));
     case ColumnOwner: return QString::fromStdWString(row.ownerModule);
     case ColumnRisk: return riskText(row.riskFlags);
+    case ColumnBaseline:
+        if ((row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_AVAILABLE) == 0U)
+        {
+            return kernelText("kernel.descriptor.baseline.unavailable", QStringLiteral("不可用"));
+        }
+        return (row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_DIFFERS) != 0U
+            ? hex64(row.descriptorBaselineRawLow) + QStringLiteral(" / ") + hex64(row.descriptorBaselineRawHigh)
+            : kernelText("kernel.descriptor.baseline.matches", QStringLiteral("一致"));
     case ColumnRaw:
         return row.descriptorSize > 8U
             ? hex64(row.descriptorRawLow) + QStringLiteral(" / ") + hex64(row.descriptorRawHigh)
@@ -416,6 +459,16 @@ QString KernelDescriptorTableTab::detailText(const ksword::ark::DriverIntegrityE
         .arg(hex64(row.descriptorBase), hex64(row.descriptorLimit));
     lines << kernelText("kernel.descriptor.detail.flags", QStringLiteral("Flags: %1  风险: %2")).arg(hex32(row.descriptorFlags), riskText(row.riskFlags));
     lines << kernelText("kernel.descriptor.detail.raw", QStringLiteral("Raw: %1 / %2")).arg(hex64(row.descriptorRawLow), hex64(row.descriptorRawHigh));
+    if ((row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_AVAILABLE) != 0U)
+    {
+        lines << kernelText(
+            "kernel.descriptor.detail.baseline",
+            QStringLiteral("启动期基线 #%1: Handler %2  Raw %3 / %4"))
+            .arg(row.descriptorBaselineGeneration)
+            .arg(hex64(row.descriptorBaselineHandler))
+            .arg(hex64(row.descriptorBaselineRawLow))
+            .arg(hex64(row.descriptorBaselineRawHigh));
+    }
     if (!row.ownerModule.empty())
     {
         lines << kernelText("kernel.descriptor.detail.owner", QStringLiteral("归属模块: %1 [%2 +%3]"))
@@ -443,6 +496,110 @@ void KernelDescriptorTableTab::showCurrentDetail()
     }
     const std::size_t sourceIndex = static_cast<std::size_t>(item->data(Qt::UserRole).toULongLong());
     m_detailEdit->setPlainText(sourceIndex < m_rows.size() ? detailText(m_rows[sourceIndex]) : QString());
+}
+
+void KernelDescriptorTableTab::restoreSelectedIdtBaseline()
+{
+    const int selectedRow = m_table->currentRow();
+    const QTableWidgetItem* item = selectedRow >= 0 ? m_table->item(selectedRow, ColumnTable) : nullptr;
+    if (item == nullptr)
+    {
+        return;
+    }
+    const std::size_t sourceIndex = static_cast<std::size_t>(item->data(Qt::UserRole).toULongLong());
+    if (sourceIndex >= m_rows.size())
+    {
+        return;
+    }
+    const auto row = m_rows[sourceIndex];
+    if (row.evidenceClass != KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER ||
+        row.processorGroup > 0xFFFFU ||
+        row.processorNumber > 0xFFU ||
+        row.vector > 0xFFU ||
+        (row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_AVAILABLE) == 0U ||
+        (row.descriptorBaselineFlags & KSWORD_ARK_DESCRIPTOR_BASELINE_FLAG_DIFFERS) == 0U)
+    {
+        QMessageBox::information(
+            this,
+            kernelText("kernel.descriptor.restore.title", QStringLiteral("恢复 IDT 基线")),
+            kernelText("kernel.descriptor.restore.not_needed", QStringLiteral("该行没有可恢复的 IDT 基线差异。")));
+        return;
+    }
+
+    ksword::ark::DriverClient client;
+    const auto preflight = client.restoreIdtBaseline(
+        static_cast<std::uint16_t>(row.processorGroup),
+        static_cast<std::uint8_t>(row.processorNumber),
+        static_cast<std::uint8_t>(row.vector),
+        row.descriptorRawLow,
+        row.descriptorRawHigh,
+        false,
+        false);
+    if (!preflight.io.ok ||
+        preflight.status != KSWORD_ARK_IDT_RESTORE_STATUS_FORCE_REQUIRED)
+    {
+        QMessageBox::critical(
+            this,
+            kernelText("kernel.descriptor.restore.title", QStringLiteral("恢复 IDT 基线")),
+            kernelText(
+                "kernel.descriptor.restore.preflight_failed",
+                QStringLiteral("R0 预检未通过。状态 %1，NTSTATUS %2。\n%3"))
+                .arg(preflight.status)
+                .arg(hex32(static_cast<std::uint32_t>(preflight.lastStatus)))
+                .arg(QString::fromStdString(preflight.io.message)));
+        return;
+    }
+
+    QMessageBox::warning(
+        this,
+        kernelText("kernel.descriptor.restore.warning_title", QStringLiteral("高风险：修改 IDT")),
+        kernelText(
+            "kernel.descriptor.restore.warning",
+            QStringLiteral("将原子替换 CPU %1:%2 的 IDT 向量 %3。错误的中断门会立即造成系统崩溃；仅在已确认当前值异常且启动期基线可信时继续。"))
+            .arg(row.processorGroup)
+            .arg(row.processorNumber)
+            .arg(row.vector));
+    bool accepted = false;
+    const QString confirmation = QInputDialog::getText(
+        this,
+        kernelText("kernel.descriptor.restore.confirm_title", QStringLiteral("确认恢复 IDT")),
+        kernelText("kernel.descriptor.restore.confirm_prompt", QStringLiteral("输入 RESTORE IDT 继续：")),
+        QLineEdit::Normal,
+        QString(),
+        &accepted);
+    if (!accepted || confirmation != QStringLiteral("RESTORE IDT"))
+    {
+        return;
+    }
+
+    const auto restored = client.restoreIdtBaseline(
+        static_cast<std::uint16_t>(row.processorGroup),
+        static_cast<std::uint8_t>(row.processorNumber),
+        static_cast<std::uint8_t>(row.vector),
+        row.descriptorRawLow,
+        row.descriptorRawHigh,
+        true,
+        true);
+    if (!restored.io.ok || restored.status != KSWORD_ARK_IDT_RESTORE_STATUS_OK)
+    {
+        QMessageBox::critical(
+            this,
+            kernelText("kernel.descriptor.restore.title", QStringLiteral("恢复 IDT 基线")),
+            kernelText(
+                "kernel.descriptor.restore.failed",
+                QStringLiteral("IDT 恢复失败。状态 %1，NTSTATUS %2。\n%3"))
+                .arg(restored.status)
+                .arg(hex32(static_cast<std::uint32_t>(restored.lastStatus)))
+                .arg(QString::fromStdString(restored.io.message)));
+        return;
+    }
+    QMessageBox::information(
+        this,
+        kernelText("kernel.descriptor.restore.title", QStringLiteral("恢复 IDT 基线")),
+        kernelText(
+            "kernel.descriptor.restore.completed",
+            QStringLiteral("IDT 表项已按启动期基线恢复，并完成原子写入后的逐位校验。")));
+    refreshAsync();
 }
 
 QString KernelDescriptorTableTab::hex64(const std::uint64_t value)

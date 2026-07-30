@@ -241,10 +241,15 @@ static const KSW_DYN_FIELD_BINDING g_KswordDynFieldBindings[] = {
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_RTL_AVL_RESTART_KEY, "_RTL_AVL_TABLE.RestartKey", "PiDDB AVL Table Fields", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, Kernel.RtlAvlRestartKey),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_RTL_AVL_DELETE_COUNT, "_RTL_AVL_TABLE.DeleteCount", "PiDDB AVL Table Fields", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, Kernel.RtlAvlDeleteCount),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_RTL_AVL_TYPE_SIZE, "_RTL_AVL_TABLE.TypeSize", "PiDDB AVL Table Fields", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, Kernel.RtlAvlTypeSize),
+    KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_PIDDB_DRIVER_NAME, "_PIDDB_CACHE_ENTRY.DriverName", "PiDDB Cache Entry Fields", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, Kernel.PiDdbDriverName),
+    KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_PIDDB_TIME_DATE_STAMP, "_PIDDB_CACHE_ENTRY.TimeDateStamp", "PiDDB Cache Entry Fields", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, Kernel.PiDdbTimeDateStamp),
+    KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_PIDDB_LOAD_STATUS, "_PIDDB_CACHE_ENTRY.LoadStatus", "PiDDB Cache Entry Fields", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, Kernel.PiDdbLoadStatus),
+    KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_PIDDB_TYPE_SIZE, "_PIDDB_CACHE_ENTRY.TypeSize", "PiDDB Cache Entry Fields", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, Kernel.PiDdbTypeSize),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_KG_PSP_CID_TABLE, "PspCidTable", "Kernel Globals", KSW_CAP_KERNEL_GLOBALS | KSW_CAP_CID_TABLE_WALK, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, KernelGlobals.PspCidTable),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_KG_PS_LOADED_MODULE_LIST, "PsLoadedModuleList", "Kernel Globals", KSW_CAP_KERNEL_GLOBALS | KSW_CAP_KERNEL_MODULE_LIST_FIELDS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, KernelGlobals.PsLoadedModuleList),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_KG_MM_UNLOADED_DRIVERS, "MmUnloadedDrivers", "Kernel Globals", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, KernelGlobals.MmUnloadedDrivers),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_KG_PIDDB_CACHE_TABLE, "PiDDBCacheTable", "Kernel Globals", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, KernelGlobals.PiDDBCacheTable),
+    KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_KG_PIDDB_LOCK, "PiDDBLock", "Kernel Globals", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, KernelGlobals.PiDDBLock),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_KG_KE_SERVICE_DESCRIPTOR_TABLE_SHADOW, "KeServiceDescriptorTableShadow", "Kernel Globals", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, KernelGlobals.KeServiceDescriptorTableShadow),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_KG_MM_LAST_UNLOADED_DRIVER, "MmLastUnloadedDriver", "Kernel Globals", KSW_CAP_KERNEL_GLOBALS, FALSE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, KernelGlobals.MmLastUnloadedDriver),
     KSW_FIELD_BINDING(KSW_DYN_FIELD_ID_CB_PSP_CREATE_PROCESS_NOTIFY_ROUTINE, "PspCreateProcessNotifyRoutine", "Callback Notify Globals", KSW_CAP_CALLBACK_NOTIFY_GLOBALS, TRUE, KSW_DYN_FIELD_SOURCE_PDB_PROFILE, CallbackGlobals.PspCreateProcessNotifyRoutine),
@@ -737,6 +742,14 @@ Return Value:
         return State->KernelSources.RtlAvlDeleteCount;
     case KSW_DYN_FIELD_ID_RTL_AVL_TYPE_SIZE:
         return State->KernelSources.RtlAvlTypeSize;
+    case KSW_DYN_FIELD_ID_PIDDB_DRIVER_NAME:
+        return State->KernelSources.PiDdbDriverName;
+    case KSW_DYN_FIELD_ID_PIDDB_TIME_DATE_STAMP:
+        return State->KernelSources.PiDdbTimeDateStamp;
+    case KSW_DYN_FIELD_ID_PIDDB_LOAD_STATUS:
+        return State->KernelSources.PiDdbLoadStatus;
+    case KSW_DYN_FIELD_ID_PIDDB_TYPE_SIZE:
+        return State->KernelSources.PiDdbTypeSize;
     case KSW_DYN_FIELD_ID_KG_PSP_CID_TABLE:
         return State->KernelGlobalSources.PspCidTable;
     case KSW_DYN_FIELD_ID_KG_PS_LOADED_MODULE_LIST:
@@ -745,6 +758,8 @@ Return Value:
         return State->KernelGlobalSources.MmUnloadedDrivers;
     case KSW_DYN_FIELD_ID_KG_PIDDB_CACHE_TABLE:
         return State->KernelGlobalSources.PiDDBCacheTable;
+    case KSW_DYN_FIELD_ID_KG_PIDDB_LOCK:
+        return State->KernelGlobalSources.PiDDBLock;
     case KSW_DYN_FIELD_ID_KG_KE_SERVICE_DESCRIPTOR_TABLE_SHADOW:
         return State->KernelGlobalSources.KeServiceDescriptorTableShadow;
     case KSW_DYN_FIELD_ID_KG_MM_LAST_UNLOADED_DRIVER:
@@ -1073,7 +1088,7 @@ Return Value:
     const ULONG protectionFields[] = { State->Kernel.EpProtection, State->Kernel.EpSignatureLevel, State->Kernel.EpSectionSignatureLevel };
     const ULONG etwFields[] = { State->Kernel.EgeGuid, State->Kernel.EreGuidEntry };
     const ULONG lxcoreFields[] = { State->LxcoreOffsets.LxPicoProc, State->LxcoreOffsets.LxPicoProcInfo, State->LxcoreOffsets.LxPicoProcInfoPID, State->LxcoreOffsets.LxPicoThrdInfo, State->LxcoreOffsets.LxPicoThrdInfoTID };
-    const ULONG kernelGlobalFields[] = { State->KernelGlobals.PspCidTable, State->KernelGlobals.PsLoadedModuleList, State->KernelGlobals.MmUnloadedDrivers, State->KernelGlobals.PiDDBCacheTable, State->KernelGlobals.KeServiceDescriptorTableShadow };
+    const ULONG kernelGlobalFields[] = { State->KernelGlobals.PspCidTable, State->KernelGlobals.PsLoadedModuleList, State->KernelGlobals.MmUnloadedDrivers, State->KernelGlobals.PiDDBCacheTable, State->KernelGlobals.PiDDBLock, State->KernelGlobals.KeServiceDescriptorTableShadow };
     const ULONG callbackNotifyGlobals[] = { State->CallbackGlobals.PspCreateProcessNotifyRoutine, State->CallbackGlobals.PspCreateThreadNotifyRoutine, State->CallbackGlobals.PspLoadImageNotifyRoutine };
     const ULONG callbackRegistryGlobals[] = { State->CallbackGlobals.CmCallbackListHead };
     const ULONG callbackObjectFields[] = { State->CallbackOffsets.ObjectTypeCallbackList, State->CallbackOffsets.CallbackEntryItemPreOperation, State->CallbackOffsets.CallbackEntryItemPostOperation, State->CallbackOffsets.CallbackEntryItemOperations, State->CallbackOffsets.CallbackEntryItemCallbackEntry };

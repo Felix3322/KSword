@@ -46,6 +46,12 @@
     <ClCompile Include="src\features\kernel\ioctl_registry_query.c" />
     <ClCompile Include="src\features\kernel\driver_integrity.c" />
     <ClCompile Include="src\features\kernel\kernel_cpu_integrity.c" />
+    <ClCompile Include="src\features\kernel\kernel_idt_baseline.c" />
+    <ClCompile Include="src\features\kernel\kernel_idt_baseline_ioctl.c" />
+    <ClCompile Include="src\features\kernel\kernel_piddb.c" />
+    <ClCompile Include="src\features\kernel\kernel_piddb_ioctl.c" />
+    <ClCompile Include="src\features\hvm\hvm_runtime.c" />
+    <ClCompile Include="src\features\hvm\hvm_ioctl.c" />
     <ClCompile Include="src\features\kernel\cpu_hardware_query.c" />
     <ClCompile Include="src\features\kernel\driver_unload.c" />
     <ClCompile Include="src\features\kernel\driver_blind.c" />
@@ -140,6 +146,8 @@
     <ClCompile Include="src\features\keyboard\keyboard_ioctl.c" />
     <ClCompile Include="src\features\storage\storage_audit.c" />
     <ClCompile Include="src\features\storage\storage_ioctl.c" />
+    <ClCompile Include="src\features\storage\storage_forensics.c" />
+    <ClCompile Include="src\features\storage\storage_forensics_ioctl.c" />
     <ClCompile Include="src\features\win32k\win32k_support.c" />
     <ClCompile Include="src\features\win32k\win32k_query.c" />
     <ClCompile Include="src\features\win32k\win32k_detail.c" />
@@ -232,6 +240,12 @@
     <ClInclude Include="src\features\kernel\driver_integrity.h" />
     <ClInclude Include="src\features\kernel\driver_blind_internal.h" />
     <ClInclude Include="src\features\kernel\kernel_cpu_integrity.h" />
+    <ClInclude Include="src\features\kernel\kernel_idt_baseline.h" />
+    <ClInclude Include="..\shared\driver\KswordArkKernelBaselineIoctl.h" />
+    <ClInclude Include="src\features\kernel\kernel_piddb.h" />
+    <ClInclude Include="src\features\hvm\hvm_runtime.h" />
+    <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_object_audit.h" />
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h" />
     <ClInclude Include="src\features\mutation\mutation_transaction.h" />

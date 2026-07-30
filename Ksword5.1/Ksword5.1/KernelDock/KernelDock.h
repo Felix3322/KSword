@@ -140,11 +140,21 @@ struct KernelSsdtEntry
     std::uint64_t zwRoutineAddress = 0;  // zwRoutineAddress：Zw* 导出例程地址。
     std::uint64_t serviceRoutineAddress = 0; // serviceRoutineAddress：SSDT 表项解析出的服务例程地址。
     std::uint64_t serviceTableBase = 0;  // serviceTableBase：驱动返回的服务表基址。
+    std::uint64_t tableEntryAddress = 0; // tableEntryAddress：SSDT 槽位本身的内核地址。
+    std::uint64_t currentTableValue = 0; // currentTableValue：当前编码槽值。
+    std::uint64_t cleanTableValue = 0;   // cleanTableValue：磁盘映像同 RVA 编码槽值。
+    std::uint32_t tableEntrySize = 0;    // tableEntrySize：编码槽宽度。
+    std::vector<std::uint8_t> currentTableBytes; // currentTableBytes：当前槽位小端字节。
+    std::vector<std::uint8_t> cleanTableBytes;   // cleanTableBytes：已校验磁盘基线字节。
+    QString cleanBaselinePath;           // cleanBaselinePath：已验证磁盘映像路径。
+    QString cleanBaselineStatus;         // cleanBaselineStatus：身份/差异诊断。
     QString serviceNameText;             // serviceNameText：服务名称（Zw*）。
     QString moduleNameText;              // moduleNameText：模块名。
     QString statusText;                  // statusText：状态文本（索引解析/表项解析等）。
     QString detailText;                  // detailText：详情文本。
     bool indexResolved = false;          // indexResolved：是否成功从桩码提取服务索引。
+    bool cleanBaselineAvailable = false; // cleanBaselineAvailable：是否获得身份匹配的磁盘槽位。
+    bool cleanBaselineDiffers = false;   // cleanBaselineDiffers：当前槽位是否与基线不同。
     bool querySucceeded = false;         // querySucceeded：该条目是否有效。
 };
 
@@ -623,6 +633,7 @@ private:
     // refreshSsdtAsync：
     // - 作用：后台刷新 SSDT 遍历结果。
     void refreshSsdtAsync();
+    void restoreSelectedSsdtBaseline();
 
     // refreshDynDataAsync：
     // - 作用：后台查询 R0 DynData 状态、字段列表和 capability 位图。
@@ -639,6 +650,7 @@ private:
     // refreshShadowSsdtAsync：
     // - 作用：后台调用 ArkDriverClient 解析 SSSDT/Shadow SSDT。
     void refreshShadowSsdtAsync();
+    void restoreSelectedShadowSsdtBaseline();
 
     // refreshInlineHooksAsync：
     // - 作用：后台扫描内核模块导出函数 Inline Hook。
@@ -947,6 +959,7 @@ private:
     int m_inlineHookTabIndex = -1;       // m_inlineHookTabIndex：Inline Hook 页签索引。
     int m_iatEatHookTabIndex = -1;       // m_iatEatHookTabIndex：IAT/EAT Hook 页签索引。
     int m_descriptorTableTabIndex = -1;  // m_descriptorTableTabIndex：IDT/GDT 描述符页签索引。
+    int m_hvmTabIndex = -1;              // m_hvmTabIndex：VT-x/EPT 生命周期与证据页签索引。
     int m_timerDpcTabIndex = -1;          // m_timerDpcTabIndex：KTIMER/DPC 页签索引。
     int m_crossViewTabIndex = -1;        // m_crossViewTabIndex：CID/交叉视图页签索引。
     int m_ipcTabIndex = -1;              // m_ipcTabIndex：IPC/NamedPipe/ALPC 页签索引。
@@ -1003,6 +1016,7 @@ private:
     QVBoxLayout* m_ssdtLayout = nullptr;               // m_ssdtLayout：SSDT 页布局。
     QHBoxLayout* m_ssdtToolLayout = nullptr;           // m_ssdtToolLayout：SSDT 工具栏布局。
     QPushButton* m_refreshSsdtButton = nullptr;        // m_refreshSsdtButton：SSDT 刷新按钮。
+    QPushButton* m_restoreSsdtButton = nullptr;        // m_restoreSsdtButton：按验证磁盘基线恢复槽位。
     QLineEdit* m_ssdtFilterEdit = nullptr;             // m_ssdtFilterEdit：SSDT 筛选输入框。
     QLabel* m_ssdtStatusLabel = nullptr;               // m_ssdtStatusLabel：SSDT 状态文本。
     QTableWidget* m_ssdtTable = nullptr;               // m_ssdtTable：SSDT 结果表。

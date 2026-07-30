@@ -52,6 +52,11 @@ NTSTATUS KswordARKKernelIoctlQueryDriverObject(_In_ WDFDEVICE Device, _In_ WDFRE
 NTSTATUS KswordARKKernelIoctlEnumShadowSsdt(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlScanInlineHooks(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlPatchInlineHook(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKKernelIoctlRestoreIdtBaseline(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKKernelIoctlQueryPiDdb(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKKernelIoctlDeletePiDdb(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKHvmIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKHvmIoctlControl(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlEnumIatEatHooks(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlForceUnloadDriver(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKernelIoctlControlDriverCommunication(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -131,6 +136,9 @@ NTSTATUS KswordARKStorageIoctlQueryVolumeStackAudit(_In_ WDFDEVICE Device, _In_ 
 NTSTATUS KswordARKStorageIoctlQueryBitLockerFveAudit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKStorageIoctlQueryMountMgrMappingAudit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKStorageIoctlQueryFileSystemIntegrityAudit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKStorageIoctlQueryRawDiskBackend(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKStorageIoctlReadRawDisk(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKStorageIoctlWriteRawDisk(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKSecurityAuditIoctlQuerySecurityStatus(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKSecurityAuditIoctlQueryDriverTrustView(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKSecurityAuditIoctlQueryHyperVSummary(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -183,6 +191,11 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_ENUM_SHADOW_SSDT, KswordARKKernelIoctlEnumShadowSsdt, "IOCTL_KSWORD_ARK_ENUM_SHADOW_SSDT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SCAN_INLINE_HOOKS, KswordARKKernelIoctlScanInlineHooks, "IOCTL_KSWORD_ARK_SCAN_INLINE_HOOKS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_PATCH_INLINE_HOOK, KswordARKKernelIoctlPatchInlineHook, "IOCTL_KSWORD_ARK_PATCH_INLINE_HOOK", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RESTORE_IDT_BASELINE, KswordARKKernelIoctlRestoreIdtBaseline, "IOCTL_KSWORD_ARK_RESTORE_IDT_BASELINE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_QUERY_PIDDB, KswordARKKernelIoctlQueryPiDdb, "IOCTL_KSWORD_ARK_QUERY_PIDDB", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_DELETE_PIDDB, KswordARKKernelIoctlDeletePiDdb, "IOCTL_KSWORD_ARK_DELETE_PIDDB", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_QUERY_HVM, KswordARKHvmIoctlQuery, "IOCTL_KSWORD_ARK_QUERY_HVM", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_CONTROL_HVM, KswordARKHvmIoctlControl, "IOCTL_KSWORD_ARK_CONTROL_HVM", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_ENUM_IAT_EAT_HOOKS, KswordARKKernelIoctlEnumIatEatHooks, "IOCTL_KSWORD_ARK_ENUM_IAT_EAT_HOOKS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_FORCE_UNLOAD_DRIVER, KswordARKKernelIoctlForceUnloadDriver, "IOCTL_KSWORD_ARK_FORCE_UNLOAD_DRIVER", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION, KswordARKKernelIoctlControlDriverCommunication, "IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
@@ -270,6 +283,9 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_QUERY_BITLOCKER_FVE_AUDIT, KswordARKStorageIoctlQueryBitLockerFveAudit, "IOCTL_KSWORD_ARK_QUERY_BITLOCKER_FVE_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_MOUNTMGR_MAPPING_AUDIT, KswordARKStorageIoctlQueryMountMgrMappingAudit, "IOCTL_KSWORD_ARK_QUERY_MOUNTMGR_MAPPING_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_FILESYSTEM_INTEGRITY_AUDIT, KswordARKStorageIoctlQueryFileSystemIntegrityAudit, "IOCTL_KSWORD_ARK_QUERY_FILESYSTEM_INTEGRITY_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_QUERY_RAW_DISK_BACKEND, KswordARKStorageIoctlQueryRawDiskBackend, "IOCTL_KSWORD_ARK_QUERY_RAW_DISK_BACKEND", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
+    { IOCTL_KSWORD_ARK_READ_RAW_DISK, KswordARKStorageIoctlReadRawDisk, "IOCTL_KSWORD_ARK_READ_RAW_DISK", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
+    { IOCTL_KSWORD_ARK_WRITE_RAW_DISK, KswordARKStorageIoctlWriteRawDisk, "IOCTL_KSWORD_ARK_WRITE_RAW_DISK", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_SECURITY_STATUS, KswordARKSecurityAuditIoctlQuerySecurityStatus, "IOCTL_KSWORD_ARK_QUERY_SECURITY_STATUS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_DRIVER_TRUST_VIEW, KswordARKSecurityAuditIoctlQueryDriverTrustView, "IOCTL_KSWORD_ARK_QUERY_DRIVER_TRUST_VIEW", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_HYPERV_SUMMARY, KswordARKSecurityAuditIoctlQueryHyperVSummary, "IOCTL_KSWORD_ARK_QUERY_HYPERV_SUMMARY", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
