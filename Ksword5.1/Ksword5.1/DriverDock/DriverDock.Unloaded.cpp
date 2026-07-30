@@ -1,6 +1,8 @@
 #include "DriverDock.Internal.h"
 #include "../UI/VisibleTableWidget.h"
 
+#include <QTimeZone>
+
 using namespace ksword::driver_dock_internal;
 
 namespace
@@ -69,7 +71,7 @@ namespace
         }
         return QDateTime::fromMSecsSinceEpoch(
             static_cast<qint64>(unixMilliseconds),
-            Qt::UTC)
+            QTimeZone::UTC)
             .toLocalTime()
             .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
     }
