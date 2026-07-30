@@ -430,7 +430,15 @@ namespace
                 verification.lookupError = enumerationError == ERROR_SUCCESS
                     ? ERROR_NOT_FOUND
                     : enumerationError;
-                // 完整枚举到 nullptr 时 API 已结束 previous context 的枚举寿命。
+                // phPrevCatInfo 仅用于继续枚举；最终返回 nullptr 后仍须按
+                // mscat 契约释放最后一个 HCATINFO，不能先清空而泄漏 context。
+                if (previousCatalog != nullptr)
+                {
+                    ::CryptCATAdminReleaseCatalogContext(
+                        catalogAdmin.value,
+                        previousCatalog,
+                        0);
+                }
                 previousCatalog = nullptr;
                 break;
             }
