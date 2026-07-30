@@ -27,6 +27,7 @@
 #include <QMenu>
 #include <QMetaObject>
 #include <QModelIndex>
+#include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -995,8 +996,9 @@ DiskMonitorPage::~DiskMonitorPage()
     m_processSamplingInProgress.store(false);
     if (m_storagePanel != nullptr)
     {
-        // collectSamples 已完全退出后才能平衡剩余 anchor。
-        m_storagePanel->releasePerformanceCounters();
+        // collectSamples 已完全退出后只移交 lease；GUI 线程不执行 OFF。
+        m_storagePanel->retirePerformanceCountersAsync(
+            QStringLiteral("disk-monitor-page-destructor"));
     }
     stopFileActivityEtw(true);
 }
@@ -1454,11 +1456,11 @@ void DiskMonitorPage::refreshNow()
         {
             return;
         }
-        std::vector<DiskMonitorStorageSample> storageSampleList =
+        DiskMonitorStorageBatch storageSampleBatch =
             m_storagePanel != nullptr
             ? m_storagePanel->collectSamples(
                 &m_processSamplingStopRequested)
-            : std::vector<DiskMonitorStorageSample>{};
+            : DiskMonitorStorageBatch{};
         if (m_processSamplingStopRequested.load(
             std::memory_order_acquire))
         {
@@ -1469,14 +1471,14 @@ void DiskMonitorPage::refreshNow()
             [
                 this,
                 sampleList = std::move(sampleList),
-                storageSampleList = std::move(storageSampleList)
+                storageSampleBatch = std::move(storageSampleBatch)
             ]() mutable
         {
             m_processSamplingInProgress.store(false);
             if (m_refreshButton != nullptr) m_refreshButton->setEnabled(true);
             applyProcessDiskSamples(
                 std::move(sampleList),
-                std::move(storageSampleList));
+                std::move(storageSampleBatch));
         },
             Qt::QueuedConnection);
     });
@@ -1484,8 +1486,34 @@ void DiskMonitorPage::refreshNow()
 
 void DiskMonitorPage::applyProcessDiskSamples(
     std::vector<ProcessDiskSample> sampleList,
-    std::vector<DiskMonitorStorageSample> storageSampleList)
+    DiskMonitorStorageBatch storageSampleBatch)
 {
+    const QList<QTableView*> diskActivityTables = {
+        m_processTable,
+        m_activityTable
+    };
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu(diskActivityTables))
+    {
+        // 延迟完整采样提交，ETW 活动队列也保持到安全回投时再消费。
+        const QPointer<DiskMonitorPage> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("disk-monitor-process-snapshot-apply"),
+            diskActivityTables,
+            [safeThis,
+                sampleList = std::move(sampleList),
+                storageSampleBatch = std::move(storageSampleBatch)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyProcessDiskSamples(
+                        std::move(sampleList),
+                        std::move(storageSampleBatch));
+                }
+            });
+        return;
+    }
+
     std::sort(
         sampleList.begin(),
         sampleList.end(),
@@ -1506,7 +1534,7 @@ void DiskMonitorPage::applyProcessDiskSamples(
     updateActivityTable(m_lastSampleList);
     if (m_storagePanel != nullptr)
     {
-        m_storagePanel->applySamples(std::move(storageSampleList));
+        m_storagePanel->applySamples(std::move(storageSampleBatch));
     }
     updateSummaryLabels(m_lastSampleList);
 

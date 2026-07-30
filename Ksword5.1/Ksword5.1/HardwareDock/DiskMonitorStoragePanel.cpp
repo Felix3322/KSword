@@ -1,12 +1,15 @@
 #include "DiskMonitorStoragePanel.h"
 
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
 #include <QBrush>
 #include <QColor>
+#include <QDebug>
 #include <QHeaderView>
+#include <QPointer>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QTableWidget>
@@ -14,10 +17,15 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cwchar>
 #include <iterator>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 #ifndef NOMINMAX
@@ -37,7 +45,8 @@ struct DiskMonitorStoragePerformanceState
         std::uint32_t storageDeviceNumber = 0U;
         HANDLE volumeHandle = INVALID_HANDLE_VALUE;
         std::uint32_t ownedEnableReferenceCount = 0U;
-        bool lifecycleHealthy = true;
+        std::uint32_t lastQueryError = 0U;
+        std::uint32_t consecutiveQueryFailureCount = 0U;
     };
 
     QHash<QString, Lease> leaseByVolumeGuid;
@@ -119,24 +128,50 @@ namespace
         return key;
     }
 
-    QString storageIdentityKey(const DiskMonitorStorageSample& sample)
+    QString storageIdentityKey(
+        const QString& volumeGuidName,
+        const std::uint32_t volumeSerialNumber,
+        const std::array<std::uint16_t, 8>& managerIdentity,
+        const std::uint32_t storageDeviceNumber)
     {
-        if (sample.volumeGuidName.isEmpty() ||
-            !sample.volumeSerialAvailable ||
-            !hasStorageManagerIdentity(sample.storageManagerIdentity) ||
-            !sample.performanceAvailable)
+        if (volumeGuidName.isEmpty() ||
+            !hasStorageManagerIdentity(managerIdentity))
         {
             return {};
         }
 
         return QStringLiteral("%1|%2|%3|%4")
-            .arg(normalizedVolumeGuidName(sample.volumeGuidName))
+            .arg(normalizedVolumeGuidName(volumeGuidName))
             .arg(
-                QString::number(sample.volumeSerialNumber, 16)
+                QString::number(volumeSerialNumber, 16)
                     .rightJustified(8, QLatin1Char('0')))
             .arg(storageManagerIdentityKey(
-                sample.storageManagerIdentity))
-            .arg(sample.storageDeviceNumber);
+                managerIdentity))
+            .arg(storageDeviceNumber);
+    }
+
+    QString storageIdentityKey(const DiskMonitorStorageSample& sample)
+    {
+        if (!sample.volumeSerialAvailable ||
+            !sample.performanceAvailable)
+        {
+            return {};
+        }
+        return storageIdentityKey(
+            sample.volumeGuidName,
+            sample.volumeSerialNumber,
+            sample.storageManagerIdentity,
+            sample.storageDeviceNumber);
+    }
+
+    QString storageIdentityKey(
+        const DiskMonitorStoragePerformanceState::Lease& lease)
+    {
+        return storageIdentityKey(
+            lease.volumeGuidName,
+            lease.volumeSerialNumber,
+            lease.storageManagerIdentity,
+            lease.storageDeviceNumber);
     }
 
     bool counter32Delta(
@@ -173,13 +208,25 @@ namespace
     }
 
     bool turnOffOnePerformanceReference(
-        DiskMonitorStoragePerformanceState::Lease* lease)
+        DiskMonitorStoragePerformanceState::Lease* lease,
+        DWORD* errorOut = nullptr)
     {
+        if (errorOut != nullptr)
+        {
+            *errorOut = ERROR_SUCCESS;
+        }
         if (lease == nullptr ||
-            lease->volumeHandle == INVALID_HANDLE_VALUE ||
             lease->ownedEnableReferenceCount == 0U)
         {
             return true;
+        }
+        if (lease->volumeHandle == INVALID_HANDLE_VALUE)
+        {
+            if (errorOut != nullptr)
+            {
+                *errorOut = ERROR_INVALID_HANDLE;
+            }
+            return false;
         }
 
         DWORD returnedBytes = 0U;
@@ -194,55 +241,208 @@ namespace
             nullptr);
         if (!releaseOk)
         {
-            lease->lifecycleHealthy = false;
+            if (errorOut != nullptr)
+            {
+                *errorOut = GetLastError();
+            }
             return false;
         }
         --lease->ownedEnableReferenceCount;
         return true;
     }
 
-    bool drainOwnedPerformanceReferences(
-        DiskMonitorStoragePerformanceState::Lease* lease)
+    void logRetiredLeaseDiagnostic(
+        const DiskMonitorStoragePerformanceState::Lease& lease,
+        const QString& reason,
+        const QString& action,
+        const DWORD errorCode,
+        const std::uint32_t attempt)
     {
-        if (lease == nullptr)
-        {
-            return true;
-        }
-
-        // 只释放本会话记录的引用；失败即停止，避免误减其它监控程序的全局引用。
-        while (lease->ownedEnableReferenceCount > 0U)
-        {
-            if (!turnOffOnePerformanceReference(lease))
-            {
-                break;
-            }
-        }
-        return lease->ownedEnableReferenceCount == 0U;
+        qWarning().noquote()
+            << QStringLiteral(
+                "[DiskMonitorStorage] retired lease %1: guid=%2 refs=%3 "
+                "error=%4 attempt=%5 lastQueryError=%6 "
+                "consecutiveQueryFailures=%7 reason=%8")
+                .arg(action)
+                .arg(lease.volumeGuidName)
+                .arg(lease.ownedEnableReferenceCount)
+                .arg(errorCode)
+                .arg(attempt)
+                .arg(lease.lastQueryError)
+                .arg(lease.consecutiveQueryFailureCount)
+                .arg(reason);
     }
 
-    void closePerformanceLeaseHandle(
-        DiskMonitorStoragePerformanceState::Lease* lease)
+    struct RetiredLeaseTask
     {
-        if (lease == nullptr)
+        DiskMonitorStoragePerformanceState::Lease lease;
+        QString reason;
+        bool workerScheduled = false;
+    };
+
+    using RetiredLeaseTaskPointer = std::shared_ptr<RetiredLeaseTask>;
+
+    std::mutex& retiredLeaseTaskMutex()
+    {
+        // 退役线程可能活到 Qt 静态对象销毁之后；故意让注册表随进程退出，
+        // 避免静态析构与仍阻塞在存储栈中的 worker 发生竞态。
+        static auto* mutex = new std::mutex();
+        return *mutex;
+    }
+
+    std::vector<RetiredLeaseTaskPointer>& retiredLeaseTaskRegistry()
+    {
+        static auto* taskRegistry =
+            new std::vector<RetiredLeaseTaskPointer>();
+        return *taskRegistry;
+    }
+
+    void retainRetiredLeaseTask(
+        const RetiredLeaseTaskPointer& task)
+    {
+        const std::lock_guard<std::mutex> lock(retiredLeaseTaskMutex());
+        retiredLeaseTaskRegistry().push_back(task);
+    }
+
+    void releaseCompletedRetiredLeaseTask(
+        const RetiredLeaseTaskPointer& task)
+    {
+        const std::lock_guard<std::mutex> lock(retiredLeaseTaskMutex());
+        auto& taskRegistry = retiredLeaseTaskRegistry();
+        taskRegistry.erase(
+            std::remove(
+                taskRegistry.begin(),
+                taskRegistry.end(),
+                task),
+            taskRegistry.end());
+    }
+
+    void runRetiredLeaseTask(
+        const RetiredLeaseTaskPointer& task)
+    {
+        DiskMonitorStoragePerformanceState::Lease& lease = task->lease;
+        const QString& reason = task->reason;
+        std::uint32_t failureAttempt = 0U;
+        logRetiredLeaseDiagnostic(
+            lease,
+            reason,
+            QStringLiteral("start"),
+            ERROR_SUCCESS,
+            failureAttempt);
+
+        while (lease.ownedEnableReferenceCount > 0U &&
+               lease.volumeHandle != INVALID_HANDLE_VALUE)
         {
+            DWORD releaseError = ERROR_SUCCESS;
+            if (turnOffOnePerformanceReference(
+                &lease,
+                &releaseError))
+            {
+                failureAttempt = 0U;
+                logRetiredLeaseDiagnostic(
+                    lease,
+                    reason,
+                    QStringLiteral("released-one"),
+                    ERROR_SUCCESS,
+                    failureAttempt);
+                continue;
+            }
+
+            ++failureAttempt;
+            logRetiredLeaseDiagnostic(
+                lease,
+                reason,
+                QStringLiteral("retry"),
+                releaseError,
+                failureAttempt);
+            const std::uint32_t backoffExponent =
+                std::min<std::uint32_t>(failureAttempt, 7U);
+            const auto backoff =
+                std::chrono::milliseconds(
+                    250U * (1U << backoffExponent));
+            std::this_thread::sleep_for(backoff);
+        }
+
+        if (lease.ownedEnableReferenceCount == 0U)
+        {
+            if (lease.volumeHandle != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(lease.volumeHandle);
+                lease.volumeHandle = INVALID_HANDLE_VALUE;
+            }
+            logRetiredLeaseDiagnostic(
+                lease,
+                reason,
+                QStringLiteral("closed"),
+                ERROR_SUCCESS,
+                failureAttempt);
+            releaseCompletedRetiredLeaseTask(task);
             return;
         }
-        if (lease->volumeHandle != INVALID_HANDLE_VALUE)
+
+        // 句柄已无效但账本尚未归零时保留 process-lifetime ledger，
+        // 不伪造 OFF 成功，也不在 GUI 线程尝试同步补偿。
+        logRetiredLeaseDiagnostic(
+            lease,
+            reason,
+            QStringLiteral("retained-until-process-exit"),
+            ERROR_INVALID_HANDLE,
+            failureAttempt);
+    }
+
+    void tryStartPendingRetiredLeaseWorkers()
+    {
+        std::vector<RetiredLeaseTaskPointer> pendingTaskList;
         {
-            CloseHandle(lease->volumeHandle);
-            lease->volumeHandle = INVALID_HANDLE_VALUE;
+            const std::lock_guard<std::mutex> lock(
+                retiredLeaseTaskMutex());
+            for (const RetiredLeaseTaskPointer& task :
+                 retiredLeaseTaskRegistry())
+            {
+                if (!task->workerScheduled)
+                {
+                    task->workerScheduled = true;
+                    pendingTaskList.push_back(task);
+                }
+            }
+        }
+
+        for (const RetiredLeaseTaskPointer& task : pendingTaskList)
+        {
+            try
+            {
+                std::thread([task]()
+                {
+                    runRetiredLeaseTask(task);
+                }).detach();
+            }
+            catch (const std::system_error& error)
+            {
+                logRetiredLeaseDiagnostic(
+                    task->lease,
+                    task->reason,
+                    QStringLiteral(
+                        "worker-start-failed-retained-for-retry"),
+                    static_cast<DWORD>(error.code().value()),
+                    0U);
+                const std::lock_guard<std::mutex> lock(
+                    retiredLeaseTaskMutex());
+                task->workerScheduled = false;
+            }
         }
     }
 
-    bool releasePerformanceLease(
-        DiskMonitorStoragePerformanceState::Lease* lease)
+    void startRetiredLeaseReaper(
+        DiskMonitorStoragePerformanceState::Lease lease,
+        QString reason)
     {
-        if (!drainOwnedPerformanceReferences(lease))
-        {
-            return false;
-        }
-        closePerformanceLeaseHandle(lease);
-        return true;
+        auto task = std::make_shared<RetiredLeaseTask>();
+        task->lease = std::move(lease);
+        task->reason = std::move(reason);
+        retainRetiredLeaseTask(task);
+        // 每次有新 lease 退役时，也重试之前因资源不足未能启动的 worker。
+        // ledger 始终先进入 process-lifetime 注册表，线程创建失败不会丢失所有权。
+        tryStartPendingRetiredLeaseWorkers();
     }
 
     void populatePerformanceSample(
@@ -286,6 +486,61 @@ namespace
             lease.storageDeviceNumber == sample.storageDeviceNumber &&
             lease.storageManagerIdentity ==
                 sample.storageManagerIdentity;
+    }
+
+    bool performanceIdentityComplete(
+        const DiskMonitorStorageSample& sample)
+    {
+        return !sample.volumeGuidName.isEmpty() &&
+            sample.volumeSerialAvailable &&
+            hasStorageManagerIdentity(sample.storageManagerIdentity);
+    }
+
+    bool isImmediateLeaseRetirementError(const DWORD errorCode)
+    {
+        switch (errorCode)
+        {
+        case ERROR_INVALID_HANDLE:
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+        case ERROR_INVALID_DRIVE:
+        case ERROR_NOT_READY:
+        case ERROR_GEN_FAILURE:
+        case ERROR_DEV_NOT_EXIST:
+        case ERROR_NO_SUCH_DEVICE:
+        case ERROR_DEVICE_NOT_CONNECTED:
+        case ERROR_DEVICE_REMOVED:
+        case ERROR_NO_MEDIA_IN_DRIVE:
+        case ERROR_MEDIA_CHANGED:
+        case ERROR_INVALID_FUNCTION:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    void clearPerformanceSample(DiskMonitorStorageSample* sample)
+    {
+        if (sample == nullptr)
+        {
+            return;
+        }
+        sample->storageManagerName.clear();
+        sample->storageManagerIdentity.fill(0U);
+        sample->sampleTickMs = 0U;
+        sample->bytesRead = 0U;
+        sample->bytesWritten = 0U;
+        sample->readCount = 0U;
+        sample->writeCount = 0U;
+        sample->readTime100ns = 0U;
+        sample->writeTime100ns = 0U;
+        sample->idleTime100ns = 0U;
+        sample->queryTime100ns = 0U;
+        sample->storageDeviceNumber = 0U;
+        sample->queueDepth = 0U;
+        sample->performanceError = ERROR_SUCCESS;
+        sample->performanceAvailable = false;
+        sample->baselinePending = false;
     }
 
     QTableWidgetItem* createStorageItem(
@@ -355,47 +610,69 @@ DiskMonitorStoragePanel::DiskMonitorStoragePanel(QWidget* parent)
 
 DiskMonitorStoragePanel::~DiskMonitorStoragePanel()
 {
-    releasePerformanceCounters();
+    retirePerformanceCountersAsync(
+        QStringLiteral("storage-panel-destructor"));
 }
 
-void DiskMonitorStoragePanel::releasePerformanceCounters()
+void DiskMonitorStoragePanel::retirePerformanceCountersAsync(
+    const QString& reason)
 {
     if (m_performanceState == nullptr)
     {
         return;
     }
 
-    for (auto leaseIterator = m_performanceState->leaseByVolumeGuid.begin();
-         leaseIterator != m_performanceState->leaseByVolumeGuid.end();
+    std::vector<DiskMonitorStoragePerformanceState::Lease> retiredLeaseList;
+    retiredLeaseList.reserve(
+        static_cast<std::size_t>(
+            m_performanceState->leaseByVolumeGuid.size()));
+    for (auto leaseIterator =
+             m_performanceState->leaseByVolumeGuid.begin();
+         leaseIterator !=
+             m_performanceState->leaseByVolumeGuid.end();
          ++leaseIterator)
     {
-        DiskMonitorStoragePerformanceState::Lease& lease =
-            leaseIterator.value();
-        if (!releasePerformanceLease(&lease))
-        {
-            // 页面最终退出前只再做一次有界重试；随后必须关闭句柄，
-            // 避免析构因故障存储栈无限循环。
-            drainOwnedPerformanceReferences(&lease);
-            closePerformanceLeaseHandle(&lease);
-        }
+        retiredLeaseList.push_back(
+            std::move(leaseIterator.value()));
     }
     m_performanceState->leaseByVolumeGuid.clear();
+
+    for (auto& retiredLease : retiredLeaseList)
+    {
+        startRetiredLeaseReaper(
+            std::move(retiredLease),
+            reason);
+    }
 }
 
-std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
+DiskMonitorStorageBatch DiskMonitorStoragePanel::collectSamples(
     const std::atomic_bool* stopRequested)
 {
-    std::vector<DiskMonitorStorageSample> sampleList;
-    if (m_performanceState == nullptr || samplingShouldStop(stopRequested))
+    DiskMonitorStorageBatch sampleBatch;
+    std::vector<DiskMonitorStorageSample>& sampleList =
+        sampleBatch.sampleList;
+    if (m_performanceState == nullptr)
     {
-        return sampleList;
+        sampleBatch.enumerationError = ERROR_INVALID_HANDLE;
+        return sampleBatch;
+    }
+    if (samplingShouldStop(stopRequested))
+    {
+        sampleBatch.enumerationError = ERROR_OPERATION_ABORTED;
+        return sampleBatch;
     }
 
     // 先让 Windows 返回多字符串缓冲区长度，再一次性读取所有逻辑卷根目录。
+    SetLastError(ERROR_SUCCESS);
     const DWORD requiredCharacterCount = GetLogicalDriveStringsW(0U, nullptr);
     if (requiredCharacterCount == 0U)
     {
-        return sampleList;
+        const DWORD errorCode = GetLastError();
+        sampleBatch.enumerationError =
+            errorCode != ERROR_SUCCESS
+            ? errorCode
+            : ERROR_GEN_FAILURE;
+        return sampleBatch;
     }
     std::vector<wchar_t> driveBuffer(
         static_cast<std::size_t>(requiredCharacterCount) + 1U,
@@ -406,10 +683,40 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
     if (copiedCharacterCount == 0U ||
         static_cast<std::size_t>(copiedCharacterCount) >= driveBuffer.size())
     {
-        return sampleList;
+        const DWORD errorCode = GetLastError();
+        sampleBatch.enumerationError =
+            errorCode != ERROR_SUCCESS
+            ? errorCode
+            : ERROR_INSUFFICIENT_BUFFER;
+        return sampleBatch;
     }
 
     QSet<QString> seenVolumeGuidSet;
+    auto retireActiveLease =
+        [
+            this,
+            &sampleBatch
+        ](
+            auto leaseIterator,
+            const QString& reason)
+    {
+        const QString invalidatedIdentity =
+            storageIdentityKey(leaseIterator.value());
+        if (!invalidatedIdentity.isEmpty() &&
+            !sampleBatch.invalidatedBaselineKeys.contains(
+                invalidatedIdentity))
+        {
+            sampleBatch.invalidatedBaselineKeys.append(
+                invalidatedIdentity);
+        }
+
+        DiskMonitorStoragePerformanceState::Lease retiredLease =
+            std::move(leaseIterator.value());
+        m_performanceState->leaseByVolumeGuid.erase(leaseIterator);
+        startRetiredLeaseReaper(
+            std::move(retiredLease),
+            reason);
+    };
 
     // 仅枚举固定卷；网络盘和可移动介质可能在后台查询时长时间阻塞，
     // 与资源监视器的本机磁盘审计目标也不一致。
@@ -518,22 +825,22 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
                 mayOpenNewLease = false;
                 DiskMonitorStoragePerformanceState::Lease& lease =
                     leaseIterator.value();
-                if (lease.volumeHandle == INVALID_HANDLE_VALUE)
+                const bool primaryIdentityMatches =
+                    lease.volumeHandle != INVALID_HANDLE_VALUE &&
+                    normalizedVolumeGuidName(lease.volumeGuidName) ==
+                        volumeGuidKey &&
+                    sample.volumeSerialAvailable &&
+                    lease.volumeSerialNumber ==
+                        sample.volumeSerialNumber;
+                if (!primaryIdentityMatches)
                 {
-                    m_performanceState->leaseByVolumeGuid.erase(leaseIterator);
-                    mayOpenNewLease = true;
-                }
-                else if (!lease.lifecycleHealthy)
-                {
-                    // OFF 曾失败时停止继续查询，先尝试清空已知自有引用；
-                    // 本轮仍保持 N/A，下一轮才重新建立 anchor。
-                    if (drainOwnedPerformanceReferences(&lease))
-                    {
-                        CloseHandle(lease.volumeHandle);
-                        lease.volumeHandle = INVALID_HANDLE_VALUE;
-                        m_performanceState->leaseByVolumeGuid.erase(
-                            leaseIterator);
-                    }
+                    retireActiveLease(
+                        leaseIterator,
+                        QStringLiteral(
+                            "primary-guid-or-volume-serial-changed"));
+                    mayOpenNewLease =
+                        !volumeGuidKey.isEmpty() &&
+                        sample.volumeSerialAvailable;
                 }
                 else
                 {
@@ -552,6 +859,8 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
                     if (queryOk)
                     {
                         ++lease.ownedEnableReferenceCount;
+                        lease.lastQueryError = ERROR_SUCCESS;
+                        lease.consecutiveQueryFailureCount = 0U;
                         const bool completeResult =
                             returnedBytes >=
                             static_cast<DWORD>(sizeof(performance));
@@ -564,25 +873,74 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
                         }
 
                         // 无论返回长度是否有效，成功 IOCTL 都已增加引用。
+                        DWORD balanceError = ERROR_SUCCESS;
                         const bool balancedQueryReference =
-                            turnOffOnePerformanceReference(&lease);
+                            turnOffOnePerformanceReference(
+                                &lease,
+                                &balanceError);
+                        const bool secondaryIdentityMatches =
+                            completeResult &&
+                            performanceIdentityComplete(sample) &&
+                            performanceIdentityMatches(lease, sample);
                         if (completeResult &&
                             balancedQueryReference &&
-                            performanceIdentityMatches(lease, sample))
+                            secondaryIdentityMatches)
                         {
                             sample.performanceAvailable = true;
                         }
-                        else if (completeResult &&
-                                 balancedQueryReference &&
-                                 !performanceIdentityMatches(lease, sample))
+                        else
                         {
-                            // GUID 相同但设备/管理器/卷序列已变化：整组 epoch
-                            // 作废并释放旧 anchor，避免跨设备相减。
-                            if (releasePerformanceLease(&lease))
+                            sample.performanceError =
+                                !completeResult
+                                ? ERROR_INVALID_DATA
+                                : (!balancedQueryReference
+                                    ? balanceError
+                                    : ERROR_INVALID_DATA);
+                            if (!balancedQueryReference)
                             {
-                                m_performanceState->leaseByVolumeGuid.erase(
-                                    leaseIterator);
+                                lease.lastQueryError = balanceError;
+                                ++lease.consecutiveQueryFailureCount;
                             }
+                            retireActiveLease(
+                                leaseIterator,
+                                !balancedQueryReference
+                                ? QStringLiteral(
+                                    "query-reference-off-failed")
+                                : QStringLiteral(
+                                    "secondary-manager-or-device-changed"));
+                            mayOpenNewLease =
+                                !samplingShouldStop(stopRequested) &&
+                                !volumeGuidKey.isEmpty() &&
+                                sample.volumeSerialAvailable;
+                        }
+                    }
+                    else
+                    {
+                        const DWORD queryError = GetLastError();
+                        sample.performanceError = queryError;
+                        lease.lastQueryError = queryError;
+                        ++lease.consecutiveQueryFailureCount;
+
+                        const bool stopCancellation =
+                            samplingShouldStop(stopRequested) &&
+                            queryError == ERROR_OPERATION_ABORTED;
+                        const bool retireFailedLease =
+                            stopCancellation ||
+                            isImmediateLeaseRetirementError(queryError) ||
+                            lease.consecutiveQueryFailureCount >= 2U;
+                        if (retireFailedLease)
+                        {
+                            retireActiveLease(
+                                leaseIterator,
+                                stopCancellation
+                                ? QStringLiteral(
+                                    "sampling-cancelled")
+                                : QStringLiteral(
+                                    "query-failure-threshold"));
+                            mayOpenNewLease =
+                                !samplingShouldStop(stopRequested) &&
+                                !volumeGuidKey.isEmpty() &&
+                                sample.volumeSerialAvailable;
                         }
                     }
                 }
@@ -591,6 +949,7 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
             if (mayOpenNewLease &&
                 !samplingShouldStop(stopRequested))
             {
+                clearPerformanceSample(&sample);
                 QString volumeDevicePath = sample.volumeGuidName;
                 while (volumeDevicePath.endsWith(QLatin1Char('\\')))
                 {
@@ -627,8 +986,10 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
                     if (queryOk)
                     {
                         newLease.ownedEnableReferenceCount = 1U;
-                        if (returnedBytes >=
-                            static_cast<DWORD>(sizeof(performance)))
+                        const bool completeResult =
+                            returnedBytes >=
+                            static_cast<DWORD>(sizeof(performance));
+                        if (completeResult)
                         {
                             populatePerformanceSample(
                                 performance,
@@ -640,26 +1001,42 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
                                 sample.storageManagerName;
                             newLease.storageManagerIdentity =
                                 sample.storageManagerIdentity;
-                            sample.performanceAvailable = true;
-                            m_performanceState->leaseByVolumeGuid.insert(
-                                volumeGuidKey,
-                                std::move(newLease));
-                        }
-                        else
-                        {
-                            if (!releasePerformanceLease(&newLease))
+                            if (performanceIdentityComplete(sample))
                             {
-                                newLease.lifecycleHealthy = false;
+                                sample.performanceAvailable = true;
+                                sample.baselinePending = true;
                                 m_performanceState->leaseByVolumeGuid.insert(
                                     volumeGuidKey,
                                     std::move(newLease));
                             }
+                            else
+                            {
+                                sample.performanceError =
+                                    ERROR_INVALID_DATA;
+                                startRetiredLeaseReaper(
+                                    std::move(newLease),
+                                    QStringLiteral(
+                                        "initial-identity-incomplete"));
+                            }
+                        }
+                        else
+                        {
+                            sample.performanceError = ERROR_INVALID_DATA;
+                            startRetiredLeaseReaper(
+                                std::move(newLease),
+                                QStringLiteral(
+                                    "initial-query-short-result"));
                         }
                     }
                     else
                     {
+                        sample.performanceError = GetLastError();
                         CloseHandle(volumeHandle);
                     }
+                }
+                else
+                {
+                    sample.performanceError = GetLastError();
                 }
             }
 
@@ -684,31 +1061,30 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
         driveRootPointer += driveRootLength + 1U;
     }
 
-    if (!samplingShouldStop(stopRequested))
+    if (samplingShouldStop(stopRequested))
     {
-        // 本轮未出现的卷已卸载/移除；释放成功才删除 lease。
-        // 临时 OFF 失败时保留句柄和准确自有引用数，供后续轮次重试。
+        sampleBatch.enumerationError = ERROR_OPERATION_ABORTED;
+    }
+    else
+    {
+        sampleBatch.enumerationSucceeded = true;
+        sampleBatch.enumerationError = ERROR_SUCCESS;
+
+        // 本轮未出现的卷已卸载/移除；先从 active map 取出，
+        // 再交给独立退役线程，旧 OFF 失败不阻止同 GUID 后续重建。
         for (auto leaseIterator =
                  m_performanceState->leaseByVolumeGuid.begin();
              leaseIterator !=
                  m_performanceState->leaseByVolumeGuid.end();)
         {
-            if (!seenVolumeGuidSet.contains(leaseIterator.key()))
+            auto currentLeaseIterator = leaseIterator;
+            ++leaseIterator;
+            if (!seenVolumeGuidSet.contains(
+                currentLeaseIterator.key()))
             {
-                if (releasePerformanceLease(&leaseIterator.value()))
-                {
-                    leaseIterator =
-                        m_performanceState->leaseByVolumeGuid.erase(
-                            leaseIterator);
-                }
-                else
-                {
-                    ++leaseIterator;
-                }
-            }
-            else
-            {
-                ++leaseIterator;
+                retireActiveLease(
+                    currentLeaseIterator,
+                    QStringLiteral("volume-no-longer-enumerated"));
             }
         }
     }
@@ -720,17 +1096,59 @@ std::vector<DiskMonitorStorageSample> DiskMonitorStoragePanel::collectSamples(
         {
             return left.driveRoot.compare(right.driveRoot, Qt::CaseInsensitive) < 0;
         });
-    return sampleList;
+
+    sampleBatch.fixedVolumeCount =
+        static_cast<int>(sampleList.size());
+    for (const DiskMonitorStorageSample& sample : sampleList)
+    {
+        if (sample.performanceAvailable)
+        {
+            ++sampleBatch.performanceAvailableCount;
+        }
+        if (sample.baselinePending)
+        {
+            ++sampleBatch.baselinePendingCount;
+        }
+    }
+    sampleBatch.failedPerformanceCount =
+        sampleBatch.fixedVolumeCount -
+        sampleBatch.performanceAvailableCount;
+    return sampleBatch;
 }
 
 void DiskMonitorStoragePanel::applySamples(
-    std::vector<DiskMonitorStorageSample> sampleList)
+    DiskMonitorStorageBatch sampleBatch)
 {
     if (m_table == nullptr)
     {
         return;
     }
 
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_table}))
+    {
+        const QPointer<DiskMonitorStoragePanel> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("disk-monitor-storage-snapshot-apply"),
+            {m_table},
+            [safeThis, sampleBatch = std::move(sampleBatch)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applySamples(std::move(sampleBatch));
+                }
+            });
+        return;
+    }
+
+    for (const QString& invalidatedBaseline :
+         sampleBatch.invalidatedBaselineKeys)
+    {
+        m_baselineByIdentity.remove(invalidatedBaseline);
+    }
+
+    std::vector<DiskMonitorStorageSample>& sampleList =
+        sampleBatch.sampleList;
     const QSignalBlocker tableSignalBlocker(m_table);
     const bool sortingWasEnabled = m_table->isSortingEnabled();
     m_table->setSortingEnabled(false);
@@ -741,6 +1159,7 @@ void DiskMonitorStoragePanel::applySamples(
     double totalReadRate = 0.0;
     double totalWriteRate = 0.0;
     int validRateSampleCount = 0;
+    int baselinePendingCount = 0;
     QHash<QString, StorageBaseline> nextBaselineByIdentity;
 
     for (std::size_t sampleIndex = 0U;
@@ -876,6 +1295,10 @@ void DiskMonitorStoragePanel::applySamples(
             nextBaseline.performanceAvailable = true;
             nextBaselineByIdentity.insert(baselineKey, nextBaseline);
         }
+        if (sample.performanceAvailable && !rateAvailable)
+        {
+            ++baselinePendingCount;
+        }
 
         const int rowIndex = static_cast<int>(sampleIndex);
         m_table->setItem(
@@ -972,8 +1395,33 @@ void DiskMonitorStoragePanel::applySamples(
         }
     }
 
+    sampleBatch.baselinePendingCount = baselinePendingCount;
     m_baselineByIdentity = std::move(nextBaselineByIdentity);
-    if (sampleList.empty())
+    if (!sampleBatch.enumerationSucceeded)
+    {
+        if (sampleList.empty())
+        {
+            m_table->setRowCount(1);
+            m_table->setItem(
+                0,
+                kStorageColumnDrive,
+                createStorageItem(
+                    QStringLiteral("存储枚举失败，错误码：%1")
+                        .arg(sampleBatch.enumerationError)));
+            m_table->setSpan(
+                0,
+                kStorageColumnDrive,
+                1,
+                kStorageColumnCount);
+        }
+        m_summaryText = QStringLiteral(
+            "存储：枚举未完成（错误 %1）    已取得性能：%2    等待基线：%3    采集失败：%4    汇总：N/A")
+            .arg(sampleBatch.enumerationError)
+            .arg(sampleBatch.performanceAvailableCount)
+            .arg(sampleBatch.baselinePendingCount)
+            .arg(sampleBatch.failedPerformanceCount);
+    }
+    else if (sampleBatch.fixedVolumeCount == 0)
     {
         m_table->setRowCount(1);
         m_table->setItem(
@@ -983,18 +1431,39 @@ void DiskMonitorStoragePanel::applySamples(
         m_table->setSpan(0, kStorageColumnDrive, 1, kStorageColumnCount);
         m_summaryText = QStringLiteral("存储：未发现可用固定卷");
     }
-    else if (validRateSampleCount == 0)
+    else if (validRateSampleCount ==
+                 sampleBatch.fixedVolumeCount &&
+             sampleBatch.baselinePendingCount == 0 &&
+             sampleBatch.failedPerformanceCount == 0)
     {
         m_summaryText = QStringLiteral(
-            "存储：%1 个卷    最高活动时间：N/A    总吞吐：N/A")
-            .arg(static_cast<int>(sampleList.size()));
+            "存储：%1 个卷    最高活动时间：%2%    总吞吐：%3")
+            .arg(sampleBatch.fixedVolumeCount)
+            .arg(highestActivePercent, 0, 'f', 1)
+            .arg(formatRate(totalReadRate + totalWriteRate));
     }
     else
     {
-        m_summaryText = QStringLiteral("存储：%1 个卷    最高活动时间：%2%    总吞吐：%3")
-            .arg(static_cast<int>(sampleList.size()))
-            .arg(highestActivePercent, 0, 'f', 1)
-            .arg(formatRate(totalReadRate + totalWriteRate));
+        const QString activeSummary =
+            validRateSampleCount > 0
+            ? QStringLiteral("%1%").arg(
+                highestActivePercent,
+                0,
+                'f',
+                1)
+            : QStringLiteral("N/A");
+        const QString throughputSummary =
+            validRateSampleCount > 0
+            ? formatRate(totalReadRate + totalWriteRate)
+            : QStringLiteral("N/A");
+        m_summaryText = QStringLiteral(
+            "存储：有效 %1/%2 个卷（部分）    等待基线：%3    采集失败：%4    有效卷最高活动：%5    有效卷总吞吐：%6")
+            .arg(validRateSampleCount)
+            .arg(sampleBatch.fixedVolumeCount)
+            .arg(sampleBatch.baselinePendingCount)
+            .arg(sampleBatch.failedPerformanceCount)
+            .arg(activeSummary)
+            .arg(throughputSummary);
     }
     m_table->setSortingEnabled(sortingWasEnabled);
 }

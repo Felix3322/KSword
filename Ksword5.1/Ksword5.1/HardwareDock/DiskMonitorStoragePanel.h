@@ -10,6 +10,7 @@
 
 #include <QHash>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include <array>
@@ -47,9 +48,26 @@ struct DiskMonitorStorageSample
     std::uint32_t volumeSerialNumber = 0U;   // volumeSerialNumber：卷序列号，辅助识别换盘。
     std::uint32_t storageDeviceNumber = 0U;  // storageDeviceNumber：性能提供者设备编号。
     std::uint32_t queueDepth = 0U;           // queueDepth：采样瞬间磁盘队列深度。
+    std::uint32_t performanceError = 0U;     // performanceError：本轮性能查询错误码。
     bool capacityAvailable = false;          // capacityAvailable：容量查询是否成功。
     bool volumeSerialAvailable = false;      // volumeSerialAvailable：卷序列号查询是否成功。
     bool performanceAvailable = false;       // performanceAvailable：磁盘性能计数器是否可用。
+    bool baselinePending = false;            // baselinePending：本轮仅建立了新身份基线。
+};
+
+// DiskMonitorStorageBatch：
+// - 采样结果与枚举完整性必须一起提交到 UI；
+// - 只有 enumerationSucceeded=true 且 fixedVolumeCount=0 才表示确实无固定卷。
+struct DiskMonitorStorageBatch
+{
+    std::vector<DiskMonitorStorageSample> sampleList;
+    QStringList invalidatedBaselineKeys;
+    std::uint32_t enumerationError = 0U;
+    int fixedVolumeCount = 0;
+    int performanceAvailableCount = 0;
+    int baselinePendingCount = 0;
+    int failedPerformanceCount = 0;
+    bool enumerationSucceeded = false;
 };
 
 // DiskMonitorStoragePanel：
@@ -69,19 +87,19 @@ public:
     // - 输入：可选的析构停止标志；
     // - 处理：枚举本机固定卷并读取容量、卷标、文件系统和磁盘性能累计值；
     // - 返回：可移动的纯数据列表，失败卷会保留可获得的字段并安全降级。
-    std::vector<DiskMonitorStorageSample> collectSamples(
+    DiskMonitorStorageBatch collectSamples(
         const std::atomic_bool* stopRequested = nullptr);
 
-    // releasePerformanceCounters：
-    // - 处理：只释放本页面成功取得的 IOCTL_DISK_PERFORMANCE 引用并关闭句柄；
-    // - 调用约束：采样线程停止并 join 后调用，可重复执行。
-    void releasePerformanceCounters();
+    // retirePerformanceCountersAsync：
+    // - 处理：把 active lease 移交给按值自持的后台退役线程；
+    // - 不在 GUI 线程执行 IOCTL/OFF，可重复执行。
+    void retirePerformanceCountersAsync(const QString& reason);
 
     // applySamples：
     // - 输入：后台线程得到的原始样本；
     // - 处理：用上一轮基线计算速率、活动时间和响应时间，再刷新表格；
     // - 返回：无，样本为空时显示明确占位行。
-    void applySamples(std::vector<DiskMonitorStorageSample> sampleList);
+    void applySamples(DiskMonitorStorageBatch sampleBatch);
 
     // summaryText：
     // - 输入：无；

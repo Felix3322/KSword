@@ -179,7 +179,7 @@ private:
     void refreshNow();
     void applyProcessDiskSamples(
         std::vector<ProcessDiskSample> sampleList,
-        std::vector<DiskMonitorStorageSample> storageSampleList);
+        DiskMonitorStorageBatch storageSampleBatch);
     std::vector<ProcessDiskSample> collectProcessDiskSamples();
     std::vector<FileActivitySample> consumeFileActivitySamples(const std::vector<ProcessDiskSample>& sampleList);
     void pruneStaleSelection(const std::vector<ProcessDiskSample>& sampleList);
