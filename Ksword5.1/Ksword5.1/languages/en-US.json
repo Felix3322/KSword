@@ -21927,6 +21927,7 @@
     "可用空间": "Available space",
     "存储": "Storage",
     "存储：%1 个卷    最高活动时间：%2%    总吞吐：%3": "Storage: %1 volume(s)    Highest active time: %2%    Total throughput: %3",
+    "存储：%1 个卷    最高活动时间：N/A    总吞吐：N/A": "Storage: %1 volume(s)    Highest active time: N/A    Total throughput: N/A",
     "存储：未发现可用固定卷": "Storage: no local fixed volumes found",
     "存储：等待首轮采样": "Storage: waiting for the first sample",
     "展开或折叠该磁盘监控区域": "Expand or collapse this disk-monitoring section",

@@ -836,8 +836,8 @@ namespace
         toggleButton->setText(titleText);
         toggleButton->setCheckable(true);
         toggleButton->setChecked(true);
-        toggleButton->setArrowType(Qt::DownArrow);
-        toggleButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        toggleButton->setArrowType(Qt::NoArrow);
+        toggleButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
         toggleButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         toggleButton->setStyleSheet(QStringLiteral(
             "QToolButton{border:0;background:transparent;color:%1;"
@@ -854,18 +854,97 @@ namespace
         {
             headerLayout->addWidget(secondHeaderControl, 0);
         }
+
+        auto* arrowButton = new QToolButton(headerWidget);
+        arrowButton->setArrowType(Qt::DownArrow);
+        arrowButton->setAutoRaise(true);
+        arrowButton->setFocusPolicy(Qt::NoFocus);
+        arrowButton->setFixedWidth(24);
+        arrowButton->setToolTip(
+            QStringLiteral("展开或折叠该磁盘监控区域"));
+        arrowButton->setStyleSheet(QStringLiteral(
+            "QToolButton{border:0;background:transparent;color:%1;padding:2px;}")
+            .arg(KswordTheme::TextPrimaryHex()));
+        headerLayout->addWidget(arrowButton, 0);
+
         sectionLayout->addWidget(headerWidget, 0);
         sectionLayout->addWidget(contentWidget, 1);
+        sectionWidget->setSizePolicy(
+            QSizePolicy::Preferred,
+            QSizePolicy::Expanding);
 
         QObject::connect(
             toggleButton,
             &QToolButton::toggled,
             sectionWidget,
-            [toggleButton, contentWidget](const bool expanded)
+            [
+                toggleButton,
+                arrowButton,
+                contentWidget,
+                headerWidget,
+                sectionWidget
+            ](const bool expanded)
             {
-                contentWidget->setVisible(expanded);
-                toggleButton->setArrowType(
+                auto* splitter =
+                    qobject_cast<QSplitter*>(sectionWidget->parentWidget());
+                const int splitterIndex =
+                    splitter != nullptr
+                    ? splitter->indexOf(sectionWidget)
+                    : -1;
+                QList<int> splitterSizes =
+                    splitter != nullptr
+                    ? splitter->sizes()
+                    : QList<int>{};
+
+                if (expanded)
+                {
+                    sectionWidget->setMinimumHeight(0);
+                    sectionWidget->setMaximumHeight(QWIDGETSIZE_MAX);
+                    contentWidget->setVisible(true);
+                    const int previousExpandedHeight =
+                        sectionWidget->property(
+                            "kswordDiskMonitorExpandedHeight").toInt();
+                    if (splitterIndex >= 0 &&
+                        splitterIndex < splitterSizes.size() &&
+                        previousExpandedHeight > 0)
+                    {
+                        splitterSizes[splitterIndex] =
+                            previousExpandedHeight;
+                        splitter->setSizes(splitterSizes);
+                    }
+                }
+                else
+                {
+                    if (splitterIndex >= 0 &&
+                        splitterIndex < splitterSizes.size())
+                    {
+                        sectionWidget->setProperty(
+                            "kswordDiskMonitorExpandedHeight",
+                            splitterSizes[splitterIndex]);
+                    }
+                    contentWidget->setVisible(false);
+                    const int collapsedHeight =
+                        std::max(1, headerWidget->sizeHint().height());
+                    sectionWidget->setMinimumHeight(collapsedHeight);
+                    sectionWidget->setMaximumHeight(collapsedHeight);
+                    if (splitterIndex >= 0 &&
+                        splitterIndex < splitterSizes.size())
+                    {
+                        splitterSizes[splitterIndex] = collapsedHeight;
+                        splitter->setSizes(splitterSizes);
+                    }
+                }
+                sectionWidget->updateGeometry();
+                arrowButton->setArrowType(
                     expanded ? Qt::DownArrow : Qt::RightArrow);
+            });
+        QObject::connect(
+            arrowButton,
+            &QToolButton::clicked,
+            toggleButton,
+            [toggleButton]()
+            {
+                toggleButton->toggle();
             });
         if (toggleButtonOut != nullptr)
         {
@@ -902,12 +981,23 @@ DiskMonitorPage::~DiskMonitorPage()
     {
         m_refreshTimer->stop();
     }
+    m_processSamplingStopRequested.store(
+        true,
+        std::memory_order_release);
     if (m_processSamplingThread != nullptr && m_processSamplingThread->joinable())
     {
+        // 先协作取消采样线程当前的同步卷 I/O，再 join；保持对象存活，
+        // 不使用可能令 raw-this 回调产生 UAF 的 detach。
+        CancelSynchronousIo(m_processSamplingThread->native_handle());
         m_processSamplingThread->join();
     }
     m_processSamplingThread.reset();
     m_processSamplingInProgress.store(false);
+    if (m_storagePanel != nullptr)
+    {
+        // collectSamples 已完全退出后才能平衡剩余 anchor。
+        m_storagePanel->releasePerformanceCounters();
+    }
     stopFileActivityEtw(true);
 }
 
@@ -1040,6 +1130,10 @@ void DiskMonitorPage::initializeUi()
     m_activityTable->setColumnWidth(ActivityColumnProcess, 180);
     m_activityTable->setColumnWidth(ActivityColumnIoPriority, 100);
     m_activityTable->setColumnWidth(ActivityColumnResponse, 110);
+    m_activityTable->horizontalHeader()->moveSection(
+        m_activityTable->horizontalHeader()->visualIndex(
+            ActivityColumnProcess),
+        0);
     QWidget* activitySection = createDiskMonitorSection(
         m_splitter,
         &m_activitySectionButton,
@@ -1334,6 +1428,11 @@ void DiskMonitorPage::installProcessColumnMenu()
 
 void DiskMonitorPage::refreshNow()
 {
+    if (m_processSamplingStopRequested.load(
+        std::memory_order_acquire))
+    {
+        return;
+    }
     if (m_processSamplingInProgress.exchange(true))
     {
         return;
@@ -1350,8 +1449,21 @@ void DiskMonitorPage::refreshNow()
     m_processSamplingThread = std::make_unique<std::thread>([this]()
     {
         std::vector<ProcessDiskSample> sampleList = collectProcessDiskSamples();
+        if (m_processSamplingStopRequested.load(
+            std::memory_order_acquire))
+        {
+            return;
+        }
         std::vector<DiskMonitorStorageSample> storageSampleList =
-            DiskMonitorStoragePanel::collectSamples();
+            m_storagePanel != nullptr
+            ? m_storagePanel->collectSamples(
+                &m_processSamplingStopRequested)
+            : std::vector<DiskMonitorStorageSample>{};
+        if (m_processSamplingStopRequested.load(
+            std::memory_order_acquire))
+        {
+            return;
+        }
         QMetaObject::invokeMethod(
             this,
             [

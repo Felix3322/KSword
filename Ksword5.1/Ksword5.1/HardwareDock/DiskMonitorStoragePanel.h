@@ -12,10 +12,14 @@
 #include <QString>
 #include <QWidget>
 
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 class QTableWidget;
+struct DiskMonitorStoragePerformanceState;
 
 // DiskMonitorStorageSample：
 // - 输入：collectSamples() 从 Windows 固定卷和磁盘性能接口读取；
@@ -24,20 +28,27 @@ class QTableWidget;
 struct DiskMonitorStorageSample
 {
     QString driveRoot;                       // driveRoot：卷根目录，例如 C:\。
+    QString volumeGuidName;                  // volumeGuidName：规范化卷 GUID 路径。
     QString volumeLabel;                     // volumeLabel：卷标，系统未提供时为空。
     QString fileSystemName;                  // fileSystemName：文件系统名称，例如 NTFS。
+    QString storageManagerName;              // storageManagerName：性能提供者标识。
+    std::array<std::uint16_t, 8> storageManagerIdentity{}; // storageManagerIdentity：原始 8 WCHAR 身份。
     std::uint64_t availableBytes = 0U;       // availableBytes：当前用户可用空间。
     std::uint64_t totalBytes = 0U;           // totalBytes：卷总容量。
+    std::uint64_t sampleTickMs = 0U;         // sampleTickMs：IOCTL 完成附近的单调时间。
     std::uint64_t bytesRead = 0U;            // bytesRead：磁盘累计读取字节。
     std::uint64_t bytesWritten = 0U;         // bytesWritten：磁盘累计写入字节。
-    std::uint64_t readCount = 0U;            // readCount：磁盘累计读取次数。
-    std::uint64_t writeCount = 0U;           // writeCount：磁盘累计写入次数。
+    std::uint32_t readCount = 0U;            // readCount：磁盘累计读取次数。
+    std::uint32_t writeCount = 0U;           // writeCount：磁盘累计写入次数。
     std::uint64_t readTime100ns = 0U;        // readTime100ns：累计读取耗时，单位 100ns。
     std::uint64_t writeTime100ns = 0U;       // writeTime100ns：累计写入耗时，单位 100ns。
     std::uint64_t idleTime100ns = 0U;        // idleTime100ns：累计空闲时间，单位 100ns。
-    std::uint64_t queryTime100ns = 0U;       // queryTime100ns：性能计数器累计观察时间。
+    std::uint64_t queryTime100ns = 0U;       // queryTime100ns：IOCTL 返回的系统查询时间戳。
+    std::uint32_t volumeSerialNumber = 0U;   // volumeSerialNumber：卷序列号，辅助识别换盘。
+    std::uint32_t storageDeviceNumber = 0U;  // storageDeviceNumber：性能提供者设备编号。
     std::uint32_t queueDepth = 0U;           // queueDepth：采样瞬间磁盘队列深度。
     bool capacityAvailable = false;          // capacityAvailable：容量查询是否成功。
+    bool volumeSerialAvailable = false;      // volumeSerialAvailable：卷序列号查询是否成功。
     bool performanceAvailable = false;       // performanceAvailable：磁盘性能计数器是否可用。
 };
 
@@ -52,12 +63,19 @@ public:
     // - parent：Qt 父控件；
     // - 返回：创建只读存储表，不启动独立线程或定时器。
     explicit DiskMonitorStoragePanel(QWidget* parent = nullptr);
+    ~DiskMonitorStoragePanel() override;
 
     // collectSamples：
-    // - 输入：无；
+    // - 输入：可选的析构停止标志；
     // - 处理：枚举本机固定卷并读取容量、卷标、文件系统和磁盘性能累计值；
     // - 返回：可移动的纯数据列表，失败卷会保留可获得的字段并安全降级。
-    static std::vector<DiskMonitorStorageSample> collectSamples();
+    std::vector<DiskMonitorStorageSample> collectSamples(
+        const std::atomic_bool* stopRequested = nullptr);
+
+    // releasePerformanceCounters：
+    // - 处理：只释放本页面成功取得的 IOCTL_DISK_PERFORMANCE 引用并关闭句柄；
+    // - 调用约束：采样线程停止并 join 后调用，可重复执行。
+    void releasePerformanceCounters();
 
     // applySamples：
     // - 输入：后台线程得到的原始样本；
@@ -73,18 +91,18 @@ public:
 private:
     // StorageBaseline：
     // - 作用：保存单卷上一轮累计值；
-    // - key：使用大写卷根目录，避免盘符大小写造成重复基线。
+    // - key：卷 GUID + 卷序列号 + StorageManagerName + StorageDeviceNumber。
     struct StorageBaseline
     {
-        std::uint64_t sampleTickMs = 0U;     // sampleTickMs：GetTickCount64 采样时间。
+        std::uint64_t sampleTickMs = 0U;     // sampleTickMs：IOCTL 完成附近的单调采样时间。
         std::uint64_t bytesRead = 0U;        // bytesRead：上一轮累计读取字节。
         std::uint64_t bytesWritten = 0U;     // bytesWritten：上一轮累计写入字节。
-        std::uint64_t readCount = 0U;        // readCount：上一轮累计读取次数。
-        std::uint64_t writeCount = 0U;       // writeCount：上一轮累计写入次数。
+        std::uint32_t readCount = 0U;        // readCount：上一轮累计读取次数。
+        std::uint32_t writeCount = 0U;       // writeCount：上一轮累计写入次数。
         std::uint64_t readTime100ns = 0U;    // readTime100ns：上一轮累计读取耗时。
         std::uint64_t writeTime100ns = 0U;   // writeTime100ns：上一轮累计写入耗时。
         std::uint64_t idleTime100ns = 0U;    // idleTime100ns：上一轮累计空闲时间。
-        std::uint64_t queryTime100ns = 0U;   // queryTime100ns：上一轮累计观察时间。
+        std::uint64_t queryTime100ns = 0U;   // queryTime100ns：上一轮系统查询时间戳。
         bool performanceAvailable = false;   // performanceAvailable：上一轮性能值是否有效。
     };
 
@@ -99,6 +117,7 @@ private:
     static QString formatRate(double bytesPerSecond);
 
     QTableWidget* m_table = nullptr;         // m_table：固定卷存储状态表。
-    QHash<QString, StorageBaseline> m_baselineByDrive; // m_baselineByDrive：卷根目录到历史基线。
+    std::unique_ptr<DiskMonitorStoragePerformanceState> m_performanceState;
+    QHash<QString, StorageBaseline> m_baselineByIdentity; // m_baselineByIdentity：稳定卷身份到历史基线。
     QString m_summaryText;                   // m_summaryText：最近一轮资源监视器式摘要。
 };

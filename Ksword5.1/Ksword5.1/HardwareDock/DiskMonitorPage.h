@@ -247,6 +247,7 @@ private:
     bool m_initialSamplingStarted = false;         // m_initialSamplingStarted：是否已经启动 ETW 与首轮采样。
     std::unique_ptr<std::thread> m_processSamplingThread; // m_processSamplingThread：后台进程 IO 采样线程。
     std::atomic_bool m_processSamplingInProgress{ false }; // m_processSamplingInProgress：避免采样重叠。
+    std::atomic_bool m_processSamplingStopRequested{ false }; // m_processSamplingStopRequested：析构时协作取消同步采样。
 
     std::unordered_map<std::uint32_t, ProcessDiskBaseline> m_baselineByPid; // m_baselineByPid：PID 到历史基线。
     std::unordered_set<std::uint32_t> m_selectedPidSet; // m_selectedPidSet：用户勾选 PID 集。
