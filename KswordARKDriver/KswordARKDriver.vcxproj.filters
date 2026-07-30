@@ -299,6 +299,7 @@
     <ClInclude Include="..\shared\driver\KswordArkFilterIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkDeviceAuditIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkPlatformAuditIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkI8042AuditIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkHwidIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkDriverBlindIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\hwid\hwid_dispatch_hooks.h"><Filter>Source Files\Features\Hwid</Filter></ClInclude>
@@ -736,6 +737,7 @@
     <ClCompile Include="src\features\device_audit\device_audit_support.c"><Filter>Source Files\Features\DeviceAudit</Filter></ClCompile>
     <ClCompile Include="src\features\device_audit\device_audit_targets.c"><Filter>Source Files\Features\DeviceAudit</Filter></ClCompile>
     <ClCompile Include="src\features\platform_audit\platform_audit.c"><Filter>Source Files\Features\Kernel</Filter></ClCompile>
+    <ClCompile Include="src\features\i8042_audit\i8042_audit.c"><Filter>Source Files\Features\Kernel</Filter></ClCompile>
     <ClCompile Include="src\features\hwid\hwid_dispatch_hooks.c"><Filter>Source Files\Features\Hwid</Filter></ClCompile>
     <ClCompile Include="src\features\hwid\hwid_dispatch_ioctl.c"><Filter>Source Files\Features\Hwid</Filter></ClCompile>
     <ClCompile Include="src\features\storage\storage_forensics.c"><Filter>Source Files\Features\Storage</Filter></ClCompile>

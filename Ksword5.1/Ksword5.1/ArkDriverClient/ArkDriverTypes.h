@@ -36,6 +36,7 @@
 #include "../../../shared/driver/KswordArkWin32kIoctl.h"
 #include "../../../shared/driver/KswordArkDeviceAuditIoctl.h"
 #include "../../../shared/driver/KswordArkPlatformAuditIoctl.h"
+#include "../../../shared/driver/KswordArkI8042AuditIoctl.h"
 #include "../../../shared/driver/KswordArkDriverBlindIoctl.h"
 #include "../../../shared/driver/KswordArkFilterIoctl.h"
 #include "../../../shared/driver/KswordArkKernelObjectIoctl.h"
@@ -2321,6 +2322,22 @@ namespace ksword::ark
         std::uint32_t buildNumber = 0;
         std::uint32_t signaturePolicyFlags = 0;
         std::vector<KSWORD_ARK_PLATFORM_AUDIT_ENTRY> entries;
+    };
+
+    // I8042AuditResult 承载专用 i8042prt 描述符与端点证据。
+    // 输入：queryI8042Audit 返回；只有精确 PE/RSDS/opcode/DriverObject 匹配时含端点行。
+    // 返回行为：只读，不读取输入包，不回放内部 IOCTL，不写设备扩展。
+    struct I8042AuditResult : VariableAuditResultBase
+    {
+        std::uint32_t responseFlags = 0;
+        std::uint32_t descriptorId = 0;
+        std::uint32_t imageTimeDateStamp = 0;
+        std::uint32_t imageSize = 0;
+        std::uint32_t imageChecksum = 0;
+        std::uint32_t pdbAge = 0;
+        std::uint64_t imageBase = 0;
+        std::uint8_t pdbGuid[KSWORD_ARK_I8042_PDB_GUID_BYTES]{};
+        std::vector<KSWORD_ARK_I8042_AUDIT_ENTRY> entries;
     };
 
     // CidTableAuditResult 承载 PspCidTable 只读枚举行。

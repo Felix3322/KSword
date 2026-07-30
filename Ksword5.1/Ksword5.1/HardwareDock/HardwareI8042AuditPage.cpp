@@ -1,60 +1,62 @@
 #include "HardwareI8042AuditPage.h"
 
-#include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
+#include <QBrush>
+#include <QColor>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QEvent>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMetaObject>
-#include <QPointer>
 #include <QPushButton>
+#include <QPointer>
 #include <QShowEvent>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
-#include <algorithm>
 #include <array>
-#include <thread>
 #include <utility>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 
 namespace
 {
     QString i8042Text(const char* const key, const QString& sourceText)
     {
-        return ks::i18n::contextText(QString::fromLatin1(key), sourceText);
+        return ks::i18n::LanguageManager::instance().text(
+            QString::fromUtf8(key),
+            sourceText);
     }
 
     enum I8042Column : int
     {
-        ColumnSource = 0,
-        ColumnTarget,
-        ColumnItem,
+        ColumnDeviceKind = 0,
+        ColumnPnpId,
+        ColumnEndpoint,
         ColumnAddress,
-        ColumnRelatedAddress,
-        ColumnModule,
+        ColumnContext,
+        ColumnClassDeviceObject,
+        ColumnOwner,
+        ColumnExecutable,
+        ColumnSameStack,
+        ColumnVerdict,
         ColumnStatus,
-        ColumnFlags,
-        ColumnDetail,
+        ColumnEvidence,
         ColumnCount
-    };
-
-    const std::array<const wchar_t*, 5> kI8042DriverNames = {
-        L"\\Driver\\i8042prt",
-        L"\\Driver\\kbdclass",
-        L"\\Driver\\mouclass",
-        L"\\Driver\\kbdhid",
-        L"\\Driver\\mouhid"
     };
 
     QTableWidgetItem* readOnlyI8042Item(const QString& text)
@@ -64,14 +66,11 @@ namespace
         return item;
     }
 
-    bool isI8042RelatedModule(const std::wstring& modulePath)
+    QString hexValue(const std::uint64_t value)
     {
-        const QString path = QString::fromStdWString(modulePath);
-        return path.contains(QStringLiteral("i8042prt"), Qt::CaseInsensitive) ||
-            path.contains(QStringLiteral("kbdclass"), Qt::CaseInsensitive) ||
-            path.contains(QStringLiteral("mouclass"), Qt::CaseInsensitive) ||
-            path.contains(QStringLiteral("kbdhid"), Qt::CaseInsensitive) ||
-            path.contains(QStringLiteral("mouhid"), Qt::CaseInsensitive);
+        return QStringLiteral("0x%1")
+            .arg(value, 0, 16)
+            .toUpper();
     }
 }
 
@@ -81,13 +80,42 @@ HardwareI8042AuditPage::HardwareI8042AuditPage(QWidget* parent)
     initializeUi();
 }
 
+HardwareI8042AuditPage::~HardwareI8042AuditPage()
+{
+    {
+        const std::lock_guard lock(m_refreshMutex);
+        m_closing = true;
+        if (m_refreshThread.joinable())
+        {
+            // 只取消本 worker 的同步 DeviceIoControl；无待处理 I/O 时失败可忽略。
+            (void)::CancelSynchronousIo(m_refreshThread.native_handle());
+        }
+    }
+    if (m_refreshThread.joinable())
+    {
+        m_refreshThread.join();
+    }
+}
+
 void HardwareI8042AuditPage::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
     if (!m_firstRefreshStarted)
     {
         m_firstRefreshStarted = true;
-        QMetaObject::invokeMethod(this, [this]() { refreshAsync(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(
+            this,
+            [this]() { refreshAsync(); },
+            Qt::QueuedConnection);
+    }
+}
+
+void HardwareI8042AuditPage::changeEvent(QEvent* event)
+{
+    QWidget::changeEvent(event);
+    if (event != nullptr && event->type() == QEvent::LanguageChange)
+    {
+        retranslateUi();
     }
 }
 
@@ -97,43 +125,26 @@ void HardwareI8042AuditPage::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    auto* explanation = new QLabel(
-        i8042Text(
-            "hardware.i8042.explanation",
-            QStringLiteral("只读 i8042prt 审计：组合 DriverObject 派遣表、输入设备栈和已登记回调；"
-                           "同时展示 kbdclass/mouclass/kbdhid/mouhid 邻接关系。"
-                           "本页不读取按键、扫描码、鼠标移动或 HID 报告，也不使用私有裸偏移。")),
-        this);
-    explanation->setWordWrap(true);
-    explanation->setStyleSheet(
-        QStringLiteral("QLabel{padding:6px;border:1px solid %1;border-radius:4px;color:%2;}")
+    m_explanationLabel = new QLabel(this);
+    m_explanationLabel->setWordWrap(true);
+    m_explanationLabel->setStyleSheet(
+        QStringLiteral(
+            "QLabel{padding:6px;border:1px solid %1;border-radius:4px;color:%2;}")
             .arg(KswordTheme::BorderColorHex())
             .arg(KswordTheme::TextSecondaryHex()));
-    rootLayout->addWidget(explanation);
+    rootLayout->addWidget(m_explanationLabel);
 
     auto* toolbar = new QHBoxLayout();
-    m_refreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), this);
-    m_refreshButton->setToolTip(i8042Text(
-        "hardware.i8042.refresh.tooltip",
-        QStringLiteral("重新组合 i8042prt DriverObject、InputStack 与 CallbackEnum 只读证据")));
+    m_refreshButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+        QString(),
+        this);
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
     m_columnGroupCombo = new QComboBox(this);
-    m_columnGroupCombo->addItems({
-        i8042Text("hardware.i8042.columns.a", QStringLiteral("列组 A：链路")),
-        i8042Text("hardware.i8042.columns.b", QStringLiteral("列组 B：完整性")),
-        i8042Text("hardware.i8042.columns.c", QStringLiteral("列组 C：全部"))
-    });
-    m_columnGroupCombo->setToolTip(i8042Text(
-        "hardware.i8042.columns.tooltip",
-        QStringLiteral("切换链路定位、完整性诊断或全部列")));
+    m_columnGroupCombo->addItems({ QString(), QString(), QString() });
     m_filterEdit = new QLineEdit(this);
     m_filterEdit->setClearButtonEnabled(true);
-    m_filterEdit->setPlaceholderText(i8042Text(
-        "hardware.i8042.filter.placeholder",
-        QStringLiteral("过滤驱动 / IRP / 设备 / 回调 / 模块 / 状态")));
-    m_statusLabel = new QLabel(
-        i8042Text("hardware.i8042.status.waiting", QStringLiteral("状态：等待刷新")),
-        this);
+    m_statusLabel = new QLabel(this);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     toolbar->addWidget(m_refreshButton);
     toolbar->addWidget(m_columnGroupCombo);
@@ -143,30 +154,119 @@ void HardwareI8042AuditPage::initializeUi()
 
     m_table = new ks::ui::VisibleTableWidget(this);
     m_table->setColumnCount(ColumnCount);
-    m_table->setHorizontalHeaderLabels({
-        i8042Text("hardware.i8042.header.source", QStringLiteral("证据源")),
-        i8042Text("hardware.i8042.header.target", QStringLiteral("目标驱动")),
-        i8042Text("hardware.i8042.header.item", QStringLiteral("项目")),
-        i8042Text("hardware.i8042.header.address", QStringLiteral("地址")),
-        i8042Text("hardware.i8042.header.related_address", QStringLiteral("关联地址")),
-        i8042Text("hardware.i8042.header.module", QStringLiteral("模块")),
-        i8042Text("hardware.i8042.header.status", QStringLiteral("状态")),
-        i8042Text("hardware.i8042.header.flags", QStringLiteral("标志")),
-        i8042Text("hardware.i8042.header.detail", QStringLiteral("备注"))
-    });
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setAlternatingRowColors(true);
     m_table->verticalHeader()->setVisible(false);
-    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(
+        QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setStretchLastSection(true);
     rootLayout->addWidget(m_table, 1);
 
-    connect(m_refreshButton, &QPushButton::clicked, this, [this]() { refreshAsync(); });
-    connect(m_columnGroupCombo, &QComboBox::currentIndexChanged, this, [this]() { applyColumnGroup(); });
-    connect(m_filterEdit, &QLineEdit::textChanged, this, [this]() { applyFilter(); });
+    connect(
+        m_refreshButton,
+        &QPushButton::clicked,
+        this,
+        [this]() { refreshAsync(); });
+    connect(
+        m_columnGroupCombo,
+        &QComboBox::currentIndexChanged,
+        this,
+        [this]() { applyColumnGroup(); });
+    connect(
+        m_filterEdit,
+        &QLineEdit::textChanged,
+        this,
+        [this]() { applyFilter(); });
+    retranslateUi();
     applyColumnGroup();
+}
+
+void HardwareI8042AuditPage::retranslateUi()
+{
+    if (m_explanationLabel == nullptr ||
+        m_refreshButton == nullptr ||
+        m_columnGroupCombo == nullptr ||
+        m_filterEdit == nullptr ||
+        m_statusLabel == nullptr ||
+        m_table == nullptr)
+    {
+        return;
+    }
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({ m_table }))
+    {
+        const QPointer<HardwareI8042AuditPage> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("hardware-i8042-audit-retranslate"),
+            { m_table },
+            [safeThis]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->retranslateUi();
+                }
+            });
+        return;
+    }
+
+    m_explanationLabel->setText(i8042Text(
+        "hardware.i8042.explanation",
+        QStringLiteral(
+            "只读 i8042prt 专项审计：仅在 PE、RSDS、opcode 与 DriverObject "
+            "全部匹配受支持描述符后，展示键鼠 ClassService、InitializationRoutine、"
+            "IsrRoutine 及 Context/ClassDeviceObject 的地址、模块执行节和同栈证据。"
+            "未知版本失败关闭；本页不读取按键、扫描码、鼠标移动或 HID 报告。")));
+    m_refreshButton->setToolTip(i8042Text(
+        "hardware.i8042.refresh.tooltip",
+        QStringLiteral("重新读取专用 i8042prt 描述符与端点证据")));
+    m_columnGroupCombo->setItemText(0, i8042Text(
+        "hardware.i8042.columns.a",
+        QStringLiteral("列组 A：端点")));
+    m_columnGroupCombo->setItemText(1, i8042Text(
+        "hardware.i8042.columns.b",
+        QStringLiteral("列组 B：完整性")));
+    m_columnGroupCombo->setItemText(2, i8042Text(
+        "hardware.i8042.columns.c",
+        QStringLiteral("列组 C：全部")));
+    m_columnGroupCombo->setToolTip(i8042Text(
+        "hardware.i8042.columns.tooltip",
+        QStringLiteral("切换端点定位、完整性证据或全部列")));
+    m_filterEdit->setPlaceholderText(i8042Text(
+        "hardware.i8042.filter.placeholder",
+        QStringLiteral("过滤设备 / PnP / 端点 / 模块 / 状态 / 证据")));
+    m_table->setHorizontalHeaderLabels({
+        i8042Text("hardware.i8042.header.device_type", QStringLiteral("设备类型")),
+        i8042Text("hardware.i8042.header.pnp", QStringLiteral("PnP / Hardware ID")),
+        i8042Text("hardware.i8042.header.endpoint", QStringLiteral("端点")),
+        i8042Text("hardware.i8042.header.address", QStringLiteral("地址")),
+        i8042Text("hardware.i8042.header.context", QStringLiteral("Context")),
+        i8042Text("hardware.i8042.header.class_do", QStringLiteral("ClassDeviceObject")),
+        i8042Text("hardware.i8042.header.owner", QStringLiteral("归属模块")),
+        i8042Text("hardware.i8042.header.executable", QStringLiteral("执行节")),
+        i8042Text("hardware.i8042.header.same_stack", QStringLiteral("同设备栈")),
+        i8042Text("hardware.i8042.header.verdict", QStringLiteral("结论")),
+        i8042Text("hardware.i8042.header.status", QStringLiteral("状态")),
+        i8042Text("hardware.i8042.header.evidence", QStringLiteral("证据"))
+    });
+
+    if (m_refreshRunning)
+    {
+        m_statusLabel->setText(i8042Text(
+            "hardware.i8042.status.refreshing",
+            QStringLiteral("状态：正在验证映像描述符并读取只读端点...")));
+    }
+    else if (m_hasResult)
+    {
+        renderResult(m_lastResult);
+    }
+    else
+    {
+        m_statusLabel->setText(i8042Text(
+            "hardware.i8042.status.waiting",
+            QStringLiteral("状态：等待刷新")));
+    }
 }
 
 void HardwareI8042AuditPage::refreshAsync()
@@ -175,58 +275,78 @@ void HardwareI8042AuditPage::refreshAsync()
     {
         return;
     }
+    if (m_refreshThread.joinable())
+    {
+        // 上一结果只会在 worker 已完成查询并成功投递后进入 GUI 队列。
+        m_refreshThread.join();
+    }
+    {
+        const std::lock_guard lock(m_refreshMutex);
+        if (m_closing)
+        {
+            return;
+        }
+    }
+
     m_refreshRunning = true;
     m_refreshButton->setEnabled(false);
     m_statusLabel->setText(i8042Text(
         "hardware.i8042.status.refreshing",
-        QStringLiteral("状态：正在组合三类只读证据...")));
-    QPointer<HardwareI8042AuditPage> safeThis(this);
+        QStringLiteral("状态：正在验证映像描述符并读取只读端点...")));
 
-    std::thread([safeThis]()
     {
-        Snapshot snapshot;
-        ksword::ark::DriverClient client;
-        snapshot.drivers.reserve(kI8042DriverNames.size());
-        for (const wchar_t* driverName : kI8042DriverNames)
+        const std::lock_guard lock(m_refreshMutex);
+        if (m_closing)
         {
-            snapshot.drivers.push_back(client.queryDriverObject(driverName));
-        }
-        snapshot.inputStack = client.queryInputStackAudit(L"\\Driver\\i8042prt");
-        snapshot.callbacks = client.enumerateCallbacks(KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_ALL);
-        QCoreApplication* application = QCoreApplication::instance();
-        if (application == nullptr)
-        {
+            m_refreshRunning = false;
+            m_refreshButton->setEnabled(true);
             return;
         }
-        const bool posted = QMetaObject::invokeMethod(
-            application,
-            [safeThis, snapshot = std::move(snapshot)]() mutable
+        QCoreApplication* const application = QCoreApplication::instance();
+        const QPointer<HardwareI8042AuditPage> safeThis(this);
+        m_refreshThread = std::thread([this, application, safeThis]()
+        {
+            ksword::ark::DriverClient client;
+            auto result = client.queryI8042Audit();
+            const std::lock_guard workerLock(m_refreshMutex);
+            if (m_closing)
             {
-                if (safeThis != nullptr)
+                return;
+            }
+            if (application == nullptr)
+            {
+                return;
+            }
+            const bool posted = QMetaObject::invokeMethod(
+                application,
+                [safeThis, result = std::move(result)]() mutable
                 {
-                    safeThis->applySnapshot(std::move(snapshot));
-                }
-            },
-            Qt::QueuedConnection);
-        // 中文说明：投递失败时也不允许 worker 触碰页面状态；页面恢复只能发生在 GUI 回调内。
-        Q_UNUSED(posted);
-    }).detach();
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->applyResult(std::move(result));
+                    }
+                },
+                Qt::QueuedConnection);
+            Q_UNUSED(posted);
+        });
+    }
 }
 
-void HardwareI8042AuditPage::applySnapshot(Snapshot snapshot)
+void HardwareI8042AuditPage::applyResult(
+    ksword::ark::I8042AuditResult result)
 {
-    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_table}))
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({ m_table }))
     {
         const QPointer<HardwareI8042AuditPage> safeThis(this);
         ks::ui::DeferTableUiCommitIfContextMenuOpen(
             this,
             QStringLiteral("hardware-i8042-audit-apply"),
-            {m_table},
-            [safeThis, snapshot = std::move(snapshot)]() mutable
+            { m_table },
+            [safeThis, result = std::move(result)]() mutable
             {
                 if (!safeThis.isNull())
                 {
-                    safeThis->applySnapshot(std::move(snapshot));
+                    safeThis->applyResult(std::move(result));
                 }
             });
         return;
@@ -234,170 +354,129 @@ void HardwareI8042AuditPage::applySnapshot(Snapshot snapshot)
 
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
+    m_lastResult = result;
+    m_hasResult = true;
+    renderResult(m_lastResult);
+}
+
+void HardwareI8042AuditPage::renderResult(
+    const ksword::ark::I8042AuditResult& result)
+{
     m_table->setRowCount(0);
-    int successfulDriverQueries = 0;
-    for (const ksword::ark::DriverObjectQueryResult& driver : snapshot.drivers)
+    if (!result.io.ok)
     {
-        appendDriverRows(driver);
-        if (driver.io.ok)
-        {
-            ++successfulDriverQueries;
-        }
+        m_statusLabel->setText(i8042Text(
+            "hardware.i8042.status.failed",
+            QStringLiteral("状态：协议查询失败 - %1"))
+            .arg(QString::fromStdString(result.io.message)));
+        return;
     }
-    appendInputRows(snapshot.inputStack);
-    appendCallbackRows(snapshot.callbacks);
+
+    for (const KSWORD_ARK_I8042_AUDIT_ENTRY& entry : result.entries)
+    {
+        appendEntry(entry);
+    }
     applyColumnGroup();
     applyFilter();
-    m_statusLabel->setText(
-        i8042Text(
-            "hardware.i8042.status.summary",
-            QStringLiteral("状态：%1 行；DriverObject %2/%3；InputStack=%4；CallbackEnum=%5"))
-            .arg(m_table->rowCount())
-            .arg(successfulDriverQueries)
-            .arg(snapshot.drivers.size())
-            .arg(snapshot.inputStack.io.ok
-                     ? i8042Text("hardware.i8042.value.ok", QStringLiteral("正常"))
-                     : i8042Text("hardware.i8042.value.failed", QStringLiteral("失败")))
-            .arg(snapshot.callbacks.io.ok
-                     ? i8042Text("hardware.i8042.value.ok", QStringLiteral("正常"))
-                     : i8042Text("hardware.i8042.value.failed", QStringLiteral("失败"))));
+
+    const bool imageValidated =
+        (result.responseFlags &
+         KSWORD_ARK_I8042_RESPONSE_IMAGE_VALIDATED) != 0UL;
+    const bool descriptorValidated =
+        (result.responseFlags &
+         KSWORD_ARK_I8042_RESPONSE_DESCRIPTOR_VALIDATED) != 0UL;
+    m_statusLabel->setText(i8042Text(
+        "hardware.i8042.status.summary",
+        QStringLiteral(
+            "状态：%1/%2 行；描述符=%3；映像=%4；布局=%5；"
+            "TDS=0x%6；Size=0x%7；Flags=0x%8"))
+        .arg(result.entries.size())
+        .arg(result.totalCount)
+        .arg(result.descriptorId)
+        .arg(yesNoText(imageValidated, true))
+        .arg(yesNoText(descriptorValidated, true))
+        .arg(QStringLiteral("%1")
+            .arg(result.imageTimeDateStamp, 8, 16, QLatin1Char('0'))
+            .toUpper())
+        .arg(QString::number(result.imageSize, 16).toUpper())
+        .arg(QString::number(result.responseFlags, 16).toUpper()));
 }
 
-void HardwareI8042AuditPage::appendDriverRows(const ksword::ark::DriverObjectQueryResult& result)
+void HardwareI8042AuditPage::appendEntry(
+    const KSWORD_ARK_I8042_AUDIT_ENTRY& entry)
 {
-    const QString targetName = result.driverName.empty()
-        ? i8042Text("hardware.i8042.value.driver_query_failed", QStringLiteral("<DriverObject 查询失败>"))
-        : QString::fromStdWString(result.driverName);
-    appendRow({
-        QStringLiteral("DriverObject"),
-        targetName,
-        i8042Text("hardware.i8042.value.driver_summary", QStringLiteral("驱动摘要")),
-        addressText(result.driverObjectAddress),
-        addressText(result.driverStart),
-        QString::fromStdWString(result.imagePath),
-        result.io.ok
-            ? i8042Text("hardware.i8042.value.ok", QStringLiteral("正常"))
-            : i8042Text("hardware.i8042.value.query_failed", QStringLiteral("查询失败")),
-        QStringLiteral("DriverFlags=0x%1").arg(result.driverFlags, 8, 16, QLatin1Char('0')),
-        i8042Text(
-            "hardware.i8042.driver.detail",
-            QStringLiteral("Unload=%1；Service=%2；NTSTATUS=0x%3"))
-            .arg(addressText(result.driverUnload))
-            .arg(QString::fromStdWString(result.serviceKeyName))
-            .arg(static_cast<unsigned long>(result.lastStatus), 8, 16, QLatin1Char('0'))
-    });
+    const bool executablePresent =
+        (entry.fieldFlags & KSWORD_ARK_I8042_FIELD_CALLBACK_ADDRESS) != 0UL;
+    const bool executable =
+        (entry.fieldFlags & KSWORD_ARK_I8042_FIELD_EXECUTABLE) != 0UL;
+    const bool classDoPresent =
+        (entry.fieldFlags &
+         KSWORD_ARK_I8042_FIELD_CLASS_DEVICE_OBJECT) != 0UL;
+    const bool sameStack =
+        (entry.fieldFlags &
+         KSWORD_ARK_I8042_FIELD_SAME_DEVICE_STACK) != 0UL;
+    const std::array<QString, ColumnCount> cells = {
+        deviceKindText(entry.deviceKind),
+        fixedWide(entry.pnpId, KSWORD_ARK_I8042_PNP_ID_CHARS),
+        endpointText(entry.endpointKind),
+        addressText(entry.callbackAddress != 0ULL
+            ? entry.callbackAddress
+            : entry.deviceObject),
+        addressText(entry.contextAddress),
+        addressText(entry.classDeviceObject),
+        fixedWide(
+            entry.ownerModulePath,
+            KSWORD_ARK_I8042_MODULE_PATH_CHARS),
+        yesNoText(executable, executablePresent),
+        yesNoText(sameStack, classDoPresent),
+        verdictText(entry.verdict),
+        statusText(entry.status, entry.lastStatus),
+        detailText(entry)
+    };
 
-    for (const ksword::ark::DriverMajorFunctionEntry& major : result.majorFunctions)
-    {
-        appendRow({
-            QStringLiteral("DriverObject.MajorFunction"),
-            targetName,
-            majorFunctionText(major.majorFunction),
-            addressText(major.dispatchAddress),
-            addressText(major.moduleBase),
-            QString::fromStdWString(major.moduleName),
-            (major.flags & 0x00000002UL) != 0UL
-                ? i8042Text("hardware.i8042.value.owned", QStringLiteral("由目标映像拥有"))
-                : i8042Text("hardware.i8042.value.delegated", QStringLiteral("已委派 / 所有者不匹配")),
-            QStringLiteral("0x%1").arg(major.flags, 8, 16, QLatin1Char('0')),
-            i8042Text(
-                "hardware.i8042.dispatch.detail",
-                QStringLiteral("派遣地址和模块归属来自现有 DriverObject 查询协议；不读取私有偏移。"))
-        });
-    }
-}
-
-void HardwareI8042AuditPage::appendInputRows(const ksword::ark::DeviceAuditResult& result)
-{
-    for (const KSWORD_ARK_DEVICE_AUDIT_ENTRY& entry : result.entries)
-    {
-        appendRow({
-            QStringLiteral("InputStack"),
-            fixedWide(entry.driverName, KSWORD_ARK_DEVICE_AUDIT_DRIVER_NAME_CHARS),
-            entry.rowKind == KSWORD_ARK_DEVICE_AUDIT_ROW_KIND_DRIVER_SUMMARY
-                ? i8042Text("hardware.i8042.value.driver_summary", QStringLiteral("驱动摘要"))
-                : i8042Text(
-                      "hardware.i8042.input.device_depth",
-                      QStringLiteral("设备层级 %1 / 已附加 %2"))
-                      .arg(entry.relationDepth)
-                      .arg(entry.attachedDepth),
-            addressText(entry.deviceObjectAddress != 0ULL
-                ? entry.deviceObjectAddress
-                : entry.driverObjectAddress),
-            addressText(entry.attachedDeviceAddress != 0ULL
-                ? entry.attachedDeviceAddress
-                : entry.nextDeviceObjectAddress),
-            fixedWide(entry.imagePath, KSWORD_ARK_DEVICE_AUDIT_IMAGE_PATH_CHARS),
-            QStringLiteral("Status=%1 Risk=0x%2")
-                .arg(entry.status)
-                .arg(entry.riskFlags, 8, 16, QLatin1Char('0')),
-            QStringLiteral("0x%1").arg(entry.fieldFlags, 8, 16, QLatin1Char('0')),
-            fixedWide(entry.detail, KSWORD_ARK_DEVICE_AUDIT_DETAIL_CHARS)
-        });
-    }
-}
-
-void HardwareI8042AuditPage::appendCallbackRows(const ksword::ark::CallbackEnumResult& result)
-{
-    for (const ksword::ark::CallbackEnumEntry& entry : result.entries)
-    {
-        if (!isI8042RelatedModule(entry.modulePath))
-        {
-            continue;
-        }
-        appendRow({
-            QStringLiteral("CallbackEnum"),
-            QString::fromStdWString(entry.modulePath),
-            QString::fromStdWString(entry.name),
-            addressText(entry.callbackAddress),
-            addressText(entry.registrationAddress),
-            QString::fromStdWString(entry.modulePath),
-            QStringLiteral("Class=%1 Status=%2 Trust=0x%3")
-                .arg(entry.callbackClass)
-                .arg(entry.status)
-                .arg(entry.trustFlags, 8, 16, QLatin1Char('0')),
-            QStringLiteral("0x%1").arg(entry.fieldFlags, 8, 16, QLatin1Char('0')),
-            QString::fromStdWString(entry.detail)
-        });
-    }
-}
-
-void HardwareI8042AuditPage::appendRow(const QStringList& cells)
-{
     const int row = m_table->rowCount();
     m_table->insertRow(row);
     for (int column = 0; column < ColumnCount; ++column)
     {
-        m_table->setItem(
-            row,
-            column,
-            readOnlyI8042Item(column < cells.size() ? cells[column] : QString()));
+        auto* item = readOnlyI8042Item(
+            cells[static_cast<std::size_t>(column)]);
+        if (entry.verdict == KSWORD_ARK_I8042_VERDICT_SUSPICIOUS)
+        {
+            item->setBackground(QBrush(QColor(190, 35, 45, 48)));
+        }
+        m_table->setItem(row, column, item);
     }
 }
 
 void HardwareI8042AuditPage::applyColumnGroup()
 {
-    const int group = m_columnGroupCombo != nullptr ? m_columnGroupCombo->currentIndex() : 0;
+    const int group = m_columnGroupCombo != nullptr
+        ? m_columnGroupCombo->currentIndex()
+        : 0;
     for (int column = 0; column < ColumnCount; ++column)
     {
         bool visible = group == 2;
         if (group == 0)
         {
-            visible = column == ColumnSource ||
-                column == ColumnTarget ||
-                column == ColumnItem ||
+            visible =
+                column == ColumnDeviceKind ||
+                column == ColumnPnpId ||
+                column == ColumnEndpoint ||
                 column == ColumnAddress ||
-                column == ColumnRelatedAddress ||
-                column == ColumnStatus;
+                column == ColumnOwner ||
+                column == ColumnVerdict;
         }
         else if (group == 1)
         {
-            visible = column == ColumnSource ||
-                column == ColumnItem ||
-                column == ColumnModule ||
+            visible =
+                column == ColumnEndpoint ||
+                column == ColumnAddress ||
+                column == ColumnContext ||
+                column == ColumnClassDeviceObject ||
+                column == ColumnExecutable ||
+                column == ColumnSameStack ||
                 column == ColumnStatus ||
-                column == ColumnFlags ||
-                column == ColumnDetail;
+                column == ColumnEvidence;
         }
         m_table->setColumnHidden(column, !visible);
     }
@@ -405,54 +484,28 @@ void HardwareI8042AuditPage::applyColumnGroup()
 
 void HardwareI8042AuditPage::applyFilter()
 {
-    const QString filter = m_filterEdit != nullptr ? m_filterEdit->text().trimmed() : QString();
+    const QString filter = m_filterEdit != nullptr
+        ? m_filterEdit->text().trimmed()
+        : QString();
     for (int row = 0; row < m_table->rowCount(); ++row)
     {
         bool matched = filter.isEmpty();
-        for (int column = 0; !matched && column < m_table->columnCount(); ++column)
+        for (int column = 0;
+             !matched && column < m_table->columnCount();
+             ++column)
         {
             const QTableWidgetItem* item = m_table->item(row, column);
-            matched = item != nullptr && item->text().contains(filter, Qt::CaseInsensitive);
+            matched =
+                item != nullptr &&
+                item->text().contains(filter, Qt::CaseInsensitive);
         }
         m_table->setRowHidden(row, !matched);
     }
 }
 
-QString HardwareI8042AuditPage::addressText(const std::uint64_t address)
-{
-    return address == 0ULL
-        ? QStringLiteral("-")
-        : QStringLiteral("0x%1").arg(address, 16, 16, QLatin1Char('0'));
-}
-
-QString HardwareI8042AuditPage::majorFunctionText(const std::uint32_t majorFunction)
-{
-    switch (majorFunction)
-    {
-    case 0:
-        return QStringLiteral("IRP_MJ_CREATE");
-    case 2:
-        return QStringLiteral("IRP_MJ_CLOSE");
-    case 3:
-        return QStringLiteral("IRP_MJ_READ");
-    case 4:
-        return QStringLiteral("IRP_MJ_WRITE");
-    case 14:
-        return QStringLiteral("IRP_MJ_DEVICE_CONTROL");
-    case 15:
-        return QStringLiteral("IRP_MJ_INTERNAL_DEVICE_CONTROL");
-    case 22:
-        return QStringLiteral("IRP_MJ_POWER");
-    case 23:
-        return QStringLiteral("IRP_MJ_SYSTEM_CONTROL");
-    case 27:
-        return QStringLiteral("IRP_MJ_PNP");
-    default:
-        return QStringLiteral("IRP_MJ_%1").arg(majorFunction);
-    }
-}
-
-QString HardwareI8042AuditPage::fixedWide(const wchar_t* text, const int capacity)
+QString HardwareI8042AuditPage::fixedWide(
+    const wchar_t* text,
+    const int capacity)
 {
     if (text == nullptr || capacity <= 0)
     {
@@ -464,4 +517,241 @@ QString HardwareI8042AuditPage::fixedWide(const wchar_t* text, const int capacit
         ++length;
     }
     return QString::fromWCharArray(text, length);
+}
+
+QString HardwareI8042AuditPage::addressText(
+    const std::uint64_t address)
+{
+    return address == 0ULL
+        ? QStringLiteral("-")
+        : QStringLiteral("0x%1")
+            .arg(address, 16, 16, QLatin1Char('0'))
+            .toUpper();
+}
+
+QString HardwareI8042AuditPage::deviceKindText(
+    const std::uint32_t value)
+{
+    switch (value)
+    {
+    case KSWORD_ARK_I8042_DEVICE_KEYBOARD:
+        return i8042Text(
+            "hardware.i8042.device.keyboard",
+            QStringLiteral("键盘"));
+    case KSWORD_ARK_I8042_DEVICE_MOUSE:
+        return i8042Text(
+            "hardware.i8042.device.mouse",
+            QStringLiteral("鼠标"));
+    default:
+        return i8042Text(
+            "hardware.i8042.value.unknown",
+            QStringLiteral("未知"));
+    }
+}
+
+QString HardwareI8042AuditPage::endpointText(
+    const std::uint32_t value)
+{
+    switch (value)
+    {
+    case KSWORD_ARK_I8042_ENDPOINT_KEYBOARD_CLASS_SERVICE:
+        return QStringLiteral("Keyboard ClassService");
+    case KSWORD_ARK_I8042_ENDPOINT_KEYBOARD_INITIALIZATION:
+        return QStringLiteral("Keyboard InitializationRoutine");
+    case KSWORD_ARK_I8042_ENDPOINT_KEYBOARD_ISR:
+        return QStringLiteral("Keyboard IsrRoutine");
+    case KSWORD_ARK_I8042_ENDPOINT_MOUSE_CLASS_SERVICE:
+        return QStringLiteral("Mouse ClassService");
+    case KSWORD_ARK_I8042_ENDPOINT_MOUSE_ISR:
+        return QStringLiteral("Mouse IsrRoutine");
+    default:
+        return QStringLiteral("-");
+    }
+}
+
+QString HardwareI8042AuditPage::yesNoText(
+    const bool value,
+    const bool present)
+{
+    if (!present)
+    {
+        return QStringLiteral("-");
+    }
+    return value
+        ? i8042Text("hardware.i8042.value.yes", QStringLiteral("是"))
+        : i8042Text("hardware.i8042.value.no", QStringLiteral("否"));
+}
+
+QString HardwareI8042AuditPage::verdictText(
+    const std::uint32_t value)
+{
+    switch (value)
+    {
+    case KSWORD_ARK_I8042_VERDICT_AVAILABLE:
+        return i8042Text(
+            "hardware.i8042.verdict.available",
+            QStringLiteral("证据可用（非 Clean）"));
+    case KSWORD_ARK_I8042_VERDICT_SUSPICIOUS:
+        return i8042Text(
+            "hardware.i8042.verdict.suspicious",
+            QStringLiteral("可疑"));
+    case KSWORD_ARK_I8042_VERDICT_UNSUPPORTED:
+        return i8042Text(
+            "hardware.i8042.verdict.unsupported",
+            QStringLiteral("不支持 / 失败关闭"));
+    default:
+        return i8042Text(
+            "hardware.i8042.value.unknown",
+            QStringLiteral("未知"));
+    }
+}
+
+QString HardwareI8042AuditPage::statusText(
+    const std::uint32_t value,
+    const std::int32_t lastStatus)
+{
+    QString text;
+    switch (value)
+    {
+    case KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE:
+        text = i8042Text(
+            "hardware.i8042.status.available",
+            QStringLiteral("已读取"));
+        break;
+    case KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL:
+        text = i8042Text(
+            "hardware.i8042.status.partial",
+            QStringLiteral("部分"));
+        break;
+    case KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED:
+        text = i8042Text(
+            "hardware.i8042.status.unsupported",
+            QStringLiteral("不支持"));
+        break;
+    case KSWORD_ARK_I8042_AUDIT_STATUS_SIGNATURE_MISMATCH:
+        text = i8042Text(
+            "hardware.i8042.status.signature_mismatch",
+            QStringLiteral("证据不匹配"));
+        break;
+    case KSWORD_ARK_I8042_AUDIT_STATUS_QUERY_FAILED:
+        text = i8042Text(
+            "hardware.i8042.status.query_failed",
+            QStringLiteral("查询失败"));
+        break;
+    case KSWORD_ARK_I8042_AUDIT_STATUS_BUFFER_TRUNCATED:
+        text = i8042Text(
+            "hardware.i8042.status.truncated",
+            QStringLiteral("已截断"));
+        break;
+    default:
+        text = i8042Text(
+            "hardware.i8042.status.unavailable",
+            QStringLiteral("不可用"));
+        break;
+    }
+    return QStringLiteral("%1 (0x%2)")
+        .arg(text)
+        .arg(QStringLiteral("%1")
+            .arg(
+                static_cast<std::uint32_t>(lastStatus),
+                8,
+                16,
+                QLatin1Char('0'))
+            .toUpper());
+}
+
+QString HardwareI8042AuditPage::detailText(
+    const KSWORD_ARK_I8042_AUDIT_ENTRY& entry)
+{
+    const auto arg = [&entry](const int index)
+    {
+        return hexValue(
+            entry.detailArgs[static_cast<std::size_t>(index)]);
+    };
+    switch (entry.detailCode)
+    {
+    case KSWORD_ARK_I8042_DETAIL_DESCRIPTOR_VALIDATED:
+        return i8042Text(
+            "hardware.i8042.detail.descriptor_validated",
+            QStringLiteral(
+                "受支持描述符已验证；extension=%1；deviceKind=%2。"))
+            .arg(arg(0))
+            .arg(entry.detailArgs[1]);
+    case KSWORD_ARK_I8042_DETAIL_DRIVER_NOT_FOUND:
+        return i8042Text(
+            "hardware.i8042.detail.driver_not_found",
+            QStringLiteral("\\Driver\\i8042prt 不存在或无法引用。"));
+    case KSWORD_ARK_I8042_DETAIL_MODULE_NOT_FOUND:
+        return i8042Text(
+            "hardware.i8042.detail.module_not_found",
+            QStringLiteral("未找到唯一的 i8042prt.sys 已加载模块。"));
+    case KSWORD_ARK_I8042_DETAIL_IMAGE_MISMATCH:
+        return i8042Text(
+            "hardware.i8042.detail.image_mismatch",
+            QStringLiteral("PE 身份不匹配；未知版本已失败关闭。"));
+    case KSWORD_ARK_I8042_DETAIL_RSDS_MISMATCH:
+        return i8042Text(
+            "hardware.i8042.detail.rsds_mismatch",
+            QStringLiteral("RSDS GUID/Age 不匹配；未知版本已失败关闭。"));
+    case KSWORD_ARK_I8042_DETAIL_OPCODE_MISMATCH:
+        return i8042Text(
+            "hardware.i8042.detail.opcode_mismatch",
+            QStringLiteral("opcode 窗口 %1 不匹配；未使用设备扩展偏移。"))
+            .arg(arg(0));
+    case KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH:
+        return i8042Text(
+            "hardware.i8042.detail.driver_layout_mismatch",
+            QStringLiteral(
+                "DriverObject 派遣/AddDevice/设备类型不匹配（%1，%2）。"))
+            .arg(arg(0), arg(1));
+    case KSWORD_ARK_I8042_DETAIL_DEVICE_ENUM_FAILED:
+        return i8042Text(
+            "hardware.i8042.detail.device_enum_failed",
+            QStringLiteral("IoEnumerateDeviceObjectList 失败。"));
+    case KSWORD_ARK_I8042_DETAIL_NO_DEVICES:
+        return i8042Text(
+            "hardware.i8042.detail.no_devices",
+            QStringLiteral("i8042prt 当前没有设备对象。"));
+    case KSWORD_ARK_I8042_DETAIL_PNP_CLASS_UNKNOWN:
+        return i8042Text(
+            "hardware.i8042.detail.pnp_unknown",
+            QStringLiteral("PnP 类别无法安全判定；未读取类型专用偏移。"));
+    case KSWORD_ARK_I8042_DETAIL_EXTENSION_READ_FAILED:
+        return i8042Text(
+            "hardware.i8042.detail.extension_read_failed",
+            QStringLiteral("设备扩展端点读取失败；未返回不完整指针。"));
+    case KSWORD_ARK_I8042_DETAIL_ENDPOINT_AVAILABLE:
+        return i8042Text(
+            "hardware.i8042.detail.endpoint_available",
+            QStringLiteral(
+                "端点=%1；owner=%2；ClassDO=%3；Context=%4；"
+                "owner/执行节/同栈证据通过，但没有独立 Clean 基线。"))
+            .arg(arg(0), arg(1), arg(2), arg(3));
+    case KSWORD_ARK_I8042_DETAIL_ENDPOINT_NULL:
+        return i8042Text(
+            "hardware.i8042.detail.endpoint_null",
+            QStringLiteral("端点尚未登记；endpointKind=%1。"))
+            .arg(entry.detailArgs[0]);
+    case KSWORD_ARK_I8042_DETAIL_OWNER_MISMATCH:
+        return i8042Text(
+            "hardware.i8042.detail.owner_mismatch",
+            QStringLiteral("端点 %1 的模块 %2 不在同一设备栈。"))
+            .arg(arg(0), arg(1));
+    case KSWORD_ARK_I8042_DETAIL_NON_EXECUTABLE:
+        return i8042Text(
+            "hardware.i8042.detail.non_executable",
+            QStringLiteral("端点 %1 不位于归属模块的可执行节。"))
+            .arg(arg(0));
+    case KSWORD_ARK_I8042_DETAIL_CLASS_DO_OUTSIDE_STACK:
+        return i8042Text(
+            "hardware.i8042.detail.class_do_outside_stack",
+            QStringLiteral("ClassDeviceObject %1 不在设备 %2 的附加栈。"))
+            .arg(arg(0), arg(1));
+    case KSWORD_ARK_I8042_DETAIL_BUFFER_TRUNCATED:
+        return i8042Text(
+            "hardware.i8042.detail.buffer_truncated",
+            QStringLiteral("结果超过行预算，已安全截断。"));
+    default:
+        return QStringLiteral("-");
+    }
 }

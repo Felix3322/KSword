@@ -4335,12 +4335,12 @@ void HardwareDock::initializeI8042AuditTab()
         QStringLiteral("i8042prt 审计"));
     m_sideTabWidget->setTabToolTip(
         tabIndex,
-        QStringLiteral("组合检查 i8042prt 派遣表、输入设备栈、类/HID 邻接驱动和相关回调"));
+        QStringLiteral("精确验证 i8042prt 映像描述符、键鼠端点归属与设备栈关系"));
     ks::i18n::LanguageManager::instance().bindTabToolTip(
         m_sideTabWidget,
         m_i8042AuditPage,
         QStringLiteral("hardware.tooltip.i8042_audit"),
-        QStringLiteral("组合检查 i8042prt 派遣表、输入设备栈、类/HID 邻接驱动和相关回调"));
+        QStringLiteral("精确验证 i8042prt 映像描述符、键鼠端点归属与设备栈关系"));
 }
 
 void HardwareDock::initializeUsbTopologyTab()

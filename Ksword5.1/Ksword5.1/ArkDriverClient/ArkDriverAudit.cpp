@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -1697,6 +1698,473 @@ namespace ksword::ark
             headerSize,
             response->entrySize,
             parsedCount);
+        result.io.message = appendAuditSummary(
+            operationName,
+            result.totalCount,
+            result.returnedCount,
+            result.entries.size(),
+            result.io.bytesReturned);
+        return result;
+    }
+
+    I8042AuditResult DriverClient::queryI8042Audit(const unsigned long maxRows) const
+    {
+        constexpr const char* operationName = "IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT";
+        constexpr std::size_t headerSize =
+            offsetof(KSWORD_ARK_QUERY_I8042_AUDIT_RESPONSE, entries);
+        constexpr std::uint32_t knownResponseFlags =
+            KSWORD_ARK_I8042_RESPONSE_TRUNCATED |
+            KSWORD_ARK_I8042_RESPONSE_PARTIAL |
+            KSWORD_ARK_I8042_RESPONSE_FAIL_CLOSED |
+            KSWORD_ARK_I8042_RESPONSE_IMAGE_VALIDATED |
+            KSWORD_ARK_I8042_RESPONSE_DESCRIPTOR_VALIDATED;
+        constexpr std::uint32_t knownFieldFlags =
+            KSWORD_ARK_I8042_FIELD_DEVICE_OBJECT |
+            KSWORD_ARK_I8042_FIELD_PNP_ID |
+            KSWORD_ARK_I8042_FIELD_CLASS_DEVICE_OBJECT |
+            KSWORD_ARK_I8042_FIELD_CALLBACK_ADDRESS |
+            KSWORD_ARK_I8042_FIELD_CONTEXT_ADDRESS |
+            KSWORD_ARK_I8042_FIELD_OWNER_MODULE |
+            KSWORD_ARK_I8042_FIELD_EXECUTABLE |
+            KSWORD_ARK_I8042_FIELD_SAME_DEVICE_STACK |
+            KSWORD_ARK_I8042_FIELD_IMAGE_VALIDATED |
+            KSWORD_ARK_I8042_FIELD_DESCRIPTOR_VALIDATED |
+            KSWORD_ARK_I8042_FIELD_DETAIL_ARGS;
+        constexpr std::uint8_t expectedPdbGuid[KSWORD_ARK_I8042_PDB_GUID_BYTES] = {
+            0x63U, 0x4CU, 0x70U, 0xECU,
+            0x2FU, 0x3FU, 0xE7U, 0xA4U,
+            0xBEU, 0xF7U, 0x86U, 0xF7U,
+            0x55U, 0xDCU, 0xB5U, 0x2CU
+        };
+        I8042AuditResult result{};
+        KSWORD_ARK_QUERY_I8042_AUDIT_REQUEST request{};
+        request.size = sizeof(request);
+        request.version = KSWORD_ARK_I8042_AUDIT_PROTOCOL_VERSION;
+        request.maxRows = maxRows;
+        request.flags = 0UL;
+        request.reserved0 = 0UL;
+        request.reserved1 = 0UL;
+
+        constexpr std::size_t responseBufferBytes =
+            headerSize +
+            (static_cast<std::size_t>(KSWORD_ARK_I8042_HARD_MAX_ROWS) *
+             sizeof(KSWORD_ARK_I8042_AUDIT_ENTRY));
+        static_assert(
+            responseBufferBytes <= std::numeric_limits<unsigned long>::max(),
+            "i8042 audit buffer must fit DeviceIoControl");
+        std::vector<std::uint8_t> responseBuffer(responseBufferBytes, 0U);
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT,
+            &request,
+            sizeof(request),
+            responseBuffer.data(),
+            static_cast<unsigned long>(responseBuffer.size()));
+        if (!result.io.ok)
+        {
+            markUnsupportedIfNeeded(result, operationName);
+            return result;
+        }
+
+        const auto failProtocol = [&result, operationName](const std::string& reason)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message = std::string(operationName) +
+                " invalid response: " + reason;
+            result.entries.clear();
+        };
+        if (result.io.bytesReturned < headerSize ||
+            result.io.bytesReturned > responseBuffer.size())
+        {
+            failProtocol("header/bytesReturned out of range");
+            return result;
+        }
+
+        KSWORD_ARK_QUERY_I8042_AUDIT_RESPONSE response{};
+        std::memcpy(&response, responseBuffer.data(), headerSize);
+        const unsigned long requestedRows =
+            maxRows == 0UL
+                ? KSWORD_ARK_I8042_DEFAULT_MAX_ROWS
+                : std::min(maxRows, KSWORD_ARK_I8042_HARD_MAX_ROWS);
+        const auto validStatus = [](const unsigned long value)
+        {
+            return value <= KSWORD_ARK_I8042_AUDIT_STATUS_BUFFER_TRUNCATED;
+        };
+        const bool imageValidated =
+            (response.responseFlags &
+             KSWORD_ARK_I8042_RESPONSE_IMAGE_VALIDATED) != 0UL;
+        const bool descriptorValidated =
+            (response.responseFlags &
+             KSWORD_ARK_I8042_RESPONSE_DESCRIPTOR_VALIDATED) != 0UL;
+        const bool truncated =
+            (response.responseFlags &
+             KSWORD_ARK_I8042_RESPONSE_TRUNCATED) != 0UL;
+        const bool partial =
+            (response.responseFlags &
+             KSWORD_ARK_I8042_RESPONSE_PARTIAL) != 0UL;
+        const bool failClosed =
+            (response.responseFlags &
+             KSWORD_ARK_I8042_RESPONSE_FAIL_CLOSED) != 0UL;
+        const bool exactIdentity =
+            response.imageTimeDateStamp == 0xFD7548DDUL &&
+            response.imageSize == 0x00026000UL &&
+            response.imageChecksum == 0x0002637EUL &&
+            response.pdbAge == 1UL &&
+            std::equal(
+                std::begin(response.pdbGuid),
+                std::end(response.pdbGuid),
+                std::begin(expectedPdbGuid));
+        const bool headerValid =
+            response.size == headerSize &&
+            response.version == KSWORD_ARK_I8042_AUDIT_PROTOCOL_VERSION &&
+            response.reserved0 == 0UL &&
+            validStatus(response.queryStatus) &&
+            (response.responseFlags & ~knownResponseFlags) == 0UL &&
+            response.totalCount >= response.returnedCount &&
+            response.returnedCount <= requestedRows &&
+            response.returnedCount <= KSWORD_ARK_I8042_HARD_MAX_ROWS &&
+            (truncated
+                ? response.totalCount > response.returnedCount
+                : response.totalCount == response.returnedCount) &&
+            response.entrySize == sizeof(KSWORD_ARK_I8042_AUDIT_ENTRY) &&
+            response.descriptorId ==
+                KSWORD_ARK_I8042_DESCRIPTOR_WIN11_26100_7934 &&
+            (partial ==
+                (response.queryStatus !=
+                 KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE)) &&
+            (response.queryStatus !=
+                    KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE ||
+             response.totalCount != 0UL) &&
+            (truncated ==
+                (response.queryStatus ==
+                 KSWORD_ARK_I8042_AUDIT_STATUS_BUFFER_TRUNCATED)) &&
+            (!failClosed || (partial && !descriptorValidated)) &&
+            response.queryStatus !=
+                KSWORD_ARK_I8042_AUDIT_STATUS_SIGNATURE_MISMATCH &&
+            (!imageValidated || (response.imageBase != 0ULL && exactIdentity)) &&
+            (!descriptorValidated || imageValidated);
+        if (!headerValid)
+        {
+            failProtocol("header fields rejected");
+            return result;
+        }
+        if (response.returnedCount >
+            (std::numeric_limits<std::size_t>::max() - headerSize) /
+                sizeof(KSWORD_ARK_I8042_AUDIT_ENTRY))
+        {
+            failProtocol("row byte count overflow");
+            return result;
+        }
+        const std::size_t requiredBytes =
+            headerSize +
+            (static_cast<std::size_t>(response.returnedCount) *
+             sizeof(KSWORD_ARK_I8042_AUDIT_ENTRY));
+        if (requiredBytes != result.io.bytesReturned)
+        {
+            failProtocol("returnedCount/bytesReturned mismatch");
+            return result;
+        }
+
+        result.entries.reserve(response.returnedCount);
+        for (std::size_t index = 0U; index < response.returnedCount; ++index)
+        {
+            KSWORD_ARK_I8042_AUDIT_ENTRY entry{};
+            const std::size_t offset =
+                headerSize + (index * sizeof(KSWORD_ARK_I8042_AUDIT_ENTRY));
+            std::memcpy(
+                &entry,
+                responseBuffer.data() + offset,
+                sizeof(entry));
+
+            const bool stringsValid =
+                std::find(
+                    std::begin(entry.pnpId),
+                    std::end(entry.pnpId),
+                    L'\0') != std::end(entry.pnpId) &&
+                std::find(
+                    std::begin(entry.ownerModulePath),
+                    std::end(entry.ownerModulePath),
+                    L'\0') != std::end(entry.ownerModulePath);
+            const bool pnpPresent =
+                entry.pnpId[0] != L'\0';
+            const bool ownerPathPresent =
+                entry.ownerModulePath[0] != L'\0';
+            const bool pnpFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_PNP_ID) != 0UL;
+            const bool ownerFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_OWNER_MODULE) != 0UL;
+            const bool callbackFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_CALLBACK_ADDRESS) != 0UL;
+            const bool classDeviceFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_CLASS_DEVICE_OBJECT) != 0UL;
+            const bool executableFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_EXECUTABLE) != 0UL;
+            const bool sameStackFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_SAME_DEVICE_STACK) != 0UL;
+            const bool entryImageFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_IMAGE_VALIDATED) != 0UL;
+            const bool entryDescriptorFlag =
+                (entry.fieldFlags &
+                 KSWORD_ARK_I8042_FIELD_DESCRIPTOR_VALIDATED) != 0UL;
+            const bool endpointMatchesDevice =
+                (entry.deviceKind == KSWORD_ARK_I8042_DEVICE_KEYBOARD &&
+                 entry.endpointKind >=
+                    KSWORD_ARK_I8042_ENDPOINT_KEYBOARD_CLASS_SERVICE &&
+                 entry.endpointKind <=
+                    KSWORD_ARK_I8042_ENDPOINT_KEYBOARD_ISR) ||
+                (entry.deviceKind == KSWORD_ARK_I8042_DEVICE_MOUSE &&
+                 entry.endpointKind >=
+                    KSWORD_ARK_I8042_ENDPOINT_MOUSE_CLASS_SERVICE &&
+                 entry.endpointKind <=
+                    KSWORD_ARK_I8042_ENDPOINT_MOUSE_ISR);
+            const bool ownerRangeValid =
+                !ownerFlag ||
+                (callbackFlag &&
+                 entry.moduleBase != 0ULL &&
+                 entry.moduleSize != 0UL &&
+                 entry.callbackAddress >= entry.moduleBase &&
+                 entry.callbackAddress - entry.moduleBase <
+                    entry.moduleSize);
+            const std::uint32_t deviceAllowedFields =
+                KSWORD_ARK_I8042_FIELD_DEVICE_OBJECT |
+                KSWORD_ARK_I8042_FIELD_PNP_ID |
+                KSWORD_ARK_I8042_FIELD_IMAGE_VALIDATED |
+                KSWORD_ARK_I8042_FIELD_DESCRIPTOR_VALIDATED |
+                KSWORD_ARK_I8042_FIELD_DETAIL_ARGS;
+            const bool availableDevice =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_AVAILABLE &&
+                entry.deviceKind != KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
+                entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DESCRIPTOR_VALIDATED &&
+                entry.lastStatus == 0L;
+            const bool unsupportedDevice =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNSUPPORTED &&
+                entry.deviceKind == KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
+                (entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_PNP_CLASS_UNKNOWN) &&
+                entry.lastStatus != 0L;
+            const bool deviceShape =
+                entry.rowKind != KSWORD_ARK_I8042_AUDIT_ROW_DEVICE ||
+                (entry.endpointKind == KSWORD_ARK_I8042_ENDPOINT_NONE &&
+                 entryImageFlag &&
+                 entryDescriptorFlag &&
+                 (entry.fieldFlags & ~deviceAllowedFields) == 0UL &&
+                 (availableDevice || unsupportedDevice));
+            const bool availableEndpoint =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_AVAILABLE &&
+                entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_ENDPOINT_AVAILABLE &&
+                entry.lastStatus == 0L &&
+                callbackFlag &&
+                classDeviceFlag &&
+                ownerFlag &&
+                executableFlag &&
+                sameStackFlag;
+            const bool nullEndpoint =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_UNAVAILABLE &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNKNOWN &&
+                entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_ENDPOINT_NULL &&
+                entry.lastStatus == 0L &&
+                !callbackFlag &&
+                !ownerFlag &&
+                !executableFlag &&
+                !sameStackFlag;
+            const bool suspiciousEndpoint =
+                entry.status ==
+                    KSWORD_ARK_I8042_AUDIT_STATUS_SIGNATURE_MISMATCH &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_SUSPICIOUS &&
+                entry.lastStatus != 0L &&
+                callbackFlag &&
+                (entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_OWNER_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_NON_EXECUTABLE ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_CLASS_DO_OUTSIDE_STACK);
+            const bool endpointShape =
+                entry.rowKind != KSWORD_ARK_I8042_AUDIT_ROW_ENDPOINT ||
+                (endpointMatchesDevice &&
+                 entryImageFlag &&
+                 entryDescriptorFlag &&
+                 (availableEndpoint ||
+                  nullEndpoint ||
+                  suspiciousEndpoint));
+            const bool unavailableDiagnostic =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_UNAVAILABLE &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNKNOWN &&
+                entry.detailCode == KSWORD_ARK_I8042_DETAIL_NO_DEVICES;
+            const bool unsupportedDiagnostic =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNSUPPORTED &&
+                (entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_MODULE_NOT_FOUND ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DRIVER_NOT_FOUND ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_IMAGE_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_RSDS_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_OPCODE_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH);
+            const bool failedDiagnostic =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_QUERY_FAILED &&
+                (entry.verdict == KSWORD_ARK_I8042_VERDICT_UNKNOWN ||
+                 (failClosed &&
+                  entry.verdict ==
+                    KSWORD_ARK_I8042_VERDICT_UNSUPPORTED)) &&
+                (entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_MODULE_NOT_FOUND ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DEVICE_ENUM_FAILED ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_EXTENSION_READ_FAILED);
+            const bool diagnosticShape =
+                entry.rowKind !=
+                    KSWORD_ARK_I8042_AUDIT_ROW_DIAGNOSTIC ||
+                (entry.deviceKind == KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
+                 entry.endpointKind == KSWORD_ARK_I8042_ENDPOINT_NONE &&
+                 entry.fieldFlags ==
+                    KSWORD_ARK_I8042_FIELD_DETAIL_ARGS &&
+                 entry.lastStatus != 0L &&
+                 (unavailableDiagnostic ||
+                  unsupportedDiagnostic ||
+                  failedDiagnostic));
+            const bool rowShapeValid =
+                (entry.rowKind == KSWORD_ARK_I8042_AUDIT_ROW_DEVICE &&
+                 entry.endpointKind == KSWORD_ARK_I8042_ENDPOINT_NONE) ||
+                (entry.rowKind == KSWORD_ARK_I8042_AUDIT_ROW_ENDPOINT &&
+                 entry.deviceKind != KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
+                 entry.endpointKind >=
+                    KSWORD_ARK_I8042_ENDPOINT_KEYBOARD_CLASS_SERVICE &&
+                 entry.endpointKind <= KSWORD_ARK_I8042_ENDPOINT_MOUSE_ISR) ||
+                (entry.rowKind == KSWORD_ARK_I8042_AUDIT_ROW_DIAGNOSTIC &&
+                 entry.endpointKind == KSWORD_ARK_I8042_ENDPOINT_NONE);
+            const bool entryValid =
+                entry.size == sizeof(entry) &&
+                entry.reserved0 == 0UL &&
+                entry.reserved1 == 0UL &&
+                rowShapeValid &&
+                entry.deviceKind <= KSWORD_ARK_I8042_DEVICE_MOUSE &&
+                validStatus(entry.status) &&
+                entry.verdict <= KSWORD_ARK_I8042_VERDICT_UNSUPPORTED &&
+                (entry.fieldFlags & ~knownFieldFlags) == 0UL &&
+                entry.detailCode <= KSWORD_ARK_I8042_DETAIL_BUFFER_TRUNCATED &&
+                stringsValid &&
+                pnpFlag == pnpPresent &&
+                ownerFlag == ownerPathPresent &&
+                ownerRangeValid &&
+                deviceShape &&
+                endpointShape &&
+                diagnosticShape &&
+                (((entry.fieldFlags &
+                   KSWORD_ARK_I8042_FIELD_DETAIL_ARGS) != 0UL) ==
+                 (entry.detailCode != KSWORD_ARK_I8042_DETAIL_NONE)) &&
+                (((entry.fieldFlags &
+                   KSWORD_ARK_I8042_FIELD_DEVICE_OBJECT) != 0UL) ==
+                 (entry.deviceObject != 0ULL)) &&
+                (((entry.fieldFlags &
+                   KSWORD_ARK_I8042_FIELD_CLASS_DEVICE_OBJECT) != 0UL) ==
+                 (entry.classDeviceObject != 0ULL)) &&
+                (((entry.fieldFlags &
+                   KSWORD_ARK_I8042_FIELD_CALLBACK_ADDRESS) != 0UL) ==
+                 (entry.callbackAddress != 0ULL)) &&
+                (((entry.fieldFlags &
+                   KSWORD_ARK_I8042_FIELD_CONTEXT_ADDRESS) != 0UL) ==
+                 (entry.contextAddress != 0ULL)) &&
+                (((entry.fieldFlags &
+                   KSWORD_ARK_I8042_FIELD_OWNER_MODULE) != 0UL) ==
+                 (entry.moduleBase != 0ULL && entry.moduleSize != 0UL)) &&
+                ((entry.fieldFlags &
+                  KSWORD_ARK_I8042_FIELD_EXECUTABLE) == 0UL ||
+                 (entry.fieldFlags &
+                  (KSWORD_ARK_I8042_FIELD_CALLBACK_ADDRESS |
+                   KSWORD_ARK_I8042_FIELD_OWNER_MODULE)) ==
+                    (KSWORD_ARK_I8042_FIELD_CALLBACK_ADDRESS |
+                     KSWORD_ARK_I8042_FIELD_OWNER_MODULE)) &&
+                ((entry.fieldFlags &
+                  KSWORD_ARK_I8042_FIELD_SAME_DEVICE_STACK) == 0UL ||
+                 (entry.fieldFlags &
+                  KSWORD_ARK_I8042_FIELD_CLASS_DEVICE_OBJECT) != 0UL) &&
+                ((entry.fieldFlags &
+                  KSWORD_ARK_I8042_FIELD_IMAGE_VALIDATED) == 0UL ||
+                 imageValidated) &&
+                ((entry.fieldFlags &
+                  KSWORD_ARK_I8042_FIELD_DESCRIPTOR_VALIDATED) == 0UL ||
+                 descriptorValidated);
+            if (!entryValid)
+            {
+                failProtocol(
+                    "entry[" + std::to_string(index) + "] rejected");
+                return result;
+            }
+            result.entries.push_back(entry);
+        }
+
+        const bool aggregateValid =
+            (response.queryStatus != KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE ||
+             std::all_of(
+                 result.entries.begin(),
+                 result.entries.end(),
+                 [](const KSWORD_ARK_I8042_AUDIT_ENTRY& entry)
+                 {
+                     return entry.status ==
+                         KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE;
+                 })) &&
+            (!failClosed ||
+             std::any_of(
+                 result.entries.begin(),
+                 result.entries.end(),
+                 [](const KSWORD_ARK_I8042_AUDIT_ENTRY& entry)
+                 {
+                     return entry.rowKind ==
+                            KSWORD_ARK_I8042_AUDIT_ROW_DIAGNOSTIC &&
+                         entry.verdict ==
+                            KSWORD_ARK_I8042_VERDICT_UNSUPPORTED;
+                 }));
+        if (!aggregateValid)
+        {
+            failProtocol("entry aggregate rejected");
+            return result;
+        }
+
+        result.version = response.version;
+        result.status = response.queryStatus;
+        result.responseFlags = response.responseFlags;
+        result.totalCount = response.totalCount;
+        result.returnedCount = response.returnedCount;
+        result.entrySize = response.entrySize;
+        result.descriptorId = response.descriptorId;
+        result.imageTimeDateStamp = response.imageTimeDateStamp;
+        result.imageSize = response.imageSize;
+        result.imageChecksum = response.imageChecksum;
+        result.pdbAge = response.pdbAge;
+        result.imageBase = response.imageBase;
+        std::copy(
+            std::begin(response.pdbGuid),
+            std::end(response.pdbGuid),
+            std::begin(result.pdbGuid));
+        result.lastStatus = response.lastStatus;
+        result.io.ntStatus = response.lastStatus;
+        result.unsupported =
+            response.queryStatus ==
+                KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED ||
+            (response.responseFlags &
+             KSWORD_ARK_I8042_RESPONSE_FAIL_CLOSED) != 0UL;
         result.io.message = appendAuditSummary(
             operationName,
             result.totalCount,
