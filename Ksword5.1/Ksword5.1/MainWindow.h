@@ -20,6 +20,7 @@
 #include <QHBoxLayout>
 #include <QString>
 #include <QByteArray>
+#include <QPixmap>
 #include <QToolButton>
 
 #include <functional>
@@ -441,6 +442,22 @@ private:
     // 调用方式：外观设置变更时调用。
     void rebuildWindowBackgroundBrush(bool includeBackgroundImage = true);
 
+    // queueBackgroundImageValidation 作用：
+    // - 仅在背景路径变化时，把路径探测与图片解码投递到线程池；
+    // - UI 线程立即切换到“尚未就绪”的缓存状态，不访问 UNC 或离线盘。
+    // 入参 rawImagePath：配置中原始背景路径；传出：无。
+    void queueBackgroundImageValidation(const QString& rawImagePath);
+
+    // isCachedBackgroundImageReady 作用：
+    // - 只比较内存中的路径键、就绪标记和像素缓存，不执行文件系统调用；
+    // - 供主题、滚动条、Dock 惰性初始化和浮动容器刷新安全复用。
+    // 入参 rawImagePath：待匹配的配置路径；返回：缓存图片是否可直接使用。
+    bool isCachedBackgroundImageReady(const QString& rawImagePath) const;
+
+    // cachedBackgroundImage 作用：返回已在线程池完成解码的背景像素缓存。
+    // 入参 rawImagePath：待匹配的配置路径；返回：可用图片指针，否则为空。
+    const QPixmap* cachedBackgroundImage(const QString& rawImagePath) const;
+
     // applyFloatingDockContainerAppearance 作用：
     // - 把当前主题色、背景图与样式同步到指定浮动 Dock 容器；
     // - 解决“拖出后浮动窗口背景变成纯黑未填充”的问题。
@@ -559,6 +576,12 @@ private:
 
     // m_currentAppearanceSettings 作用：缓存当前外观配置（主题/背景图/透明度）。
     ks::settings::AppearanceSettings m_currentAppearanceSettings;
+    QString m_backgroundImageCacheKey; // m_backgroundImageCacheKey：当前异步验证对应的原始路径键。
+    QString m_backgroundImageResolvedPath; // m_backgroundImageResolvedPath：线程池解析后的实际路径，仅供诊断。
+    QPixmap m_backgroundImagePixmap; // m_backgroundImagePixmap：UI 线程持有的已解码背景像素。
+    quint64 m_backgroundImageValidationGeneration = 0; // m_backgroundImageValidationGeneration：淘汰过期异步结果的代次。
+    bool m_backgroundImageReady = false; // m_backgroundImageReady：当前路径是否已验证并成功解码。
+    bool m_backgroundReadinessRefreshPending = false; // m_backgroundReadinessRefreshPending：异步结果是否要求重建视觉。
     StartupProgressCallback m_startupProgressCallback; // m_startupProgressCallback：主窗口启动阶段进度回调。
     bool m_startupWindowVisibilityAdjusted = false; // m_startupWindowVisibilityAdjusted：是否已完成首次显示区域修正。
     bool m_deferredDockInitializationStarted = false; // m_deferredDockInitializationStarted：是否已启动显示后补载流程。

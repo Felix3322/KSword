@@ -3429,53 +3429,6 @@ namespace
         return rawOpacityPercent;
     }
 
-    const QPixmap* cachedBackgroundSourcePixmap(const QString& imagePath)
-    {
-        static QString cachedImagePath;
-        static qint64 cachedImageLastModifiedMs = -1;
-        static qint64 cachedImageSizeBytes = -1;
-        static QPixmap cachedImagePixmap;
-
-        const QString cleanImagePath = QDir::cleanPath(imagePath.trimmed());
-        if (cleanImagePath.isEmpty())
-        {
-            return nullptr;
-        }
-
-        const QFileInfo imageFileInfo(cleanImagePath);
-        if (!imageFileInfo.exists() || !imageFileInfo.isFile() || !imageFileInfo.isReadable())
-        {
-            return nullptr;
-        }
-
-        const qint64 imageLastModifiedMs = imageFileInfo.lastModified().toMSecsSinceEpoch();
-        const qint64 imageSizeBytes = imageFileInfo.size();
-        const bool cacheHit =
-            cleanImagePath == cachedImagePath
-            && imageLastModifiedMs == cachedImageLastModifiedMs
-            && imageSizeBytes == cachedImageSizeBytes
-            && !cachedImagePixmap.isNull();
-        if (!cacheHit)
-        {
-            QPixmap loadedPixmap(cleanImagePath);
-            if (loadedPixmap.isNull())
-            {
-                cachedImagePath.clear();
-                cachedImageLastModifiedMs = -1;
-                cachedImageSizeBytes = -1;
-                cachedImagePixmap = QPixmap();
-                return nullptr;
-            }
-
-            cachedImagePath = cleanImagePath;
-            cachedImageLastModifiedMs = imageLastModifiedMs;
-            cachedImageSizeBytes = imageSizeBytes;
-            cachedImagePixmap = std::move(loadedPixmap);
-        }
-
-        return cachedImagePixmap.isNull() ? nullptr : &cachedImagePixmap;
-    }
-
     // MainWindowBackgroundWidget 作用：
     // - 作为主窗口根容器的唯一背景绘制者；
     // - 每次绘制都按当前真实 rect 执行“居中、等比覆盖”，避免启动阶段预测窗口尺寸。
@@ -3555,35 +3508,32 @@ namespace
     // 调用方式：MainWindow::applyFloatingDockContainerAppearance 调用。
     // 入参 windowSize：目标窗口尺寸；
     // 入参 baseColor：主题基底色（深色黑、浅色白）；
-    // 入参 imagePath：背景图绝对路径；
+    // 入参 sourceImage：已在线程池解码并由 UI 线程转换的缓存图片；可为空。
     // 入参 imageOpacityPercent：背景图透明度（0~100）。
     // 返回：可直接设置到 QPalette::Window 的画刷。
     QBrush buildBackgroundBrush(
         const QSize& windowSize,
         const QColor& baseColor,
-        const QString& imagePath,
+        const QPixmap* sourceImage,
         const int imageOpacityPercent)
     {
         const QSize safeSize = windowSize.isValid() ? windowSize : QSize(1, 1);
         const int normalizedOpacityPercent = normalizeOpacityPercent(imageOpacityPercent);
-        const QString cleanImagePath = QDir::cleanPath(imagePath.trimmed());
-        const QPixmap* sourceImage = normalizedOpacityPercent > 0
-            ? cachedBackgroundSourcePixmap(cleanImagePath)
-            : nullptr;
-        const quint64 sourceImageCacheKey = sourceImage == nullptr ? 0 : sourceImage->cacheKey();
+        // effectiveSourceImage 用途：透明度为零时跳过合成，同时不访问任何文件路径。
+        const QPixmap* effectiveSourceImage = normalizedOpacityPercent > 0 ? sourceImage : nullptr;
+        const quint64 sourceImageCacheKey =
+            effectiveSourceImage == nullptr ? 0 : effectiveSourceImage->cacheKey();
 
         // 主窗口 resize 期间通常会连续收到相同尺寸或相邻布局事件。
         // 缓存最近一次合成图，避免重复分配整窗像素缓冲并再次进行平滑缩放。
         static QSize cachedSize;
         static QColor cachedBaseColor;
-        static QString cachedImagePath;
         static int cachedOpacityPercent = -1;
         static quint64 cachedSourceImageCacheKey = 0;
         static QPixmap cachedComposedPixmap;
         const bool cacheHit =
             cachedSize == safeSize
             && cachedBaseColor == baseColor
-            && cachedImagePath == cleanImagePath
             && cachedOpacityPercent == normalizedOpacityPercent
             && cachedSourceImageCacheKey == sourceImageCacheKey
             && !cachedComposedPixmap.isNull();
@@ -3594,14 +3544,14 @@ namespace
 
         QPixmap composedPixmap(safeSize);
         composedPixmap.fill(baseColor);
-        if (sourceImage != nullptr)
+        if (effectiveSourceImage != nullptr)
         {
             QPainter painter(&composedPixmap);
             painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
             painter.setOpacity(static_cast<double>(normalizedOpacityPercent) / 100.0);
 
             // scaledImageSize 作用：按“覆盖整个窗口”策略计算缩放尺寸。
-            QSizeF scaledImageSize = sourceImage->size();
+            QSizeF scaledImageSize = effectiveSourceImage->size();
             scaledImageSize.scale(safeSize, Qt::KeepAspectRatioByExpanding);
 
             const QRectF targetRect(
@@ -3610,12 +3560,14 @@ namespace
                 scaledImageSize.width(),
                 scaledImageSize.height());
 
-            painter.drawPixmap(targetRect, *sourceImage, QRectF(QPointF(0, 0), sourceImage->size()));
+            painter.drawPixmap(
+                targetRect,
+                *effectiveSourceImage,
+                QRectF(QPointF(0, 0), effectiveSourceImage->size()));
         }
 
         cachedSize = safeSize;
         cachedBaseColor = baseColor;
-        cachedImagePath = cleanImagePath;
         cachedOpacityPercent = normalizedOpacityPercent;
         cachedSourceImageCacheKey = sourceImageCacheKey;
         cachedComposedPixmap = composedPixmap;
@@ -3816,24 +3768,6 @@ namespace
             *elapsedMsOut = applyTimer.elapsed();
         }
         return true;
-    }
-
-    // isBackgroundImageReady 作用：
-    // - 判断背景图路径是否可用（存在且可读）；
-    // - 供样式层决定是否开启 Dock 全透明策略。
-    // 调用方式：applyAppearanceSettings 内部调用。
-    // 入参 rawImagePath：配置中的背景图路径（相对或绝对）。
-    // 返回：true=背景图可加载；false=背景图不可用。
-    bool isBackgroundImageReady(const QString& rawImagePath)
-    {
-        const QString resolvedImagePath = ks::settings::resolveBackgroundImagePathForLoad(rawImagePath);
-        if (resolvedImagePath.trimmed().isEmpty())
-        {
-            return false;
-        }
-
-        const QFileInfo imageFileInfo(resolvedImagePath);
-        return imageFileInfo.exists() && imageFileInfo.isFile() && imageFileInfo.isReadable();
     }
 
     // configureSingleInstanceMessageReception 作用：
@@ -8292,7 +8226,7 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     if (isKernelDock)
     {
         const bool allowWallpaperThroughKernelDock =
-            isBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
+            isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
         realWidget->setAutoFillBackground(!allowWallpaperThroughKernelDock);
         realWidget->setAttribute(Qt::WA_StyledBackground, !allowWallpaperThroughKernelDock);
     }
@@ -8648,7 +8582,7 @@ void MainWindow::repairKernelDockAfterLayoutRestore(const QString& reasonText)
         // 背景图模式下不能再强制根控件自绘实底，否则会把主窗口背景图挡住。
         QWidget* oldWidget = m_dockKernel->takeWidget();
         const bool allowWallpaperThroughKernelDock =
-            isBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
+            isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
         m_kernelWidget->setAutoFillBackground(!allowWallpaperThroughKernelDock);
         m_kernelWidget->setAttribute(Qt::WA_StyledBackground, !allowWallpaperThroughKernelDock);
         m_kernelWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -9607,36 +9541,37 @@ void MainWindow::applyAppearanceSettings(
     m_currentAppearanceSettings = settings;
     RuntimeAppearanceProgress runtimeProgress(runtimeProgressRequired);
 
-    // 非视觉设置保存不再探测背景路径。网络路径或不可访问驱动器的 QFileInfo 查询可能阻塞，
-    // 之前即使只修改“下次启动”选项也会同步触发这条路径。
-    bool enableDockTransparencyForBackgroundImage = false;
-    bool dockTransparencyChanged = isInitialAppearanceApply;
+    // previousBackgroundImageReady 用途：路径切换前只读取内存缓存，判断透明策略是否变化。
+    const bool previousBackgroundImageReady =
+        isCachedBackgroundImageReady(previousSettings.backgroundImagePath);
+    // backgroundReadinessChanged 用途：消费异步验证完成标记，使就绪结果触发一次视觉重建。
+    const bool backgroundReadinessChanged = m_backgroundReadinessRefreshPending;
+    m_backgroundReadinessRefreshPending = false;
     if (isInitialAppearanceApply || backgroundPathChanged)
     {
         runtimeProgress.update(
             8,
             QStringLiteral("main.runtime_appearance.progress.background"),
             QStringLiteral("正在应用界面设置..."));
-        enableDockTransparencyForBackgroundImage = isBackgroundImageReady(settings.backgroundImagePath);
-        if (!isInitialAppearanceApply)
-        {
-            const bool previousDockTransparencyEnabled =
-                isBackgroundImageReady(previousSettings.backgroundImagePath);
-            dockTransparencyChanged =
-                previousDockTransparencyEnabled != enableDockTransparencyForBackgroundImage;
-        }
+        // 只有路径首次加载或真实变化时才异步验证；主题与滚动条变化不会进入文件系统。
+        queueBackgroundImageValidation(settings.backgroundImagePath);
     }
-    else if (themeVisualRefreshRequired || scrollBarStyleChanged)
-    {
-        // 主题或滚动条样式需要重建 QSS，保持当前背景透明策略即可。
-        enableDockTransparencyForBackgroundImage = isBackgroundImageReady(settings.backgroundImagePath);
-    }
+    // enableDockTransparencyForBackgroundImage 用途：从当前代次的缓存结果决定透明策略。
+    const bool enableDockTransparencyForBackgroundImage =
+        isCachedBackgroundImageReady(settings.backgroundImagePath);
+    const bool dockTransparencyChanged =
+        isInitialAppearanceApply
+        || backgroundReadinessChanged
+        || previousBackgroundImageReady != enableDockTransparencyForBackgroundImage;
     const bool mainStyleRefreshRequired =
         themeVisualRefreshRequired
         || dockTransparencyChanged
         || scrollBarStyleChanged;
     const bool backgroundRefreshRequired =
-        isInitialAppearanceApply || effectiveThemeChanged || backgroundChanged;
+        isInitialAppearanceApply
+        || effectiveThemeChanged
+        || backgroundChanged
+        || backgroundReadinessChanged;
     const bool floatingDockRefreshRequired = mainStyleRefreshRequired || backgroundRefreshRequired;
     qint64 globalAppStyleApplyMs = 0;
     int globalAppStyleWidgetCount = 0;
@@ -9965,19 +9900,123 @@ bool MainWindow::isDarkModeEffective(const ks::settings::AppearanceSettings& set
     return styleHints->colorScheme() == Qt::ColorScheme::Dark;
 }
 
+void MainWindow::queueBackgroundImageValidation(const QString& rawImagePath)
+{
+    // cacheKey 用途：只做内存比较；trimmed 不会访问 UNC 或离线盘。
+    const QString cacheKey = rawImagePath.trimmed();
+    ++m_backgroundImageValidationGeneration;
+    // validationGeneration 用途：后台任务返回时淘汰已被更新路径取代的旧结果。
+    const quint64 validationGeneration = m_backgroundImageValidationGeneration;
+    m_backgroundImageCacheKey = cacheKey;
+    m_backgroundImageResolvedPath.clear();
+    m_backgroundImagePixmap = QPixmap();
+    m_backgroundImageReady = false;
+    if (cacheKey.isEmpty())
+    {
+        return;
+    }
+
+    // guardedWindow 用途：后台任务可能晚于主窗口销毁，回投前必须验证生命周期。
+    const QPointer<MainWindow> guardedWindow(this);
+    QThreadPool::globalInstance()->start(
+        [guardedWindow, rawImagePath, cacheKey, validationGeneration]()
+        {
+            // 以下路径解析、QFileInfo 探测和图片解码全部在线程池执行。
+            // 不可达 UNC 只会占用后台任务，不会阻塞 Qt UI 事件循环。
+            const QString resolvedImagePath =
+                ks::settings::resolveBackgroundImagePathForLoad(rawImagePath);
+            QImage decodedImage;
+            if (!resolvedImagePath.trimmed().isEmpty())
+            {
+                // imageFileInfo 用途：验证目标存在、为普通文件且当前可读。
+                const QFileInfo imageFileInfo(resolvedImagePath);
+                if (imageFileInfo.exists()
+                    && imageFileInfo.isFile()
+                    && imageFileInfo.isReadable())
+                {
+                    decodedImage.load(resolvedImagePath);
+                }
+            }
+
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                appInstance,
+                [guardedWindow,
+                    cacheKey,
+                    resolvedImagePath,
+                    validationGeneration,
+                    decodedImage]()
+                {
+                    if (guardedWindow == nullptr)
+                    {
+                        return;
+                    }
+                    MainWindow* const mainWindow = guardedWindow.data();
+                    const bool resultIsCurrent =
+                        mainWindow->m_backgroundImageValidationGeneration == validationGeneration
+                        && mainWindow->m_backgroundImageCacheKey.compare(
+                            cacheKey,
+                            Qt::CaseInsensitive) == 0;
+                    if (!resultIsCurrent)
+                    {
+                        return;
+                    }
+
+                    mainWindow->m_backgroundImageResolvedPath = resolvedImagePath;
+                    mainWindow->m_backgroundImagePixmap = decodedImage.isNull()
+                        ? QPixmap()
+                        : QPixmap::fromImage(decodedImage);
+                    // nextReady 用途：只有路径验证和图片解码均成功才允许透明 Dock。
+                    const bool nextReady = !mainWindow->m_backgroundImagePixmap.isNull();
+                    const bool readinessChanged =
+                        mainWindow->m_backgroundImageReady != nextReady;
+                    mainWindow->m_backgroundImageReady = nextReady;
+                    if (!readinessChanged)
+                    {
+                        return;
+                    }
+
+                    // 异步结果只设置一次性重建标记；再次应用同一设置不会重新验证路径。
+                    mainWindow->m_backgroundReadinessRefreshPending = true;
+                    mainWindow->applyAppearanceSettings(
+                        mainWindow->m_currentAppearanceSettings,
+                        QStringLiteral("背景图异步验证完成"));
+                },
+                Qt::QueuedConnection);
+        });
+}
+
+bool MainWindow::isCachedBackgroundImageReady(const QString& rawImagePath) const
+{
+    // requestedCacheKey 用途：仅规范首尾空白，不解析路径也不查询文件系统。
+    const QString requestedCacheKey = rawImagePath.trimmed();
+    return !requestedCacheKey.isEmpty()
+        && m_backgroundImageCacheKey.compare(requestedCacheKey, Qt::CaseInsensitive) == 0
+        && m_backgroundImageReady
+        && !m_backgroundImagePixmap.isNull();
+}
+
+const QPixmap* MainWindow::cachedBackgroundImage(const QString& rawImagePath) const
+{
+    return isCachedBackgroundImageReady(rawImagePath)
+        ? &m_backgroundImagePixmap
+        : nullptr;
+}
+
 void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
 {
     const bool darkModeEnabled = isDarkModeEffective(m_currentAppearanceSettings);
     const QColor baseColor = darkModeEnabled ? KswordTheme::BlackColor() : KswordTheme::WhiteColor();
 
-    // resolvedImagePath 作用：把配置路径解析成可加载的绝对路径。
-    const QString resolvedImagePath = includeBackgroundImage
-        ? ks::settings::resolveBackgroundImagePathForLoad(m_currentAppearanceSettings.backgroundImagePath)
-        : QString();
     const int normalizedOpacityPercent = normalizeOpacityPercent(
         m_currentAppearanceSettings.backgroundOpacityPercent);
+    // sourceImage 用途：只读取异步解码缓存，主题刷新不会再次访问原始路径。
     const QPixmap* sourceImage = includeBackgroundImage && normalizedOpacityPercent > 0
-        ? cachedBackgroundSourcePixmap(resolvedImagePath)
+        ? cachedBackgroundImage(m_currentAppearanceSettings.backgroundImagePath)
         : nullptr;
 
     if (m_mainRootContainer != nullptr)
@@ -10012,17 +10051,18 @@ void MainWindow::applyFloatingDockContainerAppearance(ads::CFloatingDockContaine
 
     const bool darkModeEnabled = isDarkModeEffective(m_currentAppearanceSettings);
     const QColor baseColor = darkModeEnabled ? KswordTheme::BlackColor() : KswordTheme::WhiteColor();
-    const QString resolvedImagePath = ks::settings::resolveBackgroundImagePathForLoad(
-        m_currentAppearanceSettings.backgroundImagePath);
     const bool enableDockTransparencyForBackgroundImage =
-        isBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
+        isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
+    // sourceImage 用途：浮动容器复用线程池解码结果，不执行路径探测或文件加载。
+    const QPixmap* sourceImage =
+        cachedBackgroundImage(m_currentAppearanceSettings.backgroundImagePath);
 
     // floatingSize 用途：浮动容器当前尺寸；无效时至少给 1x1，避免画刷构造失败。
     const QSize floatingSize = floatingWidget->size().isValid() ? floatingWidget->size() : QSize(1, 1);
     const QBrush backgroundBrush = buildBackgroundBrush(
         floatingSize,
         baseColor,
-        resolvedImagePath,
+        sourceImage,
         m_currentAppearanceSettings.backgroundOpacityPercent);
 
     QPalette floatingPalette = floatingWidget->palette();
