@@ -83,6 +83,12 @@ Return Value:
     NTSTATUS status = STATUS_SUCCESS;
     BOOLEAN lockHeld = FALSE;
     BOOLEAN criticalRegionEntered = FALSE;
+    // 分别记录三个端口是否已经成功取得引用，不能把非空候选指针等同于引用所有权。
+    BOOLEAN connectionPortReferenced = FALSE;
+    // 单独记录 server 端口引用，确保异常清理只释放本函数真正持有的引用。
+    BOOLEAN serverPortReferenced = FALSE;
+    // 单独记录 client 端口引用，避免 ObReferenceObject 异常后错误递减对象引用计数。
+    BOOLEAN clientPortReferenced = FALSE;
 
     if (PortObject == NULL || ExpectedType == NULL || DynState == NULL || PortsOut == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -115,6 +121,8 @@ Return Value:
                 }
                 else {
                     ObReferenceObject(connectionPort);
+                    // 只有 ObReferenceObject 正常返回后，本函数才拥有 connection 端口引用。
+                    connectionPortReferenced = TRUE;
                 }
             }
         }
@@ -128,6 +136,8 @@ Return Value:
                 }
                 else {
                     ObReferenceObject(serverPort);
+                    // 只有 ObReferenceObject 正常返回后，本函数才拥有 server 端口引用。
+                    serverPortReferenced = TRUE;
                 }
             }
         }
@@ -141,6 +151,8 @@ Return Value:
                 }
                 else {
                     ObReferenceObject(clientPort);
+                    // 只有 ObReferenceObject 正常返回后，本函数才拥有 client 端口引用。
+                    clientPortReferenced = TRUE;
                 }
             }
         }
@@ -163,13 +175,13 @@ Return Value:
     }
 
     if (!NT_SUCCESS(status)) {
-        if (connectionPort != NULL) {
+        if (connectionPortReferenced && connectionPort != NULL) {
             ObDereferenceObject(connectionPort);
         }
-        if (serverPort != NULL) {
+        if (serverPortReferenced && serverPort != NULL) {
             ObDereferenceObject(serverPort);
         }
-        if (clientPort != NULL) {
+        if (clientPortReferenced && clientPort != NULL) {
             ObDereferenceObject(clientPort);
         }
         return status;
