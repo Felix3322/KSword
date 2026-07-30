@@ -581,6 +581,16 @@
     <Copy SourceFiles="@(KswordLanguagePack)" DestinationFolder="$(TargetDir)languages\" SkipUnchangedFiles="true" Condition="'@(KswordLanguagePack)' != ''" />
     <Warning Condition="'@(KswordLanguagePack)' == ''" Text="No KSword language packs were found under $(MSBuildProjectDirectory)\languages." />
   </Target>
+  <!-- Qt Advanced Docking System 必须与 MSVC/Qt 运行时保持同一 ABI，并放在 exe 同目录，避免 PATH 捡到 MinGW 同名 DLL。 -->
+  <Target Name="CopyQtAdvancedDockingRuntime" AfterTargets="Build">
+    <PropertyGroup>
+      <QtAdvancedDockingRuntimeSource Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(MSBuildProjectDirectory)\lib\qtadvanceddockingd.dll</QtAdvancedDockingRuntimeSource>
+      <QtAdvancedDockingRuntimeSource Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(MSBuildProjectDirectory)\lib\qtadvanceddocking.dll</QtAdvancedDockingRuntimeSource>
+    </PropertyGroup>
+    <Error Condition="'$(QtAdvancedDockingRuntimeSource)'==''" Text="Qt Advanced Docking runtime is not configured for $(Configuration)|$(Platform)." />
+    <Error Condition="!Exists('$(QtAdvancedDockingRuntimeSource)')" Text="Qt Advanced Docking runtime was not found: $(QtAdvancedDockingRuntimeSource)" />
+    <Copy SourceFiles="$(QtAdvancedDockingRuntimeSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
   <Target Name="CopyKswordLicenseAndCovenant" AfterTargets="Build">
     <PropertyGroup>
       <KswordLicenseSource>$(MSBuildProjectDirectory)\..\..\LICENSE</KswordLicenseSource>

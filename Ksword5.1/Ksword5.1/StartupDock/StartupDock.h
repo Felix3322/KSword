@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../Framework.h"
+#include "../ksword/startup/startup.h"
 
 #include <QHash>
 #include <QIcon>
@@ -76,6 +77,7 @@ public:
     // - 供所有枚举器输出和所有表格渲染复用。
     struct StartupEntry
     {
+        ks::startup::StartupEntry backendEntry; // backendEntry：完整后端记录，启停动作只使用结构化定位信息。
         QString uniqueIdText;           // uniqueIdText：全局唯一键，便于缓存定位。
         StartupCategory category = StartupCategory::All; // category：所属分类。
         QString categoryText;           // categoryText：分类显示文本。
@@ -150,7 +152,8 @@ private:
     void openSelectedFileProperties(StartupCategory category, QTableWidget* tableWidget);
     void openSelectedRegistryLocation(StartupCategory category, QTableWidget* tableWidget);
     void copySelectedRow(StartupCategory category, QTableWidget* tableWidget);
-    void deleteSelectedEntry(StartupCategory category, QTableWidget* tableWidget);
+    void setStartupEntryEnabled(StartupEntry entry, bool enabled);
+    void deleteStartupEntry(StartupEntry entry);
     void exportCurrentView();
     void applyFilterAndRefresh();
 
@@ -206,6 +209,9 @@ private:
     bool m_initialRefreshDone = false;        // m_initialRefreshDone：是否已完成首次懒加载。
     std::atomic_bool m_refreshInProgress{ false }; // m_refreshInProgress：后台刷新是否进行中。
     std::atomic_bool m_refreshQueued{ false };     // m_refreshQueued：刷新过程中是否又收到新请求。
+    std::atomic_bool m_startupActionInProgress{ false }; // m_startupActionInProgress：可逆启停动作是否进行中。
+    std::atomic_bool m_destroying{ false };        // m_destroying：析构已开始，后台线程不再投递 UI 回调。
     std::unique_ptr<std::thread> m_refreshThread;  // m_refreshThread：后台枚举线程对象。
+    std::unique_ptr<std::thread> m_actionThread;   // m_actionThread：受管理的可逆启停工作线程。
     int m_progressPid = 0;                         // m_progressPid：启动项枚举进度任务 PID。
 };

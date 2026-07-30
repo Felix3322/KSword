@@ -16,6 +16,25 @@ namespace
             : startupText("startup.value.no", QStringLiteral("否"));
     }
 
+    QString emptyValueText()
+    {
+        return startupText("startup.value.empty", QStringLiteral("<空>"));
+    }
+
+    QString startupRiskLevelText(const ks::startup::StartupRiskLevel riskLevel)
+    {
+        switch (riskLevel)
+        {
+        case ks::startup::StartupRiskLevel::Normal:
+            return startupText("startup.risk_level.normal", QStringLiteral("普通"));
+        case ks::startup::StartupRiskLevel::Critical:
+            return startupText("startup.risk_level.critical", QStringLiteral("严重"));
+        case ks::startup::StartupRiskLevel::Elevated:
+        default:
+            return startupText("startup.risk_level.elevated", QStringLiteral("较高"));
+        }
+    }
+
     // buildEntryDetailText：
     // - 作用：把一条 StartupEntry 展开成详细信息文本；
     // - 调用：查看启动项详细信息时使用；
@@ -25,27 +44,38 @@ namespace
     {
         QString detailText;
         detailText += startupText("startup.detail.name", QStringLiteral("名称：%1\n")).arg(entry.itemNameText);
-        detailText += startupText("startup.detail.category", QStringLiteral("分类：%1\n")).arg(entry.categoryText);
+        detailText += startupText("startup.detail.category", QStringLiteral("分类：%1\n"))
+            .arg(ks::i18n::sourceText(entry.categoryText));
         detailText += startupText("startup.detail.publisher", QStringLiteral("发布者：%1\n"))
-            .arg(entry.publisherText.isEmpty() ? QStringLiteral("<空>") : entry.publisherText);
+            .arg(entry.publisherText.isEmpty() ? emptyValueText() : entry.publisherText);
         detailText += startupText("startup.detail.image_path", QStringLiteral("镜像路径：%1\n"))
-            .arg(entry.imagePathText.isEmpty() ? QStringLiteral("<空>") : entry.imagePathText);
+            .arg(entry.imagePathText.isEmpty() ? emptyValueText() : entry.imagePathText);
         detailText += startupText("startup.detail.command", QStringLiteral("命令：%1\n"))
-            .arg(entry.commandText.isEmpty() ? QStringLiteral("<空>") : entry.commandText);
+            .arg(entry.commandText.isEmpty() ? emptyValueText() : entry.commandText);
         detailText += startupText("startup.detail.location", QStringLiteral("来源位置：%1\n"))
-            .arg(entry.locationText.isEmpty() ? QStringLiteral("<空>") : entry.locationText);
+            .arg(entry.locationText.isEmpty() ? emptyValueText() : entry.locationText);
         detailText += startupText("startup.detail.group_location", QStringLiteral("分组位置：%1\n"))
-            .arg(entry.locationGroupText.isEmpty() ? QStringLiteral("<空>") : entry.locationGroupText);
+            .arg(entry.locationGroupText.isEmpty() ? emptyValueText() : entry.locationGroupText);
         detailText += startupText("startup.detail.registry_value", QStringLiteral("注册表值名：%1\n"))
-            .arg(entry.registryValueNameText.isEmpty() ? QStringLiteral("<空>") : entry.registryValueNameText);
+            .arg(entry.registryValueNameText.isEmpty() ? emptyValueText() : entry.registryValueNameText);
         detailText += startupText("startup.detail.user_context", QStringLiteral("用户/上下文：%1\n"))
-            .arg(entry.userText.isEmpty() ? QStringLiteral("<空>") : entry.userText);
+            .arg(entry.userText.isEmpty() ? emptyValueText() : ks::i18n::sourceText(entry.userText));
         detailText += startupText("startup.detail.type", QStringLiteral("类型：%1\n"))
-            .arg(entry.sourceTypeText.isEmpty() ? QStringLiteral("<空>") : entry.sourceTypeText);
+            .arg(entry.sourceTypeText.isEmpty() ? emptyValueText() : ks::i18n::sourceText(entry.sourceTypeText));
         detailText += startupText("startup.detail.status", QStringLiteral("状态：%1\n"))
             .arg(buildStatusText(entry.enabled));
+        detailText += startupText("startup.detail.can_enable", QStringLiteral("可启用：%1\n"))
+            .arg(boolText(entry.backendEntry.canEnable));
+        detailText += startupText("startup.detail.can_disable", QStringLiteral("可禁用：%1\n"))
+            .arg(boolText(entry.backendEntry.canDisable));
+        detailText += startupText("startup.detail.protected", QStringLiteral("受保护：%1\n"))
+            .arg(boolText(entry.backendEntry.isProtected));
+        detailText += startupText("startup.detail.protection_reason", QStringLiteral("保护/风险原因：%1\n"))
+            .arg(startupRiskReasonText(entry.backendEntry));
+        detailText += startupText("startup.detail.risk_level", QStringLiteral("风险等级：%1\n"))
+            .arg(startupRiskLevelText(entry.backendEntry.riskLevel));
         detailText += startupText("startup.detail.description", QStringLiteral("补充说明：%1\n"))
-            .arg(entry.detailText.isEmpty() ? QStringLiteral("<空>") : entry.detailText);
+            .arg(entry.detailText.isEmpty() ? emptyValueText() : startupLocalizedDetailText(entry.detailText));
         detailText += startupText("startup.detail.file_location", QStringLiteral("可打开文件位置：%1\n"))
             .arg(boolText(entry.canOpenFileLocation));
         detailText += startupText("startup.detail.registry_location", QStringLiteral("可打开注册表位置：%1\n"))

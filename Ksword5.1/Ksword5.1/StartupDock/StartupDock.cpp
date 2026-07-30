@@ -21,6 +21,11 @@ StartupDock::StartupDock(QWidget* parent)
 
 StartupDock::~StartupDock()
 {
+    m_destroying.store(true);
+    if (m_actionThread != nullptr && m_actionThread->joinable())
+    {
+        m_actionThread->join();
+    }
     if (m_refreshThread != nullptr && m_refreshThread->joinable())
     {
         m_refreshThread->join();
@@ -47,6 +52,37 @@ void StartupDock::changeEvent(QEvent* event)
 
     applyTranslatedHeaders();
     rebuildAllTables();
+    if (m_statusLabel == nullptr)
+    {
+        return;
+    }
+    if (m_refreshInProgress.load())
+    {
+        m_statusLabel->setText(
+            m_refreshQueued.load()
+                ? startupText(
+                    "startup.status.refresh_queued",
+                    QStringLiteral("状态：后台刷新进行中，已记录新的刷新请求"))
+                : startupText(
+                    "startup.status.refreshing",
+                    QStringLiteral("状态：后台正在枚举启动项...")));
+    }
+    else if (!m_initialRefreshDone)
+    {
+        m_statusLabel->setText(
+            startupText(
+                "startup.status.initial",
+                QStringLiteral("状态：首次打开该页时加载启动项")));
+    }
+    else
+    {
+        m_statusLabel->setText(
+            startupText(
+                "startup.status.summary",
+                QStringLiteral("状态：共 %1 条，当前分类 %2"))
+                .arg(m_entryList.size())
+                .arg(categoryToText(currentCategory())));
+    }
 }
 
 int StartupDock::toStartupColumn(const StartupColumn column)
@@ -247,10 +283,22 @@ void StartupDock::requestAsyncRefresh(const bool forceRefresh)
             startupText("startup.status.refreshing", QStringLiteral("状态：后台正在枚举启动项...")));
     }
 
-    const QPointer<StartupDock> safeThis(this);
-    m_refreshThread = std::make_unique<std::thread>([safeThis]()
+    const int progressPid = m_progressPid;
+    // LanguageManager 的当前语言由 UI 线程切换。先在此处取得进度文案，
+    // 避免后台枚举线程与语言切换并发访问翻译状态。
+    const std::string enumerateBackendProgressText = startupText(
+        "startup.progress.enumerate_backend",
+        QStringLiteral("调用 ks::startup 后端枚举启动项")).toStdString();
+    const std::string backendCompletedProgressText = startupText(
+        "startup.progress.backend_completed",
+        QStringLiteral("ks::startup 后端枚举完成")).toStdString();
+    m_refreshThread = std::make_unique<std::thread>(
+        [this,
+         progressPid,
+         enumerateBackendProgressText,
+         backendCompletedProgressText]()
         {
-            if (safeThis.isNull())
+            if (m_destroying.load())
             {
                 return;
             }
@@ -259,37 +307,33 @@ void StartupDock::requestAsyncRefresh(const bool forceRefresh)
             entryList.reserve(256);
 
             kPro.set(
-                safeThis->m_progressPid,
-                startupText(
-                    "startup.progress.enumerate_backend",
-                    QStringLiteral("调用 ks::startup 后端枚举启动项")).toStdString(),
+                progressPid,
+                enumerateBackendProgressText,
                 0,
                 15.0f);
             appendBackendStartupEntries(
                 &entryList,
                 ks::startup::EnumerateAllStartupEntries());
             kPro.set(
-                safeThis->m_progressPid,
-                startupText(
-                    "startup.progress.backend_completed",
-                    QStringLiteral("ks::startup 后端枚举完成")).toStdString(),
+                progressPid,
+                backendCompletedProgressText,
                 0,
                 96.0f);
 
-            if (safeThis.isNull())
+            if (m_destroying.load())
             {
                 return;
             }
 
             QMetaObject::invokeMethod(
-                safeThis,
-                [safeThis, entryList = std::move(entryList)]() mutable
+                this,
+                [this, entryList = std::move(entryList)]() mutable
                 {
-                    if (safeThis.isNull())
+                    if (m_destroying.load())
                     {
                         return;
                     }
-                    safeThis->applyRefreshResult(std::move(entryList));
+                    applyRefreshResult(std::move(entryList));
                 },
                 Qt::QueuedConnection);
         });

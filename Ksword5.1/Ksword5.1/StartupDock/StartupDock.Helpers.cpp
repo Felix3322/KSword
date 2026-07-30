@@ -67,6 +67,77 @@ namespace startup_dock_detail
             : startupText("startup.value.disabled", QStringLiteral("禁用"));
     }
 
+    QString startupRiskReasonText(const ks::startup::StartupEntry& backendEntry)
+    {
+        QString fallbackText = QString::fromUtf8(
+            backendEntry.riskReasonText.c_str(),
+            static_cast<qsizetype>(backendEntry.riskReasonText.size())).trimmed();
+        if (fallbackText.isEmpty())
+        {
+            fallbackText = startupText(
+                "startup.risk_reason.unspecified",
+                QStringLiteral("后端未提供保护或风险原因"));
+        }
+
+        if (backendEntry.riskReasonCode.empty())
+        {
+            return fallbackText;
+        }
+
+        const std::string translationKey = "startup.risk_reason." + backendEntry.riskReasonCode;
+        return startupText(translationKey.c_str(), fallbackText);
+    }
+
+    QString startupLocalizedDetailText(const QString& detailText)
+    {
+        const QString taskStatePrefix = QStringLiteral("状态=");
+        const QString taskTriggerSeparator = QStringLiteral("；触发器=");
+        const QString taskDescriptionSeparator = QStringLiteral("；描述=");
+        const qsizetype triggerIndex = detailText.indexOf(taskTriggerSeparator);
+        const qsizetype descriptionIndex = detailText.indexOf(
+            taskDescriptionSeparator,
+            triggerIndex < 0 ? 0 : triggerIndex + taskTriggerSeparator.size());
+        if (detailText.startsWith(taskStatePrefix)
+            && triggerIndex >= taskStatePrefix.size()
+            && descriptionIndex > triggerIndex)
+        {
+            const QString stateText = detailText.sliced(
+                taskStatePrefix.size(),
+                triggerIndex - taskStatePrefix.size());
+            const qsizetype triggerValueStart = triggerIndex + taskTriggerSeparator.size();
+            const QString triggerText = detailText.sliced(
+                triggerValueStart,
+                descriptionIndex - triggerValueStart);
+            const QString descriptionText = detailText.sliced(
+                descriptionIndex + taskDescriptionSeparator.size());
+            return startupText(
+                "startup.detail.scheduled_task",
+                QStringLiteral("状态：%1；触发器：%2；描述：%3"))
+                .arg(stateText)
+                .arg(triggerText)
+                .arg(descriptionText);
+        }
+
+        const QString backupPrefix = QStringLiteral("KSword 备份=");
+        if (detailText.startsWith(backupPrefix))
+        {
+            return startupText(
+                "startup.detail.backup_record",
+                QStringLiteral("KSword 备份记录：%1"))
+                .arg(detailText.sliced(backupPrefix.size()));
+        }
+
+        const QString parkingPrefix = QStringLiteral("KSword 暂存=");
+        if (detailText.startsWith(parkingPrefix))
+        {
+            return startupText(
+                "startup.detail.parking_path",
+                QStringLiteral("KSword 暂存路径：%1"))
+                .arg(detailText.sliced(parkingPrefix.size()));
+        }
+        return ks::i18n::sourceText(detailText);
+    }
+
     QStringList parseCsvLine(const QString& csvLineText)
     {
         QStringList fieldList;
@@ -159,6 +230,7 @@ namespace startup_dock_detail
             // - 后端只负责枚举与文本/布尔字段；
             // - QIcon 留空，后续仍由 StartupDock::resolveEntryIcon 在 UI 线程解析。
             StartupDock::StartupEntry entry;
+            entry.backendEntry = backendEntry;
             entry.uniqueIdText = fromBackendText(backendEntry.uniqueIdText);
             entry.category = fromBackendCategory(backendEntry.category);
             entry.categoryText = fromBackendText(backendEntry.categoryText);

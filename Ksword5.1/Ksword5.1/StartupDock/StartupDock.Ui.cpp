@@ -392,10 +392,19 @@ void StartupDock::appendEntryRow(
     tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::ImagePath), createReadOnlyItem(entry.imagePathText));
     tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::Command), createReadOnlyItem(entry.commandText));
     tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::Location), createReadOnlyItem(entry.locationText));
-    tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::User), createReadOnlyItem(entry.userText));
+    tableWidget->setItem(
+        rowIndex,
+        toStartupColumn(StartupColumn::User),
+        createReadOnlyItem(ks::i18n::sourceText(entry.userText)));
     tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::Enabled), createReadOnlyItem(buildStatusText(entry.enabled)));
-    tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::Type), createReadOnlyItem(entry.sourceTypeText));
-    tableWidget->setItem(rowIndex, toStartupColumn(StartupColumn::Detail), createReadOnlyItem(entry.detailText));
+    tableWidget->setItem(
+        rowIndex,
+        toStartupColumn(StartupColumn::Type),
+        createReadOnlyItem(ks::i18n::sourceText(entry.sourceTypeText)));
+    tableWidget->setItem(
+        rowIndex,
+        toStartupColumn(StartupColumn::Detail),
+        createReadOnlyItem(startupLocalizedDetailText(entry.detailText)));
 
     // shouldHighlightUntrusted 用途：记录当前条目是否命中不受信任高亮条件。
     const bool shouldHighlightUntrusted = isUntrustedStartupEntry(entry);
@@ -432,10 +441,10 @@ void StartupDock::appendRegistryTreeLeaf(
     entryItem->setText(toStartupColumn(StartupColumn::ImagePath), entry.imagePathText);
     entryItem->setText(toStartupColumn(StartupColumn::Command), entry.commandText);
     entryItem->setText(toStartupColumn(StartupColumn::Location), entry.locationText);
-    entryItem->setText(toStartupColumn(StartupColumn::User), entry.userText);
+    entryItem->setText(toStartupColumn(StartupColumn::User), ks::i18n::sourceText(entry.userText));
     entryItem->setText(toStartupColumn(StartupColumn::Enabled), buildStatusText(entry.enabled));
-    entryItem->setText(toStartupColumn(StartupColumn::Type), entry.sourceTypeText);
-    entryItem->setText(toStartupColumn(StartupColumn::Detail), entry.detailText);
+    entryItem->setText(toStartupColumn(StartupColumn::Type), ks::i18n::sourceText(entry.sourceTypeText));
+    entryItem->setText(toStartupColumn(StartupColumn::Detail), startupLocalizedDetailText(entry.detailText));
     entryItem->setIcon(toStartupColumn(StartupColumn::Name), resolveEntryIcon(entry));
 
     // shouldHighlightUntrusted 用途：树节点模式下沿用表格相同的不受信任着色规则。

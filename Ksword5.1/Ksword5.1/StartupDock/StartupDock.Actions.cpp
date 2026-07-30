@@ -3,7 +3,6 @@
 #include "../Framework/PrivilegeElevationPrompt.h"
 
 #include <QMetaObject>
-#include <QPointer>
 
 #include <winsvc.h>
 
@@ -139,6 +138,186 @@ namespace
         return deleteOk != FALSE;
     }
 
+    QString startupToggleActionText(const bool enabled)
+    {
+        return enabled
+            ? startupText("startup.menu.enable", QStringLiteral("启用"))
+            : startupText("startup.menu.disable", QStringLiteral("禁用"));
+    }
+
+    QString startupToggleImpactText(
+        const ks::startup::StartupActionKind actionKind,
+        const bool enabled)
+    {
+        switch (actionKind)
+        {
+        case ks::startup::StartupActionKind::RegistryRunValue:
+            return enabled
+                ? startupText(
+                    "startup.dialog.toggle.impact.registry.enable",
+                    QStringLiteral("将已停放的 Run 注册表值恢复到原位置；若原位置已被占用，不会覆盖现有值。"))
+                : startupText(
+                    "startup.dialog.toggle.impact.registry.disable",
+                    QStringLiteral("将 Run 注册表值移入 KSword 的可恢复备份；原值数据会保留，便于重新启用。"));
+        case ks::startup::StartupActionKind::StartupFolderFile:
+            return enabled
+                ? startupText(
+                    "startup.dialog.toggle.impact.startup_folder.enable",
+                    QStringLiteral("将启动文件从 KSword 专用停放位置移回“启动”文件夹；若目标路径已存在，不会覆盖现有文件。"))
+                : startupText(
+                    "startup.dialog.toggle.impact.startup_folder.disable",
+                    QStringLiteral("将启动文件移到 KSword 专用停放位置；文件内容会保留，之后可以重新启用。"));
+        case ks::startup::StartupActionKind::ScheduledTask:
+            return enabled
+                ? startupText(
+                    "startup.dialog.toggle.impact.task.enable",
+                    QStringLiteral("重新启用计划任务，并保留其现有触发器与操作配置。"))
+                : startupText(
+                    "startup.dialog.toggle.impact.task.disable",
+                    QStringLiteral("禁用计划任务，但保留任务定义、触发器与操作配置，之后可以重新启用。"));
+        case ks::startup::StartupActionKind::None:
+        default:
+            return enabled
+                ? startupText(
+                    "startup.dialog.toggle.impact.generic.enable",
+                    QStringLiteral("后端将使用已保存的结构化定位信息恢复该启动项。"))
+                : startupText(
+                    "startup.dialog.toggle.impact.generic.disable",
+                    QStringLiteral("后端将保留恢复信息并以可逆方式禁用该启动项。"));
+        }
+    }
+
+    QString startupActionStatusText(const ks::startup::StartupActionStatus status)
+    {
+        switch (status)
+        {
+        case ks::startup::StartupActionStatus::Success:
+            return startupText("startup.dialog.toggle.status.success", QStringLiteral("成功"));
+        case ks::startup::StartupActionStatus::NoChange:
+            return startupText("startup.dialog.toggle.status.no_change", QStringLiteral("状态未变化"));
+        case ks::startup::StartupActionStatus::InvalidEntry:
+            return startupText("startup.dialog.toggle.status.invalid_entry", QStringLiteral("条目无效"));
+        case ks::startup::StartupActionStatus::NotSupported:
+            return startupText("startup.dialog.toggle.status.not_supported", QStringLiteral("来源类型不受支持"));
+        case ks::startup::StartupActionStatus::ProtectedEntry:
+            return startupText("startup.dialog.toggle.status.protected", QStringLiteral("条目受保护"));
+        case ks::startup::StartupActionStatus::Conflict:
+            return startupText("startup.dialog.toggle.status.conflict", QStringLiteral("目标位置存在冲突"));
+        case ks::startup::StartupActionStatus::NotFound:
+            return startupText("startup.dialog.toggle.status.not_found", QStringLiteral("来源或备份不存在"));
+        case ks::startup::StartupActionStatus::AccessDenied:
+            return startupText("startup.dialog.toggle.status.access_denied", QStringLiteral("权限不足"));
+        case ks::startup::StartupActionStatus::WriteFailed:
+            return startupText("startup.dialog.toggle.status.write_failed", QStringLiteral("写入失败"));
+        case ks::startup::StartupActionStatus::VerificationFailed:
+            return startupText("startup.dialog.toggle.status.verification_failed", QStringLiteral("操作后验证失败"));
+        case ks::startup::StartupActionStatus::RollbackFailed:
+            return startupText("startup.dialog.toggle.status.rollback_failed", QStringLiteral("回滚失败"));
+        case ks::startup::StartupActionStatus::ProcessFailed:
+            return startupText("startup.dialog.toggle.status.process_failed", QStringLiteral("系统命令执行失败"));
+        default:
+            return startupText("startup.dialog.toggle.status.unknown", QStringLiteral("未知错误"));
+        }
+    }
+
+    QString startupActionFailureText(const ks::startup::ActionResult& actionResult)
+    {
+        const QString backendMessageText = QString::fromUtf8(
+            actionResult.messageText.c_str(),
+            static_cast<qsizetype>(actionResult.messageText.size())).trimmed();
+        const QString messageText = backendMessageText.isEmpty()
+            ? backendMessageText
+            : ks::i18n::sourceText(backendMessageText);
+        QString detailText = startupText(
+            "startup.dialog.toggle.failed.details",
+            QStringLiteral("状态：%1\n详细信息：%2"))
+            .arg(startupActionStatusText(actionResult.status))
+            .arg(messageText.isEmpty()
+                ? startupText(
+                    "startup.dialog.toggle.failed.no_details",
+                    QStringLiteral("后端未提供附加错误信息。"))
+                : messageText);
+
+        if (actionResult.errorCode != ERROR_SUCCESS)
+        {
+            detailText += QStringLiteral("\n");
+            detailText += startupText(
+                "startup.dialog.toggle.failed.win32",
+                QStringLiteral("Win32 错误：%1"))
+                .arg(winErrorText(actionResult.errorCode));
+        }
+
+        if (actionResult.rollbackAttempted)
+        {
+            detailText += QStringLiteral("\n");
+            detailText += actionResult.rollbackSucceeded
+                ? startupText(
+                    "startup.dialog.toggle.rollback.succeeded",
+                    QStringLiteral("安全回滚：已成功恢复操作前状态。"))
+                : startupText(
+                    "startup.dialog.toggle.rollback.failed",
+                    QStringLiteral("安全回滚：失败，请在刷新后核对启动项和备份状态。"));
+        }
+        return detailText;
+    }
+
+    bool isStartupPrivilegeFailure(const ks::startup::ActionResult& actionResult)
+    {
+        return actionResult.status == ks::startup::StartupActionStatus::AccessDenied
+            || actionResult.errorCode == ERROR_ACCESS_DENIED
+            || actionResult.errorCode == ERROR_PRIVILEGE_NOT_HELD
+            || actionResult.errorCode == ERROR_ELEVATION_REQUIRED;
+    }
+
+    QString startupTsvField(QString fieldText)
+    {
+        // 用可见控制字符替代 TSV 的行/列分隔符，确保一条启动项恒定占一行。
+        fieldText.replace(QChar('\t'), QStringLiteral("␉"));
+        fieldText.replace(QChar('\r'), QStringLiteral("␍"));
+        fieldText.replace(QChar('\n'), QStringLiteral("␊"));
+        return fieldText;
+    }
+
+    QString startupEntryTsvRow(const StartupDock::StartupEntry& entry)
+    {
+        QStringList fieldList{
+            entry.itemNameText,
+            entry.publisherText,
+            entry.imagePathText,
+            entry.commandText,
+            entry.locationText,
+            ks::i18n::sourceText(entry.userText),
+            buildStatusText(entry.enabled),
+            ks::i18n::sourceText(entry.sourceTypeText),
+            startupLocalizedDetailText(entry.detailText)
+        };
+        for (QString& fieldText : fieldList)
+        {
+            fieldText = startupTsvField(fieldText);
+        }
+        return fieldList.join(QChar('\t'));
+    }
+
+    class StartupActionFlagReset final
+    {
+    public:
+        explicit StartupActionFlagReset(std::atomic_bool& actionFlag)
+            : m_actionFlag(actionFlag)
+        {
+        }
+
+        ~StartupActionFlagReset()
+        {
+            m_actionFlag.store(false);
+        }
+
+        StartupActionFlagReset(const StartupActionFlagReset&) = delete;
+        StartupActionFlagReset& operator=(const StartupActionFlagReset&) = delete;
+
+    private:
+        std::atomic_bool& m_actionFlag;
+    };
+
 }
 
 void StartupDock::initializeConnections()
@@ -244,6 +423,7 @@ void StartupDock::showEntryContextMenu(
     {
         return;
     }
+    tableWidget->setCurrentItem(clickedItem);
 
     const int entryIndex = findEntryIndexByTableRow(category, clickedItem->row());
     if (entryIndex < 0 || entryIndex >= static_cast<int>(m_entryList.size()))
@@ -251,7 +431,7 @@ void StartupDock::showEntryContextMenu(
         return;
     }
 
-    const StartupEntry& entry = m_entryList[static_cast<std::size_t>(entryIndex)];
+    const StartupEntry entry = m_entryList[static_cast<std::size_t>(entryIndex)];
     QMenu contextMenu(this);
     // 显式填充菜单背景，避免浅色模式下继承透明样式出现黑底。
     contextMenu.setStyleSheet(KswordTheme::ContextMenuStyle());
@@ -289,6 +469,22 @@ void StartupDock::showEntryContextMenu(
                 .arg(entry.itemNameText);
             return uploadTarget;
         });
+    contextMenu.addSeparator();
+    const bool targetEnabled = !entry.enabled;
+    QAction* toggleAction = contextMenu.addAction(
+        createBlueIcon(targetEnabled ? ":/Icon/process_start.svg" : ":/Icon/process_pause.svg"),
+        startupToggleActionText(targetEnabled));
+    QAction* protectedReasonAction = nullptr;
+    if (entry.backendEntry.isProtected)
+    {
+        protectedReasonAction = contextMenu.addAction(
+            createBlueIcon(":/Icon/process_details.svg"),
+            startupText(
+                "startup.menu.protected_reason",
+                QStringLiteral("受保护：%1"))
+                .arg(startupRiskReasonText(entry.backendEntry)));
+        protectedReasonAction->setEnabled(false);
+    }
     QAction* deleteAction = contextMenu.addAction(
         createBlueIcon(":/Icon/log_clear.svg"),
         startupText("startup.menu.delete", QStringLiteral("删除项")));
@@ -302,7 +498,17 @@ void StartupDock::showEntryContextMenu(
     gotoServiceAction->setEnabled(
         entry.category == StartupCategory::Services
         || entry.sourceTypeText == QStringLiteral("AutoService"));
-    deleteAction->setEnabled(entry.canDelete);
+    const bool toggleSupported = targetEnabled
+        ? entry.backendEntry.canEnable
+        : entry.backendEntry.canDisable;
+    toggleAction->setEnabled(
+        toggleSupported
+        && !entry.backendEntry.isProtected
+        && !m_startupActionInProgress.load());
+    deleteAction->setEnabled(
+        entry.canDelete
+        && !entry.backendEntry.isProtected
+        && !m_startupActionInProgress.load());
 
     QAction* selectedAction = contextMenu.exec(tableWidget->viewport()->mapToGlobal(localPos));
     if (selectedAction == detailAction)
@@ -354,9 +560,13 @@ void StartupDock::showEntryContextMenu(
     {
         return;
     }
+    else if (selectedAction == toggleAction)
+    {
+        setStartupEntryEnabled(entry, targetEnabled);
+    }
     else if (selectedAction == deleteAction)
     {
-        deleteSelectedEntry(category, tableWidget);
+        deleteStartupEntry(entry);
     }
 }
 
@@ -398,33 +608,50 @@ void StartupDock::showRegistryContextMenu(const QPoint& localPos)
     QAction* openRegistryAction = contextMenu.addAction(
         createBlueIcon(":/Icon/file_find.svg"),
         startupText("startup.menu.open_registry", QStringLiteral("打开注册表位置")));
-    const StartupEntry* registryEntry =
-        (entryIndex >= 0 && entryIndex < static_cast<int>(m_entryList.size()))
-        ? &m_entryList[static_cast<std::size_t>(entryIndex)]
-        : nullptr;
+    const bool hasRegistryEntry =
+        entryIndex >= 0 && entryIndex < static_cast<int>(m_entryList.size());
+    const StartupEntry registryEntry = hasRegistryEntry
+        ? m_entryList[static_cast<std::size_t>(entryIndex)]
+        : StartupEntry{};
     QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
         &contextMenu,
         this,
-        [registryEntry]() -> ks::online_scan::SandboxUploadTarget
+        [hasRegistryEntry, registryEntry]() -> ks::online_scan::SandboxUploadTarget
         {
             // 输入：高级注册表树当前叶子条目。
             // 处理：只有叶子条目才从 imagePathText 提取上传文件。
             // 返回：待上传路径和来源说明。
             ks::online_scan::SandboxUploadTarget uploadTarget;
-            if (registryEntry == nullptr)
+            if (!hasRegistryEntry)
             {
                 uploadTarget.errorText = startupText(
                     "startup.upload.error.invalid_node",
                     QStringLiteral("当前注册表节点不是可上传的启动项。"));
                 return uploadTarget;
             }
-            uploadTarget.filePath = registryEntry->imagePathText;
+            uploadTarget.filePath = registryEntry.imagePathText;
             uploadTarget.sourceText = startupText(
                 "startup.source.autostart_registry",
                 QStringLiteral("自启动注册表项 %1"))
-                .arg(registryEntry->itemNameText);
+                .arg(registryEntry.itemNameText);
             return uploadTarget;
         });
+    contextMenu.addSeparator();
+    const bool targetEnabled = !hasRegistryEntry || !registryEntry.enabled;
+    QAction* toggleAction = contextMenu.addAction(
+        createBlueIcon(targetEnabled ? ":/Icon/process_start.svg" : ":/Icon/process_pause.svg"),
+        startupToggleActionText(targetEnabled));
+    QAction* protectedReasonAction = nullptr;
+    if (hasRegistryEntry && registryEntry.backendEntry.isProtected)
+    {
+        protectedReasonAction = contextMenu.addAction(
+            createBlueIcon(":/Icon/process_details.svg"),
+            startupText(
+                "startup.menu.protected_reason",
+                QStringLiteral("受保护：%1"))
+                .arg(startupRiskReasonText(registryEntry.backendEntry)));
+        protectedReasonAction->setEnabled(false);
+    }
     QAction* deleteAction = contextMenu.addAction(
         createBlueIcon(":/Icon/log_clear.svg"),
         startupText("startup.menu.delete", QStringLiteral("删除项")));
@@ -439,11 +666,12 @@ void StartupDock::showRegistryContextMenu(const QPoint& localPos)
             uploadVirusTotalAction->setEnabled(false);
         }
         openRegistryAction->setEnabled(!locationText.isEmpty());
+        toggleAction->setEnabled(false);
         deleteAction->setEnabled(false);
     }
     else if (entryIndex >= 0 && entryIndex < static_cast<int>(m_entryList.size()))
     {
-        const StartupEntry& entry = m_entryList[static_cast<std::size_t>(entryIndex)];
+        const StartupEntry& entry = registryEntry;
         openFileAction->setEnabled(entry.canOpenFileLocation);
         filePropertiesAction->setEnabled(entry.canOpenFileLocation);
         if (uploadVirusTotalAction != nullptr)
@@ -451,7 +679,17 @@ void StartupDock::showRegistryContextMenu(const QPoint& localPos)
             uploadVirusTotalAction->setEnabled(entry.canOpenFileLocation && !entry.imagePathText.trimmed().isEmpty());
         }
         openRegistryAction->setEnabled(entry.canOpenRegistryLocation);
-        deleteAction->setEnabled(entry.canDelete);
+        const bool toggleSupported = targetEnabled
+            ? entry.backendEntry.canEnable
+            : entry.backendEntry.canDisable;
+        toggleAction->setEnabled(
+            toggleSupported
+            && !entry.backendEntry.isProtected
+            && !m_startupActionInProgress.load());
+        deleteAction->setEnabled(
+            entry.canDelete
+            && !entry.backendEntry.isProtected
+            && !m_startupActionInProgress.load());
     }
     else
     {
@@ -462,6 +700,7 @@ void StartupDock::showRegistryContextMenu(const QPoint& localPos)
             uploadVirusTotalAction->setEnabled(false);
         }
         openRegistryAction->setEnabled(false);
+        toggleAction->setEnabled(false);
         deleteAction->setEnabled(false);
     }
 
@@ -490,9 +729,13 @@ void StartupDock::showRegistryContextMenu(const QPoint& localPos)
     {
         return;
     }
-    else if (selectedAction == deleteAction)
+    else if (selectedAction == toggleAction && hasRegistryEntry)
     {
-        deleteSelectedEntry(StartupCategory::Registry, nullptr);
+        setStartupEntryEnabled(registryEntry, targetEnabled);
+    }
+    else if (selectedAction == deleteAction && hasRegistryEntry)
+    {
+        deleteStartupEntry(registryEntry);
     }
 }
 
@@ -610,17 +853,7 @@ void StartupDock::copySelectedRow(const StartupCategory category, QTableWidget* 
         }
 
         const StartupEntry& entry = m_entryList[static_cast<std::size_t>(entryIndex)];
-        const QString rowText = QStringLiteral("%1\t%2\t%3\t%4\t%5\t%6\t%7\t%8\t%9")
-            .arg(entry.itemNameText)
-            .arg(entry.publisherText)
-            .arg(entry.imagePathText)
-            .arg(entry.commandText)
-            .arg(entry.locationText)
-            .arg(entry.userText)
-            .arg(buildStatusText(entry.enabled))
-            .arg(entry.sourceTypeText)
-            .arg(entry.detailText);
-        QApplication::clipboard()->setText(rowText);
+        QApplication::clipboard()->setText(startupEntryTsvRow(entry));
         return;
     }
 
@@ -636,17 +869,7 @@ void StartupDock::copySelectedRow(const StartupCategory category, QTableWidget* 
     }
 
     const StartupEntry& entry = m_entryList[static_cast<std::size_t>(entryIndex)];
-    const QString rowText = QStringLiteral("%1\t%2\t%3\t%4\t%5\t%6\t%7\t%8\t%9")
-        .arg(entry.itemNameText)
-        .arg(entry.publisherText)
-        .arg(entry.imagePathText)
-        .arg(entry.commandText)
-        .arg(entry.locationText)
-        .arg(entry.userText)
-        .arg(buildStatusText(entry.enabled))
-        .arg(entry.sourceTypeText)
-        .arg(entry.detailText);
-    QApplication::clipboard()->setText(rowText);
+    QApplication::clipboard()->setText(startupEntryTsvRow(entry));
 }
 
 void StartupDock::exportCurrentView()
@@ -700,16 +923,7 @@ void StartupDock::exportCurrentView()
                 }
 
                 const StartupEntry& entry = m_entryList[static_cast<std::size_t>(entryIndex)];
-                outputStream
-                    << entry.itemNameText << '\t'
-                    << entry.publisherText << '\t'
-                    << entry.imagePathText << '\t'
-                    << entry.commandText << '\t'
-                    << entry.locationText << '\t'
-                    << entry.userText << '\t'
-                    << buildStatusText(entry.enabled) << '\t'
-                    << entry.sourceTypeText << '\t'
-                    << entry.detailText << '\n';
+                outputStream << startupEntryTsvRow(entry) << '\n';
             }
         }
     }
@@ -730,16 +944,7 @@ void StartupDock::exportCurrentView()
             }
 
             const StartupEntry& entry = m_entryList[static_cast<std::size_t>(entryIndex)];
-            outputStream
-                << entry.itemNameText << '\t'
-                << entry.publisherText << '\t'
-                << entry.imagePathText << '\t'
-                << entry.commandText << '\t'
-                << entry.locationText << '\t'
-                << entry.userText << '\t'
-                << buildStatusText(entry.enabled) << '\t'
-                << entry.sourceTypeText << '\t'
-                << entry.detailText << '\n';
+            outputStream << startupEntryTsvRow(entry) << '\n';
         }
     }
 }
@@ -756,24 +961,193 @@ void StartupDock::applyFilterAndRefresh()
     }
 }
 
-void StartupDock::deleteSelectedEntry(const StartupCategory category, QTableWidget* tableWidget)
+void StartupDock::setStartupEntryEnabled(StartupEntry entry, const bool enabled)
 {
-    int entryIndex = -1;
-    if (category == StartupCategory::Registry)
+    const QString actionText = startupToggleActionText(enabled);
+    const QString operationTitle = startupText(
+        "startup.dialog.toggle.operation.title",
+        QStringLiteral("%1启动项"))
+        .arg(actionText);
+
+    if (entry.backendEntry.isProtected)
     {
-        entryIndex = findEntryIndexByRegistryTreeItem(
-            m_registryTree != nullptr ? m_registryTree->currentItem() : nullptr);
+        QMessageBox::information(
+            this,
+            operationTitle,
+            startupText(
+                "startup.dialog.toggle.protected",
+                QStringLiteral("该条目受保护，不能更改启用状态。\n\n条目：%1\n保护原因：%2"))
+                .arg(entry.itemNameText)
+                .arg(startupRiskReasonText(entry.backendEntry)));
+        return;
     }
-    else if (tableWidget != nullptr && tableWidget->currentRow() >= 0)
+
+    const bool actionSupported = enabled
+        ? entry.backendEntry.canEnable
+        : entry.backendEntry.canDisable;
+    if (!actionSupported)
     {
-        entryIndex = findEntryIndexByTableRow(category, tableWidget->currentRow());
+        QMessageBox::information(
+            this,
+            operationTitle,
+            startupText(
+                "startup.dialog.toggle.unsupported",
+                QStringLiteral("后端未允许对该条目执行“%1”。请刷新后查看最新状态。"))
+                .arg(actionText));
+        return;
     }
-    if (entryIndex < 0 || entryIndex >= static_cast<int>(m_entryList.size()))
+
+    const QString locationText = entry.locationText.trimmed().isEmpty()
+        ? startupText("startup.value.empty", QStringLiteral("<空>"))
+        : entry.locationText;
+    const QMessageBox::StandardButton confirmButton = QMessageBox::warning(
+        this,
+        startupText(
+            "startup.dialog.toggle.confirm.title",
+            QStringLiteral("确认%1"))
+            .arg(operationTitle),
+        startupText(
+            "startup.dialog.toggle.confirm.message",
+            QStringLiteral("%1\n\n条目：%2\n来源：%3\n目标状态：%4\n风险提示：%5\n\n此操作可恢复；完成后可以通过右键菜单改回原状态。是否继续？"))
+            .arg(startupToggleImpactText(entry.backendEntry.actionKind, enabled))
+            .arg(entry.itemNameText)
+            .arg(locationText)
+            .arg(buildStatusText(enabled))
+            .arg(startupRiskReasonText(entry.backendEntry)),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (confirmButton != QMessageBox::Yes)
     {
         return;
     }
 
-    const StartupEntry& entry = m_entryList[static_cast<std::size_t>(entryIndex)];
+    bool expectedIdle = false;
+    if (!m_startupActionInProgress.compare_exchange_strong(expectedIdle, true))
+    {
+        QMessageBox::information(
+            this,
+            operationTitle,
+            startupText(
+                "startup.dialog.toggle.busy",
+                QStringLiteral("已有一个启动项启停操作正在执行，请等待其完成后重试。")));
+        return;
+    }
+
+    const ks::startup::StartupEntry backendEntry = entry.backendEntry;
+    const QString itemNameText = entry.itemNameText;
+    const QString sourceTypeText = entry.sourceTypeText;
+    const QString entryLocationText = entry.locationText;
+    if (m_actionThread != nullptr && m_actionThread->joinable())
+    {
+        m_actionThread->join();
+    }
+    m_actionThread = std::make_unique<std::thread>(
+        [this,
+         backendEntry,
+         enabled,
+         actionText,
+         operationTitle,
+         itemNameText,
+         sourceTypeText,
+         entryLocationText]()
+    {
+        const ks::startup::ActionResult actionResult =
+            ks::startup::SetStartupEntryEnabled(backendEntry, enabled);
+        if (m_destroying.load())
+        {
+            return;
+        }
+
+        const bool callbackQueued = QMetaObject::invokeMethod(
+            this,
+            [this,
+             actionResult,
+             enabled,
+             actionText,
+             operationTitle,
+             itemNameText,
+             sourceTypeText,
+             entryLocationText]()
+            {
+                if (m_destroying.load())
+                {
+                    return;
+                }
+
+                m_startupActionInProgress.store(false);
+                refreshAllStartupEntries();
+                if (!actionResult.success)
+                {
+                    const QString failureText = startupActionFailureText(actionResult);
+                    bool privilegePromptHandled = false;
+                    if (isStartupPrivilegeFailure(actionResult))
+                    {
+                        if (actionResult.errorCode != ERROR_SUCCESS)
+                        {
+                            privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                                this,
+                                operationTitle,
+                                static_cast<unsigned long>(actionResult.errorCode));
+                        }
+                        if (!privilegePromptHandled)
+                        {
+                            privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                                this,
+                                operationTitle,
+                                failureText);
+                        }
+                    }
+                    if (!privilegePromptHandled)
+                    {
+                        QMessageBox::warning(
+                            this,
+                            startupText(
+                                "startup.dialog.toggle.failed.title",
+                                QStringLiteral("%1失败"))
+                                .arg(operationTitle),
+                            failureText);
+                    }
+                    return;
+                }
+
+                kLogEvent actionEvent;
+                info << actionEvent
+                    << startupText(
+                        "startup.log.toggle.succeeded",
+                        QStringLiteral("[StartupDock] 可逆启停成功, action=%1, changed=%2, targetEnabled=%3, type=%4, name=%5, location=%6"))
+                           .arg(actionText)
+                           .arg(actionResult.changed ? QStringLiteral("true") : QStringLiteral("false"))
+                           .arg(enabled ? QStringLiteral("true") : QStringLiteral("false"))
+                           .arg(sourceTypeText)
+                           .arg(itemNameText)
+                           .arg(entryLocationText)
+                           .toStdString()
+                    << eol;
+            },
+            Qt::QueuedConnection);
+        if (!callbackQueued)
+        {
+            m_startupActionInProgress.store(false);
+        }
+    });
+}
+
+void StartupDock::deleteStartupEntry(StartupEntry entry)
+{
+    if (entry.backendEntry.isProtected)
+    {
+        QMessageBox::warning(
+            this,
+            startupText(
+                "startup.dialog.delete.protected.title",
+                QStringLiteral("受保护的启动项")),
+            startupText(
+                "startup.dialog.delete.protected.message",
+                QStringLiteral("该条目受保护，永久删除已被阻止。\n\n条目：%1\n保护原因：%2"))
+                .arg(entry.itemNameText)
+                .arg(startupRiskReasonText(entry.backendEntry)));
+        return;
+    }
     if (!entry.canDelete)
     {
         QMessageBox::information(
@@ -785,8 +1159,12 @@ void StartupDock::deleteSelectedEntry(const StartupCategory category, QTableWidg
 
     const QMessageBox::StandardButton confirmButton = QMessageBox::warning(
         this,
-        startupText("startup.dialog.delete.confirm.title", QStringLiteral("删除启动项")),
-        startupText("startup.dialog.delete.confirm.message", QStringLiteral("确定删除以下条目？\n\n%1\n来源：%2"))
+        startupText(
+            "startup.dialog.delete.confirm.irreversible.title",
+            QStringLiteral("永久删除启动项")),
+        startupText(
+            "startup.dialog.delete.confirm.irreversible.message",
+            QStringLiteral("即将永久删除以下启动项及其来源记录：\n\n%1\n来源：%2\n\n此操作不可通过 KSword 恢复。若只是暂时停止启动，请取消并使用“禁用”。\n\n确定仍要永久删除吗？"))
             .arg(entry.itemNameText)
             .arg(entry.locationText),
         QMessageBox::Yes | QMessageBox::No,
@@ -795,6 +1173,19 @@ void StartupDock::deleteSelectedEntry(const StartupCategory category, QTableWidg
     {
         return;
     }
+
+    bool expectedIdle = false;
+    if (!m_startupActionInProgress.compare_exchange_strong(expectedIdle, true))
+    {
+        QMessageBox::information(
+            this,
+            startupText("startup.dialog.title", QStringLiteral("启动项")),
+            startupText(
+                "startup.dialog.operation.busy",
+                QStringLiteral("已有一个启动项修改操作正在执行，请等待其完成后重试。")));
+        return;
+    }
+    StartupActionFlagReset actionFlagReset(m_startupActionInProgress);
 
     QString errorText;
     bool deleteOk = false;
@@ -849,83 +1240,28 @@ void StartupDock::deleteSelectedEntry(const StartupCategory category, QTableWidg
     }
     else if (entry.sourceTypeText == QStringLiteral("ScheduledTask"))
     {
-        const StartupEntry taskEntry = entry;
-        QPointer<StartupDock> safeThis(this);
-        std::thread([safeThis, taskEntry]()
-        {
-            QProcess processObject;
-            processObject.setProgram(QStringLiteral("schtasks.exe"));
-            processObject.setArguments({
-                QStringLiteral("/Delete"),
-                QStringLiteral("/TN"),
-                taskEntry.locationText,
-                QStringLiteral("/F")
-                });
-            processObject.start();
-            bool taskDeleteOk = processObject.waitForStarted(1500) && processObject.waitForFinished(10000)
-                && processObject.exitStatus() == QProcess::NormalExit
-                && processObject.exitCode() == 0;
-            QString taskErrorText;
-            if (!taskDeleteOk)
-            {
-                taskErrorText = QString::fromLocal8Bit(processObject.readAllStandardError()).trimmed();
-                if (taskErrorText.isEmpty())
-                {
-                    taskErrorText = QString::fromLocal8Bit(processObject.readAllStandardOutput()).trimmed();
-                }
-                if (taskErrorText.isEmpty())
-                {
-                    taskErrorText = startupText("startup.delete.schtasks_failed", QStringLiteral("schtasks 删除失败。"));
-                }
-            }
-
-            if (safeThis.isNull()) return;
-            QMetaObject::invokeMethod(
-                safeThis.data(),
-                [safeThis, taskEntry, taskDeleteOk, taskErrorText]()
-                {
-                    if (safeThis.isNull()) return;
-                    if (!taskDeleteOk)
-                    {
-                        (void)ks::ui::promptForPrivilegeFailure(
-                            safeThis.data(),
-                            QStringLiteral("删除计划任务启动项"),
-                            taskErrorText);
-                        QMessageBox::warning(
-                            safeThis.data(),
-                            startupText("startup.dialog.title", QStringLiteral("启动项")),
-                            startupText("startup.dialog.delete.failed", QStringLiteral("删除失败：%1"))
-                                .arg(taskErrorText));
-                        return;
-                    }
-
-                    kLogEvent deleteEvent;
-                    info << deleteEvent
-                        << startupText(
-                            "startup.log.delete.succeeded",
-                            QStringLiteral("[StartupDock] 删除启动项成功, type="))
-                               .toStdString()
-                        << taskEntry.sourceTypeText.toStdString()
-                        << ", name="
-                        << taskEntry.itemNameText.toStdString()
-                        << ", location="
-                        << taskEntry.locationText.toStdString()
-                        << eol;
-                    safeThis->refreshAllStartupEntries();
-                },
-                Qt::QueuedConnection);
-        }).detach();
-        return;
+        errorText = startupText(
+            "startup.dialog.delete.task_use_disable",
+            QStringLiteral("计划任务不支持从启动项页永久删除；请使用“禁用”，或在 Windows 任务计划程序中管理。"));
+        deleteOk = false;
     }
 
     if (!deleteOk)
     {
-        (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除启动项"), errorText);
-        QMessageBox::warning(
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
-            startupText("startup.dialog.title", QStringLiteral("启动项")),
-            startupText("startup.dialog.delete.failed", QStringLiteral("删除失败：%1"))
-                .arg(errorText));
+            startupText(
+                "startup.dialog.delete.operation.title",
+                QStringLiteral("删除启动项")),
+            errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(
+                this,
+                startupText("startup.dialog.title", QStringLiteral("启动项")),
+                startupText("startup.dialog.delete.failed", QStringLiteral("删除失败：%1"))
+                    .arg(errorText));
+        }
         return;
     }
 
@@ -1013,7 +1349,11 @@ bool StartupDock::entryMatchesCurrentFilter(const StartupEntry& entry) const
         + entry.imagePathText + QLatin1Char('\n')
         + entry.commandText + QLatin1Char('\n')
         + entry.locationText + QLatin1Char('\n')
+        + entry.userText + QLatin1Char('\n')
+        + ks::i18n::sourceText(entry.userText) + QLatin1Char('\n')
         + entry.sourceTypeText + QLatin1Char('\n')
-        + entry.detailText;
+        + ks::i18n::sourceText(entry.sourceTypeText) + QLatin1Char('\n')
+        + entry.detailText + QLatin1Char('\n')
+        + startupLocalizedDetailText(entry.detailText);
     return haystackText.contains(keywordText, Qt::CaseInsensitive);
 }

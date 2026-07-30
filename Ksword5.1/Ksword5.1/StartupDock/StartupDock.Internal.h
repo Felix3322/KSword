@@ -102,6 +102,16 @@ namespace startup_dock_detail
     // - 把启用状态转成统一文本。
     QString buildStatusText(bool enabled);
 
+    // startupRiskReasonText 作用：
+    // - 优先按后端稳定原因码读取本地化文本；
+    // - 后端诊断文本仅作为未配置语言键时的回退。
+    QString startupRiskReasonText(const ks::startup::StartupEntry& backendEntry);
+
+    // startupLocalizedDetailText 作用：
+    // - 翻译带动态备份标识/路径的启动项说明；
+    // - 其它静态说明继续交给 sourceText 处理。
+    QString startupLocalizedDetailText(const QString& detailText);
+
     // parseCsvLine 作用：
     // - 解析一行 CSV 文本，支持引号转义；
     // - 供 `schtasks` 输出解析复用。

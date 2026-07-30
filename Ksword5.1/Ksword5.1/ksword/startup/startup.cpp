@@ -6,7 +6,9 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <KnownFolders.h>
 #include <Shellapi.h>
+#include <ShlObj.h>
 #include <Softpub.h>
 #include <WinTrust.h>
 #include <winsvc.h>
@@ -17,6 +19,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <filesystem>
@@ -165,6 +168,83 @@ namespace
             return std::wstring();
         }
         return std::wstring(buffer.data(), chars);
+    }
+
+    // KnownFolderPath avoids trusting caller-controlled environment variables for security paths.
+    std::wstring KnownFolderPath(const KNOWNFOLDERID& folderId)
+    {
+        PWSTR rawPath = nullptr;
+        const HRESULT result = ::SHGetKnownFolderPath(folderId, KF_FLAG_DEFAULT, nullptr, &rawPath);
+        if (FAILED(result) || rawPath == nullptr)
+        {
+            if (rawPath != nullptr)
+            {
+                ::CoTaskMemFree(rawPath);
+            }
+            return std::wstring();
+        }
+        std::wstring path(rawPath);
+        ::CoTaskMemFree(rawPath);
+        return path;
+    }
+
+    struct FileIdentitySnapshot
+    {
+        std::uint64_t volumeSerial = 0;
+        std::uint64_t fileIndex = 0;
+        std::uint64_t fileSize = 0;
+        std::uint64_t lastWriteTime = 0;
+    };
+
+    // QueryFileIdentityNoReparse opens the final component itself and rejects links/directories.
+    bool QueryFileIdentityNoReparse(
+        const std::wstring& pathText,
+        FileIdentitySnapshot& identityOut,
+        DWORD& errorCodeOut)
+    {
+        errorCodeOut = ERROR_SUCCESS;
+        HANDLE fileHandle = ::CreateFileW(
+            pathText.c_str(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (fileHandle == INVALID_HANDLE_VALUE)
+        {
+            errorCodeOut = ::GetLastError();
+            return false;
+        }
+        BY_HANDLE_FILE_INFORMATION information{};
+        const BOOL queryOk = ::GetFileInformationByHandle(fileHandle, &information);
+        const DWORD queryError = queryOk == FALSE ? ::GetLastError() : ERROR_SUCCESS;
+        ::CloseHandle(fileHandle);
+        if (queryOk == FALSE)
+        {
+            errorCodeOut = queryError;
+            return false;
+        }
+        if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+            || (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            errorCodeOut = ERROR_REPARSE_TAG_INVALID;
+            return false;
+        }
+        ULARGE_INTEGER fileIndex{};
+        fileIndex.HighPart = information.nFileIndexHigh;
+        fileIndex.LowPart = information.nFileIndexLow;
+        ULARGE_INTEGER fileSize{};
+        fileSize.HighPart = information.nFileSizeHigh;
+        fileSize.LowPart = information.nFileSizeLow;
+        ULARGE_INTEGER lastWriteTime{};
+        lastWriteTime.HighPart = information.ftLastWriteTime.dwHighDateTime;
+        lastWriteTime.LowPart = information.ftLastWriteTime.dwLowDateTime;
+        identityOut.volumeSerial = information.dwVolumeSerialNumber;
+        identityOut.fileIndex = fileIndex.QuadPart;
+        identityOut.fileSize = fileSize.QuadPart;
+        identityOut.lastWriteTime = lastWriteTime.QuadPart;
+        return true;
     }
 
     // Append detail fragments without forcing the UI layer to know how backend details were assembled.
@@ -370,6 +450,7 @@ namespace
         std::string valueNameText;
         std::string valueDataText;
         DWORD valueType = REG_NONE;
+        std::vector<std::uint8_t> rawData;
     };
 
     // RootKeyText maps the limited root keys used by StartupDock-compatible enumerators.
@@ -394,6 +475,96 @@ namespace
     std::string BuildRegistryLocationText(HKEY rootKey, const std::wstring& subKeyText)
     {
         return RootKeyText(rootKey) + "\\" + FromWide(subKeyText);
+    }
+
+    // EqualWideI compares Win32 locator components without depending on display casing.
+    bool EqualWideI(const std::wstring& left, const std::wstring& right)
+    {
+        return ::CompareStringOrdinal(left.c_str(), static_cast<int>(left.size()), right.c_str(), static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
+    }
+
+    // PublicRegistryRoot converts only the two hives accepted by reversible Run actions.
+    ks::startup::StartupRegistryRoot PublicRegistryRoot(HKEY rootKey)
+    {
+        if (rootKey == HKEY_CURRENT_USER)
+        {
+            return ks::startup::StartupRegistryRoot::CurrentUser;
+        }
+        if (rootKey == HKEY_LOCAL_MACHINE)
+        {
+            return ks::startup::StartupRegistryRoot::LocalMachine;
+        }
+        return ks::startup::StartupRegistryRoot::None;
+    }
+
+    // NativeRegistryRoot rejects unknown public roots instead of guessing from display text.
+    HKEY NativeRegistryRoot(const ks::startup::StartupRegistryRoot root)
+    {
+        switch (root)
+        {
+        case ks::startup::StartupRegistryRoot::CurrentUser:
+            return HKEY_CURRENT_USER;
+        case ks::startup::StartupRegistryRoot::LocalMachine:
+            return HKEY_LOCAL_MACHINE;
+        case ks::startup::StartupRegistryRoot::None:
+            break;
+        }
+        return nullptr;
+    }
+
+    // TxR availability is not guaranteed across supported Windows configurations. Until the
+    // complete source+metadata transaction can be guaranteed, registry mutation stays closed.
+    constexpr bool kRegistryReversibleEnabled = false;
+
+    // Startup Folder moves require handle-relative, reparse-safe rename semantics. Until every
+    // supported target is covered, enumeration remains available but mutation stays closed.
+    constexpr bool kStartupFolderReversibleEnabled = false;
+
+    // IsKnownRunLocation recognizes records created by older builds so they remain visible.
+    bool IsKnownRunLocation(HKEY rootKey, const std::wstring& subKeyText)
+    {
+        static const std::wstring runKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+        static const std::wstring runOnceKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
+        static const std::wstring run32Key = L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run";
+        static const std::wstring runOnce32Key = L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
+        if (rootKey == HKEY_CURRENT_USER)
+        {
+            return EqualWideI(subKeyText, runKey) || EqualWideI(subKeyText, runOnceKey);
+        }
+        if (rootKey == HKEY_LOCAL_MACHINE)
+        {
+            return EqualWideI(subKeyText, runKey) || EqualWideI(subKeyText, runOnceKey)
+                || EqualWideI(subKeyText, run32Key) || EqualWideI(subKeyText, runOnce32Key);
+        }
+        return false;
+    }
+
+    // IsSupportedRunLocation is intentionally limited to the current user's native Run keys.
+    bool IsSupportedRunLocation(HKEY rootKey, const std::wstring& subKeyText)
+    {
+        static const std::wstring runKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+        static const std::wstring runOnceKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
+        return kRegistryReversibleEnabled
+            && rootKey == HKEY_CURRENT_USER
+            && (EqualWideI(subKeyText, runKey) || EqualWideI(subKeyText, runOnceKey));
+    }
+
+    // ProtectEntry clears every destructive capability for sources outside the reversible allow-list.
+    void ProtectEntry(
+        ks::startup::StartupEntry& entry,
+        const ks::startup::StartupRiskLevel riskLevel,
+        const std::string& reasonCode,
+        const std::string& reasonText)
+    {
+        entry.actionKind = ks::startup::StartupActionKind::None;
+        entry.actionLocator = ks::startup::StartupActionLocator{};
+        entry.canEnable = false;
+        entry.canDisable = false;
+        entry.isProtected = true;
+        entry.riskLevel = riskLevel;
+        entry.riskReasonCode = reasonCode;
+        entry.riskReasonText = reasonText;
+        entry.canDelete = false;
     }
 
     // RegistryDataToText converts common registry types into compact UTF-8 display strings.
@@ -473,10 +644,12 @@ namespace
         {
             return std::nullopt;
         }
+        rawBuffer.resize(bufferBytes);
         RegistryValueRecord record;
         record.valueNameText = FromWide(valueNameText);
         record.valueDataText = ks::str::TrimCopy(RegistryDataToText(valueType, rawBuffer));
         record.valueType = valueType;
+        record.rawData = std::move(rawBuffer);
         return record;
     }
 
@@ -512,10 +685,12 @@ namespace
             const LONG dataResult = ::RegEnumValueW(openedKey, valueIndex, valueName.data(), &valueNameChars, nullptr, &valueType, rawBuffer.data(), &dataBytes);
             if (dataResult == ERROR_SUCCESS)
             {
+                rawBuffer.resize(dataBytes);
                 RegistryValueRecord record;
                 record.valueNameText = FromWide(std::wstring(valueName.data(), valueNameChars));
                 record.valueDataText = ks::str::TrimCopy(RegistryDataToText(valueType, rawBuffer));
                 record.valueType = valueType;
+                record.rawData = std::move(rawBuffer);
                 records.push_back(std::move(record));
             }
             ++valueIndex;
@@ -604,7 +779,7 @@ namespace
         entry.registryValueNameText = registryValueNameText;
         entry.deleteRegistryTree = deleteRegistryTree;
         entry.canOpenRegistryLocation = !ks::str::TrimCopy(entry.locationText).empty();
-        entry.canDelete = entry.canOpenRegistryLocation;
+        entry.canDelete = false;
 
         std::string resolvedImagePath;
         if (resolveClsidFromValueData && IsClsidText(entry.commandText))
@@ -639,6 +814,7 @@ namespace
         bool started = false;
         bool finished = false;
         DWORD exitCode = 0;
+        DWORD errorCode = ERROR_SUCCESS;
         std::string stdoutText;
         std::string stderrText;
     };
@@ -667,14 +843,23 @@ namespace
         }
     }
 
-    // RunHiddenProcess executes PowerShell/schtasks-compatible commands without UI framework helpers.
-    ProcessOutput RunHiddenProcess(const std::wstring& commandLine, DWORD timeoutMs)
+    // RunHiddenProcess executes one explicitly selected executable without PATH/CWD lookup.
+    ProcessOutput RunHiddenProcess(
+        const std::wstring& applicationPath,
+        const std::wstring& commandLine,
+        DWORD timeoutMs)
     {
         ProcessOutput output;
+        if (applicationPath.empty())
+        {
+            output.errorCode = ERROR_FILE_NOT_FOUND;
+            return output;
+        }
         SECURITY_ATTRIBUTES securityAttributes{};
         securityAttributes.nLength = sizeof(securityAttributes);
         securityAttributes.bInheritHandle = TRUE;
 
+        HANDLE stdinHandle = INVALID_HANDLE_VALUE;
         HANDLE stdoutRead = nullptr;
         HANDLE stdoutWrite = nullptr;
         HANDLE stderrRead = nullptr;
@@ -682,29 +867,116 @@ namespace
         if (::CreatePipe(&stdoutRead, &stdoutWrite, &securityAttributes, 0) == FALSE ||
             ::CreatePipe(&stderrRead, &stderrWrite, &securityAttributes, 0) == FALSE)
         {
+            output.errorCode = ::GetLastError();
             if (stdoutRead != nullptr) ::CloseHandle(stdoutRead);
             if (stdoutWrite != nullptr) ::CloseHandle(stdoutWrite);
             if (stderrRead != nullptr) ::CloseHandle(stderrRead);
             if (stderrWrite != nullptr) ::CloseHandle(stderrWrite);
             return output;
         }
-        ::SetHandleInformation(stdoutRead, HANDLE_FLAG_INHERIT, 0);
-        ::SetHandleInformation(stderrRead, HANDLE_FLAG_INHERIT, 0);
+        if (::SetHandleInformation(stdoutRead, HANDLE_FLAG_INHERIT, 0) == FALSE
+            || ::SetHandleInformation(stderrRead, HANDLE_FLAG_INHERIT, 0) == FALSE)
+        {
+            output.errorCode = ::GetLastError();
+            ::CloseHandle(stdoutRead);
+            ::CloseHandle(stdoutWrite);
+            ::CloseHandle(stderrRead);
+            ::CloseHandle(stderrWrite);
+            return output;
+        }
 
-        STARTUPINFOW startupInfo{};
-        startupInfo.cb = sizeof(startupInfo);
-        startupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-        startupInfo.wShowWindow = SW_HIDE;
-        startupInfo.hStdOutput = stdoutWrite;
-        startupInfo.hStdError = stderrWrite;
-        startupInfo.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+        stdinHandle = ::CreateFileW(
+            L"NUL",
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &securityAttributes,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (stdinHandle == INVALID_HANDLE_VALUE)
+        {
+            output.errorCode = ::GetLastError();
+            ::CloseHandle(stdoutRead);
+            ::CloseHandle(stdoutWrite);
+            ::CloseHandle(stderrRead);
+            ::CloseHandle(stderrWrite);
+            return output;
+        }
+
+        SIZE_T attributeListSize = 0;
+        ::InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeListSize);
+        std::vector<std::uint8_t> attributeListBuffer(attributeListSize);
+        auto* attributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+            attributeListBuffer.data());
+        if (attributeListSize == 0
+            || ::InitializeProcThreadAttributeList(attributeList, 1, 0, &attributeListSize) == FALSE)
+        {
+            output.errorCode = ::GetLastError();
+            ::CloseHandle(stdinHandle);
+            ::CloseHandle(stdoutRead);
+            ::CloseHandle(stdoutWrite);
+            ::CloseHandle(stderrRead);
+            ::CloseHandle(stderrWrite);
+            return output;
+        }
+        const std::array<HANDLE, 3> inheritedHandles{
+            stdinHandle,
+            stdoutWrite,
+            stderrWrite
+        };
+        if (::UpdateProcThreadAttribute(
+                attributeList,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                const_cast<HANDLE*>(inheritedHandles.data()),
+                sizeof(inheritedHandles),
+                nullptr,
+                nullptr) == FALSE)
+        {
+            output.errorCode = ::GetLastError();
+            ::DeleteProcThreadAttributeList(attributeList);
+            ::CloseHandle(stdinHandle);
+            ::CloseHandle(stdoutRead);
+            ::CloseHandle(stdoutWrite);
+            ::CloseHandle(stderrRead);
+            ::CloseHandle(stderrWrite);
+            return output;
+        }
+
+        STARTUPINFOEXW startupInfo{};
+        startupInfo.StartupInfo.cb = sizeof(startupInfo);
+        startupInfo.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startupInfo.StartupInfo.wShowWindow = SW_HIDE;
+        startupInfo.StartupInfo.hStdOutput = stdoutWrite;
+        startupInfo.StartupInfo.hStdError = stderrWrite;
+        startupInfo.StartupInfo.hStdInput = stdinHandle;
+        startupInfo.lpAttributeList = attributeList;
 
         PROCESS_INFORMATION processInfo{};
         std::vector<wchar_t> commandBuffer(commandLine.begin(), commandLine.end());
         commandBuffer.push_back(L'\0');
-        const BOOL createOk = ::CreateProcessW(nullptr, commandBuffer.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startupInfo, &processInfo);
+        const std::wstring applicationDirectory =
+            std::filesystem::path(applicationPath).parent_path().wstring();
+        const BOOL createOk = ::CreateProcessW(
+            applicationPath.c_str(),
+            commandBuffer.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+            nullptr,
+            applicationDirectory.empty() ? nullptr : applicationDirectory.c_str(),
+            &startupInfo.StartupInfo,
+            &processInfo);
+        if (createOk == FALSE)
+        {
+            output.errorCode = ::GetLastError();
+        }
+        ::DeleteProcThreadAttributeList(attributeList);
+        ::CloseHandle(stdinHandle);
         ::CloseHandle(stdoutWrite);
         ::CloseHandle(stderrWrite);
+        stdinHandle = INVALID_HANDLE_VALUE;
         stdoutWrite = nullptr;
         stderrWrite = nullptr;
         if (createOk == FALSE)
@@ -728,13 +1000,19 @@ namespace
             {
                 break;
             }
+            if (waitResult == WAIT_FAILED)
+            {
+                output.errorCode = ::GetLastError();
+                break;
+            }
             const DWORD elapsedMs = ::GetTickCount() - startTick;
             if (elapsedMs >= timeoutMs)
             {
+                output.errorCode = WAIT_TIMEOUT;
                 break;
             }
         }
-        if (waitResult == WAIT_TIMEOUT)
+        if (waitResult != WAIT_OBJECT_0)
         {
             ::TerminateProcess(processInfo.hProcess, 1);
             ::WaitForSingleObject(processInfo.hProcess, 1500);
@@ -752,6 +1030,29 @@ namespace
         ::CloseHandle(stdoutRead);
         ::CloseHandle(stderrRead);
         return output;
+    }
+
+    // ProcessFailureCode preserves launch/wait failures and rejects a successful exit that did
+    // not produce the expected protocol marker as malformed output.
+    DWORD ProcessFailureCode(const ProcessOutput& output)
+    {
+        if (output.errorCode != ERROR_SUCCESS)
+        {
+            return output.errorCode;
+        }
+        if (!output.started)
+        {
+            return ERROR_PROCESS_ABORTED;
+        }
+        if (!output.finished)
+        {
+            return WAIT_TIMEOUT;
+        }
+        if (output.exitCode != 0)
+        {
+            return output.exitCode;
+        }
+        return ERROR_INVALID_DATA;
     }
 
     // Base64EncodeWideScript avoids command-line quoting bugs for complex PowerShell scripts.
@@ -775,12 +1076,36 @@ namespace
         return encoded;
     }
 
-    // RunPowerShellScript runs an EncodedCommand script and returns UTF-8 decoded output.
+    // TrustedPowerShellPath resolves only the inbox Windows PowerShell under System32.
+    std::wstring TrustedPowerShellPath()
+    {
+        std::array<wchar_t, MAX_PATH + 1> systemDirectory{};
+        const UINT charCount = ::GetSystemDirectoryW(
+            systemDirectory.data(),
+            static_cast<UINT>(systemDirectory.size()));
+        if (charCount == 0 || charCount >= systemDirectory.size())
+        {
+            return std::wstring();
+        }
+        return (std::filesystem::path(systemDirectory.data())
+            / L"WindowsPowerShell"
+            / L"v1.0"
+            / L"powershell.exe").wstring();
+    }
+
+    // RunPowerShellScript runs an EncodedCommand script through the trusted inbox executable.
     ProcessOutput RunPowerShellScript(const std::wstring& scriptText, DWORD timeoutMs)
     {
+        const std::wstring powerShellPath = TrustedPowerShellPath();
+        if (powerShellPath.empty())
+        {
+            return ProcessOutput{};
+        }
         const std::wstring encodedScript = Base64EncodeWideScript(scriptText);
-        const std::wstring commandLine = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand " + encodedScript;
-        ProcessOutput output = RunHiddenProcess(commandLine, timeoutMs);
+        const std::wstring commandLine = L"\"" + powerShellPath
+            + L"\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
+            + encodedScript;
+        ProcessOutput output = RunHiddenProcess(powerShellPath, commandLine, timeoutMs);
         // PowerShell scripts set OutputEncoding=UTF8; fall back to raw bytes if conversion is unnecessary.
         return output;
     }
@@ -1434,6 +1759,42 @@ namespace
         entry.detailText = FromWide(spec.detailText);
         entry.uniqueIdText = "REGLOGON|" + locationText + "|" + entry.itemNameText;
         FinalizeRegistryEntry(entry, valueRecord.valueDataText, std::string(), valueRecord.valueNameText, false, false);
+        if (IsSupportedRunLocation(spec.rootKey, subKeyText))
+        {
+            entry.actionKind = ks::startup::StartupActionKind::RegistryRunValue;
+            entry.actionLocator.registryRoot = PublicRegistryRoot(spec.rootKey);
+            entry.actionLocator.registrySubKeyText = FromWide(subKeyText);
+            entry.actionLocator.registryValueNameText = valueRecord.valueNameText;
+            entry.actionLocator.registryValueSnapshotValid = true;
+            entry.actionLocator.registryValueType = valueRecord.valueType;
+            entry.actionLocator.registryRawData = valueRecord.rawData;
+            entry.canEnable = false;
+            entry.canDisable = true;
+            entry.isProtected = false;
+            entry.riskLevel = ks::startup::StartupRiskLevel::Normal;
+            entry.riskReasonCode = "registry_user";
+            entry.riskReasonText = FromWide(L"此用户启动值受事务备份、身份比对与恢复保护。");
+        }
+        else
+        {
+            const bool policyManaged = LowerWideCopy(subKeyText).find(L"\\policies\\") != std::wstring::npos;
+            const bool machineScope = spec.rootKey == HKEY_LOCAL_MACHINE;
+            const bool currentUserRun =
+                spec.rootKey == HKEY_CURRENT_USER && IsKnownRunLocation(spec.rootKey, subKeyText);
+            ProtectEntry(
+                entry,
+                policyManaged || machineScope
+                    ? ks::startup::StartupRiskLevel::Critical
+                    : ks::startup::StartupRiskLevel::Elevated,
+                policyManaged ? "policy" : (machineScope ? "machine_scope" : "unsupported_source"),
+                policyManaged
+                    ? FromWide(L"策略管理的启动值受保护，不能直接修改。")
+                    : (machineScope
+                        ? FromWide(L"机器范围启动项不能使用当前用户备份作为提权恢复代理，已受保护。")
+                        : (currentUserRun
+                            ? FromWide(L"当前系统无法保证注册表源值与备份元数据的原子事务，已暂时关闭可逆修改。")
+                            : FromWide(L"此注册表启动来源不在当前用户 Run/RunOnce 可逆白名单内。"))));
+        }
         entries.push_back(std::move(entry));
     }
 
@@ -1473,6 +1834,11 @@ namespace
                     entry.detailText = FromWide(spec.detailText) + FromWide(L"\uff1b\u5b50\u952e=") + subKeyNameText;
                     entry.uniqueIdText = "RUNONCEEX|" + entry.locationText + "|" + entry.itemNameText;
                     FinalizeRegistryEntry(entry, valueRecord.valueDataText, std::string(), valueRecord.valueNameText, false, false);
+                    ProtectEntry(
+                        entry,
+                        ks::startup::StartupRiskLevel::Elevated,
+                        "unsupported_source",
+                        FromWide(L"RunOnceEx 具有嵌套执行语义，不在可逆操作白名单内。"));
                     entries.push_back(std::move(entry));
                 }
             }
@@ -1482,11 +1848,9 @@ namespace
     // AppendStartupFolderEntries enumerates per-user and machine Startup folders.
     void AppendStartupFolderEntries(std::vector<ks::startup::StartupEntry>& entries)
     {
-        const std::wstring appData = QueryEnvironmentWide(L"APPDATA");
-        const std::wstring programData = QueryEnvironmentWide(L"ProgramData");
         const std::array<std::pair<std::wstring, const wchar_t*>, 2> folders{ {
-            { appData.empty() ? std::wstring() : appData + L"\\Microsoft\\Windows\\Start Menu\\Programs\\Startup", L"当前用户" },
-            { programData.empty() ? std::wstring() : programData + L"\\Microsoft\\Windows\\Start Menu\\Programs\\Startup", L"本机" }
+            { KnownFolderPath(FOLDERID_Startup), L"当前用户" },
+            { KnownFolderPath(FOLDERID_CommonStartup), L"本机" }
         } };
         for (const auto& folder : folders)
         {
@@ -1502,7 +1866,8 @@ namespace
             std::vector<std::filesystem::directory_entry> fileEntries;
             for (const auto& dirEntry : std::filesystem::directory_iterator(folder.first, ec))
             {
-                if (!ec && dirEntry.is_regular_file(ec))
+                const std::filesystem::file_status linkStatus = dirEntry.symlink_status(ec);
+                if (!ec && !std::filesystem::is_directory(linkStatus))
                 {
                     fileEntries.push_back(dirEntry);
                 }
@@ -1525,10 +1890,29 @@ namespace
                 entry.sourceTypeText = "StartupFolder";
                 entry.detailText = FromWide(L"开始菜单启动文件夹");
                 entry.enabled = true;
-                entry.canOpenFileLocation = true;
-                entry.canDelete = true;
-                entry.imagePathExists = true;
+                FileIdentitySnapshot identity;
+                DWORD identityError = ERROR_SUCCESS;
+                const bool identityValid = QueryFileIdentityNoReparse(
+                    fileEntry.path().wstring(),
+                    identity,
+                    identityError);
+                entry.canOpenFileLocation = identityValid;
+                entry.canDelete = false;
+                entry.imagePathExists = identityValid;
                 entry.uniqueIdText = "STARTUPFOLDER|" + filePathText;
+                const bool machineScope = folder.second == std::wstring(L"\u672c\u673a");
+                ProtectEntry(
+                    entry,
+                    machineScope || !identityValid
+                        ? ks::startup::StartupRiskLevel::Critical
+                        : ks::startup::StartupRiskLevel::Elevated,
+                    machineScope ? "machine_scope" : "unsupported_source",
+                    machineScope
+                        ? FromWide(L"机器范围启动文件夹不能使用当前用户暂存目录作为提权恢复代理，已受保护。")
+                        : (!identityValid
+                            ? FromWide(L"启动文件无法取得不跟随重解析点的稳定身份，已受保护。")
+                            : FromWide(L"当前版本尚未启用句柄级无覆盖移动，启动文件夹可逆修改已安全关闭。")));
+                entry.lastErrorCode = identityValid ? ERROR_SUCCESS : identityError;
                 entries.push_back(std::move(entry));
             }
         }
@@ -1560,6 +1944,14 @@ namespace
             entry.detailText = FromWide(spec.detailText);
             entry.uniqueIdText = "SINGLE|" + entry.locationText + "|" + entry.itemNameText;
             FinalizeRegistryEntry(entry, valueRecord->valueDataText, std::string(), FromWide(valueNameText), false, spec.resolveClsidFromValueData);
+            const bool policyManaged = LowerWideCopy(subKeyText).find(L"\\policies\\") != std::wstring::npos;
+            ProtectEntry(
+                entry,
+                ks::startup::StartupRiskLevel::Critical,
+                policyManaged ? "policy" : "critical_registry",
+                policyManaged
+                    ? FromWide(L"策略管理的注册表持久化项受保护，不能直接修改。")
+                    : FromWide(L"Winlogon、LSA、会话管理器等关键注册表持久化项受保护。"));
             entries.push_back(std::move(entry));
         }
     }
@@ -1594,6 +1986,11 @@ namespace
                     valueRecord.valueNameText,
                     false,
                     spec.resolveClsidFromValueData);
+                ProtectEntry(
+                    entry,
+                    ks::startup::StartupRiskLevel::Critical,
+                    "critical_registry",
+                    FromWide(L"高级注册表持久化项不在可逆 Run/RunOnce 白名单内。"));
                 entries.push_back(std::move(entry));
             }
         }
@@ -1649,6 +2046,11 @@ namespace
                     valueRecord.has_value() ? valueRecord->valueNameText : FromWide(valueNameText),
                     spec.deleteRegistryTree,
                     spec.resolveClsidFromValueData);
+                ProtectEntry(
+                    entry,
+                    ks::startup::StartupRiskLevel::Critical,
+                    "critical_registry",
+                    FromWide(L"基于子键的注册表持久化项不允许通用修改。"));
                 entries.push_back(std::move(entry));
             }
         }
@@ -1748,9 +2150,16 @@ namespace
                 entry.detailText = drivers ? FromWide(L"自动启动驱动") : FromWide(L"自动启动服务");
             }
             entry.canOpenFileLocation = !entry.imagePathText.empty();
-            entry.canDelete = true;
+            entry.canDelete = false;
             entry.imagePathExists = FileExists(entry.imagePathText);
             entry.uniqueIdText = std::string(drivers ? "DRIVER|" : "SERVICE|") + serviceName;
+            ProtectEntry(
+                entry,
+                drivers ? ks::startup::StartupRiskLevel::Critical : ks::startup::StartupRiskLevel::Elevated,
+                drivers ? "driver" : "service",
+                drivers
+                    ? FromWide(L"驱动启动配置涉及内核关键路径，已受保护。")
+                    : FromWide(L"服务启动配置不在首批可逆操作范围内。"));
             entries.push_back(std::move(entry));
             ::CloseServiceHandle(serviceHandle);
         }
@@ -1801,6 +2210,8 @@ namespace
         const std::string actionText = GetJsonField(taskObject, "Actions");
         const std::string taskPathText = GetJsonField(taskObject, "TaskPath");
         const std::string taskNameText = GetJsonField(taskObject, "TaskName");
+        const std::string taskDefinitionSha256Text =
+            LowerAsciiCopy(GetJsonField(taskObject, "XmlSha256"));
         if (ks::str::TrimCopy(taskNameText).empty())
         {
             return;
@@ -1814,15 +2225,41 @@ namespace
         entry.publisherText = ks::startup::QueryPublisherTextByPath(entry.imagePathText);
         entry.locationText = taskPathText + taskNameText;
         entry.userText = GetJsonField(taskObject, "UserId");
-        entry.enabled = LowerAsciiCopy(GetJsonField(taskObject, "State")).find("disabled") == std::string::npos;
+        const std::string enabledText = LowerAsciiCopy(GetJsonField(taskObject, "Enabled"));
+        entry.enabled = enabledText == "true"
+            || (enabledText.empty()
+                && LowerAsciiCopy(GetJsonField(taskObject, "State")).find("disabled") == std::string::npos);
         entry.sourceTypeText = "ScheduledTask";
         entry.detailText = FromWide(L"\u72b6\u6001=") + GetJsonField(taskObject, "State")
             + FromWide(L"\uff1b\u89e6\u53d1\u5668=") + GetJsonField(taskObject, "Triggers")
             + FromWide(L"\uff1b\u63cf\u8ff0=") + GetJsonField(taskObject, "Description");
         entry.canOpenFileLocation = !entry.imagePathText.empty();
-        entry.canDelete = true;
+        entry.canDelete = false;
         entry.imagePathExists = FileExists(entry.imagePathText);
         entry.uniqueIdText = "TASK|" + entry.locationText;
+        entry.actionKind = ks::startup::StartupActionKind::ScheduledTask;
+        entry.actionLocator.taskPathText = taskPathText;
+        entry.actionLocator.taskNameText = taskNameText;
+        entry.actionLocator.taskDefinitionSha256Text = taskDefinitionSha256Text;
+        entry.canEnable = !entry.enabled;
+        entry.canDisable = entry.enabled;
+        entry.isProtected = false;
+        entry.riskLevel = ks::startup::StartupRiskLevel::Elevated;
+        entry.riskReasonCode = "scheduled_task";
+        entry.riskReasonText = FromWide(L"仅列出 BootTrigger 和 LogonTrigger 任务；状态变更由 Windows 任务计划程序执行。");
+        const bool validHash = taskDefinitionSha256Text.size() == 64
+            && std::all_of(
+                taskDefinitionSha256Text.begin(),
+                taskDefinitionSha256Text.end(),
+                [](const unsigned char ch) { return std::isxdigit(ch) != 0; });
+        if (!validHash)
+        {
+            ProtectEntry(
+                entry,
+                ks::startup::StartupRiskLevel::Elevated,
+                "unsupported_source",
+                FromWide(L"无法取得计划任务定义 XML 的稳定 SHA-256 身份，状态修改已受保护。"));
+        }
         entries.push_back(std::move(entry));
     }
 
@@ -1856,6 +2293,11 @@ namespace
         entry.canDelete = false;
         entry.imagePathExists = FileExists(entry.imagePathText);
         entry.uniqueIdText = "WMI|" + typeText + "|" + entry.itemNameText + "|" + locationText;
+        ProtectEntry(
+            entry,
+            ks::startup::StartupRiskLevel::Critical,
+            "wmi",
+            FromWide(L"WMI 永久事件持久化项不允许通用修改。"));
         entries.push_back(std::move(entry));
     }
 
@@ -1864,20 +2306,49 @@ namespace
     {
         return LR"PS(
 $ErrorActionPreference='SilentlyContinue'
+$ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$taskList = @(Get-ScheduledTask | ForEach-Object {
+function Get-KSwordTaskIdentityHash($task) {
+  [xml]$document = [string](ScheduledTasks\Export-ScheduledTask -InputObject $task -ErrorAction Stop)
+  $enabledNode = $document.SelectSingleNode("/*[local-name()='Task']/*[local-name()='Settings']/*[local-name()='Enabled']")
+  if ($null -ne $enabledNode) { $null = $enabledNode.ParentNode.RemoveChild($enabledNode) }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString(
+      $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($document.OuterXml))
+    ).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+function Get-KSwordTaskEnabled($task) {
+  if ($null -ne $task.Settings -and $null -ne $task.Settings.Enabled) {
+    return [bool]$task.Settings.Enabled
+  }
+  return ([string]$task.State -ne 'Disabled')
+}
+$scheduledTasksModule = Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1'
+Microsoft.PowerShell.Core\Import-Module -Name $scheduledTasksModule -Force -ErrorAction Stop
+$taskList = @(ScheduledTasks\Get-ScheduledTask | ForEach-Object {
   $actions = ($_.Actions | ForEach-Object { ($_.Execute + ' ' + $_.Arguments).Trim() }) -join ' | '
-  $triggers = ($_.Triggers | ForEach-Object { $_.CimClass.CimClassName }) -join ' | '
-  [PSCustomObject]@{
-    TaskPath = $_.TaskPath
-    TaskName = $_.TaskName
-    State = [string]$_.State
-    Author = $_.Author
-    Description = $_.Description
-    Actions = $actions
-    Triggers = $triggers
-    UserId = $_.Principal.UserId
+  $triggerKinds = @($_.Triggers | ForEach-Object { $_.CimClass.CimClassName })
+  $isBootOrLogon = @($triggerKinds | Where-Object { $_ -eq 'MSFT_TaskBootTrigger' -or $_ -eq 'MSFT_TaskLogonTrigger' }).Count -gt 0
+  if ($isBootOrLogon) {
+    $xmlSha256 = ''
+    try { $xmlSha256 = Get-KSwordTaskIdentityHash $_ } catch { $xmlSha256 = '' }
+    [PSCustomObject]@{
+      TaskPath = $_.TaskPath
+      TaskName = $_.TaskName
+      State = [string]$_.State
+      Enabled = Get-KSwordTaskEnabled $_
+      Author = $_.Author
+      Description = $_.Description
+      Actions = $actions
+      Triggers = ($triggerKinds -join ' | ')
+      UserId = $_.Principal.UserId
+      XmlSha256 = $xmlSha256
+    }
   }
 })
 if ($taskList.Count -eq 0) { '[]' } else { $taskList | ConvertTo-Json -Depth 5 -Compress }
@@ -1889,29 +2360,2049 @@ if ($taskList.Count -eq 0) { '[]' } else { $taskList | ConvertTo-Json -Depth 5 -
     {
         return LR"PS(
 $ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+$cimCmdletsModule = Join-Path $PSHOME 'Modules\CimCmdlets\CimCmdlets.psd1'
+Microsoft.PowerShell.Core\Import-Module -Name $cimCmdletsModule -Force -ErrorAction Stop
 $items = @()
-Get-CimInstance -Namespace root/subscription -ClassName CommandLineEventConsumer | ForEach-Object {
+CimCmdlets\Get-CimInstance -Namespace root/subscription -ClassName CommandLineEventConsumer | ForEach-Object {
     $items += [PSCustomObject]@{ Type='WMI-CommandLineConsumer'; Name=$_.Name; Command=$_.CommandLineTemplate; Image=$_.ExecutablePath; Location='root\subscription\CommandLineEventConsumer'; Detail=('ExecutablePath=' + $_.ExecutablePath + '; WorkingDirectory=' + $_.WorkingDirectory) }
 }
-Get-CimInstance -Namespace root/subscription -ClassName ActiveScriptEventConsumer | ForEach-Object {
+CimCmdlets\Get-CimInstance -Namespace root/subscription -ClassName ActiveScriptEventConsumer | ForEach-Object {
     $items += [PSCustomObject]@{ Type='WMI-ActiveScriptConsumer'; Name=$_.Name; Command=$_.ScriptText; Image=''; Location='root\subscription\ActiveScriptEventConsumer'; Detail=('ScriptingEngine=' + $_.ScriptingEngine) }
 }
-Get-CimInstance -Namespace root/subscription -ClassName LogFileEventConsumer | ForEach-Object {
+CimCmdlets\Get-CimInstance -Namespace root/subscription -ClassName LogFileEventConsumer | ForEach-Object {
     $items += [PSCustomObject]@{ Type='WMI-LogFileConsumer'; Name=$_.Name; Command=$_.Filename; Image=''; Location='root\subscription\LogFileEventConsumer'; Detail=('Text=' + $_.Text) }
 }
-Get-CimInstance -Namespace root/subscription -ClassName NTEventLogEventConsumer | ForEach-Object {
+CimCmdlets\Get-CimInstance -Namespace root/subscription -ClassName NTEventLogEventConsumer | ForEach-Object {
     $items += [PSCustomObject]@{ Type='WMI-NTEventLogConsumer'; Name=$_.Name; Command=$_.SourceName; Image=''; Location='root\subscription\NTEventLogEventConsumer'; Detail=('EventId=' + $_.EventID + '; Category=' + $_.Category) }
 }
-Get-CimInstance -Namespace root/subscription -ClassName __EventFilter | ForEach-Object {
+CimCmdlets\Get-CimInstance -Namespace root/subscription -ClassName __EventFilter | ForEach-Object {
     $items += [PSCustomObject]@{ Type='WMI-EventFilter'; Name=$_.Name; Command=$_.Query; Image=''; Location='root\subscription\__EventFilter'; Detail=('QueryLanguage=' + $_.QueryLanguage + '; EventNamespace=' + $_.EventNamespace) }
 }
-Get-CimInstance -Namespace root/subscription -ClassName __FilterToConsumerBinding | ForEach-Object {
+CimCmdlets\Get-CimInstance -Namespace root/subscription -ClassName __FilterToConsumerBinding | ForEach-Object {
     $items += [PSCustomObject]@{ Type='WMI-FilterToConsumerBinding'; Name=$_.Consumer; Command=$_.Filter; Image=''; Location='root\subscription\__FilterToConsumerBinding'; Detail=('Consumer=' + $_.Consumer + '; Filter=' + $_.Filter + '; DeliveryQoS=' + $_.DeliveryQoS) }
 }
 if ($items.Count -eq 0) { '[]' } else { $items | ConvertTo-Json -Compress -Depth 4 }
 )PS";
+    }
+}
+
+namespace
+{
+    constexpr wchar_t kRegistryBackupRoot[] = L"Software\\KSword\\StartupManager\\RegistryBackups";
+    constexpr wchar_t kStartupFolderBackupRoot[] = L"Software\\KSword\\StartupManager\\StartupFolderBackups";
+    constexpr DWORD kBackupSchemaVersion = 1;
+    constexpr DWORD kBackupStatePrepared = 0;
+    constexpr DWORD kBackupStateDisabled = 1;
+    constexpr DWORD kBackupStateRestored = 2;
+
+    struct RegistryBackupRecord
+    {
+        std::wstring backupId;
+        ks::startup::StartupRegistryRoot root = ks::startup::StartupRegistryRoot::None;
+        std::wstring subKey;
+        std::wstring valueName;
+        std::wstring itemName;
+        DWORD valueType = REG_NONE;
+        std::vector<std::uint8_t> rawData;
+        DWORD state = kBackupStatePrepared;
+    };
+
+    struct StartupFolderBackupRecord
+    {
+        std::wstring backupId;
+        std::wstring originalPath;
+        std::wstring parkedPath;
+        std::wstring itemName;
+        DWORD state = kBackupStatePrepared;
+    };
+
+    // MakeActionResult keeps all action exits explicit and uniform for UI callers.
+    ks::startup::ActionResult MakeActionResult(
+        const ks::startup::StartupActionStatus status,
+        const bool success,
+        const bool changed,
+        const DWORD errorCode,
+        const std::string& messageText)
+    {
+        ks::startup::ActionResult result;
+        result.status = status;
+        result.success = success;
+        result.changed = changed;
+        result.errorCode = errorCode;
+        result.messageText = messageText;
+        return result;
+    }
+
+    ks::startup::StartupActionStatus StatusFromWin32(
+        const DWORD errorCode,
+        const ks::startup::StartupActionStatus fallback)
+    {
+        if (errorCode == ERROR_ACCESS_DENIED || errorCode == ERROR_PRIVILEGE_NOT_HELD)
+        {
+            return ks::startup::StartupActionStatus::AccessDenied;
+        }
+        if (errorCode == ERROR_FILE_NOT_FOUND || errorCode == ERROR_PATH_NOT_FOUND)
+        {
+            return ks::startup::StartupActionStatus::NotFound;
+        }
+        if (errorCode == ERROR_ALREADY_EXISTS || errorCode == ERROR_FILE_EXISTS)
+        {
+            return ks::startup::StartupActionStatus::Conflict;
+        }
+        return fallback;
+    }
+
+    // IsSafeBackupId prevents a caller-provided backup locator from escaping its metadata root.
+    bool IsSafeBackupId(const std::wstring& backupId)
+    {
+        if (backupId.empty() || backupId.size() > 128)
+        {
+            return false;
+        }
+        return std::all_of(backupId.begin(), backupId.end(), [](const wchar_t ch) {
+            return (ch >= L'0' && ch <= L'9')
+                || (ch >= L'A' && ch <= L'F')
+                || (ch >= L'a' && ch <= L'f')
+                || ch == L'-';
+        });
+    }
+
+    // GenerateBackupId combines wall-clock, process, thread, and atomic sequence identifiers.
+    std::wstring GenerateBackupId()
+    {
+        static volatile LONG sequence = 0;
+        FILETIME fileTime{};
+        ::GetSystemTimeAsFileTime(&fileTime);
+        ULARGE_INTEGER ticks{};
+        ticks.LowPart = fileTime.dwLowDateTime;
+        ticks.HighPart = fileTime.dwHighDateTime;
+        const ULONG serial = static_cast<ULONG>(::InterlockedIncrement(&sequence));
+        std::wostringstream stream;
+        stream << std::uppercase << std::hex
+            << ticks.QuadPart << L"-"
+            << ::GetCurrentProcessId() << L"-"
+            << ::GetCurrentThreadId() << L"-"
+            << serial;
+        return stream.str();
+    }
+
+    std::wstring MetadataRecordPath(const wchar_t* metadataRoot, const std::wstring& backupId)
+    {
+        return std::wstring(metadataRoot) + L"\\" + backupId;
+    }
+
+    // QueryOpenedRegistryValueRaw preserves the exact type and byte sequence stored in a value.
+    LONG QueryOpenedRegistryValueRaw(
+        HKEY openedKey,
+        const std::wstring& valueName,
+        DWORD& valueTypeOut,
+        std::vector<std::uint8_t>& rawDataOut)
+    {
+        const wchar_t* valueNamePointer = valueName.empty() ? nullptr : valueName.c_str();
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            DWORD valueType = REG_NONE;
+            DWORD dataBytes = 0;
+            LONG result = ::RegQueryValueExW(openedKey, valueNamePointer, nullptr, &valueType, nullptr, &dataBytes);
+            if (result != ERROR_SUCCESS)
+            {
+                return result;
+            }
+            std::vector<std::uint8_t> rawData(static_cast<std::size_t>(dataBytes));
+            DWORD actualBytes = dataBytes;
+            result = ::RegQueryValueExW(
+                openedKey,
+                valueNamePointer,
+                nullptr,
+                &valueType,
+                rawData.empty() ? nullptr : rawData.data(),
+                &actualBytes);
+            if (result == ERROR_MORE_DATA)
+            {
+                continue;
+            }
+            if (result != ERROR_SUCCESS)
+            {
+                return result;
+            }
+            rawData.resize(actualBytes);
+            valueTypeOut = valueType;
+            rawDataOut = std::move(rawData);
+            return ERROR_SUCCESS;
+        }
+        return ERROR_MORE_DATA;
+    }
+
+    LONG QueryRegistryValueRaw(
+        HKEY rootKey,
+        const std::wstring& subKey,
+        const std::wstring& valueName,
+        DWORD& valueTypeOut,
+        std::vector<std::uint8_t>& rawDataOut)
+    {
+        HKEY openedKey = nullptr;
+        const LONG openResult = ::RegOpenKeyExW(rootKey, subKey.c_str(), 0, KEY_QUERY_VALUE, &openedKey);
+        if (openResult != ERROR_SUCCESS)
+        {
+            return openResult;
+        }
+        const LONG queryResult = QueryOpenedRegistryValueRaw(openedKey, valueName, valueTypeOut, rawDataOut);
+        ::RegCloseKey(openedKey);
+        return queryResult;
+    }
+
+    LONG SetMetadataDword(HKEY openedKey, const wchar_t* name, const DWORD value)
+    {
+        return ::RegSetValueExW(
+            openedKey,
+            name,
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE*>(&value),
+            sizeof(value));
+    }
+
+    LONG SetMetadataString(HKEY openedKey, const wchar_t* name, const std::wstring& value)
+    {
+        const DWORD dataBytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+        return ::RegSetValueExW(
+            openedKey,
+            name,
+            0,
+            REG_SZ,
+            reinterpret_cast<const BYTE*>(value.c_str()),
+            dataBytes);
+    }
+
+    LONG SetMetadataBinary(HKEY openedKey, const wchar_t* name, const std::vector<std::uint8_t>& value)
+    {
+        return ::RegSetValueExW(
+            openedKey,
+            name,
+            0,
+            REG_BINARY,
+            value.empty() ? nullptr : value.data(),
+            static_cast<DWORD>(value.size()));
+    }
+
+    bool QueryMetadataDword(HKEY openedKey, const wchar_t* name, DWORD& valueOut)
+    {
+        DWORD type = REG_NONE;
+        std::vector<std::uint8_t> rawData;
+        if (QueryOpenedRegistryValueRaw(openedKey, name, type, rawData) != ERROR_SUCCESS
+            || type != REG_DWORD
+            || rawData.size() != sizeof(DWORD))
+        {
+            return false;
+        }
+        std::memcpy(&valueOut, rawData.data(), sizeof(DWORD));
+        return true;
+    }
+
+    bool QueryMetadataString(HKEY openedKey, const wchar_t* name, std::wstring& valueOut)
+    {
+        DWORD type = REG_NONE;
+        std::vector<std::uint8_t> rawData;
+        if (QueryOpenedRegistryValueRaw(openedKey, name, type, rawData) != ERROR_SUCCESS
+            || type != REG_SZ
+            || rawData.size() < sizeof(wchar_t)
+            || rawData.size() % sizeof(wchar_t) != 0)
+        {
+            return false;
+        }
+        std::size_t charCount = rawData.size() / sizeof(wchar_t);
+        valueOut.resize(charCount);
+        std::memcpy(valueOut.data(), rawData.data(), rawData.size());
+        while (!valueOut.empty() && valueOut.back() == L'\0')
+        {
+            valueOut.pop_back();
+        }
+        return valueOut.find(L'\0') == std::wstring::npos;
+    }
+
+    bool QueryMetadataBinary(HKEY openedKey, const wchar_t* name, std::vector<std::uint8_t>& valueOut)
+    {
+        DWORD type = REG_NONE;
+        std::vector<std::uint8_t> rawData;
+        if (QueryOpenedRegistryValueRaw(openedKey, name, type, rawData) != ERROR_SUCCESS || type != REG_BINARY)
+        {
+            return false;
+        }
+        valueOut = std::move(rawData);
+        return true;
+    }
+
+    // CreateUniqueMetadataKey never opens an existing backup record for writing.
+    LONG CreateUniqueMetadataKey(
+        const wchar_t* metadataRoot,
+        std::wstring& backupIdOut,
+        HKEY& recordKeyOut)
+    {
+        recordKeyOut = nullptr;
+        HKEY rootKey = nullptr;
+        LONG result = ::RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            metadataRoot,
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_CREATE_SUB_KEY,
+            nullptr,
+            &rootKey,
+            nullptr);
+        if (result != ERROR_SUCCESS)
+        {
+            return result;
+        }
+        for (int attempt = 0; attempt < 64; ++attempt)
+        {
+            const std::wstring backupId = GenerateBackupId();
+            DWORD disposition = 0;
+            HKEY recordKey = nullptr;
+            result = ::RegCreateKeyExW(
+                rootKey,
+                backupId.c_str(),
+                0,
+                nullptr,
+                REG_OPTION_NON_VOLATILE,
+                KEY_QUERY_VALUE | KEY_SET_VALUE,
+                nullptr,
+                &recordKey,
+                &disposition);
+            if (result == ERROR_SUCCESS && disposition == REG_CREATED_NEW_KEY)
+            {
+                backupIdOut = backupId;
+                recordKeyOut = recordKey;
+                ::RegCloseKey(rootKey);
+                return ERROR_SUCCESS;
+            }
+            if (recordKey != nullptr)
+            {
+                ::RegCloseKey(recordKey);
+            }
+            if (result != ERROR_SUCCESS)
+            {
+                ::RegCloseKey(rootKey);
+                return result;
+            }
+        }
+        ::RegCloseKey(rootKey);
+        return ERROR_ALREADY_EXISTS;
+    }
+
+    LONG DeleteMetadataRecord(const wchar_t* metadataRoot, const std::wstring& backupId)
+    {
+        if (!IsSafeBackupId(backupId))
+        {
+            return ERROR_INVALID_NAME;
+        }
+        const LONG result = ::RegDeleteTreeW(
+            HKEY_CURRENT_USER,
+            MetadataRecordPath(metadataRoot, backupId).c_str());
+        return result == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : result;
+    }
+
+    LONG SetAndVerifyMetadataState(HKEY recordKey, const DWORD state)
+    {
+        const LONG setResult = SetMetadataDword(recordKey, L"State", state);
+        if (setResult != ERROR_SUCCESS)
+        {
+            return setResult;
+        }
+        DWORD storedState = 0;
+        return QueryMetadataDword(recordKey, L"State", storedState) && storedState == state
+            ? ERROR_SUCCESS
+            : ERROR_INVALID_DATA;
+    }
+
+    LONG CommitMetadataStateById(
+        const wchar_t* metadataRoot,
+        const std::wstring& backupId,
+        const DWORD state)
+    {
+        if (!IsSafeBackupId(backupId))
+        {
+            return ERROR_INVALID_NAME;
+        }
+        HKEY recordKey = nullptr;
+        LONG result = ::RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            MetadataRecordPath(metadataRoot, backupId).c_str(),
+            0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            &recordKey);
+        if (result == ERROR_SUCCESS)
+        {
+            result = SetAndVerifyMetadataState(recordKey, state);
+        }
+        if (result == ERROR_SUCCESS)
+        {
+            result = ::RegFlushKey(recordKey);
+        }
+        if (recordKey != nullptr)
+        {
+            ::RegCloseKey(recordKey);
+        }
+        return result;
+    }
+
+    bool RawRegistryValuesEqual(
+        const DWORD leftType,
+        const std::vector<std::uint8_t>& leftData,
+        const DWORD rightType,
+        const std::vector<std::uint8_t>& rightData)
+    {
+        return leftType == rightType && leftData == rightData;
+    }
+
+    LONG SetRegistryValueWithoutOverwrite(
+        HKEY rootKey,
+        const std::wstring& subKey,
+        const std::wstring& valueName,
+        const DWORD valueType,
+        const std::vector<std::uint8_t>& rawData)
+    {
+        HKEY openedKey = nullptr;
+        LONG result = ::RegCreateKeyExW(
+            rootKey,
+            subKey.c_str(),
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            nullptr,
+            &openedKey,
+            nullptr);
+        if (result != ERROR_SUCCESS)
+        {
+            return result;
+        }
+        DWORD existingType = REG_NONE;
+        std::vector<std::uint8_t> existingData;
+        result = QueryOpenedRegistryValueRaw(openedKey, valueName, existingType, existingData);
+        if (result == ERROR_SUCCESS)
+        {
+            ::RegCloseKey(openedKey);
+            return ERROR_ALREADY_EXISTS;
+        }
+        if (result != ERROR_FILE_NOT_FOUND)
+        {
+            ::RegCloseKey(openedKey);
+            return result;
+        }
+        // Registry values do not have a native compare-and-set primitive. This final absence
+        // check is performed on the exact write handle and RegSetValueExW follows immediately;
+        // callers still verify the exact bytes after the best-effort no-overwrite write.
+        const wchar_t* valueNamePointer = valueName.empty() ? nullptr : valueName.c_str();
+        result = ::RegSetValueExW(
+            openedKey,
+            valueNamePointer,
+            0,
+            valueType,
+            rawData.empty() ? nullptr : rawData.data(),
+            static_cast<DWORD>(rawData.size()));
+        ::RegCloseKey(openedKey);
+        if (result != ERROR_SUCCESS)
+        {
+            return result;
+        }
+        DWORD verifyType = REG_NONE;
+        std::vector<std::uint8_t> verifyData;
+        result = QueryRegistryValueRaw(rootKey, subKey, valueName, verifyType, verifyData);
+        if (result != ERROR_SUCCESS)
+        {
+            return result;
+        }
+        return RawRegistryValuesEqual(valueType, rawData, verifyType, verifyData)
+            ? ERROR_SUCCESS
+            : ERROR_INVALID_DATA;
+    }
+
+    LONG DeleteRegistryValueIfExact(
+        HKEY rootKey,
+        const std::wstring& subKey,
+        const std::wstring& valueName,
+        const DWORD expectedType,
+        const std::vector<std::uint8_t>& expectedData)
+    {
+        DWORD currentType = REG_NONE;
+        std::vector<std::uint8_t> currentData;
+        LONG result = QueryRegistryValueRaw(rootKey, subKey, valueName, currentType, currentData);
+        if (result != ERROR_SUCCESS)
+        {
+            return result;
+        }
+        if (!RawRegistryValuesEqual(currentType, currentData, expectedType, expectedData))
+        {
+            return ERROR_ALREADY_EXISTS;
+        }
+        HKEY openedKey = nullptr;
+        result = ::RegOpenKeyExW(rootKey, subKey.c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &openedKey);
+        if (result != ERROR_SUCCESS)
+        {
+            return result;
+        }
+        currentType = REG_NONE;
+        currentData.clear();
+        result = QueryOpenedRegistryValueRaw(openedKey, valueName, currentType, currentData);
+        if (result != ERROR_SUCCESS)
+        {
+            ::RegCloseKey(openedKey);
+            return result;
+        }
+        if (!RawRegistryValuesEqual(currentType, currentData, expectedType, expectedData))
+        {
+            ::RegCloseKey(openedKey);
+            return ERROR_ALREADY_EXISTS;
+        }
+        const wchar_t* valueNamePointer = valueName.empty() ? nullptr : valueName.c_str();
+        result = ::RegDeleteValueW(openedKey, valueNamePointer);
+        ::RegCloseKey(openedKey);
+        if (result != ERROR_SUCCESS)
+        {
+            return result;
+        }
+        result = QueryRegistryValueRaw(rootKey, subKey, valueName, currentType, currentData);
+        return result == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : (result == ERROR_SUCCESS ? ERROR_ALREADY_EXISTS : result);
+    }
+}
+
+namespace
+{
+    LONG WriteRegistryBackupMetadata(HKEY recordKey, const RegistryBackupRecord& record)
+    {
+        LONG result = SetMetadataDword(recordKey, L"SchemaVersion", kBackupSchemaVersion);
+        if (result == ERROR_SUCCESS) result = SetMetadataDword(recordKey, L"State", record.state);
+        if (result == ERROR_SUCCESS) result = SetMetadataDword(recordKey, L"Root", static_cast<DWORD>(record.root));
+        if (result == ERROR_SUCCESS) result = SetMetadataString(recordKey, L"SubKey", record.subKey);
+        if (result == ERROR_SUCCESS) result = SetMetadataString(recordKey, L"ValueName", record.valueName);
+        if (result == ERROR_SUCCESS) result = SetMetadataString(recordKey, L"ItemName", record.itemName);
+        if (result == ERROR_SUCCESS) result = SetMetadataDword(recordKey, L"ValueType", record.valueType);
+        if (result == ERROR_SUCCESS) result = SetMetadataBinary(recordKey, L"RawData", record.rawData);
+        return result;
+    }
+
+    bool ReadRegistryBackupMetadata(
+        HKEY recordKey,
+        const std::wstring& backupId,
+        RegistryBackupRecord& recordOut)
+    {
+        DWORD schemaVersion = 0;
+        DWORD state = 0;
+        DWORD rootValue = 0;
+        DWORD valueType = REG_NONE;
+        RegistryBackupRecord record;
+        record.backupId = backupId;
+        if (!QueryMetadataDword(recordKey, L"SchemaVersion", schemaVersion)
+            || schemaVersion != kBackupSchemaVersion
+            || !QueryMetadataDword(recordKey, L"State", state)
+            || state > kBackupStateRestored
+            || !QueryMetadataDword(recordKey, L"Root", rootValue)
+            || !QueryMetadataString(recordKey, L"SubKey", record.subKey)
+            || !QueryMetadataString(recordKey, L"ValueName", record.valueName)
+            || !QueryMetadataString(recordKey, L"ItemName", record.itemName)
+            || !QueryMetadataDword(recordKey, L"ValueType", valueType)
+            || !QueryMetadataBinary(recordKey, L"RawData", record.rawData))
+        {
+            return false;
+        }
+        record.root = static_cast<ks::startup::StartupRegistryRoot>(rootValue);
+        record.state = state;
+        record.valueType = valueType;
+        const HKEY nativeRoot = NativeRegistryRoot(record.root);
+        if (nativeRoot == nullptr || !IsKnownRunLocation(nativeRoot, record.subKey))
+        {
+            return false;
+        }
+        recordOut = std::move(record);
+        return true;
+    }
+
+    bool ReadRegistryBackupById(
+        const std::wstring& backupId,
+        RegistryBackupRecord& recordOut,
+        DWORD& errorCodeOut)
+    {
+        errorCodeOut = ERROR_SUCCESS;
+        if (!IsSafeBackupId(backupId))
+        {
+            errorCodeOut = ERROR_INVALID_NAME;
+            return false;
+        }
+        HKEY recordKey = nullptr;
+        const LONG openResult = ::RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            MetadataRecordPath(kRegistryBackupRoot, backupId).c_str(),
+            0,
+            KEY_QUERY_VALUE,
+            &recordKey);
+        if (openResult != ERROR_SUCCESS)
+        {
+            errorCodeOut = static_cast<DWORD>(openResult);
+            return false;
+        }
+        const bool readOk = ReadRegistryBackupMetadata(recordKey, backupId, recordOut);
+        ::RegCloseKey(recordKey);
+        if (!readOk)
+        {
+            errorCodeOut = ERROR_INVALID_DATA;
+        }
+        return readOk;
+    }
+
+    bool RegistryBackupRecordsEqual(const RegistryBackupRecord& left, const RegistryBackupRecord& right)
+    {
+        return left.backupId == right.backupId
+            && left.root == right.root
+            && EqualWideI(left.subKey, right.subKey)
+            && left.valueName == right.valueName
+            && left.itemName == right.itemName
+            && left.valueType == right.valueType
+            && left.rawData == right.rawData
+            && left.state == right.state;
+    }
+
+    std::string RunSourceTypeForSubKey(const std::wstring& subKey)
+    {
+        const std::wstring lowerSubKey = LowerWideCopy(subKey);
+        const bool is32 = lowerSubKey.find(L"\\wow6432node\\") != std::wstring::npos;
+        const bool isRunOnce = EndsWithI(subKey, L"\\RunOnce");
+        if (is32)
+        {
+            return isRunOnce ? "RunOnce32" : "Run32";
+        }
+        return isRunOnce ? "RunOnce" : "Run";
+    }
+
+    // RollbackDisabledRegistryValue restores only into an absent value and never overwrites a conflict.
+    bool RollbackDisabledRegistryValue(const RegistryBackupRecord& record, DWORD& errorCodeOut)
+    {
+        const HKEY rootKey = NativeRegistryRoot(record.root);
+        const LONG restoreResult = SetRegistryValueWithoutOverwrite(
+            rootKey,
+            record.subKey,
+            record.valueName,
+            record.valueType,
+            record.rawData);
+        errorCodeOut = static_cast<DWORD>(restoreResult);
+        return restoreResult == ERROR_SUCCESS;
+    }
+
+    ks::startup::ActionResult DisableRegistryRunEntry(const ks::startup::StartupEntry& entry)
+    {
+        if (!kRegistryReversibleEnabled)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NotSupported,
+                false,
+                false,
+                ERROR_NOT_SUPPORTED,
+                FromWide(L"当前系统无法保证注册表事务原子性，注册表可逆修改已安全关闭。"));
+        }
+        const HKEY rootKey = NativeRegistryRoot(entry.actionLocator.registryRoot);
+        const std::wstring subKey = ToWide(entry.actionLocator.registrySubKeyText);
+        const std::wstring valueName = ToWide(entry.actionLocator.registryValueNameText);
+        if (rootKey == nullptr
+            || !IsSupportedRunLocation(rootKey, subKey)
+            || !entry.actionLocator.backupIdText.empty())
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"注册表操作定位器无效，或不在 Run/RunOnce 白名单内。"));
+        }
+
+        DWORD valueType = REG_NONE;
+        std::vector<std::uint8_t> rawData;
+        LONG result = QueryRegistryValueRaw(rootKey, subKey, valueName, valueType, rawData);
+        if (result != ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                StatusFromWin32(static_cast<DWORD>(result), ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(result),
+                FromWide(L"无法读取源注册表值。"));
+        }
+
+        RegistryBackupRecord record;
+        record.root = entry.actionLocator.registryRoot;
+        record.subKey = subKey;
+        record.valueName = valueName;
+        record.itemName = ToWide(entry.itemNameText);
+        record.valueType = valueType;
+        record.rawData = rawData;
+        record.state = kBackupStatePrepared;
+
+        HKEY recordKey = nullptr;
+        result = CreateUniqueMetadataKey(kRegistryBackupRoot, record.backupId, recordKey);
+        if (result != ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                StatusFromWin32(static_cast<DWORD>(result), ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(result),
+                FromWide(L"无法创建唯一的注册表备份记录。"));
+        }
+
+        result = WriteRegistryBackupMetadata(recordKey, record);
+        if (result == ERROR_SUCCESS)
+        {
+            result = ::RegFlushKey(recordKey);
+        }
+        RegistryBackupRecord verifiedRecord;
+        const bool metadataVerified = result == ERROR_SUCCESS
+            && ReadRegistryBackupMetadata(recordKey, record.backupId, verifiedRecord)
+            && RegistryBackupRecordsEqual(record, verifiedRecord);
+        if (!metadataVerified)
+        {
+            const DWORD failureCode = result == ERROR_SUCCESS ? ERROR_INVALID_DATA : static_cast<DWORD>(result);
+            ::RegCloseKey(recordKey);
+            DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+            return MakeActionResult(
+                StatusFromWin32(failureCode, ks::startup::StartupActionStatus::VerificationFailed),
+                false,
+                false,
+                failureCode,
+                FromWide(L"注册表备份写入或校验失败；源值未被修改。"));
+        }
+
+        DWORD currentType = REG_NONE;
+        std::vector<std::uint8_t> currentData;
+        result = QueryRegistryValueRaw(rootKey, subKey, valueName, currentType, currentData);
+        if (result != ERROR_SUCCESS || !RawRegistryValuesEqual(valueType, rawData, currentType, currentData))
+        {
+            ::RegCloseKey(recordKey);
+            DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                result == ERROR_SUCCESS ? ERROR_ALREADY_EXISTS : static_cast<DWORD>(result),
+                FromWide(L"源注册表值在备份后发生变化；未执行删除。"));
+        }
+
+        result = DeleteRegistryValueIfExact(rootKey, subKey, valueName, valueType, rawData);
+        if (result != ERROR_SUCCESS)
+        {
+            ::RegCloseKey(recordKey);
+            DWORD observedType = REG_NONE;
+            std::vector<std::uint8_t> observedData;
+            const LONG observeResult = QueryRegistryValueRaw(rootKey, subKey, valueName, observedType, observedData);
+            ks::startup::ActionResult failure = MakeActionResult(
+                StatusFromWin32(static_cast<DWORD>(result), ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(result),
+                FromWide(L"无法安全删除源注册表值。"));
+            failure.rollbackAttempted = true;
+            if (observeResult == ERROR_SUCCESS && RawRegistryValuesEqual(valueType, rawData, observedType, observedData))
+            {
+                failure.rollbackSucceeded = DeleteMetadataRecord(kRegistryBackupRoot, record.backupId) == ERROR_SUCCESS;
+            }
+            else if (observeResult == ERROR_FILE_NOT_FOUND)
+            {
+                DWORD rollbackError = ERROR_SUCCESS;
+                failure.rollbackSucceeded = RollbackDisabledRegistryValue(record, rollbackError);
+                if (failure.rollbackSucceeded)
+                {
+                    DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+                }
+                else
+                {
+                    failure.status = ks::startup::StartupActionStatus::RollbackFailed;
+                    failure.errorCode = rollbackError;
+                }
+            }
+            else
+            {
+                failure.status = ks::startup::StartupActionStatus::RollbackFailed;
+                failure.errorCode = observeResult == ERROR_SUCCESS ? ERROR_ALREADY_EXISTS : static_cast<DWORD>(observeResult);
+            }
+            return failure;
+        }
+
+        LONG stateResult = SetAndVerifyMetadataState(recordKey, kBackupStateDisabled);
+        if (stateResult == ERROR_SUCCESS)
+        {
+            stateResult = ::RegFlushKey(recordKey);
+        }
+        ::RegCloseKey(recordKey);
+        if (stateResult != ERROR_SUCCESS)
+        {
+            DWORD rollbackError = ERROR_SUCCESS;
+            const bool rollbackOk = RollbackDisabledRegistryValue(record, rollbackError);
+            ks::startup::ActionResult failure = MakeActionResult(
+                rollbackOk
+                    ? StatusFromWin32(static_cast<DWORD>(stateResult), ks::startup::StartupActionStatus::WriteFailed)
+                    : ks::startup::StartupActionStatus::RollbackFailed,
+                false,
+                false,
+                rollbackOk ? static_cast<DWORD>(stateResult) : rollbackError,
+                rollbackOk
+                    ? FromWide(L"禁用状态提交失败；原注册表值已恢复。")
+                    : FromWide(L"禁用状态提交失败，且自动回滚失败。"));
+            failure.rollbackAttempted = true;
+            failure.rollbackSucceeded = rollbackOk;
+            if (rollbackOk)
+            {
+                DeleteMetadataRecord(kRegistryBackupRoot, record.backupId);
+            }
+            return failure;
+        }
+
+        return MakeActionResult(
+            ks::startup::StartupActionStatus::Success,
+            true,
+            true,
+            ERROR_SUCCESS,
+            FromWide(L"注册表启动值已完成备份、校验并禁用。"));
+    }
+
+    ks::startup::ActionResult EnableRegistryRunEntry(const ks::startup::StartupEntry& entry)
+    {
+        if (!kRegistryReversibleEnabled)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NotSupported,
+                false,
+                false,
+                ERROR_NOT_SUPPORTED,
+                FromWide(L"当前系统无法保证注册表事务原子性，注册表可逆恢复已安全关闭。"));
+        }
+        const std::wstring backupId = ToWide(entry.actionLocator.backupIdText);
+        RegistryBackupRecord record;
+        DWORD readError = ERROR_SUCCESS;
+        if (!ReadRegistryBackupById(backupId, record, readError))
+        {
+            return MakeActionResult(
+                StatusFromWin32(readError, ks::startup::StartupActionStatus::InvalidEntry),
+                false,
+                false,
+                readError,
+                FromWide(L"注册表备份记录缺失、格式无效，或使用了不受支持的版本。"));
+        }
+        if (record.state == kBackupStateRestored)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"注册表启动值已经恢复。"));
+        }
+        if (record.state != kBackupStateDisabled)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_STATE,
+                FromWide(L"注册表备份事务尚未提交，不能通过此接口恢复。"));
+        }
+        if (record.root != entry.actionLocator.registryRoot
+            || !EqualWideI(record.subKey, ToWide(entry.actionLocator.registrySubKeyText))
+            || record.valueName != ToWide(entry.actionLocator.registryValueNameText))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_DATA,
+                FromWide(L"条目定位器与不可变备份元数据不匹配。"));
+        }
+
+        const HKEY rootKey = NativeRegistryRoot(record.root);
+        LONG result = SetRegistryValueWithoutOverwrite(
+            rootKey,
+            record.subKey,
+            record.valueName,
+            record.valueType,
+            record.rawData);
+        if (result != ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                StatusFromWin32(static_cast<DWORD>(result), ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(result),
+                result == ERROR_ALREADY_EXISTS
+                    ? FromWide(L"原名称下已存在注册表值；未执行覆盖。")
+                    : FromWide(L"无法恢复原注册表值。"));
+        }
+
+        HKEY recordKey = nullptr;
+        result = ::RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            MetadataRecordPath(kRegistryBackupRoot, backupId).c_str(),
+            0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            &recordKey);
+        LONG stateResult = result;
+        if (stateResult == ERROR_SUCCESS)
+        {
+            stateResult = SetAndVerifyMetadataState(recordKey, kBackupStateRestored);
+        }
+        if (stateResult == ERROR_SUCCESS)
+        {
+            stateResult = ::RegFlushKey(recordKey);
+        }
+        if (recordKey != nullptr)
+        {
+            ::RegCloseKey(recordKey);
+        }
+        if (stateResult != ERROR_SUCCESS)
+        {
+            const LONG rollbackResult = DeleteRegistryValueIfExact(
+                rootKey,
+                record.subKey,
+                record.valueName,
+                record.valueType,
+                record.rawData);
+            ks::startup::ActionResult failure = MakeActionResult(
+                rollbackResult == ERROR_SUCCESS
+                    ? StatusFromWin32(static_cast<DWORD>(stateResult), ks::startup::StartupActionStatus::WriteFailed)
+                    : ks::startup::StartupActionStatus::RollbackFailed,
+                false,
+                false,
+                rollbackResult == ERROR_SUCCESS ? static_cast<DWORD>(stateResult) : static_cast<DWORD>(rollbackResult),
+                rollbackResult == ERROR_SUCCESS
+                    ? FromWide(L"恢复元数据提交失败；已再次移除刚恢复的值。")
+                    : FromWide(L"恢复元数据提交失败，且无法回滚刚恢复的值。"));
+            failure.rollbackAttempted = true;
+            failure.rollbackSucceeded = rollbackResult == ERROR_SUCCESS;
+            return failure;
+        }
+
+        const LONG cleanupResult = DeleteMetadataRecord(kRegistryBackupRoot, backupId);
+        return MakeActionResult(
+            ks::startup::StartupActionStatus::Success,
+            true,
+            true,
+            cleanupResult == ERROR_SUCCESS ? ERROR_SUCCESS : static_cast<DWORD>(cleanupResult),
+            cleanupResult == ERROR_SUCCESS
+                ? FromWide(L"原注册表值已恢复，备份记录已移除。")
+                : FromWide(L"原注册表值已恢复，但无法移除已退役的备份元数据。"));
+    }
+
+    // AppendDisabledRegistryRunEntries exposes valid app-owned backups as enabled=false records.
+    void AppendDisabledRegistryRunEntries(std::vector<ks::startup::StartupEntry>& entries)
+    {
+        for (const std::wstring& backupId : EnumerateRegistrySubKeys(HKEY_CURRENT_USER, kRegistryBackupRoot))
+        {
+            RegistryBackupRecord record;
+            DWORD readError = ERROR_SUCCESS;
+            if (!ReadRegistryBackupById(backupId, record, readError))
+            {
+                ks::startup::StartupEntry invalidEntry;
+                invalidEntry.category = ks::startup::StartupCategory::Logon;
+                invalidEntry.categoryText = ks::startup::CategoryToText(invalidEntry.category);
+                invalidEntry.itemNameText = FromWide(L"KSword 注册表恢复记录 ") + FromWide(backupId);
+                invalidEntry.detailText = FromWide(L"KSword 备份=") + FromWide(backupId);
+                invalidEntry.sourceTypeText = "RunBackup";
+                invalidEntry.enabled = false;
+                invalidEntry.uniqueIdText = "REGLOGON-RECOVERY-INVALID|" + FromWide(backupId);
+                invalidEntry.lastErrorCode = readError;
+                ProtectEntry(
+                    invalidEntry,
+                    ks::startup::StartupRiskLevel::Critical,
+                    "backup_record",
+                    FromWide(L"注册表恢复元数据损坏或版本不受支持；记录已保留并显式受保护。"));
+                entries.push_back(std::move(invalidEntry));
+                continue;
+            }
+            const HKEY rootKey = NativeRegistryRoot(record.root);
+            DWORD sourceType = REG_NONE;
+            std::vector<std::uint8_t> sourceData;
+            const LONG sourceResult = QueryRegistryValueRaw(
+                rootKey,
+                record.subKey,
+                record.valueName,
+                sourceType,
+                sourceData);
+            const bool restoreConflict = sourceResult == ERROR_SUCCESS;
+            const bool sourceConfirmedAbsent =
+                sourceResult == ERROR_FILE_NOT_FOUND || sourceResult == ERROR_PATH_NOT_FOUND;
+            const bool sourceMatchesBackup = restoreConflict
+                && RawRegistryValuesEqual(
+                    sourceType,
+                    sourceData,
+                    record.valueType,
+                    record.rawData);
+            DWORD reconciliationError = ERROR_SUCCESS;
+            if (record.state == kBackupStatePrepared
+                && record.root == ks::startup::StartupRegistryRoot::CurrentUser)
+            {
+                if (sourceMatchesBackup)
+                {
+                    reconciliationError = static_cast<DWORD>(
+                        DeleteMetadataRecord(kRegistryBackupRoot, backupId));
+                    if (reconciliationError == ERROR_SUCCESS)
+                    {
+                        continue;
+                    }
+                }
+                else if (sourceConfirmedAbsent)
+                {
+                    reconciliationError = static_cast<DWORD>(
+                        CommitMetadataStateById(
+                            kRegistryBackupRoot,
+                            backupId,
+                            kBackupStateDisabled));
+                    if (reconciliationError == ERROR_SUCCESS)
+                    {
+                        record.state = kBackupStateDisabled;
+                    }
+                }
+            }
+            else if (record.state == kBackupStateRestored && sourceMatchesBackup)
+            {
+                reconciliationError = static_cast<DWORD>(
+                    DeleteMetadataRecord(kRegistryBackupRoot, backupId));
+                if (reconciliationError == ERROR_SUCCESS)
+                {
+                    continue;
+                }
+            }
+
+            ks::startup::StartupEntry entry;
+            entry.category = ks::startup::StartupCategory::Logon;
+            entry.categoryText = ks::startup::CategoryToText(entry.category);
+            entry.itemNameText = record.itemName.empty()
+                ? (record.valueName.empty() ? FromWide(L"(\u9ed8\u8ba4\u503c)") : FromWide(record.valueName))
+                : FromWide(record.itemName);
+            entry.locationText = BuildRegistryLocationText(rootKey, record.subKey);
+            entry.locationGroupText = entry.locationText;
+            entry.userText = record.root == ks::startup::StartupRegistryRoot::CurrentUser
+                ? FromWide(L"\u5f53\u524d\u7528\u6237")
+                : FromWide(L"\u672c\u673a");
+            entry.sourceTypeText = RunSourceTypeForSubKey(record.subKey);
+            entry.detailText = FromWide(L"KSword 备份=") + FromWide(backupId);
+            entry.uniqueIdText = "REGLOGON-RECOVERY|" + FromWide(backupId);
+            FinalizeRegistryEntry(
+                entry,
+                RegistryDataToText(record.valueType, record.rawData),
+                std::string(),
+                FromWide(record.valueName),
+                false,
+                false);
+            entry.enabled = sourceMatchesBackup;
+            entry.lastErrorCode = reconciliationError != ERROR_SUCCESS
+                ? reconciliationError
+                : (sourceConfirmedAbsent || restoreConflict
+                    ? ERROR_SUCCESS
+                    : static_cast<std::uint32_t>(sourceResult));
+            std::string reasonCode = "backup_record";
+            std::string reasonText;
+            if (record.root == ks::startup::StartupRegistryRoot::LocalMachine)
+            {
+                reasonCode = "machine_scope";
+                reasonText = FromWide(L"旧机器范围备份不得通过当前用户元数据恢复，记录已保留为只读。");
+            }
+            else if (record.state == kBackupStatePrepared && sourceMatchesBackup)
+            {
+                reasonText = FromWide(L"Prepared 操作尚未发生，但清理恢复元数据失败；记录保持可见。");
+            }
+            else if (record.state == kBackupStatePrepared && sourceConfirmedAbsent)
+            {
+                reasonText = FromWide(L"Prepared 记录对应的源值已缺失，但提交 Disabled 状态失败；记录保持可见。");
+            }
+            else if (restoreConflict && !sourceMatchesBackup)
+            {
+                reasonText = FromWide(L"源位置已出现不同的同名注册表值；恢复记录保持受保护状态。");
+            }
+            else if (!sourceConfirmedAbsent)
+            {
+                reasonText = FromWide(L"无法检查原注册表位置；恢复记录继续保持受保护状态。");
+            }
+            else
+            {
+                reasonText = FromWide(L"恢复元数据已完成对账；注册表事务功能关闭期间仅提供只读诊断。");
+            }
+            ProtectEntry(
+                entry,
+                ks::startup::StartupRiskLevel::Elevated,
+                reasonCode,
+                reasonText);
+            entries.push_back(std::move(entry));
+        }
+    }
+}
+
+namespace
+{
+    std::wstring StartupParkingRoot()
+    {
+        const std::wstring localAppData = KnownFolderPath(FOLDERID_LocalAppData);
+        return localAppData.empty()
+            ? std::wstring()
+            : (std::filesystem::path(localAppData) / L"KSword" / L"StartupManager" / L"Parking").wstring();
+    }
+
+    std::wstring NormalizedPathText(const std::wstring& pathText)
+    {
+        if (pathText.empty())
+        {
+            return std::wstring();
+        }
+        return std::filesystem::path(pathText).lexically_normal().wstring();
+    }
+
+    bool EqualPathI(const std::wstring& left, const std::wstring& right)
+    {
+        return EqualWideI(NormalizedPathText(left), NormalizedPathText(right));
+    }
+
+    // IsKnownStartupFolderFile recognizes current and legacy machine-wide records for display.
+    bool IsKnownStartupFolderFile(const std::wstring& pathText, bool* machineWideOut = nullptr)
+    {
+        const std::filesystem::path filePath = std::filesystem::path(pathText).lexically_normal();
+        if (!filePath.is_absolute() || filePath.filename().empty())
+        {
+            return false;
+        }
+        const std::array<std::pair<std::wstring, bool>, 2> folders{ {
+            { KnownFolderPath(FOLDERID_Startup), false },
+            { KnownFolderPath(FOLDERID_CommonStartup), true }
+        } };
+        for (const auto& folder : folders)
+        {
+            if (!folder.first.empty() && EqualPathI(filePath.parent_path().wstring(), folder.first))
+            {
+                if (machineWideOut != nullptr)
+                {
+                    *machineWideOut = folder.second;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool IsSupportedStartupFolderFile(const std::wstring& pathText)
+    {
+        bool machineWide = false;
+        return kStartupFolderReversibleEnabled
+            && IsKnownStartupFolderFile(pathText, &machineWide)
+            && !machineWide;
+    }
+
+    bool IsRegularFileWide(const std::wstring& pathText)
+    {
+        const DWORD attributes = ::GetFileAttributesW(pathText.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    }
+
+    LONG MoveFileWithoutOverwrite(const std::wstring& sourcePath, const std::wstring& destinationPath)
+    {
+        if (IsRegularFileWide(destinationPath) || ::GetFileAttributesW(destinationPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            return ERROR_ALREADY_EXISTS;
+        }
+        if (::MoveFileExW(
+                sourcePath.c_str(),
+                destinationPath.c_str(),
+                MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH) == FALSE)
+        {
+            return static_cast<LONG>(::GetLastError());
+        }
+        if (IsRegularFileWide(sourcePath) || !IsRegularFileWide(destinationPath))
+        {
+            return ERROR_INVALID_DATA;
+        }
+        return ERROR_SUCCESS;
+    }
+
+    LONG WriteStartupFolderBackupMetadata(HKEY recordKey, const StartupFolderBackupRecord& record)
+    {
+        LONG result = SetMetadataDword(recordKey, L"SchemaVersion", kBackupSchemaVersion);
+        if (result == ERROR_SUCCESS) result = SetMetadataDword(recordKey, L"State", record.state);
+        if (result == ERROR_SUCCESS) result = SetMetadataString(recordKey, L"OriginalPath", record.originalPath);
+        if (result == ERROR_SUCCESS) result = SetMetadataString(recordKey, L"ParkedPath", record.parkedPath);
+        if (result == ERROR_SUCCESS) result = SetMetadataString(recordKey, L"ItemName", record.itemName);
+        return result;
+    }
+
+    bool ReadStartupFolderBackupMetadata(
+        HKEY recordKey,
+        const std::wstring& backupId,
+        StartupFolderBackupRecord& recordOut)
+    {
+        DWORD schemaVersion = 0;
+        StartupFolderBackupRecord record;
+        record.backupId = backupId;
+        if (!QueryMetadataDword(recordKey, L"SchemaVersion", schemaVersion)
+            || schemaVersion != kBackupSchemaVersion
+            || !QueryMetadataDword(recordKey, L"State", record.state)
+            || record.state > kBackupStateRestored
+            || !QueryMetadataString(recordKey, L"OriginalPath", record.originalPath)
+            || !QueryMetadataString(recordKey, L"ParkedPath", record.parkedPath)
+            || !QueryMetadataString(recordKey, L"ItemName", record.itemName)
+            || !IsKnownStartupFolderFile(record.originalPath))
+        {
+            return false;
+        }
+        const std::wstring parkingRoot = StartupParkingRoot();
+        if (parkingRoot.empty())
+        {
+            return false;
+        }
+        const std::wstring expectedParkedPath =
+            (std::filesystem::path(parkingRoot) / backupId / std::filesystem::path(record.originalPath).filename()).wstring();
+        if (!EqualPathI(expectedParkedPath, record.parkedPath))
+        {
+            return false;
+        }
+        recordOut = std::move(record);
+        return true;
+    }
+
+    bool ReadStartupFolderBackupById(
+        const std::wstring& backupId,
+        StartupFolderBackupRecord& recordOut,
+        DWORD& errorCodeOut)
+    {
+        errorCodeOut = ERROR_SUCCESS;
+        if (!IsSafeBackupId(backupId))
+        {
+            errorCodeOut = ERROR_INVALID_NAME;
+            return false;
+        }
+        HKEY recordKey = nullptr;
+        const LONG openResult = ::RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            MetadataRecordPath(kStartupFolderBackupRoot, backupId).c_str(),
+            0,
+            KEY_QUERY_VALUE,
+            &recordKey);
+        if (openResult != ERROR_SUCCESS)
+        {
+            errorCodeOut = static_cast<DWORD>(openResult);
+            return false;
+        }
+        const bool readOk = ReadStartupFolderBackupMetadata(recordKey, backupId, recordOut);
+        ::RegCloseKey(recordKey);
+        if (!readOk)
+        {
+            errorCodeOut = ERROR_INVALID_DATA;
+        }
+        return readOk;
+    }
+
+    bool StartupFolderBackupRecordsEqual(
+        const StartupFolderBackupRecord& left,
+        const StartupFolderBackupRecord& right)
+    {
+        return left.backupId == right.backupId
+            && EqualPathI(left.originalPath, right.originalPath)
+            && EqualPathI(left.parkedPath, right.parkedPath)
+            && left.itemName == right.itemName
+            && left.state == right.state;
+    }
+
+    LONG CreateUniqueStartupFolderBackup(
+        const std::wstring& originalPath,
+        StartupFolderBackupRecord& recordOut,
+        HKEY& recordKeyOut)
+    {
+        const std::wstring parkingRoot = StartupParkingRoot();
+        if (parkingRoot.empty())
+        {
+            return ERROR_PATH_NOT_FOUND;
+        }
+        std::error_code directoryError;
+        std::filesystem::create_directories(parkingRoot, directoryError);
+        if (directoryError)
+        {
+            return static_cast<LONG>(directoryError.value());
+        }
+        for (int attempt = 0; attempt < 64; ++attempt)
+        {
+            StartupFolderBackupRecord record;
+            record.originalPath = NormalizedPathText(originalPath);
+            record.itemName = std::filesystem::path(record.originalPath).filename().wstring();
+            record.state = kBackupStatePrepared;
+            HKEY recordKey = nullptr;
+            LONG result = CreateUniqueMetadataKey(kStartupFolderBackupRoot, record.backupId, recordKey);
+            if (result != ERROR_SUCCESS)
+            {
+                return result;
+            }
+            const std::wstring parkingDirectory =
+                (std::filesystem::path(parkingRoot) / record.backupId).wstring();
+            record.parkedPath =
+                (std::filesystem::path(parkingDirectory) / record.itemName).wstring();
+            if (::CreateDirectoryW(parkingDirectory.c_str(), nullptr) != FALSE)
+            {
+                recordOut = std::move(record);
+                recordKeyOut = recordKey;
+                return ERROR_SUCCESS;
+            }
+            result = static_cast<LONG>(::GetLastError());
+            ::RegCloseKey(recordKey);
+            DeleteMetadataRecord(kStartupFolderBackupRoot, record.backupId);
+            if (result != ERROR_ALREADY_EXISTS)
+            {
+                return result;
+            }
+        }
+        return ERROR_ALREADY_EXISTS;
+    }
+
+    void CleanupStartupFolderBackupArtifacts(const StartupFolderBackupRecord& record)
+    {
+        const std::wstring parkingRoot = StartupParkingRoot();
+        if (!IsSafeBackupId(record.backupId) || parkingRoot.empty())
+        {
+            return;
+        }
+        const std::wstring expectedDirectory =
+            (std::filesystem::path(parkingRoot) / record.backupId).wstring();
+        const std::wstring actualDirectory =
+            std::filesystem::path(record.parkedPath).parent_path().wstring();
+        const std::wstring expectedParkedPath =
+            (std::filesystem::path(expectedDirectory) / record.itemName).wstring();
+        if (!EqualPathI(expectedDirectory, actualDirectory)
+            || !EqualPathI(expectedParkedPath, record.parkedPath))
+        {
+            return;
+        }
+        const DWORD attributes = ::GetFileAttributesW(expectedDirectory.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES)
+        {
+            const DWORD errorCode = ::GetLastError();
+            if (errorCode == ERROR_FILE_NOT_FOUND || errorCode == ERROR_PATH_NOT_FOUND)
+            {
+                DeleteMetadataRecord(kStartupFolderBackupRoot, record.backupId);
+            }
+            return;
+        }
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0
+            || (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            return;
+        }
+        if (::RemoveDirectoryW(expectedDirectory.c_str()) != FALSE)
+        {
+            DeleteMetadataRecord(kStartupFolderBackupRoot, record.backupId);
+        }
+    }
+
+    ks::startup::ActionResult DisableStartupFolderEntry(const ks::startup::StartupEntry& entry)
+    {
+        if (!kStartupFolderReversibleEnabled)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NotSupported,
+                false,
+                false,
+                ERROR_NOT_SUPPORTED,
+                FromWide(L"启动文件夹句柄级无覆盖移动尚未启用，可逆修改已安全关闭。"));
+        }
+        const std::wstring originalPath = ToWide(entry.actionLocator.originalFilePathText);
+        if (!entry.actionLocator.backupIdText.empty()
+            || !entry.actionLocator.parkedFilePathText.empty()
+            || !IsSupportedStartupFolderFile(originalPath))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"启动文件夹操作定位器无效，或目标不在 Windows 启动文件夹内。"));
+        }
+        if (!IsRegularFileWide(originalPath))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NotFound,
+                false,
+                false,
+                ERROR_FILE_NOT_FOUND,
+                FromWide(L"启动文件夹中的文件已不存在。"));
+        }
+
+        StartupFolderBackupRecord record;
+        HKEY recordKey = nullptr;
+        LONG result = CreateUniqueStartupFolderBackup(originalPath, record, recordKey);
+        if (result != ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                StatusFromWin32(static_cast<DWORD>(result), ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(result),
+                FromWide(L"无法创建唯一的应用专用暂存位置。"));
+        }
+
+        result = WriteStartupFolderBackupMetadata(recordKey, record);
+        if (result == ERROR_SUCCESS)
+        {
+            result = ::RegFlushKey(recordKey);
+        }
+        StartupFolderBackupRecord verifiedRecord;
+        const bool metadataVerified = result == ERROR_SUCCESS
+            && ReadStartupFolderBackupMetadata(recordKey, record.backupId, verifiedRecord)
+            && StartupFolderBackupRecordsEqual(record, verifiedRecord);
+        if (!metadataVerified)
+        {
+            const DWORD failureCode = result == ERROR_SUCCESS ? ERROR_INVALID_DATA : static_cast<DWORD>(result);
+            ::RegCloseKey(recordKey);
+            CleanupStartupFolderBackupArtifacts(record);
+            return MakeActionResult(
+                StatusFromWin32(failureCode, ks::startup::StartupActionStatus::VerificationFailed),
+                false,
+                false,
+                failureCode,
+                FromWide(L"暂存元数据写入或校验失败；源文件未被移动。"));
+        }
+
+        result = MoveFileWithoutOverwrite(record.originalPath, record.parkedPath);
+        if (result != ERROR_SUCCESS)
+        {
+            ::RegCloseKey(recordKey);
+            ks::startup::ActionResult failure = MakeActionResult(
+                StatusFromWin32(static_cast<DWORD>(result), ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(result),
+                FromWide(L"无法将启动文件夹文件移动到暂存位置。"));
+            failure.rollbackAttempted = true;
+            if (IsRegularFileWide(record.originalPath) && !IsRegularFileWide(record.parkedPath))
+            {
+                failure.rollbackSucceeded = true;
+                CleanupStartupFolderBackupArtifacts(record);
+            }
+            else if (!IsRegularFileWide(record.originalPath) && IsRegularFileWide(record.parkedPath))
+            {
+                const LONG rollbackResult = MoveFileWithoutOverwrite(record.parkedPath, record.originalPath);
+                failure.rollbackSucceeded = rollbackResult == ERROR_SUCCESS;
+                if (failure.rollbackSucceeded)
+                {
+                    CleanupStartupFolderBackupArtifacts(record);
+                }
+                else
+                {
+                    failure.status = ks::startup::StartupActionStatus::RollbackFailed;
+                    failure.errorCode = static_cast<DWORD>(rollbackResult);
+                }
+            }
+            else
+            {
+                failure.status = ks::startup::StartupActionStatus::RollbackFailed;
+                failure.errorCode = ERROR_ALREADY_EXISTS;
+            }
+            return failure;
+        }
+
+        LONG stateResult = SetAndVerifyMetadataState(recordKey, kBackupStateDisabled);
+        if (stateResult == ERROR_SUCCESS)
+        {
+            stateResult = ::RegFlushKey(recordKey);
+        }
+        ::RegCloseKey(recordKey);
+        if (stateResult != ERROR_SUCCESS)
+        {
+            const LONG rollbackResult = MoveFileWithoutOverwrite(record.parkedPath, record.originalPath);
+            ks::startup::ActionResult failure = MakeActionResult(
+                rollbackResult == ERROR_SUCCESS
+                    ? StatusFromWin32(static_cast<DWORD>(stateResult), ks::startup::StartupActionStatus::WriteFailed)
+                    : ks::startup::StartupActionStatus::RollbackFailed,
+                false,
+                false,
+                rollbackResult == ERROR_SUCCESS ? static_cast<DWORD>(stateResult) : static_cast<DWORD>(rollbackResult),
+                rollbackResult == ERROR_SUCCESS
+                    ? FromWide(L"暂存状态提交失败；启动文件夹文件已恢复。")
+                    : FromWide(L"暂存状态提交失败，且文件自动回滚失败。"));
+            failure.rollbackAttempted = true;
+            failure.rollbackSucceeded = rollbackResult == ERROR_SUCCESS;
+            if (failure.rollbackSucceeded)
+            {
+                CleanupStartupFolderBackupArtifacts(record);
+            }
+            return failure;
+        }
+
+        return MakeActionResult(
+            ks::startup::StartupActionStatus::Success,
+            true,
+            true,
+            ERROR_SUCCESS,
+            FromWide(L"启动文件夹文件已移动到唯一的应用专用暂存位置。"));
+    }
+
+    ks::startup::ActionResult EnableStartupFolderEntry(const ks::startup::StartupEntry& entry)
+    {
+        if (!kStartupFolderReversibleEnabled)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NotSupported,
+                false,
+                false,
+                ERROR_NOT_SUPPORTED,
+                FromWide(L"启动文件夹句柄级无覆盖移动尚未启用，可逆恢复已安全关闭。"));
+        }
+        const std::wstring backupId = ToWide(entry.actionLocator.backupIdText);
+        StartupFolderBackupRecord record;
+        DWORD readError = ERROR_SUCCESS;
+        if (!ReadStartupFolderBackupById(backupId, record, readError))
+        {
+            return MakeActionResult(
+                StatusFromWin32(readError, ks::startup::StartupActionStatus::InvalidEntry),
+                false,
+                false,
+                readError,
+                FromWide(L"启动文件夹备份记录缺失、格式无效，或使用了不受支持的版本。"));
+        }
+        if (record.state == kBackupStateRestored)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"启动文件夹文件已经恢复。"));
+        }
+        if (record.state != kBackupStateDisabled)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_STATE,
+                FromWide(L"暂存事务尚未提交，不能通过此接口恢复。"));
+        }
+        if (!EqualPathI(record.originalPath, ToWide(entry.actionLocator.originalFilePathText))
+            || !EqualPathI(record.parkedPath, ToWide(entry.actionLocator.parkedFilePathText)))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_DATA,
+                FromWide(L"条目定位器与不可变暂存元数据不匹配。"));
+        }
+        if (IsRegularFileWide(record.originalPath))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_ALREADY_EXISTS,
+                FromWide(L"原位置已存在同名文件；未执行覆盖。"));
+        }
+        if (!IsRegularFileWide(record.parkedPath))
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NotFound,
+                false,
+                false,
+                ERROR_FILE_NOT_FOUND,
+                FromWide(L"暂存的启动文件夹文件缺失。"));
+        }
+
+        LONG result = MoveFileWithoutOverwrite(record.parkedPath, record.originalPath);
+        if (result != ERROR_SUCCESS)
+        {
+            return MakeActionResult(
+                StatusFromWin32(static_cast<DWORD>(result), ks::startup::StartupActionStatus::WriteFailed),
+                false,
+                false,
+                static_cast<DWORD>(result),
+                FromWide(L"无法恢复暂存的启动文件夹文件。"));
+        }
+
+        HKEY recordKey = nullptr;
+        result = ::RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            MetadataRecordPath(kStartupFolderBackupRoot, backupId).c_str(),
+            0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            &recordKey);
+        LONG stateResult = result;
+        if (stateResult == ERROR_SUCCESS)
+        {
+            stateResult = SetAndVerifyMetadataState(recordKey, kBackupStateRestored);
+        }
+        if (stateResult == ERROR_SUCCESS)
+        {
+            stateResult = ::RegFlushKey(recordKey);
+        }
+        if (recordKey != nullptr)
+        {
+            ::RegCloseKey(recordKey);
+        }
+        if (stateResult != ERROR_SUCCESS)
+        {
+            const LONG rollbackResult = MoveFileWithoutOverwrite(record.originalPath, record.parkedPath);
+            ks::startup::ActionResult failure = MakeActionResult(
+                rollbackResult == ERROR_SUCCESS
+                    ? StatusFromWin32(static_cast<DWORD>(stateResult), ks::startup::StartupActionStatus::WriteFailed)
+                    : ks::startup::StartupActionStatus::RollbackFailed,
+                false,
+                false,
+                rollbackResult == ERROR_SUCCESS ? static_cast<DWORD>(stateResult) : static_cast<DWORD>(rollbackResult),
+                rollbackResult == ERROR_SUCCESS
+                    ? FromWide(L"恢复元数据提交失败；文件已移回暂存位置。")
+                    : FromWide(L"恢复元数据提交失败，且文件回滚失败。"));
+            failure.rollbackAttempted = true;
+            failure.rollbackSucceeded = rollbackResult == ERROR_SUCCESS;
+            return failure;
+        }
+
+        const LONG cleanupResult = DeleteMetadataRecord(kStartupFolderBackupRoot, backupId);
+        ::RemoveDirectoryW(std::filesystem::path(record.parkedPath).parent_path().c_str());
+        return MakeActionResult(
+            ks::startup::StartupActionStatus::Success,
+            true,
+            true,
+            cleanupResult == ERROR_SUCCESS ? ERROR_SUCCESS : static_cast<DWORD>(cleanupResult),
+            cleanupResult == ERROR_SUCCESS
+                ? FromWide(L"启动文件夹文件已恢复，暂存元数据已移除。")
+                : FromWide(L"启动文件夹文件已恢复，但无法移除已退役的暂存元数据。"));
+    }
+
+    void AppendDisabledStartupFolderEntries(std::vector<ks::startup::StartupEntry>& entries)
+    {
+        for (const std::wstring& backupId : EnumerateRegistrySubKeys(HKEY_CURRENT_USER, kStartupFolderBackupRoot))
+        {
+            StartupFolderBackupRecord record;
+            DWORD readError = ERROR_SUCCESS;
+            if (!ReadStartupFolderBackupById(backupId, record, readError))
+            {
+                ks::startup::StartupEntry invalidEntry;
+                invalidEntry.category = ks::startup::StartupCategory::Logon;
+                invalidEntry.categoryText = ks::startup::CategoryToText(invalidEntry.category);
+                invalidEntry.itemNameText = FromWide(L"KSword 启动文件恢复记录 ") + FromWide(backupId);
+                invalidEntry.detailText = FromWide(L"KSword 暂存记录=") + FromWide(backupId);
+                invalidEntry.sourceTypeText = "StartupFolderBackup";
+                invalidEntry.enabled = false;
+                invalidEntry.uniqueIdText = "STARTUPFOLDER-RECOVERY-INVALID|" + FromWide(backupId);
+                invalidEntry.lastErrorCode = readError;
+                ProtectEntry(
+                    invalidEntry,
+                    ks::startup::StartupRiskLevel::Critical,
+                    "backup_record",
+                    FromWide(L"启动文件夹恢复元数据损坏或版本不受支持；记录已保留并显式受保护。"));
+                entries.push_back(std::move(invalidEntry));
+                continue;
+            }
+            FileIdentitySnapshot originalIdentity;
+            FileIdentitySnapshot parkedIdentity;
+            DWORD originalError = ERROR_SUCCESS;
+            DWORD parkedError = ERROR_SUCCESS;
+            const bool originalExists = QueryFileIdentityNoReparse(
+                record.originalPath,
+                originalIdentity,
+                originalError);
+            const bool parkedExists = QueryFileIdentityNoReparse(
+                record.parkedPath,
+                parkedIdentity,
+                parkedError);
+            bool machineWide = false;
+            IsKnownStartupFolderFile(record.originalPath, &machineWide);
+            DWORD reconciliationError = ERROR_SUCCESS;
+            if (record.state == kBackupStatePrepared && !machineWide)
+            {
+                if (originalExists && !parkedExists
+                    && (parkedError == ERROR_FILE_NOT_FOUND || parkedError == ERROR_PATH_NOT_FOUND))
+                {
+                    CleanupStartupFolderBackupArtifacts(record);
+                    StartupFolderBackupRecord remainingRecord;
+                    DWORD remainingError = ERROR_SUCCESS;
+                    if (!ReadStartupFolderBackupById(
+                            backupId,
+                            remainingRecord,
+                            remainingError)
+                        && remainingError == ERROR_FILE_NOT_FOUND)
+                    {
+                        continue;
+                    }
+                    reconciliationError = remainingError == ERROR_SUCCESS
+                        ? ERROR_CANNOT_MAKE
+                        : remainingError;
+                }
+                else if (!originalExists && parkedExists
+                    && (originalError == ERROR_FILE_NOT_FOUND || originalError == ERROR_PATH_NOT_FOUND))
+                {
+                    reconciliationError = static_cast<DWORD>(
+                        CommitMetadataStateById(
+                            kStartupFolderBackupRoot,
+                            backupId,
+                            kBackupStateDisabled));
+                    if (reconciliationError == ERROR_SUCCESS)
+                    {
+                        record.state = kBackupStateDisabled;
+                    }
+                }
+            }
+
+            ks::startup::StartupEntry entry;
+            entry.category = ks::startup::StartupCategory::Logon;
+            entry.categoryText = ks::startup::CategoryToText(entry.category);
+            entry.itemNameText = record.itemName.empty()
+                ? FromWide(std::filesystem::path(record.originalPath).filename().wstring())
+                : FromWide(record.itemName);
+            entry.commandText = ToNativeSeparators(FromWide(record.originalPath));
+            entry.imagePathText = ToNativeSeparators(FromWide(record.parkedPath));
+            entry.publisherText = parkedExists
+                ? ks::startup::QueryPublisherTextByPath(entry.imagePathText)
+                : std::string();
+            entry.locationText = ToNativeSeparators(FromWide(std::filesystem::path(record.originalPath).parent_path().wstring()));
+            entry.userText = machineWide ? FromWide(L"\u672c\u673a") : FromWide(L"\u5f53\u524d\u7528\u6237");
+            entry.sourceTypeText = "StartupFolder";
+            entry.detailText = FromWide(L"KSword 暂存=") + FromWide(record.parkedPath);
+            entry.enabled = false;
+            entry.canOpenFileLocation = parkedExists;
+            entry.canDelete = false;
+            entry.imagePathExists = parkedExists;
+            entry.uniqueIdText = "STARTUPFOLDER-RECOVERY|" + FromWide(backupId);
+            entry.lastErrorCode = reconciliationError != ERROR_SUCCESS
+                ? reconciliationError
+                : (!originalExists && originalError != ERROR_FILE_NOT_FOUND
+                    && originalError != ERROR_PATH_NOT_FOUND
+                    ? originalError
+                    : (!parkedExists && parkedError != ERROR_FILE_NOT_FOUND
+                        && parkedError != ERROR_PATH_NOT_FOUND
+                        ? parkedError
+                        : ERROR_SUCCESS));
+            std::string reasonCode = machineWide ? "machine_scope" : "backup_record";
+            std::string reasonText;
+            if (machineWide)
+            {
+                reasonText = FromWide(L"旧机器范围暂存记录不得通过当前用户目录恢复，已保留为只读。");
+            }
+            else if (record.state == kBackupStatePrepared && originalExists && !parkedExists)
+            {
+                reasonText = FromWide(L"Prepared 操作尚未发生，但安全清理暂存记录失败；记录保持可见。");
+            }
+            else if (record.state == kBackupStatePrepared && !originalExists && parkedExists)
+            {
+                reasonText = FromWide(L"Prepared 记录对应文件已被暂存，但提交 Disabled 状态失败；记录保持可见。");
+            }
+            else if (originalExists && parkedExists)
+            {
+                reasonText = FromWide(L"原位置与暂存位置同时存在文件；恢复记录保持受保护状态。");
+            }
+            else if (originalExists)
+            {
+                reasonText = FromWide(L"原位置存在文件；恢复记录保持受保护状态。");
+            }
+            else if (!parkedExists)
+            {
+                reasonText = FromWide(L"原位置与暂存位置均无可验证普通文件；恢复记录保持受保护状态。");
+            }
+            else
+            {
+                reasonText = FromWide(L"暂存记录已完成对账；句柄级恢复功能关闭期间仅提供只读诊断。");
+            }
+            ProtectEntry(
+                entry,
+                ks::startup::StartupRiskLevel::Elevated,
+                reasonCode,
+                reasonText);
+            entries.push_back(std::move(entry));
+        }
+    }
+}
+
+namespace
+{
+    std::wstring QuotePowerShellLiteral(const std::wstring& text)
+    {
+        std::wstring escaped;
+        escaped.reserve(text.size() + 2);
+        escaped.push_back(L'\'');
+        for (const wchar_t ch : text)
+        {
+            escaped.push_back(ch);
+            if (ch == L'\'')
+            {
+                escaped.push_back(L'\'');
+            }
+        }
+        escaped.push_back(L'\'');
+        return escaped;
+    }
+
+    bool IsValidScheduledTaskLocator(const std::wstring& taskPath, const std::wstring& taskName)
+    {
+        const auto containsWildcard = [](const std::wstring& text) {
+            return text.find_first_of(L"*?[]") != std::wstring::npos;
+        };
+        return !taskPath.empty()
+            && taskPath.front() == L'\\'
+            && taskPath.back() == L'\\'
+            && taskPath.find(L'\0') == std::wstring::npos
+            && !containsWildcard(taskPath)
+            && !taskName.empty()
+            && taskName.find(L'\0') == std::wstring::npos
+            && taskName.find(L'\\') == std::wstring::npos
+            && !containsWildcard(taskName);
+    }
+
+    std::wstring TaskIdentityPowerShellFunction()
+    {
+        return LR"PS(
+$ProgressPreference='SilentlyContinue'
+function Get-KSwordTaskIdentityHash($task) {
+  [xml]$document = [string](ScheduledTasks\Export-ScheduledTask -InputObject $task -ErrorAction Stop)
+  $enabledNode = $document.SelectSingleNode("/*[local-name()='Task']/*[local-name()='Settings']/*[local-name()='Enabled']")
+  if ($null -ne $enabledNode) { $null = $enabledNode.ParentNode.RemoveChild($enabledNode) }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString(
+      $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($document.OuterXml))
+    ).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+function Get-KSwordTaskEnabled($task) {
+  if ($null -ne $task.Settings -and $null -ne $task.Settings.Enabled) {
+    return [bool]$task.Settings.Enabled
+  }
+  return ([string]$task.State -ne 'Disabled')
+}
+function Test-KSwordBootOrLogon($task) {
+  $kinds = @($task.Triggers | ForEach-Object { $_.CimClass.CimClassName })
+  return @($kinds | Where-Object {
+    $_ -eq 'MSFT_TaskBootTrigger' -or $_ -eq 'MSFT_TaskLogonTrigger'
+  }).Count -gt 0
+}
+)PS";
+    }
+
+    std::wstring BuildSetTaskEnabledPowerShellScript(
+        const std::wstring& taskPath,
+        const std::wstring& taskName,
+        const std::wstring& expectedHash,
+        const bool enabled)
+    {
+        std::wstring script = LR"PS(
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+)PS";
+        script += TaskIdentityPowerShellFunction();
+        script += LR"PS(
+$taskPath = )PS";
+        script += QuotePowerShellLiteral(taskPath);
+        script += L"\n$taskName = ";
+        script += QuotePowerShellLiteral(taskName);
+        script += L"\n$expectedHash = ";
+        script += QuotePowerShellLiteral(expectedHash);
+        script += L"\n$desiredEnabled = ";
+        script += enabled ? L"$true\n" : L"$false\n";
+        script += LR"PS(
+try {
+$scheduledTasksModule = Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1'
+Microsoft.PowerShell.Core\Import-Module -Name $scheduledTasksModule -Force -ErrorAction Stop
+$task = ScheduledTasks\Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+if (-not (Test-KSwordBootOrLogon $task)) { 'KSWORD_UNSUPPORTED'; exit 12 }
+if ((Get-KSwordTaskIdentityHash $task) -ne $expectedHash) { 'KSWORD_STALE'; exit 13 }
+$currentEnabled = Get-KSwordTaskEnabled $task
+if ($currentEnabled -eq $desiredEnabled) { 'KSWORD_NO_CHANGE'; exit 0 }
+if ($currentEnabled) { 'KSWORD_ORIGINAL_ENABLED' } else { 'KSWORD_ORIGINAL_DISABLED' }
+'KSWORD_MUTATION_ATTEMPTED'
+[Console]::Out.Flush()
+if ($desiredEnabled) {
+  ScheduledTasks\Enable-ScheduledTask -InputObject $task -ErrorAction Stop | Out-Null
+} else {
+  ScheduledTasks\Disable-ScheduledTask -InputObject $task -ErrorAction Stop | Out-Null
+}
+$verifyTask = ScheduledTasks\Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+if (-not (Test-KSwordBootOrLogon $verifyTask)) { throw 'KSWORD_VERIFY_TRIGGER' }
+if ((Get-KSwordTaskIdentityHash $verifyTask) -ne $expectedHash) { throw 'KSWORD_VERIFY_HASH' }
+if ((Get-KSwordTaskEnabled $verifyTask) -ne $desiredEnabled) { throw 'KSWORD_VERIFY_STATE' }
+'KSWORD_CHANGED'
+} catch {
+  $hresult = [int]$_.Exception.HResult
+  $accessDenied = ($_.Exception -is [System.UnauthorizedAccessException]) -or
+    ($hresult -eq -2147024891) -or
+    ([string]$_.FullyQualifiedErrorId -match 'AccessDenied|UnauthorizedAccess')
+  if ($accessDenied) { 'KSWORD_ACCESS_DENIED'; exit 5 }
+  'KSWORD_TASK_ERROR'
+  exit 1
+}
+)PS";
+        return script;
+    }
+
+    std::wstring BuildRecoverTaskStatePowerShellScript(
+        const std::wstring& taskPath,
+        const std::wstring& taskName,
+        const std::wstring& expectedHash,
+        const bool originalEnabled)
+    {
+        std::wstring script = LR"PS(
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+)PS";
+        script += TaskIdentityPowerShellFunction();
+        script += LR"PS(
+$taskPath = )PS";
+        script += QuotePowerShellLiteral(taskPath);
+        script += L"\n$taskName = ";
+        script += QuotePowerShellLiteral(taskName);
+        script += L"\n$expectedHash = ";
+        script += QuotePowerShellLiteral(expectedHash);
+        script += L"\n$originalEnabled = ";
+        script += originalEnabled ? L"$true\n" : L"$false\n";
+        script += LR"PS(
+try {
+  $scheduledTasksModule = Join-Path $PSHOME 'Modules\ScheduledTasks\ScheduledTasks.psd1'
+  Microsoft.PowerShell.Core\Import-Module -Name $scheduledTasksModule -Force -ErrorAction Stop
+  $task = ScheduledTasks\Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+  if (-not (Test-KSwordBootOrLogon $task)) { 'KSWORD_ROLLBACK_BLOCKED'; exit 21 }
+  if ((Get-KSwordTaskIdentityHash $task) -ne $expectedHash) { 'KSWORD_ROLLBACK_BLOCKED'; exit 22 }
+  if ((Get-KSwordTaskEnabled $task) -eq $originalEnabled) {
+    'KSWORD_ROLLBACK_NOT_NEEDED'
+    exit 0
+  }
+  if ($originalEnabled) {
+    ScheduledTasks\Enable-ScheduledTask -InputObject $task -ErrorAction Stop | Out-Null
+  } else {
+    ScheduledTasks\Disable-ScheduledTask -InputObject $task -ErrorAction Stop | Out-Null
+  }
+  $verifyTask = ScheduledTasks\Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+  if (-not (Test-KSwordBootOrLogon $verifyTask)) { throw 'KSWORD_ROLLBACK_TRIGGER' }
+  if ((Get-KSwordTaskIdentityHash $verifyTask) -ne $expectedHash) { throw 'KSWORD_ROLLBACK_HASH' }
+  if ((Get-KSwordTaskEnabled $verifyTask) -ne $originalEnabled) { throw 'KSWORD_ROLLBACK_STATE' }
+  'KSWORD_ROLLBACK_OK'
+} catch {
+  'KSWORD_ROLLBACK_FAILED'
+  exit 23
+}
+)PS";
+        return script;
+    }
+
+    ks::startup::ActionResult SetScheduledTaskEnabled(
+        const ks::startup::StartupEntry& entry,
+        const bool enabled)
+    {
+        const std::wstring taskPath = ToWide(entry.actionLocator.taskPathText);
+        const std::wstring taskName = ToWide(entry.actionLocator.taskNameText);
+        const std::wstring expectedHash =
+            ToWide(LowerAsciiCopy(entry.actionLocator.taskDefinitionSha256Text));
+        const bool validHash = expectedHash.size() == 64
+            && std::all_of(expectedHash.begin(), expectedHash.end(), [](const wchar_t ch) {
+                return (ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f');
+            });
+        if (!IsValidScheduledTaskLocator(taskPath, taskName) || !validHash)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"计划任务定位器无效。"));
+        }
+        const ProcessOutput output = RunPowerShellScript(
+            BuildSetTaskEnabledPowerShellScript(taskPath, taskName, expectedHash, enabled),
+            20000);
+        const std::string stdoutText = StripUtf8Bom(ks::str::TrimCopy(output.stdoutText));
+        if (output.started && output.finished && output.exitCode == 0
+            && stdoutText.find("KSWORD_NO_CHANGE") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::NoChange,
+                true,
+                false,
+                ERROR_SUCCESS,
+                FromWide(L"计划任务已经处于请求的状态。"));
+        }
+        if (output.started && output.finished && output.exitCode == 0
+            && stdoutText.find("KSWORD_CHANGED") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Success,
+                true,
+                true,
+                ERROR_SUCCESS,
+                FromWide(L"Windows 任务计划程序已变更并校验任务状态。"));
+        }
+        if (stdoutText.find("KSWORD_STALE") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::Conflict,
+                false,
+                false,
+                ERROR_REVISION_MISMATCH,
+                FromWide(L"计划任务定义已在枚举后变化；未修改陈旧对象。"));
+        }
+        if (stdoutText.find("KSWORD_UNSUPPORTED") != std::string::npos)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::ProtectedEntry,
+                false,
+                false,
+                ERROR_NOT_SUPPORTED,
+                FromWide(L"计划任务已不再包含 Boot 或 Logon 触发器，状态修改已受保护。"));
+        }
+
+        const bool accessDenied =
+            stdoutText.find("KSWORD_ACCESS_DENIED") != std::string::npos;
+        const DWORD errorCode = accessDenied
+            ? ERROR_ACCESS_DENIED
+            : ProcessFailureCode(output);
+        ks::startup::ActionResult failure = MakeActionResult(
+            accessDenied
+                ? ks::startup::StartupActionStatus::AccessDenied
+                : ks::startup::StartupActionStatus::ProcessFailed,
+            false,
+            false,
+            errorCode,
+            FromWide(L"计划任务状态变更失败。"));
+        const bool mutationAttempted =
+            stdoutText.find("KSWORD_MUTATION_ATTEMPTED") != std::string::npos;
+        const bool originalEnabled =
+            stdoutText.find("KSWORD_ORIGINAL_ENABLED") != std::string::npos;
+        const bool originalDisabled =
+            stdoutText.find("KSWORD_ORIGINAL_DISABLED") != std::string::npos;
+        if (!mutationAttempted || originalEnabled == originalDisabled)
+        {
+            return failure;
+        }
+
+        const ProcessOutput recoveryOutput = RunPowerShellScript(
+            BuildRecoverTaskStatePowerShellScript(
+                taskPath,
+                taskName,
+                expectedHash,
+                originalEnabled),
+            20000);
+        const std::string recoveryText =
+            StripUtf8Bom(ks::str::TrimCopy(recoveryOutput.stdoutText));
+        failure.messageText =
+            FromWide(L"计划任务状态变更失败；后端已使用独立进程重查原状态。");
+        if (recoveryOutput.started && recoveryOutput.finished
+            && recoveryOutput.exitCode == 0
+            && recoveryText.find("KSWORD_ROLLBACK_NOT_NEEDED") != std::string::npos)
+        {
+            return failure;
+        }
+        failure.rollbackAttempted = true;
+        failure.rollbackSucceeded = recoveryOutput.started
+            && recoveryOutput.finished
+            && recoveryOutput.exitCode == 0
+            && recoveryText.find("KSWORD_ROLLBACK_OK") != std::string::npos;
+        if (!failure.rollbackSucceeded)
+        {
+            failure.status = ks::startup::StartupActionStatus::RollbackFailed;
+            failure.changed = true;
+            failure.errorCode = ProcessFailureCode(recoveryOutput);
+            failure.messageText =
+                FromWide(L"计划任务状态变更失败，且独立恢复无法确认已回到原状态。");
+        }
+        return failure;
     }
 }
 
@@ -2108,6 +4599,8 @@ namespace ks::startup
         }
         AppendRunOnceExEntries(entries);
         AppendStartupFolderEntries(entries);
+        AppendDisabledRegistryRunEntries(entries);
+        AppendDisabledStartupFolderEntries(entries);
         return entries;
     }
 
@@ -2179,6 +4672,11 @@ namespace ks::startup
                 entry.canDelete = false;
                 entry.deleteRegistryTree = false;
                 entry.uniqueIdText = "WINSOCK|" + entry.locationText;
+                ProtectEntry(
+                    entry,
+                    StartupRiskLevel::Critical,
+                    "winsock",
+                    FromWide(L"Winsock 目录项属于系统关键配置，不允许通用修改。"));
                 entries.push_back(std::move(entry));
             }
         }
@@ -2213,6 +4711,11 @@ namespace ks::startup
             errorEntry.sourceTypeText = "WMI-ParseError";
             errorEntry.enabled = false;
             errorEntry.uniqueIdText = "WMI|ParseError";
+            ProtectEntry(
+                errorEntry,
+                StartupRiskLevel::Critical,
+                "wmi",
+                FromWide(L"WMI 枚举失败；合成的错误记录不能修改。"));
             entries.push_back(std::move(errorEntry));
             return entries;
         }
@@ -2237,5 +4740,37 @@ namespace ks::startup
         append(EnumerateWinsockEntries());
         append(EnumerateWmiEntries());
         return entries;
+    }
+
+    ActionResult SetStartupEntryEnabled(const StartupEntry& entry, const bool enabled)
+    {
+        if (entry.isProtected)
+        {
+            return MakeActionResult(
+                StartupActionStatus::ProtectedEntry,
+                false,
+                false,
+                ERROR_ACCESS_DISABLED_BY_POLICY,
+                entry.riskReasonText.empty()
+                    ? FromWide(L"此启动项受保护，不能变更状态。")
+                    : entry.riskReasonText);
+        }
+        switch (entry.actionKind)
+        {
+        case StartupActionKind::RegistryRunValue:
+            return enabled ? EnableRegistryRunEntry(entry) : DisableRegistryRunEntry(entry);
+        case StartupActionKind::StartupFolderFile:
+            return enabled ? EnableStartupFolderEntry(entry) : DisableStartupFolderEntry(entry);
+        case StartupActionKind::ScheduledTask:
+            return SetScheduledTaskEnabled(entry, enabled);
+        case StartupActionKind::None:
+            break;
+        }
+        return MakeActionResult(
+            StartupActionStatus::NotSupported,
+            false,
+            false,
+            ERROR_NOT_SUPPORTED,
+            FromWide(L"此启动项没有可逆的后端操作。"));
     }
 }
