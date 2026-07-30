@@ -3074,7 +3074,8 @@ void WindowDock::initializeUi()
     m_rootLayout->addWidget(m_toolBarWidget, 0);
 
     m_tabWidget = new QTabWidget(this);
-    m_tabWidget->setTabPosition(QTabWidget::West);
+    // 窗口 Dock 的根子页统一放到顶部横排，保留所有现有页面和 currentIndex 状态源。
+    m_tabWidget->setTabPosition(QTabWidget::North);
     m_rootLayout->addWidget(m_tabWidget, 1);
 
     // 配置只读结构化表格：可排序、行选择、内容自适应列宽、末列拉伸。

@@ -1,6 +1,7 @@
 #include "NetworkDock.InternalCommon.h"
 #include "NetworkAuditPage.h"
 #include "NetworkFirewallPage.h"
+#include "../ArkDriverClient/ArkDriverClient.h"
 #include "../PluginHost.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../UI/TableInteractionSupport.h"
@@ -9,6 +10,61 @@
 #include <string>
 
 using namespace network_dock_detail;
+
+namespace
+{
+    // r0WfpIpv4AddressText 作用：
+    // - 把 shared/driver WFP event 的 4 字节网络序 IPv4 转成标准文本；
+    // - 转换失败时返回 0.0.0.0，避免读取协议行以外的字节；
+    // - 返回：可写入 PacketRecord 的 UTF-8 地址。
+    std::string r0WfpIpv4AddressText(const unsigned char addressBytes[4])
+    {
+        char addressBuffer[INET_ADDRSTRLEN] = {};
+        if (addressBytes == nullptr ||
+            InetNtopA(AF_INET, addressBytes, addressBuffer, static_cast<DWORD>(std::size(addressBuffer))) == nullptr)
+        {
+            return std::string("0.0.0.0");
+        }
+        return std::string(addressBuffer);
+    }
+
+    // buildR0WfpAleEventRecord 作用：
+    // - 把真实 R0 WFP ALE IPv4 流授权事件转换为流量监控统一模型；
+    // - 保留驱动 sequence/flags，并明确 total/payload/packetBytes 均不可用；
+    // - 返回：可直接写入 NetworkDock 缓存的无 payload 事件记录。
+    ks::network::PacketRecord buildR0WfpAleEventRecord(
+        const KSWORD_ARK_NETWORK_WFP_EVENT_ROW& eventRow)
+    {
+        constexpr std::uint64_t windowsEpochToUnixEpoch100ns = 116444736000000000ULL;
+        ks::network::PacketRecord packetRecord;
+        packetRecord.captureTimestampMs =
+            eventRow.timestamp100ns >= windowsEpochToUnixEpoch100ns
+            ? (eventRow.timestamp100ns - windowsEpochToUnixEpoch100ns) / 10000ULL
+            : 0ULL;
+        packetRecord.protocol =
+            static_cast<ks::network::PacketTransportProtocol>(eventRow.protocol);
+        packetRecord.direction =
+            eventRow.direction == KSWORD_ARK_NETWORK_DIRECTION_OUTBOUND
+            ? ks::network::PacketDirection::Outbound
+            : ks::network::PacketDirection::Inbound;
+        packetRecord.processId = eventRow.processId;
+        packetRecord.processName = ks::process::GetProcessNameByPID(eventRow.processId);
+        packetRecord.sourceSequenceId = eventRow.sequence;
+        packetRecord.sourceFlags = eventRow.flags;
+        packetRecord.sourceText = "R0-WFP-ALE";
+        packetRecord.wfpAleEventNoPayload = true;
+        packetRecord.localAddress = r0WfpIpv4AddressText(eventRow.localAddress);
+        packetRecord.localPort = eventRow.localPort;
+        packetRecord.remoteAddress = r0WfpIpv4AddressText(eventRow.remoteAddress);
+        packetRecord.remotePort = eventRow.remotePort;
+        packetRecord.totalPacketSize = 0;
+        packetRecord.payloadSize = 0;
+        packetRecord.payloadOffset = 0;
+        packetRecord.packetBytes.clear();
+        return packetRecord;
+    }
+}
+
 void NetworkDock::initializeConnections()
 {
     connect(m_sideTabWidget, &QTabWidget::currentChanged, this, [this](const int /*index*/)
@@ -267,14 +323,19 @@ void NetworkDock::initializeConnections()
             });
     }
 
-    // 连接管理控制连接。
-    connect(m_refreshConnectionButton, &QPushButton::clicked, this, [this]()
+    // 旧连接管理页不再创建；保留实现供回滚，但禁止对空控件建立连接。
+    if (m_refreshConnectionButton != nullptr)
+    {
+        connect(m_refreshConnectionButton, &QPushButton::clicked, this, [this]()
         {
             kLogEvent refreshClickEvent;
             info << refreshClickEvent << "[NetworkDock] 用户触发连接快照手动刷新。" << eol;
             refreshConnectionTables();
         });
-    connect(m_autoRefreshConnectionButton, &QPushButton::toggled, this, [this](const bool checked)
+    }
+    if (m_autoRefreshConnectionButton != nullptr)
+    {
+        connect(m_autoRefreshConnectionButton, &QPushButton::toggled, this, [this](const bool checked)
         {
             if (m_autoRefreshConnectionButton != nullptr)
             {
@@ -295,11 +356,17 @@ void NetworkDock::initializeConnections()
                 << (checked ? "true" : "false")
                 << eol;
         });
-    connect(m_terminateTcpButton, &QPushButton::clicked, this, [this]()
+    }
+    if (m_terminateTcpButton != nullptr)
+    {
+        connect(m_terminateTcpButton, &QPushButton::clicked, this, [this]()
         {
             terminateSelectedTcpConnection();
         });
-    connect(m_clearConnectionPidFilterButton, &QPushButton::clicked, this, [this]()
+    }
+    if (m_clearConnectionPidFilterButton != nullptr)
+    {
+        connect(m_clearConnectionPidFilterButton, &QPushButton::clicked, this, [this]()
         {
             m_connectionPidFilterSet.clear();
             if (m_clearConnectionPidFilterButton != nullptr)
@@ -308,6 +375,7 @@ void NetworkDock::initializeConnections()
             }
             refreshConnectionTables();
         });
+    }
 
     // HTTPS 解析控制连接。
     connect(m_httpsStartProxyButton, &QPushButton::clicked, this, [this]()
@@ -404,12 +472,14 @@ void NetworkDock::initializeConnections()
     // TCP 表右键菜单：
     // - 支持“终止连接、复制行、跟踪此进程、转到进程详细信息”；
     // - “跟踪此进程”语义为写入 PID 过滤并立即应用。
-    connect(
-        m_tcpConnectionTable,
-        &QWidget::customContextMenuRequested,
-        this,
-        [this, parsePidFromConnectionRow, openProcessDetailByPid](const QPoint& position)
-        {
+    if (m_tcpConnectionTable != nullptr)
+    {
+        connect(
+            m_tcpConnectionTable,
+            &QWidget::customContextMenuRequested,
+            this,
+            [this, parsePidFromConnectionRow, openProcessDetailByPid](const QPoint& position)
+            {
             const QModelIndex index = m_tcpConnectionTable->indexAt(position);
             if (!index.isValid())
             {
@@ -499,17 +569,20 @@ void NetworkDock::initializeConnections()
             {
                 return;
             }
-        });
+            });
+    }
 
     // UDP 表右键菜单：
     // - UDP 无标准“按连接终止”API，因此不提供 terminate；
     // - 仍支持复制行、跟踪此进程、转到进程详情。
-    connect(
-        m_udpEndpointTable,
-        &QWidget::customContextMenuRequested,
-        this,
-        [this, parsePidFromConnectionRow, openProcessDetailByPid](const QPoint& position)
-        {
+    if (m_udpEndpointTable != nullptr)
+    {
+        connect(
+            m_udpEndpointTable,
+            &QWidget::customContextMenuRequested,
+            this,
+            [this, parsePidFromConnectionRow, openProcessDetailByPid](const QPoint& position)
+            {
             const QModelIndex index = m_udpEndpointTable->indexAt(position);
             if (!index.isValid())
             {
@@ -593,7 +666,8 @@ void NetworkDock::initializeConnections()
             {
                 return;
             }
-        });
+            });
+    }
 
     // 请求构造控制连接：执行请求、重置表单、模式切换自动调整默认参数。
     connect(m_manualExecuteButton, &QPushButton::clicked, this, [this]()
@@ -1137,20 +1211,16 @@ void NetworkDock::startTrafficMonitor()
         m_droppedPacketCount = 0;
     }
 
-    const bool startIssued = m_trafficService->StartCapture();
-    m_monitorRunning = startIssued && m_trafficService->IsRunning();
-    if (!startIssued || !m_monitorRunning)
+    // 先探测版本化 R0 WFP ALE event IOCTL；只有该真实事件协议失败才回退 R3。
+    // 后台探测失败会自动调用 startR3TrafficMonitor，不需要用户二次点击。
+    const std::uint64_t generation = m_monitorGeneration.fetch_add(1) + 1ULL;
+    m_monitorSource = TrafficMonitorSource::Starting;
+    m_monitorRunning = true;
+    if (m_monitorStatusLabel != nullptr)
     {
-        m_monitorStatusLabel->setText(QStringLiteral("状态：启动失败"));
+        m_monitorStatusLabel->setText(QStringLiteral("状态：正在探测 R0 WFP ALE IPv4 流事件数据源..."));
     }
-    else
-    {
-        // 监控成功启动后才登记时间轴会话：
-        // - 未启动监控的等待时间不进入横轴；
-        // - 多次启动/停止会按活动时长连续拼接。
-        beginPacketTimelineMonitorSession();
-        m_monitorStatusLabel->setText(QStringLiteral("状态：启动中..."));
-    }
+    refreshR0TrafficSnapshotAsync(generation, true);
 
     updateMonitorButtonState();
 
@@ -1171,6 +1241,14 @@ void NetworkDock::stopTrafficMonitor()
         return;
     }
 
+    const TrafficMonitorSource sourceBeforeStop = m_monitorSource;
+    m_monitorGeneration.fetch_add(1);
+    m_monitorSource = TrafficMonitorSource::Stopped;
+    if (m_r0TrafficRefreshTimer != nullptr)
+    {
+        m_r0TrafficRefreshTimer->stop();
+    }
+
     // UI 立即切换到“停止中”，给用户及时反馈，避免误判“按钮没反应”。
     m_monitorRunning = false;
     if (m_monitorStatusLabel != nullptr)
@@ -1178,6 +1256,22 @@ void NetworkDock::stopTrafficMonitor()
         m_monitorStatusLabel->setText(QStringLiteral("状态：停止中..."));
     }
     updateMonitorButtonState();
+
+    // R0/探测模式没有 R3 抓包线程需要 join，可在 UI 线程立即完成停止。
+    if (sourceBeforeStop != TrafficMonitorSource::R3 || !m_trafficService->IsRunning())
+    {
+        m_monitorStopInProgress.store(false);
+        if (m_packetTimelineSessionActive)
+        {
+            endPacketTimelineMonitorSession();
+        }
+        if (m_monitorStatusLabel != nullptr)
+        {
+            m_monitorStatusLabel->setText(QStringLiteral("状态：已停止（来源：无）"));
+        }
+        updateMonitorButtonState();
+        return;
+    }
 
     // 先回收上一次 stop 线程对象，确保本轮只保留一个 stop worker。
     if (m_monitorStopThread != nullptr && m_monitorStopThread->joinable())
@@ -1209,6 +1303,7 @@ void NetworkDock::stopTrafficMonitor()
             guardThis->m_monitorStopThread.reset();
             guardThis->m_monitorStopInProgress.store(false);
             guardThis->m_monitorRunning = false;
+            guardThis->m_monitorSource = TrafficMonitorSource::Stopped;
             guardThis->endPacketTimelineMonitorSession();
             if (guardThis->m_monitorStatusLabel != nullptr)
             {
@@ -1223,6 +1318,180 @@ void NetworkDock::stopTrafficMonitor()
 
     kLogEvent stopEvent;
     info << stopEvent << "[NetworkDock] 用户触发网络监控停止（异步）。" << eol;
+}
+
+void NetworkDock::refreshR0TrafficSnapshotAsync(
+    const std::uint64_t generation,
+    const bool initialProbe)
+{
+    if (m_r0TrafficRefreshPending.exchange(true))
+    {
+        // 用户可能在上一代 R0 查询尚未返回时停止并立即重启。
+        // 初始探测不能静默丢弃，否则新一代会永久停在 Starting 状态。
+        if (initialProbe)
+        {
+            QTimer::singleShot(120, this, [this, generation]()
+            {
+                if (m_monitorGeneration.load() == generation
+                    && m_monitorSource == TrafficMonitorSource::Starting)
+                {
+                    refreshR0TrafficSnapshotAsync(generation, true);
+                }
+            });
+        }
+        return;
+    }
+
+    const std::uint64_t afterSequence = m_r0LastEventSequence;
+    QPointer<NetworkDock> safeThis(this);
+    std::thread([safeThis, generation, initialProbe, afterSequence]()
+    {
+        const ksword::ark::DriverClient driverClient;
+        const ksword::ark::NetworkWfpEventResult eventResult =
+            driverClient.queryNetworkWfpEvents(
+                afterSequence,
+                KSWORD_ARK_NETWORK_WFP_EVENT_MAX_REQUESTED_ROWS);
+        const bool r0Usable =
+            eventResult.io.ok &&
+            !eventResult.unsupported &&
+            eventResult.status == KSWORD_ARK_NETWORK_STATUS_APPLIED;
+
+        std::size_t skippedProtocolCount = 0U;
+        std::vector<ks::network::PacketRecord> eventRecords;
+        if (r0Usable)
+        {
+            eventRecords.reserve(eventResult.entries.size());
+            for (const KSWORD_ARK_NETWORK_WFP_EVENT_ROW& eventRow : eventResult.entries)
+            {
+                if (eventRow.protocol != KSWORD_ARK_NETWORK_PROTOCOL_TCP &&
+                    eventRow.protocol != KSWORD_ARK_NETWORK_PROTOCOL_UDP)
+                {
+                    ++skippedProtocolCount;
+                    continue;
+                }
+                eventRecords.push_back(buildR0WfpAleEventRecord(eventRow));
+            }
+        }
+
+        const QString diagnosticText = r0Usable
+            ? QStringLiteral("新增=%1/%2，cursor=%3，ring覆盖=%4，cursor缺口=%5，跳过非TCP/UDP=%6")
+                .arg(static_cast<qulonglong>(eventRecords.size()))
+                .arg(eventResult.returnedCount)
+                .arg(static_cast<qulonglong>(eventResult.nextSequence))
+                .arg(static_cast<qulonglong>(eventResult.droppedEventCount))
+                .arg(static_cast<qulonglong>(eventResult.cursorGapCount))
+                .arg(static_cast<qulonglong>(skippedProtocolCount))
+            : QStringLiteral("event=%1；status=%2；lastStatus=0x%3")
+                .arg(QString::fromUtf8(eventResult.io.message.c_str()))
+                .arg(eventResult.status)
+                .arg(static_cast<quint32>(eventResult.lastStatus), 8, 16, QChar('0'));
+
+        if (safeThis.isNull())
+        {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            safeThis.data(),
+            [safeThis,
+                generation,
+                initialProbe,
+                r0Usable,
+                diagnosticText,
+                nextSequence = eventResult.nextSequence,
+                droppedEventCount = eventResult.droppedEventCount,
+                eventRecords = std::move(eventRecords)]() mutable
+            {
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+                safeThis->m_r0TrafficRefreshPending.store(false);
+                if (safeThis->m_monitorGeneration.load() != generation
+                    || safeThis->m_monitorSource == TrafficMonitorSource::Stopped)
+                {
+                    return;
+                }
+
+                if (!r0Usable)
+                {
+                    safeThis->startR3TrafficMonitor(diagnosticText);
+                    return;
+                }
+
+                if (initialProbe)
+                {
+                    safeThis->m_monitorSource = TrafficMonitorSource::R0;
+                    safeThis->m_monitorRunning = true;
+                    if (!safeThis->m_packetTimelineSessionActive)
+                    {
+                        safeThis->beginPacketTimelineMonitorSession();
+                    }
+                    if (safeThis->m_r0TrafficRefreshTimer != nullptr)
+                    {
+                        safeThis->m_r0TrafficRefreshTimer->start();
+                    }
+                }
+
+                safeThis->m_r0LastEventSequence = nextSequence;
+                safeThis->m_r0LastDroppedEventCount = droppedEventCount;
+                for (ks::network::PacketRecord& packetRecord : eventRecords)
+                {
+                    packetRecord.sequenceId = safeThis->m_r0SyntheticSequence++;
+                    safeThis->onPacketCaptured(packetRecord);
+                }
+
+                if (safeThis->m_monitorStatusLabel != nullptr)
+                {
+                    safeThis->m_monitorStatusLabel->setText(
+                        QStringLiteral("状态：运行中；来源：R0 WFP ALE IPv4 流事件（无逐包长度/报文字节/payload；%1）")
+                            .arg(diagnosticText));
+                }
+                safeThis->updateMonitorButtonState();
+            },
+            Qt::QueuedConnection);
+    }).detach();
+}
+
+void NetworkDock::startR3TrafficMonitor(const QString& fallbackReason)
+{
+    if (m_monitorSource == TrafficMonitorSource::Stopped || m_trafficService == nullptr)
+    {
+        return;
+    }
+    if (m_r0TrafficRefreshTimer != nullptr)
+    {
+        m_r0TrafficRefreshTimer->stop();
+    }
+    m_monitorSource = TrafficMonitorSource::R3;
+
+    const bool startIssued = m_trafficService->StartCapture();
+    m_monitorRunning = startIssued && m_trafficService->IsRunning();
+    if (!m_monitorRunning)
+    {
+        m_monitorSource = TrafficMonitorSource::Stopped;
+        if (m_packetTimelineSessionActive)
+        {
+            endPacketTimelineMonitorSession();
+        }
+        if (m_monitorStatusLabel != nullptr)
+        {
+            m_monitorStatusLabel->setText(QStringLiteral("状态：R0 不可用，R3 回退启动失败"));
+        }
+    }
+    else
+    {
+        if (!m_packetTimelineSessionActive)
+        {
+            beginPacketTimelineMonitorSession();
+        }
+        if (m_monitorStatusLabel != nullptr)
+        {
+            m_monitorStatusLabel->setText(
+                QStringLiteral("状态：运行中；来源：R3 用户态抓包（R0 不可用：%1）")
+                    .arg(fallbackReason));
+        }
+    }
+    updateMonitorButtonState();
 }
 
 void NetworkDock::updateMonitorButtonState()

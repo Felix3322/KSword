@@ -563,6 +563,12 @@ private:
     // - 作用：创建“SSDT 遍历”页。
     void initializeSsdtTab();
 
+    // initializeIoManagementTab：
+    // - 输入：无；
+    // - 处理：创建 I/O 管理主页面及 SSDT、ShadowSSDT、IDT、GDT、IOCTLS 横向子页；
+    // - 返回：无。
+    void initializeIoManagementTab();
+
     // initializeDynDataTab：
     // - 作用：创建“动态偏移”诊断页。
     void initializeDynDataTab();
@@ -616,6 +622,12 @@ private:
     // - 作用：按需初始化指定 Tab 的 UI 与首次数据加载。
     // - 参数 tabIndex：顶层 Tab 索引。
     void ensureTabInitialized(int tabIndex);
+
+    // ensureIoManagementTabInitialized：
+    // - 输入 innerTabIndex：I/O 管理内部横向子页索引；
+    // - 处理：仅为 SSDT/ShadowSSDT 启动原有惰性 UI 与首次刷新；
+    // - 返回：无，IDT/GDT 自行在首次显示时加载，IOCTLS 无后台查询。
+    void ensureIoManagementTabInitialized(int innerTabIndex);
 
     // ==================== 异步刷新 ====================
     // refreshObjectNamespaceAsync：
@@ -949,16 +961,19 @@ private:
     QLabel* m_tabInitializingStatusLabel = nullptr;       // m_tabInitializingStatusLabel：Tab 初始化状态提示文字。
     int m_objectNamespaceTabIndex = -1;  // m_objectNamespaceTabIndex：对象命名空间页签索引。
     int m_atomTabIndex = -1;             // m_atomTabIndex：原子表页签索引。
-    int m_ssdtTabIndex = -1;             // m_ssdtTabIndex：SSDT 页签索引。
+    int m_ioManagementTabIndex = -1;     // m_ioManagementTabIndex：I/O 管理顶层页签索引。
+    int m_ioSsdtTabIndex = -1;           // m_ioSsdtTabIndex：I/O 管理内部 SSDT 子页索引。
+    int m_ioShadowSsdtTabIndex = -1;     // m_ioShadowSsdtTabIndex：内部 ShadowSSDT 子页索引。
+    int m_ioIdtTabIndex = -1;            // m_ioIdtTabIndex：内部 IDT 子页索引。
+    int m_ioGdtTabIndex = -1;            // m_ioGdtTabIndex：内部 GDT 子页索引。
+    int m_ioIoctlTabIndex = -1;          // m_ioIoctlTabIndex：内部 IOCTLS 解码器子页索引。
     int m_dynDataTabIndex = -1;          // m_dynDataTabIndex：动态偏移页签索引。
     int m_driverStatusTabIndex = -1;      // m_driverStatusTabIndex：驱动状态页签索引。
     int m_ntQueryTabIndex = -1;          // m_ntQueryTabIndex：历史 NtQuery 页签索引。
     int m_callbackTabIndex = -1;         // m_callbackTabIndex：驱动回调页签索引。
     int m_callbackEnumTabIndex = -1;     // m_callbackEnumTabIndex：回调遍历页签索引。
-    int m_shadowSsdtTabIndex = -1;       // m_shadowSsdtTabIndex：SSSDT 解析页签索引。
     int m_inlineHookTabIndex = -1;       // m_inlineHookTabIndex：Inline Hook 页签索引。
     int m_iatEatHookTabIndex = -1;       // m_iatEatHookTabIndex：IAT/EAT Hook 页签索引。
-    int m_descriptorTableTabIndex = -1;  // m_descriptorTableTabIndex：IDT/GDT 描述符页签索引。
     int m_hvmTabIndex = -1;              // m_hvmTabIndex：VT-x/EPT 生命周期与证据页签索引。
     int m_timerDpcTabIndex = -1;          // m_timerDpcTabIndex：KTIMER/DPC 页签索引。
     int m_crossViewTabIndex = -1;        // m_crossViewTabIndex：CID/交叉视图页签索引。
@@ -1011,7 +1026,12 @@ private:
     QTableWidget* m_ntQueryTable = nullptr;            // m_ntQueryTable：历史 NtQuery 结果表。
     CodeEditorWidget* m_ntQueryDetailEditor = nullptr; // m_ntQueryDetailEditor：历史 NtQuery 详情编辑器（只读）。
 
-    // ==================== SSDT 页 ====================
+    // ==================== I/O 管理聚合页 ====================
+    QWidget* m_ioManagementPage = nullptr;              // m_ioManagementPage：I/O 管理顶层页容器。
+    QVBoxLayout* m_ioManagementLayout = nullptr;         // m_ioManagementLayout：I/O 管理根布局。
+    QTabWidget* m_ioManagementInnerTabWidget = nullptr;  // m_ioManagementInnerTabWidget：横向五子页容器。
+
+    // ==================== SSDT 子页 ====================
     QWidget* m_ssdtPage = nullptr;                     // m_ssdtPage：SSDT 页容器。
     QVBoxLayout* m_ssdtLayout = nullptr;               // m_ssdtLayout：SSDT 页布局。
     QHBoxLayout* m_ssdtToolLayout = nullptr;           // m_ssdtToolLayout：SSDT 工具栏布局。
@@ -1022,7 +1042,7 @@ private:
     QTableWidget* m_ssdtTable = nullptr;               // m_ssdtTable：SSDT 结果表。
     CodeEditorWidget* m_ssdtDetailEditor = nullptr;    // m_ssdtDetailEditor：SSDT 详情编辑器（只读）。
 
-    // ==================== SSSDT 解析页 ====================
+    // ==================== ShadowSSDT 子页 ====================
     QWidget* m_shadowSsdtPage = nullptr;               // m_shadowSsdtPage：SSSDT 页容器。
     QVBoxLayout* m_shadowSsdtLayout = nullptr;         // m_shadowSsdtLayout：SSSDT 页布局。
     QHBoxLayout* m_shadowSsdtToolLayout = nullptr;     // m_shadowSsdtToolLayout：SSSDT 工具栏布局。

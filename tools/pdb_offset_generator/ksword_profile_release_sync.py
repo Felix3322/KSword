@@ -92,6 +92,7 @@ KERNEL_GLOBAL_RVA_FIELD_IDS = {
     "PiDDBLock": 231,
     "KeServiceDescriptorTableShadow": 86,
     "MmLastUnloadedDriver": 87,
+    "PiDDBLock": 231,
 }
 
 CALLBACK_STRUCT_OFFSET_FIELD_IDS = {
@@ -391,6 +392,7 @@ V4_ITEM_KIND_NAMES = set(V4_ITEM_KIND_IDS)
 V4_CORE_GROUP_ID = 1
 V4_TIMER_GROUP_ID = 2
 V4_FLTMGR_MINIFILTER_GROUP_ID = 3
+V4_CI_KERNEL_HASH_GROUP_ID = 4
 V4_SPECIAL_ITEM_IDS = {
     "EthActiveExWorker": 1001,
     "KprcbTimerTable": 1002,
@@ -410,11 +412,25 @@ V4_SPECIAL_ITEM_IDS = {
     "KtimerTypeSize": 1016,
     "KdpcTypeSize": 1017,
     "FltFilterOperations": 1101,
+    "CiKernelHashBucketList": 1201,
+    "CiHashCacheLock": 1202,
+    "CiHashEntryNext": 1203,
+    "CiHashEntryDriverName": 1204,
+    "CiHashEntryTimeDateStamp": 1205,
+    "CiHashEntryLoadStatus": 1206,
+    "CiHashEntryImageBase": 1207,
+    "CiHashEntryImageSize": 1208,
+    "CiHashEntryTypeSize": 1209,
 }
 V4_ITEM_IDS_BY_NAME = {**KNOWN_FIELD_IDS, **V4_SPECIAL_ITEM_IDS}
 V4_SPECIAL_ITEM_GROUPS = {
-    **{name: V4_TIMER_GROUP_ID for name in V4_SPECIAL_ITEM_IDS if name != "FltFilterOperations"},
+    **{
+        name: V4_TIMER_GROUP_ID
+        for name in V4_SPECIAL_ITEM_IDS
+        if name != "FltFilterOperations" and not name.startswith("Ci")
+    },
     "FltFilterOperations": V4_FLTMGR_MINIFILTER_GROUP_ID,
+    **{name: V4_CI_KERNEL_HASH_GROUP_ID for name in V4_SPECIAL_ITEM_IDS if name.startswith("Ci")},
 }
 
 
@@ -954,6 +970,9 @@ def validate_v4_items(path: Path, data: dict[str, Any], state: ValidationState) 
         if kind_name == "StructOffset" and (value == 0xFFFFFFFF or value > KSW_DYN_PROFILE_OFFSET_MAX):
             reject(state, path, f"v4_struct_offset_invalid:{name}")
             return None
+        if kind_name in {"GlobalRva", "ListHeadGlobal"} and (value == 0 or value > KSW_DYN_PROFILE_GLOBAL_RVA_MAX):
+            reject(state, path, f"v4_global_rva_invalid:{name}")
+            return None
         if kind_name == "TypeSize" and (value == 0 or value > KSW_DYN_PROFILE_OFFSET_MAX):
             reject(state, path, f"v4_type_size_invalid:{name}")
             return None
@@ -1044,7 +1063,7 @@ def validate_profile(path: Path, state: ValidationState) -> ProfileRecord | None
         return None
 
     module_class = str(module.get("class", "")).strip().lower()
-    if module_class not in {"ntoskrnl", "ntkrla57", "fltmgr"}:
+    if module_class not in {"ntoskrnl", "ntkrla57", "fltmgr", "ci"}:
         reject(state, path, f"unsupported_module_class:{module_class}")
         return None
 
@@ -1186,6 +1205,8 @@ def module_class_id_from_text(module_class: str) -> int | None:
         return 2
     if normalized in {"fltmgr", "fltmgr.sys"}:
         return 48
+    if normalized in {"ci", "ci.dll", "ci.sys"}:
+        return 65
     return None
 
 
@@ -1240,7 +1261,9 @@ def build_pack_typed_items(record: ProfileRecord, pack_version: int) -> list[dic
 
 def build_pack_v4_items(record: ProfileRecord) -> list[dict[str, Any]]:
     """Convert legacy typed items plus v4-only items to stable wire records."""
-    source_typed_items = record.typed_items or build_pack_typed_items(record, KSW_PACK_VERSION_V3)
+    source_typed_items: list[dict[str, Any]] = []
+    if record.identity.module_class in {"ntoskrnl", "ntkrla57"}:
+        source_typed_items = record.typed_items or build_pack_typed_items(record, KSW_PACK_VERSION_V3)
     packed_items: list[dict[str, Any]] = []
     seen_item_ids: set[int] = set()
     for item in source_typed_items:
@@ -1299,6 +1322,7 @@ def build_pack_v4_capability_groups(items: list[dict[str, Any]]) -> list[dict[st
         V4_CORE_GROUP_ID: "ntos.core",
         V4_TIMER_GROUP_ID: "timer.dpc",
         V4_FLTMGR_MINIFILTER_GROUP_ID: "fltmgr.minifilter",
+        V4_CI_KERNEL_HASH_GROUP_ID: "ci.kernel_hash",
     }
     groups: list[dict[str, Any]] = []
     for group_id in sorted({int(item["capabilityGroupId"]) for item in items}):

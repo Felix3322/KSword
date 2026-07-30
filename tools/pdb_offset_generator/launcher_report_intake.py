@@ -35,6 +35,7 @@ PROFILE_CLASS_NAMES = {
     0: "ntoskrnl",
     1: "ntkrla57",
     48: "fltmgr",
+    65: "ci",
 }
 
 

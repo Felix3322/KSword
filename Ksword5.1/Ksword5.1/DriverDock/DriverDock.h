@@ -25,6 +25,7 @@
 
 // Qt 前置声明：减少头文件编译耦合。
 class QCheckBox;
+class QButtonGroup;
 class QComboBox;
 class CodeEditorWidget;
 class QColor;
@@ -34,6 +35,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QRadioButton;
 class QShowEvent;
 class QSplitter;
 class QSpinBox;
@@ -179,9 +181,9 @@ private:
     void initializeIntegrityTab();
 
     // initializeUnloadedPiddbTab：
-    // - 构建只读 Unloaded / PiDDB 证据页；
-    // - 主要展示 OptionalGlobal / DynData / PDB 可用性证据；
-    // - 不做删除、清理或绕过动作。
+    // - 按 issue 截图构建“已卸载驱动”页；
+    // - 支持 MmUnloadedDrivers / PiDDBCacheTable / g_KernelHashBucketList 三来源；
+    // - 查询/过滤/详情保持只读；PiDDB 来源另提供强确认的精确表项管理动作。
     void initializeUnloadedPiddbTab();
 
     // initializeConnections：
@@ -257,12 +259,36 @@ private:
     // - 返回：无。
     void rebuildModuleCrossViewTable();
 
+    // refreshUnloadedDriversAsync：
+    // - 作用：后台调用 ArkDriverClient 查询当前选中的已卸载驱动来源；
+    // - 处理逻辑：来源切换或刷新按钮触发，旧 ticket 结果不会覆盖新来源；
+    // - 返回：无，结果回投 UI 线程。
+    void refreshUnloadedDriversAsync();
+
+    // applyUnloadedDriverQueryResult：
+    // - 输入：查询 ticket 与 ArkDriverClient 统一结果；
+    // - 处理逻辑：校验 ticket、更新缓存/状态并重绘过滤视图；
+    // - 返回：无。
+    void applyUnloadedDriverQueryResult(
+        std::uint64_t ticket,
+        ksword::ark::UnloadedDriverQueryResult result);
+
     // rebuildUnloadedPiddbTable：
-    // - 作用：按当前 Driver Integrity 缓存重绘 Unloaded / PiDDB 证据表；
-    // - 处理逻辑：只显示 OptionalGlobal 相关证据；
+    // - 作用：按当前来源缓存、字段下拉框、关键词和正则开关重绘表格；
+    // - 处理逻辑：只做本地过滤，不重新访问驱动；
     // - 返回：无。
     void rebuildUnloadedPiddbTable();
-    void refreshPiDdbAsync();
+
+    // selectedPiDdbEntryIdentity：
+    // - 作用：把截图页当前选中的 PiDDB 统一行转换为删除协议所需的精确身份；
+    // - 处理逻辑：同时校验当前来源、查询状态、缓存索引和必需字段；
+    // - 返回：仅在所选行可安全进入 R0 预检时返回 true。
+    bool selectedPiDdbEntryIdentity(ksword::ark::PiDdbEntry* identity) const;
+
+    // deleteSelectedPiDdbEntry：
+    // - 作用：对当前选中的 PiDDB 行执行精确身份预检和强确认删除；
+    // - 处理逻辑：复用 R0 preflight、固定短语确认和删除后同锁复核；
+    // - 返回：无；成功后重新查询当前 PiDDB 来源。
     void deleteSelectedPiDdbEntry();
 
     // showSelectedDriverIntegrityDetail：
@@ -272,14 +298,14 @@ private:
     void showSelectedDriverIntegrityDetail();
 
     // showUnloadedPiddbContextMenu：
-    // - 输入：Unloaded / PiDDB 表格内的局部坐标；
-    // - 处理逻辑：弹出复制/详情菜单；精确 PiDDB 行可进入安全门控删除流程；
+    // - 输入：已卸载驱动表格内的局部坐标；
+    // - 处理逻辑：弹出详情/复制/刷新菜单，不提供删除或清理动作；
     // - 返回：无，用户选择后执行本地 UI 操作。
     void showUnloadedPiddbContextMenu(const QPoint& localPosition);
 
     // showSelectedUnloadedPiddbDetailDialog：
-    // - 输入：无，读取当前选中的 Unloaded / PiDDB 表格行；
-    // - 处理逻辑：用缓存索引展开完整 Driver Integrity 证据，并放入 CodeEditorWidget 弹窗；
+    // - 输入：无，读取当前选中的已卸载驱动表格行；
+    // - 处理逻辑：用缓存索引展开原始来源字段，并放入 CodeEditorWidget 弹窗；
     // - 返回：无，弹窗关闭后不修改任何 R0/R3 状态。
     void showSelectedUnloadedPiddbDetailDialog();
 
@@ -310,10 +336,27 @@ private:
     // - 结果写入模块证据详情区，不调用 WinTrust。
     void querySelectedModuleKernelSignature();
 
+    // dumpSelectedModuleMemory：
+    // - 输入为进入右键菜单前捕获的模块名、路径和基址快照；
+    // - 由 R0 校验已加载模块身份与映像大小；
+    // - 后台分页读取内核映像，只在完整成功后以不覆盖的原子重命名提交用户所选文件。
+    void dumpSelectedModuleMemory(
+        const QString& moduleName,
+        const QString& rawPath,
+        std::uint64_t moduleBase);
+
     // stopDriverServiceFromServiceRow：
     // - 从服务列表选中行读取 SCM 服务名并通过 ControlService(SERVICE_CONTROL_STOP) 停止；
     // - 不调用 R0 DriverObject 强卸载，避免对活动驱动执行不安全强拆。
     void stopDriverServiceFromServiceRow(int rowIndex);
+
+    // scUnloadAndCleanupDriver：
+    // - 输入为进入右键菜单前捕获的不可变 SCM 服务名与规范化驱动路径；
+    // - 严格等待 SERVICE_STOPPED，停后再次验证配置路径和独占引用；
+    // - 仅在 DeleteService 成功后删除驱动文件，任一前置门槛失败均不触碰注册表或文件。
+    void scUnloadAndCleanupDriver(
+        const QString& serviceName,
+        const QString& normalizedBinaryPath);
 
     // forceUnloadDriverFromServiceRow：
     // - 将当前服务名规范化为 \Driver\Name 并调用 ArkDriverClient；
@@ -501,6 +544,8 @@ private:
     QLabel* m_moduleEvidenceStatusLabel = nullptr; // 模块证据聚合状态标签。
     bool m_moduleEvidenceQuerying = false;         // 模块证据后台查询中标记。
     std::uint64_t m_moduleEvidenceQueryTicket = 0; // 模块证据查询序号。
+    bool m_moduleDumpRunning = false;              // 模块 R0 Dump 后台任务运行标记。
+    bool m_scCleanupRunning = false;                // SCM 卸载并清理文件/服务注册后台任务标记。
 
     // ========================= 页签2：驱动操作 =========================
     QWidget* m_operatePage = nullptr;                 // 操作页容器。
@@ -583,18 +628,27 @@ private:
     bool m_integrityQuerying = false;                 // 完整性查询中标记。
     std::uint64_t m_integrityQueryTicket = 0;         // 完整性查询序号。
 
-    // ========================= 页签6：Unloaded / PiDDB =========================
-    QWidget* m_unloadedPiddbPage = nullptr;           // Unloaded / PiDDB 页容器。
-    QVBoxLayout* m_unloadedPiddbLayout = nullptr;     // Unloaded / PiDDB 主布局。
-    QHBoxLayout* m_unloadedPiddbToolLayout = nullptr; // Unloaded / PiDDB 工具栏布局。
-    QPushButton* m_unloadedPiddbRefreshButton = nullptr; // 刷新按钮。
-    QPushButton* m_unloadedPiddbDeleteButton = nullptr; // 删除精确 PiDDB 表项按钮。
-    QLineEdit* m_unloadedPiddbFilterEdit = nullptr;   // 关键词过滤输入框。
-    QCheckBox* m_unloadedPiddbRiskOnlyCheck = nullptr; // 仅显示风险/降级证据。
-    QLabel* m_unloadedPiddbStatusLabel = nullptr;     // 状态标签。
-    QTableWidget* m_unloadedPiddbTable = nullptr;     // Unloaded / PiDDB 表。
-    bool m_piddbQuerying = false;
-    std::uint64_t m_piddbQueryTicket = 0;
+    // ========================= 页签6：已卸载驱动 =========================
+    QWidget* m_unloadedPiddbPage = nullptr;           // 已卸载驱动页容器。
+    QVBoxLayout* m_unloadedPiddbLayout = nullptr;     // 已卸载驱动主布局。
+    QHBoxLayout* m_unloadedPiddbSourceLayout = nullptr; // 三来源单选布局。
+    QHBoxLayout* m_unloadedPiddbFilterLayout = nullptr; // 字段/关键词/正则/数量布局。
+    QPushButton* m_unloadedPiddbRefreshButton = nullptr; // 重新查询当前来源按钮。
+    QPushButton* m_unloadedPiddbDeleteButton = nullptr; // 仅精确 PiDDB 行可用的强确认管理按钮。
+    QButtonGroup* m_unloadedPiddbSourceGroup = nullptr; // 三来源互斥组。
+    QRadioButton* m_unloadedPiddbMmSourceRadio = nullptr; // MmUnloadedDrivers 来源。
+    QRadioButton* m_unloadedPiddbPiDdbSourceRadio = nullptr; // PiDDBCacheTable 来源。
+    QRadioButton* m_unloadedPiddbCiSourceRadio = nullptr; // g_KernelHashBucketList 来源。
+    QComboBox* m_unloadedPiddbFieldCombo = nullptr;   // 过滤字段下拉框。
+    QLineEdit* m_unloadedPiddbFilterEdit = nullptr;   // 关键词或正则输入框。
+    QCheckBox* m_unloadedPiddbRegexCheck = nullptr;   // 是否使用正则表达式。
+    QLabel* m_unloadedPiddbCountLabel = nullptr;      // 当前可见行数量。
+    QLabel* m_unloadedPiddbStatusLabel = nullptr;     // 当前来源查询状态。
+    QTableWidget* m_unloadedPiddbTable = nullptr;     // 六列已卸载驱动表。
+    ksword::ark::UnloadedDriverQueryResult m_lastUnloadedDriverResult; // 最近查询元信息。
+    std::vector<ksword::ark::UnloadedDriverEntry> m_unloadedDriverCache; // 当前来源原始行。
+    bool m_unloadedDriverQuerying = false;            // 后台查询中标记。
+    std::uint64_t m_unloadedDriverQueryTicket = 0;    // 来源切换/查询序号。
 
     // ========================= 数据缓存 =========================
     std::vector<DriverServiceRecord> m_driverServiceCache;      // 驱动服务缓存。
@@ -603,8 +657,6 @@ private:
     ksword::ark::DriverObjectQueryResult m_lastDriverObjectQueryResult; // 最近一次 DriverObject 查询结果缓存。
     std::vector<ksword::ark::DriverIntegrityEvidenceEntry> m_driverIntegrityCache; // 驱动完整性证据缓存。
     ksword::ark::DriverIntegrityResult m_lastDriverIntegrityResult; // 最近一次完整性查询元信息。
-    ksword::ark::PiDdbQueryResult m_lastPiDdbQueryResult;
-    std::vector<ksword::ark::PiDdbEntry> m_piddbCache;
     bool m_hasDriverObjectQueryResult = false;          // 是否已有 DriverObject 查询结果可回填。
     bool m_initialRefreshDone = false;                          // 首次显示时是否已完成首轮刷新。
 

@@ -19,6 +19,7 @@
 #define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_UDP_ENDPOINTS 0x8A1UL
 #define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_WFP_INVENTORY 0x8A2UL
 #define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_NDIS_CHAIN    0x8A3UL
+#define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_WFP_EVENTS    0x8A9UL
 
 #define IOCTL_KSWORD_ARK_NETWORK_SET_RULES \
     CTL_CODE( \
@@ -62,6 +63,13 @@
         METHOD_BUFFERED, \
         FILE_ANY_ACCESS)
 
+#define IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_EVENTS \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_WFP_EVENTS, \
+        METHOD_BUFFERED, \
+        FILE_ANY_ACCESS)
+
 #define KSWORD_ARK_NETWORK_ACTION_DISABLE 0UL
 #define KSWORD_ARK_NETWORK_ACTION_REPLACE 1UL
 #define KSWORD_ARK_NETWORK_ACTION_CLEAR   2UL
@@ -98,6 +106,22 @@
 
 #define KSWORD_ARK_NETWORK_MAX_RULES 32UL
 #define KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS 1024UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_MAX_REQUESTED_ROWS 512UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_DEFAULT_REQUESTED_ROWS 256UL
+
+#define KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_FLAG_NONE 0x00000000UL
+
+#define KSWORD_ARK_NETWORK_WFP_EVENT_RESPONSE_FLAG_CURSOR_GAP 0x00000001UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_RESPONSE_FLAG_TRUNCATED  0x00000002UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_RESPONSE_FLAG_CURSOR_RESET 0x00000004UL
+
+#define KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_NO_PAYLOAD             0x00000001UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_BLOCKED                0x00000002UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_ACTION_WRITE_UNAVAILABLE 0x00000004UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_ALE_CONNECT            0x00000008UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_ALE_RECV_ACCEPT        0x00000010UL
+#define KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_IPV4                   0x00000020UL
 
 #define KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_IPV4 0x00000001UL
 #define KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_IPV6 0x00000002UL
@@ -155,6 +179,59 @@ typedef struct _KSWORD_ARK_NETWORK_AUDIT_QUERY_REQUEST
     unsigned long flags;
     unsigned long maxRows;
 } KSWORD_ARK_NETWORK_AUDIT_QUERY_REQUEST;
+
+// WFP ALE 事件增量查询。afterSequence=0 表示从驱动当前保留的最旧事件开始读取。
+typedef struct _KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_REQUEST
+{
+    unsigned long version;
+    unsigned long size;
+    unsigned long flags;
+    unsigned long maxRows;
+    unsigned long long afterSequence;
+    unsigned long long reserved;
+} KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_REQUEST;
+
+// WFP ALE IPv4 流授权事件。地址保存为网络字节序字节数组，端口保存为主机字节序。
+// timestamp100ns 是从 1601-01-01 UTC 起算的 100ns 系统时间；该协议永远不承载 payload。
+typedef struct _KSWORD_ARK_NETWORK_WFP_EVENT_ROW
+{
+    unsigned long version;
+    unsigned long size;
+    unsigned long long sequence;
+    unsigned long long timestamp100ns;
+    unsigned long direction;
+    unsigned long protocol;
+    unsigned long processId;
+    unsigned long flags;
+    unsigned short localPort;
+    unsigned short remotePort;
+    unsigned char localAddress[4];
+    unsigned char remoteAddress[4];
+    unsigned long reserved0;
+    unsigned long reserved1;
+} KSWORD_ARK_NETWORK_WFP_EVENT_ROW;
+
+// WFP ALE 事件变长响应。droppedEventCount 为 ring 累计覆盖数，cursorGapCount 为本次
+// afterSequence 已落后于当前最旧事件而无法补回的事件数。
+typedef struct _KSWORD_ARK_NETWORK_WFP_EVENT_RESPONSE
+{
+    unsigned long version;
+    unsigned long size;
+    unsigned long status;
+    unsigned long flags;
+    unsigned long availableEventCount;
+    unsigned long returnedEventCount;
+    unsigned long entrySize;
+    unsigned long capacity;
+    unsigned long long oldestSequence;
+    unsigned long long newestSequence;
+    unsigned long long nextSequence;
+    unsigned long long droppedEventCount;
+    unsigned long long cursorGapCount;
+    long lastStatus;
+    unsigned long reserved;
+    KSWORD_ARK_NETWORK_WFP_EVENT_ROW entries[1];
+} KSWORD_ARK_NETWORK_WFP_EVENT_RESPONSE;
 
 // TCP/UDP endpoint 行。地址以 16 字节保存，IPv4 使用前 4 字节。
 typedef struct _KSWORD_ARK_NETWORK_ENDPOINT_ROW

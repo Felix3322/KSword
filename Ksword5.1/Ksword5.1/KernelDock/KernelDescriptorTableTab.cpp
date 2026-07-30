@@ -9,7 +9,6 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
-#include <QComboBox>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -74,8 +73,11 @@ namespace
     }
 }
 
-KernelDescriptorTableTab::KernelDescriptorTableTab(QWidget* parent)
-    : QWidget(parent)
+KernelDescriptorTableTab::KernelDescriptorTableTab(
+    const KernelDescriptorTableKind tableKind,
+    QWidget* parent)
+    : QWidget(parent),
+      m_tableKind(tableKind)
 {
     initializeUi();
 }
@@ -96,26 +98,39 @@ void KernelDescriptorTableTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(5);
 
+    // idtOnly 用于为两个独立子页选择精确文本，不在运行期改变页面类型。
+    const bool idtOnly = m_tableKind == KernelDescriptorTableKind::Idt;
     auto* toolbar = new QHBoxLayout();
-    m_refreshButton = new QPushButton(kernelText("kernel.descriptor.refresh", QStringLiteral("刷新 IDT/GDT")), this);
-    m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
-    m_restoreIdtButton = new QPushButton(
-        kernelText("kernel.descriptor.restore_idt", QStringLiteral("恢复选中 IDT 基线")),
+    m_refreshButton = new QPushButton(
+        kernelText(
+            idtOnly ? "kernel.descriptor.refresh.idt" : "kernel.descriptor.refresh.gdt",
+            idtOnly ? QStringLiteral("刷新 IDT") : QStringLiteral("刷新 GDT")),
         this);
-    m_restoreIdtButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
-    m_restoreIdtButton->setEnabled(false);
-    m_tableFilterCombo = new QComboBox(this);
-    m_tableFilterCombo->addItem(kernelText("kernel.descriptor.filter.all", QStringLiteral("全部")), 0);
-    m_tableFilterCombo->addItem(QStringLiteral("IDT"), QVariant::fromValue(static_cast<quint32>(KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER)));
-    m_tableFilterCombo->addItem(QStringLiteral("GDT"), QVariant::fromValue(static_cast<quint32>(KSWORD_ARK_DRIVER_INTEGRITY_CLASS_GDT_DESCRIPTOR)));
+    m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+    if (idtOnly)
+    {
+        m_restoreIdtButton = new QPushButton(
+            kernelText("kernel.descriptor.restore_idt", QStringLiteral("恢复选中 IDT 基线")),
+            this);
+        m_restoreIdtButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+        m_restoreIdtButton->setEnabled(false);
+    }
     m_filterEdit = new QLineEdit(this);
     m_filterEdit->setClearButtonEnabled(true);
-    m_filterEdit->setPlaceholderText(kernelText("kernel.descriptor.filter.placeholder", QStringLiteral("按 CPU、向量/选择子、地址、类型、模块和风险筛选")));
+    m_filterEdit->setPlaceholderText(kernelText(
+        idtOnly
+            ? "kernel.descriptor.filter.idt.placeholder"
+            : "kernel.descriptor.filter.gdt.placeholder",
+        idtOnly
+            ? QStringLiteral("按 CPU、向量、地址、模块和风险筛选 IDT")
+            : QStringLiteral("按 CPU、选择子、地址、类型和风险筛选 GDT")));
     m_statusLabel = new QLabel(kernelText("kernel.descriptor.status.waiting", QStringLiteral("状态：等待刷新")), this);
     m_statusLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     toolbar->addWidget(m_refreshButton);
-    toolbar->addWidget(m_restoreIdtButton);
-    toolbar->addWidget(m_tableFilterCombo);
+    if (m_restoreIdtButton != nullptr)
+    {
+        toolbar->addWidget(m_restoreIdtButton);
+    }
     toolbar->addWidget(m_filterEdit, 1);
     toolbar->addWidget(m_statusLabel);
     rootLayout->addLayout(toolbar);
@@ -154,7 +169,13 @@ void KernelDescriptorTableTab::initializeUi()
 
     m_detailEdit = new QTextEdit(splitter);
     m_detailEdit->setReadOnly(true);
-    m_detailEdit->setPlaceholderText(kernelText("kernel.descriptor.detail.placeholder", QStringLiteral("选择 IDT/GDT 表项查看结构化位域和 R0 诊断详情")));
+    m_detailEdit->setPlaceholderText(kernelText(
+        idtOnly
+            ? "kernel.descriptor.detail.idt.placeholder"
+            : "kernel.descriptor.detail.gdt.placeholder",
+        idtOnly
+            ? QStringLiteral("选择 IDT 表项查看 Handler、位域和 R0 诊断详情")
+            : QStringLiteral("选择 GDT 表项查看段描述符、位域和 R0 诊断详情")));
     splitter->addWidget(m_table);
     splitter->addWidget(m_detailEdit);
     splitter->setStretchFactor(0, 4);
@@ -162,11 +183,17 @@ void KernelDescriptorTableTab::initializeUi()
     rootLayout->addWidget(splitter, 1);
 
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() { refreshAsync(); });
-    connect(m_restoreIdtButton, &QPushButton::clicked, this, [this]() { restoreSelectedIdtBaseline(); });
-    connect(m_tableFilterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { rebuildTable(); });
+    if (m_restoreIdtButton != nullptr)
+    {
+        connect(m_restoreIdtButton, &QPushButton::clicked, this, [this]() { restoreSelectedIdtBaseline(); });
+    }
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this](const QString&) { rebuildTable(); });
     connect(m_table, &QTableWidget::currentCellChanged, this, [this](int, int, int, int) {
         showCurrentDetail();
+        if (m_restoreIdtButton == nullptr)
+        {
+            return;
+        }
         bool canRestore = false;
         if (m_table->currentRow() >= 0)
         {
@@ -198,14 +225,29 @@ void KernelDescriptorTableTab::refreshAsync()
     m_refreshRunning = true;
     m_firstRefreshStarted = true;
     m_refreshButton->setEnabled(false);
-    m_statusLabel->setText(kernelText("kernel.descriptor.status.refreshing", QStringLiteral("正在按 CPU 读取 IDTR/GDTR 与描述符...")));
+    if (m_restoreIdtButton != nullptr)
+    {
+        m_restoreIdtButton->setEnabled(false);
+    }
+
+    // queryFlags 只请求当前子页所需证据，避免切换 IDT/GDT 时重复传输另一张表。
+    const bool idtOnly = m_tableKind == KernelDescriptorTableKind::Idt;
+    const std::uint32_t queryFlags = KSWORD_ARK_DRIVER_INTEGRITY_FLAG_CPU |
+        (idtOnly
+            ? KSWORD_ARK_DRIVER_INTEGRITY_FLAG_IDT_ENTRIES
+            : KSWORD_ARK_DRIVER_INTEGRITY_FLAG_GDT_ENTRIES);
+    m_statusLabel->setText(kernelText(
+        idtOnly
+            ? "kernel.descriptor.status.refreshing.idt"
+            : "kernel.descriptor.status.refreshing.gdt",
+        idtOnly
+            ? QStringLiteral("正在按 CPU 读取 IDTR 与 IDT 表项...")
+            : QStringLiteral("正在按 CPU 读取 GDTR 与 GDT 描述符...")));
     QPointer<KernelDescriptorTableTab> safeThis(this);
-    std::thread([safeThis]() {
+    std::thread([safeThis, queryFlags]() {
         ksword::ark::DriverClient client;
         ksword::ark::DriverIntegrityResult result = client.queryKernelCpuIntegrity(
-            KSWORD_ARK_DRIVER_INTEGRITY_FLAG_CPU |
-                KSWORD_ARK_DRIVER_INTEGRITY_FLAG_IDT_ENTRIES |
-                KSWORD_ARK_DRIVER_INTEGRITY_FLAG_GDT_ENTRIES,
+            queryFlags,
             KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_MAX_ROWS,
             KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_IDT_VECTORS);
         if (safeThis == nullptr)
@@ -225,11 +267,21 @@ void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult re
 {
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
+    if (m_restoreIdtButton != nullptr)
+    {
+        m_restoreIdtButton->setEnabled(false);
+    }
     m_rows.clear();
     if (!result.io.ok)
     {
+        // failureKey 与 fallbackText 由固定子页类型决定，避免错误信息仍写成 IDT/GDT 混合查询。
+        const bool idtOnly = m_tableKind == KernelDescriptorTableKind::Idt;
         const QString errorText = result.io.message.empty()
-            ? kernelText("kernel.descriptor.status.failed", QStringLiteral("IDT/GDT 查询失败"))
+            ? kernelText(
+                idtOnly
+                    ? "kernel.descriptor.status.failed.idt"
+                    : "kernel.descriptor.status.failed.gdt",
+                idtOnly ? QStringLiteral("IDT 查询失败") : QStringLiteral("GDT 查询失败"))
             : QString::fromStdString(result.io.message);
         m_statusLabel->setText(errorText);
         rebuildTable();
@@ -251,13 +303,21 @@ void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult re
             m_rows.push_back(std::move(row));
         }
     }
-    QString summary = kernelText(
-        "kernel.descriptor.status.completed",
-        QStringLiteral("已读取 %1 个 IDT 表项、%2 个 GDT 表项，CPU %3，协议 v%4"))
-        .arg(static_cast<qulonglong>(idtCount))
-        .arg(static_cast<qulonglong>(gdtCount))
-        .arg(result.cpuCount)
-        .arg(result.version);
+    // summary 只报告当前子页的表项数，CPU 和协议版本仍保留用于定位采集环境。
+    const bool idtOnly = m_tableKind == KernelDescriptorTableKind::Idt;
+    QString summary = idtOnly
+        ? kernelText(
+            "kernel.descriptor.status.completed.idt",
+            QStringLiteral("已读取 %1 个 IDT 表项，CPU %2，协议 v%3"))
+            .arg(static_cast<qulonglong>(idtCount))
+            .arg(result.cpuCount)
+            .arg(result.version)
+        : kernelText(
+            "kernel.descriptor.status.completed.gdt",
+            QStringLiteral("已读取 %1 个 GDT 表项，CPU %2，协议 v%3"))
+            .arg(static_cast<qulonglong>(gdtCount))
+            .arg(result.cpuCount)
+            .arg(result.version);
     if ((result.flags & KSWORD_ARK_DRIVER_INTEGRITY_RISK_TRUNCATED) != 0U ||
         (result.statusFlags & KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_TRUNCATED) != 0U)
     {
@@ -269,8 +329,11 @@ void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult re
 
 bool KernelDescriptorTableTab::rowMatchesFilter(const ksword::ark::DriverIntegrityEvidenceEntry& row) const
 {
-    const std::uint32_t selectedClass = static_cast<std::uint32_t>(m_tableFilterCombo->currentData().toUInt());
-    if (selectedClass != 0U && row.evidenceClass != selectedClass)
+    // expectedClass 把实例固定为单一表类型，即使旧驱动意外返回混合证据也不会串页。
+    const std::uint32_t expectedClass = m_tableKind == KernelDescriptorTableKind::Idt
+        ? KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER
+        : KSWORD_ARK_DRIVER_INTEGRITY_CLASS_GDT_DESCRIPTOR;
+    if (row.evidenceClass != expectedClass)
     {
         return false;
     }

@@ -22,14 +22,17 @@
 #include <QAbstractItemView>
 #include <QAction>
 #include <QBrush>
+#include <QButtonGroup>
 #include <QChar>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QColor>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -52,6 +55,8 @@
 #include <QPointer>
 #include <QPixmap>
 #include <QPushButton>
+#include <QRadioButton>
+#include <QRegularExpression>
 #include <QRunnable>
 #include <QShowEvent>
 #include <QSplitter>
@@ -62,15 +67,18 @@
 #include <QThreadPool>
 #include <QTabWidget>
 #include <QTimer>
+#include <QTemporaryFile>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -98,6 +106,7 @@ namespace ksword::driver_dock_internal
     QStringList driverIntegrityTableHeaders();
     QStringList driverMajorFunctionTableHeaders();
     QStringList driverModuleCrossViewTableHeaders();
+    QStringList driverUnloadedDriverTableHeaders();
 
     // ModuleRecordIndexRole：
     // - 输入：写入已加载模块表格的第一列单元格；

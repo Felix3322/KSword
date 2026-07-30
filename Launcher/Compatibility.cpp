@@ -212,7 +212,7 @@ ScanResult ScanCompatibility(const SupportManifest& manifest) {
         const ModuleDefinition* definition = DefinitionForClass(finding.module.classId, manifest);
         const bool profileGap = !finding.profileFound || !finding.profileComplete;
         result.inspected.push_back(finding);
-        if (profileGap && definition && (definition->compatibilityRequired || definition->collectionOnly)) result.collectionCandidates.push_back(finding);
+        if (profileGap && definition && (definition->compatibilityRequired || definition->collectionOnly || definition->alwaysCollect)) result.collectionCandidates.push_back(finding);
         if (profileGap && definition && definition->compatibilityRequired) result.missing.push_back(finding);
     }
     if (!sawKernel) {
@@ -228,7 +228,7 @@ ScanResult ScanCompatibility(const SupportManifest& manifest) {
         const ModuleDefinition* definition = DefinitionForClass(finding.module.classId, manifest);
         const bool profileGap = !finding.profileFound || !finding.profileComplete;
         result.inspected.push_back(finding);
-        if (profileGap && definition && (definition->compatibilityRequired || definition->collectionOnly)) result.collectionCandidates.push_back(finding);
+        if (profileGap && definition && (definition->compatibilityRequired || definition->collectionOnly || definition->alwaysCollect)) result.collectionCandidates.push_back(finding);
         if (profileGap && definition && definition->compatibilityRequired) result.missing.push_back(finding);
     }
     return result;

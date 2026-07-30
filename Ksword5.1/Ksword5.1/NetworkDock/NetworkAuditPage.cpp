@@ -5,23 +5,27 @@
 // ============================================================
 // NetworkAuditPage.cpp
 // 作用：
-// 1) 提供只读网络审计页的 UI 与快照刷新逻辑；
-// 2) 复用现有 ks::network / ks::process / handle helper 做 cross-view；
-// 3) 所有数据仅用于审计展示，不提供任何修改系统网络状态的动作。
+// 1) 提供网络审计页的 UI 与快照刷新逻辑；
+// 2) TCP/UDP Cross-View 合并连接刷新、PID 筛选、复制与 TCP 终止动作；
+// 3) AFD/WFP/NDIS/NSI 保持只读审计边界。
 // ============================================================
 
 #include "../theme.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../Framework/PrivilegeElevationPrompt.h"
 #include "../ksword/file/file_handle_tools.h"
 #include "../ksword/network/network.h"
 #include "../ksword/network/network_connection_tools.h"
 #include "../ksword/process/process.h"
+#include "../OnlineScan/SandboxUploadActions.h"
 
 #include <QDateTime>
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QFileIconProvider>
+#include <QFileInfo>
 #include <QJsonParseError>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -32,6 +36,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMetaObject>
 #include <QModelIndex>
 #include <QPixmap>
@@ -43,6 +48,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -53,6 +59,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -634,6 +641,8 @@ NetworkAuditPage::NetworkAuditPage(QWidget* parent)
     : QWidget(parent)
 {
     initializeUi();
+    m_crossAutoRefreshTimer = new QTimer(this);
+    m_crossAutoRefreshTimer->setInterval(2200);
     initializeConnections();
 }
 
@@ -644,6 +653,47 @@ void NetworkAuditPage::requestInitialRefresh()
     {
         refreshAllSnapshotsAsync(false);
     }
+}
+
+void NetworkAuditPage::focusProcessIds(const QSet<quint32>& processIds)
+{
+    m_processFilterSet = processIds;
+    activateCrossView();
+    if (m_crossFilterLabel != nullptr)
+    {
+        QStringList processIdTextList;
+        processIdTextList.reserve(m_processFilterSet.size());
+        for (const quint32 processId : m_processFilterSet)
+        {
+            processIdTextList.push_back(QString::number(processId));
+        }
+        processIdTextList.sort();
+        m_crossFilterLabel->setText(
+            m_processFilterSet.isEmpty()
+                ? QStringLiteral("PID 筛选：无")
+                : QStringLiteral("PID 筛选：%1")
+                    .arg(processIdTextList.join(',')));
+    }
+    updateCrossViewActionState();
+    refreshAllSnapshotsAsync(true);
+}
+
+void NetworkAuditPage::activateCrossView()
+{
+    if (m_sectionTabWidget != nullptr && m_crossViewPage != nullptr)
+    {
+        m_sectionTabWidget->setCurrentWidget(m_crossViewPage);
+    }
+}
+
+void NetworkAuditPage::setTrackProcessHandler(ProcessActionHandler handler)
+{
+    m_trackProcessHandler = std::move(handler);
+}
+
+void NetworkAuditPage::setOpenProcessDetailHandler(ProcessActionHandler handler)
+{
+    m_openProcessDetailHandler = std::move(handler);
 }
 
 void NetworkAuditPage::initializeUi()
@@ -679,6 +729,36 @@ void NetworkAuditPage::initializeUi()
     QVBoxLayout* crossLayout = new QVBoxLayout(m_crossViewPage);
     crossLayout->setContentsMargins(4, 4, 4, 4);
     crossLayout->setSpacing(6);
+
+    // 连接管理动作已合并到 Cross-View，不再单独占用顶层 Tab。
+    m_crossControlLayout = new QHBoxLayout();
+    m_crossControlLayout->setContentsMargins(0, 0, 0, 0);
+    m_crossControlLayout->setSpacing(6);
+
+    m_crossAutoRefreshButton = new QPushButton(QStringLiteral("自动刷新"), m_crossViewPage);
+    m_crossAutoRefreshButton->setIcon(QIcon(QStringLiteral(":/Icon/process_refresh.svg")));
+    m_crossAutoRefreshButton->setToolTip(QStringLiteral("每 2.2 秒自动刷新 TCP/UDP Cross-View"));
+    m_crossAutoRefreshButton->setCheckable(true);
+    m_crossAutoRefreshButton->setChecked(true);
+    m_crossControlLayout->addWidget(m_crossAutoRefreshButton);
+
+    m_crossTerminateButton = new QPushButton(QStringLiteral("终止 TCP"), m_crossViewPage);
+    m_crossTerminateButton->setIcon(QIcon(QStringLiteral(":/Icon/process_terminate.svg")));
+    m_crossTerminateButton->setToolTip(QStringLiteral("终止选中的 R3 IPv4 TCP 活动连接"));
+    m_crossTerminateButton->setEnabled(false);
+    m_crossControlLayout->addWidget(m_crossTerminateButton);
+
+    m_clearProcessFilterButton = new QPushButton(QStringLiteral("清除 PID 筛选"), m_crossViewPage);
+    m_clearProcessFilterButton->setIcon(QIcon(QStringLiteral(":/Icon/log_clear.svg")));
+    m_clearProcessFilterButton->setToolTip(QStringLiteral("显示全部进程的 TCP/UDP 连接"));
+    m_clearProcessFilterButton->setEnabled(false);
+    m_crossControlLayout->addWidget(m_clearProcessFilterButton);
+
+    m_crossFilterLabel = new QLabel(QStringLiteral("PID 筛选：无"), m_crossViewPage);
+    m_crossFilterLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_crossControlLayout->addWidget(m_crossFilterLabel, 1);
+    crossLayout->addLayout(m_crossControlLayout);
+
     m_crossViewSplitter = new QSplitter(Qt::Vertical, m_crossViewPage);
     m_crossViewTopSplitter = new QSplitter(Qt::Horizontal, m_crossViewSplitter);
 
@@ -698,7 +778,7 @@ void NetworkAuditPage::initializeUi()
     m_tcpTable->verticalHeader()->setVisible(false);
     m_tcpTable->horizontalHeader()->setStretchLastSection(true);
     m_tcpTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    installCopyMenu(m_tcpTable, 0);
+    m_tcpTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
     m_udpTable = new ks::ui::VisibleTableWidget(m_crossViewTopSplitter);
     m_udpTable->setColumnCount(5);
@@ -715,7 +795,7 @@ void NetworkAuditPage::initializeUi()
     m_udpTable->verticalHeader()->setVisible(false);
     m_udpTable->horizontalHeader()->setStretchLastSection(true);
     m_udpTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    installCopyMenu(m_udpTable, 0);
+    m_udpTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
     m_crossSummaryTable = new ks::ui::VisibleTableWidget(m_crossViewSplitter);
     m_crossSummaryTable->setColumnCount(5);
@@ -842,6 +922,49 @@ void NetworkAuditPage::initializeConnections()
     {
         refreshAllSnapshotsAsync(true);
     });
+
+    connect(m_crossAutoRefreshButton, &QPushButton::toggled, this, [this](const bool enabled)
+    {
+        if (m_crossAutoRefreshTimer == nullptr)
+        {
+            return;
+        }
+        enabled ? m_crossAutoRefreshTimer->start() : m_crossAutoRefreshTimer->stop();
+    });
+    connect(m_crossAutoRefreshTimer, &QTimer::timeout, this, [this]()
+    {
+        if (isVisible()
+            && m_sectionTabWidget != nullptr
+            && m_sectionTabWidget->currentWidget() == m_crossViewPage)
+        {
+            refreshCrossViewAsync();
+        }
+    });
+    if (m_crossAutoRefreshButton != nullptr && m_crossAutoRefreshButton->isChecked())
+    {
+        m_crossAutoRefreshTimer->start();
+    }
+
+    connect(m_crossTerminateButton, &QPushButton::clicked, this, [this]()
+    {
+        terminateSelectedTcpConnection();
+    });
+    connect(m_clearProcessFilterButton, &QPushButton::clicked, this, [this]()
+    {
+        focusProcessIds({});
+    });
+    connect(m_tcpTable, &QTableWidget::itemSelectionChanged, this, [this]()
+    {
+        updateCrossViewActionState();
+    });
+    connect(m_tcpTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& position)
+    {
+        showCrossViewContextMenu(m_tcpTable, position);
+    });
+    connect(m_udpTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& position)
+    {
+        showCrossViewContextMenu(m_udpTable, position);
+    });
 }
 
 void NetworkAuditPage::refreshAllSnapshotsAsync(const bool forceRefresh)
@@ -915,7 +1038,79 @@ void NetworkAuditPage::refreshAllSnapshotsAsync(const bool forceRefresh)
     }).detach();
 }
 
-NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot()
+void NetworkAuditPage::refreshCrossViewAsync()
+{
+    bool expected = false;
+    if (!m_refreshInProgress.compare_exchange_strong(expected, true))
+    {
+        return;
+    }
+
+    QPointer<NetworkAuditPage> safeThis(this);
+    std::thread([safeThis]()
+    {
+        AuditSnapshot snapshot;
+        QString failureText;
+        try
+        {
+            snapshot = buildAuditSnapshot(true);
+        }
+        catch (const std::exception& exception)
+        {
+            failureText = QStringLiteral("刷新失败：%1").arg(QString::fromUtf8(exception.what()));
+        }
+        catch (...)
+        {
+            failureText = QStringLiteral("刷新失败");
+        }
+
+        if (safeThis.isNull())
+        {
+            return;
+        }
+        const bool invokeOk = QMetaObject::invokeMethod(
+            safeThis.data(),
+            [safeThis, snapshot = std::move(snapshot), failureText]() mutable
+            {
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+
+                if (failureText.isEmpty())
+                {
+                    // R0 行由完整审计采集；高频连接刷新只替换 R3 行。
+                    for (const TcpEndpointRow& cachedRow : safeThis->m_tcpEndpointCache)
+                    {
+                        if (cachedRow.isR0Snapshot)
+                        {
+                            snapshot.tcpEndpointRows.push_back(cachedRow);
+                        }
+                    }
+                    for (const UdpEndpointRow& cachedRow : safeThis->m_udpEndpointCache)
+                    {
+                        if (cachedRow.sourceText.startsWith(QStringLiteral("R0")))
+                        {
+                            snapshot.udpEndpointRows.push_back(cachedRow);
+                        }
+                    }
+                    safeThis->refreshCrossViewTable(snapshot);
+                }
+                else if (safeThis->m_statusLabel != nullptr)
+                {
+                    safeThis->m_statusLabel->setText(failureText);
+                }
+                safeThis->m_refreshInProgress.store(false);
+            },
+            Qt::QueuedConnection);
+        if (!invokeOk && !safeThis.isNull())
+        {
+            safeThis->m_refreshInProgress.store(false);
+        }
+    }).detach();
+}
+
+NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool crossViewOnly)
 {
     AuditSnapshot snapshot;
 
@@ -958,6 +1153,8 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot()
         endpointRow.detailText = QStringLiteral("来源=R3 TCP table；PID=%1；状态=%2")
             .arg(tcpRecord.processId)
             .arg(endpointRow.stateText);
+        endpointRow.canTerminate = true;
+        endpointRow.connectionRecord = tcpRecord;
         snapshot.tcpEndpointRows.push_back(std::move(endpointRow));
     }
     snapshot.udpEndpointRows.reserve(udpRecords.size());
@@ -997,6 +1194,11 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot()
         }
         return left.processName < right.processName;
     });
+
+    if (crossViewOnly)
+    {
+        return snapshot;
+    }
 
     // AFD：先基于系统句柄做只读枚举，再筛选 AFD 相关对象。
     ks::file::HandleSnapshotOptions handleOptions;
@@ -1398,6 +1600,7 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot()
                     row.remoteEndpointText = r0EndpointText(entry.addressFamily, entry.remoteAddress, entry.remotePort);
                     row.stateText = r0TcpStateText(entry.state);
                     row.detailText = detailText;
+                    row.isR0Snapshot = true;
                     snapshot.tcpEndpointRows.push_back(std::move(row));
                 }
                 else
@@ -1599,52 +1802,334 @@ void NetworkAuditPage::applySnapshot(const AuditSnapshot& snapshot)
 
 void NetworkAuditPage::refreshCrossViewTable(const AuditSnapshot& snapshot)
 {
+    m_tcpEndpointCache = snapshot.tcpEndpointRows;
+    m_udpEndpointCache = snapshot.udpEndpointRows;
     if (m_tcpTable != nullptr)
     {
-        m_tcpTable->setRowCount(static_cast<int>(snapshot.tcpEndpointRows.size()));
-        int rowIndex = 0;
-        for (const TcpEndpointRow& row : snapshot.tcpEndpointRows)
+        m_tcpTable->setRowCount(0);
+        for (std::size_t cacheIndex = 0; cacheIndex < m_tcpEndpointCache.size(); ++cacheIndex)
         {
-            m_tcpTable->setItem(rowIndex, 0, createReadOnlyCell(QString::number(row.processId)));
-            m_tcpTable->setItem(rowIndex, 1, createReadOnlyCell(row.processName));
+            const TcpEndpointRow& row = m_tcpEndpointCache[cacheIndex];
+            if (!m_processFilterSet.isEmpty()
+                && !m_processFilterSet.contains(static_cast<quint32>(row.processId)))
+            {
+                continue;
+            }
+
+            const int rowIndex = m_tcpTable->rowCount();
+            m_tcpTable->insertRow(rowIndex);
+            QTableWidgetItem* pidItem = createReadOnlyCell(QString::number(row.processId));
+            pidItem->setData(Qt::UserRole, static_cast<qulonglong>(cacheIndex));
+            m_tcpTable->setItem(rowIndex, 0, pidItem);
+            QTableWidgetItem* processItem = createReadOnlyCell(row.processName);
+            processItem->setIcon(resolveProcessIcon(row.processId));
+            m_tcpTable->setItem(rowIndex, 1, processItem);
             m_tcpTable->setItem(rowIndex, 2, createReadOnlyCell(row.localEndpointText));
             m_tcpTable->setItem(rowIndex, 3, createReadOnlyCell(row.remoteEndpointText));
             m_tcpTable->setItem(rowIndex, 4, createReadOnlyCell(row.stateText));
             m_tcpTable->setItem(rowIndex, 5, createReadOnlyCell(row.detailText));
-            ++rowIndex;
         }
     }
 
     if (m_udpTable != nullptr)
     {
-        m_udpTable->setRowCount(static_cast<int>(snapshot.udpEndpointRows.size()));
-        int rowIndex = 0;
+        m_udpTable->setRowCount(0);
         for (const UdpEndpointRow& row : snapshot.udpEndpointRows)
         {
+            if (!m_processFilterSet.isEmpty()
+                && !m_processFilterSet.contains(static_cast<quint32>(row.processId)))
+            {
+                continue;
+            }
+
+            const int rowIndex = m_udpTable->rowCount();
+            m_udpTable->insertRow(rowIndex);
             m_udpTable->setItem(rowIndex, 0, createReadOnlyCell(QString::number(row.processId)));
-            m_udpTable->setItem(rowIndex, 1, createReadOnlyCell(row.processName));
+            QTableWidgetItem* processItem = createReadOnlyCell(row.processName);
+            processItem->setIcon(resolveProcessIcon(row.processId));
+            m_udpTable->setItem(rowIndex, 1, processItem);
             m_udpTable->setItem(rowIndex, 2, createReadOnlyCell(row.localEndpointText));
             m_udpTable->setItem(rowIndex, 3, createReadOnlyCell(row.sourceText));
             m_udpTable->setItem(rowIndex, 4, createReadOnlyCell(row.detailText));
-            ++rowIndex;
         }
     }
 
     if (m_crossSummaryTable != nullptr)
     {
-        m_crossSummaryTable->setRowCount(static_cast<int>(snapshot.crossViewRows.size()));
-        int rowIndex = 0;
+        m_crossSummaryTable->setRowCount(0);
         for (const CrossViewRow& row : snapshot.crossViewRows)
         {
+            if (!m_processFilterSet.isEmpty()
+                && !m_processFilterSet.contains(static_cast<quint32>(row.processId)))
+            {
+                continue;
+            }
+
+            const int rowIndex = m_crossSummaryTable->rowCount();
+            m_crossSummaryTable->insertRow(rowIndex);
             m_crossSummaryTable->setItem(rowIndex, 0, createReadOnlyCell(QString::number(row.processId)));
-            m_crossSummaryTable->setItem(rowIndex, 1, createReadOnlyCell(row.processName));
+            QTableWidgetItem* processItem = createReadOnlyCell(row.processName);
+            processItem->setIcon(resolveProcessIcon(row.processId));
+            m_crossSummaryTable->setItem(rowIndex, 1, processItem);
             m_crossSummaryTable->setItem(rowIndex, 2, createReadOnlyCell(QString::number(row.tcpCount)));
             m_crossSummaryTable->setItem(rowIndex, 3, createReadOnlyCell(QString::number(row.udpCount)));
             m_crossSummaryTable->setItem(rowIndex, 4, createReadOnlyCell(QStringLiteral("TCP: %1 | UDP: %2")
                 .arg(row.tcpSummary.isEmpty() ? QStringLiteral("<无>") : row.tcpSummary)
                 .arg(row.udpSummary.isEmpty() ? QStringLiteral("<无>") : row.udpSummary)));
-            ++rowIndex;
         }
+    }
+    updateCrossViewActionState();
+}
+
+QIcon NetworkAuditPage::resolveProcessIcon(const std::uint32_t processId)
+{
+    if (processId == 0U)
+    {
+        return QIcon(QStringLiteral(":/Icon/process_main.svg"));
+    }
+
+    const quint32 processIdKey = static_cast<quint32>(processId);
+    const auto cachedIterator = m_processIconCache.constFind(processIdKey);
+    if (cachedIterator != m_processIconCache.constEnd())
+    {
+        return cachedIterator.value();
+    }
+
+    QIcon processIcon;
+    const std::string processPath = ks::process::QueryProcessPathByPid(processId);
+    if (!processPath.empty())
+    {
+        static QFileIconProvider iconProvider;
+        processIcon = iconProvider.icon(QFileInfo(QString::fromUtf8(processPath.c_str())));
+    }
+    if (processIcon.isNull())
+    {
+        processIcon = QIcon(QStringLiteral(":/Icon/process_main.svg"));
+    }
+    m_processIconCache.insert(processIdKey, processIcon);
+    return processIcon;
+}
+
+void NetworkAuditPage::updateCrossViewActionState()
+{
+    bool canTerminateSelection = false;
+    if (m_tcpTable != nullptr && m_tcpTable->currentRow() >= 0)
+    {
+        const QTableWidgetItem* pidItem = m_tcpTable->item(m_tcpTable->currentRow(), 0);
+        bool cacheIndexOk = false;
+        const qulonglong cacheIndexValue = pidItem != nullptr
+            ? pidItem->data(Qt::UserRole).toULongLong(&cacheIndexOk)
+            : 0ULL;
+        canTerminateSelection =
+            cacheIndexOk
+            && cacheIndexValue < m_tcpEndpointCache.size()
+            && m_tcpEndpointCache[static_cast<std::size_t>(cacheIndexValue)].canTerminate;
+    }
+    if (m_crossTerminateButton != nullptr)
+    {
+        m_crossTerminateButton->setEnabled(canTerminateSelection);
+    }
+    if (m_clearProcessFilterButton != nullptr)
+    {
+        m_clearProcessFilterButton->setEnabled(!m_processFilterSet.isEmpty());
+    }
+}
+
+void NetworkAuditPage::terminateSelectedTcpConnection()
+{
+    if (m_tcpTable == nullptr || m_tcpTable->currentRow() < 0)
+    {
+        QMessageBox::information(this, QStringLiteral("网络审计"), QStringLiteral("请先选中一条 TCP 连接。"));
+        return;
+    }
+
+    const QTableWidgetItem* pidItem = m_tcpTable->item(m_tcpTable->currentRow(), 0);
+    bool cacheIndexOk = false;
+    const qulonglong cacheIndexValue = pidItem != nullptr
+        ? pidItem->data(Qt::UserRole).toULongLong(&cacheIndexOk)
+        : 0ULL;
+    if (!cacheIndexOk || cacheIndexValue >= m_tcpEndpointCache.size())
+    {
+        QMessageBox::warning(this, QStringLiteral("网络审计"), QStringLiteral("所选连接已过期，请刷新后重试。"));
+        return;
+    }
+
+    const TcpEndpointRow endpointRow = m_tcpEndpointCache[static_cast<std::size_t>(cacheIndexValue)];
+    if (!endpointRow.canTerminate)
+    {
+        QMessageBox::information(
+            this,
+            QStringLiteral("网络审计"),
+            QStringLiteral("该行来自 R0 只读快照；请选中对应的 R3 TCP 行执行终止。"));
+        return;
+    }
+
+    const std::string unsupportedReason =
+        ks::network::GetTcpTerminationUnsupportedReason(endpointRow.connectionRecord);
+    if (!unsupportedReason.empty())
+    {
+        QMessageBox::information(
+            this,
+            QStringLiteral("网络审计"),
+            QStringLiteral("当前 TCP 行不能终止：%1")
+                .arg(QString::fromUtf8(unsupportedReason.c_str())));
+        return;
+    }
+
+    const int confirmation = QMessageBox::question(
+        this,
+        QStringLiteral("终止 TCP 连接"),
+        QStringLiteral("确认终止连接？\nPID=%1\n本地=%2\n远端=%3")
+            .arg(endpointRow.processId)
+            .arg(endpointRow.localEndpointText)
+            .arg(endpointRow.remoteEndpointText));
+    if (confirmation != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    std::string detailText;
+    const bool terminateOk =
+        ks::network::TerminateTcpConnectionByRecord(endpointRow.connectionRecord, &detailText);
+    if (terminateOk)
+    {
+        QMessageBox::information(this, QStringLiteral("网络审计"), QStringLiteral("连接终止请求已提交。"));
+        refreshAllSnapshotsAsync(true);
+        return;
+    }
+
+    const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+        this,
+        QStringLiteral("终止 TCP 连接"),
+        QString::fromUtf8(detailText.c_str()));
+    if (!privilegePromptHandled)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("网络审计"),
+            QStringLiteral("终止连接失败：%1").arg(QString::fromUtf8(detailText.c_str())));
+    }
+}
+
+void NetworkAuditPage::showCrossViewContextMenu(
+    QTableWidget* tableWidget,
+    const QPoint& localPosition)
+{
+    if (tableWidget == nullptr)
+    {
+        return;
+    }
+
+    const QModelIndex clickedIndex = tableWidget->indexAt(localPosition);
+    if (clickedIndex.isValid())
+    {
+        tableWidget->setCurrentCell(clickedIndex.row(), clickedIndex.column());
+        tableWidget->selectRow(clickedIndex.row());
+    }
+
+    const int selectedRow = tableWidget->currentRow();
+    bool processIdOk = false;
+    const QTableWidgetItem* processIdItem =
+        selectedRow >= 0 ? tableWidget->item(selectedRow, 0) : nullptr;
+    const quint32 selectedProcessId = processIdItem != nullptr
+        ? processIdItem->text().toUInt(&processIdOk)
+        : 0U;
+    const bool hasProcess = processIdOk && selectedProcessId != 0U;
+
+    bool canTerminateSelection = false;
+    if (tableWidget == m_tcpTable && processIdItem != nullptr)
+    {
+        bool cacheIndexOk = false;
+        const qulonglong cacheIndexValue =
+            processIdItem->data(Qt::UserRole).toULongLong(&cacheIndexOk);
+        canTerminateSelection =
+            cacheIndexOk
+            && cacheIndexValue < m_tcpEndpointCache.size()
+            && m_tcpEndpointCache[static_cast<std::size_t>(cacheIndexValue)].canTerminate;
+    }
+
+    QMenu menu(tableWidget);
+    menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+    QAction* terminateAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_uncritical.svg")),
+        QStringLiteral("终止此 TCP 连接"));
+    terminateAction->setVisible(tableWidget == m_tcpTable);
+    terminateAction->setEnabled(canTerminateSelection);
+    QAction* copyAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
+        QStringLiteral("复制行"));
+    copyAction->setEnabled(selectedRow >= 0);
+    QAction* trackProcessAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/log_track.svg")),
+        QStringLiteral("跟踪此进程"));
+    trackProcessAction->setEnabled(hasProcess && static_cast<bool>(m_trackProcessHandler));
+    QAction* openProcessDetailAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_details.svg")),
+        QStringLiteral("转到进程详细信息"));
+    openProcessDetailAction->setEnabled(
+        hasProcess && static_cast<bool>(m_openProcessDetailHandler));
+    const bool isTcpTable = tableWidget == m_tcpTable;
+    QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
+        &menu,
+        this,
+        [isTcpTable, selectedProcessId, hasProcess]() -> ks::online_scan::SandboxUploadTarget
+        {
+            ks::online_scan::SandboxUploadTarget uploadTarget;
+            if (!hasProcess)
+            {
+                uploadTarget.errorText = isTcpTable
+                    ? QStringLiteral("当前 TCP 行没有可解析 PID。")
+                    : QStringLiteral("当前 UDP 行没有可解析 PID。");
+                return uploadTarget;
+            }
+            uploadTarget.filePath = QString::fromStdString(
+                ks::process::QueryProcessPathByPid(selectedProcessId));
+            uploadTarget.sourceText = isTcpTable
+                ? QStringLiteral("网络 TCP 连接 PID=%1").arg(selectedProcessId)
+                : QStringLiteral("网络 UDP 端点 PID=%1").arg(selectedProcessId);
+            return uploadTarget;
+        });
+    if (uploadVirusTotalAction != nullptr)
+    {
+        uploadVirusTotalAction->setEnabled(hasProcess);
+    }
+    menu.addSeparator();
+    QAction* refreshAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+        QStringLiteral("刷新 TCP/UDP"));
+    QAction* clearFilterAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/log_clear.svg")),
+        QStringLiteral("清除 PID 筛选"));
+    clearFilterAction->setEnabled(!m_processFilterSet.isEmpty());
+
+    const QAction* selectedAction = menu.exec(tableWidget->viewport()->mapToGlobal(localPosition));
+    if (selectedAction == terminateAction)
+    {
+        terminateSelectedTcpConnection();
+    }
+    else if (selectedAction == copyAction)
+    {
+        copyCurrentTableRow(tableWidget);
+    }
+    else if (selectedAction == trackProcessAction)
+    {
+        m_trackProcessHandler(selectedProcessId);
+    }
+    else if (selectedAction == openProcessDetailAction)
+    {
+        m_openProcessDetailHandler(selectedProcessId);
+    }
+    else if (selectedAction == uploadVirusTotalAction)
+    {
+        return;
+    }
+    else if (selectedAction == refreshAction)
+    {
+        refreshAllSnapshotsAsync(true);
+    }
+    else if (selectedAction == clearFilterAction)
+    {
+        focusProcessIds({});
     }
 }
 

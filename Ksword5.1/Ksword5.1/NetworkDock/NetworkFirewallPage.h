@@ -19,11 +19,14 @@
 class QCheckBox;
 class QLabel;
 class QLineEdit;
+class QPoint;
 class QPushButton;
 class QTabWidget;
 class QTableWidget;
 class QTimer;
 class QVBoxLayout;
+class QSplitter;
+class CodeEditorWidget;
 
 // NetworkFirewallPage 说明：
 // - 输入：Qt 父控件；
@@ -70,7 +73,7 @@ public:
         QString remoteHostText;    // remoteHostText：远端主机名。
         QString protocolText;      // protocolText：TCP/UDP/ICMP 或协议号。
         QString timestampText;     // timestampText：事件时间。
-        bool isDrop = false;       // isDrop：是否用红色突出。
+        bool isDrop = false;       // isDrop：是否为 DROP，仅供筛选，不改变正常文字颜色。
     };
 
     // FirewallRuleEntry：
@@ -146,7 +149,7 @@ private:
 
     // appendEventsToTable 作用：
     // - 输入：批量事件、是否清空旧内容；
-    // - 处理：写入表格并应用 DROP 高亮；
+    // - 处理：写入表格；DROP 仅保留筛选标记，文字使用正常主题色；
     // - 无返回值。
     void appendEventsToTable(const std::vector<FirewallEventEntry>& eventList, bool clearBeforeAppend);
 
@@ -191,6 +194,18 @@ private:
     // - 无输入参数；
     // - 无返回值。
     void updateRuleActionButtons();
+
+    // updateRuleDetailEditor 作用：
+    // - 将当前选中规则的完整字段写入底部 CodeEditorWidget；
+    // - 未选中时显示操作提示；
+    // - 无返回值。
+    void updateRuleDetailEditor();
+
+    // showRuleContextMenu 作用：
+    // - 提供新增、禁用/启用、刷新、删除等规则动作；
+    // - 菜单显式应用主题样式；
+    // - 无返回值。
+    void showRuleContextMenu(const QPoint& localPosition);
 
     // addFirewallRule 作用：
     // - 打开新增规则对话框，并将规则加入系统防火墙；
@@ -323,7 +338,9 @@ private:
     QPushButton* m_deleteRuleButton = nullptr; // m_deleteRuleButton：删除规则按钮。
     QLineEdit* m_ruleSearchEdit = nullptr;     // m_ruleSearchEdit：规则搜索输入框。
     QCheckBox* m_ruleEnabledOnlyCheck = nullptr; // m_ruleEnabledOnlyCheck：仅显示启用规则。
+    QSplitter* m_ruleSplitter = nullptr;       // m_ruleSplitter：规则表与详情 3:1 垂直分栏。
     QTableWidget* m_ruleTable = nullptr;       // m_ruleTable：防火墙规则表。
+    CodeEditorWidget* m_ruleDetailEditor = nullptr; // m_ruleDetailEditor：完整规则详情只读编辑器。
     std::atomic_bool m_refreshingRules{ false }; // m_refreshingRules：规则刷新互斥。
     std::atomic_bool m_initialRefreshRequested{ false }; // m_initialRefreshRequested：首轮刷新门控。
     std::vector<FirewallRuleEntry> m_ruleEntryList; // m_ruleEntryList：规则快照缓存。

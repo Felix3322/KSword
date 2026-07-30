@@ -149,6 +149,7 @@
     <ClCompile Include="DriverDock\DriverDock.DebugAndUtils.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Evidence.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Integrity.cpp" />
+    <ClCompile Include="DriverDock\DriverDock.Unloaded.cpp" />
     <ClCompile Include="FileDock\FileDock.cpp" />
     <ClCompile Include="FileDock\FileDock.HandleUsage.cpp" />
     <ClCompile Include="FileDock\FileHandleUsageScanner.cpp" />
@@ -200,6 +201,7 @@
     <ClCompile Include="KernelDock\KernelDockCidTab.cpp" />
     <ClCompile Include="KernelDock\KernelDescriptorTableTab.cpp" />
     <ClCompile Include="KernelDock\KernelHvmTab.cpp" />
+    <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp" />
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp" />
     <ClCompile Include="KernelDock\KernelBaseNamedObjectsTab.cpp" />
     <ClCompile Include="KernelDock\KernelBaseNamedObjectsWorker.cpp" />
@@ -345,6 +347,7 @@
     <ClCompile Include="UI\HexEditorWidget.Ui.cpp" />
     <ClCompile Include="UI\HexEditorWidget.Tools.cpp" />
     <ClCompile Include="UI\PerformanceNavCard.cpp" />
+    <ClCompile Include="UI\SvgThemeIconManager.cpp" />
     <ClCompile Include="UI\TableColumnAutoFit.cpp" />
     <ClCompile Include="UI\TableInteractionSupport.cpp" />
     <ClCompile Include="UI\TableSnapshotCompare.cpp" />
@@ -451,6 +454,7 @@
     <ClInclude Include="KernelDock\KernelDockCidTab.h" />
     <ClInclude Include="KernelDock\KernelDescriptorTableTab.h" />
     <ClInclude Include="KernelDock\KernelHvmTab.h" />
+    <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h" />
     <ClInclude Include="KernelDock\KernelDockIpcTab.h" />
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepTab.h" />
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepWorker.h" />
@@ -551,6 +555,7 @@
     <QtMoc Include="UI\HexEditorWidget.h" />
     <ClInclude Include="UI\HexEditorWidget.Internal.h" />
     <ClInclude Include="UI\PerformanceNavCard.h" />
+    <ClInclude Include="UI\SvgThemeIconManager.h" />
     <ClInclude Include="UI\ThemedMessageBox.h" />
     <ClInclude Include="SettingsDock\AppearanceSettings.h" />
     <QtMoc Include="ServerDock\ServiceDock.h" />

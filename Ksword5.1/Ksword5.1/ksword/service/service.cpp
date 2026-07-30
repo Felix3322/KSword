@@ -588,6 +588,19 @@ namespace ks::service
                 (void)waitByHandle(svc.get(), SERVICE_STOPPED, static_cast<DWORD>(stopTimeoutMs), &finalStatus);
             }
         }
+        if (!stopFirst)
+        {
+            ServiceStatus verifiedStatus;
+            if (!queryStatusByHandle(svc.get(), &verifiedStatus, textOut, codeOut)) { return false; }
+            if (verifiedStatus.currentState != SERVICE_STOPPED)
+            {
+                return failWin32(
+                    "DeleteServiceByName refused a service that is not stopped",
+                    ERROR_BUSY,
+                    textOut,
+                    codeOut);
+            }
+        }
         if (::DeleteService(svc.get()) == FALSE)
         {
             const DWORD err = ::GetLastError();

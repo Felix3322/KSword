@@ -682,6 +682,10 @@ namespace
             return QStringLiteral("ntkrla57");
         case KSW_DYN_PROFILE_CLASS_LXCORE:
             return QStringLiteral("lxcore");
+        case KSW_DYN_PROFILE_CLASS_FLTMGR:
+            return QStringLiteral("fltmgr");
+        case KSW_DYN_PROFILE_CLASS_CI:
+            return QStringLiteral("ci");
         default:
             return QStringLiteral("unknown(%1)").arg(classId);
         }
@@ -1110,15 +1114,19 @@ namespace
             { "_RTL_AVL_TABLE.DeleteCount", KSW_DYN_FIELD_ID_RTL_AVL_DELETE_COUNT },
             { "RtlAvlTypeSize", KSW_DYN_FIELD_ID_RTL_AVL_TYPE_SIZE },
             { "_RTL_AVL_TABLE.TypeSize", KSW_DYN_FIELD_ID_RTL_AVL_TYPE_SIZE },
+            { "PiDdbDriverName", KSW_DYN_FIELD_ID_PIDDB_DRIVER_NAME },
+            { "_PIDDB_CACHE_ENTRY.DriverName", KSW_DYN_FIELD_ID_PIDDB_DRIVER_NAME },
+            { "PiDdbTimeDateStamp", KSW_DYN_FIELD_ID_PIDDB_TIME_DATE_STAMP },
+            { "_PIDDB_CACHE_ENTRY.TimeDateStamp", KSW_DYN_FIELD_ID_PIDDB_TIME_DATE_STAMP },
+            { "PiDdbLoadStatus", KSW_DYN_FIELD_ID_PIDDB_LOAD_STATUS },
+            { "_PIDDB_CACHE_ENTRY.LoadStatus", KSW_DYN_FIELD_ID_PIDDB_LOAD_STATUS },
+            { "PiDdbTypeSize", KSW_DYN_FIELD_ID_PIDDB_TYPE_SIZE },
+            { "_PIDDB_CACHE_ENTRY.TypeSize", KSW_DYN_FIELD_ID_PIDDB_TYPE_SIZE },
             { "PspCidTable", KSW_DYN_FIELD_ID_KG_PSP_CID_TABLE },
             { "PsLoadedModuleList", KSW_DYN_FIELD_ID_KG_PS_LOADED_MODULE_LIST },
             { "MmUnloadedDrivers", KSW_DYN_FIELD_ID_KG_MM_UNLOADED_DRIVERS },
             { "PiDDBCacheTable", KSW_DYN_FIELD_ID_KG_PIDDB_CACHE_TABLE },
             { "PiDDBLock", KSW_DYN_FIELD_ID_KG_PIDDB_LOCK },
-            { "PiDdbDriverName", KSW_DYN_FIELD_ID_PIDDB_DRIVER_NAME },
-            { "PiDdbTimeDateStamp", KSW_DYN_FIELD_ID_PIDDB_TIME_DATE_STAMP },
-            { "PiDdbLoadStatus", KSW_DYN_FIELD_ID_PIDDB_LOAD_STATUS },
-            { "PiDdbTypeSize", KSW_DYN_FIELD_ID_PIDDB_TYPE_SIZE },
             // Kernel Global RVA 映射：
             // - 输入：PDB profile pack 中的 Shadow SSDT 全局符号名；
             // - 处理：映射到 shared DynData 字段 ID，避免 EX apply 将该项计入 ignored；
@@ -1185,6 +1193,7 @@ namespace
         case KSW_DYN_FIELD_ID_KG_PS_LOADED_MODULE_LIST:
         case KSW_DYN_FIELD_ID_KG_MM_UNLOADED_DRIVERS:
         case KSW_DYN_FIELD_ID_KG_PIDDB_CACHE_TABLE:
+        case KSW_DYN_FIELD_ID_KG_PIDDB_LOCK:
         case KSW_DYN_FIELD_ID_KG_KE_SERVICE_DESCRIPTOR_TABLE_SHADOW:
         case KSW_DYN_FIELD_ID_KG_MM_LAST_UNLOADED_DRIVER:
             return true;
@@ -1612,6 +1621,16 @@ namespace
         case KSW_DYN_V4_ITEM_ID_KTIMER_TABLE_ENTRY_TYPE_SIZE:
         case KSW_DYN_V4_ITEM_ID_KTIMER_TYPE_SIZE:
         case KSW_DYN_V4_ITEM_ID_KDPC_TYPE_SIZE:
+        case KSW_DYN_V4_ITEM_ID_FLT_FILTER_OPERATIONS:
+        case KSW_DYN_V4_ITEM_ID_CI_KERNEL_HASH_BUCKET_LIST:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_CACHE_LOCK:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_NEXT:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_DRIVER_NAME:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_TIME_DATE_STAMP:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_LOAD_STATUS:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_IMAGE_BASE:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_IMAGE_SIZE:
+        case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_TYPE_SIZE:
             return true;
         default:
             return false;
@@ -1777,6 +1796,18 @@ namespace
             classIdOut = KSW_DYN_PROFILE_CLASS_NTKRLA57;
             return true;
         }
+        if (normalized == QStringLiteral("fltmgr") || normalized == QStringLiteral("fltmgr.sys"))
+        {
+            classIdOut = KSW_DYN_PROFILE_CLASS_FLTMGR;
+            return true;
+        }
+        if (normalized == QStringLiteral("ci") ||
+            normalized == QStringLiteral("ci.dll") ||
+            normalized == QStringLiteral("ci.sys"))
+        {
+            classIdOut = KSW_DYN_PROFILE_CLASS_CI;
+            return true;
+        }
 
         classIdOut = 0U;
         return false;
@@ -1800,6 +1831,8 @@ namespace
         case KSW_DYN_PROFILE_CLASS_NTOSKRNL:
         case KSW_DYN_PROFILE_CLASS_NTKRLA57:
         case KSW_DYN_PROFILE_CLASS_LXCORE:
+        case KSW_DYN_PROFILE_CLASS_FLTMGR:
+        case KSW_DYN_PROFILE_CLASS_CI:
             classIdOut = parsedValue;
             return true;
         default:
@@ -2504,6 +2537,34 @@ namespace
         return result;
     }
 
+    // convertV4PacketIdentity：
+    // - 输入 source：queryDynDataV4Modules 返回的共享模块身份包；
+    // - 处理：按固定长度安全提取模块名，并转换为 profile 查找所需 R3 类型；
+    // - 返回：ArkDynModuleIdentity 值对象。
+    ksword::ark::ArkDynModuleIdentity convertV4PacketIdentity(
+        const KSW_DYN_MODULE_IDENTITY_PACKET& source)
+    {
+        ksword::ark::ArkDynModuleIdentity result{};
+        result.present = source.present != 0UL;
+        result.classId = static_cast<std::uint32_t>(source.classId);
+        result.machine = static_cast<std::uint32_t>(source.machine);
+        result.timeDateStamp =
+            static_cast<std::uint32_t>(source.timeDateStamp);
+        result.sizeOfImage =
+            static_cast<std::uint32_t>(source.sizeOfImage);
+        result.imageBase = static_cast<std::uint64_t>(source.imageBase);
+        std::size_t moduleNameLength = 0U;
+        while (moduleNameLength < KSW_DYN_MODULE_NAME_CHARS &&
+            source.moduleName[moduleNameLength] != L'\0')
+        {
+            ++moduleNameLength;
+        }
+        result.moduleName.assign(
+            source.moduleName,
+            source.moduleName + moduleNameLength);
+        return result;
+    }
+
     // moduleDetailText：
     // - 输入 title/source：模块标题和身份结构；
     // - 处理：格式化模块 identity；
@@ -2941,6 +3002,88 @@ namespace
         {
             pdbProfileMessageText = kernelText("kernel.dyndata.profile.status_query_failed", QStringLiteral("DynData status 查询失败，无法确认 ntoskrnl identity，跳过 PDB profile 扫描。"));
             pdbProfileIoMessageText = friendlyDynDataIoMessage(initialStatusResult.io.message);
+        }
+
+        // v4 模块 profile 必须按各自当前映像身份精确选择；ntoskrnl status
+        // 不包含 ci.dll 身份，因此 CI 只能从 queryDynDataV4Modules 的初始快照加载。
+        if (initialV4ModulesResult.io.ok)
+        {
+            for (const KSW_DYN_V4_MODULE_STATUS_ENTRY& moduleEntry :
+                 initialV4ModulesResult.entries)
+            {
+                if (moduleEntry.module.image.classId !=
+                        KSW_DYN_PROFILE_CLASS_CI ||
+                    moduleEntry.module.image.present == 0UL ||
+                    (moduleEntry.statusFlags &
+                        KSW_DYN_V4_STATUS_FLAG_PROFILE_APPLIED) != 0U)
+                {
+                    continue;
+                }
+
+                pdbProfileScanAttempted = true;
+                const ksword::ark::ArkDynModuleIdentity ciIdentity =
+                    convertV4PacketIdentity(moduleEntry.module.image);
+                QString ciScanDiagnostics;
+                const LocalPdbProfile ciProfile =
+                    findMatchingPdbProfile(ciIdentity, ciScanDiagnostics);
+                const QString ciDiagnosticBlock =
+                    QStringLiteral("CI: %1").arg(ciScanDiagnostics);
+                if (!pdbProfileMessageText.isEmpty())
+                {
+                    pdbProfileMessageText += QStringLiteral(" | ");
+                }
+                pdbProfileMessageText += ciDiagnosticBlock;
+
+                if (!ciProfile.matched)
+                {
+                    continue;
+                }
+                pdbProfileFound = true;
+                if (pdbProfileSourceText.isEmpty())
+                {
+                    pdbProfileSourceText =
+                        profileSourceDisplayText(ciProfile.sourceText);
+                    pdbProfileNameText =
+                        stringToQString(ciProfile.applyInput.profileName);
+                    pdbProfilePathText = ciProfile.pathText;
+                }
+                pdbProfileIgnoredJsonFields +=
+                    ciProfile.ignoredUnknownFields;
+                if (!ciProfile.valid ||
+                    ciProfile.applyV4Input.items.empty())
+                {
+                    continue;
+                }
+
+                const ksword::ark::DynDataV4ApplyResult ciApplyResult =
+                    client.applyDynDataProfileV4(
+                        ciProfile.applyV4Input);
+                if (!pdbProfileIoMessageText.isEmpty())
+                {
+                    pdbProfileIoMessageText += QStringLiteral(" | ");
+                }
+                pdbProfileIoMessageText +=
+                    friendlyDynDataIoMessage(ciApplyResult.io.message);
+                pdbProfileStatus = ciApplyResult.response.status;
+                pdbProfileAppliedFields +=
+                    ciApplyResult.response.appliedItemCount;
+                pdbProfileRejectedFields +=
+                    ciApplyResult.response.rejectedItemCount;
+                if (ciApplyResult.response.message[0] != L'\0')
+                {
+                    pdbProfileMessageText += QStringLiteral(" | CI: ");
+                    pdbProfileMessageText +=
+                        wideStringToQString(
+                            ciApplyResult.response.message);
+                }
+                const bool ciApplySucceeded =
+                    ciApplyResult.io.ok &&
+                    ciApplyResult.response.status == 0;
+                pdbProfileApplied =
+                    pdbProfileApplied || ciApplySucceeded;
+                requeryAfterProfileApply =
+                    requeryAfterProfileApply || ciApplySucceeded;
+            }
         }
 
         ksword::ark::DynDataStatusResult statusResult = initialStatusResult;

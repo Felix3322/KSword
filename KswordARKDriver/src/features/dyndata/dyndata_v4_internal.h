@@ -74,6 +74,23 @@ typedef struct _KSW_DYN_V4_BIT_FIELD_LAYOUT
     ULONG StorageBytes;
 } KSW_DYN_V4_BIT_FIELD_LAYOUT;
 
+// CI 哈希缓存消费者只接收已完成身份校验的一次性布局快照。
+// Global 字段保存相对 ci.dll/ci.sys 当前映像基址的 RVA。
+typedef struct _KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT
+{
+    ULONGLONG ModuleBase;
+    ULONG ModuleSize;
+    ULONG KernelHashBucketListRva;
+    ULONG HashCacheLockRva;
+    ULONG EntryNext;
+    ULONG EntryDriverName;
+    ULONG EntryTimeDateStamp;
+    ULONG EntryLoadStatus;
+    ULONG EntryImageBase;
+    ULONG EntryImageSize;
+    ULONG EntryTypeSize;
+} KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT;
+
 NTSTATUS
 KswordARKDynDataV4SnapshotTimerDpcLayout(
     _Out_ KSW_DYN_V4_TIMER_DPC_LAYOUT* LayoutOut
@@ -89,6 +106,20 @@ KswordARKDynDataV4SnapshotFltMgrMinifilterLayout(
 NTSTATUS
 KswordARKDynDataV4SnapshotActiveExWorkerField(
     _Out_ KSW_DYN_V4_BIT_FIELD_LAYOUT* FieldOut
+    );
+
+// 获取与当前 ci.dll/ci.sys 身份精确匹配的只读内核哈希缓存布局。
+NTSTATUS
+KswordARKDynDataV4SnapshotCiKernelHashLayout(
+    _Out_ KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT* LayoutOut
+    );
+
+// 枚举当前已加载且受 v4 支持的模块身份，并叠加已经应用的 profile 状态。
+ULONG
+KswordARKDynDataV4BuildModuleStatusSnapshot(
+    _Out_writes_opt_(EntryCapacity) KSW_DYN_V4_MODULE_STATUS_ENTRY* Entries,
+    _In_ ULONG EntryCapacity,
+    _Out_ ULONG* TotalCountOut
     );
 
 EXTERN_C_END

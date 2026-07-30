@@ -41,6 +41,7 @@
 #include "../../../shared/driver/KswordArkHwidIoctl.h"
 #include "../../../shared/driver/KswordArkDebugOutputIoctl.h"
 #include "../../../shared/driver/KswordArkBugcheckIoctl.h"
+#include "../../../shared/driver/KswordArkUnloadedDriverIoctl.h"
 
 namespace ksword::ark
 {
@@ -653,6 +654,7 @@ namespace ksword::ark
     {
         IoResult io;                    // io：DeviceIoControl 调用状态。
         std::uint32_t version = 0;      // version：协议版本。
+        std::uint32_t headerSize = 0;   // headerSize：R0 固定响应头大小。
         std::uint32_t processId = 0;    // processId：目标 PID。
         std::uint32_t fieldFlags = 0;   // fieldFlags：KSWORD_ARK_MEMORY_FIELD_*。
         std::uint32_t readStatus = KSWORD_ARK_MEMORY_READ_STATUS_UNAVAILABLE; // readStatus：R0 读聚合状态。
@@ -1154,6 +1156,36 @@ namespace ksword::ark
         std::uint32_t moduleCount = 0;
         long lastStatus = 0;
         std::vector<DriverIntegrityEvidenceEntry> entries;
+    };
+
+    // UnloadedDriverEntry：三个内核来源统一投影后的只读记录。
+    // flags 中的 HAS_* 位决定 UI 哪些列显示真实值，缺失字段不会被解释为 0。
+    struct UnloadedDriverEntry
+    {
+        std::uint32_t source = 0;
+        std::uint32_t flags = 0;
+        std::uint64_t entryAddress = 0;
+        std::uint64_t baseAddress = 0;
+        std::uint64_t imageSize = 0;
+        std::uint64_t unloadTime = 0;
+        std::uint32_t timeDateStamp = 0;
+        long loadStatus = 0;
+        std::wstring driverName;
+    };
+
+    // UnloadedDriverQueryResult：一次指定来源查询的传输、业务状态与行集合。
+    // unsupported 仅表示旧驱动没有该 IOCTL；DynData/profile 缺失由 queryStatus 表达。
+    struct UnloadedDriverQueryResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t source = 0;
+        std::uint32_t queryStatus = KSWORD_ARK_UNLOADED_DRIVER_STATUS_INVALID_REQUEST;
+        std::uint32_t responseFlags = 0;
+        std::uint32_t totalRows = 0;
+        std::uint32_t skippedRows = 0;
+        long lastStatus = 0;
+        std::vector<UnloadedDriverEntry> entries;
     };
 
     // CpuHardwareSnapshotResult carries the read-only R0 CPUID hardware packet.
@@ -1953,6 +1985,21 @@ namespace ksword::ark
         std::uint32_t budgetRows = 0;
         std::uint32_t generation = 0;
         std::vector<KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW> entries;
+    };
+
+    // NetworkWfpEventResult 承载真实 WFP ALE IPv4 流授权事件增量响应。
+    // 输入：queryNetworkWfpEvents(afterSequence, maxRows) 返回。
+    // 处理：严格验证响应/行 ABI、字节边界和 sequence 单调性后复制 entries。
+    // 返回行为：事件只含五元组元数据，不含 packet length、bytes 或 payload。
+    struct NetworkWfpEventResult : VariableAuditResultBase
+    {
+        std::uint32_t capacity = 0;           // capacity：驱动固定非分页 ring 容量。
+        std::uint64_t oldestSequence = 0;     // oldestSequence：当前仍可读取的最旧序号。
+        std::uint64_t newestSequence = 0;     // newestSequence：当前 ring 最新序号。
+        std::uint64_t nextSequence = 0;       // nextSequence：本响应最后返回的 cursor。
+        std::uint64_t droppedEventCount = 0;  // droppedEventCount：ring 累计覆盖事件数。
+        std::uint64_t cursorGapCount = 0;     // cursorGapCount：本次 cursor 已无法恢复的事件数。
+        std::vector<KSWORD_ARK_NETWORK_WFP_EVENT_ROW> entries;
     };
 
     // NetworkNdisChainResult 承载 NDIS miniport/filter/protocol/binding 链只读审计结果。

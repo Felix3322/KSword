@@ -86,6 +86,7 @@
 #include "Internationalization/LanguageManager.h"
 #include "UI/CodeEditorWidget.h"
 #include "UI/GlobalDialogTheme.h"
+#include "UI/SvgThemeIconManager.h"
 #include "UI/ThemedMessageBox.h"
 #include "theme.h"
 #include "../../shared/KswordArkLogProtocol.h"
@@ -9615,6 +9616,7 @@ void MainWindow::applyAppearanceSettings(
     int globalAppStyleWidgetCount = 0;
     int globalAppStyleLength = 0;
     qint64 styleSheetApplyElapsedMs = 0;
+    ks::ui::SvgThemeIconApplyResult svgThemeIconApplyResult;
     bool globalAppStyleChanged = false;
     bool mainStyleSheetChanged = false;
 
@@ -9796,18 +9798,7 @@ void MainWindow::applyAppearanceSettings(
             QStringLiteral("正在应用界面设置..."));
     }
 
-    if (isInitialAppearanceApply)
-    {
-        reportStartupProgress(
-            91,
-            QStringLiteral("main.startup.progress.queue_kernel_dock_check"),
-            QStringLiteral("即将完成..."));
-        QTimer::singleShot(0, this, [this]()
-            {
-                repairKernelDockAfterLayoutRestore(QStringLiteral("applyAppearanceSettings-deferred-0"));
-            });
-    }
-    else if (dockTransparencyChanged)
+    if (!isInitialAppearanceApply && dockTransparencyChanged)
     {
         repairKernelDockAfterLayoutRestore(QStringLiteral("applyAppearanceSettings"));
     }
@@ -9847,6 +9838,62 @@ void MainWindow::applyAppearanceSettings(
     if (themeVisualRefreshRequired)
     {
         refreshThemeDependentVisuals(darkModeEnabled);
+
+        runtimeProgress.update(
+            88,
+            QStringLiteral("main.runtime_appearance.progress.svg_icons"),
+            QStringLiteral("正在集中适配 SVG 图标..."));
+        QApplication* const applicationPointer =
+            qobject_cast<QApplication*>(QCoreApplication::instance());
+        const bool usesDefaultThemeColor =
+            KswordTheme::PrimaryBlueColor == KswordTheme::DefaultPrimaryAccentColor();
+        // SVG 图标批处理必须在各面板重建主题视觉后执行，避免后续刷新覆盖着色结果。
+        // 回调只更新启动画面的文本与进度，不改变主题加载次序。
+        const auto svgProgressCallback =
+            [this, isInitialAppearanceApply](const int processedCount, const int totalCount)
+            {
+                if (!isInitialAppearanceApply)
+                {
+                    return;
+                }
+                const int svgProgressValue =
+                    totalCount > 0
+                    ? 88 + qBound(
+                        0,
+                        static_cast<int>(
+                            (static_cast<qint64>(processedCount) * 3) /
+                            totalCount),
+                        3)
+                    : 91;
+                reportStartupProgress(
+                    svgProgressValue,
+                    totalCount > 0
+                        ? QStringLiteral("main.startup.progress.recolor_svg_icons_count")
+                        : QStringLiteral("main.startup.progress.recolor_svg_icons_skipped"),
+                    totalCount > 0
+                        ? QStringLiteral("正在集中适配 SVG 图标（%1/%2）...")
+                            .arg(processedCount)
+                            .arg(totalCount)
+                        : QStringLiteral("默认主题色无需重新着色 SVG 图标。"));
+            };
+        svgThemeIconApplyResult =
+            ks::ui::SvgThemeIconManager::instance().applyToApplication(
+                applicationPointer,
+                KswordTheme::PrimaryBlueColor,
+                usesDefaultThemeColor,
+                svgProgressCallback);
+    }
+
+    if (isInitialAppearanceApply)
+    {
+        reportStartupProgress(
+            92,
+            QStringLiteral("main.startup.progress.queue_kernel_dock_check"),
+            QStringLiteral("即将完成..."));
+        QTimer::singleShot(0, this, [this]()
+            {
+                repairKernelDockAfterLayoutRestore(QStringLiteral("applyAppearanceSettings-deferred-0"));
+            });
     }
 
     runtimeProgress.update(
@@ -9876,6 +9923,16 @@ void MainWindow::applyAppearanceSettings(
         << (mainStyleRefreshRequired ? "true" : "false")
         << ", styleChanged="
         << (mainStyleSheetChanged ? "true" : "false")
+        << ", svgIconVisited="
+        << svgThemeIconApplyResult.visitedWidgetCount
+        << ", svgIconChanged="
+        << svgThemeIconApplyResult.recoloredIconCount
+        << ", svgIconCacheHits="
+        << svgThemeIconApplyResult.cacheHitCount
+        << ", svgIconDefaultSkipped="
+        << (svgThemeIconApplyResult.skippedDefaultTheme ? "true" : "false")
+        << ", svgIconElapsedMs="
+        << svgThemeIconApplyResult.elapsedMilliseconds
         << "，styleElapsedMs="
         << styleSheetApplyElapsedMs
         << "，elapsedMs="

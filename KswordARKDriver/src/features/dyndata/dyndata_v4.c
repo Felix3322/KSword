@@ -127,6 +127,11 @@ static const KSW_KERNEL_MODULE_NAME_MATCH g_KswordDynV4FvevolNames[] = {
     { "fvevol.sys", KSW_DYN_PROFILE_CLASS_FVEVOL }
 };
 
+static const KSW_KERNEL_MODULE_NAME_MATCH g_KswordDynV4CiNames[] = {
+    { "ci.dll", KSW_DYN_PROFILE_CLASS_CI },
+    { "ci.sys", KSW_DYN_PROFILE_CLASS_CI }
+};
+
 static const KSW_DYN_V4_MODULE_MATCH g_KswordDynV4ModuleMatches[] = {
     { KSW_DYN_PROFILE_CLASS_NTOSKRNL, g_KswordDynV4NtosNames, RTL_NUMBER_OF(g_KswordDynV4NtosNames) },
     { KSW_DYN_PROFILE_CLASS_NTKRLA57, g_KswordDynV4Ntkrla57Names, RTL_NUMBER_OF(g_KswordDynV4Ntkrla57Names) },
@@ -138,7 +143,8 @@ static const KSW_DYN_V4_MODULE_MATCH g_KswordDynV4ModuleMatches[] = {
     { KSW_DYN_PROFILE_CLASS_NDIS, g_KswordDynV4NdisNames, RTL_NUMBER_OF(g_KswordDynV4NdisNames) },
     { KSW_DYN_PROFILE_CLASS_NETIO, g_KswordDynV4NetioNames, RTL_NUMBER_OF(g_KswordDynV4NetioNames) },
     { KSW_DYN_PROFILE_CLASS_FLTMGR, g_KswordDynV4FltMgrNames, RTL_NUMBER_OF(g_KswordDynV4FltMgrNames) },
-    { KSW_DYN_PROFILE_CLASS_FVEVOL, g_KswordDynV4FvevolNames, RTL_NUMBER_OF(g_KswordDynV4FvevolNames) }
+    { KSW_DYN_PROFILE_CLASS_FVEVOL, g_KswordDynV4FvevolNames, RTL_NUMBER_OF(g_KswordDynV4FvevolNames) },
+    { KSW_DYN_PROFILE_CLASS_CI, g_KswordDynV4CiNames, RTL_NUMBER_OF(g_KswordDynV4CiNames) }
 };
 
 static VOID
@@ -364,6 +370,94 @@ Return Value:
     }
 
     return -1L;
+}
+
+// 前向声明：模块状态快照需要复用下方的严格映像身份比较。
+static BOOLEAN
+KswordARKDynDataV4ImageIdentityMatches(
+    _In_ const KSW_DYN_MODULE_IDENTITY_PACKET* CurrentIdentity,
+    _In_ const KSW_DYN_MODULE_IDENTITY_PACKET* RequestedIdentity
+    );
+
+ULONG
+KswordARKDynDataV4BuildModuleStatusSnapshot(
+    _Out_writes_opt_(EntryCapacity) KSW_DYN_V4_MODULE_STATUS_ENTRY* Entries,
+    _In_ ULONG EntryCapacity,
+    _Out_ ULONG* TotalCountOut
+    )
+/*++
+
+Routine Description:
+
+    Query every currently loaded module class supported by DynData v4 and merge
+    an already accepted profile row when its immutable image identity still
+    matches. 中文说明：未应用 profile 的 ci.dll 也会返回身份，R3 才能从 v4
+    pack 选择精确条目，不能靠猜测版本或遍历提交大量错误 profile。
+
+Return Value:
+
+    Number of rows copied to Entries. TotalCountOut receives all loaded matches.
+
+--*/
+{
+    ULONG matchIndex = 0UL;
+    ULONG copiedCount = 0UL;
+    ULONG totalCount = 0UL;
+
+    if (TotalCountOut == NULL) {
+        return 0UL;
+    }
+    *TotalCountOut = 0UL;
+
+    for (matchIndex = 0UL;
+         matchIndex < RTL_NUMBER_OF(g_KswordDynV4ModuleMatches);
+         ++matchIndex) {
+        const KSW_DYN_V4_MODULE_MATCH* moduleMatch =
+            &g_KswordDynV4ModuleMatches[matchIndex];
+        KSW_DYN_MODULE_IDENTITY_PACKET currentIdentity;
+        KSW_DYN_V4_MODULE_STATUS_ENTRY publicEntry;
+        const LONG moduleSlot =
+            KswordARKDynDataV4FindModuleSlot(moduleMatch->ClassId);
+        NTSTATUS identityStatus = STATUS_SUCCESS;
+
+        RtlZeroMemory(&currentIdentity, sizeof(currentIdentity));
+        RtlZeroMemory(&publicEntry, sizeof(publicEntry));
+        identityStatus = KswordARKQueryKernelModuleIdentity(
+            moduleMatch->Names,
+            moduleMatch->NameCount,
+            &currentIdentity);
+        if (!NT_SUCCESS(identityStatus) || currentIdentity.present == 0UL) {
+            continue;
+        }
+
+        // 当前匹配表索引也是公开稳定槽位；不要把理论上的 -1 moduleSlot
+        // 直接转换成 ULONG 后暴露给 R3。
+        publicEntry.moduleIndex = matchIndex;
+        publicEntry.statusFlags = KSW_DYN_V4_STATUS_FLAG_IDENTITY_MATCHED;
+        publicEntry.module.image = currentIdentity;
+        if (moduleSlot >= 0L &&
+            (ULONG)moduleSlot < KSW_DYN_V4_MAX_MODULES) {
+            ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+            if (g_KswordDynDataV4State.Modules[moduleSlot].Occupied &&
+                KswordARKDynDataV4ImageIdentityMatches(
+                    &currentIdentity,
+                    &g_KswordDynDataV4State.Modules[moduleSlot]
+                        .PublicEntry.module.image)) {
+                publicEntry =
+                    g_KswordDynDataV4State.Modules[moduleSlot].PublicEntry;
+            }
+            ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+        }
+
+        totalCount += 1UL;
+        if (Entries != NULL && copiedCount < EntryCapacity) {
+            Entries[copiedCount] = publicEntry;
+            copiedCount += 1UL;
+        }
+    }
+
+    *TotalCountOut = totalCount;
+    return copiedCount;
 }
 
 static BOOLEAN
@@ -903,6 +997,151 @@ Return Value:
 
     if (!NT_SUCCESS(status)) {
         RtlZeroMemory(FieldOut, sizeof(*FieldOut));
+    }
+    return status;
+}
+
+NTSTATUS
+KswordARKDynDataV4SnapshotCiKernelHashLayout(
+    _Out_ KSW_DYN_V4_CI_KERNEL_HASH_LAYOUT* LayoutOut
+    )
+/*++
+
+Routine Description:
+
+    Copy the identity-matched CI kernel hash list globals and entry layout into
+    one scalar snapshot. 中文说明：调用方不会直接访问 v4 全局状态，也不会在
+    持有 DynData 锁时遍历 CI 链表。
+
+Return Value:
+
+    STATUS_SUCCESS when every required CI hash item is present and bounded;
+    STATUS_NOT_SUPPORTED when the CI profile or required item is absent.
+
+--*/
+{
+    ULONG moduleIndex = 0UL;
+    ULONG itemIndex = 0UL;
+    ULONG requiredFoundMask = 0UL;
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
+
+    if (LayoutOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
+    LayoutOut->EntryTimeDateStamp = KSW_DYN_OFFSET_UNAVAILABLE;
+    LayoutOut->EntryLoadStatus = KSW_DYN_OFFSET_UNAVAILABLE;
+    LayoutOut->EntryImageBase = KSW_DYN_OFFSET_UNAVAILABLE;
+    LayoutOut->EntryImageSize = KSW_DYN_OFFSET_UNAVAILABLE;
+
+    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    for (moduleIndex = 0UL; moduleIndex < KSW_DYN_V4_MAX_MODULES; ++moduleIndex) {
+        const KSW_DYN_V4_MODULE_STATE* moduleState =
+            &g_KswordDynDataV4State.Modules[moduleIndex];
+
+        if (!moduleState->Occupied ||
+            moduleState->PublicEntry.module.image.classId != KSW_DYN_PROFILE_CLASS_CI ||
+            moduleState->StoredItemCount > KSW_DYN_V4_MAX_ITEMS_PER_MODULE) {
+            continue;
+        }
+
+        LayoutOut->ModuleBase = moduleState->PublicEntry.module.image.imageBase;
+        LayoutOut->ModuleSize = moduleState->PublicEntry.module.image.sizeOfImage;
+        for (itemIndex = 0UL; itemIndex < moduleState->StoredItemCount; ++itemIndex) {
+            const KSW_DYN_V4_ITEM_PACKET* item = &moduleState->Items[itemIndex];
+
+            switch (item->itemId) {
+            case KSW_DYN_V4_ITEM_ID_CI_KERNEL_HASH_BUCKET_LIST:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_GLOBAL_RVA) {
+                    LayoutOut->KernelHashBucketListRva = item->valueLow;
+                    requiredFoundMask |= 0x00000001UL;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_CACHE_LOCK:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_GLOBAL_RVA) {
+                    LayoutOut->HashCacheLockRva = item->valueLow;
+                    requiredFoundMask |= 0x00000002UL;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_NEXT:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET) {
+                    LayoutOut->EntryNext = item->valueLow;
+                    requiredFoundMask |= 0x00000004UL;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_DRIVER_NAME:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET) {
+                    LayoutOut->EntryDriverName = item->valueLow;
+                    requiredFoundMask |= 0x00000008UL;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_TIME_DATE_STAMP:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET) {
+                    LayoutOut->EntryTimeDateStamp = item->valueLow;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_LOAD_STATUS:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET) {
+                    LayoutOut->EntryLoadStatus = item->valueLow;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_IMAGE_BASE:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET) {
+                    LayoutOut->EntryImageBase = item->valueLow;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_IMAGE_SIZE:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET) {
+                    LayoutOut->EntryImageSize = item->valueLow;
+                }
+                break;
+            case KSW_DYN_V4_ITEM_ID_CI_HASH_ENTRY_TYPE_SIZE:
+                if (item->itemKind == KSW_DYN_V4_ITEM_KIND_TYPE_SIZE) {
+                    LayoutOut->EntryTypeSize = item->valueLow;
+                    requiredFoundMask |= 0x00000040UL;
+                }
+                break;
+            default:
+                break;
+            }
+        }
+        break;
+    }
+    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+
+    // 必需字段必须全部出现，并且每个访问范围都落在 PDB 报告的结构大小内。
+    if (requiredFoundMask == 0x0000004FUL &&
+        LayoutOut->ModuleBase != 0ULL &&
+        LayoutOut->ModuleSize != 0UL &&
+        LayoutOut->KernelHashBucketListRva != 0UL &&
+        LayoutOut->HashCacheLockRva != 0UL &&
+        LayoutOut->ModuleSize >= sizeof(PVOID) &&
+        LayoutOut->KernelHashBucketListRva <=
+            LayoutOut->ModuleSize - sizeof(PVOID) &&
+        LayoutOut->ModuleSize >= sizeof(ERESOURCE) &&
+        LayoutOut->HashCacheLockRva <=
+            LayoutOut->ModuleSize - sizeof(ERESOURCE) &&
+        LayoutOut->ModuleBase <=
+            (~0ULL - LayoutOut->KernelHashBucketListRva) &&
+        LayoutOut->ModuleBase <=
+            (~0ULL - LayoutOut->HashCacheLockRva) &&
+        LayoutOut->EntryTypeSize >= sizeof(UNICODE_STRING) &&
+        LayoutOut->EntryTypeSize <= 4096UL &&
+        LayoutOut->EntryNext <= LayoutOut->EntryTypeSize - sizeof(PVOID) &&
+        LayoutOut->EntryDriverName <= LayoutOut->EntryTypeSize - sizeof(UNICODE_STRING) &&
+        (LayoutOut->EntryTimeDateStamp == KSW_DYN_OFFSET_UNAVAILABLE ||
+            LayoutOut->EntryTimeDateStamp <= LayoutOut->EntryTypeSize - sizeof(ULONG)) &&
+        (LayoutOut->EntryLoadStatus == KSW_DYN_OFFSET_UNAVAILABLE ||
+            LayoutOut->EntryLoadStatus <= LayoutOut->EntryTypeSize - sizeof(NTSTATUS)) &&
+        (LayoutOut->EntryImageBase == KSW_DYN_OFFSET_UNAVAILABLE ||
+            LayoutOut->EntryImageBase <= LayoutOut->EntryTypeSize - sizeof(PVOID)) &&
+        (LayoutOut->EntryImageSize == KSW_DYN_OFFSET_UNAVAILABLE ||
+            LayoutOut->EntryImageSize <= LayoutOut->EntryTypeSize - sizeof(ULONG))) {
+        status = STATUS_SUCCESS;
+    }
+
+    if (!NT_SUCCESS(status)) {
+        RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
     }
     return status;
 }

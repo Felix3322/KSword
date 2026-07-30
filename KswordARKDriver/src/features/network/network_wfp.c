@@ -20,19 +20,26 @@ Environment:
 
 // 本文件只声明当前实现实际用到的 WFP 最小 ABI，避免直接包含 fwpsk.h/ndis.h
 // 在当前 WDK/项目 Werror 组合下触发第三方头文件告警。
-#define KSWORD_ARK_FWPS_LAYER_ALE_AUTH_RECV_ACCEPT_V4 43U
-#define KSWORD_ARK_FWPS_LAYER_ALE_AUTH_CONNECT_V4 47U
+#define KSWORD_ARK_FWPS_LAYER_ALE_AUTH_RECV_ACCEPT_V4 44U
+#define KSWORD_ARK_FWPS_LAYER_ALE_AUTH_CONNECT_V4 48U
+#define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_LOCAL_ADDRESS 2U
 #define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_LOCAL_PORT 4U
 #define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_PROTOCOL 5U
+#define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_REMOTE_ADDRESS 6U
 #define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_REMOTE_PORT 7U
+#define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_LOCAL_ADDRESS 2U
 #define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_LOCAL_PORT 4U
 #define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_PROTOCOL 5U
+#define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_REMOTE_ADDRESS 6U
 #define KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_REMOTE_PORT 7U
-#define KSWORD_ARK_FWPS_METADATA_FIELD_PROCESS_ID 0x00000040ULL
+#define KSWORD_ARK_FWPS_METADATA_FIELD_PROCESS_ID 0x00000020U
 #define KSWORD_ARK_FWPS_RIGHT_ACTION_WRITE 0x00000001U
 #define KSWORD_ARK_FWPS_CLASSIFY_OUT_FLAG_ABSORB 0x00000001U
 #define KSWORD_ARK_FWPM_SESSION_FLAG_DYNAMIC 0x00000001U
 #define KSWORD_ARK_FWP_EMPTY 0U
+#define KSWORD_ARK_FWP_UINT8 1U
+#define KSWORD_ARK_FWP_UINT16 2U
+#define KSWORD_ARK_FWP_UINT32 3U
 
 // 中文说明：下面三个 action type 是 WDK fwptypes.h 暴露给 BFE 的固定 ABI 值。
 // 中文说明：FWP_ACTION_* 由低位动作编号叠加 TERMINATING/CALLOUT 标志组成，不能手工
@@ -105,41 +112,33 @@ typedef struct _KSWORD_ARK_FWPS_INCOMING_VALUES0
     KSWORD_ARK_FWPS_INCOMING_VALUE0* incomingValue;
 } KSWORD_ARK_FWPS_INCOMING_VALUES0;
 
+// 中文说明：FWPS_INCOMING_METADATA_VALUES0 在 processId 前包含固定的
+// FWPS_DISCARD_METADATA0；即使本功能不读取丢弃原因，也不能省略它，否则后续
+// processId 会从错误偏移读取。这里只复制官方前缀布局，不依赖后续版本化字段。
+typedef struct _KSWORD_ARK_FWPS_DISCARD_METADATA0
+{
+    UINT32 discardModule;
+    UINT32 discardReason;
+    UINT64 filterId;
+} KSWORD_ARK_FWPS_DISCARD_METADATA0;
+
 typedef struct _KSWORD_ARK_FWPS_INCOMING_METADATA_VALUES0
 {
     UINT32 currentMetadataValues;
     UINT32 flags;
     UINT64 reserved;
+    KSWORD_ARK_FWPS_DISCARD_METADATA0 discardMetadata;
     UINT64 flowHandle;
     UINT32 ipHeaderSize;
     UINT32 transportHeaderSize;
     VOID* processPath;
     UINT64 token;
     UINT64 processId;
-    UINT32 sourceInterfaceIndex;
-    UINT32 destinationInterfaceIndex;
-    ULONG compartmentId;
-    UINT32 fragmentMetadata;
-    UINT32 pathMtu;
-    UINT64 completionHandle;
-    UINT64 transportEndpointHandle;
-    UINT64 remoteScopeId;
-    UINT64 packetDirection;
-    UINT64 etherFrameLength;
-    VOID* parentEndpointHandle;
-    UINT32 icmpIdAndSequence;
-    UINT32 localRedirectTargetPID;
-    VOID* originalDestination;
-    UINT64 redirectRecords;
-    UINT32 currentL2MetadataValues;
-    UINT32 l2Flags;
-    UINT32 ethernetMacHeaderSize;
-    UINT32 wiFiOperationMode;
-    VOID* vSwitchSourcePortId;
-    VOID* vSwitchDestinationPortId;
-    UINT32 padding0;
-    KSWORD_ARK_FWP_BYTE_BLOB* rawData;
 } KSWORD_ARK_FWPS_INCOMING_METADATA_VALUES0;
+
+// 官方 FWPS_INCOMING_METADATA_VALUES0 的稳定前缀中 processId 位于 64 字节处。
+// 编译期保护可阻止以后“精简”未使用字段时再次破坏 classify ABI。
+C_ASSERT(FIELD_OFFSET(KSWORD_ARK_FWPS_INCOMING_METADATA_VALUES0, processId) == 64);
 
 typedef struct _KSWORD_ARK_FWPS_FILTER0
 {
@@ -390,19 +389,19 @@ static const GUID KSWORD_ARK_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4 =
 { 0xe1cd9fe7, 0xf4b5, 0x4273, { 0x96, 0xc0, 0x59, 0x2e, 0x48, 0x7b, 0x86, 0x50 } };
 
 static UINT16
-KswordARKNetworkUshortHostOrder(
-    _In_ UINT16 NetworkOrderValue
+KswordARKNetworkReadHostOrderPort(
+    _In_ UINT16 HostOrderValue
     )
 /*++
 
 Routine Description:
 
-    将 WFP 元数据中的网络序端口转换为主机序。中文说明：WFP ALE 字段通常使用
-    网络字节序，规则协议使用人类可读端口值，因此 classify 前统一转换。
+    读取 WFP FWP_UINT16 端口。中文说明：WFP 规范明确 FWP_UINT16 IP port 使用
+    主机字节序，不能再次做字节交换。
 
 Arguments:
 
-    NetworkOrderValue - 网络字节序 16 位端口。
+    HostOrderValue - WFP 提供的主机字节序 16 位端口。
 
 Return Value:
 
@@ -410,7 +409,8 @@ Return Value:
 
 --*/
 {
-    return (UINT16)(((NetworkOrderValue & 0x00FFU) << 8) | ((NetworkOrderValue & 0xFF00U) >> 8));
+    // 中文说明：WFP 已提供主机序，直接返回避免端口反向。
+    return HostOrderValue;
 }
 
 static ULONG
@@ -436,9 +436,15 @@ Return Value:
 
 --*/
 {
-    if (Values == NULL || FieldIndex >= Values->valueCount) {
+    // 中文说明：WFP 数组指针、索引和稳定 FWP_UINT32 类型必须同时有效。
+    if (Values == NULL ||
+        Values->incomingValue == NULL ||
+        FieldIndex >= Values->valueCount ||
+        Values->incomingValue[FieldIndex].value.type != KSWORD_ARK_FWP_UINT32) {
+        // 中文说明：字段缺失或 union 类型不符时返回 0，禁止错误解释 union。
         return 0UL;
     }
+    // 中文说明：类型已验证，可安全读取 uint32 union 成员。
     return Values->incomingValue[FieldIndex].value.value.uint32;
 }
 
@@ -465,10 +471,51 @@ Return Value:
 
 --*/
 {
-    if (Values == NULL || FieldIndex >= Values->valueCount) {
+    // 中文说明：WFP 数组指针、索引和稳定 FWP_UINT16 类型必须同时有效。
+    if (Values == NULL ||
+        Values->incomingValue == NULL ||
+        FieldIndex >= Values->valueCount ||
+        Values->incomingValue[FieldIndex].value.type != KSWORD_ARK_FWP_UINT16) {
+        // 中文说明：字段缺失或 union 类型不符时返回 0。
         return 0UL;
     }
+    // 中文说明：类型已验证，可安全读取 uint16 union 成员。
     return (ULONG)Values->incomingValue[FieldIndex].value.value.uint16;
+}
+
+static ULONG
+KswordARKNetworkReadUint8Field(
+    _In_ const KSWORD_ARK_FWPS_INCOMING_VALUES0* Values,
+    _In_ UINT32 FieldIndex
+    )
+/*++
+
+Routine Description:
+
+    从 WFP incoming values 读取 UINT8 字段。中文说明：ALE IP_PROTOCOL 是
+    FWP_UINT8，不能用 UINT32 联合体成员解释。
+
+Arguments:
+
+    Values - WFP classify 输入字段集合。
+    FieldIndex - 字段索引。
+
+Return Value:
+
+    字段值；字段不存在时返回 0。
+
+--*/
+{
+    // 中文说明：先校验 WFP 字段数组边界。
+    if (Values == NULL ||
+        Values->incomingValue == NULL ||
+        FieldIndex >= Values->valueCount ||
+        Values->incomingValue[FieldIndex].value.type != KSWORD_ARK_FWP_UINT8) {
+        // 中文说明：字段不可用或 union 类型不符时返回 0。
+        return 0UL;
+    }
+    // 中文说明：协议字段按 FWP_UINT8 读取并扩展为 ULONG。
+    return (ULONG)Values->incomingValue[FieldIndex].value.value.uint8;
 }
 
 static ULONG
@@ -507,6 +554,8 @@ KswordARKNetworkClassifyExtractTuple(
     _In_ const KSWORD_ARK_FWPS_INCOMING_METADATA_VALUES0* Metadata,
     _Out_ ULONG* DirectionOut,
     _Out_ ULONG* ProtocolOut,
+    _Out_ ULONG* LocalAddressV4Out,
+    _Out_ ULONG* RemoteAddressV4Out,
     _Out_ USHORT* LocalPortOut,
     _Out_ USHORT* RemotePortOut,
     _Out_ ULONG* ProcessIdOut
@@ -515,8 +564,8 @@ KswordARKNetworkClassifyExtractTuple(
 
 Routine Description:
 
-    从 ALE connect/recv-accept 层提取规则匹配所需摘要。中文说明：当前仅覆盖 IPv4
-    TCP/UDP，IPv6 可以后续用同一规则结构扩展。
+    从 ALE connect/recv-accept 层提取规则匹配与事件所需摘要。中文说明：当前仅
+    覆盖 IPv4；驱动保留原始协议号，R3 监控页当前只展示 TCP/UDP。
 
 Arguments:
 
@@ -524,6 +573,8 @@ Arguments:
     Metadata - WFP metadata。
     DirectionOut - 返回入站/出站方向。
     ProtocolOut - 返回协议号。
+    LocalAddressV4Out - 返回主机序本地 IPv4。
+    RemoteAddressV4Out - 返回主机序远端 IPv4。
     LocalPortOut - 返回本地端口。
     RemotePortOut - 返回远端端口。
     ProcessIdOut - 返回进程 ID。
@@ -534,33 +585,61 @@ Return Value:
 
 --*/
 {
-    UINT16 localPortNetwork = 0U;
-    UINT16 remotePortNetwork = 0U;
+    // 中文说明：保存 WFP 已提供为主机序的本地端口。
+    UINT16 localPortHost = 0U;
+    // 中文说明：保存 WFP 已提供为主机序的远端端口。
+    UINT16 remotePortHost = 0U;
 
+    // 中文说明：所有输出字段都必须可写，避免 classify 热路径部分初始化。
     if (Values == NULL || DirectionOut == NULL || ProtocolOut == NULL ||
+        LocalAddressV4Out == NULL || RemoteAddressV4Out == NULL ||
         LocalPortOut == NULL || RemotePortOut == NULL || ProcessIdOut == NULL) {
+        // 中文说明：参数无效时拒绝形成事件。
         return FALSE;
     }
 
+    // 中文说明：ALE_AUTH_CONNECT_V4 表示出站流授权。
     if (Values->layerId == KSWORD_ARK_FWPS_LAYER_ALE_AUTH_CONNECT_V4) {
+        // 中文说明：connect 层固定映射为出站。
         *DirectionOut = KSWORD_ARK_NETWORK_DIRECTION_OUTBOUND;
-        *ProtocolOut = KswordARKNetworkReadUint32Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_PROTOCOL);
-        localPortNetwork = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_LOCAL_PORT);
-        remotePortNetwork = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_REMOTE_PORT);
+        // 中文说明：协议字段按 FWP_UINT8 读取。
+        *ProtocolOut = KswordARKNetworkReadUint8Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_PROTOCOL);
+        // 中文说明：IPv4 地址字段按 FWP_UINT32 主机序读取。
+        *LocalAddressV4Out = KswordARKNetworkReadUint32Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_LOCAL_ADDRESS);
+        // 中文说明：读取主机序远端 IPv4。
+        *RemoteAddressV4Out = KswordARKNetworkReadUint32Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_REMOTE_ADDRESS);
+        // 中文说明：读取主机序本地端口。
+        localPortHost = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_LOCAL_PORT);
+        // 中文说明：读取主机序远端端口。
+        remotePortHost = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_REMOTE_PORT);
     }
+    // 中文说明：ALE_AUTH_RECV_ACCEPT_V4 表示入站流授权。
     else if (Values->layerId == KSWORD_ARK_FWPS_LAYER_ALE_AUTH_RECV_ACCEPT_V4) {
+        // 中文说明：recv-accept 层固定映射为入站。
         *DirectionOut = KSWORD_ARK_NETWORK_DIRECTION_INBOUND;
-        *ProtocolOut = KswordARKNetworkReadUint32Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_PROTOCOL);
-        localPortNetwork = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_LOCAL_PORT);
-        remotePortNetwork = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_REMOTE_PORT);
+        // 中文说明：协议字段按 FWP_UINT8 读取。
+        *ProtocolOut = KswordARKNetworkReadUint8Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_PROTOCOL);
+        // 中文说明：读取主机序本地 IPv4。
+        *LocalAddressV4Out = KswordARKNetworkReadUint32Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_LOCAL_ADDRESS);
+        // 中文说明：读取主机序远端 IPv4。
+        *RemoteAddressV4Out = KswordARKNetworkReadUint32Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_REMOTE_ADDRESS);
+        // 中文说明：读取主机序本地端口。
+        localPortHost = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_LOCAL_PORT);
+        // 中文说明：读取主机序远端端口。
+        remotePortHost = (UINT16)KswordARKNetworkReadUint16Field(Values, KSWORD_ARK_FWPS_FIELD_ALE_AUTH_RECV_ACCEPT_V4_IP_REMOTE_PORT);
     }
     else {
+        // 中文说明：IPv6 和其它 layer 本版不写入 IPv4 事件 ring。
         return FALSE;
     }
 
-    *LocalPortOut = KswordARKNetworkUshortHostOrder(localPortNetwork);
-    *RemotePortOut = KswordARKNetworkUshortHostOrder(remotePortNetwork);
+    // 中文说明：WFP port 已是主机序，helper 明确避免二次交换。
+    *LocalPortOut = KswordARKNetworkReadHostOrderPort(localPortHost);
+    // 中文说明：保持远端端口的主机序数值。
+    *RemotePortOut = KswordARKNetworkReadHostOrderPort(remotePortHost);
+    // 中文说明：PID 缺失时 helper 返回 0。
     *ProcessIdOut = KswordARKNetworkReadProcessId(Metadata);
+    // 中文说明：完整 IPv4 ALE 摘要已形成。
     return TRUE;
 }
 
@@ -638,8 +717,8 @@ KswordARKNetworkClassifyFn(
 
 Routine Description:
 
-    WFP ALE classify 回调。中文说明：只在规则命中 block 时设置 BLOCK，其他情况保持
-    PERMIT，且遵守 KSWORD_ARK_FWPS_RIGHT_ACTION_WRITE 权限。
+    WFP ALE classify 回调。中文说明：每次受支持的 IPv4 connect/recv-accept 授权均
+    记录真实无 payload 流事件；只在拥有 ACTION_WRITE 且规则命中时设置 BLOCK。
 
 Arguments:
 
@@ -656,48 +735,126 @@ Return Value:
 
 --*/
 {
+    // 中文说明：获取静态非分页网络运行时。
     KSWORD_ARK_NETWORK_RUNTIME* runtime = KswordARKNetworkGetRuntime();
+    // 中文说明：保存 ALE 层推导的入站/出站方向。
     ULONG direction = 0UL;
+    // 中文说明：保存 FWP_UINT8 IP 协议号。
     ULONG protocol = 0UL;
+    // 中文说明：保存 FWP_UINT32 主机序本地 IPv4。
+    ULONG localAddressV4 = 0UL;
+    // 中文说明：保存 FWP_UINT32 主机序远端 IPv4。
+    ULONG remoteAddressV4 = 0UL;
+    // 中文说明：保存 FWP_UINT16 主机序本地端口。
     USHORT localPort = 0U;
+    // 中文说明：保存 FWP_UINT16 主机序远端端口。
     USHORT remotePort = 0U;
+    // 中文说明：保存 WFP metadata PID。
     ULONG processId = 0UL;
+    // 中文说明：保存最终是否由本 callout 实际阻断。
     BOOLEAN shouldBlock = FALSE;
+    // 中文说明：保存本次 classify 是否允许写 action。
+    BOOLEAN actionWritable = FALSE;
+    // 中文说明：保存写入共享事件行的语义标志。
+    ULONG eventFlags = 0UL;
 
+    // 中文说明：当前 ALE 事件通道不读取 layerData。
     UNREFERENCED_PARAMETER(layerData);
+    // 中文说明：当前 ALE 事件通道不读取 filter 上下文。
     UNREFERENCED_PARAMETER(filter);
+    // 中文说明：当前 ALE 事件通道不分配 flow context。
     UNREFERENCED_PARAMETER(flowContext);
 
-    if (classifyOut == NULL || (classifyOut->rights & KSWORD_ARK_FWPS_RIGHT_ACTION_WRITE) == 0U) {
+    // 中文说明：静态运行时理论上始终存在，空值时不得继续访问计数器。
+    if (runtime == NULL) {
+        // 中文说明：不干预其它 WFP policy。
         return;
     }
 
+    // 中文说明：计数所有到达本 callout 的 classify 调用，包括只读仲裁调用。
     InterlockedIncrement64(&runtime->ClassifyCount);
+    // 中文说明：只对受支持的 IPv4 connect/recv-accept 层提取完整元数据。
     if (!KswordARKNetworkClassifyExtractTuple(
         inFixedValues,
         inMetaValues,
         &direction,
         &protocol,
+        &localAddressV4,
+        &remoteAddressV4,
         &localPort,
         &remotePort,
         &processId)) {
-        classifyOut->actionType = KSWORD_ARK_FWP_ACTION_PERMIT;
+        // 中文说明：字段不受支持但 action 可写时保持既有默认放行行为。
+        if (classifyOut != NULL &&
+            (classifyOut->rights & KSWORD_ARK_FWPS_RIGHT_ACTION_WRITE) != 0U) {
+            // 中文说明：未知层不由本 callout 阻断。
+            classifyOut->actionType = KSWORD_ARK_FWP_ACTION_PERMIT;
+        }
+        // 中文说明：不为无法形成完整 IPv4 五元组的 classify 伪造事件。
         return;
     }
 
-    shouldBlock = KswordARKNetworkShouldBlockClassify(
+    // 中文说明：只有非空 classifyOut 且持有 ACTION_WRITE 才能改变仲裁结果。
+    actionWritable =
+        classifyOut != NULL &&
+        (classifyOut->rights & KSWORD_ARK_FWPS_RIGHT_ACTION_WRITE) != 0U;
+    // 中文说明：只有可写 action 时才执行现有规则判定，避免标记未实际执行的 block。
+    if (actionWritable) {
+        // 中文说明：读取规则快照并计算最终阻断。
+        shouldBlock = KswordARKNetworkShouldBlockClassify(
+            direction,
+            protocol,
+            localPort,
+            remotePort,
+            processId);
+    }
+
+    // 中文说明：根据实际 ALE layer 标记事件来源。
+    eventFlags =
+        (inFixedValues->layerId == KSWORD_ARK_FWPS_LAYER_ALE_AUTH_CONNECT_V4) ?
+        KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_ALE_CONNECT :
+        KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_ALE_RECV_ACCEPT;
+    // 中文说明：无 action write 权限时明确标记只观察、未改写。
+    if (!actionWritable) {
+        // 中文说明：R3 可据此避免把规则预判误认为实际动作。
+        eventFlags |= KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_ACTION_WRITE_UNAVAILABLE;
+    }
+    // 中文说明：只有实际准备设置 BLOCK 时写入 blocked 标志。
+    if (shouldBlock) {
+        // 中文说明：事件语义与下面实际 action 保持一致。
+        eventFlags |= KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_BLOCKED;
+    }
+
+    // 中文说明：在修改 classifyOut 前写入固定非分页 ring；该函数仅使用自旋锁。
+    KswordARKNetworkRecordWfpAleEvent(
         direction,
         protocol,
+        localAddressV4,
+        remoteAddressV4,
         localPort,
         remotePort,
-        processId);
+        processId,
+        eventFlags);
+
+    // 中文说明：无 action write 权限时只记录事件，不干预已有仲裁结果。
+    if (!actionWritable) {
+        // 中文说明：事件已完成，直接返回。
+        return;
+    }
+
+    // 中文说明：规则命中时执行既有阻断动作。
     if (shouldBlock) {
+        // 中文说明：设置 terminating block。
         classifyOut->actionType = KSWORD_ARK_FWP_ACTION_BLOCK;
+        // 中文说明：清除 action write 权限，防止后续低权重 filter 改写。
         classifyOut->rights &= ~KSWORD_ARK_FWPS_RIGHT_ACTION_WRITE;
+        // 中文说明：吸收命中流量以维持既有阻断行为。
         classifyOut->flags |= KSWORD_ARK_FWPS_CLASSIFY_OUT_FLAG_ABSORB;
+        // 中文说明：累计实际阻断次数。
         InterlockedIncrement64(&runtime->BlockedCount);
     }
     else {
+        // 中文说明：没有 block 规则命中时显式放行。
         classifyOut->actionType = KSWORD_ARK_FWP_ACTION_PERMIT;
     }
 }

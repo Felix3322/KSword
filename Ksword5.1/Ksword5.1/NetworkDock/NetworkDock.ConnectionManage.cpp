@@ -1,33 +1,33 @@
 #include "NetworkDock.InternalCommon.h"
+#include "NetworkAuditPage.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 
 using namespace network_dock_detail;
 
 void NetworkDock::focusConnectionsByPids(const QVector<quint32>& processIds)
 {
-    m_connectionPidFilterSet.clear();
+    QSet<quint32> processFilterSet;
     for (const quint32 processId : processIds)
     {
         if (processId != 0U)
         {
-            m_connectionPidFilterSet.insert(processId);
+            processFilterSet.insert(processId);
         }
     }
 
-    if (m_sideTabWidget != nullptr && m_connectionManagePage != nullptr)
+    if (m_sideTabWidget != nullptr && m_networkAuditPage != nullptr)
     {
-        m_sideTabWidget->setCurrentWidget(m_connectionManagePage);
+        m_sideTabWidget->setCurrentWidget(m_networkAuditPage);
     }
-    if (m_clearConnectionPidFilterButton != nullptr)
+    if (m_networkAuditPage != nullptr)
     {
-        m_clearConnectionPidFilterButton->setEnabled(!m_connectionPidFilterSet.isEmpty());
+        m_networkAuditPage->focusProcessIds(processFilterSet);
     }
-    refreshConnectionTables();
 }
 
 void NetworkDock::setProcessDetailConnectionScope()
 {
-    // 进程详情只提供当前进程 TCP/UDP 连接的查看与管理。
+    // 进程详情只提供网络审计中的 TCP/UDP Cross-View。
     // 抓包、防火墙、诊断等全局网络功能继续保留在独立网络 Dock。
     if (m_sideTabWidget == nullptr)
     {
@@ -38,12 +38,13 @@ void NetworkDock::setProcessDetailConnectionScope()
     {
         m_sideTabWidget->setTabVisible(
             tabIndex,
-            m_sideTabWidget->widget(tabIndex) == m_connectionManagePage);
+            m_sideTabWidget->widget(tabIndex) == m_networkAuditPage);
     }
 
-    if (m_connectionManagePage != nullptr)
+    if (m_networkAuditPage != nullptr)
     {
-        m_sideTabWidget->setCurrentWidget(m_connectionManagePage);
+        m_sideTabWidget->setCurrentWidget(m_networkAuditPage);
+        m_networkAuditPage->activateCrossView();
     }
 }
 

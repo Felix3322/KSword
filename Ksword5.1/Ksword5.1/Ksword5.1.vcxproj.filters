@@ -149,6 +149,9 @@
     <ClCompile Include="DriverDock\DriverDock.Integrity.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="DriverDock\DriverDock.Unloaded.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="FileDock\FileDock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -210,6 +213,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="KernelDock\KernelHvmTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp">
@@ -597,6 +603,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="UI\PerformanceNavCard.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\SvgThemeIconManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="UI\TableColumnAutoFit.cpp">
@@ -1080,6 +1089,9 @@
     <ClInclude Include="KernelDock\KernelHvmTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="KernelDock\KernelBaseNamedObjectsTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1282,6 +1294,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\PerformanceNavCard.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\SvgThemeIconManager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\GlobalDialogTheme.h">

@@ -1,4 +1,5 @@
 #include "NetworkFirewallPage.h"
+#include "../UI/CodeEditorWidget.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -34,6 +35,7 @@
 #include <QModelIndex>
 #include <QPointer>
 #include <QPushButton>
+#include <QSplitter>
 #include <QStringList>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -1189,20 +1191,30 @@ void NetworkFirewallPage::initializeRuleManagerUi()
     toolbarLayout->setSpacing(8);
 
     m_refreshRulesButton = new QPushButton(QStringLiteral("刷新规则"), m_ruleManagerPage);
+    m_refreshRulesButton->setIcon(QIcon(QStringLiteral(":/Icon/process_refresh.svg")));
+    m_refreshRulesButton->setToolTip(QStringLiteral("重新枚举 Windows Firewall 规则"));
     toolbarLayout->addWidget(m_refreshRulesButton, 0);
 
     m_addRuleButton = new QPushButton(QStringLiteral("新增"), m_ruleManagerPage);
+    m_addRuleButton->setIcon(QIcon(QStringLiteral(":/Icon/plus.svg")));
+    m_addRuleButton->setToolTip(QStringLiteral("新增 Windows Firewall 规则"));
     toolbarLayout->addWidget(m_addRuleButton, 0);
 
     m_editRuleButton = new QPushButton(QStringLiteral("编辑"), m_ruleManagerPage);
+    m_editRuleButton->setIcon(QIcon(QStringLiteral(":/Icon/process_details.svg")));
+    m_editRuleButton->setToolTip(QStringLiteral("编辑选中的规则"));
     m_editRuleButton->setEnabled(false);
     toolbarLayout->addWidget(m_editRuleButton, 0);
 
     m_toggleRuleButton = new QPushButton(QStringLiteral("启用/禁用"), m_ruleManagerPage);
+    m_toggleRuleButton->setIcon(QIcon(QStringLiteral(":/Icon/process_suspend.svg")));
+    m_toggleRuleButton->setToolTip(QStringLiteral("切换选中规则的启用状态"));
     m_toggleRuleButton->setEnabled(false);
     toolbarLayout->addWidget(m_toggleRuleButton, 0);
 
     m_deleteRuleButton = new QPushButton(QStringLiteral("删除"), m_ruleManagerPage);
+    m_deleteRuleButton->setIcon(QIcon(QStringLiteral(":/Icon/log_clear.svg")));
+    m_deleteRuleButton->setToolTip(QStringLiteral("删除选中的规则"));
     m_deleteRuleButton->setEnabled(false);
     toolbarLayout->addWidget(m_deleteRuleButton, 0);
 
@@ -1215,7 +1227,8 @@ void NetworkFirewallPage::initializeRuleManagerUi()
     toolbarLayout->addWidget(m_ruleEnabledOnlyCheck, 0);
     pageLayout->addLayout(toolbarLayout, 0);
 
-    m_ruleTable = new ks::ui::VisibleTableWidget(m_ruleManagerPage);
+    m_ruleSplitter = new QSplitter(Qt::Vertical, m_ruleManagerPage);
+    m_ruleTable = new ks::ui::VisibleTableWidget(m_ruleSplitter);
     m_ruleTable->setColumnCount(RuleColumnCount);
     m_ruleTable->setHorizontalHeaderLabels({
         QStringLiteral("Name"),
@@ -1242,8 +1255,18 @@ void NetworkFirewallPage::initializeRuleManagerUi()
     m_ruleTable->setColumnWidth(RuleColumnApplication, 220);
     m_ruleTable->setColumnWidth(RuleColumnGrouping, 150);
     m_ruleTable->setColumnWidth(RuleColumnDescription, 220);
-    installFirewallTableCopyMenu(m_ruleTable);
-    pageLayout->addWidget(m_ruleTable, 1);
+    m_ruleTable->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    // 完整详情固定放在规则表下方，默认约占页面高度四分之一。
+    m_ruleDetailEditor = new CodeEditorWidget(m_ruleSplitter);
+    m_ruleDetailEditor->setReadOnly(true);
+    m_ruleDetailEditor->setLocalizedText(QStringLiteral("请选择一条防火墙规则查看完整详情。"));
+    m_ruleSplitter->addWidget(m_ruleTable);
+    m_ruleSplitter->addWidget(m_ruleDetailEditor);
+    m_ruleSplitter->setStretchFactor(0, 3);
+    m_ruleSplitter->setStretchFactor(1, 1);
+    m_ruleSplitter->setSizes({ 720, 240 });
+    pageLayout->addWidget(m_ruleSplitter, 1);
 
     if (m_innerTabWidget != nullptr)
     {
@@ -1315,10 +1338,15 @@ void NetworkFirewallPage::initializeConnections()
     connect(m_ruleTable, &QTableWidget::itemSelectionChanged, this, [this]()
     {
         updateRuleActionButtons();
+        updateRuleDetailEditor();
     });
     connect(m_ruleTable, &QTableWidget::cellDoubleClicked, this, [this](const int, const int)
     {
         editSelectedFirewallRule();
+    });
+    connect(m_ruleTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& position)
+    {
+        showRuleContextMenu(position);
     });
     m_liveFlushTimer->start();
 }
@@ -1512,9 +1540,6 @@ void NetworkFirewallPage::appendEventsToTable(
         m_eventTable->setRowCount(0);
     }
 
-    const QColor dropColor = KswordTheme::ErrorColor();
-    const QColor allowColor = KswordTheme::SuccessColor();
-
     m_eventTable->setUpdatesEnabled(false);
     for (const FirewallEventEntry& entry : eventList)
     {
@@ -1540,14 +1565,8 @@ void NetworkFirewallPage::appendEventsToTable(
         {
             QTableWidgetItem* item = new QTableWidgetItem(values[static_cast<std::size_t>(column)]);
             item->setData(Qt::UserRole, entry.isDrop);
-            if (entry.isDrop)
-            {
-                item->setForeground(dropColor);
-            }
-            else if (column == ColumnAction && entry.actionText.contains(QStringLiteral("Allowed"), Qt::CaseInsensitive))
-            {
-                item->setForeground(allowColor);
-            }
+            // 不写入固定前景色：DROP/Allowed 均继承表格调色板，并可随主题切换自动更新。
+            // 动作类别仍通过 Action 列和“仅 DROP”筛选判断。
             m_eventTable->setItem(row, column, item);
         }
     }
@@ -1702,6 +1721,7 @@ void NetworkFirewallPage::refreshRulesAsync(const bool forceRefresh)
                     safeThis->m_refreshRulesButton->setEnabled(true);
                 }
                 safeThis->updateRuleActionButtons();
+                safeThis->updateRuleDetailEditor();
                 safeThis->m_refreshingRules.store(false);
             },
             Qt::QueuedConnection);
@@ -1844,6 +1864,142 @@ void NetworkFirewallPage::updateRuleActionButtons()
     else if (m_toggleRuleButton != nullptr)
     {
         m_toggleRuleButton->setText(QStringLiteral("启用/禁用"));
+    }
+}
+
+void NetworkFirewallPage::updateRuleDetailEditor()
+{
+    if (m_ruleDetailEditor == nullptr)
+    {
+        return;
+    }
+
+    FirewallRuleEntry ruleEntry;
+    if (!selectedRuleEntry(&ruleEntry))
+    {
+        m_ruleDetailEditor->setLocalizedText(
+            QStringLiteral("请选择一条防火墙规则查看完整详情。"));
+        return;
+    }
+
+    const QString detailText = QStringLiteral(
+        "名称：%1\n"
+        "启用：%2\n"
+        "动作：%3\n"
+        "方向：%4\n"
+        "配置文件：%5\n"
+        "协议：%6\n"
+        "本地端口：%7\n"
+        "远端端口：%8\n"
+        "本地地址：%9\n"
+        "远端地址：%10\n"
+        "应用程序：%11\n"
+        "服务：%12\n"
+        "分组：%13\n"
+        "描述：%14\n"
+        "规则指纹：%15")
+        .arg(safeText(ruleEntry.nameText))
+        .arg(ruleEntry.enabled ? QStringLiteral("是") : QStringLiteral("否"))
+        .arg(safeText(ruleEntry.actionText))
+        .arg(safeText(ruleEntry.directionText))
+        .arg(safeText(ruleEntry.profilesText))
+        .arg(safeText(ruleEntry.protocolText))
+        .arg(safeText(ruleEntry.localPortsText))
+        .arg(safeText(ruleEntry.remotePortsText))
+        .arg(safeText(ruleEntry.localAddressesText))
+        .arg(safeText(ruleEntry.remoteAddressesText))
+        .arg(safeText(ruleEntry.applicationText))
+        .arg(safeText(ruleEntry.serviceText))
+        .arg(safeText(ruleEntry.groupingText))
+        .arg(safeText(ruleEntry.descriptionText))
+        .arg(safeText(ruleEntry.fingerprintText));
+    m_ruleDetailEditor->setLocalizedText(detailText);
+}
+
+void NetworkFirewallPage::showRuleContextMenu(const QPoint& localPosition)
+{
+    if (m_ruleTable == nullptr)
+    {
+        return;
+    }
+
+    const QModelIndex clickedIndex = m_ruleTable->indexAt(localPosition);
+    if (clickedIndex.isValid())
+    {
+        m_ruleTable->setCurrentCell(clickedIndex.row(), clickedIndex.column());
+        m_ruleTable->selectRow(clickedIndex.row());
+    }
+
+    FirewallRuleEntry selectedEntry;
+    const bool hasSingleRule = selectedRuleEntry(&selectedEntry);
+    const bool hasAnySelection =
+        m_ruleTable->selectionModel() != nullptr
+        && !m_ruleTable->selectionModel()->selectedRows().isEmpty();
+
+    QMenu menu(m_ruleTable);
+    menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+    QAction* addAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/plus.svg")),
+        QStringLiteral("新增规则"));
+    QAction* editAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_details.svg")),
+        QStringLiteral("编辑规则"));
+    editAction->setEnabled(hasSingleRule);
+    QAction* toggleAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_suspend.svg")),
+        hasSingleRule && selectedEntry.enabled
+            ? QStringLiteral("禁用规则")
+            : QStringLiteral("启用规则"));
+    toggleAction->setEnabled(hasSingleRule);
+    QAction* refreshAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+        QStringLiteral("刷新规则"));
+    QAction* deleteAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/log_clear.svg")),
+        QStringLiteral("删除规则"));
+    deleteAction->setEnabled(hasAnySelection);
+    menu.addSeparator();
+    QAction* copyAction = menu.addAction(
+        QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
+        QStringLiteral("复制当前行"));
+    copyAction->setEnabled(m_ruleTable->currentRow() >= 0);
+
+    const QAction* selectedAction = menu.exec(
+        m_ruleTable->viewport()->mapToGlobal(localPosition));
+    if (selectedAction == addAction)
+    {
+        addFirewallRule();
+    }
+    else if (selectedAction == editAction)
+    {
+        editSelectedFirewallRule();
+    }
+    else if (selectedAction == toggleAction)
+    {
+        toggleSelectedFirewallRuleEnabled();
+    }
+    else if (selectedAction == refreshAction)
+    {
+        refreshRulesAsync(true);
+    }
+    else if (selectedAction == deleteAction)
+    {
+        deleteSelectedFirewallRules();
+    }
+    else if (selectedAction == copyAction)
+    {
+        const int rowIndex = m_ruleTable->currentRow();
+        QStringList rowFields;
+        rowFields.reserve(m_ruleTable->columnCount());
+        for (int columnIndex = 0; columnIndex < m_ruleTable->columnCount(); ++columnIndex)
+        {
+            const QTableWidgetItem* item = m_ruleTable->item(rowIndex, columnIndex);
+            rowFields.push_back(item != nullptr ? item->text() : QString());
+        }
+        if (QGuiApplication::clipboard() != nullptr)
+        {
+            QGuiApplication::clipboard()->setText(rowFields.join(QLatin1Char('\t')));
+        }
     }
 }
 

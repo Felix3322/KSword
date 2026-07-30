@@ -45,6 +45,8 @@
     <ClCompile Include="src\features\kernel\driver_object_query.c" />
     <ClCompile Include="src\features\kernel\ioctl_registry_query.c" />
     <ClCompile Include="src\features\kernel\driver_integrity.c" />
+    <ClCompile Include="src\features\kernel\kernel_unloaded_drivers.c" />
+    <ClCompile Include="src\features\kernel\kernel_unloaded_drivers_ioctl.c" />
     <ClCompile Include="src\features\kernel\kernel_cpu_integrity.c" />
     <ClCompile Include="src\features\kernel\kernel_idt_baseline.c" />
     <ClCompile Include="src\features\kernel\kernel_idt_baseline_ioctl.c" />
@@ -241,10 +243,12 @@
     <ClInclude Include="..\shared\driver\KswordArkHwidIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkDriverBlindIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkWin32kIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkUnloadedDriverIoctl.h" />
     <ClInclude Include="src\features\redirect\redirect_internal.h" />
     <ClInclude Include="src\features\network\network_internal.h" />
     <ClInclude Include="src\features\kernel\hook_scan_support.h" />
     <ClInclude Include="src\features\kernel\driver_integrity.h" />
+    <ClInclude Include="src\features\kernel\kernel_unloaded_drivers.h" />
     <ClInclude Include="src\features\kernel\driver_blind_internal.h" />
     <ClInclude Include="src\features\kernel\kernel_cpu_integrity.h" />
     <ClInclude Include="src\features\kernel\kernel_idt_baseline.h" />

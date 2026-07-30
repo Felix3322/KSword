@@ -68,6 +68,7 @@
 #include <QRunnable>
 #include <QScreen>
 #include <QScrollArea>
+#include <QSet>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSortFilterProxyModel>
@@ -141,6 +142,160 @@
 
 namespace
 {
+    // isDeletedFileSafelyRecoverable 作用：
+    // - 统一判断扫描结果是否可进入恢复流程；
+    // - 非驻留数据只有完整度与 runlist 均通过扫描校验时才返回 true。
+    bool isDeletedFileSafelyRecoverable(
+        const ks::file::NtfsDeletedFileEntry& entryValue)
+    {
+        return entryValue.recoveryCapability ==
+                ks::file::NtfsRecoveryCapability::Resident ||
+            entryValue.recoveryCapability ==
+                ks::file::NtfsRecoveryCapability::NonResidentIntact;
+    }
+
+    // deletedFileRecoveryCapabilityText 作用：
+    // - 将底层恢复能力转换为表格可读文本；
+    // - 文本明确说明非驻留数据必须导出到其它卷。
+    QString deletedFileRecoveryCapabilityText(
+        const ks::file::NtfsDeletedFileEntry& entryValue)
+    {
+        switch (entryValue.recoveryCapability)
+        {
+        case ks::file::NtfsRecoveryCapability::Resident:
+            return QStringLiteral("Resident 可恢复");
+        case ks::file::NtfsRecoveryCapability::NonResidentIntact:
+            return QStringLiteral("非驻留完整可恢复（需其它卷）");
+        case ks::file::NtfsRecoveryCapability::NonResidentAtRisk:
+            return QStringLiteral("非驻留簇已复用或完整度未知");
+        case ks::file::NtfsRecoveryCapability::UnsupportedStream:
+            return QStringLiteral("压缩、加密或跨记录流暂不支持");
+        case ks::file::NtfsRecoveryCapability::MetadataOnly:
+        default:
+            return QStringLiteral("仅元数据");
+        }
+    }
+
+    // localVolumeRootForPath 作用：
+    // - 从本地绝对路径提取“C:\”形式卷根；
+    // - UNC/网络路径返回空字符串，不会被误判为源卷。
+    QString localVolumeRootForPath(const QString& pathText)
+    {
+        const QString nativePath =
+            QDir::toNativeSeparators(QDir::cleanPath(pathText.trimmed()));
+        if (nativePath.size() < 2 || nativePath[1] != QChar(':'))
+        {
+            return QString();
+        }
+        return nativePath.left(2).toUpper() + QStringLiteral("\\");
+    }
+
+    // safeRecoveryFileName 作用：
+    // - 把来自 MFT 的原始名称转换为可由 Win32 普通文件 API 创建的叶名称；
+    // - 过滤路径分隔符、ADS 冒号、控制字符、尾随点/空格和 DOS 保留设备名；
+    // - 返回空字符串表示调用方应改用 deleted_<MFT>.bin 占位名。
+    QString safeRecoveryFileName(const QString& requestedFileName)
+    {
+        QString safeFileName = requestedFileName.trimmed();
+        constexpr qsizetype MaximumRecoveryFileNameLength = 180;
+        const QString invalidCharacterSet =
+            QStringLiteral("<>:\"/\\|?*");
+        for (qsizetype characterIndex = 0;
+             characterIndex < safeFileName.size();
+             ++characterIndex)
+        {
+            const QChar characterValue = safeFileName.at(characterIndex);
+            if (characterValue.unicode() < 0x20U ||
+                invalidCharacterSet.contains(characterValue))
+            {
+                safeFileName[characterIndex] = QChar('_');
+            }
+        }
+
+        while (safeFileName.endsWith(QChar('.')) ||
+               safeFileName.endsWith(QChar(' ')))
+        {
+            safeFileName.chop(1);
+        }
+        if (safeFileName.size() > MaximumRecoveryFileNameLength)
+        {
+            safeFileName.truncate(MaximumRecoveryFileNameLength);
+            if (!safeFileName.isEmpty() &&
+                safeFileName.back().isHighSurrogate())
+            {
+                safeFileName.chop(1);
+            }
+        }
+
+        const QString deviceBaseName =
+            safeFileName.section(QChar('.'), 0, 0).toUpper();
+        const bool isReservedDeviceName =
+            deviceBaseName == QStringLiteral("CON") ||
+            deviceBaseName == QStringLiteral("PRN") ||
+            deviceBaseName == QStringLiteral("AUX") ||
+            deviceBaseName == QStringLiteral("NUL") ||
+            (deviceBaseName.size() == 4 &&
+             (deviceBaseName.startsWith(QStringLiteral("COM")) ||
+              deviceBaseName.startsWith(QStringLiteral("LPT"))) &&
+             deviceBaseName.back() >= QChar('1') &&
+             deviceBaseName.back() <= QChar('9'));
+        if (isReservedDeviceName)
+        {
+            safeFileName.prepend(QChar('_'));
+        }
+        if (safeFileName == QStringLiteral(".") ||
+            safeFileName == QStringLiteral(".."))
+        {
+            safeFileName.clear();
+        }
+        return safeFileName;
+    }
+
+    // uniqueRecoveryTargetPath 作用：
+    // - 为批量恢复生成不覆盖现有文件、也不互相冲突的输出路径；
+    // - 冲突时在扩展名前附加 MFT 记录号及递增序号。
+    QString uniqueRecoveryTargetPath(
+        const QString& outputDirectory,
+        const QString& requestedFileName,
+        const std::uint64_t fileReference,
+        QSet<QString>& reservedPathSet)
+    {
+        QString safeFileName = safeRecoveryFileName(requestedFileName);
+        if (safeFileName.isEmpty() ||
+            safeFileName == QStringLiteral(".") ||
+            safeFileName == QStringLiteral(".."))
+        {
+            safeFileName = QStringLiteral("deleted_%1.bin")
+                .arg(static_cast<qulonglong>(fileReference));
+        }
+
+        const QFileInfo nameInfo(safeFileName);
+        const QString baseName = nameInfo.completeBaseName().isEmpty()
+            ? safeFileName
+            : nameInfo.completeBaseName();
+        const QString suffixText = nameInfo.completeSuffix();
+        QString candidatePath = QDir(outputDirectory).filePath(safeFileName);
+        int collisionIndex = 0;
+        while (QFileInfo::exists(candidatePath) ||
+               reservedPathSet.contains(candidatePath.toCaseFolded()))
+        {
+            ++collisionIndex;
+            const QString collisionName = suffixText.isEmpty()
+                ? QStringLiteral("%1_mft%2_%3")
+                    .arg(baseName)
+                    .arg(static_cast<qulonglong>(fileReference))
+                    .arg(collisionIndex)
+                : QStringLiteral("%1_mft%2_%3.%4")
+                    .arg(baseName)
+                    .arg(static_cast<qulonglong>(fileReference))
+                    .arg(collisionIndex)
+                    .arg(suffixText);
+            candidatePath = QDir(outputDirectory).filePath(collisionName);
+        }
+        reservedPathSet.insert(candidatePath.toCaseFolded());
+        return candidatePath;
+    }
+
     struct DriverDeleteTarget
     {
         QString path;
@@ -8653,7 +8808,8 @@ void FileDock::initializeRecoveryPage()
     m_recoveryScanButton->setStyleSheet(buildBlueButtonStyle());
 
     m_recoveryExportButton = new QPushButton(QIcon(":/Icon/log_export.svg"), QStringLiteral("恢复选中"), toolWidget);
-    m_recoveryExportButton->setToolTip(QStringLiteral("导出选中删除项（当前仅支持 resident 数据）"));
+    m_recoveryExportButton->setToolTip(QStringLiteral(
+        "支持 Resident 与完整非驻留数据；非驻留文件必须导出到其它卷，恢复前后都会复核卷位图。"));
     m_recoveryExportButton->setStyleSheet(buildBlueButtonStyle());
 
     toolLayout->addWidget(new QLabel(QStringLiteral("卷: "), toolWidget), 0);
@@ -8855,11 +9011,9 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
                         ? QStringLiteral("%1%").arg(itemValue.estimatedIntegrityPercent)
                         : QStringLiteral("未知");
 
-                    // 恢复能力文本：同时体现 resident、原始文件名是否保留，便于快速筛选。
+                    // 恢复能力文本：明确区分驻留、完整非驻留、已复用与不支持布局。
                     QString recoverabilityText =
-                        itemValue.residentDataReady
-                        ? QStringLiteral("Resident可恢复")
-                        : QStringLiteral("仅元数据");
+                        deletedFileRecoveryCapabilityText(itemValue);
                     if (!itemValue.hasOriginalName)
                     {
                         recoverabilityText += QStringLiteral(" / 缺名");
@@ -8877,7 +9031,13 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
                         itemValue.modifiedTime.isValid()
                         ? itemValue.modifiedTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
                         : QStringLiteral("-")));
-                    safeThis->m_recoveryTable->setItem(row, 4, new QTableWidgetItem(QString::number(itemValue.fileReference)));
+                    safeThis->m_recoveryTable->setItem(
+                        row,
+                        4,
+                        new QTableWidgetItem(
+                            QStringLiteral("%1 / seq %2")
+                                .arg(static_cast<qulonglong>(itemValue.fileReference))
+                                .arg(itemValue.sequenceNumber)));
                     safeThis->m_recoveryTable->setItem(row, 5, new QTableWidgetItem(integrityText));
                     safeThis->m_recoveryTable->setItem(row, 6, new QTableWidgetItem(recoverabilityText));
                 }
@@ -8886,16 +9046,35 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
                 const int residentReadyCount = static_cast<int>(std::count_if(
                     safeThis->m_deletedRecoveryItems.begin(),
                     safeThis->m_deletedRecoveryItems.end(),
-                    [](const ks::file::NtfsDeletedFileEntry& item) { return item.residentDataReady; }));
+                    [](const ks::file::NtfsDeletedFileEntry& item) {
+                        return item.recoveryCapability ==
+                            ks::file::NtfsRecoveryCapability::Resident;
+                    }));
+                const int nonResidentReadyCount = static_cast<int>(std::count_if(
+                    safeThis->m_deletedRecoveryItems.begin(),
+                    safeThis->m_deletedRecoveryItems.end(),
+                    [](const ks::file::NtfsDeletedFileEntry& item) {
+                        return item.recoveryCapability ==
+                            ks::file::NtfsRecoveryCapability::NonResidentIntact;
+                    }));
+                const int safelyRecoverableCount = static_cast<int>(std::count_if(
+                    safeThis->m_deletedRecoveryItems.begin(),
+                    safeThis->m_deletedRecoveryItems.end(),
+                    [](const ks::file::NtfsDeletedFileEntry& item) {
+                        return isDeletedFileSafelyRecoverable(item);
+                    }));
                 const int highIntegrityCount = static_cast<int>(std::count_if(
                     safeThis->m_deletedRecoveryItems.begin(),
                     safeThis->m_deletedRecoveryItems.end(),
                     [](const ks::file::NtfsDeletedFileEntry& item) { return item.estimatedIntegrityPercent >= 80; }));
 
                 safeThis->m_recoveryStatusLabel->setText(
-                    QStringLiteral("扫描完成：%1 项（Resident %2 项，完整度≥80%% %3 项）")
+                    QStringLiteral(
+                        "扫描完成：%1 项（可安全恢复 %2 项：Resident %3，完整非驻留 %4；完整度≥80%% %5 项）")
                     .arg(safeThis->m_deletedRecoveryItems.size())
+                    .arg(safelyRecoverableCount)
                     .arg(residentReadyCount)
+                    .arg(nonResidentReadyCount)
                     .arg(highIntegrityCount));
 
                 kLogEvent event;
@@ -8960,6 +9139,44 @@ void FileDock::recoverSelectedDeletedFilesAsync()
         QMessageBox::information(this, QStringLiteral("文件恢复"), QStringLiteral("未读取到有效恢复条目。"));
         return;
     }
+    const bool hasSafelyRecoverableItem = std::any_of(
+        selectedItems.begin(),
+        selectedItems.end(),
+        [](const ks::file::NtfsDeletedFileEntry& item) {
+            return isDeletedFileSafelyRecoverable(item);
+        });
+    if (!hasSafelyRecoverableItem)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("文件恢复"),
+            QStringLiteral("选中项均不满足安全恢复条件；请查看“恢复能力”和“完整度”列。"));
+        return;
+    }
+
+    const bool hasIntactNonResidentItem = std::any_of(
+        selectedItems.begin(),
+        selectedItems.end(),
+        [](const ks::file::NtfsDeletedFileEntry& item) {
+            return item.recoveryCapability ==
+                ks::file::NtfsRecoveryCapability::NonResidentIntact;
+        });
+    const QString sourceVolumeRoot = localVolumeRootForPath(volumeRoot);
+    const QString outputVolumeRoot = localVolumeRootForPath(exportDir);
+    if (hasIntactNonResidentItem &&
+        !sourceVolumeRoot.isEmpty() &&
+        sourceVolumeRoot.compare(outputVolumeRoot, Qt::CaseInsensitive) == 0)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("非驻留恢复需要其它卷"),
+            QStringLiteral(
+                "选中项包含非驻留文件。不能把恢复结果写回源卷 %1，"
+                "因为输出文件分配空间时可能直接覆盖待恢复簇。\n\n"
+                "请重新选择其它本地卷或网络目录。")
+                .arg(sourceVolumeRoot));
+        return;
+    }
 
     m_recoveryRecoverInProgress = true;
     if (m_recoveryScanButton != nullptr)
@@ -8988,6 +9205,7 @@ void FileDock::recoverSelectedDeletedFilesAsync()
     std::thread([safeThis, progressPid, volumeRoot, exportDir, selectedItems]() {
         int successCount = 0;
         QStringList failTextList;
+        QSet<QString> reservedTargetPathSet;
 
         for (std::size_t index = 0; index < selectedItems.size(); ++index)
         {
@@ -8997,13 +9215,34 @@ void FileDock::recoverSelectedDeletedFilesAsync()
             {
                 exportName = QStringLiteral("deleted_%1.bin").arg(deletedItem.fileReference);
             }
-            const QString targetPath = QDir(exportDir).filePath(exportName);
+            const QString targetPath = uniqueRecoveryTargetPath(
+                exportDir,
+                exportName,
+                deletedItem.fileReference,
+                reservedTargetPathSet);
             QString errorText;
-            const bool ok = ks::file::ManualFileSystemParser::recoverNtfsResidentFile(
+            const bool ok = ks::file::ManualFileSystemParser::recoverNtfsDeletedFile(
                 volumeRoot,
                 deletedItem,
                 targetPath,
-                errorText);
+                errorText,
+                [progressPid, index, itemCount = selectedItems.size()](
+                    const int itemPercent,
+                    const QString& stageText) {
+                    const float completedItemRatio =
+                        static_cast<float>(index) /
+                        static_cast<float>(std::max<std::size_t>(itemCount, 1));
+                    const float currentItemRatio =
+                        (static_cast<float>(std::clamp(itemPercent, 0, 100)) / 100.0f) /
+                        static_cast<float>(std::max<std::size_t>(itemCount, 1));
+                    const float mappedProgress =
+                        5.0f + (completedItemRatio + currentItemRatio) * 90.0f;
+                    kPro.set(
+                        progressPid,
+                        stageText.toStdString(),
+                        0,
+                        mappedProgress);
+                });
             if (ok)
             {
                 ++successCount;

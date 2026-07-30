@@ -91,11 +91,15 @@ namespace ks::network
 
         std::uint32_t processId = 0;          // 归属进程 PID（0 表示暂未解析）。
         std::string processName;              // 归属进程名（缓存查询，可能为空）。
+        std::string sourceText = "R3";        // 数据来源：R3 抓包或 R0 WFP ALE 流授权事件。
+        std::uint64_t sourceSequenceId = 0;   // R0 WFP 原始事件序号；R3 抓包保持 0。
+        std::uint32_t sourceFlags = 0;        // R0 WFP 事件语义标志；R3 抓包保持 0。
 
         std::string localAddress;             // 本地地址文本（IPv4/IPv6）。
         std::uint16_t localPort = 0;          // 本地端口。
         std::string remoteAddress;            // 远端地址文本（IPv4/IPv6）。
         std::uint16_t remotePort = 0;         // 远端端口。
+        std::string remoteDomain;              // 远端域名：优先由本机 DNS 缓存异步回填。
 
         std::uint32_t totalPacketSize = 0;    // IP 报文总长度（字节）。
         std::uint32_t payloadSize = 0;        // L4 负载长度（字节）。
@@ -103,6 +107,7 @@ namespace ks::network
 
         bool localToLocalAmbiguous = false;   // true 表示源/目的都属于本机（本地环回或本机双地址通信），方向需后续二次判定。
         bool packetBytesTruncated = false;    // true 表示 packetBytes 被截断保存。
+        bool wfpAleEventNoPayload = false;    // true 表示 R0 WFP ALE 流授权事件，不是含 payload 的逐包记录。
         std::vector<std::uint8_t> packetBytes;// 保存的原始报文字节（用于详情窗口查看）。
     };
 

@@ -177,6 +177,1342 @@ namespace
         table->setItem(rowIndex, 5, createReadOnlyItem(detailText));
     }
 
+    constexpr std::uint32_t kDriverModuleDumpHeaderProbeBytes = 64U * 1024U;
+    constexpr std::uint32_t kDriverModuleDumpHardMaxBytes = 512U * 1024U * 1024U;
+
+    enum class DriverModuleDumpError : std::uint32_t
+    {
+        None = 0U,
+        InvalidTarget,
+        TargetExists,
+        IdentityCheck,
+        DeviceOpen,
+        MemoryRead,
+        PeValidation,
+        DestinationDirectory,
+        TemporaryFileCreate,
+        TemporaryFileWrite,
+        TemporaryFileFlush,
+        AtomicCommit
+    };
+
+    struct DriverModuleDumpResult
+    {
+        bool ok = false;
+        DriverModuleDumpError error = DriverModuleDumpError::None;
+        QString technicalDetail;
+        QString targetPath;
+        std::uint64_t moduleBase = 0U;
+        std::uint32_t moduleSize = 0U;
+        unsigned long win32Error = ERROR_SUCCESS;
+    };
+
+    QString driverModuleDumpErrorText(const DriverModuleDumpError error)
+    {
+        switch (error)
+        {
+        case DriverModuleDumpError::InvalidTarget:
+            return driverText(
+                "driver.dump_module.error.invalid_target",
+                QStringLiteral("模块身份参数或保存路径不安全，操作已拒绝。"));
+        case DriverModuleDumpError::TargetExists:
+            return driverText(
+                "driver.dump_module.error.target_exists",
+                QStringLiteral("目标文件已存在或在提交前被创建；为避免覆盖，操作已取消。"));
+        case DriverModuleDumpError::IdentityCheck:
+            return driverText(
+                "driver.dump_module.error.identity_check",
+                QStringLiteral("R0 无法确认读取前后的模块基址、名称和大小完全一致。"));
+        case DriverModuleDumpError::DeviceOpen:
+            return driverText(
+                "driver.dump_module.error.device_open",
+                QStringLiteral("无法打开 KswordARK R0 控制设备。"));
+        case DriverModuleDumpError::MemoryRead:
+            return driverText(
+                "driver.dump_module.error.memory_read",
+                QStringLiteral("R0 内存读取响应未通过完整性校验，未保留部分或补零数据。"));
+        case DriverModuleDumpError::PeValidation:
+            return driverText(
+                "driver.dump_module.error.pe_validation",
+                QStringLiteral("内存中的 PE 头或 SizeOfImage 与 R0 模块边界不一致。"));
+        case DriverModuleDumpError::DestinationDirectory:
+            return driverText(
+                "driver.dump_module.error.destination_directory",
+                QStringLiteral("目标目录不存在或不可安全使用。"));
+        case DriverModuleDumpError::TemporaryFileCreate:
+            return driverText(
+                "driver.dump_module.error.temp_create",
+                QStringLiteral("无法在目标目录创建原子临时文件。"));
+        case DriverModuleDumpError::TemporaryFileWrite:
+            return driverText(
+                "driver.dump_module.error.temp_write",
+                QStringLiteral("写入原子临时文件失败，临时文件已取消。"));
+        case DriverModuleDumpError::TemporaryFileFlush:
+            return driverText(
+                "driver.dump_module.error.temp_flush",
+                QStringLiteral("原子临时文件无法完整刷新到磁盘，提交已取消。"));
+        case DriverModuleDumpError::AtomicCommit:
+            return driverText(
+                "driver.dump_module.error.atomic_commit",
+                QStringLiteral("最终无覆盖原子提交失败，目标文件未创建。"));
+        case DriverModuleDumpError::None:
+        default:
+            return driverText(
+                "driver.dump_module.error.unknown",
+                QStringLiteral("模块内存 Dump 在安全校验中失败。"));
+        }
+    }
+
+    template <typename ValueType>
+    bool driverModuleDumpReadValue(
+        const std::vector<std::uint8_t>& bytes,
+        const std::size_t offset,
+        ValueType& valueOut)
+    {
+        if (offset > bytes.size() || sizeof(ValueType) > bytes.size() - offset)
+        {
+            return false;
+        }
+        std::memcpy(&valueOut, bytes.data() + offset, sizeof(ValueType));
+        return true;
+    }
+
+    bool driverModuleDumpValidateRead(
+        const ksword::ark::VirtualMemoryReadResult& readResult,
+        const std::uint64_t expectedAddress,
+        const std::uint32_t expectedBytes,
+        QString& technicalDetailOut)
+    {
+        const std::uint32_t requiredFields =
+            KSWORD_ARK_MEMORY_FIELD_READ_DATA_PRESENT |
+            KSWORD_ARK_MEMORY_FIELD_ADDRESS_KERNEL_RANGE;
+        if (!readResult.io.ok ||
+            readResult.version != KSWORD_ARK_MEMORY_PROTOCOL_VERSION ||
+            readResult.headerSize !=
+                offsetof(KSWORD_ARK_READ_VIRTUAL_MEMORY_RESPONSE, data) ||
+            readResult.processId != 0U ||
+            readResult.source != KSWORD_ARK_MEMORY_SOURCE_R0_MM_COPY_KERNEL_VIRTUAL ||
+            readResult.requestedBaseAddress != expectedAddress ||
+            readResult.requestedBytes != expectedBytes ||
+            readResult.maxBytesPerRequest != KSWORD_ARK_MEMORY_READ_MAX_BYTES ||
+            readResult.readStatus != KSWORD_ARK_MEMORY_READ_STATUS_OK ||
+            readResult.lookupStatus != 0 ||
+            readResult.copyStatus != 0 ||
+            (readResult.fieldFlags & requiredFields) != requiredFields ||
+            (readResult.fieldFlags &
+                (KSWORD_ARK_MEMORY_FIELD_PARTIAL_COPY |
+                 KSWORD_ARK_MEMORY_FIELD_ZERO_FILLED_UNREADABLE |
+                 KSWORD_ARK_MEMORY_FIELD_ADDRESS_USER_RANGE)) != 0U ||
+            readResult.bytesRead != expectedBytes ||
+            readResult.data.size() != static_cast<std::size_t>(expectedBytes) ||
+            readResult.io.bytesReturned !=
+                offsetof(KSWORD_ARK_READ_VIRTUAL_MEMORY_RESPONSE, data) + expectedBytes)
+        {
+            technicalDetailOut = QString::fromLatin1(
+                "R0 read response rejected: io=%1, win32=%2, version=%3, "
+                "pid=%4, source=%5, address=0x%6/0x%7, requested=%8/%9, "
+                "returned=%10, bytesRead=%11, data=%12, status=%13, "
+                "copyStatus=0x%14, fields=0x%15, max=%16.")
+                .arg(readResult.io.ok ? 1 : 0)
+                .arg(readResult.io.win32Error)
+                .arg(readResult.version)
+                .arg(readResult.processId)
+                .arg(readResult.source)
+                .arg(readResult.requestedBaseAddress, 0, 16)
+                .arg(expectedAddress, 0, 16)
+                .arg(readResult.requestedBytes)
+                .arg(expectedBytes)
+                .arg(readResult.io.bytesReturned)
+                .arg(readResult.bytesRead)
+                .arg(readResult.data.size())
+                .arg(readResult.readStatus)
+                .arg(static_cast<unsigned long>(readResult.copyStatus), 0, 16)
+                .arg(readResult.fieldFlags, 0, 16)
+                .arg(readResult.maxBytesPerRequest);
+            return false;
+        }
+        return true;
+    }
+
+    bool driverModuleDumpQueryIdentity(
+        const ksword::ark::DriverClient& driverClient,
+        const QString& ntPath,
+        const std::uint64_t moduleBase,
+        const std::uint32_t expectedSize,
+        std::uint32_t& moduleSizeOut,
+        QString& technicalDetailOut)
+    {
+        const ksword::ark::ImageSignatureQueryResult identityResult =
+            driverClient.queryImageSignature(
+                ntPath.toStdWString(),
+                moduleBase,
+                KSWORD_ARK_IMAGE_SIGNATURE_QUERY_FLAG_MATCH_LOADED_MODULE);
+        const KSWORD_ARK_QUERY_IMAGE_SIGNATURE_RESPONSE& response =
+            identityResult.response;
+        const unsigned long requiredFields =
+            KSWORD_ARK_IMAGE_SIGNATURE_FIELD_REQUEST_PATH |
+            KSWORD_ARK_IMAGE_SIGNATURE_FIELD_LOADED_MODULE |
+            KSWORD_ARK_IMAGE_SIGNATURE_FIELD_LOADED_MODULE_NAME_MATCH;
+        std::size_t responsePathLength = 0U;
+        while (responsePathLength < KSWORD_ARK_TRUST_PATH_MAX_CHARS &&
+               response.ntPath[responsePathLength] != L'\0')
+        {
+            ++responsePathLength;
+        }
+        const QString responseNtPath =
+            responsePathLength < KSWORD_ARK_TRUST_PATH_MAX_CHARS
+            ? QString::fromWCharArray(
+                response.ntPath,
+                static_cast<int>(responsePathLength))
+            : QString();
+        if (!identityResult.io.ok ||
+            response.requestFlags !=
+                KSWORD_ARK_IMAGE_SIGNATURE_QUERY_FLAG_MATCH_LOADED_MODULE ||
+            response.expectedModuleBase != moduleBase ||
+            response.matchedModuleBase != moduleBase ||
+            response.loadedModuleStatus != 0 ||
+            responseNtPath.compare(ntPath, Qt::CaseSensitive) != 0 ||
+            (response.structuralFlags &
+                KSWORD_ARK_IMAGE_SIGNATURE_STRUCT_LOADED_NAME_MISMATCH) != 0U ||
+            (response.fieldFlags & requiredFields) != requiredFields ||
+            response.matchedModuleSize == 0U ||
+            response.matchedModuleSize > kDriverModuleDumpHardMaxBytes ||
+            (expectedSize != 0U && response.matchedModuleSize != expectedSize) ||
+            moduleBase > (std::numeric_limits<std::uint64_t>::max)() -
+                static_cast<std::uint64_t>(response.matchedModuleSize))
+        {
+            technicalDetailOut = QString::fromLatin1(
+                "R0 loaded-module identity rejected: io=%1, win32=%2, "
+                "expectedBase=0x%3, responseExpected=0x%4, matchedBase=0x%5, "
+                "matchedSize=%6, expectedSize=%7, loadedStatus=0x%8, fields=0x%9.")
+                .arg(identityResult.io.ok ? 1 : 0)
+                .arg(identityResult.io.win32Error)
+                .arg(moduleBase, 0, 16)
+                .arg(response.expectedModuleBase, 0, 16)
+                .arg(response.matchedModuleBase, 0, 16)
+                .arg(response.matchedModuleSize)
+                .arg(expectedSize)
+                .arg(static_cast<unsigned long>(response.loadedModuleStatus), 0, 16)
+                .arg(response.fieldFlags, 0, 16);
+            return false;
+        }
+        moduleSizeOut = response.matchedModuleSize;
+        return true;
+    }
+
+    bool driverModuleDumpValidatePeImage(
+        const std::vector<std::uint8_t>& headerBytes,
+        const std::uint32_t authoritativeSize,
+        QString& technicalDetailOut)
+    {
+        std::uint16_t dosMagic = 0U;
+        std::uint32_t peOffset = 0U;
+        if (!driverModuleDumpReadValue(headerBytes, 0U, dosMagic) ||
+            !driverModuleDumpReadValue(headerBytes, 0x3CU, peOffset) ||
+            dosMagic != 0x5A4DU ||
+            peOffset < 0x40U)
+        {
+            technicalDetailOut = QString::fromLatin1(
+                "Loaded image DOS header is invalid (magic=0x%1, e_lfanew=0x%2).")
+                .arg(dosMagic, 0, 16)
+                .arg(peOffset, 0, 16);
+            return false;
+        }
+
+        std::uint32_t peSignature = 0U;
+        std::uint16_t machine = 0U;
+        std::uint16_t sectionCount = 0U;
+        std::uint16_t optionalHeaderBytes = 0U;
+        const std::size_t fileHeaderOffset = static_cast<std::size_t>(peOffset) + 4U;
+        const std::size_t optionalHeaderOffset = fileHeaderOffset + 20U;
+        if (!driverModuleDumpReadValue(headerBytes, peOffset, peSignature) ||
+            !driverModuleDumpReadValue(headerBytes, fileHeaderOffset, machine) ||
+            !driverModuleDumpReadValue(headerBytes, fileHeaderOffset + 2U, sectionCount) ||
+            !driverModuleDumpReadValue(headerBytes, fileHeaderOffset + 16U, optionalHeaderBytes) ||
+            peSignature != 0x00004550U ||
+            machine == 0U ||
+            sectionCount == 0U ||
+            sectionCount > 96U ||
+            optionalHeaderBytes < 64U ||
+            optionalHeaderOffset > headerBytes.size() ||
+            optionalHeaderBytes > headerBytes.size() - optionalHeaderOffset)
+        {
+            technicalDetailOut = QString::fromLatin1(
+                "Loaded image NT headers are invalid (PE=0x%1, machine=0x%2, "
+                "sections=%3, optionalBytes=%4, e_lfanew=0x%5).")
+                .arg(peSignature, 0, 16)
+                .arg(machine, 0, 16)
+                .arg(sectionCount)
+                .arg(optionalHeaderBytes)
+                .arg(peOffset, 0, 16);
+            return false;
+        }
+
+        std::uint16_t optionalMagic = 0U;
+        std::uint32_t sectionAlignment = 0U;
+        std::uint32_t sizeOfImage = 0U;
+        std::uint32_t sizeOfHeaders = 0U;
+        if (!driverModuleDumpReadValue(headerBytes, optionalHeaderOffset, optionalMagic) ||
+            !driverModuleDumpReadValue(headerBytes, optionalHeaderOffset + 32U, sectionAlignment) ||
+            !driverModuleDumpReadValue(headerBytes, optionalHeaderOffset + 56U, sizeOfImage) ||
+            !driverModuleDumpReadValue(headerBytes, optionalHeaderOffset + 60U, sizeOfHeaders) ||
+            (optionalMagic != 0x10BU && optionalMagic != 0x20BU) ||
+            sectionAlignment == 0U ||
+            (sectionAlignment & (sectionAlignment - 1U)) != 0U ||
+            sizeOfHeaders == 0U ||
+            sizeOfHeaders > sizeOfImage ||
+            sizeOfImage == 0U ||
+            sizeOfImage > kDriverModuleDumpHardMaxBytes ||
+            sizeOfImage % sectionAlignment != 0U ||
+            sizeOfImage != authoritativeSize)
+        {
+            technicalDetailOut = QString::fromLatin1(
+                "Loaded image SizeOfImage cross-check failed (magic=0x%1, "
+                "alignment=%2, headers=%3, PE size=%4, R0 module size=%5).")
+                .arg(optionalMagic, 0, 16)
+                .arg(sectionAlignment)
+                .arg(sizeOfHeaders)
+                .arg(sizeOfImage)
+                .arg(authoritativeSize);
+            return false;
+        }
+        return true;
+    }
+
+    bool driverOperationHasUnsafeWin32PathSyntax(
+        const QString& pathText,
+        const bool allowUnc)
+    {
+        const QString nativePath =
+            QDir::toNativeSeparators(pathText.trimmed());
+        if (nativePath.isEmpty() ||
+            nativePath.startsWith(QStringLiteral("\\\\?\\")) ||
+            nativePath.startsWith(QStringLiteral("\\\\.\\")) ||
+            nativePath.startsWith(QStringLiteral("\\??\\")) ||
+            nativePath.startsWith(QStringLiteral("\\Device\\"), Qt::CaseInsensitive))
+        {
+            return true;
+        }
+
+        const QFileInfo pathInfo(nativePath);
+        if (!pathInfo.isAbsolute())
+        {
+            return true;
+        }
+
+        QString pathWithoutRoot;
+        if (nativePath.startsWith(QStringLiteral("\\\\")))
+        {
+            if (!allowUnc || nativePath.contains(QLatin1Char(':')))
+            {
+                return true;
+            }
+            pathWithoutRoot = nativePath.mid(2);
+        }
+        else
+        {
+            if (nativePath.size() < 3 ||
+                !nativePath.at(0).isLetter() ||
+                nativePath.at(1) != QLatin1Char(':') ||
+                nativePath.at(2) != QLatin1Char('\\') ||
+                nativePath.indexOf(QLatin1Char(':'), 2) >= 0)
+            {
+                return true;
+            }
+            pathWithoutRoot = nativePath.mid(2);
+        }
+
+        if (pathWithoutRoot.contains(
+            QRegularExpression(QStringLiteral(R"([<>:"|?*\x00-\x1F])"))))
+        {
+            return true;
+        }
+        const QStringList pathParts =
+            QDir::fromNativeSeparators(pathWithoutRoot)
+                .split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        const QRegularExpression reservedDosNameExpression(
+            QStringLiteral(R"(^(CON|PRN|AUX|NUL|CLOCK\$|COM[1-9]|LPT[1-9])$)"),
+            QRegularExpression::CaseInsensitiveOption);
+        for (const QString& pathPart : pathParts)
+        {
+            const int extensionSeparator = pathPart.indexOf(QLatin1Char('.'));
+            const QString deviceStem =
+                (extensionSeparator >= 0
+                    ? pathPart.left(extensionSeparator)
+                    : pathPart)
+                .trimmed();
+            if (pathPart.endsWith(QLatin1Char('.')) ||
+                pathPart.endsWith(QLatin1Char(' ')) ||
+                reservedDosNameExpression.match(deviceStem).hasMatch())
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    QString driverModuleDumpPathIdentityKey(const QString& pathText)
+    {
+        const QFileInfo pathInfo(pathText);
+        const QString canonicalPath = pathInfo.canonicalFilePath();
+        const QString identityPath = canonicalPath.isEmpty()
+            ? pathInfo.absoluteFilePath()
+            : canonicalPath;
+        if (identityPath.isEmpty())
+        {
+            return QString();
+        }
+        return QDir::toNativeSeparators(
+            QDir::cleanPath(QDir::fromNativeSeparators(identityPath)))
+            .toCaseFolded();
+    }
+
+    QString driverModuleDumpExtendedPath(const QString& pathText)
+    {
+        QString nativePath = QDir::toNativeSeparators(
+            QFileInfo(pathText).absoluteFilePath());
+        if (nativePath.startsWith(QStringLiteral("\\\\?\\")))
+        {
+            return nativePath;
+        }
+        if (nativePath.startsWith(QStringLiteral("\\\\")))
+        {
+            return QStringLiteral("\\\\?\\UNC\\") + nativePath.mid(2);
+        }
+        return QStringLiteral("\\\\?\\") + nativePath;
+    }
+
+    DriverModuleDumpResult driverModuleDumpToFile(
+        const QString& ntPath,
+        const std::uint64_t moduleBase,
+        const QString& targetPath)
+    {
+        DriverModuleDumpResult dumpResult;
+        dumpResult.targetPath = QFileInfo(targetPath).absoluteFilePath();
+        dumpResult.moduleBase = moduleBase;
+        if (moduleBase == 0U ||
+            ntPath.isEmpty() ||
+            dumpResult.targetPath.isEmpty() ||
+            driverOperationHasUnsafeWin32PathSyntax(
+                dumpResult.targetPath,
+                true))
+        {
+            dumpResult.error = DriverModuleDumpError::InvalidTarget;
+            dumpResult.technicalDetail = QString::fromLatin1("Module dump parameters are invalid.");
+            return dumpResult;
+        }
+        if (QFileInfo::exists(dumpResult.targetPath))
+        {
+            dumpResult.error = DriverModuleDumpError::TargetExists;
+            dumpResult.win32Error = ERROR_FILE_EXISTS;
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "The destination already exists; overwrite is forbidden.");
+            return dumpResult;
+        }
+
+        const ksword::ark::DriverClient driverClient;
+        std::uint32_t moduleSize = 0U;
+        if (!driverModuleDumpQueryIdentity(
+            driverClient,
+            ntPath,
+            moduleBase,
+            0U,
+            moduleSize,
+            dumpResult.technicalDetail))
+        {
+            dumpResult.error = DriverModuleDumpError::IdentityCheck;
+            return dumpResult;
+        }
+        dumpResult.moduleSize = moduleSize;
+
+        ksword::ark::DriverHandle driverHandle = driverClient.open();
+        if (!driverHandle.isValid())
+        {
+            dumpResult.error = DriverModuleDumpError::DeviceOpen;
+            dumpResult.win32Error = ::GetLastError();
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "Opening the KswordARK R0 control device failed.");
+            return dumpResult;
+        }
+
+        const std::uint32_t headerBytesToRead =
+            std::min<std::uint32_t>(moduleSize, kDriverModuleDumpHeaderProbeBytes);
+        if (headerBytesToRead < 256U)
+        {
+            dumpResult.error = DriverModuleDumpError::PeValidation;
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "The authoritative module image size is too small for a PE image.");
+            return dumpResult;
+        }
+        const ksword::ark::VirtualMemoryReadResult headerRead =
+            driverClient.readVirtualMemory(
+                0U,
+                moduleBase,
+                headerBytesToRead,
+                KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS,
+                &driverHandle);
+        if (!driverModuleDumpValidateRead(
+            headerRead,
+            moduleBase,
+            headerBytesToRead,
+            dumpResult.technicalDetail))
+        {
+            dumpResult.error = DriverModuleDumpError::MemoryRead;
+            return dumpResult;
+        }
+        if (!driverModuleDumpValidatePeImage(
+            headerRead.data,
+            moduleSize,
+            dumpResult.technicalDetail))
+        {
+            dumpResult.error = DriverModuleDumpError::PeValidation;
+            return dumpResult;
+        }
+
+        const QFileInfo targetInfo(dumpResult.targetPath);
+        QDir targetDirectory = targetInfo.dir();
+        if (!targetDirectory.exists())
+        {
+            dumpResult.error = DriverModuleDumpError::DestinationDirectory;
+            dumpResult.win32Error = ERROR_PATH_NOT_FOUND;
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "The destination directory does not exist.");
+            return dumpResult;
+        }
+        QTemporaryFile temporaryFile(targetDirectory.filePath(
+            QString::fromLatin1(".%1.ksword-module-dump-XXXXXX.tmp")
+                .arg(targetInfo.fileName())));
+        temporaryFile.setAutoRemove(true);
+        if (!temporaryFile.open())
+        {
+            dumpResult.error = DriverModuleDumpError::TemporaryFileCreate;
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "Creating the atomic temporary file failed: %1")
+                .arg(temporaryFile.errorString());
+            return dumpResult;
+        }
+
+        const auto writeChunk =
+            [&temporaryFile, &dumpResult](const std::vector<std::uint8_t>& bytes) -> bool
+            {
+                const qint64 expectedBytes = static_cast<qint64>(bytes.size());
+                if (temporaryFile.write(
+                    reinterpret_cast<const char*>(bytes.data()),
+                    expectedBytes) != expectedBytes)
+                {
+                    dumpResult.error = DriverModuleDumpError::TemporaryFileWrite;
+                    dumpResult.technicalDetail = QString::fromLatin1(
+                        "Writing the atomic temporary file failed: %1")
+                        .arg(temporaryFile.errorString());
+                    return false;
+                }
+                return true;
+            };
+        if (!writeChunk(headerRead.data))
+        {
+            return dumpResult;
+        }
+
+        std::uint64_t offset = headerBytesToRead;
+        while (offset < moduleSize)
+        {
+            const std::uint32_t chunkBytes = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(
+                    KSWORD_ARK_MEMORY_READ_MAX_BYTES,
+                    static_cast<std::uint64_t>(moduleSize) - offset));
+            const std::uint64_t chunkAddress = moduleBase + offset;
+            const ksword::ark::VirtualMemoryReadResult readResult =
+                driverClient.readVirtualMemory(
+                    0U,
+                    chunkAddress,
+                    chunkBytes,
+                    KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS,
+                    &driverHandle);
+            if (!driverModuleDumpValidateRead(
+                readResult,
+                chunkAddress,
+                chunkBytes,
+                dumpResult.technicalDetail))
+            {
+                dumpResult.error = DriverModuleDumpError::MemoryRead;
+                return dumpResult;
+            }
+            if (!writeChunk(readResult.data))
+            {
+                return dumpResult;
+            }
+            offset += chunkBytes;
+        }
+
+        std::uint32_t finalModuleSize = 0U;
+        if (!driverModuleDumpQueryIdentity(
+            driverClient,
+            ntPath,
+            moduleBase,
+            moduleSize,
+            finalModuleSize,
+            dumpResult.technicalDetail))
+        {
+            dumpResult.error = DriverModuleDumpError::IdentityCheck;
+            dumpResult.technicalDetail.prepend(QString::fromLatin1(
+                "Final loaded-module identity check failed. "));
+            return dumpResult;
+        }
+        if (!temporaryFile.flush())
+        {
+            dumpResult.error = DriverModuleDumpError::TemporaryFileFlush;
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "Flushing the atomic temporary file failed: %1")
+                .arg(temporaryFile.errorString());
+            return dumpResult;
+        }
+        const HANDLE temporaryHandle =
+            reinterpret_cast<HANDLE>(temporaryFile.handle());
+        if (temporaryHandle == INVALID_HANDLE_VALUE ||
+            !::FlushFileBuffers(temporaryHandle))
+        {
+            dumpResult.error = DriverModuleDumpError::TemporaryFileFlush;
+            dumpResult.win32Error = ::GetLastError();
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "FlushFileBuffers failed before atomic commit.");
+            return dumpResult;
+        }
+        temporaryFile.close();
+
+        if (QFileInfo::exists(dumpResult.targetPath))
+        {
+            dumpResult.error = DriverModuleDumpError::TargetExists;
+            dumpResult.win32Error = ERROR_FILE_EXISTS;
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "The destination appeared before commit; overwrite was refused.");
+            return dumpResult;
+        }
+        const QString temporaryExtendedPath =
+            driverModuleDumpExtendedPath(temporaryFile.fileName());
+        const QString targetExtendedPath =
+            driverModuleDumpExtendedPath(dumpResult.targetPath);
+        if (!::MoveFileExW(
+            reinterpret_cast<LPCWSTR>(temporaryExtendedPath.utf16()),
+            reinterpret_cast<LPCWSTR>(targetExtendedPath.utf16()),
+            MOVEFILE_WRITE_THROUGH))
+        {
+            dumpResult.error = DriverModuleDumpError::AtomicCommit;
+            dumpResult.win32Error = ::GetLastError();
+            dumpResult.technicalDetail = QString::fromLatin1(
+                "Atomic no-replace commit failed.");
+            return dumpResult;
+        }
+
+        dumpResult.ok = true;
+        return dumpResult;
+    }
+
+    enum class DriverScCleanupStage : std::uint32_t
+    {
+        TargetValidation = 0U,
+        PreflightConfig,
+        PreflightSharing,
+        StopRequest,
+        StopWait,
+        PostflightConfig,
+        PostflightSharing,
+        ServiceDelete,
+        FileDelete,
+        Complete
+    };
+
+    struct DriverScCleanupResult
+    {
+        DriverScCleanupStage stage = DriverScCleanupStage::TargetValidation;
+        bool ok = false;
+        bool stopReached = false;
+        bool serviceDeleted = false;
+        bool fileDeletedOrMissing = false;
+        bool fileWasMissing = false;
+        std::uint32_t win32Error = 0U;
+        std::uint32_t finalServiceState = 0U;
+        QString normalizedPath;
+        QString technicalDetail;
+        QStringList sharedServiceNames;
+    };
+
+    struct DriverScCleanupFileIdentity
+    {
+        bool exists = false;
+        std::uint32_t volumeSerialNumber = 0U;
+        std::uint32_t fileIndexHigh = 0U;
+        std::uint32_t fileIndexLow = 0U;
+        QString finalPath;
+    };
+
+    QString driverScCleanupStageText(const DriverScCleanupStage stage)
+    {
+        switch (stage)
+        {
+        case DriverScCleanupStage::TargetValidation:
+            return driverText(
+                "driver.cleanup.stage.target_validation",
+                QStringLiteral("目标校验"));
+        case DriverScCleanupStage::PreflightConfig:
+            return driverText(
+                "driver.cleanup.stage.preflight_config",
+                QStringLiteral("停止前服务配置复核"));
+        case DriverScCleanupStage::PreflightSharing:
+            return driverText(
+                "driver.cleanup.stage.preflight_sharing",
+                QStringLiteral("停止前共享路径复核"));
+        case DriverScCleanupStage::StopRequest:
+            return driverText(
+                "driver.cleanup.stage.stop_request",
+                QStringLiteral("SCM 停止请求"));
+        case DriverScCleanupStage::StopWait:
+            return driverText(
+                "driver.cleanup.stage.stop_wait",
+                QStringLiteral("等待 SERVICE_STOPPED"));
+        case DriverScCleanupStage::PostflightConfig:
+            return driverText(
+                "driver.cleanup.stage.postflight_config",
+                QStringLiteral("停止后服务配置复核"));
+        case DriverScCleanupStage::PostflightSharing:
+            return driverText(
+                "driver.cleanup.stage.postflight_sharing",
+                QStringLiteral("停止后共享路径复核"));
+        case DriverScCleanupStage::ServiceDelete:
+            return driverText(
+                "driver.cleanup.stage.service_delete",
+                QStringLiteral("删除服务注册"));
+        case DriverScCleanupStage::FileDelete:
+            return driverText(
+                "driver.cleanup.stage.file_delete",
+                QStringLiteral("删除驱动文件"));
+        case DriverScCleanupStage::Complete:
+            return driverText(
+                "driver.cleanup.stage.complete",
+                QStringLiteral("完成"));
+        default:
+            return driverText(
+                "driver.cleanup.stage.unknown",
+                QStringLiteral("未知阶段"));
+        }
+    }
+
+    QString driverScCleanupWindowsDirectory()
+    {
+        std::vector<wchar_t> pathBuffer(32768U, L'\0');
+        const UINT pathLength = ::GetWindowsDirectoryW(
+            pathBuffer.data(),
+            static_cast<UINT>(pathBuffer.size()));
+        if (pathLength == 0U ||
+            pathLength >= static_cast<UINT>(pathBuffer.size()))
+        {
+            return QString();
+        }
+        return QDir::toNativeSeparators(
+            QString::fromWCharArray(pathBuffer.data(), static_cast<int>(pathLength)));
+    }
+
+    QString driverScCleanupNormalizePath(const QString& rawPathText)
+    {
+        QString pathText =
+            ks::online_scan::normalizeKernelImagePathForUpload(rawPathText).trimmed();
+        if (pathText.isEmpty() ||
+            pathText.compare(QStringLiteral("<unknown>"), Qt::CaseInsensitive) == 0)
+        {
+            return QString();
+        }
+
+        pathText = QDir::toNativeSeparators(pathText);
+        if (QFileInfo(pathText).isRelative())
+        {
+            const QString portablePath = QDir::fromNativeSeparators(pathText);
+            if (!portablePath.startsWith(
+                QStringLiteral("System32/"),
+                Qt::CaseInsensitive))
+            {
+                return QString();
+            }
+
+            const QString windowsDirectory = driverScCleanupWindowsDirectory();
+            if (windowsDirectory.isEmpty())
+            {
+                return QString();
+            }
+            pathText = QDir::toNativeSeparators(
+                windowsDirectory + QLatin1Char('/') + portablePath);
+        }
+
+        pathText = QDir::toNativeSeparators(
+            QDir::cleanPath(QDir::fromNativeSeparators(pathText)));
+        const QFileInfo pathInfo(pathText);
+        if (!pathInfo.isAbsolute() ||
+            pathInfo.suffix().compare(QStringLiteral("sys"), Qt::CaseInsensitive) != 0 ||
+            (pathInfo.exists() && !pathInfo.isFile()))
+        {
+            return QString();
+        }
+        const QString absolutePath =
+            QDir::toNativeSeparators(pathInfo.absoluteFilePath());
+        if (driverOperationHasUnsafeWin32PathSyntax(absolutePath, false))
+        {
+            return QString();
+        }
+        return absolutePath;
+    }
+
+    QString driverScCleanupPathIdentityKey(const QString& normalizedPath)
+    {
+        const QFileInfo pathInfo(normalizedPath);
+        const QString canonicalPath = pathInfo.canonicalFilePath();
+        const QString identityPath =
+            canonicalPath.isEmpty() ? normalizedPath : canonicalPath;
+        return QDir::toNativeSeparators(
+            QDir::cleanPath(QDir::fromNativeSeparators(identityPath)))
+            .toCaseFolded();
+    }
+
+    bool driverScCleanupQueryFileIdentity(
+        const QString& normalizedPath,
+        const DWORD desiredAccess,
+        DriverScCleanupFileIdentity& identityOut,
+        HANDLE* const handleOut,
+        std::uint32_t& win32ErrorOut,
+        QString& technicalDetailOut)
+    {
+        identityOut = DriverScCleanupFileIdentity{};
+        win32ErrorOut = ERROR_SUCCESS;
+        if (handleOut != nullptr)
+        {
+            *handleOut = INVALID_HANDLE_VALUE;
+        }
+
+        if (driverOperationHasUnsafeWin32PathSyntax(normalizedPath, false))
+        {
+            win32ErrorOut = ERROR_INVALID_NAME;
+            technicalDetailOut = QString::fromLatin1(
+                "The driver path contains unsafe Win32 path syntax.");
+            return false;
+        }
+
+        const QString extendedPath =
+            driverModuleDumpExtendedPath(normalizedPath);
+        HANDLE fileHandle = ::CreateFileW(
+            reinterpret_cast<LPCWSTR>(extendedPath.utf16()),
+            desiredAccess,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (fileHandle == INVALID_HANDLE_VALUE)
+        {
+            const DWORD openError = ::GetLastError();
+            if (openError == ERROR_FILE_NOT_FOUND ||
+                openError == ERROR_PATH_NOT_FOUND)
+            {
+                return true;
+            }
+            win32ErrorOut = openError;
+            technicalDetailOut = QString::fromLatin1(
+                "Opening the driver path for identity verification failed.");
+            return false;
+        }
+
+        BY_HANDLE_FILE_INFORMATION fileInformation{};
+        if (!::GetFileInformationByHandle(fileHandle, &fileInformation))
+        {
+            win32ErrorOut = ::GetLastError();
+            technicalDetailOut = QString::fromLatin1(
+                "GetFileInformationByHandle failed for the driver path.");
+            ::CloseHandle(fileHandle);
+            return false;
+        }
+        if ((fileInformation.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0U)
+        {
+            win32ErrorOut = ERROR_REPARSE_POINT_ENCOUNTERED;
+            technicalDetailOut = QString::fromLatin1(
+                "The driver path ends at a reparse point; cleanup was refused.");
+            ::CloseHandle(fileHandle);
+            return false;
+        }
+
+        std::vector<wchar_t> finalPathBuffer(32768U, L'\0');
+        const DWORD finalPathLength = ::GetFinalPathNameByHandleW(
+            fileHandle,
+            finalPathBuffer.data(),
+            static_cast<DWORD>(finalPathBuffer.size()),
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (finalPathLength == 0U ||
+            finalPathLength >= static_cast<DWORD>(finalPathBuffer.size()))
+        {
+            win32ErrorOut = finalPathLength == 0U
+                ? ::GetLastError()
+                : ERROR_INSUFFICIENT_BUFFER;
+            technicalDetailOut = QString::fromLatin1(
+                "GetFinalPathNameByHandleW failed for the driver path.");
+            ::CloseHandle(fileHandle);
+            return false;
+        }
+
+        identityOut.exists = true;
+        identityOut.volumeSerialNumber = fileInformation.dwVolumeSerialNumber;
+        identityOut.fileIndexHigh = fileInformation.nFileIndexHigh;
+        identityOut.fileIndexLow = fileInformation.nFileIndexLow;
+        identityOut.finalPath = QDir::toNativeSeparators(
+            QString::fromWCharArray(
+                finalPathBuffer.data(),
+                static_cast<int>(finalPathLength)));
+        if (handleOut != nullptr)
+        {
+            *handleOut = fileHandle;
+        }
+        else
+        {
+            ::CloseHandle(fileHandle);
+        }
+        return true;
+    }
+
+    bool driverScCleanupSameFileIdentity(
+        const DriverScCleanupFileIdentity& left,
+        const DriverScCleanupFileIdentity& right)
+    {
+        if (left.exists != right.exists)
+        {
+            return false;
+        }
+        if (!left.exists)
+        {
+            return true;
+        }
+        return left.volumeSerialNumber == right.volumeSerialNumber &&
+            left.fileIndexHigh == right.fileIndexHigh &&
+            left.fileIndexLow == right.fileIndexLow &&
+            left.finalPath.compare(right.finalPath, Qt::CaseInsensitive) == 0;
+    }
+
+    bool driverScCleanupValidateLiveTarget(
+        const std::wstring& serviceName,
+        const QString& expectedNormalizedPath,
+        const bool afterStop,
+        DriverScCleanupResult& result)
+    {
+        result.stage = afterStop
+            ? DriverScCleanupStage::PostflightConfig
+            : DriverScCleanupStage::PreflightConfig;
+
+        ks::service::ServiceRecord liveRecord;
+        std::string serviceErrorText;
+        std::uint32_t serviceErrorCode = 0U;
+        if (!ks::service::QueryServiceRecord(
+            serviceName,
+            &liveRecord,
+            &serviceErrorText,
+            &serviceErrorCode))
+        {
+            result.win32Error = serviceErrorCode;
+            result.technicalDetail = QString::fromUtf8(serviceErrorText.c_str());
+            return false;
+        }
+        if (!liveRecord.hasConfig ||
+            (liveRecord.config.serviceType & SERVICE_DRIVER) == 0U)
+        {
+            result.win32Error = ERROR_INVALID_DATA;
+            result.technicalDetail = QString::fromLatin1(
+                "The live SCM record is not a queryable driver service.");
+            return false;
+        }
+        if (afterStop &&
+            (!liveRecord.hasStatus ||
+             liveRecord.status.currentState != SERVICE_STOPPED))
+        {
+            result.win32Error = ERROR_BUSY;
+            result.finalServiceState = liveRecord.hasStatus
+                ? liveRecord.status.currentState
+                : 0U;
+            result.technicalDetail = QString::fromLatin1(
+                "The live SCM service state is no longer SERVICE_STOPPED (hasStatus=%1, currentState=%2).")
+                .arg(liveRecord.hasStatus ? 1 : 0)
+                .arg(result.finalServiceState);
+            return false;
+        }
+
+        const QString currentPath = driverScCleanupNormalizePath(
+            QString::fromStdWString(liveRecord.config.binaryPath));
+        if (currentPath.isEmpty())
+        {
+            result.win32Error = ERROR_INVALID_DATA;
+            result.technicalDetail = QString::fromLatin1(
+                "The live SCM ImagePath is empty, relative, non-.sys, or otherwise unsafe.");
+            return false;
+        }
+        if (currentPath.compare(expectedNormalizedPath, Qt::CaseInsensitive) != 0)
+        {
+            result.win32Error = ERROR_INVALID_DATA;
+            result.technicalDetail = QString::fromLatin1(
+                "The live SCM ImagePath changed after confirmation (expected=%1, current=%2).")
+                .arg(expectedNormalizedPath, currentPath);
+            return false;
+        }
+        result.normalizedPath = currentPath;
+
+        result.stage = afterStop
+            ? DriverScCleanupStage::PostflightSharing
+            : DriverScCleanupStage::PreflightSharing;
+        std::vector<ks::service::ServiceRecord> serviceRecords;
+        std::string enumerationErrorText;
+        std::uint32_t enumerationErrorCode = 0U;
+        if (!ks::service::EnumerateServiceRecords(
+            SERVICE_DRIVER,
+            SERVICE_STATE_ALL,
+            &serviceRecords,
+            &enumerationErrorText,
+            &enumerationErrorCode))
+        {
+            result.win32Error = enumerationErrorCode;
+            result.technicalDetail = QString::fromUtf8(enumerationErrorText.c_str());
+            return false;
+        }
+
+        const QString expectedPathKey =
+            driverScCleanupPathIdentityKey(expectedNormalizedPath);
+        if (expectedPathKey.isEmpty())
+        {
+            result.win32Error = ERROR_INVALID_DATA;
+            result.technicalDetail = QString::fromLatin1(
+                "The confirmed driver path has no stable comparison key.");
+            return false;
+        }
+        DriverScCleanupFileIdentity expectedFileIdentity;
+        std::uint32_t identityError = ERROR_SUCCESS;
+        QString identityDetail;
+        if (!driverScCleanupQueryFileIdentity(
+            expectedNormalizedPath,
+            FILE_READ_ATTRIBUTES,
+            expectedFileIdentity,
+            nullptr,
+            identityError,
+            identityDetail))
+        {
+            result.win32Error = identityError;
+            result.technicalDetail = identityDetail;
+            return false;
+        }
+
+        const QString serviceNameText = QString::fromStdWString(serviceName);
+        QStringList sharedServiceNames;
+        for (const ks::service::ServiceRecord& serviceRecord : serviceRecords)
+        {
+            const QString candidateServiceName =
+                QString::fromStdWString(serviceRecord.serviceName).trimmed();
+            if (candidateServiceName.compare(
+                serviceNameText,
+                Qt::CaseInsensitive) == 0)
+            {
+                continue;
+            }
+            if (!serviceRecord.hasConfig)
+            {
+                result.win32Error = ERROR_ACCESS_DENIED;
+                result.technicalDetail = QString::fromLatin1(
+                    "The driver target cannot be proven unshared because SCM config "
+                    "is unavailable for service %1: %2")
+                    .arg(
+                        candidateServiceName,
+                        QString::fromUtf8(serviceRecord.configErrorText.c_str()));
+                return false;
+            }
+
+            const QString rawCandidatePath =
+                QString::fromStdWString(serviceRecord.config.binaryPath).trimmed();
+            if (rawCandidatePath.isEmpty())
+            {
+                continue;
+            }
+            const QString candidatePath =
+                driverScCleanupNormalizePath(rawCandidatePath);
+            if (candidatePath.isEmpty())
+            {
+                result.win32Error = ERROR_INVALID_DATA;
+                result.technicalDetail = QString::fromLatin1(
+                    "The driver target cannot be proven unshared because service %1 "
+                    "has an unresolvable ImagePath: %2")
+                    .arg(candidateServiceName, rawCandidatePath);
+                return false;
+            }
+            DriverScCleanupFileIdentity candidateFileIdentity;
+            identityError = ERROR_SUCCESS;
+            identityDetail.clear();
+            if (!driverScCleanupQueryFileIdentity(
+                candidatePath,
+                FILE_READ_ATTRIBUTES,
+                candidateFileIdentity,
+                nullptr,
+                identityError,
+                identityDetail))
+            {
+                result.win32Error = identityError;
+                result.technicalDetail = QString::fromLatin1(
+                    "The driver target cannot be proven unshared because the file identity for service %1 could not be queried.")
+                    .arg(candidateServiceName);
+                return false;
+            }
+            const bool sameExistingFile =
+                expectedFileIdentity.exists &&
+                candidateFileIdentity.exists &&
+                expectedFileIdentity.volumeSerialNumber ==
+                    candidateFileIdentity.volumeSerialNumber &&
+                expectedFileIdentity.fileIndexHigh ==
+                    candidateFileIdentity.fileIndexHigh &&
+                expectedFileIdentity.fileIndexLow ==
+                    candidateFileIdentity.fileIndexLow;
+            if (driverScCleanupPathIdentityKey(candidatePath) == expectedPathKey ||
+                sameExistingFile)
+            {
+                sharedServiceNames.push_back(candidateServiceName);
+            }
+        }
+        if (!sharedServiceNames.isEmpty())
+        {
+            sharedServiceNames.sort(Qt::CaseInsensitive);
+            result.sharedServiceNames = sharedServiceNames;
+            result.win32Error = ERROR_SHARING_VIOLATION;
+            result.technicalDetail = QString::fromLatin1(
+                "The same driver file is referenced by other SCM services: %1")
+                .arg(sharedServiceNames.join(QStringLiteral(", ")));
+            return false;
+        }
+        return true;
+    }
+
+    DriverScCleanupResult driverScUnloadAndCleanup(
+        const QString& serviceNameText,
+        const QString& expectedNormalizedPath)
+    {
+        DriverScCleanupResult result;
+        result.normalizedPath =
+            driverScCleanupNormalizePath(expectedNormalizedPath);
+        if (serviceNameText.trimmed().isEmpty() ||
+            result.normalizedPath.isEmpty() ||
+            result.normalizedPath.compare(
+                expectedNormalizedPath,
+                Qt::CaseInsensitive) != 0)
+        {
+            result.win32Error = ERROR_INVALID_PARAMETER;
+            result.technicalDetail = QString::fromLatin1(
+                "The immutable service name or confirmed driver path is invalid.");
+            return result;
+        }
+
+        const std::wstring serviceName = toWideString(serviceNameText);
+        if (!driverScCleanupValidateLiveTarget(
+            serviceName,
+            result.normalizedPath,
+            false,
+            result))
+        {
+            return result;
+        }
+
+        DriverScCleanupFileIdentity confirmedFileIdentity;
+        std::uint32_t fileIdentityError = ERROR_SUCCESS;
+        QString fileIdentityDetail;
+        if (!driverScCleanupQueryFileIdentity(
+            result.normalizedPath,
+            FILE_READ_ATTRIBUTES,
+            confirmedFileIdentity,
+            nullptr,
+            fileIdentityError,
+            fileIdentityDetail))
+        {
+            result.stage = DriverScCleanupStage::PreflightConfig;
+            result.win32Error = fileIdentityError;
+            result.technicalDetail = fileIdentityDetail;
+            return result;
+        }
+
+        result.stage = DriverScCleanupStage::StopRequest;
+        ks::service::ServiceStatus finalStatus{};
+        std::string stopErrorText;
+        std::uint32_t stopErrorCode = 0U;
+        const bool stopOk = ks::service::StopServiceByName(
+            serviceName,
+            10000U,
+            SERVICE_STOPPED,
+            &finalStatus,
+            &stopErrorText,
+            &stopErrorCode);
+        result.finalServiceState = finalStatus.currentState;
+        if (!stopOk)
+        {
+            result.win32Error = stopErrorCode;
+            result.technicalDetail = QString::fromUtf8(stopErrorText.c_str());
+            return result;
+        }
+        if (finalStatus.currentState != SERVICE_STOPPED)
+        {
+            result.stage = DriverScCleanupStage::StopWait;
+            result.win32Error = ERROR_TIMEOUT;
+            result.technicalDetail = QString::fromLatin1(
+                "StopServiceByName returned without reaching SERVICE_STOPPED "
+                "(finalState=%1).")
+                .arg(finalStatus.currentState);
+            return result;
+        }
+        result.stopReached = true;
+
+        if (!driverScCleanupValidateLiveTarget(
+            serviceName,
+            result.normalizedPath,
+            true,
+            result))
+        {
+            return result;
+        }
+
+        DriverScCleanupFileIdentity postStopFileIdentity;
+        fileIdentityError = ERROR_SUCCESS;
+        fileIdentityDetail.clear();
+        if (!driverScCleanupQueryFileIdentity(
+            result.normalizedPath,
+            FILE_READ_ATTRIBUTES,
+            postStopFileIdentity,
+            nullptr,
+            fileIdentityError,
+            fileIdentityDetail))
+        {
+            result.stage = DriverScCleanupStage::PostflightConfig;
+            result.win32Error = fileIdentityError;
+            result.technicalDetail = fileIdentityDetail;
+            return result;
+        }
+        if (postStopFileIdentity.exists &&
+            !driverScCleanupSameFileIdentity(
+                confirmedFileIdentity,
+                postStopFileIdentity))
+        {
+            result.stage = DriverScCleanupStage::PostflightConfig;
+            result.win32Error = ERROR_FILE_INVALID;
+            result.technicalDetail = QString::fromLatin1(
+                "The driver file identity changed while the service was stopping.");
+            return result;
+        }
+        confirmedFileIdentity = postStopFileIdentity;
+
+        // 把状态、配置路径和共享引用的最终复核尽量贴近 DeleteService，
+        // 避免 STOPPED 后被其它进程重新启动或重新绑定路径时继续清理。
+        if (!driverScCleanupValidateLiveTarget(
+            serviceName,
+            result.normalizedPath,
+            true,
+            result))
+        {
+            return result;
+        }
+        DriverScCleanupFileIdentity deleteGateFileIdentity;
+        fileIdentityError = ERROR_SUCCESS;
+        fileIdentityDetail.clear();
+        if (!driverScCleanupQueryFileIdentity(
+            result.normalizedPath,
+            FILE_READ_ATTRIBUTES,
+            deleteGateFileIdentity,
+            nullptr,
+            fileIdentityError,
+            fileIdentityDetail))
+        {
+            result.stage = DriverScCleanupStage::PostflightConfig;
+            result.win32Error = fileIdentityError;
+            result.technicalDetail = fileIdentityDetail;
+            return result;
+        }
+        if (deleteGateFileIdentity.exists &&
+            !driverScCleanupSameFileIdentity(
+                confirmedFileIdentity,
+                deleteGateFileIdentity))
+        {
+            result.stage = DriverScCleanupStage::PostflightConfig;
+            result.win32Error = ERROR_FILE_INVALID;
+            result.technicalDetail = QString::fromLatin1(
+                "The driver file identity changed immediately before service deletion.");
+            return result;
+        }
+        confirmedFileIdentity = deleteGateFileIdentity;
+
+        result.stage = DriverScCleanupStage::ServiceDelete;
+        std::string deleteServiceErrorText;
+        std::uint32_t deleteServiceErrorCode = 0U;
+        if (!ks::service::DeleteServiceByName(
+            serviceName,
+            false,
+            0U,
+            &deleteServiceErrorText,
+            &deleteServiceErrorCode))
+        {
+            result.win32Error = deleteServiceErrorCode;
+            result.technicalDetail =
+                QString::fromUtf8(deleteServiceErrorText.c_str());
+            return result;
+        }
+        result.finalServiceState = SERVICE_STOPPED;
+        result.serviceDeleted = true;
+
+        result.stage = DriverScCleanupStage::FileDelete;
+        DriverScCleanupFileIdentity deleteFileIdentity;
+        HANDLE deleteFileHandle = INVALID_HANDLE_VALUE;
+        fileIdentityError = ERROR_SUCCESS;
+        fileIdentityDetail.clear();
+        if (!driverScCleanupQueryFileIdentity(
+            result.normalizedPath,
+            DELETE | FILE_READ_ATTRIBUTES,
+            deleteFileIdentity,
+            &deleteFileHandle,
+            fileIdentityError,
+            fileIdentityDetail))
+        {
+            result.win32Error = fileIdentityError;
+            result.technicalDetail = fileIdentityDetail;
+            return result;
+        }
+        if (!deleteFileIdentity.exists)
+        {
+            result.fileWasMissing = true;
+        }
+        else
+        {
+            if (!driverScCleanupSameFileIdentity(
+                confirmedFileIdentity,
+                deleteFileIdentity))
+            {
+                ::CloseHandle(deleteFileHandle);
+                result.win32Error = ERROR_FILE_INVALID;
+                result.technicalDetail = QString::fromLatin1(
+                    "The driver path now refers to a different file; deletion was refused.");
+                return result;
+            }
+
+            FILE_DISPOSITION_INFO dispositionInformation{};
+            dispositionInformation.DeleteFile = TRUE;
+            if (!::SetFileInformationByHandle(
+                deleteFileHandle,
+                FileDispositionInfo,
+                &dispositionInformation,
+                sizeof(dispositionInformation)))
+            {
+                result.win32Error = ::GetLastError();
+                result.technicalDetail = QString::fromLatin1(
+                    "Deleting the identity-verified driver file failed after the service registration was deleted.");
+                ::CloseHandle(deleteFileHandle);
+                return result;
+            }
+            ::CloseHandle(deleteFileHandle);
+        }
+        result.fileDeletedOrMissing = true;
+        result.stage = DriverScCleanupStage::Complete;
+        result.ok = true;
+        result.win32Error = ERROR_SUCCESS;
+        result.technicalDetail.clear();
+        return result;
+    }
+
 }
 
 void DriverDock::refreshDriverServiceRecords()
@@ -373,6 +1709,22 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
         return;
     }
 
+    // QMenu::exec 会进入嵌套事件循环；清理操作必须在进入前复制不可变目标，
+    // 不能在用户确认后重新按可能已刷新的 rowIndex 读取服务名或路径。
+    const int selectedServiceRowIndex = selectedRows.front().row();
+    const QTableWidgetItem* selectedServiceNameItem =
+        m_serviceTable->item(selectedServiceRowIndex, 0);
+    const QTableWidgetItem* selectedServicePathItem =
+        m_serviceTable->item(selectedServiceRowIndex, 5);
+    const QString selectedCleanupServiceName =
+        selectedServiceNameItem != nullptr
+        ? selectedServiceNameItem->data(Qt::UserRole).toString().trimmed()
+        : QString();
+    const QString selectedCleanupServicePath =
+        selectedServicePathItem != nullptr
+        ? driverScCleanupNormalizePath(selectedServicePathItem->text())
+        : QString();
+
     QMenu contextMenu(this);
     contextMenu.setStyleSheet(KswordTheme::ContextMenuStyle());
     QAction* fillObjectNameAction = contextMenu.addAction(
@@ -392,6 +1744,31 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
         driverText(
             "driver.menu.stop_service.tooltip",
             QStringLiteral("通过服务控制管理器发送 SERVICE_CONTROL_STOP，走 Windows 标准驱动卸载路径。")));
+    QAction* scCleanupAction = contextMenu.addAction(
+        QIcon(":/Icon/process_uncritical.svg"),
+        driverText(
+            "driver.menu.sc_unload_cleanup",
+            QStringLiteral("sc卸载并清理文件注册表")));
+    scCleanupAction->setToolTip(driverText(
+        "driver.menu.sc_unload_cleanup.tooltip",
+        QStringLiteral("严格等待 SCM 到达 SERVICE_STOPPED；停前停后均复核服务路径与独占引用，随后删除服务注册和驱动文件。")));
+    const bool serviceCleanupTargetReady =
+        !selectedCleanupServiceName.isEmpty() &&
+        !selectedCleanupServicePath.isEmpty();
+    scCleanupAction->setEnabled(
+        serviceCleanupTargetReady && !m_scCleanupRunning);
+    if (m_scCleanupRunning)
+    {
+        scCleanupAction->setToolTip(driverText(
+            "driver.menu.sc_unload_cleanup.running",
+            QStringLiteral("已有 sc 卸载清理任务正在后台运行，请等待完成。")));
+    }
+    else if (!serviceCleanupTargetReady)
+    {
+        scCleanupAction->setToolTip(driverText(
+            "driver.menu.sc_unload_cleanup.invalid_service_target",
+            QStringLiteral("当前服务缺少可安全解析的绝对 .sys 路径，无法执行清理。")));
+    }
     QAction* forceUnloadAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
         driverText("driver.menu.force_unload_driver_object", QStringLiteral("直接调用 DriverUnload")));
@@ -432,6 +1809,13 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
     if (selectedAction == stopServiceAction)
     {
         stopDriverServiceFromServiceRow(selectedRows.front().row());
+        return;
+    }
+    if (selectedAction == scCleanupAction)
+    {
+        scUnloadAndCleanupDriver(
+            selectedCleanupServiceName,
+            selectedCleanupServicePath);
         return;
     }
     if (selectedAction == forceUnloadAction)
@@ -546,6 +1930,278 @@ void DriverDock::stopDriverServiceFromServiceRow(const int rowIndex)
         });
     stopTask->setAutoDelete(true);
     QThreadPool::globalInstance()->start(stopTask);
+}
+
+void DriverDock::scUnloadAndCleanupDriver(
+    const QString& serviceName,
+    const QString& normalizedBinaryPath)
+{
+    if (m_scCleanupRunning)
+    {
+        appendOperateLogLine(driverText(
+            "driver.cleanup.already_running",
+            QStringLiteral("已有 sc 卸载清理任务正在运行，本次请求未执行。")));
+        return;
+    }
+
+    const QString serviceNameText = serviceName.trimmed();
+    const QString confirmedPath =
+        driverScCleanupNormalizePath(normalizedBinaryPath);
+    if (serviceNameText.isEmpty() ||
+        confirmedPath.isEmpty() ||
+        confirmedPath.compare(
+            normalizedBinaryPath,
+            Qt::CaseInsensitive) != 0)
+    {
+        QMessageBox::warning(
+            this,
+            driverText(
+                "driver.cleanup.title",
+                QStringLiteral("sc 卸载并清理")),
+            driverText(
+                "driver.cleanup.invalid_target",
+                QStringLiteral("目标服务名或驱动路径无效。仅允许清理可解析为绝对 .sys 文件的 SCM 驱动服务。")));
+        return;
+    }
+
+    const QString featureName = driverText(
+        "driver.cleanup.feature_name",
+        QStringLiteral("sc 卸载并清理驱动文件和服务注册"));
+    if (!ks::ui::requestAdministratorRestartForFeature(this, featureName))
+    {
+        return;
+    }
+
+    const QMessageBox::StandardButton confirmation =
+        QMessageBox::warning(
+            this,
+            driverText(
+                "driver.cleanup.title",
+                QStringLiteral("sc 卸载并清理")),
+            driverText(
+                "driver.cleanup.confirm_body",
+                QStringLiteral(
+                    "目标服务：%1\n"
+                    "驱动文件：%2\n\n"
+                    "该操作不可逆，将严格按以下顺序执行：\n"
+                    "1. 复核当前 SCM 配置路径，确认没有其它驱动服务共享该文件；\n"
+                    "2. 通过 SCM 发送 SERVICE_CONTROL_STOP，并等待 SERVICE_STOPPED；\n"
+                    "3. 停止后再次复核配置路径和非共享状态；\n"
+                    "4. 删除服务注册；仅删除成功后才删除驱动文件。\n\n"
+                    "如果停止失败或未到 SERVICE_STOPPED，服务注册和文件都不会被删除。"
+                    "如果服务注册已删除但文件删除失败，将保留孤立文件且不会自动恢复服务注册，"
+                    "需要手动处理该部分成功状态。\n\n是否继续？"))
+                .arg(serviceNameText, confirmedPath),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+    if (confirmation != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    bool phraseAccepted = false;
+    const QString confirmationPhrase = QInputDialog::getText(
+        this,
+        driverText(
+            "driver.cleanup.strong_confirm_title",
+            QStringLiteral("不可逆清理强确认")),
+        driverText(
+            "driver.cleanup.strong_confirm_prompt",
+            QStringLiteral("要继续，请准确输入 UNLOAD CLEANUP：")),
+        QLineEdit::Normal,
+        QString(),
+        &phraseAccepted);
+    if (!phraseAccepted)
+    {
+        return;
+    }
+    if (confirmationPhrase != QStringLiteral("UNLOAD CLEANUP"))
+    {
+        QMessageBox::warning(
+            this,
+            driverText(
+                "driver.cleanup.title",
+                QStringLiteral("sc 卸载并清理")),
+            driverText(
+                "driver.cleanup.strong_confirm_mismatch",
+                QStringLiteral("确认短语不匹配，未执行任何操作。")));
+        return;
+    }
+
+    appendOperateLogLine(
+        driverText(
+            "driver.cleanup.started",
+            QStringLiteral("开始 sc 卸载并清理：service=%1，path=%2"))
+        .arg(serviceNameText, confirmedPath));
+    m_scCleanupRunning = true;
+
+    QPointer<DriverDock> guardThis(this);
+    auto* cleanupTask = QRunnable::create(
+        [guardThis, serviceNameText, confirmedPath]()
+        {
+            const DriverScCleanupResult cleanupResult =
+                driverScUnloadAndCleanup(serviceNameText, confirmedPath);
+
+            // 结果先投递到长生命周期 GUI receiver；到 GUI 线程后再检查 QPointer，
+            // 避免 worker 线程把可能已析构的 DriverDock raw pointer 当 receiver。
+            QCoreApplication* application = QCoreApplication::instance();
+            if (application == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                application,
+                [guardThis, serviceNameText, cleanupResult]()
+                {
+                    if (guardThis == nullptr)
+                    {
+                        return;
+                    }
+
+                    guardThis->m_scCleanupRunning = false;
+                    const QString stageText =
+                        driverScCleanupStageText(cleanupResult.stage);
+                    if (cleanupResult.ok)
+                    {
+                        const QString fileStateText = cleanupResult.fileWasMissing
+                            ? driverText(
+                                "driver.cleanup.file_already_missing",
+                                QStringLiteral("文件原本已不存在（视为已清理）"))
+                            : driverText(
+                                "driver.cleanup.file_deleted",
+                                QStringLiteral("文件已删除"));
+                        const QString successText = driverText(
+                            "driver.cleanup.success",
+                            QStringLiteral(
+                                "sc 卸载清理完成。\n\n"
+                                "服务：%1\n"
+                                "服务注册：已删除或已标记删除\n"
+                                "驱动文件：%2\n"
+                                "文件状态：%3"))
+                            .arg(
+                                serviceNameText,
+                                cleanupResult.normalizedPath,
+                                fileStateText);
+                        guardThis->appendOperateLogLine(
+                            driverText(
+                                "driver.cleanup.success_log",
+                                QStringLiteral("sc 卸载清理完成：service=%1，path=%2，file=%3"))
+                            .arg(
+                                serviceNameText,
+                                cleanupResult.normalizedPath,
+                                fileStateText));
+                        QMessageBox::information(
+                            guardThis,
+                            driverText(
+                                "driver.cleanup.title",
+                                QStringLiteral("sc 卸载并清理")),
+                            successText);
+                    }
+                    else
+                    {
+                        (void)ks::ui::promptForPrivilegeFailure(
+                            guardThis,
+                            driverText(
+                                "driver.cleanup.feature_name",
+                                QStringLiteral("sc 卸载并清理驱动文件和服务注册")),
+                            cleanupResult.win32Error);
+
+                        QString detailText;
+                        if (!cleanupResult.sharedServiceNames.isEmpty())
+                        {
+                            detailText = driverText(
+                                "driver.cleanup.shared_services_detail",
+                                QStringLiteral("同一驱动文件仍被这些服务引用：%1"))
+                                .arg(cleanupResult.sharedServiceNames.join(
+                                    QStringLiteral(", ")));
+                        }
+                        else
+                        {
+                            detailText = driverText(
+                                "driver.cleanup.failure_detail",
+                                QStringLiteral("该阶段的实时安全校验或系统调用未通过；后续删除已按安全策略中止。"));
+                            if (cleanupResult.win32Error != ERROR_SUCCESS)
+                            {
+                                detailText = driverText(
+                                    "driver.cleanup.failure_detail_with_system",
+                                    QStringLiteral("%1\n系统消息：%2"))
+                                    .arg(
+                                        detailText,
+                                        DriverDock::formatWin32ErrorText(
+                                            cleanupResult.win32Error));
+                            }
+                        }
+                        QString failureText;
+                        if (cleanupResult.serviceDeleted)
+                        {
+                            failureText = driverText(
+                                "driver.cleanup.partial_failure",
+                                QStringLiteral(
+                                    "sc 卸载清理部分成功：服务已停止且服务注册已删除或已标记删除，"
+                                    "但驱动文件删除失败。不会自动恢复已删除的服务注册。\n\n"
+                                    "服务：%1\n驱动文件：%2\n"
+                                    "失败阶段：%3\nWin32：%4\n详情：%5"))
+                                .arg(serviceNameText)
+                                .arg(cleanupResult.normalizedPath)
+                                .arg(stageText)
+                                .arg(cleanupResult.win32Error)
+                                .arg(detailText);
+                        }
+                        else if (cleanupResult.stopReached)
+                        {
+                            failureText = driverText(
+                                "driver.cleanup.post_stop_failure",
+                                QStringLiteral(
+                                    "sc 卸载清理已中止：服务已到达 SERVICE_STOPPED，"
+                                    "但后续复核或服务注册删除失败。"
+                                    "服务注册和驱动文件均未删除。\n\n"
+                                    "服务：%1\n驱动文件：%2\n"
+                                    "失败阶段：%3\nWin32：%4\n详情：%5"))
+                                .arg(serviceNameText)
+                                .arg(cleanupResult.normalizedPath)
+                                .arg(stageText)
+                                .arg(cleanupResult.win32Error)
+                                .arg(detailText);
+                        }
+                        else
+                        {
+                            failureText = driverText(
+                                "driver.cleanup.pre_stop_failure",
+                                QStringLiteral(
+                                    "sc 卸载清理未执行破坏性清理：停止前复核失败，"
+                                    "或未确认服务到达 SERVICE_STOPPED。"
+                                    "服务注册和驱动文件均未删除；服务可能仍在停止过程中。\n\n"
+                                    "服务：%1\n驱动文件：%2\n"
+                                    "失败阶段：%3\nWin32：%4\n详情：%5"))
+                                .arg(serviceNameText)
+                                .arg(cleanupResult.normalizedPath)
+                                .arg(stageText)
+                                .arg(cleanupResult.win32Error)
+                                .arg(detailText);
+                        }
+                        guardThis->appendOperateLogLine(
+                            driverText(
+                                "driver.cleanup.failure_log",
+                                QStringLiteral("sc 卸载清理失败：service=%1，stage=%2，error=%3，detail=%4"))
+                            .arg(serviceNameText)
+                            .arg(stageText)
+                            .arg(cleanupResult.win32Error)
+                            .arg(detailText));
+                        QMessageBox::warning(
+                            guardThis,
+                            driverText(
+                                "driver.cleanup.title",
+                                QStringLiteral("sc 卸载并清理")),
+                            failureText);
+                    }
+
+                    guardThis->refreshDriverServiceRecords();
+                    guardThis->refreshLoadedKernelModuleRecords();
+                },
+                Qt::QueuedConnection);
+        });
+    cleanupTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(cleanupTask);
 }
 
 void DriverDock::forceUnloadDriverFromServiceRow(const int rowIndex, const bool destructiveCleanup)
@@ -677,6 +2333,12 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     QAction* copyRowAction = contextMenu.addAction(
         QIcon(":/Icon/process_copy_row.svg"),
         driverText("driver.menu.copy_row", QStringLiteral("复制当前行")));
+    QAction* dumpModuleMemoryAction = contextMenu.addAction(
+        QIcon(":/Icon/disk_save.svg"),
+        driverText("driver.menu.dump_module_memory", QStringLiteral("R0 Dump 模块内存…")));
+    dumpModuleMemoryAction->setToolTip(driverText(
+        "driver.menu.dump_module_memory.tooltip",
+        QStringLiteral("按已加载模块基址读取完整内存映像；仅在全部分页读取和身份复核成功后原子保存，绝不覆盖已有文件。")));
     QAction* queryKernelSignatureAction = contextMenu.addAction(
         driverText("driver.menu.query_kernel_signature", QStringLiteral("R0 读取内核签名证据")));
     QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
@@ -710,6 +2372,14 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         uploadVirusTotalAction->setEnabled(!selectedRows.isEmpty());
     }
     contextMenu.addSeparator();
+    QAction* scCleanupAction = contextMenu.addAction(
+        QIcon(":/Icon/process_uncritical.svg"),
+        driverText(
+            "driver.menu.sc_unload_cleanup",
+            QStringLiteral("sc卸载并清理文件注册表")));
+    scCleanupAction->setToolTip(driverText(
+        "driver.menu.sc_unload_cleanup.module_tooltip",
+        QStringLiteral("仅当模块完整路径在当前 SCM 驱动服务缓存中唯一匹配时，才允许走标准 sc 停止并清理。")));
     QAction* forceCleanupByBaseAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
         driverText("driver.menu.force_unload_by_base", QStringLiteral("按模块基址直接调用 DriverUnload")));
@@ -744,6 +2414,7 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     // 恢复按 R0 保存的模块基址记录查找，因此即使证据刷新失败也必须保留逃生入口。
     const int selectedRowIndex = selectedRows.front().row();
     QString selectedModuleName;
+    QString selectedModulePath;
     std::uint64_t selectedModuleBase = 0U;
     std::size_t sourceIndex = m_loadedModuleEvidenceCache.size();
     {
@@ -752,9 +2423,15 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
             m_moduleTable->item(selectedRowIndex, 0);
         const QTableWidgetItem* selectedModuleBaseItem =
             m_moduleTable->item(selectedRowIndex, 1);
+        const QTableWidgetItem* selectedModulePathItem =
+            m_moduleTable->item(selectedRowIndex, 8);
         selectedModuleName =
             selectedModuleNameItem != nullptr
             ? selectedModuleNameItem->text().trimmed()
+            : QString();
+        selectedModulePath =
+            selectedModulePathItem != nullptr
+            ? selectedModulePathItem->text().trimmed()
             : QString();
         selectedModuleBase =
             selectedModuleBaseItem != nullptr
@@ -766,6 +2443,50 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
                 selectedModuleNameItem->data(ModuleRecordIndexRole).toULongLong())
             : m_loadedModuleEvidenceCache.size();
     }
+
+    // 仅按规范化完整路径做唯一匹配；不使用模块名/文件名猜测 SCM 服务，
+    // 防止同名驱动位于不同目录时停止并删除错误目标。
+    const QString normalizedModulePath =
+        driverScCleanupNormalizePath(selectedModulePath);
+    QString selectedCleanupServiceName;
+    QString selectedCleanupServicePath;
+    std::size_t cleanupServiceMatchCount = 0U;
+    if (!normalizedModulePath.isEmpty())
+    {
+        for (const DriverServiceRecord& serviceRecord : m_driverServiceCache)
+        {
+            const QString candidatePath =
+                driverScCleanupNormalizePath(serviceRecord.binaryPath);
+            if (!candidatePath.isEmpty() &&
+                candidatePath.compare(
+                    normalizedModulePath,
+                    Qt::CaseInsensitive) == 0)
+            {
+                ++cleanupServiceMatchCount;
+                selectedCleanupServiceName = serviceRecord.serviceName.trimmed();
+                selectedCleanupServicePath = candidatePath;
+            }
+        }
+    }
+    const bool moduleCleanupTargetReady =
+        cleanupServiceMatchCount == 1U &&
+        !selectedCleanupServiceName.isEmpty() &&
+        !selectedCleanupServicePath.isEmpty();
+    scCleanupAction->setEnabled(
+        moduleCleanupTargetReady && !m_scCleanupRunning);
+    if (m_scCleanupRunning)
+    {
+        scCleanupAction->setToolTip(driverText(
+            "driver.menu.sc_unload_cleanup.running",
+            QStringLiteral("已有 sc 卸载清理任务正在后台运行，请等待完成。")));
+    }
+    else if (!moduleCleanupTargetReady)
+    {
+        scCleanupAction->setToolTip(driverText(
+            "driver.menu.sc_unload_cleanup.module_unresolved",
+            QStringLiteral("当前模块完整路径无法在驱动服务缓存中唯一匹配 SCM 服务；请刷新服务和模块后重试。")));
+    }
+
     QString selectedDriverObjectName;
     std::uint64_t selectedDriverObjectAddress = 0U;
     bool selectedDriverObjectResolved = false;
@@ -784,6 +2505,14 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         selectedDriverStartMatchesBase &&
         !selectedDriverObjectName.isEmpty() &&
         selectedDriverObjectAddress != 0U;
+    dumpModuleMemoryAction->setEnabled(
+        selectedModuleBase != 0U && !m_moduleDumpRunning);
+    if (m_moduleDumpRunning)
+    {
+        dumpModuleMemoryAction->setToolTip(driverText(
+            "driver.menu.dump_module_memory.running",
+            QStringLiteral("已有模块内存 Dump 正在后台运行，请等待完成。")));
+    }
     blindCommunicationAction->setEnabled(selectedModuleBase != 0U && exactTargetReady);
     restoreCommunicationAction->setEnabled(selectedModuleBase != 0U);
     if (!exactTargetReady)
@@ -814,6 +2543,14 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         copyDriverOperationCurrentRow(m_moduleTable);
         return;
     }
+    if (selectedAction == dumpModuleMemoryAction)
+    {
+        dumpSelectedModuleMemory(
+            selectedModuleName,
+            selectedModulePath,
+            selectedModuleBase);
+        return;
+    }
     if (selectedAction == queryKernelSignatureAction)
     {
         querySelectedModuleKernelSignature();
@@ -821,6 +2558,13 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     }
     if (selectedAction == uploadVirusTotalAction)
     {
+        return;
+    }
+    if (selectedAction == scCleanupAction)
+    {
+        scUnloadAndCleanupDriver(
+            selectedCleanupServiceName,
+            selectedCleanupServicePath);
         return;
     }
     if (selectedAction == blindCommunicationAction)
@@ -893,6 +2637,211 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         }
         return;
     }
+}
+
+void DriverDock::dumpSelectedModuleMemory(
+    const QString& moduleNameSnapshot,
+    const QString& rawPathSnapshot,
+    const std::uint64_t moduleBase)
+{
+    if (m_moduleDumpRunning)
+    {
+        return;
+    }
+    const QString moduleName = moduleNameSnapshot.trimmed();
+    const QString rawPath = rawPathSnapshot.trimmed();
+    const QString ntPath = buildKernelSignatureNtPath(rawPath);
+    if (moduleBase == 0U ||
+        rawPath.isEmpty() ||
+        rawPath == QStringLiteral("<unknown>") ||
+        ntPath.isEmpty())
+    {
+        QMessageBox::warning(
+            this,
+            driverText(
+                "driver.dump_module.title",
+                QStringLiteral("R0 Dump 模块内存")),
+            driverText(
+                "driver.dump_module.invalid_selection",
+                QStringLiteral("当前模块缺少有效的加载基址或映像路径，无法执行 R0 Dump。")));
+        return;
+    }
+
+    QString safeModuleName = moduleName;
+    safeModuleName.replace(
+        QRegularExpression(QStringLiteral(R"([<>:"/\\|?*\x00-\x1F])")),
+        QStringLiteral("_"));
+    if (safeModuleName.isEmpty())
+    {
+        safeModuleName = QStringLiteral("kernel-module");
+    }
+    const QString targetPath = QFileDialog::getSaveFileName(
+        this,
+        driverText(
+            "driver.dump_module.browse_title",
+            QStringLiteral("选择模块内存 Dump 保存路径")),
+        QDir::home().filePath(safeModuleName + QStringLiteral(".memory.bin")),
+        driverText(
+            "driver.dump_module.file_filter",
+            QStringLiteral("模块内存镜像 (*.bin *.dmp);;所有文件 (*.*)")));
+    if (targetPath.trimmed().isEmpty())
+    {
+        return;
+    }
+
+    const QString normalizedTargetPath =
+        QFileInfo(targetPath).absoluteFilePath();
+    if (driverOperationHasUnsafeWin32PathSyntax(
+        normalizedTargetPath,
+        true))
+    {
+        QMessageBox::warning(
+            this,
+            driverText(
+                "driver.dump_module.title",
+                QStringLiteral("R0 Dump 模块内存")),
+            driverText(
+                "driver.dump_module.unsafe_path",
+                QStringLiteral("保存路径包含设备命名空间、备用数据流或其它不安全的 Win32 路径语法。请选择普通的本地或 UNC 文件路径。")));
+        return;
+    }
+    const QString sourceWin32Path =
+        ks::online_scan::normalizeKernelImagePathForUpload(rawPath);
+    const QString sourcePathKey =
+        driverModuleDumpPathIdentityKey(sourceWin32Path);
+    const QString targetPathKey =
+        driverModuleDumpPathIdentityKey(normalizedTargetPath);
+    const bool sameSourcePath =
+        !sourcePathKey.isEmpty() &&
+        sourcePathKey == targetPathKey;
+    if (sameSourcePath || QFileInfo::exists(normalizedTargetPath))
+    {
+        // 所有已存在目标（包括原始 .sys 及其硬链接）均拒绝，因此不存在覆盖窗口。
+        QMessageBox::warning(
+            this,
+            driverText(
+                "driver.dump_module.title",
+                QStringLiteral("R0 Dump 模块内存")),
+            driverText(
+                "driver.dump_module.no_overwrite",
+                QStringLiteral("目标文件已经存在。为保护原始驱动及已有证据，本功能绝不覆盖文件；请选择新的文件名。")));
+        return;
+    }
+
+    m_moduleDumpRunning = true;
+    if (m_overviewStatusLabel != nullptr)
+    {
+        m_overviewStatusLabel->setText(driverText(
+            "driver.dump_module.status.running",
+            QStringLiteral("状态：正在后台 R0 Dump 模块 %1…"))
+            .arg(moduleName));
+    }
+    appendOperateLogLine(driverText(
+        "driver.dump_module.log.started",
+        QStringLiteral("开始 R0 Dump 模块内存：%1，基址=%2，目标=%3"))
+        .arg(moduleName)
+        .arg(formatCompactAddress(moduleBase))
+        .arg(normalizedTargetPath));
+
+    QPointer<DriverDock> guardThis(this);
+    auto* dumpTask = QRunnable::create(
+        [guardThis, moduleName, ntPath, moduleBase, normalizedTargetPath]()
+        {
+            const DriverModuleDumpResult dumpResult =
+                driverModuleDumpToFile(ntPath, moduleBase, normalizedTargetPath);
+            QCoreApplication* application = QCoreApplication::instance();
+            if (application == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                application,
+                [guardThis, moduleName, dumpResult]()
+                {
+                    if (guardThis == nullptr)
+                    {
+                        return;
+                    }
+                    guardThis->m_moduleDumpRunning = false;
+                    if (dumpResult.ok)
+                    {
+                        if (guardThis->m_overviewStatusLabel != nullptr)
+                        {
+                            guardThis->m_overviewStatusLabel->setText(driverText(
+                                "driver.dump_module.status.complete",
+                                QStringLiteral("状态：模块 %1 的 R0 Dump 已完成（%2 字节）"))
+                                .arg(moduleName)
+                                .arg(dumpResult.moduleSize));
+                        }
+                        guardThis->appendOperateLogLine(driverText(
+                            "driver.dump_module.log.complete",
+                            QStringLiteral("R0 Dump 模块内存完成：%1，%2 字节，保存到 %3"))
+                            .arg(moduleName)
+                            .arg(dumpResult.moduleSize)
+                            .arg(dumpResult.targetPath));
+                        QMessageBox::information(
+                            guardThis,
+                            driverText(
+                                "driver.dump_module.title",
+                                QStringLiteral("R0 Dump 模块内存")),
+                            driverText(
+                                "driver.dump_module.complete",
+                                QStringLiteral(
+                                    "模块内存 Dump 完成。\n\n"
+                                    "模块：%1\n"
+                                    "基址：%2\n"
+                                    "映像大小：%3 字节\n"
+                                    "保存路径：%4\n\n"
+                                    "R0 已在读取前后复核同一已加载模块的基址、名称和大小；"
+                                    "内存 PE 的 SizeOfImage 也与 R0 模块边界一致。"))
+                                .arg(moduleName)
+                                .arg(formatCompactAddress(dumpResult.moduleBase))
+                                .arg(dumpResult.moduleSize)
+                                .arg(dumpResult.targetPath));
+                        return;
+                    }
+
+                    QString failureDetail =
+                        driverModuleDumpErrorText(dumpResult.error);
+                    if (dumpResult.win32Error != ERROR_SUCCESS)
+                    {
+                        failureDetail = driverText(
+                            "driver.dump_module.error.with_win32",
+                            QStringLiteral("%1\nWin32：%2"))
+                            .arg(
+                                failureDetail,
+                                DriverDock::formatWin32ErrorText(
+                                    dumpResult.win32Error));
+                    }
+                    if (guardThis->m_overviewStatusLabel != nullptr)
+                    {
+                        guardThis->m_overviewStatusLabel->setText(driverText(
+                            "driver.dump_module.status.failed",
+                            QStringLiteral("状态：模块 %1 的 R0 Dump 失败，未生成目标文件。"))
+                            .arg(moduleName));
+                    }
+                    guardThis->appendOperateLogLine(driverText(
+                        "driver.dump_module.log.failed",
+                        QStringLiteral("R0 Dump 模块内存失败：%1；%2"))
+                        .arg(moduleName)
+                        .arg(failureDetail));
+                    QMessageBox::critical(
+                        guardThis,
+                        driverText(
+                            "driver.dump_module.title",
+                            QStringLiteral("R0 Dump 模块内存")),
+                        driverText(
+                            "driver.dump_module.failed",
+                            QStringLiteral(
+                                "模块内存 Dump 失败，原子临时文件已取消，目标文件未创建。\n\n"
+                                "模块：%1\n详情：%2"))
+                            .arg(moduleName)
+                            .arg(failureDetail));
+                },
+                Qt::QueuedConnection);
+        });
+    dumpTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(dumpTask);
 }
 
 void DriverDock::querySelectedModuleKernelSignature()

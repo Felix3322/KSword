@@ -4,6 +4,7 @@
 #include "../UI/TableInteractionSupport.h"
 #include "../ksword/network/network_format_tools.h"
 #include "../theme.h"
+#include "../../../shared/driver/KswordArkNetworkIoctl.h"
 
 #include <QAction>
 #include <QClipboard>
@@ -22,6 +23,28 @@
 
 namespace network_dock_detail
 {
+    // packetSourceDisplayText 作用：
+    // - 把内部数据源和 WFP event flags 转成可本地化的明确来源文本；
+    // - R0 事件始终声明无 packet payload，避免被误认成逐包抓包。
+    static QString packetSourceDisplayText(const ks::network::PacketRecord& packetRecord)
+    {
+        if (!packetRecord.wfpAleEventNoPayload)
+        {
+            return packetRecord.sourceText.empty()
+                ? QStringLiteral("R3")
+                : toQString(packetRecord.sourceText);
+        }
+        if ((packetRecord.sourceFlags & KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_BLOCKED) != 0UL)
+        {
+            return QStringLiteral("R0 WFP ALE 流事件（已阻断；无 packet payload）");
+        }
+        if ((packetRecord.sourceFlags & KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_ACTION_WRITE_UNAVAILABLE) != 0UL)
+        {
+            return QStringLiteral("R0 WFP ALE 流事件（仅观察；无 packet payload）");
+        }
+        return QStringLiteral("R0 WFP ALE 流事件（已放行；无 packet payload）");
+    }
+
     void installCopyCurrentRowMenu(
         QTableWidget* tableWidget,
         const QString& actionText,
@@ -202,7 +225,10 @@ namespace network_dock_detail
                 setWindowFlag(Qt::Window, true);
                 setAttribute(Qt::WA_StyledBackground, true);
                 setAutoFillBackground(true);
-                setWindowTitle(QStringLiteral("报文详情 - #%1").arg(packetRecord.sequenceId));
+                setWindowTitle(
+                    packetRecord.wfpAleEventNoPayload
+                        ? QStringLiteral("R0 WFP ALE 流事件详情 - #%1").arg(packetRecord.sequenceId)
+                        : QStringLiteral("报文详情 - #%1").arg(packetRecord.sequenceId));
                 resize(1120, 760);
                 setStyleSheet(buildPacketDetailWindowStyle());
 
@@ -214,17 +240,35 @@ namespace network_dock_detail
                 QLabel* metaLabel = new QLabel(this);
                 const QString timeText = toQString(
                     ks::network::FormatUnixTimestampMs(packetRecord.captureTimestampMs, true));
-                metaLabel->setText(QStringLiteral(
-                    "时间: %1\n协议: %2  方向: %3\nPID: %4  进程: %5\n本地: %6\n远端: %7\n总长度: %8 bytes, 负载: %9 bytes")
-                    .arg(timeText)
-                    .arg(toQString(ks::network::PacketProtocolToString(packetRecord.protocol)))
-                    .arg(toQString(ks::network::PacketDirectionToString(packetRecord.direction)))
-                    .arg(packetRecord.processId)
-                    .arg(toQString(packetRecord.processName))
-                    .arg(formatEndpointText(packetRecord.localAddress, packetRecord.localPort))
-                    .arg(formatEndpointText(packetRecord.remoteAddress, packetRecord.remotePort))
-                    .arg(packetRecord.totalPacketSize)
-                    .arg(packetRecord.payloadSize));
+                if (packetRecord.wfpAleEventNoPayload)
+                {
+                    metaLabel->setText(QStringLiteral(
+                        "来源: %1\n驱动事件序号: %2  标志: 0x%3\n时间: %4\n协议: %5  方向: %6\nPID: %7  进程: %8\n本地: %9\n远端: %10\n总长度: -（ALE 元数据）, 负载: -（ALE 无 payload）")
+                        .arg(packetSourceDisplayText(packetRecord))
+                        .arg(packetRecord.sourceSequenceId)
+                        .arg(packetRecord.sourceFlags, 8, 16, QChar('0'))
+                        .arg(timeText)
+                        .arg(toQString(ks::network::PacketProtocolToString(packetRecord.protocol)))
+                        .arg(toQString(ks::network::PacketDirectionToString(packetRecord.direction)))
+                        .arg(packetRecord.processId)
+                        .arg(toQString(packetRecord.processName))
+                        .arg(formatEndpointText(packetRecord.localAddress, packetRecord.localPort))
+                        .arg(formatEndpointText(packetRecord.remoteAddress, packetRecord.remotePort)));
+                }
+                else
+                {
+                    metaLabel->setText(QStringLiteral(
+                        "时间: %1\n协议: %2  方向: %3\nPID: %4  进程: %5\n本地: %6\n远端: %7\n总长度: %8 bytes, 负载: %9 bytes")
+                        .arg(timeText)
+                        .arg(toQString(ks::network::PacketProtocolToString(packetRecord.protocol)))
+                        .arg(toQString(ks::network::PacketDirectionToString(packetRecord.direction)))
+                        .arg(packetRecord.processId)
+                        .arg(toQString(packetRecord.processName))
+                        .arg(formatEndpointText(packetRecord.localAddress, packetRecord.localPort))
+                        .arg(formatEndpointText(packetRecord.remoteAddress, packetRecord.remotePort))
+                        .arg(packetRecord.totalPacketSize)
+                        .arg(packetRecord.payloadSize));
+                }
                 metaLabel->setWordWrap(true);
                 metaLabel->setStyleSheet(QStringLiteral("padding:6px 8px;border:1px solid %1;border-radius:4px;")
                     .arg(KswordTheme::BorderHex()));
@@ -232,9 +276,17 @@ namespace network_dock_detail
 
                 // 可读摘要：先展示“内容预览列同款”的语义化 ASCII 摘要，便于快速判断协议文本。
                 QLabel* readablePreviewLabel = new QLabel(this);
-                readablePreviewLabel->setText(QStringLiteral("可读ASCII摘要: %1").arg(buildPayloadAsciiPreviewText(packetRecord)));
+                const QString readablePreviewText =
+                    packetRecord.wfpAleEventNoPayload
+                        ? QStringLiteral("R0 WFP ALE 流事件不包含 packet payload")
+                        : buildPayloadAsciiPreviewText(packetRecord);
+                readablePreviewLabel->setText(
+                    QStringLiteral("可读ASCII摘要: %1").arg(readablePreviewText));
                 readablePreviewLabel->setWordWrap(true);
-                readablePreviewLabel->setToolTip(QStringLiteral("该摘要优先提取 payload 中可读 ASCII 片段。"));
+                readablePreviewLabel->setToolTip(
+                    packetRecord.wfpAleEventNoPayload
+                        ? QStringLiteral("该记录来自内核 WFP ALE 流授权层，不包含逐包长度、报文字节或 payload。")
+                        : QStringLiteral("该摘要优先提取 payload 中可读 ASCII 片段。"));
                 readablePreviewLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
                 rootLayout->addWidget(readablePreviewLabel);
 
@@ -249,7 +301,9 @@ namespace network_dock_detail
                 hexPageLayout->setSpacing(4);
 
                 QLabel* hexHintLabel = new QLabel(
-                    QStringLiteral("十六进制区域支持 Ctrl+F 异步查找、Ctrl+G 跳转、批量复制与导出。"),
+                    packetRecord.wfpAleEventNoPayload
+                        ? QStringLiteral("R0 WFP ALE 流事件没有报文字节；十六进制区域保持为空。")
+                        : QStringLiteral("十六进制区域支持 Ctrl+F 异步查找、Ctrl+G 跳转、批量复制与导出。"),
                     hexPage);
                 hexHintLabel->setWordWrap(true);
                 hexHintLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
@@ -384,28 +438,42 @@ namespace network_dock_detail
             ks::network::FormatUnixTimestampMs(packetRecord.captureTimestampMs, false));
         const QString protocolText = toQString(ks::network::PacketProtocolToString(packetRecord.protocol));
         const QString directionText = toQString(ks::network::PacketDirectionToString(packetRecord.direction));
+        const QString sourceText = packetSourceDisplayText(packetRecord);
         const QString pidText = QString::number(packetRecord.processId);
         const QString processNameText = toQString(packetRecord.processName);
         const QString localEndpointText = formatEndpointText(packetRecord.localAddress, packetRecord.localPort);
         const QString remoteEndpointText = formatEndpointText(packetRecord.remoteAddress, packetRecord.remotePort);
-        const QString packetSizeText = QString::number(packetRecord.totalPacketSize);
-        const QString payloadSizeText = QString::number(packetRecord.payloadSize);
-        const QString previewText = buildPayloadAsciiPreviewText(packetRecord);
+        const QString remoteDomainText = packetRecord.remoteDomain.empty()
+            ? QStringLiteral("解析中…")
+            : toQString(packetRecord.remoteDomain);
+        const QString packetSizeText = packetRecord.wfpAleEventNoPayload
+            ? QStringLiteral("-")
+            : QString::number(packetRecord.totalPacketSize);
+        const QString payloadSizeText = packetRecord.wfpAleEventNoPayload
+            ? QStringLiteral("-")
+            : QString::number(packetRecord.payloadSize);
+        const QString previewText = packetRecord.wfpAleEventNoPayload
+            ? QStringLiteral("R0 WFP ALE 流事件不包含 packet payload")
+            : buildPayloadAsciiPreviewText(packetRecord);
 
         QTableWidgetItem* timeItem = createPacketCell(timeText);
         timeItem->setData(Qt::UserRole, static_cast<qulonglong>(sequenceId));
         tableWidget->setItem(rowIndex, 0, timeItem);
         tableWidget->setItem(rowIndex, 1, createPacketCell(protocolText));
         tableWidget->setItem(rowIndex, 2, createPacketCell(directionText));
-        tableWidget->setItem(rowIndex, 3, createPacketCell(pidText));
+        tableWidget->setItem(rowIndex, 3, createPacketCell(sourceText));
+        tableWidget->setItem(rowIndex, 4, createPacketCell(pidText));
         QTableWidgetItem* processNameItem = createPacketCell(processNameText);
         processNameItem->setIcon(processIcon);
-        tableWidget->setItem(rowIndex, 4, processNameItem);
-        tableWidget->setItem(rowIndex, 5, createPacketCell(localEndpointText));
-        tableWidget->setItem(rowIndex, 6, createPacketCell(remoteEndpointText));
-        tableWidget->setItem(rowIndex, 7, createPacketCell(packetSizeText));
-        tableWidget->setItem(rowIndex, 8, createPacketCell(payloadSizeText));
-        tableWidget->setItem(rowIndex, 9, createPacketCell(previewText));
+        tableWidget->setItem(rowIndex, 5, processNameItem);
+        tableWidget->setItem(rowIndex, 6, createPacketCell(localEndpointText));
+        tableWidget->setItem(rowIndex, 7, createPacketCell(remoteEndpointText));
+        QTableWidgetItem* remoteDomainItem = createPacketCell(remoteDomainText);
+        remoteDomainItem->setData(Qt::UserRole, toQString(packetRecord.remoteAddress));
+        tableWidget->setItem(rowIndex, 8, remoteDomainItem);
+        tableWidget->setItem(rowIndex, 9, createPacketCell(packetSizeText));
+        tableWidget->setItem(rowIndex, 10, createPacketCell(payloadSizeText));
+        tableWidget->setItem(rowIndex, 11, createPacketCell(previewText));
     }
 
     void showPacketDetailWindow(const ks::network::PacketRecord& packetRecord)

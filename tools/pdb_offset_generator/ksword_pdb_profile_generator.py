@@ -275,6 +275,59 @@ V4_TYPE_SIZE_MAP: dict[str, str] = {
     "KdpcTypeSize": "_KDPC",
 }
 
+# CI 的哈希缓存条目不是稳定公开 ABI，不同 PDB 会使用不同的内部类型名。
+# 生成器只接受 PDB 中真实存在的候选类型/成员，不在 R0 侧猜固定偏移。
+V4_CI_FIELD_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
+    "CiHashEntryNext": (
+        ("_MINCRYPT_HASH_BUCKET_ENTRY", "Next"),
+        ("_HASH_BUCKET_ENTRY", "Next"),
+        ("HashBucketEntry", "Next"),
+        ("_CI_HASH_CACHE_ENTRY", "Next"),
+    ),
+    "CiHashEntryDriverName": (
+        ("_MINCRYPT_HASH_BUCKET_ENTRY", "DriverName"),
+        ("_HASH_BUCKET_ENTRY", "DriverName"),
+        ("HashBucketEntry", "DriverName"),
+        ("_CI_HASH_CACHE_ENTRY", "DriverName"),
+    ),
+    "CiHashEntryTimeDateStamp": (
+        ("_MINCRYPT_HASH_BUCKET_ENTRY", "TimeDateStamp"),
+        ("_HASH_BUCKET_ENTRY", "TimeDateStamp"),
+        ("HashBucketEntry", "TimeDateStamp"),
+        ("_CI_HASH_CACHE_ENTRY", "TimeDateStamp"),
+    ),
+    "CiHashEntryLoadStatus": (
+        ("_MINCRYPT_HASH_BUCKET_ENTRY", "LoadStatus"),
+        ("_HASH_BUCKET_ENTRY", "LoadStatus"),
+        ("HashBucketEntry", "LoadStatus"),
+        ("_CI_HASH_CACHE_ENTRY", "LoadStatus"),
+    ),
+    "CiHashEntryImageBase": (
+        ("_MINCRYPT_HASH_BUCKET_ENTRY", "ImageBase"),
+        ("_HASH_BUCKET_ENTRY", "ImageBase"),
+        ("HashBucketEntry", "ImageBase"),
+        ("_CI_HASH_CACHE_ENTRY", "ImageBase"),
+    ),
+    "CiHashEntryImageSize": (
+        ("_MINCRYPT_HASH_BUCKET_ENTRY", "ImageSize"),
+        ("_HASH_BUCKET_ENTRY", "ImageSize"),
+        ("HashBucketEntry", "ImageSize"),
+        ("_CI_HASH_CACHE_ENTRY", "ImageSize"),
+    ),
+}
+
+V4_CI_TYPE_SIZE_ALIASES: tuple[str, ...] = (
+    "_MINCRYPT_HASH_BUCKET_ENTRY",
+    "_HASH_BUCKET_ENTRY",
+    "HashBucketEntry",
+    "_CI_HASH_CACHE_ENTRY",
+)
+
+V4_CI_GLOBAL_SYMBOLS: dict[str, str] = {
+    "CiKernelHashBucketList": "g_KernelHashBucketList",
+    "CiHashCacheLock": "g_HashCacheLock",
+}
+
 V4_ITEM_DEFINITIONS: dict[str, tuple[int, str, int]] = {
     "EthActiveExWorker": (1001, "BitField", 2),
     "KprcbTimerTable": (1002, "StructOffset", 2),
@@ -294,6 +347,24 @@ V4_ITEM_DEFINITIONS: dict[str, tuple[int, str, int]] = {
     "KtimerTypeSize": (1016, "TypeSize", 2),
     "KdpcTypeSize": (1017, "TypeSize", 2),
     "FltFilterOperations": (1101, "StructOffset", 3),
+    "CiKernelHashBucketList": (1201, "GlobalRva", 4),
+    "CiHashCacheLock": (1202, "GlobalRva", 4),
+    "CiHashEntryNext": (1203, "StructOffset", 4),
+    "CiHashEntryDriverName": (1204, "StructOffset", 4),
+    "CiHashEntryTimeDateStamp": (1205, "StructOffset", 4),
+    "CiHashEntryLoadStatus": (1206, "StructOffset", 4),
+    "CiHashEntryImageBase": (1207, "StructOffset", 4),
+    "CiHashEntryImageSize": (1208, "StructOffset", 4),
+    "CiHashEntryTypeSize": (1209, "TypeSize", 4),
+}
+
+# CI 缓存的最小安全遍历只依赖两个全局、Next、DriverName 和类型大小。
+# 其余列仅在对应 PDB 确实公开字段时进入配置，UI 对缺失列显示“-”。
+V4_OPTIONAL_ITEM_NAMES: set[str] = {
+    "CiHashEntryTimeDateStamp",
+    "CiHashEntryLoadStatus",
+    "CiHashEntryImageBase",
+    "CiHashEntryImageSize",
 }
 
 CALLBACK_GLOBAL_RVA_NAMES: tuple[str, ...] = (
@@ -506,6 +577,8 @@ def module_class_for_file(file_name: str) -> str:
         return "ntkrla57"
     if lowered == "fltmgr.sys":
         return "fltmgr"
+    if lowered in {"ci.dll", "ci.sys"}:
+        return "ci"
     return "ntoskrnl"
 
 
@@ -1439,16 +1512,117 @@ def build_callback_items(
     return callback_items, diagnostics
 
 
+def v4_group_ids_for_module(module_class: str | None) -> set[int]:
+    """Return the v4 capability groups that belong to one module profile."""
+    normalized = (module_class or "").strip().lower()
+    if not normalized:
+        # 保留旧的纯类型解析调用语义；CI 组必须额外提供 PE/symbol 上下文。
+        return {2, 3}
+    if normalized in {"ntoskrnl", "ntoskrnl.exe", "ntkrla57", "ntkrla57.exe"}:
+        return {2}
+    if normalized in {"fltmgr", "fltmgr.sys"}:
+        return {3}
+    if normalized in {"ci", "ci.dll", "ci.sys"}:
+        return {4}
+    return set()
+
+
 def build_v4_items(
     types_text: str,
     resolved_member_offsets: dict[tuple[str, str], int] | None = None,
     resolved_type_sizes: dict[str, int] | None = None,
     resolved_bit_fields: dict[tuple[str, str], tuple[int, int, int, int]] | None = None,
+    pe_path: Path | None = None,
+    symbol_addresses: dict[str, list[SymbolAddress]] | None = None,
+    module_class: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """Build stable timer/DPC v4 items from one PDB type dump."""
+    """Build module-scoped v4 items from identity-matched PDB types/symbols."""
     items: list[dict[str, Any]] = []
     missing: list[dict[str, str]] = []
+    active_group_ids = v4_group_ids_for_module(module_class)
     for item_name, (item_id, item_kind, group_id) in V4_ITEM_DEFINITIONS.items():
+        if group_id not in active_group_ids:
+            continue
+        item_flags = "optional" if item_name in V4_OPTIONAL_ITEM_NAMES else "required"
+        if item_name in V4_CI_GLOBAL_SYMBOLS:
+            symbol_name = V4_CI_GLOBAL_SYMBOLS[item_name]
+            matches = (symbol_addresses or {}).get(symbol_name, [])
+            if pe_path is None or not matches:
+                missing.append({"kind": item_kind, "name": item_name, "reason": "symbol_not_found", "symbolName": symbol_name})
+                continue
+            address = choose_symbol_address(matches)
+            rva = rva_from_section_offset(pe_path, address.section, address.offset)
+            if rva is None:
+                missing.append({"kind": item_kind, "name": item_name, "reason": "section_offset_unmapped", "symbolName": symbol_name})
+                continue
+            item: dict[str, Any] = {
+                "itemId": item_id,
+                "name": item_name,
+                "kind": item_kind,
+                "flags": item_flags,
+                "capabilityGroupId": group_id,
+                "value": f"0x{rva:08X}",
+                "aux0": 0,
+                "aux1": 0,
+                "aux2": 0,
+                "aux3": 0,
+            }
+        elif item_name in V4_CI_FIELD_ALIASES:
+            selected_member: tuple[str, str] | None = None
+            offset: int | None = None
+            for member_candidate in V4_CI_FIELD_ALIASES[item_name]:
+                candidate_offset = (resolved_member_offsets or {}).get(member_candidate)
+                if candidate_offset is None and resolved_member_offsets is None:
+                    candidate_offset = resolve_member_offset(types_text, *member_candidate)
+                if candidate_offset is not None:
+                    selected_member = member_candidate
+                    offset = candidate_offset
+                    break
+            if selected_member is None or offset is None:
+                if item_flags == "required":
+                    missing.append({"kind": item_kind, "name": item_name, "reason": "member_aliases_not_found"})
+                continue
+            item = {
+                "itemId": item_id,
+                "name": item_name,
+                "kind": item_kind,
+                "flags": item_flags,
+                "capabilityGroupId": group_id,
+                "value": f"0x{offset:04X}",
+                "aux0": 0,
+                "aux1": 0,
+                "aux2": 0,
+                "aux3": 0,
+                "structName": selected_member[0],
+                "memberName": selected_member[1],
+            }
+        elif item_name == "CiHashEntryTypeSize":
+            selected_type = ""
+            type_size: int | None = None
+            for type_candidate in V4_CI_TYPE_SIZE_ALIASES:
+                candidate_size = (resolved_type_sizes or {}).get(type_candidate)
+                if candidate_size is None and resolved_type_sizes is None:
+                    candidate_size = resolve_type_size(types_text, type_candidate)
+                if candidate_size is not None:
+                    selected_type = type_candidate
+                    type_size = candidate_size
+                    break
+            if type_size is None:
+                missing.append({"kind": item_kind, "name": item_name, "reason": "type_aliases_not_found"})
+                continue
+            item = {
+                "itemId": item_id,
+                "name": item_name,
+                "kind": item_kind,
+                "flags": item_flags,
+                "capabilityGroupId": group_id,
+                "value": f"0x{type_size:04X}",
+                "aux0": 0,
+                "aux1": 0,
+                "aux2": 0,
+                "aux3": 0,
+                "structName": selected_type,
+            }
         if item_name in V4_FIELD_MAP:
             struct_name, member_name = V4_FIELD_MAP[item_name]
             offset = (resolved_member_offsets or {}).get((struct_name, member_name))
@@ -1461,7 +1635,7 @@ def build_v4_items(
                 "itemId": item_id,
                 "name": item_name,
                 "kind": item_kind,
-                "flags": "required",
+                "flags": item_flags,
                 "capabilityGroupId": group_id,
                 "value": f"0x{offset:04X}",
                 "aux0": 0,
@@ -1482,7 +1656,7 @@ def build_v4_items(
                 "itemId": item_id,
                 "name": item_name,
                 "kind": item_kind,
-                "flags": "required",
+                "flags": item_flags,
                 "capabilityGroupId": group_id,
                 "value": f"0x{offset:04X}",
                 "aux0": bit_offset,
@@ -1490,7 +1664,7 @@ def build_v4_items(
                 "aux2": storage_bytes,
                 "aux3": 0,
             }
-        else:
+        elif item_name in V4_TYPE_SIZE_MAP:
             struct_name = V4_TYPE_SIZE_MAP[item_name]
             type_size = (resolved_type_sizes or {}).get(struct_name)
             if type_size is None and resolved_type_sizes is None:
@@ -1502,7 +1676,7 @@ def build_v4_items(
                 "itemId": item_id,
                 "name": item_name,
                 "kind": item_kind,
-                "flags": "required",
+                "flags": item_flags,
                 "capabilityGroupId": group_id,
                 "value": f"0x{type_size:04X}",
                 "aux0": 0,
@@ -1521,11 +1695,17 @@ def resolve_v4_layouts(types_text: str) -> tuple[
 ]:
     """Resolve v4 members, type sizes, and bitfields from one PDB type dump."""
     member_requests = list(V4_FIELD_MAP.values()) + list(V4_BIT_FIELD_MAP.values())
+    member_requests.extend(
+        member
+        for aliases in V4_CI_FIELD_ALIASES.values()
+        for member in aliases
+    )
     member_requests.extend(request for alias in V4_MEMBER_ALIASES.values() for request in alias)
+    type_size_requests = list(V4_TYPE_SIZE_MAP.values()) + list(V4_CI_TYPE_SIZE_ALIASES)
     resolved_member_offsets, resolved_type_sizes, resolved_bit_fields = resolve_type_layouts_batch(
         types_text,
         member_requests,
-        V4_TYPE_SIZE_MAP.values(),
+        type_size_requests,
         V4_BIT_FIELD_MAP.values(),
     )
     for target, (base_member, nested_member) in V4_MEMBER_ALIASES.items():
@@ -1546,13 +1726,33 @@ def refresh_v4_profile(
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
     if not isinstance(profile, dict):
         raise ValueError(f"profile root is not an object: {profile_path}")
+    module = profile.get("module")
+    module_class = str(module.get("class", "")) if isinstance(module, dict) else ""
     resolved_member_offsets, resolved_type_sizes, resolved_bit_fields = resolve_v4_layouts(types_text)
     v4_items, v4_missing_items = build_v4_items(
         types_text,
         resolved_member_offsets=resolved_member_offsets,
         resolved_type_sizes=resolved_type_sizes,
         resolved_bit_fields=resolved_bit_fields,
+        module_class=module_class,
     )
+    if module_class.strip().lower() == "ci":
+        # 仅刷新类型时没有 symbol dump；保留已通过旧生成流程写入的两个 CI GlobalRva。
+        previous_items = profile.get("v4Items")
+        if isinstance(previous_items, list):
+            preserved_names = set(V4_CI_GLOBAL_SYMBOLS)
+            v4_items.extend(
+                item
+                for item in previous_items
+                if isinstance(item, dict) and str(item.get("name", "")) in preserved_names
+            )
+            present_names = {str(item.get("name", "")) for item in v4_items}
+            v4_missing_items = [
+                item
+                for item in v4_missing_items
+                if str(item.get("name", "")) not in present_names
+            ]
+            v4_items.sort(key=lambda item: int(item.get("itemId", 0)))
     profile["v4Items"] = v4_items
     profile["v4MissingItems"] = v4_missing_items
     diagnostics = profile.get("diagnostics")
@@ -1576,13 +1776,25 @@ def v4_profile_complete(profile_path: Path) -> bool:
     raw_items = profile.get("v4Items")
     if not isinstance(raw_items, list):
         return False
-    expected_ids = {definition[0] for definition in V4_ITEM_DEFINITIONS.values()}
+    module = profile.get("module")
+    module_class = str(module.get("class", "")) if isinstance(module, dict) else ""
+    active_groups = v4_group_ids_for_module(module_class)
+    expected_ids = {
+        definition[0]
+        for name, definition in V4_ITEM_DEFINITIONS.items()
+        if definition[2] in active_groups and name not in V4_OPTIONAL_ITEM_NAMES
+    }
+    allowed_ids = {
+        definition[0]
+        for definition in V4_ITEM_DEFINITIONS.values()
+        if definition[2] in active_groups
+    }
     actual_ids = {
         item.get("itemId")
         for item in raw_items
         if isinstance(item, dict) and isinstance(item.get("itemId"), int)
     }
-    return actual_ids == expected_ids
+    return expected_ids.issubset(actual_ids) and actual_ids.issubset(allowed_ids)
 
 
 def build_profile(
@@ -1612,11 +1824,21 @@ def build_profile(
     """
     member_requests = list(FIELD_MAP.values()) + list(CALLBACK_STRUCT_FIELD_MAP.values())
     member_requests.extend(list(V4_FIELD_MAP.values()) + list(V4_BIT_FIELD_MAP.values()))
+    member_requests.extend(
+        member
+        for aliases in V4_CI_FIELD_ALIASES.values()
+        for member in aliases
+    )
     member_requests.extend(request for alias in V4_MEMBER_ALIASES.values() for request in alias)
+    type_size_requests = (
+        list(TYPE_SIZE_MAP.values()) +
+        list(V4_TYPE_SIZE_MAP.values()) +
+        list(V4_CI_TYPE_SIZE_ALIASES)
+    )
     resolved_member_offsets, resolved_type_size_values, resolved_bit_fields = resolve_type_layouts_batch(
         types_text,
         member_requests,
-        list(TYPE_SIZE_MAP.values()) + list(V4_TYPE_SIZE_MAP.values()),
+        type_size_requests,
         V4_BIT_FIELD_MAP.values(),
     )
     for target, (base_member, nested_member) in V4_MEMBER_ALIASES.items():
@@ -1662,6 +1884,9 @@ def build_profile(
         resolved_member_offsets=resolved_member_offsets,
         resolved_type_sizes=resolved_type_size_values,
         resolved_bit_fields=resolved_bit_fields,
+        pe_path=pe_path,
+        symbol_addresses=symbol_addresses or {},
+        module_class=entry.class_name,
     )
     diagnostics["v4MissingItems"] = v4_missing_items
     typed_items: list[dict[str, Any]] = []

@@ -29,7 +29,6 @@ void NetworkDock::initializeUi()
     // target process, which is too coarse for a user-facing network dock tab.
     // Keep initializeRateLimitTab() compiled for now so the backend/UI code can
     // be restored later if a cleaner enforcement model replaces it.
-    initializeConnectionManageTab();
     initializeFirewallTab();
     initializeNetworkAuditTab();
     initializeManualRequestTab();
@@ -189,10 +188,12 @@ void NetworkDock::initializeTrafficMonitorTab()
         QStringLiteral("时间"),
         QStringLiteral("协议"),
         QStringLiteral("方向"),
+        QStringLiteral("来源"),
         QStringLiteral("PID"),
         QStringLiteral("进程"),
         QStringLiteral("本地端点"),
         QStringLiteral("远端端点"),
+        QStringLiteral("域名"),
         QStringLiteral("总长度"),
         QStringLiteral("负载"),
         QStringLiteral("内容预览")
@@ -432,10 +433,41 @@ void NetworkDock::initializeFirewallTab()
 void NetworkDock::initializeNetworkAuditTab()
 {
     // 网络审计页：
-    // - 只读展示 TCP/UDP cross-view、AFD 关联句柄、WFP、NDIS 和 NSI 摘要；
-    // - 不向任何驱动或系统组件发送修改型请求；
-    // - 仅作为 NetworkDock 的审计视图入口。
+    // - TCP/UDP Cross-View 接管原连接管理页的操作能力；
+    // - AFD、WFP、NDIS 和 NSI 分区仍保持只读；
+    // - 独立“连接管理”顶层入口不再创建，避免功能重复。
     m_networkAuditPage = new NetworkAuditPage(this);
+    m_networkAuditPage->setTrackProcessHandler([this](const std::uint32_t processId)
+    {
+        addOrTrackProcessPid(processId);
+
+        kLogEvent trackEvent;
+        info << trackEvent
+            << "[NetworkDock] 跟踪此进程触发, pid=" << processId
+            << eol;
+    });
+    m_networkAuditPage->setOpenProcessDetailHandler([this](const std::uint32_t processId)
+    {
+        ks::process::ProcessRecord processRecord;
+        processRecord.pid = processId;
+        processRecord.processName = ks::process::GetProcessNameByPID(processId);
+        if (processRecord.processName.empty())
+        {
+            processRecord.processName = "PID_" + std::to_string(processId);
+        }
+
+        ProcessDetailWindow* detailWindow = new ProcessDetailWindow(processRecord, nullptr);
+        detailWindow->setAttribute(Qt::WA_DeleteOnClose, true);
+        detailWindow->setWindowFlag(Qt::Window, true);
+        detailWindow->show();
+        detailWindow->raise();
+        detailWindow->activateWindow();
+
+        kLogEvent detailEvent;
+        info << detailEvent
+            << "[NetworkDock] 打开进程详情窗口, pid=" << processId
+            << eol;
+    });
     m_sideTabWidget->addTab(
         m_networkAuditPage,
         QIcon(QStringLiteral(":/Icon/process_details.svg")),
