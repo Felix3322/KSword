@@ -2,6 +2,7 @@
 
 #include "KernelDock.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../UI/KernelDisassemblyDialog.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
@@ -708,9 +709,31 @@ void KernelDescriptorTableTab::showCopyMenu(const QPoint& position)
     QAction* copyCell = menu.addAction(kernelText("kernel.descriptor.copy.cell", QStringLiteral("复制单元格")));
     QAction* copyRow = menu.addAction(kernelText("kernel.descriptor.copy.row", QStringLiteral("复制当前行")));
     QAction* copyAll = menu.addAction(kernelText("kernel.descriptor.copy.all", QStringLiteral("复制全部行")));
+    menu.addSeparator();
+    QMenu* advancedAnalysis = menu.addMenu(
+        QStringLiteral("高级分析"));
+    QAction* instructionView = advancedAnalysis->addAction(
+        QStringLiteral("指令视图…"));
     copyCell->setEnabled(index.isValid());
     copyRow->setEnabled(row >= 0);
     copyAll->setEnabled(m_table->rowCount() > 0);
+    std::size_t sourceIndex = m_rows.size();
+    if (row >= 0)
+    {
+        const QTableWidgetItem* sourceItem =
+            m_table->item(row, ColumnTable);
+        if (sourceItem != nullptr)
+        {
+            sourceIndex = static_cast<std::size_t>(
+                sourceItem->data(Qt::UserRole).toULongLong());
+        }
+    }
+    const bool canOpenInstructionView =
+        sourceIndex < m_rows.size()
+        && m_rows[sourceIndex].evidenceClass
+            == KSWORD_ARK_DRIVER_INTEGRITY_CLASS_IDT_HANDLER
+        && m_rows[sourceIndex].descriptorBase != 0U;
+    instructionView->setEnabled(canOpenInstructionView);
     QAction* selected = menu.exec(m_table->viewport()->mapToGlobal(position));
     if (selected == copyCell && index.isValid())
     {
@@ -729,5 +752,18 @@ void KernelDescriptorTableTab::showCopyMenu(const QPoint& position)
             lines << rowClipboardText(m_table, tableRow, tableRow == 0);
         }
         QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
+    }
+    else if (selected == instructionView
+        && canOpenInstructionView)
+    {
+        const auto& descriptor = m_rows[sourceIndex];
+        ks::ui::KernelDisassemblyDialog::openKernelAddress(
+            this,
+            descriptor.descriptorBase,
+            QStringLiteral(
+                "IDT 向量 %1（CPU %2:%3）Handler")
+                .arg(descriptor.vector)
+                .arg(descriptor.processorGroup)
+                .arg(descriptor.processorNumber));
     }
 }

@@ -14,12 +14,57 @@ Environment:
 
 --*/
 
+#include <ntifs.h>
+
 #include "mutation_transaction.h"
 #include "../../dispatch/ioctl_validation.h"
 #include "ark/ark_log.h"
 
 #include <ntstrsafe.h>
 #include <stdarg.h>
+
+static NTSTATUS
+KswordARKMutationRequestorIdentity(
+    _In_ WDFREQUEST Request,
+    _Out_ ULONG* ProcessIdOut,
+    _Outptr_ PEPROCESS* ProcessObjectOut)
+/*++
+
+Routine Description:
+
+    Captures the process identifier and stable process object attached to the
+    original IOCTL IRP. The object identity, rather than the reusable PID alone,
+    is bound to PREPARE state and must match for COMMIT/ROLLBACK.
+
+--*/
+{
+    PIRP irp = NULL;
+    PEPROCESS processObject = NULL;
+    ULONG processId = 0UL;
+
+    if (Request == NULL ||
+        ProcessIdOut == NULL ||
+        ProcessObjectOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *ProcessIdOut = 0UL;
+    *ProcessObjectOut = NULL;
+
+    irp = WdfRequestWdmGetIrp(Request);
+    if (irp == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    processId = IoGetRequestorProcessId(irp);
+    processObject = IoGetRequestorProcess(irp);
+    if (processId == 0UL || processObject == NULL) {
+        return STATUS_ACCESS_DENIED;
+    }
+
+    *ProcessIdOut = processId;
+    *ProcessObjectOut = processObject;
+    return STATUS_SUCCESS;
+}
 
 static VOID
 KswordARKMutationIoctlLog(
@@ -67,7 +112,7 @@ KswordARKMutationIoctlPrepare(
 
 Routine Description:
 
-    Handles the future IOCTL_KSWORD_ARK_MUTATION_PREPARE entry. The handler
+    Handles the registered IOCTL_KSWORD_ARK_MUTATION_PREPARE entry. The handler
     validates write access, copies METHOD_BUFFERED input before output is cleared,
     and delegates target validation and before-byte snapshotting to the backend.
 
@@ -90,6 +135,8 @@ Return Value:
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
+    ULONG requestorProcessId = 0UL;
+    PEPROCESS requestorProcessObject = NULL;
     NTSTATUS status = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(InputBufferLength);
@@ -103,6 +150,14 @@ Return Value:
     status = KswordARKValidateDeviceIoControlWriteAccess(Request);
     if (!NT_SUCCESS(status)) {
         KswordARKMutationIoctlLog(Device, "Warn", "Mutation prepare denied: write access required, status=0x%08X.", (unsigned int)status);
+        return status;
+    }
+    status = KswordARKMutationRequestorIdentity(
+        Request,
+        &requestorProcessId,
+        &requestorProcessObject);
+    if (!NT_SUCCESS(status)) {
+        KswordARKMutationIoctlLog(Device, "Warn", "Mutation prepare denied: requestor PID unavailable, status=0x%08X.", (unsigned int)status);
         return status;
     }
 
@@ -131,6 +186,8 @@ Return Value:
 
     status = KswordARKMutationPrepare(
         Device,
+        requestorProcessId,
+        requestorProcessObject,
         &requestCopy,
         outputBuffer,
         actualOutputLength,
@@ -159,7 +216,7 @@ KswordARKMutationIoctlCommit(
 
 Routine Description:
 
-    Handles the future IOCTL_KSWORD_ARK_MUTATION_COMMIT entry. The handler only
+    Handles the registered IOCTL_KSWORD_ARK_MUTATION_COMMIT entry. The handler only
     accepts a transaction request, copies it before output reuse, and leaves all
     before-match, FORCE, safety policy, and write decisions to the backend.
 
@@ -182,6 +239,8 @@ Return Value:
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
+    ULONG requestorProcessId = 0UL;
+    PEPROCESS requestorProcessObject = NULL;
     NTSTATUS status = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(InputBufferLength);
@@ -195,6 +254,14 @@ Return Value:
     status = KswordARKValidateDeviceIoControlWriteAccess(Request);
     if (!NT_SUCCESS(status)) {
         KswordARKMutationIoctlLog(Device, "Warn", "Mutation commit denied: write access required, status=0x%08X.", (unsigned int)status);
+        return status;
+    }
+    status = KswordARKMutationRequestorIdentity(
+        Request,
+        &requestorProcessId,
+        &requestorProcessObject);
+    if (!NT_SUCCESS(status)) {
+        KswordARKMutationIoctlLog(Device, "Warn", "Mutation commit denied: requestor PID unavailable, status=0x%08X.", (unsigned int)status);
         return status;
     }
 
@@ -223,6 +290,8 @@ Return Value:
 
     status = KswordARKMutationCommit(
         Device,
+        requestorProcessId,
+        requestorProcessObject,
         &requestCopy,
         outputBuffer,
         actualOutputLength,
@@ -251,7 +320,7 @@ KswordARKMutationIoctlRollback(
 
 Routine Description:
 
-    Handles the future IOCTL_KSWORD_ARK_MUTATION_ROLLBACK entry. Rollback is
+    Handles the registered IOCTL_KSWORD_ARK_MUTATION_ROLLBACK entry. Rollback is
     driven only by transactionId and is idempotent when current bytes already
     match the before snapshot.
 
@@ -274,6 +343,8 @@ Return Value:
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
+    ULONG requestorProcessId = 0UL;
+    PEPROCESS requestorProcessObject = NULL;
     NTSTATUS status = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(InputBufferLength);
@@ -287,6 +358,14 @@ Return Value:
     status = KswordARKValidateDeviceIoControlWriteAccess(Request);
     if (!NT_SUCCESS(status)) {
         KswordARKMutationIoctlLog(Device, "Warn", "Mutation rollback denied: write access required, status=0x%08X.", (unsigned int)status);
+        return status;
+    }
+    status = KswordARKMutationRequestorIdentity(
+        Request,
+        &requestorProcessId,
+        &requestorProcessObject);
+    if (!NT_SUCCESS(status)) {
+        KswordARKMutationIoctlLog(Device, "Warn", "Mutation rollback denied: requestor PID unavailable, status=0x%08X.", (unsigned int)status);
         return status;
     }
 
@@ -315,6 +394,8 @@ Return Value:
 
     status = KswordARKMutationRollback(
         Device,
+        requestorProcessId,
+        requestorProcessObject,
         &requestCopy,
         outputBuffer,
         actualOutputLength,
@@ -343,7 +424,7 @@ KswordARKMutationIoctlQueryAudit(
 
 Routine Description:
 
-    Handles the future IOCTL_KSWORD_ARK_MUTATION_QUERY_AUDIT entry. The input is
+    Handles the registered IOCTL_KSWORD_ARK_MUTATION_QUERY_AUDIT entry. The input is
     optional; when omitted the backend returns the newest entries that fit in the
     caller's output buffer without byteData.
 
@@ -376,6 +457,14 @@ Return Value:
     }
     *BytesReturned = 0U;
 
+    status = IoValidateDeviceIoControlAccess(
+        WdfRequestWdmGetIrp(Request),
+        FILE_READ_ACCESS);
+    if (!NT_SUCCESS(status)) {
+        KswordARKMutationIoctlLog(Device, "Warn", "Mutation audit query denied: read access required, status=0x%08X.", (unsigned int)status);
+        return status;
+    }
+
     RtlZeroMemory(&requestCopy, sizeof(requestCopy));
     status = KswordARKRetrieveOptionalInputBuffer(
         Request,
@@ -390,6 +479,15 @@ Return Value:
     }
     if (hasInput) {
         RtlCopyMemory(&requestCopy, inputBuffer, sizeof(requestCopy));
+    }
+    if (hasInput &&
+        (requestCopy.flags &
+         KSWORD_ARK_MUTATION_QUERY_AUDIT_FLAG_INCLUDE_BYTES) != 0UL) {
+        status = KswordARKValidateDeviceIoControlWriteAccess(Request);
+        if (!NT_SUCCESS(status)) {
+            KswordARKMutationIoctlLog(Device, "Warn", "Mutation audit byte query denied: write access required, status=0x%08X.", (unsigned int)status);
+            return status;
+        }
     }
 
     status = KswordARKRetrieveRequiredOutputBuffer(

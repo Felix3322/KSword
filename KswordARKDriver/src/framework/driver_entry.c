@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "ark/ark_driver.h"
+#include "ark/ark_mutation.h"
 #include "src/features/kernel/kernel_idt_baseline.h"
 #include "src/features/hvm/hvm_runtime.h"
 #include "driver_entry.tmh"
@@ -198,6 +199,8 @@ Return Value:
     KswordARKHvmUninitialize();
     // IOCTL 已停止后释放只读 IDT 基线，避免卸载后保留本驱动分配。
     KswordARKIdtBaselineUninitialize();
+    // 释放危险写事务为防 PID 复用而持有的请求进程对象引用。
+    KswordARKMutationUninitialize();
     // 随后停止并排空所有可能回调到本驱动映像的线程终止 APC。
     KswordARKThreadApcUninitialize();
 

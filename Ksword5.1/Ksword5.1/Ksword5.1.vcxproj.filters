@@ -605,6 +605,12 @@
     <ClCompile Include="UI\CodeEditorWidget.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\KernelDisassemblyDialog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\third_party\zydis\Zydis.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\GlobalDialogTheme.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -922,6 +928,9 @@
     <ClInclude Include="..\..\third_party\zstd\zstd.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\third_party\zydis\Zydis.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\third_party\zstd\zstd_errors.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1004,6 +1013,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <QtMoc Include="UI\CodeEditorWidget.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="UI\KernelDisassemblyDialog.h">
       <Filter>Header Files</Filter>
     </QtMoc>
     <QtMoc Include="WelcomeDock\WelcomeDock.h">
@@ -1354,6 +1366,15 @@
       <Filter>Profile Files</Filter>
     </None>
     <None Include="..\..\COMMUNITY_COVENANT.md">
+      <Filter>Profile Files</Filter>
+    </None>
+    <None Include="..\..\third_party\zydis\LICENSE-Zycore.txt">
+      <Filter>Profile Files</Filter>
+    </None>
+    <None Include="..\..\third_party\zydis\LICENSE-Zydis.txt">
+      <Filter>Profile Files</Filter>
+    </None>
+    <None Include="..\..\third_party\zydis\NOTICE.md">
       <Filter>Profile Files</Filter>
     </None>
     <None Include="..\..\third_party\zstd\LICENSE.txt">

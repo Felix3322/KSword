@@ -31,13 +31,22 @@ Environment:
 #define KSWORD_ARK_MUTATION_FNV_PRIME 1099511628211ULL
 #define KSWORD_ARK_MUTATION_USER_TOP 0x00007FFFFFFFFFFFULL
 #define KSWORD_ARK_MUTATION_KERNEL_BASE 0xFFFF800000000000ULL
+#define KSWORD_ARK_MUTATION_TRANSACTION_TTL_SECONDS 120UL
+#define KSWORD_ARK_MUTATION_TERMINAL_TTL_SECONDS 30UL
 
 typedef struct _KSWORD_ARK_MUTATION_SLOT
 {
     BOOLEAN InUse;
+    BOOLEAN OperationBusy;
+    BOOLEAN CommitAttempted;
+    BOOLEAN CommitSucceeded;
+    BOOLEAN RollbackAttempted;
     ULONG Flags;
     ULONG Status;
     ULONG TargetKind;
+    ULONG OwnerProcessId;
+    PEPROCESS OwnerProcessObject;
+    PEPROCESS TargetProcessObject;
     ULONG ProcessId;
     ULONG Bytes;
     ULONG RiskFlags;
@@ -95,6 +104,54 @@ KswordARKMutationInitialize(VOID)
     KswordARKMutationEnsureInitialized();
 }
 
+static VOID
+KswordARKMutationClearSlotLocked(
+    _Inout_ KSWORD_ARK_MUTATION_SLOT* Slot)
+/*++ Routine Description:
+     Clears one global transaction slot while the mutation lock is held. The
+     global slot exclusively owns its process-object reference; stack snapshots
+     copy the pointer only for comparison and never release it. --*/
+{
+    if (Slot == NULL) {
+        return;
+    }
+    if (Slot->OwnerProcessObject != NULL) {
+        ObDereferenceObject(Slot->OwnerProcessObject);
+        Slot->OwnerProcessObject = NULL;
+    }
+    if (Slot->TargetProcessObject != NULL) {
+        ObDereferenceObject(Slot->TargetProcessObject);
+        Slot->TargetProcessObject = NULL;
+    }
+    RtlSecureZeroMemory(Slot, sizeof(*Slot));
+}
+
+VOID
+KswordARKMutationUninitialize(VOID)
+/*++ Routine Description:
+     Releases all process-object references retained by mutation transactions
+     after IOCTL dispatch has stopped during driver unload. --*/
+{
+    ULONG index = 0UL;
+
+    if (InterlockedCompareExchange(
+            (volatile LONG*)&g_KswordArkMutationInitState,
+            KSWORD_ARK_MUTATION_READY,
+            KSWORD_ARK_MUTATION_READY) !=
+        KSWORD_ARK_MUTATION_READY) {
+        return;
+    }
+
+    ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+    for (index = 0UL;
+         index < KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY;
+         index += 1UL) {
+        KswordARKMutationClearSlotLocked(
+            &g_KswordArkMutationState.Slots[index]);
+    }
+    ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+}
+
 static ULONGLONG
 KswordARKMutationTick(VOID)
 /*++ Routine Description:
@@ -103,6 +160,59 @@ KswordARKMutationTick(VOID)
     LARGE_INTEGER tick;
     KeQueryTickCount(&tick);
     return (ULONGLONG)tick.QuadPart;
+}
+
+static ULONGLONG
+KswordARKMutationSecondsToTicks(_In_ ULONG Seconds)
+/*++ Routine Description:
+     Converts a bounded wall-clock interval to KeQueryTickCount units. --*/
+{
+    const ULONGLONG increment100ns =
+        (ULONGLONG)KeQueryTimeIncrement();
+    const ULONGLONG interval100ns =
+        (ULONGLONG)Seconds * 10000000ULL;
+
+    if (increment100ns == 0ULL) {
+        return 1ULL;
+    }
+    return (interval100ns + increment100ns - 1ULL) /
+        increment100ns;
+}
+
+static VOID
+KswordARKMutationExpireSlotsLocked(_In_ ULONGLONG NowTick)
+/*++ Routine Description:
+     Clears nonbusy expired transactions while the caller holds the mutation
+     lock. Rolled-back terminal state is retained briefly so replay is rejected
+     explicitly; prepared/committed state remains available long enough for one
+     owner-bound rollback. --*/
+{
+    const ULONGLONG transactionTtl =
+        KswordARKMutationSecondsToTicks(
+            KSWORD_ARK_MUTATION_TRANSACTION_TTL_SECONDS);
+    const ULONGLONG terminalTtl =
+        KswordARKMutationSecondsToTicks(
+            KSWORD_ARK_MUTATION_TERMINAL_TTL_SECONDS);
+    ULONG index = 0UL;
+
+    for (index = 0UL;
+         index < KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY;
+         index += 1UL) {
+        KSWORD_ARK_MUTATION_SLOT* slot =
+            &g_KswordArkMutationState.Slots[index];
+        ULONGLONG ttl = transactionTtl;
+
+        if (!slot->InUse || slot->OperationBusy) {
+            continue;
+        }
+        if (slot->RollbackAttempted) {
+            ttl = terminalTtl;
+        }
+        if ((NowTick - slot->TimestampTick) < ttl) {
+            continue;
+        }
+        KswordARKMutationClearSlotLocked(slot);
+    }
 }
 
 static ULONGLONG
@@ -150,44 +260,35 @@ KswordARKMutationKernelAddress(_In_ ULONGLONG Address)
 static BOOLEAN
 KswordARKMutationRangeReadable(_In_ ULONGLONG Address, _In_ ULONG Bytes)
 /*++ Routine Description:
-     Inputs are address and byte count; verifies canonical, non-wrapping, nonpaged
-     small kernel range. It never maps physical pages, writes PTEs, or changes CR0
-     WP. Returns TRUE when the whole range is safe to snapshot. --*/
+     Inputs are address and byte count; verifies a canonical, non-wrapping small
+     kernel range. MmCopyMemory performs the actual fault-contained read, so this
+     predicate does not reject a valid pageable kernel mapping merely because it
+     is not resident at this instant. Returns TRUE for a syntactically valid
+     snapshot range. --*/
 {
-    ULONG index = 0UL;
+    /* Reject zero-length and protocol-oversized requests before address math. */
     if (Bytes == 0UL || Bytes > KSWORD_ARK_MUTATION_MAX_BYTES) {
+        /* A transaction may never escape its fixed response and audit buffers. */
         return FALSE;
     }
+    /* Reject unsigned wraparound at the end of the requested byte range. */
     if ((ULONGLONG)Bytes > (((ULONGLONG)-1) - Address + 1ULL)) {
+        /* A wrapping target cannot be represented by one exact transaction. */
         return FALSE;
     }
+    /* Both endpoints must stay inside the canonical x64 kernel half. */
     if (!KswordARKMutationKernelAddress(Address) || !KswordARKMutationKernelAddress(Address + (ULONGLONG)Bytes - 1ULL)) {
+        /* User addresses and the noncanonical hole are outside this target kind. */
         return FALSE;
     }
-    for (index = 0UL; index < Bytes; index += 1UL) {
-        BOOLEAN addressValid = FALSE;
-#pragma warning(push)
-#pragma warning(disable: 4996)
-        /*
-         * MmIsNonPagedSystemAddressValid is deprecated in current WDK headers,
-         * but this mutation preflight path intentionally preserves the existing
-         * nonpaged-address gate before MmCopyMemory. The warning is suppressed
-         * locally so WarningAsError builds can still validate unrelated driver
-         * changes without broad project-level warning policy changes.
-         */
-        addressValid = MmIsNonPagedSystemAddressValid((PVOID)(ULONG_PTR)(Address + (ULONGLONG)index));
-#pragma warning(pop)
-        if (!addressValid) {
-            return FALSE;
-        }
-    }
+    /* The caller must use MmCopyMemory or an exception-guarded locked MDL next. */
     return TRUE;
 }
 
 static NTSTATUS
 KswordARKMutationReadKernelBytes(_In_ ULONGLONG Address, _Out_writes_bytes_(Bytes) UCHAR* Buffer, _In_ ULONG Bytes)
 /*++ Routine Description:
-     Inputs are kernel virtual address and byte count; copies a checked nonpaged
+     Inputs are kernel virtual address and byte count; copies a checked system
      range with MmCopyMemory virtual mode. Processing is read-only. Returns full
      copy status or a validation failure. --*/
 {
@@ -197,6 +298,11 @@ KswordARKMutationReadKernelBytes(_In_ ULONGLONG Address, _Out_writes_bytes_(Byte
     if (Buffer == NULL || !KswordARKMutationRangeReadable(Address, Bytes)) {
         return STATUS_ACCESS_VIOLATION;
     }
+    /* MmCopyMemory may fault pageable system addresses only at APC_LEVEL or below. */
+    if (KeGetCurrentIrql() > APC_LEVEL) {
+        /* Defer rather than touching a pageable target at elevated IRQL. */
+        return STATUS_INVALID_DEVICE_STATE;
+    }
     RtlZeroMemory(&copyAddress, sizeof(copyAddress));
     copyAddress.VirtualAddress = (PVOID)(ULONG_PTR)Address;
     status = MmCopyMemory(Buffer, copyAddress, (SIZE_T)Bytes, MM_COPY_MEMORY_VIRTUAL, &copied);
@@ -204,6 +310,178 @@ KswordARKMutationReadKernelBytes(_In_ ULONGLONG Address, _Out_writes_bytes_(Byte
         return status;
     }
     return (copied == (SIZE_T)Bytes) ? STATUS_SUCCESS : STATUS_PARTIAL_COPY;
+}
+
+static NTSTATUS
+KswordARKMutationWriteKernelBytes(
+    _In_ ULONGLONG Address,
+    _In_reads_bytes_(Bytes) const UCHAR* ExpectedBytes,
+    _In_reads_bytes_(Bytes) const UCHAR* Buffer,
+    _In_ ULONG Bytes
+    )
+/*++
+
+Routine Description:
+
+    Writes one previously snapshotted kernel virtual-address range through a
+    temporary writable MDL alias.  The caller has already compared the current
+    bytes with the PREPARE snapshot and evaluated the central safety policy.
+    This path never clears CR0.WP and never leaves a writable mapping behind.
+
+Arguments:
+
+    Address - Canonical kernel virtual address captured by PREPARE.
+    ExpectedBytes - Bytes that must still be present immediately before copy.
+    Buffer - Replacement or rollback bytes owned by the transaction slot.
+    Bytes - Bounded transaction length.
+
+Return Value:
+
+    STATUS_SUCCESS after the alias write is visible, or an allocation, probe,
+    mapping, protection, or exception status.
+
+--*/
+{
+    /* The MDL describes the exact caller-selected virtual byte range. */
+    PMDL mdl = NULL;
+    /* The temporary system mapping is the only address used for the write. */
+    PVOID writableAlias = NULL;
+    /* Track whether MmProbeAndLockPages completed before cleanup unlocks it. */
+    BOOLEAN pagesLocked = FALSE;
+    /* Invalidate all processor mappings only after the alias is removed. */
+    BOOLEAN writeCompleted = FALSE;
+    /* Preserve the first concrete failure for the transaction response. */
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /* Reapply the same canonical, nonwrapping and length gate used by PREPARE. */
+    if (ExpectedBytes == NULL
+        || Buffer == NULL
+        || !KswordARKMutationRangeReadable(Address, Bytes)) {
+        /* Refuse an address that no longer satisfies the transaction boundary. */
+        return STATUS_ACCESS_VIOLATION;
+    }
+    /* Page probing, locking and mapping are intentionally confined to PASSIVE. */
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        /* The R3 caller can retry through a passive execution-level queue. */
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    /* Probe operations raise for invalid mappings, so cleanup is exception safe. */
+    __try {
+        /* Allocate an MDL for the exact virtual range without attaching an IRP. */
+        mdl = IoAllocateMdl(
+            (PVOID)(ULONG_PTR)Address,
+            Bytes,
+            FALSE,
+            FALSE,
+            NULL);
+        /* Allocation failure leaves the target untouched. */
+        if (mdl == NULL) {
+            /* Surface the resource failure to the audited transaction result. */
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            /* Leave the guarded block through the common cleanup path. */
+            __leave;
+        }
+
+        /*
+         * Probe the original mapping only for read access so a normal read-only
+         * image section (for example, kernel .text) is not rejected. The locked
+         * PFNs are then exposed through a separate temporary writable alias.
+         */
+        MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+        /* Cleanup may now safely call MmUnlockPages. */
+        pagesLocked = TRUE;
+
+        /*
+         * Build a distinct non-executable mapping so the original mapping's
+         * execute permissions are not broadened and CR0.WP is never changed.
+         */
+        writableAlias = MmMapLockedPagesSpecifyCache(
+            mdl,
+            KernelMode,
+            MmCached,
+            NULL,
+            FALSE,
+            NormalPagePriority | MdlMappingNoExecute);
+        /* A missing alias means no byte has been modified. */
+        if (writableAlias == NULL) {
+            /* Report a bounded allocation/mapping failure. */
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            /* Leave the guarded block through the common cleanup path. */
+            __leave;
+        }
+
+        /* Explicitly grant write access only to the temporary system alias. */
+        status = MmProtectMdlSystemAddress(mdl, PAGE_READWRITE);
+        /* Protection failure leaves the original target mapping unchanged. */
+        if (!NT_SUCCESS(status)) {
+            /* Leave the guarded block through the common cleanup path. */
+            __leave;
+        }
+
+        /*
+         * Narrow the compare/write race by checking through the locked alias.
+         * Generic live kernel memory cannot provide a true multi-byte atomic
+         * CAS, so a concurrent change after this comparison remains an
+         * explicitly reported risk.
+         */
+        if (RtlCompareMemory(
+                writableAlias,
+                ExpectedBytes,
+                Bytes) != Bytes) {
+            status = STATUS_REVISION_MISMATCH;
+            __leave;
+        }
+
+        /* Copy only the transaction's bounded replacement or rollback bytes. */
+        RtlCopyMemory(writableAlias, Buffer, Bytes);
+        /* Publish the alias copy before its mapping is removed. */
+        KeMemoryBarrier();
+        writeCompleted = TRUE;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        /* Convert a probe, map, protection, or copy exception to NTSTATUS. */
+        status = GetExceptionCode();
+    }
+
+    /* Remove the writable alias immediately after the bounded copy attempt. */
+    if (writableAlias != NULL) {
+        /* Unmap only the alias created by MmMapLockedPagesSpecifyCache. */
+        MmUnmapLockedPages(writableAlias, mdl);
+        /* Prevent cleanup from observing a stale writable virtual address. */
+        writableAlias = NULL;
+    }
+    if (NT_SUCCESS(status) &&
+        writeCompleted &&
+        mdl != NULL &&
+        pagesLocked) {
+        /*
+         * KeInvalidateRangeAllCaches flushes this physical range for every
+         * virtual mapping on every processor and completes before returning.
+         * It provides fetch visibility, not execution quiescence or atomicity.
+         */
+        KeInvalidateRangeAllCaches(
+            (PVOID)(ULONG_PTR)Address,
+            Bytes);
+        KeMemoryBarrier();
+    }
+    /* Release physical-page locks only when the probe completed successfully. */
+    if (mdl != NULL && pagesLocked) {
+        /* Restore the pages to their normal memory-manager lifecycle. */
+        MmUnlockPages(mdl);
+        /* Prevent any accidental double unlock in future cleanup edits. */
+        pagesLocked = FALSE;
+    }
+    /* Free the MDL descriptor after mapping and locking state is gone. */
+    if (mdl != NULL) {
+        /* The MDL contains no caller-owned buffer that needs separate freeing. */
+        IoFreeMdl(mdl);
+        /* Clear the local pointer before returning the final status. */
+        mdl = NULL;
+    }
+
+    /* The commit path performs a fresh read and exact byte verification next. */
+    return status;
 }
 
 static NTSTATUS
@@ -238,33 +516,79 @@ KswordARKMutationReadPplBytes(_In_ PEPROCESS ProcessObject, _In_ const KSW_DYN_S
 }
 
 static NTSTATUS
-KswordARKMutationWritePplBytes(_In_ PEPROCESS ProcessObject, _In_ const KSW_DYN_STATE* DynState, _In_reads_bytes_(Bytes) const UCHAR* Buffer, _In_ ULONG Bytes)
+KswordARKMutationWritePplBytes(_In_ PEPROCESS ProcessObject, _In_ const KSW_DYN_STATE* DynState, _In_reads_bytes_(Bytes) const UCHAR* ExpectedBytes, _In_reads_bytes_(Bytes) const UCHAR* Buffer, _In_ ULONG Bytes)
 /*++ Routine Description:
-     Inputs are EPROCESS, DynData, source bytes, and count. Processing writes only
-     DynData-confirmed process protection fields and verifies them; it does not
-     touch CR0 WP, PTEs, or physical memory. Returns write/verify status. --*/
+     Inputs are EPROCESS, DynData, expected/source bytes, and count. Processing
+     validates every DynData offset, compares each byte immediately before its
+     individual write, verifies the full result, and best-effort compensates
+     already-written fields after any partial failure. Multi-byte PPL updates are
+     explicitly not atomic. Returns STATUS_PARTIAL_COPY whenever a write began
+     but the requested final state was not fully verified. --*/
 {
     ULONG offsets[KSWORD_ARK_MUTATION_PROCESS_PROTECTION_MAX_BYTES] = { 0UL };
+    UCHAR current[KSWORD_ARK_MUTATION_PROCESS_PROTECTION_MAX_BYTES] = { 0U };
     UCHAR verify[KSWORD_ARK_MUTATION_PROCESS_PROTECTION_MAX_BYTES] = { 0U };
     ULONG index = 0UL;
+    ULONG written = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
-    if (ProcessObject == NULL || DynState == NULL || Buffer == NULL || Bytes == 0UL || Bytes > KSWORD_ARK_MUTATION_PROCESS_PROTECTION_MAX_BYTES) {
+    if (ProcessObject == NULL ||
+        DynState == NULL ||
+        ExpectedBytes == NULL ||
+        Buffer == NULL ||
+        Bytes == 0UL ||
+        Bytes > KSWORD_ARK_MUTATION_PROCESS_PROTECTION_MAX_BYTES) {
         return STATUS_INVALID_PARAMETER;
     }
     offsets[0] = DynState->Kernel.EpProtection;
     offsets[1] = DynState->Kernel.EpSignatureLevel;
     offsets[2] = DynState->Kernel.EpSectionSignatureLevel;
+    for (index = 0UL; index < Bytes; index += 1UL) {
+        if (!KswordARKMutationOffsetPresent(offsets[index])) {
+            return STATUS_PROCEDURE_NOT_FOUND;
+        }
+    }
     __try {
+        /*
+         * Snapshot all logical fields first, then repeat an individual compare
+         * immediately before each byte write to narrow the concurrent-change
+         * window without claiming a multi-byte atomic operation.
+         */
         for (index = 0UL; index < Bytes; index += 1UL) {
-            if (!KswordARKMutationOffsetPresent(offsets[index])) {
-                status = STATUS_PROCEDURE_NOT_FOUND;
+            RtlCopyMemory(
+                &current[index],
+                (PUCHAR)ProcessObject + offsets[index],
+                sizeof(current[index]));
+        }
+        if (RtlCompareMemory(
+                current,
+                ExpectedBytes,
+                Bytes) != Bytes) {
+            status = STATUS_REVISION_MISMATCH;
+        }
+        for (index = 0UL;
+             NT_SUCCESS(status) && index < Bytes;
+             index += 1UL) {
+            UCHAR beforeWrite = 0U;
+            RtlCopyMemory(
+                &beforeWrite,
+                (PUCHAR)ProcessObject + offsets[index],
+                sizeof(beforeWrite));
+            if (beforeWrite != ExpectedBytes[index]) {
+                status = STATUS_REVISION_MISMATCH;
                 break;
             }
-            RtlCopyMemory((PUCHAR)ProcessObject + offsets[index], &Buffer[index], sizeof(Buffer[index]));
+            RtlCopyMemory(
+                (PUCHAR)ProcessObject + offsets[index],
+                &Buffer[index],
+                sizeof(Buffer[index]));
+            written = index + 1UL;
         }
         if (NT_SUCCESS(status)) {
             for (index = 0UL; index < Bytes; index += 1UL) {
-                RtlCopyMemory(&verify[index], (PUCHAR)ProcessObject + offsets[index], sizeof(verify[index]));
+                RtlCopyMemory(
+                    &verify[index],
+                    (PUCHAR)ProcessObject + offsets[index],
+                    sizeof(verify[index]));
                 if (verify[index] != Buffer[index]) {
                     status = STATUS_UNSUCCESSFUL;
                     break;
@@ -274,6 +598,40 @@ KswordARKMutationWritePplBytes(_In_ PEPROCESS ProcessObject, _In_ const KSW_DYN_
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
+    }
+
+    if (!NT_SUCCESS(status) && written != 0UL) {
+        /*
+         * Restore only bytes that still equal this transaction's requested
+         * value. A third-party value is never overwritten during compensation.
+         * A full reread follows even when one compensation step faults.
+         */
+        __try {
+            for (index = 0UL; index < written; index += 1UL) {
+                UCHAR observed = 0U;
+                RtlCopyMemory(
+                    &observed,
+                    (PUCHAR)ProcessObject + offsets[index],
+                    sizeof(observed));
+                if (observed == Buffer[index]) {
+                    RtlCopyMemory(
+                        (PUCHAR)ProcessObject + offsets[index],
+                        &ExpectedBytes[index],
+                        sizeof(ExpectedBytes[index]));
+                }
+            }
+            RtlZeroMemory(verify, sizeof(verify));
+            for (index = 0UL; index < Bytes; index += 1UL) {
+                RtlCopyMemory(
+                    &verify[index],
+                    (PUCHAR)ProcessObject + offsets[index],
+                    sizeof(verify[index]));
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            RtlZeroMemory(verify, sizeof(verify));
+        }
+        return STATUS_PARTIAL_COPY;
     }
     return status;
 }
@@ -350,7 +708,9 @@ KswordARKMutationReadPplForSlot(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _Out_
     }
     processAddress = (ULONGLONG)(ULONG_PTR)processObject;
     protectionAddress = processAddress + (ULONGLONG)dynState.Kernel.EpProtection;
-    if (processAddress != Slot->TargetContext || protectionAddress != Slot->TargetAddress) {
+    if (processObject != Slot->TargetProcessObject ||
+        processAddress != Slot->TargetContext ||
+        protectionAddress != Slot->TargetAddress) {
         status = STATUS_REVISION_MISMATCH;
     }
     else {
@@ -361,7 +721,7 @@ KswordARKMutationReadPplForSlot(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _Out_
 }
 
 static NTSTATUS
-KswordARKMutationWritePplForSlot(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _In_reads_bytes_(Slot->Bytes) const UCHAR* Bytes)
+KswordARKMutationWritePplForSlot(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _In_reads_bytes_(Slot->Bytes) const UCHAR* ExpectedBytes, _In_reads_bytes_(Slot->Bytes) const UCHAR* Bytes)
 /*++ Routine Description:
      Inputs are a slot and source bytes. Processing revalidates PID, DynData, and
      target address before writing PPL fields. Returns guarded write status. --*/
@@ -371,7 +731,9 @@ KswordARKMutationWritePplForSlot(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _In_
     ULONGLONG processAddress = 0ULL;
     ULONGLONG protectionAddress = 0ULL;
     NTSTATUS status = STATUS_SUCCESS;
-    if (Slot == NULL || Bytes == NULL) {
+    if (Slot == NULL ||
+        ExpectedBytes == NULL ||
+        Bytes == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     RtlZeroMemory(&dynState, sizeof(dynState));
@@ -388,11 +750,18 @@ KswordARKMutationWritePplForSlot(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _In_
     }
     processAddress = (ULONGLONG)(ULONG_PTR)processObject;
     protectionAddress = processAddress + (ULONGLONG)dynState.Kernel.EpProtection;
-    if (processAddress != Slot->TargetContext || protectionAddress != Slot->TargetAddress) {
+    if (processObject != Slot->TargetProcessObject ||
+        processAddress != Slot->TargetContext ||
+        protectionAddress != Slot->TargetAddress) {
         status = STATUS_REVISION_MISMATCH;
     }
     else {
-        status = KswordARKMutationWritePplBytes(processObject, &dynState, Bytes, Slot->Bytes);
+        status = KswordARKMutationWritePplBytes(
+            processObject,
+            &dynState,
+            ExpectedBytes,
+            Bytes,
+            Slot->Bytes);
     }
     ObDereferenceObject(processObject);
     return status;
@@ -417,16 +786,29 @@ KswordARKMutationReadSlotBytes(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _Out_w
 }
 
 static NTSTATUS
-KswordARKMutationWriteSlotBytes(_In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _In_reads_bytes_(Slot->Bytes) const UCHAR* Bytes)
+KswordARKMutationWriteSlotBytes(
+    _In_ const KSWORD_ARK_MUTATION_SLOT* Slot,
+    _In_reads_bytes_(Slot->Bytes) const UCHAR* ExpectedBytes,
+    _In_reads_bytes_(Slot->Bytes) const UCHAR* Bytes)
 /*++ Routine Description:
      Inputs are prepared slot and source bytes. Processing writes only supported
      guarded target kinds; all others fail closed. Returns NTSTATUS. --*/
 {
-    if (Slot == NULL || Bytes == NULL) {
+    if (Slot == NULL || ExpectedBytes == NULL || Bytes == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     if (Slot->TargetKind == KSWORD_ARK_MUTATION_TARGET_PROCESS_PROTECTION_BYTES) {
-        return KswordARKMutationWritePplForSlot(Slot, Bytes);
+        return KswordARKMutationWritePplForSlot(
+            Slot,
+            ExpectedBytes,
+            Bytes);
+    }
+    if (Slot->TargetKind == KSWORD_ARK_MUTATION_TARGET_KERNEL_VIRTUAL_BYTES_SMALL) {
+        return KswordARKMutationWriteKernelBytes(
+            Slot->TargetAddress,
+            ExpectedBytes,
+            Bytes,
+            Slot->Bytes);
     }
     return STATUS_NOT_SUPPORTED;
 }
@@ -437,7 +819,12 @@ KswordARKMutationTargetRisk(_In_ ULONG TargetKind)
      Input is target kind; maps it to stable audit risk flags. Returns bitmask. --*/
 {
     if (TargetKind == KSWORD_ARK_MUTATION_TARGET_KERNEL_VIRTUAL_BYTES_SMALL) {
-        return KSWORD_ARK_MUTATION_RISK_KERNEL_PATCH_SURFACE | KSWORD_ARK_MUTATION_RISK_CANONICAL_REQUIRED | KSWORD_ARK_MUTATION_RISK_NONPAGED_REQUIRED | KSWORD_ARK_MUTATION_RISK_SIZE_LIMITED | KSWORD_ARK_MUTATION_RISK_WRITE_BLOCKED_BY_DESIGN;
+        return KSWORD_ARK_MUTATION_RISK_KERNEL_PATCH_SURFACE |
+            KSWORD_ARK_MUTATION_RISK_CANONICAL_REQUIRED |
+            KSWORD_ARK_MUTATION_RISK_SIZE_LIMITED |
+            KSWORD_ARK_MUTATION_RISK_WRITABLE_MDL_ALIAS |
+            KSWORD_ARK_MUTATION_RISK_EXECUTABLE_BYTES_MAY_BE_LIVE |
+            KSWORD_ARK_MUTATION_RISK_WRITE_VERIFY_REQUIRED;
     }
     if (TargetKind == KSWORD_ARK_MUTATION_TARGET_PROCESS_PROTECTION_BYTES) {
         return KSWORD_ARK_MUTATION_RISK_PROCESS_PROTECTION_SURFACE | KSWORD_ARK_MUTATION_RISK_DYNDATA_REQUIRED | KSWORD_ARK_MUTATION_RISK_DYNDATA_CONFIRMED | KSWORD_ARK_MUTATION_RISK_SIZE_LIMITED;
@@ -636,7 +1023,7 @@ KswordARKMutationPrepareSnapshot(_In_ const KSWORD_ARK_MUTATION_PREPARE_REQUEST*
 }
 
 NTSTATUS
-KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATION_PREPARE_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut)
+KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessId, _In_ PEPROCESS RequestorProcessObject, _In_ const KSWORD_ARK_MUTATION_PREPARE_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut)
 /*++ Routine Description:
      Inputs are device, PREPARE request, output buffer, and length. Processing
      validates target, snapshots before bytes, assigns transactionId, and records
@@ -645,12 +1032,16 @@ KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATI
     KSWORD_ARK_MUTATION_RESPONSE* response = NULL;
     KSWORD_ARK_MUTATION_SLOT slot;
     KSWORD_ARK_MUTATION_SLOT* storedSlot = NULL;
+    PEPROCESS targetProcessObject = NULL;
     ULONG protocolStatus = KSWORD_ARK_MUTATION_STATUS_UNKNOWN;
     ULONG riskFlags = KSWORD_ARK_MUTATION_RISK_NONE;
     ULONG index = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
     KswordARKMutationEnsureInitialized();
-    if (BytesWrittenOut == NULL || OutputBuffer == NULL) {
+    if (BytesWrittenOut == NULL ||
+        OutputBuffer == NULL ||
+        RequestorProcessId == 0UL ||
+        RequestorProcessObject == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *BytesWrittenOut = 0U;
@@ -668,6 +1059,8 @@ KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATI
     slot.Flags = (Request != NULL) ? Request->flags : 0UL;
     slot.Status = protocolStatus;
     slot.TargetKind = (Request != NULL) ? Request->targetKind : KSWORD_ARK_MUTATION_TARGET_UNKNOWN;
+    slot.OwnerProcessId = RequestorProcessId;
+    slot.OwnerProcessObject = RequestorProcessObject;
     slot.ProcessId = (Request != NULL) ? Request->processId : 0UL;
     slot.Bytes = (Request != NULL && Request->bytes <= KSWORD_ARK_MUTATION_MAX_BYTES) ? Request->bytes : 0UL;
     slot.RiskFlags = riskFlags;
@@ -680,13 +1073,99 @@ KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATI
     slot.AfterHash = KswordARKMutationHash(slot.AfterBytes, slot.Bytes);
     if (NT_SUCCESS(status)) {
         ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+        KswordARKMutationExpireSlotsLocked(
+            KswordARKMutationTick());
         slot.TransactionId = g_KswordArkMutationState.NextTransactionId;
         g_KswordArkMutationState.NextTransactionId += 1ULL;
         if (g_KswordArkMutationState.NextTransactionId == 0ULL) {
             g_KswordArkMutationState.NextTransactionId = 1ULL;
         }
         index = (ULONG)(slot.TransactionId % KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY);
-        storedSlot = &g_KswordArkMutationState.Slots[index];
+        /*
+         * An active transaction is never replaced merely because the ring
+         * wrapped. Expiration above creates reusable slots; if all 64 slots
+         * are still live, PREPARE fails closed with BUSY.
+         */
+        {
+            ULONG probe = 0UL;
+            storedSlot = NULL;
+            for (probe = 0UL;
+                 probe < KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY;
+                 probe += 1UL) {
+                ULONG candidate =
+                    (index + probe)
+                    % KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY;
+                if (!g_KswordArkMutationState.Slots[candidate].InUse) {
+                    index = candidate;
+                    storedSlot =
+                        &g_KswordArkMutationState.Slots[candidate];
+                    break;
+                }
+            }
+        }
+        if (storedSlot == NULL) {
+            slot.TransactionId = 0ULL;
+            slot.Status = KSWORD_ARK_MUTATION_STATUS_REJECTED_BUSY;
+            slot.LastStatus = STATUS_DEVICE_BUSY;
+            protocolStatus = slot.Status;
+            status = slot.LastStatus;
+            ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+            KswordARKMutationFillResponse(
+                response,
+                &slot,
+                protocolStatus,
+                status,
+                riskFlags);
+            *BytesWrittenOut = sizeof(*response);
+            return status;
+        }
+        if (slot.TargetKind ==
+            KSWORD_ARK_MUTATION_TARGET_PROCESS_PROTECTION_BYTES) {
+            status = PsLookupProcessByProcessId(
+                ULongToHandle(slot.ProcessId),
+                &targetProcessObject);
+            if (!NT_SUCCESS(status) ||
+                targetProcessObject == NULL ||
+                (ULONGLONG)(ULONG_PTR)targetProcessObject !=
+                    slot.TargetContext) {
+                if (targetProcessObject != NULL) {
+                    ObDereferenceObject(targetProcessObject);
+                    targetProcessObject = NULL;
+                }
+                slot.TransactionId = 0ULL;
+                slot.Status =
+                    KSWORD_ARK_MUTATION_STATUS_REJECTED_TARGET_CHANGED;
+                slot.LastStatus = NT_SUCCESS(status)
+                    ? STATUS_REVISION_MISMATCH
+                    : status;
+                slot.RiskFlags |=
+                    KSWORD_ARK_MUTATION_RISK_TARGET_CHANGED;
+                protocolStatus = slot.Status;
+                status = slot.LastStatus;
+                ExReleasePushLockExclusive(
+                    &g_KswordArkMutationState.Lock);
+                KswordARKMutationFillResponse(
+                    response,
+                    &slot,
+                    protocolStatus,
+                    status,
+                    slot.RiskFlags);
+                *BytesWrittenOut = sizeof(*response);
+                return status;
+            }
+            /*
+             * PsLookupProcessByProcessId returned the reference that the
+             * global slot will own. Keeping the object alive prevents the old
+             * EPROCESS address from being recycled into a same-PID target.
+             */
+            slot.TargetProcessObject = targetProcessObject;
+        }
+        /*
+         * Only the global slot owns this reference. Stack copies carry the
+         * pointer solely for identity comparison and never release it.
+         */
+        KswordARKMutationClearSlotLocked(storedSlot);
+        ObReferenceObject(RequestorProcessObject);
         *storedSlot = slot;
         KswordARKMutationAuditLocked(KSWORD_ARK_MUTATION_OPERATION_PREPARE, storedSlot, KSWORD_ARK_MUTATION_STATUS_PREPARED, STATUS_SUCCESS, Request->flags, storedSlot->RiskFlags, storedSlot->BeforeBytes);
         ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
@@ -706,8 +1185,8 @@ static NTSTATUS
 KswordARKMutationSafety(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATION_SLOT* Slot, _In_ ULONG RequestFlags)
 /*++ Routine Description:
      Inputs are optional device, transaction slot, and request flags. Processing
-     maps target kind to safety policy and sets UI_CONFIRMED only when FORCE is
-     present. Returns policy status. --*/
+     maps target kind to safety policy and forwards the explicit UI_CONFIRMED
+     bit independently of FORCE. Returns policy status. --*/
 {
     KSWORD_ARK_SAFETY_CONTEXT context;
     ULONG operation = KSWORD_ARK_SAFETY_OPERATION_NONE;
@@ -721,12 +1200,15 @@ KswordARKMutationSafety(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATIO
     RtlZeroMemory(&context, sizeof(context));
     context.Operation = operation;
     context.TargetProcessId = Slot->ProcessId;
-    context.ContextFlags = ((RequestFlags & KSWORD_ARK_MUTATION_FLAG_FORCE) != 0UL) ? KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED : 0UL;
+    context.ContextFlags =
+        ((RequestFlags & KSWORD_ARK_MUTATION_FLAG_UI_CONFIRMED) != 0UL)
+        ? KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED
+        : 0UL;
     return KswordARKSafetyEvaluate(Device, &context);
 }
 
 static NTSTATUS
-KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATION_TRANSACTION_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut, _In_ BOOLEAN Rollback)
+KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessId, _In_ PEPROCESS RequestorProcessObject, _In_ const KSWORD_ARK_MUTATION_TRANSACTION_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut, _In_ BOOLEAN Rollback)
 /*++ Routine Description:
      Inputs are device, transaction request, output buffer, and rollback selector.
      Processing loads PREPARE state by transactionId, dry-runs without FORCE,
@@ -744,8 +1226,18 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK
     ULONG riskFlags = KSWORD_ARK_MUTATION_RISK_NONE;
     NTSTATUS status = STATUS_SUCCESS;
     NTSTATUS lastStatus = STATUS_SUCCESS;
+    BOOLEAN operationClaimed = FALSE;
+    BOOLEAN operationBusy = FALSE;
+    BOOLEAN ownerMismatch = FALSE;
+    BOOLEAN stateRejected = FALSE;
+    BOOLEAN dryRun = FALSE;
+    BOOLEAN writeAttemptStarted = FALSE;
+    BOOLEAN rollbackCompletedWithoutWrite = FALSE;
     KswordARKMutationEnsureInitialized();
-    if (BytesWrittenOut == NULL || OutputBuffer == NULL) {
+    if (BytesWrittenOut == NULL ||
+        OutputBuffer == NULL ||
+        RequestorProcessId == 0UL ||
+        RequestorProcessObject == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *BytesWrittenOut = 0U;
@@ -755,25 +1247,128 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK
     if (Request == NULL || Request->size < sizeof(KSWORD_ARK_MUTATION_TRANSACTION_REQUEST) || Request->version != KSWORD_ARK_MUTATION_PROTOCOL_VERSION || Request->reserved != 0UL || Request->transactionId == 0ULL || ((Request->flags & ~(KSWORD_ARK_MUTATION_FLAG_FORCE | KSWORD_ARK_MUTATION_FLAG_UI_CONFIRMED | KSWORD_ARK_MUTATION_FLAG_DRY_RUN)) != 0UL)) {
         return STATUS_INVALID_PARAMETER;
     }
+    dryRun =
+        ((Request->flags & KSWORD_ARK_MUTATION_FLAG_DRY_RUN) != 0UL)
+        ? TRUE
+        : FALSE;
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     response = (KSWORD_ARK_MUTATION_RESPONSE*)OutputBuffer;
     RtlZeroMemory(&slot, sizeof(slot));
-    ExAcquirePushLockShared(&g_KswordArkMutationState.Lock);
+    ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKMutationExpireSlotsLocked(
+        KswordARKMutationTick());
     storedSlot = KswordARKMutationFindSlotLocked(Request->transactionId);
     if (storedSlot != NULL) {
-        slot = *storedSlot;
+        if (storedSlot->OwnerProcessObject != RequestorProcessObject) {
+            ownerMismatch = TRUE;
+            KswordARKMutationAuditLocked(
+                eventCode,
+                storedSlot,
+                KSWORD_ARK_MUTATION_STATUS_REJECTED_SAFETY_POLICY,
+                STATUS_ACCESS_DENIED,
+                Request->flags,
+                storedSlot->RiskFlags |
+                    KSWORD_ARK_MUTATION_RISK_POLICY_DENIED,
+                NULL);
+        }
+        else if (storedSlot->OperationBusy) {
+            slot = *storedSlot;
+            operationBusy = TRUE;
+        }
+        else if (storedSlot->RollbackAttempted ||
+                 (!Rollback && storedSlot->CommitAttempted) ||
+                 (Rollback && !storedSlot->CommitAttempted)) {
+            slot = *storedSlot;
+            stateRejected = TRUE;
+        }
+        else {
+            storedSlot->OperationBusy = TRUE;
+            slot = *storedSlot;
+            operationClaimed = TRUE;
+        }
     }
-    ExReleasePushLockShared(&g_KswordArkMutationState.Lock);
+    ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
     if (storedSlot == NULL) {
         slot.TransactionId = Request->transactionId;
         KswordARKMutationFillResponse(response, &slot, KSWORD_ARK_MUTATION_STATUS_REJECTED_NOT_FOUND, STATUS_NOT_FOUND, KSWORD_ARK_MUTATION_RISK_NONE);
         *BytesWrittenOut = sizeof(*response);
         return STATUS_SUCCESS;
     }
+    if (ownerMismatch) {
+        RtlZeroMemory(&slot, sizeof(slot));
+        slot.TransactionId = Request->transactionId;
+        KswordARKMutationFillResponse(
+            response,
+            &slot,
+            KSWORD_ARK_MUTATION_STATUS_REJECTED_SAFETY_POLICY,
+            STATUS_ACCESS_DENIED,
+            KSWORD_ARK_MUTATION_RISK_POLICY_DENIED);
+        *BytesWrittenOut = sizeof(*response);
+        return STATUS_SUCCESS;
+    }
+    if (operationBusy) {
+        slot.Status = KSWORD_ARK_MUTATION_STATUS_REJECTED_BUSY;
+        slot.LastStatus = STATUS_DEVICE_BUSY;
+        slot.TimestampTick = KswordARKMutationTick();
+        ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+        KswordARKMutationAuditLocked(
+            eventCode,
+            &slot,
+            slot.Status,
+            slot.LastStatus,
+            Request->flags,
+            slot.RiskFlags,
+            NULL);
+        ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+        KswordARKMutationFillResponse(
+            response,
+            &slot,
+            slot.Status,
+            slot.LastStatus,
+            slot.RiskFlags);
+        *BytesWrittenOut = sizeof(*response);
+        return STATUS_SUCCESS;
+    }
+    if (stateRejected) {
+        const ULONG rejectedRisk =
+            slot.RiskFlags |
+            KSWORD_ARK_MUTATION_RISK_POLICY_DENIED;
+        ExAcquirePushLockExclusive(
+            &g_KswordArkMutationState.Lock);
+        storedSlot = KswordARKMutationFindSlotLocked(
+            Request->transactionId);
+        if (storedSlot != NULL &&
+            storedSlot->OwnerProcessObject == RequestorProcessObject) {
+            KswordARKMutationAuditLocked(
+                eventCode,
+                storedSlot,
+                KSWORD_ARK_MUTATION_STATUS_REJECTED_INVALID_REQUEST,
+                STATUS_INVALID_DEVICE_STATE,
+                Request->flags,
+                rejectedRisk,
+                NULL);
+        }
+        ExReleasePushLockExclusive(
+            &g_KswordArkMutationState.Lock);
+        KswordARKMutationFillResponse(
+            response,
+            &slot,
+            KSWORD_ARK_MUTATION_STATUS_REJECTED_INVALID_REQUEST,
+            STATUS_INVALID_DEVICE_STATE,
+            rejectedRisk);
+        *BytesWrittenOut = sizeof(*response);
+        return STATUS_SUCCESS;
+    }
     desired = Rollback ? slot.BeforeBytes : slot.AfterBytes;
     riskFlags = slot.RiskFlags;
-    if ((Request->flags & KSWORD_ARK_MUTATION_FLAG_FORCE) == 0UL) {
-        riskFlags |= KSWORD_ARK_MUTATION_RISK_FORCE_REQUIRED | KSWORD_ARK_MUTATION_RISK_DRY_RUN;
+    if (dryRun ||
+        (Request->flags & KSWORD_ARK_MUTATION_FLAG_FORCE) == 0UL) {
+        riskFlags |= KSWORD_ARK_MUTATION_RISK_DRY_RUN;
+        if ((Request->flags &
+             KSWORD_ARK_MUTATION_FLAG_FORCE) == 0UL) {
+            riskFlags |=
+                KSWORD_ARK_MUTATION_RISK_FORCE_REQUIRED;
+        }
         statusCode = KSWORD_ARK_MUTATION_STATUS_DRY_RUN;
         lastStatus = STATUS_REQUEST_NOT_ACCEPTED;
     }
@@ -789,6 +1384,18 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK
             riskFlags |= KSWORD_ARK_MUTATION_RISK_ROLLBACK_IDEMPOTENT;
             statusCode = KSWORD_ARK_MUTATION_STATUS_ALREADY_AT_BEFORE;
             lastStatus = STATUS_SUCCESS;
+            rollbackCompletedWithoutWrite = TRUE;
+        }
+        else if (Rollback && RtlCompareMemory(current, slot.AfterBytes, slot.Bytes) != slot.Bytes) {
+            /*
+             * Rollback is another expected-before conditional operation.  It is
+             * not a multi-byte atomic CAS: a third party may have changed the
+             * target after COMMIT, so restoring stale bytes would overwrite
+             * evidence or live state that this transaction does not own.
+             */
+            riskFlags |= KSWORD_ARK_MUTATION_RISK_TARGET_CHANGED;
+            statusCode = KSWORD_ARK_MUTATION_STATUS_REJECTED_TARGET_CHANGED;
+            lastStatus = STATUS_REVISION_MISMATCH;
         }
         else if (!Rollback && RtlCompareMemory(current, slot.BeforeBytes, slot.Bytes) != slot.Bytes) {
             riskFlags |= KSWORD_ARK_MUTATION_RISK_BEFORE_MISMATCH;
@@ -800,11 +1407,6 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK
             statusCode = KSWORD_ARK_MUTATION_STATUS_REJECTED_PLAN_ONLY;
             lastStatus = STATUS_NOT_SUPPORTED;
         }
-        else if (slot.TargetKind == KSWORD_ARK_MUTATION_TARGET_KERNEL_VIRTUAL_BYTES_SMALL) {
-            riskFlags |= KSWORD_ARK_MUTATION_RISK_WRITE_BLOCKED_BY_DESIGN;
-            statusCode = KSWORD_ARK_MUTATION_STATUS_REJECTED_UNSUPPORTED_TARGET;
-            lastStatus = STATUS_NOT_SUPPORTED;
-        }
         else {
             status = KswordARKMutationSafety(Device, &slot, Request->flags);
             if (!NT_SUCCESS(status)) {
@@ -813,24 +1415,63 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK
                 lastStatus = status;
             }
             else {
-                status = KswordARKMutationWriteSlotBytes(&slot, desired);
-                if (!NT_SUCCESS(status)) {
-                    statusCode = KswordARKMutationFailureStatus(status, KSWORD_ARK_MUTATION_STATUS_WRITE_FAILED);
+                ExAcquirePushLockExclusive(
+                    &g_KswordArkMutationState.Lock);
+                storedSlot = KswordARKMutationFindSlotLocked(
+                    Request->transactionId);
+                if (storedSlot == NULL ||
+                    storedSlot->OwnerProcessObject !=
+                        RequestorProcessObject ||
+                    !storedSlot->OperationBusy ||
+                    (Rollback
+                        ? storedSlot->RollbackAttempted
+                        : storedSlot->CommitAttempted)) {
+                    status = STATUS_INVALID_DEVICE_STATE;
+                }
+                else {
+                    if (Rollback) {
+                        storedSlot->RollbackAttempted = TRUE;
+                        slot.RollbackAttempted = TRUE;
+                    }
+                    else {
+                        storedSlot->CommitAttempted = TRUE;
+                        slot.CommitAttempted = TRUE;
+                    }
+                    writeAttemptStarted = TRUE;
+                }
+                ExReleasePushLockExclusive(
+                    &g_KswordArkMutationState.Lock);
+                if (!writeAttemptStarted) {
+                    statusCode =
+                        KSWORD_ARK_MUTATION_STATUS_REJECTED_INVALID_REQUEST;
                     lastStatus = status;
                 }
                 else {
-                    status = KswordARKMutationReadSlotBytes(&slot, verify);
+                    status = KswordARKMutationWriteSlotBytes(
+                        &slot,
+                        current,
+                        desired);
                     if (!NT_SUCCESS(status)) {
-                        statusCode = KSWORD_ARK_MUTATION_STATUS_READ_FAILED;
+                        if (status == STATUS_REVISION_MISMATCH) {
+                            riskFlags |= KSWORD_ARK_MUTATION_RISK_TARGET_CHANGED;
+                        }
+                        statusCode = KswordARKMutationFailureStatus(status, KSWORD_ARK_MUTATION_STATUS_WRITE_FAILED);
                         lastStatus = status;
                     }
-                    else if (RtlCompareMemory(verify, desired, slot.Bytes) != slot.Bytes) {
-                        statusCode = KSWORD_ARK_MUTATION_STATUS_WRITE_FAILED;
-                        lastStatus = STATUS_UNSUCCESSFUL;
-                    }
                     else {
-                        statusCode = Rollback ? KSWORD_ARK_MUTATION_STATUS_ROLLED_BACK : KSWORD_ARK_MUTATION_STATUS_COMMITTED;
-                        lastStatus = STATUS_SUCCESS;
+                        status = KswordARKMutationReadSlotBytes(&slot, verify);
+                        if (!NT_SUCCESS(status)) {
+                            statusCode = KSWORD_ARK_MUTATION_STATUS_READ_FAILED;
+                            lastStatus = status;
+                        }
+                        else if (RtlCompareMemory(verify, desired, slot.Bytes) != slot.Bytes) {
+                            statusCode = KSWORD_ARK_MUTATION_STATUS_WRITE_FAILED;
+                            lastStatus = STATUS_UNSUCCESSFUL;
+                        }
+                        else {
+                            statusCode = Rollback ? KSWORD_ARK_MUTATION_STATUS_ROLLED_BACK : KSWORD_ARK_MUTATION_STATUS_COMMITTED;
+                            lastStatus = STATUS_SUCCESS;
+                        }
                     }
                 }
             }
@@ -842,11 +1483,20 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK
     slot.TimestampTick = KswordARKMutationTick();
     ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
     storedSlot = KswordARKMutationFindSlotLocked(Request->transactionId);
-    if (storedSlot != NULL) {
+    if (storedSlot != NULL && operationClaimed) {
         storedSlot->Status = slot.Status;
         storedSlot->RiskFlags = slot.RiskFlags;
         storedSlot->LastStatus = slot.LastStatus;
         storedSlot->TimestampTick = slot.TimestampTick;
+        if (rollbackCompletedWithoutWrite) {
+            storedSlot->RollbackAttempted = TRUE;
+        }
+        if (!Rollback &&
+            statusCode ==
+                KSWORD_ARK_MUTATION_STATUS_COMMITTED) {
+            storedSlot->CommitSucceeded = TRUE;
+        }
+        storedSlot->OperationBusy = FALSE;
         KswordARKMutationAuditLocked(eventCode, storedSlot, statusCode, lastStatus, Request->flags, riskFlags, desired);
     }
     ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
@@ -862,22 +1512,22 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK
 }
 
 NTSTATUS
-KswordARKMutationCommit(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATION_TRANSACTION_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut)
+KswordARKMutationCommit(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessId, _In_ PEPROCESS RequestorProcessObject, _In_ const KSWORD_ARK_MUTATION_TRANSACTION_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut)
 /*++ Routine Description:
      Inputs are device, transaction request, and output buffer. Processing commits
      only by transactionId through shared commit/rollback logic. Returns NTSTATUS. --*/
 {
-    return KswordARKMutationCommitRollback(Device, Request, OutputBuffer, OutputBufferLength, BytesWrittenOut, FALSE);
+    return KswordARKMutationCommitRollback(Device, RequestorProcessId, RequestorProcessObject, Request, OutputBuffer, OutputBufferLength, BytesWrittenOut, FALSE);
 }
 
 NTSTATUS
-KswordARKMutationRollback(_In_opt_ WDFDEVICE Device, _In_ const KSWORD_ARK_MUTATION_TRANSACTION_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut)
+KswordARKMutationRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessId, _In_ PEPROCESS RequestorProcessObject, _In_ const KSWORD_ARK_MUTATION_TRANSACTION_REQUEST* Request, _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer, _In_ size_t OutputBufferLength, _Out_ size_t* BytesWrittenOut)
 /*++ Routine Description:
      Inputs are device, transaction request, and output buffer. Processing restores
      the before snapshot when needed and reports idempotent success if already
      restored. Returns NTSTATUS. --*/
 {
-    return KswordARKMutationCommitRollback(Device, Request, OutputBuffer, OutputBufferLength, BytesWrittenOut, TRUE);
+    return KswordARKMutationCommitRollback(Device, RequestorProcessId, RequestorProcessObject, Request, OutputBuffer, OutputBufferLength, BytesWrittenOut, TRUE);
 }
 
 NTSTATUS
@@ -925,7 +1575,9 @@ KswordARKMutationQueryAudit(_Out_writes_bytes_(OutputBufferLength) PVOID OutputB
     if (capacity < maxEntries) {
         maxEntries = capacity;
     }
-    ExAcquirePushLockShared(&g_KswordArkMutationState.Lock);
+    ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKMutationExpireSlotsLocked(
+        KswordARKMutationTick());
     nextSequence = g_KswordArkMutationState.NextAuditSequence;
     oldestSequence = (nextSequence > KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY) ? (nextSequence - KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY) : 1ULL;
     if (startSequence == 0ULL || startSequence < oldestSequence) {
@@ -950,7 +1602,7 @@ KswordARKMutationQueryAudit(_Out_writes_bytes_(OutputBufferLength) PVOID OutputB
         }
         returned += 1UL;
     }
-    ExReleasePushLockShared(&g_KswordArkMutationState.Lock);
+    ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
     response->totalCount = total;
     response->returnedCount = returned;
     response->lostCount = lost;

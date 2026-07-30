@@ -15,6 +15,8 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTableWidget;
+class QAction;
+class QToolButton;
 
 namespace ks::misc
 {
@@ -53,6 +55,7 @@ namespace ks::misc
         void browseRawDirectory();
         void previewSelectedRawFile();
         void exportSelectedRawFile();
+        void analyzeSelectedRawPe();
         void applyProbeResult(
             DiskForensicsSelection selection,
             FileSystemProbeResult result);
@@ -78,6 +81,8 @@ namespace ks::misc
         QPushButton* m_rawListButton = nullptr;
         QPushButton* m_rawPreviewButton = nullptr;
         QPushButton* m_rawExportButton = nullptr;
+        QToolButton* m_rawMoreButton = nullptr;
+        QAction* m_rawPeAction = nullptr;
         QLabel* m_rawSummaryLabel = nullptr;
         QTableWidget* m_rawTable = nullptr;
         QLineEdit* m_filePathEdit = nullptr;
