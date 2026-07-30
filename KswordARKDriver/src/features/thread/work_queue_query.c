@@ -96,6 +96,29 @@ KswordARKWorkQueueReadField(
 }
 
 static BOOLEAN
+KswordARKWorkQueueListHeadIsPlausible(
+    _In_ ULONG64 ListHeadAddress,
+    _In_ const LIST_ENTRY* Head
+    )
+{
+    ULONG64 forward = 0ULL;
+    ULONG64 backward = 0ULL;
+
+    if (Head == NULL || !KswordARKWorkQueueIsKernelAddress(ListHeadAddress)) {
+        return FALSE;
+    }
+    forward = (ULONG64)(ULONG_PTR)Head->Flink;
+    backward = (ULONG64)(ULONG_PTR)Head->Blink;
+
+    // An empty list is valid only when both links point back to the head.
+    if (forward == ListHeadAddress || backward == ListHeadAddress) {
+        return forward == ListHeadAddress && backward == ListHeadAddress;
+    }
+    return KswordARKWorkQueueIsKernelAddress(forward) &&
+        KswordARKWorkQueueIsKernelAddress(backward);
+}
+
+static BOOLEAN
 KswordARKWorkQueueFieldFits(
     _In_ ULONG Offset,
     _In_ ULONG FieldBytes,
@@ -408,6 +431,14 @@ KswordARKWorkQueueEnumerateItems(
             STATUS_PARTIAL_COPY);
         return;
     }
+    if (!KswordARKWorkQueueListHeadIsPlausible(ListHeadAddress, &headBefore)) {
+        Builder->Response->corruptListCount += 1UL;
+        KswordARKWorkQueueMarkPartial(
+            Builder,
+            KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
+            STATUS_DATA_ERROR);
+        return;
+    }
 
     currentLink = (ULONG64)(ULONG_PTR)headBefore.Flink;
     while (currentLink != ListHeadAddress && !Builder->Stop) {
@@ -486,15 +517,24 @@ KswordARKWorkQueueEnumerateItems(
         currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
     }
 
-    if (!Builder->Stop &&
-        (!KswordARKWorkQueueRead(ListHeadAddress, &headAfter, sizeof(headAfter)) ||
-         headAfter.Flink != headBefore.Flink ||
-         headAfter.Blink != headBefore.Blink)) {
-        Builder->Response->corruptListCount += 1UL;
-        KswordARKWorkQueueMarkPartial(
-            Builder,
-            KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
-            STATUS_RETRY);
+    if (!Builder->Stop) {
+        if (!KswordARKWorkQueueRead(ListHeadAddress, &headAfter, sizeof(headAfter))) {
+            Builder->Response->readFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
+                STATUS_PARTIAL_COPY);
+        }
+        else if (previousLink != (ULONG64)(ULONG_PTR)headBefore.Blink ||
+                 !KswordARKWorkQueueListHeadIsPlausible(ListHeadAddress, &headAfter) ||
+                 headAfter.Flink != headBefore.Flink ||
+                 headAfter.Blink != headBefore.Blink) {
+            Builder->Response->corruptListCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
+                STATUS_RETRY);
+        }
     }
 }
 
@@ -505,34 +545,44 @@ KswordARKWorkQueueReferenceThread(
     )
 {
     POBJECT_TYPE objectType = NULL;
+    BOOLEAN safeReference = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
     if (ReferencedOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *ReferencedOut = FALSE;
-    if (Candidate == NULL || PsThreadType == NULL) {
+    if (Candidate == NULL || PsThreadType == NULL || *PsThreadType == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
+
+    // The private queue list does not provide a caller-held object reference.
+    // Acquire one atomically before touching the object header/type so a
+    // concurrently exiting worker cannot be observed through a zero-reference
+    // ETHREAD.
+    __try {
+        safeReference = ObReferenceObjectSafe(Candidate);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return GetExceptionCode();
+    }
+    if (!safeReference) {
+        return STATUS_DELETE_PENDING;
+    }
+    *ReferencedOut = TRUE;
 
     __try {
         objectType = ObGetObjectType(Candidate);
         if (objectType != *PsThreadType) {
             status = STATUS_OBJECT_TYPE_MISMATCH;
         }
-        else {
-            status = ObReferenceObjectByPointer(
-                Candidate,
-                0,
-                *PsThreadType,
-                KernelMode);
-        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
     }
-    if (NT_SUCCESS(status)) {
-        *ReferencedOut = TRUE;
+    if (!NT_SUCCESS(status)) {
+        ObDereferenceObject(Candidate);
+        *ReferencedOut = FALSE;
     }
     return status;
 }
@@ -563,6 +613,14 @@ KswordARKWorkQueueEnumerateThreads(
             STATUS_PARTIAL_COPY);
         return;
     }
+    if (!KswordARKWorkQueueListHeadIsPlausible(ListHeadAddress, &headBefore)) {
+        Builder->Response->corruptListCount += 1UL;
+        KswordARKWorkQueueMarkPartial(
+            Builder,
+            KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
+            STATUS_DATA_ERROR);
+        return;
+    }
 
     currentLink = (ULONG64)(ULONG_PTR)headBefore.Flink;
     while (currentLink != ListHeadAddress && !Builder->Stop) {
@@ -570,9 +628,12 @@ KswordARKWorkQueueEnumerateThreads(
         ULONG64 kthreadAddress = 0ULL;
         ULONG64 ethreadAddress = 0ULL;
         ULONG64 queuePointer = 0ULL;
+        ULONG64 referencedQueuePointer = 0ULL;
         ULONG64 startAddress = 0ULL;
+        LIST_ENTRY referencedLinks;
         PETHREAD threadObject = NULL;
         BOOLEAN referenced = FALSE;
+        ULONG threadProcessId = 0UL;
         NTSTATUS referenceStatus = STATUS_SUCCESS;
         KSWORD_ARK_WORK_QUEUE_ENTRY entry;
 
@@ -651,8 +712,47 @@ KswordARKWorkQueueEnumerateThreads(
         }
 
         entry.flags |= KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_REFERENCED;
+        // The object reference prevents ETHREAD reuse, but the queue can still
+        // unlink the worker between the initial list read and the reference.
+        // Re-read both the membership links and Queue field while referenced;
+        // changed evidence is returned only as an explicit partial snapshot.
+        if (!KswordARKWorkQueueRead(currentLink, &referencedLinks, sizeof(referencedLinks)) ||
+            !KswordARKWorkQueueReadField(
+                kthreadAddress,
+                Builder->Layout.KthreadQueue,
+                &referencedQueuePointer,
+                sizeof(referencedQueuePointer))) {
+            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_READ_FAILED;
+            Builder->Response->readFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
+                STATUS_PARTIAL_COPY);
+            ObDereferenceObject(threadObject);
+            KswordARKWorkQueueAppendEntry(Builder, &entry);
+            previousLink = currentLink;
+            currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
+            continue;
+        }
+        if (referencedLinks.Flink != currentLinks.Flink ||
+            referencedLinks.Blink != currentLinks.Blink ||
+            referencedQueuePointer != PriQueueAddress) {
+            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_IDENTITY_FAILED;
+            Builder->Response->referenceFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
+                STATUS_RETRY);
+            ObDereferenceObject(threadObject);
+            KswordARKWorkQueueAppendEntry(Builder, &entry);
+            previousLink = currentLink;
+            currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
+            continue;
+        }
+
         __try {
             entry.threadId = HandleToULong(PsGetThreadId(threadObject));
+            threadProcessId = HandleToULong(PsGetThreadProcessId(threadObject));
 #if (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
             entry.threadCreateTime100ns =
                 (ULONG64)PsGetThreadCreateTime(threadObject);
@@ -661,16 +761,35 @@ KswordARKWorkQueueEnumerateThreads(
         __except (EXCEPTION_EXECUTE_HANDLER) {
             entry.threadId = 0UL;
             entry.threadCreateTime100ns = 0ULL;
+            threadProcessId = 0UL;
         }
         if (entry.threadId == 0UL ||
             entry.threadCreateTime100ns == 0ULL ||
-            HandleToULong(PsGetThreadProcessId(threadObject)) != 4UL ||
-            !KswordARKWorkQueueReadField(
+            threadProcessId != 4UL) {
+            entry.threadId = 0UL;
+            entry.threadCreateTime100ns = 0ULL;
+            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_IDENTITY_FAILED;
+            Builder->Response->referenceFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
+                STATUS_OBJECT_NAME_NOT_FOUND);
+        }
+        else if (!KswordARKWorkQueueReadField(
                 ethreadAddress,
                 Builder->Layout.EthreadStartAddress,
                 &startAddress,
-                sizeof(startAddress)) ||
-            startAddress == 0ULL) {
+                sizeof(startAddress))) {
+            entry.threadId = 0UL;
+            entry.threadCreateTime100ns = 0ULL;
+            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_READ_FAILED;
+            Builder->Response->readFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
+                STATUS_PARTIAL_COPY);
+        }
+        else if (startAddress == 0ULL) {
             entry.threadId = 0UL;
             entry.threadCreateTime100ns = 0ULL;
             entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_IDENTITY_FAILED;
@@ -698,15 +817,24 @@ KswordARKWorkQueueEnumerateThreads(
         currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
     }
 
-    if (!Builder->Stop &&
-        (!KswordARKWorkQueueRead(ListHeadAddress, &headAfter, sizeof(headAfter)) ||
-         headAfter.Flink != headBefore.Flink ||
-         headAfter.Blink != headBefore.Blink)) {
-        Builder->Response->corruptListCount += 1UL;
-        KswordARKWorkQueueMarkPartial(
-            Builder,
-            KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
-            STATUS_RETRY);
+    if (!Builder->Stop) {
+        if (!KswordARKWorkQueueRead(ListHeadAddress, &headAfter, sizeof(headAfter))) {
+            Builder->Response->readFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
+                STATUS_PARTIAL_COPY);
+        }
+        else if (previousLink != (ULONG64)(ULONG_PTR)headBefore.Blink ||
+                 !KswordARKWorkQueueListHeadIsPlausible(ListHeadAddress, &headAfter) ||
+                 headAfter.Flink != headBefore.Flink ||
+                 headAfter.Blink != headBefore.Blink) {
+            Builder->Response->corruptListCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
+                STATUS_RETRY);
+        }
     }
 }
 

@@ -1882,15 +1882,19 @@ void ProcessDock::executeR0ResumeThreadAction()
 
 void ProcessDock::executeSuspendDriverThreadAction()
 {
-    const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid != 4U ||
-        threadRecord->threadId == 0U || threadRecord->createTime100ns == 0ULL)
+    const ks::process::SystemThreadRecord* selectedThread = selectedThreadRecord();
+    if (selectedThread == nullptr || selectedThread->ownerPid != 4U ||
+        selectedThread->threadId == 0U || selectedThread->createTime100ns == 0ULL)
     {
         return;
     }
-    const std::uint64_t startAddress = threadRecord->startAddress != 0ULL
-        ? threadRecord->startAddress
-        : threadRecord->win32StartAddress;
+    // QMessageBox::critical enters a nested event loop. Preserve the complete
+    // identity before opening it so an async table refresh cannot invalidate
+    // the selected m_threadRecordList element or replace the requested target.
+    const ks::process::SystemThreadRecord threadRecord = *selectedThread;
+    const std::uint64_t startAddress = threadRecord.startAddress != 0ULL
+        ? threadRecord.startAddress
+        : threadRecord.win32StartAddress;
     if (startAddress == 0ULL)
     {
         return;
@@ -1904,7 +1908,7 @@ void ProcessDock::executeSuspendDriverThreadAction()
         ks::i18n::contextText(
             QStringLiteral("process.thread.driver_suspend.confirm.body"),
             QStringLiteral("即将挂起 System(PID 4) 的驱动线程 %1。此操作可能冻结磁盘、网络或安全组件，并可能导致系统死锁或蓝屏。仅在已保存工作且可强制重启时继续。"))
-            .arg(threadRecord->threadId),
+            .arg(threadRecord.threadId),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (confirmation != QMessageBox::Yes)
@@ -1915,15 +1919,15 @@ void ProcessDock::executeSuspendDriverThreadAction()
     kLogEvent actionEvent;
     const ksword::ark::DriverClient driverClient;
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
-        threadRecord->threadId,
+        threadRecord.threadId,
         startAddress,
-        threadRecord->createTime100ns,
+        threadRecord.createTime100ns,
         KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND,
         KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NONE,
         true);
     const std::string detailText = threadIoMessageStdString(result.message);
     (result.ok ? info : err) << actionEvent
-        << "[ProcessDock] executeSuspendDriverThreadAction: tid=" << threadRecord->threadId
+        << "[ProcessDock] executeSuspendDriverThreadAction: tid=" << threadRecord.threadId
         << ", start=0x" << std::hex << startAddress << std::dec
         << ", actionOk=" << (result.ok ? "true" : "false")
         << ", detail=" << detailText
@@ -1940,15 +1944,16 @@ void ProcessDock::executeSuspendDriverThreadAction()
 
 void ProcessDock::executeResumeDriverThreadAction()
 {
-    const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid != 4U ||
-        threadRecord->threadId == 0U || threadRecord->createTime100ns == 0ULL)
+    const ks::process::SystemThreadRecord* selectedThread = selectedThreadRecord();
+    if (selectedThread == nullptr || selectedThread->ownerPid != 4U ||
+        selectedThread->threadId == 0U || selectedThread->createTime100ns == 0ULL)
     {
         return;
     }
-    const std::uint64_t startAddress = threadRecord->startAddress != 0ULL
-        ? threadRecord->startAddress
-        : threadRecord->win32StartAddress;
+    const ks::process::SystemThreadRecord threadRecord = *selectedThread;
+    const std::uint64_t startAddress = threadRecord.startAddress != 0ULL
+        ? threadRecord.startAddress
+        : threadRecord.win32StartAddress;
     if (startAddress == 0ULL)
     {
         return;
@@ -1957,15 +1962,15 @@ void ProcessDock::executeResumeDriverThreadAction()
     kLogEvent actionEvent;
     const ksword::ark::DriverClient driverClient;
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
-        threadRecord->threadId,
+        threadRecord.threadId,
         startAddress,
-        threadRecord->createTime100ns,
+        threadRecord.createTime100ns,
         KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME,
         KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NONE,
         false);
     const std::string detailText = threadIoMessageStdString(result.message);
     (result.ok ? info : err) << actionEvent
-        << "[ProcessDock] executeResumeDriverThreadAction: tid=" << threadRecord->threadId
+        << "[ProcessDock] executeResumeDriverThreadAction: tid=" << threadRecord.threadId
         << ", start=0x" << std::hex << startAddress << std::dec
         << ", actionOk=" << (result.ok ? "true" : "false")
         << ", detail=" << detailText
@@ -1982,15 +1987,19 @@ void ProcessDock::executeResumeDriverThreadAction()
 
 void ProcessDock::executeTerminateDriverThreadAction(const unsigned long terminateMethod)
 {
-    const ks::process::SystemThreadRecord* threadRecord = selectedThreadRecord();
-    if (threadRecord == nullptr || threadRecord->ownerPid != 4U ||
-        threadRecord->threadId == 0U || threadRecord->createTime100ns == 0ULL)
+    const ks::process::SystemThreadRecord* selectedThread = selectedThreadRecord();
+    if (selectedThread == nullptr || selectedThread->ownerPid != 4U ||
+        selectedThread->threadId == 0U || selectedThread->createTime100ns == 0ULL)
     {
         return;
     }
-    const std::uint64_t startAddress = threadRecord->startAddress != 0ULL
-        ? threadRecord->startAddress
-        : threadRecord->win32StartAddress;
+    // The two confirmation dialogs below both pump events. Keep the identity
+    // tuple immutable across them and let R0 reject it if the live thread
+    // changes before the action.
+    const ks::process::SystemThreadRecord threadRecord = *selectedThread;
+    const std::uint64_t startAddress = threadRecord.startAddress != 0ULL
+        ? threadRecord.startAddress
+        : threadRecord.win32StartAddress;
     if (startAddress == 0ULL)
     {
         return;
@@ -2023,7 +2032,7 @@ void ProcessDock::executeTerminateDriverThreadAction(const unsigned long termina
         ks::i18n::contextText(
             QStringLiteral("process.thread.driver_terminate.confirm.body"),
             QStringLiteral("即将使用实验性原始 API“%2”结束 System(PID 4) 的驱动线程 %1。此操作不可撤销，可能立即造成数据损坏、系统死锁或蓝屏。APC 方法只表示成功排队，不保证送达或终止。仅在隔离测试环境并准备强制重启时继续。"))
-            .arg(threadRecord->threadId)
+            .arg(threadRecord.threadId)
             .arg(rawApiText),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
@@ -2035,15 +2044,15 @@ void ProcessDock::executeTerminateDriverThreadAction(const unsigned long termina
     kLogEvent actionEvent;
     const ksword::ark::DriverClient driverClient;
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
-        threadRecord->threadId,
+        threadRecord.threadId,
         startAddress,
-        threadRecord->createTime100ns,
+        threadRecord.createTime100ns,
         KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE,
         terminateMethod,
         true);
     const std::string detailText = threadIoMessageStdString(result.message);
     (result.ok ? info : err) << actionEvent
-        << "[ProcessDock] executeTerminateDriverThreadAction: tid=" << threadRecord->threadId
+        << "[ProcessDock] executeTerminateDriverThreadAction: tid=" << threadRecord.threadId
         << ", start=0x" << std::hex << startAddress << std::dec
         << ", terminateMethod=" << terminateMethod
         << ", actionOk=" << (result.ok ? "true" : "false")
