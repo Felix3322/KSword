@@ -9910,6 +9910,10 @@ void MainWindow::refreshThemeDependentVisuals(const bool darkModeEnabled)
     {
         m_processWidget->refreshThemeVisuals();
     }
+    if (m_windowWidget != nullptr)
+    {
+        m_windowWidget->refreshThemeVisuals();
+    }
 
     if (m_customTitleBar != nullptr)
     {

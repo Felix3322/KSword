@@ -79,6 +79,16 @@
 
 namespace
 {
+    // kColumnPresetSelectedProperty 作用：标识 A/B 列预设按钮的当前选中态。
+    // 该内部属性名不是用户可见文本，集中定义可避免误入 i18n 语言包。
+    constexpr char kColumnPresetSelectedProperty[] = {
+        'k', 's', 'w', 'o', 'r', 'd',
+        'C', 'o', 'l', 'u', 'm', 'n',
+        'P', 'r', 'e', 's', 'e', 't',
+        'S', 'e', 'l', 'e', 'c', 't', 'e', 'd',
+        '\0'
+    };
+
     enum HotkeyTableColumn : int
     {
         HotkeyColumnName = 0,
@@ -1894,8 +1904,13 @@ namespace
         }
 
         const QString presetText = table->property("kswordColumnPreset").toString();
-        buttonA->setStyleSheet(buildColumnPresetButtonStyle(presetText == QStringLiteral("A")));
-        buttonB->setStyleSheet(buildColumnPresetButtonStyle(presetText == QStringLiteral("B")));
+        // 按钮属性用途：保存当前选中态，主题刷新时无需重新捕获局部 lambda 指针。
+        const bool buttonASelected = presetText == QStringLiteral("A");
+        const bool buttonBSelected = presetText == QStringLiteral("B");
+        buttonA->setProperty(kColumnPresetSelectedProperty, buttonASelected);
+        buttonB->setProperty(kColumnPresetSelectedProperty, buttonBSelected);
+        buttonA->setStyleSheet(buildColumnPresetButtonStyle(buttonASelected));
+        buttonB->setStyleSheet(buildColumnPresetButtonStyle(buttonBSelected));
     }
 
     // applyColumnPresetToTable 作用：
@@ -1956,6 +1971,8 @@ namespace
         QPushButton* button = new QPushButton(buttonText, parentWidget);
         button->setToolTip(tooltipText);
         button->setCursor(Qt::PointingHandCursor);
+        // 该动态属性标识由 WindowDock 主题刷新统一管理的 A/B 列预设按钮。
+        button->setProperty(kColumnPresetSelectedProperty, false);
         button->setStyleSheet(buildColumnPresetButtonStyle(false));
         return button;
     }
@@ -2937,6 +2954,83 @@ void WindowDock::focusWindowsByPids(const QVector<quint32>& processIds)
     {
         m_tabWidget->setCurrentWidget(m_windowManagementDock);
         m_windowManagementDock->focusProcessIds(processIds);
+    }
+}
+
+void WindowDock::refreshThemeVisuals()
+{
+    // auditTables 用途：只包含 WindowDock 自己的审计表，避免覆盖内嵌 OtherDock 的表格策略。
+    const QVector<QTableWidget*> auditTables = {
+        m_windowsTable,
+        m_guiThreadsTable,
+        m_sessionTable,
+        m_hotkeysTable,
+        m_hooksTable,
+        m_clipboardTable,
+        m_deviceTable
+    };
+
+    for (QTableWidget* const table : auditTables)
+    {
+        if (table == nullptr)
+        {
+            continue;
+        }
+
+        // usesTransparentBackground 用途：主题刷新后保留原有背景穿透语义。
+        const bool usesTransparentBackground =
+            table->property("ksword_transparent_audit_table").toBool();
+        table->setStyleSheet(
+            usesTransparentBackground
+                ? transparentAuditTableStyle()
+                : auditTableStyle());
+        applyAuditTablePalette(table);
+
+        // 已存在的 item 保存了创建时的 QBrush，必须逐项更新，不能只依赖新 palette。
+        for (int rowIndex = 0; rowIndex < table->rowCount(); ++rowIndex)
+        {
+            for (int columnIndex = 0; columnIndex < table->columnCount(); ++columnIndex)
+            {
+                QTableWidgetItem* const item = table->item(rowIndex, columnIndex);
+                if (item == nullptr)
+                {
+                    continue;
+                }
+
+                item->setForeground(QBrush(KswordTheme::TextPrimaryColor()));
+                item->setBackground(
+                    usesTransparentBackground
+                        ? QBrush()
+                        : QBrush(
+                            (rowIndex % 2) == 0
+                                ? KswordTheme::SurfaceColor()
+                                : KswordTheme::SurfaceAltColor()));
+            }
+        }
+        if (table->viewport() != nullptr)
+        {
+            table->viewport()->update();
+        }
+        table->update();
+    }
+
+    // presetButtons 用途：刷新所有通过动态属性标识的 A/B 按钮，不改变其选中状态。
+    const QList<QPushButton*> presetButtons = findChildren<QPushButton*>();
+    for (QPushButton* const button : presetButtons)
+    {
+        if (button == nullptr
+            || !button->property(kColumnPresetSelectedProperty).isValid())
+        {
+            continue;
+        }
+        button->setStyleSheet(
+            buildColumnPresetButtonStyle(
+                button->property(kColumnPresetSelectedProperty).toBool()));
+    }
+
+    if (m_queryWindowDetailButton != nullptr)
+    {
+        m_queryWindowDetailButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
     }
 }
 

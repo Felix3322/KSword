@@ -48,6 +48,13 @@ public:
 
     void focusWindowsByPids(const QVector<quint32>& processIds);
 
+    // refreshThemeVisuals 作用：
+    // - 重新生成审计表格、现有单元格和列预设按钮依赖主题颜色的视觉状态；
+    // - 保留透明表格策略、行模型、排序和列显隐，不触发任何 R0/R3 查询。
+    // 调用方式：MainWindow 的统一主题刷新入口在深浅主题或自定义颜色变化后调用。
+    // 传入传出：无。
+    void refreshThemeVisuals();
+
 protected:
     // showEvent 作用：
     // - 保留 Qt show 事件链；
