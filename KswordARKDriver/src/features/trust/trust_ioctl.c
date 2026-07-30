@@ -87,6 +87,7 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_IMAGE_TRUST_REQUEST* queryRequest = NULL;
+    KSWORD_ARK_QUERY_IMAGE_TRUST_REQUEST queryRequestSnapshot = { 0 };
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
@@ -115,7 +116,15 @@ Return Value:
         return status;
     }
 
-    queryRequest = (KSWORD_ARK_QUERY_IMAGE_TRUST_REQUEST*)inputBuffer;
+    /*
+     * METHOD_BUFFERED can alias the input and output SystemBuffer. Keep the
+     * validated request stable before output retrieval/backend zeroing.
+     */
+    RtlCopyMemory(
+        &queryRequestSnapshot,
+        inputBuffer,
+        sizeof(queryRequestSnapshot));
+    queryRequest = &queryRequestSnapshot;
     if ((queryRequest->flags & ~allowedFlags) != 0UL) {
         KswordARKTrustIoctlLog(Device, "Warn", "R0 query-image-trust: flags rejected, flags=0x%08X.", (unsigned int)queryRequest->flags);
         return STATUS_INVALID_PARAMETER;
@@ -156,7 +165,7 @@ Return Value:
         KswordARKTrustIoctlLog(
             Device,
             "Info",
-            "R0 query-image-trust success: status=%lu, source=%lu, fields=0x%08X.",
+            "R0 query-image-trust completed: status=%lu, source=%lu, fields=0x%08X.",
             (unsigned long)response->queryStatus,
             (unsigned long)response->trustSource,
             (unsigned int)response->fieldFlags);
@@ -184,6 +193,7 @@ Routine Description:
 --*/
 {
     KSWORD_ARK_QUERY_IMAGE_SIGNATURE_REQUEST* queryRequest = NULL;
+    KSWORD_ARK_QUERY_IMAGE_SIGNATURE_REQUEST queryRequestSnapshot = { 0 };
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
@@ -213,7 +223,15 @@ Routine Description:
         return status;
     }
 
-    queryRequest = (KSWORD_ARK_QUERY_IMAGE_SIGNATURE_REQUEST*)inputBuffer;
+    /*
+     * METHOD_BUFFERED input/output buffers can be the same SystemBuffer.
+     * Preserve path/base/flags before the backend clears the output packet.
+     */
+    RtlCopyMemory(
+        &queryRequestSnapshot,
+        inputBuffer,
+        sizeof(queryRequestSnapshot));
+    queryRequest = &queryRequestSnapshot;
     if (queryRequest->reserved != 0U) {
         KswordARKTrustIoctlLog(Device, "Warn", "R0 query-image-signature: reserved field is nonzero.");
         return STATUS_INVALID_PARAMETER;
@@ -260,7 +278,7 @@ Routine Description:
         KswordARKTrustIoctlLog(
             Device,
             "Info",
-            "R0 query-image-signature success: status=%lu, fields=0x%08X, structural=0x%08X, certs=%lu.",
+            "R0 query-image-signature completed: status=%lu, fields=0x%08X, structural=0x%08X, certs=%lu.",
             (unsigned long)response->queryStatus,
             (unsigned int)response->fieldFlags,
             (unsigned int)response->structuralFlags,
