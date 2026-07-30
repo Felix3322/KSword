@@ -180,9 +180,20 @@ namespace
         return QStringLiteral("PluginMarketplace/AcceptedLicenses/%1").arg(plugin.id);
     }
 
-    QString marketplaceLicenseFingerprint(const MarketplacePlugin& plugin)
+    QString marketplaceLicenseFingerprint(
+        const MarketplacePlugin& plugin,
+        const QByteArray& licensePayload)
     {
-        return plugin.licenseName + QChar('\n') + plugin.licenseUrl.toString(QUrl::FullyEncoded);
+        // 许可证正文哈希参与接受指纹，同一 URL 的内容变化也会强制重新确认。
+        const QString contentSha256 = QString::fromLatin1(
+            QCryptographicHash::hash(
+                licensePayload,
+                QCryptographicHash::Sha256).toHex());
+        return plugin.licenseName
+            + QChar('\n')
+            + plugin.licenseUrl.toString(QUrl::FullyEncoded)
+            + QChar('\n')
+            + contentSha256;
     }
 
     bool isValidPluginId(const QString& id)
@@ -2205,11 +2216,22 @@ namespace
             }
         }
 
-        bool hasAcceptedMarketplaceLicense(const MarketplacePlugin& plugin) const
+        bool hasMarketplaceLicenseAcceptanceRecord(const MarketplacePlugin& plugin) const
         {
             QSettings settings;
-            return settings.value(marketplaceLicenseAcceptanceKey(plugin)).toString() ==
-                marketplaceLicenseFingerprint(plugin);
+            return !settings.value(
+                marketplaceLicenseAcceptanceKey(plugin)).toString().isEmpty();
+        }
+
+        bool hasAcceptedMarketplaceLicense(
+            const MarketplacePlugin& plugin,
+            const QByteArray& licensePayload) const
+        {
+            // 只有名称、URL 和本次实际下载正文都一致时，旧接受记录才仍然有效。
+            QSettings settings;
+            return settings.value(
+                marketplaceLicenseAcceptanceKey(plugin)).toString()
+                == marketplaceLicenseFingerprint(plugin, licensePayload);
         }
 
         void updateInstallProgress(const QString& stage, const int percent)
@@ -2252,13 +2274,45 @@ namespace
             });
         }
 
+        // requestMarketplaceLicensePayload：
+        // - 输入 plugin/completion：商城插件和异步完成回调；
+        // - 处理：下载实际许可证正文，并把网络错误或空正文统一归一化；
+        // - 输出：回调收到成功标记、原始正文和可展示错误，不触发 ZIP 下载。
+        void requestMarketplaceLicensePayload(
+            const MarketplacePlugin& plugin,
+            const std::function<void(bool, QByteArray, QString)>& completion)
+        {
+            QNetworkRequest request(plugin.licenseUrl);
+            request.setHeader(
+                QNetworkRequest::UserAgentHeader,
+                QStringLiteral("KSword-PluginMarketplace/1"));
+            QNetworkReply* reply = m_networkManager->get(request);
+            connect(
+                reply,
+                &QNetworkReply::finished,
+                this,
+                [reply, completion]() {
+                    const QByteArray payload = reply->readAll();
+                    const bool networkOk =
+                        reply->error() == QNetworkReply::NoError;
+                    const QString failureMessage = networkOk
+                        ? QStringLiteral("许可证正文为空。")
+                        : networkReplyErrorText(reply);
+                    reply->deleteLater();
+                    completion(
+                        networkOk && !payload.isEmpty(),
+                        payload,
+                        failureMessage);
+                });
+        }
+
         void beginAutomaticUpdates(const QList<MarketplacePlugin>& updates)
         {
             m_autoUpdateQueue.clear();
             int pendingLicenseConfirmation = 0;
             for (const MarketplacePlugin& plugin : updates)
             {
-                if (hasAcceptedMarketplaceLicense(plugin))
+                if (hasMarketplaceLicenseAcceptanceRecord(plugin))
                 {
                     m_autoUpdateQueue.push_back(plugin);
                 }
@@ -2311,14 +2365,45 @@ namespace
             const MarketplacePlugin plugin = m_autoUpdateQueue.takeFirst();
             const int current = m_autoUpdateTotal - m_autoUpdateQueue.size();
             updateInstallProgress(QStringLiteral("自动更新 %1（%2 / %3）").arg(plugin.name).arg(current).arg(m_autoUpdateTotal), 0);
-            downloadMarketplaceArchive(plugin, [this, plugin](const bool success, const QString& message) {
-                ++m_autoUpdateCompleted;
-                if (!success)
-                {
-                    m_autoUpdateFailures.push_back(QStringLiteral("%1：%2").arg(plugin.name, message));
-                }
-                startNextAutomaticUpdate();
-            });
+            requestMarketplaceLicensePayload(
+                plugin,
+                [this, plugin](
+                    const bool licenseReadOk,
+                    const QByteArray licensePayload,
+                    const QString& licenseError) {
+                    if (!licenseReadOk
+                        || !hasAcceptedMarketplaceLicense(
+                            plugin,
+                            licensePayload))
+                    {
+                        ++m_autoUpdateCompleted;
+                        const QString failureMessage = licenseReadOk
+                            ? QStringLiteral("许可证正文已变化，需要手动重新确认。")
+                            : QStringLiteral("无法核验许可证：%1")
+                                .arg(licenseError);
+                        m_autoUpdateFailures.push_back(
+                            QStringLiteral("%1：%2")
+                                .arg(plugin.name, failureMessage));
+                        startNextAutomaticUpdate();
+                        return;
+                    }
+
+                    // 自动更新只有在本次正文哈希仍与接受记录一致时才下载 ZIP。
+                    downloadMarketplaceArchive(
+                        plugin,
+                        [this, plugin](
+                            const bool success,
+                            const QString& message) {
+                            ++m_autoUpdateCompleted;
+                            if (!success)
+                            {
+                                m_autoUpdateFailures.push_back(
+                                    QStringLiteral("%1：%2")
+                                        .arg(plugin.name, message));
+                            }
+                            startNextAutomaticUpdate();
+                        });
+                });
         }
 
         void requestSelectedMarketplaceLicense()
@@ -2336,24 +2421,38 @@ namespace
             }
             const MarketplacePlugin plugin = m_marketplacePlugins.at(row);
             m_status->setText(QStringLiteral("正在读取 %1 的许可证；同意前不会下载或安装插件。").arg(plugin.name));
-            QNetworkRequest request(plugin.licenseUrl);
-            request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("KSword-PluginMarketplace/1"));
-            QNetworkReply* reply = m_networkManager->get(request);
-            connect(reply, &QNetworkReply::finished, this, [this, reply, plugin]() {
-                const QByteArray payload = reply->readAll();
-                const bool networkOk = reply->error() == QNetworkReply::NoError;
-                const QString networkError = networkOk ? QString() : networkReplyErrorText(reply);
-                reply->deleteLater();
-                if (!networkOk || payload.isEmpty())
-                {
-                    QMessageBox::warning(this, QStringLiteral("插件商城"), QStringLiteral("无法读取许可证：%1").arg(networkError));
-                    return;
-                }
-                showLicenseAgreement(plugin, QString::fromUtf8(payload));
-            });
+            requestMarketplaceLicensePayload(
+                plugin,
+                [this, plugin](
+                    const bool success,
+                    const QByteArray licensePayload,
+                    const QString& errorMessage) {
+                    if (!success)
+                    {
+                        QMessageBox::warning(
+                            this,
+                            QStringLiteral("插件商城"),
+                            QStringLiteral("无法读取许可证：%1")
+                                .arg(errorMessage));
+                        return;
+                    }
+                    if (hasAcceptedMarketplaceLicense(
+                            plugin,
+                            licensePayload))
+                    {
+                        m_status->setText(
+                            QStringLiteral("%1 的许可证正文未变化，继续下载安装。")
+                                .arg(plugin.name));
+                        downloadMarketplaceArchive(plugin);
+                        return;
+                    }
+                    showLicenseAgreement(plugin, licensePayload);
+                });
         }
 
-        void showLicenseAgreement(const MarketplacePlugin& plugin, const QString& licenseText)
+        void showLicenseAgreement(
+            const MarketplacePlugin& plugin,
+            const QByteArray& licensePayload)
         {
             QDialog licenseDialog(this);
             licenseDialog.setWindowTitle(QStringLiteral("许可证：%1").arg(plugin.name));
@@ -2365,7 +2464,7 @@ namespace
             layout->addWidget(label);
             auto* text = new QPlainTextEdit(&licenseDialog);
             text->setReadOnly(true);
-            text->setPlainText(licenseText);
+            text->setPlainText(QString::fromUtf8(licensePayload));
             layout->addWidget(text, 1);
             auto* agree = new QCheckBox(QStringLiteral("我已阅读并同意上述插件许可证"), &licenseDialog);
             layout->addWidget(agree);
@@ -2382,7 +2481,9 @@ namespace
                 return;
             }
             QSettings settings;
-            settings.setValue(marketplaceLicenseAcceptanceKey(plugin), marketplaceLicenseFingerprint(plugin));
+            settings.setValue(
+                marketplaceLicenseAcceptanceKey(plugin),
+                marketplaceLicenseFingerprint(plugin, licensePayload));
             downloadMarketplaceArchive(plugin);
         }
 
