@@ -10719,6 +10719,10 @@ void MonitorDock::refreshEtwProvidersAsync()
 
 void MonitorDock::refreshEtwSessionsAsync()
 {
+    const std::uint64_t requestTicket = m_etwSessionRefreshTicket.fetch_add(
+        1,
+        std::memory_order_relaxed) + 1;
+
     if (m_etwSessionStatusLabel != nullptr)
     {
         m_etwSessionStatusLabel->setText(QStringLiteral("● 刷新中..."));
@@ -10736,7 +10740,7 @@ void MonitorDock::refreshEtwSessionsAsync()
     kPro.set(m_etwSessionRefreshProgressPid, "枚举系统活动 ETW 会话", 0, 10.0f);
 
     QPointer<MonitorDock> guardThis(this);
-    std::thread([guardThis]() {
+    std::thread([guardThis, requestTicket]() {
         std::vector<EtwSessionEntry> sessionList;
         constexpr ULONG querySessionCapacity = 128;
         constexpr ULONG traceNameChars = 1024;
@@ -10823,10 +10827,17 @@ void MonitorDock::refreshEtwSessionsAsync()
             }
         }
 
-        QMetaObject::invokeMethod(qApp, [guardThis, sessionList = std::move(sessionList), queryStatus]() {
-            const auto commitSessions = [guardThis, sessionList, queryStatus]()
+        QMetaObject::invokeMethod(qApp, [guardThis, requestTicket, sessionList = std::move(sessionList), queryStatus]() {
+            if (guardThis == nullptr ||
+                guardThis->m_etwSessionRefreshTicket.load(std::memory_order_relaxed) != requestTicket)
             {
-                if (guardThis == nullptr)
+                return;
+            }
+
+            const auto commitSessions = [guardThis, requestTicket, sessionList, queryStatus]()
+            {
+                if (guardThis == nullptr ||
+                    guardThis->m_etwSessionRefreshTicket.load(std::memory_order_relaxed) != requestTicket)
                 {
                     return;
                 }

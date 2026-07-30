@@ -1738,27 +1738,48 @@ void NetworkFirewallPage::refreshRulesAsync(const bool forceRefresh)
                     return;
                 }
 
-                if (errorText.isEmpty())
+                auto applyResult = [
+                    safeThis,
+                    ruleSnapshot = std::move(ruleList),
+                    errorText]() mutable
                 {
-                    safeThis->m_ruleEntryList = ruleList;
-                    safeThis->appendRulesToTable(safeThis->m_ruleEntryList, true);
-                    safeThis->setStatusText(
-                        QStringLiteral("防火墙规则：%1 条，刷新：%2")
-                        .arg(static_cast<int>(safeThis->m_ruleEntryList.size()))
-                        .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
-                }
-                else
-                {
-                    safeThis->setStatusText(errorText);
-                }
+                    if (safeThis.isNull())
+                    {
+                        return;
+                    }
 
-                if (safeThis->m_refreshRulesButton != nullptr)
+                    if (errorText.isEmpty())
+                    {
+                        safeThis->m_ruleEntryList = ruleSnapshot;
+                        safeThis->appendRulesToTable(safeThis->m_ruleEntryList, true);
+                        safeThis->setStatusText(
+                            QStringLiteral("防火墙规则：%1 条，刷新：%2")
+                            .arg(static_cast<int>(safeThis->m_ruleEntryList.size()))
+                            .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
+                    }
+                    else
+                    {
+                        safeThis->setStatusText(errorText);
+                    }
+
+                    if (safeThis->m_refreshRulesButton != nullptr)
+                    {
+                        safeThis->m_refreshRulesButton->setEnabled(true);
+                    }
+                    safeThis->updateRuleActionButtons();
+                    safeThis->updateRuleDetailEditor();
+                    safeThis->m_refreshingRules.store(false);
+                };
+
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        safeThis.data(),
+                        QStringLiteral("firewall-rule-refresh-result-apply"),
+                        {safeThis->m_ruleTable},
+                        applyResult))
                 {
-                    safeThis->m_refreshRulesButton->setEnabled(true);
+                    return;
                 }
-                safeThis->updateRuleActionButtons();
-                safeThis->updateRuleDetailEditor();
-                safeThis->m_refreshingRules.store(false);
+                applyResult();
             },
             Qt::QueuedConnection);
         if (!invokeOk && !safeThis.isNull())

@@ -445,30 +445,37 @@ void KernelDockCidTab::refreshAsync()
             {
                 return;
             }
-            guardThis->m_cidSummary = cidSummary;
-            guardThis->applyRefreshResult(std::move(rows), errorText.trimmed(), processOk || threadOk || cidOk);
+
+            auto applySnapshot = [
+                guardThis,
+                rows = std::move(rows),
+                errorText = errorText.trimmed(),
+                success = processOk || threadOk || cidOk,
+                cidSummary]() mutable
+            {
+                if (guardThis == nullptr)
+                {
+                    return;
+                }
+                guardThis->m_cidSummary = cidSummary;
+                guardThis->applyRefreshResult(std::move(rows), errorText, success);
+            };
+
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    guardThis.data(),
+                    QStringLiteral("kernel-cid-snapshot"),
+                    {guardThis->m_table},
+                    applySnapshot))
+            {
+                return;
+            }
+            applySnapshot();
         }, Qt::QueuedConnection);
     }).detach();
 }
 
 void KernelDockCidTab::applyRefreshResult(std::vector<CidEvidenceRow> rows, const QString& errorText, const bool success)
 {
-    const QPointer<KernelDockCidTab> safeThis(this);
-    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
-        this,
-        QStringLiteral("kernel-cid-snapshot"),
-        { m_table },
-        [safeThis, rows, errorText, success]() mutable
-        {
-            if (!safeThis.isNull())
-            {
-                safeThis->applyRefreshResult(std::move(rows), errorText, success);
-            }
-        }))
-    {
-        return;
-    }
-
     m_refreshing.store(false);
     m_refreshButton->setEnabled(true);
     m_rows = std::move(rows);

@@ -577,6 +577,23 @@ void NetworkDock::applyDomainResolutionResult(
     const QString displayText = domainText.trimmed().isEmpty()
         ? QStringLiteral("-")
         : domainText.trimmed();
+
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("network-domain-resolution:%1").arg(addressKey),
+            {m_packetTable},
+            [safeThis, addressKey, displayText]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyDomainResolutionResult(addressKey, displayText);
+                }
+            }))
+    {
+        return;
+    }
+
     m_remoteDomainResolutionPending.remove(addressKey);
     m_remoteDomainCache.insert(addressKey, displayText);
     if (m_remoteDomainCache.size() > 4096)

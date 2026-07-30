@@ -281,10 +281,29 @@ namespace
     }
 
     // itemViewForEventObject 作用：
-    // - 把 QTableView/QTreeView 本体或其 viewport 统一还原为 QAbstractItemView；
+    // - 把 QTableView/QTreeView 本体、viewport 或其 QHeaderView 统一还原为业务视图；
     // - 仅用于菜单生命周期屏障，不改变全局表格操作栏的适用范围。
     QAbstractItemView* itemViewForEventObject(QObject* watchedObject)
     {
+        QHeaderView* headerView = qobject_cast<QHeaderView*>(watchedObject);
+        if (headerView == nullptr)
+        {
+            QHeaderView* parentHeader = qobject_cast<QHeaderView*>(
+                watchedObject != nullptr ? watchedObject->parent() : nullptr);
+            if (parentHeader != nullptr && watchedObject == parentHeader->viewport())
+            {
+                headerView = parentHeader;
+            }
+        }
+        if (headerView != nullptr)
+        {
+            if (QAbstractItemView* parentItemView =
+                    qobject_cast<QAbstractItemView*>(headerView->parent()))
+            {
+                return parentItemView;
+            }
+        }
+
         if (QAbstractItemView* itemView = qobject_cast<QAbstractItemView*>(watchedObject))
         {
             return itemView;
