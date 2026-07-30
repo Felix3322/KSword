@@ -29,11 +29,13 @@
 #include <QModelIndex>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSplitter>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -779,6 +781,98 @@ namespace
         }
         return eventNameText;
     }
+
+    QString diskMonitorPresetButtonStyle(const bool selected)
+    {
+        // diskMonitorPresetButtonStyle：
+        // - 输入：A/B 列组是否处于当前预设；
+        // - 返回：与硬件页其它列预设一致的紧凑主题样式。
+        const QString backgroundColor = selected
+            ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
+            : QStringLiteral("transparent");
+        const QString borderColor = selected
+            ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
+            : KswordTheme::BorderColorHex();
+        const QString textColor = selected
+            ? KswordTheme::OnAccentHex()
+            : KswordTheme::TextPrimaryColorHex();
+        return QStringLiteral(
+            "QPushButton{min-width:26px;max-width:26px;padding:3px 0;border:1px solid %1;"
+            "border-radius:0;color:%2;background:%3;font-weight:700;}"
+            "QPushButton:hover{border-color:%4;}")
+            .arg(
+                borderColor,
+                textColor,
+                backgroundColor,
+                KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+    }
+
+    QWidget* createDiskMonitorSection(
+        QWidget* parentWidget,
+        QToolButton** toggleButtonOut,
+        const QString& titleText,
+        QWidget* contentWidget,
+        QWidget* firstHeaderControl = nullptr,
+        QWidget* secondHeaderControl = nullptr)
+    {
+        // createDiskMonitorSection：
+        // - 输入：父控件、标题、内容控件和可选 A/B 控件；
+        // - 处理：创建资源监视器式可折叠区域，箭头和内容可见性保持同步；
+        // - 返回：可直接加入垂直 QSplitter 的区域控件。
+        auto* sectionWidget = new QWidget(parentWidget);
+        auto* sectionLayout = new QVBoxLayout(sectionWidget);
+        sectionLayout->setContentsMargins(0, 0, 0, 0);
+        sectionLayout->setSpacing(0);
+
+        auto* headerWidget = new QWidget(sectionWidget);
+        auto* headerLayout = new QHBoxLayout(headerWidget);
+        headerLayout->setContentsMargins(4, 2, 4, 2);
+        headerLayout->setSpacing(0);
+        headerWidget->setStyleSheet(QStringLiteral(
+            "QWidget{background:%1;border:1px solid %2;}")
+            .arg(KswordTheme::PanelHex(), KswordTheme::BorderHex()));
+
+        auto* toggleButton = new QToolButton(headerWidget);
+        toggleButton->setText(titleText);
+        toggleButton->setCheckable(true);
+        toggleButton->setChecked(true);
+        toggleButton->setArrowType(Qt::DownArrow);
+        toggleButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        toggleButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        toggleButton->setStyleSheet(QStringLiteral(
+            "QToolButton{border:0;background:transparent;color:%1;"
+            "font-size:14px;font-weight:700;text-align:left;padding:3px;}")
+            .arg(KswordTheme::TextPrimaryHex()));
+        toggleButton->setToolTip(QStringLiteral("展开或折叠该磁盘监控区域"));
+        headerLayout->addWidget(toggleButton, 1);
+
+        if (firstHeaderControl != nullptr)
+        {
+            headerLayout->addWidget(firstHeaderControl, 0);
+        }
+        if (secondHeaderControl != nullptr)
+        {
+            headerLayout->addWidget(secondHeaderControl, 0);
+        }
+        sectionLayout->addWidget(headerWidget, 0);
+        sectionLayout->addWidget(contentWidget, 1);
+
+        QObject::connect(
+            toggleButton,
+            &QToolButton::toggled,
+            sectionWidget,
+            [toggleButton, contentWidget](const bool expanded)
+            {
+                contentWidget->setVisible(expanded);
+                toggleButton->setArrowType(
+                    expanded ? Qt::DownArrow : Qt::RightArrow);
+            });
+        if (toggleButtonOut != nullptr)
+        {
+            *toggleButtonOut = toggleButton;
+        }
+        return sectionWidget;
+    }
 }
 
 DiskMonitorPage::DiskMonitorPage(QWidget* parent)
@@ -877,6 +971,17 @@ void DiskMonitorPage::initializeUi()
     m_splitter = new QSplitter(Qt::Vertical, this);
     m_rootLayout->addWidget(m_splitter, 1);
 
+    // 进程表提供互补的 A/B 精简列组：
+    // A 对齐资源监视器概览，B 提供响应时间、操作次数和完整路径诊断。
+    m_processViewAButton = new QPushButton(QStringLiteral("A"), this);
+    m_processViewAButton->setToolTip(
+        QStringLiteral("A 组：显示进程、PID 和读/写/总吞吐。"));
+    m_processViewAButton->setStyleSheet(diskMonitorPresetButtonStyle(false));
+    m_processViewBButton = new QPushButton(QStringLiteral("B"), this);
+    m_processViewBButton->setToolTip(
+        QStringLiteral("B 组：显示进程、PID、响应时间、操作次数和路径。"));
+    m_processViewBButton->setStyleSheet(diskMonitorPresetButtonStyle(false));
+
     m_processTable = new ks::ui::VisibleTableWidget(this);
     configureTableWidget(m_processTable);
     m_processTable->setColumnCount(ProcessColumnCount);
@@ -899,7 +1004,19 @@ void DiskMonitorPage::initializeUi()
     m_processTable->setColumnWidth(ProcessColumnChecked, 54);
     m_processTable->setColumnWidth(ProcessColumnPid, 80);
     m_processTable->setColumnWidth(ProcessColumnName, 180);
-    m_splitter->addWidget(m_processTable);
+    m_processTable->horizontalHeader()->moveSection(
+        m_processTable->horizontalHeader()->visualIndex(ProcessColumnName),
+        1);
+    installProcessColumnMenu();
+    applyProcessColumnPreset(false);
+    QWidget* processSection = createDiskMonitorSection(
+        m_splitter,
+        &m_processSectionButton,
+        QStringLiteral("磁盘活动的进程"),
+        m_processTable,
+        m_processViewAButton,
+        m_processViewBButton);
+    m_splitter->addWidget(processSection);
 
     m_activityTable = new ks::ui::VisibleTableWidget(this);
     configureTableWidget(m_activityTable, ActivityColumnPid);
@@ -923,10 +1040,26 @@ void DiskMonitorPage::initializeUi()
     m_activityTable->setColumnWidth(ActivityColumnProcess, 180);
     m_activityTable->setColumnWidth(ActivityColumnIoPriority, 100);
     m_activityTable->setColumnWidth(ActivityColumnResponse, 110);
-    m_splitter->addWidget(m_activityTable);
+    QWidget* activitySection = createDiskMonitorSection(
+        m_splitter,
+        &m_activitySectionButton,
+        QStringLiteral("磁盘活动"),
+        m_activityTable);
+    m_splitter->addWidget(activitySection);
+
+    // “存储”区域补齐资源监视器第三层视图。容量和性能计数器与进程采样
+    // 在同一后台线程读取，页面不会增加额外刷新定时器。
+    m_storagePanel = new DiskMonitorStoragePanel(this);
+    QWidget* storageSection = createDiskMonitorSection(
+        m_splitter,
+        &m_storageSectionButton,
+        QStringLiteral("存储"),
+        m_storagePanel);
+    m_splitter->addWidget(storageSection);
     m_splitter->setStretchFactor(0, 2);
-    m_splitter->setStretchFactor(1, 1);
-    m_splitter->setSizes({ 420, 260 });
+    m_splitter->setStretchFactor(1, 2);
+    m_splitter->setStretchFactor(2, 1);
+    m_splitter->setSizes({ 300, 300, 170 });
 }
 
 void DiskMonitorPage::startInitialSampling()
@@ -1023,6 +1156,21 @@ void DiskMonitorPage::initializeConnections()
             updateSummaryLabels(m_lastSampleList);
         });
     }
+
+    if (m_processViewAButton != nullptr)
+    {
+        connect(m_processViewAButton, &QPushButton::clicked, this, [this]()
+        {
+            applyProcessColumnPreset(false);
+        });
+    }
+    if (m_processViewBButton != nullptr)
+    {
+        connect(m_processViewBButton, &QPushButton::clicked, this, [this]()
+        {
+            applyProcessColumnPreset(true);
+        });
+    }
 }
 
 void DiskMonitorPage::configureTableWidget(QTableWidget* tableWidget, const int processIdColumn) const
@@ -1053,6 +1201,137 @@ void DiskMonitorPage::configureTableWidget(QTableWidget* tableWidget, const int 
     installDiskMonitorTableCopyMenu(tableWidget, processIdColumn);
 }
 
+void DiskMonitorPage::applyProcessColumnPreset(const bool diagnosticView)
+{
+    if (m_processTable == nullptr)
+    {
+        return;
+    }
+
+    // A 组严格对应资源监视器“磁盘活动的进程”字段；B 组保留进程身份，
+    // 再切换为响应时间、操作频率和路径，避免任何一组变成全量密集表。
+    for (int columnIndex = 0;
+         columnIndex < m_processTable->columnCount();
+         ++columnIndex)
+    {
+        bool shouldShow = false;
+        if (!diagnosticView)
+        {
+            shouldShow =
+                columnIndex == ProcessColumnChecked ||
+                columnIndex == ProcessColumnPid ||
+                columnIndex == ProcessColumnName ||
+                columnIndex == ProcessColumnReadRate ||
+                columnIndex == ProcessColumnWriteRate ||
+                columnIndex == ProcessColumnTotalRate;
+        }
+        else
+        {
+            shouldShow =
+                columnIndex == ProcessColumnChecked ||
+                columnIndex == ProcessColumnPid ||
+                columnIndex == ProcessColumnName ||
+                columnIndex == ProcessColumnResponse ||
+                columnIndex == ProcessColumnReadOps ||
+                columnIndex == ProcessColumnWriteOps ||
+                columnIndex == ProcessColumnPath;
+        }
+        m_processTable->setColumnHidden(columnIndex, !shouldShow);
+    }
+
+    const QString presetText = diagnosticView
+        ? QStringLiteral("B")
+        : QStringLiteral("A");
+    m_processTable->setProperty("kswordColumnPreset", presetText);
+    if (m_processViewAButton != nullptr)
+    {
+        m_processViewAButton->setStyleSheet(
+            diskMonitorPresetButtonStyle(!diagnosticView));
+    }
+    if (m_processViewBButton != nullptr)
+    {
+        m_processViewBButton->setStyleSheet(
+            diskMonitorPresetButtonStyle(diagnosticView));
+    }
+}
+
+void DiskMonitorPage::installProcessColumnMenu()
+{
+    if (m_processTable == nullptr ||
+        m_processTable->horizontalHeader() == nullptr)
+    {
+        return;
+    }
+
+    // 表头右键菜单允许逐列显隐；用户手工调整后进入 Custom 状态，
+    // A/B 都取消主题高亮，明确表示当前布局已脱离预设。
+    QHeaderView* headerView = m_processTable->horizontalHeader();
+    headerView->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(
+        headerView,
+        &QHeaderView::customContextMenuRequested,
+        m_processTable,
+        [this, headerView](const QPoint& localPosition)
+        {
+            QMenu menu(m_processTable);
+            menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+            for (int columnIndex = 0;
+                 columnIndex < m_processTable->columnCount();
+                 ++columnIndex)
+            {
+                const QTableWidgetItem* headerItem =
+                    m_processTable->horizontalHeaderItem(columnIndex);
+                QAction* columnAction = menu.addAction(
+                    headerItem != nullptr
+                        ? headerItem->text()
+                        : QStringLiteral("Column %1").arg(columnIndex));
+                columnAction->setCheckable(true);
+                columnAction->setChecked(
+                    !m_processTable->isColumnHidden(columnIndex));
+                columnAction->setData(columnIndex);
+            }
+
+            QAction* selectedAction = menu.exec(
+                headerView->viewport()->mapToGlobal(localPosition));
+            if (selectedAction == nullptr)
+            {
+                return;
+            }
+
+            int visibleColumnCount = 0;
+            for (int columnIndex = 0;
+                 columnIndex < m_processTable->columnCount();
+                 ++columnIndex)
+            {
+                if (!m_processTable->isColumnHidden(columnIndex))
+                {
+                    ++visibleColumnCount;
+                }
+            }
+            const int selectedColumn = selectedAction->data().toInt();
+            const bool shouldShow = selectedAction->isChecked();
+            if (!shouldShow && visibleColumnCount <= 1)
+            {
+                return;
+            }
+
+            m_processTable->setColumnHidden(selectedColumn, !shouldShow);
+            m_processTable->setProperty(
+                "kswordColumnPreset",
+                QStringLiteral("Custom"));
+            if (m_processViewAButton != nullptr)
+            {
+                m_processViewAButton->setStyleSheet(
+                    diskMonitorPresetButtonStyle(false));
+            }
+            if (m_processViewBButton != nullptr)
+            {
+                m_processViewBButton->setStyleSheet(
+                    diskMonitorPresetButtonStyle(false));
+            }
+        });
+}
+
 void DiskMonitorPage::refreshNow()
 {
     if (m_processSamplingInProgress.exchange(true))
@@ -1071,16 +1350,29 @@ void DiskMonitorPage::refreshNow()
     m_processSamplingThread = std::make_unique<std::thread>([this]()
     {
         std::vector<ProcessDiskSample> sampleList = collectProcessDiskSamples();
-        QMetaObject::invokeMethod(this, [this, sampleList = std::move(sampleList)]() mutable
+        std::vector<DiskMonitorStorageSample> storageSampleList =
+            DiskMonitorStoragePanel::collectSamples();
+        QMetaObject::invokeMethod(
+            this,
+            [
+                this,
+                sampleList = std::move(sampleList),
+                storageSampleList = std::move(storageSampleList)
+            ]() mutable
         {
             m_processSamplingInProgress.store(false);
             if (m_refreshButton != nullptr) m_refreshButton->setEnabled(true);
-            applyProcessDiskSamples(std::move(sampleList));
-        }, Qt::QueuedConnection);
+            applyProcessDiskSamples(
+                std::move(sampleList),
+                std::move(storageSampleList));
+        },
+            Qt::QueuedConnection);
     });
 }
 
-void DiskMonitorPage::applyProcessDiskSamples(std::vector<ProcessDiskSample> sampleList)
+void DiskMonitorPage::applyProcessDiskSamples(
+    std::vector<ProcessDiskSample> sampleList,
+    std::vector<DiskMonitorStorageSample> storageSampleList)
 {
     std::sort(
         sampleList.begin(),
@@ -1100,6 +1392,10 @@ void DiskMonitorPage::applyProcessDiskSamples(std::vector<ProcessDiskSample> sam
 
     updateProcessTable(m_lastSampleList);
     updateActivityTable(m_lastSampleList);
+    if (m_storagePanel != nullptr)
+    {
+        m_storagePanel->applySamples(std::move(storageSampleList));
+    }
     updateSummaryLabels(m_lastSampleList);
 
     if (m_statusLabel != nullptr)
@@ -1665,6 +1961,30 @@ void DiskMonitorPage::updateSummaryLabels(const std::vector<ProcessDiskSample>& 
             .arg(activeProcessCount)
             .arg(static_cast<int>(m_selectedPidSet.size()))
             .arg(modeText));
+    }
+
+    // 折叠标题在区域关闭时仍保留关键指标，对齐资源监视器的分区摘要。
+    if (m_processSectionButton != nullptr)
+    {
+        m_processSectionButton->setText(
+            QStringLiteral("磁盘活动的进程    读: %1    写: %2")
+            .arg(formatBytesPerSecond(totalReadBytesPerSec))
+            .arg(formatBytesPerSecond(totalWriteBytesPerSec)));
+    }
+    if (m_activitySectionButton != nullptr)
+    {
+        const int activityRowCount = m_activityTable != nullptr
+            ? m_activityTable->rowCount()
+            : 0;
+        m_activitySectionButton->setText(
+            QStringLiteral("磁盘活动    当前行: %1    勾选进程: %2")
+            .arg(activityRowCount)
+            .arg(static_cast<int>(m_selectedPidSet.size())));
+    }
+    if (m_storageSectionButton != nullptr &&
+        m_storagePanel != nullptr)
+    {
+        m_storageSectionButton->setText(m_storagePanel->summaryText());
     }
 }
 

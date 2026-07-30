@@ -2,11 +2,46 @@
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 
+#include <QDesktopServices>
+#include <QUrl>
+#include <QUrlQuery>
+
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::driver_dock_internal;
 
 namespace
 {
+    bool openDriverBingSearch(
+        const QString& driverName,
+        const QString& driverImagePath)
+    {
+        // openDriverBingSearch：
+        // - 输入：右键菜单打开前快照的驱动名与镜像路径；
+        // - 处理：只构造 Bing 查询 URL 并交给系统默认浏览器，不读取任何搜索结果；
+        // - 返回：系统是否接受了 URL 打开请求。
+        QStringList queryTerms;
+        const QString normalizedName = driverName.trimmed();
+        if (!normalizedName.isEmpty())
+        {
+            queryTerms.push_back(normalizedName);
+        }
+
+        // 路径只取文件名，避免把用户机器目录或设备路径发送给搜索引擎。
+        const QString imageFileName = QFileInfo(driverImagePath.trimmed()).fileName();
+        if (!imageFileName.isEmpty() &&
+            imageFileName.compare(normalizedName, Qt::CaseInsensitive) != 0)
+        {
+            queryTerms.push_back(imageFileName);
+        }
+        queryTerms.push_back(QStringLiteral("Windows driver"));
+
+        QUrl searchUrl(QStringLiteral("https://www.bing.com/search"));
+        QUrlQuery searchQuery;
+        searchQuery.addQueryItem(QStringLiteral("q"), queryTerms.join(QLatin1Char(' ')));
+        searchUrl.setQuery(searchQuery);
+        return QDesktopServices::openUrl(searchUrl);
+    }
+
     QString driverOperationTableCellText(QTableWidget* table, const int rowIndex, const int columnIndex)
     {
         // driverOperationTableCellText：
@@ -1720,6 +1755,12 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
         selectedServiceNameItem != nullptr
         ? selectedServiceNameItem->data(Qt::UserRole).toString().trimmed()
         : QString();
+    const QString selectedSearchServiceName =
+        !selectedCleanupServiceName.isEmpty()
+        ? selectedCleanupServiceName
+        : (selectedServiceNameItem != nullptr
+            ? selectedServiceNameItem->text().trimmed()
+            : QString());
     const QString selectedCleanupServicePath =
         selectedServicePathItem != nullptr
         ? driverScCleanupNormalizePath(selectedServicePathItem->text())
@@ -1736,6 +1777,14 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
     QAction* copyRowAction = contextMenu.addAction(
         QIcon(":/Icon/process_copy_row.svg"),
         driverText("driver.menu.copy_row", QStringLiteral("复制当前行")));
+    QAction* searchDriverOnlineAction = contextMenu.addAction(
+        QIcon(":/Icon/file_find.svg"),
+        driverText(
+            "driver.menu.search_bing",
+            QStringLiteral("使用 Bing 搜索驱动信息")));
+    searchDriverOnlineAction->setToolTip(driverText(
+        "driver.menu.search_bing.tooltip",
+        QStringLiteral("仅在默认浏览器中打开与所选驱动有关的 Bing 搜索，不读取或处理搜索结果。")));
     contextMenu.addSeparator();
     QAction* stopServiceAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
@@ -1804,6 +1853,23 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
     if (selectedAction == copyRowAction)
     {
         copyDriverOperationCurrentRow(m_serviceTable);
+        return;
+    }
+    if (selectedAction == searchDriverOnlineAction)
+    {
+        if (!openDriverBingSearch(
+            selectedSearchServiceName,
+            selectedCleanupServicePath))
+        {
+            QMessageBox::warning(
+                this,
+                driverText(
+                    "driver.search_bing.failed.title",
+                    QStringLiteral("无法打开浏览器")),
+                driverText(
+                    "driver.search_bing.failed.body",
+                    QStringLiteral("系统未能打开 Bing 搜索页面，请检查默认浏览器设置。")));
+        }
         return;
     }
     if (selectedAction == stopServiceAction)
@@ -2333,6 +2399,14 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     QAction* copyRowAction = contextMenu.addAction(
         QIcon(":/Icon/process_copy_row.svg"),
         driverText("driver.menu.copy_row", QStringLiteral("复制当前行")));
+    QAction* searchDriverOnlineAction = contextMenu.addAction(
+        QIcon(":/Icon/file_find.svg"),
+        driverText(
+            "driver.menu.search_bing",
+            QStringLiteral("使用 Bing 搜索驱动信息")));
+    searchDriverOnlineAction->setToolTip(driverText(
+        "driver.menu.search_bing.tooltip",
+        QStringLiteral("仅在默认浏览器中打开与所选驱动有关的 Bing 搜索，不读取或处理搜索结果。")));
     QAction* dumpModuleMemoryAction = contextMenu.addAction(
         QIcon(":/Icon/disk_save.svg"),
         driverText("driver.menu.dump_module_memory", QStringLiteral("R0 Dump 模块内存…")));
@@ -2541,6 +2615,21 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     if (selectedAction == copyRowAction)
     {
         copyDriverOperationCurrentRow(m_moduleTable);
+        return;
+    }
+    if (selectedAction == searchDriverOnlineAction)
+    {
+        if (!openDriverBingSearch(selectedModuleName, selectedModulePath))
+        {
+            QMessageBox::warning(
+                this,
+                driverText(
+                    "driver.search_bing.failed.title",
+                    QStringLiteral("无法打开浏览器")),
+                driverText(
+                    "driver.search_bing.failed.body",
+                    QStringLiteral("系统未能打开 Bing 搜索页面，请检查默认浏览器设置。")));
+        }
         return;
     }
     if (selectedAction == dumpModuleMemoryAction)

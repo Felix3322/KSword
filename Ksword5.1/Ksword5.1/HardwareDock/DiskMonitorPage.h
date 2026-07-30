@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../Framework.h"
+#include "DiskMonitorStoragePanel.h"
 
 #include <QHash>
 #include <QWidget>
@@ -36,6 +37,7 @@ class QSplitter;
 class QTableWidget;
 class QTableWidgetItem;
 class QTimer;
+class QToolButton;
 class QVBoxLayout;
 struct _EVENT_RECORD;
 
@@ -175,7 +177,9 @@ private:
 
     // ===================== 采样与刷新 =====================
     void refreshNow();
-    void applyProcessDiskSamples(std::vector<ProcessDiskSample> sampleList);
+    void applyProcessDiskSamples(
+        std::vector<ProcessDiskSample> sampleList,
+        std::vector<DiskMonitorStorageSample> storageSampleList);
     std::vector<ProcessDiskSample> collectProcessDiskSamples();
     std::vector<FileActivitySample> consumeFileActivitySamples(const std::vector<ProcessDiskSample>& sampleList);
     void pruneStaleSelection(const std::vector<ProcessDiskSample>& sampleList);
@@ -183,6 +187,18 @@ private:
     void updateActivityTable(const std::vector<ProcessDiskSample>& sampleList);
     void updateSummaryLabels(const std::vector<ProcessDiskSample>& sampleList);
     void syncSelectionFromTable();
+
+    // applyProcessColumnPreset：
+    // - 输入：false 为资源监视器概览列，true 为进程诊断列；
+    // - 处理：两组均保持精简，并同步 A/B 按钮主题状态；
+    // - 返回：无，用户仍可通过表头右键自定义单列显隐。
+    void applyProcessColumnPreset(bool diagnosticView);
+
+    // installProcessColumnMenu：
+    // - 输入：无；
+    // - 处理：为进程表表头增加逐列显隐菜单，手工调整后清除 A/B 预设高亮；
+    // - 返回：无。
+    void installProcessColumnMenu();
 
     // ===================== ETW 文件活动采集 =====================
     void startFileActivityEtw();
@@ -219,8 +235,14 @@ private:
     QPushButton* m_selectActiveButton = nullptr;   // m_selectActiveButton：勾选当前活跃进程。
     QPushButton* m_clearSelectionButton = nullptr; // m_clearSelectionButton：清空勾选按钮。
     QSplitter* m_splitter = nullptr;               // m_splitter：上下表格分割器。
+    QToolButton* m_processSectionButton = nullptr; // m_processSectionButton：进程活动折叠标题。
+    QToolButton* m_activitySectionButton = nullptr;// m_activitySectionButton：文件活动折叠标题。
+    QToolButton* m_storageSectionButton = nullptr; // m_storageSectionButton：存储折叠标题。
+    QPushButton* m_processViewAButton = nullptr;   // m_processViewAButton：资源监视器式概览列组。
+    QPushButton* m_processViewBButton = nullptr;   // m_processViewBButton：诊断列组。
     QTableWidget* m_processTable = nullptr;        // m_processTable：进程级磁盘速率表。
     QTableWidget* m_activityTable = nullptr;       // m_activityTable：勾选进程磁盘活动表。
+    DiskMonitorStoragePanel* m_storagePanel = nullptr; // m_storagePanel：固定卷容量与性能区。
     QTimer* m_refreshTimer = nullptr;              // m_refreshTimer：周期刷新定时器。
     bool m_initialSamplingStarted = false;         // m_initialSamplingStarted：是否已经启动 ETW 与首轮采样。
     std::unique_ptr<std::thread> m_processSamplingThread; // m_processSamplingThread：后台进程 IO 采样线程。
