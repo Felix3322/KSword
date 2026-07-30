@@ -20587,6 +20587,8 @@
     "释放所有 VMXON、VMCS 和 EPT 页表资源，并清除本次自检、来宾启动与 VM-exit 证据。继续吗？": "Release all VMXON, VMCS, and EPT table resources and clear this session's self-test, guest-launch, and VM-exit evidence?",
     "OneShotGuest": "OneShotGuest",
     "VmExitTelemetry": "VmExitTelemetry",
-    "LAUNCH CONTROLLED GUEST": "LAUNCH CONTROLLED GUEST"
+    "LAUNCH CONTROLLED GUEST": "LAUNCH CONTROLLED GUEST",
+    ", lastExitReason=": ", lastExitReason=",
+    ", vmExits=": ", vmExits="
   }
 }
