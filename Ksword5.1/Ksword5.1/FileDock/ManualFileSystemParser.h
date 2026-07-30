@@ -5,7 +5,7 @@
 // 作用：
 // 1) 提供“手动解析文件系统”能力，支持 NTFS/FAT32/exFAT；
 // 2) 提供目录项枚举接口，供 FileDock 手动模式直接展示；
-// 3) 提供 NTFS 误删项扫描与驻留数据恢复能力。
+// 3) 提供 NTFS 误删项扫描，以及驻留/完整非驻留数据恢复能力。
 // ============================================================
 
 #include "../Framework.h"
@@ -45,9 +45,21 @@ namespace ks::file
         std::uint64_t ntfsFileReference = 0; // NTFS 场景下的文件引用号（用于恢复功能）。
     };
 
+    // NtfsRecoveryCapability 作用：
+    // - 明确区分可安全导出的数据类型与仅可定位的元数据；
+    // - 非驻留流只有在数据段完整、卷位图确认尚未复用时才标记为可恢复。
+    enum class NtfsRecoveryCapability : int
+    {
+        MetadataOnly = 0,          // 仅有 MFT 元数据，没有可用主数据流。
+        Resident = 1,              // 主数据流驻留于 MFT 记录，可直接恢复。
+        NonResidentIntact = 2,     // 非驻留数据段完整且扫描时全部簇仍空闲。
+        NonResidentAtRisk = 3,     // 非驻留数据簇已复用或完整度未知，禁止自动导出。
+        UnsupportedStream = 4      // 压缩、加密或多段属性布局当前无法安全重建。
+    };
+
     // NtfsDeletedFileEntry 作用：
     // - 表示扫描到的 NTFS 误删候选项；
-    // - 支持驻留数据直接恢复到目标文件。
+    // - 保存恢复前二次校验所需的 MFT 序列号和恢复能力。
     struct NtfsDeletedFileEntry
     {
         QString fileName;                  // 删除项文件名。
@@ -55,10 +67,13 @@ namespace ks::file
         std::uint64_t sizeBytes = 0;       // 文件大小（字节）。
         QDateTime modifiedTime;            // 文件最后修改时间。
         std::uint64_t fileReference = 0;   // MFT 记录号（用于二次定位）。
+        std::uint16_t sequenceNumber = 0;  // MFT 序列号（防止记录删除后被复用）。
         int estimatedIntegrityPercent = -1; // 估计完整度百分比，-1 表示当前无法评估。
         bool hasOriginalName = true;       // 是否保留了原始文件名，false 表示仅能生成占位名。
         bool residentDataReady = false;    // 是否已提取驻留数据。
         QByteArray residentData;           // 驻留数据内容（扫描阶段可为空，恢复时按需回读）。
+        NtfsRecoveryCapability recoveryCapability =
+            NtfsRecoveryCapability::MetadataOnly; // 扫描时评估出的恢复能力。
     };
 
     // ManualFileSystemParser 作用：
@@ -123,20 +138,32 @@ namespace ks::file
             QString& errorTextOut,
             const std::function<void(int, const QString&)>& progressCallback = {});
 
-        // recoverNtfsResidentFile 作用：
-        // - 对单个误删项执行“驻留数据恢复”。
+        // recoverNtfsDeletedFile 作用：
+        // - 对单个误删项执行安全恢复；
+        // - 支持驻留数据，以及卷位图前后两次校验均通过的完整非驻留数据。
         // 调用方法：
         // - FileDock“文件恢复”页中选择一行后调用。
         // 入参 volumeRootPath：
         // - 卷根路径（例如 C:\\），用于记录日志与路径归属校验。
         // 入参 deletedEntry：
-        // - 待恢复条目（要求 residentDataReady=true）。
+        // - 待恢复条目；函数会按记录号和序列号重新读取 MFT，不信任旧扫描快照。
         // 入参 targetFilePath：
         // - 导出的目标文件路径。
         // 出参 errorTextOut：
         // - 失败时返回原因文本。
+        // 入参 progressCallback：
+        // - 可选恢复进度回调，percent 范围为 0~100。
         // 返回值：
         // - 成功返回 true，失败返回 false。
+        static bool recoverNtfsDeletedFile(
+            const QString& volumeRootPath,
+            const NtfsDeletedFileEntry& deletedEntry,
+            const QString& targetFilePath,
+            QString& errorTextOut,
+            const std::function<void(int, const QString&)>& progressCallback = {});
+
+        // recoverNtfsResidentFile 作用：
+        // - 兼容旧调用方的包装入口，内部统一走 recoverNtfsDeletedFile。
         static bool recoverNtfsResidentFile(
             const QString& volumeRootPath,
             const NtfsDeletedFileEntry& deletedEntry,

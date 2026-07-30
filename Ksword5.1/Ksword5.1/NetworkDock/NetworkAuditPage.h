@@ -3,33 +3,46 @@
 // ============================================================
 // NetworkAuditPage.h
 // 作用：
-// 1) 提供只读网络审计页，集中展示 TCP/UDP cross-view、AFD、WFP、NDIS 和 NSI 摘要；
-// 2) 仅做用户态审计与交叉验证，不提供任何 disable / detach / bypass 动作；
-// 3) 所有刷新逻辑都保持为只读查询，便于 NetworkDock 侧边栏复用。
+// 1) 提供网络审计页，集中展示 TCP/UDP cross-view、AFD、WFP、NDIS 和 NSI 摘要；
+// 2) TCP/UDP cross-view 合并原“连接管理”页的刷新、筛选、复制、进程动作、扫描与终止动作；
+// 3) 其余审计分区保持只读，不提供 disable / detach / bypass 动作。
 // ============================================================
 
 #include "../Framework.h"
+#include "../ksword/network/network_connection_tools.h"
 
+#include <QHash>
+#include <QIcon>
 #include <QWidget>
 #include <QJsonValue>
+#include <QSet>
 
 #include <atomic> // std::atomic_bool：防止并发刷新重入。
+#include <functional> // std::function：把原连接管理页的进程动作回调给 NetworkDock。
 #include <memory> // std::unique_ptr：异步快照对象托管。
 #include <vector> // std::vector：批量快照行缓存。
 
 class QLabel;
 class QLineEdit;
+class QPoint;
 class QPushButton;
 class QSplitter;
 class QTabWidget;
 class QTableWidget;
 class QTableWidgetItem;
+class QTimer;
 class QVBoxLayout;
 class QHBoxLayout;
 
 class NetworkAuditPage final : public QWidget
 {
 public:
+    // ProcessActionHandler：
+    // - 输入：Cross-View 当前行的 PID；
+    // - 处理：由 NetworkDock 注入“跟踪进程/打开进程详情”的既有实现；
+    // - 返回：无。
+    using ProcessActionHandler = std::function<void(std::uint32_t)>;
+
     // 构造函数：
     // - 输入 parent：Qt 父控件，可为空；
     // - 处理：构建只读审计页 UI；首轮异步刷新在页面首次显示时触发；
@@ -46,6 +59,30 @@ public:
     // - 重复调用不会启动并发任务；
     // - 无返回值。
     void requestInitialRefresh();
+
+    // focusProcessIds 作用：
+    // - 合并原连接管理页的“按进程跳转”能力；
+    // - 传入空集合表示清除过滤，并切换到 TCP/UDP Cross-View；
+    // - 返回：无。
+    void focusProcessIds(const QSet<quint32>& processIds);
+
+    // activateCrossView 作用：
+    // - 切换到 TCP/UDP Cross-View；
+    // - 供进程详情中的网络子页复用；
+    // - 返回：无。
+    void activateCrossView();
+
+    // setTrackProcessHandler 作用：
+    // - 合并原连接管理页“跟踪此进程”动作；
+    // - handler 为空时右键菜单会禁用该动作；
+    // - 返回：无。
+    void setTrackProcessHandler(ProcessActionHandler handler);
+
+    // setOpenProcessDetailHandler 作用：
+    // - 合并原连接管理页“转到进程详细信息”动作；
+    // - handler 为空时右键菜单会禁用该动作；
+    // - 返回：无。
+    void setOpenProcessDetailHandler(ProcessActionHandler handler);
 
 private:
     // CrossViewRow：TCP/UDP 交叉视图的一行聚合结果。
@@ -68,6 +105,9 @@ private:
         QString remoteEndpointText;  // remoteEndpointText：远端 IP:Port。
         QString stateText;           // stateText：TCP 状态或协议状态。
         QString detailText;          // detailText：来源、对象地址、字段掩码等可复制明细。
+        bool isR0Snapshot = false;    // isR0Snapshot：true 表示驱动只读快照行。
+        bool canTerminate = false;    // canTerminate：仅 R3 IPv4 活动连接允许 DELETE_TCB。
+        ks::network::TcpConnectionRecord connectionRecord; // connectionRecord：终止动作使用的原始四元组。
     };
 
     // UdpEndpointRow：UDP 明细表的一行，展示本地端点与来源诊断。
@@ -235,6 +275,12 @@ private:
     // - 返回：无，结果通过 UI 线程回投。
     void refreshAllSnapshotsAsync(bool forceRefresh);
 
+    // refreshCrossViewAsync 作用：
+    // - 原连接管理页的 2.2 秒自动刷新只枚举 R3 TCP/UDP；
+    // - 保留最近一次完整审计取得的 R0 行，避免反复采集 AFD/WFP/NDIS；
+    // - 返回：无。
+    void refreshCrossViewAsync();
+
     // applySnapshot 作用：
     // - 将后台采集完成的全部快照写回各个表格；
     // - 输入 snapshot：后台线程采集结果；
@@ -246,6 +292,29 @@ private:
     // - 输入 snapshot：来自后台的完整网络快照；
     // - 返回：无。
     void refreshCrossViewTable(const AuditSnapshot& snapshot);
+
+    // terminateSelectedTcpConnection 作用：
+    // - 终止 Cross-View 中选中的 R3 IPv4 TCP 活动连接；
+    // - R0 快照行、IPv6、LISTEN 等会给出明确不可用原因；
+    // - 返回：无。
+    void terminateSelectedTcpConnection();
+
+    // showCrossViewContextMenu 作用：
+    // - 为 TCP/UDP 表提供复制、刷新、进程跟踪、进程详情、扫描、终止和清除 PID 筛选；
+    // - 菜单显式应用主题样式；
+    // - 返回：无。
+    void showCrossViewContextMenu(QTableWidget* tableWidget, const QPoint& localPosition);
+
+    // resolveProcessIcon 作用：
+    // - 按 PID 的真实可执行路径提取系统图标并缓存；
+    // - 路径不可读时回退默认进程图标；
+    // - 返回：进程图标。
+    QIcon resolveProcessIcon(std::uint32_t processId);
+
+    // updateCrossViewActionState 作用：
+    // - 按 TCP 选择与 PID 筛选状态更新按钮；
+    // - 返回：无。
+    void updateCrossViewActionState();
 
     // refreshAfdTable 作用：
     // - 重建 AFD 相关句柄表格；
@@ -274,7 +343,7 @@ private:
     // buildAuditSnapshot 作用：
     // - 在后台线程中采集所有只读审计数据；
     // - 返回：完整快照与状态文本。
-    static AuditSnapshot buildAuditSnapshot();
+    static AuditSnapshot buildAuditSnapshot(bool crossViewOnly = false);
 
     // runPowerShellTextSync 作用：
     // - 同步执行 PowerShell 并返回 stdout 文本；
@@ -324,6 +393,11 @@ private:
     QWidget* m_crossViewPage = nullptr;
     QSplitter* m_crossViewSplitter = nullptr;
     QSplitter* m_crossViewTopSplitter = nullptr;
+    QHBoxLayout* m_crossControlLayout = nullptr;
+    QPushButton* m_crossAutoRefreshButton = nullptr;
+    QPushButton* m_crossTerminateButton = nullptr;
+    QPushButton* m_clearProcessFilterButton = nullptr;
+    QLabel* m_crossFilterLabel = nullptr;
     QTableWidget* m_tcpTable = nullptr;
     QTableWidget* m_udpTable = nullptr;
     QTableWidget* m_crossSummaryTable = nullptr;
@@ -351,6 +425,13 @@ private:
     QWidget* m_nsiPage = nullptr;
     QTableWidget* m_nsiSummaryTable = nullptr;
 
+    QTimer* m_crossAutoRefreshTimer = nullptr; // 原连接管理页自动刷新能力。
+    QSet<quint32> m_processFilterSet; // 进程页带入的独立 PID 筛选。
+    std::vector<TcpEndpointRow> m_tcpEndpointCache; // UI 行通过 UserRole 回查终止参数。
+    std::vector<UdpEndpointRow> m_udpEndpointCache; // 最近一次 UDP 快照，保留 R0 行使用。
+    QHash<quint32, QIcon> m_processIconCache; // PID -> 真实进程图标缓存。
+    ProcessActionHandler m_trackProcessHandler; // 原连接页“跟踪此进程”实现。
+    ProcessActionHandler m_openProcessDetailHandler; // 原连接页“转到进程详细信息”实现。
     std::atomic_bool m_refreshInProgress{ false };
     std::atomic_bool m_initialRefreshRequested{ false };
 };

@@ -8,7 +8,7 @@
     "generatedUtc": { "type": "string" },
     "product": { "type": "string" },
     "osPolicy": { "type": "object" },
-    "modules": { "type": "array", "minItems": 11 },
+    "modules": { "type": "array", "minItems": 12, "maxItems": 12 },
     "profiles": { "type": "array" }
   },
   "additionalProperties": false

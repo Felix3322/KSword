@@ -86,10 +86,10 @@ public:
     // - 作用：停止后台抓包线程，避免窗口释放后仍有异步回调。
     ~NetworkDock() override;
 
-    // 切换到连接管理页并以 PID 集合过滤 TCP/UDP，独立于流量监控规则。
+    // 切换到网络审计 TCP/UDP Cross-View 并按 PID 集合过滤，独立于流量监控规则。
     void focusConnectionsByPids(const QVector<quint32>& processIds);
 
-    // setProcessDetailConnectionScope：进程详情内嵌时仅显示连接管理页。
+    // setProcessDetailConnectionScope：进程详情内嵌时仅显示网络审计 Cross-View 入口。
     void setProcessDetailConnectionScope();
 
 protected:
@@ -105,10 +105,12 @@ private:
         Time = 0,       // 抓包时间（毫秒精度）。
         Protocol,       // 协议（TCP/UDP）。
         Direction,      // 方向（Outbound/Inbound）。
+        Source,         // 数据来源（R0/R3）。
         Pid,            // 归属进程 PID。
         ProcessName,    // 进程名（带图标）。
         LocalEndpoint,  // 本地地址:端口。
         RemoteEndpoint, // 远端地址:端口。
+        RemoteDomain,   // 远端域名（紧邻远端端点，异步解析）。
         PacketSize,     // 总包长（字节）。
         PayloadSize,    // 负载长度（字节）。
         Preview,        // 负载预览（十六进制）。
@@ -414,6 +416,18 @@ private:
     // - 返回：无。
     void stopTrafficMonitor();
 
+    // refreshR0TrafficSnapshotAsync：
+    // - 后台按 cursor 增量读取真实 R0 WFP ALE IPv4 流授权事件；
+    // - initialProbe=true 时用于选择 R0 或自动回退 R3；
+    // - 返回：无，结果回投 UI 线程。
+    void refreshR0TrafficSnapshotAsync(std::uint64_t generation, bool initialProbe);
+
+    // startR3TrafficMonitor：
+    // - 在 R0 不可用时启动原有 R3 抓包；
+    // - fallbackReason 会显示在状态栏，明确当前数据来源；
+    // - 返回：无。
+    void startR3TrafficMonitor(const QString& fallbackReason);
+
     // updateMonitorButtonState：
     // - 作用：按 m_monitorRunning 刷新开始/停止按钮状态。
     // - 返回：无。
@@ -476,6 +490,18 @@ private:
     // - 参数 packetRecord：待追加报文。
     // - 返回：无。
     void appendPacketToMonitorTable(const ks::network::PacketRecord& packetRecord);
+
+    // scheduleDomainResolutionForPacket：
+    // - 对远端 IP 启动有界线程池解析，优先使用本机 DNS 缓存；
+    // - 相同地址只发起一次任务，并把结果回填所有对应行；
+    // - 返回：无。
+    void scheduleDomainResolutionForPacket(std::uint64_t sequenceId, const QString& remoteAddressText);
+
+    // applyDomainResolutionResult：
+    // - 缓存异步解析结果并更新报文缓存/表格；
+    // - 空结果统一显示“-”，避免阻塞抓包路径；
+    // - 返回：无。
+    void applyDomainResolutionResult(const QString& remoteAddressText, const QString& domainText);
 
     // rebuildMonitorTableByFilter：
     // - 作用：按当前组合过滤条件重建主流量表。
@@ -1460,10 +1486,19 @@ private:
     ks::network::NidsEngine m_nidsEngine; // NIDS 规则引擎实例。
     QTimer* m_rateLimitRefreshTimer = nullptr; // 限速规则轮询刷新定时器。
     QTimer* m_packetFlushTimer = nullptr;      // 报文批量刷新定时器（UI 节流关键）。
+    QTimer* m_r0TrafficRefreshTimer = nullptr; // R0 WFP ALE 增量事件轮询定时器。
     QTimer* m_connectionRefreshTimer = nullptr; // 连接快照轮询刷新定时器（TCP/UDP）。
     QTimer* m_multiDownloadRefreshTimer = nullptr; // 多线程下载页面刷新定时器（进度UI节流）。
     std::unique_ptr<ks::network::HttpsMitmProxyService> m_httpsProxyService; // HTTPS MITM 代理服务对象。
     bool m_monitorRunning = false;             // 抓包运行状态缓存。
+    enum class TrafficMonitorSource : std::uint8_t
+    {
+        Stopped = 0, // 当前未监控。
+        Starting,    // 正在探测 R0 能力。
+        R0,          // 使用驱动 WFP ALE IPv4 流授权事件。
+        R3           // 使用原有用户态抓包。
+    };
+    TrafficMonitorSource m_monitorSource = TrafficMonitorSource::Stopped; // 当前明确的数据来源。
     bool m_httpsProxyRunning = false;          // HTTPS代理运行状态缓存。
     bool m_httpsProxyServiceInitialized = false; // HTTPS代理服务是否已延后初始化。
     bool m_httpsSystemProxySnapshotCaptured = false; // 是否已保存本页改写前的代理配置。
@@ -1474,6 +1509,8 @@ private:
     std::optional<QString> m_httpsPreviousProxyOverride;     // 原 ProxyOverride，缺省表示原值不存在。
     std::optional<QString> m_httpsPreviousAutoConfigUrl;     // 原 AutoConfigURL，缺省表示原值不存在。
     std::atomic_bool m_monitorStopInProgress{ false }; // 停止流程进行中，避免重复 stop 导致 UI 抖动。
+    std::atomic_bool m_r0TrafficRefreshPending{ false }; // R0 ALE 事件查询重入门控。
+    std::atomic<std::uint64_t> m_monitorGeneration{ 0 }; // 启停代数，丢弃过期异步结果。
     std::unique_ptr<std::thread> m_monitorStopThread;  // 异步 stop 的 join 线程，防止主线程等待卡顿。
 
     // 当前已应用过滤状态：
@@ -1493,6 +1530,11 @@ private:
     static constexpr std::size_t kMaxPendingPacketQueueCount = 80000;
     std::deque<std::uint64_t> m_packetSequenceOrder; // 报文序号按时间顺序缓存。
     std::unordered_map<std::uint64_t, ks::network::PacketRecord> m_packetBySequence; // 序号 -> 报文映射。
+    std::uint64_t m_r0LastEventSequence = 0; // 已消费的驱动 WFP event cursor，用于严格增量去重。
+    std::uint64_t m_r0LastDroppedEventCount = 0; // 驱动固定 ring 累计覆盖数，供状态栏显示。
+    std::uint64_t m_r0SyntheticSequence = (1ULL << 63U); // UI 主键序号；原始驱动 sequence 单独保存在 PacketRecord。
+    QHash<QString, QString> m_remoteDomainCache; // IP -> 域名缓存，空解析结果保存为“-”。
+    QSet<QString> m_remoteDomainResolutionPending; // 正在异步解析的远端 IP。
     std::vector<ProcessTraceTimelineEventPoint> m_packetTimelineEventPoints; // 报文时间轴绘制点缓存。
     std::vector<PacketTimelineCaptureSession> m_packetTimelineSessionList; // 监控开启会话列表，用于剔除停机间隔。
     std::unordered_map<std::uint64_t, std::uint64_t> m_packetTimelineTimeBySequence; // 报文序号 -> 压缩时间轴时间。

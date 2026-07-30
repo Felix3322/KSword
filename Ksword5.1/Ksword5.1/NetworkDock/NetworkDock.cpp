@@ -74,25 +74,20 @@ NetworkDock::NetworkDock(QWidget* parent)
         });
     m_packetFlushTimer->start();
 
-    // 连接管理刷新定时器：
-    // - 用于周期更新 TCP/UDP 表；
-    // - 自动刷新关闭或页面不可见时，定时器回调会直接跳过；
-    // - 目的是避免隐藏页持续枚举连接造成 UI 卡顿。
-    m_connectionRefreshTimer = new QTimer(this);
-    m_connectionRefreshTimer->setInterval(2200);
-    connect(m_connectionRefreshTimer, &QTimer::timeout, this, [this]()
+    // R0 流量模式轮询：
+    // - 仅在 R0 模式运行时按 sequence cursor 查询新增 WFP ALE IPv4 流事件；
+    // - 查询失败会在 refreshR0TrafficSnapshotAsync 中无缝回退 R3；
+    // - 独立“连接管理”页已移除，不再创建其旧轮询器。
+    m_r0TrafficRefreshTimer = new QTimer(this);
+    m_r0TrafficRefreshTimer->setInterval(2000);
+    connect(m_r0TrafficRefreshTimer, &QTimer::timeout, this, [this]()
         {
-            if (m_sideTabWidget == nullptr || m_sideTabWidget->currentWidget() != m_connectionManagePage)
+            if (!m_monitorRunning || m_monitorSource != TrafficMonitorSource::R0)
             {
                 return;
             }
-            if (m_autoRefreshConnectionButton != nullptr && !m_autoRefreshConnectionButton->isChecked())
-            {
-                return;
-            }
-            refreshConnectionTables();
+            refreshR0TrafficSnapshotAsync(m_monitorGeneration.load(), false);
         });
-    m_connectionRefreshTimer->start();
 
     // 多线程下载刷新定时器：
     // - 周期刷新任务表/分段表/总进度条；
@@ -143,21 +138,17 @@ NetworkDock::NetworkDock(QWidget* parent)
     kLogEvent initializeEvent;
     info << initializeEvent << "[NetworkDock] 网络面板初始化完成。" << eol;
 
-    // 首次加载不再强制立刻枚举连接：
-    // - 如果当前就处于连接管理页，则仍执行一次首刷；
-    // - 否则延迟到用户切入该页后由自动刷新触发，减少主线程启动负担。
-    if (m_sideTabWidget != nullptr && m_sideTabWidget->currentWidget() == m_connectionManagePage)
-    {
-        refreshConnectionTables();
-    }
-    else if (m_connectionStatusLabel != nullptr)
-    {
-        m_connectionStatusLabel->setText(QStringLiteral("状态：进入此页面后自动刷新"));
-    }
 }
 
 NetworkDock::~NetworkDock()
 {
+    m_monitorGeneration.fetch_add(1);
+    m_monitorSource = TrafficMonitorSource::Stopped;
+    if (m_r0TrafficRefreshTimer != nullptr)
+    {
+        m_r0TrafficRefreshTimer->stop();
+    }
+
     // 析构前请求取消全部下载任务，避免窗口释放后继续长期下载。
     {
         std::lock_guard<std::mutex> guard(m_multiDownloadTaskMutex);

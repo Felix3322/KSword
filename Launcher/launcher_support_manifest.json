@@ -144,6 +144,21 @@
       "publishedProfileCount": 0,
       "completeProfileCount": 0,
       "coverageStatus": "unpublished"
+    },
+    {
+      "classId": 65,
+      "className": "CI",
+      "fileNames": [
+        "ci.dll",
+        "ci.sys"
+      ],
+      "alwaysCollect": true,
+      "compatibilityRequired": false,
+      "collectionOnly": false,
+      "supportSource": "pdb-v4",
+      "publishedProfileCount": 0,
+      "completeProfileCount": 0,
+      "coverageStatus": "unpublished"
     }
   ],
   "profiles": [

@@ -22,31 +22,11 @@ namespace
         Count
     };
 
-    enum class UnloadedPiddbColumn : int
-    {
-        Evidence = 0,
-        Object,
-        Target,
-        Risk,
-        Source,
-        Confidence,
-        Detail,
-        Count
-    };
-
     int integrityColumnIndex(const IntegrityColumn column)
     {
         // 输入：完整性表列枚举。
         // 处理：转换为 QTableWidget 列号。
         // 返回：列索引。
-        return static_cast<int>(column);
-    }
-
-    int unloadedPiddbColumnIndex(const UnloadedPiddbColumn column)
-    {
-        // 输入：Unloaded/PiDDB 表列枚举。
-        // 处理：转换为 QTableWidget 列号。
-        // 返回：列索引，供写表和复制逻辑复用。
         return static_cast<int>(column);
     }
 
@@ -300,46 +280,6 @@ namespace
         });
     }
 
-    bool isUnloadedPiddbRiskOrDegradedRow(const ksword::ark::DriverIntegrityEvidenceEntry& row)
-    {
-        // 输入：Driver Integrity 证据行。
-        // 处理：识别风险、partial、unsupported、truncated、PDB-required 等需要人工关注的行。
-        // 返回：true 表示“仅风险/降级”模式下仍应显示。
-        constexpr std::uint32_t degradedFlags =
-            KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PARTIAL |
-            KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_UNSUPPORTED |
-            KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_TRUNCATED |
-            KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PDB_REQUIRED;
-        return row.riskFlags != 0U || (row.statusFlags & degradedFlags) != 0U || row.entryStatus != 0U;
-    }
-
-    bool unloadedPiddbRowMatchesKeyword(
-        const ksword::ark::DriverIntegrityEvidenceEntry& row,
-        const QString& keywordText)
-    {
-        // 输入：证据行和用户关键词。
-        // 处理：在类别、地址、风险、来源、置信度、详情和 owner 中做大小写不敏感匹配。
-        // 返回：true 表示该行通过关键词过滤。
-        if (keywordText.trimmed().isEmpty())
-        {
-            return true;
-        }
-
-        QStringList haystackParts;
-        haystackParts << classText(row.evidenceClass);
-        haystackParts << hex64(row.objectAddress);
-        haystackParts << hex64(row.targetAddress);
-        haystackParts << riskText(row.riskFlags);
-        haystackParts << QStringLiteral("0x%1").arg(row.sourceMask, 8, 16, QChar('0'));
-        haystackParts << QString::number(row.confidence);
-        haystackParts << QString::fromStdWString(row.ownerModule);
-        haystackParts << QString::fromStdWString(row.detail);
-        haystackParts << QString::number(row.entryStatus);
-        haystackParts << QStringLiteral("0x%1").arg(row.statusFlags, 8, 16, QChar('0'));
-        const QString haystackText = haystackParts.join(QStringLiteral("\n"));
-        return haystackText.contains(keywordText.trimmed(), Qt::CaseInsensitive);
-    }
-
     QTableWidgetItem* numericItem(const QString& text, const qulonglong value)
     {
         // 输入：展示文本和排序数值。
@@ -546,7 +486,6 @@ void DriverDock::initializeIntegrityTab()
         driverText("driver.tab.integrity", QStringLiteral("驱动完整性")));
 
     rebuildModuleCrossViewTable();
-    rebuildUnloadedPiddbTable();
 }
 
 void DriverDock::refreshDriverIntegrityAsync(const bool cpuOnly)
@@ -613,7 +552,6 @@ void DriverDock::refreshDriverIntegrityAsync(const bool cpuOnly)
             guardThis->m_driverIntegrityCache = result.entries;
             guardThis->rebuildDriverIntegrityTable();
             guardThis->rebuildModuleCrossViewTable();
-            guardThis->rebuildUnloadedPiddbTable();
             guardThis->showSelectedDriverIntegrityDetail();
 
             if (guardThis->m_integrityStatusLabel != nullptr)
@@ -779,239 +717,85 @@ void DriverDock::rebuildModuleCrossViewTable()
     m_moduleCrossViewTable->setSortingEnabled(true);
 }
 
-void DriverDock::refreshPiDdbAsync()
+bool DriverDock::selectedPiDdbEntryIdentity(
+    ksword::ark::PiDdbEntry* identity) const
 {
-    if (m_piddbQuerying)
+    // DriverDock.Unloaded.cpp 把源缓存索引写入名称列的专用角色。
+    constexpr int unloadedCacheIndexRole = Qt::UserRole + 57;
+    constexpr std::uint32_t requiredIdentityFlags =
+        KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_NAME |
+        KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_TIMESTAMP |
+        KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_LOAD_STATUS;
+
+    if (m_unloadedDriverQuerying ||
+        m_unloadedPiddbTable == nullptr ||
+        m_unloadedPiddbSourceGroup == nullptr ||
+        m_unloadedPiddbSourceGroup->checkedId() !=
+            KSWORD_ARK_UNLOADED_DRIVER_SOURCE_PIDDB_CACHE_TABLE ||
+        !m_lastUnloadedDriverResult.io.ok ||
+        m_lastUnloadedDriverResult.source !=
+            KSWORD_ARK_UNLOADED_DRIVER_SOURCE_PIDDB_CACHE_TABLE)
     {
-        return;
-    }
-    m_piddbQuerying = true;
-    const std::uint64_t ticket = ++m_piddbQueryTicket;
-    if (m_unloadedPiddbRefreshButton != nullptr)
-    {
-        m_unloadedPiddbRefreshButton->setEnabled(false);
-    }
-    if (m_unloadedPiddbDeleteButton != nullptr)
-    {
-        m_unloadedPiddbDeleteButton->setEnabled(false);
-    }
-    if (m_unloadedPiddbStatusLabel != nullptr)
-    {
-        m_unloadedPiddbStatusLabel->setText(
-            driverText("driver.piddb.status.querying", QStringLiteral("状态：正在读取 PiDDB AVL 表...")));
+        return false;
     }
 
-    QPointer<DriverDock> guardThis(this);
-    QRunnable* task = QRunnable::create([guardThis, ticket]() {
-        ksword::ark::PiDdbQueryResult result =
-            ksword::ark::DriverClient().queryPiDdb();
-        if (guardThis == nullptr)
-        {
-            return;
-        }
-        QMetaObject::invokeMethod(
-            guardThis.data(),
-            [guardThis, ticket, result = std::move(result)]() mutable {
-                if (guardThis == nullptr ||
-                    guardThis->m_piddbQueryTicket != ticket)
-                {
-                    return;
-                }
-                guardThis->m_piddbQuerying = false;
-                guardThis->m_lastPiDdbQueryResult = result;
-                guardThis->m_piddbCache = result.entries;
-                if (guardThis->m_unloadedPiddbRefreshButton != nullptr)
-                {
-                    guardThis->m_unloadedPiddbRefreshButton->setEnabled(true);
-                }
-                guardThis->rebuildUnloadedPiddbTable();
-            },
-            Qt::QueuedConnection);
-    });
-    QThreadPool::globalInstance()->start(task);
-}
-
-void DriverDock::rebuildUnloadedPiddbTable()
-{
-    if (m_unloadedPiddbTable == nullptr)
+    const int currentRow = m_unloadedPiddbTable->currentRow();
+    const QTableWidgetItem* nameItem = currentRow >= 0
+        ? m_unloadedPiddbTable->item(currentRow, 0)
+        : nullptr;
+    bool indexOk = false;
+    const qulonglong cacheIndex = nameItem != nullptr
+        ? nameItem->data(unloadedCacheIndexRole).toULongLong(&indexOk)
+        : 0ULL;
+    if (!indexOk ||
+        cacheIndex >= static_cast<qulonglong>(m_unloadedDriverCache.size()))
     {
-        return;
+        return false;
     }
 
-    const QSignalBlocker blocker(m_unloadedPiddbTable);
-    m_unloadedPiddbTable->setSortingEnabled(false);
-    m_unloadedPiddbTable->setRowCount(0);
-    const QString keyword = m_unloadedPiddbFilterEdit != nullptr
-        ? m_unloadedPiddbFilterEdit->text().trimmed()
-        : QString();
-    const bool riskOnly = m_unloadedPiddbRiskOnlyCheck != nullptr &&
-        m_unloadedPiddbRiskOnlyCheck->isChecked();
-
-    for (std::size_t cacheIndex = 0U;
-         cacheIndex < m_piddbCache.size();
-         ++cacheIndex)
+    const ksword::ark::UnloadedDriverEntry& row =
+        m_unloadedDriverCache[static_cast<std::size_t>(cacheIndex)];
+    if (row.source != KSWORD_ARK_UNLOADED_DRIVER_SOURCE_PIDDB_CACHE_TABLE ||
+        (row.flags & requiredIdentityFlags) != requiredIdentityFlags ||
+        row.entryAddress == 0ULL ||
+        row.driverName.empty())
     {
-        const ksword::ark::PiDdbEntry& entry = m_piddbCache[cacheIndex];
-        const QString name = QString::fromStdWString(entry.driverName);
-        const QString timestamp = QStringLiteral("0x%1")
-            .arg(entry.timeDateStamp, 8, 16, QLatin1Char('0'))
-            .toUpper();
-        const QString loadStatus = formatNtStatusText(entry.loadStatus);
-        const QString address = hex64(entry.entryAddress);
-        const bool risky = entry.loadStatus < 0;
-        const QString searchable = QStringLiteral("%1 %2 %3 %4")
-            .arg(name, timestamp, loadStatus, address);
-        if ((riskOnly && !risky) ||
-            (!keyword.isEmpty() &&
-             !searchable.contains(keyword, Qt::CaseInsensitive)))
-        {
-            continue;
-        }
-
-        const int tableRow = m_unloadedPiddbTable->rowCount();
-        m_unloadedPiddbTable->insertRow(tableRow);
-        QTableWidgetItem* typeItem = textItem(QStringLiteral("PiDDB"));
-        typeItem->setData(
-            Qt::UserRole + 1,
-            QVariant::fromValue<qulonglong>(
-                static_cast<qulonglong>(cacheIndex)));
-        typeItem->setData(Qt::UserRole + 2, QStringLiteral("piddb"));
-        m_unloadedPiddbTable->setItem(
-            tableRow,
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Evidence),
-            typeItem);
-        m_unloadedPiddbTable->setItem(
-            tableRow,
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Object),
-            textItem(name));
-        m_unloadedPiddbTable->setItem(
-            tableRow,
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Target),
-            numericItem(timestamp, entry.timeDateStamp));
-        m_unloadedPiddbTable->setItem(
-            tableRow,
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Risk),
-            textItem(loadStatus));
-        m_unloadedPiddbTable->setItem(
-            tableRow,
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Source),
-            numericItem(address, entry.entryAddress));
-        m_unloadedPiddbTable->setItem(
-            tableRow,
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Confidence),
-            textItem(risky
-                ? driverText("driver.piddb.state.failed_load", QStringLiteral("失败记录"))
-                : driverText("driver.piddb.state.recorded", QStringLiteral("已记录"))));
-        m_unloadedPiddbTable->setItem(
-            tableRow,
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Detail),
-            textItem(driverText(
-                "driver.piddb.detail.identity",
-                QStringLiteral("精确身份：名称 + 时间戳 + 表项地址；删除前还会复核 LoadStatus。"))));
+        return false;
     }
 
-    for (std::size_t cacheIndex = 0U;
-         cacheIndex < m_driverIntegrityCache.size();
-         ++cacheIndex)
+    if (identity != nullptr)
     {
-        const auto& row = m_driverIntegrityCache[cacheIndex];
-        if (row.evidenceClass !=
-                KSWORD_ARK_DRIVER_INTEGRITY_CLASS_OPTIONAL_GLOBAL ||
-            (riskOnly && !isUnloadedPiddbRiskOrDegradedRow(row)) ||
-            !unloadedPiddbRowMatchesKeyword(row, keyword))
-        {
-            continue;
-        }
-        const int tableRow = m_unloadedPiddbTable->rowCount();
-        m_unloadedPiddbTable->insertRow(tableRow);
-        QTableWidgetItem* typeItem = textItem(QStringLiteral("GlobalSummary"));
-        typeItem->setData(
-            Qt::UserRole + 1,
-            QVariant::fromValue<qulonglong>(
-                static_cast<qulonglong>(cacheIndex)));
-        typeItem->setData(Qt::UserRole + 2, QStringLiteral("integrity"));
-        m_unloadedPiddbTable->setItem(tableRow, 0, typeItem);
-        m_unloadedPiddbTable->setItem(tableRow, 1, textItem(classText(row.evidenceClass)));
-        m_unloadedPiddbTable->setItem(tableRow, 2, textItem(QStringLiteral("-")));
-        m_unloadedPiddbTable->setItem(tableRow, 3, textItem(riskText(row.riskFlags)));
-        m_unloadedPiddbTable->setItem(tableRow, 4, numericItem(hex64(row.objectAddress), row.objectAddress));
-        m_unloadedPiddbTable->setItem(tableRow, 5, numericItem(QString::number(row.confidence), row.confidence));
-        m_unloadedPiddbTable->setItem(tableRow, 6, textItem(integritySummaryText(row)));
+        identity->entryAddress = row.entryAddress;
+        identity->timeDateStamp = row.timeDateStamp;
+        identity->loadStatus = row.loadStatus;
+        identity->driverName = row.driverName;
     }
-
-    if (m_unloadedPiddbTable->rowCount() == 0)
-    {
-        m_unloadedPiddbTable->setRowCount(1);
-        m_unloadedPiddbTable->setItem(0, 0, textItem(QStringLiteral("PiDDB")));
-        m_unloadedPiddbTable->setItem(0, 1, textItem(QStringLiteral("<unavailable>")));
-        for (int column = 2; column < 6; ++column)
-        {
-            m_unloadedPiddbTable->setItem(0, column, textItem(QStringLiteral("-")));
-        }
-        m_unloadedPiddbTable->setItem(
-            0,
-            6,
-            textItem(driverText(
-                "driver.piddb.empty",
-                QStringLiteral("没有可显示的 PiDDB 表项；请刷新，或检查当前内核 PDB 布局是否完整。"))));
-    }
-
-    if (m_unloadedPiddbStatusLabel != nullptr)
-    {
-        m_unloadedPiddbStatusLabel->setText(
-            driverText(
-                "driver.piddb.status.summary",
-                QStringLiteral("状态：PiDDB %1/%2 项，查询状态 %3，当前显示 %4 行。"))
-                .arg(m_piddbCache.size())
-                .arg(m_lastPiDdbQueryResult.totalRows)
-                .arg(m_lastPiDdbQueryResult.queryStatus)
-                .arg(m_unloadedPiddbTable->rowCount()));
-    }
-    if (m_unloadedPiddbDeleteButton != nullptr)
-    {
-        m_unloadedPiddbDeleteButton->setEnabled(false);
-    }
-    m_unloadedPiddbTable->setSortingEnabled(true);
+    return true;
 }
 
 void DriverDock::deleteSelectedPiDdbEntry()
 {
-    if (m_unloadedPiddbTable == nullptr ||
-        m_unloadedPiddbTable->currentRow() < 0)
-    {
-        return;
-    }
-    const QTableWidgetItem* typeItem =
-        m_unloadedPiddbTable->item(
-            m_unloadedPiddbTable->currentRow(),
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Evidence));
-    bool indexOk = false;
-    const qulonglong cacheIndex = typeItem != nullptr
-        ? typeItem->data(Qt::UserRole + 1).toULongLong(&indexOk)
-        : 0ULL;
-    if (!indexOk || typeItem == nullptr ||
-        typeItem->data(Qt::UserRole + 2).toString() !=
-            QStringLiteral("piddb") ||
-        cacheIndex >= static_cast<qulonglong>(m_piddbCache.size()))
+    ksword::ark::PiDdbEntry expected{};
+    if (!selectedPiDdbEntryIdentity(&expected))
     {
         return;
     }
 
-    const ksword::ark::PiDdbEntry expected =
-        m_piddbCache[static_cast<std::size_t>(cacheIndex)];
     const ksword::ark::DriverClient client;
     const ksword::ark::PiDdbDeleteResult preflight =
         client.deletePiDdbEntry(expected, false, false);
     if (!preflight.io.ok ||
-        preflight.status !=
-            KSWORD_ARK_PIDDB_DELETE_STATUS_FORCE_REQUIRED)
+        preflight.status != KSWORD_ARK_PIDDB_DELETE_STATUS_FORCE_REQUIRED)
     {
         QMessageBox::critical(
             this,
-            driverText("driver.piddb.delete.title", QStringLiteral("删除 PiDDB 表项")),
+            driverText(
+                "driver.piddb.delete.title",
+                QStringLiteral("删除 PiDDB 表项")),
             driverText(
                 "driver.piddb.delete.preflight_failed",
-                QStringLiteral("R0 精确身份预检失败。状态 %1，NTSTATUS %2。\n%3"))
+                QStringLiteral(
+                    "R0 精确身份预检失败。状态 %1，NTSTATUS %2。\n%3"))
                 .arg(preflight.status)
                 .arg(formatNtStatusText(preflight.lastStatus))
                 .arg(friendlyDriverIoMessage(preflight.io.message)));
@@ -1020,18 +804,28 @@ void DriverDock::deleteSelectedPiDdbEntry()
 
     QMessageBox::warning(
         this,
-        driverText("driver.piddb.delete.warning_title", QStringLiteral("高风险：修改内核驱动历史缓存")),
+        driverText(
+            "driver.piddb.delete.warning_title",
+            QStringLiteral("高风险：修改内核驱动历史缓存")),
         driverText(
             "driver.piddb.delete.warning",
-            QStringLiteral("将从活动 PiDDB AVL 表删除“%1”（时间戳 0x%2，地址 %3）。这会改变内核驱动加载历史，可能影响诊断、安全产品或系统稳定性；操作不可由本程序自动撤销。"))
+            QStringLiteral(
+                "将从活动 PiDDB AVL 表删除“%1”（时间戳 0x%2，地址 %3）。"
+                "这会改变内核驱动加载历史，可能影响诊断、安全产品或系统稳定性；"
+                "操作不可由本程序自动撤销。"))
             .arg(QString::fromStdWString(expected.driverName))
             .arg(expected.timeDateStamp, 8, 16, QLatin1Char('0'))
             .arg(hex64(expected.entryAddress)));
+
     bool accepted = false;
     const QString confirmation = QInputDialog::getText(
         this,
-        driverText("driver.piddb.delete.confirm_title", QStringLiteral("确认删除 PiDDB 表项")),
-        driverText("driver.piddb.delete.confirm_prompt", QStringLiteral("输入 DELETE PIDDB 继续：")),
+        driverText(
+            "driver.piddb.delete.confirm_title",
+            QStringLiteral("确认删除 PiDDB 表项")),
+        driverText(
+            "driver.piddb.delete.confirm_prompt",
+            QStringLiteral("输入 DELETE PIDDB 继续：")),
         QLineEdit::Normal,
         QString(),
         &accepted);
@@ -1047,7 +841,9 @@ void DriverDock::deleteSelectedPiDdbEntry()
     {
         QMessageBox::critical(
             this,
-            driverText("driver.piddb.delete.title", QStringLiteral("删除 PiDDB 表项")),
+            driverText(
+                "driver.piddb.delete.title",
+                QStringLiteral("删除 PiDDB 表项")),
             driverText(
                 "driver.piddb.delete.failed",
                 QStringLiteral("删除失败。状态 %1，NTSTATUS %2。\n%3"))
@@ -1056,215 +852,18 @@ void DriverDock::deleteSelectedPiDdbEntry()
                 .arg(friendlyDriverIoMessage(deleted.io.message)));
         return;
     }
+
     QMessageBox::information(
         this,
-        driverText("driver.piddb.delete.title", QStringLiteral("删除 PiDDB 表项")),
+        driverText(
+            "driver.piddb.delete.title",
+            QStringLiteral("删除 PiDDB 表项")),
         driverText(
             "driver.piddb.delete.completed",
-            QStringLiteral("精确表项已删除，并在同一内核锁保护下复核为不存在。剩余 %1 项。"))
+            QStringLiteral(
+                "精确表项已删除，并在同一内核锁保护下复核为不存在。剩余 %1 项。"))
             .arg(deleted.remainingRows));
-    refreshPiDdbAsync();
-}
-
-void DriverDock::showUnloadedPiddbContextMenu(const QPoint& localPosition)
-{
-    // 输入：表格局部坐标。
-    // 处理：复制/详情为只读；精确 PiDDB 行额外提供安全门控删除入口。
-    // 返回：无。
-    if (m_unloadedPiddbTable == nullptr)
-    {
-        return;
-    }
-
-    const QModelIndex clickedIndex = m_unloadedPiddbTable->indexAt(localPosition);
-    if (clickedIndex.isValid())
-    {
-        m_unloadedPiddbTable->selectRow(clickedIndex.row());
-    }
-
-    QMenu contextMenu(this);
-    contextMenu.setStyleSheet(KswordTheme::ContextMenuStyle());
-    QAction* detailAction = contextMenu.addAction(
-        QIcon(QStringLiteral(":/Icon/process_details.svg")),
-        driverText("driver.menu.view_evidence_detail", QStringLiteral("查看完整证据详情")));
-    QAction* copyRowAction = contextMenu.addAction(
-        QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
-        QStringLiteral("复制当前行"));
-    QAction* copyVisibleAction = contextMenu.addAction(
-        QIcon(QStringLiteral(":/Icon/log_copy.svg")),
-        driverText("driver.menu.copy_visible_rows", QStringLiteral("复制可见行")));
-    contextMenu.addSeparator();
-    QAction* deleteAction = contextMenu.addAction(
-        driverText("driver.unloaded.delete_exact", QStringLiteral("删除选中 PiDDB 表项")));
-    const QTableWidgetItem* selectedTypeItem =
-        m_unloadedPiddbTable->item(
-            m_unloadedPiddbTable->currentRow(),
-            unloadedPiddbColumnIndex(UnloadedPiddbColumn::Evidence));
-    deleteAction->setEnabled(
-        selectedTypeItem != nullptr &&
-        selectedTypeItem->data(Qt::UserRole + 2).toString() ==
-            QStringLiteral("piddb"));
-
-    QAction* selectedAction = contextMenu.exec(m_unloadedPiddbTable->viewport()->mapToGlobal(localPosition));
-    if (selectedAction == detailAction)
-    {
-        showSelectedUnloadedPiddbDetailDialog();
-        return;
-    }
-    if (selectedAction == copyRowAction)
-    {
-        copySelectedUnloadedPiddbRow();
-        return;
-    }
-    if (selectedAction == copyVisibleAction)
-    {
-        copyVisibleUnloadedPiddbRows();
-        return;
-    }
-    if (selectedAction == deleteAction)
-    {
-        deleteSelectedPiDdbEntry();
-        return;
-    }
-}
-
-void DriverDock::showSelectedUnloadedPiddbDetailDialog()
-{
-    // 输入：当前表格选择。
-    // 处理：从 UserRole 缓存索引读取完整 Driver Integrity 行，使用 CodeEditorWidget 展示。
-    // 返回：无；弹窗为只读并显式设置不透明样式。
-    if (m_unloadedPiddbTable == nullptr)
-    {
-        return;
-    }
-
-    const int currentRow = m_unloadedPiddbTable->currentRow();
-    if (currentRow < 0)
-    {
-        return;
-    }
-
-    QTableWidgetItem* evidenceItem =
-        m_unloadedPiddbTable->item(currentRow, unloadedPiddbColumnIndex(UnloadedPiddbColumn::Evidence));
-    bool ok = false;
-    const qulonglong cacheIndex = evidenceItem != nullptr
-        ? evidenceItem->data(Qt::UserRole + 1).toULongLong(&ok)
-        : 0ULL;
-    const QString rowKind = evidenceItem != nullptr
-        ? evidenceItem->data(Qt::UserRole + 2).toString()
-        : QString();
-    if (!ok ||
-        (rowKind == QStringLiteral("piddb")
-            ? cacheIndex >= static_cast<qulonglong>(m_piddbCache.size())
-            : cacheIndex >= static_cast<qulonglong>(m_driverIntegrityCache.size())))
-    {
-        return;
-    }
-
-    QDialog detailDialog(this);
-    detailDialog.setObjectName(QStringLiteral("driverDockUnloadedPiddbDetailDialog"));
-    detailDialog.setWindowTitle(
-        driverText("driver.dialog.unloaded_detail.title", QStringLiteral("Unloaded / PiDDB 证据详情")));
-    detailDialog.resize(860, 620);
-    detailDialog.setStyleSheet(KswordTheme::OpaqueDialogStyle(detailDialog.objectName()));
-
-    QVBoxLayout* dialogLayout = new QVBoxLayout(&detailDialog);
-    dialogLayout->setContentsMargins(10, 10, 10, 10);
-    dialogLayout->setSpacing(8);
-
-    CodeEditorWidget* detailEditor = new CodeEditorWidget(&detailDialog);
-    detailEditor->setReadOnly(true);
-    if (rowKind == QStringLiteral("piddb"))
-    {
-        const ksword::ark::PiDdbEntry& entry =
-            m_piddbCache[static_cast<std::size_t>(cacheIndex)];
-        detailEditor->setLocalizedText(
-            driverText(
-                "driver.piddb.detail.full",
-                QStringLiteral("类型: PiDDB\n驱动名: %1\n时间戳: 0x%2\n加载状态: %3\n表项地址: %4\n\n删除身份绑定: 驱动名 + 时间戳 + LoadStatus + 表项地址。R0 会在 PiDDBLock 独占保护下重新枚举并复核，任何变化都会拒绝删除。"))
-                .arg(QString::fromStdWString(entry.driverName))
-                .arg(entry.timeDateStamp, 8, 16, QLatin1Char('0'))
-                .arg(formatNtStatusText(entry.loadStatus))
-                .arg(hex64(entry.entryAddress)));
-    }
-    else
-    {
-        detailEditor->setLocalizedText(
-            detailText(
-                m_driverIntegrityCache[
-                    static_cast<std::size_t>(cacheIndex)]));
-    }
-    dialogLayout->addWidget(detailEditor, 1);
-
-    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, &detailDialog);
-    QPushButton* copyButton = buttonBox->addButton(
-        driverText("driver.dialog.copy_detail", QStringLiteral("复制详情")),
-        QDialogButtonBox::ActionRole);
-    QObject::connect(copyButton, &QPushButton::clicked, &detailDialog, [detailEditor]()
-        {
-            if (detailEditor != nullptr && QGuiApplication::clipboard() != nullptr)
-            {
-                QGuiApplication::clipboard()->setText(detailEditor->text());
-            }
-        });
-    QObject::connect(buttonBox, &QDialogButtonBox::rejected, &detailDialog, &QDialog::reject);
-    dialogLayout->addWidget(buttonBox);
-    detailDialog.exec();
-}
-
-void DriverDock::copySelectedUnloadedPiddbRow()
-{
-    // 输入：当前表格选择。
-    // 处理：复制单行 TSV，便于粘贴到表格或工单。
-    // 返回：无。
-    if (m_unloadedPiddbTable == nullptr || QGuiApplication::clipboard() == nullptr)
-    {
-        return;
-    }
-
-    const int currentRow = m_unloadedPiddbTable->currentRow();
-    if (currentRow < 0)
-    {
-        return;
-    }
-
-    QStringList cells;
-    for (int columnIndex = 0; columnIndex < m_unloadedPiddbTable->columnCount(); ++columnIndex)
-    {
-        cells << escapeTsvCell(tableCellText(m_unloadedPiddbTable, currentRow, columnIndex));
-    }
-    QGuiApplication::clipboard()->setText(cells.join(QLatin1Char('\t')));
-}
-
-void DriverDock::copyVisibleUnloadedPiddbRows()
-{
-    // 输入：当前表格可见内容。
-    // 处理：复制表头和所有行，保留当前过滤后的视图。
-    // 返回：无。
-    if (m_unloadedPiddbTable == nullptr || QGuiApplication::clipboard() == nullptr)
-    {
-        return;
-    }
-
-    QStringList lines;
-    QStringList headerCells;
-    for (int columnIndex = 0; columnIndex < m_unloadedPiddbTable->columnCount(); ++columnIndex)
-    {
-        QTableWidgetItem* headerItem = m_unloadedPiddbTable->horizontalHeaderItem(columnIndex);
-        headerCells << escapeTsvCell(headerItem != nullptr ? headerItem->text() : QString());
-    }
-    lines << headerCells.join(QLatin1Char('\t'));
-
-    for (int rowIndex = 0; rowIndex < m_unloadedPiddbTable->rowCount(); ++rowIndex)
-    {
-        QStringList rowCells;
-        for (int columnIndex = 0; columnIndex < m_unloadedPiddbTable->columnCount(); ++columnIndex)
-        {
-            rowCells << escapeTsvCell(tableCellText(m_unloadedPiddbTable, rowIndex, columnIndex));
-        }
-        lines << rowCells.join(QLatin1Char('\t'));
-    }
-    QGuiApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
+    refreshUnloadedDriversAsync();
 }
 
 void DriverDock::showSelectedDriverIntegrityDetail()

@@ -19,6 +19,7 @@
 #include "KernelDockIpcTab.h"
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelIoctlAuditTab.h"
+#include "KernelIoctlDecoderTab.h"
 #include "KernelNamedPipeTab.h"
 #include "KernelObjectDirectoryDeepTab.h"
 #include "KernelObjectTypeMatrixTab.h"
@@ -452,13 +453,12 @@ void KernelDock::initializeUi()
 
     m_objectNamespacePage = new QWidget(m_tabWidget);
     m_atomPage = new QWidget(m_tabWidget);
-    m_ssdtPage = new QWidget(m_tabWidget);
+    m_ioManagementPage = new QWidget(m_tabWidget);
     m_dynDataPage = new QWidget(m_tabWidget);
     m_driverStatusPage = new QWidget(m_tabWidget);
     m_ntQueryPage = new QWidget(m_tabWidget);
     m_callbackInterceptPage = new QWidget(m_tabWidget);
     m_callbackEnumPage = new QWidget(m_tabWidget);
-    m_shadowSsdtPage = new QWidget(m_tabWidget);
     m_inlineHookPage = new QWidget(m_tabWidget);
     m_iatEatHookPage = new QWidget(m_tabWidget);
     m_timerDpcPage = new QWidget(m_tabWidget);
@@ -483,17 +483,17 @@ void KernelDock::initializeUi()
         kernelText("kernel.main.tab.nt_query.title", QStringLiteral("历史NtQuery")));
     m_tabWidget->setTabToolTip(m_ntQueryTabIndex, kernelText("kernel.main.tab.nt_query.tooltip", QStringLiteral("旧版内核 NtQuery 信息页")));
 
-    m_ssdtTabIndex = m_tabWidget->addTab(
-        m_ssdtPage,
-        tabIcon(QStringLiteral(":/Icon/process_list.svg")),
-        QStringLiteral("SSDT"));
-    m_tabWidget->setTabToolTip(m_ssdtTabIndex, kernelText("kernel.main.tab.ssdt.tooltip", QStringLiteral("驱动侧 SSDT 服务索引遍历结果")));
-
-    m_shadowSsdtTabIndex = m_tabWidget->addTab(
-        m_shadowSsdtPage,
-        tabIcon(QStringLiteral(":/Icon/process_list.svg")),
-        QStringLiteral("SSSDT"));
-    m_tabWidget->setTabToolTip(m_shadowSsdtTabIndex, kernelText("kernel.main.tab.shadow_ssdt.tooltip", QStringLiteral("参考 System Informer 的 win32k/win32u shadow syscall 解析")));
+    // I/O 管理把原顶层 SSDT、SSSDT、IDT/GDT 收拢为横向子页，并追加 IOCTLS 解码器。
+    m_ioManagementTabIndex = m_tabWidget->addTab(
+        m_ioManagementPage,
+        tabIcon(QStringLiteral(":/Icon/process_details.svg")),
+        kernelText("kernel.main.tab.io_management.title", QStringLiteral("I/O管理")));
+    m_tabWidget->setTabToolTip(
+        m_ioManagementTabIndex,
+        kernelText(
+            "kernel.main.tab.io_management.tooltip",
+            QStringLiteral("集中查看 SSDT、ShadowSSDT、IDT、GDT 并解析 IOCTL 控制码")));
+    initializeIoManagementTab();
 
     m_inlineHookTabIndex = m_tabWidget->addTab(
         m_inlineHookPage,
@@ -506,12 +506,6 @@ void KernelDock::initializeUi()
         tabIcon(QStringLiteral(":/Icon/process_details.svg")),
         QStringLiteral("IAT/EAT"));
     m_tabWidget->setTabToolTip(m_iatEatHookTabIndex, kernelText("kernel.main.tab.iat_eat.tooltip", QStringLiteral("检测内核模块导入表和导出表可疑目标指针")));
-
-    m_descriptorTableTabIndex = m_tabWidget->addTab(
-        new KernelDescriptorTableTab(m_tabWidget),
-        tabIcon(QStringLiteral(":/Icon/process_details.svg")),
-        QStringLiteral("IDT/GDT"));
-    m_tabWidget->setTabToolTip(m_descriptorTableTabIndex, kernelText("kernel.main.tab.descriptor.tooltip", QStringLiteral("按 CPU 读取并解码 IDT/GDT 描述符及完整性风险")));
 
     m_hvmTabIndex = m_tabWidget->addTab(
         new KernelHvmTab(m_tabWidget),
@@ -612,11 +606,10 @@ void KernelDock::updateTabIconContrast()
     m_tabWidget->setTabIcon(m_objectNamespaceTabIndex, tabIcon(QStringLiteral(":/Icon/process_tree.svg")));
     m_tabWidget->setTabIcon(m_atomTabIndex, tabIcon(QStringLiteral(":/Icon/process_threads.svg")));
     m_tabWidget->setTabIcon(m_ntQueryTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    m_tabWidget->setTabIcon(m_ssdtTabIndex, tabIcon(QStringLiteral(":/Icon/process_list.svg")));
-    m_tabWidget->setTabIcon(m_shadowSsdtTabIndex, tabIcon(QStringLiteral(":/Icon/process_list.svg")));
+    m_tabWidget->setTabIcon(m_ioManagementTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
     m_tabWidget->setTabIcon(m_inlineHookTabIndex, tabIcon(QStringLiteral(":/Icon/process_critical.svg")));
     m_tabWidget->setTabIcon(m_iatEatHookTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
-    m_tabWidget->setTabIcon(m_descriptorTableTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
+    m_tabWidget->setTabIcon(m_hvmTabIndex, tabIcon(QStringLiteral(":/Icon/process_priority.svg")));
     m_tabWidget->setTabIcon(m_timerDpcTabIndex, tabIcon(QStringLiteral(":/Icon/process_threads.svg")));
     m_tabWidget->setTabIcon(m_crossViewTabIndex, tabIcon(QStringLiteral(":/Icon/process_list.svg")));
     m_tabWidget->setTabIcon(m_ipcTabIndex, tabIcon(QStringLiteral(":/Icon/process_details.svg")));
@@ -637,13 +630,9 @@ void KernelDock::updateTabIconContrast()
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
     }
-    else if (currentIndex == m_ssdtTabIndex)
+    else if (currentIndex == m_ioManagementTabIndex)
     {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_list.svg")));
-    }
-    else if (currentIndex == m_shadowSsdtTabIndex)
-    {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_list.svg")));
+        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
     }
     else if (currentIndex == m_inlineHookTabIndex)
     {
@@ -653,9 +642,9 @@ void KernelDock::updateTabIconContrast()
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
     }
-    else if (currentIndex == m_descriptorTableTabIndex)
+    else if (currentIndex == m_hvmTabIndex)
     {
-        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_details.svg")));
+        m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_priority.svg")));
     }
     else if (currentIndex == m_timerDpcTabIndex)
     {
@@ -685,6 +674,73 @@ void KernelDock::updateTabIconContrast()
     {
         m_tabWidget->setTabIcon(currentIndex, selectedTabIcon(QStringLiteral(":/Icon/process_list.svg")));
     }
+}
+
+void KernelDock::initializeIoManagementTab()
+{
+    if (m_ioManagementPage == nullptr || m_ioManagementLayout != nullptr)
+    {
+        return;
+    }
+
+    // m_ioManagementLayout 只承载一个顶端横向 QTabWidget，避免旧顶层页面被额外边距挤压。
+    m_ioManagementLayout = new QVBoxLayout(m_ioManagementPage);
+    m_ioManagementLayout->setContentsMargins(4, 4, 4, 4);
+    m_ioManagementLayout->setSpacing(0);
+
+    m_ioManagementInnerTabWidget = new QTabWidget(m_ioManagementPage);
+    m_ioManagementInnerTabWidget->setTabPosition(QTabWidget::North);
+    m_ioManagementInnerTabWidget->setDocumentMode(true);
+    m_ioManagementLayout->addWidget(m_ioManagementInnerTabWidget, 1);
+
+    // SSDT 与 ShadowSSDT 继续复用原有页面和惰性刷新逻辑，只调整容器层级。
+    m_ssdtPage = new QWidget(m_ioManagementInnerTabWidget);
+    m_shadowSsdtPage = new QWidget(m_ioManagementInnerTabWidget);
+    m_ioSsdtTabIndex = m_ioManagementInnerTabWidget->addTab(
+        m_ssdtPage,
+        kernelText("kernel.main.inner_tab.ssdt", QStringLiteral("SSDT")));
+    m_ioShadowSsdtTabIndex = m_ioManagementInnerTabWidget->addTab(
+        m_shadowSsdtPage,
+        kernelText("kernel.main.inner_tab.shadow_ssdt", QStringLiteral("ShadowSSDT")));
+
+    // IDT/GDT 分别固定到独立实例，满足截图中的四张内核表横向切换心智模型。
+    auto* idtTab = new KernelDescriptorTableTab(
+        KernelDescriptorTableKind::Idt,
+        m_ioManagementInnerTabWidget);
+    auto* gdtTab = new KernelDescriptorTableTab(
+        KernelDescriptorTableKind::Gdt,
+        m_ioManagementInnerTabWidget);
+    m_ioIdtTabIndex = m_ioManagementInnerTabWidget->addTab(
+        idtTab,
+        kernelText("kernel.main.inner_tab.idt", QStringLiteral("IDT")));
+    m_ioGdtTabIndex = m_ioManagementInnerTabWidget->addTab(
+        gdtTab,
+        kernelText("kernel.main.inner_tab.gdt", QStringLiteral("GDT")));
+
+    // IOCTLS 子页为纯 R3 解码器，不访问驱动，因此可以与其余内核表并列即时创建。
+    auto* ioctlDecoderTab = new KernelIoctlDecoderTab(m_ioManagementInnerTabWidget);
+    m_ioIoctlTabIndex = m_ioManagementInnerTabWidget->addTab(
+        ioctlDecoderTab,
+        kernelText("kernel.main.inner_tab.ioctls", QStringLiteral("IOCTLS")));
+
+    m_ioManagementInnerTabWidget->setTabToolTip(
+        m_ioSsdtTabIndex,
+        kernelText("kernel.main.tab.ssdt.tooltip", QStringLiteral("驱动侧 SSDT 服务索引遍历结果")));
+    m_ioManagementInnerTabWidget->setTabToolTip(
+        m_ioShadowSsdtTabIndex,
+        kernelText(
+            "kernel.main.tab.shadow_ssdt.tooltip",
+            QStringLiteral("参考 System Informer 的 win32k/win32u shadow syscall 解析")));
+    m_ioManagementInnerTabWidget->setTabToolTip(
+        m_ioIdtTabIndex,
+        kernelText("kernel.main.inner_tab.idt.tooltip", QStringLiteral("按 CPU 读取 IDT 与 Handler 完整性证据")));
+    m_ioManagementInnerTabWidget->setTabToolTip(
+        m_ioGdtTabIndex,
+        kernelText("kernel.main.inner_tab.gdt.tooltip", QStringLiteral("按 CPU 读取并解码 GDT 段描述符")));
+    m_ioManagementInnerTabWidget->setTabToolTip(
+        m_ioIoctlTabIndex,
+        kernelText("kernel.main.inner_tab.ioctls.tooltip", QStringLiteral("解析 32 位 CTL_CODE 的 Device、Function、Access 与 Method")));
+    m_ioManagementInnerTabWidget->setCurrentIndex(m_ioSsdtTabIndex);
 }
 
 void KernelDock::initializeObjectNamespaceTab()
@@ -1012,6 +1068,23 @@ void KernelDock::initializeConnections()
         updateTabIconContrast();
         ensureTabInitialized(tabIndex);
     });
+
+    // I/O 管理内部切换只初始化当前 SSDT/ShadowSSDT；IDT/GDT 由各自 showEvent 首刷。
+    if (m_ioManagementInnerTabWidget != nullptr)
+    {
+        connect(
+            m_ioManagementInnerTabWidget,
+            &QTabWidget::currentChanged,
+            this,
+            [this](const int innerTabIndex)
+            {
+                if (m_tabWidget != nullptr &&
+                    m_tabWidget->currentIndex() == m_ioManagementTabIndex)
+                {
+                    ensureIoManagementTabInitialized(innerTabIndex);
+                }
+            });
+    }
 }
 
 void KernelDock::initializeCrossViewTab()
@@ -1078,23 +1151,12 @@ void KernelDock::ensureTabInitialized(const int tabIndex)
         return;
     }
 
-    if (tabIndex == m_ssdtTabIndex && !m_ssdtTabInitialized)
+    if (tabIndex == m_ioManagementTabIndex)
     {
-        showTabInitializingProgress(tabIndex, QStringLiteral("SSDT"));
-        initializeSsdtTab();
-        m_ssdtTabInitialized = true;
-        hideTabInitializingProgress();
-        refreshSsdtAsync();
-        return;
-    }
-
-    if (tabIndex == m_shadowSsdtTabIndex && !m_shadowSsdtTabInitialized)
-    {
-        showTabInitializingProgress(tabIndex, QStringLiteral("SSSDT"));
-        initializeShadowSsdtTab();
-        m_shadowSsdtTabInitialized = true;
-        hideTabInitializingProgress();
-        refreshShadowSsdtAsync();
+        const int innerTabIndex = m_ioManagementInnerTabWidget != nullptr
+            ? m_ioManagementInnerTabWidget->currentIndex()
+            : -1;
+        ensureIoManagementTabInitialized(innerTabIndex);
         return;
     }
 
@@ -1185,4 +1247,26 @@ void KernelDock::ensureTabInitialized(const int tabIndex)
         return;
     }
 
+}
+
+void KernelDock::ensureIoManagementTabInitialized(const int innerTabIndex)
+{
+    if (innerTabIndex == m_ioSsdtTabIndex && !m_ssdtTabInitialized)
+    {
+        showTabInitializingProgress(m_ioManagementTabIndex, QStringLiteral("SSDT"));
+        initializeSsdtTab();
+        m_ssdtTabInitialized = true;
+        hideTabInitializingProgress();
+        refreshSsdtAsync();
+        return;
+    }
+
+    if (innerTabIndex == m_ioShadowSsdtTabIndex && !m_shadowSsdtTabInitialized)
+    {
+        showTabInitializingProgress(m_ioManagementTabIndex, QStringLiteral("ShadowSSDT"));
+        initializeShadowSsdtTab();
+        m_shadowSsdtTabInitialized = true;
+        hideTabInitializingProgress();
+        refreshShadowSsdtAsync();
+    }
 }

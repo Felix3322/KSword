@@ -100,7 +100,8 @@ namespace ksword::driver_dock_internal
     bool isDriverSignatureLoadError(const DWORD errorCode)
     {
         return errorCode == ERROR_INVALID_IMAGE_HASH ||
-            errorCode == ERROR_DRIVER_BLOCKED;
+            errorCode == ERROR_DRIVER_BLOCKED ||
+            errorCode == ERROR_ACCESS_DISABLED_BY_POLICY;
     }
 
     // formatWin32ErrorTextForAdvice：
@@ -137,15 +138,123 @@ namespace ksword::driver_dock_internal
             .arg(messageText);
     }
 
+    // WindowsReleaseInfo：
+    // - 作用：保存 Windows 面向用户的版本标签和内核构建号；
+    // - displayVersion 用于区分共享同一服务分支的 25H2/26H2，不能只看 build。
+    struct WindowsReleaseInfo
+    {
+        QString displayVersion; // displayVersion：注册表中的 DisplayVersion，例如 26H2。
+        QString buildNumber;    // buildNumber：注册表中的 CurrentBuildNumber，仅用于诊断展示。
+        bool is26H2OrNewer = false; // is26H2OrNewer：版本标签是否达到 26H2。
+    };
+
+    // readWindowsVersionRegistryText：
+    // - 输入：CurrentVersion 注册表中的字符串值名；
+    // - 处理：固定读取 64 位系统视图，避免 32 位重定向造成版本误判；
+    // - 返回：读取成功后的去空白文本，失败返回空字符串。
+    QString readWindowsVersionRegistryText(const wchar_t* valueName)
+    {
+        HKEY versionKey = nullptr;
+        const LSTATUS openStatus = ::RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+            0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &versionKey);
+        if (openStatus != ERROR_SUCCESS || versionKey == nullptr)
+        {
+            return QString();
+        }
+
+        std::array<wchar_t, 64> valueBuffer{};
+        DWORD valueType = 0;
+        DWORD valueBytes = static_cast<DWORD>(valueBuffer.size() * sizeof(wchar_t));
+        const LSTATUS queryStatus = ::RegQueryValueExW(
+            versionKey,
+            valueName,
+            nullptr,
+            &valueType,
+            reinterpret_cast<LPBYTE>(valueBuffer.data()),
+            &valueBytes);
+        ::RegCloseKey(versionKey);
+        if (queryStatus != ERROR_SUCCESS ||
+            (valueType != REG_SZ && valueType != REG_EXPAND_SZ))
+        {
+            return QString();
+        }
+
+        valueBuffer.back() = L'\0';
+        return QString::fromWCharArray(valueBuffer.data()).trimmed();
+    }
+
+    // queryWindowsReleaseInfo：
+    // - 作用：按 DisplayVersion 解析 Windows 年度/半年度版本；
+    // - 26H2 与 25H2 共享服务分支，故 build 只展示、不参与版本阈值判断；
+    // - 返回：供驱动加载错误分流和日志展示使用的稳定快照。
+    WindowsReleaseInfo queryWindowsReleaseInfo()
+    {
+        WindowsReleaseInfo releaseInfo;
+        releaseInfo.displayVersion =
+            readWindowsVersionRegistryText(L"DisplayVersion").toUpper();
+        releaseInfo.buildNumber =
+            readWindowsVersionRegistryText(L"CurrentBuildNumber");
+
+        const int halfMarkerIndex =
+            releaseInfo.displayVersion.indexOf(QLatin1Char('H'));
+        bool yearValid = false;
+        bool halfValid = false;
+        const int releaseYear = halfMarkerIndex > 0
+            ? releaseInfo.displayVersion.left(halfMarkerIndex).toInt(&yearValid)
+            : 0;
+        const int releaseHalf = halfMarkerIndex > 0
+            ? releaseInfo.displayVersion.mid(halfMarkerIndex + 1).toInt(&halfValid)
+            : 0;
+        releaseInfo.is26H2OrNewer =
+            yearValid &&
+            halfValid &&
+            (releaseYear > 26 || (releaseYear == 26 && releaseHalf >= 2));
+        return releaseInfo;
+    }
+
     // buildDriverSignatureLoadAdvice：
     // - 输入：错误码、服务名、驱动路径；
-    // - 处理：生成面向开发环境的签名修复说明；
+    // - 处理：26H2 及以上先进入新内核信任策略专用分支，其余版本保留通用说明；
     // - 返回：可直接追加到 DriverDock 操作日志中的多行文本。
     QString buildDriverSignatureLoadAdvice(
         const DWORD errorCode,
         const QString& serviceNameText,
         const QString& binaryPathText)
     {
+        const QString resolvedBinaryPath = binaryPathText.trimmed().isEmpty()
+            ? driverText(
+                "driver.load_advice.path_missing",
+                QStringLiteral("<未从表单读取到路径>"))
+            : binaryPathText;
+        const WindowsReleaseInfo releaseInfo = queryWindowsReleaseInfo();
+        if (releaseInfo.is26H2OrNewer)
+        {
+            return driverText(
+                "driver.load_advice.windows_26h2_policy",
+                QStringLiteral(
+                    "挂载失败：Windows 拒绝加载驱动（%1）。\n"
+                    "系统：Windows %2（Build %3，已按 26H2 或更高版本处理）\n"
+                    "服务：%4\n"
+                    "驱动路径：%5\n"
+                    "此版本使用更严格的内核驱动信任策略。正式环境请换用经 Microsoft Hardware Dev Center "
+                    "签名（证明签名/WHQL）的 KswordARK.sys；开发环境也必须给二进制写入有效测试签名，"
+                    "启用 TESTSIGNING 后重启。若仍失败，请检查“代码完整性/操作”事件日志以及 "
+                    "Secure Boot、内存完整性或 WDAC 策略，不要把策略阻止误判为普通 SCM 故障。"))
+                .arg(formatWin32ErrorTextForAdvice(errorCode))
+                .arg(releaseInfo.displayVersion)
+                .arg(releaseInfo.buildNumber.isEmpty()
+                    ? driverText(
+                        "driver.load_advice.build_unknown",
+                        QStringLiteral("<未知>"))
+                    : releaseInfo.buildNumber)
+                .arg(serviceNameText)
+                .arg(resolvedBinaryPath);
+        }
+
         QString adviceText = driverText(
             "driver.load_advice.signature_error",
             QStringLiteral(
@@ -155,9 +264,7 @@ namespace ksword::driver_dock_internal
                 "请使用可信签名的 KswordARK.sys；开发或测试环境可使用测试签名并启用测试模式，随后重启系统。"))
             .arg(formatWin32ErrorTextForAdvice(errorCode))
             .arg(serviceNameText)
-            .arg(binaryPathText.trimmed().isEmpty()
-                ? driverText("driver.load_advice.path_missing", QStringLiteral("<未从表单读取到路径>"))
-                : binaryPathText);
+            .arg(resolvedBinaryPath);
         return adviceText;
     }
 
@@ -338,7 +445,7 @@ void DriverDock::showEvent(QShowEvent* event)
         {
             refreshDriverServiceRecords();
             refreshLoadedKernelModuleRecords();
-            refreshPiDdbAsync();
+            refreshUnloadedDriversAsync();
         });
 }
 

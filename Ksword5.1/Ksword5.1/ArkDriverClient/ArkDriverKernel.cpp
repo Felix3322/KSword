@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1074,6 +1075,228 @@ namespace ksword::ark
             << ", lastStatus=0x" << std::hex << static_cast<unsigned long>(integrityResult.lastStatus);
         integrityResult.io.message = stream.str();
         return integrityResult;
+    }
+
+    UnloadedDriverQueryResult DriverClient::queryUnloadedDrivers(
+        const std::uint32_t source,
+        const unsigned long maxRows) const
+    {
+        // 输入：三个只读来源之一和单次返回行数预算。
+        // 处理：构造固定请求头，按预算分配变长响应并严格校验协议边界。
+        // 返回：统一 R3 行模型；业务降级状态保留在 queryStatus/lastStatus。
+        UnloadedDriverQueryResult queryResult{};
+        queryResult.source = source;
+
+        const bool sourceValid =
+            source == KSWORD_ARK_UNLOADED_DRIVER_SOURCE_MM_UNLOADED_DRIVERS ||
+            source == KSWORD_ARK_UNLOADED_DRIVER_SOURCE_PIDDB_CACHE_TABLE ||
+            source == KSWORD_ARK_UNLOADED_DRIVER_SOURCE_KERNEL_HASH_BUCKET_LIST;
+        if (!sourceValid)
+        {
+            queryResult.io.ok = false;
+            queryResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            queryResult.io.message = "unloaded driver source is invalid";
+            return queryResult;
+        }
+
+        const unsigned long boundedRows = std::max<unsigned long>(
+            1UL,
+            std::min<unsigned long>(
+                maxRows == 0UL
+                    ? KSWORD_ARK_UNLOADED_DRIVER_DEFAULT_ROWS
+                    : maxRows,
+                KSWORD_ARK_UNLOADED_DRIVER_MAX_ROWS));
+        constexpr std::size_t headerSize =
+            KSWORD_ARK_QUERY_UNLOADED_DRIVERS_RESPONSE_HEADER_SIZE;
+        const std::size_t responseBytes =
+            headerSize +
+            (static_cast<std::size_t>(boundedRows) *
+                sizeof(KSWORD_ARK_UNLOADED_DRIVER_ROW));
+
+        KSWORD_ARK_QUERY_UNLOADED_DRIVERS_REQUEST request{};
+        request.version = KSWORD_ARK_UNLOADED_DRIVER_PROTOCOL_VERSION;
+        request.size = static_cast<unsigned long>(sizeof(request));
+        request.source = static_cast<unsigned long>(source);
+        request.maxRows = boundedRows;
+
+        std::vector<std::uint8_t> responseBuffer(responseBytes, 0U);
+        queryResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            responseBuffer.data(),
+            static_cast<unsigned long>(responseBuffer.size()));
+        if (!queryResult.io.ok)
+        {
+            queryResult.unsupported =
+                isUnsupportedIoctlError(queryResult.io.win32Error) ||
+                queryResult.io.win32Error == ERROR_CALL_NOT_IMPLEMENTED;
+            queryResult.io.message = queryResult.unsupported
+                ? "IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS unsupported or driver version is too old"
+                : "DeviceIoControl(IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS) failed, error=" +
+                    std::to_string(queryResult.io.win32Error);
+            return queryResult;
+        }
+        if (queryResult.io.bytesReturned < headerSize)
+        {
+            queryResult.io.ok = false;
+            queryResult.io.message =
+                "unloaded driver response too small, bytesReturned=" +
+                std::to_string(queryResult.io.bytesReturned);
+            return queryResult;
+        }
+
+        const auto* response =
+            reinterpret_cast<const KSWORD_ARK_QUERY_UNLOADED_DRIVERS_RESPONSE*>(
+                responseBuffer.data());
+        constexpr std::uint32_t knownResponseFlags =
+            KSWORD_ARK_UNLOADED_DRIVER_RESPONSE_FLAG_TRUNCATED |
+            KSWORD_ARK_UNLOADED_DRIVER_RESPONSE_FLAG_SKIPPED_INVALID_ROW |
+            KSWORD_ARK_UNLOADED_DRIVER_RESPONSE_FLAG_SNAPSHOT_RACY;
+        const bool headerValid =
+            response->version == KSWORD_ARK_UNLOADED_DRIVER_PROTOCOL_VERSION &&
+            response->rowSize == sizeof(KSWORD_ARK_UNLOADED_DRIVER_ROW) &&
+            response->source == source &&
+            response->queryStatus <= KSWORD_ARK_UNLOADED_DRIVER_STATUS_PARTIAL &&
+            (response->responseFlags & ~knownResponseFlags) == 0U &&
+            response->returnedRows <= boundedRows &&
+            response->returnedRows <= response->totalRows &&
+            response->reserved[0] == 0U &&
+            response->reserved[1] == 0U &&
+            response->size >= headerSize &&
+            response->size == queryResult.io.bytesReturned;
+        if (!headerValid)
+        {
+            queryResult.io.ok = false;
+            queryResult.io.message =
+                "unloaded driver response header is invalid";
+            return queryResult;
+        }
+
+        const std::size_t returnedRows =
+            static_cast<std::size_t>(response->returnedRows);
+        if (returnedRows >
+            (std::numeric_limits<std::size_t>::max() - headerSize) /
+                sizeof(KSWORD_ARK_UNLOADED_DRIVER_ROW))
+        {
+            queryResult.io.ok = false;
+            queryResult.io.message =
+                "unloaded driver response row count overflows size";
+            return queryResult;
+        }
+        const std::size_t requiredResponseBytes =
+            headerSize +
+            (returnedRows * sizeof(KSWORD_ARK_UNLOADED_DRIVER_ROW));
+        if (requiredResponseBytes !=
+                static_cast<std::size_t>(response->size) ||
+            requiredResponseBytes >
+                static_cast<std::size_t>(queryResult.io.bytesReturned) ||
+            returnedRows > boundedRows)
+        {
+            queryResult.io.ok = false;
+            queryResult.io.message =
+                "unloaded driver response size contract is invalid";
+            return queryResult;
+        }
+
+        queryResult.queryStatus =
+            static_cast<std::uint32_t>(response->queryStatus);
+        queryResult.responseFlags =
+            static_cast<std::uint32_t>(response->responseFlags);
+        queryResult.totalRows =
+            static_cast<std::uint32_t>(response->totalRows);
+        queryResult.skippedRows =
+            static_cast<std::uint32_t>(response->skippedRows);
+        queryResult.lastStatus = static_cast<long>(response->lastStatus);
+        queryResult.io.ntStatus = queryResult.lastStatus;
+
+        constexpr std::uint32_t knownRowFlags =
+            KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_NAME |
+            KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_BASE |
+            KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_SIZE |
+            KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_TIMESTAMP |
+            KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_LOAD_STATUS |
+            KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_UNLOAD_TIME;
+        queryResult.entries.reserve(returnedRows);
+        for (std::size_t rowIndex = 0U;
+             rowIndex < returnedRows;
+             ++rowIndex)
+        {
+            const KSWORD_ARK_UNLOADED_DRIVER_ROW& sourceRow =
+                response->rows[rowIndex];
+            const std::size_t nameBytes =
+                static_cast<std::size_t>(sourceRow.nameLengthBytes);
+            const bool hasName =
+                (sourceRow.flags &
+                    KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_NAME) != 0U;
+            const bool hasBase =
+                (sourceRow.flags &
+                    KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_BASE) != 0U;
+            const bool hasSize =
+                (sourceRow.flags &
+                    KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_SIZE) != 0U;
+            const bool hasTimestamp =
+                (sourceRow.flags &
+                    KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_TIMESTAMP) != 0U;
+            const bool hasLoadStatus =
+                (sourceRow.flags &
+                    KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_LOAD_STATUS) != 0U;
+            const bool hasUnloadTime =
+                (sourceRow.flags &
+                    KSWORD_ARK_UNLOADED_DRIVER_ROW_FLAG_HAS_UNLOAD_TIME) != 0U;
+            const std::size_t nameChars = nameBytes / sizeof(wchar_t);
+            if (sourceRow.source != source ||
+                (sourceRow.flags & ~knownRowFlags) != 0U ||
+                sourceRow.reserved != 0U ||
+                nameBytes > sizeof(sourceRow.driverName) - sizeof(wchar_t) ||
+                (nameBytes % sizeof(wchar_t)) != 0U ||
+                hasName != (nameBytes != 0U) ||
+                (!hasBase && sourceRow.baseAddress != 0ULL) ||
+                (!hasSize && sourceRow.imageSize != 0ULL) ||
+                (!hasTimestamp && sourceRow.timeDateStamp != 0UL) ||
+                (!hasLoadStatus && sourceRow.loadStatus != 0L) ||
+                (!hasUnloadTime && sourceRow.unloadTime != 0ULL) ||
+                sourceRow.driverName[nameChars] != L'\0')
+            {
+                queryResult.io.ok = false;
+                queryResult.io.message =
+                    "unloaded driver response row is invalid";
+                queryResult.entries.clear();
+                return queryResult;
+            }
+
+            UnloadedDriverEntry row{};
+            row.source = static_cast<std::uint32_t>(sourceRow.source);
+            row.flags = static_cast<std::uint32_t>(sourceRow.flags);
+            row.entryAddress =
+                static_cast<std::uint64_t>(sourceRow.entryAddress);
+            row.baseAddress =
+                static_cast<std::uint64_t>(sourceRow.baseAddress);
+            row.imageSize =
+                static_cast<std::uint64_t>(sourceRow.imageSize);
+            row.unloadTime =
+                static_cast<std::uint64_t>(sourceRow.unloadTime);
+            row.timeDateStamp =
+                static_cast<std::uint32_t>(sourceRow.timeDateStamp);
+            row.loadStatus = static_cast<long>(sourceRow.loadStatus);
+            row.driverName.assign(
+                sourceRow.driverName,
+                sourceRow.driverName + nameChars);
+            queryResult.entries.push_back(std::move(row));
+        }
+
+        std::ostringstream stream;
+        stream << "source=" << queryResult.source
+            << ", status=" << queryResult.queryStatus
+            << ", total=" << queryResult.totalRows
+            << ", returned=" << response->returnedRows
+            << ", parsed=" << queryResult.entries.size()
+            << ", skipped=" << queryResult.skippedRows
+            << ", flags=0x" << std::hex << queryResult.responseFlags
+            << ", lastStatus=0x"
+            << static_cast<unsigned long>(queryResult.lastStatus);
+        queryResult.io.message = stream.str();
+        return queryResult;
     }
 
     DriverIntegrityResult DriverClient::queryKernelCpuIntegrity(

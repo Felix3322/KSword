@@ -231,6 +231,13 @@ namespace ksword::ark
             unsigned long flags = KSWORD_ARK_DRIVER_INTEGRITY_FLAG_DEFAULT,
             unsigned long maxRows = KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_MAX_ROWS,
             unsigned long maxIdtVectorsPerCpu = KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_IDT_VECTORS) const;
+        // queryUnloadedDrivers：
+        // - 输入：MmUnloadedDrivers、PiDDBCacheTable 或 g_KernelHashBucketList 来源及行数预算；
+        // - 处理：调用统一只读 IOCTL，并按 HAS_* 标志保留各来源真实支持的列；
+        // - 返回：UnloadedDriverQueryResult；不会删除、清理或修改任何内核缓存。
+        UnloadedDriverQueryResult queryUnloadedDrivers(
+            std::uint32_t source,
+            unsigned long maxRows = KSWORD_ARK_UNLOADED_DRIVER_DEFAULT_ROWS) const;
         // queryKernelCpuIntegrity：
         // - 输入：CPU/IDT 采集 flags 与预算。
         // - 处理：复用 queryDriverIntegrity 的协议，只请求 CPU entry evidence。
@@ -342,6 +349,7 @@ namespace ksword::ark
         NetworkEndpointAuditResult queryNetworkTcpEndpoints(unsigned long flags = KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxRows = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) const;
         NetworkEndpointAuditResult queryNetworkUdpEndpoints(unsigned long flags = KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxRows = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) const;
         NetworkWfpInventoryResult queryNetworkWfpInventory(unsigned long flags = KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxRows = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) const;
+        NetworkWfpEventResult queryNetworkWfpEvents(std::uint64_t afterSequence, unsigned long maxRows = KSWORD_ARK_NETWORK_WFP_EVENT_DEFAULT_REQUESTED_ROWS) const;
         NetworkNdisChainResult queryNetworkNdisChain(unsigned long flags = KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxRows = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) const;
         // File/filter/storage audit wrappers：
         // - 输入：只读 flags、预算和可选卷路径；

@@ -97,7 +97,6 @@ Return Value:
 --*/
 {
     KSW_QUERY_DYN_V4_MODULES_RESPONSE* response = NULL;
-    ULONG index = 0UL;
     ULONG totalCount = 0UL;
     ULONG returnedCount = 0UL;
     ULONG capacity = 0UL;
@@ -116,18 +115,11 @@ Return Value:
     response->entrySize = sizeof(KSW_DYN_V4_MODULE_STATUS_ENTRY);
     capacity = (ULONG)((OutputBufferLength - KSW_QUERY_DYN_V4_MODULES_RESPONSE_HEADER_SIZE) / sizeof(KSW_DYN_V4_MODULE_STATUS_ENTRY));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
-    for (index = 0UL; index < KSW_DYN_V4_MAX_MODULES; ++index) {
-        if (!g_KswordDynDataV4State.Modules[index].Occupied) {
-            continue;
-        }
-        totalCount += 1UL;
-        if (returnedCount < capacity) {
-            response->entries[returnedCount] = g_KswordDynDataV4State.Modules[index].PublicEntry;
-            returnedCount += 1UL;
-        }
-    }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    // 即使 profile 尚未应用也返回当前模块身份，R3 才能精确选择 CI 等多模块条目。
+    returnedCount = KswordARKDynDataV4BuildModuleStatusSnapshot(
+        response->entries,
+        capacity,
+        &totalCount);
 
     response->totalCount = totalCount;
     response->returnedCount = returnedCount;

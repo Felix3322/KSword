@@ -32,6 +32,11 @@ OPTIONAL_MISSING_FIELDS = {
     "_UNLOADED_DRIVERS->CurrentTime",
 }
 
+# CI 的 v4 profile 没有传统 v3 字段表；只要只读遍历所需的两个全局、
+# Next、DriverName 与条目大小都存在，就能安全发布为完整身份。
+CI_MODULE_CLASS_ID = 65
+CI_REQUIRED_V4_ITEM_IDS = {1201, 1202, 1203, 1204, 1209}
+
 
 def load_object(path: Path) -> dict[str, Any]:
     """读取 JSON 对象；输入文件路径，输出顶层字典，格式错误时直接终止构建。"""
@@ -47,8 +52,8 @@ def validate_source(source: dict[str, Any]) -> dict[int, dict[str, Any]]:
     if source.get("schemaVersion") != 1:
         raise ValueError("support_manifest_source.json schemaVersion must be 1")
     modules = source.get("modules")
-    if not isinstance(modules, list) or len(modules) != 11:
-        raise ValueError("the Launcher catalog must contain exactly 11 v4 module classes")
+    if not isinstance(modules, list) or len(modules) != 12:
+        raise ValueError("the Launcher catalog must contain exactly 12 v4 module classes")
     indexed: dict[int, dict[str, Any]] = {}
     for module in modules:
         if not isinstance(module, dict):
@@ -66,7 +71,7 @@ def validate_source(source: dict[str, Any]) -> dict[int, dict[str, Any]]:
         if compatibility_required and collection_only:
             raise ValueError(f"module {class_id} cannot be compatibilityRequired and collectionOnly")
         indexed[class_id] = module
-    expected_class_ids = {0, 1, 2, 16, 17, 18, 32, 33, 34, 48, 64}
+    expected_class_ids = {0, 1, 2, 16, 17, 18, 32, 33, 34, 48, 64, 65}
     if set(indexed) != expected_class_ids:
         raise ValueError("module classIds do not match the shared DynData v4 class IDs")
     if not indexed[0]["compatibilityRequired"] or not indexed[1]["compatibilityRequired"]:
@@ -75,8 +80,18 @@ def validate_source(source: dict[str, Any]) -> dict[int, dict[str, Any]]:
 
 
 def profile_is_complete(profile: dict[str, Any]) -> bool:
-    """判断发布 profile 是否完整；输入 v3 profile，输出 Launcher 使用的完整性标记。"""
-    coverage = float(profile.get("coveragePercent", 0.0))
+    """判断发布 profile 是否完整；输入 v3/v4 profile，输出 Launcher 使用的完整性标记。"""
+    if int(profile.get("moduleClassId", -1)) == CI_MODULE_CLASS_ID:
+        items = profile.get("items", [])
+        if not isinstance(items, list):
+            return False
+        item_ids = {
+            int(item["itemId"])
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("itemId"), int)
+        }
+        return CI_REQUIRED_V4_ITEM_IDS.issubset(item_ids)
+
     missing_fields = profile.get("missingFields", [])
     missing_globals = profile.get("missingGlobals", [])
     # coveragePercent 是所有字段的数学覆盖率，不能单独作为核心可用性的判断；
@@ -173,7 +188,7 @@ def validate_output(output: dict[str, Any]) -> None:
     """执行无需第三方库的严格结构校验；输入输出对象，失败时抛出异常。"""
     if set(output) != {"schemaVersion", "generatedUtc", "product", "osPolicy", "modules", "profiles"}:
         raise ValueError("generated manifest contains unexpected top-level keys")
-    if output["schemaVersion"] != 1 or len(output["modules"]) != 11:
+    if output["schemaVersion"] != 1 or len(output["modules"]) != 12:
         raise ValueError("generated manifest has an invalid schema or module count")
     for profile in output["profiles"]:
         for key in REQUIRED_PROFILE_KEYS + ("complete", "coveragePercent", "profileName"):

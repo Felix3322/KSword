@@ -2,8 +2,12 @@
 
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
+#include <QPointer>
 
 #include <cstddef>
+#include <unordered_map>
+
+#pragma comment(lib, "Dnsapi.lib")
 
 using namespace network_dock_detail;
 
@@ -41,6 +45,166 @@ namespace
     {
         (void)packetRecord;
         return QStringLiteral("网络");
+    }
+
+    // normalizeIpAddressText 作用：
+    // - 输入任意合法 IPv4/IPv6 文本；
+    // - 通过 InetPton/InetNtop 归一化，作为 DNS 地址缓存键；
+    // - 无效文本返回空字符串。
+    QString normalizeIpAddressText(const QString& addressText)
+    {
+        IN_ADDR ipv4Address{};
+        if (InetPtonW(AF_INET, reinterpret_cast<PCWSTR>(addressText.utf16()), &ipv4Address) == 1)
+        {
+            wchar_t addressBuffer[INET_ADDRSTRLEN] = {};
+            return InetNtopW(AF_INET, &ipv4Address, addressBuffer, static_cast<DWORD>(std::size(addressBuffer))) != nullptr
+                ? QString::fromWCharArray(addressBuffer)
+                : QString();
+        }
+
+        IN6_ADDR ipv6Address{};
+        if (InetPtonW(AF_INET6, reinterpret_cast<PCWSTR>(addressText.utf16()), &ipv6Address) == 1)
+        {
+            wchar_t addressBuffer[INET6_ADDRSTRLEN] = {};
+            return InetNtopW(AF_INET6, &ipv6Address, addressBuffer, static_cast<DWORD>(std::size(addressBuffer))) != nullptr
+                ? QString::fromWCharArray(addressBuffer).toLower()
+                : QString();
+        }
+        return QString();
+    }
+
+    // rebuildLocalDnsAddressMap 作用：
+    // - 先枚举 DnsGetCacheDataTable 中的名称，再用 DNS_QUERY_CACHE_ONLY 读取 A/AAAA；
+    // - 返回 IP -> 域名映射，全程不会触发线上 DNS 查询；
+    // - 该函数只在后台线程调用。
+    QHash<QString, QString> rebuildLocalDnsAddressMap()
+    {
+        using DnsGetCacheDataTableFn = BOOL(WINAPI*)(PVOID);
+        struct DnsCacheEntryRecord
+        {
+            DnsCacheEntryRecord* next = nullptr;
+            PWSTR name = nullptr;
+            WORD type = 0;
+            WORD dataLength = 0;
+            DWORD flags = 0;
+        };
+
+        QHash<QString, QString> addressNameMap;
+        HMODULE dnsapiModule = GetModuleHandleW(L"dnsapi.dll");
+        if (dnsapiModule == nullptr)
+        {
+            dnsapiModule = LoadLibraryW(L"dnsapi.dll");
+        }
+        if (dnsapiModule == nullptr)
+        {
+            return addressNameMap;
+        }
+
+        const auto dnsGetCacheDataTable = reinterpret_cast<DnsGetCacheDataTableFn>(
+            GetProcAddress(dnsapiModule, "DnsGetCacheDataTable"));
+        if (dnsGetCacheDataTable == nullptr)
+        {
+            return addressNameMap;
+        }
+
+        DnsCacheEntryRecord rootEntry{};
+        if (dnsGetCacheDataTable(&rootEntry) == FALSE)
+        {
+            return addressNameMap;
+        }
+
+        int visitedNameCount = 0;
+        for (DnsCacheEntryRecord* node = rootEntry.next;
+            node != nullptr && visitedNameCount < 2048;
+            node = node->next, ++visitedNameCount)
+        {
+            if (node->name == nullptr || (node->type != DNS_TYPE_A && node->type != DNS_TYPE_AAAA))
+            {
+                continue;
+            }
+
+            PDNS_RECORDW recordList = nullptr;
+            const DNS_STATUS queryStatus = DnsQuery_W(
+                node->name,
+                node->type,
+                DNS_QUERY_CACHE_ONLY,
+                nullptr,
+                &recordList,
+                nullptr);
+            if (queryStatus != ERROR_SUCCESS || recordList == nullptr)
+            {
+                continue;
+            }
+
+            const QString domainText = QString::fromWCharArray(node->name);
+            for (PDNS_RECORDW record = recordList; record != nullptr; record = record->pNext)
+            {
+                wchar_t addressBuffer[INET6_ADDRSTRLEN] = {};
+                PCWSTR convertedAddress = nullptr;
+                if (record->wType == DNS_TYPE_A)
+                {
+                    convertedAddress = InetNtopW(
+                        AF_INET,
+                        &record->Data.A.IpAddress,
+                        addressBuffer,
+                        static_cast<DWORD>(std::size(addressBuffer)));
+                }
+                else if (record->wType == DNS_TYPE_AAAA)
+                {
+                    convertedAddress = InetNtopW(
+                        AF_INET6,
+                        record->Data.AAAA.Ip6Address.IP6Byte,
+                        addressBuffer,
+                        static_cast<DWORD>(std::size(addressBuffer)));
+                }
+                if (convertedAddress == nullptr)
+                {
+                    continue;
+                }
+
+                const QString addressKey = normalizeIpAddressText(QString::fromWCharArray(addressBuffer));
+                if (!addressKey.isEmpty() && !addressNameMap.contains(addressKey))
+                {
+                    addressNameMap.insert(addressKey, domainText);
+                }
+            }
+            DnsRecordListFree(recordList, DnsFreeRecordList);
+        }
+        return addressNameMap;
+    }
+
+    // resolveDomainNameFromLocalCache 作用：
+    // - 只查询本机 DNS Client 缓存映射，不发送线上 PTR/DNS 请求；
+    // - 缓存最多每 30 秒后台重建一次，避免抓包 UI 线程等待；
+    // - 返回域名，缓存未命中时返回空字符串。
+    QString resolveDomainNameFromLocalCache(const QString& addressText)
+    {
+        const QString addressKey = normalizeIpAddressText(addressText);
+        if (addressKey.isEmpty()
+            || addressKey == QStringLiteral("0.0.0.0")
+            || addressKey == QStringLiteral("::"))
+        {
+            return QString();
+        }
+
+        static std::mutex dnsCacheMutex;
+        static QHash<QString, QString> localDnsAddressMap;
+        static ULONGLONG lastRefreshTick = 0;
+        {
+            std::lock_guard<std::mutex> guard(dnsCacheMutex);
+            const ULONGLONG nowTick = GetTickCount64();
+            if (lastRefreshTick == 0ULL || (nowTick - lastRefreshTick) >= 30000ULL)
+            {
+                localDnsAddressMap = rebuildLocalDnsAddressMap();
+                lastRefreshTick = nowTick;
+            }
+            const auto cachedIterator = localDnsAddressMap.constFind(addressKey);
+            if (cachedIterator != localDnsAddressMap.constEnd())
+            {
+                return cachedIterator.value();
+            }
+        }
+        return QString();
     }
 }
 
@@ -231,10 +395,18 @@ void NetworkDock::flushPendingPacketsToUi()
 
 void NetworkDock::onStatusMessageArrived(const std::string& statusText)
 {
+    // R0 模式不接受已停止的 R3 服务回调覆盖来源状态。
+    if (m_monitorSource == TrafficMonitorSource::R0
+        || m_monitorSource == TrafficMonitorSource::Starting)
+    {
+        return;
+    }
+
     const QString statusQString = toQString(statusText);
     if (m_monitorStatusLabel != nullptr)
     {
-        m_monitorStatusLabel->setText(QStringLiteral("状态：%1").arg(statusQString));
+        m_monitorStatusLabel->setText(
+            QStringLiteral("状态：来源 R3；%1").arg(statusQString));
     }
 
     // 状态回调可能表示启动失败/线程退出，因此同步刷新按钮状态。
@@ -248,6 +420,10 @@ void NetworkDock::onStatusMessageArrived(const std::string& statusText)
         // 后台线程若因错误或外部条件自行退出，也要关闭时间轴会话；
         // 否则后续等待时间会被误计入“监控开启时长”。
         endPacketTimelineMonitorSession();
+    }
+    if (!m_monitorRunning)
+    {
+        m_monitorSource = TrafficMonitorSource::Stopped;
     }
     updateMonitorButtonState();
 
@@ -298,8 +474,123 @@ void NetworkDock::appendPacketToMonitorTable(const ks::network::PacketRecord& pa
     // - setRowCount 在尾部追加时更轻量，适合高频写入场景。
     const int newRow = m_packetTable->rowCount();
     m_packetTable->setRowCount(newRow + 1);
-    const QIcon processIcon = resolveProcessIconByPid(packetRecord.processId, packetRecord.processName);
-    populatePacketRow(m_packetTable, newRow, packetRecord, packetRecord.sequenceId, processIcon);
+    scheduleDomainResolutionForPacket(
+        packetRecord.sequenceId,
+        toQString(packetRecord.remoteAddress));
+    const auto cachedPacketIterator = m_packetBySequence.find(packetRecord.sequenceId);
+    const ks::network::PacketRecord& displayRecord = cachedPacketIterator != m_packetBySequence.end()
+        ? cachedPacketIterator->second
+        : packetRecord;
+    const QIcon processIcon = resolveProcessIconByPid(
+        displayRecord.processId,
+        displayRecord.processName);
+    populatePacketRow(
+        m_packetTable,
+        newRow,
+        displayRecord,
+        displayRecord.sequenceId,
+        processIcon);
+}
+
+void NetworkDock::scheduleDomainResolutionForPacket(
+    const std::uint64_t sequenceId,
+    const QString& remoteAddressText)
+{
+    const QString addressKey = normalizeIpAddressText(remoteAddressText);
+    if (addressKey.isEmpty()
+        || addressKey == QStringLiteral("0.0.0.0")
+        || addressKey == QStringLiteral("::"))
+    {
+        auto packetIterator = m_packetBySequence.find(sequenceId);
+        if (packetIterator != m_packetBySequence.end())
+        {
+            packetIterator->second.remoteDomain = "-";
+        }
+        return;
+    }
+
+    const auto cachedIterator = m_remoteDomainCache.constFind(addressKey);
+    if (cachedIterator != m_remoteDomainCache.constEnd())
+    {
+        auto packetIterator = m_packetBySequence.find(sequenceId);
+        if (packetIterator != m_packetBySequence.end())
+        {
+            packetIterator->second.remoteDomain = cachedIterator.value().toUtf8().constData();
+        }
+        return;
+    }
+    if (m_remoteDomainResolutionPending.contains(addressKey))
+    {
+        return;
+    }
+    m_remoteDomainResolutionPending.insert(addressKey);
+
+    QPointer<NetworkDock> safeThis(this);
+    QThreadPool::globalInstance()->start([safeThis, addressKey]()
+    {
+        const QString domainText = resolveDomainNameFromLocalCache(addressKey);
+        if (safeThis.isNull())
+        {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            safeThis.data(),
+            [safeThis, addressKey, domainText]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyDomainResolutionResult(addressKey, domainText);
+                }
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void NetworkDock::applyDomainResolutionResult(
+    const QString& remoteAddressText,
+    const QString& domainText)
+{
+    const QString addressKey = normalizeIpAddressText(remoteAddressText);
+    if (addressKey.isEmpty())
+    {
+        return;
+    }
+
+    const QString displayText = domainText.trimmed().isEmpty()
+        ? QStringLiteral("-")
+        : domainText.trimmed();
+    m_remoteDomainResolutionPending.remove(addressKey);
+    m_remoteDomainCache.insert(addressKey, displayText);
+    if (m_remoteDomainCache.size() > 4096)
+    {
+        m_remoteDomainCache.erase(m_remoteDomainCache.begin());
+    }
+
+    for (auto& packetPair : m_packetBySequence)
+    {
+        if (normalizeIpAddressText(toQString(packetPair.second.remoteAddress)) == addressKey)
+        {
+            packetPair.second.remoteDomain = displayText.toUtf8().constData();
+        }
+    }
+
+    if (m_packetTable == nullptr)
+    {
+        return;
+    }
+    const int domainColumn = toPacketColumn(PacketTableColumn::RemoteDomain);
+    for (int rowIndex = 0; rowIndex < m_packetTable->rowCount(); ++rowIndex)
+    {
+        QTableWidgetItem* domainItem = m_packetTable->item(rowIndex, domainColumn);
+        if (domainItem == nullptr)
+        {
+            continue;
+        }
+        if (normalizeIpAddressText(domainItem->data(Qt::UserRole).toString()) == addressKey)
+        {
+            domainItem->setText(displayText);
+        }
+    }
 }
 
 void NetworkDock::rebuildMonitorTableByFilter()
@@ -338,9 +629,24 @@ void NetworkDock::rebuildMonitorTableByFilter()
             continue;
         }
 
-        const ks::network::PacketRecord& packetRecord = *packetRecordPtr;
-        const QIcon processIcon = resolveProcessIconByPid(packetRecord.processId, packetRecord.processName);
-        populatePacketRow(m_packetTable, writeRow, packetRecord, packetRecord.sequenceId, processIcon);
+        const std::uint64_t sequenceId = packetRecordPtr->sequenceId;
+        scheduleDomainResolutionForPacket(
+            sequenceId,
+            toQString(packetRecordPtr->remoteAddress));
+        const auto cachedPacketIterator = m_packetBySequence.find(sequenceId);
+        const ks::network::PacketRecord& displayRecord =
+            cachedPacketIterator != m_packetBySequence.end()
+                ? cachedPacketIterator->second
+                : *packetRecordPtr;
+        const QIcon processIcon = resolveProcessIconByPid(
+            displayRecord.processId,
+            displayRecord.processName);
+        populatePacketRow(
+            m_packetTable,
+            writeRow,
+            displayRecord,
+            displayRecord.sequenceId,
+            processIcon);
         ++writeRow;
     }
 

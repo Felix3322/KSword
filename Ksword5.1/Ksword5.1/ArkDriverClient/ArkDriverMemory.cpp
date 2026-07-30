@@ -164,6 +164,7 @@ namespace ksword::ark
         const auto* responseHeader =
             reinterpret_cast<const KSWORD_ARK_READ_VIRTUAL_MEMORY_RESPONSE*>(responseBuffer.data());
         readResult.version = static_cast<std::uint32_t>(responseHeader->version);
+        readResult.headerSize = static_cast<std::uint32_t>(responseHeader->headerSize);
         readResult.processId = static_cast<std::uint32_t>(responseHeader->processId);
         readResult.fieldFlags = static_cast<std::uint32_t>(responseHeader->fieldFlags);
         readResult.readStatus = static_cast<std::uint32_t>(responseHeader->readStatus);

@@ -426,6 +426,10 @@ namespace
             return QStringLiteral("ntkrla57");
         case KSW_DYN_PROFILE_CLASS_LXCORE:
             return QStringLiteral("lxcore");
+        case KSW_DYN_PROFILE_CLASS_FLTMGR:
+            return QStringLiteral("fltmgr");
+        case KSW_DYN_PROFILE_CLASS_CI:
+            return QStringLiteral("ci");
         default:
             return QStringLiteral("unknown(%1)").arg(classId);
         }

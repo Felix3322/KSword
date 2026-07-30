@@ -19,6 +19,7 @@
     { "classId": 33, "className": "NDIS", "fileNames": ["ndis.sys"], "compatibilityRequired": false, "collectionOnly": true },
     { "classId": 34, "className": "NETIO", "fileNames": ["netio.sys"], "compatibilityRequired": false, "collectionOnly": true },
     { "classId": 48, "className": "FLTMGR", "fileNames": ["fltmgr.sys"], "compatibilityRequired": false, "collectionOnly": true },
-    { "classId": 64, "className": "FVEVOL", "fileNames": ["fvevol.sys"], "compatibilityRequired": false, "collectionOnly": true }
+    { "classId": 64, "className": "FVEVOL", "fileNames": ["fvevol.sys"], "compatibilityRequired": false, "collectionOnly": true },
+    { "classId": 65, "className": "CI", "fileNames": ["ci.dll", "ci.sys"], "alwaysCollect": true, "compatibilityRequired": false, "collectionOnly": false, "supportSource": "pdb-v4" }
   ]
 }

@@ -485,6 +485,123 @@ Return Value:
 }
 
 NTSTATUS
+KswordARKNetworkIoctlQueryWfpEvents(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+/*++
+
+Routine Description:
+
+    处理 IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_EVENTS。中文说明：METHOD_BUFFERED 的输入
+    与输出可能指向同一 SystemBuffer，因此必须先复制 cursor/maxRows 再写响应。
+
+Arguments:
+
+    Device - WDF 设备对象。
+    Request - 当前 WDF 请求。
+    InputBufferLength - 输入长度。
+    OutputBufferLength - 输出长度。
+    BytesReturned - 返回写入字节数。
+
+Return Value:
+
+    NTSTATUS from buffer retrieval or versioned event backend.
+
+--*/
+{
+    // 中文说明：指向 METHOD_BUFFERED 输入请求，复制后不再使用。
+    KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_REQUEST* inputRequest = NULL;
+    // 中文说明：局部请求防止输出清零覆盖 afterSequence/maxRows。
+    KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_REQUEST localRequest = { 0 };
+    // 中文说明：接收 METHOD_BUFFERED 输出 SystemBuffer。
+    PVOID outputBuffer = NULL;
+    // 中文说明：保存 WDF 实际输出缓冲长度。
+    size_t actualOutputLength = 0U;
+    // 中文说明：保存检索或后端状态。
+    NTSTATUS status = STATUS_SUCCESS;
+    // 中文说明：事件响应头不含 entries[1] 占位行。
+    const size_t responseHeaderSize =
+        sizeof(KSWORD_ARK_NETWORK_WFP_EVENT_RESPONSE) -
+        sizeof(KSWORD_ARK_NETWORK_WFP_EVENT_ROW);
+
+    // 中文说明：dispatch 的输出长度由 WDF 检索结果再次验证。
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+
+    // 中文说明：调用方必须提供返回字节计数。
+    if (BytesReturned == NULL) {
+        // 中文说明：无法回报完成长度时拒绝请求。
+        return STATUS_INVALID_PARAMETER;
+    }
+    // 中文说明：默认没有输出字节。
+    *BytesReturned = 0U;
+
+    // 中文说明：事件查询要求完整版本化输入，旧驱动会在 registry 层拒绝未知 IOCTL。
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_NETWORK_WFP_EVENT_QUERY_REQUEST),
+        (PVOID*)&inputRequest,
+        NULL);
+    // 中文说明：输入检索失败时不访问 SystemBuffer。
+    if (!NT_SUCCESS(status)) {
+        // 中文说明：只记录失败，不在轮询成功路径制造高频日志。
+        KswordARKNetworkIoctlLog(
+            Device,
+            "Error",
+            "R0 WFP event query input invalid, status=0x%08X.",
+            (unsigned int)status);
+        // 中文说明：把 WDF 检索错误返回 dispatch。
+        return status;
+    }
+    // 中文说明：dispatch 提供的输入长度也必须覆盖稳定请求 ABI。
+    if (InputBufferLength < sizeof(localRequest)) {
+        // 中文说明：长度不一致时拒绝，避免复制截断请求。
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    // 中文说明：在任何输出检索或清零前复制 alias 的 METHOD_BUFFERED 请求。
+    RtlCopyMemory(&localRequest, inputRequest, sizeof(localRequest));
+
+    // 中文说明：输出必须至少容纳无行响应头。
+    status = KswordARKRetrieveRequiredOutputBuffer(
+        Request,
+        responseHeaderSize,
+        &outputBuffer,
+        &actualOutputLength);
+    // 中文说明：输出检索失败时保留已复制请求但不调用后端。
+    if (!NT_SUCCESS(status)) {
+        // 中文说明：记录实际缓冲错误。
+        KswordARKNetworkIoctlLog(
+            Device,
+            "Error",
+            "R0 WFP event query output invalid, status=0x%08X.",
+            (unsigned int)status);
+        // 中文说明：把 WDF 检索错误返回 dispatch。
+        return status;
+    }
+
+    // 中文说明：后端读取局部请求并写入可能 alias 原输入的输出缓冲。
+    status = KswordARKNetworkQueryWfpEvents(
+        &localRequest,
+        outputBuffer,
+        actualOutputLength,
+        BytesReturned);
+    // 中文说明：轮询成功不写驱动日志，避免持续网络活动污染日志 ring。
+    if (!NT_SUCCESS(status)) {
+        // 中文说明：仅后端失败时记录诊断。
+        KswordARKNetworkIoctlLog(
+            Device,
+            "Error",
+            "R0 WFP event query backend failed, status=0x%08X.",
+            (unsigned int)status);
+    }
+    // 中文说明：返回后端传输状态。
+    return status;
+}
+
+NTSTATUS
 KswordARKNetworkIoctlQueryNdisChain(
     _In_ WDFDEVICE Device,
     _In_ WDFREQUEST Request,
