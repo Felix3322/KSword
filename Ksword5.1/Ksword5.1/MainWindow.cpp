@@ -9561,6 +9561,9 @@ void MainWindow::applyAppearanceSettings(
     // 直接读取主题模块当前状态，才能识别 FollowSystem 的真实深浅色切换。
     const bool effectiveThemeChanged =
         isInitialAppearanceApply || KswordTheme::IsDarkModeEnabled() != darkModeEnabled;
+    // themeVisualRefreshRequired 用途：作为所有专用主题控件的唯一重建条件。
+    // 深浅主题或自定义主题色任一变化，都必须进入同一刷新入口。
+    const bool themeVisualRefreshRequired = effectiveThemeChanged || themeColorChanged;
     const bool backgroundPathChanged =
         isInitialAppearanceApply
         || previousSettings.backgroundImagePath.compare(
@@ -9592,7 +9595,7 @@ void MainWindow::applyAppearanceSettings(
         || previousSettings.notificationStackDirection != settings.notificationStackDirection;
     const bool runtimeProgressRequired =
         !isInitialAppearanceApply
-        && (effectiveThemeChanged || themeColorChanged || backgroundChanged || fontChanged);
+        && (themeVisualRefreshRequired || backgroundChanged || fontChanged);
 
     m_currentAppearanceSettings = settings;
     RuntimeAppearanceProgress runtimeProgress(runtimeProgressRequired);
@@ -9616,15 +9619,13 @@ void MainWindow::applyAppearanceSettings(
                 previousDockTransparencyEnabled != enableDockTransparencyForBackgroundImage;
         }
     }
-    else if (effectiveThemeChanged || themeColorChanged || scrollBarStyleChanged)
+    else if (themeVisualRefreshRequired || scrollBarStyleChanged)
     {
         // 主题或滚动条样式需要重建 QSS，保持当前背景透明策略即可。
         enableDockTransparencyForBackgroundImage = isBackgroundImageReady(settings.backgroundImagePath);
     }
     const bool mainStyleRefreshRequired =
-        isInitialAppearanceApply
-        || effectiveThemeChanged
-        || themeColorChanged
+        themeVisualRefreshRequired
         || dockTransparencyChanged
         || scrollBarStyleChanged;
     const bool backgroundRefreshRequired =
@@ -9642,7 +9643,7 @@ void MainWindow::applyAppearanceSettings(
         setPinnedWindowState(m_currentAppearanceSettings.startupTopMostEnabled, false);
     }
 
-    if (effectiveThemeChanged || themeColorChanged)
+    if (themeVisualRefreshRequired)
     {
         runtimeProgress.update(
             16,
@@ -9814,11 +9815,6 @@ void MainWindow::applyAppearanceSettings(
             QStringLiteral("正在应用界面设置..."));
     }
 
-    if (effectiveThemeChanged && m_processWidget != nullptr)
-    {
-        m_processWidget->refreshThemeVisuals();
-    }
-
     if (isInitialAppearanceApply)
     {
         reportStartupProgress(
@@ -9835,23 +9831,9 @@ void MainWindow::applyAppearanceSettings(
         repairKernelDockAfterLayoutRestore(QStringLiteral("applyAppearanceSettings"));
     }
 
-    if (m_customTitleBar != nullptr && (effectiveThemeChanged || topMostChanged))
+    if (m_customTitleBar != nullptr && topMostChanged && !themeVisualRefreshRequired)
     {
-        if (effectiveThemeChanged)
-        {
-            m_customTitleBar->setDarkModeEnabled(darkModeEnabled);
-        }
         m_customTitleBar->setPinnedState(m_windowPinned);
-        if (effectiveThemeChanged)
-        {
-            m_customTitleBar->setCaptureProtectionState(m_captureProtectionEnabled);
-            syncCustomTitleBarMaximizedState();
-        }
-    }
-
-    if (effectiveThemeChanged)
-    {
-        applyNativeWindowFrameVisualStyle();
     }
 
     if (backgroundRefreshRequired)
@@ -9874,25 +9856,16 @@ void MainWindow::applyAppearanceSettings(
             }
         }
     }
-    if (effectiveThemeChanged)
-    {
-        refreshPrivilegeStatusButtons();
-        refreshTopActionButtonStyles();
-        if (m_progressWidget != nullptr)
-        {
-            m_progressWidget->refreshThemeVisuals();
-        }
-    }
     if (m_notificationCardManager != nullptr)
     {
         if (notificationSettingsChanged)
         {
             m_notificationCardManager->applySettings(m_currentAppearanceSettings);
         }
-        if (effectiveThemeChanged)
-        {
-            m_notificationCardManager->refreshVisuals();
-        }
+    }
+    if (themeVisualRefreshRequired)
+    {
+        refreshThemeDependentVisuals(darkModeEnabled);
     }
 
     runtimeProgress.update(
@@ -9927,6 +9900,39 @@ void MainWindow::applyAppearanceSettings(
         << "，elapsedMs="
         << appearanceApplyTimer.elapsed()
         << eol;
+}
+
+void MainWindow::refreshThemeDependentVisuals(const bool darkModeEnabled)
+{
+    // 专用主题刷新统一从这里分发；调用者已先更新 KswordTheme 种子与主窗口 QSS。
+    // 各刷新函数只重建视觉状态，不触发后台数据枚举或改变功能配置。
+    if (m_processWidget != nullptr)
+    {
+        m_processWidget->refreshThemeVisuals();
+    }
+
+    if (m_customTitleBar != nullptr)
+    {
+        // 即使深浅状态未变，也要调用该入口以重建依赖自定义主题色的标题栏 QSS。
+        m_customTitleBar->setDarkModeEnabled(darkModeEnabled);
+        m_customTitleBar->setPinnedState(m_windowPinned);
+        m_customTitleBar->setCaptureProtectionState(m_captureProtectionEnabled);
+        syncCustomTitleBarMaximizedState();
+    }
+
+    // 原生框架、权限按钮和顶部动作按钮均读取当前主题模块状态。
+    applyNativeWindowFrameVisualStyle();
+    refreshPrivilegeStatusButtons();
+    refreshTopActionButtonStyles();
+
+    if (m_progressWidget != nullptr)
+    {
+        m_progressWidget->refreshThemeVisuals();
+    }
+    if (m_notificationCardManager != nullptr)
+    {
+        m_notificationCardManager->refreshVisuals();
+    }
 }
 
 bool MainWindow::isDarkModeEffective(const ks::settings::AppearanceSettings& settings) const

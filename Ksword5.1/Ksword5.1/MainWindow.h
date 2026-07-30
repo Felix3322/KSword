@@ -421,6 +421,13 @@ private:
     // 入参 triggerReason：触发来源文本（日志用途）。
     void applyAppearanceSettings(const ks::settings::AppearanceSettings& settings, const QString& triggerReason);
 
+    // refreshThemeDependentVisuals 作用：
+    // - 统一重建所有直接依赖深浅主题或自定义主题色的专用控件样式；
+    // - 避免新增主题色消费者时只接入深浅主题变化而遗漏自定义颜色热更新。
+    // 调用方式：applyAppearanceSettings 在主题视觉种子变化且主窗口 QSS 更新后调用。
+    // 入参 darkModeEnabled：当前最终生效的深色模式状态；传出：无。
+    void refreshThemeDependentVisuals(bool darkModeEnabled);
+
     // isDarkModeEffective 作用：
     // - 根据“手动深浅色/跟随系统”计算当前最终是否深色。
     // 调用方式：应用样式或重建背景时调用。
