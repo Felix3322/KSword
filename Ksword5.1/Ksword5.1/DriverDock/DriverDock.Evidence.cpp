@@ -388,9 +388,10 @@ namespace
     {
         CatalogSignatureVerification verification;
         CatalogAdminHandle catalogAdmin;
+        GUID driverActionVerify = DRIVER_ACTION_VERIFY;
         if (!::CryptCATAdminAcquireContext2(
             &catalogAdmin.value,
-            &DRIVER_ACTION_VERIFY,
+            &driverActionVerify,
             BCRYPT_SHA256_ALGORITHM,
             nullptr,
             0))
@@ -430,15 +431,8 @@ namespace
                 verification.lookupError = enumerationError == ERROR_SUCCESS
                     ? ERROR_NOT_FOUND
                     : enumerationError;
-                // phPrevCatInfo 仅用于继续枚举；最终返回 nullptr 后仍须按
-                // mscat 契约释放最后一个 HCATINFO，不能先清空而泄漏 context。
-                if (previousCatalog != nullptr)
-                {
-                    ::CryptCATAdminReleaseCatalogContext(
-                        catalogAdmin.value,
-                        previousCatalog,
-                        0);
-                }
+                // 把 previous 传给下一次枚举时，API 接管并释放该 context；
+                // 自然耗尽返回 nullptr 后调用方已不再拥有 HCATINFO。
                 previousCatalog = nullptr;
                 break;
             }
