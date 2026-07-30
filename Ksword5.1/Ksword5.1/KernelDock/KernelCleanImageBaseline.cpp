@@ -8,6 +8,7 @@
 #endif
 #include <Windows.h>
 #include <bcrypt.h>
+#include <wincrypt.h>
 #include <mscat.h>
 #include <Softpub.h>
 #include <WinTrust.h>

@@ -2340,7 +2340,7 @@ void KernelDock::refreshCallbackEnumAsync()
              resultRows = std::move(resultRows)]() mutable {
             const auto deferredRows =
                 std::make_shared<std::vector<KernelCallbackEnumEntry>>(std::move(resultRows));
-            const auto commitResult = [
+            auto commitResult = [
                 guardThis,
                 success,
                 errorText,

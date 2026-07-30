@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <cstring>
@@ -1054,9 +1055,7 @@ namespace ks::file
         {
             IMAGE_OPTIONAL_HEADER64 optionalHeader{};
             constexpr std::size_t fixedHeaderBytes =
-                FIELD_OFFSET(
-                    IMAGE_OPTIONAL_HEADER64,
-                    DataDirectory);
+                offsetof(IMAGE_OPTIONAL_HEADER64, DataDirectory);
             if (fileHeader.SizeOfOptionalHeader
                 < fixedHeaderBytes)
             {
@@ -1100,9 +1099,7 @@ namespace ks::file
         {
             IMAGE_OPTIONAL_HEADER32 optionalHeader{};
             constexpr std::size_t fixedHeaderBytes =
-                FIELD_OFFSET(
-                    IMAGE_OPTIONAL_HEADER32,
-                    DataDirectory);
+                offsetof(IMAGE_OPTIONAL_HEADER32, DataDirectory);
             if (fileHeader.SizeOfOptionalHeader
                 < fixedHeaderBytes)
             {

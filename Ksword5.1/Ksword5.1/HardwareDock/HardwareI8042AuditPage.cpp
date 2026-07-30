@@ -1,5 +1,6 @@
 #include "HardwareI8042AuditPage.h"
 
+#include "../ArkDriverClient/ArkDriverClient.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"

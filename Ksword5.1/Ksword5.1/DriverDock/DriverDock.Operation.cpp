@@ -7,6 +7,8 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <io.h>
+
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::driver_dock_internal;
 
@@ -802,9 +804,11 @@ namespace
                 .arg(temporaryFile.errorString());
             return dumpResult;
         }
+        const auto temporaryOsHandle =
+            ::_get_osfhandle(temporaryFile.handle());
         const HANDLE temporaryHandle =
-            reinterpret_cast<HANDLE>(temporaryFile.handle());
-        if (temporaryHandle == INVALID_HANDLE_VALUE ||
+            reinterpret_cast<HANDLE>(temporaryOsHandle);
+        if (temporaryOsHandle == -1 ||
             !::FlushFileBuffers(temporaryHandle))
         {
             dumpResult.error = DriverModuleDumpError::TemporaryFileFlush;

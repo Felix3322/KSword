@@ -2133,7 +2133,7 @@ void KernelDock::refreshShadowSsdtAsync()
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, totalCount, returnedCount, resultRows = std::move(resultRows)]() mutable {
             const auto deferredRows =
                 std::make_shared<std::vector<KernelSsdtEntry>>(std::move(resultRows));
-            const auto commitResult = [guardThis, success, errorText, totalCount, returnedCount, deferredRows]() mutable
+            auto commitResult = [guardThis, success, errorText, totalCount, returnedCount, deferredRows]() mutable
             {
             std::vector<KernelSsdtEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
@@ -2255,7 +2255,7 @@ void KernelDock::refreshInlineHooksAsync()
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, totalCount, moduleCount, lastStatus, resultRows = std::move(resultRows)]() mutable {
             const auto deferredRows =
                 std::make_shared<std::vector<KernelInlineHookEntry>>(std::move(resultRows));
-            const auto commitResult = [guardThis, success, errorText, totalCount, moduleCount, lastStatus, deferredRows]() mutable
+            auto commitResult = [guardThis, success, errorText, totalCount, moduleCount, lastStatus, deferredRows]() mutable
             {
             std::vector<KernelInlineHookEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
@@ -2391,7 +2391,7 @@ void KernelDock::refreshIatEatHooksAsync()
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, totalCount, moduleCount, lastStatus, resultRows = std::move(resultRows)]() mutable {
             const auto deferredRows =
                 std::make_shared<std::vector<KernelIatEatHookEntry>>(std::move(resultRows));
-            const auto commitResult = [guardThis, success, errorText, totalCount, moduleCount, lastStatus, deferredRows]() mutable
+            auto commitResult = [guardThis, success, errorText, totalCount, moduleCount, lastStatus, deferredRows]() mutable
             {
             std::vector<KernelIatEatHookEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
@@ -2538,7 +2538,7 @@ void KernelDock::refreshTimerDpcAsync()
         QMetaObject::invokeMethod(guardThis, [guardThis, enumResult, resultRows = std::move(resultRows)]() mutable {
             const auto deferredRows =
                 std::make_shared<std::vector<KernelTimerDpcEntry>>(std::move(resultRows));
-            const auto commitResult = [guardThis, enumResult, deferredRows]() mutable
+            auto commitResult = [guardThis, enumResult, deferredRows]() mutable
             {
             std::vector<KernelTimerDpcEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)

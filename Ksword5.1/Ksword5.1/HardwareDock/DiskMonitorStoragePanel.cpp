@@ -348,11 +348,10 @@ DiskMonitorStoragePanel::DiskMonitorStoragePanel(QWidget* parent)
     m_table->setStyleSheet(QStringLiteral(
         "QTableWidget{background:transparent;border:1px solid %1;}"
         "QHeaderView::section{background:%2;color:%3;border:0;border-right:1px solid %1;"
-        "border-bottom:1px solid %1;padding:5px 7px;font-weight:600;}"))
-        .arg(
-            KswordTheme::BorderHex(),
-            KswordTheme::PanelHex(),
-            KswordTheme::TextPrimaryHex()));
+        "border-bottom:1px solid %1;padding:5px 7px;font-weight:600;}")
+        .arg(KswordTheme::BorderHex())
+        .arg(KswordTheme::SurfaceAltHex())
+        .arg(KswordTheme::TextPrimaryHex()));
     rootLayout->addWidget(m_table, 1);
 
     m_summaryText = QStringLiteral("存储：等待首轮采样");

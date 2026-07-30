@@ -3489,7 +3489,7 @@ void KernelDock::refreshDynDataAsync()
                 std::make_shared<std::vector<KernelDynDataFieldEntry>>(std::move(rows));
             const auto deferredV4Rows =
                 std::make_shared<std::vector<KernelDynDataV4ItemEntry>>(std::move(v4ItemRows));
-            const auto commitResult = [
+            auto commitResult = [
                 guardThis,
                 success,
                 deferredSummary,

@@ -303,7 +303,7 @@ void KernelDock::refreshSsdtAsync()
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, resultRows = std::move(resultRows)]() mutable {
             const auto deferredRows =
                 std::make_shared<std::vector<KernelSsdtEntry>>(std::move(resultRows));
-            const auto commitResult = [guardThis, success, errorText, deferredRows]() mutable
+            auto commitResult = [guardThis, success, errorText, deferredRows]() mutable
             {
             std::vector<KernelSsdtEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)

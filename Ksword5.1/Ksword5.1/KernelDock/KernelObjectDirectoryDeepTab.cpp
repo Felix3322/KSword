@@ -387,7 +387,7 @@ void KernelObjectDirectoryDeepTab::startRefresh()
         QMetaObject::invokeMethod(guardThis, [guardThis, result = std::move(result)]() mutable {
             const auto deferredResult =
                 std::make_shared<KernelObjectDirectoryDeepResult>(std::move(result));
-            const auto commitResult = [guardThis, deferredResult]() mutable
+            auto commitResult = [guardThis, deferredResult]() mutable
             {
             KernelObjectDirectoryDeepResult& result = *deferredResult;
             if (guardThis == nullptr)

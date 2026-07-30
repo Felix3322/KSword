@@ -831,7 +831,7 @@ namespace
         headerLayout->setSpacing(0);
         headerWidget->setStyleSheet(QStringLiteral(
             "QWidget{background:%1;border:1px solid %2;}")
-            .arg(KswordTheme::PanelHex(), KswordTheme::BorderHex()));
+            .arg(KswordTheme::SurfaceAltHex(), KswordTheme::BorderHex()));
 
         auto* toggleButton = new QToolButton(headerWidget);
         toggleButton->setText(titleText);

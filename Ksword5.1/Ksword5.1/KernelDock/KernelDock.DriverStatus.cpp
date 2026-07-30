@@ -1451,7 +1451,7 @@ void KernelDock::refreshDriverStatusAsync()
                 std::make_shared<KernelDriverStatusSummary>(std::move(summary));
             const auto deferredRows =
                 std::make_shared<std::vector<KernelDriverCapabilityEntry>>(std::move(rows));
-            const auto commitResult = [guardThis, success, deferredSummary, deferredRows]() mutable
+            auto commitResult = [guardThis, success, deferredSummary, deferredRows]() mutable
             {
             KernelDriverStatusSummary& summary = *deferredSummary;
             std::vector<KernelDriverCapabilityEntry>& rows = *deferredRows;

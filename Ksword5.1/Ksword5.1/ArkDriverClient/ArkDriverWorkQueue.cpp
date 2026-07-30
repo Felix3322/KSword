@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -131,7 +132,7 @@ namespace ksword::ark
                 }
             }
             else if (entry.queueType != KSWORD_ARK_WORK_QUEUE_TYPE_SHARED_WORKER ||
-                     entry.priorityIndex != MAXULONG ||
+                     entry.priorityIndex != std::numeric_limits<unsigned long>::max() ||
                      entry.workItemAddress != 0ULL ||
                      entry.threadObject == 0ULL)
             {
