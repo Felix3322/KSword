@@ -46,6 +46,14 @@ typedef struct _KSWORD_ARK_CALLBACK_OBJECT_REGISTRATION
     PVOID CallbackContext;
 } KSWORD_ARK_CALLBACK_OBJECT_REGISTRATION;
 
+typedef struct _KSWORD_ARK_CALLBACK_OBJECT_SNAPSHOT
+{
+    ULONG TraversalIndex;
+    ULONG64 RegistrationAddress;
+    ULONG64 CallbackFunction;
+    ULONG64 CallbackContext;
+} KSWORD_ARK_CALLBACK_OBJECT_SNAPSHOT;
+
 NTSYSAPI
 NTSTATUS
 NTAPI
@@ -189,7 +197,8 @@ KswordArkCallbackExtendedEnumerateCallbackObject(
 Routine Description:
 
     遍历一个 CallbackObject 内部注册链。中文说明：当前结构由 ExRegisterCallback
-    公开入口的对象布局恢复；持有对象 push lock 共享锁，避免并发注销释放节点。
+    公开入口的对象布局恢复；持有对象自旋锁复制标量快照，避免并发注销释放节点，
+    并在释放自旋锁后完成模块判断、字符串格式化与响应构建。
 
 Arguments:
 
@@ -209,18 +218,24 @@ Return Value:
 {
     ULONG index = 0UL;
     ULONG addedCount = 0UL;
+    ULONG snapshotCount = 0UL;
+    ULONG snapshotIndex = 0UL;
     ULONG objectSignature = 0UL;
     ULONG64 listHeadAddress = 0ULL;
     ULONG64 currentAddress = 0ULL;
     LIST_ENTRY listHead;
-    PEX_PUSH_LOCK objectLock = NULL;
+    PKSPIN_LOCK objectLock = NULL;
+    KIRQL oldIrql = PASSIVE_LEVEL;
+    KSWORD_ARK_CALLBACK_OBJECT_SNAPSHOT* snapshots = NULL;
 
+    // 验证调用方提供的响应构建器、模块缓存、对象地址与展示名称。
     if (Builder == NULL ||
         ModuleCache == NULL ||
         CallbackObjectAddress == 0ULL ||
         ObjectName == NULL) {
         return 0UL;
     }
+    // 验证对象签名，避免对并非 CallbackObject 的地址获取私有锁。
     if (!KswordArkCallbackEnumReadMemory(
             (const VOID*)(ULONG_PTR)CallbackObjectAddress,
             &objectSignature,
@@ -229,22 +244,36 @@ Return Value:
         return 0UL;
     }
 
+    // 计算注册链表头地址；x64 CALLBACK_OBJECT 的锁位于 +0x08，链表位于 +0x10。
     listHeadAddress = CallbackObjectAddress + (2ULL * sizeof(ULONG_PTR));
+    // 在进入自旋锁前分配非分页快照，锁内不进行任何内存分配或字符串处理。
+    snapshots = (KSWORD_ARK_CALLBACK_OBJECT_SNAPSHOT*)KswordArkAllocateNonPaged(
+        sizeof(*snapshots) * KSWORD_ARK_CALLBACK_OBJECT_REGISTRATION_LIMIT,
+        KSWORD_ARK_CALLBACK_OBJECT_TAG);
+    // 内存不足时安全放弃本对象，避免在持锁状态进入失败恢复路径。
+    if (snapshots == NULL) {
+        return 0UL;
+    }
+    // 清零快照数组，确保任何提前结束路径都不会暴露未初始化字段。
+    RtlZeroMemory(
+        snapshots,
+        sizeof(*snapshots) * KSWORD_ARK_CALLBACK_OBJECT_REGISTRATION_LIMIT);
+
+    // CALLBACK_OBJECT 的 +0x08 字段由 ExRegisterCallback 以 KSPIN_LOCK 方式保护。
+    objectLock = (PKSPIN_LOCK)(ULONG_PTR)(CallbackObjectAddress + sizeof(ULONG_PTR));
+    // 获取对象自旋锁并保存原 IRQL，阻止并发注销释放当前注册节点。
+    KeAcquireSpinLock(objectLock, &oldIrql);
+    // 在锁内读取链表头，确保首节点来自同一个一致性窗口。
     RtlZeroMemory(&listHead, sizeof(listHead));
     if (!KswordArkCallbackExtendedReadListEntry(listHeadAddress, &listHead)) {
+        // 读取失败时先恢复 IRQL，再释放预分配快照。
+        KeReleaseSpinLock(objectLock, oldIrql);
+        // 快照来自本函数的非分页分配，失败路径必须对称释放。
+        ExFreePoolWithTag(snapshots, KSWORD_ARK_CALLBACK_OBJECT_TAG);
         return 0UL;
     }
 
-    objectLock = (PEX_PUSH_LOCK)(ULONG_PTR)(CallbackObjectAddress + sizeof(ULONG_PTR));
-    KeEnterCriticalRegion();
-    ExAcquirePushLockSharedEx(objectLock, 0UL);
-
-    if (!KswordArkCallbackExtendedReadListEntry(listHeadAddress, &listHead)) {
-        ExReleasePushLockSharedEx(objectLock, 0UL);
-        KeLeaveCriticalRegion();
-        return 0UL;
-    }
-
+    // 从锁保护下的首节点开始遍历，最多复制固定数量的标量快照。
     currentAddress = (ULONG64)(ULONG_PTR)listHead.Flink;
     while (currentAddress != 0ULL &&
         currentAddress != listHeadAddress &&
@@ -252,67 +281,99 @@ Return Value:
         KSWORD_ARK_CALLBACK_OBJECT_REGISTRATION registration;
         ULONG64 nextAddress = 0ULL;
 
+        // 每个节点读取前清零本地结构，避免异常读取留下栈残值。
         RtlZeroMemory(&registration, sizeof(registration));
+        // 在对象锁保护下复制注册节点，注销路径不能同时释放该节点。
         if (!KswordArkCallbackEnumReadMemory(
                 (const VOID*)(ULONG_PTR)currentAddress,
                 &registration,
                 sizeof(registration))) {
             break;
         }
+        // 保存下一节点地址，后续只在当前锁保护窗口内使用。
         nextAddress = (ULONG64)(ULONG_PTR)registration.Link.Flink;
 
+        // 仅接受属于当前对象且具有非空回调函数的注册节点。
         if ((ULONG64)(ULONG_PTR)registration.CallbackObject == CallbackObjectAddress &&
-            registration.CallbackFunction != NULL &&
-            KswordArkCallbackEnumIsKernelModuleAddress(
-                ModuleCache,
-                (ULONG64)(ULONG_PTR)registration.CallbackFunction)) {
-            WCHAR nameText[KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS];
-            WCHAR detailText[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
-
-            RtlZeroMemory(nameText, sizeof(nameText));
-            RtlZeroMemory(detailText, sizeof(detailText));
-            (VOID)RtlStringCbPrintfW(
-                nameText,
-                sizeof(nameText),
-                L"%ws[%lu]",
-                ObjectName,
-                (unsigned long)index);
-            (VOID)RtlStringCbPrintfW(
-                detailText,
-                sizeof(detailText),
-                L"CallbackObject 注册项；Object=0x%p，Registration=0x%p，Function=0x%p，Context=0x%p。",
-                (PVOID)(ULONG_PTR)CallbackObjectAddress,
-                (PVOID)(ULONG_PTR)currentAddress,
-                registration.CallbackFunction,
-                registration.CallbackContext);
-            KswordArkCallbackExtendedAddRow(
-                Builder,
-                ModuleCache,
-                CallbackClass,
-                Source,
-                KSWORD_ARK_CALLBACK_ENUM_STATUS_OK,
-                STATUS_SUCCESS,
-                RegistrationType,
-                0UL,
-                0UL,
-                (ULONG64)(ULONG_PTR)registration.CallbackFunction,
-                (ULONG64)(ULONG_PTR)registration.CallbackContext,
-                currentAddress,
-                0UL,
-                nameText,
-                detailText);
-            ++addedCount;
+            registration.CallbackFunction != NULL) {
+            // 快照只保存锁外构建响应所需的标量，不保留可失效的节点指针。
+            snapshots[snapshotCount].TraversalIndex = index;
+            snapshots[snapshotCount].RegistrationAddress = currentAddress;
+            snapshots[snapshotCount].CallbackFunction =
+                (ULONG64)(ULONG_PTR)registration.CallbackFunction;
+            snapshots[snapshotCount].CallbackContext =
+                (ULONG64)(ULONG_PTR)registration.CallbackContext;
+            // 记录已填充快照数量，容量与遍历上限完全一致。
+            ++snapshotCount;
         }
 
+        // 自环表示链表损坏；继续遍历会在持锁状态无限循环。
         if (nextAddress == currentAddress) {
             break;
         }
+        // 推进到下一节点并记录原始遍历序号。
         currentAddress = nextAddress;
         ++index;
     }
 
-    ExReleasePushLockSharedEx(objectLock, 0UL);
-    KeLeaveCriticalRegion();
+    // 完成节点复制后立即释放对象自旋锁并恢复调用方 IRQL。
+    KeReleaseSpinLock(objectLock, oldIrql);
+
+    // 锁外逐条验证模块归属并构建响应，避免在 DISPATCH_LEVEL 执行复杂逻辑。
+    for (snapshotIndex = 0UL; snapshotIndex < snapshotCount; ++snapshotIndex) {
+        WCHAR nameText[KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS];
+        WCHAR detailText[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
+        const KSWORD_ARK_CALLBACK_OBJECT_SNAPSHOT* snapshot = &snapshots[snapshotIndex];
+
+        // 非模块地址不进入结果集，但不会影响其余稳定快照。
+        if (!KswordArkCallbackEnumIsKernelModuleAddress(
+                ModuleCache,
+                snapshot->CallbackFunction)) {
+            continue;
+        }
+
+        // 预清零展示缓冲，保证格式化失败时仍保持确定内容。
+        RtlZeroMemory(nameText, sizeof(nameText));
+        RtlZeroMemory(detailText, sizeof(detailText));
+        // 使用锁内记录的遍历序号维持现有名称语义。
+        (VOID)RtlStringCbPrintfW(
+            nameText,
+            sizeof(nameText),
+            L"%ws[%lu]",
+            ObjectName,
+            (unsigned long)snapshot->TraversalIndex);
+        // 详情只引用标量地址，不会解引用已经注销的注册节点。
+        (VOID)RtlStringCbPrintfW(
+            detailText,
+            sizeof(detailText),
+            L"CallbackObject 注册项；Object=0x%p，Registration=0x%p，Function=0x%p，Context=0x%p。",
+            (PVOID)(ULONG_PTR)CallbackObjectAddress,
+            (PVOID)(ULONG_PTR)snapshot->RegistrationAddress,
+            (PVOID)(ULONG_PTR)snapshot->CallbackFunction,
+            (PVOID)(ULONG_PTR)snapshot->CallbackContext);
+        // 将已验证快照写入统一回调枚举响应。
+        KswordArkCallbackExtendedAddRow(
+            Builder,
+            ModuleCache,
+            CallbackClass,
+            Source,
+            KSWORD_ARK_CALLBACK_ENUM_STATUS_OK,
+            STATUS_SUCCESS,
+            RegistrationType,
+            0UL,
+            0UL,
+            snapshot->CallbackFunction,
+            snapshot->CallbackContext,
+            snapshot->RegistrationAddress,
+            0UL,
+            nameText,
+            detailText);
+        // 统计成功加入结果集的注册项数量。
+        ++addedCount;
+    }
+
+    // 释放本函数分配的非分页快照数组。
+    ExFreePoolWithTag(snapshots, KSWORD_ARK_CALLBACK_OBJECT_TAG);
     return addedCount;
 }
 
