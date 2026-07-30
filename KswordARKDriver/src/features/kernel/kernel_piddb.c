@@ -350,7 +350,7 @@ KswordARKPiDdbDelete(
     PVOID matchedEntry = NULL;
     PVOID entryCopy = NULL;
     BOOLEAN restart = TRUE;
-    KSWORD_ARK_PIDDB_ROW row;
+    KSWORD_ARK_PIDDB_ROW row = { 0 };
     BOOLEAN deleted = FALSE;
     BOOLEAN stillPresent = FALSE;
 
