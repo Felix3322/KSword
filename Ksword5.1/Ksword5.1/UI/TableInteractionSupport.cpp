@@ -41,14 +41,19 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <utility>
 
 namespace
 {
     using ks::ui::TableComparisonModel;
     using ks::ui::TableComparisonResult;
     using ks::ui::TableSnapshot;
+    using ks::ui::TableSnapshotCaptureLimits;
     using ks::ui::TableSnapshotColumn;
     using ks::ui::TableSnapshotCompareEngine;
+    using ks::ui::TableSnapshotComparisonLimits;
+    using ks::ui::TableSnapshotRetentionLimits;
+    using ks::ui::TableSnapshotRetentionResult;
 
     constexpr char kInstalledProperty[] = "KSWORD_TABLE_INTERACTION_SUPPORT_INSTALLED";
     constexpr char kActionBarProperty[] = "KSWORD_TABLE_INTERACTION_ACTION_BAR";
@@ -56,6 +61,10 @@ namespace
     constexpr char kContextActionsInstalledProperty[] = "KSWORD_TABLE_INTERACTION_CONTEXT_ACTIONS_INSTALLED";
     constexpr char kComparisonActiveProperty[] = "KSWORD_TABLE_INTERACTION_COMPARISON_ACTIVE";
     constexpr int kActionBarHeight = 32;
+    constexpr quint64 kBytesPerMiB = 1024ULL * 1024ULL;
+    constexpr TableSnapshotCaptureLimits kSnapshotCaptureLimits{};
+    constexpr TableSnapshotComparisonLimits kSnapshotComparisonLimits{};
+    constexpr TableSnapshotRetentionLimits kSnapshotRetentionLimits{};
 
     QString localizedSourceText(const char* sourceText)
     {
@@ -512,14 +521,28 @@ namespace
             return button;
         }
 
-        QToolButton* createSnapshotButton(const QString& label, const bool checked)
+        QToolButton* createSnapshotButton(const TableSnapshot& snapshot, const bool checked)
         {
             auto* button = new QToolButton(m_snapshotContent);
-            button->setText(label);
+            button->setText(snapshot.label + (snapshot.isTruncated() ? QStringLiteral("*") : QString()));
             button->setCheckable(true);
             button->setChecked(checked);
             button->setAutoRaise(false);
             button->setMinimumWidth(28);
+            QString tooltip = localizedSourceText("快照 %1：保留 %2 行，估算 %3 MiB。")
+                .arg(snapshot.label)
+                .arg(snapshot.rows.size())
+                .arg(QString::number(
+                    static_cast<double>(snapshot.estimatedBytes) / kBytesPerMiB,
+                    'f',
+                    2));
+            if (snapshot.isTruncated())
+            {
+                tooltip += QLatin1Char('\n')
+                    + localizedSourceText("该快照仅覆盖源表前 %1 个扫描行；保留部分仍可用于比较，未覆盖行不会参与结果。")
+                        .arg(snapshot.visitedSourceRows);
+            }
+            button->setToolTip(tooltip);
             button->setStyleSheet(QStringLiteral(
                 "QToolButton {"
                 "  padding: 2px 7px;"
@@ -572,16 +595,122 @@ namespace
 
         void addSnapshot()
         {
-            if (m_table.isNull() || m_inComparison || m_table->model() == nullptr)
+            if (m_table.isNull() ||
+                m_inComparison ||
+                m_snapshotCaptureInProgress ||
+                m_table->model() == nullptr)
             {
                 return;
             }
 
             const quint64 sequence = m_nextSnapshotOrdinal++;
             const QString label = TableSnapshotCompareEngine::snapshotLabelForOrdinal(sequence);
-            m_snapshots.push_back(TableSnapshotCompareEngine::capture(m_table.data(), label, sequence));
+            m_snapshotCaptureInProgress = true;
+            updateControls();
+
+            QPointer<TableActionBar> actionBarGuard(this);
+            TableSnapshot snapshot = TableSnapshotCompareEngine::capture(
+                m_table.data(),
+                label,
+                sequence,
+                kSnapshotCaptureLimits);
+            if (actionBarGuard.isNull())
+            {
+                return;
+            }
+            m_snapshotCaptureInProgress = false;
+            if (snapshot.sourceInvalidated)
+            {
+                updateControls();
+                QMessageBox::warning(
+                    this,
+                    localizedSourceText("快照采集限制"),
+                    localizedSourceText("采集期间源表已关闭，或其数据、布局、表头可见状态发生变化。本次快照已整份丢弃；请在源表稳定后重试。"));
+                return;
+            }
+
+            m_snapshots.push_back(std::move(snapshot));
+            const TableSnapshot& retainedSnapshot = m_snapshots.back();
+
+            QStringList limitMessages;
+            bool retainedPartialSnapshot = false;
+            if (retainedSnapshot.truncatedByRowLimit)
+            {
+                retainedPartialSnapshot = true;
+                limitMessages.push_back(
+                    localizedSourceText("快照 %1 已截断：源表共 %2 行，仅访问 %3 行并保留 %4 行。")
+                        .arg(retainedSnapshot.label)
+                        .arg(retainedSnapshot.sourceRowCount)
+                        .arg(retainedSnapshot.visitedSourceRows)
+                        .arg(retainedSnapshot.rows.size()));
+                limitMessages.push_back(
+                    localizedSourceText("已达到单份快照的 %1 行硬上限。")
+                        .arg(kSnapshotCaptureLimits.maximumRows));
+            }
+            if (retainedSnapshot.truncatedByColumnLimit)
+            {
+                retainedPartialSnapshot = true;
+                limitMessages.push_back(
+                    localizedSourceText("快照 %1 仅扫描源表前 %2/%3 列，并保留其中 %4 个可见列。")
+                        .arg(retainedSnapshot.label)
+                        .arg(retainedSnapshot.visitedSourceColumns)
+                        .arg(retainedSnapshot.sourceColumnCount)
+                        .arg(retainedSnapshot.visibleColumns.size()));
+                limitMessages.push_back(
+                    localizedSourceText("已达到单份快照的 %1 列硬上限。")
+                        .arg(kSnapshotCaptureLimits.maximumColumns));
+            }
+            if (retainedSnapshot.truncatedByByteLimit)
+            {
+                retainedPartialSnapshot = true;
+                limitMessages.push_back(
+                    localizedSourceText("已达到单份快照的 %1 MiB 估算内存硬上限。")
+                        .arg(kSnapshotCaptureLimits.maximumEstimatedBytes / kBytesPerMiB));
+            }
+            if (retainedSnapshot.truncatedByValueLimit)
+            {
+                retainedPartialSnapshot = true;
+                limitMessages.push_back(
+                    localizedSourceText("快照 %1 中有 %2 个表头值和 %3 个单元格值超过单值上限，另有 %4 个不支持的显示值类型；相关值已截断或留空。")
+                        .arg(retainedSnapshot.label)
+                        .arg(retainedSnapshot.truncatedHeaderValueCount)
+                        .arg(retainedSnapshot.truncatedCellValueCount)
+                        .arg(retainedSnapshot.unsupportedDisplayValueCount));
+                limitMessages.push_back(
+                    localizedSourceText("单个表头最多保留 %1 个字符，单个单元格最多保留 %2 个字符。")
+                        .arg(kSnapshotCaptureLimits.maximumHeaderCharacters)
+                        .arg(kSnapshotCaptureLimits.maximumCellCharacters));
+            }
+
+            const TableSnapshotRetentionResult retention =
+                TableSnapshotCompareEngine::enforceRetentionLimits(
+                    m_snapshots,
+                    kSnapshotRetentionLimits);
+            if (!retention.evictedLabels.isEmpty())
+            {
+                limitMessages.push_back(
+                    localizedSourceText("为满足最多 %1 份快照、总估算内存不超过 %2 MiB 的硬上限，已淘汰最旧的 %3 份快照：%4。")
+                        .arg(kSnapshotRetentionLimits.maximumSnapshots)
+                        .arg(kSnapshotRetentionLimits.maximumEstimatedBytes / kBytesPerMiB)
+                        .arg(retention.evictedLabels.size())
+                        .arg(retention.evictedLabels.join(QStringLiteral(", "))));
+            }
+            if (retainedPartialSnapshot)
+            {
+                limitMessages.push_back(
+                    localizedSourceText("已保留的部分仍可继续参与快照比较。"));
+            }
+
+            pruneSnapshotSelections();
             rebuildSnapshotControls();
             updateControls();
+            if (!limitMessages.isEmpty())
+            {
+                QMessageBox::information(
+                    this,
+                    localizedSourceText("快照采集限制"),
+                    limitMessages.join(QStringLiteral("\n\n")));
+            }
         }
 
         void enterCleanupMode()
@@ -689,7 +818,7 @@ namespace
             for (const TableSnapshot& snapshot : m_snapshots)
             {
                 QToolButton* button = createSnapshotButton(
-                    snapshot.label,
+                    snapshot,
                     m_cleanupMode
                         ? m_cleanupSelections.contains(snapshot.sequence)
                         : m_selectedSnapshotSequences.contains(snapshot.sequence));
@@ -934,14 +1063,64 @@ namespace
             }
         }
 
-        void showComparisonView()
+        void showComparisonLimitWarning(const TableComparisonResult& comparison)
         {
-            if (m_table.isNull() || m_cleanupMode || m_selectedSnapshotSequences.size() != 2)
+            if (!comparison.isTruncated() || comparison.cancelled)
             {
                 return;
             }
 
-            const QVector<const TableSnapshot*> snapshots = selectedSnapshots();
+            QStringList reasons;
+            if (comparison.truncatedByResultByteLimit)
+            {
+                reasons.push_back(
+                    localizedSourceText("比较结果达到 %1 MiB 独立估算内存硬上限。")
+                        .arg(kSnapshotComparisonLimits.maximumEstimatedBytes / kBytesPerMiB));
+            }
+            if (comparison.truncatedByTemporaryByteLimit)
+            {
+                reasons.push_back(
+                    localizedSourceText("比较临时索引达到 %1 MiB 估算内存硬上限。")
+                        .arg(kSnapshotComparisonLimits.maximumTemporaryEstimatedBytes / kBytesPerMiB));
+            }
+            if (comparison.truncatedByWorkLimit)
+            {
+                reasons.push_back(
+                    localizedSourceText("比较达到 %1 个单元工作量硬上限。")
+                        .arg(kSnapshotComparisonLimits.maximumWorkUnits));
+            }
+
+            QMessageBox::warning(
+                this,
+                localizedSourceText("快照比较限制"),
+                localizedSourceText("比较已按硬预算提前停止；当前视图仅包含停止前生成的部分结果。")
+                    + QStringLiteral("\n\n")
+                    + reasons.join(QLatin1Char('\n')));
+        }
+
+        void showComparisonView()
+        {
+            if (m_table.isNull() ||
+                m_cleanupMode ||
+                m_comparisonInProgress ||
+                m_selectedSnapshotSequences.size() != 2)
+            {
+                return;
+            }
+
+            const QPointer<TableActionBar> actionBarGuard(this);
+            const QPointer<QTableView> tableGuard(m_table);
+            const QPointer<QAbstractItemModel> modelGuard(m_table->model());
+            const auto sourceStillValid = [actionBarGuard, tableGuard, modelGuard]()
+            {
+                return !actionBarGuard.isNull() &&
+                    !tableGuard.isNull() &&
+                    !modelGuard.isNull() &&
+                    actionBarGuard->m_table == tableGuard &&
+                    tableGuard->model() == modelGuard;
+            };
+
+            QVector<const TableSnapshot*> snapshots = selectedSnapshots();
             if (snapshots.size() != 2)
             {
                 pruneSnapshotSelections();
@@ -956,6 +1135,53 @@ namespace
                 std::swap(earlier, later);
             }
 
+            if (earlier->isTruncated() || later->isTruncated())
+            {
+                QStringList snapshotCoverage;
+                for (const TableSnapshot* snapshot : { earlier, later })
+                {
+                    if (snapshot != nullptr && snapshot->isTruncated())
+                    {
+                        snapshotCoverage.push_back(
+                            localizedSourceText("快照 %1：扫描源表前 %2/%3 行，保留 %4 行；扫描前 %5/%6 列，保留 %7 个可见列。")
+                                .arg(snapshot->label)
+                                .arg(snapshot->visitedSourceRows)
+                                .arg(snapshot->sourceRowCount)
+                                .arg(snapshot->rows.size())
+                                .arg(snapshot->visitedSourceColumns)
+                                .arg(snapshot->sourceColumnCount)
+                                .arg(snapshot->visibleColumns.size()));
+                    }
+                }
+                QMessageBox::warning(
+                    this,
+                    localizedSourceText("截断快照比较"),
+                    localizedSourceText("所选快照包含截断数据。比对仅覆盖各快照已扫描并保留的行与列；未覆盖内容不会出现在结果中。")
+                        + QStringLiteral("\n\n")
+                        + snapshotCoverage.join(QLatin1Char('\n')));
+                if (!sourceStillValid())
+                {
+                    return;
+                }
+
+                // The nested modal event loop may have changed the snapshot store
+                // without destroying the table. Re-resolve both selections before
+                // using their addresses again.
+                snapshots = selectedSnapshots();
+                if (snapshots.size() != 2)
+                {
+                    pruneSnapshotSelections();
+                    updateControls();
+                    return;
+                }
+                earlier = snapshots.at(0);
+                later = snapshots.at(1);
+                if (earlier->sequence > later->sequence)
+                {
+                    std::swap(earlier, later);
+                }
+            }
+
             if (m_inComparison)
             {
                 showCurrentView();
@@ -963,10 +1189,38 @@ namespace
 
             m_ignoredSourceColumns = TableSnapshotCompareEngine::defaultIgnoredColumnIndexes(*earlier);
             m_ignoredSourceColumns.unite(TableSnapshotCompareEngine::defaultIgnoredColumnIndexes(*later));
+            m_comparisonInProgress = true;
+            updateControls();
             const TableComparisonResult comparison = TableSnapshotCompareEngine::compare(
                 *earlier,
                 *later,
-                m_ignoredSourceColumns);
+                m_ignoredSourceColumns,
+                QVector<int>(),
+                kSnapshotComparisonLimits,
+                [sourceStillValid]()
+                {
+                    return !sourceStillValid();
+                });
+            if (actionBarGuard.isNull())
+            {
+                return;
+            }
+            m_comparisonInProgress = false;
+            if (!sourceStillValid() || comparison.cancelled)
+            {
+                updateControls();
+                return;
+            }
+            showComparisonLimitWarning(comparison);
+            if (actionBarGuard.isNull())
+            {
+                return;
+            }
+            if (!sourceStillValid())
+            {
+                updateControls();
+                return;
+            }
             m_comparisonModel = new TableComparisonModel(comparison, this);
             m_comparisonModel->setShowDifferencesOnly(m_differenceOnlyCheckBox->isChecked());
 
@@ -1012,7 +1266,10 @@ namespace
 
         void refreshComparison()
         {
-            if (!m_inComparison || m_comparisonModel.isNull() || m_selectedSnapshotSequences.size() != 2)
+            if (!m_inComparison ||
+                m_comparisonInProgress ||
+                m_comparisonModel.isNull() ||
+                m_selectedSnapshotSequences.size() != 2)
             {
                 return;
             }
@@ -1027,11 +1284,42 @@ namespace
             {
                 std::swap(earlier, later);
             }
-            m_comparisonModel->setComparison(TableSnapshotCompareEngine::compare(
+            m_comparisonInProgress = true;
+            updateControls();
+            const QPointer<TableActionBar> actionBarGuard(this);
+            const TableComparisonResult comparison = TableSnapshotCompareEngine::compare(
                 *earlier,
                 *later,
-                m_ignoredSourceColumns));
+                m_ignoredSourceColumns,
+                QVector<int>(),
+                kSnapshotComparisonLimits,
+                [actionBarGuard]()
+                {
+                    return actionBarGuard.isNull() || actionBarGuard->m_table.isNull();
+                });
+            if (actionBarGuard.isNull())
+            {
+                return;
+            }
+            m_comparisonInProgress = false;
+            if (comparison.cancelled || m_table.isNull() || m_comparisonModel.isNull())
+            {
+                updateControls();
+                return;
+            }
+            showComparisonLimitWarning(comparison);
+            if (actionBarGuard.isNull())
+            {
+                return;
+            }
+            if (m_table.isNull() || m_comparisonModel.isNull())
+            {
+                updateControls();
+                return;
+            }
+            m_comparisonModel->setComparison(comparison);
             m_comparisonModel->setShowDifferencesOnly(m_differenceOnlyCheckBox->isChecked());
+            updateControls();
         }
 
         void showIgnoredColumnsMenu()
@@ -1112,24 +1400,52 @@ namespace
         {
             const bool hasSnapshots = !m_snapshots.isEmpty();
             const bool exactlyTwoSnapshotsSelected = m_selectedSnapshotSequences.size() == 2;
-            const bool hasVisibleRows = activeTableView() != nullptr &&
-                !allVisibleRows(activeTableView()).isEmpty();
-            m_copyAllButton->setEnabled(hasVisibleRows);
-            m_exportButton->setEnabled(hasVisibleRows);
-            m_addSnapshotButton->setEnabled(!m_cleanupMode && !m_inComparison && m_table != nullptr && m_table->model() != nullptr);
+            QTableView* activeTable = activeTableView();
+            const bool hasVisibleRows = activeTable != nullptr &&
+                activeTable->model() != nullptr &&
+                activeTable->model()->rowCount() > 0 &&
+                activeTable->model()->columnCount() > 0;
+            const bool controlsAvailable =
+                !m_snapshotCaptureInProgress && !m_comparisonInProgress;
+            m_copyAllButton->setEnabled(controlsAvailable && hasVisibleRows);
+            m_exportButton->setEnabled(controlsAvailable && hasVisibleRows);
+            m_addSnapshotButton->setText(localizedSourceText(
+                m_snapshotCaptureInProgress ? "正在采集…" : "增加快照"));
+            m_addSnapshotButton->setEnabled(
+                controlsAvailable &&
+                !m_cleanupMode &&
+                !m_inComparison &&
+                m_table != nullptr &&
+                m_table->model() != nullptr);
             m_cleanupButton->setVisible(!m_cleanupMode);
-            m_cleanupButton->setEnabled(hasSnapshots && !m_inComparison);
+            m_cleanupButton->setEnabled(controlsAvailable && hasSnapshots && !m_inComparison);
             m_doneCleanupButton->setVisible(m_cleanupMode);
+            m_doneCleanupButton->setEnabled(controlsAvailable);
             m_deleteSelectedButton->setVisible(m_cleanupMode);
-            m_deleteSelectedButton->setEnabled(m_cleanupMode && !m_cleanupSelections.isEmpty());
+            m_deleteSelectedButton->setEnabled(
+                controlsAvailable &&
+                m_cleanupMode &&
+                !m_cleanupSelections.isEmpty());
             m_clearAllButton->setVisible(m_cleanupMode);
-            m_clearAllButton->setEnabled(m_cleanupMode && hasSnapshots);
+            m_clearAllButton->setEnabled(controlsAvailable && m_cleanupMode && hasSnapshots);
             m_differenceOnlyCheckBox->setVisible(m_inComparison);
+            m_differenceOnlyCheckBox->setEnabled(controlsAvailable);
             m_ignoreColumnsButton->setVisible(m_inComparison);
-            m_currentViewButton->setEnabled(m_inComparison);
+            m_ignoreColumnsButton->setEnabled(controlsAvailable);
+            m_currentViewButton->setEnabled(controlsAvailable && m_inComparison);
             m_currentViewButton->setChecked(!m_inComparison);
-            m_compareViewButton->setEnabled(!m_cleanupMode && exactlyTwoSnapshotsSelected);
+            m_compareViewButton->setEnabled(
+                controlsAvailable &&
+                !m_cleanupMode &&
+                exactlyTwoSnapshotsSelected);
             m_compareViewButton->setChecked(m_inComparison);
+            for (QToolButton* snapshotButton : std::as_const(m_snapshotButtons))
+            {
+                if (snapshotButton != nullptr)
+                {
+                    snapshotButton->setEnabled(controlsAvailable);
+                }
+            }
         }
 
         QPointer<QTableView> m_table;
@@ -1150,6 +1466,8 @@ namespace
         bool m_originalViewportOpaquePaint = false;
         bool m_cleanupMode = false;
         bool m_inComparison = false;
+        bool m_snapshotCaptureInProgress = false;
+        bool m_comparisonInProgress = false;
         QToolButton* m_copyAllButton = nullptr;
         QToolButton* m_exportButton = nullptr;
         QToolButton* m_addSnapshotButton = nullptr;
