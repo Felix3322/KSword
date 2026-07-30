@@ -106,7 +106,7 @@ KswordARKHvmVmExitDispatch(
     if (NT_SUCCESS(telemetryStatus) &&
         (context->Result.Exit.Reason &
             KSW_HVM_VMEXIT_REASON_ENTRY_FAILURE) == 0UL &&
-        basicReason == KSWORD_ARK_HVM_EXIT_REASON_VMCALL) {
+        basicReason == KSW_HVM_VMEXIT_REASON_VMCALL) {
         context->ExitStatus = STATUS_SUCCESS;
     } else if (!NT_SUCCESS(telemetryStatus)) {
         context->ExitStatus = telemetryStatus;
