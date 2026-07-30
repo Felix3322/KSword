@@ -25,6 +25,13 @@ Environment:
 #define KSW_WORK_QUEUE_MAX_PE_SECTIONS 96UL
 #define KSW_WORK_QUEUE_MAX_EX_POOL_INDEX 8UL
 
+typedef PETHREAD(NTAPI* KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN)(
+    _In_ PEPROCESS Process,
+    _In_opt_ PETHREAD Thread
+    );
+
+extern NTKERNELAPI PEPROCESS PsInitialSystemProcess;
+
 typedef struct _KSW_WORK_QUEUE_BUILDER
 {
     KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE* Response;
@@ -34,6 +41,18 @@ typedef struct _KSW_WORK_QUEUE_BUILDER
     KSW_DYN_V4_WORK_QUEUE_LAYOUT Layout;
     KSW_HOOK_SYSTEM_MODULE_INFORMATION* Modules;
 } KSW_WORK_QUEUE_BUILDER;
+
+static KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN
+KswordARKWorkQueueResolvePsGetNextProcessThread(
+    VOID
+    )
+{
+    UNICODE_STRING routineName;
+
+    RtlInitUnicodeString(&routineName, L"PsGetNextProcessThread");
+    return (KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN)
+        MmGetSystemRoutineAddress(&routineName);
+}
 
 static BOOLEAN
 KswordARKWorkQueueIsKernelAddress(
@@ -538,151 +557,61 @@ KswordARKWorkQueueEnumerateItems(
     }
 }
 
-static NTSTATUS
-KswordARKWorkQueueReferenceThread(
-    _In_ PETHREAD Candidate,
-    _Out_ BOOLEAN* ReferencedOut
-    )
-{
-    POBJECT_TYPE objectType = NULL;
-    BOOLEAN safeReference = FALSE;
-    NTSTATUS status = STATUS_SUCCESS;
-
-    if (ReferencedOut == NULL) {
-        return STATUS_INVALID_PARAMETER;
-    }
-    *ReferencedOut = FALSE;
-    if (Candidate == NULL || PsThreadType == NULL || *PsThreadType == NULL) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    // The private queue list does not provide a caller-held object reference.
-    // Acquire one atomically before touching the object header/type so a
-    // concurrently exiting worker cannot be observed through a zero-reference
-    // ETHREAD.
-    __try {
-        safeReference = ObReferenceObjectSafe(Candidate);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return GetExceptionCode();
-    }
-    if (!safeReference) {
-        return STATUS_DELETE_PENDING;
-    }
-    *ReferencedOut = TRUE;
-
-    __try {
-        objectType = ObGetObjectType(Candidate);
-        if (objectType != *PsThreadType) {
-            status = STATUS_OBJECT_TYPE_MISMATCH;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = GetExceptionCode();
-    }
-    if (!NT_SUCCESS(status)) {
-        ObDereferenceObject(Candidate);
-        *ReferencedOut = FALSE;
-    }
-    return status;
-}
-
 static VOID
 KswordARKWorkQueueEnumerateThreads(
     _Inout_ KSW_WORK_QUEUE_BUILDER* Builder,
     _In_ ULONG NodeIndex,
     _In_ ULONG64 WorkQueueAddress,
     _In_ ULONG64 PriQueueAddress,
-    _In_ ULONG64 ListHeadAddress
+    _In_ KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN PsGetNextProcessThread
     )
 {
-    LIST_ENTRY headBefore;
-    LIST_ENTRY headAfter;
-    ULONG64 currentLink = 0ULL;
-    ULONG64 previousLink = ListHeadAddress;
-    ULONG iteration = 0UL;
+    PETHREAD threadCursor = NULL;
 
-    if (Builder == NULL || Builder->Stop) {
-        return;
-    }
-    if (!KswordARKWorkQueueRead(ListHeadAddress, &headBefore, sizeof(headBefore))) {
-        Builder->Response->readFailureCount += 1UL;
-        KswordARKWorkQueueMarkPartial(
-            Builder,
-            KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
-            STATUS_PARTIAL_COPY);
-        return;
-    }
-    if (!KswordARKWorkQueueListHeadIsPlausible(ListHeadAddress, &headBefore)) {
-        Builder->Response->corruptListCount += 1UL;
-        KswordARKWorkQueueMarkPartial(
-            Builder,
-            KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
-            STATUS_DATA_ERROR);
+    if (Builder == NULL || Builder->Stop ||
+        PsGetNextProcessThread == NULL ||
+        PsInitialSystemProcess == NULL) {
         return;
     }
 
-    currentLink = (ULONG64)(ULONG_PTR)headBefore.Flink;
-    while (currentLink != ListHeadAddress && !Builder->Stop) {
-        LIST_ENTRY currentLinks;
-        ULONG64 kthreadAddress = 0ULL;
+    /*
+     * ThreadListHead is a private, lockless queue list and cannot establish
+     * that an arbitrary list-derived address is an object. Walk the System
+     * process through PsGetNextProcessThread instead; every cursor is already
+     * an Object Manager referenced ETHREAD. DynData is used only to read the
+     * referenced ETHREAD's embedded KTHREAD.Queue and reverse-match it to the
+     * target KPRIQUEUE.
+     */
+    threadCursor = PsGetNextProcessThread(PsInitialSystemProcess, NULL);
+    while (threadCursor != NULL && !Builder->Stop) {
+        PETHREAD nextThread = NULL;
         ULONG64 ethreadAddress = 0ULL;
+        ULONG64 kthreadAddress = 0ULL;
         ULONG64 queuePointer = 0ULL;
-        ULONG64 referencedQueuePointer = 0ULL;
+        ULONG64 verifiedQueuePointer = 0ULL;
         ULONG64 startAddress = 0ULL;
-        LIST_ENTRY referencedLinks;
-        PETHREAD threadObject = NULL;
-        BOOLEAN referenced = FALSE;
         ULONG threadProcessId = 0UL;
-        NTSTATUS referenceStatus = STATUS_SUCCESS;
         KSWORD_ARK_WORK_QUEUE_ENTRY entry;
 
-        if (iteration >= Builder->MaxEntries) {
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_TRUNCATED,
-                STATUS_BUFFER_OVERFLOW);
-            Builder->Stop = TRUE;
-            break;
-        }
-        ++iteration;
-        if (!KswordARKWorkQueueIsKernelAddress(currentLink) ||
-            currentLink < Builder->Layout.KthreadQueueListEntry ||
-            !KswordARKWorkQueueRead(currentLink, &currentLinks, sizeof(currentLinks)) ||
-            (ULONG64)(ULONG_PTR)currentLinks.Blink != previousLink) {
-            Builder->Response->corruptListCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
-                STATUS_DATA_ERROR);
-            break;
-        }
-        kthreadAddress = currentLink - Builder->Layout.KthreadQueueListEntry;
-        if (kthreadAddress < Builder->Layout.EthreadTcb) {
-            Builder->Response->referenceFailureCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
-                STATUS_DATA_ERROR);
-            previousLink = currentLink;
-            currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
-            continue;
-        }
-        ethreadAddress = kthreadAddress - Builder->Layout.EthreadTcb;
-        if (!KswordARKWorkQueueReadField(
+        ethreadAddress = (ULONG64)(ULONG_PTR)threadCursor;
+        if (!KswordARKWorkQueueAddAddress(
+                ethreadAddress,
+                Builder->Layout.EthreadTcb,
+                &kthreadAddress) ||
+            !KswordARKWorkQueueReadField(
                 kthreadAddress,
                 Builder->Layout.KthreadQueue,
                 &queuePointer,
-                sizeof(queuePointer)) ||
-            queuePointer != PriQueueAddress) {
-            Builder->Response->referenceFailureCount += 1UL;
+                sizeof(queuePointer))) {
+            Builder->Response->readFailureCount += 1UL;
             KswordARKWorkQueueMarkPartial(
                 Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
-                STATUS_OBJECT_TYPE_MISMATCH);
-            previousLink = currentLink;
-            currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
-            continue;
+                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
+                STATUS_PARTIAL_COPY);
+            goto AdvanceThread;
+        }
+        if (queuePointer != PriQueueAddress) {
+            goto AdvanceThread;
         }
 
         RtlZeroMemory(&entry, sizeof(entry));
@@ -691,71 +620,19 @@ KswordARKWorkQueueEnumerateThreads(
         entry.queueType = KSWORD_ARK_WORK_QUEUE_TYPE_SHARED_WORKER;
         entry.priorityIndex = MAXULONG;
         entry.nodeIndex = NodeIndex;
-        entry.flags = KSWORD_ARK_WORK_QUEUE_ENTRY_QUEUE_VALIDATED;
+        entry.flags =
+            KSWORD_ARK_WORK_QUEUE_ENTRY_QUEUE_VALIDATED |
+            KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_REFERENCED;
         entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_OK;
         entry.queueAddress = WorkQueueAddress;
         entry.threadObject = ethreadAddress;
 
-        threadObject = (PETHREAD)(ULONG_PTR)ethreadAddress;
-        referenceStatus = KswordARKWorkQueueReferenceThread(threadObject, &referenced);
-        if (!NT_SUCCESS(referenceStatus) || !referenced) {
-            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_REFERENCE_FAILED;
-            Builder->Response->referenceFailureCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
-                referenceStatus);
-            KswordARKWorkQueueAppendEntry(Builder, &entry);
-            previousLink = currentLink;
-            currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
-            continue;
-        }
-
-        entry.flags |= KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_REFERENCED;
-        // The object reference prevents ETHREAD reuse, but the queue can still
-        // unlink the worker between the initial list read and the reference.
-        // Re-read both the membership links and Queue field while referenced;
-        // changed evidence is returned only as an explicit partial snapshot.
-        if (!KswordARKWorkQueueRead(currentLink, &referencedLinks, sizeof(referencedLinks)) ||
-            !KswordARKWorkQueueReadField(
-                kthreadAddress,
-                Builder->Layout.KthreadQueue,
-                &referencedQueuePointer,
-                sizeof(referencedQueuePointer))) {
-            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_READ_FAILED;
-            Builder->Response->readFailureCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
-                STATUS_PARTIAL_COPY);
-            ObDereferenceObject(threadObject);
-            KswordARKWorkQueueAppendEntry(Builder, &entry);
-            previousLink = currentLink;
-            currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
-            continue;
-        }
-        if (referencedLinks.Flink != currentLinks.Flink ||
-            referencedLinks.Blink != currentLinks.Blink ||
-            referencedQueuePointer != PriQueueAddress) {
-            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_IDENTITY_FAILED;
-            Builder->Response->referenceFailureCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
-                STATUS_RETRY);
-            ObDereferenceObject(threadObject);
-            KswordARKWorkQueueAppendEntry(Builder, &entry);
-            previousLink = currentLink;
-            currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
-            continue;
-        }
-
         __try {
-            entry.threadId = HandleToULong(PsGetThreadId(threadObject));
-            threadProcessId = HandleToULong(PsGetThreadProcessId(threadObject));
+            entry.threadId = HandleToULong(PsGetThreadId(threadCursor));
+            threadProcessId = HandleToULong(PsGetThreadProcessId(threadCursor));
 #if (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
             entry.threadCreateTime100ns =
-                (ULONG64)PsGetThreadCreateTime(threadObject);
+                (ULONG64)PsGetThreadCreateTime(threadCursor);
 #endif
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -799,6 +676,30 @@ KswordARKWorkQueueEnumerateThreads(
                 KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
                 STATUS_OBJECT_NAME_NOT_FOUND);
         }
+        else if (!KswordARKWorkQueueReadField(
+                kthreadAddress,
+                Builder->Layout.KthreadQueue,
+                &verifiedQueuePointer,
+                sizeof(verifiedQueuePointer))) {
+            entry.threadId = 0UL;
+            entry.threadCreateTime100ns = 0ULL;
+            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_READ_FAILED;
+            Builder->Response->readFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
+                STATUS_PARTIAL_COPY);
+        }
+        else if (verifiedQueuePointer != PriQueueAddress) {
+            entry.threadId = 0UL;
+            entry.threadCreateTime100ns = 0ULL;
+            entry.status = KSWORD_ARK_WORK_QUEUE_ENTRY_STATUS_THREAD_IDENTITY_FAILED;
+            Builder->Response->referenceFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                Builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
+                STATUS_RETRY);
+        }
         else {
             entry.flags |= KSWORD_ARK_WORK_QUEUE_ENTRY_THREAD_IDENTITY_VALID;
             entry.routineAddress = startAddress;
@@ -811,30 +712,17 @@ KswordARKWorkQueueEnumerateThreads(
             }
         }
 
-        ObDereferenceObject(threadObject);
         KswordARKWorkQueueAppendEntry(Builder, &entry);
-        previousLink = currentLink;
-        currentLink = (ULONG64)(ULONG_PTR)currentLinks.Flink;
-    }
 
-    if (!Builder->Stop) {
-        if (!KswordARKWorkQueueRead(ListHeadAddress, &headAfter, sizeof(headAfter))) {
-            Builder->Response->readFailureCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
-                STATUS_PARTIAL_COPY);
+AdvanceThread:
+        if (Builder->Stop) {
+            ObDereferenceObject(threadCursor);
+            threadCursor = NULL;
+            break;
         }
-        else if (previousLink != (ULONG64)(ULONG_PTR)headBefore.Blink ||
-                 !KswordARKWorkQueueListHeadIsPlausible(ListHeadAddress, &headAfter) ||
-                 headAfter.Flink != headBefore.Flink ||
-                 headAfter.Blink != headBefore.Blink) {
-            Builder->Response->corruptListCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                Builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_CORRUPT_LIST,
-                STATUS_RETRY);
-        }
+        nextThread = PsGetNextProcessThread(PsInitialSystemProcess, threadCursor);
+        ObDereferenceObject(threadCursor);
+        threadCursor = nextThread;
     }
 }
 
@@ -854,6 +742,7 @@ KswordARKDriverEnumerateWorkQueues(
         KSWORD_ARK_WORK_QUEUE_TYPE_DELAYED,
         KSWORD_ARK_WORK_QUEUE_TYPE_HYPERCRITICAL
     };
+    KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN psGetNextProcessThread = NULL;
     ULONG64 pspSystemPartitionAddress = 0ULL;
     ULONG64 prioritiesAddress = 0ULL;
     ULONG64 epartitionAddress = 0ULL;
@@ -902,6 +791,17 @@ KswordARKDriverEnumerateWorkQueues(
         return STATUS_SUCCESS;
     }
     builder.Response->statusFlags |= KSWORD_ARK_WORK_QUEUE_STATUS_LAYOUT_VALIDATED;
+
+    if ((Request->flags & KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORKER_THREADS) != 0UL) {
+        psGetNextProcessThread = KswordARKWorkQueueResolvePsGetNextProcessThread();
+        if (psGetNextProcessThread == NULL || PsInitialSystemProcess == NULL) {
+            builder.Response->referenceFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                &builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
+                STATUS_PROCEDURE_NOT_FOUND);
+        }
+    }
 
     status = KswordARKHookBuildModuleSnapshot(&builder.Modules, &moduleBytes);
     if (!NT_SUCCESS(status)) {
@@ -973,7 +873,6 @@ KswordARKDriverEnumerateWorkQueues(
         ULONG64 workQueuePointerAddress = 0ULL;
         ULONG64 workQueueAddress = 0ULL;
         ULONG64 priQueueAddress = 0ULL;
-        ULONG64 threadListHeadAddress = 0ULL;
         ULONG liveQueueIndex = MAXULONG;
         ULONG queueTypeIndex = 0UL;
 
@@ -1045,25 +944,14 @@ KswordARKDriverEnumerateWorkQueues(
         }
 
         if ((Request->flags & KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORKER_THREADS) != 0UL &&
-            !builder.Stop) {
-            if (KswordARKWorkQueueAddAddress(
-                    priQueueAddress,
-                    builder.Layout.KpriQueueThreadListHead,
-                    &threadListHeadAddress)) {
-                KswordARKWorkQueueEnumerateThreads(
-                    &builder,
-                    nodeIndex,
-                    workQueueAddress,
-                    priQueueAddress,
-                    threadListHeadAddress);
-            }
-            else {
-                builder.Response->readFailureCount += 1UL;
-                KswordARKWorkQueueMarkPartial(
-                    &builder,
-                    KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE,
-                    STATUS_INTEGER_OVERFLOW);
-            }
+            !builder.Stop &&
+            psGetNextProcessThread != NULL) {
+            KswordARKWorkQueueEnumerateThreads(
+                &builder,
+                nodeIndex,
+                workQueueAddress,
+                priQueueAddress,
+                psGetNextProcessThread);
         }
     }
 
