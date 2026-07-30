@@ -290,6 +290,7 @@
     <ClInclude Include="..\shared\driver\KswordArkFilterIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkDeviceAuditIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkHwidIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkDriverBlindIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\hwid\hwid_dispatch_hooks.h"><Filter>Source Files\Features\Hwid</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkWin32kIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="include\ark\ark_thread_crossview.h"><Filter>Header Files\Ark</Filter></ClInclude>
@@ -297,6 +298,7 @@
     <ClInclude Include="src\features\thread\thread_crossview.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\thread\thread_worker_state.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\driver_integrity.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\driver_blind_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_cpu_integrity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_object_audit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h"><Filter>Header Files</Filter></ClInclude>
@@ -392,6 +394,18 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\driver_unload.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\driver_blind.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\driver_blind_actions.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\driver_blind_gate.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\driver_blind_ioctl.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_object_audit.c">

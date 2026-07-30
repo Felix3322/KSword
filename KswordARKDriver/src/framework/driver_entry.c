@@ -61,6 +61,14 @@ Return Value:
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
 
+    // 中文说明：必须在 WdfDriverCreate 安装框架 dispatch 前捕获 I/O 管理器的内核拒绝入口。
+    status = KswordARKDriverCommunicationInitialize(DriverObject);
+    // 中文说明：通信控制是可选功能；无法证明内核拒绝入口时只禁用该功能。
+    if (!NT_SUCCESS(status)) {
+        // 中文说明：保留其它 KSword 能力可用，同时让新 IOCTL 返回 DEVICE_NOT_READY。
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKDriverCommunicationInitialize unavailable %!STATUS!", status);
+    }
+
     // Register cleanup callback for WPP_CLEANUP during framework teardown.
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.EvtCleanupCallback = KswordARKDriverEvtDriverContextCleanup;
@@ -77,6 +85,8 @@ Return Value:
         &driverHandle);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfDriverCreate failed %!STATUS!", status);
+        // 中文说明：框架创建失败时撤销通信控制状态和所有潜在引用。
+        KswordARKDriverCommunicationUninitialize();
         WPP_CLEANUP(DriverObject);
         return status;
     }
@@ -84,6 +94,8 @@ Return Value:
     status = KswordARKDriverCreateControlDevice(driverHandle, &controlDevice);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKDriverCreateControlDevice failed %!STATUS!", status);
+        // 中文说明：控制设备创建失败时不保留通信控制全局状态。
+        KswordARKDriverCommunicationUninitialize();
         WPP_CLEANUP(DriverObject);
         return status;
     }
@@ -92,6 +104,8 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKCallbackInitialize failed %!STATUS!", status);
         WdfObjectDelete(controlDevice);
+        // 中文说明：回调初始化失败返回前撤销通信控制状态。
+        KswordARKDriverCommunicationUninitialize();
         WPP_CLEANUP(DriverObject);
         return status;
     }
@@ -142,6 +156,9 @@ Return Value:
     UNREFERENCED_PARAMETER(Driver);
 
     PAGED_CODE();
+
+    // 中文说明：最先恢复仍由本功能持有的 MajorFunction，并释放目标 DriverObject 引用。
+    KswordARKDriverCommunicationUninitialize();
 
     // Stop crash callbacks before any other teardown can invalidate state used
     // by the nonpaged diagnostic path.

@@ -4,6 +4,7 @@
 #include "driver/KswordArkFileIoctl.h"
 #include "driver/KswordArkCallbackIoctl.h"
 #include "driver/KswordArkKernelIoctl.h"
+#include "driver/KswordArkDriverBlindIoctl.h"
 #include "driver/KswordArkDynDataIoctl.h"
 #include "driver/KswordArkCapabilityIoctl.h"
 #include "driver/KswordArkThreadIoctl.h"

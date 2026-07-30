@@ -176,6 +176,7 @@ namespace
         table->setItem(rowIndex, 4, createReadOnlyItem(confidenceText));
         table->setItem(rowIndex, 5, createReadOnlyItem(detailText));
     }
+
 }
 
 void DriverDock::refreshDriverServiceRecords()
@@ -723,6 +724,75 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         driverText(
             "driver.menu.deep_cleanup_by_base.tooltip",
             QStringLiteral("先封 MajorFunction、终止并确认目标线程退出，再清理可验证回调、调用 DriverUnload，并解除/删除设备链。")));
+    contextMenu.addSeparator();
+    QAction* blindCommunicationAction = contextMenu.addAction(
+        QIcon(":/Icon/process_critical.svg"),
+        driverText("driver.menu.blind_irp", QStringLiteral("致盲 IRP 通信…")));
+    blindCommunicationAction->setToolTip(
+        driverText(
+            "driver.menu.blind_irp.tooltip",
+            QStringLiteral("按模块基址精确定位 DriverObject，只拒绝 CREATE/READ/WRITE/DEVICE_CONTROL/INTERNAL_DEVICE_CONTROL；保留 Cleanup、Close、PnP、Power 和 FastIo。")));
+    QAction* restoreCommunicationAction = contextMenu.addAction(
+        QIcon(":/Icon/process_refresh.svg"),
+        driverText("driver.menu.restore_irp", QStringLiteral("恢复 IRP 通信")));
+    restoreCommunicationAction->setToolTip(
+        driverText(
+            "driver.menu.restore_irp.tooltip",
+            QStringLiteral("只恢复仍由本功能接管的 MajorFunction；检测到第三方改写时不会覆盖对方入口。")));
+
+    // 致盲是危险写操作：只有证据缓存证明 canonical DriverObject 与模块基址一致时启用。
+    // 恢复按 R0 保存的模块基址记录查找，因此即使证据刷新失败也必须保留逃生入口。
+    const int selectedRowIndex = selectedRows.front().row();
+    QString selectedModuleName;
+    std::uint64_t selectedModuleBase = 0U;
+    std::size_t sourceIndex = m_loadedModuleEvidenceCache.size();
+    {
+        // QMenu::exec 会运行嵌套事件循环；所有表项指针仅在进入该循环前使用。
+        const QTableWidgetItem* selectedModuleNameItem =
+            m_moduleTable->item(selectedRowIndex, 0);
+        const QTableWidgetItem* selectedModuleBaseItem =
+            m_moduleTable->item(selectedRowIndex, 1);
+        selectedModuleName =
+            selectedModuleNameItem != nullptr
+            ? selectedModuleNameItem->text().trimmed()
+            : QString();
+        selectedModuleBase =
+            selectedModuleBaseItem != nullptr
+            ? selectedModuleBaseItem->data(Qt::UserRole).toULongLong()
+            : 0U;
+        sourceIndex =
+            selectedModuleNameItem != nullptr
+            ? static_cast<std::size_t>(
+                selectedModuleNameItem->data(ModuleRecordIndexRole).toULongLong())
+            : m_loadedModuleEvidenceCache.size();
+    }
+    QString selectedDriverObjectName;
+    std::uint64_t selectedDriverObjectAddress = 0U;
+    bool selectedDriverObjectResolved = false;
+    bool selectedDriverStartMatchesBase = false;
+    if (sourceIndex < m_loadedModuleEvidenceCache.size())
+    {
+        const LoadedModuleEvidenceRecord& evidence =
+            m_loadedModuleEvidenceCache[sourceIndex];
+        selectedDriverObjectName = evidence.driverObjectName.trimmed();
+        selectedDriverObjectAddress = evidence.driverObjectAddress;
+        selectedDriverObjectResolved = evidence.driverObjectResolved;
+        selectedDriverStartMatchesBase = evidence.driverStartMatchesBase;
+    }
+    const bool exactTargetReady =
+        selectedDriverObjectResolved &&
+        selectedDriverStartMatchesBase &&
+        !selectedDriverObjectName.isEmpty() &&
+        selectedDriverObjectAddress != 0U;
+    blindCommunicationAction->setEnabled(selectedModuleBase != 0U && exactTargetReady);
+    restoreCommunicationAction->setEnabled(selectedModuleBase != 0U);
+    if (!exactTargetReady)
+    {
+        blindCommunicationAction->setToolTip(
+            driverText(
+                "driver.menu.blind_irp.requires_evidence",
+                QStringLiteral("请先刷新模块证据；仅当 canonical DriverObject、对象地址已解析且 DriverStart 与模块基址一致时允许致盲。")));
+    }
 
     QAction* selectedAction = contextMenu.exec(m_moduleTable->viewport()->mapToGlobal(localPosition));
     if (selectedAction == refreshEvidenceAction)
@@ -751,6 +821,51 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     }
     if (selectedAction == uploadVirusTotalAction)
     {
+        return;
+    }
+    if (selectedAction == blindCommunicationAction)
+    {
+        const QMessageBox::StandardButton confirmResult = QMessageBox::warning(
+            this,
+            driverText(
+                "driver.confirm.blind_irp.title",
+                QStringLiteral("致盲 IRP 通信")),
+            driverText(
+                "driver.confirm.blind_irp.body",
+                QStringLiteral(
+                    "目标模块：%1\nDriverObject：%2\n对象地址：%3\n模块基址：%4\n\n"
+                    "将把以下 5 个通信入口替换为系统拒绝入口：\n"
+                    "CREATE / READ / WRITE / DEVICE_CONTROL / INTERNAL_DEVICE_CONTROL\n\n"
+                    "不会卸载驱动，也不会停止线程、回调、DPC、共享内存通信或已在途 IRP；"
+                    "Cleanup、Close、PnP、Power、SystemControl、Shutdown 和 FastIo 保持不变。"
+                    "该操作仍可能导致应用访问失败、设备异常、系统卡死或蓝屏。\n\n"
+                    "未被第三方改写且仍由本功能持有的入口可通过“恢复 IRP 通信”撤销；"
+                    "冲突槽只报告、不覆盖。是否继续？"))
+                .arg(selectedModuleName)
+                .arg(selectedDriverObjectName)
+                .arg(formatCompactAddress(selectedDriverObjectAddress))
+                .arg(formatCompactAddress(selectedModuleBase)),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirmResult == QMessageBox::Yes)
+        {
+            controlDriverCommunication(
+                selectedModuleBase,
+                selectedModuleName,
+                selectedDriverObjectName,
+                selectedDriverObjectAddress,
+                false);
+        }
+        return;
+    }
+    if (selectedAction == restoreCommunicationAction)
+    {
+        controlDriverCommunication(
+            selectedModuleBase,
+            selectedModuleName,
+            selectedDriverObjectName,
+            selectedDriverObjectAddress,
+            true);
         return;
     }
     if (selectedAction == forceCleanupByBaseAction)

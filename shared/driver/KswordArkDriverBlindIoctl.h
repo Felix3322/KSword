@@ -1,0 +1,84 @@
+#pragma once
+
+#include "KswordArkKernelIoctl.h"
+
+/*
+ * Driver communication control protocol.
+ *
+ * BLIND identifies the exact target with the loaded module base, canonical
+ * \Driver\ name, and the DriverObject address observed by the read-only
+ * evidence scan.  QUERY and RESTORE use the saved module-base record only.
+ */
+#define KSWORD_ARK_DRIVER_COMMUNICATION_PROTOCOL_VERSION 1UL
+
+#define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_COMMUNICATION 0x8A7UL
+
+#define IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_COMMUNICATION, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
+
+#define KSWORD_ARK_DRIVER_COMMUNICATION_ACTION_QUERY   0UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_ACTION_BLIND   1UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_ACTION_RESTORE 2UL
+
+#define KSWORD_ARK_DRIVER_COMMUNICATION_STATE_INACTIVE 0UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_STATE_ACTIVE   1UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_STATE_CONFLICT 2UL
+
+#define KSWORD_ARK_DRIVER_COMMUNICATION_FLAG_TARGET_MODULE_BASE_PRESENT 0x00000001UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_FLAG_UI_CONFIRMED               0x00000002UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_FLAG_EXPECTED_DRIVER_OBJECT_PRESENT 0x00000004UL
+
+#define KSWORD_ARK_DRIVER_COMMUNICATION_RESPONSE_FLAG_FOREIGN_CHANGE 0x00000001UL
+
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_CREATE                  0x00000001UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_READ                    0x00000002UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_WRITE                   0x00000004UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_DEVICE_CONTROL          0x00000008UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_INTERNAL_DEVICE_CONTROL 0x00000010UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_ALL \
+    (KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_CREATE | \
+     KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_READ | \
+     KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_WRITE | \
+     KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_DEVICE_CONTROL | \
+     KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_INTERNAL_DEVICE_CONTROL)
+
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_CREATE                  0x00UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_READ                    0x03UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_WRITE                   0x04UL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_DEVICE_CONTROL          0x0EUL
+#define KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_INTERNAL_DEVICE_CONTROL 0x0FUL
+
+typedef struct _KSWORD_ARK_DRIVER_COMMUNICATION_REQUEST
+{
+    unsigned long version;
+    unsigned long action;
+    unsigned long flags;
+    unsigned long reserved;
+    unsigned long long targetModuleBase;
+    unsigned long long expectedDriverObjectAddress;
+    wchar_t driverName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS];
+} KSWORD_ARK_DRIVER_COMMUNICATION_REQUEST;
+
+typedef struct _KSWORD_ARK_DRIVER_COMMUNICATION_RESPONSE
+{
+    unsigned long version;
+    unsigned long action;
+    unsigned long state;
+    unsigned long responseFlags;
+    long lastStatus;
+    unsigned long targetedMask;
+    unsigned long changedMask;
+    unsigned long activeMask;
+    unsigned long ownedMask;
+    unsigned long conflictMask;
+    unsigned long generation;
+    unsigned long reserved;
+    unsigned long long driverObjectAddress;
+    unsigned long long driverStart;
+    unsigned long long rejectDispatchAddress;
+    wchar_t driverName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS];
+} KSWORD_ARK_DRIVER_COMMUNICATION_RESPONSE;

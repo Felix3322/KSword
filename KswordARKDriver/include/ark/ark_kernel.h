@@ -3,6 +3,7 @@
 #include <ntddk.h>
 
 #include "driver/KswordArkKernelIoctl.h"
+#include "driver/KswordArkDriverBlindIoctl.h"
 
 EXTERN_C_START
 
@@ -75,6 +76,36 @@ typedef struct _KSW_DRIVER_UNLOAD_DIAGNOSTICS
     ULONG imageHeaderSizeOfImage;
     ULONG imageNtHeaderOffset;
 } KSW_DRIVER_UNLOAD_DIAGNOSTICS, *PKSW_DRIVER_UNLOAD_DIAGNOSTICS;
+
+NTSTATUS
+KswordARKDriverCommunicationInitialize(
+    _In_ PDRIVER_OBJECT DriverObject
+    );
+
+VOID
+KswordARKDriverCommunicationUninitialize(
+    VOID
+    );
+
+NTSTATUS
+KswordARKDriverControlCommunication(
+    _In_ const KSWORD_ARK_DRIVER_COMMUNICATION_REQUEST* Request,
+    _Out_ KSWORD_ARK_DRIVER_COMMUNICATION_RESPONSE* Response
+    );
+
+BOOLEAN
+KswordARKDriverCommunicationHasBlockingRecord(
+    _In_ PDRIVER_OBJECT TargetDriverObject,
+    _In_ ULONGLONG OriginalRequestModuleBase
+    );
+
+NTSTATUS
+KswordARKDriverReferenceObjectByModuleBase(
+    _In_ ULONGLONG TargetModuleBase,
+    _Outptr_ PDRIVER_OBJECT* DriverObjectOut,
+    _Out_writes_(NameChars) PWCHAR NormalizedNameOut,
+    _In_ ULONG NameChars
+    );
 
 NTSTATUS
 KswordARKKernelIoctlExperimentalReturnToFirmware(

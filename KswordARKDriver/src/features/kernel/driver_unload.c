@@ -1110,13 +1110,17 @@ KswordARKDriverUnloadReferenceByModuleBaseInDirectory(
     ULONG returnLength = 0UL;
     ULONG scannedEntries = 0UL;
     BOOLEAN restartScan = TRUE;
+    BOOLEAN scanComplete = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
     NTSTATUS finalStatus = STATUS_OBJECT_NAME_NOT_FOUND;
+    PDRIVER_OBJECT matchedObject = NULL;
+    WCHAR matchedName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS] = { 0 };
 
     if (DirectoryName == NULL ||
         TargetModuleBase == 0ULL ||
         DriverObjectOut == NULL ||
-        NormalizedNameOut == NULL) {
+        NormalizedNameOut == NULL ||
+        NameChars == 0UL) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -1140,6 +1144,7 @@ KswordARKDriverUnloadReferenceByModuleBaseInDirectory(
 
     while (scannedEntries < KSW_DRIVER_UNLOAD_DIRECTORY_MAX_ENTRIES) {
         WCHAR candidateName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS] = { 0 };
+        WCHAR candidateNormalizedName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS] = { 0 };
         PDRIVER_OBJECT candidateObject = NULL;
         NTSTATUS candidateStatus = STATUS_SUCCESS;
 
@@ -1154,10 +1159,12 @@ KswordARKDriverUnloadReferenceByModuleBaseInDirectory(
             &returnLength);
         restartScan = FALSE;
         if (status == STATUS_NO_MORE_ENTRIES) {
-            finalStatus = STATUS_OBJECT_NAME_NOT_FOUND;
+            /* 中文说明：完整扫描结束后才能证明模块基址在本目录中唯一。 */
+            scanComplete = TRUE;
             break;
         }
         if (!NT_SUCCESS(status)) {
+            /* 中文说明：目录扫描中断时不能把已找到的首个对象当成唯一身份。 */
             finalStatus = status;
             break;
         }
@@ -1180,8 +1187,8 @@ KswordARKDriverUnloadReferenceByModuleBaseInDirectory(
         candidateStatus = KswordARKDriverUnloadReferenceCandidateName(
             candidateName,
             &candidateObject,
-            NormalizedNameOut,
-            NameChars);
+            candidateNormalizedName,
+            RTL_NUMBER_OF(candidateNormalizedName));
         if (!NT_SUCCESS(candidateStatus)) {
             if (candidateStatus != STATUS_OBJECT_TYPE_MISMATCH) {
                 finalStatus = candidateStatus;
@@ -1190,23 +1197,73 @@ KswordARKDriverUnloadReferenceByModuleBaseInDirectory(
         }
 
         if (KswordARKDriverUnloadDriverObjectMatchesModuleBase(candidateObject, TargetModuleBase)) {
-            *DriverObjectOut = candidateObject;
-            ExFreePoolWithTag(entry, KSW_DRIVER_UNLOAD_DIRECTORY_TAG);
-            ZwClose(directoryHandle);
-            return STATUS_SUCCESS;
+            /* 中文说明：第二个同基址 DriverObject 使模块基址身份产生歧义。 */
+            if (matchedObject != NULL) {
+                /* 中文说明：释放第二个候选引用，不把任一对象交给调用方。 */
+                ObDereferenceObject(candidateObject);
+                /* 中文说明：释放先前保留的首个匹配引用。 */
+                ObDereferenceObject(matchedObject);
+                /* 中文说明：清空本地指针避免公共清理路径重复释放。 */
+                matchedObject = NULL;
+                /* 中文说明：用稳定碰撞状态拒绝不唯一身份。 */
+                finalStatus = STATUS_OBJECT_NAME_COLLISION;
+                /* 中文说明：无需继续扫描，本目录已经证明歧义。 */
+                break;
+            }
+
+            /* 中文说明：暂存首个匹配并继续完整扫描以证明唯一性。 */
+            matchedObject = candidateObject;
+            /* 中文说明：只保存真正匹配项的规范对象名。 */
+            (VOID)RtlStringCchCopyW(
+                matchedName,
+                RTL_NUMBER_OF(matchedName),
+                candidateNormalizedName);
+            /* 中文说明：对象引用已转移给 matchedObject，禁止落入普通释放。 */
+            candidateObject = NULL;
+            /* 中文说明：继续枚举本目录中的其它对象。 */
+            continue;
         }
 
         ObDereferenceObject(candidateObject);
     }
 
+    /* 中文说明：达到固定扫描上限时不能证明唯一，按失败关闭。 */
+    if (!scanComplete &&
+        finalStatus == STATUS_OBJECT_NAME_NOT_FOUND) {
+        /* 中文说明：保留明确上限状态供调用方诊断。 */
+        finalStatus = STATUS_BUFFER_OVERFLOW;
+    }
+    /* 中文说明：只有完整扫描且恰有一个匹配时才发布引用。 */
+    if (scanComplete &&
+        matchedObject != NULL &&
+        finalStatus == STATUS_OBJECT_NAME_NOT_FOUND) {
+        /* 中文说明：把唯一引用的所有权转移给调用方。 */
+        *DriverObjectOut = matchedObject;
+        /* 中文说明：输出唯一匹配的规范对象名。 */
+        (VOID)RtlStringCchCopyW(
+            NormalizedNameOut,
+            NameChars,
+            matchedName);
+        /* 中文说明：释放临时目录查询缓冲。 */
+        ExFreePoolWithTag(entry, KSW_DRIVER_UNLOAD_DIRECTORY_TAG);
+        /* 中文说明：关闭本次对象目录句柄。 */
+        ZwClose(directoryHandle);
+        /* 中文说明：本目录中的模块基址身份唯一。 */
+        return STATUS_SUCCESS;
+    }
+    /* 中文说明：扫描失败、碰撞或未完成时释放暂存的首个引用。 */
+    if (matchedObject != NULL) {
+        /* 中文说明：失败路径不向调用方泄露对象引用。 */
+        ObDereferenceObject(matchedObject);
+    }
     ExFreePoolWithTag(entry, KSW_DRIVER_UNLOAD_DIRECTORY_TAG);
     ZwClose(directoryHandle);
     return finalStatus;
 }
 
-/* 中文说明：按模块基址扫描对象目录，处理“服务已停止但模块仍在”的残留场景。 */
-static NTSTATUS
-KswordARKDriverUnloadReferenceByModuleBase(
+/* 中文说明：按模块基址扫描对象目录，供强卸载和通信阻断功能共享精确 DriverObject 身份。 */
+NTSTATUS
+KswordARKDriverReferenceObjectByModuleBase(
     _In_ ULONGLONG TargetModuleBase,
     _Outptr_ PDRIVER_OBJECT* DriverObjectOut,
     _Out_writes_(NameChars) PWCHAR NormalizedNameOut,
@@ -1220,32 +1277,92 @@ KswordARKDriverUnloadReferenceByModuleBase(
     };
     ULONG directoryIndex = 0UL;
     NTSTATUS status = STATUS_OBJECT_NAME_NOT_FOUND;
+    PDRIVER_OBJECT matchedObject = NULL;
+    WCHAR matchedName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS] = { 0 };
 
-    if (TargetModuleBase == 0ULL || DriverObjectOut == NULL || NormalizedNameOut == NULL) {
+    if (TargetModuleBase == 0ULL ||
+        DriverObjectOut == NULL ||
+        NormalizedNameOut == NULL ||
+        NameChars == 0UL) {
         return STATUS_INVALID_PARAMETER;
     }
 
     *DriverObjectOut = NULL;
+    /* 中文说明：失败路径不保留上一次调用者缓冲中的对象名。 */
+    NormalizedNameOut[0] = L'\0';
     for (directoryIndex = 0UL;
         directoryIndex < RTL_NUMBER_OF(directoriesToScan);
         ++directoryIndex) {
+        PDRIVER_OBJECT directoryMatch = NULL;
+        WCHAR directoryMatchName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS] = { 0 };
         NTSTATUS scanStatus = KswordARKDriverUnloadReferenceByModuleBaseInDirectory(
             directoriesToScan[directoryIndex],
             TargetModuleBase,
-            DriverObjectOut,
-            NormalizedNameOut,
-            NameChars);
+            &directoryMatch,
+            directoryMatchName,
+            RTL_NUMBER_OF(directoryMatchName));
 
         if (NT_SUCCESS(scanStatus)) {
-            return STATUS_SUCCESS;
+            /* 中文说明：跨目录第二个同基址对象同样构成身份歧义。 */
+            if (matchedObject != NULL) {
+                /* 中文说明：释放当前目录返回的唯一匹配引用。 */
+                ObDereferenceObject(directoryMatch);
+                /* 中文说明：释放先前目录保留的匹配引用。 */
+                ObDereferenceObject(matchedObject);
+                /* 中文说明：不向调用方返回任一歧义对象。 */
+                return STATUS_OBJECT_NAME_COLLISION;
+            }
+
+            /* 中文说明：保留首个目录匹配并继续扫描其它允许目录。 */
+            matchedObject = directoryMatch;
+            /* 中文说明：保存首个匹配的规范对象名。 */
+            (VOID)RtlStringCchCopyW(
+                matchedName,
+                RTL_NUMBER_OF(matchedName),
+                directoryMatchName);
+            /* 中文说明：标记已经找到候选但尚未证明跨目录唯一。 */
+            status = STATUS_SUCCESS;
+            /* 中文说明：继续下一允许目录。 */
+            continue;
+        }
+        /* 中文说明：目录内部已经发现同基址碰撞时立即失败。 */
+        if (scanStatus == STATUS_OBJECT_NAME_COLLISION) {
+            /* 中文说明：释放先前目录可能保留的唯一匹配。 */
+            if (matchedObject != NULL) {
+                /* 中文说明：碰撞路径不保留引用。 */
+                ObDereferenceObject(matchedObject);
+            }
+            /* 中文说明：把稳定碰撞状态返回所有调用者。 */
+            return scanStatus;
         }
         if (scanStatus != STATUS_OBJECT_NAME_NOT_FOUND &&
             scanStatus != STATUS_OBJECT_PATH_NOT_FOUND &&
             scanStatus != STATUS_OBJECT_TYPE_MISMATCH) {
-            status = scanStatus;
+            /* 中文说明：若已找到匹配但其它目录扫描失败，也不能证明唯一。 */
+            if (matchedObject != NULL) {
+                /* 中文说明：释放尚未发布的唯一候选引用。 */
+                ObDereferenceObject(matchedObject);
+                /* 中文说明：清空本地指针避免后续误发布。 */
+                matchedObject = NULL;
+            }
+            /* 中文说明：任一目录无法完整扫描时都不能证明跨目录唯一。 */
+            return scanStatus;
         }
     }
 
+    /* 中文说明：三个允许目录完整扫描后发布唯一匹配。 */
+    if (matchedObject != NULL && NT_SUCCESS(status)) {
+        /* 中文说明：把唯一 DriverObject 引用交给调用方。 */
+        *DriverObjectOut = matchedObject;
+        /* 中文说明：回填唯一对象的规范目录名。 */
+        (VOID)RtlStringCchCopyW(
+            NormalizedNameOut,
+            NameChars,
+            matchedName);
+        /* 中文说明：模块基址在所有允许目录中唯一。 */
+        return STATUS_SUCCESS;
+    }
+    /* 中文说明：失败状态不会留下未发布引用。 */
     return status;
 }
 
@@ -1282,7 +1399,7 @@ KswordARKDriverUnloadReferenceByName(
 
     if ((Request->flags & KSWORD_ARK_DRIVER_UNLOAD_FLAG_TARGET_MODULE_BASE_PRESENT) != 0UL &&
         Request->targetModuleBase != 0ULL) {
-        status = KswordARKDriverUnloadReferenceByModuleBase(
+        status = KswordARKDriverReferenceObjectByModuleBase(
             Request->targetModuleBase,
             DriverObjectOut,
             NormalizedNameOut,
@@ -4371,6 +4488,29 @@ Return Value:
         response->driverName,
         KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS,
         normalizedName);
+
+    /*
+     * 中文说明：通信阻断记录持有目标 DriverObject 引用和原始 dispatch。
+     * 在 active 或 foreign-conflict 状态直接卸载会破坏恢复身份，必须先让
+     * R3 执行 RESTORE；这里同时使用已引用对象指针和原始请求基址门禁，
+     * 不从目标可写的当前 DriverStart 派生记录键。
+     */
+    if (KswordARKDriverCommunicationHasBlockingRecord(
+        driverObject,
+        requestSnapshot.targetModuleBase)) {
+        /* 中文说明：沿用固定 operation-failed 响应状态承载可重试的 busy 原因。 */
+        response->status = KSWORD_ARK_DRIVER_UNLOAD_STATUS_OPERATION_FAILED;
+        /* 中文说明：lastStatus 明确要求调用方先恢复通信入口。 */
+        response->lastStatus = STATUS_DEVICE_BUSY;
+        /* 中文说明：waitStatus 同步 busy，避免 UI 把该结果误判为等待超时。 */
+        response->waitStatus = STATUS_DEVICE_BUSY;
+        /* 中文说明：返回完整固定响应供 R3 展示恢复建议。 */
+        *BytesWrittenOut = sizeof(*response);
+        /* 中文说明：释放本次 force-unload 解析获得的临时对象引用。 */
+        ObDereferenceObject(driverObject);
+        /* 中文说明：协议层调用成功，具体拒绝原因位于响应状态。 */
+        return STATUS_SUCCESS;
+    }
 
     status = KswordARKDriverUnloadBuildPreflightResult(
         driverObject,

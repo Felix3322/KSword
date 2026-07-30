@@ -109,15 +109,25 @@ private:
         QString inlineHookStatusText;  // inlineHookStatusText：Inline Hook 可疑项摘要。
         QString callbackStatusText;    // callbackStatusText：Callback 引用摘要。
         QString detailText;            // detailText：详情区可复制的证据明细。
+        std::uint64_t driverObjectAddress = 0; // driverObjectAddress：只读证据查询返回的精确对象地址。
+        std::uint64_t communicationRejectDispatchAddress = 0; // communicationRejectDispatchAddress：R0 系统拒绝入口。
         bool queryAttempted = false;   // queryAttempted：是否已经尝试聚合。
         bool driverObjectResolved = false; // driverObjectResolved：DriverObject 是否解析成功。
         bool driverStartKnown = false; // driverStartKnown：DriverStart 是否有有效值。
         bool driverStartMatchesBase = false; // driverStartMatchesBase：DriverStart 是否等于模块基址。
+        bool communicationStateKnown = false; // communicationStateKnown：通信控制 QUERY 是否返回有效业务状态。
+        bool communicationActive = false; // communicationActive：是否仍有本功能拥有的致盲槽位。
+        bool communicationConflict = false; // communicationConflict：是否有第三方改写导致的粘性冲突。
         bool hasMajorFunctionExternalJump = false; // hasMajorFunctionExternalJump：是否存在 MajorFunction 外跳。
         bool hasIatEatSuspicious = false; // hasIatEatSuspicious：是否存在 IAT/EAT 可疑项。
         bool hasInlineHookSuspicious = false; // hasInlineHookSuspicious：是否存在 Inline Hook 可疑项。
         bool hasCallbackReference = false; // hasCallbackReference：是否存在回调引用该模块。
         bool hasScanError = false;     // hasScanError：是否存在 IO/协议/解析错误。
+        std::uint32_t communicationActiveMask = 0; // communicationActiveMask：当前由系统拒绝入口接管的槽位。
+        std::uint32_t communicationOwnedMask = 0; // communicationOwnedMask：当前仍由本功能拥有恢复资格的槽位。
+        std::uint32_t communicationConflictMask = 0; // communicationConflictMask：不可自动恢复的粘性冲突槽位。
+        std::uint32_t communicationGeneration = 0; // communicationGeneration：R0 记录代次。
+        std::uint32_t majorFunctionIntentionalBlindCount = 0; // majorFunctionIntentionalBlindCount：已由本功能有意致盲的外跳数。
         std::uint32_t majorFunctionExternalCount = 0; // majorFunctionExternalCount：外跳 MajorFunction 数量。
         std::uint32_t iatEatSuspiciousCount = 0; // iatEatSuspiciousCount：IAT/EAT 可疑项数量。
         std::uint32_t inlineHookSuspiciousCount = 0; // inlineHookSuspiciousCount：Inline Hook 可疑项数量。
@@ -313,6 +323,17 @@ private:
     // - removeCallbacksFirst 为 true 时请求 R0 在 DriverObject 处理成功后移除可验证回调；
     // - destructiveCleanup 为 true 时才允许持久中和/删 DeviceObject/ObMakeTemporaryObject。
     void forceUnloadDriverFromModuleRow(int rowIndex, bool removeCallbacksFirst = false, bool destructiveCleanup = false);
+
+    // controlDriverCommunication：
+    // - 使用确认前复制的模块基址、canonical DriverObject 和对象地址作为不可变目标；
+    // - restoreCommunication 为 true 时按 R0 保存记录执行可恢复撤销；
+    // - 不重读可能刷新的表格行，操作异步执行并在完成后刷新模块证据。
+    void controlDriverCommunication(
+        std::uint64_t moduleBase,
+        const QString& moduleName,
+        const QString& driverObjectName,
+        std::uint64_t expectedDriverObjectAddress,
+        bool restoreCommunication);
 
     // queryDriverObjectForModuleEvidence：
     // - 作用：按模块名推导 DriverObject 名称并查询 R0 对象诊断；

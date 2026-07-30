@@ -245,6 +245,25 @@ namespace ksword::ark
         PhysicalMemoryLayoutResult queryPhysicalMemoryLayout() const;
         DriverForceUnloadResult forceUnloadDriver(const std::wstring& driverName, unsigned long flags = 0UL, unsigned long timeoutMilliseconds = 3000UL) const;
         DriverForceUnloadResult forceUnloadDriverByModuleBase(std::uint64_t moduleBase, const std::wstring& fallbackDriverName = std::wstring(), unsigned long flags = 0UL, unsigned long timeoutMilliseconds = 3000UL) const;
+        // controlDriverCommunication：
+        // - 输入：精确模块基址、canonical 名称、证据扫描返回的 DriverObject 地址和 action；
+        // - 处理：统一封装独立通信控制 IOCTL，Dock UI 不直接访问 KswordARK 设备；
+        // - 返回：状态、MajorFunction 掩码、冲突信息和 canonical DriverObject 名称。
+        DriverCommunicationControlResult controlDriverCommunication(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long action,
+            std::uint64_t expectedDriverObjectAddress = 0U) const;
+        DriverCommunicationControlResult queryDriverCommunication(
+            std::uint64_t moduleBase,
+            const std::wstring& displayName = std::wstring()) const;
+        DriverCommunicationControlResult blindDriverCommunication(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            std::uint64_t expectedDriverObjectAddress) const;
+        DriverCommunicationControlResult restoreDriverCommunication(
+            std::uint64_t moduleBase,
+            const std::wstring& displayName = std::wstring()) const;
         // prepareMutation / commitMutation / rollbackMutation / queryMutationAudit：
         // - 输入：受控 transaction 参数或只读 audit 查询参数。
         // - 处理：仅在 ArkDriverClient 内封装 mutation IOCTL；Dock UI 不直接调用 DeviceIoControl。

@@ -31,6 +31,7 @@
 #include "../../../shared/driver/KswordArkTrustIoctl.h"
 #include "../../../shared/driver/KswordArkWin32kIoctl.h"
 #include "../../../shared/driver/KswordArkDeviceAuditIoctl.h"
+#include "../../../shared/driver/KswordArkDriverBlindIoctl.h"
 #include "../../../shared/driver/KswordArkFilterIoctl.h"
 #include "../../../shared/driver/KswordArkKernelObjectIoctl.h"
 #include "../../../shared/driver/KswordArkHwidIoctl.h"
@@ -1461,6 +1462,29 @@ namespace ksword::ark
         long threadLastStatus = 0;             // threadLastStatus：最后一个线程处理失败状态。
         std::uint32_t detachedDeviceCount = 0; // detachedDeviceCount：强拆时解除的上下层设备关联数。
         std::wstring driverName;             // driverName：R0 规范化对象名。
+    };
+
+    // DriverCommunicationControlResult：
+    // - 作用：承载 Issue #47 的 IRP 通信致盲、查询和恢复响应；
+    // - 边界：只展示 R0 返回的地址与掩码，R3 不保存或回传原始 dispatch 指针。
+    struct DriverCommunicationControlResult
+    {
+        IoResult io;                              // io：DeviceIoControl 传输和协议校验状态。
+        std::uint32_t version = 0;               // version：响应协议版本。
+        std::uint32_t action = 0;                // action：QUERY、BLIND 或 RESTORE。
+        std::uint32_t state = KSWORD_ARK_DRIVER_COMMUNICATION_STATE_INACTIVE; // state：当前 R0 记录状态。
+        std::uint32_t responseFlags = 0;         // responseFlags：foreign-change 等诊断位。
+        long lastStatus = 0;                     // lastStatus：实际控制动作的 NTSTATUS。
+        std::uint32_t targetedMask = 0;          // targetedMask：本功能固定管理的 MajorFunction 掩码。
+        std::uint32_t changedMask = 0;           // changedMask：本次成功修改或恢复的槽位。
+        std::uint32_t activeMask = 0;            // activeMask：当前实际指向系统拒绝入口的槽位。
+        std::uint32_t ownedMask = 0;             // ownedMask：当前仍由本功能拥有恢复资格的槽位。
+        std::uint32_t conflictMask = 0;          // conflictMask：恢复时检测到第三方改写的槽位。
+        std::uint32_t generation = 0;            // generation：目标记录的幂等操作代次。
+        std::uint64_t driverObjectAddress = 0;   // driverObjectAddress：只读诊断地址。
+        std::uint64_t driverStart = 0;           // driverStart：用于核对模块基址的驱动镜像起点。
+        std::uint64_t rejectDispatchAddress = 0; // rejectDispatchAddress：R0 捕获的系统拒绝入口。
+        std::wstring driverName;                 // driverName：R0 返回的 canonical DriverObject 名称。
     };
 
     // CallbackRuntimeResult wraps the runtime-state response packet.

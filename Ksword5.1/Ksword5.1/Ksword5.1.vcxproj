@@ -145,6 +145,7 @@
     <ClCompile Include="DriverDock\DriverDock.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Ui.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Operation.cpp" />
+    <ClCompile Include="DriverDock\DriverDock.Communication.cpp" />
     <ClCompile Include="DriverDock\DriverDock.DebugAndUtils.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Evidence.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Integrity.cpp" />
@@ -382,6 +383,7 @@
     <ClCompile Include="ArkDriverClient\ArkDriverMemory.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverFile.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverRegistry.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverBlind.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverKernel.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverIoctlRegistry.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverKeyboard.cpp" />

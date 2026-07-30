@@ -195,6 +195,40 @@ namespace
         }
         return addressValue >= moduleBase && addressValue < (moduleBase + moduleSize);
     }
+
+    // evidenceCommunicationMaskForMajor：把 WDK MajorFunction 索引映射为 Issue #47 的五位协议掩码。
+    // 输入：MajorFunction 数值；处理：仅识别本功能固定管理的五个通信槽；返回：对应掩码或 0。
+    std::uint32_t evidenceCommunicationMaskForMajor(const std::uint32_t majorFunction)
+    {
+        switch (majorFunction)
+        {
+        case KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_CREATE:
+            return KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_CREATE;
+        case KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_READ:
+            return KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_READ;
+        case KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_WRITE:
+            return KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_WRITE;
+        case KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_DEVICE_CONTROL:
+            return KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_DEVICE_CONTROL;
+        case KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_INDEX_INTERNAL_DEVICE_CONTROL:
+            return KSWORD_ARK_DRIVER_COMMUNICATION_MAJOR_MASK_INTERNAL_DEVICE_CONTROL;
+        default:
+            return 0U;
+        }
+    }
+
+    // evidenceCommunicationMaskCount：计算五位通信槽掩码中的置位数。
+    // 输入：共享协议掩码；处理：逐位清除最低置位；返回：置位数量。
+    std::uint32_t evidenceCommunicationMaskCount(std::uint32_t maskValue)
+    {
+        std::uint32_t bitCount = 0U;
+        while (maskValue != 0U)
+        {
+            maskValue &= (maskValue - 1U);
+            ++bitCount;
+        }
+        return bitCount;
+    }
 }
 
 
@@ -227,14 +261,16 @@ QColor DriverDock::moduleEvidenceStatusColor(const LoadedModuleEvidenceRecord& e
     }
     if (evidence.hasMajorFunctionExternalJump ||
         evidence.hasIatEatSuspicious ||
-        evidence.hasInlineHookSuspicious)
+        evidence.hasInlineHookSuspicious ||
+        evidence.communicationConflict)
     {
         return KswordTheme::ErrorColor();
     }
     if (evidence.hasScanError ||
         !evidence.driverObjectResolved ||
         (evidence.driverStartKnown && !evidence.driverStartMatchesBase) ||
-        evidence.hasCallbackReference)
+        evidence.hasCallbackReference ||
+        evidence.communicationActive)
     {
         return KswordTheme::WarningColor();
     }
@@ -353,6 +389,7 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
         detailLines << QString();
 
         evidence.driverObjectName = QString::fromStdWString(objectResult.driverName);
+        evidence.driverObjectAddress = objectResult.driverObjectAddress;
         evidence.driverObjectStatusText = evidence.driverObjectResolved
             ? driverText("driver.evidence.status.resolved", QStringLiteral("已解析"))
             : driverText("driver.evidence.status.unresolved", QStringLiteral("未解析"));
@@ -370,6 +407,108 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
             evidence.hasScanError = true;
         }
 
+        ksword::ark::DriverCommunicationControlResult communicationResult;
+        const bool communicationQueryEligible =
+            evidence.driverObjectResolved &&
+            evidence.driverStartMatchesBase &&
+            evidence.driverObjectAddress != 0U &&
+            !evidence.driverObjectName.trimmed().isEmpty();
+        detailLines << driverText(
+            "driver.evidence.communication.title",
+            QStringLiteral("[IRP 通信控制]"));
+        if (communicationQueryEligible)
+        {
+            communicationResult = driverClient.queryDriverCommunication(
+                moduleRecord.baseAddress,
+                evidence.driverObjectName.toStdWString());
+            const bool operationSucceeded =
+                communicationResult.io.ok &&
+                communicationResult.lastStatus >= 0;
+            const bool responseIdentityMatches =
+                communicationResult.state ==
+                    KSWORD_ARK_DRIVER_COMMUNICATION_STATE_INACTIVE ||
+                (communicationResult.driverStart == moduleRecord.baseAddress &&
+                    communicationResult.driverObjectAddress ==
+                        evidence.driverObjectAddress);
+            evidence.communicationStateKnown =
+                operationSucceeded &&
+                responseIdentityMatches;
+            evidence.communicationActiveMask =
+                evidence.communicationStateKnown
+                ? communicationResult.activeMask
+                : 0U;
+            evidence.communicationOwnedMask =
+                evidence.communicationStateKnown
+                ? communicationResult.ownedMask
+                : 0U;
+            evidence.communicationConflictMask =
+                evidence.communicationStateKnown
+                ? communicationResult.conflictMask
+                : 0U;
+            evidence.communicationGeneration =
+                evidence.communicationStateKnown
+                ? communicationResult.generation
+                : 0U;
+            evidence.communicationRejectDispatchAddress =
+                evidence.communicationStateKnown
+                ? communicationResult.rejectDispatchAddress
+                : 0U;
+            evidence.communicationActive =
+                evidence.communicationOwnedMask != 0U;
+            evidence.communicationConflict =
+                evidence.communicationConflictMask != 0U ||
+                (evidence.communicationStateKnown &&
+                    communicationResult.state ==
+                        KSWORD_ARK_DRIVER_COMMUNICATION_STATE_CONFLICT);
+
+            detailLines << driverText(
+                "driver.evidence.communication.io",
+                QStringLiteral("查询: ok=%1 Last=%2 说明=%3"))
+                .arg(communicationResult.io.ok
+                    ? QStringLiteral("true")
+                    : QStringLiteral("false"))
+                .arg(communicationResult.io.ok
+                    ? formatNtStatusText(communicationResult.lastStatus)
+                    : QStringLiteral("<不可用>"))
+                .arg(friendlyDriverIoMessage(communicationResult.io.message));
+            detailLines << driverText(
+                "driver.evidence.communication.state",
+                QStringLiteral(
+                    "状态: known=%1 state=%2 active=%3 owned=%4 conflict=%5 generation=%6"))
+                .arg(evidence.communicationStateKnown
+                    ? QStringLiteral("true")
+                    : QStringLiteral("false"))
+                .arg(communicationResult.state)
+                .arg(formatHex32(communicationResult.activeMask))
+                .arg(formatHex32(communicationResult.ownedMask))
+                .arg(formatHex32(communicationResult.conflictMask))
+                .arg(communicationResult.generation);
+            detailLines << driverText(
+                "driver.evidence.communication.identity",
+                QStringLiteral("身份: DriverObject=%1 DriverStart=%2 Reject=%3"))
+                .arg(formatCompactAddress(
+                    communicationResult.driverObjectAddress))
+                .arg(formatCompactAddress(communicationResult.driverStart))
+                .arg(formatCompactAddress(
+                    communicationResult.rejectDispatchAddress));
+            if (operationSucceeded && !responseIdentityMatches)
+            {
+                evidence.hasScanError = true;
+                detailLines << driverText(
+                    "driver.evidence.communication.identity_mismatch",
+                    QStringLiteral(
+                        "通信控制记录与当前 DriverObject 证据不一致，已拒绝把该记录视为可信状态。"));
+            }
+        }
+        else
+        {
+            detailLines << driverText(
+                "driver.evidence.communication.not_eligible",
+                QStringLiteral(
+                    "未查询：需要已解析的 canonical DriverObject、对象地址及匹配的 DriverStart。"));
+        }
+        detailLines << QString();
+
         detailLines << QStringLiteral("[MajorFunction]");
         if (objectResult.majorFunctions.empty())
         {
@@ -382,7 +521,28 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
             for (const ksword::ark::DriverMajorFunctionEntry& entry : objectResult.majorFunctions)
             {
                 const bool outsideOwnImage = (entry.flags & 0x00000002U) == 0U;
-                if (outsideOwnImage)
+                const std::uint32_t communicationMask =
+                    evidenceCommunicationMaskForMajor(entry.majorFunction);
+                const bool intentionalCommunicationBlind =
+                    outsideOwnImage &&
+                    evidence.communicationStateKnown &&
+                    evidence.communicationRejectDispatchAddress != 0U &&
+                    communicationMask != 0U &&
+                    (evidence.communicationActiveMask & communicationMask) != 0U &&
+                    (evidence.communicationOwnedMask & communicationMask) != 0U &&
+                    entry.dispatchAddress ==
+                        evidence.communicationRejectDispatchAddress;
+                if (intentionalCommunicationBlind)
+                {
+                    ++evidence.majorFunctionIntentionalBlindCount;
+                    detailLines << driverText(
+                        "driver.evidence.detail.major_function_intentional_blind",
+                        QStringLiteral(
+                            "主动致盲: %1 dispatch=%2 系统拒绝入口，由 Issue #47 通信控制持有"))
+                        .arg(driverMajorFunctionName(entry.majorFunction))
+                        .arg(formatCompactAddress(entry.dispatchAddress));
+                }
+                else if (outsideOwnImage)
                 {
                     ++evidence.majorFunctionExternalCount;
                     detailLines << driverText(
@@ -395,7 +555,8 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
                         .arg(driverDispatchLocationText(entry.flags));
                 }
             }
-            if (evidence.majorFunctionExternalCount == 0U)
+            if (evidence.majorFunctionExternalCount == 0U &&
+                evidence.majorFunctionIntentionalBlindCount == 0U)
             {
                 detailLines << driverText(
                     "driver.evidence.detail.major_function_clean",
@@ -407,10 +568,39 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
             }
         }
         evidence.hasMajorFunctionExternalJump = evidence.majorFunctionExternalCount != 0U;
-        evidence.majorFunctionStatusText = evidence.hasMajorFunctionExternalJump
-            ? driverText("driver.evidence.status.external_count", QStringLiteral("外跳 %1"))
-                .arg(evidence.majorFunctionExternalCount)
-            : driverText("driver.evidence.status.no_external", QStringLiteral("未见外跳"));
+        const std::uint32_t communicationConflictCount =
+            evidenceCommunicationMaskCount(evidence.communicationConflictMask);
+        if (evidence.communicationConflict)
+        {
+            evidence.majorFunctionStatusText = driverText(
+                "driver.evidence.status.communication_conflict",
+                QStringLiteral("主动致盲 %1/5 · 冲突 %2"))
+                .arg(evidence.majorFunctionIntentionalBlindCount)
+                .arg(communicationConflictCount);
+        }
+        else if (evidence.majorFunctionIntentionalBlindCount != 0U &&
+            evidence.hasMajorFunctionExternalJump)
+        {
+            evidence.majorFunctionStatusText = driverText(
+                "driver.evidence.status.communication_and_external",
+                QStringLiteral("主动致盲 %1/5 · 未知外跳 %2"))
+                .arg(evidence.majorFunctionIntentionalBlindCount)
+                .arg(evidence.majorFunctionExternalCount);
+        }
+        else if (evidence.majorFunctionIntentionalBlindCount != 0U)
+        {
+            evidence.majorFunctionStatusText = driverText(
+                "driver.evidence.status.communication_active",
+                QStringLiteral("主动致盲 %1/5"))
+                .arg(evidence.majorFunctionIntentionalBlindCount);
+        }
+        else
+        {
+            evidence.majorFunctionStatusText = evidence.hasMajorFunctionExternalJump
+                ? driverText("driver.evidence.status.external_count", QStringLiteral("外跳 %1"))
+                    .arg(evidence.majorFunctionExternalCount)
+                : driverText("driver.evidence.status.no_external", QStringLiteral("未见外跳"));
+        }
 
         detailLines << QStringLiteral("[IAT/EAT]");
         if (!iatEatResult.io.ok)
@@ -659,7 +849,8 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
                     {
                         if (evidence.hasMajorFunctionExternalJump ||
                             evidence.hasIatEatSuspicious ||
-                            evidence.hasInlineHookSuspicious)
+                            evidence.hasInlineHookSuspicious ||
+                            evidence.communicationConflict)
                         {
                             ++suspiciousCount;
                         }
