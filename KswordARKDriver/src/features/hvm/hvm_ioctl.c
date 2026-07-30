@@ -142,11 +142,13 @@ KswordARKHvmIoctlControl(
         (KSWORD_ARK_CONTROL_HVM_RESPONSE*)outputBuffer;
 
     /*
-     * Preparing VMX pages is reversible allocation work.  The actual VMX
-     * transition receives the central critical kernel-patch policy gate.
+     * Preparing VMX pages is reversible allocation work.  VMX transitions and
+     * guest entry both receive the central critical kernel-patch policy gate.
      */
     if (controlRequest->command ==
-        KSWORD_ARK_HVM_CONTROL_SELF_TEST) {
+            KSWORD_ARK_HVM_CONTROL_SELF_TEST ||
+        controlRequest->command ==
+            KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST) {
         KSWORD_ARK_SAFETY_CONTEXT safetyContext = { 0 };
 
         /* Bind policy auditing to the exact high-risk operation class. */
@@ -157,11 +159,21 @@ KswordARKHvmIoctlControl(
                 KSWORD_ARK_HVM_CONTROL_FLAG_UI_CONFIRMED) != 0UL
             ? KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED
             : 0UL;
-        safetyContext.TargetText =
-            L"Per-processor VT-x VMXON and VMXOFF self-test";
-        safetyContext.TargetTextChars =
-            (USHORT)(RTL_NUMBER_OF(
-                L"Per-processor VT-x VMXON and VMXOFF self-test") - 1U);
+        /* Describe the exact privileged transition in the central audit gate. */
+        if (controlRequest->command ==
+                KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST) {
+            safetyContext.TargetText =
+                L"One-shot VT-x VMLAUNCH and VMCALL VM-exit test";
+            safetyContext.TargetTextChars =
+                (USHORT)(RTL_NUMBER_OF(
+                    L"One-shot VT-x VMLAUNCH and VMCALL VM-exit test") - 1U);
+        } else {
+            safetyContext.TargetText =
+                L"Per-processor VT-x VMXON and VMXOFF self-test";
+            safetyContext.TargetTextChars =
+                (USHORT)(RTL_NUMBER_OF(
+                    L"Per-processor VT-x VMXON and VMXOFF self-test") - 1U);
+        }
         status = KswordARKSafetyEvaluate(Device, &safetyContext);
         if (!NT_SUCCESS(status)) {
             RtlZeroMemory(controlResponse, sizeof(*controlResponse));

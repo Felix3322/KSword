@@ -51,6 +51,8 @@
     <ClCompile Include="src\features\kernel\kernel_piddb.c" />
     <ClCompile Include="src\features\kernel\kernel_piddb_ioctl.c" />
     <ClCompile Include="src\features\hvm\hvm_runtime.c" />
+    <ClCompile Include="src\features\hvm\hvm_vmcs.c" />
+    <ClCompile Include="src\features\hvm\hvm_guest.c" />
     <ClCompile Include="src\features\hvm\hvm_ioctl.c" />
     <ClCompile Include="src\features\kernel\cpu_hardware_query.c" />
     <ClCompile Include="src\features\kernel\driver_unload.c" />
@@ -165,6 +167,11 @@
     <ClCompile Include="src\features\hwid\hwid_dispatch_ioctl.c" />
   <ClCompile Include="src\features\callback\callback_external_wfp.c" /><ClCompile Include="src\features\callback\callback_external_minifilter.c" /><ClCompile Include="src\features\callback\callback_external_safe.c" /><ClCompile Include="src\features\memory\memory_physical.c" /><ClCompile Include="src\features\memory\memory_physical_layout.c" /><ClCompile Include="src\features\memory\memory_pagetable.c" /><ClCompile Include="src\features\memory\memory_kernel_exec_scan.c" /><ClCompile Include="src\features\memory\memory_kernel_exec_scan_helpers.c" /><ClCompile Include="src\features\memory\memory_kernel_evidence.c" /><ClCompile Include="src\features\memory\memory_evidence_enrichment.c" /><ClCompile Include="src\features\memory\memory_ioctl.c" /></ItemGroup>
   <ItemGroup>
+    <MASM Include="src\features\hvm\hvm_entry.asm">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </MASM>
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="Device.h" />
     <ClInclude Include="Driver.h" />
     <ClInclude Include="include\ark\ark_device.h" />
@@ -244,6 +251,8 @@
     <ClInclude Include="..\shared\driver\KswordArkKernelBaselineIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_piddb.h" />
     <ClInclude Include="src\features\hvm\hvm_runtime.h" />
+    <ClInclude Include="src\features\hvm\hvm_vmcs.h" />
+    <ClInclude Include="src\features\hvm\hvm_guest.h" />
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_object_audit.h" />
@@ -316,6 +325,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -444,5 +454,6 @@
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
   </ImportGroup>
 </Project>

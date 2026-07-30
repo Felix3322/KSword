@@ -32,6 +32,9 @@
     <Filter Include="Source Files\\Features\\Kernel">
       <UniqueIdentifier>{3C9A808C-7B1F-4E1A-9A24-2A70C4FA2287}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\Features\HVM">
+      <UniqueIdentifier>{2A123E07-8900-4B37-A85B-4FA28AB7AA12}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Source Files\Features\DebugOutput">
       <UniqueIdentifier>{654E78AA-7742-498B-9C45-9A875F5DD5C3}</UniqueIdentifier>
     </Filter>
@@ -305,6 +308,8 @@
     <ClInclude Include="src\features\kernel\kernel_piddb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\hvm\hvm_runtime.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_vmcs.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_guest.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_object_audit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h"><Filter>Header Files</Filter></ClInclude>
@@ -409,11 +414,20 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\hvm\hvm_runtime.c">
-      <Filter>Source Files\Features\Kernel</Filter>
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_vmcs.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_guest.c">
+      <Filter>Source Files\Features\HVM</Filter>
     </ClCompile>
     <ClCompile Include="src\features\hvm\hvm_ioctl.c">
-      <Filter>Source Files\Features\Kernel</Filter>
+      <Filter>Source Files\Features\HVM</Filter>
     </ClCompile>
+    <MASM Include="src\features\hvm\hvm_entry.asm">
+      <Filter>Source Files\Features\HVM</Filter>
+    </MASM>
     <ClCompile Include="src\features\kernel\cpu_hardware_query.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>

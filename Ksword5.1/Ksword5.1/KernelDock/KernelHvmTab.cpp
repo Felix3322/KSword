@@ -38,6 +38,7 @@ namespace
         CpuColumnProcessor = 0,
         CpuColumnResource,
         CpuColumnSelfTest,
+        CpuColumnGuestExit,
         CpuColumnVmxResult,
         CpuColumnNtStatus,
         CpuColumnCount
@@ -79,7 +80,7 @@ void KernelHvmTab::initializeUi()
     m_warningLabel = new QLabel(
         kernelText(
             "kernel.hvm.warning",
-            QStringLiteral("⚠ 内核虚拟化实验后端：准备会分配每 CPU VMXON/VMCS 区域并构造 EPT；自检会在每个 CPU 上短暂执行 VMXON/VMXOFF。Hyper-V、VBS、嵌套虚拟化或其它 VMM 可能拒绝操作。准备完成或自检通过都不等于虚拟机已经启动。")),
+            QStringLiteral("⚠ 内核虚拟化实验后端：准备和自检会操作每 CPU VMXON/VMCS 与 EPT；受控启动会真实执行一次 VMLAUNCH，由来宾立即 VMCALL 并经 VM-exit 返回。Hyper-V、VBS、嵌套虚拟化、固件或其它 VMM 可能拒绝操作，错误状态可能造成系统不稳定或蓝屏。每次启动前请保存工作。")),
         this);
     m_warningLabel->setWordWrap(true);
     m_warningLabel->setStyleSheet(QStringLiteral(
@@ -101,6 +102,9 @@ void KernelHvmTab::initializeUi()
     m_selfTestButton = new QPushButton(
         kernelText("kernel.hvm.self_test", QStringLiteral("逐 CPU 自检")),
         this);
+    m_launchButton = new QPushButton(
+        kernelText("kernel.hvm.launch", QStringLiteral("启动一次性来宾")),
+        this);
     m_teardownButton = new QPushButton(
         kernelText("kernel.hvm.teardown", QStringLiteral("释放后端")),
         this);
@@ -110,7 +114,11 @@ void KernelHvmTab::initializeUi()
             QStringLiteral("允许在已检测到的 Hypervisor 中尝试嵌套 VMX")),
         this);
     for (QPushButton* button :
-         { m_refreshButton, m_prepareButton, m_selfTestButton, m_teardownButton })
+         { m_refreshButton,
+           m_prepareButton,
+           m_selfTestButton,
+           m_launchButton,
+           m_teardownButton })
     {
         button->setStyleSheet(KswordTheme::ThemedButtonStyle());
     }
@@ -123,6 +131,7 @@ void KernelHvmTab::initializeUi()
     toolbar->addWidget(m_refreshButton);
     toolbar->addWidget(m_prepareButton);
     toolbar->addWidget(m_selfTestButton);
+    toolbar->addWidget(m_launchButton);
     toolbar->addWidget(m_teardownButton);
     toolbar->addWidget(m_allowNestedCheck);
     toolbar->addStretch(1);
@@ -144,6 +153,7 @@ void KernelHvmTab::initializeUi()
         kernelText("kernel.hvm.cpu.processor", QStringLiteral("处理器")),
         kernelText("kernel.hvm.cpu.resource", QStringLiteral("VMX 区域")),
         kernelText("kernel.hvm.cpu.self_test", QStringLiteral("自检")),
+        kernelText("kernel.hvm.cpu.guest_exit", QStringLiteral("来宾 / VM-exit")),
         kernelText("kernel.hvm.cpu.vmx_result", QStringLiteral("VMX 指令结果")),
         kernelText("kernel.hvm.cpu.ntstatus", QStringLiteral("NTSTATUS"))
     });
@@ -175,6 +185,9 @@ void KernelHvmTab::initializeUi()
     });
     connect(m_selfTestButton, &QPushButton::clicked, this, [this]() {
         selfTestBackend();
+    });
+    connect(m_launchButton, &QPushButton::clicked, this, [this]() {
+        launchControlledGuest();
     });
     connect(m_teardownButton, &QPushButton::clicked, this, [this]() {
         teardownBackend();
@@ -248,7 +261,7 @@ void KernelHvmTab::applyStatus(ksword::ark::HvmStatusResult result)
     m_summaryLabel->setText(
         kernelText(
             "kernel.hvm.summary",
-            QStringLiteral("CPU：%1　Hypervisor：%2　状态：%3　准备 CPU：%4/%5　自检通过：%6/%5　EPT 页表页：%7　RAM 映射：%8 GiB"))
+            QStringLiteral("CPU：%1　Hypervisor：%2　状态：%3　准备 CPU：%4/%5　自检通过：%6/%5　EPT 页表页：%7　RAM 映射：%8 GiB　VM-exit：%9　最近退出：%10"))
             .arg(cpuVendor.isEmpty() ? QStringLiteral("-") : cpuVendor)
             .arg(hypervisorVendor.isEmpty()
                      ? kernelText("kernel.hvm.none", QStringLiteral("未检测到"))
@@ -263,7 +276,13 @@ void KernelHvmTab::applyStatus(ksword::ark::HvmStatusResult result)
                     (1024.0 * 1024.0 * 1024.0),
                 0,
                 'f',
-                2));
+                2)
+            .arg(m_snapshot.vmExitCount)
+            .arg(
+                m_snapshot.lastExitReason ==
+                        KSWORD_ARK_HVM_EXIT_REASON_NONE
+                    ? QStringLiteral("-")
+                    : QString::number(m_snapshot.lastExitReason)));
 
     const int rowCount = static_cast<int>(std::min<unsigned long>(
         m_snapshot.processorCount,
@@ -278,6 +297,12 @@ void KernelHvmTab::applyStatus(ksword::ark::HvmStatusResult result)
             (cpu.stateFlags & KSWORD_ARK_HVM_CPU_STATE_SELF_TESTED) != 0U;
         const bool passed =
             (cpu.stateFlags & KSWORD_ARK_HVM_CPU_STATE_VMXON_SUCCEEDED) != 0U;
+        const bool vmcsLoaded =
+            (cpu.stateFlags & KSWORD_ARK_HVM_CPU_STATE_VMCS_LOADED) != 0U;
+        const bool guestLaunched =
+            (cpu.stateFlags & KSWORD_ARK_HVM_CPU_STATE_GUEST_LAUNCHED) != 0U;
+        const bool vmExitHandled =
+            (cpu.stateFlags & KSWORD_ARK_HVM_CPU_STATE_VMEXIT_HANDLED) != 0U;
         m_cpuTable->setItem(
             rowIndex,
             CpuColumnProcessor,
@@ -301,6 +326,30 @@ void KernelHvmTab::applyStatus(ksword::ark::HvmStatusResult result)
                     : (passed
                            ? kernelText("kernel.hvm.passed", QStringLiteral("通过"))
                            : kernelText("kernel.hvm.failed", QStringLiteral("失败")))));
+        QString guestExitText = QStringLiteral("-");
+        if (vmExitHandled)
+        {
+            guestExitText = kernelText(
+                "kernel.hvm.cpu.exit_handled",
+                QStringLiteral("已退出（原因 %1）"))
+                .arg(cpu.lastExitReason);
+        }
+        else if (guestLaunched)
+        {
+            guestExitText = kernelText(
+                "kernel.hvm.cpu.launched",
+                QStringLiteral("来宾已启动"));
+        }
+        else if (vmcsLoaded)
+        {
+            guestExitText = kernelText(
+                "kernel.hvm.cpu.vmcs_loaded",
+                QStringLiteral("VMCS 已加载"));
+        }
+        m_cpuTable->setItem(
+            rowIndex,
+            CpuColumnGuestExit,
+            readOnlyItem(guestExitText));
         m_cpuTable->setItem(
             rowIndex,
             CpuColumnVmxResult,
@@ -391,12 +440,31 @@ void KernelHvmTab::applyControl(
     }
     else
     {
-        const QString action =
-            command == KSWORD_ARK_HVM_CONTROL_PREPARE
-            ? kernelText("kernel.hvm.action.prepared", QStringLiteral("VMX/EPT 后端已准备"))
-            : (command == KSWORD_ARK_HVM_CONTROL_SELF_TEST
-                   ? kernelText("kernel.hvm.action.tested", QStringLiteral("逐 CPU VMX 自检已完成"))
-                   : kernelText("kernel.hvm.action.torn_down", QStringLiteral("HVM 后端资源已释放")));
+        QString action;
+        if (command == KSWORD_ARK_HVM_CONTROL_PREPARE)
+        {
+            action = kernelText(
+                "kernel.hvm.action.prepared",
+                QStringLiteral("VMX/EPT 后端已准备"));
+        }
+        else if (command == KSWORD_ARK_HVM_CONTROL_SELF_TEST)
+        {
+            action = kernelText(
+                "kernel.hvm.action.tested",
+                QStringLiteral("逐 CPU VMX 自检已完成"));
+        }
+        else if (command == KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST)
+        {
+            action = kernelText(
+                "kernel.hvm.action.launched",
+                QStringLiteral("一次性来宾已 VMLAUNCH，并通过 VMCALL 完成 VM-exit"));
+        }
+        else
+        {
+            action = kernelText(
+                "kernel.hvm.action.torn_down",
+                QStringLiteral("HVM 后端资源已释放"));
+        }
         QMessageBox::information(
             this,
             kernelText("kernel.hvm.operation.title", QStringLiteral("HVM 操作")),
@@ -432,6 +500,23 @@ void KernelHvmTab::selfTestBackend()
     }
 }
 
+void KernelHvmTab::launchControlledGuest()
+{
+    const QString warning = kernelText(
+        "kernel.hvm.launch.warning",
+        QStringLiteral(
+            "这是实际的高风险 VM-entry：驱动会在一个已自检 CPU 上进入 VMX root，装载完整 VMCS，真实执行 VMLAUNCH。"
+            "一次性来宾只执行 VMCALL；VM-exit 入口会采集退出原因、qualification、RIP/RSP 和 VM-instruction error，随后 VMCLEAR、VMXOFF 并恢复 CR4。"
+            "任何 VMCS、EPT、固件、Hyper-V/VBS、嵌套虚拟化或处理器实现异常都可能导致系统不稳定、蓝屏或必须重启。"
+            "请先保存全部工作；若检测到上层 Hypervisor，还必须勾选嵌套 VMX 许可。"));
+    if (confirmTyped(warning, QStringLiteral("LAUNCH CONTROLLED GUEST")))
+    {
+        runControlAsync(
+            KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST,
+            true);
+    }
+}
+
 void KernelHvmTab::teardownBackend()
 {
     if (QMessageBox::question(
@@ -439,7 +524,7 @@ void KernelHvmTab::teardownBackend()
             kernelText("kernel.hvm.teardown.title", QStringLiteral("释放 HVM 后端")),
             kernelText(
                 "kernel.hvm.teardown.warning",
-                QStringLiteral("释放所有 VMXON、VMCS 和 EPT 页表资源，并清除本次自检结果。继续吗？")),
+                QStringLiteral("释放所有 VMXON、VMCS 和 EPT 页表资源，并清除本次自检、来宾启动与 VM-exit 证据。继续吗？")),
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No) == QMessageBox::Yes)
     {
@@ -480,15 +565,29 @@ void KernelHvmTab::updateButtons()
     const bool resourcesReady =
         (m_snapshot.stateFlags &
             KSWORD_ARK_HVM_STATE_RESOURCES_READY) != 0U;
+    const bool guestReady =
+        (m_snapshot.stateFlags &
+            KSWORD_ARK_HVM_STATE_GUEST_READY) != 0U;
+    const bool guestRunning =
+        (m_snapshot.stateFlags &
+            KSWORD_ARK_HVM_STATE_GUEST_RUNNING) != 0U;
     m_refreshButton->setEnabled(!m_operationRunning);
     m_prepareButton->setEnabled(
         !m_operationRunning && m_supported && !resourcesReady);
     m_selfTestButton->setEnabled(
         !m_operationRunning && m_supported && resourcesReady);
+    m_launchButton->setEnabled(
+        !m_operationRunning &&
+        m_supported &&
+        guestReady &&
+        !guestRunning);
     m_teardownButton->setEnabled(
-        !m_operationRunning && m_supported && resourcesReady);
+        !m_operationRunning &&
+        m_supported &&
+        resourcesReady &&
+        !guestRunning);
     m_allowNestedCheck->setEnabled(
-        !m_operationRunning && !resourcesReady);
+        !m_operationRunning && m_supported && !guestRunning);
 }
 
 QString KernelHvmTab::buildDetail(
@@ -511,9 +610,17 @@ QString KernelHvmTab::buildDetail(
             "EPT PML4/PDPT/2MiB leaf：%14 / %15 / %16\n"
             "映射 RAM：%17 bytes\n"
             "最高映射物理地址：0x%18\n"
-            "最近 NTSTATUS：%19\n\n"
-            "边界：当前后端只完成能力证明、资源准备、RAM EPT 恒等映射与 VMXON/VMXOFF 自检；"
-            "它没有执行 VMLAUNCH，不应被解释为活动虚拟机或活动监控器。"))
+            "最近 NTSTATUS：%19\n"
+            "VM-exit 次数：%20\n"
+            "最近退出原因：%21\n"
+            "退出 qualification：0x%22\n"
+            "来宾 RIP / RSP：0x%23 / 0x%24\n"
+            "退出指令长度：%25\n"
+            "VM-instruction error：%26\n"
+            "最近启动 CPU：%27\n"
+            "最近启动使用嵌套 VMX：%28\n\n"
+            "边界：后端只启动受控的一次性来宾；来宾立即 VMCALL，VM-exit 后执行 VMCLEAR/VMXOFF。"
+            "它不驻留、不拦截操作系统工作负载，也不宣称提供通用虚拟机。"))
         .arg(response.version)
         .arg(response.queryStatus)
         .arg(stateText(response.stateFlags))
@@ -534,7 +641,30 @@ QString KernelHvmTab::buildDetail(
         .arg(QString::number(
             response.highestMappedPhysicalAddress,
             16).toUpper())
-        .arg(ntStatusText(response.lastStatus));
+        .arg(ntStatusText(response.lastStatus))
+        .arg(response.vmExitCount)
+        .arg(
+            response.lastExitReason ==
+                    KSWORD_ARK_HVM_EXIT_REASON_NONE
+                ? QStringLiteral("-")
+                : QString::number(response.lastExitReason))
+        .arg(QString::number(
+            response.lastExitQualification,
+            16).toUpper())
+        .arg(QString::number(response.lastGuestRip, 16).toUpper())
+        .arg(QString::number(response.lastGuestRsp, 16).toUpper())
+        .arg(response.lastExitInstructionLength)
+        .arg(response.lastVmInstructionError)
+        .arg(
+            response.lastLaunchProcessorGroup == 0xFFFFU
+                ? QStringLiteral("-")
+                : QStringLiteral("%1:%2")
+                      .arg(response.lastLaunchProcessorGroup)
+                      .arg(response.lastLaunchProcessorNumber))
+        .arg(
+            response.lastLaunchWasNested != 0U
+                ? kernelText("kernel.hvm.yes.simple", QStringLiteral("是"))
+                : kernelText("kernel.hvm.no.simple", QStringLiteral("否")));
 }
 
 QString KernelHvmTab::featureText(const std::uint64_t flags)
@@ -544,7 +674,7 @@ QString KernelHvmTab::featureText(const std::uint64_t flags)
         std::uint64_t flag;
         const char* name;
     };
-    static constexpr std::array<FeatureName, 16> names{{
+    static constexpr std::array<FeatureName, 18> names{{
         { KSWORD_ARK_HVM_FEATURE_INTEL, "Intel" },
         { KSWORD_ARK_HVM_FEATURE_VMX, "VMX" },
         { KSWORD_ARK_HVM_FEATURE_FEATURE_CONTROL_LOCKED, "FeatureControlLocked" },
@@ -560,7 +690,9 @@ QString KernelHvmTab::featureText(const std::uint64_t flags)
         { KSWORD_ARK_HVM_FEATURE_INVEPT_ALL, "INVEPT-All" },
         { KSWORD_ARK_HVM_FEATURE_VPID, "VPID" },
         { KSWORD_ARK_HVM_FEATURE_HYPERVISOR_PRESENT, "HypervisorPresent" },
-        { KSWORD_ARK_HVM_FEATURE_NESTED_VMX_EXPOSED, "NestedVmxExposed" }
+        { KSWORD_ARK_HVM_FEATURE_NESTED_VMX_EXPOSED, "NestedVmxExposed" },
+        { KSWORD_ARK_HVM_FEATURE_ONE_SHOT_GUEST, "OneShotGuest" },
+        { KSWORD_ARK_HVM_FEATURE_VMEXIT_TELEMETRY, "VmExitTelemetry" }
     }};
     QStringList values;
     for (const auto& value : names)
@@ -592,6 +724,16 @@ QString KernelHvmTab::stateText(const std::uint32_t flags)
         values.push_back(kernelText("kernel.hvm.state.faulted", QStringLiteral("存在失败")));
     if ((flags & KSWORD_ARK_HVM_STATE_EPT_TRUNCATED) != 0U)
         values.push_back(kernelText("kernel.hvm.state.truncated", QStringLiteral("EPT 映射已截断")));
+    if ((flags & KSWORD_ARK_HVM_STATE_GUEST_READY) != 0U)
+        values.push_back(kernelText("kernel.hvm.state.guest_ready", QStringLiteral("来宾可启动")));
+    if ((flags & KSWORD_ARK_HVM_STATE_GUEST_RUNNING) != 0U)
+        values.push_back(kernelText("kernel.hvm.state.guest_running", QStringLiteral("来宾运行中")));
+    if ((flags & KSWORD_ARK_HVM_STATE_GUEST_EXITED) != 0U)
+        values.push_back(kernelText("kernel.hvm.state.guest_exited", QStringLiteral("来宾已退出")));
+    if ((flags & KSWORD_ARK_HVM_STATE_NESTED_ACTIVE) != 0U)
+        values.push_back(kernelText("kernel.hvm.state.nested_active", QStringLiteral("嵌套 VMX 活动")));
+    if ((flags & KSWORD_ARK_HVM_STATE_NESTED_VALIDATED) != 0U)
+        values.push_back(kernelText("kernel.hvm.state.nested_validated", QStringLiteral("嵌套启动已验证")));
     return values.isEmpty() ? QStringLiteral("-") : values.join(QStringLiteral(" / "));
 }
 

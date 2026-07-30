@@ -1,0 +1,104 @@
+#pragma once
+
+#include "DiskRawFileSystemBrowser.h"
+
+#include <QByteArray>
+#include <QString>
+
+#include <cstdint>
+
+namespace ks::misc::rawfs
+{
+    constexpr std::uint32_t kMaximumSingleReadBytes = 16U * 1024U * 1024U;
+    constexpr std::uint32_t kExportChunkBytes = 4U * 1024U * 1024U;
+    constexpr std::uint32_t kMaximumExtentCount = 4096U;
+    constexpr std::uint32_t kMaximumTreeDepth = 32U;
+
+    class VolumeReader final
+    {
+    public:
+        VolumeReader(
+            int diskIndex,
+            unsigned long backend,
+            std::uint64_t partitionOffset,
+            std::uint64_t partitionLength,
+            std::uint32_t logicalSectorSize);
+
+        bool read(
+            std::uint64_t relativeOffset,
+            std::uint32_t length,
+            QByteArray& bytesOut,
+            QString& errorTextOut) const;
+
+        bool rangeIsValid(
+            std::uint64_t relativeOffset,
+            std::uint64_t length) const;
+
+        std::uint64_t partitionOffset() const;
+        std::uint64_t partitionLength() const;
+
+    private:
+        int m_diskIndex = -1;
+        unsigned long m_backend = 1UL;
+        std::uint64_t m_partitionOffset = 0;
+        std::uint64_t m_partitionLength = 0;
+        std::uint32_t m_logicalSectorSize = 512U;
+    };
+
+    QString normalizePath(const QString& path);
+    QString childPath(const QString& parent, const QString& name);
+
+    RawDirectoryResult listExt(
+        const VolumeReader& reader,
+        ForensicFileSystemKind expectedKind,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readExt(
+        const VolumeReader& reader,
+        ForensicFileSystemKind expectedKind,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+
+    RawDirectoryResult listBtrfs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readBtrfs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+
+    RawDirectoryResult listApfs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readApfs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+
+    RawDirectoryResult listHfs(
+        const VolumeReader& reader,
+        ForensicFileSystemKind expectedKind,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readHfs(
+        const VolumeReader& reader,
+        ForensicFileSystemKind expectedKind,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+
+    RawDirectoryResult listRefs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readRefs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+}

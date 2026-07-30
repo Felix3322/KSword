@@ -80,6 +80,24 @@
     <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawApfsFileSystem.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawBtrfsFileSystem.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawExtFileSystem.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawFileSystemBrowser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawHfsFileSystem.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawRefsFileSystem.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MiscDock\DiskEditor\DiskRangeTools.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -902,6 +920,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DiskEditor\DiskRawFileSystemBrowser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DiskEditor\DiskRawFileSystemInternal.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelCleanImageBaseline.h">

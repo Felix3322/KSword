@@ -255,8 +255,8 @@ namespace ksword::ark
             const PiDdbEntry& expectedEntry,
             bool force,
             bool uiConfirmed) const;
-        // queryHvmStatus/controlHvm：读取 VT-x/EPT 能力并执行受控准备、自检或释放。
-        // self-test 只做逐 CPU VMXON/VMXOFF 验证，不代表 VMLAUNCH 或虚拟机已运行。
+        // queryHvmStatus/controlHvm：读取 VT-x/EPT 能力并执行准备、自检、
+        // 一次性 VMCALL 来宾、VM-exit 采集或资源释放。
         HvmStatusResult queryHvmStatus() const;
         HvmControlResult controlHvm(
             unsigned long command,

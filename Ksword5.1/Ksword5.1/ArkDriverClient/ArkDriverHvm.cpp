@@ -36,7 +36,9 @@ namespace ksword::ark
             << ", features=0x" << result.response.featureFlags
             << ", generation=" << std::dec << result.response.generation
             << ", processors=" << result.response.preparedProcessorCount
-            << "/" << result.response.processorCount;
+            << "/" << result.response.processorCount
+            << ", vmExits=" << result.response.vmExitCount
+            << ", lastExitReason=" << result.response.lastExitReason;
         if (result.unsupported)
         {
             stream << ", unsupported=true";
@@ -69,6 +71,10 @@ namespace ksword::ark
         {
             request.flags |= KSWORD_ARK_HVM_CONTROL_FLAG_ALLOW_NESTED;
         }
+        if (command == KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST)
+        {
+            request.flags |= KSWORD_ARK_HVM_CONTROL_FLAG_ONE_SHOT_GUEST;
+        }
         request.confirmationToken =
             KSWORD_ARK_HVM_CONTROL_CONFIRMATION_TOKEN;
         request.expectedGeneration = expectedGeneration;
@@ -93,7 +99,9 @@ namespace ksword::ark
             << ", prepared="
             << result.response.preparedProcessorCount
             << ", passed="
-            << result.response.selfTestPassedProcessorCount;
+            << result.response.selfTestPassedProcessorCount
+            << ", vmExits=" << result.response.vmExitCount
+            << ", lastExitReason=" << result.response.lastExitReason;
         if (result.unsupported)
         {
             stream << ", unsupported=true";

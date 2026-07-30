@@ -3,11 +3,12 @@
 #include "KswordArkProcessIoctl.h"
 
 /*
- * The HVM protocol separates read-only capability inspection from resource
- * preparation and the privileged VMXON/VMXOFF self-test.  It deliberately does
- * not describe a prepared backend as a running hypervisor.
+ * The HVM protocol separates read-only capability inspection, reversible
+ * resource preparation, VMXON/VMXOFF validation, and an explicitly confirmed
+ * one-shot guest.  The guest executes a controlled VMCALL and must return
+ * through the VM-exit dispatcher before the launch command completes.
  */
-#define KSWORD_ARK_HVM_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_HVM_PROTOCOL_VERSION 2UL
 
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_HVM   0x8CAUL
 #define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_HVM 0x8CBUL
@@ -37,6 +38,8 @@
 #define KSWORD_ARK_HVM_FEATURE_VPID                   0x0000000000002000ULL
 #define KSWORD_ARK_HVM_FEATURE_HYPERVISOR_PRESENT     0x0000000000004000ULL
 #define KSWORD_ARK_HVM_FEATURE_NESTED_VMX_EXPOSED     0x0000000000008000ULL
+#define KSWORD_ARK_HVM_FEATURE_ONE_SHOT_GUEST          0x0000000000010000ULL
+#define KSWORD_ARK_HVM_FEATURE_VMEXIT_TELEMETRY        0x0000000000020000ULL
 
 #define KSWORD_ARK_HVM_STATE_INITIALIZED      0x00000001UL
 #define KSWORD_ARK_HVM_STATE_RESOURCES_READY  0x00000002UL
@@ -46,12 +49,20 @@
 #define KSWORD_ARK_HVM_STATE_BUSY             0x00000020UL
 #define KSWORD_ARK_HVM_STATE_FAULTED          0x00000040UL
 #define KSWORD_ARK_HVM_STATE_EPT_TRUNCATED    0x00000080UL
+#define KSWORD_ARK_HVM_STATE_GUEST_READY      0x00000100UL
+#define KSWORD_ARK_HVM_STATE_GUEST_RUNNING    0x00000200UL
+#define KSWORD_ARK_HVM_STATE_GUEST_EXITED     0x00000400UL
+#define KSWORD_ARK_HVM_STATE_NESTED_ACTIVE    0x00000800UL
+#define KSWORD_ARK_HVM_STATE_NESTED_VALIDATED 0x00001000UL
 
 #define KSWORD_ARK_HVM_CPU_STATE_RESOURCE_READY  0x00000001UL
 #define KSWORD_ARK_HVM_CPU_STATE_SELF_TESTED     0x00000002UL
 #define KSWORD_ARK_HVM_CPU_STATE_VMXON_SUCCEEDED 0x00000004UL
 #define KSWORD_ARK_HVM_CPU_STATE_EXCEPTION       0x00000008UL
 #define KSWORD_ARK_HVM_CPU_STATE_CONFLICT        0x00000010UL
+#define KSWORD_ARK_HVM_CPU_STATE_VMCS_LOADED      0x00000020UL
+#define KSWORD_ARK_HVM_CPU_STATE_GUEST_LAUNCHED   0x00000040UL
+#define KSWORD_ARK_HVM_CPU_STATE_VMEXIT_HANDLED   0x00000080UL
 
 #define KSWORD_ARK_HVM_QUERY_STATUS_OK                    0UL
 #define KSWORD_ARK_HVM_QUERY_STATUS_UNSUPPORTED_CPU       1UL
@@ -64,10 +75,12 @@
 #define KSWORD_ARK_HVM_CONTROL_PREPARE   1UL
 #define KSWORD_ARK_HVM_CONTROL_SELF_TEST 2UL
 #define KSWORD_ARK_HVM_CONTROL_TEARDOWN  3UL
+#define KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST 4UL
 
 #define KSWORD_ARK_HVM_CONTROL_FLAG_UI_CONFIRMED 0x00000001UL
 #define KSWORD_ARK_HVM_CONTROL_FLAG_FORCE        0x00000002UL
 #define KSWORD_ARK_HVM_CONTROL_FLAG_ALLOW_NESTED 0x00000004UL
+#define KSWORD_ARK_HVM_CONTROL_FLAG_ONE_SHOT_GUEST 0x00000008UL
 
 #define KSWORD_ARK_HVM_CONTROL_CONFIRMATION_TOKEN 0x48564D43UL
 
@@ -83,6 +96,11 @@
 #define KSWORD_ARK_HVM_CONTROL_STATUS_SELF_TEST_FAILED      9UL
 #define KSWORD_ARK_HVM_CONTROL_STATUS_VERIFY_FAILED         10UL
 #define KSWORD_ARK_HVM_CONTROL_STATUS_BUSY                  11UL
+#define KSWORD_ARK_HVM_CONTROL_STATUS_GUEST_LAUNCH_FAILED   12UL
+#define KSWORD_ARK_HVM_CONTROL_STATUS_UNEXPECTED_VMEXIT     13UL
+
+#define KSWORD_ARK_HVM_EXIT_REASON_NONE   0xFFFFFFFFUL
+#define KSWORD_ARK_HVM_EXIT_REASON_VMCALL 18UL
 
 typedef struct _KSWORD_ARK_HVM_CPU_ROW
 {
@@ -91,7 +109,7 @@ typedef struct _KSWORD_ARK_HVM_CPU_ROW
     unsigned char vmxInstructionResult;
     unsigned long stateFlags;
     long lastStatus;
-    unsigned long reserved;
+    unsigned long lastExitReason;
 } KSWORD_ARK_HVM_CPU_ROW;
 
 typedef struct _KSWORD_ARK_QUERY_HVM_REQUEST
@@ -127,6 +145,16 @@ typedef struct _KSWORD_ARK_QUERY_HVM_RESPONSE
     unsigned long long eptPointer;
     unsigned long long mappedRamBytes;
     unsigned long long highestMappedPhysicalAddress;
+    unsigned long long vmExitCount;
+    unsigned long long lastExitQualification;
+    unsigned long long lastGuestRip;
+    unsigned long long lastGuestRsp;
+    unsigned long lastExitReason;
+    unsigned long lastExitInstructionLength;
+    unsigned long lastVmInstructionError;
+    unsigned short lastLaunchProcessorGroup;
+    unsigned char lastLaunchProcessorNumber;
+    unsigned char lastLaunchWasNested;
     long lastStatus;
     unsigned long reserved;
     char cpuVendor[KSWORD_ARK_HVM_VENDOR_CHARS];
@@ -158,9 +186,18 @@ typedef struct _KSWORD_ARK_CONTROL_HVM_RESPONSE
     unsigned long selfTestPassedProcessorCount;
     unsigned long failedProcessorCount;
     unsigned long eptPageCount;
-    unsigned long reserved;
+    unsigned long lastExitReason;
     unsigned long long eptPointer;
     unsigned long long mappedRamBytes;
+    unsigned long long vmExitCount;
+    unsigned long long lastExitQualification;
+    unsigned long long lastGuestRip;
+    unsigned long long lastGuestRsp;
+    unsigned long lastExitInstructionLength;
+    unsigned long lastVmInstructionError;
+    unsigned short launchProcessorGroup;
+    unsigned char launchProcessorNumber;
+    unsigned char launchWasNested;
     long lastStatus;
     unsigned long reserved2;
 } KSWORD_ARK_CONTROL_HVM_RESPONSE;

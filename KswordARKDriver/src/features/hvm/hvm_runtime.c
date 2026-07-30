@@ -7,10 +7,8 @@ Module Name:
 Abstract:
 
     Owns the VT-x capability snapshot, per-processor VMX regions, a RAM-only
-    EPT identity map, and a bounded VMXON/VMXOFF validation lifecycle.
-
-    This module never executes VMLAUNCH.  A prepared or self-tested backend is
-    therefore reported separately from an active hypervisor.
+    EPT identity map, VMXON/VMXOFF validation, and the serialized lifecycle for
+    an explicitly confirmed one-shot VMCALL guest.
 
 Environment:
 
@@ -19,6 +17,7 @@ Environment:
 --*/
 
 #include "hvm_runtime.h"
+#include "hvm_guest.h"
 
 #if defined(_M_AMD64)
 #include <intrin.h>
@@ -104,6 +103,16 @@ typedef struct _KSW_HVM_RUNTIME
     ULONGLONG EptPointer;
     ULONGLONG MappedRamBytes;
     ULONGLONG HighestMappedPhysicalAddress;
+    ULONGLONG VmExitCount;
+    ULONGLONG LastExitQualification;
+    ULONGLONG LastGuestRip;
+    ULONGLONG LastGuestRsp;
+    ULONG LastExitReason;
+    ULONG LastExitInstructionLength;
+    ULONG LastVmInstructionError;
+    USHORT LastLaunchProcessorGroup;
+    UCHAR LastLaunchProcessorNumber;
+    UCHAR LastLaunchWasNested;
     CHAR CpuVendor[KSWORD_ARK_HVM_VENDOR_CHARS];
     CHAR HypervisorVendor[KSWORD_ARK_HVM_HYPERVISOR_VENDOR_CHARS];
     KSW_HVM_CPU_RESOURCE Processors[KSWORD_ARK_HVM_MAX_PROCESSORS];
@@ -287,6 +296,21 @@ KswordARKHvmReadCapabilities(
         return FALSE;
     }
 
+    /* Advertise the bounded guest only when its complete EPT baseline exists. */
+    if ((Runtime->FeatureFlags &
+            (KSWORD_ARK_HVM_FEATURE_EPT |
+             KSWORD_ARK_HVM_FEATURE_EPT_WB |
+             KSWORD_ARK_HVM_FEATURE_EPT_4_LEVEL |
+             KSWORD_ARK_HVM_FEATURE_EPT_2MB)) ==
+        (KSWORD_ARK_HVM_FEATURE_EPT |
+         KSWORD_ARK_HVM_FEATURE_EPT_WB |
+         KSWORD_ARK_HVM_FEATURE_EPT_4_LEVEL |
+         KSWORD_ARK_HVM_FEATURE_EPT_2MB)) {
+        Runtime->FeatureFlags |=
+            KSWORD_ARK_HVM_FEATURE_ONE_SHOT_GUEST |
+            KSWORD_ARK_HVM_FEATURE_VMEXIT_TELEMETRY;
+    }
+
     /* A usable capability snapshot is now available. */
     Runtime->QueryStatus = KSWORD_ARK_HVM_QUERY_STATUS_OK;
     Runtime->LastStatus = STATUS_SUCCESS;
@@ -340,12 +364,27 @@ KswordARKHvmFreeResourcesLocked(
     Runtime->EptPointer = 0ULL;
     Runtime->MappedRamBytes = 0ULL;
     Runtime->HighestMappedPhysicalAddress = 0ULL;
+    Runtime->VmExitCount = 0ULL;
+    Runtime->LastExitQualification = 0ULL;
+    Runtime->LastGuestRip = 0ULL;
+    Runtime->LastGuestRsp = 0ULL;
+    Runtime->LastExitReason = KSWORD_ARK_HVM_EXIT_REASON_NONE;
+    Runtime->LastExitInstructionLength = 0UL;
+    Runtime->LastVmInstructionError = 0UL;
+    Runtime->LastLaunchProcessorGroup = 0xFFFFU;
+    Runtime->LastLaunchProcessorNumber = 0xFFU;
+    Runtime->LastLaunchWasNested = 0U;
     Runtime->StateFlags &=
         ~(KSWORD_ARK_HVM_STATE_RESOURCES_READY |
           KSWORD_ARK_HVM_STATE_EPT_READY |
           KSWORD_ARK_HVM_STATE_SELF_TESTED |
           KSWORD_ARK_HVM_STATE_SELF_TEST_PASSED |
-          KSWORD_ARK_HVM_STATE_EPT_TRUNCATED);
+          KSWORD_ARK_HVM_STATE_EPT_TRUNCATED |
+          KSWORD_ARK_HVM_STATE_GUEST_READY |
+          KSWORD_ARK_HVM_STATE_GUEST_RUNNING |
+          KSWORD_ARK_HVM_STATE_GUEST_EXITED |
+          KSWORD_ARK_HVM_STATE_NESTED_ACTIVE |
+          KSWORD_ARK_HVM_STATE_NESTED_VALIDATED);
 }
 
 static PVOID
@@ -603,6 +642,8 @@ KswordARKHvmAllocateProcessorResourcesLocked(
             cpu->Row.processorGroup = group;
             cpu->Row.processorNumber = processorNumber;
             cpu->Row.vmxInstructionResult = 0xFFU;
+            cpu->Row.lastExitReason =
+                KSWORD_ARK_HVM_EXIT_REASON_NONE;
             /*
              * Publish the in-progress slot to cleanup before either allocation;
              * this prevents a partial VMXON/VMCS pair from escaping rollback.
@@ -850,16 +891,193 @@ KswordARKHvmSelfTestLocked(
     if (passed == Runtime->ProcessorCount &&
         Runtime->ProcessorCount != 0UL) {
         Runtime->StateFlags |=
-            KSWORD_ARK_HVM_STATE_SELF_TEST_PASSED;
+            KSWORD_ARK_HVM_STATE_SELF_TEST_PASSED |
+            KSWORD_ARK_HVM_STATE_GUEST_READY;
         return STATUS_SUCCESS;
     }
     Runtime->StateFlags &=
-        ~KSWORD_ARK_HVM_STATE_SELF_TEST_PASSED;
+        ~(KSWORD_ARK_HVM_STATE_SELF_TEST_PASSED |
+          KSWORD_ARK_HVM_STATE_GUEST_READY);
     return NT_SUCCESS(firstFailure)
         ? STATUS_UNSUCCESSFUL
         : firstFailure;
 #else
     UNREFERENCED_PARAMETER(Runtime);
+    UNREFERENCED_PARAMETER(Request);
+    return STATUS_NOT_SUPPORTED;
+#endif
+}
+
+static NTSTATUS
+KswordARKHvmLaunchGuestLocked(
+    _Inout_ KSW_HVM_RUNTIME* Runtime,
+    _In_ const KSWORD_ARK_CONTROL_HVM_REQUEST* Request
+    )
+{
+#if defined(_M_AMD64)
+    KSW_HVM_CPU_RESOURCE* cpu = NULL;
+    KSW_HVM_GUEST_LAUNCH_INPUT launchInput = { 0 };
+    KSW_HVM_GUEST_LAUNCH_RESULT launchResult = { 0 };
+    ULONG index = 0UL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    BOOLEAN nestedLaunch = FALSE;
+
+    /* Require a complete prepared and self-tested backend before VM entry. */
+    if ((Runtime->StateFlags &
+            (KSWORD_ARK_HVM_STATE_RESOURCES_READY |
+             KSWORD_ARK_HVM_STATE_EPT_READY |
+             KSWORD_ARK_HVM_STATE_SELF_TEST_PASSED |
+             KSWORD_ARK_HVM_STATE_GUEST_READY)) !=
+        (KSWORD_ARK_HVM_STATE_RESOURCES_READY |
+         KSWORD_ARK_HVM_STATE_EPT_READY |
+         KSWORD_ARK_HVM_STATE_SELF_TEST_PASSED |
+         KSWORD_ARK_HVM_STATE_GUEST_READY)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    /* Require the one-shot semantic bit so the command cannot drift silently. */
+    if ((Request->flags &
+            KSWORD_ARK_HVM_CONTROL_FLAG_ONE_SHOT_GUEST) == 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* Detect whether this launch would execute as an explicitly nested guest. */
+    nestedLaunch =
+        (Runtime->FeatureFlags &
+            KSWORD_ARK_HVM_FEATURE_HYPERVISOR_PRESENT) != 0ULL;
+    /* Reject nested execution unless both exposure and explicit opt-in exist. */
+    if (nestedLaunch &&
+        (((Request->flags &
+              KSWORD_ARK_HVM_CONTROL_FLAG_ALLOW_NESTED) == 0UL) ||
+         ((Runtime->FeatureFlags &
+              KSWORD_ARK_HVM_FEATURE_NESTED_VMX_EXPOSED) == 0ULL))) {
+        return STATUS_HV_FEATURE_UNAVAILABLE;
+    }
+
+    /* Clear the previous launch's per-CPU evidence before selecting a target. */
+    for (index = 0UL; index < Runtime->ProcessorCount; ++index) {
+        Runtime->Processors[index].Row.stateFlags &=
+            ~(KSWORD_ARK_HVM_CPU_STATE_VMCS_LOADED |
+              KSWORD_ARK_HVM_CPU_STATE_GUEST_LAUNCHED |
+              KSWORD_ARK_HVM_CPU_STATE_VMEXIT_HANDLED);
+        Runtime->Processors[index].Row.lastExitReason =
+            KSWORD_ARK_HVM_EXIT_REASON_NONE;
+    }
+    /* Select the first processor whose VMXON/VMXOFF self-test succeeded. */
+    for (index = 0UL; index < Runtime->ProcessorCount; ++index) {
+        if ((Runtime->Processors[index].Row.stateFlags &
+                KSWORD_ARK_HVM_CPU_STATE_VMXON_SUCCEEDED) != 0UL) {
+            cpu = &Runtime->Processors[index];
+            break;
+        }
+    }
+    /* Refuse VM entry when no processor retained a passing self-test. */
+    if (cpu == NULL) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    /* Copy the exact processor identity into the launch contract. */
+    launchInput.ProcessorGroup = cpu->Row.processorGroup;
+    /* Copy the group-relative processor number into the launch contract. */
+    launchInput.ProcessorNumber = cpu->Row.processorNumber;
+    /* Publish whether the launch is intentionally nested. */
+    launchInput.NestedLaunch = nestedLaunch ? 1U : 0U;
+    /* Reference the processor-owned VMXON physical page. */
+    launchInput.VmxonPhysical = cpu->VmxonPhysical;
+    /* Reference the processor-owned VMCS physical page. */
+    launchInput.VmcsPhysical = cpu->VmcsPhysical;
+    /* Copy the VMCS revision/control mode evidence. */
+    launchInput.VmxBasic = Runtime->VmxBasic;
+    /* Copy the CR0 required-one mask. */
+    launchInput.Cr0Fixed0 = Runtime->Cr0Fixed0;
+    /* Copy the CR0 allowed-one mask. */
+    launchInput.Cr0Fixed1 = Runtime->Cr0Fixed1;
+    /* Copy the CR4 required-one mask. */
+    launchInput.Cr4Fixed0 = Runtime->Cr4Fixed0;
+    /* Copy the CR4 allowed-one mask. */
+    launchInput.Cr4Fixed1 = Runtime->Cr4Fixed1;
+    /* Reference the prepared RAM identity-map EPT pointer. */
+    launchInput.EptPointer = Runtime->EptPointer;
+
+    /* Replace the previous one-shot state with an observable running state. */
+    Runtime->StateFlags &=
+        ~(KSWORD_ARK_HVM_STATE_GUEST_EXITED |
+          KSWORD_ARK_HVM_STATE_NESTED_VALIDATED);
+    /* Publish guest-running state before entering VMX root. */
+    Runtime->StateFlags |= KSWORD_ARK_HVM_STATE_GUEST_RUNNING;
+    /* Publish nested-active state only for an explicitly allowed nested launch. */
+    if (nestedLaunch) {
+        Runtime->StateFlags |= KSWORD_ARK_HVM_STATE_NESTED_ACTIVE;
+    }
+    /* Preserve the selected processor identity for both success and failure. */
+    Runtime->LastLaunchProcessorGroup = cpu->Row.processorGroup;
+    /* Preserve the selected group-relative processor number. */
+    Runtime->LastLaunchProcessorNumber = cpu->Row.processorNumber;
+    /* Preserve the launch environment as protocol-visible evidence. */
+    Runtime->LastLaunchWasNested = nestedLaunch ? 1U : 0U;
+    /* Execute the bounded guest and wait for its exit continuation. */
+    status = KswordARKHvmLaunchControlledGuest(
+        &launchInput,
+        &launchResult);
+    /* Clear transient active state after the launch function returns. */
+    Runtime->StateFlags &=
+        ~(KSWORD_ARK_HVM_STATE_GUEST_RUNNING |
+          KSWORD_ARK_HVM_STATE_NESTED_ACTIVE);
+
+    /* Preserve the exact final VMX instruction result on the selected CPU. */
+    cpu->Row.vmxInstructionResult =
+        launchResult.VmxInstructionResult;
+    /* Preserve the launch status on the selected CPU row. */
+    cpu->Row.lastStatus = status;
+    /* Publish current-VMCS evidence when VMPTRLD completed. */
+    if (launchResult.VmcsLoaded != 0U) {
+        cpu->Row.stateFlags |=
+            KSWORD_ARK_HVM_CPU_STATE_VMCS_LOADED;
+    }
+    /* Publish successful VM-entry evidence only when a host exit occurred. */
+    if (launchResult.GuestLaunched != 0U) {
+        cpu->Row.stateFlags |=
+            KSWORD_ARK_HVM_CPU_STATE_GUEST_LAUNCHED;
+    }
+    /* Publish VM-exit dispatch evidence and increment its monotonic counter. */
+    if (launchResult.VmExitHandled != 0U) {
+        cpu->Row.stateFlags |=
+            KSWORD_ARK_HVM_CPU_STATE_VMEXIT_HANDLED;
+        Runtime->VmExitCount += 1ULL;
+        Runtime->StateFlags |=
+            KSWORD_ARK_HVM_STATE_GUEST_EXITED;
+        Runtime->LastExitReason =
+            launchResult.Exit.Reason &
+            KSW_HVM_VMEXIT_REASON_BASIC_MASK;
+        cpu->Row.lastExitReason =
+            Runtime->LastExitReason;
+    } else {
+        Runtime->LastExitReason =
+            KSWORD_ARK_HVM_EXIT_REASON_NONE;
+    }
+    /* Preserve exit qualification even when the exit was unexpected. */
+    Runtime->LastExitQualification =
+        launchResult.Exit.Qualification;
+    /* Preserve the guest instruction pointer at the exit boundary. */
+    Runtime->LastGuestRip = launchResult.Exit.GuestRip;
+    /* Preserve the guest stack pointer at the exit boundary. */
+    Runtime->LastGuestRsp = launchResult.Exit.GuestRsp;
+    /* Preserve the decoded VM-exit instruction length. */
+    Runtime->LastExitInstructionLength =
+        launchResult.Exit.InstructionLength;
+    /* Prefer launch-time VMfail detail, then retain exit-time diagnostic state. */
+    Runtime->LastVmInstructionError =
+        launchResult.VmInstructionError != 0UL
+        ? launchResult.VmInstructionError
+        : launchResult.Exit.VmInstructionError;
+    /* Record that nested VM entry and the expected VMCALL exit both completed. */
+    if (NT_SUCCESS(status) && nestedLaunch) {
+        Runtime->StateFlags |=
+            KSWORD_ARK_HVM_STATE_NESTED_VALIDATED;
+    }
+    return status;
+#else
+    /* Keep non-x64 builds explicit and warning-free. */
+    UNREFERENCED_PARAMETER(Runtime);
+    /* Keep non-x64 builds explicit and warning-free. */
     UNREFERENCED_PARAMETER(Request);
     return STATUS_NOT_SUPPORTED;
 #endif
@@ -890,6 +1108,13 @@ KswordARKHvmControlStatusFromNtStatus(
     if (Status == STATUS_INSUFFICIENT_RESOURCES) {
         return KSWORD_ARK_HVM_CONTROL_STATUS_RESOURCE_FAILED;
     }
+    if (Command == KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST &&
+        Status == STATUS_UNEXPECTED_IO_ERROR) {
+        return KSWORD_ARK_HVM_CONTROL_STATUS_UNEXPECTED_VMEXIT;
+    }
+    if (Command == KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST) {
+        return KSWORD_ARK_HVM_CONTROL_STATUS_GUEST_LAUNCH_FAILED;
+    }
     if (Command == KSWORD_ARK_HVM_CONTROL_SELF_TEST) {
         return KSWORD_ARK_HVM_CONTROL_STATUS_SELF_TEST_FAILED;
     }
@@ -907,6 +1132,10 @@ KswordARKHvmInitialize(
     g_KswordHvm.Initialized = TRUE;
     g_KswordHvm.StateFlags = KSWORD_ARK_HVM_STATE_INITIALIZED;
     g_KswordHvm.Generation = 1UL;
+    g_KswordHvm.LastExitReason =
+        KSWORD_ARK_HVM_EXIT_REASON_NONE;
+    g_KswordHvm.LastLaunchProcessorGroup = 0xFFFFU;
+    g_KswordHvm.LastLaunchProcessorNumber = 0xFFU;
 
 #if defined(_M_AMD64)
     /* Capability failure disables HVM only; it does not fail driver startup. */
@@ -986,6 +1215,22 @@ KswordARKHvmQuery(
     Response->mappedRamBytes = g_KswordHvm.MappedRamBytes;
     Response->highestMappedPhysicalAddress =
         g_KswordHvm.HighestMappedPhysicalAddress;
+    Response->vmExitCount = g_KswordHvm.VmExitCount;
+    Response->lastExitQualification =
+        g_KswordHvm.LastExitQualification;
+    Response->lastGuestRip = g_KswordHvm.LastGuestRip;
+    Response->lastGuestRsp = g_KswordHvm.LastGuestRsp;
+    Response->lastExitReason = g_KswordHvm.LastExitReason;
+    Response->lastExitInstructionLength =
+        g_KswordHvm.LastExitInstructionLength;
+    Response->lastVmInstructionError =
+        g_KswordHvm.LastVmInstructionError;
+    Response->lastLaunchProcessorGroup =
+        g_KswordHvm.LastLaunchProcessorGroup;
+    Response->lastLaunchProcessorNumber =
+        g_KswordHvm.LastLaunchProcessorNumber;
+    Response->lastLaunchWasNested =
+        g_KswordHvm.LastLaunchWasNested;
     Response->lastStatus = g_KswordHvm.LastStatus;
     KswordARKHvmCopyAscii(
         Response->cpuVendor,
@@ -1034,17 +1279,30 @@ KswordARKHvmControl(
             KSWORD_ARK_HVM_CONTROL_FLAG_UI_CONFIRMED) == 0UL ||
         (Request->command != KSWORD_ARK_HVM_CONTROL_PREPARE &&
          Request->command != KSWORD_ARK_HVM_CONTROL_SELF_TEST &&
-         Request->command != KSWORD_ARK_HVM_CONTROL_TEARDOWN)) {
+         Request->command != KSWORD_ARK_HVM_CONTROL_TEARDOWN &&
+         Request->command !=
+            KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST)) {
         Response->status =
             KSWORD_ARK_HVM_CONTROL_STATUS_INVALID_REQUEST;
         Response->lastStatus = STATUS_INVALID_PARAMETER;
         return STATUS_SUCCESS;
     }
-    if (Request->command == KSWORD_ARK_HVM_CONTROL_SELF_TEST &&
+    if ((Request->command == KSWORD_ARK_HVM_CONTROL_SELF_TEST ||
+         Request->command ==
+            KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST) &&
         (Request->flags & KSWORD_ARK_HVM_CONTROL_FLAG_FORCE) == 0UL) {
         Response->status =
             KSWORD_ARK_HVM_CONTROL_STATUS_CONFIRMATION_REQUIRED;
         Response->lastStatus = STATUS_ACCESS_DENIED;
+        return STATUS_SUCCESS;
+    }
+    if (Request->command ==
+            KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST &&
+        (Request->flags &
+            KSWORD_ARK_HVM_CONTROL_FLAG_ONE_SHOT_GUEST) == 0UL) {
+        Response->status =
+            KSWORD_ARK_HVM_CONTROL_STATUS_INVALID_REQUEST;
+        Response->lastStatus = STATUS_INVALID_PARAMETER;
         return STATUS_SUCCESS;
     }
     if (!g_KswordHvm.Initialized) {
@@ -1093,6 +1351,11 @@ KswordARKHvmControl(
         status = KswordARKHvmSelfTestLocked(
             &g_KswordHvm,
             Request);
+    } else if (Request->command ==
+        KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST) {
+        status = KswordARKHvmLaunchGuestLocked(
+            &g_KswordHvm,
+            Request);
     } else {
         KswordARKHvmFreeResourcesLocked(&g_KswordHvm);
         status = STATUS_SUCCESS;
@@ -1129,6 +1392,22 @@ Complete:
     Response->eptPageCount = g_KswordHvm.EptPageCount;
     Response->eptPointer = g_KswordHvm.EptPointer;
     Response->mappedRamBytes = g_KswordHvm.MappedRamBytes;
+    Response->vmExitCount = g_KswordHvm.VmExitCount;
+    Response->lastExitQualification =
+        g_KswordHvm.LastExitQualification;
+    Response->lastGuestRip = g_KswordHvm.LastGuestRip;
+    Response->lastGuestRsp = g_KswordHvm.LastGuestRsp;
+    Response->lastExitReason = g_KswordHvm.LastExitReason;
+    Response->lastExitInstructionLength =
+        g_KswordHvm.LastExitInstructionLength;
+    Response->lastVmInstructionError =
+        g_KswordHvm.LastVmInstructionError;
+    Response->launchProcessorGroup =
+        g_KswordHvm.LastLaunchProcessorGroup;
+    Response->launchProcessorNumber =
+        g_KswordHvm.LastLaunchProcessorNumber;
+    Response->launchWasNested =
+        g_KswordHvm.LastLaunchWasNested;
     Response->lastStatus = status;
     ExReleasePushLockExclusive(&g_KswordHvm.Lock);
     KeLeaveCriticalRegion();

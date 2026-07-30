@@ -14,7 +14,7 @@ class QTableWidget;
 class QTextEdit;
 
 // KernelHvmTab presents VT-x/EPT capability, reversible resource preparation,
-// per-CPU VMXON/VMXOFF validation, and teardown without implying VMLAUNCH.
+// per-CPU VMX validation, a one-shot VMCALL guest, VM-exit evidence, and teardown.
 class KernelHvmTab final : public QWidget
 {
 public:
@@ -35,6 +35,7 @@ private:
         ksword::ark::HvmStatusResult status);
     void prepareBackend();
     void selfTestBackend();
+    void launchControlledGuest();
     void teardownBackend();
     bool confirmTyped(const QString& warning, const QString& phrase);
     void updateButtons();
@@ -51,6 +52,7 @@ private:
     QPushButton* m_refreshButton = nullptr;
     QPushButton* m_prepareButton = nullptr;
     QPushButton* m_selfTestButton = nullptr;
+    QPushButton* m_launchButton = nullptr;
     QPushButton* m_teardownButton = nullptr;
     QCheckBox* m_allowNestedCheck = nullptr;
     QTableWidget* m_cpuTable = nullptr;

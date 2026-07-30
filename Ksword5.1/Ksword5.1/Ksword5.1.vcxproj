@@ -225,6 +225,12 @@
     <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensics.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawApfsFileSystem.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawBtrfsFileSystem.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawExtFileSystem.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawFileSystemBrowser.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawHfsFileSystem.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawRefsFileSystem.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskRangeTools.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskStructureParser.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorTab.cpp" />
@@ -529,6 +535,8 @@
     <ClInclude Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensics.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.h" />
+    <ClInclude Include="MiscDock\DiskEditor\DiskRawFileSystemBrowser.h" />
+    <ClInclude Include="MiscDock\DiskEditor\DiskRawFileSystemInternal.h" />
     <ClInclude Include="RegistryDock\RegistryOptimizationPage.h" />
     <QtMoc Include="ProcessDock\ProcessDetailWindow.h" />
     <ClInclude Include="ProcessDock\ProcessDetailWindow.InternalCommon.h" />

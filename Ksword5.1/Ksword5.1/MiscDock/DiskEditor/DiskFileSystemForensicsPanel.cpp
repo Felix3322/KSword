@@ -20,6 +20,7 @@
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <thread>
 #include <utility>
 
@@ -83,6 +84,60 @@ namespace
         valueOut = parsed;
         return true;
     }
+
+    bool supportsRawBrowser(
+        const ks::misc::ForensicFileSystemKind kind)
+    {
+        switch (kind)
+        {
+        case ks::misc::ForensicFileSystemKind::ReFs:
+        case ks::misc::ForensicFileSystemKind::Ext2:
+        case ks::misc::ForensicFileSystemKind::Ext3:
+        case ks::misc::ForensicFileSystemKind::Ext4:
+        case ks::misc::ForensicFileSystemKind::Btrfs:
+        case ks::misc::ForensicFileSystemKind::Apfs:
+        case ks::misc::ForensicFileSystemKind::Hfs:
+        case ks::misc::ForensicFileSystemKind::HfsPlus:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    QString bytePreview(const QByteArray& bytes)
+    {
+        QString text;
+        for (qsizetype row = 0; row < bytes.size(); row += 16)
+        {
+            const qsizetype rowLength =
+                std::min<qsizetype>(16, bytes.size() - row);
+            text += QStringLiteral("%1  ")
+                .arg(static_cast<qulonglong>(row), 8, 16, QChar('0'))
+                .toUpper();
+            QString characters;
+            for (qsizetype column = 0; column < 16; ++column)
+            {
+                if (column < rowLength)
+                {
+                    const unsigned char value =
+                        static_cast<unsigned char>(bytes[row + column]);
+                    text += QStringLiteral("%1 ")
+                        .arg(value, 2, 16, QChar('0'))
+                        .toUpper();
+                    characters += value >= 0x20U && value <= 0x7EU
+                        ? QChar(value)
+                        : QChar('.');
+                }
+                else
+                {
+                    text += QStringLiteral("   ");
+                    characters += QChar(' ');
+                }
+            }
+            text += QStringLiteral(" |%1|\n").arg(characters);
+        }
+        return text;
+    }
 }
 
 namespace ks::misc
@@ -132,6 +187,62 @@ namespace ks::misc
             });
         probeLayout->addWidget(m_probeTable, 1);
         rootLayout->addWidget(probeGroup, 2);
+
+        auto* rawGroup = new QGroupBox(
+            QStringLiteral("未挂载分区原始目录与文件浏览"),
+            this);
+        auto* rawLayout = new QVBoxLayout(rawGroup);
+        auto* rawToolbar = new QGridLayout();
+        m_rawPathEdit = new QLineEdit(
+            QStringLiteral("\\"),
+            rawGroup);
+        m_rawPathEdit->setPlaceholderText(
+            QStringLiteral("分区内路径，例如 \\ 或 \\Users"));
+        m_rawUpButton = new QPushButton(
+            QStringLiteral("上级目录"),
+            rawGroup);
+        m_rawListButton = new QPushButton(
+            QStringLiteral("列出目录"),
+            rawGroup);
+        m_rawPreviewButton = new QPushButton(
+            QStringLiteral("预览前 4 KiB"),
+            rawGroup);
+        m_rawExportButton = new QPushButton(
+            QStringLiteral("导出选中文件"),
+            rawGroup);
+        m_rawUpButton->setEnabled(false);
+        m_rawListButton->setEnabled(false);
+        m_rawPreviewButton->setEnabled(false);
+        m_rawExportButton->setEnabled(false);
+        m_rawUpButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+        m_rawListButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+        m_rawPreviewButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+        m_rawExportButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+        m_rawSummaryLabel = new QLabel(
+            QStringLiteral(
+                "先探测当前分区；ReFS、Ext2/3/4、BtrFS、APFS、"
+                "HFS/HFS+ 可直接浏览目录、查看物理区段并导出文件。"),
+            rawGroup);
+        m_rawSummaryLabel->setWordWrap(true);
+        rawToolbar->addWidget(m_rawPathEdit, 0, 0);
+        rawToolbar->addWidget(m_rawUpButton, 0, 1);
+        rawToolbar->addWidget(m_rawListButton, 0, 2);
+        rawToolbar->addWidget(m_rawPreviewButton, 0, 3);
+        rawToolbar->addWidget(m_rawExportButton, 0, 4);
+        rawToolbar->addWidget(m_rawSummaryLabel, 1, 0, 1, 5);
+        rawLayout->addLayout(rawToolbar);
+        m_rawTable = createTable(rawGroup, {
+            QStringLiteral("名称"),
+            QStringLiteral("类型"),
+            QStringLiteral("逻辑大小"),
+            QStringLiteral("分配大小"),
+            QStringLiteral("对象 ID"),
+            QStringLiteral("元数据偏移"),
+            QStringLiteral("首个物理偏移"),
+            QStringLiteral("区段")
+            });
+        rawLayout->addWidget(m_rawTable, 1);
+        rootLayout->addWidget(rawGroup, 2);
 
         auto* deletedGroup = new QGroupBox(
             QStringLiteral("删除目录项取证与精确区间擦除"),
@@ -248,6 +359,95 @@ namespace ks::misc
         {
             probeCurrentPartition();
         });
+        connect(m_rawListButton, &QPushButton::clicked, this, [this]()
+        {
+            browseRawDirectory();
+        });
+        connect(m_rawUpButton, &QPushButton::clicked, this, [this]()
+        {
+            QString path = m_rawPathEdit->text().trimmed();
+            path.replace(QChar('/'), QChar('\\'));
+            while (path.contains(QStringLiteral("\\\\")))
+            {
+                path.replace(QStringLiteral("\\\\"), QStringLiteral("\\"));
+            }
+            if (!path.startsWith(QChar('\\')))
+            {
+                path.prepend(QChar('\\'));
+            }
+            if (path.size() > 1 && path.endsWith(QChar('\\')))
+            {
+                path.chop(1);
+            }
+            if (path != QStringLiteral("\\"))
+            {
+                const qsizetype separator = path.lastIndexOf(QChar('\\'));
+                path = separator <= 0
+                    ? QStringLiteral("\\")
+                    : path.left(separator);
+                m_rawPathEdit->setText(path);
+                browseRawDirectory();
+            }
+        });
+        connect(m_rawPreviewButton, &QPushButton::clicked, this, [this]()
+        {
+            previewSelectedRawFile();
+        });
+        connect(m_rawExportButton, &QPushButton::clicked, this, [this]()
+        {
+            exportSelectedRawFile();
+        });
+        connect(
+            m_rawTable,
+            &QTableWidget::itemSelectionChanged,
+            this,
+            [this]()
+            {
+                const int row = m_rawTable->currentRow();
+                const bool fileSelected =
+                    row >= 0
+                    && row < static_cast<int>(m_rawEntries.size())
+                    && m_rawEntries[static_cast<std::size_t>(row)].type
+                        != RawFileObjectType::Directory;
+                m_rawPreviewButton->setEnabled(
+                    !m_busy && fileSelected);
+                m_rawExportButton->setEnabled(
+                    !m_busy && fileSelected);
+            });
+        connect(
+            m_rawTable,
+            &QTableWidget::cellDoubleClicked,
+            this,
+            [this](const int row, const int column)
+            {
+                if (row < 0
+                    || row >= static_cast<int>(m_rawEntries.size()))
+                {
+                    return;
+                }
+                if (column == 6)
+                {
+                    const QTableWidgetItem* item =
+                        m_rawTable->item(row, column);
+                    if (item != nullptr
+                        && item->data(Qt::UserRole + 1).toBool()
+                        && m_jumpCallback)
+                    {
+                        m_jumpCallback(
+                            item->data(Qt::UserRole).toULongLong());
+                    }
+                    return;
+                }
+                const RawFileEntry& entry =
+                    m_rawEntries[static_cast<std::size_t>(row)];
+                if (entry.type == RawFileObjectType::Directory)
+                {
+                    m_rawPathEdit->setText(entry.fullPath);
+                    browseRawDirectory();
+                    return;
+                }
+                previewSelectedRawFile();
+            });
         connect(m_fileBrowseButton, &QPushButton::clicked, this, [this]()
         {
             const QString selected = QFileDialog::getOpenFileName(
@@ -372,15 +572,220 @@ namespace ks::misc
             }
             QMetaObject::invokeMethod(
                 safeThis.data(),
-                [safeThis, result = std::move(result)]() mutable
+                [safeThis,
+                    selectionValue,
+                    result = std::move(result)]() mutable
                 {
                     if (!safeThis.isNull())
                     {
-                        safeThis->applyProbeResult(std::move(result));
+                        safeThis->applyProbeResult(
+                            selectionValue,
+                            std::move(result));
                     }
                 },
                 Qt::QueuedConnection);
         }).detach();
+    }
+
+    void DiskFileSystemForensicsPanel::browseRawDirectory()
+    {
+        if (m_busy
+            || !m_rawSelection.has_value()
+            || !supportsRawBrowser(m_rawFileSystem))
+        {
+            return;
+        }
+        const QString path = m_rawPathEdit->text().trimmed();
+        const DiskForensicsSelection selection = *m_rawSelection;
+        const ForensicFileSystemKind fileSystem = m_rawFileSystem;
+        m_busy = true;
+        m_rawUpButton->setEnabled(false);
+        m_rawListButton->setEnabled(false);
+        m_rawPreviewButton->setEnabled(false);
+        m_rawExportButton->setEnabled(false);
+        m_rawSummaryLabel->setText(
+            QStringLiteral("正在解析 %1 的原始目录 %2 ...")
+                .arg(selection.displayText)
+                .arg(path));
+        QPointer<DiskFileSystemForensicsPanel> safeThis(this);
+        std::thread(
+            [safeThis, selection, fileSystem, path]()
+            {
+                RawDirectoryResult result =
+                    DiskRawFileSystemBrowser::listDirectory(
+                        selection.diskIndex,
+                        selection.backend,
+                        selection.partitionOffset,
+                        selection.partitionLength,
+                        selection.logicalSectorSize,
+                        fileSystem,
+                        path,
+                        4096U);
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    safeThis.data(),
+                    [safeThis,
+                        selection,
+                        result = std::move(result)]() mutable
+                    {
+                        if (!safeThis.isNull())
+                        {
+                            safeThis->applyRawDirectoryResult(
+                                selection,
+                                std::move(result));
+                        }
+                    },
+                    Qt::QueuedConnection);
+            }).detach();
+    }
+
+    void DiskFileSystemForensicsPanel::previewSelectedRawFile()
+    {
+        if (m_busy || !m_rawSelection.has_value())
+        {
+            return;
+        }
+        const int row = m_rawTable->currentRow();
+        if (row < 0 || row >= static_cast<int>(m_rawEntries.size()))
+        {
+            return;
+        }
+        const RawFileEntry entry =
+            m_rawEntries[static_cast<std::size_t>(row)];
+        if (entry.type == RawFileObjectType::Directory)
+        {
+            return;
+        }
+        if (entry.fileSizeBytes == 0U)
+        {
+            QMessageBox::information(
+                this,
+                QStringLiteral("原始文件预览"),
+                QStringLiteral("该文件长度为 0 字节。"));
+            return;
+        }
+        const DiskForensicsSelection selection = *m_rawSelection;
+        const ForensicFileSystemKind fileSystem = m_rawFileSystem;
+        const std::uint32_t previewLength =
+            static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(
+                    entry.fileSizeBytes,
+                    4096U));
+        m_busy = true;
+        m_rawListButton->setEnabled(false);
+        m_rawPreviewButton->setEnabled(false);
+        m_rawExportButton->setEnabled(false);
+        m_rawSummaryLabel->setText(
+            QStringLiteral("正在读取 %1 的前 %2 字节 ...")
+                .arg(entry.fullPath)
+                .arg(previewLength));
+        QPointer<DiskFileSystemForensicsPanel> safeThis(this);
+        std::thread(
+            [safeThis,
+                selection,
+                fileSystem,
+                filePath = entry.fullPath,
+                previewLength]()
+            {
+                RawFileReadResult result =
+                    DiskRawFileSystemBrowser::readFile(
+                        selection.diskIndex,
+                        selection.backend,
+                        selection.partitionOffset,
+                        selection.partitionLength,
+                        selection.logicalSectorSize,
+                        fileSystem,
+                        filePath,
+                        0U,
+                        previewLength);
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    safeThis.data(),
+                    [safeThis, result = std::move(result)]() mutable
+                    {
+                        if (!safeThis.isNull())
+                        {
+                            safeThis->applyRawReadResult(
+                                std::move(result));
+                        }
+                    },
+                    Qt::QueuedConnection);
+            }).detach();
+    }
+
+    void DiskFileSystemForensicsPanel::exportSelectedRawFile()
+    {
+        if (m_busy || !m_rawSelection.has_value())
+        {
+            return;
+        }
+        const int row = m_rawTable->currentRow();
+        if (row < 0 || row >= static_cast<int>(m_rawEntries.size()))
+        {
+            return;
+        }
+        const RawFileEntry entry =
+            m_rawEntries[static_cast<std::size_t>(row)];
+        if (entry.type == RawFileObjectType::Directory)
+        {
+            return;
+        }
+        const QString destination = QFileDialog::getSaveFileName(
+            this,
+            QStringLiteral("导出原始文件"),
+            entry.name);
+        if (destination.isEmpty())
+        {
+            return;
+        }
+        const DiskForensicsSelection selection = *m_rawSelection;
+        const ForensicFileSystemKind fileSystem = m_rawFileSystem;
+        m_busy = true;
+        m_rawListButton->setEnabled(false);
+        m_rawPreviewButton->setEnabled(false);
+        m_rawExportButton->setEnabled(false);
+        m_rawSummaryLabel->setText(
+            QStringLiteral("正在导出 %1 ...").arg(entry.fullPath));
+        QPointer<DiskFileSystemForensicsPanel> safeThis(this);
+        std::thread(
+            [safeThis,
+                selection,
+                fileSystem,
+                source = entry.fullPath,
+                destination]()
+            {
+                RawFileExportResult result =
+                    DiskRawFileSystemBrowser::exportFile(
+                        selection.diskIndex,
+                        selection.backend,
+                        selection.partitionOffset,
+                        selection.partitionLength,
+                        selection.logicalSectorSize,
+                        fileSystem,
+                        source,
+                        destination);
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    safeThis.data(),
+                    [safeThis, result = std::move(result)]() mutable
+                    {
+                        if (!safeThis.isNull())
+                        {
+                            safeThis->applyRawExportResult(
+                                std::move(result));
+                        }
+                    },
+                    Qt::QueuedConnection);
+            }).detach();
     }
 
     void DiskFileSystemForensicsPanel::resolveCurrentFile()
@@ -644,15 +1049,26 @@ namespace ks::misc
     }
 
     void DiskFileSystemForensicsPanel::applyProbeResult(
+        DiskForensicsSelection selection,
         FileSystemProbeResult result)
     {
         m_busy = false;
         m_probeButton->setEnabled(true);
         m_probeTable->setRowCount(0);
+        m_rawTable->setRowCount(0);
+        m_rawEntries.clear();
+        m_rawSelection.reset();
+        m_rawFileSystem = ForensicFileSystemKind::Unknown;
+        m_rawUpButton->setEnabled(false);
+        m_rawListButton->setEnabled(false);
+        m_rawPreviewButton->setEnabled(false);
+        m_rawExportButton->setEnabled(false);
         if (!result.success)
         {
             m_probeSummaryLabel->setText(
                 QStringLiteral("探测失败：%1").arg(result.errorText));
+            m_rawSummaryLabel->setText(
+                QStringLiteral("原始目录浏览不可用：分区探测未成功。"));
             return;
         }
 
@@ -684,6 +1100,244 @@ namespace ks::misc
             m_probeTable->setItem(row, 4, readOnlyItem(field.detail));
         }
         m_probeTable->resizeColumnsToContents();
+
+        if (supportsRawBrowser(result.kind))
+        {
+            m_rawSelection = std::move(selection);
+            m_rawFileSystem = result.kind;
+            m_rawPathEdit->setText(QStringLiteral("\\"));
+            m_rawListButton->setEnabled(true);
+            m_rawSummaryLabel->setText(
+                QStringLiteral(
+                    "%1 已就绪：可直接读取未挂载分区的目录树、文件数据和物理区段。")
+                    .arg(result.name));
+        }
+        else
+        {
+            m_rawSummaryLabel->setText(
+                QStringLiteral(
+                    "%1 使用现有专用取证入口；此浏览器面向 ReFS、Ext、"
+                    "BtrFS、APFS 与 HFS/HFS+。")
+                    .arg(result.name));
+        }
+    }
+
+    void DiskFileSystemForensicsPanel::applyRawDirectoryResult(
+        DiskForensicsSelection selection,
+        RawDirectoryResult result)
+    {
+        m_busy = false;
+        m_rawTable->setRowCount(0);
+        m_rawEntries.clear();
+        m_rawPreviewButton->setEnabled(false);
+        m_rawExportButton->setEnabled(false);
+        if (!result.success)
+        {
+            m_rawUpButton->setEnabled(
+                m_rawPathEdit->text().trimmed() != QStringLiteral("\\"));
+            m_rawListButton->setEnabled(
+                m_rawSelection.has_value()
+                && supportsRawBrowser(m_rawFileSystem));
+            m_rawSummaryLabel->setText(
+                QStringLiteral("原始目录解析失败：%1")
+                    .arg(result.errorText));
+            return;
+        }
+
+        m_rawSelection = std::move(selection);
+        m_rawFileSystem = result.fileSystem;
+        m_rawPathEdit->setText(result.canonicalPath);
+        m_rawEntries = std::move(result.entries);
+        m_rawUpButton->setEnabled(
+            result.canonicalPath != QStringLiteral("\\"));
+        m_rawListButton->setEnabled(true);
+        m_rawSummaryLabel->setText(
+            QStringLiteral(
+                "%1 | 目录对象=%2 | 扫描记录=%3 | 返回=%4%5")
+                .arg(result.fileSystemName)
+                .arg(static_cast<qulonglong>(
+                    result.directoryObjectId))
+                .arg(static_cast<qulonglong>(
+                    result.scannedRecords))
+                .arg(m_rawEntries.size())
+                .arg(result.truncated
+                    ? QStringLiteral("（已达到显示上限）")
+                    : QString()));
+        m_rawTable->setRowCount(
+            static_cast<int>(m_rawEntries.size()));
+        for (int row = 0;
+             row < static_cast<int>(m_rawEntries.size());
+             ++row)
+        {
+            const RawFileEntry& entry =
+                m_rawEntries[static_cast<std::size_t>(row)];
+            m_rawTable->setItem(row, 0, readOnlyItem(entry.name));
+            m_rawTable->setItem(
+                row,
+                1,
+                readOnlyItem(
+                    DiskRawFileSystemBrowser::objectTypeText(
+                        entry.type)));
+            m_rawTable->setItem(
+                row,
+                2,
+                readOnlyItem(QString::number(entry.fileSizeBytes)));
+            m_rawTable->setItem(
+                row,
+                3,
+                readOnlyItem(
+                    QString::number(entry.allocatedSizeBytes)));
+            m_rawTable->setItem(
+                row,
+                4,
+                readOnlyItem(QString::number(entry.objectId)));
+            auto* metadataItem =
+                readOnlyItem(hexOffset(entry.metadataOffset));
+            metadataItem->setData(
+                Qt::UserRole,
+                static_cast<qulonglong>(entry.metadataOffset));
+            m_rawTable->setItem(row, 5, metadataItem);
+
+            QStringList extentTexts;
+            std::uint64_t firstPhysical = 0;
+            bool firstPhysicalExact = false;
+            for (const RawFileExtent& extent : entry.extents)
+            {
+                if (!firstPhysicalExact
+                    && extent.physicalMappingExact
+                    && !extent.sparse)
+                {
+                    firstPhysical = extent.absoluteOffset;
+                    firstPhysicalExact = true;
+                }
+                QString state;
+                if (extent.sparse)
+                {
+                    state = QStringLiteral("稀疏");
+                }
+                else if (extent.unwritten)
+                {
+                    state = QStringLiteral("未写入");
+                }
+                else if (extent.compressed)
+                {
+                    state = QStringLiteral("压缩");
+                }
+                extentTexts.push_back(
+                    QStringLiteral("%1:%2+%3%4")
+                        .arg(hexOffset(extent.logicalOffset))
+                        .arg(extent.physicalMappingExact
+                            ? hexOffset(extent.absoluteOffset)
+                            : QStringLiteral("-"))
+                        .arg(static_cast<qulonglong>(
+                            extent.lengthBytes))
+                        .arg(state.isEmpty()
+                            ? QString()
+                            : QStringLiteral("[%1]").arg(state)));
+            }
+            auto* physicalItem = readOnlyItem(
+                firstPhysicalExact
+                    ? hexOffset(firstPhysical)
+                    : QStringLiteral("-"));
+            physicalItem->setData(
+                Qt::UserRole,
+                static_cast<qulonglong>(firstPhysical));
+            physicalItem->setData(
+                Qt::UserRole + 1,
+                firstPhysicalExact);
+            m_rawTable->setItem(row, 6, physicalItem);
+            m_rawTable->setItem(
+                row,
+                7,
+                readOnlyItem(extentTexts.isEmpty()
+                    ? QStringLiteral("-")
+                    : extentTexts.join(QStringLiteral("; "))));
+        }
+        m_rawTable->resizeColumnsToContents();
+    }
+
+    void DiskFileSystemForensicsPanel::applyRawReadResult(
+        RawFileReadResult result)
+    {
+        m_busy = false;
+        m_rawListButton->setEnabled(m_rawSelection.has_value());
+        m_rawUpButton->setEnabled(
+            m_rawPathEdit->text().trimmed() != QStringLiteral("\\"));
+        const int row = m_rawTable->currentRow();
+        const bool fileSelected =
+            row >= 0
+            && row < static_cast<int>(m_rawEntries.size())
+            && m_rawEntries[static_cast<std::size_t>(row)].type
+                != RawFileObjectType::Directory;
+        m_rawPreviewButton->setEnabled(fileSelected);
+        m_rawExportButton->setEnabled(fileSelected);
+        if (!result.success)
+        {
+            m_rawSummaryLabel->setText(
+                QStringLiteral("原始文件读取失败：%1")
+                    .arg(result.errorText));
+            QMessageBox::warning(
+                this,
+                QStringLiteral("原始文件预览"),
+                result.errorText);
+            return;
+        }
+
+        m_rawSummaryLabel->setText(
+            QStringLiteral(
+                "已读取 %1：%2 字节，文件总长 %3 字节。")
+                .arg(result.filePath)
+                .arg(result.bytes.size())
+                .arg(static_cast<qulonglong>(
+                    result.fileSizeBytes)));
+        QMessageBox preview(this);
+        preview.setIcon(QMessageBox::Information);
+        preview.setWindowTitle(QStringLiteral("原始文件预览"));
+        preview.setText(
+            QStringLiteral("%1\n读取 %2 字节；十六进制内容见详细信息。")
+                .arg(result.filePath)
+                .arg(result.bytes.size()));
+        preview.setDetailedText(bytePreview(result.bytes));
+        preview.exec();
+    }
+
+    void DiskFileSystemForensicsPanel::applyRawExportResult(
+        RawFileExportResult result)
+    {
+        m_busy = false;
+        m_rawListButton->setEnabled(m_rawSelection.has_value());
+        m_rawUpButton->setEnabled(
+            m_rawPathEdit->text().trimmed() != QStringLiteral("\\"));
+        const int row = m_rawTable->currentRow();
+        const bool fileSelected =
+            row >= 0
+            && row < static_cast<int>(m_rawEntries.size())
+            && m_rawEntries[static_cast<std::size_t>(row)].type
+                != RawFileObjectType::Directory;
+        m_rawPreviewButton->setEnabled(fileSelected);
+        m_rawExportButton->setEnabled(fileSelected);
+        if (!result.success)
+        {
+            m_rawSummaryLabel->setText(
+                QStringLiteral("原始文件导出失败：%1")
+                    .arg(result.errorText));
+            QMessageBox::warning(
+                this,
+                QStringLiteral("导出原始文件"),
+                result.errorText);
+            return;
+        }
+        m_rawSummaryLabel->setText(
+            QStringLiteral(
+                "导出完成：%1 → %2（%3 字节）")
+                .arg(result.filePath)
+                .arg(result.destinationPath)
+                .arg(static_cast<qulonglong>(
+                    result.bytesWritten)));
+        QMessageBox::information(
+            this,
+            QStringLiteral("导出原始文件"),
+            m_rawSummaryLabel->text());
     }
 
     void DiskFileSystemForensicsPanel::applyExtentResult(

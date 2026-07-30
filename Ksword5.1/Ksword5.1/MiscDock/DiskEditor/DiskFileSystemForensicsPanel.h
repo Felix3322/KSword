@@ -2,6 +2,7 @@
 
 #include "DiskDeletedEntryForensics.h"
 #include "DiskFileSystemForensics.h"
+#include "DiskRawFileSystemBrowser.h"
 
 #include <QWidget>
 
@@ -49,19 +50,36 @@ namespace ks::misc
         void reverseLookupCurrentCluster();
         void scanDeletedEntries();
         void eraseSelectedDeletedEntry();
-        void applyProbeResult(FileSystemProbeResult result);
+        void browseRawDirectory();
+        void previewSelectedRawFile();
+        void exportSelectedRawFile();
+        void applyProbeResult(
+            DiskForensicsSelection selection,
+            FileSystemProbeResult result);
         void applyExtentResult(FileExtentResult result);
         void applyReverseResult(ReverseClusterResult result);
         void applyDeletedResult(
             DiskForensicsSelection selection,
             DeletedEntryScanResult result);
         void applyEraseResult(ExtentEraseResult result);
+        void applyRawDirectoryResult(
+            DiskForensicsSelection selection,
+            RawDirectoryResult result);
+        void applyRawReadResult(RawFileReadResult result);
+        void applyRawExportResult(RawFileExportResult result);
 
         SelectionProvider m_selectionProvider;
         JumpCallback m_jumpCallback;
         QPushButton* m_probeButton = nullptr;
         QLabel* m_probeSummaryLabel = nullptr;
         QTableWidget* m_probeTable = nullptr;
+        QLineEdit* m_rawPathEdit = nullptr;
+        QPushButton* m_rawUpButton = nullptr;
+        QPushButton* m_rawListButton = nullptr;
+        QPushButton* m_rawPreviewButton = nullptr;
+        QPushButton* m_rawExportButton = nullptr;
+        QLabel* m_rawSummaryLabel = nullptr;
+        QTableWidget* m_rawTable = nullptr;
         QLineEdit* m_filePathEdit = nullptr;
         QPushButton* m_fileBrowseButton = nullptr;
         QPushButton* m_extentButton = nullptr;
@@ -76,6 +94,10 @@ namespace ks::misc
         QTableWidget* m_deletedTable = nullptr;
         std::optional<DiskForensicsSelection> m_deletedSelection;
         std::vector<DeletedDirectoryEntry> m_deletedEntries;
+        std::optional<DiskForensicsSelection> m_rawSelection;
+        ForensicFileSystemKind m_rawFileSystem =
+            ForensicFileSystemKind::Unknown;
+        std::vector<RawFileEntry> m_rawEntries;
         bool m_busy = false;
     };
 }
