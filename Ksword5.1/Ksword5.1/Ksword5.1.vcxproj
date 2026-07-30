@@ -402,6 +402,7 @@
     <ClCompile Include="ArkDriverClient\ArkDriverError.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverCapability.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverDynData.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkRuntimeDynData.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverCapabilities.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverProcess.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverHandle.cpp" />
@@ -591,6 +592,7 @@
     <QtMoc Include="WelcomeDock\WelcomeDock.h" />
     <ClInclude Include="ArkDriverClient\ArkDriverClient.h" />
     <ClInclude Include="ArkDriverClient\ArkDriverTypes.h" />
+    <ClInclude Include="ArkDriverClient\ArkRuntimeDynData.h" />
     <ClInclude Include="ArkDriverClient\ArkDriverError.h" />
     <ClInclude Include="ArkDriverClient\ArkDriverCapabilities.h" />
     <ClInclude Include="..\..\third_party\zydis\Zydis.h" />
@@ -611,6 +613,7 @@
     <None Include="profiles\ark_dyndata_pack_v2.json" />
     <None Include="profiles\ark_dyndata_pack_v3.json" />
     <None Include="profiles\ark_dyndata_pack_v4.json" />
+    <None Include="ArkDriverClient\ArkRuntimeDynDataCatalog.inc" />
     <None Include="languages\en-US.json" />
     <None Include="languages\zh-CN.json" />
   </ItemGroup>

@@ -447,6 +447,9 @@
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverDynData.cpp">
       <Filter>ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkRuntimeDynData.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverDebugOutput.cpp">
       <Filter>ArkDriverClient</Filter>
     </ClCompile>
@@ -848,6 +851,12 @@
     <ClInclude Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverTypes.h">
       <Filter>ArkDriverClient</Filter>
     </ClInclude>
+    <ClInclude Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkRuntimeDynData.h">
+      <Filter>ArkDriverClient</Filter>
+    </ClInclude>
+    <None Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkRuntimeDynDataCatalog.inc">
+      <Filter>ArkDriverClient</Filter>
+    </None>
     <ClInclude Include="..\Ksword5.1\Ksword5.1\ksword\process\process.h">
       <Filter>ksword\process</Filter>
     </ClInclude>

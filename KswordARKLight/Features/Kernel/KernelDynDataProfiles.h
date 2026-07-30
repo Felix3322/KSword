@@ -16,8 +16,7 @@ struct DynDataProfileMatch {
     bool scanned = false;
     bool matched = false;
     bool valid = false;
-    bool preferExApply = false;
-    bool preferV4Apply = false;
+    std::wstring source = L"Local DynData Profile Pack";
     std::wstring path;
     std::wstring message;
     std::uint32_t existingPackCount = 0;

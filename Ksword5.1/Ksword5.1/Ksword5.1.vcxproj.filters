@@ -773,6 +773,9 @@
     <ClCompile Include="ArkDriverClient\ArkDriverDynData.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkRuntimeDynData.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverCapabilities.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
@@ -1049,6 +1052,9 @@
       <Filter>Header Files\ArkDriverClient</Filter>
     </ClInclude>
     <ClInclude Include="ArkDriverClient\ArkDriverTypes.h">
+      <Filter>Header Files\ArkDriverClient</Filter>
+    </ClInclude>
+    <ClInclude Include="ArkDriverClient\ArkRuntimeDynData.h">
       <Filter>Header Files\ArkDriverClient</Filter>
     </ClInclude>
     <ClInclude Include="ArkDriverClient\ArkDriverError.h">
@@ -1394,6 +1400,9 @@
     </None>
     <None Include="profiles\ark_dyndata_pack_v4.json">
       <Filter>Profile Files</Filter>
+    </None>
+    <None Include="ArkDriverClient\ArkRuntimeDynDataCatalog.inc">
+      <Filter>Header Files\ArkDriverClient</Filter>
     </None>
     <None Include="languages\en-US.json">
       <Filter>Profile Files</Filter>

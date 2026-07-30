@@ -49,15 +49,53 @@ py -3.12 Launcher\tools\generate_support_manifest.py `
   --output Launcher\launcher_support_manifest.json
 ```
 
-This tool builds KswordARK dynamic-offset JSON profiles from Microsoft public symbols.
+The offline generator builds KswordARK dynamic-offset JSON profiles from Microsoft public symbols.
 It uses the same public symbol-server PE key format used by debugger symbol tools:
 `/<file>/<TimeDateStamp><SizeOfImage>/<file>`.
 
-The tool intentionally runs outside the driver and outside the released product:
+The offline corpus workflow intentionally runs outside the driver and outside the released product:
 
 - It may download PE/PDB files into a local corpus/cache.
 - It emits small JSON profiles under `profiles/ark_dyndata`.
 - KswordARK user mode parses JSON and sends a packed, validated offset packet to the driver.
+
+## Runtime exact-PDB fallback
+
+The checked-in/release pack remains the primary and reproducible profile source.
+If no valid pack entry matches the loaded image, the main application and
+KswordARKLight can build an in-memory fallback profile from the exact public PDB:
+
+- R0 supplies the loaded module `Machine + TimeDateStamp + SizeOfImage + ImageBase`.
+- R3 first verifies the local PE against that identity, then loads symbols with
+  DbgHelp using `SYMOPT_EXACT_SYMBOLS`.
+- The fallback is accepted only when DbgHelp reports a loaded PDB with a nonzero
+  GUID/Age and no PDB mismatch.
+- NTOS/NTKRLA57 entries produce the same legacy, EX, and v4 catalog consumed by
+  the offline generator. The layers are applied in `Legacy -> EX -> V4` order.
+- FLTMGR and CI companion entries produce their existing v4 capability groups.
+- A mismatch or unresolved item remains unavailable; the resolver never reuses
+  a neighboring-build offset.
+
+`KSWORD_SYMBOL_PATH` and `_NT_SYMBOL_PATH` are honored. The default symbol cache
+is `%LOCALAPPDATA%\KSword\symbols`. Because stock Windows can provide DbgHelp
+without the separate SymSrv component, R3 also parses the PE's RSDS record and
+can download the exact `<pdb>/<GUID+Age>/<pdb>` object with WinHTTP. The default
+upstream is the Microsoft public symbol server; `KSWORD_SYMBOL_SERVER` can
+override its base URL. DbgHelp still revalidates the downloaded PDB GUID/Age
+before any offset is accepted.
+
+Keep the compiled runtime catalog synchronized with the Python generator:
+
+```powershell
+python tools\pdb_offset_generator\verify_runtime_dyndata_catalog.py
+```
+
+R0 also has a final read-only fallback inspired by bounded accessor decoding:
+it decodes only a small allowlist of exported one-argument accessors, validates
+each candidate against the live current process/thread object, and fills only
+fields still unavailable after System Informer data and exact PDB application.
+It does not pattern-scan arbitrary kernel text, invent global addresses, or
+enable a mutation path from an unvalidated candidate.
 
 ## Minimal example
 

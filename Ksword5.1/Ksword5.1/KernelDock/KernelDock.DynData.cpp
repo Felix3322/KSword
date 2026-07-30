@@ -2,6 +2,7 @@
 #include "../UI/VisibleTableWidget.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../ArkDriverClient/ArkRuntimeDynData.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../ksword/profile/ProfileJsonLoader.h"
 #include "../theme.h"
@@ -725,6 +726,12 @@ namespace
         if (sourceTextValue == QStringLiteral("scattered-json"))
         {
             return QStringLiteral("PDB profile scattered JSON");
+        }
+        if (sourceTextValue == QStringLiteral("runtime-exact-pdb"))
+        {
+            return kernelText(
+                "kernel.dyndata.profile.source.runtime_exact_pdb",
+                QStringLiteral("运行时精确 PDB"));
         }
         return sourceTextValue.trimmed().isEmpty()
             ? kernelText("kernel.dyndata.placeholder.empty", QStringLiteral("<空>"))
@@ -2466,6 +2473,46 @@ namespace
         return bestProfile;
     }
 
+    // resolveRuntimePdbProfile：
+    // - 输入 currentIdentity/diagnosticsOut：pack 未命中的当前模块身份和诊断输出；
+    // - 处理：调用共享 ArkDriverClient DbgHelp resolver，从身份匹配的本机 PE/PDB
+    //   动态生成与离线发布器相同的 v1/EX/v4 apply 输入；
+    // - 返回：只有 PE 与 PDB GUID/Age 均精确匹配且至少解析到一个 item 时 valid=true。
+    LocalPdbProfile resolveRuntimePdbProfile(
+        const ksword::ark::ArkDynModuleIdentity& currentIdentity,
+        QString& diagnosticsOut)
+    {
+        LocalPdbProfile profile;
+        const ksword::ark::RuntimeDynDataResolveResult runtimeResult =
+            ksword::ark::ResolveRuntimeDynDataProfile(currentIdentity);
+        diagnosticsOut = QString::fromStdWString(runtimeResult.diagnostics);
+        profile.matched = runtimeResult.pdbIdentityAvailable;
+        profile.valid = runtimeResult.valid;
+        profile.sourceText = QStringLiteral("runtime-exact-pdb");
+        profile.pathText = QDir::toNativeSeparators(
+            QString::fromStdWString(
+                runtimeResult.pdbPath.empty()
+                    ? runtimeResult.imagePath
+                    : runtimeResult.pdbPath));
+        profile.diagnosticsText = diagnosticsOut;
+        profile.applyInput = runtimeResult.profile;
+        profile.applyExInput = runtimeResult.profileEx;
+        profile.applyV4Input = runtimeResult.profileV4;
+        profile.exAppliedCount =
+            static_cast<std::uint32_t>(profile.applyExInput.items.size());
+        profile.typedItemCount = profile.exAppliedCount;
+        profile.callbackItemCount = static_cast<std::uint32_t>(std::count_if(
+            profile.applyExInput.items.begin(),
+            profile.applyExInput.items.end(),
+            [](const ksword::ark::DynDataProfileExItem& item) {
+                return (item.flags &
+                    KSW_DYN_PROFILE_EX_ITEM_FLAG_CALLBACK) != 0U;
+            }));
+        profile.v4ItemCount =
+            static_cast<std::uint32_t>(profile.applyV4Input.items.size());
+        return profile;
+    }
+
     // capabilityNames：
     // - 输入 mask：能力位图；
     // - 处理：遍历能力表并拼接命中名称；
@@ -2905,7 +2952,26 @@ namespace
             {
                 pdbProfileScanAttempted = true;
                 QString scanDiagnostics;
-                const LocalPdbProfile profile = findMatchingPdbProfile(initialStatusResult.ntoskrnl, scanDiagnostics);
+                LocalPdbProfile profile =
+                    findMatchingPdbProfile(
+                        initialStatusResult.ntoskrnl,
+                        scanDiagnostics);
+                if (!profile.valid)
+                {
+                    QString runtimeDiagnostics;
+                    LocalPdbProfile runtimeProfile =
+                        resolveRuntimePdbProfile(
+                            initialStatusResult.ntoskrnl,
+                            runtimeDiagnostics);
+                    scanDiagnostics += kernelText(
+                        "kernel.dyndata.profile.runtime_fallback.result",
+                        QStringLiteral(" | 运行时精确 PDB 回退：%1"))
+                        .arg(runtimeDiagnostics);
+                    if (runtimeProfile.valid)
+                    {
+                        profile = std::move(runtimeProfile);
+                    }
+                }
                 pdbProfileMessageText = scanDiagnostics;
                 if (profile.matched)
                 {
@@ -2985,7 +3051,10 @@ namespace
                                 applyMessages << wideStringToQString(applyV4Result.response.message);
                             }
                             anyApplySucceeded = anyApplySucceeded ||
-                                (applyV4Result.io.ok && applyV4Result.response.status == 0);
+                                (applyV4Result.io.ok &&
+                                 applyV4Result.response.status == 0 &&
+                                 applyV4Result.response.rejectedItemCount == 0U &&
+                                 applyV4Result.response.missingRequiredItemCount == 0U);
                         }
 
                         if (!applyMessages.isEmpty())
@@ -3005,14 +3074,18 @@ namespace
         }
 
         // v4 模块 profile 必须按各自当前映像身份精确选择；ntoskrnl status
-        // 不包含 ci.dll 身份，因此 CI 只能从 queryDynDataV4Modules 的初始快照加载。
+        // 不包含 fltmgr/ci 身份，因此 companion profile 从 v4 初始快照逐模块加载。
         if (initialV4ModulesResult.io.ok)
         {
             for (const KSW_DYN_V4_MODULE_STATUS_ENTRY& moduleEntry :
                  initialV4ModulesResult.entries)
             {
-                if (moduleEntry.module.image.classId !=
-                        KSW_DYN_PROFILE_CLASS_CI ||
+                const bool supportedCompanion =
+                    moduleEntry.module.image.classId ==
+                        KSW_DYN_PROFILE_CLASS_FLTMGR ||
+                    moduleEntry.module.image.classId ==
+                        KSW_DYN_PROFILE_CLASS_CI;
+                if (!supportedCompanion ||
                     moduleEntry.module.image.present == 0UL ||
                     (moduleEntry.statusFlags &
                         KSW_DYN_V4_STATUS_FLAG_PROFILE_APPLIED) != 0U)
@@ -3021,20 +3094,41 @@ namespace
                 }
 
                 pdbProfileScanAttempted = true;
-                const ksword::ark::ArkDynModuleIdentity ciIdentity =
+                const ksword::ark::ArkDynModuleIdentity moduleIdentity =
                     convertV4PacketIdentity(moduleEntry.module.image);
-                QString ciScanDiagnostics;
-                const LocalPdbProfile ciProfile =
-                    findMatchingPdbProfile(ciIdentity, ciScanDiagnostics);
-                const QString ciDiagnosticBlock =
-                    QStringLiteral("CI: %1").arg(ciScanDiagnostics);
+                const QString moduleLabel =
+                    QString::fromStdWString(moduleIdentity.moduleName);
+                QString moduleScanDiagnostics;
+                LocalPdbProfile moduleProfile =
+                    findMatchingPdbProfile(
+                        moduleIdentity,
+                        moduleScanDiagnostics);
+                if (!moduleProfile.valid)
+                {
+                    QString runtimeDiagnostics;
+                    LocalPdbProfile runtimeProfile =
+                        resolveRuntimePdbProfile(
+                            moduleIdentity,
+                            runtimeDiagnostics);
+                    moduleScanDiagnostics += kernelText(
+                        "kernel.dyndata.profile.runtime_fallback.result",
+                        QStringLiteral(" | 运行时精确 PDB 回退：%1"))
+                        .arg(runtimeDiagnostics);
+                    if (runtimeProfile.valid)
+                    {
+                        moduleProfile = std::move(runtimeProfile);
+                    }
+                }
+                const QString moduleDiagnosticBlock =
+                    QStringLiteral("%1: %2")
+                        .arg(moduleLabel, moduleScanDiagnostics);
                 if (!pdbProfileMessageText.isEmpty())
                 {
                     pdbProfileMessageText += QStringLiteral(" | ");
                 }
-                pdbProfileMessageText += ciDiagnosticBlock;
+                pdbProfileMessageText += moduleDiagnosticBlock;
 
-                if (!ciProfile.matched)
+                if (!moduleProfile.matched)
                 {
                     continue;
                 }
@@ -3042,47 +3136,54 @@ namespace
                 if (pdbProfileSourceText.isEmpty())
                 {
                     pdbProfileSourceText =
-                        profileSourceDisplayText(ciProfile.sourceText);
+                        profileSourceDisplayText(moduleProfile.sourceText);
                     pdbProfileNameText =
-                        stringToQString(ciProfile.applyInput.profileName);
-                    pdbProfilePathText = ciProfile.pathText;
+                        stringToQString(
+                            moduleProfile.applyInput.profileName);
+                    pdbProfilePathText = moduleProfile.pathText;
                 }
                 pdbProfileIgnoredJsonFields +=
-                    ciProfile.ignoredUnknownFields;
-                if (!ciProfile.valid ||
-                    ciProfile.applyV4Input.items.empty())
+                    moduleProfile.ignoredUnknownFields;
+                if (!moduleProfile.valid ||
+                    moduleProfile.applyV4Input.items.empty())
                 {
                     continue;
                 }
 
-                const ksword::ark::DynDataV4ApplyResult ciApplyResult =
+                const ksword::ark::DynDataV4ApplyResult moduleApplyResult =
                     client.applyDynDataProfileV4(
-                        ciProfile.applyV4Input);
+                        moduleProfile.applyV4Input);
                 if (!pdbProfileIoMessageText.isEmpty())
                 {
                     pdbProfileIoMessageText += QStringLiteral(" | ");
                 }
                 pdbProfileIoMessageText +=
-                    friendlyDynDataIoMessage(ciApplyResult.io.message);
-                pdbProfileStatus = ciApplyResult.response.status;
+                    friendlyDynDataIoMessage(
+                        moduleApplyResult.io.message);
+                pdbProfileStatus =
+                    moduleApplyResult.response.status;
                 pdbProfileAppliedFields +=
-                    ciApplyResult.response.appliedItemCount;
+                    moduleApplyResult.response.appliedItemCount;
                 pdbProfileRejectedFields +=
-                    ciApplyResult.response.rejectedItemCount;
-                if (ciApplyResult.response.message[0] != L'\0')
+                    moduleApplyResult.response.rejectedItemCount;
+                if (moduleApplyResult.response.message[0] != L'\0')
                 {
-                    pdbProfileMessageText += QStringLiteral(" | CI: ");
+                    pdbProfileMessageText +=
+                        QStringLiteral(" | %1: ").arg(moduleLabel);
                     pdbProfileMessageText +=
                         wideStringToQString(
-                            ciApplyResult.response.message);
+                            moduleApplyResult.response.message);
                 }
-                const bool ciApplySucceeded =
-                    ciApplyResult.io.ok &&
-                    ciApplyResult.response.status == 0;
+                const bool moduleApplySucceeded =
+                    moduleApplyResult.io.ok &&
+                    moduleApplyResult.response.status == 0 &&
+                    moduleApplyResult.response.rejectedItemCount == 0U &&
+                    moduleApplyResult.response.missingRequiredItemCount == 0U;
                 pdbProfileApplied =
-                    pdbProfileApplied || ciApplySucceeded;
+                    pdbProfileApplied || moduleApplySucceeded;
                 requeryAfterProfileApply =
-                    requeryAfterProfileApply || ciApplySucceeded;
+                    requeryAfterProfileApply ||
+                    moduleApplySucceeded;
             }
         }
 

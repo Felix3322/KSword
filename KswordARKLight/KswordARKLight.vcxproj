@@ -213,6 +213,7 @@
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverClient.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverAudit.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverDynData.cpp" />
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkRuntimeDynData.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverDebugOutput.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverError.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverFile.cpp" />
@@ -348,6 +349,8 @@
     <ClInclude Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverClient.h" />
     <ClInclude Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverError.h" />
     <ClInclude Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverTypes.h" />
+    <ClInclude Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkRuntimeDynData.h" />
+    <None Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkRuntimeDynDataCatalog.inc" />
     <ClInclude Include="..\Ksword5.1\Ksword5.1\ksword\process\process.h" />
     <ClInclude Include="..\Ksword5.1\Ksword5.1\ksword\string\string.h" />
     <ClInclude Include="..\shared\KswordArkLogProtocol.h" />

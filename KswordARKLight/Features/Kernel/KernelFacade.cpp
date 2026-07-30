@@ -239,6 +239,7 @@ std::wstring LocalPdbProfileText(const DynDataProfileMatch& match) {
     if (match.matched) {
         std::wostringstream stream;
         stream << L"命中：" << Utf8ToWide(match.profile.profileName)
+               << L"，来源=" << match.source
                << L"，字段=" << match.fieldCount
                << L"，typedItems=" << match.typedItemCount
                << L"，callbackItems=" << match.callbackItemCount
@@ -3293,7 +3294,7 @@ KernelOperationResult QueryDynData(const KernelRequest& request) {
         { L"PdbProfileScanAttempted", YesNoText(profileMatch.scanned) },
         { L"PdbProfileFound", YesNoText(profileMatch.matched) },
         { L"PdbProfileApplied", L"否" },
-        { L"PdbProfileSource", profileMatch.matched ? L"Local DynData Profile Pack" : L"None" },
+        { L"PdbProfileSource", profileMatch.matched ? profileMatch.source : L"None" },
         { L"PdbProfileName", Utf8ToWide(profileMatch.profile.profileName) },
         { L"PdbProfilePath", profileMatch.path },
         { L"PdbProfileStatus", profileMatch.valid ? L"OK" : L"NotApplied" },
@@ -3302,7 +3303,7 @@ KernelOperationResult QueryDynData(const KernelRequest& request) {
         { L"PdbProfileUnknownFields", L"0" },
         { L"PdbProfileIgnoredJsonFields", L"0" },
         { L"PdbProfileMessage", profileMatch.message },
-        { L"PdbProfileIo", L"Local scan only" },
+        { L"PdbProfileIo", profileMatch.source == L"Runtime Exact PDB" ? L"DbgHelp exact PDB" : L"Local scan only" },
     }, profileMatch.message));
     AppendDynDataProfileRows(result, profileMatch, request.filterText);
 
@@ -5427,18 +5428,101 @@ KernelOperationResult ExecuteDynDataApplyMatchedProfile(const KernelActionReques
     KernelOperationResult result;
     result.supported = true;
     result.destructiveAction = true;
+    result.success = true;
+    bool appliedAnyLayer = false;
+    const auto appendLayerMessage = [&result](const std::wstring& message) {
+        if (!result.message.empty()) {
+            result.message += L" | ";
+        }
+        result.message += message;
+    };
 
-    if (match.preferV4Apply) {
+    if (!match.profile.fields.empty()) {
+        appliedAnyLayer = true;
+        const ksword::ark::DynDataProfileApplyResult applied = client.applyDynDataProfile(match.profile);
+        const bool layerSucceeded =
+            applied.io.ok &&
+            applied.status >= 0 &&
+            applied.rejectedFieldCount == 0 &&
+            applied.unknownFieldCount == 0;
+        result.success = result.success && layerSucceeded;
+        appendLayerMessage(
+            std::wstring(L"DynData legacy profile 应用")
+            + (layerSucceeded ? L"完成。" : L"失败或部分拒绝。")
+            + L" "
+            + applied.message
+            + L" "
+            + Utf8ToWide(applied.io.message));
+        result.rows.push_back(Row({
+            { L"Action", L"DynDataApplyMatchedProfile" },
+            { L"Mode", L"Legacy" },
+            { L"IO", applied.io.ok ? L"OK" : L"FAIL" },
+            { L"Win32", std::to_wstring(applied.io.win32Error) },
+            { L"BytesReturned", std::to_wstring(applied.io.bytesReturned) },
+            { L"NTSTATUS", HexText(static_cast<std::uint32_t>(applied.status)) },
+            { L"AppliedFields", std::to_wstring(applied.appliedFieldCount) },
+            { L"RejectedFields", std::to_wstring(applied.rejectedFieldCount) },
+            { L"UnknownFields", std::to_wstring(applied.unknownFieldCount) },
+            { L"StatusFlags", HexText(applied.statusFlags) },
+            { L"CapabilityMask", HexText(applied.capabilityMask) },
+            { L"Profile", Utf8ToWide(match.profile.profileName) },
+            { L"PdbName", Utf8ToWide(match.profile.pdbName) },
+            { L"PdbGuid", Utf8ToWide(match.profile.pdbGuid) },
+            { L"PdbAge", std::to_wstring(match.profile.pdbAge) },
+            { L"ProfilePath", match.path },
+        }, applied.message.empty() ? Utf8ToWide(applied.io.message) : applied.message));
+    }
+
+    if (!match.profileEx.items.empty()) {
+        appliedAnyLayer = true;
+        const ksword::ark::DynDataProfileApplyExResult applied = client.applyDynDataProfileEx(match.profileEx);
+        const bool layerSucceeded =
+            applied.io.ok &&
+            applied.status >= 0 &&
+            applied.rejectedItemCount == 0 &&
+            applied.unknownItemCount == 0;
+        result.success = result.success && layerSucceeded;
+        appendLayerMessage(
+            std::wstring(L"DynData EX profile 应用")
+            + (layerSucceeded ? L"完成。" : L"失败或部分拒绝。")
+            + L" "
+            + applied.message
+            + L" "
+            + Utf8ToWide(applied.io.message));
+        result.rows.push_back(Row({
+            { L"Action", L"DynDataApplyMatchedProfile" },
+            { L"Mode", L"EX" },
+            { L"IO", applied.io.ok ? L"OK" : L"FAIL" },
+            { L"Win32", std::to_wstring(applied.io.win32Error) },
+            { L"BytesReturned", std::to_wstring(applied.io.bytesReturned) },
+            { L"NTSTATUS", HexText(static_cast<std::uint32_t>(applied.status)) },
+            { L"AppliedItems", std::to_wstring(applied.appliedItemCount) },
+            { L"RejectedItems", std::to_wstring(applied.rejectedItemCount) },
+            { L"UnknownItems", std::to_wstring(applied.unknownItemCount) },
+            { L"StatusFlags", HexText(applied.statusFlags) },
+            { L"CapabilityMask", HexText(applied.capabilityMask) },
+            { L"Profile", Utf8ToWide(match.profileEx.profileName) },
+            { L"PdbName", Utf8ToWide(match.profileEx.pdbName) },
+            { L"PdbGuid", Utf8ToWide(match.profileEx.pdbGuid) },
+            { L"PdbAge", std::to_wstring(match.profileEx.pdbAge) },
+            { L"ProfilePath", match.path },
+        }, applied.message.empty() ? Utf8ToWide(applied.io.message) : applied.message));
+    }
+
+    if (!match.profileV4.items.empty()) {
+        appliedAnyLayer = true;
         const ksword::ark::DynDataV4ApplyResult applied = client.applyDynDataProfileV4(match.profileV4);
         const KSW_APPLY_DYN_PROFILE_V4_RESPONSE& response = applied.response;
-        result.success = applied.io.ok && !applied.unsupported && response.status >= 0 &&
+        const bool layerSucceeded = applied.io.ok && !applied.unsupported && response.status >= 0 &&
             response.rejectedItemCount == 0 && response.missingRequiredItemCount == 0;
-        result.message = std::wstring(L"DynData V4 profile 应用")
-            + (result.success ? L"完成。" : L"失败、旧驱动不支持或存在必需项缺失。")
+        result.success = result.success && layerSucceeded;
+        appendLayerMessage(
+            std::wstring(L"DynData V4 profile 应用")
+            + (layerSucceeded ? L"完成。" : L"失败、旧驱动不支持或存在必需项缺失。")
             + L" "
             + response.message
             + L" "
-            + Utf8ToWide(applied.io.message);
+            + Utf8ToWide(applied.io.message));
         result.rows.push_back(Row({
             { L"Action", L"DynDataApplyMatchedProfile" },
             { L"Mode", L"V4" },
@@ -5465,60 +5549,11 @@ KernelOperationResult ExecuteDynDataApplyMatchedProfile(const KernelActionReques
             { L"CapabilityGroupCount", std::to_wstring(match.profileV4.capabilityGroups.size()) },
             { L"ProfilePath", match.path },
         }, response.message[0] == L'\0' ? Utf8ToWide(applied.io.message) : std::wstring(response.message)));
-    } else if (match.preferExApply) {
-        const ksword::ark::DynDataProfileApplyExResult applied = client.applyDynDataProfileEx(match.profileEx);
-        result.success = applied.io.ok && applied.status >= 0 && applied.rejectedItemCount == 0 && applied.unknownItemCount == 0;
-        result.message = std::wstring(L"DynData EX profile 应用")
-            + (result.success ? L"完成。" : L"失败或部分拒绝。")
-            + L" "
-            + applied.message
-            + L" "
-            + Utf8ToWide(applied.io.message);
-        result.rows.push_back(Row({
-            { L"Action", L"DynDataApplyMatchedProfile" },
-            { L"Mode", L"EX" },
-            { L"IO", applied.io.ok ? L"OK" : L"FAIL" },
-            { L"Win32", std::to_wstring(applied.io.win32Error) },
-            { L"BytesReturned", std::to_wstring(applied.io.bytesReturned) },
-            { L"NTSTATUS", HexText(static_cast<std::uint32_t>(applied.status)) },
-            { L"AppliedItems", std::to_wstring(applied.appliedItemCount) },
-            { L"RejectedItems", std::to_wstring(applied.rejectedItemCount) },
-            { L"UnknownItems", std::to_wstring(applied.unknownItemCount) },
-            { L"StatusFlags", HexText(applied.statusFlags) },
-            { L"CapabilityMask", HexText(applied.capabilityMask) },
-            { L"Profile", Utf8ToWide(match.profileEx.profileName) },
-            { L"PdbName", Utf8ToWide(match.profileEx.pdbName) },
-            { L"PdbGuid", Utf8ToWide(match.profileEx.pdbGuid) },
-            { L"PdbAge", std::to_wstring(match.profileEx.pdbAge) },
-            { L"ProfilePath", match.path },
-        }, applied.message.empty() ? Utf8ToWide(applied.io.message) : applied.message));
-    } else {
-        const ksword::ark::DynDataProfileApplyResult applied = client.applyDynDataProfile(match.profile);
-        result.success = applied.io.ok && applied.status >= 0 && applied.rejectedFieldCount == 0 && applied.unknownFieldCount == 0;
-        result.message = std::wstring(L"DynData legacy profile 应用")
-            + (result.success ? L"完成。" : L"失败或部分拒绝。")
-            + L" "
-            + applied.message
-            + L" "
-            + Utf8ToWide(applied.io.message);
-        result.rows.push_back(Row({
-            { L"Action", L"DynDataApplyMatchedProfile" },
-            { L"Mode", L"Legacy" },
-            { L"IO", applied.io.ok ? L"OK" : L"FAIL" },
-            { L"Win32", std::to_wstring(applied.io.win32Error) },
-            { L"BytesReturned", std::to_wstring(applied.io.bytesReturned) },
-            { L"NTSTATUS", HexText(static_cast<std::uint32_t>(applied.status)) },
-            { L"AppliedFields", std::to_wstring(applied.appliedFieldCount) },
-            { L"RejectedFields", std::to_wstring(applied.rejectedFieldCount) },
-            { L"UnknownFields", std::to_wstring(applied.unknownFieldCount) },
-            { L"StatusFlags", HexText(applied.statusFlags) },
-            { L"CapabilityMask", HexText(applied.capabilityMask) },
-            { L"Profile", Utf8ToWide(match.profile.profileName) },
-            { L"PdbName", Utf8ToWide(match.profile.pdbName) },
-            { L"PdbGuid", Utf8ToWide(match.profile.pdbGuid) },
-            { L"PdbAge", std::to_wstring(match.profile.pdbAge) },
-            { L"ProfilePath", match.path },
-        }, applied.message.empty() ? Utf8ToWide(applied.io.message) : applied.message));
+    }
+
+    if (!appliedAnyLayer) {
+        result.success = false;
+        result.message = L"匹配的 DynData profile 没有可下发的 Legacy、EX 或 V4 数据层。";
     }
 
     AppendDynDataProfileRows(result, match, request.filterText);

@@ -393,6 +393,11 @@ V4_CORE_GROUP_ID = 1
 V4_TIMER_GROUP_ID = 2
 V4_FLTMGR_MINIFILTER_GROUP_ID = 3
 V4_CI_KERNEL_HASH_GROUP_ID = 4
+V4_FIXED_CAPABILITY_GROUP_COUNTS = {
+    V4_TIMER_GROUP_ID: (17, 0),
+    V4_FLTMGR_MINIFILTER_GROUP_ID: (1, 0),
+    V4_CI_KERNEL_HASH_GROUP_ID: (5, 4),
+}
 V4_SPECIAL_ITEM_IDS = {
     "EthActiveExWorker": 1001,
     "KprcbTimerTable": 1002,
@@ -1327,12 +1332,18 @@ def build_pack_v4_capability_groups(items: list[dict[str, Any]]) -> list[dict[st
     groups: list[dict[str, Any]] = []
     for group_id in sorted({int(item["capabilityGroupId"]) for item in items}):
         group_items = [item for item in items if int(item["capabilityGroupId"]) == group_id]
+        present_required = sum(1 for item in group_items if int(item["flags"]) & 1)
+        present_optional = sum(1 for item in group_items if int(item["flags"]) & 2)
+        required_count, optional_count = V4_FIXED_CAPABILITY_GROUP_COUNTS.get(
+            group_id,
+            (present_required, present_optional),
+        )
         groups.append(
             {
                 "groupId": group_id,
                 "flags": 0,
-                "requiredItemCount": sum(1 for item in group_items if int(item["flags"]) & 1),
-                "optionalItemCount": sum(1 for item in group_items if int(item["flags"]) & 2),
+                "requiredItemCount": required_count,
+                "optionalItemCount": optional_count,
                 "groupName": names.get(group_id, f"group.{group_id}"),
             }
         )
