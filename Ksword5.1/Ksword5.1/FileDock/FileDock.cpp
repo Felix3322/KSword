@@ -4214,16 +4214,21 @@ namespace
                     .arg(formatNtStatus(row.lastStatus))
                     .arg(fixedWideAuditText(row.detail))
                     .toUpper();
-                content += QStringLiteral("     CleanImageBaseline=%1 IdentityMatched=%2 Differs=%3 Image=%4 RVA=0x%5\n")
+                content += QStringLiteral("     BaselineScope=TARGET_PROLOGUE_ONLY CleanImageBaseline=%1 IdentityMatched=%2 CodeIntegrityTrusted=%3 SigningLevel=%4 Relocated=%5 Differs=%6 Image=%7 RVA=0x%8\n")
                     .arg(baseline.available ? QStringLiteral("AVAILABLE") : QStringLiteral("UNAVAILABLE"))
                     .arg(baseline.identityMatched ? QStringLiteral("YES") : QStringLiteral("NO"))
+                    .arg(baseline.codeIntegrityTrusted ? QStringLiteral("YES") : QStringLiteral("NO"))
+                    .arg(baseline.signingLevel)
+                    .arg(baseline.relocationApplied ? QStringLiteral("YES") : QStringLiteral("NO"))
                     .arg(baseline.available
                         ? (baseline.differs ? QStringLiteral("YES") : QStringLiteral("NO"))
                         : QStringLiteral("UNKNOWN"))
                     .arg(baseline.imagePath.isEmpty() ? QStringLiteral("<unavailable>") : baseline.imagePath)
                     .arg(baseline.relativeVirtualAddress, 8, 16, QChar('0'))
                     .toUpper();
-                content += QStringLiteral("     ObservedBytes=%1\n     CleanBytes=%2\n     BaselineDetail=%3\n")
+                content += QStringLiteral("     SHA256=%1\n     SigningThumbprint=%2\n     ObservedBytes=%3\n     CleanBytes=%4\n     BaselineDetail=%5\n")
+                    .arg(baseline.imageSha256.isEmpty() ? QStringLiteral("<unavailable>") : baseline.imageSha256)
+                    .arg(baseline.signingThumbprint.isEmpty() ? QStringLiteral("<unavailable>") : baseline.signingThumbprint)
                     .arg(byteText(baseline.observedBytes))
                     .arg(byteText(baseline.cleanBytes))
                     .arg(baseline.statusText);

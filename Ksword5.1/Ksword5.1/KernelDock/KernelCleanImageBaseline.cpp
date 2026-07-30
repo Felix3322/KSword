@@ -1,6 +1,7 @@
 #include "KernelCleanImageBaseline.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../Internationalization/LanguageManager.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -13,8 +14,8 @@
 #include <winternl.h>
 
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 
 #include <algorithm>
@@ -22,6 +23,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "Wintrust.lib")
@@ -29,6 +31,11 @@
 namespace
 {
     constexpr unsigned long kSystemModuleInformationClass = 11UL;
+
+    QString baselineText(const QString& sourceText)
+    {
+        return ks::i18n::sourceText(sourceText);
+    }
 
     struct KernelModuleRow
     {
@@ -266,41 +273,22 @@ namespace
         }
     }
 
-    bool readTrustedDiskImage(
-        const QString& path,
+    bool readDiskImage(
+        const HANDLE fileHandle,
         QByteArray& bytesOut)
     {
         bytesOut.clear();
-        ReadOnlyTrustFile file(path);
-        if (file.handle == INVALID_HANDLE_VALUE)
-        {
-            return false;
-        }
-
-        WINTRUST_FILE_INFO fileInfo{};
-        fileInfo.cbStruct = sizeof(fileInfo);
-        fileInfo.pcwszFilePath =
-            reinterpret_cast<LPCWSTR>(path.utf16());
-        fileInfo.hFile = file.handle;
-
-        WINTRUST_DATA trustData{};
-        initializeStrictTrustData(trustData);
-        trustData.dwUnionChoice = WTD_CHOICE_FILE;
-        trustData.pFile = &fileInfo;
-        const bool trusted =
-            runWinTrustAndClose(trustData) == ERROR_SUCCESS ||
-            verifyCatalogTrust(path, file.handle);
-        if (!trusted)
+        if (fileHandle == INVALID_HANDLE_VALUE)
         {
             return false;
         }
 
         LARGE_INTEGER fileSize{};
-        constexpr LONGLONG maximumTrustedImageBytes =
+        constexpr LONGLONG maximumImageBytes =
             512LL * 1024LL * 1024LL;
-        if (!::GetFileSizeEx(file.handle, &fileSize) ||
-            fileSize.QuadPart <= 0 ||
-            fileSize.QuadPart > maximumTrustedImageBytes ||
+        if (!::GetFileSizeEx(fileHandle, &fileSize) ||
+            fileSize.QuadPart < 0 ||
+            fileSize.QuadPart > maximumImageBytes ||
             fileSize.QuadPart >
                 static_cast<LONGLONG>(
                     std::numeric_limits<qsizetype>::max()))
@@ -309,7 +297,7 @@ namespace
         }
         LARGE_INTEGER fileStart{};
         if (!::SetFilePointerEx(
-                file.handle,
+                fileHandle,
                 fileStart,
                 nullptr,
                 FILE_BEGIN))
@@ -326,7 +314,7 @@ namespace
                 std::min<qsizetype>(remaining, MAXDWORD));
             DWORD bytesRead = 0U;
             if (!::ReadFile(
-                    file.handle,
+                    fileHandle,
                     bytesOut.data() + offset,
                     requestBytes,
                     &bytesRead,
@@ -339,6 +327,34 @@ namespace
             offset += static_cast<qsizetype>(bytesRead);
         }
         return true;
+    }
+
+    bool readTrustedDiskImage(
+        const QString& path,
+        const HANDLE fileHandle,
+        QByteArray& bytesOut)
+    {
+        bytesOut.clear();
+        if (fileHandle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        WINTRUST_FILE_INFO fileInfo{};
+        fileInfo.cbStruct = sizeof(fileInfo);
+        fileInfo.pcwszFilePath =
+            reinterpret_cast<LPCWSTR>(path.utf16());
+        fileInfo.hFile = fileHandle;
+
+        WINTRUST_DATA trustData{};
+        initializeStrictTrustData(trustData);
+        trustData.dwUnionChoice = WTD_CHOICE_FILE;
+        trustData.pFile = &fileInfo;
+        const bool trusted =
+            runWinTrustAndClose(trustData) == ERROR_SUCCESS ||
+            verifyCatalogTrust(path, fileHandle);
+        return trusted &&
+            readDiskImage(fileHandle, bytesOut);
     }
 
     QString normalizeKernelPath(const QString& input)
@@ -534,11 +550,14 @@ namespace
     struct PeIdentity
     {
         bool valid = false;
+        std::uint16_t machine = 0;
         std::uint32_t timestamp = 0;
-        std::uint64_t imageBase = 0;
         std::uint32_t sizeOfImage = 0;
         std::uint32_t checkSum = 0;
         std::uint32_t sizeOfHeaders = 0;
+        std::uint32_t relocationRva = 0;
+        std::uint32_t relocationSize = 0;
+        std::uint64_t preferredImageBase = 0;
         std::uint64_t sectionTableOffset = 0;
         std::uint16_t sectionCount = 0;
     };
@@ -590,9 +609,18 @@ namespace
                 return false;
             }
             identityOut.sizeOfImage = optional.SizeOfImage;
-            identityOut.imageBase = optional.ImageBase;
             identityOut.checkSum = optional.CheckSum;
             identityOut.sizeOfHeaders = optional.SizeOfHeaders;
+            identityOut.preferredImageBase = optional.ImageBase;
+            if (optional.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC)
+            {
+                identityOut.relocationRva =
+                    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
+                        .VirtualAddress;
+                identityOut.relocationSize =
+                    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
+                        .Size;
+            }
         }
         else if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
         {
@@ -603,9 +631,18 @@ namespace
                 return false;
             }
             identityOut.sizeOfImage = optional.SizeOfImage;
-            identityOut.imageBase = optional.ImageBase;
             identityOut.checkSum = optional.CheckSum;
             identityOut.sizeOfHeaders = optional.SizeOfHeaders;
+            identityOut.preferredImageBase = optional.ImageBase;
+            if (optional.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC)
+            {
+                identityOut.relocationRva =
+                    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
+                        .VirtualAddress;
+                identityOut.relocationSize =
+                    optional.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
+                        .Size;
+            }
         }
         else
         {
@@ -620,6 +657,7 @@ namespace
             return false;
         }
         identityOut.timestamp = fileHeader.TimeDateStamp;
+        identityOut.machine = fileHeader.Machine;
         identityOut.sectionCount = fileHeader.NumberOfSections;
         identityOut.sectionTableOffset =
             optionalOffset + fileHeader.SizeOfOptionalHeader;
@@ -627,87 +665,420 @@ namespace
         return true;
     }
 
-    bool readPeRva(
-        const QByteArray& imageBytes,
+    std::vector<std::uint8_t> loadedHeaderBytes(
+        std::uint64_t moduleBase,
+        QString& errorTextOut);
+
+    bool mapPeImage(
+        const QByteArray& diskImage,
         const PeIdentity& identity,
-        const std::uint32_t rva,
-        const std::uint32_t byteCount,
-        std::vector<std::uint8_t>& bytesOut,
+        const std::uint64_t loadedBase,
+        std::vector<std::uint8_t>& mappedImageOut,
+        bool& relocationAppliedOut,
         QString& errorTextOut)
     {
-        bytesOut.clear();
-        if (byteCount == 0U
-            || rva > std::numeric_limits<std::uint32_t>::max() - byteCount)
+        constexpr std::uint32_t maximumMappedImageBytes =
+            512U * 1024U * 1024U;
+        mappedImageOut.clear();
+        relocationAppliedOut = false;
+        if (!identity.valid
+            || identity.sizeOfImage == 0U
+            || identity.sizeOfImage > maximumMappedImageBytes)
         {
-            errorTextOut = QStringLiteral("映像 RVA 范围无效。");
+            errorTextOut =
+                baselineText(QStringLiteral("映像 SizeOfImage 无效或超过取证上限。"));
             return false;
         }
-        std::uint64_t fileOffset = 0U;
-        if (rva < identity.sizeOfHeaders)
-        {
-            fileOffset = rva;
-        }
-        else
-        {
-            bool found = false;
-            for (std::uint16_t index = 0;
-                 index < identity.sectionCount;
-                 ++index)
+
+        mappedImageOut.assign(identity.sizeOfImage, 0U);
+        const std::size_t headerBytes = std::min<std::size_t>(
             {
-                IMAGE_SECTION_HEADER section = {};
-                const std::uint64_t sectionOffset =
-                    identity.sectionTableOffset
-                    + static_cast<std::uint64_t>(index)
-                        * sizeof(IMAGE_SECTION_HEADER);
-                if (!copyStructure(imageBytes, sectionOffset, section))
+                mappedImageOut.size(),
+                static_cast<std::size_t>(diskImage.size()),
+                static_cast<std::size_t>(identity.sizeOfHeaders)
+            });
+        if (headerBytes == 0U)
+        {
+            errorTextOut = baselineText(QStringLiteral("映像头范围为空。"));
+            return false;
+        }
+        std::memcpy(
+            mappedImageOut.data(),
+            diskImage.constData(),
+            headerBytes);
+
+        for (std::uint16_t index = 0;
+             index < identity.sectionCount;
+             ++index)
+        {
+            IMAGE_SECTION_HEADER section = {};
+            const std::uint64_t sectionOffset =
+                identity.sectionTableOffset
+                + static_cast<std::uint64_t>(index)
+                    * sizeof(IMAGE_SECTION_HEADER);
+            if (!copyStructure(diskImage, sectionOffset, section))
+            {
+                errorTextOut =
+                    baselineText(QStringLiteral("映像区段表读取失败。"));
+                return false;
+            }
+            if (section.SizeOfRawData == 0U)
+            {
+                continue;
+            }
+            if (section.VirtualAddress >= mappedImageOut.size()
+                || section.PointerToRawData
+                    >= static_cast<std::uint32_t>(diskImage.size()))
+            {
+                errorTextOut =
+                    baselineText(QStringLiteral("映像区段范围越界。"));
+                return false;
+            }
+            const std::size_t mappedRemaining =
+                mappedImageOut.size() - section.VirtualAddress;
+            const std::size_t fileRemaining =
+                static_cast<std::size_t>(diskImage.size())
+                - section.PointerToRawData;
+            const std::size_t copyBytes = std::min<std::size_t>(
                 {
-                    errorTextOut =
-                        QStringLiteral("映像区段表读取失败。");
-                    return false;
-                }
-                const std::uint32_t mappedSize = std::max(
-                    section.Misc.VirtualSize,
-                    section.SizeOfRawData);
-                if (rva < section.VirtualAddress
-                    || rva - section.VirtualAddress >= mappedSize)
+                    static_cast<std::size_t>(section.SizeOfRawData),
+                    mappedRemaining,
+                    fileRemaining
+                });
+            if (copyBytes != section.SizeOfRawData)
+            {
+                errorTextOut =
+                    baselineText(QStringLiteral("映像区段原始数据被截断。"));
+                return false;
+            }
+            std::memcpy(
+                mappedImageOut.data() + section.VirtualAddress,
+                diskImage.constData() + section.PointerToRawData,
+                copyBytes);
+        }
+
+        const std::uint64_t relocationDelta =
+            loadedBase - identity.preferredImageBase;
+        if (relocationDelta == 0U)
+        {
+            return true;
+        }
+        if (identity.relocationRva == 0U
+            || identity.relocationSize < sizeof(IMAGE_BASE_RELOCATION)
+            || identity.relocationRva >= mappedImageOut.size()
+            || identity.relocationSize
+                > mappedImageOut.size() - identity.relocationRva)
+        {
+            errorTextOut = baselineText(QStringLiteral("映像发生基址变化，但重定位目录不可用。"));
+            return false;
+        }
+
+        std::uint32_t consumed = 0U;
+        while (consumed < identity.relocationSize)
+        {
+            if (identity.relocationSize - consumed
+                    < sizeof(IMAGE_BASE_RELOCATION))
+            {
+                errorTextOut =
+                    baselineText(QStringLiteral("PE 重定位块头被截断。"));
+                return false;
+            }
+            const std::size_t blockOffset =
+                static_cast<std::size_t>(identity.relocationRva)
+                + consumed;
+            IMAGE_BASE_RELOCATION block = {};
+            std::memcpy(
+                &block,
+                mappedImageOut.data() + blockOffset,
+                sizeof(block));
+            if (block.SizeOfBlock < sizeof(block)
+                || block.SizeOfBlock
+                    > identity.relocationSize - consumed)
+            {
+                errorTextOut =
+                    baselineText(QStringLiteral("PE 重定位块长度无效。"));
+                return false;
+            }
+            const std::uint32_t entryBytes =
+                block.SizeOfBlock - sizeof(block);
+            if ((entryBytes % sizeof(WORD)) != 0U)
+            {
+                errorTextOut =
+                    baselineText(QStringLiteral("PE 重定位项未按 WORD 对齐。"));
+                return false;
+            }
+            const std::uint32_t entryCount =
+                entryBytes / sizeof(WORD);
+            for (std::uint32_t entryIndex = 0U;
+                 entryIndex < entryCount;
+                 ++entryIndex)
+            {
+                WORD entry = 0U;
+                std::memcpy(
+                    &entry,
+                    mappedImageOut.data()
+                        + blockOffset + sizeof(block)
+                        + entryIndex * sizeof(WORD),
+                    sizeof(entry));
+                const WORD type = static_cast<WORD>(entry >> 12);
+                const std::uint64_t targetRva =
+                    static_cast<std::uint64_t>(block.VirtualAddress)
+                    + (entry & 0x0FFFU);
+                if (type == IMAGE_REL_BASED_ABSOLUTE)
                 {
                     continue;
                 }
-                const std::uint32_t relative =
-                    rva - section.VirtualAddress;
-                if (relative > section.SizeOfRawData
-                    || byteCount > section.SizeOfRawData - relative)
+                if (type == IMAGE_REL_BASED_DIR64)
                 {
-                    errorTextOut = QStringLiteral(
-                        "目标 RVA 位于零填充区或越过磁盘区段。");
-                    return false;
+                    if (targetRva > mappedImageOut.size()
+                        || sizeof(std::uint64_t)
+                            > mappedImageOut.size()
+                                - static_cast<std::size_t>(targetRva))
+                    {
+                        errorTextOut =
+                            baselineText(QStringLiteral("DIR64 重定位目标越界。"));
+                        return false;
+                    }
+                    std::uint64_t value = 0U;
+                    std::memcpy(
+                        &value,
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
+                        sizeof(value));
+                    value += relocationDelta;
+                    std::memcpy(
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
+                        &value,
+                        sizeof(value));
+                    relocationAppliedOut = true;
+                    continue;
                 }
-                fileOffset =
-                    static_cast<std::uint64_t>(section.PointerToRawData)
-                    + relative;
-                found = true;
-                break;
+                if (type == IMAGE_REL_BASED_HIGHLOW)
+                {
+                    if (targetRva > mappedImageOut.size()
+                        || sizeof(std::uint32_t)
+                            > mappedImageOut.size()
+                                - static_cast<std::size_t>(targetRva))
+                    {
+                        errorTextOut =
+                            baselineText(QStringLiteral("HIGHLOW 重定位目标越界。"));
+                        return false;
+                    }
+                    std::uint32_t value = 0U;
+                    std::memcpy(
+                        &value,
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
+                        sizeof(value));
+                    value += static_cast<std::uint32_t>(
+                        relocationDelta);
+                    std::memcpy(
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
+                        &value,
+                        sizeof(value));
+                    relocationAppliedOut = true;
+                    continue;
+                }
+                errorTextOut = baselineText(QStringLiteral("PE 含有当前取证器不支持的重定位类型 %1。"))
+                    .arg(type);
+                return false;
             }
-            if (!found)
+            consumed += block.SizeOfBlock;
+        }
+        return true;
+    }
+
+    QString thumbprintText(
+        const KSWORD_ARK_QUERY_IMAGE_SIGNATURE_RESPONSE& response)
+    {
+        const std::uint32_t byteCount = std::min<std::uint32_t>(
+            response.thumbprintSize,
+            KSWORD_ARK_TRUST_THUMBPRINT_MAX_BYTES);
+        return QString::fromLatin1(
+            QByteArray(
+                reinterpret_cast<const char*>(response.thumbprint),
+                static_cast<qsizetype>(byteCount))
+                .toHex());
+    }
+
+    struct PreparedTrustedImage
+    {
+        LoadedModule module;
+        PeIdentity identity;
+        QByteArray diskImage;
+        std::vector<std::uint8_t> mappedImage;
+        QString sha256;
+        QString signingThumbprint;
+        std::uint32_t signingLevel = 0;
+        bool diskTrustVerified = false;
+        bool relocationApplied = false;
+    };
+
+    bool prepareTrustedImage(
+        const LoadedModule& module,
+        const bool requireTrustedDiskImage,
+        PreparedTrustedImage& preparedOut,
+        QString& errorTextOut)
+    {
+        preparedOut = {};
+        preparedOut.module = module;
+        if (module.filePath.isEmpty()
+            || !QFileInfo::exists(module.filePath))
+        {
+            errorTextOut = baselineText(QStringLiteral("模块磁盘路径不可用：%1")).arg(module.ntPath);
+            return false;
+        }
+
+        ReadOnlyTrustFile imageFile(module.filePath);
+        if (imageFile.handle == INVALID_HANDLE_VALUE)
+        {
+            errorTextOut = baselineText(QStringLiteral("无法读取模块磁盘映像：%1"))
+                .arg(QDir::toNativeSeparators(module.filePath));
+            return false;
+        }
+        if (requireTrustedDiskImage)
+        {
+            if (!readTrustedDiskImage(
+                    module.filePath,
+                    imageFile.handle,
+                    preparedOut.diskImage))
             {
-                errorTextOut =
-                    QStringLiteral("没有区段覆盖目标 RVA。");
+                errorTextOut = baselineText(QStringLiteral(
+                    "磁盘映像未通过 embedded/catalog 完整链信任验证，拒绝建立安全基线。"));
+                return false;
+            }
+            preparedOut.diskTrustVerified = true;
+        }
+        else
+        {
+            if (!readDiskImage(
+                    imageFile.handle,
+                    preparedOut.diskImage))
+            {
+                errorTextOut = baselineText(QStringLiteral("无法读取模块磁盘映像：%1"))
+                    .arg(QDir::toNativeSeparators(module.filePath));
                 return false;
             }
         }
-
-        if (fileOffset > static_cast<std::uint64_t>(imageBytes.size())
-            || byteCount
-                > static_cast<std::uint64_t>(imageBytes.size()) - fileOffset)
+        if (preparedOut.diskImage.isEmpty())
         {
-            errorTextOut =
-                QStringLiteral("目标 RVA 对应的磁盘字节越界。");
+            errorTextOut = baselineText(QStringLiteral("模块磁盘映像为空。"));
             return false;
         }
-        const auto* begin = reinterpret_cast<const std::uint8_t*>(
-            imageBytes.constData() + static_cast<qsizetype>(fileOffset));
-        bytesOut.assign(begin, begin + byteCount);
-        return true;
+        preparedOut.sha256 = QString::fromLatin1(
+            QCryptographicHash::hash(
+                preparedOut.diskImage,
+                QCryptographicHash::Sha256)
+                .toHex());
+        if (!parsePeIdentity(
+            preparedOut.diskImage,
+            preparedOut.identity,
+            errorTextOut))
+        {
+            return false;
+        }
+
+        const std::vector<std::uint8_t> memoryHeader =
+            loadedHeaderBytes(module.base, errorTextOut);
+        if (memoryHeader.empty())
+        {
+            return false;
+        }
+        const QByteArray memoryHeaderArray(
+            reinterpret_cast<const char*>(memoryHeader.data()),
+            static_cast<qsizetype>(memoryHeader.size()));
+        PeIdentity memoryIdentity;
+        if (!parsePeIdentity(
+            memoryHeaderArray,
+            memoryIdentity,
+            errorTextOut))
+        {
+            errorTextOut = baselineText(QStringLiteral("已加载映像身份读取失败：%1")).arg(errorTextOut);
+            return false;
+        }
+        if (preparedOut.identity.machine != memoryIdentity.machine
+            || preparedOut.identity.timestamp != memoryIdentity.timestamp
+            || preparedOut.identity.sizeOfImage != memoryIdentity.sizeOfImage
+            || preparedOut.identity.checkSum != memoryIdentity.checkSum
+            || preparedOut.identity.sizeOfImage != module.size)
+        {
+            errorTextOut = baselineText(QStringLiteral("磁盘映像与已加载模块的机器类型、时间戳、映像大小或校验和不一致。"));
+            return false;
+        }
+
+        const ksword::ark::DriverClient client;
+        const ksword::ark::ImageSignatureQueryResult signature =
+            client.queryImageSignature(
+                module.ntPath.toStdWString(),
+                module.base,
+                KSWORD_ARK_IMAGE_SIGNATURE_QUERY_FLAG_DEFAULT
+                    | KSWORD_ARK_IMAGE_SIGNATURE_QUERY_FLAG_MATCH_LOADED_MODULE);
+        const std::uint32_t requiredFields =
+            KSWORD_ARK_IMAGE_SIGNATURE_FIELD_SIGNING_LEVEL
+            | KSWORD_ARK_IMAGE_SIGNATURE_FIELD_LOADED_MODULE
+            | KSWORD_ARK_IMAGE_SIGNATURE_FIELD_LOADED_MODULE_NAME_MATCH;
+        if (!signature.io.ok
+            || (signature.response.fieldFlags & requiredFields)
+                != requiredFields
+            || signature.response.signingLevelStatus < 0
+            || signature.response.loadedModuleStatus < 0
+            || signature.response.matchedModuleBase != module.base
+            || signature.response.signingLevel
+                < KSWORD_ARK_SIGNING_LEVEL_AUTHENTICODE
+            || (signature.response.structuralFlags
+                & KSWORD_ARK_IMAGE_SIGNATURE_STRUCT_LOADED_NAME_MISMATCH)
+                != 0U)
+        {
+            errorTextOut = baselineText(QStringLiteral("内核 Code Integrity 签名级别或已加载模块身份证据不足，拒绝建立可信基线。"));
+            return false;
+        }
+        preparedOut.signingLevel = signature.response.signingLevel;
+        preparedOut.signingThumbprint =
+            thumbprintText(signature.response);
+
+        return mapPeImage(
+            preparedOut.diskImage,
+            preparedOut.identity,
+            module.base,
+            preparedOut.mappedImage,
+            preparedOut.relocationApplied,
+            errorTextOut);
+    }
+
+    const PreparedTrustedImage* cachedTrustedImage(
+        const LoadedModule& module,
+        QString& errorTextOut)
+    {
+        thread_local std::vector<PreparedTrustedImage> cache;
+        const auto existing = std::find_if(
+            cache.cbegin(),
+            cache.cend(),
+            [&module](const PreparedTrustedImage& candidate)
+            {
+                return candidate.module.base == module.base
+                    && candidate.module.size == module.size
+                    && candidate.module.filePath.compare(
+                        module.filePath,
+                        Qt::CaseInsensitive) == 0;
+            });
+        if (existing != cache.cend())
+        {
+            return &(*existing);
+        }
+
+        PreparedTrustedImage prepared;
+        if (!prepareTrustedImage(
+                module,
+                false,
+                prepared,
+                errorTextOut))
+        {
+            return nullptr;
+        }
+        cache.push_back(std::move(prepared));
+        return &cache.back();
     }
 
     std::vector<std::uint8_t> loadedHeaderBytes(
@@ -812,90 +1183,54 @@ namespace ks::kernel
         }
         result.relativeVirtualAddress =
             static_cast<std::uint32_t>(rva64);
-        if (module->filePath.isEmpty()
-            || !QFileInfo::exists(module->filePath))
-        {
-            result.statusText = QStringLiteral(
-                "模块磁盘路径不可用：%1").arg(module->ntPath);
-            return result;
-        }
-        QByteArray diskImage;
+        PreparedTrustedImage trustedDiskImage;
+        const PreparedTrustedImage* prepared = nullptr;
         if (requireTrustedDiskImage)
         {
-            if (!readTrustedDiskImage(
-                    module->filePath,
-                    diskImage))
+            if (!prepareTrustedImage(
+                    *module,
+                    true,
+                    trustedDiskImage,
+                    errorText))
             {
-                result.statusText = QStringLiteral(
-                    "磁盘映像未通过 embedded/catalog 完整链信任验证，拒绝建立安全基线。");
+                result.statusText = errorText;
                 return result;
             }
-            result.diskTrustVerified = true;
+            prepared = &trustedDiskImage;
         }
         else
         {
-            QFile imageFile(module->filePath);
-            if (!imageFile.open(QIODevice::ReadOnly))
-            {
-                result.statusText = QStringLiteral(
-                    "无法读取模块磁盘映像：%1")
-                    .arg(QDir::toNativeSeparators(module->filePath));
-                return result;
-            }
-            diskImage = imageFile.readAll();
-            imageFile.close();
+            prepared = cachedTrustedImage(
+                *module,
+                errorText);
         }
-        PeIdentity diskIdentity;
-        if (!parsePeIdentity(diskImage, diskIdentity, errorText))
+        if (prepared == nullptr)
         {
             result.statusText = errorText;
             return result;
         }
-        result.preferredImageBase = diskIdentity.imageBase;
-
-        const std::vector<std::uint8_t> memoryHeader =
-            loadedHeaderBytes(module->base, errorText);
-        if (memoryHeader.empty())
+        result.identityMatched = true;
+        result.diskTrustVerified = prepared->diskTrustVerified;
+        result.codeIntegrityTrusted = true;
+        result.relocationApplied = prepared->relocationApplied;
+        result.preferredImageBase =
+            prepared->identity.preferredImageBase;
+        result.signingLevel = prepared->signingLevel;
+        result.imageSha256 = prepared->sha256;
+        result.signingThumbprint = prepared->signingThumbprint;
+        if (result.relativeVirtualAddress > prepared->mappedImage.size()
+            || byteCount > prepared->mappedImage.size()
+                - result.relativeVirtualAddress)
         {
-            result.statusText = errorText;
+            result.statusText =
+                baselineText(QStringLiteral("目标 RVA 在已重定位映像中越界。"));
             return result;
         }
-        const QByteArray memoryHeaderArray(
-            reinterpret_cast<const char*>(memoryHeader.data()),
-            static_cast<qsizetype>(memoryHeader.size()));
-        PeIdentity memoryIdentity;
-        if (!parsePeIdentity(
-            memoryHeaderArray,
-            memoryIdentity,
-            errorText))
-        {
-            result.statusText = QStringLiteral(
-                "已加载映像身份读取失败：%1").arg(errorText);
-            return result;
-        }
-        result.identityMatched =
-            diskIdentity.timestamp == memoryIdentity.timestamp
-            && diskIdentity.sizeOfImage == memoryIdentity.sizeOfImage
-            && diskIdentity.checkSum == memoryIdentity.checkSum
-            && diskIdentity.sizeOfImage == module->size;
-        if (!result.identityMatched)
-        {
-            result.statusText = QStringLiteral(
-                "磁盘映像与已加载模块的时间戳、映像大小或校验和不一致，拒绝建立恢复基线。");
-            return result;
-        }
-
-        if (!readPeRva(
-            diskImage,
-            diskIdentity,
-            result.relativeVirtualAddress,
-            byteCount,
-            result.cleanBytes,
-            errorText))
-        {
-            result.statusText = errorText;
-            return result;
-        }
+        result.cleanBytes.assign(
+            prepared->mappedImage.cbegin()
+                + result.relativeVirtualAddress,
+            prepared->mappedImage.cbegin()
+                + result.relativeVirtualAddress + byteCount);
         if (observedBytes.empty())
         {
             if (!readKernelBytes(
@@ -922,8 +1257,9 @@ namespace ks::kernel
         result.available = true;
         result.differs = result.cleanBytes != result.observedBytes;
         result.statusText = result.differs
-            ? QStringLiteral("当前内存与已验证磁盘映像基线不一致")
-            : QStringLiteral("当前内存与已验证磁盘映像基线一致");
+            ? baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线不一致"))
+            : baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线一致"));
         return result;
     }
+
 }

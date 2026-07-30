@@ -70,30 +70,29 @@ namespace
         return item;
     }
 
-    bool rebaseCleanPointer(
+    bool validateRuntimeCleanPointer(
         const ks::kernel::CleanImageBaselineResult& baseline,
-        const std::uint64_t diskPointer,
+        const std::uint64_t runtimePointer,
         std::uint64_t& runtimeAddressOut)
     {
         runtimeAddressOut = 0U;
         if (!baseline.available ||
             !baseline.identityMatched ||
-            baseline.preferredImageBase == 0U ||
+            !baseline.diskTrustVerified ||
+            !baseline.codeIntegrityTrusted ||
             baseline.moduleBase == 0U ||
             baseline.moduleSize == 0U ||
-            diskPointer < baseline.preferredImageBase)
+            runtimePointer < baseline.moduleBase)
         {
             return false;
         }
         const std::uint64_t rva =
-            diskPointer - baseline.preferredImageBase;
-        if (rva >= baseline.moduleSize ||
-            baseline.moduleBase >
-                std::numeric_limits<std::uint64_t>::max() - rva)
+            runtimePointer - baseline.moduleBase;
+        if (rva >= baseline.moduleSize)
         {
             return false;
         }
-        runtimeAddressOut = baseline.moduleBase + rva;
+        runtimeAddressOut = runtimePointer;
         return true;
     }
 
@@ -169,15 +168,15 @@ namespace
                 continue;
             }
 
-            std::uint64_t diskPointer = 0U;
+            std::uint64_t runtimePointer = 0U;
             std::memcpy(
-                &diskPointer,
+                &runtimePointer,
                 baseline.cleanBytes.data() + byteOffset,
-                sizeof(diskPointer));
+                sizeof(runtimePointer));
             std::uint64_t originalAddress = 0U;
-            if (!rebaseCleanPointer(
+            if (!validateRuntimeCleanPointer(
                     baseline,
-                    diskPointer,
+                    runtimePointer,
                     originalAddress))
             {
                 continue;
