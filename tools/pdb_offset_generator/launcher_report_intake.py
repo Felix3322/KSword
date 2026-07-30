@@ -31,6 +31,11 @@ DEFAULT_SYMBOL_SERVER = "https://msdl.microsoft.com/download/symbols"
 REPORT_METADATA_FILES = ("README.txt", "report.json", "report.txt", "SHA256SUMS.txt", "launcher.log")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PDB_GUID_RE = re.compile(r"^\s*GUID:\s*\{?([^}\s]+)\}?\s*$", re.IGNORECASE | re.MULTILINE)
+PROFILE_CLASS_NAMES = {
+    0: "ntoskrnl",
+    1: "ntkrla57",
+    48: "fltmgr",
+}
 
 
 class IntakeError(RuntimeError):
@@ -382,14 +387,19 @@ def canonical_pdb_path(corpus_root: Path, module: dict[str, Any]) -> Path:
     return corpus_root / "pdb-cache" / module["arch"] / pdb["name"] / pdb["symbolKey"] / pdb["name"]
 
 
+def compatibility_profile_class(module: dict[str, Any]) -> str | None:
+    """Return the profile class only when the report contract permits publishing it."""
+    if bool(module.get("collectionOnly")):
+        return None
+    return PROFILE_CLASS_NAMES.get(int(module.get("classId", -1)))
+
+
 def run_profile_generator(module: dict[str, Any], normalized_pe: Path, pdb_path: Path, output_dir: Path, llvm_pdbutil: Path) -> Path:
     generator = Path(__file__).with_name("ksword_pdb_profile_generator.py")
-    profile_class = {
-        0: "ntoskrnl",
-        1: "ntkrla57",
-        48: "fltmgr",
-    }.get(module["classId"])
+    profile_class = compatibility_profile_class(module)
     if profile_class is None:
+        if bool(module.get("collectionOnly")):
+            raise IntakeError(f"collection-only module cannot publish a profile: {module['fileName']}")
         raise IntakeError(f"unsupported profile class: {module['classId']}")
     profile_name = (
         f"{profile_class}_"
@@ -510,7 +520,7 @@ def commit_report(result: dict[str, Any], corpus_root: Path, report_dir: Path, s
 
     generated_profiles: list[tuple[dict[str, Any], Path]] = []
     for module in result["modules"]:
-        if module["classId"] not in {0, 1, 48}:
+        if compatibility_profile_class(module) is None:
             continue
         print(f"[profile generate] {module['fileName']}", flush=True)
         profile_path = run_profile_generator(
@@ -521,15 +531,29 @@ def commit_report(result: dict[str, Any], corpus_root: Path, report_dir: Path, s
             llvm_pdbutil,
         )
         generated_profiles.append((module, profile_path))
-    if not generated_profiles:
+
+    non_collection_modules = [
+        module
+        for module in result["modules"]
+        if not bool(module.get("collectionOnly"))
+    ]
+    if not generated_profiles and non_collection_modules:
         raise IntakeError("report contains no compatibility profile module")
-    validation = validate_generated_profiles(generated_profile_dir, staging)
-    print("[profile validate] accepted", flush=True)
-    result["profileValidation"] = {
-        "publishedProfiles": validation.get("publishedProfiles"),
-        "rejectedProfiles": validation.get("rejectedProfiles"),
-        "duplicateGroups": validation.get("duplicateGroups"),
-    }
+    if generated_profiles:
+        validation = validate_generated_profiles(generated_profile_dir, staging)
+        print("[profile validate] accepted", flush=True)
+        result["profileValidation"] = {
+            "publishedProfiles": validation.get("publishedProfiles"),
+            "rejectedProfiles": validation.get("rejectedProfiles"),
+            "duplicateGroups": validation.get("duplicateGroups"),
+        }
+    else:
+        print("[profile validate] skipped: collection-only report", flush=True)
+        result["profileValidation"] = {
+            "publishedProfiles": 0,
+            "rejectedProfiles": 0,
+            "duplicateGroups": 0,
+        }
 
     for module in result["modules"]:
         print(f"[commit] {module['fileName']}", flush=True)
