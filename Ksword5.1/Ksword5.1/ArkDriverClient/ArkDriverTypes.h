@@ -1657,6 +1657,8 @@ namespace ksword::ark
         std::uint64_t rawStorageValue = 0;   // rawStorageValue：R0 原始注册槽值；旧协议未提供时为 0。
         std::uint64_t moduleBase = 0;
         std::uint32_t moduleSize = 0;
+        std::uint32_t detailCode = KSWORD_ARK_CALLBACK_ENUM_DETAIL_NONE;
+        std::uint64_t detailArgs[KSWORD_ARK_CALLBACK_ENUM_DETAIL_ARG_COUNT]{};
         std::wstring name;
         std::wstring altitude;
         std::wstring modulePath;

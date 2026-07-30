@@ -1428,10 +1428,123 @@ namespace
         return kernelText("kernel.callback.enum.address.none", QStringLiteral("<无回调地址>"));
     }
 
+    QString callbackEnumNtStatusText(const std::uint64_t value)
+    {
+        return QString::number(
+            static_cast<quint32>(value),
+            16).rightJustified(8, QLatin1Char('0')).toUpper();
+    }
+
+    QString callbackEnumLegacyFsPairStateText(const std::uint64_t pairEvidence)
+    {
+        return (pairEvidence & (1ULL << 32)) != 0ULL
+            ? kernelText(
+                "kernel.callback.enum.legacy_fs.pair.paired",
+                QStringLiteral("pre/post 成对"))
+            : kernelText(
+                "kernel.callback.enum.legacy_fs.pair.single",
+                QStringLiteral("单边回调"));
+    }
+
+    QString callbackEnumLocalizedDetailText(
+        const ksword::ark::CallbackEnumEntry& source,
+        const KernelCallbackEnumEntry& entry)
+    {
+        if (source.callbackClass != KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER ||
+            (source.fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_DETAIL_ARGS) == 0U ||
+            source.detailCode == KSWORD_ARK_CALLBACK_ENUM_DETAIL_NONE)
+        {
+            return entry.detailText;
+        }
+
+        switch (source.detailCode)
+        {
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_PUBLIC_EMPTY:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.public_empty",
+                QStringLiteral("公开 API 未返回旧式文件系统过滤驱动；NTSTATUS=0x%1。"))
+                .arg(callbackEnumNtStatusText(source.detailArgs[0]));
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_COUNT_LIMIT:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.count_limit",
+                QStringLiteral("公开 API 报告 %1 个过滤驱动，超过 %2 行安全上限；本轮失败关闭。"))
+                .arg(source.detailArgs[0])
+                .arg(source.detailArgs[1]);
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_CLASS_INIT_NOT_FOUND:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.class_init_not_found",
+                QStringLiteral("%1：公开枚举确认旧式 FS filter，但在 DriverExtension+0x%2..0x%3 未找到结构签名唯一的 ClassInitData（NTSTATUS=0x%4）。"))
+                .arg(entry.nameText)
+                .arg(QString::number(source.detailArgs[1], 16).toUpper())
+                .arg(QString::number(source.detailArgs[2], 16).toUpper())
+                .arg(callbackEnumNtStatusText(source.detailArgs[3]));
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_CLASS_INIT_AMBIGUOUS:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.class_init_ambiguous",
+                QStringLiteral("%1：DriverExtension+0x%2..0x%3 出现多个结构签名候选；为避免误判，本轮失败关闭（NTSTATUS=0x%4）。"))
+                .arg(entry.nameText)
+                .arg(QString::number(source.detailArgs[1], 16).toUpper())
+                .arg(QString::number(source.detailArgs[2], 16).toUpper())
+                .arg(callbackEnumNtStatusText(source.detailArgs[3]));
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_CLASS_INIT_VALIDATED:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.class_init_validated",
+                QStringLiteral("ClassInitData=%1；DriverExtension+0x%2；Size=%3；登记 %4 个 pre/post 回调；结构/版本证据已独立验证，各槽 owner 将逐项判定。"))
+                .arg(callbackEnumFormatAddress(source.detailArgs[0]))
+                .arg(QString::number(source.detailArgs[1], 16).toUpper())
+                .arg(source.detailArgs[2])
+                .arg(source.detailArgs[3]);
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_OWNER_MATCH:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.owner_match",
+                QStringLiteral("ClassInitData=%1；DriverExtension+0x%2；%3；pair=%4；回调 owner 与登记驱动匹配（base=%5）。"))
+                .arg(callbackEnumFormatAddress(source.detailArgs[0]))
+                .arg(QString::number(source.detailArgs[1], 16).toUpper())
+                .arg(callbackEnumLegacyFsPairStateText(source.detailArgs[2]))
+                .arg(source.detailArgs[2] & 0xFFFFFFFFULL)
+                .arg(callbackEnumFormatAddress(source.detailArgs[3]));
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_OWNER_MISMATCH:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.owner_mismatch",
+                QStringLiteral("ClassInitData=%1；DriverExtension+0x%2；%3；pair=%4；回调模块 base=%5，与登记驱动 base=%6 不匹配，标记为可疑。"))
+                .arg(callbackEnumFormatAddress(source.detailArgs[0]))
+                .arg(QString::number(source.detailArgs[1], 16).toUpper())
+                .arg(callbackEnumLegacyFsPairStateText(source.detailArgs[2]))
+                .arg(source.detailArgs[2] & 0xFFFFFFFFULL)
+                .arg(callbackEnumFormatAddress(entry.moduleBase))
+                .arg(callbackEnumFormatAddress(source.detailArgs[3]));
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_OWNER_UNRESOLVED:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.owner_unresolved",
+                QStringLiteral("ClassInitData=%1；DriverExtension+0x%2；%3；pair=%4；无法解析回调 owner（NTSTATUS=0x%5），状态保持未知。"))
+                .arg(callbackEnumFormatAddress(source.detailArgs[0]))
+                .arg(QString::number(source.detailArgs[1], 16).toUpper())
+                .arg(callbackEnumLegacyFsPairStateText(source.detailArgs[2]))
+                .arg(source.detailArgs[2] & 0xFFFFFFFFULL)
+                .arg(callbackEnumNtStatusText(
+                    static_cast<std::uint64_t>(
+                        static_cast<std::uint32_t>(entry.lastStatus))));
+        case KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_PUBLIC_ENUM_FAILED:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.public_enum_failed",
+                QStringLiteral("公开 API 枚举失败；NTSTATUS=0x%1，返回数量=%2，分配容量=%3；未解释可能不完整的 DriverObject 数组。"))
+                .arg(callbackEnumNtStatusText(source.detailArgs[0]))
+                .arg(source.detailArgs[1])
+                .arg(source.detailArgs[2]);
+        default:
+            return kernelText(
+                "kernel.callback.enum.legacy_fs.detail.unknown_code",
+                QStringLiteral("Legacy FS 诊断代码未知：%1。"))
+                .arg(source.detailCode);
+        }
+    }
+
     QString callbackEnumRowStatusText(const std::uint32_t status, const long lastStatus)
     {
         switch (status)
         {
+        case KSWORD_ARK_CALLBACK_ENUM_STATUS_UNKNOWN:
+            return kernelText("kernel.callback.enum.status.unknown", QStringLiteral("未知"));
         case KSWORD_ARK_CALLBACK_ENUM_STATUS_OK:
             return kernelText("kernel.callback.enum.status.ok", QStringLiteral("可见/成功"));
         case KSWORD_ARK_CALLBACK_ENUM_STATUS_NOT_REGISTERED:
@@ -1443,6 +1556,8 @@ namespace
                 .arg(QString::number(static_cast<quint32>(lastStatus), 16).rightJustified(8, QLatin1Char('0')).toUpper());
         case KSWORD_ARK_CALLBACK_ENUM_STATUS_BUFFER_TRUNCATED:
             return kernelText("kernel.callback.enum.status.buffer_truncated", QStringLiteral("缓冲截断"));
+        case KSWORD_ARK_CALLBACK_ENUM_STATUS_SUSPICIOUS:
+            return kernelText("kernel.callback.enum.status.suspicious", QStringLiteral("可疑"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(status);
@@ -1481,6 +1596,7 @@ namespace
         row.altitudeText = QString::fromStdWString(source.altitude);
         row.modulePathText = QString::fromStdWString(source.modulePath);
         row.detailText = QString::fromStdWString(source.detail);
+        row.detailText = callbackEnumLocalizedDetailText(source, row);
         row.requiresSecondConfirmation = callbackEnumRequiresSecondConfirmation(row);
         row.fallbackPatternOnly = callbackEnumIsFallbackPatternSource(row.source);
         return row;
@@ -2385,7 +2501,15 @@ void KernelDock::rebuildCallbackEnumTable(const QString& filterKeyword)
             trustItem->setForeground(QBrush(KswordTheme::TextSecondaryColor()));
         }
 
-        if (entry.status == KSWORD_ARK_CALLBACK_ENUM_STATUS_UNSUPPORTED)
+        if (entry.status == KSWORD_ARK_CALLBACK_ENUM_STATUS_SUSPICIOUS)
+        {
+            statusItem->setForeground(QBrush(KswordTheme::ErrorColor()));
+        }
+        else if (entry.status == KSWORD_ARK_CALLBACK_ENUM_STATUS_UNKNOWN)
+        {
+            statusItem->setForeground(QBrush(KswordTheme::WarningColor()));
+        }
+        else if (entry.status == KSWORD_ARK_CALLBACK_ENUM_STATUS_UNSUPPORTED)
         {
             statusItem->setForeground(QBrush(KswordTheme::WarningColor()));
         }
