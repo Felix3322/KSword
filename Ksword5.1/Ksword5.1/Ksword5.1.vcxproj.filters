@@ -952,6 +952,9 @@
     <ClInclude Include="..\..\third_party\zstd\zstd.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\third_party\zydis\Zydis.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\third_party\zstd\zstd_errors.h">
       <Filter>Header Files</Filter>
     </ClInclude>

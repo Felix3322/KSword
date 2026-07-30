@@ -1,6 +1,7 @@
 #include "KernelCleanImageBaseline.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../Internationalization/LanguageManager.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -28,11 +29,17 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace
 {
     constexpr unsigned long kSystemModuleInformationClass = 11UL;
+
+    QString baselineText(const QString& sourceText)
+    {
+        return ks::i18n::sourceText(sourceText);
+    }
 
     struct KernelModuleRow
     {
@@ -395,7 +402,7 @@ namespace
             || identity.sizeOfImage > maximumMappedImageBytes)
         {
             errorTextOut =
-                QStringLiteral("映像 SizeOfImage 无效或超过取证上限。");
+                baselineText(QStringLiteral("映像 SizeOfImage 无效或超过取证上限。"));
             return false;
         }
 
@@ -408,7 +415,7 @@ namespace
             });
         if (headerBytes == 0U)
         {
-            errorTextOut = QStringLiteral("映像头范围为空。");
+            errorTextOut = baselineText(QStringLiteral("映像头范围为空。"));
             return false;
         }
         std::memcpy(
@@ -428,7 +435,7 @@ namespace
             if (!copyStructure(diskImage, sectionOffset, section))
             {
                 errorTextOut =
-                    QStringLiteral("映像区段表读取失败。");
+                    baselineText(QStringLiteral("映像区段表读取失败。"));
                 return false;
             }
             if (section.SizeOfRawData == 0U)
@@ -440,7 +447,7 @@ namespace
                     >= static_cast<std::uint32_t>(diskImage.size()))
             {
                 errorTextOut =
-                    QStringLiteral("映像区段范围越界。");
+                    baselineText(QStringLiteral("映像区段范围越界。"));
                 return false;
             }
             const std::size_t mappedRemaining =
@@ -457,7 +464,7 @@ namespace
             if (copyBytes != section.SizeOfRawData)
             {
                 errorTextOut =
-                    QStringLiteral("映像区段原始数据被截断。");
+                    baselineText(QStringLiteral("映像区段原始数据被截断。"));
                 return false;
             }
             std::memcpy(
@@ -478,8 +485,7 @@ namespace
             || identity.relocationSize
                 > mappedImageOut.size() - identity.relocationRva)
         {
-            errorTextOut = QStringLiteral(
-                "映像发生基址变化，但重定位目录不可用。");
+            errorTextOut = baselineText(QStringLiteral("映像发生基址变化，但重定位目录不可用。"));
             return false;
         }
 
@@ -490,7 +496,7 @@ namespace
                     < sizeof(IMAGE_BASE_RELOCATION))
             {
                 errorTextOut =
-                    QStringLiteral("PE 重定位块头被截断。");
+                    baselineText(QStringLiteral("PE 重定位块头被截断。"));
                 return false;
             }
             const std::size_t blockOffset =
@@ -506,7 +512,7 @@ namespace
                     > identity.relocationSize - consumed)
             {
                 errorTextOut =
-                    QStringLiteral("PE 重定位块长度无效。");
+                    baselineText(QStringLiteral("PE 重定位块长度无效。"));
                 return false;
             }
             const std::uint32_t entryBytes =
@@ -514,7 +520,7 @@ namespace
             if ((entryBytes % sizeof(WORD)) != 0U)
             {
                 errorTextOut =
-                    QStringLiteral("PE 重定位项未按 WORD 对齐。");
+                    baselineText(QStringLiteral("PE 重定位项未按 WORD 对齐。"));
                 return false;
             }
             const std::uint32_t entryCount =
@@ -531,8 +537,9 @@ namespace
                         + entryIndex * sizeof(WORD),
                     sizeof(entry));
                 const WORD type = static_cast<WORD>(entry >> 12);
-                const std::uint32_t targetRva =
-                    block.VirtualAddress + (entry & 0x0FFFU);
+                const std::uint64_t targetRva =
+                    static_cast<std::uint64_t>(block.VirtualAddress)
+                    + (entry & 0x0FFFU);
                 if (type == IMAGE_REL_BASED_ABSOLUTE)
                 {
                     continue;
@@ -541,20 +548,23 @@ namespace
                 {
                     if (targetRva > mappedImageOut.size()
                         || sizeof(std::uint64_t)
-                            > mappedImageOut.size() - targetRva)
+                            > mappedImageOut.size()
+                                - static_cast<std::size_t>(targetRva))
                     {
                         errorTextOut =
-                            QStringLiteral("DIR64 重定位目标越界。");
+                            baselineText(QStringLiteral("DIR64 重定位目标越界。"));
                         return false;
                     }
                     std::uint64_t value = 0U;
                     std::memcpy(
                         &value,
-                        mappedImageOut.data() + targetRva,
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
                         sizeof(value));
                     value += relocationDelta;
                     std::memcpy(
-                        mappedImageOut.data() + targetRva,
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
                         &value,
                         sizeof(value));
                     relocationAppliedOut = true;
@@ -564,28 +574,30 @@ namespace
                 {
                     if (targetRva > mappedImageOut.size()
                         || sizeof(std::uint32_t)
-                            > mappedImageOut.size() - targetRva)
+                            > mappedImageOut.size()
+                                - static_cast<std::size_t>(targetRva))
                     {
                         errorTextOut =
-                            QStringLiteral("HIGHLOW 重定位目标越界。");
+                            baselineText(QStringLiteral("HIGHLOW 重定位目标越界。"));
                         return false;
                     }
                     std::uint32_t value = 0U;
                     std::memcpy(
                         &value,
-                        mappedImageOut.data() + targetRva,
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
                         sizeof(value));
                     value += static_cast<std::uint32_t>(
                         relocationDelta);
                     std::memcpy(
-                        mappedImageOut.data() + targetRva,
+                        mappedImageOut.data()
+                            + static_cast<std::size_t>(targetRva),
                         &value,
                         sizeof(value));
                     relocationAppliedOut = true;
                     continue;
                 }
-                errorTextOut = QStringLiteral(
-                    "PE 含有当前取证器不支持的重定位类型 %1。")
+                errorTextOut = baselineText(QStringLiteral("PE 含有当前取证器不支持的重定位类型 %1。"))
                     .arg(type);
                 return false;
             }
@@ -629,16 +641,14 @@ namespace
         if (module.filePath.isEmpty()
             || !QFileInfo::exists(module.filePath))
         {
-            errorTextOut = QStringLiteral(
-                "模块磁盘路径不可用：%1").arg(module.ntPath);
+            errorTextOut = baselineText(QStringLiteral("模块磁盘路径不可用：%1")).arg(module.ntPath);
             return false;
         }
 
         QFile imageFile(module.filePath);
         if (!imageFile.open(QIODevice::ReadOnly))
         {
-            errorTextOut = QStringLiteral(
-                "无法读取模块磁盘映像：%1")
+            errorTextOut = baselineText(QStringLiteral("无法读取模块磁盘映像：%1"))
                 .arg(QDir::toNativeSeparators(module.filePath));
             return false;
         }
@@ -646,7 +656,7 @@ namespace
         imageFile.close();
         if (preparedOut.diskImage.isEmpty())
         {
-            errorTextOut = QStringLiteral("模块磁盘映像为空。");
+            errorTextOut = baselineText(QStringLiteral("模块磁盘映像为空。"));
             return false;
         }
         preparedOut.sha256 = QString::fromLatin1(
@@ -677,8 +687,7 @@ namespace
             memoryIdentity,
             errorTextOut))
         {
-            errorTextOut = QStringLiteral(
-                "已加载映像身份读取失败：%1").arg(errorTextOut);
+            errorTextOut = baselineText(QStringLiteral("已加载映像身份读取失败：%1")).arg(errorTextOut);
             return false;
         }
         if (preparedOut.identity.machine != memoryIdentity.machine
@@ -687,8 +696,7 @@ namespace
             || preparedOut.identity.checkSum != memoryIdentity.checkSum
             || preparedOut.identity.sizeOfImage != module.size)
         {
-            errorTextOut = QStringLiteral(
-                "磁盘映像与已加载模块的机器类型、时间戳、映像大小或校验和不一致。");
+            errorTextOut = baselineText(QStringLiteral("磁盘映像与已加载模块的机器类型、时间戳、映像大小或校验和不一致。"));
             return false;
         }
 
@@ -715,8 +723,7 @@ namespace
                 & KSWORD_ARK_IMAGE_SIGNATURE_STRUCT_LOADED_NAME_MISMATCH)
                 != 0U)
         {
-            errorTextOut = QStringLiteral(
-                "内核 Code Integrity 签名级别或已加载模块身份证据不足，拒绝建立可信基线。");
+            errorTextOut = baselineText(QStringLiteral("内核 Code Integrity 签名级别或已加载模块身份证据不足，拒绝建立可信基线。"));
             return false;
         }
         preparedOut.signingLevel = signature.response.signingLevel;
@@ -1178,7 +1185,7 @@ namespace ks::kernel
                 - result.relativeVirtualAddress)
         {
             result.statusText =
-                QStringLiteral("目标 RVA 在已重定位映像中越界。");
+                baselineText(QStringLiteral("目标 RVA 在已重定位映像中越界。"));
             return result;
         }
         result.cleanBytes.assign(
@@ -1212,10 +1219,8 @@ namespace ks::kernel
         result.available = true;
         result.differs = result.cleanBytes != result.observedBytes;
         result.statusText = result.differs
-            ? QStringLiteral(
-                "当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线不一致")
-            : QStringLiteral(
-                "当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线一致");
+            ? baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线不一致"))
+            : baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线一致"));
         return result;
     }
 
