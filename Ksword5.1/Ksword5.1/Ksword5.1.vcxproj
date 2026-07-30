@@ -159,6 +159,8 @@
     <ClCompile Include="FileDock\FilePropertyPeAnalyzer.Directories.cpp" />
     <ClCompile Include="FileDock\FilePropertyPeAnalyzer.Tables.cpp" />
     <ClCompile Include="FileDock\ManualFileSystemParser.cpp" />
+    <ClCompile Include="ScannerDock\ScannerDock.cpp" />
+    <ClCompile Include="ScannerDock\ScannerDock.Table.cpp" />
     <ClCompile Include="句柄\HandleDock.cpp" />
     <ClCompile Include="句柄\HandleDock.Actions.cpp" />
     <ClCompile Include="句柄\HandleDock.Detail.cpp" />
@@ -183,6 +185,10 @@
     <ClCompile Include="Framework\StartupSplash.cpp" />
     <ClCompile Include="ksword\file\file_handle_tools.cpp" />
     <ClCompile Include="ksword\file\pe_analyzer.cpp" />
+    <ClCompile Include="ksword\scanner\atomic_file_patch.cpp" />
+    <ClCompile Include="ksword\scanner\binary_scanner.cpp" />
+    <ClCompile Include="ksword\scanner\elf_scanner.cpp" />
+    <ClCompile Include="ksword\scanner\macho_scanner.cpp" />
     <ClCompile Include="ksword\profile\ProfileJsonLoader.cpp" />
     <ClCompile Include="KernelDock\KernelDock.cpp" />
     <ClCompile Include="KernelDock\KernelDock.CallbackIntercept.cpp" />
@@ -465,6 +471,10 @@
     <ClInclude Include="ksword\file\file.h" />
     <ClInclude Include="ksword\file\file_handle_tools.h" />
     <ClInclude Include="ksword\file\pe_analyzer.h" />
+    <ClInclude Include="ksword\scanner\atomic_file_patch.h" />
+    <ClInclude Include="ksword\scanner\binary_scanner.h" />
+    <ClInclude Include="ksword\scanner\scanner.h" />
+    <ClInclude Include="ksword\scanner\scanner_internal.h" />
     <ClInclude Include="ksword\log\log.h" />
     <ClInclude Include="ksword\network\network.h" />
     <ClInclude Include="ksword\network\network_connection_tools.h" />
@@ -489,6 +499,7 @@
     <QtMoc Include="DriverDock\DriverDock.h" />
     <ClInclude Include="DriverDock\DriverDock.Internal.h" />
     <QtMoc Include="FileDock\FileDock.h" />
+    <ClInclude Include="ScannerDock\ScannerDock.h" />
     <QtMoc Include="句柄\HandleDock.h" />
     <ClInclude Include="句柄\HandleObjectTypeWorker.h" />
     <QtMoc Include="HardwareDock\HardwareDock.h" />

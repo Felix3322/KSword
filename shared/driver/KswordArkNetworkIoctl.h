@@ -164,6 +164,7 @@
 #define KSWORD_ARK_NETWORK_WFP_OBJECT_FILTER    3UL
 #define KSWORD_ARK_NETWORK_WFP_OBJECT_CALLOUT   4UL
 
+#define KSWORD_ARK_NETWORK_NDIS_OBJECT_UNKNOWN  0UL
 #define KSWORD_ARK_NETWORK_NDIS_OBJECT_MINIPORT 1UL
 #define KSWORD_ARK_NETWORK_NDIS_OBJECT_FILTER   2UL
 #define KSWORD_ARK_NETWORK_NDIS_OBJECT_PROTOCOL 3UL
@@ -336,7 +337,9 @@ typedef struct _KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW
     wchar_t ownerModule[KSWORD_ARK_NETWORK_NAME_CHARS];
 } KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW;
 
-// NDIS chain 查询响应。后续 PDB traversal 必须维持 bounded traversal 和 count-first 语义。
+// NDIS chain 查询响应。公开设备栈只能证明 DEVICE_OBJECT 附加关系；除可证明的
+// FILE_DEVICE_PHYSICAL_NETCARD 边界外，objectKind 必须为 UNKNOWN。后续 PDB traversal
+// 必须维持 bounded traversal 和 count-first 语义。
 typedef struct _KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE
 {
     unsigned long version;

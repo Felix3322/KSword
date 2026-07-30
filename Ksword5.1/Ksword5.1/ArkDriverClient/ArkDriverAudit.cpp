@@ -17,6 +17,8 @@ namespace ksword::ark
         // 处理逻辑：多数协议都是 count-first + bounded rows，4MB 足够首版 UI 展示。
         // 返回行为：常量无返回值，调用方仍按 bytesReturned 和 entrySize 二次限界。
         constexpr std::size_t kDefaultAuditBufferBytes = 4U * 1024U * 1024U;
+        constexpr std::uint32_t kStatusBufferOverflow = 0x80000005UL;
+        constexpr std::uint32_t kStatusPartialCopy = 0x8000000DUL;
 
         // fixedAuditWideToString 作用：
         // - 输入：共享协议定长 wchar_t 数组和最大字符数；
@@ -119,6 +121,150 @@ namespace ksword::ark
 
             const std::size_t availableRows = (io.bytesReturned - headerSize) / static_cast<std::size_t>(entrySize);
             return std::min<std::size_t>(static_cast<std::size_t>(returnedCount), availableRows);
+        }
+
+        // validateNetworkAuditHeader 作用：
+        // - 输入：R0 网络审计响应头、固定头大小和操作名；
+        // - 处理：校验协议版本、头大小、状态、来源位、计数和预算关系；
+        // - 返回：true 表示后续可以安全解析变长行，失败时同步写入 IoResult。
+        template <typename TResponse>
+        bool validateNetworkAuditHeader(
+            IoResult& io,
+            const TResponse& response,
+            const std::size_t headerSize,
+            const char* const operationName)
+        {
+            constexpr std::uint32_t knownSourceFlags =
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_TCPIP_PDB |
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_NETIO_PDB |
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_NDIS_PDB |
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+
+            auto fail = [&io, operationName](const std::string& reason)
+            {
+                io.ok = false;
+                io.win32Error = ERROR_INVALID_DATA;
+                io.message = std::string(operationName) + " invalid response: " + reason;
+                return false;
+            };
+
+            if (response.version != KSWORD_ARK_NETWORK_PROTOCOL_VERSION)
+            {
+                return fail("version=" + std::to_string(response.version));
+            }
+            if (response.size != headerSize || response.size > io.bytesReturned)
+            {
+                return fail("size=" + std::to_string(response.size) +
+                    ", bytesReturned=" + std::to_string(io.bytesReturned));
+            }
+            if (response.status > KSWORD_ARK_NETWORK_STATUS_AUDIT_STUB)
+            {
+                return fail("status=" + std::to_string(response.status));
+            }
+            if ((response.flags & ~KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL) != 0UL)
+            {
+                return fail("flags=" + std::to_string(response.flags));
+            }
+            if ((response.sourceFlags & ~knownSourceFlags) != 0UL)
+            {
+                return fail("sourceFlags=" + std::to_string(response.sourceFlags));
+            }
+            if (response.returnedRowCount > response.totalRowCount)
+            {
+                return fail("returnedRowCount exceeds totalRowCount");
+            }
+            if (response.budgetRows != 0UL && response.returnedRowCount > response.budgetRows)
+            {
+                return fail("returnedRowCount exceeds budgetRows");
+            }
+            return true;
+        }
+
+        // isRetainableNetworkInventoryPartial 作用：
+        // - 输入：WFP/NDIS 响应的协议状态、NTSTATUS 和实际返回行数；
+        // - 处理：只认可驱动约定的 PARTIAL_COPY/BUFFER_OVERFLOW 部分快照；
+        // - 返回：true 表示合法行可以保留给 UI/CLI，其他 OPERATION_FAILED 不可用。
+        bool isRetainableNetworkInventoryPartial(
+            const std::uint32_t status,
+            const long lastStatus,
+            const std::uint32_t returnedCount) noexcept
+        {
+            const std::uint32_t normalizedStatus =
+                static_cast<std::uint32_t>(lastStatus);
+            return status == KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED &&
+                returnedCount != 0U &&
+                (normalizedStatus == kStatusPartialCopy ||
+                 normalizedStatus == kStatusBufferOverflow);
+        }
+
+        // finalizeNetworkInventoryCompleteness 作用：
+        // - 输入：已完成协议边界和逐行校验的 WFP/NDIS wrapper 结果；
+        // - 处理：标记 complete/partial/truncated，并丢弃不符合 partial 契约的失败行；
+        // - 返回：无返回值，结果原地更新。
+        template <typename TResult>
+        void finalizeNetworkInventoryCompleteness(TResult& result)
+        {
+            const bool applied =
+                result.status == KSWORD_ARK_NETWORK_STATUS_APPLIED;
+            const bool complete =
+                applied && result.totalCount == result.returnedCount;
+            const bool collectorPartial = isRetainableNetworkInventoryPartial(
+                result.status,
+                result.lastStatus,
+                result.returnedCount);
+            const bool appliedTruncated =
+                applied && !complete;
+            result.partial = collectorPartial || appliedTruncated;
+            result.truncated =
+                appliedTruncated ||
+                (collectorPartial &&
+                 (result.totalCount > result.returnedCount ||
+                  static_cast<std::uint32_t>(result.lastStatus) ==
+                      kStatusBufferOverflow));
+
+            if (!applied && !collectorPartial)
+            {
+                result.entries.clear();
+            }
+        }
+
+        // finalizeNetworkEndpointCompleteness 作用：
+        // - 输入：已通过共享头与 endpoint 行校验的 TCP/UDP 结果；
+        // - 处理：endpoint 只接受 APPLIED；失败响应中的行一律丢弃；
+        // - 返回：无返回值，同时填充 truncated 供 UI 明确展示。
+        void finalizeNetworkEndpointCompleteness(
+            NetworkEndpointAuditResult& result)
+        {
+            const bool applied =
+                result.status == KSWORD_ARK_NETWORK_STATUS_APPLIED;
+            const bool complete =
+                applied && result.totalCount == result.returnedCount;
+            result.partial = applied && !complete;
+            result.truncated = result.partial;
+            if (!applied)
+            {
+                result.entries.clear();
+            }
+        }
+
+        // appendNetworkAuditState 作用：
+        // - 输入：已生成的解析摘要和网络响应状态字段；
+        // - 处理：把协议状态、NTSTATUS、来源与 generation 附加到诊断文本；
+        // - 返回：可直接交给 UI/日志的完整结构化说明。
+        std::string appendNetworkAuditState(
+            std::string summary,
+            const std::uint32_t status,
+            const long lastStatus,
+            const std::uint32_t sourceFlags,
+            const std::uint32_t generation)
+        {
+            std::ostringstream stream;
+            stream << summary
+                << ", protocolStatus=" << status
+                << ", lastStatus=0x" << std::hex << static_cast<std::uint32_t>(lastStatus)
+                << ", sourceFlags=0x" << sourceFlags
+                << std::dec << ", generation=" << generation;
+            return stream.str();
         }
 
         // appendAuditSummary 作用：
@@ -326,9 +472,20 @@ namespace ksword::ark
 
             constexpr std::size_t headerSize = sizeof(KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW);
             const auto* response = reinterpret_cast<const KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE*>(responseBuffer.data());
+            if (!validateNetworkAuditHeader(result.io, *response, headerSize, operationName))
+            {
+                return result;
+            }
             const std::size_t parsedCount = validateAuditRows(result.io, headerSize, response->entrySize, sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW), response->returnedRowCount, operationName);
             if (!result.io.ok)
             {
+                return result;
+            }
+            if (parsedCount != static_cast<std::size_t>(response->returnedRowCount))
+            {
+                result.io.ok = false;
+                result.io.win32Error = ERROR_INVALID_DATA;
+                result.io.message = std::string(operationName) + " returned rows exceed response bytes";
                 return result;
             }
 
@@ -344,7 +501,52 @@ namespace ksword::ark
             result.lastStatus = response->lastStatus;
             result.io.ntStatus = response->lastStatus;
             result.entries = parseVariableRows<KSWORD_ARK_NETWORK_ENDPOINT_ROW>(responseBuffer, headerSize, response->entrySize, parsedCount);
-            result.io.message = appendAuditSummary(operationName, result.totalCount, result.returnedCount, result.entries.size(), result.io.bytesReturned);
+            const std::uint32_t expectedProtocol =
+                ioctlCode == IOCTL_KSWORD_ARK_NETWORK_QUERY_TCP_ENDPOINTS
+                ? KSWORD_ARK_NETWORK_PROTOCOL_TCP
+                : KSWORD_ARK_NETWORK_PROTOCOL_UDP;
+            constexpr std::uint32_t knownRowFlags =
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_PDB_UNAVAILABLE |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_FIELD_MISSING |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_BUDGET_LIMITED |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_OWNER_UNKNOWN |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_MODULE_UNKNOWN;
+            constexpr std::uint32_t knownSourceFlags =
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_TCPIP_PDB |
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_NETIO_PDB |
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_NDIS_PDB |
+                KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+            for (const KSWORD_ARK_NETWORK_ENDPOINT_ROW& entry : result.entries)
+            {
+                const bool knownFamily =
+                    entry.addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_UNKNOWN ||
+                    entry.addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV4 ||
+                    entry.addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV6;
+                if (!knownFamily ||
+                    entry.protocol != expectedProtocol ||
+                    (entry.flags & ~knownRowFlags) != 0UL ||
+                    (entry.sourceFlags & ~knownSourceFlags) != 0UL)
+                {
+                    result.io.ok = false;
+                    result.io.win32Error = ERROR_INVALID_DATA;
+                    result.io.message = std::string(operationName) + " contains an invalid endpoint row";
+                    result.entries.clear();
+                    return result;
+                }
+            }
+            finalizeNetworkEndpointCompleteness(result);
+            result.io.message = appendNetworkAuditState(
+                appendAuditSummary(operationName, result.totalCount, result.returnedCount, result.entries.size(), result.io.bytesReturned),
+                result.status,
+                result.lastStatus,
+                result.sourceFlags,
+                result.generation);
+            result.io.message += result.partial || result.truncated
+                ? ", completeness=partial, truncatedRowsRetained=true"
+                : (result.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+                   result.totalCount == result.returnedCount
+                    ? ", completeness=complete"
+                    : ", completeness=unavailable, responseRowsDiscarded=true");
             return result;
         }
 
@@ -367,9 +569,20 @@ namespace ksword::ark
 
             constexpr std::size_t headerSize = sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW);
             const auto* response = reinterpret_cast<const KSWORD_ARK_NETWORK_WFP_INVENTORY_RESPONSE*>(responseBuffer.data());
+            if (!validateNetworkAuditHeader(result.io, *response, headerSize, operationName))
+            {
+                return result;
+            }
             const std::size_t parsedCount = validateAuditRows(result.io, headerSize, response->entrySize, sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW), response->returnedRowCount, operationName);
             if (!result.io.ok)
             {
+                return result;
+            }
+            if (parsedCount != static_cast<std::size_t>(response->returnedRowCount))
+            {
+                result.io.ok = false;
+                result.io.win32Error = ERROR_INVALID_DATA;
+                result.io.message = std::string(operationName) + " returned rows exceed response bytes";
                 return result;
             }
 
@@ -385,7 +598,38 @@ namespace ksword::ark
             result.lastStatus = response->lastStatus;
             result.io.ntStatus = response->lastStatus;
             result.entries = parseVariableRows<KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW>(responseBuffer, headerSize, response->entrySize, parsedCount);
-            result.io.message = appendAuditSummary(operationName, result.totalCount, result.returnedCount, result.entries.size(), result.io.bytesReturned);
+            constexpr std::uint32_t knownRowFlags =
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_PDB_UNAVAILABLE |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_FIELD_MISSING |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_BUDGET_LIMITED |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_OWNER_UNKNOWN |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_MODULE_UNKNOWN;
+            for (const KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW& entry : result.entries)
+            {
+                if (entry.objectKind < KSWORD_ARK_NETWORK_WFP_OBJECT_PROVIDER ||
+                    entry.objectKind > KSWORD_ARK_NETWORK_WFP_OBJECT_CALLOUT ||
+                    (entry.flags & ~knownRowFlags) != 0UL)
+                {
+                    result.io.ok = false;
+                    result.io.win32Error = ERROR_INVALID_DATA;
+                    result.io.message = std::string(operationName) + " contains an invalid WFP row";
+                    result.entries.clear();
+                    return result;
+                }
+            }
+            finalizeNetworkInventoryCompleteness(result);
+            result.io.message = appendNetworkAuditState(
+                appendAuditSummary(operationName, result.totalCount, result.returnedCount, result.entries.size(), result.io.bytesReturned),
+                result.status,
+                result.lastStatus,
+                result.sourceFlags,
+                result.generation);
+            result.io.message += result.partial || result.truncated
+                ? ", completeness=partial, partialRowsRetained=true"
+                : (result.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+                   result.totalCount == result.returnedCount
+                    ? ", completeness=complete"
+                    : ", completeness=unavailable, responseRowsDiscarded=true");
             return result;
         }
 
@@ -694,9 +938,20 @@ namespace ksword::ark
 
             constexpr std::size_t headerSize = sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW);
             const auto* response = reinterpret_cast<const KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE*>(responseBuffer.data());
+            if (!validateNetworkAuditHeader(result.io, *response, headerSize, operationName))
+            {
+                return result;
+            }
             const std::size_t parsedCount = validateAuditRows(result.io, headerSize, response->entrySize, sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW), response->returnedRowCount, operationName);
             if (!result.io.ok)
             {
+                return result;
+            }
+            if (parsedCount != static_cast<std::size_t>(response->returnedRowCount))
+            {
+                result.io.ok = false;
+                result.io.win32Error = ERROR_INVALID_DATA;
+                result.io.message = std::string(operationName) + " returned rows exceed response bytes";
                 return result;
             }
 
@@ -712,7 +967,37 @@ namespace ksword::ark
             result.lastStatus = response->lastStatus;
             result.io.ntStatus = response->lastStatus;
             result.entries = parseVariableRows<KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW>(responseBuffer, headerSize, response->entrySize, parsedCount);
-            result.io.message = appendAuditSummary(operationName, result.totalCount, result.returnedCount, result.entries.size(), result.io.bytesReturned);
+            constexpr std::uint32_t knownRowFlags =
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_PDB_UNAVAILABLE |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_FIELD_MISSING |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_BUDGET_LIMITED |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_OWNER_UNKNOWN |
+                KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_MODULE_UNKNOWN;
+            for (const KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW& entry : result.entries)
+            {
+                if (entry.objectKind > KSWORD_ARK_NETWORK_NDIS_OBJECT_BINDING ||
+                    (entry.flags & ~knownRowFlags) != 0UL)
+                {
+                    result.io.ok = false;
+                    result.io.win32Error = ERROR_INVALID_DATA;
+                    result.io.message = std::string(operationName) + " contains an invalid NDIS row";
+                    result.entries.clear();
+                    return result;
+                }
+            }
+            finalizeNetworkInventoryCompleteness(result);
+            result.io.message = appendNetworkAuditState(
+                appendAuditSummary(operationName, result.totalCount, result.returnedCount, result.entries.size(), result.io.bytesReturned),
+                result.status,
+                result.lastStatus,
+                result.sourceFlags,
+                result.generation);
+            result.io.message += result.partial || result.truncated
+                ? ", completeness=partial, partialRowsRetained=true"
+                : (result.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+                   result.totalCount == result.returnedCount
+                    ? ", completeness=complete"
+                    : ", completeness=unavailable, responseRowsDiscarded=true");
             return result;
         }
 

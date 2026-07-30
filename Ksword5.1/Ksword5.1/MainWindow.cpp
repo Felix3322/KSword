@@ -125,7 +125,7 @@ namespace
     // kDockLayoutConfigFileVersion 作用：
     // - 作为 ADS saveState/restoreState 的版本号；
     // - Dock 集合或默认布局发生不兼容变化时递增，可自动放弃旧布局。
-    constexpr int kDockLayoutConfigFileVersion = 5;
+    constexpr int kDockLayoutConfigFileVersion = 6;
 
     // kDockLayoutConfigFileName 作用：
     // - 定义用户拖拽后的 ADS 布局配置文件名；
@@ -8153,6 +8153,11 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
         if (m_fileWidget == nullptr) { m_fileWidget = new FileDock(this); }
         realWidget = m_fileWidget;
     }
+    else if (dockKey == QStringLiteral("scanner"))
+    {
+        if (m_scannerWidget == nullptr) { m_scannerWidget = new ScannerDock(this); }
+        realWidget = m_scannerWidget;
+    }
     else if (dockKey == QStringLiteral("driver"))
     {
         if (m_driverWidget == nullptr) { m_driverWidget = new DriverDock(this); }
@@ -8499,6 +8504,7 @@ void MainWindow::ensureVisibleLazyDocksInitialized(const QString& reasonText)
         m_dockNetwork,
         m_dockMemory,
         m_dockFile,
+        m_dockScanner,
         m_dockDriver,
         m_dockKernel,
         m_dockMonitorTab,
@@ -8666,6 +8672,7 @@ void MainWindow::initDockWidgets()
     if (shouldEagerLoad(QStringLiteral("network"))) { m_networkWidget = new NetworkDock(this); }
     if (shouldEagerLoad(QStringLiteral("memory"))) { m_memoryWidget = new MemoryDock(this); }
     if (shouldEagerLoad(QStringLiteral("file"))) { m_fileWidget = new FileDock(this); }
+    if (shouldEagerLoad(QStringLiteral("scanner"))) { m_scannerWidget = new ScannerDock(this); }
     if (shouldEagerLoad(QStringLiteral("driver"))) { m_driverWidget = new DriverDock(this); }
     // KernelDock 不再参与主 Dock 惰性占位：
     // - 它是启动恢复黑屏的唯一复现场景；
@@ -8824,6 +8831,7 @@ void MainWindow::initDockWidgets()
     createLazyDockWidget(m_dockNetwork, m_networkWidget, ks::i18n::text(QStringLiteral("dock.network"), QStringLiteral("网络")), QStringLiteral("network"));
     createLazyDockWidget(m_dockMemory, m_memoryWidget, ks::i18n::text(QStringLiteral("dock.memory"), QStringLiteral("内存")), QStringLiteral("memory"));
     createLazyDockWidget(m_dockFile, m_fileWidget, ks::i18n::text(QStringLiteral("dock.file"), QStringLiteral("文件")), QStringLiteral("file"));
+    createLazyDockWidget(m_dockScanner, m_scannerWidget, ks::i18n::text(QStringLiteral("dock.scanner"), QStringLiteral("扫描器")), QStringLiteral("scanner"));
     createLazyDockWidget(m_dockDriver, m_driverWidget, ks::i18n::text(QStringLiteral("dock.driver"), QStringLiteral("驱动")), QStringLiteral("driver"));
     createLazyDockWidget(m_dockKernel, m_kernelWidget, ks::i18n::text(QStringLiteral("dock.kernel"), QStringLiteral("内核")), QStringLiteral("kernel"));
     createLazyDockWidget(m_dockMonitorTab, m_monitorWidget, ks::i18n::text(QStringLiteral("dock.monitor"), QStringLiteral("监控")), QStringLiteral("monitor"));
@@ -8872,6 +8880,7 @@ void MainWindow::initDockWidgets()
         m_dockNetwork,
         m_dockMemory,
         m_dockFile,
+        m_dockScanner,
         m_dockDriver,
         m_dockKernel,
         m_dockMonitorTab,
@@ -8942,6 +8951,7 @@ void MainWindow::setupDockLayout()
     m_pDockManager->addDockWidgetTabToArea(m_dockNetwork, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockMemory, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockFile, leftDockArea);
+    m_pDockManager->addDockWidgetTabToArea(m_dockScanner, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockDriver, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockKernel, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockMonitorTab, leftDockArea);
@@ -8964,7 +8974,7 @@ void MainWindow::setupDockLayout()
         QStringLiteral("正在加载功能模块..."));
 
     // 4. 辅助 Dock 默认位于底部，按“日志窗口｜监视面板｜当前任务”以 2:2:1 横向排列。
-    // 首次启动先关闭三者，但保留停靠位置；版本 5 布局恢复会覆盖此默认可见状态。
+    // 首次启动先关闭三者，但保留停靠位置；版本 6 布局恢复会覆盖此默认可见状态。
     auto bottomLogArea = m_pDockManager->addDockWidget(
         ads::BottomDockWidgetArea,
         m_dockLog);
@@ -9370,6 +9380,11 @@ void MainWindow::initAppearanceSettings()
         {
             targetDock = m_dockFile;
             targetName = QStringLiteral("文件");
+        }
+        else if (normalizedKey == QStringLiteral("scanner"))
+        {
+            targetDock = m_dockScanner;
+            targetName = QStringLiteral("扫描器");
         }
         else if (normalizedKey == QStringLiteral("driver"))
         {

@@ -33,6 +33,7 @@ class QTableWidgetItem;
 class QTimer;
 class QVBoxLayout;
 class QHBoxLayout;
+struct NetworkAuditAsyncState;
 
 class NetworkAuditPage final : public QWidget
 {
@@ -50,9 +51,9 @@ public:
     explicit NetworkAuditPage(QWidget* parent = nullptr);
 
     // 析构函数：
-    // - 处理：默认析构，Qt 自动释放子控件；
+    // - 处理：先撤销异步 worker 的 owner，再由 Qt 释放子控件；
     // - 返回：无。
-    ~NetworkAuditPage() override = default;
+    ~NetworkAuditPage() override;
 
     // requestInitialRefresh 作用：
     // - 在页面首次成为当前页时启动首轮只读审计；
@@ -217,6 +218,17 @@ private:
         QString mtuText;
     };
 
+    // NdisUnknownRow：驱动无法证明具体 NDIS 对象边界时保留的降级证据。
+    // 这类行不得投影成 Miniport/Filter/Protocol/Binding 中的任意一种。
+    struct NdisUnknownRow
+    {
+        QString kindText;
+        QString componentText;
+        QString ownerModuleText;
+        QString objectAddressText;
+        QString detailText;
+    };
+
     // NsiSummaryRow：NSI 摘要的一行展示结果。
     struct NsiSummaryRow
     {
@@ -251,8 +263,11 @@ private:
         std::vector<NdisAdapterRow> ndisAdapterRows;
         std::vector<NdisBindingRow> ndisBindingRows;
         std::vector<NdisProtocolRow> ndisProtocolRows;
+        std::vector<NdisUnknownRow> ndisUnknownRows;
         std::vector<NsiSummaryRow> nsiSummaryRows;
         std::vector<R0NetworkSummaryRow> r0SummaryRows;
+        QString r0TcpStatusText;
+        QString r0UdpStatusText;
         QString statusText;
         QString detailText;
     };
@@ -420,6 +435,7 @@ private:
     QTableWidget* m_ndisAdapterTable = nullptr;
     QTableWidget* m_ndisBindingTable = nullptr;
     QTableWidget* m_ndisProtocolTable = nullptr;
+    QTableWidget* m_ndisUnknownTable = nullptr;
 
     // NSI summary.
     QWidget* m_nsiPage = nullptr;
@@ -429,9 +445,12 @@ private:
     QSet<quint32> m_processFilterSet; // 进程页带入的独立 PID 筛选。
     std::vector<TcpEndpointRow> m_tcpEndpointCache; // UI 行通过 UserRole 回查终止参数。
     std::vector<UdpEndpointRow> m_udpEndpointCache; // 最近一次 UDP 快照，保留 R0 行使用。
+    QString m_r0TcpStatusText; // 最近一次完整 R0 TCP 查询的协议状态，不把零行误报为成功。
+    QString m_r0UdpStatusText; // 最近一次完整 R0 UDP 查询的协议状态。
     QHash<quint32, QIcon> m_processIconCache; // PID -> 真实进程图标缓存。
     ProcessActionHandler m_trackProcessHandler; // 原连接页“跟踪此进程”实现。
     ProcessActionHandler m_openProcessDetailHandler; // 原连接页“转到进程详细信息”实现。
+    std::shared_ptr<NetworkAuditAsyncState> m_asyncState; // 跨线程回投共享状态；析构先清空 owner。
     std::atomic_bool m_refreshInProgress{ false };
     std::atomic_bool m_initialRefreshRequested{ false };
 };

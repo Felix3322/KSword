@@ -3127,6 +3127,205 @@ namespace
         return request;
     }
 
+    // networkAuditStatusText 作用：把网络审计协议状态转换成稳定的 CLI token。
+    // 输入：shared/driver 定义的 KSWORD_ARK_NETWORK_STATUS_*。
+    // 处理：未知值单独标记，避免把 DeviceIoControl 成功误报成 R0 可用。
+    // 返回：便于脚本解析的英文状态名。
+    const wchar_t* networkAuditStatusText(const unsigned long status)
+    {
+        switch (status)
+        {
+        case KSWORD_ARK_NETWORK_STATUS_APPLIED: return L"applied";
+        case KSWORD_ARK_NETWORK_STATUS_CLEARED: return L"cleared";
+        case KSWORD_ARK_NETWORK_STATUS_DISABLED: return L"disabled";
+        case KSWORD_ARK_NETWORK_STATUS_INVALID_RULE: return L"invalid-rule";
+        case KSWORD_ARK_NETWORK_STATUS_WFP_UNAVAILABLE: return L"wfp-unavailable";
+        case KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED: return L"operation-failed";
+        case KSWORD_ARK_NETWORK_STATUS_AUDIT_UNAVAILABLE: return L"audit-unavailable";
+        case KSWORD_ARK_NETWORK_STATUS_AUDIT_STUB: return L"audit-stub";
+        case KSWORD_ARK_NETWORK_STATUS_UNKNOWN:
+        default:
+            return L"unknown";
+        }
+    }
+
+    constexpr std::uint32_t kNetworkStatusBufferOverflow = 0x80000005UL;
+    constexpr std::uint32_t kNetworkStatusPartialCopy = 0x8000000DUL;
+
+    // isRetainableNetworkInventoryPartial 作用：识别 WFP/NDIS 可保留的部分快照。
+    // 输入：协议状态、lastStatus 和返回行数。
+    // 处理：仅接受 OPERATION_FAILED + PARTIAL_COPY/BUFFER_OVERFLOW + 非零行。
+    // 返回：true 表示 CLI 可输出这些合法行，但必须明确标记 partial。
+    bool isRetainableNetworkInventoryPartial(
+        const unsigned long status,
+        const long lastStatus,
+        const unsigned long returnedRows) noexcept
+    {
+        const std::uint32_t normalizedStatus =
+            static_cast<std::uint32_t>(lastStatus);
+        return status == KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED &&
+            returnedRows != 0UL &&
+            (normalizedStatus == kNetworkStatusPartialCopy ||
+             normalizedStatus == kNetworkStatusBufferOverflow);
+    }
+
+    // validateNetworkAuditHeader 作用：校验 TCP/UDP/WFP/NDIS 共用响应头语义。
+    // 输入：响应头字段、实际返回字节数、固定头大小和命令标签。
+    // 处理：检查版本/大小/状态/来源位/计数/预算，拒绝损坏或错版驱动数据。
+    // 返回：true 表示后续可以调用 validateVariable 解析明细行。
+    bool validateNetworkAuditHeader(
+        const unsigned long version,
+        const unsigned long size,
+        const unsigned long status,
+        const unsigned long flags,
+        const unsigned long totalRows,
+        const unsigned long returnedRows,
+        const unsigned long sourceFlags,
+        const unsigned long budgetRows,
+        const DWORD bytesReturned,
+        const std::size_t headerSize,
+        const wchar_t* featureLabel)
+    {
+        constexpr unsigned long knownSourceFlags =
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_TCPIP_PDB |
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_NETIO_PDB |
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_NDIS_PDB |
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+        const bool valid =
+            version == KSWORD_ARK_NETWORK_PROTOCOL_VERSION &&
+            size == headerSize &&
+            size <= bytesReturned &&
+            status <= KSWORD_ARK_NETWORK_STATUS_AUDIT_STUB &&
+            (flags & ~KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL) == 0UL &&
+            (sourceFlags & ~knownSourceFlags) == 0UL &&
+            returnedRows <= totalRows &&
+            (budgetRows == 0UL || returnedRows <= budgetRows);
+        if (!valid)
+        {
+            std::wcerr << featureLabel
+                       << L": invalid network audit response"
+                       << L" version=" << version
+                       << L" size=" << size
+                       << L" status=" << status
+                       << L" flags=0x" << std::hex << flags
+                       << L" sourceFlags=0x" << sourceFlags
+                       << std::dec << L" total=" << totalRows
+                       << L" returned=" << returnedRows
+                       << L" budgetRows=" << budgetRows
+                       << L" bytesReturned=" << bytesReturned << L"\n";
+        }
+        return valid;
+    }
+
+    // printNetworkAuditState 作用：输出 R0 可用性和明确降级原因。
+    // 输入：协议状态、NTSTATUS、来源、预算、generation、计数和 partial 接受状态。
+    // 处理：APPLIED 或协议认可的 partial 行标记 usableR0=1，并单列 complete/truncated。
+    // 返回：无返回值。
+    void printNetworkAuditState(
+        const unsigned long status,
+        const long lastStatus,
+        const unsigned long sourceFlags,
+        const unsigned long budgetRows,
+        const unsigned long generation,
+        const unsigned long totalRows,
+        const unsigned long returnedRows,
+        const bool partialRowsAccepted)
+    {
+        const bool complete =
+            status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+            totalRows == returnedRows;
+        const bool appliedTruncated =
+            status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+            totalRows > returnedRows;
+        const bool rowsUsable =
+            status == KSWORD_ARK_NETWORK_STATUS_APPLIED ||
+            partialRowsAccepted;
+        const bool partial = partialRowsAccepted || appliedTruncated;
+        const bool truncated = rowsUsable &&
+            (totalRows > returnedRows ||
+             (partialRowsAccepted &&
+              static_cast<std::uint32_t>(lastStatus) ==
+                  kNetworkStatusBufferOverflow));
+        const wchar_t* scopeText = L"pdb/private";
+        if (sourceFlags == KSWORD_ARK_NETWORK_AUDIT_SOURCE_NONE)
+        {
+            scopeText = L"none";
+        }
+        else if (sourceFlags == KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE)
+        {
+            scopeText = L"runtime-state-only";
+        }
+        std::wcout << L"evidence=R0-header"
+                   << L" usableR0=" << (rowsUsable ? 1 : 0)
+                   << L" completeR0=" << (complete ? 1 : 0)
+                   << L" partial=" << (partial ? 1 : 0)
+                   << L" truncated=" << (truncated ? 1 : 0)
+                   << L" retainedRows=" << (rowsUsable ? returnedRows : 0UL)
+                   << L" protocolStatus=" << networkAuditStatusText(status)
+                   << L"(" << status << L")"
+                   << L" scope=" << scopeText
+                   << L" lastStatus=0x" << std::hex << static_cast<unsigned long>(lastStatus)
+                   << L" sourceFlags=0x" << sourceFlags
+                   << std::dec << L" budgetRows=" << budgetRows
+                   << L" generation=" << generation << L"\n";
+    }
+
+    // networkAuditAddressToText 作用：格式化 R0 endpoint 行中的 IPv4/IPv6 地址。
+    // 输入：共享协议地址族和固定 16 字节地址。
+    // 处理：只调用 documented InetNtopW，不读取任何私有网络结构。
+    // 返回：可直接与主机字节序端口拼接的地址文本。
+    std::wstring networkAuditAddressToText(
+        const unsigned long addressFamily,
+        const unsigned char addressBytes[16])
+    {
+        wchar_t addressText[INET6_ADDRSTRLEN]{};
+        if (addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV4)
+        {
+            IN_ADDR address{};
+            std::memcpy(&address, addressBytes, sizeof(address));
+            return ::InetNtopW(AF_INET, &address, addressText, static_cast<DWORD>(std::size(addressText))) != nullptr
+                ? std::wstring(addressText)
+                : std::wstring(L"<invalid-ipv4>");
+        }
+        if (addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV6)
+        {
+            IN6_ADDR address{};
+            std::memcpy(&address, addressBytes, sizeof(address));
+            return ::InetNtopW(AF_INET6, &address, addressText, static_cast<DWORD>(std::size(addressText))) != nullptr
+                ? std::wstring(addressText)
+                : std::wstring(L"<invalid-ipv6>");
+        }
+        return L"<unknown-address-family>";
+    }
+
+    // networkNdisObjectKindText 作用：把 NDIS 行类型转换成可审计 token。
+    // UNKNOWN 是 collector 无法证明对象边界时的合法降级证据，不能伪称 miniport/LWF。
+    const wchar_t* networkNdisObjectKindText(const unsigned long kind)
+    {
+        switch (kind)
+        {
+        case KSWORD_ARK_NETWORK_NDIS_OBJECT_UNKNOWN: return L"unknown-unproven";
+        case KSWORD_ARK_NETWORK_NDIS_OBJECT_MINIPORT: return L"miniport";
+        case KSWORD_ARK_NETWORK_NDIS_OBJECT_FILTER: return L"filter";
+        case KSWORD_ARK_NETWORK_NDIS_OBJECT_PROTOCOL: return L"protocol";
+        case KSWORD_ARK_NETWORK_NDIS_OBJECT_BINDING: return L"binding";
+        default: return L"invalid";
+        }
+    }
+
+    // networkWfpObjectKindText 作用：把 WFP 行类型转换成稳定的可审计 token。
+    const wchar_t* networkWfpObjectKindText(const unsigned long kind)
+    {
+        switch (kind)
+        {
+        case KSWORD_ARK_NETWORK_WFP_OBJECT_PROVIDER: return L"provider";
+        case KSWORD_ARK_NETWORK_WFP_OBJECT_SUBLAYER: return L"sublayer";
+        case KSWORD_ARK_NETWORK_WFP_OBJECT_FILTER: return L"filter";
+        case KSWORD_ARK_NETWORK_WFP_OBJECT_CALLOUT: return L"callout";
+        default: return L"invalid";
+        }
+    }
+
     // queryNetworkEndpoints prints TCP or UDP R0 endpoint audit rows.
     // Inputs: parsed args plus IOCTL code and display labels.
     // Processing: validates variable response rows and renders endpoint evidence.
@@ -3140,31 +3339,99 @@ namespace
         if (rc != 0) return normalizeIoctlRc(featureLabel, io, rc);
         constexpr std::size_t headerSize = sizeof(KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW);
         const auto* response = reinterpret_cast<const KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE*>(buffer.data());
+        if (!validateNetworkAuditHeader(
+            response->version,
+            response->size,
+            response->status,
+            response->flags,
+            response->totalRowCount,
+            response->returnedRowCount,
+            response->sourceFlags,
+            response->budgetRows,
+            io.bytesReturned,
+            headerSize,
+            featureLabel))
+        {
+            return 4;
+        }
         std::size_t available = 0U;
         try { available = validateVariable(io.bytesReturned, headerSize, response->entrySize, sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW), featureLabel); }
         catch (...) { return 4; }
+        if (available < response->returnedRowCount)
+        {
+            std::wcerr << featureLabel << L": returned rows exceed response bytes\n";
+            return 4;
+        }
         printResponseBanner(response->version, response->status, response->lastStatus, io.bytesReturned);
         printCountHeader(response->version, response->totalRowCount, response->returnedRowCount, response->entrySize, io.bytesReturned);
-        std::wcout << L"flags=0x" << std::hex << response->flags
-                   << L" source=0x" << response->sourceFlags
-                   << std::dec << L" budgetRows=" << response->budgetRows
-                   << L" generation=" << response->generation << L"\n";
+        printNetworkAuditState(
+            response->status,
+            response->lastStatus,
+            response->sourceFlags,
+            response->budgetRows,
+            response->generation,
+            response->totalRowCount,
+            response->returnedRowCount,
+            false);
+        if (response->status != KSWORD_ARK_NETWORK_STATUS_APPLIED)
+        {
+            std::wcerr
+                << L"unsupported / unavailable: "
+                << featureLabel
+                << L" did not return an APPLIED endpoint snapshot\n";
+            return 5;
+        }
         const std::size_t parsed = responseCountLimit(response->returnedRowCount, available, getOptionU32(args, L"--limit", 128U));
-        for (std::size_t i = 0; i < parsed; ++i)
+        const unsigned long expectedProtocol =
+            code == IOCTL_KSWORD_ARK_NETWORK_QUERY_TCP_ENDPOINTS
+            ? KSWORD_ARK_NETWORK_PROTOCOL_TCP
+            : KSWORD_ARK_NETWORK_PROTOCOL_UDP;
+        constexpr unsigned long knownRowFlags =
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_PDB_UNAVAILABLE |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_FIELD_MISSING |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_BUDGET_LIMITED |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_OWNER_UNKNOWN |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_MODULE_UNKNOWN;
+        constexpr unsigned long knownSourceFlags =
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_TCPIP_PDB |
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_NETIO_PDB |
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_NDIS_PDB |
+            KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+        for (std::size_t i = 0; i < response->returnedRowCount; ++i)
         {
             const auto* row = reinterpret_cast<const KSWORD_ARK_NETWORK_ENDPOINT_ROW*>(buffer.data() + headerSize + (i * response->entrySize));
+            const bool knownFamily =
+                row->addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_UNKNOWN ||
+                row->addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV4 ||
+                row->addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV6;
+            if (!knownFamily ||
+                row->protocol != expectedProtocol ||
+                (row->flags & ~knownRowFlags) != 0UL ||
+                (row->sourceFlags & ~knownSourceFlags) != 0UL)
+            {
+                std::wcerr << featureLabel << L": invalid endpoint row at index " << i << L"\n";
+                return 4;
+            }
+            if (i >= parsed)
+            {
+                continue;
+            }
             std::wcout << L"  [" << i << L"] rowId=" << row->rowId
                        << L" af=" << row->addressFamily
                        << L" proto=" << row->protocol
                        << L" state=" << row->state
                        << L" pid=" << row->owningPid
-                       << L" localPort=" << row->localPort
-                       << L" remotePort=" << row->remotePort
+                       << L" local=" << networkAuditAddressToText(row->addressFamily, row->localAddress) << L":" << row->localPort
+                       << L" remote=" << networkAuditAddressToText(row->addressFamily, row->remoteAddress) << L":" << row->remotePort
+                       << L" compartment=" << row->compartmentId
+                       << L" ifIndex=" << row->interfaceIndex
                        << L" flags=0x" << std::hex << row->flags
                        << L" source=0x" << row->sourceFlags
+                       << L" fieldMask=0x" << row->fieldMask
                        << L" endpoint=" << hex64(row->endpointObject)
                        << L" processObject=" << hex64(row->owningProcessObject)
                        << L" transport=" << hex64(row->transportObject)
+                       << L" interfaceLuid=" << hex64(row->interfaceLuid)
                        << std::dec << L"\n";
         }
         return 0;
@@ -3183,17 +3450,76 @@ namespace
         if (rc != 0) return normalizeIoctlRc(L"network wfp", io, rc);
         constexpr std::size_t headerSize = sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW);
         const auto* response = reinterpret_cast<const KSWORD_ARK_NETWORK_WFP_INVENTORY_RESPONSE*>(buffer.data());
+        if (!validateNetworkAuditHeader(
+            response->version,
+            response->size,
+            response->status,
+            response->flags,
+            response->totalRowCount,
+            response->returnedRowCount,
+            response->sourceFlags,
+            response->budgetRows,
+            io.bytesReturned,
+            headerSize,
+            L"network wfp"))
+        {
+            return 4;
+        }
         std::size_t available = 0U;
         try { available = validateVariable(io.bytesReturned, headerSize, response->entrySize, sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW), L"network wfp"); }
         catch (...) { return 4; }
+        if (available < response->returnedRowCount)
+        {
+            std::wcerr << L"network wfp: returned rows exceed response bytes\n";
+            return 4;
+        }
+        const bool partialRowsAccepted =
+            isRetainableNetworkInventoryPartial(
+                response->status,
+                response->lastStatus,
+                response->returnedRowCount);
         printResponseBanner(response->version, response->status, response->lastStatus, io.bytesReturned);
         printCountHeader(response->version, response->totalRowCount, response->returnedRowCount, response->entrySize, io.bytesReturned);
+        printNetworkAuditState(
+            response->status,
+            response->lastStatus,
+            response->sourceFlags,
+            response->budgetRows,
+            response->generation,
+            response->totalRowCount,
+            response->returnedRowCount,
+            partialRowsAccepted);
+        if (response->status != KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+            !partialRowsAccepted)
+        {
+            std::wcerr
+                << L"unsupported / unavailable: network wfp returned no retainable partial snapshot\n";
+            return 5;
+        }
         const std::size_t parsed = responseCountLimit(response->returnedRowCount, available, getOptionU32(args, L"--limit", 128U));
-        for (std::size_t i = 0; i < parsed; ++i)
+        constexpr unsigned long knownRowFlags =
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_PDB_UNAVAILABLE |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_FIELD_MISSING |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_BUDGET_LIMITED |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_OWNER_UNKNOWN |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_MODULE_UNKNOWN;
+        for (std::size_t i = 0; i < response->returnedRowCount; ++i)
         {
             const auto* row = reinterpret_cast<const KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW*>(buffer.data() + headerSize + (i * response->entrySize));
+            if (row->objectKind < KSWORD_ARK_NETWORK_WFP_OBJECT_PROVIDER ||
+                row->objectKind > KSWORD_ARK_NETWORK_WFP_OBJECT_CALLOUT ||
+                (row->flags & ~knownRowFlags) != 0UL)
+            {
+                std::wcerr << L"network wfp: invalid row at index " << i << L"\n";
+                return 4;
+            }
+            if (i >= parsed)
+            {
+                continue;
+            }
             std::wcout << L"  [" << i << L"] rowId=" << row->rowId
-                       << L" kind=" << row->objectKind
+                       << L" kind=" << networkWfpObjectKindText(row->objectKind)
+                       << L"(" << row->objectKind << L")"
                        << L" layer=" << row->layerId
                        << L" calloutId=" << row->calloutId
                        << L" filterId=" << row->filterId
@@ -3219,17 +3545,75 @@ namespace
         if (rc != 0) return normalizeIoctlRc(L"network ndis", io, rc);
         constexpr std::size_t headerSize = sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW);
         const auto* response = reinterpret_cast<const KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE*>(buffer.data());
+        if (!validateNetworkAuditHeader(
+            response->version,
+            response->size,
+            response->status,
+            response->flags,
+            response->totalRowCount,
+            response->returnedRowCount,
+            response->sourceFlags,
+            response->budgetRows,
+            io.bytesReturned,
+            headerSize,
+            L"network ndis"))
+        {
+            return 4;
+        }
         std::size_t available = 0U;
         try { available = validateVariable(io.bytesReturned, headerSize, response->entrySize, sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW), L"network ndis"); }
         catch (...) { return 4; }
+        if (available < response->returnedRowCount)
+        {
+            std::wcerr << L"network ndis: returned rows exceed response bytes\n";
+            return 4;
+        }
+        const bool partialRowsAccepted =
+            isRetainableNetworkInventoryPartial(
+                response->status,
+                response->lastStatus,
+                response->returnedRowCount);
         printResponseBanner(response->version, response->status, response->lastStatus, io.bytesReturned);
         printCountHeader(response->version, response->totalRowCount, response->returnedRowCount, response->entrySize, io.bytesReturned);
+        printNetworkAuditState(
+            response->status,
+            response->lastStatus,
+            response->sourceFlags,
+            response->budgetRows,
+            response->generation,
+            response->totalRowCount,
+            response->returnedRowCount,
+            partialRowsAccepted);
+        if (response->status != KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+            !partialRowsAccepted)
+        {
+            std::wcerr
+                << L"unsupported / unavailable: network ndis returned no retainable partial snapshot\n";
+            return 5;
+        }
         const std::size_t parsed = responseCountLimit(response->returnedRowCount, available, getOptionU32(args, L"--limit", 128U));
-        for (std::size_t i = 0; i < parsed; ++i)
+        constexpr unsigned long knownRowFlags =
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_PDB_UNAVAILABLE |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_FIELD_MISSING |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_BUDGET_LIMITED |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_OWNER_UNKNOWN |
+            KSWORD_ARK_NETWORK_AUDIT_ROW_FLAG_MODULE_UNKNOWN;
+        for (std::size_t i = 0; i < response->returnedRowCount; ++i)
         {
             const auto* row = reinterpret_cast<const KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW*>(buffer.data() + headerSize + (i * response->entrySize));
+            if (row->objectKind > KSWORD_ARK_NETWORK_NDIS_OBJECT_BINDING ||
+                (row->flags & ~knownRowFlags) != 0UL)
+            {
+                std::wcerr << L"network ndis: invalid row at index " << i << L"\n";
+                return 4;
+            }
+            if (i >= parsed)
+            {
+                continue;
+            }
             std::wcout << L"  [" << i << L"] rowId=" << row->rowId
-                       << L" kind=" << row->objectKind
+                       << L" kind=" << networkNdisObjectKindText(row->objectKind)
+                       << L"(" << row->objectKind << L")"
                        << L" ifIndex=" << row->ifIndex
                        << L" order=" << row->filterOrder
                        << L" object=" << hex64(row->objectAddress)

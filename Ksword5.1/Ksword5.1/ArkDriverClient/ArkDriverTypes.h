@@ -1972,6 +1972,8 @@ namespace ksword::ark
         std::uint32_t sourceFlags = 0;        // sourceFlags：tcpip/netio/runtime 等证据来源。
         std::uint32_t budgetRows = 0;         // budgetRows：R0 实际接受的行预算。
         std::uint32_t generation = 0;         // generation：R0 快照代数。
+        bool partial = false;                 // partial：APPLIED 但只返回预算内子集。
+        bool truncated = false;               // truncated：totalCount 大于 returnedCount。
         std::vector<KSWORD_ARK_NETWORK_ENDPOINT_ROW> entries;
     };
 
@@ -1984,6 +1986,8 @@ namespace ksword::ark
         std::uint32_t sourceFlags = 0;
         std::uint32_t budgetRows = 0;
         std::uint32_t generation = 0;
+        bool partial = false;                 // partial：collector 部分失败，或 APPLIED 但仅返回子集。
+        bool truncated = false;               // truncated：总数/返回数或 BUFFER_OVERFLOW 表示结果不完整。
         std::vector<KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW> entries;
     };
 
@@ -2011,6 +2015,8 @@ namespace ksword::ark
         std::uint32_t sourceFlags = 0;
         std::uint32_t budgetRows = 0;
         std::uint32_t generation = 0;
+        bool partial = false;                 // partial：collector 部分失败，或 APPLIED 但仅返回子集。
+        bool truncated = false;               // truncated：总数/返回数或 BUFFER_OVERFLOW 表示结果不完整。
         std::vector<KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW> entries;
     };
 

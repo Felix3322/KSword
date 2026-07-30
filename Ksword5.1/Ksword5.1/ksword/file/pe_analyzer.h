@@ -63,6 +63,8 @@ namespace ks::file
         std::uint16_t machine = 0;
         std::uint16_t subsystem = 0;
         std::uint32_t entryPointRva = 0;
+        std::uint32_t entryPointFileOffset = 0;
+        bool entryPointFileOffsetValid = false;
         std::uint64_t imageBase = 0;
         std::vector<PeSectionSummary> sections;
         std::vector<PeImportModuleSummary> importModules;
@@ -72,8 +74,16 @@ namespace ks::file
     // AnalyzePeFile 作用：读取文件并解析 PE 结构，返回结构化结果与报告文本。
     PeAnalysisResult AnalyzePeFile(const std::wstring& filePath);
 
+    // AnalyzePeBytes 作用：直接解析来自原始磁盘、内存快照或其它证据源的 PE 字节。
+    PeAnalysisResult AnalyzePeBytes(
+        const std::vector<std::uint8_t>& fileBytes);
+
     // BuildPeAnalysisText 作用：兼容属性窗口现有“直接拿文本显示”的调用方式。
     std::wstring BuildPeAnalysisText(const std::wstring& filePath);
+
+    // BuildPeAnalysisText 作用：返回内存 PE 字节的可读分析报告。
+    std::wstring BuildPeAnalysisText(
+        const std::vector<std::uint8_t>& fileBytes);
 
     // BuildPeAnalysisTextUtf8 作用：便于非 Qt 调用者传入 UTF-8 文件路径并获得 UTF-8 报告。
     std::string BuildPeAnalysisTextUtf8(const std::string& filePathUtf8);

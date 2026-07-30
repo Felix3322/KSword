@@ -40,7 +40,6 @@
 #include <QMetaObject>
 #include <QModelIndex>
 #include <QPixmap>
-#include <QPointer>
 #include <QProcess>
 #include <QPushButton>
 #include <QSplitter>
@@ -56,6 +55,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -69,6 +69,15 @@
 #include <fwpmu.h>
 
 #pragma comment(lib, "Ws2_32.lib")
+
+// NetworkAuditAsyncState 把 detached worker 的回投目标放在共享互斥状态中。
+// 析构先清空 owner；worker 只有在同一把锁保护下才能提交 queued 调用，
+// GUI 回调再复核 owner，并在调用页面成员前释放锁。
+struct NetworkAuditAsyncState
+{
+    std::mutex mutex;
+    NetworkAuditPage* owner = nullptr;
+};
 
 namespace
 {
@@ -254,6 +263,18 @@ namespace
         {
             return QStringLiteral("R0 网络审计查询超时，已保留现有 R3 审计结果");
         }
+        if (rawText.contains(QStringLiteral("invalid response"), Qt::CaseInsensitive) ||
+            rawText.contains(QStringLiteral("invalid endpoint row"), Qt::CaseInsensitive) ||
+            rawText.contains(QStringLiteral("invalid WFP row"), Qt::CaseInsensitive) ||
+            rawText.contains(QStringLiteral("invalid NDIS row"), Qt::CaseInsensitive) ||
+            rawText.contains(QStringLiteral("returned rows exceed"), Qt::CaseInsensitive))
+        {
+            return QStringLiteral("驱动返回的网络审计响应未通过协议校验，已丢弃 R0 数据");
+        }
+        if (rawText.contains(QStringLiteral("protocolStatus="), Qt::CaseInsensitive))
+        {
+            return QStringLiteral("驱动已返回并通过校验的结构化网络审计数据");
+        }
         if (rawText.startsWith(QStringLiteral("version="), Qt::CaseInsensitive))
         {
             return QStringLiteral("驱动已返回结构化网络审计数据");
@@ -262,31 +283,44 @@ namespace
     }
 
     // r0AuditStatusText 作用：
-    // - 将 R0 wrapper 的 ok/unsupported/unavailable 状态转成 UI 文本；
+    // - 将 R0 wrapper 的 ok/partial/unsupported/unavailable 状态转成 UI 文本；
     // - 输入 result：任意带 io/unsupported 字段的 ArkDriverClient 审计结果；
-    // - 返回：验收要求中的 ok / unsupported / unavailable。
+    // - 返回：验收要求中的 ok / partial / unsupported / unavailable。
     template <typename TResult>
     QString r0AuditStatusText(const TResult& result)
     {
-        if (result.io.ok)
+        if (!result.io.ok)
         {
-            return QStringLiteral("ok");
+            return result.unsupported
+                ? QStringLiteral("unsupported")
+                : QStringLiteral("unavailable");
         }
-        if (result.unsupported)
+
+        // DeviceIoControl 成功只代表拿到了结构化响应头；只有 APPLIED 且 total==returned 才是完整快照。
+        // ArkDriverClient 已严格筛选 partial，其他 OPERATION_FAILED 不保留明细行。
+        if (result.partial ||
+            result.truncated ||
+            result.totalCount > result.returnedCount)
         {
-            return QStringLiteral("unsupported");
+            return QStringLiteral("partial");
         }
-        return QStringLiteral("unavailable");
+        if (result.status != KSWORD_ARK_NETWORK_STATUS_APPLIED)
+        {
+            return QStringLiteral("unavailable");
+        }
+        return result.sourceFlags != KSWORD_ARK_NETWORK_AUDIT_SOURCE_NONE
+            ? QStringLiteral("ok")
+            : QStringLiteral("unavailable");
     }
 
     // r0AuditTruncatedText 作用：
-    // - 根据 total/returned 判断 R0 结果是否被截断；
+    // - 根据 wrapper completeness 与 total/returned 判断 R0 结果是否被截断；
     // - 输入 result：任意 VariableAuditResultBase 派生结果；
     // - 返回：true/false 文本，方便摘要表直接展示。
     template <typename TResult>
     QString r0AuditTruncatedText(const TResult& result)
     {
-        return result.totalCount > result.returnedCount
+        return result.truncated || result.totalCount > result.returnedCount
             ? QStringLiteral("true")
             : QStringLiteral("false");
     }
@@ -452,11 +486,13 @@ namespace
 
     // r0NdisObjectKindText 作用：
     // - 输入 kind：R0 NDIS objectKind；
-    // - 返回：Miniport/Filter/Protocol/Binding 等可读分类。
+    // - 返回：未知对象明确标为 Unknown/Unproven，不把公开 device-stack 证据伪装成 LWF。
     QString r0NdisObjectKindText(const unsigned long kind)
     {
         switch (kind)
         {
+        case KSWORD_ARK_NETWORK_NDIS_OBJECT_UNKNOWN:
+            return QStringLiteral("未知/未证明");
         case KSWORD_ARK_NETWORK_NDIS_OBJECT_MINIPORT: return QStringLiteral("Miniport");
         case KSWORD_ARK_NETWORK_NDIS_OBJECT_FILTER: return QStringLiteral("Filter");
         case KSWORD_ARK_NETWORK_NDIS_OBJECT_PROTOCOL: return QStringLiteral("Protocol");
@@ -638,12 +674,23 @@ namespace
 }
 
 NetworkAuditPage::NetworkAuditPage(QWidget* parent)
-    : QWidget(parent)
+    : QWidget(parent),
+      m_asyncState(std::make_shared<NetworkAuditAsyncState>())
 {
+    m_asyncState->owner = this;
     initializeUi();
     m_crossAutoRefreshTimer = new QTimer(this);
     m_crossAutoRefreshTimer->setInterval(2200);
     initializeConnections();
+}
+
+NetworkAuditPage::~NetworkAuditPage()
+{
+    if (m_asyncState)
+    {
+        std::lock_guard<std::mutex> lock(m_asyncState->mutex);
+        m_asyncState->owner = nullptr;
+    }
 }
 
 void NetworkAuditPage::requestInitialRefresh()
@@ -886,9 +933,13 @@ void NetworkAuditPage::initializeUi()
     m_ndisAdapterTable = buildWfpTable(m_ndisPage, { QStringLiteral("名称"), QStringLiteral("描述"), QStringLiteral("IfIndex"), QStringLiteral("状态"), QStringLiteral("MAC"), QStringLiteral("速率"), QStringLiteral("连接") });
     m_ndisBindingTable = buildWfpTable(m_ndisPage, { QStringLiteral("网卡"), QStringLiteral("显示名"), QStringLiteral("ComponentId"), QStringLiteral("启用"), QStringLiteral("InstanceId") });
     m_ndisProtocolTable = buildWfpTable(m_ndisPage, { QStringLiteral("别名"), QStringLiteral("IfIndex"), QStringLiteral("地址族"), QStringLiteral("连接"), QStringLiteral("Metric"), QStringLiteral("MTU") });
+    m_ndisUnknownTable = buildWfpTable(m_ndisPage, { QStringLiteral("类型"), QStringLiteral("组件"), QStringLiteral("所属模块"), QStringLiteral("对象地址"), QStringLiteral("详情") });
     m_ndisTabWidget->addTab(m_ndisAdapterTable, QStringLiteral("Miniport"));
     m_ndisTabWidget->addTab(m_ndisBindingTable, QStringLiteral("Binding"));
     m_ndisTabWidget->addTab(m_ndisProtocolTable, QStringLiteral("Protocol"));
+    m_ndisTabWidget->addTab(
+        m_ndisUnknownTable,
+        QStringLiteral("未知/未证明"));
     m_sectionTabWidget->addTab(m_ndisPage, QStringLiteral("NDIS"));
 
     // NSI。
@@ -988,8 +1039,8 @@ void NetworkAuditPage::refreshAllSnapshotsAsync(const bool forceRefresh)
         m_statusLabel->setText(forceRefresh ? QStringLiteral("状态：正在重新采集...") : QStringLiteral("状态：正在采集..."));
     }
 
-    QPointer<NetworkAuditPage> safeThis(this);
-    std::thread([safeThis]()
+    const std::shared_ptr<NetworkAuditAsyncState> asyncState = m_asyncState;
+    std::thread([asyncState]()
     {
         AuditSnapshot snapshot;
         QString failureText;
@@ -1006,35 +1057,37 @@ void NetworkAuditPage::refreshAllSnapshotsAsync(const bool forceRefresh)
             failureText = QStringLiteral("刷新失败");
         }
 
-        if (safeThis.isNull())
+        std::lock_guard<std::mutex> dispatchLock(asyncState->mutex);
+        NetworkAuditPage* const receiver = asyncState->owner;
+        if (receiver == nullptr)
         {
             return;
         }
-
-        const bool invokeOk = QMetaObject::invokeMethod(safeThis.data(), [safeThis, snapshot = std::move(snapshot), failureText]() mutable
+        QMetaObject::invokeMethod(receiver, [asyncState, snapshot = std::move(snapshot), failureText]() mutable
         {
-            if (safeThis.isNull())
+            NetworkAuditPage* page = nullptr;
+            {
+                std::lock_guard<std::mutex> stateLock(asyncState->mutex);
+                page = asyncState->owner;
+            }
+            if (page == nullptr)
             {
                 return;
             }
             if (failureText.isEmpty())
             {
-                safeThis->applySnapshot(snapshot);
+                page->applySnapshot(snapshot);
             }
-            else if (safeThis->m_statusLabel != nullptr)
+            else if (page->m_statusLabel != nullptr)
             {
-                safeThis->m_statusLabel->setText(failureText);
+                page->m_statusLabel->setText(failureText);
             }
-            if (safeThis->m_refreshButton != nullptr)
+            if (page->m_refreshButton != nullptr)
             {
-                safeThis->m_refreshButton->setEnabled(true);
+                page->m_refreshButton->setEnabled(true);
             }
-            safeThis->m_refreshInProgress.store(false);
+            page->m_refreshInProgress.store(false);
         }, Qt::QueuedConnection);
-        if (!invokeOk && !safeThis.isNull())
-        {
-            safeThis->m_refreshInProgress.store(false);
-        }
     }).detach();
 }
 
@@ -1046,8 +1099,8 @@ void NetworkAuditPage::refreshCrossViewAsync()
         return;
     }
 
-    QPointer<NetworkAuditPage> safeThis(this);
-    std::thread([safeThis]()
+    const std::shared_ptr<NetworkAuditAsyncState> asyncState = m_asyncState;
+    std::thread([asyncState]()
     {
         AuditSnapshot snapshot;
         QString failureText;
@@ -1064,15 +1117,22 @@ void NetworkAuditPage::refreshCrossViewAsync()
             failureText = QStringLiteral("刷新失败");
         }
 
-        if (safeThis.isNull())
+        std::lock_guard<std::mutex> dispatchLock(asyncState->mutex);
+        NetworkAuditPage* const receiver = asyncState->owner;
+        if (receiver == nullptr)
         {
             return;
         }
-        const bool invokeOk = QMetaObject::invokeMethod(
-            safeThis.data(),
-            [safeThis, snapshot = std::move(snapshot), failureText]() mutable
+        QMetaObject::invokeMethod(
+            receiver,
+            [asyncState, snapshot = std::move(snapshot), failureText]() mutable
             {
-                if (safeThis.isNull())
+                NetworkAuditPage* page = nullptr;
+                {
+                    std::lock_guard<std::mutex> stateLock(asyncState->mutex);
+                    page = asyncState->owner;
+                }
+                if (page == nullptr)
                 {
                     return;
                 }
@@ -1080,33 +1140,29 @@ void NetworkAuditPage::refreshCrossViewAsync()
                 if (failureText.isEmpty())
                 {
                     // R0 行由完整审计采集；高频连接刷新只替换 R3 行。
-                    for (const TcpEndpointRow& cachedRow : safeThis->m_tcpEndpointCache)
+                    for (const TcpEndpointRow& cachedRow : page->m_tcpEndpointCache)
                     {
                         if (cachedRow.isR0Snapshot)
                         {
                             snapshot.tcpEndpointRows.push_back(cachedRow);
                         }
                     }
-                    for (const UdpEndpointRow& cachedRow : safeThis->m_udpEndpointCache)
+                    for (const UdpEndpointRow& cachedRow : page->m_udpEndpointCache)
                     {
                         if (cachedRow.sourceText.startsWith(QStringLiteral("R0")))
                         {
                             snapshot.udpEndpointRows.push_back(cachedRow);
                         }
                     }
-                    safeThis->refreshCrossViewTable(snapshot);
+                    page->refreshCrossViewTable(snapshot);
                 }
-                else if (safeThis->m_statusLabel != nullptr)
+                else if (page->m_statusLabel != nullptr)
                 {
-                    safeThis->m_statusLabel->setText(failureText);
+                    page->m_statusLabel->setText(failureText);
                 }
-                safeThis->m_refreshInProgress.store(false);
+                page->m_refreshInProgress.store(false);
             },
             Qt::QueuedConnection);
-        if (!invokeOk && !safeThis.isNull())
-        {
-            safeThis->m_refreshInProgress.store(false);
-        }
     }).detach();
 }
 
@@ -1542,6 +1598,8 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
         const auto udpR0 = driverClient.queryNetworkUdpEndpoints();
         const auto wfpR0 = driverClient.queryNetworkWfpInventory();
         const auto ndisR0 = driverClient.queryNetworkNdisChain();
+        snapshot.r0TcpStatusText = r0AuditStatusText(tcpR0);
+        snapshot.r0UdpStatusText = r0AuditStatusText(udpR0);
 
         auto appendR0Summary = [&snapshot](const QString& nameText, const auto& result)
         {
@@ -1554,10 +1612,38 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
                 .arg(result.returnedCount)
                 .arg(result.totalCount)
                 .arg(static_cast<qulonglong>(result.entries.size()));
-            row.truncatedText = r0AuditTruncatedText(result) == QStringLiteral("true")
-                ? QStringLiteral("是，结果可能未完整返回")
-                : QStringLiteral("否");
-            row.messageText = ioMessageToText(result.io.message);
+            if (result.partial)
+            {
+                if (result.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+                    result.totalCount > result.returnedCount)
+                {
+                    row.truncatedText =
+                        QStringLiteral("是，达到返回预算（仅展示驱动返回子集）");
+                }
+                else
+                {
+                    row.truncatedText =
+                        static_cast<std::uint32_t>(result.lastStatus) == 0x80000005UL
+                        ? QStringLiteral("是，部分结果（达到遍历或缓冲上限，合法行已保留）")
+                        : QStringLiteral("部分结果（部分枚举失败，合法行已保留）");
+                }
+            }
+            else
+            {
+                row.truncatedText =
+                    r0AuditTruncatedText(result) == QStringLiteral("true")
+                    ? QStringLiteral("是，结果可能未完整返回")
+                    : QStringLiteral("否");
+            }
+            row.messageText = QStringLiteral("%1；protocolStatus=%2；lastStatus=%3；sourceFlags=%4；generation=%5；partial=%6；truncated=%7；retainedRows=%8")
+                .arg(ioMessageToText(result.io.message))
+                .arg(result.status)
+                .arg(r0Hex32(static_cast<std::uint32_t>(result.lastStatus)))
+                .arg(r0Hex32(result.sourceFlags))
+                .arg(result.generation)
+                .arg(result.partial ? QStringLiteral("true") : QStringLiteral("false"))
+                .arg(result.truncated ? QStringLiteral("true") : QStringLiteral("false"))
+                .arg(static_cast<qulonglong>(result.entries.size()));
             snapshot.r0SummaryRows.push_back(std::move(row));
         };
 
@@ -1572,12 +1658,13 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
         // - 返回：无，所有文本仅用于只读审计展示。
         auto appendR0Endpoints = [&snapshot](const ksword::ark::NetworkEndpointAuditResult& result, const bool tcpRows)
         {
+            const QString completenessText = result.partial || result.truncated
+                ? QStringLiteral("部分/截断子集")
+                : QStringLiteral("完整结果");
             for (const KSWORD_ARK_NETWORK_ENDPOINT_ROW& entry : result.entries)
             {
-                const QString detailText = QStringLiteral(
-                    "来源=R0 endpoint；rowId=%1；protocol=%2；AF=%3；compartment=%4；ifIndex=%5；"
-                    "flags=%6；sourceFlags=%7；fieldMask=%8；endpointObject=%9；owningProcessObject=%10；"
-                    "transportObject=%11；interfaceLuid=%12")
+                const QString detailText = QStringLiteral("来源=R0 endpoint；快照=%1；rowId=%2；protocol=%3；AF=%4；compartment=%5；ifIndex=%6；flags=%7；sourceFlags=%8；fieldMask=%9；endpointObject=%10；owningProcessObject=%11；transportObject=%12；interfaceLuid=%13")
+                    .arg(completenessText)
                     .arg(entry.rowId)
                     .arg(entry.protocol)
                     .arg(entry.addressFamily)
@@ -1618,12 +1705,14 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
 
         auto appendR0WfpRows = [&snapshot](const ksword::ark::NetworkWfpInventoryResult& result)
         {
+            const QString completenessText = result.partial || result.truncated
+                ? QStringLiteral("部分/截断子集")
+                : QStringLiteral("完整结果");
             for (const KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW& entry : result.entries)
             {
                 const QString ownerModuleText = fixedNetworkWideText(entry.ownerModule, KSWORD_ARK_NETWORK_NAME_CHARS, QStringLiteral("<owner unknown>"));
-                const QString detailText = QStringLiteral(
-                    "来源=R0 WFP；kind=%1；rowId=%2；flags=%3；fieldMask=%4；layerId=%5；calloutId=%6；"
-                    "object=%7；classify=%8；notify=%9；flowDelete=%10；ownerBase=%11；ownerModule=%12")
+                const QString detailText = QStringLiteral("来源=R0 WFP；快照=%1；kind=%2；rowId=%3；flags=%4；fieldMask=%5；layerId=%6；calloutId=%7；object=%8；classify=%9；notify=%10；flowDelete=%11；ownerBase=%12；ownerModule=%13")
+                    .arg(completenessText)
                     .arg(r0WfpObjectKindText(entry.objectKind))
                     .arg(entry.rowId)
                     .arg(r0Hex32(entry.flags))
@@ -1692,14 +1781,16 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
 
         auto appendR0NdisRows = [&snapshot](const ksword::ark::NetworkNdisChainResult& result)
         {
+            const QString completenessText = result.partial || result.truncated
+                ? QStringLiteral("部分/截断子集")
+                : QStringLiteral("完整结果");
             for (const KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW& entry : result.entries)
             {
                 const QString componentText = fixedNetworkWideText(entry.componentName, KSWORD_ARK_NETWORK_NAME_CHARS, QStringLiteral("<component unknown>"));
                 const QString ownerModuleText = fixedNetworkWideText(entry.ownerModule, KSWORD_ARK_NETWORK_NAME_CHARS, QStringLiteral("<owner unknown>"));
                 const QString kindText = r0NdisObjectKindText(entry.objectKind);
-                const QString detailText = QStringLiteral(
-                    "来源=R0 NDIS；kind=%1；rowId=%2；flags=%3；fieldMask=%4；ifIndex=%5；filterOrder=%6；"
-                    "adapterLuid=%7；object=%8；parent=%9；driverObject=%10；imageBase=%11；ownerModule=%12")
+                const QString detailText = QStringLiteral("来源=R0 NDIS；快照=%1；kind=%2；rowId=%3；flags=%4；fieldMask=%5；ifIndex=%6；filterOrder=%7；adapterLuid=%8；object=%9；parent=%10；driverObject=%11；imageBase=%12；ownerModule=%13")
+                    .arg(completenessText)
                     .arg(kindText)
                     .arg(entry.rowId)
                     .arg(r0Hex32(entry.flags))
@@ -1736,7 +1827,9 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
                     row.mtuText = detailText;
                     snapshot.ndisProtocolRows.push_back(std::move(row));
                 }
-                else
+                else if (
+                    entry.objectKind == KSWORD_ARK_NETWORK_NDIS_OBJECT_FILTER ||
+                    entry.objectKind == KSWORD_ARK_NETWORK_NDIS_OBJECT_BINDING)
                 {
                     NdisBindingRow row;
                     row.adapterNameText = componentText;
@@ -1745,6 +1838,17 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
                     row.enabledText = QStringLiteral("flags=%1").arg(r0Hex32(entry.flags));
                     row.instanceIdText = detailText;
                     snapshot.ndisBindingRows.push_back(std::move(row));
+                }
+                else
+                {
+                    NdisUnknownRow row;
+                    row.kindText = QStringLiteral("未知/未证明（kind=%1）")
+                        .arg(entry.objectKind);
+                    row.componentText = componentText;
+                    row.ownerModuleText = ownerModuleText;
+                    row.objectAddressText = r0Hex64(entry.objectAddress);
+                    row.detailText = detailText;
+                    snapshot.ndisUnknownRows.push_back(std::move(row));
                 }
             }
         };
@@ -1804,6 +1908,84 @@ void NetworkAuditPage::refreshCrossViewTable(const AuditSnapshot& snapshot)
 {
     m_tcpEndpointCache = snapshot.tcpEndpointRows;
     m_udpEndpointCache = snapshot.udpEndpointRows;
+    if (!snapshot.r0TcpStatusText.isEmpty())
+    {
+        m_r0TcpStatusText = snapshot.r0TcpStatusText;
+    }
+    if (!snapshot.r0UdpStatusText.isEmpty())
+    {
+        m_r0UdpStatusText = snapshot.r0UdpStatusText;
+    }
+
+    // Cross-View 必须按来源重新聚合当前缓存。完整刷新提供 R0 行，高频刷新替换
+    // R3 行并保留最近一次 R0 行；在这里重算可以避免自动刷新后汇总表退化成 R3-only。
+    struct CrossViewAggregate
+    {
+        CrossViewRow row;
+        std::size_t tcpR0Count = 0U;
+        std::size_t udpR0Count = 0U;
+        QString tcpR0Summary;
+        QString udpR0Summary;
+    };
+    std::unordered_map<std::uint32_t, CrossViewAggregate> crossMap;
+    for (const TcpEndpointRow& endpointRow : m_tcpEndpointCache)
+    {
+        CrossViewAggregate& aggregate = crossMap[endpointRow.processId];
+        aggregate.row.processId = endpointRow.processId;
+        if (!endpointRow.isR0Snapshot || aggregate.row.processName.isEmpty())
+        {
+            aggregate.row.processName = endpointRow.processName;
+        }
+        const QString endpointSummary = QStringLiteral("%1 -> %2 (%3)")
+            .arg(endpointRow.localEndpointText)
+            .arg(endpointRow.remoteEndpointText)
+            .arg(endpointRow.stateText);
+        if (endpointRow.isR0Snapshot)
+        {
+            ++aggregate.tcpR0Count;
+            aggregate.tcpR0Summary = joinCompactLines({ aggregate.tcpR0Summary, endpointSummary });
+        }
+        else
+        {
+            ++aggregate.row.tcpCount;
+            aggregate.row.tcpSummary = joinCompactLines({ aggregate.row.tcpSummary, endpointSummary });
+        }
+    }
+    for (const UdpEndpointRow& endpointRow : m_udpEndpointCache)
+    {
+        CrossViewAggregate& aggregate = crossMap[endpointRow.processId];
+        aggregate.row.processId = endpointRow.processId;
+        const bool isR0Snapshot = endpointRow.sourceText.startsWith(QStringLiteral("R0"));
+        if (!isR0Snapshot || aggregate.row.processName.isEmpty())
+        {
+            aggregate.row.processName = endpointRow.processName;
+        }
+        if (isR0Snapshot)
+        {
+            ++aggregate.udpR0Count;
+            aggregate.udpR0Summary = joinCompactLines({ aggregate.udpR0Summary, endpointRow.localEndpointText });
+        }
+        else
+        {
+            ++aggregate.row.udpCount;
+            aggregate.row.udpSummary = joinCompactLines({ aggregate.row.udpSummary, endpointRow.localEndpointText });
+        }
+    }
+    std::vector<CrossViewAggregate> effectiveCrossRows;
+    effectiveCrossRows.reserve(crossMap.size());
+    for (auto& pair : crossMap)
+    {
+        effectiveCrossRows.push_back(std::move(pair.second));
+    }
+    std::sort(effectiveCrossRows.begin(), effectiveCrossRows.end(), [](const CrossViewAggregate& left, const CrossViewAggregate& right)
+    {
+        if (left.row.processId != right.row.processId)
+        {
+            return left.row.processId < right.row.processId;
+        }
+        return left.row.processName < right.row.processName;
+    });
+
     if (m_tcpTable != nullptr)
     {
         m_tcpTable->setRowCount(0);
@@ -1857,8 +2039,9 @@ void NetworkAuditPage::refreshCrossViewTable(const AuditSnapshot& snapshot)
     if (m_crossSummaryTable != nullptr)
     {
         m_crossSummaryTable->setRowCount(0);
-        for (const CrossViewRow& row : snapshot.crossViewRows)
+        for (const CrossViewAggregate& aggregate : effectiveCrossRows)
         {
+            const CrossViewRow& row = aggregate.row;
             if (!m_processFilterSet.isEmpty()
                 && !m_processFilterSet.contains(static_cast<quint32>(row.processId)))
             {
@@ -1871,11 +2054,34 @@ void NetworkAuditPage::refreshCrossViewTable(const AuditSnapshot& snapshot)
             QTableWidgetItem* processItem = createReadOnlyCell(row.processName);
             processItem->setIcon(resolveProcessIcon(row.processId));
             m_crossSummaryTable->setItem(rowIndex, 1, processItem);
-            m_crossSummaryTable->setItem(rowIndex, 2, createReadOnlyCell(QString::number(row.tcpCount)));
-            m_crossSummaryTable->setItem(rowIndex, 3, createReadOnlyCell(QString::number(row.udpCount)));
-            m_crossSummaryTable->setItem(rowIndex, 4, createReadOnlyCell(QStringLiteral("TCP: %1 | UDP: %2")
+            const auto r0CountText = [](const std::size_t count, const QString& statusText)
+            {
+                if (statusText == QStringLiteral("ok"))
+                {
+                    return QString::number(static_cast<qulonglong>(count));
+                }
+                if (count != 0U)
+                {
+                    return QStringLiteral("%1:%2")
+                        .arg(statusText.isEmpty() ? QStringLiteral("?") : statusText)
+                        .arg(static_cast<qulonglong>(count));
+                }
+                return statusText.isEmpty() ? QStringLiteral("?") : statusText;
+            };
+            m_crossSummaryTable->setItem(rowIndex, 2, createReadOnlyCell(
+                QStringLiteral("R3:%1 / R0:%2")
+                .arg(static_cast<qulonglong>(row.tcpCount))
+                .arg(r0CountText(aggregate.tcpR0Count, m_r0TcpStatusText))));
+            m_crossSummaryTable->setItem(rowIndex, 3, createReadOnlyCell(
+                QStringLiteral("R3:%1 / R0:%2")
+                .arg(static_cast<qulonglong>(row.udpCount))
+                .arg(r0CountText(aggregate.udpR0Count, m_r0UdpStatusText))));
+            m_crossSummaryTable->setItem(rowIndex, 4, createReadOnlyCell(
+                QStringLiteral("R3 TCP: %1 | R0 TCP: %2 | R3 UDP: %3 | R0 UDP: %4")
                 .arg(row.tcpSummary.isEmpty() ? QStringLiteral("<无>") : row.tcpSummary)
-                .arg(row.udpSummary.isEmpty() ? QStringLiteral("<无>") : row.udpSummary)));
+                .arg(aggregate.tcpR0Summary.isEmpty() ? QStringLiteral("<无>") : aggregate.tcpR0Summary)
+                .arg(row.udpSummary.isEmpty() ? QStringLiteral("<无>") : row.udpSummary)
+                .arg(aggregate.udpR0Summary.isEmpty() ? QStringLiteral("<无>") : aggregate.udpR0Summary)));
         }
     }
     updateCrossViewActionState();
@@ -2264,6 +2470,15 @@ void NetworkAuditPage::refreshNdisTables(const AuditSnapshot& snapshot)
         tableWidget->setItem(rowIndex, 3, createReadOnlyCell(row.connectionStateText));
         tableWidget->setItem(rowIndex, 4, createReadOnlyCell(row.interfaceMetricText));
         tableWidget->setItem(rowIndex, 5, createReadOnlyCell(row.mtuText));
+    });
+
+    fillTable(m_ndisUnknownTable, snapshot.ndisUnknownRows, [](QTableWidget* tableWidget, int rowIndex, const NdisUnknownRow& row)
+    {
+        tableWidget->setItem(rowIndex, 0, createReadOnlyCell(row.kindText));
+        tableWidget->setItem(rowIndex, 1, createReadOnlyCell(row.componentText));
+        tableWidget->setItem(rowIndex, 2, createReadOnlyCell(row.ownerModuleText));
+        tableWidget->setItem(rowIndex, 3, createReadOnlyCell(row.objectAddressText));
+        tableWidget->setItem(rowIndex, 4, createReadOnlyCell(row.detailText));
     });
 }
 

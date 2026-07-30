@@ -41,6 +41,7 @@
 #include "NetworkDock/NetworkDock.h"
 #include "MemoryDock/MemoryDock.h"
 #include "FileDock/FileDock.h"
+#include "ScannerDock/ScannerDock.h"
 #include "DriverDock/DriverDock.h"
 #include "KernelDock/KernelDock.h"
 #include "MonitorDock/MonitorDock.h"
@@ -504,6 +505,7 @@ private:
     ads::CDockWidget* m_dockNetwork = nullptr; // m_dockNetwork：网络页 Dock。
     ads::CDockWidget* m_dockMemory = nullptr; // m_dockMemory：内存页 Dock。
     ads::CDockWidget* m_dockFile = nullptr; // m_dockFile：文件页 Dock。
+    ads::CDockWidget* m_dockScanner = nullptr; // m_dockScanner：独立二进制扫描器 Dock。
     ads::CDockWidget* m_dockDriver = nullptr; // m_dockDriver：驱动页 Dock。
     ads::CDockWidget* m_dockKernel = nullptr; // m_dockKernel：内核页 Dock。
     ads::CDockWidget* m_dockMonitorTab = nullptr; // m_dockMonitorTab：监控页 Dock。
@@ -527,6 +529,7 @@ private:
     NetworkDock* m_networkWidget = nullptr; // m_networkWidget：网络页内容控件。
     MemoryDock* m_memoryWidget = nullptr; // m_memoryWidget：内存页内容控件。
     FileDock* m_fileWidget = nullptr; // m_fileWidget：文件页内容控件。
+    ScannerDock* m_scannerWidget = nullptr; // m_scannerWidget：PE/ELF/Mach-O 扫描与安全编辑页。
     FileDock* m_shellUnlockerFileDock = nullptr; // m_shellUnlockerFileDock：Shell 右键文件解锁器隐藏宿主。
     DriverDock* m_driverWidget = nullptr; // m_driverWidget：驱动页内容控件。
     KernelDock* m_kernelWidget = nullptr; // m_kernelWidget：内核页内容控件。

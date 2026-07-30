@@ -144,6 +144,10 @@
     <ClCompile Include="src\features\redirect\redirect_ioctl.c" />
     <ClCompile Include="src\features\network\network_runtime.c" />
     <ClCompile Include="src\features\network\network_audit.c" />
+    <ClCompile Include="src\features\network\network_inventory.c" />
+    <ClCompile Include="src\features\network\network_inventory_nsi.c" />
+    <ClCompile Include="src\features\network\network_inventory_wfp.c" />
+    <ClCompile Include="src\features\network\network_inventory_ndis.c" />
     <ClCompile Include="src\features\network\network_wfp.c" />
     <ClCompile Include="src\features\network\network_ioctl.c" />
     <ClCompile Include="src\features\keyboard\keyboard_query.c" />
@@ -246,6 +250,8 @@
     <ClInclude Include="..\shared\driver\KswordArkUnloadedDriverIoctl.h" />
     <ClInclude Include="src\features\redirect\redirect_internal.h" />
     <ClInclude Include="src\features\network\network_internal.h" />
+    <ClInclude Include="src\features\network\network_inventory.h" />
+    <ClInclude Include="src\features\network\network_inventory_internal.h" />
     <ClInclude Include="src\features\kernel\hook_scan_support.h" />
     <ClInclude Include="src\features\kernel\driver_integrity.h" />
     <ClInclude Include="src\features\kernel\kernel_unloaded_drivers.h" />
@@ -379,7 +385,7 @@
     <Link>
       <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
       <AdditionalLibraryDirectories>$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\km\$(Platform);$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\ucrt\$(Platform);$(WindowsSdkDir)Lib\wdf\kmdf\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
+      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;netio.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -398,7 +404,7 @@
     <Link>
       <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
       <AdditionalLibraryDirectories>$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\km\$(Platform);$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\ucrt\$(Platform);$(WindowsSdkDir)Lib\wdf\kmdf\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
+      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;netio.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
@@ -416,7 +422,7 @@
     <Link>
       <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
       <AdditionalLibraryDirectories>$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\km\$(Platform);$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\ucrt\$(Platform);$(WindowsSdkDir)Lib\wdf\kmdf\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
+      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;netio.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
@@ -434,7 +440,7 @@
     <Link>
       <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
       <AdditionalLibraryDirectories>$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\km\$(Platform);$(WindowsSdkDir)Lib\$(TargetPlatformVersion)\ucrt\$(Platform);$(WindowsSdkDir)Lib\wdf\kmdf\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
+      <AdditionalDependencies>wdmsec.lib;wdm.lib;fwpkclnt.lib;netio.lib;fltMgr.lib;%(AdditionalDependencies);usbdex.lib;ntstrsafe.lib;aux_klib.lib;ucrt.osmode.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -20,6 +20,9 @@
 // 文件工具（路径规范化、句柄扫描、PE 基础解析等非 UI 后端）。
 #include "file/file.h"
 
+// 二进制扫描工具（PE/ELF/Mach-O 结构化解析与受约束原子文件补丁）。
+#include "scanner/scanner.h"
+
 // 启动项工具（注册表、服务、计划任务、Winsock、WMI 非 UI 枚举后端）。
 #include "startup/startup.h"
 

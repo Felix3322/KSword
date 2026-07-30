@@ -16,6 +16,7 @@ Environment:
 --*/
 
 #include "network_internal.h"
+#include "network_inventory.h"
 
 #define KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE \
     (sizeof(KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW))
@@ -27,6 +28,35 @@ Environment:
     (sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE) - sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW))
 
 #define KSWORD_ARK_NETWORK_AUDIT_DEFAULT_BUDGET_ROWS 256UL
+
+static ULONG
+KswordARKNetworkAuditCapacityFromBuffer(
+    _In_ size_t OutputBufferLength,
+    _In_ size_t HeaderSize,
+    _In_ size_t RowSize
+    )
+/*++
+
+Routine Description:
+
+    计算变长网络响应可容纳的完整行数，并限制到协议最大预算。
+
+--*/
+{
+    size_t payloadLength = 0U;
+    size_t rowCapacity = 0U;
+
+    if (OutputBufferLength <= HeaderSize || RowSize == 0U) {
+        return 0UL;
+    }
+
+    payloadLength = OutputBufferLength - HeaderSize;
+    rowCapacity = payloadLength / RowSize;
+    if (rowCapacity > KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) {
+        rowCapacity = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS;
+    }
+    return (ULONG)rowCapacity;
+}
 
 // {D2B28BC6-9E08-4D07-9F7B-2BA821D8AA51}
 static const GUID KSWORD_ARK_AUDIT_WFP_SUBLAYER =
@@ -153,7 +183,7 @@ Return Value:
 
 static VOID
 KswordARKNetworkAuditFillEndpointHeader(
-    _Out_ KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE* Response,
+    _Out_writes_bytes_(KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE) PVOID ResponseBuffer,
     _In_ ULONG Flags,
     _In_ ULONG BudgetRows,
     _In_ ULONG RuntimeGeneration,
@@ -163,8 +193,8 @@ KswordARKNetworkAuditFillEndpointHeader(
 
 Routine Description:
 
-    填充 TCP/UDP endpoint 响应头。中文说明：当前不遍历 tcpip 内部表，因此
-    total/returned 都为 0，并通过 AUDIT_UNAVAILABLE 暴露安全降级原因。
+    填充 TCP/UDP endpoint 基础响应头。collector 成功后由调用方覆盖计数、来源和
+    APPLIED 状态；collector 失败时保留 AUDIT_UNAVAILABLE 与真实错误码。
 
 Arguments:
 
@@ -180,6 +210,9 @@ Return Value:
 
 --*/
 {
+    KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE* Response =
+        (KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE*)ResponseBuffer;
+
     Response->version = KSWORD_ARK_NETWORK_PROTOCOL_VERSION;
     Response->size = (ULONG)KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE;
     Response->status = KSWORD_ARK_NETWORK_STATUS_AUDIT_UNAVAILABLE;
@@ -204,8 +237,8 @@ KswordARKNetworkQueryTcpEndpoints(
 
 Routine Description:
 
-    构造 TCP endpoint 只读审计响应。中文说明：该阶段只提供稳定协议骨架，后续
-    tcpip PDB traversal 接入时必须维持 count-first 和预算限制。
+    构造 TCP endpoint 只读审计响应。中文说明：真实数据来自 netio.sys 的 NSI
+    TCP provider table；私有 tcpip 对象字段不可用时由行 flags 明确标记。
 
 Arguments:
 
@@ -223,6 +256,12 @@ Return Value:
     KSWORD_ARK_NETWORK_RUNTIME* runtime = KswordARKNetworkGetRuntime();
     KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE* response = NULL;
     ULONG generation = 0UL;
+    ULONG queryFlags = 0UL;
+    ULONG budgetRows = 0UL;
+    ULONG rowCapacity = 0UL;
+    ULONG rowsAllowed = 0UL;
+    ULONG totalRows = 0UL;
+    ULONG returnedRows = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
 
     if (OutputBuffer == NULL || BytesWrittenOut == NULL) {
@@ -242,15 +281,40 @@ Return Value:
     generation = runtime->Generation;
     ExReleasePushLockShared(&runtime->Lock);
 
+    queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
+    budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
+    rowCapacity = KswordARKNetworkAuditCapacityFromBuffer(
+        OutputBufferLength,
+        KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE,
+        sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW));
+    rowsAllowed = (budgetRows < rowCapacity) ? budgetRows : rowCapacity;
+
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     response = (KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE*)OutputBuffer;
     KswordARKNetworkAuditFillEndpointHeader(
         response,
-        KswordARKNetworkAuditNormalizeFlags(Request),
-        KswordARKNetworkAuditNormalizeBudget(Request),
+        queryFlags,
+        budgetRows,
         generation,
         STATUS_NOT_SUPPORTED);
-    *BytesWrittenOut = KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE;
+
+    status = KswordARKNetworkCollectNsiEndpoints(
+        TRUE,
+        queryFlags,
+        (rowsAllowed != 0UL) ? response->entries : NULL,
+        rowsAllowed,
+        &totalRows,
+        &returnedRows);
+    response->lastStatus = status;
+    if (status == STATUS_SUCCESS) {
+        response->status = KSWORD_ARK_NETWORK_STATUS_APPLIED;
+        response->totalRowCount = totalRows;
+        response->returnedRowCount = returnedRows;
+        response->sourceFlags = KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+    }
+
+    *BytesWrittenOut = KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE +
+        ((size_t)returnedRows * sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW));
     return STATUS_SUCCESS;
 }
 
@@ -265,8 +329,8 @@ KswordARKNetworkQueryUdpEndpoints(
 
 Routine Description:
 
-    构造 UDP endpoint 只读审计响应。中文说明：当前不枚举 UDP endpoint，避免在
-    未完成 PDB/锁纪律确认前读取 tcpip 私有表。
+    构造 UDP endpoint 只读审计响应。中文说明：真实数据来自 netio.sys 的 NSI
+    UDP provider table；不读取 tcpip 私有表，不伪造 endpoint 对象地址。
 
 Arguments:
 
@@ -284,6 +348,12 @@ Return Value:
     KSWORD_ARK_NETWORK_RUNTIME* runtime = KswordARKNetworkGetRuntime();
     KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE* response = NULL;
     ULONG generation = 0UL;
+    ULONG queryFlags = 0UL;
+    ULONG budgetRows = 0UL;
+    ULONG rowCapacity = 0UL;
+    ULONG rowsAllowed = 0UL;
+    ULONG totalRows = 0UL;
+    ULONG returnedRows = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
 
     if (OutputBuffer == NULL || BytesWrittenOut == NULL) {
@@ -303,15 +373,40 @@ Return Value:
     generation = runtime->Generation;
     ExReleasePushLockShared(&runtime->Lock);
 
+    queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
+    budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
+    rowCapacity = KswordARKNetworkAuditCapacityFromBuffer(
+        OutputBufferLength,
+        KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE,
+        sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW));
+    rowsAllowed = (budgetRows < rowCapacity) ? budgetRows : rowCapacity;
+
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     response = (KSWORD_ARK_NETWORK_ENDPOINT_RESPONSE*)OutputBuffer;
     KswordARKNetworkAuditFillEndpointHeader(
         response,
-        KswordARKNetworkAuditNormalizeFlags(Request),
-        KswordARKNetworkAuditNormalizeBudget(Request),
+        queryFlags,
+        budgetRows,
         generation,
         STATUS_NOT_SUPPORTED);
-    *BytesWrittenOut = KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE;
+
+    status = KswordARKNetworkCollectNsiEndpoints(
+        FALSE,
+        queryFlags,
+        (rowsAllowed != 0UL) ? response->entries : NULL,
+        rowsAllowed,
+        &totalRows,
+        &returnedRows);
+    response->lastStatus = status;
+    if (status == STATUS_SUCCESS) {
+        response->status = KSWORD_ARK_NETWORK_STATUS_APPLIED;
+        response->totalRowCount = totalRows;
+        response->returnedRowCount = returnedRows;
+        response->sourceFlags = KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+    }
+
+    *BytesWrittenOut = KSWORD_ARK_NETWORK_ENDPOINT_HEADER_SIZE +
+        ((size_t)returnedRows * sizeof(KSWORD_ARK_NETWORK_ENDPOINT_ROW));
     return STATUS_SUCCESS;
 }
 
@@ -549,8 +644,8 @@ KswordARKNetworkQueryWfpInventory(
 
 Routine Description:
 
-    构造 WFP provider/sublayer/filter/callout inventory 响应。中文说明：该函数只导出
-    KswordARK 运行时已经注册的 WFP 对象 ID/GUID，不遍历 BFE 私有链表。
+    构造 WFP provider/sublayer/filter/callout inventory 响应。优先通过 BFE 公开
+    只读枚举器返回全局对象；枚举器不可用时才降级到 KswordARK 自有运行时对象。
 
 Arguments:
 
@@ -573,12 +668,13 @@ Return Value:
     ULONG recvAcceptCalloutId = 0UL;
     UINT64 connectFilterId = 0ULL;
     UINT64 recvAcceptFilterId = 0ULL;
+    ULONG queryFlags = 0UL;
     ULONG budgetRows = 0UL;
     ULONG rowCapacity = 0UL;
     ULONG totalRows = 0UL;
     ULONG rowsToWrite = 0UL;
+    ULONG rowsAllowed = 0UL;
     ULONG rowIndex = 0UL;
-    NTSTATUS registerStatus = STATUS_SUCCESS;
     NTSTATUS status = STATUS_SUCCESS;
 
     if (OutputBuffer == NULL || BytesWrittenOut == NULL) {
@@ -601,11 +697,44 @@ Return Value:
     recvAcceptCalloutId = runtime->RecvAcceptCalloutId;
     connectFilterId = runtime->ConnectFilterId;
     recvAcceptFilterId = runtime->RecvAcceptFilterId;
-    registerStatus = runtime->RegisterStatus;
     ExReleasePushLockShared(&runtime->Lock);
 
+    queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
     budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
     rowCapacity = KswordARKNetworkAuditWfpCapacityFromBuffer(OutputBufferLength);
+    rowsAllowed = (budgetRows < rowCapacity) ? budgetRows : rowCapacity;
+
+    RtlZeroMemory(OutputBuffer, OutputBufferLength);
+    response = (KSWORD_ARK_NETWORK_WFP_INVENTORY_RESPONSE*)OutputBuffer;
+    status = KswordARKNetworkCollectWfpInventory(
+        (rowsAllowed != 0UL) ? response->entries : NULL,
+        rowsAllowed,
+        &totalRows,
+        &rowsToWrite);
+    if (status == STATUS_SUCCESS ||
+        status == STATUS_PARTIAL_COPY ||
+        status == STATUS_BUFFER_OVERFLOW ||
+        totalRows != 0UL) {
+        response->version = KSWORD_ARK_NETWORK_PROTOCOL_VERSION;
+        response->size = (ULONG)KSWORD_ARK_NETWORK_WFP_HEADER_SIZE;
+        response->status = (status == STATUS_SUCCESS) ?
+            KSWORD_ARK_NETWORK_STATUS_APPLIED :
+            KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED;
+        response->flags = queryFlags;
+        response->totalRowCount = totalRows;
+        response->returnedRowCount = rowsToWrite;
+        response->entrySize = sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW);
+        response->sourceFlags = KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+        response->budgetRows = budgetRows;
+        response->generation = generation;
+        response->lastStatus = status;
+        *BytesWrittenOut = KSWORD_ARK_NETWORK_WFP_HEADER_SIZE +
+            ((size_t)rowsToWrite * sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW));
+        return STATUS_SUCCESS;
+    }
+
+    totalRows = 0UL;
+    rowsToWrite = 0UL;
     if ((runtimeFlags & KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED) != 0UL) {
         totalRows = 5UL;
     }
@@ -622,16 +751,18 @@ Return Value:
     response->version = KSWORD_ARK_NETWORK_PROTOCOL_VERSION;
     response->size = (ULONG)KSWORD_ARK_NETWORK_WFP_HEADER_SIZE;
     response->status = (totalRows != 0UL) ?
-        KSWORD_ARK_NETWORK_STATUS_APPLIED :
+        KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED :
         KSWORD_ARK_NETWORK_STATUS_AUDIT_UNAVAILABLE;
-    response->flags = KswordARKNetworkAuditNormalizeFlags(Request);
+    response->flags = queryFlags;
     response->totalRowCount = totalRows;
     response->returnedRowCount = rowsToWrite;
     response->entrySize = sizeof(KSWORD_ARK_NETWORK_WFP_INVENTORY_ROW);
-    response->sourceFlags = KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE;
+    response->sourceFlags = (totalRows != 0UL) ?
+        KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE :
+        KSWORD_ARK_NETWORK_AUDIT_SOURCE_NONE;
     response->budgetRows = budgetRows;
     response->generation = generation;
-    response->lastStatus = (totalRows != 0UL) ? STATUS_SUCCESS : registerStatus;
+    response->lastStatus = status;
 
     if (rowIndex < rowsToWrite) {
         KswordARKNetworkAuditFillWfpSublayerRow(&response->entries[rowIndex], rowIndex);
@@ -699,8 +830,8 @@ KswordARKNetworkQueryNdisChain(
 
 Routine Description:
 
-    构造 NDIS miniport/filter/protocol/binding chain 骨架响应。中文说明：该函数
-    不 detach、不 pause、不重排 NDIS 组件，只返回只读审计协议头。
+    构造 NDIS miniport/filter 设备栈只读响应。collector 只使用公开接口类和
+    引用计数安全的设备栈遍历，不 detach、不 pause、不重排 NDIS 组件。
 
 Arguments:
 
@@ -718,6 +849,12 @@ Return Value:
     KSWORD_ARK_NETWORK_RUNTIME* runtime = KswordARKNetworkGetRuntime();
     KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE* response = NULL;
     ULONG generation = 0UL;
+    ULONG queryFlags = 0UL;
+    ULONG budgetRows = 0UL;
+    ULONG rowCapacity = 0UL;
+    ULONG rowsAllowed = 0UL;
+    ULONG totalRows = 0UL;
+    ULONG returnedRows = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
 
     if (OutputBuffer == NULL || BytesWrittenOut == NULL) {
@@ -737,19 +874,39 @@ Return Value:
     generation = runtime->Generation;
     ExReleasePushLockShared(&runtime->Lock);
 
+    queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
+    budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
+    rowCapacity = KswordARKNetworkAuditCapacityFromBuffer(
+        OutputBufferLength,
+        KSWORD_ARK_NETWORK_NDIS_HEADER_SIZE,
+        sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW));
+    rowsAllowed = (budgetRows < rowCapacity) ? budgetRows : rowCapacity;
+
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     response = (KSWORD_ARK_NETWORK_NDIS_CHAIN_RESPONSE*)OutputBuffer;
+    status = KswordARKNetworkCollectNdisDeviceStacks(
+        (rowsAllowed != 0UL) ? response->entries : NULL,
+        rowsAllowed,
+        &totalRows,
+        &returnedRows);
     response->version = KSWORD_ARK_NETWORK_PROTOCOL_VERSION;
     response->size = (ULONG)KSWORD_ARK_NETWORK_NDIS_HEADER_SIZE;
-    response->status = KSWORD_ARK_NETWORK_STATUS_AUDIT_UNAVAILABLE;
-    response->flags = KswordARKNetworkAuditNormalizeFlags(Request);
-    response->totalRowCount = 0UL;
-    response->returnedRowCount = 0UL;
+    response->status = (status == STATUS_SUCCESS) ?
+        KSWORD_ARK_NETWORK_STATUS_APPLIED :
+        ((totalRows != 0UL) ?
+            KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED :
+            KSWORD_ARK_NETWORK_STATUS_AUDIT_UNAVAILABLE);
+    response->flags = queryFlags;
+    response->totalRowCount = totalRows;
+    response->returnedRowCount = returnedRows;
     response->entrySize = sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW);
-    response->sourceFlags = KSWORD_ARK_NETWORK_AUDIT_SOURCE_NONE;
-    response->budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
+    response->sourceFlags = (status == STATUS_SUCCESS || totalRows != 0UL) ?
+        KSWORD_ARK_NETWORK_AUDIT_SOURCE_RUNTIME_STATE :
+        KSWORD_ARK_NETWORK_AUDIT_SOURCE_NONE;
+    response->budgetRows = budgetRows;
     response->generation = generation;
-    response->lastStatus = STATUS_NOT_SUPPORTED;
-    *BytesWrittenOut = KSWORD_ARK_NETWORK_NDIS_HEADER_SIZE;
+    response->lastStatus = status;
+    *BytesWrittenOut = KSWORD_ARK_NETWORK_NDIS_HEADER_SIZE +
+        ((size_t)returnedRows * sizeof(KSWORD_ARK_NETWORK_NDIS_CHAIN_ROW));
     return STATUS_SUCCESS;
 }

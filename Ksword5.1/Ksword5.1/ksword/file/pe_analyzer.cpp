@@ -215,8 +215,9 @@ namespace ks::file
             return std::string(nameBytes, nameBytes + length);
         }
 
-        // RvaToFileOffset maps an RVA through section headers, with a header-area fallback.
-        // It guards section-size addition to avoid overflow in malformed images.
+        // RvaToFileOffset maps only bytes that physically exist in a section's
+        // raw-data range. A VirtualSize-only tail is zero-filled by the loader and
+        // has no file offset, so treating it as raw evidence would be incorrect.
         bool RvaToFileOffset(
             std::uint32_t rvaValue,
             std::uint32_t sizeOfHeadersValue,
@@ -226,16 +227,21 @@ namespace ks::file
             for (const IMAGE_SECTION_HEADER& sectionHeader : sectionList)
             {
                 const std::uint32_t sectionRva = sectionHeader.VirtualAddress;
-                const std::uint32_t sectionSpan = std::max(sectionHeader.Misc.VirtualSize, sectionHeader.SizeOfRawData);
-                if (sectionSpan == 0 || sectionRva > std::numeric_limits<std::uint32_t>::max() - sectionSpan)
+                if (rvaValue < sectionRva)
                 {
                     continue;
                 }
-                if (rvaValue >= sectionRva && rvaValue < sectionRva + sectionSpan)
+                const std::uint32_t delta = rvaValue - sectionRva;
+                if (delta >= sectionHeader.SizeOfRawData
+                    || sectionHeader.PointerToRawData
+                        > std::numeric_limits<std::uint32_t>::max()
+                            - delta)
                 {
-                    fileOffsetOut = sectionHeader.PointerToRawData + (rvaValue - sectionRva);
-                    return true;
+                    continue;
                 }
+                fileOffsetOut =
+                    sectionHeader.PointerToRawData + delta;
+                return true;
             }
             if (rvaValue < sizeOfHeadersValue)
             {
@@ -969,16 +975,10 @@ namespace ks::file
         }
     }
 
-    PeAnalysisResult AnalyzePeFile(const std::wstring& filePath)
+    PeAnalysisResult AnalyzePeBytes(
+        const std::vector<std::uint8_t>& fileBytes)
     {
         PeAnalysisResult result{};
-        std::vector<std::uint8_t> fileBytes;
-        std::wstring readErrorText;
-        if (!ReadWholeFile(filePath, fileBytes, readErrorText))
-        {
-            result.reportText = L"PE解析失败：" + readErrorText;
-            return result;
-        }
         if (fileBytes.size() < sizeof(IMAGE_DOS_HEADER))
         {
             result.reportText = L"PE解析失败：文件过小，无法读取 DOS 头。";
@@ -1125,6 +1125,15 @@ namespace ks::file
         result.subsystem = subsystemValue;
         result.entryPointRva = entryPointRva;
         result.imageBase = imageBaseValue;
+        result.entryPointFileOffsetValid =
+            entryPointRva != 0U
+            && RvaToFileOffset(
+                entryPointRva,
+                sizeOfHeadersValue,
+                sectionList,
+                result.entryPointFileOffset)
+            && result.entryPointFileOffset
+                < static_cast<std::uint64_t>(fileBytes.size());
         result.importModules = CollectImportTable(
             fileBytes,
             isPe64,
@@ -1184,11 +1193,30 @@ namespace ks::file
         return result;
     }
 
+    PeAnalysisResult AnalyzePeFile(const std::wstring& filePath)
+    {
+        std::vector<std::uint8_t> fileBytes;
+        std::wstring readErrorText;
+        if (!ReadWholeFile(filePath, fileBytes, readErrorText))
+        {
+            PeAnalysisResult result;
+            result.reportText = L"PE解析失败：" + readErrorText;
+            return result;
+        }
+        return AnalyzePeBytes(fileBytes);
+    }
+
     std::wstring BuildPeAnalysisText(const std::wstring& filePath)
     {
         // BuildPeAnalysisText is the text-only facade used by the FileDock property page.
         // It returns the report regardless of success so failures remain displayable.
         return AnalyzePeFile(filePath).reportText;
+    }
+
+    std::wstring BuildPeAnalysisText(
+        const std::vector<std::uint8_t>& fileBytes)
+    {
+        return AnalyzePeBytes(fileBytes).reportText;
     }
 
     std::string BuildPeAnalysisTextUtf8(const std::string& filePathUtf8)
