@@ -20,7 +20,7 @@ jobs:
       driver: ${{ steps.detect.outputs.driver }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -76,7 +76,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Verify WDK integration
         shell: pwsh
@@ -124,7 +124,7 @@ jobs:
           }
 
       - name: Upload driver artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: KswordARKDriver-unsigned-Release
           path: |

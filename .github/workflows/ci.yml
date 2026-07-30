@@ -27,7 +27,7 @@ jobs:
       ce_launcher: ${{ steps.detect.outputs.ce_launcher }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -110,12 +110,12 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -165,7 +165,7 @@ jobs:
 
       - name: Upload IOCTL audit report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ioctl-audit
           path: artifacts/ioctl-audit.md
@@ -180,7 +180,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -283,7 +283,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Qt for payload prerequisite
         uses: jurplel/install-qt-action@v4
@@ -371,7 +371,7 @@ jobs:
           }
 
       - name: Upload KswordSetup artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: KswordSetup-unsigned-Release
           path: |
@@ -386,7 +386,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build driver prerequisite and KswordARKLight
         shell: pwsh
@@ -438,7 +438,7 @@ jobs:
           }
 
       - name: Upload KswordARKLight artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: KswordARKLight-unsigned-Release
           path: |
@@ -457,7 +457,7 @@ jobs:
         platform: [x64, Win32]
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build KswordCheatEnginePlugin
         shell: pwsh
@@ -491,7 +491,7 @@ jobs:
           }
 
       - name: Upload KswordCheatEnginePlugin artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: KswordCheatEnginePlugin-${{ matrix.platform }}-Release
           path: |
@@ -506,7 +506,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build KswordCheatEngineLauncher
         shell: pwsh
@@ -540,7 +540,7 @@ jobs:
           }
 
       - name: Upload KswordCheatEngineLauncher artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: KswordCheatEngineLauncher-Release
           path: |
