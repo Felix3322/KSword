@@ -199,6 +199,17 @@ typedef struct _KSW_DRIVER_UNLOAD_CONTEXT
     WCHAR ServiceRegistryPath[KSWORD_ARK_DRIVER_IMAGE_PATH_CHARS];
 } KSW_DRIVER_UNLOAD_CONTEXT, *PKSW_DRIVER_UNLOAD_CONTEXT;
 
+/* 中文说明：保存 DriverObject 入口点和设备标志，使卸载前强拆失败时可以回滚。 */
+typedef struct _KSW_DRIVER_UNLOAD_ENTRY_TRANSACTION
+{
+    PFAST_IO_DISPATCH OriginalFastIoDispatch;
+    PDRIVER_DISPATCH OriginalMajorFunction[IRP_MJ_MAXIMUM_FUNCTION + 1UL];
+    PDEVICE_OBJECT DeviceObjects[KSW_DRIVER_UNLOAD_MAX_DEVICE_DELETE_COUNT];
+    ULONG OriginalDeviceFlags[KSW_DRIVER_UNLOAD_MAX_DEVICE_DELETE_COUNT];
+    ULONG DeviceCount;
+    BOOLEAN Applied;
+} KSW_DRIVER_UNLOAD_ENTRY_TRANSACTION, *PKSW_DRIVER_UNLOAD_ENTRY_TRANSACTION;
+
 /* 中文说明：DriverObject 强拆阶段的目标镜像驻留线程处理结果。 */
 typedef struct _KSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT
 {
@@ -1999,6 +2010,208 @@ KswordARKDriverUnloadClearDispatchUnsafe(
     }
 }
 
+/* 中文说明：只读快照 DriverObject 入口点和设备对象标志，并引用设备对象保活。 */
+static NTSTATUS
+KswordARKDriverUnloadSnapshotEntryTransaction(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _Out_ KSW_DRIVER_UNLOAD_ENTRY_TRANSACTION* Transaction
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    ULONG actualDeviceCount = 0UL;
+    ULONG majorIndex = 0UL;
+    ULONG deviceIndex = 0UL;
+
+    /*
+     * 输入：已引用目标 DriverObject 和空事务结构。
+     * 处理：先通过公开 IoEnumerateDeviceObjectList 获取带引用的设备快照，再读取
+     *      FastIo、全部 MajorFunction 和设备原始 Flags；本函数不修改目标对象。
+     * 返回：完整快照成功时 STATUS_SUCCESS；容量、对象归属或访问失败时返回错误。
+     */
+    if (DriverObject == NULL || Transaction == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(Transaction, sizeof(*Transaction));
+
+    status = IoEnumerateDeviceObjectList(
+        DriverObject,
+        Transaction->DeviceObjects,
+        sizeof(Transaction->DeviceObjects),
+        &actualDeviceCount);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (actualDeviceCount > KSW_DRIVER_UNLOAD_MAX_DEVICE_DELETE_COUNT) {
+        for (deviceIndex = 0UL;
+             deviceIndex < KSW_DRIVER_UNLOAD_MAX_DEVICE_DELETE_COUNT;
+             ++deviceIndex) {
+            if (Transaction->DeviceObjects[deviceIndex] != NULL) {
+                ObDereferenceObject(Transaction->DeviceObjects[deviceIndex]);
+                Transaction->DeviceObjects[deviceIndex] = NULL;
+            }
+        }
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    Transaction->DeviceCount = actualDeviceCount;
+
+    __try {
+        Transaction->OriginalFastIoDispatch = DriverObject->FastIoDispatch;
+        for (majorIndex = 0UL;
+             majorIndex <= IRP_MJ_MAXIMUM_FUNCTION;
+             ++majorIndex) {
+            Transaction->OriginalMajorFunction[majorIndex] =
+                DriverObject->MajorFunction[majorIndex];
+        }
+        for (deviceIndex = 0UL;
+             deviceIndex < Transaction->DeviceCount;
+             ++deviceIndex) {
+            if (Transaction->DeviceObjects[deviceIndex] == NULL ||
+                Transaction->DeviceObjects[deviceIndex]->DriverObject != DriverObject) {
+                status = STATUS_OBJECT_TYPE_MISMATCH;
+                break;
+            }
+            Transaction->OriginalDeviceFlags[deviceIndex] =
+                Transaction->DeviceObjects[deviceIndex]->Flags;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    if (!NT_SUCCESS(status)) {
+        for (deviceIndex = 0UL;
+             deviceIndex < Transaction->DeviceCount;
+             ++deviceIndex) {
+            if (Transaction->DeviceObjects[deviceIndex] != NULL) {
+                ObDereferenceObject(Transaction->DeviceObjects[deviceIndex]);
+                Transaction->DeviceObjects[deviceIndex] = NULL;
+            }
+        }
+        Transaction->DeviceCount = 0UL;
+    }
+    return status;
+}
+
+/* 中文说明：在完整事务快照存在时原子中和 dispatch 并阻断新设备打开。 */
+static NTSTATUS
+KswordARKDriverUnloadApplyEntryTransaction(
+    _Inout_ PDRIVER_OBJECT DriverObject,
+    _Inout_ KSW_DRIVER_UNLOAD_ENTRY_TRANSACTION* Transaction
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /*
+     * 输入：目标 DriverObject 和已成功建立的入口点事务快照。
+     * 处理：标记事务已应用，再设置拒绝 dispatch、清空 FastIo 并为快照设备设置
+     *      DO_DEVICE_INITIALIZING；异常由调用方统一执行回滚。
+     * 返回：全部写入成功时 STATUS_SUCCESS；异常时返回异常 NTSTATUS。
+     */
+    if (DriverObject == NULL || Transaction == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    Transaction->Applied = TRUE;
+    __try {
+        ULONG majorIndex = 0UL;
+        ULONG deviceIndex = 0UL;
+
+        DriverObject->FastIoDispatch = NULL;
+        for (majorIndex = 0UL;
+             majorIndex <= IRP_MJ_MAXIMUM_FUNCTION;
+             ++majorIndex) {
+            DriverObject->MajorFunction[majorIndex] =
+                KswordARKDriverUnloadRejectedDispatch;
+        }
+        for (deviceIndex = 0UL;
+             deviceIndex < Transaction->DeviceCount;
+             ++deviceIndex) {
+            Transaction->DeviceObjects[deviceIndex]->Flags |= DO_DEVICE_INITIALIZING;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+    return status;
+}
+
+/* 中文说明：恢复入口点事务保存的 FastIo、MajorFunction 和设备初始化标志位。 */
+static NTSTATUS
+KswordARKDriverUnloadRollbackEntryTransaction(
+    _Inout_ PDRIVER_OBJECT DriverObject,
+    _Inout_ KSW_DRIVER_UNLOAD_ENTRY_TRANSACTION* Transaction
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /*
+     * 输入：仍被引用的目标 DriverObject 和此前应用过的事务快照。
+     * 处理：仅在 Applied=TRUE 时恢复全部可逆入口字段及原始初始化标志位；
+     *      其它并发更新的设备 Flags 保持不变，避免回滚覆盖目标驱动新状态。
+     * 返回：恢复成功时 STATUS_SUCCESS；写回异常时返回异常 NTSTATUS。
+     */
+    if (DriverObject == NULL || Transaction == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (!Transaction->Applied) {
+        return STATUS_SUCCESS;
+    }
+
+    __try {
+        ULONG majorIndex = 0UL;
+        ULONG deviceIndex = 0UL;
+
+        DriverObject->FastIoDispatch = Transaction->OriginalFastIoDispatch;
+        for (majorIndex = 0UL;
+             majorIndex <= IRP_MJ_MAXIMUM_FUNCTION;
+             ++majorIndex) {
+            DriverObject->MajorFunction[majorIndex] =
+                Transaction->OriginalMajorFunction[majorIndex];
+        }
+        for (deviceIndex = 0UL;
+             deviceIndex < Transaction->DeviceCount;
+             ++deviceIndex) {
+            Transaction->DeviceObjects[deviceIndex]->Flags =
+                (Transaction->DeviceObjects[deviceIndex]->Flags &
+                    ~DO_DEVICE_INITIALIZING) |
+                (Transaction->OriginalDeviceFlags[deviceIndex] &
+                    DO_DEVICE_INITIALIZING);
+        }
+        Transaction->Applied = FALSE;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+    return status;
+}
+
+/* 中文说明：释放入口事务持有的设备对象引用，不修改已经提交的目标字段。 */
+static VOID
+KswordARKDriverUnloadReleaseEntryTransaction(
+    _Inout_ KSW_DRIVER_UNLOAD_ENTRY_TRANSACTION* Transaction
+    )
+{
+    ULONG deviceIndex = 0UL;
+
+    /*
+     * 输入：成功快照过设备对象的事务。
+     * 处理：逐个归还 IoEnumerateDeviceObjectList 增加的对象引用并清空计数。
+     * 返回：无；可用于成功提交或回滚完成后的对称清理。
+     */
+    if (Transaction == NULL) {
+        return;
+    }
+    for (deviceIndex = 0UL;
+         deviceIndex < Transaction->DeviceCount;
+         ++deviceIndex) {
+        if (Transaction->DeviceObjects[deviceIndex] != NULL) {
+            ObDereferenceObject(Transaction->DeviceObjects[deviceIndex]);
+            Transaction->DeviceObjects[deviceIndex] = NULL;
+        }
+    }
+    Transaction->DeviceCount = 0UL;
+}
+
 /* 中文说明：可选清理 DriverUnload 指针，避免右键重复触发同一个卸载入口。 */
 static VOID
 KswordARKDriverUnloadClearUnloadPointerUnsafe(
@@ -3192,9 +3405,12 @@ KswordARKDriverUnloadBuildPreflightResult(
             }
         }
     }
-    else if (evidenceStatus == STATUS_SUCCESS &&
-        Result->ThreadScanStatus == STATUS_BUFFER_OVERFLOW) {
-        evidenceStatus = Result->ThreadScanStatus;
+    else {
+        if (evidenceStatus == STATUS_SUCCESS) {
+            evidenceStatus = Result->ThreadScanStatus;
+        }
+        Result->AllowDestructiveCleanup = FALSE;
+        Result->AllowDirectUnload = FALSE;
     }
 
     {
@@ -3217,9 +3433,12 @@ KswordARKDriverUnloadBuildPreflightResult(
                 Result->HasNonRemovableModuleCallbacks = TRUE;
             }
         }
-        else if (evidenceStatus == STATUS_SUCCESS &&
-            Result->CallbackScanStatus == STATUS_BUFFER_OVERFLOW) {
-            evidenceStatus = Result->CallbackScanStatus;
+        else {
+            if (evidenceStatus == STATUS_SUCCESS) {
+                evidenceStatus = Result->CallbackScanStatus;
+            }
+            Result->AllowDestructiveCleanup = FALSE;
+            Result->AllowDirectUnload = FALSE;
         }
     }
 
@@ -3370,15 +3589,20 @@ KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(
     )
 {
     KSW_DYN_STATE dynState;
+    KSW_DRIVER_UNLOAD_ENTRY_TRANSACTION entryTransaction;
     NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS rollbackStatus = STATUS_SUCCESS;
     ULONG terminatePass = 0UL;
     ULONG remainingThreads = 0UL;
+    ULONG scannedProcesses = 0UL;
+    ULONG scannedThreads = 0UL;
 
     /*
-     * DriverObject 强拆的不可变前半段：
-     * 1. 先封 MajorFunction/FastIo，阻止新的外部入口；
-     * 2. 再终止目标镜像驻留的系统线程并逐个确认退出；
-     * 3. 全部成功后调用方才允许进入 DriverUnload。
+     * DriverObject 强拆的事务前半段：
+     * 1. 重新验证 PDB-backed ETHREAD 字段并完成一次只读线程扫描；
+     * 2. 保存 MajorFunction/FastIo/Device Flags 后才阻断新的外部入口；
+     * 3. 线程或回调清理失败时恢复全部可逆入口字段；
+     * 4. 全部成功后提交事务，调用方才允许进入 DriverUnload。
      */
     if (UnloadContext == NULL || UnloadContext->DriverObject == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -3392,24 +3616,43 @@ KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(
         return STATUS_INVALID_DEVICE_REQUEST;
     }
 
-    KswordARKDriverUnloadClearDispatchUnsafe(UnloadContext->DriverObject);
-    UnloadContext->CleanupFlagsApplied |=
-        KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD;
-    status = KswordARKDriverUnloadBlockNewDeviceCreatesUnsafe(
-        UnloadContext->DriverObject,
-        NULL);
+    RtlZeroMemory(&dynState, sizeof(dynState));
+    RtlZeroMemory(&entryTransaction, sizeof(entryTransaction));
+    KswordARKDynDataSnapshot(&dynState);
+    if (!KswordARKDriverUnloadHasPdbBackedThreadDynData(&dynState)) {
+        return STATUS_REQUEST_NOT_ACCEPTED;
+    }
+
+    status = KswordARKDriverUnloadScanModuleResidentThreads(
+        &dynState,
+        UnloadContext->DriverStart,
+        UnloadContext->DriverEnd,
+        &scannedProcesses,
+        &scannedThreads,
+        &remainingThreads);
     if (!NT_SUCCESS(status)) {
         return status;
     }
 
-    RtlZeroMemory(&dynState, sizeof(dynState));
-    KswordARKDynDataSnapshot(&dynState);
+    status = KswordARKDriverUnloadSnapshotEntryTransaction(
+        UnloadContext->DriverObject,
+        &entryTransaction);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = KswordARKDriverUnloadApplyEntryTransaction(
+        UnloadContext->DriverObject,
+        &entryTransaction);
+    if (!NT_SUCCESS(status)) {
+        goto RollbackEntryTransaction;
+    }
+    UnloadContext->CleanupFlagsApplied |=
+        KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD;
+
     for (terminatePass = 0UL;
         terminatePass < KSW_DRIVER_UNLOAD_THREAD_TERMINATE_PASSES;
         ++terminatePass) {
         KSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT threadResult;
-        ULONG scannedProcesses = 0UL;
-        ULONG scannedThreads = 0UL;
 
         RtlZeroMemory(&threadResult, sizeof(threadResult));
         threadResult.LastStatus = STATUS_SUCCESS;
@@ -3425,10 +3668,12 @@ KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(
             UnloadContext->ThreadLastStatus = threadResult.LastStatus;
         }
         if (!NT_SUCCESS(status)) {
-            return status;
+            goto RollbackEntryTransaction;
         }
 
         remainingThreads = 0UL;
+        scannedProcesses = 0UL;
+        scannedThreads = 0UL;
         status = KswordARKDriverUnloadScanModuleResidentThreads(
             &dynState,
             UnloadContext->DriverStart,
@@ -3438,7 +3683,7 @@ KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(
             &remainingThreads);
         if (!NT_SUCCESS(status)) {
             UnloadContext->ThreadLastStatus = status;
-            return status;
+            goto RollbackEntryTransaction;
         }
         if (remainingThreads == 0UL) {
             break;
@@ -3448,7 +3693,8 @@ KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(
         UnloadContext->ThreadCandidates += remainingThreads;
         UnloadContext->ThreadFailures += remainingThreads;
         UnloadContext->ThreadLastStatus = STATUS_DEVICE_BUSY;
-        return STATUS_DEVICE_BUSY;
+        status = STATUS_DEVICE_BUSY;
+        goto RollbackEntryTransaction;
     }
 
     UnloadContext->CleanupFlagsApplied |=
@@ -3468,12 +3714,22 @@ KswordARKDriverUnloadApplyPreUnloadTeardownUnsafe(
         UnloadContext->CallbackFailures = callbackResult.Failures;
         UnloadContext->CallbackLastStatus = callbackResult.LastStatus;
         if (!NT_SUCCESS(status)) {
-            return status;
+            goto RollbackEntryTransaction;
         }
         UnloadContext->CleanupFlagsApplied |=
             KSWORD_ARK_DRIVER_UNLOAD_FLAG_REMOVE_CALLBACKS_BY_MODULE_BASE;
     }
+    KswordARKDriverUnloadReleaseEntryTransaction(&entryTransaction);
     return STATUS_SUCCESS;
+
+RollbackEntryTransaction:
+    rollbackStatus = KswordARKDriverUnloadRollbackEntryTransaction(
+        UnloadContext->DriverObject,
+        &entryTransaction);
+    UnloadContext->CleanupFlagsApplied &=
+        ~KSWORD_ARK_DRIVER_UNLOAD_FLAG_CLEAR_DISPATCH_BEFORE_UNLOAD;
+    KswordARKDriverUnloadReleaseEntryTransaction(&entryTransaction);
+    return NT_SUCCESS(rollbackStatus) ? status : rollbackStatus;
 }
 
 /* 中文说明：执行强制卸载后的附加清理，所有动作都必须由有效 flag 明确启用。 */
@@ -3714,6 +3970,16 @@ KswordARKDriverUnloadPreflightDenyStatus(
     if (Preflight->HasDeviceLoop || Preflight->HasCrossDriverAttach) {
         return STATUS_INVALID_DEVICE_REQUEST;
     }
+    if (!Preflight->HasThreadScan) {
+        return NT_SUCCESS(Preflight->ThreadScanStatus)
+            ? STATUS_REQUEST_NOT_ACCEPTED
+            : Preflight->ThreadScanStatus;
+    }
+    if (!Preflight->HasCallbackScan) {
+        return NT_SUCCESS(Preflight->CallbackScanStatus)
+            ? STATUS_REQUEST_NOT_ACCEPTED
+            : Preflight->CallbackScanStatus;
+    }
     if (Preflight->HasModuleResidentThreads) {
         return STATUS_DEVICE_BUSY;
     }
@@ -3761,7 +4027,9 @@ KswordARKDriverUnloadCanUseDestructiveFallback(
         !Preflight->HasValidDynData ||
         !Preflight->HasPdbBackedDynData ||
         !Preflight->HasValidDriverObjectOffsets ||
-        !Preflight->HasValidLoaderEvidence) {
+        !Preflight->HasValidLoaderEvidence ||
+        !Preflight->HasThreadScan ||
+        !Preflight->HasCallbackScan) {
         return FALSE;
     }
     if (!KswordARKDriverUnloadHasCleanupRequest(Flags)) {
