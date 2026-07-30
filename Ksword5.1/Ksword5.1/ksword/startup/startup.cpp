@@ -5,6 +5,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <Aclapi.h>
 #include <Windows.h>
 #include <KnownFolders.h>
 #include <Shellapi.h>
@@ -3634,12 +3635,120 @@ namespace
 
 namespace
 {
-    std::wstring StartupParkingRoot()
+    std::wstring StartupParkingRoot(HKEY metadataHive)
     {
-        const std::wstring localAppData = KnownFolderPath(FOLDERID_LocalAppData);
-        return localAppData.empty()
-            ? std::wstring()
-            : (std::filesystem::path(localAppData) / L"KSword" / L"StartupManager" / L"Parking").wstring();
+        if (metadataHive == HKEY_CURRENT_USER)
+        {
+            const std::wstring localAppData = KnownFolderPath(FOLDERID_LocalAppData);
+            return localAppData.empty()
+                ? std::wstring()
+                : (std::filesystem::path(localAppData) / L"KSword" / L"StartupManager" / L"Parking").wstring();
+        }
+        if (metadataHive == HKEY_LOCAL_MACHINE)
+        {
+            const std::wstring programData = KnownFolderPath(FOLDERID_ProgramData);
+            const std::wstring protectedDirectoryName =
+                std::wstring(L"KSword") + L"StartupManager";
+            return programData.empty()
+                ? std::wstring()
+                : (std::filesystem::path(programData) / protectedDirectoryName / L"Parking").wstring();
+        }
+        return std::wstring();
+    }
+
+    LONG EnsureProtectedMachineDirectory(const std::wstring& directoryPath)
+    {
+        PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
+        if (::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)",
+                SDDL_REVISION_1,
+                &securityDescriptor,
+                nullptr) == FALSE)
+        {
+            return static_cast<LONG>(::GetLastError());
+        }
+
+        SECURITY_ATTRIBUTES securityAttributes{};
+        securityAttributes.nLength = sizeof(securityAttributes);
+        securityAttributes.lpSecurityDescriptor = securityDescriptor;
+        securityAttributes.bInheritHandle = FALSE;
+        if (::CreateDirectoryW(directoryPath.c_str(), &securityAttributes) == FALSE)
+        {
+            const DWORD createError = ::GetLastError();
+            if (createError != ERROR_ALREADY_EXISTS)
+            {
+                ::LocalFree(securityDescriptor);
+                return static_cast<LONG>(createError);
+            }
+        }
+
+        HANDLE directoryHandle = ::CreateFileW(
+            directoryPath.c_str(),
+            FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (directoryHandle == INVALID_HANDLE_VALUE)
+        {
+            const DWORD openError = ::GetLastError();
+            ::LocalFree(securityDescriptor);
+            return static_cast<LONG>(openError);
+        }
+
+        BY_HANDLE_FILE_INFORMATION fileInformation{};
+        const bool informationValid =
+            ::GetFileInformationByHandle(directoryHandle, &fileInformation) != FALSE;
+        if (!informationValid
+            || (fileInformation.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0
+            || (fileInformation.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            const DWORD validationError = informationValid
+                ? ERROR_REPARSE_TAG_INVALID
+                : ::GetLastError();
+            ::CloseHandle(directoryHandle);
+            ::LocalFree(securityDescriptor);
+            return static_cast<LONG>(validationError);
+        }
+
+        BOOL daclPresent = FALSE;
+        BOOL daclDefaulted = FALSE;
+        PACL dacl = nullptr;
+        const bool daclValid =
+            ::GetSecurityDescriptorDacl(securityDescriptor, &daclPresent, &dacl, &daclDefaulted) != FALSE
+            && daclPresent
+            && dacl != nullptr;
+        const DWORD securityResult = daclValid
+            ? ::SetSecurityInfo(
+                directoryHandle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                nullptr,
+                nullptr,
+                dacl,
+                nullptr)
+            : ERROR_INVALID_SECURITY_DESCR;
+        ::CloseHandle(directoryHandle);
+        ::LocalFree(securityDescriptor);
+        return static_cast<LONG>(securityResult);
+    }
+
+    LONG EnsureMachineStartupParkingRoot()
+    {
+        const std::wstring parkingRoot = StartupParkingRoot(HKEY_LOCAL_MACHINE);
+        if (parkingRoot.empty())
+        {
+            return ERROR_PATH_NOT_FOUND;
+        }
+        const std::wstring protectedRoot =
+            std::filesystem::path(parkingRoot).parent_path().wstring();
+        LONG result = EnsureProtectedMachineDirectory(protectedRoot);
+        if (result == ERROR_SUCCESS)
+        {
+            result = EnsureProtectedMachineDirectory(parkingRoot);
+        }
+        return result;
     }
 
     std::wstring NormalizedPathText(const std::wstring& pathText)
@@ -3688,6 +3797,16 @@ namespace
         return IsKnownStartupFolderFile(pathText, &machineWide);
     }
 
+    HKEY StartupFolderMetadataHive(const std::wstring& originalPath)
+    {
+        bool machineWide = false;
+        if (!IsKnownStartupFolderFile(originalPath, &machineWide))
+        {
+            return nullptr;
+        }
+        return machineWide ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+    }
+
     bool IsRegularFileWide(const std::wstring& pathText)
     {
         const DWORD attributes = ::GetFileAttributesW(pathText.c_str());
@@ -3725,6 +3844,7 @@ namespace
     }
 
     bool ReadStartupFolderBackupMetadata(
+        HKEY metadataHive,
         HKEY recordKey,
         const std::wstring& backupId,
         StartupFolderBackupRecord& recordOut)
@@ -3739,11 +3859,11 @@ namespace
             || !QueryMetadataString(recordKey, L"OriginalPath", record.originalPath)
             || !QueryMetadataString(recordKey, L"ParkedPath", record.parkedPath)
             || !QueryMetadataString(recordKey, L"ItemName", record.itemName)
-            || !IsKnownStartupFolderFile(record.originalPath))
+            || StartupFolderMetadataHive(record.originalPath) != metadataHive)
         {
             return false;
         }
-        const std::wstring parkingRoot = StartupParkingRoot();
+        const std::wstring parkingRoot = StartupParkingRoot(metadataHive);
         if (parkingRoot.empty())
         {
             return false;
@@ -3759,6 +3879,7 @@ namespace
     }
 
     bool ReadStartupFolderBackupById(
+        HKEY metadataHive,
         const std::wstring& backupId,
         StartupFolderBackupRecord& recordOut,
         DWORD& errorCodeOut)
@@ -3771,7 +3892,7 @@ namespace
         }
         HKEY recordKey = nullptr;
         const LONG openResult = ::RegOpenKeyExW(
-            HKEY_CURRENT_USER,
+            metadataHive,
             MetadataRecordPath(kStartupFolderBackupRoot, backupId).c_str(),
             0,
             KEY_QUERY_VALUE,
@@ -3781,7 +3902,11 @@ namespace
             errorCodeOut = static_cast<DWORD>(openResult);
             return false;
         }
-        const bool readOk = ReadStartupFolderBackupMetadata(recordKey, backupId, recordOut);
+        const bool readOk = ReadStartupFolderBackupMetadata(
+            metadataHive,
+            recordKey,
+            backupId,
+            recordOut);
         ::RegCloseKey(recordKey);
         if (!readOk)
         {
@@ -3806,16 +3931,28 @@ namespace
         StartupFolderBackupRecord& recordOut,
         HKEY& recordKeyOut)
     {
-        const std::wstring parkingRoot = StartupParkingRoot();
+        const HKEY metadataHive = StartupFolderMetadataHive(originalPath);
+        const std::wstring parkingRoot = StartupParkingRoot(metadataHive);
         if (parkingRoot.empty())
         {
             return ERROR_PATH_NOT_FOUND;
         }
-        std::error_code directoryError;
-        std::filesystem::create_directories(parkingRoot, directoryError);
-        if (directoryError)
+        if (metadataHive == HKEY_LOCAL_MACHINE)
         {
-            return static_cast<LONG>(directoryError.value());
+            const LONG directoryResult = EnsureMachineStartupParkingRoot();
+            if (directoryResult != ERROR_SUCCESS)
+            {
+                return directoryResult;
+            }
+        }
+        else
+        {
+            std::error_code directoryError;
+            std::filesystem::create_directories(parkingRoot, directoryError);
+            if (directoryError)
+            {
+                return static_cast<LONG>(directoryError.value());
+            }
         }
         for (int attempt = 0; attempt < 64; ++attempt)
         {
@@ -3825,7 +3962,7 @@ namespace
             record.state = kBackupStatePrepared;
             HKEY recordKey = nullptr;
             LONG result = CreateUniqueMetadataKey(
-                HKEY_CURRENT_USER,
+                metadataHive,
                 kStartupFolderBackupRoot,
                 record.backupId,
                 recordKey);
@@ -3845,7 +3982,7 @@ namespace
             }
             result = static_cast<LONG>(::GetLastError());
             ::RegCloseKey(recordKey);
-            DeleteMetadataRecord(HKEY_CURRENT_USER, kStartupFolderBackupRoot, record.backupId);
+            DeleteMetadataRecord(metadataHive, kStartupFolderBackupRoot, record.backupId);
             if (result != ERROR_ALREADY_EXISTS)
             {
                 return result;
@@ -3856,8 +3993,9 @@ namespace
 
     void CleanupStartupFolderBackupArtifacts(const StartupFolderBackupRecord& record)
     {
-        const std::wstring parkingRoot = StartupParkingRoot();
-        if (!IsSafeBackupId(record.backupId) || parkingRoot.empty())
+        const HKEY metadataHive = StartupFolderMetadataHive(record.originalPath);
+        const std::wstring parkingRoot = StartupParkingRoot(metadataHive);
+        if (metadataHive == nullptr || !IsSafeBackupId(record.backupId) || parkingRoot.empty())
         {
             return;
         }
@@ -3878,7 +4016,7 @@ namespace
             const DWORD errorCode = ::GetLastError();
             if (errorCode == ERROR_FILE_NOT_FOUND || errorCode == ERROR_PATH_NOT_FOUND)
             {
-                DeleteMetadataRecord(HKEY_CURRENT_USER, kStartupFolderBackupRoot, record.backupId);
+                DeleteMetadataRecord(metadataHive, kStartupFolderBackupRoot, record.backupId);
             }
             return;
         }
@@ -3889,16 +4027,17 @@ namespace
         }
         if (::RemoveDirectoryW(expectedDirectory.c_str()) != FALSE)
         {
-            DeleteMetadataRecord(HKEY_CURRENT_USER, kStartupFolderBackupRoot, record.backupId);
+            DeleteMetadataRecord(metadataHive, kStartupFolderBackupRoot, record.backupId);
         }
     }
 
     ks::startup::ActionResult DisableStartupFolderEntry(const ks::startup::StartupEntry& entry)
     {
         const std::wstring originalPath = ToWide(entry.actionLocator.originalFilePathText);
+        const HKEY metadataHive = StartupFolderMetadataHive(originalPath);
         if (!entry.actionLocator.backupIdText.empty()
             || !entry.actionLocator.parkedFilePathText.empty()
-            || !IsSupportedStartupFolderFile(originalPath))
+            || metadataHive == nullptr)
         {
             return MakeActionResult(
                 ks::startup::StartupActionStatus::InvalidEntry,
@@ -3960,7 +4099,11 @@ namespace
         }
         StartupFolderBackupRecord verifiedRecord;
         const bool metadataVerified = result == ERROR_SUCCESS
-            && ReadStartupFolderBackupMetadata(recordKey, record.backupId, verifiedRecord)
+            && ReadStartupFolderBackupMetadata(
+                metadataHive,
+                recordKey,
+                record.backupId,
+                verifiedRecord)
             && StartupFolderBackupRecordsEqual(record, verifiedRecord);
         if (!metadataVerified)
         {
@@ -4052,9 +4195,20 @@ namespace
     ks::startup::ActionResult EnableStartupFolderEntry(const ks::startup::StartupEntry& entry)
     {
         const std::wstring backupId = ToWide(entry.actionLocator.backupIdText);
+        const HKEY metadataHive =
+            StartupFolderMetadataHive(ToWide(entry.actionLocator.originalFilePathText));
+        if (metadataHive == nullptr)
+        {
+            return MakeActionResult(
+                ks::startup::StartupActionStatus::InvalidEntry,
+                false,
+                false,
+                ERROR_INVALID_PARAMETER,
+                FromWide(L"启动文件夹恢复记录的完整性范围无效。"));
+        }
         StartupFolderBackupRecord record;
         DWORD readError = ERROR_SUCCESS;
-        if (!ReadStartupFolderBackupById(backupId, record, readError))
+        if (!ReadStartupFolderBackupById(metadataHive, backupId, record, readError))
         {
             return MakeActionResult(
                 StatusFromWin32(readError, ks::startup::StartupActionStatus::InvalidEntry),
@@ -4123,7 +4277,7 @@ namespace
 
         HKEY recordKey = nullptr;
         result = ::RegOpenKeyExW(
-            HKEY_CURRENT_USER,
+            metadataHive,
             MetadataRecordPath(kStartupFolderBackupRoot, backupId).c_str(),
             0,
             KEY_QUERY_VALUE | KEY_SET_VALUE,
@@ -4160,7 +4314,7 @@ namespace
         }
 
         const LONG cleanupResult = DeleteMetadataRecord(
-            HKEY_CURRENT_USER,
+            metadataHive,
             kStartupFolderBackupRoot,
             backupId);
         ::RemoveDirectoryW(std::filesystem::path(record.parkedPath).parent_path().c_str());
@@ -4176,29 +4330,35 @@ namespace
 
     void AppendDisabledStartupFolderEntries(std::vector<ks::startup::StartupEntry>& entries)
     {
-        for (const std::wstring& backupId : EnumerateRegistrySubKeys(HKEY_CURRENT_USER, kStartupFolderBackupRoot))
+        const std::array<HKEY, 2> metadataHives{ HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE };
+        for (const HKEY metadataHive : metadataHives)
         {
-            StartupFolderBackupRecord record;
-            DWORD readError = ERROR_SUCCESS;
-            if (!ReadStartupFolderBackupById(backupId, record, readError))
+            const std::string metadataScope = metadataHive == HKEY_LOCAL_MACHINE ? "HKLM" : "HKCU";
+            for (const std::wstring& backupId : EnumerateRegistrySubKeys(metadataHive, kStartupFolderBackupRoot))
             {
-                ks::startup::StartupEntry invalidEntry;
-                invalidEntry.category = ks::startup::StartupCategory::Logon;
-                invalidEntry.categoryText = ks::startup::CategoryToText(invalidEntry.category);
-                invalidEntry.itemNameText = FromWide(L"KSword 启动文件恢复记录 ") + FromWide(backupId);
-                invalidEntry.detailText = FromWide(L"KSword 暂存记录=") + FromWide(backupId);
-                invalidEntry.sourceTypeText = "StartupFolderBackup";
-                invalidEntry.enabled = false;
-                invalidEntry.uniqueIdText = "STARTUPFOLDER-RECOVERY-INVALID|" + FromWide(backupId);
-                invalidEntry.lastErrorCode = readError;
-                MarkEntryActionUnavailable(
-                    invalidEntry,
-                    ks::startup::StartupRiskLevel::Critical,
-                    "backup_record",
-                    FromWide(L"启动文件夹恢复元数据损坏或版本不受支持，无法构造可执行的恢复定位器。"));
-                entries.push_back(std::move(invalidEntry));
-                continue;
-            }
+                StartupFolderBackupRecord record;
+                DWORD readError = ERROR_SUCCESS;
+                if (!ReadStartupFolderBackupById(metadataHive, backupId, record, readError))
+                {
+                    ks::startup::StartupEntry invalidEntry;
+                    invalidEntry.category = ks::startup::StartupCategory::Logon;
+                    invalidEntry.categoryText = ks::startup::CategoryToText(invalidEntry.category);
+                    invalidEntry.itemNameText = FromWide(L"KSword 启动文件恢复记录 ") + FromWide(backupId);
+                    invalidEntry.detailText =
+                        metadataScope + "|" + FromWide(L"KSword 暂存记录=") + FromWide(backupId);
+                    invalidEntry.sourceTypeText = "StartupFolderBackup";
+                    invalidEntry.enabled = false;
+                    invalidEntry.uniqueIdText =
+                        "STARTUPFOLDER-RECOVERY-INVALID|" + metadataScope + "|" + FromWide(backupId);
+                    invalidEntry.lastErrorCode = readError;
+                    MarkEntryActionUnavailable(
+                        invalidEntry,
+                        ks::startup::StartupRiskLevel::Critical,
+                        "backup_record",
+                        FromWide(L"启动文件夹恢复元数据损坏、版本不受支持，或元数据完整性范围与目标不匹配。"));
+                    entries.push_back(std::move(invalidEntry));
+                    continue;
+                }
             FileIdentitySnapshot originalIdentity;
             FileIdentitySnapshot parkedIdentity;
             DWORD originalError = ERROR_SUCCESS;
@@ -4223,6 +4383,7 @@ namespace
                     StartupFolderBackupRecord remainingRecord;
                     DWORD remainingError = ERROR_SUCCESS;
                     if (!ReadStartupFolderBackupById(
+                            metadataHive,
                             backupId,
                             remainingRecord,
                             remainingError)
@@ -4239,7 +4400,7 @@ namespace
                 {
                     reconciliationError = static_cast<DWORD>(
                         CommitMetadataStateById(
-                            HKEY_CURRENT_USER,
+                            metadataHive,
                             kStartupFolderBackupRoot,
                             backupId,
                             kBackupStateDisabled));
@@ -4264,12 +4425,14 @@ namespace
             entry.locationText = ToNativeSeparators(FromWide(std::filesystem::path(record.originalPath).parent_path().wstring()));
             entry.userText = machineWide ? FromWide(L"\u672c\u673a") : FromWide(L"\u5f53\u524d\u7528\u6237");
             entry.sourceTypeText = "StartupFolder";
-            entry.detailText = FromWide(L"KSword 暂存=") + FromWide(record.parkedPath);
+            entry.detailText =
+                metadataScope + "|" + FromWide(L"KSword 暂存=") + FromWide(record.parkedPath);
             entry.enabled = false;
             entry.canOpenFileLocation = parkedExists;
             entry.canDelete = false;
             entry.imagePathExists = parkedExists;
-            entry.uniqueIdText = "STARTUPFOLDER-RECOVERY|" + FromWide(backupId);
+            entry.uniqueIdText =
+                "STARTUPFOLDER-RECOVERY|" + metadataScope + "|" + FromWide(backupId);
             entry.lastErrorCode = reconciliationError != ERROR_SUCCESS
                 ? reconciliationError
                 : (!originalExists && originalError != ERROR_FILE_NOT_FOUND
@@ -4334,6 +4497,7 @@ namespace
                     reasonText);
             }
             entries.push_back(std::move(entry));
+            }
         }
     }
 }

@@ -19786,6 +19786,8 @@
     "原位置已存在文件；恢复操作会拒绝覆盖该文件。": "A file already exists at the original location; restoration will refuse to overwrite it.",
     "后端未提供风险说明": "The backend did not provide a risk explanation",
     "启动文件夹恢复元数据损坏或版本不受支持，无法构造可执行的恢复定位器。": "The Startup-folder recovery metadata is corrupt or unsupported, so an actionable recovery locator cannot be built.",
+    "启动文件夹恢复元数据损坏、版本不受支持，或元数据完整性范围与目标不匹配。": "The Startup-folder recovery metadata is corrupt, unsupported, or stored at an integrity scope that does not match its target.",
+    "启动文件夹恢复记录的完整性范围无效。": "The Startup-folder recovery record integrity scope is invalid.",
     "启动文件已在枚举后变化；请刷新后重试。": "The startup file changed after enumeration; refresh and try again.",
     "存在多个匹配的 WMI 对象；为避免误删，未执行修改。": "Multiple WMI objects matched; no change was made to avoid deleting the wrong object.",
     "已禁用的服务控制管理器启动项": "Disabled Service Control Manager startup item",
