@@ -76,20 +76,6 @@ ZwQueryDirectoryObject(
     _Out_opt_ PULONG ReturnLength
     );
 
-NTSYSAPI
-NTSTATUS
-NTAPI
-ObReferenceObjectByName(
-    _In_ PUNICODE_STRING ObjectName,
-    _In_ ULONG Attributes,
-    _In_opt_ PACCESS_STATE PassedAccessState,
-    _In_opt_ ACCESS_MASK DesiredAccess,
-    _In_opt_ POBJECT_TYPE ObjectType,
-    _In_ KPROCESSOR_MODE AccessMode,
-    _Inout_opt_ PVOID ParseContext,
-    _Out_ PVOID* Object
-    );
-
 static NTSTATUS
 KswordArkCallbackExtendedOpenCallbackDirectory(
     _Out_ HANDLE* DirectoryHandleOut
@@ -441,7 +427,8 @@ Return Value:
     while (scannedEntries < KSWORD_ARK_CALLBACK_OBJECT_DIRECTORY_LIMIT) {
         WCHAR objectName[KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS];
         UNICODE_STRING fullObjectName;
-        PVOID callbackObject = NULL;
+        OBJECT_ATTRIBUTES callbackObjectAttributes;
+        PCALLBACK_OBJECT callbackObject = NULL;
 
         RtlZeroMemory(entry, KSWORD_ARK_CALLBACK_OBJECT_DIRECTORY_BYTES);
         status = ZwQueryDirectoryObject(
@@ -477,15 +464,19 @@ Return Value:
         }
 
         RtlInitUnicodeString(&fullObjectName, objectName);
-        status = ObReferenceObjectByName(
+        // 使用公开 CallbackObject DDI 打开现有对象；该入口会在内核内部传入真实对象类型。
+        InitializeObjectAttributes(
+            &callbackObjectAttributes,
             &fullObjectName,
             OBJ_CASE_INSENSITIVE,
             NULL,
-            0,
-            NULL,
-            KernelMode,
-            NULL,
-            &callbackObject);
+            NULL);
+        // Create=FALSE 保证枚举只读；AllowMultipleCallbacks 在仅打开现有对象时被系统忽略。
+        status = ExCreateCallback(
+            &callbackObject,
+            &callbackObjectAttributes,
+            FALSE,
+            FALSE);
         if (!NT_SUCCESS(status) || callbackObject == NULL) {
             continue;
         }
