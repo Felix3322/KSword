@@ -62,11 +62,19 @@ jobs:
           }
 
           common='(^tools/|^scripts/|^shared/|^third_party/|^\.deps/|^\.github/workflows/|^.*\.sln$|(^|/)(Directory\.Build\..*|.*\.props|.*\.targets)$)'
-          usermode_re="^(Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/)|$common"
-          setup_re="^(KswordSetup/|Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/|KswordARKDriver/|KswordARKLight/)|$common"
+          usermode_re="^(TaskmgrHijack\.ps1$|Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/)|$common"
+          setup_re="^(TaskmgrHijack\.ps1$|KswordSetup/|Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/|KswordARKDriver/|KswordARKLight/)|$common"
           arklight_re="^(KswordARKLight/|KswordARKDriver/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|Resource/)|shared/driver/|scripts/Sign-KswordArkDriverVariant\.ps1)|$common"
           ce_plugin_re="^(CheatEnginePlugin/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|ksword/string/)|shared/driver/)|$common"
           ce_launcher_re="^(CheatEngineExecutablePlugin/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|ksword/string/))|$common"
+
+          # 回归保护：主程序构建后直接复制根目录脚本，路径规则必须始终命中。
+          for project_rule in "$usermode_re" "$setup_re"; do
+            if ! printf '%s\n' 'TaskmgrHijack.ps1' | grep -Eq "$project_rule"; then
+              echo 'TaskmgrHijack.ps1 must trigger user-mode and setup builds.' >&2
+              exit 1
+            fi
+          done
 
           usermode=false
           setup=false

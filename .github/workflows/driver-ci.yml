@@ -47,8 +47,21 @@ jobs:
             changed="$(git diff --name-only HEAD~1 HEAD)"
           fi
 
+          driver_re='^(KswordARKDriver/|shared/driver/|third_party/systeminformer_dyn/|\.github/workflows/driver-ci\.yml$)'
+
+          # 回归保护：项目直接编译/包含的 System Informer 动态配置输入必须触发驱动构建。
+          for driver_input in \
+            'third_party/systeminformer_dyn/kphdyn.c' \
+            'third_party/systeminformer_dyn/kphdyn.h' \
+            'third_party/systeminformer_dyn/ksw_si_dynconfig.h'; do
+            if ! printf '%s\n' "$driver_input" | grep -Eq "$driver_re"; then
+              echo "$driver_input must trigger the driver build." >&2
+              exit 1
+            fi
+          done
+
           driver=false
-          if [[ "$changed" == '__all__' ]] || printf '%s\n' "$changed" | grep -Eq '^(KswordARKDriver/|shared/driver/|\.github/workflows/driver-ci\.yml$)'; then
+          if [[ "$changed" == '__all__' ]] || printf '%s\n' "$changed" | grep -Eq "$driver_re"; then
             driver=true
           fi
           echo "driver=$driver" >> "$GITHUB_OUTPUT"
