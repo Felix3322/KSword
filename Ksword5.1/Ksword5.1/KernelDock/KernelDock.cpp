@@ -34,6 +34,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QHeaderView>
@@ -305,6 +306,18 @@ QWidget* KernelDock::kswordSelfDriverPage() const
     return m_selfDriverPage;
 }
 
+bool KernelDock::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_selfDriverPage &&
+        event != nullptr &&
+        (event->type() == QEvent::Show ||
+         event->type() == QEvent::ShowToParent))
+    {
+        ensureSelfDriverCurrentTabRefreshed();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void KernelDock::showEvent(QShowEvent* event)
 {
     QWidget::showEvent(event);
@@ -482,6 +495,7 @@ void KernelDock::initializeUi()
     // “Ksword自身驱动”容器不加入 KernelDock 顶层；
     // MainWindow 会把整个容器交给 DriverDock，原业务方法仍由 KernelDock 执行。
     m_selfDriverPage = new QWidget(this);
+    m_selfDriverPage->installEventFilter(this);
     m_selfDriverLayout = new QVBoxLayout(m_selfDriverPage);
     m_selfDriverLayout->setContentsMargins(4, 4, 4, 4);
     m_selfDriverInnerTabWidget = new QTabWidget(m_selfDriverPage);
@@ -1165,6 +1179,54 @@ void KernelDock::initializeConnections()
                 }
             });
     }
+
+    if (m_selfDriverInnerTabWidget != nullptr)
+    {
+        connect(
+            m_selfDriverInnerTabWidget,
+            &QTabWidget::currentChanged,
+            this,
+            [this](const int)
+            {
+                ensureSelfDriverCurrentTabRefreshed();
+            });
+    }
+}
+
+void KernelDock::ensureSelfDriverCurrentTabRefreshed()
+{
+    if (m_selfDriverRefreshCheckPending ||
+        m_selfDriverPage == nullptr ||
+        m_selfDriverInnerTabWidget == nullptr)
+    {
+        return;
+    }
+    m_selfDriverRefreshCheckPending = true;
+    QTimer::singleShot(0, this, [this]()
+    {
+        m_selfDriverRefreshCheckPending = false;
+        if (m_selfDriverPage == nullptr ||
+            m_selfDriverInnerTabWidget == nullptr ||
+            !m_selfDriverPage->isVisible())
+        {
+            return;
+        }
+
+        const int currentIndex =
+            m_selfDriverInnerTabWidget->currentIndex();
+        if (currentIndex == m_dynDataTabIndex &&
+            !m_dynDataFirstRefreshTriggered)
+        {
+            m_dynDataFirstRefreshTriggered = true;
+            refreshDynDataAsync();
+        }
+        else if (currentIndex == m_driverStatusTabIndex &&
+                 !m_driverStatusFirstRefreshTriggered)
+        {
+            m_driverStatusFirstRefreshTriggered = true;
+            refreshDriverStatusAsync();
+        }
+    });
 }
 
 void KernelDock::initializeCrossViewTab()

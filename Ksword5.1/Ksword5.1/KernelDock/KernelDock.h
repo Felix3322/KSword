@@ -44,6 +44,7 @@ class QTableWidget;
 class QTabWidget;
 class QTreeWidget;
 class QVBoxLayout;
+class QEvent;
 class QShowEvent;
 class CodeEditorWidget;
 class CallbackInterceptController;
@@ -541,6 +542,11 @@ public:
     QString displayStateSummary() const;
 
 protected:
+    // eventFilter：
+    // - 处理迁移到 DriverDock 的自身驱动容器首次真正可见事件；
+    // - 只安排当前二级页的一次幂等首刷，不接管页面业务所有权。
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
     // showEvent：
     // - 输入 event：Qt 显示事件；
     // - 处理：内核 Dock 被 ADS 延迟挂载/恢复后，再次确保当前内部页真实初始化；
@@ -628,6 +634,11 @@ private:
     // - 作用：按需初始化指定 Tab 的 UI 与首次数据加载。
     // - 参数 tabIndex：顶层 Tab 索引。
     void ensureTabInitialized(int tabIndex);
+
+    // ensureSelfDriverCurrentTabRefreshed：
+    // - 外层自身驱动页可见或内部页切换后延迟一轮复核；
+    // - 动态偏移与驱动状态各自最多自动首刷一次。
+    void ensureSelfDriverCurrentTabRefreshed();
 
     // ensureIoManagementTabInitialized：
     // - 输入 innerTabIndex：I/O 管理内部横向子页索引；
@@ -991,6 +1002,9 @@ private:
     bool m_ssdtTabInitialized = false;            // m_ssdtTabInitialized：SSDT 页是否已初始化。
     bool m_dynDataTabInitialized = false;          // m_dynDataTabInitialized：动态偏移页是否已初始化。
     bool m_driverStatusTabInitialized = false;     // m_driverStatusTabInitialized：驱动状态页是否已初始化。
+    bool m_selfDriverRefreshCheckPending = false;  // m_selfDriverRefreshCheckPending：可见性延迟复核是否已排队。
+    bool m_dynDataFirstRefreshTriggered = false;   // m_dynDataFirstRefreshTriggered：动态偏移是否已自动首刷。
+    bool m_driverStatusFirstRefreshTriggered = false; // m_driverStatusFirstRefreshTriggered：驱动状态是否已自动首刷。
     bool m_ntQueryTabInitialized = false;         // m_ntQueryTabInitialized：历史 NtQuery 页是否已初始化。
     bool m_callbackTabInitialized = false;        // m_callbackTabInitialized：驱动回调页是否已初始化。
     bool m_callbackEnumTabInitialized = false;    // m_callbackEnumTabInitialized：回调遍历页是否已初始化。
