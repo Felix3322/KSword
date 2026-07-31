@@ -16,6 +16,13 @@ Environment:
 
 #include <ntddk.h>
 
+// WFP packet-layer ABI exposes NET_BUFFER/NET_BUFFER_LIST.  ndis.h requires
+// an explicit NDIS contract before it can provide those definitions.
+#ifndef NDIS630
+#define NDIS630
+#endif
+#include <ndis.h>
+
 // 中文说明：WDK WFP/NDIS 头使用匿名 union/bit-field；只在系统头范围关闭对应告警。
 #pragma warning(push)
 #pragma warning(disable:4201 4214)
