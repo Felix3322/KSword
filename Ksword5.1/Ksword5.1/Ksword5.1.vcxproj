@@ -237,6 +237,7 @@
     <ClCompile Include="MiscDock\ApplicationControlPage.cpp" />
     <ClCompile Include="MiscDock\SoundSource\SoundSourceDetector.cpp" />
     <ClCompile Include="MiscDock\SoundSource\SoundSourcePage.cpp" />
+    <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorBackend.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensics.cpp" />
@@ -434,6 +435,7 @@
     <ClCompile Include="ArkDriverClient\ArkDriverHwid.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverDebugOutput.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverBugcheck.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverSystemTime.cpp" />
     <ClCompile Include="..\..\third_party\zstd\zstd.c">
       <CompileAs>CompileAsC</CompileAs>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
@@ -540,6 +542,7 @@
     <ClInclude Include="MiscDock\ApplicationControlPage.h" />
     <ClInclude Include="MiscDock\SoundSource\SoundSourceDetector.h" />
     <QtMoc Include="MiscDock\SoundSource\SoundSourcePage.h" />
+    <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Internal.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskAdvancedModels.h" />
@@ -577,6 +580,7 @@
     <ClInclude Include="MiscDock\DiskEditor\DiskFileSystemForensicsPanel.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskRawFileSystemBrowser.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskRawFileSystemInternal.h" />
+    <ClInclude Include="..\..\shared\driver\KswordArkSystemTimeIoctl.h" />
     <ClInclude Include="RegistryDock\RegistryOptimizationPage.h" />
     <QtMoc Include="ProcessDock\ProcessDetailWindow.h" />
     <ClInclude Include="ProcessDock\ProcessDetailWindow.InternalCommon.h" />

@@ -280,6 +280,15 @@ namespace ksword::ark
             bool force,
             bool allowNested,
             bool uiConfirmed) const;
+        // querySystemTime/controlSystemTime：
+        // - 查询或控制全系统性能计数器的连续倍率映射；
+        // - UI 只传模式、倍率、期望代次与确认状态，不直接访问设备。
+        SystemTimeQueryResult querySystemTime() const;
+        SystemTimeControlResult controlSystemTime(
+            unsigned long command,
+            unsigned long factor,
+            unsigned long expectedGeneration,
+            bool uiConfirmed) const;
         // queryCpuHardwareSnapshot：
         // - 输入：无；R0 只执行 CPUID 与处理器数量查询。
         // - 处理：封装 IOCTL_KSWORD_ARK_QUERY_CPU_HARDWARE，解析 vendor/brand/family/model/feature mask。

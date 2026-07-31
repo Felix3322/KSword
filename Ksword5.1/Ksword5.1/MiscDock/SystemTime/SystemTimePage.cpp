@@ -1,0 +1,605 @@
+#include "SystemTimePage.h"
+
+#include "../../ArkDriverClient/ArkDriverClient.h"
+#include "../../theme.h"
+
+#include <QCheckBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHideEvent>
+#include <QIcon>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QRadioButton>
+#include <QShowEvent>
+#include <QSpinBox>
+#include <QTimer>
+#include <QVBoxLayout>
+
+namespace
+{
+    constexpr int kStatusRefreshIntervalMs = 2000;
+
+    // addressText：把 R0 诊断地址转换为固定宽度十六进制文本。
+    QString addressText(const unsigned long long address)
+    {
+        return address == 0ULL
+            ? QStringLiteral("不可用")
+            : QStringLiteral("0x%1")
+                .arg(address, 16, 16, QLatin1Char('0'))
+                .toUpper();
+    }
+
+    // operationStatusText：把稳定协议状态码转换为场景化错误提示。
+    QString operationStatusText(
+        const unsigned long status,
+        const long lastStatus)
+    {
+        QString reason;
+        switch (status)
+        {
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_OK:
+            reason = QStringLiteral("操作成功");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_CONFIRMATION_REQUIRED:
+            reason = QStringLiteral("安全策略要求重新确认");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_UNSUPPORTED_BUILD:
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_RESOLVE_FAILED:
+            reason = QStringLiteral("当前 Windows 构建无法安全解析计时器");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_PATCH_FAILED:
+            reason = QStringLiteral("计时器接管失败，已回滚");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_CONFLICT:
+            reason = QStringLiteral("检测到其它计时器钩子，已失败关闭");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_STALE_GENERATION:
+            reason = QStringLiteral("状态已被其它控制者更新，请刷新后重试");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_INVALID_REQUEST:
+            reason = QStringLiteral("倍率或控制参数无效");
+            break;
+        default:
+            reason = QStringLiteral("系统变速状态不可用");
+            break;
+        }
+        return QStringLiteral("%1；NTSTATUS=0x%2")
+            .arg(reason)
+            .arg(
+                static_cast<unsigned long>(lastStatus),
+                8,
+                16,
+                QLatin1Char('0'))
+            .toUpper();
+    }
+
+    // showOpaqueMessage：为高风险页面的消息框显式设置不透明主题背景。
+    void showOpaqueMessage(
+        QWidget* parent,
+        const QMessageBox::Icon icon,
+        const QString& title,
+        const QString& text)
+    {
+        QMessageBox messageBox(parent);
+        messageBox.setObjectName(
+            QStringLiteral("ksSystemTimeMessageBox"));
+        messageBox.setStyleSheet(
+            KswordTheme::OpaqueDialogStyle(
+                messageBox.objectName()));
+        messageBox.setIcon(icon);
+        messageBox.setWindowTitle(title);
+        messageBox.setText(text);
+        messageBox.setStandardButtons(QMessageBox::Ok);
+        messageBox.exec();
+    }
+}
+
+namespace ks::misc
+{
+    SystemTimePage::SystemTimePage(QWidget* parent)
+        : QWidget(parent)
+    {
+        initializeUi();
+        initializeConnections();
+    }
+
+    void SystemTimePage::showEvent(QShowEvent* event)
+    {
+        QWidget::showEvent(event);
+        refreshStatus();
+        m_refreshTimer->start();
+    }
+
+    void SystemTimePage::hideEvent(QHideEvent* event)
+    {
+        m_refreshTimer->stop();
+        QWidget::hideEvent(event);
+    }
+
+    void SystemTimePage::initializeUi()
+    {
+        auto* rootLayout = new QVBoxLayout(this);
+        rootLayout->setContentsMargins(12, 12, 12, 12);
+        rootLayout->setSpacing(10);
+
+        // 永久警告不随确认消失，确保活动状态下始终能看到风险边界。
+        m_warningLabel = new QLabel(
+            QStringLiteral(
+                "⚠ 系统全局变速会接管内核性能计数器并影响整个系统的计时。"
+                "它可能导致动画、超时、音视频、网络协议、游戏和安全软件异常，"
+                "严重时会造成冻结或蓝屏。请先保存工作，强烈建议仅在虚拟机中使用。"),
+            this);
+        m_warningLabel->setWordWrap(true);
+        m_warningLabel->setStyleSheet(
+            QStringLiteral(
+                "QLabel{padding:10px;border:1px solid %1;border-radius:5px;"
+                "background:%2;color:%3;font-weight:600;}")
+                .arg(KswordTheme::WarningHex())
+                .arg(KswordTheme::ThemeColorName(
+                    KswordTheme::WarningBackgroundColor()))
+                .arg(KswordTheme::TextPrimaryHex()));
+        rootLayout->addWidget(m_warningLabel);
+
+        m_persistenceLabel = new QLabel(
+            QStringLiteral(
+                "关闭页面不会自动恢复速度；请使用“恢复 1x”。"
+                "驱动正常卸载时也会尝试恢复原始计时路径。"),
+            this);
+        m_persistenceLabel->setWordWrap(true);
+        m_persistenceLabel->setStyleSheet(
+            QStringLiteral("color:%1;")
+                .arg(KswordTheme::TextSecondaryHex()));
+        rootLayout->addWidget(m_persistenceLabel);
+
+        // 倍率组只提供同一原理下的 N 倍加速和 1/N 减速。
+        auto* controlGroup = new QGroupBox(
+            QStringLiteral("计时倍率"),
+            this);
+        auto* controlLayout = new QVBoxLayout(controlGroup);
+        auto* modeLayout = new QHBoxLayout();
+        m_speedUpRadio = new QRadioButton(
+            QStringLiteral("加速 N 倍"),
+            controlGroup);
+        m_slowDownRadio = new QRadioButton(
+            QStringLiteral("减速到 1/N"),
+            controlGroup);
+        m_speedUpRadio->setChecked(true);
+        m_factorSpin = new QSpinBox(controlGroup);
+        m_factorSpin->setRange(
+            static_cast<int>(KSWORD_ARK_SYSTEM_TIME_MIN_FACTOR),
+            static_cast<int>(KSWORD_ARK_SYSTEM_TIME_MAX_FACTOR));
+        m_factorSpin->setValue(2);
+        m_factorSpin->setSuffix(QStringLiteral(" ×"));
+        m_factorSpin->setToolTip(
+            QStringLiteral("设置 2 到 64 的整数倍率"));
+        modeLayout->addWidget(m_speedUpRadio);
+        modeLayout->addWidget(m_slowDownRadio);
+        modeLayout->addSpacing(12);
+        modeLayout->addWidget(new QLabel(
+            QStringLiteral("倍率："),
+            controlGroup));
+        modeLayout->addWidget(m_factorSpin);
+        modeLayout->addStretch(1);
+        controlLayout->addLayout(modeLayout);
+
+        m_acknowledgeCheck = new QCheckBox(
+            QStringLiteral(
+                "我已保存工作，并理解该功能可能使系统不稳定"),
+            controlGroup);
+        controlLayout->addWidget(m_acknowledgeCheck);
+
+        auto* buttonLayout = new QHBoxLayout();
+        m_refreshButton = new QPushButton(
+            QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+            QStringLiteral("刷新状态"),
+            controlGroup);
+        m_applyButton = new QPushButton(
+            QIcon(QStringLiteral(":/Icon/process_start.svg")),
+            QStringLiteral("应用变速"),
+            controlGroup);
+        m_resetButton = new QPushButton(
+            QIcon(QStringLiteral(":/Icon/codeeditor_replace.svg")),
+            QStringLiteral("恢复 1x"),
+            controlGroup);
+        m_refreshButton->setToolTip(
+            QStringLiteral("重新查询 R0 计时器接管状态"));
+        m_applyButton->setToolTip(
+            QStringLiteral("经过双重确认后应用当前模式和倍率"));
+        m_resetButton->setToolTip(
+            QStringLiteral("立即停止变速并恢复原始性能计数器"));
+        for (QPushButton* button :
+             { m_refreshButton, m_applyButton, m_resetButton })
+        {
+            button->setStyleSheet(
+                KswordTheme::ThemedButtonStyle());
+        }
+        buttonLayout->addWidget(m_refreshButton);
+        buttonLayout->addWidget(m_applyButton);
+        buttonLayout->addWidget(m_resetButton);
+        buttonLayout->addStretch(1);
+        controlLayout->addLayout(buttonLayout);
+        rootLayout->addWidget(controlGroup);
+
+        // 状态组同时显示用户结论与可核对的解析证据。
+        auto* statusGroup = new QGroupBox(
+            QStringLiteral("当前状态"),
+            this);
+        auto* statusLayout = new QVBoxLayout(statusGroup);
+        m_currentModeLabel = new QLabel(
+            QStringLiteral("当前：等待查询"),
+            statusGroup);
+        m_currentModeLabel->setStyleSheet(
+            QStringLiteral("font-size:16px;font-weight:700;color:%1;")
+                .arg(KswordTheme::TextPrimaryHex()));
+        m_backendLabel = new QLabel(statusGroup);
+        m_backendLabel->setWordWrap(true);
+        m_diagnosticLabel = new QLabel(statusGroup);
+        m_diagnosticLabel->setWordWrap(true);
+        m_diagnosticLabel->setTextInteractionFlags(
+            Qt::TextSelectableByMouse);
+        m_operationLabel = new QLabel(
+            QStringLiteral("尚未查询 R0 状态"),
+            statusGroup);
+        m_operationLabel->setWordWrap(true);
+        statusLayout->addWidget(m_currentModeLabel);
+        statusLayout->addWidget(m_backendLabel);
+        statusLayout->addWidget(m_diagnosticLabel);
+        statusLayout->addWidget(m_operationLabel);
+        rootLayout->addWidget(statusGroup);
+        rootLayout->addStretch(1);
+
+        m_refreshTimer = new QTimer(this);
+        m_refreshTimer->setInterval(
+            kStatusRefreshIntervalMs);
+        updateButtons();
+    }
+
+    void SystemTimePage::initializeConnections()
+    {
+        connect(
+            m_refreshButton,
+            &QPushButton::clicked,
+            this,
+            [this]() { refreshStatus(); });
+        connect(
+            m_applyButton,
+            &QPushButton::clicked,
+            this,
+            [this]() { applyRequestedMode(); });
+        connect(
+            m_resetButton,
+            &QPushButton::clicked,
+            this,
+            [this]() { resetSystemTime(); });
+        connect(
+            m_acknowledgeCheck,
+            &QCheckBox::toggled,
+            this,
+            [this](const bool) { updateButtons(); });
+        connect(
+            m_refreshTimer,
+            &QTimer::timeout,
+            this,
+            [this]() { refreshStatus(); });
+    }
+
+    void SystemTimePage::refreshStatus()
+    {
+        if (m_busy)
+        {
+            return;
+        }
+        setBusy(true);
+        ksword::ark::DriverClient client;
+        const auto result = client.querySystemTime();
+        setBusy(false);
+
+        if (!result.io.ok)
+        {
+            m_supported = false;
+            m_operationLabel->setText(
+                result.unsupported
+                    ? QStringLiteral(
+                        "当前 KswordARK 驱动不支持系统全局变速，请更新 R0。")
+                    : QStringLiteral("R0 查询失败：%1")
+                        .arg(QString::fromStdString(
+                            result.io.message)));
+            updateButtons();
+            return;
+        }
+
+        m_generation = result.response.generation;
+        m_supported =
+            (result.response.stateFlags &
+                KSWORD_ARK_SYSTEM_TIME_STATE_SUPPORTED) != 0UL;
+        updateStatusDisplay(
+            result.response.status,
+            result.response.stateFlags,
+            result.response.generation,
+            result.response.command,
+            result.response.factor,
+            result.response.osBuildNumber,
+            result.response.lastStatus,
+            result.response.counterSourceAddress,
+            result.response.primarySlotAddress,
+            result.response.secondarySlotAddress);
+        updateButtons();
+    }
+
+    void SystemTimePage::applyRequestedMode()
+    {
+        const unsigned long factor =
+            static_cast<unsigned long>(m_factorSpin->value());
+        const unsigned long command =
+            m_speedUpRadio->isChecked()
+            ? KSWORD_ARK_SYSTEM_TIME_COMMAND_SPEED_UP
+            : KSWORD_ARK_SYSTEM_TIME_COMMAND_SLOW_DOWN;
+        const QString modeText =
+            m_speedUpRadio->isChecked()
+            ? QStringLiteral("加速")
+            : QStringLiteral("减速");
+
+        if (!m_acknowledgeCheck->isChecked() ||
+            !confirmHighRisk(modeText, factor))
+        {
+            return;
+        }
+
+        setBusy(true);
+        kLogEvent controlEvent;
+        ksword::ark::DriverClient client;
+        const auto freshStatus = client.querySystemTime();
+        if (!freshStatus.io.ok)
+        {
+            setBusy(false);
+            warn << controlEvent
+                << "[SystemTimePage] 控制前状态查询失败: "
+                << freshStatus.io.message << eol;
+            showOpaqueMessage(
+                this,
+                QMessageBox::Critical,
+                QStringLiteral("系统全局变速"),
+                QStringLiteral("控制前无法读取 R0 状态，未执行任何修改。"));
+            return;
+        }
+
+        const auto result = client.controlSystemTime(
+            command,
+            factor,
+            freshStatus.response.generation,
+            true);
+        setBusy(false);
+        if (!result.io.ok ||
+            result.response.status !=
+                KSWORD_ARK_SYSTEM_TIME_STATUS_OK)
+        {
+            warn << controlEvent
+                << "[SystemTimePage] 系统变速失败: "
+                << result.io.message << eol;
+            showOpaqueMessage(
+                this,
+                QMessageBox::Critical,
+                QStringLiteral("系统全局变速"),
+                result.io.ok
+                    ? operationStatusText(
+                        result.response.status,
+                        result.response.lastStatus)
+                    : QStringLiteral("R0 控制失败：%1")
+                        .arg(QString::fromStdString(
+                            result.io.message)));
+            refreshStatus();
+            return;
+        }
+
+        info << controlEvent
+            << "[SystemTimePage] 系统变速已应用, mode="
+            << modeText.toStdString()
+            << ", factor=" << factor << eol;
+        m_operationLabel->setText(
+            QStringLiteral("已应用：%1 %2 倍")
+                .arg(modeText)
+                .arg(factor));
+        refreshStatus();
+    }
+
+    void SystemTimePage::resetSystemTime()
+    {
+        setBusy(true);
+        kLogEvent resetEvent;
+        ksword::ark::DriverClient client;
+        const auto result = client.controlSystemTime(
+            KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET,
+            1UL,
+            m_generation,
+            false);
+        setBusy(false);
+
+        if (!result.io.ok ||
+            result.response.status !=
+                KSWORD_ARK_SYSTEM_TIME_STATUS_OK)
+        {
+            warn << resetEvent
+                << "[SystemTimePage] 恢复 1x 失败: "
+                << result.io.message << eol;
+            showOpaqueMessage(
+                this,
+                QMessageBox::Critical,
+                QStringLiteral("恢复系统计时"),
+                result.io.ok
+                    ? operationStatusText(
+                        result.response.status,
+                        result.response.lastStatus)
+                    : QStringLiteral("R0 控制失败：%1")
+                        .arg(QString::fromStdString(
+                            result.io.message)));
+            refreshStatus();
+            return;
+        }
+
+        info << resetEvent
+            << "[SystemTimePage] 已恢复原始系统计时路径。" << eol;
+        m_operationLabel->setText(
+            QStringLiteral("已恢复原始计时路径（1x）"));
+        m_acknowledgeCheck->setChecked(false);
+        refreshStatus();
+    }
+
+    bool SystemTimePage::confirmHighRisk(
+        const QString& modeText,
+        const unsigned long factor)
+    {
+        QMessageBox warningBox(this);
+        warningBox.setObjectName(
+            QStringLiteral("ksSystemTimeRiskDialog"));
+        warningBox.setStyleSheet(
+            KswordTheme::OpaqueDialogStyle(
+                warningBox.objectName()));
+        warningBox.setIcon(QMessageBox::Warning);
+        warningBox.setWindowTitle(
+            QStringLiteral("系统全局变速风险确认"));
+        warningBox.setText(
+            QStringLiteral(
+                "即将对整个系统%1 %2 倍。\n\n"
+                "此操作会改变全局性能计数器的时间流速，"
+                "可能破坏超时、同步、网络、音视频和安全软件行为。\n"
+                "请确认已保存工作，并准备在异常时立即恢复 1x。")
+                .arg(modeText)
+                .arg(factor));
+        warningBox.setStandardButtons(
+            QMessageBox::Ok | QMessageBox::Cancel);
+        warningBox.setDefaultButton(QMessageBox::Cancel);
+        if (warningBox.exec() != QMessageBox::Ok)
+        {
+            return false;
+        }
+
+        const QString confirmationPhrase =
+            QStringLiteral("I UNDERSTAND SYSTEM TIME");
+        QDialog typedDialog(this);
+        typedDialog.setObjectName(
+            QStringLiteral("ksSystemTimeTypedConfirmDialog"));
+        typedDialog.setStyleSheet(
+            KswordTheme::OpaqueDialogStyle(
+                typedDialog.objectName()));
+        typedDialog.setWindowTitle(
+            QStringLiteral("输入确认短语"));
+        auto* dialogLayout = new QVBoxLayout(&typedDialog);
+        auto* promptLabel = new QLabel(
+            QStringLiteral("请输入 %1 以继续：")
+                .arg(confirmationPhrase),
+            &typedDialog);
+        promptLabel->setWordWrap(true);
+        auto* phraseEdit = new QLineEdit(&typedDialog);
+        phraseEdit->setPlaceholderText(confirmationPhrase);
+        auto* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+            &typedDialog);
+        dialogLayout->addWidget(promptLabel);
+        dialogLayout->addWidget(phraseEdit);
+        dialogLayout->addWidget(buttons);
+        connect(
+            buttons,
+            &QDialogButtonBox::accepted,
+            &typedDialog,
+            &QDialog::accept);
+        connect(
+            buttons,
+            &QDialogButtonBox::rejected,
+            &typedDialog,
+            &QDialog::reject);
+        phraseEdit->setFocus();
+        return typedDialog.exec() == QDialog::Accepted &&
+            phraseEdit->text() == confirmationPhrase;
+    }
+
+    void SystemTimePage::updateStatusDisplay(
+        const unsigned long status,
+        const unsigned long stateFlags,
+        const unsigned long generation,
+        const unsigned long command,
+        const unsigned long factor,
+        const unsigned long osBuildNumber,
+        const long lastStatus,
+        const unsigned long long counterSourceAddress,
+        const unsigned long long primarySlotAddress,
+        const unsigned long long secondarySlotAddress)
+    {
+        const bool active =
+            (stateFlags &
+                KSWORD_ARK_SYSTEM_TIME_STATE_ACTIVE) != 0UL;
+        const bool conflict =
+            (stateFlags &
+                KSWORD_ARK_SYSTEM_TIME_STATE_CONFLICT) != 0UL;
+        if (active &&
+            command == KSWORD_ARK_SYSTEM_TIME_COMMAND_SPEED_UP)
+        {
+            m_currentModeLabel->setText(
+                QStringLiteral("当前：全局加速 %1 倍")
+                    .arg(factor));
+        }
+        else if (active &&
+                 command ==
+                    KSWORD_ARK_SYSTEM_TIME_COMMAND_SLOW_DOWN)
+        {
+            m_currentModeLabel->setText(
+                QStringLiteral("当前：全局减速到 1/%1")
+                    .arg(factor));
+        }
+        else
+        {
+            m_currentModeLabel->setText(
+                QStringLiteral("当前：原始速度 1x"));
+        }
+
+        m_currentModeLabel->setStyleSheet(
+            QStringLiteral("font-size:16px;font-weight:700;color:%1;")
+                .arg(conflict
+                    ? KswordTheme::ErrorHex()
+                    : active
+                        ? KswordTheme::WarningHex()
+                        : KswordTheme::SuccessHex()));
+        m_backendLabel->setText(
+            QStringLiteral("Windows 构建：%1；解析模式：%2；状态代次：%3")
+                .arg(osBuildNumber)
+                .arg(
+                    (stateFlags &
+                        KSWORD_ARK_SYSTEM_TIME_STATE_HANDLER_TABLE) != 0UL
+                        ? QStringLiteral("HAL 处理器表")
+                        : QStringLiteral("HAL 计数器槽"))
+                .arg(generation));
+        m_diagnosticLabel->setText(
+            QStringLiteral("计时描述符：%1；主槽：%2；辅助槽：%3")
+                .arg(addressText(counterSourceAddress))
+                .arg(addressText(primarySlotAddress))
+                .arg(addressText(secondarySlotAddress)));
+        m_operationLabel->setText(
+            operationStatusText(status, lastStatus));
+    }
+
+    void SystemTimePage::updateButtons()
+    {
+        m_refreshButton->setEnabled(!m_busy);
+        m_applyButton->setEnabled(
+            !m_busy &&
+            m_supported &&
+            m_acknowledgeCheck->isChecked());
+        m_resetButton->setEnabled(
+            !m_busy &&
+            m_supported);
+        m_factorSpin->setEnabled(!m_busy);
+        m_speedUpRadio->setEnabled(!m_busy);
+        m_slowDownRadio->setEnabled(!m_busy);
+        m_acknowledgeCheck->setEnabled(!m_busy);
+    }
+
+    void SystemTimePage::setBusy(const bool busy)
+    {
+        m_busy = busy;
+        updateButtons();
+    }
+}

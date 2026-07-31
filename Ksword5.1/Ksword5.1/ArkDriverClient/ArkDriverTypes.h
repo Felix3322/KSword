@@ -45,6 +45,7 @@
 #include "../../../shared/driver/KswordArkDebugOutputIoctl.h"
 #include "../../../shared/driver/KswordArkBugcheckIoctl.h"
 #include "../../../shared/driver/KswordArkUnloadedDriverIoctl.h"
+#include "../../../shared/driver/KswordArkSystemTimeIoctl.h"
 
 namespace ksword::ark
 {
@@ -1178,6 +1179,28 @@ namespace ksword::ark
         IoResult io;
         bool unsupported = false;
         KSWORD_ARK_CONTROL_HVM_RESPONSE response{};
+    };
+
+    // SystemTimeQueryResult：
+    // - 输入：由 DriverClient::querySystemTime 读取；
+    // - 处理：保留 R0 的倍率、接管、冲突和构建解析证据；
+    // - 返回行为：unsupported 允许旧驱动在 UI 中平稳降级。
+    struct SystemTimeQueryResult
+    {
+        IoResult io; // io：底层 DeviceIoControl 与固定响应校验状态。
+        bool unsupported = false; // unsupported：旧驱动未注册系统变速 IOCTL。
+        KSWORD_ARK_QUERY_SYSTEM_TIME_RESPONSE response{}; // response：R0 状态快照。
+    };
+
+    // SystemTimeControlResult：
+    // - 输入：由 DriverClient::controlSystemTime 填充；
+    // - 处理：保存动作前后代次与接管状态；
+    // - 返回行为：UI 依据 response.status 判断业务成功或安全拒绝。
+    struct SystemTimeControlResult
+    {
+        IoResult io; // io：底层控制 IOCTL 状态。
+        bool unsupported = false; // unsupported：当前驱动不支持该协议。
+        KSWORD_ARK_CONTROL_SYSTEM_TIME_RESPONSE response{}; // response：控制结果。
     };
 
     // DriverIntegrityResult carries DriverObject/LDR/CPU integrity evidence.

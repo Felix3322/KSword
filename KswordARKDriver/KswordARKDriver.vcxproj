@@ -56,6 +56,10 @@
     <ClCompile Include="src\features\hvm\hvm_vmcs.c" />
     <ClCompile Include="src\features\hvm\hvm_guest.c" />
     <ClCompile Include="src\features\hvm\hvm_ioctl.c" />
+    <ClCompile Include="src\features\system_time\system_time_counter.c" />
+    <ClCompile Include="src\features\system_time\system_time_ioctl.c" />
+    <ClCompile Include="src\features\system_time\system_time_resolver.c" />
+    <ClCompile Include="src\features\system_time\system_time_runtime.c" />
     <ClCompile Include="src\features\kernel\cpu_hardware_query.c" />
     <ClCompile Include="src\features\kernel\driver_unload.c" />
     <ClCompile Include="src\features\kernel\driver_blind.c" />
@@ -185,6 +189,7 @@
     <ClInclude Include="Driver.h" />
     <ClInclude Include="include\ark\ark_device.h" />
     <ClInclude Include="include\ark\ark_driver.h" />
+    <ClInclude Include="include\ark\ark_system_time.h" />
     <ClInclude Include="include\ark\ark_file.h" />
     <ClInclude Include="include\ark\ark_ioctl.h" />
     <ClInclude Include="include\ark\ark_log.h" />
@@ -270,6 +275,9 @@
     <ClInclude Include="src\features\hvm\hvm_vmcs.h" />
     <ClInclude Include="src\features\hvm\hvm_guest.h" />
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkSystemTimeIoctl.h" />
+    <ClInclude Include="src\features\system_time\system_time_counter.h" />
+    <ClInclude Include="src\features\system_time\system_time_internal.h" />
     <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_object_audit.h" />
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h" />
