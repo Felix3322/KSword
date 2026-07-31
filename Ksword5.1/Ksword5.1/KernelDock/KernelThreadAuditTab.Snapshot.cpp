@@ -245,24 +245,14 @@ KernelThreadAuditTab::Snapshot KernelThreadAuditTab::collectSnapshot(const Mode 
                 (r0Entry.flags & KSWORD_ARK_THREAD_FLAG_ACTIVE_EX_WORKER) != 0U;
         }
 
-        row.module = findOwnerModule(modules, row.startAddress, &row.moduleResolved);
-        if (row.createTime100ns == 0U || row.startAddress == 0U)
-        {
-            row.protectionKind = ProtectionKind::MissingThreadIdentity;
-        }
-        else if (!row.moduleResolved)
-        {
-            row.protectionKind = ProtectionKind::UnknownModule;
-        }
-        else if (row.module.kernelImage)
-        {
-            row.protectionKind = ProtectionKind::KernelImage;
-        }
-        else
-        {
-            row.protectedTarget = false;
-            row.protectionKind = ProtectionKind::ThirdPartyR0Recheck;
-        }
+        row.module = findOwnerModule(
+            modules,
+            row.startAddress,
+            &row.moduleResolved);
+        // 系统线程页不再按内核归属、未知模块、启动地址或创建时间缺失禁用操作；
+        // R0 仅复核请求中实际可用的身份字段，TID 始终是动作入口的必要标识。
+        row.protectedTarget = false;
+        row.protectionKind = ProtectionKind::BestEffortR0Recheck;
         snapshot.rows.push_back(std::move(row));
     }
 

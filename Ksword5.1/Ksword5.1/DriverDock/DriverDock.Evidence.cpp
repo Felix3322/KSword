@@ -267,6 +267,7 @@ namespace
     {
         QString fileIdentifier;
         QString catalogPath;
+        QString signerCertificateName;
         LONG trustStatus = 0;
         DWORD lookupError = ERROR_SUCCESS;
         bool trustStatusAvailable = false;
@@ -337,12 +338,77 @@ namespace
             WTD_DISABLE_MD2_MD4;
     }
 
-    // runWinTrustAndClose：所有 VERIFY 路径都在返回前执行 STATEACTION_CLOSE。
-    LONG runWinTrustAndClose(WINTRUST_DATA& trustData)
+    // extractSignerCertificateName：
+    // - 输入：WinVerifyTrust 在 VERIFY 阶段保留的 provider state；
+    // - 处理：读取首个 signer chain 的叶证书 simple display name；
+    // - 返回：最终签名证书名称，链状态不可读时为空。
+    QString extractSignerCertificateName(const WINTRUST_DATA& trustData)
+    {
+        if (trustData.hWVTStateData == nullptr)
+        {
+            return QString();
+        }
+
+        CRYPT_PROVIDER_DATA* providerData =
+            ::WTHelperProvDataFromStateData(trustData.hWVTStateData);
+        if (providerData == nullptr)
+        {
+            return QString();
+        }
+        CRYPT_PROVIDER_SGNR* signer =
+            ::WTHelperGetProvSignerFromChain(providerData, 0, FALSE, 0);
+        if (signer == nullptr ||
+            signer->csCertChain == 0 ||
+            signer->pasCertChain == nullptr ||
+            signer->pasCertChain[0].pCert == nullptr)
+        {
+            return QString();
+        }
+
+        const CERT_CONTEXT* certificateContext =
+            signer->pasCertChain[0].pCert;
+        const DWORD requiredChars = ::CertGetNameStringW(
+            certificateContext,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            0,
+            nullptr,
+            nullptr,
+            0);
+        if (requiredChars <= 1)
+        {
+            return QString();
+        }
+
+        std::vector<wchar_t> nameBuffer(requiredChars, L'\0');
+        const DWORD writtenChars = ::CertGetNameStringW(
+            certificateContext,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            0,
+            nullptr,
+            nameBuffer.data(),
+            requiredChars);
+        if (writtenChars <= 1)
+        {
+            return QString();
+        }
+        return QString::fromWCharArray(
+            nameBuffer.data(),
+            static_cast<int>(writtenChars - 1)).trimmed();
+    }
+
+    // runWinTrustAndClose：所有 VERIFY 路径先提取叶证书名称，再执行 STATEACTION_CLOSE。
+    LONG runWinTrustAndClose(
+        WINTRUST_DATA& trustData,
+        QString* const signerCertificateNameOut = nullptr)
     {
         GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
         trustData.dwStateAction = WTD_STATEACTION_VERIFY;
         const LONG trustStatus = ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        if (signerCertificateNameOut != nullptr)
+        {
+            *signerCertificateNameOut =
+                extractSignerCertificateName(trustData);
+        }
         trustData.dwStateAction = WTD_STATEACTION_CLOSE;
         ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
         trustData.hWVTStateData = nullptr;
@@ -474,7 +540,9 @@ namespace
             // Catalog provider 读取同一只读句柄前回到文件起点，不依赖哈希 API 留下的游标。
             LARGE_INTEGER fileStart{};
             ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
-            verification.trustStatus = runWinTrustAndClose(trustData);
+            verification.trustStatus = runWinTrustAndClose(
+                trustData,
+                &verification.signerCertificateName);
             verification.trustStatusAvailable = true;
             verification.trusted =
                 verification.trustStatus == ERROR_SUCCESS;
@@ -517,7 +585,9 @@ DriverDock::LoadedModuleSignatureEvidence DriverDock::verifyLoadedModuleSignatur
     initializeStrictTrustData(embeddedTrustData);
     embeddedTrustData.dwUnionChoice = WTD_CHOICE_FILE;
     embeddedTrustData.pFile = &fileInfo;
-    const LONG embeddedTrustStatus = runWinTrustAndClose(embeddedTrustData);
+    const LONG embeddedTrustStatus = runWinTrustAndClose(
+        embeddedTrustData,
+        &evidence.signerCertificateName);
     evidence.embeddedTrustStatus =
         static_cast<std::int32_t>(embeddedTrustStatus);
     if (embeddedTrustStatus == ERROR_SUCCESS)
@@ -540,6 +610,8 @@ DriverDock::LoadedModuleSignatureEvidence DriverDock::verifyLoadedModuleSignatur
         verifyCatalogSignature(normalizedPath, fileHandle.value);
     evidence.fileIdentifier = catalogVerification.fileIdentifier;
     evidence.catalogPath = catalogVerification.catalogPath;
+    evidence.signerCertificateName =
+        catalogVerification.signerCertificateName;
     evidence.catalogTrustStatus =
         static_cast<std::int32_t>(catalogVerification.trustStatus);
     evidence.catalogLookupError = catalogVerification.lookupError;
@@ -622,9 +694,19 @@ QString DriverDock::moduleSignatureStatusText(
             "driver.evidence.pending",
             QStringLiteral("待扫描"));
     }
-    return moduleSignatureTrusted(evidence)
-        ? driverText("driver.signature.valid", QStringLiteral("有效"))
-        : driverText("driver.signature.invalid", QStringLiteral("无效"));
+    if (!moduleSignatureTrusted(evidence))
+    {
+        return driverText(
+            "driver.signature.invalid",
+            QStringLiteral("无效"));
+    }
+    if (!evidence.signatureEvidence.signerCertificateName.isEmpty())
+    {
+        return evidence.signatureEvidence.signerCertificateName;
+    }
+    return driverText(
+        "driver.signature.valid_signer_unknown",
+        QStringLiteral("有效（签名者未知）"));
 }
 
 QString DriverDock::moduleSignatureDetailText(
@@ -646,6 +728,10 @@ QString DriverDock::moduleSignatureDetailText(
     const QString verificationPath = signature.verificationPath.isEmpty()
         ? unavailableText
         : signature.verificationPath;
+    const QString signerCertificateName =
+        signature.signerCertificateName.isEmpty()
+        ? unavailableText
+        : signature.signerCertificateName;
 
     switch (signature.state)
     {
@@ -663,14 +749,16 @@ QString DriverDock::moduleSignatureDetailText(
             "driver.signature.valid.embedded.detail",
             QStringLiteral(
                 "数字签名有效：Windows 已验证嵌入式 Authenticode 完整信任链。\n"
-                "路径：%1\n验证方式：嵌入签名"))
+                "签名者：%1\n路径：%2\n验证方式：嵌入签名"))
+            .arg(signerCertificateName)
             .arg(verificationPath);
     case LoadedModuleSignatureState::TrustedCatalog:
         return driverText(
             "driver.signature.valid.catalog.detail",
             QStringLiteral(
                 "数字签名有效：Windows 已通过系统目录验证完整信任链。\n"
-                "路径：%1\n验证方式：目录签名\n文件标识：%2\n目录：%3"))
+                "签名者：%1\n路径：%2\n验证方式：目录签名\n文件标识：%3\n目录：%4"))
+            .arg(signerCertificateName)
             .arg(verificationPath)
             .arg(signature.fileIdentifier.isEmpty()
                 ? unavailableText

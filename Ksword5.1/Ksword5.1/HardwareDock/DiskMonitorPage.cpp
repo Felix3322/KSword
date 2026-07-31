@@ -18,6 +18,8 @@
 #include <QClipboard>
 #include <QCheckBox>
 #include <QDateTime>
+#include <QFileIconProvider>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -783,31 +785,6 @@ namespace
         return eventNameText;
     }
 
-    QString diskMonitorPresetButtonStyle(const bool selected)
-    {
-        // diskMonitorPresetButtonStyle：
-        // - 输入：A/B 列组是否处于当前预设；
-        // - 返回：与硬件页其它列预设一致的紧凑主题样式。
-        const QString backgroundColor = selected
-            ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
-            : QStringLiteral("transparent");
-        const QString borderColor = selected
-            ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
-            : KswordTheme::BorderColorHex();
-        const QString textColor = selected
-            ? KswordTheme::OnAccentHex()
-            : KswordTheme::TextPrimaryColorHex();
-        return QStringLiteral(
-            "QPushButton{min-width:26px;max-width:26px;padding:3px 0;border:1px solid %1;"
-            "border-radius:0;color:%2;background:%3;font-weight:700;}"
-            "QPushButton:hover{border-color:%4;}")
-            .arg(
-                borderColor,
-                textColor,
-                backgroundColor,
-                KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
-    }
-
     QWidget* createDiskMonitorSection(
         QWidget* parentWidget,
         QToolButton** toggleButtonOut,
@@ -1063,17 +1040,6 @@ void DiskMonitorPage::initializeUi()
     m_splitter = new QSplitter(Qt::Vertical, this);
     m_rootLayout->addWidget(m_splitter, 1);
 
-    // 进程表提供互补的 A/B 精简列组：
-    // A 对齐资源监视器概览，B 提供响应时间、操作次数和完整路径诊断。
-    m_processViewAButton = new QPushButton(QStringLiteral("A"), this);
-    m_processViewAButton->setToolTip(
-        QStringLiteral("A 组：显示进程、PID 和读/写/总吞吐。"));
-    m_processViewAButton->setStyleSheet(diskMonitorPresetButtonStyle(false));
-    m_processViewBButton = new QPushButton(QStringLiteral("B"), this);
-    m_processViewBButton->setToolTip(
-        QStringLiteral("B 组：显示进程、PID、响应时间、操作次数和路径。"));
-    m_processViewBButton->setStyleSheet(diskMonitorPresetButtonStyle(false));
-
     m_processTable = new ks::ui::VisibleTableWidget(this);
     configureTableWidget(m_processTable);
     m_processTable->setColumnCount(ProcessColumnCount);
@@ -1100,14 +1066,11 @@ void DiskMonitorPage::initializeUi()
         m_processTable->horizontalHeader()->visualIndex(ProcessColumnName),
         1);
     installProcessColumnMenu();
-    applyProcessColumnPreset(false);
     QWidget* processSection = createDiskMonitorSection(
         m_splitter,
         &m_processSectionButton,
         QStringLiteral("磁盘活动的进程"),
-        m_processTable,
-        m_processViewAButton,
-        m_processViewBButton);
+        m_processTable);
     m_splitter->addWidget(processSection);
 
     m_activityTable = new ks::ui::VisibleTableWidget(this);
@@ -1196,6 +1159,7 @@ void DiskMonitorPage::initializeConnections()
         connect(m_filterEdit, &QLineEdit::textChanged, this, [this]()
         {
             updateProcessTable(m_lastSampleList);
+            updateActivityTable(m_lastSampleList);
         });
     }
 
@@ -1253,20 +1217,6 @@ void DiskMonitorPage::initializeConnections()
         });
     }
 
-    if (m_processViewAButton != nullptr)
-    {
-        connect(m_processViewAButton, &QPushButton::clicked, this, [this]()
-        {
-            applyProcessColumnPreset(false);
-        });
-    }
-    if (m_processViewBButton != nullptr)
-    {
-        connect(m_processViewBButton, &QPushButton::clicked, this, [this]()
-        {
-            applyProcessColumnPreset(true);
-        });
-    }
 }
 
 void DiskMonitorPage::configureTableWidget(QTableWidget* tableWidget, const int processIdColumn) const
@@ -1297,60 +1247,6 @@ void DiskMonitorPage::configureTableWidget(QTableWidget* tableWidget, const int 
     installDiskMonitorTableCopyMenu(tableWidget, processIdColumn);
 }
 
-void DiskMonitorPage::applyProcessColumnPreset(const bool diagnosticView)
-{
-    if (m_processTable == nullptr)
-    {
-        return;
-    }
-
-    // A 组严格对应资源监视器“磁盘活动的进程”字段；B 组保留进程身份，
-    // 再切换为响应时间、操作频率和路径，避免任何一组变成全量密集表。
-    for (int columnIndex = 0;
-         columnIndex < m_processTable->columnCount();
-         ++columnIndex)
-    {
-        bool shouldShow = false;
-        if (!diagnosticView)
-        {
-            shouldShow =
-                columnIndex == ProcessColumnChecked ||
-                columnIndex == ProcessColumnPid ||
-                columnIndex == ProcessColumnName ||
-                columnIndex == ProcessColumnReadRate ||
-                columnIndex == ProcessColumnWriteRate ||
-                columnIndex == ProcessColumnTotalRate;
-        }
-        else
-        {
-            shouldShow =
-                columnIndex == ProcessColumnChecked ||
-                columnIndex == ProcessColumnPid ||
-                columnIndex == ProcessColumnName ||
-                columnIndex == ProcessColumnResponse ||
-                columnIndex == ProcessColumnReadOps ||
-                columnIndex == ProcessColumnWriteOps ||
-                columnIndex == ProcessColumnPath;
-        }
-        m_processTable->setColumnHidden(columnIndex, !shouldShow);
-    }
-
-    const QString presetText = diagnosticView
-        ? QStringLiteral("B")
-        : QStringLiteral("A");
-    m_processTable->setProperty("kswordColumnPreset", presetText);
-    if (m_processViewAButton != nullptr)
-    {
-        m_processViewAButton->setStyleSheet(
-            diskMonitorPresetButtonStyle(!diagnosticView));
-    }
-    if (m_processViewBButton != nullptr)
-    {
-        m_processViewBButton->setStyleSheet(
-            diskMonitorPresetButtonStyle(diagnosticView));
-    }
-}
-
 void DiskMonitorPage::installProcessColumnMenu()
 {
     if (m_processTable == nullptr ||
@@ -1359,8 +1255,7 @@ void DiskMonitorPage::installProcessColumnMenu()
         return;
     }
 
-    // 表头右键菜单允许逐列显隐；用户手工调整后进入 Custom 状态，
-    // A/B 都取消主题高亮，明确表示当前布局已脱离预设。
+    // 默认展示全部字段；表头右键仍允许用户临时隐藏不需要的单列。
     QHeaderView* headerView = m_processTable->horizontalHeader();
     headerView->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(
@@ -1412,19 +1307,6 @@ void DiskMonitorPage::installProcessColumnMenu()
             }
 
             m_processTable->setColumnHidden(selectedColumn, !shouldShow);
-            m_processTable->setProperty(
-                "kswordColumnPreset",
-                QStringLiteral("Custom"));
-            if (m_processViewAButton != nullptr)
-            {
-                m_processViewAButton->setStyleSheet(
-                    diskMonitorPresetButtonStyle(false));
-            }
-            if (m_processViewBButton != nullptr)
-            {
-                m_processViewBButton->setStyleSheet(
-                    diskMonitorPresetButtonStyle(false));
-            }
         });
 }
 
@@ -1705,12 +1587,26 @@ std::vector<DiskMonitorPage::FileActivitySample> DiskMonitorPage::consumeFileAct
     m_lastFileActivityDrainMs = nowMs;
 
     std::unordered_map<std::uint32_t, QString> processNameByPid;
+    std::unordered_map<std::uint32_t, QString> processPathByPid;
     std::unordered_map<std::uint32_t, QString> processIoPriorityByPid;
     processNameByPid.reserve(sampleList.size());
+    processPathByPid.reserve(sampleList.size());
     processIoPriorityByPid.reserve(sampleList.size());
+    if (m_recentProcessNameByPid.size() > 4096U)
+    {
+        m_recentProcessNameByPid.clear();
+        m_recentProcessPathByPid.clear();
+    }
     for (const ProcessDiskSample& sample : sampleList)
     {
         processNameByPid[sample.pid] = sample.processName;
+        processPathByPid[sample.pid] = sample.processImagePath;
+        m_recentProcessNameByPid[sample.pid] = sample.processName;
+        if (!sample.processImagePath.isEmpty())
+        {
+            m_recentProcessPathByPid[sample.pid] =
+                sample.processImagePath;
+        }
         if (!sample.ioPriorityText.isEmpty())
         {
             processIoPriorityByPid[sample.pid] = sample.ioPriorityText;
@@ -1749,9 +1645,33 @@ std::vector<DiskMonitorPage::FileActivitySample> DiskMonitorPage::consumeFileAct
         FileActivitySample sample;
         sample.pid = accumulator.pid;
         const auto processNameIt = processNameByPid.find(sample.pid);
-        sample.processName = processNameIt != processNameByPid.end()
-            ? processNameIt->second
-            : QStringLiteral("<PID %1>").arg(sample.pid);
+        if (processNameIt != processNameByPid.end())
+        {
+            sample.processName = processNameIt->second;
+        }
+        else
+        {
+            const auto recentNameIt =
+                m_recentProcessNameByPid.find(sample.pid);
+            sample.processName =
+                recentNameIt != m_recentProcessNameByPid.end()
+                ? recentNameIt->second
+                : QStringLiteral("<PID %1>").arg(sample.pid);
+        }
+        const auto processPathIt = processPathByPid.find(sample.pid);
+        if (processPathIt != processPathByPid.end())
+        {
+            sample.processImagePath = processPathIt->second;
+        }
+        else
+        {
+            const auto recentPathIt =
+                m_recentProcessPathByPid.find(sample.pid);
+            if (recentPathIt != m_recentProcessPathByPid.end())
+            {
+                sample.processImagePath = recentPathIt->second;
+            }
+        }
         sample.filePath = accumulator.filePath;
         sample.readBytesPerSec = static_cast<double>(accumulator.readBytes) / deltaSeconds;
         sample.writeBytesPerSec = static_cast<double>(accumulator.writeBytes) / deltaSeconds;
@@ -1878,7 +1798,15 @@ void DiskMonitorPage::updateProcessTable(const std::vector<ProcessDiskSample>& s
             rowIndex,
             ProcessColumnPid,
             createNumericItem(QString::number(sample.pid), static_cast<double>(sample.pid)));
-        setTableItemText(m_processTable, rowIndex, ProcessColumnName, createReadOnlyItem(sample.processName));
+        QTableWidgetItem* processNameItem =
+            createReadOnlyItem(sample.processName);
+        processNameItem->setIcon(
+            processIconForPath(sample.processImagePath));
+        setTableItemText(
+            m_processTable,
+            rowIndex,
+            ProcessColumnName,
+            processNameItem);
         setTableItemText(
             m_processTable,
             rowIndex,
@@ -1941,8 +1869,9 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
     selectedFileActivityList.reserve(m_lastFileActivityList.size() + m_fileActivityHistory.size());
     for (const FileActivitySample& fileActivity : m_lastFileActivityList)
     {
-        if (!filterBySelectedPid ||
-            m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end())
+        if ((!filterBySelectedPid ||
+                m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end()) &&
+            activityMatchesFilter(fileActivity))
         {
             selectedFileActivityList.push_back(fileActivity);
         }
@@ -1950,8 +1879,9 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
     for (const FileActivityHistoryEntry& historyEntry : m_fileActivityHistory)
     {
         const FileActivitySample& fileActivity = historyEntry.sample;
-        if (!filterBySelectedPid ||
-            m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end())
+        if ((!filterBySelectedPid ||
+                m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end()) &&
+            activityMatchesFilter(fileActivity))
         {
             selectedFileActivityList.push_back(fileActivity);
         }
@@ -2014,7 +1944,15 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
                 rowIndex,
                 ActivityColumnPid,
                 createNumericItem(QString::number(sample.pid), static_cast<double>(sample.pid)));
-            setTableItemText(m_activityTable, rowIndex, ActivityColumnProcess, createReadOnlyItem(sample.processName));
+            QTableWidgetItem* processNameItem =
+                createReadOnlyItem(sample.processName);
+            processNameItem->setIcon(
+                processIconForPath(sample.processImagePath));
+            setTableItemText(
+                m_activityTable,
+                rowIndex,
+                ActivityColumnProcess,
+                processNameItem);
             setTableItemText(m_activityTable, rowIndex, ActivityColumnFile, createReadOnlyItem(sample.filePath));
             setTableItemText(
                 m_activityTable,
@@ -2724,6 +2662,53 @@ bool DiskMonitorPage::sampleMatchesFilter(const ProcessDiskSample& sample) const
     }
 
     return processSearchText(sample).contains(filterText);
+}
+
+bool DiskMonitorPage::activityMatchesFilter(
+    const FileActivitySample& sample) const
+{
+    const QString filterText = m_filterEdit != nullptr
+        ? m_filterEdit->text().trimmed().toLower()
+        : QString();
+    if (filterText.isEmpty())
+    {
+        return true;
+    }
+
+    return QStringLiteral("%1 %2 %3 %4")
+        .arg(sample.pid)
+        .arg(sample.processName)
+        .arg(sample.processImagePath)
+        .arg(sample.filePath)
+        .toLower()
+        .contains(filterText);
+}
+
+QIcon DiskMonitorPage::processIconForPath(const QString& imagePath)
+{
+    const QString cacheKey = imagePath.trimmed().isEmpty()
+        ? QStringLiteral("<default-process-icon>")
+        : imagePath.trimmed().toLower();
+    const auto cachedIterator =
+        m_processIconByPath.constFind(cacheKey);
+    if (cachedIterator != m_processIconByPath.constEnd())
+    {
+        return cachedIterator.value();
+    }
+
+    QIcon processIcon;
+    if (!imagePath.trimmed().isEmpty())
+    {
+        static QFileIconProvider iconProvider;
+        processIcon = iconProvider.icon(QFileInfo(imagePath));
+    }
+    if (processIcon.isNull())
+    {
+        processIcon =
+            QIcon(QStringLiteral(":/Icon/process_main.svg"));
+    }
+    m_processIconByPath.insert(cacheKey, processIcon);
+    return processIcon;
 }
 
 QString DiskMonitorPage::formatBytesPerSecond(const double bytesPerSecond) const

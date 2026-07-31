@@ -594,7 +594,7 @@ Return Value:
         ((size_t)response->returnedCount * sizeof(KSWORD_ARK_DEVICE_AUDIT_ENTRY));
     KswDeviceAuditLog(
         Device,
-        (response->queryStatus == KSWORD_ARK_DEVICE_AUDIT_STATUS_OK) ? "Info" : "Warn",
+        (response->queryStatus == KSWORD_ARK_DEVICE_AUDIT_STATUS_QUERY_FAILED) ? "Warn" : "Info",
         "%s completed: q=%lu flags=0x%08lX total=%lu returned=%lu devices=%lu targets=%lu bytes=%Iu.",
         LogName,
         response->queryStatus,

@@ -6,8 +6,9 @@ Module Name:
 
 Abstract:
 
-    i8042prt 专项只读审计。只有已知 PE/RSDS/opcode/DriverObject 描述符全部
-    匹配时才读取设备扩展中的端点指针；未知版本始终失败关闭。
+    i8042prt 专项只读审计。所有版本都使用 I/O 管理器公开接口枚举设备对象；
+    只有已知 PE/RSDS/opcode/DriverObject 描述符全部匹配时，才读取设备扩展
+    中的端点指针。
 
 Environment:
 
@@ -1055,9 +1056,11 @@ KswI8042AuditDevice(
     _Inout_ KSWORD_ARK_QUERY_I8042_AUDIT_RESPONSE* Response,
     _In_ ULONG Capacity,
     _In_ ULONG MaxRows,
-    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_opt_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
     _In_ PDRIVER_OBJECT DriverObject,
-    _In_ PDEVICE_OBJECT DeviceObject
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ BOOLEAN ImageValidated,
+    _In_ BOOLEAN DescriptorValidated
     )
 {
     KSWORD_ARK_I8042_AUDIT_ENTRY deviceEntry;
@@ -1072,26 +1075,29 @@ KswI8042AuditDevice(
     RtlZeroMemory(pnpId, sizeof(pnpId));
     deviceEntry.size = sizeof(deviceEntry);
     deviceEntry.rowKind = KSWORD_ARK_I8042_AUDIT_ROW_DEVICE;
-    deviceEntry.status = KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED;
-    deviceEntry.verdict = KSWORD_ARK_I8042_VERDICT_UNSUPPORTED;
+    deviceEntry.status = KSWORD_ARK_I8042_AUDIT_STATUS_QUERY_FAILED;
+    deviceEntry.verdict = KSWORD_ARK_I8042_VERDICT_UNKNOWN;
     deviceEntry.deviceObject = (ULONGLONG)(ULONG_PTR)DeviceObject;
-    deviceEntry.fieldFlags = KSWORD_ARK_I8042_FIELD_DEVICE_OBJECT |
-        KSWORD_ARK_I8042_FIELD_IMAGE_VALIDATED |
-        KSWORD_ARK_I8042_FIELD_DESCRIPTOR_VALIDATED;
+    deviceEntry.fieldFlags = KSWORD_ARK_I8042_FIELD_DEVICE_OBJECT;
+    if (ImageValidated) {
+        deviceEntry.fieldFlags |= KSWORD_ARK_I8042_FIELD_IMAGE_VALIDATED;
+    }
+    if (DescriptorValidated) {
+        deviceEntry.fieldFlags |= KSWORD_ARK_I8042_FIELD_DESCRIPTOR_VALIDATED;
+    }
 
     if (!KswordARKHookReadMemorySafe(
             DeviceObject,
             &deviceView,
             sizeof(deviceView)) ||
-        deviceView.DriverObject != DriverObject ||
-        deviceView.DeviceType != FILE_DEVICE_8042_PORT) {
+        deviceView.DriverObject != DriverObject) {
         deviceEntry.lastStatus = STATUS_OBJECT_TYPE_MISMATCH;
         KswI8042SetDetail(
             &deviceEntry,
             KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH,
             deviceEntry.deviceObject,
             deviceView.DeviceType,
-            FILE_DEVICE_8042_PORT,
+            (ULONGLONG)(ULONG_PTR)deviceView.DriverObject,
             0ULL);
         KswI8042Append(Response, Capacity, MaxRows, &deviceEntry);
         return;
@@ -1110,6 +1116,8 @@ KswI8042AuditDevice(
         deviceEntry.fieldFlags |= KSWORD_ARK_I8042_FIELD_PNP_ID;
     }
     if (deviceKind == KSWORD_ARK_I8042_DEVICE_UNKNOWN) {
+        deviceEntry.status = KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL;
+        deviceEntry.verdict = KSWORD_ARK_I8042_VERDICT_UNKNOWN;
         deviceEntry.lastStatus = STATUS_NOT_SUPPORTED;
         KswI8042SetDetail(
             &deviceEntry,
@@ -1127,12 +1135,20 @@ KswI8042AuditDevice(
     deviceEntry.lastStatus = STATUS_SUCCESS;
     KswI8042SetDetail(
         &deviceEntry,
-        KSWORD_ARK_I8042_DETAIL_DESCRIPTOR_VALIDATED,
-        KSW_I8042_EXPECTED_EXTENSION_SIZE,
+        DescriptorValidated ?
+            KSWORD_ARK_I8042_DETAIL_DESCRIPTOR_VALIDATED :
+            KSWORD_ARK_I8042_DETAIL_GENERIC_DEVICE_AVAILABLE,
+        DescriptorValidated ? KSW_I8042_EXPECTED_EXTENSION_SIZE : 0UL,
         deviceKind,
         deviceEntry.deviceObject,
         0ULL);
     KswI8042Append(Response, Capacity, MaxRows, &deviceEntry);
+
+    // 中文说明：设备对象和 PnP 标识来自公开 I/O 管理器接口，可跨版本返回；
+    // 扩展偏移属于 i8042prt 私有布局，描述符不精确时绝不读取。
+    if (!DescriptorValidated || ModuleInfo == NULL) {
+        return;
+    }
 
     if (!KswI8042ReadEndpoints(
             DeviceObject,
@@ -1205,8 +1221,10 @@ KswI8042EnumerateDevices(
     _Inout_ KSWORD_ARK_QUERY_I8042_AUDIT_RESPONSE* Response,
     _In_ ULONG Capacity,
     _In_ ULONG MaxRows,
-    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
-    _In_ PDRIVER_OBJECT DriverObject
+    _In_opt_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ BOOLEAN ImageValidated,
+    _In_ BOOLEAN DescriptorValidated
     )
 {
     PDEVICE_OBJECT* deviceObjects = NULL;
@@ -1300,7 +1318,9 @@ KswI8042EnumerateDevices(
                     MaxRows,
                     ModuleInfo,
                     DriverObject,
-                    deviceObjects[index]);
+                    deviceObjects[index],
+                    ImageValidated,
+                    DescriptorValidated);
             }
         }
         KswI8042ReleaseDeviceList(deviceObjects, requestedCount);
@@ -1338,6 +1358,8 @@ KswordARKI8042AuditIoctlQuery(
     IMAGE_NT_HEADERS ntHeaders;
     ULONG64 observedDispatch = 0ULL;
     ULONG64 observedAddDevice = 0ULL;
+    BOOLEAN imageValidated = FALSE;
+    BOOLEAN descriptorValidated = FALSE;
     BOOLEAN hasInput = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -1407,58 +1429,66 @@ KswordARKI8042AuditIoctlQuery(
         }
         KswI8042AddDiagnostic(
             response, capacity, maxRows,
-            KSWORD_ARK_I8042_AUDIT_STATUS_QUERY_FAILED,
+            KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL,
             status,
             KSWORD_ARK_I8042_DETAIL_MODULE_NOT_FOUND,
             moduleInfoBytes,
             0ULL,
-            TRUE);
-        goto Exit;
+            FALSE);
+        if (moduleInfo != NULL) {
+            ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+            moduleInfo = NULL;
+        }
     }
-    i8042Module = KswI8042FindUniqueModule(moduleInfo, "i8042prt.sys");
-    if (i8042Module == NULL) {
+    if (moduleInfo != NULL) {
+        i8042Module = KswI8042FindUniqueModule(moduleInfo, "i8042prt.sys");
+    }
+    if (moduleInfo != NULL && i8042Module == NULL) {
         KswI8042AddDiagnostic(
             response, capacity, maxRows,
-            KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED,
+            KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL,
             STATUS_NOT_FOUND,
             KSWORD_ARK_I8042_DETAIL_MODULE_NOT_FOUND,
             0ULL,
             0ULL,
-            TRUE);
-        goto Exit;
+            FALSE);
     }
 
-    status = KswI8042ValidateImage(
-        i8042Module,
-        &ntHeaders,
-        &pdbGuid,
-        &pdbAge,
-        &failedOpcodeRva);
-    response->imageBase = (ULONGLONG)(ULONG_PTR)i8042Module->ImageBase;
-    response->imageTimeDateStamp = ntHeaders.FileHeader.TimeDateStamp;
-    response->imageSize = ntHeaders.OptionalHeader.SizeOfImage;
-    response->imageChecksum = ntHeaders.OptionalHeader.CheckSum;
-    response->pdbAge = pdbAge;
-    RtlCopyMemory(response->pdbGuid, &pdbGuid, sizeof(pdbGuid));
-    if (!NT_SUCCESS(status)) {
-        ULONG detailCode = KSWORD_ARK_I8042_DETAIL_IMAGE_MISMATCH;
-        if (status == STATUS_REVISION_MISMATCH) {
-            detailCode = KSWORD_ARK_I8042_DETAIL_RSDS_MISMATCH;
+    if (i8042Module != NULL) {
+        status = KswI8042ValidateImage(
+            i8042Module,
+            &ntHeaders,
+            &pdbGuid,
+            &pdbAge,
+            &failedOpcodeRva);
+        response->imageBase = (ULONGLONG)(ULONG_PTR)i8042Module->ImageBase;
+        response->imageTimeDateStamp = ntHeaders.FileHeader.TimeDateStamp;
+        response->imageSize = ntHeaders.OptionalHeader.SizeOfImage;
+        response->imageChecksum = ntHeaders.OptionalHeader.CheckSum;
+        response->pdbAge = pdbAge;
+        RtlCopyMemory(response->pdbGuid, &pdbGuid, sizeof(pdbGuid));
+        if (!NT_SUCCESS(status)) {
+            ULONG detailCode = KSWORD_ARK_I8042_DETAIL_IMAGE_MISMATCH;
+            if (status == STATUS_REVISION_MISMATCH) {
+                detailCode = KSWORD_ARK_I8042_DETAIL_RSDS_MISMATCH;
+            }
+            else if (status == STATUS_DATA_ERROR) {
+                detailCode = KSWORD_ARK_I8042_DETAIL_OPCODE_MISMATCH;
+            }
+            KswI8042AddDiagnostic(
+                response, capacity, maxRows,
+                KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL,
+                status,
+                detailCode,
+                failedOpcodeRva,
+                response->imageBase,
+                FALSE);
         }
-        else if (status == STATUS_DATA_ERROR) {
-            detailCode = KSWORD_ARK_I8042_DETAIL_OPCODE_MISMATCH;
+        else {
+            imageValidated = TRUE;
+            response->responseFlags |= KSWORD_ARK_I8042_RESPONSE_IMAGE_VALIDATED;
         }
-        KswI8042AddDiagnostic(
-            response, capacity, maxRows,
-            KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED,
-            status,
-            detailCode,
-            failedOpcodeRva,
-            response->imageBase,
-            TRUE);
-        goto Exit;
     }
-    response->responseFlags |= KSWORD_ARK_I8042_RESPONSE_IMAGE_VALIDATED;
 
     status = KswI8042ReferenceDriver(&driverObject);
     if (!NT_SUCCESS(status) || driverObject == NULL) {
@@ -1467,39 +1497,45 @@ KswordARKI8042AuditIoctlQuery(
         }
         KswI8042AddDiagnostic(
             response, capacity, maxRows,
-            KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED,
+            KSWORD_ARK_I8042_AUDIT_STATUS_QUERY_FAILED,
             status,
             KSWORD_ARK_I8042_DETAIL_DRIVER_NOT_FOUND,
             0ULL,
             0ULL,
-            TRUE);
+            FALSE);
         goto Exit;
     }
-    status = KswI8042ValidateDriverLayout(
-        driverObject,
-        i8042Module,
-        &observedDispatch,
-        &observedAddDevice);
-    if (!NT_SUCCESS(status)) {
-        KswI8042AddDiagnostic(
-            response, capacity, maxRows,
-            KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED,
-            status,
-            KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH,
-            observedDispatch,
-            observedAddDevice,
-            TRUE);
-        goto Exit;
+    if (imageValidated) {
+        status = KswI8042ValidateDriverLayout(
+            driverObject,
+            i8042Module,
+            &observedDispatch,
+            &observedAddDevice);
+        if (!NT_SUCCESS(status)) {
+            KswI8042AddDiagnostic(
+                response, capacity, maxRows,
+                KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL,
+                status,
+                KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH,
+                observedDispatch,
+                observedAddDevice,
+                FALSE);
+        }
+        else {
+            descriptorValidated = TRUE;
+            response->responseFlags |=
+                KSWORD_ARK_I8042_RESPONSE_DESCRIPTOR_VALIDATED;
+        }
     }
-    response->responseFlags |=
-        KSWORD_ARK_I8042_RESPONSE_DESCRIPTOR_VALIDATED;
 
     status = KswI8042EnumerateDevices(
         response,
         capacity,
         maxRows,
         moduleInfo,
-        driverObject);
+        driverObject,
+        imageValidated,
+        descriptorValidated);
     if (!NT_SUCCESS(status)) {
         KswI8042AddDiagnostic(
             response, capacity, maxRows,

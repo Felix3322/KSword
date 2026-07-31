@@ -501,7 +501,6 @@ void KernelDock::initializeUi()
     m_selfDriverInnerTabWidget = new QTabWidget(m_selfDriverPage);
     m_selfDriverInnerTabWidget->setIconSize(QSize(16, 16));
     m_selfDriverLayout->addWidget(m_selfDriverInnerTabWidget, 1);
-    m_dynDataPage = new QWidget(m_selfDriverInnerTabWidget);
     m_driverStatusPage = new QWidget(m_selfDriverInnerTabWidget);
 
     m_objectNamespaceTabIndex = m_tabWidget->addTab(
@@ -636,15 +635,10 @@ void KernelDock::initializeUi()
         QStringLiteral("IPC"));
     m_tabWidget->setTabToolTip(m_ipcTabIndex, kernelText("kernel.main.tab.ipc.tooltip", QStringLiteral("只读 NamedPipe / ALPC / 通信对象")));
 
-    m_dynDataTabIndex = m_selfDriverInnerTabWidget->addTab(
-        m_dynDataPage,
-        tabIcon(QStringLiteral(":/Icon/process_priority.svg")),
-        kernelText("kernel.main.tab.dyn_data.title", QStringLiteral("动态偏移")));
-    m_selfDriverInnerTabWidget->setTabToolTip(
-        m_dynDataTabIndex,
-        kernelText(
-            "kernel.main.tab.dyn_data.tooltip",
-            QStringLiteral("System Informer DynData 精确匹配状态与字段列表")));
+    // DynData 的总览与 PDB Profile 直接成为“Ksword自身驱动”的二级页，
+    // 不再保留只承载第三层页签的空“动态偏移”容器。
+    initializeDynDataTab();
+    m_dynDataTabInitialized = true;
 
     m_driverStatusTabIndex = m_selfDriverInnerTabWidget->addTab(
         m_driverStatusPage,
@@ -658,8 +652,6 @@ void KernelDock::initializeUi()
 
     // 迁移页离开 KernelDock 顶层后仍需先构建真实内容；
     // 后续自动/手工刷新继续调用原成员函数，不复制驱动状态业务逻辑。
-    initializeDynDataTab();
-    m_dynDataTabInitialized = true;
     initializeDriverStatusTab();
     m_driverStatusTabInitialized = true;
 
@@ -1214,7 +1206,8 @@ void KernelDock::ensureSelfDriverCurrentTabRefreshed()
 
         const int currentIndex =
             m_selfDriverInnerTabWidget->currentIndex();
-        if (currentIndex == m_dynDataTabIndex &&
+        if ((currentIndex == m_dynDataTabIndex ||
+                currentIndex == m_dynDataProfileTabIndex) &&
             !m_dynDataFirstRefreshTriggered)
         {
             m_dynDataFirstRefreshTriggered = true;

@@ -4,6 +4,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <OleAuto.h>
 #include <DbgHelp.h>
 #include <WinHttp.h>
 
@@ -1361,6 +1362,160 @@ namespace ksword::ark
             return typeIndexOut != 0U;
         }
 
+        bool variantToUnsigned32(
+            const VARIANT& source,
+            std::uint32_t& valueOut)
+        {
+            std::uint64_t value = 0ULL;
+            switch (source.vt)
+            {
+            case VT_UI1:
+                value = source.bVal;
+                break;
+            case VT_I1:
+                if (source.cVal < 0) return false;
+                value = static_cast<std::uint8_t>(source.cVal);
+                break;
+            case VT_UI2:
+                value = source.uiVal;
+                break;
+            case VT_I2:
+                if (source.iVal < 0) return false;
+                value = static_cast<std::uint16_t>(source.iVal);
+                break;
+            case VT_UI4:
+                value = source.ulVal;
+                break;
+            case VT_UINT:
+                value = source.uintVal;
+                break;
+            case VT_I4:
+                if (source.lVal < 0) return false;
+                value = static_cast<std::uint32_t>(source.lVal);
+                break;
+            case VT_INT:
+                if (source.intVal < 0) return false;
+                value = static_cast<std::uint32_t>(source.intVal);
+                break;
+            case VT_UI8:
+                value = source.ullVal;
+                break;
+            case VT_I8:
+                if (source.llVal < 0) return false;
+                value = static_cast<std::uint64_t>(source.llVal);
+                break;
+            default:
+                return false;
+            }
+            if (value > std::numeric_limits<std::uint32_t>::max())
+            {
+                return false;
+            }
+            valueOut = static_cast<std::uint32_t>(value);
+            return true;
+        }
+
+        bool resolveEnumValue(
+            const DbgHelpSession& session,
+            const std::string& enumName,
+            const std::string& enumeratorName,
+            std::uint32_t& valueOut,
+            std::uint32_t& storageBytesOut)
+        {
+            valueOut = 0U;
+            storageBytesOut = 0U;
+            ULONG typeIndex = 0U;
+            if (!findTypeIndex(session, enumName, typeIndex))
+            {
+                return false;
+            }
+
+            ULONG64 typeLength = 0ULL;
+            if (::SymGetTypeInfo(
+                    session.key.value,
+                    session.moduleBase,
+                    typeIndex,
+                    TI_GET_LENGTH,
+                    &typeLength) == FALSE ||
+                typeLength == 0ULL ||
+                typeLength > sizeof(std::uint32_t))
+            {
+                return false;
+            }
+
+            ULONG childCount = 0U;
+            if (::SymGetTypeInfo(
+                    session.key.value,
+                    session.moduleBase,
+                    typeIndex,
+                    TI_GET_CHILDRENCOUNT,
+                    &childCount) == FALSE ||
+                childCount == 0U)
+            {
+                return false;
+            }
+            const std::size_t bufferBytes =
+                sizeof(TI_FINDCHILDREN_PARAMS) +
+                (static_cast<std::size_t>(childCount) - 1U) *
+                    sizeof(ULONG);
+            std::vector<std::uint8_t> childStorage(
+                bufferBytes,
+                0U);
+            auto* const children =
+                reinterpret_cast<TI_FINDCHILDREN_PARAMS*>(
+                    childStorage.data());
+            children->Count = childCount;
+            children->Start = 0U;
+            if (::SymGetTypeInfo(
+                    session.key.value,
+                    session.moduleBase,
+                    typeIndex,
+                    TI_FINDCHILDREN,
+                    children) == FALSE)
+            {
+                return false;
+            }
+
+            for (ULONG index = 0U; index < childCount; ++index)
+            {
+                const ULONG childId = children->ChildId[index];
+                wchar_t* allocatedName = nullptr;
+                if (::SymGetTypeInfo(
+                        session.key.value,
+                        session.moduleBase,
+                        childId,
+                        TI_GET_SYMNAME,
+                        &allocatedName) == FALSE ||
+                    allocatedName == nullptr)
+                {
+                    continue;
+                }
+                const std::unique_ptr<wchar_t, decltype(&::LocalFree)> name(
+                    allocatedName,
+                    &::LocalFree);
+                if (wideToUtf8(std::wstring(name.get())) != enumeratorName)
+                {
+                    continue;
+                }
+
+                VARIANT enumValue{};
+                if (::SymGetTypeInfo(
+                        session.key.value,
+                        session.moduleBase,
+                        childId,
+                        TI_GET_VALUE,
+                        &enumValue) == FALSE ||
+                    !variantToUnsigned32(enumValue, valueOut))
+                {
+                    return false;
+                }
+                storageBytesOut =
+                    static_cast<std::uint32_t>(typeLength);
+                return true;
+            }
+            return false;
+        }
+
         bool loadTypeLayout(
             const DbgHelpSession& session,
             const std::string& typeName,
@@ -1915,6 +2070,128 @@ namespace ksword::ark
             }
         }
 
+        void resolveNtosWorkQueueV4Items(
+            const DbgHelpSession& session,
+            TypeResolver& types,
+            const ArkDynModuleIdentity& identity,
+            RuntimeDynDataResolveResult& result)
+        {
+            const struct
+            {
+                std::uint32_t itemId;
+                const char* symbolName;
+            } globalItems[] = {
+                {KSW_DYN_V4_ITEM_ID_WQ_PSP_SYSTEM_PARTITION, "PspSystemPartition"},
+                {KSW_DYN_V4_ITEM_ID_WQ_EXP_BUILTIN_PRIORITIES, "ExpBuiltinPriorities"},
+            };
+            for (const auto& item : globalItems)
+            {
+                std::uint32_t rva = 0U;
+                if (resolveSymbolRva(
+                        session,
+                        item.symbolName,
+                        identity.sizeOfImage,
+                        rva))
+                {
+                    appendV4Item(
+                        result,
+                        item.itemId,
+                        KSW_DYN_V4_ITEM_KIND_GLOBAL_RVA,
+                        KSW_DYN_V4_ITEM_FLAG_REQUIRED,
+                        KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE,
+                        rva);
+                }
+            }
+
+            const struct
+            {
+                std::uint32_t itemId;
+                const char* typeName;
+                const char* memberName;
+            } memberItems[] = {
+                {KSW_DYN_V4_ITEM_ID_WQ_EPARTITION_EX_PARTITION, "_EPARTITION", "ExPartition"},
+                {KSW_DYN_V4_ITEM_ID_WQ_EX_PARTITION_WORK_QUEUES, "_EX_PARTITION", "WorkQueues"},
+                {KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_WORK_PRI_QUEUE, "_EX_WORK_QUEUE", "WorkPriQueue"},
+                {KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_QUEUE_INDEX, "_EX_WORK_QUEUE", "QueueIndex"},
+                {KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_ENTRY_LIST_HEAD, "_KPRIQUEUE", "EntryListHead"},
+                {KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_THREAD_LIST_HEAD, "_KPRIQUEUE", "ThreadListHead"},
+                {KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_QUEUE, "_KTHREAD", "Queue"},
+                {KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_QUEUE_LIST_ENTRY, "_KTHREAD", "QueueListEntry"},
+                {KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_LIST, "_WORK_QUEUE_ITEM", "List"},
+                {KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_ROUTINE, "_WORK_QUEUE_ITEM", "WorkerRoutine"},
+                {KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_PARAMETER, "_WORK_QUEUE_ITEM", "Parameter"},
+                {KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_START_ADDRESS, "_ETHREAD", "StartAddress"},
+                {KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_TCB, "_ETHREAD", "Tcb"},
+            };
+            MemberLayout member{};
+            for (const auto& item : memberItems)
+            {
+                if (types.member(
+                        item.typeName,
+                        item.memberName,
+                        member) &&
+                    member.offset <= kMaximumProfileOffset)
+                {
+                    appendV4Item(
+                        result,
+                        item.itemId,
+                        KSW_DYN_V4_ITEM_KIND_STRUCT_OFFSET,
+                        KSW_DYN_V4_ITEM_FLAG_REQUIRED,
+                        KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE,
+                        member.offset);
+                }
+            }
+
+            const struct
+            {
+                std::uint32_t itemId;
+                const char* typeName;
+            } sizeItems[] = {
+                {KSW_DYN_V4_ITEM_ID_WQ_EPARTITION_TYPE_SIZE, "_EPARTITION"},
+                {KSW_DYN_V4_ITEM_ID_WQ_EX_PARTITION_TYPE_SIZE, "_EX_PARTITION"},
+                {KSW_DYN_V4_ITEM_ID_WQ_EX_WORK_QUEUE_TYPE_SIZE, "_EX_WORK_QUEUE"},
+                {KSW_DYN_V4_ITEM_ID_WQ_KPRI_QUEUE_TYPE_SIZE, "_KPRIQUEUE"},
+                {KSW_DYN_V4_ITEM_ID_WQ_KTHREAD_TYPE_SIZE, "_KTHREAD"},
+                {KSW_DYN_V4_ITEM_ID_WQ_WORK_ITEM_TYPE_SIZE, "_WORK_QUEUE_ITEM"},
+                {KSW_DYN_V4_ITEM_ID_WQ_ETHREAD_TYPE_SIZE, "_ETHREAD"},
+            };
+            for (const auto& item : sizeItems)
+            {
+                std::uint32_t typeSize = 0U;
+                if (types.typeSize(item.typeName, typeSize) &&
+                    typeSize != 0U &&
+                    typeSize <= kMaximumProfileOffset)
+                {
+                    appendV4Item(
+                        result,
+                        item.itemId,
+                        KSW_DYN_V4_ITEM_KIND_TYPE_SIZE,
+                        KSW_DYN_V4_ITEM_FLAG_REQUIRED,
+                        KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE,
+                        typeSize);
+                }
+            }
+
+            std::uint32_t enumValue = 0U;
+            std::uint32_t enumStorageBytes = 0U;
+            if (resolveEnumValue(
+                    session,
+                    "_EXQUEUEINDEX",
+                    "ExPoolUntrusted",
+                    enumValue,
+                    enumStorageBytes))
+            {
+                appendV4Item(
+                    result,
+                    KSW_DYN_V4_ITEM_ID_WQ_EX_POOL_UNTRUSTED,
+                    KSW_DYN_V4_ITEM_KIND_ENUM_VALUE,
+                    KSW_DYN_V4_ITEM_FLAG_REQUIRED,
+                    KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE,
+                    enumValue,
+                    enumStorageBytes);
+            }
+        }
+
         void resolveFltmgrV4Items(
             TypeResolver& types,
             RuntimeDynDataResolveResult& result)
@@ -2042,6 +2319,11 @@ namespace ksword::ark
             case KSW_DYN_PROFILE_CLASS_NTOSKRNL:
             case KSW_DYN_PROFILE_CLASS_NTKRLA57:
                 resolveNtosV4Items(types, result);
+                resolveNtosWorkQueueV4Items(
+                    session,
+                    types,
+                    identity,
+                    result);
                 break;
             case KSW_DYN_PROFILE_CLASS_FLTMGR:
                 resolveFltmgrV4Items(types, result);
@@ -2066,6 +2348,8 @@ namespace ksword::ark
                 return "fltmgr.minifilter";
             case KSW_DYN_V4_CAPABILITY_GROUP_CI_KERNEL_HASH:
                 return "ci.kernel_hash";
+            case KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE:
+                return "ntos.work_queue";
             default:
                 return "runtime.unknown";
             }
@@ -2119,6 +2403,10 @@ namespace ksword::ark
                 case KSW_DYN_V4_CAPABILITY_GROUP_CI_KERNEL_HASH:
                     group.requiredItemCount = 5U;
                     group.optionalItemCount = 4U;
+                    break;
+                case KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE:
+                    group.requiredItemCount = 23U;
+                    group.optionalItemCount = 0U;
                     break;
                 default:
                     break;

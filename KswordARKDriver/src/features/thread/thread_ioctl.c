@@ -545,48 +545,6 @@ Return Value:
     return status;
 }
 
-static BOOLEAN
-KswordARKDriverThreadIsProtectedDriverEntity(
-    _In_ WDFDEVICE Device,
-    _In_ ULONG64 StartAddress
-    )
-{
-    WDFDRIVER wdfDriver = NULL;
-    PDRIVER_OBJECT driverObject = NULL;
-    ULONG_PTR driverStart = 0U;
-    ULONG_PTR driverEnd = 0U;
-    ULONG driverSize = 0UL;
-
-    // 自保护绑定当前 WDFDEVICE 所属 DriverObject 实体，而不是可重命名文件名。
-    // 任何取值失败或范围回绕都按受保护处理。
-    if (Device == NULL || StartAddress == 0ULL) {
-        return TRUE;
-    }
-    wdfDriver = WdfDeviceGetDriver(Device);
-    if (wdfDriver == NULL) {
-        return TRUE;
-    }
-    driverObject = WdfDriverWdmGetDriverObject(wdfDriver);
-    if (driverObject == NULL) {
-        return TRUE;
-    }
-
-    __try {
-        driverStart = (ULONG_PTR)driverObject->DriverStart;
-        driverSize = driverObject->DriverSize;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return TRUE;
-    }
-    if (driverStart == 0U || driverSize == 0UL ||
-        (ULONG_PTR)driverSize > ((ULONG_PTR)(~(ULONG_PTR)0) - driverStart)) {
-        return TRUE;
-    }
-    driverEnd = driverStart + (ULONG_PTR)driverSize;
-    return (ULONG_PTR)StartAddress >= driverStart &&
-        (ULONG_PTR)StartAddress < driverEnd;
-}
-
 static NTSTATUS
 KswordARKDriverThreadVerifyLiveIdentity(
     _In_ PETHREAD ThreadObject,
@@ -604,9 +562,7 @@ KswordARKDriverThreadVerifyLiveIdentity(
         *ActualStartAddressOut = 0ULL;
     }
     if (ThreadObject == NULL || ControlRequest == NULL ||
-        ControlRequest->threadId == 0UL ||
-        ControlRequest->expectedStartAddress == 0ULL ||
-        ControlRequest->expectedCreateTime100ns == 0ULL) {
+        ControlRequest->threadId == 0UL) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -617,7 +573,7 @@ KswordARKDriverThreadVerifyLiveIdentity(
     }
 
 #if (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
-    {
+    if (ControlRequest->expectedCreateTime100ns != 0ULL) {
         const LONGLONG createTime = PsGetThreadCreateTime(ThreadObject);
         if (createTime <= 0 ||
             (ULONG64)createTime != ControlRequest->expectedCreateTime100ns) {
@@ -625,8 +581,10 @@ KswordARKDriverThreadVerifyLiveIdentity(
         }
     }
 #else
-    // 目标 WDK 无可靠创建时间 API 时，整个驱动线程控制协议关闭。
-    return STATUS_NOT_SUPPORTED;
+    // 旧 WDK 仅在调用方确实提供创建时间时拒绝；缺失时间不再关闭控制入口。
+    if (ControlRequest->expectedCreateTime100ns != 0ULL) {
+        return STATUS_NOT_SUPPORTED;
+    }
 #endif
 
     RtlZeroMemory(&detailRequest, sizeof(detailRequest));
@@ -651,7 +609,7 @@ KswordARKDriverThreadVerifyLiveIdentity(
     else if ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL) {
         actualStartAddress = detailResponse.startAddress;
     }
-    if (actualStartAddress == 0ULL ||
+    if (ControlRequest->expectedStartAddress != 0ULL &&
         !(((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL &&
            ControlRequest->expectedStartAddress == detailResponse.startAddress) ||
           ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_WIN32_START_ADDRESS) != 0UL &&
@@ -659,7 +617,7 @@ KswordARKDriverThreadVerifyLiveIdentity(
         return STATUS_OBJECT_NAME_NOT_FOUND;
     }
     if (ActualStartAddressOut != NULL) {
-        *ActualStartAddressOut = ControlRequest->expectedStartAddress;
+        *ActualStartAddressOut = actualStartAddress;
     }
     return STATUS_SUCCESS;
 }
@@ -673,8 +631,9 @@ KswordARKDriverControlDriverThread(
 
 Routine Description:
 
-    Validate one PID 4 system thread against its live R0 start address and the
-    loaded-driver module snapshot, then suspend, resume, or terminate it.
+    Validate one PID 4 system thread against all identity fields supplied by R3,
+    then suspend, resume, or terminate it.  Missing optional fields do not
+    disable the control entry.
 
 Arguments:
 
@@ -693,7 +652,7 @@ Return Value:
     const UCHAR* moduleFileName = NULL;
     ULONG moduleFileNameBytes = 0UL;
     ULONG moduleInfoBytes = 0UL;
-    WCHAR moduleNameWide[128] = { 0 };
+    WCHAR moduleNameWide[128] = L"<unresolved>";
     USHORT moduleNameChars = 0U;
     PETHREAD threadObject = NULL;
     PETHREAD actionThreadObject = NULL;
@@ -707,8 +666,6 @@ Return Value:
         ControlRequest->size != sizeof(*ControlRequest) ||
         ControlRequest->version != KSWORD_ARK_DRIVER_THREAD_CONTROL_PROTOCOL_VERSION ||
         ControlRequest->threadId == 0UL ||
-        ControlRequest->expectedStartAddress == 0ULL ||
-        ControlRequest->expectedCreateTime100ns == 0ULL ||
         (ControlRequest->flags & ~KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_VALID_MASK) != 0UL ||
         ControlRequest->reserved0 != 0UL ||
         ControlRequest->reserved1 != 0UL ||
@@ -768,27 +725,26 @@ Return Value:
         goto Exit;
     }
 
+    // 模块快照只用于审计文本，不再把 ntoskrnl、自身驱动、未知模块或缺失启动地址
+    // 作为控制保护条件。快照失败时继续使用 <unresolved> 目标文本。
     status = KswordARKHookBuildModuleSnapshot(&moduleInfo, &moduleInfoBytes);
-    if (!NT_SUCCESS(status)) {
-        goto Exit;
+    if (NT_SUCCESS(status) && actualStartAddress != 0ULL) {
+        ownerModule = KswordARKHookFindModuleForAddress(
+            moduleInfo,
+            (ULONG_PTR)actualStartAddress);
+        if (ownerModule != NULL) {
+            KswordARKHookGetModuleFileName(
+                ownerModule,
+                &moduleFileName,
+                &moduleFileNameBytes);
+            KswordARKHookCopyBoundedAnsiToWide(
+                moduleFileName,
+                moduleFileNameBytes,
+                moduleNameWide,
+                RTL_NUMBER_OF(moduleNameWide));
+        }
     }
-    ownerModule = KswordARKHookFindModuleForAddress(
-        moduleInfo,
-        (ULONG_PTR)actualStartAddress);
-    if (ownerModule == NULL || ownerModule == &moduleInfo->Modules[0]) {
-        status = STATUS_ACCESS_DENIED;
-        goto Exit;
-    }
-    KswordARKHookGetModuleFileName(ownerModule, &moduleFileName, &moduleFileNameBytes);
-    if (KswordARKDriverThreadIsProtectedDriverEntity(Device, actualStartAddress)) {
-        status = STATUS_ACCESS_DENIED;
-        goto Exit;
-    }
-    KswordARKHookCopyBoundedAnsiToWide(
-        moduleFileName,
-        moduleFileNameBytes,
-        moduleNameWide,
-        RTL_NUMBER_OF(moduleNameWide));
+    status = STATUS_SUCCESS;
     while (moduleNameChars + 1U < RTL_NUMBER_OF(moduleNameWide) &&
            moduleNameWide[moduleNameChars] != L'\0') {
         ++moduleNameChars;
@@ -811,7 +767,7 @@ Return Value:
     }
 
     // 动作入口前按 TID 重新引用一次 ETHREAD，并要求它仍是最初持有的同一对象。
-    // 随后从新引用精确核对 TID + StartAddress + CreateTime；失败时不进入任何后端。
+    // 随后从新引用核对 TID 以及请求中实际提供的 StartAddress/CreateTime。
     status = PsLookupThreadByThreadId(
         ULongToHandle(ControlRequest->threadId),
         &actionThreadObject);

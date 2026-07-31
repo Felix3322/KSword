@@ -132,21 +132,10 @@ KernelThreadAuditTab::KernelThreadAuditTab(const Mode mode, QWidget* parent)
 
 void KernelThreadAuditTab::initializeUi()
 {
-    // 根布局：风险说明常驻顶部，工具栏、表格和详情垂直排列。
+    // 根布局：工具栏、表格和详情垂直排列。
     auto* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
-
-    auto* safetyLabel = new QLabel(this);
-    safetyLabel->setObjectName(QStringLiteral("kernelThreadAuditSafetyLabel"));
-    safetyLabel->setWordWrap(true);
-    safetyLabel->setStyleSheet(QStringLiteral(
-        "QLabel#kernelThreadAuditSafetyLabel{background:%1;color:%2;"
-        "border:1px solid %3;border-radius:4px;padding:7px;}")
-        .arg(KswordTheme::SurfaceAltHex())
-        .arg(KswordTheme::TextPrimaryHex())
-        .arg(KswordTheme::WarningHex()));
-    rootLayout->addWidget(safetyLabel);
 
     // 工具栏按钮使用图标和 tooltip；A/B 按钮按列组规范紧贴放置。
     auto* toolLayout = new QHBoxLayout();
@@ -238,27 +227,11 @@ void KernelThreadAuditTab::initializeUi()
 
 void KernelThreadAuditTab::applyTranslatedText()
 {
-    // 安全说明根据模式区分“全部系统线程”与“工作队列候选”。
-    QLabel* safetyLabel = findChild<QLabel*>(QStringLiteral("kernelThreadAuditSafetyLabel"));
-    if (safetyLabel != nullptr)
-    {
-        const QString safetyText = m_mode == Mode::SystemThreads
-            ? threadAuditText(
-                "thread_audit.system.safety",
-                QStringLiteral("安全边界：只允许管理启动入口明确归属于第三方驱动且创建时间可靠的 System 线程；"
-                               "R0 在动作前精确复核 TID、入口、创建时间，并按当前 DriverObject 的 DriverStart/DriverSize 保护自身实体。"))
-            : threadAuditText(
-                "thread_audit.work_queue.safety",
-                QStringLiteral("只读证据：仅在当前 ntoskrnl 的 PE/PDB 身份和完整 DynData 结构描述精确匹配时读取工作队列；"
-                               "缺字段或身份不一致会显式关闭，不扫描全局内存、不猜偏移，也不提供管理动作。"));
-        safetyLabel->setText(safetyText);
-    }
-
     // 图标按钮只通过 tooltip 表达动作含义。
     m_refreshButton->setToolTip(threadAuditText("thread_audit.tooltip.refresh", QStringLiteral("刷新线程审计快照")));
-    m_suspendButton->setToolTip(threadAuditText("thread_audit.tooltip.suspend", QStringLiteral("挂起选中的第三方驱动系统线程")));
-    m_resumeButton->setToolTip(threadAuditText("thread_audit.tooltip.resume", QStringLiteral("恢复选中的第三方驱动系统线程")));
-    m_terminateButton->setToolTip(threadAuditText("thread_audit.tooltip.terminate", QStringLiteral("终止选中的第三方驱动系统线程（高风险）")));
+    m_suspendButton->setToolTip(threadAuditText("thread_audit.tooltip.suspend", QStringLiteral("挂起选中的系统线程")));
+    m_resumeButton->setToolTip(threadAuditText("thread_audit.tooltip.resume", QStringLiteral("恢复选中的系统线程")));
+    m_terminateButton->setToolTip(threadAuditText("thread_audit.tooltip.terminate", QStringLiteral("终止选中的系统线程（高风险）")));
     m_overviewButton->setToolTip(threadAuditText("thread_audit.tooltip.view_a", QStringLiteral("A：调度与队列概览")));
     m_evidenceButton->setToolTip(threadAuditText("thread_audit.tooltip.view_b", QStringLiteral("B：入口地址与模块归属证据")));
     m_filterEdit->setPlaceholderText(threadAuditText("thread_audit.filter.placeholder", QStringLiteral("按 TID、状态、队列或模块筛选")));
@@ -397,7 +370,7 @@ void KernelThreadAuditTab::rebuildTable()
         const QString protectionText = row.protectedTarget
             ? threadAuditText("thread_audit.protection.blocked", QStringLiteral("已保护：%1"))
                 .arg(protectionReasonText(row.protectionKind))
-            : threadAuditText("thread_audit.protection.allowed", QStringLiteral("第三方驱动线程（需确认）"));
+            : threadAuditText("thread_audit.protection.allowed", QStringLiteral("可操作（需确认）"));
         const QString stateValue = m_mode == Mode::WorkQueueThreads
             ? threadAuditText("thread_audit.value.not_applicable", QStringLiteral("不适用"))
             : stateText(row.state);
@@ -462,10 +435,7 @@ void KernelThreadAuditTab::updateDetail()
 
     const bool actionAllowed =
         m_mode == Mode::SystemThreads &&
-        !row.protectedTarget &&
-        row.threadId != 0U &&
-        row.startAddress != 0U &&
-        row.createTime100ns != 0U;
+        row.threadId != 0U;
     m_suspendButton->setEnabled(actionAllowed);
     m_resumeButton->setEnabled(actionAllowed);
     m_terminateButton->setEnabled(actionAllowed);
@@ -532,12 +502,10 @@ void KernelThreadAuditTab::updateDetail()
             .arg(row.module.imageSize, 0, 16)
         << QStringLiteral("ModulePath: %1").arg(row.module.path)
         << QString()
-        << threadAuditText("thread_audit.detail.safety", QStringLiteral("[管理安全]"))
-        << QStringLiteral("Protected: %1").arg(row.protectedTarget ? QStringLiteral("true") : QStringLiteral("false"))
-        << QStringLiteral("Reason: %1").arg(protectionReasonText(row.protectionKind))
+        << threadAuditText("thread_audit.detail.safety", QStringLiteral("[管理确认]"))
         << threadAuditText(
             "thread_audit.detail.safety_boundary",
-            QStringLiteral("危险操作仅限系统线程页；R0 动作入口前重新核对精确 TID、启动地址、创建时间，并按当前 DriverObject 实体范围保护自身。"));
+            QStringLiteral("危险操作仅限系统线程页；R0 始终复核 TID，并在启动地址或创建时间可用时同步复核对应字段。"));
     m_detailEditor->setText(detailLines.join(QLatin1Char('\n')));
 }
 
@@ -632,21 +600,18 @@ void KernelThreadAuditTab::showRowMenu(const QPoint& localPosition)
     actionMenu.setStyleSheet(menuStyle());
     QAction* suspendAction = actionMenu.addAction(
         QIcon(QStringLiteral(":/Icon/process_pause.svg")),
-        threadAuditText("thread_audit.menu.suspend", QStringLiteral("挂起第三方驱动线程")));
+        threadAuditText("thread_audit.menu.suspend", QStringLiteral("挂起系统线程")));
     QAction* resumeAction = actionMenu.addAction(
         QIcon(QStringLiteral(":/Icon/process_resume.svg")),
-        threadAuditText("thread_audit.menu.resume", QStringLiteral("恢复第三方驱动线程")));
+        threadAuditText("thread_audit.menu.resume", QStringLiteral("恢复系统线程")));
     QAction* terminateAction = actionMenu.addAction(
         QIcon(QStringLiteral(":/Icon/process_terminate.svg")),
-        threadAuditText("thread_audit.menu.terminate", QStringLiteral("终止第三方驱动线程（高风险）")));
+        threadAuditText("thread_audit.menu.terminate", QStringLiteral("终止系统线程（高风险）")));
 
     const bool actionAllowed =
         m_mode == Mode::SystemThreads &&
         rowCopy.has_value() &&
-        !rowCopy->protectedTarget &&
-        rowCopy->threadId != 0U &&
-        rowCopy->startAddress != 0U &&
-        rowCopy->createTime100ns != 0U;
+        rowCopy->threadId != 0U;
     suspendAction->setEnabled(actionAllowed);
     resumeAction->setEnabled(actionAllowed);
     terminateAction->setEnabled(actionAllowed);
@@ -685,17 +650,13 @@ void KernelThreadAuditTab::runControlAction(
     const unsigned long action)
 {
     if (m_mode != Mode::SystemThreads ||
-        row.protectedTarget ||
-        row.threadId == 0U ||
-        row.startAddress == 0U ||
-        row.createTime100ns == 0U)
+        row.threadId == 0U)
     {
         showResultMessage(
             this,
             false,
             threadAuditText("thread_audit.dialog.blocked.title", QStringLiteral("系统线程操作已阻止")),
-            threadAuditText("thread_audit.dialog.blocked.body", QStringLiteral("该线程受到保护：%1"))
-                .arg(protectionReasonText(row.protectionKind)));
+            threadAuditText("thread_audit.dialog.blocked.body", QStringLiteral("当前记录没有可用于执行操作的线程 ID。")));
         return;
     }
 
@@ -730,7 +691,7 @@ void KernelThreadAuditTab::runControlAction(
             threadAuditText("thread_audit.dialog.terminate.second.title", QStringLiteral("最终终止确认")),
             threadAuditText(
                 "thread_audit.dialog.terminate.second.body",
-                QStringLiteral("这是不可逆操作。R0 会再次校验线程身份，但无法保证目标驱动可以安全恢复。\n\n再次确认终止 TID %1？"))
+                QStringLiteral("这是不可逆操作。R0 会再次校验当前可用的线程身份字段，但无法保证目标驱动可以安全恢复。\n\n再次确认终止 TID %1？"))
                 .arg(row.threadId)))
     {
         return;
@@ -900,10 +861,10 @@ QString KernelThreadAuditTab::protectionReasonText(
         return threadAuditText(
             "thread_audit.protection.identity_missing",
             QStringLiteral("启动地址或创建时间缺失，危险操作已关闭"));
-    case ProtectionKind::ThirdPartyR0Recheck:
+    case ProtectionKind::BestEffortR0Recheck:
         return threadAuditText(
             "thread_audit.protection.r0_recheck",
-            QStringLiteral("第三方模块；操作时由 R0 精确复核身份"));
+            QStringLiteral("操作时由 R0 复核当前可用身份"));
     case ProtectionKind::ReadOnlyWorkQueueEvidence:
         return threadAuditText(
             "thread_audit.protection.read_only",
@@ -989,7 +950,7 @@ QString KernelThreadAuditTab::snapshotDiagnosticText(
         case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED:
             diagnostics << threadAuditText(
                 "thread_audit.work_queue.query.unsupported",
-                QStringLiteral("当前构建缺少完整精确描述，已关闭枚举"));
+                QStringLiteral("当前驱动尚未加载工作队列精确布局；请刷新“Ksword自身驱动 / PDB Profile”后重试"));
             break;
         case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_PARTIAL:
             diagnostics << threadAuditText(

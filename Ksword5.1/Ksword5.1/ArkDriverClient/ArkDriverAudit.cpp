@@ -1731,6 +1731,7 @@ namespace ksword::ark
         {
             return value == KSWORD_ARK_PLATFORM_SIGNATURE_NONE ||
                 value == KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V6 ||
+                value == KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V4_V5 ||
                 (value >= KSWORD_ARK_PLATFORM_SIGNATURE_WDF_BINDING_TABLE &&
                  value <= KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_22);
         };
@@ -2103,25 +2104,36 @@ namespace ksword::ark
                 entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE &&
                 entry.verdict == KSWORD_ARK_I8042_VERDICT_AVAILABLE &&
                 entry.deviceKind != KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
-                entry.detailCode ==
-                    KSWORD_ARK_I8042_DETAIL_DESCRIPTOR_VALIDATED &&
-                entry.lastStatus == 0L;
-            const bool unsupportedDevice =
-                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_UNSUPPORTED &&
-                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNSUPPORTED &&
-                entry.deviceKind == KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
                 (entry.detailCode ==
-                    KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH ||
+                    KSWORD_ARK_I8042_DETAIL_DESCRIPTOR_VALIDATED ||
                  entry.detailCode ==
-                    KSWORD_ARK_I8042_DETAIL_PNP_CLASS_UNKNOWN) &&
+                    KSWORD_ARK_I8042_DETAIL_GENERIC_DEVICE_AVAILABLE) &&
+                entry.lastStatus == 0L;
+            const bool partialDevice =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNKNOWN &&
+                entry.deviceKind == KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
+                entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_PNP_CLASS_UNKNOWN &&
+                entry.lastStatus != 0L;
+            const bool failedDevice =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_QUERY_FAILED &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNKNOWN &&
+                entry.deviceKind == KSWORD_ARK_I8042_DEVICE_UNKNOWN &&
+                entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH &&
                 entry.lastStatus != 0L;
             const bool deviceShape =
                 entry.rowKind != KSWORD_ARK_I8042_AUDIT_ROW_DEVICE ||
                 (entry.endpointKind == KSWORD_ARK_I8042_ENDPOINT_NONE &&
-                 entryImageFlag &&
-                 entryDescriptorFlag &&
                  (entry.fieldFlags & ~deviceAllowedFields) == 0UL &&
-                 (availableDevice || unsupportedDevice));
+                 (availableDevice || partialDevice || failedDevice) &&
+                 (entry.detailCode !=
+                        KSWORD_ARK_I8042_DETAIL_DESCRIPTOR_VALIDATED ||
+                  (entryImageFlag && entryDescriptorFlag)) &&
+                 (entry.detailCode !=
+                        KSWORD_ARK_I8042_DETAIL_GENERIC_DEVICE_AVAILABLE ||
+                  !entryDescriptorFlag));
             const bool availableEndpoint =
                 entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_AVAILABLE &&
                 entry.verdict == KSWORD_ARK_I8042_VERDICT_AVAILABLE &&
@@ -2182,6 +2194,19 @@ namespace ksword::ark
                     KSWORD_ARK_I8042_DETAIL_OPCODE_MISMATCH ||
                  entry.detailCode ==
                     KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH);
+            const bool partialDiagnostic =
+                entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_PARTIAL &&
+                entry.verdict == KSWORD_ARK_I8042_VERDICT_UNKNOWN &&
+                (entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_MODULE_NOT_FOUND ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_IMAGE_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_RSDS_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_OPCODE_MISMATCH ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DRIVER_LAYOUT_MISMATCH);
             const bool failedDiagnostic =
                 entry.status == KSWORD_ARK_I8042_AUDIT_STATUS_QUERY_FAILED &&
                 (entry.verdict == KSWORD_ARK_I8042_VERDICT_UNKNOWN ||
@@ -2190,6 +2215,8 @@ namespace ksword::ark
                     KSWORD_ARK_I8042_VERDICT_UNSUPPORTED)) &&
                 (entry.detailCode ==
                     KSWORD_ARK_I8042_DETAIL_MODULE_NOT_FOUND ||
+                 entry.detailCode ==
+                    KSWORD_ARK_I8042_DETAIL_DRIVER_NOT_FOUND ||
                  entry.detailCode ==
                     KSWORD_ARK_I8042_DETAIL_DEVICE_ENUM_FAILED ||
                  entry.detailCode ==
@@ -2204,6 +2231,7 @@ namespace ksword::ark
                  entry.lastStatus != 0L &&
                  (unavailableDiagnostic ||
                   unsupportedDiagnostic ||
+                  partialDiagnostic ||
                   failedDiagnostic));
             const bool rowShapeValid =
                 (entry.rowKind == KSWORD_ARK_I8042_AUDIT_ROW_DEVICE &&
@@ -2224,7 +2252,8 @@ namespace ksword::ark
                 validStatus(entry.status) &&
                 entry.verdict <= KSWORD_ARK_I8042_VERDICT_UNSUPPORTED &&
                 (entry.fieldFlags & ~knownFieldFlags) == 0UL &&
-                entry.detailCode <= KSWORD_ARK_I8042_DETAIL_BUFFER_TRUNCATED &&
+                entry.detailCode <=
+                    KSWORD_ARK_I8042_DETAIL_GENERIC_DEVICE_AVAILABLE &&
                 stringsValid &&
                 pnpFlag == pnpPresent &&
                 ownerFlag == ownerPathPresent &&

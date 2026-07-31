@@ -124,6 +124,7 @@ private:
         QString verificationPath;
         QString fileIdentifier;
         QString catalogPath;
+        QString signerCertificateName;
         std::int32_t embeddedTrustStatus = 0;
         std::int32_t catalogTrustStatus = 0;
         std::uint32_t catalogLookupError = 0U;

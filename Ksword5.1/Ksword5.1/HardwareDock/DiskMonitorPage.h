@@ -12,6 +12,7 @@
 #include "DiskMonitorStoragePanel.h"
 
 #include <QHash>
+#include <QIcon>
 #include <QWidget>
 
 #ifndef NOMINMAX
@@ -114,6 +115,7 @@ private:
     {
         std::uint32_t pid = 0;             // pid：触发文件 IO 的进程 ID。
         QString processName;               // processName：进程名。
+        QString processImagePath;          // processImagePath：用于活动表进程图标与筛选。
         QString filePath;                  // filePath：ETW 解析到的文件路径。
         double readBytesPerSec = 0.0;      // readBytesPerSec：文件读取速率。
         double writeBytesPerSec = 0.0;     // writeBytesPerSec：文件写入速率。
@@ -188,15 +190,9 @@ private:
     void updateSummaryLabels(const std::vector<ProcessDiskSample>& sampleList);
     void syncSelectionFromTable();
 
-    // applyProcessColumnPreset：
-    // - 输入：false 为资源监视器概览列，true 为进程诊断列；
-    // - 处理：两组均保持精简，并同步 A/B 按钮主题状态；
-    // - 返回：无，用户仍可通过表头右键自定义单列显隐。
-    void applyProcessColumnPreset(bool diagnosticView);
-
     // installProcessColumnMenu：
     // - 输入：无；
-    // - 处理：为进程表表头增加逐列显隐菜单，手工调整后清除 A/B 预设高亮；
+    // - 处理：为进程表表头增加逐列显隐菜单，默认显示全部字段；
     // - 返回：无。
     void installProcessColumnMenu();
 
@@ -217,6 +213,8 @@ private:
     void applyProcessRowCheckState(QTableWidgetItem* checkItem, std::uint32_t pid) const;
     QString processSearchText(const ProcessDiskSample& sample) const;
     bool sampleMatchesFilter(const ProcessDiskSample& sample) const;
+    bool activityMatchesFilter(const FileActivitySample& sample) const;
+    QIcon processIconForPath(const QString& imagePath);
 
     // ===================== 格式化工具 =====================
     QString formatBytesPerSecond(double bytesPerSecond) const;
@@ -238,8 +236,6 @@ private:
     QToolButton* m_processSectionButton = nullptr; // m_processSectionButton：进程活动折叠标题。
     QToolButton* m_activitySectionButton = nullptr;// m_activitySectionButton：文件活动折叠标题。
     QToolButton* m_storageSectionButton = nullptr; // m_storageSectionButton：存储折叠标题。
-    QPushButton* m_processViewAButton = nullptr;   // m_processViewAButton：资源监视器式概览列组。
-    QPushButton* m_processViewBButton = nullptr;   // m_processViewBButton：诊断列组。
     QTableWidget* m_processTable = nullptr;        // m_processTable：进程级磁盘速率表。
     QTableWidget* m_activityTable = nullptr;       // m_activityTable：全部或按勾选 PID 过滤的磁盘活动表。
     DiskMonitorStoragePanel* m_storagePanel = nullptr; // m_storagePanel：固定卷容量与性能区。
@@ -254,6 +250,9 @@ private:
     std::vector<ProcessDiskSample> m_lastSampleList;    // m_lastSampleList：最近一次采样结果。
     std::vector<FileActivitySample> m_lastFileActivityList; // m_lastFileActivityList：最近一秒 ETW 文件活动。
     std::deque<FileActivityHistoryEntry> m_fileActivityHistory; // m_fileActivityHistory：最近数秒文件级活动历史。
+    std::unordered_map<std::uint32_t, QString> m_recentProcessNameByPid; // 最近进程名缓存：补全短时 ETW 历史。
+    std::unordered_map<std::uint32_t, QString> m_recentProcessPathByPid; // 最近映像路径缓存：补全活动图标。
+    QHash<QString, QIcon> m_processIconByPath;      // 映像路径到 16px shell 图标的 UI 缓存。
     bool m_updatingProcessTable = false;                // m_updatingProcessTable：防止程序刷新触发递归勾选同步。
 
     std::unique_ptr<std::thread> m_fileActivityEtwThread; // m_fileActivityEtwThread：后台 ETW 会话线程。

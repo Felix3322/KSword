@@ -984,7 +984,8 @@ private:
     int m_ioIdtTabIndex = -1;            // m_ioIdtTabIndex：内部 IDT 子页索引。
     int m_ioGdtTabIndex = -1;            // m_ioGdtTabIndex：内部 GDT 子页索引。
     int m_ioIoctlTabIndex = -1;          // m_ioIoctlTabIndex：内部 IOCTLS 解码器子页索引。
-    int m_dynDataTabIndex = -1;          // m_dynDataTabIndex：自身驱动内部动态偏移页索引。
+    int m_dynDataTabIndex = -1;          // m_dynDataTabIndex：自身驱动内部 DynData 总览页索引。
+    int m_dynDataProfileTabIndex = -1;   // m_dynDataProfileTabIndex：自身驱动内部 PDB Profile 页索引。
     int m_driverStatusTabIndex = -1;      // m_driverStatusTabIndex：自身驱动内部状态页索引。
     int m_ntQueryTabIndex = -1;          // m_ntQueryTabIndex：历史 NtQuery 页签索引。
     int m_kernelAuditTabIndex = -1;       // m_kernelAuditTabIndex：内核审计与回调顶层页索引。
@@ -1122,8 +1123,6 @@ private:
     CodeEditorWidget* m_timerDpcDetailEditor = nullptr;
 
     // ==================== 动态偏移页 ====================
-    QWidget* m_dynDataPage = nullptr;                  // m_dynDataPage：动态偏移页容器。
-    QVBoxLayout* m_dynDataLayout = nullptr;            // m_dynDataLayout：动态偏移页布局。
     QHBoxLayout* m_dynDataToolLayout = nullptr;        // m_dynDataToolLayout：动态偏移工具栏布局。
     QPushButton* m_refreshDynDataButton = nullptr;     // m_refreshDynDataButton：动态偏移刷新按钮。
     QPushButton* m_copyDynDataReportButton = nullptr;  // m_copyDynDataReportButton：复制诊断报告按钮。
@@ -1132,7 +1131,6 @@ private:
     QTableWidget* m_dynDataSummaryTable = nullptr;     // m_dynDataSummaryTable：动态偏移摘要表。
     QTableWidget* m_dynDataFieldTable = nullptr;       // m_dynDataFieldTable：动态偏移字段表。
     CodeEditorWidget* m_dynDataDetailEditor = nullptr; // m_dynDataDetailEditor：动态偏移详情编辑器（只读）。
-    QTabWidget* m_dynDataInnerTabWidget = nullptr;     // m_dynDataInnerTabWidget：动态偏移内部页签容器。
     QWidget* m_dynDataOverviewPage = nullptr;          // m_dynDataOverviewPage：动态偏移总览页。
     QVBoxLayout* m_dynDataOverviewLayout = nullptr;    // m_dynDataOverviewLayout：动态偏移总览页布局。
     QWidget* m_dynDataProfilePage = nullptr;           // m_dynDataProfilePage：PDB profile 状态页。

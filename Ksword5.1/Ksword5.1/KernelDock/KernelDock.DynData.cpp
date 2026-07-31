@@ -2907,6 +2907,8 @@ namespace
         ksword::ark::DriverClient client;
         const ksword::ark::DynDataStatusResult initialStatusResult = client.queryDynDataStatus();
         const ksword::ark::DynDataV4ModulesResult initialV4ModulesResult = client.queryDynDataV4Modules();
+        const ksword::ark::DynDataV4CapabilityGroupsResult initialV4GroupsResult =
+            client.queryDynDataV4CapabilityGroups();
 
         bool pdbProfileScanAttempted = false;
         bool pdbProfileFound = false;
@@ -2937,7 +2939,7 @@ namespace
                         KSW_CAP_KERNEL_MODULE_LIST_FIELDS |
                         KSW_CAP_DRIVER_OBJECT_FIELDS |
                         KSW_CAP_KERNEL_GLOBALS)) != 0ULL;
-            const bool v4ProfileAlreadyActive = initialV4ModulesResult.io.ok && std::any_of(
+            const bool v4ModuleProfileAlreadyActive = initialV4ModulesResult.io.ok && std::any_of(
                 initialV4ModulesResult.entries.begin(),
                 initialV4ModulesResult.entries.end(),
                 [&initialStatusResult](const KSW_DYN_V4_MODULE_STATUS_ENTRY& entry) {
@@ -2947,6 +2949,27 @@ namespace
                         entry.module.image.sizeOfImage == initialStatusResult.ntoskrnl.sizeOfImage &&
                         (entry.statusFlags & KSW_DYN_V4_STATUS_FLAG_PROFILE_APPLIED) != 0U;
                 });
+            const bool workQueueProfileAlreadyActive =
+                initialV4GroupsResult.io.ok &&
+                std::any_of(
+                    initialV4GroupsResult.entries.begin(),
+                    initialV4GroupsResult.entries.end(),
+                    [&initialStatusResult](
+                        const KSW_DYN_V4_CAPABILITY_GROUP_STATUS_ENTRY& entry)
+                    {
+                        return entry.moduleClassId ==
+                                initialStatusResult.ntoskrnl.classId &&
+                            entry.groupId ==
+                                KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE &&
+                            (entry.statusFlags &
+                                KSW_DYN_V4_STATUS_FLAG_REQUIRED_COMPLETE) != 0U &&
+                            entry.requiredItemCount != 0U &&
+                            entry.presentRequiredItemCount ==
+                                entry.requiredItemCount;
+                    });
+            const bool v4ProfileAlreadyActive =
+                v4ModuleProfileAlreadyActive &&
+                workQueueProfileAlreadyActive;
             if (pdbProfileAlreadyActive && callbackProfileAlreadyActive && v3ProfileAlreadyActive && v4ProfileAlreadyActive)
             {
                 pdbProfileMessageText = kernelText("kernel.dyndata.profile.apply.already_active", QStringLiteral("R0 已经启用 PDB/callback/v3/v4 DynData profile，本次刷新跳过重复 apply。"));
@@ -2959,7 +2982,21 @@ namespace
                     findMatchingPdbProfile(
                         initialStatusResult.ntoskrnl,
                         scanDiagnostics);
-                if (!profile.valid)
+                const auto hasWorkQueueV4Items =
+                    [](const LocalPdbProfile& candidate)
+                    {
+                        return std::any_of(
+                            candidate.applyV4Input.items.begin(),
+                            candidate.applyV4Input.items.end(),
+                            [](const KSW_DYN_V4_ITEM_PACKET& item)
+                            {
+                                return item.capabilityGroupId ==
+                                    KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE;
+                            });
+                    };
+                if (!profile.valid ||
+                    (!workQueueProfileAlreadyActive &&
+                        !hasWorkQueueV4Items(profile)))
                 {
                     QString runtimeDiagnostics;
                     LocalPdbProfile runtimeProfile =
@@ -2970,7 +3007,9 @@ namespace
                         "kernel.dyndata.profile.runtime_fallback.result",
                         QStringLiteral(" | 运行时精确 PDB 回退：%1"))
                         .arg(runtimeDiagnostics);
-                    if (runtimeProfile.valid)
+                    if (runtimeProfile.valid &&
+                        (workQueueProfileAlreadyActive ||
+                            hasWorkQueueV4Items(runtimeProfile)))
                     {
                         profile = std::move(runtimeProfile);
                     }
@@ -3353,21 +3392,15 @@ namespace
 
 void KernelDock::initializeDynDataTab()
 {
-    if (m_dynDataPage == nullptr || m_dynDataLayout != nullptr)
+    if (m_selfDriverInnerTabWidget == nullptr ||
+        m_dynDataOverviewLayout != nullptr)
     {
         return;
     }
 
-    // 动态偏移页改成内层页签：总览 + PDB profile 状态页。
-    m_dynDataLayout = new QVBoxLayout(m_dynDataPage);
-    m_dynDataLayout->setContentsMargins(4, 4, 4, 4);
-    m_dynDataLayout->setSpacing(6);
-
-    m_dynDataInnerTabWidget = new QTabWidget(m_dynDataPage);
-    m_dynDataInnerTabWidget->setIconSize(QSize(16, 16));
-    m_dynDataLayout->addWidget(m_dynDataInnerTabWidget, 1);
-
-    m_dynDataOverviewPage = new QWidget(m_dynDataInnerTabWidget);
+    // 总览与 PDB Profile 直接挂在“Ksword自身驱动”页签容器中，
+    // 避免“动态偏移 -> 总览/PDB Profile”的无内容中间层。
+    m_dynDataOverviewPage = new QWidget(m_selfDriverInnerTabWidget);
     m_dynDataOverviewLayout = new QVBoxLayout(m_dynDataOverviewPage);
     m_dynDataOverviewLayout->setContentsMargins(0, 0, 0, 0);
     m_dynDataOverviewLayout->setSpacing(6);
@@ -3459,12 +3492,17 @@ void KernelDock::initializeDynDataTab()
     lowerSplitter->setStretchFactor(0, 3);
     lowerSplitter->setStretchFactor(1, 2);
 
-    m_dynDataInnerTabWidget->addTab(
+    m_dynDataTabIndex = m_selfDriverInnerTabWidget->addTab(
         m_dynDataOverviewPage,
         QIcon(QStringLiteral(":/Icon/process_priority.svg")),
         kernelText("kernel.dyndata.tab.overview", QStringLiteral("总览")));
+    m_selfDriverInnerTabWidget->setTabToolTip(
+        m_dynDataTabIndex,
+        kernelText(
+            "kernel.main.tab.dyn_data.tooltip",
+            QStringLiteral("System Informer DynData 精确匹配状态与字段列表")));
 
-    m_dynDataProfilePage = new QWidget(m_dynDataInnerTabWidget);
+    m_dynDataProfilePage = new QWidget(m_selfDriverInnerTabWidget);
     m_dynDataProfileLayout = new QVBoxLayout(m_dynDataProfilePage);
     m_dynDataProfileLayout->setContentsMargins(4, 4, 4, 4);
     m_dynDataProfileLayout->setSpacing(6);
@@ -3526,7 +3564,7 @@ void KernelDock::initializeDynDataTab()
     profileSplitter->setStretchFactor(1, 3);
     profileSplitter->setStretchFactor(2, 2);
 
-    m_dynDataInnerTabWidget->addTab(
+    m_dynDataProfileTabIndex = m_selfDriverInnerTabWidget->addTab(
         m_dynDataProfilePage,
         QIcon(QStringLiteral(":/Icon/process_details.svg")),
         QStringLiteral("PDB Profile"));

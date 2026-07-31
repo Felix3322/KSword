@@ -8,7 +8,6 @@
 #include <thread>
 #include <vector>
 
-class QComboBox;
 class QEvent;
 class QLabel;
 class QLineEdit;
@@ -50,7 +49,9 @@ private:
     void refreshAsync();
     void applyResult(ksword::ark::PlatformAuditResult result);
     void populatePage(Page& page, const ksword::ark::PlatformAuditResult& result);
+    void setColumnGroup(int groupIndex);
     void applyColumnGroup();
+    void updateColumnGroupButtons();
     void applyFilter();
 
     static QString fixedWide(const wchar_t* text, int capacity);
@@ -64,7 +65,9 @@ private:
     Mode m_mode;
     QTabWidget* m_innerTabs = nullptr;
     QPushButton* m_refreshButton = nullptr;
-    QComboBox* m_columnGroupCombo = nullptr;
+    QPushButton* m_columnGroupAButton = nullptr;
+    QPushButton* m_columnGroupBButton = nullptr;
+    QPushButton* m_columnGroupCButton = nullptr;
     QLineEdit* m_filterEdit = nullptr;
     QLabel* m_explanationLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
@@ -76,4 +79,5 @@ private:
     bool m_firstRefreshStarted = false;
     bool m_refreshRunning = false;
     bool m_hasResult = false;
+    int m_columnGroupIndex = 0;
 };

@@ -6,6 +6,7 @@
 // KswordArkI8042AuditIoctl.h
 // 作用：
 // - 定义 R3 <-> R0 i8042prt 专项只读审计协议；
+// - 所有版本都通过 I/O 管理器公开接口枚举 i8042prt 设备对象；
 // - 仅在 PE/RSDS/opcode/DriverObject 全部匹配已知描述符后读取设备扩展指针；
 // - 只返回端点地址、归属和设备栈关系，不读取键鼠输入数据，也不提供写入能力。
 // ============================================================
@@ -85,6 +86,7 @@
 #define KSWORD_ARK_I8042_DETAIL_NON_EXECUTABLE       15UL
 #define KSWORD_ARK_I8042_DETAIL_CLASS_DO_OUTSIDE_STACK 16UL
 #define KSWORD_ARK_I8042_DETAIL_BUFFER_TRUNCATED     17UL
+#define KSWORD_ARK_I8042_DETAIL_GENERIC_DEVICE_AVAILABLE 18UL
 
 #define KSWORD_ARK_I8042_DESCRIPTOR_WIN11_26100_7934 1UL
 

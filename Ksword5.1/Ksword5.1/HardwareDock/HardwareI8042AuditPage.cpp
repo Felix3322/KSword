@@ -9,7 +9,6 @@
 #include <QAbstractItemView>
 #include <QBrush>
 #include <QColor>
-#include <QComboBox>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QHeaderView>
@@ -27,6 +26,7 @@
 #include <QVBoxLayout>
 
 #include <array>
+#include <algorithm>
 #include <utility>
 
 #ifndef NOMINMAX
@@ -65,6 +65,22 @@ namespace
         auto* item = new QTableWidgetItem(text);
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         return item;
+    }
+
+    QString i8042ColumnButtonStyle(const bool selected)
+    {
+        return QStringLiteral(
+            "QPushButton{min-width:28px;padding:4px 8px;border:1px solid %1;"
+            "background:%2;color:%3;}"
+            "QPushButton:hover{background:%4;}")
+            .arg(KswordTheme::BorderColorHex())
+            .arg(selected
+                     ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
+                     : KswordTheme::SurfaceAltHex())
+            .arg(selected
+                     ? KswordTheme::OnAccentHex()
+                     : KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::PrimaryBlueSolidHoverHex());
     }
 
     QString hexValue(const std::uint64_t value)
@@ -126,29 +142,27 @@ void HardwareI8042AuditPage::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    m_explanationLabel = new QLabel(this);
-    m_explanationLabel->setWordWrap(true);
-    m_explanationLabel->setStyleSheet(
-        QStringLiteral(
-            "QLabel{padding:6px;border:1px solid %1;border-radius:4px;color:%2;}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::TextSecondaryHex()));
-    rootLayout->addWidget(m_explanationLabel);
-
     auto* toolbar = new QHBoxLayout();
+    toolbar->setContentsMargins(0, 0, 0, 0);
+    toolbar->setSpacing(0);
     m_refreshButton = new QPushButton(
         QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
         QString(),
         this);
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
-    m_columnGroupCombo = new QComboBox(this);
-    m_columnGroupCombo->addItems({ QString(), QString(), QString() });
+    m_columnGroupAButton = new QPushButton(QStringLiteral("A"), this);
+    m_columnGroupBButton = new QPushButton(QStringLiteral("B"), this);
+    m_columnGroupCButton = new QPushButton(QStringLiteral("C"), this);
     m_filterEdit = new QLineEdit(this);
     m_filterEdit->setClearButtonEnabled(true);
     m_statusLabel = new QLabel(this);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     toolbar->addWidget(m_refreshButton);
-    toolbar->addWidget(m_columnGroupCombo);
+    toolbar->addSpacing(6);
+    toolbar->addWidget(m_columnGroupAButton);
+    toolbar->addWidget(m_columnGroupBButton);
+    toolbar->addWidget(m_columnGroupCButton);
+    toolbar->addSpacing(6);
     toolbar->addWidget(m_filterEdit, 1);
     toolbar->addWidget(m_statusLabel);
     rootLayout->addLayout(toolbar);
@@ -170,25 +184,25 @@ void HardwareI8042AuditPage::initializeUi()
         &QPushButton::clicked,
         this,
         [this]() { refreshAsync(); });
-    connect(
-        m_columnGroupCombo,
-        &QComboBox::currentIndexChanged,
-        this,
-        [this]() { applyColumnGroup(); });
+    connect(m_columnGroupAButton, &QPushButton::clicked, this, [this]() { setColumnGroup(0); });
+    connect(m_columnGroupBButton, &QPushButton::clicked, this, [this]() { setColumnGroup(1); });
+    connect(m_columnGroupCButton, &QPushButton::clicked, this, [this]() { setColumnGroup(2); });
     connect(
         m_filterEdit,
         &QLineEdit::textChanged,
         this,
         [this]() { applyFilter(); });
     retranslateUi();
+    updateColumnGroupButtons();
     applyColumnGroup();
 }
 
 void HardwareI8042AuditPage::retranslateUi()
 {
-    if (m_explanationLabel == nullptr ||
-        m_refreshButton == nullptr ||
-        m_columnGroupCombo == nullptr ||
+    if (m_refreshButton == nullptr ||
+        m_columnGroupAButton == nullptr ||
+        m_columnGroupBButton == nullptr ||
+        m_columnGroupCButton == nullptr ||
         m_filterEdit == nullptr ||
         m_statusLabel == nullptr ||
         m_table == nullptr)
@@ -212,28 +226,19 @@ void HardwareI8042AuditPage::retranslateUi()
         return;
     }
 
-    m_explanationLabel->setText(i8042Text(
-        "hardware.i8042.explanation",
-        QStringLiteral(
-            "只读 i8042prt 专项审计：仅在 PE、RSDS、opcode 与 DriverObject "
-            "全部匹配受支持描述符后，展示键鼠 ClassService、InitializationRoutine、"
-            "IsrRoutine 及 Context/ClassDeviceObject 的地址、模块执行节和同栈证据。"
-            "未知版本失败关闭；本页不读取按键、扫描码、鼠标移动或 HID 报告。")));
     m_refreshButton->setToolTip(i8042Text(
         "hardware.i8042.refresh.tooltip",
         QStringLiteral("重新读取专用 i8042prt 描述符与端点证据")));
-    m_columnGroupCombo->setItemText(0, i8042Text(
+    m_columnGroupAButton->setToolTip(i8042Text(
         "hardware.i8042.columns.a",
-        QStringLiteral("列组 A：端点")));
-    m_columnGroupCombo->setItemText(1, i8042Text(
+        QStringLiteral("A：端点定位")));
+    m_columnGroupBButton->setToolTip(i8042Text(
         "hardware.i8042.columns.b",
-        QStringLiteral("列组 B：完整性")));
-    m_columnGroupCombo->setItemText(2, i8042Text(
+        QStringLiteral("B：完整性证据")));
+    m_columnGroupCButton->setToolTip(i8042Text(
         "hardware.i8042.columns.c",
-        QStringLiteral("列组 C：全部")));
-    m_columnGroupCombo->setToolTip(i8042Text(
-        "hardware.i8042.columns.tooltip",
-        QStringLiteral("切换端点定位、完整性证据或全部列")));
+        QStringLiteral("C：全部字段")));
+    updateColumnGroupButtons();
     m_filterEdit->setPlaceholderText(i8042Text(
         "hardware.i8042.filter.placeholder",
         QStringLiteral("过滤设备 / PnP / 端点 / 模块 / 状态 / 证据")));
@@ -449,11 +454,16 @@ void HardwareI8042AuditPage::appendEntry(
     }
 }
 
+void HardwareI8042AuditPage::setColumnGroup(const int groupIndex)
+{
+    m_columnGroupIndex = std::clamp(groupIndex, 0, 2);
+    updateColumnGroupButtons();
+    applyColumnGroup();
+}
+
 void HardwareI8042AuditPage::applyColumnGroup()
 {
-    const int group = m_columnGroupCombo != nullptr
-        ? m_columnGroupCombo->currentIndex()
-        : 0;
+    const int group = m_columnGroupIndex;
     for (int column = 0; column < ColumnCount; ++column)
     {
         bool visible = group == 2;
@@ -480,6 +490,24 @@ void HardwareI8042AuditPage::applyColumnGroup()
                 column == ColumnEvidence;
         }
         m_table->setColumnHidden(column, !visible);
+    }
+}
+
+void HardwareI8042AuditPage::updateColumnGroupButtons()
+{
+    const std::array<QPushButton*, 3> buttons = {
+        m_columnGroupAButton,
+        m_columnGroupBButton,
+        m_columnGroupCButton
+    };
+    for (std::size_t index = 0U; index < buttons.size(); ++index)
+    {
+        if (buttons[index] != nullptr)
+        {
+            buttons[index]->setStyleSheet(
+                i8042ColumnButtonStyle(
+                    static_cast<int>(index) == m_columnGroupIndex));
+        }
     }
 }
 
@@ -689,11 +717,11 @@ QString HardwareI8042AuditPage::detailText(
     case KSWORD_ARK_I8042_DETAIL_IMAGE_MISMATCH:
         return i8042Text(
             "hardware.i8042.detail.image_mismatch",
-            QStringLiteral("PE 身份不匹配；未知版本已失败关闭。"));
+            QStringLiteral("PE 身份不匹配；仅返回通用设备枚举，不读取私有扩展。"));
     case KSWORD_ARK_I8042_DETAIL_RSDS_MISMATCH:
         return i8042Text(
             "hardware.i8042.detail.rsds_mismatch",
-            QStringLiteral("RSDS GUID/Age 不匹配；未知版本已失败关闭。"));
+            QStringLiteral("RSDS GUID/Age 不匹配；仅返回通用设备枚举，不读取私有扩展。"));
     case KSWORD_ARK_I8042_DETAIL_OPCODE_MISMATCH:
         return i8042Text(
             "hardware.i8042.detail.opcode_mismatch",
@@ -752,6 +780,10 @@ QString HardwareI8042AuditPage::detailText(
         return i8042Text(
             "hardware.i8042.detail.buffer_truncated",
             QStringLiteral("结果超过行预算，已安全截断。"));
+    case KSWORD_ARK_I8042_DETAIL_GENERIC_DEVICE_AVAILABLE:
+        return i8042Text(
+            "hardware.i8042.detail.generic_device",
+            QStringLiteral("已通过 I/O 管理器枚举设备；当前版本无精确私有扩展描述符，因此不读取端点偏移。"));
     default:
         return QStringLiteral("-");
     }

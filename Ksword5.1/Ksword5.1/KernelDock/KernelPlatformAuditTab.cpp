@@ -8,7 +8,6 @@
 #include "../theme.h"
 
 #include <QAbstractItemView>
-#include <QComboBox>
 #include <QDir>
 #include <QEvent>
 #include <QHeaderView>
@@ -68,6 +67,22 @@ namespace
         auto* item = new QTableWidgetItem(text);
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         return item;
+    }
+
+    QString platformColumnButtonStyle(const bool selected)
+    {
+        return QStringLiteral(
+            "QPushButton{min-width:28px;padding:4px 8px;border:1px solid %1;"
+            "background:%2;color:%3;}"
+            "QPushButton:hover{background:%4;}")
+            .arg(KswordTheme::BorderColorHex())
+            .arg(selected
+                     ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
+                     : KswordTheme::SurfaceAltHex())
+            .arg(selected
+                     ? KswordTheme::OnAccentHex()
+                     : KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::PrimaryBlueSolidHoverHex());
     }
 
     bool validateRuntimeCleanPointer(
@@ -270,35 +285,32 @@ void KernelPlatformAuditTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    m_explanationLabel = new QLabel(
-        m_mode == Mode::Hal
-            ? kernelText(
-                  "kernel.platform.hal.explanation",
-                  QStringLiteral("只读 HAL 审计：公开表逐字段按 WDK 结构解析；私有表按受支持 Build/Version/ByteSize 描述解析，ACPI 与子组件仅接受可信锚点小窗口内唯一且完整验证的 RIP-relative 候选。没有独立基线时只报告 owner/执行节一致性，不把运行时地址判为 Clean。"))
-            : kernelText(
-                  "kernel.platform.wdf.explanation",
-                  QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")),
-        this);
-    m_explanationLabel->setWordWrap(true);
-    m_explanationLabel->setStyleSheet(
-        QStringLiteral("QLabel{padding:6px;border:1px solid %1;border-radius:4px;color:%2;}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::TextSecondaryHex()));
-    rootLayout->addWidget(m_explanationLabel);
+    if (m_mode == Mode::Wdf)
+    {
+        m_explanationLabel = new QLabel(
+            kernelText(
+                "kernel.platform.wdf.explanation",
+                QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")),
+            this);
+        m_explanationLabel->setWordWrap(true);
+        m_explanationLabel->setStyleSheet(
+            QStringLiteral("QLabel{padding:6px;border:1px solid %1;border-radius:4px;color:%2;}")
+                .arg(KswordTheme::BorderColorHex())
+                .arg(KswordTheme::TextSecondaryHex()));
+        rootLayout->addWidget(m_explanationLabel);
+    }
 
     auto* toolbar = new QHBoxLayout();
+    toolbar->setContentsMargins(0, 0, 0, 0);
+    toolbar->setSpacing(0);
     m_refreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QString(), this);
     m_refreshButton->setToolTip(kernelText(
         "kernel.platform.toolbar.refresh.tooltip",
         QStringLiteral("重新读取经过结构与模块边界验证的只读审计快照")));
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
-    m_columnGroupCombo = new QComboBox(this);
-    m_columnGroupCombo->addItem(kernelText("kernel.platform.columns.a", QStringLiteral("列组 A：定位")));
-    m_columnGroupCombo->addItem(kernelText("kernel.platform.columns.b", QStringLiteral("列组 B：验证")));
-    m_columnGroupCombo->addItem(kernelText("kernel.platform.columns.c", QStringLiteral("列组 C：全部")));
-    m_columnGroupCombo->setToolTip(kernelText(
-        "kernel.platform.columns.tooltip",
-        QStringLiteral("在地址定位、签名验证和全部字段三种紧凑视图间切换")));
+    m_columnGroupAButton = new QPushButton(QStringLiteral("A"), this);
+    m_columnGroupBButton = new QPushButton(QStringLiteral("B"), this);
+    m_columnGroupCButton = new QPushButton(QStringLiteral("C"), this);
     m_filterEdit = new QLineEdit(this);
     m_filterEdit->setClearButtonEnabled(true);
     m_filterEdit->setPlaceholderText(kernelText(
@@ -309,7 +321,11 @@ void KernelPlatformAuditTab::initializeUi()
         this);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     toolbar->addWidget(m_refreshButton);
-    toolbar->addWidget(m_columnGroupCombo);
+    toolbar->addSpacing(6);
+    toolbar->addWidget(m_columnGroupAButton);
+    toolbar->addWidget(m_columnGroupBButton);
+    toolbar->addWidget(m_columnGroupCButton);
+    toolbar->addSpacing(6);
     toolbar->addWidget(m_filterEdit, 1);
     toolbar->addWidget(m_statusLabel);
     rootLayout->addLayout(toolbar);
@@ -343,8 +359,11 @@ void KernelPlatformAuditTab::initializeUi()
     rootLayout->addWidget(m_innerTabs, 1);
 
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() { refreshAsync(); });
-    connect(m_columnGroupCombo, &QComboBox::currentIndexChanged, this, [this]() { applyColumnGroup(); });
+    connect(m_columnGroupAButton, &QPushButton::clicked, this, [this]() { setColumnGroup(0); });
+    connect(m_columnGroupBButton, &QPushButton::clicked, this, [this]() { setColumnGroup(1); });
+    connect(m_columnGroupCButton, &QPushButton::clicked, this, [this]() { setColumnGroup(2); });
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this]() { applyFilter(); });
+    updateColumnGroupButtons();
 }
 
 void KernelPlatformAuditTab::retranslateUi()
@@ -374,14 +393,9 @@ void KernelPlatformAuditTab::retranslateUi()
 
     if (m_explanationLabel != nullptr)
     {
-        m_explanationLabel->setText(
-            m_mode == Mode::Hal
-                ? kernelText(
-                      "kernel.platform.hal.explanation",
-                      QStringLiteral("只读 HAL 审计：公开表逐字段按 WDK 结构解析；私有表按受支持 Build/Version/ByteSize 描述解析，ACPI 与子组件仅接受可信锚点小窗口内唯一且完整验证的 RIP-relative 候选。没有独立基线时只报告 owner/执行节一致性，不把运行时地址判为 Clean。"))
-                : kernelText(
-                      "kernel.platform.wdf.explanation",
-                      QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")));
+        m_explanationLabel->setText(kernelText(
+            "kernel.platform.wdf.explanation",
+            QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")));
     }
     if (m_refreshButton != nullptr)
     {
@@ -389,27 +403,20 @@ void KernelPlatformAuditTab::retranslateUi()
             "kernel.platform.toolbar.refresh.tooltip",
             QStringLiteral("重新读取经过结构与模块边界验证的只读审计快照")));
     }
-    if (m_columnGroupCombo != nullptr &&
-        m_columnGroupCombo->count() >= 3)
+    if (m_columnGroupAButton != nullptr &&
+        m_columnGroupBButton != nullptr &&
+        m_columnGroupCButton != nullptr)
     {
-        m_columnGroupCombo->setItemText(
-            0,
-            kernelText(
-                "kernel.platform.columns.a",
-                QStringLiteral("列组 A：定位")));
-        m_columnGroupCombo->setItemText(
-            1,
-            kernelText(
-                "kernel.platform.columns.b",
-                QStringLiteral("列组 B：验证")));
-        m_columnGroupCombo->setItemText(
-            2,
-            kernelText(
-                "kernel.platform.columns.c",
-                QStringLiteral("列组 C：全部")));
-        m_columnGroupCombo->setToolTip(kernelText(
-            "kernel.platform.columns.tooltip",
-            QStringLiteral("在地址定位、签名验证和全部字段三种紧凑视图间切换")));
+        m_columnGroupAButton->setToolTip(kernelText(
+            "kernel.platform.columns.a",
+            QStringLiteral("A：地址定位")));
+        m_columnGroupBButton->setToolTip(kernelText(
+            "kernel.platform.columns.b",
+            QStringLiteral("B：签名验证")));
+        m_columnGroupCButton->setToolTip(kernelText(
+            "kernel.platform.columns.c",
+            QStringLiteral("C：全部字段")));
+        updateColumnGroupButtons();
     }
     if (m_filterEdit != nullptr)
     {
@@ -717,9 +724,16 @@ void KernelPlatformAuditTab::populatePage(
     }
 }
 
+void KernelPlatformAuditTab::setColumnGroup(const int groupIndex)
+{
+    m_columnGroupIndex = std::clamp(groupIndex, 0, 2);
+    updateColumnGroupButtons();
+    applyColumnGroup();
+}
+
 void KernelPlatformAuditTab::applyColumnGroup()
 {
-    const int groupIndex = m_columnGroupCombo != nullptr ? m_columnGroupCombo->currentIndex() : 0;
+    const int groupIndex = m_columnGroupIndex;
     for (const Page& page : m_pages)
     {
         if (page.table == nullptr)
@@ -748,6 +762,24 @@ void KernelPlatformAuditTab::applyColumnGroup()
                     column == ColumnDetail;
             }
             page.table->setColumnHidden(column, !visible);
+        }
+    }
+}
+
+void KernelPlatformAuditTab::updateColumnGroupButtons()
+{
+    const std::array<QPushButton*, 3> buttons = {
+        m_columnGroupAButton,
+        m_columnGroupBButton,
+        m_columnGroupCButton
+    };
+    for (std::size_t index = 0U; index < buttons.size(); ++index)
+    {
+        if (buttons[index] != nullptr)
+        {
+            buttons[index]->setStyleSheet(
+                platformColumnButtonStyle(
+                    static_cast<int>(index) == m_columnGroupIndex));
         }
     }
 }
@@ -846,6 +878,8 @@ QString KernelPlatformAuditTab::signatureText(const unsigned long signatureId)
     {
     case KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V6:
         return kernelText("kernel.platform.signature.public_hal_v6", QStringLiteral("公开 HAL v6"));
+    case KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V4_V5:
+        return kernelText("kernel.platform.signature.public_hal_v4_v5", QStringLiteral("公开 HAL v4/v5"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_WDF_BINDING_TABLE:
         return kernelText("kernel.platform.signature.wdf_binding", QStringLiteral("KMDF 绑定表"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_X64_PROLOGUE:

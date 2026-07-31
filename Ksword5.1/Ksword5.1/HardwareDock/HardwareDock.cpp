@@ -695,50 +695,20 @@ namespace
 
     // chooseCpuCoreGridShape 作用：
     // - 输入：当前逻辑处理器数量；
-    // - 处理：以 2:1 宽屏网格为目标搜索稳定的行列因子，允许少量尾部空位；
-    // - 返回：32 线程稳定得到 8x4，高核数最多使用 8 行，避免把 CPU 页面纵向撑高。
+    // - 处理：恢复接近平方形的原始排列，列数向上取平方根、行数按剩余核心向上取整；
+    // - 返回：4 线程稳定得到 2x2，其它核心数也不会退化成单行长条。
     CpuCoreGridShape chooseCpuCoreGridShape(const int logicalProcessorCount)
     {
         const int coreCount = std::max(1, logicalProcessorCount);
-        const int squareRootRows = std::max(
+        const int columnCount = std::max(
             1,
             static_cast<int>(std::ceil(std::sqrt(static_cast<double>(coreCount)))));
-        const int maximumRowCount = std::min(8, squareRootRows);
-        constexpr double targetWideAspectRatio = 2.0;
-
-        CpuCoreGridShape bestShape{coreCount, 1};
-        double bestScore = std::numeric_limits<double>::max();
-        for (int candidateRows = 1; candidateRows <= maximumRowCount; ++candidateRows)
-        {
-            const int candidateColumns = std::max(
-                candidateRows,
-                static_cast<int>(std::ceil(
-                    static_cast<double>(coreCount) /
-                    static_cast<double>(candidateRows))));
-            const int emptyCellCount =
-                candidateColumns * candidateRows - coreCount;
-            const double aspectRatio =
-                static_cast<double>(candidateColumns) /
-                static_cast<double>(candidateRows);
-            const double aspectPenalty =
-                std::abs(std::log(aspectRatio / targetWideAspectRatio));
-            const double emptyCellPenalty =
-                static_cast<double>(emptyCellCount) /
-                static_cast<double>(coreCount);
-            const double candidateScore =
-                aspectPenalty + emptyCellPenalty * 0.65;
-
-            // 同分时选择更少的行，保证非方数与超高核数机器上的页面高度不抖动。
-            if (candidateScore < bestScore - 0.000001 ||
-                (std::abs(candidateScore - bestScore) <= 0.000001 &&
-                    candidateRows < bestShape.rowCount))
-            {
-                bestScore = candidateScore;
-                bestShape.columnCount = candidateColumns;
-                bestShape.rowCount = candidateRows;
-            }
-        }
-        return bestShape;
+        const int rowCount = std::max(
+            1,
+            static_cast<int>(std::ceil(
+                static_cast<double>(coreCount) /
+                static_cast<double>(columnCount))));
+        return CpuCoreGridShape{columnCount, rowCount};
     }
 
     // buildStatusColor 作用：
@@ -3518,7 +3488,7 @@ void HardwareDock::initializeUtilizationCpuSubTab()
         .arg(KswordTheme::TextPrimaryHex()));
     lockLabelHeightToFont(titleLabel, 14);
     m_cpuModelLabel = new QLabel(QStringLiteral("检测中..."), m_utilizationCpuSubPage);
-    configurePersistentHeaderLabel(m_cpuModelLabel, QSizePolicy::Ignored);
+    configurePersistentHeaderLabel(m_cpuModelLabel);
     m_cpuModelLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_cpuModelLabel->setStyleSheet(
         QStringLiteral("font-size:15px;font-weight:500;color:%1;")

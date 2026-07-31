@@ -1098,6 +1098,60 @@ KswPlatformInitializeEntry(
     KswPlatformCopyWide(Entry->name, RTL_NUMBER_OF(Entry->name), Name);
 }
 
+static BOOLEAN
+KswPlatformAddExportedFunction(
+    _Inout_ KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE* Response,
+    _In_ ULONG Capacity,
+    _In_ ULONG MaxRows,
+    _In_ ULONG Scope,
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_z_ PCWSTR ExportName,
+    _In_ ULONG OwnerPolicy
+    )
+{
+    PVOID functionAddress = KswPlatformGetRoutine(ExportName);
+    KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry;
+
+    if (functionAddress == NULL) {
+        return FALSE;
+    }
+    KswPlatformInitializeEntry(
+        &entry,
+        Scope,
+        KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION,
+        KSWORD_ARK_PLATFORM_SIGNATURE_EXACT_EXPORT_ONLY,
+        KSWORD_ARK_PLATFORM_SLOT_FUNCTION,
+        OwnerPolicy,
+        0UL,
+        NULL,
+        ExportName);
+    entry.liveAddress = (ULONGLONG)(ULONG_PTR)functionAddress;
+    entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_LIVE_ADDRESS |
+        KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT;
+    KswPlatformClassifyFunction(&entry, ModuleInfo, OwnerPolicy);
+    KswPlatformAppend(Response, Capacity, MaxRows, &entry);
+    return TRUE;
+}
+
+static ULONG
+KswPlatformHalDispatchSlotCount(
+    _In_ ULONG Version
+    )
+{
+    // 中文说明：HAL_DISPATCH 以尾部追加字段演进；v4 到
+    // HalSetPciErrorHandlerCallback，v5 再含 HalGetPrmCache，v6 含全部字段。
+    if (Version == 4UL) {
+        return 22UL;
+    }
+    if (Version == 5UL) {
+        return 23UL;
+    }
+    if (Version == 6UL) {
+        return (ULONG)RTL_NUMBER_OF(g_KswHalDispatchSlots);
+    }
+    return 0UL;
+}
+
 static VOID
 KswPlatformAddHalDispatch(
     _Inout_ KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE* Response,
@@ -1110,7 +1164,10 @@ KswPlatformAddHalDispatch(
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
     ULONG version = 0UL;
     ULONG index = 0UL;
+    ULONG slotCount = 0UL;
     ULONG tableBytes = 0UL;
+    ULONG signatureId = KSWORD_ARK_PLATFORM_SIGNATURE_NONE;
+    KSWORD_ARK_PLATFORM_AUDIT_ENTRY versionEntry;
 
     if (tableAddress == NULL) {
         KswPlatformAddDiagnostic(
@@ -1126,16 +1183,47 @@ KswPlatformAddHalDispatch(
     }
 
     tableOwner = KswordARKHookFindModuleForAddress(ModuleInfo, (ULONG_PTR)tableAddress);
-    tableBytes = g_KswHalDispatchSlots[RTL_NUMBER_OF(g_KswHalDispatchSlots) - 1UL].Offset +
-        g_KswHalDispatchSlots[RTL_NUMBER_OF(g_KswHalDispatchSlots) - 1UL].Width;
+    if (!KswPlatformIsExpectedHalOwner(tableOwner) ||
+        !KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)tableAddress,
+            sizeof(version),
+            FALSE,
+            FALSE) ||
+        !KswordARKHookReadMemorySafe(tableAddress, &version, sizeof(version))) {
+        KswPlatformAddDiagnostic(
+            Response, Capacity, MaxRows,
+            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH,
+            KSWORD_ARK_PLATFORM_AUDIT_STATUS_SIGNATURE_MISMATCH,
+            STATUS_DATA_ERROR,
+            L"HalDispatchTable",
+            KSWORD_ARK_PLATFORM_DETAIL_RANGE_INVALID,
+            sizeof(version),
+            0ULL);
+        return;
+    }
+    slotCount = KswPlatformHalDispatchSlotCount(version);
+    if (slotCount == 0UL) {
+        KswPlatformAddDiagnostic(
+            Response, Capacity, MaxRows,
+            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH,
+            KSWORD_ARK_PLATFORM_AUDIT_STATUS_UNSUPPORTED,
+            STATUS_REVISION_MISMATCH,
+            L"HalDispatchTable",
+            KSWORD_ARK_PLATFORM_DETAIL_VERSION_MISMATCH,
+            4ULL,
+            version);
+        return;
+    }
+    tableBytes = g_KswHalDispatchSlots[slotCount - 1UL].Offset +
+        g_KswHalDispatchSlots[slotCount - 1UL].Width;
     if (!KswPlatformIsExpectedHalOwner(tableOwner) ||
         !KswPlatformRangeInSection(
             tableOwner,
             (ULONG_PTR)tableAddress,
             tableBytes,
             FALSE,
-            FALSE) ||
-        !KswordARKHookReadMemorySafe(tableAddress, &version, sizeof(version))) {
+            FALSE)) {
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH,
@@ -1147,20 +1235,31 @@ KswPlatformAddHalDispatch(
             0ULL);
         return;
     }
-    if (version != HAL_DISPATCH_VERSION) {
-        KswPlatformAddDiagnostic(
-            Response, Capacity, MaxRows,
-            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH,
-            KSWORD_ARK_PLATFORM_AUDIT_STATUS_UNSUPPORTED,
-            STATUS_REVISION_MISMATCH,
-            L"HalDispatchTable",
-            KSWORD_ARK_PLATFORM_DETAIL_VERSION_MISMATCH,
-            HAL_DISPATCH_VERSION,
-            version);
-        return;
-    }
+    signatureId = version == HAL_DISPATCH_VERSION ?
+        KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V6 :
+        KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V4_V5;
+    KswPlatformInitializeEntry(
+        &versionEntry,
+        KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH,
+        KSWORD_ARK_PLATFORM_AUDIT_ROW_TABLE,
+        signatureId,
+        KSWORD_ARK_PLATFORM_SLOT_SCALAR,
+        KSWORD_ARK_PLATFORM_OWNER_NONE,
+        0UL,
+        tableAddress,
+        L"Version");
+    versionEntry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT |
+        KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED;
+    KswPlatformSetDetail(
+        &versionEntry,
+        KSWORD_ARK_PLATFORM_DETAIL_SCALAR_VALUE,
+        version,
+        tableBytes,
+        slotCount,
+        0ULL);
+    KswPlatformAppend(Response, Capacity, MaxRows, &versionEntry);
 
-    for (index = 0UL; index < RTL_NUMBER_OF(g_KswHalDispatchSlots); ++index) {
+    for (index = 0UL; index < slotCount; ++index) {
         const KSW_PLATFORM_SLOT_DESCRIPTOR* descriptor = &g_KswHalDispatchSlots[index];
         KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry;
         ULONGLONG value = 0ULL;
@@ -1171,7 +1270,7 @@ KswPlatformAddHalDispatch(
             descriptor->SlotKind == KSWORD_ARK_PLATFORM_SLOT_FUNCTION ?
                 KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION :
                 KSWORD_ARK_PLATFORM_AUDIT_ROW_TABLE,
-            KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V6,
+            signatureId,
             descriptor->SlotKind,
             descriptor->OwnerPolicy,
             index,
@@ -1238,6 +1337,21 @@ KswPlatformFindPrivateBuild(
     return NULL;
 }
 
+static const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR*
+KswPlatformFindPrivateVersion(
+    _In_ ULONG Version
+    )
+{
+    ULONG index = 0UL;
+
+    for (index = 0UL; index < RTL_NUMBER_OF(g_KswHalPrivateBuilds); ++index) {
+        if (g_KswHalPrivateBuilds[index].Version == Version) {
+            return &g_KswHalPrivateBuilds[index];
+        }
+    }
+    return NULL;
+}
+
 static NTSTATUS
 KswPlatformLocateHalPrivateBySignature(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
@@ -1262,32 +1376,102 @@ KswPlatformAddHalPrivate(
     ULONG version = 0UL;
     ULONG index = 0UL;
     NTSTATUS locateStatus = STATUS_NOT_SUPPORTED;
+    BOOLEAN exactExport = FALSE;
     KSWORD_ARK_PLATFORM_AUDIT_ENTRY versionEntry;
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
 
-    if (build == NULL) {
-        KswPlatformAddDiagnostic(
-            Response, Capacity, MaxRows,
-            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
-            KSWORD_ARK_PLATFORM_AUDIT_STATUS_UNSUPPORTED,
-            STATUS_NOT_SUPPORTED,
-            L"HalPrivateDispatchTable",
-            KSWORD_ARK_PLATFORM_DETAIL_BUILD_UNSUPPORTED,
-            BuildNumber,
-            0ULL);
-        return;
+    // 中文说明：数据导出提供精确表地址，先验证 owner、受界范围和版本，
+    // 避免依赖单一系统构建的指令窗口。只有已知 Version/ByteSize 才展开槽位。
+    tableAddress = KswPlatformGetRoutine(L"HalPrivateDispatchTable");
+    tableOwner = KswordARKHookFindModuleForAddress(
+        ModuleInfo,
+        (ULONG_PTR)tableAddress);
+    if (tableAddress != NULL &&
+        KswPlatformIsExpectedHalOwner(tableOwner) &&
+        KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)tableAddress,
+            sizeof(version),
+            FALSE,
+            FALSE) &&
+        KswordARKHookReadMemorySafe(
+            tableAddress,
+            &version,
+            sizeof(version))) {
+        const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR* versionBuild =
+            KswPlatformFindPrivateVersion(version);
+        if (versionBuild != NULL &&
+            KswPlatformRangeInSection(
+                tableOwner,
+                (ULONG_PTR)tableAddress,
+                versionBuild->ByteSize,
+                FALSE,
+                FALSE)) {
+            build = versionBuild;
+            locateStatus = STATUS_SUCCESS;
+            exactExport = TRUE;
+        }
+        else {
+            KswPlatformInitializeEntry(
+                &versionEntry,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
+                KSWORD_ARK_PLATFORM_AUDIT_ROW_TABLE,
+                KSWORD_ARK_PLATFORM_SIGNATURE_EXACT_EXPORT_ONLY,
+                KSWORD_ARK_PLATFORM_SLOT_SCALAR,
+                KSWORD_ARK_PLATFORM_OWNER_NONE,
+                0UL,
+                tableAddress,
+                L"Version");
+            versionEntry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT;
+            KswPlatformSetDetail(
+                &versionEntry,
+                KSWORD_ARK_PLATFORM_DETAIL_SCALAR_VALUE,
+                version,
+                BuildNumber,
+                0ULL,
+                0ULL);
+            KswPlatformAppend(Response, Capacity, MaxRows, &versionEntry);
+            (VOID)KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
+                ModuleInfo,
+                L"HalTranslateBusAddress",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_PCI);
+            (VOID)KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
+                ModuleInfo,
+                L"HalAssignSlotResources",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_PCI);
+            return;
+        }
     }
 
-    // 中文说明：私有表地址不再直接取 HalPrivateDispatchTable 导出。
-    // 每个受支持 Build 都从 HalTranslateBusAddress 的小窗口内，以经过
-    // byte/mask 描述的 RIP-relative 槽引用反推出表基址；候选必须唯一，
-    // 且完整结构范围和 Version/ByteSize 同时通过才会继续枚举。
-    locateStatus = KswPlatformLocateHalPrivateBySignature(
-        ModuleInfo,
-        BuildNumber,
-        build,
-        &tableAddress,
-        &version);
+    // 中文说明：旧系统若不暴露数据导出，仍保留受界 RIP-relative
+    // 定位；候选必须唯一，且完整 Version/ByteSize 同时验证。
+    if (!NT_SUCCESS(locateStatus) && build != NULL) {
+        locateStatus = KswPlatformLocateHalPrivateBySignature(
+            ModuleInfo,
+            BuildNumber,
+            build,
+            &tableAddress,
+            &version);
+    }
     if (!NT_SUCCESS(locateStatus)) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
+                ModuleInfo,
+                L"HalTranslateBusAddress",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_PCI)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE,
@@ -1303,12 +1487,12 @@ KswPlatformAddHalPrivate(
                     (locateStatus == STATUS_NOT_SUPPORTED ?
                         KSWORD_ARK_PLATFORM_DETAIL_BUILD_UNSUPPORTED :
                         KSWORD_ARK_PLATFORM_DETAIL_LOCATOR_NOT_FOUND)),
-            locateStatus == STATUS_REVISION_MISMATCH ?
+            locateStatus == STATUS_REVISION_MISMATCH && build != NULL ?
                 build->Version :
                 BuildNumber,
-            locateStatus == STATUS_REVISION_MISMATCH ?
+            locateStatus == STATUS_REVISION_MISMATCH && build != NULL ?
                 version :
-                build->ByteSize);
+                (build != NULL ? build->ByteSize : 0UL));
         return;
     }
 
@@ -1323,7 +1507,9 @@ KswPlatformAddHalPrivate(
         tableAddress,
         L"Version");
     versionEntry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
-        KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
+        (exactExport ?
+            KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT :
+            KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED);
     KswPlatformSetDetail(
         &versionEntry,
         KSWORD_ARK_PLATFORM_DETAIL_SCALAR_VALUE,
@@ -1354,7 +1540,9 @@ KswPlatformAddHalPrivate(
             tableAddress,
             descriptor->Name);
         entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
-            KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
+            (exactExport ?
+                KSWORD_ARK_PLATFORM_FIELD_EXACT_EXPORT :
+                KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED);
 
         if (!KswordARKHookReadMemorySafe(
                 (const UCHAR*)tableAddress + descriptor->Offset,
@@ -1907,6 +2095,16 @@ KswPlatformAddHalAcpi(
 
     if (locator == NULL ||
         !KswPlatformGetHalPowerAnchor(ModuleInfo, &anchor)) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+                ModuleInfo,
+                L"HalAcpiGetTableEx",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_ACPI)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
@@ -1925,6 +2123,16 @@ KswPlatformAddHalAcpi(
         KswPlatformValidateHalAcpiCandidate,
         &tableAddress);
     if (!NT_SUCCESS(locateStatus)) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+                ModuleInfo,
+                L"HalAcpiGetTableEx",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_ACPI)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
@@ -1941,6 +2149,16 @@ KswPlatformAddHalAcpi(
 
     RtlZeroMemory(&view, sizeof(view));
     if (!KswordARKHookReadMemorySafe(tableAddress, &view, sizeof(view))) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+                ModuleInfo,
+                L"HalAcpiGetTableEx",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_ACPI)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
@@ -1953,6 +2171,16 @@ KswPlatformAddHalAcpi(
         return;
     }
     if (!KswPlatformHalAcpiIdentityMatches(&view)) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+                ModuleInfo,
+                L"HalAcpiGetTableEx",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_ACPI)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
@@ -2025,6 +2253,16 @@ KswPlatformAddHalSubcomponents(
     ULONG index = 0UL;
 
     if (locator == NULL) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
+                ModuleInfo,
+                L"HalInitSystem",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
@@ -2046,6 +2284,16 @@ KswPlatformAddHalSubcomponents(
         KswPlatformValidateHalSubcomponentCandidate,
         &tableAddress);
     if (!NT_SUCCESS(locateStatus)) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
+                ModuleInfo,
+                L"HalInitSystem",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
@@ -2062,6 +2310,16 @@ KswPlatformAddHalSubcomponents(
 
     RtlZeroMemory(entries, sizeof(entries));
     if (!KswordARKHookReadMemorySafe(tableAddress, entries, sizeof(entries))) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
+                ModuleInfo,
+                L"HalInitSystem",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
@@ -2074,6 +2332,16 @@ KswPlatformAddHalSubcomponents(
         return;
     }
     if (!KswPlatformHalSubcomponentIdentityMatches(ModuleInfo, entries)) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
+                ModuleInfo,
+                L"HalInitSystem",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL)) {
+            return;
+        }
         KswPlatformAddDiagnostic(
             Response, Capacity, MaxRows,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,

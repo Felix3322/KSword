@@ -62,7 +62,7 @@ private:
         UnknownModule,
         KernelImage,
         MissingThreadIdentity,
-        ThirdPartyR0Recheck,
+        BestEffortR0Recheck,
         ReadOnlyWorkQueueEvidence
     };
 
