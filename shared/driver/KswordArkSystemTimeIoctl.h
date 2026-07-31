@@ -6,7 +6,7 @@
  * 系统全局变速协议只描述 R3/R0 之间的稳定数据契约。
  * 内核地址仅用于诊断展示，R3 不得直接读写这些地址。
  */
-#define KSWORD_ARK_SYSTEM_TIME_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_SYSTEM_TIME_PROTOCOL_VERSION 2UL
 
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_SYSTEM_TIME   0x865UL
 #define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_SYSTEM_TIME 0x866UL
@@ -33,6 +33,13 @@
 #define KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET     1UL
 #define KSWORD_ARK_SYSTEM_TIME_COMMAND_SPEED_UP  2UL
 #define KSWORD_ARK_SYSTEM_TIME_COMMAND_SLOW_DOWN 3UL
+
+/*
+ * ORIGINAL_COMPAT 按原项目的版本特征直接定位 HAL 计数器描述符。
+ * GUARDED 使用相同接管原理，但在返回目标前额外验证描述符和函数槽。
+ */
+#define KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT 1UL
+#define KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED         2UL
 
 /* UI_CONFIRMED 表示 R3 已完成持久警告之外的本次双重确认。 */
 #define KSWORD_ARK_SYSTEM_TIME_CONTROL_FLAG_UI_CONFIRMED 0x00000001UL
@@ -87,7 +94,7 @@ typedef struct _KSWORD_ARK_QUERY_SYSTEM_TIME_RESPONSE
     unsigned long factor;
     unsigned long osBuildNumber;
     long lastStatus;
-    unsigned long reserved;
+    unsigned long resolutionMode;
     unsigned long long counterValue;
     unsigned long long counterSourceAddress;
     unsigned long long primarySlotAddress;
@@ -107,7 +114,7 @@ typedef struct _KSWORD_ARK_CONTROL_SYSTEM_TIME_REQUEST
     unsigned long flags;
     unsigned long confirmationToken;
     unsigned long expectedGeneration;
-    unsigned long reserved;
+    unsigned long resolutionMode;
 } KSWORD_ARK_CONTROL_SYSTEM_TIME_REQUEST;
 
 /* 控制响应返回动作前后状态，R3 可立即更新页面而无需猜测。 */
@@ -124,6 +131,6 @@ typedef struct _KSWORD_ARK_CONTROL_SYSTEM_TIME_RESPONSE
     unsigned long factor;
     unsigned long osBuildNumber;
     long lastStatus;
-    unsigned long reserved;
+    unsigned long resolutionMode;
     unsigned long long counterValue;
 } KSWORD_ARK_CONTROL_SYSTEM_TIME_RESPONSE;

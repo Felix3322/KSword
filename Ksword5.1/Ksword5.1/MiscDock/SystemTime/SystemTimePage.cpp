@@ -156,6 +156,49 @@ namespace ks::misc
                 .arg(KswordTheme::TextSecondaryHex()));
         rootLayout->addWidget(m_persistenceLabel);
 
+        // 方案组明确区分原版兼容定位和写入前增强校验定位。
+        auto* schemeGroup = new QGroupBox(
+            QStringLiteral("实现方案"),
+            this);
+        auto* schemeLayout = new QVBoxLayout(schemeGroup);
+        m_originalCompatRadio = new QRadioButton(
+            QStringLiteral("原版兼容（默认）"),
+            schemeGroup);
+        m_originalCompatRadio->setToolTip(
+            QStringLiteral(
+                "按原项目的系统版本特征直接定位并接管 HAL 计数器函数指针"));
+        auto* originalDescription = new QLabel(
+            QStringLiteral(
+                "严格沿用原项目的版本特征和 HAL 计数器函数指针接管路径，"
+                "兼容性最高；仍保留 KSword 的恢复与冲突监控。"),
+            schemeGroup);
+        originalDescription->setWordWrap(true);
+        originalDescription->setStyleSheet(
+            QStringLiteral("color:%1;")
+                .arg(KswordTheme::TextSecondaryHex()));
+
+        m_guardedResolutionRadio = new QRadioButton(
+            QStringLiteral("增强校验"),
+            schemeGroup);
+        m_guardedResolutionRadio->setToolTip(
+            QStringLiteral(
+                "使用相同接管原理，但在写入前验证描述符、函数槽和处理器表"));
+        auto* guardedDescription = new QLabel(
+            QStringLiteral(
+                "使用相同接管原理，但在写入前额外验证描述符、函数槽和处理器表；"
+                "校验不通过时拒绝启用。"),
+            schemeGroup);
+        guardedDescription->setWordWrap(true);
+        guardedDescription->setStyleSheet(
+            QStringLiteral("color:%1;")
+                .arg(KswordTheme::TextSecondaryHex()));
+        m_originalCompatRadio->setChecked(true);
+        schemeLayout->addWidget(m_originalCompatRadio);
+        schemeLayout->addWidget(originalDescription);
+        schemeLayout->addWidget(m_guardedResolutionRadio);
+        schemeLayout->addWidget(guardedDescription);
+        rootLayout->addWidget(schemeGroup);
+
         // 倍率组只提供同一原理下的 N 倍加速和 1/N 减速。
         auto* controlGroup = new QGroupBox(
             QStringLiteral("计时倍率"),
@@ -325,6 +368,7 @@ namespace ks::misc
             result.response.factor,
             result.response.osBuildNumber,
             result.response.lastStatus,
+            result.response.resolutionMode,
             result.response.counterSourceAddress,
             result.response.primarySlotAddress,
             result.response.secondarySlotAddress);
@@ -343,9 +387,17 @@ namespace ks::misc
             m_speedUpRadio->isChecked()
             ? QStringLiteral("加速")
             : QStringLiteral("减速");
+        const unsigned long resolutionMode =
+            m_originalCompatRadio->isChecked()
+            ? KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
+            : KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED;
+        const QString schemeText =
+            m_originalCompatRadio->isChecked()
+            ? QStringLiteral("原版兼容")
+            : QStringLiteral("增强校验");
 
         if (!m_acknowledgeCheck->isChecked() ||
-            !confirmHighRisk(modeText, factor))
+            !confirmHighRisk(modeText, schemeText, factor))
         {
             return;
         }
@@ -371,6 +423,7 @@ namespace ks::misc
         const auto result = client.controlSystemTime(
             command,
             factor,
+            resolutionMode,
             freshStatus.response.generation,
             true);
         setBusy(false);
@@ -399,9 +452,11 @@ namespace ks::misc
         info << controlEvent
             << "[SystemTimePage] 系统变速已应用, mode="
             << modeText.toStdString()
+            << ", scheme=" << schemeText.toStdString()
             << ", factor=" << factor << eol;
         m_operationLabel->setText(
-            QStringLiteral("已应用：%1 %2 倍")
+            QStringLiteral("已应用：%1；%2 %3 倍")
+                .arg(schemeText)
                 .arg(modeText)
                 .arg(factor));
         refreshStatus();
@@ -415,6 +470,9 @@ namespace ks::misc
         const auto result = client.controlSystemTime(
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET,
             1UL,
+            m_originalCompatRadio->isChecked()
+                ? KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
+                : KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED,
             m_generation,
             false);
         setBusy(false);
@@ -451,6 +509,7 @@ namespace ks::misc
 
     bool SystemTimePage::confirmHighRisk(
         const QString& modeText,
+        const QString& schemeText,
         const unsigned long factor)
     {
         QMessageBox warningBox(this);
@@ -464,10 +523,11 @@ namespace ks::misc
             QStringLiteral("系统全局变速风险确认"));
         warningBox.setText(
             QStringLiteral(
-                "即将对整个系统%1 %2 倍。\n\n"
+                "即将使用“%1”方案，对整个系统%2 %3 倍。\n\n"
                 "此操作会改变全局性能计数器的时间流速，"
                 "可能破坏超时、同步、网络、音视频和安全软件行为。\n"
                 "请确认已保存工作，并准备在异常时立即恢复 1x。")
+                .arg(schemeText)
                 .arg(modeText)
                 .arg(factor));
         warningBox.setStandardButtons(
@@ -525,6 +585,7 @@ namespace ks::misc
         const unsigned long factor,
         const unsigned long osBuildNumber,
         const long lastStatus,
+        const unsigned long resolutionMode,
         const unsigned long long counterSourceAddress,
         const unsigned long long primarySlotAddress,
         const unsigned long long secondarySlotAddress)
@@ -535,6 +596,25 @@ namespace ks::misc
         const bool conflict =
             (stateFlags &
                 KSWORD_ARK_SYSTEM_TIME_STATE_CONFLICT) != 0UL;
+        const QString schemeText =
+            resolutionMode ==
+                KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED
+            ? QStringLiteral("增强校验")
+            : resolutionMode ==
+                KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
+                ? QStringLiteral("原版兼容")
+                : QStringLiteral("未知");
+        m_active = active;
+        if (active)
+        {
+            m_originalCompatRadio->setChecked(
+                resolutionMode ==
+                    KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT);
+            m_guardedResolutionRadio->setChecked(
+                resolutionMode ==
+                    KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED);
+        }
+
         if (active &&
             command == KSWORD_ARK_SYSTEM_TIME_COMMAND_SPEED_UP)
         {
@@ -564,8 +644,10 @@ namespace ks::misc
                         ? KswordTheme::WarningHex()
                         : KswordTheme::SuccessHex()));
         m_backendLabel->setText(
-            QStringLiteral("Windows 构建：%1；解析模式：%2；状态代次：%3")
+            QStringLiteral(
+                "Windows 构建：%1；实现方案：%2；计时路径：%3；状态代次：%4")
                 .arg(osBuildNumber)
+                .arg(schemeText)
                 .arg(
                     (stateFlags &
                         KSWORD_ARK_SYSTEM_TIME_STATE_HANDLER_TABLE) != 0UL
@@ -594,6 +676,10 @@ namespace ks::misc
         m_factorSpin->setEnabled(!m_busy);
         m_speedUpRadio->setEnabled(!m_busy);
         m_slowDownRadio->setEnabled(!m_busy);
+        m_originalCompatRadio->setEnabled(
+            !m_busy && !m_active);
+        m_guardedResolutionRadio->setEnabled(
+            !m_busy && !m_active);
         m_acknowledgeCheck->setEnabled(!m_busy);
     }
 

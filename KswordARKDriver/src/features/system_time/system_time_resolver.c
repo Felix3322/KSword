@@ -172,7 +172,8 @@ KswordARKSystemTimeValidateDescriptor(
 /*
  * 按原始机制的系统版本分支定位描述符引用：
  * Windows 8/10 使用 MOV RDI,[RIP+disp32]，Windows 11 使用
- * MOV RSI,[RIP+disp32]。扫描保持有界，并验证实际会访问的字段。
+ * MOV RSI,[RIP+disp32]。原版兼容方案接受首个有效引用，增强方案继续
+ * 验证后续会访问的描述符字段。
  */
 static
 NTSTATUS
@@ -180,6 +181,7 @@ KswordARKSystemTimeFindDescriptor(
     _In_reads_bytes_(KSW_SYSTEM_TIME_SCAN_BYTES) const UCHAR* Code,
     _In_ ULONG_PTR CodeAddress,
     _In_ ULONG OsBuildNumber,
+    _In_ BOOLEAN GuardedResolution,
     _Out_ PVOID* Descriptor
     )
 {
@@ -216,7 +218,8 @@ KswordARKSystemTimeFindDescriptor(
             continue;
         }
 
-        if (KswordARKSystemTimeValidateDescriptor(
+        if (!GuardedResolution ||
+            KswordARKSystemTimeValidateDescriptor(
                 candidateDescriptor,
                 OsBuildNumber)) {
             *Descriptor = candidateDescriptor;
@@ -229,7 +232,7 @@ KswordARKSystemTimeFindDescriptor(
 
 /*
  * 新版 Windows 将活动计数器入口放进按时钟源索引的处理器表。
- * 枚举 LEA RCX,[RIP+disp32] 候选，并用表内函数指针反向验证。
+ * 枚举 LEA RCX,[RIP+disp32] 候选；增强方案再用表内函数指针反向验证。
  */
 static
 NTSTATUS
@@ -237,6 +240,7 @@ KswordARKSystemTimeFindHandlerSlot(
     _In_reads_bytes_(KSW_SYSTEM_TIME_SCAN_BYTES) const UCHAR* Code,
     _In_ ULONG_PTR CodeAddress,
     _In_ PVOID Descriptor,
+    _In_ BOOLEAN GuardedResolution,
     _Out_ volatile PVOID** HandlerSlot
     )
 {
@@ -285,11 +289,12 @@ KswordARKSystemTimeFindHandlerSlot(
             (UCHAR*)tableAddress +
             ((SIZE_T)handlerIndex *
                 KSW_SYSTEM_TIME_HANDLER_ROW_BYTES));
-        if (!KswordARKSystemTimeReadPointer(
+        if (GuardedResolution &&
+            (!KswordARKSystemTimeReadPointer(
                 (const VOID*)candidateSlot,
                 &candidateFunction) ||
-            !KswordARKSystemTimeIsKernelCodePointer(
-                candidateFunction)) {
+             !KswordARKSystemTimeIsKernelCodePointer(
+                candidateFunction))) {
             continue;
         }
 
@@ -302,11 +307,12 @@ KswordARKSystemTimeFindHandlerSlot(
 }
 
 /*
- * 公共解析入口只返回经过结构与函数归属验证的槽地址。
+ * 公共解析入口按协议选择原版兼容或增强校验方案。
  * 当前不支持 x86，避免将 x64 RIP 相对规则错误套用到其它架构。
  */
 NTSTATUS
 KswordARKSystemTimeResolve(
+    _In_ ULONG ResolutionMode,
     _Out_ KSWORD_ARK_SYSTEM_TIME_RESOLUTION* Resolution
     )
 {
@@ -318,10 +324,18 @@ KswordARKSystemTimeResolve(
     PVOID descriptor = NULL;
     volatile PVOID* primarySlot = NULL;
     NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN guardedResolution = FALSE;
 
-    if (Resolution == NULL) {
+    if (Resolution == NULL ||
+        (ResolutionMode !=
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT &&
+         ResolutionMode !=
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED)) {
         return STATUS_INVALID_PARAMETER;
     }
+    guardedResolution =
+        ResolutionMode ==
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED;
     RtlZeroMemory(Resolution, sizeof(*Resolution));
 
     RtlInitUnicodeString(
@@ -358,6 +372,7 @@ KswordARKSystemTimeResolve(
         code,
         (ULONG_PTR)queryCounterRoutine,
         versionInfo.dwBuildNumber,
+        guardedResolution,
         &descriptor);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -372,6 +387,7 @@ KswordARKSystemTimeResolve(
             code,
             (ULONG_PTR)queryCounterRoutine,
             descriptor,
+            guardedResolution,
             &primarySlot);
         if (!NT_SUCCESS(status)) {
             return status;
@@ -389,6 +405,7 @@ KswordARKSystemTimeResolve(
     Resolution->CounterDescriptor = descriptor;
     return STATUS_SUCCESS;
 #else
+    UNREFERENCED_PARAMETER(ResolutionMode);
     UNREFERENCED_PARAMETER(Resolution);
     return STATUS_NOT_SUPPORTED;
 #endif

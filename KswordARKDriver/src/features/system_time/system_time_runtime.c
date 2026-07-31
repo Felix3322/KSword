@@ -59,6 +59,7 @@ typedef struct _KSWORD_ARK_SYSTEM_TIME_STATE
     volatile LONG LastStatus;
     ULONG LastCommand;
     ULONG Factor;
+    ULONG ResolutionMode;
     BOOLEAN Resolved;
     BOOLEAN OriginalQpcBypassBit;
     BOOLEAN OriginalInternalBypassBit;
@@ -249,6 +250,7 @@ KswordARKSystemTimeResolveLocked(
     }
 
     status = KswordARKSystemTimeResolve(
+        g_KswordArkSystemTimeState.ResolutionMode,
         &g_KswordArkSystemTimeState.Resolution);
     if (!NT_SUCCESS(status)) {
         InterlockedExchange(
@@ -267,6 +269,45 @@ KswordARKSystemTimeResolveLocked(
     InterlockedExchange(
         &g_KswordArkSystemTimeState.LastStatus,
         STATUS_SUCCESS);
+    return STATUS_SUCCESS;
+}
+
+/*
+ * 切换解析方案前必须处于未接管状态。
+ * 清除旧解析和旁路快照，确保下一次启用按新方案重新定位并重新取证。
+ */
+static
+NTSTATUS
+KswordARKSystemTimeSelectResolutionModeLocked(
+    _In_ ULONG ResolutionMode
+    )
+{
+    if (ResolutionMode !=
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT &&
+        ResolutionMode !=
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (ResolutionMode ==
+        g_KswordArkSystemTimeState.ResolutionMode) {
+        return STATUS_SUCCESS;
+    }
+    if (InterlockedCompareExchange(
+            &g_KswordArkSystemTimeState.Active,
+            0L,
+            0L) != 0L) {
+        return STATUS_DEVICE_BUSY;
+    }
+
+    RtlZeroMemory(
+        &g_KswordArkSystemTimeState.Resolution,
+        sizeof(g_KswordArkSystemTimeState.Resolution));
+    g_KswordArkSystemTimeState.OriginalPrimary = NULL;
+    g_KswordArkSystemTimeState.OriginalSecondary = NULL;
+    g_KswordArkSystemTimeState.ResolutionMode = ResolutionMode;
+    g_KswordArkSystemTimeState.Resolved = FALSE;
+    g_KswordArkSystemTimeState.PatchBitsCaptured = FALSE;
     return STATUS_SUCCESS;
 }
 
@@ -396,6 +437,8 @@ KswordARKSystemTimeFillQueryLocked(
         &g_KswordArkSystemTimeState.LastStatus,
         0L,
         0L);
+    Response->resolutionMode =
+        g_KswordArkSystemTimeState.ResolutionMode;
 
     counter = KeQueryPerformanceCounter(NULL);
     Response->counterValue =
@@ -707,6 +750,8 @@ KswordARKSystemTimeInitialize(
     g_KswordArkSystemTimeState.LastCommand =
         KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET;
     g_KswordArkSystemTimeState.Factor = 1UL;
+    g_KswordArkSystemTimeState.ResolutionMode =
+        KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT;
     InterlockedExchange(
         &g_KswordArkSystemTimeState.Generation,
         1L);
@@ -822,6 +867,18 @@ KswordARKSystemTimeControl(
 
     if (Request->command !=
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET &&
+        Request->resolutionMode !=
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT &&
+        Request->resolutionMode !=
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED) {
+        Response->status =
+            KSWORD_ARK_SYSTEM_TIME_STATUS_INVALID_REQUEST;
+        Response->lastStatus = STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
+    }
+
+    if (Request->command !=
+            KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET &&
         ((Request->flags &
             KSWORD_ARK_SYSTEM_TIME_CONTROL_FLAG_UI_CONFIRMED) == 0UL ||
          Request->confirmationToken !=
@@ -863,26 +920,40 @@ KswordARKSystemTimeControl(
         Response->status = NT_SUCCESS(actionStatus)
             ? KSWORD_ARK_SYSTEM_TIME_STATUS_OK
             : KSWORD_ARK_SYSTEM_TIME_STATUS_CONFLICT;
-    } else if (InterlockedCompareExchange(
-            &g_KswordArkSystemTimeState.Active,
-            0L,
-            0L) != 0L) {
-        actionStatus = KswordARKSystemTimeReconfigureLocked(
-            Request->command,
-            Request->factor);
-        Response->status = NT_SUCCESS(actionStatus)
-            ? KSWORD_ARK_SYSTEM_TIME_STATUS_OK
-            : KSWORD_ARK_SYSTEM_TIME_STATUS_INTERNAL_ERROR;
     } else {
-        actionStatus = KswordARKSystemTimeActivateLocked(
-            Request->command,
-            Request->factor);
-        Response->status = NT_SUCCESS(actionStatus)
-            ? KSWORD_ARK_SYSTEM_TIME_STATUS_OK
-            : (ULONG)InterlockedCompareExchange(
-                &g_KswordArkSystemTimeState.RuntimeStatus,
+        /*
+         * 未激活时允许切换方案并强制重新解析。
+         * 已激活时只有相同方案可以继续调整倍率。
+         */
+        actionStatus =
+            KswordARKSystemTimeSelectResolutionModeLocked(
+                Request->resolutionMode);
+        if (!NT_SUCCESS(actionStatus)) {
+            Response->status =
+                KSWORD_ARK_SYSTEM_TIME_STATUS_INVALID_REQUEST;
+        } else if (InterlockedCompareExchange(
+                &g_KswordArkSystemTimeState.Active,
                 0L,
-                0L);
+                0L) != 0L) {
+            actionStatus =
+                KswordARKSystemTimeReconfigureLocked(
+                    Request->command,
+                    Request->factor);
+            Response->status = NT_SUCCESS(actionStatus)
+                ? KSWORD_ARK_SYSTEM_TIME_STATUS_OK
+                : KSWORD_ARK_SYSTEM_TIME_STATUS_INTERNAL_ERROR;
+        } else {
+            actionStatus =
+                KswordARKSystemTimeActivateLocked(
+                    Request->command,
+                    Request->factor);
+            Response->status = NT_SUCCESS(actionStatus)
+                ? KSWORD_ARK_SYSTEM_TIME_STATUS_OK
+                : (ULONG)InterlockedCompareExchange(
+                    &g_KswordArkSystemTimeState.RuntimeStatus,
+                    0L,
+                    0L);
+        }
     }
 
     if (NT_SUCCESS(actionStatus) &&
@@ -908,6 +979,8 @@ KswordARKSystemTimeControl(
     Response->osBuildNumber =
         g_KswordArkSystemTimeState.Resolution.OsBuildNumber;
     Response->lastStatus = actionStatus;
+    Response->resolutionMode =
+        g_KswordArkSystemTimeState.ResolutionMode;
     Response->counterValue =
         (ULONGLONG)KeQueryPerformanceCounter(NULL).QuadPart;
     ExReleasePushLockExclusive(

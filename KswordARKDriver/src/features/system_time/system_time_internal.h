@@ -17,8 +17,12 @@ typedef struct _KSWORD_ARK_SYSTEM_TIME_RESOLUTION
     UCHAR Reserved[3];
 } KSWORD_ARK_SYSTEM_TIME_RESOLUTION, *PKSWORD_ARK_SYSTEM_TIME_RESOLUTION;
 
-/* 解析 KeQueryPerformanceCounter 内的 RIP 相对引用并验证候选计时描述符。 */
+/*
+ * 解析 KeQueryPerformanceCounter 内的 RIP 相对引用。
+ * ResolutionMode 选择原版兼容定位或增强校验定位。
+ */
 NTSTATUS
 KswordARKSystemTimeResolve(
+    _In_ ULONG ResolutionMode,
     _Out_ KSWORD_ARK_SYSTEM_TIME_RESOLUTION* Resolution
     );

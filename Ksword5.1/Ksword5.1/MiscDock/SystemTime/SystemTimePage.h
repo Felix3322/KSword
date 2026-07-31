@@ -46,8 +46,11 @@ namespace ks::misc
         void applyRequestedMode();
         // resetSystemTime：无额外门槛地恢复 1x 原始计时路径。
         void resetSystemTime();
-        // confirmHighRisk：显示风险清单并要求输入固定确认短语。
-        bool confirmHighRisk(const QString& modeText, unsigned long factor);
+        // confirmHighRisk：显示所选方案和风险清单，并要求输入固定确认短语。
+        bool confirmHighRisk(
+            const QString& modeText,
+            const QString& schemeText,
+            unsigned long factor);
         // updateStatusDisplay：把协议字段转换为用户可读状态和诊断证据。
         void updateStatusDisplay(
             unsigned long status,
@@ -57,6 +60,7 @@ namespace ks::misc
             unsigned long factor,
             unsigned long osBuildNumber,
             long lastStatus,
+            unsigned long resolutionMode,
             unsigned long long counterSourceAddress,
             unsigned long long primarySlotAddress,
             unsigned long long secondarySlotAddress);
@@ -72,6 +76,8 @@ namespace ks::misc
         QLabel* m_backendLabel = nullptr; // m_backendLabel：构建与解析策略摘要。
         QLabel* m_diagnosticLabel = nullptr; // m_diagnosticLabel：槽地址和 NTSTATUS 证据。
         QLabel* m_operationLabel = nullptr; // m_operationLabel：最近刷新或控制结果。
+        QRadioButton* m_originalCompatRadio = nullptr; // m_originalCompatRadio：选择原项目兼容定位。
+        QRadioButton* m_guardedResolutionRadio = nullptr; // m_guardedResolutionRadio：选择增强校验定位。
         QRadioButton* m_speedUpRadio = nullptr; // m_speedUpRadio：选择 N 倍加速。
         QRadioButton* m_slowDownRadio = nullptr; // m_slowDownRadio：选择 1/N 减速。
         QSpinBox* m_factorSpin = nullptr; // m_factorSpin：2 到协议上限的倍率输入。
@@ -81,6 +87,7 @@ namespace ks::misc
         QPushButton* m_resetButton = nullptr; // m_resetButton：紧急恢复 1x。
         QTimer* m_refreshTimer = nullptr; // m_refreshTimer：页面可见时的状态轮询器。
         unsigned long m_generation = 0UL; // m_generation：最近查询到的并发控制代次。
+        bool m_active = false; // m_active：R0 当前是否已经接管计数器槽。
         bool m_supported = false; // m_supported：当前 R0 是否解析并支持本功能。
         bool m_busy = false; // m_busy：同步控制期间阻止重复操作。
     };

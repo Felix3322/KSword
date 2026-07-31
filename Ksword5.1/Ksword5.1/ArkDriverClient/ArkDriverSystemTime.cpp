@@ -59,6 +59,8 @@ namespace ksword::ark
             << result.response.generation
             << ", command=" << result.response.command
             << ", factor=" << result.response.factor
+            << ", resolutionMode="
+            << result.response.resolutionMode
             << ", build=" << result.response.osBuildNumber;
         if (result.unsupported)
         {
@@ -75,6 +77,7 @@ namespace ksword::ark
     SystemTimeControlResult DriverClient::controlSystemTime(
         const unsigned long command,
         const unsigned long factor,
+        const unsigned long resolutionMode,
         const unsigned long expectedGeneration,
         const bool uiConfirmed) const
     {
@@ -86,6 +89,7 @@ namespace ksword::ark
         request.size = sizeof(request);
         request.command = command;
         request.factor = factor;
+        request.resolutionMode = resolutionMode;
         request.expectedGeneration = expectedGeneration;
         if (uiConfirmed)
         {
@@ -120,6 +124,7 @@ namespace ksword::ark
             << "system-time control command="
             << command
             << ", requestedFactor=" << factor
+            << ", resolutionMode=" << resolutionMode
             << ", status=" << result.response.status
             << ", oldFlags=0x" << std::hex
             << result.response.oldStateFlags

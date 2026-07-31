@@ -284,6 +284,7 @@ namespace ksword::ark
         SystemTimeControlResult controlSystemTime(
             unsigned long command,
             unsigned long factor,
+            unsigned long resolutionMode,
             unsigned long expectedGeneration,
             bool uiConfirmed) const;
         // queryCpuHardwareSnapshot：
