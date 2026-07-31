@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../ArkDriverClient/ArkDriverClient.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -37,6 +38,7 @@
 #include <algorithm>
 #include <chrono>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -530,6 +532,26 @@ void FileMappedProcessWindow::applyRefreshResult(
     if (refreshTicket < m_refreshTicket)
     {
         return;
+    }
+
+    if (ks::ui::IsItemViewUiCommitBlockedByContextMenu({ m_resultTable }))
+    {
+        const auto refreshSnapshot = std::make_shared<RefreshResult>(refreshResult);
+        const QPointer<FileMappedProcessWindow> safeThis(this);
+        if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("file-mapped-process-snapshot"),
+            { m_resultTable },
+            [safeThis, refreshTicket, refreshSnapshot]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyRefreshResult(refreshTicket, *refreshSnapshot);
+                }
+            }))
+        {
+            return;
+        }
     }
 
     m_rows = refreshResult.rows;

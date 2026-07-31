@@ -254,6 +254,19 @@ V4_FIELD_MAP: dict[str, tuple[str, str]] = {
     "KdpcDeferredRoutine": ("_KDPC", "DeferredRoutine"),
     "KdpcDeferredContext": ("_KDPC", "DeferredContext"),
     "FltFilterOperations": ("_FLT_FILTER", "Operations"),
+    "WqEpartitionExPartition": ("_EPARTITION", "ExPartition"),
+    "WqExPartitionWorkQueues": ("_EX_PARTITION", "WorkQueues"),
+    "WqExWorkQueueWorkPriQueue": ("_EX_WORK_QUEUE", "WorkPriQueue"),
+    "WqExWorkQueueQueueIndex": ("_EX_WORK_QUEUE", "QueueIndex"),
+    "WqKpriQueueEntryListHead": ("_KPRIQUEUE", "EntryListHead"),
+    "WqKpriQueueThreadListHead": ("_KPRIQUEUE", "ThreadListHead"),
+    "WqKthreadQueue": ("_KTHREAD", "Queue"),
+    "WqKthreadQueueListEntry": ("_KTHREAD", "QueueListEntry"),
+    "WqEthreadTcb": ("_ETHREAD", "Tcb"),
+    "WqEthreadStartAddress": ("_ETHREAD", "StartAddress"),
+    "WqWorkItemList": ("_WORK_QUEUE_ITEM", "List"),
+    "WqWorkItemRoutine": ("_WORK_QUEUE_ITEM", "WorkerRoutine"),
+    "WqWorkItemParameter": ("_WORK_QUEUE_ITEM", "Parameter"),
 }
 
 # Older public PDBs describe the timer kind through the embedded dispatcher
@@ -273,6 +286,13 @@ V4_TYPE_SIZE_MAP: dict[str, str] = {
     "KtimerTableEntryTypeSize": "_KTIMER_TABLE_ENTRY",
     "KtimerTypeSize": "_KTIMER",
     "KdpcTypeSize": "_KDPC",
+    "WqEpartitionTypeSize": "_EPARTITION",
+    "WqExPartitionTypeSize": "_EX_PARTITION",
+    "WqExWorkQueueTypeSize": "_EX_WORK_QUEUE",
+    "WqKpriQueueTypeSize": "_KPRIQUEUE",
+    "WqKthreadTypeSize": "_KTHREAD",
+    "WqEthreadTypeSize": "_ETHREAD",
+    "WqWorkItemTypeSize": "_WORK_QUEUE_ITEM",
 }
 
 # CI 的哈希缓存条目不是稳定公开 ABI，不同 PDB 会使用不同的内部类型名。
@@ -328,6 +348,20 @@ V4_CI_GLOBAL_SYMBOLS: dict[str, str] = {
     "CiHashCacheLock": "g_HashCacheLock",
 }
 
+V4_WORK_QUEUE_GLOBAL_SYMBOLS: dict[str, str] = {
+    "WqPspSystemPartition": "PspSystemPartition",
+    "WqExpBuiltinPriorities": "ExpBuiltinPriorities",
+}
+
+V4_GLOBAL_SYMBOLS: dict[str, str] = {
+    **V4_CI_GLOBAL_SYMBOLS,
+    **V4_WORK_QUEUE_GLOBAL_SYMBOLS,
+}
+
+V4_ENUM_VALUE_MAP: dict[str, tuple[str, str]] = {
+    "WqExPoolUntrusted": ("_EXQUEUEINDEX", "ExPoolUntrusted"),
+}
+
 V4_ITEM_DEFINITIONS: dict[str, tuple[int, str, int]] = {
     "EthActiveExWorker": (1001, "BitField", 2),
     "KprcbTimerTable": (1002, "StructOffset", 2),
@@ -356,6 +390,29 @@ V4_ITEM_DEFINITIONS: dict[str, tuple[int, str, int]] = {
     "CiHashEntryImageBase": (1207, "StructOffset", 4),
     "CiHashEntryImageSize": (1208, "StructOffset", 4),
     "CiHashEntryTypeSize": (1209, "TypeSize", 4),
+    "WqPspSystemPartition": (1301, "GlobalRva", 5),
+    "WqExpBuiltinPriorities": (1302, "GlobalRva", 5),
+    "WqEpartitionExPartition": (1303, "StructOffset", 5),
+    "WqExPartitionWorkQueues": (1304, "StructOffset", 5),
+    "WqExWorkQueueWorkPriQueue": (1305, "StructOffset", 5),
+    "WqExWorkQueueQueueIndex": (1306, "StructOffset", 5),
+    "WqKpriQueueEntryListHead": (1307, "StructOffset", 5),
+    "WqKpriQueueThreadListHead": (1308, "StructOffset", 5),
+    "WqKthreadQueue": (1309, "StructOffset", 5),
+    "WqKthreadQueueListEntry": (1310, "StructOffset", 5),
+    "WqWorkItemList": (1311, "StructOffset", 5),
+    "WqWorkItemRoutine": (1312, "StructOffset", 5),
+    "WqWorkItemParameter": (1313, "StructOffset", 5),
+    "WqExPoolUntrusted": (1314, "EnumValue", 5),
+    "WqEpartitionTypeSize": (1315, "TypeSize", 5),
+    "WqExPartitionTypeSize": (1316, "TypeSize", 5),
+    "WqExWorkQueueTypeSize": (1317, "TypeSize", 5),
+    "WqKpriQueueTypeSize": (1318, "TypeSize", 5),
+    "WqKthreadTypeSize": (1319, "TypeSize", 5),
+    "WqWorkItemTypeSize": (1320, "TypeSize", 5),
+    "WqEthreadStartAddress": (1321, "StructOffset", 5),
+    "WqEthreadTypeSize": (1322, "TypeSize", 5),
+    "WqEthreadTcb": (1323, "StructOffset", 5),
 }
 
 # CI 缓存的最小安全遍历只依赖两个全局、Next、DriverName 和类型大小。
@@ -410,14 +467,31 @@ OFFSET_RE = re.compile(r"offset\s*=\s*(0x[0-9A-Fa-f]+|\d+)")
 TYPE_REF_RE = re.compile(r"(?:type|Type)\s*=\s*([^,\]\s]+)")
 BIT_OFFSET_RE = re.compile(r"bit offset\s*=\s*(0x[0-9A-Fa-f]+|\d+)")
 BIT_COUNT_RE = re.compile(r"# bits\s*=\s*(0x[0-9A-Fa-f]+|\d+)")
+ENUMERATE_RE = re.compile(r"LF_ENUMERATE\s*\[([^=\]]+)\s*=\s*([^\]]+)\]")
+ENUM_UNDERLYING_TYPE_RE = re.compile(
+    r"underlying type:[^\r\n]*?(0x[0-9A-Fa-f]+|\b[0-9A-Fa-f]{4,}\b)",
+    re.IGNORECASE,
+)
 SYMBOL_HEADER_RE = re.compile(r"^\s*([0-9A-Fa-fx]+)\s*\|\s*(S_[A-Z0-9_]+)\b.*`([^`]+)`")
 SYMBOL_ADDR_RE = re.compile(r"\baddr\s*=\s*([0-9A-Fa-f]+):([0-9A-Fa-f]+)")
 
 CODEVIEW_PRIMITIVE_TYPE_SIZES = {
+    "0010": 1,  # char
+    "0011": 2,  # short
+    "0012": 4,  # long
+    "0013": 8,  # __int64
     "0020": 1,  # unsigned char
     "0021": 2,  # unsigned short
     "0022": 4,  # unsigned long
     "0023": 8,  # unsigned __int64
+    "0068": 1,  # signed int8
+    "0069": 1,  # unsigned int8
+    "0072": 2,  # signed int16
+    "0073": 2,  # unsigned int16
+    "0074": 4,  # signed int32
+    "0075": 4,  # unsigned int32
+    "0076": 8,  # signed int64
+    "0077": 8,  # unsigned int64
 }
 
 
@@ -1000,6 +1074,53 @@ def resolve_member_offset(types_text: str, struct_name: str, member_name: str) -
     return None
 
 
+def resolve_enum_value(
+    types_text: str,
+    enum_name: str,
+    enumerator_name: str,
+) -> tuple[int, int] | None:
+    """Resolve one LF_ENUMERATE value and its PDB-declared storage size."""
+    lines = types_text.splitlines()
+    for index, line in enumerate(lines):
+        header = TYPE_HEADER_RE.match(line)
+        if not header or header.group(2) != "LF_ENUM":
+            continue
+        record_lines = [line]
+        for body_line in lines[index + 1 :]:
+            if TYPE_HEADER_RE.match(body_line):
+                break
+            record_lines.append(body_line)
+        record_text = "\n".join(record_lines)
+        if f"`{enum_name}`" not in record_text or "forward ref" in record_text:
+            continue
+        underlying_match = ENUM_UNDERLYING_TYPE_RE.search(record_text)
+        if not underlying_match:
+            continue
+        underlying_type_id = normalize_record_id(underlying_match.group(1))
+        if len(underlying_type_id) < 4:
+            underlying_type_id = underlying_type_id.zfill(4)
+        storage_bytes = CODEVIEW_PRIMITIVE_TYPE_SIZES.get(underlying_type_id)
+        if storage_bytes is None:
+            continue
+        field_match = FIELD_LIST_RE.search(record_text)
+        if not field_match:
+            continue
+        field_list_id = field_match.group(1)
+        for field_line in field_list_lines(lines, field_list_id):
+            enumerate_match = ENUMERATE_RE.search(field_line)
+            if not enumerate_match:
+                continue
+            parsed_name = enumerate_match.group(1).strip()
+            parsed_name = re.sub(r"^name\s*=\s*", "", parsed_name).strip(" `")
+            if parsed_name != enumerator_name:
+                continue
+            try:
+                return parse_int(enumerate_match.group(2).strip()), storage_bytes
+            except ValueError:
+                return None
+    return None
+
+
 def resolve_bit_field(types_text: str, struct_name: str, member_name: str) -> tuple[int, int, int, int] | None:
     """Resolve one direct LF_BITFIELD member.
 
@@ -1518,7 +1639,9 @@ def v4_group_ids_for_module(module_class: str | None) -> set[int]:
     if not normalized:
         # 保留旧的纯类型解析调用语义；CI 组必须额外提供 PE/symbol 上下文。
         return {2, 3}
-    if normalized in {"ntoskrnl", "ntoskrnl.exe", "ntkrla57", "ntkrla57.exe"}:
+    if normalized in {"ntoskrnl", "ntoskrnl.exe"}:
+        return {2, 5}
+    if normalized in {"ntkrla57", "ntkrla57.exe"}:
         return {2}
     if normalized in {"fltmgr", "fltmgr.sys"}:
         return {3}
@@ -1544,8 +1667,8 @@ def build_v4_items(
         if group_id not in active_group_ids:
             continue
         item_flags = "optional" if item_name in V4_OPTIONAL_ITEM_NAMES else "required"
-        if item_name in V4_CI_GLOBAL_SYMBOLS:
-            symbol_name = V4_CI_GLOBAL_SYMBOLS[item_name]
+        if item_name in V4_GLOBAL_SYMBOLS:
+            symbol_name = V4_GLOBAL_SYMBOLS[item_name]
             matches = (symbol_addresses or {}).get(symbol_name, [])
             if pe_path is None or not matches:
                 missing.append({"kind": item_kind, "name": item_name, "reason": "symbol_not_found", "symbolName": symbol_name})
@@ -1622,6 +1745,35 @@ def build_v4_items(
                 "aux2": 0,
                 "aux3": 0,
                 "structName": selected_type,
+            }
+        elif item_name in V4_ENUM_VALUE_MAP:
+            enum_name, enumerator_name = V4_ENUM_VALUE_MAP[item_name]
+            enum_descriptor = resolve_enum_value(types_text, enum_name, enumerator_name)
+            if enum_descriptor is None:
+                missing.append(
+                    {
+                        "kind": item_kind,
+                        "name": item_name,
+                        "reason": "enumerator_not_found",
+                        "enumName": enum_name,
+                        "enumeratorName": enumerator_name,
+                    }
+                )
+                continue
+            enum_value, enum_storage_bytes = enum_descriptor
+            item = {
+                "itemId": item_id,
+                "name": item_name,
+                "kind": item_kind,
+                "flags": item_flags,
+                "capabilityGroupId": group_id,
+                "value": f"0x{enum_value:08X}",
+                "aux0": enum_storage_bytes,
+                "aux1": 0,
+                "aux2": 0,
+                "aux3": 0,
+                "enumName": enum_name,
+                "enumeratorName": enumerator_name,
             }
         if item_name in V4_FIELD_MAP:
             struct_name, member_name = V4_FIELD_MAP[item_name]
@@ -1736,11 +1888,16 @@ def refresh_v4_profile(
         resolved_bit_fields=resolved_bit_fields,
         module_class=module_class,
     )
-    if module_class.strip().lower() == "ci":
-        # 仅刷新类型时没有 symbol dump；保留已通过旧生成流程写入的两个 CI GlobalRva。
+    normalized_module_class = module_class.strip().lower()
+    if normalized_module_class in {"ci", "ntoskrnl"}:
+        # 仅刷新类型时没有 symbol dump；保留旧生成流程已按同一身份写入的 GlobalRva。
         previous_items = profile.get("v4Items")
         if isinstance(previous_items, list):
-            preserved_names = set(V4_CI_GLOBAL_SYMBOLS)
+            preserved_names = (
+                set(V4_CI_GLOBAL_SYMBOLS)
+                if normalized_module_class == "ci"
+                else set(V4_WORK_QUEUE_GLOBAL_SYMBOLS)
+            )
             v4_items.extend(
                 item
                 for item in previous_items

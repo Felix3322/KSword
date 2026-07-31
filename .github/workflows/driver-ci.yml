@@ -114,9 +114,9 @@ jobs:
         shell: pwsh
         run: |
           $artifacts = @(
-            'KswordARKDriver/x64/Release/KswordARK.sys',
-            'KswordARKDriver/x64/Release/KswordARK.pdb',
-            'KswordARKDriver/x64/Release/KswordARKDriver.inf'
+            'Ksword5.1/x64/Release/KswordARK.sys',
+            'Ksword5.1/x64/Release/KswordARK.pdb',
+            'Ksword5.1/x64/Release/KswordARKDriver.inf'
           )
           $missing = $artifacts | Where-Object { -not (Test-Path $_) }
           if ($missing) {
@@ -128,7 +128,7 @@ jobs:
         with:
           name: KswordARKDriver-unsigned-Release
           path: |
-            KswordARKDriver/x64/Release/KswordARK.sys
-            KswordARKDriver/x64/Release/KswordARK.pdb
-            KswordARKDriver/x64/Release/KswordARKDriver.inf
+            Ksword5.1/x64/Release/KswordARK.sys
+            Ksword5.1/x64/Release/KswordARK.pdb
+            Ksword5.1/x64/Release/KswordARKDriver.inf
           if-no-files-found: error

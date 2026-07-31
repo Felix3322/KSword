@@ -113,6 +113,41 @@ void NetworkDock::applyConnectionSnapshot(
         return;
     }
 
+    const QList<QTableView*> connectionTables = {
+        m_tcpConnectionTable,
+        m_udpEndpointTable
+    };
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu(connectionTables))
+    {
+        // TCP/UDP 共用同一份后台快照，必须作为一个原子提交延迟，
+        // 防止菜单打开期间任一表重排导致已捕获行失效。
+        const QPointer<NetworkDock> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("network-connection-snapshot"),
+            connectionTables,
+            [safeThis,
+                tcpSnapshot = std::move(tcpSnapshot),
+                udpSnapshot = std::move(udpSnapshot),
+                tcpOk,
+                udpOk,
+                tcpErrorText = std::move(tcpErrorText),
+                udpErrorText = std::move(udpErrorText)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyConnectionSnapshot(
+                        std::move(tcpSnapshot),
+                        std::move(udpSnapshot),
+                        tcpOk,
+                        udpOk,
+                        std::move(tcpErrorText),
+                        std::move(udpErrorText));
+                }
+            });
+        return;
+    }
+
     if (!tcpOk || !udpOk)
     {
         if (m_connectionStatusLabel != nullptr)
@@ -247,6 +282,22 @@ void NetworkDock::refreshTcpConnectionTable()
         return;
     }
 
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-tcp-connection-refresh"),
+        {m_tcpConnectionTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshTcpConnectionTable();
+            }
+        }))
+    {
+        return;
+    }
+
     std::vector<ks::network::TcpConnectionRecord> tcpSnapshot;
     std::string errorText;
     if (!ks::network::EnumerateTcpConnectionRecords(tcpSnapshot, &errorText))
@@ -298,6 +349,22 @@ void NetworkDock::refreshTcpConnectionTable()
 void NetworkDock::refreshUdpEndpointTable()
 {
     if (m_udpEndpointTable == nullptr)
+    {
+        return;
+    }
+
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-udp-endpoint-refresh"),
+        {m_udpEndpointTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshUdpEndpointTable();
+            }
+        }))
     {
         return;
     }

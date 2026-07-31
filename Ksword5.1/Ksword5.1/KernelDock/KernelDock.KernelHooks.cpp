@@ -1,4 +1,7 @@
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 #include "../UI/VisibleTableWidget.h"
 
 #include "KernelCleanImageBaseline.h"
@@ -2128,6 +2131,11 @@ void KernelDock::refreshShadowSsdtAsync()
         }
 
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, totalCount, returnedCount, resultRows = std::move(resultRows)]() mutable {
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelSsdtEntry>>(std::move(resultRows));
+            auto commitResult = [guardThis, success, errorText, totalCount, returnedCount, deferredRows]() mutable
+            {
+            std::vector<KernelSsdtEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
             {
                 return;
@@ -2164,6 +2172,21 @@ void KernelDock::refreshShadowSsdtAsync()
             {
                 guardThis->m_shadowSsdtDetailEditor->setText(kernelText("kernel.hooks.shadow.empty", QStringLiteral("当前环境未返回 SSSDT stub 解析结果。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-shadow-ssdt-snapshot-apply"),
+                { guardThis->m_shadowSsdtTable },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -2230,6 +2253,11 @@ void KernelDock::refreshInlineHooksAsync()
         }
 
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, totalCount, moduleCount, lastStatus, resultRows = std::move(resultRows)]() mutable {
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelInlineHookEntry>>(std::move(resultRows));
+            auto commitResult = [guardThis, success, errorText, totalCount, moduleCount, lastStatus, deferredRows]() mutable
+            {
+            std::vector<KernelInlineHookEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
             {
                 return;
@@ -2284,6 +2312,21 @@ void KernelDock::refreshInlineHooksAsync()
             {
                 guardThis->m_inlineHookDetailEditor->setText(kernelText("kernel.hooks.inline.empty", QStringLiteral("当前过滤条件下未返回 Inline Hook 记录。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-inline-hook-snapshot-apply"),
+                { guardThis->m_inlineHookTable },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -2346,6 +2389,11 @@ void KernelDock::refreshIatEatHooksAsync()
         }
 
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, totalCount, moduleCount, lastStatus, resultRows = std::move(resultRows)]() mutable {
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelIatEatHookEntry>>(std::move(resultRows));
+            auto commitResult = [guardThis, success, errorText, totalCount, moduleCount, lastStatus, deferredRows]() mutable
+            {
+            std::vector<KernelIatEatHookEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
             {
                 return;
@@ -2394,6 +2442,21 @@ void KernelDock::refreshIatEatHooksAsync()
             {
                 guardThis->m_iatEatHookDetailEditor->setText(kernelText("kernel.hooks.iat.empty", QStringLiteral("当前过滤条件下未返回 IAT/EAT 记录。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-iat-eat-hook-snapshot-apply"),
+                { guardThis->m_iatEatHookTable },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -2473,6 +2536,11 @@ void KernelDock::refreshTimerDpcAsync()
         }
 
         QMetaObject::invokeMethod(guardThis, [guardThis, enumResult, resultRows = std::move(resultRows)]() mutable {
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelTimerDpcEntry>>(std::move(resultRows));
+            auto commitResult = [guardThis, enumResult, deferredRows]() mutable
+            {
+            std::vector<KernelTimerDpcEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
             {
                 return;
@@ -2527,6 +2595,21 @@ void KernelDock::refreshTimerDpcAsync()
             {
                 guardThis->m_timerDpcDetailEditor->setText(kernelText("kernel.timer_dpc.empty", QStringLiteral("当前快照未返回活动 KTIMER 记录。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-timer-dpc-snapshot-apply"),
+                { guardThis->m_timerDpcTable },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }

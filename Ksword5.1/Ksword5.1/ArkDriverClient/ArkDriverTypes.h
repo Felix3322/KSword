@@ -22,6 +22,7 @@
 #include "../../../shared/driver/KswordArkMutationIoctl.h"
 #include "../../../shared/driver/KswordArkProcessIoctl.h"
 #include "../../../shared/driver/KswordArkThreadIoctl.h"
+#include "../../../shared/driver/KswordArkWorkQueueIoctl.h"
 #include "../../../shared/driver/KswordArkAlpcIoctl.h"
 #include "../../../shared/driver/KswordArkSectionIoctl.h"
 #include "../../../shared/driver/KswordArkRegistryIoctl.h"
@@ -35,6 +36,8 @@
 #include "../../../shared/driver/KswordArkTrustIoctl.h"
 #include "../../../shared/driver/KswordArkWin32kIoctl.h"
 #include "../../../shared/driver/KswordArkDeviceAuditIoctl.h"
+#include "../../../shared/driver/KswordArkPlatformAuditIoctl.h"
+#include "../../../shared/driver/KswordArkI8042AuditIoctl.h"
 #include "../../../shared/driver/KswordArkDriverBlindIoctl.h"
 #include "../../../shared/driver/KswordArkFilterIoctl.h"
 #include "../../../shared/driver/KswordArkKernelObjectIoctl.h"
@@ -248,6 +251,47 @@ namespace ksword::ark
         std::uint32_t totalCount = 0;
         std::uint32_t returnedCount = 0;
         std::vector<ThreadEntry> entries;
+    };
+
+    // WorkQueueEntry preserves one validated read-only R0 work-item or worker-thread row.
+    struct WorkQueueEntry
+    {
+        std::uint32_t rowKind = 0;
+        std::uint32_t queueType = 0;
+        std::uint32_t priorityIndex = 0;
+        std::uint32_t nodeIndex = 0;
+        std::uint32_t flags = 0;
+        std::uint32_t status = 0;
+        std::uint64_t queueAddress = 0;
+        std::uint64_t workItemAddress = 0;
+        std::uint64_t routineAddress = 0;
+        std::uint64_t parameterAddress = 0;
+        std::uint64_t threadObject = 0;
+        std::uint32_t threadId = 0;
+        std::uint64_t threadCreateTime100ns = 0;
+        std::uint64_t moduleBase = 0;
+        std::uint32_t moduleSize = 0;
+        std::string moduleName;
+        std::string modulePath;
+    };
+
+    // WorkQueueEnumResult separates transport success from explicit fail-closed R0 status.
+    struct WorkQueueEnumResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t version = 0;
+        std::uint32_t queryStatus = KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED;
+        std::uint32_t statusFlags = 0;
+        std::uint32_t totalCount = 0;
+        std::uint32_t returnedCount = 0;
+        std::uint32_t nodeCount = 0;
+        std::uint32_t queuesVisited = 0;
+        std::uint32_t corruptListCount = 0;
+        std::uint32_t readFailureCount = 0;
+        std::uint32_t referenceFailureCount = 0;
+        long lastStatus = 0;
+        std::vector<WorkQueueEntry> entries;
     };
 
     // HandleEntry 是 R0 HandleTable 直接枚举的 R3 侧模型。
@@ -1678,6 +1722,8 @@ namespace ksword::ark
         std::uint64_t rawStorageValue = 0;   // rawStorageValue：R0 原始注册槽值；旧协议未提供时为 0。
         std::uint64_t moduleBase = 0;
         std::uint32_t moduleSize = 0;
+        std::uint32_t detailCode = KSWORD_ARK_CALLBACK_ENUM_DETAIL_NONE;
+        std::uint64_t detailArgs[KSWORD_ARK_CALLBACK_ENUM_DETAIL_ARG_COUNT]{};
         std::wstring name;
         std::wstring altitude;
         std::wstring modulePath;
@@ -2330,6 +2376,35 @@ namespace ksword::ark
         std::uint32_t driverCount = 0;
         std::uint32_t deviceCount = 0;
         std::vector<KSWORD_ARK_DEVICE_AUDIT_ENTRY> entries;
+    };
+
+    // PlatformAuditResult 承载 HAL/WDF 统一只读审计结果。
+    // 输入：queryPlatformAudit 返回，scopeMask 指定 HAL 表或 WDF 表/回调。
+    // 处理：entries 保留地址、模块、结构/owner 证据和本地化 detailCode 参数。
+    // 返回行为：只读，不提供 patch、restore、unhook 或任意内存访问。
+    struct PlatformAuditResult : VariableAuditResultBase
+    {
+        std::uint32_t scopeMask = 0;
+        std::uint32_t responseFlags = 0;
+        std::uint32_t buildNumber = 0;
+        std::uint32_t signaturePolicyFlags = 0;
+        std::vector<KSWORD_ARK_PLATFORM_AUDIT_ENTRY> entries;
+    };
+
+    // I8042AuditResult 承载专用 i8042prt 描述符与端点证据。
+    // 输入：queryI8042Audit 返回；只有精确 PE/RSDS/opcode/DriverObject 匹配时含端点行。
+    // 返回行为：只读，不读取输入包，不回放内部 IOCTL，不写设备扩展。
+    struct I8042AuditResult : VariableAuditResultBase
+    {
+        std::uint32_t responseFlags = 0;
+        std::uint32_t descriptorId = 0;
+        std::uint32_t imageTimeDateStamp = 0;
+        std::uint32_t imageSize = 0;
+        std::uint32_t imageChecksum = 0;
+        std::uint32_t pdbAge = 0;
+        std::uint64_t imageBase = 0;
+        std::uint8_t pdbGuid[KSWORD_ARK_I8042_PDB_GUID_BYTES]{};
+        std::vector<KSWORD_ARK_I8042_AUDIT_ENTRY> entries;
     };
 
     // CidTableAuditResult 承载 PspCidTable 只读枚举行。

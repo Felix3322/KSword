@@ -7,20 +7,27 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <bcrypt.h>
+#include <wincrypt.h>
+#include <mscat.h>
+#include <Softpub.h>
+#include <WinTrust.h>
 #include <winternl.h>
 
 #include <QByteArray>
 #include <QCryptographicHash>
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <utility>
 #include <vector>
+
+#pragma comment(lib, "Wintrust.lib")
 
 namespace
 {
@@ -62,6 +69,294 @@ namespace
 
     using NtQuerySystemInformationFunction =
         NTSTATUS(NTAPI*)(ULONG, PVOID, ULONG, PULONG);
+
+    class ReadOnlyTrustFile final
+    {
+    public:
+        explicit ReadOnlyTrustFile(const QString& path)
+            : handle(::CreateFileW(
+                  reinterpret_cast<LPCWSTR>(path.utf16()),
+                  GENERIC_READ,
+                  FILE_SHARE_READ,
+                  nullptr,
+                  OPEN_EXISTING,
+                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                  nullptr))
+        {
+        }
+
+        ~ReadOnlyTrustFile()
+        {
+            if (handle != INVALID_HANDLE_VALUE)
+            {
+                ::CloseHandle(handle);
+            }
+        }
+
+        ReadOnlyTrustFile(const ReadOnlyTrustFile&) = delete;
+        ReadOnlyTrustFile& operator=(const ReadOnlyTrustFile&) = delete;
+
+        HANDLE handle = INVALID_HANDLE_VALUE;
+    };
+
+    class CatalogAdminContext final
+    {
+    public:
+        ~CatalogAdminContext()
+        {
+            if (handle != nullptr)
+            {
+                ::CryptCATAdminReleaseContext(handle, 0);
+            }
+        }
+
+        CatalogAdminContext(const CatalogAdminContext&) = delete;
+        CatalogAdminContext& operator=(const CatalogAdminContext&) = delete;
+        CatalogAdminContext() = default;
+
+        HCATADMIN handle = nullptr;
+    };
+
+    void initializeStrictTrustData(WINTRUST_DATA& trustData)
+    {
+        trustData = WINTRUST_DATA{};
+        trustData.cbStruct = sizeof(trustData);
+        trustData.dwUIChoice = WTD_UI_NONE;
+        trustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+        trustData.dwProvFlags =
+            WTD_SAFER_FLAG |
+            WTD_CACHE_ONLY_URL_RETRIEVAL |
+            WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT |
+            WTD_DISABLE_MD2_MD4;
+    }
+
+    LONG runWinTrustAndClose(WINTRUST_DATA& trustData)
+    {
+        GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+        const LONG status =
+            ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+        ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        trustData.hWVTStateData = nullptr;
+        return status;
+    }
+
+    bool calculateCatalogHash(
+        const HCATADMIN catalogAdmin,
+        const HANDLE fileHandle,
+        std::vector<BYTE>& hashOut)
+    {
+        LARGE_INTEGER fileStart{};
+        hashOut.clear();
+        ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
+        DWORD hashBytes = 0U;
+        if (!::CryptCATAdminCalcHashFromFileHandle2(
+                catalogAdmin,
+                fileHandle,
+                &hashBytes,
+                nullptr,
+                0) ||
+            hashBytes == 0U)
+        {
+            return false;
+        }
+        hashOut.resize(hashBytes);
+        ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
+        if (!::CryptCATAdminCalcHashFromFileHandle2(
+                catalogAdmin,
+                fileHandle,
+                &hashBytes,
+                hashOut.data(),
+                0))
+        {
+            hashOut.clear();
+            return false;
+        }
+        hashOut.resize(hashBytes);
+        return true;
+    }
+
+    bool verifyCatalogTrust(
+        const QString& path,
+        const HANDLE fileHandle)
+    {
+        CatalogAdminContext catalogAdmin;
+        GUID driverActionVerify = DRIVER_ACTION_VERIFY;
+        if (!::CryptCATAdminAcquireContext2(
+                &catalogAdmin.handle,
+                &driverActionVerify,
+                BCRYPT_SHA256_ALGORITHM,
+                nullptr,
+                0))
+        {
+            return false;
+        }
+
+        std::vector<BYTE> hash;
+        if (!calculateCatalogHash(
+                catalogAdmin.handle,
+                fileHandle,
+                hash))
+        {
+            return false;
+        }
+        const QByteArray fileHashBytes(
+            reinterpret_cast<const char*>(hash.data()),
+            static_cast<qsizetype>(hash.size()));
+        const QByteArray memberTagBytes =
+            fileHashBytes.toHex().toUpper();
+        const QString memberTag = QString::fromLatin1(
+            memberTagBytes.constData(),
+            memberTagBytes.size());
+
+        HCATINFO previousCatalog = nullptr;
+        for (;;)
+        {
+            HCATINFO currentCatalog =
+                ::CryptCATAdminEnumCatalogFromHash(
+                    catalogAdmin.handle,
+                    hash.data(),
+                    static_cast<DWORD>(hash.size()),
+                    0,
+                    &previousCatalog);
+            if (currentCatalog == nullptr)
+            {
+                // Enum consumes/releases the previous context when advancing.
+                // Natural exhaustion therefore leaves no caller-owned HCATINFO.
+                return false;
+            }
+            previousCatalog = currentCatalog;
+
+            CATALOG_INFO catalogInfo{};
+            catalogInfo.cbStruct = sizeof(catalogInfo);
+            if (!::CryptCATCatalogInfoFromContext(
+                    currentCatalog,
+                    &catalogInfo,
+                    0))
+            {
+                continue;
+            }
+
+            WINTRUST_CATALOG_INFO trustCatalogInfo{};
+            trustCatalogInfo.cbStruct = sizeof(trustCatalogInfo);
+            trustCatalogInfo.pcwszCatalogFilePath =
+                catalogInfo.wszCatalogFile;
+            trustCatalogInfo.pcwszMemberTag =
+                reinterpret_cast<LPCWSTR>(memberTag.utf16());
+            trustCatalogInfo.pcwszMemberFilePath =
+                reinterpret_cast<LPCWSTR>(path.utf16());
+            trustCatalogInfo.hMemberFile = fileHandle;
+            trustCatalogInfo.pbCalculatedFileHash = hash.data();
+            trustCatalogInfo.cbCalculatedFileHash =
+                static_cast<DWORD>(hash.size());
+            trustCatalogInfo.hCatAdmin = catalogAdmin.handle;
+
+            LARGE_INTEGER fileStart{};
+            ::SetFilePointerEx(
+                fileHandle,
+                fileStart,
+                nullptr,
+                FILE_BEGIN);
+            WINTRUST_DATA trustData{};
+            initializeStrictTrustData(trustData);
+            trustData.dwUnionChoice = WTD_CHOICE_CATALOG;
+            trustData.pCatalog = &trustCatalogInfo;
+            if (runWinTrustAndClose(trustData) == ERROR_SUCCESS)
+            {
+                ::CryptCATAdminReleaseCatalogContext(
+                    catalogAdmin.handle,
+                    currentCatalog,
+                    0);
+                previousCatalog = nullptr;
+                return true;
+            }
+        }
+    }
+
+    bool readDiskImage(
+        const HANDLE fileHandle,
+        QByteArray& bytesOut)
+    {
+        bytesOut.clear();
+        if (fileHandle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        LARGE_INTEGER fileSize{};
+        constexpr LONGLONG maximumImageBytes =
+            512LL * 1024LL * 1024LL;
+        if (!::GetFileSizeEx(fileHandle, &fileSize) ||
+            fileSize.QuadPart < 0 ||
+            fileSize.QuadPart > maximumImageBytes ||
+            fileSize.QuadPart >
+                static_cast<LONGLONG>(
+                    std::numeric_limits<qsizetype>::max()))
+        {
+            return false;
+        }
+        LARGE_INTEGER fileStart{};
+        if (!::SetFilePointerEx(
+                fileHandle,
+                fileStart,
+                nullptr,
+                FILE_BEGIN))
+        {
+            return false;
+        }
+
+        bytesOut.resize(static_cast<qsizetype>(fileSize.QuadPart));
+        qsizetype offset = 0;
+        while (offset < bytesOut.size())
+        {
+            const qsizetype remaining = bytesOut.size() - offset;
+            const DWORD requestBytes = static_cast<DWORD>(
+                std::min<qsizetype>(remaining, MAXDWORD));
+            DWORD bytesRead = 0U;
+            if (!::ReadFile(
+                    fileHandle,
+                    bytesOut.data() + offset,
+                    requestBytes,
+                    &bytesRead,
+                    nullptr) ||
+                bytesRead == 0U)
+            {
+                bytesOut.clear();
+                return false;
+            }
+            offset += static_cast<qsizetype>(bytesRead);
+        }
+        return true;
+    }
+
+    bool readTrustedDiskImage(
+        const QString& path,
+        const HANDLE fileHandle,
+        QByteArray& bytesOut)
+    {
+        bytesOut.clear();
+        if (fileHandle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        WINTRUST_FILE_INFO fileInfo{};
+        fileInfo.cbStruct = sizeof(fileInfo);
+        fileInfo.pcwszFilePath =
+            reinterpret_cast<LPCWSTR>(path.utf16());
+        fileInfo.hFile = fileHandle;
+
+        WINTRUST_DATA trustData{};
+        initializeStrictTrustData(trustData);
+        trustData.dwUnionChoice = WTD_CHOICE_FILE;
+        trustData.pFile = &fileInfo;
+        const bool trusted =
+            runWinTrustAndClose(trustData) == ERROR_SUCCESS ||
+            verifyCatalogTrust(path, fileHandle);
+        return trusted &&
+            readDiskImage(fileHandle, bytesOut);
+    }
 
     QString normalizeKernelPath(const QString& input)
     {
@@ -618,11 +913,13 @@ namespace
         QString sha256;
         QString signingThumbprint;
         std::uint32_t signingLevel = 0;
+        bool diskTrustVerified = false;
         bool relocationApplied = false;
     };
 
     bool prepareTrustedImage(
         const LoadedModule& module,
+        const bool requireTrustedDiskImage,
         PreparedTrustedImage& preparedOut,
         QString& errorTextOut)
     {
@@ -635,15 +932,37 @@ namespace
             return false;
         }
 
-        QFile imageFile(module.filePath);
-        if (!imageFile.open(QIODevice::ReadOnly))
+        ReadOnlyTrustFile imageFile(module.filePath);
+        if (imageFile.handle == INVALID_HANDLE_VALUE)
         {
             errorTextOut = baselineText(QStringLiteral("无法读取模块磁盘映像：%1"))
                 .arg(QDir::toNativeSeparators(module.filePath));
             return false;
         }
-        preparedOut.diskImage = imageFile.readAll();
-        imageFile.close();
+        if (requireTrustedDiskImage)
+        {
+            if (!readTrustedDiskImage(
+                    module.filePath,
+                    imageFile.handle,
+                    preparedOut.diskImage))
+            {
+                errorTextOut = baselineText(QStringLiteral(
+                    "磁盘映像未通过 embedded/catalog 完整链信任验证，拒绝建立安全基线。"));
+                return false;
+            }
+            preparedOut.diskTrustVerified = true;
+        }
+        else
+        {
+            if (!readDiskImage(
+                    imageFile.handle,
+                    preparedOut.diskImage))
+            {
+                errorTextOut = baselineText(QStringLiteral("无法读取模块磁盘映像：%1"))
+                    .arg(QDir::toNativeSeparators(module.filePath));
+                return false;
+            }
+        }
         if (preparedOut.diskImage.isEmpty())
         {
             errorTextOut = baselineText(QStringLiteral("模块磁盘映像为空。"));
@@ -751,7 +1070,11 @@ namespace
         }
 
         PreparedTrustedImage prepared;
-        if (!prepareTrustedImage(module, prepared, errorTextOut))
+        if (!prepareTrustedImage(
+                module,
+                false,
+                prepared,
+                errorTextOut))
         {
             return nullptr;
         }
@@ -821,7 +1144,8 @@ namespace ks::kernel
     CleanImageBaselineResult KernelCleanImageBaseline::compareAddress(
         const std::uint64_t kernelAddress,
         const std::uint32_t byteCount,
-        const std::vector<std::uint8_t>& observedBytes)
+        const std::vector<std::uint8_t>& observedBytes,
+        const bool requireTrustedDiskImage)
     {
         CleanImageBaselineResult result;
         if (kernelAddress == 0U
@@ -860,16 +1184,38 @@ namespace ks::kernel
         }
         result.relativeVirtualAddress =
             static_cast<std::uint32_t>(rva64);
-        const PreparedTrustedImage* prepared =
-            cachedTrustedImage(*module, errorText);
+        PreparedTrustedImage trustedDiskImage;
+        const PreparedTrustedImage* prepared = nullptr;
+        if (requireTrustedDiskImage)
+        {
+            if (!prepareTrustedImage(
+                    *module,
+                    true,
+                    trustedDiskImage,
+                    errorText))
+            {
+                result.statusText = errorText;
+                return result;
+            }
+            prepared = &trustedDiskImage;
+        }
+        else
+        {
+            prepared = cachedTrustedImage(
+                *module,
+                errorText);
+        }
         if (prepared == nullptr)
         {
             result.statusText = errorText;
             return result;
         }
         result.identityMatched = true;
+        result.diskTrustVerified = prepared->diskTrustVerified;
         result.codeIntegrityTrusted = true;
         result.relocationApplied = prepared->relocationApplied;
+        result.preferredImageBase =
+            prepared->identity.preferredImageBase;
         result.signingLevel = prepared->signingLevel;
         result.imageSha256 = prepared->sha256;
         result.signingThumbprint = prepared->signingThumbprint;

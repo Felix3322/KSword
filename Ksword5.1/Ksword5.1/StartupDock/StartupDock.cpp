@@ -1,4 +1,5 @@
 #include "StartupDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 
 using namespace startup_dock_detail;
 
@@ -341,6 +342,33 @@ void StartupDock::requestAsyncRefresh(const bool forceRefresh)
 
 void StartupDock::applyRefreshResult(std::vector<StartupEntry> entryList)
 {
+    const QList<QTableView*> startupTables = {
+        m_allTable,
+        m_logonTable,
+        m_servicesTable,
+        m_driversTable,
+        m_tasksTable,
+        m_wmiTable
+    };
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu(startupTables))
+    {
+        // 六张分类表来自同一快照，菜单关闭后必须原子替换，
+        // 避免各标签页缓存与可见行处于不同代次。
+        const QPointer<StartupDock> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("startup-tables-refresh-apply"),
+            startupTables,
+            [safeThis, entryList = std::move(entryList)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyRefreshResult(std::move(entryList));
+                }
+            });
+        return;
+    }
+
     std::sort(
         entryList.begin(),
         entryList.end(),

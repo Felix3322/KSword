@@ -73,6 +73,7 @@
     <ReferencePath>$(ReferencePath)</ReferencePath>
     <LibraryPath>$(MSBuildProjectDirectory)\lib;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64)</LibraryPath>
   </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\..\Ksword.ReleaseOutput.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <LanguageStandard>stdcpp23</LanguageStandard>
@@ -171,11 +172,14 @@
     <ClCompile Include="句柄\HandleObjectTypeWorker.cpp" />
     <ClCompile Include="HardwareDock\HardwareDock.cpp" />
     <ClCompile Include="HardwareDock\DiskMonitorPage.cpp" />
+    <ClCompile Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.cpp" />
+    <ClCompile Include="HardwareDock\DiskMonitorStoragePanel.cpp" />
     <ClCompile Include="HardwareDock\MemoryCompositionHistoryWidget.cpp" />
     <ClCompile Include="HardwareDock\HardwareR0EvidencePage.cpp" />
     <ClCompile Include="HardwareDock\HardwareDeviceManagerPage.cpp" />
     <ClCompile Include="HardwareDock\HardwareOtherDevicesPage.cpp" />
     <ClCompile Include="HardwareDock\HardwareHwidDispatchPage.cpp" />
+    <ClCompile Include="HardwareDock\HardwareI8042AuditPage.cpp" />
     <ClCompile Include="Framework\Log.cpp" />
     <ClCompile Include="Framework\LogDockWidget.cpp" />
     <ClCompile Include="Framework\NotificationCardManager.cpp" />
@@ -207,6 +211,7 @@
     <ClCompile Include="KernelDock\KernelDockCidTab.cpp" />
     <ClCompile Include="KernelDock\KernelDescriptorTableTab.cpp" />
     <ClCompile Include="KernelDock\KernelHvmTab.cpp" />
+    <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp" />
     <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp" />
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp" />
     <ClCompile Include="KernelDock\KernelBaseNamedObjectsTab.cpp" />
@@ -226,6 +231,8 @@
     <ClCompile Include="KernelDock\KernelObjectTypeMatrixTab.cpp" />
     <ClCompile Include="KernelDock\KernelSymbolicLinkTab.cpp" />
     <ClCompile Include="KernelDock\KernelSymbolicLinkWorker.cpp" />
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.cpp" />
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.Snapshot.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="MiscDock\BootEditor\BootEditorTab.Actions.cpp" />
     <ClCompile Include="MiscDock\ApplicationControlPage.cpp" />
@@ -410,6 +417,7 @@
     <ClCompile Include="ArkDriverClient\ArkRuntimeDynData.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverCapabilities.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverProcess.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverWorkQueue.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverHandle.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverAlpc.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverSection.cpp" />
@@ -471,6 +479,7 @@
     <ClInclude Include="KernelDock\KernelDockCidTab.h" />
     <ClInclude Include="KernelDock\KernelDescriptorTableTab.h" />
     <ClInclude Include="KernelDock\KernelHvmTab.h" />
+    <ClInclude Include="KernelDock\KernelPlatformAuditTab.h" />
     <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h" />
     <ClInclude Include="KernelDock\KernelDockIpcTab.h" />
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepTab.h" />
@@ -478,6 +487,7 @@
     <ClInclude Include="KernelDock\KernelObjectTypeMatrixTab.h" />
     <ClInclude Include="KernelDock\KernelSymbolicLinkTab.h" />
     <ClInclude Include="KernelDock\KernelSymbolicLinkWorker.h" />
+    <ClInclude Include="KernelDock\KernelThreadAuditTab.h" />
     <ClInclude Include="ksword\ksword.h" />
     <ClInclude Include="ksword\file\file.h" />
     <ClInclude Include="ksword\file\file_handle_tools.h" />
@@ -517,8 +527,11 @@
     <ClInclude Include="句柄\HandleObjectTypeWorker.h" />
     <QtMoc Include="HardwareDock\HardwareDock.h" />
     <QtMoc Include="HardwareDock\DiskMonitorPage.h" />
+    <ClInclude Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.h" />
+    <ClInclude Include="HardwareDock\DiskMonitorStoragePanel.h" />
     <ClInclude Include="HardwareDock\MemoryCompositionHistoryWidget.h" />
     <ClInclude Include="HardwareDock\HardwareR0EvidencePage.h" />
+    <ClInclude Include="HardwareDock\HardwareI8042AuditPage.h" />
     <QtMoc Include="HardwareDock\HardwareDeviceManagerPage.h" />
     <QtMoc Include="HardwareDock\HardwareOtherDevicesPage.h" />
     <QtMoc Include="HardwareDock\HardwareHwidDispatchPage.h" />
@@ -753,14 +766,15 @@
   </Target>
   <Target Name="CopyKswordArkDriverArtifacts" AfterTargets="Build">
     <PropertyGroup>
-      <KswordArkDriverOutputDir>$(MSBuildProjectDirectory)\..\..\KswordARKDriver\x64\$(Configuration)\</KswordArkDriverOutputDir>
+      <KswordArkDriverOutputDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(KswordUnifiedReleaseOutputDir)</KswordArkDriverOutputDir>
+      <KswordArkDriverOutputDir Condition="'$(Configuration)|$(Platform)'!='Release|x64'">$(MSBuildProjectDirectory)\..\..\KswordARKDriver\x64\$(Configuration)\</KswordArkDriverOutputDir>
       <KswordArkDriverSysSource>$(KswordArkDriverOutputDir)KswordARK.sys</KswordArkDriverSysSource>
       <KswordArkDriverPdbSource>$(KswordArkDriverOutputDir)KswordARK.pdb</KswordArkDriverPdbSource>
       <KswordArkDriverInfSource>$(KswordArkDriverOutputDir)KswordARKDriver.inf</KswordArkDriverInfSource>
     </PropertyGroup>
-    <Copy SourceFiles="$(KswordArkDriverSysSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="Exists('$(KswordArkDriverSysSource)')" />
-    <Copy SourceFiles="$(KswordArkDriverPdbSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="Exists('$(KswordArkDriverPdbSource)')" />
-    <Copy SourceFiles="$(KswordArkDriverInfSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="Exists('$(KswordArkDriverInfSource)')" />
+    <Copy SourceFiles="$(KswordArkDriverSysSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="'$(Configuration)|$(Platform)'!='Release|x64' And Exists('$(KswordArkDriverSysSource)')" />
+    <Copy SourceFiles="$(KswordArkDriverPdbSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="'$(Configuration)|$(Platform)'!='Release|x64' And Exists('$(KswordArkDriverPdbSource)')" />
+    <Copy SourceFiles="$(KswordArkDriverInfSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="'$(Configuration)|$(Platform)'!='Release|x64' And Exists('$(KswordArkDriverInfSource)')" />
     <Warning Condition="!Exists('$(KswordArkDriverSysSource)')" Text="KswordARK driver binary was not found for output sync: $(KswordArkDriverSysSource)" />
   </Target>
   <!-- Qt 官方动态库由 MSVC /MD 构建，即使 Ksword5.1.exe 自身使用 /MT，也仍需把 VC 运行库 DLL 随 Release 输出部署。 -->

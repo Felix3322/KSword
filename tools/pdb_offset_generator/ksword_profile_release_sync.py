@@ -395,10 +395,12 @@ V4_CORE_GROUP_ID = 1
 V4_TIMER_GROUP_ID = 2
 V4_FLTMGR_MINIFILTER_GROUP_ID = 3
 V4_CI_KERNEL_HASH_GROUP_ID = 4
+V4_WORK_QUEUE_GROUP_ID = 5
 V4_FIXED_CAPABILITY_GROUP_COUNTS = {
     V4_TIMER_GROUP_ID: (17, 0),
     V4_FLTMGR_MINIFILTER_GROUP_ID: (1, 0),
     V4_CI_KERNEL_HASH_GROUP_ID: (5, 4),
+    V4_WORK_QUEUE_GROUP_ID: (23, 0),
 }
 V4_SPECIAL_ITEM_IDS = {
     "EthActiveExWorker": 1001,
@@ -428,16 +430,42 @@ V4_SPECIAL_ITEM_IDS = {
     "CiHashEntryImageBase": 1207,
     "CiHashEntryImageSize": 1208,
     "CiHashEntryTypeSize": 1209,
+    "WqPspSystemPartition": 1301,
+    "WqExpBuiltinPriorities": 1302,
+    "WqEpartitionExPartition": 1303,
+    "WqExPartitionWorkQueues": 1304,
+    "WqExWorkQueueWorkPriQueue": 1305,
+    "WqExWorkQueueQueueIndex": 1306,
+    "WqKpriQueueEntryListHead": 1307,
+    "WqKpriQueueThreadListHead": 1308,
+    "WqKthreadQueue": 1309,
+    "WqKthreadQueueListEntry": 1310,
+    "WqWorkItemList": 1311,
+    "WqWorkItemRoutine": 1312,
+    "WqWorkItemParameter": 1313,
+    "WqExPoolUntrusted": 1314,
+    "WqEpartitionTypeSize": 1315,
+    "WqExPartitionTypeSize": 1316,
+    "WqExWorkQueueTypeSize": 1317,
+    "WqKpriQueueTypeSize": 1318,
+    "WqKthreadTypeSize": 1319,
+    "WqWorkItemTypeSize": 1320,
+    "WqEthreadStartAddress": 1321,
+    "WqEthreadTypeSize": 1322,
+    "WqEthreadTcb": 1323,
 }
 V4_ITEM_IDS_BY_NAME = {**KNOWN_FIELD_IDS, **V4_SPECIAL_ITEM_IDS}
 V4_SPECIAL_ITEM_GROUPS = {
     **{
         name: V4_TIMER_GROUP_ID
         for name in V4_SPECIAL_ITEM_IDS
-        if name != "FltFilterOperations" and not name.startswith("Ci")
+        if name != "FltFilterOperations" and
+        not name.startswith("Ci") and
+        not name.startswith("Wq")
     },
     "FltFilterOperations": V4_FLTMGR_MINIFILTER_GROUP_ID,
     **{name: V4_CI_KERNEL_HASH_GROUP_ID for name in V4_SPECIAL_ITEM_IDS if name.startswith("Ci")},
+    **{name: V4_WORK_QUEUE_GROUP_ID for name in V4_SPECIAL_ITEM_IDS if name.startswith("Wq")},
 }
 
 
@@ -1330,6 +1358,7 @@ def build_pack_v4_capability_groups(items: list[dict[str, Any]]) -> list[dict[st
         V4_TIMER_GROUP_ID: "timer.dpc",
         V4_FLTMGR_MINIFILTER_GROUP_ID: "fltmgr.minifilter",
         V4_CI_KERNEL_HASH_GROUP_ID: "ci.kernel_hash",
+        V4_WORK_QUEUE_GROUP_ID: "ntos.work_queue",
     }
     groups: list[dict[str, Any]] = []
     for group_id in sorted({int(item["capabilityGroupId"]) for item in items}):

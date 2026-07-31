@@ -1,5 +1,6 @@
 #include "RegistryOptimizationPage.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../theme.h"
@@ -1405,6 +1406,24 @@ void RegistryOptimizationPage::rebuildGroupTree()
 
 void RegistryOptimizationPage::rebuildItemTable()
 {
+    // 过滤防抖定时器可能在菜单嵌套事件循环中到期。
+    // 清空可见行和单元格控件前统一等待菜单关闭。
+    const QPointer<RegistryOptimizationPage> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("registry-optimization-table-rebuild"),
+        {m_itemTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->rebuildItemTable();
+            }
+        }))
+    {
+        return;
+    }
+
     cancelStateRefresh();
     cancelStateApply(QStringLiteral("已取消正在进行的应用，因为筛选结果已改变。"));
     m_rebuildingTable = true;

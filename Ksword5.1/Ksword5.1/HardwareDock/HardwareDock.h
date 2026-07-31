@@ -25,6 +25,7 @@ class HardwareR0EvidencePage;
 class HardwareDeviceManagerPage;
 class HardwareOtherDevicesPage;
 class HardwareHwidDispatchPage;
+class HardwareI8042AuditPage;
 class PerformanceNavCard;
 class QChartView;
 class QAreaSeries;
@@ -334,6 +335,7 @@ private:
     void initializeOtherDevicesTab();
     void initializeDeviceStackTab();
     void initializeKeyboardMouseHidTab();
+    void initializeI8042AuditTab();
     void initializeUsbTopologyTab();
     void initializePnpAcpiPciTab();
 
@@ -475,6 +477,19 @@ private:
     QString buildR0CpuFeatureBadgeText(std::uint64_t featureMask) const;
     void refreshStaticHardwareTexts(bool forceRefresh);
     void requestAsyncStaticInfoRefresh();
+    // requestAsyncDeviceAuditRefresh 作用：
+    // - 按位请求当前可见的设备栈/输入栈/USB/PnP 页面，避免周期刷新全量查询；
+    // - 重入请求会合并到 pending mask，始终只有一个设备审计工作线程。
+    void requestAsyncDeviceAuditRefresh(std::uint32_t refreshMask);
+    // applyDeviceAuditRefreshResult 作用：
+    // - 在 GUI 线程原子替换三组设备审计缓存并刷新关联表；
+    // - 任一关联表菜单打开时延迟完整结果，避免缓存与表行代次错位。
+    void applyDeviceAuditRefreshResult(
+        std::uint32_t requestedMask,
+        DeviceAuditViewSnapshot deviceStackSnapshot,
+        DeviceAuditViewSnapshot inputStackSnapshot,
+        DeviceAuditViewSnapshot usbTopologySnapshot,
+        QString pnpAcpiPciText);
     void requestAsyncSensorRefresh();
     void requestAsyncR0HardwareHealthRefresh();
     void refreshCpuTopologyStaticInfo();
@@ -488,12 +503,25 @@ private:
     QString buildDeviceStackStaticText() const;
     QString buildKeyboardMouseHidStaticText() const;
     QString buildUsbTopologyStaticText() const;
-    DeviceAuditViewSnapshot buildDeviceStackAuditViewSnapshot() const;
-    DeviceAuditViewSnapshot buildKeyboardMouseHidAuditViewSnapshot() const;
-    DeviceAuditViewSnapshot buildUsbTopologyAuditViewSnapshot() const;
-    QString buildPnpAcpiPciStaticText() const;
+    static DeviceAuditViewSnapshot buildDeviceStackAuditViewSnapshot();
+    static DeviceAuditViewSnapshot buildKeyboardMouseHidAuditViewSnapshot();
+    static DeviceAuditViewSnapshot buildUsbTopologyAuditViewSnapshot();
+    static QString buildPnpAcpiPciStaticText();
 
 private:
+    // DeviceAuditRefreshFlag：静态诊断页按需刷新位，供快速切页时合并请求。
+    enum DeviceAuditRefreshFlag : std::uint32_t
+    {
+        DeviceStackAuditRefresh = 0x00000001U, // DeviceStackAuditRefresh：设备栈页。
+        InputStackAuditRefresh = 0x00000002U,  // InputStackAuditRefresh：键鼠/HID 输入栈页。
+        UsbTopologyAuditRefresh = 0x00000004U, // UsbTopologyAuditRefresh：USB 拓扑页。
+        PnpAcpiPciRefresh = 0x00000008U,       // PnpAcpiPciRefresh：PnP/ACPI/PCI 文本页。
+        AllDeviceAuditRefresh = DeviceStackAuditRefresh |
+            InputStackAuditRefresh |
+            UsbTopologyAuditRefresh |
+            PnpAcpiPciRefresh
+    };
+
     // 顶层结构。
     QVBoxLayout* m_rootLayout = nullptr;    // m_rootLayout：根布局。
     QTabWidget* m_sideTabWidget = nullptr;  // m_sideTabWidget：顶部横向硬件页签容器（保留旧成员名避免无关重构）。
@@ -527,8 +555,9 @@ private:
     QScrollArea* m_coreChartScrollArea = nullptr;  // m_coreChartScrollArea：CPU 核心图滚动容器。
     QWidget* m_coreChartHostWidget = nullptr;      // m_coreChartHostWidget：CPU 核心图宿主。
     QGridLayout* m_coreChartGridLayout = nullptr;  // m_coreChartGridLayout：CPU 核心图矩阵布局。
-    QLabel* m_cpuUtilPrimaryDetailLabel = nullptr; // m_cpuUtilPrimaryDetailLabel：CPU 左侧参数文本。
-    QLabel* m_cpuUtilSecondaryDetailLabel = nullptr; // m_cpuUtilSecondaryDetailLabel：CPU 右侧参数文本。
+    QLabel* m_cpuUtilPrimaryDetailLabel = nullptr; // m_cpuUtilPrimaryDetailLabel：CPU 左侧大字关键指标。
+    QLabel* m_cpuUtilSecondaryDetailLabel = nullptr; // m_cpuUtilSecondaryDetailLabel：CPU 右侧第一列硬件参数。
+    QLabel* m_cpuUtilTertiaryDetailLabel = nullptr; // m_cpuUtilTertiaryDetailLabel：CPU 右侧第二列缓存与 R0 摘要。
 
     // 利用率详情页：内存。
     QWidget* m_utilizationMemorySubPage = nullptr;   // m_utilizationMemorySubPage：内存详情页。
@@ -618,6 +647,7 @@ private:
     QWidget* m_keyboardMouseHidPage = nullptr;     // m_keyboardMouseHidPage：键鼠/HID 只读页。
     CodeEditorWidget* m_keyboardMouseHidEditor = nullptr; // m_keyboardMouseHidEditor：键鼠/HID 文本。
     QTableWidget* m_keyboardMouseHidTable = nullptr; // m_keyboardMouseHidTable：输入设备 R0 明细表。
+    HardwareI8042AuditPage* m_i8042AuditPage = nullptr; // m_i8042AuditPage：i8042prt/键鼠类驱动组合审计页。
     QWidget* m_usbTopologyPage = nullptr;          // m_usbTopologyPage：USB 拓扑只读页。
     CodeEditorWidget* m_usbTopologyEditor = nullptr; // m_usbTopologyEditor：USB 拓扑文本。
     QTableWidget* m_usbTopologyTable = nullptr;     // m_usbTopologyTable：USB 拓扑 R0 明细表。
@@ -640,6 +670,8 @@ private:
     QVector<QStringList> m_cachedUsbTopologyRows; // m_cachedUsbTopologyRows：USB 拓扑表格行缓存。
     QString m_cachedPnpAcpiPciStaticText;      // m_cachedPnpAcpiPciStaticText：PnP/ACPI/PCI 缓存。
     std::atomic_bool m_staticInfoRefreshing{ false }; // m_staticInfoRefreshing：静态信息异步刷新锁。
+    std::atomic_bool m_deviceAuditRefreshing{ false }; // m_deviceAuditRefreshing：设备审计异步刷新锁。
+    std::atomic<std::uint32_t> m_pendingDeviceAuditRefreshMask{ 0U }; // m_pendingDeviceAuditRefreshMask：重入时合并的页面刷新位。
     std::atomic_bool m_sensorRefreshing{ false };     // m_sensorRefreshing：传感器异步刷新锁。
     std::atomic_bool m_r0HardwareHealthRefreshing{ false }; // m_r0HardwareHealthRefreshing：R0硬件健康异步刷新锁。
     bool m_initialSamplingStarted = false;            // m_initialSamplingStarted：首次显示时是否已启动首轮采样。

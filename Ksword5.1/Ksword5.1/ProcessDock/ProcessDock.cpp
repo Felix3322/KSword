@@ -1,6 +1,7 @@
 #include "ProcessDock.h"
 #include "ProcessAffinityUtils.h"
 #include "ProcessAffinityPersistence.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../theme.h"
@@ -5806,6 +5807,29 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
 
 void ProcessDock::applyRefreshResult(RefreshResult refreshResult, const bool forceUiRefresh)
 {
+    // 后台快照不仅会重建模型，也会先替换菜单动作查询使用的进程缓存。
+    // 菜单打开时把整次提交延后，避免旧行与新缓存短暂错配。
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_processTable}))
+    {
+        auto deferredResult = std::make_shared<RefreshResult>(std::move(refreshResult));
+        const QPointer<ProcessDock> safeThis(this);
+        if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                this,
+                QStringLiteral("process-main-refresh-result"),
+                {m_processTable},
+                [safeThis, deferredResult, forceUiRefresh]() mutable
+                {
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->applyRefreshResult(std::move(*deferredResult), forceUiRefresh);
+                    }
+                }))
+        {
+            return;
+        }
+        refreshResult = std::move(*deferredResult);
+    }
+
     // 计算主线程观测耗时，用于“刷新状态标签”和日志输出。
     const auto nowTime = std::chrono::steady_clock::now();
     const auto elapsedMs = static_cast<std::uint64_t>(
@@ -6666,6 +6690,25 @@ void ProcessDock::rebuildTable()
     {
         return;
     }
+
+    // 右键菜单保存的是当前模型行。菜单关闭前禁止替换模型，
+    // 否则周期刷新会让菜单动作落到另一进程。
+    const QPointer<ProcessDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("process-main-table-rebuild"),
+        {m_processTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->rebuildTable();
+            }
+        }))
+    {
+        return;
+    }
+
     const auto tableRebuildStartTime = std::chrono::steady_clock::now();
 
     if (isProcessActivityTableSnapshotActive())

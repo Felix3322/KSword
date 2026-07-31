@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../theme.h"
+#include "../UI/TableInteractionSupport.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -622,6 +623,22 @@ void ThreadStackWindow::requestAsyncCapture(const bool forceRefresh)
 void ThreadStackWindow::applyCaptureResult(const std::uint64_t ticket, const CaptureResult& result)
 {
     if (ticket < m_captureTicket)
+    {
+        return;
+    }
+
+    QPointer<ThreadStackWindow> guardThis(this);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("thread-stack-capture-apply"),
+            {m_frameTable},
+            [guardThis, ticket, result]()
+            {
+                if (guardThis != nullptr)
+                {
+                    guardThis->applyCaptureResult(ticket, result);
+                }
+            }))
     {
         return;
     }

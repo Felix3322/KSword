@@ -1,6 +1,7 @@
 #include "ProcessTraceMonitorWidget.h"
 #include "../theme.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../UI/TableInteractionSupport.h"
 
 // ============================================================
 // ProcessTraceMonitorWidget.Actions.cpp
@@ -1850,6 +1851,24 @@ void ProcessTraceMonitorWidget::clearEventFilter()
 void ProcessTraceMonitorWidget::flushPendingRows()
 {
     if (m_eventTable == nullptr)
+    {
+        return;
+    }
+
+    // 在 drain 前延后整个 UI 提交；同键 timeout 只保留一次重试，原始事件仍留在
+    // m_pendingRows 中，因此菜单关闭后不会丢批次，也不会让头部裁剪改变动作目标。
+    const QPointer<ProcessTraceMonitorWidget> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("process-trace-event-flush"),
+        { m_eventTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->flushPendingRows();
+            }
+        }))
     {
         return;
     }

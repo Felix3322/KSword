@@ -1,8 +1,10 @@
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 #include "../UI/VisibleTableWidget.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
-#include "../ArkDriverClient/ArkRuntimeDynData.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../ksword/profile/ProfileJsonLoader.h"
 #include "../theme.h"
@@ -2473,46 +2475,6 @@ namespace
         return bestProfile;
     }
 
-    // resolveRuntimePdbProfile：
-    // - 输入 currentIdentity/diagnosticsOut：pack 未命中的当前模块身份和诊断输出；
-    // - 处理：调用共享 ArkDriverClient DbgHelp resolver，从身份匹配的本机 PE/PDB
-    //   动态生成与离线发布器相同的 v1/EX/v4 apply 输入；
-    // - 返回：只有 PE 与 PDB GUID/Age 均精确匹配且至少解析到一个 item 时 valid=true。
-    LocalPdbProfile resolveRuntimePdbProfile(
-        const ksword::ark::ArkDynModuleIdentity& currentIdentity,
-        QString& diagnosticsOut)
-    {
-        LocalPdbProfile profile;
-        const ksword::ark::RuntimeDynDataResolveResult runtimeResult =
-            ksword::ark::ResolveRuntimeDynDataProfile(currentIdentity);
-        diagnosticsOut = QString::fromStdWString(runtimeResult.diagnostics);
-        profile.matched = runtimeResult.pdbIdentityAvailable;
-        profile.valid = runtimeResult.valid;
-        profile.sourceText = QStringLiteral("runtime-exact-pdb");
-        profile.pathText = QDir::toNativeSeparators(
-            QString::fromStdWString(
-                runtimeResult.pdbPath.empty()
-                    ? runtimeResult.imagePath
-                    : runtimeResult.pdbPath));
-        profile.diagnosticsText = diagnosticsOut;
-        profile.applyInput = runtimeResult.profile;
-        profile.applyExInput = runtimeResult.profileEx;
-        profile.applyV4Input = runtimeResult.profileV4;
-        profile.exAppliedCount =
-            static_cast<std::uint32_t>(profile.applyExInput.items.size());
-        profile.typedItemCount = profile.exAppliedCount;
-        profile.callbackItemCount = static_cast<std::uint32_t>(std::count_if(
-            profile.applyExInput.items.begin(),
-            profile.applyExInput.items.end(),
-            [](const ksword::ark::DynDataProfileExItem& item) {
-                return (item.flags &
-                    KSW_DYN_PROFILE_EX_ITEM_FLAG_CALLBACK) != 0U;
-            }));
-        profile.v4ItemCount =
-            static_cast<std::uint32_t>(profile.applyV4Input.items.size());
-        return profile;
-    }
-
     // capabilityNames：
     // - 输入 mask：能力位图；
     // - 处理：遍历能力表并拼接命中名称；
@@ -2904,6 +2866,8 @@ namespace
         ksword::ark::DriverClient client;
         const ksword::ark::DynDataStatusResult initialStatusResult = client.queryDynDataStatus();
         const ksword::ark::DynDataV4ModulesResult initialV4ModulesResult = client.queryDynDataV4Modules();
+        const ksword::ark::DynDataV4CapabilityGroupsResult initialV4GroupsResult =
+            client.queryDynDataV4CapabilityGroups();
 
         bool pdbProfileScanAttempted = false;
         bool pdbProfileFound = false;
@@ -2934,7 +2898,7 @@ namespace
                         KSW_CAP_KERNEL_MODULE_LIST_FIELDS |
                         KSW_CAP_DRIVER_OBJECT_FIELDS |
                         KSW_CAP_KERNEL_GLOBALS)) != 0ULL;
-            const bool v4ProfileAlreadyActive = initialV4ModulesResult.io.ok && std::any_of(
+            const bool v4ModuleProfileAlreadyActive = initialV4ModulesResult.io.ok && std::any_of(
                 initialV4ModulesResult.entries.begin(),
                 initialV4ModulesResult.entries.end(),
                 [&initialStatusResult](const KSW_DYN_V4_MODULE_STATUS_ENTRY& entry) {
@@ -2944,6 +2908,27 @@ namespace
                         entry.module.image.sizeOfImage == initialStatusResult.ntoskrnl.sizeOfImage &&
                         (entry.statusFlags & KSW_DYN_V4_STATUS_FLAG_PROFILE_APPLIED) != 0U;
                 });
+            const bool workQueueProfileAlreadyActive =
+                initialV4GroupsResult.io.ok &&
+                std::any_of(
+                    initialV4GroupsResult.entries.begin(),
+                    initialV4GroupsResult.entries.end(),
+                    [&initialStatusResult](
+                        const KSW_DYN_V4_CAPABILITY_GROUP_STATUS_ENTRY& entry)
+                    {
+                        return entry.moduleClassId ==
+                                initialStatusResult.ntoskrnl.classId &&
+                            entry.groupId ==
+                                KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE &&
+                            (entry.statusFlags &
+                                KSW_DYN_V4_STATUS_FLAG_REQUIRED_COMPLETE) != 0U &&
+                            entry.requiredItemCount != 0U &&
+                            entry.presentRequiredItemCount ==
+                                entry.requiredItemCount;
+                    });
+            const bool v4ProfileAlreadyActive =
+                v4ModuleProfileAlreadyActive &&
+                workQueueProfileAlreadyActive;
             if (pdbProfileAlreadyActive && callbackProfileAlreadyActive && v3ProfileAlreadyActive && v4ProfileAlreadyActive)
             {
                 pdbProfileMessageText = kernelText("kernel.dyndata.profile.apply.already_active", QStringLiteral("R0 已经启用 PDB/callback/v3/v4 DynData profile，本次刷新跳过重复 apply。"));
@@ -2956,22 +2941,6 @@ namespace
                     findMatchingPdbProfile(
                         initialStatusResult.ntoskrnl,
                         scanDiagnostics);
-                if (!profile.valid)
-                {
-                    QString runtimeDiagnostics;
-                    LocalPdbProfile runtimeProfile =
-                        resolveRuntimePdbProfile(
-                            initialStatusResult.ntoskrnl,
-                            runtimeDiagnostics);
-                    scanDiagnostics += kernelText(
-                        "kernel.dyndata.profile.runtime_fallback.result",
-                        QStringLiteral(" | 运行时精确 PDB 回退：%1"))
-                        .arg(runtimeDiagnostics);
-                    if (runtimeProfile.valid)
-                    {
-                        profile = std::move(runtimeProfile);
-                    }
-                }
                 pdbProfileMessageText = scanDiagnostics;
                 if (profile.matched)
                 {
@@ -3103,22 +3072,6 @@ namespace
                     findMatchingPdbProfile(
                         moduleIdentity,
                         moduleScanDiagnostics);
-                if (!moduleProfile.valid)
-                {
-                    QString runtimeDiagnostics;
-                    LocalPdbProfile runtimeProfile =
-                        resolveRuntimePdbProfile(
-                            moduleIdentity,
-                            runtimeDiagnostics);
-                    moduleScanDiagnostics += kernelText(
-                        "kernel.dyndata.profile.runtime_fallback.result",
-                        QStringLiteral(" | 运行时精确 PDB 回退：%1"))
-                        .arg(runtimeDiagnostics);
-                    if (runtimeProfile.valid)
-                    {
-                        moduleProfile = std::move(runtimeProfile);
-                    }
-                }
                 const QString moduleDiagnosticBlock =
                     QStringLiteral("%1: %2")
                         .arg(moduleLabel, moduleScanDiagnostics);
@@ -3350,21 +3303,15 @@ namespace
 
 void KernelDock::initializeDynDataTab()
 {
-    if (m_dynDataPage == nullptr || m_dynDataLayout != nullptr)
+    if (m_selfDriverInnerTabWidget == nullptr ||
+        m_dynDataOverviewLayout != nullptr)
     {
         return;
     }
 
-    // 动态偏移页改成内层页签：总览 + PDB profile 状态页。
-    m_dynDataLayout = new QVBoxLayout(m_dynDataPage);
-    m_dynDataLayout->setContentsMargins(4, 4, 4, 4);
-    m_dynDataLayout->setSpacing(6);
-
-    m_dynDataInnerTabWidget = new QTabWidget(m_dynDataPage);
-    m_dynDataInnerTabWidget->setIconSize(QSize(16, 16));
-    m_dynDataLayout->addWidget(m_dynDataInnerTabWidget, 1);
-
-    m_dynDataOverviewPage = new QWidget(m_dynDataInnerTabWidget);
+    // 总览与 PDB Profile 直接挂在“Ksword自身驱动”页签容器中，
+    // 避免“动态偏移 -> 总览/PDB Profile”的无内容中间层。
+    m_dynDataOverviewPage = new QWidget(m_selfDriverInnerTabWidget);
     m_dynDataOverviewLayout = new QVBoxLayout(m_dynDataOverviewPage);
     m_dynDataOverviewLayout->setContentsMargins(0, 0, 0, 0);
     m_dynDataOverviewLayout->setSpacing(6);
@@ -3456,12 +3403,17 @@ void KernelDock::initializeDynDataTab()
     lowerSplitter->setStretchFactor(0, 3);
     lowerSplitter->setStretchFactor(1, 2);
 
-    m_dynDataInnerTabWidget->addTab(
+    m_dynDataTabIndex = m_selfDriverInnerTabWidget->addTab(
         m_dynDataOverviewPage,
         QIcon(QStringLiteral(":/Icon/process_priority.svg")),
         kernelText("kernel.dyndata.tab.overview", QStringLiteral("总览")));
+    m_selfDriverInnerTabWidget->setTabToolTip(
+        m_dynDataTabIndex,
+        kernelText(
+            "kernel.main.tab.dyn_data.tooltip",
+            QStringLiteral("System Informer DynData 精确匹配状态与字段列表")));
 
-    m_dynDataProfilePage = new QWidget(m_dynDataInnerTabWidget);
+    m_dynDataProfilePage = new QWidget(m_selfDriverInnerTabWidget);
     m_dynDataProfileLayout = new QVBoxLayout(m_dynDataProfilePage);
     m_dynDataProfileLayout->setContentsMargins(4, 4, 4, 4);
     m_dynDataProfileLayout->setSpacing(6);
@@ -3523,7 +3475,7 @@ void KernelDock::initializeDynDataTab()
     profileSplitter->setStretchFactor(1, 3);
     profileSplitter->setStretchFactor(2, 2);
 
-    m_dynDataInnerTabWidget->addTab(
+    m_dynDataProfileTabIndex = m_selfDriverInnerTabWidget->addTab(
         m_dynDataProfilePage,
         QIcon(QStringLiteral(":/Icon/process_details.svg")),
         QStringLiteral("PDB Profile"));
@@ -3553,8 +3505,8 @@ void KernelDock::requestDynDataRefresh()
 {
     if (!m_dynDataTabInitialized)
     {
-        ensureTabInitialized(m_dynDataTabIndex);
-        return;
+        initializeDynDataTab();
+        m_dynDataTabInitialized = true;
     }
 
     refreshDynDataAsync();
@@ -3581,6 +3533,22 @@ void KernelDock::refreshDynDataAsync()
         const bool success = queryDynDataSnapshot(summary, rows, v4ItemRows);
 
         QMetaObject::invokeMethod(guardThis, [guardThis, success, summary = std::move(summary), rows = std::move(rows), v4ItemRows = std::move(v4ItemRows)]() mutable {
+            const auto deferredSummary =
+                std::make_shared<KernelDynDataSummary>(std::move(summary));
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelDynDataFieldEntry>>(std::move(rows));
+            const auto deferredV4Rows =
+                std::make_shared<std::vector<KernelDynDataV4ItemEntry>>(std::move(v4ItemRows));
+            auto commitResult = [
+                guardThis,
+                success,
+                deferredSummary,
+                deferredRows,
+                deferredV4Rows]() mutable
+            {
+            KernelDynDataSummary& summary = *deferredSummary;
+            std::vector<KernelDynDataFieldEntry>& rows = *deferredRows;
+            std::vector<KernelDynDataV4ItemEntry>& v4ItemRows = *deferredV4Rows;
             if (guardThis == nullptr)
             {
                 return;
@@ -3680,6 +3648,26 @@ void KernelDock::refreshDynDataAsync()
             {
                 guardThis->refreshTimerDpcAsync();
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-dyndata-snapshot-apply"),
+                {
+                    guardThis->m_dynDataSummaryTable,
+                    guardThis->m_dynDataFieldTable,
+                    guardThis->m_dynDataProfileSummaryTable,
+                    guardThis->m_dynDataV4ItemTable
+                },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }

@@ -1,5 +1,6 @@
 #include "RegistryDock/RegistryDock.h"
 #include "Framework/PrivilegeElevationPrompt.h"
+#include "UI/TableInteractionSupport.h"
 #include "UI/VisibleTableWidget.h"
 #include "Internationalization/LanguageManager.h"
 
@@ -3078,6 +3079,24 @@ void RegistryDock::enqueuePendingSearchRow(PendingSearchRow&& row)
 
 void RegistryDock::flushPendingSearchRows()
 {
+    // 搜索线程只负责入队；菜单打开时不消费队列，
+    // 避免批量扩容让右键动作保存的结果行发生漂移。
+    const QPointer<RegistryDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("registry-search-result-flush"),
+        {m_searchResultTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->flushPendingSearchRows();
+            }
+        }))
+    {
+        return;
+    }
+
     std::vector<PendingSearchRow> rows;
     bool hasPendingRows = false;
     {

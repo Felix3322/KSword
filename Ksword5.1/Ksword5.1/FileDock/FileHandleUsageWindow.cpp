@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "../theme.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../ksword/file/file_handle_tools.h"
 
 #include <QAbstractItemView>
@@ -30,6 +31,7 @@
 #include <QResizeEvent>
 #include <QVBoxLayout>
 
+#include <memory>
 #include <utility>
 
 namespace
@@ -270,6 +272,27 @@ void FileHandleUsageWindow::applyRefreshResult(
     if (refreshTicket < m_refreshTicket)
     {
         return;
+    }
+
+    if (ks::ui::IsItemViewUiCommitBlockedByContextMenu({ m_resultTable }))
+    {
+        const auto refreshSnapshot =
+            std::make_shared<filedock::handleusage::HandleUsageScanResult>(refreshResult);
+        const QPointer<FileHandleUsageWindow> safeThis(this);
+        if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("file-handle-usage-snapshot"),
+            { m_resultTable },
+            [safeThis, refreshTicket, refreshSnapshot]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyRefreshResult(refreshTicket, *refreshSnapshot);
+                }
+            }))
+        {
+            return;
+        }
     }
 
     m_entries = refreshResult.entries;

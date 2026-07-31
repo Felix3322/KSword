@@ -1,6 +1,9 @@
 #include "MemoryDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../UI/TableColumnAutoFit.h"
+
+#include <memory>
 
 using namespace ksword::memory_dock_internal;
 
@@ -539,30 +542,46 @@ void MemoryDock::refreshProcessMemoryEvidenceAsync()
         QMetaObject::invokeMethod(
             guardThis.data(),
             [guardThis, ticket, entries = std::move(entries)]() mutable {
-                if (guardThis == nullptr || ticket < guardThis->m_processMemoryEvidenceRefreshTicket.load())
+                auto entriesSnapshot =
+                    std::make_shared<std::vector<ProcessMemoryEvidenceEntry>>(std::move(entries));
+                auto commitSnapshot = [guardThis, ticket, entriesSnapshot]() mutable
+                {
+                    if (guardThis == nullptr ||
+                        ticket < guardThis->m_processMemoryEvidenceRefreshTicket.load())
+                    {
+                        return;
+                    }
+
+                    guardThis->m_processMemoryEvidenceRefreshInProgress.store(false);
+                    if (guardThis->m_processMemoryEvidenceRefreshButton != nullptr)
+                    {
+                        guardThis->m_processMemoryEvidenceRefreshButton->setEnabled(true);
+                    }
+
+                    guardThis->m_processMemoryEvidenceCache = std::move(*entriesSnapshot);
+                    guardThis->rebuildProcessMemoryEvidenceTable();
+                    guardThis->showProcessMemoryEvidenceDetailByCurrentRow();
+                    if (guardThis->m_processMemoryEvidenceStatusLabel != nullptr)
+                    {
+                        guardThis->m_processMemoryEvidenceStatusLabel->setText(
+                            QStringLiteral("状态：采样 %1 行").arg(guardThis->m_processMemoryEvidenceCache.size()));
+                        guardThis->m_processMemoryEvidenceStatusLabel->setStyleSheet(QStringLiteral(
+                            "color:%1; font-weight:600;")
+                            .arg(guardThis->m_processMemoryEvidenceCache.empty()
+                                ? KswordTheme::ErrorColor().name(QColor::HexRgb)
+                                : KswordTheme::SuccessColor().name(QColor::HexRgb)));
+                    }
+                };
+
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    guardThis.data(),
+                    QStringLiteral("memory-process-evidence-snapshot"),
+                    { guardThis->m_processMemoryEvidenceTable },
+                    commitSnapshot))
                 {
                     return;
                 }
-
-                guardThis->m_processMemoryEvidenceRefreshInProgress.store(false);
-                if (guardThis->m_processMemoryEvidenceRefreshButton != nullptr)
-                {
-                    guardThis->m_processMemoryEvidenceRefreshButton->setEnabled(true);
-                }
-
-                guardThis->m_processMemoryEvidenceCache = std::move(entries);
-                guardThis->rebuildProcessMemoryEvidenceTable();
-                guardThis->showProcessMemoryEvidenceDetailByCurrentRow();
-                if (guardThis->m_processMemoryEvidenceStatusLabel != nullptr)
-                {
-                    guardThis->m_processMemoryEvidenceStatusLabel->setText(
-                        QStringLiteral("状态：采样 %1 行").arg(guardThis->m_processMemoryEvidenceCache.size()));
-                    guardThis->m_processMemoryEvidenceStatusLabel->setStyleSheet(QStringLiteral(
-                        "color:%1; font-weight:600;")
-                        .arg(guardThis->m_processMemoryEvidenceCache.empty()
-                            ? KswordTheme::ErrorColor().name(QColor::HexRgb)
-                            : KswordTheme::SuccessColor().name(QColor::HexRgb)));
-                }
+                commitSnapshot();
             },
             Qt::QueuedConnection);
     }).detach();

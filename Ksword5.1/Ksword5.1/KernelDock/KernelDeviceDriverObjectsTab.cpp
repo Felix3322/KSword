@@ -1,6 +1,7 @@
 
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -328,6 +329,22 @@ void KernelDeviceDriverObjectsTab::applyRefreshResult(
     std::vector<KernelDeviceDriverObjectEntry> rows,
     const QString& errorText)
 {
+    const QPointer<KernelDeviceDriverObjectsTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-device-driver-objects-snapshot"),
+        { m_tableWidget },
+        [safeThis, rows, errorText]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applyRefreshResult(std::move(rows), errorText);
+            }
+        }))
+    {
+        return;
+    }
+
     if (!errorText.isEmpty())
     {
         updateStatusText(errorText);

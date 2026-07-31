@@ -2,6 +2,7 @@
 #include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
 #include "../UI/FlatTableModel.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include <algorithm>
@@ -603,6 +604,27 @@ void LogDockWidget::initializeRefreshTimer()
 
 void LogDockWidget::refreshTableFromManager(const bool forceRefresh)
 {
+    // 右键菜单处于 exec 嵌套事件循环时，模型 reset 会让菜单记录的行号失效。
+    // 同类刷新只保留最新一次，菜单关闭后再回投，保证复制/跟踪仍针对右键时的日志行。
+    const QPointer<LogDockWidget> safeThis(this);
+    const QString refreshCommitKey = forceRefresh
+        ? QStringLiteral("log-table-force-refresh")
+        : QStringLiteral("log-table-periodic-refresh");
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        refreshCommitKey,
+        { m_logTable },
+        [safeThis, forceRefresh]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshTableFromManager(forceRefresh);
+            }
+        }))
+    {
+        return;
+    }
+
     const std::size_t currentRevision = KswordARKEventEntry.Revision();
     if (!forceRefresh && currentRevision == m_lastRevision)
     {

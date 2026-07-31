@@ -1,4 +1,5 @@
 #include "DriverDock.Internal.h"
+#include "../KernelDock/KernelThreadAuditTab.h"
 #include "../UI/VisibleTableWidget.h"
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
@@ -6,9 +7,26 @@ using namespace ksword::driver_dock_internal;
 
 namespace ksword::driver_dock_internal
 {
+    namespace
+    {
+        // 证据采集工作线程只生成稳定源文本；该标记按线程隔离，不改变 GUI 线程语言状态。
+        thread_local bool driverEvidenceSourceTextOnly = false;
+    }
+
     QString driverText(const char* const contextKey, const QString& sourceText)
     {
+        if (driverEvidenceSourceTextOnly)
+        {
+            return sourceText;
+        }
         return ks::i18n::contextText(QString::fromLatin1(contextKey), sourceText);
+    }
+
+    bool swapDriverEvidenceSourceTextMode(const bool sourceTextOnly)
+    {
+        const bool previousMode = driverEvidenceSourceTextOnly;
+        driverEvidenceSourceTextOnly = sourceTextOnly;
+        return previousMode;
     }
 
     QStringList driverServiceTableHeaders()
@@ -29,6 +47,7 @@ namespace ksword::driver_dock_internal
         return {
             driverText("driver.header.module_name", QStringLiteral("模块名")),
             driverText("driver.header.base_address", QStringLiteral("基址")),
+            driverText("driver.header.digital_signature", QStringLiteral("数字签名")),
             driverText("driver.header.driver_object", QStringLiteral("DriverObject")),
             driverText("driver.header.driver_start", QStringLiteral("DriverStart")),
             driverText("driver.header.major_function", QStringLiteral("MajorFunction")),
@@ -211,6 +230,9 @@ void DriverDock::changeEvent(QEvent* event)
         applyTranslatedHeaders();
         updateDebugCaptureButtonState();
         refreshDebugOutputLines();
+        // 签名缓存只保存语义；切换语言时同步重建行文本、筛选结果、详情和摘要。
+        rebuildLoadedModuleTable();
+        updateLoadedModuleEvidenceStatusText();
     }
 }
 
@@ -223,6 +245,17 @@ void DriverDock::applyTranslatedHeaders()
     if (m_moduleTable != nullptr)
     {
         m_moduleTable->setHorizontalHeaderLabels(driverModuleTableHeaders());
+    }
+    if (m_serviceFilterEdit != nullptr)
+    {
+        m_serviceFilterEdit->setPlaceholderText(
+            driverText(
+                "driver.overview.filter.placeholder",
+                QStringLiteral("搜索驱动服务或已加载模块")));
+        m_serviceFilterEdit->setToolTip(
+            driverText(
+                "driver.overview.filter.tooltip",
+                QStringLiteral("同时按服务名、显示名、描述、模块名、签名状态和映像路径模糊过滤")));
     }
     if (m_driverObjectEvidenceTable != nullptr)
     {
@@ -263,6 +296,32 @@ void DriverDock::applyTranslatedHeaders()
                 "driver.unloaded.delete_exact",
                 QStringLiteral("删除选中 PiDDB 表项")));
     }
+    if (m_systemThreadAuditTab != nullptr)
+    {
+        const int systemThreadTabIndex = m_tabWidget->indexOf(m_systemThreadAuditTab);
+        if (systemThreadTabIndex >= 0)
+        {
+            m_tabWidget->setTabText(
+                systemThreadTabIndex,
+                driverText("driver.tab.system_threads", QStringLiteral("系统线程")));
+            m_tabWidget->setTabToolTip(
+                systemThreadTabIndex,
+                driverText(
+                    "driver.tab.system_threads.tooltip",
+                    QStringLiteral("枚举 System(PID 4) 线程并提供受保护的第三方驱动线程管理")));
+        }
+    }
+    if (m_kswordSelfDriverPage != nullptr && m_kswordSelfDriverTabIndex >= 0)
+    {
+        m_tabWidget->setTabText(
+            m_kswordSelfDriverTabIndex,
+            driverText("driver.tab.self_driver", QStringLiteral("Ksword自身驱动")));
+        m_tabWidget->setTabToolTip(
+            m_kswordSelfDriverTabIndex,
+            driverText(
+                "driver.tab.self_driver.tooltip",
+                QStringLiteral("KswordARK 动态偏移与驱动状态")));
+    }
 }
 
 void DriverDock::initializeUi()
@@ -281,6 +340,29 @@ void DriverDock::initializeUi()
     initializeModuleCrossViewTab();
     initializeIntegrityTab();
     initializeUnloadedPiddbTab();
+    initializeSystemThreadTab();
+}
+
+void DriverDock::initializeSystemThreadTab()
+{
+    if (m_tabWidget == nullptr || m_systemThreadAuditTab != nullptr)
+    {
+        return;
+    }
+
+    // 系统线程页只负责展示与确认；所有 KswordARK 操作由组件内 ArkDriverClient 完成。
+    m_systemThreadAuditTab = new KernelThreadAuditTab(
+        KernelThreadAuditTab::Mode::SystemThreads,
+        m_tabWidget);
+    const int tabIndex = m_tabWidget->addTab(
+        m_systemThreadAuditTab,
+        QIcon(QStringLiteral(":/Icon/process_threads.svg")),
+        driverText("driver.tab.system_threads", QStringLiteral("系统线程")));
+    m_tabWidget->setTabToolTip(
+        tabIndex,
+        driverText(
+            "driver.tab.system_threads.tooltip",
+            QStringLiteral("枚举 System(PID 4) 线程并提供受保护的第三方驱动线程管理")));
 }
 
 void DriverDock::initializeOverviewTab()
@@ -316,11 +398,11 @@ void DriverDock::initializeOverviewTab()
 
     m_serviceFilterEdit = new QLineEdit(m_overviewPage);
     m_serviceFilterEdit->setPlaceholderText(
-        driverText("driver.overview.filter.placeholder", QStringLiteral("输入服务名/显示名/路径过滤")));
+        driverText("driver.overview.filter.placeholder", QStringLiteral("搜索驱动服务或已加载模块")));
     m_serviceFilterEdit->setToolTip(
         driverText(
             "driver.overview.filter.tooltip",
-            QStringLiteral("支持按服务名、显示名、路径、描述模糊过滤")));
+            QStringLiteral("同时按服务名、显示名、描述、模块名、签名状态和映像路径模糊过滤")));
 
     m_overviewStatusLabel = new QLabel(
         driverText("driver.status.waiting_refresh", QStringLiteral("状态：等待刷新")),
@@ -372,7 +454,7 @@ void DriverDock::initializeOverviewTab()
         moduleContainer));
 
     m_moduleTable = new ks::ui::VisibleTableWidget(moduleContainer);
-    m_moduleTable->setColumnCount(9);
+    m_moduleTable->setColumnCount(ModuleTableColumnCount);
     m_moduleTable->setHorizontalHeaderLabels(driverModuleTableHeaders());
     m_moduleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_moduleTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -381,7 +463,7 @@ void DriverDock::initializeOverviewTab()
     m_moduleTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_moduleTable->verticalHeader()->setVisible(false);
     m_moduleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_moduleTable->horizontalHeader()->setSectionResizeMode(8, QHeaderView::Stretch);
+    m_moduleTable->horizontalHeader()->setSectionResizeMode(ModuleImagePathColumn, QHeaderView::Stretch);
     moduleLayout->addWidget(m_moduleTable, 3);
 
     m_moduleEvidenceStatusLabel = new QLabel(
@@ -899,6 +981,7 @@ void DriverDock::initializeConnections()
     connect(m_serviceFilterEdit, &QLineEdit::textChanged, this, [this](const QString&)
         {
             rebuildDriverServiceTableByFilter();
+            rebuildLoadedModuleTable();
         });
 
     // 服务列表：选择变更后回填操作页。

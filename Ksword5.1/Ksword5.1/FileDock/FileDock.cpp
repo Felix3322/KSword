@@ -114,6 +114,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include <Aclapi.h>
 #include <Sddl.h>
@@ -4717,57 +4718,80 @@ namespace
 
                     QMetaObject::invokeMethod(
                         targetDialog,
-                        [tableGuard, statusGuard, refreshGuard, scanResult]()
+                        [guardThis, tableGuard, statusGuard, refreshGuard, scanResult]()
                         {
-                            if (tableGuard == nullptr || statusGuard == nullptr || refreshGuard == nullptr)
+                            if (guardThis == nullptr || tableGuard == nullptr ||
+                                statusGuard == nullptr || refreshGuard == nullptr)
                             {
                                 return;
                             }
 
-                            tableGuard->setSortingEnabled(false);
-                            tableGuard->clear();
-                            for (const filedock::handleusage::HandleUsageEntry& entry : scanResult.entries)
+                            const auto scanSnapshot =
+                                std::make_shared<filedock::handleusage::HandleUsageScanResult>(scanResult);
+                            const auto commitSnapshot =
+                                [tableGuard, statusGuard, refreshGuard, scanSnapshot]()
                             {
-                                auto* item = new QTreeWidgetItem();
-                                item->setText(0, QString::number(entry.processId));
-                                item->setText(1, entry.processName);
-                                item->setText(2, entry.handleValue == 0
-                                    ? QStringLiteral("-")
-                                    : formatHex64(entry.handleValue));
-                                item->setText(3, entry.grantedAccess == 0
-                                    ? QStringLiteral("-")
-                                    : QStringLiteral("0x%1").arg(entry.grantedAccess, 8, 16, QChar('0')).toUpper());
-                                item->setText(4, entry.objectName);
-                                item->setText(5, entry.matchedTargetPath);
-                                const QString sourceText = entry.enumerationSource.trimmed().isEmpty()
-                                    ? QStringLiteral("R3 DuplicateHandle")
-                                    : entry.enumerationSource;
-                                const QString ruleText = entry.matchRuleText.trimmed().isEmpty()
-                                    ? (entry.matchedByDirectoryRule ? QStringLiteral("目录前缀") : QStringLiteral("精确"))
-                                    : entry.matchRuleText;
-                                item->setText(6, QStringLiteral("%1 | %2").arg(sourceText, ruleText));
-                                tableGuard->addTopLevelItem(item);
-                            }
-                            tableGuard->setSortingEnabled(true);
-                            if (tableGuard->header() != nullptr)
-                            {
-                                tableGuard->resizeColumnToContents(0);
-                                tableGuard->resizeColumnToContents(1);
-                                tableGuard->resizeColumnToContents(2);
-                                tableGuard->resizeColumnToContents(3);
-                            }
+                                if (tableGuard == nullptr || statusGuard == nullptr ||
+                                    refreshGuard == nullptr)
+                                {
+                                    return;
+                                }
 
-                            QString statusText = QStringLiteral("● 扫描完成 %1 ms | 总句柄:%2 | 文件句柄:%3 | 命中:%4")
-                                .arg(scanResult.elapsedMs)
-                                .arg(scanResult.totalHandleCount)
-                                .arg(scanResult.fileLikeHandleCount)
-                                .arg(scanResult.matchedHandleCount);
-                            if (!scanResult.diagnosticText.trimmed().isEmpty())
+                                tableGuard->setSortingEnabled(false);
+                                tableGuard->clear();
+                                for (const filedock::handleusage::HandleUsageEntry& entry : scanSnapshot->entries)
+                                {
+                                    auto* item = new QTreeWidgetItem();
+                                    item->setText(0, QString::number(entry.processId));
+                                    item->setText(1, entry.processName);
+                                    item->setText(2, entry.handleValue == 0
+                                        ? QStringLiteral("-")
+                                        : formatHex64(entry.handleValue));
+                                    item->setText(3, entry.grantedAccess == 0
+                                        ? QStringLiteral("-")
+                                        : QStringLiteral("0x%1").arg(entry.grantedAccess, 8, 16, QChar('0')).toUpper());
+                                    item->setText(4, entry.objectName);
+                                    item->setText(5, entry.matchedTargetPath);
+                                    const QString sourceText = entry.enumerationSource.trimmed().isEmpty()
+                                        ? QStringLiteral("R3 DuplicateHandle")
+                                        : entry.enumerationSource;
+                                    const QString ruleText = entry.matchRuleText.trimmed().isEmpty()
+                                        ? (entry.matchedByDirectoryRule ? QStringLiteral("目录前缀") : QStringLiteral("精确"))
+                                        : entry.matchRuleText;
+                                    item->setText(6, QStringLiteral("%1 | %2").arg(sourceText, ruleText));
+                                    tableGuard->addTopLevelItem(item);
+                                }
+                                tableGuard->setSortingEnabled(true);
+                                if (tableGuard->header() != nullptr)
+                                {
+                                    tableGuard->resizeColumnToContents(0);
+                                    tableGuard->resizeColumnToContents(1);
+                                    tableGuard->resizeColumnToContents(2);
+                                    tableGuard->resizeColumnToContents(3);
+                                }
+
+                                QString statusText = QStringLiteral("● 扫描完成 %1 ms | 总句柄:%2 | 文件句柄:%3 | 命中:%4")
+                                    .arg(scanSnapshot->elapsedMs)
+                                    .arg(scanSnapshot->totalHandleCount)
+                                    .arg(scanSnapshot->fileLikeHandleCount)
+                                    .arg(scanSnapshot->matchedHandleCount);
+                                if (!scanSnapshot->diagnosticText.trimmed().isEmpty())
+                                {
+                                    statusText += QStringLiteral(" | %1").arg(scanSnapshot->diagnosticText);
+                                }
+                                statusGuard->setText(statusText);
+                                refreshGuard->setEnabled(true);
+                            };
+
+                            if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                                guardThis.data(),
+                                QStringLiteral("file-detail-usage-snapshot"),
+                                { tableGuard.data() },
+                                commitSnapshot))
                             {
-                                statusText += QStringLiteral(" | %1").arg(scanResult.diagnosticText);
+                                return;
                             }
-                            statusGuard->setText(statusText);
-                            refreshGuard->setEnabled(true);
+                            commitSnapshot();
                         },
                         Qt::QueuedConnection);
                 });
@@ -4926,6 +4950,35 @@ namespace
             // 输入：aceTable/detailEditor/statusLabel 为目标控件，snapshot 为读取结果。
             // 处理：表格展示可编辑 DACL ACE，详情框保留完整文本和错误码。
             // 返回：无；控件为空时跳过对应更新。
+            if (aceTable != nullptr &&
+                ks::ui::IsTableUiCommitBlockedByContextMenu({ aceTable }))
+            {
+                const auto snapshotGuard = std::make_shared<FileSecuritySnapshot>(snapshot);
+                const QPointer<FileDetailDialog> safeThis(this);
+                const QPointer<QTableWidget> tableGuard(aceTable);
+                const QPointer<CodeEditorWidget> editorGuard(detailEditor);
+                const QPointer<QLabel> statusGuard(statusLabel);
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    this,
+                    QStringLiteral("file-detail-security-snapshot"),
+                    { aceTable },
+                    [safeThis, tableGuard, editorGuard, statusGuard, baseContent, snapshotGuard]()
+                    {
+                        if (!safeThis.isNull())
+                        {
+                            safeThis->populateSecurityWidgets(
+                                tableGuard,
+                                editorGuard,
+                                statusGuard,
+                                baseContent,
+                                *snapshotGuard);
+                        }
+                    }))
+                {
+                    return;
+                }
+            }
+
             if (aceTable != nullptr)
             {
                 aceTable->setSortingEnabled(false);
@@ -5803,22 +5856,51 @@ namespace
                                 return;
                             }
 
-                            guardThis->populateDependencyTable(tableGuard, statusGuard, result, elapsedMs);
-                            QString detailText;
-                            detailText += QStringLiteral("目标: %1\n").arg(QDir::toNativeSeparators(guardThis->m_filePath));
-                            if (!result.success || !result.errorText.trimmed().isEmpty())
+                            const auto resultSnapshot =
+                                std::make_shared<file_dock_detail::PeDependencyResult>(result);
+                            const auto commitSnapshot =
+                                [guardThis, tableGuard, statusGuard, detailGuard, resultSnapshot, elapsedMs]()
                             {
-                                detailText += QStringLiteral("%1\n").arg(result.errorText.trimmed());
-                            }
-                            else
-                            {
-                                detailText += QStringLiteral("依赖 DLL 名称:\n");
-                                for (const QString& dllName : result.dllNames)
+                                if (guardThis == nullptr || tableGuard == nullptr ||
+                                    statusGuard == nullptr || detailGuard == nullptr)
                                 {
-                                    detailText += QStringLiteral("  - %1\n").arg(dllName);
+                                    return;
                                 }
+
+                                guardThis->populateDependencyTable(
+                                    tableGuard,
+                                    statusGuard,
+                                    *resultSnapshot,
+                                    elapsedMs);
+                                QString detailText;
+                                detailText += QStringLiteral("目标: %1\n")
+                                    .arg(QDir::toNativeSeparators(guardThis->m_filePath));
+                                if (!resultSnapshot->success ||
+                                    !resultSnapshot->errorText.trimmed().isEmpty())
+                                {
+                                    detailText += QStringLiteral("%1\n")
+                                        .arg(resultSnapshot->errorText.trimmed());
+                                }
+                                else
+                                {
+                                    detailText += QStringLiteral("依赖 DLL 名称:\n");
+                                    for (const QString& dllName : resultSnapshot->dllNames)
+                                    {
+                                        detailText += QStringLiteral("  - %1\n").arg(dllName);
+                                    }
+                                }
+                                detailGuard->setLocalizedText(detailText);
+                            };
+
+                            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                                guardThis.data(),
+                                QStringLiteral("file-detail-dependency-snapshot"),
+                                { tableGuard.data() },
+                                commitSnapshot))
+                            {
+                                return;
                             }
-                            detailGuard->setLocalizedText(detailText);
+                            commitSnapshot();
                         },
                         Qt::QueuedConnection);
                 });
@@ -8576,7 +8658,19 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
 
         const bool invokeOk = QMetaObject::invokeMethod(
             safeThis.data(),
-            [safeThis, leftPanelRequest, requestPath, requestedFsType, panelNameText, showWarningMessage, requestSerial, progressPid, parseOk, parsedEntries, parsedFsType, parseErrorText, usedWinApiFallback]() {
+            [safeThis,
+             leftPanelRequest,
+             requestPath,
+             requestedFsType,
+             panelNameText,
+             showWarningMessage,
+             requestSerial,
+             progressPid,
+             parseOk,
+             parsedEntries = std::move(parsedEntries),
+             parsedFsType,
+             parseErrorText,
+             usedWinApiFallback]() mutable {
                 if (safeThis.isNull())
                 {
                     kPro.set(progressPid, "界面已关闭", 0, 100.0f);
@@ -8623,135 +8717,199 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                     return;
                 }
 
-                targetPanel.manualParseInProgress = false;
-                targetPanel.manualParsingPath.clear();
-                targetPanel.manualRequestedFsType = requestedFsType;
-                if (targetPanel.readModeCombo != nullptr)
+                const auto parsedEntriesSnapshot =
+                    std::make_shared<std::vector<ks::file::ManualDirectoryEntry>>(
+                        std::move(parsedEntries));
+                const auto commitSnapshot =
+                    [safeThis,
+                     leftPanelRequest,
+                     requestPath,
+                     requestedFsType,
+                     panelNameText,
+                     showWarningMessage,
+                     requestSerial,
+                     progressPid,
+                     parseOk,
+                     parsedEntriesSnapshot,
+                     parsedFsType,
+                     parseErrorText,
+                     usedWinApiFallback]()
                 {
-                    targetPanel.readModeCombo->setEnabled(true);
-                }
-
-                targetPanel.manualModel->setRowCount(0);
-                targetPanel.lastManualFsType = parsedFsType;
-
-                if (!parseOk)
-                {
-                    // 失败时也记住路径，避免过滤/排序触发连续重试。
-                    targetPanel.manualLoadedPath = requestPath;
-                    if (targetPanel.parserStatusLabel != nullptr)
+                    if (safeThis.isNull())
                     {
-                        targetPanel.parserStatusLabel->setText(QStringLiteral("解析器: 手动解析失败"));
-                    }
-                    if (showWarningMessage)
-                    {
-                        QMessageBox::warning(
-                            safeThis.data(),
-                            QStringLiteral("手动解析失败"),
-                            QStringLiteral("路径: %1\n错误: %2")
-                            .arg(QDir::toNativeSeparators(requestPath))
-                            .arg(parseErrorText));
+                        kPro.set(progressPid, "界面已关闭", 0, 100.0f);
+                        return;
                     }
 
-                    kLogEvent event;
-                    warn << event
-                        << "[FileDock] 异步手动解析失败, panel="
-                        << panelNameText.toStdString()
-                        << ", path="
-                        << QDir::toNativeSeparators(requestPath).toStdString()
-                        << ", error="
-                        << parseErrorText.toStdString()
-                        << eol;
-                }
-                else
-                {
-                    // 批量回填模型：
-                    // - 不再阻断 manualModel 信号，避免 proxy 无法感知新增行导致“日志显示有 rows 但视图空白”。
-                    // - 通过临时关闭视图重绘降低批量插入期间的 UI 开销。
-                    if (targetPanel.fileView != nullptr)
+                    FilePanelWidgets& commitPanel =
+                        leftPanelRequest ? safeThis->m_leftPanel : safeThis->m_rightPanel;
+                    if (commitPanel.manualParseRequestSerial != requestSerial)
                     {
-                        targetPanel.fileView->setUpdatesEnabled(false);
+                        return;
                     }
-                    for (const ks::file::ManualDirectoryEntry& itemValue : parsedEntries)
+
+                    commitPanel.manualParseInProgress = false;
+                    commitPanel.manualParsingPath.clear();
+                    commitPanel.manualRequestedFsType = requestedFsType;
+                    if (commitPanel.readModeCombo != nullptr)
                     {
-                        QList<QStandardItem*> rowItems;
-                        rowItems.reserve(static_cast<int>(ManualModelColumn::Count));
+                        commitPanel.readModeCombo->setEnabled(true);
+                    }
 
-                        QStandardItem* nameItem = new QStandardItem(itemValue.name);
-                        nameItem->setData(itemValue.absolutePath, Qt::UserRole);
-                        nameItem->setData(itemValue.isDirectory, Qt::UserRole + 1);
-                        rowItems.push_back(nameItem);
+                    commitPanel.manualModel->setRowCount(0);
+                    commitPanel.lastManualFsType = parsedFsType;
 
-                        QStandardItem* sizeItem = new QStandardItem(
-                            itemValue.isDirectory ? QStringLiteral("-") : formatSizeText(itemValue.sizeBytes));
-                        sizeItem->setData(static_cast<qulonglong>(itemValue.sizeBytes), Qt::UserRole);
-                        rowItems.push_back(sizeItem);
-
-                        QString typeText = itemValue.typeText;
-                        const QString reparseMarkerText = reparseKindMarkerForPath(itemValue.absolutePath);
-                        if (!reparseMarkerText.isEmpty())
+                    if (!parseOk)
+                    {
+                        // 失败时也记住路径，避免过滤/排序触发连续重试。
+                        commitPanel.manualLoadedPath = requestPath;
+                        if (commitPanel.parserStatusLabel != nullptr)
                         {
-                            typeText = QStringLiteral("%1 / %2").arg(reparseMarkerText, typeText);
+                            commitPanel.parserStatusLabel->setText(
+                                QStringLiteral("解析器: 手动解析失败"));
                         }
-                        rowItems.push_back(new QStandardItem(typeText));
-                        rowItems.push_back(new QStandardItem(itemValue.modifiedTime.isValid()
-                            ? itemValue.modifiedTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
-                            : QStringLiteral("-")));
-                        rowItems.push_back(new QStandardItem(QDir::toNativeSeparators(itemValue.absolutePath)));
-                        rowItems.push_back(new QStandardItem(itemValue.isDirectory ? QStringLiteral("1") : QStringLiteral("0")));
-                        targetPanel.manualModel->appendRow(rowItems);
-                    }
-                    if (targetPanel.manualProxyModel != nullptr)
-                    {
-                        targetPanel.manualProxyModel->invalidate();
-                    }
-                    if (targetPanel.fileView != nullptr)
-                    {
-                        targetPanel.fileView->setRootIndex(QModelIndex());
-                        targetPanel.fileView->setUpdatesEnabled(true);
-                    }
-
-                    if (targetPanel.parserStatusLabel != nullptr)
-                    {
-                        // 异步路径与同步路径保持同一展示规则，避免回退后仍伪装成手动解析。
-                        if (usedWinApiFallback)
+                        if (showWarningMessage)
                         {
-                            targetPanel.parserStatusLabel->setText(
-                                QStringLiteral("解析器: Windows API 回退 (%1)")
-                                .arg(manualFsTypeToText(parsedFsType)));
+                            QMessageBox::warning(
+                                safeThis.data(),
+                                QStringLiteral("手动解析失败"),
+                                QStringLiteral("路径: %1\n错误: %2")
+                                .arg(QDir::toNativeSeparators(requestPath))
+                                .arg(parseErrorText));
                         }
-                        else
-                        {
-                            targetPanel.parserStatusLabel->setText(
-                                QStringLiteral("解析器: %1 (手动)").arg(manualFsTypeToText(parsedFsType)));
-                        }
+
+                        kLogEvent event;
+                        warn << event
+                            << "[FileDock] 异步手动解析失败, panel="
+                            << panelNameText.toStdString()
+                            << ", path="
+                            << QDir::toNativeSeparators(requestPath).toStdString()
+                            << ", error="
+                            << parseErrorText.toStdString()
+                            << eol;
                     }
-                    targetPanel.manualLoadedPath = requestPath;
+                    else
+                    {
+                        // 批量回填模型：
+                        // - 不再阻断 manualModel 信号，避免 proxy 无法感知新增行导致“日志显示有 rows 但视图空白”。
+                        // - 通过临时关闭视图重绘降低批量插入期间的 UI 开销。
+                        if (commitPanel.fileView != nullptr)
+                        {
+                            commitPanel.fileView->setUpdatesEnabled(false);
+                        }
+                        for (const ks::file::ManualDirectoryEntry& itemValue : *parsedEntriesSnapshot)
+                        {
+                            QList<QStandardItem*> rowItems;
+                            rowItems.reserve(static_cast<int>(ManualModelColumn::Count));
 
-                    kLogEvent event;
-                    info << event
-                        << "[FileDock] 异步手动解析完成, panel="
-                        << panelNameText.toStdString()
-                        << ", fsType="
-                        << manualFsTypeToText(parsedFsType).toStdString()
-                        << ", rows="
-                        << parsedEntries.size()
-                        << ", path="
-                        << QDir::toNativeSeparators(requestPath).toStdString()
-                        << eol;
-                }
+                            QStandardItem* nameItem = new QStandardItem(itemValue.name);
+                            nameItem->setData(itemValue.absolutePath, Qt::UserRole);
+                            nameItem->setData(itemValue.isDirectory, Qt::UserRole + 1);
+                            rowItems.push_back(nameItem);
 
-                // 模型回填后重新应用过滤/排序，让视图立即更新到当前条件。
-                safeThis->applyPanelFilterAndSort(targetPanel);
-                kPro.set(progressPid, parseOk ? "手动解析完成" : "手动解析失败", 0, 100.0f);
+                            QStandardItem* sizeItem = new QStandardItem(
+                                itemValue.isDirectory
+                                ? QStringLiteral("-")
+                                : formatSizeText(itemValue.sizeBytes));
+                            sizeItem->setData(
+                                static_cast<qulonglong>(itemValue.sizeBytes),
+                                Qt::UserRole);
+                            rowItems.push_back(sizeItem);
 
-                // 若解析过程中用户又切了目录，完成后立即执行挂起请求。
-                if (!targetPanel.manualParseInProgress && targetPanel.manualParsePending)
+                            QString typeText = itemValue.typeText;
+                            const QString reparseMarkerText =
+                                reparseKindMarkerForPath(itemValue.absolutePath);
+                            if (!reparseMarkerText.isEmpty())
+                            {
+                                typeText = QStringLiteral("%1 / %2")
+                                    .arg(reparseMarkerText, typeText);
+                            }
+                            rowItems.push_back(new QStandardItem(typeText));
+                            rowItems.push_back(new QStandardItem(
+                                itemValue.modifiedTime.isValid()
+                                ? itemValue.modifiedTime.toString(
+                                    QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                                : QStringLiteral("-")));
+                            rowItems.push_back(new QStandardItem(
+                                QDir::toNativeSeparators(itemValue.absolutePath)));
+                            rowItems.push_back(new QStandardItem(
+                                itemValue.isDirectory
+                                ? QStringLiteral("1")
+                                : QStringLiteral("0")));
+                            commitPanel.manualModel->appendRow(rowItems);
+                        }
+                        if (commitPanel.manualProxyModel != nullptr)
+                        {
+                            commitPanel.manualProxyModel->invalidate();
+                        }
+                        if (commitPanel.fileView != nullptr)
+                        {
+                            commitPanel.fileView->setRootIndex(QModelIndex());
+                            commitPanel.fileView->setUpdatesEnabled(true);
+                        }
+
+                        if (commitPanel.parserStatusLabel != nullptr)
+                        {
+                            // 异步路径与同步路径保持同一展示规则，避免回退后仍伪装成手动解析。
+                            if (usedWinApiFallback)
+                            {
+                                commitPanel.parserStatusLabel->setText(
+                                    QStringLiteral("解析器: Windows API 回退 (%1)")
+                                    .arg(manualFsTypeToText(parsedFsType)));
+                            }
+                            else
+                            {
+                                commitPanel.parserStatusLabel->setText(
+                                    QStringLiteral("解析器: %1 (手动)")
+                                    .arg(manualFsTypeToText(parsedFsType)));
+                            }
+                        }
+                        commitPanel.manualLoadedPath = requestPath;
+
+                        kLogEvent event;
+                        info << event
+                            << "[FileDock] 异步手动解析完成, panel="
+                            << panelNameText.toStdString()
+                            << ", fsType="
+                            << manualFsTypeToText(parsedFsType).toStdString()
+                            << ", rows="
+                            << parsedEntriesSnapshot->size()
+                            << ", path="
+                            << QDir::toNativeSeparators(requestPath).toStdString()
+                            << eol;
+                    }
+
+                    // 模型回填后重新应用过滤/排序，让视图立即更新到当前条件。
+                    safeThis->applyPanelFilterAndSort(commitPanel);
+                    kPro.set(
+                        progressPid,
+                        parseOk ? "手动解析完成" : "手动解析失败",
+                        0,
+                        100.0f);
+
+                    // 若解析过程中用户又切了目录，完成后立即执行挂起请求。
+                    if (!commitPanel.manualParseInProgress && commitPanel.manualParsePending)
+                    {
+                        const bool pendingShowWarning =
+                            commitPanel.manualParsePendingShowWarning;
+                        commitPanel.manualParsePending = false;
+                        commitPanel.manualParsePendingShowWarning = false;
+                        safeThis->requestAsyncManualReload(commitPanel, pendingShowWarning);
+                    }
+                };
+
+                const QString commitKey = leftPanelRequest
+                    ? QStringLiteral("file-manual-model-left")
+                    : QStringLiteral("file-manual-model-right");
+                if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                    safeThis.data(),
+                    commitKey,
+                    { targetPanel.fileView },
+                    commitSnapshot))
                 {
-                    const bool pendingShowWarning = targetPanel.manualParsePendingShowWarning;
-                    targetPanel.manualParsePending = false;
-                    targetPanel.manualParsePendingShowWarning = false;
-                    safeThis->requestAsyncManualReload(targetPanel, pendingShowWarning);
+                    return;
                 }
+                commitSnapshot();
             },
             Qt::QueuedConnection);
 
@@ -8970,126 +9128,171 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
 
         QMetaObject::invokeMethod(
             safeThis.data(),
-            [safeThis, rootPath, progressPid, scanOk, deletedItems, errorText]() {
+            [safeThis,
+             rootPath,
+             progressPid,
+             scanOk,
+             deletedItems = std::move(deletedItems),
+             errorText]() mutable {
                 if (safeThis.isNull())
                 {
                     kPro.set(progressPid, "界面已关闭", 0, 100.0f);
                     return;
                 }
 
-                safeThis->m_recoveryScanInProgress = false;
-                if (safeThis->m_recoveryScanButton != nullptr)
+                const auto deletedItemsSnapshot =
+                    std::make_shared<std::vector<ks::file::NtfsDeletedFileEntry>>(
+                        std::move(deletedItems));
+                const auto commitSnapshot =
+                    [safeThis,
+                     rootPath,
+                     progressPid,
+                     scanOk,
+                     deletedItemsSnapshot,
+                     errorText]()
                 {
-                    safeThis->m_recoveryScanButton->setEnabled(true);
-                }
-                if (safeThis->m_recoveryExportButton != nullptr)
-                {
-                    safeThis->m_recoveryExportButton->setEnabled(true);
-                }
+                    if (safeThis.isNull())
+                    {
+                        kPro.set(progressPid, "界面已关闭", 0, 100.0f);
+                        return;
+                    }
 
-                if (!scanOk)
-                {
-                    safeThis->m_recoveryStatusLabel->setText(QStringLiteral("扫描失败：%1").arg(errorText));
+                    safeThis->m_recoveryScanInProgress = false;
+                    if (safeThis->m_recoveryScanButton != nullptr)
+                    {
+                        safeThis->m_recoveryScanButton->setEnabled(true);
+                    }
+                    if (safeThis->m_recoveryExportButton != nullptr)
+                    {
+                        safeThis->m_recoveryExportButton->setEnabled(true);
+                    }
+
+                    if (!scanOk)
+                    {
+                        safeThis->m_recoveryStatusLabel->setText(
+                            QStringLiteral("扫描失败：%1").arg(errorText));
+                        kLogEvent event;
+                        err << event
+                            << "[FileDock] 扫描误删失败, volume="
+                            << QDir::toNativeSeparators(rootPath).toStdString()
+                            << ", error="
+                            << errorText.toStdString()
+                            << eol;
+                        QMessageBox::warning(safeThis.data(), QStringLiteral("扫描失败"), errorText);
+                        kPro.set(progressPid, "扫描失败", 0, 100.0f);
+                        return;
+                    }
+
+                    safeThis->m_deletedRecoveryItems = std::move(*deletedItemsSnapshot);
+                    safeThis->m_recoveryTable->setUpdatesEnabled(false);
+                    safeThis->m_recoveryTable->setSortingEnabled(false);
+                    safeThis->m_recoveryTable->clearContents();
+                    safeThis->m_recoveryTable->setRowCount(
+                        static_cast<int>(safeThis->m_deletedRecoveryItems.size()));
+                    for (int row = 0;
+                         row < static_cast<int>(safeThis->m_deletedRecoveryItems.size());
+                         ++row)
+                    {
+                        const ks::file::NtfsDeletedFileEntry& itemValue =
+                            safeThis->m_deletedRecoveryItems[static_cast<std::size_t>(row)];
+                        // 完整度文本：优先显示估计百分比，无法评估时明确标记为未知。
+                        const QString integrityText =
+                            (itemValue.estimatedIntegrityPercent >= 0)
+                            ? QStringLiteral("%1%").arg(itemValue.estimatedIntegrityPercent)
+                            : QStringLiteral("未知");
+
+                        // 恢复能力文本：明确区分驻留、完整非驻留、已复用与不支持布局。
+                        QString recoverabilityText =
+                            deletedFileRecoveryCapabilityText(itemValue);
+                        if (!itemValue.hasOriginalName)
+                        {
+                            recoverabilityText += QStringLiteral(" / 缺名");
+                        }
+
+                        QTableWidgetItem* nameItem = new QTableWidgetItem(itemValue.fileName);
+                        if (!itemValue.hasOriginalName)
+                        {
+                            nameItem->setToolTip(
+                                QStringLiteral("该条目原始文件名已丢失，当前名称为系统生成的占位名。"));
+                        }
+                        safeThis->m_recoveryTable->setItem(row, 0, nameItem);
+                        safeThis->m_recoveryTable->setItem(
+                            row, 1, new QTableWidgetItem(itemValue.pathHint));
+                        safeThis->m_recoveryTable->setItem(
+                            row, 2, new QTableWidgetItem(formatSizeText(itemValue.sizeBytes)));
+                        safeThis->m_recoveryTable->setItem(row, 3, new QTableWidgetItem(
+                            itemValue.modifiedTime.isValid()
+                            ? itemValue.modifiedTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                            : QStringLiteral("-")));
+                        safeThis->m_recoveryTable->setItem(
+                            row,
+                            4,
+                            new QTableWidgetItem(
+                                QStringLiteral("%1 / seq %2")
+                                    .arg(static_cast<qulonglong>(itemValue.fileReference))
+                                    .arg(itemValue.sequenceNumber)));
+                        safeThis->m_recoveryTable->setItem(
+                            row, 5, new QTableWidgetItem(integrityText));
+                        safeThis->m_recoveryTable->setItem(
+                            row, 6, new QTableWidgetItem(recoverabilityText));
+                    }
+                    safeThis->m_recoveryTable->setUpdatesEnabled(true);
+
+                    const int residentReadyCount = static_cast<int>(std::count_if(
+                        safeThis->m_deletedRecoveryItems.begin(),
+                        safeThis->m_deletedRecoveryItems.end(),
+                        [](const ks::file::NtfsDeletedFileEntry& item) {
+                            return item.recoveryCapability ==
+                                ks::file::NtfsRecoveryCapability::Resident;
+                        }));
+                    const int nonResidentReadyCount = static_cast<int>(std::count_if(
+                        safeThis->m_deletedRecoveryItems.begin(),
+                        safeThis->m_deletedRecoveryItems.end(),
+                        [](const ks::file::NtfsDeletedFileEntry& item) {
+                            return item.recoveryCapability ==
+                                ks::file::NtfsRecoveryCapability::NonResidentIntact;
+                        }));
+                    const int safelyRecoverableCount = static_cast<int>(std::count_if(
+                        safeThis->m_deletedRecoveryItems.begin(),
+                        safeThis->m_deletedRecoveryItems.end(),
+                        [](const ks::file::NtfsDeletedFileEntry& item) {
+                            return isDeletedFileSafelyRecoverable(item);
+                        }));
+                    const int highIntegrityCount = static_cast<int>(std::count_if(
+                        safeThis->m_deletedRecoveryItems.begin(),
+                        safeThis->m_deletedRecoveryItems.end(),
+                        [](const ks::file::NtfsDeletedFileEntry& item) {
+                            return item.estimatedIntegrityPercent >= 80;
+                        }));
+
+                    safeThis->m_recoveryStatusLabel->setText(
+                        QStringLiteral(
+                            "扫描完成：%1 项（可安全恢复 %2 项：Resident %3，完整非驻留 %4；完整度≥80%% %5 项）")
+                        .arg(safeThis->m_deletedRecoveryItems.size())
+                        .arg(safelyRecoverableCount)
+                        .arg(residentReadyCount)
+                        .arg(nonResidentReadyCount)
+                        .arg(highIntegrityCount));
+
                     kLogEvent event;
-                    err << event
-                        << "[FileDock] 扫描误删失败, volume="
+                    info << event
+                        << "[FileDock] 扫描误删完成, volume="
                         << QDir::toNativeSeparators(rootPath).toStdString()
-                        << ", error="
-                        << errorText.toStdString()
+                        << ", total="
+                        << safeThis->m_deletedRecoveryItems.size()
                         << eol;
-                    QMessageBox::warning(safeThis.data(), QStringLiteral("扫描失败"), errorText);
-                    kPro.set(progressPid, "扫描失败", 0, 100.0f);
+                    kPro.set(progressPid, "扫描完成", 0, 100.0f);
+                };
+
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    safeThis.data(),
+                    QStringLiteral("file-recovery-scan-snapshot"),
+                    { safeThis->m_recoveryTable },
+                    commitSnapshot))
+                {
                     return;
                 }
-
-                safeThis->m_deletedRecoveryItems = deletedItems;
-                safeThis->m_recoveryTable->setUpdatesEnabled(false);
-                safeThis->m_recoveryTable->setSortingEnabled(false);
-                safeThis->m_recoveryTable->clearContents();
-                safeThis->m_recoveryTable->setRowCount(static_cast<int>(safeThis->m_deletedRecoveryItems.size()));
-                for (int row = 0; row < static_cast<int>(safeThis->m_deletedRecoveryItems.size()); ++row)
-                {
-                    const ks::file::NtfsDeletedFileEntry& itemValue = safeThis->m_deletedRecoveryItems[static_cast<std::size_t>(row)];
-                    // 完整度文本：优先显示估计百分比，无法评估时明确标记为未知。
-                    const QString integrityText =
-                        (itemValue.estimatedIntegrityPercent >= 0)
-                        ? QStringLiteral("%1%").arg(itemValue.estimatedIntegrityPercent)
-                        : QStringLiteral("未知");
-
-                    // 恢复能力文本：明确区分驻留、完整非驻留、已复用与不支持布局。
-                    QString recoverabilityText =
-                        deletedFileRecoveryCapabilityText(itemValue);
-                    if (!itemValue.hasOriginalName)
-                    {
-                        recoverabilityText += QStringLiteral(" / 缺名");
-                    }
-
-                    QTableWidgetItem* nameItem = new QTableWidgetItem(itemValue.fileName);
-                    if (!itemValue.hasOriginalName)
-                    {
-                        nameItem->setToolTip(QStringLiteral("该条目原始文件名已丢失，当前名称为系统生成的占位名。"));
-                    }
-                    safeThis->m_recoveryTable->setItem(row, 0, nameItem);
-                    safeThis->m_recoveryTable->setItem(row, 1, new QTableWidgetItem(itemValue.pathHint));
-                    safeThis->m_recoveryTable->setItem(row, 2, new QTableWidgetItem(formatSizeText(itemValue.sizeBytes)));
-                    safeThis->m_recoveryTable->setItem(row, 3, new QTableWidgetItem(
-                        itemValue.modifiedTime.isValid()
-                        ? itemValue.modifiedTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
-                        : QStringLiteral("-")));
-                    safeThis->m_recoveryTable->setItem(
-                        row,
-                        4,
-                        new QTableWidgetItem(
-                            QStringLiteral("%1 / seq %2")
-                                .arg(static_cast<qulonglong>(itemValue.fileReference))
-                                .arg(itemValue.sequenceNumber)));
-                    safeThis->m_recoveryTable->setItem(row, 5, new QTableWidgetItem(integrityText));
-                    safeThis->m_recoveryTable->setItem(row, 6, new QTableWidgetItem(recoverabilityText));
-                }
-                safeThis->m_recoveryTable->setUpdatesEnabled(true);
-
-                const int residentReadyCount = static_cast<int>(std::count_if(
-                    safeThis->m_deletedRecoveryItems.begin(),
-                    safeThis->m_deletedRecoveryItems.end(),
-                    [](const ks::file::NtfsDeletedFileEntry& item) {
-                        return item.recoveryCapability ==
-                            ks::file::NtfsRecoveryCapability::Resident;
-                    }));
-                const int nonResidentReadyCount = static_cast<int>(std::count_if(
-                    safeThis->m_deletedRecoveryItems.begin(),
-                    safeThis->m_deletedRecoveryItems.end(),
-                    [](const ks::file::NtfsDeletedFileEntry& item) {
-                        return item.recoveryCapability ==
-                            ks::file::NtfsRecoveryCapability::NonResidentIntact;
-                    }));
-                const int safelyRecoverableCount = static_cast<int>(std::count_if(
-                    safeThis->m_deletedRecoveryItems.begin(),
-                    safeThis->m_deletedRecoveryItems.end(),
-                    [](const ks::file::NtfsDeletedFileEntry& item) {
-                        return isDeletedFileSafelyRecoverable(item);
-                    }));
-                const int highIntegrityCount = static_cast<int>(std::count_if(
-                    safeThis->m_deletedRecoveryItems.begin(),
-                    safeThis->m_deletedRecoveryItems.end(),
-                    [](const ks::file::NtfsDeletedFileEntry& item) { return item.estimatedIntegrityPercent >= 80; }));
-
-                safeThis->m_recoveryStatusLabel->setText(
-                    QStringLiteral(
-                        "扫描完成：%1 项（可安全恢复 %2 项：Resident %3，完整非驻留 %4；完整度≥80%% %5 项）")
-                    .arg(safeThis->m_deletedRecoveryItems.size())
-                    .arg(safelyRecoverableCount)
-                    .arg(residentReadyCount)
-                    .arg(nonResidentReadyCount)
-                    .arg(highIntegrityCount));
-
-                kLogEvent event;
-                info << event
-                    << "[FileDock] 扫描误删完成, volume="
-                    << QDir::toNativeSeparators(rootPath).toStdString()
-                    << ", total="
-                    << safeThis->m_deletedRecoveryItems.size()
-                    << eol;
-                kPro.set(progressPid, "扫描完成", 0, 100.0f);
+                commitSnapshot();
             },
             Qt::QueuedConnection);
     }).detach();
@@ -11939,18 +12142,53 @@ void FileDock::unlockPathsByDriver(
                 }
                 QWidget* const unlockerDialogParent = resolveVisibleDialogParent(safeThis.data());
 
+                QList<QAbstractItemView*> affectedViews;
                 if (refreshTarget == RefreshTarget::Left)
                 {
-                    safeThis->refreshPanel(safeThis->m_leftPanel);
+                    affectedViews.push_back(safeThis->m_leftPanel.fileView);
                 }
                 else if (refreshTarget == RefreshTarget::Right)
                 {
-                    safeThis->refreshPanel(safeThis->m_rightPanel);
+                    affectedViews.push_back(safeThis->m_rightPanel.fileView);
                 }
                 else
                 {
-                    safeThis->refreshPanel(safeThis->m_leftPanel);
-                    safeThis->refreshPanel(safeThis->m_rightPanel);
+                    affectedViews.push_back(safeThis->m_leftPanel.fileView);
+                    affectedViews.push_back(safeThis->m_rightPanel.fileView);
+                }
+                const auto refreshPanels = [safeThis, refreshTarget]()
+                {
+                    if (safeThis.isNull())
+                    {
+                        return;
+                    }
+                    if (refreshTarget == RefreshTarget::Left)
+                    {
+                        safeThis->refreshPanel(safeThis->m_leftPanel);
+                    }
+                    else if (refreshTarget == RefreshTarget::Right)
+                    {
+                        safeThis->refreshPanel(safeThis->m_rightPanel);
+                    }
+                    else
+                    {
+                        safeThis->refreshPanel(safeThis->m_leftPanel);
+                        safeThis->refreshPanel(safeThis->m_rightPanel);
+                    }
+                };
+                const QString refreshKey =
+                    refreshTarget == RefreshTarget::Left
+                    ? QStringLiteral("file-unlocker-panel-refresh-left")
+                    : (refreshTarget == RefreshTarget::Right
+                        ? QStringLiteral("file-unlocker-panel-refresh-right")
+                        : QStringLiteral("file-unlocker-panel-refresh-both"));
+                if (!ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                    safeThis.data(),
+                    refreshKey,
+                    affectedViews,
+                    refreshPanels))
+                {
+                    refreshPanels();
                 }
 
                 const QString modeText = unlockOperationModeToText(jobResult.operationMode);
@@ -12139,7 +12377,26 @@ void FileDock::takeOwnershipSelectedItems(FilePanelWidgets& panel)
                 }
 
                 FilePanelWidgets& targetPanel = leftPanelRequest ? safeThis->m_leftPanel : safeThis->m_rightPanel;
-                safeThis->refreshPanel(targetPanel);
+                const auto refreshTargetPanel = [safeThis, leftPanelRequest]()
+                {
+                    if (!safeThis.isNull())
+                    {
+                        FilePanelWidgets& commitPanel =
+                            leftPanelRequest ? safeThis->m_leftPanel : safeThis->m_rightPanel;
+                        safeThis->refreshPanel(commitPanel);
+                    }
+                };
+                const QString refreshKey = leftPanelRequest
+                    ? QStringLiteral("file-ownership-refresh-left")
+                    : QStringLiteral("file-ownership-refresh-right");
+                if (!ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                    safeThis.data(),
+                    refreshKey,
+                    { targetPanel.fileView },
+                    refreshTargetPanel))
+                {
+                    refreshTargetPanel();
+                }
                 if (!errorDetails.isEmpty())
                 {
                     kLogEvent failEvent;

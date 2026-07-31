@@ -545,34 +545,81 @@ Return Value:
     return status;
 }
 
-static BOOLEAN
-KswordARKDriverThreadIsProtectedModuleName(
-    _In_reads_bytes_(FileNameBytes) const UCHAR* FileName,
-    _In_ ULONG FileNameBytes
+static NTSTATUS
+KswordARKDriverThreadVerifyLiveIdentity(
+    _In_ PETHREAD ThreadObject,
+    _In_ const KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST* ControlRequest,
+    _Out_opt_ ULONG64* ActualStartAddressOut
     )
 {
-    static const PCSTR protectedNames[] = {
-        "ntoskrnl.exe",
-        "ntkrnlmp.exe",
-        "ntkrnlpa.exe",
-        "ntkrpamp.exe",
-        "ntkrla57.exe",
-        "KswordARK.sys"
-    };
-    ULONG index = 0UL;
+    KSWORD_ARK_THREAD_DETAIL_REQUEST detailRequest;
+    KSWORD_ARK_THREAD_DETAIL_RESPONSE detailResponse;
+    ULONG64 actualStartAddress = 0ULL;
+    size_t detailBytes = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
 
-    if (FileName == NULL || FileNameBytes == 0UL) {
-        return TRUE;
+    if (ActualStartAddressOut != NULL) {
+        *ActualStartAddressOut = 0ULL;
     }
-    for (index = 0UL; index < RTL_NUMBER_OF(protectedNames); ++index) {
-        if (KswordARKHookBoundedAnsiEqualsInsensitive(
-                FileName,
-                FileNameBytes,
-                protectedNames[index])) {
-            return TRUE;
+    if (ThreadObject == NULL || ControlRequest == NULL ||
+        ControlRequest->threadId == 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // 已引用对象仍需验证 Ps 公共身份，防止调用链误传其它 ETHREAD。
+    if (HandleToULong(PsGetThreadId(ThreadObject)) != ControlRequest->threadId ||
+        HandleToULong(PsGetThreadProcessId(ThreadObject)) != 4UL) {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+
+#if (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
+    if (ControlRequest->expectedCreateTime100ns != 0ULL) {
+        const LONGLONG createTime = PsGetThreadCreateTime(ThreadObject);
+        if (createTime <= 0 ||
+            (ULONG64)createTime != ControlRequest->expectedCreateTime100ns) {
+            return STATUS_OBJECT_NAME_NOT_FOUND;
         }
     }
-    return FALSE;
+#else
+    // 旧 WDK 仅在调用方确实提供创建时间时拒绝；缺失时间不再关闭控制入口。
+    if (ControlRequest->expectedCreateTime100ns != 0ULL) {
+        return STATUS_NOT_SUPPORTED;
+    }
+#endif
+
+    RtlZeroMemory(&detailRequest, sizeof(detailRequest));
+    RtlZeroMemory(&detailResponse, sizeof(detailResponse));
+    detailRequest.version = KSWORD_ARK_THREAD_PROTOCOL_VERSION;
+    detailRequest.flags = KSWORD_ARK_THREAD_DETAIL_FLAG_INCLUDE_START;
+    detailRequest.threadId = ControlRequest->threadId;
+    detailRequest.processId = 4UL;
+    status = KswordARKDriverQueryThreadDetail(
+        &detailResponse,
+        sizeof(detailResponse),
+        &detailRequest,
+        &detailBytes);
+    if (!NT_SUCCESS(status) ||
+        detailResponse.processId != 4UL) {
+        return NT_SUCCESS(status) ? STATUS_OBJECT_NAME_NOT_FOUND : status;
+    }
+
+    if ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_WIN32_START_ADDRESS) != 0UL) {
+        actualStartAddress = detailResponse.win32StartAddress;
+    }
+    else if ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL) {
+        actualStartAddress = detailResponse.startAddress;
+    }
+    if (ControlRequest->expectedStartAddress != 0ULL &&
+        !(((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL &&
+           ControlRequest->expectedStartAddress == detailResponse.startAddress) ||
+          ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_WIN32_START_ADDRESS) != 0UL &&
+           ControlRequest->expectedStartAddress == detailResponse.win32StartAddress))) {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    if (ActualStartAddressOut != NULL) {
+        *ActualStartAddressOut = actualStartAddress;
+    }
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS
@@ -584,8 +631,9 @@ KswordARKDriverControlDriverThread(
 
 Routine Description:
 
-    Validate one PID 4 system thread against its live R0 start address and the
-    loaded-driver module snapshot, then suspend, resume, or terminate it.
+    Validate one PID 4 system thread against all identity fields supplied by R3,
+    then suspend, resume, or terminate it.  Missing optional fields do not
+    disable the control entry.
 
 Arguments:
 
@@ -599,17 +647,15 @@ Return Value:
 
 --*/
 {
-    KSWORD_ARK_THREAD_DETAIL_REQUEST detailRequest;
-    KSWORD_ARK_THREAD_DETAIL_RESPONSE detailResponse;
     KSW_HOOK_SYSTEM_MODULE_INFORMATION* moduleInfo = NULL;
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* ownerModule = NULL;
     const UCHAR* moduleFileName = NULL;
     ULONG moduleFileNameBytes = 0UL;
     ULONG moduleInfoBytes = 0UL;
-    WCHAR moduleNameWide[128] = { 0 };
+    WCHAR moduleNameWide[128] = L"<unresolved>";
     USHORT moduleNameChars = 0U;
-    size_t detailBytes = 0;
     PETHREAD threadObject = NULL;
+    PETHREAD actionThreadObject = NULL;
     HANDLE threadHandle = NULL;
     ULONG previousSuspendCount = 0UL;
     ULONG64 actualStartAddress = 0ULL;
@@ -617,10 +663,24 @@ Return Value:
     NTSTATUS status = STATUS_SUCCESS;
 
     if (ControlRequest == NULL ||
+        ControlRequest->size != sizeof(*ControlRequest) ||
+        ControlRequest->version != KSWORD_ARK_DRIVER_THREAD_CONTROL_PROTOCOL_VERSION ||
         ControlRequest->threadId == 0UL ||
+        (ControlRequest->flags & ~KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_VALID_MASK) != 0UL ||
+        ControlRequest->reserved0 != 0UL ||
+        ControlRequest->reserved1 != 0UL ||
         (ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND &&
          ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME &&
          ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if ((ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_SUSPEND ||
+         ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE) &&
+        (ControlRequest->flags & KSWORD_ARK_DRIVER_THREAD_CONTROL_FLAG_UI_CONFIRMED) == 0UL) {
+        return STATUS_ACCESS_DENIED;
+    }
+    if (ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME &&
+        ControlRequest->flags != 0UL) {
         return STATUS_INVALID_PARAMETER;
     }
     if (ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE) {
@@ -643,89 +703,48 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         return status;
     }
-    if (HandleToULong(PsGetThreadProcessId(threadObject)) != 4UL) {
-        status = STATUS_OBJECT_NAME_NOT_FOUND;
-        goto Exit;
-    }
     if (threadObject == PsGetCurrentThread() &&
         ControlRequest->action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME) {
         status = STATUS_INVALID_DEVICE_STATE;
         goto Exit;
     }
 
-    RtlZeroMemory(&detailRequest, sizeof(detailRequest));
-    RtlZeroMemory(&detailResponse, sizeof(detailResponse));
-    detailRequest.version = KSWORD_ARK_THREAD_PROTOCOL_VERSION;
-    detailRequest.flags = KSWORD_ARK_THREAD_DETAIL_FLAG_INCLUDE_START;
-    detailRequest.threadId = ControlRequest->threadId;
-    detailRequest.processId = 4UL;
-    status = KswordARKDriverQueryThreadDetail(
-        &detailResponse,
-        sizeof(detailResponse),
-        &detailRequest,
-        &detailBytes);
-    if ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_WIN32_START_ADDRESS) != 0UL) {
-        actualStartAddress = detailResponse.win32StartAddress;
-    }
-    else if ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL) {
-        actualStartAddress = detailResponse.startAddress;
-    }
-    if (!NT_SUCCESS(status) ||
-        detailResponse.processId != 4UL ||
-        actualStartAddress == 0ULL) {
+    status = KswordARKDriverThreadVerifyLiveIdentity(
+        threadObject,
+        ControlRequest,
+        &actualStartAddress);
+    if (!NT_SUCCESS(status)) {
         KswordARKThreadIoctlLog(
             Device,
             "Warn",
-            "Driver-thread control rejected: tid=%lu, detailStatus=%lu, lastStatus=0x%08X, start=0x%I64X.",
+            "Driver-thread control identity rejected: tid=%lu, expectedStart=0x%I64X, expectedCreateTime100ns=%I64u, status=0x%08X.",
             (unsigned long)ControlRequest->threadId,
-            (unsigned long)detailResponse.status,
-            (unsigned int)detailResponse.lastStatus,
-            actualStartAddress);
-        status = NT_SUCCESS(status) ? STATUS_NOT_FOUND : status;
+            ControlRequest->expectedStartAddress,
+            ControlRequest->expectedCreateTime100ns,
+            (unsigned int)status);
         goto Exit;
-    }
-    if (ControlRequest->expectedStartAddress != 0ULL) {
-        const BOOLEAN expectedMatchesStart =
-            ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_START_ADDRESS) != 0UL &&
-             ControlRequest->expectedStartAddress == detailResponse.startAddress) ||
-            ((detailResponse.fieldFlags & KSWORD_ARK_THREAD_DETAIL_FIELD_WIN32_START_ADDRESS) != 0UL &&
-             ControlRequest->expectedStartAddress == detailResponse.win32StartAddress);
-        if (!expectedMatchesStart) {
-            KswordARKThreadIoctlLog(
-                Device,
-                "Warn",
-                "Driver-thread control stale target: tid=%lu, expected=0x%I64X, start=0x%I64X, win32Start=0x%I64X.",
-                (unsigned long)ControlRequest->threadId,
-                ControlRequest->expectedStartAddress,
-                detailResponse.startAddress,
-                detailResponse.win32StartAddress);
-            status = STATUS_OBJECT_NAME_NOT_FOUND;
-            goto Exit;
-        }
-        actualStartAddress = ControlRequest->expectedStartAddress;
     }
 
+    // 模块快照只用于审计文本，不再把 ntoskrnl、自身驱动、未知模块或缺失启动地址
+    // 作为控制保护条件。快照失败时继续使用 <unresolved> 目标文本。
     status = KswordARKHookBuildModuleSnapshot(&moduleInfo, &moduleInfoBytes);
-    if (!NT_SUCCESS(status)) {
-        goto Exit;
+    if (NT_SUCCESS(status) && actualStartAddress != 0ULL) {
+        ownerModule = KswordARKHookFindModuleForAddress(
+            moduleInfo,
+            (ULONG_PTR)actualStartAddress);
+        if (ownerModule != NULL) {
+            KswordARKHookGetModuleFileName(
+                ownerModule,
+                &moduleFileName,
+                &moduleFileNameBytes);
+            KswordARKHookCopyBoundedAnsiToWide(
+                moduleFileName,
+                moduleFileNameBytes,
+                moduleNameWide,
+                RTL_NUMBER_OF(moduleNameWide));
+        }
     }
-    ownerModule = KswordARKHookFindModuleForAddress(
-        moduleInfo,
-        (ULONG_PTR)actualStartAddress);
-    if (ownerModule == NULL || ownerModule == &moduleInfo->Modules[0]) {
-        status = STATUS_ACCESS_DENIED;
-        goto Exit;
-    }
-    KswordARKHookGetModuleFileName(ownerModule, &moduleFileName, &moduleFileNameBytes);
-    if (KswordARKDriverThreadIsProtectedModuleName(moduleFileName, moduleFileNameBytes)) {
-        status = STATUS_ACCESS_DENIED;
-        goto Exit;
-    }
-    KswordARKHookCopyBoundedAnsiToWide(
-        moduleFileName,
-        moduleFileNameBytes,
-        moduleNameWide,
-        RTL_NUMBER_OF(moduleNameWide));
+    status = STATUS_SUCCESS;
     while (moduleNameChars + 1U < RTL_NUMBER_OF(moduleNameWide) &&
            moduleNameWide[moduleNameChars] != L'\0') {
         ++moduleNameChars;
@@ -747,26 +766,53 @@ Return Value:
         }
     }
 
+    // 动作入口前按 TID 重新引用一次 ETHREAD，并要求它仍是最初持有的同一对象。
+    // 随后从新引用核对 TID 以及请求中实际提供的 StartAddress/CreateTime。
+    status = PsLookupThreadByThreadId(
+        ULongToHandle(ControlRequest->threadId),
+        &actionThreadObject);
+    if (!NT_SUCCESS(status) || actionThreadObject != threadObject) {
+        if (NT_SUCCESS(status)) {
+            status = STATUS_OBJECT_NAME_NOT_FOUND;
+        }
+        goto Exit;
+    }
+    status = KswordARKDriverThreadVerifyLiveIdentity(
+        actionThreadObject,
+        ControlRequest,
+        &actualStartAddress);
+    if (!NT_SUCCESS(status)) {
+        KswordARKThreadIoctlLog(
+            Device,
+            "Warn",
+            "Driver-thread control final identity check failed: tid=%lu, expectedStart=0x%I64X, expectedCreateTime100ns=%I64u, status=0x%08X.",
+            (unsigned long)ControlRequest->threadId,
+            ControlRequest->expectedStartAddress,
+            ControlRequest->expectedCreateTime100ns,
+            (unsigned int)status);
+        goto Exit;
+    }
+
     if (ControlRequest->action == KSWORD_ARK_DRIVER_THREAD_ACTION_TERMINATE) {
         switch (ControlRequest->terminateMethod) {
         case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_PSP_BY_POINTER:
             status = KswordARKDriverTerminateReferencedThreadPsp(
-                threadObject,
+                actionThreadObject,
                 STATUS_CANCELLED);
             break;
         case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_ZW_OR_NT:
             status = KswordARKDriverTerminateReferencedThreadZwOrNt(
-                threadObject,
+                actionThreadObject,
                 STATUS_CANCELLED);
             break;
         case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_NORMAL_APC:
             status = KswordARKDriverQueueTerminateSystemThreadApc(
-                threadObject,
+                actionThreadObject,
                 FALSE);
             break;
         case KSWORD_ARK_DRIVER_THREAD_TERMINATE_METHOD_SPECIAL_TO_NORMAL_APC:
             status = KswordARKDriverQueueTerminateSystemThreadApc(
-                threadObject,
+                actionThreadObject,
                 TRUE);
             break;
         default:
@@ -776,7 +822,7 @@ Return Value:
     }
     else {
         status = ObOpenObjectByPointer(
-            threadObject,
+            actionThreadObject,
             OBJ_KERNEL_HANDLE,
             NULL,
             THREAD_SUSPEND_RESUME,
@@ -796,8 +842,9 @@ Return Value:
     KswordARKThreadIoctlLog(
         Device,
         NT_SUCCESS(status) ? "Info" : "Warn",
-        "Driver-thread control result: tid=%lu, action=%lu, terminateMethod=%lu, module=%ws, start=0x%I64X, previousSuspendCount=%lu, status=0x%08X.",
+        "Driver-thread control result: tid=%lu, createTime100ns=%I64u, action=%lu, terminateMethod=%lu, module=%ws, start=0x%I64X, previousSuspendCount=%lu, status=0x%08X.",
         (unsigned long)ControlRequest->threadId,
+        ControlRequest->expectedCreateTime100ns,
         (unsigned long)ControlRequest->action,
         (unsigned long)ControlRequest->terminateMethod,
         moduleNameWide,
@@ -809,6 +856,10 @@ Exit:
     if (threadHandle != NULL) {
         ZwClose(threadHandle);
         threadHandle = NULL;
+    }
+    if (actionThreadObject != NULL) {
+        ObDereferenceObject(actionThreadObject);
+        actionThreadObject = NULL;
     }
     if (threadObject != NULL) {
         ObDereferenceObject(threadObject);
@@ -835,7 +886,6 @@ KswordARKThreadIoctlControlDriverThread(
     size_t actualInputLength = 0;
     NTSTATUS status = STATUS_SUCCESS;
 
-    UNREFERENCED_PARAMETER(InputBufferLength);
     UNREFERENCED_PARAMETER(OutputBufferLength);
 
     if (BytesReturned == NULL) {
@@ -852,6 +902,10 @@ KswordARKThreadIoctlControlDriverThread(
         return status;
     }
     controlRequest = (KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST*)inputBuffer;
+    if (InputBufferLength != sizeof(*controlRequest) ||
+        actualInputLength != sizeof(*controlRequest)) {
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
     status = KswordARKDriverControlDriverThread(Device, controlRequest);
     if (NT_SUCCESS(status)) {
         *BytesReturned = sizeof(KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST);

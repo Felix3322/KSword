@@ -410,6 +410,22 @@ void NetworkDock::rebuildNidsAlertTable()
         return;
     }
 
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-nids-filter-rebuild"),
+        {m_nidsAlertTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->rebuildNidsAlertTable();
+            }
+        }))
+    {
+        return;
+    }
+
     m_nidsAlertTable->setUpdatesEnabled(false);
     m_nidsAlertTable->setRowCount(0);
     for (const ks::network::NidsAlert& alertRecord : m_nidsAlertList)
@@ -429,6 +445,22 @@ void NetworkDock::rebuildNidsAlertTable()
 
 void NetworkDock::clearNidsAlerts()
 {
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-nids-clear"),
+        {m_nidsAlertTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->clearNidsAlerts();
+            }
+        }))
+    {
+        return;
+    }
+
     m_nidsEngine.Reset();
     m_nidsAlertList.clear();
     m_nidsAnalyzedPacketCount = 0;

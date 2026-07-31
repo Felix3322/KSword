@@ -590,6 +590,7 @@ namespace ksword::ark
     IoResult DriverClient::controlDriverThread(
         const std::uint32_t threadId,
         const std::uint64_t expectedStartAddress,
+        const std::uint64_t expectedCreateTime100ns,
         const unsigned long action,
         const unsigned long terminateMethod,
         const bool uiConfirmed) const
@@ -599,6 +600,7 @@ namespace ksword::ark
             handle,
             threadId,
             expectedStartAddress,
+            expectedCreateTime100ns,
             action,
             terminateMethod,
             uiConfirmed);
@@ -608,11 +610,14 @@ namespace ksword::ark
         DriverHandle& handle,
         const std::uint32_t threadId,
         const std::uint64_t expectedStartAddress,
+        const std::uint64_t expectedCreateTime100ns,
         const unsigned long action,
         const unsigned long terminateMethod,
         const bool uiConfirmed) const
     {
         KSWORD_ARK_CONTROL_DRIVER_THREAD_REQUEST request{};
+        request.size = static_cast<unsigned long>(sizeof(request));
+        request.version = KSWORD_ARK_DRIVER_THREAD_CONTROL_PROTOCOL_VERSION;
         request.threadId = threadId;
         request.action = action;
         request.flags = uiConfirmed
@@ -620,6 +625,7 @@ namespace ksword::ark
             : 0UL;
         request.terminateMethod = terminateMethod;
         request.expectedStartAddress = expectedStartAddress;
+        request.expectedCreateTime100ns = expectedCreateTime100ns;
         IoResult result = deviceIoControl(
             IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD,
             &request,
@@ -653,6 +659,7 @@ namespace ksword::ark
         stream << "tid=" << threadId
             << ", pid=4"
             << ", start=0x" << std::hex << expectedStartAddress << std::dec
+            << ", createTime100ns=" << expectedCreateTime100ns
             << ", action=" << actionText
             << ", terminateMethod=" << terminateMethod
             << ", rawApi=" << rawApiText

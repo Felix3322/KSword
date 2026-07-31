@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_PACK = Path(r"Ksword5.1\Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json")
+DEFAULT_PACK = Path(r"Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json")
 DEFAULT_KERNEL = Path(r"C:\Windows\System32\ntoskrnl.exe")
 ACTIVE_PROCESS_LINKS_NAMES = {"EpActiveProcessLinks", "_EPROCESS.ActiveProcessLinks"}
 UNAVAILABLE_OFFSETS = {0xFFFFFFFF, 0x0000FFFF}

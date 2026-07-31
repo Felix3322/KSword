@@ -1,5 +1,6 @@
 #include "KernelCommunicationEndpointTab.h"
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -209,6 +210,22 @@ void KernelCommunicationEndpointTab::applyRefreshResult(
     const QString& errorText,
     const bool success)
 {
+    const QPointer<KernelCommunicationEndpointTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-communication-endpoint-snapshot"),
+        { m_table },
+        [safeThis, rows, errorText, success]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applyRefreshResult(std::move(rows), errorText, success);
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing.store(false);
     m_refreshButton->setEnabled(true);
     m_rows = std::move(rows);

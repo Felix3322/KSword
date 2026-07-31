@@ -79,8 +79,8 @@ namespace ksword::ark
         IoResult terminateThread(DriverHandle& handle, std::uint32_t threadId, std::uint32_t processId, long exitStatus) const;
         IoResult setThreadSuspended(std::uint32_t threadId, std::uint32_t processId, bool suspended) const;
         IoResult setThreadSuspended(DriverHandle& handle, std::uint32_t threadId, std::uint32_t processId, bool suspended) const;
-        IoResult controlDriverThread(std::uint32_t threadId, std::uint64_t expectedStartAddress, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
-        IoResult controlDriverThread(DriverHandle& handle, std::uint32_t threadId, std::uint64_t expectedStartAddress, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
+        IoResult controlDriverThread(std::uint32_t threadId, std::uint64_t expectedStartAddress, std::uint64_t expectedCreateTime100ns, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
+        IoResult controlDriverThread(DriverHandle& handle, std::uint32_t threadId, std::uint64_t expectedStartAddress, std::uint64_t expectedCreateTime100ns, unsigned long action, unsigned long terminateMethod, bool uiConfirmed) const;
         IoResult experimentalReturnToFirmware() const;
         IoResult suspendProcess(std::uint32_t processId) const;
         IoResult setProcessProtection(std::uint32_t processId, std::uint8_t protectionLevel) const;
@@ -104,6 +104,9 @@ namespace ksword::ark
 
         ProcessEnumResult enumerateProcesses(unsigned long flags) const;
         ThreadEnumResult enumerateThreads(unsigned long flags, std::uint32_t processId = 0) const;
+        WorkQueueEnumResult enumerateWorkQueues(
+            unsigned long flags = KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_ALL,
+            unsigned long maxEntries = KSWORD_ARK_WORK_QUEUE_DEFAULT_MAX_ENTRIES) const;
         HandleEnumResult enumerateProcessHandles(std::uint32_t processId, unsigned long flags = KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_ALL) const;
         HandleObjectQueryResult queryHandleObject(std::uint32_t processId, std::uint64_t handleValue, unsigned long flags = KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL, unsigned long requestedAccess = 0) const;
         AlpcPortQueryResult queryAlpcPort(std::uint32_t processId, std::uint64_t handleValue, unsigned long flags = KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_ALL) const;
@@ -424,6 +427,16 @@ namespace ksword::ark
         DeviceAuditResult queryInputStackAudit(const std::wstring& targetName = std::wstring(), unsigned long maxRows = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ROWS, unsigned long maxAttachedDepth = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ATTACHED_DEPTH) const;
         DeviceAuditResult queryUsbTopologyAudit(const std::wstring& targetName = std::wstring(), unsigned long maxRows = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ROWS, unsigned long maxAttachedDepth = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ATTACHED_DEPTH) const;
         DeviceAuditResult queryGpuDisplayWatchdogAudit(const std::wstring& targetName = std::wstring(), unsigned long maxRows = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ROWS, unsigned long maxAttachedDepth = KSWORD_ARK_DEVICE_AUDIT_DEFAULT_MAX_ATTACHED_DEPTH) const;
+        // queryPlatformAudit：
+        // - 输入：HAL/WDF scope 和最大行数；
+        // - 处理：只通过受控 IOCTL 获取结构签名与模块边界验证后的证据；
+        // - 返回：未知系统布局显式 unsupported/partial，不尝试裸偏移扫描。
+        PlatformAuditResult queryPlatformAudit(unsigned long scopeMask = KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL, unsigned long maxRows = KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS) const;
+        // queryI8042Audit：
+        // - 输入：最大行预算；
+        // - 处理：通过专用只读 IOCTL 获取精确版本描述符验证后的键鼠端点；
+        // - 返回：未知 i8042prt 映像显式 unsupported，不回退到 CallbackEnum。
+        I8042AuditResult queryI8042Audit(unsigned long maxRows = KSWORD_ARK_I8042_DEFAULT_MAX_ROWS) const;
         // queryHwidDispatchState / controlHwidDispatch：
         // - 输入：无输入查询或完整 HWID Dispatch 控制包；
         // - 处理：只通过 ArkDriverClient 访问新增 IOCTL，Dock 不直接 DeviceIoControl；

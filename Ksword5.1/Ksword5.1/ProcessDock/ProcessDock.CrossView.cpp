@@ -598,53 +598,75 @@ void ProcessDock::refreshCrossViewAsync()
             {
                 return;
             }
-            guardThis->m_crossViewRefreshInProgress = false;
-            if (guardThis->m_crossViewRefreshButton != nullptr)
+            auto applySnapshot = [
+                guardThis,
+                ticket,
+                processSnapshot = std::move(processResult),
+                threadSnapshot = std::move(threadResult)]() mutable
             {
-                guardThis->m_crossViewRefreshButton->setEnabled(true);
-            }
+                if (guardThis == nullptr || guardThis->m_crossViewRefreshTicket != ticket)
+                {
+                    return;
+                }
 
-            guardThis->m_lastProcessCrossViewResult = processResult;
-            guardThis->m_lastThreadCrossViewResult = threadResult;
-            guardThis->m_processCrossViewCache = processResult.entries;
-            guardThis->m_threadCrossViewCache = threadResult.entries;
-            guardThis->rebuildCrossViewTables();
+                guardThis->m_crossViewRefreshInProgress = false;
+                if (guardThis->m_crossViewRefreshButton != nullptr)
+                {
+                    guardThis->m_crossViewRefreshButton->setEnabled(true);
+                }
 
-            QString statusText;
-            if (!processResult.io.ok || !threadResult.io.ok)
+                guardThis->m_lastProcessCrossViewResult = processSnapshot;
+                guardThis->m_lastThreadCrossViewResult = threadSnapshot;
+                guardThis->m_processCrossViewCache = processSnapshot.entries;
+                guardThis->m_threadCrossViewCache = threadSnapshot.entries;
+                guardThis->rebuildCrossViewTables();
+
+                QString statusText;
+                if (!processSnapshot.io.ok || !threadSnapshot.io.ok)
+                {
+                    // 将底层 IO 诊断转换为用户可读说明：
+                    // - 输入：ArkDriverClient 的 unsupported 标记和 io.message；
+                    // - 处理：保留“未集成/驱动过旧”的明确语义，其余交给 friendlyDriverDetail 归一化；
+                    // - 返回：状态栏短文本，不直接暴露 DeviceIoControl 等底层字符串。
+                    const QString processMessageText = processSnapshot.unsupported
+                        ? QStringLiteral("进程未集成/驱动过旧")
+                        : friendlyDriverDetail(narrowToQString(processSnapshot.io.message));
+                    const QString threadMessageText = threadSnapshot.unsupported
+                        ? QStringLiteral("线程未集成/驱动过旧")
+                        : friendlyDriverDetail(narrowToQString(threadSnapshot.io.message));
+                    statusText = QStringLiteral("状态：%1 / %2")
+                        .arg(processMessageText)
+                        .arg(threadMessageText);
+                    guardThis->m_crossViewStatusLabel->setStyleSheet(
+                        QStringLiteral("color:%1; font-weight:700;")
+                            .arg(KswordTheme::ErrorColor().name(QColor::HexRgb)));
+                }
+                else
+                {
+                    statusText = QStringLiteral("状态：进程 %1/%2，线程 %3/%4，missingCaps=0x%5/0x%6")
+                        .arg(processSnapshot.entries.size())
+                        .arg(processSnapshot.totalCount)
+                        .arg(threadSnapshot.entries.size())
+                        .arg(threadSnapshot.totalCount)
+                        .arg(static_cast<qulonglong>(processSnapshot.missingCapabilityMask), 0, 16)
+                        .arg(static_cast<qulonglong>(threadSnapshot.missingCapabilityMask), 0, 16);
+                    guardThis->m_crossViewStatusLabel->setStyleSheet(
+                        QStringLiteral("color:%1; font-weight:700;")
+                            .arg(KswordTheme::SuccessColor().name(QColor::HexRgb)));
+                }
+                guardThis->m_crossViewStatusLabel->setText(statusText);
+                guardThis->showCrossViewDetailForCurrentRow(false);
+            };
+
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    guardThis.data(),
+                    QStringLiteral("process-cross-view-snapshot-apply"),
+                    {guardThis->m_processCrossViewTable, guardThis->m_threadCrossViewTable},
+                    applySnapshot))
             {
-                // 将底层 IO 诊断转换为用户可读说明：
-                // - 输入：ArkDriverClient 的 unsupported 标记和 io.message；
-                // - 处理：保留“未集成/驱动过旧”的明确语义，其余交给 friendlyDriverDetail 归一化；
-                // - 返回：状态栏短文本，不直接暴露 DeviceIoControl 等底层字符串。
-                const QString processMessageText = processResult.unsupported
-                    ? QStringLiteral("进程未集成/驱动过旧")
-                    : friendlyDriverDetail(narrowToQString(processResult.io.message));
-                const QString threadMessageText = threadResult.unsupported
-                    ? QStringLiteral("线程未集成/驱动过旧")
-                    : friendlyDriverDetail(narrowToQString(threadResult.io.message));
-                statusText = QStringLiteral("状态：%1 / %2")
-                    .arg(processMessageText)
-                    .arg(threadMessageText);
-                guardThis->m_crossViewStatusLabel->setStyleSheet(
-                    QStringLiteral("color:%1; font-weight:700;")
-                        .arg(KswordTheme::ErrorColor().name(QColor::HexRgb)));
+                return;
             }
-            else
-            {
-                statusText = QStringLiteral("状态：进程 %1/%2，线程 %3/%4，missingCaps=0x%5/0x%6")
-                    .arg(processResult.entries.size())
-                    .arg(processResult.totalCount)
-                    .arg(threadResult.entries.size())
-                    .arg(threadResult.totalCount)
-                    .arg(static_cast<qulonglong>(processResult.missingCapabilityMask), 0, 16)
-                    .arg(static_cast<qulonglong>(threadResult.missingCapabilityMask), 0, 16);
-                guardThis->m_crossViewStatusLabel->setStyleSheet(
-                    QStringLiteral("color:%1; font-weight:700;")
-                        .arg(KswordTheme::SuccessColor().name(QColor::HexRgb)));
-            }
-            guardThis->m_crossViewStatusLabel->setText(statusText);
-            guardThis->showCrossViewDetailForCurrentRow(false);
+            applySnapshot();
         }, Qt::QueuedConnection);
     });
     task->setAutoDelete(true);
@@ -653,6 +675,22 @@ void ProcessDock::refreshCrossViewAsync()
 
 void ProcessDock::rebuildCrossViewTables()
 {
+    const QPointer<ProcessDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("process-cross-view-tables-rebuild"),
+        {m_processCrossViewTable, m_threadCrossViewTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->rebuildCrossViewTables();
+            }
+        }))
+    {
+        return;
+    }
+
     // 输入：无，读取 cross-view 缓存和过滤控件。
     // 处理：分别重绘进程/线程来源矩阵。
     // 返回：无。

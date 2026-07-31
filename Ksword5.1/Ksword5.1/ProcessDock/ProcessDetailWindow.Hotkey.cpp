@@ -1749,6 +1749,22 @@ void ProcessDetailWindow::requestAsyncHotkeyRefresh()
 
 void ProcessDetailWindow::applyHotkeyRefreshResult(const HotkeyInspectRefreshResult& refreshResult)
 {
+    QPointer<ProcessDetailWindow> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("process-detail-hotkey-snapshot-apply"),
+            {m_hotkeyTable, m_keyboardHotkeyTable},
+            [guardThis, refreshResult]()
+            {
+                if (guardThis != nullptr)
+                {
+                    guardThis->applyHotkeyRefreshResult(refreshResult);
+                }
+            }))
+    {
+        return;
+    }
+
     m_hotkeyRefreshing = false;
     if (m_refreshHotkeyButton != nullptr)
     {
@@ -2077,6 +2093,22 @@ void ProcessDetailWindow::requestAsyncKeyboardRefresh()
 
 void ProcessDetailWindow::applyKeyboardRefreshResult(const KeyboardInspectRefreshResult& refreshResult)
 {
+    QPointer<ProcessDetailWindow> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("process-detail-keyboard-snapshot-apply"),
+            {m_hotkeyTable, m_keyboardHotkeyTable, m_keyboardHookTable},
+            [guardThis, refreshResult]()
+            {
+                if (guardThis != nullptr)
+                {
+                    guardThis->applyKeyboardRefreshResult(refreshResult);
+                }
+            }))
+    {
+        return;
+    }
+
     m_keyboardRefreshing = false;
     if (m_refreshKeyboardButton != nullptr)
     {

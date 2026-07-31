@@ -470,6 +470,22 @@ void WindowEventHookTab::refreshAsync()
 
 void WindowEventHookTab::applySnapshot(QVector<QStringList> rows, const QString& statusText)
 {
+    const QPointer<WindowEventHookTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("window-event-hook-snapshot-apply"),
+        { m_table },
+        [safeThis, rows, statusText]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applySnapshot(std::move(rows), statusText);
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing = false;
     m_refreshButton->setEnabled(true);
     m_rows = std::move(rows);

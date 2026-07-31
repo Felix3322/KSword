@@ -453,8 +453,63 @@ DriverDock::~DriverDock()
 {
     stopDebugOutputCapture();
 
+    // 自身驱动页的业务对象仍由 KernelDock 持有；独立销毁 DriverDock 时将页面接回，
+    // 避免 KernelDock 的动态偏移/状态成员指向已经被 QTabWidget 删除的控件。
+    if (m_kswordSelfDriverPage != nullptr && m_tabWidget != nullptr)
+    {
+        const int pageIndex = m_tabWidget->indexOf(m_kswordSelfDriverPage);
+        if (pageIndex >= 0)
+        {
+            m_tabWidget->removeTab(pageIndex);
+        }
+        if (!m_kswordSelfDriverFallbackOwner.isNull())
+        {
+            m_kswordSelfDriverPage->setParent(m_kswordSelfDriverFallbackOwner);
+            m_kswordSelfDriverPage->hide();
+        }
+    }
+
     kLogEvent destroyEvent;
     info << destroyEvent
         << driverText("driver.log.destroyed", QStringLiteral("[DriverDock] 驱动页已析构。"))
         << eol;
+}
+
+void DriverDock::attachKswordSelfDriverPage(QWidget* page, QWidget* fallbackOwner)
+{
+    if (page == nullptr || m_tabWidget == nullptr)
+    {
+        return;
+    }
+    if (m_kswordSelfDriverPage == page)
+    {
+        return;
+    }
+
+    // 若未来调用方替换页面，先把旧页面从当前 Tab 中安全移除并交还原所有者。
+    if (m_kswordSelfDriverPage != nullptr)
+    {
+        const int oldPageIndex = m_tabWidget->indexOf(m_kswordSelfDriverPage);
+        if (oldPageIndex >= 0)
+        {
+            m_tabWidget->removeTab(oldPageIndex);
+        }
+        if (!m_kswordSelfDriverFallbackOwner.isNull())
+        {
+            m_kswordSelfDriverPage->setParent(m_kswordSelfDriverFallbackOwner);
+            m_kswordSelfDriverPage->hide();
+        }
+    }
+
+    m_kswordSelfDriverPage = page;
+    m_kswordSelfDriverFallbackOwner = fallbackOwner;
+    m_kswordSelfDriverTabIndex = m_tabWidget->addTab(
+        page,
+        QIcon(QStringLiteral(":/Icon/process_priority.svg")),
+        driverText("driver.tab.self_driver", QStringLiteral("Ksword自身驱动")));
+    m_tabWidget->setTabToolTip(
+        m_kswordSelfDriverTabIndex,
+        driverText(
+            "driver.tab.self_driver.tooltip",
+            QStringLiteral("KswordARK 动态偏移与驱动状态")));
 }

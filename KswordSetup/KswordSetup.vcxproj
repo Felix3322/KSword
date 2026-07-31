@@ -78,6 +78,7 @@
     <KswordSetupPayloadRoot>$(MSBuildProjectDirectory)\..\Ksword5.1\x64\$(Configuration)</KswordSetupPayloadRoot>
     <KswordSetupGeneratedDir>$(ProjectDir)generated</KswordSetupGeneratedDir>
   </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\Ksword.ReleaseOutput.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>

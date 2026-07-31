@@ -1,5 +1,6 @@
 #include "PrivilegeDock.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 
@@ -29,6 +30,7 @@
 #include <QMessageBox>
 #include <QModelIndex>
 #include <QPushButton>
+#include <QPointer>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -475,6 +477,22 @@ void PrivilegeDock::initializeConnections()
 
 void PrivilegeDock::refreshLocalUserList()
 {
+    QPointer<PrivilegeDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("privilege-local-user-refresh"),
+            {m_accountTable, m_permissionTable},
+            [guardThis]()
+            {
+                if (guardThis != nullptr)
+                {
+                    guardThis->refreshLocalUserList();
+                }
+            }))
+    {
+        return;
+    }
+
     // accountEvent 复用整条刷新日志链路。
     kLogEvent accountEvent;
     info << accountEvent
@@ -562,6 +580,22 @@ void PrivilegeDock::refreshLocalUserList()
 
 void PrivilegeDock::refreshLocalUserTable()
 {
+    QPointer<PrivilegeDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("privilege-local-user-table-rebuild"),
+            {m_accountTable},
+            [guardThis]()
+            {
+                if (guardThis != nullptr)
+                {
+                    guardThis->refreshLocalUserTable();
+                }
+            }))
+    {
+        return;
+    }
+
     m_accountTable->setRowCount(static_cast<int>(m_localUserList.size()));
     for (int row = 0; row < static_cast<int>(m_localUserList.size()); ++row)
     {
@@ -847,6 +881,22 @@ void PrivilegeDock::resetPasswordByInputs()
 
 void PrivilegeDock::refreshPermissionSnapshot()
 {
+    QPointer<PrivilegeDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("privilege-permission-snapshot-refresh"),
+            {m_accountTable, m_permissionTable},
+            [guardThis]()
+            {
+                if (guardThis != nullptr)
+                {
+                    guardThis->refreshPermissionSnapshot();
+                }
+            }))
+    {
+        return;
+    }
+
     kLogEvent event;
     info << event
         << privilegeLogText(

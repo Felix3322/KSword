@@ -46,6 +46,7 @@
     <IntDir>$(MSBuildProjectDirectory)\x64\$(Configuration)\obj\</IntDir>
     <TargetName>KswordARKLight</TargetName>
   </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\Ksword.ReleaseOutput.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <LanguageStandard>stdcpp20</LanguageStandard>

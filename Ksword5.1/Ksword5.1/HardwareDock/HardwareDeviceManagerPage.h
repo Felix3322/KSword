@@ -98,6 +98,13 @@ private:
     // - 无返回值，结果通过 queued connection 回到 UI。
     void refreshDevicesAsync(bool forceRefresh);
 
+    // applyDeviceSnapshot 作用：
+    // - 在 GUI 线程原子替换设备缓存并重建树；
+    // - 设备树右键菜单打开时延迟完整快照，避免旧 item 持有失效缓存指针。
+    void applyDeviceSnapshot(
+        std::vector<DeviceEntry> deviceList,
+        bool includeAllDevices);
+
     // rebuildDeviceTree 作用：
     // - 输入：设备快照列表；
     // - 处理：按 Parent InstanceId 构建树，应用搜索过滤和异常高亮；

@@ -1,5 +1,8 @@
 #include "KernelNamedPipeTab.h"
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 
 // ============================================================
 // KernelNamedPipeTab.cpp
@@ -277,6 +280,24 @@ void KernelNamedPipeTab::applySnapshot(
     const KernelNamedPipeSnapshot& snapshot)
 {
     if (refreshTicket < m_refreshTicket)
+    {
+        return;
+    }
+
+    const QPointer<KernelNamedPipeTab> guardThis(this);
+    const auto deferredSnapshot =
+        std::make_shared<KernelNamedPipeSnapshot>(snapshot);
+    if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-named-pipe-snapshot-apply"),
+        { m_resultTable },
+        [guardThis, refreshTicket, deferredSnapshot]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->applySnapshot(refreshTicket, *deferredSnapshot);
+            }
+        }))
     {
         return;
     }

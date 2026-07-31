@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -905,24 +906,45 @@ void MonitorDock::refreshArkRiskCenterAsync()
                 {
                     return;
                 }
-                guardThis->m_arkRiskRefreshInProgress = false;
-                if (guardThis->m_arkRiskRefreshButton != nullptr)
+
+                auto deferredEntries =
+                    std::make_shared<std::vector<MonitorDock::ArkRiskCenterEntry>>(std::move(entries));
+                auto deferredStatusLines = std::make_shared<QStringList>(std::move(statusLines));
+                auto commit = [guardThis, ticket, deferredEntries, deferredStatusLines]() mutable
                 {
-                    guardThis->m_arkRiskRefreshButton->setEnabled(true);
-                }
-                guardThis->m_arkRiskCenterEntries = std::move(entries);
-                guardThis->rebuildArkRiskCenterTable();
-                guardThis->showArkRiskCenterDetailForCurrentRow();
-                if (guardThis->m_arkRiskStatusLabel != nullptr)
+                    if (guardThis == nullptr || guardThis->m_arkRiskRefreshTicket != ticket)
+                    {
+                        return;
+                    }
+
+                    guardThis->m_arkRiskRefreshInProgress = false;
+                    if (guardThis->m_arkRiskRefreshButton != nullptr)
+                    {
+                        guardThis->m_arkRiskRefreshButton->setEnabled(true);
+                    }
+                    guardThis->m_arkRiskCenterEntries = std::move(*deferredEntries);
+                    guardThis->rebuildArkRiskCenterTable();
+                    guardThis->showArkRiskCenterDetailForCurrentRow();
+                    if (guardThis->m_arkRiskStatusLabel != nullptr)
+                    {
+                        guardThis->m_arkRiskStatusLabel->setText(
+                            QStringLiteral("状态：%1 项；%2")
+                            .arg(static_cast<qulonglong>(guardThis->m_arkRiskCenterEntries.size()))
+                            .arg(deferredStatusLines->join(QStringLiteral("；"))));
+                        guardThis->m_arkRiskStatusLabel->setStyleSheet(
+                            QStringLiteral("color:%1; font-weight:700;")
+                                .arg(KswordTheme::SuccessColor().name(QColor::HexRgb)));
+                    }
+                };
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        guardThis.data(),
+                        QStringLiteral("monitor-ark-risk-center-snapshot-apply"),
+                        {guardThis->m_arkRiskTable},
+                        commit))
                 {
-                    guardThis->m_arkRiskStatusLabel->setText(
-                        QStringLiteral("状态：%1 项；%2")
-                        .arg(static_cast<qulonglong>(guardThis->m_arkRiskCenterEntries.size()))
-                        .arg(statusLines.join(QStringLiteral("；"))));
-                    guardThis->m_arkRiskStatusLabel->setStyleSheet(
-                        QStringLiteral("color:%1; font-weight:700;")
-                            .arg(KswordTheme::SuccessColor().name(QColor::HexRgb)));
+                    return;
                 }
+                commit();
             },
             Qt::QueuedConnection);
     });

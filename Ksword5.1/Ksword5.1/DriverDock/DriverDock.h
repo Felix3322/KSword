@@ -14,6 +14,7 @@
 #include "../Framework.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 
+#include <QPointer>
 #include <QWidget>
 
 #include <atomic>   // std::atomic_bool：调试捕获线程运行标记。
@@ -42,6 +43,7 @@ class QSpinBox;
 class QTableWidget;
 class QTabWidget;
 class QVBoxLayout;
+class KernelThreadAuditTab;
 
 // DriverDock：
 // - 驱动页主控件；
@@ -60,6 +62,13 @@ public:
     // 析构函数：
     // - 作用：停止调试捕获线程并回收资源。
     ~DriverDock() override;
+
+    // attachKswordSelfDriverPage：
+    // - 输入 page：KernelDock 持有的“Ksword自身驱动”容器；
+    // - 输入 fallbackOwner：DriverDock 析构时接回页面的原始所有者；
+    // - 处理：将动态偏移/驱动状态作为驱动 Dock 一级页展示，不复制业务逻辑；
+    // - 输出：无，重复调用同一页面时保持幂等。
+    void attachKswordSelfDriverPage(QWidget* page, QWidget* fallbackOwner);
 
 protected:
     // showEvent：
@@ -97,12 +106,39 @@ private:
         std::uint64_t baseAddress = 0; // 基址（十六进制展示）。
     };
 
+    enum class LoadedModuleSignatureState : std::uint32_t
+    {
+        Pending = 0U,
+        PathUnavailable,
+        InvalidTrust,
+        TrustedEmbedded,
+        TrustedCatalog
+    };
+
+    // LoadedModuleSignatureEvidence：
+    // - 只缓存不依赖当前语言的签名语义、错误码和文件标识；
+    // - UI 线程按当前语言生成表格、筛选文本、提示与详情，语言切换无需重新扫描。
+    struct LoadedModuleSignatureEvidence
+    {
+        LoadedModuleSignatureState state = LoadedModuleSignatureState::Pending;
+        QString verificationPath;
+        QString fileIdentifier;
+        QString catalogPath;
+        QString signerCertificateName;
+        std::int32_t embeddedTrustStatus = 0;
+        std::int32_t catalogTrustStatus = 0;
+        std::uint32_t catalogLookupError = 0U;
+        bool catalogAttempted = false;
+        bool catalogTrustStatusAvailable = false;
+    };
+
     // LoadedModuleEvidenceRecord：
     // - 作用：保存单个已加载模块的 R0 证据聚合结果；
     // - 数据只用于 DriverDock 展示，不触发卸载、移除或修复动作。
     struct LoadedModuleEvidenceRecord
     {
         QString moduleName;            // moduleName：被聚合的模块名。
+        LoadedModuleSignatureEvidence signatureEvidence; // signatureEvidence：语言无关的 embedded/catalog 信任证据。
         QString driverObjectName;      // driverObjectName：成功解析到的 DriverObject 名称。
         QString driverObjectStatusText;// driverObjectStatusText：DriverObject 查询状态展示文本。
         QString driverStartMatchText;  // driverStartMatchText：DriverStart 与模块基址比对文本。
@@ -186,6 +222,11 @@ private:
     // - 查询/过滤/详情保持只读；PiDDB 来源另提供强确认的精确表项管理动作。
     void initializeUnloadedPiddbTab();
 
+    // initializeSystemThreadTab：
+    // - 构建“系统线程”一级页；
+    // - 复用 KernelThreadAuditTab 与 ArkDriverClient 现有线程协议。
+    void initializeSystemThreadTab();
+
     // initializeConnections：
     // - 作用：连接全部控件信号与业务槽函数。
     void initializeConnections();
@@ -213,6 +254,11 @@ private:
     // - 处理逻辑：逐行按源索引更新证据列，并刷新当前选中模块详情；
     // - 返回：无。
     void rebuildLoadedModuleEvidenceViews();
+
+    // updateLoadedModuleEvidenceStatusText：
+    // - 按缓存语义重新生成聚合摘要；
+    // - 语言切换时无需重跑 R0/签名后台扫描。
+    void updateLoadedModuleEvidenceStatusText();
 
     // showSelectedModuleEvidenceDetail：
     // - 作用：展示当前选中模块的证据明细；
@@ -396,6 +442,12 @@ private:
     static std::vector<LoadedModuleEvidenceRecord> collectEvidenceForLoadedModules(
         const std::vector<LoadedKernelModuleRecord>& moduleRecords);
 
+    // verifyLoadedModuleSignature：
+    // - 先验证 embedded Authenticode，再用系统 Catalog 进行 catalog-only fallback；
+    // - 仅完整链与 whole-chain revocation 都成功时标记可信，离线/未知均保持无效。
+    static LoadedModuleSignatureEvidence verifyLoadedModuleSignature(
+        const QString& rawImagePath);
+
     // buildPendingModuleEvidenceRecord：
     // - 作用：构造尚未聚合证据时的占位记录；
     // - 处理逻辑：所有证据列填入“待扫描”，详情区说明后台查询方式；
@@ -408,6 +460,16 @@ private:
     // - 处理逻辑：可疑为红色，解析失败/引用为橙色，正常为绿色；
     // - 返回：可直接设置到 QBrush 的 QColor。
     static QColor moduleEvidenceStatusColor(const LoadedModuleEvidenceRecord& evidence);
+
+    static bool moduleSignatureCheckAttempted(
+        const LoadedModuleEvidenceRecord& evidence);
+    static bool moduleSignatureTrusted(
+        const LoadedModuleEvidenceRecord& evidence);
+    static QString moduleSignatureStatusText(
+        const LoadedModuleEvidenceRecord& evidence);
+    static QString moduleSignatureDetailText(
+        const LoadedModuleEvidenceRecord& evidence);
+    static QString localizedModuleEvidenceText(const QString& sourceText);
 
     // rebuildDriverServiceTableByFilter：
     // - 作用：按过滤关键词重建驱动服务表格。
@@ -527,6 +589,10 @@ private:
     // ========================= 顶层布局 =========================
     QVBoxLayout* m_rootLayout = nullptr; // 根布局。
     QTabWidget* m_tabWidget = nullptr;   // 子页签容器。
+    KernelThreadAuditTab* m_systemThreadAuditTab = nullptr; // 系统线程一级审计页。
+    QWidget* m_kswordSelfDriverPage = nullptr; // 从 KernelDock 迁移的自身驱动容器。
+    QPointer<QWidget> m_kswordSelfDriverFallbackOwner; // 析构时接回自身驱动容器的所有者。
+    int m_kswordSelfDriverTabIndex = -1; // 自身驱动页在 DriverDock 中的索引。
 
     // ========================= 页签1：驱动概览 =========================
     QWidget* m_overviewPage = nullptr;            // 概览页容器。

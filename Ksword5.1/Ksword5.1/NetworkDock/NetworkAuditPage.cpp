@@ -1891,6 +1891,37 @@ NetworkAuditPage::AuditSnapshot NetworkAuditPage::buildAuditSnapshot(const bool 
 
 void NetworkAuditPage::applySnapshot(const AuditSnapshot& snapshot)
 {
+    // 完整审计会重建多个关联表格；任一右键菜单打开时必须整体延后提交，
+    // 否则同一快照只更新部分表格，也可能让菜单行号指向下一轮数据。
+    const QPointer<NetworkAuditPage> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-audit-full-snapshot"),
+        {
+            m_tcpTable,
+            m_udpTable,
+            m_crossSummaryTable,
+            m_afdTable,
+            m_wfpProviderTable,
+            m_wfpSubLayerTable,
+            m_wfpCalloutTable,
+            m_wfpFilterTable,
+            m_ndisAdapterTable,
+            m_ndisBindingTable,
+            m_ndisProtocolTable,
+            m_nsiSummaryTable
+        },
+        [safeThis, snapshot]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applySnapshot(snapshot);
+            }
+        }))
+    {
+        return;
+    }
+
     refreshCrossViewTable(snapshot);
     refreshAfdTable(snapshot.afdRows);
     refreshWfpTables(snapshot);
@@ -1906,6 +1937,23 @@ void NetworkAuditPage::applySnapshot(const AuditSnapshot& snapshot)
 
 void NetworkAuditPage::refreshCrossViewTable(const AuditSnapshot& snapshot)
 {
+    // 高频 TCP/UDP 自动刷新只重建交叉视图三表；菜单打开期间合并为最新快照。
+    const QPointer<NetworkAuditPage> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-audit-cross-view"),
+        { m_tcpTable, m_udpTable, m_crossSummaryTable },
+        [safeThis, snapshot]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshCrossViewTable(snapshot);
+            }
+        }))
+    {
+        return;
+    }
+
     m_tcpEndpointCache = snapshot.tcpEndpointRows;
     m_udpEndpointCache = snapshot.udpEndpointRows;
     if (!snapshot.r0TcpStatusText.isEmpty())

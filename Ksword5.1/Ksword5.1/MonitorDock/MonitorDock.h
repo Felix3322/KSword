@@ -1011,6 +1011,7 @@ private:
     std::uint32_t m_etwArchiveSegmentIndex = 0;      // 分段文件递增编号。
     std::atomic_bool m_etwArchiveWriteFailed{ false }; // 任一归档写入失败后停止继续接收事件。
     std::atomic<std::uint64_t> m_etwArchiveFilterTicket{ 0 }; // 后台全量筛选取消票据。
+    std::atomic<std::uint64_t> m_etwSessionRefreshTicket{ 0 }; // ETW 会话枚举请求票据，阻止旧 detached 结果回填。
     std::atomic<std::uint64_t> m_etwArchiveSessionGeneration{ 0 }; // 捕获会话代次，阻止旧任务读取新会话。
     std::mutex m_etwArchiveTaskMutex;                // 后台筛选/导出任务生命周期互斥锁。
     std::condition_variable m_etwArchiveTaskCondition; // 析构等待后台归档任务退出。

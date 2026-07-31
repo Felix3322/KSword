@@ -1,5 +1,6 @@
 #include "DiskEditorTab.h"
 #include "../../Framework/PrivilegeElevationPrompt.h"
+#include "../../UI/TableInteractionSupport.h"
 #include "../../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -973,6 +974,31 @@ namespace ks::misc
 
     void DiskEditorTab::applyDiskList(std::vector<DiskDeviceInfo> disks, const QString& errorText)
     {
+        const QList<QTableView*> diskEditorTables = {
+            m_partitionTable,
+            m_structureTable,
+            m_volumeTable,
+            m_healthTable
+        };
+        if (ks::ui::IsTableUiCommitBlockedByContextMenu(diskEditorTables))
+        {
+            const QPointer<DiskEditorTab> safeThis(this);
+            ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                this,
+                QStringLiteral("disk-editor-device-list-apply"),
+                diskEditorTables,
+                [safeThis, disks = std::move(disks), errorText]() mutable
+                {
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->applyDiskList(
+                            std::move(disks),
+                            errorText);
+                    }
+                });
+            return;
+        }
+
         m_disks = std::move(disks);
         m_diskCombo->blockSignals(true);
         m_diskCombo->clear();
@@ -1608,6 +1634,30 @@ namespace ks::misc
 
     void DiskEditorTab::applyStructureReport(DiskStructureReport report, const QString& errorText)
     {
+        const QList<QTableView*> structureTables = {
+            m_structureTable,
+            m_volumeTable,
+            m_healthTable
+        };
+        if (ks::ui::IsTableUiCommitBlockedByContextMenu(structureTables))
+        {
+            const QPointer<DiskEditorTab> safeThis(this);
+            ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                this,
+                QStringLiteral("disk-editor-structure-report-apply"),
+                structureTables,
+                [safeThis, report = std::move(report), errorText]() mutable
+                {
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->applyStructureReport(
+                            std::move(report),
+                            errorText);
+                    }
+                });
+            return;
+        }
+
         if (!errorText.isEmpty())
         {
             (void)ks::ui::promptForPrivilegeFailure(this, QStringLiteral("解析物理磁盘结构"), errorText);
@@ -2084,6 +2134,26 @@ namespace ks::misc
 
     void DiskEditorTab::applyRangeTaskResult(const QString& taskName, DiskRangeTaskResult result)
     {
+        if (taskName == QStringLiteral("搜索") &&
+            ks::ui::IsTableUiCommitBlockedByContextMenu({m_searchResultTable}))
+        {
+            const QPointer<DiskEditorTab> safeThis(this);
+            ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                this,
+                QStringLiteral("disk-editor-search-result-apply"),
+                {m_searchResultTable},
+                [safeThis, taskName, result = std::move(result)]() mutable
+                {
+                    if (!safeThis.isNull())
+                    {
+                        safeThis->applyRangeTaskResult(
+                            taskName,
+                            std::move(result));
+                    }
+                });
+            return;
+        }
+
         if (!result.errorText.isEmpty())
         {
             // privilegePromptHandled：避免提权提示后紧接着显示相互冲突的旧失败框。

@@ -1,6 +1,7 @@
 #include "ArkDriverClient.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <sstream>
 
 namespace ksword::ark

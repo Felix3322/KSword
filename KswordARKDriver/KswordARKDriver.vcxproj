@@ -114,6 +114,7 @@
     <ClCompile Include="src\features\thread\thread_detail.c" />
     <ClCompile Include="src\features\thread\thread_apc.c" />
     <ClCompile Include="src\features\thread\thread_ioctl.c" />
+    <ClCompile Include="src\features\thread\work_queue_query.c" />
     <ClCompile Include="src\features\handle\handle_support.c" />
     <ClCompile Include="src\features\handle\handle_object_query.c" />
     <ClCompile Include="src\features\handle\handle_query.c" />
@@ -173,6 +174,8 @@
     <ClCompile Include="src\features\device_audit\device_audit_query.c" />
     <ClCompile Include="src\features\device_audit\device_audit_support.c" />
     <ClCompile Include="src\features\device_audit\device_audit_targets.c" />
+    <ClCompile Include="src\features\platform_audit\platform_audit.c" />
+    <ClCompile Include="src\features\i8042_audit\i8042_audit.c" />
     <ClCompile Include="src\features\hwid\hwid_dispatch_hooks.c" />
     <ClCompile Include="src\features\hwid\hwid_dispatch_ioctl.c" />
   <ClCompile Include="src\features\callback\callback_external_wfp.c" /><ClCompile Include="src\features\callback\callback_external_minifilter.c" /><ClCompile Include="src\features\callback\callback_external_safe.c" /><ClCompile Include="src\features\memory\memory_physical.c" /><ClCompile Include="src\features\memory\memory_physical_layout.c" /><ClCompile Include="src\features\memory\memory_pagetable.c" /><ClCompile Include="src\features\memory\memory_kernel_exec_scan.c" /><ClCompile Include="src\features\memory\memory_kernel_exec_scan_helpers.c" /><ClCompile Include="src\features\memory\memory_kernel_evidence.c" /><ClCompile Include="src\features\memory\memory_evidence_enrichment.c" /><ClCompile Include="src\features\memory\memory_ioctl.c" /></ItemGroup>
@@ -214,6 +217,7 @@
     <ClInclude Include="include\ark\ark_dyndata_fields.h" />
     <ClInclude Include="include\ark\ark_capability.h" />
     <ClInclude Include="include\ark\ark_thread.h" />
+    <ClInclude Include="..\shared\driver\KswordArkWorkQueueIoctl.h" />
     <ClInclude Include="include\ark\ark_thread_crossview.h" />
     <ClInclude Include="include\ark\ark_handle.h" />
     <ClInclude Include="src\features\handle\handle_support.h" />
@@ -249,6 +253,8 @@
     <ClInclude Include="..\shared\driver\KswordArkKernelObjectIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkFilterIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkDeviceAuditIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkPlatformAuditIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkI8042AuditIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkHwidIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkDriverBlindIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkWin32kIoctl.h" />
@@ -342,9 +348,7 @@
     <UseDebugLibraries>false</UseDebugLibraries>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <ImportGroup Label="ExtensionSettings">
-    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
-  </ImportGroup>
+  <ImportGroup Label="ExtensionSettings" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
@@ -378,6 +382,7 @@
     <SignMode>Off</SignMode>
     <SkipPackageVerification>true</SkipPackageVerification>
   </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\Ksword.ReleaseOutput.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)include;$(ProjectDir)..\shared;$(ProjectDir)..\third_party\systeminformer_dyn;$(WindowsSdkDir)Include\$(TargetPlatformVersion)\km;$(WindowsSdkDir)Include\$(TargetPlatformVersion)\shared;$(WindowsSdkDir)Include\wdf\kmdf\1.15;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -471,7 +476,5 @@
     <Error Condition="!Exists('$(KswordArkSignScript)')" Text="KswordARK driver variant signing script was not found: $(KswordArkSignScript)" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets">
-    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
-  </ImportGroup>
+  <ImportGroup Label="ExtensionTargets" />
 </Project>

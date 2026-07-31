@@ -1,5 +1,6 @@
 #include "OtherDock.h"
 #include "../theme.h"
+#include "../UI/TableInteractionSupport.h"
 
 // ============================================================
 // OtherDock.Desktop.cpp
@@ -12,6 +13,7 @@
 #include <QColor>
 #include <QFont>
 #include <QLabel>
+#include <QPointer>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -652,6 +654,22 @@ void OtherDock::refreshDesktopList()
         err << refreshEvent
             << "[OtherDock] 刷新桌面列表失败：桌面管理控件未初始化。"
             << eol;
+        return;
+    }
+
+    const QPointer<OtherDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("desktop-management-table-refresh"),
+        {m_desktopTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->refreshDesktopList();
+            }
+        }))
+    {
         return;
     }
 

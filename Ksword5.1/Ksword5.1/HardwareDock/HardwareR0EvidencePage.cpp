@@ -1,4 +1,5 @@
 #include "HardwareR0EvidencePage.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
@@ -1172,65 +1173,110 @@ void HardwareR0EvidencePage::refreshEvidenceAsync(const bool forceRefresh)
 
         QMetaObject::invokeMethod(safeThis.data(), [safeThis, ticket, bundle = std::move(bundle)]() mutable
         {
-            if (safeThis == nullptr || safeThis->m_refreshTicket.load() != ticket)
+            if (safeThis == nullptr)
             {
                 return;
             }
 
-            safeThis->m_refreshing.store(false);
-            if (safeThis->m_refreshButton != nullptr)
-            {
-                safeThis->m_refreshButton->setEnabled(true);
-            }
-
-            safeThis->m_lastIntegrityResult = bundle.integrityResult;
-            safeThis->m_lastCapabilityResult = bundle.capabilityResult;
-            safeThis->m_lastDynDataResult = bundle.dynDataResult;
-            safeThis->m_evidenceCache.clear();
-            safeThis->m_evidenceCache.reserve(bundle.integrityResult.entries.size());
-            for (const auto& row : bundle.integrityResult.entries)
-            {
-                if (isHardwareCpuEvidenceClass(row.evidenceClass))
-                {
-                    safeThis->m_evidenceCache.push_back(row);
-                }
-            }
-            safeThis->rebuildEvidenceTable();
-            safeThis->showSelectedEvidenceDetail();
-
-            if (!bundle.integrityResult.io.ok)
-            {
-                const QString message = bundle.integrityResult.unsupported
-                    ? QStringLiteral("状态：当前 R0 驱动未支持 CPU Integrity IOCTL")
-                    : QStringLiteral("状态：R0 查询不可用：%1").arg(friendlyHardwareIoMessage(bundle.integrityResult.io.message));
-                safeThis->setStatusText(message, KswordTheme::ErrorColor().name(QColor::HexRgb));
-                return;
-            }
-
-            const QString capabilityText = bundle.capabilityResult.io.ok
-                ? QStringLiteral("Cap:%1/%2")
-                    .arg(bundle.capabilityResult.returnedFeatureCount)
-                    .arg(bundle.capabilityResult.totalFeatureCount)
-                : QStringLiteral("Cap不可用");
-            const QString dynDataText = bundle.dynDataResult.io.ok
-                ? QStringLiteral("Dyn:0x%1")
-                    .arg(static_cast<qulonglong>(bundle.dynDataResult.capabilityMask), 0, 16)
-                    .toUpper()
-                : QStringLiteral("Dyn不可用");
-            const QString statusText = QStringLiteral("状态：%1，证据 %2/%3，CPU %4，模块 %5，%6，%7，Last=%8")
-                .arg(queryStatusText(bundle.integrityResult.queryStatus))
-                .arg(safeThis->m_evidenceCache.size())
-                .arg(bundle.integrityResult.totalCount)
-                .arg(bundle.integrityResult.cpuCount)
-                .arg(bundle.integrityResult.moduleCount)
-                .arg(capabilityText)
-                .arg(dynDataText)
-                .arg(ntStatusText(bundle.integrityResult.lastStatus));
-            safeThis->setStatusText(statusText, KswordTheme::PrimaryBlueHex);
+            safeThis->applyEvidenceQueryResults(
+                ticket,
+                std::move(bundle.capabilityResult),
+                std::move(bundle.dynDataResult),
+                std::move(bundle.integrityResult));
         }, Qt::QueuedConnection);
     });
     task->setAutoDelete(true);
     QThreadPool::globalInstance()->start(task);
+}
+
+void HardwareR0EvidencePage::applyEvidenceQueryResults(
+    const std::uint64_t ticket,
+    ksword::ark::DriverCapabilitiesQueryResult capabilityResult,
+    ksword::ark::DynDataCapabilitiesResult dynDataResult,
+    ksword::ark::DriverIntegrityResult integrityResult)
+{
+    if (m_refreshTicket.load() != ticket)
+    {
+        return;
+    }
+
+    if (ks::ui::IsTableUiCommitBlockedByContextMenu({m_evidenceTable}))
+    {
+        const QPointer<HardwareR0EvidencePage> safeThis(this);
+        ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("hardware-r0-evidence-snapshot-apply"),
+            {m_evidenceTable},
+            [safeThis,
+                ticket,
+                capabilityResult = std::move(capabilityResult),
+                dynDataResult = std::move(dynDataResult),
+                integrityResult = std::move(integrityResult)]() mutable
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyEvidenceQueryResults(
+                        ticket,
+                        std::move(capabilityResult),
+                        std::move(dynDataResult),
+                        std::move(integrityResult));
+                }
+            });
+        return;
+    }
+
+    m_refreshing.store(false);
+    if (m_refreshButton != nullptr)
+    {
+        m_refreshButton->setEnabled(true);
+    }
+
+    m_lastIntegrityResult = std::move(integrityResult);
+    m_lastCapabilityResult = std::move(capabilityResult);
+    m_lastDynDataResult = std::move(dynDataResult);
+    m_evidenceCache.clear();
+    m_evidenceCache.reserve(m_lastIntegrityResult.entries.size());
+    for (const auto& row : m_lastIntegrityResult.entries)
+    {
+        if (isHardwareCpuEvidenceClass(row.evidenceClass))
+        {
+            m_evidenceCache.push_back(row);
+        }
+    }
+    rebuildEvidenceTable();
+    showSelectedEvidenceDetail();
+
+    if (!m_lastIntegrityResult.io.ok)
+    {
+        const QString message = m_lastIntegrityResult.unsupported
+            ? QStringLiteral("状态：当前 R0 驱动未支持 CPU Integrity IOCTL")
+            : QStringLiteral("状态：R0 查询不可用：%1")
+                .arg(friendlyHardwareIoMessage(m_lastIntegrityResult.io.message));
+        setStatusText(message, KswordTheme::ErrorColor().name(QColor::HexRgb));
+        return;
+    }
+
+    const QString capabilityText = m_lastCapabilityResult.io.ok
+        ? QStringLiteral("Cap:%1/%2")
+            .arg(m_lastCapabilityResult.returnedFeatureCount)
+            .arg(m_lastCapabilityResult.totalFeatureCount)
+        : QStringLiteral("Cap不可用");
+    const QString dynDataText = m_lastDynDataResult.io.ok
+        ? QStringLiteral("Dyn:0x%1")
+            .arg(static_cast<qulonglong>(m_lastDynDataResult.capabilityMask), 0, 16)
+            .toUpper()
+        : QStringLiteral("Dyn不可用");
+    const QString statusText =
+        QStringLiteral("状态：%1，证据 %2/%3，CPU %4，模块 %5，%6，%7，Last=%8")
+        .arg(queryStatusText(m_lastIntegrityResult.queryStatus))
+        .arg(m_evidenceCache.size())
+        .arg(m_lastIntegrityResult.totalCount)
+        .arg(m_lastIntegrityResult.cpuCount)
+        .arg(m_lastIntegrityResult.moduleCount)
+        .arg(capabilityText)
+        .arg(dynDataText)
+        .arg(ntStatusText(m_lastIntegrityResult.lastStatus));
+    setStatusText(statusText, KswordTheme::PrimaryBlueHex);
 }
 
 void HardwareR0EvidencePage::rebuildEvidenceTable()

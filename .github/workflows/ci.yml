@@ -264,12 +264,12 @@ jobs:
         shell: pwsh
         run: |
           $artifacts = @(
-            'Ksword5.1/Ksword5.1/x64/Release/Ksword5.1.exe',
+            'Ksword5.1/x64/Release/Ksword5.1.exe',
             'Ksword5.1/x64/Release/Launcher.exe',
-            'Taskbar/x64/Release/Taskbar.exe',
-            'KswordHUD/x64/Release/KswordHUD.exe',
-            'APIMonitor_x64/x64/Release/APIMonitor_x64.dll',
-            'KswordCLI/x64/Release/KswordCLI.exe'
+            'Ksword5.1/x64/Release/Taskbar.exe',
+            'Ksword5.1/x64/Release/KswordHUD.exe',
+            'Ksword5.1/x64/Release/APIMonitor_x64.dll',
+            'Ksword5.1/x64/Release/KswordCLI.exe'
           )
           $missing = $artifacts | Where-Object { -not (Test-Path $_) }
           if ($missing) {
@@ -362,8 +362,8 @@ jobs:
         shell: pwsh
         run: |
           $artifacts = @(
-            'KswordSetup/x64/Release/KswordSetup.exe',
-            'KswordSetup/x64/Release/KswordSetup.pdb'
+            'Ksword5.1/x64/Release/KswordSetup.exe',
+            'Ksword5.1/x64/Release/KswordSetup.pdb'
           )
           $missing = $artifacts | Where-Object { -not (Test-Path $_) }
           if ($missing) {
@@ -375,8 +375,8 @@ jobs:
         with:
           name: KswordSetup-unsigned-Release
           path: |
-            KswordSetup/x64/Release/KswordSetup.exe
-            KswordSetup/x64/Release/KswordSetup.pdb
+            Ksword5.1/x64/Release/KswordSetup.exe
+            Ksword5.1/x64/Release/KswordSetup.pdb
           if-no-files-found: error
 
   ksword-arklight:

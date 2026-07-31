@@ -1,4 +1,7 @@
 #include "KernelDock.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 #include "../UI/VisibleTableWidget.h"
 
 #include "KernelDockSsdtWorker.h"
@@ -298,6 +301,11 @@ void KernelDock::refreshSsdtAsync()
         const bool success = runSsdtSnapshotTask(resultRows, errorText);
 
         QMetaObject::invokeMethod(guardThis, [guardThis, success, errorText, resultRows = std::move(resultRows)]() mutable {
+            const auto deferredRows =
+                std::make_shared<std::vector<KernelSsdtEntry>>(std::move(resultRows));
+            auto commitResult = [guardThis, success, errorText, deferredRows]() mutable
+            {
+            std::vector<KernelSsdtEntry>& resultRows = *deferredRows;
             if (guardThis == nullptr)
             {
                 return;
@@ -341,6 +349,21 @@ void KernelDock::refreshSsdtAsync()
             {
                 guardThis->m_ssdtDetailEditor->setText(kernelText("kernel.ssdt.empty", QStringLiteral("当前环境未返回可见 SSDT 条目。")));
             }
+            };
+
+            if (guardThis == nullptr)
+            {
+                return;
+            }
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                guardThis.data(),
+                QStringLiteral("kernel-ssdt-snapshot-apply"),
+                { guardThis->m_ssdtTable },
+                commitResult))
+            {
+                return;
+            }
+            commitResult();
         }, Qt::QueuedConnection);
     }).detach();
 }

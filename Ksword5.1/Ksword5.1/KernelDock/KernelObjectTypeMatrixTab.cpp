@@ -11,6 +11,7 @@
 
 #include "KernelDockQueryWorker.h"
 #include "../UI/CodeEditorWidget.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
 #include <QAbstractItemView>
@@ -198,6 +199,22 @@ void KernelObjectTypeMatrixTab::applyRefreshResult(
     const QString& errorText,
     const bool success)
 {
+    const QPointer<KernelObjectTypeMatrixTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-object-type-matrix-snapshot"),
+        { m_table },
+        [safeThis, rows, errorText, success]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applyRefreshResult(std::move(rows), errorText, success);
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshing.store(false);
     m_refreshButton->setEnabled(true);
 

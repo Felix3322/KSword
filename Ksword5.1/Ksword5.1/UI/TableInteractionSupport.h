@@ -1,8 +1,15 @@
 #pragma once
 
 class QApplication;
+class QAbstractItemView;
+class QObject;
+class QTableView;
 
+#include <QList>
+#include <QString>
 #include <QtGlobal>
+
+#include <functional>
 
 namespace ks::ui
 {
@@ -26,4 +33,37 @@ namespace ks::ui
     void OpenProcessDetailByIdentity(
         quint32 pid,
         quint64 creationTime100ns);
+
+    // IsTableUiCommitBlockedByContextMenu 作用：
+    // - 输入：一次 UI 提交会修改的全部表格；
+    // - 返回：任一表格的右键菜单仍打开时为 true；
+    // - 供携带大型可移动快照的刷新入口先判断，避免正常刷新为延迟回调复制整份数据。
+    bool IsTableUiCommitBlockedByContextMenu(
+        const QList<QTableView*>& tableList);
+
+    // IsItemViewUiCommitBlockedByContextMenu 作用：
+    // - 与表格版本相同，但同时支持 QTreeView/QTreeWidget；
+    // - 用于设备树、句柄树等带业务右键菜单的异步重建入口。
+    bool IsItemViewUiCommitBlockedByContextMenu(
+        const QList<QAbstractItemView*>& itemViewList);
+
+    // DeferTableUiCommitIfContextMenuOpen 作用：
+    // - 输入：提交任务所有者、稳定去重键、会被重建的表格集合和 UI 提交函数；
+    // - 处理：任一表格的右键菜单打开时只保留同 owner/key 的最新提交，菜单关闭后回投；
+    // - 返回：true 表示本次提交已延后，false 表示当前没有右键菜单，调用方应立即提交。
+    // 调用方法：刷新函数在修改模型前调用；返回 true 时立即结束本轮刷新。
+    bool DeferTableUiCommitIfContextMenuOpen(
+        QObject* owner,
+        const QString& commitKey,
+        const QList<QTableView*>& tableList,
+        std::function<void()> commitAction);
+
+    // DeferItemViewUiCommitIfContextMenuOpen 作用：
+    // - 为 QTableView 与 QTreeView 提供同一菜单屏障与 owner/key latest-wins 语义；
+    // - 刷新函数必须在清空缓存、模型或 item 前调用，返回 true 时立即结束。
+    bool DeferItemViewUiCommitIfContextMenuOpen(
+        QObject* owner,
+        const QString& commitKey,
+        const QList<QAbstractItemView*>& itemViewList,
+        std::function<void()> commitAction);
 }

@@ -3,6 +3,7 @@
 #include "KernelDock.h"
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/KernelDisassemblyDialog.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../theme.h"
 
@@ -266,6 +267,22 @@ void KernelDescriptorTableTab::refreshAsync()
 
 void KernelDescriptorTableTab::applyResult(ksword::ark::DriverIntegrityResult result)
 {
+    const QPointer<KernelDescriptorTableTab> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("kernel-descriptor-table-snapshot"),
+        { m_table },
+        [safeThis, result]() mutable
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->applyResult(std::move(result));
+            }
+        }))
+    {
+        return;
+    }
+
     m_refreshRunning = false;
     m_refreshButton->setEnabled(true);
     if (m_restoreIdtButton != nullptr)

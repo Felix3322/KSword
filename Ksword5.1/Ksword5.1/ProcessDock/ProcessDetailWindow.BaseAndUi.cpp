@@ -3179,6 +3179,7 @@ void ProcessDetailWindow::initializeThreadTab()
             hasDriverThreadTarget =
                 selectedCacheIndex < m_threadInspectRows.size() &&
                 m_threadInspectRows[selectedCacheIndex].threadId != 0U &&
+                m_threadInspectRows[selectedCacheIndex].createTime100ns != 0ULL &&
                 (m_threadInspectRows[selectedCacheIndex].startAddress != 0ULL ||
                  m_threadInspectRows[selectedCacheIndex].win32StartAddress != 0ULL);
         }

@@ -70,7 +70,7 @@ void ProcessDetailWindow::executeR0SuspendSelectedThreadAction()
         return;
     }
 
-    const ThreadInspectItem& selectedThread = m_threadInspectRows[cacheIndex];
+    const ThreadInspectItem selectedThread = m_threadInspectRows[cacheIndex];
     const std::uint32_t processId = selectedThread.processId != 0U
         ? selectedThread.processId
         : m_baseRecord.pid;
@@ -201,7 +201,8 @@ void ProcessDetailWindow::executeDriverThreadAction(
     const std::uint64_t startAddress = selectedThread.startAddress != 0ULL
         ? selectedThread.startAddress
         : selectedThread.win32StartAddress;
-    if (m_baseRecord.pid != 4U || selectedThread.threadId == 0U || startAddress == 0ULL)
+    if (m_baseRecord.pid != 4U || selectedThread.threadId == 0U ||
+        startAddress == 0ULL || selectedThread.createTime100ns == 0ULL)
     {
         return;
     }
@@ -284,6 +285,7 @@ void ProcessDetailWindow::executeDriverThreadAction(
     const ksword::ark::IoResult result = driverClient.controlDriverThread(
         selectedThread.threadId,
         startAddress,
+        selectedThread.createTime100ns,
         action,
         terminateMethod,
         action != KSWORD_ARK_DRIVER_THREAD_ACTION_RESUME);

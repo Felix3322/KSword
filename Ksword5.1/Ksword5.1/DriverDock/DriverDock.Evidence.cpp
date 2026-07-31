@@ -1,9 +1,42 @@
 #include "DriverDock.Internal.h"
+#include "../OnlineScan/SandboxUploadActions.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <Windows.h>
+#include <bcrypt.h>
+#include <wincrypt.h>
+#include <mscat.h>
+#include <Softpub.h>
+#include <WinTrust.h>
+
+#include <QByteArray>
+
+#pragma comment(lib, "Wintrust.lib")
 
 using namespace ksword::driver_dock_internal;
 
 namespace
 {
+    class DriverEvidenceSourceTextScope final
+    {
+    public:
+        DriverEvidenceSourceTextScope()
+            : m_previousMode(swapDriverEvidenceSourceTextMode(true))
+        {
+        }
+
+        ~DriverEvidenceSourceTextScope()
+        {
+            swapDriverEvidenceSourceTextMode(m_previousMode);
+        }
+
+        DriverEvidenceSourceTextScope(const DriverEvidenceSourceTextScope&) = delete;
+        DriverEvidenceSourceTextScope& operator=(const DriverEvidenceSourceTextScope&) = delete;
+
+    private:
+        bool m_previousMode = false;
+    };
+
     // EvidenceModuleKey：模块证据聚合使用的小写模块名 key。
     // 输入：模块名或路径叶子名；处理：去空白、取文件名、小写；返回：稳定比较 key。
     QString evidenceModuleKey(QString moduleNameText)
@@ -229,8 +262,366 @@ namespace
         }
         return bitCount;
     }
+
+    struct CatalogSignatureVerification
+    {
+        QString fileIdentifier;
+        QString catalogPath;
+        QString signerCertificateName;
+        LONG trustStatus = 0;
+        DWORD lookupError = ERROR_SUCCESS;
+        bool trustStatusAvailable = false;
+        bool trusted = false;
+    };
+
+    class CatalogAdminHandle final
+    {
+    public:
+        CatalogAdminHandle() = default;
+
+        ~CatalogAdminHandle()
+        {
+            if (value != nullptr)
+            {
+                ::CryptCATAdminReleaseContext(value, 0);
+            }
+        }
+
+        CatalogAdminHandle(const CatalogAdminHandle&) = delete;
+        CatalogAdminHandle& operator=(const CatalogAdminHandle&) = delete;
+
+        HCATADMIN value = nullptr;
+    };
+
+    class ReadOnlyFileHandle final
+    {
+    public:
+        explicit ReadOnlyFileHandle(const QString& filePath)
+            : value(::CreateFileW(
+                reinterpret_cast<LPCWSTR>(filePath.utf16()),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                nullptr))
+        {
+        }
+
+        ~ReadOnlyFileHandle()
+        {
+            if (value != INVALID_HANDLE_VALUE)
+            {
+                ::CloseHandle(value);
+            }
+        }
+
+        ReadOnlyFileHandle(const ReadOnlyFileHandle&) = delete;
+        ReadOnlyFileHandle& operator=(const ReadOnlyFileHandle&) = delete;
+
+        HANDLE value = INVALID_HANDLE_VALUE;
+    };
+
+    // initializeStrictTrustData：
+    // - whole-chain 吊销检查覆盖完整证书链（根证书除外）；
+    // - 仅使用本机缓存，离线、未知或链不完整时 WinVerifyTrust 必须返回失败。
+    void initializeStrictTrustData(WINTRUST_DATA& trustData)
+    {
+        trustData = WINTRUST_DATA{};
+        trustData.cbStruct = sizeof(trustData);
+        trustData.dwUIChoice = WTD_UI_NONE;
+        trustData.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+        trustData.dwProvFlags =
+            WTD_SAFER_FLAG |
+            WTD_CACHE_ONLY_URL_RETRIEVAL |
+            WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT |
+            WTD_DISABLE_MD2_MD4;
+    }
+
+    // extractSignerCertificateName：
+    // - 输入：WinVerifyTrust 在 VERIFY 阶段保留的 provider state；
+    // - 处理：读取首个 signer chain 的叶证书 simple display name；
+    // - 返回：最终签名证书名称，链状态不可读时为空。
+    QString extractSignerCertificateName(const WINTRUST_DATA& trustData)
+    {
+        if (trustData.hWVTStateData == nullptr)
+        {
+            return QString();
+        }
+
+        CRYPT_PROVIDER_DATA* providerData =
+            ::WTHelperProvDataFromStateData(trustData.hWVTStateData);
+        if (providerData == nullptr)
+        {
+            return QString();
+        }
+        CRYPT_PROVIDER_SGNR* signer =
+            ::WTHelperGetProvSignerFromChain(providerData, 0, FALSE, 0);
+        if (signer == nullptr ||
+            signer->csCertChain == 0 ||
+            signer->pasCertChain == nullptr ||
+            signer->pasCertChain[0].pCert == nullptr)
+        {
+            return QString();
+        }
+
+        const CERT_CONTEXT* certificateContext =
+            signer->pasCertChain[0].pCert;
+        const DWORD requiredChars = ::CertGetNameStringW(
+            certificateContext,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            0,
+            nullptr,
+            nullptr,
+            0);
+        if (requiredChars <= 1)
+        {
+            return QString();
+        }
+
+        std::vector<wchar_t> nameBuffer(requiredChars, L'\0');
+        const DWORD writtenChars = ::CertGetNameStringW(
+            certificateContext,
+            CERT_NAME_SIMPLE_DISPLAY_TYPE,
+            0,
+            nullptr,
+            nameBuffer.data(),
+            requiredChars);
+        if (writtenChars <= 1)
+        {
+            return QString();
+        }
+        return QString::fromWCharArray(
+            nameBuffer.data(),
+            static_cast<int>(writtenChars - 1)).trimmed();
+    }
+
+    // runWinTrustAndClose：所有 VERIFY 路径先提取叶证书名称，再执行 STATEACTION_CLOSE。
+    LONG runWinTrustAndClose(
+        WINTRUST_DATA& trustData,
+        QString* const signerCertificateNameOut = nullptr)
+    {
+        GUID policyGuid = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+        trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+        const LONG trustStatus = ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        if (signerCertificateNameOut != nullptr)
+        {
+            *signerCertificateNameOut =
+                extractSignerCertificateName(trustData);
+        }
+        trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+        ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
+        trustData.hWVTStateData = nullptr;
+        return trustStatus;
+    }
+
+    bool calculateCatalogHash(
+        const HCATADMIN catalogAdmin,
+        const HANDLE fileHandle,
+        std::vector<BYTE>& fileHash)
+    {
+        LARGE_INTEGER fileStart{};
+        ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
+        DWORD hashSize = 0U;
+        if (!::CryptCATAdminCalcHashFromFileHandle2(
+            catalogAdmin,
+            fileHandle,
+            &hashSize,
+            nullptr,
+            0) ||
+            hashSize == 0U)
+        {
+            return false;
+        }
+
+        fileHash.resize(hashSize);
+        ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
+        const BOOL hashResult = ::CryptCATAdminCalcHashFromFileHandle2(
+            catalogAdmin,
+            fileHandle,
+            &hashSize,
+            fileHash.data(),
+            0);
+        if (hashResult == FALSE)
+        {
+            return false;
+        }
+        fileHash.resize(hashSize);
+        return true;
+    }
+
+    CatalogSignatureVerification verifyCatalogSignature(
+        const QString& normalizedPath,
+        const HANDLE fileHandle)
+    {
+        CatalogSignatureVerification verification;
+        CatalogAdminHandle catalogAdmin;
+        GUID driverActionVerify = DRIVER_ACTION_VERIFY;
+        if (!::CryptCATAdminAcquireContext2(
+            &catalogAdmin.value,
+            &driverActionVerify,
+            BCRYPT_SHA256_ALGORITHM,
+            nullptr,
+            0))
+        {
+            verification.lookupError = ::GetLastError();
+            return verification;
+        }
+
+        std::vector<BYTE> fileHash;
+        if (!calculateCatalogHash(catalogAdmin.value, fileHandle, fileHash))
+        {
+            verification.lookupError = ::GetLastError();
+            return verification;
+        }
+
+        const QByteArray fileIdentifierBytes = QByteArray(
+            reinterpret_cast<const char*>(fileHash.data()),
+            static_cast<qsizetype>(fileHash.size()))
+            .toHex()
+            .toUpper();
+        verification.fileIdentifier = QString::fromLatin1(
+            fileIdentifierBytes.constData(),
+            fileIdentifierBytes.size());
+
+        HCATINFO previousCatalog = nullptr;
+        for (;;)
+        {
+            HCATINFO currentCatalog = ::CryptCATAdminEnumCatalogFromHash(
+                catalogAdmin.value,
+                fileHash.data(),
+                static_cast<DWORD>(fileHash.size()),
+                0,
+                &previousCatalog);
+            if (currentCatalog == nullptr)
+            {
+                const DWORD enumerationError = ::GetLastError();
+                verification.lookupError = enumerationError == ERROR_SUCCESS
+                    ? ERROR_NOT_FOUND
+                    : enumerationError;
+                // 把 previous 传给下一次枚举时，API 接管并释放该 context；
+                // 自然耗尽返回 nullptr 后调用方已不再拥有 HCATINFO。
+                previousCatalog = nullptr;
+                break;
+            }
+            previousCatalog = currentCatalog;
+
+            CATALOG_INFO catalogInfo{};
+            catalogInfo.cbStruct = sizeof(catalogInfo);
+            if (!::CryptCATCatalogInfoFromContext(
+                currentCatalog,
+                &catalogInfo,
+                0))
+            {
+                verification.lookupError = ::GetLastError();
+                continue;
+            }
+
+            verification.catalogPath = QString::fromWCharArray(
+                catalogInfo.wszCatalogFile);
+            WINTRUST_CATALOG_INFO trustCatalogInfo{};
+            trustCatalogInfo.cbStruct = sizeof(trustCatalogInfo);
+            trustCatalogInfo.pcwszCatalogFilePath =
+                reinterpret_cast<LPCWSTR>(verification.catalogPath.utf16());
+            trustCatalogInfo.pcwszMemberTag =
+                reinterpret_cast<LPCWSTR>(verification.fileIdentifier.utf16());
+            trustCatalogInfo.pcwszMemberFilePath =
+                reinterpret_cast<LPCWSTR>(normalizedPath.utf16());
+            trustCatalogInfo.hMemberFile = fileHandle;
+            trustCatalogInfo.pbCalculatedFileHash = fileHash.data();
+            trustCatalogInfo.cbCalculatedFileHash =
+                static_cast<DWORD>(fileHash.size());
+            trustCatalogInfo.hCatAdmin = catalogAdmin.value;
+
+            WINTRUST_DATA trustData{};
+            initializeStrictTrustData(trustData);
+            trustData.dwUnionChoice = WTD_CHOICE_CATALOG;
+            trustData.pCatalog = &trustCatalogInfo;
+            // Catalog provider 读取同一只读句柄前回到文件起点，不依赖哈希 API 留下的游标。
+            LARGE_INTEGER fileStart{};
+            ::SetFilePointerEx(fileHandle, fileStart, nullptr, FILE_BEGIN);
+            verification.trustStatus = runWinTrustAndClose(
+                trustData,
+                &verification.signerCertificateName);
+            verification.trustStatusAvailable = true;
+            verification.trusted =
+                verification.trustStatus == ERROR_SUCCESS;
+            if (verification.trusted)
+            {
+                // 成功后提前结束枚举，按 mscat 契约显式释放最后一个 context。
+                ::CryptCATAdminReleaseCatalogContext(
+                    catalogAdmin.value,
+                    currentCatalog,
+                    0);
+                previousCatalog = nullptr;
+                verification.lookupError = ERROR_SUCCESS;
+                break;
+            }
+        }
+        return verification;
+    }
 }
 
+DriverDock::LoadedModuleSignatureEvidence DriverDock::verifyLoadedModuleSignature(
+    const QString& rawImagePath)
+{
+    LoadedModuleSignatureEvidence evidence;
+    const QString normalizedPath =
+        ks::online_scan::normalizeKernelImagePathForUpload(rawImagePath).trimmed();
+    evidence.verificationPath =
+        normalizedPath.isEmpty() ? rawImagePath : normalizedPath;
+    if (normalizedPath.isEmpty() || !QFileInfo::exists(normalizedPath))
+    {
+        evidence.state = LoadedModuleSignatureState::PathUnavailable;
+        return evidence;
+    }
+
+    WINTRUST_FILE_INFO fileInfo{};
+    fileInfo.cbStruct = sizeof(fileInfo);
+    fileInfo.pcwszFilePath =
+        reinterpret_cast<LPCWSTR>(normalizedPath.utf16());
+
+    WINTRUST_DATA embeddedTrustData{};
+    initializeStrictTrustData(embeddedTrustData);
+    embeddedTrustData.dwUnionChoice = WTD_CHOICE_FILE;
+    embeddedTrustData.pFile = &fileInfo;
+    const LONG embeddedTrustStatus = runWinTrustAndClose(
+        embeddedTrustData,
+        &evidence.signerCertificateName);
+    evidence.embeddedTrustStatus =
+        static_cast<std::int32_t>(embeddedTrustStatus);
+    if (embeddedTrustStatus == ERROR_SUCCESS)
+    {
+        evidence.state = LoadedModuleSignatureState::TrustedEmbedded;
+        return evidence;
+    }
+
+    // embedded 失败后必须继续查系统 Catalog，支持没有 PE 证书表的 catalog-only 驱动。
+    evidence.catalogAttempted = true;
+    ReadOnlyFileHandle fileHandle(normalizedPath);
+    if (fileHandle.value == INVALID_HANDLE_VALUE)
+    {
+        evidence.catalogLookupError = ::GetLastError();
+        evidence.state = LoadedModuleSignatureState::InvalidTrust;
+        return evidence;
+    }
+
+    const CatalogSignatureVerification catalogVerification =
+        verifyCatalogSignature(normalizedPath, fileHandle.value);
+    evidence.fileIdentifier = catalogVerification.fileIdentifier;
+    evidence.catalogPath = catalogVerification.catalogPath;
+    evidence.signerCertificateName =
+        catalogVerification.signerCertificateName;
+    evidence.catalogTrustStatus =
+        static_cast<std::int32_t>(catalogVerification.trustStatus);
+    evidence.catalogLookupError = catalogVerification.lookupError;
+    evidence.catalogTrustStatusAvailable =
+        catalogVerification.trustStatusAvailable;
+    evidence.state = catalogVerification.trusted
+        ? LoadedModuleSignatureState::TrustedCatalog
+        : LoadedModuleSignatureState::InvalidTrust;
+    return evidence;
+}
 
 DriverDock::LoadedModuleEvidenceRecord DriverDock::buildPendingModuleEvidenceRecord(
     const LoadedKernelModuleRecord& moduleRecord)
@@ -238,16 +629,15 @@ DriverDock::LoadedModuleEvidenceRecord DriverDock::buildPendingModuleEvidenceRec
     // 输入：模块记录；处理：填充各列等待文本；返回：占位证据记录。
     LoadedModuleEvidenceRecord evidence;
     evidence.moduleName = moduleRecord.moduleName;
-    const QString pendingScanText = driverText("driver.evidence.pending", QStringLiteral("待扫描"));
+    const QString pendingScanText = QStringLiteral("待扫描");
     evidence.driverObjectStatusText = pendingScanText;
     evidence.driverStartMatchText = pendingScanText;
     evidence.majorFunctionStatusText = pendingScanText;
     evidence.iatEatStatusText = pendingScanText;
     evidence.inlineHookStatusText = pendingScanText;
     evidence.callbackStatusText = pendingScanText;
-    evidence.detailText = driverText(
-        "driver.evidence.pending.detail",
-        QStringLiteral("模块 %1 尚未执行证据聚合。\n点击工具栏证据刷新按钮后，后台线程会只读查询 DriverObject / Hook / Callback。"))
+    evidence.detailText = QStringLiteral(
+        "模块 %1 尚未执行证据聚合。\n点击工具栏证据刷新按钮后，后台线程会只读查询 DriverObject / Hook / Callback。")
         .arg(moduleRecord.moduleName);
     return evidence;
 }
@@ -259,7 +649,9 @@ QColor DriverDock::moduleEvidenceStatusColor(const LoadedModuleEvidenceRecord& e
     {
         return KswordTheme::TextSecondaryColor();
     }
-    if (evidence.hasMajorFunctionExternalJump ||
+    if ((moduleSignatureCheckAttempted(evidence) &&
+            !moduleSignatureTrusted(evidence)) ||
+        evidence.hasMajorFunctionExternalJump ||
         evidence.hasIatEatSuspicious ||
         evidence.hasInlineHookSuspicious ||
         evidence.communicationConflict)
@@ -275,6 +667,153 @@ QColor DriverDock::moduleEvidenceStatusColor(const LoadedModuleEvidenceRecord& e
         return KswordTheme::WarningColor();
     }
     return KswordTheme::SuccessColor();
+}
+
+bool DriverDock::moduleSignatureCheckAttempted(
+    const LoadedModuleEvidenceRecord& evidence)
+{
+    return evidence.signatureEvidence.state !=
+        LoadedModuleSignatureState::Pending;
+}
+
+bool DriverDock::moduleSignatureTrusted(
+    const LoadedModuleEvidenceRecord& evidence)
+{
+    return evidence.signatureEvidence.state ==
+            LoadedModuleSignatureState::TrustedEmbedded ||
+        evidence.signatureEvidence.state ==
+            LoadedModuleSignatureState::TrustedCatalog;
+}
+
+QString DriverDock::moduleSignatureStatusText(
+    const LoadedModuleEvidenceRecord& evidence)
+{
+    if (!moduleSignatureCheckAttempted(evidence))
+    {
+        return driverText(
+            "driver.evidence.pending",
+            QStringLiteral("待扫描"));
+    }
+    if (!moduleSignatureTrusted(evidence))
+    {
+        return driverText(
+            "driver.signature.invalid",
+            QStringLiteral("无效"));
+    }
+    if (!evidence.signatureEvidence.signerCertificateName.isEmpty())
+    {
+        return evidence.signatureEvidence.signerCertificateName;
+    }
+    return driverText(
+        "driver.signature.valid_signer_unknown",
+        QStringLiteral("有效（签名者未知）"));
+}
+
+QString DriverDock::moduleSignatureDetailText(
+    const LoadedModuleEvidenceRecord& evidence)
+{
+    const LoadedModuleSignatureEvidence& signature =
+        evidence.signatureEvidence;
+    const auto trustStatusHex = [](const std::int32_t statusValue)
+    {
+        return QString::number(
+            static_cast<std::uint32_t>(statusValue),
+            16)
+            .rightJustified(8, QLatin1Char('0'))
+            .toUpper();
+    };
+    const QString unavailableText = driverText(
+        "driver.signature.not_available",
+        QStringLiteral("<不可用>"));
+    const QString verificationPath = signature.verificationPath.isEmpty()
+        ? unavailableText
+        : signature.verificationPath;
+    const QString signerCertificateName =
+        signature.signerCertificateName.isEmpty()
+        ? unavailableText
+        : signature.signerCertificateName;
+
+    switch (signature.state)
+    {
+    case LoadedModuleSignatureState::Pending:
+        return driverText(
+            "driver.signature.pending.detail",
+            QStringLiteral("数字签名信任链等待后台验证。"));
+    case LoadedModuleSignatureState::PathUnavailable:
+        return driverText(
+            "driver.signature.path_unavailable",
+            QStringLiteral("签名无效：模块映像路径不可访问。\n路径：%1"))
+            .arg(verificationPath);
+    case LoadedModuleSignatureState::TrustedEmbedded:
+        return driverText(
+            "driver.signature.valid.embedded.detail",
+            QStringLiteral(
+                "数字签名有效：Windows 已验证嵌入式 Authenticode 完整信任链。\n"
+                "签名者：%1\n路径：%2\n验证方式：嵌入签名"))
+            .arg(signerCertificateName)
+            .arg(verificationPath);
+    case LoadedModuleSignatureState::TrustedCatalog:
+        return driverText(
+            "driver.signature.valid.catalog.detail",
+            QStringLiteral(
+                "数字签名有效：Windows 已通过系统目录验证完整信任链。\n"
+                "签名者：%1\n路径：%2\n验证方式：目录签名\n文件标识：%3\n目录：%4"))
+            .arg(signerCertificateName)
+            .arg(verificationPath)
+            .arg(signature.fileIdentifier.isEmpty()
+                ? unavailableText
+                : signature.fileIdentifier)
+            .arg(signature.catalogPath.isEmpty()
+                ? unavailableText
+                : signature.catalogPath);
+    case LoadedModuleSignatureState::InvalidTrust:
+    default:
+        break;
+    }
+
+    const QString catalogTrustText =
+        signature.catalogTrustStatusAvailable
+        ? QStringLiteral("0x%1").arg(
+            trustStatusHex(signature.catalogTrustStatus))
+        : driverText(
+            "driver.signature.not_performed",
+            QStringLiteral("未执行"));
+    const QString catalogLookupText = QStringLiteral("%1 (0x%2)")
+        .arg(signature.catalogLookupError)
+        .arg(
+            QString::number(signature.catalogLookupError, 16)
+                .rightJustified(8, QLatin1Char('0'))
+                .toUpper());
+    return driverText(
+        "driver.signature.invalid.strict.detail",
+        QStringLiteral(
+            "数字签名无效或完整信任链无法验证。\n"
+            "路径：%1\n"
+            "嵌入式 WinVerifyTrust：0x%2\n"
+            "目录 WinVerifyTrust：%3\n"
+            "目录查询错误：%4\n"
+            "文件标识：%5\n"
+            "说明：吊销状态离线、未知或链不完整均按无效处理。"))
+        .arg(verificationPath)
+        .arg(trustStatusHex(signature.embeddedTrustStatus))
+        .arg(catalogTrustText)
+        .arg(catalogLookupText)
+        .arg(signature.fileIdentifier.isEmpty()
+            ? unavailableText
+            : signature.fileIdentifier);
+}
+
+QString DriverDock::localizedModuleEvidenceText(const QString& sourceText)
+{
+    QStringList localizedLines;
+    const QStringList sourceLines =
+        sourceText.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    localizedLines.reserve(sourceLines.size());
+    for (const QString& sourceLine : sourceLines)
+    {
+        localizedLines.push_back(ks::i18n::displayText(sourceLine));
+    }
+    return localizedLines.join(QLatin1Char('\n'));
 }
 
 bool DriverDock::queryDriverObjectForModuleEvidence(
@@ -336,6 +875,8 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
     const std::vector<LoadedKernelModuleRecord>& moduleRecords)
 {
     // 输入：当前模块快照；处理：调用现有 DriverClient 能力聚合证据；返回：与输入等长的证据数组。
+    // 后台线程只缓存源文本和语义字段；LanguageManager 只允许 GUI 渲染阶段访问。
+    const DriverEvidenceSourceTextScope sourceTextScope;
     std::vector<LoadedModuleEvidenceRecord> evidenceRecords;
     evidenceRecords.reserve(moduleRecords.size());
 
@@ -355,18 +896,11 @@ std::vector<DriverDock::LoadedModuleEvidenceRecord> DriverDock::collectEvidenceF
     {
         LoadedModuleEvidenceRecord evidence = buildPendingModuleEvidenceRecord(moduleRecord);
         evidence.queryAttempted = true;
+        // signatureVerification 用途：把模块文件的 Windows 信任链结论纳入同一后台证据快照。
+        evidence.signatureEvidence =
+            verifyLoadedModuleSignature(moduleRecord.imagePath);
 
         QStringList detailLines;
-        detailLines << driverText("driver.evidence.detail.title", QStringLiteral("模块证据聚合"))
-                    << driverText("driver.evidence.detail.module", QStringLiteral("模块: %1")).arg(moduleRecord.moduleName)
-                    << driverText("driver.evidence.detail.base", QStringLiteral("基址: %1"))
-                        .arg(formatCompactAddress(moduleRecord.baseAddress))
-                    << driverText("driver.evidence.detail.image_path", QStringLiteral("映像路径: %1"))
-                        .arg(moduleRecord.imagePath)
-                    << driverText(
-                        "driver.evidence.detail.read_only_note",
-                        QStringLiteral("说明: 本结果仅聚合证据，不执行卸载、移除或修复。"))
-                    << QString();
 
         ksword::ark::DriverObjectQueryResult objectResult;
         QString attemptedNamesText;
@@ -821,67 +1355,152 @@ void DriverDock::refreshLoadedModuleEvidenceAsync()
     }
 
     const std::vector<LoadedKernelModuleRecord> moduleSnapshot = m_loadedModuleCache;
+    QObject* const applicationContext = QCoreApplication::instance();
+    if (applicationContext == nullptr)
+    {
+        m_moduleEvidenceQuerying = false;
+        if (m_refreshModuleEvidenceButton != nullptr)
+        {
+            m_refreshModuleEvidenceButton->setEnabled(true);
+        }
+        return;
+    }
+
     QPointer<DriverDock> guardThis(this);
-    auto* evidenceTask = QRunnable::create([guardThis, ticketValue, moduleSnapshot]()
+    auto* evidenceTask = QRunnable::create(
+        [applicationContext, guardThis, ticketValue, moduleSnapshot]()
         {
             auto resultRecords = DriverDock::collectEvidenceForLoadedModules(moduleSnapshot);
 
+            // 应用对象是稳定投递 context；QPointer 只在 GUI lambda 内检查并解引用。
             QMetaObject::invokeMethod(
-                guardThis,
+                applicationContext,
                 [guardThis, ticketValue, resultRecords = std::move(resultRecords)]() mutable
                 {
+                    if (guardThis == nullptr)
+                    {
+                        return;
+                    }
+
+                    const auto deferredRecords =
+                        std::make_shared<std::vector<LoadedModuleEvidenceRecord>>(
+                            std::move(resultRecords));
+                    const auto commitEvidence = [guardThis, ticketValue, deferredRecords]()
+                    {
+                        if (guardThis == nullptr ||
+                            guardThis->m_moduleEvidenceQueryTicket != ticketValue)
+                        {
+                            return;
+                        }
+
+                        guardThis->m_moduleEvidenceQuerying = false;
+                        if (guardThis->m_refreshModuleEvidenceButton != nullptr)
+                        {
+                            guardThis->m_refreshModuleEvidenceButton->setEnabled(true);
+                        }
+
+                        guardThis->m_loadedModuleEvidenceCache = std::move(*deferredRecords);
+                        // 签名状态本身也是搜索字段，因此后台完成后必须重新应用共享过滤器。
+                        guardThis->rebuildLoadedModuleTable();
+                        guardThis->updateLoadedModuleEvidenceStatusText();
+                    };
+
                     if (guardThis == nullptr ||
                         guardThis->m_moduleEvidenceQueryTicket != ticketValue)
                     {
                         return;
                     }
-
-                    guardThis->m_moduleEvidenceQuerying = false;
-                    if (guardThis->m_refreshModuleEvidenceButton != nullptr)
+                    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        guardThis.data(),
+                        QStringLiteral("driver-loaded-module-evidence-apply"),
+                        { guardThis->m_moduleTable },
+                        commitEvidence))
                     {
-                        guardThis->m_refreshModuleEvidenceButton->setEnabled(true);
+                        return;
                     }
-
-                    std::size_t suspiciousCount = 0U;
-                    std::size_t callbackCount = 0U;
-                    std::size_t errorCount = 0U;
-                    for (const auto& evidence : resultRecords)
-                    {
-                        if (evidence.hasMajorFunctionExternalJump ||
-                            evidence.hasIatEatSuspicious ||
-                            evidence.hasInlineHookSuspicious ||
-                            evidence.communicationConflict)
-                        {
-                            ++suspiciousCount;
-                        }
-                        if (evidence.hasCallbackReference)
-                        {
-                            ++callbackCount;
-                        }
-                        if (evidence.hasScanError)
-                        {
-                            ++errorCount;
-                        }
-                    }
-
-                    guardThis->m_loadedModuleEvidenceCache = std::move(resultRecords);
-                    guardThis->rebuildLoadedModuleEvidenceViews();
-                    if (guardThis->m_moduleEvidenceStatusLabel != nullptr)
-                    {
-                        guardThis->m_moduleEvidenceStatusLabel->setText(
-                            driverText(
-                                "driver.evidence.status.completed",
-                                QStringLiteral("证据：已聚合 %1 个模块，可疑=%2，Callback引用=%3，错误=%4"))
-                            .arg(guardThis->m_loadedModuleEvidenceCache.size())
-                            .arg(suspiciousCount)
-                            .arg(callbackCount)
-                            .arg(errorCount));
-                    }
+                    commitEvidence();
                 },
                 Qt::QueuedConnection);
         });
     evidenceTask->setAutoDelete(true);
     QThreadPool::globalInstance()->start(evidenceTask);
+}
+
+void DriverDock::updateLoadedModuleEvidenceStatusText()
+{
+    if (m_moduleEvidenceStatusLabel == nullptr)
+    {
+        return;
+    }
+    if (m_moduleEvidenceQuerying)
+    {
+        m_moduleEvidenceStatusLabel->setText(driverText(
+            "driver.evidence.status.aggregating",
+            QStringLiteral("证据：正在刷新...")));
+        return;
+    }
+    if (m_loadedModuleEvidenceCache.empty())
+    {
+        m_moduleEvidenceStatusLabel->setText(driverText(
+            "driver.evidence.status.no_modules_short",
+            QStringLiteral("证据：没有可聚合的模块。")));
+        return;
+    }
+
+    const bool hasCompletedEvidence = std::any_of(
+        m_loadedModuleEvidenceCache.cbegin(),
+        m_loadedModuleEvidenceCache.cend(),
+        [](const LoadedModuleEvidenceRecord& evidence)
+        {
+            return evidence.queryAttempted;
+        });
+    if (!hasCompletedEvidence)
+    {
+        m_moduleEvidenceStatusLabel->setText(driverText(
+            "driver.evidence.status.modules_refreshed",
+            QStringLiteral("证据：模块列表已刷新。")));
+        return;
+    }
+
+    std::size_t suspiciousCount = 0U;
+    std::size_t callbackCount = 0U;
+    std::size_t errorCount = 0U;
+    std::size_t invalidSignatureCount = 0U;
+    for (const LoadedModuleEvidenceRecord& evidence :
+        m_loadedModuleEvidenceCache)
+    {
+        if (evidence.hasMajorFunctionExternalJump ||
+            evidence.hasIatEatSuspicious ||
+            evidence.hasInlineHookSuspicious ||
+            evidence.communicationConflict)
+        {
+            ++suspiciousCount;
+        }
+        if (evidence.hasCallbackReference)
+        {
+            ++callbackCount;
+        }
+        if (evidence.hasScanError)
+        {
+            ++errorCount;
+        }
+        if (moduleSignatureCheckAttempted(evidence) &&
+            !moduleSignatureTrusted(evidence))
+        {
+            ++invalidSignatureCount;
+        }
+    }
+
+    m_moduleEvidenceStatusLabel->setText(
+        driverText(
+            "driver.evidence.status.completed",
+            QStringLiteral(
+                "证据：已聚合 %1 个模块，可疑=%2，Callback引用=%3，错误=%4，签名无效=%5"))
+        .arg(m_loadedModuleEvidenceCache.size())
+        .arg(suspiciousCount)
+        .arg(callbackCount)
+        .arg(errorCount)
+        .arg(invalidSignatureCount));
 }
 
 void DriverDock::rebuildLoadedModuleEvidenceViews()
@@ -908,29 +1527,166 @@ void DriverDock::rebuildLoadedModuleEvidenceViews()
         }
 
         const LoadedModuleEvidenceRecord& evidence = m_loadedModuleEvidenceCache[sourceIndex];
+        // invalidSignature 用途：只有后台确实完成校验且信任链失败时才整行标红。
+        const bool invalidSignature =
+            moduleSignatureCheckAttempted(evidence) &&
+            !moduleSignatureTrusted(evidence);
+        QColor invalidSignatureBackgroundColor = KswordTheme::ErrorColor();
+        invalidSignatureBackgroundColor.setAlpha(48);
+        for (int columnIndex = 0;
+            columnIndex < m_moduleTable->columnCount();
+            ++columnIndex)
+        {
+            QTableWidgetItem* rowItem = m_moduleTable->item(rowIndex, columnIndex);
+            if (rowItem != nullptr)
+            {
+                rowItem->setBackground(
+                    invalidSignature
+                    ? QBrush(invalidSignatureBackgroundColor)
+                    : QBrush());
+            }
+        }
+
+        QTableWidgetItem* signatureItem =
+            m_moduleTable->item(rowIndex, ModuleSignatureColumn);
+        const QString signatureStatusText =
+            moduleSignatureStatusText(evidence);
+        const QString signatureDetailText =
+            moduleSignatureDetailText(evidence);
+        if (signatureItem == nullptr)
+        {
+            signatureItem = createReadOnlyItem(signatureStatusText);
+            m_moduleTable->setItem(rowIndex, ModuleSignatureColumn, signatureItem);
+        }
+        else
+        {
+            signatureItem->setText(signatureStatusText);
+        }
+        const QColor signatureColor = !moduleSignatureCheckAttempted(evidence)
+            ? KswordTheme::TextSecondaryColor()
+            : (moduleSignatureTrusted(evidence)
+                ? KswordTheme::SuccessColor()
+                : KswordTheme::ErrorColor());
+        signatureItem->setForeground(QBrush(signatureColor));
+        signatureItem->setToolTip(signatureDetailText.left(4000));
+
+        const QString pendingText = driverText(
+            "driver.evidence.pending",
+            QStringLiteral("待扫描"));
+        const QString driverObjectStatusText = !evidence.queryAttempted
+            ? pendingText
+            : (evidence.driverObjectResolved
+                ? driverText(
+                    "driver.evidence.status.resolved",
+                    QStringLiteral("已解析"))
+                : driverText(
+                    "driver.evidence.status.unresolved",
+                    QStringLiteral("未解析")));
+        const QString driverStartStatusText = !evidence.queryAttempted
+            ? pendingText
+            : (!evidence.driverStartKnown
+                ? driverText(
+                    "driver.evidence.status.unknown",
+                    QStringLiteral("未知"))
+                : (evidence.driverStartMatchesBase
+                    ? driverText(
+                        "driver.evidence.status.match",
+                        QStringLiteral("匹配"))
+                    : driverText(
+                        "driver.evidence.status.mismatch",
+                        QStringLiteral("不匹配"))));
+
+        QString majorFunctionStatusText = pendingText;
+        if (evidence.queryAttempted)
+        {
+            const std::uint32_t communicationConflictCount =
+                evidenceCommunicationMaskCount(
+                    evidence.communicationConflictMask);
+            if (evidence.communicationConflict)
+            {
+                majorFunctionStatusText = driverText(
+                    "driver.evidence.status.communication_conflict",
+                    QStringLiteral("主动致盲 %1/5 · 冲突 %2"))
+                    .arg(evidence.majorFunctionIntentionalBlindCount)
+                    .arg(communicationConflictCount);
+            }
+            else if (evidence.majorFunctionIntentionalBlindCount != 0U &&
+                evidence.hasMajorFunctionExternalJump)
+            {
+                majorFunctionStatusText = driverText(
+                    "driver.evidence.status.communication_and_external",
+                    QStringLiteral("主动致盲 %1/5 · 未知外跳 %2"))
+                    .arg(evidence.majorFunctionIntentionalBlindCount)
+                    .arg(evidence.majorFunctionExternalCount);
+            }
+            else if (evidence.majorFunctionIntentionalBlindCount != 0U)
+            {
+                majorFunctionStatusText = driverText(
+                    "driver.evidence.status.communication_active",
+                    QStringLiteral("主动致盲 %1/5"))
+                    .arg(evidence.majorFunctionIntentionalBlindCount);
+            }
+            else
+            {
+                majorFunctionStatusText =
+                    evidence.hasMajorFunctionExternalJump
+                    ? driverText(
+                        "driver.evidence.status.external_count",
+                        QStringLiteral("外跳 %1"))
+                        .arg(evidence.majorFunctionExternalCount)
+                    : driverText(
+                        "driver.evidence.status.no_external",
+                        QStringLiteral("未见外跳"));
+            }
+        }
+
+        const QString iatEatStatusText =
+            evidence.queryAttempted && evidence.hasIatEatSuspicious
+            ? driverText(
+                "driver.evidence.status.suspicious_count",
+                QStringLiteral("可疑 %1"))
+                .arg(evidence.iatEatSuspiciousCount)
+            : localizedModuleEvidenceText(evidence.iatEatStatusText);
+        const QString inlineHookStatusText =
+            evidence.queryAttempted && evidence.hasInlineHookSuspicious
+            ? driverText(
+                "driver.evidence.status.suspicious_count",
+                QStringLiteral("可疑 %1"))
+                .arg(evidence.inlineHookSuspiciousCount)
+            : localizedModuleEvidenceText(evidence.inlineHookStatusText);
+        const QString callbackStatusText =
+            evidence.queryAttempted && evidence.hasCallbackReference
+            ? driverText(
+                "driver.evidence.status.reference_count",
+                QStringLiteral("引用 %1"))
+                .arg(evidence.callbackReferenceCount)
+            : localizedModuleEvidenceText(evidence.callbackStatusText);
         const QStringList columnTexts = {
-            evidence.driverObjectStatusText,
-            evidence.driverStartMatchText,
-            evidence.majorFunctionStatusText,
-            evidence.iatEatStatusText,
-            evidence.inlineHookStatusText,
-            evidence.callbackStatusText
+            driverObjectStatusText,
+            driverStartStatusText,
+            majorFunctionStatusText,
+            iatEatStatusText,
+            inlineHookStatusText,
+            callbackStatusText
         };
         const QColor foregroundColor = moduleEvidenceStatusColor(evidence);
         for (int columnOffset = 0; columnOffset < columnTexts.size(); ++columnOffset)
         {
-            QTableWidgetItem* cellItem = m_moduleTable->item(rowIndex, 2 + columnOffset);
+            const int columnIndex = ModuleEvidenceFirstColumn + columnOffset;
+            QTableWidgetItem* cellItem = m_moduleTable->item(rowIndex, columnIndex);
             if (cellItem == nullptr)
             {
                 cellItem = createReadOnlyItem(columnTexts[columnOffset]);
-                m_moduleTable->setItem(rowIndex, 2 + columnOffset, cellItem);
+                m_moduleTable->setItem(rowIndex, columnIndex, cellItem);
             }
             else
             {
                 cellItem->setText(columnTexts[columnOffset]);
             }
             cellItem->setForeground(QBrush(foregroundColor));
-            cellItem->setToolTip(evidence.detailText.left(4000));
+            // 完整证据已经显示在表格下方的详情区；证据列不再重复挂载
+            // 最长 4000 字符的悬停文本，避免 tooltip 遮挡整个主窗口。
+            cellItem->setToolTip(QString());
         }
     }
 
@@ -979,5 +1735,60 @@ void DriverDock::showSelectedModuleEvidenceDetail()
         return;
     }
 
-    m_moduleEvidenceDetailEditor->setLocalizedText(m_loadedModuleEvidenceCache[sourceIndex].detailText);
+    const LoadedModuleEvidenceRecord& evidence =
+        m_loadedModuleEvidenceCache[sourceIndex];
+    const LoadedKernelModuleRecord* moduleRecord =
+        sourceIndex < m_loadedModuleCache.size()
+        ? &m_loadedModuleCache[sourceIndex]
+        : nullptr;
+    const QString signatureSummary = driverText(
+        "driver.evidence.detail.signature",
+        QStringLiteral("数字签名: %1"))
+        .arg(moduleSignatureStatusText(evidence));
+    QString evidenceBody;
+    if (!evidence.queryAttempted)
+    {
+        evidenceBody = driverText(
+            "driver.evidence.pending.detail",
+            QStringLiteral(
+                "模块 %1 尚未执行证据聚合。\n"
+                "点击工具栏证据刷新按钮后，后台线程会只读查询 DriverObject / Hook / Callback。"))
+            .arg(evidence.moduleName);
+    }
+    else
+    {
+        evidenceBody = localizedModuleEvidenceText(evidence.detailText);
+    }
+
+    QStringList localizedDetailLines;
+    localizedDetailLines
+        << driverText(
+            "driver.evidence.detail.title",
+            QStringLiteral("模块证据聚合"))
+        << driverText(
+            "driver.evidence.detail.module",
+            QStringLiteral("模块: %1"))
+            .arg(evidence.moduleName);
+    if (moduleRecord != nullptr)
+    {
+        localizedDetailLines
+            << driverText(
+                "driver.evidence.detail.base",
+                QStringLiteral("基址: %1"))
+                .arg(formatCompactAddress(moduleRecord->baseAddress))
+            << driverText(
+                "driver.evidence.detail.image_path",
+                QStringLiteral("映像路径: %1"))
+                .arg(moduleRecord->imagePath);
+    }
+    localizedDetailLines
+        << signatureSummary
+        << moduleSignatureDetailText(evidence)
+        << driverText(
+            "driver.evidence.detail.read_only_note",
+            QStringLiteral("说明: 本结果仅聚合证据，不执行卸载、移除或修复。"))
+        << QString()
+        << evidenceBody;
+    m_moduleEvidenceDetailEditor->setRawText(
+        localizedDetailLines.join(QLatin1Char('\n')));
 }

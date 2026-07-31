@@ -1959,6 +1959,24 @@ private:
             return;
         }
 
+        // 定时读取本身会消费驱动队列；菜单打开时必须在 drain IOCTL 前延后，
+        // 否则 latest-wins 只能保留最后一个已消费批次。
+        const QPointer<CallbackInterceptController> guardThis(this);
+        if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("kernel-callback-file-monitor-drain"),
+            { m_fileMonitorTable },
+            [guardThis]()
+            {
+                if (!guardThis.isNull())
+                {
+                    guardThis->drainFileMonitorEvents();
+                }
+            }))
+        {
+            return;
+        }
+
         const ksword::ark::DriverClient driverClient;
         const ksword::ark::FileMonitorDrainResult drainResult = driverClient.drainFileMonitor(128UL, 0UL);
         if (!drainResult.io.ok)

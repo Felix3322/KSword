@@ -230,10 +230,19 @@
     <ClCompile Include="KernelDock\KernelHvmTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KernelDock\KernelThreadAuditTab.Snapshot.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="KernelDock\KernelDock.KernelHooks.cpp">
@@ -797,6 +806,9 @@
     <ClCompile Include="ArkDriverClient\ArkDriverProcess.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverWorkQueue.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverHandle.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
@@ -860,6 +872,12 @@
     <ClCompile Include="HardwareDock\DiskMonitorPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="HardwareDock\DiskMonitorStoragePanel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="HardwareDock\HardwareR0EvidencePage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -870,6 +888,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="HardwareDock\HardwareHwidDispatchPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="HardwareDock\HardwareI8042AuditPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -1060,7 +1081,16 @@
     <QtMoc Include="HardwareDock\DiskMonitorPage.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HardwareDock\DiskMonitorStoragePanel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="HardwareDock\HardwareR0EvidencePage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HardwareDock\HardwareI8042AuditPage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <QtMoc Include="HardwareDock\HardwareDeviceManagerPage.h">
@@ -1161,6 +1191,9 @@
     <ClInclude Include="KernelDock\KernelHvmTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="KernelDock\KernelPlatformAuditTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1195,6 +1228,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelDockIpcTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelThreadAuditTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelObjectDirectoryDeepTab.h">

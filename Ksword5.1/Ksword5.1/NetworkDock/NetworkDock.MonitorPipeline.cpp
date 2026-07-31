@@ -240,6 +240,24 @@ void NetworkDock::onPacketCaptured(const ks::network::PacketRecord& packetRecord
 
 void NetworkDock::flushPendingPacketsToUi()
 {
+    // 在读取并消费后台队列前设置提交屏障。菜单打开时队列继续积累，
+    // 关闭后只触发一次最新 flush，既不丢包也不改变菜单对应的行。
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-packet-stream-flush"),
+        {m_packetTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->flushPendingPacketsToUi();
+            }
+        }))
+    {
+        return;
+    }
+
     // 先在锁内把待处理报文批量转移到局部容器，缩短锁持有时间。
     std::vector<ks::network::PacketRecord> packetBatch;
     std::uint64_t droppedCountSnapshot = 0;
@@ -559,6 +577,23 @@ void NetworkDock::applyDomainResolutionResult(
     const QString displayText = domainText.trimmed().isEmpty()
         ? QStringLiteral("-")
         : domainText.trimmed();
+
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("network-domain-resolution:%1").arg(addressKey),
+            {m_packetTable},
+            [safeThis, addressKey, displayText]()
+            {
+                if (!safeThis.isNull())
+                {
+                    safeThis->applyDomainResolutionResult(addressKey, displayText);
+                }
+            }))
+    {
+        return;
+    }
+
     m_remoteDomainResolutionPending.remove(addressKey);
     m_remoteDomainCache.insert(addressKey, displayText);
     if (m_remoteDomainCache.size() > 4096)
@@ -596,6 +631,22 @@ void NetworkDock::applyDomainResolutionResult(
 void NetworkDock::rebuildMonitorTableByFilter()
 {
     if (m_packetTable == nullptr)
+    {
+        return;
+    }
+
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-packet-filter-rebuild"),
+        {m_packetTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->rebuildMonitorTableByFilter();
+            }
+        }))
     {
         return;
     }
@@ -1132,6 +1183,22 @@ void NetworkDock::trimOldestPacketWhenNeeded()
 
 void NetworkDock::clearAllPacketRows()
 {
+    const QPointer<NetworkDock> safeThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("network-packet-clear"),
+        {m_packetTable, m_nidsAlertTable},
+        [safeThis]()
+        {
+            if (!safeThis.isNull())
+            {
+                safeThis->clearAllPacketRows();
+            }
+        }))
+    {
+        return;
+    }
+
     // 同时清空后台待刷新队列，避免“刚清空又回填旧数据”。
     {
         std::lock_guard<std::mutex> guard(m_pendingPacketMutex);

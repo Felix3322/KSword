@@ -18,6 +18,8 @@ Environment:
 #include "ark/ark_ioctl.h"
 #include "driver/KswordArkMutationIoctl.h"
 #include "driver/KswordArkDeviceAuditIoctl.h"
+#include "driver/KswordArkPlatformAuditIoctl.h"
+#include "driver/KswordArkI8042AuditIoctl.h"
 #include "driver/KswordArkHwidIoctl.h"
 
 // Feature handler declarations live here instead of in the central dispatch file.
@@ -32,6 +34,7 @@ NTSTATUS KswordARKProcessIoctlDkomProcess(_In_ WDFDEVICE Device, _In_ WDFREQUEST
 NTSTATUS KswordARKProcessIoctlInjectProcess(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKThreadIoctlSetSuspended(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKThreadIoctlControlDriverThread(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKWorkQueueIoctlEnum(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMemoryIoctlQueryVirtualMemory(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMemoryIoctlReadVirtualMemory(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMemoryIoctlWriteVirtualMemory(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -159,6 +162,8 @@ NTSTATUS KswordARKDeviceAuditIoctlQueryDeviceStack(_In_ WDFDEVICE Device, _In_ W
 NTSTATUS KswordARKDeviceAuditIoctlQueryInputStack(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDeviceAuditIoctlQueryUsbTopology(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDeviceAuditIoctlQueryGpuDisplayWatchdog(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKPlatformAuditIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKI8042AuditIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHwidIoctlQueryDispatch(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHwidIoctlControlDispatch(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDebugOutputIoctlControl(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -238,6 +243,8 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_TERMINATE_THREAD, KswordARKThreadIoctlTerminate, "IOCTL_KSWORD_ARK_TERMINATE_THREAD", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED, KswordARKThreadIoctlSetSuspended, "IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD, KswordARKThreadIoctlControlDriverThread, "IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    // Work-queue enumeration is read-only and reports identity/layout gaps in its fixed response.
+    { IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE, KswordARKWorkQueueIoctlEnum, "IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
     // Process cross-view performs its own per-source capability checks, so dispatch must allow degraded read-only results.
     { IOCTL_KSWORD_ARK_QUERY_PROCESS_CROSSVIEW, KswordARKProcessIoctlQueryCrossView, "IOCTL_KSWORD_ARK_QUERY_PROCESS_CROSSVIEW", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     // Thread cross-view performs its own per-source capability checks, so dispatch must allow degraded read-only results.
@@ -311,6 +318,10 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_QUERY_INPUT_STACK_AUDIT, KswordARKDeviceAuditIoctlQueryInputStack, "IOCTL_KSWORD_ARK_QUERY_INPUT_STACK_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_USB_TOPOLOGY_AUDIT, KswordARKDeviceAuditIoctlQueryUsbTopology, "IOCTL_KSWORD_ARK_QUERY_USB_TOPOLOGY_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT, KswordARKDeviceAuditIoctlQueryGpuDisplayWatchdog, "IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    // HAL/WDF 审计仅返回经导出、边界和结构签名验证的只读证据。
+    { IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT, KswordARKPlatformAuditIoctlQuery, "IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    // i8042prt 审计只在精确映像/描述符匹配后读取端点地址，不读取输入数据。
+    { IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT, KswordARKI8042AuditIoctlQuery, "IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     // 调试输出轮询频率较高，成功路径静默，避免驱动自有日志被无意义放大。
     { IOCTL_KSWORD_ARK_DEBUG_OUTPUT_CONTROL, KswordARKDebugOutputIoctlControl, "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_CONTROL", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN, KswordARKDebugOutputIoctlDrain, "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },

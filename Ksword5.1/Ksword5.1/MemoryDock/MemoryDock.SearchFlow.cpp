@@ -1,4 +1,7 @@
 #include "MemoryDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <memory>
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::memory_dock_internal;
@@ -545,50 +548,70 @@ void MemoryDock::startNextScan()
                 return;
             }
 
-            // UI 事件排队期间也可能收到取消请求，提交结果前重新读取标志。
-            const bool effectiveCancelled = cancelled || selfGuard->m_scanCancelRequested.load();
-
-            selfGuard->m_scanInProgress.store(false);
-            selfGuard->m_scanCancelRequested.store(false);
-            selfGuard->m_firstScanButton->setEnabled(true);
-            selfGuard->m_resetScanButton->setEnabled(true);
-            selfGuard->m_cancelScanButton->setEnabled(false);
-
-            if (!effectiveCancelled)
+            auto resultsSnapshot =
+                std::make_shared<std::vector<SearchResultEntry>>(std::move(nextResultCache));
+            auto commitSnapshot = [selfGuard, cancelled, elapsedMs, resultsSnapshot]() mutable
             {
-                selfGuard->m_searchResultCache = std::move(nextResultCache);
-                selfGuard->rebuildSearchResultTable();
-            }
+                if (selfGuard == nullptr)
+                {
+                    return;
+                }
 
-            selfGuard->m_nextScanButton->setEnabled(!selfGuard->m_searchResultCache.empty());
-            QString finishText;
-            if (effectiveCancelled)
-            {
-                finishText = QString("再次扫描已取消：保留上一轮 %1 项，耗时 %2 ms")
-                    .arg(selfGuard->m_searchResultCache.size())
-                    .arg(elapsedMs);
-            }
-            else
-            {
-                finishText = QString("再次扫描完成：保留 %1 项，耗时 %2 ms")
-                    .arg(selfGuard->m_searchResultCache.size())
-                    .arg(elapsedMs);
-            }
-            if (selfGuard->m_searchResultCache.size() > selfGuard->m_searchResultVisibleCount)
-            {
-                finishText += QString("（仅显示前 %1 项）").arg(selfGuard->m_searchResultVisibleCount);
-            }
-            selfGuard->m_scanStatusLabel->setText(finishText);
+                // 事件可能因表格菜单冻结而延后，提交前再次吸收期间到达的取消请求。
+                const bool effectiveCancelled =
+                    cancelled || selfGuard->m_scanCancelRequested.load();
+                selfGuard->m_scanInProgress.store(false);
+                selfGuard->m_scanCancelRequested.store(false);
+                selfGuard->m_firstScanButton->setEnabled(true);
+                selfGuard->m_resetScanButton->setEnabled(true);
+                selfGuard->m_cancelScanButton->setEnabled(false);
 
-            kLogEvent nextScanFinishEvent;
-            info << nextScanFinishEvent
-                << "[MemoryDock] startNextScan: 完成, remainingCount="
-                << selfGuard->m_searchResultCache.size()
-                << ", elapsedMs="
-                << elapsedMs
-                << ", cancelled="
-                << (cancelled ? "true" : "false")
-                << eol;
+                if (!effectiveCancelled)
+                {
+                    selfGuard->m_searchResultCache = std::move(*resultsSnapshot);
+                    selfGuard->rebuildSearchResultTable();
+                }
+
+                selfGuard->m_nextScanButton->setEnabled(!selfGuard->m_searchResultCache.empty());
+                QString finishText;
+                if (effectiveCancelled)
+                {
+                    finishText = QString("再次扫描已取消：保留上一轮 %1 项，耗时 %2 ms")
+                        .arg(selfGuard->m_searchResultCache.size())
+                        .arg(elapsedMs);
+                }
+                else
+                {
+                    finishText = QString("再次扫描完成：保留 %1 项，耗时 %2 ms")
+                        .arg(selfGuard->m_searchResultCache.size())
+                        .arg(elapsedMs);
+                }
+                if (selfGuard->m_searchResultCache.size() > selfGuard->m_searchResultVisibleCount)
+                {
+                    finishText += QString("（仅显示前 %1 项）").arg(selfGuard->m_searchResultVisibleCount);
+                }
+                selfGuard->m_scanStatusLabel->setText(finishText);
+
+                kLogEvent nextScanFinishEvent;
+                info << nextScanFinishEvent
+                    << "[MemoryDock] startNextScan: 完成, remainingCount="
+                    << selfGuard->m_searchResultCache.size()
+                    << ", elapsedMs="
+                    << elapsedMs
+                    << ", cancelled="
+                    << (effectiveCancelled ? "true" : "false")
+                    << eol;
+            };
+
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                selfGuard.data(),
+                QStringLiteral("memory-search-next-scan"),
+                { selfGuard->m_searchResultTable },
+                commitSnapshot))
+            {
+                return;
+            }
+            commitSnapshot();
         }, Qt::QueuedConnection);
         finishScanTask();
     }).detach();
@@ -996,45 +1019,65 @@ void MemoryDock::scanMemoryRegionsInBackground(
                 return;
             }
 
-            // UI 事件排队期间也可能收到取消请求，不能让旧扫描结果覆盖当前状态。
-            const bool effectiveCancelled = cancelled || selfGuard->m_scanCancelRequested.load();
-
-            selfGuard->m_scanInProgress.store(false);
-            selfGuard->m_scanCancelRequested.store(false);
-            selfGuard->m_firstScanButton->setEnabled(true);
-            selfGuard->m_resetScanButton->setEnabled(true);
-            selfGuard->m_cancelScanButton->setEnabled(false);
-
-            if (effectiveCancelled)
+            auto resultsSnapshot =
+                std::make_shared<std::vector<SearchResultEntry>>(std::move(finalResults));
+            auto commitSnapshot = [selfGuard, cancelled, elapsedMs, resultsSnapshot]() mutable
             {
-                selfGuard->m_scanStatusLabel->setText("扫描已取消。");
-                kLogEvent scanBackgroundCancelledUiEvent;
-                warn << scanBackgroundCancelledUiEvent
-                    << "[MemoryDock] scanMemoryRegionsInBackground: 主线程收到取消结果。"
+                if (selfGuard == nullptr)
+                {
+                    return;
+                }
+
+                // 延迟提交期间的取消同样有效，避免旧扫描结果覆盖用户当前状态。
+                const bool effectiveCancelled =
+                    cancelled || selfGuard->m_scanCancelRequested.load();
+                selfGuard->m_scanInProgress.store(false);
+                selfGuard->m_scanCancelRequested.store(false);
+                selfGuard->m_firstScanButton->setEnabled(true);
+                selfGuard->m_resetScanButton->setEnabled(true);
+                selfGuard->m_cancelScanButton->setEnabled(false);
+
+                if (effectiveCancelled)
+                {
+                    selfGuard->m_scanStatusLabel->setText("扫描已取消。");
+                    kLogEvent scanBackgroundCancelledUiEvent;
+                    warn << scanBackgroundCancelledUiEvent
+                        << "[MemoryDock] scanMemoryRegionsInBackground: 主线程收到取消结果。"
+                        << eol;
+                    return;
+                }
+
+                selfGuard->m_scanProgressBar->setValue(100);
+                selfGuard->m_searchResultCache = std::move(*resultsSnapshot);
+                selfGuard->rebuildSearchResultTable();
+                QString finishText = QString("首次扫描完成：命中 %1 项，耗时 %2 ms")
+                    .arg(selfGuard->m_searchResultCache.size())
+                    .arg(elapsedMs);
+                if (selfGuard->m_searchResultCache.size() > selfGuard->m_searchResultVisibleCount)
+                {
+                    finishText += QString("（仅显示前 %1 项）").arg(selfGuard->m_searchResultVisibleCount);
+                }
+                selfGuard->m_scanStatusLabel->setText(finishText);
+
+                // UI 提交完成日志：确认结果已落地到缓存与表格。
+                kLogEvent scanBackgroundUiFinishEvent;
+                info << scanBackgroundUiFinishEvent
+                    << "[MemoryDock] scanMemoryRegionsInBackground: 主线程提交完成, resultCount="
+                    << selfGuard->m_searchResultCache.size()
+                    << ", elapsedMs="
+                    << elapsedMs
                     << eol;
+            };
+
+            if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                selfGuard.data(),
+                QStringLiteral("memory-search-first-scan"),
+                { selfGuard->m_searchResultTable },
+                commitSnapshot))
+            {
                 return;
             }
-
-            selfGuard->m_scanProgressBar->setValue(100);
-            selfGuard->m_searchResultCache = std::move(finalResults);
-            selfGuard->rebuildSearchResultTable();
-            QString finishText = QString("首次扫描完成：命中 %1 项，耗时 %2 ms")
-                .arg(selfGuard->m_searchResultCache.size())
-                .arg(elapsedMs);
-            if (selfGuard->m_searchResultCache.size() > selfGuard->m_searchResultVisibleCount)
-            {
-                finishText += QString("（仅显示前 %1 项）").arg(selfGuard->m_searchResultVisibleCount);
-            }
-            selfGuard->m_scanStatusLabel->setText(finishText);
-
-            // UI 提交完成日志：确认结果已落地到缓存与表格。
-            kLogEvent scanBackgroundUiFinishEvent;
-            info << scanBackgroundUiFinishEvent
-                << "[MemoryDock] scanMemoryRegionsInBackground: 主线程提交完成, resultCount="
-                << selfGuard->m_searchResultCache.size()
-                << ", elapsedMs="
-                << elapsedMs
-                << eol;
+            commitSnapshot();
             }, Qt::QueuedConnection);
         finishScanTask();
     }).detach();

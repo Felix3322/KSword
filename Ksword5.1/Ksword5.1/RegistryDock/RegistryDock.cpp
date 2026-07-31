@@ -1,6 +1,7 @@
 #include "RegistryDock.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 // ============================================================
@@ -727,6 +728,22 @@ void RegistryDock::refreshCurrentKey(bool)
 
 void RegistryDock::refreshValueTable()
 {
+    const QPointer<RegistryDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("registry-value-table-refresh"),
+            {m_valueTable},
+            [guardThis]()
+            {
+                if (!guardThis.isNull())
+                {
+                    guardThis->refreshValueTable();
+                }
+            }))
+    {
+        return;
+    }
+
     {
         kLogEvent event;
         dbg << event << "[RegistryDock] 开始刷新值列表, path=" << m_currentPath.toStdString() << eol;
@@ -1610,6 +1627,24 @@ void RegistryDock::stopSearch(bool waitForThread)
 
 void RegistryDock::flushPendingSearchRows()
 {
+    // 搜索线程只负责入队；菜单打开时不消费队列，避免定时/queued flush
+    // 让右键动作保存的结果行漂移，或在 latest-wins 合并时丢失已 drain 的行。
+    const QPointer<RegistryDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+            this,
+            QStringLiteral("registry-search-result-flush"),
+            {m_searchResultTable},
+            [guardThis]()
+            {
+                if (!guardThis.isNull())
+                {
+                    guardThis->flushPendingSearchRows();
+                }
+            }))
+    {
+        return;
+    }
+
     std::vector<PendingSearchRow> rows;
     {
         std::lock_guard<std::mutex> lock(m_pendingMutex);

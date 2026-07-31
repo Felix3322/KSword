@@ -1882,6 +1882,24 @@ void DirectKernelCallMonitorWidget::flushPendingRows()
         return;
     }
 
+    // QMenu::exec() 会运行嵌套事件循环；定时刷新必须在读取待处理队列前进入
+    // 表格提交门，否则前端裁剪会让菜单捕获的行号指向另一条事件。
+    const QPointer<DirectKernelCallMonitorWidget> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("direct-kernel-call-event-flush"),
+        { m_eventTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->flushPendingRows();
+            }
+        }))
+    {
+        return;
+    }
+
     std::vector<CapturedEventRow> rowList;
     {
         std::lock_guard<std::mutex> lock(m_pendingMutex);

@@ -1,7 +1,10 @@
 #include "MemoryDock.Internal.h"
+#include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
 #include <QPixmap>
+
+#include <memory>
 
 using namespace ksword::memory_dock_internal;
 
@@ -499,67 +502,82 @@ void MemoryDock::refreshKernelExecutableMemoryScanAsync()
         QMetaObject::invokeMethod(
             guardThis.data(),
             [guardThis, ticket, scanResult = std::move(scanResult)]() mutable {
-                if (guardThis == nullptr)
+                auto resultSnapshot =
+                    std::make_shared<ksword::ark::KernelExecutableMemoryScanResult>(
+                        std::move(scanResult));
+                auto commitSnapshot = [guardThis, ticket, resultSnapshot]()
                 {
-                    return;
-                }
+                    if (guardThis == nullptr ||
+                        ticket < guardThis->m_kernelExecutableRefreshTicket.load())
+                    {
+                        return;
+                    }
 
-                if (ticket < guardThis->m_kernelExecutableRefreshTicket.load())
-                {
-                    return;
-                }
+                    guardThis->m_kernelExecutableRefreshInProgress.store(false);
+                    if (guardThis->m_kernelExecutableRefreshButton != nullptr)
+                    {
+                        guardThis->m_kernelExecutableRefreshButton->setEnabled(true);
+                    }
 
-                guardThis->m_kernelExecutableRefreshInProgress.store(false);
-                if (guardThis->m_kernelExecutableRefreshButton != nullptr)
-                {
-                    guardThis->m_kernelExecutableRefreshButton->setEnabled(true);
-                }
+                    const ksword::ark::KernelExecutableMemoryScanResult& snapshot = *resultSnapshot;
+                    if (!snapshot.io.ok)
+                    {
+                        guardThis->m_kernelExecutableCache.clear();
+                        guardThis->m_kernelExecutableVisibleCount = 0U;
+                        guardThis->rebuildKernelExecutableMemoryScanTable();
 
-                if (!scanResult.io.ok)
-                {
-                    guardThis->m_kernelExecutableCache.clear();
-                    guardThis->m_kernelExecutableVisibleCount = 0U;
+                        const QString unsupportedText = snapshot.unsupported
+                            ? QStringLiteral("不支持/驱动版本过旧")
+                            : QStringLiteral("扫描失败");
+                        if (guardThis->m_kernelExecutableStatusLabel != nullptr)
+                        {
+                            guardThis->m_kernelExecutableStatusLabel->setText(
+                                QStringLiteral("状态：%1").arg(unsupportedText));
+                            guardThis->m_kernelExecutableStatusLabel->setStyleSheet(
+                                kernelExecutableStatusStyle(
+                                    snapshot.unsupported
+                                        ? KswordTheme::ErrorColor().name(QColor::HexRgb)
+                                        : KswordTheme::TextSecondaryColorHex()));
+                        }
+                        if (guardThis->m_kernelExecutableDetailEditor != nullptr)
+                        {
+                            guardThis->m_kernelExecutableDetailEditor->setText(
+                                snapshot.unsupported
+                                ? QStringLiteral("当前驱动不支持内核可执行内存扫描，请更新为匹配版本。")
+                                : QStringLiteral("内核可执行页扫描失败。\n\nWin32: %1\n详情: %2")
+                                    .arg(snapshot.io.win32Error)
+                                    .arg(kernelExecutableIoMessageText(snapshot.io.message)));
+                        }
+                        return;
+                    }
+
+                    guardThis->m_kernelExecutableCache = snapshot.entries;
                     guardThis->rebuildKernelExecutableMemoryScanTable();
-
-                    const QString unsupportedText = scanResult.unsupported
-                        ? QStringLiteral("不支持/驱动版本过旧")
-                        : QStringLiteral("扫描失败");
+                    guardThis->showKernelExecutableMemoryDetailByCurrentRow();
                     if (guardThis->m_kernelExecutableStatusLabel != nullptr)
                     {
                         guardThis->m_kernelExecutableStatusLabel->setText(
-                            QStringLiteral("状态：%1").arg(unsupportedText));
-                        guardThis->m_kernelExecutableStatusLabel->setStyleSheet(kernelExecutableStatusStyle(
-                            scanResult.unsupported
-                                ? KswordTheme::ErrorColor().name(QColor::HexRgb)
-                                : KswordTheme::TextSecondaryColorHex()));
+                            QStringLiteral("状态：总计 %1，显示 %2，模块 %3")
+                            .arg(snapshot.totalCount)
+                            .arg(guardThis->m_kernelExecutableVisibleCount)
+                            .arg(snapshot.moduleCount));
+                        guardThis->m_kernelExecutableStatusLabel->setStyleSheet(
+                            kernelExecutableStatusStyle(
+                                snapshot.entries.empty()
+                                    ? KswordTheme::ErrorColor().name(QColor::HexRgb)
+                                    : KswordTheme::SuccessColor().name(QColor::HexRgb)));
                     }
-                    if (guardThis->m_kernelExecutableDetailEditor != nullptr)
-                    {
-                        guardThis->m_kernelExecutableDetailEditor->setText(
-                            scanResult.unsupported
-                            ? QStringLiteral("当前驱动不支持内核可执行内存扫描，请更新为匹配版本。")
-                            : QStringLiteral("内核可执行页扫描失败。\n\nWin32: %1\n详情: %2")
-                                .arg(scanResult.io.win32Error)
-                                .arg(kernelExecutableIoMessageText(scanResult.io.message)));
-                    }
+                };
+
+                if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                    guardThis.data(),
+                    QStringLiteral("memory-kernel-executable-snapshot"),
+                    { guardThis->m_kernelExecutableTable },
+                    commitSnapshot))
+                {
                     return;
                 }
-
-                guardThis->m_kernelExecutableCache = scanResult.entries;
-                guardThis->rebuildKernelExecutableMemoryScanTable();
-                guardThis->showKernelExecutableMemoryDetailByCurrentRow();
-                if (guardThis->m_kernelExecutableStatusLabel != nullptr)
-                {
-                    guardThis->m_kernelExecutableStatusLabel->setText(
-                        QStringLiteral("状态：总计 %1，显示 %2，模块 %3")
-                        .arg(scanResult.totalCount)
-                        .arg(guardThis->m_kernelExecutableVisibleCount)
-                        .arg(scanResult.moduleCount));
-                    guardThis->m_kernelExecutableStatusLabel->setStyleSheet(kernelExecutableStatusStyle(
-                        scanResult.entries.empty()
-                            ? KswordTheme::ErrorColor().name(QColor::HexRgb)
-                            : KswordTheme::SuccessColor().name(QColor::HexRgb)));
-                }
+                commitSnapshot();
             },
             Qt::QueuedConnection);
     }).detach();

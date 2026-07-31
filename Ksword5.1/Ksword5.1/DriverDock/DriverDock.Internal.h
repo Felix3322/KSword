@@ -97,6 +97,11 @@ namespace ksword::driver_dock_internal
     // - 返回：当前语言下的界面文本。
     QString driverText(const char* contextKey, const QString& sourceText);
 
+    // swapDriverEvidenceSourceTextMode：
+    // - 后台证据线程启用时让 driverText 只返回调用点源文本，不访问 LanguageManager；
+    // - 返回调用前模式，供 RAII 在离开工作线程采集范围时恢复。
+    bool swapDriverEvidenceSourceTextMode(bool sourceTextOnly);
+
     // DriverDock 表头工厂：集中维护各只读表格的列语义，便于语言切换时重绘。
     QStringList driverServiceTableHeaders();
     QStringList driverModuleTableHeaders();
@@ -113,6 +118,13 @@ namespace ksword::driver_dock_internal
     // - 处理：保存该行对应 m_loadedModuleCache/m_loadedModuleEvidenceCache 的源索引；
     // - 返回：常量本身无返回值，读取时用于从 UI 行反查缓存。
     constexpr int ModuleRecordIndexRole = Qt::UserRole + 41;
+    constexpr int ModuleNameColumn = 0;       // ModuleNameColumn：模块名列。
+    constexpr int ModuleBaseColumn = 1;       // ModuleBaseColumn：模块基址列。
+    constexpr int ModuleSignatureColumn = 2;  // ModuleSignatureColumn：数字签名信任链列。
+    constexpr int ModuleEvidenceFirstColumn = 3; // ModuleEvidenceFirstColumn：DriverObject 起始证据列。
+    constexpr int ModuleEvidenceLastColumn = 8; // ModuleEvidenceLastColumn：Callback 末尾证据列。
+    constexpr int ModuleImagePathColumn = 9;  // ModuleImagePathColumn：模块磁盘映像路径列。
+    constexpr int ModuleTableColumnCount = 10; // ModuleTableColumnCount：已加载模块表总列数。
 
     // DriverDock 内部工具：输入 UI/Win32 数据，返回格式化文本或操作状态。
     std::wstring toWideString(const QString& textValue);

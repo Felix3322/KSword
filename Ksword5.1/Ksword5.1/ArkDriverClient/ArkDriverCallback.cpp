@@ -81,11 +81,46 @@ namespace ksword::ark
             wchar_t detail[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
         };
 
+        struct CallbackEnumV3Entry
+        {
+            // Input: none; this mirrors the v3 prefix before stable detail
+            // metadata was appended. Keeping it explicit lets a newer R3
+            // consume an older v3 driver without shifting the text fields.
+            unsigned long size;
+            unsigned long callbackClass;
+            unsigned long source;
+            unsigned long status;
+            unsigned long fieldFlags;
+            unsigned long operationMask;
+            unsigned long objectTypeMask;
+            long lastStatus;
+            unsigned long long callbackAddress;
+            unsigned long long contextAddress;
+            unsigned long long registrationAddress;
+            unsigned long long rawStorageValue;
+            unsigned long long enumerationGeneration;
+            unsigned long long identityHash;
+            unsigned long trustFlags;
+            unsigned long removeBehavior;
+            unsigned long long moduleBase;
+            unsigned long moduleSize;
+            unsigned long ownerRangeState;
+            unsigned long registrationType;
+            unsigned long reserved;
+            wchar_t name[KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS];
+            wchar_t altitude[KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS];
+            wchar_t modulePath[KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS];
+            wchar_t detail[KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS];
+        };
+
         static_assert(sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST_V2) == 24U);
         static_assert(sizeof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_HEADER_V2) == 32U);
         static_assert(offsetof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE_V2, entries) == 32U);
         static_assert(sizeof(KSWORD_ARK_ENUM_CALLBACKS_REQUEST) == 40U);
         static_assert(offsetof(KSWORD_ARK_ENUM_CALLBACKS_RESPONSE, entries) == 48U);
+        static_assert(
+            sizeof(CallbackEnumV3Entry) ==
+            offsetof(KSWORD_ARK_CALLBACK_ENUM_ENTRY, detailCode));
     }
 
     AsyncIoResult DriverClient::waitCallbackEventAsync(
@@ -297,6 +332,7 @@ namespace ksword::ark
         constexpr std::uint32_t maximumSnapshotRetries = 3U;
         constexpr std::size_t legacyEntrySize = sizeof(CallbackEnumLegacyEntry);
         constexpr std::size_t v1EntrySize = sizeof(CallbackEnumV1Entry);
+        constexpr std::size_t v3EntrySize = sizeof(CallbackEnumV3Entry);
         const std::size_t responseBufferBytes =
             v3HeaderSize + (static_cast<std::size_t>(pageEntryCount) * sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY));
         std::vector<std::uint8_t> responseBuffer(responseBufferBytes, 0U);
@@ -428,7 +464,7 @@ namespace ksword::ark
                 return enumResult;
             }
             if (responseHeader->version >= KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION &&
-                responseHeader->entrySize < sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY))
+                responseHeader->entrySize < v3EntrySize)
             {
                 enumResult.io.ok = false;
                 enumResult.io.win32Error = ERROR_INVALID_DATA;
@@ -554,6 +590,42 @@ namespace ksword::ark
                     row.removeFlags = row.removeBehavior;
                     row.moduleBase = static_cast<std::uint64_t>(sourceEntry->moduleBase);
                     row.moduleSize = static_cast<std::uint32_t>(sourceEntry->moduleSize);
+                    row.detailCode = static_cast<std::uint32_t>(sourceEntry->detailCode);
+                    for (std::size_t detailIndex = 0U;
+                         detailIndex < KSWORD_ARK_CALLBACK_ENUM_DETAIL_ARG_COUNT;
+                         ++detailIndex)
+                    {
+                        row.detailArgs[detailIndex] =
+                            static_cast<std::uint64_t>(sourceEntry->detailArgs[detailIndex]);
+                    }
+                    row.name = fixedCallbackWideToString(sourceEntry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS);
+                    row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
+                    row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
+                    row.detail = fixedCallbackWideToString(sourceEntry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS);
+                }
+                else if (responseHeader->entrySize >= v3EntrySize)
+                {
+                    const auto* sourceEntry =
+                        reinterpret_cast<const CallbackEnumV3Entry*>(responseBuffer.data() + entryOffset);
+                    row.callbackClass = static_cast<std::uint32_t>(sourceEntry->callbackClass);
+                    row.source = static_cast<std::uint32_t>(sourceEntry->source);
+                    row.status = static_cast<std::uint32_t>(sourceEntry->status);
+                    row.fieldFlags = static_cast<std::uint32_t>(sourceEntry->fieldFlags);
+                    row.operationMask = static_cast<std::uint32_t>(sourceEntry->operationMask);
+                    row.objectTypeMask = static_cast<std::uint32_t>(sourceEntry->objectTypeMask);
+                    row.registrationType = static_cast<std::uint32_t>(sourceEntry->registrationType);
+                    row.lastStatus = static_cast<long>(sourceEntry->lastStatus);
+                    row.callbackAddress = static_cast<std::uint64_t>(sourceEntry->callbackAddress);
+                    row.contextAddress = static_cast<std::uint64_t>(sourceEntry->contextAddress);
+                    row.registrationAddress = static_cast<std::uint64_t>(sourceEntry->registrationAddress);
+                    row.rawStorageValue = static_cast<std::uint64_t>(sourceEntry->rawStorageValue);
+                    row.generation = static_cast<std::uint64_t>(sourceEntry->enumerationGeneration);
+                    row.identityHash = static_cast<std::uint64_t>(sourceEntry->identityHash);
+                    row.trustFlags = static_cast<std::uint32_t>(sourceEntry->trustFlags);
+                    row.removeBehavior = static_cast<std::uint32_t>(sourceEntry->removeBehavior);
+                    row.removeFlags = row.removeBehavior;
+                    row.moduleBase = static_cast<std::uint64_t>(sourceEntry->moduleBase);
+                    row.moduleSize = static_cast<std::uint32_t>(sourceEntry->moduleSize);
                     row.name = fixedCallbackWideToString(sourceEntry->name, KSWORD_ARK_CALLBACK_ENUM_NAME_CHARS);
                     row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
                     row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
@@ -606,6 +678,24 @@ namespace ksword::ark
                     row.altitude = fixedCallbackWideToString(sourceEntry->altitude, KSWORD_ARK_CALLBACK_ENUM_ALTITUDE_CHARS);
                     row.modulePath = fixedCallbackWideToString(sourceEntry->modulePath, KSWORD_ARK_CALLBACK_ENUM_MODULE_PATH_CHARS);
                     row.detail = fixedCallbackWideToString(sourceEntry->detail, KSWORD_ARK_CALLBACK_ENUM_DETAIL_CHARS);
+                }
+                if (responseHeader->entrySize >=
+                        sizeof(KSWORD_ARK_CALLBACK_ENUM_ENTRY) &&
+                    ((((row.fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_DETAIL_ARGS) != 0U) !=
+                      (row.detailCode != KSWORD_ARK_CALLBACK_ENUM_DETAIL_NONE)) ||
+                     (row.detailCode != KSWORD_ARK_CALLBACK_ENUM_DETAIL_NONE &&
+                      row.callbackClass !=
+                          KSWORD_ARK_CALLBACK_ENUM_CLASS_LEGACY_FS_FILTER) ||
+                     row.detailCode >
+                         KSWORD_ARK_CALLBACK_ENUM_DETAIL_LEGACY_FS_PUBLIC_ENUM_FAILED))
+                {
+                    enumResult.io.ok = false;
+                    enumResult.io.win32Error = ERROR_INVALID_DATA;
+                    enumResult.io.message =
+                        "callback enum row detail metadata invalid, page=" +
+                        std::to_string(pageCount) +
+                        ", row=" + std::to_string(index);
+                    return enumResult;
                 }
                 if (responseHeader->version >= KSWORD_ARK_CALLBACK_ENUM_PROTOCOL_VERSION &&
                     (((row.fieldFlags & KSWORD_ARK_CALLBACK_ENUM_FIELD_IDENTITY_HASH) == 0U) ||

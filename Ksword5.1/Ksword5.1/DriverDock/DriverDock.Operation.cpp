@@ -1,12 +1,50 @@
 #include "DriverDock.Internal.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../OnlineScan/SandboxUploadActions.h"
+#include "../UI/TableInteractionSupport.h"
+
+#include <QDesktopServices>
+#include <QUrl>
+#include <QUrlQuery>
+
+#include <io.h>
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::driver_dock_internal;
 
 namespace
 {
+    bool openDriverBingSearch(
+        const QString& driverName,
+        const QString& driverImagePath)
+    {
+        // openDriverBingSearch：
+        // - 输入：右键菜单打开前快照的驱动名与镜像路径；
+        // - 处理：只构造 Bing 查询 URL 并交给系统默认浏览器，不读取任何搜索结果；
+        // - 返回：系统是否接受了 URL 打开请求。
+        QStringList queryTerms;
+        const QString normalizedName = driverName.trimmed();
+        if (!normalizedName.isEmpty())
+        {
+            queryTerms.push_back(normalizedName);
+        }
+
+        // 路径只取文件名，避免把用户机器目录或设备路径发送给搜索引擎。
+        const QString imageFileName = QFileInfo(driverImagePath.trimmed()).fileName();
+        if (!imageFileName.isEmpty() &&
+            imageFileName.compare(normalizedName, Qt::CaseInsensitive) != 0)
+        {
+            queryTerms.push_back(imageFileName);
+        }
+        queryTerms.push_back(QStringLiteral("Windows driver"));
+
+        QUrl searchUrl(QStringLiteral("https://www.bing.com/search"));
+        QUrlQuery searchQuery;
+        searchQuery.addQueryItem(QStringLiteral("q"), queryTerms.join(QLatin1Char(' ')));
+        searchUrl.setQuery(searchQuery);
+        return QDesktopServices::openUrl(searchUrl);
+    }
+
     QString driverOperationTableCellText(QTableWidget* table, const int rowIndex, const int columnIndex)
     {
         // driverOperationTableCellText：
@@ -766,9 +804,11 @@ namespace
                 .arg(temporaryFile.errorString());
             return dumpResult;
         }
+        const auto temporaryOsHandle =
+            ::_get_osfhandle(temporaryFile.handle());
         const HANDLE temporaryHandle =
-            reinterpret_cast<HANDLE>(temporaryFile.handle());
-        if (temporaryHandle == INVALID_HANDLE_VALUE ||
+            reinterpret_cast<HANDLE>(temporaryOsHandle);
+        if (temporaryOsHandle == -1 ||
             !::FlushFileBuffers(temporaryHandle))
         {
             dumpResult.error = DriverModuleDumpError::TemporaryFileFlush;
@@ -1517,6 +1557,22 @@ namespace
 
 void DriverDock::refreshDriverServiceRecords()
 {
+    const QPointer<DriverDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("driver-service-record-refresh"),
+        { m_serviceTable, m_moduleTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->refreshDriverServiceRecords();
+            }
+        }))
+    {
+        return;
+    }
+
     kLogEvent refreshEvent;
     info << refreshEvent
         << driverText("driver.log.refresh_services_start", QStringLiteral("[DriverDock] 开始刷新驱动服务列表。"))
@@ -1551,9 +1607,13 @@ void DriverDock::refreshDriverServiceRecords()
     if (m_overviewStatusLabel != nullptr)
     {
         m_overviewStatusLabel->setText(
-            driverText("driver.overview.count", QStringLiteral("状态：驱动服务 %1 条，模块 %2 条"))
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
             .arg(m_driverServiceCache.size())
-            .arg(m_loadedModuleCache.size()));
+            .arg(m_serviceTable != nullptr ? m_serviceTable->rowCount() : 0)
+            .arg(m_loadedModuleCache.size())
+            .arg(m_moduleTable != nullptr ? m_moduleTable->rowCount() : 0));
     }
 
     info << refreshEvent
@@ -1563,6 +1623,22 @@ void DriverDock::refreshDriverServiceRecords()
 
 void DriverDock::refreshLoadedKernelModuleRecords()
 {
+    const QPointer<DriverDock> guardThis(this);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("driver-loaded-module-refresh"),
+        { m_serviceTable, m_moduleTable },
+        [guardThis]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->refreshLoadedKernelModuleRecords();
+            }
+        }))
+    {
+        return;
+    }
+
     kLogEvent refreshEvent;
     info << refreshEvent
         << driverText("driver.log.refresh_modules_start", QStringLiteral("[DriverDock] 开始刷新已加载模块列表。"))
@@ -1617,9 +1693,13 @@ void DriverDock::refreshLoadedKernelModuleRecords()
     if (m_overviewStatusLabel != nullptr)
     {
         m_overviewStatusLabel->setText(
-            driverText("driver.overview.count", QStringLiteral("状态：驱动服务 %1 条，模块 %2 条"))
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
             .arg(m_driverServiceCache.size())
-            .arg(m_loadedModuleCache.size()));
+            .arg(m_serviceTable != nullptr ? m_serviceTable->rowCount() : 0)
+            .arg(m_loadedModuleCache.size())
+            .arg(m_moduleTable != nullptr ? m_moduleTable->rowCount() : 0));
     }
     if (m_moduleEvidenceStatusLabel != nullptr)
     {
@@ -1720,6 +1800,12 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
         selectedServiceNameItem != nullptr
         ? selectedServiceNameItem->data(Qt::UserRole).toString().trimmed()
         : QString();
+    const QString selectedSearchServiceName =
+        !selectedCleanupServiceName.isEmpty()
+        ? selectedCleanupServiceName
+        : (selectedServiceNameItem != nullptr
+            ? selectedServiceNameItem->text().trimmed()
+            : QString());
     const QString selectedCleanupServicePath =
         selectedServicePathItem != nullptr
         ? driverScCleanupNormalizePath(selectedServicePathItem->text())
@@ -1736,6 +1822,14 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
     QAction* copyRowAction = contextMenu.addAction(
         QIcon(":/Icon/process_copy_row.svg"),
         driverText("driver.menu.copy_row", QStringLiteral("复制当前行")));
+    QAction* searchDriverOnlineAction = contextMenu.addAction(
+        QIcon(":/Icon/file_find.svg"),
+        driverText(
+            "driver.menu.search_bing",
+            QStringLiteral("使用 Bing 搜索驱动信息")));
+    searchDriverOnlineAction->setToolTip(driverText(
+        "driver.menu.search_bing.tooltip",
+        QStringLiteral("仅在默认浏览器中打开与所选驱动有关的 Bing 搜索，不读取或处理搜索结果。")));
     contextMenu.addSeparator();
     QAction* stopServiceAction = contextMenu.addAction(
         QIcon(":/Icon/process_uncritical.svg"),
@@ -1804,6 +1898,23 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
     if (selectedAction == copyRowAction)
     {
         copyDriverOperationCurrentRow(m_serviceTable);
+        return;
+    }
+    if (selectedAction == searchDriverOnlineAction)
+    {
+        if (!openDriverBingSearch(
+            selectedSearchServiceName,
+            selectedCleanupServicePath))
+        {
+            QMessageBox::warning(
+                this,
+                driverText(
+                    "driver.search_bing.failed.title",
+                    QStringLiteral("无法打开浏览器")),
+                driverText(
+                    "driver.search_bing.failed.body",
+                    QStringLiteral("系统未能打开 Bing 搜索页面，请检查默认浏览器设置。")));
+        }
         return;
     }
     if (selectedAction == stopServiceAction)
@@ -2333,6 +2444,14 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     QAction* copyRowAction = contextMenu.addAction(
         QIcon(":/Icon/process_copy_row.svg"),
         driverText("driver.menu.copy_row", QStringLiteral("复制当前行")));
+    QAction* searchDriverOnlineAction = contextMenu.addAction(
+        QIcon(":/Icon/file_find.svg"),
+        driverText(
+            "driver.menu.search_bing",
+            QStringLiteral("使用 Bing 搜索驱动信息")));
+    searchDriverOnlineAction->setToolTip(driverText(
+        "driver.menu.search_bing.tooltip",
+        QStringLiteral("仅在默认浏览器中打开与所选驱动有关的 Bing 搜索，不读取或处理搜索结果。")));
     QAction* dumpModuleMemoryAction = contextMenu.addAction(
         QIcon(":/Icon/disk_save.svg"),
         driverText("driver.menu.dump_module_memory", QStringLiteral("R0 Dump 模块内存…")));
@@ -2352,7 +2471,9 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
             ks::online_scan::SandboxUploadTarget uploadTarget;
             const int rowIndex = m_moduleTable != nullptr ? m_moduleTable->currentRow() : -1;
             const QTableWidgetItem* pathItem =
-                (m_moduleTable != nullptr && rowIndex >= 0) ? m_moduleTable->item(rowIndex, 8) : nullptr;
+                (m_moduleTable != nullptr && rowIndex >= 0)
+                ? m_moduleTable->item(rowIndex, ModuleImagePathColumn)
+                : nullptr;
             const QTableWidgetItem* nameItem =
                 (m_moduleTable != nullptr && rowIndex >= 0) ? m_moduleTable->item(rowIndex, 0) : nullptr;
             if (pathItem == nullptr)
@@ -2424,7 +2545,7 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         const QTableWidgetItem* selectedModuleBaseItem =
             m_moduleTable->item(selectedRowIndex, 1);
         const QTableWidgetItem* selectedModulePathItem =
-            m_moduleTable->item(selectedRowIndex, 8);
+            m_moduleTable->item(selectedRowIndex, ModuleImagePathColumn);
         selectedModuleName =
             selectedModuleNameItem != nullptr
             ? selectedModuleNameItem->text().trimmed()
@@ -2541,6 +2662,21 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     if (selectedAction == copyRowAction)
     {
         copyDriverOperationCurrentRow(m_moduleTable);
+        return;
+    }
+    if (selectedAction == searchDriverOnlineAction)
+    {
+        if (!openDriverBingSearch(selectedModuleName, selectedModulePath))
+        {
+            QMessageBox::warning(
+                this,
+                driverText(
+                    "driver.search_bing.failed.title",
+                    QStringLiteral("无法打开浏览器")),
+                driverText(
+                    "driver.search_bing.failed.body",
+                    QStringLiteral("系统未能打开 Bing 搜索页面，请检查默认浏览器设置。")));
+        }
         return;
     }
     if (selectedAction == dumpModuleMemoryAction)
@@ -2853,7 +2989,9 @@ void DriverDock::querySelectedModuleKernelSignature()
     const int rowIndex = m_moduleTable->currentRow();
     const QTableWidgetItem* nameItem = rowIndex >= 0 ? m_moduleTable->item(rowIndex, 0) : nullptr;
     const QTableWidgetItem* baseItem = rowIndex >= 0 ? m_moduleTable->item(rowIndex, 1) : nullptr;
-    const QTableWidgetItem* pathItem = rowIndex >= 0 ? m_moduleTable->item(rowIndex, 8) : nullptr;
+    const QTableWidgetItem* pathItem = rowIndex >= 0
+        ? m_moduleTable->item(rowIndex, ModuleImagePathColumn)
+        : nullptr;
     const QString moduleName = nameItem != nullptr ? nameItem->text().trimmed() : QString();
     const QString rawPath = pathItem != nullptr ? pathItem->text().trimmed() : QString();
     const QString ntPath = buildKernelSignatureNtPath(rawPath);
@@ -3125,6 +3263,31 @@ void DriverDock::querySelectedDriverObjectInfo()
 
 void DriverDock::applyDriverObjectQueryResult(const ksword::ark::DriverObjectQueryResult& result)
 {
+    // DriverObject 查询会一次重建对象、派遣、设备、扩展、Fast I/O 五张证据表。
+    const QPointer<DriverDock> guardThis(this);
+    const auto deferredResult =
+        std::make_shared<ksword::ark::DriverObjectQueryResult>(result);
+    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+        this,
+        QStringLiteral("driver-object-evidence-apply"),
+        {
+            m_driverObjectEvidenceTable,
+            m_majorFunctionTable,
+            m_deviceObjectTable,
+            m_driverExtensionEvidenceTable,
+            m_fastIoEvidenceTable
+        },
+        [guardThis, deferredResult]()
+        {
+            if (!guardThis.isNull())
+            {
+                guardThis->applyDriverObjectQueryResult(*deferredResult);
+            }
+        }))
+    {
+        return;
+    }
+
     // 查询结果回填：
     // - 所有地址都作为诊断文本展示；
     // - 不在 UI 中将地址作为任何二次操作输入。
@@ -3489,11 +3652,18 @@ void DriverDock::rebuildDriverServiceTableByFilter()
 
     if (m_overviewStatusLabel != nullptr)
     {
+        // visibleModuleCount 用途：同一搜索框对下方模块表的当前筛选数量。
+        const int visibleModuleCount = m_moduleTable != nullptr
+            ? m_moduleTable->rowCount()
+            : 0;
         m_overviewStatusLabel->setText(
-            driverText("driver.overview.count.filtered", QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条"))
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
             .arg(m_driverServiceCache.size())
             .arg(visibleCount)
-            .arg(m_loadedModuleCache.size()));
+            .arg(m_loadedModuleCache.size())
+            .arg(visibleModuleCount));
     }
 }
 
@@ -3504,22 +3674,50 @@ void DriverDock::rebuildLoadedModuleTable()
         return;
     }
 
+    // filterText 用途：与服务表共享概览搜索框，同时匹配模块名、路径和签名结论。
+    const QString filterText = m_serviceFilterEdit != nullptr
+        ? m_serviceFilterEdit->text().trimmed()
+        : QString();
     m_moduleTable->setRowCount(0);
     for (std::size_t sourceIndex = 0U; sourceIndex < m_loadedModuleCache.size(); ++sourceIndex)
     {
         const LoadedKernelModuleRecord& moduleRecord = m_loadedModuleCache[sourceIndex];
+        // evidencePointer 用途：签名后台扫描完成后让搜索立即覆盖签名状态文本。
+        const LoadedModuleEvidenceRecord* evidencePointer =
+            sourceIndex < m_loadedModuleEvidenceCache.size()
+            ? &m_loadedModuleEvidenceCache[sourceIndex]
+            : nullptr;
+        const QString signatureStatusText = evidencePointer != nullptr
+            ? moduleSignatureStatusText(*evidencePointer)
+            : driverText("driver.evidence.pending", QStringLiteral("待扫描"));
+        const bool matchesFilter =
+            filterText.isEmpty() ||
+            moduleRecord.moduleName.contains(filterText, Qt::CaseInsensitive) ||
+            moduleRecord.imagePath.contains(filterText, Qt::CaseInsensitive) ||
+            signatureStatusText.contains(filterText, Qt::CaseInsensitive);
+        if (!matchesFilter)
+        {
+            continue;
+        }
+
         const int rowIndex = m_moduleTable->rowCount();
         m_moduleTable->insertRow(rowIndex);
         QTableWidgetItem* moduleNameItem = createReadOnlyItem(moduleRecord.moduleName);
         moduleNameItem->setData(
             ModuleRecordIndexRole,
             QVariant::fromValue<qulonglong>(static_cast<qulonglong>(sourceIndex)));
-        m_moduleTable->setItem(rowIndex, 0, moduleNameItem);
+        m_moduleTable->setItem(rowIndex, ModuleNameColumn, moduleNameItem);
         QTableWidgetItem* baseItem = createReadOnlyItem(formatAddress(moduleRecord.baseAddress));
         baseItem->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(
             static_cast<qulonglong>(moduleRecord.baseAddress)));
-        m_moduleTable->setItem(rowIndex, 1, baseItem);
-        for (int evidenceColumn = 2; evidenceColumn <= 7; ++evidenceColumn)
+        m_moduleTable->setItem(rowIndex, ModuleBaseColumn, baseItem);
+        m_moduleTable->setItem(
+            rowIndex,
+            ModuleSignatureColumn,
+            createReadOnlyItem(signatureStatusText));
+        for (int evidenceColumn = ModuleEvidenceFirstColumn;
+            evidenceColumn <= ModuleEvidenceLastColumn;
+            ++evidenceColumn)
         {
             m_moduleTable->setItem(
                 rowIndex,
@@ -3528,13 +3726,28 @@ void DriverDock::rebuildLoadedModuleTable()
         }
         QTableWidgetItem* pathItem = createReadOnlyItem(moduleRecord.imagePath);
         pathItem->setToolTip(moduleRecord.imagePath);
-        m_moduleTable->setItem(rowIndex, 8, pathItem);
+        m_moduleTable->setItem(rowIndex, ModuleImagePathColumn, pathItem);
     }
     if (m_moduleTable->rowCount() > 0)
     {
         m_moduleTable->setCurrentCell(0, 0);
     }
     rebuildLoadedModuleEvidenceViews();
+    if (m_overviewStatusLabel != nullptr)
+    {
+        // visibleServiceCount 用途：状态栏同步展示服务与模块两个表格的筛选数量。
+        const int visibleServiceCount = m_serviceTable != nullptr
+            ? m_serviceTable->rowCount()
+            : 0;
+        m_overviewStatusLabel->setText(
+            driverText(
+                "driver.overview.count.filtered",
+                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
+            .arg(m_driverServiceCache.size())
+            .arg(visibleServiceCount)
+            .arg(m_loadedModuleCache.size())
+            .arg(m_moduleTable->rowCount()));
+    }
 }
 
 void DriverDock::syncOperateFormBySelectedService()
