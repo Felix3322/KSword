@@ -6,11 +6,13 @@
 
 ### 1. Release 构建
 
-当前开发机使用 `D:\Software\VS\MSBuild\Current\Bin\MSBuild.exe` 与 `D:\Software\Qt\6.9.3\msvc2022_64`。先设置 Qt 路径和 QtMsBuild 路径，再依次构建用户态项目。主程序必须重新构建；Taskbar、KswordHUD、APIMonitor_x64 也要构建后覆盖进包。
+当前开发机有两套已验证的构建路径：优先使用仓库随附依赖，即 `.deps\Qt\6.9.3\msvc2022_64` 与 `.deps\QtVsTools\msbuild`；MSBuild 使用 `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe`。若该套不可用，再回退到 `D:\Software\VS\MSBuild\Current\Bin\MSBuild.exe` 和 `D:\Software\Qt\6.9.3\msvc2022_64`。先设置 Qt 路径和 QtMsBuild 路径，再依次构建用户态项目。主程序必须重新构建；Taskbar、KswordHUD、APIMonitor_x64 也要构建后覆盖进包。
 
 ```powershell
-$msbuild='D:\Software\VS\MSBuild\Current\Bin\MSBuild.exe'
-$env:KSWORD_QT_DIR='D:\Software\Qt\6.9.3\msvc2022_64'
+$msbuild='C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe'
+if (!(Test-Path $msbuild)) { $msbuild='D:\Software\VS\MSBuild\Current\Bin\MSBuild.exe' }
+$env:KSWORD_QT_DIR=(Resolve-Path '.deps\Qt\6.9.3\msvc2022_64' -ErrorAction SilentlyContinue).Path
+if (!$env:KSWORD_QT_DIR) { $env:KSWORD_QT_DIR='D:\Software\Qt\6.9.3\msvc2022_64' }
 $qtMsBuild=(Resolve-Path '.deps\QtVsTools\msbuild').Path
 
 & $msbuild 'Ksword5.1\Ksword5.1\Ksword5.1.vcxproj' /t:Build /p:Configuration=Release /p:Platform=x64 /p:QtMsBuild=$qtMsBuild /m:1 /v:minimal

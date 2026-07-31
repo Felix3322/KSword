@@ -4,6 +4,7 @@
 #include "ApplicationControlPage.h"
 #include "ContextMenuCleaner/ContextMenuCleanerTab.h"
 #include "DiskEditor/DiskEditorTab.h"
+#include "SoundSource/SoundSourcePage.h"
 
 #include <QIcon>
 #include <QTabWidget>
@@ -32,6 +33,15 @@ void MiscDock::initializeUi()
 
     m_bootEditorTab = new BootEditorTab(m_mainTabWidget);
     m_mainTabWidget->addTab(m_bootEditorTab, QStringLiteral("引导"));
+
+    // 声音来源页：
+    // - R3 连续采样 Core Audio 输出会话峰值并归因到 PID；
+    // - R0 复用进程 Cross-View 与 Runtime Detail 交叉核验候选 PID。
+    m_soundSourcePage = new ks::misc::SoundSourcePage(0U, 0U, m_mainTabWidget);
+    m_mainTabWidget->addTab(
+        m_soundSourcePage,
+        QIcon(QStringLiteral(":/Icon/sound_source.svg")),
+        QStringLiteral("声音来源"));
 
     // Shell 关联管理页：
     // - 覆盖右键菜单、URL 绑定、打开方式和 Explorer 第三方主页项；

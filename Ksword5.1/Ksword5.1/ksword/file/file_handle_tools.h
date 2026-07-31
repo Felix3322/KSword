@@ -30,6 +30,11 @@ namespace ks::file
     // - UI 可转接到 kPro/状态栏，命令行调用者也可忽略。
     using ProgressCallback = std::function<void(const std::string& stepText, float progressValue)>;
 
+    // CancellationCallback 作用：
+    // - 让耗时句柄扫描在 FileDock 关闭或用户取消时尽快结束；
+    // - 返回 true 表示调用方不再需要本轮结果，后端只完成必要的资源释放。
+    using CancellationCallback = std::function<bool()>;
+
     // HandleEnumMode 作用：
     // - 描述句柄快照构建使用的枚举路径；
     // - 与句柄 Dock 的 UI 下拉框保持语义一致，但不依赖 UI 枚举。
@@ -232,6 +237,7 @@ namespace ks::file
     {
         bool tryKernelHandleTable = true;
         ProgressCallback progressCallback;
+        CancellationCallback cancellationCallback;
     };
 
     // HandleUsageScanResult 作用：
@@ -276,7 +282,8 @@ namespace ks::file
     bool QuerySystemHandles(
         const NtApiSet& apiSet,
         std::vector<RawSystemHandle>& recordsOut,
-        std::wstring& diagnosticTextOut);
+        std::wstring& diagnosticTextOut,
+        const CancellationCallback& cancellationCallback = {});
 
     // QueryNtObjectText 作用：读取 NtQueryObject 返回的 UNICODE_STRING 文本。
     bool QueryNtObjectText(

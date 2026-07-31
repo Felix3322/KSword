@@ -19,10 +19,12 @@
 #include <QPointer>
 #include <QSet>
 #include <QStringList>
+#include <QThreadPool>
 #include <QVector>
 #include <QWidget>
 
 #include <atomic>        // std::atomic_bool：存活主机扫描的并发状态控制。
+#include <condition_variable> // std::condition_variable：析构阶段等待扫描任务退出。
 #include <cstdint>       // std::uint32_t/std::uint64_t：PID、序号与长度字段。
 #include <deque>         // std::deque：报文序号顺序缓存与后台待刷新队列。
 #include <memory>        // std::unique_ptr：后台监控服务对象托管。
@@ -1048,6 +1050,11 @@ private:
     // - 返回：无。
     void stopAliveHostScan();
 
+    // cancelAndWaitForAliveHostScan：
+    // - 作用：请求 ICMP 扫描停止，并在析构前等待后台协调任务及其 worker 退出；
+    // - 返回：无。
+    void cancelAndWaitForAliveHostScan();
+
     // appendAliveHostRow：
     // - 作用：向扫描结果表追加一行。
     // - 返回：无。
@@ -1569,10 +1576,21 @@ private:
     // PID 图标缓存：避免重复解析 EXE 图标导致 UI 卡顿。
     QHash<quint32, QIcon> m_processIconCacheByPid;
 
+    // AliveScanTaskState：让后台扫描在 QWidget 生命周期之外仍可安全记录退出状态。
+    struct AliveScanTaskState
+    {
+        std::mutex mutex; // mutex：保护 activeTaskCount。
+        std::condition_variable completion; // completion：最后一个协调任务退出时唤醒析构路径。
+        std::atomic_bool cancelRequested{ false }; // cancelRequested：独立于 QWidget 的取消请求。
+        std::size_t activeTaskCount = 0; // activeTaskCount：尚未退出的 ICMP 扫描协调任务数。
+    };
+
     // 存活主机扫描状态：防止重复启动并支持用户中断。
     std::atomic_bool m_aliveScanRunning{ false };
     std::atomic_bool m_aliveScanCancel{ false };
     int m_aliveScanProgressPid = 0;
+    QThreadPool m_aliveScanThreadPool; // m_aliveScanThreadPool：仅承载本 Dock 的扫描协调任务，避免等待全局任务池。
+    std::shared_ptr<AliveScanTaskState> m_aliveScanTaskState = std::make_shared<AliveScanTaskState>();
 
     // 多线程下载任务运行状态：支持多任务并行与界面周期刷新。
     mutable std::mutex m_multiDownloadTaskMutex; // m_multiDownloadTaskMutex：下载任务列表并发访问锁。

@@ -65,17 +65,28 @@ KswordArkFindPendingDecisionByGuidLocked(
     return NULL;
 }
 
-static VOID
+static BOOLEAN
 KswordArkInsertPendingDecision(
     _In_ KSWORD_ARK_CALLBACK_RUNTIME* runtime,
     _In_ KSWORD_ARK_PENDING_DECISION* pendingDecision
     )
 {
+    BOOLEAN inserted = FALSE;
+
+    if (runtime == NULL || pendingDecision == NULL) {
+        return FALSE;
+    }
+
     ExAcquirePushLockExclusive(&runtime->PendingLock);
-    InsertTailList(&runtime->PendingDecisionList, &pendingDecision->Link);
-    KswordArkPendingDecisionReference(pendingDecision); // list reference
-    (VOID)InterlockedIncrement(&runtime->PendingDecisionCount);
+    // 卸载已开始时不再发布新的等待项，避免注销回调后留下无法被唤醒的等待者。
+    if (InterlockedCompareExchange(&runtime->Stopping, 0L, 0L) == 0L) {
+        InsertTailList(&runtime->PendingDecisionList, &pendingDecision->Link);
+        KswordArkPendingDecisionReference(pendingDecision); // list reference
+        (VOID)InterlockedIncrement(&runtime->PendingDecisionCount);
+        inserted = TRUE;
+    }
     ExReleasePushLockExclusive(&runtime->PendingLock);
+    return inserted;
 }
 
 static VOID
@@ -89,14 +100,15 @@ KswordArkRemovePendingDecision(
     ExAcquirePushLockExclusive(&runtime->PendingLock);
     if (pendingDecision->Link.Flink != NULL && pendingDecision->Link.Blink != NULL) {
         RemoveEntryList(&pendingDecision->Link);
+        // 链接只在持有 PendingLock 时清零，取消路径据此识别已脱链的项。
         pendingDecision->Link.Flink = NULL;
         pendingDecision->Link.Blink = NULL;
+        (VOID)InterlockedDecrement(&runtime->PendingDecisionCount);
         removed = TRUE;
     }
     ExReleasePushLockExclusive(&runtime->PendingLock);
 
     if (removed) {
-        (VOID)InterlockedDecrement(&runtime->PendingDecisionCount);
         KswordArkPendingDecisionRelease(pendingDecision); // drop list reference
     }
 }
@@ -235,7 +247,8 @@ KswordArkCallbackWaiterUninitialize(
         return;
     }
 
-    (VOID)KswordArkCallbackCancelAllPendingInternal();
+    // 不能通过全局运行时查询取消项，因为卸载会先撤销全局发布再销毁此队列。
+    (VOID)KswordArkCallbackCancelAllPendingForRuntime(runtime);
     if (runtime->WaitQueue != WDF_NO_HANDLE) {
         WdfIoQueuePurgeSynchronously(runtime->WaitQueue);
         WdfObjectDelete(runtime->WaitQueue);
@@ -313,26 +326,67 @@ KswordArkCallbackIoctlAnswerEventInternal(
         return STATUS_INVALID_PARAMETER;
     }
 
-    ExAcquirePushLockShared(&runtime->PendingLock);
+    // 答复、超时和取消都在同一把锁下仲裁 FinalDecision，避免超时覆盖已接受的答复。
+    ExAcquirePushLockExclusive(&runtime->PendingLock);
     matchedDecision = KswordArkFindPendingDecisionByGuidLocked(runtime, &answerRequest->eventGuid);
-    if (matchedDecision != NULL) {
-        KswordArkPendingDecisionReference(matchedDecision);
-    }
-    ExReleasePushLockShared(&runtime->PendingLock);
-
     if (matchedDecision == NULL) {
+        ExReleasePushLockExclusive(&runtime->PendingLock);
         return STATUS_NOT_FOUND;
     }
 
-    if (InterlockedCompareExchange(&matchedDecision->Answered, 1L, 0L) != 0L) {
-        KswordArkPendingDecisionRelease(matchedDecision);
+    if (InterlockedCompareExchange(&matchedDecision->Answered, 0L, 0L) != 0L) {
+        ExReleasePushLockExclusive(&runtime->PendingLock);
         return STATUS_ALREADY_COMMITTED;
     }
 
     matchedDecision->FinalDecision = answerRequest->decision;
+    (VOID)InterlockedExchange(&matchedDecision->Answered, 1L);
+    // 答复线程在锁外发信号前持有临时引用，防止并发超时路径释放该对象。
+    KswordArkPendingDecisionReference(matchedDecision);
+    ExReleasePushLockExclusive(&runtime->PendingLock);
     KeSetEvent(&matchedDecision->DecisionEvent, IO_NO_INCREMENT, FALSE);
     *CompleteBytesOut = sizeof(KSWORD_ARK_CALLBACK_ANSWER_REQUEST);
     KswordArkPendingDecisionRelease(matchedDecision);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswordArkCallbackCancelAllPendingForRuntime(
+    _In_ KSWORD_ARK_CALLBACK_RUNTIME* runtime
+    )
+{
+    if (runtime == NULL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    for (;;) {
+        KSWORD_ARK_PENDING_DECISION* pendingDecision = NULL;
+
+        ExAcquirePushLockExclusive(&runtime->PendingLock);
+        if (!IsListEmpty(&runtime->PendingDecisionList)) {
+            PLIST_ENTRY entry = RemoveHeadList(&runtime->PendingDecisionList);
+
+            pendingDecision = CONTAINING_RECORD(entry, KSWORD_ARK_PENDING_DECISION, Link);
+            // 先在受保护的原链表中脱链，绝不把节点暂挂到未受保护的本地链表。
+            pendingDecision->Link.Flink = NULL;
+            pendingDecision->Link.Blink = NULL;
+            (VOID)InterlockedDecrement(&runtime->PendingDecisionCount);
+            if (InterlockedCompareExchange(&pendingDecision->Answered, 0L, 0L) == 0L) {
+                pendingDecision->FinalDecision = pendingDecision->DefaultDecision;
+                (VOID)InterlockedExchange(&pendingDecision->Answered, 1L);
+            }
+        }
+        ExReleasePushLockExclusive(&runtime->PendingLock);
+
+        if (pendingDecision == NULL) {
+            break;
+        }
+
+        // 无条件置位事件，覆盖答复线程已提交但尚未来得及发信号的窄窗口。
+        KeSetEvent(&pendingDecision->DecisionEvent, IO_NO_INCREMENT, FALSE);
+        KswordArkPendingDecisionRelease(pendingDecision); // drop list reference
+    }
+
     return STATUS_SUCCESS;
 }
 
@@ -342,36 +396,8 @@ KswordArkCallbackCancelAllPendingInternal(
     )
 {
     KSWORD_ARK_CALLBACK_RUNTIME* runtime = KswordArkCallbackGetRuntime();
-    LIST_ENTRY localList;
 
-    if (runtime == NULL) {
-        return STATUS_INVALID_DEVICE_STATE;
-    }
-
-    InitializeListHead(&localList);
-
-    ExAcquirePushLockExclusive(&runtime->PendingLock);
-    while (!IsListEmpty(&runtime->PendingDecisionList)) {
-        PLIST_ENTRY entry = RemoveHeadList(&runtime->PendingDecisionList);
-        InsertTailList(&localList, entry);
-        (VOID)InterlockedDecrement(&runtime->PendingDecisionCount);
-    }
-    ExReleasePushLockExclusive(&runtime->PendingLock);
-
-    while (!IsListEmpty(&localList)) {
-        PLIST_ENTRY entry = RemoveHeadList(&localList);
-        KSWORD_ARK_PENDING_DECISION* pendingDecision =
-            CONTAINING_RECORD(entry, KSWORD_ARK_PENDING_DECISION, Link);
-        pendingDecision->Link.Flink = NULL;
-        pendingDecision->Link.Blink = NULL;
-        if (InterlockedCompareExchange(&pendingDecision->Answered, 1L, 0L) == 0L) {
-            pendingDecision->FinalDecision = pendingDecision->DefaultDecision;
-            KeSetEvent(&pendingDecision->DecisionEvent, IO_NO_INCREMENT, FALSE);
-        }
-        KswordArkPendingDecisionRelease(pendingDecision); // drop list reference
-    }
-
-    return STATUS_SUCCESS;
+    return KswordArkCallbackCancelAllPendingForRuntime(runtime);
 }
 
 NTSTATUS
@@ -395,6 +421,15 @@ KswordArkCallbackAskUserDecision(
 
     if (runtime == NULL || runtime->WaitQueue == WDF_NO_HANDLE) {
         return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    if (InterlockedCompareExchange(&runtime->Stopping, 0L, 0L) != 0L) {
+        // 卸载中的回调必须立即采用规则默认值，不能再创建会阻塞注销流程的等待项。
+        *decisionOut = eventInput->Match.AskDefaultDecision;
+        if (*decisionOut != KSWORD_ARK_DECISION_DENY) {
+            *decisionOut = KSWORD_ARK_DECISION_ALLOW;
+        }
+        return STATUS_DEVICE_NOT_READY;
     }
 
     if (KeGetCurrentIrql() > APC_LEVEL) {
@@ -448,7 +483,12 @@ KswordArkCallbackAskUserDecision(
         pendingDecision->TargetPath,
         RTL_NUMBER_OF(pendingDecision->TargetPath));
 
-    KswordArkInsertPendingDecision(runtime, pendingDecision);
+    if (!KswordArkInsertPendingDecision(runtime, pendingDecision)) {
+        // 停止状态可能在预检查后才建立；插入失败时保留规则默认决定并释放所有者引用。
+        *decisionOut = pendingDecision->DefaultDecision;
+        KswordArkPendingDecisionRelease(pendingDecision); // owner release
+        return STATUS_DEVICE_NOT_READY;
+    }
     dispatchStatus = KswordArkDispatchEventToWaitingRequest(runtime, pendingDecision);
     if (!NT_SUCCESS(dispatchStatus)) {
         KswordArkRemovePendingDecision(runtime, pendingDecision);
@@ -481,18 +521,33 @@ KswordArkCallbackAskUserDecision(
         FALSE,
         &timeoutInterval);
     if (waitStatus == STATUS_TIMEOUT) {
-        pendingDecision->FinalDecision = pendingDecision->DefaultDecision;
-        *decisionOut = pendingDecision->DefaultDecision;
-        KswordArkCallbackLogFormat(
-            "Warn",
-            "AskUser timeout default applied, callback=%lu, op=0x%08lX, groupId=%lu, ruleId=%lu.",
-            (unsigned long)eventInput->CallbackType,
-            (unsigned long)eventInput->OperationType,
-            (unsigned long)eventInput->Match.GroupId,
-            (unsigned long)eventInput->Match.RuleId);
+        BOOLEAN timeoutApplied = FALSE;
+
+        // 与答复和取消共用 PendingLock，保证最终决定及其状态不会发生竞态写入。
+        ExAcquirePushLockExclusive(&runtime->PendingLock);
+        if (InterlockedCompareExchange(&pendingDecision->Answered, 0L, 0L) == 0L) {
+            pendingDecision->FinalDecision = pendingDecision->DefaultDecision;
+            (VOID)InterlockedExchange(&pendingDecision->Answered, 1L);
+            timeoutApplied = TRUE;
+        }
+        *decisionOut = pendingDecision->FinalDecision;
+        ExReleasePushLockExclusive(&runtime->PendingLock);
+
+        if (timeoutApplied) {
+            KswordArkCallbackLogFormat(
+                "Warn",
+                "AskUser timeout default applied, callback=%lu, op=0x%08lX, groupId=%lu, ruleId=%lu.",
+                (unsigned long)eventInput->CallbackType,
+                (unsigned long)eventInput->OperationType,
+                (unsigned long)eventInput->Match.GroupId,
+                (unsigned long)eventInput->Match.RuleId);
+        }
     }
     else {
+        // 事件唤醒后仍在锁下读取结果，以配对答复、取消和超时路径的写入同步。
+        ExAcquirePushLockShared(&runtime->PendingLock);
         *decisionOut = pendingDecision->FinalDecision;
+        ExReleasePushLockShared(&runtime->PendingLock);
     }
 
     KswordArkRemovePendingDecision(runtime, pendingDecision);

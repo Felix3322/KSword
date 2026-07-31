@@ -11627,10 +11627,24 @@ void FileDock::unlockPathsByDriver(
         const auto markWorkerStopped = [this]() {
             this->m_unlockerWorkerRunning.store(false);
             };
+        const auto stopRequested = [this]()
+        {
+            return this->m_unlockerWorkerStopRequested.load();
+        };
 
         kPro.set(progressPid, "扫描占用来源", 0, 35.0f);
         const filedock::handleusage::HandleUsageScanResult scanResult =
-            filedock::handleusage::scanHandleUsageByPaths(paths, progressPid);
+            filedock::handleusage::scanHandleUsageByPaths(
+                paths,
+                progressPid,
+                true,
+                stopRequested);
+        if (stopRequested())
+        {
+            kPro.set(progressPid, "用户取消", 0, 100.0f);
+            markWorkerStopped();
+            return;
+        }
         jobResult.scanCompleted = true;
         jobResult.scanDetailList.push_back(
             QStringLiteral("matched=%1, elapsedMs=%2, diagnostic=%3")
@@ -11644,6 +11658,12 @@ void FileDock::unlockPathsByDriver(
         const std::uint32_t currentProcessId = static_cast<std::uint32_t>(::GetCurrentProcessId());
         for (const filedock::handleusage::HandleUsageEntry& entry : scanResult.entries)
         {
+            if (stopRequested())
+            {
+                kPro.set(progressPid, "用户取消", 0, 100.0f);
+                markWorkerStopped();
+                return;
+            }
             if (entry.processId == 0U)
             {
                 continue;
@@ -11683,6 +11703,12 @@ void FileDock::unlockPathsByDriver(
         jobResult.processCandidateList.reserve(candidateByPid.size());
         for (const auto& entry : candidateByPid)
         {
+            if (stopRequested())
+            {
+                kPro.set(progressPid, "用户取消", 0, 100.0f);
+                markWorkerStopped();
+                return;
+            }
             jobResult.processCandidateList.push_back(entry.second);
         }
 

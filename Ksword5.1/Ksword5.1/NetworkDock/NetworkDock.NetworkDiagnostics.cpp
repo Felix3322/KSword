@@ -1585,6 +1585,12 @@ void NetworkDock::startAliveHostScan()
 
     m_aliveScanRunning.store(true);
     m_aliveScanCancel.store(false);
+    const std::shared_ptr<AliveScanTaskState> taskState = m_aliveScanTaskState;
+    taskState->cancelRequested.store(false);
+    {
+        std::lock_guard<std::mutex> lock(taskState->mutex);
+        ++taskState->activeTaskCount;
+    }
     const int timeoutMs = m_aliveScanTimeoutSpin->value();
 
     {
@@ -1602,8 +1608,20 @@ void NetworkDock::startAliveHostScan()
     }
 
     QPointer<NetworkDock> guardThis(this);
-    auto* scanTask = QRunnable::create([guardThis, startIpHostOrder, endIpHostOrder, timeoutMs]()
+    auto* scanTask = QRunnable::create([guardThis, taskState, startIpHostOrder, endIpHostOrder, timeoutMs]()
         {
+            const auto finishAliveScanTask = [taskState]()
+            {
+                std::lock_guard<std::mutex> lock(taskState->mutex);
+                if (taskState->activeTaskCount > 0)
+                {
+                    --taskState->activeTaskCount;
+                }
+                if (taskState->activeTaskCount == 0)
+                {
+                    taskState->completion.notify_all();
+                }
+            };
             const std::uint64_t totalCount =
                 static_cast<std::uint64_t>(endIpHostOrder) - startIpHostOrder + 1;
             std::atomic<std::uint64_t> nextIpHostOrder{ startIpHostOrder };
@@ -1623,6 +1641,7 @@ void NetworkDock::startAliveHostScan()
             for (unsigned int workerIndex = 0; workerIndex < workerCount; ++workerIndex)
             {
                 workers.emplace_back([guardThis,
+                    taskState,
                     endIpHostOrder,
                     timeoutMs,
                     totalCount,
@@ -1641,7 +1660,7 @@ void NetworkDock::startAliveHostScan()
                         char sendData[] = "KSWORD";
                         while (true)
                         {
-                            if (guardThis == nullptr || guardThis->m_aliveScanCancel.load())
+                            if (guardThis == nullptr || taskState->cancelRequested.load())
                             {
                                 break;
                             }
@@ -1685,9 +1704,9 @@ void NetworkDock::startAliveHostScan()
                             const QString ipText = toQString(ks::network::FormatIpv4HostOrder(currentIpHostOrder));
                             QMetaObject::invokeMethod(
                                 guardThis,
-                                [guardThis, ipText, alive, rttMs, detailText, doneCount, totalCount, aliveNow]()
+                                [guardThis, taskState, ipText, alive, rttMs, detailText, doneCount, totalCount, aliveNow]()
                                 {
-                                    if (guardThis == nullptr)
+                                    if (guardThis == nullptr || taskState->cancelRequested.load())
                                     {
                                         return;
                                     }
@@ -1727,7 +1746,7 @@ void NetworkDock::startAliveHostScan()
 
             QMetaObject::invokeMethod(
                 guardThis,
-                [guardThis, totalCount, finishedCountValue, aliveCountValue, icmpHandleFailCountValue, workerCount]()
+                [guardThis, taskState, totalCount, finishedCountValue, aliveCountValue, icmpHandleFailCountValue, workerCount]()
                 {
                     if (guardThis == nullptr)
                     {
@@ -1736,7 +1755,7 @@ void NetworkDock::startAliveHostScan()
                     guardThis->m_aliveScanRunning.store(false);
                     guardThis->m_startAliveScanButton->setEnabled(true);
                     guardThis->m_stopAliveScanButton->setEnabled(false);
-                    const bool canceled = guardThis->m_aliveScanCancel.load();
+                    const bool canceled = taskState->cancelRequested.load() || guardThis->m_aliveScanCancel.load();
                     const int progressValue = ks::network::CalculateIntegerProgressPercent(
                         finishedCountValue,
                         totalCount);
@@ -1779,23 +1798,38 @@ void NetworkDock::startAliveHostScan()
                         << ", icmpHandleFailCount="
                         << icmpHandleFailCountValue
                         << ", canceled="
-                        << (guardThis->m_aliveScanCancel.load() ? "true" : "false")
+                        << (canceled ? "true" : "false")
                         << eol;
                 },
                 Qt::QueuedConnection);
+            finishAliveScanTask();
         });
-    QThreadPool::globalInstance()->start(scanTask);
+    m_aliveScanThreadPool.start(scanTask);
 }
 
 void NetworkDock::stopAliveHostScan()
 {
     m_aliveScanCancel.store(true);
+    m_aliveScanTaskState->cancelRequested.store(true);
     m_aliveScanStatusLabel->setText(QStringLiteral("状态：正在停止扫描..."));
 
     kLogEvent event;
     info << event
         << "[NetworkDock] 用户请求停止存活主机扫描。"
         << eol;
+}
+
+void NetworkDock::cancelAndWaitForAliveHostScan()
+{
+    m_aliveScanCancel.store(true);
+    const std::shared_ptr<AliveScanTaskState> taskState = m_aliveScanTaskState;
+    taskState->cancelRequested.store(true);
+
+    std::unique_lock<std::mutex> lock(taskState->mutex);
+    taskState->completion.wait(lock, [taskState]()
+    {
+        return taskState->activeTaskCount == 0;
+    });
 }
 
 void NetworkDock::appendAliveHostRow(

@@ -296,12 +296,25 @@ void WinAPIDock::startPipeReadThread()
             ::CloseHandle(reinterpret_cast<HANDLE>(storedHandleValue));
         }
 
-        QMetaObject::invokeMethod(qApp, [guardThis]() {
+        const bool retryConnection = !guardThis->m_pipeStopFlag.load()
+            && guardThis->m_pipeRunning.load()
+            && guardThis->m_pipeReconnectAttempts.fetch_add(1) < kPipeReconnectLimit;
+
+        QMetaObject::invokeMethod(qApp, [guardThis, retryConnection]() {
             if (guardThis == nullptr)
             {
                 return;
             }
             guardThis->m_pipeConnected.store(false);
+            if (retryConnection && !guardThis->m_pipeStopFlag.load() && guardThis->m_pipeRunning.load())
+            {
+                guardThis->appendInternalEvent(
+                    QStringLiteral("内部"),
+                    QStringLiteral("管道短暂断开"),
+                    QStringLiteral("Agent 正在切换会话，正在重新连接命名管道。"));
+                guardThis->startPipeReadThread();
+                return;
+            }
             if (guardThis->m_pipeStopFlag.load())
             {
                 guardThis->appendInternalEvent(

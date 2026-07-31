@@ -3002,6 +3002,8 @@ void RegistryDock::startSearchAsync()
 
         QMetaObject::invokeMethod(qApp, [guardThis, scanned, hits]() {
             if (guardThis == nullptr) return;
+            // 读取停止标记必须位于复位之前，确保交互停止与自然完成显示不同状态。
+            const bool wasStopped = guardThis->m_searchStopFlag.load();
             guardThis->m_searchRunning.store(false);
             guardThis->m_searchStopFlag.store(false);
             if (guardThis->m_searchThread != nullptr && guardThis->m_searchThread->joinable())
@@ -3012,12 +3014,14 @@ void RegistryDock::startSearchAsync()
             guardThis->flushPendingSearchRows();
             guardThis->m_searchButton->setEnabled(true);
             guardThis->m_stopSearchButton->setEnabled(false);
-            guardThis->updateStatusBar(QStringLiteral("状态: 搜索完成，扫描 %1 键，命中 %2 项").arg(scanned).arg(hits));
-            kPro.set(guardThis->m_progressPid, "搜索完成", 0, 100.0f);
+            guardThis->updateStatusBar(wasStopped
+                ? QStringLiteral("状态: 搜索已停止")
+                : QStringLiteral("状态: 搜索完成，扫描 %1 键，命中 %2 项").arg(scanned).arg(hits));
+            kPro.set(guardThis->m_progressPid, wasStopped ? "搜索停止" : "搜索完成", 0, 100.0f);
 
             kLogEvent event;
             info << event
-                << "[RegistryDock] 搜索完成, scanned="
+                << (wasStopped ? "[RegistryDock] 搜索已停止, scanned=" : "[RegistryDock] 搜索完成, scanned=")
                 << scanned
                 << ", hits="
                 << hits
@@ -3057,24 +3061,10 @@ void RegistryDock::stopSearch(bool waitForThread)
         return;
     }
 
-    std::unique_ptr<std::thread> joinThread = std::move(m_searchThread);
-    QPointer<RegistryDock> guardThis(this);
-    std::thread([joinThread = std::move(joinThread), guardThis]() mutable {
-        if (joinThread != nullptr && joinThread->joinable()) joinThread->join();
-        QMetaObject::invokeMethod(qApp, [guardThis]() {
-            if (guardThis == nullptr) return;
-            guardThis->m_searchRunning.store(false);
-            guardThis->m_searchStopFlag.store(false);
-            guardThis->flushPendingSearchRows();
-            guardThis->m_searchButton->setEnabled(true);
-            guardThis->m_stopSearchButton->setEnabled(false);
-            guardThis->updateStatusBar(QStringLiteral("状态: 搜索已停止"));
-            kPro.set(guardThis->m_progressPid, "搜索停止", 0, 100.0f);
-
-            kLogEvent event;
-            info << event << "[RegistryDock] 搜索已停止（异步回收完成）。" << eol;
-        }, Qt::QueuedConnection);
-    }).detach();
+    // 交互停止不能移走唯一的线程所有权：析构路径需要用它同步等待，
+    // 才能保证递归搜索不会在 RegistryDock 释放后继续访问成员。
+    m_stopSearchButton->setEnabled(false);
+    updateStatusBar(QStringLiteral("状态: 搜索已停止"));
 }
 
 void RegistryDock::enqueuePendingSearchRow(PendingSearchRow&& row)

@@ -115,6 +115,15 @@ private:
     void terminateHooksForSelectedProcess();
     bool prepareSessionArtifacts(std::uint32_t pidValue, QString* errorTextOut);
     bool writeSessionConfigFile(QString* errorTextOut) const;
+
+    // hasResidentAgentForProcess：
+    // - 作用：通过 PID 与创建时间确认同一进程实例是否仍可复用已加载 Agent。
+    // - 返回：可复用时为 true；身份不匹配时会清除缓存。
+    bool hasResidentAgentForProcess(std::uint32_t pidValue);
+
+    // rememberResidentAgentForProcess：
+    // - 作用：在成功注入后记录目标进程身份，供同一 Dock 内下一会话避免重复 LoadLibraryW。
+    void rememberResidentAgentForProcess(std::uint32_t pidValue);
     void appendInternalEvent(const QString& categoryText, const QString& apiText, const QString& detailText);
     QString fakeSuccessRulesIniText() const;
     bool validateFakeSuccessRules(QString* errorTextOut) const;
@@ -211,6 +220,7 @@ private:
     static constexpr std::size_t kPendingRowCapacity = 24000; // 后台队列上限，积压时丢弃最旧事件以保护内存与延迟。
     static constexpr std::size_t kUiFlushRowLimit = 160;      // 单个 GUI tick 最多渲染的事件数。
     static constexpr int kUiFlushBudgetMs = 4;                // 单个 GUI tick 的渲染时间预算。
+    static constexpr std::uint32_t kPipeReconnectLimit = 3;  // 旧会话切换时读端可容忍的瞬时断线次数，避免新 Agent 建管道前 UI 放弃读取。
 
     std::deque<EventRow> m_pendingRows;                    // m_pendingRows：后台线程待刷入的有界 FIFO 事件队列。
     std::mutex m_pendingMutex;                             // m_pendingMutex：保护待刷入事件队列。
@@ -225,12 +235,16 @@ private:
     std::atomic_bool m_pipeConnected{ false };             // m_pipeConnected：是否已成功连上 Agent 管道。
     std::atomic_bool m_pipeStopFlag{ false };              // m_pipeStopFlag：命名管道线程停止信号。
     std::atomic_uintptr_t m_pipeHandleValue{ 0 };          // m_pipeHandleValue：后台线程持有的管道句柄数值。
+    std::atomic_uint32_t m_pipeReconnectAttempts{ 0 };     // m_pipeReconnectAttempts：当前会话已使用的读端短暂断线重连次数。
     QTimer* m_uiFlushTimer = nullptr;                      // m_uiFlushTimer：批量刷新事件表的定时器。
     int m_sessionProgressPid = 0;                          // m_sessionProgressPid：kPro 任务卡片 ID。
     std::uint32_t m_currentSessionPid = 0;                 // m_currentSessionPid：当前监控中的目标 PID。
+    std::uint32_t m_residentAgentPid = 0;                  // m_residentAgentPid：已成功注入且仍可能常驻 Agent 的 PID。
+    std::uint64_t m_residentAgentCreationTime100ns = 0;    // m_residentAgentCreationTime100ns：常驻 Agent 所属进程实例的创建时间，防 PID 复用。
     QString m_currentPipeName;                             // m_currentPipeName：当前命名管道名。
     QString m_currentConfigPath;                           // m_currentConfigPath：当前会话配置文件路径。
     QString m_currentStopFlagPath;                         // m_currentStopFlagPath：当前停止标记文件路径。
+    QString m_currentSessionId;                            // m_currentSessionId：每次启动唯一标识，防 stop/start 过快时遗漏停止标记。
     qint64 m_lastProcessRefreshMs = 0;                     // m_lastProcessRefreshMs：上次完成进程快照的时间戳（ms）。
     bool m_eventFilterActive = false;                      // m_eventFilterActive：是否需要在事件到达时执行全表筛选。
     bool m_hasActivatedOnce = false;                       // m_hasActivatedOnce：是否已经至少激活过一次页面。

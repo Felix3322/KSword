@@ -229,6 +229,8 @@
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="MiscDock\BootEditor\BootEditorTab.Actions.cpp" />
     <ClCompile Include="MiscDock\ApplicationControlPage.cpp" />
+    <ClCompile Include="MiscDock\SoundSource\SoundSourceDetector.cpp" />
+    <ClCompile Include="MiscDock\SoundSource\SoundSourcePage.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorBackend.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskFileSystemForensics.cpp" />
@@ -526,6 +528,8 @@
     <ClInclude Include="MemoryDock\MemoryDock.Internal.h" />
     <QtMoc Include="MiscDock\BootEditor\BootEditorTab.h" />
     <ClInclude Include="MiscDock\ApplicationControlPage.h" />
+    <ClInclude Include="MiscDock\SoundSource\SoundSourceDetector.h" />
+    <QtMoc Include="MiscDock\SoundSource\SoundSourcePage.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Internal.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskAdvancedModels.h" />

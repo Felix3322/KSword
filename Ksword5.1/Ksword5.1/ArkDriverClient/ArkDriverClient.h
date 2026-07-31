@@ -176,12 +176,14 @@ namespace ksword::ark
         // queryProcessCrossView：
         // - 输入：进程 cross-view 采集 flags、PID 半开/闭合过滤和节点预算。
         // - 处理：只通过 ArkDriverClient 调用 R0，不让 Dock 直接 DeviceIoControl。
+        // - existingHandle：可复用已打开的设备句柄，批量只读查询时避免重复打开驱动。
         // - 返回：ProcessCrossViewResult，包含 source matrix、anomaly flags 和 DynData 缺口。
         ProcessCrossViewResult queryProcessCrossView(
             unsigned long flags = KSWORD_ARK_PROCESS_CROSSVIEW_FLAG_INCLUDE_ALL,
             std::uint32_t startPid = 0,
             std::uint32_t endPid = 0,
-            unsigned long maxNodes = KSWORD_ARK_CROSSVIEW_DEFAULT_MAX_NODES) const;
+            unsigned long maxNodes = KSWORD_ARK_CROSSVIEW_DEFAULT_MAX_NODES,
+            DriverHandle* existingHandle = nullptr) const;
         // queryThreadCrossView：
         // - 输入：线程 cross-view 采集 flags、可选 PID/TID 过滤和节点预算。
         // - 处理：解析 ETHREAD/KTHREAD 来源矩阵，只读展示线程 DKOM 证据。
@@ -195,8 +197,12 @@ namespace ksword::ark
         // query*RuntimeDetail：
         // - 输入：PID/TID 和只读字段组 flags。
         // - 处理：封装 R0 PDB/DynData detail IOCTL，失败时返回 unsupported/unavailable。
+        // - existingHandle：可选共享设备句柄；为空时保持原有按调用打开行为。
         // - 返回：固定响应结构；不把对象地址作为后续写操作凭据。
-        ProcessRuntimeDetailResult queryProcessRuntimeDetail(std::uint32_t processId, unsigned long flags = KSWORD_ARK_PROCESS_DETAIL_FLAG_INCLUDE_ALL) const;
+        ProcessRuntimeDetailResult queryProcessRuntimeDetail(
+            std::uint32_t processId,
+            unsigned long flags = KSWORD_ARK_PROCESS_DETAIL_FLAG_INCLUDE_ALL,
+            DriverHandle* existingHandle = nullptr) const;
         ThreadRuntimeDetailResult queryThreadRuntimeDetail(std::uint32_t threadId, std::uint32_t processId = 0, unsigned long flags = KSWORD_ARK_THREAD_DETAIL_FLAG_INCLUDE_ALL) const;
         // query*RuntimeFieldSamples：
         // - 输入：deep PDB catalog 选出的字段 offset/size 列表。

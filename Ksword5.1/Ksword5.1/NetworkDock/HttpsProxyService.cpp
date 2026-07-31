@@ -1,6 +1,8 @@
 #include "HttpsProxyService.h"
 #include "../ksword/network/network_connection_tools.h"
 
+#include <algorithm>
+
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
@@ -16,6 +18,9 @@
 #include <QtNetwork/QSslKey>
 #include <QtNetwork/QSslSocket>
 #include <QtNetwork/QTcpServer>
+#include <QtNetwork/QTcpSocket>
+
+#include <vector>
 
 namespace ks::network
 {
@@ -257,6 +262,12 @@ namespace ks::network
                     failWithError(QStringLiteral("客户端 TLS 失败：%1")
                         .arg(errorList.isEmpty() ? m_clientSocket->errorString() : errorList.first().errorString()));
                 });
+            }
+
+            // requestStop：由服务停止路径在会话所属线程调用，先关闭套接字再销毁会话。
+            void requestStop()
+            {
+                closePeerAndDelete();
             }
 
         private:
@@ -773,6 +784,96 @@ namespace ks::network
             bool m_closing = false;                  // m_closing：是否正在结束会话，防止重复发出错误或汇总。
         };
 
+        // ProxySessionRegistry：集中保存活动会话线程，保证代理停止和析构会同步收尾。
+        class ProxySessionRegistry final
+        {
+        public:
+            struct SessionWorker
+            {
+                QPointer<ProxySession> session; // session：会话对象，销毁后自动置空。
+                QPointer<QThread> thread;       // thread：承载会话事件循环的线程。
+            };
+
+            bool add(ProxySession* sessionValue, QThread* threadValue)
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_stopping)
+                {
+                    return false;
+                }
+                m_sessionWorkerList.push_back(SessionWorker{ sessionValue, threadValue });
+                return true;
+            }
+
+            void remove(QThread* threadValue)
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_sessionWorkerList.erase(
+                    std::remove_if(
+                        m_sessionWorkerList.begin(),
+                        m_sessionWorkerList.end(),
+                        [threadValue](const SessionWorker& worker)
+                        {
+                            return worker.thread.isNull() || worker.thread.data() == threadValue;
+                        }),
+                    m_sessionWorkerList.end());
+            }
+
+            void stopAndWait()
+            {
+                std::vector<SessionWorker> sessionWorkerList;
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    m_stopping = true;
+                    sessionWorkerList = m_sessionWorkerList;
+                }
+
+                for (const SessionWorker& worker : sessionWorkerList)
+                {
+                    const QPointer<ProxySession> session = worker.session;
+                    if (!session.isNull())
+                    {
+                        const bool queued = QMetaObject::invokeMethod(
+                            session.data(),
+                            [session]()
+                            {
+                                if (!session.isNull())
+                                {
+                                    session->requestStop();
+                                }
+                            },
+                            Qt::QueuedConnection);
+                        if (queued)
+                        {
+                            continue;
+                        }
+                    }
+
+                    if (!worker.thread.isNull())
+                    {
+                        worker.thread->quit();
+                    }
+                }
+
+                for (const SessionWorker& worker : sessionWorkerList)
+                {
+                    if (worker.thread.isNull() || worker.thread.data() == QThread::currentThread())
+                    {
+                        continue;
+                    }
+                    worker.thread->wait();
+                }
+
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_sessionWorkerList.clear();
+            }
+
+        private:
+            std::mutex m_mutex; // m_mutex：保护会话登记与停止快照。
+            std::vector<SessionWorker> m_sessionWorkerList; // m_sessionWorkerList：所有尚未结束的会话线程。
+            bool m_stopping = false; // m_stopping：停止阶段拒绝新会话登记。
+        };
+
         class ProxyServer final : public QTcpServer
         {
         public:
@@ -785,11 +886,13 @@ namespace ks::network
                 HostCertLoader hostCertLoaderValue,
                 ParsedEmitter parsedEmitterValue,
                 StatusEmitter statusEmitterValue,
-                SessionIdProvider sessionIdProviderValue)
+                SessionIdProvider sessionIdProviderValue,
+                std::shared_ptr<ProxySessionRegistry> sessionRegistryValue)
                 : m_hostCertLoader(std::move(hostCertLoaderValue))
                 , m_parsedEmitter(std::move(parsedEmitterValue))
                 , m_statusEmitter(std::move(statusEmitterValue))
                 , m_sessionIdProvider(std::move(sessionIdProviderValue))
+                , m_sessionRegistry(std::move(sessionRegistryValue))
             {
             }
 
@@ -804,10 +907,31 @@ namespace ks::network
                     m_hostCertLoader,
                     m_parsedEmitter,
                     m_statusEmitter);
+                if (m_sessionRegistry != nullptr && !m_sessionRegistry->add(session, sessionThread))
+                {
+                    QTcpSocket rejectedSocket;
+                    rejectedSocket.setSocketDescriptor(socketDescriptor);
+                    rejectedSocket.abort();
+                    delete session;
+                    delete sessionThread;
+                    return;
+                }
                 session->moveToThread(sessionThread);
                 connect(sessionThread, &QThread::started, session, [session]() { session->initialize(); });
-                connect(session, &QObject::destroyed, sessionThread, &QThread::quit);
+                connect(session, &QObject::destroyed, sessionThread, &QThread::quit, Qt::DirectConnection);
                 connect(sessionThread, &QThread::finished, session, &QObject::deleteLater);
+                connect(
+                    sessionThread,
+                    &QThread::finished,
+                    sessionThread,
+                    [sessionRegistry = m_sessionRegistry, sessionThread]()
+                    {
+                        if (sessionRegistry != nullptr)
+                        {
+                            sessionRegistry->remove(sessionThread);
+                        }
+                    },
+                    Qt::DirectConnection);
                 connect(sessionThread, &QThread::finished, sessionThread, &QObject::deleteLater);
                 sessionThread->start();
             }
@@ -817,6 +941,7 @@ namespace ks::network
             ParsedEmitter m_parsedEmitter;        // m_parsedEmitter：解析事件回调。
             StatusEmitter m_statusEmitter;        // m_statusEmitter：状态文本回调。
             SessionIdProvider m_sessionIdProvider; // m_sessionIdProvider：会话编号分配器。
+            std::shared_ptr<ProxySessionRegistry> m_sessionRegistry; // m_sessionRegistry：活动会话线程登记表。
         };
     }
 
@@ -892,12 +1017,18 @@ namespace ks::network
                 }
                 return safeThis->m_nextSessionId++;
             };
+        const std::shared_ptr<ProxySessionRegistry> sessionRegistry = std::make_shared<ProxySessionRegistry>();
 
         m_server = std::make_unique<ProxyServer>(
             std::move(hostCertLoader),
             std::move(parsedEmitter),
             std::move(statusEmitter),
-            std::move(sessionIdProvider));
+            std::move(sessionIdProvider),
+            sessionRegistry);
+        m_stopSessionWorkers = [sessionRegistry]()
+        {
+            sessionRegistry->stopAndWait();
+        };
 
         if (!m_server->listen(listenAddress, listenPort))
         {
@@ -906,6 +1037,7 @@ namespace ks::network
                 *errorTextOut = QStringLiteral("HTTPS代理监听失败：%1").arg(m_server->errorString());
             }
             m_server.reset();
+            m_stopSessionWorkers = {};
             return false;
         }
 
@@ -917,13 +1049,24 @@ namespace ks::network
 
     void HttpsMitmProxyService::stop()
     {
-        if (!m_server)
+        const bool hadActiveProxy = m_server != nullptr || static_cast<bool>(m_stopSessionWorkers);
+        if (m_server != nullptr)
         {
-            return;
+            m_server->close();
+            m_server.reset();
         }
-        m_server->close();
-        m_server.reset();
-        emitStatus(QStringLiteral("HTTPS代理已停止。"));
+        if (m_stopSessionWorkers)
+        {
+            // 会话线程会持有 service 回调；必须先等它们退出，再允许服务对象析构。
+            const std::function<void()> stopSessionWorkers = std::move(m_stopSessionWorkers);
+            stopSessionWorkers();
+        }
+        m_listenAddress = QHostAddress();
+        m_listenPort = 0;
+        if (hadActiveProxy)
+        {
+            emitStatus(QStringLiteral("HTTPS代理已停止。"));
+        }
     }
 
     bool HttpsMitmProxyService::isRunning() const

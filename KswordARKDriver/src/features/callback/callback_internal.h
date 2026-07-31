@@ -99,6 +99,8 @@ typedef struct _KSWORD_ARK_CALLBACK_RUNTIME
     EX_PUSH_LOCK PendingLock;
     LIST_ENTRY PendingDecisionList;
     volatile LONG PendingDecisionCount;
+    // 卸载开始后拒绝创建新的等待项，确保注销回调前能够排空现有等待者。
+    volatile LONG Stopping;
     volatile LONG64 EventSequence;
 
     LARGE_INTEGER RegistryCookie;
@@ -434,6 +436,11 @@ KswordArkCallbackIoctlAnswerEventInternal(
 NTSTATUS
 KswordArkCallbackCancelAllPendingInternal(
     VOID
+    );
+
+NTSTATUS
+KswordArkCallbackCancelAllPendingForRuntime(
+    _In_ KSWORD_ARK_CALLBACK_RUNTIME* runtime
     );
 
 NTSTATUS

@@ -200,6 +200,7 @@ namespace ks::network
 
     private:
         std::unique_ptr<QTcpServer> m_server;  // m_server：本地代理监听服务器。
+        std::function<void()> m_stopSessionWorkers; // m_stopSessionWorkers：停止并等待所有活动代理会话线程。
         ParsedCallback m_parsedCallback;       // m_parsedCallback：解析结果回调。
         StatusCallback m_statusCallback;       // m_statusCallback：状态文本回调。
         QHostAddress m_listenAddress;          // m_listenAddress：当前监听地址。

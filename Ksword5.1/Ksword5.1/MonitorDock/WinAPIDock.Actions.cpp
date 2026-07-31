@@ -35,12 +35,14 @@
 #include <QPointer>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextStream>
 #include <QTimer>
+#include <QUuid>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -733,12 +735,49 @@ bool WinAPIDock::prepareSessionArtifacts(const std::uint32_t pidValue, QString* 
     m_currentPipeName = QString::fromStdWString(ks::winapi_monitor::buildPipeNameForPid(pidValue));
     m_currentConfigPath = QString::fromStdWString(ks::winapi_monitor::buildConfigPathForPid(pidValue));
     m_currentStopFlagPath = QString::fromStdWString(ks::winapi_monitor::buildStopFlagPathForPid(pidValue));
+    m_currentSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    return true;
+}
 
-    if (QFile::exists(m_currentStopFlagPath))
+bool WinAPIDock::hasResidentAgentForProcess(const std::uint32_t pidValue)
+{
+    // hasResidentAgentForProcess：
+    // - 输入：pidValue 为准备启动会话的目标 PID；
+    // - 处理：用 PID 和进程创建时间确认同一实例仍保留此前已注入的常驻 Agent；
+    // - 返回：确认可复用时为 true，身份无法确认或 PID 已复用时清除缓存并返回 false。
+    if (pidValue == 0 || pidValue != m_residentAgentPid || m_residentAgentCreationTime100ns == 0)
     {
-        QFile::remove(m_currentStopFlagPath);
+        return false;
+    }
+
+    std::uint64_t observedCreationTime100ns = 0;
+    if (!ks::process::QueryProcessCreationTimeByPid(pidValue, &observedCreationTime100ns, nullptr)
+        || observedCreationTime100ns != m_residentAgentCreationTime100ns)
+    {
+        m_residentAgentPid = 0;
+        m_residentAgentCreationTime100ns = 0;
+        return false;
     }
     return true;
+}
+
+void WinAPIDock::rememberResidentAgentForProcess(const std::uint32_t pidValue)
+{
+    // rememberResidentAgentForProcess：
+    // - 输入：pidValue 为刚刚完成 DLL 注入的目标 PID；
+    // - 处理：记录 PID 和创建时间，后续同一进程实例的 start-stop-start 复用正在等待的 Agent worker；
+    // - 返回：无返回值，无法读取身份时主动放弃缓存，下一会话将保守地重新执行注入。
+    std::uint64_t creationTime100ns = 0;
+    if (!ks::process::QueryProcessCreationTimeByPid(pidValue, &creationTime100ns, nullptr)
+        || creationTime100ns == 0)
+    {
+        m_residentAgentPid = 0;
+        m_residentAgentCreationTime100ns = 0;
+        return;
+    }
+
+    m_residentAgentPid = pidValue;
+    m_residentAgentCreationTime100ns = creationTime100ns;
 }
 
 QString WinAPIDock::fakeSuccessRulesIniText() const
@@ -1007,8 +1046,8 @@ bool WinAPIDock::writeSessionConfigFile(QString* errorTextOut) const
         return false;
     }
 
-    QFile configFile(m_currentConfigPath);
-    if (!configFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
+    QSaveFile configFile(m_currentConfigPath);
+    if (!configFile.open(QIODevice::WriteOnly | QIODevice::Text))
     {
         if (errorTextOut != nullptr)
         {
@@ -1021,6 +1060,7 @@ bool WinAPIDock::writeSessionConfigFile(QString* errorTextOut) const
     outputStream << "[monitor]\n";
     outputStream << "pipe_name=" << m_currentPipeName << '\n';
     outputStream << "stop_flag_path=" << m_currentStopFlagPath << '\n';
+    outputStream << "session_id=" << m_currentSessionId << '\n';
     outputStream << "agent_dll_path=" << (m_agentDllPathEdit != nullptr ? QDir::cleanPath(m_agentDllPathEdit->text().trimmed()) : QString()) << '\n';
     outputStream << "enable_file=" << ((m_hookFileCheck != nullptr && m_hookFileCheck->isChecked()) ? 1 : 0) << '\n';
     outputStream << "enable_registry=" << ((m_hookRegistryCheck != nullptr && m_hookRegistryCheck->isChecked()) ? 1 : 0) << '\n';
@@ -1036,7 +1076,25 @@ bool WinAPIDock::writeSessionConfigFile(QString* errorTextOut) const
     outputStream << "fake_success_raw_fallback=" << ((m_fakeRawFallbackCheck != nullptr && m_fakeRawFallbackCheck->isChecked()) ? 1 : 0) << '\n';
     outputStream << "fake_success_rules=" << fakeSuccessRulesIniText() << '\n';
     outputStream << "detail_limit=" << static_cast<int>(ks::winapi_monitor::kMaxDetailChars - 1) << '\n';
-    configFile.close();
+    outputStream.flush();
+    if (outputStream.status() != QTextStream::Ok || !configFile.commit())
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = QStringLiteral("无法原子提交会话配置：%1").arg(m_currentConfigPath);
+        }
+        return false;
+    }
+
+    // 只有完整新配置已经可见后才撤销停止标记，避免常驻 Agent 在半写入 INI 上启动下一会话。
+    if (QFile::exists(m_currentStopFlagPath) && !QFile::remove(m_currentStopFlagPath))
+    {
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = QStringLiteral("会话配置已写入，但无法撤销停止标记：%1").arg(m_currentStopFlagPath);
+        }
+        return false;
+    }
     return true;
 }
 
@@ -1147,6 +1205,9 @@ void WinAPIDock::startMonitoring()
         return;
     }
 
+    // 同一进程实例停止后 Agent worker 会驻留等待下一份配置；复用它避免重复 LoadLibraryW 增加模块引用计数。
+    const bool reuseResidentAgent = hasResidentAgentForProcess(pidValue);
+
     if (m_eventTable != nullptr)
     {
         m_eventTable->clearContents();
@@ -1161,6 +1222,7 @@ void WinAPIDock::startMonitoring()
     m_pipeStopFlag.store(false);
     m_pipeRunning.store(true);
     m_pipeConnected.store(false);
+    m_pipeReconnectAttempts.store(0);
     {
         std::lock_guard<std::mutex> lock(m_childPipeMutex);
         m_childSessionPids.clear();
@@ -1176,7 +1238,8 @@ void WinAPIDock::startMonitoring()
     startPipeReadThread();
 
     std::string detailText;
-    const bool injectOk = ks::process::InjectDllByPath(pidValue, dllPathText.toStdString(), &detailText);
+    const bool injectOk = reuseResidentAgent
+        || ks::process::InjectDllByPath(pidValue, dllPathText.toStdString(), &detailText);
     if (!injectOk)
     {
         const QString injectErrorText = QString::fromStdString(detailText);
@@ -1197,12 +1260,23 @@ void WinAPIDock::startMonitoring()
         return;
     }
 
+    if (!reuseResidentAgent)
+    {
+        rememberResidentAgentForProcess(pidValue);
+    }
+
     appendInternalEvent(
         QStringLiteral("内部"),
         QStringLiteral("会话已启动"),
-        QStringLiteral("已写入配置并完成 DLL 注入，等待 Agent 创建命名管道。"));
+        reuseResidentAgent
+            ? QStringLiteral("已原子写入配置并复用常驻 Agent，等待其重新创建命名管道。")
+            : QStringLiteral("已原子写入配置并完成 DLL 注入，等待 Agent 创建命名管道。"));
 
-    kPro.set(m_sessionProgressPid, "DLL 已注入，等待 Agent 握手", 0, 45.0f);
+    kPro.set(
+        m_sessionProgressPid,
+        reuseResidentAgent ? "复用常驻 Agent，等待握手" : "DLL 已注入，等待 Agent 握手",
+        0,
+        45.0f);
     updateActionState();
     updateStatusLabel();
 }

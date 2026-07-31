@@ -21,6 +21,7 @@ namespace apimon
         std::size_t g_pendingPacketCount = 0;                // g_pendingPacketCount：当前环形队列中有效事件数量。
         std::atomic_bool g_senderStopFlag{ false };    // g_senderStopFlag：后台发送线程停止信号。
         HANDLE g_queueWakeEvent = nullptr;             // g_queueWakeEvent：待发送事件唤醒事件。
+        HANDLE g_senderStopEvent = nullptr;            // g_senderStopEvent：中断挂起 OVERLAPPED WriteFile 的手动复位停止事件。
         constexpr DWORD kPipeConnectPollMs = 200;       // kPipeConnectPollMs：等待客户端连接时的轮询间隔。
         constexpr DWORD kPipeConnectTimeoutMs = 45000;  // kPipeConnectTimeoutMs：等待 UI 侧连入的最大时长。
 
@@ -98,20 +99,114 @@ namespace apimon
             }
         }
 
-        void EnsureSenderThreadStarted()
+        // WritePendingPacketLocked 作用：
+        // - 输入：packetValue 为固定大小的协议事件包，调用者已独占 g_pipeLock；
+        // - 处理：使用专属 OVERLAPPED 和停止事件等待写完成，停止时由发送线程取消本次 I/O；
+        // - 返回：完整写入一个包时为 true，断开、取消或任意 I/O 错误时为 false。
+        bool WritePendingPacketLocked(const ks::winapi_monitor::ApiMonitorEventPacket& packetValue)
+        {
+            if (g_pipeHandle == INVALID_HANDLE_VALUE || g_senderStopFlag.load())
+            {
+                return false;
+            }
+
+            HANDLE writeEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (writeEvent == nullptr)
+            {
+                return false;
+            }
+
+            OVERLAPPED overlappedValue{};
+            overlappedValue.hEvent = writeEvent;
+            DWORD bytesWritten = 0;
+            bool writeComplete = false;
+            const BOOL writeStarted = ::WriteFile(
+                g_pipeHandle,
+                &packetValue,
+                static_cast<DWORD>(sizeof(packetValue)),
+                nullptr,
+                &overlappedValue);
+            if (writeStarted != FALSE)
+            {
+                writeComplete = ::GetOverlappedResult(
+                    g_pipeHandle,
+                    &overlappedValue,
+                    &bytesWritten,
+                    FALSE) != FALSE;
+            }
+            else if (::GetLastError() == ERROR_IO_PENDING)
+            {
+                HANDLE waitHandles[] = { writeEvent, g_senderStopEvent };
+                const DWORD waitResult = ::WaitForMultipleObjects(
+                    static_cast<DWORD>(std::size(waitHandles)),
+                    waitHandles,
+                    FALSE,
+                    INFINITE);
+                if (waitResult == WAIT_OBJECT_0)
+                {
+                    writeComplete = ::GetOverlappedResult(
+                        g_pipeHandle,
+                        &overlappedValue,
+                        &bytesWritten,
+                        FALSE) != FALSE;
+                }
+                else
+                {
+                    // 停止信号或等待异常时，必须先完成取消并等待实际完成，
+                    // 否则栈上的 OVERLAPPED/packetValue 离开作用域后仍可能被内核访问。
+                    (void)::CancelIoEx(g_pipeHandle, &overlappedValue);
+                    (void)::WaitForSingleObject(writeEvent, INFINITE);
+                    (void)::GetOverlappedResult(
+                        g_pipeHandle,
+                        &overlappedValue,
+                        &bytesWritten,
+                        FALSE);
+                }
+            }
+
+            ::CloseHandle(writeEvent);
+            return writeComplete && bytesWritten == sizeof(packetValue);
+        }
+
+        // EnsureSenderThreadStarted 作用：
+        // - 输入：errorTextOut 接收创建停止事件或发送线程失败的诊断，可为空；
+        // - 处理：准备队列唤醒/停止事件，并在当前会话没有发送线程时创建唯一发送线程；
+        // - 返回：发送线程可用时为 true，创建任何必要同步对象失败时为 false。
+        bool EnsureSenderThreadStarted(std::wstring* errorTextOut)
         {
             if (g_queueWakeEvent == nullptr)
             {
                 g_queueWakeEvent = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                if (g_queueWakeEvent == nullptr)
+                {
+                    if (errorTextOut != nullptr)
+                    {
+                        *errorTextOut = L"CreateEventW for monitor queue wake failed. error=" + std::to_wstring(::GetLastError());
+                    }
+                    return false;
+                }
+            }
+            if (g_senderStopEvent == nullptr)
+            {
+                g_senderStopEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                if (g_senderStopEvent == nullptr)
+                {
+                    if (errorTextOut != nullptr)
+                    {
+                        *errorTextOut = L"CreateEventW for monitor sender stop failed. error=" + std::to_wstring(::GetLastError());
+                    }
+                    return false;
+                }
             }
 
             std::unique_ptr<std::thread>& senderThread = SenderThreadSlot();
             if (senderThread != nullptr && senderThread->joinable())
             {
-                return;
+                return true;
             }
 
             g_senderStopFlag.store(false);
+            (void)::ResetEvent(g_senderStopEvent);
             senderThread = std::make_unique<std::thread>([]() {
                 // senderBypassScope：
                 // - 输入：无；
@@ -135,12 +230,8 @@ namespace apimon
                         ::Sleep(25);
                     }
                 }
-
-                while (FlushPendingMonitorEvents(256) != 0)
-                {
-                    // 停止前尽量清空已入队事件；每轮仍保持小批量，避免长时间持有管道锁。
-                }
             });
+            return true;
         }
 
         bool WaitForClientConnection(const HANDLE pipeHandle, const MonitorConfig& configValue, std::wstring* errorTextOut)
@@ -288,13 +379,25 @@ namespace apimon
         g_pipeHandle = pipeHandle;
         g_pipeHandleValue.store(reinterpret_cast<std::uintptr_t>(pipeHandle));
         ::ReleaseSRWLockExclusive(&g_pipeLock);
-        EnsureSenderThreadStarted();
+        if (!EnsureSenderThreadStarted(errorTextOut))
+        {
+            ::AcquireSRWLockExclusive(&g_pipeLock);
+            ClosePipeLocked();
+            ::ReleaseSRWLockExclusive(&g_pipeLock);
+            return false;
+        }
         return true;
     }
 
     void StopMonitorPipeServer()
     {
         g_senderStopFlag.store(true);
+        if (g_senderStopEvent != nullptr)
+        {
+            // 发送线程正在等待异步 WriteFile 时会自行 CancelIoEx 并回收 OVERLAPPED；
+            // 这里不能先关闭 g_pipeHandle，否则发送线程可能在已失效句柄上取完成状态。
+            ::SetEvent(g_senderStopEvent);
+        }
         if (g_queueWakeEvent != nullptr)
         {
             ::SetEvent(g_queueWakeEvent);
@@ -408,14 +511,7 @@ namespace apimon
         for (std::size_t indexValue = 0; indexValue < flushCount; ++indexValue)
         {
             const auto& packetValue = packetBatch[indexValue];
-            DWORD bytesWritten = 0;
-            const BOOL writeOk = ::WriteFile(
-                g_pipeHandle,
-                &packetValue,
-                static_cast<DWORD>(sizeof(packetValue)),
-                &bytesWritten,
-                nullptr);
-            if (writeOk == FALSE || bytesWritten != sizeof(packetValue))
+            if (!WritePendingPacketLocked(packetValue))
             {
                 ClosePipeLocked();
                 break;

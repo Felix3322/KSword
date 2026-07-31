@@ -37,9 +37,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import struct
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1491,7 +1493,7 @@ def ensure_safe_target(target_dir: Path) -> None:
         raise ValueError(f"Refusing to clean unexpected target directory: {resolved}")
 
 
-def clean_scattered_profile_target(target_dir: Path) -> int:
+def clean_scattered_profile_target(target_dir: Path, keep_names: set[str] | None = None) -> int:
     """Delete stale scattered JSON profiles from the release profile directory.
 
     Inputs:
@@ -1499,8 +1501,8 @@ def clean_scattered_profile_target(target_dir: Path) -> int:
 
     Processing:
     - Verifies the expected directory suffix before deleting anything.
-    - Removes only direct child *.json files; pack files and manifests live in
-      the parent profiles directory and are never touched here.
+    - Removes only direct child *.json files not named in keep_names; pack files
+      and manifests live in the parent profiles directory and are never touched.
 
     Return behavior:
     - Returns the number of JSON files removed.
@@ -1511,9 +1513,35 @@ def clean_scattered_profile_target(target_dir: Path) -> int:
     ensure_safe_target(target_dir)
     removed_count = 0
     for stale_file in target_dir.glob("*.json"):
+        if keep_names is not None and stale_file.name in keep_names:
+            continue
         stale_file.unlink()
         removed_count += 1
     return removed_count
+
+
+def atomic_copy2(source_path: Path, destination: Path) -> None:
+    """Copy one profile through a sibling temporary file and atomically publish it.
+
+    The temporary file lives in destination.parent, so os.replace never exposes a
+    partially copied JSON profile to the running Ksword process on interruption.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary_path = Path(temporary_name)
+    os.close(descriptor)
+    try:
+        shutil.copy2(source_path, temporary_path)
+        # r+b keeps a writable handle on Windows, which FlushFileBuffers requires.
+        with temporary_path.open("r+b") as temporary_file:
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, destination)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def copy_profiles(records: list[ProfileRecord], target_dir: Path, clean_target: bool, max_copy: int) -> list[Path]:
@@ -1526,22 +1554,22 @@ def copy_profiles(records: list[ProfileRecord], target_dir: Path, clean_target: 
     - max_copy: Optional copy limit used for small smoke tests.
 
     Processing:
-    - Creates the target directory, optionally cleans stale JSON, and copies files
-      while preserving source file names.
+    - Creates the target directory and atomically refreshes selected files before
+      optionally deleting stale JSON, so an interrupted publish keeps old files.
 
     Return behavior:
     - Returns the list of destination paths copied or refreshed.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    if clean_target:
-        clean_scattered_profile_target(target_dir)
-
     selected = records[:max_copy] if max_copy > 0 else records
     copied: list[Path] = []
     for record in selected:
         destination = target_dir / record.path.name
-        shutil.copy2(record.path, destination)
+        atomic_copy2(record.path, destination)
         copied.append(destination)
+
+    if clean_target:
+        clean_scattered_profile_target(target_dir, {record.path.name for record in selected})
     return copied
 
 
@@ -1656,10 +1684,27 @@ def build_manifest(
     return manifest
 
 
-def write_json(path: Path, data: dict[str, Any]) -> None:
-    """Write a JSON file with stable indentation and UTF-8 encoding."""
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    """Write bytes through a sibling temp file and atomically replace the target."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as temporary_file:
+            temporary_file.write(payload)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    """Atomically write a stable, UTF-8, indented JSON document."""
+
+    atomic_write_bytes(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
 def write_compact_json(path: Path, data: dict[str, Any]) -> None:
@@ -1676,8 +1721,8 @@ def write_compact_json(path: Path, data: dict[str, Any]) -> None:
     Return behavior:
     - No return value; raises OSError/TypeError if writing fails.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    atomic_write_bytes(path, payload.encode("utf-8"))
 
 
 def main(argv: list[str] | None = None) -> int:

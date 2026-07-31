@@ -14,7 +14,10 @@
 #include <QWidget>
 
 #include <atomic>      // std::atomic：扫描取消标志、并发状态标志。
+#include <condition_variable> // std::condition_variable：等待已取消扫描线程退出。
 #include <cstdint>     // std::uint32_t / std::uint64_t：PID、地址等固定宽度整数。
+#include <memory>      // std::shared_ptr：扫描任务状态在后台线程退出前保持有效。
+#include <mutex>       // std::mutex：保护扫描任务计数。
 #include <string>      // std::string：日志与 Win32 调用时的字符串桥接。
 #include <vector>      // std::vector：缓存进程/模块/区域/扫描结果。
 
@@ -459,6 +462,11 @@ private:
     // - 作用：设置扫描取消标志，后台线程会尽快停止。
     // - 返回：无。
     void cancelCurrentScan();
+
+    // cancelAndWaitForMemoryScanTasks：
+    // - 作用：请求所有内存扫描停止，并在关闭句柄或析构前等待后台任务退出。
+    // - 返回：无。
+    void cancelAndWaitForMemoryScanTasks();
 
     // rebuildSearchResultTable：
     // - 作用：按 m_searchResultCache 重建结果表格。
@@ -944,6 +952,16 @@ private:
     // 运行时状态与缓存
     // ========================================================
 
+    // MemoryScanTaskState：
+    // - 作用：独立保存扫描任务计数与等待条件，避免 detached worker 依赖 QWidget 生命周期；
+    // - 生命周期：MemoryDock 与所有已启动扫描任务共同持有。
+    struct MemoryScanTaskState
+    {
+        std::mutex mutex;                         // mutex：保护 activeTaskCount 的读写。
+        std::condition_variable completion;       // completion：最后一个任务退出时唤醒关闭路径。
+        std::size_t activeTaskCount = 0;          // activeTaskCount：当前尚未退出的扫描协调线程数。
+    };
+
     HANDLE m_attachedProcessHandle = nullptr; // 当前附加的目标进程句柄。
     std::uint32_t m_attachedPid = 0;          // 当前附加 PID。
     QString m_attachedProcessName;            // 当前附加进程名。
@@ -961,6 +979,8 @@ private:
     SearchValueType m_lastSearchValueType = SearchValueType::Byte; // 最近一次扫描类型。
     std::atomic<bool> m_scanInProgress{ false };       // 当前是否正在扫描。
     std::atomic<bool> m_scanCancelRequested{ false };  // 扫描取消标志。
+    std::shared_ptr<MemoryScanTaskState> m_scanTaskState = std::make_shared<MemoryScanTaskState>();
+                                                        // m_scanTaskState：跨线程存活的扫描任务计数器。
     std::uint32_t m_scanThreadCount = 4;               // 扫描线程数（设置可调）。
     std::uint32_t m_scanChunkSizeKB = 1024;            // 单次读取块大小（KB，设置可调）。
 

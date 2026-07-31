@@ -58,6 +58,14 @@ Ksword5.1 is an open-source Windows ARK, kernel-debugging, and system-forensics 
 
 The current codebase focuses on R3/R0 cross-view evidence, PDB/DynData-driven offsets, read-only audit pages, and explicit gates for destructive or mutation-oriented actions.
 
+## Recent Highlights
+
+- A dedicated Scanner dock now performs background structural scans of PE, ELF, and Mach-O files. Its optional byte editor is deliberately constrained to length-preserving changes, revalidates the source snapshot, atomically replaces the target, and can keep a backup after explicit risk acknowledgement.
+- Kernel and storage forensics now include clean loaded-image and IDT baselines, descriptor-table and IOCTL decoding tools, kernel disassembly, expanded R0 network inventories, and a raw filesystem browser with deleted-entry analysis.
+- The HVM page supports a confirmation-gated VMX self-test and one-shot test guest with VM-exit telemetry; it is intended for authorized lab and diagnostic use only.
+- When a packaged DynData profile does not match, the full and lightweight applications can resolve an exact runtime PDB profile in the background. Identity checks are required before any result is applied.
+- Recent usability work adds table-freeze controls, smooth scrolling, and a cancellable UI stall detector. Startup and network-configuration changes also have stronger target validation, recovery, and transaction handling.
+
 ## Components
 
 - `Ksword5.1`: full Qt application with ADS dock layout and the complete ARK workflow.
@@ -72,38 +80,40 @@ The current codebase focuses on R3/R0 cross-view evidence, PDB/DynData-driven of
 
 - Process, thread, CID, and handle cross-view; hidden-object evidence; thread-stack inspection; process details; PDB field diagnostics; and guarded R0 actions.
 - Memory-region browsing, search, hex viewing, bookmarks and breakpoints, R0 memory paths, kernel executable-memory scanning, memory evidence, and PTE/VA translation.
-- Packet monitoring, connection management, per-process throttling, request construction, HTTPS analysis, firewall/WFP views, NIDS, segmented downloads, and TCP/UDP/AFD/WFP/NDIS/NSI audit views.
-- Driver services, loaded modules, DriverObject/DeviceObject/MajorFunction/FastIo diagnostics, Driver Integrity, Module Cross-View, Unloaded/PiDDB evidence, SSDT/SSSDT, hooks, callbacks, and object-namespace inspection.
-- File management and recovery, hashes, signatures, PE/strings/hex views, file unlocker, minifilter/FileObject/Section/storage evidence, hardware utilization, disk monitoring, device trees, and R0 device-stack audits.
+- Structured PE/ELF/Mach-O scanning and a guarded, length-preserving byte-editing path with source revalidation, atomic replacement, and optional backup.
+- Packet monitoring, connection management, per-process throttling, request construction, HTTPS analysis, firewall/WFP views, NIDS, segmented downloads, and R0 TCP/UDP/AFD/NSI/NDIS/WFP inventory and audit views.
+- Driver services, loaded modules, DriverObject/DeviceObject/MajorFunction/FastIo diagnostics, Driver Integrity, Module Cross-View, Unloaded/PiDDB evidence, clean loaded-image and IDT baselines, descriptor-table/IOCTL decoding, kernel disassembly, SSDT/SSSDT, hooks, callbacks, and object-namespace inspection.
+- File management and recovery, hashes, signatures, PE/strings/hex views, file unlocker, minifilter/FileObject/Section/storage evidence, read-only raw filesystem and deleted-entry forensics, hardware utilization, disk monitoring, device trees, and R0 device-stack audits.
 - AppLocker, WDAC/Code Integrity, Defender/ASR, VBS/Hyper-V, platform security, driver trust, and event-log diagnostics.
-- ADS layout persistence and restoration, lazy initialization of visible docks, top-menu settings, UIAccess/always-on-top policies, log and task-progress panels, and the Taskbar top AppBar with the `S O S Enter` quick launch.
+- ADS layout persistence and restoration, lazy initialization of visible docks, table-freeze and smooth-scrolling controls, a cancellable UI stall detector, top-menu settings, UIAccess/always-on-top policies, log and task-progress panels, and the Taskbar top AppBar with the `S O S Enter` quick launch.
 
 ## ARK Features by Main Application Dock
 
 > This inventory is based on recent code, comments, dock-initialization logic, and the R0/R3 protocols. See `docs/OpenArk功能对照与TODO.md` for the OpenArk coverage comparison and remaining TODOs.
 
-### Main Workspace Docks (16)
+### Main Workspace Docks (17)
 
-> Settings have moved from the primary docks to the top menu; the main workspace includes the Miscellaneous dock.
+> Settings have moved from the primary docks to the top menu; the main workspace includes the Scanner and Miscellaneous docks.
 
 | Primary Dock | Subpages / Key Areas | Primary Capabilities |
 |---|---|---|
 | Welcome | Welcome page | Shows version, build time, user information, avatar, and project entry points. |
 | Process | Process list, create process, details, threads, modules, tokens, Cross-View, PDB Catalog | Process tree/list, icons and difference highlighting, terminate/suspend/resume/priority/critical-process actions, recoverable R0 hiding, R3/R0 process and thread comparison, thread stacks, and risk prompts for PPL/Signature/CID operations. |
-| Network | Traffic monitor, per-process throttling, connection management, request builder, HTTPS, ARP/DNS, live hosts, firewall, NIDS, downloads, network audit | Packet capture and filtering, TCP/UDP connection management, WFP firewall events and rules, real-time detection, segmented HTTP/HTTPS downloads, and read-only TCP/UDP/AFD/WFP/NDIS/NSI cross-view. |
+| Network | Traffic monitor, per-process throttling, connection management, request builder, HTTPS, ARP/DNS, live hosts, firewall, NIDS, downloads, network audit | Packet capture and filtering, TCP/UDP connection management, WFP firewall events and rules, real-time detection, segmented HTTP/HTTPS downloads, and read-only R0 TCP/UDP/AFD/NSI/NDIS/WFP inventories and cross-view. |
 | Memory | Processes and modules, regions, search, viewer, breakpoints/bookmarks, R0 read/write, Kernel Exec Scan, Memory Evidence, PTE | R3 memory browsing/search, R0 region reads, kernel executable-memory scanning, kernel/process memory evidence, and page-table/virtual-address translation. |
 | File | File manager, recovery, properties, unlock, Minifilter, FileObject, Section, Storage/BitLocker | Dual-pane management, ownership/permission handling, hashes/signatures/PE/strings/hex, NTFS recovery, file-lock and Section mappings, and read-only storage-stack/BitLocker evidence. |
-| Driver | Overview, operations, debug output, object information, integrity, module Cross-View, Unloaded/PiDDB | Driver-service registration/load/unload/delete, loaded modules, DBWIN output, DriverObject/DeviceObject/MajorFunction/FastIo, Driver Integrity, and read-only evidence pages. |
-| Kernel | Object namespace, atom table, NtQuery, SSDT, SSSDT, Inline Hook, IAT/EAT, CID, IPC, DynData, driver status, callbacks | Recursive object directories, BaseNamedObjects, NamedPipe, symbolic links, device/driver objects, object-type matrix, CID/cross-view, ALPC/IPC, dynamic offsets, capability matrix, and callback inventory/management. Callback inventory covers notify, registry, object, filter, bugcheck, shutdown, file-system, logon, CallbackObject, image-verification, and NMI sources with module ownership plus v3 snapshot/row identity diagnostics. |
+| Scanner | Structured scan, guarded byte editor | Background structural scanning for PE, ELF, and Mach-O files. The optional editor permits only length-preserving edits after explicit risk acknowledgement; it revalidates the original snapshot, atomically replaces the target, and can retain a backup. |
+| Driver | Overview, operations, debug output, object information, integrity, module Cross-View, Unloaded/PiDDB | Driver-service registration/load/unload/delete, loaded modules, DBWIN output, DriverObject/DeviceObject/MajorFunction/FastIo, Driver Integrity, unloaded-driver/PiDDB evidence, and explicitly gated operator actions. |
+| Kernel | Object namespace, atom table, NtQuery, SSDT, SSSDT, Inline Hook, IAT/EAT, CID, IPC, DynData, driver status, callbacks, baselines, HVM | Recursive object directories, BaseNamedObjects, NamedPipe, symbolic links, device/driver objects, object-type matrix, CID/cross-view, ALPC/IPC, dynamic offsets, capability matrix, clean loaded-image and IDT baselines, descriptor-table/IOCTL decoding, kernel disassembly, and callback inventory/management. Callback inventory covers notify, registry, object, filter, bugcheck, shutdown, file-system, logon, CallbackObject, image-verification, and NMI sources with module ownership plus v3 snapshot/row identity diagnostics. The HVM workflow has explicit confirmations for VMX self-tests and one-shot test guests. |
 | Monitor | Process targeting, direct kernel calls, WinAPI, WMI, ETW, Risk Center | Target-process-tree ETW, syscall capture, WinAPI Agent, WMI subscriptions, ETW provider/session management, and ARK risk aggregation. |
 | Hardware | Utilization, overview, CPU, GPU, memory, disk monitoring, device management, R0 device audit | Task-Manager-style performance views, dynamic disk/network/GPU cards, process I/O and ETW file activity, SetupAPI/CfgMgr device tree, and DevNode/USB/HID/PCI/ACPI/GPU/display/watchdog audit. |
 | Privileges | Accounts, privileges | Local users, create user/reset password, group information, and the current process privilege snapshot. |
 | Windows | Window list, desktop/window details, Win32k/GUI, hotkeys/hooks, clipboard, GPU/display | Window enumeration, filtering, preview, picking, control, desktop management, message monitoring, and structured win32k GUI/session plus hotkey/hook audit. |
 | Registry | Tree, value list, search results | Registry browsing, key/value CRUD, `.reg` import/export, asynchronous search, and navigation. |
 | Handles | Handle list, object types, object details | PID/keyword/type filtering, named-object resolution, object-type statistics, and HandleTable/ObjectHeader/ObjectType evidence. |
-| Startup | Overview, logon, services, drivers, scheduled tasks, advanced registry, WMI | Categorized startup overview, icon rendering, filtering/export, file and registry location lookup, actionable deletion, and navigation to service management. |
+| Startup | Overview, logon, services, drivers, scheduled tasks, advanced registry, WMI | Categorized startup overview, icon rendering, filtering/export, file and registry location lookup, recovery-aware changes, and navigation to service management. Risk-gated actions validate targets before permanent removal and retain recovery transactions where the source supports them. |
 | Services | Main service table, general, logon, recovery, dependencies, audit | Service filtering/sorting, startup-type changes, start/stop/pause/continue, property editing, dependency/audit information, and TSV/JSON export. |
-| Miscellaneous | Boot, Shell association management, disk editing, application control | BCD/boot entry points; management of context menus, URL bindings, file Open With handlers, format-specific menus, and third-party Explorer Home entries; read-only disk editing by default (writes require unlocking); and AppLocker/WDAC/Defender/ASR/platform-security/event-log diagnostics. |
+| Miscellaneous | Boot, Shell association management, disk editing, raw filesystem forensics, application control | BCD/boot entry points; management of context menus, URL bindings, file Open With handlers, format-specific menus, and third-party Explorer Home entries; read-only disk editing, raw filesystem browsing, and deleted-entry analysis by default (writes require unlocking); and AppLocker/WDAC/Defender/ASR/platform-security/event-log diagnostics. |
 
 ### Auxiliary Panel Docks
 
@@ -144,6 +154,7 @@ The current codebase focuses on R3/R0 cross-view evidence, PDB/DynData-driven of
 - Audit pages should be read-only by default. Unload, delete, patch, bypass, disk-write, and similar mutation actions require a separate entry point, risk notice, and rollback/audit strategy.
 - The first DynData phase uses the vendored System Informer dynamic-offset data in `third_party/systeminformer_dyn/`. Ksword integrates only the `KphDynConfig` data and a lightweight parser, not the KPH communication layer, object system, or session tokens.
 - The DynData R0/R3 protocol is centralized in `shared/driver/KswordArkDynDataIoctl.h`. KernelDock's Dynamic Offsets page uses `ArkDriverClient` to show profile matches, field sources, and capability gates; when the driver loads, the main window automatically refreshes and applies the DynData profile.
+- If a packaged profile does not match, the full and lightweight applications can resolve an exact runtime PDB profile in a serialized background DbgHelp session. Results are applied only after PE/PDB identity checks succeed; unsupported or mismatched data is not guessed across builds.
 - Process extended information uses the v2 protocol in `shared/driver/KswordArkProcessIoctl.h` to provide session, full image path, Protection/SignatureLevel, ObjectTable/SectionObject availability, field source, and DynData capability. ProcessDock/ProcessDetail shows availability only and does not enumerate the handle table or Section directly when DynData is missing.
 - Recoverable R0 process hiding uses `IOCTL_KSWORD_ARK_SET_PROCESS_VISIBILITY`. The driver changes `_EPROCESS.UniqueProcessId` and unlinks `ActiveProcessLinks` while retaining the PspCidTable record, allowing restoration by the original PID.
 - The unified driver status/capability protocol is in `shared/driver/KswordArkCapabilityIoctl.h`. KernelDock's Driver Status page shows Driver Loaded/Missing, Protocol Mismatch, DynData Missing, Limited, security policy, the most recent R0 error, and the feature-capability matrix.

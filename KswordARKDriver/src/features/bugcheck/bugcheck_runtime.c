@@ -11,6 +11,7 @@ Abstract:
 --*/
 
 #include "bugcheck_internal.h"
+#include "../../platform/pool_compat.h"
 
 #include <aux_klib.h>
 #include <ntstrsafe.h>
@@ -291,8 +292,7 @@ KswordARKBugcheckRefreshModuleCache(
         return;
     }
 
-    modules = (PAUX_MODULE_EXTENDED_INFO)ExAllocatePool2(
-        POOL_FLAG_NON_PAGED,
+    modules = (PAUX_MODULE_EXTENDED_INFO)KswordARKAllocateNonPagedPool(
         bytes,
         KSWORD_ARK_BUGCHECK_POOL_TAG);
     if (modules == NULL) {

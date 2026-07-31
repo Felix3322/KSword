@@ -302,6 +302,9 @@ KswordArkCallbackDestroyRuntime(
         return;
     }
 
+    // 先封闭新的 AskUser 等待项，再唤醒已有等待者，防止注销回调时等待线程阻塞卸载。
+    (VOID)InterlockedExchange(&runtime->Stopping, 1L);
+    (VOID)KswordArkCallbackCancelAllPendingForRuntime(runtime);
     KswordArkMinifilterCallbackUnregister(runtime);
     KswordArkObjectCallbackUnregister(runtime);
     KswordArkImageCallbackUnregister(runtime);
@@ -361,6 +364,8 @@ KswordARKCallbackInitialize(
     RtlZeroMemory(runtime->MiniFilterBypassPids, sizeof(runtime->MiniFilterBypassPids));
     runtime->RegisteredCallbacksMask = 0U;
     runtime->Initialized = FALSE;
+    // 发布前显式声明运行时可接收等待项；销毁路径会以原子方式切换到停止状态。
+    runtime->Stopping = 0L;
     ExInitializePushLock(&runtime->SnapshotLock);
     ExInitializePushLock(&runtime->PendingLock);
     ExInitializePushLock(&runtime->MiniFilterBypassPidLock);
@@ -456,6 +461,7 @@ KswordARKCallbackUninitialize(
 
     ExAcquirePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
     runtime = g_KswordArkCallbackRuntime;
+    // 先撤销全局发布以拒绝新的外部查找；销毁路径改用显式 runtime 指针取消等待项。
     g_KswordArkCallbackRuntime = NULL;
     ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
 

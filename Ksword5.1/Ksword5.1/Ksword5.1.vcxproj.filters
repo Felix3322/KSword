@@ -62,6 +62,12 @@
     <ClCompile Include="MiscDock\ApplicationControlPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\SoundSource\SoundSourceDetector.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\SoundSource\SoundSourcePage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MemoryDock\MemoryDock.ProcessMemoryEvidence.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -901,6 +907,12 @@
     <ClInclude Include="MiscDock\ApplicationControlPage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="MiscDock\SoundSource\SoundSourceDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <QtMoc Include="MiscDock\SoundSource\SoundSourcePage.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>

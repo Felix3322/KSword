@@ -89,10 +89,12 @@ namespace filedock::handleusage
     HandleUsageScanResult scanHandleUsageByPaths(
         const std::vector<QString>& absolutePaths,
         const int progressPid,
-        const bool tryKernelHandleTable)
+        const bool tryKernelHandleTable,
+        const std::function<bool()>& cancellationCallback)
     {
         ks::file::HandleUsageScanOptions options{};
         options.tryKernelHandleTable = tryKernelHandleTable;
+        options.cancellationCallback = cancellationCallback;
         if (progressPid > 0)
         {
             // ProgressCallback 只转接纯文本和百分比，具体进度条生命周期仍由 FileDock 窗口控制。

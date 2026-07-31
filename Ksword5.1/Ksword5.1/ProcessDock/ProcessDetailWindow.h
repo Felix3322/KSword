@@ -318,6 +318,11 @@ private:
     // initializeEmbeddedNetworkTab 作用：创建按当前 PID 过滤的网络连接惰性容器。
     void initializeEmbeddedNetworkTab();
     void ensureEmbeddedNetworkView();
+    // initializeSoundSourceTab：
+    // - 作用：复用声音来源页并锁定当前进程 PID；
+    // - 调用：用户首次进入“声音来源”页时由 ensureTabContentInitialized 调用；
+    // - 输入/返回：目标 PID 来自 m_baseRecord，无返回值。
+    void initializeSoundSourceTab();
     // initializeEmbeddedWindowTab 作用：创建按当前 PID 过滤的窗口列表惰性容器。
     void initializeEmbeddedWindowTab();
     void ensureEmbeddedWindowView();
@@ -651,6 +656,7 @@ private:
     QWidget* m_embeddedHandleTab = nullptr;    // 当前进程“句柄”内嵌审计页。
     QWidget* m_embeddedMemoryTab = nullptr;    // 当前进程精简“内存”内嵌页。
     QWidget* m_embeddedNetworkTab = nullptr;   // 当前进程“网络连接”内嵌页。
+    QWidget* m_soundSourceTab = nullptr;       // 当前进程“声音来源”内嵌页。
     QWidget* m_embeddedWindowTab = nullptr;    // 当前进程“窗口列表”内嵌页。
     QWidget* m_tokenTab = nullptr;             // “令牌”页。
     QWidget* m_tokenSwitchTab = nullptr;       // “令牌开关”页。
