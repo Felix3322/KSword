@@ -35,3 +35,4 @@
 #include "driver/KswordArkDebugOutputIoctl.h"
 #include "driver/KswordArkBugcheckIoctl.h"
 #include "driver/KswordArkUnloadedDriverIoctl.h"
+#include "driver/KswordArkSystemTimeIoctl.h"

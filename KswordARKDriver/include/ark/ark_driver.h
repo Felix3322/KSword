@@ -33,6 +33,7 @@
 #include "ark_network.h"
 #include "ark_keyboard.h"
 #include "ark_storage.h"
+#include "ark_system_time.h"
 #include "Trace.h"
 
 EXTERN_C_START

@@ -5,7 +5,7 @@
 // 作用：
 // 1) 提供“杂项”总入口页；
 // 2) 通过内部 Tab 承载子功能模块；
-// 3) 当前包含“引导”“声音来源”“右键菜单清理”“磁盘编辑”“应用控制”等子模块。
+// 3) 当前包含“引导”“声音来源”“系统变速”“Shell 关联”“磁盘编辑”“应用控制”等子模块。
 // ============================================================
 
 #include "../Framework.h"
@@ -21,6 +21,7 @@ namespace ks::misc
     class ContextMenuCleanerTab;
     class ApplicationControlPage;
     class SoundSourcePage;
+    class SystemTimePage;
 }
 
 class MiscDock final : public QWidget
@@ -48,4 +49,5 @@ private:
     ks::misc::ContextMenuCleanerTab* m_contextMenuCleanerTab = nullptr; // m_contextMenuCleanerTab：右键菜单清理页组件。
     ks::misc::ApplicationControlPage* m_applicationControlPage = nullptr; // m_applicationControlPage：应用控制页组件。
     ks::misc::SoundSourcePage* m_soundSourcePage = nullptr; // m_soundSourcePage：全局输出声音来源检测页。
+    ks::misc::SystemTimePage* m_systemTimePage = nullptr; // m_systemTimePage：系统全局变速控制页。
 };

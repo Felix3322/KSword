@@ -5,6 +5,7 @@
 #include "ContextMenuCleaner/ContextMenuCleanerTab.h"
 #include "DiskEditor/DiskEditorTab.h"
 #include "SoundSource/SoundSourcePage.h"
+#include "SystemTime/SystemTimePage.h"
 
 #include <QIcon>
 #include <QTabWidget>
@@ -42,6 +43,15 @@ void MiscDock::initializeUi()
         m_soundSourcePage,
         QIcon(QStringLiteral(":/Icon/sound_source.svg")),
         QStringLiteral("声音来源"));
+
+    // 系统全局变速页：
+    // - 通过 ArkDriverClient 控制 R0 性能计数器连续倍率映射；
+    // - 永久展示失稳风险，并在每次启用前执行双重确认。
+    m_systemTimePage = new ks::misc::SystemTimePage(m_mainTabWidget);
+    m_mainTabWidget->addTab(
+        m_systemTimePage,
+        QIcon(QStringLiteral(":/Icon/system_time.svg")),
+        QStringLiteral("系统变速"));
 
     // Shell 关联管理页：
     // - 覆盖右键菜单、URL 绑定、打开方式和 Explorer 第三方主页项；

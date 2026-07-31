@@ -61,6 +61,8 @@ Return Value:
     KswordARKCapabilityInitialize();
     KswordARKTrustInitialize();
     KswordARKSafetyInitialize();
+    // 系统变速加载阶段只准备同步和 DPC，不会在用户确认前修改系统计时源。
+    KswordARKSystemTimeInitialize();
     // 在控制设备可见前捕获每 CPU 的不可变 IDT 基线；失败只禁用该诊断功能。
     status = KswordARKIdtBaselineInitialize();
     if (!NT_SUCCESS(status)) {
@@ -103,6 +105,8 @@ Return Value:
         &driverHandle);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfDriverCreate failed %!STATUS!", status);
+        // 框架失败时对称撤销系统变速状态，确保维护 DPC 不会残留。
+        KswordARKSystemTimeUninitialize();
         // 中文说明：框架创建失败时撤销通信控制状态和所有潜在引用。
         KswordARKDriverCommunicationUninitialize();
         // Release the optional HVM capability state on early framework failure.
@@ -118,6 +122,8 @@ Return Value:
     status = KswordARKDriverCreateControlDevice(driverHandle, &controlDevice);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKDriverCreateControlDevice failed %!STATUS!", status);
+        // 控制设备不可见时不会有合法变速请求，立即释放其运行时状态。
+        KswordARKSystemTimeUninitialize();
         // 中文说明：控制设备创建失败时不保留通信控制全局状态。
         KswordARKDriverCommunicationUninitialize();
         // Release the optional HVM capability state on early device failure.
@@ -134,6 +140,8 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKCallbackInitialize failed %!STATUS!", status);
         WdfObjectDelete(controlDevice);
+        // 回调初始化回滚必须同时撤销可能的系统变速维护对象。
+        KswordARKSystemTimeUninitialize();
         // 中文说明：回调初始化失败返回前撤销通信控制状态。
         KswordARKDriverCommunicationUninitialize();
         // Release any explicit HVM resources before returning initialization failure.
@@ -193,6 +201,8 @@ Return Value:
 
     PAGED_CODE();
 
+    // 最先停止系统计时钩子并恢复原始 HAL 槽，防止卸载后回调到本驱动映像。
+    KswordARKSystemTimeUninitialize();
     // 中文说明：最先恢复仍由本功能持有的 MajorFunction，并释放目标 DriverObject 引用。
     KswordARKDriverCommunicationUninitialize();
     // Release all VMX/VMCS/EPT pages before the driver image can leave memory.
