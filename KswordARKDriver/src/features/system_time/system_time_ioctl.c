@@ -107,6 +107,7 @@ KswordARKSystemTimeIoctlControl(
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
     const KSWORD_ARK_CONTROL_SYSTEM_TIME_REQUEST* controlRequest = NULL;
+    KSWORD_ARK_CONTROL_SYSTEM_TIME_REQUEST controlRequestSnapshot = { 0 };
     KSWORD_ARK_CONTROL_SYSTEM_TIME_RESPONSE* controlResponse = NULL;
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -160,6 +161,16 @@ KswordARKSystemTimeIoctlControl(
         controlRequest->size != sizeof(*controlRequest)) {
         return STATUS_REVISION_MISMATCH;
     }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出可能共用同一个 SystemBuffer。
+     * 运行时会先清零响应，因此必须先复制请求，避免响应初始化覆盖请求。
+     */
+    RtlCopyMemory(
+        &controlRequestSnapshot,
+        controlRequest,
+        sizeof(controlRequestSnapshot));
+    controlRequest = &controlRequestSnapshot;
 
     /*
      * 加速和减速会接管全系统性能计数器，必须进入统一 KERNEL_PATCH
