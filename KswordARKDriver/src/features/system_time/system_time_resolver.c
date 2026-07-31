@@ -25,15 +25,8 @@ Environment:
 #define KSW_SYSTEM_TIME_HANDLER_INDEX_OFFSET   0xBCUL
 #define KSW_SYSTEM_TIME_INTERNAL_FLAGS_OFFSET  0xE0UL
 #define KSW_SYSTEM_TIME_HANDLER_ROW_BYTES      16UL
+#define KSW_SYSTEM_TIME_WINDOWS_10_BUILD_MAX   19045UL
 #define KSW_SYSTEM_TIME_HANDLER_BUILD_MINIMUM  28000UL
-
-NTSYSAPI
-PVOID
-NTAPI
-RtlPcToFileHeader(
-    _In_ PVOID PcValue,
-    _Outptr_ PVOID* BaseOfImage
-    );
 
 /* 安全读取一个指针值；异常或用户地址一律按候选无效处理。 */
 static
@@ -83,23 +76,19 @@ KswordARKSystemTimeReadUlong(
     return TRUE;
 }
 
-/* 仅接受属于已加载内核映像且当前可读的函数地址。 */
+/*
+ * HAL 计数器入口在部分配置中可能落在运行时生成的内核代码区，
+ * 因此不能用 RtlPcToFileHeader 是否命中映像作为必要条件。
+ */
 static
 BOOLEAN
 KswordARKSystemTimeIsKernelCodePointer(
     _In_opt_ PVOID Address
     )
 {
-    PVOID imageBase = NULL;
-
-    if (Address == NULL ||
-        (ULONG_PTR)Address < (ULONG_PTR)MmSystemRangeStart ||
-        !MmIsAddressValid(Address)) {
-        return FALSE;
-    }
-
-    return RtlPcToFileHeader(Address, &imageBase) != NULL &&
-        imageBase != NULL;
+    return Address != NULL &&
+        (ULONG_PTR)Address >= (ULONG_PTR)MmSystemRangeStart &&
+        MmIsAddressValid(Address);
 }
 
 /*
@@ -125,92 +114,96 @@ KswordARKSystemTimeRipTarget(
 }
 
 /*
- * 验证一个可能的 HAL 计数器描述符。
- * 两个固定槽均指向内核代码时得分最高，可显著降低误识别概率。
+ * 验证由版本对应的 KeQueryPerformanceCounter 特征直接引用的描述符。
+ * 精确特征已经提供结构语义，这里只验证后续会读写的字段，不再要求
+ * 函数入口必须属于可由 RtlPcToFileHeader 反查的已加载映像。
  */
 static
-ULONG
-KswordARKSystemTimeScoreDescriptor(
-    _In_ PVOID Descriptor
+BOOLEAN
+KswordARKSystemTimeValidateDescriptor(
+    _In_ PVOID Descriptor,
+    _In_ ULONG OsBuildNumber
     )
 {
     PVOID secondaryFunction = NULL;
     PVOID legacyFunction = NULL;
     ULONG handlerIndex = 0UL;
     ULONG internalFlags = 0UL;
-    ULONG score = 0UL;
 
     if (Descriptor == NULL ||
-        (ULONG_PTR)Descriptor < (ULONG_PTR)MmSystemRangeStart) {
-        return 0UL;
+        (ULONG_PTR)Descriptor < (ULONG_PTR)MmSystemRangeStart ||
+        ((ULONG_PTR)Descriptor & (sizeof(PVOID) - 1U)) != 0U) {
+        return FALSE;
     }
 
-    if (KswordARKSystemTimeReadPointer(
+    if (!KswordARKSystemTimeReadPointer(
             (const UCHAR*)Descriptor +
                 KSW_SYSTEM_TIME_SECONDARY_SLOT_OFFSET,
-            &secondaryFunction) &&
-        KswordARKSystemTimeIsKernelCodePointer(secondaryFunction)) {
-        score += 4UL;
-    }
-
-    if (KswordARKSystemTimeReadPointer(
+            &secondaryFunction) ||
+        !KswordARKSystemTimeReadPointer(
             (const UCHAR*)Descriptor +
                 KSW_SYSTEM_TIME_LEGACY_SLOT_OFFSET,
-            &legacyFunction) &&
-        KswordARKSystemTimeIsKernelCodePointer(legacyFunction)) {
-        score += 4UL;
+            &legacyFunction) ||
+        !KswordARKSystemTimeIsKernelCodePointer(secondaryFunction) ||
+        !KswordARKSystemTimeIsKernelCodePointer(legacyFunction)) {
+        return FALSE;
     }
 
-    if (KswordARKSystemTimeReadUlong(
-            (const UCHAR*)Descriptor +
-                KSW_SYSTEM_TIME_HANDLER_INDEX_OFFSET,
-            &handlerIndex) &&
-        handlerIndex < 256UL) {
-        score += 1UL;
-    }
-
-    if (KswordARKSystemTimeReadUlong(
+    if (!KswordARKSystemTimeReadUlong(
             (const UCHAR*)Descriptor +
                 KSW_SYSTEM_TIME_INTERNAL_FLAGS_OFFSET,
             &internalFlags)) {
-        UNREFERENCED_PARAMETER(internalFlags);
-        score += 1UL;
+        return FALSE;
+    }
+    UNREFERENCED_PARAMETER(internalFlags);
+
+    if (OsBuildNumber >= KSW_SYSTEM_TIME_HANDLER_BUILD_MINIMUM &&
+        (!KswordARKSystemTimeReadUlong(
+            (const UCHAR*)Descriptor +
+                KSW_SYSTEM_TIME_HANDLER_INDEX_OFFSET,
+            &handlerIndex) ||
+         handlerIndex >= 256UL)) {
+        return FALSE;
     }
 
-    return score;
+    return TRUE;
 }
 
 /*
- * 从 KeQueryPerformanceCounter 中找出引用计数器描述符指针的 MOV。
- * 这里按指令语义枚举全部 RIP 相对 MOV，而不是硬编码目标寄存器。
+ * 按原始机制的系统版本分支定位描述符引用：
+ * Windows 8/10 使用 MOV RDI,[RIP+disp32]，Windows 11 使用
+ * MOV RSI,[RIP+disp32]。扫描保持有界，并验证实际会访问的字段。
  */
 static
 NTSTATUS
 KswordARKSystemTimeFindDescriptor(
     _In_reads_bytes_(KSW_SYSTEM_TIME_SCAN_BYTES) const UCHAR* Code,
     _In_ ULONG_PTR CodeAddress,
+    _In_ ULONG OsBuildNumber,
     _Out_ PVOID* Descriptor
     )
 {
     ULONG offset = 0UL;
-    ULONG bestScore = 0UL;
-    PVOID bestDescriptor = NULL;
+    const UCHAR expectedModRm =
+        OsBuildNumber <= KSW_SYSTEM_TIME_WINDOWS_10_BUILD_MAX
+        ? 0x3DU
+        : 0x35U;
 
     if (Code == NULL || Descriptor == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
+    *Descriptor = NULL;
 
     for (offset = 0UL;
          offset + 7UL <= KSW_SYSTEM_TIME_SCAN_BYTES;
          ++offset) {
         PVOID storageAddress = NULL;
         PVOID candidateDescriptor = NULL;
-        ULONG candidateScore = 0UL;
 
-        /* REX.W + MOV r64,[RIP+disp32] 的 ModRM 低三位固定为 101。 */
+        /* 仅接受当前系统版本对应的完整三字节指令前缀。 */
         if (Code[offset] != 0x48U ||
             Code[offset + 1UL] != 0x8BU ||
-            (Code[offset + 2UL] & 0xC7U) != 0x05U) {
+            Code[offset + 2UL] != expectedModRm) {
             continue;
         }
 
@@ -223,22 +216,15 @@ KswordARKSystemTimeFindDescriptor(
             continue;
         }
 
-        candidateScore =
-            KswordARKSystemTimeScoreDescriptor(candidateDescriptor);
-        if (candidateScore > bestScore) {
-            bestScore = candidateScore;
-            bestDescriptor = candidateDescriptor;
+        if (KswordARKSystemTimeValidateDescriptor(
+                candidateDescriptor,
+                OsBuildNumber)) {
+            *Descriptor = candidateDescriptor;
+            return STATUS_SUCCESS;
         }
     }
 
-    /* 两个函数槽和两个辅助字段全部验证通过时分数为 10。 */
-    if (bestScore < 9UL || bestDescriptor == NULL) {
-        *Descriptor = NULL;
-        return STATUS_NOT_FOUND;
-    }
-
-    *Descriptor = bestDescriptor;
-    return STATUS_SUCCESS;
+    return STATUS_NOT_FOUND;
 }
 
 /*
@@ -366,10 +352,12 @@ KswordARKSystemTimeResolve(
     if (versionInfo.dwBuildNumber < 9200UL) {
         return STATUS_NOT_SUPPORTED;
     }
+    Resolution->OsBuildNumber = versionInfo.dwBuildNumber;
 
     status = KswordARKSystemTimeFindDescriptor(
         code,
         (ULONG_PTR)queryCounterRoutine,
+        versionInfo.dwBuildNumber,
         &descriptor);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -399,8 +387,6 @@ KswordARKSystemTimeResolve(
         (UCHAR*)descriptor +
         KSW_SYSTEM_TIME_INTERNAL_FLAGS_OFFSET);
     Resolution->CounterDescriptor = descriptor;
-    Resolution->OsBuildNumber =
-        versionInfo.dwBuildNumber;
     return STATUS_SUCCESS;
 #else
     UNREFERENCED_PARAMETER(Resolution);
