@@ -1242,30 +1242,11 @@ void DirectKernelCallMonitorWidget::stopCaptureInternal(bool waitForThread)
         m_statusLabel->setText(QStringLiteral("● 停止中..."));
         m_statusLabel->setStyleSheet(buildStatusStyle(monitorWarningColorHex()));
     }
-    std::unique_ptr<std::thread> joinThread = std::move(m_captureThread);
-    QPointer<DirectKernelCallMonitorWidget> guardThis(this);
-    std::thread([joinThread = std::move(joinThread), guardThis]() mutable {
-        if (joinThread != nullptr && joinThread->joinable())
-        {
-            joinThread->join();
-        }
-        QMetaObject::invokeMethod(qApp, [guardThis]() {
-            if (guardThis == nullptr)
-            {
-                return;
-            }
-            guardThis->m_captureRunning.store(false);
-            guardThis->m_capturePaused.store(false);
-            if (guardThis->m_uiUpdateTimer != nullptr)
-            {
-                guardThis->flushPendingRows();
-            }
-            guardThis->updateActionState();
-            guardThis->updateStatusLabel();
-        }, Qt::QueuedConnection);
-    }).detach();
-
+    // 停止按钮不能转移 m_captureThread 的所有权。该线程持有 ETW 的
+    // 原始 Context，析构路径需要保留 join 句柄，才能在释放 QWidget 前
+    // 等待 ProcessTrace 及其回调完全结束。
     updateActionState();
+    updateStatusLabel();
 }
 
 void DirectKernelCallMonitorWidget::setCapturePaused(bool paused)

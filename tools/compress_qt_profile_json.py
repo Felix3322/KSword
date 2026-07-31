@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import struct
 import sys
+import tempfile
 import zlib
 
 
@@ -32,6 +33,29 @@ def qt_compress_bytes(data: bytes, level: int) -> bytes:
     """
 
     return struct.pack(">I", len(data)) + zlib.compress(data, level)
+
+
+def atomic_write_bytes(output_path: Path, payload: bytes) -> None:
+    """Publish payload through a sibling temporary file with os.replace().
+
+    Keeping the temporary file in output_path.parent makes the final replacement
+    atomic on one filesystem, so qUncompress never observes a truncated .qz.
+    """
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as temporary_file:
+            temporary_file.write(payload)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, output_path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def compress_file(source_path: Path, output_path: Path, level: int) -> None:
@@ -58,8 +82,7 @@ def compress_file(source_path: Path, output_path: Path, level: int) -> None:
     if restored_data != raw_data:
         raise ValueError(f"verification failed after compression: {source_path}")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(compressed_data)
+    atomic_write_bytes(output_path, compressed_data)
 
 
 def compress_directory(source_dir: Path, output_dir: Path, pattern: str, level: int) -> int:

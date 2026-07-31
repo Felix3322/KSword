@@ -213,8 +213,10 @@ Return Value:
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
     KswordARKNetworkUninitialize();
     KswordARKRedirectUninitialize();
-    KswordARKCallbackUninitialize();
+    // 先注销会进入回调规则层的 minifilter，并等待其 post-operation 回调全部退出。
     KswordARKFileMonitorUninitialize();
+    // minifilter 已停止后才销毁 callback runtime，避免 post-operation 路径访问已释放状态。
+    KswordARKCallbackUninitialize();
     KswordARKDynDataUninitialize();
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
 }

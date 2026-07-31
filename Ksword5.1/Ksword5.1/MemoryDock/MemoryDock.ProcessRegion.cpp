@@ -717,8 +717,9 @@ void MemoryDock::detachProcess()
         << m_attachedPid
         << eol;
 
-    // 先请求扫描取消，防止后台继续使用旧句柄。
-    cancelCurrentScan();
+    // 先取消并等待所有扫描协调线程退出，再关闭进程句柄，
+    // 防止后台 ReadProcessMemory 使用已关闭或已复用的 HANDLE。
+    cancelAndWaitForMemoryScanTasks();
 
     // 同步抬高模块刷新 ticket，确保旧的异步模块回调不会覆盖“已分离”状态。
     m_moduleRefreshTicket.fetch_add(1);

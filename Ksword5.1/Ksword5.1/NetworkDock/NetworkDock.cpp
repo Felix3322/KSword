@@ -149,6 +149,9 @@ NetworkDock::~NetworkDock()
         m_r0TrafficRefreshTimer->stop();
     }
 
+    // 先收尾 ICMP 扫描，避免析构后的后台 worker 继续访问 NetworkDock 成员。
+    cancelAndWaitForAliveHostScan();
+
     // 析构前请求取消全部下载任务，避免窗口释放后继续长期下载。
     {
         std::lock_guard<std::mutex> guard(m_multiDownloadTaskMutex);

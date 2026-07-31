@@ -350,6 +350,7 @@ void MemoryDock::startNextScan()
     std::vector<SearchResultEntry> previousResultCache = m_searchResultCache;
     const int totalCount = static_cast<int>(previousResultCache.size());
     const QPointer<MemoryDock> selfGuard(this);
+    const std::shared_ptr<MemoryScanTaskState> taskState = m_scanTaskState;
 
     // 再次扫描也统一使用“扫描中”状态，确保取消按钮和顶部按钮行为一致。
     m_scanInProgress.store(true);
@@ -362,7 +363,14 @@ void MemoryDock::startNextScan()
     m_scanProgressBar->setValue(0);
     m_scanStatusLabel->setText(QString("再次扫描中：总计 %1 条").arg(totalCount));
 
+    // 在线程启动前登记任务，关闭/分离路径据此等待，避免只靠 QPointer 判断生命周期。
+    {
+        std::lock_guard<std::mutex> lock(taskState->mutex);
+        ++taskState->activeTaskCount;
+    }
+
     std::thread([selfGuard,
+        taskState,
         processHandle,
         valueType,
         previousResultCache = std::move(previousResultCache),
@@ -374,8 +382,22 @@ void MemoryDock::startNextScan()
         nonNumericWildcardMask,
         bytesToDouble]() mutable
     {
+        const auto finishScanTask = [taskState]()
+        {
+            std::lock_guard<std::mutex> lock(taskState->mutex);
+            if (taskState->activeTaskCount > 0)
+            {
+                --taskState->activeTaskCount;
+                if (taskState->activeTaskCount == 0)
+                {
+                    taskState->completion.notify_all();
+                }
+            }
+        };
+
         if (selfGuard == nullptr || processHandle == nullptr)
         {
+            finishScanTask();
             return;
         }
 
@@ -535,13 +557,16 @@ void MemoryDock::startNextScan()
                     return;
                 }
 
+                // 事件可能因表格菜单冻结而延后，提交前再次吸收期间到达的取消请求。
+                const bool effectiveCancelled =
+                    cancelled || selfGuard->m_scanCancelRequested.load();
                 selfGuard->m_scanInProgress.store(false);
                 selfGuard->m_scanCancelRequested.store(false);
                 selfGuard->m_firstScanButton->setEnabled(true);
                 selfGuard->m_resetScanButton->setEnabled(true);
                 selfGuard->m_cancelScanButton->setEnabled(false);
 
-                if (!cancelled)
+                if (!effectiveCancelled)
                 {
                     selfGuard->m_searchResultCache = std::move(*resultsSnapshot);
                     selfGuard->rebuildSearchResultTable();
@@ -549,7 +574,7 @@ void MemoryDock::startNextScan()
 
                 selfGuard->m_nextScanButton->setEnabled(!selfGuard->m_searchResultCache.empty());
                 QString finishText;
-                if (cancelled)
+                if (effectiveCancelled)
                 {
                     finishText = QString("再次扫描已取消：保留上一轮 %1 项，耗时 %2 ms")
                         .arg(selfGuard->m_searchResultCache.size())
@@ -574,7 +599,7 @@ void MemoryDock::startNextScan()
                     << ", elapsedMs="
                     << elapsedMs
                     << ", cancelled="
-                    << (cancelled ? "true" : "false")
+                    << (effectiveCancelled ? "true" : "false")
                     << eol;
             };
 
@@ -588,6 +613,7 @@ void MemoryDock::startNextScan()
             }
             commitSnapshot();
         }, Qt::QueuedConnection);
+        finishScanTask();
     }).detach();
 }
 
@@ -627,6 +653,20 @@ void MemoryDock::cancelCurrentScan()
             << "[MemoryDock] cancelCurrentScan: 已设置取消标志。"
             << eol;
     }
+}
+
+void MemoryDock::cancelAndWaitForMemoryScanTasks()
+{
+    // 关闭句柄或析构前必须等待协调线程退出，不能让 detached worker 继续访问控件。
+    cancelCurrentScan();
+    m_scanCancelRequested.store(true);
+
+    const std::shared_ptr<MemoryScanTaskState> taskState = m_scanTaskState;
+    std::unique_lock<std::mutex> lock(taskState->mutex);
+    taskState->completion.wait(lock, [taskState]()
+    {
+        return taskState->activeTaskCount == 0;
+    });
 }
 
 void MemoryDock::rebuildSearchResultTable()
@@ -727,15 +767,36 @@ void MemoryDock::scanMemoryRegionsInBackground(
     const std::uint32_t threadCount = std::max<std::uint32_t>(1, m_scanThreadCount);
     const std::size_t chunkSize = static_cast<std::size_t>(std::max<std::uint32_t>(64, m_scanChunkSizeKB) * 1024u);
     const auto startTime = std::chrono::steady_clock::now();
+    const std::shared_ptr<MemoryScanTaskState> taskState = m_scanTaskState;
+
+    // 外层协调线程会等待其内部 worker，因此登记这一层即可覆盖整轮首次扫描。
+    {
+        std::lock_guard<std::mutex> lock(taskState->mutex);
+        ++taskState->activeTaskCount;
+    }
 
     // 后台主线程只负责拉起 worker 并汇总结果，不直接操作 UI 控件。
-    std::thread([selfGuard, processHandle, regions, scanPattern, threadCount, chunkSize, startTime]() {
+    std::thread([selfGuard, taskState, processHandle, regions, scanPattern, threadCount, chunkSize, startTime]() {
+        const auto finishScanTask = [taskState]()
+        {
+            std::lock_guard<std::mutex> lock(taskState->mutex);
+            if (taskState->activeTaskCount > 0)
+            {
+                --taskState->activeTaskCount;
+                if (taskState->activeTaskCount == 0)
+                {
+                    taskState->completion.notify_all();
+                }
+            }
+        };
+
         if (selfGuard == nullptr || processHandle == nullptr)
         {
             kLogEvent scanBackgroundGuardFailEvent;
             warn << scanBackgroundGuardFailEvent
                 << "[MemoryDock] scanMemoryRegionsInBackground: selfGuard 或 processHandle 无效，线程直接返回。"
                 << eol;
+            finishScanTask();
             return;
         }
 
@@ -760,6 +821,7 @@ void MemoryDock::scanMemoryRegionsInBackground(
                 selfGuard->m_cancelScanButton->setEnabled(false);
                 selfGuard->m_scanStatusLabel->setText("扫描失败：匹配模式为空。");
                 }, Qt::QueuedConnection);
+            finishScanTask();
             return;
         }
 
@@ -966,13 +1028,16 @@ void MemoryDock::scanMemoryRegionsInBackground(
                     return;
                 }
 
+                // 延迟提交期间的取消同样有效，避免旧扫描结果覆盖用户当前状态。
+                const bool effectiveCancelled =
+                    cancelled || selfGuard->m_scanCancelRequested.load();
                 selfGuard->m_scanInProgress.store(false);
                 selfGuard->m_scanCancelRequested.store(false);
                 selfGuard->m_firstScanButton->setEnabled(true);
                 selfGuard->m_resetScanButton->setEnabled(true);
                 selfGuard->m_cancelScanButton->setEnabled(false);
 
-                if (cancelled)
+                if (effectiveCancelled)
                 {
                     selfGuard->m_scanStatusLabel->setText("扫描已取消。");
                     kLogEvent scanBackgroundCancelledUiEvent;
@@ -1014,6 +1079,7 @@ void MemoryDock::scanMemoryRegionsInBackground(
             }
             commitSnapshot();
             }, Qt::QueuedConnection);
-        }).detach();
+        finishScanTask();
+    }).detach();
 }
 

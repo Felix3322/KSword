@@ -31,6 +31,7 @@
 #include <iterator>    // std::size：静态数组长度。
 #include <limits>      // std::numeric_limits：数值边界检查。
 #include <mutex>       // std::mutex：保护全局 PDH 查询句柄。
+#include <new>         // std::nothrow：远程注入延迟清理上下文分配失败时不抛异常。
 #include <sstream>     // std::ostringstream：错误文本拼接。
 #include <string>      // std::string/std::wstring：进程文本与 PDH 实例名。
 #include <unordered_map> // std::unordered_map：线程枚举时缓存 PID->进程名。
@@ -2286,6 +2287,84 @@ namespace
                 return false;
             }
         }
+        return true;
+    }
+
+    // DeferredRemoteLoadLibraryCleanup 作用：
+    // - 输入：保存仍在执行的远程 LoadLibraryW 线程、目标进程句柄和远程 DLL 路径地址；
+    // - 处理：把远程地址的释放延后到远程线程确实结束之后，避免超时返回时发生远程 Use-After-Free；
+    // - 返回：作为后台清理线程的唯一上下文，由清理线程负责释放；
+    // - 原因：LoadLibraryW 超时不代表远程线程已停止，调用方不能同步释放其参数内存。
+    struct DeferredRemoteLoadLibraryCleanup
+    {
+        HANDLE processHandle = nullptr;
+        HANDLE remoteThread = nullptr;
+        void* remotePathMemory = nullptr;
+    };
+
+    // CompleteDeferredRemoteLoadLibraryCleanup 作用：
+    // - 输入：parameterValue 指向转移所有权后的 DeferredRemoteLoadLibraryCleanup；
+    // - 处理：等待远程 LoadLibraryW 线程结束，再释放它读取过的远程路径内存和全部句柄；
+    // - 返回：始终返回 0，后台清理失败不影响调用线程已经返回的注入诊断。
+    DWORD WINAPI CompleteDeferredRemoteLoadLibraryCleanup(const LPVOID parameterValue)
+    {
+        auto* const cleanupContext = static_cast<DeferredRemoteLoadLibraryCleanup*>(parameterValue);
+        if (cleanupContext == nullptr)
+        {
+            return 0;
+        }
+
+        const DWORD waitResult = ::WaitForSingleObject(cleanupContext->remoteThread, INFINITE);
+        if (waitResult == WAIT_OBJECT_0)
+        {
+            (void)::VirtualFreeEx(cleanupContext->processHandle, cleanupContext->remotePathMemory, 0, MEM_RELEASE);
+        }
+
+        if (cleanupContext->remoteThread != nullptr)
+        {
+            ::CloseHandle(cleanupContext->remoteThread);
+        }
+        if (cleanupContext->processHandle != nullptr)
+        {
+            ::CloseHandle(cleanupContext->processHandle);
+        }
+        delete cleanupContext;
+        return 0;
+    }
+
+    // ScheduleDeferredRemoteLoadLibraryCleanup 作用：
+    // - 输入：一个未完成的远程 LoadLibraryW 线程及其仍被读取的参数内存；
+    // - 处理：创建独立后台线程接管全部资源，避免主线程超时后错误释放远程参数；
+    // - 返回：成功转移资源所有权时为 true，失败时调用方仍必须保留远程内存。
+    bool ScheduleDeferredRemoteLoadLibraryCleanup(
+        const HANDLE processHandle,
+        const HANDLE remoteThread,
+        void* const remotePathMemory)
+    {
+        auto* const cleanupContext = new (std::nothrow) DeferredRemoteLoadLibraryCleanup{
+            processHandle,
+            remoteThread,
+            remotePathMemory
+        };
+        if (cleanupContext == nullptr)
+        {
+            return false;
+        }
+
+        HANDLE cleanupThread = ::CreateThread(
+            nullptr,
+            0,
+            &CompleteDeferredRemoteLoadLibraryCleanup,
+            cleanupContext,
+            0,
+            nullptr);
+        if (cleanupThread == nullptr)
+        {
+            delete cleanupContext;
+            return false;
+        }
+
+        ::CloseHandle(cleanupThread);
         return true;
     }
 }
@@ -4910,12 +4989,60 @@ namespace ks::process
             return false;
         }
 
-        ::WaitForSingleObject(remoteThread, 10000);
+        constexpr DWORD loadLibraryWaitTimeoutMs = 10000;
+        const DWORD waitResult = ::WaitForSingleObject(remoteThread, loadLibraryWaitTimeoutMs);
+        if (waitResult != WAIT_OBJECT_0)
+        {
+            const DWORD waitError = waitResult == WAIT_FAILED ? ::GetLastError() : ERROR_SUCCESS;
+            const bool cleanupScheduled = ScheduleDeferredRemoteLoadLibraryCleanup(
+                processHandle,
+                remoteThread,
+                remotePathMemory);
+            if (errorMessage != nullptr)
+            {
+                if (cleanupScheduled)
+                {
+                    *errorMessage = "LoadLibraryW remote thread did not finish within "
+                        + std::to_string(loadLibraryWaitTimeoutMs)
+                        + " ms; deferred cleanup owns the remote path until the thread exits.";
+                }
+                else
+                {
+                    *errorMessage = "LoadLibraryW remote thread did not finish within "
+                        + std::to_string(loadLibraryWaitTimeoutMs)
+                        + " ms and deferred cleanup could not be scheduled; the remote DLL path was intentionally retained until the target process exits.";
+                }
+                if (waitResult == WAIT_FAILED)
+                {
+                    *errorMessage += " WaitForSingleObject failed: " + FormatLastErrorMessage(waitError);
+                }
+            }
+
+            if (!cleanupScheduled)
+            {
+                // 远程线程仍可能读取 remotePathMemory；清理线程创建失败时宁可保留目标进程中的小块路径内存，
+                // 也不能在这里 VirtualFreeEx 触发远程 LoadLibraryW 的悬空指针。
+                ::CloseHandle(remoteThread);
+                ::CloseHandle(processHandle);
+            }
+            return false;
+        }
+
         DWORD threadExitCode = 0;
-        ::GetExitCodeThread(remoteThread, &threadExitCode);
+        const BOOL exitCodeOk = ::GetExitCodeThread(remoteThread, &threadExitCode);
+        const DWORD exitCodeError = exitCodeOk == FALSE ? ::GetLastError() : ERROR_SUCCESS;
         ::CloseHandle(remoteThread);
         ::VirtualFreeEx(processHandle, remotePathMemory, 0, MEM_RELEASE);
         ::CloseHandle(processHandle);
+
+        if (exitCodeOk == FALSE)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetExitCodeThread(LoadLibraryW) failed: " + FormatLastErrorMessage(exitCodeError);
+            }
+            return false;
+        }
 
         if (threadExitCode != 0)
         {

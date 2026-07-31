@@ -925,11 +925,18 @@ Arguments:
 
 Return Value:
 
-    TRUE when an offset was stored; otherwise FALSE.
+    TRUE when the destination was already present or a runtime offset was
+    stored; otherwise FALSE.
 
 --*/
 {
-    if (DestinationOffset == NULL || DestinationSource == NULL || ResolvedOffset <= 0) {
+    if (DestinationOffset == NULL || DestinationSource == NULL) {
+        return FALSE;
+    }
+    if (KswordARKDynDataOffsetPresent(*DestinationOffset)) {
+        return TRUE;
+    }
+    if (ResolvedOffset <= 0) {
         return FALSE;
     }
 
@@ -949,8 +956,9 @@ KswordARKDynDataActivateRuntimeOffsets(
 
 Routine Description:
 
-    Resolve Ksword-specific EPROCESS protection offsets by existing runtime
-    pattern helpers and cache them in the same DynData state.
+    Resolve the bounded, live-validated read-only accessor offsets and the
+    existing Ksword-specific EPROCESS protection offsets, then fill only fields
+    that were not already supplied by System Informer or an applied PDB profile.
 
 Arguments:
 
@@ -962,6 +970,7 @@ Return Value:
 
 --*/
 {
+    KSWORD_RUNTIME_DYNDATA_OFFSETS resolved;
     BOOLEAN protectionPresent = FALSE;
     BOOLEAN signaturePresent = FALSE;
     BOOLEAN sectionSignaturePresent = FALSE;
@@ -969,6 +978,64 @@ Return Value:
     if (State == NULL) {
         return;
     }
+
+    KswordARKDriverResolveReadOnlyDynDataOffsets(&resolved);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpUniqueProcessId,
+        &State->Kernel.EpUniqueProcessId,
+        &State->KernelSources.EpUniqueProcessId);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpActiveProcessLinks,
+        &State->Kernel.EpActiveProcessLinks,
+        &State->KernelSources.EpActiveProcessLinks);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpImageFileName,
+        &State->Kernel.EpImageFileName,
+        &State->KernelSources.EpImageFileName);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpCreateTime,
+        &State->Kernel.EpCreateTime,
+        &State->KernelSources.EpCreateTime);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpExitStatus,
+        &State->Kernel.EpExitStatus,
+        &State->KernelSources.EpExitStatus);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpPeb,
+        &State->Kernel.EpPeb,
+        &State->KernelSources.EpPeb);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpWin32Process,
+        &State->Kernel.EpWin32Process,
+        &State->KernelSources.EpWin32Process);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpWow64Process,
+        &State->Kernel.EpWow64Process,
+        &State->KernelSources.EpWow64Process);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpInheritedFromUniqueProcessId,
+        &State->Kernel.EpInheritedFromUniqueProcessId,
+        &State->KernelSources.EpInheritedFromUniqueProcessId);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpSectionBaseAddress,
+        &State->Kernel.EpSectionBaseAddress,
+        &State->KernelSources.EpSectionBaseAddress);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EtCid,
+        &State->Kernel.EtCid,
+        &State->KernelSources.EtCid);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EtStartAddress,
+        &State->Kernel.EtStartAddress,
+        &State->KernelSources.EtStartAddress);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EtWin32StartAddress,
+        &State->Kernel.EtWin32StartAddress,
+        &State->KernelSources.EtWin32StartAddress);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.KtProcess,
+        &State->Kernel.KtProcess,
+        &State->KernelSources.KtProcess);
 
     protectionPresent = KswordARKDynDataStoreRuntimeOffset(
         KswordARKDriverResolveProcessProtectionOffset(),

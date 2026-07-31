@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <memory>
@@ -575,23 +576,148 @@ void ApplyOptions(const InstallOptions& o) {
     if (g_launchCheck) g_launchCheck->value(o.launchAfterInstall ? 1 : 0);
 }
 
-// ExtractPayload releases every generated payload resource. Input is install
-// options and log text; processing merges files without deleting user config;
-// output is true only when all resources write successfully.
+// PayloadDeployment records one switched payload file. The record carries the
+// original-file backup needed to restore every earlier replacement on failure.
+struct PayloadDeployment {
+    std::wstring target;
+    std::wstring backup;
+    bool replacedExisting = false;
+};
+
+// RemovePayloadWorkTree removes only the installer-created staging tree. Input
+// is its exact root; processing recursively removes staging files; output is a
+// best-effort cleanup result and never touches the installation payload itself.
+bool RemovePayloadWorkTree(const std::wstring& root) {
+    WIN32_FIND_DATAW findData{};
+    HANDLE find = ::FindFirstFileW(Join(root, L"*").c_str(), &findData);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring name(findData.cFileName);
+            if (name == L"." || name == L"..") continue;
+
+            const std::wstring child = Join(root, name);
+            if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                RemovePayloadWorkTree(child);
+            }
+            else {
+                ::DeleteFileW(child.c_str());
+            }
+        } while (::FindNextFileW(find, &findData));
+        ::FindClose(find);
+    }
+    return ::RemoveDirectoryW(root.c_str()) != FALSE || ::GetLastError() == ERROR_FILE_NOT_FOUND;
+}
+
+// RestorePayloadDeployments restores already replaced files in reverse order.
+// Input is the successful switch list; processing puts backups back in place;
+// output is false only when Windows rejects one of the rollback operations.
+bool RestorePayloadDeployments(const std::vector<PayloadDeployment>& deployments) {
+    bool restored = true;
+    for (auto it = deployments.rbegin(); it != deployments.rend(); ++it) {
+        if (!it->replacedExisting) {
+            if (ExistsFile(it->target) && !::DeleteFileW(it->target.c_str())) {
+                restored = false;
+            }
+            continue;
+        }
+
+        if (!ExistsFile(it->backup)) {
+            restored = false;
+            continue;
+        }
+
+        if (ExistsFile(it->target)) {
+            if (!::ReplaceFileW(it->target.c_str(), it->backup.c_str(), nullptr,
+                REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)) {
+                restored = false;
+            }
+        }
+        else if (!::MoveFileExW(it->backup.c_str(), it->target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            restored = false;
+        }
+    }
+    return restored;
+}
+
+// SwitchStagedPayloadFile installs one fully written staging file. Input is the
+// staged path, final path, and backup path; output describes a reversible switch.
+bool SwitchStagedPayloadFile(const std::wstring& staged, const std::wstring& target,
+    const std::wstring& backup, PayloadDeployment* deployment) {
+    if (!deployment || !EnsureDir(Parent(target))) return false;
+
+    deployment->target = target;
+    deployment->backup = backup;
+    deployment->replacedExisting = ExistsFile(target);
+
+    if (deployment->replacedExisting) {
+        if (!EnsureDir(Parent(backup))) return false;
+        return ::ReplaceFileW(target.c_str(), staged.c_str(), backup.c_str(),
+            REPLACEFILE_WRITE_THROUGH, nullptr, nullptr) != FALSE;
+    }
+
+    return ::MoveFileExW(staged.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+}
+
+// ExtractPayload stages every generated resource before any live file changes.
+// Input is install options and log text; processing commits reversible switches;
+// output is true only when the full payload becomes available as one update.
 bool ExtractPayload(const InstallOptions& o, std::wstring* log) {
     if (!EnsureDir(o.installDir)) {
         AppendLog(log, L"创建安装目录失败: " + o.installDir);
         return false;
     }
+
+    // 使用进程号和时钟构成只属于本次安装的工作目录，避免覆盖已有安装内容。
+    const std::wstring workRoot = Join(o.installDir, L".kswordsetup-staging-" +
+        std::to_wstring(::GetCurrentProcessId()) + L"-" + std::to_wstring(::GetTickCount64()));
+    if (!::CreateDirectoryW(workRoot.c_str(), nullptr)) {
+        AppendLog(log, L"创建安装临时目录失败: " + workRoot);
+        return false;
+    }
+
+    const std::wstring payloadRoot = Join(workRoot, L"payload");
+    const std::wstring backupRoot = Join(workRoot, L"backup");
     for (unsigned int i = 0; i < kKswordSetupPayloadResourceCount; ++i) {
         const auto& e = kKswordSetupPayloadResources[i];
-        const std::wstring out = Join(o.installDir, e.relativePath);
-        AppendLog(log, L"释放: " + std::wstring(e.relativePath));
-        if (!ExtractRc(e.resourceId, out)) {
-            AppendLog(log, L"释放失败，请关闭正在运行的 Ksword 相关程序后重试: " + out);
+        const std::wstring staged = Join(payloadRoot, e.relativePath);
+        AppendLog(log, L"准备: " + std::wstring(e.relativePath));
+        if (!ExtractRc(e.resourceId, staged)) {
+            AppendLog(log, L"准备安装文件失败: " + staged);
+            RemovePayloadWorkTree(workRoot);
             return false;
         }
     }
+
+    // 仅当所有资源已完整写入 staging 后才接触现有安装；失败时恢复之前的文件。
+    std::vector<PayloadDeployment> deployments;
+    deployments.reserve(kKswordSetupPayloadResourceCount);
+    for (unsigned int i = 0; i < kKswordSetupPayloadResourceCount; ++i) {
+        const auto& e = kKswordSetupPayloadResources[i];
+        const std::wstring target = Join(o.installDir, e.relativePath);
+        const std::wstring staged = Join(payloadRoot, e.relativePath);
+        const std::wstring backup = Join(backupRoot, e.relativePath);
+        PayloadDeployment deployment;
+
+        AppendLog(log, L"安装: " + std::wstring(e.relativePath));
+        if (!SwitchStagedPayloadFile(staged, target, backup, &deployment)) {
+            const DWORD error = ::GetLastError();
+            const bool restored = RestorePayloadDeployments(deployments);
+            AppendLog(log, L"安装切换失败，错误码: " + std::to_wstring(error) + L"，已" +
+                (restored ? L"恢复原有文件。" : L"尝试恢复原有文件，但仍有文件未恢复。"));
+            // 回滚不完整时保留工作目录中的备份，避免清理动作抹掉最后一份可恢复原文件。
+            if (restored) {
+                RemovePayloadWorkTree(workRoot);
+            }
+            else {
+                AppendLog(log, L"已保留恢复备份目录: " + workRoot);
+            }
+            return false;
+        }
+        deployments.push_back(std::move(deployment));
+    }
+
+    // 成功后备份不再需要；删除仅限本次随机 staging 目录，不影响用户文件或配置。
+    RemovePayloadWorkTree(workRoot);
     return true;
 }
 
@@ -678,7 +804,42 @@ bool RunWaitCapture(const std::wstring& exe, const std::wstring& args, const std
         if (exitCode) *exitCode = ::GetLastError();
         return false;
     }
-    ::SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+    // 读取端绝不能被子进程继承，否则子进程退出后 reader 仍看不到 EOF。
+    if (!::SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0)) {
+        const DWORD error = ::GetLastError();
+        ::CloseHandle(readPipe);
+        ::CloseHandle(writePipe);
+        if (exitCode) *exitCode = error;
+        return false;
+    }
+
+    // The launched helper and every descendant are kept in one job.  If a
+    // helper exits while a descendant still owns stdout/stderr, closing the job
+    // lets the reader finish instead of leaving the installer waiting forever.
+    HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
+    if (!job) {
+        const DWORD error = ::GetLastError();
+        ::CloseHandle(readPipe);
+        ::CloseHandle(writePipe);
+        if (exitCode) *exitCode = error;
+        if (output) *output = L"无法创建子进程作业对象。";
+        return false;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
+    jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!::SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &jobInfo,
+            sizeof(jobInfo))) {
+        const DWORD error = ::GetLastError();
+        ::CloseHandle(job);
+        ::CloseHandle(readPipe);
+        ::CloseHandle(writePipe);
+        if (exitCode) *exitCode = error;
+        if (output) *output = L"无法配置子进程作业对象。";
+        return false;
+    }
 
     std::wstring cmd = Quote(exe) + (args.empty() ? L"" : L" " + args);
     std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
@@ -698,53 +859,146 @@ bool RunWaitCapture(const std::wstring& exe, const std::wstring& args, const std
         nullptr,
         nullptr,
         TRUE,
-        CREATE_NO_WINDOW,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED,
         nullptr,
         cwd.empty() ? nullptr : cwd.c_str(),
         &si,
         &pi);
+    const DWORD createError = created ? ERROR_SUCCESS : ::GetLastError();
 
     ::CloseHandle(writePipe);
     writePipe = nullptr;
 
     if (!created) {
         if (output) {
-            *output = L"CreateProcessW failed, last error=" + std::to_wstring(::GetLastError());
+            *output = L"CreateProcessW failed, last error=" + std::to_wstring(createError);
         }
         ::CloseHandle(readPipe);
-        if (exitCode) *exitCode = ::GetLastError();
+        ::CloseHandle(job);
+        if (exitCode) *exitCode = createError;
+        return false;
+    }
+
+    // Assign before resuming so helpers cannot start a child outside our job
+    // between CreateProcessW and AssignProcessToJobObject.
+    if (!::AssignProcessToJobObject(job, pi.hProcess)) {
+        const DWORD error = ::GetLastError();
+        ::TerminateProcess(pi.hProcess, error);
+        ::WaitForSingleObject(pi.hProcess, 5000);
+        ::CloseHandle(readPipe);
+        ::CloseHandle(pi.hThread);
+        ::CloseHandle(pi.hProcess);
+        ::CloseHandle(job);
+        if (exitCode) *exitCode = error;
+        if (output) *output = L"无法将诊断子进程加入受控作业，last error=" + std::to_wstring(error);
+        return false;
+    }
+    if (::ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+        const DWORD error = ::GetLastError();
+        ::TerminateJobObject(job, error);
+        ::WaitForSingleObject(pi.hProcess, 5000);
+        ::CloseHandle(readPipe);
+        ::CloseHandle(pi.hThread);
+        ::CloseHandle(pi.hProcess);
+        ::CloseHandle(job);
+        if (exitCode) *exitCode = error;
+        if (output) *output = L"无法启动诊断子进程，last error=" + std::to_wstring(error);
+        return false;
+    }
+
+    // 子进程可能写满匿名管道；同步 drain 可防止父进程等待子进程、子进程等待父进程的死锁。
+    std::shared_ptr<std::string> captured;
+    std::thread reader;
+    try {
+        captured = std::make_shared<std::string>();
+        reader = std::thread([readPipe, captured]() {
+            constexpr size_t kMaxCapturedBytes = 1024 * 1024;
+            char buffer[4096];
+            DWORD read = 0;
+            try {
+                while (::ReadFile(readPipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+                    // 即使诊断文本超限也继续读空管道，避免重新引入子进程阻塞。
+                    const size_t available = captured->size() < kMaxCapturedBytes
+                        ? kMaxCapturedBytes - captured->size() : 0;
+                    captured->append(buffer, buffer + std::min<size_t>(read, available));
+                }
+            }
+            catch (...) {
+                // 诊断缓存失败不应终止安装器；关闭读取端可让子进程收到管道已断开。
+            }
+            ::CloseHandle(readPipe);
+        });
+    }
+    catch (const std::exception&) {
+        // 无法创建 reader 时不能继续运行会写满管道的子进程；有界回收后向 UI 返回错误。
+        constexpr DWORD kReaderCreationFailure = ERROR_NOT_ENOUGH_MEMORY;
+        ::TerminateJobObject(job, kReaderCreationFailure);
+        ::WaitForSingleObject(pi.hProcess, 5000);
+        ::CloseHandle(readPipe);
+        ::CloseHandle(pi.hThread);
+        ::CloseHandle(pi.hProcess);
+        ::CloseHandle(job);
+        if (exitCode) *exitCode = kReaderCreationFailure;
+        if (output) *output = L"无法创建诊断输出读取线程。";
         return false;
     }
 
     DWORD wait = ::WaitForSingleObject(pi.hProcess, timeoutMs);
-    if (wait == WAIT_TIMEOUT) {
-        ::TerminateProcess(pi.hProcess, 1460);
+    if (wait != WAIT_OBJECT_0) {
+        // 超时或等待失败时结束完整进程树，而不是只杀父进程留下持有输出管道的后代。
+        ::TerminateJobObject(job, wait == WAIT_TIMEOUT ? 1460 : ::GetLastError());
+        ::WaitForSingleObject(pi.hProcess, 5000);
     }
 
-    std::string captured;
-    char buffer[4096];
-    DWORD read = 0;
-    while (::ReadFile(readPipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
-        captured.append(buffer, buffer + read);
+    // PowerShell 或其它工具可能让后代继承输出管道；初始进程退出后仍要有界等待 EOF。
+    constexpr DWORD kReaderDrainTimeoutMs = 5000;
+    constexpr DWORD kReaderCancelTimeoutMs = 2000;
+    const HANDLE readerThread = reinterpret_cast<HANDLE>(reader.native_handle());
+    DWORD readerWait = ::WaitForSingleObject(readerThread, kReaderDrainTimeoutMs);
+    bool readerCancelled = readerWait != WAIT_OBJECT_0;
+    if (readerCancelled) {
+        // 先结束作业树，使继承的输出端关闭；这比只终止父进程更可靠。
+        ::TerminateJobObject(job, ERROR_OPERATION_ABORTED);
+        ::WaitForSingleObject(pi.hProcess, 5000);
+        readerWait = ::WaitForSingleObject(readerThread, kReaderDrainTimeoutMs);
     }
-    ::CloseHandle(readPipe);
+    if (readerWait != WAIT_OBJECT_0) {
+        // 若 reader 恰好仍阻塞在同步 ReadFile，向目标线程请求取消并只再等待有限时间。
+        ::CancelSynchronousIo(readerThread);
+        readerWait = ::WaitForSingleObject(readerThread, kReaderCancelTimeoutMs);
+    }
+    const bool readerDetached = readerWait != WAIT_OBJECT_0;
+    if (readerDetached) {
+        // 不可安全地强杀未知 I/O 线程；共享缓冲区仍由线程持有，安装器可立即返回。
+        reader.detach();
+    }
+    else {
+        reader.join();
+    }
 
     DWORD code = 1;
     ::GetExitCodeProcess(pi.hProcess, &code);
     ::CloseHandle(pi.hThread);
     ::CloseHandle(pi.hProcess);
+    ::CloseHandle(job);
     if (exitCode) *exitCode = code;
 
-    if (output && !captured.empty()) {
-        const int wideLen = ::MultiByteToWideChar(CP_OEMCP, 0, captured.data(), (int)captured.size(), nullptr, 0);
+    if (output && !readerDetached && captured && !captured->empty()) {
+        const int wideLen = ::MultiByteToWideChar(CP_OEMCP, 0, captured->data(), (int)captured->size(), nullptr, 0);
         if (wideLen > 0) {
             std::wstring wide((size_t)wideLen, L'\0');
-            ::MultiByteToWideChar(CP_OEMCP, 0, captured.data(), (int)captured.size(), &wide[0], wideLen);
+            ::MultiByteToWideChar(CP_OEMCP, 0, captured->data(), (int)captured->size(), &wide[0], wideLen);
             *output = std::move(wide);
         }
     }
+    if (output && readerCancelled) {
+        *output += L"\r\n诊断输出管道仍被子进程占用，已停止继续等待。";
+    }
+    if (output && readerDetached) {
+        *output += L"\r\n诊断输出读取线程未能及时退出，安装器已放弃等待。";
+    }
 
-    return wait == WAIT_OBJECT_0 && code == 0;
+    return wait == WAIT_OBJECT_0 && code == 0 && !readerCancelled && !readerDetached;
 }
 
 // InstallTaskmgr calls the released TaskmgrHijack.ps1 in parameter mode. Input is

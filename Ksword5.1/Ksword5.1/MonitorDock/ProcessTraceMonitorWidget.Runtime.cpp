@@ -650,26 +650,11 @@ void ProcessTraceMonitorWidget::stopMonitoringInternal(const bool waitForThread)
         return;
     }
 
-    std::unique_ptr<std::thread> joinThread = std::move(m_captureThread);
-    QPointer<ProcessTraceMonitorWidget> guardThis(this);
-    std::thread([joinThread = std::move(joinThread), guardThis]() mutable {
-        if (joinThread != nullptr && joinThread->joinable())
-        {
-            joinThread->join();
-        }
-
-        QMetaObject::invokeMethod(qApp, [guardThis]() {
-            if (guardThis == nullptr)
-            {
-                return;
-            }
-
-            guardThis->m_captureRunning.store(false);
-            guardThis->m_capturePaused.store(false);
-            guardThis->updateActionState();
-            guardThis->updateStatusLabel();
-        }, Qt::QueuedConnection);
-    }).detach();
+    // 交互停止只请求 ETW 线程退出，不能把唯一 join 句柄移入 detached
+    // 回收线程。析构函数必须仍能同步等待该线程，确保 ETW 回调 Context
+    // 指向的控件在 ProcessTrace 和所有回调结束前始终有效。
+    updateActionState();
+    updateStatusLabel();
 }
 
 void ProcessTraceMonitorWidget::setMonitoringPaused(const bool paused)

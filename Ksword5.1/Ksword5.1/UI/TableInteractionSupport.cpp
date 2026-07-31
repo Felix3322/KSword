@@ -2,11 +2,13 @@
 
 #include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
+#include "TableFreezeSupport.h"
 #include "TableSnapshotCompare.h"
 #include "VisibleTableWidget.h"
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
@@ -50,6 +52,8 @@ namespace
 {
     using ks::ui::TableComparisonModel;
     using ks::ui::TableComparisonResult;
+    using ks::ui::TableFrozenPaneController;
+    using ks::ui::TablePausedSnapshotModel;
     using ks::ui::TableSnapshot;
     using ks::ui::TableSnapshotCaptureLimits;
     using ks::ui::TableSnapshotColumn;
@@ -626,8 +630,36 @@ namespace
 
             m_copyAllButton = createButton("复制全表", QStringLiteral(":/Icon/log_copy.svg"));
             m_exportButton = createButton("导出", QStringLiteral(":/Icon/log_export.svg"));
+            m_freezePaneButton = createButton("冻结窗格");
+            m_freezePaneButton->setToolTip(localizedSourceText(
+                "选择单元格后，可将其所在行及上方冻结到顶部、所在列及左侧冻结到左侧"));
+            m_pauseRefreshButton = createButton("停止刷新");
+            m_pauseRefreshButton->setCheckable(true);
             layout->addWidget(m_copyAllButton);
             layout->addWidget(m_exportButton);
+            layout->addWidget(m_freezePaneButton);
+            layout->addWidget(m_pauseRefreshButton);
+
+            m_frozenPaneController = new TableFrozenPaneController(this);
+            m_frozenPaneController->setTargetTable(m_table.data());
+
+            m_freezePaneMenu = new QMenu(m_freezePaneButton);
+            m_freezePaneMenu->setStyleSheet(KswordTheme::ContextMenuStyle());
+            m_freezeCurrentRowAction = m_freezePaneMenu->addAction(
+                localizedSourceText("冻结到当前行"));
+            m_freezeCurrentColumnAction = m_freezePaneMenu->addAction(
+                localizedSourceText("冻结到当前列"));
+            m_freezeCurrentCellAction = m_freezePaneMenu->addAction(
+                localizedSourceText("冻结到当前单元格"));
+            m_freezePaneMenu->addSeparator();
+            m_unfreezeRowsAction = m_freezePaneMenu->addAction(
+                localizedSourceText("取消冻结行"));
+            m_unfreezeColumnsAction = m_freezePaneMenu->addAction(
+                localizedSourceText("取消冻结列"));
+            m_unfreezeAllAction = m_freezePaneMenu->addAction(
+                localizedSourceText("取消全部窗格冻结"));
+            m_freezePaneButton->setMenu(m_freezePaneMenu);
+            m_freezePaneButton->setPopupMode(QToolButton::InstantPopup);
 
             m_snapshotScrollArea = new QScrollArea(this);
             m_snapshotScrollArea->setFrameShape(QFrame::NoFrame);
@@ -676,6 +708,41 @@ namespace
                 {
                     exportTableToTsv(activeTableView());
                 });
+            connect(m_freezePaneMenu, &QMenu::aboutToShow, this, [this]()
+                {
+                    updateFreezePaneMenu();
+                });
+            connect(m_freezeCurrentRowAction, &QAction::triggered, this, [this]()
+                {
+                    freezeToCurrentIndex(true, false);
+                });
+            connect(m_freezeCurrentColumnAction, &QAction::triggered, this, [this]()
+                {
+                    freezeToCurrentIndex(false, true);
+                });
+            connect(m_freezeCurrentCellAction, &QAction::triggered, this, [this]()
+                {
+                    freezeToCurrentIndex(true, true);
+                });
+            connect(m_unfreezeRowsAction, &QAction::triggered, this, [this]()
+                {
+                    m_frozenPaneController->setFrozenRowSectionCount(0);
+                    updateControls();
+                });
+            connect(m_unfreezeColumnsAction, &QAction::triggered, this, [this]()
+                {
+                    m_frozenPaneController->setFrozenColumnSectionCount(0);
+                    updateControls();
+                });
+            connect(m_unfreezeAllAction, &QAction::triggered, this, [this]()
+                {
+                    m_frozenPaneController->clearFrozenPanes();
+                    updateControls();
+                });
+            connect(m_pauseRefreshButton, &QToolButton::toggled, this, [this](const bool checked)
+                {
+                    setRefreshPaused(checked);
+                });
             connect(m_addSnapshotButton, &QToolButton::clicked, this, [this]()
                 {
                     addSnapshot();
@@ -720,6 +787,38 @@ namespace
             updateControls();
         }
 
+    protected:
+        void changeEvent(QEvent* eventObject) override
+        {
+            QFrame::changeEvent(eventObject);
+            if (eventObject == nullptr || eventObject->type() != QEvent::LanguageChange)
+            {
+                return;
+            }
+
+            m_copyAllButton->setText(localizedSourceText("复制全表"));
+            m_exportButton->setText(localizedSourceText("导出"));
+            m_freezePaneButton->setText(localizedSourceText("冻结窗格"));
+            m_freezePaneButton->setToolTip(localizedSourceText(
+                "选择单元格后，可将其所在行及上方冻结到顶部、所在列及左侧冻结到左侧"));
+            m_freezeCurrentRowAction->setText(localizedSourceText("冻结到当前行"));
+            m_freezeCurrentColumnAction->setText(localizedSourceText("冻结到当前列"));
+            m_freezeCurrentCellAction->setText(localizedSourceText("冻结到当前单元格"));
+            m_unfreezeRowsAction->setText(localizedSourceText("取消冻结行"));
+            m_unfreezeColumnsAction->setText(localizedSourceText("取消冻结列"));
+            m_unfreezeAllAction->setText(localizedSourceText("取消全部窗格冻结"));
+            m_cleanupButton->setText(localizedSourceText("清理"));
+            m_doneCleanupButton->setText(localizedSourceText("完成"));
+            m_deleteSelectedButton->setText(localizedSourceText("清理选中"));
+            m_clearAllButton->setText(localizedSourceText("清除全部"));
+            m_differenceOnlyCheckBox->setText(localizedSourceText("只显示差异项"));
+            m_ignoreColumnsButton->setText(localizedSourceText("忽略列"));
+            m_currentViewButton->setText(localizedSourceText("当前视图"));
+            m_compareViewButton->setText(localizedSourceText("比对视图"));
+            updateControls();
+        }
+
+    public:
         void updatePosition()
         {
             if (m_table.isNull())
@@ -735,6 +834,10 @@ namespace
             }
             hideSourceViewportWidgets();
             updateComparisonOverlayGeometry();
+            if (m_frozenPaneController != nullptr)
+            {
+                m_frozenPaneController->refreshGeometry();
+            }
         }
 
     private:
@@ -794,7 +897,289 @@ namespace
 
         QTableView* activeTableView() const
         {
-            return m_comparisonOverlay.isNull() ? m_table.data() : m_comparisonOverlay.data();
+            if (!m_comparisonOverlay.isNull())
+            {
+                return m_comparisonOverlay.data();
+            }
+            return m_pauseOverlay.isNull() ? m_table.data() : m_pauseOverlay.data();
+        }
+
+        void updateFreezePaneMenu()
+        {
+            QTableView* tableView = activeTableView();
+            const QModelIndex currentIndex =
+                tableView != nullptr ? tableView->currentIndex() : QModelIndex();
+            const bool currentAvailable =
+                !m_inComparison &&
+                !m_pauseCaptureInProgress &&
+                tableView != nullptr &&
+                tableView->model() != nullptr &&
+                currentIndex.isValid();
+
+            m_freezeCurrentRowAction->setEnabled(currentAvailable);
+            m_freezeCurrentColumnAction->setEnabled(currentAvailable);
+            m_freezeCurrentCellAction->setEnabled(currentAvailable);
+            m_unfreezeRowsAction->setEnabled(
+                m_frozenPaneController->frozenRowSectionCount() > 0);
+            m_unfreezeColumnsAction->setEnabled(
+                m_frozenPaneController->frozenColumnSectionCount() > 0);
+            m_unfreezeAllAction->setEnabled(
+                m_frozenPaneController->frozenRowSectionCount() > 0 ||
+                m_frozenPaneController->frozenColumnSectionCount() > 0);
+        }
+
+        // freezeToCurrentIndex 作用：
+        // - 将当前单元格所在可视行及其上方行冻结到顶部；
+        // - 将当前单元格所在可视列及其左侧列冻结到左侧；
+        // - freezeRows/freezeColumns 控制本次只修改哪一个方向。
+        void freezeToCurrentIndex(const bool freezeRows, const bool freezeColumns)
+        {
+            QTableView* tableView = activeTableView();
+            if (m_inComparison || tableView == nullptr || tableView->model() == nullptr ||
+                !tableView->currentIndex().isValid())
+            {
+                return;
+            }
+
+            if (m_frozenPaneController->targetTable() != tableView)
+            {
+                m_frozenPaneController->setTargetTable(tableView);
+            }
+
+            const QModelIndex currentIndex = tableView->currentIndex();
+            if (freezeRows)
+            {
+                const int visualRow =
+                    tableView->verticalHeader()->visualIndex(currentIndex.row());
+                if (visualRow >= 0)
+                {
+                    m_frozenPaneController->setFrozenRowSectionCount(visualRow + 1);
+                }
+            }
+            if (freezeColumns)
+            {
+                const int visualColumn =
+                    tableView->horizontalHeader()->visualIndex(currentIndex.column());
+                if (visualColumn >= 0)
+                {
+                    m_frozenPaneController->setFrozenColumnSectionCount(visualColumn + 1);
+                }
+            }
+            m_frozenPaneController->refreshGeometry(true);
+            updateControls();
+        }
+
+        void configurePausedOverlay(
+            ComparisonTableView* pausedView,
+            const TableSnapshot& snapshot)
+        {
+            if (pausedView == nullptr || m_table.isNull() || m_pauseModel.isNull())
+            {
+                return;
+            }
+
+            QTableView* sourceTable = m_table.data();
+            pausedView->setModel(m_pauseModel);
+            pausedView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+            pausedView->setSelectionBehavior(sourceTable->selectionBehavior());
+            pausedView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            pausedView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+            pausedView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+            pausedView->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+            pausedView->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            pausedView->verticalScrollBar()->setSingleStep(
+                std::max(20, sourceTable->verticalScrollBar()->singleStep()));
+            pausedView->horizontalScrollBar()->setSingleStep(
+                std::max(20, sourceTable->horizontalScrollBar()->singleStep()));
+            pausedView->setAlternatingRowColors(sourceTable->alternatingRowColors());
+            pausedView->setShowGrid(sourceTable->showGrid());
+            pausedView->setGridStyle(sourceTable->gridStyle());
+            pausedView->setTextElideMode(sourceTable->textElideMode());
+            pausedView->setWordWrap(false);
+            pausedView->setSortingEnabled(false);
+            pausedView->setFrameShape(QFrame::NoFrame);
+            pausedView->setFocusPolicy(Qt::StrongFocus);
+            pausedView->setFont(sourceTable->font());
+            pausedView->setPalette(sourceTable->palette());
+            pausedView->setAutoFillBackground(true);
+            pausedView->viewport()->setAutoFillBackground(true);
+            pausedView->viewport()->setPalette(sourceTable->viewport()->palette());
+
+            pausedView->verticalHeader()->setVisible(
+                !sourceTable->verticalHeader()->isHidden());
+            pausedView->verticalHeader()->setMinimumSectionSize(
+                sourceTable->verticalHeader()->minimumSectionSize());
+            pausedView->verticalHeader()->setDefaultSectionSize(
+                sourceTable->verticalHeader()->defaultSectionSize());
+            pausedView->horizontalHeader()->setSectionsMovable(false);
+            pausedView->horizontalHeader()->setSectionsClickable(false);
+            pausedView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+            pausedView->horizontalHeader()->setStretchLastSection(
+                sourceTable->horizontalHeader()->stretchLastSection());
+
+            for (int columnIndex = 0; columnIndex < snapshot.visibleColumns.size(); ++columnIndex)
+            {
+                const int sourceColumn = snapshot.visibleColumns.at(columnIndex).sourceColumn;
+                const int sourceWidth =
+                    sourceColumn >= 0 &&
+                    sourceTable->model() != nullptr &&
+                    sourceColumn < sourceTable->model()->columnCount()
+                    ? sourceTable->columnWidth(sourceColumn)
+                    : sourceTable->horizontalHeader()->defaultSectionSize();
+                pausedView->setColumnWidth(columnIndex, std::max(32, sourceWidth));
+            }
+
+            const QModelIndex sourceCurrentIndex = sourceTable->currentIndex();
+            if (sourceCurrentIndex.isValid())
+            {
+                int pausedRow = -1;
+                int pausedColumn = -1;
+                for (int rowIndex = 0; rowIndex < snapshot.rows.size(); ++rowIndex)
+                {
+                    if (snapshot.rows.at(rowIndex).sourceRow == sourceCurrentIndex.row())
+                    {
+                        pausedRow = rowIndex;
+                        break;
+                    }
+                }
+                for (int columnIndex = 0;
+                    columnIndex < snapshot.visibleColumns.size();
+                    ++columnIndex)
+                {
+                    if (snapshot.visibleColumns.at(columnIndex).sourceColumn ==
+                        sourceCurrentIndex.column())
+                    {
+                        pausedColumn = columnIndex;
+                        break;
+                    }
+                }
+                if (pausedRow >= 0 && pausedColumn >= 0)
+                {
+                    pausedView->setCurrentIndex(m_pauseModel->index(pausedRow, pausedColumn));
+                }
+            }
+        }
+
+        bool pauseRefresh()
+        {
+            if (m_refreshPaused)
+            {
+                return true;
+            }
+            if (m_table.isNull() || m_table->model() == nullptr ||
+                m_inComparison || m_pauseCaptureInProgress)
+            {
+                return false;
+            }
+
+            const QPointer<TableActionBar> actionBarGuard(this);
+            const QPointer<QTableView> tableGuard(m_table);
+            const QPointer<QAbstractItemModel> modelGuard(m_table->model());
+            m_pauseCaptureInProgress = true;
+            updateControls();
+            const TableSnapshot snapshot = TableSnapshotCompareEngine::capture(
+                m_table.data(),
+                localizedSourceText("刷新已停止"),
+                0,
+                kSnapshotCaptureLimits);
+            if (actionBarGuard.isNull())
+            {
+                return false;
+            }
+            m_pauseCaptureInProgress = false;
+            if (tableGuard.isNull() || modelGuard.isNull() ||
+                m_table != tableGuard || tableGuard->model() != modelGuard ||
+                snapshot.sourceInvalidated)
+            {
+                QMessageBox::warning(
+                    this,
+                    localizedSourceText("停止刷新失败"),
+                    localizedSourceText("表格在捕获期间已重建，请重试。"));
+                updateControls();
+                return false;
+            }
+
+            if (snapshot.isTruncated())
+            {
+                QMessageBox::warning(
+                    this,
+                    localizedSourceText("停止刷新视图已截断"),
+                    localizedSourceText(
+                        "表格规模超过停止刷新快照的安全上限，当前固定视图保留 %1/%2 行和 %3/%4 列；恢复刷新后可回到完整实时表格。")
+                        .arg(snapshot.rows.size())
+                        .arg(snapshot.sourceRowCount)
+                        .arg(snapshot.visibleColumns.size())
+                        .arg(snapshot.sourceColumnCount));
+                if (actionBarGuard.isNull() || tableGuard.isNull() ||
+                    modelGuard.isNull() || m_table != tableGuard ||
+                    tableGuard->model() != modelGuard)
+                {
+                    updateControls();
+                    return false;
+                }
+            }
+
+            m_pauseModel = new TablePausedSnapshotModel(snapshot, this);
+            auto* pausedView = new ComparisonTableView(m_table.data());
+            m_pauseOverlay = pausedView;
+            configurePausedOverlay(pausedView, snapshot);
+
+            m_frozenPaneController->setTargetTable(nullptr);
+            suspendOriginalTablePainting();
+            m_refreshPaused = true;
+            pausedView->show();
+            updatePosition();
+            pausedView->raise();
+            pausedView->setFocus(Qt::OtherFocusReason);
+            m_frozenPaneController->setTargetTable(pausedView);
+            updateControls();
+            return true;
+        }
+
+        void resumeRefresh()
+        {
+            if (!m_refreshPaused && m_pauseOverlay.isNull())
+            {
+                return;
+            }
+
+            m_frozenPaneController->setTargetTable(nullptr);
+            if (!m_pauseOverlay.isNull())
+            {
+                m_pauseOverlay->hide();
+                m_pauseOverlay->deleteLater();
+                m_pauseOverlay.clear();
+            }
+            resumeOriginalTablePainting();
+            if (!m_pauseModel.isNull())
+            {
+                m_pauseModel->deleteLater();
+                m_pauseModel.clear();
+            }
+
+            m_refreshPaused = false;
+            m_frozenPaneController->setTargetTable(m_table.data());
+            {
+                const QSignalBlocker blocker(m_pauseRefreshButton);
+                m_pauseRefreshButton->setChecked(false);
+            }
+            updatePosition();
+            updateControls();
+        }
+
+        void setRefreshPaused(const bool paused)
+        {
+            if (paused)
+            {
+                if (!pauseRefresh())
+                {
+                    const QSignalBlocker blocker(m_pauseRefreshButton);
+                    m_pauseRefreshButton->setChecked(false);
+                    updateControls();
+                }
+                return;
+            }
+            resumeRefresh();
         }
 
         const TableSnapshot* snapshotForSequence(const quint64 sequence) const
@@ -1459,6 +1844,7 @@ namespace
             configureComparisonOverlay(comparisonView, comparison);
             comparisonView->setProperty(kComparisonActiveProperty, true);
 
+            m_frozenPaneController->setTargetTable(nullptr);
             suspendOriginalTablePainting();
             m_inComparison = true;
             comparisonView->show();
@@ -1490,6 +1876,7 @@ namespace
             }
 
             m_inComparison = false;
+            m_frozenPaneController->setTargetTable(m_table.data());
             updatePosition();
             updateControls();
         }
@@ -1610,19 +1997,23 @@ namespace
 
         void updateComparisonOverlayGeometry()
         {
-            if (m_table.isNull() || m_comparisonOverlay.isNull())
+            if (m_table.isNull() ||
+                (m_comparisonOverlay.isNull() && m_pauseOverlay.isNull()))
             {
                 return;
             }
 
             const int frameWidth = m_table->frameWidth();
             const int top = std::max(frameWidth, geometry().bottom() + 1);
-            m_comparisonOverlay->setGeometry(
+            QTableView* overlayView = !m_comparisonOverlay.isNull()
+                ? m_comparisonOverlay.data()
+                : m_pauseOverlay.data();
+            overlayView->setGeometry(
                 frameWidth,
                 top,
                 std::max(0, m_table->width() - frameWidth * 2),
                 std::max(0, m_table->height() - top - frameWidth));
-            m_comparisonOverlay->raise();
+            overlayView->raise();
             raise();
         }
 
@@ -1636,15 +2027,44 @@ namespace
                 activeTable->model()->rowCount() > 0 &&
                 activeTable->model()->columnCount() > 0;
             const bool controlsAvailable =
-                !m_snapshotCaptureInProgress && !m_comparisonInProgress;
+                !m_snapshotCaptureInProgress &&
+                !m_comparisonInProgress &&
+                !m_pauseCaptureInProgress;
             m_copyAllButton->setEnabled(controlsAvailable && hasVisibleRows);
             m_exportButton->setEnabled(controlsAvailable && hasVisibleRows);
+            m_freezePaneButton->setEnabled(
+                controlsAvailable &&
+                !m_inComparison &&
+                activeTable != nullptr &&
+                activeTable->model() != nullptr);
+            m_pauseRefreshButton->setText(localizedSourceText(
+                m_pauseCaptureInProgress
+                    ? "正在停止…"
+                    : (m_refreshPaused ? "恢复刷新" : "停止刷新")));
+            m_pauseRefreshButton->setToolTip(localizedSourceText(
+                m_refreshPaused
+                    ? "恢复实时表格并显示后台更新后的最新结果"
+                    : "固定当前表格内容；后台采集继续运行，恢复后显示最新结果"));
+            {
+                const QSignalBlocker blocker(m_pauseRefreshButton);
+                m_pauseRefreshButton->setChecked(
+                    m_refreshPaused || m_pauseCaptureInProgress);
+            }
+            m_pauseRefreshButton->setEnabled(
+                !m_pauseCaptureInProgress &&
+                !m_snapshotCaptureInProgress &&
+                !m_comparisonInProgress &&
+                !m_cleanupMode &&
+                !m_inComparison &&
+                m_table != nullptr &&
+                m_table->model() != nullptr);
             m_addSnapshotButton->setText(localizedSourceText(
                 m_snapshotCaptureInProgress ? "正在采集…" : "增加快照"));
             m_addSnapshotButton->setEnabled(
                 controlsAvailable &&
                 !m_cleanupMode &&
                 !m_inComparison &&
+                !m_refreshPaused &&
                 m_table != nullptr &&
                 m_table->model() != nullptr);
             m_cleanupButton->setVisible(!m_cleanupMode);
@@ -1667,6 +2087,7 @@ namespace
             m_compareViewButton->setEnabled(
                 controlsAvailable &&
                 !m_cleanupMode &&
+                !m_refreshPaused &&
                 exactlyTwoSnapshotsSelected);
             m_compareViewButton->setChecked(m_inComparison);
             for (QToolButton* snapshotButton : std::as_const(m_snapshotButtons))
@@ -1681,6 +2102,9 @@ namespace
         QPointer<QTableView> m_table;
         QPointer<QTableView> m_comparisonOverlay;
         QPointer<TableComparisonModel> m_comparisonModel;
+        QPointer<QTableView> m_pauseOverlay;
+        QPointer<TablePausedSnapshotModel> m_pauseModel;
+        TableFrozenPaneController* m_frozenPaneController = nullptr;
         QVector<TableSnapshot> m_snapshots;
         QVector<quint64> m_selectedSnapshotSequences;
         QSet<quint64> m_cleanupSelections;
@@ -1696,10 +2120,21 @@ namespace
         bool m_originalViewportOpaquePaint = false;
         bool m_cleanupMode = false;
         bool m_inComparison = false;
+        bool m_refreshPaused = false;
         bool m_snapshotCaptureInProgress = false;
         bool m_comparisonInProgress = false;
+        bool m_pauseCaptureInProgress = false;
         QToolButton* m_copyAllButton = nullptr;
         QToolButton* m_exportButton = nullptr;
+        QToolButton* m_freezePaneButton = nullptr;
+        QToolButton* m_pauseRefreshButton = nullptr;
+        QMenu* m_freezePaneMenu = nullptr;
+        QAction* m_freezeCurrentRowAction = nullptr;
+        QAction* m_freezeCurrentColumnAction = nullptr;
+        QAction* m_freezeCurrentCellAction = nullptr;
+        QAction* m_unfreezeRowsAction = nullptr;
+        QAction* m_unfreezeColumnsAction = nullptr;
+        QAction* m_unfreezeAllAction = nullptr;
         QToolButton* m_addSnapshotButton = nullptr;
         QToolButton* m_cleanupButton = nullptr;
         QToolButton* m_doneCleanupButton = nullptr;

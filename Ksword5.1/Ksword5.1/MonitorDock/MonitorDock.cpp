@@ -9729,6 +9729,14 @@ void MonitorDock::startWmiSubscription()
         return;
     }
 
+    // 上一轮线程即使已经自然退出，std::thread 仍必须先 join；否则覆盖
+    // unique_ptr 会析构一个 joinable thread 并触发 std::terminate。
+    if (m_wmiSubscribeThread != nullptr && m_wmiSubscribeThread->joinable())
+    {
+        m_wmiSubscribeThread->join();
+        m_wmiSubscribeThread.reset();
+    }
+
     std::vector<QString> classList;
     for (int row = 0; row < m_wmiEventClassTable->rowCount(); ++row)
     {
@@ -10157,40 +10165,8 @@ void MonitorDock::stopWmiSubscriptionInternal(bool waitForThread)
         return;
     }
 
-    // 交互路径：把 join 下放到后台，避免主线程等待导致卡顿。
-    std::unique_ptr<std::thread> joinThread = std::move(m_wmiSubscribeThread);
-    QPointer<MonitorDock> guardThis(this);
-    std::thread([joinThread = std::move(joinThread), guardThis]() mutable {
-        if (joinThread != nullptr && joinThread->joinable())
-        {
-            joinThread->join();
-        }
-        QMetaObject::invokeMethod(qApp, [guardThis]() {
-            if (guardThis == nullptr)
-            {
-                return;
-            }
-            guardThis->m_wmiSubscribeRunning.store(false);
-            guardThis->m_wmiSubscribePaused.store(false);
-            if (guardThis->m_wmiUiUpdateTimer != nullptr)
-            {
-                guardThis->m_wmiUiUpdateTimer->stop();
-            }
-            guardThis->flushWmiPendingRows();
-            guardThis->m_wmiSubscribeStatusLabel->setText(QStringLiteral("● 已停止"));
-            guardThis->m_wmiSubscribeStatusLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
-            if (guardThis->m_wmiSubscribeProgressPid != 0)
-            {
-                kPro.set(guardThis->m_wmiSubscribeProgressPid, "WMI订阅结束", 0, 100.0f);
-                guardThis->m_wmiSubscribeProgressPid = 0;
-            }
-
-            kLogEvent event;
-            info << event
-                << "[MonitorDock] 停止WMI订阅：异步线程回收完成。"
-                << eol;
-        }, Qt::QueuedConnection);
-    }).detach();
+    // 保留 m_wmiSubscribeThread 的所有权，析构函数才能等待 COM/WMI
+    // 查询循环真正退出，避免后台线程在 MonitorDock 释放后访问成员。
 }
 
 void MonitorDock::setWmiSubscriptionPaused(bool paused)
@@ -12700,67 +12676,12 @@ void MonitorDock::stopEtwCaptureInternal(bool waitForThread)
         return;
     }
 
-    // 交互路径：异步 join，防止点击“停止监听”时 UI 阻塞。
+    // 交互路径只请求停止，线程所有权必须保留给析构路径。
     if (m_etwCaptureStatusLabel != nullptr)
     {
         m_etwCaptureStatusLabel->setText(QStringLiteral("● 停止中..."));
         m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(monitorWarningColorHex()));
     }
-    std::unique_ptr<std::thread> joinThread = std::move(m_etwCaptureThread);
-    QPointer<MonitorDock> guardThis(this);
-    std::thread([joinThread = std::move(joinThread), guardThis]() mutable {
-        if (joinThread != nullptr && joinThread->joinable())
-        {
-            joinThread->join();
-        }
-        QMetaObject::invokeMethod(qApp, [guardThis]() {
-            if (guardThis == nullptr)
-            {
-                return;
-            }
-            // 异步回收结束时仍需保留暂停边界，否则停止刷新会退回当前系统时间。
-            const bool wasPaused = guardThis->m_etwCapturePaused.load();
-            const std::uint64_t pauseEnd100ns = guardThis->m_etwTimelinePauseTime100ns;
-            if (guardThis->m_etwCaptureStopTime100ns == 0 && wasPaused && pauseEnd100ns != 0)
-            {
-                guardThis->m_etwCaptureStopTime100ns = pauseEnd100ns;
-            }
-            if (wasPaused && pauseEnd100ns != 0)
-            {
-                guardThis->closeEtwTimelinePauseInterval(pauseEnd100ns);
-            }
-            guardThis->m_etwCaptureRunning.store(false);
-            guardThis->m_etwCapturePaused.store(false);
-            guardThis->m_etwTimelinePauseTime100ns = 0;
-            if (guardThis->m_etwCaptureStatusLabel != nullptr)
-            {
-                const std::uint64_t eventsLost = guardThis->m_etwSourceEventsLost.load(
-                    std::memory_order_relaxed);
-                const bool archiveFailed = guardThis->m_etwArchiveWriteFailed.load(
-                    std::memory_order_relaxed);
-                guardThis->m_etwCaptureStatusLabel->setText(archiveFailed
-                    ? QStringLiteral("● ETW归档写入失败")
-                    : (eventsLost == 0
-                        ? QStringLiteral("● 已停止")
-                        : QStringLiteral("● ETW源事件丢失:%1").arg(static_cast<qulonglong>(eventsLost))));
-                guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(
-                    !archiveFailed && eventsLost == 0 ? monitorIdleColorHex() : monitorErrorColorHex()));
-            }
-            if (guardThis->m_etwUiUpdateTimer != nullptr && guardThis->m_etwUiUpdateTimer->isActive())
-            {
-                guardThis->m_etwUiUpdateTimer->stop();
-            }
-            guardThis->flushEtwPendingRows(true);
-            guardThis->scheduleEtwArchiveFilterRebuild();
-            guardThis->updateEtwCaptureActionState();
-
-            kLogEvent event;
-            info << event
-                << "[MonitorDock] 停止ETW：异步线程回收完成。"
-                << eol;
-        }, Qt::QueuedConnection);
-    }).detach();
-
     if (m_etwUiUpdateTimer != nullptr && m_etwUiUpdateTimer->isActive())
     {
         m_etwUiUpdateTimer->stop();

@@ -58,6 +58,13 @@ Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工
 
 当前主线重点是 R3/R0 cross-view、PDB/DynData 动态偏移、只读审计证据页和明确的 mutation/safety gate。大量审计页默认只读，涉及驱动卸载、回调移除、磁盘写入、进程保护位修改等高风险操作时，应通过单独入口、显式确认和能力门禁执行。
 
+### 近期更新
+- 新增独立“扫描器” Dock，可在后台结构化扫描 PE、ELF 和 Mach-O 文件。其可选字节编辑器只允许等长修改，会复核源文件快照、使用原子替换，并在明确确认风险后可保留备份。
+- 内核与存储取证新增干净已加载镜像和 IDT 基线、描述符表与 IOCTL 解码工具、内核反汇编、扩展的 R0 网络清单，以及原始文件系统浏览和已删除条目分析。
+- HVM 页提供需确认的 VMX 自检和一次性测试来宾，并记录 VM-exit 遥测；仅适用于已获授权的实验和诊断场景。
+- 发行包 DynData profile 不匹配时，完整主程序和轻量版可在后台解析精确运行时 PDB profile；只有 PE/PDB 身份校验通过的结果才会被下发。
+- 新增表格冻结、平滑滚动和可取消的 UI 卡顿检测器；启动项与网络配置修改也加强了目标校验、恢复和事务处理。
+
 ### 组件定位
 - `Ksword5.1`：完整 Qt 主程序，使用 ADS Dock 布局，适合完整 ARK/调试/审计工作流。
 - `KswordARKLight`：轻量 ARK 工具，面向更早系统和低资源场景；使用原生 Win32/C++ 与手写 Dock/UI，不依赖 Qt，提供精简功能、更快启动和更简洁界面。
@@ -70,27 +77,29 @@ Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工
 ### 主要能力
 - 进程、线程、CID 与句柄 cross-view：R3/R0 枚举对照、隐藏嫌疑标记、线程栈、进程详情、PDB 字段诊断和热键/键盘相关审计。
 - 内存与页表取证：进程区域、搜索、Hex、书签/断点、R0 读写路径、内核可执行内存扫描、Kernel/Process memory evidence、PTE/VA 翻译。
-- 网络审计与流量工具：抓包/过滤/连接管理/限速/请求构造/HTTPS 解析、WFP 防火墙事件与规则、NIDS、分段下载、TCP/UDP/AFD/WFP/NDIS/NSI 只读审计。
-- 驱动与内核对象：驱动服务与模块、DriverObject/DeviceObject/MajorFunction/FastIo、Driver Integrity、Module Cross-View、Unloaded/PiDDB、对象命名空间、SSDT/SSSDT、Inline Hook、IAT/EAT、回调遍历。
-- 文件、存储与设备：双面板文件管理、属性/哈希/签名/PE/字符串/Hex、文件解锁与恢复、Minifilter/FileObject/Section/Storage/BitLocker 证据、硬盘 IO 监控、SetupAPI/CfgMgr 设备树和 R0 设备栈审计。
+- 二进制扫描与受控编辑：PE/ELF/Mach-O 结构化扫描；等长字节修改会复核源快照、原子替换目标，并可选保留备份。
+- 网络审计与流量工具：抓包/过滤/连接管理/限速/请求构造/HTTPS 解析、WFP 防火墙事件与规则、NIDS、分段下载，以及 TCP/UDP/AFD/NSI/NDIS/WFP 的 R0 清单和审计视图。
+- 驱动与内核对象：驱动服务与模块、DriverObject/DeviceObject/MajorFunction/FastIo、Driver Integrity、Module Cross-View、Unloaded/PiDDB、干净已加载镜像与 IDT 基线、描述符表/IOCTL 解码、内核反汇编、对象命名空间、SSDT/SSSDT、Inline Hook、IAT/EAT、回调遍历。
+- 文件、存储与设备：双面板文件管理、属性/哈希/签名/PE/字符串/Hex、文件解锁与恢复、Minifilter/FileObject/Section/Storage/BitLocker 证据、原始文件系统和已删除条目取证、硬盘 IO 监控、SetupAPI/CfgMgr 设备树和 R0 设备栈审计。
 - 系统安全姿态：AppLocker、WDAC/Code Integrity、Defender/ASR、VBS/Hyper-V、驱动信任、平台安全和事件日志诊断。
-- UI 与辅助体验：ADS 布局保存/恢复、可见 Dock 惰性初始化、顶部菜单设置、UIAccess/置顶策略、日志与任务进度面板、Taskbar 顶部 AppBar 与 `S O S Enter` 快速拉起。
+- UI 与辅助体验：ADS 布局保存/恢复、可见 Dock 惰性初始化、表格冻结、平滑滚动、可取消的 UI 卡顿检测、顶部菜单设置、UIAccess/置顶策略、日志与任务进度面板、Taskbar 顶部 AppBar 与 `S O S Enter` 快速拉起。
 
 ### ARK 功能（按主程序 Dock 分类）
 > 以下内容基于近期代码、注释、Dock 初始化逻辑与 R0/R3 协议整理。OpenArk 覆盖对照与缺口 TODO 见：`docs/OpenArk功能对照与TODO.md`。
 
-#### 主工作区 Dock（16 个）
-> “设置”已从主 Dock 移到顶部菜单，主工作区新增/保留“杂项”。
+#### 主工作区 Dock（17 个）
+> “设置”已从主 Dock 移到顶部菜单，主工作区包括“扫描器”和“杂项”。
 
 | 一级 Dock | 二级页 / 关键区 | 主要功能 |
 |---|---|---|
 | 欢迎 | 欢迎页主体 | 展示版本、编译时间、用户信息、头像和项目入口。 |
 | 进程 | 进程列表、创建进程、详情窗口、线程、模块、令牌、Cross-View、PDB Catalog | 进程树/列表、图标与差异高亮、结束/挂起/恢复/优先级/关键进程/R0 可恢复隐藏、R3/R0 进程线程对照、线程栈、PPL/Signature/CID 等高风险操作提示。 |
-| 网络 | 流量监控、进程限速、连接管理、请求构造、HTTPS、ARP/DNS、存活主机、防火墙、NIDS、下载、网络审计 | 抓包过滤、TCP/UDP 连接管理、WFP 防火墙事件与规则、实时检测、分段 HTTP/HTTPS 下载、TCP/UDP/AFD/WFP/NDIS/NSI 只读 cross-view。 |
+| 网络 | 流量监控、进程限速、连接管理、请求构造、HTTPS、ARP/DNS、存活主机、防火墙、NIDS、下载、网络审计 | 抓包过滤、TCP/UDP 连接管理、WFP 防火墙事件与规则、实时检测、分段 HTTP/HTTPS 下载，以及 TCP/UDP/AFD/NSI/NDIS/WFP 的只读 R0 清单和 cross-view。 |
 | 内存 | 进程与模块、区域、搜索、查看器、断点/书签、R0 读写、Kernel Exec Scan、Memory Evidence、PTE | R3 内存浏览与搜索、R0 区域读取、内核可执行内存扫描、内核/进程内存证据、页表项与虚拟地址翻译。 |
 | 文件 | 文件管理、文件恢复、属性、解锁、Minifilter、FileObject、Section、Storage/BitLocker | 双面板管理、权限接管、哈希/签名/PE/字符串/Hex、NTFS 恢复、文件占用与 Section 映射、存储栈与 BitLocker 只读证据。 |
-| 驱动 | 驱动概览、驱动操作、调试输出、对象信息、完整性、模块 Cross-View、Unloaded/PiDDB | 驱动服务注册/加载/卸载/删除、已加载模块、DBWIN 输出、DriverObject/DeviceObject/MajorFunction/FastIo、Driver Integrity 和只读证据页。 |
-| 内核 | 对象命名空间、原子表、NtQuery、SSDT、SSSDT、Inline Hook、IAT/EAT、CID、IPC、DynData、驱动状态、回调 | 对象目录递归、BaseNamedObjects、NamedPipe、符号链接、设备/驱动对象、对象类型矩阵、CID/cross-view、ALPC/IPC、动态偏移、能力矩阵和回调遍历/管理。回调清单覆盖 Notify、注册表、对象、过滤器、BugCheck、Shutdown、文件系统、登录会话、CallbackObject、镜像验证与 NMI 来源，并展示模块归属及 v3 快照/逐行身份诊断。 |
+| 扫描器 | 结构化扫描、安全字节编辑 | 在后台结构化扫描 PE、ELF 与 Mach-O。可选编辑器只允许等长修改，需明确确认风险；它会复核原始快照、原子替换目标，并可保留备份。 |
+| 驱动 | 驱动概览、驱动操作、调试输出、对象信息、完整性、模块 Cross-View、Unloaded/PiDDB | 驱动服务注册/加载/卸载/删除、已加载模块、DBWIN 输出、DriverObject/DeviceObject/MajorFunction/FastIo、Driver Integrity、Unloaded/PiDDB 证据和显式门禁的操作入口。 |
+| 内核 | 对象命名空间、原子表、NtQuery、SSDT、SSSDT、Inline Hook、IAT/EAT、CID、IPC、DynData、驱动状态、回调、基线、HVM | 对象目录递归、BaseNamedObjects、NamedPipe、符号链接、设备/驱动对象、对象类型矩阵、CID/cross-view、ALPC/IPC、动态偏移、能力矩阵、干净已加载镜像与 IDT 基线、描述符表/IOCTL 解码、内核反汇编和回调遍历/管理。回调清单覆盖 Notify、注册表、对象、过滤器、BugCheck、Shutdown、文件系统、登录会话、CallbackObject、镜像验证与 NMI 来源，并展示模块归属及 v3 快照/逐行身份诊断。HVM 流程对 VMX 自检和一次性测试来宾设有显式确认。 |
 | 监控 | 进程定向、直接内核调用、WinAPI、WMI、ETW、Risk Center | 目标进程树 ETW、syscall 采集、WinAPI Agent、WMI 订阅、ETW Provider/Session 管理、ARK 风险聚合。 |
 | 硬件 | 利用率、概览、CPU、GPU、内存、硬盘监控、设备管理、R0 设备审计 | 任务管理器风格性能页、磁盘/网络/GPU 动态卡片、进程 IO 与 ETW 文件活动、SetupAPI/CfgMgr 设备树、DevNode/USB/HID/PCI/ACPI/GPU/display/watchdog 审计。 |
 | 权限 | 账号、权限 | 本地用户、创建用户/重置密码、组信息和当前进程权限快照。 |
@@ -99,7 +108,7 @@ Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工
 | 句柄 | 句柄列表、对象类型、对象详情 | 按 PID/关键字/类型过滤，命名对象解析，对象类型统计，HandleTable/ObjectHeader/ObjectType 证据。 |
 | 启动项 | 总览、登录、服务、驱动、计划任务、高级注册表、WMI | 启动项分类汇总、图标渲染、过滤/导出、定位文件和注册表位置；所有真实来源取消只读保护，改为展示风险等级、影响、恢复能力后由用户确认修改。注册表值和启动文件夹使用备份/暂存恢复，计划任务启停后复核，服务与驱动修改 SCM 启动类型；WMI 禁用和 Winsock/整子键删除属于明确标记的不可恢复操作。 |
 | 服务 | 服务主表、常规、登录、恢复、依存关系、审计 | 服务筛选排序、启动类型调整、启动/停止/暂停/继续、属性编辑、依赖和审计信息、TSV/JSON 导出。 |
-| 杂项 | 引导、Shell 关联管理、磁盘编辑、应用控制 | BCD/引导相关入口；右键菜单、URL 绑定、文件打开方式、按格式右键菜单及资源管理器主页第三方程序管理；默认只读磁盘编辑（写入需解锁）；AppLocker/WDAC/Defender/ASR/平台安全/事件日志诊断。 |
+| 杂项 | 引导、Shell 关联管理、磁盘编辑、原始文件系统取证、应用控制 | BCD/引导相关入口；右键菜单、URL 绑定、文件打开方式、按格式右键菜单及资源管理器主页第三方程序管理；默认只读的磁盘编辑、原始文件系统浏览和已删除条目分析（写入需解锁）；AppLocker/WDAC/Defender/ASR/平台安全/事件日志诊断。 |
 
 #### 辅助面板 Dock
 | 面板 | 关键区 | 主要功能 |
@@ -136,6 +145,7 @@ Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工
 - 默认审计页应只读；卸载、删除、patch、bypass、磁盘写入等 mutation 类能力必须走独立入口、风险提示和回滚/审计策略。
 - DynData 第一阶段使用 `third_party/systeminformer_dyn/` 中 vendored System Informer 动态偏移数据；Ksword 只接入 `KphDynConfig` 数据和轻量解析器，不引入 KPH 通信层、对象系统或 session token。
 - DynData R0/R3 协议集中在 `shared/driver/KswordArkDynDataIoctl.h`，KernelDock 的“动态偏移”页通过 `ArkDriverClient` 展示 profile 命中、字段来源和 capability gating；KswordARK 驱动装载后主窗口会立即触发 DynData profile 自动刷新与下发。
+- 当发行包 profile 未命中时，完整主程序和轻量版可在串行后台 DbgHelp 会话中解析精确运行时 PDB profile。只有 PE/PDB 身份校验通过时才会下发；不支持或不匹配的数据不会跨版本猜测偏移。
 - 进程扩展信息使用 `shared/driver/KswordArkProcessIoctl.h` v2 协议传递 Session、完整镜像路径、Protection/SignatureLevel、ObjectTable/SectionObject 可用性、字段来源和 DynData capability；ProcessDock/ProcessDetail 只展示可用性，不在 DynData 缺失时直接枚举句柄表或 Section。
 - R0 可恢复进程隐藏使用 `IOCTL_KSWORD_ARK_SET_PROCESS_VISIBILITY`，驱动同时修改 `_EPROCESS.UniqueProcessId` 并摘除 `ActiveProcessLinks`，保留 PspCidTable 记录以便按原 PID 恢复。
 - 驱动统一状态/能力协议集中在 `shared/driver/KswordArkCapabilityIoctl.h`；KernelDock 的“驱动状态”页展示 Driver Loaded/Missing、Protocol Mismatch、DynData Missing、Limited、安全策略、最近 R0 错误和功能能力矩阵。

@@ -50,6 +50,7 @@ namespace ks::settings
     // unlockerShellContextMenuEnabled：是否启用“系统右键-文件解锁器”菜单（下次启动生效）。
     // useWideScrollBars：是否使用宽滚动条（false=默认窄版）；
     // scrollBarAutoHideEnabled：滚动条是否启用自动隐藏/悬停展开；
+    // smoothScrollingEnabled：是否对全局滚动区域启用滚轮缓动；
     // sliderWheelAdjustEnabled：是否允许滚轮直接调整滑块值。
     // fontFamily：应用界面字体族；空值表示沿用系统默认字体。
     // textAntialiasingEnabled：是否以应用默认字体启用文本抗锯齿。
@@ -72,6 +73,7 @@ namespace ks::settings
         bool unlockerShellContextMenuEnabled = true;
         bool useWideScrollBars = false;
         bool scrollBarAutoHideEnabled = false;
+        bool smoothScrollingEnabled = true;
         bool sliderWheelAdjustEnabled = false;
         QString fontFamily;
         bool textAntialiasingEnabled = true;

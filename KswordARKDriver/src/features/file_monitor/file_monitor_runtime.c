@@ -545,6 +545,11 @@ Return Value:
         Event->fieldFlags |= KSWORD_ARK_FILE_MONITOR_FIELD_FSCTL_PRESENT;
     }
 
+    // post-operation 回调可在 DISPATCH_LEVEL 运行；名称查询及 FileName 缓冲区访问只允许 APC_LEVEL 及以下。
+    if (KeGetCurrentIrql() > APC_LEVEL) {
+        return;
+    }
+
     nameStatus = FltGetFileNameInformation(
         Data,
         FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,

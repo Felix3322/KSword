@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace filedock::handleusage
@@ -61,9 +62,11 @@ namespace filedock::handleusage
     // 传入 absolutePaths：目标绝对路径集合（可多选）。
     // 传入 progressPid：进度条 id，0 表示不转接进度。
     // 传入 tryKernelHandleTable：true 表示优先尝试 R0 HandleTable；false 表示只做 R3/合成占用扫描。
+    // 传入 cancellationCallback：返回 true 时尽快结束扫描；省略时按原有完整扫描执行。
     // 传出：HandleUsageScanResult（按值返回）。
     HandleUsageScanResult scanHandleUsageByPaths(
         const std::vector<QString>& absolutePaths,
         int progressPid = 0,
-        bool tryKernelHandleTable = true);
+        bool tryKernelHandleTable = true,
+        const std::function<bool()>& cancellationCallback = {});
 }

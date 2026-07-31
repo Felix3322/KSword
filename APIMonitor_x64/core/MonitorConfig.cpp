@@ -278,6 +278,10 @@ namespace apimon
             configValue.configPath,
             L"stop_flag_path",
             ks::winapi_monitor::buildStopFlagPathForPid(configValue.targetPid).c_str());
+        configValue.sessionId = QueryIniText(
+            configValue.configPath,
+            L"session_id",
+            L"");
         configValue.agentDllPath = QueryIniText(
             configValue.configPath,
             L"agent_dll_path",

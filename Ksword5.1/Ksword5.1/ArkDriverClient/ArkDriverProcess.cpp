@@ -195,7 +195,8 @@ namespace ksword::ark
         const unsigned long flags,
         const std::uint32_t startPid,
         const std::uint32_t endPid,
-        const unsigned long maxNodes) const
+        const unsigned long maxNodes,
+        DriverHandle* const existingHandle) const
     {
         // 输入：进程 cross-view 查询 flags、PID 范围和最大节点预算。
         // 处理：调用 R0 只读 cross-view IOCTL，按 entrySize 解码 EPROCESS 来源矩阵。
@@ -214,7 +215,8 @@ namespace ksword::ark
             &request,
             static_cast<unsigned long>(sizeof(request)),
             responseBuffer.data(),
-            static_cast<unsigned long>(responseBuffer.size()));
+            static_cast<unsigned long>(responseBuffer.size()),
+            existingHandle);
         if (!crossViewResult.io.ok)
         {
             crossViewResult.unsupported = isUnsupportedIoctlError(crossViewResult.io.win32Error);
@@ -490,7 +492,8 @@ namespace ksword::ark
 
     ProcessRuntimeDetailResult DriverClient::queryProcessRuntimeDetail(
         const std::uint32_t processId,
-        const unsigned long flags) const
+        const unsigned long flags,
+        DriverHandle* const existingHandle) const
     {
         // 输入：目标 PID 和字段组 flags。
         // 处理：封装 IOCTL_KSWORD_ARK_QUERY_PROCESS_DETAIL，固定响应不足时给出明确错误。
@@ -507,7 +510,8 @@ namespace ksword::ark
             &request,
             static_cast<unsigned long>(sizeof(request)),
             &detailResult.response,
-            static_cast<unsigned long>(sizeof(detailResult.response)));
+            static_cast<unsigned long>(sizeof(detailResult.response)),
+            existingHandle);
         if (!detailResult.io.ok)
         {
             detailResult.unsupported = isUnsupportedIoctlError(detailResult.io.win32Error);

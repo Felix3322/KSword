@@ -1,4 +1,5 @@
 #include "KernelDynDataProfiles.h"
+#include "../../../Ksword5.1/Ksword5.1/ArkDriverClient/ArkRuntimeDynData.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1166,6 +1167,8 @@ void AppendDiagnostic(std::vector<std::wstring>& diagnostics, std::wstring messa
     diagnostics.push_back(std::move(message));
 }
 
+std::wstring ApplyModeText(const DynDataProfileMatch& match);
+
 // BuildMatchedProfileResult fills the returned match after an identity hit.
 // Inputs are the current identity, root dictionary, profile object, and path;
 // processing parses both legacy fields and EX typed items; output is a complete
@@ -1219,8 +1222,6 @@ DynDataProfileMatch BuildMatchedProfileResult(
         }
     }
 
-    result.preferV4Apply = !result.profileV4.items.empty();
-    result.preferExApply = !result.preferV4Apply && !result.profileEx.items.empty();
     result.valid = !result.profile.fields.empty() || !result.profileEx.items.empty() || !result.profileV4.items.empty();
 
     std::wostringstream message;
@@ -1231,7 +1232,7 @@ DynDataProfileMatch BuildMatchedProfileResult(
             << L"，v4Groups=" << result.profileV4.capabilityGroups.size()
             << L"，packProfiles=" << result.profileCount
             << L"，scanned=" << result.scannedProfileCount
-            << L"，applyMode=" << (result.preferV4Apply ? L"V4" : (result.preferExApply ? L"EX" : L"Legacy")) << L"。";
+            << L"，applyMode=" << ApplyModeText(result) << L"。";
     } else {
         message << L"本地 DynData profile pack 命中 identity，但可应用 fields/items 均为空或无法映射到当前协议。";
     }
@@ -1267,16 +1268,30 @@ void PushFilteredRow(KernelOperationResult& result, KernelResultRow row, const s
     }
 }
 
-// ApplyModeText returns the driver API selected by parsed profile content. Input
-// is one match packet; output is a stable UI label.
+// ApplyModeText returns every driver API layer supplied by parsed profile
+// content. Input is one match packet; output follows the actual application
+// order used by the main application and ArkLight.
 std::wstring ApplyModeText(const DynDataProfileMatch& match) {
     if (!match.valid) {
         return L"Unavailable";
     }
-    if (match.preferV4Apply) {
-        return L"V4";
+    std::wstring layers;
+    const auto appendLayer = [&layers](const wchar_t* layer) {
+        if (!layers.empty()) {
+            layers += L" -> ";
+        }
+        layers += layer;
+    };
+    if (!match.profile.fields.empty()) {
+        appendLayer(L"Legacy");
     }
-    return match.preferExApply ? L"EX" : L"Legacy";
+    if (!match.profileEx.items.empty()) {
+        appendLayer(L"EX");
+    }
+    if (!match.profileV4.items.empty()) {
+        appendLayer(L"V4");
+    }
+    return layers.empty() ? L"Unavailable" : layers;
 }
 
 // CoverageText formats optional coveragePercent. Input is the raw double from
@@ -1296,6 +1311,7 @@ std::wstring CoverageText(const double coveragePercent) {
 
 DynDataProfileMatch FindMatchingDynDataProfile(const ksword::ark::ArkDynModuleIdentity& identity) {
     DynDataProfileMatch result;
+    DynDataProfileMatch invalidMatchedResult;
     std::vector<std::wstring> diagnostics;
 
     if (!identity.present) {
@@ -1361,9 +1377,68 @@ DynDataProfileMatch FindMatchingDynDataProfile(const ksword::ark::ArkDynModuleId
             if (!ProfileMatchesIdentity(identity, profileObject)) {
                 continue;
             }
-            return BuildMatchedProfileResult(identity, rootObject, profileObject, candidatePath, packVersion, existingPackCount, profileCount, scannedProfileCount);
+            DynDataProfileMatch matched = BuildMatchedProfileResult(
+                identity,
+                rootObject,
+                profileObject,
+                candidatePath,
+                packVersion,
+                existingPackCount,
+                profileCount,
+                scannedProfileCount);
+            if (matched.valid) {
+                return matched;
+            }
+            invalidMatchedResult = std::move(matched);
+            AppendDiagnostic(
+                diagnostics,
+                L"identity-matched pack entry was invalid; trying exact runtime PDB");
         }
         AppendDiagnostic(diagnostics, L"pack 未命中: " + candidatePath.wstring() + L" (profiles=" + std::to_wstring(profileCount) + L")");
+    }
+
+    const ksword::ark::RuntimeDynDataResolveResult runtime =
+        ksword::ark::ResolveRuntimeDynDataProfile(identity);
+    AppendDiagnostic(
+        diagnostics,
+        L"runtime exact PDB: " + runtime.diagnostics);
+    if (runtime.valid) {
+        result.scanned = true;
+        result.matched = true;
+        result.valid = true;
+        result.source = L"Runtime Exact PDB";
+        result.path = runtime.pdbPath.empty()
+            ? runtime.imagePath
+            : runtime.pdbPath;
+        result.message = runtime.diagnostics;
+        result.existingPackCount = existingPackCount;
+        result.scannedProfileCount = scannedProfileCount;
+        result.fieldCount = runtime.resolvedFieldCount;
+        result.typedItemCount = runtime.resolvedTypedItemCount;
+        result.callbackItemCount = static_cast<std::uint32_t>(std::count_if(
+            runtime.profileEx.items.begin(),
+            runtime.profileEx.items.end(),
+            [](const ksword::ark::DynDataProfileExItem& item) {
+                return (item.flags &
+                    KSW_DYN_PROFILE_EX_ITEM_FLAG_CALLBACK) != 0U;
+            }));
+        result.v4ItemCount = runtime.resolvedV4ItemCount;
+        result.v4CapabilityGroupCount =
+            static_cast<std::uint32_t>(
+                runtime.profileV4.capabilityGroups.size());
+        result.coveragePercent =
+            (static_cast<double>(runtime.resolvedTypedItemCount) / 203.0) *
+            100.0;
+        result.profile = runtime.profile;
+        result.profileEx = runtime.profileEx;
+        result.profileV4 = runtime.profileV4;
+        return result;
+    }
+
+    if (invalidMatchedResult.matched) {
+        invalidMatchedResult.message +=
+            L" | runtime exact PDB: " + runtime.diagnostics;
+        return invalidMatchedResult;
     }
 
     result.message = L"未找到匹配 DynData profile pack；存在 pack=" + std::to_wstring(existingPackCount) +
@@ -1379,7 +1454,7 @@ DynDataProfileMatch FindMatchingDynDataProfile(const ksword::ark::ArkDynModuleId
 
 void AppendDynDataProfileRows(KernelOperationResult& result, const DynDataProfileMatch& match, const std::wstring& filterText) {
     PushFilteredRow(result, Row({
-        { L"Source", L"Local DynData Profile Pack" },
+        { L"Source", match.source },
         { L"Scanned", match.scanned ? L"是" : L"否" },
         { L"Matched", match.matched ? L"是" : L"否" },
         { L"Valid", match.valid ? L"是" : L"否" },

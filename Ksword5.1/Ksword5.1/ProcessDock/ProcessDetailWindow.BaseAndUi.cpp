@@ -5,6 +5,7 @@
 #include "../MemoryDock/MemoryDock.h"
 #include "../NetworkDock/NetworkDock.h"
 #include "../OtherDock/OtherDock.h"
+#include "../MiscDock/SoundSource/SoundSourcePage.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../PluginHost.h"
 
@@ -1363,6 +1364,7 @@ void ProcessDetailWindow::initializeUi()
     m_embeddedHandleTab = new QWidget(m_tabWidget);
     m_embeddedMemoryTab = new QWidget(m_tabWidget);
     m_embeddedNetworkTab = new QWidget(m_tabWidget);
+    m_soundSourceTab = new QWidget(m_tabWidget);
     m_embeddedWindowTab = new QWidget(m_tabWidget);
     m_tokenTab = new QWidget(m_tabWidget);
     m_tokenSwitchTab = new QWidget(m_tabWidget);
@@ -1381,6 +1383,7 @@ void ProcessDetailWindow::initializeUi()
     m_embeddedHandleTab->setObjectName(QStringLiteral("ProcessDetailTab_EmbeddedHandle"));
     m_embeddedMemoryTab->setObjectName(QStringLiteral("ProcessDetailTab_EmbeddedMemory"));
     m_embeddedNetworkTab->setObjectName(QStringLiteral("ProcessDetailTab_EmbeddedNetwork"));
+    m_soundSourceTab->setObjectName(QStringLiteral("ProcessDetailTab_SoundSource"));
     m_embeddedWindowTab->setObjectName(QStringLiteral("ProcessDetailTab_EmbeddedWindow"));
     m_tokenTab->setObjectName(QStringLiteral("ProcessDetailTab_Token"));
     m_tokenSwitchTab->setObjectName(QStringLiteral("ProcessDetailTab_TokenSwitch"));
@@ -1407,6 +1410,7 @@ void ProcessDetailWindow::initializeUi()
     m_tabWidget->addTab(m_embeddedHandleTab, QIcon(":/Icon/handle_refresh.svg"), "句柄");
     m_tabWidget->addTab(m_embeddedMemoryTab, QIcon(":/Icon/process_list.svg"), "内存");
     m_tabWidget->addTab(m_embeddedNetworkTab, QIcon(":/Icon/process_details.svg"), "网络连接");
+    m_tabWidget->addTab(m_soundSourceTab, QIcon(":/Icon/sound_source.svg"), "声音来源");
     m_tabWidget->addTab(m_embeddedWindowTab, QIcon(":/Icon/process_tree.svg"), "窗口列表");
     m_tabWidget->addTab(m_tokenTab, QIcon(":/Icon/process_critical.svg"), "令牌");
     m_tabWidget->addTab(m_tokenSwitchTab, QIcon(":/Icon/process_start.svg"), "令牌开关");
@@ -1484,6 +1488,10 @@ void ProcessDetailWindow::ensureTabContentInitialized(QWidget* const tab)
     else if (tab == m_embeddedNetworkTab)
     {
         initializeEmbeddedNetworkTab();
+    }
+    else if (tab == m_soundSourceTab)
+    {
+        initializeSoundSourceTab();
     }
     else if (tab == m_embeddedWindowTab)
     {
@@ -1827,6 +1835,20 @@ void ProcessDetailWindow::ensureEmbeddedNetworkView()
     m_embeddedNetworkDock->focusConnectionsByPids(
         QVector<quint32>{ static_cast<quint32>(m_baseRecord.pid) });
     m_embeddedNetworkDock->show();
+}
+
+void ProcessDetailWindow::initializeSoundSourceTab()
+{
+    // 进程详情只传入当前 PID；页面内部仍使用与杂项页一致的后台采样和 R0 核验。
+    auto* soundSourceLayout = new QVBoxLayout(m_soundSourceTab);
+    soundSourceLayout->setContentsMargins(0, 0, 0, 0);
+    soundSourceLayout->setSpacing(0);
+
+    auto* soundSourcePage = new ks::misc::SoundSourcePage(
+        m_baseRecord.pid,
+        m_baseRecord.creationTime100ns,
+        m_soundSourceTab);
+    soundSourceLayout->addWidget(soundSourcePage, 1);
 }
 
 void ProcessDetailWindow::initializeEmbeddedWindowTab()

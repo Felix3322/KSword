@@ -18,6 +18,7 @@ Environment:
 --*/
 
 #include "ark/ark_driver.h"
+#include "../../platform/pool_compat.h"
 
 #include <ntdddisk.h>
 #include <ntddscsi.h>
@@ -716,8 +717,7 @@ Routine Description:
     }
 
     /* Allocate padding so the returned view can be aligned inside the block. */
-    PVOID allocation = ExAllocatePool2(
-        POOL_FLAG_NON_PAGED,
+    PVOID allocation = KswordARKAllocateNonPagedPool(
         (SIZE_T)Length + effectiveAlignment,
         KSW_STORAGE_FORENSICS_POOL_TAG);
 

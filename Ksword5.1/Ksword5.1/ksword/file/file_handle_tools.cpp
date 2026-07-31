@@ -48,6 +48,12 @@ namespace ks::file
 #endif
         constexpr USHORT kSymbolicLinkRelativeFlag = 1U;
 
+        // IsCancellationRequested：集中处理可选取消回调，避免扫描循环遗漏关闭请求。
+        bool IsCancellationRequested(const CancellationCallback& cancellationCallback)
+        {
+            return cancellationCallback && cancellationCallback();
+        }
+
         // ReadableArkIoMessage 作用：
         // - 输入：ArkDriverClient 返回的 UTF-8 诊断文本和当前能力名称；
         // - 处理：把 DeviceIoControl、unsupported、DynData、buffer 等底层英文日志转换为中文说明；
@@ -494,7 +500,8 @@ namespace ks::file
         }
 
         // CollectProcessNameMap builds a reusable PID -> process name cache through Toolhelp.
-        std::unordered_map<std::uint32_t, std::wstring> CollectProcessNameMap()
+        std::unordered_map<std::uint32_t, std::wstring> CollectProcessNameMap(
+            const CancellationCallback& cancellationCallback = {})
         {
             std::unordered_map<std::uint32_t, std::wstring> processNameMap;
             UniqueHandle snapshotHandle(::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
@@ -508,6 +515,10 @@ namespace ks::file
             BOOL hasItem = ::Process32FirstW(snapshotHandle.get(), &processEntry);
             while (hasItem != FALSE)
             {
+                if (IsCancellationRequested(cancellationCallback))
+                {
+                    break;
+                }
                 processNameMap[processEntry.th32ProcessID] = processEntry.szExeFile;
                 hasItem = ::Process32NextW(snapshotHandle.get(), &processEntry);
             }
@@ -919,7 +930,8 @@ namespace ks::file
     bool QuerySystemHandles(
         const NtApiSet& apiSet,
         std::vector<RawSystemHandle>& recordsOut,
-        std::wstring& diagnosticTextOut)
+        std::wstring& diagnosticTextOut,
+        const CancellationCallback& cancellationCallback)
     {
         recordsOut.clear();
         diagnosticTextOut.clear();
@@ -932,6 +944,11 @@ namespace ks::file
         ULONG bufferSize = 1024U * 1024U;
         for (int attemptIndex = 0; attemptIndex < 10; ++attemptIndex)
         {
+            if (IsCancellationRequested(cancellationCallback))
+            {
+                diagnosticTextOut = L"扫描已取消。";
+                return false;
+            }
             std::vector<std::uint8_t> buffer(static_cast<std::size_t>(bufferSize), 0);
             ULONG returnLength = 0;
             const NTSTATUS status = apiSet.querySystemInformation(kSystemExtendedHandleInformationClass, buffer.data(), bufferSize, &returnLength);
@@ -961,6 +978,12 @@ namespace ks::file
             recordsOut.reserve(safeRecordCount);
             for (std::size_t index = 0; index < safeRecordCount; ++index)
             {
+                if ((index % 1024U) == 0U && IsCancellationRequested(cancellationCallback))
+                {
+                    diagnosticTextOut = L"扫描已取消。";
+                    recordsOut.clear();
+                    return false;
+                }
                 const SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX_NATIVE& source = handleHeader->handles[index];
                 RawSystemHandle row{};
                 row.processId = static_cast<std::uint32_t>(source.uniqueProcessId);
@@ -1727,12 +1750,18 @@ namespace ks::file
         // returns only entries that match target file/directory patterns.
         HandleUsageScanResult ScanKernelHandleTableOccupancy(
             const std::vector<TargetPathPattern>& targetPatterns,
-            const std::unordered_map<std::uint32_t, std::wstring>& processNameMap)
+            const std::unordered_map<std::uint32_t, std::wstring>& processNameMap,
+            const CancellationCallback& cancellationCallback)
         {
             HandleUsageScanResult result{};
             if (targetPatterns.empty())
             {
                 result.diagnosticText = L"KernelHandleTable:目标为空";
+                return result;
+            }
+            if (IsCancellationRequested(cancellationCallback))
+            {
+                result.diagnosticText = L"扫描已取消。";
                 return result;
             }
 
@@ -1752,6 +1781,11 @@ namespace ks::file
             std::size_t nonFileSkippedCount = 0;
             for (const ksword::ark::ProcessEntry& processEntry : processResult.entries)
             {
+                if (IsCancellationRequested(cancellationCallback))
+                {
+                    result.diagnosticText = L"扫描已取消。";
+                    return result;
+                }
                 if (processEntry.processId == 0) { continue; }
                 const ksword::ark::HandleEnumResult handleResult = driverClient.enumerateProcessHandles(
                     processEntry.processId,
@@ -1764,6 +1798,11 @@ namespace ks::file
                 result.totalHandleCount += handleResult.entries.size();
                 for (const ksword::ark::HandleEntry& handleEntry : handleResult.entries)
                 {
+                    if (IsCancellationRequested(cancellationCallback))
+                    {
+                        result.diagnosticText = L"扫描已取消。";
+                        return result;
+                    }
                     const std::uint64_t handleKey = BuildHandleKey(handleEntry.processId, handleEntry.handleValue);
                     if (emittedHandleKeySet.find(handleKey) != emittedHandleKeySet.end()) { continue; }
                     const ksword::ark::HandleObjectQueryResult objectResult = driverClient.queryHandleObject(
@@ -1828,12 +1867,18 @@ namespace ks::file
         HandleUsageScanResult ScanFileHandleOccupancyByR3(
             const std::vector<TargetPathPattern>& targetPatterns,
             const std::unordered_map<std::uint32_t, std::wstring>& processNameMap,
-            const ProgressCallback& progressCallback)
+            const ProgressCallback& progressCallback,
+            const CancellationCallback& cancellationCallback)
         {
             HandleUsageScanResult result{};
             if (targetPatterns.empty())
             {
                 result.diagnosticText = L"未提供有效目标路径。";
+                return result;
+            }
+            if (IsCancellationRequested(cancellationCallback))
+            {
+                result.diagnosticText = L"扫描已取消。";
                 return result;
             }
 
@@ -1848,7 +1893,7 @@ namespace ks::file
             const NtApiSet apiSet = QueryNtApis();
             std::vector<RawSystemHandle> rawRecords;
             std::wstring snapshotDiagnosticText;
-            if (!QuerySystemHandles(apiSet, rawRecords, snapshotDiagnosticText))
+            if (!QuerySystemHandles(apiSet, rawRecords, snapshotDiagnosticText, cancellationCallback))
             {
                 result.diagnosticText = snapshotDiagnosticText;
                 return result;
@@ -1877,6 +1922,11 @@ namespace ks::file
 
             for (const RawSystemHandle& row : rawRecords)
             {
+                if (IsCancellationRequested(cancellationCallback))
+                {
+                    result.diagnosticText = L"扫描已取消。";
+                    return result;
+                }
                 if (row.typeIndex != fileTypeIndex)
                 {
                     continue;
@@ -1968,7 +2018,8 @@ namespace ks::file
             std::vector<HandleUsageEntry>& entryList,
             std::size_t& processImageMatchCountOut,
             std::size_t& loadedModuleMatchCountOut,
-            const ProgressCallback& progressCallback)
+            const ProgressCallback& progressCallback,
+            const CancellationCallback& cancellationCallback)
         {
             processImageMatchCountOut = 0;
             loadedModuleMatchCountOut = 0;
@@ -1977,6 +2028,10 @@ namespace ks::file
             std::set<std::wstring> syntheticDedupeSet;
             for (const auto& processPair : processNameMap)
             {
+                if (IsCancellationRequested(cancellationCallback))
+                {
+                    return;
+                }
                 const std::uint32_t processId = processPair.first;
                 const std::wstring imagePath = QueryProcessImagePathCached(processId, processImagePathCache);
                 std::wstring matchedTargetPath;
@@ -2009,6 +2064,10 @@ namespace ks::file
             if (progressCallback) { progressCallback("扫描模块加载占用", 95.0f); }
             for (const auto& processPair : processNameMap)
             {
+                if (IsCancellationRequested(cancellationCallback))
+                {
+                    return;
+                }
                 const std::uint32_t processId = processPair.first;
                 UniqueHandle moduleSnapshot(::CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId));
                 if (!moduleSnapshot.valid())
@@ -2021,6 +2080,10 @@ namespace ks::file
                 BOOL hasModule = ::Module32FirstW(moduleSnapshot.get(), &moduleEntry);
                 while (hasModule != FALSE)
                 {
+                    if (IsCancellationRequested(cancellationCallback))
+                    {
+                        return;
+                    }
                     const std::wstring modulePath = moduleEntry.szExePath;
                     std::wstring matchedTargetPath;
                     bool matchedByDirectoryRule = false;
@@ -2054,6 +2117,22 @@ namespace ks::file
     {
         HandleUsageScanResult result{};
         const auto beginTime = std::chrono::steady_clock::now();
+        const auto finishCancelledScan = [&result, beginTime]()
+        {
+            result.entries.clear();
+            result.matchedHandleCount = 0;
+            result.processImageMatchCount = 0;
+            result.loadedModuleMatchCount = 0;
+            result.kernelHandleMatchCount = 0;
+            result.diagnosticText = L"扫描已取消。";
+            result.elapsedMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - beginTime).count());
+        };
+        if (IsCancellationRequested(options.cancellationCallback))
+        {
+            finishCancelledScan();
+            return result;
+        }
         const std::vector<TargetPathPattern> targetPatterns = BuildTargetPathPatterns(absolutePaths);
         if (targetPatterns.empty())
         {
@@ -2063,7 +2142,12 @@ namespace ks::file
             return result;
         }
 
-        const std::unordered_map<std::uint32_t, std::wstring> processNameMap = CollectProcessNameMap();
+        const std::unordered_map<std::uint32_t, std::wstring> processNameMap = CollectProcessNameMap(options.cancellationCallback);
+        if (IsCancellationRequested(options.cancellationCallback))
+        {
+            finishCancelledScan();
+            return result;
+        }
         std::unordered_map<std::uint32_t, std::wstring> processImagePathCache;
         if (options.progressCallback) { options.progressCallback("开始扫描占用来源", 5.0f); }
 
@@ -2071,14 +2155,31 @@ namespace ks::file
         bool kernelUsable = false;
         if (options.tryKernelHandleTable)
         {
-            kernelHandleResult = ScanKernelHandleTableOccupancy(targetPatterns, processNameMap);
+            kernelHandleResult = ScanKernelHandleTableOccupancy(
+                targetPatterns,
+                processNameMap,
+                options.cancellationCallback);
+            if (IsCancellationRequested(options.cancellationCallback))
+            {
+                finishCancelledScan();
+                return result;
+            }
             kernelUsable = kernelHandleResult.diagnosticText.find(L"KernelHandleTable进程:") != std::wstring::npos;
         }
 
         const HandleUsageScanResult fileHandleResult = kernelHandleResult.entries.empty()
-            ? ScanFileHandleOccupancyByR3(targetPatterns, processNameMap, options.progressCallback)
+            ? ScanFileHandleOccupancyByR3(
+                targetPatterns,
+                processNameMap,
+                options.progressCallback,
+                options.cancellationCallback)
             : kernelHandleResult;
         result = fileHandleResult;
+        if (IsCancellationRequested(options.cancellationCallback))
+        {
+            finishCancelledScan();
+            return result;
+        }
 
         AppendSyntheticOccupancyEntries(
             targetPatterns,
@@ -2087,7 +2188,13 @@ namespace ks::file
             result.entries,
             result.processImageMatchCount,
             result.loadedModuleMatchCount,
-            options.progressCallback);
+            options.progressCallback,
+            options.cancellationCallback);
+        if (IsCancellationRequested(options.cancellationCallback))
+        {
+            finishCancelledScan();
+            return result;
+        }
 
         std::sort(result.entries.begin(), result.entries.end(), [](const HandleUsageEntry& leftEntry, const HandleUsageEntry& rightEntry) {
             if (leftEntry.processId != rightEntry.processId) { return leftEntry.processId < rightEntry.processId; }
