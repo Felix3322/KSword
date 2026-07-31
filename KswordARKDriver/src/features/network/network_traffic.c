@@ -75,6 +75,17 @@ static const GUID KSWORD_ARK_WFP_TRAFFIC_INBOUND_V6_CALLOUT =
 static const GUID KSWORD_ARK_WFP_TRAFFIC_OUTBOUND_V6_CALLOUT =
 { 0xdb89c588, 0xc0ba, 0x44e0, { 0xb7, 0xe2, 0xc9, 0xb0, 0x14, 0x8d, 0xc0, 0xbb } };
 
+// Built-in layer GUIDs are copied from the WDK ABI so this driver does not
+// depend on the GUID-definition import library for data symbols.
+static const GUID KSWORD_ARK_FWPM_LAYER_INBOUND_IPPACKET_V4 =
+{ 0xc86fd1bf, 0x21cd, 0x497e, { 0xa0, 0xbb, 0x17, 0x42, 0x5c, 0x88, 0x5c, 0x58 } };
+static const GUID KSWORD_ARK_FWPM_LAYER_OUTBOUND_IPPACKET_V4 =
+{ 0x1e5c9fae, 0x8a84, 0x4135, { 0xa3, 0x31, 0x95, 0x0b, 0x54, 0x22, 0x9e, 0xcd } };
+static const GUID KSWORD_ARK_FWPM_LAYER_INBOUND_IPPACKET_V6 =
+{ 0xf52032cb, 0x991c, 0x46e7, { 0x97, 0x1d, 0x26, 0x01, 0x45, 0x9a, 0x91, 0xca } };
+static const GUID KSWORD_ARK_FWPM_LAYER_OUTBOUND_IPPACKET_V6 =
+{ 0xa3b3ab6b, 0x3564, 0x488c, { 0x91, 0x17, 0xf3, 0x4e, 0x82, 0x14, 0x27, 0x63 } };
+
 // 中文说明：单个逐包层的 runtime/engine 注册参数。
 typedef struct _KSWORD_ARK_NETWORK_TRAFFIC_CALLOUT_CONFIG
 {
@@ -90,25 +101,25 @@ static const KSWORD_ARK_NETWORK_TRAFFIC_CALLOUT_CONFIG g_KswordArkTrafficCallout
 {
     {
         &KSWORD_ARK_WFP_TRAFFIC_INBOUND_V4_CALLOUT,
-        &FWPM_LAYER_INBOUND_IPPACKET_V4,
+        &KSWORD_ARK_FWPM_LAYER_INBOUND_IPPACKET_V4,
         L"KswordARK inbound IPv4 packet callout",
         L"KswordARK inbound IPv4 packet filter"
     },
     {
         &KSWORD_ARK_WFP_TRAFFIC_OUTBOUND_V4_CALLOUT,
-        &FWPM_LAYER_OUTBOUND_IPPACKET_V4,
+        &KSWORD_ARK_FWPM_LAYER_OUTBOUND_IPPACKET_V4,
         L"KswordARK outbound IPv4 packet callout",
         L"KswordARK outbound IPv4 packet filter"
     },
     {
         &KSWORD_ARK_WFP_TRAFFIC_INBOUND_V6_CALLOUT,
-        &FWPM_LAYER_INBOUND_IPPACKET_V6,
+        &KSWORD_ARK_FWPM_LAYER_INBOUND_IPPACKET_V6,
         L"KswordARK inbound IPv6 packet callout",
         L"KswordARK inbound IPv6 packet filter"
     },
     {
         &KSWORD_ARK_WFP_TRAFFIC_OUTBOUND_V6_CALLOUT,
-        &FWPM_LAYER_OUTBOUND_IPPACKET_V6,
+        &KSWORD_ARK_FWPM_LAYER_OUTBOUND_IPPACKET_V6,
         L"KswordARK outbound IPv6 packet callout",
         L"KswordARK outbound IPv6 packet filter"
     }
