@@ -26,88 +26,60 @@ AudioSpectrumAnalyzer::~AudioSpectrumAnalyzer()
 }
 
 bool AudioSpectrumAnalyzer::initialize() {
-    // 重复初始化前先完整释放旧会话，避免把新的 COM 初始化与旧接口混在一起。
-    if (m_comInitialized || m_deviceEnumerator || m_audioClient || m_captureThread) {
-        releaseResources();
+    // UI 侧只重置缓存。Core Audio 的 COM 初始化和会话创建由采集线程完成，
+    // 这样不会把 STA 中创建的接口裸传给后台线程。
+    releaseResources();
+    m_audioBuffer.clear();
+    {
+        std::lock_guard<std::mutex> lock(m_spectrumMutex);
+        m_spectrumData.fill(0.0f, NUM_BANDS);
+        m_previousSpectrum.fill(0.0f, NUM_BANDS);
     }
+    m_magnitudes.fill(0.0f, FFT_SIZE / 2);
+    sample_rate = 48000;
+    return true;
+}
 
-    // 1. 初始化COM（已修复为STA模式）
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    if (FAILED(hr)) {
-        qWarning() << "COM初始化失败. 错误码:" << hr;
+void AudioSpectrumAnalyzer::releaseResources() {
+    // 必须先让采集线程退出；COM 接口的 Stop/Release/CoUninitialize 都在该线程中完成。
+    stopCapture();
+}
+
+bool AudioSpectrumAnalyzer::initializeAudioSessionOnWorker()
+{
+    // 采集线程是唯一的 Core Audio apartment；所有接口均在这个 MTA 中创建和使用。
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(comResult)) {
+        qWarning() << "采集线程 COM 初始化失败，错误码:" << comResult;
         return false;
     }
-    m_comInitialized = true;
+    m_workerComInitialized = true;
 
-    // 2. 创建设备枚举器
-    hr = CoCreateInstance(
+    const HRESULT enumeratorResult = CoCreateInstance(
         __uuidof(MMDeviceEnumerator),
         nullptr,
         CLSCTX_ALL,
         __uuidof(IMMDeviceEnumerator),
-        (void**)&m_deviceEnumerator
-    );
-    if (FAILED(hr)) {
-        qWarning() << "创建设备枚举器失败. 错误码:" << hr;
-        releaseResources();
+        reinterpret_cast<void**>(&m_deviceEnumerator));
+    if (FAILED(enumeratorResult)) {
+        qWarning() << "创建音频设备枚举器失败，错误码:" << enumeratorResult;
         return false;
     }
 
-    // 3. 枚举所有活跃的音频设备（根据需求选择输入/输出）
-    IMMDeviceCollection* pDevices = nullptr;
-    EDataFlow flow = eRender;  // 若分析扬声器输出，用eRender；若分析麦克风，用eCapture
-    hr = m_deviceEnumerator->EnumAudioEndpoints(
-        flow,
-        DEVICE_STATE_ACTIVE,  // 只枚举活跃设备
-        &pDevices
-    );
-    if (FAILED(hr)) {
-        qWarning() << "枚举设备失败. 错误码:" << hr;
-        releaseResources();  // 自定义释放资源的函数
+    if (!initializeAudioDevice()) {
+        qWarning() << "未能初始化可用的环回音频设备。";
         return false;
     }
 
-    // 4. 遍历设备，尝试初始化第一个可用设备
-    UINT deviceCount = 0;
-    pDevices->GetCount(&deviceCount);
-    qDebug() << "找到" << deviceCount << "个活跃音频设备";
-
-    bool foundValidDevice = false;
-    for (UINT i = 0; i < deviceCount; ++i) {
-        IMMDevice* pDevice = nullptr;
-        if (SUCCEEDED(pDevices->Item(i, &pDevice))) {
-            qDebug() << "尝试初始化设备" << i;
-            m_audioDevice = pDevice;  // 临时使用当前设备
-
-            // 尝试初始化该设备的音频客户端
-            if (setupAudioClient()) {
-                qDebug() << "设备" << i << "初始化成功！";
-                foundValidDevice = true;
-                break;  // 找到可用设备，退出循环
-            }
-            else {
-                pDevice->Release();  // 初始化失败，释放设备
-                m_audioDevice = nullptr;
-            }
-        }
-    }
-
-    pDevices->Release();  // 释放设备集合
-
-    if (!foundValidDevice) {
-        qWarning() << "所有设备均无法初始化（可能被占用或不支持格式）";
-        releaseResources();
-        return false;
-    }
-
-    // setupAudioClient 已为选中的设备完成初始化；不能再次覆盖接口和设备指针。
     return true;
 }
-void AudioSpectrumAnalyzer::releaseResources() {
-    // 先同步停止工作线程，确保下方每个 COM 指针不再被后台读取。
-    stopCapture();
 
-    // 释放COM接口
+void AudioSpectrumAnalyzer::releaseAudioSessionOnWorker()
+{
+    // 本函数只在 captureAudioData 的采集线程执行，避免跨 apartment Release。
+    if (m_audioClient) {
+        m_audioClient->Stop();
+    }
     if (m_captureClient) {
         m_captureClient->Release();
         m_captureClient = nullptr;
@@ -124,21 +96,22 @@ void AudioSpectrumAnalyzer::releaseResources() {
         m_deviceEnumerator->Release();
         m_deviceEnumerator = nullptr;
     }
-
-    // GetMixFormat 返回的格式内存归 COM 分配器所有，必须与接口一同释放。
     if (m_waveFormat) {
         CoTaskMemFree(m_waveFormat);
         m_waveFormat = nullptr;
     }
-
-    // 仅平衡本对象成功完成的 CoInitializeEx，避免对未初始化的线程反初始化。
-    if (m_comInitialized) {
+    if (m_workerComInitialized) {
         CoUninitialize();
-        m_comInitialized = false;
+        m_workerComInitialized = false;
     }
 }
+
 bool AudioSpectrumAnalyzer::enumerateAudioDevices()
 {
+    if (!m_deviceEnumerator) {
+        return false;
+    }
+
     IMMDeviceCollection* deviceCollection = nullptr;
     HRESULT hr = m_deviceEnumerator->EnumAudioEndpoints(
         eRender, DEVICE_STATE_ACTIVE, &deviceCollection);
@@ -157,6 +130,8 @@ bool AudioSpectrumAnalyzer::enumerateAudioDevices()
                     return true;
                 }
                 device->Release();
+                // 失败后立即清空成员，避免遗留指向已 Release 设备的悬空指针。
+                m_audioDevice = nullptr;
             }
         }
         deviceCollection->Release();
@@ -165,6 +140,10 @@ bool AudioSpectrumAnalyzer::enumerateAudioDevices()
 }
 bool AudioSpectrumAnalyzer::initializeAudioDevice()
 {
+    if (!m_deviceEnumerator) {
+        return false;
+    }
+
     HRESULT hr = m_deviceEnumerator->GetDefaultAudioEndpoint(
         eRender, eConsole, &m_audioDevice);
 
@@ -218,9 +197,6 @@ bool AudioSpectrumAnalyzer::setupAudioClient()
         nullptr
     );
 
-    // 保存实际生效格式的采样率；格式内存会在 releaseResources 中成对释放。
-    sample_rate = defaultFormat->nSamplesPerSec;
-
     if (FAILED(hr)) {
         QString errorMsg;
         if (hr == AUDCLNT_E_DEVICE_IN_USE) {
@@ -251,12 +227,16 @@ bool AudioSpectrumAnalyzer::setupAudioClient()
     m_audioClient = audioClient;
     m_captureClient = captureClient;
     m_waveFormat = defaultFormat;
+    // 保存实际生效格式的采样率；格式内存会在采集线程退出前释放。
+    sample_rate = defaultFormat->nSamplesPerSec;
     return true;
 }
 
 void AudioSpectrumAnalyzer::startCapture()
 {
-    if (m_isCapturing || !m_audioClient || !m_captureClient) return;
+    if (m_isCapturing.load(std::memory_order_acquire)) {
+        return;
+    }
 
     // 已结束但尚未关闭的旧线程句柄必须先回收，避免覆盖可等待的线程所有权。
     if (m_captureThread) {
@@ -267,13 +247,8 @@ void AudioSpectrumAnalyzer::startCapture()
         m_captureThread = nullptr;
     }
 
-    HRESULT hr = m_audioClient->Start();
-    if (FAILED(hr)) {
-        qWarning() << "Failed to start audio capture";
-        return;
-    }
-
-    m_isCapturing = true;
+    // UI 不触碰 IAudioClient；工作线程会在自己的 MTA 中创建、Start 和 Stop 会话。
+    m_isCapturing.store(true, std::memory_order_release);
 
     // 创建捕获线程
     m_captureThread = CreateThread(nullptr, 0, [](LPVOID param) -> DWORD {
@@ -285,21 +260,17 @@ void AudioSpectrumAnalyzer::startCapture()
     // 创建失败时没有线程会清理状态，必须立即恢复，保证下次可以重新启动。
     if (!m_captureThread) {
         qWarning() << "创建音频捕获线程失败，错误码:" << GetLastError();
-        m_isCapturing = false;
-        m_audioClient->Stop();
+        m_isCapturing.store(false, std::memory_order_release);
     }
 }
 
 void AudioSpectrumAnalyzer::stopCapture()
 {
-    m_isCapturing = false;
-
-    if (m_audioClient) {
-        m_audioClient->Stop();
-    }
+    // 仅发送停止请求。不能从 UI 线程调用工作线程 MTA 中的 IAudioClient::Stop。
+    m_isCapturing.store(false, std::memory_order_release);
 
     if (m_captureThread) {
-        // 不能在超时后释放 COM 接口：线程仍可能在 GetBuffer 或 FFT 中访问它们。
+        // 等待采集线程自己 Stop/Release/CoUninitialize 后再销毁对象，避免悬空 this。
         WaitForSingleObject(m_captureThread, INFINITE);
         CloseHandle(m_captureThread);
         m_captureThread = nullptr;
@@ -308,7 +279,29 @@ void AudioSpectrumAnalyzer::stopCapture()
 
 void AudioSpectrumAnalyzer::captureAudioData()
 {
-    while (m_isCapturing) {
+    // 该线程拥有完整的 COM 会话；失败路径也必须在同一线程回收已创建接口。
+    if (!initializeAudioSessionOnWorker()) {
+        releaseAudioSessionOnWorker();
+        m_isCapturing.store(false, std::memory_order_release);
+        qWarning() << "音频采集会话初始化失败。";
+        return;
+    }
+
+    if (!m_isCapturing.load(std::memory_order_acquire)) {
+        releaseAudioSessionOnWorker();
+        qDebug() << "音频采集在线程启动前已被取消。";
+        return;
+    }
+
+    const HRESULT startResult = m_audioClient->Start();
+    if (FAILED(startResult)) {
+        qWarning() << "启动音频采集失败，错误码:" << startResult;
+        releaseAudioSessionOnWorker();
+        m_isCapturing.store(false, std::memory_order_release);
+        return;
+    }
+
+    while (m_isCapturing.load(std::memory_order_acquire)) {
         UINT32 packetSize = 0;
         HRESULT hr = m_captureClient->GetNextPacketSize(&packetSize);
 
@@ -328,7 +321,9 @@ void AudioSpectrumAnalyzer::captureAudioData()
                 // 静音包的 data 可为 nullptr；显式补零可保留时间轴且不会解引用空指针。
                 if (framesAvailable > 0) {
                     const BYTE* sampleData = (flags & AUDCLNT_BUFFERFLAGS_SILENT) ? nullptr : data;
-                    processAudioData(sampleData, framesAvailable);
+                    if (m_isCapturing.load(std::memory_order_acquire)) {
+                        processAudioData(sampleData, framesAvailable);
+                    }
                 }
 
                 // 只要 GetBuffer 成功就必须配对 ReleaseBuffer，包括零帧包。
@@ -342,7 +337,11 @@ void AudioSpectrumAnalyzer::captureAudioData()
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
-    qDebug() << "捕获线程退出"; // 新增日志，确认退出时机
+
+    // Stop 与所有 Release 均保留在创建接口的同一 MTA 中，UI 侧只等待线程结束。
+    releaseAudioSessionOnWorker();
+    m_isCapturing.store(false, std::memory_order_release);
+    qDebug() << "捕获线程退出";
 }
 
 void AudioSpectrumAnalyzer::processAudioData(const BYTE* data, UINT32 framesAvailable) {
@@ -524,9 +523,6 @@ void AudioSpectrumAnalyzer::applyFFT(const float* audioData, int size)
 void AudioSpectrumAnalyzer::calculateFrequencyBands() {
     qDebug() << "Calculating frequency bands...";
 
-    // 重置频带数据
-    m_spectrumData.fill(0.0f, NUM_BANDS);
-
     if (m_magnitudes.isEmpty()) {
         qDebug() << "ERROR: Magnitudes array is empty!";
         return;
@@ -540,6 +536,8 @@ void AudioSpectrumAnalyzer::calculateFrequencyBands() {
         return;
     }
 
+    // 先在采集线程的局部副本中计算，随后一次性发布给 UI 线程。
+    QVector<float> nextSpectrum(NUM_BANDS, 0.0f);
     for (int band = 0; band < NUM_BANDS; ++band) {
         // 计算频带对应的频率范围（对数刻度）
         float lowFreq = band == 0 ? 20.0f : (sampleRate / 2) * pow(2.0f, (band - 1) / (NUM_BANDS - 1.0f));
@@ -570,24 +568,25 @@ void AudioSpectrumAnalyzer::calculateFrequencyBands() {
         } else {
             sum *= 5.0f; // 高频飞起来
 		}
-        m_spectrumData[band] = count > 0 ? sum / count : 0.0f
-            ;
-
-
+        nextSpectrum[band] = count > 0 ? sum / count : 0.0f;
     }
 
     // 调试输出频带数据
-    float maxBand = *std::max_element(m_spectrumData.begin(), m_spectrumData.end());
+    const float maxBand = *std::max_element(nextSpectrum.cbegin(), nextSpectrum.cend());
     qDebug() << "Frequency bands calculated - max band:" << maxBand;
 
     if (maxBand > 0) {
         qDebug() << "First 5 bands:";
         for (int i = 0; i < 5 && i < NUM_BANDS; ++i) {
-            qDebug() << "  Band" << i << ":" << m_spectrumData[i];
+            qDebug() << "  Band" << i << ":" << nextSpectrum[i];
         }
     }
 
-    emit spectrumDataReady(m_spectrumData);
+    {
+        std::lock_guard<std::mutex> lock(m_spectrumMutex);
+        m_spectrumData = nextSpectrum;
+    }
+    emit spectrumDataReady(nextSpectrum);
     qDebug() << "Spectrum data signal emitted";
 }
 void AudioSpectrumAnalyzer::createWindowFunction()
@@ -600,5 +599,6 @@ void AudioSpectrumAnalyzer::createWindowFunction()
 
 QVector<float> AudioSpectrumAnalyzer::getSpectrumData() const
 {
+    std::lock_guard<std::mutex> lock(m_spectrumMutex);
     return m_spectrumData;
 }
