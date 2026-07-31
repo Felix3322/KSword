@@ -3,7 +3,6 @@
 #include "../Framework.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
-#include "../UI/StallDetector.h"
 #include "../theme.h"
 
 #include <QButtonGroup>
@@ -495,10 +494,10 @@ void SettingsDock::initializeAppearanceTab()
     interactionLayout->setSpacing(8);
 
     QLabel* interactionHintLabel = new QLabel(
-        QStringLiteral("调整全局滚动、卡顿检测与取消提示，以及滚轮是否直接调整滑块。"),
+        QStringLiteral("调整全局滚动，以及滚轮是否直接调整滑块。"),
         interactionGroupBox);
     interactionHintLabel->setWordWrap(true);
-    languageManager.bindText(interactionHintLabel, QStringLiteral("settings.interaction.hint"), QStringLiteral("调整全局滚动、卡顿检测与取消提示，以及滚轮是否直接调整滑块。"));
+    languageManager.bindText(interactionHintLabel, QStringLiteral("settings.interaction.hint"), QStringLiteral("调整全局滚动，以及滚轮是否直接调整滑块。"));
     interactionLayout->addWidget(interactionHintLabel);
 
     QHBoxLayout* scrollBarWidthLayout = new QHBoxLayout();
@@ -534,45 +533,6 @@ void SettingsDock::initializeAppearanceTab()
         QStringLiteral("settings.scroll.smooth.tooltip"),
         QStringLiteral("对表格、列表、文本区和滚动页的鼠标滚轮滚动使用缓动动画"));
     interactionLayout->addWidget(m_smoothScrollingCheckBox);
-
-    m_stallDetectionCheckBox = new QCheckBox(
-        QStringLiteral("启用界面卡顿检测"),
-        interactionGroupBox);
-    languageManager.bindText(
-        m_stallDetectionCheckBox,
-        QStringLiteral("settings.stall_detector.enabled"),
-        QStringLiteral("启用界面卡顿检测"));
-    m_stallDetectionCheckBox->setToolTip(
-        QStringLiteral("主事件循环超过阈值未响应时显示独立取消提示；取消采用安全的协作式请求，不会强制终止线程"));
-    languageManager.bindToolTip(
-        m_stallDetectionCheckBox,
-        QStringLiteral("settings.stall_detector.enabled.tooltip"),
-        QStringLiteral("主事件循环超过阈值未响应时显示独立取消提示；取消采用安全的协作式请求，不会强制终止线程"));
-    interactionLayout->addWidget(m_stallDetectionCheckBox);
-
-    QHBoxLayout* stallThresholdLayout = new QHBoxLayout();
-    stallThresholdLayout->setSpacing(6);
-    QLabel* stallThresholdLabel = new QLabel(
-        QStringLiteral("卡顿阈值（毫秒）"),
-        interactionGroupBox);
-    languageManager.bindText(
-        stallThresholdLabel,
-        QStringLiteral("settings.stall_detector.threshold"),
-        QStringLiteral("卡顿阈值（毫秒）"));
-    stallThresholdLayout->addWidget(stallThresholdLabel, 0);
-    m_stallDetectionThresholdSpinBox = new QSpinBox(interactionGroupBox);
-    m_stallDetectionThresholdSpinBox->setRange(
-        ks::ui::kMinimumUiStallThresholdMs,
-        ks::ui::kMaximumUiStallThresholdMs);
-    m_stallDetectionThresholdSpinBox->setSingleStep(250);
-    m_stallDetectionThresholdSpinBox->setToolTip(
-        QStringLiteral("主界面连续无响应达到该时长后，提供“请求取消当前动作”和“继续等待”选项"));
-    languageManager.bindToolTip(
-        m_stallDetectionThresholdSpinBox,
-        QStringLiteral("settings.stall_detector.threshold.tooltip"),
-        QStringLiteral("主界面连续无响应达到该时长后，提供“请求取消当前动作”和“继续等待”选项"));
-    stallThresholdLayout->addWidget(m_stallDetectionThresholdSpinBox, 1);
-    interactionLayout->addLayout(stallThresholdLayout);
 
     m_sliderWheelAdjustCheckBox = new QCheckBox(QStringLiteral("允许滚轮直接调整滑块"), interactionGroupBox);
     languageManager.bindText(m_sliderWheelAdjustCheckBox, QStringLiteral("settings.slider.wheel"), QStringLiteral("允许滚轮直接调整滑块"));
@@ -925,22 +885,6 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QStringLiteral("全局平滑滚动开关切换"));
         });
 
-    connect(m_stallDetectionCheckBox, &QCheckBox::toggled, this, [this](const bool checkedState) {
-        if (m_stallDetectionThresholdSpinBox != nullptr)
-        {
-            m_stallDetectionThresholdSpinBox->setEnabled(checkedState);
-        }
-        markPendingChanges(QStringLiteral("界面卡顿检测开关切换"));
-        });
-
-    connect(
-        m_stallDetectionThresholdSpinBox,
-        QOverload<int>::of(&QSpinBox::valueChanged),
-        this,
-        [this](const int /*thresholdMs*/) {
-            markPendingChanges(QStringLiteral("界面卡顿检测阈值变化"));
-        });
-
     connect(m_sliderWheelAdjustCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
         markPendingChanges(QStringLiteral("滑块滚轮调节开关切换"));
         });
@@ -1072,15 +1016,6 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     {
         m_smoothScrollingCheckBox->setChecked(settings.smoothScrollingEnabled);
     }
-    if (m_stallDetectionCheckBox != nullptr)
-    {
-        m_stallDetectionCheckBox->setChecked(settings.stallDetectionEnabled);
-    }
-    if (m_stallDetectionThresholdSpinBox != nullptr)
-    {
-        m_stallDetectionThresholdSpinBox->setValue(settings.stallDetectionThresholdMs);
-        m_stallDetectionThresholdSpinBox->setEnabled(settings.stallDetectionEnabled);
-    }
     if (m_sliderWheelAdjustCheckBox != nullptr)
     {
         m_sliderWheelAdjustCheckBox->setChecked(settings.sliderWheelAdjustEnabled);
@@ -1194,12 +1129,6 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         (m_scrollBarAutoHideCheckBox != nullptr) && m_scrollBarAutoHideCheckBox->isChecked();
     collectedSettings.smoothScrollingEnabled =
         (m_smoothScrollingCheckBox != nullptr) && m_smoothScrollingCheckBox->isChecked();
-    collectedSettings.stallDetectionEnabled =
-        (m_stallDetectionCheckBox != nullptr) && m_stallDetectionCheckBox->isChecked();
-    collectedSettings.stallDetectionThresholdMs =
-        m_stallDetectionThresholdSpinBox != nullptr
-        ? m_stallDetectionThresholdSpinBox->value()
-        : m_currentAppearanceSettings.stallDetectionThresholdMs;
     collectedSettings.sliderWheelAdjustEnabled =
         (m_sliderWheelAdjustCheckBox != nullptr) && m_sliderWheelAdjustCheckBox->isChecked();
     collectedSettings.fontFamily = m_fontCombo != nullptr
@@ -1402,8 +1331,6 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.useWideScrollBars == m_currentAppearanceSettings.useWideScrollBars
         && nextSettings.scrollBarAutoHideEnabled == m_currentAppearanceSettings.scrollBarAutoHideEnabled
         && nextSettings.smoothScrollingEnabled == m_currentAppearanceSettings.smoothScrollingEnabled
-        && nextSettings.stallDetectionEnabled == m_currentAppearanceSettings.stallDetectionEnabled
-        && nextSettings.stallDetectionThresholdMs == m_currentAppearanceSettings.stallDetectionThresholdMs
         && nextSettings.sliderWheelAdjustEnabled == m_currentAppearanceSettings.sliderWheelAdjustEnabled
         && nextSettings.fontFamily.compare(m_currentAppearanceSettings.fontFamily, Qt::CaseInsensitive) == 0
         && nextSettings.textAntialiasingEnabled == m_currentAppearanceSettings.textAntialiasingEnabled
@@ -1531,10 +1458,6 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         << (m_currentAppearanceSettings.scrollBarAutoHideEnabled ? "true" : "false")
         << "，全局平滑滚动="
         << (m_currentAppearanceSettings.smoothScrollingEnabled ? "true" : "false")
-        << "，界面卡顿检测="
-        << (m_currentAppearanceSettings.stallDetectionEnabled ? "true" : "false")
-        << "，卡顿阈值毫秒="
-        << m_currentAppearanceSettings.stallDetectionThresholdMs
         << "，滚轮调整滑块="
         << (m_currentAppearanceSettings.sliderWheelAdjustEnabled ? "true" : "false")
         << "，VirusTotal API Key已配置="

@@ -284,12 +284,6 @@ private:
     // m_smoothScrollingCheckBox 作用：设置全局滚动区域是否启用滚轮缓动。
     QCheckBox* m_smoothScrollingCheckBox = nullptr;
 
-    // m_stallDetectionCheckBox 作用：设置是否检测 Qt 主事件循环长时间无响应。
-    QCheckBox* m_stallDetectionCheckBox = nullptr;
-
-    // m_stallDetectionThresholdSpinBox 作用：设置触发卡顿取消提示的毫秒阈值。
-    QSpinBox* m_stallDetectionThresholdSpinBox = nullptr;
-
     // m_sliderWheelAdjustCheckBox 作用：设置滚轮是否可直接调整滑块值。
     QCheckBox* m_sliderWheelAdjustCheckBox = nullptr;
 

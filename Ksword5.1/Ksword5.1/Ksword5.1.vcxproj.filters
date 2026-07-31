@@ -626,9 +626,6 @@
     <ClCompile Include="UI\SmoothScrollSupport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="UI\StallDetector.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="UI\SvgThemeIconManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1096,9 +1093,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\SmoothScrollSupport.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="UI\StallDetector.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\TableColumnAutoFit.h">

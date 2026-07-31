@@ -74,8 +74,6 @@ namespace ks::settings
         bool useWideScrollBars = false;
         bool scrollBarAutoHideEnabled = false;
         bool smoothScrollingEnabled = true;
-        bool stallDetectionEnabled = true;
-        int stallDetectionThresholdMs = 2000;
         bool sliderWheelAdjustEnabled = false;
         QString fontFamily;
         bool textAntialiasingEnabled = true;
