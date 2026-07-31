@@ -88,6 +88,7 @@
 #include "UI/GlobalDialogTheme.h"
 #include "UI/SvgThemeIconManager.h"
 #include "UI/SmoothScrollSupport.h"
+#include "UI/StallDetector.h"
 #include "UI/ThemedMessageBox.h"
 #include "theme.h"
 #include "../../shared/KswordArkLogProtocol.h"
@@ -9582,6 +9583,10 @@ void MainWindow::applyAppearanceSettings(
     const bool smoothScrollingChanged =
         isInitialAppearanceApply
         || previousSettings.smoothScrollingEnabled != settings.smoothScrollingEnabled;
+    const bool stallDetectorSettingsChanged =
+        isInitialAppearanceApply
+        || previousSettings.stallDetectionEnabled != settings.stallDetectionEnabled
+        || previousSettings.stallDetectionThresholdMs != settings.stallDetectionThresholdMs;
     const bool topMostChanged =
         isInitialAppearanceApply
         || previousSettings.startupTopMostEnabled != settings.startupTopMostEnabled;
@@ -9600,6 +9605,12 @@ void MainWindow::applyAppearanceSettings(
     if (smoothScrollingChanged)
     {
         ks::ui::SetGlobalSmoothScrollingEnabled(settings.smoothScrollingEnabled);
+    }
+    if (stallDetectorSettingsChanged)
+    {
+        ks::ui::SetGlobalStallDetectorSettings(
+            settings.stallDetectionEnabled,
+            settings.stallDetectionThresholdMs);
     }
     RuntimeAppearanceProgress runtimeProgress(runtimeProgressRequired);
 

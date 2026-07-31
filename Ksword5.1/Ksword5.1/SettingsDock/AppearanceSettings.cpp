@@ -271,6 +271,11 @@ namespace
         return std::clamp(rawSeconds, 0, 60);
     }
 
+    int clampStallDetectionThresholdMs(const int rawThresholdMs)
+    {
+        return std::clamp(rawThresholdMs, 500, 30000);
+    }
+
     // normalizeCustomThemeColor 作用：只接受完整的 RGB 色值，避免无效配置进入主题计算。
     // 空值代表使用产品默认主题色。
     QString normalizeCustomThemeColor(const QString& rawColorText)
@@ -389,6 +394,8 @@ namespace
         defaultSettings.useWideScrollBars = false;
         defaultSettings.scrollBarAutoHideEnabled = false;
         defaultSettings.smoothScrollingEnabled = true;
+        defaultSettings.stallDetectionEnabled = true;
+        defaultSettings.stallDetectionThresholdMs = 2000;
         defaultSettings.sliderWheelAdjustEnabled = false;
         defaultSettings.fontFamily.clear();
         defaultSettings.textAntialiasingEnabled = true;
@@ -575,6 +582,12 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     loadedSettings.smoothScrollingEnabled = rootObject
         .value(QStringLiteral("smooth_scrolling_enabled"))
         .toBool(loadedSettings.smoothScrollingEnabled);
+    loadedSettings.stallDetectionEnabled = rootObject
+        .value(QStringLiteral("stall_detection_enabled"))
+        .toBool(loadedSettings.stallDetectionEnabled);
+    loadedSettings.stallDetectionThresholdMs = clampStallDetectionThresholdMs(
+        rootObject.value(QStringLiteral("stall_detection_threshold_ms"))
+        .toInt(loadedSettings.stallDetectionThresholdMs));
     loadedSettings.sliderWheelAdjustEnabled = rootObject
         .value(QStringLiteral("slider_wheel_adjust_enabled"))
         .toBool(loadedSettings.sliderWheelAdjustEnabled);
@@ -679,6 +692,12 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(
         QStringLiteral("smooth_scrolling_enabled"),
         settings.smoothScrollingEnabled);
+    rootObject.insert(
+        QStringLiteral("stall_detection_enabled"),
+        settings.stallDetectionEnabled);
+    rootObject.insert(
+        QStringLiteral("stall_detection_threshold_ms"),
+        clampStallDetectionThresholdMs(settings.stallDetectionThresholdMs));
     rootObject.insert(
         QStringLiteral("slider_wheel_adjust_enabled"),
         settings.sliderWheelAdjustEnabled);

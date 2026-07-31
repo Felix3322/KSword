@@ -358,6 +358,7 @@
     <ClCompile Include="UI\HexEditorWidget.Tools.cpp" />
     <ClCompile Include="UI\PerformanceNavCard.cpp" />
     <ClCompile Include="UI\SmoothScrollSupport.cpp" />
+    <ClCompile Include="UI\StallDetector.cpp" />
     <ClCompile Include="UI\SvgThemeIconManager.cpp" />
     <ClCompile Include="UI\TableColumnAutoFit.cpp" />
     <ClCompile Include="UI\TableFreezeSupport.cpp" />
@@ -499,6 +500,7 @@
     <ClInclude Include="theme.h" />
     <ClInclude Include="UI\FlatTableModel.h" />
     <ClInclude Include="UI\SmoothScrollSupport.h" />
+    <ClInclude Include="UI\StallDetector.h" />
     <ClInclude Include="UI\TableColumnAutoFit.h" />
     <ClInclude Include="UI\TableFreezeSupport.h" />
     <ClInclude Include="UI\TableInteractionSupport.h" />
