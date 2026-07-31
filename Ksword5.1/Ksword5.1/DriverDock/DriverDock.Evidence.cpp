@@ -1669,9 +1669,6 @@ void DriverDock::rebuildLoadedModuleEvidenceViews()
             inlineHookStatusText,
             callbackStatusText
         };
-        const QString evidenceToolTip =
-            signatureDetailText + QStringLiteral("\n\n") +
-            localizedModuleEvidenceText(evidence.detailText);
         const QColor foregroundColor = moduleEvidenceStatusColor(evidence);
         for (int columnOffset = 0; columnOffset < columnTexts.size(); ++columnOffset)
         {
@@ -1687,7 +1684,9 @@ void DriverDock::rebuildLoadedModuleEvidenceViews()
                 cellItem->setText(columnTexts[columnOffset]);
             }
             cellItem->setForeground(QBrush(foregroundColor));
-            cellItem->setToolTip(evidenceToolTip.left(4000));
+            // 完整证据已经显示在表格下方的详情区；证据列不再重复挂载
+            // 最长 4000 字符的悬停文本，避免 tooltip 遮挡整个主窗口。
+            cellItem->setToolTip(QString());
         }
     }
 

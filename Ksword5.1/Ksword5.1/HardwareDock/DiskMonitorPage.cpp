@@ -1876,9 +1876,12 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
             selectedFileActivityList.push_back(fileActivity);
         }
     }
-    for (const FileActivityHistoryEntry& historyEntry : m_fileActivityHistory)
+    // 历史记录按新到旧补入；当前窗口始终优先，避免旧采样覆盖正在变化的活动行。
+    for (auto historyIt = m_fileActivityHistory.crbegin();
+        historyIt != m_fileActivityHistory.crend();
+        ++historyIt)
     {
-        const FileActivitySample& fileActivity = historyEntry.sample;
+        const FileActivitySample& fileActivity = historyIt->sample;
         if ((!filterBySelectedPid ||
                 m_selectedPidSet.find(fileActivity.pid) != m_selectedPidSet.end()) &&
             activityMatchesFilter(fileActivity))
@@ -1891,11 +1894,22 @@ void DiskMonitorPage::updateActivityTable(const std::vector<ProcessDiskSample>& 
         QHash<QString, FileActivitySample> deduplicatedActivityByKey;
         for (const FileActivitySample& sample : selectedFileActivityList)
         {
-            const QString keyText = QStringLiteral("%1|%2").arg(sample.pid).arg(sample.filePath.toLower());
-            const double sampleTotal = sample.readBytesPerSec + sample.writeBytesPerSec;
-            const auto existingIt = deduplicatedActivityByKey.constFind(keyText);
-            if (existingIt == deduplicatedActivityByKey.constEnd()
-                || sampleTotal > (existingIt.value().readBytesPerSec + existingIt.value().writeBytesPerSec))
+            // 资源监视器式活动表展示的是持续变化的逻辑活动项，而不是 ETW 事件历史。
+            // 用进程映像 + 文件路径形成稳定键；同一程序重启或 PID 复用后更新原行，
+            // 用户明确勾选 PID 时，前置过滤仍会把范围限制在所选进程。
+            QString processIdentity = sample.processImagePath.trimmed();
+            if (processIdentity.isEmpty())
+            {
+                processIdentity = sample.processName.trimmed();
+            }
+            if (processIdentity.isEmpty())
+            {
+                processIdentity = QString::number(sample.pid);
+            }
+            const QString keyText = processIdentity.toLower()
+                + QLatin1Char('|')
+                + sample.filePath.trimmed().toLower();
+            if (!deduplicatedActivityByKey.contains(keyText))
             {
                 deduplicatedActivityByKey.insert(keyText, sample);
             }

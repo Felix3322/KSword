@@ -285,21 +285,6 @@ void KernelPlatformAuditTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    if (m_mode == Mode::Wdf)
-    {
-        m_explanationLabel = new QLabel(
-            kernelText(
-                "kernel.platform.wdf.explanation",
-                QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")),
-            this);
-        m_explanationLabel->setWordWrap(true);
-        m_explanationLabel->setStyleSheet(
-            QStringLiteral("QLabel{padding:6px;border:1px solid %1;border-radius:4px;color:%2;}")
-                .arg(KswordTheme::BorderColorHex())
-                .arg(KswordTheme::TextSecondaryHex()));
-        rootLayout->addWidget(m_explanationLabel);
-    }
-
     auto* toolbar = new QHBoxLayout();
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(0);
@@ -391,12 +376,6 @@ void KernelPlatformAuditTab::retranslateUi()
         return;
     }
 
-    if (m_explanationLabel != nullptr)
-    {
-        m_explanationLabel->setText(kernelText(
-            "kernel.platform.wdf.explanation",
-            QStringLiteral("只读 WDF 审计：完整枚举当前驱动的 KMDF 绑定表及实际注册回调。原始地址仅在 Wdf01000.sys 磁盘映像通过 embedded/catalog 完整链信任验证、与加载映像 PE 身份匹配并成功重定位对应槽位时有效；槽位不匹配标记 Suspicious，槽位匹配仍保留函数入口的独立判定，绝不据此覆盖为 Clean。")));
-    }
     if (m_refreshButton != nullptr)
     {
         m_refreshButton->setToolTip(kernelText(

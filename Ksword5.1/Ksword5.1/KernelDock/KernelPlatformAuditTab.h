@@ -69,7 +69,6 @@ private:
     QPushButton* m_columnGroupBButton = nullptr;
     QPushButton* m_columnGroupCButton = nullptr;
     QLineEdit* m_filterEdit = nullptr;
-    QLabel* m_explanationLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     std::vector<Page> m_pages;
     ksword::ark::PlatformAuditResult m_lastResult;
