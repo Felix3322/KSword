@@ -357,8 +357,10 @@
     <ClCompile Include="UI\HexEditorWidget.Ui.cpp" />
     <ClCompile Include="UI\HexEditorWidget.Tools.cpp" />
     <ClCompile Include="UI\PerformanceNavCard.cpp" />
+    <ClCompile Include="UI\SmoothScrollSupport.cpp" />
     <ClCompile Include="UI\SvgThemeIconManager.cpp" />
     <ClCompile Include="UI\TableColumnAutoFit.cpp" />
+    <ClCompile Include="UI\TableFreezeSupport.cpp" />
     <ClCompile Include="UI\TableInteractionSupport.cpp" />
     <ClCompile Include="UI\TableSnapshotCompare.cpp" />
     <ClCompile Include="UI\ThemedMessageBox.cpp" />
@@ -496,7 +498,9 @@
     <ClInclude Include="ksword\string\string.h" />
     <ClInclude Include="theme.h" />
     <ClInclude Include="UI\FlatTableModel.h" />
+    <ClInclude Include="UI\SmoothScrollSupport.h" />
     <ClInclude Include="UI\TableColumnAutoFit.h" />
+    <ClInclude Include="UI\TableFreezeSupport.h" />
     <ClInclude Include="UI\TableInteractionSupport.h" />
     <ClInclude Include="UI\TableSnapshotCompare.h" />
     <ClInclude Include="UI\VisibleTableWidget.h" />

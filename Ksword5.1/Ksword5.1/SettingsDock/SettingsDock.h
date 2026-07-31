@@ -281,6 +281,9 @@ private:
     // m_scrollBarAutoHideCheckBox 作用：设置滚动条是否弱显示/悬停显示。
     QCheckBox* m_scrollBarAutoHideCheckBox = nullptr;
 
+    // m_smoothScrollingCheckBox 作用：设置全局滚动区域是否启用滚轮缓动。
+    QCheckBox* m_smoothScrollingCheckBox = nullptr;
+
     // m_sliderWheelAdjustCheckBox 作用：设置滚轮是否可直接调整滑块值。
     QCheckBox* m_sliderWheelAdjustCheckBox = nullptr;
 

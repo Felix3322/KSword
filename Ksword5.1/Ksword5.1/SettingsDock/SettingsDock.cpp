@@ -494,10 +494,10 @@ void SettingsDock::initializeAppearanceTab()
     interactionLayout->setSpacing(8);
 
     QLabel* interactionHintLabel = new QLabel(
-        QStringLiteral("调整全局滚动条占用空间、滚轮是否调整滑块，以及滚动条是否自动隐藏。"),
+        QStringLiteral("调整全局滚动条占用空间、平滑滚动、滚轮是否调整滑块，以及滚动条是否自动隐藏。"),
         interactionGroupBox);
     interactionHintLabel->setWordWrap(true);
-    languageManager.bindText(interactionHintLabel, QStringLiteral("settings.interaction.hint"), QStringLiteral("调整全局滚动条占用空间、滚轮是否调整滑块，以及滚动条是否自动隐藏。"));
+    languageManager.bindText(interactionHintLabel, QStringLiteral("settings.interaction.hint"), QStringLiteral("调整全局滚动条占用空间、平滑滚动、滚轮是否调整滑块，以及滚动条是否自动隐藏。"));
     interactionLayout->addWidget(interactionHintLabel);
 
     QHBoxLayout* scrollBarWidthLayout = new QHBoxLayout();
@@ -518,6 +518,21 @@ void SettingsDock::initializeAppearanceTab()
     m_scrollBarAutoHideCheckBox->setToolTip(QStringLiteral("启用后滚动条默认缩到很窄，鼠标悬停时展开到当前宽度档位"));
     languageManager.bindToolTip(m_scrollBarAutoHideCheckBox, QStringLiteral("settings.scrollbar.auto_hide.tooltip"), QStringLiteral("启用后滚动条默认缩到很窄，鼠标悬停时展开到当前宽度档位"));
     interactionLayout->addWidget(m_scrollBarAutoHideCheckBox);
+
+    m_smoothScrollingCheckBox = new QCheckBox(
+        QStringLiteral("启用全局平滑滚动"),
+        interactionGroupBox);
+    languageManager.bindText(
+        m_smoothScrollingCheckBox,
+        QStringLiteral("settings.scroll.smooth"),
+        QStringLiteral("启用全局平滑滚动"));
+    m_smoothScrollingCheckBox->setToolTip(
+        QStringLiteral("对表格、列表、文本区和滚动页的鼠标滚轮滚动使用缓动动画"));
+    languageManager.bindToolTip(
+        m_smoothScrollingCheckBox,
+        QStringLiteral("settings.scroll.smooth.tooltip"),
+        QStringLiteral("对表格、列表、文本区和滚动页的鼠标滚轮滚动使用缓动动画"));
+    interactionLayout->addWidget(m_smoothScrollingCheckBox);
 
     m_sliderWheelAdjustCheckBox = new QCheckBox(QStringLiteral("允许滚轮直接调整滑块"), interactionGroupBox);
     languageManager.bindText(m_sliderWheelAdjustCheckBox, QStringLiteral("settings.slider.wheel"), QStringLiteral("允许滚轮直接调整滑块"));
@@ -866,6 +881,10 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QStringLiteral("滚动条自动隐藏开关切换"));
         });
 
+    connect(m_smoothScrollingCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
+        markPendingChanges(QStringLiteral("全局平滑滚动开关切换"));
+        });
+
     connect(m_sliderWheelAdjustCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
         markPendingChanges(QStringLiteral("滑块滚轮调节开关切换"));
         });
@@ -993,6 +1012,10 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     {
         m_scrollBarAutoHideCheckBox->setChecked(settings.scrollBarAutoHideEnabled);
     }
+    if (m_smoothScrollingCheckBox != nullptr)
+    {
+        m_smoothScrollingCheckBox->setChecked(settings.smoothScrollingEnabled);
+    }
     if (m_sliderWheelAdjustCheckBox != nullptr)
     {
         m_sliderWheelAdjustCheckBox->setChecked(settings.sliderWheelAdjustEnabled);
@@ -1104,6 +1127,8 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         (m_scrollBarWidthCombo != nullptr) && m_scrollBarWidthCombo->currentData().toBool();
     collectedSettings.scrollBarAutoHideEnabled =
         (m_scrollBarAutoHideCheckBox != nullptr) && m_scrollBarAutoHideCheckBox->isChecked();
+    collectedSettings.smoothScrollingEnabled =
+        (m_smoothScrollingCheckBox != nullptr) && m_smoothScrollingCheckBox->isChecked();
     collectedSettings.sliderWheelAdjustEnabled =
         (m_sliderWheelAdjustCheckBox != nullptr) && m_sliderWheelAdjustCheckBox->isChecked();
     collectedSettings.fontFamily = m_fontCombo != nullptr
@@ -1305,6 +1330,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.suppressR0FeaturePrompts == m_currentAppearanceSettings.suppressR0FeaturePrompts
         && nextSettings.useWideScrollBars == m_currentAppearanceSettings.useWideScrollBars
         && nextSettings.scrollBarAutoHideEnabled == m_currentAppearanceSettings.scrollBarAutoHideEnabled
+        && nextSettings.smoothScrollingEnabled == m_currentAppearanceSettings.smoothScrollingEnabled
         && nextSettings.sliderWheelAdjustEnabled == m_currentAppearanceSettings.sliderWheelAdjustEnabled
         && nextSettings.fontFamily.compare(m_currentAppearanceSettings.fontFamily, Qt::CaseInsensitive) == 0
         && nextSettings.textAntialiasingEnabled == m_currentAppearanceSettings.textAntialiasingEnabled
@@ -1430,6 +1456,8 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         << (m_currentAppearanceSettings.useWideScrollBars ? "true" : "false")
         << "，滚动条自动隐藏="
         << (m_currentAppearanceSettings.scrollBarAutoHideEnabled ? "true" : "false")
+        << "，全局平滑滚动="
+        << (m_currentAppearanceSettings.smoothScrollingEnabled ? "true" : "false")
         << "，滚轮调整滑块="
         << (m_currentAppearanceSettings.sliderWheelAdjustEnabled ? "true" : "false")
         << "，VirusTotal API Key已配置="

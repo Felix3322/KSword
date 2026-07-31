@@ -617,10 +617,16 @@
     <ClCompile Include="UI\PerformanceNavCard.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\SmoothScrollSupport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\SvgThemeIconManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="UI\TableColumnAutoFit.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\TableFreezeSupport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="UI\TableInteractionSupport.cpp">
@@ -1074,7 +1080,13 @@
     <ClInclude Include="UI\FlatTableModel.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="UI\SmoothScrollSupport.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="UI\TableColumnAutoFit.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\TableFreezeSupport.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\TableInteractionSupport.h">

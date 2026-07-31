@@ -388,6 +388,7 @@ namespace
         defaultSettings.unlockerShellContextMenuEnabled = true;
         defaultSettings.useWideScrollBars = false;
         defaultSettings.scrollBarAutoHideEnabled = false;
+        defaultSettings.smoothScrollingEnabled = true;
         defaultSettings.sliderWheelAdjustEnabled = false;
         defaultSettings.fontFamily.clear();
         defaultSettings.textAntialiasingEnabled = true;
@@ -571,6 +572,9 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     loadedSettings.scrollBarAutoHideEnabled = rootObject
         .value(QStringLiteral("scroll_bar_auto_hide_enabled"))
         .toBool(loadedSettings.scrollBarAutoHideEnabled);
+    loadedSettings.smoothScrollingEnabled = rootObject
+        .value(QStringLiteral("smooth_scrolling_enabled"))
+        .toBool(loadedSettings.smoothScrollingEnabled);
     loadedSettings.sliderWheelAdjustEnabled = rootObject
         .value(QStringLiteral("slider_wheel_adjust_enabled"))
         .toBool(loadedSettings.sliderWheelAdjustEnabled);
@@ -672,6 +676,9 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(
         QStringLiteral("scroll_bar_auto_hide_enabled"),
         settings.scrollBarAutoHideEnabled);
+    rootObject.insert(
+        QStringLiteral("smooth_scrolling_enabled"),
+        settings.smoothScrollingEnabled);
     rootObject.insert(
         QStringLiteral("slider_wheel_adjust_enabled"),
         settings.sliderWheelAdjustEnabled);

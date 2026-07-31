@@ -16,6 +16,7 @@
 #include "UI/GlobalDialogTheme.h"
 #include "UI/TableColumnAutoFit.h"
 #include "UI/TableInteractionSupport.h"
+#include "UI/SmoothScrollSupport.h"
 #include "Internationalization/LanguageManager.h"
 
 #ifndef NOMINMAX
@@ -1555,6 +1556,7 @@ int main(int argc, char* argv[])
     ks::ui::InstallGlobalTableColumnAutoFit(&app);
     startupTraceRaw("InstallGlobalTableColumnAutoFit finished");
     ks::ui::InstallGlobalTableInteractionSupport(&app);
+    ks::ui::InstallGlobalSmoothScrollSupport(&app);
     const QStringList argumentList = QCoreApplication::arguments();
     startupTraceRaw(
         std::string("QCoreApplication::arguments fetched, count=")

@@ -87,6 +87,7 @@
 #include "UI/CodeEditorWidget.h"
 #include "UI/GlobalDialogTheme.h"
 #include "UI/SvgThemeIconManager.h"
+#include "UI/SmoothScrollSupport.h"
 #include "UI/ThemedMessageBox.h"
 #include "theme.h"
 #include "../../shared/KswordArkLogProtocol.h"
@@ -9578,6 +9579,9 @@ void MainWindow::applyAppearanceSettings(
     const bool sliderWheelChanged =
         isInitialAppearanceApply
         || previousSettings.sliderWheelAdjustEnabled != settings.sliderWheelAdjustEnabled;
+    const bool smoothScrollingChanged =
+        isInitialAppearanceApply
+        || previousSettings.smoothScrollingEnabled != settings.smoothScrollingEnabled;
     const bool topMostChanged =
         isInitialAppearanceApply
         || previousSettings.startupTopMostEnabled != settings.startupTopMostEnabled;
@@ -9593,6 +9597,10 @@ void MainWindow::applyAppearanceSettings(
         && (themeVisualRefreshRequired || backgroundChanged || fontChanged);
 
     m_currentAppearanceSettings = settings;
+    if (smoothScrollingChanged)
+    {
+        ks::ui::SetGlobalSmoothScrollingEnabled(settings.smoothScrollingEnabled);
+    }
     RuntimeAppearanceProgress runtimeProgress(runtimeProgressRequired);
 
     // previousBackgroundImageReady 用途：路径切换前只读取内存缓存，判断透明策略是否变化。
