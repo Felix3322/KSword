@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <!--
+    Centralize final x64 Release artifacts while keeping project-local IntDir
+    values. This file is rooted at the repository, so no machine path is used.
+  -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <KswordUnifiedReleaseOutputDir>$(MSBuildThisFileDirectory)Ksword5.1\x64\Release\</KswordUnifiedReleaseOutputDir>
+    <OutDir>$(KswordUnifiedReleaseOutputDir)</OutDir>
+  </PropertyGroup>
+</Project>

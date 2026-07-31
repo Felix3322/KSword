@@ -173,10 +173,10 @@ and does not publish scattered JSON, use pack-only together with `--clean-target
 
 ```powershell
 python tools\pdb_offset_generator\ksword_profile_release_sync.py `
-  --release-root Ksword5.1\Ksword5.1\x64\Release `
+  --release-root Ksword5.1\x64\Release `
   --pack-only `
   --pack-version 3 `
-  --pack-output Ksword5.1\Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json `
+  --pack-output Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json `
   --clean-target
 ```
 
@@ -265,7 +265,7 @@ local `ntoskrnl.exe` identity:
 
 ```powershell
 python tools\pdb_offset_generator\ksword_active_process_links_audit.py `
-  --pack Ksword5.1\Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json `
+  --pack Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json `
   --kernel C:\Windows\System32\ntoskrnl.exe
 ```
 

@@ -21,7 +21,7 @@ $msbuild='D:\Software\VS\MSBuild\Current\Bin\MSBuild.exe'
 
 32 位 Cheat Engine 需要把 `Platform` 改为 `Win32` 单独构建。DLL 输出位置：
 
-- `CheatEnginePlugin\x64\Release\KswordCheatEnginePlugin.dll`
+- `Ksword5.1\x64\Release\KswordCheatEnginePlugin.dll`
 - `CheatEnginePlugin\Win32\Release\KswordCheatEnginePlugin.dll`
 
 ## 安装与使用

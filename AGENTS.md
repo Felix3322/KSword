@@ -22,7 +22,7 @@ $qtMsBuild=(Resolve-Path '.deps\QtVsTools\msbuild').Path
 & $msbuild 'APIMonitor_x64\APIMonitor_x64.vcxproj' /t:Build /p:Configuration=Release /p:Platform=x64 /m:1 /v:minimal
 ```
 
-驱动项目依赖 WDK。如果当前机器无法构建驱动，不要阻塞发行包制作；沿用已有未签名 R0 Release 产物：`KswordARKDriver\x64\Release\KswordARK.sys`、`KswordARKDriver\x64\Release\KswordARK.pdb`、`KswordARKDriver\x64\Release\KswordARKDriver.inf`。
+驱动项目依赖 WDK。如果当前机器无法构建驱动，不要阻塞发行包制作；沿用统一 Release 目录中的已有未签名 R0 产物：`Ksword5.1\x64\Release\KswordARK.sys`、`Ksword5.1\x64\Release\KswordARK.pdb`、`Ksword5.1\x64\Release\KswordARKDriver.inf`。
 
 ### 2. 搭建发行目录
 
@@ -37,16 +37,16 @@ if (Test-Path $stageRoot) { Remove-Item -LiteralPath $stageRoot -Recurse -Force 
 New-Item -ItemType Directory -Path $stageRoot | Out-Null
 tar -xf $ref -C $stageRoot
 
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\Ksword5.1.exe' $stage -Force
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\Launcher.exe' $stage -Force
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\KswordARKLight.exe' $stage -Force
-Copy-Item 'Taskbar\x64\Release\Taskbar.exe' $stage -Force
-Copy-Item 'KswordHUD\x64\Release\KswordHUD.exe' $stage -Force
-Copy-Item 'APIMonitor_x64\x64\Release\APIMonitor_x64.dll' $stage -Force
-Copy-Item 'APIMonitor_x64\x64\Release\APIMonitor_x64.pdb' $stage -Force
-Copy-Item 'KswordARKDriver\x64\Release\KswordARK.sys' $stage -Force
-Copy-Item 'KswordARKDriver\x64\Release\KswordARK.pdb' $stage -Force
-Copy-Item 'KswordARKDriver\x64\Release\KswordARKDriver.inf' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\Ksword5.1.exe' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\Launcher.exe' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\KswordARKLight.exe' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\Taskbar.exe' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\KswordHUD.exe' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\APIMonitor_x64.dll' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\APIMonitor_x64.pdb' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\KswordARK.sys' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\KswordARK.pdb' $stage -Force
+Copy-Item 'Ksword5.1\x64\Release\KswordARKDriver.inf' $stage -Force
 Copy-Item 'LICENSE' (Join-Path $stage 'LICENSE') -Force
 Copy-Item 'COMMUNITY_COVENANT.md' (Join-Path $stage 'COMMUNITY_COVENANT.md') -Force
 
@@ -62,20 +62,20 @@ Copy-Item 'third_party\zstd\LICENSE.txt' (Join-Path $licenseDir 'zstd-LICENSE.tx
 
 $profileDir=Join-Path $stage 'profiles'
 if (!(Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir | Out-Null }
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json' $profileDir -Force
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v2.json' $profileDir -Force
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\profiles\launcher_support_manifest.json' $profileDir -Force
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\profiles\registry_optimization_items.json' $profileDir -Force
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\profiles\registry_optimization_assets' $profileDir -Recurse -Force
+Copy-Item 'Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v3.json' $profileDir -Force
+Copy-Item 'Ksword5.1\x64\Release\profiles\ark_dyndata_pack_v2.json' $profileDir -Force
+Copy-Item 'Ksword5.1\x64\Release\profiles\launcher_support_manifest.json' $profileDir -Force
+Copy-Item 'Ksword5.1\x64\Release\profiles\registry_optimization_items.json' $profileDir -Force
+Copy-Item 'Ksword5.1\x64\Release\profiles\registry_optimization_assets' $profileDir -Recurse -Force
 
 $languageDir=Join-Path $stage 'languages'
 if (Test-Path $languageDir) { Remove-Item -LiteralPath $languageDir -Recurse -Force }
-Copy-Item 'Ksword5.1\Ksword5.1\x64\Release\languages' $stage -Recurse -Force
+Copy-Item 'Ksword5.1\x64\Release\languages' $stage -Recurse -Force
 
 $driverDir=Join-Path $stage 'KswordARKDriver'
 if (!(Test-Path $driverDir)) { New-Item -ItemType Directory -Path $driverDir | Out-Null }
-Copy-Item 'KswordARKDriver\x64\Release\KswordARK.sys' $driverDir -Force
-Copy-Item 'KswordARKDriver\x64\Release\KswordARKDriver.inf' $driverDir -Force
+Copy-Item 'Ksword5.1\x64\Release\KswordARK.sys' $driverDir -Force
+Copy-Item 'Ksword5.1\x64\Release\KswordARKDriver.inf' $driverDir -Force
 ```
 
 ### 3. 生成 7z 包

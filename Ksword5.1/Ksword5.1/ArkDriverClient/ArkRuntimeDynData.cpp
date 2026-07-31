@@ -1,5 +1,11 @@
 #include "ArkRuntimeDynData.h"
 
+// Product policy: DynData must remain usable on fully offline target machines.
+// Keep the former resolver source for reference while compiling it out of every
+// build; pack misses are handled only by packaged profiles or feature-local
+// signature resolvers and must never contact a symbol server on the target PC.
+#if 0
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -2594,3 +2600,16 @@ namespace ksword::ark
         return result;
     }
 }
+#else
+namespace ksword::ark
+{
+    RuntimeDynDataResolveResult ResolveRuntimeDynDataProfile(
+        const ArkDynModuleIdentity& identity,
+        const std::vector<std::string>& extraSymbolNames)
+    {
+        (void)identity;
+        (void)extraSymbolNames;
+        return {};
+    }
+}
+#endif

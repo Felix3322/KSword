@@ -9,7 +9,7 @@
 
 namespace ksword::ark
 {
-    // RuntimeDynDataResolveResult 是本地 profile pack 未命中后的精确 PDB fallback 结果。
+    // RuntimeDynDataResolveResult 是开发构建可选的精确 PDB 解析结果。
     // 输入：R0 返回的当前模块 PE 身份，以及调用方额外需要的符号名。
     // 处理：校验本机 PE 身份，通过串行 DbgHelp 会话加载该 PE 的精确 PDB，
     //       然后按与离线生成器相同的字段目录生成 v1/EX/v4 apply 输入。
@@ -32,8 +32,8 @@ namespace ksword::ark
         std::unordered_map<std::string, std::uint32_t> symbolRvas;
     };
 
-    // ResolveRuntimeDynDataProfile 尝试为当前已加载模块动态生成精确 profile。
-    // 该函数可能访问配置的符号服务器，必须从后台线程调用；DbgHelp 全局状态在函数内串行化。
+    // ResolveRuntimeDynDataProfile 当前按离线产品策略返回空结果；pack 未命中时
+    // 只能使用随包矩阵或功能本地特征码，任何构建均不得在目标电脑下载 PDB。
     RuntimeDynDataResolveResult ResolveRuntimeDynDataProfile(
         const ArkDynModuleIdentity& identity,
         const std::vector<std::string>& extraSymbolNames = {});

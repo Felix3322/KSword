@@ -1,5 +1,4 @@
 #include "KernelDynDataProfiles.h"
-#include "../../../Ksword5.1/Ksword5.1/ArkDriverClient/ArkRuntimeDynData.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1392,52 +1391,12 @@ DynDataProfileMatch FindMatchingDynDataProfile(const ksword::ark::ArkDynModuleId
             invalidMatchedResult = std::move(matched);
             AppendDiagnostic(
                 diagnostics,
-                L"identity-matched pack entry was invalid; trying exact runtime PDB");
+                L"identity-matched pack entry was invalid");
         }
         AppendDiagnostic(diagnostics, L"pack 未命中: " + candidatePath.wstring() + L" (profiles=" + std::to_wstring(profileCount) + L")");
     }
 
-    const ksword::ark::RuntimeDynDataResolveResult runtime =
-        ksword::ark::ResolveRuntimeDynDataProfile(identity);
-    AppendDiagnostic(
-        diagnostics,
-        L"runtime exact PDB: " + runtime.diagnostics);
-    if (runtime.valid) {
-        result.scanned = true;
-        result.matched = true;
-        result.valid = true;
-        result.source = L"Runtime Exact PDB";
-        result.path = runtime.pdbPath.empty()
-            ? runtime.imagePath
-            : runtime.pdbPath;
-        result.message = runtime.diagnostics;
-        result.existingPackCount = existingPackCount;
-        result.scannedProfileCount = scannedProfileCount;
-        result.fieldCount = runtime.resolvedFieldCount;
-        result.typedItemCount = runtime.resolvedTypedItemCount;
-        result.callbackItemCount = static_cast<std::uint32_t>(std::count_if(
-            runtime.profileEx.items.begin(),
-            runtime.profileEx.items.end(),
-            [](const ksword::ark::DynDataProfileExItem& item) {
-                return (item.flags &
-                    KSW_DYN_PROFILE_EX_ITEM_FLAG_CALLBACK) != 0U;
-            }));
-        result.v4ItemCount = runtime.resolvedV4ItemCount;
-        result.v4CapabilityGroupCount =
-            static_cast<std::uint32_t>(
-                runtime.profileV4.capabilityGroups.size());
-        result.coveragePercent =
-            (static_cast<double>(runtime.resolvedTypedItemCount) / 203.0) *
-            100.0;
-        result.profile = runtime.profile;
-        result.profileEx = runtime.profileEx;
-        result.profileV4 = runtime.profileV4;
-        return result;
-    }
-
     if (invalidMatchedResult.matched) {
-        invalidMatchedResult.message +=
-            L" | runtime exact PDB: " + runtime.diagnostics;
         return invalidMatchedResult;
     }
 

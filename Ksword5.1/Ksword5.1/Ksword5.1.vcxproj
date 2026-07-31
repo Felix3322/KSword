@@ -73,6 +73,7 @@
     <ReferencePath>$(ReferencePath)</ReferencePath>
     <LibraryPath>$(MSBuildProjectDirectory)\lib;$(VC_LibraryPath_x64);$(WindowsSDK_LibraryPath_x64)</LibraryPath>
   </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\..\Ksword.ReleaseOutput.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <LanguageStandard>stdcpp23</LanguageStandard>
@@ -765,14 +766,15 @@
   </Target>
   <Target Name="CopyKswordArkDriverArtifacts" AfterTargets="Build">
     <PropertyGroup>
-      <KswordArkDriverOutputDir>$(MSBuildProjectDirectory)\..\..\KswordARKDriver\x64\$(Configuration)\</KswordArkDriverOutputDir>
+      <KswordArkDriverOutputDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(KswordUnifiedReleaseOutputDir)</KswordArkDriverOutputDir>
+      <KswordArkDriverOutputDir Condition="'$(Configuration)|$(Platform)'!='Release|x64'">$(MSBuildProjectDirectory)\..\..\KswordARKDriver\x64\$(Configuration)\</KswordArkDriverOutputDir>
       <KswordArkDriverSysSource>$(KswordArkDriverOutputDir)KswordARK.sys</KswordArkDriverSysSource>
       <KswordArkDriverPdbSource>$(KswordArkDriverOutputDir)KswordARK.pdb</KswordArkDriverPdbSource>
       <KswordArkDriverInfSource>$(KswordArkDriverOutputDir)KswordARKDriver.inf</KswordArkDriverInfSource>
     </PropertyGroup>
-    <Copy SourceFiles="$(KswordArkDriverSysSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="Exists('$(KswordArkDriverSysSource)')" />
-    <Copy SourceFiles="$(KswordArkDriverPdbSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="Exists('$(KswordArkDriverPdbSource)')" />
-    <Copy SourceFiles="$(KswordArkDriverInfSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="Exists('$(KswordArkDriverInfSource)')" />
+    <Copy SourceFiles="$(KswordArkDriverSysSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="'$(Configuration)|$(Platform)'!='Release|x64' And Exists('$(KswordArkDriverSysSource)')" />
+    <Copy SourceFiles="$(KswordArkDriverPdbSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="'$(Configuration)|$(Platform)'!='Release|x64' And Exists('$(KswordArkDriverPdbSource)')" />
+    <Copy SourceFiles="$(KswordArkDriverInfSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="'$(Configuration)|$(Platform)'!='Release|x64' And Exists('$(KswordArkDriverInfSource)')" />
     <Warning Condition="!Exists('$(KswordArkDriverSysSource)')" Text="KswordARK driver binary was not found for output sync: $(KswordArkDriverSysSource)" />
   </Target>
   <!-- Qt 官方动态库由 MSVC /MD 构建，即使 Ksword5.1.exe 自身使用 /MT，也仍需把 VC 运行库 DLL 随 Release 输出部署。 -->

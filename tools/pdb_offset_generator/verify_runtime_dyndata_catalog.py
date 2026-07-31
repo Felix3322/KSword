@@ -143,6 +143,10 @@ def main() -> int:
             release_sync.V4_FIXED_CAPABILITY_GROUP_COUNTS[
                 release_sync.V4_CI_KERNEL_HASH_GROUP_ID
             ],
+        "KSW_DYN_V4_CAPABILITY_GROUP_WORK_QUEUE":
+            release_sync.V4_FIXED_CAPABILITY_GROUP_COUNTS[
+                release_sync.V4_WORK_QUEUE_GROUP_ID
+            ],
     }
     actual_v4_counts = runtime_v4_group_counts(
         args.runtime_source

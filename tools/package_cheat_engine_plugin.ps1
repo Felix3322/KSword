@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $sourceRoot = Join-Path $repositoryRoot 'CheatEngineExecutablePlugin'
 $pluginRoot = Join-Path $repositoryRoot 'plugin\cheat-engine'
+$releaseOutputRoot = Join-Path $repositoryRoot 'Ksword5.1\x64\Release'
 
 # 未显式指定时，从系统安装信息解析 CE 目录，避免写个人机器路径。
 if ([string]::IsNullOrWhiteSpace($CheatEngineDirectory)) {
@@ -25,8 +26,14 @@ if ([string]::IsNullOrWhiteSpace($CheatEngineDirectory)) {
 
 # 所有输入产物必须存在，缺一项即停止，避免生成看似完整的坏插件。
 $ceDirectory = [IO.Path]::GetFullPath($CheatEngineDirectory)
-$launcher = Join-Path $sourceRoot "x64\$Configuration\KswordCheatEngineLauncher.exe"
-$bridgeX64 = Join-Path $repositoryRoot "CheatEnginePlugin\x64\$Configuration\KswordCheatEnginePlugin.dll"
+if ($Configuration -eq 'Release') {
+    $launcher = Join-Path $releaseOutputRoot 'KswordCheatEngineLauncher.exe'
+    $bridgeX64 = Join-Path $releaseOutputRoot 'KswordCheatEnginePlugin.dll'
+}
+else {
+    $launcher = Join-Path $sourceRoot "x64\$Configuration\KswordCheatEngineLauncher.exe"
+    $bridgeX64 = Join-Path $repositoryRoot "CheatEnginePlugin\x64\$Configuration\KswordCheatEnginePlugin.dll"
+}
 $bridgeWin32 = Join-Path $repositoryRoot "CheatEnginePlugin\Win32\$Configuration\KswordCheatEnginePlugin.dll"
 $requiredFiles = @(
     (Join-Path $ceDirectory 'cheatengine-x86_64.exe'),

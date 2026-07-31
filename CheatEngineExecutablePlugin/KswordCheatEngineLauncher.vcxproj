@@ -45,6 +45,7 @@
     <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)$(Platform)\$(Configuration)\obj\</IntDir>
   </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\Ksword.ReleaseOutput.props" />
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
