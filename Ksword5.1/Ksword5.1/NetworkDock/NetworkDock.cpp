@@ -75,11 +75,11 @@ NetworkDock::NetworkDock(QWidget* parent)
     m_packetFlushTimer->start();
 
     // R0 流量模式轮询：
-    // - 仅在 R0 模式运行时按 sequence cursor 查询新增 WFP ALE IPv4 流事件；
+    // - 仅在 R0 模式运行时按 sequence cursor 查询新增 WFP IPv4/IPv6 逐包记录；
     // - 查询失败会在 refreshR0TrafficSnapshotAsync 中无缝回退 R3；
     // - 独立“连接管理”页已移除，不再创建其旧轮询器。
     m_r0TrafficRefreshTimer = new QTimer(this);
-    m_r0TrafficRefreshTimer->setInterval(2000);
+    m_r0TrafficRefreshTimer->setInterval(250);
     connect(m_r0TrafficRefreshTimer, &QTimer::timeout, this, [this]()
         {
             if (!m_monitorRunning || m_monitorSource != TrafficMonitorSource::R0)

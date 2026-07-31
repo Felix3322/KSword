@@ -369,6 +369,7 @@ namespace ksword::ark
         NetworkEndpointAuditResult queryNetworkUdpEndpoints(unsigned long flags = KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxRows = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) const;
         NetworkWfpInventoryResult queryNetworkWfpInventory(unsigned long flags = KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxRows = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) const;
         NetworkWfpEventResult queryNetworkWfpEvents(std::uint64_t afterSequence, unsigned long maxRows = KSWORD_ARK_NETWORK_WFP_EVENT_DEFAULT_REQUESTED_ROWS) const;
+        NetworkTrafficPacketResult queryNetworkTrafficPackets(std::uint64_t afterSequence, unsigned long maxRows = KSWORD_ARK_NETWORK_TRAFFIC_DEFAULT_REQUESTED_ROWS) const;
         NetworkNdisChainResult queryNetworkNdisChain(unsigned long flags = KSWORD_ARK_NETWORK_AUDIT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxRows = KSWORD_ARK_NETWORK_AUDIT_MAX_REQUESTED_ROWS) const;
         // File/filter/storage audit wrappers：
         // - 输入：只读 flags、预算和可选卷路径；

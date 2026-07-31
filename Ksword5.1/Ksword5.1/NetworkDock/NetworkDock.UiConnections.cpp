@@ -7,60 +7,131 @@
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
 #include <string>
 
 using namespace network_dock_detail;
 
 namespace
 {
-    // r0WfpIpv4AddressText 作用：
-    // - 把 shared/driver WFP event 的 4 字节网络序 IPv4 转成标准文本；
-    // - 转换失败时返回 0.0.0.0，避免读取协议行以外的字节；
+    // r0WfpPacketAddressText 作用：
+    // - 把 shared/driver WFP packet row 的 IPv4/IPv6 网络序地址转成标准文本；
+    // - 转换失败时返回对应未指定地址，避免读取协议行以外的字节；
     // - 返回：可写入 PacketRecord 的 UTF-8 地址。
-    std::string r0WfpIpv4AddressText(const unsigned char addressBytes[4])
+    std::string r0WfpPacketAddressText(
+        const unsigned long addressFamily,
+        const unsigned char addressBytes[16])
     {
-        char addressBuffer[INET_ADDRSTRLEN] = {};
+        const int nativeAddressFamily =
+            addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV6
+            ? AF_INET6
+            : AF_INET;
+        char addressBuffer[INET6_ADDRSTRLEN] = {};
         if (addressBytes == nullptr ||
-            InetNtopA(AF_INET, addressBytes, addressBuffer, static_cast<DWORD>(std::size(addressBuffer))) == nullptr)
+            InetNtopA(
+                nativeAddressFamily,
+                addressBytes,
+                addressBuffer,
+                static_cast<DWORD>(std::size(addressBuffer))) == nullptr)
         {
-            return std::string("0.0.0.0");
+            return nativeAddressFamily == AF_INET6
+                ? std::string("::")
+                : std::string("0.0.0.0");
         }
         return std::string(addressBuffer);
     }
 
-    // buildR0WfpAleEventRecord 作用：
-    // - 把真实 R0 WFP ALE IPv4 流授权事件转换为流量监控统一模型；
-    // - 保留驱动 sequence/flags，并明确 total/payload/packetBytes 均不可用；
-    // - 返回：可直接写入 NetworkDock 缓存的无 payload 事件记录。
-    ks::network::PacketRecord buildR0WfpAleEventRecord(
-        const KSWORD_ARK_NETWORK_WFP_EVENT_ROW& eventRow)
+    // resolveR0WfpPacketProcessId 作用：
+    // - 优先使用 R0 metadata PID；IPPACKET 层未提供时按本地端点表解析；
+    // - IPv4/IPv6 均使用 network.h 中已有的 250ms 节流 resolver；
+    // - 返回：PID，无法归属时为 0。
+    std::uint32_t resolveR0WfpPacketProcessId(
+        const KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW& packetRow,
+        ks::network::detail::ConnectionPidResolver& pidResolver)
+    {
+        if (packetRow.processId != 0UL)
+        {
+            return packetRow.processId;
+        }
+
+        const auto protocol =
+            static_cast<ks::network::PacketTransportProtocol>(packetRow.protocol);
+        if (packetRow.addressFamily == KSWORD_ARK_NETWORK_ADDRESS_FAMILY_IPV4)
+        {
+            std::uint32_t localAddressNetworkOrder = 0U;
+            std::uint32_t remoteAddressNetworkOrder = 0U;
+            std::memcpy(
+                &localAddressNetworkOrder,
+                packetRow.localAddress,
+                sizeof(localAddressNetworkOrder));
+            std::memcpy(
+                &remoteAddressNetworkOrder,
+                packetRow.remoteAddress,
+                sizeof(remoteAddressNetworkOrder));
+            return pidResolver.ResolveProcessId(
+                protocol,
+                ntohl(localAddressNetworkOrder),
+                packetRow.localPort,
+                ntohl(remoteAddressNetworkOrder),
+                packetRow.remotePort);
+        }
+
+        ks::network::detail::Ipv6Bytes localAddress{};
+        ks::network::detail::Ipv6Bytes remoteAddress{};
+        std::memcpy(localAddress.data(), packetRow.localAddress, localAddress.size());
+        std::memcpy(remoteAddress.data(), packetRow.remoteAddress, remoteAddress.size());
+        return pidResolver.ResolveProcessIdV6(
+            protocol,
+            localAddress,
+            packetRow.localPort,
+            remoteAddress,
+            packetRow.remotePort);
+    }
+
+    // buildR0WfpPacketRecord 作用：
+    // - 把真实 R0 WFP IPv4/IPv6 IP packet 层记录转换为流量监控统一模型；
+    // - 保留完整包长/payload 边界和受限原始前缀，PID 缺失时在 R3 侧补全；
+    // - 返回：可直接写入 NetworkDock 缓存的逐包记录。
+    ks::network::PacketRecord buildR0WfpPacketRecord(
+        const KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW& packetRow,
+        ks::network::detail::ConnectionPidResolver& pidResolver,
+        ks::network::detail::ProcessNameResolver& processNameResolver)
     {
         constexpr std::uint64_t windowsEpochToUnixEpoch100ns = 116444736000000000ULL;
         ks::network::PacketRecord packetRecord;
         packetRecord.captureTimestampMs =
-            eventRow.timestamp100ns >= windowsEpochToUnixEpoch100ns
-            ? (eventRow.timestamp100ns - windowsEpochToUnixEpoch100ns) / 10000ULL
+            packetRow.timestamp100ns >= windowsEpochToUnixEpoch100ns
+            ? (packetRow.timestamp100ns - windowsEpochToUnixEpoch100ns) / 10000ULL
             : 0ULL;
         packetRecord.protocol =
-            static_cast<ks::network::PacketTransportProtocol>(eventRow.protocol);
+            static_cast<ks::network::PacketTransportProtocol>(packetRow.protocol);
         packetRecord.direction =
-            eventRow.direction == KSWORD_ARK_NETWORK_DIRECTION_OUTBOUND
+            packetRow.direction == KSWORD_ARK_NETWORK_DIRECTION_OUTBOUND
             ? ks::network::PacketDirection::Outbound
             : ks::network::PacketDirection::Inbound;
-        packetRecord.processId = eventRow.processId;
-        packetRecord.processName = ks::process::GetProcessNameByPID(eventRow.processId);
-        packetRecord.sourceSequenceId = eventRow.sequence;
-        packetRecord.sourceFlags = eventRow.flags;
-        packetRecord.sourceText = "R0-WFP-ALE";
-        packetRecord.wfpAleEventNoPayload = true;
-        packetRecord.localAddress = r0WfpIpv4AddressText(eventRow.localAddress);
-        packetRecord.localPort = eventRow.localPort;
-        packetRecord.remoteAddress = r0WfpIpv4AddressText(eventRow.remoteAddress);
-        packetRecord.remotePort = eventRow.remotePort;
-        packetRecord.totalPacketSize = 0;
-        packetRecord.payloadSize = 0;
-        packetRecord.payloadOffset = 0;
-        packetRecord.packetBytes.clear();
+        packetRecord.processId = resolveR0WfpPacketProcessId(packetRow, pidResolver);
+        packetRecord.processName = processNameResolver.ResolveProcessName(packetRecord.processId);
+        packetRecord.sourceSequenceId = packetRow.sequence;
+        packetRecord.sourceFlags = packetRow.flags;
+        packetRecord.sourceText = "R0-WFP-PACKET";
+        packetRecord.localAddress = r0WfpPacketAddressText(packetRow.addressFamily, packetRow.localAddress);
+        packetRecord.localPort = packetRow.localPort;
+        packetRecord.remoteAddress = r0WfpPacketAddressText(packetRow.addressFamily, packetRow.remoteAddress);
+        packetRecord.remotePort = packetRow.remotePort;
+        packetRecord.totalPacketSize = packetRow.totalPacketLength;
+        packetRecord.payloadSize = packetRow.payloadLength;
+        packetRecord.payloadOffset = packetRow.payloadOffset;
+        packetRecord.packetBytesTruncated =
+            (packetRow.flags & KSWORD_ARK_NETWORK_TRAFFIC_PACKET_FLAG_TRUNCATED) != 0UL;
+        const std::size_t capturedLength = std::min<std::size_t>(
+            packetRow.capturedLength,
+            KSWORD_ARK_NETWORK_TRAFFIC_MAX_CAPTURE_BYTES);
+        packetRecord.packetBytes.assign(
+            packetRow.capturedBytes,
+            packetRow.capturedBytes + capturedLength);
         return packetRecord;
     }
 }
@@ -1211,14 +1282,14 @@ void NetworkDock::startTrafficMonitor()
         m_droppedPacketCount = 0;
     }
 
-    // 先探测版本化 R0 WFP ALE event IOCTL；只有该真实事件协议失败才回退 R3。
+    // 先探测版本化 R0 WFP IP packet IOCTL；旧驱动或逐包数据面不可用时立即回退 R3。
     // 后台探测失败会自动调用 startR3TrafficMonitor，不需要用户二次点击。
     const std::uint64_t generation = m_monitorGeneration.fetch_add(1) + 1ULL;
     m_monitorSource = TrafficMonitorSource::Starting;
     m_monitorRunning = true;
     if (m_monitorStatusLabel != nullptr)
     {
-        m_monitorStatusLabel->setText(QStringLiteral("状态：正在探测 R0 WFP ALE IPv4 流事件数据源..."));
+        m_monitorStatusLabel->setText(QStringLiteral("状态：正在探测 R0 WFP IPv4/IPv6 逐包数据源..."));
     }
     refreshR0TrafficSnapshotAsync(generation, true);
 
@@ -1347,44 +1418,41 @@ void NetworkDock::refreshR0TrafficSnapshotAsync(
     std::thread([safeThis, generation, initialProbe, afterSequence]()
     {
         const ksword::ark::DriverClient driverClient;
-        const ksword::ark::NetworkWfpEventResult eventResult =
-            driverClient.queryNetworkWfpEvents(
+        const ksword::ark::NetworkTrafficPacketResult packetResult =
+            driverClient.queryNetworkTrafficPackets(
                 afterSequence,
-                KSWORD_ARK_NETWORK_WFP_EVENT_MAX_REQUESTED_ROWS);
+                KSWORD_ARK_NETWORK_TRAFFIC_MAX_REQUESTED_ROWS);
         const bool r0Usable =
-            eventResult.io.ok &&
-            !eventResult.unsupported &&
-            eventResult.status == KSWORD_ARK_NETWORK_STATUS_APPLIED;
+            packetResult.io.ok &&
+            !packetResult.unsupported &&
+            packetResult.status == KSWORD_ARK_NETWORK_STATUS_APPLIED;
 
-        std::size_t skippedProtocolCount = 0U;
-        std::vector<ks::network::PacketRecord> eventRecords;
+        std::vector<ks::network::PacketRecord> packetRecords;
         if (r0Usable)
         {
-            eventRecords.reserve(eventResult.entries.size());
-            for (const KSWORD_ARK_NETWORK_WFP_EVENT_ROW& eventRow : eventResult.entries)
+            ks::network::detail::ConnectionPidResolver pidResolver;
+            ks::network::detail::ProcessNameResolver processNameResolver;
+            packetRecords.reserve(packetResult.entries.size());
+            for (const KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW& packetRow : packetResult.entries)
             {
-                if (eventRow.protocol != KSWORD_ARK_NETWORK_PROTOCOL_TCP &&
-                    eventRow.protocol != KSWORD_ARK_NETWORK_PROTOCOL_UDP)
-                {
-                    ++skippedProtocolCount;
-                    continue;
-                }
-                eventRecords.push_back(buildR0WfpAleEventRecord(eventRow));
+                packetRecords.push_back(buildR0WfpPacketRecord(
+                    packetRow,
+                    pidResolver,
+                    processNameResolver));
             }
         }
 
         const QString diagnosticText = r0Usable
-            ? QStringLiteral("新增=%1/%2，cursor=%3，ring覆盖=%4，cursor缺口=%5，跳过非TCP/UDP=%6")
-                .arg(static_cast<qulonglong>(eventRecords.size()))
-                .arg(eventResult.returnedCount)
-                .arg(static_cast<qulonglong>(eventResult.nextSequence))
-                .arg(static_cast<qulonglong>(eventResult.droppedEventCount))
-                .arg(static_cast<qulonglong>(eventResult.cursorGapCount))
-                .arg(static_cast<qulonglong>(skippedProtocolCount))
-            : QStringLiteral("event=%1；status=%2；lastStatus=0x%3")
-                .arg(QString::fromUtf8(eventResult.io.message.c_str()))
-                .arg(eventResult.status)
-                .arg(static_cast<quint32>(eventResult.lastStatus), 8, 16, QChar('0'));
+            ? QStringLiteral("新增=%1/%2，cursor=%3，ring覆盖=%4，cursor缺口=%5")
+                .arg(static_cast<qulonglong>(packetRecords.size()))
+                .arg(packetResult.returnedCount)
+                .arg(static_cast<qulonglong>(packetResult.nextSequence))
+                .arg(static_cast<qulonglong>(packetResult.droppedPacketCount))
+                .arg(static_cast<qulonglong>(packetResult.cursorGapCount))
+            : QStringLiteral("packet=%1；status=%2；lastStatus=0x%3")
+                .arg(QString::fromUtf8(packetResult.io.message.c_str()))
+                .arg(packetResult.status)
+                .arg(static_cast<quint32>(packetResult.lastStatus), 8, 16, QChar('0'));
 
         if (safeThis.isNull())
         {
@@ -1397,9 +1465,9 @@ void NetworkDock::refreshR0TrafficSnapshotAsync(
                 initialProbe,
                 r0Usable,
                 diagnosticText,
-                nextSequence = eventResult.nextSequence,
-                droppedEventCount = eventResult.droppedEventCount,
-                eventRecords = std::move(eventRecords)]() mutable
+                nextSequence = packetResult.nextSequence,
+                droppedPacketCount = packetResult.droppedPacketCount,
+                packetRecords = std::move(packetRecords)]() mutable
             {
                 if (safeThis.isNull())
                 {
@@ -1433,8 +1501,8 @@ void NetworkDock::refreshR0TrafficSnapshotAsync(
                 }
 
                 safeThis->m_r0LastEventSequence = nextSequence;
-                safeThis->m_r0LastDroppedEventCount = droppedEventCount;
-                for (ks::network::PacketRecord& packetRecord : eventRecords)
+                safeThis->m_r0LastDroppedEventCount = droppedPacketCount;
+                for (ks::network::PacketRecord& packetRecord : packetRecords)
                 {
                     packetRecord.sequenceId = safeThis->m_r0SyntheticSequence++;
                     safeThis->onPacketCaptured(packetRecord);
@@ -1443,7 +1511,8 @@ void NetworkDock::refreshR0TrafficSnapshotAsync(
                 if (safeThis->m_monitorStatusLabel != nullptr)
                 {
                     safeThis->m_monitorStatusLabel->setText(
-                        QStringLiteral("状态：运行中；来源：R0 WFP ALE IPv4 流事件（无逐包长度/报文字节/payload；%1）")
+                        QStringLiteral("状态：运行中；来源：R0 WFP IPv4/IPv6 逐包捕获（报文前缀最长 %1 字节；%2）")
+                            .arg(KSWORD_ARK_NETWORK_TRAFFIC_MAX_CAPTURE_BYTES)
                             .arg(diagnosticText));
                 }
                 safeThis->updateMonitorButtonState();

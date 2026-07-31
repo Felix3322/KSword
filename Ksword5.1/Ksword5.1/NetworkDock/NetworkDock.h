@@ -419,7 +419,7 @@ private:
     void stopTrafficMonitor();
 
     // refreshR0TrafficSnapshotAsync：
-    // - 后台按 cursor 增量读取真实 R0 WFP ALE IPv4 流授权事件；
+    // - 后台按 cursor 增量读取真实 R0 WFP IPv4/IPv6 逐包记录；
     // - initialProbe=true 时用于选择 R0 或自动回退 R3；
     // - 返回：无，结果回投 UI 线程。
     void refreshR0TrafficSnapshotAsync(std::uint64_t generation, bool initialProbe);
@@ -1493,7 +1493,7 @@ private:
     ks::network::NidsEngine m_nidsEngine; // NIDS 规则引擎实例。
     QTimer* m_rateLimitRefreshTimer = nullptr; // 限速规则轮询刷新定时器。
     QTimer* m_packetFlushTimer = nullptr;      // 报文批量刷新定时器（UI 节流关键）。
-    QTimer* m_r0TrafficRefreshTimer = nullptr; // R0 WFP ALE 增量事件轮询定时器。
+    QTimer* m_r0TrafficRefreshTimer = nullptr; // R0 WFP 逐包增量查询轮询定时器。
     QTimer* m_connectionRefreshTimer = nullptr; // 连接快照轮询刷新定时器（TCP/UDP）。
     QTimer* m_multiDownloadRefreshTimer = nullptr; // 多线程下载页面刷新定时器（进度UI节流）。
     std::unique_ptr<ks::network::HttpsMitmProxyService> m_httpsProxyService; // HTTPS MITM 代理服务对象。
@@ -1502,7 +1502,7 @@ private:
     {
         Stopped = 0, // 当前未监控。
         Starting,    // 正在探测 R0 能力。
-        R0,          // 使用驱动 WFP ALE IPv4 流授权事件。
+        R0,          // 使用驱动 WFP IPv4/IPv6 逐包记录。
         R3           // 使用原有用户态抓包。
     };
     TrafficMonitorSource m_monitorSource = TrafficMonitorSource::Stopped; // 当前明确的数据来源。
@@ -1516,7 +1516,7 @@ private:
     std::optional<QString> m_httpsPreviousProxyOverride;     // 原 ProxyOverride，缺省表示原值不存在。
     std::optional<QString> m_httpsPreviousAutoConfigUrl;     // 原 AutoConfigURL，缺省表示原值不存在。
     std::atomic_bool m_monitorStopInProgress{ false }; // 停止流程进行中，避免重复 stop 导致 UI 抖动。
-    std::atomic_bool m_r0TrafficRefreshPending{ false }; // R0 ALE 事件查询重入门控。
+    std::atomic_bool m_r0TrafficRefreshPending{ false }; // R0 逐包查询重入门控。
     std::atomic<std::uint64_t> m_monitorGeneration{ 0 }; // 启停代数，丢弃过期异步结果。
     std::unique_ptr<std::thread> m_monitorStopThread;  // 异步 stop 的 join 线程，防止主线程等待卡顿。
 
@@ -1537,8 +1537,8 @@ private:
     static constexpr std::size_t kMaxPendingPacketQueueCount = 80000;
     std::deque<std::uint64_t> m_packetSequenceOrder; // 报文序号按时间顺序缓存。
     std::unordered_map<std::uint64_t, ks::network::PacketRecord> m_packetBySequence; // 序号 -> 报文映射。
-    std::uint64_t m_r0LastEventSequence = 0; // 已消费的驱动 WFP event cursor，用于严格增量去重。
-    std::uint64_t m_r0LastDroppedEventCount = 0; // 驱动固定 ring 累计覆盖数，供状态栏显示。
+    std::uint64_t m_r0LastEventSequence = 0; // 已消费的驱动 WFP 逐包 cursor，用于严格增量去重。
+    std::uint64_t m_r0LastDroppedEventCount = 0; // 驱动逐包 ring 累计覆盖数，供状态栏显示。
     std::uint64_t m_r0SyntheticSequence = (1ULL << 63U); // UI 主键序号；原始驱动 sequence 单独保存在 PacketRecord。
     QHash<QString, QString> m_remoteDomainCache; // IP -> 域名缓存，空解析结果保存为“-”。
     QSet<QString> m_remoteDomainResolutionPending; // 正在异步解析的远端 IP。

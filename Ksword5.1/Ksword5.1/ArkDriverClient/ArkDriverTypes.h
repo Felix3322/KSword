@@ -2075,6 +2075,21 @@ namespace ksword::ark
         std::vector<KSWORD_ARK_NETWORK_WFP_EVENT_ROW> entries;
     };
 
+    // NetworkTrafficPacketResult 承载真实 WFP IPv4/IPv6 IP packet 层逐包增量响应。
+    // 输入：queryNetworkTrafficPackets(afterSequence, maxRows) 返回。
+    // 处理：严格验证 response/row ABI、cursor、报文边界和有限前缀，再复制 entries。
+    // 返回行为：旧驱动未注册新 IOCTL 时 unsupported=true，调用方必须回退 R3 而非降级到 ALE 流事件。
+    struct NetworkTrafficPacketResult : VariableAuditResultBase
+    {
+        std::uint32_t capacity = 0;            // capacity：驱动固定非分页逐包 ring 容量。
+        std::uint64_t oldestSequence = 0;      // oldestSequence：当前仍可读取的最旧包序号。
+        std::uint64_t newestSequence = 0;      // newestSequence：当前逐包 ring 最新序号。
+        std::uint64_t nextSequence = 0;        // nextSequence：本响应最后返回的 cursor。
+        std::uint64_t droppedPacketCount = 0;  // droppedPacketCount：ring 累计覆盖报文数。
+        std::uint64_t cursorGapCount = 0;      // cursorGapCount：本次 cursor 已无法恢复的报文数。
+        std::vector<KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW> entries;
+    };
+
     // NetworkNdisChainResult 承载 NDIS miniport/filter/protocol/binding 链只读审计结果。
     // 输入：queryNetworkNdisChain 返回。
     // 处理：每行保留对象地址、父对象、驱动对象和 owner module 诊断字段。

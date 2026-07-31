@@ -72,6 +72,14 @@ KswordARKNetworkQueryWfpEvents(
     _Out_ size_t* BytesWrittenOut
     );
 
+NTSTATUS
+KswordARKNetworkQueryTrafficPackets(
+    _In_ const KSWORD_ARK_NETWORK_TRAFFIC_QUERY_REQUEST* Request,
+    _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesWrittenOut
+    );
+
 BOOLEAN
 KswordARKNetworkShouldHidePort(
     _In_ ULONG Protocol,

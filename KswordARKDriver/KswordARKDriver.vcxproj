@@ -154,6 +154,7 @@
     <ClCompile Include="src\features\network\network_inventory_wfp.c" />
     <ClCompile Include="src\features\network\network_inventory_ndis.c" />
     <ClCompile Include="src\features\network\network_wfp.c" />
+    <ClCompile Include="src\features\network\network_traffic.c" />
     <ClCompile Include="src\features\network\network_ioctl.c" />
     <ClCompile Include="src\features\keyboard\keyboard_query.c" />
     <ClCompile Include="src\features\keyboard\keyboard_ioctl.c" />

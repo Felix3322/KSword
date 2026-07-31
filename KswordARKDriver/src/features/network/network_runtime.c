@@ -592,7 +592,9 @@ Return Value:
     }
 
     registeredFlags = Runtime->RuntimeFlags &
-        (KSWORD_ARK_NETWORK_RUNTIME_WFP_REGISTERED | KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED);
+        (KSWORD_ARK_NETWORK_RUNTIME_WFP_REGISTERED |
+            KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED |
+            KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED);
     Runtime->RuntimeFlags = registeredFlags;
     Runtime->RuleCount = 0UL;
     Runtime->BlockedRuleCount = 0UL;
@@ -649,8 +651,12 @@ Return Value:
     ExInitializePushLock(&g_KswordArkNetworkRuntime.Lock);
     // 中文说明：事件 ring 在 classify 可达的 DISPATCH_LEVEL 使用独立自旋锁。
     KeInitializeSpinLock(&g_KswordArkNetworkRuntime.EventLock);
+    // 中文说明：IP packet 逐包 ring 使用独立自旋锁，避免 ALE 规则事件相互阻塞。
+    KeInitializeSpinLock(&g_KswordArkNetworkRuntime.TrafficLock);
     // 中文说明：事件序号从 1 开始，0 保留为“没有 cursor”。
     g_KswordArkNetworkRuntime.NextEventSequence = 1ULL;
+    // 中文说明：逐包序号同样从 1 开始，0 表示未建立 cursor。
+    g_KswordArkNetworkRuntime.NextTrafficSequence = 1ULL;
     g_KswordArkNetworkRuntime.Device = Device;
     g_KswordArkNetworkRuntime.DriverObject = DriverObject;
     if (Device != WDF_NO_HANDLE) {
@@ -658,6 +664,8 @@ Return Value:
     }
     g_KswordArkNetworkRuntime.RegisterStatus = STATUS_NOT_SUPPORTED;
     g_KswordArkNetworkRuntime.EngineStatus = STATUS_NOT_SUPPORTED;
+    // 中文说明：逐包对象尚未注册时回报明确不支持状态。
+    g_KswordArkNetworkRuntime.TrafficCaptureStatus = STATUS_NOT_SUPPORTED;
 
     status = KswordARKNetworkWfpRegister(&g_KswordArkNetworkRuntime);
     g_KswordArkNetworkRuntime.RegisterStatus = status;
@@ -707,7 +715,9 @@ Return Value:
     runtime->BlockedRuleCount = 0UL;
     runtime->HiddenPortRuleCount = 0UL;
     runtime->RuntimeFlags &=
-        (KSWORD_ARK_NETWORK_RUNTIME_WFP_REGISTERED | KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED);
+        (KSWORD_ARK_NETWORK_RUNTIME_WFP_REGISTERED |
+            KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED |
+            KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED);
     runtime->Generation += 1UL;
     ExReleasePushLockExclusive(&runtime->Lock);
 
@@ -715,6 +725,7 @@ Return Value:
     runtime->RuntimeFlags = 0UL;
     runtime->RegisterStatus = STATUS_NOT_SUPPORTED;
     runtime->EngineStatus = STATUS_NOT_SUPPORTED;
+    runtime->TrafficCaptureStatus = STATUS_NOT_SUPPORTED;
 }
 
 NTSTATUS

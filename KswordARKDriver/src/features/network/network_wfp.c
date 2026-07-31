@@ -1127,6 +1127,16 @@ Return Value:
         return status;
     }
 
+    // 中文说明：ALE 规则 callout 注册后，再注册 IPv4/IPv6 四个逐包观察 callout。
+    status = KswordARKNetworkTrafficRegisterRuntimeCallouts(Runtime);
+    // 中文说明：任一逐包 runtime callout 失败都走统一清理，避免只覆盖部分方向。
+    if (!NT_SUCCESS(status)) {
+        // 中文说明：注销已创建的 ALE 与逐包 runtime callout。
+        KswordARKNetworkWfpUnregister(Runtime);
+        // 中文说明：返回精确 WFP 注册错误。
+        return status;
+    }
+
     RtlZeroMemory(&session, sizeof(session));
     session.flags = KSWORD_ARK_FWPM_SESSION_FLAG_DYNAMIC;
     status = FwpmEngineOpen0(
@@ -1162,6 +1172,11 @@ Return Value:
             &KSWORD_ARK_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
             L"KswordARK ALE recv-accept callout");
     }
+    // 中文说明：在同一事务中加入四个 IPPACKET callout 与 inspection filter。
+    if (NT_SUCCESS(status)) {
+        // 中文说明：逐包模块使用同一个动态 engine 和 KswordARK 子层。
+        status = KswordARKNetworkTrafficAddEngineObjects(Runtime);
+    }
     if (NT_SUCCESS(status)) {
         status = KswordARKNetworkAddFilter(
             Runtime,
@@ -1182,7 +1197,12 @@ Return Value:
     if (NT_SUCCESS(status)) {
         status = FwpmTransactionCommit0(Runtime->EngineHandle);
         if (NT_SUCCESS(status)) {
-            Runtime->RuntimeFlags |= KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED;
+            // 中文说明：ALE 规则与逐包四层对象同一事务提交，能力位同步可见。
+            Runtime->RuntimeFlags |=
+                KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED |
+                KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED;
+            // 中文说明：记录逐包数据面已提交成功。
+            Runtime->TrafficCaptureStatus = STATUS_SUCCESS;
             return STATUS_SUCCESS;
         }
     }
@@ -1190,6 +1210,9 @@ Return Value:
         (VOID)FwpmTransactionAbort0(Runtime->EngineHandle);
     }
 
+    // 中文说明：提交或任一对象添加失败时，逐包查询应回报精确失败状态。
+    Runtime->TrafficCaptureStatus = status;
+    // 中文说明：清理事务外 runtime callout 与可能残留的动态 engine 对象。
     KswordARKNetworkWfpUnregister(Runtime);
     return status;
 }
@@ -1220,6 +1243,8 @@ Return Value:
     }
 
     if (Runtime->EngineHandle != NULL) {
+        // 中文说明：先删除逐包 filter/callout，避免关闭 engine 后丢失显式清理机会。
+        KswordARKNetworkTrafficDeleteEngineObjects(Runtime);
         if (Runtime->ConnectFilterId != 0ULL) {
             (VOID)FwpmFilterDeleteById0(Runtime->EngineHandle, Runtime->ConnectFilterId);
             Runtime->ConnectFilterId = 0ULL;
@@ -1244,7 +1269,11 @@ Return Value:
         Runtime->RecvAcceptCalloutId = 0U;
     }
 
+    // 中文说明：最后注销四个逐包 runtime callout；函数支持部分初始化。
+    KswordARKNetworkTrafficUnregisterRuntimeCallouts(Runtime);
+
     Runtime->RuntimeFlags &= ~(
         KSWORD_ARK_NETWORK_RUNTIME_WFP_REGISTERED |
-        KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED);
+        KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED |
+        KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED);
 }

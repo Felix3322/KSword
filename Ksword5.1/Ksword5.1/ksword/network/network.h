@@ -91,7 +91,7 @@ namespace ks::network
 
         std::uint32_t processId = 0;          // 归属进程 PID（0 表示暂未解析）。
         std::string processName;              // 归属进程名（缓存查询，可能为空）。
-        std::string sourceText = "R3";        // 数据来源：R3 抓包或 R0 WFP ALE 流授权事件。
+        std::string sourceText = "R3";        // 数据来源：R3 抓包、R0 WFP 逐包记录或兼容 ALE 流授权事件。
         std::uint64_t sourceSequenceId = 0;   // R0 WFP 原始事件序号；R3 抓包保持 0。
         std::uint32_t sourceFlags = 0;        // R0 WFP 事件语义标志；R3 抓包保持 0。
 

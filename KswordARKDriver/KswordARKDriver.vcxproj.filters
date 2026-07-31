@@ -750,6 +750,9 @@
     <ClCompile Include="src\features\network\network_wfp.c">
       <Filter>Source Files\Features\Network</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\network\network_traffic.c">
+      <Filter>Source Files\Features\Network</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\keyboard\keyboard_query.c">
       <Filter>Source Files\Features\Keyboard</Filter>
     </ClCompile>
