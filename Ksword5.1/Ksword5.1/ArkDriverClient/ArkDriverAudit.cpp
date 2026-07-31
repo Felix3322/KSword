@@ -1733,7 +1733,7 @@ namespace ksword::ark
                 value == KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V6 ||
                 value == KSWORD_ARK_PLATFORM_SIGNATURE_PUBLIC_HAL_V4_V5 ||
                 (value >= KSWORD_ARK_PLATFORM_SIGNATURE_WDF_BINDING_TABLE &&
-                 value <= KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_22);
+                 value <= KSWORD_ARK_PLATFORM_SIGNATURE_MAX);
         };
         const bool headerValid =
             response.size == headerSize &&

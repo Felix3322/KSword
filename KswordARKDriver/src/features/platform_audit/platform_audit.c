@@ -47,10 +47,18 @@ Environment:
 
 #define KSW_PLATFORM_RESPONSE_HEADER_SIZE \
     (FIELD_OFFSET(KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE, entries))
-#define KSW_PLATFORM_HAL_ACPI_SIGNATURE 0x204C4148UL
-#define KSW_PLATFORM_HAL_ACPI_VERSION   5UL
-#define KSW_PLATFORM_HAL_ACPI_FUNCTION_COUNT 18UL
-#define KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT 22UL
+// 中文说明：内存中的 ULONG 值是 0x48414C20；不要按 ASCII "HAL "
+// 的字节展示顺序误写成 0x204C4148，否则所有真实表都会被拒绝。
+#define KSW_PLATFORM_HAL_ACPI_SIGNATURE 0x48414C20UL
+#define KSW_PLATFORM_HAL_ACPI_VERSION_V4 4UL
+#define KSW_PLATFORM_HAL_ACPI_VERSION_V5 5UL
+#define KSW_PLATFORM_HAL_ACPI_V4_FUNCTION_COUNT 21UL
+#define KSW_PLATFORM_HAL_ACPI_V5_FUNCTION_COUNT 18UL
+#define KSW_PLATFORM_HAL_ACPI_MAX_FUNCTION_COUNT \
+    KSW_PLATFORM_HAL_ACPI_V4_FUNCTION_COUNT
+#define KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT 21UL
+#define KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT    22UL
+#define KSW_PLATFORM_HAL_SUBCOMPONENT_QOS_INDEX    18UL
 
 typedef struct _KSW_PLATFORM_SLOT_DESCRIPTOR
 {
@@ -73,7 +81,7 @@ typedef struct _KSW_PLATFORM_HAL_ACPI_VIEW
 {
     ULONG Signature;
     ULONG Version;
-    PVOID Functions[KSW_PLATFORM_HAL_ACPI_FUNCTION_COUNT];
+    PVOID Functions[KSW_PLATFORM_HAL_ACPI_MAX_FUNCTION_COUNT];
 } KSW_PLATFORM_HAL_ACPI_VIEW;
 
 typedef struct _KSW_PLATFORM_HAL_SUBCOMPONENT
@@ -314,37 +322,75 @@ static const KSW_PLATFORM_SLOT_DESCRIPTOR g_KswHalPrivateSlots[] = {
 #undef KSW_PRIVATE_FUNCTION
 
 static const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR g_KswHalPrivateBuilds[] = {
+    // 中文说明：19041～19045 共用 Vibranium 内核结构；运行时仍以 Version=51
+    // 和完整 0x4B0 受界范围双重确认，不能只凭系统报告的产品 build 放行。
+    { 19041UL, 51UL, 0x4B0UL, KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V51 },
     { 22000UL, 54UL, 0x4D8UL, KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V54 },
     { 22621UL, 58UL, 0x4F0UL, KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V58 },
     { 26100UL, 61UL, 0x518UL, KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V61 },
     { 26220UL, 61UL, 0x518UL, KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V61 }
 };
 
-static const PCWSTR g_KswHalAcpiFunctionNames[KSW_PLATFORM_HAL_ACPI_FUNCTION_COUNT] = {
+static const PCWSTR
+g_KswHalAcpiFunctionNames[KSW_PLATFORM_HAL_ACPI_MAX_FUNCTION_COUNT] = {
+    // 中文说明：这里展示经公开符号样本核对过的实现语义名，而不是旧头文件
+    // 中容易误导的字段别名；槽位顺序仍由 HAL ACPI v5 的结构身份约束。
     L"HalpAcpiTimerInterrupt",
-    L"HalpAcpiMachineStateInit",
+    L"HaliAcpiMachineStateInit",
     L"HalpAcpiQueryFlags",
-    L"HalxPicStateIntact",
-    L"HalxRestorePicState",
-    L"HalpPciInterfaceReadConfig",
-    L"HalpPciInterfaceWriteConfig",
-    L"HalpGetIOApicVersion",
-    L"HalpSetMaxLegacyPciBusNumber",
-    L"HalpIsVectorValid",
-    L"HalpGetAcpiTable",
-    L"HalpAcpiGetRsdp",
-    L"HalpAcpiGetFacsMapping",
-    L"HalpAcpiGetAllTables",
+    L"HalpInterruptIsPicStateIntact",
+    L"HalpInterruptRestoreAllControllerState",
+    L"HaliPciInterfaceReadConfig",
+    L"HaliPciInterfaceWriteConfig",
+    L"HalpInterruptGetApicVersion",
+    L"HaliSetMaxLegacyPciBusNumber",
+    L"HalpInterruptIsGsiValid",
+    L"HalAcpiGetTableDispatch",
+    L"HalAcpiGetRsdpDispatch",
+    L"HalAcpiGetFacsMappingDispatch",
+    L"HalAcpiGetAllTablesDispatch",
     L"HalpAcpiPmRegisterAvailable",
     L"HalpAcpiPmRegisterRead",
     L"HalpAcpiPmRegisterWrite",
-    L"HalpAcpiTimerQueryCounter"
+    L"HalpAcpiAccessSecureAddress",
+    // 中文说明：ACPI v4 的尾部还保留三个旧式 PCI I/O 配置读取槽；
+    // v5 删除这些槽，因此输出数量必须由表头 Version 决定。
+    L"HalpPciReadIoConfigUlong",
+    L"HalpPciReadIoConfigUchar",
+    L"HalpPciReadIoConfigUshort"
 };
 
-static const PCWSTR g_KswHalSubcomponentNames[KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT] = {
+static const PCWSTR
+g_KswHalSubcomponentNames[KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT] = {
     L"Acpi", L"Dbg", L"Dma", L"Dp", L"Errata", L"ExtEnv", L"Firmware",
     L"HalExt", L"Hv", L"HwPerfCnt", L"Interrupt", L"Iommu", L"Misc", L"Mm",
     L"Pci", L"Pnp", L"Power", L"Proc", L"Qos", L"Timer", L"Topology", L"Whea"
+};
+
+static const PCWSTR
+g_KswHalSubcomponentFunctionNames[KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT] = {
+    L"HalpAcpiInitSystem",
+    L"HalpDbgInitSystem",
+    L"HalpDmaInitSystem",
+    L"HalpDpInitSystem",
+    L"HalpErrataInitSystem",
+    L"HalpExtEnvInitSystem",
+    L"HalpFirmwareInitSystem",
+    L"HalpHalExtInitSystem",
+    L"HalpHvInitSystem",
+    L"HalpHwPerfCntInitSystem",
+    L"HalpInterruptInitSystem",
+    L"HalpIommuInitSystem",
+    L"HalpMiscInitSystem",
+    L"HalpMmInitSystem",
+    L"HalpPciInitSystem",
+    L"HalpPnpInitSystem",
+    L"HalpPowerInitSystem",
+    L"HalpProcInitSystem",
+    L"HalpQosInitSystem",
+    L"HalpTimerInitSystem",
+    L"HalpTopologyInitSystem",
+    L"HalpWheaInitSystem"
 };
 
 // KMDF 1.15 wdffuncenum.h defines a contiguous, index-stable table of 444 APIs.
@@ -1758,15 +1804,32 @@ KswPlatformAddHalDispatch(
     }
 }
 
+static ULONG
+KswPlatformCanonicalBuildNumber(
+    _In_ ULONG BuildNumber
+    )
+{
+    // 中文说明：Windows 10 2004～22H2 都报告不同产品 build，但共享
+    // 19041 内核基线；同理 22621/22631 共用同一 22H2/23H2 结构族。
+    if (BuildNumber >= 19041UL && BuildNumber <= 19045UL) {
+        return 19041UL;
+    }
+    if (BuildNumber >= 22621UL && BuildNumber <= 22631UL) {
+        return 22621UL;
+    }
+    return BuildNumber;
+}
+
 static const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR*
 KswPlatformFindPrivateBuild(
     _In_ ULONG BuildNumber
     )
 {
+    ULONG canonicalBuild = KswPlatformCanonicalBuildNumber(BuildNumber);
     ULONG index = 0UL;
 
     for (index = 0UL; index < RTL_NUMBER_OF(g_KswHalPrivateBuilds); ++index) {
-        if (g_KswHalPrivateBuilds[index].BuildNumber == BuildNumber) {
+        if (g_KswHalPrivateBuilds[index].BuildNumber == canonicalBuild) {
             return &g_KswHalPrivateBuilds[index];
         }
     }
@@ -2047,6 +2110,12 @@ typedef BOOLEAN
 // 不允许回退到 HalPrivateDispatchTable 导出，也不扫描整个内核映像。
 static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalPrivateLocators[] = {
     {
+        19041UL, L"HalTranslateBusAddress", 0x00UL, 0x80UL, -0x38L,
+        0x4B0UL, 51UL,
+        { 0x48U, 0x8BU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
+    },
+    {
         22000UL, L"HalTranslateBusAddress", 0x00UL, 0x80UL, -0x38L,
         0x4D8UL, 54UL,
         { 0x48U, 0x8BU, 0x05U, 0U, 0U, 0U, 0U },
@@ -2074,26 +2143,32 @@ static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalPrivateLocators[] = {
 
 static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalAcpiLocators[] = {
     {
+        19041UL, NULL, 0x00UL, 0xC0UL, 0L,
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions), 0UL,
+        { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
+        { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
+    },
+    {
         22000UL, NULL, 0x00UL, 0xC0UL, 0L,
-        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions), 0UL,
         { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
         { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
     },
     {
         22621UL, NULL, 0x00UL, 0xC0UL, 0L,
-        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions), 0UL,
         { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
         { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
     },
     {
         26100UL, NULL, 0x00UL, 0x80UL, 0L,
-        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions), 0UL,
         { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
         { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
     },
     {
         26220UL, NULL, 0x00UL, 0x80UL, 0L,
-        sizeof(KSW_PLATFORM_HAL_ACPI_VIEW), KSW_PLATFORM_HAL_ACPI_VERSION,
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions), 0UL,
         { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
         { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
     }
@@ -2101,18 +2176,29 @@ static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalAcpiLocators[] = {
 
 static const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR g_KswHalSubcomponentLocators[] = {
     {
+        // 中文说明：Vibranium 的导出入口先转入紧邻的 phase/helper，
+        // helper 在 +0xAB 以 lea r12,[HalSubComponents] 取得 21 项表。
+        // 仅扫描该短窗口，并继续用全部只读名称对确认候选身份。
+        19041UL, L"HalInitSystem", 0xA0UL, 0x20UL, 0L,
+        sizeof(KSW_PLATFORM_HAL_SUBCOMPONENT) *
+            KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT,
+        KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT,
+        { 0x4CU, 0x8DU, 0x25U, 0U, 0U, 0U, 0U },
+        { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
+    },
+    {
         26100UL, L"HalInitSystem", 0x00UL, 0x90UL, 0L,
         sizeof(KSW_PLATFORM_HAL_SUBCOMPONENT) *
-            KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
-        KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+            KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT,
+        KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT,
         { 0x48U, 0x8DU, 0x05U, 0U, 0U, 0U, 0U },
         { 0xF8U, 0xFFU, 0xC7U, 0U, 0U, 0U, 0U }
     },
     {
         26220UL, L"HalInitSystem", 0x70UL, 0x20UL, 0L,
         sizeof(KSW_PLATFORM_HAL_SUBCOMPONENT) *
-            KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
-        KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+            KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT,
+        KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT,
         { 0x4CU, 0x8DU, 0x25U, 0U, 0U, 0U, 0U },
         { 0xFFU, 0xFFU, 0xFFU, 0U, 0U, 0U, 0U }
     }
@@ -2125,10 +2211,11 @@ KswPlatformFindRipLocator(
     _In_ ULONG BuildNumber
     )
 {
+    ULONG canonicalBuild = KswPlatformCanonicalBuildNumber(BuildNumber);
     ULONG index = 0UL;
 
     for (index = 0UL; index < DescriptorCount; ++index) {
-        if (Descriptors[index].BuildNumber == BuildNumber) {
+        if (Descriptors[index].BuildNumber == canonicalBuild) {
             return &Descriptors[index];
         }
     }
@@ -2323,13 +2410,60 @@ KswPlatformLocateHalPrivateBySignature(
 }
 
 static BOOLEAN
-KswPlatformHalAcpiIdentityMatches(
-    _In_ const KSW_PLATFORM_HAL_ACPI_VIEW* View
+KswPlatformGetHalAcpiLayout(
+    _In_ ULONG Version,
+    _Out_ ULONG* FunctionCountOut,
+    _Out_ ULONG* ByteSizeOut
     )
 {
-    return View != NULL &&
-        View->Signature == KSW_PLATFORM_HAL_ACPI_SIGNATURE &&
-        View->Version == KSW_PLATFORM_HAL_ACPI_VERSION;
+    ULONG functionCount = 0UL;
+
+    if (FunctionCountOut == NULL || ByteSizeOut == NULL) {
+        return FALSE;
+    }
+    *FunctionCountOut = 0UL;
+    *ByteSizeOut = 0UL;
+    if (Version == KSW_PLATFORM_HAL_ACPI_VERSION_V4) {
+        functionCount = KSW_PLATFORM_HAL_ACPI_V4_FUNCTION_COUNT;
+    }
+    else if (Version == KSW_PLATFORM_HAL_ACPI_VERSION_V5) {
+        functionCount = KSW_PLATFORM_HAL_ACPI_V5_FUNCTION_COUNT;
+    }
+    else {
+        return FALSE;
+    }
+    *FunctionCountOut = functionCount;
+    *ByteSizeOut =
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions) +
+        (ULONG)(sizeof(PVOID) * functionCount);
+    return TRUE;
+}
+
+static BOOLEAN
+KswPlatformHalAcpiIdentityMatches(
+    _In_ const KSW_PLATFORM_HAL_ACPI_VIEW* View,
+    _Out_opt_ ULONG* FunctionCountOut,
+    _Out_opt_ ULONG* ByteSizeOut
+    )
+{
+    ULONG functionCount = 0UL;
+    ULONG byteSize = 0UL;
+
+    if (View == NULL ||
+        View->Signature != KSW_PLATFORM_HAL_ACPI_SIGNATURE ||
+        !KswPlatformGetHalAcpiLayout(
+            View->Version,
+            &functionCount,
+            &byteSize)) {
+        return FALSE;
+    }
+    if (FunctionCountOut != NULL) {
+        *FunctionCountOut = functionCount;
+    }
+    if (ByteSizeOut != NULL) {
+        *ByteSizeOut = byteSize;
+    }
+    return TRUE;
 }
 
 static BOOLEAN
@@ -2341,10 +2475,14 @@ KswPlatformValidateHalAcpiCandidate(
 {
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
     KSW_PLATFORM_HAL_ACPI_VIEW view;
+    ULONG functionCount = 0UL;
+    ULONG byteSize = 0UL;
+    const ULONG headerSize =
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions);
 
     if (ModuleInfo == NULL || Candidate == NULL || Locator == NULL ||
-        Locator->TableByteSize != sizeof(view) ||
-        Locator->ExpectedVersion != KSW_PLATFORM_HAL_ACPI_VERSION) {
+        Locator->TableByteSize != headerSize ||
+        Locator->ExpectedVersion != 0UL) {
         return FALSE;
     }
     tableOwner = KswordARKHookFindModuleForAddress(ModuleInfo, (ULONG_PTR)Candidate);
@@ -2353,11 +2491,23 @@ KswPlatformValidateHalAcpiCandidate(
         !KswPlatformRangeInSection(
             tableOwner,
             (ULONG_PTR)Candidate,
-            sizeof(view),
+            headerSize,
             FALSE,
             TRUE) ||
-        !KswordARKHookReadMemorySafe(Candidate, &view, sizeof(view)) ||
-        !KswPlatformHalAcpiIdentityMatches(&view)) {
+        !KswordARKHookReadMemorySafe(Candidate, &view, headerSize) ||
+        !KswPlatformHalAcpiIdentityMatches(
+            &view,
+            &functionCount,
+            &byteSize) ||
+        functionCount > RTL_NUMBER_OF(view.Functions) ||
+        !KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)Candidate,
+            byteSize,
+            FALSE,
+            TRUE) ||
+        !KswordARKHookReadMemorySafe(Candidate, &view, byteSize) ||
+        !KswPlatformHalAcpiIdentityMatches(&view, NULL, NULL)) {
         return FALSE;
     }
     // 函数槽内容不是表身份条件：外部 owner、非执行地址或 NULL 正是需要
@@ -2409,24 +2559,61 @@ KswPlatformValidateBoundedWideName(
 }
 
 static BOOLEAN
+KswPlatformHalSubcomponentIndex(
+    _In_ ULONG EntryIndex,
+    _In_ ULONG EntryCount,
+    _Out_ ULONG* NameIndexOut
+    )
+{
+    ULONG nameIndex = EntryIndex;
+
+    if (NameIndexOut == NULL ||
+        (EntryCount != KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT &&
+         EntryCount != KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT) ||
+        EntryIndex >= EntryCount) {
+        return FALSE;
+    }
+
+    // 中文说明：Vibranium 的 21 项表没有 Qos；新表在 Proc 与 Timer
+    // 之间插入 Qos，因此旧表从该索引开始要跳过一个显示/身份名称。
+    if (EntryCount == KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT &&
+        EntryIndex >= KSW_PLATFORM_HAL_SUBCOMPONENT_QOS_INDEX) {
+        nameIndex += 1UL;
+    }
+    if (nameIndex >= RTL_NUMBER_OF(g_KswHalSubcomponentNames)) {
+        return FALSE;
+    }
+    *NameIndexOut = nameIndex;
+    return TRUE;
+}
+
+static BOOLEAN
 KswPlatformHalSubcomponentIdentityMatches(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
-    _In_reads_(KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT)
-        const KSW_PLATFORM_HAL_SUBCOMPONENT* Entries
+    _In_reads_(EntryCount) const KSW_PLATFORM_HAL_SUBCOMPONENT* Entries,
+    _In_ ULONG EntryCount
     )
 {
     ULONG index = 0UL;
 
-    if (ModuleInfo == NULL || Entries == NULL) {
+    if (ModuleInfo == NULL || Entries == NULL ||
+        (EntryCount != KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT &&
+         EntryCount != KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT)) {
         return FALSE;
     }
-    for (index = 0UL;
-         index < KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT;
-         ++index) {
+    for (index = 0UL; index < EntryCount; ++index) {
+        ULONG nameIndex = 0UL;
+
+        if (!KswPlatformHalSubcomponentIndex(
+                index,
+                EntryCount,
+                &nameIndex)) {
+            return FALSE;
+        }
         if (!KswPlatformValidateBoundedWideName(
                 ModuleInfo,
                 Entries[index].Name,
-                g_KswHalSubcomponentNames[index])) {
+                g_KswHalSubcomponentNames[nameIndex])) {
             return FALSE;
         }
     }
@@ -2441,10 +2628,18 @@ KswPlatformValidateHalSubcomponentCandidate(
     )
 {
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
-    KSW_PLATFORM_HAL_SUBCOMPONENT entries[KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT];
-    if (ModuleInfo == NULL || Candidate == NULL || Locator == NULL ||
-        Locator->TableByteSize != sizeof(entries) ||
-        Locator->ExpectedVersion != KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT) {
+    KSW_PLATFORM_HAL_SUBCOMPONENT
+        entries[KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT];
+    ULONG entryCount = 0UL;
+
+    if (ModuleInfo == NULL || Candidate == NULL || Locator == NULL) {
+        return FALSE;
+    }
+    entryCount = Locator->ExpectedVersion;
+    if ((entryCount != KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT &&
+         entryCount != KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT) ||
+        Locator->TableByteSize !=
+            (ULONG)(sizeof(KSW_PLATFORM_HAL_SUBCOMPONENT) * entryCount)) {
         return FALSE;
     }
     tableOwner = KswordARKHookFindModuleForAddress(ModuleInfo, (ULONG_PTR)Candidate);
@@ -2453,17 +2648,23 @@ KswPlatformValidateHalSubcomponentCandidate(
         !KswPlatformRangeInSection(
             tableOwner,
             (ULONG_PTR)Candidate,
-            sizeof(entries),
+            Locator->TableByteSize,
             FALSE,
             TRUE) ||
-        !KswordARKHookReadMemorySafe(Candidate, entries, sizeof(entries))) {
+        !KswordARKHookReadMemorySafe(
+            Candidate,
+            entries,
+            Locator->TableByteSize)) {
         return FALSE;
     }
 
-    if (!KswPlatformHalSubcomponentIdentityMatches(ModuleInfo, entries)) {
+    if (!KswPlatformHalSubcomponentIdentityMatches(
+            ModuleInfo,
+            entries,
+            entryCount)) {
         return FALSE;
     }
-    // 22 个只读名称对和受界表范围负责候选身份；函数槽逐项分类。
+    // 21/22 个只读名称对和受界表范围负责候选身份；函数槽逐项分类。
     // 因此被替换到外部模块、未知地址或 NULL 的函数仍会作为对应行返回。
     return TRUE;
 }
@@ -2527,6 +2728,10 @@ KswPlatformAddHalAcpi(
     PVOID tableAddress = NULL;
     KSW_PLATFORM_HAL_ACPI_VIEW view;
     NTSTATUS locateStatus = STATUS_NOT_SUPPORTED;
+    ULONG functionCount = 0UL;
+    ULONG byteSize = 0UL;
+    const ULONG headerSize =
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions);
     ULONG index = 0UL;
 
     if (locator == NULL ||
@@ -2584,7 +2789,7 @@ KswPlatformAddHalAcpi(
     }
 
     RtlZeroMemory(&view, sizeof(view));
-    if (!KswordARKHookReadMemorySafe(tableAddress, &view, sizeof(view))) {
+    if (!KswordARKHookReadMemorySafe(tableAddress, &view, headerSize)) {
         if (KswPlatformAddExportedFunction(
                 Response,
                 Capacity,
@@ -2603,10 +2808,13 @@ KswPlatformAddHalAcpi(
             L"HalAcpiDispatchTable",
             KSWORD_ARK_PLATFORM_DETAIL_READ_FAILED,
             (ULONGLONG)(ULONG_PTR)tableAddress,
-            sizeof(view));
+            headerSize);
         return;
     }
-    if (!KswPlatformHalAcpiIdentityMatches(&view)) {
+    if (!KswPlatformHalAcpiIdentityMatches(
+            &view,
+            &functionCount,
+            &byteSize)) {
         if (KswPlatformAddExportedFunction(
                 Response,
                 Capacity,
@@ -2628,19 +2836,60 @@ KswPlatformAddHalAcpi(
             view.Version);
         return;
     }
+    if (functionCount > RTL_NUMBER_OF(view.Functions) ||
+        byteSize > sizeof(view) ||
+        !KswordARKHookReadMemorySafe(tableAddress, &view, byteSize)) {
+        if (KswPlatformAddExportedFunction(
+                Response,
+                Capacity,
+                MaxRows,
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+                ModuleInfo,
+                L"HalAcpiGetTableEx",
+                KSWORD_ARK_PLATFORM_OWNER_NT_HAL_ACPI)) {
+            return;
+        }
+        KswPlatformAddDiagnostic(
+            Response, Capacity, MaxRows,
+            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+            KSWORD_ARK_PLATFORM_AUDIT_STATUS_QUERY_FAILED,
+            STATUS_PARTIAL_COPY,
+            L"HalAcpiDispatchTable",
+            KSWORD_ARK_PLATFORM_DETAIL_READ_FAILED,
+            (ULONGLONG)(ULONG_PTR)tableAddress,
+            byteSize);
+        return;
+    }
+    if (!KswPlatformHalAcpiIdentityMatches(&view, NULL, NULL)) {
+        KswPlatformAddDiagnostic(
+            Response, Capacity, MaxRows,
+            KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
+            KSWORD_ARK_PLATFORM_AUDIT_STATUS_QUERY_FAILED,
+            STATUS_REVISION_MISMATCH,
+            L"HalAcpiDispatchTable",
+            KSWORD_ARK_PLATFORM_DETAIL_TABLE_INVALID,
+            view.Signature,
+            view.Version);
+        return;
+    }
 
-    for (index = 0UL; index < RTL_NUMBER_OF(view.Functions); ++index) {
+    for (index = 0UL; index < functionCount; ++index) {
         KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry;
         ULONG ownerPolicy =
-            (index == 5UL || index == 6UL || index == 8UL) ?
+            (index == 5UL || index == 6UL || index == 8UL ||
+             index >= KSW_PLATFORM_HAL_ACPI_V5_FUNCTION_COUNT) ?
                 KSWORD_ARK_PLATFORM_OWNER_NT_HAL_PCI :
                 KSWORD_ARK_PLATFORM_OWNER_NT_HAL_ACPI;
+        ULONG signatureId =
+            view.Version == KSW_PLATFORM_HAL_ACPI_VERSION_V4 ?
+                KSWORD_ARK_PLATFORM_SIGNATURE_HAL_ACPI_V4 :
+                KSWORD_ARK_PLATFORM_SIGNATURE_HAL_ACPI_V5;
 
         KswPlatformInitializeEntry(
             &entry,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI,
             KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION,
-            KSWORD_ARK_PLATFORM_SIGNATURE_HAL_ACPI_V5,
+            signatureId,
             KSWORD_ARK_PLATFORM_SLOT_FUNCTION,
             ownerPolicy,
             index,
@@ -2656,7 +2905,7 @@ KswPlatformAddHalAcpi(
                 KSWORD_ARK_PLATFORM_DETAIL_NULL_SLOT,
                 index,
                 BuildNumber,
-                KSW_PLATFORM_HAL_ACPI_VERSION,
+                view.Version,
                 0ULL);
         }
         else {
@@ -2684,8 +2933,10 @@ KswPlatformAddHalSubcomponents(
             BuildNumber);
     PVOID anchor = NULL;
     PVOID tableAddress = NULL;
-    KSW_PLATFORM_HAL_SUBCOMPONENT entries[KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT];
+    KSW_PLATFORM_HAL_SUBCOMPONENT
+        entries[KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT];
     NTSTATUS locateStatus = STATUS_NOT_SUPPORTED;
+    ULONG entryCount = 0UL;
     ULONG index = 0UL;
 
     if (locator == NULL) {
@@ -2710,6 +2961,7 @@ KswPlatformAddHalSubcomponents(
             26100ULL);
         return;
     }
+    entryCount = locator->ExpectedVersion;
     anchor = locator->AnchorName != NULL ?
         KswPlatformGetRoutine(locator->AnchorName) :
         NULL;
@@ -2745,7 +2997,10 @@ KswPlatformAddHalSubcomponents(
     }
 
     RtlZeroMemory(entries, sizeof(entries));
-    if (!KswordARKHookReadMemorySafe(tableAddress, entries, sizeof(entries))) {
+    if (!KswordARKHookReadMemorySafe(
+            tableAddress,
+            entries,
+            locator->TableByteSize)) {
         if (KswPlatformAddExportedFunction(
                 Response,
                 Capacity,
@@ -2764,10 +3019,13 @@ KswPlatformAddHalSubcomponents(
             L"HalSubComponents",
             KSWORD_ARK_PLATFORM_DETAIL_READ_FAILED,
             (ULONGLONG)(ULONG_PTR)tableAddress,
-            sizeof(entries));
+            locator->TableByteSize);
         return;
     }
-    if (!KswPlatformHalSubcomponentIdentityMatches(ModuleInfo, entries)) {
+    if (!KswPlatformHalSubcomponentIdentityMatches(
+            ModuleInfo,
+            entries,
+            entryCount)) {
         if (KswPlatformAddExportedFunction(
                 Response,
                 Capacity,
@@ -2786,23 +3044,34 @@ KswPlatformAddHalSubcomponents(
             L"HalSubComponents",
             KSWORD_ARK_PLATFORM_DETAIL_TABLE_INVALID,
             (ULONGLONG)(ULONG_PTR)tableAddress,
-            KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT);
+            entryCount);
         return;
     }
 
-    for (index = 0UL; index < RTL_NUMBER_OF(entries); ++index) {
+    for (index = 0UL; index < entryCount; ++index) {
         KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry;
+        ULONG nameIndex = 0UL;
+        ULONG signatureId =
+            entryCount == KSW_PLATFORM_HAL_SUBCOMPONENT_LEGACY_COUNT ?
+                KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_21 :
+                KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_22;
 
+        if (!KswPlatformHalSubcomponentIndex(
+                index,
+                entryCount,
+                &nameIndex)) {
+            break;
+        }
         KswPlatformInitializeEntry(
             &entry,
             KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS,
             KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION,
-            KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_22,
+            signatureId,
             KSWORD_ARK_PLATFORM_SLOT_FUNCTION,
             KSWORD_ARK_PLATFORM_OWNER_NT_HAL,
             index,
             tableAddress,
-            g_KswHalSubcomponentNames[index]);
+            g_KswHalSubcomponentFunctionNames[nameIndex]);
         entry.fieldFlags |= KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED |
             KSWORD_ARK_PLATFORM_FIELD_READ_ONLY_RANGE |
             KSWORD_ARK_PLATFORM_FIELD_LOCATOR_VALIDATED;
@@ -2813,7 +3082,7 @@ KswPlatformAddHalSubcomponents(
                 KSWORD_ARK_PLATFORM_DETAIL_NULL_SLOT,
                 index,
                 BuildNumber,
-                KSW_PLATFORM_HAL_SUBCOMPONENT_COUNT,
+                entryCount,
                 0ULL);
         }
         else {

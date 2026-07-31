@@ -867,16 +867,22 @@ QString KernelPlatformAuditTab::signatureText(const unsigned long signatureId)
         return kernelText("kernel.platform.signature.exact_export", QStringLiteral("精确导出 / 失败关闭"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_RIP_RELATIVE_MASKED:
         return kernelText("kernel.platform.signature.rip_masked", QStringLiteral("有界 byte/mask + RIP-relative"));
+    case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V51:
+        return kernelText("kernel.platform.signature.private_v51", QStringLiteral("HAL 私有表 v51 / 0x4B0"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V54:
         return kernelText("kernel.platform.signature.private_v54", QStringLiteral("HAL 私有表 v54 / 0x4D8"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V58:
         return kernelText("kernel.platform.signature.private_v58", QStringLiteral("HAL 私有表 v58 / 0x4F0"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_PRIVATE_V61:
         return kernelText("kernel.platform.signature.private_v61", QStringLiteral("HAL 私有表 v61 / 0x518"));
+    case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_ACPI_V4:
+        return kernelText("kernel.platform.signature.acpi_v4", QStringLiteral("HAL ACPI v4 / 21 项"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_ACPI_V5:
         return kernelText("kernel.platform.signature.acpi_v5", QStringLiteral("HAL ACPI v5 / 18 项"));
     case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_22:
         return kernelText("kernel.platform.signature.subcomponents_22", QStringLiteral("HAL 子组件 / 22 对"));
+    case KSWORD_ARK_PLATFORM_SIGNATURE_HAL_SUBCOMPONENTS_21:
+        return kernelText("kernel.platform.signature.subcomponents_21", QStringLiteral("HAL 子组件 / 21 对"));
     default:
         return QStringLiteral("-");
     }
