@@ -43,6 +43,7 @@
     <ClCompile Include="src\features\callback\image_callback.c" />
     <ClCompile Include="src\features\callback\object_callback.c" />
     <ClCompile Include="src\features\kernel\driver_object_query.c" />
+    <ClCompile Include="src\features\kernel\io_timer_ioctl.c" />
     <ClCompile Include="src\features\kernel\ioctl_registry_query.c" />
     <ClCompile Include="src\features\kernel\driver_integrity.c" />
     <ClCompile Include="src\features\kernel\kernel_unloaded_drivers.c" />

@@ -17,6 +17,7 @@
 #include "KernelHvmTab.h"
 #include "KernelDockIpcTab.h"
 #include "KernelDeviceDriverObjectsTab.h"
+#include "KernelIoTimerTab.h"
 #include "KernelIoctlAuditTab.h"
 #include "KernelIoctlDecoderTab.h"
 #include "KernelObjectDirectoryDeepTab.h"
@@ -859,6 +860,16 @@ void KernelDock::initializeObjectNamespaceTab()
         new KernelDeviceDriverObjectsTab(m_objectNamespaceInnerTabWidget),
         tabIcon(QStringLiteral(":/Icon/process_details.svg")),
         kernelText("kernel.main.inner_tab.device_driver", QStringLiteral("设备与驱动")));
+    auto* ioTimerTab = new KernelIoTimerTab(m_objectNamespaceInnerTabWidget);
+    const int ioTimerInnerTabIndex = m_objectNamespaceInnerTabWidget->addTab(
+        ioTimerTab,
+        tabIcon(QStringLiteral(":/Icon/process_threads.svg")),
+        kernelText("kernel.main.inner_tab.io_timer", QStringLiteral("IoTimer")));
+    m_objectNamespaceInnerTabWidget->setTabToolTip(
+        ioTimerInnerTabIndex,
+        kernelText(
+            "kernel.main.inner_tab.io_timer.tooltip",
+            QStringLiteral("枚举 DEVICE_OBJECT.Timer，并提供经三重身份校验的公开 WDM 启动/停止操作")));
     auto* ioctlAuditTab = new KernelIoctlAuditTab(m_objectNamespaceInnerTabWidget);
     m_objectNamespaceInnerTabWidget->addTab(
         ioctlAuditTab,
@@ -869,13 +880,17 @@ void KernelDock::initializeObjectNamespaceTab()
         tabIcon(QStringLiteral(":/Icon/process_list.svg")),
         kernelText("kernel.main.inner_tab.object_type", QStringLiteral("对象类型")));
 
-    // IOCTL 审计会对每个 DriverObject 发起 R0 查询。KernelDock 即使不是当前主 Dock
-    // 也会为布局恢复而创建，因此只能在用户实际切入该子页后再开始首轮采集。
+    // IOCTL 审计与 IoTimer 都会对每个 DriverObject 发起 R0 查询。KernelDock 即使不是
+    // 当前主 Dock 也会为布局恢复而创建，因此只能在用户实际切入子页后开始首轮采集。
     connect(m_objectNamespaceInnerTabWidget, &QTabWidget::currentChanged, this,
-        [this, ioctlAuditTab](const int tabIndex) {
+        [this, ioctlAuditTab, ioTimerTab](const int tabIndex) {
             if (m_objectNamespaceInnerTabWidget->widget(tabIndex) == ioctlAuditTab)
             {
                 ioctlAuditTab->requestInitialRefresh();
+            }
+            else if (m_objectNamespaceInnerTabWidget->widget(tabIndex) == ioTimerTab)
+            {
+                ioTimerTab->requestInitialRefresh();
             }
         });
 

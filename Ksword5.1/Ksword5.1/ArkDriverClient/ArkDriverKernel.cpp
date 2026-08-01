@@ -793,7 +793,7 @@ namespace ksword::ark
 
         const auto* responseHeader =
             reinterpret_cast<const KSWORD_ARK_QUERY_DRIVER_OBJECT_RESPONSE*>(responseBuffer.data());
-        if (responseHeader->deviceEntrySize < sizeof(KSWORD_ARK_DRIVER_DEVICE_ENTRY))
+        if (responseHeader->deviceEntrySize < KSWORD_ARK_DRIVER_DEVICE_ENTRY_V1_SIZE)
         {
             queryResult.io.ok = false;
             queryResult.io.message =
@@ -863,6 +863,12 @@ namespace ksword::ark
             row.attachedDeviceObjectAddress = static_cast<std::uint64_t>(sourceEntry->attachedDeviceObjectAddress);
             row.driverObjectAddress = static_cast<std::uint64_t>(sourceEntry->driverObjectAddress);
             row.deviceName = fixedKernelWideToString(sourceEntry->deviceName, KSWORD_ARK_DRIVER_DEVICE_NAME_CHARS);
+            // 旧驱动返回 v1 行宽时字段不存在，保持 0；新驱动 v2 才读取公开
+            // DEVICE_OBJECT.Timer 快照，避免越过旧响应行边界。
+            if (responseHeader->deviceEntrySize >= sizeof(KSWORD_ARK_DRIVER_DEVICE_ENTRY))
+            {
+                row.ioTimerAddress = static_cast<std::uint64_t>(sourceEntry->ioTimerAddress);
+            }
             queryResult.devices.push_back(std::move(row));
         }
 
@@ -875,6 +881,95 @@ namespace ksword::ark
             << ", bytesReturned=" << queryResult.io.bytesReturned;
         queryResult.io.message = stream.str();
         return queryResult;
+    }
+
+    IoTimerControlResult DriverClient::controlIoTimer(
+        const unsigned long action,
+        const std::wstring& driverName,
+        const std::uint64_t expectedDriverObjectAddress,
+        const std::uint64_t expectedDeviceObjectAddress,
+        const std::uint64_t expectedTimerAddress,
+        const bool uiConfirmed) const
+    {
+        IoTimerControlResult controlResult{};
+        KSWORD_ARK_CONTROL_IO_TIMER_REQUEST request{};
+        KSWORD_ARK_CONTROL_IO_TIMER_RESPONSE response{};
+
+        request.version = KSWORD_ARK_IO_TIMER_CONTROL_PROTOCOL_VERSION;
+        request.action = action;
+        request.flags = uiConfirmed
+            ? KSWORD_ARK_IO_TIMER_CONTROL_FLAG_UI_CONFIRMED
+            : 0UL;
+        request.confirmationToken = uiConfirmed
+            ? KSWORD_ARK_IO_TIMER_CONTROL_CONFIRMATION_TOKEN
+            : 0UL;
+        request.expectedDriverObjectAddress =
+            static_cast<unsigned long long>(expectedDriverObjectAddress);
+        request.expectedDeviceObjectAddress =
+            static_cast<unsigned long long>(expectedDeviceObjectAddress);
+        request.expectedTimerAddress =
+            static_cast<unsigned long long>(expectedTimerAddress);
+        copyWideToFixed(
+            request.driverName,
+            KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS,
+            driverName);
+
+        controlResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_CONTROL_IO_TIMER,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &response,
+            static_cast<unsigned long>(sizeof(response)));
+        if (!controlResult.io.ok)
+        {
+            controlResult.unsupported =
+                isUnsupportedIoctlError(controlResult.io.win32Error);
+            controlResult.io.message =
+                "DeviceIoControl(IOCTL_KSWORD_ARK_CONTROL_IO_TIMER) failed, error=" +
+                std::to_string(controlResult.io.win32Error);
+            return controlResult;
+        }
+        if (controlResult.io.bytesReturned < sizeof(response))
+        {
+            controlResult.io.ok = false;
+            controlResult.io.message =
+                "IoTimer control response too small, bytesReturned=" +
+                std::to_string(controlResult.io.bytesReturned);
+            return controlResult;
+        }
+        if (response.version != KSWORD_ARK_IO_TIMER_CONTROL_PROTOCOL_VERSION ||
+            response.size < sizeof(response) ||
+            response.action != action)
+        {
+            controlResult.io.ok = false;
+            controlResult.io.message =
+                "IoTimer control response protocol mismatch";
+            return controlResult;
+        }
+
+        controlResult.version = static_cast<std::uint32_t>(response.version);
+        controlResult.status = static_cast<std::uint32_t>(response.status);
+        controlResult.action = static_cast<std::uint32_t>(response.action);
+        controlResult.lastStatus = static_cast<long>(response.lastStatus);
+        controlResult.observedDriverObjectAddress =
+            static_cast<std::uint64_t>(response.observedDriverObjectAddress);
+        controlResult.observedDeviceObjectAddress =
+            static_cast<std::uint64_t>(response.observedDeviceObjectAddress);
+        controlResult.observedTimerAddress =
+            static_cast<std::uint64_t>(response.observedTimerAddress);
+        controlResult.io.ntStatus = controlResult.lastStatus;
+
+        std::ostringstream stream;
+        stream << "version=" << controlResult.version
+            << ", status=" << controlResult.status
+            << ", action=" << controlResult.action
+            << ", lastStatus=0x" << std::hex
+            << static_cast<unsigned long>(controlResult.lastStatus)
+            << ", driver=0x" << controlResult.observedDriverObjectAddress
+            << ", device=0x" << controlResult.observedDeviceObjectAddress
+            << ", timer=0x" << controlResult.observedTimerAddress;
+        controlResult.io.message = stream.str();
+        return controlResult;
     }
 
     DriverIntegrityResult DriverClient::queryDriverIntegrity(

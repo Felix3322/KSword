@@ -476,6 +476,9 @@ Return Value:
     Row->nextDeviceObjectAddress = (ULONGLONG)(ULONG_PTR)DeviceObject->NextDevice;
     Row->attachedDeviceObjectAddress = (ULONGLONG)(ULONG_PTR)DeviceObject->AttachedDevice;
     Row->driverObjectAddress = (ULONGLONG)(ULONG_PTR)DeviceObject->DriverObject;
+    // WDK 公开 DEVICE_OBJECT.Timer；只复制指针快照，不解引用私有 IO_TIMER 布局。
+    // 后续控制必须重新引用对象并校验三重身份，不能把此快照当作稳定操作句柄。
+    Row->ioTimerAddress = (ULONGLONG)(ULONG_PTR)DeviceObject->Timer;
     Row->nameStatus = KswordARKQueryObjectNameToFixed(
         DeviceObject,
         Row->deviceName,

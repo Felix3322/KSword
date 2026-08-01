@@ -7,7 +7,8 @@
 // 作用：
 // - 定义 R3 <-> R0 内核检查协议；
 // - 当前覆盖 SSDT/SSSDT 快照、Inline Hook、IAT/EAT Hook 与 DriverObject 查询；
-// - 所有结构只用于诊断展示，不把内核地址作为后续操作凭据。
+// - 只读地址不能单独作为操作凭据；修改请求必须带名称并由 R0 重新引用对象，
+//   再校验 DriverObject/DeviceObject/子对象三重身份。
 // ============================================================
 
 #define KSWORD_ARK_IOCTL_FUNCTION_ENUM_SSDT 0x806
@@ -23,6 +24,7 @@
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_IOCTL_REGISTRY 0x8A4UL
 #define KSWORD_ARK_IOCTL_FUNCTION_ENUM_TIMER_DPC 0x8A5UL
 #define KSWORD_ARK_IOCTL_FUNCTION_EXPERIMENTAL_RETURN_TO_FIRMWARE 0x8A6UL
+#define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_IO_TIMER 0x8ABUL
 
 #define IOCTL_KSWORD_ARK_ENUM_SSDT \
     CTL_CODE( \
@@ -53,6 +55,15 @@
         KSWORD_ARK_IOCTL_FUNCTION_ENUM_TIMER_DPC, \
         METHOD_BUFFERED, \
         FILE_ANY_ACCESS)
+
+// 中文说明：启用/停止由 IoInitializeTimer 注册的设备 IoTimer。
+// R0 只调用 WDK 公开 IoStartTimer/IoStopTimer，不解引用私有 IO_TIMER 布局。
+#define IOCTL_KSWORD_ARK_CONTROL_IO_TIMER \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_CONTROL_IO_TIMER, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
 
 // 实验性整机级动作：HalReturnToFirmware 不是线程/进程终止 API。
 // 当前只允许 HalRebootRoutine，并要求 UI 明确完成双重确认。
@@ -177,7 +188,9 @@ typedef struct _KSWORD_ARK_QUERY_IOCTL_REGISTRY_RESPONSE
         FILE_ANY_ACCESS)
 
 #define KSWORD_ARK_ENUM_SSDT_PROTOCOL_VERSION 2UL
-#define KSWORD_ARK_DRIVER_OBJECT_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_DRIVER_OBJECT_PROTOCOL_VERSION_V1 1UL
+#define KSWORD_ARK_DRIVER_OBJECT_PROTOCOL_VERSION_V2 2UL
+#define KSWORD_ARK_DRIVER_OBJECT_PROTOCOL_VERSION KSWORD_ARK_DRIVER_OBJECT_PROTOCOL_VERSION_V2
 #define KSWORD_ARK_KERNEL_HOOK_PROTOCOL_VERSION 1UL
 #define KSWORD_ARK_FORCE_UNLOAD_DRIVER_PROTOCOL_VERSION 2UL
 #define KSWORD_ARK_DRIVER_INTEGRITY_PROTOCOL_VERSION_V1 1UL
@@ -737,7 +750,15 @@ typedef struct _KSWORD_ARK_DRIVER_DEVICE_ENTRY
     unsigned long long attachedDeviceObjectAddress;
     unsigned long long driverObjectAddress;
     wchar_t deviceName[KSWORD_ARK_DRIVER_DEVICE_NAME_CHARS];
+    // 中文说明：DEVICE_OBJECT.Timer 是 WDK 公开字段；这里只返回只读 PIO_TIMER 地址，
+    // 供 R3 构造旧版 SKT64 同等的 IoTimer 清单，不把该地址作为后续修改凭据。
+    unsigned long long ioTimerAddress;
 } KSWORD_ARK_DRIVER_DEVICE_ENTRY;
+
+// v1 在 ioTimerAddress 加入前结束于 deviceName。R3 使用该常量兼容旧驱动，
+// v2 驱动通过 deviceEntrySize 明确告知完整行宽。
+#define KSWORD_ARK_DRIVER_DEVICE_ENTRY_V1_SIZE \
+    (sizeof(KSWORD_ARK_DRIVER_DEVICE_ENTRY) - sizeof(unsigned long long))
 
 typedef struct _KSWORD_ARK_QUERY_DRIVER_OBJECT_RESPONSE
 {
@@ -763,6 +784,49 @@ typedef struct _KSWORD_ARK_QUERY_DRIVER_OBJECT_RESPONSE
     KSWORD_ARK_DRIVER_MAJOR_FUNCTION_ENTRY majorFunctions[KSWORD_ARK_DRIVER_MAJOR_FUNCTION_COUNT];
     KSWORD_ARK_DRIVER_DEVICE_ENTRY devices[1];
 } KSWORD_ARK_QUERY_DRIVER_OBJECT_RESPONSE;
+
+#define KSWORD_ARK_IO_TIMER_CONTROL_PROTOCOL_VERSION 1UL
+
+#define KSWORD_ARK_IO_TIMER_CONTROL_ACTION_START 1UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_ACTION_STOP  2UL
+
+#define KSWORD_ARK_IO_TIMER_CONTROL_FLAG_UI_CONFIRMED 0x00000001UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_CONFIRMATION_TOKEN 0x49544D52UL
+
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_OK                      0UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_INVALID_REQUEST         1UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_DRIVER_NOT_FOUND        2UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_DRIVER_IDENTITY_CHANGED 3UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_DEVICE_NOT_FOUND        4UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_DEVICE_IDENTITY_CHANGED 5UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_TIMER_NOT_PRESENT       6UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_TIMER_IDENTITY_CHANGED  7UL
+#define KSWORD_ARK_IO_TIMER_CONTROL_STATUS_ENUMERATION_FAILED      8UL
+
+typedef struct _KSWORD_ARK_CONTROL_IO_TIMER_REQUEST
+{
+    unsigned long version;
+    unsigned long action;
+    unsigned long flags;
+    unsigned long confirmationToken;
+    unsigned long long expectedDriverObjectAddress;
+    unsigned long long expectedDeviceObjectAddress;
+    unsigned long long expectedTimerAddress;
+    wchar_t driverName[KSWORD_ARK_DRIVER_OBJECT_NAME_CHARS];
+} KSWORD_ARK_CONTROL_IO_TIMER_REQUEST;
+
+typedef struct _KSWORD_ARK_CONTROL_IO_TIMER_RESPONSE
+{
+    unsigned long version;
+    unsigned long size;
+    unsigned long status;
+    unsigned long action;
+    long lastStatus;
+    unsigned long reserved;
+    unsigned long long observedDriverObjectAddress;
+    unsigned long long observedDeviceObjectAddress;
+    unsigned long long observedTimerAddress;
+} KSWORD_ARK_CONTROL_IO_TIMER_RESPONSE;
 
 typedef struct _KSWORD_ARK_QUERY_DRIVER_INTEGRITY_REQUEST
 {

@@ -228,6 +228,15 @@ namespace ksword::ark
             unsigned long maxEntries = KSWORD_ARK_TIMER_DPC_DEFAULT_MAX_ENTRIES,
             unsigned long maxEntriesPerBucket = KSWORD_ARK_TIMER_DPC_DEFAULT_BUCKET_BUDGET) const;
         DriverObjectQueryResult queryDriverObject(const std::wstring& driverName, unsigned long flags = KSWORD_ARK_DRIVER_OBJECT_QUERY_FLAG_INCLUDE_ALL, unsigned long maxDevices = KSWORD_ARK_DRIVER_DEVICE_LIMIT_DEFAULT, unsigned long maxAttachedDevices = KSWORD_ARK_DRIVER_ATTACHED_LIMIT_DEFAULT) const;
+        // controlIoTimer：R0 按名称重新引用 DriverObject，用带引用设备快照
+        // 核对 DriverObject/DeviceObject/PIO_TIMER 三重身份后，调用公开 IoStartTimer/IoStopTimer。
+        IoTimerControlResult controlIoTimer(
+            unsigned long action,
+            const std::wstring& driverName,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint64_t expectedDeviceObjectAddress,
+            std::uint64_t expectedTimerAddress,
+            bool uiConfirmed) const;
         // queryIoctlRegistry：查询 KswordARK 统一 dispatch 注册表，只读返回元数据。
         IoctlRegistryQueryResult queryIoctlRegistry(unsigned long flags = KSWORD_ARK_IOCTL_REGISTRY_FLAG_INCLUDE_HANDLER, unsigned long maxEntries = KSWORD_ARK_IOCTL_REGISTRY_MAX_ENTRIES) const;
         // queryDriverIntegrity：

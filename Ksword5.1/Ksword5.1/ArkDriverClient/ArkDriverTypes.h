@@ -1563,6 +1563,7 @@ namespace ksword::ark
         std::uint64_t attachedDeviceObjectAddress = 0; // AttachedDevice。
         std::uint64_t driverObjectAddress = 0;    // DeviceObject.DriverObject。
         std::wstring deviceName;              // 设备对象名，可能为空。
+        std::uint64_t ioTimerAddress = 0;      // DeviceObject.Timer；只读诊断地址。
     };
 
     // DriverObjectQueryResult 承载 Phase-9 DriverObject/DeviceObject 查询响应。
@@ -1587,6 +1588,21 @@ namespace ksword::ark
         std::wstring imagePath;
         std::vector<DriverMajorFunctionEntry> majorFunctions;
         std::vector<DriverDeviceEntry> devices;
+    };
+
+    // IoTimerControlResult 保留 R0 对 DriverObject/DeviceObject/PIO_TIMER
+    // 三重身份的重新观察结果，不把输入地址当作可解引用句柄。
+    struct IoTimerControlResult
+    {
+        IoResult io;                           // io：DeviceIoControl 传输/协议状态。
+        bool unsupported = false;              // unsupported：旧驱动未注册控制 IOCTL。
+        std::uint32_t version = 0;             // version：响应协议版本。
+        std::uint32_t status = KSWORD_ARK_IO_TIMER_CONTROL_STATUS_INVALID_REQUEST; // status：R0 语义结果。
+        std::uint32_t action = 0;              // action：启动/停止动作回显。
+        long lastStatus = 0;                   // lastStatus：协议、对象或枚举 NTSTATUS。
+        std::uint64_t observedDriverObjectAddress = 0; // observedDriverObjectAddress：按名称重新引用结果。
+        std::uint64_t observedDeviceObjectAddress = 0; // observedDeviceObjectAddress：带引用设备快照结果。
+        std::uint64_t observedTimerAddress = 0;        // observedTimerAddress：公开 DEVICE_OBJECT.Timer 快照。
     };
 
     // IoctlRegistryEntry 承载 KswordARK dispatch registry 的一条只读诊断行。

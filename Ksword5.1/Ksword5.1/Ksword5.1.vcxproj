@@ -220,6 +220,7 @@
     <ClCompile Include="KernelDock\KernelCommunicationEndpointTab.cpp" />
     <ClCompile Include="KernelDock\KernelDeviceDriverObjectsTab.cpp" />
     <ClCompile Include="KernelDock\KernelDeviceDriverObjectsWorker.cpp" />
+    <ClCompile Include="KernelDock\KernelIoTimerTab.cpp" />
     <ClCompile Include="KernelDock\KernelIoctlAuditTab.cpp" />
     <ClCompile Include="KernelDock\KernelDockAtomWorker.cpp" />
     <ClCompile Include="KernelDock\KernelDockObjectNamespaceWorker.cpp" />
@@ -473,6 +474,7 @@
     <ClInclude Include="KernelDock\KernelCommunicationEndpointTab.h" />
     <ClInclude Include="KernelDock\KernelDeviceDriverObjectsTab.h" />
     <ClInclude Include="KernelDock\KernelDeviceDriverObjectsWorker.h" />
+    <ClInclude Include="KernelDock\KernelIoTimerTab.h" />
     <ClInclude Include="KernelDock\KernelIoctlAuditTab.h" />
     <ClInclude Include="KernelDock\KernelDockObjectNamespaceWorker.h" />
     <ClInclude Include="KernelDock\KernelDockQueryWorker.h" />
