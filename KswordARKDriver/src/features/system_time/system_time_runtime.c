@@ -17,8 +17,6 @@ Environment:
 #include "system_time_internal.h"
 #include "system_time_counter.h"
 
-#include <intrin.h>
-
 /* HAL 计数器回调在当前 x64 Windows 上不接收参数并返回 64 位计数。 */
 typedef LONGLONG
 (*KSW_SYSTEM_TIME_COUNTER_ROUTINE)(
@@ -29,18 +27,13 @@ typedef LONGLONG
 #define KSW_SYSTEM_TIME_SHARED_DATA_KERNEL_BASE 0xFFFFF78000000000ULL
 #define KSW_SYSTEM_TIME_QPC_BYPASS_OFFSET        0x3C6ULL
 #define KSW_SYSTEM_TIME_QPC_BYPASS_BIT           0x01U
-#define KSW_SYSTEM_TIME_QPC_BYPASS_CLEAR_MASK    ((CHAR)-2)
+#define KSW_SYSTEM_TIME_QPC_BYPASS_CLEAR_MASK    0xFEU
 #define KSW_SYSTEM_TIME_INTERNAL_BYPASS_BIT       0x00010000L
 
 /* 周期维护只在槽被系统恢复为原函数时重新接管，不覆盖未知第三方。 */
 #define KSW_SYSTEM_TIME_MAINTENANCE_PERIOD_MS 1000L
 #define KSW_SYSTEM_TIME_DRAIN_RETRY_COUNT      100UL
 #define KSW_SYSTEM_TIME_DRAIN_DELAY_100NS      (-10000LL)
-
-#if defined(_M_AMD64) || defined(_M_X64)
-#pragma intrinsic(_InterlockedAnd8)
-#pragma intrinsic(_InterlockedOr8)
-#endif
 
 /* 全局状态由控制锁保护；标为 volatile 的字段还会被 DPC 或钩子读取。 */
 typedef struct _KSWORD_ARK_SYSTEM_TIME_STATE
@@ -68,16 +61,101 @@ typedef struct _KSWORD_ARK_SYSTEM_TIME_STATE
 
 static KSWORD_ARK_SYSTEM_TIME_STATE g_KswordArkSystemTimeState;
 
-/* 返回内核态 KUSER_SHARED_DATA 中 QPC 旁路字节的可写别名。 */
+/* 返回 KUSER_SHARED_DATA 中 QPC 旁路字节的只读内核映射。 */
 static
-volatile CHAR*
+volatile UCHAR*
 KswordARKSystemTimeQpcBypassByte(
     VOID
     )
 {
-    return (volatile CHAR*)(ULONG_PTR)(
+    return (volatile UCHAR*)(ULONG_PTR)(
         KSW_SYSTEM_TIME_SHARED_DATA_KERNEL_BASE +
         KSW_SYSTEM_TIME_QPC_BYPASS_OFFSET);
+}
+
+/*
+ * KUSER_SHARED_DATA 的内核虚拟映射在新系统上是只读的，MmIsAddressValid
+ * 只能证明页面存在，不能证明它允许写入。这里沿用原功能的物理页映射
+ * 原理，但按整页建立短期、同缓存属性的可写映射，并在解除映射前验证
+ * 目标位，避免再对 0xFFFFF780... 直接执行写操作而触发 0x50。
+ */
+static
+NTSTATUS
+KswordARKSystemTimeWriteQpcBypassBit(
+    _In_ BOOLEAN Enabled,
+    _Out_opt_ BOOLEAN* PreviousEnabled
+    )
+{
+#if defined(_M_AMD64) || defined(_M_X64)
+    volatile UCHAR* qpcBypass =
+        KswordARKSystemTimeQpcBypassByte();
+    PHYSICAL_ADDRESS targetPhysical = { 0 };
+    PHYSICAL_ADDRESS pagePhysical = { 0 };
+    SIZE_T pageOffset = 0U;
+    PVOID mappedPage = NULL;
+    volatile UCHAR* mappedByte = NULL;
+    UCHAR oldByte = 0U;
+    UCHAR newByte = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (PreviousEnabled != NULL) {
+        *PreviousEnabled = FALSE;
+    }
+    if (KeGetCurrentIrql() > DISPATCH_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (!MmIsAddressValid((PVOID)qpcBypass)) {
+        return STATUS_ACCESS_VIOLATION;
+    }
+
+    targetPhysical = MmGetPhysicalAddress((PVOID)qpcBypass);
+    pageOffset = (SIZE_T)(
+        (ULONGLONG)targetPhysical.QuadPart &
+        ((ULONGLONG)PAGE_SIZE - 1ULL));
+    pagePhysical.QuadPart =
+        targetPhysical.QuadPart - (LONGLONG)pageOffset;
+    mappedPage = MmMapIoSpace(
+        pagePhysical,
+        PAGE_SIZE,
+        MmCached);
+    if (mappedPage == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    mappedByte = (volatile UCHAR*)(
+        (UCHAR*)mappedPage + pageOffset);
+    __try {
+        oldByte = *mappedByte;
+        newByte = Enabled
+            ? (UCHAR)(oldByte |
+                KSW_SYSTEM_TIME_QPC_BYPASS_BIT)
+            : (UCHAR)(oldByte &
+                KSW_SYSTEM_TIME_QPC_BYPASS_CLEAR_MASK);
+        *mappedByte = newByte;
+        KeMemoryBarrier();
+        if (((*mappedByte &
+                KSW_SYSTEM_TIME_QPC_BYPASS_BIT) != 0U) !=
+            (Enabled != FALSE)) {
+            *mappedByte = oldByte;
+            KeMemoryBarrier();
+            status = STATUS_DATA_ERROR;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    MmUnmapIoSpace(mappedPage, PAGE_SIZE);
+    if (NT_SUCCESS(status) && PreviousEnabled != NULL) {
+        *PreviousEnabled =
+            (oldByte & KSW_SYSTEM_TIME_QPC_BYPASS_BIT) != 0U;
+    }
+    return status;
+#else
+    UNREFERENCED_PARAMETER(Enabled);
+    UNREFERENCED_PARAMETER(PreviousEnabled);
+    return STATUS_NOT_SUPPORTED;
+#endif
 }
 
 /* 读取一个函数指针槽；SEH 防止异常解析状态造成系统崩溃。 */
@@ -154,31 +232,43 @@ KswordARKSystemTimeDisableBypassesLocked(
     )
 {
 #if defined(_M_AMD64) || defined(_M_X64)
-    volatile CHAR* qpcBypass = NULL;
-    CHAR oldQpcByte = 0;
+    BOOLEAN oldQpcBypassBit = FALSE;
     LONG oldInternalFlags = 0L;
+    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS rollbackStatus = STATUS_SUCCESS;
 
-    qpcBypass = KswordARKSystemTimeQpcBypassByte();
-    if (!MmIsAddressValid((PVOID)qpcBypass) ||
-        g_KswordArkSystemTimeState.Resolution.InternalFlags == NULL) {
+    if (g_KswordArkSystemTimeState.Resolution.InternalFlags == NULL) {
         return STATUS_ACCESS_VIOLATION;
     }
 
+    status = KswordARKSystemTimeWriteQpcBypassBit(
+        FALSE,
+        &oldQpcBypassBit);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
     __try {
-        oldQpcByte = _InterlockedAnd8(
-            qpcBypass,
-            KSW_SYSTEM_TIME_QPC_BYPASS_CLEAR_MASK);
         oldInternalFlags = InterlockedAnd(
             g_KswordArkSystemTimeState.Resolution.InternalFlags,
             ~KSW_SYSTEM_TIME_INTERNAL_BYPASS_BIT);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        return GetExceptionCode();
+        status = GetExceptionCode();
+        rollbackStatus = KswordARKSystemTimeWriteQpcBypassBit(
+            oldQpcBypassBit,
+            NULL);
+        if (!NT_SUCCESS(rollbackStatus)) {
+            InterlockedExchange(
+                &g_KswordArkSystemTimeState.ConflictDetected,
+                1L);
+            return rollbackStatus;
+        }
+        return status;
     }
 
     g_KswordArkSystemTimeState.OriginalQpcBypassBit =
-        (oldQpcByte &
-            KSW_SYSTEM_TIME_QPC_BYPASS_BIT) != 0;
+        oldQpcBypassBit;
     g_KswordArkSystemTimeState.OriginalInternalBypassBit =
         (oldInternalFlags &
             KSW_SYSTEM_TIME_INTERNAL_BYPASS_BIT) != 0;
@@ -192,30 +282,23 @@ KswordARKSystemTimeDisableBypassesLocked(
 
 /* 按激活前快照恢复两个旁路位，不改写同字节中的其它系统标志。 */
 static
-VOID
+NTSTATUS
 KswordARKSystemTimeRestoreBypasses(
     VOID
     )
 {
 #if defined(_M_AMD64) || defined(_M_X64)
-    volatile CHAR* qpcBypass = NULL;
+    NTSTATUS qpcStatus = STATUS_SUCCESS;
+    NTSTATUS internalStatus = STATUS_SUCCESS;
 
     if (!g_KswordArkSystemTimeState.PatchBitsCaptured) {
-        return;
+        return STATUS_SUCCESS;
     }
 
-    qpcBypass = KswordARKSystemTimeQpcBypassByte();
+    qpcStatus = KswordARKSystemTimeWriteQpcBypassBit(
+        g_KswordArkSystemTimeState.OriginalQpcBypassBit,
+        NULL);
     __try {
-        if (g_KswordArkSystemTimeState.OriginalQpcBypassBit) {
-            (void)_InterlockedOr8(
-                qpcBypass,
-                (CHAR)KSW_SYSTEM_TIME_QPC_BYPASS_BIT);
-        } else {
-            (void)_InterlockedAnd8(
-                qpcBypass,
-                KSW_SYSTEM_TIME_QPC_BYPASS_CLEAR_MASK);
-        }
-
         if (g_KswordArkSystemTimeState.OriginalInternalBypassBit) {
             (void)InterlockedOr(
                 g_KswordArkSystemTimeState.Resolution.InternalFlags,
@@ -227,12 +310,23 @@ KswordARKSystemTimeRestoreBypasses(
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        internalStatus = GetExceptionCode();
+    }
+
+    if (!NT_SUCCESS(qpcStatus) ||
+        !NT_SUCCESS(internalStatus)) {
         InterlockedExchange(
             &g_KswordArkSystemTimeState.ConflictDetected,
             1L);
+        return !NT_SUCCESS(qpcStatus)
+            ? qpcStatus
+            : internalStatus;
     }
-
     g_KswordArkSystemTimeState.PatchBitsCaptured = FALSE;
+    return STATUS_SUCCESS;
+#else
+    /* 非 x64 路径不会捕获或修改旁路位，恢复保持幂等成功。 */
+    return STATUS_SUCCESS;
 #endif
 }
 
@@ -466,6 +560,7 @@ KswordARKSystemTimeDeactivateLocked(
 {
     BOOLEAN primaryRestored = TRUE;
     BOOLEAN secondaryRestored = TRUE;
+    NTSTATUS bypassStatus = STATUS_SUCCESS;
     ULONG retryIndex = 0UL;
     LARGE_INTEGER delay = { 0 };
 
@@ -487,7 +582,7 @@ KswordARKSystemTimeDeactivateLocked(
             g_KswordArkSystemTimeState.OriginalSecondary);
     }
 
-    KswordARKSystemTimeRestoreBypasses();
+    bypassStatus = KswordARKSystemTimeRestoreBypasses();
     KeMemoryBarrier();
     delay.QuadPart =
         KSW_SYSTEM_TIME_DRAIN_DELAY_100NS;
@@ -510,6 +605,7 @@ KswordARKSystemTimeDeactivateLocked(
 
     if (!primaryRestored ||
         !secondaryRestored ||
+        !NT_SUCCESS(bypassStatus) ||
         retryIndex == KSW_SYSTEM_TIME_DRAIN_RETRY_COUNT) {
         InterlockedExchange(
             &g_KswordArkSystemTimeState.ConflictDetected,
@@ -519,8 +615,12 @@ KswordARKSystemTimeDeactivateLocked(
             KSWORD_ARK_SYSTEM_TIME_STATUS_CONFLICT);
         InterlockedExchange(
             &g_KswordArkSystemTimeState.LastStatus,
-            STATUS_CONFLICTING_ADDRESSES);
-        return STATUS_CONFLICTING_ADDRESSES;
+            !NT_SUCCESS(bypassStatus)
+                ? bypassStatus
+                : STATUS_CONFLICTING_ADDRESSES);
+        return !NT_SUCCESS(bypassStatus)
+            ? bypassStatus
+            : STATUS_CONFLICTING_ADDRESSES;
     }
 
     InterlockedExchange(
@@ -597,7 +697,7 @@ KswordARKSystemTimeActivateLocked(
     if (!KswordARKSystemTimePatchSlot(
             g_KswordArkSystemTimeState.Resolution.PrimarySlot,
             g_KswordArkSystemTimeState.OriginalPrimary)) {
-        KswordARKSystemTimeRestoreBypasses();
+        (void)KswordARKSystemTimeRestoreBypasses();
         status = STATUS_CONFLICTING_ADDRESSES;
     } else if (!KswordARKSystemTimePatchSlot(
             g_KswordArkSystemTimeState.Resolution.SecondarySlot,
@@ -605,7 +705,7 @@ KswordARKSystemTimeActivateLocked(
         (void)KswordARKSystemTimeRestoreSlot(
             g_KswordArkSystemTimeState.Resolution.PrimarySlot,
             g_KswordArkSystemTimeState.OriginalPrimary);
-        KswordARKSystemTimeRestoreBypasses();
+        (void)KswordARKSystemTimeRestoreBypasses();
         status = STATUS_CONFLICTING_ADDRESSES;
     }
 
@@ -714,7 +814,7 @@ KswordARKSystemTimeMaintenanceDpc(
     (void)KswordARKSystemTimeRestoreSlot(
         g_KswordArkSystemTimeState.Resolution.SecondarySlot,
         g_KswordArkSystemTimeState.OriginalSecondary);
-    KswordARKSystemTimeRestoreBypasses();
+    (void)KswordARKSystemTimeRestoreBypasses();
     InterlockedExchange(
         &g_KswordArkSystemTimeState.ConflictDetected,
         1L);
