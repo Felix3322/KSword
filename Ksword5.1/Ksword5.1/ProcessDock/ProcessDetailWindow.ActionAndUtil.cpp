@@ -13,6 +13,17 @@ using namespace process_detail_window_internal;
 
 void ProcessDetailWindow::executeTerminateProcessAction()
 {
+    if (!ks::ui::confirmDestructiveAction(
+            this,
+            QStringLiteral("process-termination-r3"),
+            ks::i18n::sourceText(QStringLiteral("结束进程")),
+            ks::i18n::sourceText(QStringLiteral("PID %1（%2）"))
+                .arg(m_baseRecord.pid)
+                .arg(QString::fromStdString(m_baseRecord.processName))))
+    {
+        return;
+    }
+
     // TerminateProcess 操作日志：同一动作只使用一个 kLogEvent，保证调用链可追踪。
     kLogEvent actionEvent;
     warn << actionEvent
@@ -33,6 +44,17 @@ void ProcessDetailWindow::executeTerminateProcessAction()
 
 void ProcessDetailWindow::executeTerminateThreadsAction()
 {
+    if (!ks::ui::confirmDestructiveAction(
+            this,
+            QStringLiteral("process-termination-r3"),
+            ks::i18n::sourceText(QStringLiteral("结束进程的全部线程")),
+            ks::i18n::sourceText(QStringLiteral("PID %1（%2）"))
+                .arg(m_baseRecord.pid)
+                .arg(QString::fromStdString(m_baseRecord.processName))))
+    {
+        return;
+    }
+
     // 全线程结束日志：同一动作只使用一个 kLogEvent，保证调用链可追踪。
     kLogEvent actionEvent;
     warn << actionEvent

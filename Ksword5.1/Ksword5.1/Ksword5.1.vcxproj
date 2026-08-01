@@ -183,6 +183,7 @@
     <ClCompile Include="Framework\Log.cpp" />
     <ClCompile Include="Framework\LogDockWidget.cpp" />
     <ClCompile Include="Framework\NotificationCardManager.cpp" />
+    <ClCompile Include="Framework\DestructiveActionConfirmation.cpp" />
     <ClCompile Include="Framework\Progress.cpp" />
     <ClCompile Include="Framework\ProgressDockWidget.cpp" />
     <ClCompile Include="Framework\CustomTitleBar.cpp" />
@@ -461,6 +462,7 @@
     <ClInclude Include="FileDock\FilePropertyPeAnalyzer.Internal.h" />
     <ClInclude Include="Framework\LogDockWidget.h" />
     <ClInclude Include="Framework\NotificationCardManager.h" />
+    <ClInclude Include="Framework\DestructiveActionConfirmation.h" />
     <ClInclude Include="Framework\PrivilegeElevationPrompt.h" />
     <ClInclude Include="Framework\ProgressDockWidget.h" />
     <ClInclude Include="Framework\StartupSplash.h" />

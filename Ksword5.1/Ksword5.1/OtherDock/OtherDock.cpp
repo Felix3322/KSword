@@ -1,5 +1,6 @@
 #include "OtherDock.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../Framework/DestructiveActionConfirmation.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
@@ -4462,7 +4463,19 @@ void OtherDock::showWindowContextMenu(const QPoint& localPos)
     }
     else if (selectedAction == terminateAction)
     {
-        // 结束进程动作：按规范仅写日志，不再弹窗确认或结果提示。
+        const QString targetDescription = ks::i18n::sourceText(QStringLiteral("PID %1（%2）"))
+            .arg(windowInfo->processId)
+            .arg(windowInfo->processNameText);
+        if (!ks::ui::confirmDestructiveAction(
+                this,
+                QStringLiteral("process-termination-r3"),
+                ks::i18n::sourceText(QStringLiteral("结束进程")),
+                targetDescription))
+        {
+            return;
+        }
+
+        // 结束进程动作：确认后执行，结果继续通过统一日志记录。
         kLogEvent actionEvent;
         warn << actionEvent
             << "[OtherDock] 执行操作：结束进程, pid="

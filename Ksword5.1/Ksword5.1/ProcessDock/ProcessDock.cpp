@@ -12,6 +12,7 @@
 #include "../UI/TableColumnAutoFit.h"
 #include "../Internationalization/LanguageManager.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../Framework/DestructiveActionConfirmation.h"
 #include "../ksword/network/network_process_etw_monitor.h"
 
 #include <QAbstractItemModel>
@@ -11858,6 +11859,27 @@ void ProcessDock::executeR0TerminateProcessActions(
     const QString& actionTitle,
     const std::vector<ProcessActionTarget>& actionTargets)
 {
+    QStringList targetPidList;
+    for (const ProcessActionTarget& actionTarget : actionTargets)
+    {
+        targetPidList.push_back(QString::number(actionTarget.record.pid));
+    }
+    const QString targetDescription = ks::i18n::sourceText(
+        QStringLiteral("%1 个进程；PID：%2"))
+        .arg(actionTargets.size())
+        .arg(targetPidList.join(QStringLiteral(", ")));
+    if (!ks::ui::confirmDestructiveAction(
+            this,
+            QStringLiteral("process-termination-r0"),
+            actionTitle,
+            targetDescription,
+            ks::i18n::sourceText(QStringLiteral(
+                "R0 结束操作不可逆，可能造成数据丢失、系统不稳定或蓝屏。请确认目标无误后再继续。"))))
+    {
+        clearContextActionBinding();
+        return;
+    }
+
     dispatchProcessActionTargetsInParallel(
         actionTitle,
         actionTargets,
@@ -12378,6 +12400,25 @@ void ProcessDock::executeTerminateProcessActions(
     const QString& actionTitle,
     const std::vector<ProcessActionTarget>& actionTargets)
 {
+    QStringList targetPidList;
+    for (const ProcessActionTarget& actionTarget : actionTargets)
+    {
+        targetPidList.push_back(QString::number(actionTarget.record.pid));
+    }
+    const QString targetDescription = ks::i18n::sourceText(
+        QStringLiteral("%1 个进程；PID：%2"))
+        .arg(actionTargets.size())
+        .arg(targetPidList.join(QStringLiteral(", ")));
+    if (!ks::ui::confirmDestructiveAction(
+            this,
+            QStringLiteral("process-termination-r3"),
+            actionTitle,
+            targetDescription))
+    {
+        clearContextActionBinding();
+        return;
+    }
+
     dispatchProcessActionTargetsInParallel(
         actionTitle,
         actionTargets,

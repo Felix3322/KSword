@@ -3783,6 +3783,17 @@
     "kernel.callback.enum.registration_type.legacy_fs_post": "旧式 FS Post 回调"
   },
   "source_translations": {
+    "DestructiveActionConfirmation.h": "DestructiveActionConfirmation.h",
+    "%1 个进程；PID：%2": "%1 个进程；PID：%2",
+    "PID %1（%2）": "PID %1（%2）",
+    "R0 结束操作不可逆，可能造成数据丢失、系统不稳定或蓝屏。请确认目标无误后再继续。": "R0 结束操作不可逆，可能造成数据丢失、系统不稳定或蓝屏。请确认目标无误后再继续。",
+    "不再弹出此类操作的确认提示": "不再弹出此类操作的确认提示",
+    "即将执行“%1”。": "即将执行“%1”。",
+    "此操作可能导致未保存的数据丢失、目标程序异常或系统不稳定。请确认目标无误后再继续。": "此操作可能导致未保存的数据丢失、目标程序异常或系统不稳定。请确认目标无误后再继续。",
+    "目标：%1\n\n%2": "目标：%1\n\n%2",
+    "确认高风险操作": "确认高风险操作",
+    "结束进程的全部线程": "结束进程的全部线程",
+    "组合方法结束进程": "组合方法结束进程",
     " invalid response: ": " 响应无效：",
     "ClassDeviceObject": "ClassDeviceObject",
     "ClassDeviceObject %1 不在设备 %2 的附加栈。": "ClassDeviceObject %1 不在设备 %2 的附加栈。",

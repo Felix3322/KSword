@@ -95,6 +95,17 @@ namespace
 
 void ProcessDetailWindow::executeTerminateProcessComboAction()
 {
+    if (!ks::ui::confirmDestructiveAction(
+            this,
+            QStringLiteral("process-termination-r3"),
+            ks::i18n::sourceText(QStringLiteral("组合方法结束进程")),
+            ks::i18n::sourceText(QStringLiteral("PID %1（%2）"))
+                .arg(m_baseRecord.pid)
+                .arg(QString::fromStdString(m_baseRecord.processName))))
+    {
+        return;
+    }
+
     // 组合结束动作：
     // - 与进程列表右键菜单保持同一方法顺序；
     // - 每个方法执行后检查目标是否退出，避免无意义继续破坏现场。
@@ -304,6 +315,19 @@ void ProcessDetailWindow::executeRefreshPplProtectionLevelAction()
 
 void ProcessDetailWindow::executeR0TerminateProcessAction()
 {
+    if (!ks::ui::confirmDestructiveAction(
+            this,
+            QStringLiteral("process-termination-r0"),
+            ks::i18n::sourceText(QStringLiteral("R0 结束进程")),
+            ks::i18n::sourceText(QStringLiteral("PID %1（%2）"))
+                .arg(m_baseRecord.pid)
+                .arg(QString::fromStdString(m_baseRecord.processName)),
+            ks::i18n::sourceText(QStringLiteral(
+                "R0 结束操作不可逆，可能造成数据丢失、系统不稳定或蓝屏。请确认目标无误后再继续。"))))
+    {
+        return;
+    }
+
     // R0 结束进程：
     // - 通过 ArkDriverClient 封装控制设备访问；
     // - exitStatus 固定为 1，与列表右键入口保持一致。
