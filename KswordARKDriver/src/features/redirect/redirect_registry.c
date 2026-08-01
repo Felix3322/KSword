@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "redirect_internal.h"
+#include "ark/ark_push_lock.h"
 
 static const WCHAR g_KswordArkRedirectRegistryAltitude[] = L"385201.6141";
 
@@ -171,14 +172,14 @@ Return Value:
         return STATUS_SUCCESS;
     }
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     status = KswordARKRedirectFindMatchLocked(
         runtime,
         KSWORD_ARK_REDIRECT_TYPE_REGISTRY,
         processId,
         view.CompleteName,
         &matchedRule);
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
     if (!NT_SUCCESS(status)) {
         return STATUS_SUCCESS;
     }

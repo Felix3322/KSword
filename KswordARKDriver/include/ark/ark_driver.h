@@ -8,6 +8,7 @@
 #include <initguid.h>
 
 #include "ark_device.h"
+#include "ark_push_lock.h"
 #include "ark_file.h"
 #include "ark_queue.h"
 #include "ark_process.h"

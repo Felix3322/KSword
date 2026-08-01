@@ -277,9 +277,9 @@ Return Value:
         return status;
     }
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     generation = runtime->Generation;
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
 
     queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
     budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
@@ -369,9 +369,9 @@ Return Value:
         return status;
     }
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     generation = runtime->Generation;
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
 
     queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
     budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
@@ -690,14 +690,14 @@ Return Value:
         return status;
     }
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     generation = runtime->Generation;
     runtimeFlags = runtime->RuntimeFlags;
     connectCalloutId = runtime->ConnectCalloutId;
     recvAcceptCalloutId = runtime->RecvAcceptCalloutId;
     connectFilterId = runtime->ConnectFilterId;
     recvAcceptFilterId = runtime->RecvAcceptFilterId;
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
 
     queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
     budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);
@@ -870,9 +870,9 @@ Return Value:
         return status;
     }
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     generation = runtime->Generation;
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
 
     queryFlags = KswordARKNetworkAuditNormalizeFlags(Request);
     budgetRows = KswordARKNetworkAuditNormalizeBudget(Request);

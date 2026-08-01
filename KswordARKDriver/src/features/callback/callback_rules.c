@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "callback_internal.h"
+#include "ark/ark_push_lock.h"
 
 typedef struct _KSWORD_ARK_GROUP_VIEW
 {
@@ -243,14 +244,14 @@ KswordArkCallbackAcquireSnapshot(
         return NULL;
     }
 
-    ExAcquirePushLockShared(&runtime->SnapshotLock);
+    KswordARKAcquirePushLockShared(&runtime->SnapshotLock);
     snapshot = runtime->ActiveSnapshot;
     if (snapshot != NULL) {
         if (!ExAcquireRundownProtection(&snapshot->RundownRef)) {
             snapshot = NULL;
         }
     }
-    ExReleasePushLockShared(&runtime->SnapshotLock);
+    KswordARKReleasePushLockShared(&runtime->SnapshotLock);
     return snapshot;
 }
 
@@ -629,10 +630,10 @@ KswordArkCallbackSwapSnapshot(
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    ExAcquirePushLockExclusive(&runtime->SnapshotLock);
+    KswordARKAcquirePushLockExclusive(&runtime->SnapshotLock);
     oldSnapshot = runtime->ActiveSnapshot;
     runtime->ActiveSnapshot = newSnapshot;
-    ExReleasePushLockExclusive(&runtime->SnapshotLock);
+    KswordARKReleasePushLockExclusive(&runtime->SnapshotLock);
 
     if (oldSnapshot != NULL) {
         ExWaitForRundownProtectionRelease(&oldSnapshot->RundownRef);

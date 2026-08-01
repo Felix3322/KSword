@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "ark/ark_alpc.h"
+#include "ark/ark_push_lock.h"
 
 #include "ark/ark_dyndata.h"
 #include "alpc_runtime_fallback.h"
@@ -110,7 +111,7 @@ Return Value:
     __try {
         KeEnterCriticalRegion();
         criticalRegionEntered = TRUE;
-        ExAcquirePushLockShared(handleTableLock);
+        KswordARKAcquirePushLockShared(handleTableLock);
         lockHeld = TRUE;
 
         if (KswordARKAlpcIsOffsetPresent(DynState->Kernel.AlpcConnectionPort)) {
@@ -158,7 +159,7 @@ Return Value:
             }
         }
 
-        ExReleasePushLockShared(handleTableLock);
+        KswordARKReleasePushLockShared(handleTableLock);
         lockHeld = FALSE;
         KeLeaveCriticalRegion();
         criticalRegionEntered = FALSE;
@@ -166,7 +167,7 @@ Return Value:
     __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
         if (lockHeld) {
-            ExReleasePushLockShared(handleTableLock);
+            KswordARKReleasePushLockShared(handleTableLock);
             lockHeld = FALSE;
         }
         if (criticalRegionEntered) {

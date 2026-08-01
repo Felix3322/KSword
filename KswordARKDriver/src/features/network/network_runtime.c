@@ -622,6 +622,44 @@ Return Value:
     }
 }
 
+static VOID
+KswordARKNetworkPublishClassifyRulesLocked(
+    _Inout_ KSWORD_ARK_NETWORK_RUNTIME* Runtime
+    )
+/*++
+
+Routine Description:
+
+    将低频规则状态发布为 DISPATCH_LEVEL 可读取的独立快照。中文说明：调用方持有
+    Runtime->Lock；本函数只在短暂 spin-lock 临界区复制固定 32 项规则。
+
+Arguments:
+
+    Runtime - 网络运行时。
+
+Return Value:
+
+    None. 本函数没有返回值。
+
+--*/
+{
+    KIRQL oldIrql = PASSIVE_LEVEL;
+
+    if (Runtime == NULL) {
+        return;
+    }
+
+    KeAcquireSpinLock(&Runtime->ClassifyRuleLock, &oldIrql);
+    RtlCopyMemory(
+        Runtime->ClassifyRules,
+        Runtime->Rules,
+        sizeof(Runtime->ClassifyRules));
+    InterlockedExchange(
+        &Runtime->ClassifyRulesActive,
+        Runtime->BlockedRuleCount != 0UL ? 1L : 0L);
+    KeReleaseSpinLock(&Runtime->ClassifyRuleLock, oldIrql);
+}
+
 NTSTATUS
 KswordARKNetworkInitialize(
     _In_ PDRIVER_OBJECT DriverObject,
@@ -649,6 +687,8 @@ Return Value:
 
     RtlZeroMemory(&g_KswordArkNetworkRuntime, sizeof(g_KswordArkNetworkRuntime));
     ExInitializePushLock(&g_KswordArkNetworkRuntime.Lock);
+    // 中文说明：WFP classify 规则快照必须支持 DISPATCH_LEVEL 读取。
+    KeInitializeSpinLock(&g_KswordArkNetworkRuntime.ClassifyRuleLock);
     // 中文说明：事件 ring 在 classify 可达的 DISPATCH_LEVEL 使用独立自旋锁。
     KeInitializeSpinLock(&g_KswordArkNetworkRuntime.EventLock);
     // 中文说明：IP packet 逐包 ring 使用独立自旋锁，避免 ALE 规则事件相互阻塞。
@@ -715,7 +755,7 @@ Return Value:
 
     InterlockedExchange(&runtime->TrafficCaptureEnabled, 0L);
 
-    ExAcquirePushLockExclusive(&runtime->Lock);
+    KswordARKAcquirePushLockExclusive(&runtime->Lock);
     RtlZeroMemory(runtime->Rules, sizeof(runtime->Rules));
     runtime->RuleCount = 0UL;
     runtime->BlockedRuleCount = 0UL;
@@ -725,7 +765,8 @@ Return Value:
             KSWORD_ARK_NETWORK_RUNTIME_WFP_STARTED |
             KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED);
     runtime->Generation += 1UL;
-    ExReleasePushLockExclusive(&runtime->Lock);
+    KswordARKNetworkPublishClassifyRulesLocked(runtime);
+    KswordARKReleasePushLockExclusive(&runtime->Lock);
 
     KswordARKNetworkWfpUnregister(runtime);
     runtime->RuntimeFlags = 0UL;
@@ -888,19 +929,20 @@ Return Value:
         return STATUS_SUCCESS;
     }
 
-    ExAcquirePushLockExclusive(&runtime->Lock);
+    KswordARKAcquirePushLockExclusive(&runtime->Lock);
     RtlZeroMemory(runtime->Rules, sizeof(runtime->Rules));
     if (Request->action == KSWORD_ARK_NETWORK_ACTION_REPLACE && appliedCount != 0UL) {
         RtlCopyMemory(runtime->Rules, newRules, sizeof(newRules));
     }
     runtime->Generation += 1UL;
     KswordARKNetworkRefreshCountersLocked(runtime);
+    KswordARKNetworkPublishClassifyRulesLocked(runtime);
     response->runtimeFlags = runtime->RuntimeFlags;
     response->appliedCount = runtime->RuleCount;
     response->blockedRuleCount = runtime->BlockedRuleCount;
     response->hiddenPortRuleCount = runtime->HiddenPortRuleCount;
     response->generation = runtime->Generation;
-    ExReleasePushLockExclusive(&runtime->Lock);
+    KswordARKReleasePushLockExclusive(&runtime->Lock);
 
     if (Request->action == KSWORD_ARK_NETWORK_ACTION_REPLACE) {
         response->status = NT_SUCCESS(runtime->RegisterStatus) ?
@@ -963,7 +1005,7 @@ Return Value:
         KSWORD_ARK_NETWORK_STATUS_APPLIED :
         KSWORD_ARK_NETWORK_STATUS_WFP_UNAVAILABLE;
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     response->runtimeFlags = runtime->RuntimeFlags;
     response->ruleCount = runtime->RuleCount;
     response->blockedRuleCount = runtime->BlockedRuleCount;
@@ -974,7 +1016,7 @@ Return Value:
     response->registerStatus = runtime->RegisterStatus;
     response->engineStatus = runtime->EngineStatus;
     RtlCopyMemory(response->rules, runtime->Rules, sizeof(response->rules));
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
 
     *BytesWrittenOut = sizeof(*response);
     return STATUS_SUCCESS;
@@ -1015,7 +1057,7 @@ Return Value:
         return FALSE;
     }
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     for (ruleIndex = 0UL; ruleIndex < KSWORD_ARK_NETWORK_MAX_RULES; ++ruleIndex) {
         const KSWORD_ARK_NETWORK_RULE* rule = &runtime->Rules[ruleIndex];
         if (rule->action != KSWORD_ARK_NETWORK_RULE_ACTION_HIDE_PORT) {
@@ -1032,7 +1074,7 @@ Return Value:
             break;
         }
     }
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
 
     return shouldHide;
 }

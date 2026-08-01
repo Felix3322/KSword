@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "ark/ark_capability.h"
+#include "ark/ark_push_lock.h"
 #include "ark/ark_dyndata.h"
 #include "ark/ark_safety.h"
 
@@ -460,11 +461,11 @@ Return Value:
 
 --*/
 {
-    ExAcquirePushLockExclusive(&g_KswordArkCapabilityErrorLock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkCapabilityErrorLock);
     g_KswordArkLastCapabilityError.Status = Status;
     KswordARKCapabilityCopyAnsi(g_KswordArkLastCapabilityError.Source, sizeof(g_KswordArkLastCapabilityError.Source), SourceText);
     KswordARKCapabilityCopyAnsi(g_KswordArkLastCapabilityError.Summary, sizeof(g_KswordArkLastCapabilityError.Summary), SummaryText);
-    ExReleasePushLockExclusive(&g_KswordArkCapabilityErrorLock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkCapabilityErrorLock);
 }
 
 BOOLEAN
@@ -557,9 +558,9 @@ Return Value:
     totalCount = KswordARKCapabilityBuildFeatureEntries(NULL, 0UL, securityPolicyFlags, dynState.CapabilityMask);
 
     RtlZeroMemory(&lastError, sizeof(lastError));
-    ExAcquirePushLockShared(&g_KswordArkCapabilityErrorLock);
+    KswordARKAcquirePushLockShared(&g_KswordArkCapabilityErrorLock);
     RtlCopyMemory(&lastError, &g_KswordArkLastCapabilityError, sizeof(lastError));
-    ExReleasePushLockShared(&g_KswordArkCapabilityErrorLock);
+    KswordARKReleasePushLockShared(&g_KswordArkCapabilityErrorLock);
 
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     response = (KSWORD_ARK_QUERY_DRIVER_CAPABILITIES_RESPONSE*)OutputBuffer;

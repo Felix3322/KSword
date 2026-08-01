@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "redirect_internal.h"
+#include "ark/ark_push_lock.h"
 
 NTSTATUS
 KswordARKRedirectTryRewriteFileCreate(
@@ -71,14 +72,14 @@ Return Value:
     sourceName = FltObjects->FileObject->FileName;
     processId = (ULONG)(ULONG_PTR)FltGetRequestorProcessId(Data);
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     status = KswordARKRedirectFindMatchLocked(
         runtime,
         KSWORD_ARK_REDIRECT_TYPE_FILE,
         processId,
         &sourceName,
         &matchedRule);
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
     if (!NT_SUCCESS(status)) {
         return STATUS_SUCCESS;
     }

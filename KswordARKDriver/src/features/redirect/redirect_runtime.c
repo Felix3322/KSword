@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "redirect_internal.h"
+#include "ark/ark_push_lock.h"
 
 #include <stdarg.h>
 
@@ -518,13 +519,13 @@ Return Value:
         return;
     }
 
-    ExAcquirePushLockExclusive(&runtime->Lock);
+    KswordARKAcquirePushLockExclusive(&runtime->Lock);
     RtlZeroMemory(runtime->Rules, sizeof(runtime->Rules));
     runtime->FileRuleCount = 0UL;
     runtime->RegistryRuleCount = 0UL;
     runtime->RuntimeFlags &= KSWORD_ARK_REDIRECT_RUNTIME_REGISTRY_HOOKED;
     runtime->Generation += 1UL;
-    ExReleasePushLockExclusive(&runtime->Lock);
+    KswordARKReleasePushLockExclusive(&runtime->Lock);
 
     KswordARKRedirectRegistryUnregister(runtime);
     runtime->RuntimeFlags = 0UL;
@@ -617,7 +618,7 @@ Return Value:
         return STATUS_SUCCESS;
     }
 
-    ExAcquirePushLockExclusive(&runtime->Lock);
+    KswordARKAcquirePushLockExclusive(&runtime->Lock);
     RtlZeroMemory(runtime->Rules, sizeof(runtime->Rules));
     if (Request->action == KSWORD_ARK_REDIRECT_ACTION_REPLACE && appliedCount != 0UL) {
         RtlCopyMemory(runtime->Rules, newRules, sizeof(newRules));
@@ -628,7 +629,7 @@ Return Value:
     response->fileRuleCount = runtime->FileRuleCount;
     response->registryRuleCount = runtime->RegistryRuleCount;
     response->generation = runtime->Generation;
-    ExReleasePushLockExclusive(&runtime->Lock);
+    KswordARKReleasePushLockExclusive(&runtime->Lock);
 
     response->appliedCount = appliedCount;
     if (Request->action == KSWORD_ARK_REDIRECT_ACTION_REPLACE) {
@@ -685,7 +686,7 @@ Return Value:
     response->version = KSWORD_ARK_REDIRECT_PROTOCOL_VERSION;
     response->status = KSWORD_ARK_REDIRECT_STATUS_APPLIED;
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KswordARKAcquirePushLockShared(&runtime->Lock);
     response->runtimeFlags = runtime->RuntimeFlags;
     response->fileRuleCount = runtime->FileRuleCount;
     response->registryRuleCount = runtime->RegistryRuleCount;
@@ -694,7 +695,7 @@ Return Value:
     response->registryRedirectHits = (ULONG64)runtime->RegistryRedirectHits;
     response->registryRegisterStatus = runtime->RegistryRegisterStatus;
     RtlCopyMemory(response->rules, runtime->Rules, sizeof(response->rules));
-    ExReleasePushLockShared(&runtime->Lock);
+    KswordARKReleasePushLockShared(&runtime->Lock);
 
     *BytesWrittenOut = sizeof(*response);
     return STATUS_SUCCESS;

@@ -1158,10 +1158,10 @@ KswordARKHvmUninitialize(
         return;
     }
     KeEnterCriticalRegion();
-    ExAcquirePushLockExclusive(&g_KswordHvm.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordHvm.Lock);
     KswordARKHvmFreeResourcesLocked(&g_KswordHvm);
     g_KswordHvm.Initialized = FALSE;
-    ExReleasePushLockExclusive(&g_KswordHvm.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordHvm.Lock);
     KeLeaveCriticalRegion();
 }
 
@@ -1183,7 +1183,7 @@ KswordARKHvmQuery(
 
     /* Snapshot all state under a shared push lock. */
     KeEnterCriticalRegion();
-    ExAcquirePushLockShared(&g_KswordHvm.Lock);
+    KswordARKAcquirePushLockShared(&g_KswordHvm.Lock);
     Response->version = KSWORD_ARK_HVM_PROTOCOL_VERSION;
     Response->size = sizeof(*Response);
     Response->queryStatus = g_KswordHvm.Busy
@@ -1249,7 +1249,7 @@ KswordARKHvmQuery(
         Response->processors[index] =
             g_KswordHvm.Processors[index].Row;
     }
-    ExReleasePushLockShared(&g_KswordHvm.Lock);
+    KswordARKReleasePushLockShared(&g_KswordHvm.Lock);
     KeLeaveCriticalRegion();
     return STATUS_SUCCESS;
 }
@@ -1314,7 +1314,7 @@ KswordARKHvmControl(
 
     /* Serialize all lifecycle changes and honor generation-bound requests. */
     KeEnterCriticalRegion();
-    ExAcquirePushLockExclusive(&g_KswordHvm.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordHvm.Lock);
     oldStateFlags = g_KswordHvm.StateFlags;
     oldGeneration = g_KswordHvm.Generation;
     if (g_KswordHvm.Busy) {
@@ -1409,7 +1409,7 @@ Complete:
     Response->launchWasNested =
         g_KswordHvm.LastLaunchWasNested;
     Response->lastStatus = status;
-    ExReleasePushLockExclusive(&g_KswordHvm.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordHvm.Lock);
     KeLeaveCriticalRegion();
     return STATUS_SUCCESS;
 }

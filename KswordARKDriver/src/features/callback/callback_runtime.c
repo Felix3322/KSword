@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "callback_internal.h"
+#include "ark/ark_push_lock.h"
 
 NTSYSAPI
 PCHAR
@@ -313,10 +314,10 @@ KswordArkCallbackDestroyRuntime(
     KswordArkRegistryCallbackUnregister(runtime);
     KswordArkCallbackWaiterUninitialize(runtime);
 
-    ExAcquirePushLockExclusive(&runtime->SnapshotLock);
+    KswordARKAcquirePushLockExclusive(&runtime->SnapshotLock);
     oldSnapshot = runtime->ActiveSnapshot;
     runtime->ActiveSnapshot = NULL;
-    ExReleasePushLockExclusive(&runtime->SnapshotLock);
+    KswordARKReleasePushLockExclusive(&runtime->SnapshotLock);
 
     if (oldSnapshot != NULL) {
         ExWaitForRundownProtectionRelease(&oldSnapshot->RundownRef);
@@ -338,9 +339,9 @@ KswordARKCallbackInitialize(
         return STATUS_INVALID_PARAMETER;
     }
 
-    ExAcquirePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
     if (g_KswordArkCallbackRuntime != NULL) {
-        ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
         return STATUS_SUCCESS;
     }
 
@@ -348,7 +349,7 @@ KswordARKCallbackInitialize(
         sizeof(KSWORD_ARK_CALLBACK_RUNTIME),
         KSWORD_ARK_CALLBACK_TAG_RUNTIME);
     if (runtime == NULL) {
-        ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -373,7 +374,7 @@ KswordARKCallbackInitialize(
 
     status = KswordArkCallbackWaiterInitialize(runtime);
     if (!NT_SUCCESS(status)) {
-        ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
         KswordArkCallbackDestroyRuntime(runtime);
         return status;
     }
@@ -383,7 +384,7 @@ KswordARKCallbackInitialize(
         runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_REGISTRY;
     }
     else {
-        ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
         KswordArkCallbackDestroyRuntime(runtime);
         return status;
     }
@@ -393,7 +394,7 @@ KswordARKCallbackInitialize(
         runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_PROCESS;
     }
     else {
-        ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
         KswordArkCallbackDestroyRuntime(runtime);
         return status;
     }
@@ -403,7 +404,7 @@ KswordARKCallbackInitialize(
         runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_THREAD;
     }
     else {
-        ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
         KswordArkCallbackDestroyRuntime(runtime);
         return status;
     }
@@ -413,7 +414,7 @@ KswordARKCallbackInitialize(
         runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_IMAGE;
     }
     else {
-        ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
         KswordArkCallbackDestroyRuntime(runtime);
         return status;
     }
@@ -435,7 +436,7 @@ KswordARKCallbackInitialize(
             status = STATUS_SUCCESS;
         }
         else {
-            ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+            KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
             KswordArkCallbackDestroyRuntime(runtime);
             return status;
         }
@@ -443,7 +444,7 @@ KswordARKCallbackInitialize(
 
     runtime->Initialized = TRUE;
     g_KswordArkCallbackRuntime = runtime;
-    ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
 
     KswordArkCallbackLogFormat(
         "Info",
@@ -459,11 +460,11 @@ KswordARKCallbackUninitialize(
 {
     KSWORD_ARK_CALLBACK_RUNTIME* runtime = NULL;
 
-    ExAcquirePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
     runtime = g_KswordArkCallbackRuntime;
     // 先撤销全局发布以拒绝新的外部查找；销毁路径改用显式 runtime 指针取消等待项。
     g_KswordArkCallbackRuntime = NULL;
-    ExReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
 
     if (runtime != NULL) {
         KswordArkCallbackDestroyRuntime(runtime);
@@ -536,13 +537,13 @@ Return Value:
         }
     }
 
-    ExAcquirePushLockExclusive(&runtime->MiniFilterBypassPidLock);
+    KswordARKAcquirePushLockExclusive(&runtime->MiniFilterBypassPidLock);
     RtlZeroMemory(runtime->MiniFilterBypassPids, sizeof(runtime->MiniFilterBypassPids));
     if (writeIndex != 0UL) {
         RtlCopyMemory(runtime->MiniFilterBypassPids, uniquePids, (SIZE_T)writeIndex * sizeof(ULONG));
     }
     runtime->MiniFilterBypassPidCount = writeIndex;
-    ExReleasePushLockExclusive(&runtime->MiniFilterBypassPidLock);
+    KswordARKReleasePushLockExclusive(&runtime->MiniFilterBypassPidLock);
 
     KswordArkCallbackLogFormat(
         "Info",
@@ -601,7 +602,7 @@ Return Value:
     response->size = sizeof(*response);
     response->version = KSWORD_ARK_CALLBACK_PROTOCOL_VERSION;
 
-    ExAcquirePushLockShared(&runtime->MiniFilterBypassPidLock);
+    KswordARKAcquirePushLockShared(&runtime->MiniFilterBypassPidLock);
     pidCount = runtime->MiniFilterBypassPidCount;
     if (pidCount > KSWORD_ARK_MINIFILTER_BYPASS_PID_MAX_COUNT) {
         pidCount = KSWORD_ARK_MINIFILTER_BYPASS_PID_MAX_COUNT;
@@ -610,7 +611,7 @@ Return Value:
     if (pidCount != 0UL) {
         RtlCopyMemory(response->processIds, runtime->MiniFilterBypassPids, (SIZE_T)pidCount * sizeof(ULONG));
     }
-    ExReleasePushLockShared(&runtime->MiniFilterBypassPidLock);
+    KswordARKReleasePushLockShared(&runtime->MiniFilterBypassPidLock);
 
     *BytesWrittenOut = sizeof(*response);
     return STATUS_SUCCESS;
@@ -647,7 +648,7 @@ Return Value:
         return FALSE;
     }
 
-    ExAcquirePushLockShared(&runtime->MiniFilterBypassPidLock);
+    KswordARKAcquirePushLockShared(&runtime->MiniFilterBypassPidLock);
     pidCount = runtime->MiniFilterBypassPidCount;
     if (pidCount > KSWORD_ARK_MINIFILTER_BYPASS_PID_MAX_COUNT) {
         pidCount = KSWORD_ARK_MINIFILTER_BYPASS_PID_MAX_COUNT;
@@ -658,7 +659,7 @@ Return Value:
             break;
         }
     }
-    ExReleasePushLockShared(&runtime->MiniFilterBypassPidLock);
+    KswordARKReleasePushLockShared(&runtime->MiniFilterBypassPidLock);
 
     return matchedPid;
 }

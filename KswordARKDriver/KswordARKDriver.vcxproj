@@ -209,6 +209,7 @@
     <ClInclude Include="Driver.h" />
     <ClInclude Include="include\ark\ark_device.h" />
     <ClInclude Include="include\ark\ark_driver.h" />
+    <ClInclude Include="include\ark\ark_push_lock.h" />
     <ClInclude Include="include\ark\ark_system_time.h" />
     <ClInclude Include="include\ark\ark_file.h" />
     <ClInclude Include="include\ark\ark_ioctl.h" />

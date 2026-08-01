@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "dyndata_v4_internal.h"
+#include "ark/ark_push_lock.h"
 #include "../../platform/kernel_module_identity.h"
 
 #include <ntstrsafe.h>
@@ -437,7 +438,7 @@ Return Value:
         publicEntry.module.image = currentIdentity;
         if (moduleSlot >= 0L &&
             (ULONG)moduleSlot < KSW_DYN_V4_MAX_MODULES) {
-            ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+            KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
             if (g_KswordDynDataV4State.Modules[moduleSlot].Occupied &&
                 KswordARKDynDataV4ImageIdentityMatches(
                     &currentIdentity,
@@ -446,7 +447,7 @@ Return Value:
                 publicEntry =
                     g_KswordDynDataV4State.Modules[moduleSlot].PublicEntry;
             }
-            ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+            KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
         }
 
         totalCount += 1UL;
@@ -766,9 +767,9 @@ Return Value:
 --*/
 {
     ExInitializePushLock(&g_KswordDynDataV4Lock);
-    ExAcquirePushLockExclusive(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordDynDataV4Lock);
     RtlZeroMemory(&g_KswordDynDataV4State, sizeof(g_KswordDynDataV4State));
-    ExReleasePushLockExclusive(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordDynDataV4Lock);
 }
 
 VOID
@@ -791,9 +792,9 @@ Return Value:
 
 --*/
 {
-    ExAcquirePushLockExclusive(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordDynDataV4Lock);
     RtlZeroMemory(&g_KswordDynDataV4State, sizeof(g_KswordDynDataV4State));
-    ExReleasePushLockExclusive(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordDynDataV4Lock);
 }
 
 NTSTATUS
@@ -823,7 +824,7 @@ Return Value:
     }
     RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     for (moduleIndex = 0UL; moduleIndex < KSW_DYN_V4_MAX_MODULES; ++moduleIndex) {
         KSW_DYN_V4_MODULE_STATE* moduleState = &g_KswordDynDataV4State.Modules[moduleIndex];
         ULONG itemIndex = 0UL;
@@ -847,7 +848,7 @@ Return Value:
         }
         break;
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
     return status;
 }
 
@@ -878,12 +879,12 @@ Return Value:
     }
     RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     moduleState = &g_KswordDynDataV4State.Modules[0];
     if (!moduleState->Occupied ||
         moduleState->PublicEntry.module.image.classId != KSW_DYN_PROFILE_CLASS_NTOSKRNL ||
         moduleState->StoredItemCount > KSW_DYN_V4_MAX_ITEMS_PER_MODULE) {
-        ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+        KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -930,7 +931,7 @@ Return Value:
             foundCount += 1UL;
         }
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
     return (foundCount == 16UL) ? STATUS_SUCCESS : STATUS_NOT_SUPPORTED;
 }
@@ -962,7 +963,7 @@ Return Value:
     }
     RtlZeroMemory(FieldOut, sizeof(*FieldOut));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     moduleState = &g_KswordDynDataV4State.Modules[0];
     if (moduleState->Occupied &&
         moduleState->PublicEntry.module.image.classId == KSW_DYN_PROFILE_CLASS_NTOSKRNL &&
@@ -993,7 +994,7 @@ Return Value:
             break;
         }
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
     if (!NT_SUCCESS(status)) {
         RtlZeroMemory(FieldOut, sizeof(*FieldOut));
@@ -1028,12 +1029,12 @@ Return Value:
     }
     RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     moduleState = &g_KswordDynDataV4State.Modules[0];
     if (!moduleState->Occupied ||
         moduleState->PublicEntry.module.image.classId != KSW_DYN_PROFILE_CLASS_NTOSKRNL ||
         moduleState->StoredItemCount > KSW_DYN_V4_MAX_ITEMS_PER_MODULE) {
-        ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+        KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -1170,7 +1171,7 @@ Return Value:
             foundMask |= bit;
         }
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
     if (foundMask != 0x007FFFFFUL ||
         LayoutOut->ModuleBase == 0ULL ||
@@ -1214,7 +1215,7 @@ Return Value:
     LayoutOut->EntryImageBase = KSW_DYN_OFFSET_UNAVAILABLE;
     LayoutOut->EntryImageSize = KSW_DYN_OFFSET_UNAVAILABLE;
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     for (moduleIndex = 0UL; moduleIndex < KSW_DYN_V4_MAX_MODULES; ++moduleIndex) {
         const KSW_DYN_V4_MODULE_STATE* moduleState =
             &g_KswordDynDataV4State.Modules[moduleIndex];
@@ -1287,7 +1288,7 @@ Return Value:
         }
         break;
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
     // 必需字段必须全部出现，并且每个访问范围都落在 PDB 报告的结构大小内。
     if (requiredFoundMask == 0x0000004FUL &&
@@ -1557,7 +1558,7 @@ Return Value:
         moduleState->PublicEntry.statusFlags |= KSW_DYN_V4_STATUS_FLAG_OPTIONAL_DEGRADED;
     }
 
-    ExAcquirePushLockExclusive(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordDynDataV4Lock);
     RtlCopyMemory(&g_KswordDynDataV4State.Modules[(ULONG)moduleSlot], moduleState, sizeof(*moduleState));
     g_KswordDynDataV4State.MissingCount = 0UL;
     for (index = 0UL; index < KSW_DYN_V4_MAX_MODULES; ++index) {
@@ -1585,7 +1586,7 @@ Return Value:
                 "optional items absent from applied profile");
         }
     }
-    ExReleasePushLockExclusive(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordDynDataV4Lock);
 
     Response->status = STATUS_SUCCESS;
     Response->statusFlags = moduleState->PublicEntry.statusFlags;

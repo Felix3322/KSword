@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "system_time_internal.h"
+#include "ark/ark_push_lock.h"
 #include "system_time_counter.h"
 
 /* HAL 计数器回调在当前 x64 Windows 上不接收参数并返回 64 位计数。 */
@@ -879,13 +880,13 @@ KswordARKSystemTimeUninitialize(
         return;
     }
 
-    ExAcquirePushLockExclusive(
+    KswordARKAcquirePushLockExclusive(
         &g_KswordArkSystemTimeState.ControlLock);
     (void)KswordARKSystemTimeDeactivateLocked();
     InterlockedExchange(
         &g_KswordArkSystemTimeState.Initialized,
         0L);
-    ExReleasePushLockExclusive(
+    KswordARKReleasePushLockExclusive(
         &g_KswordArkSystemTimeState.ControlLock);
 }
 
@@ -905,13 +906,13 @@ KswordARKSystemTimeQuery(
         return STATUS_DEVICE_NOT_READY;
     }
 
-    ExAcquirePushLockExclusive(
+    KswordARKAcquirePushLockExclusive(
         &g_KswordArkSystemTimeState.ControlLock);
     if (!g_KswordArkSystemTimeState.Resolved) {
         (void)KswordARKSystemTimeResolveLocked();
     }
     KswordARKSystemTimeFillQueryLocked(Response);
-    ExReleasePushLockExclusive(
+    KswordARKReleasePushLockExclusive(
         &g_KswordArkSystemTimeState.ControlLock);
     return STATUS_SUCCESS;
 }
@@ -990,7 +991,7 @@ KswordARKSystemTimeControl(
         return STATUS_SUCCESS;
     }
 
-    ExAcquirePushLockExclusive(
+    KswordARKAcquirePushLockExclusive(
         &g_KswordArkSystemTimeState.ControlLock);
     oldFlags = KswordARKSystemTimeStateFlagsLocked();
     oldGeneration = (ULONG)InterlockedCompareExchange(
@@ -1098,7 +1099,7 @@ KswordARKSystemTimeControl(
         g_KswordArkSystemTimeState.ResolutionMode;
     Response->counterValue =
         (ULONGLONG)KeQueryPerformanceCounter(NULL).QuadPart;
-    ExReleasePushLockExclusive(
+    KswordARKReleasePushLockExclusive(
         &g_KswordArkSystemTimeState.ControlLock);
     return STATUS_SUCCESS;
 }

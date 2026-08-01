@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "ark/ark_dyndata.h"
+#include "ark/ark_push_lock.h"
 #include "ark/ark_dyndata_fields.h"
 #include "ark/ark_log.h"
 #include "../../platform/dyndata_fallback_resolver.h"
@@ -1433,9 +1434,9 @@ Return Value:
         }
     }
     stateStatus = KswordARKDynDataBuildState(&newState, validationDriverObject);
-    ExAcquirePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKAcquirePushLockExclusive(&g_KswordDynDataStateLock);
     RtlCopyMemory(&g_KswordDynDataState, &newState, sizeof(g_KswordDynDataState));
-    ExReleasePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKReleasePushLockExclusive(&g_KswordDynDataStateLock);
 
     if (Device != NULL) {
         (VOID)RtlStringCbPrintfA(
@@ -1477,9 +1478,9 @@ Return Value:
 --*/
 {
     KswordARKDynDataV4Uninitialize();
-    ExAcquirePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKAcquirePushLockExclusive(&g_KswordDynDataStateLock);
     RtlZeroMemory(&g_KswordDynDataState, sizeof(g_KswordDynDataState));
-    ExReleasePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKReleasePushLockExclusive(&g_KswordDynDataStateLock);
 }
 
 VOID
@@ -1506,9 +1507,9 @@ Return Value:
         return;
     }
 
-    ExAcquirePushLockShared(&g_KswordDynDataStateLock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataStateLock);
     RtlCopyMemory(StateOut, &g_KswordDynDataState, sizeof(*StateOut));
-    ExReleasePushLockShared(&g_KswordDynDataStateLock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataStateLock);
 }
 
 static ULONG
@@ -2820,9 +2821,9 @@ Return Value:
         return status;
     }
 
-    ExAcquirePushLockShared(&g_KswordDynDataStateLock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataStateLock);
     RtlCopyMemory(&candidateState, &g_KswordDynDataState, sizeof(candidateState));
-    ExReleasePushLockShared(&g_KswordDynDataStateLock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataStateLock);
 
     if (!KswordARKDynDataIdentityMatches(&candidateState.Ntoskrnl, &Request->ntoskrnl)) {
         status = STATUS_NOT_SUPPORTED;
@@ -2881,9 +2882,9 @@ Return Value:
     candidateState.LastStatus = STATUS_SUCCESS;
     KswordARKDynDataSetReason(&candidateState, L"PDB profile applied and merged with runtime DynData.");
 
-    ExAcquirePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKAcquirePushLockExclusive(&g_KswordDynDataStateLock);
     RtlCopyMemory(&g_KswordDynDataState, &candidateState, sizeof(g_KswordDynDataState));
-    ExReleasePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKReleasePushLockExclusive(&g_KswordDynDataStateLock);
 
     Response->status = STATUS_SUCCESS;
     Response->statusFlags = KswordARKDynDataPublicStatusFlags(&candidateState);
@@ -2999,9 +3000,9 @@ Return Value:
         return status;
     }
 
-    ExAcquirePushLockShared(&g_KswordDynDataStateLock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataStateLock);
     RtlCopyMemory(&candidateState, &g_KswordDynDataState, sizeof(candidateState));
-    ExReleasePushLockShared(&g_KswordDynDataStateLock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataStateLock);
 
     if (!KswordARKDynDataIdentityMatches(&candidateState.Ntoskrnl, &Request->ntoskrnl)) {
         status = STATUS_NOT_SUPPORTED;
@@ -3100,9 +3101,9 @@ Return Value:
     candidateState.LastStatus = STATUS_SUCCESS;
     KswordARKDynDataSetReason(&candidateState, L"PDB profile EX applied and merged with callback DynData.");
 
-    ExAcquirePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKAcquirePushLockExclusive(&g_KswordDynDataStateLock);
     RtlCopyMemory(&g_KswordDynDataState, &candidateState, sizeof(g_KswordDynDataState));
-    ExReleasePushLockExclusive(&g_KswordDynDataStateLock);
+    KswordARKReleasePushLockExclusive(&g_KswordDynDataStateLock);
 
     Response->status = STATUS_SUCCESS;
     Response->statusFlags = KswordARKDynDataPublicStatusFlags(&candidateState);

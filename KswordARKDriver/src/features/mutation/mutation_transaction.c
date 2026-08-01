@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "mutation_transaction.h"
+#include "ark/ark_push_lock.h"
 #include "ark/ark_dyndata.h"
 #include "ark/ark_log.h"
 #include "ark/ark_safety.h"
@@ -142,14 +143,14 @@ KswordARKMutationUninitialize(VOID)
         return;
     }
 
-    ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
     for (index = 0UL;
          index < KSWORD_ARK_MUTATION_AUDIT_RING_CAPACITY;
          index += 1UL) {
         KswordARKMutationClearSlotLocked(
             &g_KswordArkMutationState.Slots[index]);
     }
-    ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
 }
 
 static ULONGLONG
@@ -1072,7 +1073,7 @@ KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessI
     slot.BeforeHash = KswordARKMutationHash(slot.BeforeBytes, slot.Bytes);
     slot.AfterHash = KswordARKMutationHash(slot.AfterBytes, slot.Bytes);
     if (NT_SUCCESS(status)) {
-        ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+        KswordARKAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
         KswordARKMutationExpireSlotsLocked(
             KswordARKMutationTick());
         slot.TransactionId = g_KswordArkMutationState.NextTransactionId;
@@ -1109,7 +1110,7 @@ KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessI
             slot.LastStatus = STATUS_DEVICE_BUSY;
             protocolStatus = slot.Status;
             status = slot.LastStatus;
-            ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+            KswordARKReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
             KswordARKMutationFillResponse(
                 response,
                 &slot,
@@ -1142,7 +1143,7 @@ KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessI
                     KSWORD_ARK_MUTATION_RISK_TARGET_CHANGED;
                 protocolStatus = slot.Status;
                 status = slot.LastStatus;
-                ExReleasePushLockExclusive(
+                KswordARKReleasePushLockExclusive(
                     &g_KswordArkMutationState.Lock);
                 KswordARKMutationFillResponse(
                     response,
@@ -1168,7 +1169,7 @@ KswordARKMutationPrepare(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorProcessI
         ObReferenceObject(RequestorProcessObject);
         *storedSlot = slot;
         KswordARKMutationAuditLocked(KSWORD_ARK_MUTATION_OPERATION_PREPARE, storedSlot, KSWORD_ARK_MUTATION_STATUS_PREPARED, STATUS_SUCCESS, Request->flags, storedSlot->RiskFlags, storedSlot->BeforeBytes);
-        ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
     }
     KswordARKMutationFillResponse(response, &slot, protocolStatus, status, riskFlags);
     *BytesWrittenOut = sizeof(*response);
@@ -1254,7 +1255,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     response = (KSWORD_ARK_MUTATION_RESPONSE*)OutputBuffer;
     RtlZeroMemory(&slot, sizeof(slot));
-    ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
     KswordARKMutationExpireSlotsLocked(
         KswordARKMutationTick());
     storedSlot = KswordARKMutationFindSlotLocked(Request->transactionId);
@@ -1287,7 +1288,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
             operationClaimed = TRUE;
         }
     }
-    ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
     if (storedSlot == NULL) {
         slot.TransactionId = Request->transactionId;
         KswordARKMutationFillResponse(response, &slot, KSWORD_ARK_MUTATION_STATUS_REJECTED_NOT_FOUND, STATUS_NOT_FOUND, KSWORD_ARK_MUTATION_RISK_NONE);
@@ -1310,7 +1311,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
         slot.Status = KSWORD_ARK_MUTATION_STATUS_REJECTED_BUSY;
         slot.LastStatus = STATUS_DEVICE_BUSY;
         slot.TimestampTick = KswordARKMutationTick();
-        ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+        KswordARKAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
         KswordARKMutationAuditLocked(
             eventCode,
             &slot,
@@ -1319,7 +1320,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
             Request->flags,
             slot.RiskFlags,
             NULL);
-        ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
         KswordARKMutationFillResponse(
             response,
             &slot,
@@ -1333,7 +1334,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
         const ULONG rejectedRisk =
             slot.RiskFlags |
             KSWORD_ARK_MUTATION_RISK_POLICY_DENIED;
-        ExAcquirePushLockExclusive(
+        KswordARKAcquirePushLockExclusive(
             &g_KswordArkMutationState.Lock);
         storedSlot = KswordARKMutationFindSlotLocked(
             Request->transactionId);
@@ -1348,7 +1349,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
                 rejectedRisk,
                 NULL);
         }
-        ExReleasePushLockExclusive(
+        KswordARKReleasePushLockExclusive(
             &g_KswordArkMutationState.Lock);
         KswordARKMutationFillResponse(
             response,
@@ -1415,7 +1416,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
                 lastStatus = status;
             }
             else {
-                ExAcquirePushLockExclusive(
+                KswordARKAcquirePushLockExclusive(
                     &g_KswordArkMutationState.Lock);
                 storedSlot = KswordARKMutationFindSlotLocked(
                     Request->transactionId);
@@ -1439,7 +1440,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
                     }
                     writeAttemptStarted = TRUE;
                 }
-                ExReleasePushLockExclusive(
+                KswordARKReleasePushLockExclusive(
                     &g_KswordArkMutationState.Lock);
                 if (!writeAttemptStarted) {
                     statusCode =
@@ -1481,7 +1482,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
     slot.RiskFlags = riskFlags;
     slot.LastStatus = lastStatus;
     slot.TimestampTick = KswordARKMutationTick();
-    ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
     storedSlot = KswordARKMutationFindSlotLocked(Request->transactionId);
     if (storedSlot != NULL && operationClaimed) {
         storedSlot->Status = slot.Status;
@@ -1499,7 +1500,7 @@ KswordARKMutationCommitRollback(_In_opt_ WDFDEVICE Device, _In_ ULONG RequestorP
         storedSlot->OperationBusy = FALSE;
         KswordARKMutationAuditLocked(eventCode, storedSlot, statusCode, lastStatus, Request->flags, riskFlags, desired);
     }
-    ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
     KswordARKMutationFillResponse(response, &slot, statusCode, lastStatus, riskFlags);
     *BytesWrittenOut = sizeof(*response);
     if (Device != NULL) {
@@ -1575,7 +1576,7 @@ KswordARKMutationQueryAudit(_Out_writes_bytes_(OutputBufferLength) PVOID OutputB
     if (capacity < maxEntries) {
         maxEntries = capacity;
     }
-    ExAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkMutationState.Lock);
     KswordARKMutationExpireSlotsLocked(
         KswordARKMutationTick());
     nextSequence = g_KswordArkMutationState.NextAuditSequence;
@@ -1602,7 +1603,7 @@ KswordARKMutationQueryAudit(_Out_writes_bytes_(OutputBufferLength) PVOID OutputB
         }
         returned += 1UL;
     }
-    ExReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkMutationState.Lock);
     response->totalCount = total;
     response->returnedCount = returned;
     response->lostCount = lost;

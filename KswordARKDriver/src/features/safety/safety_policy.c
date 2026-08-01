@@ -378,7 +378,7 @@ Return Value:
         return STATUS_INVALID_PARAMETER;
     }
 
-    ExAcquirePushLockExclusive(&g_KswordArkSafetyState.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkSafetyState.Lock);
     policyFlags = g_KswordArkSafetyState.PolicyFlags;
     requiredFlag = KswordARKSafetyRequiredPolicyFlagForOperation(Context->Operation);
     riskLevel = KswordARKSafetyRiskForOperation(Context->Operation);
@@ -420,7 +420,7 @@ Return Value:
     }
 
     KswordARKSafetyRecordDecisionLocked(Context, decision, reason, riskLevel, status);
-    ExReleasePushLockExclusive(&g_KswordArkSafetyState.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkSafetyState.Lock);
 
     KswordARKSafetyLogDecision(Device, Context, decision, reason, riskLevel, status);
     return status;
@@ -467,7 +467,7 @@ Return Value:
     response->version = KSWORD_ARK_SAFETY_PROTOCOL_VERSION;
     response->defaultPolicyFlags = KSWORD_ARK_SAFETY_POLICY_FLAG_DEFAULT;
 
-    ExAcquirePushLockShared(&g_KswordArkSafetyState.Lock);
+    KswordARKAcquirePushLockShared(&g_KswordArkSafetyState.Lock);
     response->policyFlags = g_KswordArkSafetyState.PolicyFlags;
     response->policyGeneration = g_KswordArkSafetyState.Generation;
     response->lastOperation = g_KswordArkSafetyState.LastOperation;
@@ -483,7 +483,7 @@ Return Value:
         response->lastTargetText,
         g_KswordArkSafetyState.LastTargetText,
         sizeof(response->lastTargetText));
-    ExReleasePushLockShared(&g_KswordArkSafetyState.Lock);
+    KswordARKReleasePushLockShared(&g_KswordArkSafetyState.Lock);
 
     response->lastTargetText[KSWORD_ARK_SAFETY_TEXT_MAX_CHARS - 1U] = L'\0';
     *BytesWrittenOut = sizeof(*response);
@@ -554,7 +554,7 @@ Return Value:
     response->size = sizeof(*response);
     response->version = KSWORD_ARK_SAFETY_PROTOCOL_VERSION;
 
-    ExAcquirePushLockExclusive(&g_KswordArkSafetyState.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkSafetyState.Lock);
     oldFlags = g_KswordArkSafetyState.PolicyFlags;
     oldGeneration = g_KswordArkSafetyState.Generation;
     if (Request->expectedGeneration != 0UL &&
@@ -571,7 +571,7 @@ Return Value:
     response->oldGeneration = oldGeneration;
     response->newGeneration = g_KswordArkSafetyState.Generation;
     response->status = status;
-    ExReleasePushLockExclusive(&g_KswordArkSafetyState.Lock);
+    KswordARKReleasePushLockExclusive(&g_KswordArkSafetyState.Lock);
 
     *BytesWrittenOut = sizeof(*response);
     return STATUS_SUCCESS;

@@ -673,16 +673,20 @@ Return Value:
 --*/
 {
     KSWORD_ARK_NETWORK_RUNTIME* runtime = KswordARKNetworkGetRuntime();
+    KIRQL oldIrql = PASSIVE_LEVEL;
     ULONG ruleIndex = 0UL;
     BOOLEAN shouldBlock = FALSE;
 
-    if ((runtime->RuntimeFlags & KSWORD_ARK_NETWORK_RUNTIME_RULES_ACTIVE) == 0UL) {
+    if (InterlockedCompareExchange(
+            &runtime->ClassifyRulesActive,
+            0L,
+            0L) == 0L) {
         return FALSE;
     }
 
-    ExAcquirePushLockShared(&runtime->Lock);
+    KeAcquireSpinLock(&runtime->ClassifyRuleLock, &oldIrql);
     for (ruleIndex = 0UL; ruleIndex < KSWORD_ARK_NETWORK_MAX_RULES; ++ruleIndex) {
-        const KSWORD_ARK_NETWORK_RULE* rule = &runtime->Rules[ruleIndex];
+        const KSWORD_ARK_NETWORK_RULE* rule = &runtime->ClassifyRules[ruleIndex];
         if (rule->action != KSWORD_ARK_NETWORK_RULE_ACTION_ALLOW &&
             rule->action != KSWORD_ARK_NETWORK_RULE_ACTION_BLOCK) {
             continue;
@@ -699,7 +703,7 @@ Return Value:
         shouldBlock = (rule->action == KSWORD_ARK_NETWORK_RULE_ACTION_BLOCK) ? TRUE : FALSE;
         break;
     }
-    ExReleasePushLockShared(&runtime->Lock);
+    KeReleaseSpinLock(&runtime->ClassifyRuleLock, oldIrql);
 
     return shouldBlock;
 }

@@ -140,6 +140,9 @@
     <ClInclude Include="include\ark\ark_driver.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="include\ark\ark_push_lock.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="include\ark\ark_system_time.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>

@@ -252,14 +252,14 @@ Return Value:
     BOOLEAN hidden = FALSE;
 
     KswordARKDriverEnsureProcessHideStateInitialized();
-    ExAcquirePushLockShared(&g_KswordArkProcessHideState.Lock);
+    KswordARKAcquirePushLockShared(&g_KswordArkProcessHideState.Lock);
     for (index = 0UL; index < g_KswordArkProcessHideState.Count; ++index) {
         if (g_KswordArkProcessHideState.Records[index].Pid == ProcessId) {
             hidden = TRUE;
             break;
         }
     }
-    ExReleasePushLockShared(&g_KswordArkProcessHideState.Lock);
+    KswordARKReleasePushLockShared(&g_KswordArkProcessHideState.Lock);
     return hidden;
 }
 
@@ -1530,14 +1530,14 @@ Return Value:
     if (Action == KSWORD_ARK_PROCESS_VISIBILITY_ACTION_UNHIDE &&
         (ProcessId == 0UL || ProcessId <= 4UL)) {
         *StatusOut = KSWORD_ARK_PROCESS_VISIBILITY_STATUS_VISIBLE;
-        ExAcquirePushLockShared(&g_KswordArkProcessHideState.Lock);
+        KswordARKAcquirePushLockShared(&g_KswordArkProcessHideState.Lock);
         *HiddenCountOut = g_KswordArkProcessHideState.Count;
-        ExReleasePushLockShared(&g_KswordArkProcessHideState.Lock);
+        KswordARKReleasePushLockShared(&g_KswordArkProcessHideState.Lock);
         return STATUS_SUCCESS;
     }
     if (Action == KSWORD_ARK_PROCESS_VISIBILITY_ACTION_HIDE) {
         BOOLEAN alreadyHidden = FALSE;
-        ExAcquirePushLockShared(&g_KswordArkProcessHideState.Lock);
+        KswordARKAcquirePushLockShared(&g_KswordArkProcessHideState.Lock);
         for (index = 0UL; index < g_KswordArkProcessHideState.Count; ++index) {
             if (g_KswordArkProcessHideState.Records[index].Pid == ProcessId) {
                 alreadyHidden = TRUE;
@@ -1545,7 +1545,7 @@ Return Value:
             }
         }
         *HiddenCountOut = g_KswordArkProcessHideState.Count;
-        ExReleasePushLockShared(&g_KswordArkProcessHideState.Lock);
+        KswordARKReleasePushLockShared(&g_KswordArkProcessHideState.Lock);
         if (alreadyHidden) {
             *StatusOut = KSWORD_ARK_PROCESS_VISIBILITY_STATUS_HIDDEN;
             return STATUS_SUCCESS;
@@ -1569,7 +1569,7 @@ Return Value:
         }
     }
 
-    ExAcquirePushLockExclusive(&g_KswordArkProcessHideState.Lock);
+    KswordARKAcquirePushLockExclusive(&g_KswordArkProcessHideState.Lock);
     __try {
         for (index = 0UL; index < g_KswordArkProcessHideState.Count; ++index) {
             if (g_KswordArkProcessHideState.Records[index].Pid == ProcessId) {
@@ -1733,7 +1733,7 @@ Return Value:
         *HiddenCountOut = g_KswordArkProcessHideState.Count;
     }
     __finally {
-        ExReleasePushLockExclusive(&g_KswordArkProcessHideState.Lock);
+        KswordARKReleasePushLockExclusive(&g_KswordArkProcessHideState.Lock);
     }
 
     if (processObject != NULL) {

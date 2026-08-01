@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "dyndata_v4_internal.h"
+#include "ark/ark_push_lock.h"
 #include "ark/ark_log.h"
 #include "../../dispatch/ioctl_validation.h"
 
@@ -173,7 +174,7 @@ Return Value:
     response->entrySize = sizeof(KSW_DYN_V4_CAPABILITY_GROUP_STATUS_ENTRY);
     capacity = (ULONG)((OutputBufferLength - KSW_QUERY_DYN_V4_CAPABILITY_GROUPS_RESPONSE_HEADER_SIZE) / sizeof(KSW_DYN_V4_CAPABILITY_GROUP_STATUS_ENTRY));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     for (moduleIndex = 0UL; moduleIndex < KSW_DYN_V4_MAX_MODULES; ++moduleIndex) {
         if (!g_KswordDynDataV4State.Modules[moduleIndex].Occupied) {
             continue;
@@ -186,7 +187,7 @@ Return Value:
             }
         }
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
     response->totalCount = totalCount;
     response->returnedCount = returnedCount;
@@ -239,13 +240,13 @@ Return Value:
     response->entrySize = sizeof(KSW_DYN_V4_MISSING_ITEM_ENTRY);
     capacity = (ULONG)((OutputBufferLength - KSW_QUERY_DYN_V4_MISSING_ITEMS_RESPONSE_HEADER_SIZE) / sizeof(KSW_DYN_V4_MISSING_ITEM_ENTRY));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     totalCount = g_KswordDynDataV4State.MissingCount;
     for (index = 0UL; index < totalCount && returnedCount < capacity; ++index) {
         response->entries[returnedCount] = g_KswordDynDataV4State.Missing[index];
         returnedCount += 1UL;
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
     response->totalCount = totalCount;
     response->returnedCount = returnedCount;
@@ -302,7 +303,7 @@ Return Value:
     response->entrySize = sizeof(KSW_DYN_V4_ITEM_STATUS_ENTRY);
     capacity = (ULONG)((OutputBufferLength - KSW_QUERY_DYN_V4_ITEMS_RESPONSE_HEADER_SIZE) / sizeof(KSW_DYN_V4_ITEM_STATUS_ENTRY));
 
-    ExAcquirePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKAcquirePushLockShared(&g_KswordDynDataV4Lock);
     for (moduleIndex = 0UL; moduleIndex < KSW_DYN_V4_MAX_MODULES; ++moduleIndex) {
         const KSW_DYN_V4_MODULE_STATE* moduleState = &g_KswordDynDataV4State.Modules[moduleIndex];
         if (!moduleState->Occupied) {
@@ -324,7 +325,7 @@ Return Value:
             }
         }
     }
-    ExReleasePushLockShared(&g_KswordDynDataV4Lock);
+    KswordARKReleasePushLockShared(&g_KswordDynDataV4Lock);
 
     response->totalCount = totalCount;
     response->returnedCount = returnedCount;

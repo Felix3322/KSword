@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "alpc_support.h"
+#include "ark/ark_push_lock.h"
 
 #ifndef STATUS_INFO_LENGTH_MISMATCH
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
@@ -735,10 +736,10 @@ Return Value:
     __try {
         KeEnterCriticalRegion();
         criticalRegionEntered = TRUE;
-        ExAcquirePushLockShared(portObjectLock);
+        KswordARKAcquirePushLockShared(portObjectLock);
         lockHeld = TRUE;
         RtlCopyMemory(&ownerProcessRaw, (PUCHAR)PortObject + DynState->Kernel.AlpcOwnerProcess, sizeof(ownerProcessRaw));
-        ExReleasePushLockShared(portObjectLock);
+        KswordARKReleasePushLockShared(portObjectLock);
         lockHeld = FALSE;
         KeLeaveCriticalRegion();
         criticalRegionEntered = FALSE;
@@ -746,7 +747,7 @@ Return Value:
     __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
         if (lockHeld) {
-            ExReleasePushLockShared(portObjectLock);
+            KswordARKReleasePushLockShared(portObjectLock);
             lockHeld = FALSE;
         }
         if (criticalRegionEntered) {

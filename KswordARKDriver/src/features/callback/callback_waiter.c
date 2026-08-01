@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "callback_internal.h"
+#include "ark/ark_push_lock.h"
 
 static VOID
 KswordArkPendingDecisionReference(
@@ -77,7 +78,7 @@ KswordArkInsertPendingDecision(
         return FALSE;
     }
 
-    ExAcquirePushLockExclusive(&runtime->PendingLock);
+    KswordARKAcquirePushLockExclusive(&runtime->PendingLock);
     // 卸载已开始时不再发布新的等待项，避免注销回调后留下无法被唤醒的等待者。
     if (InterlockedCompareExchange(&runtime->Stopping, 0L, 0L) == 0L) {
         InsertTailList(&runtime->PendingDecisionList, &pendingDecision->Link);
@@ -85,7 +86,7 @@ KswordArkInsertPendingDecision(
         (VOID)InterlockedIncrement(&runtime->PendingDecisionCount);
         inserted = TRUE;
     }
-    ExReleasePushLockExclusive(&runtime->PendingLock);
+    KswordARKReleasePushLockExclusive(&runtime->PendingLock);
     return inserted;
 }
 
@@ -97,7 +98,7 @@ KswordArkRemovePendingDecision(
 {
     BOOLEAN removed = FALSE;
 
-    ExAcquirePushLockExclusive(&runtime->PendingLock);
+    KswordARKAcquirePushLockExclusive(&runtime->PendingLock);
     if (pendingDecision->Link.Flink != NULL && pendingDecision->Link.Blink != NULL) {
         RemoveEntryList(&pendingDecision->Link);
         // 链接只在持有 PendingLock 时清零，取消路径据此识别已脱链的项。
@@ -106,7 +107,7 @@ KswordArkRemovePendingDecision(
         (VOID)InterlockedDecrement(&runtime->PendingDecisionCount);
         removed = TRUE;
     }
-    ExReleasePushLockExclusive(&runtime->PendingLock);
+    KswordARKReleasePushLockExclusive(&runtime->PendingLock);
 
     if (removed) {
         KswordArkPendingDecisionRelease(pendingDecision); // drop list reference
@@ -327,15 +328,15 @@ KswordArkCallbackIoctlAnswerEventInternal(
     }
 
     // 答复、超时和取消都在同一把锁下仲裁 FinalDecision，避免超时覆盖已接受的答复。
-    ExAcquirePushLockExclusive(&runtime->PendingLock);
+    KswordARKAcquirePushLockExclusive(&runtime->PendingLock);
     matchedDecision = KswordArkFindPendingDecisionByGuidLocked(runtime, &answerRequest->eventGuid);
     if (matchedDecision == NULL) {
-        ExReleasePushLockExclusive(&runtime->PendingLock);
+        KswordARKReleasePushLockExclusive(&runtime->PendingLock);
         return STATUS_NOT_FOUND;
     }
 
     if (InterlockedCompareExchange(&matchedDecision->Answered, 0L, 0L) != 0L) {
-        ExReleasePushLockExclusive(&runtime->PendingLock);
+        KswordARKReleasePushLockExclusive(&runtime->PendingLock);
         return STATUS_ALREADY_COMMITTED;
     }
 
@@ -343,7 +344,7 @@ KswordArkCallbackIoctlAnswerEventInternal(
     (VOID)InterlockedExchange(&matchedDecision->Answered, 1L);
     // 答复线程在锁外发信号前持有临时引用，防止并发超时路径释放该对象。
     KswordArkPendingDecisionReference(matchedDecision);
-    ExReleasePushLockExclusive(&runtime->PendingLock);
+    KswordARKReleasePushLockExclusive(&runtime->PendingLock);
     KeSetEvent(&matchedDecision->DecisionEvent, IO_NO_INCREMENT, FALSE);
     *CompleteBytesOut = sizeof(KSWORD_ARK_CALLBACK_ANSWER_REQUEST);
     KswordArkPendingDecisionRelease(matchedDecision);
@@ -362,7 +363,7 @@ KswordArkCallbackCancelAllPendingForRuntime(
     for (;;) {
         KSWORD_ARK_PENDING_DECISION* pendingDecision = NULL;
 
-        ExAcquirePushLockExclusive(&runtime->PendingLock);
+        KswordARKAcquirePushLockExclusive(&runtime->PendingLock);
         if (!IsListEmpty(&runtime->PendingDecisionList)) {
             PLIST_ENTRY entry = RemoveHeadList(&runtime->PendingDecisionList);
 
@@ -376,7 +377,7 @@ KswordArkCallbackCancelAllPendingForRuntime(
                 (VOID)InterlockedExchange(&pendingDecision->Answered, 1L);
             }
         }
-        ExReleasePushLockExclusive(&runtime->PendingLock);
+        KswordARKReleasePushLockExclusive(&runtime->PendingLock);
 
         if (pendingDecision == NULL) {
             break;
@@ -524,14 +525,14 @@ KswordArkCallbackAskUserDecision(
         BOOLEAN timeoutApplied = FALSE;
 
         // 与答复和取消共用 PendingLock，保证最终决定及其状态不会发生竞态写入。
-        ExAcquirePushLockExclusive(&runtime->PendingLock);
+        KswordARKAcquirePushLockExclusive(&runtime->PendingLock);
         if (InterlockedCompareExchange(&pendingDecision->Answered, 0L, 0L) == 0L) {
             pendingDecision->FinalDecision = pendingDecision->DefaultDecision;
             (VOID)InterlockedExchange(&pendingDecision->Answered, 1L);
             timeoutApplied = TRUE;
         }
         *decisionOut = pendingDecision->FinalDecision;
-        ExReleasePushLockExclusive(&runtime->PendingLock);
+        KswordARKReleasePushLockExclusive(&runtime->PendingLock);
 
         if (timeoutApplied) {
             KswordArkCallbackLogFormat(
@@ -545,9 +546,9 @@ KswordArkCallbackAskUserDecision(
     }
     else {
         // 事件唤醒后仍在锁下读取结果，以配对答复、取消和超时路径的写入同步。
-        ExAcquirePushLockShared(&runtime->PendingLock);
+        KswordARKAcquirePushLockShared(&runtime->PendingLock);
         *decisionOut = pendingDecision->FinalDecision;
-        ExReleasePushLockShared(&runtime->PendingLock);
+        KswordARKReleasePushLockShared(&runtime->PendingLock);
     }
 
     KswordArkRemovePendingDecision(runtime, pendingDecision);
