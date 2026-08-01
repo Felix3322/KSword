@@ -1,9 +1,11 @@
 #include "SystemTimePage.h"
 
 #include "../../ArkDriverClient/ArkDriverClient.h"
+#include "../../Internationalization/LanguageManager.h"
 #include "../../theme.h"
 
 #include <QCheckBox>
+#include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QGroupBox>
@@ -13,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QProcess>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QShowEvent>
@@ -20,9 +23,14 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <limits>
+
 namespace
 {
     constexpr int kStatusRefreshIntervalMs = 2000;
+    constexpr int kClockRefreshIntervalMs = 250;
+    constexpr int kTimeSyncTimeoutMs = 15000;
 
     // addressText：把 R0 诊断地址转换为固定宽度十六进制文本。
     QString addressText(const unsigned long long address)
@@ -113,11 +121,14 @@ namespace ks::misc
         QWidget::showEvent(event);
         refreshStatus();
         m_refreshTimer->start();
+        updateCalibratedTimeDisplay();
+        m_clockTimer->start();
     }
 
     void SystemTimePage::hideEvent(QHideEvent* event)
     {
         m_refreshTimer->stop();
+        m_clockTimer->stop();
         QWidget::hideEvent(event);
     }
 
@@ -156,13 +167,13 @@ namespace ks::misc
                 .arg(KswordTheme::TextSecondaryHex()));
         rootLayout->addWidget(m_persistenceLabel);
 
-        // 方案组明确区分原版兼容定位和写入前增强校验定位。
+        // 模式组明确区分原版兼容定位和写入前增强校验定位。
         auto* schemeGroup = new QGroupBox(
-            QStringLiteral("实现方案"),
+            QStringLiteral("实现模式"),
             this);
         auto* schemeLayout = new QVBoxLayout(schemeGroup);
         m_originalCompatRadio = new QRadioButton(
-            QStringLiteral("原版兼容（默认）"),
+            QStringLiteral("兼容模式（默认）"),
             schemeGroup);
         m_originalCompatRadio->setToolTip(
             QStringLiteral(
@@ -178,7 +189,7 @@ namespace ks::misc
                 .arg(KswordTheme::TextSecondaryHex()));
 
         m_guardedResolutionRadio = new QRadioButton(
-            QStringLiteral("增强校验"),
+            QStringLiteral("安全模式（即使安全一些但是仍然可能导致严重后果）"),
             schemeGroup);
         m_guardedResolutionRadio->setToolTip(
             QStringLiteral(
@@ -186,7 +197,7 @@ namespace ks::misc
         auto* guardedDescription = new QLabel(
             QStringLiteral(
                 "使用相同接管原理，但在写入前额外验证描述符、函数槽和处理器表；"
-                "校验不通过时拒绝启用。"),
+                "校验不通过时拒绝启用。该模式只能降低部分风险，仍可能冻结或蓝屏。"),
             schemeGroup);
         guardedDescription->setWordWrap(true);
         guardedDescription->setStyleSheet(
@@ -241,6 +252,10 @@ namespace ks::misc
             QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
             QStringLiteral("刷新状态"),
             controlGroup);
+        m_timeSyncButton = new QPushButton(
+            QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+            QStringLiteral("从时间服务器更新时间"),
+            controlGroup);
         m_applyButton = new QPushButton(
             QIcon(QStringLiteral(":/Icon/process_start.svg")),
             QStringLiteral("应用变速"),
@@ -251,17 +266,20 @@ namespace ks::misc
             controlGroup);
         m_refreshButton->setToolTip(
             QStringLiteral("重新查询 R0 计时器接管状态"));
+        m_timeSyncButton->setToolTip(
+            QStringLiteral("调用 Windows 时间服务，从已配置的时间服务器立即同步系统时间"));
         m_applyButton->setToolTip(
             QStringLiteral("经过双重确认后应用当前模式和倍率"));
         m_resetButton->setToolTip(
             QStringLiteral("立即停止变速并恢复原始性能计数器"));
         for (QPushButton* button :
-             { m_refreshButton, m_applyButton, m_resetButton })
+             { m_refreshButton, m_timeSyncButton, m_applyButton, m_resetButton })
         {
             button->setStyleSheet(
                 KswordTheme::ThemedButtonStyle());
         }
         buttonLayout->addWidget(m_refreshButton);
+        buttonLayout->addWidget(m_timeSyncButton);
         buttonLayout->addWidget(m_applyButton);
         buttonLayout->addWidget(m_resetButton);
         buttonLayout->addStretch(1);
@@ -273,6 +291,12 @@ namespace ks::misc
             QStringLiteral("当前状态"),
             this);
         auto* statusLayout = new QVBoxLayout(statusGroup);
+        m_calibratedTimeLabel = new QLabel(
+            QStringLiteral("校准后时间：等待倍率状态"),
+            statusGroup);
+        m_calibratedTimeLabel->setStyleSheet(
+            QStringLiteral("font-size:15px;font-weight:650;color:%1;")
+                .arg(KswordTheme::PrimaryBlueHex));
         m_currentModeLabel = new QLabel(
             QStringLiteral("当前：等待查询"),
             statusGroup);
@@ -289,6 +313,7 @@ namespace ks::misc
             QStringLiteral("尚未查询 R0 状态"),
             statusGroup);
         m_operationLabel->setWordWrap(true);
+        statusLayout->addWidget(m_calibratedTimeLabel);
         statusLayout->addWidget(m_currentModeLabel);
         statusLayout->addWidget(m_backendLabel);
         statusLayout->addWidget(m_diagnosticLabel);
@@ -299,11 +324,19 @@ namespace ks::misc
         m_refreshTimer = new QTimer(this);
         m_refreshTimer->setInterval(
             kStatusRefreshIntervalMs);
+        m_clockTimer = new QTimer(this);
+        m_clockTimer->setInterval(kClockRefreshIntervalMs);
+        resetCalibratedClock();
         updateButtons();
     }
 
     void SystemTimePage::initializeConnections()
     {
+        connect(
+            m_timeSyncButton,
+            &QPushButton::clicked,
+            this,
+            [this]() { synchronizeFromTimeServer(); });
         connect(
             m_refreshButton,
             &QPushButton::clicked,
@@ -329,6 +362,11 @@ namespace ks::misc
             &QTimer::timeout,
             this,
             [this]() { refreshStatus(); });
+        connect(
+            m_clockTimer,
+            &QTimer::timeout,
+            this,
+            [this]() { updateCalibratedTimeDisplay(); });
     }
 
     void SystemTimePage::refreshStatus()
@@ -393,8 +431,8 @@ namespace ks::misc
             : KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED;
         const QString schemeText =
             m_originalCompatRadio->isChecked()
-            ? QStringLiteral("原版兼容")
-            : QStringLiteral("增强校验");
+            ? QStringLiteral("兼容模式")
+            : QStringLiteral("安全模式");
 
         if (!m_acknowledgeCheck->isChecked() ||
             !confirmHighRisk(modeText, schemeText, factor))
@@ -507,6 +545,200 @@ namespace ks::misc
         refreshStatus();
     }
 
+    void SystemTimePage::synchronizeFromTimeServer()
+    {
+        if (m_busy || m_timeSyncProcess != nullptr)
+        {
+            return;
+        }
+
+        setBusy(true);
+        m_operationLabel->setText(
+            QStringLiteral("正在请求 Windows 时间服务器同步..."));
+
+        auto* process = new QProcess(this);
+        m_timeSyncProcess = process;
+        process->setProcessChannelMode(QProcess::MergedChannels);
+        process->setProgram(QStringLiteral("w32tm.exe"));
+        process->setArguments({
+            QStringLiteral("/resync"),
+            QStringLiteral("/rediscover") });
+
+        auto* timeoutTimer = new QTimer(process);
+        timeoutTimer->setSingleShot(true);
+        timeoutTimer->setInterval(kTimeSyncTimeoutMs);
+        connect(
+            timeoutTimer,
+            &QTimer::timeout,
+            process,
+            [this, process]()
+            {
+                if (m_timeSyncProcess != process)
+                {
+                    return;
+                }
+                process->setProperty("ksTimeSyncTimedOut", true);
+                process->kill();
+            });
+        connect(
+            process,
+            &QProcess::errorOccurred,
+            this,
+            [this, process](const QProcess::ProcessError error)
+            {
+                if (error != QProcess::FailedToStart ||
+                    m_timeSyncProcess != process)
+                {
+                    return;
+                }
+                completeTimeSynchronization(
+                    process,
+                    false,
+                    QStringLiteral("无法启动 Windows 时间服务命令 w32tm.exe"));
+            });
+        connect(
+            process,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this,
+            [this, process](
+                const int exitCode,
+                const QProcess::ExitStatus exitStatus)
+            {
+                if (m_timeSyncProcess != process)
+                {
+                    return;
+                }
+                const bool timedOut =
+                    process->property("ksTimeSyncTimedOut").toBool();
+                const QString output = QString::fromLocal8Bit(
+                    process->readAll()).trimmed();
+                completeTimeSynchronization(
+                    process,
+                    !timedOut &&
+                        exitStatus == QProcess::NormalExit &&
+                        exitCode == 0,
+                    timedOut
+                        ? QStringLiteral("等待时间服务器响应超时（15 秒）")
+                        : output);
+            });
+
+        timeoutTimer->start();
+        process->start();
+    }
+
+    void SystemTimePage::completeTimeSynchronization(
+        QProcess* process,
+        const bool success,
+        const QString& detailText)
+    {
+        if (process == nullptr || m_timeSyncProcess != process)
+        {
+            return;
+        }
+
+        m_timeSyncProcess = nullptr;
+        process->deleteLater();
+        setBusy(false);
+
+        kLogEvent timeSyncEvent;
+        if (success)
+        {
+            resetCalibratedClock();
+            m_operationLabel->setText(
+                QStringLiteral("已从 Windows 时间服务器同步系统时间"));
+            info << timeSyncEvent
+                << "[SystemTimePage] Windows 时间服务器同步成功。"
+                << eol;
+            return;
+        }
+
+        const QString failureDetail = detailText.trimmed().isEmpty()
+            ? QStringLiteral("Windows 时间服务未返回详细错误")
+            : detailText.trimmed();
+        warn << timeSyncEvent
+            << "[SystemTimePage] Windows 时间服务器同步失败: "
+            << failureDetail.toStdString() << eol;
+        m_operationLabel->setText(
+            QStringLiteral("时间服务器同步失败：%1")
+                .arg(failureDetail));
+        showOpaqueMessage(
+            this,
+            QMessageBox::Warning,
+            QStringLiteral("更新时间失败"),
+            QStringLiteral(
+                "未能从 Windows 已配置的时间服务器更新时间。\n\n%1\n\n"
+                "请确认 Windows Time 服务正在运行，并以管理员身份重试。")
+                .arg(failureDetail));
+    }
+
+    void SystemTimePage::resetCalibratedClock()
+    {
+        m_calibratedAnchorEpochMs =
+            QDateTime::currentMSecsSinceEpoch();
+        m_calibratedElapsedTimer.start();
+        updateCalibratedTimeDisplay();
+    }
+
+    void SystemTimePage::updateCalibratedTimeDisplay()
+    {
+        if (m_calibratedTimeLabel == nullptr)
+        {
+            return;
+        }
+        if (!m_calibratedElapsedTimer.isValid())
+        {
+            m_calibratedAnchorEpochMs =
+                QDateTime::currentMSecsSinceEpoch();
+            m_calibratedElapsedTimer.start();
+        }
+
+        const qint64 measuredElapsedMs =
+            std::max<qint64>(0, m_calibratedElapsedTimer.elapsed());
+        qint64 calibratedElapsedMs = measuredElapsedMs;
+        QString calibrationMode = ks::i18n::sourceText(
+            QStringLiteral("原始速度 1x"));
+        if (m_active &&
+            m_currentCommand ==
+                KSWORD_ARK_SYSTEM_TIME_COMMAND_SPEED_UP &&
+            m_currentFactor > 1UL)
+        {
+            calibratedElapsedMs /=
+                static_cast<qint64>(m_currentFactor);
+            calibrationMode = ks::i18n::sourceText(
+                QStringLiteral("加速 %1 倍"))
+                .arg(m_currentFactor);
+        }
+        else if (m_active &&
+                 m_currentCommand ==
+                    KSWORD_ARK_SYSTEM_TIME_COMMAND_SLOW_DOWN &&
+                 m_currentFactor > 1UL)
+        {
+            const qint64 factor =
+                static_cast<qint64>(m_currentFactor);
+            calibratedElapsedMs = measuredElapsedMs >
+                std::numeric_limits<qint64>::max() / factor
+                ? std::numeric_limits<qint64>::max()
+                : measuredElapsedMs * factor;
+            calibrationMode = ks::i18n::sourceText(
+                QStringLiteral("减速到 1/%1"))
+                .arg(m_currentFactor);
+        }
+
+        const qint64 maximumAddition =
+            std::numeric_limits<qint64>::max() -
+            m_calibratedAnchorEpochMs;
+        const qint64 calibratedEpochMs =
+            m_calibratedAnchorEpochMs +
+            std::min(calibratedElapsedMs, maximumAddition);
+        const QString calibratedTimeText =
+            QDateTime::fromMSecsSinceEpoch(calibratedEpochMs)
+                .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"));
+        m_calibratedTimeLabel->setText(
+            ks::i18n::sourceText(
+                QStringLiteral("校准后时间：%1（按当前 %2 校准）"))
+                .arg(calibratedTimeText, calibrationMode));
+    }
+
     bool SystemTimePage::confirmHighRisk(
         const QString& modeText,
         const QString& schemeText,
@@ -523,7 +755,7 @@ namespace ks::misc
             QStringLiteral("系统全局变速风险确认"));
         warningBox.setText(
             QStringLiteral(
-                "即将使用“%1”方案，对整个系统%2 %3 倍。\n\n"
+                "即将使用“%1”模式，对整个系统%2 %3 倍。\n\n"
                 "此操作会改变全局性能计数器的时间流速，"
                 "可能破坏超时、同步、网络、音视频和安全软件行为。\n"
                 "请确认已保存工作，并准备在异常时立即恢复 1x。")
@@ -596,15 +828,36 @@ namespace ks::misc
         const bool conflict =
             (stateFlags &
                 KSWORD_ARK_SYSTEM_TIME_STATE_CONFLICT) != 0UL;
+        const bool calibrationChanged =
+            !m_calibratedElapsedTimer.isValid() ||
+            m_calibrationGeneration != generation ||
+            m_active != active ||
+            m_currentCommand != command ||
+            m_currentFactor != factor;
         const QString schemeText =
             resolutionMode ==
                 KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED
-            ? QStringLiteral("增强校验")
+            ? QStringLiteral("安全模式")
             : resolutionMode ==
                 KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
-                ? QStringLiteral("原版兼容")
+                ? QStringLiteral("兼容模式")
                 : QStringLiteral("未知");
         m_active = active;
+        m_currentCommand = active
+            ? command
+            : KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET;
+        m_currentFactor = active
+            ? std::max(1UL, factor)
+            : 1UL;
+        m_calibrationGeneration = generation;
+        if (calibrationChanged)
+        {
+            resetCalibratedClock();
+        }
+        else
+        {
+            updateCalibratedTimeDisplay();
+        }
         if (active)
         {
             m_originalCompatRadio->setChecked(
@@ -645,7 +898,7 @@ namespace ks::misc
                         : KswordTheme::SuccessHex()));
         m_backendLabel->setText(
             QStringLiteral(
-                "Windows 构建：%1；实现方案：%2；计时路径：%3；状态代次：%4")
+                "Windows 构建：%1；实现模式：%2；计时路径：%3；状态代次：%4")
                 .arg(osBuildNumber)
                 .arg(schemeText)
                 .arg(
@@ -666,6 +919,8 @@ namespace ks::misc
     void SystemTimePage::updateButtons()
     {
         m_refreshButton->setEnabled(!m_busy);
+        m_timeSyncButton->setEnabled(
+            !m_busy && m_timeSyncProcess == nullptr);
         m_applyButton->setEnabled(
             !m_busy &&
             m_supported &&
