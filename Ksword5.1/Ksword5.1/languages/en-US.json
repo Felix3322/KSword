@@ -23307,6 +23307,7 @@
     "提交目标目录失败且旧目标恢复失败: %1，备份位于 %2": "Failed to commit target directory and restore the previous target: %1; backup: %2",
     "目录已替换，但旧目标备份清理失败: %1": "Directory replaced, but the previous target backup could not be removed: %1",
     "目标已写入，但删除源目录失败: %1": "Target written, but the source directory could not be removed: %1",
-    "目标已写入，但删除源文件失败: %1": "Target written, but the source file could not be removed: %1"
+    "目标已写入，但删除源文件失败: %1": "Target written, but the source file could not be removed: %1",
+    "为避免越界递归，不复制符号链接或重解析点: %1": "Symbolic links and reparse points are not copied to prevent traversal outside the source tree: %1"
   }
 }

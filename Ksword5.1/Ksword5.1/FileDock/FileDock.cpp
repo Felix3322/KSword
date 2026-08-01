@@ -3221,6 +3221,13 @@ namespace
     // 递归复制目录：用于跨面板复制目录场景。
     bool copyDirectoryRecursively(const QString& sourcePath, const QString& targetPath, QString& errorTextOut)
     {
+        if (isPathReparsePoint(sourcePath))
+        {
+            errorTextOut = ks::i18n::displayText(QStringLiteral("为避免越界递归，不复制符号链接或重解析点: %1"))
+                .arg(QDir::toNativeSeparators(sourcePath));
+            return false;
+        }
+
         QDir sourceDir(sourcePath);
         if (!sourceDir.exists())
         {
@@ -3241,6 +3248,13 @@ namespace
         {
             const QString src = info.absoluteFilePath();
             const QString dst = QDir(targetPath).filePath(info.fileName());
+
+            if (info.isSymLink() || isPathReparsePoint(src))
+            {
+                errorTextOut = ks::i18n::displayText(QStringLiteral("为避免越界递归，不复制符号链接或重解析点: %1"))
+                    .arg(QDir::toNativeSeparators(src));
+                return false;
+            }
 
             if (info.isDir())
             {
@@ -10568,6 +10582,11 @@ FileDock::FilePanelWidgets* FileDock::oppositePanelFor(FilePanelWidgets& sourceP
 
 void FileDock::transferSelectedItemsToOppositePanel(FilePanelWidgets& sourcePanel, bool moveItems)
 {
+    if (m_transferInProgress)
+    {
+        return;
+    }
+
     const std::vector<QString> selectedItemPaths = selectedPaths(sourcePanel);
     if (selectedItemPaths.empty())
     {
@@ -10624,132 +10643,188 @@ void FileDock::transferSelectedItemsToOppositePanel(FilePanelWidgets& sourcePane
         : ks::i18n::displayText(QStringLiteral("复制到%1")).arg(localizedTargetPanelText);
     const int progressPid = kPro.add("文件", progressTitle.toStdString());
     kPro.set(progressPid, moveItems ? "准备移动" : "准备复制", 0, 5.0f);
+    m_transferInProgress = true;
 
-    QStringList errorLines;
-    const std::size_t totalCount = selectedItemPaths.size();
-    for (std::size_t i = 0; i < totalCount; ++i)
-    {
-        const QString sourcePath = selectedItemPaths[i];
-        QFileInfo sourceInfo(sourcePath);
-        if (!sourceInfo.exists())
-        {
-            errorLines << QStringLiteral("源不存在：%1").arg(sourcePath);
-            continue;
-        }
+    const bool sourceWasLeftPanel = &sourcePanel == &m_leftPanel;
+    const QString targetDirectoryPath = targetPanel->currentPath;
+    const QString sourcePanelNameText = sourcePanel.panelNameText;
+    const QString targetPanelNameText = targetPanel->panelNameText;
+    const QPointer<FileDock> safeThis(this);
+    const QPointer<QApplication> applicationGuard(qApp);
 
-        const QString targetPath = targetDir.filePath(sourceInfo.fileName());
-        if (QDir::cleanPath(sourcePath).compare(QDir::cleanPath(targetPath), Qt::CaseInsensitive) == 0)
+    QThreadPool::globalInstance()->start(
+        [safeThis,
+            applicationGuard,
+            selectedItemPaths,
+            targetDirectoryPath,
+            sourcePanelNameText,
+            targetPanelNameText,
+            sourceWasLeftPanel,
+            moveItems,
+            progressPid]()
         {
-            errorLines << QStringLiteral("源和目标相同，已跳过：%1").arg(sourcePath);
-            continue;
-        }
-        if (sourceInfo.isDir())
-        {
-            const QString cleanSourceDirPath = QDir::cleanPath(sourceInfo.absoluteFilePath());
-            const QString cleanTargetPath = QDir::cleanPath(targetPath);
-            const QString sourcePrefix = cleanSourceDirPath.endsWith(QLatin1Char('/'))
-                ? cleanSourceDirPath
-                : cleanSourceDirPath + QLatin1Char('/');
-            if (cleanTargetPath.startsWith(sourcePrefix, Qt::CaseInsensitive))
+            QStringList errorLines;
+            const QDir workerTargetDir(targetDirectoryPath);
+            const std::size_t totalCount = selectedItemPaths.size();
+
+            for (std::size_t i = 0; i < totalCount; ++i)
             {
-                errorLines << QStringLiteral("不能把目录复制或移动到自身子目录：%1 -> %2")
-                    .arg(sourcePath, targetPath);
-                continue;
-            }
-        }
+                const QString sourcePath = selectedItemPaths[i];
+                QFileInfo sourceInfo(sourcePath);
+                if (isPathReparsePoint(sourcePath))
+                {
+                    errorLines << ks::i18n::displayText(
+                        QStringLiteral("为避免越界递归，不复制符号链接或重解析点: %1"))
+                        .arg(QDir::toNativeSeparators(sourcePath));
+                    continue;
+                }
+                if (!sourceInfo.exists())
+                {
+                    errorLines << QStringLiteral("源不存在：%1").arg(sourcePath);
+                    continue;
+                }
 
-        bool itemOk = false;
-        if (moveItems)
-        {
-            // 剪切优先尝试重命名移动，失败再走复制+删除兜底。
-            itemOk = QFile::rename(sourcePath, targetPath);
-            if (!itemOk)
-            {
-                QString copyErrorText;
+                const QString targetPath = workerTargetDir.filePath(sourceInfo.fileName());
+                if (QDir::cleanPath(sourcePath).compare(QDir::cleanPath(targetPath), Qt::CaseInsensitive) == 0)
+                {
+                    errorLines << QStringLiteral("源和目标相同，已跳过：%1").arg(sourcePath);
+                    continue;
+                }
                 if (sourceInfo.isDir())
                 {
-                    itemOk = copyDirectoryTransactionally(sourcePath, targetPath, copyErrorText);
-                    if (itemOk && !QDir(sourcePath).removeRecursively())
+                    const QString cleanSourceDirPath = QDir::cleanPath(sourceInfo.absoluteFilePath());
+                    const QString cleanTargetPath = QDir::cleanPath(targetPath);
+                    const QString sourcePrefix = cleanSourceDirPath.endsWith(QLatin1Char('/'))
+                        ? cleanSourceDirPath
+                        : cleanSourceDirPath + QLatin1Char('/');
+                    if (cleanTargetPath.startsWith(sourcePrefix, Qt::CaseInsensitive))
                     {
-                        itemOk = false;
-                        copyErrorText = ks::i18n::displayText(QStringLiteral("目标已写入，但删除源目录失败: %1"))
-                            .arg(sourcePath);
+                        errorLines << QStringLiteral("不能把目录复制或移动到自身子目录：%1 -> %2")
+                            .arg(sourcePath, targetPath);
+                        continue;
                     }
+                }
+
+                bool itemOk = false;
+                QString copyErrorText;
+                if (moveItems)
+                {
+                    // 剪切优先尝试同卷重命名，失败再走事务复制和源删除。
+                    itemOk = QFile::rename(sourcePath, targetPath);
+                    if (!itemOk && sourceInfo.isDir())
+                    {
+                        itemOk = copyDirectoryTransactionally(sourcePath, targetPath, copyErrorText);
+                        if (itemOk && !QDir(sourcePath).removeRecursively())
+                        {
+                            itemOk = false;
+                            copyErrorText = ks::i18n::displayText(
+                                QStringLiteral("目标已写入，但删除源目录失败: %1"))
+                                .arg(sourcePath);
+                        }
+                    }
+                    else if (!itemOk)
+                    {
+                        itemOk = copyFileTransactionally(sourcePath, targetPath, copyErrorText);
+                        if (itemOk && !QFile::remove(sourcePath))
+                        {
+                            itemOk = false;
+                            copyErrorText = ks::i18n::displayText(
+                                QStringLiteral("目标已写入，但删除源文件失败: %1"))
+                                .arg(sourcePath);
+                        }
+                    }
+                }
+                else if (sourceInfo.isDir())
+                {
+                    itemOk = copyDirectoryTransactionally(sourcePath, targetPath, copyErrorText);
                 }
                 else
                 {
                     itemOk = copyFileTransactionally(sourcePath, targetPath, copyErrorText);
-                    if (itemOk && !QFile::remove(sourcePath))
+                }
+
+                if (!itemOk)
+                {
+                    errorLines << copyErrorText;
+                }
+
+                if (!applicationGuard.isNull())
+                {
+                    const float progress = 5.0f +
+                        (static_cast<float>(i + 1) / static_cast<float>(totalCount)) * 90.0f;
+                    QMetaObject::invokeMethod(
+                        applicationGuard.data(),
+                        [progressPid, moveItems, progress]()
+                        {
+                            kPro.set(progressPid, moveItems ? "移动处理中" : "复制处理中", 0, progress);
+                        },
+                        Qt::QueuedConnection);
+                }
+            }
+
+            if (applicationGuard.isNull())
+            {
+                return;
+            }
+
+            QMetaObject::invokeMethod(
+                applicationGuard.data(),
+                [safeThis,
+                    errorLines = std::move(errorLines),
+                    sourcePanelNameText,
+                    targetPanelNameText,
+                    sourceWasLeftPanel,
+                    moveItems,
+                    progressPid,
+                    totalCount]()
+                {
+                    kPro.set(progressPid, moveItems ? "移动完成" : "复制完成", 0, 100.0f);
+                    if (safeThis.isNull())
                     {
-                        itemOk = false;
-                        copyErrorText = ks::i18n::displayText(QStringLiteral("目标已写入，但删除源文件失败: %1"))
-                            .arg(sourcePath);
+                        return;
                     }
-                }
-                if (!itemOk)
-                {
-                    errorLines << copyErrorText;
-                }
-            }
-        }
-        else
-        {
-            // 复制模式：目录递归复制，文件覆盖复制。
-            if (sourceInfo.isDir())
-            {
-                QString copyErrorText;
-                itemOk = copyDirectoryTransactionally(sourcePath, targetPath, copyErrorText);
-                if (!itemOk)
-                {
-                    errorLines << copyErrorText;
-                }
-            }
-            else
-            {
-                QString copyErrorText;
-                itemOk = copyFileTransactionally(sourcePath, targetPath, copyErrorText);
-                if (!itemOk)
-                {
-                    errorLines << copyErrorText;
-                }
-            }
-        }
 
-        const float progress = 5.0f + (static_cast<float>(i + 1) / static_cast<float>(totalCount)) * 90.0f;
-        kPro.set(progressPid, moveItems ? "移动处理中" : "复制处理中", 0, progress);
-    }
+                    FileDock* const dock = safeThis.data();
+                    dock->m_transferInProgress = false;
+                    FilePanelWidgets& completedSourcePanel = sourceWasLeftPanel
+                        ? dock->m_leftPanel
+                        : dock->m_rightPanel;
+                    FilePanelWidgets& completedTargetPanel = sourceWasLeftPanel
+                        ? dock->m_rightPanel
+                        : dock->m_leftPanel;
+                    dock->refreshPanel(completedSourcePanel);
+                    dock->refreshPanel(completedTargetPanel);
 
-    refreshPanel(sourcePanel);
-    refreshPanel(*targetPanel);
-    kPro.set(progressPid, moveItems ? "移动完成" : "复制完成", 0, 100.0f);
+                    if (!errorLines.isEmpty())
+                    {
+                        kLogEvent event;
+                        warn << event
+                            << "[FileDock] 跨面板文件传输部分失败, sourcePanel="
+                            << sourcePanelNameText.toStdString()
+                            << ", targetPanel="
+                            << targetPanelNameText.toStdString()
+                            << ", errorCount="
+                            << errorLines.size()
+                            << ", errorPreview=\n"
+                            << buildLogPreviewText(errorLines).toStdString()
+                            << eol;
+                        return;
+                    }
 
-    if (!errorLines.isEmpty())
-    {
-        kLogEvent event;
-        warn << event
-            << "[FileDock] 跨面板文件传输部分失败, sourcePanel="
-            << sourcePanel.panelNameText.toStdString()
-            << ", targetPanel="
-            << targetPanel->panelNameText.toStdString()
-            << ", errorCount="
-            << errorLines.size()
-            << ", errorPreview=\n"
-            << buildLogPreviewText(errorLines).toStdString()
-            << eol;
-        return;
-    }
-
-    kLogEvent event;
-    info << event
-        << "[FileDock] 跨面板文件传输完成, sourcePanel="
-        << sourcePanel.panelNameText.toStdString()
-        << ", targetPanel="
-        << targetPanel->panelNameText.toStdString()
-        << ", totalCount="
-        << totalCount
-        << ", mode="
-        << (moveItems ? "move" : "copy")
-        << eol;
+                    kLogEvent event;
+                    info << event
+                        << "[FileDock] 跨面板文件传输完成, sourcePanel="
+                        << sourcePanelNameText.toStdString()
+                        << ", targetPanel="
+                        << targetPanelNameText.toStdString()
+                        << ", totalCount="
+                        << totalCount
+                        << ", mode="
+                        << (moveItems ? "move" : "copy")
+                        << eol;
+                },
+                Qt::QueuedConnection);
+        });
 }
 
 void FileDock::createNewFileOrFolder(FilePanelWidgets& panel, bool createFolder)

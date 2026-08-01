@@ -457,6 +457,7 @@ private:
     // 左右面板实例。
     FilePanelWidgets m_leftPanel;              // 左侧面板状态。
     FilePanelWidgets m_rightPanel;             // 右侧面板状态。
+    bool m_transferInProgress = false;         // 跨面板复制/移动后台任务是否运行。
 
     // 文件解锁器后台线程状态。
     std::thread m_unlockerWorkerThread;
