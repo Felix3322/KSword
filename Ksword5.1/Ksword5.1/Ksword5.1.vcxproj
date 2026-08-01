@@ -778,6 +778,18 @@
     <Copy SourceFiles="$(KswordArkDriverInfSource)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="false" Condition="'$(Configuration)|$(Platform)'!='Release|x64' And Exists('$(KswordArkDriverInfSource)')" />
     <Warning Condition="!Exists('$(KswordArkDriverSysSource)')" Text="KswordARK driver binary was not found for output sync: $(KswordArkDriverSysSource)" />
   </Target>
+  <!-- 统一 Release 目录必须包含 Qt 运行库与平台插件，否则离开开发环境后主程序无法启动。 -->
+  <Target Name="DeployQtRuntime" AfterTargets="Build" Condition="'$(Configuration)|$(Platform)'=='Release|x64' and Exists('$(TargetPath)')">
+    <PropertyGroup>
+      <KswordQtDeployExe Condition="'$(KswordQtDeployExe)'=='' and '$(KSWORD_QT_DIR)'!='' and Exists('$(KSWORD_QT_DIR)\bin\windeployqt.exe')">$(KSWORD_QT_DIR)\bin\windeployqt.exe</KswordQtDeployExe>
+      <KswordQtDeployExe Condition="'$(KswordQtDeployExe)'=='' and Exists('$(MSBuildProjectDirectory)\..\..\.deps\Qt\6.9.3\msvc2022_64\bin\windeployqt.exe')">$(MSBuildProjectDirectory)\..\..\.deps\Qt\6.9.3\msvc2022_64\bin\windeployqt.exe</KswordQtDeployExe>
+      <KswordQtDeployExe Condition="'$(KswordQtDeployExe)'=='' and '$(QtInstall)'!='' and Exists('$(QtInstall)\bin\windeployqt.exe')">$(QtInstall)\bin\windeployqt.exe</KswordQtDeployExe>
+      <KswordQtDeployExe Condition="'$(KswordQtDeployExe)'=='' and '$(QTDIR)'!='' and Exists('$(QTDIR)\bin\windeployqt.exe')">$(QTDIR)\bin\windeployqt.exe</KswordQtDeployExe>
+    </PropertyGroup>
+    <Message Importance="High" Text="Deploying Qt runtime and plugins to $(TargetDir)" Condition="Exists('$(KswordQtDeployExe)')" />
+    <Exec Command="&quot;$(KswordQtDeployExe)&quot; --release --force --compiler-runtime --dir &quot;$(TargetDir).&quot; &quot;$(TargetPath)&quot;" Condition="Exists('$(KswordQtDeployExe)')" />
+    <Warning Condition="!Exists('$(KswordQtDeployExe)')" Text="windeployqt.exe was not found; the Release output may be missing Qt runtime DLLs and plugins." />
+  </Target>
   <!-- Qt 官方动态库由 MSVC /MD 构建，即使 Ksword5.1.exe 自身使用 /MT，也仍需把 VC 运行库 DLL 随 Release 输出部署。 -->
   <Target Name="CopyVisualCppRuntimeRedist" AfterTargets="Build" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ItemGroup>
