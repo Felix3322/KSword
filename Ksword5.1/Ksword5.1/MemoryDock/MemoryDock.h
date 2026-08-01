@@ -375,6 +375,12 @@ private:
     // - 返回：成功返回有效 HANDLE；失败返回 nullptr。
     HANDLE openProcessHandleForRead(std::uint32_t pid, QString* errorTextOut = nullptr) const;
 
+    // duplicateAttachedProcessHandleForWorker：
+    // - 作用：为后台只读任务复制当前附加进程句柄，避免任务继续使用可被 UI 线程关闭/复用的原句柄。
+    // - 参数 errorCodeOut：失败时输出 Win32 错误码（可空）。
+    // - 返回：成功返回自动关闭的独立句柄租约；失败返回空 shared_ptr。
+    std::shared_ptr<void> duplicateAttachedProcessHandleForWorker(std::uint32_t* errorCodeOut = nullptr) const;
+
     // showProcessTableContextMenu：
     // - 作用：展示进程列表右键菜单（附加 / Dump 内存）。
     // - 参数 localPosition：鼠标在进程表 viewport 内的坐标。
@@ -978,6 +984,7 @@ private:
     std::uint32_t m_attachedPid = 0;          // 当前附加 PID。
     QString m_attachedProcessName;            // 当前附加进程名。
     bool m_canReadWriteMemory = false;        // 当前句柄是否可读写内存。
+    std::atomic<std::uint64_t> m_processAttachmentGeneration{ 0 }; // 附加上下文代次（丢弃旧句柄任务结果）。
 
     std::vector<ProcessEntry> m_processCache; // 进程缓存（Tab1/工具栏复用）。
     std::vector<ModuleEntry> m_moduleCache;   // 模块缓存（Tab1 使用）。

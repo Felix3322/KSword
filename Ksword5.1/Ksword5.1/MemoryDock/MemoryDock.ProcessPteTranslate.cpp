@@ -357,6 +357,27 @@ void MemoryDock::refreshProcessPteTranslateAsync()
         return;
     }
 
+    std::uint32_t duplicateError = ERROR_SUCCESS;
+    const std::shared_ptr<void> processHandleLease =
+        duplicateAttachedProcessHandleForWorker(&duplicateError);
+    if (!processHandleLease)
+    {
+        m_processPteTranslateRefreshInProgress.store(false);
+        if (m_processPteTranslateRefreshButton != nullptr)
+        {
+            m_processPteTranslateRefreshButton->setEnabled(true);
+        }
+        if (m_processPteTranslateStatusLabel != nullptr)
+        {
+            m_processPteTranslateStatusLabel->setText(
+                QStringLiteral("状态：复制进程句柄失败（Win32=%1）。").arg(duplicateError));
+            m_processPteTranslateStatusLabel->setStyleSheet(
+                QStringLiteral("color:%1; font-weight:600;")
+                    .arg(KswordTheme::ErrorColor().name(QColor::HexRgb)));
+        }
+        return;
+    }
+
     if (m_processPteTranslateRefreshButton != nullptr)
     {
         m_processPteTranslateRefreshButton->setEnabled(false);
@@ -385,15 +406,18 @@ void MemoryDock::refreshProcessPteTranslateAsync()
         : 16U;
 
     const std::uint64_t ticket = m_processPteTranslateRefreshTicket.fetch_add(1U) + 1U;
+    const std::uint64_t attachmentGeneration = m_processAttachmentGeneration.load();
     const std::uint32_t pid = m_attachedPid;
     const QPointer<MemoryDock> guardThis(this);
 
-    std::thread([guardThis, ticket, pid, baseAddress, pageCount]() {
-        if (guardThis == nullptr)
-        {
-            return;
-        }
-
+    std::thread([guardThis,
+                 processHandleLease,
+                 ticket,
+                 attachmentGeneration,
+                 pid,
+                 baseAddress,
+                 pageCount]() {
+        const HANDLE workerProcessHandle = static_cast<HANDLE>(processHandleLease.get());
         std::vector<ProcessMemoryEvidenceEntry> entries;
         entries.reserve(pageCount);
 
@@ -412,7 +436,7 @@ void MemoryDock::refreshProcessPteTranslateAsync()
             }
 
             if (::VirtualQueryEx(
-                    guardThis->m_attachedProcessHandle,
+                    workerProcessHandle,
                     reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(va)),
                     &mbi,
                     sizeof(mbi)) != sizeof(mbi))
@@ -423,7 +447,7 @@ void MemoryDock::refreshProcessPteTranslateAsync()
             PSAPI_WORKING_SET_EX_INFORMATION wsInfo{};
             wsInfo.VirtualAddress = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(va));
             const BOOL queryOk = ::QueryWorkingSetEx(
-                guardThis->m_attachedProcessHandle,
+                workerProcessHandle,
                 &wsInfo,
                 static_cast<DWORD>(sizeof(wsInfo)));
 
@@ -463,13 +487,14 @@ void MemoryDock::refreshProcessPteTranslateAsync()
 
         QMetaObject::invokeMethod(
             guardThis.data(),
-            [guardThis, ticket, entries = std::move(entries)]() mutable {
+            [guardThis, ticket, attachmentGeneration, entries = std::move(entries)]() mutable {
                 auto entriesSnapshot =
                     std::make_shared<std::vector<ProcessMemoryEvidenceEntry>>(std::move(entries));
-                auto commitSnapshot = [guardThis, ticket, entriesSnapshot]() mutable
+                auto commitSnapshot = [guardThis, ticket, attachmentGeneration, entriesSnapshot]() mutable
                 {
                     if (guardThis == nullptr ||
-                        ticket < guardThis->m_processPteTranslateRefreshTicket.load())
+                        ticket != guardThis->m_processPteTranslateRefreshTicket.load() ||
+                        attachmentGeneration != guardThis->m_processAttachmentGeneration.load())
                     {
                         return;
                     }

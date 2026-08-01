@@ -721,6 +721,22 @@ void MemoryDock::detachProcess()
     // 防止后台 ReadProcessMemory 使用已关闭或已复用的 HANDLE。
     cancelAndWaitForMemoryScanTasks();
 
+    // 先使所有基于旧附加上下文的异步快照失效。PTE/证据任务持有的是复制句柄，
+    // 可以安全完成系统调用，但其结果不得再写回新的附加进程。
+    m_processAttachmentGeneration.fetch_add(1U);
+    m_processPteTranslateRefreshTicket.fetch_add(1U);
+    m_processMemoryEvidenceRefreshTicket.fetch_add(1U);
+    m_processPteTranslateRefreshInProgress.store(false);
+    m_processMemoryEvidenceRefreshInProgress.store(false);
+    if (m_processPteTranslateRefreshButton != nullptr)
+    {
+        m_processPteTranslateRefreshButton->setEnabled(true);
+    }
+    if (m_processMemoryEvidenceRefreshButton != nullptr)
+    {
+        m_processMemoryEvidenceRefreshButton->setEnabled(true);
+    }
+
     // 同步抬高模块刷新 ticket，确保旧的异步模块回调不会覆盖“已分离”状态。
     m_moduleRefreshTicket.fetch_add(1);
     m_moduleRefreshInProgress.store(false);
@@ -744,6 +760,10 @@ void MemoryDock::detachProcess()
     m_regionCache.clear();
     m_searchResultCache.clear();
     m_searchResultVisibleCount = 0;
+    m_processPteTranslateCache.clear();
+    m_processPteTranslateVisibleCount = 0;
+    m_processMemoryEvidenceCache.clear();
+    m_processMemoryEvidenceVisibleCount = 0;
 
     // 清理表格展示，避免用户误操作旧数据。
     m_moduleTable->clear();
@@ -756,6 +776,22 @@ void MemoryDock::detachProcess()
     }
     m_regionTable->setRowCount(0);
     m_searchResultTable->setRowCount(0);
+    if (m_processPteTranslateTable != nullptr)
+    {
+        m_processPteTranslateTable->setRowCount(0);
+    }
+    if (m_processMemoryEvidenceTable != nullptr)
+    {
+        m_processMemoryEvidenceTable->setRowCount(0);
+    }
+    if (m_processPteTranslateStatusLabel != nullptr)
+    {
+        m_processPteTranslateStatusLabel->setText(QStringLiteral("状态：请先附加进程。"));
+    }
+    if (m_processMemoryEvidenceStatusLabel != nullptr)
+    {
+        m_processMemoryEvidenceStatusLabel->setText(QStringLiteral("状态：请先附加进程。"));
+    }
     if (m_hexEditorWidget != nullptr)
     {
         m_hexEditorWidget->setEditable(false);
@@ -771,6 +807,50 @@ void MemoryDock::detachProcess()
     info << detachFinishEvent
         << "[MemoryDock] detachProcess: 分离完成，缓存与表格已重置。"
         << eol;
+}
+
+std::shared_ptr<void> MemoryDock::duplicateAttachedProcessHandleForWorker(
+    std::uint32_t* const errorCodeOut) const
+{
+    // 后台任务不得借用 m_attachedProcessHandle：分离/重新附加会关闭它，且 Windows
+    // 可能立即把相同数值分配给别的内核对象。独立复制句柄把系统调用生命周期与 UI 解耦。
+    if (errorCodeOut != nullptr)
+    {
+        *errorCodeOut = ERROR_SUCCESS;
+    }
+
+    if (m_attachedProcessHandle == nullptr)
+    {
+        if (errorCodeOut != nullptr)
+        {
+            *errorCodeOut = ERROR_INVALID_HANDLE;
+        }
+        return {};
+    }
+
+    HANDLE duplicatedHandle = nullptr;
+    if (::DuplicateHandle(
+            ::GetCurrentProcess(),
+            m_attachedProcessHandle,
+            ::GetCurrentProcess(),
+            &duplicatedHandle,
+            0U,
+            FALSE,
+            DUPLICATE_SAME_ACCESS) == FALSE)
+    {
+        if (errorCodeOut != nullptr)
+        {
+            *errorCodeOut = static_cast<std::uint32_t>(::GetLastError());
+        }
+        return {};
+    }
+
+    return std::shared_ptr<void>(duplicatedHandle, [](void* const rawHandle) {
+        if (rawHandle != nullptr)
+        {
+            ::CloseHandle(static_cast<HANDLE>(rawHandle));
+        }
+    });
 }
 
 HANDLE MemoryDock::openProcessHandleForRead(const std::uint32_t pid, QString* const errorTextOut) const

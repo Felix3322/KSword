@@ -415,6 +415,27 @@ void MemoryDock::refreshProcessMemoryEvidenceAsync()
         return;
     }
 
+    std::uint32_t duplicateError = ERROR_SUCCESS;
+    const std::shared_ptr<void> processHandleLease =
+        duplicateAttachedProcessHandleForWorker(&duplicateError);
+    if (!processHandleLease)
+    {
+        m_processMemoryEvidenceRefreshInProgress.store(false);
+        if (m_processMemoryEvidenceRefreshButton != nullptr)
+        {
+            m_processMemoryEvidenceRefreshButton->setEnabled(true);
+        }
+        if (m_processMemoryEvidenceStatusLabel != nullptr)
+        {
+            m_processMemoryEvidenceStatusLabel->setText(
+                QStringLiteral("状态：复制进程句柄失败（Win32=%1）。").arg(duplicateError));
+            m_processMemoryEvidenceStatusLabel->setStyleSheet(
+                QStringLiteral("color:%1; font-weight:600;")
+                    .arg(KswordTheme::ErrorColor().name(QColor::HexRgb)));
+        }
+        return;
+    }
+
     if (m_processMemoryEvidenceRefreshButton != nullptr)
     {
         m_processMemoryEvidenceRefreshButton->setEnabled(false);
@@ -442,14 +463,18 @@ void MemoryDock::refreshProcessMemoryEvidenceAsync()
     const bool imageOnly = m_processMemoryEvidenceImageOnlyCheck != nullptr && m_processMemoryEvidenceImageOnlyCheck->isChecked();
 
     const std::uint64_t ticket = m_processMemoryEvidenceRefreshTicket.fetch_add(1U) + 1U;
+    const std::uint64_t attachmentGeneration = m_processAttachmentGeneration.load();
     const QPointer<MemoryDock> guardThis(this);
 
-    std::thread([guardThis, ticket, startAddress, endAddress, maxRows, imageOnly]() {
-        if (guardThis == nullptr)
-        {
-            return;
-        }
-
+    std::thread([guardThis,
+                 processHandleLease,
+                 ticket,
+                 attachmentGeneration,
+                 startAddress,
+                 endAddress,
+                 maxRows,
+                 imageOnly]() {
+        const HANDLE workerProcessHandle = static_cast<HANDLE>(processHandleLease.get());
         std::vector<ProcessMemoryEvidenceEntry> entries;
         SYSTEM_INFO systemInfo{};
         ::GetSystemInfo(&systemInfo);
@@ -467,7 +492,7 @@ void MemoryDock::refreshProcessMemoryEvidenceAsync()
         {
             MEMORY_BASIC_INFORMATION mbi{};
             if (::VirtualQueryEx(
-                    guardThis->m_attachedProcessHandle,
+                    workerProcessHandle,
                     reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(currentAddress)),
                     &mbi,
                     sizeof(mbi)) != sizeof(mbi))
@@ -501,7 +526,7 @@ void MemoryDock::refreshProcessMemoryEvidenceAsync()
                 PSAPI_WORKING_SET_EX_INFORMATION wsInfo{};
                 wsInfo.VirtualAddress = reinterpret_cast<PVOID>(static_cast<std::uintptr_t>(va));
                 const BOOL queryOk = ::QueryWorkingSetEx(
-                    guardThis->m_attachedProcessHandle,
+                    workerProcessHandle,
                     &wsInfo,
                     static_cast<DWORD>(sizeof(wsInfo)));
 
@@ -541,13 +566,14 @@ void MemoryDock::refreshProcessMemoryEvidenceAsync()
 
         QMetaObject::invokeMethod(
             guardThis.data(),
-            [guardThis, ticket, entries = std::move(entries)]() mutable {
+            [guardThis, ticket, attachmentGeneration, entries = std::move(entries)]() mutable {
                 auto entriesSnapshot =
                     std::make_shared<std::vector<ProcessMemoryEvidenceEntry>>(std::move(entries));
-                auto commitSnapshot = [guardThis, ticket, entriesSnapshot]() mutable
+                auto commitSnapshot = [guardThis, ticket, attachmentGeneration, entriesSnapshot]() mutable
                 {
                     if (guardThis == nullptr ||
-                        ticket < guardThis->m_processMemoryEvidenceRefreshTicket.load())
+                        ticket != guardThis->m_processMemoryEvidenceRefreshTicket.load() ||
+                        attachmentGeneration != guardThis->m_processAttachmentGeneration.load())
                     {
                         return;
                     }

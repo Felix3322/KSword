@@ -17860,6 +17860,7 @@
     "状态：等待操作（旧协议安全移除；实验 unlink 不作为默认路径）": "Status: Waiting for operation (Legacy protocol secure removal; experimental unlink is not the default path)",
     "状态：等待查询": "Status: Waiting for query",
     "状态：等待首次刷新": "Status: Waiting for initial refresh",
+    "状态：复制进程句柄失败（Win32=%1）。": "Status: Failed to duplicate the process handle (Win32=%1).",
     "状态：结构解析失败：%1": "Status: Structure parse failed: %1",
     "状态：结构解析完成。": "Status: Structure parsing complete.",
     "状态：聚合查询中...": "Status: Aggregating query...",
