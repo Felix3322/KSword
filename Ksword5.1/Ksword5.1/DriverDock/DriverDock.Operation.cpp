@@ -242,6 +242,8 @@ namespace
         QString targetPath;
         std::uint64_t moduleBase = 0U;
         std::uint32_t moduleSize = 0U;
+        // zeroFilledChunkCount：记录 R0 因不可读或已释放页面而补零的读取分块数。
+        std::uint32_t zeroFilledChunkCount = 0U;
         unsigned long win32Error = ERROR_SUCCESS;
     };
 
@@ -268,7 +270,7 @@ namespace
         case DriverModuleDumpError::MemoryRead:
             return driverText(
                 "driver.dump_module.error.memory_read",
-                QStringLiteral("R0 内存读取响应未通过完整性校验，未保留部分或补零数据。"));
+                QStringLiteral("R0 内存读取响应的协议字段或数据长度未通过完整性校验，未保留无效数据。"));
         case DriverModuleDumpError::PeValidation:
             return driverText(
                 "driver.dump_module.error.pe_validation",
@@ -315,15 +317,33 @@ namespace
         return true;
     }
 
+    // driverModuleDumpValidateRead：
+    // - 输入：一次 R0 内核读取响应及期望的地址、长度；
+    // - 处理：严格校验协议 framing，并只接受完整读取或由 R0 明确标记的补零读取；
+    // - 输出：zeroFilledOut 表示该分块包含不可读/已释放页面的 00 占位数据。
     bool driverModuleDumpValidateRead(
         const ksword::ark::VirtualMemoryReadResult& readResult,
         const std::uint64_t expectedAddress,
         const std::uint32_t expectedBytes,
-        QString& technicalDetailOut)
+        QString& technicalDetailOut,
+        bool& zeroFilledOut)
     {
+        zeroFilledOut = false;
         const std::uint32_t requiredFields =
             KSWORD_ARK_MEMORY_FIELD_READ_DATA_PRESENT |
             KSWORD_ARK_MEMORY_FIELD_ADDRESS_KERNEL_RANGE;
+        const std::uint32_t zeroFillFields =
+            KSWORD_ARK_MEMORY_FIELD_PARTIAL_COPY |
+            KSWORD_ARK_MEMORY_FIELD_ZERO_FILLED_UNREADABLE;
+        const bool completeRead =
+            readResult.readStatus == KSWORD_ARK_MEMORY_READ_STATUS_OK &&
+            readResult.copyStatus == 0 &&
+            (readResult.fieldFlags & zeroFillFields) == 0U;
+        const bool zeroFilledRead =
+            (readResult.readStatus == KSWORD_ARK_MEMORY_READ_STATUS_PARTIAL_COPY ||
+             readResult.readStatus == KSWORD_ARK_MEMORY_READ_STATUS_ZERO_FILLED) &&
+            readResult.copyStatus != 0 &&
+            (readResult.fieldFlags & zeroFillFields) == zeroFillFields;
         if (!readResult.io.ok ||
             readResult.version != KSWORD_ARK_MEMORY_PROTOCOL_VERSION ||
             readResult.headerSize !=
@@ -333,14 +353,10 @@ namespace
             readResult.requestedBaseAddress != expectedAddress ||
             readResult.requestedBytes != expectedBytes ||
             readResult.maxBytesPerRequest != KSWORD_ARK_MEMORY_READ_MAX_BYTES ||
-            readResult.readStatus != KSWORD_ARK_MEMORY_READ_STATUS_OK ||
             readResult.lookupStatus != 0 ||
-            readResult.copyStatus != 0 ||
             (readResult.fieldFlags & requiredFields) != requiredFields ||
-            (readResult.fieldFlags &
-                (KSWORD_ARK_MEMORY_FIELD_PARTIAL_COPY |
-                 KSWORD_ARK_MEMORY_FIELD_ZERO_FILLED_UNREADABLE |
-                 KSWORD_ARK_MEMORY_FIELD_ADDRESS_USER_RANGE)) != 0U ||
+            (readResult.fieldFlags & KSWORD_ARK_MEMORY_FIELD_ADDRESS_USER_RANGE) != 0U ||
+            (!completeRead && !zeroFilledRead) ||
             readResult.bytesRead != expectedBytes ||
             readResult.data.size() != static_cast<std::size_t>(expectedBytes) ||
             readResult.io.bytesReturned !=
@@ -369,6 +385,7 @@ namespace
                 .arg(readResult.maxBytesPerRequest);
             return false;
         }
+        zeroFilledOut = zeroFilledRead;
         return true;
     }
 
@@ -687,16 +704,23 @@ namespace
                 0U,
                 moduleBase,
                 headerBytesToRead,
-                KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS,
+                KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS |
+                    KSWORD_ARK_MEMORY_READ_FLAG_ZERO_FILL_UNREADABLE,
                 &driverHandle);
+        bool headerReadZeroFilled = false;
         if (!driverModuleDumpValidateRead(
             headerRead,
             moduleBase,
             headerBytesToRead,
-            dumpResult.technicalDetail))
+            dumpResult.technicalDetail,
+            headerReadZeroFilled))
         {
             dumpResult.error = DriverModuleDumpError::MemoryRead;
             return dumpResult;
+        }
+        if (headerReadZeroFilled)
+        {
+            ++dumpResult.zeroFilledChunkCount;
         }
         if (!driverModuleDumpValidatePeImage(
             headerRead.data,
@@ -764,16 +788,23 @@ namespace
                     0U,
                     chunkAddress,
                     chunkBytes,
-                    KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS,
+                    KSWORD_ARK_MEMORY_READ_FLAG_KERNEL_ADDRESS |
+                        KSWORD_ARK_MEMORY_READ_FLAG_ZERO_FILL_UNREADABLE,
                     &driverHandle);
+            bool readZeroFilled = false;
             if (!driverModuleDumpValidateRead(
                 readResult,
                 chunkAddress,
                 chunkBytes,
-                dumpResult.technicalDetail))
+                dumpResult.technicalDetail,
+                readZeroFilled))
             {
                 dumpResult.error = DriverModuleDumpError::MemoryRead;
                 return dumpResult;
+            }
+            if (readZeroFilled)
+            {
+                ++dumpResult.zeroFilledChunkCount;
             }
             if (!writeChunk(readResult.data))
             {
@@ -2457,7 +2488,7 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         driverText("driver.menu.dump_module_memory", QStringLiteral("R0 Dump 模块内存…")));
     dumpModuleMemoryAction->setToolTip(driverText(
         "driver.menu.dump_module_memory.tooltip",
-        QStringLiteral("按已加载模块基址读取完整内存映像；仅在全部分页读取和身份复核成功后原子保存，绝不覆盖已有文件。")));
+        QStringLiteral("按已加载模块基址读取完整内存映像；不可读或已释放页面按 00 保留地址布局，并在协议、PE 与身份复核通过后原子保存。")));
     QAction* queryKernelSignatureAction = contextMenu.addAction(
         driverText("driver.menu.query_kernel_signature", QStringLiteral("R0 读取内核签名证据")));
     QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
@@ -2911,29 +2942,39 @@ void DriverDock::dumpSelectedModuleMemory(
                         }
                         guardThis->appendOperateLogLine(driverText(
                             "driver.dump_module.log.complete",
-                            QStringLiteral("R0 Dump 模块内存完成：%1，%2 字节，保存到 %3"))
+                            QStringLiteral("R0 Dump 模块内存完成：%1，%2 字节，补零分块=%3，保存到 %4"))
                             .arg(moduleName)
                             .arg(dumpResult.moduleSize)
+                            .arg(dumpResult.zeroFilledChunkCount)
                             .arg(dumpResult.targetPath));
+                        QString completionText = driverText(
+                            "driver.dump_module.complete",
+                            QStringLiteral(
+                                "模块内存 Dump 完成。\n\n"
+                                "模块：%1\n"
+                                "基址：%2\n"
+                                "映像大小：%3 字节\n"
+                                "保存路径：%4\n\n"
+                                "R0 已在读取前后复核同一已加载模块的基址、名称和大小；"
+                                "内存 PE 的 SizeOfImage 也与 R0 模块边界一致。"))
+                            .arg(moduleName)
+                            .arg(formatCompactAddress(dumpResult.moduleBase))
+                            .arg(dumpResult.moduleSize)
+                            .arg(dumpResult.targetPath);
+                        if (dumpResult.zeroFilledChunkCount > 0U)
+                        {
+                            completionText += QString::fromLatin1("\n\n") + driverText(
+                                "driver.dump_module.zero_fill_notice",
+                                QStringLiteral(
+                                    "其中 %1 个读取分块包含不可读或已释放页面；R0 已用 00 保留这些页面的地址布局。"))
+                                .arg(dumpResult.zeroFilledChunkCount);
+                        }
                         QMessageBox::information(
                             guardThis,
                             driverText(
                                 "driver.dump_module.title",
                                 QStringLiteral("R0 Dump 模块内存")),
-                            driverText(
-                                "driver.dump_module.complete",
-                                QStringLiteral(
-                                    "模块内存 Dump 完成。\n\n"
-                                    "模块：%1\n"
-                                    "基址：%2\n"
-                                    "映像大小：%3 字节\n"
-                                    "保存路径：%4\n\n"
-                                    "R0 已在读取前后复核同一已加载模块的基址、名称和大小；"
-                                    "内存 PE 的 SizeOfImage 也与 R0 模块边界一致。"))
-                                .arg(moduleName)
-                                .arg(formatCompactAddress(dumpResult.moduleBase))
-                                .arg(dumpResult.moduleSize)
-                                .arg(dumpResult.targetPath));
+                            completionText);
                         return;
                     }
 
@@ -2948,6 +2989,11 @@ void DriverDock::dumpSelectedModuleMemory(
                                 failureDetail,
                                 DriverDock::formatWin32ErrorText(
                                     dumpResult.win32Error));
+                    }
+                    if (!dumpResult.technicalDetail.trimmed().isEmpty())
+                    {
+                        failureDetail += QString::fromLatin1("\n\n") +
+                            dumpResult.technicalDetail.trimmed();
                     }
                     if (guardThis->m_overviewStatusLabel != nullptr)
                     {
