@@ -96,6 +96,7 @@ KswordARKHvmIoctlControl(
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
+    KSWORD_ARK_CONTROL_HVM_REQUEST controlRequestSnapshot = { 0 };
     const KSWORD_ARK_CONTROL_HVM_REQUEST* controlRequest = NULL;
     KSWORD_ARK_CONTROL_HVM_RESPONSE* controlResponse = NULL;
 
@@ -124,6 +125,11 @@ KswordARKHvmIoctlControl(
             ? STATUS_INFO_LENGTH_MISMATCH
             : status;
     }
+    /* Preserve METHOD_BUFFERED input before output retrieval exposes the same system buffer. */
+    RtlCopyMemory(
+        &controlRequestSnapshot,
+        inputBuffer,
+        sizeof(controlRequestSnapshot));
     status = WdfRequestRetrieveOutputBuffer(
         Request,
         sizeof(KSWORD_ARK_CONTROL_HVM_RESPONSE),
@@ -136,8 +142,7 @@ KswordARKHvmIoctlControl(
             ? STATUS_BUFFER_TOO_SMALL
             : status;
     }
-    controlRequest =
-        (const KSWORD_ARK_CONTROL_HVM_REQUEST*)inputBuffer;
+    controlRequest = &controlRequestSnapshot;
     controlResponse =
         (KSWORD_ARK_CONTROL_HVM_RESPONSE*)outputBuffer;
 

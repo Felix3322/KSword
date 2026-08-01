@@ -517,6 +517,7 @@ Return Value:
 --*/
 {
     KSWORD_ARK_ENUM_PROCESS_REQUEST* enumRequest = NULL;
+    KSWORD_ARK_ENUM_PROCESS_REQUEST requestSnapshot = { 0 };
     KSWORD_ARK_ENUM_PROCESS_REQUEST defaultRequest = { 0 };
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
@@ -545,7 +546,12 @@ Return Value:
     }
 
     if (hasInput) {
-        enumRequest = (KSWORD_ARK_ENUM_PROCESS_REQUEST*)inputBuffer;
+        /* Preserve METHOD_BUFFERED input before output retrieval exposes the shared buffer. */
+        RtlCopyMemory(
+            &requestSnapshot,
+            inputBuffer,
+            sizeof(requestSnapshot));
+        enumRequest = &requestSnapshot;
     }
     else {
         enumRequest = &defaultRequest;

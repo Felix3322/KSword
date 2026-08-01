@@ -90,6 +90,7 @@ Return Value:
 --*/
 {
     KSWORD_ARK_ENUM_PROCESS_HANDLES_REQUEST* enumRequest = NULL;
+    KSWORD_ARK_ENUM_PROCESS_HANDLES_REQUEST requestSnapshot = { 0 };
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0;
@@ -114,7 +115,12 @@ Return Value:
         return status;
     }
 
-    enumRequest = (KSWORD_ARK_ENUM_PROCESS_HANDLES_REQUEST*)inputBuffer;
+    /* Preserve METHOD_BUFFERED input before the backend clears the shared response buffer. */
+    RtlCopyMemory(
+        &requestSnapshot,
+        inputBuffer,
+        sizeof(requestSnapshot));
+    enumRequest = &requestSnapshot;
     if (enumRequest->processId == 0UL) {
         KswordARKHandleIoctlLog(Device, "Warn", "R0 enum-handle ioctl: missing pid.");
         return STATUS_INVALID_PARAMETER;
@@ -188,6 +194,7 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_HANDLE_OBJECT_REQUEST* queryRequest = NULL;
+    KSWORD_ARK_QUERY_HANDLE_OBJECT_REQUEST requestSnapshot = { 0 };
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0;
@@ -212,7 +219,12 @@ Return Value:
         return status;
     }
 
-    queryRequest = (KSWORD_ARK_QUERY_HANDLE_OBJECT_REQUEST*)inputBuffer;
+    /* Preserve METHOD_BUFFERED input before the backend clears the shared response buffer. */
+    RtlCopyMemory(
+        &requestSnapshot,
+        inputBuffer,
+        sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,
         sizeof(KSWORD_ARK_QUERY_HANDLE_OBJECT_RESPONSE),

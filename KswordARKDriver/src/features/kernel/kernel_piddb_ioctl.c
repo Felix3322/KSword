@@ -27,6 +27,7 @@ KswordARKKernelIoctlQueryPiDdb(
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
+    KSWORD_ARK_QUERY_PIDDB_REQUEST requestSnapshot = { 0 };
 
     /* Retrieve complete fixed input and a variable response header. */
     UNREFERENCED_PARAMETER(Device);
@@ -44,6 +45,11 @@ KswordARKKernelIoctlQueryPiDdb(
         actualInputLength < sizeof(KSWORD_ARK_QUERY_PIDDB_REQUEST)) {
         return NT_SUCCESS(status) ? STATUS_INFO_LENGTH_MISMATCH : status;
     }
+    /* Preserve METHOD_BUFFERED input before output retrieval exposes the same system buffer. */
+    RtlCopyMemory(
+        &requestSnapshot,
+        inputBuffer,
+        sizeof(requestSnapshot));
     status = WdfRequestRetrieveOutputBuffer(
         Request,
         KSWORD_ARK_QUERY_PIDDB_RESPONSE_HEADER_SIZE,
@@ -57,7 +63,7 @@ KswordARKKernelIoctlQueryPiDdb(
 
     /* The backend bounds every row by the actual WDF output length. */
     return KswordARKPiDdbQuery(
-        (const KSWORD_ARK_QUERY_PIDDB_REQUEST*)inputBuffer,
+        &requestSnapshot,
         (KSWORD_ARK_QUERY_PIDDB_RESPONSE*)outputBuffer,
         actualOutputLength,
         BytesReturned);
@@ -77,6 +83,7 @@ KswordARKKernelIoctlDeletePiDdb(
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
+    KSWORD_ARK_DELETE_PIDDB_REQUEST deleteRequestSnapshot = { 0 };
     const KSWORD_ARK_DELETE_PIDDB_REQUEST* deleteRequest = NULL;
     KSWORD_ARK_DELETE_PIDDB_RESPONSE* deleteResponse = NULL;
 
@@ -99,6 +106,11 @@ KswordARKKernelIoctlDeletePiDdb(
         actualInputLength < sizeof(KSWORD_ARK_DELETE_PIDDB_REQUEST)) {
         return NT_SUCCESS(status) ? STATUS_INFO_LENGTH_MISMATCH : status;
     }
+    /* Preserve METHOD_BUFFERED input before output retrieval exposes the same system buffer. */
+    RtlCopyMemory(
+        &deleteRequestSnapshot,
+        inputBuffer,
+        sizeof(deleteRequestSnapshot));
     status = WdfRequestRetrieveOutputBuffer(
         Request,
         sizeof(KSWORD_ARK_DELETE_PIDDB_RESPONSE),
@@ -109,8 +121,7 @@ KswordARKKernelIoctlDeletePiDdb(
         actualOutputLength < sizeof(KSWORD_ARK_DELETE_PIDDB_RESPONSE)) {
         return NT_SUCCESS(status) ? STATUS_BUFFER_TOO_SMALL : status;
     }
-    deleteRequest =
-        (const KSWORD_ARK_DELETE_PIDDB_REQUEST*)inputBuffer;
+    deleteRequest = &deleteRequestSnapshot;
     deleteResponse =
         (KSWORD_ARK_DELETE_PIDDB_RESPONSE*)outputBuffer;
 

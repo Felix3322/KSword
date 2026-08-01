@@ -49,6 +49,7 @@ Return Value:
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
+    KSWORD_ARK_RESTORE_IDT_BASELINE_REQUEST restoreRequestSnapshot = { 0 };
     const KSWORD_ARK_RESTORE_IDT_BASELINE_REQUEST* restoreRequest = NULL;
     KSWORD_ARK_RESTORE_IDT_BASELINE_RESPONSE* restoreResponse = NULL;
 
@@ -79,6 +80,11 @@ Return Value:
             ? STATUS_INFO_LENGTH_MISMATCH
             : status;
     }
+    /* Preserve METHOD_BUFFERED input before output retrieval exposes the same system buffer. */
+    RtlCopyMemory(
+        &restoreRequestSnapshot,
+        inputBuffer,
+        sizeof(restoreRequestSnapshot));
 
     /* Retrieve and validate the complete fixed response. */
     status = WdfRequestRetrieveOutputBuffer(
@@ -97,8 +103,7 @@ Return Value:
     }
 
     /* Bind typed views only after both buffers pass their fixed-size checks. */
-    restoreRequest =
-        (const KSWORD_ARK_RESTORE_IDT_BASELINE_REQUEST*)inputBuffer;
+    restoreRequest = &restoreRequestSnapshot;
     restoreResponse =
         (KSWORD_ARK_RESTORE_IDT_BASELINE_RESPONSE*)outputBuffer;
 
