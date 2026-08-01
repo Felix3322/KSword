@@ -14,6 +14,7 @@
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../Framework/DestructiveActionConfirmation.h"
 #include "../ksword/network/network_process_etw_monitor.h"
+#include "../ksword/process/ProcessImageDeleteGuard.h"
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
@@ -40,6 +41,7 @@
 #include <QHBoxLayout>
 #include <QItemSelection>
 #include <QItemSelectionModel>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
@@ -9176,6 +9178,24 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
     QAction* terminateProcessAction = contextMenu.addAction(
         blueTintedIcon(":/Icon/process_terminate.svg"),
         processContextText("process.menu.terminate", QStringLiteral("结束进程")));
+    QAction* terminateAndDeleteImageAction = contextMenu.addAction(
+        blueTintedIcon(":/Icon/process_terminate.svg"),
+        processContextText(
+            "process.menu.terminate_delete_image",
+            QStringLiteral("结束进程并删除映像文件")));
+    const bool canDeleteSingleImage = contextActionTargets.size() == 1U &&
+        contextActionTargets.front().record.pid != 0U &&
+        contextActionTargets.front().record.creationTime100ns != 0U &&
+        !contextActionTargets.front().record.imagePath.empty();
+    terminateAndDeleteImageAction->setEnabled(canDeleteSingleImage);
+    terminateAndDeleteImageAction->setToolTip(
+        canDeleteSingleImage
+            ? processContextText(
+                "process.menu.terminate_delete_image.tooltip",
+                QStringLiteral("绑定当前 PID 创建时间和文件 ID；确认退出后删除同一映像文件对象"))
+            : processContextText(
+                "process.menu.terminate_delete_image.unavailable",
+                QStringLiteral("仅支持单选且必须具有可验证的 PID 创建时间与映像路径")));
     QAction* terminateProcessTreeAction = contextMenu.addAction(
         blueTintedIcon(":/Icon/process_terminate.svg"),
         processContextText("process.menu.terminate_tree", QStringLiteral("结束进程树")));
@@ -9894,6 +9914,7 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         if (selectedAction == copyCellAction) { copyCurrentCell(); }
         else if (selectedAction == copyRowAction) { copyCurrentRow(); }
         else if (selectedAction == terminateProcessAction) { executeTerminateProcessAction(); }
+        else if (selectedAction == terminateAndDeleteImageAction) { executeTerminateAndDeleteImageAction(); }
         else if (selectedAction == terminateProcessTreeAction) { executeTerminateProcessTreeAction(); }
         else if (selectedAction == r0TerminateAction) { executeR0TerminateProcessAction(); }
         else if (selectedAction == r0TerminateTreeAction) { executeR0TerminateProcessTreeAction(); }
@@ -12373,6 +12394,31 @@ void ProcessDock::executeTerminateProcessAction()
     executeTerminateProcessActions(QStringLiteral("结束进程"), actionTargets);
 }
 
+void ProcessDock::executeTerminateAndDeleteImageAction()
+{
+    const std::vector<ProcessActionTarget> actionTargets = selectedActionTargets();
+    if (actionTargets.size() != 1U ||
+        actionTargets.front().record.pid == 0U ||
+        actionTargets.front().record.creationTime100ns == 0U ||
+        actionTargets.front().record.imagePath.empty())
+    {
+        kLogEvent logEvent;
+        warn << logEvent
+            << "[ProcessDock] executeTerminateAndDeleteImageAction 被拒绝："
+            << "目标必须为一个具有创建时间和映像路径的进程。"
+            << eol;
+        clearContextActionBinding();
+        return;
+    }
+
+    executeTerminateProcessActions(
+        processContextText(
+            "process.menu.terminate_delete_image",
+            QStringLiteral("结束进程并删除映像文件")),
+        actionTargets,
+        true);
+}
+
 void ProcessDock::executeTerminateProcessTreeAction()
 {
     const std::vector<ProcessActionTarget> actionTargets = processTreeActionTargets();
@@ -12398,31 +12444,88 @@ void ProcessDock::executeTerminateProcessTreeAction()
 
 void ProcessDock::executeTerminateProcessActions(
     const QString& actionTitle,
-    const std::vector<ProcessActionTarget>& actionTargets)
+    const std::vector<ProcessActionTarget>& actionTargets,
+    const bool deleteImageAfterExit)
 {
     QStringList targetPidList;
     for (const ProcessActionTarget& actionTarget : actionTargets)
     {
         targetPidList.push_back(QString::number(actionTarget.record.pid));
     }
-    const QString targetDescription = ks::i18n::sourceText(
+    QString targetDescription = ks::i18n::sourceText(
         QStringLiteral("%1 个进程；PID：%2"))
         .arg(actionTargets.size())
         .arg(targetPidList.join(QStringLiteral(", ")));
+    QString suppressionKey = QStringLiteral("process-termination-r3");
+    QString riskDescription;
+    if (deleteImageAfterExit)
+    {
+        if (actionTargets.size() != 1U)
+        {
+            clearContextActionBinding();
+            return;
+        }
+        const ProcessActionTarget& deleteTarget = actionTargets.front();
+        const QString imagePath = QString::fromStdString(deleteTarget.record.imagePath);
+        targetDescription = processContextText(
+            "process.action.terminate_delete_image.target",
+            QStringLiteral("PID：%1\n映像：%2"))
+            .arg(deleteTarget.record.pid)
+            .arg(imagePath);
+        riskDescription = processContextText(
+            "process.action.terminate_delete_image.risk",
+            QStringLiteral(
+                "该操作不可撤销。KSword 将先校验 PID 创建时间和文件 ID，"
+                "锁定当前映像文件对象，结束并确认原进程退出后永久删除该文件。"
+                "若目标是系统或关键进程，可能立即崩溃、丢失数据或导致系统无法启动。"
+                "KSword 只告知风险，不按进程类别限制该操作；"
+                "若身份、路径或退出状态无法确认，则不会删除。"));
+        // 永久文件删除不允许持久关闭确认提示，因此 suppressionKey 固定为空。
+        suppressionKey.clear();
+    }
     if (!ks::ui::confirmDestructiveAction(
             this,
-            QStringLiteral("process-termination-r3"),
+            suppressionKey,
             actionTitle,
-            targetDescription))
+            targetDescription,
+            riskDescription))
     {
         clearContextActionBinding();
         return;
     }
 
+    if (deleteImageAfterExit)
+    {
+        const QString confirmationPhrase = QStringLiteral("DELETE %1")
+            .arg(actionTargets.front().record.pid);
+        bool accepted = false;
+        const QString typedPhrase = QInputDialog::getText(
+            this,
+            processContextText(
+                "process.action.terminate_delete_image.type_title",
+                QStringLiteral("最终确认永久删除")),
+            processContextText(
+                "process.action.terminate_delete_image.type_prompt",
+                QStringLiteral("请输入 %1 以确认结束进程并永久删除其映像文件："))
+                .arg(confirmationPhrase),
+            QLineEdit::Normal,
+            QString(),
+            &accepted);
+        if (!accepted || typedPhrase.trimmed() != confirmationPhrase)
+        {
+            kLogEvent cancellationEvent;
+            warn << cancellationEvent
+                << "[ProcessDock] 结束并删除映像动作已取消：最终确认短语不匹配。"
+                << eol;
+            clearContextActionBinding();
+            return;
+        }
+    }
+
     dispatchProcessActionTargetsInParallel(
         actionTitle,
         actionTargets,
-        [](const ProcessActionTarget& actionTarget, std::string* detailTextOut)
+        [deleteImageAfterExit](const ProcessActionTarget& actionTarget, std::string* detailTextOut)
         {
             // targetPid 用途：固定本次动作的目标 PID，避免中途选中行变化影响执行对象。
             const std::uint32_t targetPid = actionTarget.record.pid;
@@ -12431,6 +12534,36 @@ void ProcessDock::executeTerminateProcessActions(
             info << actionEvent
                 << "[ProcessDock] 开始执行结束进程组合动作, pid=" << targetPid
                 << eol;
+
+            // 删除模式必须在任何结束方法执行前锁定精确文件对象；失败时不执行结束，
+            // 防止出现“进程已结束但删除目标身份无法验证”的半完成动作。
+            ks::process::CapturedProcessImageDeleteTarget capturedImageTarget;
+            std::string imageCaptureDetail;
+            if (deleteImageAfterExit)
+            {
+                const std::wstring expectedImagePath =
+                    QString::fromStdString(actionTarget.record.imagePath).toStdWString();
+                const bool captureOk = ks::process::CaptureProcessImageDeleteTarget(
+                    targetPid,
+                    actionTarget.record.creationTime100ns,
+                    expectedImagePath,
+                    &capturedImageTarget,
+                    &imageCaptureDetail);
+                if (!captureOk)
+                {
+                    err << actionEvent
+                        << "[ProcessDock] 结束并删除映像前置身份锁定失败, pid="
+                        << targetPid
+                        << ", detail="
+                        << imageCaptureDetail
+                        << eol;
+                    if (detailTextOut != nullptr)
+                    {
+                        *detailTextOut = "文件身份锁定失败：" + imageCaptureDetail;
+                    }
+                    return false;
+                }
+            }
 
             // 先做一次进程存在性检查，避免对已退出 PID 执行无意义操作。
             bool initialQueryOk = false;
@@ -12448,6 +12581,27 @@ void ProcessDock::executeTerminateProcessActions(
                     << "[ProcessDock] 目标进程已不存在，结束动作直接判定成功, pid="
                     << targetPid
                     << eol;
+                if (deleteImageAfterExit)
+                {
+                    std::string deletionDetail;
+                    const bool deletionOk = ks::process::DeleteCapturedProcessImage(
+                        &capturedImageTarget,
+                        &deletionDetail);
+                    (deletionOk ? info : err) << actionEvent
+                        << "[ProcessDock] 原进程在文件身份锁定后退出，执行精确映像删除, pid="
+                        << targetPid
+                        << ", ok="
+                        << (deletionOk ? "true" : "false")
+                        << ", detail="
+                        << deletionDetail
+                        << eol;
+                    if (detailTextOut != nullptr)
+                    {
+                        *detailTextOut = "capture=" + imageCaptureDetail +
+                            " | process=already exited | delete=" + deletionDetail;
+                    }
+                    return deletionOk;
+                }
                 if (detailTextOut != nullptr)
                 {
                     *detailTextOut = "目标进程已不存在，无需执行结束动作。";
@@ -12462,6 +12616,10 @@ void ProcessDock::executeTerminateProcessActions(
             // actionDetailStream 用途：汇总每一轮、每一方法的细节，供最终统一输出。
             std::ostringstream actionDetailStream;
             actionDetailStream << "pid=" << targetPid;
+            if (deleteImageAfterExit)
+            {
+                actionDetailStream << " | capture=" << imageCaptureDetail;
+            }
 
             // TerminateMethodEntry 作用：描述一个可执行的“结束进程原理方法”。
             struct TerminateMethodEntry
@@ -12560,7 +12718,36 @@ void ProcessDock::executeTerminateProcessActions(
                         << ")";
 
                     bool queryProcessPresentOk = false;
-                    processStillPresent = isProcessPresentBySnapshot(targetPid, &queryProcessPresentOk);
+                    bool pidWasReused = false;
+                    if (deleteImageAfterExit)
+                    {
+                        std::uint64_t currentCreationTime100ns = 0U;
+                        std::string identityDetail;
+                        if (ks::process::QueryProcessCreationTimeByPid(
+                                targetPid,
+                                &currentCreationTime100ns,
+                                &identityDetail))
+                        {
+                            queryProcessPresentOk = true;
+                            processStillPresent =
+                                currentCreationTime100ns == actionTarget.record.creationTime100ns;
+                            pidWasReused = !processStillPresent;
+                        }
+                        else
+                        {
+                            // OpenProcess/GetProcessTimes 失败时退回系统快照；快照仍显示 PID
+                            // 就按原进程存活处理，不以“无法验证”作为删除许可。
+                            processStillPresent = isProcessPresentBySnapshot(
+                                targetPid,
+                                &queryProcessPresentOk);
+                        }
+                    }
+                    else
+                    {
+                        processStillPresent = isProcessPresentBySnapshot(
+                            targetPid,
+                            &queryProcessPresentOk);
+                    }
                     if (!queryProcessPresentOk)
                     {
                         warn << actionEvent
@@ -12582,6 +12769,8 @@ void ProcessDock::executeTerminateProcessActions(
                             << roundNumber
                             << ", method="
                             << methodEntry.methodName
+                            << ", pidReused="
+                            << (pidWasReused ? "true" : "false")
                             << eol;
                         break;
                     }
@@ -12612,7 +12801,33 @@ void ProcessDock::executeTerminateProcessActions(
             {
                 *detailTextOut = actionDetailStream.str();
             }
-            return processExited;
+            if (!processExited || !deleteImageAfterExit)
+            {
+                return processExited;
+            }
+
+            std::string deletionDetail;
+            const bool deletionOk = ks::process::DeleteCapturedProcessImage(
+                &capturedImageTarget,
+                &deletionDetail);
+            (deletionOk ? info : err) << actionEvent
+                << "[ProcessDock] 目标进程退出后执行精确映像删除, pid="
+                << targetPid
+                << ", ok="
+                << (deletionOk ? "true" : "false")
+                << ", detail="
+                << deletionDetail
+                << eol;
+            actionDetailStream << " | delete="
+                << (deletionOk ? "ok" : "fail")
+                << "("
+                << deletionDetail
+                << ")";
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = actionDetailStream.str();
+            }
+            return deletionOk;
         },
         true,
         true);

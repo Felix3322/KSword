@@ -568,6 +568,10 @@ private:
     // - 固定顺序执行多种结束原理（TerminateProcess/Nt/WTS/Job/RestartManager/线程终止/调试器/Unmap 等）；
     // - 使用同一个 kLogEvent 串联整次调用链日志并判定目标是否真正退出。
     void executeTerminateProcessAction();
+    // executeTerminateAndDeleteImageAction 作用：
+    // - 仅允许一个具有完整 PID 创建时间与映像路径的目标；
+    // - 结束前锁定同一文件对象，确认原进程退出后才设置删除状态。
+    void executeTerminateAndDeleteImageAction();
     // executeTerminateProcessTreeAction 作用：
     // - 仅根据当前 R3 进程快照识别选中进程及其全部后代；
     // - 每个识别出的 PID 独立复用“结束进程组合动作”。
@@ -660,7 +664,8 @@ private:
         bool forceAsyncWithTimeout = false);
     void executeTerminateProcessActions(
         const QString& actionTitle,
-        const std::vector<ProcessActionTarget>& actionTargets);
+        const std::vector<ProcessActionTarget>& actionTargets,
+        bool deleteImageAfterExit = false);
     void executeR0TerminateProcessActions(
         const QString& actionTitle,
         const std::vector<ProcessActionTarget>& actionTargets);
