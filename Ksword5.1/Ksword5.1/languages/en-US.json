@@ -3784,6 +3784,7 @@
   },
   "source_translations": {
     "DestructiveActionConfirmation.h": "DestructiveActionConfirmation.h",
+    " protocol validation failed": " protocol validation failed",
     "%1 个进程；PID：%2": "%1 process(es); PID(s): %2",
     "PID %1（%2）": "PID %1 (%2)",
     "R0 结束操作不可逆，可能造成数据丢失、系统不稳定或蓝屏。请确认目标无误后再继续。": "This R0 termination is irreversible and may cause data loss, system instability, or a blue screen. Verify the targets before continuing.",
