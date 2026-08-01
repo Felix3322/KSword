@@ -1,10 +1,12 @@
 #include "CustomTitleBar.h"
 
+#include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDate>
+#include <QDateTime>
 #include <QFileIconProvider>
 #include <QFileInfo>
 #include <QFontMetrics>
@@ -19,6 +21,7 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QStringList>
+#include <QTimer>
 #include <QWidget>
 #include <QWindow>
 
@@ -280,6 +283,8 @@ namespace ks::ui
     CustomTitleBar::CustomTitleBar(QWidget* parentWidget)
         : QWidget(parentWidget)
     {
+        m_processStartTickMilliseconds =
+            resolveProcessStartTickMilliseconds();
         initializeUi();
         initializeConnections();
         updateVisualState();
@@ -365,6 +370,10 @@ namespace ks::ui
             return false;
         }
         if (widgetBelongsTo(hitWidget, m_systemVersionLabel))
+        {
+            return true;
+        }
+        if (widgetBelongsTo(hitWidget, m_timeStatusLabel))
         {
             return true;
         }
@@ -601,7 +610,7 @@ namespace ks::ui
         m_commandLineEdit->setClearButtonEnabled(true);
         m_commandLineEdit->setFixedHeight(22);
 
-        // 右侧控制区：系统版本 + 截屏屏蔽 + 图钉 + 最小化 + 最大化/还原 + 关闭。
+        // 右侧控制区：系统版本 + 当前时间/运行时长 + 截屏屏蔽 + 图钉 + 窗口按钮。
         m_rightWidget = new QWidget(this);
         m_rightLayout = new QHBoxLayout(m_rightWidget);
         m_rightLayout->setContentsMargins(0, 0, 2, 0);
@@ -613,6 +622,13 @@ namespace ks::ui
         m_systemVersionLabel->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
         m_systemVersionLabel->setFixedHeight(kControlButtonHeight);
         m_systemVersionLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+
+        m_timeStatusLabel = new QLabel(m_rightWidget);
+        m_timeStatusLabel->setObjectName(QStringLiteral("ksTitleTimeStatusLabel"));
+        m_timeStatusLabel->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
+        m_timeStatusLabel->setFixedHeight(kControlButtonHeight);
+        m_timeStatusLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        m_timeStatusLabel->setMinimumWidth(0);
 
         m_captureProtectionButton = new QPushButton(m_rightWidget);
         m_pinButton = new QPushButton(m_rightWidget);
@@ -627,6 +643,7 @@ namespace ks::ui
         m_closeButton->setObjectName(QStringLiteral("ksTitleCloseButton"));
 
         m_rightLayout->addWidget(m_systemVersionLabel, 0, Qt::AlignVCenter);
+        m_rightLayout->addWidget(m_timeStatusLabel, 0, Qt::AlignVCenter);
 
         const std::array<QPushButton*, 5> controlButtons = {
             m_captureProtectionButton,
@@ -658,6 +675,9 @@ namespace ks::ui
         m_rootLayout->addWidget(m_commandLineEdit, 0, 1, Qt::AlignCenter);
         m_rootLayout->addWidget(m_rightWidget, 0, 2, Qt::AlignRight | Qt::AlignVCenter);
 
+        m_timeStatusTimer = new QTimer(this);
+        m_timeStatusTimer->setInterval(1000);
+        updateTimeStatusText();
         updateCommandLineWidth();
     }
 
@@ -686,6 +706,12 @@ namespace ks::ui
             }
             emit commandSubmitted(commandText);
         });
+        connect(
+            m_timeStatusTimer,
+            &QTimer::timeout,
+            this,
+            [this]() { updateTimeStatusText(); });
+        m_timeStatusTimer->start();
     }
 
     void CustomTitleBar::updateVisualState()
@@ -726,7 +752,8 @@ namespace ks::ui
             "  font-size:12px;"
             "  font-weight:600;"
             "}"
-            "#ksCustomTitleBar QLabel#ksTitleSystemVersionLabel{"
+            "#ksCustomTitleBar QLabel#ksTitleSystemVersionLabel,"
+            "#ksCustomTitleBar QLabel#ksTitleTimeStatusLabel{"
             "  color:%3;"
             "  font-size:11px;"
             "  font-weight:500;"
@@ -875,6 +902,101 @@ namespace ks::ui
         const int badgeWidth = std::max(1, textWidth + kUserBadgeHorizontalExtraWidth);
         m_userBadgeButton->setFixedWidth(badgeWidth);
         m_userBadgeButton->updateGeometry();
+    }
+
+    void CustomTitleBar::updateTimeStatusText()
+    {
+        if (m_timeStatusLabel == nullptr)
+        {
+            return;
+        }
+
+        const QString systemTimeText =
+            QDateTime::currentDateTime().toString(
+                QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+#ifdef Q_OS_WIN
+        const unsigned long long currentTickMilliseconds =
+            static_cast<unsigned long long>(::GetTickCount64());
+#else
+        const unsigned long long currentTickMilliseconds =
+            static_cast<unsigned long long>(
+                QDateTime::currentMSecsSinceEpoch());
+#endif
+        const unsigned long long elapsedMilliseconds =
+            currentTickMilliseconds >= m_processStartTickMilliseconds
+            ? currentTickMilliseconds - m_processStartTickMilliseconds
+            : 0ULL;
+        const unsigned long long totalSeconds =
+            elapsedMilliseconds / 1000ULL;
+        const unsigned long long days = totalSeconds / 86400ULL;
+        const unsigned long long hours =
+            (totalSeconds / 3600ULL) % 24ULL;
+        const unsigned long long minutes =
+            (totalSeconds / 60ULL) % 60ULL;
+        const unsigned long long seconds = totalSeconds % 60ULL;
+        const QString elapsedText = days > 0ULL
+            ? ks::i18n::sourceText(
+                QStringLiteral("%1 天 %2:%3:%4"))
+                .arg(days)
+                .arg(hours, 2, 10, QLatin1Char('0'))
+                .arg(minutes, 2, 10, QLatin1Char('0'))
+                .arg(seconds, 2, 10, QLatin1Char('0'))
+            : QStringLiteral("%1:%2:%3")
+                .arg(hours, 2, 10, QLatin1Char('0'))
+                .arg(minutes, 2, 10, QLatin1Char('0'))
+                .arg(seconds, 2, 10, QLatin1Char('0'));
+        const QString displayText =
+            ks::i18n::sourceText(
+                QStringLiteral("系统时间：%1 | 已调试：%2"))
+                .arg(systemTimeText, elapsedText);
+        m_timeStatusLabel->setText(displayText);
+        m_timeStatusLabel->setToolTip(
+            ks::i18n::sourceText(
+                QStringLiteral("当前系统时间；软件启动后已运行：%1"))
+                .arg(elapsedText));
+    }
+
+    unsigned long long CustomTitleBar::resolveProcessStartTickMilliseconds() const
+    {
+#ifdef Q_OS_WIN
+        const unsigned long long currentTickMilliseconds =
+            static_cast<unsigned long long>(::GetTickCount64());
+        FILETIME creationTime = {};
+        FILETIME exitTime = {};
+        FILETIME kernelTime = {};
+        FILETIME userTime = {};
+        if (::GetProcessTimes(
+                ::GetCurrentProcess(),
+                &creationTime,
+                &exitTime,
+                &kernelTime,
+                &userTime) == FALSE)
+        {
+            return currentTickMilliseconds;
+        }
+
+        FILETIME currentSystemTime = {};
+        ::GetSystemTimeAsFileTime(&currentSystemTime);
+        ULARGE_INTEGER creationValue = {};
+        creationValue.LowPart = creationTime.dwLowDateTime;
+        creationValue.HighPart = creationTime.dwHighDateTime;
+        ULARGE_INTEGER currentValue = {};
+        currentValue.LowPart = currentSystemTime.dwLowDateTime;
+        currentValue.HighPart = currentSystemTime.dwHighDateTime;
+        if (currentValue.QuadPart < creationValue.QuadPart)
+        {
+            return currentTickMilliseconds;
+        }
+
+        const unsigned long long processAgeMilliseconds =
+            (currentValue.QuadPart - creationValue.QuadPart) / 10000ULL;
+        return processAgeMilliseconds <= currentTickMilliseconds
+            ? currentTickMilliseconds - processAgeMilliseconds
+            : currentTickMilliseconds;
+#else
+        return static_cast<unsigned long long>(
+            QDateTime::currentMSecsSinceEpoch());
+#endif
     }
 
     bool CustomTitleBar::tryStartWindowSystemMove(const QPoint& globalPoint)

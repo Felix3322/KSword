@@ -20,6 +20,7 @@ class QGridLayout;
 class QHBoxLayout;
 class QMouseEvent;
 class QResizeEvent;
+class QTimer;
 
 namespace ks::ui
 {
@@ -173,6 +174,16 @@ namespace ks::ui
         // - 传出：无。
         void updateUserBadgeWidth(const QString& displayUserNameText);
 
+        // updateTimeStatusText：
+        // - 作用：刷新当前系统时间和不受 QPC 变速影响的软件运行时长；
+        // - 调用：初始化后立即调用，并由 1 秒定时器持续刷新。
+        void updateTimeStatusText();
+
+        // resolveProcessStartTickMilliseconds：
+        // - 作用：把进程创建时间换算为 GetTickCount64 时间轴上的启动点；
+        // - 返回：不受性能计数器变速影响的启动毫秒刻度。
+        unsigned long long resolveProcessStartTickMilliseconds() const;
+
         // tryStartWindowSystemMove：
         // - 作用：向宿主窗口发起一次系统级拖动；
         // - 调用：mouseMoveEvent 在达到拖动阈值后调用；
@@ -222,6 +233,8 @@ namespace ks::ui
         QHBoxLayout* m_rightLayout = nullptr;     // m_rightLayout：右侧按钮区布局。
         QWidget* m_customRightWidget = nullptr;   // m_customRightWidget：右侧控制按钮前的自定义扩展控件。
         QLabel* m_systemVersionLabel = nullptr;   // m_systemVersionLabel：眼睛与图钉按钮左侧的系统版本文本。
+        QLabel* m_timeStatusLabel = nullptr;      // m_timeStatusLabel：当前系统时间与“已调试”运行时长。
+        QTimer* m_timeStatusTimer = nullptr;      // m_timeStatusTimer：每秒刷新标题栏时间文本。
         QPushButton* m_captureProtectionButton = nullptr; // m_captureProtectionButton：截屏屏蔽切换按钮。
         QPushButton* m_pinButton = nullptr;       // m_pinButton：置顶切换图钉按钮。
         QPushButton* m_minButton = nullptr;       // m_minButton：最小化按钮。
@@ -238,6 +251,7 @@ namespace ks::ui
         bool m_darkModeEnabled = false;           // m_darkModeEnabled：当前是否深色主题。
         bool m_dragCandidateActive = false;       // m_dragCandidateActive：当前是否处于标题栏拖动候选状态。
         bool m_dragInProgress = false;            // m_dragInProgress：当前是否已把拖动交给系统处理。
+        unsigned long long m_processStartTickMilliseconds = 0ULL; // m_processStartTickMilliseconds：GetTickCount64 时间轴上的进程启动点。
         QPoint m_dragPressLocalPos;               // m_dragPressLocalPos：本次按下时相对标题栏左上角的坐标。
         QPoint m_dragPressGlobalPos;              // m_dragPressGlobalPos：本次按下时的全局屏幕坐标。
     };
