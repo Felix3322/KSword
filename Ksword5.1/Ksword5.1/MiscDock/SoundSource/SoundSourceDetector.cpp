@@ -679,10 +679,9 @@ namespace ks::misc
 
                 queryProcessIdentity(record);
                 if (options.expectedCreationTime100ns != 0U &&
-                    record.creationTime100ns != 0U &&
                     record.creationTime100ns != options.expectedCreationTime100ns)
                 {
-                    // 进程详情绑定 PID + 创建时间；PID 复用后拒绝把新进程声音归给旧窗口。
+                    // 进程详情绑定 PID + 创建时间；无法读取创建时间或 PID 已复用时都拒绝归属。
                     continue;
                 }
                 if (record.systemSounds)
