@@ -130,14 +130,54 @@ jobs:
           if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
             git diff --check "origin/$env:GITHUB_BASE_REF...HEAD"
           }
-          elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_EVENT_BEFORE -and $env:GITHUB_EVENT_BEFORE -ne ('0' * 40 -join '')) {
-            git cat-file -e "$($env:GITHUB_EVENT_BEFORE)^{commit}" 2>$null
-            if ($LASTEXITCODE -eq 0) {
-              git diff --check $env:GITHUB_EVENT_BEFORE $env:GITHUB_SHA
+          elseif ($env:GITHUB_EVENT_NAME -eq 'push') {
+            $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+            $before = [string]$event.before
+            $after = [string]$event.after
+            $zeroCommit = '0' * 40
+
+            if ($before -and $before -ne $zeroCommit) {
+              git cat-file -e "$before^{commit}" 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                git fetch --no-tags --depth=1 origin $before
+                git cat-file -e "$before^{commit}" 2>$null
+              }
+            }
+
+            if ($before -and $before -ne $zeroCommit -and $LASTEXITCODE -eq 0) {
+              git diff --check $before $after
             }
             else {
-              Write-Warning "Previous push commit $env:GITHUB_EVENT_BEFORE is unavailable; checking the current commit instead."
-              git diff --check HEAD~1 HEAD
+              $commits = @($event.commits)
+              $expectedCommitCount = $commits.Count
+              if ($expectedCommitCount -le 0) {
+                throw "Cannot prove the complete push range: before=$before and the push payload contains no commits."
+              }
+              if ($expectedCommitCount -ge 2048) {
+                throw "Cannot prove the complete push range because GitHub caps the push payload at 2048 commits."
+              }
+
+              $firstCommit = [string]$commits[0].id
+              git cat-file -e "$firstCommit^{commit}" 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                throw "First pushed commit $firstCommit is unavailable."
+              }
+              $fallbackBase = (git rev-parse "$firstCommit^" 2>$null).Trim()
+              if ($LASTEXITCODE -ne 0 -or -not $fallbackBase) {
+                throw "Parent of first pushed commit $firstCommit is unavailable."
+              }
+              git merge-base --is-ancestor $fallbackBase $after
+              if ($LASTEXITCODE -ne 0) {
+                throw "Push payload is not a complete ancestry range: $fallbackBase..$after."
+              }
+
+              $rangeCommitCount = [int](git rev-list --count "$fallbackBase..$after")
+              if ($LASTEXITCODE -ne 0 -or $rangeCommitCount -ne $expectedCommitCount) {
+                throw "Push payload is incomplete: payload commits=$expectedCommitCount, ancestry commits=$rangeCommitCount."
+              }
+
+              Write-Warning "Previous push commit is unavailable; checking all $expectedCommitCount commits from the push payload."
+              git diff --check $fallbackBase $after
             }
           }
           else {
