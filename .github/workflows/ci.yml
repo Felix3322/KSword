@@ -49,7 +49,12 @@ jobs:
             base_sha="$(git merge-base "origin/$BASE_REF" "$EVENT_SHA")"
             changed="$(git diff --name-only "$base_sha" "$EVENT_SHA")"
           elif [[ -n "${EVENT_BEFORE:-}" && "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
+            if git cat-file -e "${EVENT_BEFORE}^{commit}" 2>/dev/null; then
+              changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
+            else
+              echo "Previous push commit $EVENT_BEFORE is unavailable; treating all projects as affected." >&2
+              changed='__all__'
+            fi
           else
             changed="$(git diff --name-only HEAD~1 HEAD)"
           fi
@@ -126,7 +131,14 @@ jobs:
             git diff --check "origin/$env:GITHUB_BASE_REF...HEAD"
           }
           elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_EVENT_BEFORE -and $env:GITHUB_EVENT_BEFORE -ne ('0' * 40 -join '')) {
-            git diff --check $env:GITHUB_EVENT_BEFORE $env:GITHUB_SHA
+            git cat-file -e "$($env:GITHUB_EVENT_BEFORE)^{commit}" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              git diff --check $env:GITHUB_EVENT_BEFORE $env:GITHUB_SHA
+            }
+            else {
+              Write-Warning "Previous push commit $env:GITHUB_EVENT_BEFORE is unavailable; checking the current commit instead."
+              git diff --check HEAD~1 HEAD
+            }
           }
           else {
             git diff --check HEAD~1 HEAD

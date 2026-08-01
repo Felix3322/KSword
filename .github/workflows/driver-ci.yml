@@ -42,7 +42,12 @@ jobs:
             base_sha="$(git merge-base "origin/$BASE_REF" "$EVENT_SHA")"
             changed="$(git diff --name-only "$base_sha" "$EVENT_SHA")"
           elif [[ -n "${EVENT_BEFORE:-}" && "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
+            if git cat-file -e "${EVENT_BEFORE}^{commit}" 2>/dev/null; then
+              changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
+            else
+              echo "Previous push commit $EVENT_BEFORE is unavailable; treating the driver as affected." >&2
+              changed='__all__'
+            fi
           else
             changed="$(git diff --name-only HEAD~1 HEAD)"
           fi
