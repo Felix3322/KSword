@@ -159,7 +159,7 @@ namespace ks::misc
         m_persistenceLabel = new QLabel(
             QStringLiteral(
                 "关闭页面不会自动恢复速度；请使用“恢复 1x”。"
-                "驱动正常卸载时也会尝试恢复原始计时路径。"),
+                "恢复 1x 会保留连续计数接管以避免回跳；驱动卸载时才恢复原始路径。"),
             this);
         m_persistenceLabel->setWordWrap(true);
         m_persistenceLabel->setStyleSheet(
@@ -271,7 +271,7 @@ namespace ks::misc
         m_applyButton->setToolTip(
             QStringLiteral("经过双重确认后应用当前模式和倍率"));
         m_resetButton->setToolTip(
-            QStringLiteral("立即停止变速并恢复原始性能计数器"));
+            QStringLiteral("立即停止变速并以连续计数保持 1x"));
         for (QPushButton* button :
              { m_refreshButton, m_timeSyncButton, m_applyButton, m_resetButton })
         {
@@ -538,9 +538,9 @@ namespace ks::misc
         }
 
         info << resetEvent
-            << "[SystemTimePage] 已恢复原始系统计时路径。" << eol;
+            << "[SystemTimePage] 已停止变速并切换到连续 1x 计时。" << eol;
         m_operationLabel->setText(
-            QStringLiteral("已恢复原始计时路径（1x）"));
+            QStringLiteral("已停止变速，当前以连续计数保持 1x"));
         m_acknowledgeCheck->setChecked(false);
         refreshStatus();
     }

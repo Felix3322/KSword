@@ -46,7 +46,7 @@ namespace ks::misc
         void refreshStatus();
         // applyRequestedMode：执行双重确认后应用当前加速或减速倍率。
         void applyRequestedMode();
-        // resetSystemTime：无额外门槛地恢复 1x 原始计时路径。
+        // resetSystemTime：无额外门槛地停止变速，并以连续计数保持 1x。
         void resetSystemTime();
         // synchronizeFromTimeServer：通过 Windows 时间服务异步请求立即校时。
         void synchronizeFromTimeServer();

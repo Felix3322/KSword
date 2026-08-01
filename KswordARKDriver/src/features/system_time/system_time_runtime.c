@@ -918,7 +918,8 @@ KswordARKSystemTimeQuery(
 
 /*
  * 控制入口校验协议、确认令牌、倍率与代次后执行动作。
- * RESET 是幂等恢复命令，不受过期代次和确认令牌限制。
+ * RESET 是幂等恢复命令，不受过期代次和确认令牌限制；已接管时切到连续 1x，
+ * 不把领先的虚拟计数器直接换回较小的原始计数器。
  */
 NTSTATUS
 KswordARKSystemTimeControl(
@@ -1015,8 +1016,22 @@ KswordARKSystemTimeControl(
             KSWORD_ARK_SYSTEM_TIME_STATUS_STALE_GENERATION;
     } else if (Request->command ==
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET) {
-        actionStatus =
-            KswordARKSystemTimeDeactivateLocked();
+        if (InterlockedCompareExchange(
+                &g_KswordArkSystemTimeState.Active,
+                0L,
+                0L) != 0L) {
+            /*
+             * 加速后虚拟计数可能领先原始 QPC。直接恢复函数槽会让系统计数回跳；
+             * 保留钩子并原子切换到 1x，使既有偏移保持不变而后续增量恢复原速。
+             */
+            actionStatus =
+                KswordARKSystemTimeReconfigureLocked(
+                    KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET,
+                    1UL);
+        } else {
+            actionStatus =
+                KswordARKSystemTimeDeactivateLocked();
+        }
         Response->status = NT_SUCCESS(actionStatus)
             ? KSWORD_ARK_SYSTEM_TIME_STATUS_OK
             : KSWORD_ARK_SYSTEM_TIME_STATUS_CONFLICT;
