@@ -14,6 +14,7 @@
 
 #include <atomic> // std::atomic_bool：防止历史刷新并发。
 #include <mutex>  // std::mutex：实时回调队列保护。
+#include <thread> // std::thread：可等待的历史/规则刷新线程。
 #include <vector> // std::vector：事件批量回投。
 
 class QCheckBox;
@@ -327,6 +328,7 @@ private:
     QTableWidget* m_eventTable = nullptr;      // m_eventTable：防火墙事件表。
     QTimer* m_liveFlushTimer = nullptr;        // m_liveFlushTimer：实时队列消费定时器。
     std::atomic_bool m_refreshingHistory{ false }; // m_refreshingHistory：历史刷新互斥。
+    std::thread m_historyRefreshThread;        // m_historyRefreshThread：析构前等待的历史枚举线程。
     std::atomic_bool m_liveRunning{ false };   // m_liveRunning：实时监控状态。
     std::mutex m_liveEventMutex;               // m_liveEventMutex：实时队列锁。
     std::vector<FirewallEventEntry> m_liveEventQueue; // m_liveEventQueue：实时事件队列。
@@ -342,7 +344,9 @@ private:
     QTableWidget* m_ruleTable = nullptr;       // m_ruleTable：防火墙规则表。
     CodeEditorWidget* m_ruleDetailEditor = nullptr; // m_ruleDetailEditor：完整规则详情只读编辑器。
     std::atomic_bool m_refreshingRules{ false }; // m_refreshingRules：规则刷新互斥。
+    std::thread m_ruleRefreshThread;           // m_ruleRefreshThread：析构前等待的规则枚举线程。
     std::atomic_bool m_initialRefreshRequested{ false }; // m_initialRefreshRequested：首轮刷新门控。
+    std::atomic_bool m_shuttingDown{ false };  // m_shuttingDown：阻止后台线程在析构期间继续回投 UI。
     std::vector<FirewallRuleEntry> m_ruleEntryList; // m_ruleEntryList：规则快照缓存。
     void* m_fwpuclntModule = nullptr;          // m_fwpuclntModule：fwpuclnt.dll 模块句柄。
     void* m_liveEngineHandle = nullptr;        // m_liveEngineHandle：实时监控 BFE engine。

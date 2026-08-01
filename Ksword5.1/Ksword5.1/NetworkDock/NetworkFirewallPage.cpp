@@ -1051,6 +1051,22 @@ NetworkFirewallPage::NetworkFirewallPage(QWidget* parent)
 
 NetworkFirewallPage::~NetworkFirewallPage()
 {
+    // 动态 WFP 函数指针和页面成员都会被刷新线程使用。先禁止回投并等待两个
+    // 可等待线程彻底退出，再停止订阅和卸载 DLL，避免执行已卸载代码或访问析构对象。
+    m_shuttingDown.store(true);
+    if (m_liveFlushTimer != nullptr)
+    {
+        m_liveFlushTimer->stop();
+    }
+    if (m_historyRefreshThread.joinable())
+    {
+        m_historyRefreshThread.join();
+    }
+    if (m_ruleRefreshThread.joinable())
+    {
+        m_ruleRefreshThread.join();
+    }
+
     stopLiveMonitor();
     if (m_fwpuclntModule != nullptr)
     {
@@ -1370,9 +1386,17 @@ void NetworkFirewallPage::refreshHistoryAsync(const bool forceRefresh)
     }
     setStatusText(QStringLiteral("正在枚举 WFP 历史事件..."));
 
-    QPointer<NetworkFirewallPage> safeThis(this);
-    std::thread([safeThis]()
+    // 上一轮线程虽然已经完成，但 std::thread 仍需 join 后才能复用成员槽位。
+    if (m_historyRefreshThread.joinable())
     {
+        m_historyRefreshThread.join();
+    }
+
+    QPointer<NetworkFirewallPage> safeThis(this);
+    try
+    {
+        m_historyRefreshThread = std::thread([safeThis]()
+        {
         std::vector<FirewallEventEntry> eventList;
         QString errorText;
         try
@@ -1404,7 +1428,7 @@ void NetworkFirewallPage::refreshHistoryAsync(const bool forceRefresh)
             errorText = QStringLiteral("刷新失败");
         }
 
-        if (safeThis.isNull())
+        if (safeThis.isNull() || safeThis->m_shuttingDown.load())
         {
             return;
         }
@@ -1440,7 +1464,17 @@ void NetworkFirewallPage::refreshHistoryAsync(const bool forceRefresh)
         {
             safeThis->m_refreshingHistory.store(false);
         }
-    }).detach();
+        });
+    }
+    catch (...)
+    {
+        m_refreshingHistory.store(false);
+        if (m_refreshHistoryButton != nullptr)
+        {
+            m_refreshHistoryButton->setEnabled(true);
+        }
+        setStatusText(QStringLiteral("刷新失败"));
+    }
 }
 
 void NetworkFirewallPage::startLiveMonitor()
@@ -1704,9 +1738,17 @@ void NetworkFirewallPage::refreshRulesAsync(const bool forceRefresh)
     }
     setStatusText(QStringLiteral("正在枚举 Windows Firewall 规则..."));
 
-    QPointer<NetworkFirewallPage> safeThis(this);
-    std::thread([safeThis]()
+    // m_refreshingRules 为 false 时上一轮已回投完成；在复用线程成员前回收其句柄。
+    if (m_ruleRefreshThread.joinable())
     {
+        m_ruleRefreshThread.join();
+    }
+
+    QPointer<NetworkFirewallPage> safeThis(this);
+    try
+    {
+        m_ruleRefreshThread = std::thread([safeThis]()
+        {
         std::vector<FirewallRuleEntry> ruleList;
         QString errorText;
         try
@@ -1724,7 +1766,7 @@ void NetworkFirewallPage::refreshRulesAsync(const bool forceRefresh)
         {
             errorText = QStringLiteral("刷新失败");
         }
-        if (safeThis.isNull())
+        if (safeThis.isNull() || safeThis->m_shuttingDown.load())
         {
             return;
         }
@@ -1786,7 +1828,17 @@ void NetworkFirewallPage::refreshRulesAsync(const bool forceRefresh)
         {
             safeThis->m_refreshingRules.store(false);
         }
-    }).detach();
+        });
+    }
+    catch (...)
+    {
+        m_refreshingRules.store(false);
+        if (m_refreshRulesButton != nullptr)
+        {
+            m_refreshRulesButton->setEnabled(true);
+        }
+        setStatusText(QStringLiteral("刷新失败"));
+    }
 }
 
 void NetworkFirewallPage::appendRulesToTable(
