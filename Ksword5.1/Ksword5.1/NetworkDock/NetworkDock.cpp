@@ -1,5 +1,6 @@
 #include "NetworkDock.InternalCommon.h"
 #include "HttpsProxyService.h"
+#include "../ArkDriverClient/ArkDriverClient.h"
 
 #include <QMessageBox>
 
@@ -144,6 +145,11 @@ NetworkDock::~NetworkDock()
 {
     m_monitorGeneration.fetch_add(1);
     m_monitorSource = TrafficMonitorSource::Stopped;
+    // 析构必须先停用 R0 逐包数据面；仅停止轮询会让内核继续复制所有流量。
+    {
+        const ksword::ark::DriverClient driverClient;
+        (void)driverClient.controlNetworkTrafficCapture(false);
+    }
     if (m_r0TrafficRefreshTimer != nullptr)
     {
         m_r0TrafficRefreshTimer->stop();

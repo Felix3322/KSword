@@ -666,6 +666,10 @@ Return Value:
     g_KswordArkNetworkRuntime.EngineStatus = STATUS_NOT_SUPPORTED;
     // 中文说明：逐包对象尚未注册时回报明确不支持状态。
     g_KswordArkNetworkRuntime.TrafficCaptureStatus = STATUS_NOT_SUPPORTED;
+    // 中文说明：逐包 filter 常驻，但默认不复制报文，必须由 R3 显式启用。
+    InterlockedExchange(
+        &g_KswordArkNetworkRuntime.TrafficCaptureEnabled,
+        0L);
 
     status = KswordARKNetworkWfpRegister(&g_KswordArkNetworkRuntime);
     g_KswordArkNetworkRuntime.RegisterStatus = status;
@@ -709,6 +713,8 @@ Return Value:
         return;
     }
 
+    InterlockedExchange(&runtime->TrafficCaptureEnabled, 0L);
+
     ExAcquirePushLockExclusive(&runtime->Lock);
     RtlZeroMemory(runtime->Rules, sizeof(runtime->Rules));
     runtime->RuleCount = 0UL;
@@ -726,6 +732,76 @@ Return Value:
     runtime->RegisterStatus = STATUS_NOT_SUPPORTED;
     runtime->EngineStatus = STATUS_NOT_SUPPORTED;
     runtime->TrafficCaptureStatus = STATUS_NOT_SUPPORTED;
+}
+
+NTSTATUS
+KswordARKNetworkControlTrafficCapture(
+    _In_ const KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_REQUEST* Request,
+    _Out_ KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_RESPONSE* Response
+    )
+/*++
+
+Routine Description:
+
+    显式启停 WFP IP packet 逐包复制。filter/callout 保持注册，禁用态 classify 立即返回，
+    因此不会在 UI 停止后继续解析或填充 ring。
+
+--*/
+{
+    KSWORD_ARK_NETWORK_RUNTIME* runtime = KswordARKNetworkGetRuntime();
+    KIRQL oldIrql = PASSIVE_LEVEL;
+    BOOLEAN enable = FALSE;
+
+    if (Request == NULL || Response == NULL || runtime == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(Response, sizeof(*Response));
+    Response->version = KSWORD_ARK_NETWORK_TRAFFIC_PROTOCOL_VERSION;
+    Response->size = sizeof(*Response);
+    if (Request->version != KSWORD_ARK_NETWORK_TRAFFIC_PROTOCOL_VERSION ||
+        Request->size != sizeof(*Request) ||
+        Request->flags != KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_FLAG_NONE ||
+        (Request->action != KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_DISABLE &&
+            Request->action != KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_ENABLE)) {
+        Response->status = KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED;
+        Response->lastStatus = STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
+    }
+
+    enable = Request->action == KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_ENABLE;
+    if (enable &&
+        (runtime->RuntimeFlags &
+            KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED) == 0UL) {
+        Response->status = KSWORD_ARK_NETWORK_STATUS_WFP_UNAVAILABLE;
+        Response->lastStatus = runtime->TrafficCaptureStatus;
+        Response->generation = (ULONG)InterlockedCompareExchange(
+            &runtime->TrafficCaptureGeneration,
+            0L,
+            0L);
+        return STATUS_SUCCESS;
+    }
+
+    // 中文说明：先关闭数据面，再等待已越过 classify 快速检查的写入者离开锁。
+    InterlockedExchange(&runtime->TrafficCaptureEnabled, 0L);
+    KeAcquireSpinLock(&runtime->TrafficLock, &oldIrql);
+    runtime->TrafficWriteIndex = 0UL;
+    runtime->TrafficCount = 0UL;
+    runtime->NextTrafficSequence = 1ULL;
+    runtime->DroppedTrafficCount = 0ULL;
+    Response->generation = (ULONG)InterlockedIncrement(
+        &runtime->TrafficCaptureGeneration);
+    KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+
+    if (enable) {
+        InterlockedExchange(&runtime->TrafficCaptureEnabled, 1L);
+    }
+    Response->enabled = enable ? 1UL : 0UL;
+    Response->status = enable
+        ? KSWORD_ARK_NETWORK_STATUS_APPLIED
+        : KSWORD_ARK_NETWORK_STATUS_DISABLED;
+    Response->lastStatus = STATUS_SUCCESS;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS

@@ -2075,6 +2075,15 @@ namespace ksword::ark
         std::vector<KSWORD_ARK_NETWORK_WFP_EVENT_ROW> entries;
     };
 
+    // NetworkTrafficCaptureControlResult 承载 WFP IP packet 逐包数据面的显式启停结果。
+    // 旧驱动没有控制 IOCTL 时 unsupported=true，调用方不得继续把 R0 当作已停止。
+    struct NetworkTrafficCaptureControlResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_RESPONSE response{};
+    };
+
     // NetworkTrafficPacketResult 承载真实 WFP IPv4/IPv6 IP packet 层逐包增量响应。
     // 输入：queryNetworkTrafficPackets(afterSequence, maxRows) 返回。
     // 处理：严格验证 response/row ABI、cursor、报文边界和有限前缀，再复制 entries。

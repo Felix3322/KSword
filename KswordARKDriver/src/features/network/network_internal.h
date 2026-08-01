@@ -46,6 +46,8 @@ typedef struct _KSWORD_ARK_NETWORK_RUNTIME
     ULONG64 DroppedEventCount; // DroppedEventCount：ring 覆盖旧行的累计数。
     ULONG TrafficWriteIndex; // TrafficWriteIndex：逐包 ring 下一写入槽位。
     ULONG TrafficCount; // TrafficCount：逐包 ring 当前有效行数。
+    volatile LONG TrafficCaptureEnabled; // TrafficCaptureEnabled：UI 显式启动后才允许 classify 复制报文。
+    volatile LONG TrafficCaptureGeneration; // TrafficCaptureGeneration：每次成功启停递增。
     ULONG64 NextTrafficSequence; // NextTrafficSequence：下一逐包稳定单调序号。
     ULONG64 DroppedTrafficCount; // DroppedTrafficCount：逐包 ring 覆盖旧行累计数。
     KSWORD_ARK_NETWORK_RULE Rules[KSWORD_ARK_NETWORK_MAX_RULES]; // Rules：规则快照。

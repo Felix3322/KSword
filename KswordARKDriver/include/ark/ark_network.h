@@ -80,6 +80,12 @@ KswordARKNetworkQueryTrafficPackets(
     _Out_ size_t* BytesWrittenOut
     );
 
+NTSTATUS
+KswordARKNetworkControlTrafficCapture(
+    _In_ const KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_REQUEST* Request,
+    _Out_ KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_RESPONSE* Response
+    );
+
 BOOLEAN
 KswordARKNetworkShouldHidePort(
     _In_ ULONG Protocol,

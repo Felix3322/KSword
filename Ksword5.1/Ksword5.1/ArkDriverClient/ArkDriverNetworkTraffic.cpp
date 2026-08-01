@@ -53,6 +53,78 @@ namespace ksword::ark
         }
     }
 
+    NetworkTrafficCaptureControlResult DriverClient::controlNetworkTrafficCapture(
+        const bool enabled) const
+    {
+        constexpr const char* operationName =
+            "IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE";
+        NetworkTrafficCaptureControlResult result{};
+        KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_REQUEST request{};
+
+        request.version = KSWORD_ARK_NETWORK_TRAFFIC_PROTOCOL_VERSION;
+        request.size = sizeof(request);
+        request.action = enabled
+            ? KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_ENABLE
+            : KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_DISABLE;
+        request.flags = KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_FLAG_NONE;
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE,
+            &request,
+            sizeof(request),
+            &result.response,
+            sizeof(result.response));
+        if (!result.io.ok)
+        {
+            result.unsupported =
+                isUnsupportedTrafficIoctlError(result.io.win32Error);
+            std::ostringstream stream;
+            stream << "DeviceIoControl(" << operationName << ") failed, error="
+                << result.io.win32Error;
+            if (result.unsupported)
+            {
+                stream << ", unsupported=true";
+            }
+            result.io.message = stream.str();
+            return result;
+        }
+
+        const bool knownStatus =
+            result.response.status == KSWORD_ARK_NETWORK_STATUS_APPLIED ||
+            result.response.status == KSWORD_ARK_NETWORK_STATUS_DISABLED ||
+            result.response.status == KSWORD_ARK_NETWORK_STATUS_WFP_UNAVAILABLE ||
+            result.response.status == KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED;
+        const bool enabledMatchesStatus =
+            (result.response.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+                result.response.enabled == 1UL) ||
+            (result.response.status != KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+                result.response.enabled == 0UL);
+        if (result.io.bytesReturned != sizeof(result.response) ||
+            result.response.version != KSWORD_ARK_NETWORK_TRAFFIC_PROTOCOL_VERSION ||
+            result.response.size != sizeof(result.response) ||
+            !knownStatus ||
+            !enabledMatchesStatus ||
+            result.response.reserved0 != 0UL ||
+            result.response.reserved1 != 0UL)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message = std::string(operationName) +
+                " protocol validation failed";
+            return result;
+        }
+
+        result.io.ntStatus = result.response.lastStatus;
+        std::ostringstream summary;
+        summary << operationName
+            << " enabled=" << result.response.enabled
+            << ", generation=" << result.response.generation
+            << ", status=" << result.response.status
+            << ", lastStatus=0x" << std::hex
+            << static_cast<unsigned long>(result.response.lastStatus);
+        result.io.message = summary.str();
+        return result;
+    }
+
     NetworkTrafficPacketResult DriverClient::queryNetworkTrafficPackets(
         const std::uint64_t afterSequence,
         const unsigned long maxRows) const
@@ -122,6 +194,7 @@ namespace ksword::ark
         }
 
         if (response->status != KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+            response->status != KSWORD_ARK_NETWORK_STATUS_DISABLED &&
             response->status != KSWORD_ARK_NETWORK_STATUS_WFP_UNAVAILABLE &&
             response->status != KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED)
         {

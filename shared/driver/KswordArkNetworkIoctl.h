@@ -21,6 +21,7 @@
 #define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_NDIS_CHAIN    0x8A3UL
 #define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_WFP_EVENTS    0x8A9UL
 #define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_TRAFFIC_PACKETS 0x8AAUL
+#define KSWORD_ARK_IOCTL_FUNCTION_NETWORK_CONTROL_TRAFFIC_CAPTURE 0x8ACUL
 
 #define IOCTL_KSWORD_ARK_NETWORK_SET_RULES \
     CTL_CODE( \
@@ -77,6 +78,13 @@
         KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_TRAFFIC_PACKETS, \
         METHOD_BUFFERED, \
         FILE_ANY_ACCESS)
+
+#define IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_NETWORK_CONTROL_TRAFFIC_CAPTURE, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
 
 #define KSWORD_ARK_NETWORK_ACTION_DISABLE 0UL
 #define KSWORD_ARK_NETWORK_ACTION_REPLACE 1UL
@@ -138,6 +146,10 @@
 #define KSWORD_ARK_NETWORK_WFP_EVENT_FLAG_IPV4                   0x00000020UL
 
 #define KSWORD_ARK_NETWORK_TRAFFIC_QUERY_FLAG_NONE 0x00000000UL
+
+#define KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_DISABLE 0UL
+#define KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_ENABLE  1UL
+#define KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_FLAG_NONE 0x00000000UL
 
 #define KSWORD_ARK_NETWORK_TRAFFIC_RESPONSE_FLAG_CURSOR_GAP   0x00000001UL
 #define KSWORD_ARK_NETWORK_TRAFFIC_RESPONSE_FLAG_TRUNCATED    0x00000002UL
@@ -269,6 +281,28 @@ typedef struct _KSWORD_ARK_NETWORK_TRAFFIC_QUERY_REQUEST
     unsigned long long afterSequence;
     unsigned long long reserved;
 } KSWORD_ARK_NETWORK_TRAFFIC_QUERY_REQUEST;
+
+// WFP IP packet 层逐包捕获启停请求。禁用会清空 ring，避免 UI 停止后继续积累数据。
+typedef struct _KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_REQUEST
+{
+    unsigned long version;
+    unsigned long size;
+    unsigned long action;
+    unsigned long flags;
+} KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_REQUEST;
+
+// WFP 逐包捕获启停响应。generation 每次成功启停递增，enabled 表示实际数据面状态。
+typedef struct _KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_RESPONSE
+{
+    unsigned long version;
+    unsigned long size;
+    unsigned long status;
+    unsigned long enabled;
+    unsigned long generation;
+    long lastStatus;
+    unsigned long reserved0;
+    unsigned long reserved1;
+} KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_RESPONSE;
 
 // WFP IPv4/IPv6 逐包记录。地址按网络序字节数组保存，端口按主机序保存。
 // capturedBytes 只保留报文前缀；totalPacketLength/payloadLength 始终表达完整 IP 报文。

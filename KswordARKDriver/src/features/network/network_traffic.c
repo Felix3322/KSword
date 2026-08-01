@@ -606,7 +606,8 @@ Routine Description:
 
 static VOID
 KswordARKNetworkTrafficRecordPacket(
-    _Inout_ KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW* PacketRow
+    _Inout_ KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW* PacketRow,
+    _In_ ULONG CaptureGeneration
     )
 /*++
 
@@ -628,9 +629,32 @@ Routine Description:
         // 中文说明：不影响 WFP 放行判定。
         return;
     }
+    if (InterlockedCompareExchange(
+            &runtime->TrafficCaptureEnabled,
+            0L,
+            0L) == 0L ||
+        (ULONG)InterlockedCompareExchange(
+            &runtime->TrafficCaptureGeneration,
+            0L,
+            0L) != CaptureGeneration) {
+        // 中文说明：UI 已停止后不再进入逐包 ring 临界区。
+        return;
+    }
 
     // 中文说明：自旋锁覆盖序号、覆盖计数和完整单槽复制。
     KeAcquireSpinLock(&runtime->TrafficLock, &oldIrql);
+    if (InterlockedCompareExchange(
+            &runtime->TrafficCaptureEnabled,
+            0L,
+            0L) == 0L ||
+        (ULONG)InterlockedCompareExchange(
+            &runtime->TrafficCaptureGeneration,
+            0L,
+            0L) != CaptureGeneration) {
+        // 中文说明：与禁用控制串行化，阻止已越过外层检查的迟到写入。
+        KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+        return;
+    }
     // 中文说明：读取下一写入槽位。
     writeIndex = runtime->TrafficWriteIndex;
     // 中文说明：在锁内分配严格递增序号。
@@ -684,7 +708,8 @@ KswordARKNetworkTrafficCaptureNetBuffer(
     _In_ BOOLEAN Inbound,
     _In_ ULONG Direction,
     _In_ ULONG IpHeaderSize,
-    _In_ ULONG ProcessId
+    _In_ ULONG ProcessId,
+    _In_ ULONG CaptureGeneration
     )
 /*++
 
@@ -783,7 +808,9 @@ Routine Description:
     // 中文说明：只把可完整解析的 TCP/UDP IPv4/IPv6 包写入 ring。
     if (KswordARKNetworkTrafficParsePacket(&packetRow)) {
         // 中文说明：解析成功后进入短自旋锁写入。
-        KswordARKNetworkTrafficRecordPacket(&packetRow);
+        KswordARKNetworkTrafficRecordPacket(
+            &packetRow,
+            CaptureGeneration);
     }
 }
 
@@ -814,6 +841,11 @@ Routine Description:
     ULONG processId = 0UL;
     // 中文说明：遍历可能链接的 NBL。
     NET_BUFFER_LIST* netBufferList = NULL;
+    // 中文说明：逐包数据面由 R3 显式启停，filter 本身保持常驻。
+    KSWORD_ARK_NETWORK_RUNTIME* runtime = KswordARKNetworkGetRuntime();
+    // 中文说明：把启用代次带到最终写入点，拒绝跨越停/启边界的迟到包。
+    ULONG captureGeneration = 0UL;
+    ULONG confirmedGeneration = 0UL;
 
     // 中文说明：inspection callout 不读取 filter/flow context，也不修改或吸收包。
     UNREFERENCED_PARAMETER(Filter);
@@ -826,6 +858,28 @@ Routine Description:
         // 中文说明：观察型 callout 永远不 permit/block/absorb。
         ClassifyOut->actionType = FWP_ACTION_CONTINUE;
     }
+
+    if (runtime == NULL) {
+        // 中文说明：停止态只保持 WFP 放行语义，不解析也不复制 NET_BUFFER。
+        return;
+    }
+    do {
+        captureGeneration = (ULONG)InterlockedCompareExchange(
+            &runtime->TrafficCaptureGeneration,
+            0L,
+            0L);
+        if (InterlockedCompareExchange(
+                &runtime->TrafficCaptureEnabled,
+                0L,
+                0L) == 0L) {
+            // 中文说明：停止态只保持 WFP 放行语义，不解析也不复制 NET_BUFFER。
+            return;
+        }
+        confirmedGeneration = (ULONG)InterlockedCompareExchange(
+            &runtime->TrafficCaptureGeneration,
+            0L,
+            0L);
+    } while (captureGeneration != confirmedGeneration);
 
     // 中文说明：层字段和包数据都必须存在。
     if (InFixedValues == NULL || LayerData == NULL) {
@@ -875,7 +929,8 @@ Routine Description:
                 inbound,
                 direction,
                 ipHeaderSize,
-                processId);
+                processId,
+                captureGeneration);
             // 中文说明：推进当前 NBL 内的 NET_BUFFER 链。
             netBuffer = NET_BUFFER_NEXT_NB(netBuffer);
         }
@@ -1164,14 +1219,21 @@ Routine Description:
     ULONG packetCount = 0UL;
     // 中文说明：保存最旧槽位索引。
     ULONG oldestIndex = 0UL;
-    // 中文说明：保存 ring 逻辑扫描偏移。
-    ULONG scanIndex = 0UL;
     // 中文说明：保存 cursor 后可用行数。
     ULONG availableCount = 0UL;
     // 中文说明：保存实际返回行数。
     ULONG returnedCount = 0UL;
+    // 中文说明：保存本次最多复制的行数。
+    ULONG targetReturnCount = 0UL;
+    // 中文说明：保存逐行复制时重新读取的 ring 元数据。
+    ULONG currentPacketCount = 0UL;
+    ULONG currentOldestIndex = 0UL;
     // 中文说明：保存处理驱动重载后的有效 cursor。
     ULONG64 effectiveAfterSequence = 0ULL;
+    // 中文说明：保存下一条待复制的稳定序号。
+    ULONG64 desiredSequence = 0ULL;
+    ULONG64 currentOldestSequence = 0ULL;
+    ULONG64 currentNewestSequence = 0ULL;
     // 中文说明：保存获取逐包自旋锁前 IRQL。
     KIRQL oldIrql = PASSIVE_LEVEL;
 
@@ -1200,12 +1262,18 @@ Routine Description:
     response->capacity = KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY;
     // 中文说明：只有四个 packet filter 已提交后才报告可用。
     response->status =
-        ((runtime->RuntimeFlags & KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED) != 0UL) ?
-        KSWORD_ARK_NETWORK_STATUS_APPLIED :
-        KSWORD_ARK_NETWORK_STATUS_WFP_UNAVAILABLE;
+        ((runtime->RuntimeFlags & KSWORD_ARK_NETWORK_RUNTIME_PACKET_CAPTURE_STARTED) == 0UL) ?
+        KSWORD_ARK_NETWORK_STATUS_WFP_UNAVAILABLE :
+        (InterlockedCompareExchange(
+                &runtime->TrafficCaptureEnabled,
+                0L,
+                0L) != 0L ?
+            KSWORD_ARK_NETWORK_STATUS_APPLIED :
+            KSWORD_ARK_NETWORK_STATUS_DISABLED);
     // 中文说明：不可用时返回逐包注册的精确状态。
     response->lastStatus =
-        response->status == KSWORD_ARK_NETWORK_STATUS_APPLIED ?
+        (response->status == KSWORD_ARK_NETWORK_STATUS_APPLIED ||
+            response->status == KSWORD_ARK_NETWORK_STATUS_DISABLED) ?
         STATUS_SUCCESS :
         runtime->TrafficCaptureStatus;
 
@@ -1253,7 +1321,7 @@ Routine Description:
     // 中文说明：准备处理驱动重载 cursor。
     effectiveAfterSequence = Request->afterSequence;
 
-    // 中文说明：读写侧共用逐包自旋锁，形成一致 ring 快照。
+    // 中文说明：只在锁内快照 ring 元数据，不再批量复制最多 256 个大行。
     KeAcquireSpinLock(&runtime->TrafficLock, &oldIrql);
     // 中文说明：捕获当前有效行数。
     packetCount = runtime->TrafficCount;
@@ -1277,58 +1345,108 @@ Routine Description:
                     1UL) %
                 KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY].sequence;
 
-        // 中文说明：驱动重载后旧 R3 cursor 可能大于新 ring 最新序号。
+    }
+    // 中文说明：元数据快照完成后立即恢复 IRQL，让 classify 写入继续前进。
+    KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+
+    if (packetCount != 0UL) {
+        // 中文说明：驱动重载或新捕获会话后旧 R3 cursor 可能大于最新序号。
         if (effectiveAfterSequence > response->newestSequence) {
-            // 中文说明：显式标记 cursor reset。
             response->flags |= KSWORD_ARK_NETWORK_TRAFFIC_RESPONSE_FLAG_CURSOR_RESET;
-            // 中文说明：从新 ring 最旧行重新读取。
             effectiveAfterSequence = 0ULL;
-            // 中文说明：重置响应 cursor，随后由返回行推进。
             response->nextSequence = 0ULL;
         }
 
-        // 中文说明：cursor 落后保留窗口时报告不可恢复缺口。
-        if (effectiveAfterSequence < response->oldestSequence &&
-            response->oldestSequence - effectiveAfterSequence > 1ULL) {
-            // 中文说明：设置 cursor gap 标志。
-            response->flags |= KSWORD_ARK_NETWORK_TRAFFIC_RESPONSE_FLAG_CURSOR_GAP;
-            // 中文说明：精确计算不可恢复序号数量。
-            response->cursorGapCount =
-                response->oldestSequence - effectiveAfterSequence - 1ULL;
+        // 中文说明：afterSequence=0 的协议语义是从当前最旧行开始，不把历史覆盖算成缺口。
+        if (effectiveAfterSequence == 0ULL) {
+            desiredSequence = response->oldestSequence;
+        }
+        else if (effectiveAfterSequence < response->newestSequence) {
+            desiredSequence = effectiveAfterSequence + 1ULL;
+            if (desiredSequence < response->oldestSequence) {
+                response->flags |= KSWORD_ARK_NETWORK_TRAFFIC_RESPONSE_FLAG_CURSOR_GAP;
+                response->cursorGapCount =
+                    response->oldestSequence - desiredSequence;
+                desiredSequence = response->oldestSequence;
+            }
         }
 
-        // 中文说明：按逻辑顺序扫描，保证响应序号严格递增。
-        for (scanIndex = 0UL; scanIndex < packetCount; ++scanIndex) {
-            // 中文说明：把逻辑偏移映射到物理槽位。
-            const ULONG ringIndex =
-                (oldestIndex + scanIndex) % KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY;
-            // 中文说明：读取锁保护下的稳定行。
-            const KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW* packetRow =
-                &runtime->TrafficRing[ringIndex];
-
-            // 中文说明：跳过已消费序号。
-            if (packetRow->sequence <= effectiveAfterSequence) {
-                // 中文说明：继续扫描更新行。
-                continue;
-            }
-            // 中文说明：统计 cursor 后全部可用行，即使输出预算不足。
-            availableCount += 1UL;
-            // 中文说明：只复制容量允许的最旧一批更新行。
-            if (returnedCount < outputRowCapacity) {
-                // 中文说明：完整复制固定行，包含零填充的捕获前缀尾部。
-                RtlCopyMemory(
-                    &response->entries[returnedCount],
-                    packetRow,
-                    sizeof(*packetRow));
-                // 中文说明：cursor 推进到最后实际返回序号。
-                response->nextSequence = packetRow->sequence;
-                // 中文说明：增加返回行数。
-                returnedCount += 1UL;
-            }
+        if (desiredSequence != 0ULL &&
+            desiredSequence <= response->newestSequence) {
+            // 中文说明：稳定序号连续，因此无需在锁内线性扫描 2048 个槽。
+            availableCount = (ULONG)(
+                response->newestSequence - desiredSequence + 1ULL);
+            targetReturnCount = availableCount < outputRowCapacity
+                ? availableCount
+                : outputRowCapacity;
         }
     }
-    // 中文说明：完成一致快照后恢复 IRQL。
-    KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+
+    // 中文说明：每次只在自旋锁内定位并复制一个固定行，写侧最多被单行 memcpy 阻塞。
+    while (returnedCount < targetReturnCount &&
+        desiredSequence != 0ULL &&
+        desiredSequence <= response->newestSequence) {
+        ULONG ringIndex = 0UL;
+        ULONG64 ringOffset = 0ULL;
+
+        KeAcquireSpinLock(&runtime->TrafficLock, &oldIrql);
+        currentPacketCount = runtime->TrafficCount;
+        if (currentPacketCount == 0UL) {
+            KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+            break;
+        }
+
+        currentOldestIndex =
+            (runtime->TrafficWriteIndex +
+                KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY -
+                currentPacketCount) %
+            KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY;
+        currentOldestSequence =
+            runtime->TrafficRing[currentOldestIndex].sequence;
+        currentNewestSequence =
+            runtime->TrafficRing[
+                (runtime->TrafficWriteIndex +
+                    KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY -
+                    1UL) %
+                KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY].sequence;
+
+        // 中文说明：高流量下目标槽可能在两次短锁之间被覆盖，跳到当前最旧行并记缺口。
+        if (desiredSequence < currentOldestSequence) {
+            response->flags |= KSWORD_ARK_NETWORK_TRAFFIC_RESPONSE_FLAG_CURSOR_GAP;
+            response->cursorGapCount +=
+                currentOldestSequence - desiredSequence;
+            desiredSequence = currentOldestSequence;
+        }
+        if (desiredSequence > currentNewestSequence ||
+            desiredSequence > response->newestSequence) {
+            KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+            break;
+        }
+
+        ringOffset = desiredSequence - currentOldestSequence;
+        if (ringOffset >= currentPacketCount) {
+            KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+            break;
+        }
+        ringIndex = (currentOldestIndex + (ULONG)ringOffset) %
+            KSWORD_ARK_NETWORK_TRAFFIC_RING_CAPACITY;
+        if (runtime->TrafficRing[ringIndex].sequence != desiredSequence) {
+            response->status = KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED;
+            response->lastStatus = STATUS_DATA_ERROR;
+            KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+            break;
+        }
+
+        RtlCopyMemory(
+            &response->entries[returnedCount],
+            &runtime->TrafficRing[ringIndex],
+            sizeof(runtime->TrafficRing[ringIndex]));
+        KeReleaseSpinLock(&runtime->TrafficLock, oldIrql);
+
+        response->nextSequence = desiredSequence;
+        returnedCount += 1UL;
+        desiredSequence += 1ULL;
+    }
 
     // 中文说明：回报 cursor 后可用行数。
     response->availablePacketCount = availableCount;

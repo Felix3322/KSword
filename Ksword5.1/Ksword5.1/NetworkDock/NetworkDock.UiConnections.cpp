@@ -1287,6 +1287,28 @@ void NetworkDock::startTrafficMonitor()
     const std::uint64_t generation = m_monitorGeneration.fetch_add(1) + 1ULL;
     m_monitorSource = TrafficMonitorSource::Starting;
     m_monitorRunning = true;
+    const ksword::ark::DriverClient driverClient;
+    const ksword::ark::NetworkTrafficCaptureControlResult captureControl =
+        driverClient.controlNetworkTrafficCapture(true);
+    const bool r0CaptureEnabled =
+        captureControl.io.ok &&
+        !captureControl.unsupported &&
+        captureControl.response.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+        captureControl.response.enabled == 1UL;
+    if (!r0CaptureEnabled)
+    {
+        // 控制响应损坏或启用后业务拒绝时也做一次幂等停用，避免未知半成功状态。
+        (void)driverClient.controlNetworkTrafficCapture(false);
+        startR3TrafficMonitor(QString::fromStdString(captureControl.io.message));
+        kLogEvent fallbackEvent;
+        warn << fallbackEvent
+             << "[NetworkDock] R0 逐包数据面启用失败，已回退 R3: "
+             << captureControl.io.message << eol;
+        return;
+    }
+    // 新捕获会话由 R0 清空 ring 并从 sequence=1 重新计数，R3 cursor 必须同步归零。
+    m_r0LastEventSequence = 0ULL;
+    m_r0LastDroppedEventCount = 0ULL;
     if (m_monitorStatusLabel != nullptr)
     {
         m_monitorStatusLabel->setText(QStringLiteral("状态：正在探测 R0 WFP IPv4/IPv6 逐包数据源..."));
@@ -1320,6 +1342,29 @@ void NetworkDock::stopTrafficMonitor()
         m_r0TrafficRefreshTimer->stop();
     }
 
+    bool r0StopConfirmed = true;
+    QString r0StopFailure;
+    if (sourceBeforeStop == TrafficMonitorSource::R0 ||
+        sourceBeforeStop == TrafficMonitorSource::Starting)
+    {
+        const ksword::ark::DriverClient driverClient;
+        const ksword::ark::NetworkTrafficCaptureControlResult captureControl =
+            driverClient.controlNetworkTrafficCapture(false);
+        r0StopConfirmed =
+            captureControl.io.ok &&
+            !captureControl.unsupported &&
+            captureControl.response.status == KSWORD_ARK_NETWORK_STATUS_DISABLED &&
+            captureControl.response.enabled == 0UL;
+        if (!r0StopConfirmed)
+        {
+            r0StopFailure = QString::fromStdString(captureControl.io.message);
+            kLogEvent stopFailureEvent;
+            warn << stopFailureEvent
+                 << "[NetworkDock] R0 逐包数据面停用失败: "
+                 << captureControl.io.message << eol;
+        }
+    }
+
     // UI 立即切换到“停止中”，给用户及时反馈，避免误判“按钮没反应”。
     m_monitorRunning = false;
     if (m_monitorStatusLabel != nullptr)
@@ -1338,7 +1383,11 @@ void NetworkDock::stopTrafficMonitor()
         }
         if (m_monitorStatusLabel != nullptr)
         {
-            m_monitorStatusLabel->setText(QStringLiteral("状态：已停止（来源：无）"));
+            m_monitorStatusLabel->setText(
+                r0StopConfirmed
+                    ? QStringLiteral("状态：已停止（来源：无）")
+                    : QStringLiteral("状态：界面已停止，但 R0 数据面停用失败：%1")
+                        .arg(r0StopFailure));
         }
         updateMonitorButtonState();
         return;
@@ -1456,6 +1505,7 @@ void NetworkDock::refreshR0TrafficSnapshotAsync(
 
         if (safeThis.isNull())
         {
+            (void)driverClient.controlNetworkTrafficCapture(false);
             return;
         }
         QMetaObject::invokeMethod(
@@ -1477,11 +1527,27 @@ void NetworkDock::refreshR0TrafficSnapshotAsync(
                 if (safeThis->m_monitorGeneration.load() != generation
                     || safeThis->m_monitorSource == TrafficMonitorSource::Stopped)
                 {
+                    if (safeThis->m_monitorSource == TrafficMonitorSource::Stopped)
+                    {
+                        const ksword::ark::DriverClient driverClient;
+                        (void)driverClient.controlNetworkTrafficCapture(false);
+                    }
                     return;
                 }
 
                 if (!r0Usable)
                 {
+                    const ksword::ark::DriverClient driverClient;
+                    const auto captureControl =
+                        driverClient.controlNetworkTrafficCapture(false);
+                    if (!captureControl.io.ok ||
+                        captureControl.response.status != KSWORD_ARK_NETWORK_STATUS_DISABLED)
+                    {
+                        kLogEvent disableEvent;
+                        warn << disableEvent
+                             << "[NetworkDock] R0 查询失败后的数据面停用失败: "
+                             << captureControl.io.message << eol;
+                    }
                     safeThis->startR3TrafficMonitor(diagnosticText);
                     return;
                 }

@@ -605,6 +605,82 @@ Return Value:
 }
 
 NTSTATUS
+KswordARKNetworkIoctlControlTrafficCapture(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+/*++
+
+Routine Description:
+
+    处理 IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE。该写权限 IOCTL
+    只启停逐包复制数据面，不注销 WFP filter/callout。
+
+--*/
+{
+    KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_REQUEST* inputRequest = NULL;
+    KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_REQUEST localRequest = { 0 };
+    KSWORD_ARK_NETWORK_TRAFFIC_CONTROL_RESPONSE* outputResponse = NULL;
+    size_t actualInputLength = 0U;
+    size_t actualOutputLength = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0U;
+
+    status = KswordARKValidateDeviceIoControlWriteAccess(Request);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(localRequest),
+        (PVOID*)&inputRequest,
+        &actualInputLength);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (InputBufferLength < sizeof(localRequest) ||
+        actualInputLength < sizeof(localRequest)) {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    RtlCopyMemory(&localRequest, inputRequest, sizeof(localRequest));
+
+    status = KswordARKRetrieveRequiredOutputBuffer(
+        Request,
+        sizeof(*outputResponse),
+        (PVOID*)&outputResponse,
+        &actualOutputLength);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = KswordARKNetworkControlTrafficCapture(
+        &localRequest,
+        outputResponse);
+    if (NT_SUCCESS(status)) {
+        *BytesReturned = sizeof(*outputResponse);
+        KswordARKNetworkIoctlLog(
+            Device,
+            outputResponse->status == KSWORD_ARK_NETWORK_STATUS_OPERATION_FAILED
+                ? "Warn"
+                : "Info",
+            "R0 WFP traffic capture control action=%lu enabled=%lu generation=%lu status=%lu last=0x%08X.",
+            (unsigned long)localRequest.action,
+            (unsigned long)outputResponse->enabled,
+            (unsigned long)outputResponse->generation,
+            (unsigned long)outputResponse->status,
+            (unsigned int)outputResponse->lastStatus);
+    }
+    return status;
+}
+
+NTSTATUS
 KswordARKNetworkIoctlQueryTrafficPackets(
     _In_ WDFDEVICE Device,
     _In_ WDFREQUEST Request,
