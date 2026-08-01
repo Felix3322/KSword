@@ -35,7 +35,7 @@
 #define KSWORD_ARK_SYSTEM_TIME_COMMAND_SLOW_DOWN 3UL
 
 /*
- * ORIGINAL_COMPAT 按原项目的版本特征直接定位 HAL 计数器描述符。
+ * ORIGINAL_COMPAT 按系统版本特征直接定位 HAL 计数器描述符。
  * GUARDED 使用相同接管原理，但在返回目标前额外验证描述符和函数槽。
  */
 #define KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT 1UL

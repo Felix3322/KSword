@@ -90,7 +90,7 @@ namespace ks::misc
         QLabel* m_backendLabel = nullptr; // m_backendLabel：构建与解析策略摘要。
         QLabel* m_diagnosticLabel = nullptr; // m_diagnosticLabel：槽地址和 NTSTATUS 证据。
         QLabel* m_operationLabel = nullptr; // m_operationLabel：最近刷新或控制结果。
-        QRadioButton* m_originalCompatRadio = nullptr; // m_originalCompatRadio：选择原项目兼容定位。
+        QRadioButton* m_compatRadio = nullptr; // m_compatRadio：选择兼容定位模式。
         QRadioButton* m_guardedResolutionRadio = nullptr; // m_guardedResolutionRadio：选择增强校验定位。
         QRadioButton* m_speedUpRadio = nullptr; // m_speedUpRadio：选择 N 倍加速。
         QRadioButton* m_slowDownRadio = nullptr; // m_slowDownRadio：选择 1/N 减速。

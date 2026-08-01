@@ -172,7 +172,7 @@ KswordARKSystemTimeValidateDescriptor(
 /*
  * 按原始机制的系统版本分支定位描述符引用：
  * Windows 8/10 使用 MOV RDI,[RIP+disp32]，Windows 11 使用
- * MOV RSI,[RIP+disp32]。原版兼容方案接受首个有效引用，增强方案继续
+ * MOV RSI,[RIP+disp32]。兼容模式接受首个有效引用，增强模式继续
  * 验证后续会访问的描述符字段。
  */
 static
@@ -307,7 +307,7 @@ KswordARKSystemTimeFindHandlerSlot(
 }
 
 /*
- * 公共解析入口按协议选择原版兼容或增强校验方案。
+ * 公共解析入口按协议选择兼容或增强校验模式。
  * 当前不支持 x86，避免将 x64 RIP 相对规则错误套用到其它架构。
  */
 NTSTATUS

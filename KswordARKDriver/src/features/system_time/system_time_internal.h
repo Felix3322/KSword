@@ -19,7 +19,7 @@ typedef struct _KSWORD_ARK_SYSTEM_TIME_RESOLUTION
 
 /*
  * 解析 KeQueryPerformanceCounter 内的 RIP 相对引用。
- * ResolutionMode 选择原版兼容定位或增强校验定位。
+ * ResolutionMode 选择兼容定位或增强校验定位。
  */
 NTSTATUS
 KswordARKSystemTimeResolve(

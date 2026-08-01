@@ -167,24 +167,24 @@ namespace ks::misc
                 .arg(KswordTheme::TextSecondaryHex()));
         rootLayout->addWidget(m_persistenceLabel);
 
-        // 模式组明确区分原版兼容定位和写入前增强校验定位。
+        // 模式组明确区分兼容定位和写入前增强校验定位。
         auto* schemeGroup = new QGroupBox(
             QStringLiteral("实现模式"),
             this);
         auto* schemeLayout = new QVBoxLayout(schemeGroup);
-        m_originalCompatRadio = new QRadioButton(
+        m_compatRadio = new QRadioButton(
             QStringLiteral("兼容模式（默认）"),
             schemeGroup);
-        m_originalCompatRadio->setToolTip(
+        m_compatRadio->setToolTip(
             QStringLiteral(
-                "按原项目的系统版本特征直接定位并接管 HAL 计数器函数指针"));
-        auto* originalDescription = new QLabel(
+                "按当前系统版本特征定位并接管 HAL 计数器函数指针"));
+        auto* compatDescription = new QLabel(
             QStringLiteral(
-                "严格沿用原项目的版本特征和 HAL 计数器函数指针接管路径，"
+                "使用基于系统版本特征的 HAL 计数器函数指针接管路径，"
                 "兼容性最高；仍保留 KSword 的恢复与冲突监控。"),
             schemeGroup);
-        originalDescription->setWordWrap(true);
-        originalDescription->setStyleSheet(
+        compatDescription->setWordWrap(true);
+        compatDescription->setStyleSheet(
             QStringLiteral("color:%1;")
                 .arg(KswordTheme::TextSecondaryHex()));
 
@@ -203,9 +203,9 @@ namespace ks::misc
         guardedDescription->setStyleSheet(
             QStringLiteral("color:%1;")
                 .arg(KswordTheme::TextSecondaryHex()));
-        m_originalCompatRadio->setChecked(true);
-        schemeLayout->addWidget(m_originalCompatRadio);
-        schemeLayout->addWidget(originalDescription);
+        m_compatRadio->setChecked(true);
+        schemeLayout->addWidget(m_compatRadio);
+        schemeLayout->addWidget(compatDescription);
         schemeLayout->addWidget(m_guardedResolutionRadio);
         schemeLayout->addWidget(guardedDescription);
         rootLayout->addWidget(schemeGroup);
@@ -426,11 +426,11 @@ namespace ks::misc
             ? QStringLiteral("加速")
             : QStringLiteral("减速");
         const unsigned long resolutionMode =
-            m_originalCompatRadio->isChecked()
+            m_compatRadio->isChecked()
             ? KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
             : KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED;
         const QString schemeText =
-            m_originalCompatRadio->isChecked()
+            m_compatRadio->isChecked()
             ? QStringLiteral("兼容模式")
             : QStringLiteral("安全模式");
 
@@ -508,7 +508,7 @@ namespace ks::misc
         const auto result = client.controlSystemTime(
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET,
             1UL,
-            m_originalCompatRadio->isChecked()
+            m_compatRadio->isChecked()
                 ? KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
                 : KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED,
             m_generation,
@@ -860,7 +860,7 @@ namespace ks::misc
         }
         if (active)
         {
-            m_originalCompatRadio->setChecked(
+            m_compatRadio->setChecked(
                 resolutionMode ==
                     KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT);
             m_guardedResolutionRadio->setChecked(
@@ -931,7 +931,7 @@ namespace ks::misc
         m_factorSpin->setEnabled(!m_busy);
         m_speedUpRadio->setEnabled(!m_busy);
         m_slowDownRadio->setEnabled(!m_busy);
-        m_originalCompatRadio->setEnabled(
+        m_compatRadio->setEnabled(
             !m_busy && !m_active);
         m_guardedResolutionRadio->setEnabled(
             !m_busy && !m_active);
