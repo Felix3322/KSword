@@ -23296,6 +23296,17 @@
     "%1 | FW=0x%2 | scopes=%3": "%1 | FW=0x%2 | scopes=%3",
     "CPU 厂商：%1\nHypervisor 厂商：%2\n特性：%3\n来宾可见风险：%4\n原始字段/风险/特性：0x%5 / 0x%6 / 0x%7\nCPUID 最大叶：basic=0x%8 extended=0x%9 hypervisor=0x%10\nCPUID 周期 min/median/max：%11 / %12 / %13\nIA32_FEATURE_CONTROL：%14\nIA32_VMX_EPT_VPID_CAP：%15\nAMD VM_CR：%16\nAMD EFER：%17\nDMAR/IVRS：%18 / %19\nIOMMU Interface/Ex：%20(v%21) / %22(v%23)\n查询标志：0x%24\n证据边界：虚拟/物理视图一致只能排除当前来宾可观察到的分离；不能读取外层 EPT/NPT 表，也不能证明不存在 execute-only 或按访问类型切换的 Hook。": "CPU vendor: %1\nHypervisor vendor: %2\nFeatures: %3\nGuest-visible risks: %4\nRaw fields/risks/features: 0x%5 / 0x%6 / 0x%7\nMaximum CPUID leaves: basic=0x%8 extended=0x%9 hypervisor=0x%10\nCPUID cycles min/median/max: %11 / %12 / %13\nIA32_FEATURE_CONTROL: %14\nIA32_VMX_EPT_VPID_CAP: %15\nAMD VM_CR: %16\nAMD EFER: %17\nDMAR/IVRS: %18 / %19\nIOMMU Interface/Ex: %20(v%21) / %22(v%23)\nQuery flags: 0x%24\nEvidence boundary: matching virtual and physical views only rules out separation observable by this guest. Outer EPT/NPT tables are inaccessible, so execute-only or access-dependent hooks cannot be disproved.",
     "Intel ANDD": "Intel ANDD",
-    "Intel SATC": "Intel SATC"
+    "Intel SATC": "Intel SATC",
+    "打开源文件失败: %1 (%2)": "Failed to open source file: %1 (%2)",
+    "创建目标临时文件失败: %1 (%2)": "Failed to create temporary target file: %1 (%2)",
+    "读取源文件失败: %1 (%2)": "Failed to read source file: %1 (%2)",
+    "写入目标临时文件失败: %1 (%2)": "Failed to write temporary target file: %1 (%2)",
+    "提交目标文件失败: %1 (%2)": "Failed to commit target file: %1 (%2)",
+    "备份现有目标目录失败: %1 -> %2": "Failed to back up existing target directory: %1 -> %2",
+    "提交目标目录失败，旧目标已恢复: %1": "Failed to commit target directory; the previous target was restored: %1",
+    "提交目标目录失败且旧目标恢复失败: %1，备份位于 %2": "Failed to commit target directory and restore the previous target: %1; backup: %2",
+    "目录已替换，但旧目标备份清理失败: %1": "Directory replaced, but the previous target backup could not be removed: %1",
+    "目标已写入，但删除源目录失败: %1": "Target written, but the source directory could not be removed: %1",
+    "目标已写入，但删除源文件失败: %1": "Target written, but the source file could not be removed: %1"
   }
 }

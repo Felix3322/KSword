@@ -26,6 +26,7 @@
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QAction>
+#include <QByteArray>
 #include <QClipboard>
 #include <QCheckBox>
 #include <QColor>
@@ -68,6 +69,7 @@
 #include <QRunnable>
 #include <QScreen>
 #include <QScrollArea>
+#include <QSaveFile>
 #include <QSet>
 #include <QShortcut>
 #include <QSizePolicy>
@@ -88,6 +90,7 @@
 #include <QTreeView>
 #include <QTimeZone>
 #include <QUrl>
+#include <QUuid>
 #include <QVector>
 #include <QVBoxLayout>
 #include <QWindow>
@@ -3248,10 +3251,6 @@ namespace
             }
             else
             {
-                if (QFile::exists(dst))
-                {
-                    QFile::remove(dst);
-                }
                 if (!QFile::copy(src, dst))
                 {
                     errorTextOut = QStringLiteral("复制文件失败: %1 -> %2").arg(src, dst);
@@ -3260,6 +3259,130 @@ namespace
             }
         }
 
+        return true;
+    }
+
+    // copyFileTransactionally 作用：先写同目录临时文件，完整落盘后再替换目标；失败时保留旧目标。
+    bool copyFileTransactionally(const QString& sourcePath, const QString& targetPath, QString& errorTextOut)
+    {
+        QFile sourceFile(sourcePath);
+        if (!sourceFile.open(QIODevice::ReadOnly))
+        {
+            errorTextOut = ks::i18n::displayText(QStringLiteral("打开源文件失败: %1 (%2)"))
+                .arg(sourcePath, sourceFile.errorString());
+            return false;
+        }
+
+        QSaveFile targetFile(targetPath);
+        // 禁止 direct-write fallback，避免临时文件创建失败时直接截断现有目标。
+        targetFile.setDirectWriteFallback(false);
+        if (!targetFile.open(QIODevice::WriteOnly))
+        {
+            errorTextOut = ks::i18n::displayText(QStringLiteral("创建目标临时文件失败: %1 (%2)"))
+                .arg(targetPath, targetFile.errorString());
+            return false;
+        }
+
+        QByteArray copyBuffer(1024 * 1024, Qt::Uninitialized);
+        while (true)
+        {
+            const qint64 bytesRead = sourceFile.read(copyBuffer.data(), copyBuffer.size());
+            if (bytesRead < 0)
+            {
+                targetFile.cancelWriting();
+                errorTextOut = ks::i18n::displayText(QStringLiteral("读取源文件失败: %1 (%2)"))
+                    .arg(sourcePath, sourceFile.errorString());
+                return false;
+            }
+            if (bytesRead == 0)
+            {
+                break;
+            }
+            if (targetFile.write(copyBuffer.data(), bytesRead) != bytesRead)
+            {
+                targetFile.cancelWriting();
+                errorTextOut = ks::i18n::displayText(QStringLiteral("写入目标临时文件失败: %1 (%2)"))
+                    .arg(targetPath, targetFile.errorString());
+                return false;
+            }
+        }
+
+        targetFile.setPermissions(QFileInfo(sourcePath).permissions());
+        if (!targetFile.commit())
+        {
+            errorTextOut = ks::i18n::displayText(QStringLiteral("提交目标文件失败: %1 (%2)"))
+                .arg(targetPath, targetFile.errorString());
+            return false;
+        }
+        return true;
+    }
+
+    // uniqueSiblingTransactionPath 作用：为目录替换生成同卷临时路径，保证 rename 可回滚。
+    QString uniqueSiblingTransactionPath(const QString& targetPath, const QString& roleText)
+    {
+        const QFileInfo targetInfo(targetPath);
+        const QString transactionName = QStringLiteral("-ksword-%1-%2-%3")
+            .arg(
+                roleText,
+                targetInfo.fileName(),
+                QUuid::createUuid().toString(QUuid::WithoutBraces));
+        return targetInfo.dir().filePath(transactionName);
+    }
+
+    // removeTransactionPath 作用：清理本次事务创建的文件或目录，不跟随其它目标路径。
+    bool removeTransactionPath(const QString& path)
+    {
+        const QFileInfo pathInfo(path);
+        if (!pathInfo.exists() && !pathInfo.isSymLink())
+        {
+            return true;
+        }
+        if (pathInfo.isDir() && !pathInfo.isSymLink())
+        {
+            return QDir(path).removeRecursively();
+        }
+        return QFile::remove(path);
+    }
+
+    // copyDirectoryTransactionally 作用：完整复制到同级 staging，再以 backup 回滚方式替换目标目录。
+    bool copyDirectoryTransactionally(const QString& sourcePath, const QString& targetPath, QString& errorTextOut)
+    {
+        const QString stagingPath = uniqueSiblingTransactionPath(targetPath, QStringLiteral("staging"));
+        const QString backupPath = uniqueSiblingTransactionPath(targetPath, QStringLiteral("backup"));
+        const bool targetExisted = QFileInfo::exists(targetPath);
+
+        if (!copyDirectoryRecursively(sourcePath, stagingPath, errorTextOut))
+        {
+            removeTransactionPath(stagingPath);
+            return false;
+        }
+
+        QDir renameDir;
+        if (targetExisted && !renameDir.rename(targetPath, backupPath))
+        {
+            removeTransactionPath(stagingPath);
+            errorTextOut = ks::i18n::displayText(QStringLiteral("备份现有目标目录失败: %1 -> %2"))
+                .arg(targetPath, backupPath);
+            return false;
+        }
+
+        if (!renameDir.rename(stagingPath, targetPath))
+        {
+            const bool rollbackOk = !targetExisted || renameDir.rename(backupPath, targetPath);
+            removeTransactionPath(stagingPath);
+            errorTextOut = rollbackOk
+                ? ks::i18n::displayText(QStringLiteral("提交目标目录失败，旧目标已恢复: %1")).arg(targetPath)
+                : ks::i18n::displayText(QStringLiteral("提交目标目录失败且旧目标恢复失败: %1，备份位于 %2"))
+                    .arg(targetPath, backupPath);
+            return false;
+        }
+
+        if (targetExisted && !removeTransactionPath(backupPath))
+        {
+            errorTextOut = ks::i18n::displayText(QStringLiteral("目录已替换，但旧目标备份清理失败: %1"))
+                .arg(backupPath);
+            return false;
+        }
         return true;
     }
 
@@ -10545,19 +10668,22 @@ void FileDock::transferSelectedItemsToOppositePanel(FilePanelWidgets& sourcePane
                 QString copyErrorText;
                 if (sourceInfo.isDir())
                 {
-                    itemOk = copyDirectoryRecursively(sourcePath, targetPath, copyErrorText)
-                        && QDir(sourcePath).removeRecursively();
+                    itemOk = copyDirectoryTransactionally(sourcePath, targetPath, copyErrorText);
+                    if (itemOk && !QDir(sourcePath).removeRecursively())
+                    {
+                        itemOk = false;
+                        copyErrorText = ks::i18n::displayText(QStringLiteral("目标已写入，但删除源目录失败: %1"))
+                            .arg(sourcePath);
+                    }
                 }
                 else
                 {
-                    if (QFile::exists(targetPath))
+                    itemOk = copyFileTransactionally(sourcePath, targetPath, copyErrorText);
+                    if (itemOk && !QFile::remove(sourcePath))
                     {
-                        QFile::remove(targetPath);
-                    }
-                    itemOk = QFile::copy(sourcePath, targetPath) && QFile::remove(sourcePath);
-                    if (!itemOk)
-                    {
-                        copyErrorText = QStringLiteral("移动失败: %1 -> %2").arg(sourcePath, targetPath);
+                        itemOk = false;
+                        copyErrorText = ks::i18n::displayText(QStringLiteral("目标已写入，但删除源文件失败: %1"))
+                            .arg(sourcePath);
                     }
                 }
                 if (!itemOk)
@@ -10572,7 +10698,7 @@ void FileDock::transferSelectedItemsToOppositePanel(FilePanelWidgets& sourcePane
             if (sourceInfo.isDir())
             {
                 QString copyErrorText;
-                itemOk = copyDirectoryRecursively(sourcePath, targetPath, copyErrorText);
+                itemOk = copyDirectoryTransactionally(sourcePath, targetPath, copyErrorText);
                 if (!itemOk)
                 {
                     errorLines << copyErrorText;
@@ -10580,14 +10706,11 @@ void FileDock::transferSelectedItemsToOppositePanel(FilePanelWidgets& sourcePane
             }
             else
             {
-                if (QFile::exists(targetPath))
-                {
-                    QFile::remove(targetPath);
-                }
-                itemOk = QFile::copy(sourcePath, targetPath);
+                QString copyErrorText;
+                itemOk = copyFileTransactionally(sourcePath, targetPath, copyErrorText);
                 if (!itemOk)
                 {
-                    errorLines << QStringLiteral("复制失败: %1 -> %2").arg(sourcePath, targetPath);
+                    errorLines << copyErrorText;
                 }
             }
         }
