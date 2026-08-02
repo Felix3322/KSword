@@ -1155,7 +1155,7 @@ KswordARKDriverAppendProcessEntry(
     _In_ ULONG parentProcessId,
     _In_ ULONG processFlags,
     _In_opt_z_ const CHAR* imageName,
-    _In_ PEPROCESS processObject
+    _In_opt_ PEPROCESS processObject
     )
 {
     KSWORD_ARK_PROCESS_ENTRY* entry = NULL;
