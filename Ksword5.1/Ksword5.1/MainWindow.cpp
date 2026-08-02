@@ -7038,6 +7038,8 @@ void MainWindow::stopR0DriverLogPoller()
     m_r0DriverLogPollerRunning.store(false);
     if (m_r0DriverLogPollerThread != nullptr && m_r0DriverLogPollerThread->joinable())
     {
+        // The worker owns a synchronous log-device ReadFile; cancel it before joining.
+        (void)::CancelSynchronousIo(m_r0DriverLogPollerThread->native_handle());
         m_r0DriverLogPollerThread->join();
     }
     m_r0DriverLogPollerThread.reset();
