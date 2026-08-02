@@ -190,4 +190,4 @@ void OtherDock::setCaptureProtectionForWindow(
 
 // Keep the diagnostics implementation isolated from the already large
 // OtherDock.cpp translation unit while compiling it exactly once.
-#include <OtherDock/WindowLayerDiagnostics.h>
+#include <OtherDock/WindowLayerDiagnostics.inl>
