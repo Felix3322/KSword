@@ -1306,19 +1306,21 @@ void WinAPIDock::stopMonitoringInternal(const bool waitForThread)
         }
     }
 
+    if (m_pipeThread != nullptr && m_pipeThread->joinable())
+    {
+        // The reader owns a synchronous ReadFile, so cancel it before joining.
+        (void)::CancelSynchronousIo(m_pipeThread->native_handle());
+        m_pipeThread->join();
+    }
+    m_pipeThread.reset();
+
     const std::uintptr_t pipeHandleValue = m_pipeHandleValue.exchange(0);
     if (pipeHandleValue != 0)
     {
         ::CloseHandle(reinterpret_cast<HANDLE>(pipeHandleValue));
     }
-    closeChildPipeHandles();
-
-    if (m_pipeThread != nullptr && m_pipeThread->joinable())
-    {
-        m_pipeThread->join();
-    }
-    m_pipeThread.reset();
     joinChildPipeThreads();
+    closeChildPipeHandles();
 
     m_pipeRunning.store(false);
     m_pipeConnected.store(false);

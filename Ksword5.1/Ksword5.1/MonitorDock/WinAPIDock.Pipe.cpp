@@ -508,6 +508,15 @@ void WinAPIDock::joinChildPipeThreads()
     {
         if (threadPointer != nullptr && threadPointer->joinable())
         {
+            // Each child reader owns a synchronous ReadFile on its pipe handle.
+            (void)::CancelSynchronousIo(threadPointer->native_handle());
+        }
+    }
+
+    for (std::unique_ptr<std::thread>& threadPointer : threadList)
+    {
+        if (threadPointer != nullptr && threadPointer->joinable())
+        {
             threadPointer->join();
         }
     }
