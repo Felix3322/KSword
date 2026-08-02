@@ -15,6 +15,7 @@
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/GlobalDialogTheme.h"
 
+#include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QAction>
 #include <QCheckBox>
@@ -91,6 +92,9 @@ namespace
         ColumnTimestamp,
         ColumnCount
     };
+
+    constexpr int kMaximumDisplayedFirewallEvents = 5000;
+    constexpr std::size_t kMaximumQueuedLiveEvents = 2000U;
 
     void installFirewallTableCopyMenu(QTableWidget* tableWidget)
     {
@@ -1588,16 +1592,40 @@ void NetworkFirewallPage::appendEventsToTable(
         return;
     }
 
+    const std::size_t maximumDisplayedEventCount =
+        static_cast<std::size_t>(kMaximumDisplayedFirewallEvents);
+    const std::size_t firstEventIndex = eventList.size() > maximumDisplayedEventCount
+        ? eventList.size() - maximumDisplayedEventCount
+        : 0U;
+    const int incomingRowCount = static_cast<int>(eventList.size() - firstEventIndex);
+
+    m_eventTable->setUpdatesEnabled(false);
     if (clearBeforeAppend)
     {
         m_eventTable->setRowCount(0);
     }
 
-    m_eventTable->setUpdatesEnabled(false);
-    for (const FirewallEventEntry& entry : eventList)
+    // 只保留能与本批新事件共同落在显示上限内的最新旧行。QTableWidget 的模型一次
+    // removeRows 可批量移动剩余行，避免逐行 removeRow(0) 反复搬移整个二维表。
+    const int existingRowCount = m_eventTable->rowCount();
+    const int existingRowsToKeep = std::max(0, kMaximumDisplayedFirewallEvents - incomingRowCount);
+    const int existingRowsToRemove = std::max(0, existingRowCount - existingRowsToKeep);
+    if (existingRowsToRemove > 0)
     {
-        const int row = m_eventTable->rowCount();
-        m_eventTable->insertRow(row);
+        QAbstractItemModel* const eventTableModel = m_eventTable->model();
+        if (eventTableModel == nullptr || !eventTableModel->removeRows(0, existingRowsToRemove))
+        {
+            // QTableWidget 的内部模型正常支持批量删除；异常实现下清空可确保上限仍成立。
+            m_eventTable->setRowCount(0);
+        }
+    }
+
+    const int firstNewRow = m_eventTable->rowCount();
+    m_eventTable->setRowCount(firstNewRow + incomingRowCount);
+    for (std::size_t eventIndex = firstEventIndex; eventIndex < eventList.size(); ++eventIndex)
+    {
+        const FirewallEventEntry& entry = eventList[eventIndex];
+        const int row = firstNewRow + static_cast<int>(eventIndex - firstEventIndex);
         const std::array<QString, ColumnCount> values = {
             safeText(entry.nameText),
             safeText(entry.actionText),
@@ -1623,12 +1651,8 @@ void NetworkFirewallPage::appendEventsToTable(
             m_eventTable->setItem(row, column, item);
         }
     }
-    while (m_eventTable->rowCount() > 5000)
-    {
-        m_eventTable->removeRow(0);
-    }
+    applyFilterToRowRange(firstNewRow, incomingRowCount);
     m_eventTable->setUpdatesEnabled(true);
-    applyFilterToRows();
 }
 
 void NetworkFirewallPage::applyFilterToRows()
@@ -1637,10 +1661,21 @@ void NetworkFirewallPage::applyFilterToRows()
     {
         return;
     }
+    applyFilterToRowRange(0, m_eventTable->rowCount());
+}
+
+void NetworkFirewallPage::applyFilterToRowRange(const int firstRow, const int rowCount)
+{
+    if (m_eventTable == nullptr || rowCount <= 0)
+    {
+        return;
+    }
     const QString filterText = m_searchEdit != nullptr ? m_searchEdit->text().trimmed().toLower() : QString();
     const bool dropOnly = m_dropOnlyCheck != nullptr && m_dropOnlyCheck->isChecked();
 
-    for (int row = 0; row < m_eventTable->rowCount(); ++row)
+    const int firstValidRow = std::clamp(firstRow, 0, m_eventTable->rowCount());
+    const int lastValidRow = std::min(m_eventTable->rowCount(), firstValidRow + rowCount);
+    for (int row = firstValidRow; row < lastValidRow; ++row)
     {
         bool isDrop = false;
         QString rowText;
@@ -1682,14 +1717,22 @@ void NetworkFirewallPage::flushLiveEventsToUi()
         return;
     }
 
-    std::vector<FirewallEventEntry> eventList;
+    std::deque<FirewallEventEntry> queuedEvents;
     {
         std::lock_guard<std::mutex> guard(m_liveEventMutex);
         if (m_liveEventQueue.empty())
         {
             return;
         }
-        eventList.swap(m_liveEventQueue);
+        queuedEvents.swap(m_liveEventQueue);
+    }
+
+    std::vector<FirewallEventEntry> eventList;
+    eventList.reserve(queuedEvents.size());
+    while (!queuedEvents.empty())
+    {
+        eventList.push_back(std::move(queuedEvents.front()));
+        queuedEvents.pop_front();
     }
     appendEventsToTable(eventList, false);
     setStatusText(QStringLiteral("实时事件：追加 %1 条，总计 %2 条")
@@ -3321,7 +3364,7 @@ NetworkFirewallPage::enumerateHistoryWithEngine(void* engineHandle, QString* err
             }
         }
         g_wfpApi.freeMemory(reinterpret_cast<void**>(&entries));
-        if (resultList.size() >= 5000)
+        if (resultList.size() >= static_cast<std::size_t>(kMaximumDisplayedFirewallEvents))
         {
             break;
         }
@@ -3446,9 +3489,9 @@ void NetworkFirewallPage::enqueueLiveEvent(const void* wfpEventPointer)
     }
     FirewallEventEntry entry = convertWfpEventToEntry(wfpEventPointer, m_liveEngineHandle);
     std::lock_guard<std::mutex> guard(m_liveEventMutex);
-    if (m_liveEventQueue.size() >= 2000)
+    while (m_liveEventQueue.size() >= kMaximumQueuedLiveEvents)
     {
-        m_liveEventQueue.erase(m_liveEventQueue.begin(), m_liveEventQueue.begin() + 500);
+        m_liveEventQueue.pop_front();
     }
     m_liveEventQueue.push_back(std::move(entry));
 }

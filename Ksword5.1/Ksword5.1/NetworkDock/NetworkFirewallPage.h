@@ -13,6 +13,7 @@
 #include <QWidget>
 
 #include <atomic> // std::atomic_bool：防止历史刷新并发。
+#include <deque>  // std::deque：实时事件队列按固定上限 O(1) 淘汰最旧项。
 #include <mutex>  // std::mutex：实时回调队列保护。
 #include <thread> // std::thread：可等待的历史/规则刷新线程。
 #include <vector> // std::vector：事件批量回投。
@@ -159,6 +160,9 @@ private:
     // - 无输入参数；
     // - 无返回值。
     void applyFilterToRows();
+
+    // applyFilterToRowRange 作用：只刷新指定行区间的筛选状态，避免实时追加时反复扫描全表。
+    void applyFilterToRowRange(int firstRow, int rowCount);
 
     // flushLiveEventsToUi 作用：
     // - 周期性从实时队列取出事件并追加到 UI；
@@ -331,7 +335,7 @@ private:
     std::thread m_historyRefreshThread;        // m_historyRefreshThread：析构前等待的历史枚举线程。
     std::atomic_bool m_liveRunning{ false };   // m_liveRunning：实时监控状态。
     std::mutex m_liveEventMutex;               // m_liveEventMutex：实时队列锁。
-    std::vector<FirewallEventEntry> m_liveEventQueue; // m_liveEventQueue：实时事件队列。
+    std::deque<FirewallEventEntry> m_liveEventQueue; // m_liveEventQueue：有界实时事件队列。
     QWidget* m_ruleManagerPage = nullptr;      // m_ruleManagerPage：规则管理子页。
     QPushButton* m_refreshRulesButton = nullptr; // m_refreshRulesButton：规则刷新按钮。
     QPushButton* m_addRuleButton = nullptr;    // m_addRuleButton：新增规则按钮。
