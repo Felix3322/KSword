@@ -33,6 +33,7 @@ Environment:
 #define KSW_OBJECT_TYPE_FNV_OFFSET_BASIS 1469598103934665603ULL
 #define KSW_OBJECT_TYPE_FNV_PRIME 1099511628211ULL
 #define KSW_OBJECT_TYPE_NAME_POOL_TAG 'nTsK'
+#define KSW_OBJECT_TYPE_WORKSPACE_POOL_TAG 'wOsK'
 
 #ifndef STATUS_INFO_LENGTH_MISMATCH
 #define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
@@ -59,6 +60,18 @@ typedef struct _KSW_OBJECT_TYPE_TABLE_CANDIDATE
     ULONG NonNullCount;
     BOOLEAN Valid;
 } KSW_OBJECT_TYPE_TABLE_CANDIDATE, *PKSW_OBJECT_TYPE_TABLE_CANDIDATE;
+
+/*
+ * DynData state, the parsed PE view, and signature references are all sizable.
+ * They are live together while the nested scanner runs, so keep the complete
+ * query workspace in bounded nonpaged pool instead of the kernel stack.
+ */
+typedef struct _KSW_OBJECT_TYPE_WORKSPACE
+{
+    KSW_DYN_STATE DynState;
+    KSW_RUNTIME_IMAGE_VIEW NtosView;
+    KSW_RUNTIME_DATA_REFERENCE References[KSW_OBJECT_TYPE_MAX_REFERENCES];
+} KSW_OBJECT_TYPE_WORKSPACE, *PKSW_OBJECT_TYPE_WORKSPACE;
 
 static BOOLEAN
 KswordARKObjectTypeIsKernelPointer(
@@ -293,6 +306,8 @@ Return Value:
 static NTSTATUS
 KswordARKObjectTypeLocateTable(
     _In_ const KSW_RUNTIME_IMAGE_VIEW* NtosView,
+    _Out_writes_(ReferenceCapacity) KSW_RUNTIME_DATA_REFERENCE* References,
+    _In_ ULONG ReferenceCapacity,
     _Out_ ULONG_PTR* TableAddressOut
     )
 /*++
@@ -314,7 +329,6 @@ Return Value:
         "ObReferenceObjectByHandle",
         "ObOpenObjectByPointer"
     };
-    KSW_RUNTIME_DATA_REFERENCE references[KSW_OBJECT_TYPE_MAX_REFERENCES];
     ULONG_PTR knownPointers[4];
     ULONG knownCount = 0UL;
     ULONG referenceCount = 0UL;
@@ -322,11 +336,15 @@ Return Value:
     KSW_OBJECT_TYPE_TABLE_CANDIDATE best;
     BOOLEAN ambiguous = FALSE;
 
-    if (NtosView == NULL || TableAddressOut == NULL) {
+    if (NtosView == NULL || References == NULL || ReferenceCapacity == 0UL ||
+        ReferenceCapacity > KSW_OBJECT_TYPE_MAX_REFERENCES ||
+        TableAddressOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *TableAddressOut = 0U;
-    RtlZeroMemory(references, sizeof(references));
+    RtlZeroMemory(
+        References,
+        (SIZE_T)ReferenceCapacity * sizeof(*References));
     RtlZeroMemory(knownPointers, sizeof(knownPointers));
     RtlZeroMemory(&best, sizeof(best));
     knownCount = KswordARKObjectTypeKnownPointers(
@@ -341,15 +359,15 @@ Return Value:
         RTL_NUMBER_OF(anchors),
         KSW_OBJECT_TYPE_MAX_CALL_DEPTH,
         KSW_OBJECT_TYPE_SCAN_BYTES,
-        references,
-        RTL_NUMBER_OF(references));
+        References,
+        ReferenceCapacity);
     for (referenceIndex = 0UL; referenceIndex < referenceCount; ++referenceIndex) {
         KSW_OBJECT_TYPE_TABLE_CANDIDATE candidate;
 
         RtlZeroMemory(&candidate, sizeof(candidate));
         if (!KswordARKObjectTypeValidateCandidate(
                 NtosView,
-                references[referenceIndex].Address,
+                References[referenceIndex].Address,
                 knownPointers,
                 knownCount,
                 &candidate)) {
@@ -592,8 +610,9 @@ Return Value:
     KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE_RESPONSE* response =
         (KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE_RESPONSE*)OutputBuffer;
     KSWORD_ARK_OBJECT_TYPE_TABLE_ENTRY* rows = NULL;
-    KSW_DYN_STATE dynState;
-    KSW_RUNTIME_IMAGE_VIEW ntosView;
+    KSW_OBJECT_TYPE_WORKSPACE* workspace = NULL;
+    KSW_DYN_STATE* dynState = NULL;
+    KSW_RUNTIME_IMAGE_VIEW* ntosView = NULL;
     ULONG_PTR tableAddress = 0U;
     NTSTATUS locateStatus = STATUS_SUCCESS;
     ULONG capacity = 0UL;
@@ -612,12 +631,23 @@ Return Value:
     }
     *BytesWrittenOut = 0U;
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
-    RtlZeroMemory(&dynState, sizeof(dynState));
-    RtlZeroMemory(&ntosView, sizeof(ntosView));
     response->version = KSWORD_ARK_KERNEL_OBJECT_PROTOCOL_VERSION;
     response->entrySize = sizeof(KSWORD_ARK_OBJECT_TYPE_TABLE_ENTRY);
     response->status = KSWORD_ARK_OBJECT_TYPE_TABLE_STATUS_UNAVAILABLE;
     response->nextIndex = KSWORD_ARK_OBJECT_TYPE_TABLE_MAX_SLOTS;
+
+    workspace = (KSW_OBJECT_TYPE_WORKSPACE*)KswordARKAllocateNonPagedPool(
+        sizeof(*workspace),
+        KSW_OBJECT_TYPE_WORKSPACE_POOL_TAG);
+    if (workspace == NULL) {
+        response->lastStatus = STATUS_INSUFFICIENT_RESOURCES;
+        *BytesWrittenOut = KSW_OBJECT_TYPE_RESPONSE_HEADER_SIZE;
+        return STATUS_SUCCESS;
+    }
+    RtlZeroMemory(workspace, sizeof(*workspace));
+    dynState = &workspace->DynState;
+    ntosView = &workspace->NtosView;
+
     capacity = (ULONG)((OutputBufferLength - KSW_OBJECT_TYPE_RESPONSE_HEADER_SIZE) /
         sizeof(KSWORD_ARK_OBJECT_TYPE_TABLE_ENTRY));
     requestedMax = Request->maxEntries == 0UL
@@ -627,33 +657,41 @@ Return Value:
     startIndex = min(Request->startIndex, KSWORD_ARK_OBJECT_TYPE_TABLE_MAX_SLOTS);
     rows = response->entries;
 
-    KswordARKDynDataSnapshot(&dynState);
-    response->dynDataCapabilityMask = dynState.CapabilityMask;
-    response->otNameOffset = dynState.Kernel.OtName;
-    response->otIndexOffset = dynState.Kernel.OtIndex;
-    dynName = KswordARKObjectTypeOffsetPresent(dynState.Kernel.OtName);
-    dynIndex = KswordARKObjectTypeOffsetPresent(dynState.Kernel.OtIndex);
+    KswordARKDynDataSnapshot(dynState);
+    response->dynDataCapabilityMask = dynState->CapabilityMask;
+    response->otNameOffset = dynState->Kernel.OtName;
+    response->otIndexOffset = dynState->Kernel.OtIndex;
+    dynName = KswordARKObjectTypeOffsetPresent(dynState->Kernel.OtName);
+    dynIndex = KswordARKObjectTypeOffsetPresent(dynState->Kernel.OtIndex);
     if (dynName || dynIndex) {
         response->flags |=
             KSWORD_ARK_OBJECT_TYPE_TABLE_RESPONSE_FLAG_DYNDATA_ACTIVE;
     }
-    if (dynState.Ntoskrnl.present == 0UL ||
+    if (dynState->Ntoskrnl.present == 0UL ||
         !KswordARKRuntimeInitializeImageView(
-            (PVOID)(ULONG_PTR)dynState.Ntoskrnl.imageBase,
-            dynState.Ntoskrnl.sizeOfImage,
-            &ntosView)) {
+            (PVOID)(ULONG_PTR)dynState->Ntoskrnl.imageBase,
+            dynState->Ntoskrnl.sizeOfImage,
+            ntosView)) {
         response->status = KSWORD_ARK_OBJECT_TYPE_TABLE_STATUS_TABLE_NOT_FOUND;
         response->lastStatus = STATUS_NOT_SUPPORTED;
         *BytesWrittenOut = KSW_OBJECT_TYPE_RESPONSE_HEADER_SIZE;
+        ExFreePoolWithTag(workspace, KSW_OBJECT_TYPE_WORKSPACE_POOL_TAG);
+        workspace = NULL;
         return STATUS_SUCCESS;
     }
-    locateStatus = KswordARKObjectTypeLocateTable(&ntosView, &tableAddress);
+    locateStatus = KswordARKObjectTypeLocateTable(
+        ntosView,
+        workspace->References,
+        RTL_NUMBER_OF(workspace->References),
+        &tableAddress);
     if (!NT_SUCCESS(locateStatus)) {
         response->status = (locateStatus == STATUS_OBJECT_NAME_COLLISION)
             ? KSWORD_ARK_OBJECT_TYPE_TABLE_STATUS_TABLE_AMBIGUOUS
             : KSWORD_ARK_OBJECT_TYPE_TABLE_STATUS_TABLE_NOT_FOUND;
         response->lastStatus = locateStatus;
         *BytesWrittenOut = KSW_OBJECT_TYPE_RESPONSE_HEADER_SIZE;
+        ExFreePoolWithTag(workspace, KSW_OBJECT_TYPE_WORKSPACE_POOL_TAG);
+        workspace = NULL;
         return STATUS_SUCCESS;
     }
     response->tableAddress = (ULONG64)tableAddress;
@@ -709,7 +747,7 @@ Return Value:
                 dynName) {
                 nameRead = KswordARKObjectTypeReadName(
                     objectTypeAddress,
-                    dynState.Kernel.OtName,
+                    dynState->Kernel.OtName,
                     entry->typeName,
                     RTL_NUMBER_OF(entry->typeName));
                 if (nameRead) {
@@ -736,7 +774,7 @@ Return Value:
                 dynIndex) {
                 indexRead = KswordARKObjectTypeReadIndex(
                     objectTypeAddress,
-                    dynState.Kernel.OtIndex,
+                    dynState->Kernel.OtIndex,
                     &observedIndex);
                 if (indexRead) {
                     entry->fieldFlags |=
@@ -802,6 +840,8 @@ Return Value:
     *BytesWrittenOut = KSW_OBJECT_TYPE_RESPONSE_HEADER_SIZE +
         ((size_t)response->returnedCount *
             sizeof(KSWORD_ARK_OBJECT_TYPE_TABLE_ENTRY));
+    ExFreePoolWithTag(workspace, KSW_OBJECT_TYPE_WORKSPACE_POOL_TAG);
+    workspace = NULL;
     return STATUS_SUCCESS;
 }
 
