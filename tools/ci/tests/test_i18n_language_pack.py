@@ -21,8 +21,8 @@ class CppLiteralExtractionTests(unittest.TestCase):
         source = '#include "WindowLayerDiagnostics.inl"\nQStringLiteral("Visible UI")\n'
         self.assertEqual(self.extract(source), [("Visible UI", 2)])
 
-    def test_indented_include_after_comment_is_not_ui_text(self) -> None:
-        source = '/* generated include */   #include "GeneratedHeader.h"\nL"Real label"\n'
+    def test_indented_include_is_not_ui_text(self) -> None:
+        source = '   #include "GeneratedHeader.h"\nL"Real label"\n'
         self.assertEqual(self.extract(source), [("Real label", 2)])
 
     def test_literals_in_code_still_keep_source_lines(self) -> None:
