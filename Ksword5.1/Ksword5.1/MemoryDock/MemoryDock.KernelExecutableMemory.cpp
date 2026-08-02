@@ -494,7 +494,7 @@ void MemoryDock::refreshKernelExecutableMemoryScanAsync()
         }
 
         const ksword::ark::DriverClient driverClient;
-        const ksword::ark::KernelExecutableMemoryScanResult scanResult = driverClient.scanKernelExecutableMemory(
+        ksword::ark::KernelExecutableMemoryScanResult scanResult = driverClient.scanKernelExecutableMemory(
             KSWORD_ARK_KERNEL_EXEC_SCAN_FLAG_INCLUDE_ALL,
             4096U,
             std::wstring());
