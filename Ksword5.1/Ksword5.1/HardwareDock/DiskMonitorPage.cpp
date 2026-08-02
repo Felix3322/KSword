@@ -2200,6 +2200,20 @@ void DiskMonitorPage::startFileActivityEtw()
         }
 
         m_fileActivityEtwSessionHandle.store(static_cast<std::uint64_t>(sessionHandle));
+        if (m_fileActivityEtwStopRequested.load())
+        {
+            const std::uint64_t ownedSessionHandle = m_fileActivityEtwSessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePointer,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            m_fileActivityEtwRunning.store(false);
+            return;
+        }
         m_fileActivityEtwRunning.store(true);
 
         const ULONG enableStatus = ::EnableTraceEx2(
@@ -2215,8 +2229,30 @@ void DiskMonitorPage::startFileActivityEtw()
         {
             m_fileActivityEtwLastStatus.store(enableStatus);
             m_fileActivityEtwRunning.store(false);
-            m_fileActivityEtwSessionHandle.store(0);
-            ::ControlTraceW(sessionHandle, loggerNamePointer, properties, EVENT_TRACE_CONTROL_STOP);
+            const std::uint64_t ownedSessionHandle = m_fileActivityEtwSessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePointer,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            return;
+        }
+
+        if (m_fileActivityEtwStopRequested.load())
+        {
+            const std::uint64_t ownedSessionHandle = m_fileActivityEtwSessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePointer,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            m_fileActivityEtwRunning.store(false);
             return;
         }
 
@@ -2232,12 +2268,38 @@ void DiskMonitorPage::startFileActivityEtw()
             const ULONG lastError = ::GetLastError();
             m_fileActivityEtwLastStatus.store(lastError);
             m_fileActivityEtwRunning.store(false);
-            m_fileActivityEtwSessionHandle.store(0);
-            ::ControlTraceW(sessionHandle, loggerNamePointer, properties, EVENT_TRACE_CONTROL_STOP);
+            const std::uint64_t ownedSessionHandle = m_fileActivityEtwSessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePointer,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
             return;
         }
 
         m_fileActivityEtwTraceHandle.store(static_cast<std::uint64_t>(traceHandle));
+        if (m_fileActivityEtwStopRequested.load())
+        {
+            const std::uint64_t ownedTraceHandle = m_fileActivityEtwTraceHandle.exchange(0);
+            if (ownedTraceHandle != 0)
+            {
+                ::CloseTrace(static_cast<TRACEHANDLE>(ownedTraceHandle));
+            }
+            const std::uint64_t ownedSessionHandle = m_fileActivityEtwSessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePointer,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            m_fileActivityEtwRunning.store(false);
+            return;
+        }
         const ULONG processStatus = ::ProcessTrace(&traceHandle, 1, nullptr, nullptr);
         m_fileActivityEtwLastStatus.store(
             m_fileActivityEtwStopRequested.load() ? ERROR_SUCCESS : processStatus);
@@ -2266,12 +2328,9 @@ void DiskMonitorPage::stopFileActivityEtw()
 {
     m_fileActivityEtwStopRequested.store(true);
 
-    const std::uint64_t ownedTraceHandle = m_fileActivityEtwTraceHandle.exchange(0);
-    if (ownedTraceHandle != 0)
-    {
-        ::CloseTrace(static_cast<TRACEHANDLE>(ownedTraceHandle));
-    }
-
+    // The worker exclusively closes the trace consumer handle: it can still be
+    // publishing that handle when this stop request arrives. Stopping the session
+    // wakes ProcessTrace without invalidating the worker's local trace handle.
     const std::uint64_t ownedSessionHandle = m_fileActivityEtwSessionHandle.exchange(0);
     if (ownedSessionHandle != 0)
     {
