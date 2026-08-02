@@ -535,7 +535,11 @@ QString ks::i18n::LanguageManager::sourceText(const QString& sourceText) const
     }
 
     QStringList visitedLanguageIds;
-    return resolveSourceText(m_currentLanguageId, sourceText, &visitedLanguageIds);
+    return resolveSourceText(
+        m_currentLanguageId,
+        sourceText,
+        &visitedLanguageIds,
+        true);
 }
 
 QString ks::i18n::LanguageManager::packedSourceText(const QString& sourceText) const
@@ -546,7 +550,11 @@ QString ks::i18n::LanguageManager::packedSourceText(const QString& sourceText) c
     }
 
     QStringList visitedLanguageIds;
-    return resolveSourceText(m_currentLanguageId, sourceText, &visitedLanguageIds);
+    return resolveSourceText(
+        m_currentLanguageId,
+        sourceText,
+        &visitedLanguageIds,
+        false);
 }
 
 QString ks::i18n::LanguageManager::sourceForRenderedText(const QString& renderedText) const
@@ -1145,7 +1153,8 @@ QString ks::i18n::LanguageManager::resolveContextText(
 QString ks::i18n::LanguageManager::resolveSourceText(
     const QString& languageId,
     const QString& sourceText,
-    QStringList* visitedLanguageIds) const
+    QStringList* visitedLanguageIds,
+    const bool preserveHistoricalChineseSource) const
 {
     if (visitedLanguageIds == nullptr || languageId.trimmed().isEmpty() || sourceText.isEmpty())
     {
@@ -1159,7 +1168,8 @@ QString ks::i18n::LanguageManager::resolveSourceText(
     }
     visitedLanguageIds->append(normalizedLanguageId);
 
-    if (isHistoricalChineseLanguage(normalizedLanguageId))
+    if (preserveHistoricalChineseSource
+        && isHistoricalChineseLanguage(normalizedLanguageId))
     {
         return sourceText;
     }
@@ -1236,7 +1246,8 @@ QString ks::i18n::LanguageManager::resolveSourceText(
         return resolveSourceText(
             packIterator->fallbackLanguageId,
             sourceText,
-            visitedLanguageIds);
+            visitedLanguageIds,
+            preserveHistoricalChineseSource);
     }
     return sourceText;
 }

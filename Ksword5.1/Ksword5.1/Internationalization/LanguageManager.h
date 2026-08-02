@@ -99,7 +99,8 @@ namespace ks::i18n
         QString resolveSourceText(
             const QString& languageId,
             const QString& sourceText,
-            QStringList* visitedLanguageIds) const;
+            QStringList* visitedLanguageIds,
+            bool preserveHistoricalChineseSource) const;
         void ensureApplicationEventFilter();
         void scheduleRuntimeTranslation(QObject* object);
         void applyRuntimeTranslations(QObject* object);
