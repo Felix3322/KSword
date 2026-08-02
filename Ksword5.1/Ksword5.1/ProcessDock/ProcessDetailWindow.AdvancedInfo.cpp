@@ -3010,7 +3010,7 @@ void ProcessDetailWindow::requestAsyncThreadInspectRefresh()
 
     if (m_threadInspectRefreshProgressPid == 0)
     {
-        m_threadInspectRefreshProgressPid = kPro.add("进程详情", "刷新线程细节");
+        m_threadInspectRefreshProgressPid = kPro.addReusable(this, "进程详情", "刷新线程细节");
     }
     kPro.set(m_threadInspectRefreshProgressPid, "扫描线程信息", 0, 20.0f);
 
@@ -3652,7 +3652,7 @@ void ProcessDetailWindow::requestAsyncTokenRefresh()
 
     if (m_tokenRefreshProgressPid == 0)
     {
-        m_tokenRefreshProgressPid = kPro.add("进程详情", "刷新令牌信息");
+        m_tokenRefreshProgressPid = kPro.addReusable(this, "进程详情", "刷新令牌信息");
     }
     kPro.set(m_tokenRefreshProgressPid, "读取令牌字段", 0, 20.0f);
 
@@ -4786,7 +4786,7 @@ void ProcessDetailWindow::requestAsyncKernelCallbackRefresh()
     }
     if (m_kernelCallbackRefreshProgressPid == 0)
     {
-        m_kernelCallbackRefreshProgressPid = kPro.add("进程详情", "读取内核回调表");
+        m_kernelCallbackRefreshProgressPid = kPro.addReusable(this, "进程详情", "读取内核回调表");
     }
     kPro.set(m_kernelCallbackRefreshProgressPid, "打开目标进程", 0, 15.0f);
 
@@ -5255,7 +5255,7 @@ void ProcessDetailWindow::requestAsyncPebRefresh()
 
     if (m_pebRefreshProgressPid == 0)
     {
-        m_pebRefreshProgressPid = kPro.add("进程详情", "刷新PEB信息");
+        m_pebRefreshProgressPid = kPro.addReusable(this, "进程详情", "刷新PEB信息");
     }
     kPro.set(m_pebRefreshProgressPid, "读取PEB与地址空间", 0, 20.0f);
 
@@ -6352,7 +6352,7 @@ void ProcessDetailWindow::requestAsyncSectionRefresh()
     // - set 刷新步骤文本与进度，最终由 100% 触发自动隐藏。
     if (m_sectionInfoRefreshProgressPid == 0)
     {
-        m_sectionInfoRefreshProgressPid = kPro.add("进程详情", "查询 Section/ControlArea");
+        m_sectionInfoRefreshProgressPid = kPro.addReusable(this, "进程详情", "查询 Section/ControlArea");
     }
     kPro.set(m_sectionInfoRefreshProgressPid, QStringLiteral("查询 PID=%1 的 Section/ControlArea").arg(processId).toStdString(), 0, 5.0f);
 

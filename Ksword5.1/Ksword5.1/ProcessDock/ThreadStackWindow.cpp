@@ -591,7 +591,7 @@ void ThreadStackWindow::requestAsyncCapture(const bool forceRefresh)
 
     if (m_captureProgressPid == 0)
     {
-        m_captureProgressPid = kPro.add("线程调用栈", "捕获调用栈");
+        m_captureProgressPid = kPro.addReusable(this, "线程调用栈", "捕获调用栈");
     }
     kPro.set(m_captureProgressPid, "挂起线程并执行 StackWalk64", 0, 25.0f);
 

@@ -722,7 +722,7 @@ void HandleDock::requestAsyncRefreshWithoutTypePrecondition(const bool forceRefr
 
     if (m_refreshProgressPid <= 0)
     {
-        m_refreshProgressPid = kPro.add("句柄枚举", "准备读取系统句柄快照");
+        m_refreshProgressPid = kPro.addReusable(this, "句柄枚举", "准备读取系统句柄快照");
     }
     kPro.set(m_refreshProgressPid, "后台枚举系统句柄", 0, 20.0f);
 
@@ -791,7 +791,7 @@ void HandleDock::requestObjectTypeRefreshAsync(const bool forceRefresh)
 
     if (m_objectTypeRefreshProgressPid <= 0)
     {
-        m_objectTypeRefreshProgressPid = kPro.add("对象类型", "准备读取对象类型快照");
+        m_objectTypeRefreshProgressPid = kPro.addReusable(this, "对象类型", "准备读取对象类型快照");
     }
     kPro.set(m_objectTypeRefreshProgressPid, "后台采集对象类型", 0, 20.0f);
 

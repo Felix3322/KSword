@@ -1423,7 +1423,7 @@ void RegistryDock::exportCurrentKeyAsync()
         QStringLiteral("REG 文件 (*.reg)"));
     if (outputPath.trimmed().isEmpty()) return;
 
-    if (m_progressPid == 0) m_progressPid = kPro.add("注册表", "导出");
+    if (m_progressPid == 0) m_progressPid = kPro.addReusable(this, "注册表", "导出");
     kPro.set(m_progressPid, "导出中", 0, 20.0f);
 
     QPointer<RegistryDock> guardThis(this);
@@ -1463,7 +1463,7 @@ void RegistryDock::importRegFileAsync()
     kLogEvent event;
     info << event << "[RegistryDock] 导入请求, inputPath=" << inputPath.toStdString() << eol;
 
-    if (m_progressPid == 0) m_progressPid = kPro.add("注册表", "导入");
+    if (m_progressPid == 0) m_progressPid = kPro.addReusable(this, "注册表", "导入");
     kPro.set(m_progressPid, "导入中", 0, 20.0f);
 
     QPointer<RegistryDock> guardThis(this);
@@ -1538,7 +1538,7 @@ void RegistryDock::startSearchAsync()
         m_pendingRows.clear();
     }
 
-    if (m_progressPid == 0) m_progressPid = kPro.add("注册表", "搜索");
+    if (m_progressPid == 0) m_progressPid = kPro.addReusable(this, "注册表", "搜索");
     kPro.set(m_progressPid, "搜索开始", 0, 5.0f);
     m_searchFlushTimer->start();
 

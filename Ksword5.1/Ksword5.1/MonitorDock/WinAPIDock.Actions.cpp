@@ -1231,7 +1231,7 @@ void WinAPIDock::startMonitoring()
 
     if (m_sessionProgressPid == 0)
     {
-        m_sessionProgressPid = kPro.add("WinAPI", "准备会话");
+        m_sessionProgressPid = kPro.addReusable(this, "WinAPI", "准备会话");
     }
     kPro.set(m_sessionProgressPid, "准备命名管道连接", 0, 20.0f);
 

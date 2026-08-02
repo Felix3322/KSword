@@ -103,7 +103,7 @@ void ServiceDock::requestAsyncRefresh(const bool forceRefresh)
 
     m_refreshInProgress = true;
     m_refreshQueued = false;
-    m_progressPid = kPro.add("服务管理", "枚举服务列表");
+    m_progressPid = kPro.add(this, "服务管理", "枚举服务列表");
     kPro.set(m_progressPid, "打开服务控制管理器", 0, 10.0f);
     if (m_summaryLabel != nullptr)
     {

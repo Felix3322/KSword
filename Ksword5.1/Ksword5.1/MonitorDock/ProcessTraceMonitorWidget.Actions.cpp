@@ -900,6 +900,7 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
     addTargetProcessByPid(launchResult.processId, initialRemark);
 
     const int progressTaskId = kPro.add(
+        this,
         QStringLiteral("创建并挂起目标进程").toUtf8().toStdString(),
         QStringLiteral("已加入监控目标，等待选择").toUtf8().toStdString());
     kPro.set(

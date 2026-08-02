@@ -50,7 +50,7 @@ void HandleDock::requestHandleDetailRefresh(const bool forceRefresh)
 
     if (m_handleDetailRefreshProgressPid <= 0)
     {
-        m_handleDetailRefreshProgressPid = kPro.add("句柄详情", "准备读取句柄详情");
+        m_handleDetailRefreshProgressPid = kPro.addReusable(this, "句柄详情", "准备读取句柄详情");
     }
     kPro.set(m_handleDetailRefreshProgressPid, "后台查询句柄详情", 0, 20.0f);
 

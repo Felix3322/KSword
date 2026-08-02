@@ -59,7 +59,8 @@ void ProcessDetailWindow::requestAsyncModuleRefresh(const bool forceRefresh)
     {
         if (m_moduleRefreshProgressPid <= 0)
         {
-            m_moduleRefreshProgressPid = kPro.add(
+            m_moduleRefreshProgressPid = kPro.addReusable(
+                this,
                 "模块列表首次刷新",
                 "准备读取模块与线程信息...");
         }

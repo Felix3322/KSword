@@ -182,7 +182,7 @@ void ThreatBookScan::scanFile(const QString& filePath, QWidget* dialogParent)
     }
 
     m_scanInProgress = true;
-    m_progressPid = kPro.add("在线扫描", "ThreatBook 上传准备");
+    m_progressPid = kPro.add(this, "在线扫描", "ThreatBook 上传准备");
     kPro.set(m_progressPid, "ThreatBook：准备上传样本", 0, 5.0f);
     uploadFile();
 }

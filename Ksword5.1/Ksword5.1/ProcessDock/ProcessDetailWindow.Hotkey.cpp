@@ -1690,7 +1690,7 @@ void ProcessDetailWindow::requestAsyncHotkeyRefresh()
 
     if (m_hotkeyRefreshProgressPid == 0)
     {
-        m_hotkeyRefreshProgressPid = kPro.add("进程详情", "扫描进程热键");
+        m_hotkeyRefreshProgressPid = kPro.addReusable(this, "进程详情", "扫描进程热键");
     }
     kPro.set(m_hotkeyRefreshProgressPid, "枚举窗口/菜单/资源/快捷方式", 0, 20.0f);
 
@@ -2016,7 +2016,7 @@ void ProcessDetailWindow::requestAsyncKeyboardRefresh()
 
     if (m_keyboardRefreshProgressPid == 0)
     {
-        m_keyboardRefreshProgressPid = kPro.add("进程详情", "扫描键盘");
+        m_keyboardRefreshProgressPid = kPro.addReusable(this, "进程详情", "扫描键盘");
     }
     kPro.set(m_keyboardRefreshProgressPid, "枚举热键表和键盘钩子链", 0, 20.0f);
 

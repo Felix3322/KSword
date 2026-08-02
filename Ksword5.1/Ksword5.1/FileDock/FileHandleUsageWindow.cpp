@@ -225,7 +225,7 @@ void FileHandleUsageWindow::requestRefresh(const bool forceRefresh)
 
     if (m_refreshProgressPid <= 0)
     {
-        m_refreshProgressPid = kPro.add("文件句柄扫描", "准备扫描目标占用句柄");
+        m_refreshProgressPid = kPro.addReusable(this, "文件句柄扫描", "准备扫描目标占用句柄");
     }
     kPro.set(m_refreshProgressPid, "后台扫描中", 0, 20.0f);
 

@@ -1025,7 +1025,7 @@ void DirectKernelCallMonitorWidget::startCapture()
 
     if (m_captureProgressPid == 0)
     {
-        m_captureProgressPid = kPro.add("监控", "直接内核调用监控");
+        m_captureProgressPid = kPro.addReusable(this, "监控", "直接内核调用监控");
     }
     kPro.set(m_captureProgressPid, "准备 System Syscall ETW 会话", 0, 10.0f);
 

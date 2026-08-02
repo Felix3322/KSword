@@ -279,6 +279,7 @@ void WindowGlobalHotkeyTab::refreshAsync()
     rebuildTable();
 
     m_progressTaskId = kPro.add(
+        this,
         allHotkeyText("window.global_hotkey.tab", QStringLiteral("全部热键")).toStdString(),
         allHotkeyText(
             "window.global_hotkey.progress.enumerating",

@@ -8127,7 +8127,7 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
         ? dockKey
         : dockWidget->windowTitle().trimmed();
     dockWidget->setProperty("ks_lazy_initializing", true);
-    const int progressPid = kPro.add("页面", QStringLiteral("打开%1页").arg(dockTitleText).toStdString());
+    const int progressPid = kPro.add(this, "页面", QStringLiteral("打开%1页").arg(dockTitleText).toStdString());
     kPro.set(progressPid, QStringLiteral("准备加载%1页").arg(dockTitleText).toStdString(), 0, 8.0f);
 
     const bool isNetworkDock = (dockKey == QStringLiteral("network"));

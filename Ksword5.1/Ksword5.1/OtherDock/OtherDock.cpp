@@ -3673,7 +3673,7 @@ void OtherDock::refreshWindowListAsync()
 
     if (m_refreshProgressPid == 0)
     {
-        m_refreshProgressPid = kPro.add("窗口", "窗口枚举");
+        m_refreshProgressPid = kPro.addReusable(this, "窗口", "窗口枚举");
     }
     kPro.set(m_refreshProgressPid, "开始枚举窗口", 0, 5.0f);
 

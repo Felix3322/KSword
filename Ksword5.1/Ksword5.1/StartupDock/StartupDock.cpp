@@ -271,6 +271,7 @@ void StartupDock::requestAsyncRefresh(const bool forceRefresh)
     m_refreshInProgress = true;
     m_refreshQueued = false;
     m_progressPid = kPro.add(
+        this,
         startupText("startup.progress.title", QStringLiteral("启动项")).toStdString(),
         startupText("startup.progress.enumerate", QStringLiteral("枚举自启动项")).toStdString());
     kPro.set(

@@ -394,7 +394,7 @@ void FileMappedProcessWindow::requestRefresh(const bool forceRefresh)
 
     if (m_refreshProgressPid <= 0)
     {
-        m_refreshProgressPid = kPro.add("文件映射", "准备 R0 Section 反查");
+        m_refreshProgressPid = kPro.addReusable(this, "文件映射", "准备 R0 Section 反查");
     }
     kPro.set(m_refreshProgressPid, "后台查询文件映射进程", 0, 20.0f);
 

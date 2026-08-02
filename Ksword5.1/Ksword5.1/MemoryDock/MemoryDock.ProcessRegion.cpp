@@ -990,7 +990,7 @@ void MemoryDock::requestDumpProcessMemoryByPid(const std::uint32_t pid, const QS
 
     if (m_dumpMemoryProgressPid == 0)
     {
-        m_dumpMemoryProgressPid = kPro.add("内存", "Dump进程内存");
+        m_dumpMemoryProgressPid = kPro.addReusable(this, "内存", "Dump进程内存");
     }
     kPro.set(m_dumpMemoryProgressPid, "准备读取内存区域", 0, 5.0f);
 

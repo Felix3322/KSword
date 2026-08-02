@@ -14,6 +14,8 @@
 #include <mutex>      // std::mutex：用于日志容器线程安全。
 #include <sstream>    // std::ostringstream：用于流式拼接日志文本。
 #include <string>     // std::string：用于保存日志内容/文件名/函数名。
+#include <unordered_map> // std::unordered_map：用于关联任务 PID 与 owner。
+#include <unordered_set> // std::unordered_set：用于确保每个 owner 只注册一次清理回调。
 #include <vector>     // std::vector：用于日志管理器内部存储。
 #include <QString>    // QString：用于 Qt 字符串日志输出重载。
 
@@ -24,6 +26,8 @@
 // 规范要求：Framework.h 作为全局入口，需要级联引入 Ksword.h。
 #include "Ksword.h"
 #include "Framework/StartupSplash.h"
+
+class QObject;
 
 // Logging core now lives in ksword/log/log.h and is re-exported by Ksword.h.
 // Legacy names such as kLogEvent, kEventEntry, dbg/info/warn/err/fatal,
@@ -41,6 +45,7 @@ struct kProgressTask
     float progress = 0.0f;                   // 规范化进度值，范围 [0.0, 1.0]。
     bool hiddenInList = false;               // true 表示该任务卡片应从列表隐藏（如完成）。
     bool hideProgressBarTemporarily = false; // true 表示临时隐藏进度条（UI 选项弹窗期间）。
+    bool retainedForReuse = false;           // true 表示终态后保留，供同一 owner 的周期任务再次使用。
 };
 
 // kProgress：进度条管理器。
@@ -62,6 +67,16 @@ public:
     // 参数 stepName：初始步骤文本。
     // 返回值：新任务 PID（大于 0）。
     int add(const std::string& taskName, const std::string& stepName);
+
+    // add（owner 绑定版本）作用：
+    // - 创建一次性任务，并在 owner 析构时自动移除；
+    // - 适合异步 UI 操作，防止页面关闭后留下僵尸任务。
+    int add(QObject* owner, const std::string& taskName, const std::string& stepName);
+
+    // addReusable 作用：
+    // - 创建可在完成后再次 set 的周期任务；
+    // - owner 析构时仍会自动移除，避免跨页面生命周期泄漏。
+    int addReusable(QObject* owner, const std::string& taskName, const std::string& stepName);
 
     // set 作用：
     // - 更新指定 PID 的步骤文本与进度；
@@ -117,6 +132,19 @@ private:
     // 返回值：归一化进度。
     static float normalizeProgress(float rawProgress);
 
+    // addInternal 作用：集中创建任务并可选绑定 owner 生命周期。
+    int addInternal(
+        QObject* owner,
+        const std::string& taskName,
+        const std::string& stepName,
+        bool retainedForReuse);
+
+    // pruneTerminalHistoryLocked 作用：锁内只保留有界的一次性终态历史。
+    void pruneTerminalHistoryLocked();
+
+    // removeTasksOwnedBy 作用：owner 析构时批量删除其全部任务与绑定记录。
+    void removeTasksOwnedBy(QObject* owner);
+
     // setProgressBarHiddenForUi 作用：
     // - 在 UI 弹窗前后切换“临时隐藏进度条”状态。
     // 参数 pid：目标任务 PID。
@@ -126,6 +154,8 @@ private:
 private:
     mutable std::mutex m_mutex;             // 保护任务容器与修订号的线程锁。
     std::vector<kProgressTask> m_tasks;     // 进度任务容器。
+    std::unordered_map<int, QObject*> m_taskOwners; // 记录 owner 绑定，任务删除时同步清理。
+    std::unordered_set<QObject*> m_boundOwners;     // 每个存活 owner 最多保留一个 destroyed 回调。
     int m_nextPid = 1;                      // 下一个可分配 PID（自增）。
     std::size_t m_revision = 0;             // 任务数据修订号。
 };

@@ -1545,7 +1545,7 @@ void VirusTotalOnlineScan::startApiAnalysis(const VtApiKind apiKind)
         }
         setApiState(apiKind, VtApiState::Running, QStringLiteral("正在上传样本并等待普通分析结果。"));
         m_scanInProgress = true;
-        m_progressPid = kPro.add("在线扫描", "VirusTotal 上传准备");
+        m_progressPid = kPro.add(this, "在线扫描", "VirusTotal 上传准备");
         kPro.set(m_progressPid, "VirusTotal：准备上传样本", 0, 5.0f);
 
         const QFileInfo fileInfo(m_filePath);

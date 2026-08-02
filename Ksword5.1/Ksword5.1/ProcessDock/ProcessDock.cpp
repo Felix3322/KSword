@@ -5704,7 +5704,7 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
     // 创建并复用“进程刷新”进度任务，避免每轮刷新都新增新卡片。
     if (m_refreshProgressTaskPid <= 0)
     {
-        m_refreshProgressTaskPid = kPro.add("进程列表刷新", "初始化刷新任务");
+        m_refreshProgressTaskPid = kPro.addReusable(this, "进程列表刷新", "初始化刷新任务");
     }
     kPro.set(m_refreshProgressTaskPid, forceRefresh ? "准备刷新列表参数..." : "准备监视采样参数...", 0, 0.02f);
 

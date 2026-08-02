@@ -1579,7 +1579,7 @@ void NetworkDock::startAliveHostScan()
 
     if (m_aliveScanProgressPid == 0)
     {
-        m_aliveScanProgressPid = kPro.add("网络", "存活主机扫描");
+        m_aliveScanProgressPid = kPro.addReusable(this, "网络", "存活主机扫描");
     }
     kPro.set(m_aliveScanProgressPid, "开始ICMP探测", 0, 0.0f);
 

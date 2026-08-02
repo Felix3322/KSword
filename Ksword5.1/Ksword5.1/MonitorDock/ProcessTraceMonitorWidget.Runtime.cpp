@@ -205,7 +205,7 @@ void ProcessTraceMonitorWidget::startMonitoring()
 
     if (m_captureProgressPid == 0)
     {
-        m_captureProgressPid = kPro.add("监控", "进程定向监控");
+        m_captureProgressPid = kPro.addReusable(this, "监控", "进程定向监控");
     }
     kPro.set(m_captureProgressPid, "准备固定 ETW Provider 与目标进程树", 0, 10.0f);
 

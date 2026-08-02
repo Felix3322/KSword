@@ -22,6 +22,7 @@
 namespace
 {
     std::atomic_uint g_nonModalOptionDialogSequence{ 0 };
+    constexpr std::size_t kMaximumTerminalTaskHistory = 256U;
 
     // findTaskByPidMutable 作用：
     // - 在可写任务容器中按 PID 查找任务迭代器。
@@ -171,22 +172,76 @@ kProgress::kProgress() = default;
 
 int kProgress::add(const std::string& taskName, const std::string& stepName)
 {
-    std::lock_guard<std::mutex> lockGuard(m_mutex);
+    return addInternal(nullptr, taskName, stepName, false);
+}
 
-    // 分配 PID，并创建初始任务对象。
-    const int newPid = m_nextPid++;
-    kProgressTask newTask;
-    newTask.pid = newPid;
-    newTask.taskName = taskName;
-    newTask.stepName = stepName;
-    newTask.stepCode = 0;
-    newTask.progress = 0.0f;
-    newTask.hiddenInList = false;
-    newTask.hideProgressBarTemporarily = false;
+int kProgress::add(
+    QObject* const owner,
+    const std::string& taskName,
+    const std::string& stepName)
+{
+    return addInternal(owner, taskName, stepName, false);
+}
 
-    // 追加到容器并递增修订号，驱动 UI 刷新。
-    m_tasks.push_back(std::move(newTask));
-    ++m_revision;
+int kProgress::addReusable(
+    QObject* const owner,
+    const std::string& taskName,
+    const std::string& stepName)
+{
+    return addInternal(owner, taskName, stepName, true);
+}
+
+int kProgress::addInternal(
+    QObject* const owner,
+    const std::string& taskName,
+    const std::string& stepName,
+    const bool retainedForReuse)
+{
+    int newPid = 0;
+    bool shouldBindOwner = false;
+
+    {
+        std::lock_guard<std::mutex> lockGuard(m_mutex);
+
+        // 分配 PID，并创建初始任务对象。
+        newPid = m_nextPid++;
+        kProgressTask newTask;
+        newTask.pid = newPid;
+        newTask.taskName = taskName;
+        newTask.stepName = stepName;
+        newTask.stepCode = 0;
+        newTask.progress = 0.0f;
+        newTask.hiddenInList = false;
+        newTask.hideProgressBarTemporarily = false;
+        newTask.retainedForReuse = retainedForReuse;
+
+        // 追加到容器并递增修订号，驱动 UI 刷新。
+        m_tasks.push_back(std::move(newTask));
+        if (owner != nullptr)
+        {
+            m_taskOwners.emplace(newPid, owner);
+            shouldBindOwner = m_boundOwners.insert(owner).second;
+        }
+        ++m_revision;
+    }
+
+    if (shouldBindOwner)
+    {
+        // 同一 owner 只连接一次；回调批量删除该页面创建的全部任务。
+        const QMetaObject::Connection ownerDestroyedConnection = QObject::connect(
+            owner,
+            &QObject::destroyed,
+            [owner](QObject*)
+            {
+                kPro.removeTasksOwnedBy(owner);
+            });
+        if (!ownerDestroyedConnection)
+        {
+            // owner 已无法建立生命周期绑定时，不保留无法自动回收的任务。
+            removeTasksOwnedBy(owner);
+        }
+    }
+
     return newPid;
 }
 
@@ -217,6 +272,11 @@ void kProgress::set(const int pid, const std::string& stepName, const int stepCo
 
     // 数据变更后递增修订号，通知 UI 重绘。
     ++m_revision;
+
+    if (taskIterator->hiddenInList)
+    {
+        pruneTerminalHistoryLocked();
+    }
 }
 
 int kProgress::UI(const int pid, const std::string& prompt, const std::vector<std::string>& options)
@@ -295,6 +355,72 @@ float kProgress::normalizeProgress(const float rawProgress)
         normalizedValue = 1.0f;
     }
     return normalizedValue;
+}
+
+void kProgress::pruneTerminalHistoryLocked()
+{
+    const std::size_t terminalTaskCount = static_cast<std::size_t>(std::count_if(
+        m_tasks.cbegin(),
+        m_tasks.cend(),
+        [](const kProgressTask& taskItem)
+        {
+            return taskItem.hiddenInList && !taskItem.retainedForReuse;
+        }));
+    if (terminalTaskCount <= kMaximumTerminalTaskHistory)
+    {
+        return;
+    }
+
+    std::size_t tasksToRemove = terminalTaskCount - kMaximumTerminalTaskHistory;
+    m_tasks.erase(
+        std::remove_if(
+            m_tasks.begin(),
+            m_tasks.end(),
+            [this, &tasksToRemove](const kProgressTask& taskItem)
+            {
+                if (tasksToRemove == 0U ||
+                    !taskItem.hiddenInList ||
+                    taskItem.retainedForReuse)
+                {
+                    return false;
+                }
+                --tasksToRemove;
+                m_taskOwners.erase(taskItem.pid);
+                return true;
+            }),
+        m_tasks.end());
+}
+
+void kProgress::removeTasksOwnedBy(QObject* const owner)
+{
+    if (owner == nullptr)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lockGuard(m_mutex);
+    const std::size_t previousTaskCount = m_tasks.size();
+    m_tasks.erase(
+        std::remove_if(
+            m_tasks.begin(),
+            m_tasks.end(),
+            [this, owner](const kProgressTask& taskItem)
+            {
+                const auto ownerIterator = m_taskOwners.find(taskItem.pid);
+                if (ownerIterator == m_taskOwners.end() || ownerIterator->second != owner)
+                {
+                    return false;
+                }
+                m_taskOwners.erase(ownerIterator);
+                return true;
+            }),
+        m_tasks.end());
+    m_boundOwners.erase(owner);
+
+    if (m_tasks.size() != previousTaskCount)
+    {
+        ++m_revision;
+    }
 }
 
 void kProgress::setProgressBarHiddenForUi(const int pid, const bool hidden)

@@ -196,7 +196,7 @@ void ServiceDock::refreshSelectedService()
         << serviceNameText.toStdString()
         << eol;
 
-    const int progressPid = kPro.add("服务管理", "刷新单服务详情");
+    const int progressPid = kPro.add(this, "服务管理", "刷新单服务详情");
     kPro.set(progressPid, "读取服务配置", 0, 45.0f);
 
     ServiceEntry updatedEntry;
@@ -318,7 +318,7 @@ bool ServiceDock::controlSelectedService(
         << serviceNameText.toStdString()
         << eol;
 
-    const int progressPid = kPro.add("服务管理", actionText.toStdString() + std::string(" - ") + serviceNameText.toStdString());
+    const int progressPid = kPro.add(this, "服务管理", actionText.toStdString() + std::string(" - ") + serviceNameText.toStdString());
     kPro.set(progressPid, "下发服务控制指令", 0, 55.0f);
 
     // UI layer only selects the action; ks::service owns SCM handles and Start/ControlService calls.
@@ -449,7 +449,7 @@ void ServiceDock::applySelectedStartType()
         << targetStartTypeText.toStdString()
         << eol;
 
-    const int progressPid = kPro.add("服务管理", "修改启动类型");
+    const int progressPid = kPro.add(this, "服务管理", "修改启动类型");
     kPro.set(progressPid, "写入启动类型", 0, 60.0f);
 
     ks::service::ServiceConfigUpdate update;

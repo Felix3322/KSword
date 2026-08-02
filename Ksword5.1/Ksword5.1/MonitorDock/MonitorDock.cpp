@@ -9259,7 +9259,7 @@ void MonitorDock::refreshWmiProvidersAsync()
 
     if (m_wmiProviderRefreshProgressPid == 0)
     {
-        m_wmiProviderRefreshProgressPid = kPro.add("监控", "刷新WMI Provider");
+        m_wmiProviderRefreshProgressPid = kPro.addReusable(this, "监控", "刷新WMI Provider");
     }
     kPro.set(m_wmiProviderRefreshProgressPid, "开始枚举WMI Provider", 0, 10.0f);
 
@@ -9776,7 +9776,7 @@ void MonitorDock::startWmiSubscription()
 
     if (m_wmiSubscribeProgressPid == 0)
     {
-        m_wmiSubscribeProgressPid = kPro.add("监控", "WMI订阅");
+        m_wmiSubscribeProgressPid = kPro.addReusable(this, "监控", "WMI订阅");
     }
     kPro.set(m_wmiSubscribeProgressPid, "建立WMI订阅", 0, 10.0f);
 
@@ -10611,7 +10611,7 @@ void MonitorDock::refreshEtwProvidersAsync()
 
     if (m_etwCaptureProgressPid == 0)
     {
-        m_etwCaptureProgressPid = kPro.add("监控", "刷新ETW Provider");
+        m_etwCaptureProgressPid = kPro.addReusable(this, "监控", "刷新ETW Provider");
     }
     kPro.set(m_etwCaptureProgressPid, "调用TdhEnumerateProviders", 0, 10.0f);
 
@@ -10711,7 +10711,7 @@ void MonitorDock::refreshEtwSessionsAsync()
 
     if (m_etwSessionRefreshProgressPid == 0)
     {
-        m_etwSessionRefreshProgressPid = kPro.add("监控", "刷新ETW会话");
+        m_etwSessionRefreshProgressPid = kPro.addReusable(this, "监控", "刷新ETW会话");
     }
     kPro.set(m_etwSessionRefreshProgressPid, "枚举系统活动 ETW 会话", 0, 10.0f);
 
@@ -10939,7 +10939,7 @@ void MonitorDock::stopSelectedEtwSessions()
 
     if (m_etwSessionRefreshProgressPid == 0)
     {
-        m_etwSessionRefreshProgressPid = kPro.add("监控", "结束ETW会话");
+        m_etwSessionRefreshProgressPid = kPro.addReusable(this, "监控", "结束ETW会话");
     }
     kPro.set(m_etwSessionRefreshProgressPid, "停止选中的 ETW 会话", 0, 10.0f);
 
@@ -12256,7 +12256,7 @@ void MonitorDock::startEtwCapture()
 
     if (m_etwCaptureProgressPid == 0)
     {
-        m_etwCaptureProgressPid = kPro.add("监控", "ETW监听");
+        m_etwCaptureProgressPid = kPro.addReusable(this, "监控", "ETW监听");
     }
     kPro.set(m_etwCaptureProgressPid, "准备ETW实时会话", 0, 10.0f);
 

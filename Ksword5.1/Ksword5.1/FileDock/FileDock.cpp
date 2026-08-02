@@ -8781,7 +8781,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
     const bool leftPanelRequest = (&panel == &m_leftPanel);
 
     // 手动解析进度条：满足“手动解析要可视化进度”的需求。
-    const int progressPid = kPro.add("文件", (panelNameText + QStringLiteral(" 手动解析")).toStdString());
+    const int progressPid = kPro.add(this, "文件", (panelNameText + QStringLiteral(" 手动解析")).toStdString());
     kPro.set(progressPid, "准备解析目录", 0, 5.0f);
 
     if (panel.parserStatusLabel != nullptr)
@@ -9272,7 +9272,7 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
             << eol;
     }
 
-    const int progressPid = kPro.add("文件恢复", "扫描误删");
+    const int progressPid = kPro.add(this, "文件恢复", "扫描误删");
     kPro.set(progressPid, "准备扫描卷", 0, 5.0f);
 
     QPointer<FileDock> safeThis(this);
@@ -9580,7 +9580,7 @@ void FileDock::recoverSelectedDeletedFilesAsync()
             << eol;
     }
 
-    const int progressPid = kPro.add("文件恢复", "恢复选中");
+    const int progressPid = kPro.add(this, "文件恢复", "恢复选中");
     kPro.set(progressPid, "准备恢复", 0, 5.0f);
 
     QPointer<FileDock> safeThis(this);
@@ -10678,7 +10678,7 @@ void FileDock::transferSelectedItemsToOppositePanel(FilePanelWidgets& sourcePane
     const QString progressTitle = moveItems
         ? ks::i18n::displayText(QStringLiteral("移动到%1")).arg(localizedTargetPanelText)
         : ks::i18n::displayText(QStringLiteral("复制到%1")).arg(localizedTargetPanelText);
-    const int progressPid = kPro.add("文件", progressTitle.toStdString());
+    const int progressPid = kPro.add(this, "文件", progressTitle.toStdString());
     kPro.set(progressPid, moveItems ? "准备移动" : "准备复制", 0, 5.0f);
     m_transferInProgress = true;
 
@@ -11040,7 +11040,7 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
         return;
     }
 
-    const int progressPid = kPro.add("文件", "删除");
+    const int progressPid = kPro.add(this, "文件", "删除");
     kPro.set(progressPid, "删除开始", 0, 5.0f);
 
     QStringList errors;
@@ -11177,7 +11177,7 @@ void FileDock::deleteSelectedItemByDriver(FilePanelWidgets& panel)
         return;
     }
 
-    const int progressPid = kPro.add("文件", "驱动删除");
+    const int progressPid = kPro.add(this, "文件", "驱动删除");
     kPro.set(progressPid, "驱动删除开始", 0, 5.0f);
 
     QStringList deleteErrors = prepareErrors;
@@ -12054,7 +12054,7 @@ void FileDock::unlockPathsByDriver(
         m_unlockerWorkerRunning.store(true);
     }
 
-    const int progressPid = kPro.add("文件", "文件解锁器");
+    const int progressPid = kPro.add(this, "文件", "文件解锁器");
     kPro.set(progressPid, "准备扫描占用来源", 0, 5.0f);
 
     QPointer<FileDock> safeThis(this);
@@ -12614,7 +12614,7 @@ void FileDock::takeOwnershipSelectedItems(FilePanelWidgets& panel)
         return;
     }
 
-    const int progressPid = kPro.add("文件", "取得所有权");
+    const int progressPid = kPro.add(this, "文件", "取得所有权");
     kPro.set(progressPid, "准备执行", 0, 5.0f);
 
     const bool leftPanelRequest = (&panel == &m_leftPanel);
@@ -12739,7 +12739,7 @@ void FileDock::setSelectedFileIntegrityLevel(
     }
 
     const DWORD targetIntegrityRid = static_cast<DWORD>(integrityRid);
-    const int progressPid = kPro.add("文件", "设置文件完整性");
+    const int progressPid = kPro.add(this, "文件", "设置文件完整性");
     kPro.set(progressPid, "准备执行", 0, 5.0f);
 
     QStringList failureDetails;
