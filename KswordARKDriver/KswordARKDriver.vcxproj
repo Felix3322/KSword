@@ -102,6 +102,7 @@
     <ClCompile Include="src\platform\process_resolver.c" />
     <ClCompile Include="src\platform\kernel_module_identity.c" />
     <ClCompile Include="src\platform\pool_compat.c" />
+    <ClCompile Include="src\platform\runtime_signature_scan.c" />
     <ClCompile Include="src\features\dyndata\dyndata_loader.c" />
     <ClCompile Include="src\features\dyndata\dyndata_query.c" />
     <ClCompile Include="src\features\dyndata\dyndata_validate.c" />
@@ -215,6 +216,7 @@
     <ClInclude Include="src\platform\process_resolver.h" />
     <ClInclude Include="src\platform\kernel_module_identity.h" />
     <ClInclude Include="src\platform\pool_compat.h" />
+    <ClInclude Include="src\platform\runtime_signature_scan.h" />
     <ClInclude Include="include\ark\ark_dyndata.h" />
     <ClInclude Include="include\ark\ark_dyndata_fields.h" />
     <ClInclude Include="include\ark\ark_capability.h" />
