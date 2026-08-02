@@ -384,6 +384,9 @@
     <ClCompile Include="src\features\callback\callback_extended_nmi.c">
       <Filter>Source Files\Features\Callback</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\callback\callback_extended_special.c">
+      <Filter>Source Files\Features\Callback</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\callback\callback_minifilter_enum.c">
       <Filter>Source Files\Features\Callback</Filter>
     </ClCompile>

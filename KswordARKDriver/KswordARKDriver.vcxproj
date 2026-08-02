@@ -33,6 +33,7 @@
     <ClCompile Include="src\features\callback\callback_extended_object.c" />
     <ClCompile Include="src\features\callback\callback_extended_system.c" />
     <ClCompile Include="src\features\callback\callback_extended_nmi.c" />
+    <ClCompile Include="src\features\callback\callback_extended_special.c" />
     <ClCompile Include="src\features\callback\callback_minifilter_enum.c" />
     <ClCompile Include="src\features\callback\minifilter_callback.c" />
     <ClCompile Include="src\features\callback\minifilter_inventory.c" />

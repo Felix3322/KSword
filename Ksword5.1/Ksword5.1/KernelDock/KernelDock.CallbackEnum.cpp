@@ -462,6 +462,18 @@ namespace
             return kernelText(
                 "kernel.callback.enum.class.legacy_fs_filter",
                 QStringLiteral("旧式 FS Filter pre/post 链"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_POWER_SETTING:
+            return kernelText("kernel.callback.enum.class.power_setting", QStringLiteral("电源设置回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_COALESCING:
+            return kernelText("kernel.callback.enum.class.coalescing", QStringLiteral("Coalescing 回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_PRIORITY:
+            return kernelText("kernel.callback.enum.class.priority", QStringLiteral("优先级回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_DEBUG_PRINT:
+            return kernelText("kernel.callback.enum.class.debug_print", QStringLiteral("调试打印回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_EMP:
+            return kernelText("kernel.callback.enum.class.emp", QStringLiteral("EMP Provider 回调"));
+        case KSWORD_ARK_CALLBACK_ENUM_CLASS_PLUG_PLAY:
+            return kernelText("kernel.callback.enum.class.plug_play", QStringLiteral("即插即用回调"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(callbackClass);
@@ -512,6 +524,10 @@ namespace
             return kernelText(
                 "kernel.callback.enum.source.legacy_fs_public_structural",
                 QStringLiteral("公开 FS Filter 枚举 + ClassInitData 结构签名"));
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_SPECIAL_CALLBACK:
+            return kernelText(
+                "kernel.callback.enum.source.private_special_callback",
+                QStringLiteral("私有特殊回调表/链"));
         default:
             return kernelText("kernel.callback.enum.placeholder.unknown_with_value", QStringLiteral("未知(%1)"))
                 .arg(source);
@@ -624,6 +640,30 @@ namespace
             return kernelText(
                 "kernel.callback.enum.registration_type.legacy_fs_post",
                 QStringLiteral("Legacy FS Post 回调"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_POWER_SETTING:
+            return kernelText(
+                "kernel.callback.enum.registration_type.power_setting",
+                QStringLiteral("PoRegisterPowerSettingCallback"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_COALESCING:
+            return kernelText(
+                "kernel.callback.enum.registration_type.coalescing",
+                QStringLiteral("PoRegisterCoalescingCallback"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PRIORITY:
+            return kernelText(
+                "kernel.callback.enum.registration_type.priority",
+                QStringLiteral("IoRegisterPriorityCallback"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_DEBUG_PRINT:
+            return kernelText(
+                "kernel.callback.enum.registration_type.debug_print",
+                QStringLiteral("DbgSetDebugPrintCallback"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_EMP:
+            return kernelText(
+                "kernel.callback.enum.registration_type.emp",
+                QStringLiteral("EmpProviderRegister"));
+        case KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PLUG_PLAY:
+            return kernelText(
+                "kernel.callback.enum.registration_type.plug_play",
+                QStringLiteral("IoRegisterPlugPlayNotification"));
         default:
             return kernelText("kernel.callback.enum.registration_type.unclassified", QStringLiteral("未分类"));
         }
@@ -771,6 +811,7 @@ namespace
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_CALLBACK_OBJECT:
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_OBJECT_DIRECTORY:
         case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_NMI_LIST:
+        case KSWORD_ARK_CALLBACK_ENUM_SOURCE_PRIVATE_SPECIAL_CALLBACK:
             return true;
         default:
             return false;

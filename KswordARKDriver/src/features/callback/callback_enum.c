@@ -4061,6 +4061,7 @@ Return Value:
     }
     if ((requestFlags & KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_PRIVATE) != 0UL) {
         KswordArkCallbackEnumAddPrivateCallbacks(&builder);
+        KswordArkCallbackExtendedAddSpecialCallbacks(&builder);
         KswordArkCallbackExternalAddCallbacks(&builder);
     }
     if ((requestFlags & KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_UNSUPPORTED) != 0UL) {
