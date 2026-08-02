@@ -2,6 +2,7 @@
 #pragma once
 #include <Windows.h>
 #include <pdh.h>
+#include <atomic>
 #include <mutex>
 #include <array>
 #pragma comment(lib, "Pdh.lib")
@@ -61,7 +62,8 @@ private:
     std::array<HardwareSnapshot, HISTORY_SIZE> history;  // 循环队列，存储快照
     int currentIndex;  // 当前索引
     HANDLE hThread;    // 监控线程句柄
-    bool isRunning;    // 线程运行标志
+    std::atomic_bool isRunning;  // 线程运行标志
+    std::mutex lifecycleMutex;   // 启停与线程句柄所有权
     std::mutex mtx;    // 互斥锁
 
     static DWORD WINAPI MonitorThread(LPVOID lpParam);  // 线程函数

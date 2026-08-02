@@ -179,17 +179,22 @@ HardwareMonitor::~HardwareMonitor() {
 
 // 启动监控：线程启动后立即返回，不阻塞
 bool HardwareMonitor::StartMonitoring() {
-    if (isRunning) return false;
-    isRunning = true;
+    std::lock_guard<std::mutex> lock(lifecycleMutex);
+    if (isRunning.load(std::memory_order_acquire)) return false;
+    isRunning.store(true, std::memory_order_release);
     // 启动线程（线程内仅复用m_singleUsage，无重复初始化）
     hThread = CreateThread(nullptr, 0, MonitorThread, this, 0, nullptr);
-    return hThread != nullptr;
+    if (hThread == nullptr) {
+        isRunning.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
 }
 
 // 停止监控
 void HardwareMonitor::StopMonitoring() {
-    if (!isRunning) return;
-    isRunning = false;
+    std::lock_guard<std::mutex> lock(lifecycleMutex);
+    if (!isRunning.exchange(false, std::memory_order_acq_rel)) return;
     if (hThread) {
         WaitForSingleObject(hThread, INFINITE);
         CloseHandle(hThread);
@@ -207,9 +212,9 @@ void HardwareMonitor::UpdateHistory(const HardwareSnapshot& snap) {
 // 线程函数：核心优化——仅复用m_singleUsage更新数据
 DWORD WINAPI HardwareMonitor::MonitorThread(LPVOID lpParam) {
     HardwareMonitor* monitor = static_cast<HardwareMonitor*>(lpParam);
-    if (!monitor->m_singleUsage) return 1;  // 防空指针
+    if (monitor == nullptr || !monitor->m_singleUsage) return 1;  // 防空指针
 
-    while (monitor->isRunning) {
+    while (monitor->isRunning.load(std::memory_order_acquire)) {
         // 仅更新数据（轻量操作，无初始化）
         if (monitor->m_singleUsage->UpdateData()) {
             // 复制数据到历史数组（使用轻量快照）
