@@ -161,6 +161,7 @@ namespace ks::file
     struct HandleSnapshotRow
     {
         std::uint32_t processId = 0;
+        std::uint64_t processCreationTime = 0;
         std::wstring processName;
         std::uint64_t handleValue = 0;
         std::uint16_t typeIndex = 0;
@@ -216,6 +217,7 @@ namespace ks::file
     struct HandleUsageEntry
     {
         std::uint32_t processId = 0;
+        std::uint64_t processCreationTime = 0; // processCreationTime：GetProcessTimes 创建时间，防止 PID 复用。
         std::wstring processName;
         std::wstring processImagePath;
         std::uint64_t handleValue = 0;
@@ -327,8 +329,36 @@ namespace ks::file
     // QueryFinalDosPathByHandle 作用：用 GetFinalPathNameByHandleW 读取标准 DOS 路径。
     bool QueryFinalDosPathByHandle(HANDLE objectHandle, std::wstring& pathOut);
 
-    // CloseRemoteHandle 作用：通过 DuplicateHandle(DUPLICATE_CLOSE_SOURCE) 关闭远程句柄。
-    bool CloseRemoteHandle(std::uint32_t processId, std::uint64_t handleValue, std::string& detailTextOut);
+    // OpenProcessForVerifiedAction 作用：
+    // - 打开目标进程并核对扫描时记录的创建时间；
+    // - 成功后调用方必须 CloseHandle，且持有期间 PID 不会被复用到新进程。
+    bool OpenProcessForVerifiedAction(
+        std::uint32_t processId,
+        std::uint64_t expectedCreationTime,
+        DWORD desiredAccess,
+        HANDLE& processHandleOut,
+        std::string& detailTextOut);
+
+    // CloseRemoteHandle 作用：
+    // - 校验进程创建时间和当前句柄对应文件路径；
+    // - 暂停目标进程后再通过 DuplicateHandle(DUPLICATE_CLOSE_SOURCE) 关闭已验证句柄。
+    bool CloseRemoteHandle(
+        std::uint32_t processId,
+        std::uint64_t handleValue,
+        std::uint64_t expectedProcessCreationTime,
+        const std::wstring& expectedTargetPath,
+        bool expectedDirectoryMatch,
+        std::string& detailTextOut);
+
+    // CloseRemoteHandleByObjectIdentity 作用：
+    // - 用进程创建时间 + 系统句柄快照中的对象地址复核任意类型句柄；
+    // - 供 HandleDock 的单项/批量关闭使用，拒绝陈旧或无法验证的行。
+    bool CloseRemoteHandleByObjectIdentity(
+        std::uint32_t processId,
+        std::uint64_t handleValue,
+        std::uint64_t expectedProcessCreationTime,
+        std::uint64_t expectedObjectAddress,
+        std::string& detailTextOut);
 
     // BuildHandleSnapshot 作用：构建句柄 Dock 使用的完整后端快照。
     HandleSnapshotResult BuildHandleSnapshot(const HandleSnapshotOptions& options);

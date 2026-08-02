@@ -538,6 +538,9 @@ void FileHandleUsageWindow::closeCurrentRemoteHandle()
     const bool closeOk = ks::file::CloseRemoteHandle(
         selectedHandleEntry.processId,
         selectedHandleEntry.handleValue,
+        selectedHandleEntry.processCreationTime,
+        selectedHandleEntry.matchedTargetPath.toStdWString(),
+        selectedHandleEntry.matchedByDirectoryRule,
         detailText);
     kLogEvent closeEvent;
     if (closeOk)

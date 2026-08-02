@@ -138,7 +138,7 @@ void HandleDock::closeCurrentHandle()
     }
 
     std::string detailText;
-    const bool closeOk = closeRemoteHandle(row->processId, row->handleValue, detailText);
+    const bool closeOk = closeRemoteHandle(*row, detailText);
     kLogEvent closeEvent;
     (closeOk ? info : err) << closeEvent
         << "[HandleDock] closeCurrentHandle: pid="
@@ -170,17 +170,17 @@ void HandleDock::closeSameTypeHandlesInCurrentProcess()
         return;
     }
 
-    std::vector<std::uint64_t> targetHandles;
-    targetHandles.reserve(128);
+    std::vector<HandleRow> targetRows;
+    targetRows.reserve(128);
     // 批量关闭范围使用完整快照 m_allRows，避免受当前过滤条件影响。
     for (const HandleRow& row : m_allRows)
     {
         if (row.processId == selectedRow->processId && row.typeIndex == selectedRow->typeIndex)
         {
-            targetHandles.push_back(row.handleValue);
+            targetRows.push_back(row);
         }
     }
-    if (targetHandles.empty())
+    if (targetRows.empty())
     {
         return;
     }
@@ -190,7 +190,7 @@ void HandleDock::closeSameTypeHandlesInCurrentProcess()
         .arg(selectedRow->processId)
         .arg(selectedRow->typeIndex)
         .arg(selectedRow->typeName)
-        .arg(targetHandles.size());
+        .arg(targetRows.size());
     if (QMessageBox::question(this, QStringLiteral("批量关闭句柄"), confirmText) != QMessageBox::Yes)
     {
         return;
@@ -199,10 +199,10 @@ void HandleDock::closeSameTypeHandlesInCurrentProcess()
     std::size_t successCount = 0;
     std::size_t failCount = 0;
     std::string lastErrorText;
-    for (const std::uint64_t handleValue : targetHandles)
+    for (const HandleRow& targetRow : targetRows)
     {
         std::string detailText;
-        const bool closeOk = closeRemoteHandle(selectedRow->processId, handleValue, detailText);
+        const bool closeOk = closeRemoteHandle(targetRow, detailText);
         if (closeOk)
         {
             ++successCount;
@@ -221,7 +221,7 @@ void HandleDock::closeSameTypeHandlesInCurrentProcess()
         << ", typeIndex="
         << selectedRow->typeIndex
         << ", total="
-        << targetHandles.size()
+        << targetRows.size()
         << ", success="
         << successCount
         << ", fail="

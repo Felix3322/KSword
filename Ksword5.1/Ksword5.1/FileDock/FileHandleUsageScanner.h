@@ -25,6 +25,7 @@ namespace filedock::handleusage
     struct HandleUsageEntry
     {
         std::uint32_t processId = 0;        // processId：所属进程 PID。
+        std::uint64_t processCreationTime = 0; // processCreationTime：进程创建时间，用于破坏性操作前复核 PID 身份。
         QString processName;                // processName：所属进程名。
         QString processImagePath;           // processImagePath：所属进程镜像路径。
         std::uint64_t handleValue = 0;      // handleValue：句柄值。

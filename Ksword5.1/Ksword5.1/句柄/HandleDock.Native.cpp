@@ -88,6 +88,7 @@ HandleDock::HandleRefreshResult HandleDock::buildHandleRefreshResult(const Handl
     {
         HandleRow row{};
         row.processId = backendRow.processId;
+        row.processCreationTime = backendRow.processCreationTime;
         row.processName = QString::fromStdWString(backendRow.processName);
         row.handleValue = backendRow.handleValue;
         row.typeIndex = backendRow.typeIndex;
@@ -136,14 +137,15 @@ HandleDock::ObjectTypeRefreshResult HandleDock::buildObjectTypeRefreshResult()
     return result;
 }
 
-bool HandleDock::closeRemoteHandle(
-    const std::uint32_t processId,
-    const std::uint64_t handleValue,
-    std::string& detailTextOut)
+bool HandleDock::closeRemoteHandle(const HandleRow& expectedRow, std::string& detailTextOut)
 {
-    // Remote handle closing is a reusable backend operation; the UI only forwards the
-    // selected PID/handle pair and displays the returned detail text.
-    return ks::file::CloseRemoteHandle(processId, handleValue, detailTextOut);
+    // 关闭动作绑定刷新行中的进程创建时间与对象地址，拒绝 PID/Handle 复用后的陈旧行。
+    return ks::file::CloseRemoteHandleByObjectIdentity(
+        expectedRow.processId,
+        expectedRow.handleValue,
+        expectedRow.processCreationTime,
+        expectedRow.objectAddress,
+        detailTextOut);
 }
 
 QString HandleDock::formatHex(const std::uint64_t value, const int width)

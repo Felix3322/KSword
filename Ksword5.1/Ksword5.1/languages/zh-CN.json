@@ -23309,6 +23309,18 @@
     "目录已替换，但旧目标备份清理失败: %1": "目录已替换，但旧目标备份清理失败: %1",
     "目标已写入，但删除源目录失败: %1": "目标已写入，但删除源目录失败: %1",
     "目标已写入，但删除源文件失败: %1": "目标已写入，但删除源文件失败: %1",
-    "为避免越界递归，不复制符号链接或重解析点: %1": "为避免越界递归，不复制符号链接或重解析点: %1"
+    "为避免越界递归，不复制符号链接或重解析点: %1": "为避免越界递归，不复制符号链接或重解析点: %1",
+    "身份不可验证：请重新扫描后再操作": "身份不可验证：请重新扫描后再操作",
+    ", TerminateProcess=fail, error=": "，TerminateProcess=失败，错误码=",
+    "DuplicateHandle validation failed, error=": "DuplicateHandle 校验失败，错误码=",
+    "GetProcessTimes failed, error=": "GetProcessTimes 失败，错误码=",
+    "NtSuspendProcess failed, status=0x": "NtSuspendProcess 失败，状态=0x",
+    "OpenProcess for verified action failed, error=": "为身份校验动作打开进程失败，错误码=",
+    "closed handle identity changed unexpectedly while the process was suspended": "目标进程暂停期间，已关闭句柄的身份仍意外发生变化",
+    "current handle is no longer a queryable disk file": "当前句柄已不再是可查询的磁盘文件",
+    "failed to refresh the handle identity before close": "关闭前刷新句柄身份失败",
+    "invalid or protected remote handle target": "远程句柄目标无效或受保护",
+    "invalid, protected, or unverifiable handle identity": "句柄身份无效、受保护或无法验证",
+    "process identity verified": "进程身份已验证"
   }
 }

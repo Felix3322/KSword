@@ -132,6 +132,7 @@ private:
     struct HandleRow
     {
         std::uint32_t processId = 0;       // processId：句柄所属进程 PID。
+        std::uint64_t processCreationTime = 0; // processCreationTime：进程创建时间，关闭前复核 PID 身份。
         QString processName;               // processName：句柄所属进程名。
         std::uint64_t handleValue = 0;     // handleValue：句柄数值。
         std::uint16_t typeIndex = 0;       // typeIndex：内核对象类型索引。
@@ -506,10 +507,7 @@ private:
     // 调用方法：closeCurrentHandle / closeSameTypeHandlesInCurrentProcess 调用。
     // 传入 processId：目标 PID；handleValue：目标句柄值。
     // 传出 detailTextOut：动作详情；返回 true/false。
-    static bool closeRemoteHandle(
-        std::uint32_t processId,
-        std::uint64_t handleValue,
-        std::string& detailTextOut);
+    static bool closeRemoteHandle(const HandleRow& expectedRow, std::string& detailTextOut);
 
     // buildHandleDetailRefreshResult 作用：
     // - 后台线程核心：按句柄类型生成专用详情；

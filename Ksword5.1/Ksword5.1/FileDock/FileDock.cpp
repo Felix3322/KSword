@@ -316,6 +316,7 @@ namespace
     struct UnlockProcessCandidate
     {
         std::uint32_t processId = 0U;
+        std::uint64_t processCreationTime = 0U;
         QString processName;
         QString processImagePath;
         QStringList matchedTargetList;
@@ -328,11 +329,13 @@ namespace
     struct UnlockHandleCandidate
     {
         std::uint32_t processId = 0U;
+        std::uint64_t processCreationTime = 0U;
         QString processName;
         QString processImagePath;
         std::uint64_t handleValue = 0U;
         std::uint32_t grantedAccess = 0U;
         QString matchedTargetPath;
+        bool matchedByDirectoryRule = false;
         QString matchRuleText;
         QString objectName;
         QString enumerationSource;
@@ -2472,6 +2475,7 @@ namespace
 
     bool terminateProcessByR3(
         const std::uint32_t processId,
+        const std::uint64_t expectedCreationTime,
         std::string* const detailTextOut)
     {
         if (detailTextOut != nullptr)
@@ -2488,9 +2492,28 @@ namespace
             return false;
         }
 
-        // 统一复用 ks::process 模块，确保各页面结束进程策略、返回语义与错误描述保持一致。
-        std::string terminateErrorText;
-        const bool terminateOk = ks::process::TerminateProcessByWin32(processId, &terminateErrorText);
+        // 用扫描时的创建时间复核 PID，并通过同一个已验证句柄结束进程。
+        // 持有该句柄期间旧进程对象不会销毁，因此 PID 不能被复用到另一个进程。
+        HANDLE processHandle = nullptr;
+        std::string identityDetailText;
+        if (!ks::file::OpenProcessForVerifiedAction(
+                processId,
+                expectedCreationTime,
+                PROCESS_TERMINATE | SYNCHRONIZE,
+                processHandle,
+                identityDetailText))
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = identityDetailText;
+            }
+            return false;
+        }
+
+        const BOOL terminateResult = ::TerminateProcess(processHandle, static_cast<UINT>(0xC0000005U));
+        const DWORD terminateError = terminateResult == FALSE ? ::GetLastError() : ERROR_SUCCESS;
+        ::CloseHandle(processHandle);
+        const bool terminateOk = terminateResult != FALSE;
 
         if (detailTextOut != nullptr)
         {
@@ -2502,7 +2525,7 @@ namespace
             }
             else
             {
-                oss << ", TerminateProcess=fail, detail=" << terminateErrorText;
+                oss << ", TerminateProcess=fail, error=" << terminateError;
             }
             *detailTextOut = oss.str();
         }
@@ -2547,6 +2570,8 @@ namespace
             handleCandidateList.end(),
             [](const UnlockHandleCandidate& candidate) {
                 return candidate.handleValue != 0U
+                    && candidate.processCreationTime != 0U
+                    && !candidate.matchedTargetPath.trimmed().isEmpty()
                     && candidate.processId > 4U
                     && !candidate.isCurrentProcess
                     && !candidate.isCriticalProcess;
@@ -2606,6 +2631,8 @@ namespace
         {
             const UnlockHandleCandidate& candidate = handleCandidateList[static_cast<std::size_t>(row)];
             const bool canCloseHandle = candidate.handleValue != 0U
+                && candidate.processCreationTime != 0U
+                && !candidate.matchedTargetPath.trimmed().isEmpty()
                 && !candidate.isCurrentProcess
                 && !candidate.isCriticalProcess
                 && candidate.processId > 4U;
@@ -2635,6 +2662,10 @@ namespace
             {
                 noteList.push_back(QStringLiteral("已保护：关键系统进程，不可关闭句柄"));
             }
+            if (candidate.processCreationTime == 0U || candidate.matchedTargetPath.trimmed().isEmpty())
+            {
+                noteList.push_back(QStringLiteral("身份不可验证：请重新扫描后再操作"));
+            }
 
             handleTable->setItem(row, 1, makeTableItem(QString::number(candidate.processId), canCloseHandle));
             handleTable->setItem(row, 2, makeTableItem(candidate.processName.isEmpty() ? QStringLiteral("Unknown") : candidate.processName, canCloseHandle));
@@ -2647,7 +2678,9 @@ namespace
         for (int row = 0; row < static_cast<int>(processCandidateList.size()); ++row)
         {
             const UnlockProcessCandidate& candidate = processCandidateList[static_cast<std::size_t>(row)];
-            const bool protectedProcess = candidate.isCurrentProcess || candidate.isCriticalProcess;
+            const bool protectedProcess = candidate.isCurrentProcess
+                || candidate.isCriticalProcess
+                || candidate.processCreationTime == 0U;
 
             QTableWidgetItem* const checkItem = new QTableWidgetItem();
             checkItem->setCheckState(Qt::Unchecked);
@@ -2678,6 +2711,10 @@ namespace
             if (candidate.isCriticalProcess)
             {
                 noteList.push_back(QStringLiteral("已保护：关键系统进程，不可选择"));
+            }
+            if (candidate.processCreationTime == 0U)
+            {
+                noteList.push_back(QStringLiteral("身份不可验证：请重新扫描后再操作"));
             }
 
             processTable->setItem(row, 1, makeTextItem(QString::number(candidate.processId)));
@@ -12072,6 +12109,15 @@ void FileDock::unlockPathsByDriver(
 
             UnlockProcessCandidate& processCandidate = candidateByPid[entry.processId];
             processCandidate.processId = entry.processId;
+            if (processCandidate.matchCount == 0U)
+            {
+                processCandidate.processCreationTime = entry.processCreationTime;
+            }
+            else if (processCandidate.processCreationTime != entry.processCreationTime)
+            {
+                // 同一轮扫描中 PID 身份不一致说明进程已退出/复用；清零使后续动作失败关闭。
+                processCandidate.processCreationTime = 0U;
+            }
             if (processCandidate.processName.isEmpty() && !entry.processName.trimmed().isEmpty())
             {
                 processCandidate.processName = entry.processName.trimmed();
@@ -12088,11 +12134,13 @@ void FileDock::unlockPathsByDriver(
 
             UnlockHandleCandidate handleCandidate{};
             handleCandidate.processId = entry.processId;
+            handleCandidate.processCreationTime = entry.processCreationTime;
             handleCandidate.processName = entry.processName.trimmed();
             handleCandidate.processImagePath = entry.processImagePath.trimmed();
             handleCandidate.handleValue = entry.handleValue;
             handleCandidate.grantedAccess = entry.grantedAccess;
             handleCandidate.matchedTargetPath = entry.matchedTargetPath;
+            handleCandidate.matchedByDirectoryRule = entry.matchedByDirectoryRule;
             handleCandidate.matchRuleText = entry.matchRuleText;
             handleCandidate.objectName = entry.objectName;
             handleCandidate.enumerationSource = entry.enumerationSource;
@@ -12225,6 +12273,9 @@ void FileDock::unlockPathsByDriver(
                 const bool closeOk = ks::file::CloseRemoteHandle(
                     handleCandidate.processId,
                     handleCandidate.handleValue,
+                    handleCandidate.processCreationTime,
+                    handleCandidate.matchedTargetPath.toStdWString(),
+                    handleCandidate.matchedByDirectoryRule,
                     detailText);
                 if (closeOk)
                 {
@@ -12286,9 +12337,17 @@ void FileDock::unlockPathsByDriver(
                     const QString processName = (candidateIter != candidateBySelectedPid.end())
                         ? candidateIter->second.processName
                         : QString();
+                    const std::uint64_t processCreationTime = (candidateIter != candidateBySelectedPid.end())
+                        ? candidateIter->second.processCreationTime
+                        : 0U;
                     const bool protectedProcess = candidateIter != candidateBySelectedPid.end()
-                        && (candidateIter->second.isCurrentProcess || candidateIter->second.isCriticalProcess);
-                    if (processId <= 4U || processId == static_cast<std::uint32_t>(::GetCurrentProcessId()) || protectedProcess)
+                        && (candidateIter->second.isCurrentProcess
+                            || candidateIter->second.isCriticalProcess
+                            || candidateIter->second.processCreationTime == 0U);
+                    if (processId <= 4U
+                        || processId == static_cast<std::uint32_t>(::GetCurrentProcessId())
+                        || protectedProcess
+                        || processCreationTime == 0U)
                     {
                         jobResult.skippedTargetList.push_back(
                             QStringLiteral("pid=%1 | %2 | 已保护，未结束")
@@ -12298,9 +12357,30 @@ void FileDock::unlockPathsByDriver(
                     }
 
                     std::string detailText;
-                    const bool terminateOk = (jobResult.operationMode == UnlockOperationMode::TerminateProcessR0)
-                        ? terminateProcessByR0Driver(driverHandle, processId, &detailText)
-                        : terminateProcessByR3(processId, &detailText);
+                    bool terminateOk = false;
+                    if (jobResult.operationMode == UnlockOperationMode::TerminateProcessR0)
+                    {
+                        // 即使由驱动执行结束，也先持有已核对创建时间的 R3 进程句柄；
+                        // 这样驱动按 PID 查询期间不会命中复用后的另一个进程对象。
+                        HANDLE verifiedProcessHandle = nullptr;
+                        if (ks::file::OpenProcessForVerifiedAction(
+                                processId,
+                                processCreationTime,
+                                SYNCHRONIZE,
+                                verifiedProcessHandle,
+                                detailText))
+                        {
+                            terminateOk = terminateProcessByR0Driver(driverHandle, processId, &detailText);
+                            ::CloseHandle(verifiedProcessHandle);
+                        }
+                    }
+                    else
+                    {
+                        terminateOk = terminateProcessByR3(
+                            processId,
+                            processCreationTime,
+                            &detailText);
+                    }
                     if (terminateOk)
                     {
                         jobResult.terminateSuccessCount += 1U;

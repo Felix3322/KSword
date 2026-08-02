@@ -49,6 +49,7 @@ namespace filedock::handleusage
         {
             HandleUsageEntry entry{};
             entry.processId = backendEntry.processId;
+            entry.processCreationTime = backendEntry.processCreationTime;
             entry.processName = ToQString(backendEntry.processName);
             entry.processImagePath = ToQString(backendEntry.processImagePath);
             entry.handleValue = backendEntry.handleValue;

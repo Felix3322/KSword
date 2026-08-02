@@ -162,6 +162,12 @@ namespace ks::file
             }
             HANDLE get() const { return m_handle; }
             bool valid() const { return m_handle != nullptr && m_handle != INVALID_HANDLE_VALUE; }
+            HANDLE release()
+            {
+                HANDLE releasedHandle = m_handle;
+                m_handle = nullptr;
+                return releasedHandle;
+            }
             void reset(HANDLE newHandle)
             {
                 if (m_handle != nullptr && m_handle != INVALID_HANDLE_VALUE)
@@ -172,6 +178,31 @@ namespace ks::file
             }
         private:
             HANDLE m_handle = nullptr;
+        };
+
+        using NtSuspendProcessFn = NTSTATUS(NTAPI*)(HANDLE);
+        using NtResumeProcessFn = NTSTATUS(NTAPI*)(HANDLE);
+        constexpr DWORD kProcessSuspendResumeAccess = 0x0800U;
+
+        // ScopedProcessResume 保证句柄关闭验证的任意失败分支都会恢复目标进程。
+        class ScopedProcessResume final
+        {
+        public:
+            ScopedProcessResume(HANDLE processHandle, NtResumeProcessFn resumeFunction)
+                : m_processHandle(processHandle), m_resumeFunction(resumeFunction) {}
+            ~ScopedProcessResume()
+            {
+                if (m_processHandle != nullptr && m_resumeFunction != nullptr)
+                {
+                    (void)m_resumeFunction(m_processHandle);
+                }
+            }
+            ScopedProcessResume(const ScopedProcessResume&) = delete;
+            ScopedProcessResume& operator=(const ScopedProcessResume&) = delete;
+
+        private:
+            HANDLE m_processHandle = nullptr;
+            NtResumeProcessFn m_resumeFunction = nullptr;
         };
 
         // CachedObjectSnapshot stores object-level query results so multiple handles to the
@@ -549,6 +580,47 @@ namespace ks::file
             const std::wstring imagePath = ks::str::Utf8ToUtf16(ks::process::QueryProcessPathByPid(processId));
             cacheMap.insert_or_assign(processId, imagePath);
             return imagePath;
+        }
+
+        // QueryProcessCreationTimeFromHandle 把 FILETIME 转为可稳定比较的 64 位进程身份。
+        bool QueryProcessCreationTimeFromHandle(HANDLE processHandle, std::uint64_t& creationTimeOut)
+        {
+            creationTimeOut = 0U;
+            FILETIME creationTime{};
+            FILETIME exitTime{};
+            FILETIME kernelTime{};
+            FILETIME userTime{};
+            if (::GetProcessTimes(processHandle, &creationTime, &exitTime, &kernelTime, &userTime) == FALSE)
+            {
+                return false;
+            }
+
+            ULARGE_INTEGER combinedTime{};
+            combinedTime.LowPart = creationTime.dwLowDateTime;
+            combinedTime.HighPart = creationTime.dwHighDateTime;
+            creationTimeOut = combinedTime.QuadPart;
+            return creationTimeOut != 0U;
+        }
+
+        // QueryProcessCreationTimeCached 避免同一 PID 的多条句柄/模块记录重复打开进程。
+        std::uint64_t QueryProcessCreationTimeCached(
+            const std::uint32_t processId,
+            std::unordered_map<std::uint32_t, std::uint64_t>& cacheMap)
+        {
+            const auto foundIt = cacheMap.find(processId);
+            if (foundIt != cacheMap.end())
+            {
+                return foundIt->second;
+            }
+
+            std::uint64_t creationTime = 0U;
+            UniqueHandle processHandle(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId));
+            if (processHandle.valid())
+            {
+                (void)QueryProcessCreationTimeFromHandle(processHandle.get(), creationTime);
+            }
+            cacheMap.insert_or_assign(processId, creationTime);
+            return creationTime;
         }
 
         // OpenProcessHandleForDuplicate caches remote process handles for one snapshot pass.
@@ -1330,30 +1402,264 @@ namespace ks::file
         return false;
     }
 
-    bool CloseRemoteHandle(const std::uint32_t processId, const std::uint64_t handleValue, std::string& detailTextOut)
+    bool OpenProcessForVerifiedAction(
+        const std::uint32_t processId,
+        const std::uint64_t expectedCreationTime,
+        const DWORD desiredAccess,
+        HANDLE& processHandleOut,
+        std::string& detailTextOut)
     {
+        processHandleOut = nullptr;
         detailTextOut.clear();
-        UniqueHandle processHandle(::OpenProcess(PROCESS_DUP_HANDLE, FALSE, processId));
-        if (!processHandle.valid())
+        if (processId == 0U || expectedCreationTime == 0U)
         {
-            detailTextOut = "OpenProcess(PROCESS_DUP_HANDLE) failed, error=" + std::to_string(::GetLastError());
+            detailTextOut = "process identity is unavailable; rescan before retrying";
             return false;
         }
 
+        UniqueHandle processHandle(::OpenProcess(
+            desiredAccess | PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            processId));
+        if (!processHandle.valid())
+        {
+            detailTextOut = "OpenProcess for verified action failed, error=" + std::to_string(::GetLastError());
+            return false;
+        }
+
+        std::uint64_t actualCreationTime = 0U;
+        if (!QueryProcessCreationTimeFromHandle(processHandle.get(), actualCreationTime))
+        {
+            detailTextOut = "GetProcessTimes failed, error=" + std::to_string(::GetLastError());
+            return false;
+        }
+        if (actualCreationTime != expectedCreationTime)
+        {
+            detailTextOut = "process identity changed (PID was reused); rescan before retrying";
+            return false;
+        }
+
+        processHandleOut = processHandle.release();
+        detailTextOut = "process identity verified";
+        return true;
+    }
+
+    bool CloseRemoteHandle(
+        const std::uint32_t processId,
+        const std::uint64_t handleValue,
+        const std::uint64_t expectedProcessCreationTime,
+        const std::wstring& expectedTargetPath,
+        const bool expectedDirectoryMatch,
+        std::string& detailTextOut)
+    {
+        detailTextOut.clear();
+        if (processId <= 4U || processId == static_cast<std::uint32_t>(::GetCurrentProcessId()) || handleValue == 0U)
+        {
+            detailTextOut = "invalid or protected remote handle target";
+            return false;
+        }
+        if (NormalizePathForCompare(expectedTargetPath).empty())
+        {
+            detailTextOut = "expected target path is unavailable; rescan before retrying";
+            return false;
+        }
+
+        HANDLE rawProcessHandle = nullptr;
+        if (!OpenProcessForVerifiedAction(
+                processId,
+                expectedProcessCreationTime,
+                PROCESS_DUP_HANDLE | kProcessSuspendResumeAccess,
+                rawProcessHandle,
+                detailTextOut))
+        {
+            return false;
+        }
+        UniqueHandle processHandle(rawProcessHandle);
+
+        HMODULE ntdllModule = ::GetModuleHandleW(L"ntdll.dll");
+        const auto suspendProcess = ntdllModule == nullptr
+            ? nullptr
+            : reinterpret_cast<NtSuspendProcessFn>(::GetProcAddress(ntdllModule, "NtSuspendProcess"));
+        const auto resumeProcess = ntdllModule == nullptr
+            ? nullptr
+            : reinterpret_cast<NtResumeProcessFn>(::GetProcAddress(ntdllModule, "NtResumeProcess"));
+        if (suspendProcess == nullptr || resumeProcess == nullptr)
+        {
+            detailTextOut = "NtSuspendProcess/NtResumeProcess is unavailable";
+            return false;
+        }
+
+        const NTSTATUS suspendStatus = suspendProcess(processHandle.get());
+        if (suspendStatus < 0)
+        {
+            std::ostringstream stream;
+            stream << "NtSuspendProcess failed, status=0x"
+                   << std::hex << std::uppercase << static_cast<std::uint32_t>(suspendStatus);
+            detailTextOut = stream.str();
+            return false;
+        }
+        const ScopedProcessResume resumeGuard(processHandle.get(), resumeProcess);
+
+        HANDLE rawProbeHandle = nullptr;
+        if (!DuplicateRemoteHandleToLocal(processHandle.get(), handleValue, rawProbeHandle))
+        {
+            detailTextOut = "DuplicateHandle validation failed, error=" + std::to_string(::GetLastError());
+            return false;
+        }
+        UniqueHandle probeHandle(rawProbeHandle);
+
+        std::wstring currentPath;
+        if (!QueryFinalDosPathByHandle(probeHandle.get(), currentPath))
+        {
+            detailTextOut = "current handle is no longer a queryable disk file";
+            return false;
+        }
+
+        TargetPathPattern expectedPattern{};
+        expectedPattern.displayPath = expectedTargetPath;
+        expectedPattern.normalizedPath = NormalizePathForCompare(expectedTargetPath);
+        expectedPattern.directoryMode = expectedDirectoryMatch;
+        std::wstring matchedPath;
+        bool matchedByDirectoryRule = false;
+        if (!MatchTargetPath(
+                NormalizePathForCompare(currentPath),
+                std::vector<TargetPathPattern>{ expectedPattern },
+                matchedPath,
+                matchedByDirectoryRule))
+        {
+            detailTextOut = "remote handle identity changed; current file no longer matches the scanned target";
+            return false;
+        }
+
+        HANDLE rawClosedHandle = nullptr;
         const BOOL closeOk = ::DuplicateHandle(
             processHandle.get(),
             reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(handleValue)),
-            nullptr,
-            nullptr,
+            ::GetCurrentProcess(),
+            &rawClosedHandle,
             0,
             FALSE,
-            DUPLICATE_CLOSE_SOURCE);
+            DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS);
+        UniqueHandle closedHandle(rawClosedHandle);
         if (closeOk == FALSE)
         {
             detailTextOut = "DuplicateHandle(DUPLICATE_CLOSE_SOURCE) failed, error=" + std::to_string(::GetLastError());
             return false;
         }
-        detailTextOut = "CloseSource success.";
+
+        std::wstring closedPath;
+        if (!closedHandle.valid()
+            || !QueryFinalDosPathByHandle(closedHandle.get(), closedPath)
+            || NormalizePathForCompare(closedPath) != NormalizePathForCompare(currentPath))
+        {
+            detailTextOut = "closed handle identity changed unexpectedly while the process was suspended";
+            return false;
+        }
+
+        detailTextOut = "process and file handle identities verified; CloseSource success";
+        return true;
+    }
+
+    bool CloseRemoteHandleByObjectIdentity(
+        const std::uint32_t processId,
+        const std::uint64_t handleValue,
+        const std::uint64_t expectedProcessCreationTime,
+        const std::uint64_t expectedObjectAddress,
+        std::string& detailTextOut)
+    {
+        detailTextOut.clear();
+        if (processId <= 4U
+            || processId == static_cast<std::uint32_t>(::GetCurrentProcessId())
+            || handleValue == 0U
+            || expectedObjectAddress == 0U)
+        {
+            detailTextOut = "invalid, protected, or unverifiable handle identity";
+            return false;
+        }
+
+        HANDLE rawProcessHandle = nullptr;
+        if (!OpenProcessForVerifiedAction(
+                processId,
+                expectedProcessCreationTime,
+                PROCESS_DUP_HANDLE | kProcessSuspendResumeAccess,
+                rawProcessHandle,
+                detailTextOut))
+        {
+            return false;
+        }
+        UniqueHandle processHandle(rawProcessHandle);
+
+        HMODULE ntdllModule = ::GetModuleHandleW(L"ntdll.dll");
+        const auto suspendProcess = ntdllModule == nullptr
+            ? nullptr
+            : reinterpret_cast<NtSuspendProcessFn>(::GetProcAddress(ntdllModule, "NtSuspendProcess"));
+        const auto resumeProcess = ntdllModule == nullptr
+            ? nullptr
+            : reinterpret_cast<NtResumeProcessFn>(::GetProcAddress(ntdllModule, "NtResumeProcess"));
+        if (suspendProcess == nullptr || resumeProcess == nullptr)
+        {
+            detailTextOut = "NtSuspendProcess/NtResumeProcess is unavailable";
+            return false;
+        }
+
+        const NTSTATUS suspendStatus = suspendProcess(processHandle.get());
+        if (suspendStatus < 0)
+        {
+            std::ostringstream stream;
+            stream << "NtSuspendProcess failed, status=0x"
+                   << std::hex << std::uppercase << static_cast<std::uint32_t>(suspendStatus);
+            detailTextOut = stream.str();
+            return false;
+        }
+        const ScopedProcessResume resumeGuard(processHandle.get(), resumeProcess);
+
+        const NtApiSet apiSet = QueryNtApis();
+        std::vector<RawSystemHandle> currentHandles;
+        std::wstring queryDiagnostic;
+        if (!apiSet.ready() || !QuerySystemHandles(apiSet, currentHandles, queryDiagnostic))
+        {
+            detailTextOut = "failed to refresh the handle identity before close";
+            if (!queryDiagnostic.empty())
+            {
+                detailTextOut += ": " + ks::str::Utf16ToUtf8(queryDiagnostic);
+            }
+            return false;
+        }
+
+        const auto currentRow = std::find_if(
+            currentHandles.begin(),
+            currentHandles.end(),
+            [processId, handleValue](const RawSystemHandle& row) {
+                return row.processId == processId && row.handleValue == handleValue;
+            });
+        if (currentRow == currentHandles.end())
+        {
+            detailTextOut = "the remote handle no longer exists; refresh before retrying";
+            return false;
+        }
+        if (currentRow->objectAddress != expectedObjectAddress)
+        {
+            detailTextOut = "remote handle identity changed (handle value was reused); refresh before retrying";
+            return false;
+        }
+
+        HANDLE rawClosedHandle = nullptr;
+        const BOOL closeOk = ::DuplicateHandle(
+            processHandle.get(),
+            reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(handleValue)),
+            ::GetCurrentProcess(),
+            &rawClosedHandle,
+            0,
+            FALSE,
+            DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS);
+        UniqueHandle closedHandle(rawClosedHandle);
+        if (closeOk == FALSE || !closedHandle.valid())
+        {
+            detailTextOut = "DuplicateHandle(DUPLICATE_CLOSE_SOURCE) failed, error=" + std::to_string(::GetLastError());
+            return false;
+        }
+
+        detailTextOut = "process, handle value, and object address verified; CloseSource success";
         return true;
     }
 
@@ -1387,6 +1693,7 @@ namespace ks::file
         result.totalHandleCount = rawRecords.size();
 
         const std::unordered_map<std::uint32_t, std::wstring> processNameMap = CollectProcessNameMap();
+        std::unordered_map<std::uint32_t, std::uint64_t> processCreationTimeCache;
         std::unordered_map<std::uint16_t, std::string> typeNameCache = options.typeNameCacheByIndex;
         for (const auto& pairItem : options.typeNameMapFromObjectTab)
         {
@@ -1464,6 +1771,9 @@ namespace ks::file
 
             HandleSnapshotRow row{};
             row.processId = rawRow.processId;
+            row.processCreationTime = QueryProcessCreationTimeCached(
+                rawRow.processId,
+                processCreationTimeCache);
             row.processName = ProcessNameOf(processNameMap, rawRow.processId);
             row.handleValue = rawRow.handleValue;
             row.typeIndex = rawRow.typeIndex;
@@ -1651,6 +1961,9 @@ namespace ks::file
                     {
                         HandleSnapshotRow kernelRow{};
                         kernelRow.processId = kernelEntry.processId;
+                        kernelRow.processCreationTime = QueryProcessCreationTimeCached(
+                            kernelEntry.processId,
+                            processCreationTimeCache);
                         kernelRow.processName = ProcessNameOf(processNameMap, kernelEntry.processId);
                         kernelRow.handleValue = static_cast<std::uint64_t>(kernelEntry.handleValue);
                         kernelRow.diffStatus = HandleDiffStatus::KernelOnly;
@@ -2194,6 +2507,21 @@ namespace ks::file
         {
             finishCancelledScan();
             return result;
+        }
+
+        // 破坏性解锁动作可能在用户确认后很久才执行；为每个候选保存进程创建时间，
+        // 后续用 PID + 创建时间复核身份，避免 PID 被系统复用后作用到另一个进程。
+        std::unordered_map<std::uint32_t, std::uint64_t> processCreationTimeCache;
+        for (HandleUsageEntry& entry : result.entries)
+        {
+            if (IsCancellationRequested(options.cancellationCallback))
+            {
+                finishCancelledScan();
+                return result;
+            }
+            entry.processCreationTime = QueryProcessCreationTimeCached(
+                entry.processId,
+                processCreationTimeCache);
         }
 
         std::sort(result.entries.begin(), result.entries.end(), [](const HandleUsageEntry& leftEntry, const HandleUsageEntry& rightEntry) {

@@ -23309,6 +23309,18 @@
     "目录已替换，但旧目标备份清理失败: %1": "Directory replaced, but the previous target backup could not be removed: %1",
     "目标已写入，但删除源目录失败: %1": "Target written, but the source directory could not be removed: %1",
     "目标已写入，但删除源文件失败: %1": "Target written, but the source file could not be removed: %1",
-    "为避免越界递归，不复制符号链接或重解析点: %1": "Symbolic links and reparse points are not copied to prevent traversal outside the source tree: %1"
+    "为避免越界递归，不复制符号链接或重解析点: %1": "Symbolic links and reparse points are not copied to prevent traversal outside the source tree: %1",
+    "身份不可验证：请重新扫描后再操作": "Identity cannot be verified; rescan before performing this action",
+    ", TerminateProcess=fail, error=": ", TerminateProcess=fail, error=",
+    "DuplicateHandle validation failed, error=": "DuplicateHandle validation failed, error=",
+    "GetProcessTimes failed, error=": "GetProcessTimes failed, error=",
+    "NtSuspendProcess failed, status=0x": "NtSuspendProcess failed, status=0x",
+    "OpenProcess for verified action failed, error=": "OpenProcess for verified action failed, error=",
+    "closed handle identity changed unexpectedly while the process was suspended": "Closed handle identity changed unexpectedly while the process was suspended",
+    "current handle is no longer a queryable disk file": "The current handle is no longer a queryable disk file",
+    "failed to refresh the handle identity before close": "Failed to refresh the handle identity before close",
+    "invalid or protected remote handle target": "Invalid or protected remote handle target",
+    "invalid, protected, or unverifiable handle identity": "Invalid, protected, or unverifiable handle identity",
+    "process identity verified": "Process identity verified"
   }
 }
