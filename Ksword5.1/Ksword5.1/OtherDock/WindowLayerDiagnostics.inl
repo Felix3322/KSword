@@ -1,7 +1,8 @@
 #pragma once
 
-// WindowDetailDialog is intentionally kept untouched. This module is compiled once
-// through OtherDock.WindowProtection.cpp and injects a read-only diagnostics tab.
+// This module is compiled once through OtherDock.WindowProtection.cpp and injects
+// a read-only diagnostics tab.  WindowDetailDialog publishes its target HWND as
+// metadata so this companion never has to infer it from user-visible text.
 
 #include <QApplication>
 #include <QByteArray>
@@ -39,6 +40,8 @@
 #include <QVariant>
 #include <QVBoxLayout>
 
+#include "../Internationalization/LanguageManager.h"
+
 #include <algorithm>
 #include <array>
 #include <optional>
@@ -56,10 +59,22 @@
 namespace ks::window::layerdiag
 {
     constexpr char kAttachedProperty[] = "ksword.windowLayerDiagnostics.attached";
+    constexpr char kTargetHwndProperty[] = "ksword.windowDetail.targetHwnd";
     constexpr DWORD kDwmwaExtendedFrameBounds = 9;
     constexpr DWORD kDwmwaCloaked = 14;
     constexpr int kWalkLimit = 100000;
     constexpr int kEventBlockLimit = 1000;
+
+    QString uiText(const char* key, const char* fallback)
+    {
+        return ks::i18n::text(QString::fromLatin1(key), QString::fromUtf8(fallback));
+    }
+
+    void bindUiText(QObject* object, const char* key, const char* fallback)
+    {
+        ks::i18n::LanguageManager::instance().bindText(
+            object, QString::fromLatin1(key), QString::fromUtf8(fallback));
+    }
 
     QString hwndText(HWND hwnd)
     {
@@ -210,8 +225,16 @@ namespace ks::window::layerdiag
         }
     }
 
-    int zIndex(HWND target)
+    struct ZOrderResult
     {
+        int globalIndex = -1;
+        int bandIndex = -1;
+        int bandWindowCount = 0;
+    };
+
+    ZOrderResult zOrder(HWND target, const BandResult& targetBand)
+    {
+        ZOrderResult result;
         QSet<quintptr> visited;
         HWND current = ::GetTopWindow(nullptr);
         for (int index = 0; current != nullptr && index < kWalkLimit; ++index)
@@ -224,11 +247,27 @@ namespace ks::window::layerdiag
             visited.insert(raw);
             if (current == target)
             {
-                return index;
+                result.globalIndex = index;
+            }
+
+            // Global Z order crosses bands.  Counting only peers with the
+            // same observed band makes the diagnostic answer the question
+            // users actually have: where is this window among its own layer?
+            if (targetBand.ok)
+            {
+                const BandResult currentBand = readBand(current);
+                if (currentBand.ok && currentBand.value == targetBand.value)
+                {
+                    if (current == target)
+                    {
+                        result.bandIndex = result.bandWindowCount;
+                    }
+                    ++result.bandWindowCount;
+                }
             }
             current = ::GetWindow(current, GW_HWNDNEXT);
         }
-        return -1;
+        return result;
     }
 
     struct TokenInfo
@@ -347,6 +386,8 @@ namespace ks::window::layerdiag
         HWND next = nullptr;
         HWND top = nullptr;
         int z = -1;
+        int bandZ = -1;
+        int bandWindowCount = 0;
         bool dwmAvailable = false;
         bool cloakedKnown = false;
         DWORD cloaked = 0;
@@ -406,7 +447,10 @@ namespace ks::window::layerdiag
         s.previous = ::GetWindow(hwnd, GW_HWNDPREV);
         s.next = ::GetWindow(hwnd, GW_HWNDNEXT);
         s.top = ::GetTopWindow(nullptr);
-        s.z = zIndex(hwnd);
+        const ZOrderResult order = zOrder(hwnd, s.band);
+        s.z = order.globalIndex;
+        s.bandZ = order.bandIndex;
+        s.bandWindowCount = order.bandWindowCount;
 
         using DwmFn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
         static const DwmFn dwm = []() -> DwmFn {
@@ -519,6 +563,9 @@ namespace ks::window::layerdiag
                 .arg(s.band.value).arg(hexText(s.band.value), bandName(s.band.value));
         out << QStringLiteral("注意: ZBID 数字是标识符，不是可按大小排序的置顶高度。");
         out << QStringLiteral("Top-level Z index: %1").arg(s.z);
+        out << QStringLiteral("Same-band Z index: %1 / %2")
+            .arg(s.bandZ)
+            .arg(s.band.ok ? QString::number(s.bandWindowCount) : QStringLiteral("<不可用>"));
         out << QStringLiteral("GetTopWindow(NULL): %1").arg(hwndText(s.top));
         out << QStringLiteral("GW_HWNDPREV / NEXT: %1 / %2").arg(hwndText(s.previous), hwndText(s.next));
 
@@ -602,6 +649,11 @@ namespace ks::window::layerdiag
         add(QStringLiteral("Style"), longPtrText(before.style), longPtrText(after.style));
         add(QStringLiteral("ExStyle"), longPtrText(before.exStyle), longPtrText(after.exStyle));
         add(QStringLiteral("ZIndex"), QString::number(before.z), QString::number(after.z));
+        add(QStringLiteral("SameBandZIndex"), QString::number(before.bandZ), QString::number(after.bandZ));
+        add(QStringLiteral("Title"), before.title, after.title);
+        add(QStringLiteral("WindowRect"), before.rectKnown ? rectText(before.rect) : QStringLiteral("<失败>"),
+            after.rectKnown ? rectText(after.rect) : QStringLiteral("<失败>"));
+        add(QStringLiteral("Enabled"), yesNo(before.enabled), yesNo(after.enabled));
         add(QStringLiteral("Owner"), hwndText(before.owner), hwndText(after.owner));
         add(QStringLiteral("Foreground"), hwndText(before.foreground), hwndText(after.foreground));
         add(QStringLiteral("Cloaked"), before.cloakedKnown ? hexText(before.cloaked) : QStringLiteral("<未知>"),
@@ -632,7 +684,12 @@ namespace ks::window::layerdiag
         out << QStringLiteral("A Band: %1").arg(a.band.ok ? QStringLiteral("%1 (%2)").arg(a.band.value).arg(bandName(a.band.value)) : QStringLiteral("<失败>"));
         out << QStringLiteral("B Band: %1").arg(b.band.ok ? QStringLiteral("%1 (%2)").arg(b.band.value).arg(bandName(b.band.value)) : QStringLiteral("<失败>"));
         out << QStringLiteral("Band ID 不按数值大小比较。");
-        out << QStringLiteral("A/B Z index: %1 / %2").arg(a.z).arg(b.z);
+        out << QStringLiteral("A/B global Z index: %1 / %2").arg(a.z).arg(b.z);
+        const bool sameBand = a.band.ok && b.band.ok && a.band.value == b.band.value;
+        out << QStringLiteral("Same band: %1").arg(yesNo(sameBand));
+        out << QStringLiteral("A/B same-band Z index: %1 / %2")
+            .arg(sameBand ? QString::number(a.bandZ) : QStringLiteral("<不适用>"))
+            .arg(sameBand ? QString::number(b.bandZ) : QStringLiteral("<不适用>"));
         out << QStringLiteral("Same desktop: %1").arg(yesNo(!a.desktop.isEmpty() && a.desktop == b.desktop));
         out << QStringLiteral("Same session: %1")
             .arg(a.token.sessionKnown && b.token.sessionKnown ? yesNo(a.token.sessionId == b.token.sessionId) : QStringLiteral("<未知>"));
@@ -668,6 +725,7 @@ namespace ks::window::layerdiag
     {
         QJsonArray array;
         QSet<quintptr> visited;
+        QHash<DWORD, int> bandPositions;
         HWND hwnd = ::GetTopWindow(nullptr);
         for (int index = 0; hwnd != nullptr && index < kWalkLimit; ++index)
         {
@@ -692,6 +750,12 @@ namespace ks::window::layerdiag
             item.insert(QStringLiteral("bandSuccess"), band.ok);
             item.insert(QStringLiteral("band"), static_cast<double>(band.value));
             item.insert(QStringLiteral("bandName"), bandName(band.value));
+            const int bandIndex = band.ok ? bandPositions.value(band.value, 0) : -1;
+            item.insert(QStringLiteral("bandZIndex"), bandIndex);
+            if (band.ok)
+            {
+                bandPositions.insert(band.value, bandIndex + 1);
+            }
             item.insert(QStringLiteral("desktop"), objectName(::GetThreadDesktop(tid)));
             array.append(item);
             hwnd = ::GetWindow(hwnd, GW_HWNDNEXT);
@@ -713,6 +777,7 @@ namespace ks::window::layerdiag
         case EVENT_OBJECT_REORDER: return QStringLiteral("EVENT_OBJECT_REORDER");
         case EVENT_OBJECT_STATECHANGE: return QStringLiteral("EVENT_OBJECT_STATECHANGE");
         case EVENT_OBJECT_LOCATIONCHANGE: return QStringLiteral("EVENT_OBJECT_LOCATIONCHANGE");
+        case EVENT_OBJECT_NAMECHANGE: return QStringLiteral("EVENT_OBJECT_NAMECHANGE");
         default: return QStringLiteral("EVENT_%1").arg(hexText(event));
         }
     }
@@ -736,7 +801,7 @@ namespace ks::window::layerdiag
             m_initialTid = ::GetWindowThreadProcessId(m_target, &m_initialPid);
             m_initialClass = className(m_target);
             buildUi();
-            refresh(QStringLiteral("初始快照"));
+            refresh(uiText("window.layer.status.initial_snapshot", "初始快照"));
         }
 
         ~Page() override { stopTracking(); }
@@ -783,18 +848,19 @@ namespace ks::window::layerdiag
             auto* root = new QVBoxLayout(this);
             root->setContentsMargins(8, 8, 8, 8);
             auto* warning = new QLabel(
-                QStringLiteral("Band ID 是标识符，不是线性高度。本页分别展示 Band、Band 内 Z 序和实际命中。"), this);
+                uiText("window.layer.warning", "Band ID 是标识符，不是线性高度。本页分别展示 Band、Band 内 Z 序和实际命中。"), this);
             warning->setWordWrap(true);
             root->addWidget(warning);
 
             auto* actions = new QHBoxLayout();
-            actions->addWidget(new QLabel(QStringLiteral("锁定 HWND: %1").arg(hwndText(m_target)), this), 1);
-            auto* refreshButton = new QPushButton(QStringLiteral("刷新"), this);
-            auto* delayedButton = new QPushButton(QStringLiteral("3 秒后快照"), this);
-            auto* copyButton = new QPushButton(QStringLiteral("复制"), this);
-            auto* exportButton = new QPushButton(QStringLiteral("导出快照"), this);
-            auto* exportZButton = new QPushButton(QStringLiteral("导出完整 Z 序"), this);
-            m_trackButton = new QPushButton(QStringLiteral("开始事件追踪"), this);
+            auto* targetLabel = new QLabel(uiText("window.layer.target", "锁定 HWND: %1").arg(hwndText(m_target)), this);
+            actions->addWidget(targetLabel, 1);
+            auto* refreshButton = new QPushButton(uiText("window.layer.action.refresh", "刷新"), this);
+            auto* delayedButton = new QPushButton(uiText("window.layer.action.delayed_snapshot", "3 秒后快照"), this);
+            auto* copyButton = new QPushButton(uiText("window.layer.action.copy", "复制"), this);
+            auto* exportButton = new QPushButton(uiText("window.layer.action.export_snapshot", "导出快照"), this);
+            auto* exportZButton = new QPushButton(uiText("window.layer.action.export_z_order", "导出完整 Z 序"), this);
+            m_trackButton = new QPushButton(uiText("window.layer.action.track_start", "开始事件追踪"), this);
             actions->addWidget(refreshButton);
             actions->addWidget(delayedButton);
             actions->addWidget(copyButton);
@@ -804,12 +870,13 @@ namespace ks::window::layerdiag
             root->addLayout(actions);
 
             auto* compareRow = new QHBoxLayout();
-            compareRow->addWidget(new QLabel(QStringLiteral("对比 HWND:"), this));
+            auto* compareLabel = new QLabel(uiText("window.layer.compare.hwnd", "对比 HWND:"), this);
+            compareRow->addWidget(compareLabel);
             m_compare = new QLineEdit(this);
-            m_compare->setPlaceholderText(QStringLiteral("0x104DE 或十进制"));
-            auto* pickButton = new QPushButton(QStringLiteral("取鼠标下顶层窗口"), this);
-            auto* compareButton = new QPushButton(QStringLiteral("对比"), this);
-            auto* delayedCompareButton = new QPushButton(QStringLiteral("3 秒后对比"), this);
+            m_compare->setPlaceholderText(uiText("window.layer.compare.placeholder", "0x104DE 或十进制"));
+            auto* pickButton = new QPushButton(uiText("window.layer.action.pick_top_window", "取鼠标下顶层窗口"), this);
+            auto* compareButton = new QPushButton(uiText("window.layer.action.compare", "对比"), this);
+            auto* delayedCompareButton = new QPushButton(uiText("window.layer.action.delayed_compare", "3 秒后对比"), this);
             compareRow->addWidget(m_compare, 1);
             compareRow->addWidget(pickButton);
             compareRow->addWidget(compareButton);
@@ -829,23 +896,43 @@ namespace ks::window::layerdiag
                 edit->setLineWrapMode(QPlainTextEdit::NoWrap);
                 edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
             }
-            tabs->addTab(m_output, QStringLiteral("快照 / 对比"));
-            tabs->addTab(m_events, QStringLiteral("事件时间线"));
+            tabs->addTab(m_output, uiText("window.layer.tab.snapshot", "快照 / 对比"));
+            tabs->addTab(m_events, uiText("window.layer.tab.events", "事件时间线"));
             root->addWidget(tabs, 1);
 
-            connect(refreshButton, &QPushButton::clicked, this, [this]() { refresh(QStringLiteral("手动刷新")); });
+            // These bindings keep an already-open diagnostic page coherent
+            // when the application language changes at runtime.
+            bindUiText(warning, "window.layer.warning", "Band ID 是标识符，不是线性高度。本页分别展示 Band、Band 内 Z 序和实际命中。");
+            bindUiText(refreshButton, "window.layer.action.refresh", "刷新");
+            bindUiText(delayedButton, "window.layer.action.delayed_snapshot", "3 秒后快照");
+            bindUiText(copyButton, "window.layer.action.copy", "复制");
+            bindUiText(exportButton, "window.layer.action.export_snapshot", "导出快照");
+            bindUiText(exportZButton, "window.layer.action.export_z_order", "导出完整 Z 序");
+            bindUiText(pickButton, "window.layer.action.pick_top_window", "取鼠标下顶层窗口");
+            bindUiText(compareButton, "window.layer.action.compare", "对比");
+            bindUiText(delayedCompareButton, "window.layer.action.delayed_compare", "3 秒后对比");
+            bindUiText(compareLabel, "window.layer.compare.hwnd", "对比 HWND:");
+            ks::i18n::LanguageManager::instance().bindPlaceholder(
+                m_compare, QStringLiteral("window.layer.compare.placeholder"), QStringLiteral("0x104DE 或十进制"));
+            ks::i18n::LanguageManager::instance().bindTab(
+                tabs, m_output, QStringLiteral("window.layer.tab.snapshot"), QStringLiteral("快照 / 对比"));
+            ks::i18n::LanguageManager::instance().bindTab(
+                tabs, m_events, QStringLiteral("window.layer.tab.events"), QStringLiteral("事件时间线"));
+            updateTrackButtonText();
+
+            connect(refreshButton, &QPushButton::clicked, this, [this]() { refresh(uiText("window.layer.status.manual_refresh", "手动刷新")); });
             connect(delayedButton, &QPushButton::clicked, this, [this, delayedButton]() {
                 delayedButton->setEnabled(false);
-                m_status->setText(QStringLiteral("3 秒后抓取；现在回到输入框并让候选框出现。"));
+                m_status->setText(uiText("window.layer.status.delayed_snapshot", "3 秒后抓取；现在回到输入框并让候选框出现。"));
                 QTimer::singleShot(3000, this, [this, delayedButton]() {
-                    refresh(QStringLiteral("延迟快照"));
+                    refresh(uiText("window.layer.status.delayed_snapshot_complete", "延迟快照"));
                     delayedButton->setEnabled(true);
                     QApplication::beep();
                 });
             });
             connect(copyButton, &QPushButton::clicked, this, [this]() {
                 QApplication::clipboard()->setText(m_output->toPlainText());
-                m_status->setText(QStringLiteral("已复制。"));
+                m_status->setText(uiText("window.layer.status.copied", "已复制。"));
             });
             connect(exportButton, &QPushButton::clicked, this, [this]() { exportSnapshot(); });
             connect(exportZButton, &QPushButton::clicked, this, [this]() { exportZOrder(); });
@@ -863,7 +950,7 @@ namespace ks::window::layerdiag
             connect(compareButton, &QPushButton::clicked, this, [this]() { compareNow(); });
             connect(delayedCompareButton, &QPushButton::clicked, this, [this, delayedCompareButton]() {
                 delayedCompareButton->setEnabled(false);
-                m_status->setText(QStringLiteral("3 秒后对比；请恢复待测遮挡状态。"));
+                m_status->setText(uiText("window.layer.status.delayed_compare", "3 秒后对比；请恢复待测遮挡状态。"));
                 QTimer::singleShot(3000, this, [this, delayedCompareButton]() {
                     compareNow();
                     delayedCompareButton->setEnabled(true);
@@ -876,7 +963,7 @@ namespace ks::window::layerdiag
         {
             m_current = capture(m_target);
             m_output->setPlainText(snapshotText(*m_current, m_initialPid, m_initialTid, m_initialClass));
-            m_status->setText(QStringLiteral("%1完成：%2")
+            m_status->setText(uiText("window.layer.status.completed", "%1完成：%2")
                 .arg(reason, m_current->time.toString(QStringLiteral("HH:mm:ss.zzz"))));
         }
 
@@ -885,7 +972,7 @@ namespace ks::window::layerdiag
             const std::optional<HWND> other = parseHwnd(m_compare->text());
             if (!other.has_value() || ::IsWindow(*other) == FALSE)
             {
-                m_status->setText(QStringLiteral("对比 HWND 无效或已销毁。"));
+                m_status->setText(uiText("window.layer.status.invalid_compare_target", "对比 HWND 无效或已销毁。"));
                 return;
             }
             const Snapshot a = capture(m_target);
@@ -897,14 +984,14 @@ namespace ks::window::layerdiag
                 snapshotText(a, m_initialPid, m_initialTid, m_initialClass) +
                 QStringLiteral("\n\n========== B ==========\n") +
                 snapshotText(b, b.pid, b.tid, b.cls));
-            m_status->setText(QStringLiteral("A/B 对比完成。"));
+            m_status->setText(uiText("window.layer.status.compare_complete", "A/B 对比完成。"));
         }
 
         void exportSnapshot()
         {
-            if (!m_current.has_value()) refresh(QStringLiteral("导出前刷新"));
+            if (!m_current.has_value()) refresh(uiText("window.layer.status.refresh_before_export", "导出前刷新"));
             const QString path = QFileDialog::getSaveFileName(
-                this, QStringLiteral("导出窗口层级快照"),
+                this, uiText("window.layer.export.snapshot_title", "导出窗口层级快照"),
                 QStringLiteral("window-layer-%1.json").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"))),
                 QStringLiteral("JSON (*.json)"));
             if (path.isEmpty()) return;
@@ -921,17 +1008,17 @@ namespace ks::window::layerdiag
             QFile file(path);
             if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
             {
-                QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
+                QMessageBox::warning(this, uiText("window.layer.export.failed_title", "导出失败"), uiText("window.layer.export.failed_message", "无法写入文件。"));
                 return;
             }
             file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-            m_status->setText(QStringLiteral("快照已导出。"));
+            m_status->setText(uiText("window.layer.status.snapshot_exported", "快照已导出。"));
         }
 
         void exportZOrder()
         {
             const QString path = QFileDialog::getSaveFileName(
-                this, QStringLiteral("导出完整顶层 Z 序"),
+                this, uiText("window.layer.export.z_order_title", "导出完整顶层 Z 序"),
                 QStringLiteral("window-z-order-%1.json").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"))),
                 QStringLiteral("JSON (*.json)"));
             if (path.isEmpty()) return;
@@ -942,11 +1029,11 @@ namespace ks::window::layerdiag
             QFile file(path);
             if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
             {
-                QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入文件。"));
+                QMessageBox::warning(this, uiText("window.layer.export.failed_title", "导出失败"), uiText("window.layer.export.failed_message", "无法写入文件。"));
                 return;
             }
             file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-            m_status->setText(QStringLiteral("完整 Z 序已导出。"));
+            m_status->setText(uiText("window.layer.status.z_order_exported", "完整 Z 序已导出。"));
         }
 
         void startTracking()
@@ -965,10 +1052,13 @@ namespace ks::window::layerdiag
             addHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND);
             addHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND);
             addHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_LOCATIONCHANGE);
+            addHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE);
             m_tracking = !m_hooks.empty();
             m_eventSnapshot = capture(m_target);
-            m_trackButton->setText(m_tracking ? QStringLiteral("停止事件追踪") : QStringLiteral("开始事件追踪"));
-            m_status->setText(m_tracking ? QStringLiteral("事件追踪已启动。") : QStringLiteral("SetWinEventHook 失败。"));
+            updateTrackButtonText();
+            m_status->setText(m_tracking
+                ? uiText("window.layer.status.track_started", "事件追踪已启动。")
+                : uiText("window.layer.status.track_failed", "SetWinEventHook 失败。"));
         }
 
         void stopTracking()
@@ -984,7 +1074,20 @@ namespace ks::window::layerdiag
             m_hooks.clear();
             m_tracking = false;
             m_eventSnapshot.reset();
-            if (m_trackButton != nullptr) m_trackButton->setText(QStringLiteral("开始事件追踪"));
+            updateTrackButtonText();
+        }
+
+        void updateTrackButtonText()
+        {
+            if (m_trackButton == nullptr) return;
+            if (m_tracking)
+            {
+                bindUiText(m_trackButton, "window.layer.action.track_stop", "停止事件追踪");
+            }
+            else
+            {
+                bindUiText(m_trackButton, "window.layer.action.track_start", "开始事件追踪");
+            }
         }
 
         HWND m_target = nullptr;
@@ -1020,6 +1123,15 @@ namespace ks::window::layerdiag
 
     std::optional<HWND> targetFromDialog(const QDialog* dialog)
     {
+        bool propertyOk = false;
+        const qulonglong propertyValue = dialog->property(kTargetHwndProperty).toULongLong(&propertyOk);
+        if (propertyOk && propertyValue != 0)
+        {
+            return reinterpret_cast<HWND>(static_cast<quintptr>(propertyValue));
+        }
+
+        // The fallback keeps compatibility with detail dialogs created by an
+        // older executable which do not publish the structured HWND property.
         static const QRegularExpression pattern(QStringLiteral(R"(\((0[xX][0-9A-Fa-f]+)\)\s*$)"));
         const QRegularExpressionMatch match = pattern.match(dialog->windowTitle());
         return match.hasMatch() ? parseHwnd(match.captured(1)) : std::nullopt;
@@ -1047,7 +1159,7 @@ namespace ks::window::layerdiag
         const std::optional<HWND> target = targetFromDialog(dialog);
         QTabWidget* tabs = hostTabs(dialog);
         if (!target.has_value() || tabs == nullptr) return;
-        tabs->addTab(new Page(*target, tabs), QStringLiteral("层级诊断"));
+        tabs->addTab(new Page(*target, tabs), uiText("window.layer.tab.title", "层级诊断"));
         dialog->setProperty(kAttachedProperty, true);
     }
 

@@ -1161,6 +1161,9 @@ public:
     {
         setAttribute(Qt::WA_DeleteOnClose, true);
         setObjectName(QStringLiteral("WindowDetailDialogRoot"));
+        // Keep the inspected HWND as structured metadata.  Companion pages must
+        // not have to parse a localized/user-controlled window title to find it.
+        setProperty("ksword.windowDetail.targetHwnd", QVariant::fromValue(info.hwndValue));
         setAttribute(Qt::WA_StyledBackground, true);
         setAutoFillBackground(true);
         setStyleSheet(buildOpaqueWindowDetailDialogStyle(objectName()));
