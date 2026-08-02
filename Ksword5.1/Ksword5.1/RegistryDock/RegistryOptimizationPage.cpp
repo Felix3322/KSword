@@ -768,7 +768,10 @@ namespace
         }
 
         using RegRenameKeyFunc = LSTATUS(WINAPI*)(HKEY, LPCWSTR, LPCWSTR);
-        const auto renameKey = reinterpret_cast<RegRenameKeyFunc>(::GetProcAddress(::GetModuleHandleW(L"Advapi32.dll"), "RegRenameKey"));
+        const HMODULE advapiModule = ::GetModuleHandleW(L"Advapi32.dll");
+        const auto renameKey = advapiModule != nullptr
+            ? reinterpret_cast<RegRenameKeyFunc>(::GetProcAddress(advapiModule, "RegRenameKey"))
+            : nullptr;
         if (renameKey == nullptr)
         {
             ::RegCloseKey(parentKey);
