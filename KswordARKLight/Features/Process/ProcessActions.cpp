@@ -115,6 +115,32 @@ const ProcessSnapshotRow* FindRowByPid(const std::vector<ProcessSnapshotRow>& ro
     return it == rows.end() ? nullptr : &*it;
 }
 
+// BuildProcessActionTargets preserves the exact process instances selected by
+// the user. Missing rows remain explicit zero-identity targets so mutations fail
+// closed instead of falling back to whatever later owns the same PID.
+std::vector<ProcessSnapshotRow> BuildProcessActionTargets(
+    const std::vector<DWORD>& selectedPids,
+    const std::vector<ProcessSnapshotRow>& snapshotRows) {
+    std::vector<ProcessSnapshotRow> targets;
+    targets.reserve(selectedPids.size());
+    std::unordered_set<DWORD> visitedPids;
+    visitedPids.reserve(selectedPids.size());
+    for (const DWORD pid : selectedPids) {
+        if (pid == 0U || !visitedPids.insert(pid).second) {
+            continue;
+        }
+        const ProcessSnapshotRow* row = FindRowByPid(snapshotRows, pid);
+        if (row != nullptr) {
+            targets.push_back(*row);
+            continue;
+        }
+        ProcessSnapshotRow missingTarget{};
+        missingTarget.processId = pid;
+        targets.push_back(std::move(missingTarget));
+    }
+    return targets;
+}
+
 // CollectR3ProcessTreePids expands the selected R3 processes into descendant-
 // first termination targets. R0-only audit rows are deliberately excluded from
 // both roots and descendants, so driver evidence never changes tree discovery.
@@ -331,11 +357,18 @@ bool IsProcessPresentBySnapshot(DWORD pid, bool* queryOkOut) {
     return present;
 }
 
+// OpenProcessForAction retains a verified process handle for the duration of a
+// mutation, so a PID cannot be silently rebound to a different snapshot row.
+Ksword::Core::UniqueHandle OpenProcessForAction(
+    DWORD pid,
+    ULONGLONG expectedCreationTime100ns,
+    DWORD access,
+    std::wstring& errorText);
 // ExecuteMultiMethodTerminate mirrors the full ProcessDock right-click action:
 // each target is checked after every method and the chain stops immediately
 // once its exit has been confirmed. The two-round cap prevents an unresponsive
 // target from leaving the Light UI in an unbounded operation.
-ProcessActionResult ExecuteMultiMethodTerminate(const std::vector<DWORD>& selectedPids) {
+ProcessActionResult ExecuteMultiMethodTerminate(const std::vector<ProcessSnapshotRow>& actionTargets) {
     ProcessActionResult result;
     result.title = L"结束进程(组合方法链)";
     result.success = true;
@@ -362,12 +395,26 @@ ProcessActionResult ExecuteMultiMethodTerminate(const std::vector<DWORD>& select
         { L"NtUnmapViewOfSection 卸载 ntdll.dll", [](std::uint32_t pid, std::string* detail) { return ks::process::TerminateProcessByNtUnmapNtdll(pid, detail); } }
     };
 
-    for (DWORD pid : selectedPids) {
+    for (const ProcessSnapshotRow& target : actionTargets) {
+        const DWORD pid = target.processId;
         if (IsProtectedSystemPid(pid)) {
             AppendIoLine(result.detail, pid, L"组合结束", false, L"protected system PID");
             result.success = false;
             continue;
         }
+
+        std::wstring identityError;
+        Ksword::Core::UniqueHandle verifiedProcess = OpenProcessForAction(
+            pid,
+            target.creationTime100ns,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            identityError);
+        if (!verifiedProcess.valid()) {
+            AppendIoLine(result.detail, pid, L"组合结束", false, identityError);
+            result.success = false;
+            continue;
+        }
+        // verifiedProcess stays open through all PID-only fallback methods.
 
         bool queryOk = false;
         if (!IsProcessPresentBySnapshot(pid, &queryOk)) {
@@ -412,18 +459,46 @@ ProcessActionResult ExecuteMultiMethodTerminate(const std::vector<DWORD>& select
     return result;
 }
 
-// OpenProcessForAction opens a process for a concrete local Win32/NtAPI action.
-// Inputs are PID and desired access; processing blocks obvious system PIDs and
-// opens the handle; output is an owning handle plus a diagnostic on failure.
-Ksword::Core::UniqueHandle OpenProcessForAction(DWORD pid, DWORD access, std::wstring& errorText) {
+// OpenProcessForAction opens and identity-checks one local process action handle.
+// Inputs are PID, expected snapshot creation time, and desired access; processing
+// keeps the matching handle alive for the caller so PID-only fallback APIs cannot
+// target a later process instance. Output is an owning handle or a diagnostic.
+Ksword::Core::UniqueHandle OpenProcessForAction(
+    const DWORD pid,
+    const ULONGLONG expectedCreationTime100ns,
+    const DWORD access,
+    std::wstring& errorText) {
     if (IsProtectedSystemPid(pid)) {
         errorText = L"protected system PID";
         return Ksword::Core::UniqueHandle();
     }
+    if (expectedCreationTime100ns == 0U) {
+        errorText = L"process identity is unavailable; action skipped";
+        return Ksword::Core::UniqueHandle();
+    }
 
-    HANDLE process = ::OpenProcess(access, FALSE, pid);
+    const DWORD requestedAccess = access | PROCESS_QUERY_LIMITED_INFORMATION;
+    HANDLE process = ::OpenProcess(requestedAccess, FALSE, pid);
     if (!process) {
         errorText = L"OpenProcess failed: " + Win32ErrorText(::GetLastError());
+        return Ksword::Core::UniqueHandle();
+    }
+
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    if (!::GetProcessTimes(process, &creationTime, &exitTime, &kernelTime, &userTime)) {
+        errorText = L"GetProcessTimes failed: " + Win32ErrorText(::GetLastError());
+        ::CloseHandle(process);
+        return Ksword::Core::UniqueHandle();
+    }
+    const ULONGLONG actualCreationTime100ns =
+        (static_cast<ULONGLONG>(creationTime.dwHighDateTime) << 32U) |
+        static_cast<ULONGLONG>(creationTime.dwLowDateTime);
+    if (actualCreationTime100ns == 0U || actualCreationTime100ns != expectedCreationTime100ns) {
+        errorText = L"process identity changed (PID was reused); action skipped";
+        ::CloseHandle(process);
         return Ksword::Core::UniqueHandle();
     }
     return Ksword::Core::UniqueHandle(process);
@@ -432,7 +507,7 @@ Ksword::Core::UniqueHandle OpenProcessForAction(DWORD pid, DWORD access, std::ws
 // NtSuspendOrResumeProcess invokes NtSuspendProcess or NtResumeProcess for one
 // PID. Inputs are PID and desired direction; processing uses ntdll dynamically;
 // output is true on NT_SUCCESS and a diagnostic otherwise.
-bool NtSuspendOrResumeProcess(DWORD pid, bool resume, std::wstring& message) {
+bool NtSuspendOrResumeProcess(DWORD pid, ULONGLONG expectedCreationTime100ns, bool resume, std::wstring& message) {
     const char* exportName = resume ? "NtResumeProcess" : "NtSuspendProcess";
     const FARPROC proc = NtProc(exportName);
     if (!proc) {
@@ -441,7 +516,7 @@ bool NtSuspendOrResumeProcess(DWORD pid, bool resume, std::wstring& message) {
     }
 
     std::wstring openError;
-    Ksword::Core::UniqueHandle process = OpenProcessForAction(pid, kProcessSuspendResumeAccess, openError);
+    Ksword::Core::UniqueHandle process = OpenProcessForAction(pid, expectedCreationTime100ns, kProcessSuspendResumeAccess, openError);
     if (!process.valid()) {
         message = openError;
         return false;
@@ -461,7 +536,7 @@ bool NtSuspendOrResumeProcess(DWORD pid, bool resume, std::wstring& message) {
 // SetCriticalFlagForPid sets ProcessBreakOnTermination for one process. Inputs
 // are PID and target state; processing enables SeDebugPrivilege best-effort then
 // calls NtSetInformationProcess; output reports operation success.
-bool SetCriticalFlagForPid(DWORD pid, bool enable, std::wstring& message) {
+bool SetCriticalFlagForPid(DWORD pid, ULONGLONG expectedCreationTime100ns, bool enable, std::wstring& message) {
     std::wstring privilegeDetail;
     (void)EnableCurrentProcessPrivilege(SE_DEBUG_NAME, privilegeDetail);
 
@@ -472,7 +547,7 @@ bool SetCriticalFlagForPid(DWORD pid, bool enable, std::wstring& message) {
     }
 
     std::wstring openError;
-    Ksword::Core::UniqueHandle process = OpenProcessForAction(pid, PROCESS_SET_INFORMATION, openError);
+    Ksword::Core::UniqueHandle process = OpenProcessForAction(pid, expectedCreationTime100ns, PROCESS_SET_INFORMATION, openError);
     if (!process.valid()) {
         message = openError;
         return false;
@@ -498,7 +573,7 @@ bool SetCriticalFlagForPid(DWORD pid, bool enable, std::wstring& message) {
 // SetEfficiencyModeForPid toggles Windows process power throttling. Inputs are
 // PID and target state; processing calls SetProcessInformation dynamically;
 // output reports operation success and a concrete Win32 diagnostic.
-bool SetEfficiencyModeForPid(DWORD pid, bool enable, std::wstring& message) {
+bool SetEfficiencyModeForPid(DWORD pid, ULONGLONG expectedCreationTime100ns, bool enable, std::wstring& message) {
     HMODULE kernel32 = ::GetModuleHandleW(L"kernel32.dll");
     const FARPROC proc = kernel32 ? ::GetProcAddress(kernel32, "SetProcessInformation") : nullptr;
     if (!proc) {
@@ -507,7 +582,7 @@ bool SetEfficiencyModeForPid(DWORD pid, bool enable, std::wstring& message) {
     }
 
     std::wstring openError;
-    Ksword::Core::UniqueHandle process = OpenProcessForAction(pid, PROCESS_SET_INFORMATION, openError);
+    Ksword::Core::UniqueHandle process = OpenProcessForAction(pid, expectedCreationTime100ns, PROCESS_SET_INFORMATION, openError);
     if (!process.valid()) {
         message = openError;
         return false;
@@ -682,15 +757,23 @@ bool SpecialProcessActionForMenu(ProcessActionId actionId, unsigned long& action
     }
 }
 
-bool SetPriorityForPid(DWORD pid, DWORD priorityClass, std::wstring& detail) {
-    HANDLE process = ::OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!process) {
-        detail += L"PID " + std::to_wstring(pid) + L": OpenProcess failed " + std::to_wstring(::GetLastError()) + L"\r\n";
+bool SetPriorityForPid(
+    DWORD pid,
+    ULONGLONG expectedCreationTime100ns,
+    DWORD priorityClass,
+    std::wstring& detail) {
+    std::wstring openError;
+    Ksword::Core::UniqueHandle process = OpenProcessForAction(
+        pid,
+        expectedCreationTime100ns,
+        PROCESS_SET_INFORMATION,
+        openError);
+    if (!process.valid()) {
+        detail += L"PID " + std::to_wstring(pid) + L": " + openError + L"\r\n";
         return false;
     }
-    const BOOL ok = ::SetPriorityClass(process, priorityClass);
+    const BOOL ok = ::SetPriorityClass(process.get(), priorityClass);
     const DWORD error = ok ? ERROR_SUCCESS : ::GetLastError();
-    ::CloseHandle(process);
     detail += L"PID " + std::to_wstring(pid) + (ok ? L": SetPriorityClass OK" : L": SetPriorityClass failed ") +
         (ok ? L"" : std::to_wstring(error)) + L"\r\n";
     return ok != FALSE;
@@ -769,10 +852,12 @@ ProcessActionResult ExecuteKeyboardHotkeyScan(DWORD pid) {
     return result;
 }
 
-// ExecuteLocalProcessAction applies one local Win32/NtAPI action to all selected
-// PIDs. Inputs are action id and target list; processing dispatches to a concrete
-// helper; output aggregates per-PID status for the UI.
-ProcessActionResult ExecuteLocalProcessAction(ProcessActionId actionId, const std::vector<DWORD>& selectedPids) {
+// ExecuteLocalProcessAction applies one local Win32/NtAPI action to captured
+// process instances. Each helper validates the snapshot creation time on the
+// same handle used by its mutation, so a reused PID is rejected.
+ProcessActionResult ExecuteLocalProcessAction(
+    ProcessActionId actionId,
+    const std::vector<ProcessSnapshotRow>& actionTargets) {
     ProcessActionResult result;
     result.success = true;
     bool handled = true;
@@ -808,30 +893,35 @@ ProcessActionResult ExecuteLocalProcessAction(ProcessActionId actionId, const st
     }
 
     if (!handled) {
-        return FailureResult(L"进程动作", selectedPids, L"未知本地进程动作。");
+        result.success = false;
+        result.title = L"进程动作";
+        result.detail = L"未知本地进程动作。";
+        return result;
     }
 
-    for (DWORD pid : selectedPids) {
+    for (const ProcessSnapshotRow& target : actionTargets) {
+        const DWORD pid = target.processId;
+        const ULONGLONG expectedCreationTime100ns = target.creationTime100ns;
         std::wstring message;
         bool ok = false;
         switch (actionId) {
         case ProcessActionId::SuspendProcess:
-            ok = NtSuspendOrResumeProcess(pid, false, message);
+            ok = NtSuspendOrResumeProcess(pid, expectedCreationTime100ns, false, message);
             break;
         case ProcessActionId::ResumeProcess:
-            ok = NtSuspendOrResumeProcess(pid, true, message);
+            ok = NtSuspendOrResumeProcess(pid, expectedCreationTime100ns, true, message);
             break;
         case ProcessActionId::EnableEfficiencyMode:
-            ok = SetEfficiencyModeForPid(pid, true, message);
+            ok = SetEfficiencyModeForPid(pid, expectedCreationTime100ns, true, message);
             break;
         case ProcessActionId::DisableEfficiencyMode:
-            ok = SetEfficiencyModeForPid(pid, false, message);
+            ok = SetEfficiencyModeForPid(pid, expectedCreationTime100ns, false, message);
             break;
         case ProcessActionId::SetCriticalProcess:
-            ok = SetCriticalFlagForPid(pid, true, message);
+            ok = SetCriticalFlagForPid(pid, expectedCreationTime100ns, true, message);
             break;
         case ProcessActionId::ClearCriticalProcess:
-            ok = SetCriticalFlagForPid(pid, false, message);
+            ok = SetCriticalFlagForPid(pid, expectedCreationTime100ns, false, message);
             break;
         default:
             message = L"unknown action";
@@ -843,7 +933,6 @@ ProcessActionResult ExecuteLocalProcessAction(ProcessActionId actionId, const st
     }
     return result;
 }
-
 // ExecutePplRefresh queries the R0 process enumeration table and extracts the
 // selected PIDs' protection bytes. Inputs are selected PIDs; processing uses
 // ArkDriverClient enumerateProcesses; output is an aggregated diagnostic result.
@@ -891,13 +980,21 @@ ProcessActionResult ExecuteProcessAction(
         return FailureResult(L"进程动作", selectedPids, L"没有选中进程。");
     }
 
+    const auto buildActionTargets = [&snapshotRows](const std::vector<DWORD>& pids) {
+        return BuildProcessActionTargets(pids, snapshotRows);
+    };
+
     const DWORD priorityClass = PriorityClassForAction(actionId);
     if (priorityClass != 0) {
         ProcessActionResult result;
         result.title = L"设置进程优先级";
         result.success = true;
-        for (DWORD pid : selectedPids) {
-            if (!SetPriorityForPid(pid, priorityClass, result.detail)) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            if (!SetPriorityForPid(
+                    target.processId,
+                    target.creationTime100ns,
+                    priorityClass,
+                    result.detail)) {
                 result.success = false;
             }
         }
@@ -919,7 +1016,7 @@ ProcessActionResult ExecuteProcessAction(
     }
 
     if (actionId == ProcessActionId::TerminateProcessMultiMethod) {
-        return ExecuteMultiMethodTerminate(selectedPids);
+        return ExecuteMultiMethodTerminate(buildActionTargets(selectedPids));
     }
 
     if (actionId == ProcessActionId::TerminateProcessTree) {
@@ -927,7 +1024,7 @@ ProcessActionResult ExecuteProcessAction(
         if (treePids.empty()) {
             return FailureResult(L"结束进程树", selectedPids, L"选中进程未包含在当前 R3 进程快照中，无法识别进程树。");
         }
-        ProcessActionResult result = ExecuteMultiMethodTerminate(treePids);
+        ProcessActionResult result = ExecuteMultiMethodTerminate(buildActionTargets(treePids));
         result.title = L"结束进程树";
         return result;
     }
@@ -936,21 +1033,26 @@ ProcessActionResult ExecuteProcessAction(
         ProcessActionResult result;
         result.title = L"结束进程";
         result.success = true;
-        for (DWORD pid : selectedPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            const DWORD pid = target.processId;
             if (IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"TerminateProcess", false, L"protected system PID");
                 result.success = false;
                 continue;
             }
-            HANDLE process = ::OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-            if (!process) {
-                AppendIoLine(result.detail, pid, L"TerminateProcess", false, L"OpenProcess error " + std::to_wstring(::GetLastError()));
+            std::wstring openError;
+            Ksword::Core::UniqueHandle process = OpenProcessForAction(
+                pid,
+                target.creationTime100ns,
+                PROCESS_TERMINATE,
+                openError);
+            if (!process.valid()) {
+                AppendIoLine(result.detail, pid, L"TerminateProcess", false, openError);
                 result.success = false;
                 continue;
             }
-            const BOOL ok = ::TerminateProcess(process, static_cast<UINT>(0xC0000005u));
+            const BOOL ok = ::TerminateProcess(process.get(), static_cast<UINT>(0xC0000005u));
             const DWORD error = ok ? ERROR_SUCCESS : ::GetLastError();
-            ::CloseHandle(process);
             AppendIoLine(result.detail, pid, L"TerminateProcess", ok != FALSE, ok ? L"" : L"Win32 error " + std::to_wstring(error));
             result.success = result.success && ok != FALSE;
         }
@@ -1121,7 +1223,7 @@ ProcessActionResult ExecuteProcessAction(
     case ProcessActionId::DisableEfficiencyMode:
     case ProcessActionId::SetCriticalProcess:
     case ProcessActionId::ClearCriticalProcess:
-        return ExecuteLocalProcessAction(actionId, selectedPids);
+        return ExecuteLocalProcessAction(actionId, buildActionTargets(selectedPids));
     case ProcessActionId::RefreshPplProtectionLevel:
         return ExecutePplRefresh(selectedPids);
     case ProcessActionId::OpenMemoryOperation: {

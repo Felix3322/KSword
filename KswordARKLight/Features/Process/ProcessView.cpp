@@ -56,6 +56,11 @@ struct NotifyResult {
     LRESULT result = 0;
 };
 
+// ProcessStableKey names one snapshot process instance rather than a recyclable PID.
+// A zero creation time remains explicit for kernel-only evidence rows.
+std::wstring ProcessStableKey(const DWORD processId, const ULONGLONG creationTime100ns) {
+    return L"pid:" + std::to_wstring(processId) + L"#" + std::to_wstring(creationTime100ns);
+}
 // ProcessPresentationRow is the immutable UI snapshot for one process row.
 // Keeping display text, identity and icon input together means owner-data
 // callbacks never enumerate processes or format every row during a repaint.
@@ -74,7 +79,7 @@ struct ProcessFilterResult {
     std::uint64_t displayGeneration = 0;
     std::wstring query;
     std::vector<std::size_t> visibleIndexes;
-    std::vector<DWORD> selectedPids;
+    std::vector<std::wstring> selectedStableKeys;
     std::wstring topStableKey;
 };
 
@@ -275,9 +280,9 @@ struct ProcessViewState {
     ULONGLONG previousSampleTickMs = 0;
     std::vector<ProcessActionMenuItem> activeMenuItems;
     std::unordered_map<std::wstring, int> iconCache;
-    std::unordered_map<DWORD, ULONGLONG> previousCpuTime100ns;
-    std::unordered_map<DWORD, ProcessSnapshotRow> lastActiveRowsByPid;
-    std::unordered_map<DWORD, ProcessRowVisualState> visualStateByPid;
+    std::unordered_map<std::wstring, ULONGLONG> previousCpuTime100ns;
+    std::unordered_map<std::wstring, ProcessSnapshotRow> lastActiveRowsByIdentity;
+    std::unordered_map<std::wstring, ProcessRowVisualState> visualStateByIdentity;
     std::vector<ProcessPresentationRow> presentationRows;
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
     std::vector<std::size_t> visibleRowIndexes;
@@ -571,14 +576,15 @@ void RebuildColumns(ProcessViewState& state) {
     }
 }
 
-// SelectedPids and the filtering scheduler are declared here because installing
-// a new immutable presentation must save selection and viewport before replacing
-// the owner-data row count.
+// Selection and the filtering scheduler are declared here because installing
+// a new immutable presentation must save process-instance selection and viewport
+// before replacing the owner-data row count.
 std::vector<DWORD> SelectedPids(ProcessViewState& state);
+std::vector<std::wstring> SelectedStableKeys(ProcessViewState& state);
 std::wstring StableKeyFromListItem(const ProcessViewState& state, int item);
 void RequestProcessFilter(ProcessViewState& state,
     const std::wstring& query,
-    std::vector<DWORD> selectedPids,
+    std::vector<std::wstring> selectedStableKeys,
     std::wstring topStableKey);
 
 // BuildPresentationRows converts the model into immutable owner-data rows once
@@ -607,7 +613,7 @@ void BuildPresentationRows(ProcessViewState& state,
             row.processId = process->processId;
             row.kernelOnly = process->r0KernelOnly;
             row.iconPath = process->imagePath;
-            row.stableKey = L"pid:" + std::to_wstring(process->processId);
+            row.stableKey = ProcessStableKey(process->processId, process->creationTime100ns);
         } else {
             row.stableKey = L"group:" + std::to_wstring(static_cast<int>(sourceRow.group));
         }
@@ -637,7 +643,7 @@ void RebuildRows(ProcessViewState& state) {
         return;
     }
 
-    const std::vector<DWORD> selectedPids = SelectedPids(state);
+    const std::vector<std::wstring> selectedStableKeys = SelectedStableKeys(state);
     const std::wstring topStableKey = StableKeyFromListItem(state, ListView_GetTopIndex(state.listView));
     auto filterRows = std::make_shared<std::vector<Ksword::Ui::VirtualListRow>>();
     BuildPresentationRows(state, state.presentationRows, *filterRows);
@@ -655,7 +661,7 @@ void RebuildRows(ProcessViewState& state) {
     ::InvalidateRect(state.listView, nullptr, FALSE);
 
     const std::wstring query = state.filterBar ? Ksword::Ui::GetFilterBarText(state.filterBar) : state.filterQuery;
-    RequestProcessFilter(state, query, selectedPids, topStableKey);
+    RequestProcessFilter(state, query, selectedStableKeys, topStableKey);
 }
 
 // DisplayIndexFromListItem maps a visible owner-data row to its immutable
@@ -703,6 +709,22 @@ std::vector<DWORD> SelectedPids(ProcessViewState& state) {
     return pids;
 }
 
+// SelectedStableKeys retains only real process rows and preserves their snapshot
+// identity across an asynchronous filter/rebuild cycle.
+std::vector<std::wstring> SelectedStableKeys(ProcessViewState& state) {
+    std::vector<std::wstring> stableKeys;
+    for (const int index : SelectedDisplayIndexes(state)) {
+        if (index < 0 || static_cast<std::size_t>(index) >= state.presentationRows.size()) {
+            continue;
+        }
+        const ProcessPresentationRow& row = state.presentationRows[static_cast<std::size_t>(index)];
+        if (row.processId != 0 && !row.stableKey.empty()) {
+            stableKeys.push_back(row.stableKey);
+        }
+    }
+    return stableKeys;
+}
+
 std::wstring StableKeyFromListItem(const ProcessViewState& state, const int item) {
     const int displayIndex = DisplayIndexFromListItem(state, item);
     if (displayIndex < 0 || static_cast<std::size_t>(displayIndex) >= state.presentationRows.size()) {
@@ -734,8 +756,8 @@ const ProcessPresentationRow* DisplayRowFromListItem(ProcessViewState& state, in
 
 // VisualStateForDisplayRow resolves green/gray lifecycle highlighting for a
 // visible process row. Inputs are page state and display row; processing maps
-// process PID into the latest refresh-diff table; output is Normal for groups
-// and unchanged process rows.
+// the process instance stable key into the latest refresh-diff table; output is
+// Normal for groups and unchanged process rows.
 ProcessRowVisualState VisualStateForDisplayRow(ProcessViewState& state, const ProcessPresentationRow& displayRow) {
     if (displayRow.processId == 0) {
         return ProcessRowVisualState::Normal;
@@ -746,8 +768,8 @@ ProcessRowVisualState VisualStateForDisplayRow(ProcessViewState& state, const Pr
     if (displayRow.kernelOnly) {
         return ProcessRowVisualState::KernelOnly;
     }
-    const auto source = state.visualStateByPid.find(displayRow.processId);
-    return source != state.visualStateByPid.end() ? source->second : ProcessRowVisualState::Normal;
+    const auto source = state.visualStateByIdentity.find(displayRow.stableKey);
+    return source != state.visualStateByIdentity.end() ? source->second : ProcessRowVisualState::Normal;
 }
 
 // RowBackgroundColor returns the fill color used by custom draw. Inputs are
@@ -988,7 +1010,9 @@ void ApplyProcessFilter(ProcessViewState& state, ProcessFilterResult result) {
             LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL);
         ListView_SetItemState(state.listView, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
 
-        std::unordered_set<DWORD> selectedSet(result.selectedPids.begin(), result.selectedPids.end());
+        std::unordered_set<std::wstring> selectedSet(
+            result.selectedStableKeys.begin(),
+            result.selectedStableKeys.end());
         for (std::size_t item = 0; item < state.visibleRowIndexes.size(); ++item) {
             const std::size_t displayIndex = state.visibleRowIndexes[item];
             if (displayIndex >= state.presentationRows.size()) {
@@ -998,7 +1022,7 @@ void ApplyProcessFilter(ProcessViewState& state, ProcessFilterResult result) {
             if (topItem < 0 && !result.topStableKey.empty() && row.stableKey == result.topStableKey) {
                 topItem = static_cast<int>(item);
             }
-            if (row.processId != 0 && selectedSet.find(row.processId) != selectedSet.end()) {
+            if (row.processId != 0 && selectedSet.find(row.stableKey) != selectedSet.end()) {
                 const int selectedItem = static_cast<int>(item);
                 ListView_SetItemState(state.listView, selectedItem, LVIS_SELECTED, LVIS_SELECTED);
                 if (firstSelectedItem < 0) {
@@ -1028,7 +1052,7 @@ void ApplyProcessFilter(ProcessViewState& state, ProcessFilterResult result) {
 // stale background match from overwriting a newer query or process refresh.
 void RequestProcessFilter(ProcessViewState& state,
     const std::wstring& query,
-    std::vector<DWORD> selectedPids,
+    std::vector<std::wstring> selectedStableKeys,
     std::wstring topStableKey) {
     state.filterQuery = query;
     const std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> rows = state.filterRows;
@@ -1037,7 +1061,7 @@ void RequestProcessFilter(ProcessViewState& state,
         ProcessFilterResult result{};
         result.displayGeneration = displayGeneration;
         result.query = query;
-        result.selectedPids = std::move(selectedPids);
+        result.selectedStableKeys = std::move(selectedStableKeys);
         result.topStableKey = std::move(topStableKey);
         result.visibleIndexes.resize(state.presentationRows.size());
         for (std::size_t index = 0; index < result.visibleIndexes.size(); ++index) {
@@ -1048,11 +1072,11 @@ void RequestProcessFilter(ProcessViewState& state,
     }
 
     state.filterTask->request(
-        [rows, displayGeneration, query, selectedPids = std::move(selectedPids), topStableKey = std::move(topStableKey)]() mutable {
+        [rows, displayGeneration, query, selectedStableKeys = std::move(selectedStableKeys), topStableKey = std::move(topStableKey)]() mutable {
             ProcessFilterResult result{};
             result.displayGeneration = displayGeneration;
             result.query = std::move(query);
-            result.selectedPids = std::move(selectedPids);
+            result.selectedStableKeys = std::move(selectedStableKeys);
             result.topStableKey = std::move(topStableKey);
             result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
             return result;
@@ -1527,20 +1551,22 @@ void ApplyProcessRefresh(ProcessViewState& state, ProcessRefreshSnapshot snapsho
     const ULONGLONG nowMs = ::GetTickCount64();
     const ULONGLONG elapsedMs = state.previousSampleTickMs == 0 ? 0 : nowMs - state.previousSampleTickMs;
     const DWORD processorCount = std::max<DWORD>(1, ::GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
-    std::unordered_map<DWORD, ULONGLONG> newCpuTimes;
-    std::unordered_map<DWORD, ProcessSnapshotRow> activeRowsByPid;
+    std::unordered_map<std::wstring, ULONGLONG> newCpuTimes;
+    std::unordered_map<std::wstring, ProcessSnapshotRow> activeRowsByIdentity;
     newCpuTimes.reserve(rows.size());
-    activeRowsByPid.reserve(rows.size());
-    state.visualStateByPid.clear();
+    activeRowsByIdentity.reserve(rows.size());
+    state.visualStateByIdentity.clear();
     for (ProcessSnapshotRow& row : rows) {
+        const std::wstring identityKey = ProcessStableKey(row.processId, row.creationTime100ns);
         const ULONGLONG total100ns = row.kernelTime100ns + row.userTime100ns;
-        newCpuTimes[row.processId] = total100ns;
-        activeRowsByPid[row.processId] = row;
-        if (state.hasLastActiveSnapshot && state.lastActiveRowsByPid.find(row.processId) == state.lastActiveRowsByPid.end()) {
-            state.visualStateByPid[row.processId] = ProcessRowVisualState::Added;
+        newCpuTimes[identityKey] = total100ns;
+        activeRowsByIdentity[identityKey] = row;
+        if (state.hasLastActiveSnapshot &&
+            state.lastActiveRowsByIdentity.find(identityKey) == state.lastActiveRowsByIdentity.end()) {
+            state.visualStateByIdentity[identityKey] = ProcessRowVisualState::Added;
         }
         row.cpuUsagePercent = 0.0;
-        const auto previous = state.previousCpuTime100ns.find(row.processId);
+        const auto previous = state.previousCpuTime100ns.find(identityKey);
         if (elapsedMs > 0 && previous != state.previousCpuTime100ns.end() && total100ns >= previous->second) {
             const ULONGLONG delta100ns = total100ns - previous->second;
             const double capacity100ns = static_cast<double>(elapsedMs) * 10000.0 * static_cast<double>(processorCount);
@@ -1550,27 +1576,29 @@ void ApplyProcessRefresh(ProcessViewState& state, ProcessRefreshSnapshot snapsho
         }
     }
     if (state.hasLastActiveSnapshot) {
-        for (const auto& oldRow : state.lastActiveRowsByPid) {
-            if (activeRowsByPid.find(oldRow.first) == activeRowsByPid.end()) {
+        for (const auto& oldRow : state.lastActiveRowsByIdentity) {
+            if (activeRowsByIdentity.find(oldRow.first) == activeRowsByIdentity.end()) {
                 ProcessSnapshotRow removed = oldRow.second;
                 removed.cpuUsagePercent = 0.0;
                 rows.push_back(removed);
-                state.visualStateByPid[oldRow.first] = ProcessRowVisualState::Removed;
+                state.visualStateByIdentity[oldRow.first] = ProcessRowVisualState::Removed;
             }
         }
     }
 
-    const std::size_t activeCount = activeRowsByPid.size();
-    const std::size_t addedCount = std::count_if(state.visualStateByPid.begin(), state.visualStateByPid.end(), [](const auto& entry) {
-        return entry.second == ProcessRowVisualState::Added;
-    });
-    const std::size_t removedCount = std::count_if(state.visualStateByPid.begin(), state.visualStateByPid.end(), [](const auto& entry) {
-        return entry.second == ProcessRowVisualState::Removed;
-    });
+    const std::size_t activeCount = activeRowsByIdentity.size();
+    const std::size_t addedCount = std::count_if(
+        state.visualStateByIdentity.begin(),
+        state.visualStateByIdentity.end(),
+        [](const auto& entry) { return entry.second == ProcessRowVisualState::Added; });
+    const std::size_t removedCount = std::count_if(
+        state.visualStateByIdentity.begin(),
+        state.visualStateByIdentity.end(),
+        [](const auto& entry) { return entry.second == ProcessRowVisualState::Removed; });
 
     state.previousCpuTime100ns = std::move(newCpuTimes);
     state.previousSampleTickMs = nowMs;
-    state.lastActiveRowsByPid = std::move(activeRowsByPid);
+    state.lastActiveRowsByIdentity = std::move(activeRowsByIdentity);
     state.hasLastActiveSnapshot = true;
 
     state.model.setRows(std::move(rows));
@@ -2148,7 +2176,7 @@ LRESULT CALLBACK ProcessViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (state && LOWORD(wParam) == kFilterBarId && HIWORD(wParam) == EN_CHANGE) {
             RequestProcessFilter(*state,
                 Ksword::Ui::GetFilterBarText(state->filterBar),
-                SelectedPids(*state),
+                SelectedStableKeys(*state),
                 StableKeyFromListItem(*state, ListView_GetTopIndex(state->listView)));
             return 0;
         }

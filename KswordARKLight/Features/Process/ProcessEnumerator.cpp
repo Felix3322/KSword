@@ -153,6 +153,9 @@ ProcessEnumerationResult EnumerateProcessesByNtQuerySystemInformation() {
         row.kernelTime100ns = static_cast<ULONGLONG>(info->KernelTime.QuadPart);
         row.userTime100ns = static_cast<ULONGLONG>(info->UserTime.QuadPart);
         row.cycleTime = info->CycleTime;
+        row.creationTime100ns = info->CreateTime.QuadPart > 0
+            ? static_cast<ULONGLONG>(info->CreateTime.QuadPart)
+            : 0U;
         row.workingSetBytes = info->WorkingSetSize;
         row.privatePageBytes = info->PrivatePageCount;
         row.virtualSizeBytes = info->VirtualSize;

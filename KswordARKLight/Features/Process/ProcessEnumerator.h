@@ -22,6 +22,8 @@ struct ProcessSnapshotRow {
     ULONGLONG kernelTime100ns = 0;
     ULONGLONG userTime100ns = 0;
     ULONGLONG cycleTime = 0;
+    // creationTime100ns distinguishes a recycled PID from the snapshot process instance.
+    ULONGLONG creationTime100ns = 0;
     SIZE_T workingSetBytes = 0;
     SIZE_T privatePageBytes = 0;
     SIZE_T virtualSizeBytes = 0;
