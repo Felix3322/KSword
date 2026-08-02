@@ -19,6 +19,9 @@ Environment:
 // DbgSetDebugPrintCallback 仅允许一个静态回调，因此保存当前控制设备上下文。
 static PDEVICE_CONTEXT volatile g_KswordArkDebugOutputContext = NULL;
 
+// 静态零初始化即为未占用 push lock；所有启停事务和卸载注销都由该全局锁串行化。
+static EX_PUSH_LOCK g_KswordArkDebugOutputControlLock;
+
 // 原子读取当前回调上下文，避免普通指针读取与启停路径发生数据竞争。
 static PDEVICE_CONTEXT KswordARKDebugOutputReadContext(VOID)
 {
@@ -181,6 +184,12 @@ NTSTATUS KswordARKDebugOutputControl(
     context = DeviceGetContext(Device);
     status = STATUS_SUCCESS;
 
+    /*
+     * 默认 WDF 队列采用 Parallel 调度。START/STOP 不只是单个原子标志变化，
+     * 还包含 ring 重置、全局上下文发布以及系统回调注册或注销，必须作为一个
+     * 不可交错的事务执行。回调热路径不获取此锁，因此 DIRQL 捕获行为不变。
+     */
+    KswordARKAcquirePushLockExclusive(&g_KswordArkDebugOutputControlLock);
     switch (Request->action) {
     case KSWORD_ARK_DEBUG_OUTPUT_ACTION_START:
         activeContext = KswordARKDebugOutputReadContext();
@@ -249,6 +258,7 @@ NTSTATUS KswordARKDebugOutputControl(
 
     context->DebugOutputLastStatus = status;
     KswordARKDebugOutputFillControlResponse(context, Response);
+    KswordARKReleasePushLockExclusive(&g_KswordArkDebugOutputControlLock);
     return status;
 }
 
@@ -384,8 +394,11 @@ VOID KswordARKDebugOutputUninitialize(VOID)
     PDEVICE_CONTEXT context;
     NTSTATUS status;
 
+    // 与并行 IOCTL 的 START/STOP 共用同一锁，禁止卸载注销和控制事务交错。
+    KswordARKAcquirePushLockExclusive(&g_KswordArkDebugOutputControlLock);
     context = KswordARKDebugOutputReadContext();
     if (context == NULL) {
+        KswordARKReleasePushLockExclusive(&g_KswordArkDebugOutputControlLock);
         return;
     }
 
@@ -399,4 +412,5 @@ VOID KswordARKDebugOutputUninitialize(VOID)
             NULL,
             context);
     }
+    KswordARKReleasePushLockExclusive(&g_KswordArkDebugOutputControlLock);
 }
