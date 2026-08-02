@@ -31,16 +31,25 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_BEFORE: ${{ github.event.before }}
           EVENT_SHA: ${{ github.sha }}
-          BASE_REF: ${{ github.base_ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             changed='__all__'
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
-            git fetch --no-tags origin "$BASE_REF" --depth=1
-            base_sha="$(git merge-base "origin/$BASE_REF" "$EVENT_SHA")"
-            changed="$(git diff --name-only "$base_sha" "$EVENT_SHA")"
+            if git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null &&
+               git cat-file -e "${PR_HEAD_SHA}^{commit}" 2>/dev/null; then
+              changed="$(git diff --name-only "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+            elif git cat-file -e "${EVENT_SHA}^1" 2>/dev/null &&
+                 git cat-file -e "${EVENT_SHA}^2" 2>/dev/null; then
+              echo "PR endpoint commits are unavailable; using merge commit parents." >&2
+              changed="$(git diff --name-only "${EVENT_SHA}^1" "${EVENT_SHA}^2")"
+            else
+              echo "Cannot resolve the complete PR range; treating the driver as affected." >&2
+              changed='__all__'
+            fi
           elif [[ -n "${EVENT_BEFORE:-}" && "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
             if git cat-file -e "${EVENT_BEFORE}^{commit}" 2>/dev/null; then
               changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
