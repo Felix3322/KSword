@@ -1984,8 +1984,8 @@ namespace ks::misc
         }
 
         QVector<QStringList> appLockerRows;
-        appLockerRows.reserve(appLockerRules.size());
-        for (const AppLockerRuleRecord& record : appLockerRules)
+        appLockerRows.reserve(m_appLockerRules.size());
+        for (const AppLockerRuleRecord& record : m_appLockerRules)
         {
             appLockerRows.push_back(QStringList{
                 record.collectionText,
