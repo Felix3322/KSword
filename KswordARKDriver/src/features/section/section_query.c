@@ -403,7 +403,13 @@ Return Value:
         &fileObject,
         &fileHandle);
     response->lastStatus = status;
-    if (!NT_SUCCESS(status)) {
+    if (!NT_SUCCESS(status) || fileObject == NULL) {
+        if (NT_SUCCESS(status)) {
+            response->lastStatus = STATUS_UNSUCCESSFUL;
+            if (fileHandle != NULL) {
+                ZwClose(fileHandle);
+            }
+        }
         response->queryStatus = KSWORD_ARK_FILE_SECTION_QUERY_STATUS_FILE_OPEN_FAILED;
         *BytesWrittenOut = KSWORD_ARK_FILE_SECTION_RESPONSE_HEADER_SIZE;
         return STATUS_SUCCESS;
