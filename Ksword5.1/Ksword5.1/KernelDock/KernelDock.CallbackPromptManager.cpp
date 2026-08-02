@@ -809,7 +809,13 @@ void CallbackPromptManager::runWaitWorkerLoop(int workerTag)
                 if (!workerContext->running.load() || needCancel)
                 {
                     (void)::CancelIoEx(waitHandle, &waitOverlapped);
-                    (void)::WaitForSingleObject(waitOverlapped.hEvent, 200);
+                    // Cancellation is asynchronous: keep the stack-backed OVERLAPPED and
+                    // output packet alive until the pending DeviceIoControl has completed.
+                    (void)::GetOverlappedResult(
+                        waitHandle,
+                        &waitOverlapped,
+                        &bytesReturned,
+                        TRUE);
                 }
 
                 if (::GetOverlappedResult(waitHandle, &waitOverlapped, &bytesReturned, FALSE) == FALSE)
