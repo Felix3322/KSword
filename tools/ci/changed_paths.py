@@ -182,8 +182,12 @@ def print_paths(paths: list[str] | None, source: str) -> None:
 def detect(arguments: argparse.Namespace) -> int:
     event = load_event(arguments.event_path)
     diff_range = resolve_diff_range(arguments.event_name, event, arguments.event_sha)
-    paths = changed_paths(diff_range)
-    source = diff_range.description if diff_range is not None else "unavailable; conservative fallback"
+    if arguments.event_name == "workflow_dispatch":
+        paths = None
+        source = "manual dispatch; all projects requested"
+    else:
+        paths = changed_paths(diff_range)
+        source = diff_range.description if diff_range is not None else "unavailable; conservative fallback"
     print_paths(paths, source)
 
     if arguments.mode == "projects":
