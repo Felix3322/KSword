@@ -23574,6 +23574,7 @@
     ", TerminateProcess=fail, error=": "，TerminateProcess=失败，错误码=",
     "DuplicateHandle validation failed, error=": "DuplicateHandle 校验失败，错误码=",
     "GetProcessTimes failed, error=": "GetProcessTimes 失败，错误码=",
+    "GetProcessTimes failed: ": "GetProcessTimes 失败: ",
     "NtSuspendProcess failed, status=0x": "NtSuspendProcess 失败，状态=0x",
     "OpenProcess for verified action failed, error=": "为身份校验动作打开进程失败，错误码=",
     "closed handle identity changed unexpectedly while the process was suspended": "目标进程暂停期间，已关闭句柄的身份仍意外发生变化",

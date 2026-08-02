@@ -23574,6 +23574,7 @@
     ", TerminateProcess=fail, error=": ", TerminateProcess=fail, error=",
     "DuplicateHandle validation failed, error=": "DuplicateHandle validation failed, error=",
     "GetProcessTimes failed, error=": "GetProcessTimes failed, error=",
+    "GetProcessTimes failed: ": "GetProcessTimes failed: ",
     "NtSuspendProcess failed, status=0x": "NtSuspendProcess failed, status=0x",
     "OpenProcess for verified action failed, error=": "OpenProcess for verified action failed, error=",
     "closed handle identity changed unexpectedly while the process was suspended": "Closed handle identity changed unexpectedly while the process was suspended",
