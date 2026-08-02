@@ -116,6 +116,7 @@ class RepositoryTestCase(unittest.TestCase):
             "Directory.Build.targets",
             "Ksword5.1/Ksword5.1.vcxproj.props",
             ".github/workflows/driver-ci.yml",
+            "tools/ci/changed_paths.py",
         ):
             with self.subTest(path=path):
                 self.assertTrue(changed_paths.driver_output([path]))
