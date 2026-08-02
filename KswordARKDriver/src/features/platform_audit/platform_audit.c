@@ -2225,7 +2225,7 @@ KswPlatformFindRipLocator(
 static NTSTATUS
 KswPlatformLocateRipTable(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
-    _In_ PVOID Anchor,
+    _In_opt_ PVOID Anchor,
     _In_ const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* Locator,
     _In_ KSW_PLATFORM_VALIDATE_TABLE_ROUTINE ValidateCandidate,
     _Outptr_ PVOID* TableAddressOut
