@@ -971,7 +971,7 @@ Return Value:
 static NTSTATUS
 KswordARKThreadCrossViewTryReferenceTypedObject(
     _In_ PVOID CandidateObject,
-    _In_ POBJECT_TYPE ExpectedObjectType,
+    _In_opt_ POBJECT_TYPE ExpectedObjectType,
     _Out_ BOOLEAN* TypeMatchedOut,
     _Out_ BOOLEAN* ReferencedOut
     )
