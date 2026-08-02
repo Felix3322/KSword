@@ -137,8 +137,10 @@ namespace ks::misc
 
         // applyRefreshResult：
         // - 在 UI 线程应用后台刷新结果；
+        // - refreshGeneration 必须等于当前代次，旧任务结果会被丢弃；
         // - 无返回值。
         void applyRefreshResult(
+            std::uint64_t refreshGeneration,
             QString statusText,
             QString appLockerSummary,
             QString wdacSummary,
@@ -245,10 +247,12 @@ namespace ks::misc
         int selectedEventLimit() const;
 
         // buildPathMatchHint：
-        // - 用当前 AppLocker 规则对指定路径生成可能命中提示；
-        // - filePathText 为输入路径；
+        // - 用调用方提供的 AppLocker 规则快照对指定路径生成可能命中提示；
+        // - filePathText 为输入路径，appLockerRules 为只读快照；
         // - 返回命中摘要。
-        QString buildPathMatchHint(const QString& filePathText) const;
+        static QString buildPathMatchHint(
+            const QString& filePathText,
+            const QVector<AppLockerRuleRecord>& appLockerRules);
 
     private:
         QVBoxLayout* m_rootLayout = nullptr;        // m_rootLayout：页面根布局。
@@ -287,5 +291,6 @@ namespace ks::misc
         QVector<AppLockerRuleRecord> m_appLockerRules;  // m_appLockerRules：最近一次 AppLocker 规则快照。
         QVector<EventRecord> m_eventRows;               // m_eventRows：最近一次完整事件日志缓存。
         QVector<KeyValueRecord> m_platformRows;         // m_platformRows：最近一次平台安全诊断缓存。
+        std::uint64_t m_refreshGeneration = 0;           // m_refreshGeneration：UI 线程维护的刷新代次，阻止旧结果回写。
     };
 }

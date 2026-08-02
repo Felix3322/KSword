@@ -1430,9 +1430,10 @@ namespace ks::misc
         if (m_platformSummary != nullptr) m_platformSummary->setText(QStringLiteral("正在采集平台安全…"));
         if (m_eventSummary != nullptr) m_eventSummary->setText(QStringLiteral("正在采集事件日志…"));
 
+        const std::uint64_t refreshGeneration = ++m_refreshGeneration;
         const int requestedEventLimit = selectedEventLimit();
         const QPointer<ApplicationControlPage> guardThis(this);
-        std::thread([guardThis, requestedEventLimit]() {
+        std::thread([guardThis, requestedEventLimit, refreshGeneration]() {
             QVector<AppLockerRuleRecord> appLockerRules;
             QVector<PolicyFileRecord> policyFiles;
             QVector<EventRecord> events;
@@ -1851,6 +1852,7 @@ namespace ks::misc
             }
 
             QMetaObject::invokeMethod(qApp, [guardThis,
+                                             refreshGeneration,
                                              statusText,
                                              appLockerSummary,
                                               wdacSummary,
@@ -1867,6 +1869,7 @@ namespace ks::misc
                     return;
                 }
                 guardThis->applyRefreshResult(
+                    refreshGeneration,
                     statusText,
                     appLockerSummary,
                     wdacSummary,
@@ -1883,6 +1886,7 @@ namespace ks::misc
     }
 
     void ApplicationControlPage::applyRefreshResult(
+        const std::uint64_t refreshGeneration,
         QString statusText,
         QString appLockerSummary,
         QString wdacSummary,
@@ -1895,6 +1899,12 @@ namespace ks::misc
         QVector<KeyValueRecord> defenderRows,
         QVector<KeyValueRecord> platformRows)
     {
+        // 只允许最后发起的任务写回；该检查也覆盖右键菜单延迟后再次进入的提交。
+        if (refreshGeneration != m_refreshGeneration)
+        {
+            return;
+        }
+
         const QList<QTableView*> applicationControlTables = {
             m_appLockerTable,
             m_policyFileTable,
@@ -1911,6 +1921,7 @@ namespace ks::misc
                 QStringLiteral("application-control-refresh-apply"),
                 applicationControlTables,
                 [safeThis,
+                    refreshGeneration,
                     statusText = std::move(statusText),
                     appLockerSummary = std::move(appLockerSummary),
                     wdacSummary = std::move(wdacSummary),
@@ -1926,6 +1937,7 @@ namespace ks::misc
                     if (!safeThis.isNull())
                     {
                         safeThis->applyRefreshResult(
+                            refreshGeneration,
                             std::move(statusText),
                             std::move(appLockerSummary),
                             std::move(wdacSummary),
@@ -2187,9 +2199,11 @@ namespace ks::misc
         }
     }
 
-    QString ApplicationControlPage::buildPathMatchHint(const QString& filePathText) const
+    QString ApplicationControlPage::buildPathMatchHint(
+        const QString& filePathText,
+        const QVector<AppLockerRuleRecord>& appLockerRules)
     {
-        if (m_appLockerRules.isEmpty())
+        if (appLockerRules.isEmpty())
         {
             return QStringLiteral("当前没有 AppLocker 规则缓存，无法判断路径命中。");
         }
@@ -2200,7 +2214,7 @@ namespace ks::misc
         const QString normalizedPath = QDir::toNativeSeparators(fileInfo.exists() ? fileInfo.absoluteFilePath() : sanitizedPathText);
         QStringList matches;
 
-        for (const AppLockerRuleRecord& record : m_appLockerRules)
+        for (const AppLockerRuleRecord& record : appLockerRules)
         {
             if (!record.conditionTypeText.contains(QStringLiteral("Path"), Qt::CaseInsensitive))
             {
@@ -2258,8 +2272,12 @@ namespace ks::misc
             m_fileDiagnosisSummary->setText(QStringLiteral("正在诊断：%1").arg(filePath));
         }
 
+        // 在 UI 线程取得隐式共享快照，后台线程不再读取 QWidget 所属缓存。
+        QVector<AppLockerRuleRecord> appLockerRulesSnapshot = m_appLockerRules;
         const QPointer<ApplicationControlPage> guardThis(this);
-        std::thread([guardThis, filePath]() {
+        std::thread([guardThis,
+                     filePath,
+                     appLockerRulesSnapshot = std::move(appLockerRulesSnapshot)]() {
             QVector<KeyValueRecord> rows;
             QString summaryText;
 
@@ -2270,7 +2288,9 @@ namespace ks::misc
             const QString publisherText = exists
                 ? QString::fromStdString(ks::startup::QueryPublisherTextByPath(filePath.toStdString()))
                 : QString();
-            const QString pathMatchHint = guardThis != nullptr ? guardThis->buildPathMatchHint(filePath) : QStringLiteral("页面已关闭");
+            const QString pathMatchHint = ApplicationControlPage::buildPathMatchHint(
+                filePath,
+                appLockerRulesSnapshot);
 
             const auto pushRow = [&rows](const QString& nameText, const QString& valueText, const QString& detailText) {
                 KeyValueRecord record;
