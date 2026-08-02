@@ -2136,7 +2136,9 @@ KswordARKDriverUnloadApplyEntryTransaction(
         for (deviceIndex = 0UL;
              deviceIndex < Transaction->DeviceCount;
              ++deviceIndex) {
-            Transaction->DeviceObjects[deviceIndex]->Flags |= DO_DEVICE_INITIALIZING;
+            (VOID)InterlockedOr(
+                (volatile LONG*)&Transaction->DeviceObjects[deviceIndex]->Flags,
+                (LONG)DO_DEVICE_INITIALIZING);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -2181,11 +2183,15 @@ KswordARKDriverUnloadRollbackEntryTransaction(
         for (deviceIndex = 0UL;
              deviceIndex < Transaction->DeviceCount;
              ++deviceIndex) {
-            Transaction->DeviceObjects[deviceIndex]->Flags =
-                (Transaction->DeviceObjects[deviceIndex]->Flags &
-                    ~DO_DEVICE_INITIALIZING) |
-                (Transaction->OriginalDeviceFlags[deviceIndex] &
-                    DO_DEVICE_INITIALIZING);
+            volatile LONG* flagsAddress =
+                (volatile LONG*)&Transaction->DeviceObjects[deviceIndex]->Flags;
+
+            if ((Transaction->OriginalDeviceFlags[deviceIndex] & DO_DEVICE_INITIALIZING) != 0UL) {
+                (VOID)InterlockedOr(flagsAddress, (LONG)DO_DEVICE_INITIALIZING);
+            }
+            else {
+                (VOID)InterlockedAnd(flagsAddress, (LONG)(~DO_DEVICE_INITIALIZING));
+            }
         }
         Transaction->Applied = FALSE;
     }
@@ -2302,7 +2308,9 @@ KswordARKDriverUnloadBlockNewDeviceCreatesUnsafe(
         }
 
         for (deviceIndex = 0UL; deviceIndex < deviceCount; ++deviceIndex) {
-            deviceList[deviceIndex]->Flags |= DO_DEVICE_INITIALIZING;
+            (VOID)InterlockedOr(
+                (volatile LONG*)&deviceList[deviceIndex]->Flags,
+                (LONG)DO_DEVICE_INITIALIZING);
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
