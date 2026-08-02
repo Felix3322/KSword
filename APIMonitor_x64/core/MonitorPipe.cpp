@@ -249,6 +249,12 @@ namespace apimon
             OVERLAPPED overlappedValue{};
             overlappedValue.hEvent = connectEvent;
 
+            const auto cancelAndDrainPendingConnect = [&]() {
+                DWORD ignoredTransferredBytes = 0;
+                (void)::CancelIoEx(pipeHandle, &overlappedValue);
+                (void)::GetOverlappedResult(pipeHandle, &overlappedValue, &ignoredTransferredBytes, TRUE);
+            };
+
             bool connected = false;
             const BOOL connectOk = ::ConnectNamedPipe(pipeHandle, &overlappedValue);
             if (connectOk != FALSE)
@@ -270,7 +276,7 @@ namespace apimon
                     {
                         if (StopRequested() || IsStopFlagPresent(configValue))
                         {
-                            (void)::CancelIoEx(pipeHandle, &overlappedValue);
+                            cancelAndDrainPendingConnect();
                             if (errorTextOut != nullptr)
                             {
                                 *errorTextOut = L"ConnectNamedPipe canceled because stop was requested before UI connected.";
@@ -300,6 +306,7 @@ namespace apimon
                         }
                         if (waitResult != WAIT_TIMEOUT)
                         {
+                            cancelAndDrainPendingConnect();
                             if (errorTextOut != nullptr)
                             {
                                 *errorTextOut = L"WaitForSingleObject for ConnectNamedPipe failed. error=" + std::to_wstring(::GetLastError());
@@ -313,7 +320,7 @@ namespace apimon
 
                     if (!connected)
                     {
-                        (void)::CancelIoEx(pipeHandle, &overlappedValue);
+                        cancelAndDrainPendingConnect();
                         if (errorTextOut != nullptr)
                         {
                             *errorTextOut = L"ConnectNamedPipe timed out waiting for WinAPIDock client.";
