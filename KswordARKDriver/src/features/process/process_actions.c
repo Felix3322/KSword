@@ -2152,7 +2152,7 @@ Return Value:
     if (ProcessId == 0U || MandatorySid == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
-    if (KeGetCurrentIrql() > APC_LEVEL) {
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
     if (!RtlValidSid(MandatorySid) || !KswordARKDriverSidHasMandatoryAuthority(MandatorySid)) {
