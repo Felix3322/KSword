@@ -95,6 +95,12 @@ Return Value:
         TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKDriverDispatchInitialize unavailable %!STATUS!", status);
     }
 
+    // 驱动映像编辑器保存自身身份；DynData/加载器能力在每次请求时实时解析。
+    status = KswordARKDriverImageInitialize(DriverObject);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKDriverImageInitialize unavailable %!STATUS!", status);
+    }
+
     // Register cleanup callback for WPP_CLEANUP during framework teardown.
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.EvtCleanupCallback = KswordARKDriverEvtDriverContextCleanup;
@@ -114,6 +120,8 @@ Return Value:
         // 框架失败时对称撤销系统变速状态，确保维护 DPC 不会残留。
         KswordARKSystemTimeUninitialize();
         // 中文说明：框架创建失败时撤销通信控制状态和所有潜在引用。
+        // 先恢复映像字段和加载器链，再恢复 IRP/communication 槽位。
+        KswordARKDriverImageUninitialize();
         KswordARKDriverDispatchUninitialize();
         KswordARKDriverCommunicationUninitialize();
         // Release the optional HVM capability state on early framework failure.
@@ -132,6 +140,8 @@ Return Value:
         // 控制设备不可见时不会有合法变速请求，立即释放其运行时状态。
         KswordARKSystemTimeUninitialize();
         // 中文说明：控制设备创建失败时不保留通信控制全局状态。
+        // 映像事务可能持有其它 DriverObject 引用，必须在失败返回前释放。
+        KswordARKDriverImageUninitialize();
         KswordARKDriverDispatchUninitialize();
         KswordARKDriverCommunicationUninitialize();
         // Release the optional HVM capability state on early device failure.
@@ -151,6 +161,8 @@ Return Value:
         // 回调初始化回滚必须同时撤销可能的系统变速维护对象。
         KswordARKSystemTimeUninitialize();
         // 中文说明：回调初始化失败返回前撤销通信控制状态。
+        // 对称恢复仍由映像事务拥有的字段和加载器链。
+        KswordARKDriverImageUninitialize();
         KswordARKDriverDispatchUninitialize();
         KswordARKDriverCommunicationUninitialize();
         // Release any explicit HVM resources before returning initialization failure.
@@ -214,6 +226,8 @@ Return Value:
     KswordARKSystemTimeUninitialize();
     // 中文说明：最先恢复仍由本功能持有的 MajorFunction，并释放目标 DriverObject 引用。
     // 先撤销任意槽位编辑，再恢复可能位于其下层的五槽 communication blind。
+    // 映像字段或加载器链可能包含自身身份，必须在驱动映像离开前优先恢复。
+    KswordARKDriverImageUninitialize();
     KswordARKDriverDispatchUninitialize();
     KswordARKDriverCommunicationUninitialize();
     // Release all VMX/VMCS/EPT pages before the driver image can leave memory.

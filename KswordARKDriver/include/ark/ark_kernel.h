@@ -5,6 +5,7 @@
 #include "driver/KswordArkKernelIoctl.h"
 #include "driver/KswordArkDriverBlindIoctl.h"
 #include "driver/KswordArkDriverDispatchIoctl.h"
+#include "driver/KswordArkDriverImageEditorIoctl.h"
 #include "driver/KswordArkSlatIommuAuditIoctl.h"
 
 EXTERN_C_START
@@ -131,6 +132,37 @@ KswordARKDriverDispatchHasBlockingRecord(
 
 NTSTATUS
 KswordARKKernelIoctlControlDriverDispatch(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    );
+
+NTSTATUS
+KswordARKDriverImageInitialize(
+    _In_ PDRIVER_OBJECT DriverObject
+    );
+
+VOID
+KswordARKDriverImageUninitialize(
+    VOID
+    );
+
+NTSTATUS
+KswordARKDriverControlImage(
+    _In_ const KSWORD_ARK_DRIVER_IMAGE_REQUEST* Request,
+    _Out_ KSWORD_ARK_DRIVER_IMAGE_RESPONSE* Response
+    );
+
+BOOLEAN
+KswordARKDriverImageHasBlockingRecord(
+    _In_ PDRIVER_OBJECT TargetDriverObject,
+    _In_ ULONGLONG OriginalRequestModuleBase
+    );
+
+NTSTATUS
+KswordARKKernelIoctlControlDriverImage(
     _In_ WDFDEVICE Device,
     _In_ WDFREQUEST Request,
     _In_ size_t InputBufferLength,

@@ -4815,6 +4815,9 @@ Return Value:
         requestSnapshot.targetModuleBase) ||
         KswordARKDriverDispatchHasBlockingRecord(
             driverObject,
+            requestSnapshot.targetModuleBase) ||
+        KswordARKDriverImageHasBlockingRecord(
+            driverObject,
             requestSnapshot.targetModuleBase)) {
         /* 中文说明：沿用固定 operation-failed 响应状态承载可重试的 busy 原因。 */
         response->status = KSWORD_ARK_DRIVER_UNLOAD_STATUS_OPERATION_FAILED;

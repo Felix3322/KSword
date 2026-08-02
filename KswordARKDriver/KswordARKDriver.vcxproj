@@ -73,6 +73,11 @@
     <ClCompile Include="src\features\kernel\driver_blind_ioctl.c" />
     <ClCompile Include="src\features\kernel\driver_dispatch_editor.c" />
     <ClCompile Include="src\features\kernel\driver_dispatch_editor_ioctl.c" />
+    <ClCompile Include="src\features\kernel\driver_image_editor.c" />
+    <ClCompile Include="src\features\kernel\driver_image_editor_fields.c" />
+    <ClCompile Include="src\features\kernel\driver_image_editor_list.c" />
+    <ClCompile Include="src\features\kernel\driver_image_editor_state.c" />
+    <ClCompile Include="src\features\kernel\driver_image_editor_ioctl.c" />
     <ClCompile Include="src\features\kernel\kernel_object_audit.c" />
     <ClCompile Include="src\features\kernel\kernel_object_type_table.c" />
     <ClCompile Include="src\features\kernel\object_header_fallback.c" />
@@ -285,6 +290,8 @@
     <ClInclude Include="..\shared\driver\KswordArkHwidIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkDriverBlindIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkDriverDispatchIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkDriverImageEditorIoctl.h" />
+    <ClInclude Include="src\features\kernel\driver_image_editor_internal.h" />
     <ClInclude Include="..\shared\driver\KswordArkWin32kIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkUnloadedDriverIoctl.h" />
     <ClInclude Include="src\features\redirect\redirect_internal.h" />

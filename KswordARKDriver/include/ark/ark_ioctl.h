@@ -6,6 +6,7 @@
 #include "driver/KswordArkKernelIoctl.h"
 #include "driver/KswordArkDriverBlindIoctl.h"
 #include "driver/KswordArkDriverDispatchIoctl.h"
+#include "driver/KswordArkDriverImageEditorIoctl.h"
 #include "driver/KswordArkDynDataIoctl.h"
 #include "driver/KswordArkCapabilityIoctl.h"
 #include "driver/KswordArkThreadIoctl.h"
