@@ -115,11 +115,15 @@ void RunReceiver(const std::shared_ptr<CallbackEventReceiver::State>& state, con
                         break;
                     }
                 }
+                BOOL completionOk = FALSE;
                 if (!IsReceiverRunning(state, generation)) {
                     (void)::CancelIoEx(nativeHandle, &overlapped);
-                    (void)::WaitForSingleObject(overlapped.hEvent, kReceiverRetryMilliseconds);
+                    // 取消是异步的：在关闭事件或离开栈作用域前，必须等本次 I/O 完成。
+                    completionOk = ::GetOverlappedResult(nativeHandle, &overlapped, &bytesReturned, TRUE);
+                } else {
+                    completionOk = ::GetOverlappedResult(nativeHandle, &overlapped, &bytesReturned, FALSE);
                 }
-                if (::GetOverlappedResult(nativeHandle, &overlapped, &bytesReturned, FALSE) == FALSE) {
+                if (completionOk == FALSE) {
                     const DWORD error = ::GetLastError();
                     ::CloseHandle(overlapped.hEvent);
                     if (error == ERROR_OPERATION_ABORTED || error == ERROR_INVALID_HANDLE ||
