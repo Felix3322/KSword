@@ -115,7 +115,7 @@ KswordARKDriverImageSetValue(
 // 中文说明：解析真实字段地址时只使用 WDK DriverObject 成员或实时验证过的 KLDR 偏移。
 static NTSTATUS
 KswordARKDriverImageResolveFieldAddress(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _In_ const KSW_DRIVER_IMAGE_RECORD* Record,
     _In_ ULONG Field,
     _Outptr_ PVOID* Address,
@@ -184,7 +184,7 @@ KswordARKDriverImageResolveFieldAddress(
 // 中文说明：原子读取对无效/已释放地址增加 SEH 边界，失败不会继续邻接写入。
 static NTSTATUS
 KswordARKDriverImageReadField(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _In_ const KSW_DRIVER_IMAGE_RECORD* Record,
     _In_ ULONG Field,
     _Out_ ULONGLONG* Value
@@ -233,7 +233,7 @@ KswordARKDriverImageReadField(
 // 中文说明：单字段 CAS 返回实际观察值，调用方据此区分成功、竞争和异常。
 static NTSTATUS
 KswordARKDriverImageCompareExchangeField(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _In_ const KSW_DRIVER_IMAGE_RECORD* Record,
     _In_ ULONG Field,
     _In_ ULONGLONG Desired,
@@ -288,7 +288,7 @@ KswordARKDriverImageCompareExchangeField(
 // 中文说明：采样函数总能返回三个 DriverObject 字段；KLDR 可用性由位掩码显式表达。
 NTSTATUS
 KswordARKDriverImageReadValuesLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _In_ const KSW_DRIVER_IMAGE_RECORD* Record,
     _Out_ KSWORD_ARK_DRIVER_IMAGE_VALUES* Values,
     _Out_ ULONG* AvailableFieldMask
@@ -330,7 +330,7 @@ KswordARKDriverImageReadValuesLocked(
 // 中文说明：应用五字段中的任意组合；任何中途竞争都反向回滚已成功 CAS 的字段。
 NTSTATUS
 KswordARKDriverImageApplyFieldsLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _Inout_ KSW_DRIVER_IMAGE_RECORD* Record,
     _In_ ULONG FieldMask,
     _In_ const KSWORD_ARK_DRIVER_IMAGE_VALUES* ExpectedValues,
@@ -511,7 +511,7 @@ KswordARKDriverImageApplyFieldsLocked(
 // 每个失败字段保留记录与冲突信息，便于后续查询或放弃。
 NTSTATUS
 KswordARKDriverImageRestoreFieldsLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _Inout_ KSW_DRIVER_IMAGE_RECORD* Record,
     _In_ ULONG FieldMask,
     _Out_ ULONG* ChangedFieldMask,
@@ -624,7 +624,7 @@ KswordARKDriverImageRestoreFieldsLocked(
 // 中文说明：刷新所有已管理字段，生成保守的 owned/conflict 视图而不做任何写入。
 NTSTATUS
 KswordARKDriverImageRefreshFieldsLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _Inout_ KSW_DRIVER_IMAGE_RECORD* Record,
     _Out_ BOOLEAN* StateChanged
     )

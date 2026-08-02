@@ -145,7 +145,7 @@ KswordARKDriverImageRestoreLinkLocked(
 // 中文说明：字段读取始终原子采样；KLDR 字段还要求持有真实模块资源。
 NTSTATUS
 KswordARKDriverImageReadValuesLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _In_ const KSW_DRIVER_IMAGE_RECORD* Record,
     _Out_ KSWORD_ARK_DRIVER_IMAGE_VALUES* Values,
     _Out_ ULONG* AvailableFieldMask
@@ -154,7 +154,7 @@ KswordARKDriverImageReadValuesLocked(
 // 中文说明：多字段应用使用逐字段 CAS；中途失败会反向 CAS 回滚已写字段。
 NTSTATUS
 KswordARKDriverImageApplyFieldsLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _Inout_ KSW_DRIVER_IMAGE_RECORD* Record,
     _In_ ULONG FieldMask,
     _In_ const KSWORD_ARK_DRIVER_IMAGE_VALUES* ExpectedValues,
@@ -166,7 +166,7 @@ KswordARKDriverImageApplyFieldsLocked(
 // 中文说明：恢复只把仍等于本事务 applied 值的字段 CAS 回不可变 original 值。
 NTSTATUS
 KswordARKDriverImageRestoreFieldsLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _Inout_ KSW_DRIVER_IMAGE_RECORD* Record,
     _In_ ULONG FieldMask,
     _Out_ ULONG* ChangedFieldMask,
@@ -176,7 +176,7 @@ KswordARKDriverImageRestoreFieldsLocked(
 // 中文说明：刷新只观察并更新所有权/冲突位，不覆盖任何第三方当前值。
 NTSTATUS
 KswordARKDriverImageRefreshFieldsLocked(
-    _In_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
+    _In_opt_ const KSW_DRIVER_IMAGE_RUNTIME* Runtime,
     _Inout_ KSW_DRIVER_IMAGE_RECORD* Record,
     _Out_ BOOLEAN* StateChanged
     );
