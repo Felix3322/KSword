@@ -290,6 +290,96 @@ namespace
         return stream.str();
     }
 
+    // ScopedProcessActionHandle：确保批量动作中的身份保持句柄在所有返回路径关闭。
+    class ScopedProcessActionHandle final
+    {
+    public:
+        explicit ScopedProcessActionHandle(HANDLE handleValue) : m_handle(handleValue) {}
+        ~ScopedProcessActionHandle()
+        {
+            if (m_handle != nullptr)
+            {
+                ::CloseHandle(m_handle);
+            }
+        }
+        ScopedProcessActionHandle(const ScopedProcessActionHandle&) = delete;
+        ScopedProcessActionHandle& operator=(const ScopedProcessActionHandle&) = delete;
+        bool valid() const { return m_handle != nullptr; }
+    private:
+        HANDLE m_handle = nullptr;
+    };
+
+    // acquireProcessActionIdentityHold：在一个进程句柄上读取创建时间，并将该句柄
+    // 交给调用方保持至动作结束。根据 Windows 的 PID 生命周期，该持有期内 PID
+    // 不会被复用为不同进程；身份不完整或不匹配时安全跳过动作。
+    bool acquireProcessActionIdentityHold(
+        const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
+        HANDLE* const processHandleOut,
+        std::string* const detailText)
+    {
+        if (processHandleOut == nullptr)
+        {
+            if (detailText != nullptr)
+            {
+                *detailText = "process action identity output is null";
+            }
+            return false;
+        }
+        *processHandleOut = nullptr;
+        if (pid == 0U || expectedCreationTime100ns == 0U)
+        {
+            if (detailText != nullptr)
+            {
+                *detailText = "process identity is unavailable; action skipped";
+            }
+            return false;
+        }
+
+        HANDLE processHandle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (processHandle == nullptr)
+        {
+            if (detailText != nullptr)
+            {
+                *detailText = formatProcessWin32Error(
+                    "OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)",
+                    ::GetLastError());
+            }
+            return false;
+        }
+
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        const BOOL queryOk = ::GetProcessTimes(
+            processHandle,
+            &creationTime,
+            &exitTime,
+            &kernelTime,
+            &userTime);
+        const DWORD queryError = queryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        const std::uint64_t actualCreationTime100ns = queryOk != FALSE
+            ? (static_cast<std::uint64_t>(creationTime.dwHighDateTime) << 32U) |
+                static_cast<std::uint64_t>(creationTime.dwLowDateTime)
+            : 0U;
+        if (queryOk == FALSE ||
+            actualCreationTime100ns == 0U ||
+            actualCreationTime100ns != expectedCreationTime100ns)
+        {
+            ::CloseHandle(processHandle);
+            if (detailText != nullptr)
+            {
+                *detailText = queryOk == FALSE
+                    ? formatProcessWin32Error("GetProcessTimes", queryError)
+                    : "process identity changed (PID was reused); action skipped";
+            }
+            return false;
+        }
+
+        *processHandleOut = processHandle;
+        return true;
+    }
     // enableProcessContextPrivilege 作用：
     // - 输入：privilegeName 为当前进程需要临时启用的特权名；
     // - 处理：打开当前进程 Token 并调用 AdjustTokenPrivileges；
@@ -10454,7 +10544,8 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
     const std::vector<ProcessActionTarget>& actionTargets,
     const std::function<bool(const ProcessActionTarget&, std::string*)>& actionInvoker,
     const bool refreshWhenAnySucceeded,
-    const bool forceAsyncWithTimeout)
+    const bool forceAsyncWithTimeout,
+    const bool requireVerifiedProcessIdentity)
 {
     // 参数检查：没有目标或没有执行体时直接记录并返回。
     if (actionTargets.empty() || !actionInvoker)
@@ -10467,12 +10558,43 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
         return;
     }
 
+    // 对标记为 R3 的变更动作，先在同一进程对象上验证 PID + 创建时间，并将
+    // 查询句柄保持至 actionInvoker 返回。这样动作实现即使仍以 PID 为入口，也不会
+    // 在目标退出后误落到被 Windows 复用的 PID。
+    const auto invokeAction = [actionInvoker, requireVerifiedProcessIdentity](
+        const ProcessActionTarget& actionTarget,
+        std::string* const detailTextOut) -> bool
+    {
+        if (!requireVerifiedProcessIdentity)
+        {
+            return actionInvoker(actionTarget, detailTextOut);
+        }
+
+        HANDLE rawIdentityHandle = nullptr;
+        std::string identityDetailText;
+        if (!acquireProcessActionIdentityHold(
+                actionTarget.record.pid,
+                actionTarget.record.creationTime100ns,
+                &rawIdentityHandle,
+                &identityDetailText))
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = identityDetailText;
+            }
+            return false;
+        }
+
+        ScopedProcessActionHandle identityHandle(rawIdentityHandle);
+        return actionInvoker(actionTarget, detailTextOut);
+    };
+
     // R3 结束进程包含外部调试器和会话管理回退，单目标也必须异步执行。
     // 其它动作沿用原单目标同步语义，避免扩大本次改动范围。
     if (actionTargets.size() == 1U && !forceAsyncWithTimeout)
     {
         std::string detailText;
-        const bool actionOk = actionInvoker(actionTargets.front(), &detailText);
+        const bool actionOk = invokeAction(actionTargets.front(), &detailText);
         kLogEvent actionEvent;
         (actionOk ? info : err) << actionEvent
             << "[ProcessDock] 单进程动作完成, title=" << actionTitle.toStdString()
@@ -10551,7 +10673,7 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
             guard,
             localActionTitle,
             actionTarget,
-            actionInvoker,
+            invokeAction,
             refreshWhenAnySucceeded,
             targetCount,
             finishedCounter,
@@ -10559,7 +10681,7 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
             resultReported]()
         {
             std::string detailText;
-            const bool actionOk = actionInvoker(actionTarget, &detailText);
+            const bool actionOk = invokeAction(actionTarget, &detailText);
             const std::string normalizedDetailText = detailText.empty() ? "无附加信息" : detailText;
             if (actionOk)
             {
@@ -12830,6 +12952,7 @@ void ProcessDock::executeTerminateProcessActions(
             return deletionOk;
         },
         true,
+        true,
         true);
 }
 
@@ -12850,6 +12973,8 @@ void ProcessDock::executeTerminateThreadsAction()
         {
             return ks::process::TerminateAllThreadsByPid(actionTarget.record.pid, detailTextOut);
         },
+        true,
+        false,
         true);
 }
 
@@ -12870,7 +12995,9 @@ void ProcessDock::executeSuspendAction()
         {
             return ks::process::SuspendProcessIfCreationTimeMatches(actionTarget.record.pid, actionTarget.record.creationTime100ns, detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeResumeAction()
@@ -12890,7 +13017,9 @@ void ProcessDock::executeResumeAction()
         {
             return ks::process::ResumeProcessIfCreationTimeMatches(actionTarget.record.pid, actionTarget.record.creationTime100ns, detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeSetCriticalAction(const bool enableCritical)
@@ -12910,7 +13039,9 @@ void ProcessDock::executeSetCriticalAction(const bool enableCritical)
         {
             return ks::process::SetProcessCriticalFlag(actionTarget.record.pid, enableCritical, detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeSetPriorityAction(const int priorityActionId)
@@ -12942,7 +13073,9 @@ void ProcessDock::executeSetPriorityAction(const int priorityActionId)
         {
             return ks::process::SetProcessPriority(actionTarget.record.pid, priorityLevel, detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeSetProcessIntegrityAction(
@@ -12972,7 +13105,9 @@ void ProcessDock::executeSetProcessIntegrityAction(
                 targetIntegrityRid,
                 detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeSetEfficiencyModeAction(const bool enableEfficiencyMode)
@@ -12997,7 +13132,9 @@ void ProcessDock::executeSetEfficiencyModeAction(const bool enableEfficiencyMode
                 enableEfficiencyMode,
                 detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 
     // UI 缓存即时更新：线程执行结果仍会独立记录；这里仅让已选行视觉状态快速响应。
     for (const ProcessActionTarget& actionTarget : actionTargets)
