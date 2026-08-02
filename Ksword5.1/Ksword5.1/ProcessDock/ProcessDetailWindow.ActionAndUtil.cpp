@@ -4,6 +4,97 @@
 
 using namespace process_detail_window_internal;
 
+namespace
+{
+    class ScopedDetailProcessIdentityHandle final
+    {
+    public:
+        explicit ScopedDetailProcessIdentityHandle(HANDLE handleValue) : m_handle(handleValue) {}
+        ~ScopedDetailProcessIdentityHandle()
+        {
+            if (m_handle != nullptr)
+            {
+                ::CloseHandle(m_handle);
+            }
+        }
+        ScopedDetailProcessIdentityHandle(const ScopedDetailProcessIdentityHandle&) = delete;
+        ScopedDetailProcessIdentityHandle& operator=(const ScopedDetailProcessIdentityHandle&) = delete;
+    private:
+        HANDLE m_handle = nullptr;
+    };
+
+    // invokeProcessActionForIdentity keeps a verified query handle open until
+    // the synchronous R3 operation returns. Windows does not reuse the PID while
+    // that process object is still referenced, so a stale detail window cannot
+    // modify a later process instance.
+    bool invokeProcessActionForIdentity(
+        const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
+        const std::function<bool(std::string*)>& actionInvoker,
+        std::string* const detailTextOut)
+    {
+        if (!actionInvoker)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "process action invoker is unavailable";
+            }
+            return false;
+        }
+        if (pid == 0U || expectedCreationTime100ns == 0U)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "process identity is unavailable; action skipped";
+            }
+            return false;
+        }
+
+        HANDLE rawProcessHandle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (rawProcessHandle == nullptr)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) failed, error=" +
+                    std::to_string(::GetLastError());
+            }
+            return false;
+        }
+        ScopedDetailProcessIdentityHandle processHandle(rawProcessHandle);
+
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        if (!::GetProcessTimes(
+                rawProcessHandle,
+                &creationTime,
+                &exitTime,
+                &kernelTime,
+                &userTime))
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "GetProcessTimes failed, error=" + std::to_string(::GetLastError());
+            }
+            return false;
+        }
+        const std::uint64_t actualCreationTime100ns =
+            (static_cast<std::uint64_t>(creationTime.dwHighDateTime) << 32U) |
+            static_cast<std::uint64_t>(creationTime.dwLowDateTime);
+        if (actualCreationTime100ns == 0U || actualCreationTime100ns != expectedCreationTime100ns)
+        {
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = "process identity changed (PID was reused); action skipped";
+            }
+            return false;
+        }
+
+        return actionInvoker(detailTextOut);
+    }
+}
+
 // ============================================================
 // ProcessDetailWindow.ActionAndUtil.cpp
 // 作用：
@@ -32,7 +123,15 @@ void ProcessDetailWindow::executeTerminateProcessAction()
         << eol;
 
     std::string detailText;
-    const bool actionOk = ks::process::TerminateProcessByWin32(m_baseRecord.pid, &detailText);
+    const std::uint32_t targetPid = m_baseRecord.pid;
+    const bool actionOk = invokeProcessActionForIdentity(
+        targetPid,
+        m_baseRecord.creationTime100ns,
+        [targetPid](std::string* detailTextOut)
+        {
+            return ks::process::TerminateProcessByWin32(targetPid, detailTextOut);
+        },
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] executeTerminateProcessAction: actionOk="
         << (actionOk ? "true" : "false")
@@ -63,7 +162,15 @@ void ProcessDetailWindow::executeTerminateThreadsAction()
         << eol;
 
     std::string detailText;
-    const bool actionOk = ks::process::TerminateAllThreadsByPid(m_baseRecord.pid, &detailText);
+    const std::uint32_t targetPid = m_baseRecord.pid;
+    const bool actionOk = invokeProcessActionForIdentity(
+        targetPid,
+        m_baseRecord.creationTime100ns,
+        [targetPid](std::string* detailTextOut)
+        {
+            return ks::process::TerminateAllThreadsByPid(targetPid, detailTextOut);
+        },
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] executeTerminateThreadsAction: actionOk="
         << (actionOk ? "true" : "false")
@@ -536,7 +643,15 @@ void ProcessDetailWindow::executeSetCriticalAction(const bool enableCritical)
         << eol;
 
     std::string detailText;
-    const bool actionOk = ks::process::SetProcessCriticalFlag(m_baseRecord.pid, enableCritical, &detailText);
+    const std::uint32_t targetPid = m_baseRecord.pid;
+    const bool actionOk = invokeProcessActionForIdentity(
+        targetPid,
+        m_baseRecord.creationTime100ns,
+        [targetPid, enableCritical](std::string* detailTextOut)
+        {
+            return ks::process::SetProcessCriticalFlag(targetPid, enableCritical, detailTextOut);
+        },
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] executeSetCriticalAction: actionOk="
         << (actionOk ? "true" : "false")
@@ -580,7 +695,15 @@ void ProcessDetailWindow::executeSetPriorityAction()
         << eol;
 
     std::string detailText;
-    const bool actionOk = ks::process::SetProcessPriority(m_baseRecord.pid, priorityLevel, &detailText);
+    const std::uint32_t targetPid = m_baseRecord.pid;
+    const bool actionOk = invokeProcessActionForIdentity(
+        targetPid,
+        m_baseRecord.creationTime100ns,
+        [targetPid, priorityLevel](std::string* detailTextOut)
+        {
+            return ks::process::SetProcessPriority(targetPid, priorityLevel, detailTextOut);
+        },
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] executeSetPriorityAction: actionOk="
         << (actionOk ? "true" : "false")
@@ -721,9 +844,17 @@ void ProcessDetailWindow::applyActionAffinityRule(
     }
 
     std::string detailText;
-    const bool setOk = ks::process::SetProcessAffinityRuleByPid(
-        static_cast<DWORD>(m_baseRecord.pid),
-        affinityRule,
+    const std::uint32_t targetPid = m_baseRecord.pid;
+    const bool setOk = invokeProcessActionForIdentity(
+        targetPid,
+        m_baseRecord.creationTime100ns,
+        [targetPid, &affinityRule](std::string* detailTextOut)
+        {
+            return ks::process::SetProcessAffinityRuleByPid(
+                static_cast<DWORD>(targetPid),
+                affinityRule,
+                detailTextOut);
+        },
         &detailText);
     kLogEvent actionEvent;
     (setOk ? info : warn) << actionEvent
@@ -959,6 +1090,7 @@ void ProcessDetailWindow::executeInjectDllAction()
         << eol;
 
     std::string detailText;
+    const std::uint32_t targetPid = m_baseRecord.pid;
     bool actionOk = false;
     if (useR0Injection)
     {
@@ -974,9 +1106,14 @@ void ProcessDetailWindow::executeInjectDllAction()
     }
     else
     {
-        actionOk = ks::process::InjectDllByPath(
-            m_baseRecord.pid,
-            dllPath.toStdString(),
+        const std::string dllPathUtf8 = dllPath.toStdString();
+        actionOk = invokeProcessActionForIdentity(
+            targetPid,
+            m_baseRecord.creationTime100ns,
+            [targetPid, dllPathUtf8](std::string* detailTextOut)
+            {
+                return ks::process::InjectDllByPath(targetPid, dllPathUtf8, detailTextOut);
+            },
             &detailText);
     }
     (actionOk ? info : err) << actionEvent
@@ -1032,6 +1169,7 @@ void ProcessDetailWindow::executeInjectShellcodeAction()
     }
 
     std::string detailText;
+    const std::uint32_t targetPid = m_baseRecord.pid;
     bool actionOk = false;
     if (useR0Injection)
     {
@@ -1047,9 +1185,13 @@ void ProcessDetailWindow::executeInjectShellcodeAction()
     }
     else
     {
-        actionOk = ks::process::InjectShellcodeBuffer(
-            m_baseRecord.pid,
-            shellcodeBuffer,
+        actionOk = invokeProcessActionForIdentity(
+            targetPid,
+            m_baseRecord.creationTime100ns,
+            [targetPid, &shellcodeBuffer](std::string* detailTextOut)
+            {
+                return ks::process::InjectShellcodeBuffer(targetPid, shellcodeBuffer, detailTextOut);
+            },
             &detailText);
     }
     (actionOk ? info : err) << actionEvent
