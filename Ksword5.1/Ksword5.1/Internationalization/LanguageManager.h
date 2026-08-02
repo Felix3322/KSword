@@ -38,6 +38,9 @@ namespace ks::i18n
         QString text(const QString& key, const QString& fallbackText = QString()) const;
         QString contextText(const QString& contextKey, const QString& sourceText) const;
         QString sourceText(const QString& sourceText) const;
+        // 强制查询当前语言包的 source_translations；用于以英文作为规范源文本的独立页面。
+        // 与 sourceText() 不同，中文模式下也会查包，而不是直接返回调用点文本。
+        QString packedSourceText(const QString& sourceText) const;
         QString sourceForRenderedText(const QString& renderedText) const;
         QString displayText(const QString& renderedOrSourceText) const;
 
@@ -123,6 +126,11 @@ namespace ks::i18n
     inline QString sourceText(const QString& sourceText)
     {
         return LanguageManager::instance().sourceText(sourceText);
+    }
+
+    inline QString packedSourceText(const QString& sourceText)
+    {
+        return LanguageManager::instance().packedSourceText(sourceText);
     }
 
     inline QString displayText(const QString& renderedOrSourceText)

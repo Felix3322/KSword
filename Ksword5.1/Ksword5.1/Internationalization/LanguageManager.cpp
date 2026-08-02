@@ -538,6 +538,17 @@ QString ks::i18n::LanguageManager::sourceText(const QString& sourceText) const
     return resolveSourceText(m_currentLanguageId, sourceText, &visitedLanguageIds);
 }
 
+QString ks::i18n::LanguageManager::packedSourceText(const QString& sourceText) const
+{
+    if (sourceText.isEmpty())
+    {
+        return sourceText;
+    }
+
+    QStringList visitedLanguageIds;
+    return resolveSourceText(m_currentLanguageId, sourceText, &visitedLanguageIds);
+}
+
 QString ks::i18n::LanguageManager::sourceForRenderedText(const QString& renderedText) const
 {
     if (renderedText.isEmpty() || containsHanCharacters(renderedText))
