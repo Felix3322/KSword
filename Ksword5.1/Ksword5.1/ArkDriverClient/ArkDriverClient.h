@@ -369,6 +369,56 @@ namespace ksword::ark
             unsigned long majorFunction,
             std::uint64_t expectedDriverObjectAddress,
             std::uint32_t expectedGeneration) const;
+        // Driver image 控制只传输显式身份、期望快照和用户确认；不限制驱动类别或地址值。
+        DriverImageControlResult controlDriverImage(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long action,
+            unsigned long fieldMask,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint32_t expectedGeneration,
+            const DriverImageValues& expectedValues,
+            const DriverImageValues& desiredValues,
+            std::uint64_t expectedLinkFlink = 0U,
+            std::uint64_t expectedLinkBlink = 0U,
+            bool restoreLink = false,
+            bool uiConfirmed = false) const;
+        // queryDriverImage：获取五个字段、加载器链、记录归属和冲突的同锁快照。
+        DriverImageControlResult queryDriverImage(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            std::uint64_t expectedDriverObjectAddress = 0U) const;
+        // applyDriverImageFields：按 fieldMask 对期望值执行原子 CAS 批量修改。
+        DriverImageControlResult applyDriverImageFields(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long fieldMask,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint32_t expectedGeneration,
+            const DriverImageValues& expectedValues,
+            const DriverImageValues& desiredValues) const;
+        // hideDriverImage：仅在 Flink/Blink 精确匹配时从 PsLoadedModuleList 摘链。
+        DriverImageControlResult hideDriverImage(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint32_t expectedGeneration,
+            std::uint64_t expectedLinkFlink,
+            std::uint64_t expectedLinkBlink) const;
+        // restoreDriverImage：恢复所选字段，并可按原邻居或当前尾部重新插入加载链。
+        DriverImageControlResult restoreDriverImage(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long fieldMask,
+            bool restoreLink,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint32_t expectedGeneration) const;
+        // abandonDriverImage：保持所有当前危险值/链状态，仅永久丢弃恢复记录。
+        DriverImageControlResult abandonDriverImage(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint32_t expectedGeneration) const;
         // prepareMutation / commitMutation / rollbackMutation / queryMutationAudit：
         // - 输入：受控 transaction 参数或只读 audit 查询参数。
         // - 处理：仅在 ArkDriverClient 内封装 mutation IOCTL；Dock UI 不直接调用 DeviceIoControl。

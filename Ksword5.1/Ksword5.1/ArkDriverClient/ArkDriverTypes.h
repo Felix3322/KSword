@@ -41,6 +41,7 @@
 #include "../../../shared/driver/KswordArkI8042AuditIoctl.h"
 #include "../../../shared/driver/KswordArkDriverBlindIoctl.h"
 #include "../../../shared/driver/KswordArkDriverDispatchIoctl.h"
+#include "../../../shared/driver/KswordArkDriverImageEditorIoctl.h"
 #include "../../../shared/driver/KswordArkFilterIoctl.h"
 #include "../../../shared/driver/KswordArkKernelObjectIoctl.h"
 #include "../../../shared/driver/KswordArkHwidIoctl.h"
@@ -1712,6 +1713,53 @@ namespace ksword::ark
         std::uint64_t requestedDispatchAddress = 0;
         std::uint64_t selfDriverObjectAddress = 0;
         std::wstring driverName;
+    };
+
+    // DriverImageValues：五个可独立选择的 DriverObject/KLDR 镜像元数据值。
+    // 所有字段在 R3 使用 64 位承载；R0 仅对两个自然 ULONG 字段执行宽度检查。
+    struct DriverImageValues
+    {
+        std::uint64_t driverStart = 0;       // driverStart：DriverObject->DriverStart。
+        std::uint64_t driverSize = 0;        // driverSize：DriverObject->DriverSize。
+        std::uint64_t driverSection = 0;     // driverSection：DriverObject->DriverSection。
+        std::uint64_t kldrDllBase = 0;       // kldrDllBase：KLDR_DATA_TABLE_ENTRY.DllBase。
+        std::uint64_t kldrSizeOfImage = 0;   // kldrSizeOfImage：KLDR SizeOfImage。
+    };
+
+    // DriverImageControlResult：任意驱动镜像字段和 PsLoadedModuleList 事务响应。
+    // 地址、链和冲突信息全部来自 R0；R3 不按驱动类别或值归属过滤。
+    struct DriverImageControlResult
+    {
+        IoResult io;                         // io：传输、协议校验与 NTSTATUS。
+        bool unsupported = false;            // unsupported：旧驱动未注册新 IOCTL。
+        std::uint32_t version = 0;            // version：协议版本。
+        std::uint32_t action = 0;             // action：查询、应用、隐藏、恢复或放弃。
+        std::uint32_t state = KSWORD_ARK_DRIVER_IMAGE_STATE_INACTIVE;
+        std::uint32_t responseFlags = 0;      // responseFlags：链、归属、冲突和恢复位置标志。
+        long lastStatus = 0;                  // lastStatus：实际事务 NTSTATUS。
+        long loaderStatus = 0;                // loaderStatus：加载器布局/资源解析状态。
+        std::uint32_t generation = 0;         // generation：CAS 事务代次。
+        std::uint32_t managedFieldMask = 0;   // managedFieldMask：仍有恢复记录的字段。
+        std::uint32_t ownedFieldMask = 0;     // ownedFieldMask：当前仍等于已应用值。
+        std::uint32_t conflictFieldMask = 0;  // conflictFieldMask：第三方已改写字段。
+        std::uint32_t changedFieldMask = 0;   // changedFieldMask：本次实际改变字段。
+        std::uint32_t layoutFlags = 0;        // layoutFlags：DynData/export 验证来源。
+        std::uint64_t targetModuleBase = 0;   // targetModuleBase：首次身份模块基址。
+        std::uint64_t driverObjectAddress = 0;
+        std::uint64_t selfDriverObjectAddress = 0;
+        std::uint64_t loaderEntryAddress = 0;
+        std::uint64_t listHeadAddress = 0;
+        std::uint64_t listResourceAddress = 0;
+        std::uint64_t loaderLinkAddress = 0;
+        std::uint64_t currentLinkFlink = 0;
+        std::uint64_t currentLinkBlink = 0;
+        std::uint64_t originalLinkFlink = 0;
+        std::uint64_t originalLinkBlink = 0;
+        DriverImageValues currentValues;
+        DriverImageValues originalValues;
+        DriverImageValues appliedValues;
+        DriverImageValues requestedValues;
+        std::wstring driverName;              // driverName：R0 canonical 对象名。
     };
 
     // CallbackRuntimeResult wraps the runtime-state response packet.

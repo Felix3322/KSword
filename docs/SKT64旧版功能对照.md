@@ -11,9 +11,10 @@ KSword 现有代码已覆盖公开 SKT64 旧版的大多数常规系统诊断、
 1. `IoTimer` 枚举，并超越旧版增加受控的启动/停止。
 2. “结束进程并删除映像文件”，且使用 PID 创建时间与文件 ID 防止路径/PID 竞态。
 3. 任意 `DriverObject.MajorFunction[]` 的查询、修改、事务恢复与放弃恢复记录，包括 KSword 自身、PnP、文件系统和安全关键驱动；保留对象身份、当前值、代次和 CAS 并发校验。
-4. Intel EPT / AMD NPT 来宾可见交叉视图与 IOMMU 取证：CPUID/MSR、物理别名哈希、ACPI DMAR/IVRS、公开 IOMMU 接口及可选只读 MMIO。
+4. 任意 `DriverObject.DriverStart/DriverSize/DriverSection` 与对应 `KLDR_DATA_TABLE_ENTRY.DllBase/SizeOfImage` 的查询、事务修改和恢复，以及加载器链摘除、重新插入或放弃恢复；保留对象身份、事务代次、期望当前值、链邻居和真实加载器资源同步。
+5. Intel EPT / AMD NPT 来宾可见交叉视图与 IOMMU 取证：CPUID/MSR、物理别名哈希、ACPI DMAR/IVRS、公开 IOMMU 接口及可选只读 MMIO。
 
-仍不得写成“全部完成”的关键缺口包括：常驻 HVM 与任意目标执行、PatchGuard/DSE 控制、驱动加载/卸载拦截、引导扇区保护、固件刷写/锁定、驱动映像字段改写/加载器链隐藏，以及产品特定的安全软件禁用工作流。驱动映像字段与加载器链修改还需要独立风险授权，不能由 MajorFunction 授权代替。
+仍不得写成“全部完成”的关键缺口包括：常驻 HVM 与任意目标执行、PatchGuard/DSE 控制、驱动加载/卸载拦截、引导扇区保护、固件刷写/锁定，以及产品特定的安全软件禁用工作流。
 
 ## 功能面对照
 
@@ -29,7 +30,7 @@ KSword 现有代码已覆盖公开 SKT64 旧版的大多数常规系统诊断、
 | Timer/DPC、IDT/GDT、MSR/HAL/CPU 完整性 | `KernelTimerDpcTab`、`KernelDescriptorTableTab`、CPU/platform audit | 已覆盖并扩展 |
 | EPT/NPT Hook 与 IOMMU 隐藏取证 | `KernelSlatIommuAuditTab`、`slat_iommu_audit.c` | 本轮补齐来宾可见只读取证；外层 SLAT 仍不可证明 |
 | VT-x/EPT HVM 沙箱与目标执行 | `KernelHvmTab`、`features/hvm/` | 已有真实一次性 VMLAUNCH/VMCALL 自检；常驻 VMM 与任意目标执行未完成 |
-| 驱动映像基址/大小修改与加载器链隐藏 | 尚未接入 | 未完成；等待独立风险授权 |
+| 驱动映像基址/大小修改与加载器链隐藏 | `KernelDriverImageEditorDialog`、`ArkDriverImage.cpp`、`driver_image_editor*.c`、共享协议 | 本轮补齐并超越；五字段事务、链摘除/恢复/放弃恢复 |
 | 驱动加载/卸载拦截、引导扇区保护 | 现有卸载、storage forensics 仅覆盖相邻能力 | 未完成 |
 | PatchGuard/DSE、固件刷写/锁定、产品特定禁用 | 现有平台/安全审计仅覆盖只读取证 | 未完成 |
 | 进程/线程/镜像/注册表/Ob/ExCallback/文件系统回调 | `KernelDock` callback enumeration/interception 与 R0 callback features | 已覆盖并扩展 |
@@ -66,6 +67,23 @@ KSword 对修改能力采用“告知风险、用户决定”的准则：风险�
 - 成功修改后保留原始值，可按事务恢复；恢复同样检查当前值，避免把第三方后续修改覆盖掉。
 - 不根据驱动类别限制目标，因此错误地址可立即蓝屏、破坏 I/O、切断恢复通道或留下悬空指针；UI 对此持续告知风险。
 
+## DriverObject / KLDR 镜像与加载链事务编辑器
+
+- R3 只能通过 `ArkDriverClient` 使用共享协议；Dock 不直接调用 `DeviceIoControl`。
+- 同一事务可选择修改 `DriverStart`、`DriverSize`、`DriverSection`、`DllBase` 和 `SizeOfImage`；两个大小字段按其原生 32 位宽度解析，其余指针值不设类别或数值策略限制。
+- 首次绑定同时核验精确 DriverObject/名称、`DriverStart == DllBase` 或 `DriverSection == KLDR` 条目地址，并冻结对象引用、规范名称和原始模块基址；因此改写 `DriverStart` 后仍可通过对象身份重新打开记录。
+- 加载链操作使用实时导出的 `PsLoadedModuleList` 与 `PsLoadedModuleResource`，并用 DynData 的加载链 RVA 交叉核验；修改链表时获取真实 `ERESOURCE` 排他锁。
+- 字段修改先对全部所选字段执行期望当前值与代次 CAS，再整体写入；中途失败按逆序回滚，并分别保留原始值和本次应用值。
+- 摘链前核验前后节点互相指回目标及请求携带的期望邻居，随后将条目自环；恢复只在当前值仍等于事务应用值时回写字段，链邻居仍相邻时回原位，否则插入当前链尾，第三方冲突会被保留并返回证据。
+- 记录持有 DriverObject 引用；存在活动记录时阻止强制卸载，驱动卸载阶段执行尽力恢复并释放引用。放弃记录会明确保留已应用字段或隐藏状态。
+- 不因 KSword 自身、PnP、文件系统、安全关键驱动或值风险拒绝操作；UI 始终告知蓝屏、PatchGuard、I/O/符号/崩溃转储失效和不可恢复悬空链风险，并要求逐次显式确认。
+
+实现的对象与同步语义按公开一手资料核对：
+
+- [Microsoft DRIVER_OBJECT](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_driver_object)
+- [Microsoft ExAcquireResourceExclusiveLite](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-exacquireresourceexclusivelite)
+- [Microsoft RemoveEntryList](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-removeentrylist)
+
 ## EPT/NPT 与 IOMMU 只读取证
 
 - 同时识别 Intel VMX/EPT 与 AMD SVM/NPT，并记录 Hypervisor CPUID 厂商与 CPUID 时延分布。
@@ -83,8 +101,8 @@ KSword 对修改能力采用“告知风险、用户决定”的准则：风险�
 
 ## 验证
 
-- 新增共享协议仅位于 `shared/driver/`，驱动分发仅通过 `ioctl_registry.c` 注册；SLAT/IOMMU 查询为 `METHOD_BUFFERED + FILE_ANY_ACCESS` 的只读固定响应。
-- IOCTL 审计确认 152/152 个共享定义均已注册、0 个遗漏；风险启发式仍报告仓库基线中的 14 条高风险和 2 条中风险存量项，本次只读查询未新增类别。
-- 中英语言包审计通过（18,415 条源码字符串）。
+- 新增共享协议仅位于 `shared/driver/`，驱动分发仅通过 `ioctl_registry.c` 注册；镜像事务 IOCTL 为 `METHOD_BUFFERED + FILE_WRITE_ACCESS`，SLAT/IOMMU 查询仍为 `METHOD_BUFFERED + FILE_ANY_ACCESS` 的只读固定响应。
+- IOCTL 审计确认 153/153 个共享定义均已注册、0 个遗漏；风险启发式报告 14 条高风险和 2 条中风险项。
+- 中英语言包审计通过（18,497 条源码字符串）。
 - `KswordARKDriver` `Release|x64` 编译/链接通过；未安装或加载驱动。
 - `Ksword5.1` `Release|x64` 编译/链接通过。

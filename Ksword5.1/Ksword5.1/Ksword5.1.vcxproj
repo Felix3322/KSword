@@ -221,6 +221,7 @@
     <ClCompile Include="KernelDock\KernelCommunicationEndpointTab.cpp" />
     <ClCompile Include="KernelDock\KernelDeviceDriverObjectsTab.cpp" />
     <ClCompile Include="KernelDock\KernelDriverDispatchEditorDialog.cpp" />
+    <ClCompile Include="KernelDock\KernelDriverImageEditorDialog.cpp" />
     <ClCompile Include="KernelDock\KernelDeviceDriverObjectsWorker.cpp" />
     <ClCompile Include="KernelDock\KernelIoTimerTab.cpp" />
     <ClCompile Include="KernelDock\KernelIoctlAuditTab.cpp" />
@@ -433,6 +434,7 @@
     <ClCompile Include="ArkDriverClient\ArkDriverRegistry.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverBlind.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverDispatch.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverImage.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverKernel.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverKernelBaseline.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverPiDdb.cpp" />
@@ -480,6 +482,7 @@
     <ClInclude Include="KernelDock\KernelCommunicationEndpointTab.h" />
     <ClInclude Include="KernelDock\KernelDeviceDriverObjectsTab.h" />
     <ClInclude Include="KernelDock\KernelDriverDispatchEditorDialog.h" />
+    <ClInclude Include="KernelDock\KernelDriverImageEditorDialog.h" />
     <ClInclude Include="KernelDock\KernelDeviceDriverObjectsWorker.h" />
     <ClInclude Include="KernelDock\KernelIoTimerTab.h" />
     <ClInclude Include="KernelDock\KernelIoctlAuditTab.h" />
@@ -598,6 +601,7 @@
     <ClInclude Include="MiscDock\DiskEditor\DiskRawFileSystemInternal.h" />
     <ClInclude Include="..\..\shared\driver\KswordArkSystemTimeIoctl.h" />
     <ClInclude Include="..\..\shared\driver\KswordArkDriverDispatchIoctl.h" />
+    <ClInclude Include="..\..\shared\driver\KswordArkDriverImageEditorIoctl.h" />
     <ClInclude Include="RegistryDock\RegistryOptimizationPage.h" />
     <QtMoc Include="ProcessDock\ProcessDetailWindow.h" />
     <ClInclude Include="ProcessDock\ProcessDetailWindow.InternalCommon.h" />

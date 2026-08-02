@@ -1,6 +1,7 @@
 
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelDriverDispatchEditorDialog.h"
+#include "KernelDriverImageEditorDialog.h"
 #include "KernelDock.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
@@ -592,6 +593,10 @@ void KernelDeviceDriverObjectsTab::showTableContextMenu(const QPoint& localPosit
         kernelText(
             "kernel.device_driver.menu.dispatch_editor",
             QStringLiteral("打开 IRP / MajorFunction 编辑器")));
+    QAction* imageEditorAction = menu.addAction(
+        kernelText(
+            "kernel.device_driver.menu.image_editor",
+            QStringLiteral("打开 DriverObject / KLDR 镜像编辑器")));
 
     const bool editableDriverObject = row >= 0 &&
         row < static_cast<int>(m_visibleRows.size()) &&
@@ -607,6 +612,7 @@ void KernelDeviceDriverObjectsTab::showTableContextMenu(const QPoint& localPosit
     copyTsvAction->setEnabled(!m_visibleRows.empty());
     exportAction->setEnabled(!m_visibleRows.empty());
     dispatchEditorAction->setEnabled(editableDriverObject);
+    imageEditorAction->setEnabled(editableDriverObject);
 
     QAction* selectedAction = menu.exec(m_tableWidget->viewport()->mapToGlobal(localPosition));
     if (selectedAction == copyCellAction)
@@ -630,6 +636,13 @@ void KernelDeviceDriverObjectsTab::showTableContextMenu(const QPoint& localPosit
         const KernelDeviceDriverObjectEntry& entry =
             m_visibleRows[static_cast<std::size_t>(row)];
         KernelDriverDispatchEditorDialog dialog(entry.fullPathText, this);
+        dialog.exec();
+    }
+    else if (selectedAction == imageEditorAction && editableDriverObject)
+    {
+        const KernelDeviceDriverObjectEntry& entry =
+            m_visibleRows[static_cast<std::size_t>(row)];
+        KernelDriverImageEditorDialog dialog(entry.fullPathText, this);
         dialog.exec();
     }
 }

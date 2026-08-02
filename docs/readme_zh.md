@@ -79,7 +79,7 @@ Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工
 - 内存与页表取证：进程区域、搜索、Hex、书签/断点、R0 读写路径、内核可执行内存扫描、Kernel/Process memory evidence、PTE/VA 翻译。
 - 二进制扫描与受控编辑：PE/ELF/Mach-O 结构化扫描；等长字节修改会复核源快照、原子替换目标，并可选保留备份。
 - 网络审计与流量工具：抓包/过滤/连接管理/限速/请求构造/HTTPS 解析、WFP 防火墙事件与规则、NIDS、分段下载，以及 TCP/UDP/AFD/NSI/NDIS/WFP 的 R0 清单和审计视图。
-- 驱动与内核对象：驱动服务与模块、DriverObject/DeviceObject/MajorFunction/FastIo、Driver Integrity、Module Cross-View、Unloaded/PiDDB、干净已加载镜像与 IDT 基线、描述符表/IOCTL 解码、内核反汇编、对象命名空间、SSDT/SSSDT、Inline Hook、IAT/EAT、回调遍历。
+- 驱动与内核对象：驱动服务与模块、DriverObject/DeviceObject/MajorFunction/FastIo、MajorFunction 与 DriverObject/KLDR 镜像/加载链事务编辑器、Driver Integrity、Module Cross-View、Unloaded/PiDDB、干净已加载镜像与 IDT 基线、描述符表/IOCTL 解码、内核反汇编、对象命名空间、SSDT/SSSDT、Inline Hook、IAT/EAT、回调遍历。
 - 文件、存储与设备：双面板文件管理、属性/哈希/签名/PE/字符串/Hex、文件解锁与恢复、Minifilter/FileObject/Section/Storage/BitLocker 证据、原始文件系统和已删除条目取证、硬盘 IO 监控、SetupAPI/CfgMgr 设备树和 R0 设备栈审计。
 - 系统安全姿态：AppLocker、WDAC/Code Integrity、Defender/ASR、VBS/Hyper-V、驱动信任、平台安全和事件日志诊断。
 - UI 与辅助体验：ADS 布局保存/恢复、可见 Dock 惰性初始化、表格冻结、平滑滚动、可取消的 UI 卡顿检测、顶部菜单设置、UIAccess/置顶策略、日志与任务进度面板、Taskbar 顶部 AppBar 与 `S O S Enter` 快速拉起。
@@ -98,7 +98,7 @@ Ksword5.1 是面向 Windows 的开源 ARK、内核调试与系统取证分析工
 | 内存 | 进程与模块、区域、搜索、查看器、断点/书签、R0 读写、Kernel Exec Scan、Memory Evidence、PTE | R3 内存浏览与搜索、R0 区域读取、内核可执行内存扫描、内核/进程内存证据、页表项与虚拟地址翻译。 |
 | 文件 | 文件管理、文件恢复、属性、解锁、Minifilter、FileObject、Section、Storage/BitLocker | 双面板管理、权限接管、哈希/签名/PE/字符串/Hex、NTFS 恢复、文件占用与 Section 映射、存储栈与 BitLocker 只读证据。 |
 | 扫描器 | 结构化扫描、安全字节编辑 | 在后台结构化扫描 PE、ELF 与 Mach-O。可选编辑器只允许等长修改，需明确确认风险；它会复核原始快照、原子替换目标，并可保留备份。 |
-| 驱动 | 驱动概览、驱动操作、调试输出、对象信息、完整性、模块 Cross-View、Unloaded/PiDDB | 驱动服务注册/加载/卸载/删除、已加载模块、DBWIN 输出、DriverObject/DeviceObject/MajorFunction/FastIo、Driver Integrity、Unloaded/PiDDB 证据和显式门禁的操作入口。 |
+| 驱动 | 驱动概览、驱动操作、调试输出、对象信息、完整性、模块 Cross-View、Unloaded/PiDDB | 驱动服务注册/加载/卸载/删除、已加载模块、DBWIN 输出、DriverObject/DeviceObject/MajorFunction/FastIo、MajorFunction/镜像字段原子事务、加载链摘除与恢复、Driver Integrity、Unloaded/PiDDB 证据和只告警、显式确认的操作入口。 |
 | 内核 | 对象命名空间、原子表、NtQuery、SSDT、SSSDT、Inline Hook、IAT/EAT、CID、IPC、DynData、驱动状态、回调、基线、HVM | 对象目录递归、BaseNamedObjects、NamedPipe、符号链接、设备/驱动对象、对象类型矩阵、CID/cross-view、ALPC/IPC、动态偏移、能力矩阵、干净已加载镜像与 IDT 基线、描述符表/IOCTL 解码、内核反汇编和回调遍历/管理。回调清单覆盖 Notify、注册表、对象、过滤器、BugCheck、Shutdown、文件系统、登录会话、CallbackObject、镜像验证与 NMI 来源，并展示模块归属及 v3 快照/逐行身份诊断。HVM 流程对 VMX 自检和一次性测试来宾设有显式确认。 |
 | 监控 | 进程定向、直接内核调用、WinAPI、WMI、ETW、Risk Center | 目标进程树 ETW、syscall 采集、WinAPI Agent、WMI 订阅、ETW Provider/Session 管理、ARK 风险聚合。 |
 | 硬件 | 利用率、概览、CPU、GPU、内存、硬盘监控、设备管理、R0 设备审计 | 任务管理器风格性能页、磁盘/网络/GPU 动态卡片、进程 IO 与 ETW 文件活动、SetupAPI/CfgMgr 设备树、DevNode/USB/HID/PCI/ACPI/GPU/display/watchdog 审计。 |
