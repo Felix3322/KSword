@@ -604,7 +604,7 @@ void MemoryDock::refreshKernelMemoryEvidenceAsync()
 
     std::thread([guardThis, ticket, flags, maxRows, startAddress, endAddress]() {
         const ksword::ark::DriverClient client;
-        const ksword::ark::KernelMemoryEvidenceResult result = client.queryKernelMemoryEvidence(
+        ksword::ark::KernelMemoryEvidenceResult result = client.queryKernelMemoryEvidence(
             flags,
             maxRows,
             startAddress,
