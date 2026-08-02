@@ -582,7 +582,7 @@ Return Value:
 static NTSTATUS
 KswordARKDriverBuildLabelSecurityDescriptor(
     _In_ ULONG IntegrityRid,
-    _Inout_ KSWORD_ARK_FILE_LABEL_SD_BUFFER* DescriptorBuffer
+    _Out_ KSWORD_ARK_FILE_LABEL_SD_BUFFER* DescriptorBuffer
     )
 /*++
 
