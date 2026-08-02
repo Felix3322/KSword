@@ -5472,13 +5472,15 @@ namespace ks::process
         const SuspendedProcessLaunchRequest& request,
         SuspendedProcessLaunchResult* const resultOut)
     {
+        if (resultOut == nullptr)
+        {
+            return false;
+        }
+
         SuspendedProcessLaunchResult localResult{};
         const auto finish = [&localResult, resultOut](const bool success) {
             localResult.success = success;
-            if (resultOut != nullptr)
-            {
-                *resultOut = localResult;
-            }
+            *resultOut = localResult;
             return success;
         };
 

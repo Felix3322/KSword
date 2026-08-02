@@ -616,6 +616,8 @@ namespace ks::process
     // - 当前进程已提升且 request.runAsAdministrator=false 时，优先使用 TokenLinkedToken
     //   创建普通权限目标；
     // - 成功时保留主线程句柄供 ResumeSuspendedProcessInitialThread 精确恢复。
+    // - resultOut 必须为有效输出地址；空指针会在创建进程前直接失败，避免丢失
+    //   CREATE_SUSPENDED 主线程句柄。
     bool LaunchSuspendedProcess(
         const SuspendedProcessLaunchRequest& request,
         SuspendedProcessLaunchResult* resultOut);
