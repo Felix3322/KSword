@@ -1508,7 +1508,14 @@ void NetworkFirewallPage::startLiveMonitor()
     FWPM_NET_EVENT_ENUM_TEMPLATE0 enumTemplate{};
     FWPM_NET_EVENT_SUBSCRIPTION0 subscription{};
     subscription.enumTemplate = &enumTemplate;
-    CoCreateGuid(&subscription.sessionKey);
+    const HRESULT guidStatus = ::CoCreateGuid(&subscription.sessionKey);
+    if (FAILED(guidStatus))
+    {
+        closeWfpEngine(engineHandle, true);
+        setStatusText(QStringLiteral("启动实时防火墙事件订阅失败：%1。请确认以管理员运行。")
+            .arg(win32ErrorText(static_cast<DWORD>(guidStatus))));
+        return;
+    }
 
     HANDLE subscriptionHandle = nullptr;
     const DWORD status = g_wfpApi.eventSubscribe(
