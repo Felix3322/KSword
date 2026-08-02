@@ -274,11 +274,13 @@ KswordArkCallbackEnumFreeModuleCache(
     _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache
     );
 
+_Must_inspect_result_
 NTSTATUS
 KswordArkCallbackEnumEnsureModuleCache(
     _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache
     );
 
+_Must_inspect_result_
 NTSTATUS
 KswordArkCallbackEnumResolveModuleByAddressCached(
     _Inout_opt_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
