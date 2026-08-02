@@ -909,7 +909,7 @@ Return Value:
 static BOOLEAN
 KswordARKDynDataStoreRuntimeOffset(
     _In_ LONG ResolvedOffset,
-    _Out_ ULONG* DestinationOffset,
+    _Inout_ ULONG* DestinationOffset,
     _Out_ ULONG* DestinationSource
     )
 /*++
