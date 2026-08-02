@@ -34,6 +34,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "Shell32.lib")
@@ -151,7 +152,7 @@ namespace
         {
             return std::wstring();
         }
-        std::array<wchar_t, 32768> buffer{};
+        std::vector<wchar_t> buffer(32768U, L'\0');
         const DWORD chars = ::ExpandEnvironmentStringsW(text.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()));
         if (chars == 0 || chars >= buffer.size())
         {
@@ -163,7 +164,7 @@ namespace
     // Query an environment variable as UTF-16 and return an empty string when it is absent.
     std::wstring QueryEnvironmentWide(const wchar_t* name)
     {
-        std::array<wchar_t, 32768> buffer{};
+        std::vector<wchar_t> buffer(32768U, L'\0');
         const DWORD chars = ::GetEnvironmentVariableW(name, buffer.data(), static_cast<DWORD>(buffer.size()));
         if (chars == 0 || chars >= buffer.size())
         {
