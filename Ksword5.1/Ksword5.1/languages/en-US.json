@@ -19263,6 +19263,7 @@
     "请输入导出路径：": "Enter export path:",
     "请输入文件路径。": "Enter file path.",
     "请输入有效的 PID。": "Enter a valid PID.",
+    "无法确认目标进程身份，规则未保存。": "Could not verify the target process identity; the rule was not saved.",
     "请输入正确的起止 IPv4 地址。": "Enter correct start and end IPv4 addresses.",
     "请输入用于“等于”比较的目标值。": "Enter target value for 'equals' comparison.",
     "请输入组名称：": "Enter group name:",

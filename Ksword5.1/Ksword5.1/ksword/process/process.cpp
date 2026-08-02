@@ -4235,6 +4235,94 @@ namespace ks::process
         return true;
     }
 
+    bool InvokeSuspendResumeProcessIfCreationTimeMatches(
+        const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
+        const bool resume,
+        std::string* const errorMessage)
+    {
+        if (pid == 0U || expectedCreationTime100ns == 0U)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "process identity is unavailable";
+            }
+            return false;
+        }
+
+        const auto processRoutine = reinterpret_cast<NtSuspendProcessFn>(
+            GetNtdllProcAddress(resume ? "NtResumeProcess" : "NtSuspendProcess"));
+        if (processRoutine == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = resume
+                    ? "NtResumeProcess not available."
+                    : "NtSuspendProcess not available.";
+            }
+            return false;
+        }
+
+        const HANDLE processHandle = ::OpenProcess(
+            ProcessSuspendResumeAccess | PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            ToDwordPid(pid));
+        if (processHandle == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "OpenProcess(for identity-verified suspend/resume) failed: " +
+                    FormatLastErrorMessage(::GetLastError());
+            }
+            return false;
+        }
+
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        const BOOL queryOk = ::GetProcessTimes(
+            processHandle,
+            &creationTime,
+            &exitTime,
+            &kernelTime,
+            &userTime);
+        const DWORD queryError = queryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        const std::uint64_t actualCreationTime100ns = queryOk != FALSE
+            ? ks::str::FileTimeToUint64(
+                creationTime.dwHighDateTime,
+                creationTime.dwLowDateTime)
+            : 0U;
+        if (queryOk == FALSE ||
+            actualCreationTime100ns == 0U ||
+            actualCreationTime100ns != expectedCreationTime100ns)
+        {
+            ::CloseHandle(processHandle);
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = queryOk == FALSE
+                    ? "GetProcessTimes failed: " + FormatLastErrorMessage(queryError)
+                    : "process identity changed (PID was reused); action skipped.";
+            }
+            return false;
+        }
+
+        const NTSTATUS actionStatus = processRoutine(processHandle);
+        ::CloseHandle(processHandle);
+        if (NT_SUCCESS(actionStatus))
+        {
+            return true;
+        }
+
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = FormatNtStatusMessage(
+                actionStatus,
+                resume ? "NtResumeProcess failed" : "NtSuspendProcess failed");
+        }
+        return false;
+    }
+
     bool SuspendProcess(const std::uint32_t pid, std::string* const errorMessage)
     {
         const auto ntSuspendProcess = reinterpret_cast<NtSuspendProcessFn>(
@@ -4307,6 +4395,30 @@ namespace ks::process
             *errorMessage = FormatNtStatusMessage(resumeStatus, "NtResumeProcess failed");
         }
         return false;
+    }
+
+    bool SuspendProcessIfCreationTimeMatches(
+        const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return InvokeSuspendResumeProcessIfCreationTimeMatches(
+            pid,
+            expectedCreationTime100ns,
+            false,
+            errorMessage);
+    }
+
+    bool ResumeProcessIfCreationTimeMatches(
+        const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return InvokeSuspendResumeProcessIfCreationTimeMatches(
+            pid,
+            expectedCreationTime100ns,
+            true,
+            errorMessage);
     }
 
     bool SetProcessCriticalFlag(const std::uint32_t pid, const bool enableCritical, std::string* const errorMessage)

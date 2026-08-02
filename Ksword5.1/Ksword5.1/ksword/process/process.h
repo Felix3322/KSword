@@ -531,6 +531,18 @@ namespace ks::process
     // ResumeProcess 作用：恢复进程（NtResumeProcess）。
     bool ResumeProcess(std::uint32_t pid, std::string* errorMessage);
 
+    // SuspendProcessIfCreationTimeMatches / ResumeProcessIfCreationTimeMatches：
+    // - 先在同一进程句柄上核对 PID 对应实例的创建时间；
+    // - 身份变化时拒绝动作，避免 PID 回收后影响无关进程。
+    bool SuspendProcessIfCreationTimeMatches(
+        std::uint32_t pid,
+        std::uint64_t expectedCreationTime100ns,
+        std::string* errorMessage);
+    bool ResumeProcessIfCreationTimeMatches(
+        std::uint32_t pid,
+        std::uint64_t expectedCreationTime100ns,
+        std::string* errorMessage);
+
     // SetProcessCriticalFlag 作用：设置/取消关键进程标记（NtSetInformationProcess）。
     bool SetProcessCriticalFlag(std::uint32_t pid, bool enableCritical, std::string* errorMessage);
 

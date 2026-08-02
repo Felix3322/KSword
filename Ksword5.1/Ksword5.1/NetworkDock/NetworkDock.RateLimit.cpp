@@ -16,8 +16,22 @@ void NetworkDock::applyOrUpdateRateLimitRule()
         return;
     }
 
+    std::uint64_t processCreationTime100ns = 0U;
+    if (!ks::process::QueryProcessCreationTimeByPid(
+            targetPid,
+            &processCreationTime100ns) ||
+        processCreationTime100ns == 0U)
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("进程限速"),
+            QStringLiteral("无法确认目标进程身份，规则未保存。"));
+        return;
+    }
+
     ks::network::ProcessRateLimitRule limitRule;
     limitRule.processId = targetPid;
+    limitRule.processCreationTime100ns = processCreationTime100ns;
     limitRule.bytesPerSecond = static_cast<std::uint64_t>(m_rateLimitKBpsSpin->value()) * 1024ULL;
     limitRule.suspendDurationMs = static_cast<std::uint32_t>(m_rateLimitSuspendMsSpin->value());
     limitRule.enabled = true;

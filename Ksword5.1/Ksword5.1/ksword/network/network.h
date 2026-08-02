@@ -115,6 +115,7 @@ namespace ks::network
     struct ProcessRateLimitRule
     {
         std::uint32_t processId = 0;          // 目标 PID。
+        std::uint64_t processCreationTime100ns = 0; // PID 对应进程实例的创建时间，防止 PID 回收误操作。
         std::uint64_t bytesPerSecond = 0;     // 每秒允许发送的字节上限（B/s）。
         std::uint32_t suspendDurationMs = 250;// 超限后挂起时长（毫秒）。
         bool enabled = true;                  // 是否启用该规则。
@@ -1571,11 +1572,13 @@ namespace ks::network
         }
 
         // UpsertRateLimitRule：
-        // - 新增或更新某 PID 的限速规则；
-        // - bytesPerSecond==0 或 pid==0 会忽略。
+        // - 新增或更新某 PID + 创建时间的限速规则；
+        // - 缺少进程身份或速率上限时拒绝创建，避免 PID 回收后误操作。
         void UpsertRateLimitRule(const ProcessRateLimitRule& inputRule)
         {
-            if (inputRule.processId == 0 || inputRule.bytesPerSecond == 0)
+            if (inputRule.processId == 0 ||
+                inputRule.processCreationTime100ns == 0 ||
+                inputRule.bytesPerSecond == 0)
             {
                 return;
             }
@@ -1584,10 +1587,12 @@ namespace ks::network
             sanitizedRule.suspendDurationMs = std::clamp<std::uint32_t>(sanitizedRule.suspendDurationMs, 50, 2000);
 
             bool needResumeExistingProcess = false;
+            ProcessRateLimitRule existingRule{};
             {
                 std::lock_guard<std::mutex> guard(m_rateLimitMutex);
                 RateLimitRuntime& runtime = m_rateLimitByPid[sanitizedRule.processId];
                 needResumeExistingProcess = runtime.currentlySuspended;
+                existingRule = runtime.rule;
                 runtime.rule = sanitizedRule;
                 runtime.windowStartTickMs = detail::NowTickMs();
                 runtime.currentWindowBytes = 0;
@@ -1596,11 +1601,14 @@ namespace ks::network
                 // triggerCount 保留历史，方便 UI 查看总触发次数。
             }
 
-            // 如果旧规则处于挂起状态，更新规则时先恢复进程，避免误留挂起态。
+            // 只恢复与旧规则身份匹配的实例，避免 PID 已回收时误恢复其它进程。
             if (needResumeExistingProcess)
             {
                 std::string ignoredDetailText;
-                ks::process::ResumeProcess(sanitizedRule.processId, &ignoredDetailText);
+                (void)ks::process::ResumeProcessIfCreationTimeMatches(
+                    existingRule.processId,
+                    existingRule.processCreationTime100ns,
+                    &ignoredDetailText);
             }
         }
 
@@ -1613,6 +1621,7 @@ namespace ks::network
             }
 
             bool needResumeProcess = false;
+            ProcessRateLimitRule existingRule{};
             {
                 std::lock_guard<std::mutex> guard(m_rateLimitMutex);
                 const auto iterator = m_rateLimitByPid.find(processId);
@@ -1621,14 +1630,18 @@ namespace ks::network
                     return false;
                 }
                 needResumeProcess = iterator->second.currentlySuspended;
+                existingRule = iterator->second.rule;
                 m_rateLimitByPid.erase(iterator);
             }
 
-            // 删除规则时若曾挂起，则主动恢复，避免残留状态。
+            // 删除规则时只恢复原始实例，避免 PID 回收后影响新进程。
             if (needResumeProcess)
             {
                 std::string ignoredDetailText;
-                ks::process::ResumeProcess(processId, &ignoredDetailText);
+                (void)ks::process::ResumeProcessIfCreationTimeMatches(
+                    existingRule.processId,
+                    existingRule.processCreationTime100ns,
+                    &ignoredDetailText);
             }
             return true;
         }
@@ -1636,25 +1649,29 @@ namespace ks::network
         // ClearRateLimitRules：清空全部限速规则。
         void ClearRateLimitRules()
         {
-            std::vector<std::uint32_t> processIdsNeedResume;
+            std::vector<ProcessRateLimitRule> rulesNeedResume;
             {
                 std::lock_guard<std::mutex> guard(m_rateLimitMutex);
-                processIdsNeedResume.reserve(m_rateLimitByPid.size());
+                rulesNeedResume.reserve(m_rateLimitByPid.size());
                 for (const auto& [processId, runtime] : m_rateLimitByPid)
                 {
+                    (void)processId;
                     if (runtime.currentlySuspended)
                     {
-                        processIdsNeedResume.push_back(processId);
+                        rulesNeedResume.push_back(runtime.rule);
                     }
                 }
                 m_rateLimitByPid.clear();
             }
 
-            // 批量清空规则时，同步恢复此前被挂起的进程。
-            for (const std::uint32_t processId : processIdsNeedResume)
+            // 批量清空规则时只恢复各自保存的原始进程实例。
+            for (const ProcessRateLimitRule& limitRule : rulesNeedResume)
             {
                 std::string ignoredDetailText;
-                ks::process::ResumeProcess(processId, &ignoredDetailText);
+                (void)ks::process::ResumeProcessIfCreationTimeMatches(
+                    limitRule.processId,
+                    limitRule.processCreationTime100ns,
+                    &ignoredDetailText);
             }
         }
 
@@ -2048,6 +2065,7 @@ namespace ks::network
             }
 
             std::optional<RateLimitActionEvent> suspendEvent;
+            std::uint64_t expectedCreationTime100ns = 0U;
             {
                 std::lock_guard<std::mutex> guard(m_rateLimitMutex);
                 const auto iterator = m_rateLimitByPid.find(packetRecord.processId);
@@ -2088,6 +2106,7 @@ namespace ks::network
                     event.actionSucceeded = false;
                     event.configuredBytesPerSecond = runtime.rule.bytesPerSecond;
                     event.detailText = "触发限速，准备挂起进程。";
+                    expectedCreationTime100ns = runtime.rule.processCreationTime100ns;
                     suspendEvent = event;
                 }
             }
@@ -2098,7 +2117,10 @@ namespace ks::network
             }
 
             std::string detailText;
-            const bool suspendOk = ks::process::SuspendProcess(packetRecord.processId, &detailText);
+            const bool suspendOk = ks::process::SuspendProcessIfCreationTimeMatches(
+                packetRecord.processId,
+                expectedCreationTime100ns,
+                &detailText);
             suspendEvent->actionSucceeded = suspendOk;
             if (suspendOk)
             {
@@ -2111,7 +2133,8 @@ namespace ks::network
                 // 挂起失败则立即回滚“挂起状态”，避免后续逻辑误判。
                 std::lock_guard<std::mutex> guard(m_rateLimitMutex);
                 const auto iterator = m_rateLimitByPid.find(packetRecord.processId);
-                if (iterator != m_rateLimitByPid.end())
+                if (iterator != m_rateLimitByPid.end() &&
+                    iterator->second.rule.processCreationTime100ns == expectedCreationTime100ns)
                 {
                     iterator->second.currentlySuspended = false;
                     iterator->second.resumeTickMs = 0;
@@ -2126,11 +2149,12 @@ namespace ks::network
         // - 执行 ResumeProcess 并上报动作事件。
         void consumeResumeActions(const std::uint64_t nowTickMs)
         {
-            std::vector<std::uint32_t> processIdsToResume;
+            std::vector<ProcessRateLimitRule> rulesToResume;
             {
                 std::lock_guard<std::mutex> guard(m_rateLimitMutex);
                 for (auto& [processId, runtime] : m_rateLimitByPid)
                 {
+                    (void)processId;
                     if (!runtime.currentlySuspended)
                     {
                         continue;
@@ -2142,18 +2166,21 @@ namespace ks::network
 
                     runtime.currentlySuspended = false;
                     runtime.resumeTickMs = 0;
-                    processIdsToResume.push_back(processId);
+                    rulesToResume.push_back(runtime.rule);
                 }
             }
 
-            for (const std::uint32_t processId : processIdsToResume)
+            for (const ProcessRateLimitRule& limitRule : rulesToResume)
             {
                 std::string detailText;
-                const bool resumeOk = ks::process::ResumeProcess(processId, &detailText);
+                const bool resumeOk = ks::process::ResumeProcessIfCreationTimeMatches(
+                    limitRule.processId,
+                    limitRule.processCreationTime100ns,
+                    &detailText);
 
                 RateLimitActionEvent event;
                 event.timestampMs = nowTickMs;
-                event.processId = processId;
+                event.processId = limitRule.processId;
                 event.actionType = RateLimitActionType::ResumeProcess;
                 event.actionSucceeded = resumeOk;
                 event.configuredBytesPerSecond = 0;
@@ -2169,29 +2196,33 @@ namespace ks::network
         // - 保证不会遗留“被限速挂起”的进程。
         void forceResumeAllSuspendedProcesses()
         {
-            std::vector<std::uint32_t> processIdsToResume;
+            std::vector<ProcessRateLimitRule> rulesToResume;
             {
                 std::lock_guard<std::mutex> guard(m_rateLimitMutex);
                 for (auto& [processId, runtime] : m_rateLimitByPid)
                 {
+                    (void)processId;
                     if (!runtime.currentlySuspended)
                     {
                         continue;
                     }
                     runtime.currentlySuspended = false;
                     runtime.resumeTickMs = 0;
-                    processIdsToResume.push_back(processId);
+                    rulesToResume.push_back(runtime.rule);
                 }
             }
 
-            for (const std::uint32_t processId : processIdsToResume)
+            for (const ProcessRateLimitRule& limitRule : rulesToResume)
             {
                 std::string detailText;
-                const bool resumeOk = ks::process::ResumeProcess(processId, &detailText);
+                const bool resumeOk = ks::process::ResumeProcessIfCreationTimeMatches(
+                    limitRule.processId,
+                    limitRule.processCreationTime100ns,
+                    &detailText);
 
                 RateLimitActionEvent event;
                 event.timestampMs = detail::NowTickMs();
-                event.processId = processId;
+                event.processId = limitRule.processId;
                 event.actionType = RateLimitActionType::ResumeProcess;
                 event.actionSucceeded = resumeOk;
                 event.configuredBytesPerSecond = 0;
