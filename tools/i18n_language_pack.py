@@ -127,11 +127,18 @@ def decode_cpp_string_body(body: str) -> str:
 def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
     index = 0
     line = 1
+    line_prefix_only = True
     length = len(source_text)
+    include_directive_re = re.compile(r"^#\s*(?:include|include_next|import)\b")
+
     while index < length:
         character = source_text[index]
         if character == "\n":
             line += 1
+            line_prefix_only = True
+            index += 1
+            continue
+        if line_prefix_only and character in " \t\r\f\v":
             index += 1
             continue
         if source_text.startswith("//", index):
@@ -141,12 +148,29 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
             index = newline_index
             continue
         if source_text.startswith("/*", index):
+            prefix_before_comment = line_prefix_only
             close_index = source_text.find("*/", index + 2)
             if close_index < 0:
                 return
-            line += source_text.count("\n", index, close_index + 2)
+            newline_count = source_text.count("\n", index, close_index + 2)
+            line += newline_count
+            line_prefix_only = True if newline_count > 0 else prefix_before_comment
             index = close_index + 2
             continue
+        if line_prefix_only and character == "#":
+            newline_index = source_text.find("\n", index + 1)
+            directive_end = newline_index if newline_index >= 0 else length
+            directive = source_text[index:directive_end]
+            if include_directive_re.match(directive):
+                if newline_index < 0:
+                    return
+                index = newline_index
+                continue
+            line_prefix_only = False
+            index += 1
+            continue
+
+        line_prefix_only = False
         if character == "'":
             index += 1
             while index < length:
@@ -158,6 +182,7 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
                 else:
                     if source_text[index] == "\n":
                         line += 1
+                        line_prefix_only = True
                     index += 1
             continue
 
@@ -200,7 +225,10 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
                 index = token_start + 1
                 continue
             body = source_text[body_start:body_end]
-            line += source_text.count("\n", token_start, body_end + len(terminator))
+            newline_count = source_text.count("\n", token_start, body_end + len(terminator))
+            line += newline_count
+            if newline_count > 0:
+                line_prefix_only = False
             index = body_end + len(terminator)
             if is_extractable_literal(body):
                 yield body, token_line
@@ -214,6 +242,7 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
                 body_characters.append(source_text[index + 1])
                 if source_text[index + 1] == "\n":
                     line += 1
+                    line_prefix_only = False
                 index += 2
                 continue
             if current == '"':
@@ -222,6 +251,7 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
             body_characters.append(current)
             if current == "\n":
                 line += 1
+                line_prefix_only = False
             index += 1
         decoded_text = decode_cpp_string_body("".join(body_characters))
         if is_extractable_literal(decoded_text):

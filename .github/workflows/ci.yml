@@ -19,7 +19,6 @@ jobs:
     name: Detect affected projects
     runs-on: ubuntu-latest
     outputs:
-      any: ${{ steps.detect.outputs.any }}
       usermode: ${{ steps.detect.outputs.usermode }}
       setup: ${{ steps.detect.outputs.setup }}
       arklight: ${{ steps.detect.outputs.arklight }}
@@ -31,87 +30,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate CI path rules
+        run: python3 tools/ci/changed_paths.py validate-patterns
+
       - name: Detect changed project inputs
         id: detect
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_BEFORE: ${{ github.event.before }}
-          EVENT_SHA: ${{ github.sha }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            changed='__all__'
-          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
-            git fetch --no-tags origin "$BASE_REF" --depth=1
-            base_sha="$(git merge-base "origin/$BASE_REF" "$EVENT_SHA")"
-            changed="$(git diff --name-only "$base_sha" "$EVENT_SHA")"
-          elif [[ -n "${EVENT_BEFORE:-}" && "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            if git cat-file -e "${EVENT_BEFORE}^{commit}" 2>/dev/null; then
-              changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
-            else
-              echo "Previous push commit $EVENT_BEFORE is unavailable; treating all projects as affected." >&2
-              changed='__all__'
-            fi
-          else
-            changed="$(git diff --name-only HEAD~1 HEAD)"
-          fi
-
-          matches() {
-            if [[ "$changed" == '__all__' ]]; then
-              return 0
-            fi
-            printf '%s\n' "$changed" | grep -Eq "$1"
-          }
-
-          common='(^tools/|^scripts/|^shared/|^third_party/|^\.deps/|^\.github/workflows/|^.*\.sln$|(^|/)(Directory\.Build\..*|.*\.props|.*\.targets)$)'
-          usermode_re="^(TaskmgrHijack\.ps1$|Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/)|$common"
-          setup_re="^(TaskmgrHijack\.ps1$|KswordSetup/|Ksword5\.1/|Launcher/|Taskbar/|KswordHUD/|APIMonitor_x64/|KswordCLI/|KswordARKDriver/|KswordARKLight/)|$common"
-          arklight_re="^(KswordARKLight/|KswordARKDriver/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|Resource/)|shared/driver/|scripts/Sign-KswordArkDriverVariant\.ps1)|$common"
-          ce_plugin_re="^(CheatEnginePlugin/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|ksword/string/)|shared/driver/)|$common"
-          ce_launcher_re="^(CheatEngineExecutablePlugin/|Ksword5\.1/Ksword5\.1/(ArkDriverClient/|ksword/string/))|$common"
-
-          # 回归保护：主程序构建后直接复制根目录脚本，路径规则必须始终命中。
-          for project_rule in "$usermode_re" "$setup_re"; do
-            if ! printf '%s\n' 'TaskmgrHijack.ps1' | grep -Eq "$project_rule"; then
-              echo 'TaskmgrHijack.ps1 must trigger user-mode and setup builds.' >&2
-              exit 1
-            fi
-          done
-
-          usermode=false
-          setup=false
-          arklight=false
-          ce_plugin=false
-          ce_launcher=false
-          matches "$usermode_re" && usermode=true || true
-          matches "$setup_re" && setup=true || true
-          matches "$arklight_re" && arklight=true || true
-          matches "$ce_plugin_re" && ce_plugin=true || true
-          matches "$ce_launcher_re" && ce_launcher=true || true
-
-          any=false
-          [[ "$usermode" == true || "$setup" == true || "$arklight" == true || "$ce_plugin" == true || "$ce_launcher" == true ]] && any=true
-
-          {
-            echo "any=$any"
-            echo "usermode=$usermode"
-            echo "setup=$setup"
-            echo "arklight=$arklight"
-            echo "ce_plugin=$ce_plugin"
-            echo "ce_launcher=$ce_launcher"
-          } >> "$GITHUB_OUTPUT"
-
-          echo 'Changed paths:'
-          printf '%s\n' "$changed"
-          echo "Affected projects: usermode=$usermode setup=$setup arklight=$arklight ce_plugin=$ce_plugin ce_launcher=$ce_launcher"
+        run: >-
+          python3 tools/ci/changed_paths.py detect
+          --mode projects
+          --event-name "${{ github.event_name }}"
+          --event-path "$GITHUB_EVENT_PATH"
+          --event-sha "${{ github.sha }}"
+          --github-output "$GITHUB_OUTPUT"
 
   source-integrity:
     name: Source integrity
     needs: changes
-    if: needs.changes.outputs.any == 'true'
     runs-on: windows-2022
     steps:
       - name: Check out source
@@ -124,65 +58,17 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Test CI change-range resolver
+        shell: pwsh
+        run: python -m unittest discover -s tools/ci/tests -p 'test_*.py' -v
+
       - name: Check changed-file whitespace
         shell: pwsh
-        run: |
-          if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
-            git diff --check "origin/$env:GITHUB_BASE_REF...HEAD"
-          }
-          elseif ($env:GITHUB_EVENT_NAME -eq 'push') {
-            $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
-            $before = [string]$event.before
-            $after = [string]$event.after
-            $zeroCommit = '0' * 40
-
-            if ($before -and $before -ne $zeroCommit) {
-              git cat-file -e "$before^{commit}" 2>$null
-              if ($LASTEXITCODE -ne 0) {
-                git fetch --no-tags --depth=1 origin $before
-                git cat-file -e "$before^{commit}" 2>$null
-              }
-            }
-
-            if ($before -and $before -ne $zeroCommit -and $LASTEXITCODE -eq 0) {
-              git diff --check $before $after
-            }
-            else {
-              $commits = @($event.commits)
-              $expectedCommitCount = $commits.Count
-              if ($expectedCommitCount -le 0) {
-                throw "Cannot prove the complete push range: before=$before and the push payload contains no commits."
-              }
-              if ($expectedCommitCount -ge 2048) {
-                throw "Cannot prove the complete push range because GitHub caps the push payload at 2048 commits."
-              }
-
-              $firstCommit = [string]$commits[0].id
-              git cat-file -e "$firstCommit^{commit}" 2>$null
-              if ($LASTEXITCODE -ne 0) {
-                throw "First pushed commit $firstCommit is unavailable."
-              }
-              $fallbackBase = (git rev-parse "$firstCommit^" 2>$null).Trim()
-              if ($LASTEXITCODE -ne 0 -or -not $fallbackBase) {
-                throw "Parent of first pushed commit $firstCommit is unavailable."
-              }
-              git merge-base --is-ancestor $fallbackBase $after
-              if ($LASTEXITCODE -ne 0) {
-                throw "Push payload is not a complete ancestry range: $fallbackBase..$after."
-              }
-
-              $rangeCommitCount = [int](git rev-list --count "$fallbackBase..$after")
-              if ($LASTEXITCODE -ne 0 -or $rangeCommitCount -ne $expectedCommitCount) {
-                throw "Push payload is incomplete: payload commits=$expectedCommitCount, ancestry commits=$rangeCommitCount."
-              }
-
-              Write-Warning "Previous push commit is unavailable; checking all $expectedCommitCount commits from the push payload."
-              git diff --check $fallbackBase $after
-            }
-          }
-          else {
-            git diff --check HEAD~1 HEAD
-          }
+        run: >-
+          python tools/ci/changed_paths.py check-whitespace
+          --event-name "${{ github.event_name }}"
+          --event-path "$env:GITHUB_EVENT_PATH"
+          --event-sha "${{ github.sha }}"
 
       - name: Validate tracked JSON
         shell: pwsh
@@ -190,7 +76,6 @@ jobs:
           @'
           import json
           import subprocess
-          import sys
 
           paths = subprocess.check_output(
               ["git", "ls-files", "--", "*.json"], text=True
@@ -228,7 +113,7 @@ jobs:
     needs:
       - changes
       - source-integrity
-    if: needs.changes.outputs.usermode == 'true' && needs.source-integrity.result == 'success'
+    if: needs.changes.outputs.usermode == 'true'
     runs-on: windows-2022
     steps:
       - name: Check out source
@@ -330,7 +215,9 @@ jobs:
 
   ksword-setup:
     name: KswordSetup Release build
-    needs: changes
+    needs:
+      - changes
+      - source-integrity
     if: needs.changes.outputs.setup == 'true'
     runs-on: windows-2022
     steps:
@@ -433,7 +320,9 @@ jobs:
 
   ksword-arklight:
     name: KswordARKLight Release build
-    needs: changes
+    needs:
+      - changes
+      - source-integrity
     if: needs.changes.outputs.arklight == 'true'
     runs-on: windows-2022
     steps:
@@ -500,7 +389,9 @@ jobs:
 
   ksword-ce-plugin:
     name: KswordCheatEnginePlugin Release build (${{ matrix.platform }})
-    needs: changes
+    needs:
+      - changes
+      - source-integrity
     if: needs.changes.outputs.ce_plugin == 'true'
     runs-on: windows-2022
     strategy:
@@ -553,7 +444,9 @@ jobs:
 
   ksword-ce-launcher:
     name: KswordCheatEngineLauncher Release build
-    needs: changes
+    needs:
+      - changes
+      - source-integrity
     if: needs.changes.outputs.ce_launcher == 'true'
     runs-on: windows-2022
     steps:
