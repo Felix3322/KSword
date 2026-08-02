@@ -271,7 +271,7 @@ Return Value:
 
 static VOID
 KswordARKSafetyLogDecision(
-    _In_ WDFDEVICE Device,
+    _In_opt_ WDFDEVICE Device,
     _In_ const KSWORD_ARK_SAFETY_CONTEXT* Context,
     _In_ ULONG Decision,
     _In_ ULONG Reason,
@@ -313,7 +313,9 @@ Return Value:
         (unsigned long)Decision,
         (unsigned long)Reason,
         (unsigned int)Status);
-    (VOID)KswordARKDriverEnqueueLogFrame(Device, levelText, logMessage);
+    if (Device != WDF_NO_HANDLE) {
+        (VOID)KswordARKDriverEnqueueLogFrame(Device, levelText, logMessage);
+    }
 }
 
 VOID
@@ -346,7 +348,7 @@ Return Value:
 
 NTSTATUS
 KswordARKSafetyEvaluate(
-    _In_ WDFDEVICE Device,
+    _In_opt_ WDFDEVICE Device,
     _In_ const KSWORD_ARK_SAFETY_CONTEXT* Context
     )
 /*++

@@ -22,7 +22,7 @@ KswordARKSafetyInitialize(
 
 NTSTATUS
 KswordARKSafetyEvaluate(
-    _In_ WDFDEVICE Device,
+    _In_opt_ WDFDEVICE Device,
     _In_ const KSWORD_ARK_SAFETY_CONTEXT* Context
     );
 
