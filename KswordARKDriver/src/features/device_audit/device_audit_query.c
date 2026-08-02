@@ -15,6 +15,18 @@ Environment:
 --*/
 
 #include "device_audit_internal.h"
+#include "../../platform/pool_compat.h"
+
+/*
+ * A device-audit row is large, and the integrity backend has its own sizable
+ * stack frame.  Keep the per-target conversion state adjacent to the dynamic
+ * backend response so the complete synchronous query chain remains bounded.
+ */
+typedef struct _KSW_DEVICE_AUDIT_QUERY_WORKSPACE
+{
+    KSWORD_ARK_QUERY_DRIVER_INTEGRITY_REQUEST IntegrityRequest;
+    KSWORD_ARK_DEVICE_AUDIT_ENTRY AuditEntry;
+} KSW_DEVICE_AUDIT_QUERY_WORKSPACE, *PKSW_DEVICE_AUDIT_QUERY_WORKSPACE;
 
 static VOID
 KswDeviceAuditFillSummaryEntry(
@@ -204,11 +216,14 @@ Return Value:
 
 --*/
 {
-    KSWORD_ARK_QUERY_DRIVER_INTEGRITY_REQUEST integrityRequest;
+    KSW_DEVICE_AUDIT_QUERY_WORKSPACE* workspace = NULL;
+    KSWORD_ARK_QUERY_DRIVER_INTEGRITY_REQUEST* integrityRequest = NULL;
     KSWORD_ARK_QUERY_DRIVER_INTEGRITY_RESPONSE* integrityResponse = NULL;
-    KSWORD_ARK_DEVICE_AUDIT_ENTRY auditEntry;
+    KSWORD_ARK_DEVICE_AUDIT_ENTRY* auditEntry = NULL;
     ULONG scratchRows = KSW_DEVICE_AUDIT_SCRATCH_ROW_LIMIT;
+    size_t workspaceBytes = 0U;
     size_t scratchBytes = 0U;
+    size_t allocationBytes = 0U;
     size_t bytesWritten = 0U;
     ULONG index = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
@@ -226,53 +241,90 @@ Return Value:
 
     scratchBytes = KSW_DEVICE_AUDIT_INTEGRITY_RESPONSE_HEADER_SIZE +
         ((size_t)scratchRows * sizeof(KSWORD_ARK_DRIVER_INTEGRITY_EVIDENCE));
-#pragma warning(push)
-#pragma warning(disable:4996)
-    integrityResponse = (KSWORD_ARK_QUERY_DRIVER_INTEGRITY_RESPONSE*)ExAllocatePoolWithTag(
-        NonPagedPoolNx,
-        scratchBytes,
+    workspaceBytes = ALIGN_UP_BY(
+        sizeof(*workspace),
+        MEMORY_ALLOCATION_ALIGNMENT);
+    if (scratchBytes > MAXULONG_PTR - workspaceBytes) {
+        return STATUS_INTEGER_OVERFLOW;
+    }
+    allocationBytes = workspaceBytes + scratchBytes;
+    workspace = (KSW_DEVICE_AUDIT_QUERY_WORKSPACE*)KswordARKAllocateNonPagedPool(
+        allocationBytes,
         KSW_DEVICE_AUDIT_POOL_TAG);
-#pragma warning(pop)
-    if (integrityResponse == NULL) {
+    if (workspace == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
+    RtlZeroMemory(workspace, allocationBytes);
+    integrityRequest = &workspace->IntegrityRequest;
+    auditEntry = &workspace->AuditEntry;
+    integrityResponse = (KSWORD_ARK_QUERY_DRIVER_INTEGRITY_RESPONSE*)(
+        (PUCHAR)workspace + workspaceBytes);
 
-    RtlZeroMemory(&integrityRequest, sizeof(integrityRequest));
-    integrityRequest.version = KSWORD_ARK_DRIVER_INTEGRITY_PROTOCOL_VERSION;
-    integrityRequest.flags = KSWORD_ARK_DRIVER_INTEGRITY_FLAG_DRIVER_OBJECT | KSWORD_ARK_DRIVER_INTEGRITY_FLAG_SERVICE;
-    integrityRequest.maxRows = scratchRows;
-    integrityRequest.maxDevices = Context->MaxRows;
-    integrityRequest.maxAttachedDevices = Context->MaxAttachedDepth;
-    integrityRequest.requestSize = sizeof(integrityRequest);
-    KswDeviceAuditCopyWide(integrityRequest.driverName, RTL_NUMBER_OF(integrityRequest.driverName), DriverName);
+    integrityRequest->version = KSWORD_ARK_DRIVER_INTEGRITY_PROTOCOL_VERSION;
+    integrityRequest->flags = KSWORD_ARK_DRIVER_INTEGRITY_FLAG_DRIVER_OBJECT | KSWORD_ARK_DRIVER_INTEGRITY_FLAG_SERVICE;
+    integrityRequest->maxRows = scratchRows;
+    integrityRequest->maxDevices = Context->MaxRows;
+    integrityRequest->maxAttachedDevices = Context->MaxAttachedDepth;
+    integrityRequest->requestSize = sizeof(*integrityRequest);
+    KswDeviceAuditCopyWide(
+        integrityRequest->driverName,
+        RTL_NUMBER_OF(integrityRequest->driverName),
+        DriverName);
 
-    status = KswordARKDriverQueryDriverIntegrity(integrityResponse, scratchBytes, &integrityRequest, &bytesWritten);
+    status = KswordARKDriverQueryDriverIntegrity(
+        integrityResponse,
+        scratchBytes,
+        integrityRequest,
+        &bytesWritten);
     if (!NT_SUCCESS(status)) {
         KswDeviceAuditSetResponsePartial(Response, status);
-        RtlZeroMemory(&auditEntry, sizeof(auditEntry));
-        auditEntry.size = sizeof(auditEntry);
-        auditEntry.profileFlags = ProfileFlags;
-        auditEntry.rowKind = KSWORD_ARK_DEVICE_AUDIT_ROW_KIND_DRIVER_SUMMARY;
-        auditEntry.roleHint = RoleHint;
-        auditEntry.status = KSWORD_ARK_DEVICE_AUDIT_STATUS_QUERY_FAILED;
-        auditEntry.riskFlags = KSWORD_ARK_DEVICE_AUDIT_RISK_QUERY_FAILED;
-        auditEntry.confidence = 20UL;
-        auditEntry.lastStatus = status;
-        auditEntry.fieldFlags = KSWORD_ARK_DEVICE_AUDIT_FIELD_DRIVER_NAME_PRESENT |
+        RtlZeroMemory(auditEntry, sizeof(*auditEntry));
+        auditEntry->size = sizeof(*auditEntry);
+        auditEntry->profileFlags = ProfileFlags;
+        auditEntry->rowKind = KSWORD_ARK_DEVICE_AUDIT_ROW_KIND_DRIVER_SUMMARY;
+        auditEntry->roleHint = RoleHint;
+        auditEntry->status = KSWORD_ARK_DEVICE_AUDIT_STATUS_QUERY_FAILED;
+        auditEntry->riskFlags = KSWORD_ARK_DEVICE_AUDIT_RISK_QUERY_FAILED;
+        auditEntry->confidence = 20UL;
+        auditEntry->lastStatus = status;
+        auditEntry->fieldFlags = KSWORD_ARK_DEVICE_AUDIT_FIELD_DRIVER_NAME_PRESENT |
             KSWORD_ARK_DEVICE_AUDIT_FIELD_SERVICE_NAME_PRESENT |
             KSWORD_ARK_DEVICE_AUDIT_FIELD_DETAIL_PRESENT;
-        KswDeviceAuditCopyWide(auditEntry.driverName, RTL_NUMBER_OF(auditEntry.driverName), DriverName);
-        KswDeviceAuditCopyServiceName(auditEntry.serviceName, RTL_NUMBER_OF(auditEntry.serviceName), DriverName);
-        (VOID)RtlStringCchPrintfW(auditEntry.detail, RTL_NUMBER_OF(auditEntry.detail), L"Driver integrity backend failed, status=0x%08lX.", (ULONG)status);
-        (VOID)KswDeviceAuditAppendEntry(Response, Capacity, Context->MaxRows, &auditEntry);
-        ExFreePoolWithTag(integrityResponse, KSW_DEVICE_AUDIT_POOL_TAG);
+        KswDeviceAuditCopyWide(
+            auditEntry->driverName,
+            RTL_NUMBER_OF(auditEntry->driverName),
+            DriverName);
+        KswDeviceAuditCopyServiceName(
+            auditEntry->serviceName,
+            RTL_NUMBER_OF(auditEntry->serviceName),
+            DriverName);
+        (VOID)RtlStringCchPrintfW(
+            auditEntry->detail,
+            RTL_NUMBER_OF(auditEntry->detail),
+            L"Driver integrity backend failed, status=0x%08lX.",
+            (ULONG)status);
+        (VOID)KswDeviceAuditAppendEntry(
+            Response,
+            Capacity,
+            Context->MaxRows,
+            auditEntry);
+        ExFreePoolWithTag(workspace, KSW_DEVICE_AUDIT_POOL_TAG);
         return STATUS_SUCCESS;
     }
 
     UNREFERENCED_PARAMETER(bytesWritten);
 
-    KswDeviceAuditFillSummaryEntry(&auditEntry, ProfileFlags, RoleHint, DriverName, integrityResponse);
-    status = KswDeviceAuditAppendEntry(Response, Capacity, Context->MaxRows, &auditEntry);
+    KswDeviceAuditFillSummaryEntry(
+        auditEntry,
+        ProfileFlags,
+        RoleHint,
+        DriverName,
+        integrityResponse);
+    status = KswDeviceAuditAppendEntry(
+        Response,
+        Capacity,
+        Context->MaxRows,
+        auditEntry);
     if (!NT_SUCCESS(status)) {
         KswDeviceAuditSetResponsePartial(Response, status);
     }
@@ -290,8 +342,17 @@ Return Value:
         if (evidence->evidenceClass != KSWORD_ARK_DRIVER_INTEGRITY_CLASS_DEVICE_CHAIN) {
             continue;
         }
-        KswDeviceAuditFillDeviceEntry(&auditEntry, ProfileFlags, RoleHint, DriverName, evidence);
-        status = KswDeviceAuditAppendEntry(Response, Capacity, Context->MaxRows, &auditEntry);
+        KswDeviceAuditFillDeviceEntry(
+            auditEntry,
+            ProfileFlags,
+            RoleHint,
+            DriverName,
+            evidence);
+        status = KswDeviceAuditAppendEntry(
+            Response,
+            Capacity,
+            Context->MaxRows,
+            auditEntry);
         if (!NT_SUCCESS(status)) {
             KswDeviceAuditSetResponsePartial(Response, status);
             break;
@@ -299,7 +360,7 @@ Return Value:
         Response->deviceCount += 1UL;
     }
 
-    ExFreePoolWithTag(integrityResponse, KSW_DEVICE_AUDIT_POOL_TAG);
+    ExFreePoolWithTag(workspace, KSW_DEVICE_AUDIT_POOL_TAG);
     return STATUS_SUCCESS;
 }
 
