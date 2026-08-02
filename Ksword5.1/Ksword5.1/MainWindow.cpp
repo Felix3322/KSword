@@ -4983,7 +4983,11 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
         const QPoint localPoint = mapFromGlobal(screenQPoint);
         // windowRectValue 用途：读取顶层窗口的屏幕坐标矩形，供边框缩放命中使用。
         RECT windowRectValue = {};
-        ::GetWindowRect(nativeMessage->hwnd, &windowRectValue);
+        if (nativeMessage->hwnd == nullptr
+            || ::GetWindowRect(nativeMessage->hwnd, &windowRectValue) == FALSE)
+        {
+            return QMainWindow::nativeEvent(eventType, message, result);
+        }
         // frameLocalPoint 用途：把屏幕坐标转换为相对整个顶层窗口左上角的坐标。
         const QPoint frameLocalPoint(
             screenPoint.x - windowRectValue.left,
