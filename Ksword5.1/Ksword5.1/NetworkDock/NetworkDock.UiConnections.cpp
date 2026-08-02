@@ -793,12 +793,14 @@ void NetworkDock::initializeConnections()
                 m_manualProtocolEdit->setText(QStringLiteral("17"));  // IPPROTO_UDP
             }
 
+            const bool overrideSocketParameters = m_manualOverrideSocketParameterCheck != nullptr
+                && m_manualOverrideSocketParameterCheck->isChecked();
             kLogEvent switchApiEvent;
             dbg << switchApiEvent
                 << "[NetworkDock] 请求构造 API 模式切换, api="
                 << ks::network::ManualNetworkApiKindToString(apiKind)
                 << ", overrideSocket="
-                << (m_manualOverrideSocketParameterCheck->isChecked() ? "true" : "false")
+                << (overrideSocketParameters ? "true" : "false")
                 << eol;
         });
 
