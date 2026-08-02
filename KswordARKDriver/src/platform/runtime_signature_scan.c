@@ -441,7 +441,7 @@ KswordARKRuntimeDecodeDirectBranch(
 
 static BOOLEAN
 KswordARKRuntimeAppendReference(
-    _Out_writes_(Capacity) KSW_RUNTIME_DATA_REFERENCE* References,
+    _Inout_updates_(Capacity) KSW_RUNTIME_DATA_REFERENCE* References,
     _In_ ULONG Capacity,
     _Inout_ ULONG* Count,
     _In_ ULONG_PTR Address,
@@ -475,7 +475,7 @@ KswordARKRuntimeScanRoutine(
     _In_ const KSW_RUNTIME_IMAGE_VIEW* View,
     _In_ ULONG_PTR RoutineAddress,
     _In_ ULONG ScanBytes,
-    _Out_writes_(ReferenceCapacity) KSW_RUNTIME_DATA_REFERENCE* References,
+    _Inout_updates_(ReferenceCapacity) KSW_RUNTIME_DATA_REFERENCE* References,
     _In_ ULONG ReferenceCapacity,
     _Inout_ ULONG* ReferenceCount,
     _Out_writes_opt_(BranchCapacity) ULONG_PTR* BranchTargets,
