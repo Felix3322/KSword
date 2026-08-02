@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <vector>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -274,17 +275,16 @@ namespace
         const QString applicationDirectory = QCoreApplication::applicationDirPath();
         appendUniqueDirectory(&directoryList, QDir(applicationDirectory).absoluteFilePath(QStringLiteral("languages")));
 #ifdef Q_OS_WIN
-        wchar_t executablePathBuffer[32768] = {};
-        constexpr DWORD executablePathCapacity = static_cast<DWORD>(
-            sizeof(executablePathBuffer) / sizeof(executablePathBuffer[0]));
+        constexpr DWORD executablePathCapacity = 32768U;
+        std::vector<wchar_t> executablePathBuffer(executablePathCapacity, L'\0');
         const DWORD executablePathLength = ::GetModuleFileNameW(
             nullptr,
-            executablePathBuffer,
+            executablePathBuffer.data(),
             executablePathCapacity);
         if (executablePathLength > 0 && executablePathLength < executablePathCapacity)
         {
             const QString executableDirectory = QFileInfo(
-                QString::fromWCharArray(executablePathBuffer, static_cast<int>(executablePathLength))).absolutePath();
+                QString::fromWCharArray(executablePathBuffer.data(), static_cast<int>(executablePathLength))).absolutePath();
             appendUniqueDirectory(
                 &directoryList,
                 QDir(executableDirectory).absoluteFilePath(QStringLiteral("languages")));
