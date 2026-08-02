@@ -338,6 +338,9 @@
     <ClCompile Include="MemoryDock\MemoryDock.SearchFlow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MemoryDock\SystemMemoryAuditPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MemoryDock\MemoryDock.ViewBreakpointUtil.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -935,6 +938,9 @@
       <Filter>Header Files</Filter>
     </QtMoc>
     <ClInclude Include="MemoryDock\MemoryDock.Internal.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MemoryDock\SystemMemoryAuditPage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <QtMoc Include="MiscDock\BootEditor\BootEditorTab.h">

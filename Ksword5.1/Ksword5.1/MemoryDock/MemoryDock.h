@@ -43,6 +43,7 @@ class QTreeWidget;
 class QVBoxLayout;
 class CodeEditorWidget;
 class HexEditorWidget;
+class SystemMemoryAuditPage;
 
 // Windows 句柄类型前置声明。
 typedef void* HANDLE;
@@ -305,6 +306,11 @@ private:
     // - 处理逻辑：以 VirtualQueryEx / QueryWorkingSetEx 为基础整理只读证据。
     // - 返回：无。
     void initializeProcessMemoryEvidenceTab();
+
+    // initializeSystemMemoryAuditTab：
+    // - 作用：构建 Tab11（系统内存审计）界面；
+    // - 处理逻辑：聚合物理分布、内核进程快照、Pool Tag 与 Big Pool 证据。
+    void initializeSystemMemoryAuditTab();
 
     // initializeConnections：
     // - 作用：统一连接各控件交互逻辑。
@@ -946,6 +952,12 @@ private:
     QLabel* m_processMemoryEvidenceStatusLabel = nullptr;         // 状态标签。
     QTableWidget* m_processMemoryEvidenceTable = nullptr;         // 证据结果表。
     CodeEditorWidget* m_processMemoryEvidenceDetailEditor = nullptr; // 详情编辑器。
+
+    // ========================================================
+    // Tab11：系统内存审计
+    // ========================================================
+
+    SystemMemoryAuditPage* m_systemMemoryAuditPage = nullptr; // 系统级物理内存归因页面。
 
 private:
     // ========================================================

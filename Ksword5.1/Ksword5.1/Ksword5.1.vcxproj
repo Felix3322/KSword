@@ -272,6 +272,7 @@
     <ClCompile Include="MemoryDock\MemoryDock.ProcessRegion.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.SearchParseAndFilter.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.SearchFlow.cpp" />
+    <ClCompile Include="MemoryDock\SystemMemoryAuditPage.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.ViewBreakpointUtil.cpp" />
     <ClCompile Include="MiscDock\BootEditor\BootEditorTab.cpp" />
     <ClCompile Include="MiscDock\MiscDock.cpp" />
@@ -546,6 +547,7 @@
     <QtMoc Include="KernelDock\KernelDock.CallbackPromptManager.h" />
     <QtMoc Include="MemoryDock\MemoryDock.h" />
     <ClInclude Include="MemoryDock\MemoryDock.Internal.h" />
+    <ClInclude Include="MemoryDock\SystemMemoryAuditPage.h" />
     <QtMoc Include="MiscDock\BootEditor\BootEditorTab.h" />
     <ClInclude Include="MiscDock\ApplicationControlPage.h" />
     <ClInclude Include="MiscDock\SoundSource\SoundSourceDetector.h" />

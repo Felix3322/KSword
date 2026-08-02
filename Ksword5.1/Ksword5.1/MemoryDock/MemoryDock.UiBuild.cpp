@@ -1,4 +1,5 @@
 #include "MemoryDock.Internal.h"
+#include "SystemMemoryAuditPage.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../Internationalization/LanguageManager.h"
 
@@ -189,7 +190,7 @@ void MemoryDock::initializeTabs()
     // 记录 Tab 初始化日志：便于排查某个页面未创建的问题。
     kLogEvent tabInitEvent;
     info << tabInitEvent
-        << "[MemoryDock] initializeTabs: 开始创建 10 个功能页。"
+        << "[MemoryDock] initializeTabs: 开始创建 11 个功能页。"
         << eol;
 
     // 全部子页面统一由 QTabWidget 承载。
@@ -207,6 +208,18 @@ void MemoryDock::initializeTabs()
     initializeKernelMemoryEvidenceTab();
     initializeProcessPteTranslateTab();
     initializeProcessMemoryEvidenceTab();
+    initializeSystemMemoryAuditTab();
+}
+
+void MemoryDock::initializeSystemMemoryAuditTab()
+{
+    m_systemMemoryAuditPage = new SystemMemoryAuditPage(m_tabWidget);
+    m_tabWidget->addTab(m_systemMemoryAuditPage, QStringLiteral("系统内存审计"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_tabWidget,
+        m_systemMemoryAuditPage,
+        QStringLiteral("memory.tab.system_memory_audit"),
+        QStringLiteral("系统内存审计"));
 }
 
 void MemoryDock::initializeProcessModuleTab()
