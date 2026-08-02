@@ -194,7 +194,7 @@ private:
 
     // ===================== ETW 文件活动采集 =====================
     void startFileActivityEtw();
-    void stopFileActivityEtw(bool waitForThread);
+    void stopFileActivityEtw();
     static void WINAPI fileActivityEtwCallback(struct _EVENT_RECORD* eventRecordPointer);
     void handleFileActivityEtwEvent(const struct _EVENT_RECORD* eventRecordPointer);
 

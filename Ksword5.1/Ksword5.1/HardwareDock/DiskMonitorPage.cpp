@@ -991,7 +991,7 @@ DiskMonitorPage::~DiskMonitorPage()
         m_storagePanel->retirePerformanceCountersAsync(
             QStringLiteral("disk-monitor-page-destructor"));
     }
-    stopFileActivityEtw(true);
+    stopFileActivityEtw();
 }
 
 void DiskMonitorPage::initializeUi()
@@ -2262,7 +2262,7 @@ void DiskMonitorPage::startFileActivityEtw()
     });
 }
 
-void DiskMonitorPage::stopFileActivityEtw(const bool waitForThread)
+void DiskMonitorPage::stopFileActivityEtw()
 {
     m_fileActivityEtwStopRequested.store(true);
 
@@ -2299,22 +2299,9 @@ void DiskMonitorPage::stopFileActivityEtw(const bool waitForThread)
         return;
     }
 
-    if (waitForThread)
-    {
-        m_fileActivityEtwThread->join();
-        m_fileActivityEtwThread.reset();
-        m_fileActivityEtwRunning.store(false);
-        return;
-    }
-
-    std::unique_ptr<std::thread> joinThread = std::move(m_fileActivityEtwThread);
-    std::thread([joinThread = std::move(joinThread)]() mutable
-    {
-        if (joinThread != nullptr && joinThread->joinable())
-        {
-            joinThread->join();
-        }
-    }).detach();
+    m_fileActivityEtwThread->join();
+    m_fileActivityEtwThread.reset();
+    m_fileActivityEtwRunning.store(false);
 }
 
 void WINAPI DiskMonitorPage::fileActivityEtwCallback(struct _EVENT_RECORD* eventRecordPointer)
