@@ -17,6 +17,10 @@ Environment:
 #include "ark/ark_driver.h"
 #include "../../platform/pool_compat.h"
 
+#ifdef ALLOC_PRAGMA
+#pragma alloc_text (PAGE, KswordARKThreadApcUninitialize)
+#endif
+
 #define KSWORD_ARK_THREAD_APC_POOL_TAG 'pAsK'
 #define KSWORD_ARK_APC_ENVIRONMENT_ORIGINAL 0L
 
