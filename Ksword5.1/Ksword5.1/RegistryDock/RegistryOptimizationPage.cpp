@@ -541,7 +541,7 @@ namespace
         HKEY key = nullptr;
         const LONG createResult = ::RegCreateKeyExW(
             root,
-            subPath.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(subPath.utf16()),
+            subPath.isEmpty() ? L"" : reinterpret_cast<const wchar_t*>(subPath.utf16()),
             0,
             nullptr,
             REG_OPTION_NON_VOLATILE,
