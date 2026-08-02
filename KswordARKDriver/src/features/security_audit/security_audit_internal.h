@@ -18,7 +18,7 @@ NTSTATUS
 KswordARKSecurityAuditQueryDriverTrustView(
     _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer,
     _In_ size_t OutputBufferLength,
-    _In_ const KSWORD_ARK_QUERY_DRIVER_TRUST_VIEW_REQUEST* Request,
+    _In_opt_ const KSWORD_ARK_QUERY_DRIVER_TRUST_VIEW_REQUEST* Request,
     _Out_ size_t* BytesWrittenOut
     );
 
