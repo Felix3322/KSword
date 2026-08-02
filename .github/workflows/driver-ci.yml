@@ -2,6 +2,8 @@ name: Driver CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -24,64 +26,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate CI path rules
+        run: python3 tools/ci/changed_paths.py validate-patterns
+
       - name: Detect changed driver inputs
         id: detect
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_BEFORE: ${{ github.event.before }}
-          EVENT_SHA: ${{ github.sha }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            changed='__all__'
-          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
-            if git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null &&
-               git cat-file -e "${PR_HEAD_SHA}^{commit}" 2>/dev/null; then
-              changed="$(git diff --name-only "$PR_BASE_SHA" "$PR_HEAD_SHA")"
-            elif git cat-file -e "${EVENT_SHA}^1" 2>/dev/null &&
-                 git cat-file -e "${EVENT_SHA}^2" 2>/dev/null; then
-              echo "PR endpoint commits are unavailable; using merge commit parents." >&2
-              changed="$(git diff --name-only "${EVENT_SHA}^1" "${EVENT_SHA}^2")"
-            else
-              echo "Cannot resolve the complete PR range; treating the driver as affected." >&2
-              changed='__all__'
-            fi
-          elif [[ -n "${EVENT_BEFORE:-}" && "$EVENT_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            if git cat-file -e "${EVENT_BEFORE}^{commit}" 2>/dev/null; then
-              changed="$(git diff --name-only "$EVENT_BEFORE" "$EVENT_SHA")"
-            else
-              echo "Previous push commit $EVENT_BEFORE is unavailable; treating the driver as affected." >&2
-              changed='__all__'
-            fi
-          else
-            changed="$(git diff --name-only HEAD~1 HEAD)"
-          fi
-
-          driver_re='^(KswordARKDriver/|shared/driver/|third_party/systeminformer_dyn/|\.github/workflows/driver-ci\.yml$)'
-
-          # 回归保护：项目直接编译/包含的 System Informer 动态配置输入必须触发驱动构建。
-          for driver_input in \
-            'third_party/systeminformer_dyn/kphdyn.c' \
-            'third_party/systeminformer_dyn/kphdyn.h' \
-            'third_party/systeminformer_dyn/ksw_si_dynconfig.h'; do
-            if ! printf '%s\n' "$driver_input" | grep -Eq "$driver_re"; then
-              echo "$driver_input must trigger the driver build." >&2
-              exit 1
-            fi
-          done
-
-          driver=false
-          if [[ "$changed" == '__all__' ]] || printf '%s\n' "$changed" | grep -Eq "$driver_re"; then
-            driver=true
-          fi
-          echo "driver=$driver" >> "$GITHUB_OUTPUT"
-          echo 'Changed paths:'
-          printf '%s\n' "$changed"
-          echo "Affected driver project: $driver"
+        run: >-
+          python3 tools/ci/changed_paths.py detect
+          --mode driver
+          --event-name "${{ github.event_name }}"
+          --event-path "$GITHUB_EVENT_PATH"
+          --event-sha "${{ github.sha }}"
+          --github-output "$GITHUB_OUTPUT"
 
   driver-release:
     name: Driver Release build
