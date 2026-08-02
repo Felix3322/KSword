@@ -61,11 +61,25 @@ ZwWaitForSingleObject(
     _In_opt_ PLARGE_INTEGER Timeout
     );
 
+NTSYSAPI
+NTSTATUS
+NTAPI
+ZwCancelIoFileEx(
+    _In_ HANDLE FileHandle,
+    _In_ PIO_STATUS_BLOCK IoRequestToCancel,
+    _Out_ PIO_STATUS_BLOCK IoStatusBlock
+    );
+
 NTKERNELAPI
 PDEVICE_OBJECT
 IoGetLowerDeviceObject(
     _In_ PDEVICE_OBJECT DeviceObject
     );
+
+/* Raw storage requests must not leave an IOCTL worker blocked forever. */
+#define KSW_STORAGE_IO_TIMEOUT_SECONDS 30LL
+#define KSW_STORAGE_RELATIVE_IO_TIMEOUT_100NS \
+    (-(KSW_STORAGE_IO_TIMEOUT_SECONDS * 10LL * 1000LL * 1000LL))
 
 static VOID
 KswordStorageReleaseContext(
@@ -157,12 +171,32 @@ Routine Description:
 
     /* A pending request must be waited before reading its status or output. */
     if (status == STATUS_PENDING) {
-        /* Wait for the synchronous handle to signal request completion. */
-        status = ZwWaitForSingleObject(Handle, FALSE, NULL);
-        /* A successful wait exposes the final device request status. */
-        if (NT_SUCCESS(status)) {
+        LARGE_INTEGER timeout;
+        NTSTATUS waitStatus;
+
+        /* Bound the first wait so a wedged storage stack cannot pin this worker forever. */
+        timeout.QuadPart = KSW_STORAGE_RELATIVE_IO_TIMEOUT_100NS;
+        waitStatus = ZwWaitForSingleObject(Handle, FALSE, &timeout);
+        if (waitStatus == STATUS_TIMEOUT) {
+            IO_STATUS_BLOCK cancelStatus = { 0 };
+
+            /* Cancel this exact request rather than every operation issued on the handle. */
+            (VOID)ZwCancelIoFileEx(Handle, &ioStatus, &cancelStatus);
+            /* ioStatus is stack-owned; do not return until the cancelled request is final. */
+            waitStatus = ZwWaitForSingleObject(Handle, FALSE, NULL);
+            status = NT_SUCCESS(waitStatus) ? STATUS_IO_TIMEOUT : waitStatus;
+        }
+        else if (NT_SUCCESS(waitStatus)) {
             /* Replace the wait status with the actual I/O completion status. */
             status = ioStatus.Status;
+        }
+        else {
+            IO_STATUS_BLOCK cancelStatus = { 0 };
+
+            /* Preserve lifetime safety even for an unexpected non-alertable wait failure. */
+            (VOID)ZwCancelIoFileEx(Handle, &ioStatus, &cancelStatus);
+            (VOID)ZwWaitForSingleObject(Handle, FALSE, NULL);
+            status = waitStatus;
         }
     }
 
@@ -835,15 +869,44 @@ Routine Description:
 
     /* Wait only when the target retained the request asynchronously. */
     if (status == STATUS_PENDING) {
-        /* Block at PASSIVE_LEVEL until the target signals completion. */
-        KeWaitForSingleObject(
+        LARGE_INTEGER timeout;
+        NTSTATUS waitStatus;
+
+        /* Bound the normal wait so a lower storage driver cannot hold the worker forever. */
+        timeout.QuadPart = KSW_STORAGE_RELATIVE_IO_TIMEOUT_100NS;
+        waitStatus = KeWaitForSingleObject(
             &completionEvent,
             Executive,
             KernelMode,
             FALSE,
-            NULL);
-        /* Read the final completion status after the event is signaled. */
-        status = ioStatus.Status;
+            &timeout);
+        if (waitStatus == STATUS_TIMEOUT) {
+            /* Request cancellation while the caller-owned event/IOSB/buffer are still alive. */
+            (VOID)IoCancelIrp(irp);
+            /* A final drain is mandatory before returning stack storage to the caller. */
+            waitStatus = KeWaitForSingleObject(
+                &completionEvent,
+                Executive,
+                KernelMode,
+                FALSE,
+                NULL);
+            status = NT_SUCCESS(waitStatus) ? STATUS_IO_TIMEOUT : waitStatus;
+        }
+        else if (NT_SUCCESS(waitStatus)) {
+            /* Read the final completion status after the event is signaled. */
+            status = ioStatus.Status;
+        }
+        else {
+            /* Unexpected wait failures still require cancellation and completion drainage. */
+            (VOID)IoCancelIrp(irp);
+            (VOID)KeWaitForSingleObject(
+                &completionEvent,
+                Executive,
+                KernelMode,
+                FALSE,
+                NULL);
+            status = waitStatus;
+        }
     }
 
     /* Preserve the completed transfer size within the protocol ULONG limit. */
