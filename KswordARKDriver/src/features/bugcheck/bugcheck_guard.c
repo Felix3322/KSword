@@ -91,6 +91,54 @@ KswordARKBugcheckGuardBuildHook(
     Patch[11] = 0xE0U;
 }
 
+static NTSTATUS
+KswordARKBugcheckGuardTryWriteBytes(
+    _Out_writes_bytes_(KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES) PVOID Destination,
+    _In_reads_bytes_(KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES) const UCHAR* Source
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+
+    __try {
+        RtlCopyMemory(
+            Destination,
+            Source,
+            KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
+        KeMemoryBarrier();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    return status;
+}
+
+static NTSTATUS
+KswordARKBugcheckGuardVerifyBytes(
+    _In_reads_bytes_(KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES) const VOID* Address,
+    _In_reads_bytes_(KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES) const UCHAR* Expected
+    )
+{
+    SIZE_T matchingBytes = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    __try {
+        matchingBytes = RtlCompareMemory(
+            Address,
+            Expected,
+            KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+
+    if (NT_SUCCESS(status) &&
+        matchingBytes != KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES) {
+        status = STATUS_DATA_ERROR;
+    }
+    return status;
+}
+
 static ULONG
 KswordARKBugcheckGuardStateFlags(VOID)
 {
@@ -120,35 +168,70 @@ KswordARKBugcheckGuardStateFlags(VOID)
     }
     return flags;
 }
-static VOID
+static NTSTATUS
 KswordARKBugcheckGuardRestoreFromCrashPath(VOID)
 {
+    NTSTATUS status = STATUS_SUCCESS;
     LONG state = InterlockedCompareExchange(
         &g_KswordArkBugcheckGuard.HookState,
         KSWORD_ARK_BUGCHECK_GUARD_STATE_RESTORING,
         KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED);
 
     if (state == KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED) {
-        if (g_KswordArkBugcheckGuard.WritableAlias != NULL) {
-            RtlCopyMemory(g_KswordArkBugcheckGuard.WritableAlias, g_KswordArkBugcheckGuard.OriginalBytes, KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
-            KeMemoryBarrier();
-            KeInvalidateRangeAllCaches(g_KswordArkBugcheckGuard.Target, KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
+        if (g_KswordArkBugcheckGuard.WritableAlias == NULL ||
+            g_KswordArkBugcheckGuard.Target == NULL) {
+            status = STATUS_INVALID_DEVICE_STATE;
         }
-        InterlockedExchange(&g_KswordArkBugcheckGuard.HookState, KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED);
-        return;
+        else {
+            status = KswordARKBugcheckGuardVerifyBytes(
+                g_KswordArkBugcheckGuard.WritableAlias,
+                g_KswordArkBugcheckGuard.OriginalBytes);
+            if (!NT_SUCCESS(status)) {
+                status = KswordARKBugcheckGuardTryWriteBytes(
+                    g_KswordArkBugcheckGuard.WritableAlias,
+                    g_KswordArkBugcheckGuard.OriginalBytes);
+                if (NT_SUCCESS(status)) {
+                    status = KswordARKBugcheckGuardVerifyBytes(
+                        g_KswordArkBugcheckGuard.WritableAlias,
+                        g_KswordArkBugcheckGuard.OriginalBytes);
+                }
+            }
+        }
+        if (NT_SUCCESS(status)) {
+            KeInvalidateRangeAllCaches(
+                g_KswordArkBugcheckGuard.Target,
+                KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
+            InterlockedExchange(
+                &g_KswordArkBugcheckGuard.HookState,
+                KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED);
+            return STATUS_SUCCESS;
+        }
+        g_KswordArkBugcheckGuard.LastStatus = status;
+        InterlockedExchange(
+            &g_KswordArkBugcheckGuard.HookState,
+            KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED);
+        return status;
     }
 
     while (state == KSWORD_ARK_BUGCHECK_GUARD_STATE_RESTORING) {
         KeStallExecutionProcessor(10UL);
         state = InterlockedCompareExchange(&g_KswordArkBugcheckGuard.HookState, 0L, 0L);
     }
+    return state == KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED ?
+        STATUS_SUCCESS : STATUS_DEVICE_BUSY;
 }
 
 static VOID
 KswordARKBugcheckGuardReleaseMappingLocked(VOID)
 {
+    NTSTATUS status;
+
     InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 0L);
-    KswordARKBugcheckGuardRestoreFromCrashPath();
+    status = KswordARKBugcheckGuardRestoreFromCrashPath();
+    if (!NT_SUCCESS(status)) {
+        g_KswordArkBugcheckGuard.LastStatus = status;
+        return;
+    }
     if (InterlockedCompareExchange(
             &g_KswordArkBugcheckGuard.HookExecutions,
             0L,
@@ -214,6 +297,7 @@ KswordARKBugcheckGuardHook(
     KSWORD_ARK_KE_BUGCHECK_EX_FN target;
     BOOLEAN firstHit;
     BOOLEAN tryIgnoreError;
+    NTSTATUS restoreStatus;
 
     InterlockedIncrement(&g_KswordArkBugcheckGuard.HookExecutions);
     target =
@@ -226,9 +310,15 @@ KswordARKBugcheckGuardHook(
         1L) != 0L;
 
     InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 0L);
-    KswordARKBugcheckGuardRestoreFromCrashPath();
+    restoreStatus = KswordARKBugcheckGuardRestoreFromCrashPath();
     if (firstHit) {
         KswordARKBugcheckGuardDelay(g_KswordArkBugcheckGuard.DelaySeconds);
+    }
+    if (!NT_SUCCESS(restoreStatus)) {
+        g_KswordArkBugcheckGuard.LastStatus = restoreStatus;
+        InterlockedExchange(&g_KswordArkBugcheckGuard.ErrorIgnored, 1L);
+        InterlockedDecrement(&g_KswordArkBugcheckGuard.HookExecutions);
+        return;
     }
     if (tryIgnoreError) {
         // KeBugCheckEx is declared no-return and many callers have no valid
@@ -257,6 +347,7 @@ KswordARKBugcheckGuardEnableLocked(
     PMDL mdl = NULL;
     PVOID writableAlias = NULL;
     BOOLEAN pagesLocked = FALSE;
+    BOOLEAN canReleaseMapping = TRUE;
     if (InterlockedCompareExchange(&g_KswordArkBugcheckGuard.HookState, 0L, 0L) != KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED) {
         return STATUS_ALREADY_REGISTERED;
     }
@@ -281,7 +372,7 @@ KswordARKBugcheckGuardEnableLocked(
     }
 
     __try {
-        MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+        MmProbeAndLockPages(mdl, KernelMode, IoModifyAccess);
         pagesLocked = TRUE;
         writableAlias = MmMapLockedPagesSpecifyCache(
             mdl,
@@ -312,52 +403,57 @@ KswordARKBugcheckGuardEnableLocked(
         InterlockedExchange(&g_KswordArkBugcheckGuard.TryIgnoreError, TryIgnoreError ? 1L : 0L);
         InterlockedExchange(&g_KswordArkBugcheckGuard.ErrorIgnored, 0L);
         InterlockedExchange(&g_KswordArkBugcheckGuard.HookExecutions, 0L);
-        InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 1L);
         InterlockedExchange(&g_KswordArkBugcheckGuard.HookState, KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED);
-        RtlCopyMemory(writableAlias, g_KswordArkBugcheckGuard.HookBytes, KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
-        KeMemoryBarrier();
-        KeInvalidateRangeAllCaches(target, KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
+        status = KswordARKBugcheckGuardTryWriteBytes(
+            writableAlias,
+            g_KswordArkBugcheckGuard.HookBytes);
+        if (NT_SUCCESS(status)) {
+            status = KswordARKBugcheckGuardVerifyBytes(
+                writableAlias,
+                g_KswordArkBugcheckGuard.HookBytes);
+        }
+        if (!NT_SUCCESS(status)) {
+            __leave;
+        }
+        KeInvalidateRangeAllCaches(
+            target,
+            KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
+        InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 1L);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
     }
 
     if (!NT_SUCCESS(status)) {
-        if (writableAlias != NULL &&
-            InterlockedCompareExchange(
+        if (InterlockedCompareExchange(
                 &g_KswordArkBugcheckGuard.HookState,
-                KSWORD_ARK_BUGCHECK_GUARD_STATE_RESTORING,
-                KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED) ==
-                KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED) {
-            RtlCopyMemory(
-                writableAlias,
-                g_KswordArkBugcheckGuard.OriginalBytes,
-                KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
-            KeMemoryBarrier();
-            KeInvalidateRangeAllCaches(
-                target,
-                KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES);
-            InterlockedExchange(
-                &g_KswordArkBugcheckGuard.HookState,
-                KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED);
+                0L,
+                0L) == KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED) {
+            NTSTATUS restoreStatus =
+                KswordARKBugcheckGuardRestoreFromCrashPath();
+            if (!NT_SUCCESS(restoreStatus)) {
+                canReleaseMapping = FALSE;
+            }
         }
         InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 0L);
         InterlockedExchange(&g_KswordArkBugcheckGuard.TryIgnoreError, 0L);
         InterlockedExchange(&g_KswordArkBugcheckGuard.ErrorIgnored, 0L);
         InterlockedExchange(&g_KswordArkBugcheckGuard.HookExecutions, 0L);
-        if (writableAlias != NULL) {
-            MmUnmapLockedPages(writableAlias, mdl);
+        if (canReleaseMapping) {
+            if (writableAlias != NULL) {
+                MmUnmapLockedPages(writableAlias, mdl);
+            }
+            if (pagesLocked) {
+                MmUnlockPages(mdl);
+            }
+            IoFreeMdl(mdl);
+            g_KswordArkBugcheckGuard.Target = NULL;
+            g_KswordArkBugcheckGuard.TargetMdl = NULL;
+            g_KswordArkBugcheckGuard.WritableAlias = NULL;
+            g_KswordArkBugcheckGuard.DelaySeconds = 0UL;
+            RtlZeroMemory(g_KswordArkBugcheckGuard.OriginalBytes, sizeof(g_KswordArkBugcheckGuard.OriginalBytes));
+            RtlZeroMemory(g_KswordArkBugcheckGuard.HookBytes, sizeof(g_KswordArkBugcheckGuard.HookBytes));
         }
-        if (pagesLocked) {
-            MmUnlockPages(mdl);
-        }
-        IoFreeMdl(mdl);
-        g_KswordArkBugcheckGuard.Target = NULL;
-        g_KswordArkBugcheckGuard.TargetMdl = NULL;
-        g_KswordArkBugcheckGuard.WritableAlias = NULL;
-        g_KswordArkBugcheckGuard.DelaySeconds = 0UL;
-        RtlZeroMemory(g_KswordArkBugcheckGuard.OriginalBytes, sizeof(g_KswordArkBugcheckGuard.OriginalBytes));
-        RtlZeroMemory(g_KswordArkBugcheckGuard.HookBytes, sizeof(g_KswordArkBugcheckGuard.HookBytes));
     }
     return status;
 }

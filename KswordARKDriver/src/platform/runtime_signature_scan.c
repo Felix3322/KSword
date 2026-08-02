@@ -53,16 +53,25 @@ Return Value:
 
 --*/
 {
+    MM_COPY_ADDRESS sourceAddress;
+    SIZE_T bytesTransferred = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+
     if (Address == NULL || Buffer == NULL || Size == 0U) {
         return FALSE;
     }
-    __try {
-        RtlCopyMemory(Buffer, Address, Size);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (KeGetCurrentIrql() > APC_LEVEL) {
         return FALSE;
     }
-    return TRUE;
+    RtlZeroMemory(&sourceAddress, sizeof(sourceAddress));
+    sourceAddress.VirtualAddress = (PVOID)Address;
+    status = MmCopyMemory(
+        Buffer,
+        sourceAddress,
+        Size,
+        MM_COPY_MEMORY_VIRTUAL,
+        &bytesTransferred);
+    return NT_SUCCESS(status) && bytesTransferred == Size;
 }
 
 BOOLEAN
