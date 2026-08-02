@@ -1081,7 +1081,7 @@ namespace
         }
 
         output.started = true;
-        const DWORD startTick = ::GetTickCount();
+        const ULONGLONG startTick = ::GetTickCount64();
         DWORD waitResult = WAIT_TIMEOUT;
         while (true)
         {
@@ -1099,7 +1099,7 @@ namespace
                 output.errorCode = ::GetLastError();
                 break;
             }
-            const DWORD elapsedMs = ::GetTickCount() - startTick;
+            const ULONGLONG elapsedMs = ::GetTickCount64() - startTick;
             if (elapsedMs >= timeoutMs)
             {
                 output.errorCode = WAIT_TIMEOUT;
