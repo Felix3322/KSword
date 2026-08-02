@@ -269,7 +269,8 @@ Return Value:
     *UserAndGroupsOffsetOut = -1;
     *IntegrityLevelIndexOffsetOut = -1;
     *MandatoryPolicyOffsetOut = -1;
-    if (Token == NULL || KeGetCurrentIrql() > APC_LEVEL) {
+    // SeQueryInformationToken allocates token-information buffers at PASSIVE_LEVEL.
+    if (Token == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL) {
         return;
     }
 
