@@ -17,6 +17,7 @@ Environment:
 #include "hwid_dispatch_hooks.h"
 #include "../../platform/pool_compat.h"
 
+#include <ntifs.h>
 #include <ata.h>
 #include <mountdev.h>
 #include <mountmgr.h>
@@ -548,6 +549,26 @@ KswordARKHwidRewriteDirectOrUserBuffer(
     if (Context->UserBuffer != NULL &&
         (Context->TargetFlag == KSWORD_ARK_HWID_DISPATCH_TARGET_NVIDIA ||
          Context->TargetFlag == KSWORD_ARK_HWID_DISPATCH_TARGET_NSIPROXY)) {
+        PEPROCESS requestorProcess = NULL;
+        KAPC_STATE apcState;
+        BOOLEAN attached = FALSE;
+
+        /* 完成例程可在 DISPATCH_LEVEL 运行；用户地址探测和附加只能在 <= APC_LEVEL。 */
+        if (KeGetCurrentIrql() > APC_LEVEL) {
+            return;
+        }
+
+        if (Irp->RequestorMode != KernelMode) {
+            requestorProcess = IoGetRequestorProcess(Irp);
+            if (requestorProcess == NULL) {
+                return;
+            }
+            if (requestorProcess != PsGetCurrentProcess()) {
+                KeStackAttachProcess(requestorProcess, &apcState);
+                attached = TRUE;
+            }
+        }
+
         __try {
             ULONG writableBytes = Context->TargetFlag == KSWORD_ARK_HWID_DISPATCH_TARGET_NVIDIA ?
                 min(bufferBytes, KSW_HWID_NVIDIA_SMIL_MAX_BYTES) : bufferBytes;
@@ -564,6 +585,10 @@ KswordARKHwidRewriteDirectOrUserBuffer(
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             NOTHING;
+        }
+
+        if (attached != FALSE) {
+            KeUnstackDetachProcess(&apcState);
         }
     }
 }
