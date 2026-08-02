@@ -2462,6 +2462,21 @@ namespace ksword::ark
         std::vector<KSWORD_ARK_CID_TABLE_ENTRY> entries;
     };
 
+    // ObjectTypeTableAuditResult 承载 R0 ObTypeIndexTable 只读快照。
+    // 输入：enumObjectTypeTable 返回，可按 type index 分页。
+    // 处理：保留表地址、DynData 偏移、快照哈希和逐槽交叉验证结果。
+    // 返回行为：只读展示，不修改对象类型表或对象头。
+    struct ObjectTypeTableAuditResult : VariableAuditResultBase
+    {
+        std::uint32_t nextIndex = 0;
+        std::uint64_t tableAddress = 0;
+        std::uint64_t dynDataCapabilityMask = 0;
+        std::uint64_t snapshotHash = 0;
+        std::uint32_t otNameOffset = KSWORD_ARK_KERNEL_OBJECT_OFFSET_UNAVAILABLE;
+        std::uint32_t otIndexOffset = KSWORD_ARK_KERNEL_OBJECT_OFFSET_UNAVAILABLE;
+        std::vector<KSWORD_ARK_OBJECT_TYPE_TABLE_ENTRY> entries;
+    };
+
     // KernelObjectSummaryAuditResult 承载单对象 header/type/counter 摘要。
     // 输入：queryKernelObjectSummary 返回。
     // 处理：response 直接保存共享固定响应结构。

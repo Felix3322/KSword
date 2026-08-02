@@ -456,6 +456,7 @@ namespace ksword::ark
         HwidDispatchResult controlHwidDispatch(const KSWORD_ARK_HWID_DISPATCH_CONTROL_REQUEST& request) const;
         CidTableAuditResult enumCidTable(unsigned long flags = KSWORD_ARK_CID_ENUM_FLAG_INCLUDE_ALL, unsigned long maxEntries = 4096UL, unsigned long maxVisitCount = 65536UL, unsigned long startCid = 0UL, unsigned long endCid = 0UL) const;
         KernelObjectSummaryAuditResult queryKernelObjectSummary(unsigned long targetKind, unsigned long cidValue = 0UL, std::uint64_t expectedObjectAddress = 0ULL, unsigned long flags = KSWORD_ARK_OBJECT_SUMMARY_FLAG_INCLUDE_ALL) const;
+        ObjectTypeTableAuditResult enumObjectTypeTable(unsigned long flags = KSWORD_ARK_OBJECT_TYPE_TABLE_FLAG_INCLUDE_ALL, unsigned long maxEntries = KSWORD_ARK_OBJECT_TYPE_TABLE_MAX_SLOTS, unsigned long startIndex = 0UL) const;
         IpcSummaryAuditResult queryIpcSummary(unsigned long processId = 0UL, std::uint64_t handleValue = 0ULL, unsigned long flags = KSWORD_ARK_IPC_QUERY_FLAG_INCLUDE_ALL, unsigned long maxEntries = 64UL) const;
     };
 }

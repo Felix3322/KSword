@@ -10,6 +10,7 @@
 // ============================================================
 
 #include "KernelDockQueryWorker.h"
+#include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
@@ -33,6 +34,7 @@
 #include <QVBoxLayout>
 
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 using ksword::kernel_dock_internal::kernelText;
@@ -43,6 +45,8 @@ namespace
     {
         TypeIndex = 0,
         TypeName,
+        R0Address,
+        R0Validation,
         ObjectCount,
         HandleCount,
         AccessMask,
@@ -55,6 +59,66 @@ namespace
         return QStringLiteral("color:%1;font-weight:600;").arg(colorHex);
     }
 
+    QString formatR0Address(const std::uint64_t address)
+    {
+        if (address == 0ULL)
+        {
+            return QStringLiteral("-");
+        }
+        return QStringLiteral("0x%1")
+            .arg(static_cast<qulonglong>(address), 16, 16, QChar('0'))
+            .toUpper();
+    }
+
+    QString fixedR0TypeName(const wchar_t* const text, const std::size_t maxChars)
+    {
+        if (text == nullptr || maxChars == 0U)
+        {
+            return QString();
+        }
+
+        std::size_t length = 0U;
+        while (length < maxChars && text[length] != L'\0')
+        {
+            ++length;
+        }
+        return QString::fromWCharArray(text, static_cast<qsizetype>(length));
+    }
+
+    QString objectTypeR0ValidationText(const KernelObjectTypeEntry& entry)
+    {
+        if (!entry.r0ValidationText.isEmpty())
+        {
+            return entry.r0ValidationText;
+        }
+        if (!entry.r0Present)
+        {
+            return kernelText("kernel.object_type.r0.validation.not_returned", QStringLiteral("R0 未返回该槽"));
+        }
+        if (entry.r0Status == KSWORD_ARK_OBJECT_TYPE_ENTRY_STATUS_INDEX_MISMATCH)
+        {
+            return kernelText("kernel.object_type.r0.validation.index_mismatch", QStringLiteral("索引不一致"));
+        }
+        if (entry.r0Status == KSWORD_ARK_OBJECT_TYPE_ENTRY_STATUS_READ_FAILED)
+        {
+            return kernelText("kernel.object_type.r0.validation.read_failed", QStringLiteral("结构读取失败"));
+        }
+
+        const bool indexMatched =
+            (entry.r0FieldFlags & KSWORD_ARK_OBJECT_TYPE_ENTRY_FIELD_INDEX_MATCH) != 0UL;
+        const bool nameMatched = entry.r3Present && !entry.r0TypeNameText.isEmpty() &&
+            entry.typeNameText.compare(entry.r0TypeNameText, Qt::CaseInsensitive) == 0;
+        if (indexMatched && (!entry.r3Present || entry.r0TypeNameText.isEmpty() || nameMatched))
+        {
+            return kernelText("kernel.object_type.r0.validation.matched", QStringLiteral("槽/索引/名称一致"));
+        }
+        if (!entry.r0TypeNameText.isEmpty() && entry.r3Present && !nameMatched)
+        {
+            return kernelText("kernel.object_type.r0.validation.name_mismatch", QStringLiteral("R0/R3 名称不一致"));
+        }
+        return kernelText("kernel.object_type.r0.validation.partial", QStringLiteral("部分验证"));
+    }
+
     QString cellText(const KernelObjectTypeEntry& entry, const ObjectTypeMatrixColumn column)
     {
         switch (column)
@@ -63,6 +127,10 @@ namespace
             return QString::number(entry.typeIndex);
         case ObjectTypeMatrixColumn::TypeName:
             return entry.typeNameText;
+        case ObjectTypeMatrixColumn::R0Address:
+            return formatR0Address(entry.r0ObjectTypeAddress);
+        case ObjectTypeMatrixColumn::R0Validation:
+            return objectTypeR0ValidationText(entry);
         case ObjectTypeMatrixColumn::ObjectCount:
             return QString::number(entry.totalObjectCount);
         case ObjectTypeMatrixColumn::HandleCount:
@@ -104,7 +172,7 @@ void KernelObjectTypeMatrixTab::initializeUi()
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
 
     m_filterEdit = new QLineEdit(this);
-    m_filterEdit->setPlaceholderText(kernelText("kernel.object_type.toolbar.filter.placeholder", QStringLiteral("按类型名、编号、策略筛选")));
+    m_filterEdit->setPlaceholderText(kernelText("kernel.object_type.toolbar.filter.placeholder", QStringLiteral("按类型名、编号、R0 地址或策略筛选")));
     m_filterEdit->setClearButtonEnabled(true);
 
     m_statusLabel = new QLabel(kernelText("kernel.object_type.status.waiting", QStringLiteral("状态：等待刷新")), this);
@@ -120,6 +188,8 @@ void KernelObjectTypeMatrixTab::initializeUi()
     m_table->setHorizontalHeaderLabels(QStringList{
         kernelText("kernel.object_type.header.index", QStringLiteral("类型编号")),
         kernelText("kernel.object_type.header.name", QStringLiteral("类型名")),
+        kernelText("kernel.object_type.header.r0_address", QStringLiteral("R0 类型地址")),
+        kernelText("kernel.object_type.header.r0_validation", QStringLiteral("R0 交叉验证")),
         kernelText("kernel.object_type.header.object_count", QStringLiteral("对象数")),
         kernelText("kernel.object_type.header.handle_count", QStringLiteral("句柄数")),
         kernelText("kernel.object_type.header.access_mask", QStringLiteral("访问掩码")),
@@ -176,7 +246,98 @@ void KernelObjectTypeMatrixTab::refreshAsync()
     std::thread([guardThis]() {
         std::vector<KernelObjectTypeEntry> rows;
         QString errorText;
-        const bool success = runKernelTypeSnapshotTask(rows, errorText);
+        const bool r3Success = runKernelTypeSnapshotTask(rows, errorText);
+        R0SnapshotState r0State{};
+        r0State.attempted = true;
+
+        const ksword::ark::ObjectTypeTableAuditResult r0Result =
+            ksword::ark::DriverClient().enumObjectTypeTable();
+        r0State.transportOk = r0Result.io.ok;
+        r0State.unsupported = r0Result.unsupported;
+        r0State.status = r0Result.status;
+        r0State.flags = r0Result.flags;
+        r0State.lastStatus = r0Result.lastStatus;
+        r0State.tableAddress = r0Result.tableAddress;
+        r0State.snapshotHash = r0Result.snapshotHash;
+        r0State.dynDataCapabilityMask = r0Result.dynDataCapabilityMask;
+        r0State.otNameOffset = r0Result.otNameOffset;
+        r0State.otIndexOffset = r0Result.otIndexOffset;
+        r0State.returnedCount = r0Result.returnedCount;
+
+        if (!r0Result.io.ok)
+        {
+            r0State.diagnosticText = r0Result.unsupported
+                ? kernelText("kernel.object_type.r0.old_driver", QStringLiteral("旧驱动不支持 Object Type Table IOCTL"))
+                : kernelText("kernel.object_type.r0.query_failed", QStringLiteral("R0 Object Type Table 查询失败：%1"))
+                    .arg(QString::fromStdString(r0Result.io.message));
+        }
+        else if (r0Result.tableAddress == 0ULL)
+        {
+            r0State.diagnosticText = kernelText(
+                "kernel.object_type.r0.table_unavailable",
+                QStringLiteral("R0 未能唯一定位 ObTypeIndexTable（status=%1, NTSTATUS=0x%2）"))
+                .arg(r0Result.status)
+                .arg(static_cast<qulonglong>(static_cast<std::uint32_t>(r0Result.lastStatus)), 8, 16, QChar('0'))
+                .toUpper();
+        }
+        else
+        {
+            r0State.diagnosticText = kernelText(
+                "kernel.object_type.r0.table_loaded",
+                QStringLiteral("R0 表 0x%1，返回 %2 个有效槽"))
+                .arg(static_cast<qulonglong>(r0Result.tableAddress), 16, 16, QChar('0'))
+                .arg(r0Result.entries.size())
+                .toUpper();
+        }
+
+        const QString defaultValidation = r0State.diagnosticText;
+        std::unordered_map<std::uint32_t, std::size_t> rowByTypeIndex;
+        rowByTypeIndex.reserve(rows.size());
+        for (std::size_t index = 0U; index < rows.size(); ++index)
+        {
+            rows[index].r3Present = true;
+            rows[index].r0ValidationText = defaultValidation;
+            rowByTypeIndex.emplace(rows[index].typeIndex, index);
+        }
+
+        for (const KSWORD_ARK_OBJECT_TYPE_TABLE_ENTRY& r0Entry : r0Result.entries)
+        {
+            auto found = rowByTypeIndex.find(r0Entry.typeIndex);
+            if (found == rowByTypeIndex.end())
+            {
+                KernelObjectTypeEntry r0Only{};
+                r0Only.typeIndex = r0Entry.typeIndex;
+                r0Only.r3Present = false;
+                r0Only.typeNameText = fixedR0TypeName(
+                    r0Entry.typeName,
+                    KSWORD_ARK_KERNEL_OBJECT_TYPE_NAME_CHARS);
+                if (r0Only.typeNameText.isEmpty())
+                {
+                    r0Only.typeNameText = kernelText(
+                        "kernel.object_type.r0.name_unavailable",
+                        QStringLiteral("<R0 名称不可用>"));
+                }
+                rows.push_back(std::move(r0Only));
+                found = rowByTypeIndex.emplace(
+                    r0Entry.typeIndex,
+                    rows.size() - 1U).first;
+            }
+
+            KernelObjectTypeEntry& target = rows[found->second];
+            target.r0Present = r0Entry.objectTypeAddress != 0ULL;
+            target.r0Status = r0Entry.status;
+            target.r0FieldFlags = r0Entry.fieldFlags;
+            target.r0LastStatus = r0Entry.lastStatus;
+            target.r0ObjectTypeAddress = r0Entry.objectTypeAddress;
+            target.r0IdentityHash = r0Entry.identityHash;
+            target.r0TypeNameText = fixedR0TypeName(
+                r0Entry.typeName,
+                KSWORD_ARK_KERNEL_OBJECT_TYPE_NAME_CHARS);
+            target.r0ValidationText.clear();
+        }
+
+        const bool r0HasRows = r0Result.io.ok && !r0Result.entries.empty();
+        const bool success = r3Success || r0HasRows;
 
         KernelObjectTypeMatrixTab* const contextObject = guardThis.data();
         if (contextObject == nullptr)
@@ -184,18 +345,19 @@ void KernelObjectTypeMatrixTab::refreshAsync()
             return;
         }
 
-        QMetaObject::invokeMethod(contextObject, [guardThis, rows = std::move(rows), errorText, success]() mutable {
+        QMetaObject::invokeMethod(contextObject, [guardThis, rows = std::move(rows), r0State = std::move(r0State), errorText, success]() mutable {
             if (guardThis == nullptr)
             {
                 return;
             }
-            guardThis->applyRefreshResult(std::move(rows), errorText, success);
+            guardThis->applyRefreshResult(std::move(rows), std::move(r0State), errorText, success);
         }, Qt::QueuedConnection);
     }).detach();
 }
 
 void KernelObjectTypeMatrixTab::applyRefreshResult(
     std::vector<KernelObjectTypeEntry> rows,
+    R0SnapshotState r0State,
     const QString& errorText,
     const bool success)
 {
@@ -204,11 +366,11 @@ void KernelObjectTypeMatrixTab::applyRefreshResult(
         this,
         QStringLiteral("kernel-object-type-matrix-snapshot"),
         { m_table },
-        [safeThis, rows, errorText, success]() mutable
+        [safeThis, rows, r0State, errorText, success]() mutable
         {
             if (!safeThis.isNull())
             {
-                safeThis->applyRefreshResult(std::move(rows), errorText, success);
+                safeThis->applyRefreshResult(std::move(rows), std::move(r0State), errorText, success);
             }
         }))
     {
@@ -217,6 +379,7 @@ void KernelObjectTypeMatrixTab::applyRefreshResult(
 
     m_refreshing.store(false);
     m_refreshButton->setEnabled(true);
+    m_r0State = std::move(r0State);
 
     if (!success)
     {
@@ -268,10 +431,14 @@ void KernelObjectTypeMatrixTab::rebuildTable()
     }
 
     m_table->setSortingEnabled(true);
-    m_statusLabel->setText(kernelText("kernel.object_type.status.summary", QStringLiteral("状态：已加载 %1 类，显示 %2 类"))
+    m_statusLabel->setText(kernelText("kernel.object_type.status.summary_with_r0", QStringLiteral("状态：已加载 %1 类，显示 %2 类；%3"))
         .arg(static_cast<qulonglong>(m_rows.size()))
-        .arg(static_cast<qulonglong>(visibleCount)));
-    m_statusLabel->setStyleSheet(statusLabelStyle(KswordTheme::SuccessHex()));
+        .arg(static_cast<qulonglong>(visibleCount))
+        .arg(m_r0State.diagnosticText));
+    m_statusLabel->setStyleSheet(statusLabelStyle(
+        m_r0State.tableAddress != 0ULL
+            ? KswordTheme::SuccessHex()
+            : KswordTheme::WarningHex()));
 
     if (m_table->rowCount() > 0)
     {
@@ -329,7 +496,7 @@ QString KernelObjectTypeMatrixTab::buildDetailText(const KernelObjectTypeEntry& 
     // buildDetailText：
     // - 输入：对象类型矩阵的一条源记录；
     // - 处理：把表格里的短摘要展开为可读审计说明；
-    // - 返回：供 CodeEditorWidget 展示的多行文本，不访问 R0、不修改系统状态。
+    // - 返回：供 CodeEditorWidget 展示的 R3/R0 交叉验证文本，不修改系统状态。
     QStringList lines;
     lines << QStringLiteral("[Object Type Matrix Detail]");
     lines << QStringLiteral("TypeIndex: %1").arg(entry.typeIndex);
@@ -337,6 +504,35 @@ QString KernelObjectTypeMatrixTab::buildDetailText(const KernelObjectTypeEntry& 
     lines << QStringLiteral("TotalObjectCount: %1").arg(entry.totalObjectCount);
     lines << QStringLiteral("TotalHandleCount: %1").arg(entry.totalHandleCount);
     lines << QStringLiteral("ValidAccessMask: %1").arg(formatAccessMask(entry.validAccessMask));
+    lines << QString();
+    lines << QStringLiteral("[R0 ObTypeIndexTable Evidence]");
+    lines << QStringLiteral("R3Present: %1").arg(entry.r3Present
+        ? kernelText("kernel.object_type.value.yes", QStringLiteral("是"))
+        : kernelText("kernel.object_type.value.no", QStringLiteral("否")));
+    lines << QStringLiteral("R0Present: %1").arg(entry.r0Present
+        ? kernelText("kernel.object_type.value.yes", QStringLiteral("是"))
+        : kernelText("kernel.object_type.value.no", QStringLiteral("否")));
+    lines << QStringLiteral("ObTypeIndexTable: %1").arg(formatR0Address(m_r0State.tableAddress));
+    lines << QStringLiteral("ObjectTypeAddress: %1").arg(formatR0Address(entry.r0ObjectTypeAddress));
+    lines << QStringLiteral("R0TypeName: %1").arg(entry.r0TypeNameText.isEmpty()
+        ? kernelText("kernel.object_type.placeholder.not_available", QStringLiteral("<不可用>"))
+        : entry.r0TypeNameText);
+    lines << QStringLiteral("R0Validation: %1").arg(objectTypeR0ValidationText(entry));
+    lines << QStringLiteral("R0EntryStatus: %1").arg(entry.r0Status);
+    lines << QStringLiteral("R0FieldFlags: 0x%1").arg(entry.r0FieldFlags, 8, 16, QChar('0')).toUpper();
+    lines << QStringLiteral("R0LastStatus: 0x%1")
+        .arg(static_cast<qulonglong>(static_cast<std::uint32_t>(entry.r0LastStatus)), 8, 16, QChar('0'))
+        .toUpper();
+    lines << QStringLiteral("R0IdentityHash: 0x%1")
+        .arg(static_cast<qulonglong>(entry.r0IdentityHash), 16, 16, QChar('0'))
+        .toUpper();
+    lines << QStringLiteral("SnapshotHash: 0x%1")
+        .arg(static_cast<qulonglong>(m_r0State.snapshotHash), 16, 16, QChar('0'))
+        .toUpper();
+    lines << QStringLiteral("OtName/OtIndex: 0x%1 / 0x%2")
+        .arg(m_r0State.otNameOffset, 8, 16, QChar('0'))
+        .arg(m_r0State.otIndexOffset, 8, 16, QChar('0'))
+        .toUpper();
     lines << QString();
     lines << QStringLiteral("[Enumeration Strategy]");
     lines << strategyForType(entry.typeNameText);
@@ -421,7 +617,8 @@ QString KernelObjectTypeMatrixTab::buildDiagnosticDetailText(const QString& reas
     lines << kernelText("kernel.object_type.diagnostic.source_count", QStringLiteral("源记录总数：%1")).arg(static_cast<qulonglong>(m_rows.size()));
     lines << QStringLiteral("");
     lines << kernelText("kernel.object_type.diagnostic.source_heading", QStringLiteral("[数据来源]"));
-    lines << kernelText("kernel.object_type.diagnostic.source", QStringLiteral("本页使用 NtQueryObject(ObjectTypesInformation) 的对象类型统计，不访问 R0、不修改系统对象。"));
+    lines << kernelText("kernel.object_type.diagnostic.source", QStringLiteral("本页合并 NtQueryObject(ObjectTypesInformation) 与 R0 ObTypeIndexTable，只读交叉验证槽地址、类型名和 TypeIndex，不修改系统对象。"));
+    lines << kernelText("kernel.object_type.diagnostic.r0_state", QStringLiteral("R0 状态：%1")).arg(m_r0State.diagnosticText);
     lines << kernelText("kernel.object_type.diagnostic.no_data_explanation", QStringLiteral("若这里没有记录，通常是 API 查询失败、权限/兼容性问题，或筛选条件过窄。"));
     lines << QStringLiteral("");
     lines << kernelText("kernel.object_type.diagnostic.next_heading", QStringLiteral("[下一步]"));
@@ -449,6 +646,8 @@ void KernelObjectTypeMatrixTab::insertDiagnosticRow(const QString& titleText, co
     indexItem->setData(Qt::UserRole + 2, detailText);
     m_table->setItem(0, static_cast<int>(ObjectTypeMatrixColumn::TypeIndex), indexItem);
     m_table->setItem(0, static_cast<int>(ObjectTypeMatrixColumn::TypeName), readOnlyItem(titleText));
+    m_table->setItem(0, static_cast<int>(ObjectTypeMatrixColumn::R0Address), readOnlyItem(QStringLiteral("-")));
+    m_table->setItem(0, static_cast<int>(ObjectTypeMatrixColumn::R0Validation), readOnlyItem(m_r0State.diagnosticText));
     m_table->setItem(0, static_cast<int>(ObjectTypeMatrixColumn::ObjectCount), readOnlyItem(QStringLiteral("0")));
     m_table->setItem(0, static_cast<int>(ObjectTypeMatrixColumn::HandleCount), readOnlyItem(QStringLiteral("0")));
     m_table->setItem(0, static_cast<int>(ObjectTypeMatrixColumn::AccessMask), readOnlyItem(formatAccessMask(0)));
@@ -515,6 +714,9 @@ bool KernelObjectTypeMatrixTab::rowMatchesFilter(const KernelObjectTypeEntry& en
 
     return QString::number(entry.typeIndex).contains(keyword, Qt::CaseInsensitive)
         || entry.typeNameText.contains(keyword, Qt::CaseInsensitive)
+        || entry.r0TypeNameText.contains(keyword, Qt::CaseInsensitive)
+        || formatR0Address(entry.r0ObjectTypeAddress).contains(keyword, Qt::CaseInsensitive)
+        || objectTypeR0ValidationText(entry).contains(keyword, Qt::CaseInsensitive)
         || strategyForType(entry.typeNameText).contains(keyword, Qt::CaseInsensitive);
 }
 

@@ -54,8 +54,8 @@ class KernelDockIpcTab;
 // ============================================================
 // KernelObjectTypeEntry
 // 作用：
-// - 兼容旧 Worker 保留的数据结构；
-// - 当前 UI 已不直接显示该结构，但保留以避免耦合回归。
+// - 保存 R3 ObjectTypesInformation 统计；
+// - Object Type Matrix 会按 typeIndex 合并 R0 ObTypeIndexTable 证据。
 // ============================================================
 struct KernelObjectTypeEntry
 {
@@ -69,6 +69,15 @@ struct KernelObjectTypeEntry
     std::uint32_t poolType = 0;                  // poolType：池类型。
     std::uint32_t defaultPagedPoolCharge = 0;    // defaultPagedPoolCharge：分页池默认配额。
     std::uint32_t defaultNonPagedPoolCharge = 0; // defaultNonPagedPoolCharge：非分页池默认配额。
+    bool r3Present = true;                       // r3Present：R3 ObjectTypesInformation 是否包含该行。
+    bool r0Present = false;                      // r0Present：R0 表槽是否包含有效 OBJECT_TYPE 地址。
+    std::uint32_t r0Status = 0;                  // r0Status：逐槽 R0 验证状态。
+    std::uint32_t r0FieldFlags = 0;              // r0FieldFlags：R0 已验证字段位图。
+    long r0LastStatus = 0;                       // r0LastStatus：逐槽读取/验证 NTSTATUS。
+    std::uint64_t r0ObjectTypeAddress = 0;       // r0ObjectTypeAddress：ObTypeIndexTable 槽指针。
+    std::uint64_t r0IdentityHash = 0;            // r0IdentityHash：槽地址/索引/名称稳定身份哈希。
+    QString r0TypeNameText;                      // r0TypeNameText：R0 从 OBJECT_TYPE.Name 读取的名称。
+    QString r0ValidationText;                    // r0ValidationText：面向 UI 的交叉验证摘要。
 };
 
 // ============================================================

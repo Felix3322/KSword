@@ -5,7 +5,7 @@
 // 作用说明：
 // 1) 提供对象类型统计与可枚举策略矩阵；
 // 2) 复用 KernelDockQueryWorker 的 ObjectTypesInformation 解析；
-// 3) 只做 R3 只读展示，不枚举进程句柄、不访问 R0。
+// 3) 通过 ArkDriverClient 合并 R0 ObTypeIndexTable 槽位与名称/索引验证。
 // ============================================================
 
 #include "KernelDock.h"
@@ -33,10 +33,27 @@ public:
     static QString formatAccessMask(std::uint32_t accessMask);
 
 private:
+    struct R0SnapshotState
+    {
+        bool attempted = false;
+        bool transportOk = false;
+        bool unsupported = false;
+        std::uint32_t status = 0;
+        std::uint32_t flags = 0;
+        long lastStatus = 0;
+        std::uint64_t tableAddress = 0;
+        std::uint64_t snapshotHash = 0;
+        std::uint64_t dynDataCapabilityMask = 0;
+        std::uint32_t otNameOffset = 0xFFFFFFFFUL;
+        std::uint32_t otIndexOffset = 0xFFFFFFFFUL;
+        std::uint32_t returnedCount = 0;
+        QString diagnosticText;
+    };
+
     void initializeUi();
     void initializeConnections();
     void refreshAsync();
-    void applyRefreshResult(std::vector<KernelObjectTypeEntry> rows, const QString& errorText, bool success);
+    void applyRefreshResult(std::vector<KernelObjectTypeEntry> rows, R0SnapshotState r0State, const QString& errorText, bool success);
     void rebuildTable();
     void showContextMenu(const QPoint& localPosition);
     void copyCurrentRow() const;
@@ -68,4 +85,5 @@ private:
 
     std::atomic_bool m_refreshing{ false };
     std::vector<KernelObjectTypeEntry> m_rows;
+    R0SnapshotState m_r0State;
 };

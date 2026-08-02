@@ -69,6 +69,7 @@
     <ClCompile Include="src\features\kernel\driver_blind_gate.c" />
     <ClCompile Include="src\features\kernel\driver_blind_ioctl.c" />
     <ClCompile Include="src\features\kernel\kernel_object_audit.c" />
+    <ClCompile Include="src\features\kernel\kernel_object_type_table.c" />
     <ClCompile Include="src\features\kernel\kernel_ipc_summary.c" />
     <ClCompile Include="src\features\kernel\ssdt_query.c" />
     <ClCompile Include="src\features\kernel\hook_scan.c" />
@@ -285,6 +286,7 @@
     <ClInclude Include="src\features\system_time\system_time_internal.h" />
     <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_object_audit.h" />
+    <ClInclude Include="src\features\kernel\kernel_object_type_table.h" />
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h" />
     <ClInclude Include="src\features\mutation\mutation_transaction.h" />
     <ClInclude Include="src\features\dyndata\dyndata_v4_internal.h" />

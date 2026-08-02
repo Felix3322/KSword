@@ -343,6 +343,7 @@
     <ClInclude Include="src\features\hvm\hvm_guest.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_object_audit.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\kernel_object_type_table.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\mutation\mutation_transaction.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\dyndata\dyndata_v4_internal.h"><Filter>Header Files</Filter></ClInclude>
@@ -502,6 +503,9 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_object_audit.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\kernel_object_type_table.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_ipc_summary.c">
