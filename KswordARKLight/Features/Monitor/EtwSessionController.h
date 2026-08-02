@@ -62,8 +62,7 @@ private:
     EtwFilterState filterState_;
     std::wstring sessionName_;
     std::wstring lastError_;
-    TRACEHANDLE sessionHandle_ = 0;
-    TRACEHANDLE traceHandle_ = 0;
+    std::atomic<TRACEHANDLE> sessionHandle_{ 0 };
     std::thread workerThread_;
     std::atomic<bool> running_{ false };
     std::atomic<bool> stopRequested_{ false };

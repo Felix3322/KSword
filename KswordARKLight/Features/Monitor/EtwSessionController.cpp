@@ -89,6 +89,10 @@ bool EtwSessionController::start(const EtwFilterState& filterState) {
         return false;
     }
 
+    if (workerThread_.joinable()) {
+        workerThread_.join();
+    }
+
     filterState_ = filterState;
     sessionName_ = BuildSessionName();
     std::vector<unsigned char> propertiesBuffer = MakeTracePropertiesBuffer(sessionName_);
@@ -105,7 +109,7 @@ bool EtwSessionController::start(const EtwFilterState& filterState) {
         return false;
     }
 
-    sessionHandle_ = newSessionHandle;
+    sessionHandle_.store(newSessionHandle);
     stopRequested_.store(false);
     running_.store(true);
 
@@ -114,9 +118,20 @@ bool EtwSessionController::start(const EtwFilterState& filterState) {
         return false;
     }
 
-    workerThread_ = std::thread([this]() {
-        workerLoop();
-    });
+    try {
+        workerThread_ = std::thread([this]() {
+            workerLoop();
+        });
+    }
+    catch (...) {
+        running_.store(false);
+        (void)::ControlTraceW(newSessionHandle, sessionName_.c_str(), properties, EVENT_TRACE_CONTROL_STOP);
+        sessionHandle_.store(0);
+        sessionName_.clear();
+        publishLastError(L"failed to create ETW consumer thread");
+        return false;
+    }
+
     publishStatus(L"ETW session started.");
     return true;
 }
@@ -128,22 +143,22 @@ void EtwSessionController::stop() {
     }
     stopRequested_.store(true);
 
-    if (traceHandle_ != 0 && traceHandle_ != INVALID_PROCESSTRACE_HANDLE) {
-        (void)::CloseTrace(traceHandle_);
-    }
-
-    if (sessionHandle_ != 0 && !sessionName_.empty()) {
+    const TRACEHANDLE ownedSessionHandle = sessionHandle_.exchange(0);
+    if (ownedSessionHandle != 0 && !sessionName_.empty()) {
         std::vector<unsigned char> propertiesBuffer = MakeTracePropertiesBuffer(sessionName_);
         auto* properties = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(propertiesBuffer.data());
-        (void)::ControlTraceW(sessionHandle_, sessionName_.c_str(), properties, EVENT_TRACE_CONTROL_STOP);
+        (void)::ControlTraceW(
+            ownedSessionHandle,
+            sessionName_.c_str(),
+            properties,
+            EVENT_TRACE_CONTROL_STOP);
     }
 
     if (workerThread_.joinable()) {
         workerThread_.join();
     }
 
-    sessionHandle_ = 0;
-    traceHandle_ = 0;
+    sessionName_.clear();
     publishStatus(L"ETW session stopped.");
 }
 
@@ -198,23 +213,63 @@ void EtwSessionController::handleEventRecord(EVENT_RECORD* record) {
 }
 
 void EtwSessionController::workerLoop() {
-    EVENT_TRACE_LOGFILEW logFile{};
-    logFile.LoggerName = const_cast<LPWSTR>(sessionName_.c_str());
-    logFile.ProcessTraceMode = PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_REAL_TIME;
-    logFile.EventRecordCallback = &EtwSessionController::EventRecordCallback;
-    logFile.Context = this;
+    const std::wstring sessionName = sessionName_;
+    const auto stopOwnedSession = [this, &sessionName]() {
+        const TRACEHANDLE ownedSessionHandle = sessionHandle_.exchange(0);
+        if (ownedSessionHandle == 0 || sessionName.empty()) {
+            return;
+        }
+        std::vector<unsigned char> propertiesBuffer = MakeTracePropertiesBuffer(sessionName);
+        auto* properties = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(propertiesBuffer.data());
+        (void)::ControlTraceW(
+            ownedSessionHandle,
+            sessionName.c_str(),
+            properties,
+            EVENT_TRACE_CONTROL_STOP);
+    };
 
-    traceHandle_ = ::OpenTraceW(&logFile);
-    if (traceHandle_ == INVALID_PROCESSTRACE_HANDLE) {
-        publishLastError(Win32ErrorText(L"OpenTraceW", ::GetLastError()));
+    if (stopRequested_.load()) {
         running_.store(false);
         return;
     }
 
-    TRACEHANDLE handles[] = { traceHandle_ };
+    EVENT_TRACE_LOGFILEW logFile{};
+    logFile.LoggerName = const_cast<LPWSTR>(sessionName.c_str());
+    logFile.ProcessTraceMode = PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_REAL_TIME;
+    logFile.EventRecordCallback = &EtwSessionController::EventRecordCallback;
+    logFile.Context = this;
+
+    const TRACEHANDLE traceHandle = ::OpenTraceW(&logFile);
+    if (traceHandle == INVALID_PROCESSTRACE_HANDLE) {
+        const ULONG errorCode = ::GetLastError();
+        stopOwnedSession();
+        const bool stopped = stopRequested_.load();
+        running_.store(false);
+        if (!stopped) {
+            publishLastError(Win32ErrorText(L"OpenTraceW", errorCode));
+        }
+        return;
+    }
+
+    if (stopRequested_.load()) {
+        (void)::CloseTrace(traceHandle);
+        stopOwnedSession();
+        running_.store(false);
+        return;
+    }
+
+    TRACEHANDLE handles[] = { traceHandle };
     const ULONG status = ::ProcessTrace(handles, 1, nullptr, nullptr);
-    if (status != ERROR_SUCCESS && status != ERROR_CANCELLED && !stopRequested_.load()) {
+    (void)::CloseTrace(traceHandle);
+    stopOwnedSession();
+
+    const bool stopped = stopRequested_.load();
+    running_.store(false);
+    if (status != ERROR_SUCCESS && status != ERROR_CANCELLED && !stopped) {
         publishLastError(Win32ErrorText(L"ProcessTrace", status));
+    }
+    else if (!stopped) {
+        publishStatus(L"ETW session stopped.");
     }
 }
 
@@ -227,7 +282,7 @@ bool EtwSessionController::enableProviders() {
         ENABLE_TRACE_PARAMETERS parameters{};
         parameters.Version = ENABLE_TRACE_PARAMETERS_VERSION_2;
         const ULONG status = ::EnableTraceEx2(
-            sessionHandle_,
+            sessionHandle_.load(),
             &provider.providerGuid,
             EVENT_CONTROL_CODE_ENABLE_PROVIDER,
             provider.level,

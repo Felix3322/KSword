@@ -316,6 +316,7 @@ LRESULT EtwMonitorView::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         auto* statusText = reinterpret_cast<std::wstring*>(lParam);
         if (statusText != nullptr) {
             updateStatusText(*statusText);
+            updateButtonState();
             delete statusText;
         }
         return 0;
