@@ -57,6 +57,7 @@ bool SosHotkeyLauncher::start()
     // s_activeInstance 用途：WH_KEYBOARD_LL 是 C 回调，必须通过静态指针转发到对象状态机。
     s_activeInstance = this;
     m_stopRequested.store(false);
+    m_hookThreadId.store(0, std::memory_order_release);
     m_threadReady = false;
 
     try
@@ -71,12 +72,29 @@ bool SosHotkeyLauncher::start()
     }
 
     std::unique_lock<std::mutex> stateLock(m_stateMutex);
-    m_stateCondition.wait_for(
+    const bool hookReady = m_stateCondition.wait_for(
         stateLock,
         std::chrono::milliseconds(kHookReadyWaitMs),
         [this]() {
             return m_threadReady;
         });
+    stateLock.unlock();
+
+    // 只有线程明确完成初始化且钩子安装失败时才同步回收；超时路径保持原有
+    // 非阻塞语义，由 stop()/析构负责等待，避免在消息队列尚未创建时死锁。
+    if (hookReady && !m_hookInstalled.load(std::memory_order_acquire))
+    {
+        if (m_hookThread.joinable())
+        {
+            m_hookThread.join();
+        }
+        m_hookThreadId.store(0, std::memory_order_release);
+        if (s_activeInstance == this)
+        {
+            s_activeInstance = nullptr;
+        }
+        return false;
+    }
 
     return m_hookThread.joinable();
 }
@@ -86,7 +104,7 @@ void SosHotkeyLauncher::stop()
     m_stopRequested.store(true);
 
     // hookThreadId 用途：向专用线程投递退出消息，解除 GetMessageW 阻塞。
-    const DWORD hookThreadId = m_hookThreadId;
+    const DWORD hookThreadId = m_hookThreadId.load(std::memory_order_acquire);
     if (hookThreadId != 0)
     {
         ::PostThreadMessageW(hookThreadId, WM_QUIT, 0, 0);
@@ -96,6 +114,7 @@ void SosHotkeyLauncher::stop()
     {
         m_hookThread.join();
     }
+    m_hookThreadId.store(0, std::memory_order_release);
 
     if (s_activeInstance == this)
     {
@@ -129,7 +148,7 @@ LRESULT CALLBACK SosHotkeyLauncher::lowLevelKeyboardProc(
 
 void SosHotkeyLauncher::hookThreadMain()
 {
-    m_hookThreadId = ::GetCurrentThreadId();
+    m_hookThreadId.store(::GetCurrentThreadId(), std::memory_order_release);
 
     // 线程优先级用途：让 SOS 低级键盘钩子尽量早于普通 UI 工作响应。
     ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
@@ -311,7 +330,7 @@ bool SosHotkeyLauncher::ignoredModifierKey(const DWORD vkCode)
 
 void SosHotkeyLauncher::postLaunchRequest()
 {
-    if (m_hookThreadId == 0)
+    if (m_hookThreadId.load(std::memory_order_acquire) == 0)
     {
         return;
     }

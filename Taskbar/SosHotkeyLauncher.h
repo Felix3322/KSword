@@ -97,7 +97,7 @@ private:
     std::condition_variable m_stateCondition;        // start 等待线程就绪的条件变量。
     bool m_threadReady = false;                      // 钩子线程是否完成初始化。
 
-    DWORD m_hookThreadId = 0;                        // 钩子线程 ID，用于 PostThreadMessage。
+    std::atomic<DWORD> m_hookThreadId{ 0 };           // 钩子线程 ID，用于 PostThreadMessage。
     HHOOK m_keyboardHook = nullptr;                  // SetWindowsHookExW 返回的键盘钩子句柄。
     int m_sequenceIndex = 0;                         // 当前已匹配 SOS Enter 序列的位置。
     ULONGLONG m_lastLaunchTickMs = 0;                // 上次启动主程序的时间，用于防抖。
