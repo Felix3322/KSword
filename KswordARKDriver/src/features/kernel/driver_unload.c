@@ -3190,7 +3190,7 @@ KswordARKDriverUnloadInspectImageHeader(
 /* 中文说明：聚合 loader 链和 PE 头一致性证据，供强卸载 preflight 使用。 */
 static VOID
 KswordARKDriverUnloadInspectLoaderAndImageEvidence(
-    _In_ const KSW_DRIVER_INTEGRITY_LDR_TARGET* LoaderTarget,
+    _In_opt_ const KSW_DRIVER_INTEGRITY_LDR_TARGET* LoaderTarget,
     _In_ ULONGLONG ImageBase,
     _In_ ULONG ExpectedSizeOfImage,
     _Out_ KSW_DRIVER_UNLOAD_LOADER_IMAGE_EVIDENCE* EvidenceOut
