@@ -20,6 +20,7 @@ Environment:
 #include "ark/ark_driver.h"
 #include "ark/ark_thread.h"
 #include "driver_integrity.h"
+#include "../../platform/pool_compat.h"
 
 #include <ntstrsafe.h>
 
@@ -52,6 +53,8 @@ Environment:
 #define KSW_DRIVER_UNLOAD_SYSTEM_MODULE_CLASS 11UL
 /* 中文说明：强卸载前最多检查 128 个 DeviceObject，和删除上限保持一致。 */
 #define KSW_DRIVER_UNLOAD_PREFLIGHT_DEVICE_LIMIT KSW_DRIVER_UNLOAD_MAX_DEVICE_DELETE_COUNT
+/* 中文说明：预检的大型只读工作区使用独立 tag，避免占用内核线程栈。 */
+#define KSW_DRIVER_UNLOAD_PREFLIGHT_TAG 'pDsK'
 /* 中文说明：释放最后一个 DriverObject 引用后短暂重试，等待对象管理器/loader 完成同步清理。 */
 #define KSW_DRIVER_UNLOAD_POST_VERIFY_RETRIES 5UL
 /* 中文说明：每次闭环验证之间等待 20ms，避免 IOCTL 长时间占用。 */
@@ -330,6 +333,13 @@ typedef struct _KSW_DRIVER_UNLOAD_PREFLIGHT_RESULT
     NTSTATUS Status;
     WCHAR ServiceRegistryPath[KSWORD_ARK_DRIVER_IMAGE_PATH_CHARS];
 } KSW_DRIVER_UNLOAD_PREFLIGHT_RESULT, *PKSW_DRIVER_UNLOAD_PREFLIGHT_RESULT;
+
+/* 中文说明：DynData 快照和设备访问表在嵌套证据扫描期间统一放入非分页池。 */
+typedef struct _KSW_DRIVER_UNLOAD_PREFLIGHT_WORKSPACE
+{
+    KSW_DYN_STATE DynState;
+    PDEVICE_OBJECT VisitedDevices[KSW_DRIVER_UNLOAD_PREFLIGHT_DEVICE_LIMIT];
+} KSW_DRIVER_UNLOAD_PREFLIGHT_WORKSPACE, *PKSW_DRIVER_UNLOAD_PREFLIGHT_WORKSPACE;
 
 /* 中文说明：把内部 preflight 结果压缩成 handler 可打印的诊断快照。 */
 static VOID
@@ -3224,7 +3234,8 @@ KswordARKDriverUnloadBuildPreflightResult(
     _Out_ KSW_DRIVER_UNLOAD_PREFLIGHT_RESULT* Result
     )
 {
-    KSW_DYN_STATE dynState;
+    KSW_DRIVER_UNLOAD_PREFLIGHT_WORKSPACE* workspace = NULL;
+    KSW_DYN_STATE* dynState = NULL;
     KSW_HOOK_SYSTEM_MODULE_INFORMATION* moduleInfo = NULL;
     ULONG moduleInfoBytes = 0UL;
     const KSW_HOOK_SYSTEM_MODULE_ENTRY* targetModule = NULL;
@@ -3245,8 +3256,16 @@ KswordARKDriverUnloadBuildPreflightResult(
     }
     UNREFERENCED_PARAMETER(moduleInfoBytes);
 
+    workspace = (KSW_DRIVER_UNLOAD_PREFLIGHT_WORKSPACE*)KswordARKAllocateNonPagedPool(
+        sizeof(*workspace),
+        KSW_DRIVER_UNLOAD_PREFLIGHT_TAG);
+    if (workspace == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(workspace, sizeof(*workspace));
+    dynState = &workspace->DynState;
+
     RtlZeroMemory(Result, sizeof(*Result));
-    RtlZeroMemory(&dynState, sizeof(dynState));
     RtlZeroMemory(&ldrTarget, sizeof(ldrTarget));
     RtlZeroMemory(&loaderImageEvidence, sizeof(loaderImageEvidence));
 
@@ -3267,7 +3286,9 @@ KswordARKDriverUnloadBuildPreflightResult(
         Result->HasServiceRegistryPath = NT_SUCCESS(status) ? TRUE : FALSE;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        return GetExceptionCode();
+        status = GetExceptionCode();
+        ExFreePoolWithTag(workspace, KSW_DRIVER_UNLOAD_PREFLIGHT_TAG);
+        return status;
     }
 
     if (driverStart == 0ULL ||
@@ -3277,6 +3298,7 @@ KswordARKDriverUnloadBuildPreflightResult(
         Result->AllowZwUnload = FALSE;
         Result->AllowDestructiveCleanup = FALSE;
         Result->Status = STATUS_INVALID_PARAMETER;
+        ExFreePoolWithTag(workspace, KSW_DRIVER_UNLOAD_PREFLIGHT_TAG);
         return Result->Status;
     }
     Result->DriverStart = driverStart;
@@ -3288,27 +3310,28 @@ KswordARKDriverUnloadBuildPreflightResult(
         Result->AllowZwUnload = FALSE;
         Result->AllowDestructiveCleanup = FALSE;
         Result->Status = STATUS_OBJECT_TYPE_MISMATCH;
+        ExFreePoolWithTag(workspace, KSW_DRIVER_UNLOAD_PREFLIGHT_TAG);
         return Result->Status;
     }
 
-    KswordARKDynDataSnapshot(&dynState);
+    KswordARKDynDataSnapshot(dynState);
     Result->AllowDirectUnload = Result->HasDriverUnload;
     Result->AllowZwUnload = Result->HasServiceRegistryPath;
     Result->HasValidDynData =
-        dynState.Initialized &&
-        dynState.NtosActive &&
-        (dynState.CapabilityMask & KSW_CAP_DRIVER_OBJECT_FIELDS) != 0ULL &&
-        (dynState.CapabilityMask & KSW_CAP_KERNEL_MODULE_LIST_FIELDS) != 0ULL &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.DoDriverStart) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.DoDriverSize) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.DoDriverSection) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.DoMajorFunction) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.DoDriverUnload) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.KldrDllBase) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.KldrSizeOfImage) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.Kernel.KldrInLoadOrderLinks) &&
-        KswordARKDriverIntegrityOffsetPresent(dynState.KernelGlobals.PsLoadedModuleList);
-    Result->HasPdbBackedDynData = KswordARKDriverUnloadHasPdbBackedDynData(&dynState);
+        dynState->Initialized &&
+        dynState->NtosActive &&
+        (dynState->CapabilityMask & KSW_CAP_DRIVER_OBJECT_FIELDS) != 0ULL &&
+        (dynState->CapabilityMask & KSW_CAP_KERNEL_MODULE_LIST_FIELDS) != 0ULL &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.DoDriverStart) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.DoDriverSize) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.DoDriverSection) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.DoMajorFunction) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.DoDriverUnload) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.KldrDllBase) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.KldrSizeOfImage) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->Kernel.KldrInLoadOrderLinks) &&
+        KswordARKDriverIntegrityOffsetPresent(dynState->KernelGlobals.PsLoadedModuleList);
+    Result->HasPdbBackedDynData = KswordARKDriverUnloadHasPdbBackedDynData(dynState);
 
     status = KswordARKHookBuildModuleSnapshot(&moduleInfo, &moduleInfoBytes);
     if (NT_SUCCESS(status) && moduleInfo != NULL) {
@@ -3352,7 +3375,7 @@ KswordARKDriverUnloadBuildPreflightResult(
     }
 
     if (Result->HasValidDynData) {
-        status = KswordARKDriverIntegrityFindLoadedModule(&dynState, driverStart, &ldrTarget);
+        status = KswordARKDriverIntegrityFindLoadedModule(dynState, driverStart, &ldrTarget);
         if (NT_SUCCESS(status) && ldrTarget.Found) {
             const ULONGLONG driverSize = (ULONGLONG)DriverObject->DriverSize;
             Result->LoaderEntryAddress = ldrTarget.EntryAddress;
@@ -3398,14 +3421,14 @@ KswordARKDriverUnloadBuildPreflightResult(
 
     if (Result->HasValidDynData && Result->HasValidLoaderEvidence) {
         Result->HasValidDriverObjectOffsets =
-            KswordARKDriverUnloadValidateDriverObjectOffsets(DriverObject, &dynState);
+            KswordARKDriverUnloadValidateDriverObjectOffsets(DriverObject, dynState);
         if (!Result->HasValidDriverObjectOffsets && evidenceStatus == STATUS_SUCCESS) {
             evidenceStatus = STATUS_OBJECT_TYPE_MISMATCH;
         }
     }
 
     Result->ThreadScanStatus = KswordARKDriverUnloadScanModuleResidentThreads(
-        &dynState,
+        dynState,
         driverStart,
         driverEnd,
         &Result->ScannedProcessCount,
@@ -3460,7 +3483,7 @@ KswordARKDriverUnloadBuildPreflightResult(
     __try {
         PDEVICE_OBJECT rootDevice = DriverObject->DeviceObject;
         ULONG visitedCount = 0UL;
-        PDEVICE_OBJECT visited[KSW_DRIVER_UNLOAD_PREFLIGHT_DEVICE_LIMIT] = { 0 };
+        PDEVICE_OBJECT* visited = workspace->VisitedDevices;
 
         while (rootDevice != NULL) {
             PDEVICE_OBJECT nextDevice = NULL;
@@ -3529,6 +3552,7 @@ KswordARKDriverUnloadBuildPreflightResult(
         if (moduleInfo != NULL) {
             ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
         }
+        ExFreePoolWithTag(workspace, KSW_DRIVER_UNLOAD_PREFLIGHT_TAG);
         return Result->Status;
     }
 
@@ -3594,6 +3618,7 @@ KswordARKDriverUnloadBuildPreflightResult(
     if (moduleInfo != NULL) {
         ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
     }
+    ExFreePoolWithTag(workspace, KSW_DRIVER_UNLOAD_PREFLIGHT_TAG);
     Result->Status = evidenceStatus;
     return STATUS_SUCCESS;
 }
