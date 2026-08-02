@@ -187,3 +187,7 @@ void OtherDock::setCaptureProtectionForWindow(
 
     refreshWindowListAsync();
 }
+
+// WindowLayerDiagnostics.inl is intentionally included here so the feature is
+// compiled once without expanding the already large OtherDock.cpp translation unit.
+#include "WindowLayerDiagnostics.inl"
