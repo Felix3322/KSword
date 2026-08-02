@@ -127,13 +127,25 @@ def decode_cpp_string_body(body: str) -> str:
 def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
     index = 0
     line = 1
+    line_start = True
     length = len(source_text)
     while index < length:
         character = source_text[index]
         if character == "\n":
             line += 1
+            line_start = True
             index += 1
             continue
+        if line_start and character in " \t\r\f\v":
+            index += 1
+            continue
+        if line_start and character == "#":
+            newline_index = source_text.find("\n", index + 1)
+            if newline_index < 0:
+                return
+            index = newline_index
+            continue
+        line_start = False
         if source_text.startswith("//", index):
             newline_index = source_text.find("\n", index + 2)
             if newline_index < 0:
@@ -144,7 +156,10 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
             close_index = source_text.find("*/", index + 2)
             if close_index < 0:
                 return
-            line += source_text.count("\n", index, close_index + 2)
+            newline_count = source_text.count("\n", index, close_index + 2)
+            line += newline_count
+            if newline_count > 0:
+                line_start = source_text.rfind("\n", index, close_index + 2) >= index
             index = close_index + 2
             continue
         if character == "'":
@@ -158,6 +173,7 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
                 else:
                     if source_text[index] == "\n":
                         line += 1
+                        line_start = True
                     index += 1
             continue
 
@@ -214,6 +230,7 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
                 body_characters.append(source_text[index + 1])
                 if source_text[index + 1] == "\n":
                     line += 1
+                    line_start = True
                 index += 2
                 continue
             if current == '"':
@@ -222,6 +239,7 @@ def extract_cpp_literals(source_text: str) -> Iterable[tuple[str, int]]:
             body_characters.append(current)
             if current == "\n":
                 line += 1
+                line_start = True
             index += 1
         decoded_text = decode_cpp_string_body("".join(body_characters))
         if is_extractable_literal(decoded_text):
