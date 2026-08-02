@@ -488,6 +488,13 @@ Return Value:
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
+    // KeInitializeApc permits a NULL NormalContext, but this callback cannot
+    // safely schedule its reaper or terminate the target thread without its
+    // tracked lifetime context.  Treat a broken callback contract as a no-op.
+    if (context == NULL) {
+        return;
+    }
+
     // 在终止当前线程前准备等待型 worker，确保线程退出后有人释放上下文。
     ExInitializeWorkItem(
         &context->ReaperWorkItem,
