@@ -1677,8 +1677,10 @@ namespace
     std::string QueryProcessArchitectureByHandle(const HANDLE processHandle)
     {
         using IsWow64Process2Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
-        const auto isWow64Process2Fn = reinterpret_cast<IsWow64Process2Fn>(
-            ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2"));
+        const HMODULE kernel32Module = ::GetModuleHandleW(L"kernel32.dll");
+        const auto isWow64Process2Fn = kernel32Module != nullptr
+            ? reinterpret_cast<IsWow64Process2Fn>(::GetProcAddress(kernel32Module, "IsWow64Process2"))
+            : nullptr;
         if (isWow64Process2Fn != nullptr)
         {
             USHORT processMachine = IMAGE_FILE_MACHINE_UNKNOWN;
@@ -4753,7 +4755,10 @@ namespace ks::process
             return false;
         }
 
-        FARPROC freeLibraryAddress = ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "FreeLibrary");
+        const HMODULE kernel32Module = ::GetModuleHandleW(L"kernel32.dll");
+        FARPROC freeLibraryAddress = kernel32Module != nullptr
+            ? ::GetProcAddress(kernel32Module, "FreeLibrary")
+            : nullptr;
         if (freeLibraryAddress == nullptr)
         {
             if (errorMessage != nullptr)
@@ -4958,7 +4963,10 @@ namespace ks::process
             return false;
         }
 
-        FARPROC loadLibraryAddress = ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
+        const HMODULE kernel32Module = ::GetModuleHandleW(L"kernel32.dll");
+        FARPROC loadLibraryAddress = kernel32Module != nullptr
+            ? ::GetProcAddress(kernel32Module, "LoadLibraryW")
+            : nullptr;
         if (loadLibraryAddress == nullptr)
         {
             if (errorMessage != nullptr)
