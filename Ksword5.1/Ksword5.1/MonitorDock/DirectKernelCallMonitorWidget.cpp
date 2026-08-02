@@ -1043,6 +1043,30 @@ void DirectKernelCallMonitorWidget::startCapture()
             return;
         }
 
+        const auto reportStopped = [guardThis]()
+        {
+            QMetaObject::invokeMethod(qApp, [guardThis]() {
+                if (guardThis == nullptr)
+                {
+                    return;
+                }
+                guardThis->m_captureRunning.store(false);
+                guardThis->m_capturePaused.store(false);
+                if (guardThis->m_uiUpdateTimer != nullptr)
+                {
+                    guardThis->flushPendingRows();
+                }
+                if (guardThis->m_statusLabel != nullptr)
+                {
+                    guardThis->m_statusLabel->setText(QStringLiteral("● 已停止"));
+                    guardThis->m_statusLabel->setStyleSheet(buildStatusStyle(monitorIdleColorHex()));
+                }
+                guardThis->updateActionState();
+                guardThis->updateStatusLabel();
+                kPro.set(guardThis->m_captureProgressPid, "直接内核调用监控结束", 0, 100.0f);
+            }, Qt::QueuedConnection);
+        };
+
         const std::wstring sessionNameWide = guardThis->m_sessionName.toStdWString();
         const ULONG traceNameBytes = static_cast<ULONG>((sessionNameWide.size() + 1) * sizeof(wchar_t));
         const ULONG propertyBufferSize = static_cast<ULONG>(sizeof(EVENT_TRACE_PROPERTIES) + traceNameBytes);
@@ -1093,6 +1117,20 @@ void DirectKernelCallMonitorWidget::startCapture()
         }
 
         guardThis->m_sessionHandle.store(static_cast<std::uint64_t>(sessionHandle));
+        if (guardThis->m_captureStopFlag.load())
+        {
+            const std::uint64_t ownedSessionHandle = guardThis->m_sessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePointer,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            reportStopped();
+            return;
+        }
         kPro.set(guardThis->m_captureProgressPid, "已启用 syscall kernel flag", 0, 30.0f);
 
         EVENT_TRACE_LOGFILEW traceLogFile{};
@@ -1123,6 +1161,25 @@ void DirectKernelCallMonitorWidget::startCapture()
         }
 
         guardThis->m_traceHandle.store(static_cast<std::uint64_t>(traceHandle));
+        if (guardThis->m_captureStopFlag.load())
+        {
+            const std::uint64_t ownedTraceHandle = guardThis->m_traceHandle.exchange(0);
+            if (ownedTraceHandle != 0)
+            {
+                ::CloseTrace(static_cast<TRACEHANDLE>(ownedTraceHandle));
+            }
+            const std::uint64_t ownedSessionHandle = guardThis->m_sessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePointer,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            reportStopped();
+            return;
+        }
         kPro.set(guardThis->m_captureProgressPid, "接收 syscall 事件", 0, 55.0f);
 
         const ULONG processStatus = ::ProcessTrace(&traceHandle, 1, nullptr, nullptr);
