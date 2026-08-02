@@ -23,6 +23,14 @@ Environment:
 #define KSW_RUNTIME_TOKEN_FIELD_WINDOW 0x0080U
 #define KSW_RUNTIME_TOKEN_MAX_GROUPS 0x0100U
 
+typedef struct _KSW_RUNTIME_SID_VIEW
+{
+    UCHAR Revision;
+    UCHAR SubAuthorityCount;
+    SID_IDENTIFIER_AUTHORITY IdentifierAuthority;
+    ULONG SubAuthority[ANYSIZE_ARRAY];
+} KSW_RUNTIME_SID_VIEW, *PKSW_RUNTIME_SID_VIEW;
+
 static BOOLEAN
 KswordARKDriverReadPointerGuarded(
     _In_ const VOID* Address,
@@ -115,6 +123,69 @@ Return Value:
         return FALSE;
     }
     return TRUE;
+}
+
+static BOOLEAN
+KswordARKDriverIntegrityGroupMatchesLevel(
+    _In_ const SID_AND_ATTRIBUTES* Group,
+    _In_ ULONG IntegrityLevel
+    )
+/*++
+
+Routine Description:
+
+    Match a documented TokenGroups entry against the scalar integrity level
+    returned by SeQueryInformationToken(TokenIntegrityLevel).  Unlike the
+    user-mode token query contract, the kernel SeQueryInformationToken API
+    writes the integrity RID directly to the caller's DWORD; it does not
+    return a pool-allocated TOKEN_MANDATORY_LABEL for this information class.
+
+Arguments:
+
+    Group - Candidate TokenGroups entry.
+    IntegrityLevel - Integrity RID returned by SeQueryInformationToken.
+
+Return Value:
+
+    TRUE only for the mandatory-label SID carrying IntegrityLevel.
+
+--*/
+{
+    static const SID_IDENTIFIER_AUTHORITY mandatoryLabelAuthority =
+        SECURITY_MANDATORY_LABEL_AUTHORITY;
+    SID_AND_ATTRIBUTES groupValue;
+    BOOLEAN matches = FALSE;
+
+    RtlZeroMemory(&groupValue, sizeof(groupValue));
+    if (!KswordARKDriverReadSidAndAttributesGuarded(Group, &groupValue) ||
+        groupValue.Sid == NULL) {
+        return FALSE;
+    }
+
+    __try {
+        const KSW_RUNTIME_SID_VIEW* sid =
+            (const KSW_RUNTIME_SID_VIEW*)groupValue.Sid;
+        UCHAR subAuthorityCount = 0U;
+
+        if (!RtlValidSid(groupValue.Sid)) {
+            return FALSE;
+        }
+        subAuthorityCount = sid->SubAuthorityCount;
+        if (subAuthorityCount == 0U ||
+            RtlCompareMemory(
+                &sid->IdentifierAuthority,
+                &mandatoryLabelAuthority,
+                sizeof(mandatoryLabelAuthority)) != sizeof(mandatoryLabelAuthority)) {
+            return FALSE;
+        }
+        matches = (sid->SubAuthority[subAuthorityCount - 1U] == IntegrityLevel)
+            ? TRUE
+            : FALSE;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        matches = FALSE;
+    }
+    return matches;
 }
 
 static BOOLEAN
@@ -251,7 +322,7 @@ Return Value:
 {
     PTOKEN_USER tokenUser = NULL;
     PTOKEN_GROUPS tokenGroups = NULL;
-    PTOKEN_MANDATORY_LABEL integrityLabel = NULL;
+    ULONG integrityLevel = 0UL;
     PTOKEN_MANDATORY_POLICY mandatoryPolicy = NULL;
     ULONG expectedCount = 0UL;
     ULONG groupsOffset = 0UL;
@@ -269,7 +340,7 @@ Return Value:
     *UserAndGroupsOffsetOut = -1;
     *IntegrityLevelIndexOffsetOut = -1;
     *MandatoryPolicyOffsetOut = -1;
-    if (Token == NULL || KeGetCurrentIrql() > APC_LEVEL) {
+    if (Token == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL) {
         return;
     }
 
@@ -281,7 +352,7 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         goto Exit;
     }
-    status = SeQueryInformationToken(Token, TokenIntegrityLevel, (PVOID*)&integrityLabel);
+    status = SeQueryInformationToken(Token, TokenIntegrityLevel, (PVOID*)&integrityLevel);
     if (!NT_SUCCESS(status)) {
         goto Exit;
     }
@@ -315,30 +386,16 @@ Return Value:
     }
 
     {
-        ULONG_PTR groupArrayAddress = 0U;
-        const SID_AND_ATTRIBUTES* groupArray = NULL;
         ULONG index = 0UL;
         ULONG matchCount = 0UL;
 
-        if (!KswordARKDriverReadPointerGuarded(
-                (const UCHAR*)Token + foundGroupsOffset,
-                &groupArrayAddress)) {
-            goto Exit;
-        }
-        groupArray = (const SID_AND_ATTRIBUTES*)groupArrayAddress;
-        for (index = 0UL; index < expectedCount; ++index) {
-            SID_AND_ATTRIBUTES groupEntry;
-
-            RtlZeroMemory(&groupEntry, sizeof(groupEntry));
-            if (!KswordARKDriverReadSidAndAttributesGuarded(
-                    &groupArray[index],
-                    &groupEntry)) {
-                goto Exit;
-            }
-            if (KswordARKDriverEqualSidGuarded(
-                    groupEntry.Sid,
-                    integrityLabel->Label.Sid)) {
-                integrityIndex = index;
+        for (index = 0UL; index < tokenGroups->GroupCount; ++index) {
+            if (KswordARKDriverIntegrityGroupMatchesLevel(
+                    &tokenGroups->Groups[index],
+                    integrityLevel)) {
+                // TOKEN.UserAndGroups stores the user at index zero, followed
+                // by the entries returned through TokenGroups.
+                integrityIndex = index + 1UL;
                 matchCount += 1UL;
             }
         }
@@ -416,9 +473,6 @@ Return Value:
 Exit:
     if (mandatoryPolicy != NULL) {
         ExFreePool(mandatoryPolicy);
-    }
-    if (integrityLabel != NULL) {
-        ExFreePool(integrityLabel);
     }
     if (tokenGroups != NULL) {
         ExFreePool(tokenGroups);
