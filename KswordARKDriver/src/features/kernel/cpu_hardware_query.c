@@ -159,6 +159,7 @@ Return Value:
     if (Buffer == NULL || BufferChars == 0UL) {
         return;
     }
+    Buffer[BufferChars - 1UL] = '\0';
 
     while (length < BufferChars && Buffer[length] != '\0') {
         ++length;
