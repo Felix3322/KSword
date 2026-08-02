@@ -152,6 +152,12 @@ typedef struct _KSWORD_ARK_PROCESS_INTEGRITY_ATTEMPT_DIAG
 
 static KSWORD_ARK_PROCESS_INTEGRITY_ATTEMPT_DIAG g_KswordProcessIntegrityDiag;
 
+typedef struct _KSWORD_ARK_PROCESS_INTEGRITY_TOKEN_INFORMATION
+{
+    TOKEN_MANDATORY_LABEL MandatoryLabel;
+    UCHAR SidBuffer[SECURITY_MAX_SID_SIZE];
+} KSWORD_ARK_PROCESS_INTEGRITY_TOKEN_INFORMATION;
+
 extern POBJECT_TYPE* PsProcessType;
 
 typedef PEPROCESS(NTAPI* KSWORD_PS_GET_NEXT_PROCESS_FN)(
@@ -2405,8 +2411,7 @@ Return Value:
     CLIENT_ID clientId;
     HANDLE processHandle = NULL;
     HANDLE tokenHandle = NULL;
-    UCHAR sidBuffer[SECURITY_MAX_SID_SIZE] = { 0 };
-    TOKEN_MANDATORY_LABEL mandatoryLabel;
+    KSWORD_ARK_PROCESS_INTEGRITY_TOKEN_INFORMATION tokenInformation = { 0 };
     ULONG tokenInformationLength = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
     NTSTATUS apiStatus = STATUS_SUCCESS;
@@ -2430,7 +2435,7 @@ Return Value:
         return STATUS_INVALID_PARAMETER;
     }
 
-    status = KswordARKDriverBuildMandatoryIntegritySid(IntegrityRid, (PSID)sidBuffer);
+    status = KswordARKDriverBuildMandatoryIntegritySid(IntegrityRid, (PSID)tokenInformation.SidBuffer);
     if (!NT_SUCCESS(status)) {
         KswordARKDriverRecordProcessIntegrityResult(
             ProcessId,
@@ -2452,7 +2457,7 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         fallbackStatus = KswordARKDriverSetProcessIntegrityByPrivateTokenOffsets(
             ProcessId,
-            (PSID)sidBuffer);
+            (PSID)tokenInformation.SidBuffer);
         finalStatus = KswordARKDriverSelectProcessIntegrityStatus(status, fallbackStatus);
         KswordARKDriverRecordProcessIntegrityResult(
             ProcessId,
@@ -2472,7 +2477,7 @@ Return Value:
         ZwClose(processHandle);
         fallbackStatus = KswordARKDriverSetProcessIntegrityByPrivateTokenOffsets(
             ProcessId,
-            (PSID)sidBuffer);
+            (PSID)tokenInformation.SidBuffer);
         finalStatus = KswordARKDriverSelectProcessIntegrityStatus(status, fallbackStatus);
         KswordARKDriverRecordProcessIntegrityResult(
             ProcessId,
@@ -2483,16 +2488,17 @@ Return Value:
         return finalStatus;
     }
 
-    RtlZeroMemory(&mandatoryLabel, sizeof(mandatoryLabel));
-    mandatoryLabel.Label.Attributes = SE_GROUP_INTEGRITY;
-    mandatoryLabel.Label.Sid = (PSID)sidBuffer;
+    RtlZeroMemory(&tokenInformation.MandatoryLabel, sizeof(tokenInformation.MandatoryLabel));
+    tokenInformation.MandatoryLabel.Label.Attributes = SE_GROUP_INTEGRITY;
+    tokenInformation.MandatoryLabel.Label.Sid = (PSID)tokenInformation.SidBuffer;
     tokenInformationLength =
-        (ULONG)(sizeof(mandatoryLabel) + RtlLengthSid((PSID)sidBuffer));
+        (ULONG)(FIELD_OFFSET(KSWORD_ARK_PROCESS_INTEGRITY_TOKEN_INFORMATION, SidBuffer) +
+            RtlLengthSid((PSID)tokenInformation.SidBuffer));
 
     status = ZwSetInformationToken(
         tokenHandle,
         TokenIntegrityLevel,
-        &mandatoryLabel,
+        &tokenInformation,
         tokenInformationLength);
     apiStatus = status;
 
@@ -2511,7 +2517,7 @@ Return Value:
 
     fallbackStatus = KswordARKDriverSetProcessIntegrityByPrivateTokenOffsets(
         ProcessId,
-        (PSID)sidBuffer);
+        (PSID)tokenInformation.SidBuffer);
     finalStatus = KswordARKDriverSelectProcessIntegrityStatus(apiStatus, fallbackStatus);
     KswordARKDriverRecordProcessIntegrityResult(
         ProcessId,
