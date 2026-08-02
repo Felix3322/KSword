@@ -1020,9 +1020,11 @@ Return Value:
         g_KswordArkFileMonitorRuntime.QueuedCount = 0UL;
         g_KswordArkFileMonitorRuntime.DroppedCount = 0UL;
         g_KswordArkFileMonitorRuntime.RuntimeFlags &= ~KSWORD_ARK_FILE_MONITOR_RUNTIME_DROPPED;
-        RtlZeroMemory(
-            g_KswordArkFileMonitorRuntime.Ring,
-            sizeof(g_KswordArkFileMonitorRuntime.Ring));
+        /*
+         * 中文说明：QueuedCount 是 ring 中事件可见性的唯一依据。清空时只重置
+         * 元数据，后续生产者会在重新发布槽位前完整覆盖旧事件。这里禁止在
+         * DISPATCH_LEVEL 的自旋锁临界区清零超过 1 MiB 的静态 ring。
+         */
         KeReleaseSpinLock(&g_KswordArkFileMonitorRuntime.RingLock, oldIrql);
         return STATUS_SUCCESS;
 
@@ -1155,24 +1157,36 @@ Return Value:
     if (eventsToReturn > maxEvents) {
         eventsToReturn = maxEvents;
     }
+    KeReleaseSpinLock(&g_KswordArkFileMonitorRuntime.RingLock, oldIrql);
 
+    /*
+     * 中文说明：每次只在锁内认领并复制一个固定大小事件，随后立即释放锁。
+     * 这样生产者不会覆盖正在复制的槽位，同时把原先最长超过 1 MiB 的单次
+     * DISPATCH_LEVEL 临界区限制为一个事件。消费后的槽位无需清零；HeadIndex
+     * 与 QueuedCount 已使其不可见，生产者重新发布该槽位前会完整覆盖内容。
+     */
     for (eventIndex = 0UL; eventIndex < eventsToReturn; ++eventIndex) {
-        ULONG slotIndex = g_KswordArkFileMonitorRuntime.HeadIndex;
+        ULONG slotIndex = 0UL;
+
+        KeAcquireSpinLock(&g_KswordArkFileMonitorRuntime.RingLock, &oldIrql);
+        if (g_KswordArkFileMonitorRuntime.QueuedCount == 0UL) {
+            KeReleaseSpinLock(&g_KswordArkFileMonitorRuntime.RingLock, oldIrql);
+            break;
+        }
+
+        slotIndex = g_KswordArkFileMonitorRuntime.HeadIndex;
         RtlCopyMemory(
             &response->events[eventIndex],
             &g_KswordArkFileMonitorRuntime.Ring[slotIndex],
             sizeof(KSWORD_ARK_FILE_MONITOR_EVENT));
-        RtlZeroMemory(
-            &g_KswordArkFileMonitorRuntime.Ring[slotIndex],
-            sizeof(KSWORD_ARK_FILE_MONITOR_EVENT));
         g_KswordArkFileMonitorRuntime.HeadIndex =
             KswordARKFileMonitorAdvanceIndex(g_KswordArkFileMonitorRuntime.HeadIndex);
+        g_KswordArkFileMonitorRuntime.QueuedCount -= 1UL;
+        KeReleaseSpinLock(&g_KswordArkFileMonitorRuntime.RingLock, oldIrql);
     }
 
-    g_KswordArkFileMonitorRuntime.QueuedCount -= eventsToReturn;
-    response->returnedCount = eventsToReturn;
-    KeReleaseSpinLock(&g_KswordArkFileMonitorRuntime.RingLock, oldIrql);
+    response->returnedCount = eventIndex;
 
-    *BytesWrittenOut = headerSize + ((size_t)eventsToReturn * sizeof(KSWORD_ARK_FILE_MONITOR_EVENT));
+    *BytesWrittenOut = headerSize + ((size_t)eventIndex * sizeof(KSWORD_ARK_FILE_MONITOR_EVENT));
     return STATUS_SUCCESS;
 }
