@@ -12868,7 +12868,7 @@ void ProcessDock::executeSuspendAction()
         actionTargets,
         [](const ProcessActionTarget& actionTarget, std::string* detailTextOut)
         {
-            return ks::process::SuspendProcess(actionTarget.record.pid, detailTextOut);
+            return ks::process::SuspendProcessIfCreationTimeMatches(actionTarget.record.pid, actionTarget.record.creationTime100ns, detailTextOut);
         },
         false);
 }
@@ -12888,7 +12888,7 @@ void ProcessDock::executeResumeAction()
         actionTargets,
         [](const ProcessActionTarget& actionTarget, std::string* detailTextOut)
         {
-            return ks::process::ResumeProcess(actionTarget.record.pid, detailTextOut);
+            return ks::process::ResumeProcessIfCreationTimeMatches(actionTarget.record.pid, actionTarget.record.creationTime100ns, detailTextOut);
         },
         false);
 }

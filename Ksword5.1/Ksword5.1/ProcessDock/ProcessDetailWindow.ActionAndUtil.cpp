@@ -494,7 +494,7 @@ void ProcessDetailWindow::executeSuspendProcessAction()
         << eol;
 
     std::string detailText;
-    const bool actionOk = ks::process::SuspendProcess(m_baseRecord.pid, &detailText);
+    const bool actionOk = ks::process::SuspendProcessIfCreationTimeMatches(m_baseRecord.pid, m_baseRecord.creationTime100ns, &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] executeSuspendProcessAction: actionOk="
         << (actionOk ? "true" : "false")
@@ -514,7 +514,7 @@ void ProcessDetailWindow::executeResumeProcessAction()
         << eol;
 
     std::string detailText;
-    const bool actionOk = ks::process::ResumeProcess(m_baseRecord.pid, &detailText);
+    const bool actionOk = ks::process::ResumeProcessIfCreationTimeMatches(m_baseRecord.pid, m_baseRecord.creationTime100ns, &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] executeResumeProcessAction: actionOk="
         << (actionOk ? "true" : "false")
