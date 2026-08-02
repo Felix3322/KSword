@@ -66,7 +66,7 @@ namespace ks::process
     // StartupInfoInput：STARTUPINFOW 输入镜像（全部字段可由 UI 自定义）。
     struct StartupInfoInput
     {
-        bool useValue = false;                   // false -> lpStartupInfo 传 nullptr。
+        bool useValue = false;                   // false -> 传入默认零初始化的必填 STARTUPINFOW。
         std::uint32_t cb = 0;                    // 0 表示使用 sizeof(STARTUPINFOW)。
         std::string lpReserved;
         std::string lpDesktop;
@@ -87,13 +87,12 @@ namespace ks::process
         std::uint64_t hStdError = 0;
     };
 
-    // ProcessInformationInput：PROCESS_INFORMATION 输入镜像。
-    // 说明：
-    // - 正常场景该结构应由 API 输出；
-    // - 此处保留“预填充字段”能力，满足 UI 100% 可编辑需求。
+    // ProcessInformationInput：保留的 PROCESS_INFORMATION 表单镜像。
+    // CreateProcess* 将该结构作为输出缓冲区；实现层始终传递自己的零初始化缓冲区，
+    // 因此这里的预填充字段不会作为 API 输入使用。
     struct ProcessInformationInput
     {
-        bool useValue = false;                   // false -> lpProcessInformation 传 nullptr。
+        bool useValue = false;                   // 与既有 UI/序列化兼容；不会省略必填输出缓冲区。
         std::uint64_t hProcess = 0;
         std::uint64_t hThread = 0;
         std::uint32_t dwProcessId = 0;

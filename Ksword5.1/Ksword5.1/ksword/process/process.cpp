@@ -2036,21 +2036,20 @@ namespace
         std::wstring titleText;
     };
 
-    // STARTUPINFOW 构建：false 表示调用层应传 nullptr。
-    bool BuildStartupInfo(
+    // STARTUPINFOW 构建：CreateProcess* 始终要求有效结构；未自定义时使用默认零初始化值。
+    void BuildStartupInfo(
         const ks::process::StartupInfoInput& inputValue,
         STARTUPINFOW& outputValue,
         StartupInfoBufferSet& bufferSet)
     {
-        if (!inputValue.useValue)
-        {
-            return false;
-        }
-
         outputValue = {};
-        outputValue.cb = inputValue.cb == 0
+        outputValue.cb = (!inputValue.useValue || inputValue.cb == 0)
             ? static_cast<DWORD>(sizeof(STARTUPINFOW))
             : static_cast<DWORD>(inputValue.cb);
+        if (!inputValue.useValue)
+        {
+            return;
+        }
 
         if (!inputValue.lpReserved.empty())
         {
@@ -2095,22 +2094,10 @@ namespace
         return true;
     }
 
-    // PROCESS_INFORMATION 构建：false 表示调用层应传 nullptr。
-    bool BuildProcessInfoInput(
-        const ks::process::ProcessInformationInput& inputValue,
-        PROCESS_INFORMATION& outputValue)
+    // PROCESS_INFORMATION 是 CreateProcess* 的输出缓冲区，调用前必须提供零初始化的有效地址。
+    void InitializeProcessInformationOutput(PROCESS_INFORMATION& outputValue)
     {
-        if (!inputValue.useValue)
-        {
-            return false;
-        }
-
         outputValue = {};
-        outputValue.hProcess = Uint64ToHandle(inputValue.hProcess);
-        outputValue.hThread = Uint64ToHandle(inputValue.hThread);
-        outputValue.dwProcessId = static_cast<DWORD>(inputValue.dwProcessId);
-        outputValue.dwThreadId = static_cast<DWORD>(inputValue.dwThreadId);
-        return true;
     }
 
     // 打开指定 PID 的进程令牌。
@@ -5272,15 +5259,15 @@ namespace ks::process
 
         STARTUPINFOW startupInfo{};
         StartupInfoBufferSet startupBufferSet{};
-        STARTUPINFOW* startupInfoPtr = BuildStartupInfo(
+        BuildStartupInfo(
             request.startupInfo,
             startupInfo,
-            startupBufferSet) ? &startupInfo : nullptr;
+            startupBufferSet);
+        STARTUPINFOW* const startupInfoPtr = &startupInfo;
 
         PROCESS_INFORMATION processInfo{};
-        PROCESS_INFORMATION* processInfoPtr = BuildProcessInfoInput(
-            request.processInfo,
-            processInfo) ? &processInfo : nullptr;
+        InitializeProcessInformationOutput(processInfo);
+        PROCESS_INFORMATION* const processInfoPtr = &processInfo;
 
         auto finalizeSuccess = [&localResult, processInfoPtr]() {
             localResult.success = true;
