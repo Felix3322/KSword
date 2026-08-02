@@ -44,7 +44,7 @@ PROJECT_PATTERNS = {
 DRIVER_RE = re.compile(
     r"(^KswordARKDriver/|^shared/driver/|^third_party/systeminformer_dyn/|"
     r"^scripts/Sign-KswordArkDriverVariant\.ps1$|"
-    r"^\.github/workflows/driver-ci\.yml$|^.*\.sln$|"
+    r"^\.github/workflows/driver-ci\.yml$|^tools/ci/|^.*\.sln$|"
     r"(^|/)(Directory\.Build\..*|.*\.props|.*\.targets)$)"
 )
 
@@ -237,6 +237,7 @@ def validate_patterns() -> None:
         "third_party/systeminformer_dyn/ksw_si_dynconfig.h",
         "Ksword.ReleaseOutput.props",
         ".github/workflows/driver-ci.yml",
+        "tools/ci/changed_paths.py",
     )
     for path in required_driver_inputs:
         if not driver_output([path]):
