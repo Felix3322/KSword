@@ -177,9 +177,10 @@ typedef PETHREAD(NTAPI* KSW_DRIVER_UNLOAD_PS_GET_NEXT_PROCESS_THREAD_FN)(
     _In_opt_ PETHREAD Thread
     );
 
-/* 中文说明：卸载线程上下文在非分页池中分配，线程退出前释放。 */
+/* 中文说明：卸载线程上下文由父线程和工作线程共同持有，最后一个引用负责释放。 */
 typedef struct _KSW_DRIVER_UNLOAD_CONTEXT
 {
+    volatile LONG ReferenceCount;
     PDRIVER_OBJECT DriverObject;
     ULONG Flags;
     NTSTATUS UnloadStatus;
@@ -225,9 +226,31 @@ typedef struct _KSW_DRIVER_UNLOAD_THREAD_CLEANUP_RESULT
 /* 中文说明：ZwUnloadDriver 线程上下文不保存 DriverObject，避免额外对象引用阻塞系统卸载。 */
 typedef struct _KSW_DRIVER_UNLOAD_ZW_CONTEXT
 {
+    volatile LONG ReferenceCount;
     NTSTATUS UnloadStatus;
     WCHAR ServiceRegistryPath[KSWORD_ARK_DRIVER_IMAGE_PATH_CHARS];
 } KSW_DRIVER_UNLOAD_ZW_CONTEXT, *PKSW_DRIVER_UNLOAD_ZW_CONTEXT;
+static VOID
+KswordARKDriverUnloadReleaseContext(
+    _Inout_ PKSW_DRIVER_UNLOAD_CONTEXT Context
+    )
+{
+    if (Context != NULL &&
+        InterlockedDecrement(&Context->ReferenceCount) == 0L) {
+        ExFreePoolWithTag(Context, KSW_DRIVER_UNLOAD_TAG);
+    }
+}
+
+static VOID
+KswordARKDriverUnloadReleaseZwContext(
+    _Inout_ PKSW_DRIVER_UNLOAD_ZW_CONTEXT Context
+    )
+{
+    if (Context != NULL &&
+        InterlockedDecrement(&Context->ReferenceCount) == 0L) {
+        ExFreePoolWithTag(Context, KSW_DRIVER_UNLOAD_TAG);
+    }
+}
 
 /* 中文说明：ZwQuerySystemInformation(SystemModuleInformation) 的单项布局。 */
 typedef struct _KSW_DRIVER_UNLOAD_SYSTEM_MODULE_ENTRY
@@ -4130,15 +4153,21 @@ KswordARKDriverUnloadZwThreadRoutine(
 {
     PKSW_DRIVER_UNLOAD_ZW_CONTEXT unloadContext = (PKSW_DRIVER_UNLOAD_ZW_CONTEXT)StartContext;
     UNICODE_STRING serviceRegistryPath;
+    NTSTATUS threadStatus = STATUS_INVALID_PARAMETER;
 
     if (unloadContext == NULL || unloadContext->ServiceRegistryPath[0] == L'\0') {
-        PsTerminateSystemThread(STATUS_INVALID_PARAMETER);
+        if (unloadContext != NULL) {
+            KswordARKDriverUnloadReleaseZwContext(unloadContext);
+        }
+        PsTerminateSystemThread(threadStatus);
         return;
     }
 
     RtlInitUnicodeString(&serviceRegistryPath, unloadContext->ServiceRegistryPath);
-    unloadContext->UnloadStatus = ZwUnloadDriver(&serviceRegistryPath);
-    PsTerminateSystemThread(unloadContext->UnloadStatus);
+    threadStatus = ZwUnloadDriver(&serviceRegistryPath);
+    unloadContext->UnloadStatus = threadStatus;
+    KswordARKDriverUnloadReleaseZwContext(unloadContext);
+    PsTerminateSystemThread(threadStatus);
 }
 
 /* 中文说明：运行不持有 DriverObject 引用的纯 ZwUnloadDriver 路径。 */
@@ -4181,6 +4210,7 @@ KswordARKDriverUnloadRunZwOnly(
     }
 
     RtlZeroMemory(zwContext, sizeof(*zwContext));
+    zwContext->ReferenceCount = 2L;
     status = RtlStringCchCopyW(
         zwContext->ServiceRegistryPath,
         RTL_NUMBER_OF(zwContext->ServiceRegistryPath),
@@ -4220,10 +4250,9 @@ KswordARKDriverUnloadRunZwOnly(
         NULL);
     if (!NT_SUCCESS(status)) {
         ZwClose(threadHandle);
-        /* 中文说明：线程可能已运行并访问上下文，因此这里不释放 zwContext。 */
+        KswordARKDriverUnloadReleaseZwContext(zwContext);
         return status;
     }
-
     timeoutInterval.QuadPart = -((LONGLONG)TimeoutMilliseconds * 10LL * 1000LL);
     *WaitStatusOut = KeWaitForSingleObject(
         threadObject,
@@ -4231,21 +4260,17 @@ KswordARKDriverUnloadRunZwOnly(
         KernelMode,
         FALSE,
         &timeoutInterval);
-    *UnloadStatusOut = zwContext->UnloadStatus;
     ObDereferenceObject(threadObject);
     ZwClose(threadHandle);
 
-    if (*WaitStatusOut == STATUS_TIMEOUT) {
-        /* 中文说明：超时后 Zw 线程仍可能写状态，宁可泄漏上下文也不释放。 */
-        return STATUS_TIMEOUT;
-    }
-    if (!NT_SUCCESS(*WaitStatusOut)) {
-        ExFreePoolWithTag(zwContext, KSW_DRIVER_UNLOAD_TAG);
+    if (*WaitStatusOut != STATUS_SUCCESS) {
+        KswordARKDriverUnloadReleaseZwContext(zwContext);
         return *WaitStatusOut;
     }
 
+    *UnloadStatusOut = zwContext->UnloadStatus;
     status = *UnloadStatusOut;
-    ExFreePoolWithTag(zwContext, KSW_DRIVER_UNLOAD_TAG);
+    KswordARKDriverUnloadReleaseZwContext(zwContext);
     return status;
 }
 
@@ -4430,9 +4455,13 @@ KswordARKDriverUnloadThreadRoutine(
     )
 {
     PKSW_DRIVER_UNLOAD_CONTEXT unloadContext = (PKSW_DRIVER_UNLOAD_CONTEXT)StartContext;
+    NTSTATUS threadStatus = STATUS_INVALID_PARAMETER;
 
     if (unloadContext == NULL || unloadContext->DriverObject == NULL) {
-        PsTerminateSystemThread(STATUS_INVALID_PARAMETER);
+        if (unloadContext != NULL) {
+            KswordARKDriverUnloadReleaseContext(unloadContext);
+        }
+        PsTerminateSystemThread(threadStatus);
         return;
     }
 
@@ -4470,8 +4499,10 @@ KswordARKDriverUnloadThreadRoutine(
     }
 
     /* 中文说明：线程持有的 DriverObject 引用在这里释放，父线程只释放自己的引用。 */
+    threadStatus = unloadContext->UnloadStatus;
     ObDereferenceObject(unloadContext->DriverObject);
-    PsTerminateSystemThread(unloadContext->UnloadStatus);
+    KswordARKDriverUnloadReleaseContext(unloadContext);
+    PsTerminateSystemThread(threadStatus);
 }
 
 /* 中文说明：启动系统线程并等待卸载结果。 */
@@ -4552,6 +4583,7 @@ KswordARKDriverUnloadRunThread(
 
     /* 中文说明：卸载线程可能超时后继续运行，因此上下文不能放在父线程栈上。 */
     RtlZeroMemory(unloadContext, sizeof(*unloadContext));
+    unloadContext->ReferenceCount = 2L;
     unloadContext->DriverObject = DriverObject;
     unloadContext->Flags = Flags;
     unloadContext->UnloadStatus = STATUS_PENDING;
@@ -4606,10 +4638,9 @@ KswordARKDriverUnloadRunThread(
         NULL);
     if (!NT_SUCCESS(status)) {
         ZwClose(threadHandle);
-        /* 中文说明：线程可能已经运行，不能释放上下文；由超时泄漏策略兜底。 */
+        KswordARKDriverUnloadReleaseContext(unloadContext);
         return status;
     }
-
     timeoutInterval.QuadPart = -((LONGLONG)TimeoutMilliseconds * 10LL * 1000LL);
     *WaitStatusOut = KeWaitForSingleObject(
         threadObject,
@@ -4617,6 +4648,13 @@ KswordARKDriverUnloadRunThread(
         KernelMode,
         FALSE,
         &timeoutInterval);
+    ObDereferenceObject(threadObject);
+    ZwClose(threadHandle);
+
+    if (*WaitStatusOut != STATUS_SUCCESS) {
+        KswordARKDriverUnloadReleaseContext(unloadContext);
+        return *WaitStatusOut;
+    }
 
     *UnloadStatusOut = unloadContext->UnloadStatus;
     *CleanupStatusOut = unloadContext->CleanupStatus;
@@ -4632,23 +4670,7 @@ KswordARKDriverUnloadRunThread(
     *CallbacksRemovedOut = unloadContext->CallbacksRemoved;
     *CallbackFailuresOut = unloadContext->CallbackFailures;
     *CallbackLastStatusOut = unloadContext->CallbackLastStatus;
-    ObDereferenceObject(threadObject);
-    ZwClose(threadHandle);
 
-    if (*WaitStatusOut == STATUS_TIMEOUT) {
-        /* 中文说明：超时后卸载线程仍可能访问上下文，宁可泄漏小块内存也不释放。 */
-        return STATUS_TIMEOUT;
-    }
-    if (!NT_SUCCESS(*WaitStatusOut)) {
-        ExFreePoolWithTag(unloadContext, KSW_DRIVER_UNLOAD_TAG);
-        return *WaitStatusOut;
-    }
-
-    /*
-     * 中文说明：目标没有 DriverUnload 时，强卸载路径可能只做 DriverObject
-     * 中和后返回。如果 cleanup 已经成功，不能再把 STATUS_PROCEDURE_NOT_FOUND
-     * 当成失败透传给 R3，否则 UI 会把 status=7 的成功清理误显示成错误。
-     */
     if (*DriverUnloadOut == NULL &&
         unloadContext->CleanupFlagsApplied != 0UL &&
         NT_SUCCESS(*CleanupStatusOut)) {
@@ -4659,7 +4681,7 @@ KswordARKDriverUnloadRunThread(
         status = !NT_SUCCESS(*CleanupStatusOut) ? *CleanupStatusOut : *UnloadStatusOut;
     }
 
-    ExFreePoolWithTag(unloadContext, KSW_DRIVER_UNLOAD_TAG);
+    KswordARKDriverUnloadReleaseContext(unloadContext);
     return status;
 }
 
