@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <sstream>
 #include <vector>
 
@@ -165,7 +166,7 @@ namespace ksword::ark
         // 返回：RegistryEnumResult；部分返回时 status 为 PARTIAL。
         RegistryEnumResult enumResult{};
         KSWORD_ARK_ENUM_REGISTRY_KEY_REQUEST request{};
-        KSWORD_ARK_ENUM_REGISTRY_KEY_RESPONSE response{};
+        auto response = std::make_unique<KSWORD_ARK_ENUM_REGISTRY_KEY_RESPONSE>();
         request.version = KSWORD_ARK_REGISTRY_PROTOCOL_VERSION;
         request.flags = flags;
         request.maxSubKeys = KSWORD_ARK_REGISTRY_ENUM_MAX_SUBKEYS;
@@ -180,8 +181,8 @@ namespace ksword::ark
             IOCTL_KSWORD_ARK_ENUM_REGISTRY_KEY,
             &request,
             static_cast<unsigned long>(sizeof(request)),
-            &response,
-            static_cast<unsigned long>(sizeof(response)));
+            response.get(),
+            static_cast<unsigned long>(sizeof(*response)));
         if (!enumResult.io.ok)
         {
             enumResult.io.message =
@@ -189,7 +190,7 @@ namespace ksword::ark
                 std::to_string(enumResult.io.win32Error);
             return enumResult;
         }
-        if (enumResult.io.bytesReturned < sizeof(response))
+        if (enumResult.io.bytesReturned < sizeof(*response))
         {
             enumResult.io.ok = false;
             enumResult.io.message =
@@ -198,13 +199,13 @@ namespace ksword::ark
             return enumResult;
         }
 
-        enumResult.version = static_cast<std::uint32_t>(response.version);
-        enumResult.status = static_cast<std::uint32_t>(response.status);
-        enumResult.subKeyCount = static_cast<std::uint32_t>(response.subKeyCount);
-        enumResult.returnedSubKeyCount = static_cast<std::uint32_t>(response.returnedSubKeyCount);
-        enumResult.valueCount = static_cast<std::uint32_t>(response.valueCount);
-        enumResult.returnedValueCount = static_cast<std::uint32_t>(response.returnedValueCount);
-        enumResult.lastStatus = static_cast<long>(response.lastStatus);
+        enumResult.version = static_cast<std::uint32_t>(response->version);
+        enumResult.status = static_cast<std::uint32_t>(response->status);
+        enumResult.subKeyCount = static_cast<std::uint32_t>(response->subKeyCount);
+        enumResult.returnedSubKeyCount = static_cast<std::uint32_t>(response->returnedSubKeyCount);
+        enumResult.valueCount = static_cast<std::uint32_t>(response->valueCount);
+        enumResult.returnedValueCount = static_cast<std::uint32_t>(response->returnedValueCount);
+        enumResult.lastStatus = static_cast<long>(response->lastStatus);
         enumResult.io.ntStatus = enumResult.lastStatus;
 
         const std::size_t subKeyCount = std::min<std::size_t>(
@@ -215,7 +216,7 @@ namespace ksword::ark
         {
             RegistrySubKeyEntry entry{};
             entry.name = registryFixedWideToString(
-                response.subKeys[index].name,
+                response->subKeys[index].name,
                 KSWORD_ARK_REGISTRY_ENUM_KEY_NAME_CHARS);
             enumResult.subKeys.push_back(std::move(entry));
         }
@@ -226,7 +227,7 @@ namespace ksword::ark
         enumResult.values.reserve(valueCount);
         for (std::size_t index = 0U; index < valueCount; ++index)
         {
-            const auto& source = response.values[index];
+            const auto& source = response->values[index];
             RegistryValueEntry entry{};
             entry.name = registryFixedWideToString(
                 source.name,
