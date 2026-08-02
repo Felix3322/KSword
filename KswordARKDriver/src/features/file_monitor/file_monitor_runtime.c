@@ -471,7 +471,7 @@ Return Value:
 
 static VOID
 KswordARKFileMonitorFillCommonEvent(
-    _Inout_ KSWORD_ARK_FILE_MONITOR_EVENT* Event,
+    _Out_ KSWORD_ARK_FILE_MONITOR_EVENT* Event,
     _In_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _In_ ULONG OperationType,
