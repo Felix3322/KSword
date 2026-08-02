@@ -4665,6 +4665,7 @@ namespace ks::process
                 }
             }
 
+            std::vector<wchar_t> modulePathBuffer(32768U, L'\0');
             for (std::size_t moduleIndex = 0; moduleIndex < moduleCount; ++moduleIndex)
             {
                 const HMODULE moduleHandle = moduleHandleBuffer[moduleIndex];
@@ -4673,12 +4674,11 @@ namespace ks::process
                     continue;
                 }
 
-                wchar_t modulePathBuffer[32768] = {};
                 const DWORD modulePathLength = ::GetModuleFileNameExW(
                     processHandle,
                     moduleHandle,
-                    modulePathBuffer,
-                    static_cast<DWORD>(std::size(modulePathBuffer)));
+                    modulePathBuffer.data(),
+                    static_cast<DWORD>(modulePathBuffer.size()));
                 if (modulePathLength == 0)
                 {
                     continue;
@@ -4695,7 +4695,7 @@ namespace ks::process
                 }
 
                 ProcessModuleRecord moduleRecord{};
-                moduleRecord.modulePath = ks::str::Utf16ToUtf8(std::wstring(modulePathBuffer, modulePathLength));
+                moduleRecord.modulePath = ks::str::Utf16ToUtf8(std::wstring(modulePathBuffer.data(), modulePathLength));
                 moduleRecord.moduleName = ExtractFileNameFromPath(moduleRecord.modulePath);
                 moduleRecord.moduleBaseAddress = reinterpret_cast<std::uint64_t>(moduleInfo.lpBaseOfDll);
                 moduleRecord.moduleSizeBytes = static_cast<std::uint32_t>(moduleInfo.SizeOfImage);
