@@ -32,6 +32,7 @@
 #include "../../../shared/driver/KswordArkKernelBaselineIoctl.h"
 #include "../../../shared/driver/KswordArkPiDdbIoctl.h"
 #include "../../../shared/driver/KswordArkHvmIoctl.h"
+#include "../../../shared/driver/KswordArkSlatIommuAuditIoctl.h"
 #include "../../../shared/driver/KswordArkSecurityAuditIoctl.h"
 #include "../../../shared/driver/KswordArkTrustIoctl.h"
 #include "../../../shared/driver/KswordArkWin32kIoctl.h"
@@ -1180,6 +1181,15 @@ namespace ksword::ark
         IoResult io;
         bool unsupported = false;
         KSWORD_ARK_CONTROL_HVM_RESPONSE response{};
+    };
+
+    // Read-only EPT/NPT cross-view and IOMMU firmware/runtime evidence.
+    // A clean guest-visible result cannot prove an opaque outer SLAT is clean.
+    struct SlatIommuAuditResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT_RESPONSE response{};
     };
 
     // SystemTimeQueryResult：

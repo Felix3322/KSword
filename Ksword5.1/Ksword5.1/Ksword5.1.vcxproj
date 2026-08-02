@@ -212,6 +212,7 @@
     <ClCompile Include="KernelDock\KernelDockCidTab.cpp" />
     <ClCompile Include="KernelDock\KernelDescriptorTableTab.cpp" />
     <ClCompile Include="KernelDock\KernelHvmTab.cpp" />
+    <ClCompile Include="KernelDock\KernelSlatIommuAuditTab.cpp" />
     <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp" />
     <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp" />
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp" />
@@ -436,6 +437,7 @@
     <ClCompile Include="ArkDriverClient\ArkDriverKernelBaseline.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverPiDdb.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverHvm.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverVirtualization.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverIoctlRegistry.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverKeyboard.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverCallback.cpp" />
@@ -489,6 +491,7 @@
     <ClInclude Include="KernelDock\KernelDockCidTab.h" />
     <ClInclude Include="KernelDock\KernelDescriptorTableTab.h" />
     <ClInclude Include="KernelDock\KernelHvmTab.h" />
+    <ClInclude Include="KernelDock\KernelSlatIommuAuditTab.h" />
     <ClInclude Include="KernelDock\KernelPlatformAuditTab.h" />
     <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h" />
     <ClInclude Include="KernelDock\KernelDockIpcTab.h" />

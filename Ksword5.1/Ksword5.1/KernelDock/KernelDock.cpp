@@ -15,6 +15,7 @@
 #include "KernelDockCidTab.h"
 #include "KernelDescriptorTableTab.h"
 #include "KernelHvmTab.h"
+#include "KernelSlatIommuAuditTab.h"
 #include "KernelDockIpcTab.h"
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelIoTimerTab.h"
@@ -605,6 +606,18 @@ void KernelDock::initializeUi()
         kernelText(
             "kernel.main.tab.hvm.tooltip",
             QStringLiteral("VT-x/嵌套能力、每 CPU VMX 区域、EPT RAM 映射与受控 VMXON/VMXOFF 自检")));
+
+    const int slatIommuTabIndex = m_tabWidget->addTab(
+        new KernelSlatIommuAuditTab(m_tabWidget),
+        tabIcon(QStringLiteral(":/Icon/process_priority.svg")),
+        kernelText(
+            "kernel.main.tab.slat_iommu.title",
+            QStringLiteral("SLAT/IOMMU")));
+    m_tabWidget->setTabToolTip(
+        slatIommuTabIndex,
+        kernelText(
+            "kernel.main.tab.slat_iommu.tooltip",
+            QStringLiteral("只读 EPT/NPT 虚拟-物理交叉视图、Hypervisor CPUID 与 DMAR/IVRS/IOMMU 运行时取证")));
 
     m_timerDpcTabIndex = m_tabWidget->addTab(
         m_timerDpcPage,

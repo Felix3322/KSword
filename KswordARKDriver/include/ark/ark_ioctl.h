@@ -30,6 +30,7 @@
 #include "driver/KswordArkKernelBaselineIoctl.h"
 #include "driver/KswordArkPiDdbIoctl.h"
 #include "driver/KswordArkHvmIoctl.h"
+#include "driver/KswordArkSlatIommuAuditIoctl.h"
 #include "driver/KswordArkKernelObjectIoctl.h"
 #include "driver/KswordArkFilterIoctl.h"
 #include "driver/KswordArkDeviceAuditIoctl.h"

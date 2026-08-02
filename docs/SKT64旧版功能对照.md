@@ -6,10 +6,14 @@
 
 ## 结论
 
-KSword 现有代码已覆盖公开 SKT64 旧版中绝大多数可合理用于系统诊断、取证与管理的功能面。本次实际确认并补齐的两个缺口是：
+KSword 现有代码已覆盖公开 SKT64 旧版的大多数常规系统诊断、取证与管理功能面。本轮已独立实现并确认的增量是：
 
 1. `IoTimer` 枚举，并超越旧版增加受控的启动/停止。
 2. “结束进程并删除映像文件”，且使用 PID 创建时间与文件 ID 防止路径/PID 竞态。
+3. 任意 `DriverObject.MajorFunction[]` 的查询、修改、事务恢复与放弃恢复记录，包括 KSword 自身、PnP、文件系统和安全关键驱动；保留对象身份、当前值、代次和 CAS 并发校验。
+4. Intel EPT / AMD NPT 来宾可见交叉视图与 IOMMU 取证：CPUID/MSR、物理别名哈希、ACPI DMAR/IVRS、公开 IOMMU 接口及可选只读 MMIO。
+
+仍不得写成“全部完成”的关键缺口包括：常驻 HVM 与任意目标执行、PatchGuard/DSE 控制、驱动加载/卸载拦截、引导扇区保护、固件刷写/锁定、驱动映像字段改写/加载器链隐藏，以及产品特定的安全软件禁用工作流。驱动映像字段与加载器链修改还需要独立风险授权，不能由 MajorFunction 授权代替。
 
 ## 功能面对照
 
@@ -19,10 +23,15 @@ KSword 现有代码已覆盖公开 SKT64 旧版中绝大多数可合理用于系
 | 结束进程后删除映像 | `ProcessDock/ProcessDock.cpp`、`ksword/process/ProcessImageDeleteGuard.*` | 本次补齐；精确文件句柄删除 |
 | 线程、Token、句柄、模块、内存、注入 | `ProcessDock/`、`HandleDock/`、`MemoryDock/`、R0 thread/process features | 已覆盖并扩展 |
 | 窗口、热键、KCT/窗口扩展信息 | `WindowDock/`、`KernelDock` 的 win32k 枚举页 | 已覆盖并扩展 |
-| 驱动枚举/卸载、DriverObject、DeviceObject、MajorFunction、FastIo、完整性 | `DriverDock/`、`KernelDeviceDriverObjectsTab`、driver integrity/unload/blind features | 已覆盖并扩展 |
+| 驱动枚举/卸载、DriverObject、DeviceObject、MajorFunction、FastIo、完整性 | `DriverDock/`、`KernelDeviceDriverObjectsTab`、`KernelDriverDispatchEditorDialog`、driver integrity/unload/blind/dispatch features | MajorFunction 本轮补齐事务修改/恢复；其余已覆盖并扩展 |
 | `IoTimer` | `KernelIoTimerTab.*`、`driver_object_query.c`、`io_timer_ioctl.c` | 本次补齐并超越 |
 | SSDT / Shadow SSDT / Inline / IAT / EAT | `KernelDock/`、kernel hook/SSDT features | 已覆盖并扩展 |
 | Timer/DPC、IDT/GDT、MSR/HAL/CPU 完整性 | `KernelTimerDpcTab`、`KernelDescriptorTableTab`、CPU/platform audit | 已覆盖并扩展 |
+| EPT/NPT Hook 与 IOMMU 隐藏取证 | `KernelSlatIommuAuditTab`、`slat_iommu_audit.c` | 本轮补齐来宾可见只读取证；外层 SLAT 仍不可证明 |
+| VT-x/EPT HVM 沙箱与目标执行 | `KernelHvmTab`、`features/hvm/` | 已有真实一次性 VMLAUNCH/VMCALL 自检；常驻 VMM 与任意目标执行未完成 |
+| 驱动映像基址/大小修改与加载器链隐藏 | 尚未接入 | 未完成；等待独立风险授权 |
+| 驱动加载/卸载拦截、引导扇区保护 | 现有卸载、storage forensics 仅覆盖相邻能力 | 未完成 |
+| PatchGuard/DSE、固件刷写/锁定、产品特定禁用 | 现有平台/安全审计仅覆盖只读取证 | 未完成 |
 | 进程/线程/镜像/注册表/Ob/ExCallback/文件系统回调 | `KernelDock` callback enumeration/interception 与 R0 callback features | 已覆盖并扩展 |
 | Minifilter、标准过滤、WFP function/callout | callback/filter/network audit pages 与 R0 filter/network features | 已覆盖并扩展 |
 | MmUnloadedDrivers、PiDDB、内核对象类型、系统线程 | unloaded-driver/PiDDB/object-type/thread audit pages | 已覆盖并扩展 |
@@ -49,9 +58,33 @@ KSword 对修改能力采用“告知风险、用户决定”的准则：风险�
 
 协议版本、缓冲区长度、调用方访问权限、目标存在性、对象归属、PID 创建时间、文件 ID 和修改前快照等校验仍然保留。这些校验用于确保修改落在用户实际选择的对象上，防止 PID/地址复用或竞态误伤，不属于基于风险的功能限制。
 
+## MajorFunction 事务编辑器
+
+- R3 只能通过 `ArkDriverClient` 使用共享协议；Dock 不直接调用 `DeviceIoControl`。
+- R0 重新解析规范化 DriverObject 名称，返回当前 28 个 MajorFunction 指针、对象身份和事务代次。
+- 修改要求用户明确确认，并比较期望 DriverObject、期望旧指针与期望代次；并发变化返回冲突，不会静默覆盖新值。
+- 成功修改后保留原始值，可按事务恢复；恢复同样检查当前值，避免把第三方后续修改覆盖掉。
+- 不根据驱动类别限制目标，因此错误地址可立即蓝屏、破坏 I/O、切断恢复通道或留下悬空指针；UI 对此持续告知风险。
+
+## EPT/NPT 与 IOMMU 只读取证
+
+- 同时识别 Intel VMX/EPT 与 AMD SVM/NPT，并记录 Hypervisor CPUID 厂商与 CPUID 时延分布。
+- 对多组已导出内核例程执行两次虚拟读取、两次物理别名读取和哈希比较，区分不一致与读取不稳定。
+- 校验并有界解析 ACPI `DMAR` / `IVRS`，列出 DRHD/RMRR/ATSR/RHSA/IVHD/IVMD、保留内存和畸形结构。
+- 动态查询公开 `IoGetIommuInterface` / `IoGetIommuInterfaceEx`；用户可选择额外只读采样 Intel VT-d 或 AMD IOMMU MMIO 状态。
+- 明确边界：外层 Hypervisor 控制的 EPT/NPT 对来宾不可见。哈希一致只能说明来宾当前可观察视图一致，不能证明不存在 execute-only 或按访问类型切换的 Hook。
+
+实现按公开一手资料核对寄存器和 API 语义：
+
+- [Intel VT-d Architecture Specification](https://www.intel.com/content/www/us/en/content-details/868911/intel-virtualization-technology-for-directed-i-o-architecture-specification.html)
+- [AMD I/O Virtualization Technology (IOMMU) Specification](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/specifications/48882_IOMMU.pdf)
+- [Microsoft IoGetIommuInterfaceEx](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-iogetiommuinterfaceex)
+- [Microsoft MmCopyMemory](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-mmcopymemory)
+
 ## 验证
 
-- 共享协议和 dispatch 静态审计：149 个 IOCTL 定义均已注册；`IOCTL_KSWORD_ARK_CONTROL_IO_TIMER` 是 `METHOD_BUFFERED + FILE_WRITE_ACCESS`。
-- 中英语言包审计通过。
-- `KswordARKDriver` `Release|x64` 编译/链接通过。
-- `Ksword5.1` `Release|x64` 编译/链接与 Qt 部署通过。
+- 新增共享协议仅位于 `shared/driver/`，驱动分发仅通过 `ioctl_registry.c` 注册；SLAT/IOMMU 查询为 `METHOD_BUFFERED + FILE_ANY_ACCESS` 的只读固定响应。
+- IOCTL 审计确认 152/152 个共享定义均已注册、0 个遗漏；风险启发式仍报告仓库基线中的 14 条高风险和 2 条中风险存量项，本次只读查询未新增类别。
+- 中英语言包审计通过（18,415 条源码字符串）。
+- `KswordARKDriver` `Release|x64` 编译/链接通过；未安装或加载驱动。
+- `Ksword5.1` `Release|x64` 编译/链接通过。

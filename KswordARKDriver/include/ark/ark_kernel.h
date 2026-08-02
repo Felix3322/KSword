@@ -5,6 +5,7 @@
 #include "driver/KswordArkKernelIoctl.h"
 #include "driver/KswordArkDriverBlindIoctl.h"
 #include "driver/KswordArkDriverDispatchIoctl.h"
+#include "driver/KswordArkSlatIommuAuditIoctl.h"
 
 EXTERN_C_START
 
@@ -114,6 +115,12 @@ NTSTATUS
 KswordARKDriverControlDispatch(
     _In_ const KSWORD_ARK_DRIVER_DISPATCH_REQUEST* Request,
     _Out_ KSWORD_ARK_DRIVER_DISPATCH_RESPONSE* Response
+    );
+
+NTSTATUS
+KswordARKSlatIommuAuditQuery(
+    _In_ const KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT_REQUEST* Request,
+    _Out_ KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT_RESPONSE* Response
     );
 
 BOOLEAN

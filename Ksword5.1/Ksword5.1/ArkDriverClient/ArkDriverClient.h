@@ -289,6 +289,9 @@ namespace ksword::ark
             bool force,
             bool allowNested,
             bool uiConfirmed) const;
+        // querySlatIommuAudit：只读采集 EPT/NPT 交叉视图、DMAR/IVRS
+        // 与公开 IOMMU 接口证据；includeMmio 仅增加只读寄存器采样。
+        SlatIommuAuditResult querySlatIommuAudit(bool includeMmio) const;
         // querySystemTime/controlSystemTime：
         // - 查询或控制全系统性能计数器的连续倍率映射；
         // - UI 只传模式、倍率、期望代次与确认状态，不直接访问设备。
