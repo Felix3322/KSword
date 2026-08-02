@@ -585,7 +585,7 @@ private:
     QPointer<QTreeWidget> m_responseTree;              // 响应详情页，按树形结构展开每次 VT 返回。
     QPointer<CodeEditorWidget> m_resultEditor;         // 实时结果原始数据编辑器，展示全部响应和错误文本。
     std::array<ApiPaneUi, kApiPaneCount> m_apiPanes;    // 多 API 一级 Tab 对应的 UI 控件。
-    std::array<VtApiState, kApiPaneCount> m_apiStates;  // 多 API 状态。
+    std::array<VtApiState, kApiPaneCount> m_apiStates{}; // 多 API 状态，默认均为 NotStarted。
     std::array<QString, kApiPaneCount> m_apiRawText;    // 每个 API Tab 的原始文本。
     std::array<QJsonArray, kApiPaneCount> m_apiRawSections; // 每个 API Tab 的结构化原始响应。
     QString m_filePath;                                // 当前待上传的本地文件路径。
