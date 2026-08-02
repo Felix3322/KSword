@@ -20,6 +20,7 @@ Environment:
 #include "callback_extended_internal.h"
 #include "callback_extended_kernel.h"
 #include "ark/ark_dyndata.h"
+#include "../../platform/pool_compat.h"
 #include "../../platform/runtime_signature_scan.h"
 
 #define KSW_SPECIAL_MAX_REFERENCES 96UL
@@ -31,6 +32,7 @@ Environment:
 #define KSW_SPECIAL_INDIRECT_SCAN_BYTES 0x60UL
 #define KSW_SPECIAL_PRIORITY_SLOT_COUNT 8UL
 #define KSW_SPECIAL_PNP_LIST_COUNT 13UL
+#define KSW_SPECIAL_WORKSPACE_POOL_TAG 'wSsK'
 
 typedef struct _KSW_SPECIAL_RECORD
 {
@@ -46,6 +48,19 @@ typedef struct _KSW_SPECIAL_CAPTURE
     BOOLEAN Valid;
     KSW_SPECIAL_RECORD Records[KSW_SPECIAL_MAX_RECORDS];
 } KSW_SPECIAL_CAPTURE, *PKSW_SPECIAL_CAPTURE;
+
+/*
+ * Candidate captures are about 3 KiB each.  Keeping the references, strongest
+ * candidate, and scratch candidate in one reusable pool block prevents the
+ * nested signature-scan call chain from exhausting the small kernel stack.
+ */
+typedef struct _KSW_SPECIAL_WORKSPACE
+{
+    KSW_RUNTIME_DATA_REFERENCE References[KSW_SPECIAL_MAX_REFERENCES];
+    KSW_SPECIAL_CAPTURE Best;
+    KSW_SPECIAL_CAPTURE Candidate;
+    KSW_SPECIAL_CAPTURE ListScratch;
+} KSW_SPECIAL_WORKSPACE, *PKSW_SPECIAL_WORKSPACE;
 
 typedef enum _KSW_SPECIAL_CAPTURE_KIND
 {
@@ -610,7 +625,8 @@ static BOOLEAN
 KswordArkSpecialCapturePnpLists(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
     _In_ ULONG_PTR ArrayAddress,
-    _Inout_ KSW_SPECIAL_CAPTURE* Capture
+    _Inout_ KSW_SPECIAL_CAPTURE* Capture,
+    _Inout_ KSW_SPECIAL_CAPTURE* ListScratch
     )
 /*++
 
@@ -627,26 +643,28 @@ Return Value:
 {
     ULONG listIndex = 0UL;
 
-    if (Capture == NULL || !KswordArkSpecialIsKernelPointer(ArrayAddress)) {
+    if (Capture == NULL || ListScratch == NULL || Capture == ListScratch ||
+        !KswordArkSpecialIsKernelPointer(ArrayAddress)) {
         return FALSE;
     }
     for (listIndex = 0UL; listIndex < KSW_SPECIAL_PNP_LIST_COUNT; ++listIndex) {
         const ULONG_PTR headAddress = ArrayAddress +
             ((ULONG_PTR)listIndex * sizeof(LIST_ENTRY));
-        KSW_SPECIAL_CAPTURE listCapture;
         ULONG rowIndex = 0UL;
 
-        RtlZeroMemory(&listCapture, sizeof(listCapture));
+        // Reuse the pool-backed list scratch for every PnP class; keeping this
+        // 3 KiB capture off the stack is required even though lists are serial.
+        RtlZeroMemory(ListScratch, sizeof(*ListScratch));
         if (!KswordArkSpecialCaptureDoubleList(
                 ModuleCache,
                 headAddress,
                 FALSE,
-                &listCapture) ||
-            Capture->Count > KSW_SPECIAL_MAX_RECORDS - listCapture.Count) {
+                ListScratch) ||
+            Capture->Count > KSW_SPECIAL_MAX_RECORDS - ListScratch->Count) {
             return FALSE;
         }
-        for (rowIndex = 0UL; rowIndex < listCapture.Count; ++rowIndex) {
-            Capture->Records[Capture->Count] = listCapture.Records[rowIndex];
+        for (rowIndex = 0UL; rowIndex < ListScratch->Count; ++rowIndex) {
+            Capture->Records[Capture->Count] = ListScratch->Records[rowIndex];
             Capture->Records[Capture->Count].ContextAddress = listIndex;
             Capture->Count += 1UL;
         }
@@ -661,7 +679,8 @@ KswordArkSpecialTryCapture(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
     _In_ KSW_SPECIAL_CAPTURE_KIND Kind,
     _In_ ULONG_PTR CandidateAddress,
-    _Out_ KSW_SPECIAL_CAPTURE* CaptureOut
+    _Out_ KSW_SPECIAL_CAPTURE* CaptureOut,
+    _Inout_ KSW_SPECIAL_CAPTURE* ListScratch
     )
 /*++
 
@@ -706,7 +725,8 @@ Return Value:
         return KswordArkSpecialCapturePnpLists(
             ModuleCache,
             CandidateAddress,
-            CaptureOut);
+            CaptureOut,
+            ListScratch);
     default:
         return FALSE;
     }
@@ -740,7 +760,7 @@ KswordArkSpecialFindBestCapture(
     _In_reads_(AnchorCount) PCSTR const* AnchorNames,
     _In_ ULONG AnchorCount,
     _In_ KSW_SPECIAL_CAPTURE_KIND Kind,
-    _Out_ KSW_SPECIAL_CAPTURE* CaptureOut,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _Out_ BOOLEAN* AmbiguousOut
     )
 /*++
@@ -756,18 +776,16 @@ Return Value:
 
 --*/
 {
-    KSW_RUNTIME_DATA_REFERENCE references[KSW_SPECIAL_MAX_REFERENCES];
     ULONG referenceCount = 0UL;
     ULONG referenceIndex = 0UL;
-    KSW_SPECIAL_CAPTURE best;
     BOOLEAN ambiguous = FALSE;
 
-    if (CaptureOut == NULL || AmbiguousOut == NULL) {
+    if (Workspace == NULL || AmbiguousOut == NULL) {
         return FALSE;
     }
-    RtlZeroMemory(CaptureOut, sizeof(*CaptureOut));
-    RtlZeroMemory(&best, sizeof(best));
-    RtlZeroMemory(references, sizeof(references));
+    // The same workspace is reused for all six families, so fully reset it
+    // before each independent candidate search.
+    RtlZeroMemory(Workspace, sizeof(*Workspace));
     *AmbiguousOut = FALSE;
     referenceCount = KswordARKRuntimeCollectAnchoredDataReferences(
         NtosView,
@@ -775,49 +793,50 @@ Return Value:
         AnchorCount,
         KSW_SPECIAL_MAX_CALL_DEPTH,
         KSW_SPECIAL_ROUTINE_SCAN_BYTES,
-        references,
-        RTL_NUMBER_OF(references));
+        Workspace->References,
+        RTL_NUMBER_OF(Workspace->References));
     for (referenceIndex = 0UL; referenceIndex < referenceCount; ++referenceIndex) {
         ULONG_PTR candidates[2];
         ULONG candidateIndex = 0UL;
 
         RtlZeroMemory(candidates, sizeof(candidates));
-        candidates[0] = references[referenceIndex].Address;
+        candidates[0] = Workspace->References[referenceIndex].Address;
         (VOID)KswordARKRuntimeReadMemory(
-            (const VOID*)references[referenceIndex].Address,
+            (const VOID*)Workspace->References[referenceIndex].Address,
             &candidates[1],
             sizeof(candidates[1]));
         for (candidateIndex = 0UL; candidateIndex < RTL_NUMBER_OF(candidates);
              ++candidateIndex) {
-            KSW_SPECIAL_CAPTURE candidate;
+            KSW_SPECIAL_CAPTURE* candidate = &Workspace->Candidate;
 
             if (!KswordArkSpecialIsKernelPointer(candidates[candidateIndex]) ||
                 (candidateIndex != 0UL && candidates[1] == candidates[0])) {
                 continue;
             }
-            RtlZeroMemory(&candidate, sizeof(candidate));
+            RtlZeroMemory(candidate, sizeof(*candidate));
             if (!KswordArkSpecialTryCapture(
                     ModuleCache,
                     Kind,
                     candidates[candidateIndex],
-                    &candidate)) {
+                    candidate,
+                    &Workspace->ListScratch)) {
                 continue;
             }
-            if (KswordArkSpecialCaptureBetter(&candidate, &best)) {
-                best = candidate;
+            if (KswordArkSpecialCaptureBetter(candidate, &Workspace->Best)) {
+                Workspace->Best = *candidate;
                 ambiguous = FALSE;
             }
-            else if (best.Valid && candidate.Count == best.Count &&
-                candidate.GlobalAddress != best.GlobalAddress) {
+            else if (Workspace->Best.Valid &&
+                candidate->Count == Workspace->Best.Count &&
+                candidate->GlobalAddress != Workspace->Best.GlobalAddress) {
                 ambiguous = TRUE;
             }
         }
     }
-    if (!best.Valid || ambiguous) {
+    if (!Workspace->Best.Valid || ambiguous) {
         *AmbiguousOut = ambiguous;
         return FALSE;
     }
-    *CaptureOut = best;
     return TRUE;
 }
 
@@ -894,6 +913,7 @@ KswordArkSpecialEnumerateOne(
     _Inout_ KSWORD_ARK_CALLBACK_ENUM_BUILDER* Builder,
     _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
     _In_ const KSW_RUNTIME_IMAGE_VIEW* NtosView,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_reads_(AnchorCount) PCSTR const* AnchorNames,
     _In_ ULONG AnchorCount,
     _In_ KSW_SPECIAL_CAPTURE_KIND Kind,
@@ -914,17 +934,15 @@ Return Value:
 
 --*/
 {
-    KSW_SPECIAL_CAPTURE capture;
     BOOLEAN ambiguous = FALSE;
 
-    RtlZeroMemory(&capture, sizeof(capture));
     if (!KswordArkSpecialFindBestCapture(
             NtosView,
             ModuleCache,
             AnchorNames,
             AnchorCount,
             Kind,
-            &capture,
+            Workspace,
             &ambiguous)) {
         KswordArkCallbackEnumAddUnsupportedRow(
             Builder,
@@ -938,7 +956,7 @@ Return Value:
     KswordArkSpecialPublishCapture(
         Builder,
         ModuleCache,
-        &capture,
+        &Workspace->Best,
         CallbackClass,
         RegistrationType,
         NameText);
@@ -984,6 +1002,7 @@ Return Value:
     };
     KSW_RUNTIME_IMAGE_VIEW ntosView;
     KSWORD_ARK_CALLBACK_MODULE_CACHE moduleCache;
+    KSW_SPECIAL_WORKSPACE* workspace = NULL;
     NTSTATUS moduleStatus = STATUS_SUCCESS;
 
     if (Builder == NULL) {
@@ -992,8 +1011,14 @@ Return Value:
     RtlZeroMemory(&ntosView, sizeof(ntosView));
     KswordArkCallbackEnumInitModuleCache(&moduleCache);
     moduleStatus = KswordArkCallbackEnumEnsureModuleCache(&moduleCache);
+    // One bounded nonpaged block is reused serially by all family searches;
+    // no callback data escapes after it is published into the response builder.
+    workspace = (KSW_SPECIAL_WORKSPACE*)KswordARKAllocateNonPagedPool(
+        sizeof(*workspace),
+        KSW_SPECIAL_WORKSPACE_POOL_TAG);
     if (!NT_SUCCESS(moduleStatus) ||
-        !KswordArkSpecialInitializeNtosView(&ntosView)) {
+        !KswordArkSpecialInitializeNtosView(&ntosView) ||
+        workspace == NULL) {
         const ULONG classes[] = {
             KSWORD_ARK_CALLBACK_ENUM_CLASS_POWER_SETTING,
             KSWORD_ARK_CALLBACK_ENUM_CLASS_COALESCING,
@@ -1019,6 +1044,10 @@ Return Value:
                 names[index],
                 L"ntoskrnl 映像视图或已加载模块快照不可用。");
         }
+        if (workspace != NULL) {
+            ExFreePoolWithTag(workspace, KSW_SPECIAL_WORKSPACE_POOL_TAG);
+            workspace = NULL;
+        }
         KswordArkCallbackEnumFreeModuleCache(&moduleCache);
         return;
     }
@@ -1027,6 +1056,7 @@ Return Value:
         Builder,
         &moduleCache,
         &ntosView,
+        workspace,
         powerAnchors,
         RTL_NUMBER_OF(powerAnchors),
         KswSpecialCaptureDoubleList,
@@ -1037,6 +1067,7 @@ Return Value:
         Builder,
         &moduleCache,
         &ntosView,
+        workspace,
         coalescingAnchors,
         RTL_NUMBER_OF(coalescingAnchors),
         KswSpecialCaptureDoubleListIndirect,
@@ -1047,6 +1078,7 @@ Return Value:
         Builder,
         &moduleCache,
         &ntosView,
+        workspace,
         priorityAnchors,
         RTL_NUMBER_OF(priorityAnchors),
         KswSpecialCapturePriorityArray,
@@ -1057,6 +1089,7 @@ Return Value:
         Builder,
         &moduleCache,
         &ntosView,
+        workspace,
         debugPrintAnchors,
         RTL_NUMBER_OF(debugPrintAnchors),
         KswSpecialCaptureDoubleList,
@@ -1067,6 +1100,7 @@ Return Value:
         Builder,
         &moduleCache,
         &ntosView,
+        workspace,
         empAnchors,
         RTL_NUMBER_OF(empAnchors),
         KswSpecialCaptureSingleList,
@@ -1077,11 +1111,14 @@ Return Value:
         Builder,
         &moduleCache,
         &ntosView,
+        workspace,
         plugPlayAnchors,
         RTL_NUMBER_OF(plugPlayAnchors),
         KswSpecialCapturePnpLists,
         KSWORD_ARK_CALLBACK_ENUM_CLASS_PLUG_PLAY,
         KSWORD_ARK_CALLBACK_REGISTRATION_TYPE_PLUG_PLAY,
         L"Plug and Play Notification");
+    ExFreePoolWithTag(workspace, KSW_SPECIAL_WORKSPACE_POOL_TAG);
+    workspace = NULL;
     KswordArkCallbackEnumFreeModuleCache(&moduleCache);
 }
