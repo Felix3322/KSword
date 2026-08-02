@@ -483,7 +483,7 @@ KswordARKCiHashResolveRuntimeLayout(
     LayoutOut->EntryImageSize = KSW_DYN_OFFSET_UNAVAILABLE;
     RtlZeroMemory(&view, sizeof(view));
     RtlZeroMemory(&bestList, sizeof(bestList));
-    if (KeGetCurrentIrql() > APC_LEVEL) {
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
     status = KswordARKHookBuildModuleSnapshot(&modules, &moduleBytes);

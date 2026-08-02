@@ -328,6 +328,12 @@ Return Value:
     *ModuleInfoOut = NULL;
     *BufferBytesOut = 0UL;
 
+    // ZwQuerySystemInformation can enter pageable system services; do not
+    // issue the query while special APC delivery is blocked.
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
     status = ZwQuerySystemInformation(
         KSW_HOOK_SCAN_SYSTEM_MODULE_INFORMATION_CLASS,
         NULL,
