@@ -6972,6 +6972,7 @@ struct FileDock::FileOplockEntry
     HANDLE fileHandle = INVALID_HANDLE_VALUE;
     HANDLE eventHandle = nullptr;
     OVERLAPPED overlapped{};
+    bool ioPending = false;
     std::thread waitThread;
     std::mutex ioMutex;
     std::mutex accessRecordMutex;
@@ -7058,6 +7059,7 @@ bool FileDock::requestFileOplock(FileOplockEntry& entry, unsigned long& requestE
         nullptr,
         &entry.overlapped);
     requestError = requestOk ? ERROR_SUCCESS : ::GetLastError();
+    entry.ioPending = requestOk == FALSE && requestError == ERROR_IO_PENDING;
     if (requestOk != FALSE)
     {
         return false;
@@ -7084,45 +7086,55 @@ bool FileDock::acknowledgeFileOplockBreak(FileOplockEntry& entry, unsigned long&
         return false;
     }
 
-    HANDLE ackEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (ackEvent == nullptr)
+    DWORD bytesReturned = 0;
+    BOOL acknowledgeOk = FALSE;
+    HANDLE fileHandle = INVALID_HANDLE_VALUE;
     {
-        acknowledgeError = ::GetLastError();
-        return false;
+        std::lock_guard<std::mutex> lock(entry.ioMutex);
+        if (entry.releaseRequested.load())
+        {
+            acknowledgeError = ERROR_OPERATION_ABORTED;
+            return false;
+        }
+        if (entry.fileHandle == nullptr ||
+            entry.fileHandle == INVALID_HANDLE_VALUE ||
+            entry.eventHandle == nullptr)
+        {
+            acknowledgeError = ERROR_INVALID_HANDLE;
+            return false;
+        }
+
+        fileHandle = entry.fileHandle;
+        (void)::ResetEvent(entry.eventHandle);
+        entry.overlapped = OVERLAPPED{};
+        entry.overlapped.hEvent = entry.eventHandle;
+        acknowledgeOk = ::DeviceIoControl(
+            fileHandle,
+            FSCTL_OPLOCK_BREAK_ACK_NO_2,
+            nullptr,
+            0,
+            nullptr,
+            0,
+            &bytesReturned,
+            &entry.overlapped);
+        acknowledgeError = acknowledgeOk ? ERROR_SUCCESS : ::GetLastError();
+        entry.ioPending = acknowledgeOk == FALSE && acknowledgeError == ERROR_IO_PENDING;
     }
 
-    OVERLAPPED ackOverlapped{};
-    ackOverlapped.hEvent = ackEvent;
-    DWORD bytesReturned = 0;
-    BOOL acknowledgeOk = ::DeviceIoControl(
-        entry.fileHandle,
-        FSCTL_OPLOCK_BREAK_ACK_NO_2,
-        nullptr,
-        0,
-        nullptr,
-        0,
-        &bytesReturned,
-        &ackOverlapped);
-    acknowledgeError = acknowledgeOk ? ERROR_SUCCESS : ::GetLastError();
     if (!acknowledgeOk && acknowledgeError == ERROR_IO_PENDING)
     {
-        const DWORD waitResult = ::WaitForSingleObject(ackEvent, INFINITE);
-        if (waitResult == WAIT_OBJECT_0)
+        acknowledgeOk = ::GetOverlappedResult(
+            fileHandle,
+            &entry.overlapped,
+            &bytesReturned,
+            TRUE);
+        acknowledgeError = acknowledgeOk ? ERROR_SUCCESS : ::GetLastError();
         {
-            acknowledgeOk = ::GetOverlappedResult(
-                entry.fileHandle,
-                &ackOverlapped,
-                &bytesReturned,
-                FALSE);
-            acknowledgeError = acknowledgeOk ? ERROR_SUCCESS : ::GetLastError();
-        }
-        else
-        {
-            acknowledgeError = ::GetLastError();
+            std::lock_guard<std::mutex> lock(entry.ioMutex);
+            entry.ioPending = false;
         }
     }
 
-    closeWin32Handle(ackEvent);
     return acknowledgeOk != FALSE;
 }
 
@@ -7131,9 +7143,12 @@ void FileDock::cancelFileOplockRequest(FileOplockEntry& entry)
     std::lock_guard<std::mutex> lock(entry.ioMutex);
     if (entry.fileHandle != nullptr && entry.fileHandle != INVALID_HANDLE_VALUE)
     {
-        (void)::CancelIoEx(entry.fileHandle, &entry.overlapped);
+        if (entry.ioPending)
+        {
+            (void)::CancelIoEx(entry.fileHandle, &entry.overlapped);
+        }
     }
-    if (entry.eventHandle != nullptr)
+    if (!entry.ioPending && entry.eventHandle != nullptr)
     {
         (void)::SetEvent(entry.eventHandle);
     }
@@ -11416,31 +11431,24 @@ void FileDock::addOplockToSelectedFile(FilePanelWidgets& panel, const FileOplock
         {
             bool completionOk = false;
             DWORD completionError = ERROR_SUCCESS;
-            const DWORD waitResult = ::WaitForSingleObject(oplockEntry->eventHandle, INFINITE);
-            if (oplockEntry->releaseRequested.load())
+            DWORD bytesTransferred = 0;
+            HANDLE fileHandle = INVALID_HANDLE_VALUE;
             {
-                break;
+                std::lock_guard<std::mutex> lock(oplockEntry->ioMutex);
+                fileHandle = oplockEntry->fileHandle;
             }
-
-            if (waitResult == WAIT_OBJECT_0)
-            {
-                DWORD bytesTransferred = 0;
-                {
-                    std::lock_guard<std::mutex> lock(oplockEntry->ioMutex);
-                    completionOk = (::GetOverlappedResult(
-                        oplockEntry->fileHandle,
-                        &oplockEntry->overlapped,
-                        &bytesTransferred,
-                        FALSE) != FALSE);
-                    if (!completionOk)
-                    {
-                        completionError = ::GetLastError();
-                    }
-                }
-            }
-            else
+            completionOk = (::GetOverlappedResult(
+                fileHandle,
+                &oplockEntry->overlapped,
+                &bytesTransferred,
+                TRUE) != FALSE);
+            if (!completionOk)
             {
                 completionError = ::GetLastError();
+            }
+            {
+                std::lock_guard<std::mutex> lock(oplockEntry->ioMutex);
+                oplockEntry->ioPending = false;
             }
 
             if (oplockEntry->releaseRequested.load())
