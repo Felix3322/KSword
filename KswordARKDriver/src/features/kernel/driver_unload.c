@@ -4773,14 +4773,16 @@ Return Value:
         normalizedName);
 
     /*
-     * 中文说明：通信阻断记录持有目标 DriverObject 引用和原始 dispatch。
-     * 在 active 或 foreign-conflict 状态直接卸载会破坏恢复身份，必须先让
-     * R3 执行 RESTORE；这里同时使用已引用对象指针和原始请求基址门禁，
-     * 不从目标可写的当前 DriverStart 派生记录键。
+     * 中文说明：communication blind 和通用 IRP 编辑器都会持有目标对象引用
+     * 与原始 dispatch。强卸载前必须先 RESTORE 或显式 ABANDON，避免丢失恢复
+     * 身份；门禁同时匹配已引用对象和原始请求模块基址。
      */
     if (KswordARKDriverCommunicationHasBlockingRecord(
         driverObject,
-        requestSnapshot.targetModuleBase)) {
+        requestSnapshot.targetModuleBase) ||
+        KswordARKDriverDispatchHasBlockingRecord(
+            driverObject,
+            requestSnapshot.targetModuleBase)) {
         /* 中文说明：沿用固定 operation-failed 响应状态承载可重试的 busy 原因。 */
         response->status = KSWORD_ARK_DRIVER_UNLOAD_STATUS_OPERATION_FAILED;
         /* 中文说明：lastStatus 明确要求调用方先恢复通信入口。 */

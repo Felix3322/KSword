@@ -39,6 +39,7 @@
 #include "../../../shared/driver/KswordArkPlatformAuditIoctl.h"
 #include "../../../shared/driver/KswordArkI8042AuditIoctl.h"
 #include "../../../shared/driver/KswordArkDriverBlindIoctl.h"
+#include "../../../shared/driver/KswordArkDriverDispatchIoctl.h"
 #include "../../../shared/driver/KswordArkFilterIoctl.h"
 #include "../../../shared/driver/KswordArkKernelObjectIoctl.h"
 #include "../../../shared/driver/KswordArkHwidIoctl.h"
@@ -1678,6 +1679,29 @@ namespace ksword::ark
         std::uint64_t driverStart = 0;           // driverStart：用于核对模块基址的驱动镜像起点。
         std::uint64_t rejectDispatchAddress = 0; // rejectDispatchAddress：R0 捕获的系统拒绝入口。
         std::wstring driverName;                 // driverName：R0 返回的 canonical DriverObject 名称。
+    };
+
+    // DriverDispatchControlResult：任意 DriverObject.MajorFunction 单槽事务结果。
+    // 指针字段是显式高级编辑数据；R0 不限制目标类别或地址归属。
+    struct DriverDispatchControlResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        std::uint32_t version = 0;
+        std::uint32_t action = 0;
+        std::uint32_t state = KSWORD_ARK_DRIVER_DISPATCH_STATE_INACTIVE;
+        std::uint32_t responseFlags = 0;
+        long lastStatus = 0;
+        std::uint32_t majorFunction = 0;
+        std::uint32_t generation = 0;
+        std::uint64_t targetModuleBase = 0;
+        std::uint64_t driverObjectAddress = 0;
+        std::uint64_t currentDispatchAddress = 0;
+        std::uint64_t originalDispatchAddress = 0;
+        std::uint64_t appliedDispatchAddress = 0;
+        std::uint64_t requestedDispatchAddress = 0;
+        std::uint64_t selfDriverObjectAddress = 0;
+        std::wstring driverName;
     };
 
     // CallbackRuntimeResult wraps the runtime-state response packet.

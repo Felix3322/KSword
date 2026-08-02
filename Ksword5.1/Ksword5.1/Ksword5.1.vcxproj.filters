@@ -269,6 +269,9 @@
     <ClCompile Include="KernelDock\KernelDeviceDriverObjectsTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="KernelDock\KernelDriverDispatchEditorDialog.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="KernelDock\KernelDeviceDriverObjectsWorker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -845,6 +848,9 @@
     <ClCompile Include="ArkDriverClient\ArkDriverBlind.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverDispatch.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverKernel.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
@@ -1034,6 +1040,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\shared\driver\KswordArkSystemTimeIoctl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\shared\driver\KswordArkDriverDispatchIoctl.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelCleanImageBaseline.h">
@@ -1228,6 +1237,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelDeviceDriverObjectsTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelDriverDispatchEditorDialog.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelDeviceDriverObjectsWorker.h">

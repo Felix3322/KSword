@@ -4,6 +4,7 @@
 
 #include "driver/KswordArkKernelIoctl.h"
 #include "driver/KswordArkDriverBlindIoctl.h"
+#include "driver/KswordArkDriverDispatchIoctl.h"
 
 EXTERN_C_START
 
@@ -97,6 +98,37 @@ BOOLEAN
 KswordARKDriverCommunicationHasBlockingRecord(
     _In_ PDRIVER_OBJECT TargetDriverObject,
     _In_ ULONGLONG OriginalRequestModuleBase
+    );
+
+NTSTATUS
+KswordARKDriverDispatchInitialize(
+    _In_ PDRIVER_OBJECT DriverObject
+    );
+
+VOID
+KswordARKDriverDispatchUninitialize(
+    VOID
+    );
+
+NTSTATUS
+KswordARKDriverControlDispatch(
+    _In_ const KSWORD_ARK_DRIVER_DISPATCH_REQUEST* Request,
+    _Out_ KSWORD_ARK_DRIVER_DISPATCH_RESPONSE* Response
+    );
+
+BOOLEAN
+KswordARKDriverDispatchHasBlockingRecord(
+    _In_ PDRIVER_OBJECT TargetDriverObject,
+    _In_ ULONGLONG OriginalRequestModuleBase
+    );
+
+NTSTATUS
+KswordARKKernelIoctlControlDriverDispatch(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
     );
 
 NTSTATUS

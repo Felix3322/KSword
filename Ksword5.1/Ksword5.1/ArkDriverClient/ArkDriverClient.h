@@ -330,6 +330,42 @@ namespace ksword::ark
         DriverCommunicationControlResult restoreDriverCommunication(
             std::uint64_t moduleBase,
             const std::wstring& displayName = std::wstring()) const;
+        // 通用 MajorFunction 编辑只封装身份/CAS 协议，不施加目标或地址策略。
+        DriverDispatchControlResult controlDriverDispatch(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long action,
+            unsigned long majorFunction,
+            std::uint64_t expectedDriverObjectAddress = 0U,
+            std::uint64_t expectedCurrentDispatchAddress = 0U,
+            std::uint64_t desiredDispatchAddress = 0U,
+            std::uint32_t expectedGeneration = 0U,
+            bool uiConfirmed = false) const;
+        DriverDispatchControlResult queryDriverDispatch(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long majorFunction,
+            std::uint64_t expectedDriverObjectAddress = 0U) const;
+        DriverDispatchControlResult applyDriverDispatch(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long majorFunction,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint64_t expectedCurrentDispatchAddress,
+            std::uint64_t desiredDispatchAddress,
+            std::uint32_t expectedGeneration) const;
+        DriverDispatchControlResult restoreDriverDispatch(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long majorFunction,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint32_t expectedGeneration) const;
+        DriverDispatchControlResult abandonDriverDispatch(
+            std::uint64_t moduleBase,
+            const std::wstring& canonicalDriverName,
+            unsigned long majorFunction,
+            std::uint64_t expectedDriverObjectAddress,
+            std::uint32_t expectedGeneration) const;
         // prepareMutation / commitMutation / rollbackMutation / queryMutationAudit：
         // - 输入：受控 transaction 参数或只读 audit 查询参数。
         // - 处理：仅在 ArkDriverClient 内封装 mutation IOCTL；Dock UI 不直接调用 DeviceIoControl。

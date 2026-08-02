@@ -89,6 +89,12 @@ Return Value:
         TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKDriverCommunicationInitialize unavailable %!STATUS!", status);
     }
 
+    // 通用 IRP 编辑器不依赖 blind 的目标策略；只初始化事务表和自身身份。
+    status = KswordARKDriverDispatchInitialize(DriverObject);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKDriverDispatchInitialize unavailable %!STATUS!", status);
+    }
+
     // Register cleanup callback for WPP_CLEANUP during framework teardown.
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.EvtCleanupCallback = KswordARKDriverEvtDriverContextCleanup;
@@ -108,6 +114,7 @@ Return Value:
         // 框架失败时对称撤销系统变速状态，确保维护 DPC 不会残留。
         KswordARKSystemTimeUninitialize();
         // 中文说明：框架创建失败时撤销通信控制状态和所有潜在引用。
+        KswordARKDriverDispatchUninitialize();
         KswordARKDriverCommunicationUninitialize();
         // Release the optional HVM capability state on early framework failure.
         KswordARKHvmUninitialize();
@@ -125,6 +132,7 @@ Return Value:
         // 控制设备不可见时不会有合法变速请求，立即释放其运行时状态。
         KswordARKSystemTimeUninitialize();
         // 中文说明：控制设备创建失败时不保留通信控制全局状态。
+        KswordARKDriverDispatchUninitialize();
         KswordARKDriverCommunicationUninitialize();
         // Release the optional HVM capability state on early device failure.
         KswordARKHvmUninitialize();
@@ -143,6 +151,7 @@ Return Value:
         // 回调初始化回滚必须同时撤销可能的系统变速维护对象。
         KswordARKSystemTimeUninitialize();
         // 中文说明：回调初始化失败返回前撤销通信控制状态。
+        KswordARKDriverDispatchUninitialize();
         KswordARKDriverCommunicationUninitialize();
         // Release any explicit HVM resources before returning initialization failure.
         KswordARKHvmUninitialize();
@@ -204,6 +213,8 @@ Return Value:
     // 最先停止系统计时钩子并恢复原始 HAL 槽，防止卸载后回调到本驱动映像。
     KswordARKSystemTimeUninitialize();
     // 中文说明：最先恢复仍由本功能持有的 MajorFunction，并释放目标 DriverObject 引用。
+    // 先撤销任意槽位编辑，再恢复可能位于其下层的五槽 communication blind。
+    KswordARKDriverDispatchUninitialize();
     KswordARKDriverCommunicationUninitialize();
     // Release all VMX/VMCS/EPT pages before the driver image can leave memory.
     KswordARKHvmUninitialize();

@@ -1,5 +1,6 @@
 
 #include "KernelDeviceDriverObjectsTab.h"
+#include "KernelDriverDispatchEditorDialog.h"
 #include "KernelDock.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
@@ -586,11 +587,26 @@ void KernelDeviceDriverObjectsTab::showTableContextMenu(const QPoint& localPosit
     QAction* copyRowAction = menu.addAction(kernelText("kernel.device_driver.menu.copy_row", QStringLiteral("复制当前行")));
     QAction* copyTsvAction = menu.addAction(kernelText("kernel.device_driver.menu.copy_visible_tsv", QStringLiteral("复制可见结果 TSV")));
     QAction* exportAction = menu.addAction(kernelText("kernel.device_driver.menu.export_tsv", QStringLiteral("导出 TSV")));
+    menu.addSeparator();
+    QAction* dispatchEditorAction = menu.addAction(
+        kernelText(
+            "kernel.device_driver.menu.dispatch_editor",
+            QStringLiteral("打开 IRP / MajorFunction 编辑器")));
+
+    const bool editableDriverObject = row >= 0 &&
+        row < static_cast<int>(m_visibleRows.size()) &&
+        !m_visibleRows[static_cast<std::size_t>(row)].isScopeEntry &&
+        !m_visibleRows[static_cast<std::size_t>(row)].isDirectory &&
+        (m_visibleRows[static_cast<std::size_t>(row)].fullPathText.startsWith(
+            QStringLiteral("\\Driver\\"), Qt::CaseInsensitive) ||
+         m_visibleRows[static_cast<std::size_t>(row)].fullPathText.startsWith(
+            QStringLiteral("\\FileSystem\\"), Qt::CaseInsensitive));
 
     copyCellAction->setEnabled(row >= 0 && column >= 0);
     copyRowAction->setEnabled(row >= 0);
     copyTsvAction->setEnabled(!m_visibleRows.empty());
     exportAction->setEnabled(!m_visibleRows.empty());
+    dispatchEditorAction->setEnabled(editableDriverObject);
 
     QAction* selectedAction = menu.exec(m_tableWidget->viewport()->mapToGlobal(localPosition));
     if (selectedAction == copyCellAction)
@@ -608,6 +624,13 @@ void KernelDeviceDriverObjectsTab::showTableContextMenu(const QPoint& localPosit
     else if (selectedAction == exportAction)
     {
         exportVisibleRowsAsTsv();
+    }
+    else if (selectedAction == dispatchEditorAction && editableDriverObject)
+    {
+        const KernelDeviceDriverObjectEntry& entry =
+            m_visibleRows[static_cast<std::size_t>(row)];
+        KernelDriverDispatchEditorDialog dialog(entry.fullPathText, this);
+        dialog.exec();
     }
 }
 
