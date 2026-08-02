@@ -386,6 +386,9 @@ Return Value:
         Response->vpbFlags = (ULONG)vpb->Flags;
         Response->vpbSerialNumber = vpb->SerialNumber;
         labelChars = (USHORT)(vpb->VolumeLabelLength / sizeof(WCHAR));
+        if (labelChars > RTL_NUMBER_OF(vpb->VolumeLabel)) {
+            labelChars = (USHORT)RTL_NUMBER_OF(vpb->VolumeLabel);
+        }
         if (labelChars >= KSWORD_ARK_FILE_INFO_VOLUME_LABEL_MAX_CHARS) {
             labelChars = KSWORD_ARK_FILE_INFO_VOLUME_LABEL_MAX_CHARS - 1U;
         }
