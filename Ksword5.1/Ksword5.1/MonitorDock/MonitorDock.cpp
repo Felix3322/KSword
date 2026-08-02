@@ -12301,6 +12301,52 @@ void MonitorDock::startEtwCapture()
             return;
         }
 
+        const auto reportStopped = [guardThis]()
+        {
+            QMetaObject::invokeMethod(qApp, [guardThis]() {
+                if (guardThis == nullptr)
+                {
+                    return;
+                }
+                const bool wasPaused = guardThis->m_etwCapturePaused.load();
+                const std::uint64_t pauseEnd100ns = guardThis->m_etwTimelinePauseTime100ns;
+                guardThis->m_etwCaptureRunning.store(false);
+                guardThis->m_etwCapturePaused.store(false);
+                if (guardThis->m_etwCaptureStopTime100ns == 0)
+                {
+                    guardThis->m_etwCaptureStopTime100ns = wasPaused && pauseEnd100ns != 0
+                        ? pauseEnd100ns
+                        : currentSystemTime100ns();
+                }
+                if (wasPaused && pauseEnd100ns != 0)
+                {
+                    guardThis->closeEtwTimelinePauseInterval(pauseEnd100ns);
+                }
+                guardThis->m_etwTimelinePauseTime100ns = 0;
+
+                const std::uint64_t eventsLost = guardThis->m_etwSourceEventsLost.load(std::memory_order_relaxed);
+                const bool archiveFailed = guardThis->m_etwArchiveWriteFailed.load(std::memory_order_relaxed);
+                if (guardThis->m_etwCaptureStatusLabel != nullptr)
+                {
+                    guardThis->m_etwCaptureStatusLabel->setText(archiveFailed
+                        ? QStringLiteral("● ETW归档写入失败")
+                        : (eventsLost == 0
+                            ? QStringLiteral("● 已停止")
+                            : QStringLiteral("● ETW源事件丢失:%1").arg(static_cast<qulonglong>(eventsLost))));
+                    guardThis->m_etwCaptureStatusLabel->setStyleSheet(buildStatusStyle(
+                        !archiveFailed && eventsLost == 0 ? monitorIdleColorHex() : monitorErrorColorHex()));
+                }
+                guardThis->updateEtwCaptureActionState();
+                if (guardThis->m_etwUiUpdateTimer != nullptr && guardThis->m_etwUiUpdateTimer->isActive())
+                {
+                    guardThis->m_etwUiUpdateTimer->stop();
+                }
+                guardThis->flushEtwPendingRows(true);
+                guardThis->scheduleEtwArchiveFilterRebuild();
+                kPro.set(guardThis->m_etwCaptureProgressPid, "ETW监听结束", 0, 100.0f);
+            }, Qt::QueuedConnection);
+        };
+
         const std::wstring sessionNameWide = guardThis->m_etwSessionName.toStdWString();
         const ULONG propertyBufferSize = static_cast<ULONG>(
             sizeof(EVENT_TRACE_PROPERTIES) + (sessionNameWide.size() + 1) * sizeof(wchar_t));
@@ -12359,6 +12405,21 @@ void MonitorDock::startEtwCapture()
         }
 
         guardThis->m_etwSessionHandle.store(static_cast<std::uint64_t>(sessionHandle));
+        if (guardThis->m_etwCaptureStopFlag.load())
+        {
+            const std::uint64_t ownedSessionHandle = guardThis->m_etwSessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePtr,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            guardThis->finishEtwArchiveSession();
+            reportStopped();
+            return;
+        }
         kPro.set(guardThis->m_etwCaptureProgressPid, "启用Provider", 0, 30.0f);
 
         int enableSuccessCount = legacyKernelEnableFlags != 0 ? 1 : 0;
@@ -12448,6 +12509,26 @@ void MonitorDock::startEtwCapture()
         }
 
         guardThis->m_etwTraceHandle.store(static_cast<std::uint64_t>(traceHandle));
+        if (guardThis->m_etwCaptureStopFlag.load())
+        {
+            const std::uint64_t ownedTraceHandle = guardThis->m_etwTraceHandle.exchange(0);
+            if (ownedTraceHandle != 0)
+            {
+                ::CloseTrace(static_cast<TRACEHANDLE>(ownedTraceHandle));
+            }
+            const std::uint64_t ownedSessionHandle = guardThis->m_etwSessionHandle.exchange(0);
+            if (ownedSessionHandle != 0)
+            {
+                ::ControlTraceW(
+                    static_cast<TRACEHANDLE>(ownedSessionHandle),
+                    loggerNamePtr,
+                    properties,
+                    EVENT_TRACE_CONTROL_STOP);
+            }
+            guardThis->finishEtwArchiveSession();
+            reportStopped();
+            return;
+        }
         kPro.set(guardThis->m_etwCaptureProgressPid, "ETW事件接收中", 0, 55.0f);
 
         const ULONG processStatus = ::ProcessTrace(&traceHandle, 1, nullptr, nullptr);
