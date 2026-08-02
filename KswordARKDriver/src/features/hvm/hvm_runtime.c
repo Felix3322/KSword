@@ -399,8 +399,11 @@ KswordARKHvmAllocatePageLocked(
     PVOID page = NULL;
 
     /* Enforce a bounded allocation ledger before allocating nonpaged memory. */
-    if (Runtime->EptPageCount >= KSW_HVM_MAX_EPT_PAGES ||
-        PhysicalAddress == NULL) {
+    if (PhysicalAddress == NULL) {
+        return NULL;
+    }
+    PhysicalAddress->QuadPart = 0LL;
+    if (Runtime->EptPageCount >= KSW_HVM_MAX_EPT_PAGES) {
         return NULL;
     }
     highest.QuadPart = MAXLONGLONG;
