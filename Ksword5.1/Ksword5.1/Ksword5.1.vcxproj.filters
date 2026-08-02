@@ -71,6 +71,9 @@
     <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\Experimental\BugcheckGuardPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MemoryDock\MemoryDock.ProcessMemoryEvidence.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -974,6 +977,9 @@
       <Filter>Header Files</Filter>
     </QtMoc>
     <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\Experimental\BugcheckGuardPage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.h">

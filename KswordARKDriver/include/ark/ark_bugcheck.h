@@ -31,5 +31,27 @@ KswordARKBugcheckIoctlSetBitmap(
     _Out_ size_t* BytesReturned
     );
 
+
+// Initialize and tear down the independent one-shot KeBugCheckEx delay guard.
+// It is disabled by default and must restore the exported entry before driver
+// unload. It is intentionally not coupled to the optional VMware panel.
+VOID
+KswordARKBugcheckGuardInitialize(
+    VOID
+    );
+
+VOID
+KswordARKBugcheckGuardUninitialize(
+    VOID
+    );
+
+NTSTATUS
+KswordARKBugcheckGuardIoctlConfigure(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    );
 EXTERN_C_END
 

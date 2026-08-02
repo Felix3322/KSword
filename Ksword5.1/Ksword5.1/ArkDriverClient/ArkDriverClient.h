@@ -48,6 +48,14 @@ namespace ksword::ark
             std::uint32_t brandColorRgb,
             const std::vector<std::uint8_t>& bgraPixels) const;
 
+
+        // Confirmation-gated control/status path for the one-shot KeBugCheckEx delay guard.
+        BugcheckGuardResult configureBugcheckGuard(
+            unsigned long action,
+            unsigned long delaySeconds = 0UL,
+            bool uiConfirmed = false,
+            bool tryIgnoreError = false,
+            DriverHandle* existingHandle = nullptr) const;
         // Open one synchronous control handle. The returned handle owns CloseHandle.
         DriverHandle open(unsigned long desiredAccess = GENERIC_READ | GENERIC_WRITE) const;
 

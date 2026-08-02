@@ -22,6 +22,7 @@ namespace ks::misc
     class ApplicationControlPage;
     class SoundSourcePage;
     class SystemTimePage;
+    class BugcheckGuardPage;
 }
 
 class MiscDock final : public QWidget
@@ -50,4 +51,5 @@ private:
     ks::misc::ApplicationControlPage* m_applicationControlPage = nullptr; // m_applicationControlPage：应用控制页组件。
     ks::misc::SoundSourcePage* m_soundSourcePage = nullptr; // m_soundSourcePage：全局输出声音来源检测页。
     ks::misc::SystemTimePage* m_systemTimePage = nullptr; // m_systemTimePage：系统全局变速控制页。
+    ks::misc::BugcheckGuardPage* m_bugcheckGuardPage = nullptr; // m_bugcheckGuardPage：实验性一次性蓝屏缓冲控制页。
 };

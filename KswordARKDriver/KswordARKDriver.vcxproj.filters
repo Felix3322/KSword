@@ -615,6 +615,9 @@
     <ClCompile Include="src\features\bugcheck\bugcheck_ioctl.c">
       <Filter>Source Files\Features\Bugcheck</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\bugcheck\bugcheck_guard.c">
+      <Filter>Source Files\Features\Bugcheck</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\process\process_actions.c">
       <Filter>Source Files\Features</Filter>
     </ClCompile>

@@ -57,4 +57,46 @@ namespace ksword::ark
             nullptr,
             0);
     }
+    BugcheckGuardResult DriverClient::configureBugcheckGuard(
+        const unsigned long action,
+        const unsigned long delaySeconds,
+        const bool uiConfirmed,
+        const bool tryIgnoreError,
+        DriverHandle* const existingHandle) const
+    {
+        BugcheckGuardResult result{};
+        KSWORD_ARK_BUGCHECK_GUARD_REQUEST request{};
+
+        request.size = sizeof(request);
+        request.version = KSWORD_ARK_BUGCHECK_GUARD_PROTOCOL_VERSION;
+        request.action = action;
+        request.delaySeconds = delaySeconds;
+        if (uiConfirmed) {
+            request.flags = KSWORD_ARK_BUGCHECK_GUARD_FLAG_UI_CONFIRMED;
+            request.confirmationToken =
+                KSWORD_ARK_BUGCHECK_GUARD_CONFIRMATION_TOKEN;
+        }
+        if (tryIgnoreError) {
+            request.flags |= KSWORD_ARK_BUGCHECK_GUARD_FLAG_TRY_IGNORE_ERROR;
+        }
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &result.response,
+            static_cast<unsigned long>(sizeof(result.response)),
+            existingHandle);
+        result.unsupported = !result.io.ok &&
+            (result.io.win32Error == ERROR_INVALID_FUNCTION ||
+             result.io.win32Error == ERROR_NOT_SUPPORTED);
+        if (result.io.ok &&
+            (result.io.bytesReturned < sizeof(result.response) ||
+             result.response.version != KSWORD_ARK_BUGCHECK_GUARD_PROTOCOL_VERSION ||
+             result.response.size != sizeof(result.response))) {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+        }
+        result.io.ntStatus = result.response.lastStatus;
+        return result;
+    }
 }

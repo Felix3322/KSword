@@ -1215,6 +1215,15 @@ namespace ksword::ark
         KSWORD_ARK_CONTROL_SYSTEM_TIME_RESPONSE response{}; // response：控制结果。
     };
 
+
+    // BugcheckGuardResult keeps the transport result independent from the R0
+    // state snapshot, allowing an older driver to degrade safely in the UI.
+    struct BugcheckGuardResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_BUGCHECK_GUARD_RESPONSE response{};
+    };
     // DriverIntegrityResult carries DriverObject/LDR/CPU integrity evidence.
     // Input: produced by queryDriverIntegrity or queryKernelCpuIntegrity.
     // Processing: unsupported provides graceful UI fallback for older R0 drivers.

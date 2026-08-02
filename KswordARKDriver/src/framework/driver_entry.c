@@ -193,6 +193,7 @@ Return Value:
     // VMware bugcheck diagnostics are strictly optional. The initializer
     // returns without registering callbacks on every unsupported environment.
     (void)KswordARKBugcheckInitialize(DriverObject, controlDevice);
+    KswordARKBugcheckGuardInitialize();
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
     return STATUS_SUCCESS;
@@ -241,6 +242,8 @@ Return Value:
 
     // Stop crash callbacks before any other teardown can invalidate state used
     // by the nonpaged diagnostic path.
+    // Restore the one-shot KeBugCheckEx entry before the driver image can unload.
+    KswordARKBugcheckGuardUninitialize();
     KswordARKBugcheckUninitialize();
 
     // 必须先注销内核调试回调，防止后续卸载阶段再次进入本驱动代码。

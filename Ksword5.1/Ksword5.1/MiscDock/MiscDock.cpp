@@ -3,10 +3,12 @@
 #include "BootEditor/BootEditorTab.h"
 #include "ApplicationControlPage.h"
 #include "ContextMenuCleaner/ContextMenuCleanerTab.h"
+#include "Experimental/BugcheckGuardPage.h"
 #include "DiskEditor/DiskEditorTab.h"
 #include "SoundSource/SoundSourcePage.h"
 #include "SystemTime/SystemTimePage.h"
 
+#include "../Internationalization/LanguageManager.h"
 #include <QIcon>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -52,6 +54,19 @@ void MiscDock::initializeUi()
         m_systemTimePage,
         QIcon(QStringLiteral(":/Icon/system_time.svg")),
         QStringLiteral("系统变速"));
+
+    // 蓝屏缓冲页严格归入“实验性”：它只提供一次性 KeBugCheckEx 延迟，
+    // 不承诺恢复系统，也不默认跳过最终 BugCheck。
+    m_bugcheckGuardPage = new ks::misc::BugcheckGuardPage(m_mainTabWidget);
+    m_mainTabWidget->addTab(
+        m_bugcheckGuardPage,
+        QIcon(QStringLiteral(":/Icon/codeeditor_replace.svg")),
+        QStringLiteral("实验性"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_bugcheckGuardPage,
+        QStringLiteral("misc.experimental.tab"),
+        QStringLiteral("实验性"));
 
     // Shell 关联管理页：
     // - 覆盖右键菜单、URL 绑定、打开方式和 Explorer 第三方主页项；
