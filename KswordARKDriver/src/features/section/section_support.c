@@ -73,6 +73,12 @@ typedef struct _MMVAD
     } ProcessUnion;
 } MMVAD, *PMMVAD;
 
+typedef NTSTATUS
+(NTAPI* KSW_PS_REFERENCE_PROCESS_FILE_POINTER_FN)(
+    _In_ PEPROCESS Process,
+    _Outptr_ PFILE_OBJECT* FileObject
+    );
+
 BOOLEAN
 KswordARKSectionIsOffsetPresent(
     _In_ ULONG Offset
@@ -185,6 +191,65 @@ Return Value:
     }
 
     return ((DynState->CapabilityMask & KSW_CAP_SECTION_CONTROL_AREA) == KSW_CAP_SECTION_CONTROL_AREA) ? TRUE : FALSE;
+}
+
+NTSTATUS
+KswordARKSectionReferenceProcessImageControlArea(
+    _In_ PEPROCESS ProcessObject,
+    _Outptr_result_maybenull_ PFILE_OBJECT* FileObjectOut,
+    _Outptr_result_maybenull_ PVOID* ControlAreaOut
+    )
+/*++
+
+Routine Description:
+
+    Resolve the process image ControlArea without EPROCESS.SectionObject or
+    SECTION.ControlArea offsets.  PsReferenceProcessFilePointer supplies a
+    referenced FILE_OBJECT, whose public SectionObjectPointer projection owns
+    the image ControlArea pointer.  The caller releases FileObjectOut.
+
+--*/
+{
+    UNICODE_STRING routineName;
+    KSW_PS_REFERENCE_PROCESS_FILE_POINTER_FN referenceFile = NULL;
+    PFILE_OBJECT fileObject = NULL;
+    PSECTION_OBJECT_POINTERS sectionPointers = NULL;
+    PVOID controlArea = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (ProcessObject == NULL || FileObjectOut == NULL || ControlAreaOut == NULL ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *FileObjectOut = NULL;
+    *ControlAreaOut = NULL;
+    RtlInitUnicodeString(&routineName, L"PsReferenceProcessFilePointer");
+    referenceFile = (KSW_PS_REFERENCE_PROCESS_FILE_POINTER_FN)
+        MmGetSystemRoutineAddress(&routineName);
+    if (referenceFile == NULL) {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    status = referenceFile(ProcessObject, &fileObject);
+    if (!NT_SUCCESS(status) || fileObject == NULL) {
+        return NT_SUCCESS(status) ? STATUS_NOT_FOUND : status;
+    }
+    __try {
+        sectionPointers = fileObject->SectionObjectPointer;
+        if (sectionPointers != NULL) {
+            controlArea = sectionPointers->ImageSectionObject;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+    if (!NT_SUCCESS(status) || controlArea == NULL) {
+        ObDereferenceObject(fileObject);
+        return NT_SUCCESS(status) ? STATUS_NOT_FOUND : status;
+    }
+    *FileObjectOut = fileObject;
+    *ControlAreaOut = controlArea;
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS

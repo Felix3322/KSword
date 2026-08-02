@@ -490,6 +490,7 @@ Return Value:
     ULONG requestFlags = KSWORD_ARK_THREAD_DETAIL_FLAG_INCLUDE_ALL;
     ULONG failureCount = 0UL;
     ULONG missingRequired = 0UL;
+    ULONG stackFieldSuccessCount = 0UL;
     NTSTATUS status = STATUS_SUCCESS;
     NTSTATUS lastStatus = STATUS_SUCCESS;
 
@@ -613,16 +614,28 @@ Return Value:
         KswordARKThreadDetailNoteFailure(status, &failureCount, &lastStatus);
 
         status = KswordARKThreadDetailReadUlong64Field(threadObject, dynState.Kernel.KtInitialStack, &Response->initialStack);
+        if (NT_SUCCESS(status)) {
+            ++stackFieldSuccessCount;
+        }
         KswordARKThreadDetailNoteFailure(status, &failureCount, &lastStatus);
         status = KswordARKThreadDetailReadUlong64Field(threadObject, dynState.Kernel.KtStackLimit, &Response->stackLimit);
+        if (NT_SUCCESS(status)) {
+            ++stackFieldSuccessCount;
+        }
         KswordARKThreadDetailNoteFailure(status, &failureCount, &lastStatus);
         status = KswordARKThreadDetailReadUlong64Field(threadObject, dynState.Kernel.KtStackBase, &Response->stackBase);
+        if (NT_SUCCESS(status)) {
+            ++stackFieldSuccessCount;
+        }
         KswordARKThreadDetailNoteFailure(status, &failureCount, &lastStatus);
         status = KswordARKThreadDetailReadUlong64Field(threadObject, dynState.Kernel.KtKernelStack, &Response->kernelStack);
         if (NT_SUCCESS(status)) {
+            ++stackFieldSuccessCount;
+        }
+        if (stackFieldSuccessCount >= 3UL) {
             Response->fieldFlags |= KSWORD_ARK_THREAD_DETAIL_FIELD_STACK_LIMITS;
         }
-        else {
+        if (stackFieldSuccessCount != 4UL) {
             Response->missingCapabilityMask |= KSW_CAP_THREAD_STACK_FIELDS;
         }
         KswordARKThreadDetailNoteFailure(status, &failureCount, &lastStatus);

@@ -51,13 +51,13 @@ static const KSW_CAP_FEATURE_TEMPLATE g_KswordArkFeatureTemplates[] = {
     { KSWORD_ARK_FEATURE_ID_CALLBACK_CONTROL, "Callback control", KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY | KSWORD_ARK_FEATURE_FLAG_MUTATING | KSWORD_ARK_FEATURE_FLAG_POLICY_GATED, KSWORD_ARK_SECURITY_POLICY_ALLOW_CALLBACK_CONTROL, 0ULL, "Policy allows callback control" },
     { KSWORD_ARK_FEATURE_ID_DYNDATA_STATUS, "DynData status", KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY | KSWORD_ARK_FEATURE_FLAG_READ_ONLY, 0UL, 0ULL, "DynData query IOCTLs available" },
     { KSWORD_ARK_FEATURE_ID_PROCESS_PROTECTION_PATCH, "Process protection patch", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_MUTATING | KSWORD_ARK_FEATURE_FLAG_POLICY_GATED, KSWORD_ARK_SECURITY_POLICY_ALLOW_PROCESS_PROTECTION, KSW_CAP_PROCESS_PROTECTION_PATCH, "EpProtection + EpSignatureLevel + EpSectionSignatureLevel" },
-    { KSWORD_ARK_FEATURE_ID_PROCESS_HANDLE_TABLE, "Process handle table", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_PROCESS_OBJECT_TABLE | KSW_CAP_HANDLE_TABLE_DECODE, "EpObjectTable + ObDecodeShift + ObAttributesShift + OtName + OtIndex" },
-    { KSWORD_ARK_FEATURE_ID_OBJECT_TYPE_FIELDS, "Object type fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_OBJECT_TYPE_FIELDS, "OtName + OtIndex" },
-    { KSWORD_ARK_FEATURE_ID_THREAD_STACK_FIELDS, "Thread stack fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_THREAD_STACK_FIELDS, "KtInitialStack + KtStackLimit + KtStackBase + KtKernelStack" },
-    { KSWORD_ARK_FEATURE_ID_THREAD_IO_COUNTERS, "Thread I/O counters", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_THREAD_IO_COUNTERS, "KTHREAD read/write/other operation and transfer counters" },
-    { KSWORD_ARK_FEATURE_ID_ALPC_FIELDS, "ALPC fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_ALPC_FIELDS, "ALPC port and communication-info fields" },
-    { KSWORD_ARK_FEATURE_ID_SECTION_CONTROL_AREA, "Section ControlArea", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_SECTION_CONTROL_AREA, "EpSectionObject + MmSectionControlArea + MmControlAreaListHead + MmControlAreaLock" },
-    { KSWORD_ARK_FEATURE_ID_WSL_LXCORE_FIELDS, "WSL lxcore fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_WSL_LXCORE_FIELDS, "LxPicoProc + LxPicoProcInfo + PID/TID fields" },
+    { KSWORD_ARK_FEATURE_ID_PROCESS_HANDLE_TABLE, "Process handle table", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_PROCESS_OBJECT_TABLE | KSW_CAP_HANDLE_TABLE_DECODE, "DynData direct table decode; SystemExtendedHandleInformation fallback" },
+    { KSWORD_ARK_FEATURE_ID_OBJECT_TYPE_FIELDS, "Object type fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_OBJECT_TYPE_FIELDS, "DynData private fields; Object Manager namespace and signature-located table fallback" },
+    { KSWORD_ARK_FEATURE_ID_THREAD_STACK_FIELDS, "Thread stack fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_THREAD_STACK_FIELDS, "DynData full stack; exported accessor-signature fallback for initial/base/limit" },
+    { KSWORD_ARK_FEATURE_ID_THREAD_IO_COUNTERS, "Thread I/O counters", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_THREAD_IO_COUNTERS, "KTHREAD counters; omitted fail-closed when no validated runtime oracle exists" },
+    { KSWORD_ARK_FEATURE_ID_ALPC_FIELDS, "ALPC fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_ALPC_FIELDS, "DynData communication fields; ZwAlpcQueryInformation basic fallback" },
+    { KSWORD_ARK_FEATURE_ID_SECTION_CONTROL_AREA, "Section ControlArea", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_SECTION_CONTROL_AREA, "DynData mapping walk; PsReferenceProcessFilePointer image fallback" },
+    { KSWORD_ARK_FEATURE_ID_WSL_LXCORE_FIELDS, "WSL lxcore fields", KSWORD_ARK_FEATURE_FLAG_REQUIRES_DYNDATA | KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY, 0UL, KSW_CAP_WSL_LXCORE_FIELDS, "DynData Linux IDs; public subsystem and silo evidence fallback" },
     { KSWORD_ARK_FEATURE_ID_IMAGE_TRUST_CI, "Image trust CI", KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY | KSWORD_ARK_FEATURE_FLAG_READ_ONLY, 0UL, 0ULL, "SystemCodeIntegrityInformation + cached file signing level" },
     { KSWORD_ARK_FEATURE_ID_DANGEROUS_ACTION_GOVERNANCE, "Dangerous action governance", KSWORD_ARK_FEATURE_FLAG_KERNEL_ONLY | KSWORD_ARK_FEATURE_FLAG_POLICY_GATED, KSWORD_ARK_SECURITY_POLICY_REQUIRE_CONFIRMATION | KSWORD_ARK_SECURITY_POLICY_DENY_CRITICAL_PROCESS | KSWORD_ARK_SECURITY_POLICY_ADVANCED_MODE, 0ULL, "Central safety policy + audit for mutating IOCTLs" }
 };
@@ -265,6 +265,37 @@ Return Value:
     }
 }
 
+static BOOLEAN
+KswordARKCapabilityHasValidatedRuntimeFallback(
+    _In_ ULONG FeatureId
+    )
+/*++
+
+Routine Description:
+
+    Identify read-only feature groups that remain callable through a bounded,
+    validated runtime fallback when their full private DynData layout is absent.
+
+Return Value:
+
+    TRUE for a feature with a real fallback path; otherwise FALSE.
+
+--*/
+{
+    switch (FeatureId) {
+    case KSWORD_ARK_FEATURE_ID_PROCESS_HANDLE_TABLE:
+    case KSWORD_ARK_FEATURE_ID_OBJECT_TYPE_FIELDS:
+    case KSWORD_ARK_FEATURE_ID_THREAD_STACK_FIELDS:
+    case KSWORD_ARK_FEATURE_ID_ALPC_FIELDS:
+    case KSWORD_ARK_FEATURE_ID_SECTION_CONTROL_AREA:
+    case KSWORD_ARK_FEATURE_ID_WSL_LXCORE_FIELDS:
+        return TRUE;
+
+    default:
+        return FALSE;
+    }
+}
+
 static ULONG
 KswordARKCapabilityEvaluateFeatureState(
     _In_ const KSW_CAP_FEATURE_TEMPLATE* Feature,
@@ -316,8 +347,14 @@ Return Value:
         reasonText = "Security policy denied one or more required operations.";
     }
     else if (Feature->RequiredDynDataMask != 0ULL && presentDynDataMask == 0ULL) {
-        state = KSWORD_ARK_FEATURE_STATE_UNAVAILABLE;
-        reasonText = "Required DynData capability bits are absent.";
+        if (KswordARKCapabilityHasValidatedRuntimeFallback(Feature->FeatureId)) {
+            state = KSWORD_ARK_FEATURE_STATE_DEGRADED;
+            reasonText = "Private DynData is absent; validated runtime fallback remains available.";
+        }
+        else {
+            state = KSWORD_ARK_FEATURE_STATE_UNAVAILABLE;
+            reasonText = "Required DynData capability bits are absent.";
+        }
     }
     else if (Feature->RequiredDynDataMask != 0ULL && presentDynDataMask != Feature->RequiredDynDataMask) {
         state = KSWORD_ARK_FEATURE_STATE_DEGRADED;

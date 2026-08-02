@@ -27,6 +27,13 @@ KswordARKSectionHasRequiredDynData(
     );
 
 NTSTATUS
+KswordARKSectionReferenceProcessImageControlArea(
+    _In_ PEPROCESS ProcessObject,
+    _Outptr_result_maybenull_ PFILE_OBJECT* FileObjectOut,
+    _Outptr_result_maybenull_ PVOID* ControlAreaOut
+    );
+
+NTSTATUS
 KswordARKSectionReadProcessSectionObject(
     _In_ PEPROCESS ProcessObject,
     _In_ const KSW_DYN_STATE* DynState,

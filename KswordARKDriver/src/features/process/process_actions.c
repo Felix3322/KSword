@@ -1926,6 +1926,32 @@ Return Value:
 }
 
 static BOOLEAN
+KswordARKDriverTokenIntegritySourceTrusted(
+    _In_ ULONG Source
+    )
+/*++
+
+Routine Description:
+
+    Accept either an exact PDB profile or the live-validated runtime resolver.
+
+Arguments:
+
+    Source - DynData provenance value for one private token field.
+
+Return Value:
+
+    TRUE only for an identity-bound PDB fact or validated runtime pattern.
+
+--*/
+{
+    return (Source == KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
+            Source == KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN)
+        ? TRUE
+        : FALSE;
+}
+
+static BOOLEAN
 KswordARKDriverTokenIntegrityDynDataReady(
     _In_ const KSW_DYN_STATE* State
     )
@@ -1936,7 +1962,8 @@ Routine Description:
     Validate the exact DynData dependencies required to patch a process token
     mandatory-label SID. 中文说明：这里不接受猜测来源；_EPROCESS.Token 与
     _TOKEN.UserAndGroupCount/UserAndGroups/IntegrityLevelIndex 必须来自当前
-    ntoskrnl PDB profile，并且 capability 已经由 DynData 计算为可用。
+    ntoskrnl PDB profile 或经过真实 Token 查询交叉验证的 runtime pattern，
+    并且 capability 已经由 DynData 计算为可用。
 
 Arguments:
 
@@ -1961,10 +1988,10 @@ Return Value:
         return FALSE;
     }
 
-    return State->KernelSources.EpToken == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        State->KernelSources.TokUserAndGroupCount == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        State->KernelSources.TokUserAndGroups == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        State->KernelSources.TokIntegrityLevelIndex == KSW_DYN_FIELD_SOURCE_PDB_PROFILE;
+    return KswordARKDriverTokenIntegritySourceTrusted(State->KernelSources.EpToken) &&
+        KswordARKDriverTokenIntegritySourceTrusted(State->KernelSources.TokUserAndGroupCount) &&
+        KswordARKDriverTokenIntegritySourceTrusted(State->KernelSources.TokUserAndGroups) &&
+        KswordARKDriverTokenIntegritySourceTrusted(State->KernelSources.TokIntegrityLevelIndex);
 }
 
 static BOOLEAN
@@ -2086,10 +2113,10 @@ KswordARKDriverSetProcessIntegrityByPrivateTokenOffsets(
 
 Routine Description:
 
-    Patch a process primary token's integrity SID through current-kernel PDB
-    offsets. Processing steps:
-    1. Snapshot DynData and require PDB-sourced _EPROCESS.Token plus _TOKEN
-       integrity fields.
+    Patch a process primary token's integrity SID through current-kernel
+    validated DynData offsets. Processing steps:
+    1. Snapshot DynData and require PDB-sourced or live-validated
+       _EPROCESS.Token plus _TOKEN integrity fields.
     2. Reference the target process with PsLookupProcessByProcessId.
     3. Decode the EX_FAST_REF stored at EPROCESS.Token to obtain the token
        object pointer.
@@ -2114,6 +2141,7 @@ Return Value:
     NTSTATUS status = STATUS_SUCCESS;
     ULONG_PTR tokenFastRef = 0U;
     PVOID tokenObject = NULL;
+    PACCESS_TOKEN referencedPrimaryToken = NULL;
     ULONG userAndGroupCount = 0UL;
     ULONG integrityLevelIndex = 0UL;
     SID_AND_ATTRIBUTES* userAndGroups = NULL;
@@ -2172,6 +2200,17 @@ Return Value:
         ObDereferenceObject(processObject);
         return status;
     }
+
+    referencedPrimaryToken = PsReferencePrimaryToken(processObject);
+    if (referencedPrimaryToken == NULL || tokenObject != referencedPrimaryToken) {
+        if (referencedPrimaryToken != NULL) {
+            PsDereferencePrimaryToken(referencedPrimaryToken);
+        }
+        ObDereferenceObject(processObject);
+        return STATUS_OBJECT_TYPE_MISMATCH;
+    }
+    PsDereferencePrimaryToken(referencedPrimaryToken);
+    referencedPrimaryToken = NULL;
 
     if (userAndGroupCount == 0UL ||
         userAndGroupCount > KSWORD_ARK_TOKEN_INTEGRITY_MAX_GROUPS ||

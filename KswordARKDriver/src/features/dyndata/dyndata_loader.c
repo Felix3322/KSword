@@ -17,6 +17,7 @@ Environment:
 #include "ark/ark_dyndata.h"
 #include "ark/ark_dyndata_fields.h"
 #include "ark/ark_log.h"
+#include "../../platform/dyndata_fallback_resolver.h"
 #include "../../platform/kernel_module_identity.h"
 #include "../../platform/process_resolver.h"
 #include "ksw_si_dynconfig.h"
@@ -936,7 +937,7 @@ Return Value:
     if (KswordARKDynDataOffsetPresent(*DestinationOffset)) {
         return TRUE;
     }
-    if (ResolvedOffset <= 0) {
+    if (ResolvedOffset < 0) {
         return FALSE;
     }
 
@@ -950,7 +951,8 @@ Return Value:
 
 static VOID
 KswordARKDynDataActivateRuntimeOffsets(
-    _Inout_ KSW_DYN_STATE* State
+    _Inout_ KSW_DYN_STATE* State,
+    _In_opt_ PDRIVER_OBJECT ValidationDriverObject
     )
 /*++
 
@@ -963,6 +965,7 @@ Routine Description:
 Arguments:
 
     State - Mutable DynData state.
+    ValidationDriverObject - Live KSword driver object for KLDR/public-layout checks.
 
 Return Value:
 
@@ -971,6 +974,7 @@ Return Value:
 --*/
 {
     KSWORD_RUNTIME_DYNDATA_OFFSETS resolved;
+    KSW_RUNTIME_KERNEL_LAYOUT kernelLayout;
     BOOLEAN protectionPresent = FALSE;
     BOOLEAN signaturePresent = FALSE;
     BOOLEAN sectionSignaturePresent = FALSE;
@@ -980,6 +984,10 @@ Return Value:
     }
 
     KswordARKDriverResolveReadOnlyDynDataOffsets(&resolved);
+    KswordARKDriverResolveKernelFallbackLayout(
+        ValidationDriverObject,
+        &State->Ntoskrnl,
+        &kernelLayout);
     KswordARKDynDataStoreRuntimeOffset(
         resolved.EpUniqueProcessId,
         &State->Kernel.EpUniqueProcessId,
@@ -989,9 +997,21 @@ Return Value:
         &State->Kernel.EpActiveProcessLinks,
         &State->KernelSources.EpActiveProcessLinks);
     KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpThreadListHead,
+        &State->Kernel.EpThreadListHead,
+        &State->KernelSources.EpThreadListHead);
+    KswordARKDynDataStoreRuntimeOffset(
         resolved.EpImageFileName,
         &State->Kernel.EpImageFileName,
         &State->KernelSources.EpImageFileName);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpToken,
+        &State->Kernel.EpToken,
+        &State->KernelSources.EpToken);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpFlags,
+        &State->Kernel.EpFlags,
+        &State->KernelSources.EpFlags);
     KswordARKDynDataStoreRuntimeOffset(
         resolved.EpCreateTime,
         &State->Kernel.EpCreateTime,
@@ -1021,9 +1041,53 @@ Return Value:
         &State->Kernel.EpSectionBaseAddress,
         &State->KernelSources.EpSectionBaseAddress);
     KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpJob,
+        &State->Kernel.EpJob,
+        &State->KernelSources.EpJob);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpDebugPort,
+        &State->Kernel.EpDebugPort,
+        &State->KernelSources.EpDebugPort);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpPriorityClass,
+        &State->Kernel.EpPriorityClass,
+        &State->KernelSources.EpPriorityClass);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpActiveThreads,
+        &State->Kernel.EpActiveThreads,
+        &State->KernelSources.EpActiveThreads);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpWin32WindowStation,
+        &State->Kernel.EpWin32WindowStation,
+        &State->KernelSources.EpWin32WindowStation);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EpSecurityPort,
+        &State->Kernel.EpSecurityPort,
+        &State->KernelSources.EpSecurityPort);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.TokUserAndGroupCount,
+        &State->Kernel.TokUserAndGroupCount,
+        &State->KernelSources.TokUserAndGroupCount);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.TokUserAndGroups,
+        &State->Kernel.TokUserAndGroups,
+        &State->KernelSources.TokUserAndGroups);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.TokIntegrityLevelIndex,
+        &State->Kernel.TokIntegrityLevelIndex,
+        &State->KernelSources.TokIntegrityLevelIndex);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.TokMandatoryPolicy,
+        &State->Kernel.TokMandatoryPolicy,
+        &State->KernelSources.TokMandatoryPolicy);
+    KswordARKDynDataStoreRuntimeOffset(
         resolved.EtCid,
         &State->Kernel.EtCid,
         &State->KernelSources.EtCid);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.EtThreadListEntry,
+        &State->Kernel.EtThreadListEntry,
+        &State->KernelSources.EtThreadListEntry);
     KswordARKDynDataStoreRuntimeOffset(
         resolved.EtStartAddress,
         &State->Kernel.EtStartAddress,
@@ -1036,6 +1100,179 @@ Return Value:
         resolved.KtProcess,
         &State->Kernel.KtProcess,
         &State->KernelSources.KtProcess);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.KtInitialStack,
+        &State->Kernel.KtInitialStack,
+        &State->KernelSources.KtInitialStack);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.KtStackLimit,
+        &State->Kernel.KtStackLimit,
+        &State->KernelSources.KtStackLimit);
+    KswordARKDynDataStoreRuntimeOffset(
+        resolved.KtStackBase,
+        &State->Kernel.KtStackBase,
+        &State->KernelSources.KtStackBase);
+
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.KldrInLoadOrderLinks,
+        &State->Kernel.KldrInLoadOrderLinks,
+        &State->KernelSources.KldrInLoadOrderLinks);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.KldrDllBase,
+        &State->Kernel.KldrDllBase,
+        &State->KernelSources.KldrDllBase);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.KldrSizeOfImage,
+        &State->Kernel.KldrSizeOfImage,
+        &State->KernelSources.KldrSizeOfImage);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.KldrFullDllName,
+        &State->Kernel.KldrFullDllName,
+        &State->KernelSources.KldrFullDllName);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.KldrBaseDllName,
+        &State->Kernel.KldrBaseDllName,
+        &State->KernelSources.KldrBaseDllName);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.DoDriverStart,
+        &State->Kernel.DoDriverStart,
+        &State->KernelSources.DoDriverStart);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.DoDriverSize,
+        &State->Kernel.DoDriverSize,
+        &State->KernelSources.DoDriverSize);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.DoDriverSection,
+        &State->Kernel.DoDriverSection,
+        &State->KernelSources.DoDriverSection);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.DoMajorFunction,
+        &State->Kernel.DoMajorFunction,
+        &State->KernelSources.DoMajorFunction);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.DoFastIoDispatch,
+        &State->Kernel.DoFastIoDispatch,
+        &State->KernelSources.DoFastIoDispatch);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.DoDriverUnload,
+        &State->Kernel.DoDriverUnload,
+        &State->KernelSources.DoDriverUnload);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlBalancedRoot,
+        &State->Kernel.RtlAvlBalancedRoot,
+        &State->KernelSources.RtlAvlBalancedRoot);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlOrderedPointer,
+        &State->Kernel.RtlAvlOrderedPointer,
+        &State->KernelSources.RtlAvlOrderedPointer);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlWhichOrderedElement,
+        &State->Kernel.RtlAvlWhichOrderedElement,
+        &State->KernelSources.RtlAvlWhichOrderedElement);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlNumberGenericTableElements,
+        &State->Kernel.RtlAvlNumberGenericTableElements,
+        &State->KernelSources.RtlAvlNumberGenericTableElements);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlDepthOfTree,
+        &State->Kernel.RtlAvlDepthOfTree,
+        &State->KernelSources.RtlAvlDepthOfTree);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlRestartKey,
+        &State->Kernel.RtlAvlRestartKey,
+        &State->KernelSources.RtlAvlRestartKey);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlDeleteCount,
+        &State->Kernel.RtlAvlDeleteCount,
+        &State->KernelSources.RtlAvlDeleteCount);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.RtlAvlTypeSize,
+        &State->Kernel.RtlAvlTypeSize,
+        &State->KernelSources.RtlAvlTypeSize);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.UldName,
+        &State->Kernel.UldName,
+        &State->KernelSources.UldName);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.UldStartAddress,
+        &State->Kernel.UldStartAddress,
+        &State->KernelSources.UldStartAddress);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.UldEndAddress,
+        &State->Kernel.UldEndAddress,
+        &State->KernelSources.UldEndAddress);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.UldCurrentTime,
+        &State->Kernel.UldCurrentTime,
+        &State->KernelSources.UldCurrentTime);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.UldTypeSize,
+        &State->Kernel.UldTypeSize,
+        &State->KernelSources.UldTypeSize);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.PiDdbDriverName,
+        &State->Kernel.PiDdbDriverName,
+        &State->KernelSources.PiDdbDriverName);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.PiDdbTimeDateStamp,
+        &State->Kernel.PiDdbTimeDateStamp,
+        &State->KernelSources.PiDdbTimeDateStamp);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.PiDdbLoadStatus,
+        &State->Kernel.PiDdbLoadStatus,
+        &State->KernelSources.PiDdbLoadStatus);
+    KswordARKDynDataStoreRuntimeOffset(
+        kernelLayout.PiDdbTypeSize,
+        &State->Kernel.PiDdbTypeSize,
+        &State->KernelSources.PiDdbTypeSize);
+    if (!KswordARKDynDataOffsetPresent(State->KernelGlobals.PsLoadedModuleList) &&
+        kernelLayout.PsLoadedModuleListRva >= 0) {
+        KswordARKDynDataStoreSourcedOffset(
+            (ULONG)kernelLayout.PsLoadedModuleListRva,
+            KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN,
+            &State->KernelGlobals.PsLoadedModuleList,
+            &State->KernelGlobalSources.PsLoadedModuleList);
+    }
+    if (!KswordARKDynDataOffsetPresent(State->KernelGlobals.MmUnloadedDrivers) &&
+        kernelLayout.MmUnloadedDriversRva >= 0) {
+        KswordARKDynDataStoreSourcedOffset(
+            (ULONG)kernelLayout.MmUnloadedDriversRva,
+            KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN,
+            &State->KernelGlobals.MmUnloadedDrivers,
+            &State->KernelGlobalSources.MmUnloadedDrivers);
+    }
+    if (!KswordARKDynDataOffsetPresent(State->KernelGlobals.MmLastUnloadedDriver) &&
+        kernelLayout.MmLastUnloadedDriverRva >= 0) {
+        KswordARKDynDataStoreSourcedOffset(
+            (ULONG)kernelLayout.MmLastUnloadedDriverRva,
+            KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN,
+            &State->KernelGlobals.MmLastUnloadedDriver,
+            &State->KernelGlobalSources.MmLastUnloadedDriver);
+    }
+    if (!KswordARKDynDataOffsetPresent(State->KernelGlobals.PiDDBCacheTable) &&
+        kernelLayout.PiDDBCacheTableRva >= 0) {
+        KswordARKDynDataStoreSourcedOffset(
+            (ULONG)kernelLayout.PiDDBCacheTableRva,
+            KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN,
+            &State->KernelGlobals.PiDDBCacheTable,
+            &State->KernelGlobalSources.PiDDBCacheTable);
+    }
+    if (!KswordARKDynDataOffsetPresent(State->KernelGlobals.PiDDBLock) &&
+        kernelLayout.PiDDBLockRva >= 0) {
+        KswordARKDynDataStoreSourcedOffset(
+            (ULONG)kernelLayout.PiDDBLockRva,
+            KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN,
+            &State->KernelGlobals.PiDDBLock,
+            &State->KernelGlobalSources.PiDDBLock);
+    }
+    if (!KswordARKDynDataOffsetPresent(State->KernelGlobals.KeServiceDescriptorTableShadow) &&
+        kernelLayout.KeServiceDescriptorTableShadowRva >= 0) {
+        KswordARKDynDataStoreSourcedOffset(
+            (ULONG)kernelLayout.KeServiceDescriptorTableShadowRva,
+            KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN,
+            &State->KernelGlobals.KeServiceDescriptorTableShadow,
+            &State->KernelGlobalSources.KeServiceDescriptorTableShadow);
+    }
 
     protectionPresent = KswordARKDynDataStoreRuntimeOffset(
         KswordARKDriverResolveProcessProtectionOffset(),
@@ -1055,7 +1292,8 @@ Return Value:
 
 static NTSTATUS
 KswordARKDynDataBuildState(
-    _Out_ KSW_DYN_STATE* State
+    _Out_ KSW_DYN_STATE* State,
+    _In_opt_ PDRIVER_OBJECT ValidationDriverObject
     )
 /*++
 
@@ -1067,6 +1305,7 @@ Routine Description:
 Arguments:
 
     State - Output state snapshot.
+    ValidationDriverObject - Live KSword driver object for runtime validation.
 
 Return Value:
 
@@ -1130,7 +1369,7 @@ Return Value:
         lxcoreStatus = KswordARKDynDataActivateLxcoreFields(&State->Lxcore, State);
     }
 
-    KswordARKDynDataActivateRuntimeOffsets(State);
+    KswordARKDynDataActivateRuntimeOffsets(State, ValidationDriverObject);
     State->CapabilityMask = KswordARKDynDataComputeCapabilities(State);
     State->Initialized = TRUE;
     State->LastStatus = ntosStatus;
@@ -1182,11 +1421,18 @@ Return Value:
 {
     KSW_DYN_STATE newState;
     NTSTATUS stateStatus = STATUS_SUCCESS;
+    PDRIVER_OBJECT validationDriverObject = NULL;
     CHAR logMessage[KSWORD_ARK_LOG_ENTRY_MAX_BYTES] = { 0 };
 
     ExInitializePushLock(&g_KswordDynDataStateLock);
     KswordARKDynDataV4Initialize();
-    stateStatus = KswordARKDynDataBuildState(&newState);
+    if (Device != NULL) {
+        PDEVICE_OBJECT wdmDeviceObject = WdfDeviceWdmGetDeviceObject(Device);
+        if (wdmDeviceObject != NULL) {
+            validationDriverObject = wdmDeviceObject->DriverObject;
+        }
+    }
+    stateStatus = KswordARKDynDataBuildState(&newState, validationDriverObject);
     ExAcquirePushLockExclusive(&g_KswordDynDataStateLock);
     RtlCopyMemory(&g_KswordDynDataState, &newState, sizeof(g_KswordDynDataState));
     ExReleasePushLockExclusive(&g_KswordDynDataStateLock);

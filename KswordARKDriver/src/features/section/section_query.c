@@ -166,6 +166,7 @@ Return Value:
     KSWORD_ARK_QUERY_PROCESS_SECTION_RESPONSE* response = NULL;
     KSW_DYN_STATE dynState;
     PEPROCESS processObject = NULL;
+    PFILE_OBJECT imageFileObject = NULL;
     PVOID sectionObject = NULL;
     PVOID controlArea = NULL;
     BOOLEAN remoteUnsupported = FALSE;
@@ -174,6 +175,8 @@ Return Value:
     size_t entryCapacity = 0U;
     size_t totalBytesWritten = 0U;
     NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN hasPrivateSectionLayout = FALSE;
+    BOOLEAN hasMappingLayout = FALSE;
 
     if (OutputBuffer == NULL || Request == NULL || BytesWrittenOut == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -197,6 +200,12 @@ Return Value:
     response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_UNAVAILABLE;
     response->lastStatus = STATUS_SUCCESS;
     KswordARKSectionPrepareOffsets(response, &dynState);
+    hasPrivateSectionLayout =
+        KswordARKSectionIsOffsetPresent(dynState.Kernel.EpSectionObject) &&
+        KswordARKSectionIsOffsetPresent(dynState.Kernel.MmSectionControlArea);
+    hasMappingLayout =
+        KswordARKSectionIsOffsetPresent(dynState.Kernel.MmControlAreaListHead) &&
+        KswordARKSectionIsOffsetPresent(dynState.Kernel.MmControlAreaLock);
 
     requestFlags = (Request->flags == 0UL) ? KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_ALL : Request->flags;
     maxMappings = Request->maxMappings;
@@ -212,13 +221,6 @@ Return Value:
         entryCapacity = (size_t)maxMappings;
     }
 
-    if (!KswordARKSectionHasRequiredDynData(&dynState)) {
-        response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_DYNDATA_MISSING;
-        response->lastStatus = STATUS_NOT_SUPPORTED;
-        *BytesWrittenOut = KSWORD_ARK_SECTION_RESPONSE_HEADER_SIZE;
-        return STATUS_SUCCESS;
-    }
-
     status = PsLookupProcessByProcessId(ULongToHandle(Request->processId), &processObject);
     if (!NT_SUCCESS(status)) {
         response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_PROCESS_LOOKUP_FAILED;
@@ -227,41 +229,65 @@ Return Value:
         return STATUS_SUCCESS;
     }
 
-    status = KswordARKSectionReadProcessSectionObject(processObject, &dynState, &sectionObject);
-    response->lastStatus = status;
-    if (!NT_SUCCESS(status) || sectionObject == NULL) {
-        response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_SECTION_OBJECT_MISSING;
-        ObDereferenceObject(processObject);
-        *BytesWrittenOut = KSWORD_ARK_SECTION_RESPONSE_HEADER_SIZE;
-        return STATUS_SUCCESS;
+    if (hasPrivateSectionLayout) {
+        status = KswordARKSectionReadProcessSectionObject(
+            processObject,
+            &dynState,
+            &sectionObject);
+        response->lastStatus = status;
+        if (NT_SUCCESS(status) && sectionObject != NULL) {
+            response->sectionObjectAddress = (ULONG64)(ULONG_PTR)sectionObject;
+            response->fieldFlags |= KSWORD_ARK_SECTION_FIELD_SECTION_OBJECT_PRESENT;
+            if ((requestFlags & (KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_CONTROL_AREA |
+                    KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_MAPPINGS)) != 0UL) {
+                status = KswordARKSectionReadControlArea(
+                    sectionObject,
+                    &dynState,
+                    &controlArea,
+                    &remoteUnsupported);
+                response->lastStatus = status;
+            }
+        }
+    }
+    if (controlArea == NULL &&
+        (requestFlags & (KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_CONTROL_AREA |
+            KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_MAPPINGS)) != 0UL) {
+        status = KswordARKSectionReferenceProcessImageControlArea(
+            processObject,
+            &imageFileObject,
+            &controlArea);
+        response->lastStatus = status;
     }
 
-    response->sectionObjectAddress = (ULONG64)(ULONG_PTR)sectionObject;
-    response->fieldFlags |= KSWORD_ARK_SECTION_FIELD_SECTION_OBJECT_PRESENT;
-
-    if ((requestFlags & KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_CONTROL_AREA) != 0UL) {
-        status = KswordARKSectionReadControlArea(sectionObject, &dynState, &controlArea, &remoteUnsupported);
-        response->lastStatus = status;
-        if (controlArea != NULL) {
-            response->controlAreaAddress = (ULONG64)(ULONG_PTR)controlArea;
-            response->fieldFlags |= KSWORD_ARK_SECTION_FIELD_CONTROL_AREA_PRESENT;
-        }
-        if (remoteUnsupported) {
-            response->fieldFlags |= KSWORD_ARK_SECTION_FIELD_REMOTE_MAPPING_UNSUPPORTED;
-            response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_REMOTE_UNSUPPORTED;
-        }
-        else if (!NT_SUCCESS(status)) {
-            response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_CONTROL_AREA_MISSING;
-        }
+    if (controlArea != NULL) {
+        response->controlAreaAddress = (ULONG64)(ULONG_PTR)controlArea;
+        response->fieldFlags |= KSWORD_ARK_SECTION_FIELD_CONTROL_AREA_PRESENT;
+    }
+    if (remoteUnsupported) {
+        response->fieldFlags |= KSWORD_ARK_SECTION_FIELD_REMOTE_MAPPING_UNSUPPORTED;
+        response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_REMOTE_UNSUPPORTED;
+    }
+    else if (controlArea == NULL) {
+        response->queryStatus =
+            KSWORD_ARK_SECTION_QUERY_STATUS_CONTROL_AREA_MISSING;
     }
 
     if ((requestFlags & KSWORD_ARK_SECTION_QUERY_FLAG_INCLUDE_MAPPINGS) != 0UL &&
-        controlArea != NULL &&
-        !remoteUnsupported) {
-        status = KswordARKSectionEnumerateMappings(controlArea, &dynState, response, entryCapacity);
-        response->lastStatus = status;
-        if (!NT_SUCCESS(status)) {
-            response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_MAPPING_QUERY_FAILED;
+        controlArea != NULL && !remoteUnsupported) {
+        if (hasMappingLayout) {
+            status = KswordARKSectionEnumerateMappings(
+                controlArea,
+                &dynState,
+                response,
+                entryCapacity);
+            response->lastStatus = status;
+            if (!NT_SUCCESS(status)) {
+                response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_MAPPING_QUERY_FAILED;
+            }
+        }
+        else {
+            response->lastStatus = STATUS_NOT_SUPPORTED;
+            response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_PARTIAL;
         }
     }
 
@@ -275,6 +301,9 @@ Return Value:
         response->queryStatus = KSWORD_ARK_SECTION_QUERY_STATUS_PARTIAL;
     }
 
+    if (imageFileObject != NULL) {
+        ObDereferenceObject(imageFileObject);
+    }
     ObDereferenceObject(processObject);
     totalBytesWritten = KSWORD_ARK_SECTION_RESPONSE_HEADER_SIZE +
         ((size_t)response->returnedCount * sizeof(KSWORD_ARK_SECTION_MAPPING_ENTRY));
@@ -323,6 +352,7 @@ Return Value:
     size_t totalBytesWritten = 0U;
     NTSTATUS status = STATUS_SUCCESS;
     NTSTATUS mappingStatus = STATUS_SUCCESS;
+    BOOLEAN hasMappingLayout = FALSE;
 
     if (OutputBuffer == NULL || Request == NULL || BytesWrittenOut == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -349,6 +379,9 @@ Return Value:
     response->dynDataCapabilityMask = dynState.CapabilityMask;
     response->mmControlAreaListHeadOffset = KswordARKSectionNormalizeOffset(dynState.Kernel.MmControlAreaListHead);
     response->mmControlAreaLockOffset = KswordARKSectionNormalizeOffset(dynState.Kernel.MmControlAreaLock);
+    hasMappingLayout =
+        KswordARKSectionIsOffsetPresent(dynState.Kernel.MmControlAreaListHead) &&
+        KswordARKSectionIsOffsetPresent(dynState.Kernel.MmControlAreaLock);
 
     requestFlags = (Request->flags == 0UL) ? KSWORD_ARK_FILE_SECTION_QUERY_FLAG_INCLUDE_ALL : Request->flags;
     maxMappings = Request->maxMappings;
@@ -362,13 +395,6 @@ Return Value:
     entryCapacity = (OutputBufferLength - KSWORD_ARK_FILE_SECTION_RESPONSE_HEADER_SIZE) / sizeof(KSWORD_ARK_FILE_SECTION_MAPPING_ENTRY);
     if (entryCapacity > (size_t)maxMappings) {
         entryCapacity = (size_t)maxMappings;
-    }
-
-    if (!KswordARKSectionHasRequiredDynData(&dynState)) {
-        response->queryStatus = KSWORD_ARK_FILE_SECTION_QUERY_STATUS_DYNDATA_MISSING;
-        response->lastStatus = STATUS_NOT_SUPPORTED;
-        *BytesWrittenOut = KSWORD_ARK_FILE_SECTION_RESPONSE_HEADER_SIZE;
-        return STATUS_SUCCESS;
     }
 
     status = KswordARKSectionOpenFileObjectByPath(
@@ -429,12 +455,14 @@ Return Value:
 
     if ((requestFlags & KSWORD_ARK_FILE_SECTION_QUERY_FLAG_INCLUDE_DATA_IMAGE) != 0UL &&
         dataControlArea != NULL) {
-        mappingStatus = KswordARKSectionEnumerateFileControlAreaMappings(
-            dataControlArea,
-            KSWORD_ARK_FILE_SECTION_KIND_DATA,
-            &dynState,
-            response,
-            entryCapacity);
+        mappingStatus = hasMappingLayout ?
+            KswordARKSectionEnumerateFileControlAreaMappings(
+                dataControlArea,
+                KSWORD_ARK_FILE_SECTION_KIND_DATA,
+                &dynState,
+                response,
+                entryCapacity) :
+            STATUS_NOT_SUPPORTED;
         response->lastStatus = mappingStatus;
         if (!NT_SUCCESS(mappingStatus)) {
             response->queryStatus = KSWORD_ARK_FILE_SECTION_QUERY_STATUS_MAPPING_QUERY_FAILED;
@@ -443,12 +471,14 @@ Return Value:
 
     if ((requestFlags & KSWORD_ARK_FILE_SECTION_QUERY_FLAG_INCLUDE_IMAGE) != 0UL &&
         imageControlArea != NULL) {
-        mappingStatus = KswordARKSectionEnumerateFileControlAreaMappings(
-            imageControlArea,
-            KSWORD_ARK_FILE_SECTION_KIND_IMAGE,
-            &dynState,
-            response,
-            entryCapacity);
+        mappingStatus = hasMappingLayout ?
+            KswordARKSectionEnumerateFileControlAreaMappings(
+                imageControlArea,
+                KSWORD_ARK_FILE_SECTION_KIND_IMAGE,
+                &dynState,
+                response,
+                entryCapacity) :
+            STATUS_NOT_SUPPORTED;
         response->lastStatus = mappingStatus;
         if (!NT_SUCCESS(mappingStatus) &&
             response->queryStatus == KSWORD_ARK_FILE_SECTION_QUERY_STATUS_UNAVAILABLE) {
@@ -459,6 +489,12 @@ Return Value:
     if (dataControlArea == NULL && imageControlArea == NULL) {
         response->queryStatus = KSWORD_ARK_FILE_SECTION_QUERY_STATUS_CONTROL_AREA_MISSING;
         response->lastStatus = STATUS_NOT_FOUND;
+    }
+    else if (!hasMappingLayout &&
+        (requestFlags & (KSWORD_ARK_FILE_SECTION_QUERY_FLAG_INCLUDE_DATA_IMAGE |
+            KSWORD_ARK_FILE_SECTION_QUERY_FLAG_INCLUDE_IMAGE)) != 0UL) {
+        response->queryStatus = KSWORD_ARK_FILE_SECTION_QUERY_STATUS_PARTIAL;
+        response->lastStatus = STATUS_NOT_SUPPORTED;
     }
     else if (response->queryStatus == KSWORD_ARK_FILE_SECTION_QUERY_STATUS_UNAVAILABLE) {
         response->queryStatus = ((response->fieldFlags & KSWORD_ARK_FILE_SECTION_FIELD_MAPPING_TRUNCATED) != 0UL) ?

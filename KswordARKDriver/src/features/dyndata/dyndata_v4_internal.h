@@ -120,7 +120,13 @@ typedef struct _KSW_DYN_V4_WORK_QUEUE_LAYOUT
     ULONG KthreadTypeSize;
     ULONG EthreadTypeSize;
     ULONG WorkItemTypeSize;
+    ULONG RuntimeFlags;
+    ULONG RuntimePriorityIndexes[3];
 } KSW_DYN_V4_WORK_QUEUE_LAYOUT;
+
+#define KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE 0x00000001UL
+#define KSW_DYN_V4_WORK_QUEUE_RUNTIME_ITEMS     0x00000002UL
+#define KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS   0x00000004UL
 
 NTSTATUS
 KswordARKDynDataV4SnapshotTimerDpcLayout(

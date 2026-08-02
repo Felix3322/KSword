@@ -729,6 +729,7 @@ KswordARKDriverIntegrityBuildUnloadedSummary(
     ULONGLONG newestEnd = 0ULL;
     ULONGLONG newestTime = 0ULL;
     ULONG entrySize = 0UL;
+    ULONGLONG recordsAddress = 0ULL;
     WCHAR newestName[96] = { 0 };
     BOOLEAN offsetsPresent = FALSE;
     if (Detail == NULL || DetailChars == 0UL || ConfidenceOut == NULL || StatusFlagsOut == NULL) {
@@ -737,10 +738,22 @@ KswordARKDriverIntegrityBuildUnloadedSummary(
     *ConfidenceOut = 45UL;
     *StatusFlagsOut = KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PARTIAL;
     Detail[0] = L'\0';
-    if (DynState == NULL || MmUnloadedAddress == 0ULL || MmLastUnloadedAddress == 0ULL) {
+    if (DynState == NULL || MmUnloadedAddress == 0ULL) {
         KswordARKDriverIntegrityFormatDetail(Detail, DetailChars, L"MmUnloadedDrivers global=0x%llX MmLastUnloadedDriver=0x%llX; global evidence incomplete.", MmUnloadedAddress, MmLastUnloadedAddress);
         *ConfidenceOut = 20UL;
         *StatusFlagsOut = KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_UNSUPPORTED | KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PDB_REQUIRED;
+        return;
+    }
+    if (!KswordARKHookReadMemorySafe(
+            (const VOID*)(ULONG_PTR)MmUnloadedAddress,
+            &recordsAddress,
+            sizeof(recordsAddress)) ||
+        recordsAddress == 0ULL) {
+        KswordARKDriverIntegrityFormatDetail(Detail, DetailChars,
+            L"MmUnloadedDrivers global=0x%llX; record array pointer is null or unreadable.",
+            MmUnloadedAddress);
+        *ConfidenceOut = 30UL;
+        *StatusFlagsOut = KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PARTIAL;
         return;
     }
     offsetsPresent =
@@ -765,7 +778,8 @@ KswordARKDriverIntegrityBuildUnloadedSummary(
         *StatusFlagsOut = KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PARTIAL | KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PDB_REQUIRED;
         return;
     }
-    if (!KswordARKHookReadMemorySafe((const VOID*)(ULONG_PTR)MmLastUnloadedAddress, &lastIndex, sizeof(lastIndex))) {
+    if (MmLastUnloadedAddress != 0ULL &&
+        !KswordARKHookReadMemorySafe((const VOID*)(ULONG_PTR)MmLastUnloadedAddress, &lastIndex, sizeof(lastIndex))) {
         KswordARKDriverIntegrityFormatDetail(Detail, DetailChars,
             L"MmUnloadedDrivers global=0x%llX MmLastUnloadedDriver=0x%llX; last index read failed.",
             MmUnloadedAddress, MmLastUnloadedAddress);
@@ -773,7 +787,7 @@ KswordARKDriverIntegrityBuildUnloadedSummary(
         return;
     }
     for (scanIndex = 0UL; scanIndex < KSW_DRIVER_INTEGRITY_UNLOADED_SCAN_LIMIT; ++scanIndex) {
-        const ULONGLONG entryAddress = MmUnloadedAddress + ((ULONGLONG)scanIndex * (ULONGLONG)entrySize);
+        const ULONGLONG entryAddress = recordsAddress + ((ULONGLONG)scanIndex * (ULONGLONG)entrySize);
         ULONGLONG startAddress = 0ULL;
         ULONGLONG endAddress = 0ULL;
         ULONGLONG timeValue = 0ULL;
@@ -798,8 +812,8 @@ KswordARKDriverIntegrityBuildUnloadedSummary(
         }
     }
     KswordARKDriverIntegrityFormatDetail(Detail, DetailChars,
-        L"MmUnloadedDrivers global=0x%llX MmLastUnloadedDriver=0x%llX typeSize=%lu lastIndex=%lu scanned=%lu nonEmpty=%lu newest=%ws [0x%llX-0x%llX] time=0x%llX.",
-        MmUnloadedAddress, MmLastUnloadedAddress, entrySize, lastIndex, KSW_DRIVER_INTEGRITY_UNLOADED_SCAN_LIMIT,
+        L"MmUnloadedDrivers global=0x%llX records=0x%llX MmLastUnloadedDriver=0x%llX typeSize=%lu lastIndex=%lu scanned=%lu nonEmpty=%lu newest=%ws [0x%llX-0x%llX] time=0x%llX.",
+        MmUnloadedAddress, recordsAddress, MmLastUnloadedAddress, entrySize, lastIndex, KSW_DRIVER_INTEGRITY_UNLOADED_SCAN_LIMIT,
         nonEmptyCount, newestName[0] != L'\0' ? newestName : L"<none>", newestStart, newestEnd, newestTime);
     *ConfidenceOut = (nonEmptyCount != 0UL) ? 70UL : 55UL;
     *StatusFlagsOut = (nonEmptyCount != 0UL) ? 0UL : KSWORD_ARK_DRIVER_INTEGRITY_STATUS_FLAG_PARTIAL;

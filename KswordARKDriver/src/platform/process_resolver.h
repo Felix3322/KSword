@@ -32,7 +32,10 @@ typedef struct _KSWORD_RUNTIME_DYNDATA_OFFSETS
 {
     LONG EpUniqueProcessId;
     LONG EpActiveProcessLinks;
+    LONG EpThreadListHead;
     LONG EpImageFileName;
+    LONG EpToken;
+    LONG EpFlags;
     LONG EpCreateTime;
     LONG EpExitStatus;
     LONG EpPeb;
@@ -40,10 +43,24 @@ typedef struct _KSWORD_RUNTIME_DYNDATA_OFFSETS
     LONG EpWow64Process;
     LONG EpInheritedFromUniqueProcessId;
     LONG EpSectionBaseAddress;
+    LONG EpJob;
+    LONG EpDebugPort;
+    LONG EpPriorityClass;
+    LONG EpActiveThreads;
+    LONG EpWin32WindowStation;
+    LONG EpSecurityPort;
+    LONG TokUserAndGroupCount;
+    LONG TokUserAndGroups;
+    LONG TokIntegrityLevelIndex;
+    LONG TokMandatoryPolicy;
     LONG EtCid;
+    LONG EtThreadListEntry;
     LONG EtStartAddress;
     LONG EtWin32StartAddress;
     LONG KtProcess;
+    LONG KtInitialStack;
+    LONG KtStackLimit;
+    LONG KtStackBase;
 } KSWORD_RUNTIME_DYNDATA_OFFSETS, *PKSWORD_RUNTIME_DYNDATA_OFFSETS;
 
 KSWORD_PS_SUSPEND_PROCESS_FN
@@ -79,6 +96,11 @@ KswordARKDriverResolveProcessSignatureLevelOffset(
 LONG
 KswordARKDriverResolveProcessSectionSignatureLevelOffset(
     VOID
+    );
+
+LONG
+KswordARKDriverResolveProcessFlagsOffset(
+    _In_ PEPROCESS Process
     );
 
 VOID

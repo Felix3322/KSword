@@ -31,6 +31,15 @@ typedef struct _KSW_PIDDB_LAYOUT
     ULONG EntrySize;
 } KSW_PIDDB_LAYOUT, *PKSW_PIDDB_LAYOUT;
 
+static BOOLEAN
+KswordARKPiDdbSourceIsTrusted(
+    _In_ ULONG Source
+    )
+{
+    return Source == KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
+        Source == KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN;
+}
+
 static SIZE_T
 KswordARKPiDdbBoundedWideLength(
     _In_reads_(Capacity) const WCHAR* Text,
@@ -96,20 +105,23 @@ KswordARKPiDdbResolveLayout(
     RtlZeroMemory(&state, sizeof(state));
     KswordARKDynDataSnapshot(&state);
 
-    /* Require an identity-matched active profile and every exact PiDDB fact. */
-    if (!state.NtosActive || !state.PdbProfileActive ||
-        state.KernelSources.PiDdbDriverName !=
-            KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
-        state.KernelSources.PiDdbTimeDateStamp !=
-            KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
-        state.KernelSources.PiDdbLoadStatus !=
-            KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
-        state.KernelSources.PiDdbTypeSize !=
-            KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
-        state.KernelGlobalSources.PiDDBCacheTable !=
-            KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
-        state.KernelGlobalSources.PiDDBLock !=
-            KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
+    /*
+     * Prefer the exact PDB profile, but also accept the runtime resolver only
+     * after its unique export-anchored candidate and live AVL/resource checks.
+     */
+    if (!state.NtosActive ||
+        !KswordARKPiDdbSourceIsTrusted(
+            state.KernelSources.PiDdbDriverName) ||
+        !KswordARKPiDdbSourceIsTrusted(
+            state.KernelSources.PiDdbTimeDateStamp) ||
+        !KswordARKPiDdbSourceIsTrusted(
+            state.KernelSources.PiDdbLoadStatus) ||
+        !KswordARKPiDdbSourceIsTrusted(
+            state.KernelSources.PiDdbTypeSize) ||
+        !KswordARKPiDdbSourceIsTrusted(
+            state.KernelGlobalSources.PiDDBCacheTable) ||
+        !KswordARKPiDdbSourceIsTrusted(
+            state.KernelGlobalSources.PiDDBLock) ||
         state.Kernel.PiDdbDriverName == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.PiDdbTimeDateStamp == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.PiDdbLoadStatus == KSW_DYN_OFFSET_UNAVAILABLE ||
@@ -119,7 +131,7 @@ KswordARKPiDdbResolveLayout(
         return FALSE;
     }
 
-    /* Bound every member inside the exact PDB-reported entry size. */
+    /* Bound every member inside the exact or runtime-validated entry size. */
     if (state.Kernel.PiDdbDriverName >
             state.Kernel.PiDdbTypeSize - sizeof(UNICODE_STRING) ||
         state.Kernel.PiDdbTimeDateStamp >

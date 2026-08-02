@@ -322,31 +322,41 @@ KswordARKProcessFlagsSetBreakOnTerminationByZw(
     return status;
 }
 
-/* 中文说明：解析 EPROCESS.Flags 偏移；只接受已应用的 DynData/PDB profile。 */
+/* 中文说明：解析 EPROCESS.Flags 偏移；PDB 优先，特征码来源需再次活体验证。 */
 static NTSTATUS
 KswordARKProcessFlagsResolveEprocessFlagsOffset(
+    _In_ PEPROCESS ProcessObject,
     _Out_ ULONG* FlagsOffsetOut
     )
 {
     KSW_DYN_STATE dynState;
+    LONG runtimeOffset = -1;
 
-    if (FlagsOffsetOut == NULL) {
+    if (ProcessObject == NULL || FlagsOffsetOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *FlagsOffsetOut = 0UL;
 
     /*
-     * 中文说明：这里禁止按 Windows 版本猜偏移。R3 必须先把与当前
-     * ntoskrnl identity 精确匹配的 PDB profile 下发到 DynData；否则
-     * R0 直接写 EPROCESS.Flags 会拒绝执行，避免误写邻近字段。
+     * 中文说明：这里禁止按 Windows 版本猜偏移。精确 PDB profile 仍然
+     * 优先；缺少 PDB 时只接受由 PsGetProcessExitProcessCalled 导出例程
+     * 解码、并对当前目标 EPROCESS 再次做位语义校验的 runtime pattern。
      */
     RtlZeroMemory(&dynState, sizeof(dynState));
     KswordARKDynDataSnapshot(&dynState);
     if (dynState.Kernel.EpFlags == KSW_DYN_OFFSET_UNAVAILABLE ||
         dynState.Kernel.EpFlags == 0UL ||
         dynState.Kernel.EpFlags > KSWORD_ARK_EPROCESS_FLAGS_OFFSET_MAX ||
-        dynState.KernelSources.EpFlags == KSW_DYN_FIELD_SOURCE_UNAVAILABLE) {
+        (dynState.KernelSources.EpFlags != KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
+         dynState.KernelSources.EpFlags != KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN)) {
         return STATUS_NOT_SUPPORTED;
+    }
+
+    if (dynState.KernelSources.EpFlags == KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN) {
+        runtimeOffset = KswordARKDriverResolveProcessFlagsOffset(ProcessObject);
+        if (runtimeOffset <= 0 || (ULONG)runtimeOffset != dynState.Kernel.EpFlags) {
+            return STATUS_REVISION_MISMATCH;
+        }
     }
 
     *FlagsOffsetOut = dynState.Kernel.EpFlags;
@@ -369,7 +379,7 @@ KswordARKProcessFlagsSetBreakOnTerminationByEprocess(
     }
 
     /* 中文说明：偏移解析失败时不猜测，避免误写 EPROCESS 其它字段。 */
-    status = KswordARKProcessFlagsResolveEprocessFlagsOffset(&flagsOffset);
+    status = KswordARKProcessFlagsResolveEprocessFlagsOffset(ProcessObject, &flagsOffset);
     if (!NT_SUCCESS(status)) {
         return status;
     }

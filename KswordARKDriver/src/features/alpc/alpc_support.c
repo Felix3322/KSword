@@ -393,6 +393,12 @@ Return Value:
 --*/
 {
     UNICODE_STRING typeName;
+    WCHAR objectTypePath[KSWORD_ARK_ALPC_TYPE_NAME_CHARS];
+    ULONG length = 0UL;
+    ULONG lastSeparator = 0UL;
+    BOOLEAN separatorFound = FALSE;
+    BOOLEAN namespaceTruncated = FALSE;
+    NTSTATUS namespaceStatus = STATUS_SUCCESS;
 
     if (TruncatedOut != NULL) {
         *TruncatedOut = FALSE;
@@ -400,8 +406,39 @@ Return Value:
     if (ObjectType == NULL || DynState == NULL || Destination == NULL || DestinationChars == 0UL) {
         return STATUS_INVALID_PARAMETER;
     }
+
+    RtlZeroMemory(objectTypePath, sizeof(objectTypePath));
+    namespaceStatus = KswordARKAlpcQueryObjectName(
+        ObjectType,
+        objectTypePath,
+        RTL_NUMBER_OF(objectTypePath),
+        &namespaceTruncated);
+    if (NT_SUCCESS(namespaceStatus) && objectTypePath[0] != L'\0') {
+        while (length < RTL_NUMBER_OF(objectTypePath) &&
+            objectTypePath[length] != L'\0') {
+            if (objectTypePath[length] == L'\\') {
+                lastSeparator = length;
+                separatorFound = TRUE;
+            }
+            length += 1UL;
+        }
+        typeName.Buffer = separatorFound ?
+            &objectTypePath[lastSeparator + 1UL] : objectTypePath;
+        typeName.Length = (USHORT)((length -
+            (separatorFound ? lastSeparator + 1UL : 0UL)) * sizeof(WCHAR));
+        typeName.MaximumLength = typeName.Length;
+        KswordARKAlpcCopyUnicodeStringToFixed(
+            Destination,
+            DestinationChars,
+            &typeName,
+            TruncatedOut);
+        if (TruncatedOut != NULL && namespaceTruncated) {
+            *TruncatedOut = TRUE;
+        }
+        return STATUS_SUCCESS;
+    }
     if (!KswordARKAlpcIsOffsetPresent(DynState->Kernel.OtName)) {
-        return STATUS_NOT_SUPPORTED;
+        return NT_SUCCESS(namespaceStatus) ? STATUS_NOT_SUPPORTED : namespaceStatus;
     }
 
     RtlZeroMemory(&typeName, sizeof(typeName));

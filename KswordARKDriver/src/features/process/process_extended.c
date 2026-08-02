@@ -145,9 +145,9 @@ KswordARKProcessRuntimeProtectionOffsets(
 Routine Description:
 
     Resolve PP/PPL byte offsets from live ntoskrnl helpers. 中文说明：强制结束
-    进程时，DynData 可能缺失或没有加载到当前内核 profile；此函数使用
-    PsIsProtectedProcess/PsIsProtectedProcessLight 的指令形态反推
-    EPROCESS.Protection，并按 Windows 布局推导 SignatureLevel 两个字节。
+    进程时，DynData 可能缺失或没有加载到当前内核 profile；此函数分别从
+    PsGetProcessProtection 与 PsGetProcessSignatureLevel 的窄指令形态恢复三个
+    字节偏移，并要求导出返回值、当前 EPROCESS 活体字段和三字段相邻关系一致。
 
 Arguments:
 
@@ -805,8 +805,8 @@ Return Value:
 
     /*
      * 处理顺序：
-     * 1. 优先使用运行时 PsIsProtectedProcess* 反推的偏移。它来自当前已加载
-     *    内核代码，能覆盖 profile 未命中或 DynData 旧包的情况。
+     * 1. 优先使用当前内核保护/签名访问器解码并经活体交叉验证的偏移。
+     *    它来自当前已加载内核代码，能覆盖 profile 未命中或 DynData 旧包。
      * 2. 运行时解析失败时再回退到 DynData profile。
      * 返回：只要任一来源完成写入并回读验证即成功；否则返回更具体的失败。
      */

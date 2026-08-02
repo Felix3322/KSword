@@ -15,74 +15,7 @@ Environment:
 --*/
 
 #include "handle_support.h"
-
-/*
- * KSWORD_ARK_OBJECT_HEADER_COMPAT
- * Inputs:
- * - Used only with an already decoded object header or a referenced object body.
- * Processing:
- * - Mirrors the stable front portion needed for read-only audit output, while
- *   KswordARKHandleHasObjectHeaderAuditCapability gates all field reads through
- *   the active DynData/Profile capability mask.
- * Return behavior:
- * - Plain layout helper; it has no function-like return value and must not be
- *   used for mutation.
- */
-typedef struct _KSWORD_ARK_OBJECT_HEADER_COMPAT
-{
-    SSIZE_T PointerCount;
-    PVOID HandleCountOrNextToFree;
-    EX_PUSH_LOCK Lock;
-    UCHAR TypeIndex;
-    UCHAR TraceFlags;
-    UCHAR InfoMask;
-    UCHAR Flags;
-#ifdef _WIN64
-    ULONG Reserved;
-#endif
-    PVOID ObjectCreateInfoOrQuotaBlockCharged;
-    PVOID SecurityDescriptor;
-    QUAD Body;
-} KSWORD_ARK_OBJECT_HEADER_COMPAT, *PKSWORD_ARK_OBJECT_HEADER_COMPAT;
-
-C_ASSERT(FIELD_OFFSET(KSWORD_ARK_OBJECT_HEADER_COMPAT, Body) == sizeof(KSWORD_ARK_OBJECT_HEADER_COMPAT) - sizeof(QUAD));
-
-static BOOLEAN
-KswordARKHandleHasObjectHeaderAuditCapability(
-    _In_ const KSW_DYN_STATE* DynState
-    )
-/*++
-
-Routine Description:
-
-    Gate every OBJECT_HEADER field read behind the active DynData/Profile
-    capability set. 中文说明：当前 profile 尚未暴露逐字段 OBJECT_HEADER offset；
-    因此本函数要求对象类型字段 capability 可用，并在缺失时只返回行级降级状态。
-
-Arguments:
-
-    DynState - Active DynData snapshot captured for the request.
-
-Return Value:
-
-    TRUE when object-header audit reads are allowed; otherwise FALSE.
-
---*/
-{
-    if (DynState == NULL) {
-        return FALSE;
-    }
-
-    if ((DynState->CapabilityMask & KSW_CAP_OBJECT_TYPE_FIELDS) == 0ULL) {
-        return FALSE;
-    }
-
-    if (!KswordARKHandleIsOffsetPresent(DynState->Kernel.OtIndex)) {
-        return FALSE;
-    }
-
-    return TRUE;
-}
+#include "../kernel/object_header_fallback.h"
 
 BOOLEAN
 KswordARKHandleIsOffsetPresent(
@@ -190,11 +123,15 @@ Return Value:
 
 --*/
 {
+    ULONG bodyOffset = 0UL;
+
     if (ObjectHeader == NULL) {
         return NULL;
     }
-
-    return &((PKSWORD_ARK_OBJECT_HEADER_COMPAT)ObjectHeader)->Body;
+    if (!NT_SUCCESS(KswordARKObjectHeaderResolveBodyOffsetFallback(&bodyOffset))) {
+        return NULL;
+    }
+    return (PUCHAR)ObjectHeader + bodyOffset;
 }
 
 PVOID
@@ -219,11 +156,16 @@ Return Value:
 
 --*/
 {
+    ULONG bodyOffset = 0UL;
+
     if (ObjectBody == NULL) {
         return NULL;
     }
-
-    return CONTAINING_RECORD(ObjectBody, KSWORD_ARK_OBJECT_HEADER_COMPAT, Body);
+    if (!NT_SUCCESS(KswordARKObjectHeaderResolveBodyOffsetFallback(&bodyOffset)) ||
+        (ULONG_PTR)ObjectBody < bodyOffset) {
+        return NULL;
+    }
+    return (PUCHAR)ObjectBody - bodyOffset;
 }
 
 NTSTATUS
@@ -370,11 +312,12 @@ Return Value:
 
 --*/
 {
-    PKSWORD_ARK_OBJECT_HEADER_COMPAT header = NULL;
+    KSW_OBJECT_HEADER_FALLBACK_RESULT fallback;
+    PVOID header = NULL;
     ULONG objectTypeIndex = 0UL;
+    NTSTATUS fallbackStatus = STATUS_NOT_SUPPORTED;
     NTSTATUS typeIndexStatus = STATUS_UNSUCCESSFUL;
     BOOLEAN objectTypeIndexPresent = FALSE;
-    BOOLEAN headerTypeIndexPresent = FALSE;
 
     *FieldFlagsOut = 0UL;
     *DecodeStatusOut = KSWORD_ARK_HANDLE_DECODE_STATUS_UNAVAILABLE;
@@ -390,44 +333,31 @@ Return Value:
     *TypeIndexSourceOut = KSWORD_ARK_OBJECT_TYPE_SOURCE_NONE;
     *NameInfoStatusOut = KSWORD_ARK_OBJECT_NAME_INFO_STATUS_UNKNOWN;
 
-    if (!KswordARKHandleHasObjectHeaderAuditCapability(DynState)) {
-        *DecodeStatusOut = KSWORD_ARK_HANDLE_DECODE_STATUS_HEADER_DYNDATA_MISSING;
-        *ReadStatusOut = STATUS_NOT_SUPPORTED;
-        return;
-    }
-
-    header = (PKSWORD_ARK_OBJECT_HEADER_COMPAT)ObjectHeader;
-    if (header == NULL) {
-        header = (PKSWORD_ARK_OBJECT_HEADER_COMPAT)KswordARKHandleGetObjectHeaderFromBody(ObjectBody);
-    }
-    if (header == NULL) {
+    UNREFERENCED_PARAMETER(ObjectHeader);
+    RtlZeroMemory(&fallback, sizeof(fallback));
+    if (ObjectBody == NULL) {
         *DecodeStatusOut = KSWORD_ARK_HANDLE_DECODE_STATUS_OBJECT_DECODE_FAILED;
         *ReadStatusOut = STATUS_INVALID_PARAMETER;
         return;
     }
-
-    __try {
-        *HeaderAddressOut = (ULONG64)(ULONG_PTR)header;
-        *PointerCountOut = (LONG64)header->PointerCount;
-        *HandleCountOut = (ULONG64)(ULONG_PTR)header->HandleCountOrNextToFree;
-        *HeaderTypeIndexOut = (ULONG)header->TypeIndex;
-        *InfoMaskOut = (ULONG)header->InfoMask;
-        *HeaderFlagsOut = (ULONG)header->Flags;
-        *TraceFlagsOut = (ULONG)header->TraceFlags;
-        *FieldFlagsOut |= KSWORD_ARK_HANDLE_FIELD_OBJECT_HEADER_PRESENT;
-        *FieldFlagsOut |= KSWORD_ARK_HANDLE_FIELD_POINTER_COUNT_PRESENT;
-        *FieldFlagsOut |= KSWORD_ARK_HANDLE_FIELD_HANDLE_COUNT_PRESENT;
-        *FieldFlagsOut |= KSWORD_ARK_HANDLE_FIELD_HEADER_TYPE_INDEX_PRESENT;
-        *FieldFlagsOut |= KSWORD_ARK_HANDLE_FIELD_INFO_MASK_PRESENT;
-        headerTypeIndexPresent = TRUE;
-        *NameInfoStatusOut = (header->InfoMask == 0U) ?
-            KSWORD_ARK_OBJECT_NAME_INFO_STATUS_HEADER_MASK_EMPTY :
-            KSWORD_ARK_OBJECT_NAME_INFO_STATUS_HEADER_MASK_NONZERO;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        *DecodeStatusOut = KSWORD_ARK_HANDLE_DECODE_STATUS_HEADER_READ_FAILED;
-        *ReadStatusOut = GetExceptionCode();
+    fallbackStatus = KswordARKObjectHeaderQueryFallback(ObjectBody, &fallback);
+    *ReadStatusOut = fallbackStatus;
+    if (!NT_SUCCESS(fallbackStatus) ||
+        (ULONG_PTR)ObjectBody < fallback.BodyOffset) {
+        *DecodeStatusOut = KSWORD_ARK_HANDLE_DECODE_STATUS_HEADER_DYNDATA_MISSING;
         return;
+    }
+
+    header = (PUCHAR)ObjectBody - fallback.BodyOffset;
+    *HeaderAddressOut = (ULONG64)(ULONG_PTR)header;
+    *PointerCountOut = (LONG64)fallback.PointerCount;
+    *FieldFlagsOut |=
+        KSWORD_ARK_HANDLE_FIELD_OBJECT_HEADER_PRESENT |
+        KSWORD_ARK_HANDLE_FIELD_POINTER_COUNT_PRESENT;
+    if ((fallback.ValidFields &
+            KSW_OBJECT_HEADER_FALLBACK_FIELD_HANDLE_COUNT) != 0UL) {
+        *HandleCountOut = (ULONG64)fallback.HandleCount;
+        *FieldFlagsOut |= KSWORD_ARK_HANDLE_FIELD_HANDLE_COUNT_PRESENT;
     }
 
     if (ObjectBody != NULL) {
@@ -443,9 +373,9 @@ Return Value:
     *TypeIndexSourceOut = KswordARKHandleMergeTypeIndexSource(
         objectTypeIndexPresent,
         objectTypeIndex,
-        headerTypeIndexPresent,
+        FALSE,
         *HeaderTypeIndexOut);
-    *DecodeStatusOut = KSWORD_ARK_HANDLE_DECODE_STATUS_OK;
+    *DecodeStatusOut = KSWORD_ARK_HANDLE_DECODE_STATUS_PARTIAL;
 }
 
 VOID

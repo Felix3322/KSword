@@ -17,6 +17,7 @@ Environment:
 #include "ark/ark_alpc.h"
 
 #include "ark/ark_dyndata.h"
+#include "alpc_runtime_fallback.h"
 #include "alpc_support.h"
 
 #ifndef STATUS_INFO_LENGTH_MISMATCH
@@ -325,13 +326,16 @@ Return Value:
 {
     KSWORD_ARK_QUERY_ALPC_PORT_RESPONSE* response = NULL;
     KSW_DYN_STATE dynState;
+    KSW_ALPC_RUNTIME_BASIC_INFO runtimeBasic;
     KSWORD_ARK_ALPC_REFERENCED_PORTS referencedPorts;
     PEPROCESS processObject = NULL;
     PVOID portObject = NULL;
     POBJECT_TYPE portObjectType = NULL;
     NTSTATUS status = STATUS_SUCCESS;
     NTSTATUS fieldStatus = STATUS_SUCCESS;
+    NTSTATUS runtimeStatus = STATUS_NOT_SUPPORTED;
     ULONG requestFlags = 0UL;
+    BOOLEAN hasPrivateDynData = FALSE;
     BOOLEAN truncated = FALSE;
     BOOLEAN anyTruncated = FALSE;
 
@@ -348,6 +352,7 @@ Return Value:
 
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     RtlZeroMemory(&dynState, sizeof(dynState));
+    RtlZeroMemory(&runtimeBasic, sizeof(runtimeBasic));
     RtlZeroMemory(&referencedPorts, sizeof(referencedPorts));
 
     response = (KSWORD_ARK_QUERY_ALPC_PORT_RESPONSE*)OutputBuffer;
@@ -364,13 +369,7 @@ Return Value:
     KswordARKDynDataSnapshot(&dynState);
     KswordARKAlpcPrepareOffsets(response, &dynState);
     requestFlags = (Request->flags == 0UL) ? KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_ALL : Request->flags;
-
-    if (!KswordARKAlpcHasRequiredDynData(&dynState)) {
-        response->queryStatus = KSWORD_ARK_ALPC_QUERY_STATUS_DYNDATA_MISSING;
-        response->objectReferenceStatus = STATUS_NOT_SUPPORTED;
-        *BytesWrittenOut = sizeof(*response);
-        return STATUS_SUCCESS;
-    }
+    hasPrivateDynData = KswordARKAlpcHasRequiredDynData(&dynState);
 
     status = PsLookupProcessByProcessId(ULongToHandle(Request->processId), &processObject);
     if (!NT_SUCCESS(status)) {
@@ -425,14 +424,54 @@ Return Value:
     }
 
     if ((requestFlags & (KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_BASIC | KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_NAMES)) != 0UL) {
-        truncated = FALSE;
-        fieldStatus = KswordARKAlpcPopulatePortInfo(
-            portObject,
-            KSWORD_ARK_ALPC_PORT_RELATION_QUERY,
-            requestFlags,
-            &dynState,
-            &response->queryPort,
-            &truncated);
+        if (hasPrivateDynData) {
+            truncated = FALSE;
+            fieldStatus = KswordARKAlpcPopulatePortInfo(
+                portObject,
+                KSWORD_ARK_ALPC_PORT_RELATION_QUERY,
+                requestFlags,
+                &dynState,
+                &response->queryPort,
+                &truncated);
+        }
+        else {
+            ULONG fallbackFlags = requestFlags & KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_NAMES;
+
+            truncated = FALSE;
+            fieldStatus = KswordARKAlpcPopulatePortInfo(
+                portObject,
+                KSWORD_ARK_ALPC_PORT_RELATION_QUERY,
+                fallbackFlags,
+                &dynState,
+                &response->queryPort,
+                &truncated);
+        }
+        if ((requestFlags & KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_BASIC) != 0UL &&
+            (!hasPrivateDynData ||
+                !NT_SUCCESS(response->queryPort.basicStatus))) {
+            runtimeStatus = KswordARKAlpcQueryRuntimeBasicInfo(
+                processObject,
+                Request->handleValue,
+                &runtimeBasic);
+            response->queryPort.basicStatus = runtimeStatus;
+            if (NT_SUCCESS(runtimeStatus)) {
+                response->queryPort.flags = runtimeBasic.Flags;
+                response->queryPort.sequenceNo = runtimeBasic.SequenceNo;
+                response->queryPort.portContext =
+                    (ULONG64)(ULONG_PTR)runtimeBasic.PortContext;
+                response->queryPort.fieldFlags |=
+                    KSWORD_ARK_ALPC_PORT_FIELD_FLAGS_PRESENT |
+                    KSWORD_ARK_ALPC_PORT_FIELD_SEQUENCE_PRESENT |
+                    KSWORD_ARK_ALPC_PORT_FIELD_CONTEXT_PRESENT;
+                if ((requestFlags & KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_NAMES) == 0UL ||
+                    NT_SUCCESS(response->queryPort.nameStatus)) {
+                    fieldStatus = STATUS_SUCCESS;
+                }
+            }
+            else if (NT_SUCCESS(fieldStatus)) {
+                fieldStatus = runtimeStatus;
+            }
+        }
         response->basicStatus = response->queryPort.basicStatus;
         response->nameStatus = response->queryPort.nameStatus;
         response->fieldFlags |= KSWORD_ARK_ALPC_RESPONSE_FIELD_QUERY_PORT_PRESENT;
@@ -447,7 +486,13 @@ Return Value:
     }
 
     if ((requestFlags & KSWORD_ARK_ALPC_QUERY_FLAG_INCLUDE_COMMUNICATION) != 0UL) {
-        fieldStatus = KswordARKAlpcReferenceCommunicationPorts(portObject, portObjectType, &dynState, &referencedPorts);
+        fieldStatus = hasPrivateDynData ?
+            KswordARKAlpcReferenceCommunicationPorts(
+                portObject,
+                portObjectType,
+                &dynState,
+                &referencedPorts) :
+            STATUS_NOT_SUPPORTED;
         response->communicationStatus = fieldStatus;
         if (NT_SUCCESS(fieldStatus)) {
             if (referencedPorts.ConnectionPort != NULL) {
@@ -499,7 +544,9 @@ Return Value:
             }
         }
         else if (fieldStatus != STATUS_NOT_FOUND && response->queryStatus == KSWORD_ARK_ALPC_QUERY_STATUS_UNAVAILABLE) {
-            response->queryStatus = KSWORD_ARK_ALPC_QUERY_STATUS_COMMUNICATION_FAILED;
+            response->queryStatus = hasPrivateDynData ?
+                KSWORD_ARK_ALPC_QUERY_STATUS_COMMUNICATION_FAILED :
+                KSWORD_ARK_ALPC_QUERY_STATUS_PARTIAL;
         }
     }
 

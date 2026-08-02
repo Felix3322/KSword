@@ -915,13 +915,18 @@ Return Value:
 
     RtlZeroMemory(&Response->entries[Response->returnedCount], sizeof(Response->entries[0]));
     Response->entries[Response->returnedCount].sessionId = SessionId;
-    Response->entries[Response->returnedCount].status = KSWORD_ARK_WIN32K_STATUS_PROFILE_MISSING;
+    Response->entries[Response->returnedCount].status =
+        (Response->capabilityMask &
+            (KSWORD_ARK_WIN32K_CAP_TAGWND_SIGNATURE |
+             KSWORD_ARK_WIN32K_CAP_TAGQ_SIGNATURE)) != 0ULL
+        ? KSWORD_ARK_WIN32K_STATUS_PARTIAL
+        : KSWORD_ARK_WIN32K_STATUS_PROFILE_MISSING;
     Response->entries[Response->returnedCount].capabilityMask = Response->capabilityMask;
     Response->entries[Response->returnedCount].lastStatus = STATUS_SUCCESS;
     KswordARKWin32kCopyWideText(
         Response->entries[Response->returnedCount].detail,
         KSWORD_ARK_WIN32K_DETAIL_CHARS,
-        L"Session observed; win32k PDB profile is not loaded in this R0 skeleton.");
+        L"Session observed; private-symbol fields remain unavailable while validated runtime-signature capabilities are reported separately.");
     Response->returnedCount += 1UL;
     return &Response->entries[Response->returnedCount - 1UL];
 }
@@ -966,8 +971,72 @@ Return Value:
         psGetNextProcessThread == NULL ||
         psGetThreadWin32Thread == NULL ||
         psGetProcessSessionId == NULL) {
-        Response->lastStatus = STATUS_PROCEDURE_NOT_FOUND;
-        Response->status = KSWORD_ARK_WIN32K_STATUS_PARTIAL;
+        KSWORD_ARK_WIN32K_GUI_THREAD_MAP_ENTRY* threadMap = NULL;
+        ULONG threadMapCount = 0UL;
+        ULONG mapIndex = 0UL;
+        BOOLEAN mapTruncated = FALSE;
+        NTSTATUS mapStatus = STATUS_SUCCESS;
+
+        if (Request != NULL) {
+            maxEntries = KswordARKWin32kNormalizeMaxEntries(Request->maxEntries);
+        }
+        mapStatus = KswordARKWin32kBuildGuiThreadMap(
+            maxEntries,
+            'pWkW',
+            &threadMap,
+            &threadMapCount,
+            &mapTruncated);
+        if (!NT_SUCCESS(mapStatus) || threadMap == NULL) {
+            Response->lastStatus = NT_SUCCESS(mapStatus)
+                ? STATUS_PROCEDURE_NOT_FOUND
+                : mapStatus;
+            Response->status = KSWORD_ARK_WIN32K_STATUS_PARTIAL;
+            return;
+        }
+        for (mapIndex = 0UL; mapIndex < threadMapCount; ++mapIndex) {
+            KSWORD_ARK_WIN32K_SESSION_ENTRY* sessionEntry = NULL;
+            ULONG priorIndex = 0UL;
+            BOOLEAN processAlreadyCounted = FALSE;
+
+            if (Request != NULL && Request->sessionId != 0UL &&
+                Request->sessionId != threadMap[mapIndex].SessionId) {
+                continue;
+            }
+            if (Request != NULL && Request->sessionId == 0UL &&
+                (Request->flags & KSWORD_ARK_WIN32K_QUERY_FLAG_CURRENT_SESSION_ONLY) != 0UL &&
+                psGetProcessSessionId != NULL &&
+                psGetProcessSessionId(PsGetCurrentProcess()) !=
+                    threadMap[mapIndex].SessionId) {
+                continue;
+            }
+            sessionEntry = KswordARKWin32kFindOrAppendSession(
+                Response,
+                EntryCapacity,
+                threadMap[mapIndex].SessionId);
+            if (sessionEntry == NULL) {
+                continue;
+            }
+            for (priorIndex = 0UL; priorIndex < mapIndex; ++priorIndex) {
+                if (threadMap[priorIndex].SessionId == threadMap[mapIndex].SessionId &&
+                    threadMap[priorIndex].ProcessId == threadMap[mapIndex].ProcessId) {
+                    processAlreadyCounted = TRUE;
+                    break;
+                }
+            }
+            if (!processAlreadyCounted) {
+                sessionEntry->processCount += 1UL;
+            }
+            sessionEntry->guiThreadCount += 1UL;
+            if (sessionEntry->representativeProcessId == 0UL) {
+                sessionEntry->representativeProcessId = threadMap[mapIndex].ProcessId;
+                sessionEntry->representativeThreadId = threadMap[mapIndex].ThreadId;
+            }
+        }
+        ExFreePoolWithTag(threadMap, 'pWkW');
+        Response->lastStatus = mapTruncated ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+        if (mapTruncated) {
+            Response->status = KSWORD_ARK_WIN32K_STATUS_PARTIAL;
+        }
         return;
     }
 

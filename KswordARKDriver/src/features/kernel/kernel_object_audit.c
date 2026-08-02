@@ -7,9 +7,11 @@ Environment:
     Kernel-mode Driver Framework
 --*/
 #include "kernel_object_audit.h"
+#include "object_header_fallback.h"
 #include "ark/ark_driver.h"
 #include "../process/process_crossview.h"
 #include "../../dispatch/ioctl_validation.h"
+#include "../../platform/pool_compat.h"
 #include <ntstrsafe.h>
 #include <stdarg.h>
 #define KSW_KERNEL_OBJECT_CID_RESPONSE_HEADER_SIZE \
@@ -17,6 +19,10 @@ Environment:
 #define KSW_KERNEL_OBJECT_DEFAULT_CID_VISIT_BUDGET 65536UL
 #define KSW_KERNEL_OBJECT_HARD_CID_VISIT_BUDGET    262144UL
 #define KSW_KERNEL_OBJECT_HARD_RETURN_COUNT        4096UL
+#define KSW_KERNEL_OBJECT_TYPE_NAME_POOL_TAG        'nOsK'
+#ifndef STATUS_INFO_LENGTH_MISMATCH
+#define STATUS_INFO_LENGTH_MISMATCH ((NTSTATUS)0xC0000004L)
+#endif
 #ifndef STATUS_BUFFER_OVERFLOW
 #define STATUS_BUFFER_OVERFLOW ((NTSTATUS)0x80000005L)
 #endif
@@ -45,6 +51,16 @@ NTAPI
 ObGetObjectType(
     _In_ PVOID Object
     );
+
+NTKERNELAPI
+NTSTATUS
+ObQueryNameString(
+    _In_ PVOID Object,
+    _Out_writes_bytes_opt_(Length) POBJECT_NAME_INFORMATION ObjectNameInfo,
+    _In_ ULONG Length,
+    _Out_ PULONG ReturnLength
+    );
+
 static VOID
 KswordARKKernelObjectIoctlLog(
     _In_ WDFDEVICE Device,
@@ -442,6 +458,84 @@ Return Value:
     Destination[copyChars] = L'\0';
 }
 static NTSTATUS
+KswordARKKernelObjectReadNamespaceTypeName(
+    _In_ POBJECT_TYPE ObjectType,
+    _Out_writes_(DestinationChars) WCHAR* Destination,
+    _In_ ULONG DestinationChars
+    )
+/*++
+Routine Description:
+    Query the stable Object Manager name of an OBJECT_TYPE object and retain
+    its final path component. This avoids the private _OBJECT_TYPE.Name offset.
+Return Value:
+    STATUS_SUCCESS when a bounded non-empty name was copied.
+--*/
+{
+    POBJECT_NAME_INFORMATION nameInfo = NULL;
+    ULONG requiredBytes = 0UL;
+    ULONG allocationBytes = 0UL;
+    ULONG sourceChars = 0UL;
+    ULONG startChar = 0UL;
+    ULONG copyChars = 0UL;
+    ULONG index = 0UL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (ObjectType == NULL || Destination == NULL || DestinationChars < 2UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    Destination[0] = L'\0';
+    status = ObQueryNameString(ObjectType, NULL, 0UL, &requiredBytes);
+    if (status != STATUS_INFO_LENGTH_MISMATCH &&
+        status != STATUS_BUFFER_TOO_SMALL &&
+        status != STATUS_BUFFER_OVERFLOW) {
+        return status;
+    }
+    allocationBytes = requiredBytes;
+    if (allocationBytes < sizeof(OBJECT_NAME_INFORMATION) + sizeof(WCHAR)) {
+        allocationBytes = sizeof(OBJECT_NAME_INFORMATION) + sizeof(WCHAR);
+    }
+    if (allocationBytes > 64UL * 1024UL) {
+        return STATUS_NAME_TOO_LONG;
+    }
+    nameInfo = (POBJECT_NAME_INFORMATION)KswordARKAllocateNonPagedPool(
+        allocationBytes,
+        KSW_KERNEL_OBJECT_TYPE_NAME_POOL_TAG);
+    if (nameInfo == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(nameInfo, allocationBytes);
+    status = ObQueryNameString(
+        ObjectType,
+        nameInfo,
+        allocationBytes,
+        &requiredBytes);
+    if (NT_SUCCESS(status) && nameInfo->Name.Buffer != NULL &&
+        nameInfo->Name.Length != 0U &&
+        nameInfo->Name.Length <= nameInfo->Name.MaximumLength &&
+        (nameInfo->Name.Length & (sizeof(WCHAR) - 1U)) == 0U) {
+        sourceChars = nameInfo->Name.Length / sizeof(WCHAR);
+        for (index = 0UL; index < sourceChars; ++index) {
+            if (nameInfo->Name.Buffer[index] == L'\\') {
+                startChar = index + 1UL;
+            }
+        }
+        if (startChar < sourceChars) {
+            copyChars = min(sourceChars - startChar, DestinationChars - 1UL);
+            RtlCopyMemory(
+                Destination,
+                &nameInfo->Name.Buffer[startChar],
+                (SIZE_T)copyChars * sizeof(WCHAR));
+            Destination[copyChars] = L'\0';
+        }
+    }
+    ExFreePoolWithTag(nameInfo, KSW_KERNEL_OBJECT_TYPE_NAME_POOL_TAG);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    return (copyChars != 0UL) ? STATUS_SUCCESS : STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+static NTSTATUS
 KswordARKKernelObjectReadTypeInfo(
     _In_ POBJECT_TYPE ObjectType,
     _In_ const KSW_DYN_STATE* DynState,
@@ -465,8 +559,20 @@ Return Value:
     }
     Response->objectTypeAddress = (ULONG64)(ULONG_PTR)ObjectType;
     Response->fieldFlags |= KSWORD_ARK_OBJECT_SUMMARY_FIELD_TYPE_PRESENT;
+
+    status = KswordARKKernelObjectReadNamespaceTypeName(
+        ObjectType,
+        Response->typeName,
+        KSWORD_ARK_KERNEL_OBJECT_TYPE_NAME_CHARS);
+    if (NT_SUCCESS(status)) {
+        Response->fieldFlags |= KSWORD_ARK_OBJECT_SUMMARY_FIELD_TYPE_NAME_PRESENT;
+        decodedAny = TRUE;
+    }
+
+    status = STATUS_SUCCESS;
     __try {
-        if (KswordARKCrossViewOffsetPresent(DynState->Kernel.OtName)) {
+        if (!decodedAny &&
+            KswordARKCrossViewOffsetPresent(DynState->Kernel.OtName)) {
             UNICODE_STRING typeName;
             RtlZeroMemory(&typeName, sizeof(typeName));
             RtlCopyMemory(&typeName, (PUCHAR)ObjectType + DynState->Kernel.OtName, sizeof(typeName));
@@ -547,6 +653,7 @@ Return Value:
     KSW_DYN_STATE dynState;
     PVOID object = NULL;
     POBJECT_TYPE objectType = NULL;
+    KSW_OBJECT_HEADER_FALLBACK_RESULT counterResult;
     NTSTATUS status = STATUS_SUCCESS;
     if (BytesWrittenOut == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -602,15 +709,42 @@ Return Value:
         response->status = KSWORD_ARK_OBJECT_SUMMARY_STATUS_TYPE_QUERY_FAILED;
     }
     response->counterStatus = STATUS_NOT_SUPPORTED;
-    response->objectHeaderStatus = KSWORD_ARK_OBJECT_HEADER_STATUS_PROFILE_MISSING;
-    if ((Request->flags & KSWORD_ARK_OBJECT_SUMMARY_FLAG_INCLUDE_COUNTERS) != 0UL &&
-        response->status == KSWORD_ARK_OBJECT_SUMMARY_STATUS_OK) {
-        response->status = KSWORD_ARK_OBJECT_SUMMARY_STATUS_PARTIAL;
+    response->objectHeaderStatus = KSWORD_ARK_OBJECT_HEADER_STATUS_UNAVAILABLE;
+    RtlZeroMemory(&counterResult, sizeof(counterResult));
+    if ((Request->flags & KSWORD_ARK_OBJECT_SUMMARY_FLAG_INCLUDE_COUNTERS) != 0UL) {
+        response->counterStatus = KswordARKObjectHeaderQueryFallback(
+            object,
+            &counterResult);
+        if (NT_SUCCESS(response->counterStatus)) {
+            response->pointerCount = counterResult.PointerCount;
+            response->fieldFlags |=
+                KSWORD_ARK_OBJECT_SUMMARY_FIELD_POINTER_COUNT_PRESENT;
+            if ((counterResult.ValidFields &
+                    KSW_OBJECT_HEADER_FALLBACK_FIELD_HANDLE_COUNT) != 0UL) {
+                response->handleCount = counterResult.HandleCount;
+                response->fieldFlags |=
+                    KSWORD_ARK_OBJECT_SUMMARY_FIELD_HANDLE_COUNT_PRESENT;
+            }
+            response->objectHeaderStatus = KSWORD_ARK_OBJECT_HEADER_STATUS_AVAILABLE;
+        }
+        else {
+            response->objectHeaderStatus = KSWORD_ARK_OBJECT_HEADER_STATUS_PROFILE_MISSING;
+            if (response->status == KSWORD_ARK_OBJECT_SUMMARY_STATUS_OK) {
+                response->status = KSWORD_ARK_OBJECT_SUMMARY_STATUS_PARTIAL;
+            }
+        }
     }
     (VOID)RtlStringCchPrintfW(
         response->detail,
         KSWORD_ARK_KERNEL_OBJECT_DETAIL_CHARS,
-        L"Summary is read-only and CID-backed; ObjectHeader counters require future PDB fields.");
+        (Request->flags & KSWORD_ARK_OBJECT_SUMMARY_FLAG_INCLUDE_COUNTERS) == 0UL
+            ? L"Summary is CID-backed; ObjectHeader counters were not requested."
+            : (NT_SUCCESS(response->counterStatus)
+                ? ((response->fieldFlags &
+                        KSWORD_ARK_OBJECT_SUMMARY_FIELD_HANDLE_COUNT_PRESENT) != 0UL
+                    ? L"Summary is CID-backed; ObjectHeader PointerCount and HandleCount passed independent export-signature and balanced-reference validation."
+                    : L"Summary is CID-backed; ObjectHeader PointerCount passed independent export-signature and balanced-reference validation; HandleCount was not published without a unique secondary pattern.")
+                : L"Summary is CID-backed; the ObjectHeader signature candidate was unavailable or failed live validation."));
     ObDereferenceObject(object);
     *BytesWrittenOut = sizeof(*response);
     return STATUS_SUCCESS;

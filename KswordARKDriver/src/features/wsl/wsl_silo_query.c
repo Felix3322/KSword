@@ -798,7 +798,17 @@ Return Value:
         response->queryStatus = KSWORD_ARK_WSL_QUERY_STATUS_WSL_NOT_LOADED;
     }
     else if ((response->fieldFlags & KSWORD_ARK_WSL_FIELD_LXCORE_DYNDATA_ACTIVE) == 0UL) {
-        response->queryStatus = KSWORD_ARK_WSL_QUERY_STATUS_DYNDATA_MISSING;
+        // Public subsystem and silo projections remain useful without lxcore
+        // private offsets.  Report a real partial result instead of making the
+        // complete feature look unavailable merely because Linux IDs cannot
+        // be decoded on this build.
+        response->queryStatus =
+            (response->fieldFlags &
+                (KSWORD_ARK_WSL_FIELD_PROCESS_SUBSYSTEM_PRESENT |
+                 KSWORD_ARK_WSL_FIELD_THREAD_SUBSYSTEM_PRESENT |
+                 KSWORD_ARK_WSL_FIELD_SILO_ROUTINES_PRESENT)) != 0UL
+            ? KSWORD_ARK_WSL_QUERY_STATUS_PARTIAL
+            : KSWORD_ARK_WSL_QUERY_STATUS_DYNDATA_MISSING;
     }
     else if ((response->fieldFlags & (KSWORD_ARK_WSL_FIELD_LINUX_PID_PRESENT | KSWORD_ARK_WSL_FIELD_LINUX_TID_PRESENT)) != 0UL) {
         response->queryStatus = KSWORD_ARK_WSL_QUERY_STATUS_OK;

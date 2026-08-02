@@ -200,13 +200,22 @@
     <ClInclude Include="src\platform\process_resolver.h">
       <Filter>Header Files\Platform</Filter>
     </ClInclude>
+    <ClInclude Include="src\platform\token_layout_resolver.h">
+      <Filter>Header Files\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="src\platform\dyndata_fallback_resolver.h">
+      <Filter>Header Files\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="src\platform\kernel_cache_fallback.h">
+      <Filter>Header Files\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="src\platform\runtime_signature_scan.h">
+      <Filter>Header Files\Platform</Filter>
+    </ClInclude>
     <ClInclude Include="src\platform\kernel_module_identity.h">
       <Filter>Header Files\Platform</Filter>
     </ClInclude>
     <ClInclude Include="src\platform\pool_compat.h">
-      <Filter>Header Files\Platform</Filter>
-    </ClInclude>
-    <ClInclude Include="src\platform\runtime_signature_scan.h">
       <Filter>Header Files\Platform</Filter>
     </ClInclude>
     <ClInclude Include="include\ark\ark_dyndata.h">
@@ -224,6 +233,9 @@
     <ClInclude Include="..\shared\driver\KswordArkWorkQueueIoctl.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="src\features\thread\work_queue_fallback.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\ark\ark_handle.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -234,6 +246,9 @@
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
     <ClInclude Include="src\features\alpc\alpc_support.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\alpc\alpc_runtime_fallback.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\ark\ark_section.h">
@@ -332,6 +347,8 @@
     <ClInclude Include="src\features\thread\thread_worker_state.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\driver_integrity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_unloaded_drivers.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\ci_hash_fallback.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\ssdt_fallback.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\driver_blind_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_cpu_integrity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_idt_baseline.h"><Filter>Header Files</Filter></ClInclude>
@@ -344,10 +361,12 @@
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_object_audit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_object_type_table.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\object_header_fallback.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_ipc_summary.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\mutation\mutation_transaction.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\dyndata\dyndata_v4_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\win32k\win32k_support.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\win32k\win32k_fallback.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\win32k\win32k_query.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\device_audit\device_audit_internal.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
@@ -418,6 +437,9 @@
     <ClCompile Include="src\features\kernel\ssdt_query.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\kernel\ssdt_fallback.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\kernel\hook_scan.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
@@ -437,6 +459,9 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_unloaded_drivers.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\ci_hash_fallback.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_unloaded_drivers_ioctl.c">
@@ -506,6 +531,9 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_object_type_table.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\object_header_fallback.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_ipc_summary.c">
@@ -595,13 +623,22 @@
     <ClCompile Include="src\platform\process_resolver.c">
       <Filter>Source Files\Platform</Filter>
     </ClCompile>
+    <ClCompile Include="src\platform\token_layout_resolver.c">
+      <Filter>Source Files\Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\dyndata_fallback_resolver.c">
+      <Filter>Source Files\Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\kernel_cache_fallback.c">
+      <Filter>Source Files\Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\runtime_signature_scan.c">
+      <Filter>Source Files\Platform</Filter>
+    </ClCompile>
     <ClCompile Include="src\platform\kernel_module_identity.c">
       <Filter>Source Files\Platform</Filter>
     </ClCompile>
     <ClCompile Include="src\platform\pool_compat.c">
-      <Filter>Source Files\Platform</Filter>
-    </ClCompile>
-    <ClCompile Include="src\platform\runtime_signature_scan.c">
       <Filter>Source Files\Platform</Filter>
     </ClCompile>
     <ClCompile Include="src\features\dyndata\dyndata_loader.c">
@@ -646,6 +683,9 @@
     <ClCompile Include="src\features\thread\work_queue_query.c">
       <Filter>Source Files\Features\Thread</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\thread\work_queue_fallback.c">
+      <Filter>Source Files\Features\Thread</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\handle\handle_support.c">
       <Filter>Source Files\Features\Handle</Filter>
     </ClCompile>
@@ -659,6 +699,9 @@
       <Filter>Source Files\Features\Handle</Filter>
     </ClCompile>
     <ClCompile Include="src\features\alpc\alpc_support.c">
+      <Filter>Source Files\Features\Alpc</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\alpc\alpc_runtime_fallback.c">
       <Filter>Source Files\Features\Alpc</Filter>
     </ClCompile>
     <ClCompile Include="src\features\alpc\alpc_query.c">
@@ -776,6 +819,15 @@
       <Filter>Source Files\Features\Keyboard</Filter>
     </ClCompile>
     <ClCompile Include="src\features\win32k\win32k_timer.c">
+      <Filter>Source Files\Features\Win32k</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\win32k\win32k_fallback.c">
+      <Filter>Source Files\Features\Win32k</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\win32k\win32k_queue_layout.c">
+      <Filter>Source Files\Features\Win32k</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\win32k\win32k_runtime_query.c">
       <Filter>Source Files\Features\Win32k</Filter>
     </ClCompile>
     <ClCompile Include="src\features\win32k\win32k_event_hook.c">

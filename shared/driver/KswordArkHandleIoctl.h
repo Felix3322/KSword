@@ -70,11 +70,13 @@
 #define KSWORD_ARK_OBJECT_TYPE_SOURCE_OBJECT_HEADER       2UL
 #define KSWORD_ARK_OBJECT_TYPE_SOURCE_BOTH_MATCH          3UL
 #define KSWORD_ARK_OBJECT_TYPE_SOURCE_BOTH_MISMATCH       4UL
+#define KSWORD_ARK_OBJECT_TYPE_SOURCE_SYSTEM_SNAPSHOT     5UL
 
 // Type-name source values identify whether the name came from DynData OtName.
 #define KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_NONE           0UL
 #define KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_DYNDATA_OTNAME 1UL
 #define KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_QUERY_FAILED   2UL
+#define KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_OBJECT_NAMESPACE 3UL
 
 // Name-info status is per-entry/per-query so name read failures never fail the
 // full handle enumeration.

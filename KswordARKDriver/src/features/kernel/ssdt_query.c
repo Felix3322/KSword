@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "ark/ark_driver.h"
+#include "ssdt_fallback.h"
 
 #include <ntimage.h>
 #include <ntstrsafe.h>
@@ -451,8 +452,9 @@ KswordARKDriverIsDynGlobalRvaPresent(
 
 Routine Description:
 
-    判断 DynData/PDB profile 提供的全局 RVA 是否可用。中文说明：Shadow
-    SSDT 不再猜表地址，只消费已完成 ntoskrnl 身份匹配的 PDB 全局 RVA。
+    判断 DynData 提供的全局 RVA 是否可用。中文说明：Shadow SSDT 只消费
+    已完成 ntoskrnl 身份匹配的 PDB RVA 或经过唯一命中和活体表项校验的
+    runtime pattern RVA。
 
 Arguments:
 
@@ -502,6 +504,7 @@ Return Value:
 {
     KSW_DYN_STATE dynState;
     ULONG tableShadowRva = 0UL;
+    ULONG tableShadowSource = KSW_DYN_FIELD_SOURCE_UNAVAILABLE;
     ULONG64 descriptorAddress = 0ULL;
     const KSWORD_ARK_SERVICE_TABLE_DESCRIPTOR* descriptorArray = NULL;
 
@@ -522,7 +525,14 @@ Return Value:
     }
 
     tableShadowRva = dynState.KernelGlobals.KeServiceDescriptorTableShadow;
-    if (!KswordARKDriverIsDynGlobalRvaPresent(tableShadowRva)) {
+    tableShadowSource = dynState.KernelGlobalSources.KeServiceDescriptorTableShadow;
+    if (!KswordARKDriverIsDynGlobalRvaPresent(tableShadowRva) ||
+        (tableShadowSource != KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
+         tableShadowSource != KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN)) {
+        return;
+    }
+    if (tableShadowSource == KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN &&
+        KswordARKDriverResolveShadowSsdtRva(&dynState.Ntoskrnl) != (LONG)tableShadowRva) {
         return;
     }
 

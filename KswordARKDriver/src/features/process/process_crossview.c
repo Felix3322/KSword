@@ -2679,9 +2679,13 @@ Return Value:
         return;
     }
 
-    if (!KswordARKCrossViewOffsetPresent(Context->DynState.Kernel.HtTableCode) ||
-        !KswordARKCrossViewOffsetPresent(Context->DynState.Kernel.HteLowValue) ||
-        PsProcessType == NULL || *PsProcessType == NULL) {
+    /*
+     * HtTableCode and HteLowValue have bounded read-only fallbacks in the
+     * walker, so a missing PDB field must not disable the entire CID view.
+     * Object-type validation remains mandatory before any decoded entry is
+     * referenced.
+     */
+    if (PsProcessType == NULL || *PsProcessType == NULL) {
         Context->CapabilityMissing = TRUE;
         Context->MissingCapabilityMask |= KSW_CAP_CID_TABLE_WALK;
         Context->LastStatus = STATUS_PROCEDURE_NOT_FOUND;

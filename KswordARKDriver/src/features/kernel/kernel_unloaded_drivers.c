@@ -16,6 +16,7 @@ Environment:
 --*/
 
 #include "kernel_unloaded_drivers.h"
+#include "ci_hash_fallback.h"
 #include "ark/ark_dyndata.h"
 #include "../dyndata/dyndata_v4_internal.h"
 
@@ -28,6 +29,15 @@ typedef struct _KSW_UNLOADED_QUERY_CONTEXT
     KSWORD_ARK_QUERY_UNLOADED_DRIVERS_RESPONSE* Response;
     ULONG MaxRows;
 } KSW_UNLOADED_QUERY_CONTEXT;
+
+static BOOLEAN
+KswordARKUnloadedDynDataSourceIsTrusted(
+    _In_ ULONG Source
+    )
+{
+    return Source == KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
+        Source == KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN;
+}
 
 typedef struct _KSW_MM_UNLOADED_LAYOUT
 {
@@ -209,9 +219,7 @@ Return Value:
 {
     KSW_DYN_STATE state;
     ULONGLONG recordsPointerAddress = 0ULL;
-    ULONGLONG lastIndexAddress = 0ULL;
     PVOID records = NULL;
-    ULONG lastIndex = 0UL;
 
     if (Layout == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -220,10 +228,22 @@ Return Value:
     RtlZeroMemory(&state, sizeof(state));
     KswordARKDynDataSnapshot(&state);
 
-    if (!state.NtosActive || !state.PdbProfileActive) {
+    if (!state.NtosActive) {
         return STATUS_DEVICE_NOT_READY;
     }
-    if (state.Kernel.UldName == KSW_DYN_OFFSET_UNAVAILABLE ||
+    if (!KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.UldName) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.UldStartAddress) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.UldEndAddress) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.UldCurrentTime) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.UldTypeSize) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelGlobalSources.MmUnloadedDrivers) ||
+        state.Kernel.UldName == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.UldStartAddress == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.UldEndAddress == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.UldCurrentTime == KSW_DYN_OFFSET_UNAVAILABLE ||
@@ -240,18 +260,12 @@ Return Value:
             &state.Ntoskrnl,
             state.KernelGlobals.MmUnloadedDrivers,
             sizeof(PVOID),
-            &recordsPointerAddress) ||
-        !KswordARKUnloadedRvaToAddress(
-            &state.Ntoskrnl,
-            state.KernelGlobals.MmLastUnloadedDriver,
-            sizeof(ULONG),
-            &lastIndexAddress)) {
+            &recordsPointerAddress)) {
         return STATUS_NOT_SUPPORTED;
     }
 
     __try {
         records = *(PVOID*)(ULONG_PTR)recordsPointerAddress;
-        lastIndex = *(volatile ULONG*)(ULONG_PTR)lastIndexAddress;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return GetExceptionCode();
@@ -259,10 +273,6 @@ Return Value:
     if (records == NULL) {
         return STATUS_NOT_FOUND;
     }
-    if (lastIndex > KSW_MM_UNLOADED_DRIVER_SLOTS) {
-        return STATUS_DATA_ERROR;
-    }
-
     Layout->Records = records;
     Layout->RecordSize = state.Kernel.UldTypeSize;
     Layout->NameOffset = state.Kernel.UldName;
@@ -416,10 +426,22 @@ Return Value:
     RtlZeroMemory(&state, sizeof(state));
     KswordARKDynDataSnapshot(&state);
 
-    if (!state.NtosActive || !state.PdbProfileActive) {
+    if (!state.NtosActive) {
         return STATUS_DEVICE_NOT_READY;
     }
-    if (state.Kernel.PiDdbDriverName == KSW_DYN_OFFSET_UNAVAILABLE ||
+    if (!KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.PiDdbDriverName) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.PiDdbTimeDateStamp) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.PiDdbLoadStatus) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelSources.PiDdbTypeSize) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelGlobalSources.PiDDBCacheTable) ||
+        !KswordARKUnloadedDynDataSourceIsTrusted(
+            state.KernelGlobalSources.PiDDBLock) ||
+        state.Kernel.PiDdbDriverName == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.PiDdbTimeDateStamp == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.PiDdbLoadStatus == KSW_DYN_OFFSET_UNAVAILABLE ||
         state.Kernel.PiDdbTypeSize == KSW_DYN_OFFSET_UNAVAILABLE ||
@@ -698,7 +720,10 @@ Return Value:
     RtlZeroMemory(&layout, sizeof(layout));
     status = KswordARKDynDataV4SnapshotCiKernelHashLayout(&layout);
     if (!NT_SUCCESS(status)) {
-        return STATUS_REVISION_MISMATCH;
+        status = KswordARKCiHashResolveRuntimeLayout(&layout);
+        if (!NT_SUCCESS(status)) {
+            return STATUS_REVISION_MISMATCH;
+        }
     }
     listGlobal = (PVOID)(ULONG_PTR)(
         layout.ModuleBase + layout.KernelHashBucketListRva);

@@ -180,7 +180,8 @@ KswordARKHandleQueryTypeName(
     _In_ const KSW_DYN_STATE* DynState,
     _Out_writes_(DestinationChars) WCHAR* Destination,
     _In_ ULONG DestinationChars,
-    _Out_ BOOLEAN* TruncatedOut
+    _Out_ BOOLEAN* TruncatedOut,
+    _Out_ ULONG* SourceOut
     )
 /*++
 
@@ -203,22 +204,85 @@ Return Value:
 
 --*/
 {
+    POBJECT_NAME_INFORMATION nameInfo = NULL;
     UNICODE_STRING typeName;
+    ULONG requiredBytes = 0UL;
+    ULONG allocationBytes = 0UL;
+    USHORT index = 0U;
+    USHORT lastSeparator = 0U;
+    BOOLEAN separatorFound = FALSE;
+    NTSTATUS status = STATUS_SUCCESS;
 
     if (TruncatedOut != NULL) {
         *TruncatedOut = FALSE;
     }
-    if (ObjectType == NULL || DynState == NULL || Destination == NULL || DestinationChars == 0UL) {
+    if (SourceOut != NULL) {
+        *SourceOut = KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_NONE;
+    }
+    if (ObjectType == NULL || DynState == NULL || Destination == NULL ||
+        DestinationChars == 0UL || SourceOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
+
+    // OBJECT_TYPE objects are named in \ObjectTypes.  Prefer that stable object
+    // namespace projection and keep the private OtName field only as fallback.
+    status = ObQueryNameString(ObjectType, NULL, 0UL, &requiredBytes);
+    if (status == STATUS_INFO_LENGTH_MISMATCH || status == STATUS_BUFFER_TOO_SMALL ||
+        status == STATUS_BUFFER_OVERFLOW) {
+        allocationBytes = requiredBytes;
+        if (allocationBytes < sizeof(OBJECT_NAME_INFORMATION) + sizeof(WCHAR)) {
+            allocationBytes = sizeof(OBJECT_NAME_INFORMATION) + sizeof(WCHAR);
+        }
+        if (allocationBytes <= 64UL * 1024UL) {
+            nameInfo = (POBJECT_NAME_INFORMATION)KswordARKHandleAllocateNonPaged(
+                allocationBytes);
+        }
+        if (nameInfo != NULL) {
+            RtlZeroMemory(nameInfo, allocationBytes);
+            status = ObQueryNameString(
+                ObjectType,
+                nameInfo,
+                allocationBytes,
+                &requiredBytes);
+            if (NT_SUCCESS(status) && nameInfo->Name.Buffer != NULL) {
+                typeName = nameInfo->Name;
+                for (index = 0U;
+                    index < (USHORT)(typeName.Length / sizeof(WCHAR));
+                    ++index) {
+                    if (typeName.Buffer[index] == L'\\') {
+                        lastSeparator = index;
+                        separatorFound = TRUE;
+                    }
+                }
+                if (separatorFound &&
+                    lastSeparator + 1U < typeName.Length / sizeof(WCHAR)) {
+                    typeName.Buffer += lastSeparator + 1U;
+                    typeName.Length = (USHORT)(typeName.Length -
+                        ((lastSeparator + 1U) * sizeof(WCHAR)));
+                    typeName.MaximumLength = typeName.Length;
+                }
+                KswordARKHandleCopyUnicodeStringToFixed(
+                    Destination,
+                    DestinationChars,
+                    &typeName,
+                    TruncatedOut);
+                *SourceOut = KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_OBJECT_NAMESPACE;
+                ExFreePoolWithTag(nameInfo, KSWORD_ARK_HANDLE_POOL_TAG);
+                return STATUS_SUCCESS;
+            }
+            ExFreePoolWithTag(nameInfo, KSWORD_ARK_HANDLE_POOL_TAG);
+        }
+    }
+
     if (!KswordARKHandleIsOffsetPresent(DynState->Kernel.OtName)) {
-        return STATUS_NOT_SUPPORTED;
+        return NT_SUCCESS(status) ? STATUS_NOT_SUPPORTED : status;
     }
 
     RtlZeroMemory(&typeName, sizeof(typeName));
     __try {
         RtlCopyMemory(&typeName, (PUCHAR)ObjectType + DynState->Kernel.OtName, sizeof(typeName));
         KswordARKHandleCopyUnicodeStringToFixed(Destination, DestinationChars, &typeName, TruncatedOut);
+        *SourceOut = KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_DYNDATA_OTNAME;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return GetExceptionCode();
@@ -536,11 +600,11 @@ Return Value:
             &dynState,
             response->typeName,
             KSWORD_ARK_OBJECT_TYPE_NAME_CHARS,
-            &truncated);
+            &truncated,
+            &response->objectTypeNameSource);
         response->typeStatus = status;
         if (NT_SUCCESS(status)) {
             response->fieldFlags |= KSWORD_ARK_OBJECT_INFO_FIELD_TYPE_NAME_PRESENT;
-            response->objectTypeNameSource = KSWORD_ARK_OBJECT_TYPE_NAME_SOURCE_DYNDATA_OTNAME;
             if (truncated) {
                 response->queryStatus = KSWORD_ARK_OBJECT_QUERY_STATUS_NAME_TRUNCATED;
             }

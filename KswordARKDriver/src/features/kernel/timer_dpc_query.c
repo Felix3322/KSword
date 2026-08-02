@@ -20,6 +20,13 @@ Environment:
 
 #define KSW_TIMER_DPC_POOL_TAG 'pDTK'
 
+#if defined(_M_AMD64) || defined(_M_X64)
+#define KSW_TIMER_DPC_RUNTIME_PRCB_BYTES 0x00010000UL
+#define KSW_TIMER_DPC_RUNTIME_LIST_BUDGET 4096UL
+#define KSW_TIMER_DPC_RUNTIME_MIN_BUCKETS 64UL
+#define KSW_TIMER_DPC_RUNTIME_MAX_ENTRY_BYTES 0x80UL
+#endif
+
 typedef struct _KSW_TIMER_DPC_BUILDER
 {
     KSWORD_ARK_ENUM_TIMER_DPC_RESPONSE* Response;
@@ -99,6 +106,411 @@ KswordARKTimerDpcReadMemory(
     }
     return TRUE;
 }
+
+#if defined(_M_AMD64) || defined(_M_X64)
+static BOOLEAN
+KswordARKTimerDpcAddressInsidePrcb(
+    _In_ ULONG64 Address,
+    _In_ ULONG64 PrcbAddress,
+    _In_ SIZE_T Bytes
+    )
+/*++
+
+Routine Description:
+
+    Bound one candidate range to the current processor's conservative KPRCB
+    window.  The private KPRCB type size is deliberately not assumed.
+
+Return Value:
+
+    TRUE when the entire range is contained by the non-wrapping window.
+
+--*/
+{
+    ULONG64 prcbEnd = 0ULL;
+
+    if (!KswordARKTimerDpcIsKernelAddress(PrcbAddress) ||
+        PrcbAddress > MAXULONGLONG - KSW_TIMER_DPC_RUNTIME_PRCB_BYTES) {
+        return FALSE;
+    }
+    prcbEnd = PrcbAddress + KSW_TIMER_DPC_RUNTIME_PRCB_BYTES;
+    return Address >= PrcbAddress && Address < prcbEnd &&
+        Bytes <= (SIZE_T)(prcbEnd - Address);
+}
+
+static BOOLEAN
+KswordARKTimerDpcListHeadValid(
+    _In_ ULONG64 HeadAddress
+    )
+/*++
+
+Routine Description:
+
+    Validate an empty or populated LIST_ENTRY head with reciprocal first/last
+    links.  This is the semantic gate used after the probe reaches KPRCB data.
+
+Return Value:
+
+    TRUE for a reciprocal bounded list head; otherwise FALSE.
+
+--*/
+{
+    LIST_ENTRY head;
+    LIST_ENTRY first;
+    LIST_ENTRY last;
+    ULONG64 forward = 0ULL;
+    ULONG64 backward = 0ULL;
+
+    RtlZeroMemory(&head, sizeof(head));
+    RtlZeroMemory(&first, sizeof(first));
+    RtlZeroMemory(&last, sizeof(last));
+    if (!KswordARKTimerDpcReadMemory(HeadAddress, &head, sizeof(head))) {
+        return FALSE;
+    }
+    forward = (ULONG64)(ULONG_PTR)head.Flink;
+    backward = (ULONG64)(ULONG_PTR)head.Blink;
+    if (forward == HeadAddress || backward == HeadAddress) {
+        return (forward == HeadAddress && backward == HeadAddress) ? TRUE : FALSE;
+    }
+    if (!KswordARKTimerDpcIsKernelAddress(forward) ||
+        !KswordARKTimerDpcIsKernelAddress(backward) ||
+        !KswordARKTimerDpcReadMemory(forward, &first, sizeof(first)) ||
+        !KswordARKTimerDpcReadMemory(backward, &last, sizeof(last))) {
+        return FALSE;
+    }
+    return ((ULONG64)(ULONG_PTR)first.Blink == HeadAddress &&
+            (ULONG64)(ULONG_PTR)last.Flink == HeadAddress)
+        ? TRUE
+        : FALSE;
+}
+
+static ULONG64
+KswordARKTimerDpcWalkProbeToPrcb(
+    _In_ ULONG64 ProbeLinkAddress,
+    _In_ ULONG64 PrcbAddress,
+    _In_ BOOLEAN WalkForward
+    )
+/*++
+
+Routine Description:
+
+    Follow one direction of a live probe timer's reciprocal list until the
+    walk reaches the embedded bucket head inside the current KPRCB.
+
+Return Value:
+
+    Candidate bucket-head address, or zero on corruption/budget exhaustion.
+
+--*/
+{
+    ULONG64 currentAddress = ProbeLinkAddress;
+    ULONG step = 0UL;
+
+    for (step = 0UL; step < KSW_TIMER_DPC_RUNTIME_LIST_BUDGET; ++step) {
+        LIST_ENTRY current;
+        LIST_ENTRY next;
+        ULONG64 nextAddress = 0ULL;
+
+        RtlZeroMemory(&current, sizeof(current));
+        RtlZeroMemory(&next, sizeof(next));
+        if (!KswordARKTimerDpcReadMemory(currentAddress, &current, sizeof(current))) {
+            return 0ULL;
+        }
+        nextAddress = WalkForward
+            ? (ULONG64)(ULONG_PTR)current.Flink
+            : (ULONG64)(ULONG_PTR)current.Blink;
+        if (nextAddress == 0ULL || nextAddress == ProbeLinkAddress ||
+            !KswordARKTimerDpcIsKernelAddress(nextAddress) ||
+            !KswordARKTimerDpcReadMemory(nextAddress, &next, sizeof(next))) {
+            return 0ULL;
+        }
+        if (WalkForward) {
+            if ((ULONG64)(ULONG_PTR)next.Blink != currentAddress) {
+                return 0ULL;
+            }
+        }
+        else if ((ULONG64)(ULONG_PTR)next.Flink != currentAddress) {
+            return 0ULL;
+        }
+
+        if (KswordARKTimerDpcAddressInsidePrcb(
+                nextAddress,
+                PrcbAddress,
+                sizeof(LIST_ENTRY))) {
+            return KswordARKTimerDpcListHeadValid(nextAddress)
+                ? nextAddress
+                : 0ULL;
+        }
+        currentAddress = nextAddress;
+    }
+    return 0ULL;
+}
+
+static ULONG
+KswordARKTimerDpcCountBucketRun(
+    _In_ ULONG64 KnownHeadAddress,
+    _In_ ULONG64 PrcbAddress,
+    _In_ ULONG EntryBytes,
+    _Out_ ULONG64* FirstHeadAddressOut
+    )
+/*++
+
+Routine Description:
+
+    Expand from one proven bucket head across a regular KPRCB list-head array.
+    Only reciprocal heads count, and both directions are bounded by the KPRCB
+    window and the public protocol's hard bucket limit.
+
+Return Value:
+
+    Number of contiguous heads for this stride; zero for invalid input.
+
+--*/
+{
+    ULONG64 firstAddress = KnownHeadAddress;
+    ULONG64 cursorAddress = KnownHeadAddress;
+    ULONG beforeCount = 0UL;
+    ULONG afterCount = 0UL;
+
+    if (FirstHeadAddressOut == NULL || EntryBytes < sizeof(LIST_ENTRY) ||
+        (EntryBytes & (sizeof(PVOID) - 1UL)) != 0UL) {
+        return 0UL;
+    }
+    *FirstHeadAddressOut = 0ULL;
+
+    while (beforeCount < KSWORD_ARK_TIMER_DPC_MAX_BUCKETS - 1UL &&
+           cursorAddress >= PrcbAddress + EntryBytes) {
+        const ULONG64 previousAddress = cursorAddress - EntryBytes;
+
+        if (!KswordARKTimerDpcAddressInsidePrcb(
+                previousAddress,
+                PrcbAddress,
+                sizeof(LIST_ENTRY)) ||
+            !KswordARKTimerDpcListHeadValid(previousAddress)) {
+            break;
+        }
+        firstAddress = previousAddress;
+        cursorAddress = previousAddress;
+        beforeCount += 1UL;
+    }
+
+    cursorAddress = KnownHeadAddress;
+    while (beforeCount + afterCount < KSWORD_ARK_TIMER_DPC_MAX_BUCKETS - 1UL &&
+           cursorAddress <= MAXULONGLONG - EntryBytes) {
+        const ULONG64 nextAddress = cursorAddress + EntryBytes;
+
+        if (!KswordARKTimerDpcAddressInsidePrcb(
+                nextAddress,
+                PrcbAddress,
+                sizeof(LIST_ENTRY)) ||
+            !KswordARKTimerDpcListHeadValid(nextAddress)) {
+            break;
+        }
+        cursorAddress = nextAddress;
+        afterCount += 1UL;
+    }
+
+    *FirstHeadAddressOut = firstAddress;
+    return beforeCount + afterCount + 1UL;
+}
+
+static BOOLEAN
+KswordARKTimerDpcResolveBucketArray(
+    _In_ ULONG64 KnownHeadAddress,
+    _In_ ULONG64 PrcbAddress,
+    _Out_ ULONG64* FirstHeadAddressOut,
+    _Out_ ULONG* EntryBytesOut,
+    _Out_ ULONG* BucketCountOut
+    )
+/*++
+
+Routine Description:
+
+    Select the unique regular bucket-array stride with the strongest live
+    structural evidence.  A power-of-two run of at least 64 heads is required;
+    ties fail closed instead of choosing a version guess.
+
+Return Value:
+
+    TRUE when one unique strongest layout was recovered.
+
+--*/
+{
+    ULONG entryBytes = 0UL;
+    ULONG bestCount = 0UL;
+    ULONG bestEntryBytes = 0UL;
+    ULONG64 bestFirstAddress = 0ULL;
+    BOOLEAN ambiguous = FALSE;
+
+    if (FirstHeadAddressOut == NULL || EntryBytesOut == NULL ||
+        BucketCountOut == NULL) {
+        return FALSE;
+    }
+    *FirstHeadAddressOut = 0ULL;
+    *EntryBytesOut = 0UL;
+    *BucketCountOut = 0UL;
+
+    for (entryBytes = (ULONG)sizeof(LIST_ENTRY);
+         entryBytes <= KSW_TIMER_DPC_RUNTIME_MAX_ENTRY_BYTES;
+         entryBytes += (ULONG)sizeof(PVOID)) {
+        ULONG64 firstAddress = 0ULL;
+        const ULONG count = KswordARKTimerDpcCountBucketRun(
+            KnownHeadAddress,
+            PrcbAddress,
+            entryBytes,
+            &firstAddress);
+
+        if (count < KSW_TIMER_DPC_RUNTIME_MIN_BUCKETS ||
+            count > KSWORD_ARK_TIMER_DPC_MAX_BUCKETS ||
+            (count & (count - 1UL)) != 0UL) {
+            continue;
+        }
+        if (count > bestCount) {
+            bestCount = count;
+            bestEntryBytes = entryBytes;
+            bestFirstAddress = firstAddress;
+            ambiguous = FALSE;
+        }
+        else if (count == bestCount &&
+                 (entryBytes != bestEntryBytes || firstAddress != bestFirstAddress)) {
+            ambiguous = TRUE;
+        }
+    }
+
+    if (bestCount == 0UL || ambiguous || bestFirstAddress < PrcbAddress ||
+        bestFirstAddress - PrcbAddress > MAXULONG ||
+        bestCount > MAXULONG / bestEntryBytes) {
+        return FALSE;
+    }
+    *FirstHeadAddressOut = bestFirstAddress;
+    *EntryBytesOut = bestEntryBytes;
+    *BucketCountOut = bestCount;
+    return TRUE;
+}
+
+static NTSTATUS
+KswordARKTimerDpcResolveRuntimeLayout(
+    _Out_ KSW_DYN_V4_TIMER_DPC_LAYOUT* LayoutOut
+    )
+/*++
+
+Routine Description:
+
+    Recover a normalized Timer/DPC enumeration layout without PDB data.  A
+    long-due probe KTIMER is inserted on the affinity-pinned current processor,
+    both reciprocal list directions must reach the same KPRCB bucket head, and
+    the surrounding regular bucket array must have a unique strongest stride.
+    Public WDK KTIMER/KDPC member offsets complete the read-only layout.
+
+Return Value:
+
+    STATUS_SUCCESS for a fully validated runtime layout; otherwise a fail-closed
+    capability or data status.  The probe is cancelled on every exit path.
+
+--*/
+{
+    KTIMER probeTimer;
+    LARGE_INTEGER dueTime;
+    PROCESSOR_NUMBER processorNumber;
+    GROUP_AFFINITY targetAffinity;
+    GROUP_AFFINITY previousAffinity;
+    ULONG64 prcbAddress = 0ULL;
+    ULONG64 probeLinkAddress = 0ULL;
+    ULONG64 forwardHead = 0ULL;
+    ULONG64 backwardHead = 0ULL;
+    ULONG64 firstHead = 0ULL;
+    ULONG entryBytes = 0UL;
+    ULONG bucketCount = 0UL;
+    BOOLEAN affinitySet = FALSE;
+    BOOLEAN timerSet = FALSE;
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
+
+    if (LayoutOut == NULL || KeGetCurrentIrql() > APC_LEVEL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
+    RtlZeroMemory(&probeTimer, sizeof(probeTimer));
+    RtlZeroMemory(&processorNumber, sizeof(processorNumber));
+    RtlZeroMemory(&targetAffinity, sizeof(targetAffinity));
+    RtlZeroMemory(&previousAffinity, sizeof(previousAffinity));
+
+    KeGetCurrentProcessorNumberEx(&processorNumber);
+    if (processorNumber.Number >= sizeof(KAFFINITY) * 8UL) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    targetAffinity.Group = processorNumber.Group;
+    targetAffinity.Mask = ((KAFFINITY)1) << processorNumber.Number;
+    KeSetSystemGroupAffinityThread(&targetAffinity, &previousAffinity);
+    affinitySet = TRUE;
+
+    __try {
+        prcbAddress = (ULONG64)(ULONG_PTR)KeGetPcr()->CurrentPrcb;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+        goto Exit;
+    }
+    if (!KswordARKTimerDpcIsKernelAddress(prcbAddress)) {
+        status = STATUS_DATA_ERROR;
+        goto Exit;
+    }
+
+    KeInitializeTimerEx(&probeTimer, NotificationTimer);
+    dueTime.QuadPart = -6000000000LL;
+    (VOID)KeSetTimerEx(&probeTimer, dueTime, 0L, NULL);
+    timerSet = TRUE;
+    probeLinkAddress = (ULONG64)(ULONG_PTR)&probeTimer.TimerListEntry;
+
+    forwardHead = KswordARKTimerDpcWalkProbeToPrcb(
+        probeLinkAddress,
+        prcbAddress,
+        TRUE);
+    backwardHead = KswordARKTimerDpcWalkProbeToPrcb(
+        probeLinkAddress,
+        prcbAddress,
+        FALSE);
+    if (forwardHead == 0ULL || forwardHead != backwardHead ||
+        !KswordARKTimerDpcResolveBucketArray(
+            forwardHead,
+            prcbAddress,
+            &firstHead,
+            &entryBytes,
+            &bucketCount)) {
+        status = STATUS_NOT_FOUND;
+        goto Exit;
+    }
+
+    LayoutOut->KprcbTimerTable = (ULONG)(firstHead - prcbAddress);
+    LayoutOut->TimerTableTimerEntries = 0UL;
+    LayoutOut->TimerTableEntryLock = 0UL;
+    LayoutOut->TimerTableEntryEntry = 0UL;
+    LayoutOut->TimerTableEntryTime = 0UL;
+    LayoutOut->TimerTimerListEntry = (ULONG)FIELD_OFFSET(KTIMER, TimerListEntry);
+    LayoutOut->TimerDueTime = (ULONG)FIELD_OFFSET(KTIMER, DueTime);
+    LayoutOut->TimerDpc = (ULONG)FIELD_OFFSET(KTIMER, Dpc);
+    LayoutOut->TimerType = (ULONG)FIELD_OFFSET(KTIMER, Header.Type);
+    LayoutOut->TimerPeriod = (ULONG)FIELD_OFFSET(KTIMER, Period);
+    LayoutOut->DpcDeferredRoutine = (ULONG)FIELD_OFFSET(KDPC, DeferredRoutine);
+    LayoutOut->DpcDeferredContext = (ULONG)FIELD_OFFSET(KDPC, DeferredContext);
+    LayoutOut->TimerTableTypeSize = bucketCount * entryBytes;
+    LayoutOut->TimerTableEntryTypeSize = entryBytes;
+    LayoutOut->TimerTypeSize = (ULONG)sizeof(KTIMER);
+    LayoutOut->DpcTypeSize = (ULONG)sizeof(KDPC);
+    status = STATUS_SUCCESS;
+
+Exit:
+    if (timerSet) {
+        (VOID)KeCancelTimer(&probeTimer);
+    }
+    if (affinitySet) {
+        KeRevertToUserGroupAffinityThread(&previousAffinity);
+    }
+    if (!NT_SUCCESS(status)) {
+        RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
+    }
+    return status;
+}
+#endif
 
 static BOOLEAN
 KswordARKTimerDpcLayoutValid(
@@ -402,6 +814,9 @@ KswordARKDriverEnumerateTimerDpc(
     return STATUS_SUCCESS;
 #else
     status = KswordARKDynDataV4SnapshotTimerDpcLayout(&builder.Layout);
+    if (!NT_SUCCESS(status)) {
+        status = KswordARKTimerDpcResolveRuntimeLayout(&builder.Layout);
+    }
     if (!NT_SUCCESS(status)) {
         builder.Response->queryStatus = KSWORD_ARK_TIMER_DPC_QUERY_STATUS_DYNDATA_MISSING;
         builder.Response->statusFlags = KSWORD_ARK_TIMER_DPC_STATUS_DYNDATA_MISSING;

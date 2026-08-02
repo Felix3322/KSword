@@ -18,9 +18,23 @@ Environment:
 
 #include "ark/ark_dyndata.h"
 #include "thread_worker_state.h"
+#include "work_queue_fallback.h"
 
 #define KSWORD_ARK_THREAD_ENUM_RESPONSE_HEADER_SIZE \
     (sizeof(KSWORD_ARK_ENUM_THREAD_RESPONSE) - sizeof(KSWORD_ARK_THREAD_ENTRY))
+
+#define KSW_THREAD_STACK_FIELD_MASK \
+    (KSWORD_ARK_THREAD_FIELD_INITIAL_STACK_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_STACK_LIMIT_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_STACK_BASE_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_KERNEL_STACK_PRESENT)
+#define KSW_THREAD_IO_FIELD_MASK \
+    (KSWORD_ARK_THREAD_FIELD_READ_OPERATION_COUNT_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_WRITE_OPERATION_COUNT_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_OTHER_OPERATION_COUNT_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_READ_TRANSFER_COUNT_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_WRITE_TRANSFER_COUNT_PRESENT | \
+     KSWORD_ARK_THREAD_FIELD_OTHER_TRANSFER_COUNT_PRESENT)
 #define KSWORD_ARK_THREAD_ID_STEP 4UL
 #define KSWORD_ARK_THREAD_SCAN_MIN_ID KSWORD_ARK_THREAD_ID_STEP
 #define KSWORD_ARK_THREAD_SCAN_MAX_ID 0x00100000UL
@@ -388,34 +402,51 @@ Return Value:
         return;
     }
 
-    if ((DynState->CapabilityMask & KSW_CAP_THREAD_STACK_FIELDS) != KSW_CAP_THREAD_STACK_FIELDS) {
+    if (!KswordARKThreadIsOffsetPresent(DynState->Kernel.KtInitialStack) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtStackLimit) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtStackBase) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtKernelStack)) {
         return;
     }
 
-    Entry->stackFieldSource = DynState->KernelSources.KtInitialStack;
-    status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtInitialStack, &Entry->initialStack);
-    if (NT_SUCCESS(status)) {
-        Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_INITIAL_STACK_PRESENT;
+    if (KswordARKThreadIsOffsetPresent(DynState->Kernel.KtInitialStack)) {
+        Entry->stackFieldSource = DynState->KernelSources.KtInitialStack;
+        status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtInitialStack, &Entry->initialStack);
+        if (NT_SUCCESS(status)) {
+            Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_INITIAL_STACK_PRESENT;
+        }
+        KswordARKThreadMarkFailure(Entry, status);
     }
-    KswordARKThreadMarkFailure(Entry, status);
-
-    status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtStackLimit, &Entry->stackLimit);
-    if (NT_SUCCESS(status)) {
-        Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_STACK_LIMIT_PRESENT;
+    if (KswordARKThreadIsOffsetPresent(DynState->Kernel.KtStackLimit)) {
+        if (Entry->stackFieldSource == KSW_DYN_FIELD_SOURCE_UNAVAILABLE) {
+            Entry->stackFieldSource = DynState->KernelSources.KtStackLimit;
+        }
+        status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtStackLimit, &Entry->stackLimit);
+        if (NT_SUCCESS(status)) {
+            Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_STACK_LIMIT_PRESENT;
+        }
+        KswordARKThreadMarkFailure(Entry, status);
     }
-    KswordARKThreadMarkFailure(Entry, status);
-
-    status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtStackBase, &Entry->stackBase);
-    if (NT_SUCCESS(status)) {
-        Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_STACK_BASE_PRESENT;
+    if (KswordARKThreadIsOffsetPresent(DynState->Kernel.KtStackBase)) {
+        if (Entry->stackFieldSource == KSW_DYN_FIELD_SOURCE_UNAVAILABLE) {
+            Entry->stackFieldSource = DynState->KernelSources.KtStackBase;
+        }
+        status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtStackBase, &Entry->stackBase);
+        if (NT_SUCCESS(status)) {
+            Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_STACK_BASE_PRESENT;
+        }
+        KswordARKThreadMarkFailure(Entry, status);
     }
-    KswordARKThreadMarkFailure(Entry, status);
-
-    status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtKernelStack, &Entry->kernelStack);
-    if (NT_SUCCESS(status)) {
-        Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_KERNEL_STACK_PRESENT;
+    if (KswordARKThreadIsOffsetPresent(DynState->Kernel.KtKernelStack)) {
+        if (Entry->stackFieldSource == KSW_DYN_FIELD_SOURCE_UNAVAILABLE) {
+            Entry->stackFieldSource = DynState->KernelSources.KtKernelStack;
+        }
+        status = KswordARKThreadReadPointerField(ThreadObject, DynState->Kernel.KtKernelStack, &Entry->kernelStack);
+        if (NT_SUCCESS(status)) {
+            Entry->fieldFlags |= KSWORD_ARK_THREAD_FIELD_KERNEL_STACK_PRESENT;
+        }
+        KswordARKThreadMarkFailure(Entry, status);
     }
-    KswordARKThreadMarkFailure(Entry, status);
 }
 
 static VOID
@@ -448,7 +479,12 @@ Return Value:
         return;
     }
 
-    if ((DynState->CapabilityMask & KSW_CAP_THREAD_IO_COUNTERS) != KSW_CAP_THREAD_IO_COUNTERS) {
+    if (!KswordARKThreadIsOffsetPresent(DynState->Kernel.KtReadOperationCount) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtWriteOperationCount) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtOtherOperationCount) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtReadTransferCount) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtWriteTransferCount) &&
+        !KswordARKThreadIsOffsetPresent(DynState->Kernel.KtOtherTransferCount)) {
         return;
     }
 
@@ -564,6 +600,7 @@ Return Value:
 --*/
 {
     KSWORD_ARK_THREAD_ENTRY* entry = NULL;
+    BOOLEAN optionalFieldsPartial = FALSE;
 
     if (Response == NULL || ThreadObject == NULL || DynState == NULL) {
         return;
@@ -598,11 +635,25 @@ Return Value:
         KswordARKThreadPopulateWorkerField(entry, ThreadObject, ActiveExWorkerField);
     }
 
+    if ((RequestFlags & KSWORD_ARK_ENUM_THREAD_FLAG_INCLUDE_STACK) != 0UL &&
+        (entry->fieldFlags & KSW_THREAD_STACK_FIELD_MASK) !=
+            KSW_THREAD_STACK_FIELD_MASK) {
+        optionalFieldsPartial = TRUE;
+    }
+    if ((RequestFlags & KSWORD_ARK_ENUM_THREAD_FLAG_INCLUDE_IO) != 0UL &&
+        (entry->fieldFlags & KSW_THREAD_IO_FIELD_MASK) !=
+            KSW_THREAD_IO_FIELD_MASK) {
+        optionalFieldsPartial = TRUE;
+    }
+
     if (entry->r0Status != KSWORD_ARK_THREAD_R0_STATUS_READ_FAILED) {
         if (entry->fieldFlags != 0UL) {
-            entry->r0Status = KSWORD_ARK_THREAD_R0_STATUS_OK;
+            entry->r0Status = optionalFieldsPartial ?
+                KSWORD_ARK_THREAD_R0_STATUS_PARTIAL :
+                KSWORD_ARK_THREAD_R0_STATUS_OK;
         }
-        else if ((DynState->CapabilityMask & (KSW_CAP_THREAD_STACK_FIELDS | KSW_CAP_THREAD_IO_COUNTERS)) != 0ULL) {
+        else if ((DynState->CapabilityMask &
+                (KSW_CAP_THREAD_STACK_FIELDS | KSW_CAP_THREAD_IO_COUNTERS)) != 0ULL) {
             entry->r0Status = KSWORD_ARK_THREAD_R0_STATUS_PARTIAL;
         }
     }
@@ -867,6 +918,14 @@ Return Value:
         KswordARKDynDataV4SnapshotActiveExWorkerField(&activeExWorkerField))
         ? TRUE
         : FALSE;
+    if (!activeExWorkerFieldAvailable &&
+        (requestFlags & KSWORD_ARK_ENUM_THREAD_FLAG_INCLUDE_WORKER_STATE) != 0UL) {
+        activeExWorkerFieldAvailable = NT_SUCCESS(
+            KswordARKWorkQueueResolveActiveExWorkerField(
+                &activeExWorkerField))
+            ? TRUE
+            : FALSE;
+    }
 
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     response = (KSWORD_ARK_ENUM_THREAD_RESPONSE*)OutputBuffer;

@@ -18,6 +18,7 @@ Environment:
 #include "ark/ark_thread.h"
 #include "driver/KswordArkWorkQueueIoctl.h"
 #include "../dyndata/dyndata_v4_internal.h"
+#include "work_queue_fallback.h"
 #include "../kernel/hook_scan_support.h"
 #include "../../dispatch/ioctl_validation.h"
 
@@ -152,11 +153,76 @@ KswordARKWorkQueueFieldFits(
 
 static BOOLEAN
 KswordARKWorkQueueLayoutValid(
-    _In_ const KSW_DYN_V4_WORK_QUEUE_LAYOUT* Layout
+    _In_ const KSW_DYN_V4_WORK_QUEUE_LAYOUT* Layout,
+    _In_ ULONG RequestFlags
     )
 {
     const ULONG listArrayBytes =
         KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT * (ULONG)sizeof(LIST_ENTRY);
+    const BOOLEAN runtimeLayout = Layout != NULL &&
+        (Layout->RuntimeFlags & KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) != 0UL;
+
+    if (runtimeLayout) {
+        const BOOLEAN itemsRequested =
+            (RequestFlags & KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORK_ITEMS) != 0UL;
+        const BOOLEAN threadsRequested =
+            (RequestFlags & KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORKER_THREADS) != 0UL;
+        const BOOLEAN itemsAvailable =
+            (Layout->RuntimeFlags & KSW_DYN_V4_WORK_QUEUE_RUNTIME_ITEMS) != 0UL;
+        const BOOLEAN threadsAvailable =
+            (Layout->RuntimeFlags & KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS) != 0UL;
+
+        if (!KswordARKWorkQueueIsKernelAddress(Layout->ModuleBase) ||
+            Layout->ModuleSize < sizeof(PVOID) ||
+            Layout->PspSystemPartitionRva == 0UL ||
+            Layout->PspSystemPartitionRva > Layout->ModuleSize - sizeof(PVOID) ||
+            Layout->ExPoolUntrusted >= KSW_WORK_QUEUE_MAX_EX_POOL_INDEX ||
+            !itemsAvailable ||
+            (threadsRequested && !threadsAvailable && !itemsRequested) ||
+            Layout->RuntimePriorityIndexes[0] >= KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT ||
+            Layout->RuntimePriorityIndexes[1] >= KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT ||
+            Layout->RuntimePriorityIndexes[2] >= KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT ||
+            Layout->RuntimePriorityIndexes[0] == Layout->RuntimePriorityIndexes[1] ||
+            Layout->RuntimePriorityIndexes[0] == Layout->RuntimePriorityIndexes[2] ||
+            Layout->RuntimePriorityIndexes[1] == Layout->RuntimePriorityIndexes[2] ||
+            !KswordARKWorkQueueFieldFits(
+                Layout->EpartitionExPartition,
+                sizeof(PVOID),
+                Layout->EpartitionTypeSize) ||
+            !KswordARKWorkQueueFieldFits(
+                Layout->ExPartitionWorkQueues,
+                sizeof(PVOID),
+                Layout->ExPartitionTypeSize) ||
+            !KswordARKWorkQueueFieldFits(
+                Layout->KpriQueueEntryListHead,
+                listArrayBytes,
+                Layout->KpriQueueTypeSize) ||
+            !KswordARKWorkQueueFieldFits(
+                Layout->WorkItemList,
+                sizeof(LIST_ENTRY),
+                Layout->WorkItemTypeSize) ||
+            !KswordARKWorkQueueFieldFits(
+                Layout->WorkItemRoutine,
+                sizeof(PVOID),
+                Layout->WorkItemTypeSize) ||
+            !KswordARKWorkQueueFieldFits(
+                Layout->WorkItemParameter,
+                sizeof(PVOID),
+                Layout->WorkItemTypeSize)) {
+            return FALSE;
+        }
+        if (threadsRequested && threadsAvailable) {
+            return KswordARKWorkQueueFieldFits(
+                    Layout->KthreadQueue,
+                    sizeof(PVOID),
+                    Layout->KthreadTypeSize) &&
+                KswordARKWorkQueueFieldFits(
+                    Layout->EthreadStartAddress,
+                    sizeof(PVOID),
+                    Layout->EthreadTypeSize);
+        }
+        return TRUE;
+    }
 
     if (Layout == NULL ||
         !KswordARKWorkQueueIsKernelAddress(Layout->ModuleBase) ||
@@ -779,13 +845,16 @@ KswordARKDriverEnumerateWorkQueues(
 #else
     status = KswordARKDynDataV4SnapshotWorkQueueLayout(&builder.Layout);
     if (!NT_SUCCESS(status)) {
-        builder.Response->queryStatus = KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED;
-        builder.Response->lastStatus = status;
-        *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
-        return STATUS_SUCCESS;
+        status = KswordARKWorkQueueResolveRuntimeLayout(&builder.Layout);
+        if (!NT_SUCCESS(status)) {
+            builder.Response->queryStatus = KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED;
+            builder.Response->lastStatus = status;
+            *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
+            return STATUS_SUCCESS;
+        }
     }
     builder.Response->statusFlags |= KSWORD_ARK_WORK_QUEUE_STATUS_IDENTITY_MATCHED;
-    if (!KswordARKWorkQueueLayoutValid(&builder.Layout)) {
+    if (!KswordARKWorkQueueLayoutValid(&builder.Layout, Request->flags)) {
         builder.Response->queryStatus = KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_INVALID_LAYOUT;
         builder.Response->lastStatus = STATUS_DATA_ERROR;
         *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
@@ -794,8 +863,24 @@ KswordARKDriverEnumerateWorkQueues(
     builder.Response->statusFlags |= KSWORD_ARK_WORK_QUEUE_STATUS_LAYOUT_VALIDATED;
 
     if ((Request->flags & KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORKER_THREADS) != 0UL) {
-        psGetNextProcessThread = KswordARKWorkQueueResolvePsGetNextProcessThread();
-        if (psGetNextProcessThread == NULL || PsInitialSystemProcess == NULL) {
+        if ((builder.Layout.RuntimeFlags &
+             KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) != 0UL &&
+            (builder.Layout.RuntimeFlags &
+             KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS) == 0UL) {
+            builder.Response->referenceFailureCount += 1UL;
+            KswordARKWorkQueueMarkPartial(
+                &builder,
+                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
+                STATUS_NOT_SUPPORTED);
+        }
+        else {
+            psGetNextProcessThread = KswordARKWorkQueueResolvePsGetNextProcessThread();
+        }
+        if ((psGetNextProcessThread == NULL || PsInitialSystemProcess == NULL) &&
+            (((builder.Layout.RuntimeFlags &
+               KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) == 0UL) ||
+             ((builder.Layout.RuntimeFlags &
+               KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS) != 0UL))) {
             builder.Response->referenceFailureCount += 1UL;
             KswordARKWorkQueueMarkPartial(
                 &builder,
@@ -812,14 +897,35 @@ KswordARKDriverEnumerateWorkQueues(
         return STATUS_SUCCESS;
     }
 
+    if ((builder.Layout.RuntimeFlags &
+         KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) != 0UL) {
+        RtlCopyMemory(
+            priorityIndexes,
+            builder.Layout.RuntimePriorityIndexes,
+            sizeof(priorityIndexes));
+    }
+    else if (!KswordARKWorkQueueAddAddress(
+                 builder.Layout.ModuleBase,
+                 builder.Layout.ExpBuiltinPrioritiesRva,
+                 &prioritiesAddress) ||
+             !KswordARKWorkQueueRead(
+                 prioritiesAddress,
+                 priorityIndexes,
+                 sizeof(priorityIndexes))) {
+        builder.Response->queryStatus = KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_READ_FAILED;
+        builder.Response->statusFlags |= KSWORD_ARK_WORK_QUEUE_STATUS_READ_FAILURE;
+        builder.Response->readFailureCount += 1UL;
+        builder.Response->lastStatus = STATUS_DATA_ERROR;
+        *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
+        ExFreePoolWithTag(builder.Modules, KSW_HOOK_SCAN_TAG);
+        builder.Modules = NULL;
+        return STATUS_SUCCESS;
+    }
+
     if (!KswordARKWorkQueueAddAddress(
             builder.Layout.ModuleBase,
             builder.Layout.PspSystemPartitionRva,
             &pspSystemPartitionAddress) ||
-        !KswordARKWorkQueueAddAddress(
-            builder.Layout.ModuleBase,
-            builder.Layout.ExpBuiltinPrioritiesRva,
-            &prioritiesAddress) ||
         !KswordARKWorkQueueRead(
             pspSystemPartitionAddress,
             &epartitionAddress,
@@ -837,10 +943,6 @@ KswordARKDriverEnumerateWorkQueues(
             &workQueuesAddress,
             sizeof(workQueuesAddress)) ||
         !KswordARKWorkQueueIsKernelAddress(workQueuesAddress) ||
-        !KswordARKWorkQueueRead(
-            prioritiesAddress,
-            priorityIndexes,
-            sizeof(priorityIndexes)) ||
         priorityIndexes[0] >= KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT ||
         priorityIndexes[1] >= KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT ||
         priorityIndexes[2] >= KSWORD_ARK_WORK_QUEUE_PRIORITY_COUNT ||
@@ -895,12 +997,14 @@ KswordARKDriverEnumerateWorkQueues(
                 &workQueueAddress,
                 sizeof(workQueueAddress)) ||
             !KswordARKWorkQueueIsKernelAddress(workQueueAddress) ||
-            !KswordARKWorkQueueReadField(
-                workQueueAddress,
-                builder.Layout.ExWorkQueueQueueIndex,
-                &liveQueueIndex,
-                sizeof(liveQueueIndex)) ||
-            liveQueueIndex != builder.Layout.ExPoolUntrusted ||
+            (((builder.Layout.RuntimeFlags &
+               KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) == 0UL) &&
+             (!KswordARKWorkQueueReadField(
+                 workQueueAddress,
+                 builder.Layout.ExWorkQueueQueueIndex,
+                 &liveQueueIndex,
+                 sizeof(liveQueueIndex)) ||
+              liveQueueIndex != builder.Layout.ExPoolUntrusted)) ||
             !KswordARKWorkQueueAddAddress(
                 workQueueAddress,
                 builder.Layout.ExWorkQueueWorkPriQueue,

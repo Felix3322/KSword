@@ -2589,7 +2589,22 @@ KswordARKDriverUnloadValidateDriverObjectOffsets(
     return TRUE;
 }
 
-/* 中文说明：确认卸载强路径依赖的 DynData 字段全部来自当前匹配的 PDB profile。 */
+/* 中文说明：确认卸载强路径依赖的 DynData 字段来自 PDB 或实时结构校验兜底。 */
+static BOOLEAN
+KswordARKDriverUnloadDynDataSourceTrusted(
+    _In_ ULONG Source
+    )
+{
+    // 输入：一个 DynData 字段来源。
+    // 处理：仅接受精确 PDB profile 或经过唯一命中与结构复核的 runtime pattern。
+    // 返回：来源可用于强卸载预检时 TRUE；其它来源 FALSE。
+    return (Source == KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
+            Source == KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN)
+        ? TRUE
+        : FALSE;
+}
+
+/* 中文说明：保留旧函数名以兼容诊断 ABI，其语义现为“强校验 DynData 可用”。 */
 static BOOLEAN
 KswordARKDriverUnloadHasPdbBackedDynData(
     _In_ const KSW_DYN_STATE* DynState
@@ -2597,24 +2612,23 @@ KswordARKDriverUnloadHasPdbBackedDynData(
 {
     // 输入：当前 DynData 快照。
     // 处理：检查强卸载依赖的 _DRIVER_OBJECT、_KLDR_DATA_TABLE_ENTRY 和 PsLoadedModuleList 字段来源。
-    // 返回：所有关键字段均来自 PDB profile 时 TRUE；否则 FALSE。
+    // 返回：所有关键字段均来自 PDB 或经过结构复核的 runtime pattern 时 TRUE；否则 FALSE。
     if (DynState == NULL) {
         return FALSE;
     }
 
-    return DynState->PdbProfileActive &&
-        DynState->KernelSources.DoDriverStart == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelSources.DoDriverSize == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelSources.DoDriverSection == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelSources.DoMajorFunction == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelSources.DoDriverUnload == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelSources.KldrInLoadOrderLinks == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelSources.KldrDllBase == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelSources.KldrSizeOfImage == KSW_DYN_FIELD_SOURCE_PDB_PROFILE &&
-        DynState->KernelGlobalSources.PsLoadedModuleList == KSW_DYN_FIELD_SOURCE_PDB_PROFILE;
+    return KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.DoDriverStart) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.DoDriverSize) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.DoDriverSection) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.DoMajorFunction) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.DoDriverUnload) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.KldrInLoadOrderLinks) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.KldrDllBase) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelSources.KldrSizeOfImage) &&
+        KswordARKDriverUnloadDynDataSourceTrusted(DynState->KernelGlobalSources.PsLoadedModuleList);
 }
 
-/* 中文说明：确认线程入口证据扫描依赖的 ETHREAD 偏移来自当前 PDB profile。 */
+/* 中文说明：确认线程入口证据扫描依赖的 ETHREAD 偏移来自可信解析来源。 */
 static BOOLEAN
 KswordARKDriverUnloadHasPdbBackedThreadDynData(
     _In_ const KSW_DYN_STATE* DynState
@@ -2622,20 +2636,21 @@ KswordARKDriverUnloadHasPdbBackedThreadDynData(
 {
     /*
      * 输入：当前 DynData 快照。
-     * 处理：强制要求 ETHREAD.StartAddress 来自 PDB；Win32StartAddress 可选，
-     *      但如果存在也必须来自 PDB，避免把错误偏移误判为目标模块线程。
-     * 返回：线程扫描可安全使用时 TRUE；缺少/非 PDB 来源时 FALSE。
+     * 处理：强制要求 ETHREAD.StartAddress 来自 PDB 或结构校验兜底；
+     *      Win32StartAddress 可选，但如果存在也必须是同等级可信来源。
+     * 返回：线程扫描可安全使用时 TRUE；缺少/弱来源时 FALSE。
      */
     if (DynState == NULL) {
         return FALSE;
     }
-    if (!DynState->PdbProfileActive ||
-        !KswordARKDriverIntegrityOffsetPresent(DynState->Kernel.EtStartAddress) ||
-        DynState->KernelSources.EtStartAddress != KSW_DYN_FIELD_SOURCE_PDB_PROFILE) {
+    if (!KswordARKDriverIntegrityOffsetPresent(DynState->Kernel.EtStartAddress) ||
+        !KswordARKDriverUnloadDynDataSourceTrusted(
+            DynState->KernelSources.EtStartAddress)) {
         return FALSE;
     }
     if (KswordARKDriverIntegrityOffsetPresent(DynState->Kernel.EtWin32StartAddress) &&
-        DynState->KernelSources.EtWin32StartAddress != KSW_DYN_FIELD_SOURCE_PDB_PROFILE) {
+        !KswordARKDriverUnloadDynDataSourceTrusted(
+            DynState->KernelSources.EtWin32StartAddress)) {
         return FALSE;
     }
     return TRUE;

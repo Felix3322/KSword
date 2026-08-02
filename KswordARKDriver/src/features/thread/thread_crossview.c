@@ -1688,9 +1688,15 @@ Return Value:
         return;
     }
 
-    if (!KswordARKCrossViewOffsetPresent(Context->DynState.Kernel.HtTableCode) ||
-        !KswordARKCrossViewOffsetPresent(Context->DynState.Kernel.HteLowValue) ||
-        PsThreadType == NULL || *PsThreadType == NULL) {
+    /*
+     * The shared CID walker already supplies bounded, read-only defaults for
+     * HANDLE_TABLE.TableCode and HANDLE_TABLE_ENTRY.LowValue.  Keep the same
+     * fallback contract as the process cross-view path instead of disabling
+     * thread CID evidence merely because an exact PDB profile is absent.
+     * Object-type validation remains mandatory before a decoded entry is
+     * referenced.
+     */
+    if (PsThreadType == NULL || *PsThreadType == NULL) {
         Context->CapabilityMissing = TRUE;
         Context->MissingCapabilityMask |= KSW_CAP_CID_TABLE_WALK;
         Context->LastStatus = STATUS_PROCEDURE_NOT_FOUND;
