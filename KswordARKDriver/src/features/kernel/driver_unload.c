@@ -905,6 +905,7 @@ KswordARKDriverUnloadBuildDirectoryCandidateName(
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
+    ULONG directoryChars = 0UL;
 
     if (DirectoryName == NULL ||
         EntryName == NULL ||
@@ -921,7 +922,12 @@ KswordARKDriverUnloadBuildDirectoryCandidateName(
         return status;
     }
 
-    if (CandidateName[KswordARKDriverUnloadCountFixedStringChars(CandidateName) - 1UL] != L'\\') {
+    directoryChars = KswordARKDriverUnloadCountFixedStringChars(CandidateName);
+    if (directoryChars == 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (CandidateName[directoryChars - 1UL] != L'\\') {
         status = RtlStringCchCatW(CandidateName, CandidateChars, L"\\");
         if (!NT_SUCCESS(status)) {
             return status;
