@@ -647,7 +647,7 @@ Return Value:
 
 static VOID
 KswordARKDriverResolveThreadListOffsets(
-    _In_ PEPROCESS Process,
+    _In_opt_ PEPROCESS Process,
     _In_ PETHREAD CurrentThread,
     _In_ LONG KthreadProcessOffset,
     _Out_ LONG* ProcessThreadListHeadOffsetOut,
