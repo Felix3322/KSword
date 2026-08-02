@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../ArkDriverClient/ArkDriverTypes.h"
+#include "KernelCleanImageBaseline.h"
 
 #include <QString>
 #include <QWidget>
@@ -46,14 +47,24 @@ protected:
 private:
     void initializeUi();
     void refreshAsync();
-    void applyResult(ksword::ark::DriverIntegrityResult result);
+    void applyResult(
+        ksword::ark::DriverIntegrityResult result,
+        std::vector<ks::kernel::TrustedIdtBaselineResult>
+            trustedIdtBaselines);
     void rebuildTable();
     void showCurrentDetail();
     void restoreSelectedIdtBaseline();
     void showCopyMenu(const QPoint& position);
-    bool rowMatchesFilter(const ksword::ark::DriverIntegrityEvidenceEntry& row) const;
-    QString columnText(const ksword::ark::DriverIntegrityEvidenceEntry& row, int column) const;
-    QString detailText(const ksword::ark::DriverIntegrityEvidenceEntry& row) const;
+    bool rowMatchesFilter(
+        const ksword::ark::DriverIntegrityEvidenceEntry& row,
+        std::size_t sourceIndex) const;
+    QString columnText(
+        const ksword::ark::DriverIntegrityEvidenceEntry& row,
+        int column,
+        std::size_t sourceIndex) const;
+    QString detailText(
+        const ksword::ark::DriverIntegrityEvidenceEntry& row,
+        std::size_t sourceIndex) const;
     static QString tableName(const ksword::ark::DriverIntegrityEvidenceEntry& row);
     static QString descriptorTypeText(const ksword::ark::DriverIntegrityEvidenceEntry& row);
     static QString riskText(std::uint32_t riskFlags);
@@ -69,6 +80,7 @@ private:
     QTableWidget* m_table = nullptr;        // m_table：描述符结构化结果表。
     QTextEdit* m_detailEdit = nullptr;      // m_detailEdit：当前表项的只读诊断详情。
     std::vector<ksword::ark::DriverIntegrityEvidenceEntry> m_rows; // m_rows：当前类型的 R0 快照。
+    std::vector<ks::kernel::TrustedIdtBaselineResult> m_trustedIdtBaselines; // m_trustedIdtBaselines：与 IDT 行对齐的可信映像/PDB 预期 Handler 证据。
     bool m_refreshRunning = false;          // m_refreshRunning：防止重复并发查询。
     bool m_firstRefreshStarted = false;     // m_firstRefreshStarted：首次显示自动刷新标志。
 };

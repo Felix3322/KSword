@@ -1080,6 +1080,10 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
 {
     ks::settings::AppearanceSettings collectedSettings = m_currentAppearanceSettings;
 
+    // 危险确认策略由深层功能菜单维护；保存其它设置时保留磁盘中的最新值。
+    collectedSettings.suppressDangerousActionConfirmations =
+        ks::settings::dangerousActionConfirmationsSuppressed();
+
     collectedSettings.uiLanguage = (m_languageCombo != nullptr && m_languageCombo->currentIndex() >= 0)
         ? m_languageCombo->currentData().toString()
         : m_currentAppearanceSettings.uiLanguage;

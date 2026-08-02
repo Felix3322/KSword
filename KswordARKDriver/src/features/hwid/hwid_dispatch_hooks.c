@@ -14,10 +14,11 @@ Environment:
 
 --*/
 
+#include <ntifs.h>
+
 #include "hwid_dispatch_hooks.h"
 #include "../../platform/pool_compat.h"
 
-#include <ntifs.h>
 #include <ata.h>
 #include <mountdev.h>
 #include <mountmgr.h>

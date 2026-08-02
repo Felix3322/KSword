@@ -296,6 +296,19 @@ namespace ksword::ark
             unsigned long expectedGeneration,
             bool force,
             bool allowNested,
+            bool uiConfirmed,
+            bool enableEptEvents = false,
+            bool enableNestedVmx = false,
+            bool enableEvmcs = false) const;
+        HvmEptRuleResult controlHvmEptRule(
+            unsigned long operation,
+            unsigned long expectedGeneration,
+            unsigned long ruleId,
+            unsigned long deniedAccess,
+            std::uint64_t physicalAddress,
+            std::uint64_t pageCount,
+            bool log,
+            bool allowOnce,
             bool uiConfirmed) const;
         // querySlatIommuAudit：只读采集 EPT/NPT 交叉视图、DMAR/IVRS
         // 与公开 IOMMU 接口证据；includeMmio 仅增加只读寄存器采样。
@@ -310,6 +323,10 @@ namespace ksword::ark
             unsigned long resolutionMode,
             unsigned long expectedGeneration,
             bool uiConfirmed) const;
+        HvmEventResult queryHvmEvents(
+            std::uint64_t afterSequence = 0,
+            unsigned long maxRows = KSWORD_ARK_HVM_MAX_EVENT_ROWS,
+            bool clear = false) const;
         // queryCpuHardwareSnapshot：
         // - 输入：无；R0 只执行 CPUID 与处理器数量查询。
         // - 处理：封装 IOCTL_KSWORD_ARK_QUERY_CPU_HARDWARE，解析 vendor/brand/family/model/feature mask。

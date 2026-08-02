@@ -15,15 +15,25 @@
 #include <winternl.h>
 
 #include <QByteArray>
+#include <QCoreApplication>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QSet>
+#include <QStringList>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -1082,6 +1092,303 @@ namespace
         return &cache.back();
     }
 
+    struct IdtBaselineProfile
+    {
+        std::uint32_t tableRva = 0;
+        std::array<std::vector<std::uint64_t>, 256>
+            handlerAddresses;
+        QString sourceSymbol;
+        QString profilePath;
+    };
+
+    std::optional<std::uint32_t> jsonUInt32(
+        const QJsonValue& value)
+    {
+        if (value.isDouble())
+        {
+            const double number = value.toDouble(-1.0);
+            if (number < 0.0
+                || number
+                    > static_cast<double>(
+                        std::numeric_limits<std::uint32_t>::max())
+                || number != static_cast<double>(
+                    static_cast<std::uint32_t>(number)))
+            {
+                return std::nullopt;
+            }
+            return static_cast<std::uint32_t>(number);
+        }
+        if (!value.isString())
+        {
+            return std::nullopt;
+        }
+        QString text = value.toString().trimmed();
+        int base = 10;
+        if (text.startsWith(QStringLiteral("0x"),
+                Qt::CaseInsensitive))
+        {
+            text = text.mid(2);
+            base = 16;
+        }
+        bool converted = false;
+        const qulonglong parsed = text.toULongLong(
+            &converted,
+            base);
+        if (!converted
+            || parsed
+                > std::numeric_limits<std::uint32_t>::max())
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }
+
+    QStringList idtProfileCandidatePaths()
+    {
+        QStringList paths;
+        const QStringList roots = {
+            QDir(QCoreApplication::applicationDirPath())
+                .filePath(QStringLiteral("profiles")),
+            QDir::current().filePath(QStringLiteral("profiles"))
+        };
+        QSet<QString> seen;
+        for (const QString& root : roots)
+        {
+            const QDir directory(root);
+            const QStringList packNames = {
+                QStringLiteral("ark_dyndata_pack_v4.json"),
+                QStringLiteral("ark_dyndata_pack_v3.json"),
+                QStringLiteral("ark_dyndata_pack_v2.json"),
+                QStringLiteral("ark_dyndata_pack_v1.json")
+            };
+            for (const QString& packName : packNames)
+            {
+                const QString path =
+                    QFileInfo(directory.filePath(packName))
+                        .absoluteFilePath();
+                const QString key =
+                    QDir::cleanPath(path).toLower();
+                if (!seen.contains(key) && QFileInfo::exists(path))
+                {
+                    seen.insert(key);
+                    paths.push_back(path);
+                }
+            }
+            const QDir scattered(
+                directory.filePath(QStringLiteral("ark_dyndata")));
+            const QStringList profileFiles = scattered.entryList(
+                { QStringLiteral("*.json") },
+                QDir::Files,
+                QDir::Name);
+            for (const QString& profileName : profileFiles)
+            {
+                const QString path =
+                    QFileInfo(scattered.filePath(profileName))
+                        .absoluteFilePath();
+                const QString key =
+                    QDir::cleanPath(path).toLower();
+                if (!seen.contains(key))
+                {
+                    seen.insert(key);
+                    paths.push_back(path);
+                }
+            }
+        }
+        return paths;
+    }
+
+    bool idtProfileEntryMatches(
+        const QJsonObject& profile,
+        const PreparedTrustedImage& image,
+        const bool compactPack)
+    {
+        const QJsonObject identity = compactPack
+            ? profile
+            : profile.value(QStringLiteral("module")).toObject();
+        const std::optional<std::uint32_t> machine =
+            jsonUInt32(identity.value(QStringLiteral("machine")));
+        const std::optional<std::uint32_t> timestamp =
+            jsonUInt32(identity.value(QStringLiteral("timeDateStamp")));
+        const std::optional<std::uint32_t> size =
+            jsonUInt32(identity.value(QStringLiteral("sizeOfImage")));
+        return machine.has_value()
+            && timestamp.has_value()
+            && size.has_value()
+            && machine.value() == image.identity.machine
+            && timestamp.value() == image.identity.timestamp
+            && size.value() == image.identity.sizeOfImage;
+    }
+
+    bool loadIdtBaselineProfile(
+        const PreparedTrustedImage& image,
+        IdtBaselineProfile& profileOut,
+        QString& errorTextOut)
+    {
+        profileOut = {};
+        bool identitySeen = false;
+        bool hashSeen = false;
+        bool invalidMetadataSeen = false;
+        for (const QString& path : idtProfileCandidatePaths())
+        {
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly))
+            {
+                continue;
+            }
+            QJsonParseError parseError = {};
+            const QJsonDocument document =
+                QJsonDocument::fromJson(file.readAll(), &parseError);
+            file.close();
+            if (parseError.error != QJsonParseError::NoError
+                || !document.isObject())
+            {
+                continue;
+            }
+
+            const QJsonObject root = document.object();
+            const bool compactPack =
+                root.value(QStringLiteral("profiles")).isArray();
+            QJsonArray entries;
+            if (compactPack)
+            {
+                entries =
+                    root.value(QStringLiteral("profiles")).toArray();
+            }
+            else
+            {
+                entries.append(root);
+            }
+            for (const QJsonValue& entryValue : entries)
+            {
+                if (!entryValue.isObject())
+                {
+                    continue;
+                }
+                const QJsonObject entry = entryValue.toObject();
+                if (!idtProfileEntryMatches(
+                    entry,
+                    image,
+                    compactPack))
+                {
+                    continue;
+                }
+                identitySeen = true;
+                const QJsonObject identity = compactPack
+                    ? entry
+                    : entry.value(QStringLiteral("module")).toObject();
+                const QString profileHash =
+                    identity.value(QStringLiteral("sha256"))
+                        .toString()
+                        .trimmed()
+                        .toLower();
+                if (profileHash.size() != 64
+                    || profileHash != image.sha256.toLower())
+                {
+                    continue;
+                }
+                hashSeen = true;
+                const QJsonObject baseline =
+                    entry.value(QStringLiteral("idtBaseline"))
+                        .toObject();
+                const std::optional<std::uint32_t> schemaVersion =
+                    jsonUInt32(
+                        baseline.value(QStringLiteral("schemaVersion")));
+                const std::optional<std::uint32_t> tableRva =
+                    jsonUInt32(
+                        baseline.value(QStringLiteral("tableRva")));
+                const QString sourceSymbol =
+                    baseline.value(QStringLiteral("sourceSymbol"))
+                        .toString()
+                        .trimmed();
+                const QJsonArray handlers =
+                    baseline.value(QStringLiteral("handlers")).toArray();
+                if (!schemaVersion.has_value()
+                    || schemaVersion.value() != 2U
+                    || !tableRva.has_value()
+                    || tableRva.value() == 0U
+                    || tableRva.value() >= image.mappedImage.size()
+                    || handlers.isEmpty()
+                    || sourceSymbol
+                        != QStringLiteral("KiInterruptInitTable"))
+                {
+                    invalidMetadataSeen = true;
+                    continue;
+                }
+                IdtBaselineProfile parsedProfile;
+                parsedProfile.tableRva = tableRva.value();
+                parsedProfile.sourceSymbol = sourceSymbol;
+                parsedProfile.profilePath = path;
+                std::size_t acceptedHandlers = 0U;
+                bool invalidHandlerSeen = false;
+                for (const QJsonValue& handlerValue : handlers)
+                {
+                    const QJsonObject handler =
+                        handlerValue.toObject();
+                    const std::optional<std::uint32_t> vector =
+                        jsonUInt32(
+                            handler.value(QStringLiteral("vector")));
+                    const std::optional<std::uint32_t> handlerRva =
+                        jsonUInt32(
+                            handler.value(QStringLiteral("rva")));
+                    const QString handlerSymbol =
+                        handler.value(QStringLiteral("symbol"))
+                            .toString()
+                            .trimmed();
+                    if (!vector.has_value()
+                        || vector.value() > 0xFFU
+                        || !handlerRva.has_value()
+                        || handlerRva.value() == 0U
+                        || handlerRva.value() >= image.module.size
+                        || !handlerSymbol.startsWith(
+                            QStringLiteral("Ki")))
+                    {
+                        invalidHandlerSeen = true;
+                        break;
+                    }
+                    const std::uint64_t handlerAddress =
+                        image.module.base + handlerRva.value();
+                    std::vector<std::uint64_t>& candidates =
+                        parsedProfile.handlerAddresses[vector.value()];
+                    if (std::find(
+                        candidates.cbegin(),
+                        candidates.cend(),
+                        handlerAddress) == candidates.cend())
+                    {
+                        candidates.push_back(handlerAddress);
+                        ++acceptedHandlers;
+                    }
+                }
+                if (invalidHandlerSeen || acceptedHandlers == 0U)
+                {
+                    invalidMetadataSeen = true;
+                    continue;
+                }
+                profileOut = std::move(parsedProfile);
+                return true;
+            }
+        }
+
+        if (hashSeen)
+        {
+            errorTextOut = invalidMetadataSeen
+                ? QStringLiteral(
+                    "精确 SHA256 profile 的 IDT 基线元数据缺失或无效，IDT 预期处理程序 unsupported。")
+                : QStringLiteral(
+                    "精确 SHA256 profile 未提供 KiInterruptInitTable，IDT 预期处理程序 unsupported。");
+        }
+        else if (identitySeen)
+        {
+            errorTextOut = QStringLiteral(
+                "PDB profile 的 PE 身份匹配但 SHA256 不匹配，拒绝使用。");
+        }
+        else
+        {
+            errorTextOut = QStringLiteral(
+                "没有与当前 ntoskrnl 机器类型、时间戳、SizeOfImage 和 SHA256 精确匹配的 IDT profile。");
+        }
+        return false;
+    }
+
     std::vector<std::uint8_t> loadedHeaderBytes(
         const std::uint64_t moduleBase,
         QString& errorTextOut)
@@ -1261,6 +1568,114 @@ namespace ks::kernel
             ? baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线不一致"))
             : baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线一致"));
         return result;
+    }
+
+    std::vector<TrustedIdtBaselineResult>
+    KernelCleanImageBaseline::compareIdtHandlers(
+        const std::vector<IdtHandlerObservation>& observations)
+    {
+        std::vector<TrustedIdtBaselineResult> results;
+        results.reserve(observations.size());
+        for (const IdtHandlerObservation& observation : observations)
+        {
+            TrustedIdtBaselineResult row;
+            row.vector = observation.vector;
+            row.observedHandler = observation.handler;
+            results.push_back(std::move(row));
+        }
+        if (observations.empty())
+        {
+            return results;
+        }
+
+        auto failAll = [&results](const QString& message)
+        {
+            for (TrustedIdtBaselineResult& row : results)
+            {
+                row.statusText = message;
+            }
+        };
+
+        std::vector<LoadedModule> modules;
+        QString errorText;
+        if (!enumerateLoadedModules(modules, errorText))
+        {
+            failAll(errorText);
+            return results;
+        }
+        const auto ntosIterator = std::find_if(
+            modules.cbegin(),
+            modules.cend(),
+            [](const LoadedModule& module)
+            {
+                const QString fileName =
+                    QFileInfo(module.filePath).fileName().toLower();
+                return fileName == QStringLiteral("ntoskrnl.exe")
+                    || fileName == QStringLiteral("ntkrnlmp.exe")
+                    || fileName == QStringLiteral("ntkrla57.exe");
+            });
+        if (ntosIterator == modules.cend())
+        {
+            failAll(QStringLiteral(
+                "无法在已加载模块列表中定位 ntoskrnl，IDT 可信映像基线 unsupported。"));
+            return results;
+        }
+
+        PreparedTrustedImage image;
+        if (!prepareTrustedImage(*ntosIterator, true, image, errorText))
+        {
+            failAll(errorText);
+            return results;
+        }
+        IdtBaselineProfile profile;
+        if (!loadIdtBaselineProfile(image, profile, errorText))
+        {
+            failAll(errorText);
+            return results;
+        }
+
+        for (TrustedIdtBaselineResult& row : results)
+        {
+            row.identityMatched = true;
+            row.diskTrustVerified = image.diskTrustVerified;
+            row.codeIntegrityTrusted = true;
+            row.profileHashMatched = true;
+            row.imagePath = image.module.filePath;
+            row.imageSha256 = image.sha256;
+            row.profilePath = profile.profilePath;
+            row.sourceSymbol = profile.sourceSymbol;
+            if (row.vector > 0xFFU)
+            {
+                row.statusText = QStringLiteral(
+                    "IDT 向量超出 x64 架构范围。");
+                continue;
+            }
+            const std::vector<std::uint64_t>& candidates =
+                profile.handlerAddresses[row.vector];
+            row.expectedCandidateCount =
+                static_cast<std::uint32_t>(candidates.size());
+            if (candidates.empty())
+            {
+                row.statusText = QStringLiteral(
+                    "精确 PDB 未公开该向量的静态 Handler；动态设备中断或默认 thunk 明确标记 unsupported。");
+                continue;
+            }
+            const auto matched = std::find(
+                candidates.cbegin(),
+                candidates.cend(),
+                row.observedHandler);
+            row.handlerMatches = matched != candidates.cend();
+            row.expectedHandler = row.handlerMatches
+                ? row.observedHandler
+                : candidates.front();
+            row.available = true;
+            row.statusText = row.handlerMatches
+                ? QStringLiteral(
+                    "当前 IDT Handler 与精确 PDB/SHA256 绑定的静态向量符号一致")
+                : QStringLiteral(
+                    "当前 IDT Handler 偏离精确 PDB/SHA256 绑定的静态向量符号");
+        }
+        return results;
     }
 
 }

@@ -10,12 +10,14 @@
 // ============================================================
 
 #include "KernelDockAtomWorker.h"
+#include "KernelHvmTab.h"
 #include "KernelDockObjectNamespaceWorker.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../theme.h"
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDialog>
 #include <QIcon>
 #include <QLineEdit>
 #include <QMenu>
@@ -25,6 +27,7 @@
 #include <QTableWidgetItem>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QVBoxLayout>
 
 using ksword::kernel_dock_internal::kernelText;
 
@@ -57,6 +60,45 @@ namespace
         {
             QApplication::clipboard()->setText(contentText);
         }
+    }
+
+    void showHvmFeatureDialog(
+        QWidget* parent,
+        const KernelHvmTab::FeatureArea featureArea)
+    {
+        auto* dialog = new QDialog(parent);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setModal(false);
+        dialog->resize(1180, 760);
+        switch (featureArea)
+        {
+        case KernelHvmTab::FeatureArea::Ept:
+            dialog->setWindowTitle(
+                kernelText(
+                    "kernel.hvm.dialog.ept",
+                    QStringLiteral("内核虚拟化 - EPT")));
+            break;
+        case KernelHvmTab::FeatureArea::NestedVmx:
+            dialog->setWindowTitle(
+                kernelText(
+                    "kernel.hvm.dialog.nested",
+                    QStringLiteral("内核虚拟化 - Nested VMX（partial）")));
+            break;
+        case KernelHvmTab::FeatureArea::Evmcs:
+            dialog->setWindowTitle(
+                kernelText(
+                    "kernel.hvm.dialog.evmcs",
+                    QStringLiteral("内核虚拟化 - Hyper-V eVMCS（partial）")));
+            break;
+        }
+        auto* layout = new QVBoxLayout(dialog);
+        layout->setContentsMargins(6, 6, 6, 6);
+        layout->addWidget(
+            new KernelHvmTab(featureArea, dialog),
+            1);
+        dialog->show();
+        dialog->raise();
+        dialog->activateWindow();
     }
 
     // treeItemAsTsv：
@@ -178,6 +220,22 @@ void KernelDock::showObjectNamespaceContextMenu(const QPoint& localPosition)
     QAction* resolveSymbolicLinkAction = operationMenu->addAction(kernelText("kernel.context.object.resolve_symbolic_target", QStringLiteral("解析符号链接目标")));
     QAction* mapDosPathAction = operationMenu->addAction(kernelText("kernel.context.object.map_dos_path", QStringLiteral("尝试映射为 DOS 路径")));
 
+    contextMenu.addSeparator();
+    QMenu* moreActionsMenu = contextMenu.addMenu(
+        kernelText(
+            "kernel.context.more_actions",
+            QStringLiteral("更多操作")));
+    QMenu* virtualizationMenu = moreActionsMenu->addMenu(
+        kernelText(
+            "kernel.context.virtualization",
+            QStringLiteral("虚拟化")));
+    QAction* eptAction = virtualizationMenu->addAction(
+        QStringLiteral("EPT"));
+    QAction* nestedVmxAction = virtualizationMenu->addAction(
+        QStringLiteral("Nested VMX (partial)"));
+    QAction* evmcsAction = virtualizationMenu->addAction(
+        QStringLiteral("Hyper-V eVMCS (partial)"));
+
     filterByRootAction->setEnabled(hasEntry);
     filterByDirectoryAction->setEnabled(hasEntry);
     filterByObjectNameAction->setEnabled(hasEntry && !entry->objectNameText.trimmed().isEmpty());
@@ -199,6 +257,28 @@ void KernelDock::showObjectNamespaceContextMenu(const QPoint& localPosition)
     if (selectedAction == refreshAction)
     {
         refreshObjectNamespaceAsync();
+        return;
+    }
+
+    if (selectedAction == eptAction)
+    {
+        showHvmFeatureDialog(
+            this,
+            KernelHvmTab::FeatureArea::Ept);
+        return;
+    }
+    if (selectedAction == nestedVmxAction)
+    {
+        showHvmFeatureDialog(
+            this,
+            KernelHvmTab::FeatureArea::NestedVmx);
+        return;
+    }
+    if (selectedAction == evmcsAction)
+    {
+        showHvmFeatureDialog(
+            this,
+            KernelHvmTab::FeatureArea::Evmcs);
         return;
     }
 

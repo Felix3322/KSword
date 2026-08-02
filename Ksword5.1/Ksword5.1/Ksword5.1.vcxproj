@@ -85,7 +85,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(QTDIR)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>qtadvanceddockingd.lib;Ole32.lib;Shell32.lib;Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>qtadvanceddockingd.lib;Ole32.lib;Shell32.lib;Advapi32.lib;Setupapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions>"/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' publicKeyToken='6595b64144ccf1df' language='*' processorArchitecture='*'" %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
@@ -106,7 +106,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(QTDIR)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>qtadvanceddocking.lib;Ole32.lib;Shell32.lib;Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>qtadvanceddocking.lib;Ole32.lib;Shell32.lib;Advapi32.lib;Setupapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions>"/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' publicKeyToken='6595b64144ccf1df' language='*' processorArchitecture='*'" %(AdditionalOptions)</AdditionalOptions>
       <UACUIAccess>false</UACUIAccess>
     </Link>
@@ -214,6 +214,8 @@
     <ClCompile Include="KernelDock\KernelHvmTab.cpp" />
     <ClCompile Include="KernelDock\KernelSlatIommuAuditTab.cpp" />
     <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp" />
+    <ClCompile Include="KernelDock\KernelHvmTab.Experimental.cpp" />
+    <ClCompile Include="KernelDock\KernelHvmTab.Formatting.cpp" />
     <ClCompile Include="KernelDock\KernelIoctlDecoderTab.cpp" />
     <ClCompile Include="KernelDock\KernelDockIpcTab.cpp" />
     <ClCompile Include="KernelDock\KernelBaseNamedObjectsTab.cpp" />
@@ -253,12 +255,14 @@
     <ClCompile Include="MiscDock\DiskEditor\DiskRawBtrfsFileSystem.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskRawExtFileSystem.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskRawFileSystemBrowser.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\DiskRawWindowsFileSystem.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskRawHfsFileSystem.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskRawRefsFileSystem.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskRangeTools.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskStructureParser.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorTab.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskMapWidget.cpp" />
+    <ClCompile Include="MiscDock\DiskEditor\StorageControllerResearchDialog.cpp" />
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.cpp" />
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Associations.cpp" />
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Backup.cpp" />
@@ -449,6 +453,7 @@
     <ClCompile Include="ArkDriverClient\ArkDriverDebugOutput.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverBugcheck.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverSystemTime.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkStorageControllerClient.cpp" />
     <ClCompile Include="..\..\third_party\zstd\zstd.c">
       <CompileAs>CompileAsC</CompileAs>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
@@ -572,6 +577,7 @@
     <ClInclude Include="MiscDock\DiskEditor\DiskRangeTools.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskStructureParser.h" />
     <ClInclude Include="MiscDock\DiskEditor\DiskEditorTab.h" />
+    <ClInclude Include="MiscDock\DiskEditor\StorageControllerResearchDialog.h" />
     <QtMoc Include="MiscDock\DiskEditor\DiskMapWidget.h" />
     <QtMoc Include="MiscDock\MiscDock.h" />
     <ClInclude Include="MonitorDock\EtwArchiveCompression.h" />
@@ -642,6 +648,7 @@
     <ClInclude Include="ArkDriverClient\ArkRuntimeDynData.h" />
     <ClInclude Include="ArkDriverClient\ArkDriverError.h" />
     <ClInclude Include="ArkDriverClient\ArkDriverCapabilities.h" />
+    <ClInclude Include="ArkDriverClient\ArkStorageControllerClient.h" />
     <ClInclude Include="..\..\third_party\zydis\Zydis.h" />
     <ClInclude Include="..\..\third_party\zstd\zstd.h" />
     <ClInclude Include="..\..\third_party\zstd\zstd_errors.h" />

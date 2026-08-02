@@ -362,6 +362,16 @@
     <ClInclude Include="src\features\kernel\kernel_piddb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\hvm\hvm_runtime.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_internal.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_mtrr.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_event.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_ept.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_evmcs.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_nested_vmcs.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_nested_ept.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_nested.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_exit.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\hvm\hvm_resident.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\hvm\hvm_vmcs.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\hvm\hvm_guest.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
@@ -490,6 +500,36 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\hvm\hvm_runtime.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_mtrr.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_event.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_ept.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_ept_builder.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_evmcs.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_nested_vmcs.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_nested_ept.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_nested.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_exit.c">
+      <Filter>Source Files\Features\HVM</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\hvm\hvm_resident.c">
       <Filter>Source Files\Features\HVM</Filter>
     </ClCompile>
     <ClCompile Include="src\features\hvm\hvm_vmcs.c">

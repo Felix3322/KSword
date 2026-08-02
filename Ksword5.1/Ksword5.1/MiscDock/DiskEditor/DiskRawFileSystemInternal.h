@@ -48,6 +48,38 @@ namespace ks::misc::rawfs
     QString normalizePath(const QString& path);
     QString childPath(const QString& parent, const QString& name);
 
+    RawDirectoryResult listNtfs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readNtfs(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+
+    RawDirectoryResult listFat(
+        const VolumeReader& reader,
+        ForensicFileSystemKind expectedKind,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readFat(
+        const VolumeReader& reader,
+        ForensicFileSystemKind expectedKind,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+
+    RawDirectoryResult listExFat(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint32_t maximumEntries);
+    RawFileReadResult readExFat(
+        const VolumeReader& reader,
+        const QString& path,
+        std::uint64_t offset,
+        std::uint32_t length);
+
     RawDirectoryResult listExt(
         const VolumeReader& reader,
         ForensicFileSystemKind expectedKind,

@@ -1,5 +1,6 @@
 #include "MemoryDock.h"
 #include "MemoryDock.Internal.h"
+#include "../SettingsDock/AppearanceSettings.h"
 
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/HexEditorWidget.h"
@@ -843,30 +844,47 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
         return;
     }
 
-    const QMessageBox::StandardButton confirmResult = QMessageBox::question(
-        this,
-        "应用内存差异",
-        QString(
-            "将通过 R0 写入 %1 个差异块到 %2。\n"
-            "内核或进程内存修改可能立即造成数据损坏、权限边界失效、进程崩溃或系统蓝屏。\n"
-            "只写入和原始备份不同的字节，是否继续？")
-        .arg(diffBlocks.size())
-        .arg(kernelAddressSnapshot
-            ? QStringLiteral("内核虚拟地址")
-            : QStringLiteral("PID=%1%2")
-                .arg(m_driverMemorySnapshotPid)
-                .arg(m_driverMemorySnapshotProcessName.isEmpty()
-                    ? QString()
-                    : QString(" (%1)").arg(m_driverMemorySnapshotProcessName))),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (confirmResult != QMessageBox::Yes)
+    // 危险确认策略只允许跳过重复模态框；R0 确认标志、快照比对和写后状态仍然执行。
+    const bool suppressDangerousConfirmation =
+        ks::settings::dangerousActionConfirmationsSuppressed();
+    if (!suppressDangerousConfirmation)
     {
-        if (m_driverMemoryStatusLabel != nullptr)
+        const QMessageBox::StandardButton confirmResult = QMessageBox::question(
+            this,
+            "应用内存差异",
+            QString(
+                "将通过 R0 写入 %1 个差异块到 %2。\n"
+                "内核或进程内存修改可能立即造成数据损坏、权限边界失效、进程崩溃或系统蓝屏。\n"
+                "只写入和原始备份不同的字节，是否继续？")
+            .arg(diffBlocks.size())
+            .arg(kernelAddressSnapshot
+                ? QStringLiteral("内核虚拟地址")
+                : QStringLiteral("PID=%1%2")
+                    .arg(m_driverMemorySnapshotPid)
+                    .arg(m_driverMemorySnapshotProcessName.isEmpty()
+                        ? QString()
+                        : QString(" (%1)").arg(m_driverMemorySnapshotProcessName))),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirmResult != QMessageBox::Yes)
         {
-            m_driverMemoryStatusLabel->setText("用户取消应用差异。");
+            if (m_driverMemoryStatusLabel != nullptr)
+            {
+                m_driverMemoryStatusLabel->setText("用户取消应用差异。");
+            }
+            return;
         }
-        return;
+    }
+    else
+    {
+        kLogEvent suppressedConfirmationEvent;
+        warn << suppressedConfirmationEvent
+            << "[MemoryDock] dangerous confirmation suppressed by persistent setting; "
+               "R0 snapshot verification and audit remain active, target="
+            << (kernelAddressSnapshot ? "kernel-va" : "process-va")
+            << ", blocks="
+            << diffBlocks.size()
+            << eol;
     }
 
     // 按块调用驱动写入，单块超过驱动上限时拆分。
@@ -1280,6 +1298,21 @@ bool MemoryDock::confirmForceDriverMemoryWrite(
     const std::uint32_t requestedBytes,
     const QString& failureText)
 {
+    // 全局策略允许跳过重复模态框，但不会改变 force 标志、目标范围和驱动端验证。
+    if (ks::settings::dangerousActionConfirmationsSuppressed())
+    {
+        kLogEvent suppressedForceConfirmationEvent;
+        warn << suppressedForceConfirmationEvent
+            << "[MemoryDock] force-write modal confirmation suppressed; address="
+            << formatAddress(blockAddress).toStdString()
+            << ", bytes="
+            << requestedBytes
+            << ", reason="
+            << failureText.toStdString()
+            << eol;
+        return true;
+    }
+
     // 强制确认入口：普通写入被 R0 拒绝后才会走到这里。
     QMessageBox warningBox(this);
     warningBox.setIcon(QMessageBox::Warning);
