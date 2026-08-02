@@ -8,6 +8,12 @@ Abstract:
 
     系统全局变速的 WDF 查询与高风险控制适配器。
 
+Third-Party Notice:
+
+    参考机制的许可证与归档说明位于：
+    third_party/SystemWideTransmission/LICENSE.txt
+    third_party/SystemWideTransmission/NOTICE.md
+
 Environment:
 
     Kernel-mode Driver Framework.

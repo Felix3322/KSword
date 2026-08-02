@@ -657,6 +657,8 @@
     <None Include="..\..\third_party\zydis\NOTICE.md" />
     <None Include="..\..\third_party\zstd\LICENSE.txt" />
     <None Include="..\..\third_party\zstd\NOTICE.md" />
+    <None Include="..\..\third_party\SystemWideTransmission\LICENSE.txt" />
+    <None Include="..\..\third_party\SystemWideTransmission\NOTICE.md" />
     <None Include="profiles\ark_dyndata_pack_v2.json" />
     <None Include="profiles\ark_dyndata_pack_v3.json" />
     <None Include="profiles\ark_dyndata_pack_v4.json" />
@@ -707,6 +709,18 @@
     <Error Condition="!Exists('$(KswordZstdLicenseSource)')" Text="Zstandard license file was not found: $(KswordZstdLicenseSource)" />
     <MakeDir Directories="$(KswordThirdPartyLicenseTargetDir)" />
     <Copy SourceFiles="$(KswordZstdLicenseSource)" DestinationFiles="$(KswordThirdPartyLicenseTargetDir)zstd-LICENSE.txt" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyKswordSystemWideTransmissionNotice" AfterTargets="Build">
+    <PropertyGroup>
+      <KswordSystemWideTransmissionLicenseSource>$(MSBuildProjectDirectory)\..\..\third_party\SystemWideTransmission\LICENSE.txt</KswordSystemWideTransmissionLicenseSource>
+      <KswordSystemWideTransmissionNoticeSource>$(MSBuildProjectDirectory)\..\..\third_party\SystemWideTransmission\NOTICE.md</KswordSystemWideTransmissionNoticeSource>
+      <KswordThirdPartyLicenseTargetDir>$(TargetDir)licenses\third_party\</KswordThirdPartyLicenseTargetDir>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(KswordSystemWideTransmissionLicenseSource)')" Text="SystemWideTransmission license file was not found: $(KswordSystemWideTransmissionLicenseSource)" />
+    <Error Condition="!Exists('$(KswordSystemWideTransmissionNoticeSource)')" Text="SystemWideTransmission notice file was not found: $(KswordSystemWideTransmissionNoticeSource)" />
+    <MakeDir Directories="$(KswordThirdPartyLicenseTargetDir)" />
+    <Copy SourceFiles="$(KswordSystemWideTransmissionLicenseSource)" DestinationFiles="$(KswordThirdPartyLicenseTargetDir)system-wide-transmission-LICENSE.txt" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(KswordSystemWideTransmissionNoticeSource)" DestinationFiles="$(KswordThirdPartyLicenseTargetDir)system-wide-transmission-NOTICE.md" SkipUnchangedFiles="true" />
   </Target>
   <Target Name="CopyKswordZydisLicenses" AfterTargets="Build">
     <PropertyGroup>

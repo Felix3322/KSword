@@ -1,3 +1,8 @@
+/*
+ * 参考机制的许可证与归档说明：
+ * third_party/SystemWideTransmission/LICENSE.txt
+ * third_party/SystemWideTransmission/NOTICE.md
+ */
 #pragma once
 
 #include <ntddk.h>

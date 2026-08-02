@@ -8,6 +8,12 @@ Abstract:
 
     多核安全的连续虚拟性能计数器与 HAL 回调入口。
 
+Third-Party Notice:
+
+    参考机制的许可证与归档说明位于：
+    third_party/SystemWideTransmission/LICENSE.txt
+    third_party/SystemWideTransmission/NOTICE.md
+
 Environment:
 
     Kernel-mode Driver Framework.

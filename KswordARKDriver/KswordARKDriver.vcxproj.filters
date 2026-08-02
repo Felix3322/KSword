@@ -152,6 +152,9 @@
     <ClInclude Include="src\features\system_time\system_time_counter.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\features\system_time\system_time_hyperv.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\features\system_time\system_time_internal.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -508,6 +511,9 @@
       <Filter>Source Files\Features\HVM</Filter>
     </ClCompile>
     <ClCompile Include="src\features\system_time\system_time_counter.c">
+      <Filter>Source Files\Features\SystemTime</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\system_time\system_time_hyperv.c">
       <Filter>Source Files\Features\SystemTime</Filter>
     </ClCompile>
     <ClCompile Include="src\features\system_time\system_time_ioctl.c">

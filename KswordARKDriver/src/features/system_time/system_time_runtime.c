@@ -8,6 +8,12 @@ Abstract:
 
     以连续虚拟性能计数器实现系统全局加速、减速与可恢复接管。
 
+Third-Party Notice:
+
+    参考机制的许可证与归档说明位于：
+    third_party/SystemWideTransmission/LICENSE.txt
+    third_party/SystemWideTransmission/NOTICE.md
+
 Environment:
 
     Kernel-mode Driver Framework.
@@ -17,6 +23,7 @@ Environment:
 #include "system_time_internal.h"
 #include "ark/ark_push_lock.h"
 #include "system_time_counter.h"
+#include "system_time_hyperv.h"
 
 /* HAL 计数器回调在当前 x64 Windows 上不接收参数并返回 64 位计数。 */
 typedef LONGLONG
@@ -54,13 +61,41 @@ typedef struct _KSWORD_ARK_SYSTEM_TIME_STATE
     ULONG LastCommand;
     ULONG Factor;
     ULONG ResolutionMode;
+    ULONG Backend;
     BOOLEAN Resolved;
     BOOLEAN OriginalQpcBypassBit;
     BOOLEAN OriginalInternalBypassBit;
     BOOLEAN PatchBitsCaptured;
+    BOOLEAN QpcBypassPatched;
 } KSWORD_ARK_SYSTEM_TIME_STATE;
 
 static KSWORD_ARK_SYSTEM_TIME_STATE g_KswordArkSystemTimeState;
+
+/* 计数器槽和原函数必须位于当前有效的内核地址空间。 */
+static
+BOOLEAN
+KswordARKSystemTimeIsKernelAddressValid(
+    _In_opt_ const VOID* Address
+    )
+{
+    return Address != NULL &&
+        (ULONG_PTR)Address >= (ULONG_PTR)MmSystemRangeStart &&
+        MmIsAddressValid((PVOID)Address);
+}
+
+/* 指针槽横跨的首尾字节都必须已驻留，才允许执行原子读写。 */
+static
+BOOLEAN
+KswordARKSystemTimeIsSlotAddressValid(
+    _In_opt_ volatile PVOID* Slot
+    )
+{
+    const UCHAR* first = (const UCHAR*)Slot;
+
+    return KswordARKSystemTimeIsKernelAddressValid(first) &&
+        KswordARKSystemTimeIsKernelAddressValid(
+            first + sizeof(PVOID) - 1U);
+}
 
 /* 返回 KUSER_SHARED_DATA 中 QPC 旁路字节的只读内核映射。 */
 static
@@ -167,7 +202,8 @@ KswordARKSystemTimeReadSlot(
     _Out_ PVOID* Value
     )
 {
-    if (Slot == NULL || Value == NULL) {
+    if (Value == NULL ||
+        !KswordARKSystemTimeIsSlotAddressValid(Slot)) {
         return FALSE;
     }
 
@@ -191,14 +227,20 @@ KswordARKSystemTimePatchSlot(
 {
     PVOID observed = NULL;
 
-    if (Slot == NULL || ExpectedOriginal == NULL) {
+    if (!KswordARKSystemTimeIsSlotAddressValid(Slot) ||
+        !KswordARKSystemTimeIsKernelAddressValid(ExpectedOriginal)) {
         return FALSE;
     }
 
-    observed = InterlockedCompareExchangePointer(
-        (PVOID volatile*)Slot,
-        KswordARKSystemTimeCounterHookAddress(),
-        ExpectedOriginal);
+    __try {
+        observed = InterlockedCompareExchangePointer(
+            (PVOID volatile*)Slot,
+            KswordARKSystemTimeCounterHookAddress(),
+            ExpectedOriginal);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
     return observed == ExpectedOriginal ||
         observed == KswordARKSystemTimeCounterHookAddress();
 }
@@ -213,40 +255,62 @@ KswordARKSystemTimeRestoreSlot(
 {
     PVOID observed = NULL;
 
-    if (Slot == NULL || Original == NULL) {
+    if (!KswordARKSystemTimeIsSlotAddressValid(Slot) ||
+        !KswordARKSystemTimeIsKernelAddressValid(Original)) {
         return FALSE;
     }
 
-    observed = InterlockedCompareExchangePointer(
-        (PVOID volatile*)Slot,
-        Original,
-        KswordARKSystemTimeCounterHookAddress());
+    __try {
+        observed = InterlockedCompareExchangePointer(
+            (PVOID volatile*)Slot,
+            Original,
+            KswordARKSystemTimeCounterHookAddress());
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
     return observed == KswordARKSystemTimeCounterHookAddress() ||
         observed == Original;
 }
 
-/* 保存并关闭用户态 QPC 旁路位和 HAL 内部旁路位。 */
+/* 按后端保存旁路快照；Hyper-V 路径只关闭 HAL 内部旁路。 */
 static
 NTSTATUS
-KswordARKSystemTimeDisableBypassesLocked(
-    VOID
+KswordARKSystemTimeConfigureBypassesLocked(
+    _In_ BOOLEAN DisableUserQpcBypass
     )
 {
 #if defined(_M_AMD64) || defined(_M_X64)
+    volatile UCHAR* qpcBypass =
+        KswordARKSystemTimeQpcBypassByte();
     BOOLEAN oldQpcBypassBit = FALSE;
     LONG oldInternalFlags = 0L;
     NTSTATUS status = STATUS_SUCCESS;
     NTSTATUS rollbackStatus = STATUS_SUCCESS;
 
-    if (g_KswordArkSystemTimeState.Resolution.InternalFlags == NULL) {
+    if (g_KswordArkSystemTimeState.Resolution.InternalFlags == NULL ||
+        !MmIsAddressValid((PVOID)qpcBypass)) {
         return STATUS_ACCESS_VIOLATION;
     }
 
-    status = KswordARKSystemTimeWriteQpcBypassBit(
-        FALSE,
-        &oldQpcBypassBit);
-    if (!NT_SUCCESS(status)) {
-        return status;
+    if (DisableUserQpcBypass) {
+        status = KswordARKSystemTimeWriteQpcBypassBit(
+            FALSE,
+            &oldQpcBypassBit);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+    } else {
+        __try {
+            oldQpcBypassBit =
+                ((*qpcBypass & KSW_SYSTEM_TIME_QPC_BYPASS_BIT) != 0U);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return GetExceptionCode();
+        }
+        if (!oldQpcBypassBit) {
+            return STATUS_DEVICE_NOT_READY;
+        }
     }
 
     __try {
@@ -256,14 +320,16 @@ KswordARKSystemTimeDisableBypassesLocked(
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         status = GetExceptionCode();
-        rollbackStatus = KswordARKSystemTimeWriteQpcBypassBit(
-            oldQpcBypassBit,
-            NULL);
-        if (!NT_SUCCESS(rollbackStatus)) {
-            InterlockedExchange(
-                &g_KswordArkSystemTimeState.ConflictDetected,
-                1L);
-            return rollbackStatus;
+        if (DisableUserQpcBypass) {
+            rollbackStatus = KswordARKSystemTimeWriteQpcBypassBit(
+                oldQpcBypassBit,
+                NULL);
+            if (!NT_SUCCESS(rollbackStatus)) {
+                InterlockedExchange(
+                    &g_KswordArkSystemTimeState.ConflictDetected,
+                    1L);
+                return rollbackStatus;
+            }
         }
         return status;
     }
@@ -274,14 +340,17 @@ KswordARKSystemTimeDisableBypassesLocked(
         (oldInternalFlags &
             KSW_SYSTEM_TIME_INTERNAL_BYPASS_BIT) != 0;
     g_KswordArkSystemTimeState.PatchBitsCaptured = TRUE;
+    g_KswordArkSystemTimeState.QpcBypassPatched =
+        DisableUserQpcBypass;
     KeMemoryBarrier();
     return STATUS_SUCCESS;
 #else
+    UNREFERENCED_PARAMETER(DisableUserQpcBypass);
     return STATUS_NOT_SUPPORTED;
 #endif
 }
 
-/* 按激活前快照恢复两个旁路位，不改写同字节中的其它系统标志。 */
+/* 按激活前快照恢复实际修改过的旁路位，不改写其它系统标志。 */
 static
 NTSTATUS
 KswordARKSystemTimeRestoreBypasses(
@@ -296,9 +365,11 @@ KswordARKSystemTimeRestoreBypasses(
         return STATUS_SUCCESS;
     }
 
-    qpcStatus = KswordARKSystemTimeWriteQpcBypassBit(
-        g_KswordArkSystemTimeState.OriginalQpcBypassBit,
-        NULL);
+    if (g_KswordArkSystemTimeState.QpcBypassPatched) {
+        qpcStatus = KswordARKSystemTimeWriteQpcBypassBit(
+            g_KswordArkSystemTimeState.OriginalQpcBypassBit,
+            NULL);
+    }
     __try {
         if (g_KswordArkSystemTimeState.OriginalInternalBypassBit) {
             (void)InterlockedOr(
@@ -324,6 +395,7 @@ KswordARKSystemTimeRestoreBypasses(
             : internalStatus;
     }
     g_KswordArkSystemTimeState.PatchBitsCaptured = FALSE;
+    g_KswordArkSystemTimeState.QpcBypassPatched = FALSE;
     return STATUS_SUCCESS;
 #else
     /* 非 x64 路径不会捕获或修改旁路位，恢复保持幂等成功。 */
@@ -406,6 +478,33 @@ KswordARKSystemTimeSelectResolutionModeLocked(
     return STATUS_SUCCESS;
 }
 
+/* 后端只能在未接管时切换，防止一半共享页、一半兼容旁路的混合状态。 */
+static
+NTSTATUS
+KswordARKSystemTimeSelectBackendLocked(
+    _In_ ULONG Backend
+    )
+{
+    if (Backend !=
+            KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC &&
+        Backend !=
+            KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (Backend == g_KswordArkSystemTimeState.Backend) {
+        return STATUS_SUCCESS;
+    }
+    if (InterlockedCompareExchange(
+            &g_KswordArkSystemTimeState.Active,
+            0L,
+            0L) != 0L) {
+        return STATUS_DEVICE_BUSY;
+    }
+
+    g_KswordArkSystemTimeState.Backend = Backend;
+    return STATUS_SUCCESS;
+}
+
 /* 读取两个槽的当前函数，激活前将它们作为可恢复基线。 */
 static
 NTSTATUS
@@ -422,8 +521,8 @@ KswordARKSystemTimeCaptureOriginalsLocked(
         !KswordARKSystemTimeReadSlot(
             g_KswordArkSystemTimeState.Resolution.SecondarySlot,
             &secondary) ||
-        primary == NULL ||
-        secondary == NULL ||
+        !KswordARKSystemTimeIsKernelAddressValid(primary) ||
+        !KswordARKSystemTimeIsKernelAddressValid(secondary) ||
         primary == KswordARKSystemTimeCounterHookAddress() ||
         secondary == KswordARKSystemTimeCounterHookAddress()) {
         return STATUS_CONFLICTING_ADDRESSES;
@@ -441,10 +540,13 @@ KswordARKSystemTimeStateFlagsLocked(
     VOID
     )
 {
+    KSWORD_ARK_SYSTEM_TIME_HYPERV_DIAGNOSTICS hyperv = { 0 };
     ULONG flags = 0UL;
     PVOID primary = NULL;
     PVOID secondary = NULL;
 
+    (void)KswordARKSystemTimeHypervQuery(&hyperv);
+    flags |= hyperv.StateFlags;
     if (InterlockedCompareExchange(
             &g_KswordArkSystemTimeState.Initialized,
             0L,
@@ -483,9 +585,14 @@ KswordARKSystemTimeStateFlagsLocked(
             flags |=
                 KSWORD_ARK_SYSTEM_TIME_STATE_SECONDARY_HOOKED;
         }
-        flags |=
-            KSWORD_ARK_SYSTEM_TIME_STATE_QPC_BYPASS_DISABLED |
-            KSWORD_ARK_SYSTEM_TIME_STATE_INTERNAL_FLAG_PATCHED;
+        if (g_KswordArkSystemTimeState.QpcBypassPatched) {
+            flags |=
+                KSWORD_ARK_SYSTEM_TIME_STATE_QPC_BYPASS_DISABLED;
+        }
+        if (g_KswordArkSystemTimeState.PatchBitsCaptured) {
+            flags |=
+                KSWORD_ARK_SYSTEM_TIME_STATE_INTERNAL_FLAG_PATCHED;
+        }
     }
     if (g_KswordArkSystemTimeState.Resolution.UsesHandlerTable) {
         flags |= KSWORD_ARK_SYSTEM_TIME_STATE_HANDLER_TABLE;
@@ -506,8 +613,10 @@ KswordARKSystemTimeFillQueryLocked(
     _Out_ KSWORD_ARK_QUERY_SYSTEM_TIME_RESPONSE* Response
     )
 {
+    KSWORD_ARK_SYSTEM_TIME_HYPERV_DIAGNOSTICS hyperv = { 0 };
     LARGE_INTEGER counter = { 0 };
 
+    (void)KswordARKSystemTimeHypervQuery(&hyperv);
     RtlZeroMemory(Response, sizeof(*Response));
     Response->version =
         KSWORD_ARK_SYSTEM_TIME_PROTOCOL_VERSION;
@@ -534,6 +643,8 @@ KswordARKSystemTimeFillQueryLocked(
         0L);
     Response->resolutionMode =
         g_KswordArkSystemTimeState.ResolutionMode;
+    Response->backend =
+        g_KswordArkSystemTimeState.Backend;
 
     counter = KeQueryPerformanceCounter(NULL);
     Response->counterValue =
@@ -547,6 +658,18 @@ KswordARKSystemTimeFillQueryLocked(
     Response->secondarySlotAddress =
         (ULONGLONG)(ULONG_PTR)
             g_KswordArkSystemTimeState.Resolution.SecondarySlot;
+    Response->hypervisorSharedPageAddress =
+        (ULONGLONG)(ULONG_PTR)hyperv.SharedUserVa;
+    Response->hypervisorTimeUpdateLock =
+        hyperv.TimeUpdateLock;
+    Response->hypervisorOriginalMultiplier =
+        hyperv.OriginalMultiplier;
+    Response->hypervisorOriginalBias =
+        hyperv.OriginalBias;
+    Response->hypervisorCurrentMultiplier =
+        hyperv.CurrentMultiplier;
+    Response->hypervisorCurrentBias =
+        hyperv.CurrentBias;
 }
 
 /*
@@ -561,6 +684,7 @@ KswordARKSystemTimeDeactivateLocked(
 {
     BOOLEAN primaryRestored = TRUE;
     BOOLEAN secondaryRestored = TRUE;
+    NTSTATUS hypervStatus = STATUS_SUCCESS;
     NTSTATUS bypassStatus = STATUS_SUCCESS;
     ULONG retryIndex = 0UL;
     LARGE_INTEGER delay = { 0 };
@@ -572,6 +696,10 @@ KswordARKSystemTimeDeactivateLocked(
         &g_KswordArkSystemTimeState.MaintenanceTimer);
     KeFlushQueuedDpcs();
 
+    if (g_KswordArkSystemTimeState.Backend ==
+        KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC) {
+        hypervStatus = KswordARKSystemTimeHypervRestore();
+    }
     if (g_KswordArkSystemTimeState.OriginalPrimary != NULL) {
         primaryRestored = KswordARKSystemTimeRestoreSlot(
             g_KswordArkSystemTimeState.Resolution.PrimarySlot,
@@ -606,8 +734,16 @@ KswordARKSystemTimeDeactivateLocked(
 
     if (!primaryRestored ||
         !secondaryRestored ||
+        !NT_SUCCESS(hypervStatus) ||
         !NT_SUCCESS(bypassStatus) ||
         retryIndex == KSW_SYSTEM_TIME_DRAIN_RETRY_COUNT) {
+        const NTSTATUS failureStatus =
+            !NT_SUCCESS(hypervStatus)
+            ? hypervStatus
+            : !NT_SUCCESS(bypassStatus)
+                ? bypassStatus
+                : STATUS_CONFLICTING_ADDRESSES;
+
         InterlockedExchange(
             &g_KswordArkSystemTimeState.ConflictDetected,
             1L);
@@ -616,12 +752,8 @@ KswordARKSystemTimeDeactivateLocked(
             KSWORD_ARK_SYSTEM_TIME_STATUS_CONFLICT);
         InterlockedExchange(
             &g_KswordArkSystemTimeState.LastStatus,
-            !NT_SUCCESS(bypassStatus)
-                ? bypassStatus
-                : STATUS_CONFLICTING_ADDRESSES);
-        return !NT_SUCCESS(bypassStatus)
-            ? bypassStatus
-            : STATUS_CONFLICTING_ADDRESSES;
+            failureStatus);
+        return failureStatus;
     }
 
     InterlockedExchange(
@@ -636,7 +768,32 @@ KswordARKSystemTimeDeactivateLocked(
     return STATUS_SUCCESS;
 }
 
-/* 安装两个计数器槽、关闭旁路并启动每秒一次的温和维护。 */
+/* 把 Hyper-V 探测失败转换为稳定 UI 状态，不把不同失败都伪装成“不存在”。 */
+static
+ULONG
+KswordARKSystemTimeHypervFailureStatus(
+    _In_ NTSTATUS Status,
+    _In_ BOOLEAN DuringWrite
+    )
+{
+    if (Status == STATUS_NOT_SUPPORTED) {
+        return KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_NOT_PRESENT;
+    }
+    if (Status == STATUS_DEVICE_NOT_READY ||
+        Status == STATUS_PROCEDURE_NOT_FOUND) {
+        return KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_PAGE_UNAVAILABLE;
+    }
+    if (Status == STATUS_CONFLICTING_ADDRESSES ||
+        Status == STATUS_DATA_ERROR ||
+        Status == STATUS_RETRY) {
+        return KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_VALIDATION_FAILED;
+    }
+    return DuringWrite
+        ? KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_WRITE_FAILED
+        : KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_PAGE_UNAVAILABLE;
+}
+
+/* 安装内核计数器槽，并按所选后端配置用户态 QPC 路径。 */
 static
 NTSTATUS
 KswordARKSystemTimeActivateLocked(
@@ -647,6 +804,7 @@ KswordARKSystemTimeActivateLocked(
     KSW_SYSTEM_TIME_COUNTER_ROUTINE originalCounter = NULL;
     LONGLONG initialCounter = 0LL;
     LARGE_INTEGER dueTime = { 0 };
+    BOOLEAN hypervPrepared = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
     status = KswordARKSystemTimeResolveLocked();
@@ -665,6 +823,29 @@ KswordARKSystemTimeActivateLocked(
         return status;
     }
 
+    if (g_KswordArkSystemTimeState.Backend ==
+        KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC) {
+        status = KswordARKSystemTimeHypervPrepare();
+        if (!NT_SUCCESS(status)) {
+            InterlockedExchange(
+                &g_KswordArkSystemTimeState.RuntimeStatus,
+                (LONG)KswordARKSystemTimeHypervFailureStatus(
+                    status,
+                    FALSE));
+            InterlockedExchange(
+                &g_KswordArkSystemTimeState.LastStatus,
+                status);
+            if (status == STATUS_CONFLICTING_ADDRESSES ||
+                status == STATUS_DATA_ERROR) {
+                InterlockedExchange(
+                    &g_KswordArkSystemTimeState.ConflictDetected,
+                    1L);
+            }
+            return status;
+        }
+        hypervPrepared = TRUE;
+    }
+
     originalCounter =
         (KSW_SYSTEM_TIME_COUNTER_ROUTINE)
             g_KswordArkSystemTimeState.OriginalPrimary;
@@ -680,9 +861,14 @@ KswordARKSystemTimeActivateLocked(
         &g_KswordArkSystemTimeState.ConflictDetected,
         0L);
 
-    status = KswordARKSystemTimeDisableBypassesLocked();
+    status = KswordARKSystemTimeConfigureBypassesLocked(
+        g_KswordArkSystemTimeState.Backend ==
+            KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT);
     if (!NT_SUCCESS(status)) {
         KswordARKSystemTimeCounterReset();
+        if (hypervPrepared) {
+            (void)KswordARKSystemTimeHypervRestore();
+        }
         g_KswordArkSystemTimeState.LastCommand =
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET;
         g_KswordArkSystemTimeState.Factor = 1UL;
@@ -711,6 +897,9 @@ KswordARKSystemTimeActivateLocked(
     }
 
     if (!NT_SUCCESS(status)) {
+        if (hypervPrepared) {
+            (void)KswordARKSystemTimeHypervRestore();
+        }
         KswordARKSystemTimeCounterReset();
         g_KswordArkSystemTimeState.LastCommand =
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET;
@@ -725,6 +914,42 @@ KswordARKSystemTimeActivateLocked(
             &g_KswordArkSystemTimeState.LastStatus,
             status);
         return status;
+    }
+
+    if (g_KswordArkSystemTimeState.Backend ==
+        KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC) {
+        status = KswordARKSystemTimeHypervActivate(
+            Command,
+            Factor);
+        if (!NT_SUCCESS(status)) {
+            (void)KswordARKSystemTimeRestoreSlot(
+                g_KswordArkSystemTimeState.Resolution.PrimarySlot,
+                g_KswordArkSystemTimeState.OriginalPrimary);
+            (void)KswordARKSystemTimeRestoreSlot(
+                g_KswordArkSystemTimeState.Resolution.SecondarySlot,
+                g_KswordArkSystemTimeState.OriginalSecondary);
+            (void)KswordARKSystemTimeRestoreBypasses();
+            (void)KswordARKSystemTimeHypervRestore();
+            KswordARKSystemTimeCounterReset();
+            g_KswordArkSystemTimeState.LastCommand =
+                KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET;
+            g_KswordArkSystemTimeState.Factor = 1UL;
+            InterlockedExchange(
+                &g_KswordArkSystemTimeState.RuntimeStatus,
+                (LONG)KswordARKSystemTimeHypervFailureStatus(
+                    status,
+                    TRUE));
+            InterlockedExchange(
+                &g_KswordArkSystemTimeState.LastStatus,
+                status);
+            if (status == STATUS_CONFLICTING_ADDRESSES ||
+                status == STATUS_DATA_ERROR) {
+                InterlockedExchange(
+                    &g_KswordArkSystemTimeState.ConflictDetected,
+                    1L);
+            }
+            return status;
+        }
     }
 
     InterlockedExchange(
@@ -747,7 +972,7 @@ KswordARKSystemTimeActivateLocked(
     return STATUS_SUCCESS;
 }
 
-/* 活跃状态下切换倍率时先按旧倍率结算，再原子发布新控制字。 */
+/* 活跃状态下先结算内核计数，再以同一目标连续更新 Hyper-V 共享页。 */
 static
 NTSTATUS
 KswordARKSystemTimeReconfigureLocked(
@@ -755,6 +980,12 @@ KswordARKSystemTimeReconfigureLocked(
     _In_ ULONG Factor
     )
 {
+    const ULONG oldCommand =
+        g_KswordArkSystemTimeState.LastCommand;
+    const ULONG oldFactor =
+        g_KswordArkSystemTimeState.Factor;
+    NTSTATUS hypervRollbackStatus = STATUS_SUCCESS;
+    NTSTATUS counterRollbackStatus = STATUS_SUCCESS;
     NTSTATUS status =
         KswordARKSystemTimeCounterReconfigure(
             Command,
@@ -763,14 +994,61 @@ KswordARKSystemTimeReconfigureLocked(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    if (g_KswordArkSystemTimeState.Backend ==
+        KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC) {
+        status = KswordARKSystemTimeHypervReconfigure(
+            Command,
+            Factor);
+        if (!NT_SUCCESS(status)) {
+            /*
+             * 共享页可能已经提交、只是稳定读回失败。先让共享页以当前
+             * 内核虚拟计数为连续锚点退回旧倍率，再退回内核倍率；任一
+             * 回滚失败都停止接管，避免用户态和内核态计时路径分叉。
+             */
+            hypervRollbackStatus =
+                KswordARKSystemTimeHypervReconfigure(
+                    oldCommand,
+                    oldFactor);
+            counterRollbackStatus =
+                KswordARKSystemTimeCounterReconfigure(
+                    oldCommand,
+                    oldFactor);
+            if (!NT_SUCCESS(hypervRollbackStatus) ||
+                !NT_SUCCESS(counterRollbackStatus)) {
+                (void)KswordARKSystemTimeDeactivateLocked();
+            }
+            InterlockedExchange(
+                &g_KswordArkSystemTimeState.RuntimeStatus,
+                (LONG)KswordARKSystemTimeHypervFailureStatus(
+                    status,
+                    TRUE));
+            InterlockedExchange(
+                &g_KswordArkSystemTimeState.LastStatus,
+                status);
+            if (status == STATUS_CONFLICTING_ADDRESSES ||
+                status == STATUS_DATA_ERROR) {
+                InterlockedExchange(
+                    &g_KswordArkSystemTimeState.ConflictDetected,
+                    1L);
+            }
+            return status;
+        }
+    }
+
     g_KswordArkSystemTimeState.LastCommand = Command;
     g_KswordArkSystemTimeState.Factor = Factor;
+    InterlockedExchange(
+        &g_KswordArkSystemTimeState.RuntimeStatus,
+        KSWORD_ARK_SYSTEM_TIME_STATUS_OK);
+    InterlockedExchange(
+        &g_KswordArkSystemTimeState.LastStatus,
+        STATUS_SUCCESS);
     return STATUS_SUCCESS;
 }
 
 /*
  * 维护 DPC 只接受“仍是原函数”或“仍是本钩子”两种状态。
- * 发现未知第三方时立即停止活动并恢复本功能仍持有的槽。
+ * Hyper-V 页只接受原快照或本功能快照，未知写入会触发失败关闭。
  */
 static
 VOID
@@ -783,6 +1061,7 @@ KswordARKSystemTimeMaintenanceDpc(
 {
     BOOLEAN primaryOk = TRUE;
     BOOLEAN secondaryOk = TRUE;
+    NTSTATUS hypervStatus = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(Dpc);
     UNREFERENCED_PARAMETER(DeferredContext);
@@ -802,7 +1081,17 @@ KswordARKSystemTimeMaintenanceDpc(
     secondaryOk = KswordARKSystemTimePatchSlot(
         g_KswordArkSystemTimeState.Resolution.SecondarySlot,
         g_KswordArkSystemTimeState.OriginalSecondary);
-    if (primaryOk && secondaryOk) {
+    if (primaryOk && secondaryOk &&
+        g_KswordArkSystemTimeState.Backend ==
+            KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC) {
+        hypervStatus = KswordARKSystemTimeHypervMaintain();
+        if (hypervStatus == STATUS_RETRY ||
+            hypervStatus == STATUS_DEVICE_BUSY) {
+            return;
+        }
+    }
+    if (primaryOk && secondaryOk &&
+        NT_SUCCESS(hypervStatus)) {
         return;
     }
 
@@ -815,7 +1104,12 @@ KswordARKSystemTimeMaintenanceDpc(
     (void)KswordARKSystemTimeRestoreSlot(
         g_KswordArkSystemTimeState.Resolution.SecondarySlot,
         g_KswordArkSystemTimeState.OriginalSecondary);
+    if (g_KswordArkSystemTimeState.Backend ==
+        KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC) {
+        (void)KswordARKSystemTimeHypervRestore();
+    }
     (void)KswordARKSystemTimeRestoreBypasses();
+    KswordARKSystemTimeCounterReset();
     InterlockedExchange(
         &g_KswordArkSystemTimeState.ConflictDetected,
         1L);
@@ -824,7 +1118,9 @@ KswordARKSystemTimeMaintenanceDpc(
         KSWORD_ARK_SYSTEM_TIME_STATUS_CONFLICT);
     InterlockedExchange(
         &g_KswordArkSystemTimeState.LastStatus,
-        STATUS_CONFLICTING_ADDRESSES);
+        NT_SUCCESS(hypervStatus)
+            ? STATUS_CONFLICTING_ADDRESSES
+            : hypervStatus);
     (void)InterlockedIncrement(
         &g_KswordArkSystemTimeState.Generation);
 }
@@ -839,6 +1135,7 @@ KswordARKSystemTimeInitialize(
         &g_KswordArkSystemTimeState,
         sizeof(g_KswordArkSystemTimeState));
     KswordARKSystemTimeCounterInitialize();
+    KswordARKSystemTimeHypervInitialize();
     ExInitializePushLock(
         &g_KswordArkSystemTimeState.ControlLock);
     KeInitializeTimerEx(
@@ -853,6 +1150,8 @@ KswordARKSystemTimeInitialize(
     g_KswordArkSystemTimeState.Factor = 1UL;
     g_KswordArkSystemTimeState.ResolutionMode =
         KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT;
+    g_KswordArkSystemTimeState.Backend =
+        KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC;
     InterlockedExchange(
         &g_KswordArkSystemTimeState.Generation,
         1L);
@@ -969,10 +1268,22 @@ KswordARKSystemTimeControl(
 
     if (Request->command !=
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET &&
-        Request->resolutionMode !=
+        (Request->resolutionMode !=
             KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT &&
-        Request->resolutionMode !=
-            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED) {
+         Request->resolutionMode !=
+            KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED)) {
+        Response->status =
+            KSWORD_ARK_SYSTEM_TIME_STATUS_INVALID_REQUEST;
+        Response->lastStatus = STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
+    }
+
+    if (Request->command !=
+            KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET &&
+        Request->backend !=
+            KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC &&
+        Request->backend !=
+            KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT) {
         Response->status =
             KSWORD_ARK_SYSTEM_TIME_STATUS_INVALID_REQUEST;
         Response->lastStatus = STATUS_INVALID_PARAMETER;
@@ -1044,6 +1355,10 @@ KswordARKSystemTimeControl(
         actionStatus =
             KswordARKSystemTimeSelectResolutionModeLocked(
                 Request->resolutionMode);
+        if (NT_SUCCESS(actionStatus)) {
+            actionStatus = KswordARKSystemTimeSelectBackendLocked(
+                Request->backend);
+        }
         if (!NT_SUCCESS(actionStatus)) {
             Response->status =
                 KSWORD_ARK_SYSTEM_TIME_STATUS_INVALID_REQUEST;
@@ -1057,7 +1372,10 @@ KswordARKSystemTimeControl(
                     Request->factor);
             Response->status = NT_SUCCESS(actionStatus)
                 ? KSWORD_ARK_SYSTEM_TIME_STATUS_OK
-                : KSWORD_ARK_SYSTEM_TIME_STATUS_INTERNAL_ERROR;
+                : (ULONG)InterlockedCompareExchange(
+                    &g_KswordArkSystemTimeState.RuntimeStatus,
+                    0L,
+                    0L);
         } else {
             actionStatus =
                 KswordARKSystemTimeActivateLocked(
@@ -1097,6 +1415,8 @@ KswordARKSystemTimeControl(
     Response->lastStatus = actionStatus;
     Response->resolutionMode =
         g_KswordArkSystemTimeState.ResolutionMode;
+    Response->backend =
+        g_KswordArkSystemTimeState.Backend;
     Response->counterValue =
         (ULONGLONG)KeQueryPerformanceCounter(NULL).QuadPart;
     KswordARKReleasePushLockExclusive(

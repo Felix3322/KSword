@@ -42,6 +42,13 @@ namespace
                 .toUpper();
     }
 
+    // hexValueText：显示允许为零的 Hyper-V 锁、倍率或偏置值。
+    QString hexValueText(const unsigned long long value)
+    {
+        return QStringLiteral("0x%1")
+            .arg(value, 16, 16, QLatin1Char('0'))
+            .toUpper();
+    }
     // operationStatusText：把稳定协议状态码转换为场景化错误提示。
     QString operationStatusText(
         const unsigned long status,
@@ -68,6 +75,18 @@ namespace
             break;
         case KSWORD_ARK_SYSTEM_TIME_STATUS_STALE_GENERATION:
             reason = QStringLiteral("状态已被其它控制者更新，请刷新后重试");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_NOT_PRESENT:
+            reason = QStringLiteral("未检测到 Microsoft Hyper-V，未启用变速");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_PAGE_UNAVAILABLE:
+            reason = QStringLiteral("Hyper-V 共享 QPC 页不可用，未启用变速");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_VALIDATION_FAILED:
+            reason = QStringLiteral("Hyper-V 共享 QPC 页校验冲突，已失败关闭");
+            break;
+        case KSWORD_ARK_SYSTEM_TIME_STATUS_HYPERV_WRITE_FAILED:
+            reason = QStringLiteral("Hyper-V 共享 QPC 页写入失败，已回滚");
             break;
         case KSWORD_ARK_SYSTEM_TIME_STATUS_INVALID_REQUEST:
             reason = QStringLiteral("倍率或控制参数无效");
@@ -141,8 +160,9 @@ namespace ks::misc
         // 永久警告不随确认消失，确保活动状态下始终能看到风险边界。
         m_warningLabel = new QLabel(
             QStringLiteral(
-                "⚠ 系统全局变速会接管内核性能计数器并影响整个系统的计时。"
-                "它可能导致动画、超时、音视频、网络协议、游戏和安全软件异常，"
+                "⚠ 系统全局变速会接管内核性能计数器；Hyper-V 后端还会改写"
+                "当前 Windows 分区的共享 QPC 倍率与偏置。它可能导致动画、超时、"
+                "音视频、网络协议、游戏和安全软件异常，"
                 "严重时会造成冻结或蓝屏。请先保存工作，强烈建议仅在虚拟机中使用。"),
             this);
         m_warningLabel->setWordWrap(true);
@@ -167,6 +187,48 @@ namespace ks::misc
                 .arg(KswordTheme::TextSecondaryHex()));
         rootLayout->addWidget(m_persistenceLabel);
 
+        // 后端组要求用户明确选择 Hyper-V 共享页或原 HAL 兼容路径。
+        auto* backendGroup = new QGroupBox(
+            QStringLiteral("计时后端"),
+            this);
+        auto* backendLayout = new QVBoxLayout(backendGroup);
+        m_hypervBackendRadio = new QRadioButton(
+            QStringLiteral("Hyper-V 共享 QPC（推荐）"),
+            backendGroup);
+        m_hypervBackendRadio->setToolTip(
+            QStringLiteral(
+                "保留用户态 QPC 快速路径，接管 Hyper-V 共享倍率与偏置，并同步内核 HAL 计数器"));
+        auto* hypervDescription = new QLabel(
+            QStringLiteral(
+                "要求 Microsoft Hyper-V 与共享 QPC 页均可用。用户态通过共享页变速，"
+                "内核态通过 HAL 计数器钩子同步；任一校验失败都不会静默切到其它后端。"),
+            backendGroup);
+        hypervDescription->setWordWrap(true);
+        hypervDescription->setStyleSheet(
+            QStringLiteral("color:%1;")
+                .arg(KswordTheme::TextSecondaryHex()));
+
+        m_halBackendRadio = new QRadioButton(
+            QStringLiteral("HAL 兼容后端（显式回退）"),
+            backendGroup);
+        m_halBackendRadio->setToolTip(
+            QStringLiteral(
+                "关闭用户态 QPC 快速旁路，并使用原有 HAL 计数器接管路径"));
+        auto* halDescription = new QLabel(
+            QStringLiteral(
+                "保留原有实现：关闭用户态快速旁路，使用户态和内核态都进入 HAL 计数器钩子。"
+                "仅在你明确选择后启用，不会由 Hyper-V 后端自动降级。"),
+            backendGroup);
+        halDescription->setWordWrap(true);
+        halDescription->setStyleSheet(
+            QStringLiteral("color:%1;")
+                .arg(KswordTheme::TextSecondaryHex()));
+        m_hypervBackendRadio->setChecked(true);
+        backendLayout->addWidget(m_hypervBackendRadio);
+        backendLayout->addWidget(hypervDescription);
+        backendLayout->addWidget(m_halBackendRadio);
+        backendLayout->addWidget(halDescription);
+        rootLayout->addWidget(backendGroup);
         // 模式组明确区分兼容定位和写入前增强校验定位。
         auto* schemeGroup = new QGroupBox(
             QStringLiteral("实现模式"),
@@ -358,6 +420,11 @@ namespace ks::misc
             this,
             [this](const bool) { updateButtons(); });
         connect(
+            m_hypervBackendRadio,
+            &QRadioButton::toggled,
+            this,
+            [this](const bool) { updateButtons(); });
+        connect(
             m_refreshTimer,
             &QTimer::timeout,
             this,
@@ -383,6 +450,7 @@ namespace ks::misc
         if (!result.io.ok)
         {
             m_supported = false;
+            m_hypervAvailable = false;
             m_operationLabel->setText(
                 result.unsupported
                     ? QStringLiteral(
@@ -407,9 +475,16 @@ namespace ks::misc
             result.response.osBuildNumber,
             result.response.lastStatus,
             result.response.resolutionMode,
+            result.response.backend,
             result.response.counterSourceAddress,
             result.response.primarySlotAddress,
-            result.response.secondarySlotAddress);
+            result.response.secondarySlotAddress,
+            result.response.hypervisorSharedPageAddress,
+            result.response.hypervisorTimeUpdateLock,
+            result.response.hypervisorOriginalMultiplier,
+            result.response.hypervisorOriginalBias,
+            result.response.hypervisorCurrentMultiplier,
+            result.response.hypervisorCurrentBias);
         updateButtons();
     }
 
@@ -425,6 +500,14 @@ namespace ks::misc
             m_speedUpRadio->isChecked()
             ? QStringLiteral("加速")
             : QStringLiteral("减速");
+        const unsigned long backend =
+            m_hypervBackendRadio->isChecked()
+            ? KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC
+            : KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT;
+        const QString backendText =
+            m_hypervBackendRadio->isChecked()
+            ? QStringLiteral("Hyper-V 共享 QPC")
+            : QStringLiteral("HAL 兼容后端");
         const unsigned long resolutionMode =
             m_compatRadio->isChecked()
             ? KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
@@ -435,7 +518,11 @@ namespace ks::misc
             : QStringLiteral("安全模式");
 
         if (!m_acknowledgeCheck->isChecked() ||
-            !confirmHighRisk(modeText, schemeText, factor))
+            !confirmHighRisk(
+                modeText,
+                backendText,
+                schemeText,
+                factor))
         {
             return;
         }
@@ -461,6 +548,7 @@ namespace ks::misc
         const auto result = client.controlSystemTime(
             command,
             factor,
+            backend,
             resolutionMode,
             freshStatus.response.generation,
             true);
@@ -490,10 +578,12 @@ namespace ks::misc
         info << controlEvent
             << "[SystemTimePage] 系统变速已应用, mode="
             << modeText.toStdString()
+            << ", backend=" << backendText.toStdString()
             << ", scheme=" << schemeText.toStdString()
             << ", factor=" << factor << eol;
         m_operationLabel->setText(
-            QStringLiteral("已应用：%1；%2 %3 倍")
+            QStringLiteral("已应用：%1；%2；%3 %4 倍")
+                .arg(backendText)
                 .arg(schemeText)
                 .arg(modeText)
                 .arg(factor));
@@ -508,6 +598,7 @@ namespace ks::misc
         const auto result = client.controlSystemTime(
             KSWORD_ARK_SYSTEM_TIME_COMMAND_RESET,
             1UL,
+            m_currentBackend,
             m_compatRadio->isChecked()
                 ? KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
                 : KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED,
@@ -741,6 +832,7 @@ namespace ks::misc
 
     bool SystemTimePage::confirmHighRisk(
         const QString& modeText,
+        const QString& backendText,
         const QString& schemeText,
         const unsigned long factor)
     {
@@ -755,10 +847,11 @@ namespace ks::misc
             QStringLiteral("系统全局变速风险确认"));
         warningBox.setText(
             QStringLiteral(
-                "即将使用“%1”模式，对整个系统%2 %3 倍。\n\n"
+                "即将使用“%1”后端与“%2”，对整个系统%3 %4 倍。\n\n"
                 "此操作会改变全局性能计数器的时间流速，"
                 "可能破坏超时、同步、网络、音视频和安全软件行为。\n"
                 "请确认已保存工作，并准备在异常时立即恢复 1x。")
+                .arg(backendText)
                 .arg(schemeText)
                 .arg(modeText)
                 .arg(factor));
@@ -818,9 +911,16 @@ namespace ks::misc
         const unsigned long osBuildNumber,
         const long lastStatus,
         const unsigned long resolutionMode,
+        const unsigned long backend,
         const unsigned long long counterSourceAddress,
         const unsigned long long primarySlotAddress,
-        const unsigned long long secondarySlotAddress)
+        const unsigned long long secondarySlotAddress,
+        const unsigned long long hypervisorSharedPageAddress,
+        const unsigned long long hypervisorTimeUpdateLock,
+        const unsigned long long hypervisorOriginalMultiplier,
+        const unsigned long long hypervisorOriginalBias,
+        const unsigned long long hypervisorCurrentMultiplier,
+        const unsigned long long hypervisorCurrentBias)
     {
         const bool active =
             (stateFlags &
@@ -828,12 +928,22 @@ namespace ks::misc
         const bool conflict =
             (stateFlags &
                 KSWORD_ARK_SYSTEM_TIME_STATE_CONFLICT) != 0UL;
+        const bool hypervPresent =
+            (stateFlags &
+                KSWORD_ARK_SYSTEM_TIME_STATE_HYPERV_PRESENT) != 0UL;
+        const bool hypervSharedPage =
+            (stateFlags &
+                KSWORD_ARK_SYSTEM_TIME_STATE_HYPERV_SHARED_PAGE) != 0UL;
+        const bool hypervActive =
+            (stateFlags &
+                KSWORD_ARK_SYSTEM_TIME_STATE_HYPERV_ACTIVE) != 0UL;
         const bool calibrationChanged =
             !m_calibratedElapsedTimer.isValid() ||
             m_calibrationGeneration != generation ||
             m_active != active ||
             m_currentCommand != command ||
-            m_currentFactor != factor;
+            m_currentFactor != factor ||
+            m_currentBackend != backend;
         const QString schemeText =
             resolutionMode ==
                 KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED
@@ -842,6 +952,28 @@ namespace ks::misc
                 KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT
                 ? QStringLiteral("兼容模式")
                 : QStringLiteral("未知");
+        const QString backendText =
+            backend ==
+                KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC
+            ? QStringLiteral("Hyper-V 共享 QPC")
+            : backend ==
+                KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT
+                ? QStringLiteral("HAL 兼容后端")
+                : QStringLiteral("未知");
+        const QString hypervStateText = hypervActive
+            ? QStringLiteral("共享页已接管")
+            : hypervSharedPage
+                ? QStringLiteral("共享页可用")
+                : hypervPresent
+                    ? QStringLiteral("已检测，但共享页不可用")
+                    : QStringLiteral("未检测到 Microsoft Hyper-V");
+        const QString kernelPathText =
+            (stateFlags &
+                KSWORD_ARK_SYSTEM_TIME_STATE_HANDLER_TABLE) != 0UL
+            ? QStringLiteral("HAL 处理器表")
+            : QStringLiteral("HAL 计数器槽");
+
+        m_hypervAvailable = hypervPresent && hypervSharedPage;
         m_active = active;
         m_currentCommand = active
             ? command
@@ -849,6 +981,7 @@ namespace ks::misc
         m_currentFactor = active
             ? std::max(1UL, factor)
             : 1UL;
+        m_currentBackend = backend;
         m_calibrationGeneration = generation;
         if (calibrationChanged)
         {
@@ -860,12 +993,23 @@ namespace ks::misc
         }
         if (active)
         {
+            m_hypervBackendRadio->setChecked(
+                backend ==
+                    KSWORD_ARK_SYSTEM_TIME_BACKEND_HYPERV_SHARED_QPC);
+            m_halBackendRadio->setChecked(
+                backend ==
+                    KSWORD_ARK_SYSTEM_TIME_BACKEND_HAL_COMPAT);
             m_compatRadio->setChecked(
                 resolutionMode ==
                     KSWORD_ARK_SYSTEM_TIME_RESOLUTION_ORIGINAL_COMPAT);
             m_guardedResolutionRadio->setChecked(
                 resolutionMode ==
                     KSWORD_ARK_SYSTEM_TIME_RESOLUTION_GUARDED);
+        }
+        else if (!m_hypervAvailable &&
+                 m_hypervBackendRadio->isChecked())
+        {
+            m_halBackendRadio->setChecked(true);
         }
 
         if (active &&
@@ -898,20 +1042,41 @@ namespace ks::misc
                         : KswordTheme::SuccessHex()));
         m_backendLabel->setText(
             QStringLiteral(
-                "Windows 构建：%1；实现模式：%2；计时路径：%3；状态代次：%4")
+                "Windows 构建：%1；后端：%2；实现模式：%3；"
+                "内核计时路径：%4；Hyper-V：%5；状态代次：%6")
                 .arg(osBuildNumber)
+                .arg(backendText)
                 .arg(schemeText)
-                .arg(
-                    (stateFlags &
-                        KSWORD_ARK_SYSTEM_TIME_STATE_HANDLER_TABLE) != 0UL
-                        ? QStringLiteral("HAL 处理器表")
-                        : QStringLiteral("HAL 计数器槽"))
+                .arg(kernelPathText)
+                .arg(hypervStateText)
                 .arg(generation));
-        m_diagnosticLabel->setText(
-            QStringLiteral("计时描述符：%1；主槽：%2；辅助槽：%3")
-                .arg(addressText(counterSourceAddress))
-                .arg(addressText(primarySlotAddress))
-                .arg(addressText(secondarySlotAddress)));
+        if (hypervSharedPage)
+        {
+            m_diagnosticLabel->setText(
+                QStringLiteral(
+                    "计时描述符：%1；主槽：%2；辅助槽：%3；"
+                    "Hyper-V 共享页：%4；更新锁：%5；"
+                    "原倍率：%6；当前倍率：%7；原偏置：%8；当前偏置：%9")
+                    .arg(addressText(counterSourceAddress))
+                    .arg(addressText(primarySlotAddress))
+                    .arg(addressText(secondarySlotAddress))
+                    .arg(addressText(hypervisorSharedPageAddress))
+                    .arg(hexValueText(hypervisorTimeUpdateLock))
+                    .arg(hexValueText(hypervisorOriginalMultiplier))
+                    .arg(hexValueText(hypervisorCurrentMultiplier))
+                    .arg(hexValueText(hypervisorOriginalBias))
+                    .arg(hexValueText(hypervisorCurrentBias)));
+        }
+        else
+        {
+            m_diagnosticLabel->setText(
+                QStringLiteral(
+                    "计时描述符：%1；主槽：%2；辅助槽：%3；"
+                    "Hyper-V 共享页：不可用")
+                    .arg(addressText(counterSourceAddress))
+                    .arg(addressText(primarySlotAddress))
+                    .arg(addressText(secondarySlotAddress)));
+        }
         m_operationLabel->setText(
             operationStatusText(status, lastStatus));
     }
@@ -924,13 +1089,19 @@ namespace ks::misc
         m_applyButton->setEnabled(
             !m_busy &&
             m_supported &&
-            m_acknowledgeCheck->isChecked());
+            m_acknowledgeCheck->isChecked() &&
+            (!m_hypervBackendRadio->isChecked() ||
+                m_hypervAvailable));
         m_resetButton->setEnabled(
             !m_busy &&
             m_supported);
         m_factorSpin->setEnabled(!m_busy);
         m_speedUpRadio->setEnabled(!m_busy);
         m_slowDownRadio->setEnabled(!m_busy);
+        m_hypervBackendRadio->setEnabled(
+            !m_busy && !m_active && m_hypervAvailable);
+        m_halBackendRadio->setEnabled(
+            !m_busy && !m_active);
         m_compatRadio->setEnabled(
             !m_busy && !m_active);
         m_guardedResolutionRadio->setEnabled(

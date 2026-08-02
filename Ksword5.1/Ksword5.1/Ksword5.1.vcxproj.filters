@@ -1527,6 +1527,12 @@
     <None Include="..\..\third_party\zstd\NOTICE.md">
       <Filter>Profile Files</Filter>
     </None>
+    <None Include="..\..\third_party\SystemWideTransmission\LICENSE.txt">
+      <Filter>Profile Files</Filter>
+    </None>
+    <None Include="..\..\third_party\SystemWideTransmission\NOTICE.md">
+      <Filter>Profile Files</Filter>
+    </None>
     <None Include="..\..\tools\i18n_language_pack.py">
       <Filter>Profile Files</Filter>
     </None>
