@@ -2871,7 +2871,7 @@ Return Value:
 static BOOLEAN
 KswordArkCallbackEnumFindObjectCallbackFieldsPdb(
     _Inout_ KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
-    _In_ const KSWORD_ARK_CALLBACK_ENUM_DYNDATA_PROFILE* Profile,
+    _In_opt_ const KSWORD_ARK_CALLBACK_ENUM_DYNDATA_PROFILE* Profile,
     _In_ ULONG64 NodeAddress,
     _Out_ KSWORD_ARK_CALLBACK_ENUM_OBJECT_SCAN_RESULT* ResultOut
     )
