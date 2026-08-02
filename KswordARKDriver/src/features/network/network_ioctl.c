@@ -88,6 +88,7 @@ Return Value:
 {
     KSWORD_ARK_NETWORK_SET_RULES_REQUEST* setRequest = NULL;
     PVOID outputBuffer = NULL;
+    size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -109,7 +110,7 @@ Return Value:
         Request,
         sizeof(KSWORD_ARK_NETWORK_SET_RULES_REQUEST),
         (PVOID*)&setRequest,
-        NULL);
+        &actualInputLength);
     if (!NT_SUCCESS(status)) {
         KswordARKNetworkIoctlLog(Device, "Error", "R0 network set-rules input invalid, status=0x%08X.", (unsigned int)status);
         return status;

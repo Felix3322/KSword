@@ -159,6 +159,7 @@ Return Value:
 {
     KSWORD_ARK_SET_SAFETY_POLICY_REQUEST* setRequest = NULL;
     PVOID outputBuffer = NULL;
+    size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
 
@@ -180,7 +181,7 @@ Return Value:
         Request,
         sizeof(KSWORD_ARK_SET_SAFETY_POLICY_REQUEST),
         (PVOID*)&setRequest,
-        NULL);
+        &actualInputLength);
     if (!NT_SUCCESS(status)) {
         KswordARKSafetyIoctlLog(Device, "Error", "R0 set-safety-policy: input invalid, status=0x%08X.", (unsigned int)status);
         return status;
