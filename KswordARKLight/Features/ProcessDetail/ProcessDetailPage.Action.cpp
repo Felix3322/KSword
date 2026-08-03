@@ -39,39 +39,70 @@ bool ConfirmR0Injection(HWND owner, const wchar_t* action, DWORD processId, cons
     return ::MessageBoxW(owner, message.c_str(), L"确认 R0 注入", MB_YESNO | MB_DEFBUTTON2 | MB_ICONWARNING) == IDYES;
 }
 
-bool TerminateAllThreads(DWORD processId, std::wstring& detail) {
-    HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
+} // namespace
+
+bool ProcessDetailPage::TerminateAllThreadsIfProcessIdentityMatches(
+    DWORD targetProcessId,
+    ULONGLONG expectedProcessCreationTime100ns,
+    std::wstring& detail) {
+    detail.clear();
+    Ksword::Core::UniqueHandle verifiedProcess;
+    std::wstring identityError;
+    if (!OpenVerifiedProcessActionTarget(
+            targetProcessId,
+            expectedProcessCreationTime100ns,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            verifiedProcess,
+            identityError)) {
+        detail = L"目标进程身份验证失败：" + identityError;
+        return false;
+    }
+
+    Ksword::Core::UniqueHandle snapshot(::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+    if (!snapshot.valid()) {
         detail = L"无法创建线程快照。";
         return false;
     }
+
     THREADENTRY32 entry{};
     entry.dwSize = sizeof(entry);
+    if (!::Thread32First(snapshot.get(), &entry)) {
+        detail = L"无法枚举目标进程线程。";
+        return false;
+    }
+
     int succeeded = 0;
     int failed = 0;
-    if (::Thread32First(snapshot, &entry)) {
-        do {
-            if (entry.th32OwnerProcessID != processId) {
-                continue;
-            }
-            HANDLE thread = ::OpenThread(THREAD_TERMINATE, FALSE, entry.th32ThreadID);
-            if (thread && ::TerminateThread(thread, 1)) {
-                ++succeeded;
-            } else {
-                ++failed;
-            }
-            if (thread) {
-                ::CloseHandle(thread);
-            }
-        } while (::Thread32Next(snapshot, &entry));
-    }
-    ::CloseHandle(snapshot);
-    detail = L"TerminateThread 完成：成功 " + std::to_wstring(succeeded) +
-        L"，失败 " + std::to_wstring(failed) + L"。";
-    return succeeded > 0 && failed == 0;
-}
+    int skipped = 0;
+    do {
+        if (entry.th32OwnerProcessID != targetProcessId) {
+            continue;
+        }
+        Ksword::Core::UniqueHandle thread(::OpenThread(
+            THREAD_QUERY_LIMITED_INFORMATION | THREAD_TERMINATE,
+            FALSE,
+            entry.th32ThreadID));
+        if (!thread.valid()) {
+            ++failed;
+            continue;
+        }
+        if (::GetProcessIdOfThread(thread.get()) != targetProcessId) {
+            // The Toolhelp entry became stale before the action handle opened.
+            ++skipped;
+            continue;
+        }
+        if (::TerminateThread(thread.get(), 1)) {
+            ++succeeded;
+        } else {
+            ++failed;
+        }
+    } while (::Thread32Next(snapshot.get(), &entry));
 
-} // namespace
+    detail = L"TerminateThread 完成：成功 " + std::to_wstring(succeeded) +
+        L"，失败 " + std::to_wstring(failed) +
+        L"，身份变更跳过 " + std::to_wstring(skipped) + L"。";
+    return succeeded > 0 && failed == 0 && skipped == 0;
+}
 
 bool ProcessDetailPage::CreateActionTab() {
     const TabIndex tab = TabIndex::Actions;
@@ -151,13 +182,17 @@ bool ProcessDetailPage::HandleActionCommand(int controlId) {
                 return true;
             }
             const DWORD processId = processId_;
+            const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
             ExecuteBackgroundAction(
                 TabIndex::Actions,
                 ActionStatus,
                 L"● 正在后台终止目标进程的全部线程…",
-                [processId] {
+                [processId, expectedProcessCreationTime100ns] {
                     ProcessDetailActionResult action{};
-                    const bool success = TerminateAllThreads(processId, action.dialogText);
+                    const bool success = ProcessDetailPage::TerminateAllThreadsIfProcessIdentityMatches(
+                        processId,
+                        expectedProcessCreationTime100ns,
+                        action.dialogText);
                     action.dialogTitle = L"结束进程";
                     action.dialogIcon = success ? MB_ICONINFORMATION : MB_ICONWARNING;
                     action.statusText = success
