@@ -4612,9 +4612,11 @@ namespace ks::process
         return staticOk;
     }
 
-    ProcessModuleSnapshot EnumerateProcessModulesAndThreads(
+    static ProcessModuleSnapshot EnumerateProcessModulesAndThreadsInternal(
         const std::uint32_t pid,
-        const bool includeSignatureCheck)
+        const bool includeSignatureCheck,
+        const bool requireVerifiedProcessIdentity,
+        const std::uint64_t expectedCreationTime100ns)
     {
         ProcessModuleSnapshot snapshot;
         snapshot.modules.clear();
@@ -4636,6 +4638,63 @@ namespace ks::process
                 }
                 snapshot.diagnosticText += text;
             };
+
+        struct ScopedProcessIdentityHandle final
+        {
+            HANDLE handle = nullptr;
+            ~ScopedProcessIdentityHandle()
+            {
+                if (handle != nullptr)
+                {
+                    ::CloseHandle(handle);
+                }
+            }
+        } processIdentityHold;
+
+        if (requireVerifiedProcessIdentity)
+        {
+            if (pid == 0U || expectedCreationTime100ns == 0U)
+            {
+                appendDiagnostic("process identity is unavailable; module snapshot skipped.");
+                return snapshot;
+            }
+
+            processIdentityHold.handle = ::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                FALSE,
+                ToDwordPid(pid));
+            if (processIdentityHold.handle == nullptr)
+            {
+                appendDiagnostic(
+                    "OpenProcess(for module identity) failed: " +
+                    FormatLastErrorMessage(::GetLastError()));
+                return snapshot;
+            }
+
+            FILETIME creationTime{};
+            FILETIME exitTime{};
+            FILETIME kernelTime{};
+            FILETIME userTime{};
+            const BOOL identityQueryOk = ::GetProcessTimes(
+                processIdentityHold.handle,
+                &creationTime,
+                &exitTime,
+                &kernelTime,
+                &userTime);
+            const DWORD identityQueryError = identityQueryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+            const std::uint64_t actualCreationTime100ns = identityQueryOk != FALSE
+                ? ks::str::FileTimeToUint64(creationTime.dwHighDateTime, creationTime.dwLowDateTime)
+                : 0U;
+            if (identityQueryOk == FALSE ||
+                actualCreationTime100ns == 0U ||
+                actualCreationTime100ns != expectedCreationTime100ns)
+            {
+                appendDiagnostic(identityQueryOk == FALSE
+                    ? "GetProcessTimes(for module identity) failed: " + FormatLastErrorMessage(identityQueryError)
+                    : "process identity changed (PID was reused); module snapshot skipped.");
+                return snapshot;
+            }
+        }
 
         // fillModuleSignature 作用：
         // - 统一填充模块签名显示文本、厂家、可信标记；
@@ -4871,6 +4930,29 @@ namespace ks::process
         }
 
         return snapshot;
+    }
+
+    ProcessModuleSnapshot EnumerateProcessModulesAndThreads(
+        const std::uint32_t pid,
+        const bool includeSignatureCheck)
+    {
+        return EnumerateProcessModulesAndThreadsInternal(
+            pid,
+            includeSignatureCheck,
+            false,
+            0U);
+    }
+
+    ProcessModuleSnapshot EnumerateProcessModulesAndThreadsIfIdentityMatches(
+        const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
+        const bool includeSignatureCheck)
+    {
+        return EnumerateProcessModulesAndThreadsInternal(
+            pid,
+            includeSignatureCheck,
+            true,
+            expectedCreationTime100ns);
     }
 
     bool UnloadModuleByBaseAddressIfIdentityMatches(

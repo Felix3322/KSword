@@ -576,6 +576,14 @@ namespace ks::process
         std::uint32_t pid,
         bool includeSignatureCheck);
 
+    // EnumerateProcessModulesAndThreadsIfIdentityMatches 作用：
+    // - 在整个枚举期间保持同一进程句柄，并核验 PID + 创建时间；
+    // - 身份不可用或不匹配时返回空快照，避免将复用 PID 的模块数据用于旧详情窗口。
+    ProcessModuleSnapshot EnumerateProcessModulesAndThreadsIfIdentityMatches(
+        std::uint32_t pid,
+        std::uint64_t expectedCreationTime100ns,
+        bool includeSignatureCheck);
+
     // UnloadModuleByBaseAddressIfIdentityMatches 作用：
     // - 在同一进程句柄上校验 PID + 创建时间后，对远程进程调用 FreeLibrary 卸载指定基址模块。
     bool UnloadModuleByBaseAddressIfIdentityMatches(

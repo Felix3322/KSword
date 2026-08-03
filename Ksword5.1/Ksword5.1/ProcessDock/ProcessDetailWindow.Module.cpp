@@ -43,6 +43,7 @@ void ProcessDetailWindow::requestAsyncModuleRefresh(const bool forceRefresh)
     m_moduleInitialRefreshStarted = true;
 
     const std::uint32_t pidValue = m_baseRecord.pid;
+    const std::uint64_t expectedCreationTime100ns = m_baseRecord.creationTime100ns;
     const bool includeSignatureCheck = (m_signatureCheckBox != nullptr) && m_signatureCheckBox->isChecked();
     const bool firstRefresh = !m_firstModuleRefreshDone;
 
@@ -79,11 +80,14 @@ void ProcessDetailWindow::requestAsyncModuleRefresh(const bool forceRefresh)
         << eol;
 
     QPointer<ProcessDetailWindow> guard(this);
-    QRunnable* backgroundTask = QRunnable::create([guard, localTicket, pidValue, includeSignatureCheck, firstRefresh]() {
+    QRunnable* backgroundTask = QRunnable::create([guard, localTicket, pidValue, expectedCreationTime100ns, includeSignatureCheck, firstRefresh]() {
         const auto startTime = std::chrono::steady_clock::now();
         ModuleRefreshResult refreshResult{};
         refreshResult.includeSignatureCheck = includeSignatureCheck;
-        refreshResult.moduleSnapshot = ks::process::EnumerateProcessModulesAndThreads(pidValue, includeSignatureCheck);
+        refreshResult.moduleSnapshot = ks::process::EnumerateProcessModulesAndThreadsIfIdentityMatches(
+            pidValue,
+            expectedCreationTime100ns,
+            includeSignatureCheck);
         refreshResult.elapsedMs = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - startTime).count());
