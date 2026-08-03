@@ -2,6 +2,7 @@
 
 #include "ProcessDetailTypes.h"
 
+#include "../../Core/Common.h"
 #include "../../Core/Win32Lean.h"
 #include "../../Ui/AsyncTask.h"
 #include "../../Ui/VirtualListView.h"
@@ -246,6 +247,15 @@ private:
     void BeginSnapshotRefresh(const std::wstring& loadingMessage = L"正在后台加载进程详情…");
     void ApplySnapshot(ProcessDetailSnapshot snapshot);
     void SetSnapshotRefreshControlsEnabled(bool enabled);
+    static bool OpenVerifiedThreadActionTarget(
+        DWORD targetProcessId,
+        ULONGLONG expectedProcessCreationTime100ns,
+        DWORD targetThreadId,
+        ULONGLONG expectedThreadCreationTime100ns,
+        DWORD requestedThreadAccess,
+        Ksword::Core::UniqueHandle& processOut,
+        Ksword::Core::UniqueHandle& threadOut,
+        std::wstring& errorText);
 
     bool CreateDetailTab();
     bool CreateThreadTab();

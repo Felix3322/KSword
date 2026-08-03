@@ -170,103 +170,6 @@ std::wstring LastErrorText(const wchar_t* operation, DWORD error) {
     return result;
 }
 
-ULONGLONG FileTimeTo100ns(const FILETIME& value) noexcept {
-    return (static_cast<ULONGLONG>(value.dwHighDateTime) << 32U) |
-        static_cast<ULONGLONG>(value.dwLowDateTime);
-}
-
-struct VerifiedModuleThreadTarget final {
-    Ksword::Core::UniqueHandle process;
-    Ksword::Core::UniqueHandle thread;
-    std::wstring errorText;
-
-    bool valid() const noexcept {
-        return process.valid() && thread.valid();
-    }
-};
-
-// OpenVerifiedModuleThreadTarget keeps both identities alive through the caller's
-// mutation. It rejects PID and TID reuse instead of trusting a stale module row.
-VerifiedModuleThreadTarget OpenVerifiedModuleThreadTarget(
-    DWORD targetProcessId,
-    ULONGLONG expectedProcessCreationTime100ns,
-    DWORD targetThreadId,
-    ULONGLONG expectedThreadCreationTime100ns,
-    DWORD requestedThreadAccess) {
-    VerifiedModuleThreadTarget target{};
-    if (targetProcessId == 0U || targetThreadId == 0U ||
-        expectedProcessCreationTime100ns == 0U || expectedThreadCreationTime100ns == 0U) {
-        target.errorText = L"目标进程或线程身份不可用，已取消操作。";
-        return target;
-    }
-
-    target.process.reset(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, targetProcessId));
-    if (!target.process.valid()) {
-        target.errorText = LastErrorText(L"OpenProcess", ::GetLastError());
-        return target;
-    }
-
-    FILETIME processCreationTime{};
-    FILETIME processExitTime{};
-    FILETIME processKernelTime{};
-    FILETIME processUserTime{};
-    if (!::GetProcessTimes(
-            target.process.get(),
-            &processCreationTime,
-            &processExitTime,
-            &processKernelTime,
-            &processUserTime)) {
-        target.errorText = LastErrorText(L"GetProcessTimes", ::GetLastError());
-        return target;
-    }
-    const ULONGLONG actualProcessCreationTime100ns = FileTimeTo100ns(processCreationTime);
-    if (actualProcessCreationTime100ns == 0U ||
-        actualProcessCreationTime100ns != expectedProcessCreationTime100ns) {
-        target.errorText = L"目标进程实例已变更，已取消操作。";
-        return target;
-    }
-
-    target.thread.reset(::OpenThread(
-        THREAD_QUERY_LIMITED_INFORMATION | requestedThreadAccess,
-        FALSE,
-        targetThreadId));
-    if (!target.thread.valid()) {
-        target.errorText = LastErrorText(L"OpenThread", ::GetLastError());
-        return target;
-    }
-
-    const DWORD actualOwnerProcessId = ::GetProcessIdOfThread(target.thread.get());
-    if (actualOwnerProcessId == 0U) {
-        target.errorText = LastErrorText(L"GetProcessIdOfThread", ::GetLastError());
-        return target;
-    }
-    if (actualOwnerProcessId != targetProcessId) {
-        target.errorText = L"目标线程已不属于所选进程，已取消操作。";
-        return target;
-    }
-
-    FILETIME threadCreationTime{};
-    FILETIME threadExitTime{};
-    FILETIME threadKernelTime{};
-    FILETIME threadUserTime{};
-    if (!::GetThreadTimes(
-            target.thread.get(),
-            &threadCreationTime,
-            &threadExitTime,
-            &threadKernelTime,
-            &threadUserTime)) {
-        target.errorText = LastErrorText(L"GetThreadTimes", ::GetLastError());
-        return target;
-    }
-    const ULONGLONG actualThreadCreationTime100ns = FileTimeTo100ns(threadCreationTime);
-    if (actualThreadCreationTime100ns == 0U ||
-        actualThreadCreationTime100ns != expectedThreadCreationTime100ns) {
-        target.errorText = L"目标线程实例已变更，已取消操作。";
-        return target;
-    }
-    return target;
-}
-
 bool WriteClipboardText(HWND owner, const std::wstring& text) {
     if (text.empty() || !::OpenClipboard(owner)) {
         return false;
@@ -1201,17 +1104,22 @@ void ProcessDetailPage::SuspendSelectedModuleThread() {
         L"● 正在后台挂起模块线程…",
         [threadId, expectedThreadCreationTime100ns, targetProcessId, expectedProcessCreationTime100ns] {
             ProcessDetailActionResult action{};
-            VerifiedModuleThreadTarget target = OpenVerifiedModuleThreadTarget(
-                targetProcessId,
-                expectedProcessCreationTime100ns,
-                threadId,
-                expectedThreadCreationTime100ns,
-                THREAD_SUSPEND_RESUME);
-            if (!target.valid()) {
-                action.statusText = L"● 挂起 Thread 失败 | " + target.errorText;
+            Ksword::Core::UniqueHandle verifiedProcess;
+            Ksword::Core::UniqueHandle verifiedThread;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedThreadActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    threadId,
+                    expectedThreadCreationTime100ns,
+                    THREAD_SUSPEND_RESUME,
+                    verifiedProcess,
+                    verifiedThread,
+                    identityError)) {
+                action.statusText = L"● 挂起 Thread 失败 | " + identityError;
                 return action;
             }
-            const DWORD previousCount = ::SuspendThread(target.thread.get());
+            const DWORD previousCount = ::SuspendThread(verifiedThread.get());
             const DWORD error = previousCount == static_cast<DWORD>(-1) ? ::GetLastError() : ERROR_SUCCESS;
             action.refreshRequired = error == ERROR_SUCCESS;
             action.statusText = error == ERROR_SUCCESS
@@ -1241,17 +1149,22 @@ void ProcessDetailPage::ResumeSelectedModuleThread() {
         L"● 正在后台恢复模块线程…",
         [threadId, expectedThreadCreationTime100ns, targetProcessId, expectedProcessCreationTime100ns] {
             ProcessDetailActionResult action{};
-            VerifiedModuleThreadTarget target = OpenVerifiedModuleThreadTarget(
-                targetProcessId,
-                expectedProcessCreationTime100ns,
-                threadId,
-                expectedThreadCreationTime100ns,
-                THREAD_SUSPEND_RESUME);
-            if (!target.valid()) {
-                action.statusText = L"● 取消挂起 Thread 失败 | " + target.errorText;
+            Ksword::Core::UniqueHandle verifiedProcess;
+            Ksword::Core::UniqueHandle verifiedThread;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedThreadActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    threadId,
+                    expectedThreadCreationTime100ns,
+                    THREAD_SUSPEND_RESUME,
+                    verifiedProcess,
+                    verifiedThread,
+                    identityError)) {
+                action.statusText = L"● 取消挂起 Thread 失败 | " + identityError;
                 return action;
             }
-            const DWORD previousCount = ::ResumeThread(target.thread.get());
+            const DWORD previousCount = ::ResumeThread(verifiedThread.get());
             const DWORD error = previousCount == static_cast<DWORD>(-1) ? ::GetLastError() : ERROR_SUCCESS;
             action.refreshRequired = error == ERROR_SUCCESS;
             action.statusText = error == ERROR_SUCCESS
@@ -1281,17 +1194,22 @@ void ProcessDetailPage::TerminateSelectedModuleThread() {
         L"● 正在后台结束模块线程…",
         [threadId, expectedThreadCreationTime100ns, targetProcessId, expectedProcessCreationTime100ns] {
             ProcessDetailActionResult action{};
-            VerifiedModuleThreadTarget target = OpenVerifiedModuleThreadTarget(
-                targetProcessId,
-                expectedProcessCreationTime100ns,
-                threadId,
-                expectedThreadCreationTime100ns,
-                THREAD_TERMINATE);
-            if (!target.valid()) {
-                action.statusText = L"● 结束 Thread 失败 | " + target.errorText;
+            Ksword::Core::UniqueHandle verifiedProcess;
+            Ksword::Core::UniqueHandle verifiedThread;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedThreadActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    threadId,
+                    expectedThreadCreationTime100ns,
+                    THREAD_TERMINATE,
+                    verifiedProcess,
+                    verifiedThread,
+                    identityError)) {
+                action.statusText = L"● 结束 Thread 失败 | " + identityError;
                 return action;
             }
-            const BOOL terminated = ::TerminateThread(target.thread.get(), 0);
+            const BOOL terminated = ::TerminateThread(verifiedThread.get(), 0);
             const DWORD error = terminated ? ERROR_SUCCESS : ::GetLastError();
             if (!terminated) {
                 action.statusText = L"● 结束 Thread 失败 | " + LastErrorText(L"TerminateThread", error);

@@ -1,3 +1,4 @@
+#include "../../Core/Common.h"
 #include "../../Core/Win32Lean.h"
 #include "../../Ui/FilterBar.h"
 
@@ -295,6 +296,93 @@ bool SelectedItemData(HWND list, std::size_t& indexOut) {
 
 } // namespace
 
+bool ProcessDetailPage::OpenVerifiedThreadActionTarget(
+    DWORD targetProcessId,
+    ULONGLONG expectedProcessCreationTime100ns,
+    DWORD targetThreadId,
+    ULONGLONG expectedThreadCreationTime100ns,
+    DWORD requestedThreadAccess,
+    Ksword::Core::UniqueHandle& processOut,
+    Ksword::Core::UniqueHandle& threadOut,
+    std::wstring& errorText) {
+    processOut.reset();
+    threadOut.reset();
+    errorText.clear();
+    if (targetProcessId == 0U || targetThreadId == 0U ||
+        expectedProcessCreationTime100ns == 0U || expectedThreadCreationTime100ns == 0U) {
+        errorText = L"目标进程或线程身份不可用，已取消操作。";
+        return false;
+    }
+
+    processOut.reset(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, targetProcessId));
+    if (!processOut.valid()) {
+        errorText = Win32ErrorText(L"OpenProcess", ::GetLastError());
+        return false;
+    }
+    FILETIME processCreationTime{};
+    FILETIME processExitTime{};
+    FILETIME processKernelTime{};
+    FILETIME processUserTime{};
+    if (!::GetProcessTimes(
+            processOut.get(),
+            &processCreationTime,
+            &processExitTime,
+            &processKernelTime,
+            &processUserTime)) {
+        errorText = Win32ErrorText(L"GetProcessTimes", ::GetLastError());
+        return false;
+    }
+    const ULONGLONG actualProcessCreationTime100ns =
+        (static_cast<ULONGLONG>(processCreationTime.dwHighDateTime) << 32U) |
+        static_cast<ULONGLONG>(processCreationTime.dwLowDateTime);
+    if (actualProcessCreationTime100ns == 0U ||
+        actualProcessCreationTime100ns != expectedProcessCreationTime100ns) {
+        errorText = L"目标进程实例已变更，已取消操作。";
+        return false;
+    }
+
+    threadOut.reset(::OpenThread(
+        THREAD_QUERY_LIMITED_INFORMATION | requestedThreadAccess,
+        FALSE,
+        targetThreadId));
+    if (!threadOut.valid()) {
+        errorText = Win32ErrorText(L"OpenThread", ::GetLastError());
+        return false;
+    }
+    const DWORD actualOwnerProcessId = ::GetProcessIdOfThread(threadOut.get());
+    if (actualOwnerProcessId == 0U) {
+        errorText = Win32ErrorText(L"GetProcessIdOfThread", ::GetLastError());
+        return false;
+    }
+    if (actualOwnerProcessId != targetProcessId) {
+        errorText = L"目标线程已不属于所选进程，已取消操作。";
+        return false;
+    }
+
+    FILETIME threadCreationTime{};
+    FILETIME threadExitTime{};
+    FILETIME threadKernelTime{};
+    FILETIME threadUserTime{};
+    if (!::GetThreadTimes(
+            threadOut.get(),
+            &threadCreationTime,
+            &threadExitTime,
+            &threadKernelTime,
+            &threadUserTime)) {
+        errorText = Win32ErrorText(L"GetThreadTimes", ::GetLastError());
+        return false;
+    }
+    const ULONGLONG actualThreadCreationTime100ns =
+        (static_cast<ULONGLONG>(threadCreationTime.dwHighDateTime) << 32U) |
+        static_cast<ULONGLONG>(threadCreationTime.dwLowDateTime);
+    if (actualThreadCreationTime100ns == 0U ||
+        actualThreadCreationTime100ns != expectedThreadCreationTime100ns) {
+        errorText = L"目标线程实例已变更，已取消操作。";
+        return false;
+    }
+    return true;
+}
+
 bool ProcessDetailPage::CreateThreadTab() {
     const TabIndex tab = TabIndex::Threads;
     HWND group = AddGroup(tab, L"线程枚举与上下文摘要", 6, 6, -6, -6);
@@ -542,7 +630,16 @@ void ProcessDetailPage::SuspendSelectedThread() {
         SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 没有选中线程。");
         return;
     }
-    const DWORD threadId = threads[index].threadId;
+    const ProcessThreadInfo& selectedThread = threads[index];
+    const DWORD threadId = selectedThread.threadId;
+    const ULONGLONG expectedThreadCreationTime100ns = selectedThread.creationTime100ns;
+    const DWORD targetProcessId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
+    if (threadId == 0U || expectedThreadCreationTime100ns == 0U ||
+        selectedThread.ownerProcessId != targetProcessId || expectedProcessCreationTime100ns == 0U) {
+        SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 线程身份不可用，无法安全操作。");
+        return;
+    }
     if (threadId == ::GetCurrentThreadId()) {
         SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 拒绝挂起当前 Light UI 线程。");
         return;
@@ -552,16 +649,25 @@ void ProcessDetailPage::SuspendSelectedThread() {
         TabIndex::Threads,
         ThreadStatus,
         L"● 正在后台挂起线程 " + DecimalText(threadId) + L"…",
-        [threadId] {
+        [threadId, expectedThreadCreationTime100ns, targetProcessId, expectedProcessCreationTime100ns] {
             ProcessDetailActionResult result{};
-            HANDLE thread = ::OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadId);
-            if (!thread) {
-                result.statusText = L"● " + Win32ErrorText(L"OpenThread", ::GetLastError());
+            Ksword::Core::UniqueHandle verifiedProcess;
+            Ksword::Core::UniqueHandle verifiedThread;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedThreadActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    threadId,
+                    expectedThreadCreationTime100ns,
+                    THREAD_SUSPEND_RESUME,
+                    verifiedProcess,
+                    verifiedThread,
+                    identityError)) {
+                result.statusText = L"● " + identityError;
                 return result;
             }
-            const DWORD previousCount = ::SuspendThread(thread);
+            const DWORD previousCount = ::SuspendThread(verifiedThread.get());
             const DWORD error = previousCount == static_cast<DWORD>(-1) ? ::GetLastError() : ERROR_SUCCESS;
-            ::CloseHandle(thread);
             if (error != ERROR_SUCCESS) {
                 result.statusText = L"● " + Win32ErrorText(L"SuspendThread", error);
                 return result;
@@ -581,21 +687,39 @@ void ProcessDetailPage::ResumeSelectedThread() {
         SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 没有选中线程。");
         return;
     }
-    const DWORD threadId = threads[index].threadId;
+    const ProcessThreadInfo& selectedThread = threads[index];
+    const DWORD threadId = selectedThread.threadId;
+    const ULONGLONG expectedThreadCreationTime100ns = selectedThread.creationTime100ns;
+    const DWORD targetProcessId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
+    if (threadId == 0U || expectedThreadCreationTime100ns == 0U ||
+        selectedThread.ownerProcessId != targetProcessId || expectedProcessCreationTime100ns == 0U) {
+        SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 线程身份不可用，无法安全操作。");
+        return;
+    }
     ExecuteBackgroundAction(
         TabIndex::Threads,
         ThreadStatus,
         L"● 正在后台恢复线程 " + DecimalText(threadId) + L"…",
-        [threadId] {
+        [threadId, expectedThreadCreationTime100ns, targetProcessId, expectedProcessCreationTime100ns] {
             ProcessDetailActionResult result{};
-            HANDLE thread = ::OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadId);
-            if (!thread) {
-                result.statusText = L"● " + Win32ErrorText(L"OpenThread", ::GetLastError());
+            Ksword::Core::UniqueHandle verifiedProcess;
+            Ksword::Core::UniqueHandle verifiedThread;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedThreadActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    threadId,
+                    expectedThreadCreationTime100ns,
+                    THREAD_SUSPEND_RESUME,
+                    verifiedProcess,
+                    verifiedThread,
+                    identityError)) {
+                result.statusText = L"● " + identityError;
                 return result;
             }
-            const DWORD previousCount = ::ResumeThread(thread);
+            const DWORD previousCount = ::ResumeThread(verifiedThread.get());
             const DWORD error = previousCount == static_cast<DWORD>(-1) ? ::GetLastError() : ERROR_SUCCESS;
-            ::CloseHandle(thread);
             if (error != ERROR_SUCCESS) {
                 result.statusText = L"● " + Win32ErrorText(L"ResumeThread", error);
                 return result;
@@ -615,7 +739,16 @@ void ProcessDetailPage::TerminateSelectedThread() {
         SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 没有选中线程。");
         return;
     }
-    const DWORD threadId = threads[index].threadId;
+    const ProcessThreadInfo& selectedThread = threads[index];
+    const DWORD threadId = selectedThread.threadId;
+    const ULONGLONG expectedThreadCreationTime100ns = selectedThread.creationTime100ns;
+    const DWORD targetProcessId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
+    if (threadId == 0U || expectedThreadCreationTime100ns == 0U ||
+        selectedThread.ownerProcessId != targetProcessId || expectedProcessCreationTime100ns == 0U) {
+        SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 线程身份不可用，无法安全操作。");
+        return;
+    }
     if (threadId == ::GetCurrentThreadId()) {
         SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 拒绝终止当前 Light UI 线程。");
         return;
@@ -634,16 +767,25 @@ void ProcessDetailPage::TerminateSelectedThread() {
         TabIndex::Threads,
         ThreadStatus,
         L"● 正在后台终止线程 " + DecimalText(threadId) + L"…",
-        [threadId] {
+        [threadId, expectedThreadCreationTime100ns, targetProcessId, expectedProcessCreationTime100ns] {
             ProcessDetailActionResult result{};
-            HANDLE thread = ::OpenThread(THREAD_TERMINATE, FALSE, threadId);
-            if (!thread) {
-                result.statusText = L"● " + Win32ErrorText(L"OpenThread", ::GetLastError());
+            Ksword::Core::UniqueHandle verifiedProcess;
+            Ksword::Core::UniqueHandle verifiedThread;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedThreadActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    threadId,
+                    expectedThreadCreationTime100ns,
+                    THREAD_TERMINATE,
+                    verifiedProcess,
+                    verifiedThread,
+                    identityError)) {
+                result.statusText = L"● " + identityError;
                 return result;
             }
-            const BOOL terminated = ::TerminateThread(thread, 1);
+            const BOOL terminated = ::TerminateThread(verifiedThread.get(), 1);
             const DWORD error = terminated ? ERROR_SUCCESS : ::GetLastError();
-            ::CloseHandle(thread);
             if (!terminated) {
                 result.statusText = L"● " + Win32ErrorText(L"TerminateThread", error);
                 return result;
@@ -663,10 +805,15 @@ void ProcessDetailPage::TerminateSelectedThreadByR0() {
         return;
     }
 
-    const DWORD threadId = threads[index].threadId;
-    const DWORD processId = threads[index].ownerProcessId;
-    if (threadId == 0 || processId == 0 || processId <= 4) {
-        SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 拒绝结束系统或无效 PID 的线程。");
+    const ProcessThreadInfo& selectedThread = threads[index];
+    const DWORD threadId = selectedThread.threadId;
+    const ULONGLONG expectedThreadCreationTime100ns = selectedThread.creationTime100ns;
+    const DWORD targetProcessId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
+    if (threadId == 0U || targetProcessId == 0U || targetProcessId <= 4 ||
+        expectedThreadCreationTime100ns == 0U || expectedProcessCreationTime100ns == 0U ||
+        selectedThread.ownerProcessId != targetProcessId) {
+        SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 拒绝结束系统、无效或未验证身份的线程。");
         return;
     }
     if (threadId == ::GetCurrentThreadId()) {
@@ -674,7 +821,7 @@ void ProcessDetailPage::TerminateSelectedThreadByR0() {
         return;
     }
     const std::wstring confirmationText =
-        L"将通过 R0 结束 PID " + DecimalText(processId) +
+        L"将通过 R0 结束 PID " + DecimalText(targetProcessId) +
         L" 的线程 " + DecimalText(threadId) + L"。该操作不可撤销，是否继续？";
     const int answer = ::MessageBoxW(
         hwnd_,
@@ -690,11 +837,26 @@ void ProcessDetailPage::TerminateSelectedThreadByR0() {
         TabIndex::Threads,
         ThreadStatus,
         L"● 正在后台通过 R0 结束线程 " + DecimalText(threadId) + L"…",
-        [threadId, processId] {
+        [threadId, expectedThreadCreationTime100ns, targetProcessId, expectedProcessCreationTime100ns] {
             ProcessDetailActionResult action{};
+            Ksword::Core::UniqueHandle verifiedProcess;
+            Ksword::Core::UniqueHandle verifiedThread;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedThreadActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    threadId,
+                    expectedThreadCreationTime100ns,
+                    0,
+                    verifiedProcess,
+                    verifiedThread,
+                    identityError)) {
+                action.statusText = L"● R0结束线程失败 | " + identityError;
+                return action;
+            }
             const ksword::ark::IoResult result = ksword::ark::DriverClient().terminateThread(
                 threadId,
-                processId,
+                targetProcessId,
                 static_cast<long>(0xC0000005u));
             if (!result.ok) {
                 action.statusText = L"● R0结束线程失败 | " + Utf8ToWide(result.message);
