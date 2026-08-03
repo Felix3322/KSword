@@ -12463,15 +12463,6 @@ void ProcessDock::executeRefreshPplProtectionLevelAction()
     // 每个目标独立调用 GetProcessInformation，避免 PPL 列依赖旧缓存。
     for (const ProcessActionTarget& actionTarget : actionTargets)
     {
-        std::uint32_t protectionLevelValue = 0;
-        std::string protectionLevelText;
-        std::string errorText;
-        const bool queryOk = ks::process::QueryProcessProtectionLevelByPid(
-            actionTarget.record.pid,
-            &protectionLevelValue,
-            &protectionLevelText,
-            &errorText);
-
         auto cacheIt = m_cacheByIdentity.find(actionTarget.identityKey);
         if (cacheIt == m_cacheByIdentity.end())
         {
@@ -12481,6 +12472,30 @@ void ProcessDock::executeRefreshPplProtectionLevelAction()
             continue;
         }
 
+        HANDLE processHandle = nullptr;
+        std::string identityDetail;
+        if (!acquireProcessActionIdentityHold(
+                actionTarget.record.pid,
+                actionTarget.record.creationTime100ns,
+                &processHandle,
+                &identityDetail))
+        {
+            ++failureCount;
+            resultLineList.push_back(QStringLiteral("PID %1: %2")
+                .arg(actionTarget.record.pid)
+                .arg(QString::fromStdString(identityDetail)));
+            continue;
+        }
+        const ScopedProcessActionHandle identityHold(processHandle);
+
+        std::uint32_t protectionLevelValue = 0;
+        std::string protectionLevelText;
+        std::string errorText;
+        const bool queryOk = ks::process::QueryProcessProtectionLevelByPid(
+            actionTarget.record.pid,
+            &protectionLevelValue,
+            &protectionLevelText,
+            &errorText);
         if (queryOk)
         {
             cacheIt->second.record.protectionLevelKnown = true;
