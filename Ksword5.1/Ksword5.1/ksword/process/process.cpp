@@ -4885,11 +4885,50 @@ namespace ks::process
             return false;
         }
 
-        ::WaitForSingleObject(remoteThread, 5000);
+        constexpr DWORD unloadWaitTimeoutMs = 5000;
+        const DWORD waitResult = ::WaitForSingleObject(remoteThread, unloadWaitTimeoutMs);
+        const DWORD waitError = waitResult == WAIT_FAILED ? ::GetLastError() : ERROR_SUCCESS;
+        if (waitResult != WAIT_OBJECT_0)
+        {
+            ::CloseHandle(remoteThread);
+            ::CloseHandle(processHandle);
+            if (errorMessage != nullptr)
+            {
+                if (waitResult == WAIT_TIMEOUT)
+                {
+                    *errorMessage = "FreeLibrary remote thread did not finish within "
+                        + std::to_string(unloadWaitTimeoutMs)
+                        + " ms; unload state is unknown.";
+                }
+                else if (waitResult == WAIT_FAILED)
+                {
+                    *errorMessage = "WaitForSingleObject(FreeLibrary) failed: "
+                        + FormatLastErrorMessage(waitError);
+                }
+                else
+                {
+                    *errorMessage = "WaitForSingleObject(FreeLibrary) returned unexpected result: "
+                        + std::to_string(waitResult);
+                }
+            }
+            return false;
+        }
+
         DWORD threadExitCode = 0;
-        ::GetExitCodeThread(remoteThread, &threadExitCode);
+        const BOOL exitCodeOk = ::GetExitCodeThread(remoteThread, &threadExitCode);
+        const DWORD exitCodeError = exitCodeOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
         ::CloseHandle(remoteThread);
         ::CloseHandle(processHandle);
+
+        if (exitCodeOk == FALSE)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetExitCodeThread(FreeLibrary) failed: "
+                    + FormatLastErrorMessage(exitCodeError);
+            }
+            return false;
+        }
 
         if (threadExitCode != 0)
         {
