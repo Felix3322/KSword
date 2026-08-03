@@ -3932,9 +3932,38 @@ namespace apimon
                 return false;
             }
 
-            (void)::WaitForSingleObject(remoteThread, 10000);
+            const DWORD waitResult = ::WaitForSingleObject(remoteThread, 10000);
+            const DWORD waitError = waitResult == WAIT_FAILED ? ::GetLastError() : ERROR_SUCCESS;
+            if (waitResult != WAIT_OBJECT_0)
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = waitResult == WAIT_TIMEOUT
+                        ? L"Remote LoadLibraryW timed out; remote DLL path is retained until the child exits."
+                        : L"WaitForSingleObject remote LoadLibraryW failed. error=" + std::to_wstring(waitError);
+                }
+
+                // The remote thread can still be reading remotePathMemory after a timeout.
+                // The child process reclaims this allocation on exit.
+                ::CloseHandle(remoteThread);
+                ::CloseHandle(processHandle);
+                return false;
+            }
+
             DWORD exitCode = 0;
-            (void)::GetExitCodeThread(remoteThread, &exitCode);
+            if (::GetExitCodeThread(remoteThread, &exitCode) == FALSE)
+            {
+                const DWORD exitCodeError = ::GetLastError();
+                ::CloseHandle(remoteThread);
+                ::VirtualFreeEx(processHandle, remotePathMemory, 0, MEM_RELEASE);
+                ::CloseHandle(processHandle);
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = L"GetExitCodeThread remote LoadLibraryW failed. error=" + std::to_wstring(exitCodeError);
+                }
+                return false;
+            }
+
             ::CloseHandle(remoteThread);
             ::VirtualFreeEx(processHandle, remotePathMemory, 0, MEM_RELEASE);
             ::CloseHandle(processHandle);
