@@ -3027,7 +3027,8 @@ KswordARKDriverUnloadTerminateModuleThreadsUnsafe(
                         FALSE,
                         &waitInterval);
                 }
-                if (NT_SUCCESS(terminateStatus) && NT_SUCCESS(waitStatus)) {
+                /* STATUS_TIMEOUT is NT_SUCCESS-compatible but the thread is still live. */
+                if (NT_SUCCESS(terminateStatus) && waitStatus == STATUS_SUCCESS) {
                     Result->Terminated += 1UL;
                 }
                 else {
