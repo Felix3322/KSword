@@ -11,6 +11,10 @@ namespace ksword::ark
 {
     namespace
     {
+        static_assert(sizeof(KSWORD_ARK_RAW_DISK_READ_REQUEST) == 40U);
+        static_assert(KSWORD_ARK_RAW_DISK_READ_RESPONSE_HEADER_SIZE == 32U);
+        static_assert(KSWORD_ARK_RAW_DISK_WRITE_REQUEST_HEADER_SIZE == 40U);
+
         bool isRawDiskUnsupportedError(const unsigned long win32Error)
         {
             return win32Error == ERROR_INVALID_FUNCTION

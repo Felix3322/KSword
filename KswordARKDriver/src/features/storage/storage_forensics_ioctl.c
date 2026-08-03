@@ -17,8 +17,19 @@ Environment:
 
 #include "ark/ark_driver.h"
 #include "../../dispatch/ioctl_validation.h"
+#include "../../platform/pool_compat.h"
 
 #include <ntstrsafe.h>
+
+/* Tag nonpaged snapshots of variable raw-disk write requests. */
+#define KSW_STORAGE_FORENSICS_IOCTL_POOL_TAG 'ifSK'
+
+/* Lock the fixed read-request ABI used by both R3 and R0. */
+C_ASSERT(sizeof(KSWORD_ARK_RAW_DISK_READ_REQUEST) == 40U);
+/* Lock the payload offset rather than the padded structure size. */
+C_ASSERT(KSWORD_ARK_RAW_DISK_READ_RESPONSE_HEADER_SIZE == 32U);
+/* Lock the variable write-request payload offset. */
+C_ASSERT(KSWORD_ARK_RAW_DISK_WRITE_REQUEST_HEADER_SIZE == 40U);
 
 NTSTATUS
 KswordARKStorageIoctlQueryRawDiskBackend(
@@ -68,6 +79,11 @@ Routine Description:
         return NT_SUCCESS(status) ? STATUS_INFO_LENGTH_MISMATCH : status;
     }
 
+    /* Snapshot input before METHOD_BUFFERED response writes can overwrite it. */
+    KSWORD_ARK_QUERY_RAW_DISK_BACKEND_REQUEST requestSnapshot;
+    /* Preserve every fixed request field in independent stack storage. */
+    RtlCopyMemory(&requestSnapshot, inputBuffer, sizeof(requestSnapshot));
+
     /* Retrieve the fixed response buffer. */
     PVOID outputBuffer = NULL;
     /* Receive the actual WDF output length. */
@@ -88,7 +104,7 @@ Routine Description:
 
     /* Execute the read-only capability query. */
     status = KswordARKStorageQueryRawDiskBackend(
-        (const KSWORD_ARK_QUERY_RAW_DISK_BACKEND_REQUEST*)inputBuffer,
+        &requestSnapshot,
         (KSWORD_ARK_QUERY_RAW_DISK_BACKEND_RESPONSE*)outputBuffer);
     /* Return the initialized response even when the selected backend is unavailable. */
     *BytesReturned = sizeof(KSWORD_ARK_QUERY_RAW_DISK_BACKEND_RESPONSE);
@@ -142,6 +158,11 @@ Routine Description:
         return NT_SUCCESS(status) ? STATUS_INFO_LENGTH_MISMATCH : status;
     }
 
+    /* Snapshot input before METHOD_BUFFERED response initialization can erase it. */
+    KSWORD_ARK_RAW_DISK_READ_REQUEST requestSnapshot;
+    /* Preserve every fixed read field in independent stack storage. */
+    RtlCopyMemory(&requestSnapshot, inputBuffer, sizeof(requestSnapshot));
+
     /* Retrieve at least the fixed variable-response header. */
     PVOID outputBuffer = NULL;
     /* Receive the actual WDF output length. */
@@ -163,7 +184,7 @@ Routine Description:
 
     /* Execute the selected bounded read backend. */
     return KswordARKStorageReadRawDisk(
-        (const KSWORD_ARK_RAW_DISK_READ_REQUEST*)inputBuffer,
+        &requestSnapshot,
         outputBuffer,
         actualOutputLength,
         BytesReturned);
@@ -216,6 +237,43 @@ Routine Description:
         return NT_SUCCESS(status) ? STATUS_INFO_LENGTH_MISMATCH : status;
     }
 
+    /* Initialize a fixed header snapshot without reading the variable payload. */
+    KSWORD_ARK_RAW_DISK_WRITE_REQUEST writeHeaderSnapshot = { 0 };
+    /* Preserve the complete fixed header before any aliased response write. */
+    RtlCopyMemory(
+        &writeHeaderSnapshot,
+        inputBuffer,
+        KSWORD_ARK_RAW_DISK_WRITE_REQUEST_HEADER_SIZE);
+    /* Compute the exact header-plus-payload snapshot size after bounded validation. */
+    size_t writeRequestBytes = KSWORD_ARK_RAW_DISK_WRITE_REQUEST_HEADER_SIZE;
+
+    /* Reject an empty or protocol-oversized raw-disk write payload. */
+    if (writeHeaderSnapshot.length == 0U
+        || writeHeaderSnapshot.length > KSWORD_ARK_RAW_DISK_MAX_TRANSFER_BYTES) {
+        /* The caller declared an invalid transfer size. */
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* Reject a payload that extends beyond either validated input extent. */
+    if ((size_t)writeHeaderSnapshot.length
+            > actualInputLength - KSWORD_ARK_RAW_DISK_WRITE_REQUEST_HEADER_SIZE
+        || (size_t)writeHeaderSnapshot.length
+            > InputBufferLength - KSWORD_ARK_RAW_DISK_WRITE_REQUEST_HEADER_SIZE) {
+        /* The variable payload cannot be copied safely. */
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
+    /* Add the already bounded payload length to the fixed header size. */
+    writeRequestBytes += (size_t)writeHeaderSnapshot.length;
+
+    /* Require the protocol size field to cover the complete payload. */
+    if ((size_t)writeHeaderSnapshot.size < writeRequestBytes
+        || (size_t)writeHeaderSnapshot.size > actualInputLength
+        || (size_t)writeHeaderSnapshot.size > InputBufferLength) {
+        /* The caller's advertised packet extent is inconsistent. */
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+
     /* Retrieve the fixed write response. */
     PVOID outputBuffer = NULL;
     /* Receive the actual WDF output length. */
@@ -234,9 +292,20 @@ Routine Description:
         return NT_SUCCESS(status) ? STATUS_BUFFER_TOO_SMALL : status;
     }
 
-    /* Interpret the fixed portion of the variable request after length validation. */
-    const KSWORD_ARK_RAW_DISK_WRITE_REQUEST* writeRequest =
-        (const KSWORD_ARK_RAW_DISK_WRITE_REQUEST*)inputBuffer;
+    /* Allocate an independent snapshot because METHOD_BUFFERED aliases output and input. */
+    PKSWORD_ARK_RAW_DISK_WRITE_REQUEST writeRequest =
+        (PKSWORD_ARK_RAW_DISK_WRITE_REQUEST)KswordARKAllocateNonPagedPool(
+            writeRequestBytes,
+            KSW_STORAGE_FORENSICS_IOCTL_POOL_TAG);
+
+    /* Stop before policy evaluation when the bounded snapshot cannot be allocated. */
+    if (writeRequest == NULL) {
+        /* Report the allocation failure without touching the aliased system buffer. */
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    /* Preserve the exact fixed header and payload before initializing any response. */
+    RtlCopyMemory(writeRequest, inputBuffer, writeRequestBytes);
     /* Initialize the central safety context for a critical raw-disk mutation. */
     KSWORD_ARK_SAFETY_CONTEXT safetyContext = { 0 };
     /* Select the dedicated policy operation. */
@@ -290,6 +359,8 @@ Routine Description:
         response->lastStatus = status;
         /* Return the complete fixed denied response. */
         *BytesReturned = sizeof(*response);
+        /* Release the independent request snapshot before returning. */
+        ExFreePoolWithTag(writeRequest, KSW_STORAGE_FORENSICS_IOCTL_POOL_TAG);
         /* Propagate the central policy decision. */
         return status;
     }
@@ -297,10 +368,12 @@ Routine Description:
     /* Execute the safety-authorized raw-disk write. */
     status = KswordARKStorageWriteRawDisk(
         writeRequest,
-        actualInputLength,
+        writeRequestBytes,
         (KSWORD_ARK_RAW_DISK_WRITE_RESPONSE*)outputBuffer);
     /* The feature always initializes the complete fixed response. */
     *BytesReturned = sizeof(KSWORD_ARK_RAW_DISK_WRITE_RESPONSE);
+    /* Release the independent request snapshot after the backend returns. */
+    ExFreePoolWithTag(writeRequest, KSW_STORAGE_FORENSICS_IOCTL_POOL_TAG);
     /* Propagate the backend completion status. */
     return status;
 }
