@@ -32,9 +32,10 @@ KswordARKBugcheckIoctlSetBitmap(
     );
 
 
-// Initialize and tear down the independent one-shot KeBugCheckEx delay guard.
-// It is disabled by default and must restore the exported entry before driver
-// unload. It is intentionally not coupled to the optional VMware panel.
+// Initialize and tear down the independent one-shot BugCheck delay guard.
+// HVCI systems use a delay-only callback; other systems may use the exported
+// KeBugCheckEx entry hook and must restore it before driver unload. The guard
+// is intentionally not coupled to the optional VMware panel.
 VOID
 KswordARKBugcheckGuardInitialize(
     VOID

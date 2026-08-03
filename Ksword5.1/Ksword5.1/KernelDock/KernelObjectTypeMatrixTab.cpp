@@ -150,10 +150,16 @@ KernelObjectTypeMatrixTab::KernelObjectTypeMatrixTab(QWidget* parent)
 {
     initializeUi();
     initializeConnections();
+}
 
-    QMetaObject::invokeMethod(this, [this]() {
-        refreshAsync();
-    }, Qt::QueuedConnection);
+void KernelObjectTypeMatrixTab::requestInitialRefresh()
+{
+    if (m_initialRefreshRequested)
+    {
+        return;
+    }
+    m_initialRefreshRequested = true;
+    refreshAsync();
 }
 
 void KernelObjectTypeMatrixTab::initializeUi()
@@ -218,6 +224,7 @@ void KernelObjectTypeMatrixTab::initializeUi()
 void KernelObjectTypeMatrixTab::initializeConnections()
 {
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() {
+        m_initialRefreshRequested = true;
         refreshAsync();
     });
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this]() {

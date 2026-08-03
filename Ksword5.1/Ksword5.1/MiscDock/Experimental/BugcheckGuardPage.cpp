@@ -18,6 +18,8 @@
 
 #include <Windows.h>
 
+#include <limits>
+
 namespace
 {
     bool sendWinPrintScreen()
@@ -50,59 +52,81 @@ namespace
 
     QString bugcheckGuardStatusText(
         const unsigned long status,
-        const long lastStatus)
+        const long lastStatus,
+        const unsigned long stateFlags)
     {
         QString reason;
+        const bool hvciEnabled =
+            (stateFlags & KSWORD_ARK_BUGCHECK_GUARD_STATE_HVCI_ENABLED) != 0UL;
+        const bool callbackRegistered =
+            (stateFlags &
+                KSWORD_ARK_BUGCHECK_GUARD_STATE_CALLBACK_REGISTERED) != 0UL;
         switch (status) {
         case KSWORD_ARK_BUGCHECK_GUARD_STATUS_ACTIVE:
-            reason = ks::i18n::text(
-                QStringLiteral("misc.experimental.bugcheck.status.active"),
-                QStringLiteral("缓冲 Hook 已启用，等待一次 KeBugCheckEx"));
+            reason = callbackRegistered
+                ? ks::i18n::text(
+                    QStringLiteral(
+                        "misc.experimental.bugcheck.status.active_callback"),
+                    QStringLiteral(
+                        "已启用：蓝屏前会暂停几秒，之后仍会蓝屏"))
+                : ks::i18n::text(
+                    QStringLiteral("misc.experimental.bugcheck.status.active"),
+                    QStringLiteral("已启用，等待蓝屏触发"));
             break;
         case KSWORD_ARK_BUGCHECK_GUARD_STATUS_INACTIVE:
-            reason = ks::i18n::text(
-                QStringLiteral("misc.experimental.bugcheck.status.inactive"),
-                QStringLiteral("缓冲 Hook 未启用"));
+            reason = hvciEnabled
+                ? ks::i18n::text(
+                    QStringLiteral(
+                        "misc.experimental.bugcheck.status.inactive_hvci"),
+                    QStringLiteral(
+                        "内存完整性（HVCI）已开启：可以暂停，但不能忽略蓝屏"))
+                : ks::i18n::text(
+                    QStringLiteral("misc.experimental.bugcheck.status.inactive"),
+                    QStringLiteral("未启用"));
             break;
         case KSWORD_ARK_BUGCHECK_GUARD_STATUS_CONFIRMATION_NEEDED:
             reason = ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.status.confirm"),
-                QStringLiteral("R0 拒绝：缺少用户风险确认"));
+                QStringLiteral("请先勾选“我已保存工作”"));
             break;
         case KSWORD_ARK_BUGCHECK_GUARD_STATUS_UNSUPPORTED:
             reason = ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.status.unsupported"),
-                QStringLiteral("当前驱动或 Windows 环境不支持此 Hook"));
+                QStringLiteral("当前系统无法启用这个功能"));
             break;
         case KSWORD_ARK_BUGCHECK_GUARD_STATUS_CONFLICT:
             reason = ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.status.conflict"),
-                QStringLiteral("KeBugCheckEx 已被其它 Hook 修改，已拒绝覆盖"));
+                QStringLiteral("检测到其他内核修改，为避免冲突没有启用"));
             break;
         case KSWORD_ARK_BUGCHECK_GUARD_STATUS_PATCH_FAILED:
             reason = ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.status.patch_failed"),
-                QStringLiteral("Hook 写入失败，未启用"));
+                QStringLiteral("启用失败"));
             break;
         case KSWORD_ARK_BUGCHECK_GUARD_STATUS_BUSY:
             reason = ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.status.busy"),
-                QStringLiteral("上一次触发仍在执行或等待清理，请先禁用并重试"));
+                QStringLiteral("上一次操作还没结束，请先关闭后重试"));
             break;
         default:
             reason = ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.status.invalid"),
-                QStringLiteral("蓝屏缓冲状态不可用"));
+                QStringLiteral("无法读取状态"));
             break;
         }
-        return QStringLiteral("%1；NTSTATUS=0x%2")
-            .arg(reason)
+        if (lastStatus == 0L) {
+            return reason;
+        }
+        const QString errorCode = QStringLiteral("%1")
             .arg(
                 static_cast<unsigned long>(lastStatus),
                 8,
                 16,
                 QLatin1Char('0'))
             .toUpper();
+        return QStringLiteral("%1（错误代码：0x%2）")
+            .arg(reason, errorCode);
     }
 
     void showOpaqueMessage(
@@ -158,11 +182,10 @@ namespace ks::misc
             m_warningLabel,
             QStringLiteral("misc.experimental.bugcheck.warning"),
             QStringLiteral(
-                "⚠ 蓝屏缓冲会修改 ntoskrnl!KeBugCheckEx 的入口。它不能修复导致蓝屏的错误，"
-                "不能保证给出任何可用时间，也不能避免系统最终崩溃。触发时系统可能已经损坏、"
-                "冻结或无法调度你的程序；PatchGuard 或安全产品也可能更早导致崩溃。"
-                "“尝试忽略错误”会从一个按不返回方式设计的内核路径强行返回，可能立即执行无效代码。"
-                "仅用于隔离的内核调试环境。"));
+                "⚠ 这个功能不能修好蓝屏，只能在蓝屏前暂停几秒。"
+                "开启“内存完整性（HVCI）”时只能暂停，不能忽略。"
+                "要尝试继续运行，必须先关闭“内存完整性”并重启；"
+                "即使如此，电脑仍可能马上蓝屏、死机或丢失数据。只在测试机上使用。"));
         rootLayout->addWidget(m_warningLabel);
 
         m_persistenceLabel = new QLabel(this);
@@ -174,9 +197,7 @@ namespace ks::misc
             m_persistenceLabel,
             QStringLiteral("misc.experimental.bugcheck.persistence"),
             QStringLiteral(
-                "该 Hook 默认关闭且一次性：命中时会先还原 KeBugCheckEx 入口，再给出缓冲。"
-                "普通模式随后进入常规 BugCheck；忽略模式只尝试返回调用方，绝不代表系统已恢复。"
-                "关闭或卸载驱动会还原尚未触发的 Hook；不要把它当作保护措施。"));
+                "每次启用只生效一次。触发后会自动关闭；关闭或卸载驱动也会取消。"));
         rootLayout->addWidget(m_persistenceLabel);
 
         auto* controlGroup = new QGroupBox(this);
@@ -190,11 +211,11 @@ namespace ks::misc
         language.bindText(
             m_delayLabel,
             QStringLiteral("misc.experimental.bugcheck.delay"),
-            QStringLiteral("触发后的缓冲时间："));
+            QStringLiteral("蓝屏前暂停："));
         m_delaySpin = new QSpinBox(controlGroup);
         m_delaySpin->setRange(
             static_cast<int>(KSWORD_ARK_BUGCHECK_GUARD_MIN_DELAY_SECONDS),
-            static_cast<int>(KSWORD_ARK_BUGCHECK_GUARD_MAX_DELAY_SECONDS));
+            std::numeric_limits<int>::max());
         m_delaySpin->setValue(10);
         language.bindSuffix(
             m_delaySpin,
@@ -203,7 +224,8 @@ namespace ks::misc
         m_delaySpin->setToolTip(
             ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.delay.tooltip"),
-                QStringLiteral("只允许 1 到 30 秒；实际缓冲可能不会生效。")));
+                QStringLiteral(
+                    "没有 30 秒上限。时间设得很长时，电脑会一直卡在蓝屏流程里。")));
         delayLayout->addWidget(m_delayLabel);
         delayLayout->addWidget(m_delaySpin);
         delayLayout->addStretch(1);
@@ -214,7 +236,7 @@ namespace ks::misc
             m_acknowledgeCheck,
             QStringLiteral("misc.experimental.bugcheck.ack"),
             QStringLiteral(
-                "我已保存工作，理解这不是崩溃恢复，也理解强行返回可能立即蓝屏、死锁或损坏数据"));
+                "我已保存工作，并知道电脑仍可能立即蓝屏或丢失数据"));
         controlLayout->addWidget(m_acknowledgeCheck);
 
         m_tryIgnoreErrorCheck = new QCheckBox(controlGroup);
@@ -222,26 +244,26 @@ namespace ks::misc
             m_tryIgnoreErrorCheck,
             QStringLiteral("misc.experimental.bugcheck.try_ignore"),
             QStringLiteral(
-                "缓冲结束后尝试忽略当前错误并返回调用方（极危险）"));
+                "暂停后尝试继续运行（仅关闭 HVCI 时可用，极危险）"));
         m_tryIgnoreErrorCheck->setToolTip(
             ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.try_ignore.tooltip"),
                 QStringLiteral(
-                    "KeBugCheckEx 及其调用路径按不返回方式设计。强行返回后可能立即执行无效代码、"
-                    "再次蓝屏、死锁或静默损坏数据；即使暂时可操作也必须尽快保存并强制重启。")));
+                    "开启“内存完整性（HVCI）”时不可用。关闭后强行继续也可能马上再次蓝屏、"
+                    "死机或损坏数据。")));
         controlLayout->addWidget(m_tryIgnoreErrorCheck);
 
         m_screenshotOnTriggerCheck = new QCheckBox(controlGroup);
         language.bindText(
             m_screenshotOnTriggerCheck,
             QStringLiteral("misc.experimental.bugcheck.screenshot"),
-            QStringLiteral("Hook 命中后立即模拟 Win+PrintScreen 截屏"));
+            QStringLiteral("蓝屏前尝试截图（仅关闭 HVCI 时可用）"));
         m_screenshotOnTriggerCheck->setToolTip(
             ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.screenshot.tooltip"),
                 QStringLiteral(
-                    "由 R3 每 10 毫秒查询一次 Hook 状态；命中后只发送一次 Win+PrintScreen。"
-                    "如果用户态、输入栈、DWM 或当前桌面已失去调度，截屏不会成功，也无法确认文件已保存。")));
+                    "这里只是模拟 Win+PrintScreen。系统已经卡住时不会成功，"
+                    "也无法确认截图是否保存。")));
         controlLayout->addWidget(m_screenshotOnTriggerCheck);
 
         m_screenshotPollTimer = new QTimer(this);
@@ -268,11 +290,11 @@ namespace ks::misc
         language.bindText(
             m_enableButton,
             QStringLiteral("misc.experimental.bugcheck.enable"),
-            QStringLiteral("启用一次性蓝屏缓冲"));
+            QStringLiteral("启用一次"));
         language.bindText(
             m_disableButton,
             QStringLiteral("misc.experimental.bugcheck.disable"),
-            QStringLiteral("禁用并还原 Hook"));
+            QStringLiteral("关闭"));
         for (QPushButton* button :
              { m_refreshButton, m_enableButton, m_disableButton }) {
             button->setStyleSheet(KswordTheme::ThemedButtonStyle());
@@ -293,7 +315,7 @@ namespace ks::misc
         m_statusLabel = new QLabel(
             ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.status.waiting"),
-                QStringLiteral("等待查询 R0 状态")),
+                QStringLiteral("正在读取状态…")),
             statusGroup);
         m_statusLabel->setWordWrap(true);
         m_statusLabel->setStyleSheet(
@@ -348,6 +370,8 @@ namespace ks::misc
         if (!result.io.ok) {
             m_supported = false;
             m_active = false;
+            m_hvciEnabled = false;
+            m_callbackBackend = false;
             m_statusLabel->setText(
                 result.unsupported
                     ? ks::i18n::text(
@@ -397,8 +421,11 @@ namespace ks::misc
         if (result.io.ok &&
             result.response.status ==
                 KSWORD_ARK_BUGCHECK_GUARD_STATUS_ACTIVE) {
+            const bool callbackBackend =
+                (result.response.stateFlags &
+                    KSWORD_ARK_BUGCHECK_GUARD_STATE_CALLBACK_REGISTERED) != 0UL;
             m_screenshotWatcherArmed =
-                m_screenshotOnTriggerCheck->isChecked();
+                !callbackBackend && m_screenshotOnTriggerCheck->isChecked();
             m_screenshotAttempted = false;
             m_screenshotInputAccepted = false;
             if (m_screenshotWatcherArmed) {
@@ -417,7 +444,8 @@ namespace ks::misc
                 result.io.ok
                     ? bugcheckGuardStatusText(
                         result.response.status,
-                        result.response.lastStatus)
+                        result.response.lastStatus,
+                        result.response.stateFlags)
                     : QString::fromStdString(result.io.message));
         }
         refreshStatus();
@@ -512,10 +540,25 @@ namespace ks::misc
             (response.stateFlags & KSWORD_ARK_BUGCHECK_GUARD_STATE_HOOK_EXECUTING) != 0UL;
         const bool tryIgnore =
             (response.stateFlags & KSWORD_ARK_BUGCHECK_GUARD_STATE_TRY_IGNORE_ERROR) != 0UL;
+        m_hvciEnabled =
+            (response.stateFlags &
+                KSWORD_ARK_BUGCHECK_GUARD_STATE_HVCI_ENABLED) != 0UL;
+        m_callbackBackend =
+            (response.stateFlags &
+                KSWORD_ARK_BUGCHECK_GUARD_STATE_CALLBACK_REGISTERED) != 0UL;
+        if (m_hvciEnabled) {
+            m_tryIgnoreErrorCheck->setChecked(false);
+            m_screenshotOnTriggerCheck->setChecked(false);
+        }
         m_active =
             (response.stateFlags & KSWORD_ARK_BUGCHECK_GUARD_STATE_ACTIVE) != 0UL;
         if (m_active || fired) {
-            m_delaySpin->setValue(static_cast<int>(response.delaySeconds));
+            const unsigned long maximumUiDelay =
+                static_cast<unsigned long>(std::numeric_limits<int>::max());
+            m_delaySpin->setValue(
+                response.delaySeconds > maximumUiDelay
+                    ? std::numeric_limits<int>::max()
+                    : static_cast<int>(response.delaySeconds));
             m_tryIgnoreErrorCheck->setChecked(tryIgnore || ignored);
         }
         m_triggered = fired || ignored || executing;
@@ -541,24 +584,32 @@ namespace ks::misc
                 ks::i18n::text(
                     QStringLiteral("misc.experimental.bugcheck.status.ignored"),
                     QStringLiteral(
-                        "已尝试从 KeBugCheckEx 返回。系统仍处于不可信状态；"
-                        "立即保存能够保存的工作，然后强制重启。")));
+                        "已尝试继续运行。请立即保存文件并重启，系统可能随时再次崩溃。")));
         }
         else if (executing) {
             m_statusLabel->setText(
                 ks::i18n::text(
                     QStringLiteral("misc.experimental.bugcheck.status.executing"),
-                    QStringLiteral("Hook 正在执行或等待清理；系统可能随时崩溃。")));
+                    QStringLiteral("正在处理蓝屏，系统可能随时崩溃。")));
         }
         else if (fired) {
             m_statusLabel->setText(
-                ks::i18n::text(
-                    QStringLiteral("misc.experimental.bugcheck.status.fired"),
-                    QStringLiteral("已触发一次蓝屏缓冲；Hook 入口已还原。")));
+                m_callbackBackend
+                    ? ks::i18n::text(
+                        QStringLiteral(
+                            "misc.experimental.bugcheck.status.fired_callback"),
+                        QStringLiteral(
+                            "暂停已结束，Windows 会继续蓝屏。"))
+                    : ks::i18n::text(
+                        QStringLiteral("misc.experimental.bugcheck.status.fired"),
+                        QStringLiteral("已触发一次，拦截已自动关闭。")));
         }
         else {
             m_statusLabel->setText(
-                bugcheckGuardStatusText(response.status, response.lastStatus));
+                bugcheckGuardStatusText(
+                    response.status,
+                    response.lastStatus,
+                    response.stateFlags));
         }
         if (m_screenshotWatcherArmed) {
             const QString screenshotStatus = m_screenshotAttempted
@@ -588,11 +639,20 @@ namespace ks::misc
                     : m_active
                         ? KswordTheme::WarningHex()
                         : KswordTheme::SuccessHex()));
+        const QString backendText = m_callbackBackend || m_hvciEnabled
+            ? ks::i18n::text(
+                QStringLiteral("misc.experimental.bugcheck.backend.callback"),
+                QStringLiteral("HVCI 安全延时（不能忽略）"))
+            : ks::i18n::text(
+                QStringLiteral("misc.experimental.bugcheck.backend.hook"),
+                QStringLiteral("实验拦截（可尝试继续）"));
         m_detailLabel->setText(
             ks::i18n::text(
                 QStringLiteral("misc.experimental.bugcheck.detail.state"),
                 QStringLiteral(
-                    "KeBugCheckEx=0x%1；状态位=0x%2；缓冲=%3 秒；模式=%4；NTSTATUS=0x%5"))
+                    "工作方式：%1；暂停：%4 秒；结束后：%5\n"
+                    "技术信息：KeBugCheckEx=0x%2，状态位=0x%3，NTSTATUS=0x%6"))
+                .arg(backendText)
                 .arg(response.targetAddress, 16, 16, QLatin1Char('0'))
                 .arg(response.stateFlags, 8, 16, QLatin1Char('0'))
                 .arg(response.delaySeconds)
@@ -600,16 +660,15 @@ namespace ks::misc
                     tryIgnore || ignored
                         ? ks::i18n::text(
                             QStringLiteral("misc.experimental.bugcheck.mode.ignore"),
-                            QStringLiteral("尝试忽略错误并返回"))
+                            QStringLiteral("尝试继续运行"))
                         : ks::i18n::text(
                             QStringLiteral("misc.experimental.bugcheck.mode.normal"),
-                            QStringLiteral("转入常规 BugCheck")))
+                            QStringLiteral("继续蓝屏")))
                 .arg(
                     static_cast<unsigned long>(response.lastStatus),
                     8,
                     16,
-                    QLatin1Char('0'))
-            .toUpper());
+                    QLatin1Char('0')));
         updateButtons();
     }
 
@@ -623,9 +682,10 @@ namespace ks::misc
             !m_busy && m_supported && (m_active || m_triggered));
         m_delaySpin->setEnabled(!m_busy && !m_active && !m_triggered);
         m_acknowledgeCheck->setEnabled(!m_busy && !m_active && !m_triggered);
-        m_tryIgnoreErrorCheck->setEnabled(!m_busy && !m_active && !m_triggered);
+        m_tryIgnoreErrorCheck->setEnabled(
+            !m_busy && !m_active && !m_triggered && !m_hvciEnabled);
         m_screenshotOnTriggerCheck->setEnabled(
-            !m_busy && !m_active && !m_triggered);
+            !m_busy && !m_active && !m_triggered && !m_hvciEnabled);
     }
 
     void BugcheckGuardPage::setBusy(const bool busy)

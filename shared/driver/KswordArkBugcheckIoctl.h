@@ -44,11 +44,13 @@ typedef struct _KSWORD_ARK_BUGCHECK_BITMAP_HEADER
     unsigned long reserved1;
 } KSWORD_ARK_BUGCHECK_BITMAP_HEADER;
 
-// The delay guard is deliberately separate from the VMware display panel. It
-// intercepts only the exported KeBugCheckEx entry for one bugcheck, restores
-// the entry before forwarding the call or attempting an unsupported return,
-// and is never a crash-recovery API.
-#define KSWORD_ARK_BUGCHECK_GUARD_PROTOCOL_VERSION 2UL
+// The delay guard is deliberately separate from the VMware display panel.
+// On systems where HVCI protects kernel code it uses a supported BugCheck
+// callback as a delay-only backend. Otherwise it can intercept the exported
+// KeBugCheckEx entry for one bugcheck and restore the entry before forwarding
+// the call or attempting an unsupported return. Neither backend is a
+// crash-recovery API.
+#define KSWORD_ARK_BUGCHECK_GUARD_PROTOCOL_VERSION 4UL
 #define KSWORD_ARK_IOCTL_FUNCTION_CONFIGURE_BUGCHECK_GUARD 0x8FBUL
 
 #define IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD \
@@ -66,7 +68,7 @@ typedef struct _KSWORD_ARK_BUGCHECK_BITMAP_HEADER
 #define KSWORD_ARK_BUGCHECK_GUARD_FLAG_TRY_IGNORE_ERROR 0x00000002UL
 #define KSWORD_ARK_BUGCHECK_GUARD_CONFIRMATION_TOKEN 0x4452474BUL /* 'KGRD' */
 #define KSWORD_ARK_BUGCHECK_GUARD_MIN_DELAY_SECONDS 1UL
-#define KSWORD_ARK_BUGCHECK_GUARD_MAX_DELAY_SECONDS 30UL
+// delaySeconds accepts any nonzero value representable by its ULONG field.
 
 #define KSWORD_ARK_BUGCHECK_GUARD_STATUS_OK                  0UL
 #define KSWORD_ARK_BUGCHECK_GUARD_STATUS_INACTIVE            1UL
@@ -86,6 +88,8 @@ typedef struct _KSWORD_ARK_BUGCHECK_BITMAP_HEADER
 #define KSWORD_ARK_BUGCHECK_GUARD_STATE_TRY_IGNORE_ERROR 0x00000020UL
 #define KSWORD_ARK_BUGCHECK_GUARD_STATE_ERROR_IGNORED    0x00000040UL
 #define KSWORD_ARK_BUGCHECK_GUARD_STATE_HOOK_EXECUTING   0x00000080UL
+#define KSWORD_ARK_BUGCHECK_GUARD_STATE_HVCI_ENABLED      0x00000100UL
+#define KSWORD_ARK_BUGCHECK_GUARD_STATE_CALLBACK_REGISTERED 0x00000200UL
 
 // 补丁快照属于固定线协议，Win32 R3 也必须与 x64 R0 保持相同的响应布局。
 #define KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES 12UL

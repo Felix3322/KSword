@@ -14,8 +14,9 @@ class QTimer;
 
 namespace ks::misc
 {
-    // An opt-in, one-shot KeBugCheckEx delay control. The page never claims
-    // that a delay is a crash recovery mechanism.
+    // An opt-in, one-shot BugCheck delay control. HVCI systems use a callback
+    // backend; other systems may use the KeBugCheckEx entry hook. The page
+    // never claims that either backend is a crash recovery mechanism.
     class BugcheckGuardPage final : public QWidget
     {
     public:
@@ -55,6 +56,8 @@ namespace ks::misc
         bool m_active = false;
         bool m_busy = false;
         bool m_triggered = false;
+        bool m_hvciEnabled = false;
+        bool m_callbackBackend = false;
         bool m_screenshotWatcherArmed = false;
         bool m_screenshotAttempted = false;
         bool m_screenshotInputAccepted = false;

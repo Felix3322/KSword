@@ -19,6 +19,7 @@ Abstract:
 #define KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED 0L
 #define KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED   1L
 #define KSWORD_ARK_BUGCHECK_GUARD_STATE_RESTORING   2L
+#define KSWORD_ARK_BUGCHECK_GUARD_SYSTEM_CODEINTEGRITY_INFORMATION 103UL
 
 typedef VOID
 (NTAPI* KSWORD_ARK_KE_BUGCHECK_EX_FN)(
@@ -27,6 +28,22 @@ typedef VOID
     _In_ ULONG_PTR Parameter2,
     _In_ ULONG_PTR Parameter3,
     _In_ ULONG_PTR Parameter4
+    );
+
+typedef struct _KSWORD_ARK_BUGCHECK_GUARD_CODEINTEGRITY_INFORMATION
+{
+    ULONG Length;
+    ULONG CodeIntegrityOptions;
+} KSWORD_ARK_BUGCHECK_GUARD_CODEINTEGRITY_INFORMATION;
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+ZwQuerySystemInformation(
+    _In_ ULONG SystemInformationClass,
+    _Out_writes_bytes_opt_(SystemInformationLength) PVOID SystemInformation,
+    _In_ ULONG SystemInformationLength,
+    _Out_opt_ PULONG ReturnLength
     );
 
 typedef struct _KSWORD_ARK_BUGCHECK_GUARD_STATE
@@ -38,16 +55,21 @@ typedef struct _KSWORD_ARK_BUGCHECK_GUARD_STATE
     volatile LONG TryIgnoreError;
     volatile LONG ErrorIgnored;
     volatile LONG HookExecutions;
+    volatile LONG HvciEnabled;
+    volatile LONG CallbackRegistered;
     ULONG DelaySeconds;
     PVOID Target;
     PMDL TargetMdl;
     PVOID WritableAlias;
+    KBUGCHECK_CALLBACK_RECORD CallbackRecord;
+    ULONG CallbackBuffer;
     UCHAR OriginalBytes[KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES];
     UCHAR HookBytes[KSWORD_ARK_BUGCHECK_GUARD_HOOK_BYTES];
     NTSTATUS LastStatus;
 } KSWORD_ARK_BUGCHECK_GUARD_STATE;
 
 static KSWORD_ARK_BUGCHECK_GUARD_STATE g_KswordArkBugcheckGuard;
+static UCHAR g_KswordArkBugcheckGuardComponent[] = "KswordBugcheckGuard";
 
 static VOID
 NTAPI
@@ -57,6 +79,12 @@ KswordARKBugcheckGuardHook(
     _In_ ULONG_PTR Parameter2,
     _In_ ULONG_PTR Parameter3,
     _In_ ULONG_PTR Parameter4
+    );
+
+static VOID
+KswordARKBugcheckGuardCallback(
+    _In_ PVOID Buffer,
+    _In_ ULONG Length
     );
 
 static BOOLEAN
@@ -89,6 +117,24 @@ KswordARKBugcheckGuardBuildHook(
     RtlCopyMemory(Patch + 2U, &hookTarget, sizeof(hookTarget));
     Patch[10] = 0xFFU;
     Patch[11] = 0xE0U;
+}
+
+static BOOLEAN
+KswordARKBugcheckGuardHvciEnabled(VOID)
+{
+    KSWORD_ARK_BUGCHECK_GUARD_CODEINTEGRITY_INFORMATION information;
+    NTSTATUS status;
+
+    RtlZeroMemory(&information, sizeof(information));
+    information.Length = sizeof(information);
+    status = ZwQuerySystemInformation(
+        KSWORD_ARK_BUGCHECK_GUARD_SYSTEM_CODEINTEGRITY_INFORMATION,
+        &information,
+        sizeof(information),
+        NULL);
+    return NT_SUCCESS(status) &&
+        (information.CodeIntegrityOptions &
+            KSWORD_ARK_CODEINTEGRITY_OPTION_HVCI_KMCI_ENABLED) != 0UL;
 }
 
 static NTSTATUS
@@ -166,6 +212,18 @@ KswordARKBugcheckGuardStateFlags(VOID)
     if (InterlockedCompareExchange(&g_KswordArkBugcheckGuard.HookExecutions, 0L, 0L) != 0L) {
         flags |= KSWORD_ARK_BUGCHECK_GUARD_STATE_HOOK_EXECUTING;
     }
+    if (InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.HvciEnabled,
+            1L,
+            1L) != 0L) {
+        flags |= KSWORD_ARK_BUGCHECK_GUARD_STATE_HVCI_ENABLED;
+    }
+    if (InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.CallbackRegistered,
+            1L,
+            1L) != 0L) {
+        flags |= KSWORD_ARK_BUGCHECK_GUARD_STATE_CALLBACK_REGISTERED;
+    }
     return flags;
 }
 static NTSTATUS
@@ -221,16 +279,37 @@ KswordARKBugcheckGuardRestoreFromCrashPath(VOID)
         STATUS_SUCCESS : STATUS_DEVICE_BUSY;
 }
 
-static VOID
+static NTSTATUS
 KswordARKBugcheckGuardReleaseMappingLocked(VOID)
 {
     NTSTATUS status;
 
     InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 0L);
+    if (InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.CallbackRegistered,
+            0L,
+            0L) != 0L) {
+        if (InterlockedCompareExchange(
+                &g_KswordArkBugcheckGuard.HookExecutions,
+                0L,
+                0L) != 0L ||
+            !KeDeregisterBugCheckCallback(
+                &g_KswordArkBugcheckGuard.CallbackRecord)) {
+            return STATUS_DEVICE_BUSY;
+        }
+        InterlockedExchange(
+            &g_KswordArkBugcheckGuard.CallbackRegistered,
+            0L);
+        InterlockedExchange(&g_KswordArkBugcheckGuard.Fired, 0L);
+        InterlockedExchange(&g_KswordArkBugcheckGuard.TryIgnoreError, 0L);
+        InterlockedExchange(&g_KswordArkBugcheckGuard.ErrorIgnored, 0L);
+        g_KswordArkBugcheckGuard.DelaySeconds = 0UL;
+        return STATUS_SUCCESS;
+    }
+
     status = KswordARKBugcheckGuardRestoreFromCrashPath();
     if (!NT_SUCCESS(status)) {
-        g_KswordArkBugcheckGuard.LastStatus = status;
-        return;
+        return status;
     }
     if (InterlockedCompareExchange(
             &g_KswordArkBugcheckGuard.HookExecutions,
@@ -238,7 +317,7 @@ KswordARKBugcheckGuardReleaseMappingLocked(VOID)
             0L) != 0L) {
         // A triggering CPU is still executing this driver. A later disable
         // request can release the mapping after the return attempt completes.
-        return;
+        return STATUS_DEVICE_BUSY;
     }
     InterlockedExchange(&g_KswordArkBugcheckGuard.Fired, 0L);
     InterlockedExchange(&g_KswordArkBugcheckGuard.TryIgnoreError, 0L);
@@ -256,6 +335,7 @@ KswordARKBugcheckGuardReleaseMappingLocked(VOID)
     RtlZeroMemory(g_KswordArkBugcheckGuard.OriginalBytes, sizeof(g_KswordArkBugcheckGuard.OriginalBytes));
     RtlZeroMemory(g_KswordArkBugcheckGuard.HookBytes, sizeof(g_KswordArkBugcheckGuard.HookBytes));
     g_KswordArkBugcheckGuard.DelaySeconds = 0UL;
+    return STATUS_SUCCESS;
 }
 
 static VOID
@@ -265,23 +345,56 @@ KswordARKBugcheckGuardDelay(
 {
     LARGE_INTEGER frequency;
     LARGE_INTEGER start;
-    ULONGLONG targetTicks;
+    ULONG remainingSeconds;
 
-    if (DelaySeconds > KSWORD_ARK_BUGCHECK_GUARD_MAX_DELAY_SECONDS) {
-        DelaySeconds = KSWORD_ARK_BUGCHECK_GUARD_MAX_DELAY_SECONDS;
-    }
-    start = KeQueryPerformanceCounter(&frequency);
+    (void)KeQueryPerformanceCounter(&frequency);
     if (frequency.QuadPart <= 0) {
-        ULONG index;
-        for (index = 0UL; index < DelaySeconds * 1000UL; ++index) {
-            KeStallExecutionProcessor(1000UL);
+        for (remainingSeconds = DelaySeconds;
+             remainingSeconds != 0UL;
+             --remainingSeconds) {
+            ULONG sliceIndex;
+
+            for (sliceIndex = 0UL; sliceIndex < 20000UL; ++sliceIndex) {
+                KeStallExecutionProcessor(50UL);
+            }
         }
         return;
     }
-    targetTicks = (ULONGLONG)frequency.QuadPart * (ULONGLONG)DelaySeconds;
-    while ((ULONGLONG)(KeQueryPerformanceCounter(NULL).QuadPart - start.QuadPart) < targetTicks) {
-        KeStallExecutionProcessor(1000UL);
+    for (remainingSeconds = DelaySeconds;
+         remainingSeconds != 0UL;
+         --remainingSeconds) {
+        start = KeQueryPerformanceCounter(NULL);
+        while ((ULONGLONG)(
+                KeQueryPerformanceCounter(NULL).QuadPart -
+                start.QuadPart) < (ULONGLONG)frequency.QuadPart) {
+            KeStallExecutionProcessor(50UL);
+        }
     }
+}
+
+static VOID
+KswordARKBugcheckGuardCallback(
+    _In_ PVOID Buffer,
+    _In_ ULONG Length
+    )
+{
+    BOOLEAN firstHit;
+
+    UNREFERENCED_PARAMETER(Buffer);
+    UNREFERENCED_PARAMETER(Length);
+
+    InterlockedIncrement(&g_KswordArkBugcheckGuard.HookExecutions);
+    firstHit =
+        InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 0L) != 0L &&
+        InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.Fired,
+            1L,
+            0L) == 0L;
+    if (firstHit) {
+        KswordARKBugcheckGuardDelay(
+            g_KswordArkBugcheckGuard.DelaySeconds);
+    }
+    InterlockedDecrement(&g_KswordArkBugcheckGuard.HookExecutions);
 }
 
 static VOID
@@ -336,6 +449,55 @@ KswordARKBugcheckGuardHook(
 }
 
 static NTSTATUS
+KswordARKBugcheckGuardEnableCallbackLocked(
+    _In_ ULONG DelaySeconds
+    )
+{
+    BOOLEAN registered;
+
+    if (InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.HookState,
+            0L,
+            0L) != KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED ||
+        InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.CallbackRegistered,
+            0L,
+            0L) != 0L ||
+        InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.HookExecutions,
+            0L,
+            0L) != 0L ||
+        g_KswordArkBugcheckGuard.Target != NULL ||
+        g_KswordArkBugcheckGuard.TargetMdl != NULL ||
+        g_KswordArkBugcheckGuard.WritableAlias != NULL) {
+        return STATUS_DEVICE_BUSY;
+    }
+
+    g_KswordArkBugcheckGuard.DelaySeconds = DelaySeconds;
+    g_KswordArkBugcheckGuard.CallbackBuffer = 0UL;
+    InterlockedExchange(&g_KswordArkBugcheckGuard.Fired, 0L);
+    InterlockedExchange(&g_KswordArkBugcheckGuard.TryIgnoreError, 0L);
+    InterlockedExchange(&g_KswordArkBugcheckGuard.ErrorIgnored, 0L);
+    InterlockedExchange(&g_KswordArkBugcheckGuard.HookExecutions, 0L);
+    KeInitializeCallbackRecord(&g_KswordArkBugcheckGuard.CallbackRecord);
+    registered = KeRegisterBugCheckCallback(
+        &g_KswordArkBugcheckGuard.CallbackRecord,
+        KswordARKBugcheckGuardCallback,
+        &g_KswordArkBugcheckGuard.CallbackBuffer,
+        sizeof(g_KswordArkBugcheckGuard.CallbackBuffer),
+        g_KswordArkBugcheckGuardComponent);
+    if (!registered) {
+        g_KswordArkBugcheckGuard.DelaySeconds = 0UL;
+        return STATUS_UNSUCCESSFUL;
+    }
+    InterlockedExchange(
+        &g_KswordArkBugcheckGuard.CallbackRegistered,
+        1L);
+    InterlockedExchange(&g_KswordArkBugcheckGuard.Enabled, 1L);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 KswordARKBugcheckGuardEnableLocked(
     _In_ ULONG DelaySeconds,
     _In_ BOOLEAN TryIgnoreError
@@ -348,6 +510,13 @@ KswordARKBugcheckGuardEnableLocked(
     PVOID writableAlias = NULL;
     BOOLEAN pagesLocked = FALSE;
     BOOLEAN canReleaseMapping = TRUE;
+
+    if (InterlockedCompareExchange(
+            &g_KswordArkBugcheckGuard.HvciEnabled,
+            1L,
+            1L) != 0L) {
+        return KswordARKBugcheckGuardEnableCallbackLocked(DelaySeconds);
+    }
     if (InterlockedCompareExchange(&g_KswordArkBugcheckGuard.HookState, 0L, 0L) != KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED) {
         return STATUS_ALREADY_REGISTERED;
     }
@@ -372,7 +541,9 @@ KswordARKBugcheckGuardEnableLocked(
     }
 
     __try {
-        MmProbeAndLockPages(mdl, KernelMode, IoModifyAccess);
+        // The original executable mapping is intentionally read-only. Probe
+        // for read access, then apply PAGE_READWRITE only to the MDL alias.
+        MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
         pagesLocked = TRUE;
         writableAlias = MmMapLockedPagesSpecifyCache(
             mdl,
@@ -483,6 +654,9 @@ KswordARKBugcheckGuardInitialize(
 {
     RtlZeroMemory(&g_KswordArkBugcheckGuard, sizeof(g_KswordArkBugcheckGuard));
     ExInitializeFastMutex(&g_KswordArkBugcheckGuard.ControlLock);
+    InterlockedExchange(
+        &g_KswordArkBugcheckGuard.HvciEnabled,
+        KswordARKBugcheckGuardHvciEnabled() ? 1L : 0L);
     g_KswordArkBugcheckGuard.LastStatus = STATUS_SUCCESS;
 }
 
@@ -491,9 +665,11 @@ KswordARKBugcheckGuardUninitialize(
     VOID
     )
 {
+    NTSTATUS status;
+
     ExAcquireFastMutex(&g_KswordArkBugcheckGuard.ControlLock);
-    KswordARKBugcheckGuardReleaseMappingLocked();
-    g_KswordArkBugcheckGuard.LastStatus = STATUS_SUCCESS;
+    status = KswordARKBugcheckGuardReleaseMappingLocked();
+    g_KswordArkBugcheckGuard.LastStatus = status;
     ExReleaseFastMutex(&g_KswordArkBugcheckGuard.ControlLock);
 }
 
@@ -544,16 +720,32 @@ KswordARKBugcheckGuardIoctlConfigure(
         protocolStatus = KSWORD_ARK_BUGCHECK_GUARD_STATUS_INVALID_REQUEST;
     }
     else if (input->action == KSWORD_ARK_BUGCHECK_GUARD_ACTION_QUERY) {
-        protocolStatus =
-            InterlockedCompareExchange(&g_KswordArkBugcheckGuard.HookState, 0L, 0L) ==
-                KSWORD_ARK_BUGCHECK_GUARD_STATE_INSTALLED
-            ? KSWORD_ARK_BUGCHECK_GUARD_STATUS_ACTIVE
-            : KSWORD_ARK_BUGCHECK_GUARD_STATUS_INACTIVE;
+        if (InterlockedCompareExchange(
+                &g_KswordArkBugcheckGuard.Enabled,
+                0L,
+                0L) != 0L) {
+            protocolStatus = KSWORD_ARK_BUGCHECK_GUARD_STATUS_ACTIVE;
+        }
+        else if (InterlockedCompareExchange(
+                    &g_KswordArkBugcheckGuard.HookState,
+                    0L,
+                    0L) != KSWORD_ARK_BUGCHECK_GUARD_STATE_UNINSTALLED ||
+                 InterlockedCompareExchange(
+                    &g_KswordArkBugcheckGuard.HookExecutions,
+                    0L,
+                    0L) != 0L) {
+            protocolStatus = KSWORD_ARK_BUGCHECK_GUARD_STATUS_BUSY;
+        }
+        else {
+            protocolStatus = KSWORD_ARK_BUGCHECK_GUARD_STATUS_INACTIVE;
+        }
     }
     else if (input->action == KSWORD_ARK_BUGCHECK_GUARD_ACTION_DISABLE) {
-        KswordARKBugcheckGuardReleaseMappingLocked();
-        g_KswordArkBugcheckGuard.LastStatus = STATUS_SUCCESS;
-        protocolStatus = KSWORD_ARK_BUGCHECK_GUARD_STATUS_INACTIVE;
+        status = KswordARKBugcheckGuardReleaseMappingLocked();
+        g_KswordArkBugcheckGuard.LastStatus = status;
+        protocolStatus = NT_SUCCESS(status)
+            ? KSWORD_ARK_BUGCHECK_GUARD_STATUS_INACTIVE
+            : KSWORD_ARK_BUGCHECK_GUARD_STATUS_BUSY;
     }
     else if (input->action == KSWORD_ARK_BUGCHECK_GUARD_ACTION_ENABLE) {
         if ((input->flags & KSWORD_ARK_BUGCHECK_GUARD_FLAG_UI_CONFIRMED) == 0UL ||
@@ -561,8 +753,8 @@ KswordARKBugcheckGuardIoctlConfigure(
             g_KswordArkBugcheckGuard.LastStatus = STATUS_ACCESS_DENIED;
             protocolStatus = KSWORD_ARK_BUGCHECK_GUARD_STATUS_CONFIRMATION_NEEDED;
         }
-        else if (input->delaySeconds < KSWORD_ARK_BUGCHECK_GUARD_MIN_DELAY_SECONDS ||
-                 input->delaySeconds > KSWORD_ARK_BUGCHECK_GUARD_MAX_DELAY_SECONDS) {
+        else if (input->delaySeconds <
+                    KSWORD_ARK_BUGCHECK_GUARD_MIN_DELAY_SECONDS) {
             g_KswordArkBugcheckGuard.LastStatus = STATUS_INVALID_PARAMETER;
             protocolStatus = KSWORD_ARK_BUGCHECK_GUARD_STATUS_INVALID_REQUEST;
         }

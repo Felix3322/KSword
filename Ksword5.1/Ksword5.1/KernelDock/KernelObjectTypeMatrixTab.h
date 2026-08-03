@@ -29,6 +29,7 @@ public:
     explicit KernelObjectTypeMatrixTab(QWidget* parent = nullptr);
     ~KernelObjectTypeMatrixTab() override = default;
 
+    void requestInitialRefresh();
     static QString strategyForType(const QString& typeNameText);
     static QString formatAccessMask(std::uint32_t accessMask);
 
@@ -84,6 +85,7 @@ private:
     CodeEditorWidget* m_detailEditor = nullptr;
 
     std::atomic_bool m_refreshing{ false };
+    bool m_initialRefreshRequested = false;
     std::vector<KernelObjectTypeEntry> m_rows;
     R0SnapshotState m_r0State;
 };
