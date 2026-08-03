@@ -67,7 +67,6 @@
 #include <QThreadPool>
 #include <QTabWidget>
 #include <QTimer>
-#include <QTemporaryFile>
 #include <QVBoxLayout>
 #include <QWidget>
 

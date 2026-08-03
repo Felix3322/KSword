@@ -146,6 +146,7 @@
     <ClCompile Include="DriverDock\DriverDock.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Ui.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Operation.cpp" />
+    <ClCompile Include="DriverDock\DriverDock.ModuleDumpFile.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Communication.cpp" />
     <ClCompile Include="DriverDock\DriverDock.DebugAndUtils.cpp" />
     <ClCompile Include="DriverDock\DriverDock.Evidence.cpp" />
@@ -544,6 +545,7 @@
     <ClInclude Include="UI\UI_All.h" />
     <QtMoc Include="DriverDock\DriverDock.h" />
     <ClInclude Include="DriverDock\DriverDock.Internal.h" />
+    <ClInclude Include="DriverDock\DriverDock.ModuleDumpFile.h" />
     <QtMoc Include="FileDock\FileDock.h" />
     <ClInclude Include="ScannerDock\ScannerDock.h" />
     <QtMoc Include="句柄\HandleDock.h" />

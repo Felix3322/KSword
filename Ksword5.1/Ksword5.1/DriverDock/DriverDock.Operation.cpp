@@ -1,4 +1,5 @@
 #include "DriverDock.Internal.h"
+#include "DriverDock.ModuleDumpFile.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../UI/TableInteractionSupport.h"
@@ -6,8 +7,6 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QUrlQuery>
-
-#include <io.h>
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::driver_dock_internal;
@@ -741,31 +740,26 @@ namespace
                 "The destination directory does not exist.");
             return dumpResult;
         }
-        QTemporaryFile temporaryFile(targetDirectory.filePath(
-            QString::fromLatin1(".%1.ksword-module-dump-XXXXXX.tmp")
-                .arg(targetInfo.fileName())));
-        temporaryFile.setAutoRemove(true);
-        if (!temporaryFile.open())
+        DriverModuleDumpFile temporaryFile;
+        if (!temporaryFile.create(dumpResult.targetPath))
         {
-            dumpResult.error = DriverModuleDumpError::TemporaryFileCreate;
-            dumpResult.technicalDetail = QString::fromLatin1(
-                "Creating the atomic temporary file failed: %1")
-                .arg(temporaryFile.errorString());
+            dumpResult.error =
+                temporaryFile.error() == DriverModuleDumpFileError::TargetExists
+                ? DriverModuleDumpError::TargetExists
+                : DriverModuleDumpError::TemporaryFileCreate;
+            dumpResult.win32Error = temporaryFile.win32Error();
+            dumpResult.technicalDetail = temporaryFile.technicalDetail();
             return dumpResult;
         }
 
         const auto writeChunk =
             [&temporaryFile, &dumpResult](const std::vector<std::uint8_t>& bytes) -> bool
             {
-                const qint64 expectedBytes = static_cast<qint64>(bytes.size());
-                if (temporaryFile.write(
-                    reinterpret_cast<const char*>(bytes.data()),
-                    expectedBytes) != expectedBytes)
+                if (!temporaryFile.write(bytes.data(), bytes.size()))
                 {
                     dumpResult.error = DriverModuleDumpError::TemporaryFileWrite;
-                    dumpResult.technicalDetail = QString::fromLatin1(
-                        "Writing the atomic temporary file failed: %1")
-                        .arg(temporaryFile.errorString());
+                    dumpResult.win32Error = temporaryFile.win32Error();
+                    dumpResult.technicalDetail = temporaryFile.technicalDetail();
                     return false;
                 }
                 return true;
@@ -827,50 +821,23 @@ namespace
                 "Final loaded-module identity check failed. "));
             return dumpResult;
         }
-        if (!temporaryFile.flush())
+        if (!temporaryFile.commit(moduleSize))
         {
-            dumpResult.error = DriverModuleDumpError::TemporaryFileFlush;
-            dumpResult.technicalDetail = QString::fromLatin1(
-                "Flushing the atomic temporary file failed: %1")
-                .arg(temporaryFile.errorString());
-            return dumpResult;
-        }
-        const auto temporaryOsHandle =
-            ::_get_osfhandle(temporaryFile.handle());
-        const HANDLE temporaryHandle =
-            reinterpret_cast<HANDLE>(temporaryOsHandle);
-        if (temporaryOsHandle == -1 ||
-            !::FlushFileBuffers(temporaryHandle))
-        {
-            dumpResult.error = DriverModuleDumpError::TemporaryFileFlush;
-            dumpResult.win32Error = ::GetLastError();
-            dumpResult.technicalDetail = QString::fromLatin1(
-                "FlushFileBuffers failed before atomic commit.");
-            return dumpResult;
-        }
-        temporaryFile.close();
-
-        if (QFileInfo::exists(dumpResult.targetPath))
-        {
-            dumpResult.error = DriverModuleDumpError::TargetExists;
-            dumpResult.win32Error = ERROR_FILE_EXISTS;
-            dumpResult.technicalDetail = QString::fromLatin1(
-                "The destination appeared before commit; overwrite was refused.");
-            return dumpResult;
-        }
-        const QString temporaryExtendedPath =
-            driverModuleDumpExtendedPath(temporaryFile.fileName());
-        const QString targetExtendedPath =
-            driverModuleDumpExtendedPath(dumpResult.targetPath);
-        if (!::MoveFileExW(
-            reinterpret_cast<LPCWSTR>(temporaryExtendedPath.utf16()),
-            reinterpret_cast<LPCWSTR>(targetExtendedPath.utf16()),
-            MOVEFILE_WRITE_THROUGH))
-        {
-            dumpResult.error = DriverModuleDumpError::AtomicCommit;
-            dumpResult.win32Error = ::GetLastError();
-            dumpResult.technicalDetail = QString::fromLatin1(
-                "Atomic no-replace commit failed.");
+            switch (temporaryFile.error())
+            {
+            case DriverModuleDumpFileError::Flush:
+                dumpResult.error = DriverModuleDumpError::TemporaryFileFlush;
+                break;
+            case DriverModuleDumpFileError::TargetExists:
+                dumpResult.error = DriverModuleDumpError::TargetExists;
+                break;
+            case DriverModuleDumpFileError::Commit:
+            default:
+                dumpResult.error = DriverModuleDumpError::AtomicCommit;
+                break;
+            }
+            dumpResult.win32Error = temporaryFile.win32Error();
+            dumpResult.technicalDetail = temporaryFile.technicalDetail();
             return dumpResult;
         }
 

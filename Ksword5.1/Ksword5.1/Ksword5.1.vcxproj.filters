@@ -155,6 +155,9 @@
     <ClCompile Include="DriverDock\DriverDock.Operation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="DriverDock\DriverDock.ModuleDumpFile.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="DriverDock\DriverDock.Communication.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -957,6 +960,9 @@
       <Filter>Header Files</Filter>
     </QtMoc>
     <ClInclude Include="DriverDock\DriverDock.Internal.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DriverDock\DriverDock.ModuleDumpFile.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <QtMoc Include="FileDock\FileDock.h">
