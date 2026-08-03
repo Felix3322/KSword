@@ -1025,7 +1025,7 @@ ProcessActionResult ExecuteProcessAction(
     ProcessActionId actionId,
     const std::vector<DWORD>& selectedPids,
     const std::vector<ProcessSnapshotRow>& snapshotRows) {
-    if (selectedPids.empty()) {
+    if (selectedPids.empty() && actionId != ProcessActionId::R0ClearHiddenMarks) {
         return FailureResult(L"进程动作", selectedPids, L"没有选中进程。");
     }
 
