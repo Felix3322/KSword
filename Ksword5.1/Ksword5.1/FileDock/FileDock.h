@@ -111,7 +111,7 @@ private:
         QCheckBox* showSystemCheck = nullptr;  // 显示系统文件开关。
         QCheckBox* showHiddenCheck = nullptr;  // 显示隐藏文件开关。
         QComboBox* sortModeCombo = nullptr;    // 排序方式选择。
-        QComboBox* readModeCombo = nullptr;    // 读取方式（Windows API/自动手动/强制 NTFS/FAT32/exFAT）。
+        QComboBox* readModeCombo = nullptr;    // 读取方式（Windows API/R3 手动/R0 驱动/强制 FS）。
         QLineEdit* filterEdit = nullptr;       // 文件名快速过滤输入框。
 
         QStackedWidget* fileViewStack = nullptr; // 文件视图容器（图标/列表与详情/树之间切换）。
@@ -138,6 +138,9 @@ private:
         bool pathEditMode = false;             // 当前是否处于路径编辑模式。
         ks::file::ManualFsType lastManualFsType = ks::file::ManualFsType::Unknown; // 最近一次手动解析识别到的FS类型。
         ks::file::ManualFsType manualRequestedFsType = ks::file::ManualFsType::Unknown; // 当前读取模式要求的手动解析类型。
+        int manualRequestedReadMode = 0;        // 当前模型对应的读取模式索引，防止 R3/R0 结果误复用。
+        bool manualResultPartial = false;       // R0 分页/名称边界导致结果不完整时为 true。
+        QString manualSourceDetail;             // 当前平铺模型的真实解析来源摘要。
         bool manualParseInProgress = false;    // 手动解析后台任务是否正在运行。
         bool manualParsePending = false;       // 手动解析是否有待执行请求。
         bool manualParsePendingShowWarning = false; // 待执行请求是否需要失败弹框。
@@ -237,6 +240,10 @@ private:
     // currentModeIsManual：
     // - 作用：判断当前面板是否处于手动解析模式。
     bool currentModeIsManual(const FilePanelWidgets& panel) const;
+
+    // currentModeUsesDriver：
+    // - 作用：判断平铺目录模型是否应通过 KswordARK 的 R0 目录查询填充。
+    bool currentModeUsesDriver(const FilePanelWidgets& panel) const;
 
     // requestedManualFsTypeForPanel：
     // - 作用：根据读取模式下拉框解析强制文件系统类型；

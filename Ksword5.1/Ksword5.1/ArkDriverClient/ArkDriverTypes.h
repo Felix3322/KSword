@@ -497,6 +497,36 @@ namespace ksword::ark
         std::wstring objectName;        // ObQueryNameString 文件对象名。
     };
 
+    // DirectoryEntryRecord 是 R0 文件系统驱动枚举返回的一条已校验目录记录。
+    struct DirectoryEntryRecord
+    {
+        std::uint32_t flags = 0;          // KSWORD_ARK_DIRECTORY_ENTRY_FLAG_*。
+        std::uint32_t fileAttributes = 0; // FILE_ATTRIBUTE_* 原始位。
+        std::uint64_t fileId = 0;         // 文件系统提供的 FileId，仅用于展示/关联。
+        std::int64_t allocationSize = 0;  // 分配大小，目录或未知值可能为 0。
+        std::int64_t endOfFile = 0;       // 文件逻辑长度。
+        std::int64_t creationTime = 0;    // NT 100ns 时间戳。
+        std::int64_t lastAccessTime = 0;  // NT 100ns 时间戳。
+        std::int64_t lastWriteTime = 0;   // NT 100ns 时间戳。
+        std::int64_t changeTime = 0;      // NT 100ns 时间戳。
+        std::wstring name;                // 已做协议边界校验的文件名。
+    };
+
+    // DirectoryEnumerationResult 汇总所有分页响应，并显式保留旧驱动/截断状态。
+    struct DirectoryEnumerationResult
+    {
+        IoResult io;                      // 最后一页的通信结果或本地校验错误。
+        bool unsupported = false;         // 旧驱动未注册目录枚举 IOCTL。
+        bool capped = false;              // 达到 R3 总行预算，结果不是完整目录。
+        std::uint32_t queryStatus =
+            KSWORD_ARK_DIRECTORY_ENUM_STATUS_UNAVAILABLE; // 最后一页语义状态。
+        std::uint32_t responseFlags = 0;   // 最后一页 KSWORD_ARK_DIRECTORY_ENUM_RESPONSE_FLAG_*。
+        long openStatus = 0;               // ZwCreateFile 目录打开状态。
+        long lastStatus = 0;               // ZwQueryDirectoryFile 或边界校验状态。
+        std::wstring fileSystemName;       // R0 通过 FileFsAttributeInformation 返回的名称。
+        std::vector<DirectoryEntryRecord> entries; // 已按驱动顺序合并的目录行。
+    };
+
     // ImageSignatureQueryResult preserves the complete fixed R0 response so
     // callers can distinguish PE certificate-table structure from the
     // independent Code Integrity cached-signing-level result.

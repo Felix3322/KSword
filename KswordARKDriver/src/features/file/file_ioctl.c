@@ -384,6 +384,150 @@ Return Value:
 }
 
 NTSTATUS
+KswordARKFileIoctlEnumDirectory(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+/*++
+
+Routine Description:
+
+    处理 IOCTL_KSWORD_ARK_ENUM_DIRECTORY。handler 只复制 METHOD_BUFFERED 请求、
+    校验分页和路径边界，再调用 file_directory_query.c 完成只读目录查询。
+
+Arguments:
+
+    Device - WDF 设备对象，仅用于错误日志。
+    Request - 当前目录枚举请求。
+    InputBufferLength/OutputBufferLength - 分发层提供的声明长度。
+    BytesReturned - 接收协议头和有效目录行总长度。
+
+Return Value:
+
+    NTSTATUS 表示 WDF 缓冲或协议处理结果；目录打开错误保存在响应语义字段。
+
+--*/
+{
+    KSWORD_ARK_ENUM_DIRECTORY_REQUEST* directoryRequest = NULL;
+    KSWORD_ARK_ENUM_DIRECTORY_REQUEST requestSnapshot;
+    KSWORD_ARK_ENUM_DIRECTORY_RESPONSE* directoryResponse = NULL;
+    PVOID inputBuffer = NULL;
+    PVOID outputBuffer = NULL;
+    size_t actualInputLength = 0U;
+    size_t actualOutputLength = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0U;
+
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_ENUM_DIRECTORY_REQUEST),
+        &inputBuffer,
+        &actualInputLength);
+    if (!NT_SUCCESS(status)) {
+        KswordARKFileIoctlLog(
+            Device,
+            "Error",
+            "R0 directory-enum ioctl: input invalid, status=0x%08X.",
+            (unsigned int)status);
+        return status;
+    }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出可能是同一系统缓冲；先复制完整请求，
+     * 后续响应清零才不会覆盖 path/startIndex/maxEntries。
+     */
+    directoryRequest = (KSWORD_ARK_ENUM_DIRECTORY_REQUEST*)inputBuffer;
+    RtlCopyMemory(
+        &requestSnapshot,
+        directoryRequest,
+        sizeof(requestSnapshot));
+
+    if (requestSnapshot.version != KSWORD_ARK_DIRECTORY_ENUM_PROTOCOL_VERSION ||
+        requestSnapshot.size != (ULONG)sizeof(requestSnapshot) ||
+        requestSnapshot.flags != 0UL ||
+        requestSnapshot.maxEntries == 0UL ||
+        requestSnapshot.maxEntries > KSWORD_ARK_DIRECTORY_ENUM_MAX_PAGE_ENTRIES ||
+        requestSnapshot.startIndex >= KSWORD_ARK_DIRECTORY_ENUM_MAX_TOTAL_ENTRIES ||
+        requestSnapshot.maxEntries >
+            KSWORD_ARK_DIRECTORY_ENUM_MAX_TOTAL_ENTRIES - requestSnapshot.startIndex ||
+        requestSnapshot.pathLengthChars == 0U ||
+        requestSnapshot.pathLengthChars >= KSWORD_ARK_DIRECTORY_ENUM_PATH_MAX_CHARS ||
+        requestSnapshot.path[requestSnapshot.pathLengthChars] != L'\0' ||
+        requestSnapshot.reserved != 0U) {
+        KswordARKFileIoctlLog(
+            Device,
+            "Warn",
+            "R0 directory-enum ioctl: request rejected, version=%lu, size=%lu, flags=0x%08X, start=%lu, max=%lu, chars=%u.",
+            (unsigned long)requestSnapshot.version,
+            (unsigned long)requestSnapshot.size,
+            (unsigned int)requestSnapshot.flags,
+            (unsigned long)requestSnapshot.startIndex,
+            (unsigned long)requestSnapshot.maxEntries,
+            (unsigned int)requestSnapshot.pathLengthChars);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = KswordARKRetrieveRequiredOutputBuffer(
+        Request,
+        KSWORD_ARK_ENUM_DIRECTORY_RESPONSE_HEADER_SIZE +
+            sizeof(KSWORD_ARK_DIRECTORY_ENTRY),
+        &outputBuffer,
+        &actualOutputLength);
+    if (!NT_SUCCESS(status)) {
+        KswordARKFileIoctlLog(
+            Device,
+            "Error",
+            "R0 directory-enum ioctl: output invalid, status=0x%08X.",
+            (unsigned int)status);
+        return status;
+    }
+
+    status = KswordARKDriverEnumerateDirectory(
+        outputBuffer,
+        actualOutputLength,
+        &requestSnapshot,
+        BytesReturned);
+    if (!NT_SUCCESS(status)) {
+        KswordARKFileIoctlLog(
+            Device,
+            "Error",
+            "R0 directory-enum ioctl: feature failed, chars=%u, status=0x%08X.",
+            (unsigned int)requestSnapshot.pathLengthChars,
+            (unsigned int)status);
+        return status;
+    }
+
+    if (*BytesReturned >= KSWORD_ARK_ENUM_DIRECTORY_RESPONSE_HEADER_SIZE) {
+        directoryResponse =
+            (KSWORD_ARK_ENUM_DIRECTORY_RESPONSE*)outputBuffer;
+        if (directoryResponse->queryStatus !=
+                KSWORD_ARK_DIRECTORY_ENUM_STATUS_OK &&
+            directoryResponse->queryStatus !=
+                KSWORD_ARK_DIRECTORY_ENUM_STATUS_PARTIAL) {
+            KswordARKFileIoctlLog(
+                Device,
+                "Warn",
+                "R0 directory-enum semantic failure: chars=%u, query=%lu, status=0x%08X.",
+                (unsigned int)requestSnapshot.pathLengthChars,
+                (unsigned long)directoryResponse->queryStatus,
+                (unsigned int)directoryResponse->lastStatus);
+        }
+    }
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
 KswordARKFileIoctlSetIntegrity(
     _In_ WDFDEVICE Device,
     _In_ WDFREQUEST Request,

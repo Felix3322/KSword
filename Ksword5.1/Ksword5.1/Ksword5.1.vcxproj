@@ -161,6 +161,7 @@
     <ClCompile Include="FileDock\FilePropertyPeAnalyzer.Directories.cpp" />
     <ClCompile Include="FileDock\FilePropertyPeAnalyzer.Tables.cpp" />
     <ClCompile Include="FileDock\ManualFileSystemParser.cpp" />
+    <ClCompile Include="FileDock\DriverFileSystemParser.cpp" />
     <ClCompile Include="ScannerDock\ScannerDock.cpp" />
     <ClCompile Include="ScannerDock\ScannerDock.Table.cpp" />
     <ClCompile Include="句柄\HandleDock.cpp" />
@@ -471,6 +472,7 @@
     <ClInclude Include="PluginHost.h" />
     <ClInclude Include="Internationalization\LanguageManager.h" />
     <ClInclude Include="FileDock\ManualFileSystemParser.h" />
+    <ClInclude Include="FileDock\DriverFileSystemParser.h" />
     <ClInclude Include="FileDock\FileHandleUsageScanner.h" />
     <ClInclude Include="FileDock\FileHandleUsageWindow.h" />
     <ClInclude Include="FileDock\FileMappedProcessWindow.h" />

@@ -151,6 +151,10 @@ namespace ksword::ark
             unsigned long sampleBytes = KSWORD_ARK_MEMORY_EVIDENCE_DEFAULT_SAMPLE_BYTES) const;
         FileInfoQueryResult queryFileInfo(const std::wstring& ntPath, unsigned long flags = KSWORD_ARK_QUERY_FILE_INFO_FLAG_INCLUDE_ALL) const;
         FileInfoQueryResult queryFileInfo(DriverHandle& handle, const std::wstring& ntPath, unsigned long flags = KSWORD_ARK_QUERY_FILE_INFO_FLAG_INCLUDE_ALL) const;
+        // enumerateDirectory：分页调用 R0 ZwQueryDirectoryFile，并合并为有明确总行预算的只读快照。
+        DirectoryEnumerationResult enumerateDirectory(
+            const std::wstring& ntPath,
+            unsigned long maxEntries = 16384UL) const;
         // Read Authenticode PE certificate-table structure and cached Code
         // Integrity state through the driver. No WinTrust API is used.
         ImageSignatureQueryResult queryImageSignature(

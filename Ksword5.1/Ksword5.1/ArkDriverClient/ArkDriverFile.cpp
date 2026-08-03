@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <utility>
 
 namespace ksword::ark
 {
@@ -241,6 +242,222 @@ namespace ksword::ark
         // 返回：FileInfoQueryResult，失败时 io.message 包含 Win32/协议诊断。
         DriverHandle handle = open();
         return queryFileInfo(handle, ntPath, flags);
+    }
+
+    DirectoryEnumerationResult DriverClient::enumerateDirectory(
+        const std::wstring& ntPath,
+        const unsigned long maxEntries) const
+    {
+        // 作用：用一个驱动控制句柄分页拉取目录，避免每页重复建立 KswordARK 连接。
+        // 输入：ntPath 必须是 \??\C:\... 或其它驱动可打开的 NT 路径；maxEntries 是 R3 总预算。
+        // 返回：DirectoryEnumerationResult 保留通信、语义、截断和已解析行。
+        DirectoryEnumerationResult result{};
+        if (ntPath.empty() ||
+            ntPath.size() >= KSWORD_ARK_DIRECTORY_ENUM_PATH_MAX_CHARS ||
+            maxEntries == 0UL ||
+            maxEntries > KSWORD_ARK_DIRECTORY_ENUM_MAX_TOTAL_ENTRIES)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_PARAMETER;
+            result.io.message =
+                "directory-enum request invalid, chars=" +
+                std::to_string(ntPath.size()) +
+                ", maxEntries=" + std::to_string(maxEntries);
+            return result;
+        }
+
+        DriverHandle handle = open();
+        unsigned long startIndex = 0UL;
+        while (result.entries.size() < static_cast<std::size_t>(maxEntries))
+        {
+            const unsigned long remainingEntries =
+                maxEntries - static_cast<unsigned long>(result.entries.size());
+            const unsigned long pageEntries = std::min<unsigned long>(
+                remainingEntries,
+                KSWORD_ARK_DIRECTORY_ENUM_MAX_PAGE_ENTRIES);
+            const std::size_t responseBytes =
+                KSWORD_ARK_ENUM_DIRECTORY_RESPONSE_HEADER_SIZE +
+                (static_cast<std::size_t>(pageEntries) *
+                    sizeof(KSWORD_ARK_DIRECTORY_ENTRY));
+            std::vector<std::uint8_t> responseBuffer(responseBytes, 0U);
+
+            KSWORD_ARK_ENUM_DIRECTORY_REQUEST request{};
+            request.version = KSWORD_ARK_DIRECTORY_ENUM_PROTOCOL_VERSION;
+            request.size = static_cast<unsigned long>(sizeof(request));
+            request.flags = 0UL;
+            request.startIndex = startIndex;
+            request.maxEntries = pageEntries;
+            request.pathLengthChars =
+                static_cast<unsigned short>(ntPath.size());
+            std::copy(ntPath.begin(), ntPath.end(), request.path);
+            request.path[request.pathLengthChars] = L'\0';
+
+            result.io = deviceIoControl(
+                IOCTL_KSWORD_ARK_ENUM_DIRECTORY,
+                &request,
+                static_cast<unsigned long>(sizeof(request)),
+                responseBuffer.data(),
+                static_cast<unsigned long>(responseBuffer.size()),
+                &handle);
+            if (!result.io.ok)
+            {
+                result.unsupported =
+                    isUnsupportedIoctlError(result.io.win32Error);
+                result.io.message =
+                    "DeviceIoControl(IOCTL_KSWORD_ARK_ENUM_DIRECTORY) failed, error=" +
+                    std::to_string(result.io.win32Error);
+                return result;
+            }
+            if (result.io.bytesReturned <
+                KSWORD_ARK_ENUM_DIRECTORY_RESPONSE_HEADER_SIZE)
+            {
+                result.io.ok = false;
+                result.io.win32Error = ERROR_INVALID_DATA;
+                result.io.message =
+                    "directory-enum response header truncated, bytesReturned=" +
+                    std::to_string(result.io.bytesReturned);
+                return result;
+            }
+
+            const auto* response =
+                reinterpret_cast<const KSWORD_ARK_ENUM_DIRECTORY_RESPONSE*>(
+                    responseBuffer.data());
+            if (response->version !=
+                    KSWORD_ARK_DIRECTORY_ENUM_PROTOCOL_VERSION ||
+                response->rowSize != static_cast<unsigned long>(sizeof(KSWORD_ARK_DIRECTORY_ENTRY)) ||
+                response->startIndex != startIndex ||
+                response->size <
+                    KSWORD_ARK_ENUM_DIRECTORY_RESPONSE_HEADER_SIZE ||
+                response->size > result.io.bytesReturned ||
+                response->reserved != 0UL ||
+                (response->responseFlags & ~(
+                    KSWORD_ARK_DIRECTORY_ENUM_RESPONSE_FLAG_MORE_AVAILABLE |
+                    KSWORD_ARK_DIRECTORY_ENUM_RESPONSE_FLAG_FS_NAME_PRESENT)) != 0UL ||
+                response->queryStatus == KSWORD_ARK_DIRECTORY_ENUM_STATUS_UNAVAILABLE ||
+                response->queryStatus > KSWORD_ARK_DIRECTORY_ENUM_STATUS_INVALID_REQUEST)
+            {
+                result.io.ok = false;
+                result.io.win32Error = ERROR_REVISION_MISMATCH;
+                result.io.message =
+                    "directory-enum protocol header mismatch";
+                return result;
+            }
+
+            const std::size_t availableRows =
+                (static_cast<std::size_t>(result.io.bytesReturned) -
+                    KSWORD_ARK_ENUM_DIRECTORY_RESPONSE_HEADER_SIZE) /
+                sizeof(KSWORD_ARK_DIRECTORY_ENTRY);
+            const std::size_t declaredRows = response->rowCount;
+            const std::size_t declaredBytes =
+                KSWORD_ARK_ENUM_DIRECTORY_RESPONSE_HEADER_SIZE +
+                (declaredRows * sizeof(KSWORD_ARK_DIRECTORY_ENTRY));
+            if (declaredRows > availableRows ||
+                declaredRows > static_cast<std::size_t>(pageEntries) ||
+                declaredBytes != static_cast<std::size_t>(response->size) ||
+                response->nextIndex != startIndex + response->rowCount)
+            {
+                result.io.ok = false;
+                result.io.win32Error = ERROR_INVALID_DATA;
+                result.io.message =
+                    "directory-enum row boundary invalid, rows=" +
+                    std::to_string(declaredRows);
+                return result;
+            }
+
+            result.queryStatus = response->queryStatus;
+            result.responseFlags = response->responseFlags;
+            result.openStatus = response->openStatus;
+            result.lastStatus = response->lastStatus;
+            result.io.ntStatus = response->lastStatus;
+            if ((response->responseFlags &
+                    KSWORD_ARK_DIRECTORY_ENUM_RESPONSE_FLAG_FS_NAME_PRESENT) != 0UL)
+            {
+                if (response->fileSystemNameLengthChars == 0UL ||
+                    response->fileSystemNameLengthChars >=
+                        KSWORD_ARK_DIRECTORY_ENUM_FS_NAME_MAX_CHARS ||
+                    response->fileSystemName[
+                        response->fileSystemNameLengthChars] != L'\0')
+                {
+                    result.io.ok = false;
+                    result.io.win32Error = ERROR_INVALID_DATA;
+                    result.io.message =
+                        "directory-enum filesystem name boundary invalid";
+                    return result;
+                }
+                result.fileSystemName = std::wstring(
+                    response->fileSystemName,
+                    response->fileSystemName +
+                        response->fileSystemNameLengthChars);
+            }
+
+            for (std::size_t index = 0U; index < declaredRows; ++index)
+            {
+                const KSWORD_ARK_DIRECTORY_ENTRY& source =
+                    response->rows[index];
+                if (source.nameLengthChars >=
+                        KSWORD_ARK_DIRECTORY_ENUM_NAME_MAX_CHARS ||
+                    source.name[source.nameLengthChars] != L'\0')
+                {
+                    result.io.ok = false;
+                    result.io.win32Error = ERROR_INVALID_DATA;
+                    result.io.message =
+                        "directory-enum entry name boundary invalid";
+                    return result;
+                }
+
+                DirectoryEntryRecord entry{};
+                entry.flags = source.flags;
+                entry.fileAttributes = source.fileAttributes;
+                entry.fileId = source.fileId;
+                entry.allocationSize = source.allocationSize;
+                entry.endOfFile = source.endOfFile;
+                entry.creationTime = source.creationTime;
+                entry.lastAccessTime = source.lastAccessTime;
+                entry.lastWriteTime = source.lastWriteTime;
+                entry.changeTime = source.changeTime;
+                entry.name.assign(
+                    source.name,
+                    source.name + source.nameLengthChars);
+                result.entries.push_back(std::move(entry));
+            }
+
+            if (result.queryStatus != KSWORD_ARK_DIRECTORY_ENUM_STATUS_OK)
+            {
+                break;
+            }
+
+            const bool moreAvailable =
+                (response->responseFlags &
+                    KSWORD_ARK_DIRECTORY_ENUM_RESPONSE_FLAG_MORE_AVAILABLE) != 0UL;
+            if (!moreAvailable)
+            {
+                break;
+            }
+            if (response->rowCount == 0UL ||
+                response->queryStatus != KSWORD_ARK_DIRECTORY_ENUM_STATUS_OK ||
+                response->nextIndex <= startIndex)
+            {
+                result.io.ok = false;
+                result.io.win32Error = ERROR_INVALID_DATA;
+                result.io.message =
+                    "directory-enum pagination did not advance";
+                return result;
+            }
+            startIndex = response->nextIndex;
+        }
+
+        result.capped = result.entries.size() >=
+                static_cast<std::size_t>(maxEntries) &&
+            (result.responseFlags &
+                KSWORD_ARK_DIRECTORY_ENUM_RESPONSE_FLAG_MORE_AVAILABLE) != 0UL;
+        std::ostringstream stream;
+        stream << "directory enum status=" << result.queryStatus
+            << ", rows=" << result.entries.size()
+            << ", capped=" << (result.capped ? "true" : "false")
+            << ", ntStatus=0x" << std::hex
+            << static_cast<unsigned long>(result.lastStatus);
+        result.io.message = stream.str();
+        return result;
     }
 
     ImageSignatureQueryResult DriverClient::queryImageSignature(

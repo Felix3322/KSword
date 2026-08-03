@@ -200,6 +200,9 @@
     <ClCompile Include="FileDock\ManualFileSystemParser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="FileDock\DriverFileSystemParser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ScannerDock\ScannerDock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1397,6 +1400,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FileDock\ManualFileSystemParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="FileDock\DriverFileSystemParser.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FileDock\FileHandleUsageScanner.h">

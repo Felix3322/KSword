@@ -126,6 +126,7 @@
     <ClCompile Include="src\features\kernel\hook_scan.c" />
     <ClCompile Include="src\features\kernel\hook_scan_support.c" />
     <ClCompile Include="src\features\file\file_actions.c" />
+    <ClCompile Include="src\features\file\file_directory_query.c" />
     <ClCompile Include="src\features\file_monitor\file_monitor_operation_map.c" />
     <ClCompile Include="src\features\file_monitor\file_monitor_runtime.c" />
     <ClCompile Include="src\features\file_monitor\file_monitor_ioctl.c" />

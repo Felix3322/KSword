@@ -20,6 +20,15 @@ KswordARKDriverQueryFileInfo(
     _Out_ size_t* BytesWrittenOut
     );
 
+// KswordARKDriverEnumerateDirectory：分页返回 R0 文件系统目录行，不解析私有 FS 内核结构。
+NTSTATUS
+KswordARKDriverEnumerateDirectory(
+    _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer,
+    _In_ size_t OutputBufferLength,
+    _In_ const KSWORD_ARK_ENUM_DIRECTORY_REQUEST* Request,
+    _Out_ size_t* BytesWrittenOut
+    );
+
 /*
  * KswordARKDriverSetFileIntegrity
  * Inputs:
