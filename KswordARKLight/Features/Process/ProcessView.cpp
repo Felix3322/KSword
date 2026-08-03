@@ -70,6 +70,7 @@ struct ProcessPresentationRow {
     std::wstring iconPath;
     std::vector<std::wstring> cells;
     DWORD processId = 0;
+    ULONGLONG creationTime100ns = 0;
     bool kernelOnly = false;
 };
 
@@ -105,12 +106,14 @@ enum class ProcessRowVisualState {
 // directly because lifetime is tied to WM_NCDESTROY.
 struct DetailHostState {
     DWORD processId = 0;
+    ULONGLONG expectedCreationTime100ns = 0;
     HWND child = nullptr;
     int maximumWidth = 0;
 };
 
 struct DetailHostCreateParams {
     DWORD processId = 0;
+    ULONGLONG expectedCreationTime100ns = 0;
     int maximumWidth = 0;
 };
 
@@ -123,7 +126,11 @@ bool EnsureDetailChild(HWND hwnd, DetailHostState& state) {
 
     RECT client{};
     ::GetClientRect(hwnd, &client);
-    state.child = Ksword::Features::ProcessDetail::CreateProcessDetailPage(hwnd, state.processId, client);
+    state.child = Ksword::Features::ProcessDetail::CreateProcessDetailPage(
+        hwnd,
+        state.processId,
+        state.expectedCreationTime100ns,
+        client);
     if (!state.child) {
         return false;
     }
@@ -144,6 +151,7 @@ LRESULT CALLBACK DetailHostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         auto* owned = new DetailHostState();
         if (parameters) {
             owned->processId = parameters->processId;
+            owned->expectedCreationTime100ns = parameters->expectedCreationTime100ns;
             owned->maximumWidth = parameters->maximumWidth;
         }
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(owned));
@@ -206,8 +214,8 @@ bool RegisterDetailHostClass() {
 // OpenProcessDetailWindow creates one top-level detail window for a single PID.
 // Inputs are owner and pid; processing reuses the ProcessDetail page exactly as
 // used in docks; output reports whether the host window was created and shown.
-bool OpenProcessDetailWindow(HWND owner, DWORD processId) {
-    if (processId == 0 || !RegisterDetailHostClass()) {
+bool OpenProcessDetailWindow(HWND owner, DWORD processId, ULONGLONG expectedCreationTime100ns) {
+    if (processId == 0 || expectedCreationTime100ns == 0U || !RegisterDetailHostClass()) {
         return false;
     }
 
@@ -229,7 +237,7 @@ bool OpenProcessDetailWindow(HWND owner, DWORD processId) {
         processName = L"<unknown>";
     }
     const std::wstring title = L"进程详细信息 - " + processName + L" (PID " + std::to_wstring(processId) + L")";
-    const DetailHostCreateParams parameters{ processId, maximumWidth };
+    const DetailHostCreateParams parameters{ processId, expectedCreationTime100ns, maximumWidth };
     HWND host = ::CreateWindowExW(WS_EX_APPWINDOW,
         kProcessDetailHostClass,
         title.c_str(),
@@ -611,6 +619,7 @@ void BuildPresentationRows(ProcessViewState& state,
 
         if (const ProcessSnapshotRow* process = state.model.rowForDisplayRow(sourceRow)) {
             row.processId = process->processId;
+            row.creationTime100ns = process->creationTime100ns;
             row.kernelOnly = process->r0KernelOnly;
             row.iconPath = process->imagePath;
             row.stableKey = ProcessStableKey(process->processId, process->creationTime100ns);
@@ -1851,12 +1860,19 @@ void ExecuteMenuItem(ProcessViewState& state, ProcessActionId actionId) {
     }
 
     if (actionId == ProcessActionId::OpenDetails) {
-        const std::vector<DWORD> pids = SelectedPids(state);
-        if (pids.size() != 1) {
+        const std::vector<int> selectedIndexes = SelectedDisplayIndexes(state);
+        if (selectedIndexes.size() != 1U ||
+            selectedIndexes.front() < 0 ||
+            static_cast<std::size_t>(selectedIndexes.front()) >= state.presentationRows.size()) {
             SetStatus(state, L"进程详细信息需要单选一个进程。");
             return;
         }
-        const bool opened = OpenProcessDetailWindow(state.hwnd, pids.front());
+        const ProcessPresentationRow& selectedRow =
+            state.presentationRows[static_cast<std::size_t>(selectedIndexes.front())];
+        const bool opened = OpenProcessDetailWindow(
+            state.hwnd,
+            selectedRow.processId,
+            selectedRow.creationTime100ns);
         SetStatus(state, opened ? L"已打开进程详细信息窗口。" : L"进程详细信息窗口创建失败。");
         return;
     }

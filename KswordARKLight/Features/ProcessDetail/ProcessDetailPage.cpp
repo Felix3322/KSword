@@ -91,7 +91,11 @@ void InsertTab(HWND tab, int index, const wchar_t* title) {
 
 } // namespace
 
-ProcessDetailPage::ProcessDetailPage(DWORD processId) : processId_(processId) {}
+ProcessDetailPage::ProcessDetailPage(
+    DWORD processId,
+    ULONGLONG expectedCreationTime100ns)
+    : processId_(processId),
+      expectedCreationTime100ns_(expectedCreationTime100ns) {}
 
 ProcessDetailPage::~ProcessDetailPage() {
     if (snapshotTask_) {
@@ -124,11 +128,15 @@ ProcessDetailPage::~ProcessDetailPage() {
     }
 }
 
-HWND ProcessDetailPage::Create(HWND parent, DWORD processId, const RECT& bounds) {
+HWND ProcessDetailPage::Create(
+    HWND parent,
+    DWORD processId,
+    ULONGLONG expectedCreationTime100ns,
+    const RECT& bounds) {
     if (!RegisterPageClass()) {
         return nullptr;
     }
-    auto* page = new ProcessDetailPage(processId);
+    auto* page = new ProcessDetailPage(processId, expectedCreationTime100ns);
     HWND hwnd = ::CreateWindowExW(
         0,
         kProcessDetailPageClass,
@@ -636,9 +644,9 @@ void ProcessDetailPage::BeginSnapshotRefresh(const std::wstring& loadingMessage)
     Ksword::Ui::SetLoadingOverlay(loadingOverlay_, true, loadingMessage);
     SetSnapshotRefreshControlsEnabled(false);
     snapshotTask_->request(
-        [processId = processId_]() {
+        [processId = processId_, expectedCreationTime100ns = expectedCreationTime100ns_]() {
             ProcessDetailCollector collector;
-            return collector.Collect(processId);
+            return collector.Collect(processId, expectedCreationTime100ns);
         },
         [this](std::uint64_t, std::optional<ProcessDetailSnapshot>&& snapshot, std::exception_ptr error) {
             Ksword::Ui::SetLoadingOverlay(loadingOverlay_, false);

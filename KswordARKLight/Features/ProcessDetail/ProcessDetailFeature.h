@@ -8,6 +8,10 @@ namespace Ksword::Features::ProcessDetail {
 // Inputs are a parent HWND, target PID and initial bounds; processing creates
 // the independent ProcessDetailPage; output is the child HWND or nullptr on
 // registration/window creation failure.
-HWND CreateProcessDetailPage(HWND parent, DWORD processId, const RECT& bounds);
+HWND CreateProcessDetailPage(
+    HWND parent,
+    DWORD processId,
+    ULONGLONG expectedCreationTime100ns,
+    const RECT& bounds);
 
 } // namespace Ksword::Features::ProcessDetail

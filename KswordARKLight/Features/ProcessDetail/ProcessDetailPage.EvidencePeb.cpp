@@ -993,10 +993,11 @@ void ProcessDetailPage::RefreshSectionReport() {
     }
     SetPageStatus(TabIndex::Evidence, EvidenceSectionStatus, L"● 正在查询 Section/ControlArea...");
     const DWORD processId = processId_;
+    const ULONGLONG expectedCreationTime100ns = expectedCreationTime100ns_;
     evidenceTask_->request(
-        [processId] {
+        [processId, expectedCreationTime100ns] {
             ProcessDetailCollector collector;
-            return collector.Collect(processId);
+            return collector.Collect(processId, expectedCreationTime100ns);
         },
         [this](std::uint64_t, std::optional<ProcessDetailSnapshot>&& result, std::exception_ptr error) {
             if (error || !result.has_value()) {

@@ -1368,8 +1368,50 @@ std::vector<ProcessR0AuditInfo> CollectR0AuditRows(DWORD processId, bool& succee
 
 } // namespace
 
-ProcessDetailSnapshot ProcessDetailCollector::Collect(DWORD processId) const {
+ProcessDetailSnapshot ProcessDetailCollector::Collect(
+    DWORD processId,
+    ULONGLONG expectedCreationTime100ns) const {
     ProcessDetailSnapshot snapshot{};
+    snapshot.basic.processId = processId;
+    if (processId == 0 || expectedCreationTime100ns == 0U) {
+        snapshot.basic.statusText = L"Process identity is unavailable; detail refresh skipped.";
+        snapshot.errorText = L"Basic: " + snapshot.basic.statusText;
+        return snapshot;
+    }
+
+    const HANDLE rawIdentityProcess = ::OpenProcess(kProcessBasicAccess, FALSE, processId);
+    const DWORD identityOpenError = rawIdentityProcess ? ERROR_SUCCESS : ::GetLastError();
+    Ksword::Core::UniqueHandle identityProcess(rawIdentityProcess);
+    if (!identityProcess.valid()) {
+        snapshot.basic.statusText = Win32ErrorText(L"OpenProcess(identity)", identityOpenError);
+        snapshot.errorText = L"Basic: " + snapshot.basic.statusText;
+        return snapshot;
+    }
+
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    const BOOL identityTimeOk = ::GetProcessTimes(
+        identityProcess.get(),
+        &creationTime,
+        &exitTime,
+        &kernelTime,
+        &userTime);
+    const DWORD identityTimeError = identityTimeOk ? ERROR_SUCCESS : ::GetLastError();
+    const ULONGLONG actualCreationTime100ns = identityTimeOk
+        ? (static_cast<ULONGLONG>(creationTime.dwHighDateTime) << 32U) |
+            static_cast<ULONGLONG>(creationTime.dwLowDateTime)
+        : 0U;
+    if (!identityTimeOk || actualCreationTime100ns == 0U ||
+        actualCreationTime100ns != expectedCreationTime100ns) {
+        snapshot.basic.statusText = !identityTimeOk
+            ? Win32ErrorText(L"GetProcessTimes(identity)", identityTimeError)
+            : L"Process identity changed (PID was reused); detail refresh skipped.";
+        snapshot.errorText = L"Basic: " + snapshot.basic.statusText;
+        return snapshot;
+    }
+
     snapshot.basic = CollectBasicInfo(processId, snapshot.basicSucceeded);
 
     std::wstring threadStatus;

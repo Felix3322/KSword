@@ -15,7 +15,7 @@ public:
     // Win32 identity, token, timing, memory, I/O, PEB and affinity fields while
     // tolerating protected, exited or access-denied targets; output always
     // contains per-section status text.
-    ProcessDetailSnapshot Collect(DWORD processId) const;
+    ProcessDetailSnapshot Collect(DWORD processId, ULONGLONG expectedCreationTime100ns) const;
 };
 
 } // namespace Ksword::Features::ProcessDetail

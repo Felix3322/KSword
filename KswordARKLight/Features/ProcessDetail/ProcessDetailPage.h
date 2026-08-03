@@ -24,7 +24,11 @@ namespace Ksword::Features::ProcessDetail {
 // resources, or binaries.
 class ProcessDetailPage final {
 public:
-    static HWND Create(HWND parent, DWORD processId, const RECT& bounds);
+    static HWND Create(
+        HWND parent,
+        DWORD processId,
+        ULONGLONG expectedCreationTime100ns,
+        const RECT& bounds);
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 private:
@@ -210,7 +214,7 @@ private:
         UINT dialogIcon = 0;
     };
 
-    explicit ProcessDetailPage(DWORD processId);
+    ProcessDetailPage(DWORD processId, ULONGLONG expectedCreationTime100ns);
     ~ProcessDetailPage();
 
     ProcessDetailPage(const ProcessDetailPage&) = delete;
@@ -361,6 +365,7 @@ private:
 
 private:
     DWORD processId_ = 0;
+    ULONGLONG expectedCreationTime100ns_ = 0;
     HWND hwnd_ = nullptr;
     HWND tab_ = nullptr;
     HWND loadingOverlay_ = nullptr;
