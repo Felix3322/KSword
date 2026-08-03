@@ -53,13 +53,19 @@ typedef struct _KSW_SPECIAL_CAPTURE
  * Candidate captures are about 3 KiB each.  Keeping the references, strongest
  * candidate, and scratch candidate in one reusable pool block prevents the
  * nested signature-scan call chain from exhausting the small kernel stack.
+ * 同一非分页工作区也保存 DynData、PE 视图和遍历记录，确保嵌套验证函数
+ * 不再把这些大对象压入有限的内核栈。
  */
 typedef struct _KSW_SPECIAL_WORKSPACE
 {
+    KSW_DYN_STATE DynState;
+    KSW_RUNTIME_IMAGE_VIEW NtosView;
+    KSW_RUNTIME_IMAGE_VIEW ModuleView;
     KSW_RUNTIME_DATA_REFERENCE References[KSW_SPECIAL_MAX_REFERENCES];
     KSW_SPECIAL_CAPTURE Best;
     KSW_SPECIAL_CAPTURE Candidate;
     KSW_SPECIAL_CAPTURE ListScratch;
+    ULONG_PTR Visited[KSW_SPECIAL_MAX_RECORDS];
 } KSW_SPECIAL_WORKSPACE, *PKSW_SPECIAL_WORKSPACE;
 
 typedef enum _KSW_SPECIAL_CAPTURE_KIND
@@ -99,7 +105,8 @@ Return Value:
 
 static BOOLEAN
 KswordArkSpecialInitializeNtosView(
-    _Out_ KSW_RUNTIME_IMAGE_VIEW* ViewOut
+    _Out_ KSW_RUNTIME_IMAGE_VIEW* ViewOut,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace
     )
 /*++
 
@@ -114,27 +121,29 @@ Return Value:
 
 --*/
 {
-    KSW_DYN_STATE state;
+    KSW_DYN_STATE* state = NULL;
 
-    if (ViewOut == NULL) {
+    if (ViewOut == NULL || Workspace == NULL) {
         return FALSE;
     }
-    RtlZeroMemory(&state, sizeof(state));
-    KswordARKDynDataSnapshot(&state);
-    if (state.Ntoskrnl.present == 0UL ||
-        state.Ntoskrnl.imageBase == 0ULL ||
-        state.Ntoskrnl.sizeOfImage == 0UL) {
+    state = &Workspace->DynState;
+    RtlZeroMemory(state, sizeof(*state));
+    KswordARKDynDataSnapshot(state);
+    if (state->Ntoskrnl.present == 0UL ||
+        state->Ntoskrnl.imageBase == 0ULL ||
+        state->Ntoskrnl.sizeOfImage == 0UL) {
         return FALSE;
     }
     return KswordARKRuntimeInitializeImageView(
-        (PVOID)(ULONG_PTR)state.Ntoskrnl.imageBase,
-        state.Ntoskrnl.sizeOfImage,
+        (PVOID)(ULONG_PTR)state->Ntoskrnl.imageBase,
+        state->Ntoskrnl.sizeOfImage,
         ViewOut);
 }
 
 static BOOLEAN
 KswordArkSpecialAddressIsExecutable(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG64 Address
     )
 /*++
@@ -152,28 +161,29 @@ Return Value:
 {
     ULONG index = 0UL;
 
-    if (ModuleCache == NULL || ModuleCache->ModuleInfo == NULL || Address == 0ULL) {
+    if (ModuleCache == NULL || ModuleCache->ModuleInfo == NULL ||
+        Workspace == NULL || Address == 0ULL) {
         return FALSE;
     }
     for (index = 0UL; index < ModuleCache->ModuleInfo->NumberOfModules; ++index) {
         const KSWORD_ARK_CALLBACK_MODULE_ENTRY* module =
             &ModuleCache->ModuleInfo->Modules[index];
         const ULONG64 moduleBase = (ULONG64)(ULONG_PTR)module->ImageBase;
-        KSW_RUNTIME_IMAGE_VIEW view;
+        KSW_RUNTIME_IMAGE_VIEW* view = &Workspace->ModuleView;
 
         if (moduleBase == 0ULL || module->ImageSize == 0UL ||
             Address < moduleBase || Address - moduleBase >= module->ImageSize) {
             continue;
         }
-        RtlZeroMemory(&view, sizeof(view));
+        RtlZeroMemory(view, sizeof(*view));
         if (!KswordARKRuntimeInitializeImageView(
                 module->ImageBase,
                 module->ImageSize,
-                &view)) {
+                view)) {
             return FALSE;
         }
         return KswordARKRuntimeAddressIsExecutable(
-            &view,
+            view,
             (ULONG_PTR)Address,
             1U);
     }
@@ -183,6 +193,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialAddUniqueExecutable(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG64 Candidate,
     _Inout_ ULONG64* UniqueAddress,
     _Inout_ ULONG* UniqueCount
@@ -200,7 +211,7 @@ Return Value:
 --*/
 {
     if (UniqueAddress == NULL || UniqueCount == NULL ||
-        !KswordArkSpecialAddressIsExecutable(ModuleCache, Candidate)) {
+        !KswordArkSpecialAddressIsExecutable(ModuleCache, Workspace, Candidate)) {
         return TRUE;
     }
     if (*UniqueCount == 0UL) {
@@ -218,6 +229,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialFindExecutableAround(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG_PTR CenterAddress,
     _In_ BOOLEAN DecodeShiftedValues,
     _Out_ ULONG64* CallbackAddressOut
@@ -240,7 +252,7 @@ Return Value:
     ULONG uniqueCount = 0UL;
     ULONG64 uniqueAddress = 0ULL;
 
-    if (ModuleCache == NULL || CallbackAddressOut == NULL ||
+    if (ModuleCache == NULL || Workspace == NULL || CallbackAddressOut == NULL ||
         !KswordArkSpecialIsKernelPointer(CenterAddress)) {
         return FALSE;
     }
@@ -273,6 +285,7 @@ Return Value:
         }
         if (!KswordArkSpecialAddUniqueExecutable(
                 ModuleCache,
+                Workspace,
                 (ULONG64)rawValue,
                 &uniqueAddress,
                 &uniqueCount)) {
@@ -283,6 +296,7 @@ Return Value:
             decodedValue = ((ULONG64)rawValue >> 8U) | 0xFFFF000000000000ULL;
             if (!KswordArkSpecialAddUniqueExecutable(
                     ModuleCache,
+                    Workspace,
                     decodedValue,
                     &uniqueAddress,
                     &uniqueCount)) {
@@ -303,6 +317,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialFindExecutableIndirect(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG_PTR NodeAddress,
     _Out_ ULONG64* CallbackAddressOut,
     _Out_ ULONG64* ContextAddressOut
@@ -327,13 +342,14 @@ Return Value:
     ULONG64 uniqueContext = 0ULL;
     ULONG uniqueCount = 0UL;
 
-    if (CallbackAddressOut == NULL || ContextAddressOut == NULL) {
+    if (Workspace == NULL || CallbackAddressOut == NULL || ContextAddressOut == NULL) {
         return FALSE;
     }
     *CallbackAddressOut = 0ULL;
     *ContextAddressOut = 0ULL;
     if (KswordArkSpecialFindExecutableAround(
             ModuleCache,
+            Workspace,
             NodeAddress,
             FALSE,
             &callbackAddress)) {
@@ -355,6 +371,7 @@ Return Value:
         if (!KswordArkSpecialIsKernelPointer(ownerAddress) ||
             !KswordArkSpecialFindExecutableAround(
                 ModuleCache,
+                Workspace,
                 ownerAddress,
                 FALSE,
                 &callbackAddress)) {
@@ -423,6 +440,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialCaptureDoubleList(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG_PTR HeadAddress,
     _In_ BOOLEAN AllowIndirect,
     _Inout_ KSW_SPECIAL_CAPTURE* Capture
@@ -445,7 +463,7 @@ Return Value:
     ULONG_PTR previousAddress = HeadAddress;
     ULONG visitCount = 0UL;
 
-    if (Capture == NULL ||
+    if (Capture == NULL || Workspace == NULL ||
         !KswordArkSpecialReadValidatedListHead(HeadAddress, &head)) {
         return FALSE;
     }
@@ -467,6 +485,7 @@ Return Value:
         if (AllowIndirect) {
             if (!KswordArkSpecialFindExecutableIndirect(
                     ModuleCache,
+                    Workspace,
                     currentAddress,
                     &callbackAddress,
                     &contextAddress)) {
@@ -475,6 +494,7 @@ Return Value:
         }
         else if (!KswordArkSpecialFindExecutableAround(
                 ModuleCache,
+                Workspace,
                 currentAddress,
                 FALSE,
                 &callbackAddress)) {
@@ -500,6 +520,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialCaptureSingleList(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG_PTR HeadAddress,
     _Inout_ KSW_SPECIAL_CAPTURE* Capture
     )
@@ -518,14 +539,16 @@ Return Value:
 {
     SINGLE_LIST_ENTRY head;
     ULONG_PTR currentAddress = 0U;
-    ULONG_PTR visited[KSW_SPECIAL_MAX_RECORDS];
+    ULONG_PTR* visited = NULL;
     ULONG visitCount = 0UL;
 
-    if (Capture == NULL || !KswordArkSpecialIsKernelPointer(HeadAddress) ||
+    if (Capture == NULL || Workspace == NULL ||
+        !KswordArkSpecialIsKernelPointer(HeadAddress) ||
         !KswordARKRuntimeReadMemory((const VOID*)HeadAddress, &head, sizeof(head))) {
         return FALSE;
     }
-    RtlZeroMemory(visited, sizeof(visited));
+    visited = Workspace->Visited;
+    RtlZeroMemory(visited, sizeof(Workspace->Visited));
     currentAddress = (ULONG_PTR)head.Next;
     while (currentAddress != 0U) {
         SINGLE_LIST_ENTRY current;
@@ -547,6 +570,7 @@ Return Value:
                 sizeof(current)) ||
             !KswordArkSpecialFindExecutableAround(
                 ModuleCache,
+                Workspace,
                 currentAddress,
                 FALSE,
                 &callbackAddress)) {
@@ -568,6 +592,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialCapturePriorityArray(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG_PTR ArrayAddress,
     _Inout_ KSW_SPECIAL_CAPTURE* Capture
     )
@@ -586,7 +611,8 @@ Return Value:
 {
     ULONG slot = 0UL;
 
-    if (Capture == NULL || !KswordArkSpecialIsKernelPointer(ArrayAddress)) {
+    if (Capture == NULL || Workspace == NULL ||
+        !KswordArkSpecialIsKernelPointer(ArrayAddress)) {
         return FALSE;
     }
     for (slot = 0UL; slot < KSW_SPECIAL_PRIORITY_SLOT_COUNT; ++slot) {
@@ -605,6 +631,7 @@ Return Value:
         if (!KswordArkSpecialIsKernelPointer(recordAddress) ||
             !KswordArkSpecialFindExecutableAround(
                 ModuleCache,
+                Workspace,
                 recordAddress,
                 TRUE,
                 &callbackAddress)) {
@@ -624,6 +651,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialCapturePnpLists(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ ULONG_PTR ArrayAddress,
     _Inout_ KSW_SPECIAL_CAPTURE* Capture,
     _Inout_ KSW_SPECIAL_CAPTURE* ListScratch
@@ -643,8 +671,8 @@ Return Value:
 {
     ULONG listIndex = 0UL;
 
-    if (Capture == NULL || ListScratch == NULL || Capture == ListScratch ||
-        !KswordArkSpecialIsKernelPointer(ArrayAddress)) {
+    if (Workspace == NULL || Capture == NULL || ListScratch == NULL ||
+        Capture == ListScratch || !KswordArkSpecialIsKernelPointer(ArrayAddress)) {
         return FALSE;
     }
     for (listIndex = 0UL; listIndex < KSW_SPECIAL_PNP_LIST_COUNT; ++listIndex) {
@@ -657,6 +685,7 @@ Return Value:
         RtlZeroMemory(ListScratch, sizeof(*ListScratch));
         if (!KswordArkSpecialCaptureDoubleList(
                 ModuleCache,
+                Workspace,
                 headAddress,
                 FALSE,
                 ListScratch) ||
@@ -677,6 +706,7 @@ Return Value:
 static BOOLEAN
 KswordArkSpecialTryCapture(
     _In_ const KSWORD_ARK_CALLBACK_MODULE_CACHE* ModuleCache,
+    _Inout_ KSW_SPECIAL_WORKSPACE* Workspace,
     _In_ KSW_SPECIAL_CAPTURE_KIND Kind,
     _In_ ULONG_PTR CandidateAddress,
     _Out_ KSW_SPECIAL_CAPTURE* CaptureOut,
@@ -694,7 +724,7 @@ Return Value:
 
 --*/
 {
-    if (CaptureOut == NULL) {
+    if (CaptureOut == NULL || Workspace == NULL) {
         return FALSE;
     }
     RtlZeroMemory(CaptureOut, sizeof(*CaptureOut));
@@ -702,28 +732,33 @@ Return Value:
     case KswSpecialCaptureDoubleList:
         return KswordArkSpecialCaptureDoubleList(
             ModuleCache,
+            Workspace,
             CandidateAddress,
             FALSE,
             CaptureOut);
     case KswSpecialCaptureDoubleListIndirect:
         return KswordArkSpecialCaptureDoubleList(
             ModuleCache,
+            Workspace,
             CandidateAddress,
             TRUE,
             CaptureOut);
     case KswSpecialCaptureSingleList:
         return KswordArkSpecialCaptureSingleList(
             ModuleCache,
+            Workspace,
             CandidateAddress,
             CaptureOut);
     case KswSpecialCapturePriorityArray:
         return KswordArkSpecialCapturePriorityArray(
             ModuleCache,
+            Workspace,
             CandidateAddress,
             CaptureOut);
     case KswSpecialCapturePnpLists:
         return KswordArkSpecialCapturePnpLists(
             ModuleCache,
+            Workspace,
             CandidateAddress,
             CaptureOut,
             ListScratch);
@@ -783,9 +818,12 @@ Return Value:
     if (Workspace == NULL || AmbiguousOut == NULL) {
         return FALSE;
     }
-    // The same workspace is reused for all six families, so fully reset it
-    // before each independent candidate search.
-    RtlZeroMemory(Workspace, sizeof(*Workspace));
+    // Preserve NtosView and DynState while resetting only reusable search data.
+    RtlZeroMemory(Workspace->References, sizeof(Workspace->References));
+    RtlZeroMemory(&Workspace->Best, sizeof(Workspace->Best));
+    RtlZeroMemory(&Workspace->Candidate, sizeof(Workspace->Candidate));
+    RtlZeroMemory(&Workspace->ListScratch, sizeof(Workspace->ListScratch));
+    RtlZeroMemory(Workspace->Visited, sizeof(Workspace->Visited));
     *AmbiguousOut = FALSE;
     referenceCount = KswordARKRuntimeCollectAnchoredDataReferences(
         NtosView,
@@ -816,6 +854,7 @@ Return Value:
             RtlZeroMemory(candidate, sizeof(*candidate));
             if (!KswordArkSpecialTryCapture(
                     ModuleCache,
+                    Workspace,
                     Kind,
                     candidates[candidateIndex],
                     candidate,
@@ -1000,7 +1039,6 @@ Return Value:
         "IoRegisterPlugPlayNotification",
         "IoUnregisterPlugPlayNotification"
     };
-    KSW_RUNTIME_IMAGE_VIEW ntosView;
     KSWORD_ARK_CALLBACK_MODULE_CACHE moduleCache;
     KSW_SPECIAL_WORKSPACE* workspace = NULL;
     NTSTATUS moduleStatus = STATUS_SUCCESS;
@@ -1008,7 +1046,6 @@ Return Value:
     if (Builder == NULL) {
         return;
     }
-    RtlZeroMemory(&ntosView, sizeof(ntosView));
     KswordArkCallbackEnumInitModuleCache(&moduleCache);
     moduleStatus = KswordArkCallbackEnumEnsureModuleCache(&moduleCache);
     // One bounded nonpaged block is reused serially by all family searches;
@@ -1016,9 +1053,12 @@ Return Value:
     workspace = (KSW_SPECIAL_WORKSPACE*)KswordARKAllocateNonPagedPool(
         sizeof(*workspace),
         KSW_SPECIAL_WORKSPACE_POOL_TAG);
+    if (workspace != NULL) {
+        RtlZeroMemory(workspace, sizeof(*workspace));
+    }
     if (!NT_SUCCESS(moduleStatus) ||
-        !KswordArkSpecialInitializeNtosView(&ntosView) ||
-        workspace == NULL) {
+        workspace == NULL ||
+        !KswordArkSpecialInitializeNtosView(&workspace->NtosView, workspace)) {
         const ULONG classes[] = {
             KSWORD_ARK_CALLBACK_ENUM_CLASS_POWER_SETTING,
             KSWORD_ARK_CALLBACK_ENUM_CLASS_COALESCING,
@@ -1055,7 +1095,7 @@ Return Value:
     KswordArkSpecialEnumerateOne(
         Builder,
         &moduleCache,
-        &ntosView,
+        &workspace->NtosView,
         workspace,
         powerAnchors,
         RTL_NUMBER_OF(powerAnchors),
@@ -1066,7 +1106,7 @@ Return Value:
     KswordArkSpecialEnumerateOne(
         Builder,
         &moduleCache,
-        &ntosView,
+        &workspace->NtosView,
         workspace,
         coalescingAnchors,
         RTL_NUMBER_OF(coalescingAnchors),
@@ -1077,7 +1117,7 @@ Return Value:
     KswordArkSpecialEnumerateOne(
         Builder,
         &moduleCache,
-        &ntosView,
+        &workspace->NtosView,
         workspace,
         priorityAnchors,
         RTL_NUMBER_OF(priorityAnchors),
@@ -1088,7 +1128,7 @@ Return Value:
     KswordArkSpecialEnumerateOne(
         Builder,
         &moduleCache,
-        &ntosView,
+        &workspace->NtosView,
         workspace,
         debugPrintAnchors,
         RTL_NUMBER_OF(debugPrintAnchors),
@@ -1099,7 +1139,7 @@ Return Value:
     KswordArkSpecialEnumerateOne(
         Builder,
         &moduleCache,
-        &ntosView,
+        &workspace->NtosView,
         workspace,
         empAnchors,
         RTL_NUMBER_OF(empAnchors),
@@ -1110,7 +1150,7 @@ Return Value:
     KswordArkSpecialEnumerateOne(
         Builder,
         &moduleCache,
-        &ntosView,
+        &workspace->NtosView,
         workspace,
         plugPlayAnchors,
         RTL_NUMBER_OF(plugPlayAnchors),
