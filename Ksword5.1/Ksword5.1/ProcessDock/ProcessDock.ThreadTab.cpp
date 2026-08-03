@@ -1765,7 +1765,11 @@ void ProcessDock::executeSuspendThreadAction()
 
     kLogEvent actionEvent;
     std::string detailText;
-    const bool actionOk = ks::process::SuspendThreadById(threadRecord->threadId, &detailText);
+    const bool actionOk = ks::process::SuspendThreadIfIdentityMatches(
+        threadRecord->threadId,
+        threadRecord->ownerPid,
+        threadRecord->createTime100ns,
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDock] executeSuspendThreadAction: tid=" << threadRecord->threadId
         << ", actionOk=" << (actionOk ? "true" : "false")
@@ -1784,7 +1788,11 @@ void ProcessDock::executeResumeThreadAction()
 
     kLogEvent actionEvent;
     std::string detailText;
-    const bool actionOk = ks::process::ResumeThreadById(threadRecord->threadId, &detailText);
+    const bool actionOk = ks::process::ResumeThreadIfIdentityMatches(
+        threadRecord->threadId,
+        threadRecord->ownerPid,
+        threadRecord->createTime100ns,
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDock] executeResumeThreadAction: tid=" << threadRecord->threadId
         << ", actionOk=" << (actionOk ? "true" : "false")
@@ -2129,7 +2137,11 @@ void ProcessDock::executeTerminateThreadAction()
 
     kLogEvent actionEvent;
     std::string detailText;
-    const bool actionOk = ks::process::TerminateThreadById(threadRecord->threadId, &detailText);
+    const bool actionOk = ks::process::TerminateThreadIfIdentityMatches(
+        threadRecord->threadId,
+        threadRecord->ownerPid,
+        threadRecord->createTime100ns,
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDock] executeTerminateThreadAction: tid=" << threadRecord->threadId
         << ", actionOk=" << (actionOk ? "true" : "false")

@@ -591,6 +591,25 @@ namespace ks::process
     // TerminateThreadById 作用：结束指定线程。
     bool TerminateThreadById(std::uint32_t threadId, std::string* errorMessage);
 
+    // *IfIdentityMatches 系列：
+    // - 在同一线程句柄上核验 TID、所属 PID 与 FILETIME 创建时间；
+    // - 验证成功后才执行 R3 挂起/恢复/结束，避免线程 ID 复用后操作错误对象。
+    bool SuspendThreadIfIdentityMatches(
+        std::uint32_t threadId,
+        std::uint32_t expectedOwnerPid,
+        std::uint64_t expectedCreationTime100ns,
+        std::string* errorMessage);
+    bool ResumeThreadIfIdentityMatches(
+        std::uint32_t threadId,
+        std::uint32_t expectedOwnerPid,
+        std::uint64_t expectedCreationTime100ns,
+        std::string* errorMessage);
+    bool TerminateThreadIfIdentityMatches(
+        std::uint32_t threadId,
+        std::uint32_t expectedOwnerPid,
+        std::uint64_t expectedCreationTime100ns,
+        std::string* errorMessage);
+
     // InjectDllByPath 作用：
     // - 把指定 DLL 路径注入到目标进程（LoadLibraryW 远程线程方案）。
     bool InjectDllByPath(std::uint32_t pid, const std::string& dllPath, std::string* errorMessage);

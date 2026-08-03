@@ -4982,6 +4982,189 @@ namespace ks::process
         return false;
     }
 
+    namespace
+    {
+        enum class ThreadIdentityAction
+        {
+            Suspend,
+            Resume,
+            Terminate
+        };
+
+        bool applyThreadActionIfIdentityMatches(
+            const std::uint32_t threadId,
+            const std::uint32_t expectedOwnerPid,
+            const std::uint64_t expectedCreationTime100ns,
+            const ThreadIdentityAction action,
+            std::string* const errorMessage)
+        {
+            if (threadId == 0U || expectedOwnerPid == 0U || expectedCreationTime100ns == 0U)
+            {
+                if (errorMessage != nullptr)
+                {
+                    *errorMessage = "thread identity is unavailable; action skipped.";
+                }
+                return false;
+            }
+
+            const DWORD actionAccess = action == ThreadIdentityAction::Terminate
+                ? THREAD_TERMINATE
+                : THREAD_SUSPEND_RESUME;
+            const HANDLE threadHandle = ::OpenThread(
+                actionAccess | THREAD_QUERY_LIMITED_INFORMATION,
+                FALSE,
+                threadId);
+            if (threadHandle == nullptr)
+            {
+                if (errorMessage != nullptr)
+                {
+                    *errorMessage = "OpenThread(for identity-verified action) failed: " +
+                        FormatLastErrorMessage(::GetLastError());
+                }
+                return false;
+            }
+
+            const DWORD actualOwnerPid = ::GetProcessIdOfThread(threadHandle);
+            const DWORD ownerQueryError = actualOwnerPid != 0U ? ERROR_SUCCESS : ::GetLastError();
+            FILETIME creationTime{};
+            FILETIME exitTime{};
+            FILETIME kernelTime{};
+            FILETIME userTime{};
+            const BOOL timeQueryOk = ::GetThreadTimes(
+                threadHandle,
+                &creationTime,
+                &exitTime,
+                &kernelTime,
+                &userTime);
+            const DWORD timeQueryError = timeQueryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+            const std::uint64_t actualCreationTime100ns = timeQueryOk != FALSE
+                ? ks::str::FileTimeToUint64(
+                    creationTime.dwHighDateTime,
+                    creationTime.dwLowDateTime)
+                : 0U;
+            if (actualOwnerPid == 0U || timeQueryOk == FALSE ||
+                actualCreationTime100ns == 0U ||
+                actualOwnerPid != expectedOwnerPid ||
+                actualCreationTime100ns != expectedCreationTime100ns)
+            {
+                ::CloseHandle(threadHandle);
+                if (errorMessage != nullptr)
+                {
+                    if (actualOwnerPid == 0U)
+                    {
+                        *errorMessage = "GetProcessIdOfThread failed: " +
+                            FormatLastErrorMessage(ownerQueryError);
+                    }
+                    else if (timeQueryOk == FALSE)
+                    {
+                        *errorMessage = "GetThreadTimes failed: " +
+                            FormatLastErrorMessage(timeQueryError);
+                    }
+                    else if (actualOwnerPid != expectedOwnerPid)
+                    {
+                        *errorMessage = "thread owner changed; action skipped.";
+                    }
+                    else
+                    {
+                        *errorMessage = "thread identity changed (TID was reused); action skipped.";
+                    }
+                }
+                return false;
+            }
+
+            if (action == ThreadIdentityAction::Suspend)
+            {
+                const DWORD result = ::SuspendThread(threadHandle);
+                const DWORD actionError = result == static_cast<DWORD>(-1)
+                    ? ::GetLastError()
+                    : ERROR_SUCCESS;
+                ::CloseHandle(threadHandle);
+                if (result != static_cast<DWORD>(-1))
+                {
+                    return true;
+                }
+                if (errorMessage != nullptr)
+                {
+                    *errorMessage = "SuspendThread failed: " + FormatLastErrorMessage(actionError);
+                }
+                return false;
+            }
+
+            if (action == ThreadIdentityAction::Resume)
+            {
+                const DWORD result = ::ResumeThread(threadHandle);
+                const DWORD actionError = result == static_cast<DWORD>(-1)
+                    ? ::GetLastError()
+                    : ERROR_SUCCESS;
+                ::CloseHandle(threadHandle);
+                if (result != static_cast<DWORD>(-1))
+                {
+                    return true;
+                }
+                if (errorMessage != nullptr)
+                {
+                    *errorMessage = "ResumeThread failed: " + FormatLastErrorMessage(actionError);
+                }
+                return false;
+            }
+
+            const BOOL result = ::TerminateThread(threadHandle, 1);
+            const DWORD actionError = result != FALSE ? ERROR_SUCCESS : ::GetLastError();
+            ::CloseHandle(threadHandle);
+            if (result != FALSE)
+            {
+                return true;
+            }
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "TerminateThread failed: " + FormatLastErrorMessage(actionError);
+            }
+            return false;
+        }
+    }
+
+    bool SuspendThreadIfIdentityMatches(
+        const std::uint32_t threadId,
+        const std::uint32_t expectedOwnerPid,
+        const std::uint64_t expectedCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return applyThreadActionIfIdentityMatches(
+            threadId,
+            expectedOwnerPid,
+            expectedCreationTime100ns,
+            ThreadIdentityAction::Suspend,
+            errorMessage);
+    }
+
+    bool ResumeThreadIfIdentityMatches(
+        const std::uint32_t threadId,
+        const std::uint32_t expectedOwnerPid,
+        const std::uint64_t expectedCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return applyThreadActionIfIdentityMatches(
+            threadId,
+            expectedOwnerPid,
+            expectedCreationTime100ns,
+            ThreadIdentityAction::Resume,
+            errorMessage);
+    }
+
+    bool TerminateThreadIfIdentityMatches(
+        const std::uint32_t threadId,
+        const std::uint32_t expectedOwnerPid,
+        const std::uint64_t expectedCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return applyThreadActionIfIdentityMatches(
+            threadId,
+            expectedOwnerPid,
+            expectedCreationTime100ns,
+            ThreadIdentityAction::Terminate,
+            errorMessage);
+    }
+
     bool InjectDllByPath(const std::uint32_t pid, const std::string& dllPath, std::string* const errorMessage)
     {
         if (dllPath.empty())
