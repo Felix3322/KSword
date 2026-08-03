@@ -453,18 +453,29 @@ void ProcessDetailPage::ApplyTokenSwitches() {
         IsChecked(Control(TabIndex::TokenSwitch, TokenMandatoryNewProcessMin))
     };
     const DWORD processId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
     ExecuteBackgroundAction(
         TabIndex::TokenSwitch,
         TokenSwitchStatus,
         L"● 正在后台写回令牌开关…",
-        [processId, values] {
+        [processId, expectedProcessCreationTime100ns, values] {
             ProcessDetailActionResult action{};
             const auto setInformation = reinterpret_cast<NtSetInformationTokenFn>(
                 ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtSetInformationToken"));
-            ScopedHandle process(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId));
+            Ksword::Core::UniqueHandle verifiedProcess;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedProcessActionTarget(
+                    processId,
+                    expectedProcessCreationTime100ns,
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                    verifiedProcess,
+                    identityError)) {
+                action.statusText = L"● 应用失败：" + identityError;
+                return action;
+            }
             HANDLE rawToken = nullptr;
-            if (!setInformation || !process || !::OpenProcessToken(
-                    process.get(), TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &rawToken)) {
+            if (!setInformation || !::OpenProcessToken(
+                    verifiedProcess.get(), TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, &rawToken)) {
                 action.statusText = L"● 应用失败：无法获取 NtSetInformationToken/令牌写权限";
                 return action;
             }
@@ -540,18 +551,29 @@ void ProcessDetailPage::ApplyRawTokenValue() {
         return;
     }
     const DWORD processId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
     ExecuteBackgroundAction(
         TabIndex::TokenSwitch,
         TokenSwitchStatus,
         L"● 正在后台写入原始令牌信息…",
-        [informationClass, processId, payload = std::move(payload)]() mutable {
+        [informationClass, processId, expectedProcessCreationTime100ns, payload = std::move(payload)]() mutable {
             ProcessDetailActionResult action{};
             const auto setInformation = reinterpret_cast<NtSetInformationTokenFn>(
                 ::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtSetInformationToken"));
-            ScopedHandle process(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId));
+            Ksword::Core::UniqueHandle verifiedProcess;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedProcessActionTarget(
+                    processId,
+                    expectedProcessCreationTime100ns,
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                    verifiedProcess,
+                    identityError)) {
+                action.statusText = L"● 原始设置失败：" + identityError;
+                return action;
+            }
             HANDLE rawToken = nullptr;
-            if (!setInformation || !process || !::OpenProcessToken(
-                    process.get(), TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &rawToken)) {
+            if (!setInformation || !::OpenProcessToken(
+                    verifiedProcess.get(), TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID, &rawToken)) {
                 action.statusText = L"● 原始设置失败：无法打开目标令牌";
                 return action;
             }
