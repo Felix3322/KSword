@@ -125,6 +125,7 @@ struct ProcessTokenSwitchSnapshot {
 // only after the latest request completes.
 struct ProcessPebSnapshot {
     bool completed = false;
+    bool identityMatched = false;
     bool affinityKnown = false;
     bool priorityKnown = false;
     bool selectedPebKnown = false;

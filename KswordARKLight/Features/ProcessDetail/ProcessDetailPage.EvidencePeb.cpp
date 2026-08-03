@@ -525,7 +525,10 @@ std::wstring MemoryProtectText(const DWORD protect) {
 // CollectPebSnapshot owns all remote-memory reads and address-space enumeration
 // performed by the PEB page. It receives only immutable request inputs and
 // returns strings/values that can safely be applied after the worker finishes.
-ProcessPebSnapshot CollectPebSnapshot(const DWORD processId, const int selectedTarget) {
+ProcessPebSnapshot CollectPebSnapshot(
+    const DWORD processId,
+    const ULONGLONG expectedProcessCreationTime100ns,
+    const int selectedTarget) {
     ProcessPebSnapshot snapshot{};
     const auto begin = std::chrono::steady_clock::now();
     std::wostringstream report;
@@ -534,12 +537,50 @@ ProcessPebSnapshot CollectPebSnapshot(const DWORD processId, const int selectedT
     std::vector<std::wstring> diagnostics;
     std::vector<PebReadResult> pebResults;
 
+    if (processId == 0U || expectedProcessCreationTime100ns == 0U) {
+        report << L"ProcessIdentity: <unavailable>\r\n";
+        snapshot.completed = true;
+        snapshot.reportText = report.str();
+        snapshot.statusText = L"● PEB 刷新已取消 | 进程身份不可用";
+        return snapshot;
+    }
+
     HANDLE process = ::OpenProcess(
         PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
         FALSE,
         processId);
     if (!process) {
         process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    }
+    if (process) {
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        if (!::GetProcessTimes(process, &creationTime, &exitTime, &kernelTime, &userTime)) {
+            const DWORD identityError = ::GetLastError();
+            report << L"ProcessIdentity: <GetProcessTimes failed>\r\n";
+            diagnostics.push_back(L"GetProcessTimes(identity)失败(" + std::to_wstring(identityError) + L")");
+            ::CloseHandle(process);
+            snapshot.completed = true;
+            snapshot.reportText = report.str();
+            snapshot.statusText = L"● PEB 刷新已取消 | 无法验证进程身份";
+            return snapshot;
+        }
+        const ULONGLONG actualProcessCreationTime100ns =
+            (static_cast<ULONGLONG>(creationTime.dwHighDateTime) << 32U) |
+            static_cast<ULONGLONG>(creationTime.dwLowDateTime);
+        if (actualProcessCreationTime100ns == 0U ||
+            actualProcessCreationTime100ns != expectedProcessCreationTime100ns) {
+            report << L"ProcessIdentity: <changed>\r\n";
+            diagnostics.push_back(L"目标进程实例已变更（PID 已复用），PEB 刷新被取消。");
+            ::CloseHandle(process);
+            snapshot.completed = true;
+            snapshot.reportText = report.str();
+            snapshot.statusText = L"● PEB 刷新已取消 | 目标进程实例已变更";
+            return snapshot;
+        }
+        snapshot.identityMatched = true;
     }
     if (!process) {
         diagnostics.push_back(L"OpenProcess失败(" + std::to_wstring(::GetLastError()) + L")");
@@ -1068,32 +1109,45 @@ void ProcessDetailPage::RefreshPebReport() {
     const int selectedTarget = static_cast<int>(
         ::SendMessageW(Control(TabIndex::Peb, PebTarget), CB_GETCURSEL, 0, 0));
     const DWORD processId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
     pebTask_->request(
-        [processId, selectedTarget] { return CollectPebSnapshot(processId, selectedTarget); },
+        [processId, expectedProcessCreationTime100ns, selectedTarget] {
+            return CollectPebSnapshot(processId, expectedProcessCreationTime100ns, selectedTarget);
+        },
         [this](std::uint64_t, std::optional<ProcessPebSnapshot>&& result, std::exception_ptr error) {
             if (error || !result.has_value()) {
                 SetPageStatus(TabIndex::Peb, PebStatus, L"● PEB 后台查询异常结束。");
                 return;
             }
             SetControlText(TabIndex::Peb, PebOutput, result->reportText);
-            if (result->affinityKnown) {
-                SetControlText(TabIndex::Peb, PebAffinity, result->affinityText);
-            }
-            if (result->priorityKnown) {
-                ::SendMessageW(
-                    Control(TabIndex::Peb, PebPriority),
-                    CB_SETCURSEL,
-                    static_cast<WPARAM>(result->priorityComboIndex),
-                    0);
-            }
-            if (result->selectedPebKnown) {
-                SetControlText(TabIndex::Peb, PebCommandLine, result->commandLine);
-                SetControlText(TabIndex::Peb, PebImagePath, result->imagePath);
-                SetControlText(TabIndex::Peb, PebCurrentDirectory, result->currentDirectory);
-                SetControlText(TabIndex::Peb, PebImageBase, result->imageBase);
+            if (!result->identityMatched) {
+                SetControlText(TabIndex::Peb, PebAffinity, L"Unavailable");
+                ::SendMessageW(Control(TabIndex::Peb, PebPriority), CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+                SetControlText(TabIndex::Peb, PebCommandLine, L"Unavailable");
+                SetControlText(TabIndex::Peb, PebImagePath, L"Unavailable");
+                SetControlText(TabIndex::Peb, PebCurrentDirectory, L"Unavailable");
+                SetControlText(TabIndex::Peb, PebEnvironmentName, L"Unavailable");
+                SetControlText(TabIndex::Peb, PebImageBase, L"Unavailable");
+            } else {
+                if (result->affinityKnown) {
+                    SetControlText(TabIndex::Peb, PebAffinity, result->affinityText);
+                }
+                if (result->priorityKnown) {
+                    ::SendMessageW(
+                        Control(TabIndex::Peb, PebPriority),
+                        CB_SETCURSEL,
+                        static_cast<WPARAM>(result->priorityComboIndex),
+                        0);
+                }
+                if (result->selectedPebKnown) {
+                    SetControlText(TabIndex::Peb, PebCommandLine, result->commandLine);
+                    SetControlText(TabIndex::Peb, PebImagePath, result->imagePath);
+                    SetControlText(TabIndex::Peb, PebCurrentDirectory, result->currentDirectory);
+                    SetControlText(TabIndex::Peb, PebImageBase, result->imageBase);
+                }
             }
             SetPageStatus(TabIndex::Peb, PebStatus, result->statusText);
-            pebLoaded_ = result->completed;
+            pebLoaded_ = result->completed && result->identityMatched;
         });
 
 }
