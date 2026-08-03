@@ -8,6 +8,8 @@
 #include <limits>
 #include <thread>
 
+#include <QInputDialog>
+
 using namespace process_detail_window_internal;
 
 // ============================================================
@@ -19,6 +21,13 @@ using namespace process_detail_window_internal;
 
 namespace
 {
+    constexpr int kHotkeyRowIndexRole = Qt::UserRole + 1;
+
+    QString hotkeyUiText(const QString& key, const QString& fallback)
+    {
+        return ks::i18n::contextText(key, fallback);
+    }
+
     struct HotkeyCandidate
     {
         QString objectText;
@@ -242,6 +251,15 @@ namespace
         return parts.join(QStringLiteral("+"));
     }
 
+    std::uint32_t hotkeyfFromModifiers(const std::uint32_t modifiers)
+    {
+        std::uint32_t hotkeyf = 0;
+        if ((modifiers & MOD_ALT) != 0U) hotkeyf |= HOTKEYF_ALT;
+        if ((modifiers & MOD_CONTROL) != 0U) hotkeyf |= HOTKEYF_CONTROL;
+        if ((modifiers & MOD_SHIFT) != 0U) hotkeyf |= HOTKEYF_SHIFT;
+        return hotkeyf;
+    }
+
     QString keyboardEnumStatusText(const std::uint32_t statusValue)
     {
         switch (statusValue)
@@ -378,7 +396,11 @@ namespace
             {"PRINTSCREEN", VK_SNAPSHOT},
             {"PRTSC", VK_SNAPSHOT},
             {"PAUSE", VK_PAUSE},
-            {"APPS", VK_APPS}
+            {"APPS", VK_APPS},
+            {"PLUS", VK_OEM_PLUS},
+            {"MINUS", VK_OEM_MINUS},
+            {"COMMA", VK_OEM_COMMA},
+            {"PERIOD", VK_OEM_PERIOD}
         };
 
         const auto it = keyNameMap.find(upperToken.toStdString());
@@ -395,7 +417,7 @@ namespace
     bool parseHotkeyText(const QString& sourceText, std::uint32_t& modifiersOut, std::uint32_t& virtualKeyOut)
     {
         QString text = sourceText.trimmed();
-        if (text.isEmpty() || !text.contains(QLatin1Char('+')))
+        if (text.isEmpty())
         {
             return false;
         }
@@ -427,6 +449,10 @@ namespace
             else if (modifierText == QStringLiteral("WIN"))
             {
                 modifiers |= MOD_WIN;
+            }
+            else
+            {
+                return false;
             }
         }
 
@@ -892,6 +918,39 @@ namespace
             candidates);
     }
 
+    struct AcceleratorResourceEntry
+    {
+        std::uint16_t flags = 0;
+        std::uint16_t key = 0;
+        std::uint16_t commandId = 0;
+        std::uint16_t padding = 0;
+    };
+    static_assert(sizeof(AcceleratorResourceEntry) == 8U, "PE accelerator resource entries must be 8 bytes");
+
+    QString acceleratorCharacterText(const std::uint16_t keyValue)
+    {
+        if (keyValue == 0U || keyValue > 0xFFU)
+        {
+            return QString();
+        }
+
+        const char ansiCharacter = static_cast<char>(keyValue & 0xFFU);
+        wchar_t unicodeCharacter = L'\0';
+        if (::MultiByteToWideChar(
+                CP_ACP,
+                MB_ERR_INVALID_CHARS,
+                &ansiCharacter,
+                1,
+                &unicodeCharacter,
+                1) != 1)
+        {
+            return QString();
+        }
+
+        const QChar character(static_cast<ushort>(unicodeCharacter));
+        return character.isPrint() ? QString(character).toUpper() : QString();
+    }
+
     struct AcceleratorEnumContext
     {
         HMODULE moduleHandle = nullptr;
@@ -932,25 +991,39 @@ namespace
         }
 
         const DWORD resourceBytes = ::SizeofResource(moduleHandle, resourceHandle);
-        if (resourceBytes < sizeof(ACCEL))
+        if (resourceBytes < sizeof(AcceleratorResourceEntry))
         {
             return TRUE;
         }
 
         HGLOBAL loadedResource = ::LoadResource(moduleHandle, resourceHandle);
-        const auto* accelEntries = static_cast<const ACCEL*>(::LockResource(loadedResource));
-        if (accelEntries == nullptr)
+        const auto* resourceData = static_cast<const unsigned char*>(::LockResource(loadedResource));
+        if (resourceData == nullptr)
         {
             return TRUE;
         }
 
-        const std::size_t entryCount = resourceBytes / sizeof(ACCEL);
+        // RT_ACCELERATOR uses ACCELTABLEENTRY (four WORDs, eight bytes), not the
+        // runtime ACCEL structure. Advancing by sizeof(ACCEL) misaligns every row
+        // after the first and produces bogus VK=0/garbled key names.
+        const std::size_t entryCount = resourceBytes / sizeof(AcceleratorResourceEntry);
         const QString resourceNameText = acceleratorResourceNameText(resourceName);
         for (std::size_t index = 0; index < entryCount; ++index)
         {
-            const ACCEL& accelEntry = accelEntries[index];
-            const BYTE flags = static_cast<BYTE>(accelEntry.fVirt & 0x7F);
+            AcceleratorResourceEntry acceleratorEntry{};
+            std::memcpy(
+                &acceleratorEntry,
+                resourceData + index * sizeof(AcceleratorResourceEntry),
+                sizeof(acceleratorEntry));
 
+            const bool isLastEntry = (acceleratorEntry.flags & 0x0080U) != 0U;
+            if ((acceleratorEntry.flags & ~0x009FU) != 0U)
+            {
+                if (isLastEntry) break;
+                continue;
+            }
+
+            const std::uint16_t flags = acceleratorEntry.flags & 0x007FU;
             std::uint32_t modifiers = 0;
             if ((flags & FCONTROL) != 0U) modifiers |= MOD_CONTROL;
             if ((flags & FSHIFT) != 0U) modifiers |= MOD_SHIFT;
@@ -960,40 +1033,45 @@ namespace
             QString keyOverride;
             if ((flags & FVIRTKEY) != 0U)
             {
-                virtualKey = accelEntry.key;
+                virtualKey = acceleratorEntry.key;
             }
             else
             {
-                const wchar_t keyChar = static_cast<wchar_t>(accelEntry.key);
-                SHORT vkScan = ::VkKeyScanW(keyChar);
-                if (vkScan != -1)
+                keyOverride = acceleratorCharacterText(acceleratorEntry.key);
+                if (!keyOverride.isEmpty())
                 {
-                    virtualKey = LOBYTE(vkScan);
+                    const SHORT vkScan = ::VkKeyScanW(keyOverride.at(0).unicode());
+                    if (vkScan != -1)
+                    {
+                        virtualKey = LOBYTE(vkScan);
+                    }
                 }
-                keyOverride = QString(QChar(static_cast<ushort>(keyChar))).toUpper();
             }
 
-            if (virtualKey == 0U && keyOverride.isEmpty())
+            if (virtualKey != 0U || !keyOverride.isEmpty())
             {
-                continue;
+                HotkeyCandidate row{};
+                row.objectText = QStringLiteral("%1:%2")
+                    .arg(context->modulePath, resourceNameText);
+                row.hotkeyId = acceleratorEntry.commandId;
+                row.modifiers = modifiers;
+                row.virtualKey = virtualKey;
+                row.hotkeyText = hotkeyTextFromParts(row.modifiers, row.virtualKey, keyOverride);
+                row.processId = context->processId;
+                row.threadId = 0;
+                row.processName = context->processName;
+                row.sourceText = QStringLiteral("PE Accelerator");
+                row.detailText = QStringLiteral("entry=%1 flags=0x%2")
+                    .arg(static_cast<qulonglong>(index))
+                    .arg(static_cast<unsigned int>(acceleratorEntry.flags), 4, 16, QChar('0'))
+                    .toUpper();
+                appendCandidate(*context->rows, *context->dedupeSet, std::move(row));
             }
 
-            HotkeyCandidate row{};
-            row.objectText = QStringLiteral("%1:%2")
-                .arg(context->modulePath, resourceNameText);
-            row.hotkeyId = accelEntry.cmd;
-            row.modifiers = modifiers;
-            row.virtualKey = virtualKey;
-            row.hotkeyText = hotkeyTextFromParts(row.modifiers, row.virtualKey, keyOverride);
-            row.processId = context->processId;
-            row.threadId = 0;
-            row.processName = context->processName;
-            row.sourceText = QStringLiteral("PE Accelerator");
-            row.detailText = QStringLiteral("entry=%1 flags=0x%2")
-                .arg(static_cast<qulonglong>(index))
-                .arg(static_cast<unsigned int>(accelEntry.fVirt), 2, 16, QChar('0'))
-                .toUpper();
-            appendCandidate(*context->rows, *context->dedupeSet, std::move(row));
+            if (isLastEntry)
+            {
+                break;
+            }
         }
 
         return TRUE;
@@ -1371,6 +1449,143 @@ namespace
             : 0U;
     }
 
+    bool isEditableHotkeySource(const QString& sourceText)
+    {
+        return sourceText == QStringLiteral("窗口热键") ||
+               sourceText == QStringLiteral("快捷方式热键");
+    }
+
+    bool setWindowActivationHotkey(
+        const QString& objectText,
+        const std::uint32_t processId,
+        const std::uint32_t modifiers,
+        const std::uint32_t virtualKey,
+        QString& errorText,
+        bool& conflictDetected)
+    {
+        conflictDetected = false;
+        static const QRegularExpression handlePattern(QStringLiteral("^HWND=0x([0-9A-Fa-f]+)$"));
+        const QRegularExpressionMatch handleMatch = handlePattern.match(objectText.trimmed());
+        bool handleOk = false;
+        const qulonglong handleValue = handleMatch.hasMatch()
+            ? handleMatch.captured(1).toULongLong(&handleOk, 16)
+            : 0ULL;
+        HWND windowHandle = handleOk
+            ? reinterpret_cast<HWND>(static_cast<std::uintptr_t>(handleValue))
+            : nullptr;
+        DWORD ownerProcessId = 0;
+        if (windowHandle == nullptr ||
+            ::IsWindow(windowHandle) == FALSE ||
+            ::GetWindowThreadProcessId(windowHandle, &ownerProcessId) == 0U ||
+            ownerProcessId != processId)
+        {
+            errorText = QStringLiteral("stale or invalid HWND");
+            return false;
+        }
+
+        const WORD hotkeyValue = virtualKey == 0U
+            ? 0U
+            : MAKEWORD(
+                static_cast<BYTE>(virtualKey),
+                static_cast<BYTE>(hotkeyfFromModifiers(modifiers)));
+        DWORD_PTR messageResult = 0;
+        ::SetLastError(ERROR_SUCCESS);
+        const LRESULT sendResult = ::SendMessageTimeoutW(
+            windowHandle,
+            WM_SETHOTKEY,
+            hotkeyValue,
+            0,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            500,
+            &messageResult);
+        const LRESULT hotkeyResult = static_cast<LRESULT>(messageResult);
+        if (sendResult == 0 || hotkeyResult <= 0)
+        {
+            errorText = QStringLiteral("WM_SETHOTKEY result=%1, Win32=%2")
+                .arg(hotkeyResult)
+                .arg(::GetLastError());
+            return false;
+        }
+
+        conflictDetected = hotkeyResult == 2;
+        return true;
+    }
+
+    bool setShellShortcutHotkey(
+        const QString& objectText,
+        const std::uint32_t modifiers,
+        const std::uint32_t virtualKey,
+        QString& errorText)
+    {
+        const QString shortcutPath = QDir::toNativeSeparators(objectText.trimmed());
+        if (shortcutPath.isEmpty() || !QFileInfo::exists(shortcutPath))
+        {
+            errorText = QStringLiteral("shortcut file no longer exists");
+            return false;
+        }
+
+        const HRESULT initializeResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const bool uninitializeCom = SUCCEEDED(initializeResult);
+        if (FAILED(initializeResult) && initializeResult != RPC_E_CHANGED_MODE)
+        {
+            errorText = QStringLiteral("CoInitializeEx HRESULT=0x%1")
+                .arg(static_cast<unsigned long>(initializeResult), 8, 16, QChar('0'))
+                .toUpper();
+            return false;
+        }
+
+        IShellLinkW* shellLink = nullptr;
+        IPersistFile* persistFile = nullptr;
+        HRESULT operationResult = ::CoCreateInstance(
+            CLSID_ShellLink,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&shellLink));
+        if (SUCCEEDED(operationResult) && shellLink != nullptr)
+        {
+            operationResult = shellLink->QueryInterface(IID_PPV_ARGS(&persistFile));
+        }
+        else if (SUCCEEDED(operationResult))
+        {
+            operationResult = E_POINTER;
+        }
+        const std::wstring shortcutPathW = shortcutPath.toStdWString();
+        if (SUCCEEDED(operationResult) && persistFile != nullptr)
+        {
+            operationResult = persistFile->Load(shortcutPathW.c_str(), STGM_READWRITE);
+        }
+        else if (SUCCEEDED(operationResult))
+        {
+            operationResult = E_NOINTERFACE;
+        }
+        if (SUCCEEDED(operationResult))
+        {
+            const WORD hotkeyValue = virtualKey == 0U
+                ? 0U
+                : MAKEWORD(
+                    static_cast<BYTE>(virtualKey),
+                    static_cast<BYTE>(hotkeyfFromModifiers(modifiers)));
+            operationResult = shellLink->SetHotkey(hotkeyValue);
+        }
+        if (SUCCEEDED(operationResult))
+        {
+            operationResult = persistFile->Save(shortcutPathW.c_str(), TRUE);
+        }
+
+        if (persistFile != nullptr) persistFile->Release();
+        if (shellLink != nullptr) shellLink->Release();
+        if (uninitializeCom) ::CoUninitialize();
+
+        if (FAILED(operationResult))
+        {
+            errorText = QStringLiteral("ShellLink HRESULT=0x%1")
+                .arg(static_cast<unsigned long>(operationResult), 8, 16, QChar('0'))
+                .toUpper();
+            return false;
+        }
+        return true;
+    }
+
     void installHotkeyTableContextMenu(QTableWidget* tableWidget, const int processIdColumn)
     {
         // installHotkeyTableContextMenu 作用：
@@ -1575,6 +1790,13 @@ void ProcessDetailWindow::initializeHotkeyTab()
     QHBoxLayout* topBarLayout = new QHBoxLayout();
     m_refreshHotkeyButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QStringLiteral("刷新热键"), hotkeyGroup);
     m_refreshHotkeyButton->setToolTip(QStringLiteral("扫描当前进程的窗口热键、菜单快捷键、Accelerator资源、快捷方式热键和R0热键表"));
+    m_editHotkeyButton = new QPushButton(
+        hotkeyUiText(QStringLiteral("process.hotkey.edit"), QStringLiteral("编辑热键")),
+        hotkeyGroup);
+    m_editHotkeyButton->setToolTip(hotkeyUiText(
+        QStringLiteral("process.hotkey.edit.tooltip"),
+        QStringLiteral("修改选中的窗口激活热键或 .lnk 快捷方式热键；双击行也可编辑")));
+    m_editHotkeyButton->setEnabled(false);
     m_hotkeyStatusLabel = new QLabel(QStringLiteral("● 尚未刷新"), hotkeyGroup);
     m_hotkeyStatusLabel->setMinimumWidth(0);
     m_hotkeyStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -1582,6 +1804,7 @@ void ProcessDetailWindow::initializeHotkeyTab()
         QStringLiteral("color:%1; font-weight:600;")
         .arg(KswordTheme::TextSecondaryHex()));
     topBarLayout->addWidget(m_refreshHotkeyButton);
+    topBarLayout->addWidget(m_editHotkeyButton);
     topBarLayout->addWidget(m_hotkeyStatusLabel, 1);
     hotkeyGroupLayout->addLayout(topBarLayout);
 
@@ -1614,12 +1837,141 @@ void ProcessDetailWindow::initializeHotkeyTab()
     m_hotkeyTable->setColumnWidth(6, 130);
     m_hotkeyTable->setColumnWidth(7, 120);
     installHotkeyTableContextMenu(m_hotkeyTable, 3);
+    connect(m_editHotkeyButton, &QPushButton::clicked, this, [this]() {
+        editSelectedHotkey();
+    });
+    connect(m_hotkeyTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+        if (m_editHotkeyButton != nullptr)
+        {
+            m_editHotkeyButton->setEnabled(!m_hotkeyRefreshing && m_hotkeyTable->currentRow() >= 0);
+        }
+    });
+    connect(m_hotkeyTable, &QTableWidget::cellDoubleClicked, this, [this](const int, const int) {
+        editSelectedHotkey();
+    });
     hotkeyGroupLayout->addWidget(m_hotkeyTable, 1);
 
     m_hotkeyLayout->addWidget(hotkeyGroup, 1);
 
     const QString buttonStyle = buildBlueButtonStyle();
     m_refreshHotkeyButton->setStyleSheet(buttonStyle);
+    m_editHotkeyButton->setStyleSheet(buttonStyle);
+}
+
+void ProcessDetailWindow::editSelectedHotkey()
+{
+    const QString titleText = hotkeyUiText(
+        QStringLiteral("process.hotkey.edit.title"),
+        QStringLiteral("编辑热键"));
+    if (m_hotkeyTable == nullptr || m_hotkeyTable->currentRow() < 0)
+    {
+        QMessageBox::information(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.select_row"),
+                QStringLiteral("请先选择一条热键记录。")));
+        return;
+    }
+
+    const QTableWidgetItem* rowIdentityItem = m_hotkeyTable->item(m_hotkeyTable->currentRow(), 0);
+    bool rowIndexOk = false;
+    const qulonglong rowIndexValue = rowIdentityItem != nullptr
+        ? rowIdentityItem->data(kHotkeyRowIndexRole).toULongLong(&rowIndexOk)
+        : 0ULL;
+    if (!rowIndexOk || rowIndexValue >= m_hotkeyRows.size())
+    {
+        QMessageBox::warning(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.stale"),
+                QStringLiteral("所选记录已失效，请刷新后重试。")));
+        return;
+    }
+
+    const HotkeyInspectItem row = m_hotkeyRows.at(static_cast<std::size_t>(rowIndexValue));
+    if (!isEditableHotkeySource(row.sourceText))
+    {
+        QMessageBox::information(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.unsupported"),
+                QStringLiteral("此来源是只读审计数据。当前仅支持修改窗口激活热键和 .lnk 快捷方式热键；PE Accelerator、菜单显示文本和 R0 热键表不能安全在线改写。")));
+        return;
+    }
+
+    bool accepted = false;
+    const QString editedText = QInputDialog::getText(
+        this,
+        titleText,
+        hotkeyUiText(
+            QStringLiteral("process.hotkey.edit.prompt"),
+            QStringLiteral("输入新热键（例如 Ctrl+Alt+K；留空可清除）：")),
+        QLineEdit::Normal,
+        row.hotkeyText,
+        &accepted).trimmed();
+    if (!accepted)
+    {
+        return;
+    }
+
+    std::uint32_t modifiers = 0;
+    std::uint32_t virtualKey = 0;
+    if (!editedText.isEmpty() && !parseHotkeyText(editedText, modifiers, virtualKey))
+    {
+        QMessageBox::warning(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.invalid"),
+                QStringLiteral("无法识别该热键。请使用 Ctrl、Shift、Alt 加字母、数字、F1-F24 或常用功能键。")));
+        return;
+    }
+    if ((modifiers & MOD_WIN) != 0U)
+    {
+        QMessageBox::warning(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.win_unsupported"),
+                QStringLiteral("Windows 键不受 WM_SETHOTKEY 或 .lnk 热键字段支持，请改用 Ctrl、Shift 或 Alt。")));
+        return;
+    }
+
+    QString errorText;
+    bool conflictDetected = false;
+    const bool updateSucceeded = row.sourceText == QStringLiteral("窗口热键")
+        ? setWindowActivationHotkey(row.objectText, row.processId, modifiers, virtualKey, errorText, conflictDetected)
+        : setShellShortcutHotkey(row.objectText, modifiers, virtualKey, errorText);
+    if (!updateSucceeded)
+    {
+        QMessageBox::critical(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.failed"),
+                QStringLiteral("热键修改失败：%1")).arg(errorText));
+        return;
+    }
+
+    const QString resultText = editedText.isEmpty()
+        ? hotkeyUiText(
+            QStringLiteral("process.hotkey.edit.cleared"),
+            QStringLiteral("热键已清除。"))
+        : hotkeyUiText(
+            QStringLiteral("process.hotkey.edit.success"),
+            QStringLiteral("热键已修改为 %1。")).arg(hotkeyTextFromParts(modifiers, virtualKey));
+    QMessageBox::information(
+        this,
+        titleText,
+        conflictDetected
+            ? resultText + QStringLiteral("\n") + hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.window_conflict"),
+                QStringLiteral("提示：系统报告另一个窗口使用了相同热键。"))
+            : resultText);
+    requestAsyncHotkeyRefresh();
 }
 
 void ProcessDetailWindow::showHotkeyTabAndRefresh()
@@ -1685,6 +2037,10 @@ void ProcessDetailWindow::requestAsyncHotkeyRefresh()
     if (m_refreshHotkeyButton != nullptr)
     {
         m_refreshHotkeyButton->setEnabled(false);
+    }
+    if (m_editHotkeyButton != nullptr)
+    {
+        m_editHotkeyButton->setEnabled(false);
     }
     updateHotkeyStatusLabel(QStringLiteral("● 正在扫描进程热键..."), true);
 
@@ -1813,8 +2169,9 @@ void ProcessDetailWindow::rebuildHotkeyTable()
     m_hotkeyTable->setSortingEnabled(false);
     m_hotkeyTable->setRowCount(0);
 
-    for (const HotkeyInspectItem& rowItem : m_hotkeyRows)
+    for (std::size_t rowCacheIndex = 0; rowCacheIndex < m_hotkeyRows.size(); ++rowCacheIndex)
     {
+        const HotkeyInspectItem& rowItem = m_hotkeyRows.at(rowCacheIndex);
         const int row = m_hotkeyTable->rowCount();
         m_hotkeyTable->insertRow(row);
 
@@ -1844,6 +2201,7 @@ void ProcessDetailWindow::rebuildHotkeyTable()
             QTableWidgetItem* cellItem = m_hotkeyTable->item(row, column);
             if (cellItem != nullptr)
             {
+                cellItem->setData(kHotkeyRowIndexRole, static_cast<qulonglong>(rowCacheIndex));
                 cellItem->setToolTip(cellItem->text());
             }
         }

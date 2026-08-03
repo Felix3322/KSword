@@ -456,6 +456,8 @@ private:
     // 参数 refreshResult：后台扫描结果。
     // 返回：无。
     void applyHotkeyRefreshResult(const HotkeyInspectRefreshResult& refreshResult);
+    // editSelectedHotkey：验证当前选中来源并通过稳定公开接口写入窗口或 .lnk 热键。
+    void editSelectedHotkey();
     void rebuildHotkeyTable();
     void updateHotkeyStatusLabel(const QString& statusText, bool refreshing);
     void requestAsyncKeyboardRefresh();
@@ -845,6 +847,7 @@ private:
     // ======== 进程热键页控件与状态 ========
     QVBoxLayout* m_hotkeyLayout = nullptr;       // 进程热键页总布局。
     QPushButton* m_refreshHotkeyButton = nullptr; // 刷新热键按钮。
+    QPushButton* m_editHotkeyButton = nullptr;    // 编辑当前支持来源的热键。
     QLabel* m_hotkeyStatusLabel = nullptr;       // 热键扫描状态。
     QTableWidget* m_hotkeyTable = nullptr;       // 热键结果表。
     bool m_hotkeyRefreshing = false;             // 热键扫描是否进行中。
