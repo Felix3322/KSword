@@ -56,11 +56,18 @@ private:
         qint64 sampleMs = 0;
     };
 
+    struct ProcessIdentity
+    {
+        quint32 pid = 0;
+        quint64 creationTime100ns = 0;
+    };
+
     struct ProcessEntry
     {
         quint32 pid = 0;
         quint32 parentPid = 0;
         quint32 applicationRootPid = 0;
+        quint64 creationTime100ns = 0;
         QString processName;
         QString imagePath;
         ProcessGroupType groupType = ProcessGroupType::Background;
@@ -88,8 +95,8 @@ private:
     void initializeUi();
     void applyTreeWidgetStyle();
     void showContextMenu(const QPoint& localPosition);
-    bool terminateProcessByPid(quint32 processIdValue);
-    int terminateProcessesByPidList(const QVector<quint32>& processIdList);
+    bool terminateProcessByIdentity(const ProcessIdentity& processIdentity);
+    int terminateProcessesByIdentityList(const QVector<ProcessIdentity>& processIdentityList);
     void startRefreshing();
     void stopRefreshing();
     void requestRefresh();

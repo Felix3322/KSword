@@ -56,10 +56,9 @@
 namespace
 {
     constexpr int kNameColumn = 0;
-    constexpr int kPidRole = Qt::UserRole + 1;
     constexpr int kUsageRatioRole = Qt::UserRole + 2;
     constexpr int kExpansionKeyRole = Qt::UserRole + 3;
-    constexpr int kTerminatePidListRole = Qt::UserRole + 4;
+    constexpr int kTerminateProcessIdentityListRole = Qt::UserRole + 4;
     constexpr int kMetricColumnFirst = 2;
     constexpr int kMetricColumnLast = 6;
 
@@ -817,29 +816,38 @@ void HudProcessListPanel::showContextMenu(const QPoint& localPosition)
         return;
     }
 
-    bool pidOk = false;
-    const quint32 pidValue = itemPointer->data(NameColumn, kPidRole).toUInt(&pidOk);
-    QVector<quint32> terminatePidList;
-    const QVariant terminatePidListVariant = itemPointer->data(NameColumn, kTerminatePidListRole);
-    if (terminatePidListVariant.canConvert<QVariantList>())
+    QVector<ProcessIdentity> terminateIdentityList;
+    const QVariant terminateIdentityListVariant =
+        itemPointer->data(NameColumn, kTerminateProcessIdentityListRole);
+    if (terminateIdentityListVariant.canConvert<QVariantList>())
     {
-        const QVariantList variantList = terminatePidListVariant.toList();
-        terminatePidList.reserve(variantList.size());
-        for (const QVariant& pidVariant : variantList)
+        const QVariantList variantList = terminateIdentityListVariant.toList();
+        terminateIdentityList.reserve(variantList.size());
+        for (const QVariant& identityVariant : variantList)
         {
-            bool childPidOk = false;
-            const quint32 childPidValue = pidVariant.toUInt(&childPidOk);
-            if (childPidOk && childPidValue != 0)
+            if (!identityVariant.canConvert<QVariantList>())
             {
-                terminatePidList.push_back(childPidValue);
+                continue;
+            }
+
+            const QVariantList identityValues = identityVariant.toList();
+            if (identityValues.size() != 2)
+            {
+                continue;
+            }
+
+            bool childPidOk = false;
+            bool creationTimeOk = false;
+            const quint32 childPidValue = identityValues.at(0).toUInt(&childPidOk);
+            const quint64 childCreationTime100ns = identityValues.at(1).toULongLong(&creationTimeOk);
+            if (childPidOk && creationTimeOk
+                && childPidValue != 0 && childCreationTime100ns != 0)
+            {
+                terminateIdentityList.push_back({ childPidValue, childCreationTime100ns });
             }
         }
     }
-    if (terminatePidList.isEmpty() && pidOk && pidValue != 0)
-    {
-        terminatePidList.push_back(pidValue);
-    }
-    if (terminatePidList.isEmpty())
+    if (terminateIdentityList.isEmpty())
     {
         return;
     }
@@ -869,42 +877,58 @@ void HudProcessListPanel::showContextMenu(const QPoint& localPosition)
         "}"));
 
     QAction* terminateAction = menu.addAction(
-        terminatePidList.size() > 1
+        terminateIdentityList.size() > 1
         ? QStringLiteral("结束此应用")
         : QStringLiteral("结束进程"));
     QAction* selectedAction =
         menu.exec(m_treeWidget->viewport()->mapToGlobal(localPosition));
     if (selectedAction == terminateAction)
     {
-        terminateProcessesByPidList(terminatePidList);
+        terminateProcessesByIdentityList(terminateIdentityList);
         requestRefresh();
     }
 }
 
-bool HudProcessListPanel::terminateProcessByPid(const quint32 processIdValue)
+bool HudProcessListPanel::terminateProcessByIdentity(const ProcessIdentity& processIdentity)
 {
-    const HANDLE processHandle = ::OpenProcess(PROCESS_TERMINATE, FALSE, processIdValue);
+    if (processIdentity.pid == 0 || processIdentity.creationTime100ns == 0)
+    {
+        return false;
+    }
+
+    const HANDLE processHandle = ::OpenProcess(
+        PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+        FALSE,
+        processIdentity.pid);
     if (processHandle == nullptr)
     {
         return false;
     }
 
-    const BOOL terminateOk = ::TerminateProcess(processHandle, 1);
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    const bool identityMatches =
+        ::GetProcessTimes(processHandle, &creationTime, &exitTime, &kernelTime, &userTime) != FALSE
+        && fileTimeToUint64(creationTime) == processIdentity.creationTime100ns;
+    const BOOL terminateOk = identityMatches ? ::TerminateProcess(processHandle, 1) : FALSE;
     ::CloseHandle(processHandle);
     return terminateOk != FALSE;
 }
 
-int HudProcessListPanel::terminateProcessesByPidList(const QVector<quint32>& processIdList)
+int HudProcessListPanel::terminateProcessesByIdentityList(
+    const QVector<ProcessIdentity>& processIdentityList)
 {
-    // Inputs: a list of process IDs, usually one real process row or all children of one application row.
-    // Processing: terminate each PID independently in reverse order so child/helper processes are attempted first.
-    // Return: the number of processes for which TerminateProcess returned success.
+    // Inputs: process identities from one refresh snapshot, usually one process row or all children of one application row.
+    // Processing: reopen each PID, verify its creation time on that handle, then terminate verified children/helpers first.
+    // Return: the number of identities for which TerminateProcess returned success.
     int terminatedCount = 0;
-    for (auto reverseIterator = processIdList.crbegin();
-        reverseIterator != processIdList.crend();
+    for (auto reverseIterator = processIdentityList.crbegin();
+        reverseIterator != processIdentityList.crend();
         ++reverseIterator)
     {
-        if (terminateProcessByPid(*reverseIterator))
+        if (terminateProcessByIdentity(*reverseIterator))
         {
             ++terminatedCount;
         }
@@ -1098,6 +1122,7 @@ HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
                 &kernelTime,
                 &userTime) != FALSE)
             {
+                entry.creationTime100ns = fileTimeToUint64(creationTime);
                 nextSample.cpuTime100ns =
                     fileTimeToUint64(kernelTime) + fileTimeToUint64(userTime);
             }
@@ -1671,7 +1696,6 @@ QTreeWidgetItem* HudProcessListPanel::createProcessGroupItem(
     // Return: a heap-allocated tree item owned by QTreeWidget after insertion, or nullptr only on allocation failure.
     auto* groupItem = new QTreeWidgetItem();
     groupItem->setText(NameColumn, processGroupTitle(groupType, entryCount));
-    groupItem->setData(NameColumn, kPidRole, QVariant());
     groupItem->setData(NameColumn, Qt::UserRole + 8, processGroupOrder(groupType));
     groupItem->setFirstColumnSpanned(true);
     groupItem->setFlags((groupItem->flags() | Qt::ItemIsEnabled) & ~Qt::ItemIsSelectable);
@@ -1715,17 +1739,22 @@ QTreeWidgetItem* HudProcessListPanel::createApplicationRootItem(
     itemPointer->setText(DiskColumn, formatDiskMBps(aggregateEntry.diskMBps));
     itemPointer->setText(GpuColumn, formatPercent(aggregateEntry.gpuPercent, 1));
     itemPointer->setText(NetColumn, formatNetKBps(aggregateEntry.netKBps));
-    itemPointer->setData(NameColumn, kPidRole, QVariant());
-    QVariantList terminatePidVariantList;
-    terminatePidVariantList.reserve(applicationEntries.size());
+    QVariantList terminateIdentityVariantList;
+    terminateIdentityVariantList.reserve(applicationEntries.size());
     for (const ProcessEntry& entry : applicationEntries)
     {
-        if (entry.pid != 0)
+        if (entry.pid != 0 && entry.creationTime100ns != 0)
         {
-            terminatePidVariantList.push_back(entry.pid);
+            QVariantList identityValues;
+            identityValues.push_back(entry.pid);
+            identityValues.push_back(entry.creationTime100ns);
+            terminateIdentityVariantList.push_back(identityValues);
         }
     }
-    itemPointer->setData(NameColumn, kTerminatePidListRole, terminatePidVariantList);
+    itemPointer->setData(
+        NameColumn,
+        kTerminateProcessIdentityListRole,
+        terminateIdentityVariantList);
     itemPointer->setData(CpuColumn, kUsageRatioRole, usageRatioForEntry(aggregateEntry, CpuColumn, maxRamMB, maxDiskMBps, maxNetKBps));
     itemPointer->setData(RamColumn, kUsageRatioRole, usageRatioForEntry(aggregateEntry, RamColumn, maxRamMB, maxDiskMBps, maxNetKBps));
     itemPointer->setData(DiskColumn, kUsageRatioRole, usageRatioForEntry(aggregateEntry, DiskColumn, maxRamMB, maxDiskMBps, maxNetKBps));
@@ -1774,10 +1803,18 @@ QTreeWidgetItem* HudProcessListPanel::updateOrCreateRow(
     itemPointer->setText(DiskColumn, formatDiskMBps(entry.diskMBps));
     itemPointer->setText(GpuColumn, formatPercent(entry.gpuPercent, 1));
     itemPointer->setText(NetColumn, formatNetKBps(entry.netKBps));
-    itemPointer->setData(NameColumn, kPidRole, entry.pid);
-    QVariantList terminatePidVariantList;
-    terminatePidVariantList.push_back(entry.pid);
-    itemPointer->setData(NameColumn, kTerminatePidListRole, terminatePidVariantList);
+    QVariantList terminateIdentityVariantList;
+    if (entry.pid != 0 && entry.creationTime100ns != 0)
+    {
+        QVariantList identityValues;
+        identityValues.push_back(entry.pid);
+        identityValues.push_back(entry.creationTime100ns);
+        terminateIdentityVariantList.push_back(identityValues);
+    }
+    itemPointer->setData(
+        NameColumn,
+        kTerminateProcessIdentityListRole,
+        terminateIdentityVariantList);
     itemPointer->setData(CpuColumn, kUsageRatioRole, usageRatioForEntry(entry, CpuColumn, maxRamMB, maxDiskMBps, maxNetKBps));
     itemPointer->setData(RamColumn, kUsageRatioRole, usageRatioForEntry(entry, RamColumn, maxRamMB, maxDiskMBps, maxNetKBps));
     itemPointer->setData(DiskColumn, kUsageRatioRole, usageRatioForEntry(entry, DiskColumn, maxRamMB, maxDiskMBps, maxNetKBps));
