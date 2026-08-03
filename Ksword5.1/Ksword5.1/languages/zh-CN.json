@@ -7411,6 +7411,7 @@
     "CreateJobObjectW failed: ": "CreateJobObjectW 失败: ",
     "CreateOrUpdateKernelDriverService requires serviceName and binaryPath": "CreateOrUpdateKernelDriverService 需要 serviceName 和 binaryPath",
     "CreateProcess(ntsd) failed: ": "CreateProcess(ntsd) 失败: ",
+    "GetExitCodeProcess(ntsd) failed: ": "GetExitCodeProcess(ntsd) 失败: ",
     "CreateProcess(taskkill) failed: ": "CreateProcess(taskkill) 失败: ",
     "GetExitCodeProcess(taskkill) failed: ": "GetExitCodeProcess(taskkill) 失败: ",
     "WaitForSingleObject(taskkill) failed: ": "WaitForSingleObject(taskkill) 失败: ",

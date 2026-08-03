@@ -4109,15 +4109,27 @@ namespace ks::process
         }
 
         const DWORD waitResult = ::WaitForSingleObject(processInfo.hProcess, 15000);
-        DWORD exitCode = 0;
-        ::GetExitCodeProcess(processInfo.hProcess, &exitCode);
-        ::CloseHandle(processInfo.hThread);
-        ::CloseHandle(processInfo.hProcess);
         if (waitResult != WAIT_OBJECT_0)
         {
+            ::CloseHandle(processInfo.hThread);
+            ::CloseHandle(processInfo.hProcess);
             if (errorMessage != nullptr)
             {
                 *errorMessage = "ntsd wait timeout or failed, waitResult=" + std::to_string(waitResult);
+            }
+            return false;
+        }
+
+        DWORD exitCode = 0;
+        const BOOL exitCodeOk = ::GetExitCodeProcess(processInfo.hProcess, &exitCode);
+        const DWORD exitCodeError = exitCodeOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        ::CloseHandle(processInfo.hThread);
+        ::CloseHandle(processInfo.hProcess);
+        if (exitCodeOk == FALSE)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetExitCodeProcess(ntsd) failed: " + FormatLastErrorMessage(exitCodeError);
             }
             return false;
         }
