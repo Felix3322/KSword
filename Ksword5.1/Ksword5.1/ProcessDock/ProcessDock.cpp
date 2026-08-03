@@ -10558,9 +10558,9 @@ void ProcessDock::dispatchProcessActionTargetsInParallel(
         return;
     }
 
-    // 对标记为 R3 的变更动作，先在同一进程对象上验证 PID + 创建时间，并将
-    // 查询句柄保持至 actionInvoker 返回。这样动作实现即使仍以 PID 为入口，也不会
-    // 在目标退出后误落到被 Windows 复用的 PID。
+    // 对任何按 PID 定位目标的变更动作，先在同一进程对象上验证 PID + 创建时间，并将
+    // 查询句柄保持至 actionInvoker 返回。这样 R3 或 R0 动作实现即使仍以 PID 为入口，
+    // 也不会在目标退出后误落到被 Windows 复用的 PID。
     const auto invokeAction = [actionInvoker, requireVerifiedProcessIdentity](
         const ProcessActionTarget& actionTarget,
         std::string* const detailTextOut) -> bool
@@ -12031,6 +12031,8 @@ void ProcessDock::executeR0TerminateProcessActions(
             // 每个动作目标都会单独调用 ArkDriverClient，形成独立的结束进程 IOCTL。
             return terminateProcessByR0Driver(actionTarget.record.pid, detailTextOut);
         },
+        true,
+        false,
         true);
 }
 
@@ -12051,7 +12053,9 @@ void ProcessDock::executeR0SuspendProcessAction()
         {
             return suspendProcessByR0Driver(actionTarget.record.pid, detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeR0SetProcessHiddenAction(
@@ -12252,7 +12256,9 @@ void ProcessDock::executeR0SetBreakOnTerminationAction(const bool enabled)
         {
             return setProcessSpecialFlagsByR0Driver(actionTarget.record.pid, action, detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeR0DisableApcInsertionAction()
@@ -12292,7 +12298,9 @@ void ProcessDock::executeR0DisableApcInsertionAction()
                 KSWORD_ARK_PROCESS_SPECIAL_ACTION_DISABLE_APC_INSERTION,
                 detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeR0DkomRemoveFromCidTableAction()
@@ -12333,7 +12341,9 @@ void ProcessDock::executeR0DkomRemoveFromCidTableAction()
                 KSWORD_ARK_PROCESS_DKOM_ACTION_REMOVE_FROM_PSP_CID_TABLE,
                 detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
     requestAsyncRefresh(true);
 }
 
@@ -12429,7 +12439,9 @@ void ProcessDock::executeR0SetPplProtectionAction(
         {
             return setPplProtectionLevelByR0Driver(actionTarget.record.pid, protectionLevel, detailTextOut);
         },
-        false);
+        false,
+        false,
+        true);
 }
 
 void ProcessDock::executeRefreshPplProtectionLevelAction()
