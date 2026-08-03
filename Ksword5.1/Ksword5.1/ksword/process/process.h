@@ -575,10 +575,11 @@ namespace ks::process
         std::uint32_t pid,
         bool includeSignatureCheck);
 
-    // UnloadModuleByBaseAddress 作用：
-    // - 对远程进程调用 FreeLibrary 卸载指定基址模块。
-    bool UnloadModuleByBaseAddress(
+    // UnloadModuleByBaseAddressIfIdentityMatches 作用：
+    // - 在同一进程句柄上校验 PID + 创建时间后，对远程进程调用 FreeLibrary 卸载指定基址模块。
+    bool UnloadModuleByBaseAddressIfIdentityMatches(
         std::uint32_t pid,
+        std::uint64_t expectedCreationTime100ns,
         std::uint64_t moduleBaseAddress,
         std::string* errorMessage);
 

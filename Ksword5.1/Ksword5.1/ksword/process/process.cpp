@@ -4835,8 +4835,9 @@ namespace ks::process
         return snapshot;
     }
 
-    bool UnloadModuleByBaseAddress(
+    bool UnloadModuleByBaseAddressIfIdentityMatches(
         const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
         const std::uint64_t moduleBaseAddress,
         std::string* const errorMessage)
     {
@@ -4849,6 +4850,35 @@ namespace ks::process
             if (errorMessage != nullptr)
             {
                 *errorMessage = "OpenProcess(for unload module) failed: " + FormatLastErrorMessage(::GetLastError());
+            }
+            return false;
+        }
+
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        const BOOL identityQueryOk = ::GetProcessTimes(
+            processHandle,
+            &creationTime,
+            &exitTime,
+            &kernelTime,
+            &userTime);
+        const DWORD identityQueryError = identityQueryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        const std::uint64_t actualCreationTime100ns = identityQueryOk != FALSE
+            ? ks::str::FileTimeToUint64(creationTime.dwHighDateTime, creationTime.dwLowDateTime)
+            : 0U;
+        if (expectedCreationTime100ns == 0U ||
+            identityQueryOk == FALSE ||
+            actualCreationTime100ns == 0U ||
+            actualCreationTime100ns != expectedCreationTime100ns)
+        {
+            ::CloseHandle(processHandle);
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = identityQueryOk == FALSE
+                    ? "GetProcessTimes(for unload module) failed: " + FormatLastErrorMessage(identityQueryError)
+                    : "process identity changed or is unavailable; module unload skipped.";
             }
             return false;
         }

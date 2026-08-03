@@ -506,8 +506,9 @@ void ProcessDetailWindow::unloadCurrentModule()
     }
 
     std::string detailText;
-    const bool actionOk = ks::process::UnloadModuleByBaseAddress(
+    const bool actionOk = ks::process::UnloadModuleByBaseAddressIfIdentityMatches(
         m_baseRecord.pid,
+        m_baseRecord.creationTime100ns,
         moduleRecord->moduleBaseAddress,
         &detailText);
     kLogEvent unloadModuleEvent;
