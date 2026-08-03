@@ -23577,6 +23577,8 @@
     "GetProcessTimes failed: ": "GetProcessTimes 失败: ",
     "GetProcessTimes": "GetProcessTimes",
     "process action identity output is null": "进程操作身份输出参数为空",
+    "OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) failed, error=": "OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) 失败，错误码=",
+    "process action invoker is unavailable": "进程操作执行器不可用",
     "NtSuspendProcess failed, status=0x": "NtSuspendProcess 失败，状态=0x",
     "OpenProcess for verified action failed, error=": "为身份校验动作打开进程失败，错误码=",
     "closed handle identity changed unexpectedly while the process was suspended": "目标进程暂停期间，已关闭句柄的身份仍意外发生变化",
