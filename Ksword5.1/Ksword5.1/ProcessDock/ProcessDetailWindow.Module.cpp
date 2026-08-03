@@ -545,7 +545,12 @@ void ProcessDetailWindow::suspendCurrentModuleThread()
     }
 
     std::string detailText;
-    const bool actionOk = ks::process::SuspendThreadById(moduleRecord->representativeThreadId, &detailText);
+    const bool actionOk = ks::process::SuspendThreadIfProcessAndThreadIdentityMatches(
+        moduleRecord->representativeThreadId,
+        m_baseRecord.pid,
+        m_baseRecord.creationTime100ns,
+        moduleRecord->representativeThreadCreationTime100ns,
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] suspendCurrentModuleThread: tid="
         << moduleRecord->representativeThreadId
@@ -575,7 +580,12 @@ void ProcessDetailWindow::resumeCurrentModuleThread()
     }
 
     std::string detailText;
-    const bool actionOk = ks::process::ResumeThreadById(moduleRecord->representativeThreadId, &detailText);
+    const bool actionOk = ks::process::ResumeThreadIfProcessAndThreadIdentityMatches(
+        moduleRecord->representativeThreadId,
+        m_baseRecord.pid,
+        m_baseRecord.creationTime100ns,
+        moduleRecord->representativeThreadCreationTime100ns,
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] resumeCurrentModuleThread: tid="
         << moduleRecord->representativeThreadId
@@ -605,7 +615,12 @@ void ProcessDetailWindow::terminateCurrentModuleThread()
     }
 
     std::string detailText;
-    const bool actionOk = ks::process::TerminateThreadById(moduleRecord->representativeThreadId, &detailText);
+    const bool actionOk = ks::process::TerminateThreadIfProcessAndThreadIdentityMatches(
+        moduleRecord->representativeThreadId,
+        m_baseRecord.pid,
+        m_baseRecord.creationTime100ns,
+        moduleRecord->representativeThreadCreationTime100ns,
+        &detailText);
     (actionOk ? info : err) << actionEvent
         << "[ProcessDetailWindow] terminateCurrentModuleThread: tid="
         << moduleRecord->representativeThreadId

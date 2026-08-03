@@ -288,6 +288,7 @@ namespace ks::process
         std::uint32_t entryPointRva = 0;       // 入口点 RVA（相对偏移）。
         std::string runningState;              // 运行状态文本（Loaded/Unknown）。
         std::uint32_t representativeThreadId = 0; // 代表线程 ID（用于线程操作快捷入口）。
+        std::uint64_t representativeThreadCreationTime100ns = 0; // 代表线程创建时间（用于身份校验）。
         std::string threadIdText;              // 线程 ID 汇总文本（逗号分隔）。
     };
 
@@ -609,6 +610,27 @@ namespace ks::process
         std::uint32_t threadId,
         std::uint32_t expectedOwnerPid,
         std::uint64_t expectedCreationTime100ns,
+        std::string* errorMessage);
+    // *IfProcessAndThreadIdentityMatches 系列：
+    // - 在同一进程句柄上核验 PID + 创建时间，并保持该句柄直到线程动作返回；
+    // - 再核验线程所属 PID + 创建时间，避免详情窗口落到 PID/TID 均已复用的新实例。
+    bool SuspendThreadIfProcessAndThreadIdentityMatches(
+        std::uint32_t threadId,
+        std::uint32_t expectedOwnerPid,
+        std::uint64_t expectedProcessCreationTime100ns,
+        std::uint64_t expectedThreadCreationTime100ns,
+        std::string* errorMessage);
+    bool ResumeThreadIfProcessAndThreadIdentityMatches(
+        std::uint32_t threadId,
+        std::uint32_t expectedOwnerPid,
+        std::uint64_t expectedProcessCreationTime100ns,
+        std::uint64_t expectedThreadCreationTime100ns,
+        std::string* errorMessage);
+    bool TerminateThreadIfProcessAndThreadIdentityMatches(
+        std::uint32_t threadId,
+        std::uint32_t expectedOwnerPid,
+        std::uint64_t expectedProcessCreationTime100ns,
+        std::uint64_t expectedThreadCreationTime100ns,
         std::string* errorMessage);
 
     // InjectDllByPath 作用：

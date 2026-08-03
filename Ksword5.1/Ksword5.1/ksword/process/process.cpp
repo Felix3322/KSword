@@ -4657,6 +4657,8 @@ namespace ks::process
 
         // 先枚举线程，供模块行填充 ThreadID 信息。
         std::vector<std::uint32_t> threadIdList;
+        std::uint32_t representativeThreadId = 0U;
+        std::uint64_t representativeThreadCreationTime100ns = 0U;
         HANDLE threadSnapshotHandle = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if (threadSnapshotHandle != INVALID_HANDLE_VALUE)
         {
@@ -4678,6 +4680,40 @@ namespace ks::process
                     threadRecord.stateText = "Running";
                     snapshot.threads.push_back(threadRecord);
                     threadIdList.push_back(threadRecord.threadId);
+
+                    // 只将可在同一线程对象上核验 owner + 创建时间的线程用作模块动作入口。
+                    if (representativeThreadId == 0U)
+                    {
+                        const HANDLE representativeThreadHandle = ::OpenThread(
+                            THREAD_QUERY_LIMITED_INFORMATION,
+                            FALSE,
+                            ToDwordPid(threadRecord.threadId));
+                        if (representativeThreadHandle != nullptr)
+                        {
+                            const DWORD actualOwnerPid = ::GetProcessIdOfThread(representativeThreadHandle);
+                            FILETIME creationTime{};
+                            FILETIME exitTime{};
+                            FILETIME kernelTime{};
+                            FILETIME userTime{};
+                            const BOOL timeQueryOk = ::GetThreadTimes(
+                                representativeThreadHandle,
+                                &creationTime,
+                                &exitTime,
+                                &kernelTime,
+                                &userTime);
+                            const std::uint64_t creationTime100ns = timeQueryOk != FALSE
+                                ? ks::str::FileTimeToUint64(
+                                    creationTime.dwHighDateTime,
+                                    creationTime.dwLowDateTime)
+                                : 0U;
+                            if (actualOwnerPid == ToDwordPid(pid) && creationTime100ns != 0U)
+                            {
+                                representativeThreadId = threadRecord.threadId;
+                                representativeThreadCreationTime100ns = creationTime100ns;
+                            }
+                            ::CloseHandle(representativeThreadHandle);
+                        }
+                    }
                 } while (::Thread32Next(threadSnapshotHandle, &threadEntry) != FALSE);
             }
             ::CloseHandle(threadSnapshotHandle);
@@ -4711,7 +4747,8 @@ namespace ks::process
                     moduleRecord.runningState = "Loaded";
                     fillModuleSignature(moduleRecord);
 
-                    moduleRecord.representativeThreadId = threadIdList.empty() ? 0 : threadIdList.front();
+                    moduleRecord.representativeThreadId = representativeThreadId;
+                    moduleRecord.representativeThreadCreationTime100ns = representativeThreadCreationTime100ns;
                     moduleRecord.threadIdText = BuildThreadIdSummaryText(threadIdList);
                     snapshot.modules.push_back(std::move(moduleRecord));
                 } while (::Module32NextW(moduleSnapshotHandle, &moduleEntry) != FALSE);
@@ -4813,7 +4850,8 @@ namespace ks::process
 
                 moduleRecord.runningState = "Loaded";
                 fillModuleSignature(moduleRecord);
-                moduleRecord.representativeThreadId = threadIdList.empty() ? 0 : threadIdList.front();
+                moduleRecord.representativeThreadId = representativeThreadId;
+                moduleRecord.representativeThreadCreationTime100ns = representativeThreadCreationTime100ns;
                 moduleRecord.threadIdText = BuildThreadIdSummaryText(threadIdList);
                 snapshot.modules.push_back(std::move(moduleRecord));
             }
@@ -5190,6 +5228,75 @@ namespace ks::process
             }
             return false;
         }
+
+        bool applyThreadActionIfProcessAndThreadIdentityMatches(
+            const std::uint32_t threadId,
+            const std::uint32_t expectedOwnerPid,
+            const std::uint64_t expectedProcessCreationTime100ns,
+            const std::uint64_t expectedThreadCreationTime100ns,
+            const ThreadIdentityAction action,
+            std::string* const errorMessage)
+        {
+            if (expectedOwnerPid == 0U || expectedProcessCreationTime100ns == 0U)
+            {
+                if (errorMessage != nullptr)
+                {
+                    *errorMessage = "process identity is unavailable; thread action skipped.";
+                }
+                return false;
+            }
+
+            const HANDLE processHandle = ::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                FALSE,
+                ToDwordPid(expectedOwnerPid));
+            if (processHandle == nullptr)
+            {
+                if (errorMessage != nullptr)
+                {
+                    *errorMessage = "OpenProcess(for thread identity) failed: " +
+                        FormatLastErrorMessage(::GetLastError());
+                }
+                return false;
+            }
+
+            FILETIME creationTime{};
+            FILETIME exitTime{};
+            FILETIME kernelTime{};
+            FILETIME userTime{};
+            const BOOL timeQueryOk = ::GetProcessTimes(
+                processHandle,
+                &creationTime,
+                &exitTime,
+                &kernelTime,
+                &userTime);
+            const DWORD timeQueryError = timeQueryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+            const std::uint64_t actualProcessCreationTime100ns = timeQueryOk != FALSE
+                ? ks::str::FileTimeToUint64(creationTime.dwHighDateTime, creationTime.dwLowDateTime)
+                : 0U;
+            if (timeQueryOk == FALSE ||
+                actualProcessCreationTime100ns == 0U ||
+                actualProcessCreationTime100ns != expectedProcessCreationTime100ns)
+            {
+                ::CloseHandle(processHandle);
+                if (errorMessage != nullptr)
+                {
+                    *errorMessage = timeQueryOk == FALSE
+                        ? "GetProcessTimes(for thread identity) failed: " + FormatLastErrorMessage(timeQueryError)
+                        : "process identity changed (PID was reused); thread action skipped.";
+                }
+                return false;
+            }
+
+            const bool actionOk = applyThreadActionIfIdentityMatches(
+                threadId,
+                expectedOwnerPid,
+                expectedThreadCreationTime100ns,
+                action,
+                errorMessage);
+            ::CloseHandle(processHandle);
+            return actionOk;
+        }
     }
 
     bool SuspendThreadIfIdentityMatches(
@@ -5230,6 +5337,54 @@ namespace ks::process
             threadId,
             expectedOwnerPid,
             expectedCreationTime100ns,
+            ThreadIdentityAction::Terminate,
+            errorMessage);
+    }
+
+    bool SuspendThreadIfProcessAndThreadIdentityMatches(
+        const std::uint32_t threadId,
+        const std::uint32_t expectedOwnerPid,
+        const std::uint64_t expectedProcessCreationTime100ns,
+        const std::uint64_t expectedThreadCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return applyThreadActionIfProcessAndThreadIdentityMatches(
+            threadId,
+            expectedOwnerPid,
+            expectedProcessCreationTime100ns,
+            expectedThreadCreationTime100ns,
+            ThreadIdentityAction::Suspend,
+            errorMessage);
+    }
+
+    bool ResumeThreadIfProcessAndThreadIdentityMatches(
+        const std::uint32_t threadId,
+        const std::uint32_t expectedOwnerPid,
+        const std::uint64_t expectedProcessCreationTime100ns,
+        const std::uint64_t expectedThreadCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return applyThreadActionIfProcessAndThreadIdentityMatches(
+            threadId,
+            expectedOwnerPid,
+            expectedProcessCreationTime100ns,
+            expectedThreadCreationTime100ns,
+            ThreadIdentityAction::Resume,
+            errorMessage);
+    }
+
+    bool TerminateThreadIfProcessAndThreadIdentityMatches(
+        const std::uint32_t threadId,
+        const std::uint32_t expectedOwnerPid,
+        const std::uint64_t expectedProcessCreationTime100ns,
+        const std::uint64_t expectedThreadCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        return applyThreadActionIfProcessAndThreadIdentityMatches(
+            threadId,
+            expectedOwnerPid,
+            expectedProcessCreationTime100ns,
+            expectedThreadCreationTime100ns,
             ThreadIdentityAction::Terminate,
             errorMessage);
     }
