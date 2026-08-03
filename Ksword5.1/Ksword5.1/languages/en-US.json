@@ -23586,6 +23586,7 @@
     "GetExitCodeThread(FreeLibrary) failed: ": "GetExitCodeThread(FreeLibrary) failed: ",
     "WaitForSingleObject(FreeLibrary) failed: ": "WaitForSingleObject(FreeLibrary) failed: ",
     "WaitForSingleObject(FreeLibrary) returned unexpected result: ": "WaitForSingleObject(FreeLibrary) returned unexpected result: ",
+    "GetProcessTimes(for unload module) failed: ": "GetProcessTimes(for unload module) failed: ",
     "NtSuspendProcess failed, status=0x": "NtSuspendProcess failed, status=0x",
     "OpenProcess for verified action failed, error=": "OpenProcess for verified action failed, error=",
     "closed handle identity changed unexpectedly while the process was suspended": "Closed handle identity changed unexpectedly while the process was suspended",
