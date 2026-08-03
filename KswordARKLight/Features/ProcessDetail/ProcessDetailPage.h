@@ -247,6 +247,12 @@ private:
     void BeginSnapshotRefresh(const std::wstring& loadingMessage = L"正在后台加载进程详情…");
     void ApplySnapshot(ProcessDetailSnapshot snapshot);
     void SetSnapshotRefreshControlsEnabled(bool enabled);
+    static bool OpenVerifiedProcessActionTarget(
+        DWORD targetProcessId,
+        ULONGLONG expectedProcessCreationTime100ns,
+        DWORD requestedProcessAccess,
+        Ksword::Core::UniqueHandle& processOut,
+        std::wstring& errorText);
     static bool OpenVerifiedThreadActionTarget(
         DWORD targetProcessId,
         ULONGLONG expectedProcessCreationTime100ns,

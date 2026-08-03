@@ -1006,11 +1006,12 @@ void ProcessDetailPage::UnloadSelectedModule() {
     }
     const auto moduleSnapshot = moduleEntries_;
     const DWORD targetProcessId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
     ExecuteBackgroundAction(
         TabIndex::Modules,
         ModuleStatus,
         L"● 正在后台卸载模块…",
-        [moduleBase, targetProcessId, moduleSnapshot] {
+        [moduleBase, targetProcessId, expectedProcessCreationTime100ns, moduleSnapshot] {
             ProcessDetailActionResult action{};
             HMODULE localKernel32 = ::GetModuleHandleW(L"kernel32.dll");
             FARPROC localFreeLibrary = localKernel32 ? ::GetProcAddress(localKernel32, "FreeLibrary") : nullptr;
@@ -1046,34 +1047,33 @@ void ProcessDetailPage::UnloadSelectedModule() {
                 ? remoteFunctionModule + freeLibraryOffset
                 : reinterpret_cast<std::uintptr_t>(localFreeLibrary);
 
-            HANDLE process = ::OpenProcess(
-                PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_READ,
-                FALSE,
-                targetProcessId);
-            if (!process) {
-                action.statusText = L"● 卸载模块失败 | " + LastErrorText(L"OpenProcess", ::GetLastError());
+            Ksword::Core::UniqueHandle verifiedProcess;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedProcessActionTarget(
+                    targetProcessId,
+                    expectedProcessCreationTime100ns,
+                    PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_READ,
+                    verifiedProcess,
+                    identityError)) {
+                action.statusText = L"● 卸载模块失败 | " + identityError;
                 return action;
             }
-            HANDLE thread = ::CreateRemoteThread(
-                process,
+            Ksword::Core::UniqueHandle remoteThread(::CreateRemoteThread(
+                verifiedProcess.get(),
                 nullptr,
                 0,
                 reinterpret_cast<LPTHREAD_START_ROUTINE>(remoteFreeLibrary),
                 reinterpret_cast<void*>(moduleBase),
                 0,
-                nullptr);
-            if (!thread) {
-                const DWORD error = ::GetLastError();
-                ::CloseHandle(process);
-                action.statusText = L"● 卸载模块失败 | " + LastErrorText(L"CreateRemoteThread", error);
+                nullptr));
+            if (!remoteThread.valid()) {
+                action.statusText = L"● 卸载模块失败 | " + LastErrorText(L"CreateRemoteThread", ::GetLastError());
                 return action;
             }
-            const DWORD waitResult = ::WaitForSingleObject(thread, 10000);
+            const DWORD waitResult = ::WaitForSingleObject(remoteThread.get(), 10000);
             DWORD exitCode = 0;
             const bool completed = waitResult == WAIT_OBJECT_0 &&
-                ::GetExitCodeThread(thread, &exitCode) != FALSE && exitCode != 0;
-            ::CloseHandle(thread);
-            ::CloseHandle(process);
+                ::GetExitCodeThread(remoteThread.get(), &exitCode) != FALSE && exitCode != 0;
             if (!completed) {
                 action.statusText = L"● 卸载模块失败 | FreeLibrary 未成功返回";
                 return action;

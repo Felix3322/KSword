@@ -296,25 +296,23 @@ bool SelectedItemData(HWND list, std::size_t& indexOut) {
 
 } // namespace
 
-bool ProcessDetailPage::OpenVerifiedThreadActionTarget(
+bool ProcessDetailPage::OpenVerifiedProcessActionTarget(
     DWORD targetProcessId,
     ULONGLONG expectedProcessCreationTime100ns,
-    DWORD targetThreadId,
-    ULONGLONG expectedThreadCreationTime100ns,
-    DWORD requestedThreadAccess,
+    DWORD requestedProcessAccess,
     Ksword::Core::UniqueHandle& processOut,
-    Ksword::Core::UniqueHandle& threadOut,
     std::wstring& errorText) {
     processOut.reset();
-    threadOut.reset();
     errorText.clear();
-    if (targetProcessId == 0U || targetThreadId == 0U ||
-        expectedProcessCreationTime100ns == 0U || expectedThreadCreationTime100ns == 0U) {
-        errorText = L"目标进程或线程身份不可用，已取消操作。";
+    if (targetProcessId == 0U || expectedProcessCreationTime100ns == 0U) {
+        errorText = L"目标进程身份不可用，已取消操作。";
         return false;
     }
 
-    processOut.reset(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, targetProcessId));
+    processOut.reset(::OpenProcess(
+        requestedProcessAccess | PROCESS_QUERY_LIMITED_INFORMATION,
+        FALSE,
+        targetProcessId));
     if (!processOut.valid()) {
         errorText = Win32ErrorText(L"OpenProcess", ::GetLastError());
         return false;
@@ -338,6 +336,32 @@ bool ProcessDetailPage::OpenVerifiedThreadActionTarget(
     if (actualProcessCreationTime100ns == 0U ||
         actualProcessCreationTime100ns != expectedProcessCreationTime100ns) {
         errorText = L"目标进程实例已变更，已取消操作。";
+        return false;
+    }
+    return true;
+}
+
+bool ProcessDetailPage::OpenVerifiedThreadActionTarget(
+    DWORD targetProcessId,
+    ULONGLONG expectedProcessCreationTime100ns,
+    DWORD targetThreadId,
+    ULONGLONG expectedThreadCreationTime100ns,
+    DWORD requestedThreadAccess,
+    Ksword::Core::UniqueHandle& processOut,
+    Ksword::Core::UniqueHandle& threadOut,
+    std::wstring& errorText) {
+    threadOut.reset();
+    if (targetThreadId == 0U || expectedThreadCreationTime100ns == 0U) {
+        processOut.reset();
+        errorText = L"目标线程身份不可用，已取消操作。";
+        return false;
+    }
+    if (!OpenVerifiedProcessActionTarget(
+            targetProcessId,
+            expectedProcessCreationTime100ns,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            processOut,
+            errorText)) {
         return false;
     }
 
