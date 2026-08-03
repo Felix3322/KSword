@@ -6,6 +6,8 @@
 #include <QFont>
 #include <QPainter>
 #include <QPainterPath>
+#include <QEasingCurve>
+#include <QVariantAnimation>
 #include <QPaintEvent>
 #include <QPen>
 #include <QSizePolicy>
@@ -44,6 +46,15 @@ MemoryCompositionHistoryWidget::MemoryCompositionHistoryWidget(QWidget* parent)
     setMouseTracking(true);
     setAttribute(Qt::WA_StyledBackground, false);
     setAutoFillBackground(false);
+    m_sampleAnimation = new QVariantAnimation(this);
+    m_sampleAnimation->setDuration(260);
+    m_sampleAnimation->setEasingCurve(QEasingCurve::OutCubic);
+    m_sampleAnimation->setStartValue(0.0);
+    m_sampleAnimation->setEndValue(1.0);
+    connect(m_sampleAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        m_animationProgress = value.toDouble();
+        update();
+    });
 }
 
 void MemoryCompositionHistoryWidget::setHistoryLength(const int historyLength)
@@ -80,16 +91,30 @@ void MemoryCompositionHistoryWidget::appendSample(const CompositionSample& sampl
             - safeSample.pagedPoolPercent
             - safeSample.nonPagedPoolPercent);
 
+    const CompositionSample previousSample = m_sampleList.empty()
+        ? safeSample
+        : m_sampleList.back();
+    m_previousSampleCount = static_cast<int>(m_sampleList.size());
+    m_historyWindowShifted = m_previousSampleCount >= m_historyLength;
     m_sampleList.push_back(safeSample);
     while (static_cast<int>(m_sampleList.size()) > m_historyLength)
     {
         m_sampleList.erase(m_sampleList.begin());
     }
-    update();
+    m_previousSample = previousSample;
+    m_hasPreviousSample = true;
+    m_animationProgress = 0.0;
+    m_sampleAnimation->stop();
+    m_sampleAnimation->start();
 }
 
 void MemoryCompositionHistoryWidget::clearSamples()
 {
+    m_sampleAnimation->stop();
+    m_animationProgress = 1.0;
+    m_hasPreviousSample = false;
+    m_previousSampleCount = 0;
+    m_historyWindowShifted = false;
     m_sampleList.clear();
     update();
 }
@@ -153,14 +178,54 @@ double MemoryCompositionHistoryWidget::boundedPercent(const double percentValue)
     return std::clamp(percentValue, 0.0, 100.0);
 }
 
+MemoryCompositionHistoryWidget::CompositionSample MemoryCompositionHistoryWidget::animatedSampleAt(
+    const std::size_t sampleIndex) const
+{
+    const CompositionSample targetSample = m_sampleList[sampleIndex];
+    if (!m_hasPreviousSample || sampleIndex + 1U != m_sampleList.size() || m_animationProgress >= 1.0)
+    {
+        return targetSample;
+    }
+    const auto interpolate = [this](const double startValue, const double targetValue) {
+        return startValue + (targetValue - startValue) * m_animationProgress;
+    };
+    CompositionSample result = targetSample;
+    result.usedPercent = interpolate(m_previousSample.usedPercent, targetSample.usedPercent);
+    result.activePercent = interpolate(m_previousSample.activePercent, targetSample.activePercent);
+    result.cachedPercent = interpolate(m_previousSample.cachedPercent, targetSample.cachedPercent);
+    result.pagedPoolPercent = interpolate(m_previousSample.pagedPoolPercent, targetSample.pagedPoolPercent);
+    result.nonPagedPoolPercent = interpolate(m_previousSample.nonPagedPoolPercent, targetSample.nonPagedPoolPercent);
+    return result;
+}
+
 double MemoryCompositionHistoryWidget::sampleX(const int sampleIndex, const QRectF& plotRect) const
 {
     if (m_sampleList.size() <= 1)
     {
         return plotRect.left();
     }
-    const double denominatorValue = static_cast<double>(m_sampleList.size() - 1);
-    return plotRect.left() + plotRect.width() * static_cast<double>(sampleIndex) / denominatorValue;
+    const int sampleCount = static_cast<int>(m_sampleList.size());
+    const double targetRatio =
+        static_cast<double>(sampleIndex) / static_cast<double>(sampleCount - 1);
+    double startRatio = targetRatio;
+    if (m_animationProgress < 1.0)
+    {
+        if (m_historyWindowShifted && m_previousSampleCount == sampleCount)
+        {
+            startRatio = sampleIndex + 1 < sampleCount
+                ? static_cast<double>(sampleIndex + 1) / static_cast<double>(sampleCount - 1)
+                : 1.0;
+        }
+        else if (m_previousSampleCount + 1 == sampleCount && m_previousSampleCount > 1)
+        {
+            startRatio = sampleIndex < m_previousSampleCount
+                ? static_cast<double>(sampleIndex) / static_cast<double>(m_previousSampleCount - 1)
+                : 1.0;
+        }
+    }
+    const double animatedRatio =
+        startRatio + (targetRatio - startRatio) * m_animationProgress;
+    return plotRect.left() + plotRect.width() * animatedRatio;
 }
 
 double MemoryCompositionHistoryWidget::percentY(const double percentValue, const QRectF& plotRect)
@@ -183,7 +248,7 @@ void MemoryCompositionHistoryWidget::drawStackedComposition(QPainter& painter, c
 
         for (int sampleIndex = 0; sampleIndex < static_cast<int>(m_sampleList.size()); ++sampleIndex)
         {
-            const CompositionSample& sample = m_sampleList[static_cast<std::size_t>(sampleIndex)];
+            const CompositionSample sample = animatedSampleAt(static_cast<std::size_t>(sampleIndex));
             const double componentValues[4] = {
                 sample.activePercent,
                 sample.cachedPercent,
@@ -201,7 +266,7 @@ void MemoryCompositionHistoryWidget::drawStackedComposition(QPainter& painter, c
 
         for (int sampleIndex = static_cast<int>(m_sampleList.size()) - 1; sampleIndex >= 0; --sampleIndex)
         {
-            const CompositionSample& sample = m_sampleList[static_cast<std::size_t>(sampleIndex)];
+            const CompositionSample sample = animatedSampleAt(static_cast<std::size_t>(sampleIndex));
             const double componentValues[4] = {
                 sample.activePercent,
                 sample.cachedPercent,
@@ -234,7 +299,7 @@ void MemoryCompositionHistoryWidget::drawUsageLine(QPainter& painter, const QRec
     {
         const QPointF pointValue(
             sampleX(sampleIndex, plotRect),
-            percentY(m_sampleList[static_cast<std::size_t>(sampleIndex)].usedPercent, plotRect));
+            percentY(animatedSampleAt(static_cast<std::size_t>(sampleIndex)).usedPercent, plotRect));
         if (sampleIndex == 0)
         {
             linePath.moveTo(pointValue);

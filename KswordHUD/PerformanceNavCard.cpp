@@ -1,5 +1,7 @@
 #include "PerformanceNavCard.h"
 
+#include <QEasingCurve>
+#include <QVariantAnimation>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -25,6 +27,15 @@ PerformanceNavCard::PerformanceNavCard(QWidget* parent)
     setAutoFillBackground(false);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setMinimumHeight(78);
+    m_sampleAnimation = new QVariantAnimation(this);
+    m_sampleAnimation->setDuration(260);
+    m_sampleAnimation->setEasingCurve(QEasingCurve::OutCubic);
+    m_sampleAnimation->setStartValue(0.0);
+    m_sampleAnimation->setEndValue(1.0);
+    connect(m_sampleAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        m_animationProgress = value.toDouble();
+        update();
+    });
 }
 
 void PerformanceNavCard::setTitleText(const QString& titleText)
@@ -54,18 +65,61 @@ void PerformanceNavCard::setSelectedState(const bool selected)
 void PerformanceNavCard::appendSample(const double usagePercent)
 {
     const double clampedPercent = qBound(0.0, usagePercent, 100.0);
+    const double previousSample = m_samples.isEmpty()
+        ? clampedPercent
+        : m_samples.back();
+    m_previousSampleCount = static_cast<int>(m_samples.size());
+    m_historyWindowShifted = m_previousSampleCount >= m_maxSampleCount;
     m_samples.push_back(clampedPercent);
     while (m_samples.size() > m_maxSampleCount)
     {
         m_samples.pop_front();
     }
-    update();
+    startLatestSampleAnimation(previousSample);
 }
 
 void PerformanceNavCard::clearSamples()
 {
+    m_sampleAnimation->stop();
+    m_animationProgress = 1.0;
+    m_previousSampleCount = 0;
+    m_historyWindowShifted = false;
     m_samples.clear();
     update();
+}
+
+void PerformanceNavCard::startLatestSampleAnimation(const double previousSample)
+{
+    m_previousSample = previousSample;
+    m_animationProgress = 0.0;
+    m_sampleAnimation->stop();
+    m_sampleAnimation->start();
+}
+
+double PerformanceNavCard::animatedXRatio(const int sampleIndex, const int sampleCount) const
+{
+    if (sampleCount <= 1)
+    {
+        return 0.0;
+    }
+
+    const double targetRatio =
+        static_cast<double>(sampleIndex) / static_cast<double>(sampleCount - 1);
+    double startRatio = targetRatio;
+    if (m_historyWindowShifted && m_previousSampleCount == sampleCount)
+    {
+        startRatio = sampleIndex + 1 < sampleCount
+            ? static_cast<double>(sampleIndex + 1) / static_cast<double>(sampleCount - 1)
+            : 1.0;
+    }
+    else if (m_previousSampleCount + 1 == sampleCount && m_previousSampleCount > 1)
+    {
+        startRatio = sampleIndex < m_previousSampleCount
+            ? static_cast<double>(sampleIndex) / static_cast<double>(m_previousSampleCount - 1)
+            : 1.0;
+    }
+
+    return startRatio + (targetRatio - startRatio) * m_animationProgress;
 }
 
 QSize PerformanceNavCard::sizeHint() const
@@ -79,6 +133,14 @@ void PerformanceNavCard::paintEvent(QPaintEvent* paintEventPointer)
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    const auto animatedValueAt = [this](const int indexValue) {
+        const double targetValue = m_samples.at(indexValue);
+        if (indexValue != m_samples.size() - 1 || m_animationProgress >= 1.0)
+        {
+            return targetValue;
+        }
+        return m_previousSample + (targetValue - m_previousSample) * m_animationProgress;
+    };
 
     const QRect cardRect = rect().adjusted(2, 2, -2, -2);
     const QColor cardBorderColor(
@@ -118,7 +180,7 @@ void PerformanceNavCard::paintEvent(QPaintEvent* paintEventPointer)
 
     if (m_samples.size() == 1)
     {
-        const double yRatio = m_samples.at(0) / 100.0;
+        const double yRatio = animatedValueAt(0) / 100.0;
         const double yValue = sparkRect.bottom() - yRatio * static_cast<double>(sparkRect.height());
         QPen trendPen(m_accentColor);
         trendPen.setWidthF(1.6);
@@ -133,10 +195,8 @@ void PerformanceNavCard::paintEvent(QPaintEvent* paintEventPointer)
         const int pointCount = m_samples.size();
         for (int indexValue = 0; indexValue < pointCount; ++indexValue)
         {
-            const double xRatio = pointCount > 1
-                ? static_cast<double>(indexValue) / static_cast<double>(pointCount - 1)
-                : 0.0;
-            const double yRatio = m_samples.at(indexValue) / 100.0;
+            const double xRatio = animatedXRatio(indexValue, pointCount);
+            const double yRatio = animatedValueAt(indexValue) / 100.0;
             const double xValue = sparkRect.left() + xRatio * static_cast<double>(sparkRect.width());
             const double yValue = sparkRect.bottom() - yRatio * static_cast<double>(sparkRect.height());
             if (indexValue == 0)

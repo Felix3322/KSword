@@ -12,6 +12,7 @@
 #include "../theme.h"
 
 #include <QDateTime>
+#include <QEasingCurve>
 #include <QEvent>
 #include <QFrame>
 #include <QGridLayout>
@@ -1068,15 +1069,17 @@ void MonitorPanelWidget::applyChartTextTheme()
             continue;
         }
 
-        const bool barChartNeedsSoftAnimation = chart == (m_cpuChartView != nullptr ? m_cpuChartView->chart() : nullptr);
+        const bool isCpuBarChart = chart == (m_cpuChartView != nullptr ? m_cpuChartView->chart() : nullptr);
 
         chart->setTitleBrush(primaryTextBrush);
         chart->setTitleFont(titleFont);
         chart->legend()->hide();
         chart->legend()->setLabelColor(primaryTextColor);
         chart->legend()->setFont(legendFont);
-        chart->setAnimationOptions(barChartNeedsSoftAnimation ? QChart::SeriesAnimations : QChart::NoAnimation);
-        chart->setAnimationDuration(barChartNeedsSoftAnimation ? 120 : 0);
+        chart->setAnimationOptions(
+            isCpuBarChart ? QChart::SeriesAnimations : QChart::AllAnimations);
+        chart->setAnimationDuration(isCpuBarChart ? 120 : 260);
+        chart->setAnimationEasingCurve(QEasingCurve::OutCubic);
 
         const QList<QAbstractAxis*> axisList = chart->axes();
         for (QAbstractAxis* axis : axisList)

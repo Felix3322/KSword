@@ -23,6 +23,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QEasingCurve>
 #include <QDataStream>
 #include <QDir>
 #include <QEvent>
@@ -5164,6 +5165,9 @@ void MonitorDock::initializePerformancePanel()
         QChart* chart = new QChart();
         chart->addSeries(firstSeries);
         chart->addSeries(secondSeries);
+        chart->setAnimationOptions(QChart::AllAnimations);
+        chart->setAnimationDuration(260);
+        chart->setAnimationEasingCurve(QEasingCurve::OutCubic);
         chart->setTitle(titleText);
         chart->legend()->setVisible(true);
         chart->legend()->setAlignment(Qt::AlignTop);

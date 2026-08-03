@@ -21,6 +21,8 @@
 #include <QSizePolicy>
 #include <QtGlobal>
 #include <QWheelEvent>
+#include <QEasingCurve>
+#include <QVariantAnimation>
 
 #include <algorithm>
 #include <cmath>
@@ -136,6 +138,15 @@ ProcessTraceTimelineWidget::ProcessTraceTimelineWidget(QWidget* parent)
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setMouseTracking(true);
     setFocusPolicy(Qt::NoFocus);
+    m_rateAnimation = new QVariantAnimation(this);
+    m_rateAnimation->setDuration(260);
+    m_rateAnimation->setEasingCurve(QEasingCurve::OutCubic);
+    m_rateAnimation->setStartValue(0.0);
+    m_rateAnimation->setEndValue(1.0);
+    connect(m_rateAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        m_rateAnimationProgress = value.toDouble();
+        update();
+    });
 }
 
 void ProcessTraceTimelineWidget::setCaptureRange(
@@ -148,6 +159,18 @@ void ProcessTraceTimelineWidget::setCaptureRange(
         : start100ns + kDefaultRange100ns;
 
     const bool hadRange = m_rangeEnd100ns > m_rangeStart100ns;
+    if (hadRange)
+    {
+        m_previousRateRangeStart100ns = m_rangeStart100ns;
+        m_previousRateRangeEnd100ns = m_rangeEnd100ns;
+        m_hasPreviousRateRange =
+            m_previousRateRangeStart100ns != start100ns
+            || m_previousRateRangeEnd100ns != normalizedEnd100ns;
+    }
+    else
+    {
+        m_hasPreviousRateRange = false;
+    }
     m_rangeStart100ns = start100ns;
     m_rangeEnd100ns = normalizedEnd100ns;
 
@@ -168,9 +191,15 @@ void ProcessTraceTimelineWidget::setCaptureRange(
 void ProcessTraceTimelineWidget::resetTimeline(const std::uint64_t start100ns)
 {
     m_eventPointList.clear();
+    m_rateAnimation->stop();
+    m_rateAnimationProgress = 1.0;
+    m_hasPreviousRatePoint = false;
     m_ratePointList.clear();
     m_rangeStart100ns = start100ns;
     m_rangeEnd100ns = start100ns + kDefaultRange100ns;
+    m_previousRateRangeStart100ns = m_rangeStart100ns;
+    m_previousRateRangeEnd100ns = m_rangeEnd100ns;
+    m_hasPreviousRateRange = false;
     m_selectionStart100ns = m_rangeStart100ns;
     m_selectionEnd100ns = m_rangeEnd100ns;
     m_dragPressTime100ns = 0;
@@ -253,8 +282,74 @@ void ProcessTraceTimelineWidget::setRateOverlayPoints(
     // 速率折线是可选叠加层：
     // - ETW 页不会设置该列表，因此原有事件瀑布流绘制不受影响；
     // - 网络页传入按秒聚合后的上传/下载速率，控件只负责映射到当前时间范围。
+    const ProcessTraceTimelineRatePoint previousRatePoint = m_ratePointList.empty()
+        ? (ratePointList.empty() ? ProcessTraceTimelineRatePoint{} : ratePointList.back())
+        : m_ratePointList.back();
     m_ratePointList = ratePointList;
-    update();
+    if (m_ratePointList.empty())
+    {
+        m_rateAnimation->stop();
+        m_rateAnimationProgress = 1.0;
+        m_hasPreviousRatePoint = false;
+        update();
+        return;
+    }
+    m_previousRatePoint = previousRatePoint;
+    m_hasPreviousRatePoint = true;
+    m_rateAnimationProgress = 0.0;
+    m_rateAnimation->stop();
+    m_rateAnimation->start();
+}
+
+ProcessTraceTimelineRatePoint ProcessTraceTimelineWidget::animatedRatePointAt(
+    const std::size_t pointIndex) const
+{
+    const ProcessTraceTimelineRatePoint targetPoint = m_ratePointList[pointIndex];
+    if (!m_hasPreviousRatePoint || pointIndex + 1U != m_ratePointList.size() || m_rateAnimationProgress >= 1.0)
+    {
+        return targetPoint;
+    }
+    ProcessTraceTimelineRatePoint result = targetPoint;
+    if (targetPoint.time100ns >= m_previousRatePoint.time100ns)
+    {
+        result.time100ns = m_previousRatePoint.time100ns + static_cast<std::uint64_t>(
+            static_cast<long double>(targetPoint.time100ns - m_previousRatePoint.time100ns)
+            * m_rateAnimationProgress);
+    }
+    else
+    {
+        result.time100ns = targetPoint.time100ns;
+    }
+    result.uploadBytesPerSecond = m_previousRatePoint.uploadBytesPerSecond
+        + (targetPoint.uploadBytesPerSecond - m_previousRatePoint.uploadBytesPerSecond) * m_rateAnimationProgress;
+    result.downloadBytesPerSecond = m_previousRatePoint.downloadBytesPerSecond
+        + (targetPoint.downloadBytesPerSecond - m_previousRatePoint.downloadBytesPerSecond) * m_rateAnimationProgress;
+    return result;
+}
+
+double ProcessTraceTimelineWidget::animatedRateTimeToX(const std::uint64_t time100ns) const
+{
+    long double rangeStart = static_cast<long double>(m_rangeStart100ns);
+    long double rangeEnd = static_cast<long double>(m_rangeEnd100ns);
+    if (m_hasPreviousRateRange && m_rateAnimationProgress < 1.0)
+    {
+        const long double progress = m_rateAnimationProgress;
+        rangeStart = static_cast<long double>(m_previousRateRangeStart100ns)
+            + (rangeStart - static_cast<long double>(m_previousRateRangeStart100ns)) * progress;
+        rangeEnd = static_cast<long double>(m_previousRateRangeEnd100ns)
+            + (rangeEnd - static_cast<long double>(m_previousRateRangeEnd100ns)) * progress;
+    }
+
+    const QRectF axisRect = timelineRect();
+    if (rangeEnd <= rangeStart)
+    {
+        return axisRect.left();
+    }
+    const long double ratio = std::clamp(
+        (static_cast<long double>(time100ns) - rangeStart) / (rangeEnd - rangeStart),
+        0.0L,
+        1.0L);
+    return axisRect.left() + axisRect.width() * static_cast<double>(ratio);
 }
 
 void ProcessTraceTimelineWidget::setSelectionChangedCallback(
@@ -361,13 +456,14 @@ void ProcessTraceTimelineWidget::paintEvent(QPaintEvent* eventPointer)
                 {
                     const double clampedRate = std::clamp(bytesPerSecond, 0.0, maxVisibleRate);
                     const double ratio = maxVisibleRate <= 0.0 ? 0.0 : clampedRate / maxVisibleRate;
-                    const double xValue = timeToX(time100ns);
+                    const double xValue = animatedRateTimeToX(time100ns);
                     const double yValue = rateRect.bottom() - rateRect.height() * ratio;
                     polygon << QPointF(xValue, yValue);
                 };
 
-            for (const ProcessTraceTimelineRatePoint& ratePoint : m_ratePointList)
+            for (std::size_t rateIndex = 0; rateIndex < m_ratePointList.size(); ++rateIndex)
             {
+                const ProcessTraceTimelineRatePoint ratePoint = animatedRatePointAt(rateIndex);
                 if (ratePoint.time100ns < m_rangeStart100ns || ratePoint.time100ns > m_rangeEnd100ns)
                 {
                     continue;

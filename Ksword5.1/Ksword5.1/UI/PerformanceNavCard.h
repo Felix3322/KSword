@@ -15,6 +15,7 @@
 #include <QWidget>
 
 class QPaintEvent;
+class QVariantAnimation;
 
 class PerformanceNavCard final : public QWidget
 {
@@ -78,6 +79,12 @@ protected:
     void paintEvent(QPaintEvent* paintEventPointer) override;
 
 private:
+    // startLatestSampleAnimation 作用：让最新采样点从上一数值平滑过渡到目标数值。
+    void startLatestSampleAnimation(double previousPrimarySample, double previousSecondarySample);
+    // animatedXRatio 作用：将旧采样窗口的横坐标平滑插值到新窗口。
+    double animatedXRatio(int sampleIndex, int sampleCount) const;
+
+
     QString m_titleText;      // m_titleText：卡片主标题文本。
     QString m_subtitleText;   // m_subtitleText：卡片副标题文本。
     QColor m_accentColor;     // m_accentColor：折线与边框主色。
@@ -89,4 +96,10 @@ private:
     QVector<double> m_primarySamples; // m_primarySamples：主缩略线历史采样列表。
     QVector<double> m_secondarySamples; // m_secondarySamples：次缩略线历史采样列表。
     int m_maxSampleCount = 36; // m_maxSampleCount：折线最多保留的点数。
+    int m_previousSampleCount = 0; // m_previousSampleCount：动画开始前的采样数量。
+    bool m_historyWindowShifted = false; // m_historyWindowShifted：本轮是否淘汰了最旧采样。
+    QVariantAnimation* m_sampleAnimation = nullptr; // m_sampleAnimation：最新采样点插值动画。
+    double m_previousPrimarySample = 0.0; // m_previousPrimarySample：主线动画起点。
+    double m_previousSecondarySample = 0.0; // m_previousSecondarySample：次线动画起点。
+    double m_animationProgress = 1.0; // m_animationProgress：最新点动画进度。
 };

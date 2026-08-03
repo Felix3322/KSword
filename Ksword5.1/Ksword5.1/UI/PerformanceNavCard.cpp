@@ -11,11 +11,13 @@
 
 #include "../theme.h"
 
+#include <QEasingCurve>
 #include <QFontMetrics>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QSizePolicy>
+#include <QVariantAnimation>
 
 #include <algorithm>
 
@@ -29,6 +31,16 @@ PerformanceNavCard::PerformanceNavCard(QWidget* parent)
     // 左侧设备列表会按 Dock 可用高度动态压缩卡片，因此这里不能设置固定最小高度。
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     setMinimumSize(0, 0);
+
+    m_sampleAnimation = new QVariantAnimation(this);
+    m_sampleAnimation->setDuration(260);
+    m_sampleAnimation->setEasingCurve(QEasingCurve::OutCubic);
+    m_sampleAnimation->setStartValue(0.0);
+    m_sampleAnimation->setEndValue(1.0);
+    connect(m_sampleAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        m_animationProgress = value.toDouble();
+        update();
+    });
 }
 
 void PerformanceNavCard::setTitleText(const QString& titleText)
@@ -82,12 +94,17 @@ void PerformanceNavCard::appendSample(const double usagePercent)
 {
     // clampedPercent 用途：把外部传入采样限制在 0~100，避免越界绘制。
     const double clampedPercent = std::clamp(usagePercent, 0.0, 100.0);
+    const double previousPrimarySample = m_primarySamples.isEmpty()
+        ? clampedPercent
+        : m_primarySamples.back();
+    m_previousSampleCount = static_cast<int>(m_primarySamples.size());
+    m_historyWindowShifted = m_previousSampleCount >= m_maxSampleCount;
     m_primarySamples.push_back(clampedPercent);
     while (m_primarySamples.size() > m_maxSampleCount)
     {
         m_primarySamples.pop_front();
     }
-    update();
+    startLatestSampleAnimation(previousPrimarySample, m_previousSecondarySample);
 }
 
 void PerformanceNavCard::appendDualSample(
@@ -98,6 +115,14 @@ void PerformanceNavCard::appendDualSample(
     const double primaryClampedPercent = std::clamp(primaryUsagePercent, 0.0, 100.0);
     // secondaryClampedPercent 用途：次序列采样值，限制在 0~100。
     const double secondaryClampedPercent = std::clamp(secondaryUsagePercent, 0.0, 100.0);
+    const double previousPrimarySample = m_primarySamples.isEmpty()
+        ? primaryClampedPercent
+        : m_primarySamples.back();
+    const double previousSecondarySample = m_secondarySamples.isEmpty()
+        ? secondaryClampedPercent
+        : m_secondarySamples.back();
+    m_previousSampleCount = static_cast<int>(m_primarySamples.size());
+    m_historyWindowShifted = m_previousSampleCount >= m_maxSampleCount;
     m_primarySamples.push_back(primaryClampedPercent);
     m_secondarySamples.push_back(secondaryClampedPercent);
     while (m_primarySamples.size() > m_maxSampleCount)
@@ -108,13 +133,23 @@ void PerformanceNavCard::appendDualSample(
     {
         m_secondarySamples.pop_front();
     }
-    update();
+    startLatestSampleAnimation(previousPrimarySample, previousSecondarySample);
 }
 
 void PerformanceNavCard::setSampleSeries(
     const QVector<double>& primarySampleList,
     const QVector<double>& secondarySampleList)
 {
+    const double previousPrimarySample = m_primarySamples.isEmpty()
+        ? (primarySampleList.isEmpty() ? 0.0 : primarySampleList.back())
+        : m_primarySamples.back();
+    const double previousSecondarySample = m_secondarySamples.isEmpty()
+        ? (secondarySampleList.isEmpty() ? 0.0 : secondarySampleList.back())
+        : m_secondarySamples.back();
+    m_previousSampleCount = static_cast<int>(m_primarySamples.size());
+    const int nextSampleCount = std::min(static_cast<int>(primarySampleList.size()), m_maxSampleCount);
+    m_historyWindowShifted =
+        m_previousSampleCount >= m_maxSampleCount && nextSampleCount == m_previousSampleCount;
     m_primarySamples = primarySampleList;
     while (m_primarySamples.size() > m_maxSampleCount)
     {
@@ -133,14 +168,55 @@ void PerformanceNavCard::setSampleSeries(
     {
         m_secondarySamples.clear();
     }
-    update();
+    startLatestSampleAnimation(previousPrimarySample, previousSecondarySample);
 }
 
 void PerformanceNavCard::clearSamples()
 {
+    m_sampleAnimation->stop();
+    m_animationProgress = 1.0;
     m_primarySamples.clear();
+    m_previousSampleCount = 0;
+    m_historyWindowShifted = false;
     m_secondarySamples.clear();
     update();
+}
+
+void PerformanceNavCard::startLatestSampleAnimation(
+    const double previousPrimarySample,
+    const double previousSecondarySample)
+{
+    m_previousPrimarySample = previousPrimarySample;
+    m_previousSecondarySample = previousSecondarySample;
+    m_animationProgress = 0.0;
+    m_sampleAnimation->stop();
+    m_sampleAnimation->start();
+}
+
+double PerformanceNavCard::animatedXRatio(const int sampleIndex, const int sampleCount) const
+{
+    if (sampleCount <= 1)
+    {
+        return 0.0;
+    }
+
+    const double targetRatio =
+        static_cast<double>(sampleIndex) / static_cast<double>(sampleCount - 1);
+    double startRatio = targetRatio;
+    if (m_historyWindowShifted && m_previousSampleCount == sampleCount)
+    {
+        startRatio = sampleIndex + 1 < sampleCount
+            ? static_cast<double>(sampleIndex + 1) / static_cast<double>(sampleCount - 1)
+            : 1.0;
+    }
+    else if (m_previousSampleCount + 1 == sampleCount && m_previousSampleCount > 1)
+    {
+        startRatio = sampleIndex < m_previousSampleCount
+            ? static_cast<double>(sampleIndex) / static_cast<double>(m_previousSampleCount - 1)
+            : 1.0;
+    }
+
+    return startRatio + (targetRatio - startRatio) * m_animationProgress;
 }
 
 QSize PerformanceNavCard::sizeHint() const
@@ -148,6 +224,7 @@ QSize PerformanceNavCard::sizeHint() const
     // 默认高度压到 52px，实际高度由 HardwareDock 按列表可见高度继续动态下调。
     return QSize(208, 52);
 }
+
 
 int PerformanceNavCard::sampleCapacity() const
 {
@@ -208,19 +285,32 @@ void PerformanceNavCard::paintEvent(QPaintEvent* paintEventPointer)
     // - 把采样列表映射为缩略图曲线；
     // - 先绘制折线与 X 轴围成的透明填充，再绘制趋势线本体。
     const auto drawSeriesPath =
-        [&painter, &sparkRect](const QVector<double>& sampleList, const QColor& seriesColor)
+        [this, &painter, &sparkRect](
+            const QVector<double>& sampleList,
+            const QColor& seriesColor,
+            const double previousLastValue)
         {
             if (sampleList.isEmpty())
             {
                 return;
             }
+            const auto animatedValueAt = [this, &sampleList, previousLastValue](const int indexValue) {
+                const double targetValue = sampleList.at(indexValue);
+                if (indexValue != sampleList.size() - 1 || m_animationProgress >= 1.0)
+                {
+                    return targetValue;
+                }
+                return previousLastValue
+                    + (targetValue - previousLastValue) * m_animationProgress;
+            };
+
 
             QPen trendPen(seriesColor);
             trendPen.setWidthF(1.6);
 
             if (sampleList.size() == 1)
             {
-                const double yRatio = sampleList.at(0) / 100.0;
+                const double yRatio = animatedValueAt(0) / 100.0;
                 const double yValue = sparkRect.bottom() - yRatio * static_cast<double>(sparkRect.height());
                 const QColor fillColor = KswordTheme::WithAlpha(seriesColor, 34);
                 painter.fillRect(
@@ -241,10 +331,8 @@ void PerformanceNavCard::paintEvent(QPaintEvent* paintEventPointer)
             const int pointCount = sampleList.size();
             for (int indexValue = 0; indexValue < pointCount; ++indexValue)
             {
-                const double xRatio = pointCount > 1
-                    ? static_cast<double>(indexValue) / static_cast<double>(pointCount - 1)
-                    : 0.0;
-                const double yRatio = sampleList.at(indexValue) / 100.0;
+                const double xRatio = animatedXRatio(indexValue, pointCount);
+                const double yRatio = animatedValueAt(indexValue) / 100.0;
                 const double xValue = sparkRect.left() + xRatio * static_cast<double>(sparkRect.width());
                 const double yValue = sparkRect.bottom() - yRatio * static_cast<double>(sparkRect.height());
                 if (indexValue == 0)
@@ -273,9 +361,9 @@ void PerformanceNavCard::paintEvent(QPaintEvent* paintEventPointer)
     // 双线卡片先画次序列再画主序列，确保主线不会被遮住。
     if (m_secondarySeriesVisible)
     {
-        drawSeriesPath(m_secondarySamples, m_secondarySeriesColor);
+        drawSeriesPath(m_secondarySamples, m_secondarySeriesColor, m_previousSecondarySample);
     }
-    drawSeriesPath(m_primarySamples, m_primarySeriesColor);
+    drawSeriesPath(m_primarySamples, m_primarySeriesColor, m_previousPrimarySample);
 
     // 文本区域：主标题加粗，副标题使用次级颜色。
     const int textLeft = sparkRect.right() + (compactMode ? 5 : 7);

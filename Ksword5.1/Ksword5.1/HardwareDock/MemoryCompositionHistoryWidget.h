@@ -3,6 +3,7 @@
 #include <QWidget>
 
 #include <vector>
+class QVariantAnimation;
 
 // MemoryCompositionHistoryWidget 作用：
 // - 绘制内存占用历史折线；
@@ -41,6 +42,9 @@ private:
     // boundedPercent 作用：把百分比限制到 0~100，避免异常 API 数据撑破图表。
     static double boundedPercent(double percentValue);
 
+    // animatedSampleAt 作用：返回最新采样点在当前动画帧中的插值值。
+    CompositionSample animatedSampleAt(std::size_t sampleIndex) const;
+
     // sampleX 作用：把历史采样索引映射到绘图区 X 坐标。
     double sampleX(int sampleIndex, const QRectF& plotRect) const;
 
@@ -58,4 +62,10 @@ private:
 
     int m_historyLength = 60; // m_historyLength：最多保留的历史采样点数量。
     std::vector<CompositionSample> m_sampleList; // m_sampleList：按时间顺序保存的内存构成历史。
+    int m_previousSampleCount = 0; // m_previousSampleCount：动画开始前的采样数量。
+    bool m_historyWindowShifted = false; // m_historyWindowShifted：本轮是否淘汰了最旧采样。
+    QVariantAnimation* m_sampleAnimation = nullptr; // m_sampleAnimation：最新采样点动画。
+    CompositionSample m_previousSample; // m_previousSample：最新采样点的动画起点。
+    double m_animationProgress = 1.0; // m_animationProgress：最新采样点动画进度。
+    bool m_hasPreviousSample = false; // m_hasPreviousSample：是否存在可用于插值的上一采样。
 };

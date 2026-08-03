@@ -5,6 +5,7 @@
 #include <QAbstractItemView>
 #include <QAbstractScrollArea>
 #include <QDateTime>
+#include <QEasingCurve>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -21,6 +22,7 @@
 #include <QShowEvent>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QVariantAnimation>
 #include <QVector>
 #include <QVBoxLayout>
 
@@ -71,17 +73,33 @@ namespace
         {
             setAttribute(Qt::WA_StyledBackground, true);
             setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+            m_sampleAnimation = new QVariantAnimation(this);
+            m_sampleAnimation->setDuration(260);
+            m_sampleAnimation->setEasingCurve(QEasingCurve::OutCubic);
+            m_sampleAnimation->setStartValue(0.0);
+            m_sampleAnimation->setEndValue(1.0);
+            connect(m_sampleAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+                m_animationProgress = value.toDouble();
+                update();
+            });
         }
 
         void appendSample(const double usagePercent, const int historyLength)
         {
             const double boundedValue = qBound(0.0, usagePercent, 100.0);
+            m_previousSample = m_samples.isEmpty()
+                ? boundedValue
+                : m_samples.back();
+            m_previousSampleCount = static_cast<int>(m_samples.size());
+            m_historyWindowShifted = m_previousSampleCount >= historyLength;
             m_samples.push_back(boundedValue);
             while (m_samples.size() > historyLength)
             {
                 m_samples.pop_front();
             }
-            update();
+            m_animationProgress = 0.0;
+            m_sampleAnimation->stop();
+            m_sampleAnimation->start();
         }
 
     protected:
@@ -119,13 +137,36 @@ namespace
             const double usableHeight = std::max(1.0, contentRect.height() - 8.0);
             for (int indexValue = 0; indexValue < m_samples.size(); ++indexValue)
             {
+                const int sampleCount = m_samples.size();
+                const double targetRatio =
+                    static_cast<double>(indexValue) / static_cast<double>(sampleCount - 1);
+                double startRatio = targetRatio;
+                if (m_animationProgress < 1.0)
+                {
+                    if (m_historyWindowShifted && m_previousSampleCount == sampleCount)
+                    {
+                        startRatio = indexValue + 1 < sampleCount
+                            ? static_cast<double>(indexValue + 1) / static_cast<double>(sampleCount - 1)
+                            : 1.0;
+                    }
+                    else if (m_previousSampleCount + 1 == sampleCount && m_previousSampleCount > 1)
+                    {
+                        startRatio = indexValue < m_previousSampleCount
+                            ? static_cast<double>(indexValue) / static_cast<double>(m_previousSampleCount - 1)
+                            : 1.0;
+                    }
+                }
                 const double xRatio =
-                    (m_samples.size() <= 1)
-                    ? 0.0
-                    : static_cast<double>(indexValue) / static_cast<double>(m_samples.size() - 1);
+                    startRatio + (targetRatio - startRatio) * m_animationProgress;
                 const double xValue = contentRect.left() + 4.0 + usableWidth * xRatio;
+                double sampleValue = m_samples.at(indexValue);
+                if (indexValue == m_samples.size() - 1 && m_animationProgress < 1.0)
+                {
+                    sampleValue = m_previousSample
+                        + (sampleValue - m_previousSample) * m_animationProgress;
+                }
                 const double yValue =
-                    contentRect.bottom() - 4.0 - usableHeight * (m_samples.at(indexValue) / 100.0);
+                    contentRect.bottom() - 4.0 - usableHeight * (sampleValue / 100.0);
                 if (indexValue == 0)
                 {
                     linePath.moveTo(xValue, yValue);
@@ -143,6 +184,11 @@ namespace
 
     private:
         QVector<double> m_samples;
+        int m_previousSampleCount = 0;
+        bool m_historyWindowShifted = false;
+        QVariantAnimation* m_sampleAnimation = nullptr;
+        double m_previousSample = 0.0;
+        double m_animationProgress = 1.0;
     };
 
     constexpr double kOneGiBInBytes = 1024.0 * 1024.0 * 1024.0;
@@ -443,6 +489,9 @@ namespace
 
     QChartView* createNoFrameChartView(QChart* chartPointer, QWidget* parentWidget)
     {
+        chartPointer->setAnimationOptions(QChart::AllAnimations);
+        chartPointer->setAnimationDuration(260);
+        chartPointer->setAnimationEasingCurve(QEasingCurve::OutCubic);
         configureTransparentChart(chartPointer);
         QChartView* chartView = new QChartView(chartPointer, parentWidget);
         chartView->setRenderHint(QPainter::Antialiasing, true);

@@ -30,6 +30,7 @@
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QEasingCurve>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -1808,6 +1809,11 @@ namespace
     QChartView* createPlotBackgroundChartView(QChart* chart, QWidget* parentWidget)
     {
         configureTransparentChartViewOnly(chart);
+        // 实时折线每秒刷新一次，使用短时长序列插值平滑新采样和滑动窗口；
+        // 时长明显短于采样周期，避免上一轮动画堆积到下一轮刷新。
+        chart->setAnimationOptions(QChart::AllAnimations);
+        chart->setAnimationDuration(260);
+        chart->setAnimationEasingCurve(QEasingCurve::OutCubic);
         QChartView* chartView = new QChartView(chart, parentWidget);
         chartView->setRenderHint(QPainter::Antialiasing, true);
         chartView->setFrameShape(QFrame::NoFrame);

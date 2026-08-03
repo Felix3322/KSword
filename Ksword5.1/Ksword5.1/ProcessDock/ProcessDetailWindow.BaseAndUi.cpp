@@ -10,6 +10,9 @@
 #include "../PluginHost.h"
 
 #include <QTimer>
+#include <QEasingCurve>
+#include <QHash>
+#include <QVariantAnimation>
 
 using namespace process_detail_window_internal;
 
@@ -449,6 +452,15 @@ namespace
             setAutoFillBackground(false);
             setAttribute(Qt::WA_StyledBackground, false);
             setAttribute(Qt::WA_OpaquePaintEvent, false);
+            m_seriesAnimation = new QVariantAnimation(this);
+            m_seriesAnimation->setDuration(260);
+            m_seriesAnimation->setEasingCurve(QEasingCurve::OutCubic);
+            m_seriesAnimation->setStartValue(0.0);
+            m_seriesAnimation->setEndValue(1.0);
+            connect(m_seriesAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+                m_animationProgress = value.toDouble();
+                update();
+            });
         }
 
         void setChartData(
@@ -461,7 +473,20 @@ namespace
             const QString& copyLatestText,
             const QString& copyHistoryText)
         {
+            m_previousPointCount = m_timestamps.size();
+            m_historyWindowShifted =
+                m_previousPointCount == timestamps.size()
+                && m_previousPointCount > 1U
+                && timestamps.front() > m_timestamps.front();
             m_timestamps = std::move(timestamps);
+            m_previousLatestValueByLabel.clear();
+            for (const Series& oldSeries : m_series)
+            {
+                if (!oldSeries.values.empty())
+                {
+                    m_previousLatestValueByLabel.insert(oldSeries.label, oldSeries.values.back());
+                }
+            }
             m_series = std::move(series);
             m_unitText = unitText;
             m_fixedMaximum = fixedMaximum;
@@ -469,7 +494,9 @@ namespace
             m_timeHeader = timeHeader;
             m_copyLatestText = copyLatestText;
             m_copyHistoryText = copyHistoryText;
-            update();
+            m_animationProgress = 0.0;
+            m_seriesAnimation->stop();
+            m_seriesAnimation->start();
         }
 
     protected:
@@ -593,6 +620,32 @@ namespace
             }
         }
 
+        double animatedXRatio(const std::size_t pointIndex, const std::size_t pointCount) const
+        {
+            if (pointCount <= 1U)
+            {
+                return 0.0;
+            }
+
+            const double targetRatio =
+                static_cast<double>(pointIndex) / static_cast<double>(pointCount - 1U);
+            double startRatio = targetRatio;
+            if (m_historyWindowShifted && m_previousPointCount == pointCount)
+            {
+                startRatio = pointIndex + 1U < pointCount
+                    ? static_cast<double>(pointIndex + 1U) / static_cast<double>(pointCount - 1U)
+                    : 1.0;
+            }
+            else if (m_previousPointCount + 1U == pointCount && m_previousPointCount > 1U)
+            {
+                startRatio = pointIndex < m_previousPointCount
+                    ? static_cast<double>(pointIndex) / static_cast<double>(m_previousPointCount - 1U)
+                    : 1.0;
+            }
+
+            return startRatio + (targetRatio - startRatio) * m_animationProgress;
+        }
+
         void drawLines(QPainter& painter, const QRectF& plotRect, const double axisMaximum) const
         {
             const std::size_t pointCount = m_timestamps.size();
@@ -611,13 +664,17 @@ namespace
                 const std::size_t seriesPointCount = std::min(pointCount, series.values.size());
                 for (std::size_t pointIndex = 0; pointIndex < seriesPointCount; ++pointIndex)
                 {
-                    const double x = seriesPointCount <= 1U
-                        ? plotRect.left()
-                        : plotRect.left() + plotRect.width() * static_cast<double>(pointIndex) /
-                            static_cast<double>(seriesPointCount - 1U);
+                    const double x = plotRect.left()
+                        + plotRect.width() * animatedXRatio(pointIndex, seriesPointCount);
+                    double displayValue = series.values[pointIndex];
+                    if (pointIndex + 1U == seriesPointCount && m_animationProgress < 1.0)
+                    {
+                        const double startValue = m_previousLatestValueByLabel.value(series.label, displayValue);
+                        displayValue = startValue + (displayValue - startValue) * m_animationProgress;
+                    }
                     const double valueRatio = std::min(
                         1.0,
-                        std::max(0.0, series.values[pointIndex]) / axisMaximum);
+                        std::max(0.0, displayValue) / axisMaximum);
                     const double y = plotRect.bottom() - plotRect.height() * valueRatio;
                     if (pointIndex == 0U)
                     {
@@ -714,6 +771,11 @@ namespace
         QString m_copyLatestText;
         QString m_copyHistoryText;
         double m_fixedMaximum = 0.0;
+        QHash<QString, double> m_previousLatestValueByLabel;
+        std::size_t m_previousPointCount = 0U;
+        bool m_historyWindowShifted = false;
+        QVariantAnimation* m_seriesAnimation = nullptr;
+        double m_animationProgress = 1.0;
     };
 }
 

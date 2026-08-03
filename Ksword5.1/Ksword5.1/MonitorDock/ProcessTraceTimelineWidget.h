@@ -22,6 +22,7 @@ class QEvent;
 class QMouseEvent;
 class QPaintEvent;
 class QWheelEvent;
+class QVariantAnimation;
 
 // ProcessTraceTimelineEventPoint：
 // - time100ns：ETW 绝对时间戳，单位为 100ns；
@@ -139,6 +140,9 @@ private:
         ResizeLeft,
         ResizeRight
     };
+    ProcessTraceTimelineRatePoint animatedRatePointAt(std::size_t pointIndex) const;
+    double animatedRateTimeToX(std::uint64_t time100ns) const;
+
 
     // timelineRect：
     // - 返回 40px 时间轴中的实际可绘制矩形；
@@ -198,6 +202,13 @@ private:
 private:
     std::vector<ProcessTraceTimelineEventPoint> m_eventPointList; // m_eventPointList：仅用于绘制的轻量事件缓存。
     std::vector<ProcessTraceTimelineRatePoint> m_ratePointList; // m_ratePointList：上传/下载速率折线点缓存，空时不绘制。
+    QVariantAnimation* m_rateAnimation = nullptr; // m_rateAnimation：最新速率点插值动画。
+    ProcessTraceTimelineRatePoint m_previousRatePoint; // m_previousRatePoint：最新点动画起始值。
+    double m_rateAnimationProgress = 1.0; // m_rateAnimationProgress：最新速率点动画进度。
+    std::uint64_t m_previousRateRangeStart100ns = 0; // m_previousRateRangeStart100ns：横移动画前的范围左端。
+    std::uint64_t m_previousRateRangeEnd100ns = 0; // m_previousRateRangeEnd100ns：横移动画前的范围右端。
+    bool m_hasPreviousRateRange = false; // m_hasPreviousRateRange：是否存在可插值的旧时间范围。
+    bool m_hasPreviousRatePoint = false; // m_hasPreviousRatePoint：是否有可插值的旧速率点。
     std::function<void(std::uint64_t, std::uint64_t)> m_selectionChangedCallback; // m_selectionChangedCallback：宿主筛选回调。
     std::uint64_t m_rangeStart100ns = 0;             // m_rangeStart100ns：时间轴左边缘绝对时间。
     std::uint64_t m_rangeEnd100ns = 0;               // m_rangeEnd100ns：时间轴右边缘绝对时间。

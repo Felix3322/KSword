@@ -26,6 +26,8 @@
 #include <QComboBox>
 #include <QCursor>
 #include <QDateTime>
+#include <QEasingCurve>
+#include <QVariantAnimation>
 #include <QDoubleValidator>
 #include <QDir>
 #include <QEvent>
@@ -1012,6 +1014,15 @@ public:
         setAutoFillBackground(false);
         setAttribute(Qt::WA_StyledBackground, false);
         setAttribute(Qt::WA_OpaquePaintEvent, false);
+        m_seriesAnimation = new QVariantAnimation(this);
+        m_seriesAnimation->setDuration(260);
+        m_seriesAnimation->setEasingCurve(QEasingCurve::OutCubic);
+        m_seriesAnimation->setStartValue(0.0);
+        m_seriesAnimation->setEndValue(1.0);
+        connect(m_seriesAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+            m_animationProgress = value.toDouble();
+            update();
+        });
     }
 
     // setFocusedSampleIndex：
@@ -1025,6 +1036,21 @@ public:
         }
         m_focusedSampleIndex = sampleIndex;
         update();
+    }
+
+    void animateLatestSample(const bool historyWindowShifted)
+    {
+        if (m_ownerDock == nullptr || m_ownerDock->m_activitySamples.size() < 2U)
+        {
+            m_historyWindowShifted = false;
+            m_animationProgress = 1.0;
+            update();
+            return;
+        }
+        m_historyWindowShifted = historyWindowShifted;
+        m_animationProgress = 0.0;
+        m_seriesAnimation->stop();
+        m_seriesAnimation->start();
     }
 
 protected:
@@ -1392,6 +1418,38 @@ private:
         return plotRect.left() + ratio * plotRect.width();
     }
 
+    // animatedSampleIndexToX：
+    // - 新点加入时把旧采样从上一横坐标平滑移动到目标横坐标；
+    // - 历史满载时整窗左移，未满时旧点平滑压缩以给最右侧新点留出空间。
+    double animatedSampleIndexToX(const int sampleIndex, const QRectF& plotRect) const
+    {
+        if (m_ownerDock == nullptr || m_ownerDock->m_activitySamples.size() <= 1U)
+        {
+            return plotRect.left() + plotRect.width() * 0.5;
+        }
+        const int sampleCount = static_cast<int>(m_ownerDock->m_activitySamples.size());
+        const double targetRatio =
+            static_cast<double>(sampleIndex) / static_cast<double>(sampleCount - 1);
+        double startRatio = targetRatio;
+        if (m_animationProgress < 1.0)
+        {
+            if (m_historyWindowShifted)
+            {
+                startRatio = sampleIndex + 1 < sampleCount
+                    ? static_cast<double>(sampleIndex + 1) / static_cast<double>(sampleCount - 1)
+                    : 1.0;
+            }
+            else if (sampleCount > 2)
+            {
+                startRatio = sampleIndex + 1 < sampleCount
+                    ? static_cast<double>(sampleIndex) / static_cast<double>(sampleCount - 2)
+                    : 1.0;
+            }
+        }
+        const double ratio = startRatio + (targetRatio - startRatio) * m_animationProgress;
+        return plotRect.left() + ratio * plotRect.width();
+    }
+
     // drawGrid：
     // - 绘制弱网格、最大值标签和首尾时间；
     // - 不创建额外轴控件，降低 UI 成本。
@@ -1462,8 +1520,14 @@ private:
             const auto appendSamplePoint = [&](const std::size_t sampleIndex)
             {
                 const ProcessDock::ProcessActivitySample& sample = m_ownerDock->m_activitySamples[sampleIndex];
-                const double percentValue = samplePercentMetricValue(sample, metric, selectionKeySet, metricScale);
-                const double xValue = sampleIndexToX(static_cast<int>(sampleIndex), plotRect);
+                double percentValue = samplePercentMetricValue(sample, metric, selectionKeySet, metricScale);
+                if (sampleIndex + 1U == sampleCount && sampleIndex > 0U && m_animationProgress < 1.0)
+                {
+                    const ProcessDock::ProcessActivitySample& previousSample = m_ownerDock->m_activitySamples[sampleIndex - 1U];
+                    const double previousPercentValue = samplePercentMetricValue(previousSample, metric, selectionKeySet, metricScale);
+                    percentValue = previousPercentValue + (percentValue - previousPercentValue) * m_animationProgress;
+                }
+                const double xValue = animatedSampleIndexToX(static_cast<int>(sampleIndex), plotRect);
                 const double yValue = plotRect.bottom() - (percentValue / 100.0) * plotRect.height();
                 const QPointF point(xValue, yValue);
                 pointList.push_back(point);
@@ -1556,6 +1620,9 @@ private:
 private:
     ProcessDock* m_ownerDock = nullptr; // m_ownerDock：宿主 ProcessDock，不拥有。
     int m_focusedSampleIndex = -1;      // m_focusedSampleIndex：当前时间轴定位样本。
+    QVariantAnimation* m_seriesAnimation = nullptr; // m_seriesAnimation：最新采样点插值动画。
+    double m_animationProgress = 1.0; // m_animationProgress：最新采样点动画进度。
+    bool m_historyWindowShifted = false; // m_historyWindowShifted：本轮是否淘汰了最旧采样。
 };
 
 class ProcessActivityTimelineSlider final : public QSlider
@@ -7518,6 +7585,10 @@ void ProcessDock::appendProcessActivitySample()
 
     m_activitySamples.push_back(std::move(sample));
     const bool sampleIndexShiftedLeft = trimProcessActivitySamples();
+    if (m_activityChartWidget != nullptr)
+    {
+        m_activityChartWidget->animateLatestSample(sampleIndexShiftedLeft);
+    }
     if (!m_activitySamples.empty())
     {
         appendProcessActivitySampleToDetailWindows(m_activitySamples.back());
