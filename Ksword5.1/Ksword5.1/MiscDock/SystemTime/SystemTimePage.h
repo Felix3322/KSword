@@ -62,6 +62,7 @@ namespace ks::misc
         // confirmHighRisk：显示所选方案和风险清单，并要求输入固定确认短语。
         bool confirmHighRisk(
             const QString& modeText,
+            const QString& backendText,
             const QString& schemeText,
             unsigned long factor);
         // updateStatusDisplay：把协议字段转换为用户可读状态和诊断证据。
@@ -74,9 +75,16 @@ namespace ks::misc
             unsigned long osBuildNumber,
             long lastStatus,
             unsigned long resolutionMode,
+            unsigned long backend,
             unsigned long long counterSourceAddress,
             unsigned long long primarySlotAddress,
-            unsigned long long secondarySlotAddress);
+            unsigned long long secondarySlotAddress,
+            unsigned long long hypervisorSharedPageAddress,
+            unsigned long long hypervisorTimeUpdateLock,
+            unsigned long long hypervisorOriginalMultiplier,
+            unsigned long long hypervisorOriginalBias,
+            unsigned long long hypervisorCurrentMultiplier,
+            unsigned long long hypervisorCurrentBias);
         // updateButtons：根据忙碌、协议支持和风险确认状态更新按钮。
         void updateButtons();
         // setBusy：防止一次同步 IOCTL 尚未完成时重复点击。
@@ -90,6 +98,8 @@ namespace ks::misc
         QLabel* m_backendLabel = nullptr; // m_backendLabel：构建与解析策略摘要。
         QLabel* m_diagnosticLabel = nullptr; // m_diagnosticLabel：槽地址和 NTSTATUS 证据。
         QLabel* m_operationLabel = nullptr; // m_operationLabel：最近刷新或控制结果。
+        QRadioButton* m_hypervBackendRadio = nullptr; // m_hypervBackendRadio：选择 Hyper-V 共享 QPC 后端。
+        QRadioButton* m_halBackendRadio = nullptr; // m_halBackendRadio：选择原 HAL 兼容后端。
         QRadioButton* m_compatRadio = nullptr; // m_compatRadio：选择兼容定位模式。
         QRadioButton* m_guardedResolutionRadio = nullptr; // m_guardedResolutionRadio：选择增强校验定位。
         QRadioButton* m_speedUpRadio = nullptr; // m_speedUpRadio：选择 N 倍加速。
@@ -109,8 +119,10 @@ namespace ks::misc
         unsigned long m_calibrationGeneration = ~0UL; // m_calibrationGeneration：校准锚点对应的状态代次。
         unsigned long m_currentCommand = 0UL; // m_currentCommand：校准使用的当前速度命令。
         unsigned long m_currentFactor = 1UL; // m_currentFactor：校准使用的当前倍率。
+        unsigned long m_currentBackend = 0UL; // m_currentBackend：R0 当前或默认后端。
         bool m_active = false; // m_active：R0 当前是否已经接管计数器槽。
         bool m_supported = false; // m_supported：当前 R0 是否解析并支持本功能。
+        bool m_hypervAvailable = false; // m_hypervAvailable：Microsoft Hv 与共享 QPC 页是否同时可用。
         bool m_busy = false; // m_busy：同步控制期间阻止重复操作。
     };
 }

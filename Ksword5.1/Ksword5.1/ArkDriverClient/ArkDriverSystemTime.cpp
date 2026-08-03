@@ -13,7 +13,8 @@ namespace ksword::ark
         bool isUnsupportedSystemTimeError(const unsigned long error)
         {
             return error == ERROR_INVALID_FUNCTION ||
-                error == ERROR_NOT_SUPPORTED;
+                error == ERROR_NOT_SUPPORTED ||
+                error == ERROR_REVISION_MISMATCH;
         }
     }
 
@@ -59,6 +60,7 @@ namespace ksword::ark
             << result.response.generation
             << ", command=" << result.response.command
             << ", factor=" << result.response.factor
+            << ", backend=" << result.response.backend
             << ", resolutionMode="
             << result.response.resolutionMode
             << ", build=" << result.response.osBuildNumber;
@@ -72,11 +74,12 @@ namespace ksword::ark
 
     // controlSystemTime：
     // - 调用：用户确认后设置加速/减速，或无条件恢复 1x；
-    // - 输入：命令、倍率、期望代次和 UI 确认状态；
+    // - 输入：命令、倍率、计时后端、解析模式、期望代次和 UI 确认状态；
     // - 返回：动作前后状态，所有设备访问仍封装在 ArkDriverClient。
     SystemTimeControlResult DriverClient::controlSystemTime(
         const unsigned long command,
         const unsigned long factor,
+        const unsigned long backend,
         const unsigned long resolutionMode,
         const unsigned long expectedGeneration,
         const bool uiConfirmed) const
@@ -89,6 +92,7 @@ namespace ksword::ark
         request.size = sizeof(request);
         request.command = command;
         request.factor = factor;
+        request.backend = backend;
         request.resolutionMode = resolutionMode;
         request.expectedGeneration = expectedGeneration;
         if (uiConfirmed)
@@ -124,6 +128,7 @@ namespace ksword::ark
             << "system-time control command="
             << command
             << ", requestedFactor=" << factor
+            << ", backend=" << backend
             << ", resolutionMode=" << resolutionMode
             << ", status=" << result.response.status
             << ", oldFlags=0x" << std::hex

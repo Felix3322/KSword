@@ -8,6 +8,12 @@ Abstract:
 
     独立解析 Windows HAL 性能计数器描述符及活动函数槽。
 
+Third-Party Notice:
+
+    参考机制的许可证与归档说明位于：
+    third_party/SystemWideTransmission/LICENSE.txt
+    third_party/SystemWideTransmission/NOTICE.md
+
 Environment:
 
     Kernel-mode Driver Framework.
@@ -25,7 +31,7 @@ Environment:
 #define KSW_SYSTEM_TIME_HANDLER_INDEX_OFFSET   0xBCUL
 #define KSW_SYSTEM_TIME_INTERNAL_FLAGS_OFFSET  0xE0UL
 #define KSW_SYSTEM_TIME_HANDLER_ROW_BYTES      16UL
-#define KSW_SYSTEM_TIME_WINDOWS_10_BUILD_MAX   19045UL
+#define KSW_SYSTEM_TIME_RDI_PATTERN_BUILD_MAX  20348UL
 #define KSW_SYSTEM_TIME_HANDLER_BUILD_MINIMUM  28000UL
 
 /* 安全读取一个指针值；异常或用户地址一律按候选无效处理。 */
@@ -140,12 +146,17 @@ KswordARKSystemTimeValidateDescriptor(
             (const UCHAR*)Descriptor +
                 KSW_SYSTEM_TIME_SECONDARY_SLOT_OFFSET,
             &secondaryFunction) ||
-        !KswordARKSystemTimeReadPointer(
+        !KswordARKSystemTimeIsKernelCodePointer(secondaryFunction)) {
+        return FALSE;
+    }
+
+    /* 新版主入口来自处理器表，不把已不参与接管的旧 0x70 槽作为前置条件。 */
+    if (OsBuildNumber < KSW_SYSTEM_TIME_HANDLER_BUILD_MINIMUM &&
+        (!KswordARKSystemTimeReadPointer(
             (const UCHAR*)Descriptor +
                 KSW_SYSTEM_TIME_LEGACY_SLOT_OFFSET,
             &legacyFunction) ||
-        !KswordARKSystemTimeIsKernelCodePointer(secondaryFunction) ||
-        !KswordARKSystemTimeIsKernelCodePointer(legacyFunction)) {
+         !KswordARKSystemTimeIsKernelCodePointer(legacyFunction))) {
         return FALSE;
     }
 
@@ -170,10 +181,10 @@ KswordARKSystemTimeValidateDescriptor(
 }
 
 /*
- * 按原始机制的系统版本分支定位描述符引用：
- * Windows 8/10 使用 MOV RDI,[RIP+disp32]，Windows 11 使用
- * MOV RSI,[RIP+disp32]。兼容模式接受首个有效引用，增强模式继续
- * 验证后续会访问的描述符字段。
+ * 按系统版本分支定位描述符引用：截至 build 20348 的路径使用
+ * MOV RDI,[RIP+disp32]，后续构建使用 MOV RSI,[RIP+disp32]。
+ * 两种模式都验证实际会访问的描述符字段，避免命中特征后把空槽
+ * 或错误地址带到运行阶段。
  */
 static
 NTSTATUS
@@ -186,8 +197,9 @@ KswordARKSystemTimeFindDescriptor(
     )
 {
     ULONG offset = 0UL;
+    PVOID guardedDescriptor = NULL;
     const UCHAR expectedModRm =
-        OsBuildNumber <= KSW_SYSTEM_TIME_WINDOWS_10_BUILD_MAX
+        OsBuildNumber <= KSW_SYSTEM_TIME_RDI_PATTERN_BUILD_MAX
         ? 0x3DU
         : 0x35U;
 
@@ -218,15 +230,26 @@ KswordARKSystemTimeFindDescriptor(
             continue;
         }
 
-        if (!GuardedResolution ||
-            KswordARKSystemTimeValidateDescriptor(
+        if (!KswordARKSystemTimeValidateDescriptor(
                 candidateDescriptor,
                 OsBuildNumber)) {
+            continue;
+        }
+        if (!GuardedResolution) {
             *Descriptor = candidateDescriptor;
             return STATUS_SUCCESS;
         }
+        if (guardedDescriptor == NULL) {
+            guardedDescriptor = candidateDescriptor;
+        } else if (guardedDescriptor != candidateDescriptor) {
+            return STATUS_CONFLICTING_ADDRESSES;
+        }
     }
 
+    if (guardedDescriptor != NULL) {
+        *Descriptor = guardedDescriptor;
+        return STATUS_SUCCESS;
+    }
     return STATUS_NOT_FOUND;
 }
 
@@ -246,12 +269,14 @@ KswordARKSystemTimeFindHandlerSlot(
 {
     ULONG handlerIndex = 0UL;
     ULONG offset = 0UL;
+    volatile PVOID* guardedSlot = NULL;
 
     if (Code == NULL ||
         Descriptor == NULL ||
         HandlerSlot == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
+    *HandlerSlot = NULL;
 
     if (!KswordARKSystemTimeReadUlong(
             (const UCHAR*)Descriptor +
@@ -289,20 +314,32 @@ KswordARKSystemTimeFindHandlerSlot(
             (UCHAR*)tableAddress +
             ((SIZE_T)handlerIndex *
                 KSW_SYSTEM_TIME_HANDLER_ROW_BYTES));
-        if (GuardedResolution &&
-            (!KswordARKSystemTimeReadPointer(
+        /* 兼容模式也拒绝空槽；增强模式进一步要求目标是有效内核代码。 */
+        if (!KswordARKSystemTimeReadPointer(
                 (const VOID*)candidateSlot,
                 &candidateFunction) ||
+            candidateFunction == NULL ||
+            (GuardedResolution &&
              !KswordARKSystemTimeIsKernelCodePointer(
                 candidateFunction))) {
             continue;
         }
 
-        *HandlerSlot = candidateSlot;
-        return STATUS_SUCCESS;
+        if (!GuardedResolution) {
+            *HandlerSlot = candidateSlot;
+            return STATUS_SUCCESS;
+        }
+        if (guardedSlot == NULL) {
+            guardedSlot = candidateSlot;
+        } else if (guardedSlot != candidateSlot) {
+            return STATUS_CONFLICTING_ADDRESSES;
+        }
     }
 
-    *HandlerSlot = NULL;
+    if (guardedSlot != NULL) {
+        *HandlerSlot = guardedSlot;
+        return STATUS_SUCCESS;
+    }
     return STATUS_NOT_FOUND;
 }
 

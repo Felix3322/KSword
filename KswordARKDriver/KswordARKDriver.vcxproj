@@ -100,6 +100,7 @@
     <ClCompile Include="src\features\hvm\slat_iommu_audit.c" />
     <ClCompile Include="src\features\hvm\slat_iommu_audit_ioctl.c" />
     <ClCompile Include="src\features\system_time\system_time_counter.c" />
+    <ClCompile Include="src\features\system_time\system_time_hyperv.c" />
     <ClCompile Include="src\features\system_time\system_time_ioctl.c" />
     <ClCompile Include="src\features\system_time\system_time_resolver.c" />
     <ClCompile Include="src\features\system_time\system_time_runtime.c" />
@@ -364,6 +365,7 @@
     <ClInclude Include="..\shared\driver\KswordArkSlatIommuAuditIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkSystemTimeIoctl.h" />
     <ClInclude Include="src\features\system_time\system_time_counter.h" />
+    <ClInclude Include="src\features\system_time\system_time_hyperv.h" />
     <ClInclude Include="src\features\system_time\system_time_internal.h" />
     <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_object_audit.h" />
