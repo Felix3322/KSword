@@ -23587,6 +23587,8 @@
     "WaitForSingleObject(FreeLibrary) failed: ": "WaitForSingleObject(FreeLibrary) 失败: ",
     "WaitForSingleObject(FreeLibrary) returned unexpected result: ": "WaitForSingleObject(FreeLibrary) 返回意外结果: ",
     "GetProcessTimes(for unload module) failed: ": "GetProcessTimes（卸载模块）失败: ",
+    "GetProcessTimes(for thread identity) failed: ": "GetProcessTimes（线程身份校验）失败: ",
+    "OpenProcess(for thread identity) failed: ": "OpenProcess（线程身份校验）失败: ",
     "NtSuspendProcess failed, status=0x": "NtSuspendProcess 失败，状态=0x",
     "OpenProcess for verified action failed, error=": "为身份校验动作打开进程失败，错误码=",
     "closed handle identity changed unexpectedly while the process was suspended": "目标进程暂停期间，已关闭句柄的身份仍意外发生变化",
