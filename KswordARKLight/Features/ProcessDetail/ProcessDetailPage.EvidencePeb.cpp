@@ -1119,23 +1119,28 @@ void ProcessDetailPage::ApplyPebEdits() {
     const int priorityIndex = static_cast<int>(
         ::SendMessageW(Control(TabIndex::Peb, PebPriority), CB_GETCURSEL, 0, 0));
     const DWORD processId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
     ExecuteBackgroundAction(
         TabIndex::Peb,
         PebStatus,
         L"● 正在后台修改进程属性…",
-        [processId, commandLine, imagePath, currentDirectory, environmentName, imageBase, affinityText, priorityIndex] {
+        [processId, expectedProcessCreationTime100ns, commandLine, imagePath, currentDirectory, environmentName, imageBase, affinityText, priorityIndex] {
             ProcessDetailActionResult action{};
-            HANDLE process = ::OpenProcess(
-                PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-                FALSE,
-                processId);
-            if (!process) {
-                action.statusText = L"● PEB 修改失败：无法打开目标进程";
+            Ksword::Core::UniqueHandle verifiedProcess;
+            std::wstring identityError;
+            if (!ProcessDetailPage::OpenVerifiedProcessActionTarget(
+                    processId,
+                    expectedProcessCreationTime100ns,
+                    PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
+                    verifiedProcess,
+                    identityError)) {
+                action.statusText = L"● PEB 修改失败：" + identityError;
                 action.dialogTitle = L"PEB 修改失败";
-                action.dialogText = L"OpenProcess失败：" + std::to_wstring(::GetLastError());
+                action.dialogText = identityError;
                 action.dialogIcon = MB_ICONERROR;
                 return action;
             }
+            HANDLE process = verifiedProcess.get();
 
             std::vector<std::wstring> results;
             int successCount = 0;
@@ -1197,8 +1202,6 @@ void ProcessDetailPage::ApplyPebEdits() {
                         std::to_wstring(::GetLastError()) + L")。");
                 }
             }
-            ::CloseHandle(process);
-
             std::wostringstream resultText;
             resultText << L"成功 " << successCount << L"，失败 " << failCount << L"，跳过 " << skippedCount << L"\r\n\r\n";
             for (const std::wstring& line : results) {
