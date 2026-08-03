@@ -243,9 +243,21 @@
     <ClCompile Include="src\features\i8042_audit\i8042_audit.c" />
     <ClCompile Include="src\features\hwid\hwid_dispatch_hooks.c" />
     <ClCompile Include="src\features\hwid\hwid_dispatch_ioctl.c" />
+    <ClCompile Include="src\features\rxpf\image_protection_manager.c" />
+    <ClCompile Include="src\features\rxpf\page_fault_manager.c" />
+    <ClCompile Include="src\features\rxpf\page_state_table.c" />
+    <ClCompile Include="src\features\rxpf\rxpf_diagnostics.c" />
+    <ClCompile Include="src\features\rxpf\rxpf_ioctl.c" />
+    <ClCompile Include="src\features\rxpf\rxpf_runtime.c" />
+    <ClCompile Include="src\features\rxpf\rxpf_self_test.c" />
+    <ClCompile Include="src\features\rxpf\x64_instruction_emulator.c" />
+    <ClCompile Include="src\features\rxpf\x64_instruction_emulator_tests.c" />
   <ClCompile Include="src\features\callback\callback_external_wfp.c" /><ClCompile Include="src\features\callback\callback_external_minifilter.c" /><ClCompile Include="src\features\callback\callback_external_safe.c" /><ClCompile Include="src\features\memory\memory_physical.c" /><ClCompile Include="src\features\memory\memory_physical_layout.c" /><ClCompile Include="src\features\memory\memory_pagetable.c" /><ClCompile Include="src\features\memory\memory_kernel_exec_scan.c" /><ClCompile Include="src\features\memory\memory_kernel_exec_scan_helpers.c" /><ClCompile Include="src\features\memory\memory_kernel_evidence.c" /><ClCompile Include="src\features\memory\memory_evidence_enrichment.c" /><ClCompile Include="src\features\memory\memory_ioctl.c" /></ItemGroup>
   <ItemGroup>
     <MASM Include="src\features\hvm\hvm_entry.asm">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </MASM>
+    <MASM Include="src\features\rxpf\page_fault_stub.asm">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </MASM>
   </ItemGroup>
@@ -364,6 +376,14 @@
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkSlatIommuAuditIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkSystemTimeIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkRxPfIoctl.h" />
+    <ClInclude Include="src\features\rxpf\image_protection_manager.h" />
+    <ClInclude Include="src\features\rxpf\page_fault_manager.h" />
+    <ClInclude Include="src\features\rxpf\page_state_table.h" />
+    <ClInclude Include="src\features\rxpf\rxpf_diagnostics.h" />
+    <ClInclude Include="src\features\rxpf\rxpf_runtime.h" />
+    <ClInclude Include="src\features\rxpf\rxpf_self_test.h" />
+    <ClInclude Include="src\features\rxpf\x64_instruction_emulator.h" />
     <ClInclude Include="src\features\system_time\system_time_counter.h" />
     <ClInclude Include="src\features\system_time\system_time_hyperv.h" />
     <ClInclude Include="src\features\system_time\system_time_internal.h" />

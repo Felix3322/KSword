@@ -930,4 +930,65 @@
     <ClCompile Include="src\features\storage\storage_forensics.c"><Filter>Source Files\Features\Storage</Filter></ClCompile>
     <ClCompile Include="src\features\storage\storage_forensics_ioctl.c"><Filter>Source Files\Features\Storage</Filter></ClCompile>
     <ClInclude Include="src\features\device_audit\device_audit_internal.h"><Filter>Header Files</Filter></ClInclude></ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files\Features\RXPF">
+      <UniqueIdentifier>{E14C59F2-04C2-49F2-BA23-6C6BC58E1B70}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\features\rxpf\image_protection_manager.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\page_fault_manager.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\page_state_table.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\rxpf_diagnostics.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\rxpf_ioctl.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\rxpf_runtime.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\rxpf_self_test.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\x64_instruction_emulator.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\rxpf\x64_instruction_emulator_tests.c">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </ClCompile>
+    <MASM Include="src\features\rxpf\page_fault_stub.asm">
+      <Filter>Source Files\Features\RXPF</Filter>
+    </MASM>
+    <ClInclude Include="src\features\rxpf\image_protection_manager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\rxpf\page_fault_manager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\rxpf\page_state_table.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\rxpf\rxpf_diagnostics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\rxpf\rxpf_runtime.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\rxpf\rxpf_self_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\rxpf\x64_instruction_emulator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkRxPfIoctl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
 </Project>

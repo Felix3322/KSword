@@ -1,0 +1,794 @@
+/*++
+
+Module Name:
+
+    rxpf_runtime.c
+
+Abstract:
+
+    Control-path coordinator for the experimental RX/NX page-fault emulator.
+
+Environment:
+
+    Kernel mode, PASSIVE_LEVEL control path.  The vector-14 path is implemented
+    by page_fault_manager.c and never enters this module.
+
+--*/
+
+#include "rxpf_runtime.h"
+
+#include "image_protection_manager.h"
+#include "page_fault_manager.h"
+#include "page_state_table.h"
+#include "rxpf_diagnostics.h"
+#include "rxpf_self_test.h"
+#include "x64_instruction_emulator.h"
+
+typedef struct _KSW_RXPF_RUNTIME_STATE
+{
+    KSW_RXPF_PAGE_TABLE PageTable;
+    PDRIVER_OBJECT DriverObject;
+    ULONG MaximumProcessorCount;
+    volatile LONG Initialized;
+    volatile LONG Accepting;
+    volatile LONG Generation;
+    volatile LONG AllocatedSelfTestPassed;
+    volatile LONG LastStatus;
+} KSW_RXPF_RUNTIME_STATE;
+
+static KSW_RXPF_RUNTIME_STATE g_KswRxpfRuntime;
+
+static const UCHAR g_KswRxpfSelfTestCode[] = {
+    0x48U, 0xC7U, 0xC0U, 0x78U, 0x56U, 0x34U, 0x12U,
+    0x48U, 0x83U, 0xC0U, 0x01U,
+    0xC3U
+};
+
+static NTSTATUS
+KswRxpfValidateHeader(
+    _In_ const KSWORD_ARK_RXPF_REQUEST_HEADER* Header,
+    _In_ ULONG ExpectedSize,
+    _In_ ULONG AllowedFlags
+    )
+{
+    /* Every request is exact-version, exact-size and explicitly confirmed. */
+    if (Header == NULL ||
+        Header->version != KSWORD_ARK_RXPF_PROTOCOL_VERSION ||
+        Header->size != ExpectedSize ||
+        Header->confirmationToken != KSWORD_ARK_RXPF_CONFIRMATION_TOKEN ||
+        (Header->flags & KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED) == 0UL ||
+        (Header->flags & ~AllowedFlags) != 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    return STATUS_SUCCESS;
+}
+
+static VOID
+KswRxpfFillPageResponse(
+    _In_opt_ const KSW_RXPF_PAGE_RECORD* Record,
+    _Out_ KSWORD_ARK_RXPF_PAGE_RESPONSE* Response
+    )
+{
+    /* The caller holds the writer lock while copying mutable record fields. */
+    RtlZeroMemory(Response, sizeof(*Response));
+    Response->version = KSWORD_ARK_RXPF_PROTOCOL_VERSION;
+    Response->size = sizeof(*Response);
+    if (Record == NULL) {
+        return;
+    }
+    Response->state = (ULONG)Record->State;
+    Response->targetKind = Record->TargetKind;
+    Response->flags = Record->Flags;
+    Response->generation = Record->Generation;
+    Response->referenceCount = (ULONG)Record->ReferenceCount;
+    Response->emulationEnabled = (ULONG)Record->EmulationEnabled;
+    Response->recordId = (ULONGLONG)Record->RecordId;
+    Response->pageBase = (ULONGLONG)Record->PageBase;
+    Response->writableAlias = Record->WritableAlias;
+    Response->pfn = Record->Pfn;
+    Response->ownerImageBase = Record->OwnerImageBase;
+    Response->faultCount = (ULONGLONG)Record->FaultCount;
+    Response->emulatedCount = (ULONGLONG)Record->EmulatedCount;
+    Response->unsupportedCount = (ULONGLONG)Record->UnsupportedCount;
+    Response->lastStatus = Record->LastStatus;
+    Response->lastFailureReason = Record->LastFailureReason;
+    Response->originalProtection = Record->OriginalProtection;
+    Response->currentProtection = Record->CurrentProtection;
+    Response->writableAliasProtection =
+        Record->WritableAliasProtection;
+    Response->lastWriteOffset = Record->LastWriteOffset;
+    Response->lastWriteLength = Record->LastWriteLength;
+    RtlCopyMemory(
+        Response->lastWriteBytes,
+        Record->LastWriteBytes,
+        sizeof(Response->lastWriteBytes));
+}
+
+static BOOLEAN
+KswRxpfRuntimeReady(
+    VOID
+    )
+{
+    /* Accepting is cleared before unload begins and is never re-enabled. */
+    return InterlockedCompareExchange(
+        &g_KswRxpfRuntime.Initialized,
+        1,
+        1) != 0 &&
+        InterlockedCompareExchange(
+            &g_KswRxpfRuntime.Accepting,
+            1,
+            1) != 0;
+}
+
+static VOID
+KswRxpfSetLastStatus(
+    _In_ NTSTATUS Status
+    )
+{
+    /* Keep runtime and exported diagnostic status consistent. */
+    InterlockedExchange(&g_KswRxpfRuntime.LastStatus, Status);
+    KswRxpfDiagnosticsSetLastStatus(Status);
+}
+
+NTSTATUS
+KswRxpfRuntimeInitialize(
+    _In_ PDRIVER_OBJECT DriverObject
+    )
+{
+    ULONG maximumProcessorCount = 0UL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /* Initialization is idempotent for DriverEntry rollback paths. */
+    if (DriverObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (InterlockedCompareExchange(
+            &g_KswRxpfRuntime.Initialized,
+            1,
+            1) != 0) {
+        return STATUS_SUCCESS;
+    }
+    maximumProcessorCount =
+        KeQueryMaximumProcessorCountEx(ALL_PROCESSOR_GROUPS);
+    if (maximumProcessorCount == 0UL) {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    /* Allocate every exception-path structure before publishing the runtime. */
+    RtlZeroMemory(&g_KswRxpfRuntime, sizeof(g_KswRxpfRuntime));
+    g_KswRxpfRuntime.DriverObject = DriverObject;
+    g_KswRxpfRuntime.MaximumProcessorCount = maximumProcessorCount;
+    KswRxpfPageTableInitialize(&g_KswRxpfRuntime.PageTable);
+
+    status = KswRxpfDiagnosticsInitialize(maximumProcessorCount);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+    status = KswRxpfPageFaultManagerInitialize(
+        &g_KswRxpfRuntime.PageTable,
+        maximumProcessorCount);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+    status = KswRxpfImageProtectionInitialize(DriverObject);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+    status = KswRxpfX64RunUnitTests();
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
+    /* Unsupported nt builds still initialize, but all internal calls fail closed. */
+    InterlockedExchange(&g_KswRxpfRuntime.Accepting, 1);
+    InterlockedExchange(&g_KswRxpfRuntime.Initialized, 1);
+    KswRxpfSetLastStatus(STATUS_SUCCESS);
+    return STATUS_SUCCESS;
+
+Exit:
+    /* Reverse partially completed initialization without exposing IOCTL state. */
+    KswRxpfImageProtectionUninitialize();
+    KswRxpfPageFaultManagerUninitialize();
+    KswRxpfDiagnosticsUninitialize();
+    RtlZeroMemory(&g_KswRxpfRuntime, sizeof(g_KswRxpfRuntime));
+    return status;
+}
+
+VOID
+KswRxpfRuntimeUninitialize(
+    VOID
+    )
+{
+    ULONG index = 0UL;
+    LARGE_INTEGER retryDelay;
+
+    /* Idempotent teardown is used by both unload and DriverEntry rollback. */
+    if (InterlockedCompareExchange(
+            &g_KswRxpfRuntime.Initialized,
+            1,
+            1) == 0) {
+        return;
+    }
+
+    /* Stop new control requests, then unpublish all records from vector 14. */
+    InterlockedExchange(&g_KswRxpfRuntime.Accepting, 0);
+    KswRxpfPageTableStopAccepting(&g_KswRxpfRuntime.PageTable);
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    for (index = 0UL; index < KSW_RXPF_PAGE_TABLE_CAPACITY; ++index) {
+        PKSW_RXPF_PAGE_RECORD record =
+            &g_KswRxpfRuntime.PageTable.Slots[index];
+
+        if ((ULONGLONG)record->PageBase > KSW_RXPF_PAGE_TOMBSTONE &&
+            record->State != KSWORD_ARK_RXPF_PAGE_STATE_TERMINATING) {
+            KswRxpfPageTableBeginRemoveLocked(
+                &g_KswRxpfRuntime.PageTable,
+                record);
+        }
+    }
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+
+    /* Restore every processor's original IDTR before releasing any code/data. */
+    retryDelay.QuadPart = -100000LL;
+    while (!NT_SUCCESS(KswRxpfPageFaultRestore())) {
+        /* Prefer a blocked unload over freeing code still reachable by vector 14. */
+        (void)KeDelayExecutionThread(KernelMode, FALSE, &retryDelay);
+    }
+    while (!NT_SUCCESS(KswRxpfDiagnosticsWaitForHandlers(5000UL))) {
+        /* Unload cannot safely continue while a processor still reads a record. */
+    }
+
+    /* With vector 14 restored and all read-side users gone, resources are private. */
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    for (index = 0UL; index < KSW_RXPF_PAGE_TABLE_CAPACITY; ++index) {
+        PKSW_RXPF_PAGE_RECORD record =
+            &g_KswRxpfRuntime.PageTable.Slots[index];
+
+        if ((ULONGLONG)record->PageBase > KSW_RXPF_PAGE_TOMBSTONE) {
+            KswRxpfImageProtectionReleaseRecord(record);
+            KswRxpfPageTableClearRemovedLocked(
+                &g_KswRxpfRuntime.PageTable,
+                record);
+        }
+    }
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+
+    KswRxpfPageFaultManagerUninitialize();
+    KswRxpfDiagnosticsUninitialize();
+    KswRxpfImageProtectionUninitialize();
+    InterlockedExchange(&g_KswRxpfRuntime.Initialized, 0);
+    KeMemoryBarrier();
+    RtlZeroMemory(&g_KswRxpfRuntime, sizeof(g_KswRxpfRuntime));
+}
+
+NTSTATUS
+KswRxpfRuntimeQuerySupport(
+    _Out_ KSWORD_ARK_RXPF_QUERY_SUPPORT_RESPONSE* Response
+    )
+{
+    /* Support discovery itself never attempts an internal function call. */
+    if (Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    KswRxpfImageProtectionQuerySupport(Response);
+    Response->processorCount =
+        KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+    if (KswRxpfPageFaultIsInstalled()) {
+        Response->supportFlags |= KSWORD_ARK_RXPF_SUPPORT_IDT_INSTALLED;
+    }
+    if (InterlockedCompareExchange(
+            &g_KswRxpfRuntime.AllocatedSelfTestPassed,
+            1,
+            1) != 0) {
+        Response->supportFlags |=
+            KSWORD_ARK_RXPF_SUPPORT_ALLOCATED_TEST_PASSED;
+    }
+    if (InterlockedCompareExchange(
+            &g_KswRxpfRuntime.Initialized,
+            1,
+            1) == 0) {
+        Response->supportFlags &= ~KSWORD_ARK_RXPF_SUPPORT_INITIALIZED;
+        Response->lastStatus = STATUS_DEVICE_NOT_READY;
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswRxpfRuntimeRegisterPage(
+    _In_ const KSWORD_ARK_RXPF_REGISTER_PAGE_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_PAGE_RESPONSE* Response
+    )
+{
+    KSW_RXPF_PAGE_RECORD source;
+    PKSW_RXPF_PAGE_RECORD record = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /* Registration allocates/locks resources only on the serialized control path. */
+    if (Request == NULL || Response == NULL || Request->reserved != 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(Response, sizeof(*Response));
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED |
+            KSWORD_ARK_RXPF_FLAG_CAPTURE_BACKUP);
+    if (!NT_SUCCESS(status) || !KswRxpfRuntimeReady()) {
+        return NT_SUCCESS(status) ? STATUS_DELETE_PENDING : status;
+    }
+    if (Request->targetKind != KSWORD_ARK_RXPF_TARGET_ALLOCATED_TEST &&
+        InterlockedCompareExchange(
+            &g_KswRxpfRuntime.AllocatedSelfTestPassed,
+            1,
+            1) == 0) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    status = KswRxpfImageProtectionCreateRecord(
+        Request->targetKind,
+        Request->targetAddress,
+        Request->header.flags & KSWORD_ARK_RXPF_FLAG_CAPTURE_BACKUP,
+        &source);
+    if (!NT_SUCCESS(status)) {
+        KswRxpfSetLastStatus(status);
+        return status;
+    }
+
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    status = KswRxpfPageTableInsertLocked(
+        &g_KswRxpfRuntime.PageTable,
+        &source,
+        &record);
+    if (NT_SUCCESS(status)) {
+        InterlockedIncrement(&g_KswRxpfRuntime.Generation);
+        KswRxpfFillPageResponse(record, Response);
+    }
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    if (!NT_SUCCESS(status)) {
+        KswRxpfImageProtectionReleaseRecord(&source);
+    }
+    KswRxpfSetLastStatus(status);
+    return status;
+}
+
+NTSTATUS
+KswRxpfRuntimeChangePage(
+    _In_ const KSWORD_ARK_RXPF_RECORD_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_PAGE_RESPONSE* Response
+    )
+{
+    PKSW_RXPF_PAGE_RECORD record = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /* Permission transition is single-shot and protected by the writer lock. */
+    if (Request == NULL || Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED);
+    if (!NT_SUCCESS(status) || !KswRxpfRuntimeReady()) {
+        return NT_SUCCESS(status) ? STATUS_DELETE_PENDING : status;
+    }
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    record = KswRxpfPageTableFindByIdLocked(
+        &g_KswRxpfRuntime.PageTable,
+        Request->recordId);
+    if (record == NULL) {
+        status = STATUS_NOT_FOUND;
+    } else {
+        status = KswRxpfImageProtectionChangeToRwNx(record);
+        record->LastStatus = status;
+        if (NT_SUCCESS(status)) {
+            InterlockedIncrement(&g_KswRxpfRuntime.Generation);
+        }
+    }
+    KswRxpfFillPageResponse(record, Response);
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    KswRxpfSetLastStatus(status);
+    return status;
+}
+
+NTSTATUS
+KswRxpfRuntimeQueryPage(
+    _In_ const KSWORD_ARK_RXPF_RECORD_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_PAGE_RESPONSE* Response
+    )
+{
+    PKSW_RXPF_PAGE_RECORD record = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /* Query uses the same lock as writers to return a coherent record snapshot. */
+    if (Request == NULL || Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED);
+    if (!NT_SUCCESS(status) || !KswRxpfRuntimeReady()) {
+        return NT_SUCCESS(status) ? STATUS_DELETE_PENDING : status;
+    }
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    record = KswRxpfPageTableFindByIdLocked(
+        &g_KswRxpfRuntime.PageTable,
+        Request->recordId);
+    if (record == NULL) {
+        status = STATUS_NOT_FOUND;
+    }
+    KswRxpfFillPageResponse(record, Response);
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    return status;
+}
+
+NTSTATUS
+KswRxpfRuntimeWritePage(
+    _In_ const KSWORD_ARK_RXPF_WRITE_PAGE_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_PAGE_RESPONSE* Response
+    )
+{
+    PKSW_RXPF_PAGE_RECORD record = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /* Instruction bytes cannot change while any CPU may emulate the page. */
+    if (Request == NULL || Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED);
+    if (!NT_SUCCESS(status) || !KswRxpfRuntimeReady()) {
+        return NT_SUCCESS(status) ? STATUS_DELETE_PENDING : status;
+    }
+    if (Request->length == 0UL ||
+        Request->length > KSWORD_ARK_RXPF_MAX_WRITE_BYTES ||
+        (ULONGLONG)Request->offset + Request->length > PAGE_SIZE ||
+        (ULONGLONG)Request->offset + Request->length < Request->offset) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    record = KswRxpfPageTableFindByIdLocked(
+        &g_KswRxpfRuntime.PageTable,
+        Request->recordId);
+    if (record == NULL) {
+        status = STATUS_NOT_FOUND;
+    } else if (InterlockedCompareExchange(
+            &record->EmulationEnabled,
+            0,
+            0) != 0) {
+        status = STATUS_DEVICE_BUSY;
+    } else {
+        status = KswRxpfImageProtectionWrite(
+            record,
+            Request->offset,
+            Request->bytes,
+            Request->length);
+        if (NT_SUCCESS(status)) {
+            InterlockedIncrement(&g_KswRxpfRuntime.Generation);
+        }
+    }
+    if (record != NULL) {
+        record->LastStatus = status;
+    }
+    KswRxpfFillPageResponse(record, Response);
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    KswRxpfSetLastStatus(status);
+    return status;
+}
+
+NTSTATUS
+KswRxpfRuntimeSetEmulation(
+    _In_ const KSWORD_ARK_RXPF_SET_EMULATION_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_PAGE_RESPONSE* Response
+    )
+{
+    PKSW_RXPF_PAGE_RECORD record = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN restoreIdt = FALSE;
+
+    /* Enabling is published only after every online CPU has installed its IDT. */
+    if (Request == NULL || Response == NULL || Request->enable > 1UL ||
+        Request->reserved != 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED);
+    if (!NT_SUCCESS(status) || !KswRxpfRuntimeReady()) {
+        return NT_SUCCESS(status) ? STATUS_DELETE_PENDING : status;
+    }
+
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    record = KswRxpfPageTableFindByIdLocked(
+        &g_KswRxpfRuntime.PageTable,
+        Request->recordId);
+    if (record == NULL) {
+        status = STATUS_NOT_FOUND;
+        goto Exit;
+    }
+    if (record->State != KSWORD_ARK_RXPF_PAGE_STATE_RW_NX) {
+        status = STATUS_INVALID_DEVICE_STATE;
+        goto Exit;
+    }
+    if (Request->enable != 0UL) {
+        status = KswRxpfPageFaultInstall();
+        if (NT_SUCCESS(status) &&
+            InterlockedExchange(&record->EmulationEnabled, 1) == 0) {
+            InterlockedIncrement(
+                &g_KswRxpfRuntime.PageTable.EnabledCount);
+            InterlockedIncrement(&g_KswRxpfRuntime.Generation);
+        }
+    } else if (InterlockedExchange(&record->EmulationEnabled, 0) != 0) {
+        LONG enabledCount = InterlockedDecrement(
+            &g_KswRxpfRuntime.PageTable.EnabledCount);
+
+        KeMemoryBarrier();
+        InterlockedIncrement(&g_KswRxpfRuntime.Generation);
+        restoreIdt = enabledCount == 0;
+        status = KswRxpfDiagnosticsWaitForHandlers(5000UL);
+        record->LastStatus = status;
+    }
+
+Exit:
+    if (record != NULL) {
+        record->LastStatus = status;
+    }
+    KswRxpfFillPageResponse(record, Response);
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    if (restoreIdt) {
+        NTSTATUS restoreStatus = KswRxpfPageFaultRestore();
+
+        if (NT_SUCCESS(status) && !NT_SUCCESS(restoreStatus)) {
+            status = restoreStatus;
+        }
+        Response->lastStatus = status;
+    }
+    KswRxpfSetLastStatus(status);
+    return status;
+}
+
+NTSTATUS
+KswRxpfRuntimeQueryStats(
+    _Out_ KSWORD_ARK_RXPF_STATS_RESPONSE* Response
+    )
+{
+    /* Aggregate counters are atomic and require no state-table lock. */
+    if (Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    KswRxpfDiagnosticsQueryStats(
+        (ULONG)InterlockedCompareExchange(
+            &g_KswRxpfRuntime.Generation,
+            0,
+            0),
+        (ULONG)InterlockedCompareExchange(
+            &g_KswRxpfRuntime.PageTable.RegisteredCount,
+            0,
+            0),
+        (ULONG)InterlockedCompareExchange(
+            &g_KswRxpfRuntime.PageTable.EnabledCount,
+            0,
+            0),
+        KswRxpfPageFaultIsInstalled() ? 1UL : 0UL,
+        KswRxpfPageFaultProcessorCount(),
+        Response);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswRxpfRuntimeDrainEvents(
+    _In_ const KSWORD_ARK_RXPF_DRAIN_EVENTS_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_DRAIN_EVENTS_RESPONSE* Response
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+
+    /* Ring export occurs only on the ordinary IOCTL path. */
+    if (Request == NULL || Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED);
+    if (!NT_SUCCESS(status) ||
+        Request->maxRows > KSWORD_ARK_RXPF_MAX_EVENT_ROWS) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    KswRxpfDiagnosticsDrain(Request, Response);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswRxpfRuntimeUnregisterPage(
+    _In_ const KSWORD_ARK_RXPF_RECORD_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_PAGE_RESPONSE* Response
+    )
+{
+    PKSW_RXPF_PAGE_RECORD record = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN restoreIdt = FALSE;
+
+    /* Mark terminating first; only a completed read-side grace period permits free. */
+    if (Request == NULL || Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED);
+    if (!NT_SUCCESS(status) || !KswRxpfRuntimeReady()) {
+        return NT_SUCCESS(status) ? STATUS_DELETE_PENDING : status;
+    }
+
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    record = KswRxpfPageTableFindByIdLocked(
+        &g_KswRxpfRuntime.PageTable,
+        Request->recordId);
+    if (record == NULL) {
+        status = STATUS_NOT_FOUND;
+    } else {
+        KswRxpfFillPageResponse(record, Response);
+        KswRxpfPageTableBeginRemoveLocked(
+            &g_KswRxpfRuntime.PageTable,
+            record);
+        restoreIdt = InterlockedCompareExchange(
+            &g_KswRxpfRuntime.PageTable.EnabledCount,
+            0,
+            0) == 0;
+    }
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    if (restoreIdt) {
+        status = KswRxpfPageFaultRestore();
+    }
+    if (NT_SUCCESS(status)) {
+        status = KswRxpfDiagnosticsWaitForHandlers(5000UL);
+    }
+    if (!NT_SUCCESS(status)) {
+        KswRxpfSetLastStatus(status);
+        return status;
+    }
+
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    KswRxpfImageProtectionReleaseRecord(record);
+    KswRxpfPageTableClearRemovedLocked(
+        &g_KswRxpfRuntime.PageTable,
+        record);
+    InterlockedIncrement(&g_KswRxpfRuntime.Generation);
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    KswRxpfSetLastStatus(STATUS_SUCCESS);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswRxpfRuntimeRunSelfTest(
+    _In_ const KSWORD_ARK_RXPF_RECORD_REQUEST* Request,
+    _Out_ KSWORD_ARK_RXPF_SELF_TEST_RESPONSE* Response
+    )
+{
+    PKSW_RXPF_PAGE_RECORD record = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+    BOOLEAN enabledHere = FALSE;
+    BOOLEAN restoreIdt = FALSE;
+    ULONGLONG faultsBefore = 0ULL;
+    ULONGLONG faultsAfter = 0ULL;
+    ULONGLONG returnedValue = 0ULL;
+    ULONG workerCount = 0UL;
+
+    /* The live test is limited to either driver-owned, one-page code target. */
+    if (Request == NULL || Response == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(Response, sizeof(*Response));
+    Response->version = KSWORD_ARK_RXPF_PROTOCOL_VERSION;
+    Response->size = sizeof(*Response);
+    Response->expectedValue = KSW_RXPF_SELF_TEST_EXPECTED_VALUE;
+    status = KswRxpfValidateHeader(
+        &Request->header,
+        sizeof(*Request),
+        KSWORD_ARK_RXPF_FLAG_UI_CONFIRMED);
+    if (!NT_SUCCESS(status) || !KswRxpfRuntimeReady()) {
+        status = NT_SUCCESS(status) ? STATUS_DELETE_PENDING : status;
+        goto Complete;
+    }
+
+    KswRxpfPageTableAcquireExclusive(&g_KswRxpfRuntime.PageTable);
+    record = KswRxpfPageTableFindByIdLocked(
+        &g_KswRxpfRuntime.PageTable,
+        Request->recordId);
+    if (record == NULL) {
+        status = STATUS_NOT_FOUND;
+        goto Unlock;
+    }
+    Response->recordId = (ULONGLONG)record->RecordId;
+    if ((record->TargetKind != KSWORD_ARK_RXPF_TARGET_ALLOCATED_TEST &&
+         record->TargetKind != KSWORD_ARK_RXPF_TARGET_SELF_IMAGE_TEST) ||
+        record->State != KSWORD_ARK_RXPF_PAGE_STATE_RW_NX ||
+        record->WritableAlias == 0ULL) {
+        status = STATUS_INVALID_DEVICE_STATE;
+        goto Unlock;
+    }
+    if (InterlockedCompareExchange(
+            &record->EmulationEnabled,
+            0,
+            0) != 0) {
+        status = STATUS_DEVICE_BUSY;
+        goto Unlock;
+    }
+
+    status = KswRxpfImageProtectionWrite(
+        record,
+        0UL,
+        g_KswRxpfSelfTestCode,
+        sizeof(g_KswRxpfSelfTestCode));
+    if (!NT_SUCCESS(status)) {
+        goto Unlock;
+    }
+    status = KswRxpfPageFaultInstall();
+    if (!NT_SUCCESS(status)) {
+        goto Unlock;
+    }
+    InterlockedExchange(&record->EmulationEnabled, 1);
+    InterlockedIncrement(&g_KswRxpfRuntime.PageTable.EnabledCount);
+    enabledHere = TRUE;
+    KeMemoryBarrier();
+    faultsBefore = (ULONGLONG)InterlockedCompareExchange64(
+        &record->FaultCount,
+        0,
+        0);
+
+    /* Exercise the lock-free read side once on every active processor. */
+    status = KswRxpfRunConcurrentExecutionTest(
+        (PVOID)(ULONG_PTR)record->PageBase,
+        KSW_RXPF_SELF_TEST_EXPECTED_VALUE,
+        &returnedValue,
+        &workerCount);
+    faultsAfter = (ULONGLONG)InterlockedCompareExchange64(
+        &record->FaultCount,
+        0,
+        0);
+    if (enabledHere) {
+        InterlockedExchange(&record->EmulationEnabled, 0);
+        restoreIdt = InterlockedDecrement(
+            &g_KswRxpfRuntime.PageTable.EnabledCount) == 0;
+        KeMemoryBarrier();
+    }
+    if (NT_SUCCESS(status) &&
+        (returnedValue != KSW_RXPF_SELF_TEST_EXPECTED_VALUE ||
+         workerCount == 0UL ||
+         faultsAfter - faultsBefore !=
+            (ULONGLONG)workerCount * 3ULL)) {
+        status = STATUS_DATA_ERROR;
+    }
+    record->LastStatus = status;
+    Response->returnedValue = returnedValue;
+    Response->faultsObserved = faultsAfter - faultsBefore;
+    Response->instructionCount = workerCount * 3UL;
+    Response->result = NT_SUCCESS(status)
+        ? KSWORD_ARK_RXPF_EMULATION_SUCCESS
+        : record->LastFailureReason;
+
+Unlock:
+    KswRxpfPageTableReleaseExclusive(&g_KswRxpfRuntime.PageTable);
+    if (restoreIdt) {
+        NTSTATUS restoreStatus = KswRxpfPageFaultRestore();
+
+        if (NT_SUCCESS(status) && !NT_SUCCESS(restoreStatus)) {
+            status = restoreStatus;
+        }
+    }
+
+    if (NT_SUCCESS(status)) {
+        InterlockedExchange(&g_KswRxpfRuntime.AllocatedSelfTestPassed, 1);
+    }
+Complete:
+    Response->lastStatus = status;
+    KswRxpfSetLastStatus(status);
+    return status;
+}

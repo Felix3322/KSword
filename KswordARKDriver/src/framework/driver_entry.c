@@ -18,6 +18,7 @@ Environment:
 #include "ark/ark_mutation.h"
 #include "src/features/kernel/kernel_idt_baseline.h"
 #include "src/features/hvm/hvm_runtime.h"
+#include "src/features/rxpf/rxpf_runtime.h"
 #include "driver_entry.tmh"
 
 #ifdef ALLOC_PRAGMA
@@ -100,6 +101,13 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER, "KswordARKDriverImageInitialize unavailable %!STATUS!", status);
     }
+    /* Preallocate RXPF state; exact-build ABI mismatch remains a safe feature gate. */
+    status = KswRxpfRuntimeInitialize(DriverObject);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER,
+            "KswRxpfRuntimeInitialize unavailable %!STATUS!", status);
+    }
+
 
     // Register cleanup callback for WPP_CLEANUP during framework teardown.
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
@@ -118,6 +126,8 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfDriverCreate failed %!STATUS!", status);
         // 框架失败时对称撤销系统变速状态，确保维护 DPC 不会残留。
+        /* No RXPF exception-visible allocation may survive DriverEntry failure. */
+        KswRxpfRuntimeUninitialize();
         KswordARKSystemTimeUninitialize();
         // 中文说明：框架创建失败时撤销通信控制状态和所有潜在引用。
         // 先恢复映像字段和加载器链，再恢复 IRP/communication 槽位。
@@ -138,6 +148,8 @@ Return Value:
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKDriverCreateControlDevice failed %!STATUS!", status);
         // 控制设备不可见时不会有合法变速请求，立即释放其运行时状态。
+        /* Restore any RXPF shadow IDT before the driver image can be discarded. */
+        KswRxpfRuntimeUninitialize();
         KswordARKSystemTimeUninitialize();
         // 中文说明：控制设备创建失败时不保留通信控制全局状态。
         // 映像事务可能持有其它 DriverObject 引用，必须在失败返回前释放。
@@ -159,6 +171,8 @@ Return Value:
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKCallbackInitialize failed %!STATUS!", status);
         WdfObjectDelete(controlDevice);
         // 回调初始化回滚必须同时撤销可能的系统变速维护对象。
+        /* Callback rollback also tears down optional RXPF state first. */
+        KswRxpfRuntimeUninitialize();
         KswordARKSystemTimeUninitialize();
         // 中文说明：回调初始化失败返回前撤销通信控制状态。
         // 对称恢复仍由映像事务拥有的字段和加载器链。
@@ -222,6 +236,9 @@ Return Value:
     UNREFERENCED_PARAMETER(Driver);
 
     PAGED_CODE();
+
+    /* Restore every RXPF shadow IDTR and drain #PF readers before other teardown. */
+    KswRxpfRuntimeUninitialize();
 
     // 最先停止系统计时钩子并恢复原始 HAL 槽，防止卸载后回调到本驱动映像。
     KswordARKSystemTimeUninitialize();

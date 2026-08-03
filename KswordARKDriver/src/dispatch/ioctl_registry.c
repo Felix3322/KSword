@@ -179,6 +179,16 @@ NTSTATUS KswordARKDebugOutputIoctlControl(_In_ WDFDEVICE Device, _In_ WDFREQUEST
 NTSTATUS KswordARKDebugOutputIoctlDrain(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKBugcheckIoctlSetBitmap(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKBugcheckGuardIoctlConfigure(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlQuerySupport(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlRegisterPage(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlChangePage(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlQueryPage(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlWritePage(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlSetEmulation(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlQueryStats(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlDrainEvents(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlUnregisterPage(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKRxpfIoctlRunSelfTest(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 
 static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_TERMINATE_PROCESS, KswordARKProcessIoctlTerminate, "IOCTL_KSWORD_ARK_TERMINATE_PROCESS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
@@ -349,7 +359,18 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY, KswordARKHwidIoctlQueryDispatch, "IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL, KswordARKHwidIoctlControlDispatch, "IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SET_BUGCHECK_BITMAP, KswordARKBugcheckIoctlSetBitmap, "IOCTL_KSWORD_ARK_SET_BUGCHECK_BITMAP", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_COMPLETION },
-    { IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD, KswordARKBugcheckGuardIoctlConfigure, "IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE }
+    { IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD, KswordARKBugcheckGuardIoctlConfigure, "IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    // RXPF owns its exact-build, write-access, confirmation-token and safety-policy gates.
+    { IOCTL_KSWORD_ARK_RXPF_QUERY_SUPPORT, KswordARKRxpfIoctlQuerySupport, "IOCTL_KSWORD_ARK_RXPF_QUERY_SUPPORT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RXPF_REGISTER_PAGE, KswordARKRxpfIoctlRegisterPage, "IOCTL_KSWORD_ARK_RXPF_REGISTER_PAGE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RXPF_CHANGE_PAGE, KswordARKRxpfIoctlChangePage, "IOCTL_KSWORD_ARK_RXPF_CHANGE_PAGE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RXPF_QUERY_PAGE, KswordARKRxpfIoctlQueryPage, "IOCTL_KSWORD_ARK_RXPF_QUERY_PAGE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RXPF_WRITE_PAGE, KswordARKRxpfIoctlWritePage, "IOCTL_KSWORD_ARK_RXPF_WRITE_PAGE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RXPF_SET_EMULATION, KswordARKRxpfIoctlSetEmulation, "IOCTL_KSWORD_ARK_RXPF_SET_EMULATION", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RXPF_QUERY_STATS, KswordARKRxpfIoctlQueryStats, "IOCTL_KSWORD_ARK_RXPF_QUERY_STATS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
+    { IOCTL_KSWORD_ARK_RXPF_DRAIN_EVENTS, KswordARKRxpfIoctlDrainEvents, "IOCTL_KSWORD_ARK_RXPF_DRAIN_EVENTS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
+    { IOCTL_KSWORD_ARK_RXPF_UNREGISTER_PAGE, KswordARKRxpfIoctlUnregisterPage, "IOCTL_KSWORD_ARK_RXPF_UNREGISTER_PAGE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_RXPF_RUN_SELF_TEST, KswordARKRxpfIoctlRunSelfTest, "IOCTL_KSWORD_ARK_RXPF_RUN_SELF_TEST", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE }
 };
 
 _Must_inspect_result_
