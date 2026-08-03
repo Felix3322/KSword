@@ -4,12 +4,11 @@
 #include "../theme.h"
 
 #include <QAbstractItemView>
-#include <QCheckBox>
 #include <QCoreApplication>
+#include <QCheckBox>
 #include <QDateTime>
 #include <QDir>
 #include <QEvent>
-#include <QEventLoop>
 #include <QFile>
 #include <QGridLayout>
 #include <QHeaderView>
@@ -523,8 +522,8 @@ SystemMemoryAuditPage::SystemMemoryAuditPage(QWidget* parent)
     initializeUi();
     loadPoolTagMetadata();
     initializeConnections();
+    m_startUserResidencyScanAfterSnapshot = true;
     refreshSnapshot();
-    startUserResidencyScan();
 }
 
 void SystemMemoryAuditPage::changeEvent(QEvent* event)
@@ -538,11 +537,12 @@ void SystemMemoryAuditPage::changeEvent(QEvent* event)
     retranslateUi();
     if (m_hasSnapshot)
     {
-        rebuildOverview();
-        rebuildUserResidencyTable();
-        rebuildProcessTable();
-        rebuildPoolTagTable();
-        rebuildBigPoolTable();
+        m_overviewDirty = true;
+        m_userResidencyTableDirty = true;
+        m_processTableDirty = true;
+        m_poolTagTableDirty = true;
+        m_bigPoolTableDirty = true;
+        scheduleCurrentDetailViewRebuild();
         updateDetails();
         updateStatus();
     }
@@ -699,8 +699,8 @@ void SystemMemoryAuditPage::initializeUi()
 void SystemMemoryAuditPage::initializeConnections()
 {
     connect(m_refreshButton, &QPushButton::clicked, this, [this]() {
+        m_startUserResidencyScanAfterSnapshot = true;
         refreshSnapshot();
-        startUserResidencyScan();
         });
     connect(m_userResidencyScanButton, &QPushButton::clicked, this, [this]() {
         startUserResidencyScan();
@@ -719,10 +719,11 @@ void SystemMemoryAuditPage::initializeConnections()
         m_autoRefreshTimer->setInterval(seconds * 1000);
         });
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this]() {
-        rebuildUserResidencyTable();
-        rebuildProcessTable();
-        rebuildPoolTagTable();
-        rebuildBigPoolTable();
+        m_userResidencyTableDirty = true;
+        m_processTableDirty = true;
+        m_poolTagTableDirty = true;
+        m_bigPoolTableDirty = true;
+        scheduleCurrentDetailViewRebuild();
         updateStatus();
         });
     connect(m_autoRefreshTimer, &QTimer::timeout, this, [this]() {
@@ -732,6 +733,7 @@ void SystemMemoryAuditPage::initializeConnections()
         }
         });
     connect(m_detailTabs, &QTabWidget::currentChanged, this, [this]() {
+        scheduleCurrentDetailViewRebuild();
         updateDetails();
     });
 }
@@ -799,17 +801,50 @@ void SystemMemoryAuditPage::refreshSnapshot()
         return;
     }
     m_refreshing = true;
+    const std::uint64_t ticket = m_snapshotRefreshTicket.fetch_add(1) + 1;
     m_refreshButton->setEnabled(false);
     m_statusLabel->setText(localized("Collecting system memory evidence..."));
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-    applySnapshot(collectSnapshot());
-    m_refreshButton->setEnabled(true);
-    m_refreshing = false;
+
+    const QPointer<SystemMemoryAuditPage> guardedPage(this);
+    std::thread([guardedPage, ticket]() mutable {
+        Snapshot snapshot = collectSnapshot();
+        if (guardedPage.isNull())
+        {
+            return;
+        }
+
+        QMetaObject::invokeMethod(
+            guardedPage.data(),
+            [guardedPage, ticket, snapshot = std::move(snapshot)]() mutable {
+                if (!guardedPage.isNull())
+                {
+                    guardedPage->applySnapshot(std::move(snapshot), ticket);
+                }
+            },
+            Qt::QueuedConnection);
+    }).detach();
 }
 
-void SystemMemoryAuditPage::applySnapshot(Snapshot snapshot)
+void SystemMemoryAuditPage::applySnapshot(Snapshot snapshot, const std::uint64_t ticket)
 {
+    if (ticket != m_snapshotRefreshTicket.load())
+    {
+        return;
+    }
+
     m_summaryDeltaBytes.clear();
+    snapshot.errors.clear();
+    for (const SnapshotError& error : snapshot.pendingErrors)
+    {
+        QString errorText = ks::i18n::packedSourceText(error.sourceText);
+        if (!error.argument.isNull())
+        {
+            errorText = errorText.arg(error.argument);
+        }
+        snapshot.errors << errorText;
+    }
+    snapshot.pendingErrors.clear();
+
     const QHash<QString, std::uint64_t> currentSummary{
         { QStringLiteral("in_use"), snapshot.inUseBytes },
         { QStringLiteral("available"), snapshot.availableBytes },
@@ -880,13 +915,21 @@ void SystemMemoryAuditPage::applySnapshot(Snapshot snapshot)
     m_unattributedLabel->setText(localized("Unattributed: %1 (%2)")
         .arg(formatBytes(m_snapshot.unattributedResidentBytes),
             formatPercent(m_snapshot.unattributedResidentBytes, m_snapshot.totalPhysicalBytes)));
-    rebuildOverview();
-    rebuildUserResidencyTable();
-    rebuildProcessTable();
-    rebuildPoolTagTable();
-    rebuildBigPoolTable();
+    m_overviewDirty = true;
+    m_processTableDirty = true;
+    m_poolTagTableDirty = true;
+    m_bigPoolTableDirty = true;
+    m_refreshButton->setEnabled(true);
+    m_refreshing = false;
+    scheduleCurrentDetailViewRebuild();
     updateDetails();
     updateStatus();
+
+    if (m_startUserResidencyScanAfterSnapshot)
+    {
+        m_startUserResidencyScanAfterSnapshot = false;
+        startUserResidencyScan();
+    }
 }
 
 void SystemMemoryAuditPage::startUserResidencyScan()
@@ -934,10 +977,69 @@ void SystemMemoryAuditPage::applyUserResidencyScan(UserResidencyScan scan, const
     m_userResidencyScanInProgress.store(false);
     m_userResidencyScanButton->setEnabled(true);
     m_userResidencyScanButton->setText(localized("Deep scan user-mode residency"));
-    rebuildUserResidencyTable();
-    rebuildOverview();
+    m_userResidencyTableDirty = true;
+    m_overviewDirty = true;
+    scheduleCurrentDetailViewRebuild();
     updateDetails();
     updateStatus();
+}
+
+void SystemMemoryAuditPage::scheduleCurrentDetailViewRebuild()
+{
+    if (m_detailViewRebuildScheduled)
+    {
+        return;
+    }
+
+    m_detailViewRebuildScheduled = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_detailViewRebuildScheduled = false;
+        rebuildCurrentDetailView();
+    });
+}
+
+void SystemMemoryAuditPage::rebuildCurrentDetailView()
+{
+    switch (m_detailTabs->currentIndex())
+    {
+    case 0:
+        if (m_overviewDirty)
+        {
+            rebuildOverview();
+            m_overviewDirty = false;
+        }
+        break;
+    case 1:
+        if (m_userResidencyTableDirty)
+        {
+            rebuildUserResidencyTable();
+            m_userResidencyTableDirty = false;
+        }
+        break;
+    case 2:
+        if (m_processTableDirty)
+        {
+            rebuildProcessTable();
+            m_processTableDirty = false;
+        }
+        break;
+    case 3:
+        if (m_poolTagTableDirty)
+        {
+            rebuildPoolTagTable();
+            m_poolTagTableDirty = false;
+        }
+        break;
+    case 4:
+        if (m_bigPoolTableDirty)
+        {
+            rebuildBigPoolTable();
+            m_bigPoolTableDirty = false;
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 void SystemMemoryAuditPage::rebuildOverview()
@@ -1634,7 +1736,7 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
     }
     else
     {
-        snapshot.errors << localized("GlobalMemoryStatusEx failed");
+        snapshot.pendingErrors.push_back({ QStringLiteral("GlobalMemoryStatusEx failed"), {} });
     }
 
     PERFORMANCE_INFORMATION publicPerformance{};
@@ -1665,13 +1767,13 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
     }
     else
     {
-        snapshot.errors << localized("GetPerformanceInfo failed");
+        snapshot.pendingErrors.push_back({ QStringLiteral("GetPerformanceInfo failed"), {} });
     }
 
     const NtQuerySystemInformationFunction queryFunction = resolveNtQuerySystemInformation();
     if (queryFunction == nullptr)
     {
-        snapshot.errors << localized("NtQuerySystemInformation is unavailable");
+        snapshot.pendingErrors.push_back({ QStringLiteral("NtQuerySystemInformation is unavailable"), {} });
     }
 
     if (queryFunction != nullptr)
@@ -1720,7 +1822,7 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
         }
         else
         {
-            snapshot.errors << localized("Memory page-list query failed (%1)").arg(statusHex(memoryListStatus));
+            snapshot.pendingErrors.push_back({ QStringLiteral("Memory page-list query failed (%1)"), statusHex(memoryListStatus) });
         }
 
         std::array<std::byte, 1024> performanceBuffer{};
@@ -1762,7 +1864,7 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
         }
         else
         {
-            snapshot.errors << localized("System performance query failed (%1)").arg(statusHex(performanceStatus));
+            snapshot.pendingErrors.push_back({ QStringLiteral("System performance query failed (%1)"), statusHex(performanceStatus) });
         }
 
         std::vector<std::byte> processBuffer;
@@ -1822,7 +1924,7 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
                 if (process->NextEntryOffset < sizeof(NativeSystemProcessInformation) ||
                     process->NextEntryOffset > processBuffer.size() - offset)
                 {
-                    snapshot.errors << localized("Kernel process snapshot contained an invalid next-entry offset");
+                    snapshot.pendingErrors.push_back({ QStringLiteral("Kernel process snapshot contained an invalid next-entry offset"), {} });
                     break;
                 }
                 offset += process->NextEntryOffset;
@@ -1833,7 +1935,7 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
         }
         else
         {
-            snapshot.errors << localized("Kernel process snapshot failed (%1)").arg(statusHex(processStatus));
+            snapshot.pendingErrors.push_back({ QStringLiteral("Kernel process snapshot failed (%1)"), statusHex(processStatus) });
         }
 
         std::vector<std::byte> poolTagBuffer;
@@ -1870,7 +1972,7 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
         }
         else
         {
-            snapshot.errors << localized("Pool-tag query failed (%1)").arg(statusHex(poolTagStatus));
+            snapshot.pendingErrors.push_back({ QStringLiteral("Pool-tag query failed (%1)"), statusHex(poolTagStatus) });
         }
 
         std::vector<std::byte> bigPoolBuffer;
@@ -1901,7 +2003,7 @@ SystemMemoryAuditPage::Snapshot SystemMemoryAuditPage::collectSnapshot()
         }
         else
         {
-            snapshot.errors << localized("Big Pool query failed (%1)").arg(statusHex(bigPoolStatus));
+            snapshot.pendingErrors.push_back({ QStringLiteral("Big Pool query failed (%1)"), statusHex(bigPoolStatus) });
         }
     }
 

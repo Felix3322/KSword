@@ -122,10 +122,17 @@ private:
         std::vector<UserResidencyRow> rows;
     };
 
+    struct SnapshotError
+    {
+        QString sourceText;
+        QString argument;
+    };
+
     struct Snapshot
     {
         QString sampledAt;
         QStringList errors;
+        std::vector<SnapshotError> pendingErrors;
         std::uint64_t pageSize = 4096;
 
         std::uint64_t installedPhysicalBytes = 0;
@@ -182,7 +189,9 @@ private:
     void initializeUi();
     void initializeConnections();
     void retranslateUi();
-    void applySnapshot(Snapshot snapshot);
+    void scheduleCurrentDetailViewRebuild();
+    void rebuildCurrentDetailView();
+    void applySnapshot(Snapshot snapshot, std::uint64_t ticket);
     void startUserResidencyScan();
     void applyUserResidencyScan(UserResidencyScan scan, std::uint64_t ticket);
     void rebuildOverview();
@@ -226,6 +235,13 @@ private:
     UserResidencyScan m_userResidencyScan;
     bool m_hasSnapshot = false;
     bool m_refreshing = false;
+    bool m_startUserResidencyScanAfterSnapshot = false;
+    bool m_detailViewRebuildScheduled = false;
+    bool m_overviewDirty = true;
+    bool m_userResidencyTableDirty = true;
+    bool m_processTableDirty = true;
+    bool m_poolTagTableDirty = true;
+    bool m_bigPoolTableDirty = true;
     QHash<std::uint64_t, std::uint64_t> m_previousProcessPrivateBytes;
     QHash<std::uint32_t, std::uint64_t> m_previousPoolTagBytes;
     QHash<std::uint64_t, std::uint64_t> m_previousBigPoolBytes;
@@ -233,6 +249,7 @@ private:
     QHash<QString, std::int64_t> m_summaryDeltaBytes;
     QHash<std::uint32_t, TagMetadata> m_poolTagMetadata;
     QString m_poolTagMetadataSource;
+    std::atomic<std::uint64_t> m_snapshotRefreshTicket{ 0 };
     std::atomic<std::uint64_t> m_userResidencyScanTicket{ 0 };
     std::atomic_bool m_userResidencyScanInProgress{ false };
 };
