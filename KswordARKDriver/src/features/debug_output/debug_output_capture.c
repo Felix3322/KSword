@@ -178,6 +178,16 @@ NTSTATUS KswordARKDebugOutputControl(
     }
     if (Request->version != KSWORD_ARK_DEBUG_OUTPUT_PROTOCOL_VERSION ||
         Request->size < sizeof(*Request)) {
+        /*
+         * The METHOD_BUFFERED adapter reports the fixed response size even for
+         * control failures, so initialize every returned field rather than
+         * exposing stale request bytes to the user-mode diagnostic parser.
+         */
+        RtlZeroMemory(Response, sizeof(*Response));
+        Response->version = KSWORD_ARK_DEBUG_OUTPUT_PROTOCOL_VERSION;
+        Response->size = sizeof(*Response);
+        Response->registrationStatus = STATUS_REVISION_MISMATCH;
+        Response->lastStatus = STATUS_REVISION_MISMATCH;
         return STATUS_REVISION_MISMATCH;
     }
 
