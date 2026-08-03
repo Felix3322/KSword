@@ -2091,7 +2091,6 @@ namespace
         outputValue.hStdInput = Uint64ToHandle(inputValue.hStdInput);
         outputValue.hStdOutput = Uint64ToHandle(inputValue.hStdOutput);
         outputValue.hStdError = Uint64ToHandle(inputValue.hStdError);
-        return true;
     }
 
     // PROCESS_INFORMATION 是 CreateProcess* 的输出缓冲区，调用前必须提供零初始化的有效地址。
