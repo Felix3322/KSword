@@ -73,6 +73,7 @@ public:
         QString titleText;                  // 窗口标题。
         QString classNameText;              // 窗口类名。
         std::uint32_t processId = 0;        // 所属进程 PID。
+        std::uint64_t processCreationTime100ns = 0; // 枚举时进程创建时间，用于防止 PID 复用误操作。
         std::uint32_t threadId = 0;         // 创建线程 TID。
         QString processNameText;            // 进程名。
         QString processImagePathText;       // 进程可执行文件完整路径。

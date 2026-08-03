@@ -468,6 +468,14 @@ namespace ks::process
     // TerminateProcessByWin32 作用：调用 TerminateProcess 结束进程。
     bool TerminateProcessByWin32(std::uint32_t pid, std::string* errorMessage);
 
+    // TerminateProcessByWin32IfCreationTimeMatches：
+    // - 仅在 PID 和创建时间仍指向同一进程实例时调用 TerminateProcess；
+    // - 校验与终止共用一个持有的进程句柄，避免 PID 复用的 TOCTOU 误操作。
+    bool TerminateProcessByWin32IfCreationTimeMatches(
+        std::uint32_t pid,
+        std::uint64_t expectedCreationTime100ns,
+        std::string* errorMessage);
+
     // TerminateProcessByNtNative 作用：
     // - 调用 NtTerminateProcess / ZwTerminateProcess 结束进程。
     bool TerminateProcessByNtNative(std::uint32_t pid, std::string* errorMessage);

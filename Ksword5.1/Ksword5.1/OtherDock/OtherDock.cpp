@@ -952,6 +952,13 @@ namespace
         std::uint32_t processId = 0;
         const DWORD threadId = ::GetWindowThreadProcessId(windowHandle, reinterpret_cast<DWORD*>(&processId));
         infoOut.processId = processId;
+        infoOut.processCreationTime100ns = 0U;
+        if (processId != 0U)
+        {
+            (void)ks::process::QueryProcessCreationTimeByPid(
+                processId,
+                &infoOut.processCreationTime100ns);
+        }
         infoOut.threadId = static_cast<std::uint32_t>(threadId);
         infoOut.processNameText = queryProcessNameByPid(processId, &infoOut.processImagePathText);
 
@@ -4486,8 +4493,9 @@ void OtherDock::showWindowContextMenu(const QPoint& localPos)
             << eol;
 
         std::string terminateErrorText;
-        const bool terminateOk = ks::process::TerminateProcessByWin32(
+        const bool terminateOk = ks::process::TerminateProcessByWin32IfCreationTimeMatches(
             static_cast<std::uint32_t>(windowInfo->processId),
+            windowInfo->processCreationTime100ns,
             &terminateErrorText);
         if (!terminateOk)
         {

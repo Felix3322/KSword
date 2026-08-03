@@ -3496,6 +3496,79 @@ namespace ks::process
         return false;
     }
 
+    bool TerminateProcessByWin32IfCreationTimeMatches(
+        const std::uint32_t pid,
+        const std::uint64_t expectedCreationTime100ns,
+        std::string* const errorMessage)
+    {
+        if (pid == 0U || expectedCreationTime100ns == 0U)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "process identity is unavailable";
+            }
+            return false;
+        }
+
+        const HANDLE processHandle = ::OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            ToDwordPid(pid));
+        if (processHandle == nullptr)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "OpenProcess(for identity-verified terminate) failed: " +
+                    FormatLastErrorMessage(::GetLastError());
+            }
+            return false;
+        }
+
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        const BOOL queryOk = ::GetProcessTimes(
+            processHandle,
+            &creationTime,
+            &exitTime,
+            &kernelTime,
+            &userTime);
+        const DWORD queryError = queryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        const std::uint64_t actualCreationTime100ns = queryOk != FALSE
+            ? ks::str::FileTimeToUint64(
+                creationTime.dwHighDateTime,
+                creationTime.dwLowDateTime)
+            : 0U;
+        if (queryOk == FALSE ||
+            actualCreationTime100ns == 0U ||
+            actualCreationTime100ns != expectedCreationTime100ns)
+        {
+            ::CloseHandle(processHandle);
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = queryOk == FALSE
+                    ? "GetProcessTimes failed: " + FormatLastErrorMessage(queryError)
+                    : "process identity changed (PID was reused); termination skipped.";
+            }
+            return false;
+        }
+
+        const BOOL terminateResult = ::TerminateProcess(processHandle, 1);
+        const DWORD terminateError = terminateResult != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        ::CloseHandle(processHandle);
+        if (terminateResult != FALSE)
+        {
+            return true;
+        }
+
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "TerminateProcess failed: " + FormatLastErrorMessage(terminateError);
+        }
+        return false;
+    }
+
     bool TerminateProcessByNtNative(const std::uint32_t pid, std::string* const errorMessage)
     {
         // NtTerminateProcess 优先，缺失时回退 ZwTerminateProcess。
