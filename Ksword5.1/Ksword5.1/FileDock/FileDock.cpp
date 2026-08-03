@@ -53,6 +53,7 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListView>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
@@ -78,6 +79,7 @@
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QStorageInfo>
+#include <QStyle>
 #include <QStringList>
 #include <QStackedWidget>
 #include <QTabWidget>
@@ -7317,6 +7319,10 @@ void FileDock::changeEvent(QEvent* event)
                 // 主动刷新 viewport，避免等待目录变化或重新启动后才重新取数。
                 panel.fileView->viewport()->update();
             }
+            if (panel.compactFileView != nullptr && panel.compactFileView->viewport() != nullptr)
+            {
+                panel.compactFileView->viewport()->update();
+            }
         };
     refreshPanelView(m_leftPanel);
     refreshPanelView(m_rightPanel);
@@ -7333,19 +7339,32 @@ bool FileDock::eventFilter(QObject* watched, QEvent* event)
         if (mouseEvent != nullptr && mouseEvent->button() == Qt::RightButton)
         {
             FilePanelWidgets* targetPanel = nullptr;
+            QAbstractItemView* targetView = nullptr;
             if (m_leftPanel.fileView != nullptr && watched == m_leftPanel.fileView->viewport())
             {
                 targetPanel = &m_leftPanel;
+                targetView = m_leftPanel.fileView;
             }
             else if (m_rightPanel.fileView != nullptr && watched == m_rightPanel.fileView->viewport())
             {
                 targetPanel = &m_rightPanel;
+                targetView = m_rightPanel.fileView;
+            }
+            else if (m_leftPanel.compactFileView != nullptr && watched == m_leftPanel.compactFileView->viewport())
+            {
+                targetPanel = &m_leftPanel;
+                targetView = m_leftPanel.compactFileView;
+            }
+            else if (m_rightPanel.compactFileView != nullptr && watched == m_rightPanel.compactFileView->viewport())
+            {
+                targetPanel = &m_rightPanel;
+                targetView = m_rightPanel.compactFileView;
             }
 
-            if (targetPanel != nullptr && targetPanel->fileView != nullptr)
+            if (targetPanel != nullptr && targetView != nullptr)
             {
-                const QModelIndex hitIndex = targetPanel->fileView->indexAt(mouseEvent->pos());
-                QItemSelectionModel* const selectionModel = targetPanel->fileView->selectionModel();
+                const QModelIndex hitIndex = targetView->indexAt(mouseEvent->pos());
+                QItemSelectionModel* const selectionModel = targetView->selectionModel();
                 if (hitIndex.isValid() && selectionModel != nullptr)
                 {
                     const QModelIndex hitRowIndex = hitIndex.siblingAtColumn(0);
@@ -7577,7 +7596,26 @@ void FileDock::initializePanel(FilePanelWidgets& panel, const QString& titleText
     panel.manualProxyModel->setFilterCaseSensitivity(Qt::CaseInsensitive);
     panel.manualProxyModel->setFilterKeyColumn(static_cast<int>(ManualModelColumn::Name));
 
-    panel.fileView = new QTreeView(panel.rootWidget);
+    panel.fileViewStack = new QStackedWidget(panel.rootWidget);
+    panel.fileViewStack->setMinimumWidth(0);
+    panel.fileViewStack->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+
+    panel.compactFileView = new QListView(panel.fileViewStack);
+    panel.compactFileView->setMinimumWidth(0);
+    panel.compactFileView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
+    panel.compactFileView->setModel(panel.proxyModel);
+    panel.compactFileView->setModelColumn(0);
+    panel.compactFileView->setEditTriggers(QAbstractItemView::EditKeyPressed);
+    panel.compactFileView->setContextMenuPolicy(Qt::CustomContextMenu);
+    panel.compactFileView->viewport()->installEventFilter(this);
+    panel.compactFileView->setDragEnabled(true);
+    panel.compactFileView->setAcceptDrops(true);
+    panel.compactFileView->setDropIndicatorShown(true);
+    panel.compactFileView->setDragDropMode(QAbstractItemView::DragDrop);
+    panel.compactFileView->setDefaultDropAction(Qt::MoveAction);
+    panel.compactFileView->setDragDropOverwriteMode(false);
+
+    panel.fileView = new QTreeView(panel.fileViewStack);
     // 文件列表由 FileDock 自己管理列宽和滚动行为：
     // - 禁用全局 TableColumnAutoFit，避免 QFileSystemModel 某些长名称/类型列在选择或加载时重算列宽；
     // - 横向 size policy 使用 Ignored，确保 QTreeView 的 header/内容宽度不会反向撑大 QSplitter 子面板。
@@ -7585,7 +7623,6 @@ void FileDock::initializePanel(FilePanelWidgets& panel, const QString& titleText
     panel.fileView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     ks::ui::SetTableColumnAutoFitEnabled(panel.fileView, false);
     panel.fileView->setModel(panel.proxyModel);
-    configureFileViewSelection(panel);
     panel.fileView->setEditTriggers(QAbstractItemView::EditKeyPressed);
     panel.fileView->setContextMenuPolicy(Qt::CustomContextMenu);
     panel.fileView->viewport()->installEventFilter(this);
@@ -7599,7 +7636,18 @@ void FileDock::initializePanel(FilePanelWidgets& panel, const QString& titleText
     panel.fileView->header()->setStretchLastSection(false);
     panel.fileView->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     panel.fileView->header()->setStyleSheet(QStringLiteral("QHeaderView::section{color:%1;}").arg(KswordTheme::PrimaryBlueHex));
-    panel.rootLayout->addWidget(panel.fileView, 1);
+    // 两种控件共享同一个选择模型，切换视图后多选、当前项和右键动作保持一致。
+    QItemSelectionModel* compactSelectionModel = panel.compactFileView->selectionModel();
+    panel.compactFileView->setSelectionModel(panel.fileView->selectionModel());
+    if (compactSelectionModel != nullptr && compactSelectionModel != panel.fileView->selectionModel())
+    {
+        compactSelectionModel->deleteLater();
+    }
+    configureFileViewSelection(panel);
+    panel.fileViewStack->addWidget(panel.compactFileView);
+    panel.fileViewStack->addWidget(panel.fileView);
+    panel.fileViewStack->setCurrentWidget(panel.fileView);
+    panel.rootLayout->addWidget(panel.fileViewStack, 1);
 
     panel.statusBar = new QStatusBar(panel.rootWidget);
     panel.pathStatusLabel = new QLabel(QStringLiteral("路径: -"), panel.statusBar);
@@ -7848,6 +7896,32 @@ void FileDock::initializeConnections(FilePanelWidgets& panel)
 
         QDesktopServices::openUrl(QUrl::fromLocalFile(path));
     });
+    connect(panel.compactFileView, &QListView::doubleClicked, this, [this, &panel](const QModelIndex& proxyIndex) {
+        if (!proxyIndex.isValid())
+        {
+            return;
+        }
+
+        const QString path = currentIndexPath(panel);
+        if (path.isEmpty())
+        {
+            return;
+        }
+
+        QFileInfo info(path);
+        if (info.isDir())
+        {
+            navigateToPath(panel, path, true);
+            return;
+        }
+
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    });
+
+    connect(panel.compactFileView, &QListView::customContextMenuRequested, this, [this, &panel](const QPoint& pos) {
+        showPanelContextMenu(panel, pos);
+    });
+
 
     // 右键菜单入口。
     connect(panel.fileView, &QTreeView::customContextMenuRequested, this, [this, &panel](const QPoint& pos) {
@@ -7907,6 +7981,22 @@ void FileDock::initializeConnections(FilePanelWidgets& panel)
     connect(cutShortcut, &QShortcut::activated, this, [this, &panel]() {
         cutSelectedItems(panel);
     });
+
+    // QListView 使用自己的 WidgetShortcut，避免把 Enter/Delete 等按键扩散到地址栏和过滤输入框。
+    const auto bindCompactShortcut =
+        [this, &panel](const QKeySequence& keySequence, const auto& handler)
+        {
+            QShortcut* shortcut = new QShortcut(keySequence, panel.compactFileView);
+            shortcut->setContext(Qt::WidgetShortcut);
+            connect(shortcut, &QShortcut::activated, this, handler);
+        };
+    bindCompactShortcut(QKeySequence(Qt::Key_Return), [this, &panel]() { openSelectedItems(panel); });
+    bindCompactShortcut(QKeySequence(Qt::Key_Enter), [this, &panel]() { openSelectedItems(panel); });
+    bindCompactShortcut(QKeySequence(Qt::Key_F2), [this, &panel]() { renameSelectedItem(panel); });
+    bindCompactShortcut(QKeySequence(Qt::Key_Delete), [this, &panel]() { deleteSelectedItem(panel); });
+    bindCompactShortcut(QKeySequence::Copy, [this, &panel]() { copySelectedItems(panel); });
+    bindCompactShortcut(QKeySequence::Cut, [this, &panel]() { cutSelectedItems(panel); });
+
 }
 
 void FileDock::navigateToPath(FilePanelWidgets& panel, const QString& pathText, bool recordHistory)
@@ -7959,12 +8049,14 @@ void FileDock::navigateToPath(FilePanelWidgets& panel, const QString& pathText, 
     {
         // 手动解析模式使用平铺模型，根索引固定为无效索引。
         panel.fileView->setRootIndex(QModelIndex());
+        panel.compactFileView->setRootIndex(QModelIndex());
     }
     else
     {
         const QModelIndex sourceRootIndex = panel.fsModel->setRootPath(normalizedPath);
         const QModelIndex proxyRootIndex = panel.proxyModel->mapFromSource(sourceRootIndex);
         panel.fileView->setRootIndex(proxyRootIndex);
+        panel.compactFileView->setRootIndex(proxyRootIndex);
     }
     panel.currentPath = normalizedPath;
     panel.pathEdit->setText(QDir::toNativeSeparators(normalizedPath));
@@ -8334,6 +8426,44 @@ void FileDock::applyPanelFilterAndSort(FilePanelWidgets& panel)
     const int modeIndex = panel.viewModeCombo->currentIndex();
     const QString filterText = panel.filterEdit->text().trimmed();
 
+    // 图标/列表使用 QListView 的真实布局；详情/树形保留 QTreeView 的多列与层级能力。
+    const bool compactMode = (modeIndex == 0 || modeIndex == 1);
+    if (compactMode)
+    {
+        panel.fileViewStack->setCurrentWidget(panel.compactFileView);
+        panel.compactFileView->setTextElideMode(Qt::ElideMiddle);
+        if (modeIndex == 0)
+        {
+            panel.compactFileView->setViewMode(QListView::IconMode);
+            panel.compactFileView->setResizeMode(QListView::Adjust);
+            panel.compactFileView->setMovement(QListView::Static);
+            panel.compactFileView->setFlow(QListView::LeftToRight);
+            panel.compactFileView->setWrapping(true);
+            panel.compactFileView->setGridSize(QSize(128, 96));
+            panel.compactFileView->setSpacing(6);
+            panel.compactFileView->setWordWrap(true);
+            panel.compactFileView->setUniformItemSizes(true);
+            panel.compactFileView->setIconSize(QSize(48, 48));
+        }
+        else
+        {
+            panel.compactFileView->setViewMode(QListView::ListMode);
+            panel.compactFileView->setResizeMode(QListView::Adjust);
+            panel.compactFileView->setMovement(QListView::Static);
+            panel.compactFileView->setFlow(QListView::TopToBottom);
+            panel.compactFileView->setWrapping(false);
+            panel.compactFileView->setGridSize(QSize());
+            panel.compactFileView->setSpacing(2);
+            panel.compactFileView->setWordWrap(false);
+            panel.compactFileView->setUniformItemSizes(true);
+            panel.compactFileView->setIconSize(QSize(20, 20));
+        }
+    }
+    else
+    {
+        panel.fileViewStack->setCurrentWidget(panel.fileView);
+    }
+
     if (manualMode)
     {
         // 手动模式下仅在“当前路径未加载且未在解析”时才拉起新任务，
@@ -8524,7 +8654,7 @@ void FileDock::refreshDriveCombo(FilePanelWidgets& panel)
 
 void FileDock::applyReadModeToPanel(FilePanelWidgets& panel)
 {
-    if (panel.fileView == nullptr)
+    if (panel.fileView == nullptr || panel.compactFileView == nullptr || panel.fileViewStack == nullptr)
     {
         return;
     }
@@ -8533,6 +8663,9 @@ void FileDock::applyReadModeToPanel(FilePanelWidgets& panel)
     {
         panel.fileView->setModel(panel.manualProxyModel);
         panel.fileView->setRootIndex(QModelIndex());
+        panel.compactFileView->setModel(panel.manualProxyModel);
+        panel.compactFileView->setModelColumn(0);
+        panel.compactFileView->setRootIndex(QModelIndex());
         panel.showHiddenCheck->setEnabled(false);
         panel.showSystemCheck->setEnabled(false);
         if (panel.parserStatusLabel != nullptr)
@@ -8547,6 +8680,8 @@ void FileDock::applyReadModeToPanel(FilePanelWidgets& panel)
     else
     {
         panel.fileView->setModel(panel.proxyModel);
+        panel.compactFileView->setModel(panel.proxyModel);
+        panel.compactFileView->setModelColumn(0);
         panel.showHiddenCheck->setEnabled(true);
         panel.showSystemCheck->setEnabled(true);
         if (!panel.currentPath.isEmpty())
@@ -8554,6 +8689,7 @@ void FileDock::applyReadModeToPanel(FilePanelWidgets& panel)
             const QModelIndex sourceRootIndex = panel.fsModel->setRootPath(panel.currentPath);
             const QModelIndex proxyRootIndex = panel.proxyModel->mapFromSource(sourceRootIndex);
             panel.fileView->setRootIndex(proxyRootIndex);
+            panel.compactFileView->setRootIndex(proxyRootIndex);
         }
         if (panel.parserStatusLabel != nullptr)
         {
@@ -8565,6 +8701,13 @@ void FileDock::applyReadModeToPanel(FilePanelWidgets& panel)
     panel.fileView->header()->setStretchLastSection(false);
     panel.fileView->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     QItemSelectionModel* selectionModel = panel.fileView->selectionModel();
+    QItemSelectionModel* compactSelectionModel = panel.compactFileView->selectionModel();
+    panel.compactFileView->setSelectionModel(panel.fileView->selectionModel());
+    if (compactSelectionModel != nullptr && compactSelectionModel != panel.fileView->selectionModel())
+    {
+        compactSelectionModel->deleteLater();
+    }
+
     if (selectionModel != nullptr)
     {
         QObject::disconnect(selectionModel, nullptr, this, nullptr);
@@ -8585,6 +8728,8 @@ void FileDock::configureFileViewSelection(FilePanelWidgets& panel)
     // 因此无论初始创建还是切换 Windows API/手动解析模型后，都必须保持“整行扩展多选”。
     panel.fileView->setSelectionBehavior(QAbstractItemView::SelectRows);
     panel.fileView->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    panel.compactFileView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    panel.compactFileView->setSelectionMode(QAbstractItemView::ExtendedSelection);
 }
 
 void FileDock::recreateFileSystemModel(FilePanelWidgets& panel)
@@ -8677,6 +8822,8 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
         rowItems.reserve(static_cast<int>(ManualModelColumn::Count));
 
         QStandardItem* nameItem = new QStandardItem(itemValue.name);
+        nameItem->setIcon(QApplication::style()->standardIcon(
+            itemValue.isDirectory ? QStyle::SP_DirIcon : QStyle::SP_FileIcon));
         nameItem->setData(itemValue.absolutePath, Qt::UserRole);
         nameItem->setData(itemValue.isDirectory, Qt::UserRole + 1);
         rowItems.push_back(nameItem);
@@ -8957,7 +9104,15 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                             commitPanel.parserStatusLabel->setText(
                                 QStringLiteral("解析器: 手动解析失败"));
                         }
-                        if (showWarningMessage)
+
+                        // 原始文件系统枚举需要直接读取卷设备；普通令牌会返回 ERROR_ACCESS_DENIED。
+                        // 异步完成回调必须与同步入口一样接入统一提权恢复，否则模式切换只会留下空表。
+                        const bool privilegePromptHandled =
+                            ks::ui::promptForPrivilegeFailure(
+                                safeThis.data(),
+                                QStringLiteral("读取原始文件系统数据"),
+                                parseErrorText);
+                        if (showWarningMessage && !privilegePromptHandled)
                         {
                             QMessageBox::warning(
                                 safeThis.data(),
@@ -8985,6 +9140,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         if (commitPanel.fileView != nullptr)
                         {
                             commitPanel.fileView->setUpdatesEnabled(false);
+                            commitPanel.compactFileView->setUpdatesEnabled(false);
                         }
                         for (const ks::file::ManualDirectoryEntry& itemValue : *parsedEntriesSnapshot)
                         {
@@ -8992,6 +9148,8 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                             rowItems.reserve(static_cast<int>(ManualModelColumn::Count));
 
                             QStandardItem* nameItem = new QStandardItem(itemValue.name);
+                            nameItem->setIcon(QApplication::style()->standardIcon(
+                                itemValue.isDirectory ? QStyle::SP_DirIcon : QStyle::SP_FileIcon));
                             nameItem->setData(itemValue.absolutePath, Qt::UserRole);
                             nameItem->setData(itemValue.isDirectory, Qt::UserRole + 1);
                             rowItems.push_back(nameItem);
@@ -9034,7 +9192,9 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         if (commitPanel.fileView != nullptr)
                         {
                             commitPanel.fileView->setRootIndex(QModelIndex());
+                            commitPanel.compactFileView->setRootIndex(QModelIndex());
                             commitPanel.fileView->setUpdatesEnabled(true);
+                            commitPanel.compactFileView->setUpdatesEnabled(true);
                         }
 
                         if (commitPanel.parserStatusLabel != nullptr)
@@ -9730,8 +9890,12 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
 
     // 右键命中行时，优先保证“命中行”与“选中集合”一致。
     // 说明：若命中的是已选中行，则保留原多选；若命中未选中行，则切成该单行。
-    const QModelIndex hitIndex = panel.fileView->indexAt(localPos);
-    QItemSelectionModel* selectionModel = panel.fileView->selectionModel();
+    QAbstractItemView* menuView =
+        (panel.viewModeCombo->currentIndex() <= 1)
+        ? static_cast<QAbstractItemView*>(panel.compactFileView)
+        : static_cast<QAbstractItemView*>(panel.fileView);
+    const QModelIndex hitIndex = menuView->indexAt(localPos);
+    QItemSelectionModel* selectionModel = menuView->selectionModel();
     if (hitIndex.isValid() && selectionModel != nullptr)
     {
         const QModelIndex hitRowIndex = hitIndex.siblingAtColumn(0);
@@ -9915,7 +10079,7 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     mappedProcessScanAction->setEnabled(hasAnyFile);
     pluginMenu->setEnabled(singleFileOnly);
 
-    QAction* selectedAction = menu.exec(panel.fileView->viewport()->mapToGlobal(localPos));
+    QAction* selectedAction = menu.exec(menuView->viewport()->mapToGlobal(localPos));
     if (selectedAction == nullptr)
     {
         kLogEvent menuCancelEvent;

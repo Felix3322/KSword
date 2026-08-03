@@ -29,6 +29,7 @@ class QFileSystemModel;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
+class QListView;
 class QMenu;
 class QPushButton;
 class QStandardItemModel;
@@ -113,7 +114,9 @@ private:
         QComboBox* readModeCombo = nullptr;    // 读取方式（Windows API/自动手动/强制 NTFS/FAT32/exFAT）。
         QLineEdit* filterEdit = nullptr;       // 文件名快速过滤输入框。
 
-        QTreeView* fileView = nullptr;         // 文件树视图。
+        QStackedWidget* fileViewStack = nullptr; // 文件视图容器（图标/列表与详情/树之间切换）。
+        QListView* compactFileView = nullptr;  // 真正的图标网格/纵向列表视图。
+        QTreeView* fileView = nullptr;         // 详情/树形视图，同时持有共享选区。
         QFileSystemModel* fsModel = nullptr;   // 原始文件系统模型。
         QSortFilterProxyModel* proxyModel = nullptr; // 过滤代理模型。
         QStandardItemModel* manualModel = nullptr;   // 手动解析原始模型。

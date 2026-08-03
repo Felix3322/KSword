@@ -2688,6 +2688,335 @@ namespace
         return true;
     }
 
+    // queryNtfsFileReferenceByPath 作用：
+    // - 打开目标目录并读取稳定的 NTFS 文件引用号；
+    // - 当目录记录号超出快速 MFT 窗口时，避免把“未扫描到”误判成目录不存在。
+    bool queryNtfsFileReferenceByPath(
+        const QString& directoryPath,
+        std::uint64_t& fileReferenceOut,
+        QString& errorTextOut)
+    {
+        fileReferenceOut = 0;
+        const std::wstring pathWide = toWide(
+            QDir::toNativeSeparators(QDir::cleanPath(directoryPath)));
+        HANDLE directoryHandle = ::CreateFileW(
+            pathWide.c_str(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            nullptr);
+        if (directoryHandle == INVALID_HANDLE_VALUE)
+        {
+            errorTextOut = QStringLiteral(
+                "读取 NTFS 目录引用号失败, code=%1")
+                .arg(::GetLastError());
+            return false;
+        }
+
+        BY_HANDLE_FILE_INFORMATION fileInfo{};
+        const BOOL queryOk =
+            ::GetFileInformationByHandle(directoryHandle, &fileInfo);
+        const DWORD queryError = queryOk != FALSE
+            ? ERROR_SUCCESS
+            : ::GetLastError();
+        ::CloseHandle(directoryHandle);
+        if (queryOk == FALSE)
+        {
+            errorTextOut = QStringLiteral(
+                "读取 NTFS 目录引用号失败, code=%1")
+                .arg(queryError);
+            return false;
+        }
+
+        const std::uint64_t rawFileReference =
+            (static_cast<std::uint64_t>(fileInfo.nFileIndexHigh) << 32ULL) |
+            static_cast<std::uint64_t>(fileInfo.nFileIndexLow);
+        fileReferenceOut =
+            rawFileReference & 0x0000FFFFFFFFFFFFULL;
+        return true;
+    }
+
+    // supplementNtfsDirectoryEntriesByMftEnumeration 作用：
+    // - 使用 FSCTL_ENUM_USN_DATA 遍历活动 MFT 记录，只收集目标父目录的直接孩子；
+    // - 对命中的记录再用 FSCTL_GET_NTFS_FILE_RECORD 读取原始 FILE_NAME/大小/时间；
+    // - 该路径不依赖 QDir/FindFirstFile 枚举，专门补齐快速窗口之外的高编号记录。
+    bool supplementNtfsDirectoryEntriesByMftEnumeration(
+        const QString& volumeRoot,
+        const QString& currentPath,
+        const std::uint64_t directoryFileReference,
+        std::vector<ks::file::ManualDirectoryEntry>& entriesInOut,
+        std::size_t& addedCountOut,
+        QString& errorTextOut)
+    {
+        struct DirectoryCandidate
+        {
+            std::uint64_t fileReference = 0; // fileReference：候选孩子的 48 位 MFT 记录号。
+            QString fileName;                // fileName：USN/MFT 枚举返回的当前链接名称。
+            std::uint32_t fileAttributes = 0;// fileAttributes：目录标志的低成本兜底来源。
+        };
+
+        addedCountOut = 0;
+        errorTextOut.clear();
+        QString openErrorText;
+        HANDLE volumeHandle =
+            openReadHandle(buildVolumeDevicePath(volumeRoot), openErrorText);
+        if (volumeHandle == INVALID_HANDLE_VALUE)
+        {
+            errorTextOut = openErrorText;
+            return false;
+        }
+
+        NTFS_VOLUME_DATA_BUFFER volumeData{};
+        DWORD returnedBytes = 0;
+        if (::DeviceIoControl(
+            volumeHandle,
+            FSCTL_GET_NTFS_VOLUME_DATA,
+            nullptr,
+            0,
+            &volumeData,
+            static_cast<DWORD>(sizeof(volumeData)),
+            &returnedBytes,
+            nullptr) == FALSE)
+        {
+            errorTextOut = QStringLiteral(
+                "FSCTL_GET_NTFS_VOLUME_DATA失败, code=%1")
+                .arg(::GetLastError());
+            ::CloseHandle(volumeHandle);
+            return false;
+        }
+
+        // MFT_ENUM_DATA 只返回紧凑的 USN/MFT 元数据，比读取并缓存数百万条完整 MFT 记录更适合目录补全。
+        constexpr DWORD EnumerationBufferBytes = 1024UL * 1024UL;
+        std::vector<std::uint8_t> enumerationBuffer(
+            static_cast<std::size_t>(EnumerationBufferBytes));
+        std::vector<DirectoryCandidate> candidateList;
+        QSet<QString> candidateKeySet;
+
+        MFT_ENUM_DATA enumerationData{};
+        enumerationData.StartFileReferenceNumber = 0;
+        enumerationData.LowUsn = 0;
+        enumerationData.HighUsn =
+            std::numeric_limits<USN>::max();
+
+        bool enumerationFinished = false;
+        while (!enumerationFinished)
+        {
+            returnedBytes = 0;
+            const BOOL enumerateOk = ::DeviceIoControl(
+                volumeHandle,
+                FSCTL_ENUM_USN_DATA,
+                &enumerationData,
+                static_cast<DWORD>(sizeof(enumerationData)),
+                enumerationBuffer.data(),
+                EnumerationBufferBytes,
+                &returnedBytes,
+                nullptr);
+            if (enumerateOk == FALSE)
+            {
+                const DWORD enumerateError = ::GetLastError();
+                if (enumerateError == ERROR_HANDLE_EOF)
+                {
+                    break;
+                }
+
+                errorTextOut = QStringLiteral(
+                    "FSCTL_ENUM_USN_DATA失败, code=%1")
+                    .arg(enumerateError);
+                ::CloseHandle(volumeHandle);
+                return false;
+            }
+            if (returnedBytes <= sizeof(DWORDLONG))
+            {
+                break;
+            }
+
+            DWORDLONG nextFileReference = 0;
+            std::memcpy(
+                &nextFileReference,
+                enumerationBuffer.data(),
+                sizeof(nextFileReference));
+            std::size_t recordOffset = sizeof(DWORDLONG);
+            while (recordOffset + sizeof(USN_RECORD_COMMON_HEADER) <= returnedBytes)
+            {
+                const USN_RECORD_COMMON_HEADER* commonHeader =
+                    reinterpret_cast<const USN_RECORD_COMMON_HEADER*>(
+                        enumerationBuffer.data() + recordOffset);
+                const std::uint32_t recordLength = commonHeader->RecordLength;
+                if (recordLength < sizeof(USN_RECORD_COMMON_HEADER) ||
+                    recordOffset + recordLength > returnedBytes)
+                {
+                    errorTextOut = QStringLiteral(
+                        "FSCTL_ENUM_USN_DATA返回了损坏的记录。");
+                    ::CloseHandle(volumeHandle);
+                    return false;
+                }
+
+                // NTFS 的 FSCTL_ENUM_USN_DATA 当前返回 V2 记录；其它版本跳过而不是按错误布局读取。
+                if (commonHeader->MajorVersion == 2 &&
+                    recordLength >= offsetof(USN_RECORD_V2, FileName))
+                {
+                    const USN_RECORD_V2* usnRecord =
+                        reinterpret_cast<const USN_RECORD_V2*>(commonHeader);
+                    const std::size_t fileNameEnd =
+                        static_cast<std::size_t>(usnRecord->FileNameOffset) +
+                        static_cast<std::size_t>(usnRecord->FileNameLength);
+                    const std::uint64_t parentFileReference =
+                        static_cast<std::uint64_t>(
+                            usnRecord->ParentFileReferenceNumber) &
+                        0x0000FFFFFFFFFFFFULL;
+                    if (parentFileReference == directoryFileReference &&
+                        usnRecord->FileNameLength > 0 &&
+                        fileNameEnd <= recordLength)
+                    {
+                        DirectoryCandidate candidate{};
+                        candidate.fileReference =
+                            static_cast<std::uint64_t>(
+                                usnRecord->FileReferenceNumber) &
+                            0x0000FFFFFFFFFFFFULL;
+                        candidate.fileName = QString::fromWCharArray(
+                            reinterpret_cast<const wchar_t*>(
+                                reinterpret_cast<const std::uint8_t*>(usnRecord) +
+                                usnRecord->FileNameOffset),
+                            static_cast<qsizetype>(
+                                usnRecord->FileNameLength / sizeof(wchar_t)));
+                        candidate.fileAttributes = usnRecord->FileAttributes;
+
+                        const QString candidateKey =
+                            QStringLiteral("%1|%2")
+                            .arg(static_cast<qulonglong>(
+                                candidate.fileReference))
+                            .arg(candidate.fileName.toCaseFolded());
+                        if (!candidate.fileName.isEmpty() &&
+                            !candidateKeySet.contains(candidateKey))
+                        {
+                            candidateKeySet.insert(candidateKey);
+                            candidateList.push_back(std::move(candidate));
+                        }
+                    }
+                }
+                recordOffset += recordLength;
+            }
+
+            const std::uint64_t currentStart =
+                static_cast<std::uint64_t>(
+                    enumerationData.StartFileReferenceNumber);
+            if (nextFileReference <= currentStart)
+            {
+                enumerationFinished = true;
+            }
+            else
+            {
+                enumerationData.StartFileReferenceNumber =
+                    nextFileReference;
+            }
+        }
+
+        QSet<QString> existingNameSet;
+        existingNameSet.reserve(
+            static_cast<int>(entriesInOut.size() * 2ULL + 16ULL));
+        for (const ks::file::ManualDirectoryEntry& entryValue : entriesInOut)
+        {
+            existingNameSet.insert(entryValue.name.toCaseFolded());
+        }
+
+        const std::uint16_t bytesPerSector =
+            static_cast<std::uint16_t>(volumeData.BytesPerSector);
+        const std::uint32_t bytesPerRecord =
+            volumeData.BytesPerFileRecordSegment;
+        for (const DirectoryCandidate& candidate : candidateList)
+        {
+            NtfsRawRecord recordValue{};
+            QString recordErrorText;
+            const bool recordOk = tryReadNtfsSingleRecordByFsctl(
+                volumeHandle,
+                candidate.fileReference,
+                bytesPerSector,
+                bytesPerRecord,
+                recordValue,
+                recordErrorText);
+
+            // appendEntry 统一按名称去重；同一目录在 NTFS 中不允许存在大小写折叠后相同的两个名字。
+            const auto appendEntry =
+                [&entriesInOut,
+                 &existingNameSet,
+                 &currentPath,
+                 &candidate](
+                    const QString& fileName,
+                    const bool isDirectory,
+                    const std::uint64_t sizeBytes,
+                    const std::uint64_t modifiedTime100ns)
+                {
+                    const QString normalizedName = fileName;
+                    const QString normalizedKey =
+                        normalizedName.toCaseFolded();
+                    if (normalizedName.isEmpty() ||
+                        existingNameSet.contains(normalizedKey))
+                    {
+                        return false;
+                    }
+
+                    ks::file::ManualDirectoryEntry itemValue{};
+                    itemValue.name = normalizedName;
+                    itemValue.absolutePath =
+                        QDir(currentPath).filePath(normalizedName);
+                    itemValue.isDirectory = isDirectory;
+                    itemValue.sizeBytes =
+                        isDirectory ? 0 : sizeBytes;
+                    itemValue.modifiedTime =
+                        fileTimeToLocal(modifiedTime100ns);
+                    itemValue.typeText =
+                        buildTypeText(normalizedName, isDirectory);
+                    itemValue.ntfsFileReference =
+                        candidate.fileReference;
+                    existingNameSet.insert(normalizedKey);
+                    entriesInOut.push_back(std::move(itemValue));
+                    return true;
+                };
+
+            bool appendedExactLink = false;
+            if (recordOk && recordValue.inUse)
+            {
+                for (const NtfsNameLink& nameLink : recordValue.nameLinks)
+                {
+                    if (nameLink.parentIndex !=
+                        directoryFileReference)
+                    {
+                        continue;
+                    }
+                    appendedExactLink =
+                        appendEntry(
+                            nameLink.fileName,
+                            recordValue.isDirectory,
+                            recordValue.sizeBytes,
+                            recordValue.modifiedTime100ns) ||
+                        appendedExactLink;
+                }
+            }
+
+            // 卷在枚举期间可能变化；精确 MFT 回读失败时仍保留 USN 活动记录提供的名称与目录标志。
+            if (!appendedExactLink)
+            {
+                const bool isDirectory =
+                    (candidate.fileAttributes &
+                        FILE_ATTRIBUTE_DIRECTORY) != 0;
+                appendedExactLink = appendEntry(
+                    candidate.fileName,
+                    isDirectory,
+                    0,
+                    0);
+            }
+            if (appendedExactLink)
+            {
+                addedCountOut += 1;
+            }
+        }
+
+        ::CloseHandle(volumeHandle);
+        return true;
+    }
+
     // decodeFatDateTime 作用：把 FAT 日期+时间转换为 QDateTime。
     QDateTime decodeFatDateTime(const std::uint16_t dateValue, const std::uint16_t timeValue)
     {
@@ -3337,25 +3666,31 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
 
         const QStringList pathSegments = splitRelativeSegments(pathText);
         std::uint64_t dirIndex = 5;
-        bool usedFullRangeScan = false; // usedFullRangeScan：标记本次是否已经执行过 60 万记录全量扫描。
+        bool usedFullRangeScan = false; // usedFullRangeScan：标记本次是否已经执行过 120 万记录扩大扫描。
         bool resolveOk = (cacheSnapshot != nullptr)
             && resolveNtfsDirectoryIndex(*cacheSnapshot, pathSegments, dirIndex);
-        if (!resolveOk && DirectoryListMaxRecords < DirectoryRetryMaxRecords)
+        // 快速 MFT 窗口可能不包含目标目录本身；直接从目录句柄取得真实文件引用号后继续纯 NTFS 枚举。
+        if (!resolveOk)
         {
-            std::vector<NtfsRawRecord> retryRecords;
-            QString retryErrorText;
-            std::shared_ptr<const NtfsCacheEntry> retrySnapshot;
-            if (loadNtfsRecords(volumeRoot, retryRecords, retryErrorText, DirectoryRetryMaxRecords, true, true, false, false, false, {}, &retrySnapshot))
+            std::uint64_t pathFileReference = 0;
+            QString referenceErrorText;
+            if (queryNtfsFileReferenceByPath(
+                pathText,
+                pathFileReference,
+                referenceErrorText))
             {
-                recordsValue.swap(retryRecords);
-                cacheSnapshot = retrySnapshot;
-                usedFullRangeScan = true;
-                resolveOk = (cacheSnapshot != nullptr)
-                    && resolveNtfsDirectoryIndex(*cacheSnapshot, pathSegments, dirIndex);
-            }
-            else if (errorTextOut.isEmpty())
-            {
-                errorTextOut = retryErrorText;
+                dirIndex = pathFileReference;
+                resolveOk = true;
+                errorTextOut.clear();
+
+                kLogEvent event;
+                info << event
+                    << "[FileDock] 目标目录超出快速MFT窗口，已通过目录文件引用继续枚举, path="
+                    << QDir::toNativeSeparators(
+                        QDir::cleanPath(pathText)).toStdString()
+                    << ", fileReference="
+                    << static_cast<qulonglong>(dirIndex)
+                    << eol;
             }
         }
         if (!resolveOk)
@@ -3426,23 +3761,81 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
 
         appendEntriesByDirectoryIndex(dirIndex);
 
-        // 对 Windows API 结果做一次低成本补齐校验：
-        // 1) 手动结果若少于 WinAPI，优先补齐缺失项，避免用户看到“比资源管理器更少”；
-        // 2) 这样即使目录里存在超出当前扫描窗口的新记录，也不会继续强制整卷深扫卡 UI。
+        // WinAPI 结果只作为完整性对照：发现缺项时先用 FSCTL_ENUM_USN_DATA 定向补齐高编号 MFT 记录。
+        // 只有 NTFS 定向枚举仍无法取回的残余项目，才允许复制 WinAPI 行并标记真实回退来源。
         std::vector<ManualDirectoryEntry> winApiEntries;
         if (enumerateDirectoryByWinApi(pathText, winApiEntries))
         {
-            QSet<QString> existingNameSet;
-            existingNameSet.reserve(static_cast<int>(entriesOut.size() * 2 + 8));
-            for (const ManualDirectoryEntry& itemValue : entriesOut)
+            const auto buildExistingNameSet =
+                [&entriesOut]()
+                {
+                    QSet<QString> nameSet;
+                    nameSet.reserve(
+                        static_cast<int>(
+                            entriesOut.size() * 2ULL + 16ULL));
+                    for (const ManualDirectoryEntry& itemValue : entriesOut)
+                    {
+                        nameSet.insert(itemValue.name.toCaseFolded());
+                    }
+                    return nameSet;
+                };
+
+            QSet<QString> existingNameSet =
+                buildExistingNameSet();
+            std::size_t missingBeforeMftCount = 0;
+            for (const ManualDirectoryEntry& winApiItem : winApiEntries)
             {
-                existingNameSet.insert(itemValue.name.toCaseFolded());
+                if (!existingNameSet.contains(
+                    winApiItem.name.toCaseFolded()))
+                {
+                    missingBeforeMftCount += 1;
+                }
+            }
+
+            if (missingBeforeMftCount > 0)
+            {
+                std::size_t mftAddedCount = 0;
+                QString mftEnumerationErrorText;
+                const bool mftEnumerationOk =
+                    supplementNtfsDirectoryEntriesByMftEnumeration(
+                        volumeRoot,
+                        currentPath,
+                        dirIndex,
+                        entriesOut,
+                        mftAddedCount,
+                        mftEnumerationErrorText);
+                if (mftEnumerationOk)
+                {
+                    existingNameSet = buildExistingNameSet();
+
+                    kLogEvent event;
+                    info << event
+                        << "[FileDock] NTFS定向MFT枚举完成, path="
+                        << currentPath.toStdString()
+                        << ", missingBefore="
+                        << static_cast<qulonglong>(
+                            missingBeforeMftCount)
+                        << ", mftAdded="
+                        << static_cast<qulonglong>(mftAddedCount)
+                        << eol;
+                }
+                else
+                {
+                    kLogEvent event;
+                    warn << event
+                        << "[FileDock] NTFS定向MFT枚举失败，保留WinAPI最终兜底, path="
+                        << currentPath.toStdString()
+                        << ", error="
+                        << mftEnumerationErrorText.toStdString()
+                        << eol;
+                }
             }
 
             std::size_t mergedCount = 0;
             for (const ManualDirectoryEntry& fallbackItem : winApiEntries)
             {
-                const QString normalizedName = fallbackItem.name.toCaseFolded();
+                const QString normalizedName =
+                    fallbackItem.name.toCaseFolded();
                 if (existingNameSet.contains(normalizedName))
                 {
                     continue;
@@ -3462,11 +3855,13 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
 
                 kLogEvent event;
                 warn << event
-                    << "[FileDock] NTFS手动解析结果少于WinAPI，已补齐缺失目录项, path="
-                    << QDir::toNativeSeparators(QDir::cleanPath(pathText)).toStdString()
-                    << ", manualRows="
-                    << static_cast<qulonglong>(entriesOut.size() - mergedCount)
-                    << ", mergedRows="
+                    << "[FileDock] NTFS定向MFT枚举后仍有缺项，已使用WinAPI兜底, path="
+                    << QDir::toNativeSeparators(
+                        QDir::cleanPath(pathText)).toStdString()
+                    << ", mftRows="
+                    << static_cast<qulonglong>(
+                        entriesOut.size() - mergedCount)
+                    << ", fallbackRows="
                     << static_cast<qulonglong>(mergedCount)
                     << ", winApiRows="
                     << static_cast<qulonglong>(winApiEntries.size())
