@@ -45,6 +45,7 @@ struct ProcessBasicInfo {
 struct ProcessThreadInfo {
     DWORD threadId = 0;
     DWORD ownerProcessId = 0;
+    ULONGLONG creationTime100ns = 0;
     LONG basePriority = 0;
     LONG deltaPriority = 0;
     DWORD suspendCount = 0;
@@ -61,6 +62,7 @@ struct ProcessModuleInfo {
     std::uintptr_t baseAddress = 0;
     DWORD imageSize = 0;
     DWORD representativeThreadId = 0;
+    ULONGLONG representativeThreadCreationTime100ns = 0;
     std::wstring statusText;
 };
 

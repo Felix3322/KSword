@@ -700,8 +700,8 @@ ProcessBasicInfo CollectBasicInfo(DWORD processId, bool& succeededOut) {
 }
 
 // CollectThreads enumerates threads owned by the target PID. Input is processId;
-// processing uses CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD) and never touches
-// process handles; output rows include Toolhelp metadata and status text.
+// processing uses CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD), then revalidates
+// each opened thread's owner and creation time before retaining it in the snapshot.
 std::vector<ProcessThreadInfo> CollectThreads(DWORD processId, bool& succeededOut, std::wstring& statusOut) {
     succeededOut = false;
     statusOut.clear();
@@ -734,7 +734,39 @@ std::vector<ProcessThreadInfo> CollectThreads(DWORD processId, bool& succeededOu
         row.suspendCount = 0;
 
         Ksword::Core::UniqueHandle thread(::OpenThread(kThreadQueryAccess, FALSE, row.threadId));
-        if (thread.valid() && threadApi.available()) {
+        if (!thread.valid()) {
+            row.statusText = L"OpenThread limited info failed: " + Ksword::Core::LastErrorMessage();
+            rows.push_back(std::move(row));
+            continue;
+        }
+
+        const DWORD actualOwnerProcessId = ::GetProcessIdOfThread(thread.get());
+        if (actualOwnerProcessId == 0U || actualOwnerProcessId != processId) {
+            // The Toolhelp entry became stale before OpenThread completed. Do not
+            // retain a row that could later represent another process's thread.
+            continue;
+        }
+        row.ownerProcessId = actualOwnerProcessId;
+
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        const BOOL creationTimeOk = ::GetThreadTimes(
+            thread.get(),
+            &creationTime,
+            &exitTime,
+            &kernelTime,
+            &userTime);
+        if (creationTimeOk) {
+            row.creationTime100ns =
+                (static_cast<ULONGLONG>(creationTime.dwHighDateTime) << 32U) |
+                static_cast<ULONGLONG>(creationTime.dwLowDateTime);
+        } else {
+            row.statusText = L"GetThreadTimes failed: " + Ksword::Core::LastErrorMessage();
+        }
+
+        if (threadApi.available()) {
             PVOID startAddress = nullptr;
             const LONG status = threadApi.queryInformationThread(
                 thread.get(),
@@ -744,14 +776,14 @@ std::vector<ProcessThreadInfo> CollectThreads(DWORD processId, bool& succeededOu
                 nullptr);
             if (status >= 0) {
                 row.startAddress = reinterpret_cast<std::uintptr_t>(startAddress);
-                row.statusText = L"OK";
-            } else {
+                if (creationTimeOk) {
+                    row.statusText = L"OK";
+                }
+            } else if (creationTimeOk) {
                 row.statusText = L"NtQueryInformationThread failed";
             }
-        } else if (thread.valid()) {
+        } else if (creationTimeOk) {
             row.statusText = L"OK; NtQueryInformationThread unavailable";
-        } else {
-            row.statusText = L"OpenThread limited info failed: " + Ksword::Core::LastErrorMessage();
         }
         rows.push_back(std::move(row));
     } while (::Thread32Next(snapshot.get(), &entry));
@@ -865,8 +897,10 @@ void AttachRepresentativeThreads(
         }
 
         for (const ProcessThreadInfo& thread : threads) {
-            if (thread.startAddress >= moduleStart && thread.startAddress < moduleEnd) {
+            if (thread.creationTime100ns != 0U &&
+                thread.startAddress >= moduleStart && thread.startAddress < moduleEnd) {
                 module.representativeThreadId = thread.threadId;
+                module.representativeThreadCreationTime100ns = thread.creationTime100ns;
                 break;
             }
         }
