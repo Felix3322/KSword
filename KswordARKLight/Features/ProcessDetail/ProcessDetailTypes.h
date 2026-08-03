@@ -105,6 +105,7 @@ struct ProcessDetailSnapshot {
 // to controls when the newest request completes.
 struct ProcessTokenReportSnapshot {
     bool succeeded = false;
+    bool identityMatched = false;
     std::wstring statusText;
     std::wstring reportText;
     std::wstring editorStatusText;
@@ -115,6 +116,7 @@ struct ProcessTokenReportSnapshot {
 // bits. It never owns a token handle or an HWND.
 struct ProcessTokenSwitchSnapshot {
     bool succeeded = false;
+    bool identityMatched = false;
     std::array<bool, 12> values{};
     std::array<bool, 12> updated{};
     std::wstring statusText;

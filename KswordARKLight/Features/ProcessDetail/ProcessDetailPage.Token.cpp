@@ -139,18 +139,66 @@ void SetChecked(HWND checkbox, bool checked) {
     }
 }
 
+// VerifyProcessIdentity keeps the caller-owned process handle in scope so the
+// PID cannot be reused while the following token operations are collected.
+bool VerifyProcessIdentity(
+    HANDLE process,
+    ULONGLONG expectedProcessCreationTime100ns,
+    std::wstring& errorText) {
+    errorText.clear();
+    if (!process || expectedProcessCreationTime100ns == 0U) {
+        errorText = L"进程身份不可用。";
+        return false;
+    }
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    if (!::GetProcessTimes(process, &creationTime, &exitTime, &kernelTime, &userTime)) {
+        errorText = L"GetProcessTimes失败(" + std::to_wstring(::GetLastError()) + L")";
+        return false;
+    }
+    const ULONGLONG actualProcessCreationTime100ns =
+        (static_cast<ULONGLONG>(creationTime.dwHighDateTime) << 32U) |
+        static_cast<ULONGLONG>(creationTime.dwLowDateTime);
+    if (actualProcessCreationTime100ns == 0U ||
+        actualProcessCreationTime100ns != expectedProcessCreationTime100ns) {
+        errorText = L"目标进程实例已变更（PID 已复用）。";
+        return false;
+    }
+    return true;
+}
+
 constexpr std::array<int, 10> kTokenBooleanInformationClasses{
     15, 23, 24, 26, 21, 29, 40, 46, 47, 51
 };
 
-ProcessTokenReportSnapshot CollectTokenReportSnapshot(const DWORD processId) {
+ProcessTokenReportSnapshot CollectTokenReportSnapshot(
+    const DWORD processId,
+    const ULONGLONG expectedProcessCreationTime100ns) {
     ProcessTokenReportSnapshot snapshot{};
     ScopedHandle process(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId));
-    HANDLE rawToken = nullptr;
-    if (!process || !::OpenProcessToken(process.get(), TOKEN_QUERY, &rawToken)) {
+    if (!process) {
         const DWORD error = ::GetLastError();
         snapshot.statusText = L"● 刷新失败：无法打开目标令牌";
-        snapshot.reportText = L"OpenProcess/OpenProcessToken failed: " + std::to_wstring(error);
+        snapshot.reportText = L"OpenProcess failed: " + std::to_wstring(error);
+        snapshot.editorStatusText = L"行:1 列:1 字符:0 文件:<未命名> 模式:只读 编码:UTF-16";
+        return snapshot;
+    }
+    std::wstring identityError;
+    if (!VerifyProcessIdentity(process.get(), expectedProcessCreationTime100ns, identityError)) {
+        snapshot.statusText = L"● 刷新已取消：" + identityError;
+        snapshot.reportText = L"Process identity verification failed: " + identityError;
+        snapshot.editorStatusText = L"行:1 列:1 字符:0 文件:<未命名> 模式:只读 编码:UTF-16";
+        return snapshot;
+    }
+    snapshot.identityMatched = true;
+
+    HANDLE rawToken = nullptr;
+    if (!::OpenProcessToken(process.get(), TOKEN_QUERY, &rawToken)) {
+        const DWORD error = ::GetLastError();
+        snapshot.statusText = L"● 刷新失败：无法打开目标令牌";
+        snapshot.reportText = L"OpenProcessToken failed: " + std::to_wstring(error);
         snapshot.editorStatusText = L"行:1 列:1 字符:0 文件:<未命名> 模式:只读 编码:UTF-16";
         return snapshot;
     }
@@ -216,11 +264,24 @@ ProcessTokenReportSnapshot CollectTokenReportSnapshot(const DWORD processId) {
     return snapshot;
 }
 
-ProcessTokenSwitchSnapshot CollectTokenSwitchSnapshot(const DWORD processId) {
+ProcessTokenSwitchSnapshot CollectTokenSwitchSnapshot(
+    const DWORD processId,
+    const ULONGLONG expectedProcessCreationTime100ns) {
     ProcessTokenSwitchSnapshot snapshot{};
     ScopedHandle process(::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId));
+    if (!process) {
+        snapshot.statusText = L"● 刷新失败：无法打开目标令牌";
+        return snapshot;
+    }
+    std::wstring identityError;
+    if (!VerifyProcessIdentity(process.get(), expectedProcessCreationTime100ns, identityError)) {
+        snapshot.statusText = L"● 刷新已取消：" + identityError;
+        return snapshot;
+    }
+    snapshot.identityMatched = true;
+
     HANDLE rawToken = nullptr;
-    if (!process || !::OpenProcessToken(process.get(), TOKEN_QUERY, &rawToken)) {
+    if (!::OpenProcessToken(process.get(), TOKEN_QUERY, &rawToken)) {
         snapshot.statusText = L"● 刷新失败：无法打开目标令牌";
         return snapshot;
     }
@@ -381,8 +442,11 @@ void ProcessDetailPage::RefreshTokenReport() {
     }
     SetPageStatus(TabIndex::Token, TokenStatus, L"● 正在刷新令牌...");
     const DWORD processId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
     tokenReportTask_->request(
-        [processId] { return CollectTokenReportSnapshot(processId); },
+        [processId, expectedProcessCreationTime100ns] {
+            return CollectTokenReportSnapshot(processId, expectedProcessCreationTime100ns);
+        },
         [this](std::uint64_t, std::optional<ProcessTokenReportSnapshot>&& result, std::exception_ptr error) {
             if (error || !result.has_value()) {
                 SetPageStatus(TabIndex::Token, TokenStatus, L"● 令牌后台查询异常结束。");
@@ -391,7 +455,7 @@ void ProcessDetailPage::RefreshTokenReport() {
             SetControlText(TabIndex::Token, TokenOutput, result->reportText);
             SetControlText(TabIndex::Token, TokenEditorStatus, result->editorStatusText);
             SetPageStatus(TabIndex::Token, TokenStatus, result->statusText);
-            tokenLoaded_ = result->succeeded;
+            tokenLoaded_ = result->succeeded && result->identityMatched;
         });
 }
 
@@ -402,8 +466,11 @@ void ProcessDetailPage::RefreshTokenSwitches() {
     }
     SetPageStatus(TabIndex::TokenSwitch, TokenSwitchStatus, L"● 正在读取令牌开关...");
     const DWORD processId = processId_;
+    const ULONGLONG expectedProcessCreationTime100ns = expectedCreationTime100ns_;
     tokenSwitchTask_->request(
-        [processId] { return CollectTokenSwitchSnapshot(processId); },
+        [processId, expectedProcessCreationTime100ns] {
+            return CollectTokenSwitchSnapshot(processId, expectedProcessCreationTime100ns);
+        },
         [this](std::uint64_t, std::optional<ProcessTokenSwitchSnapshot>&& result, std::exception_ptr error) {
             if (error || !result.has_value()) {
                 SetPageStatus(TabIndex::TokenSwitch, TokenSwitchStatus, L"● 令牌开关后台查询异常结束。");
@@ -429,7 +496,7 @@ void ProcessDetailPage::RefreshTokenSwitches() {
                 }
             }
             SetPageStatus(TabIndex::TokenSwitch, TokenSwitchStatus, result->statusText);
-            tokenSwitchLoaded_ = result->succeeded;
+            tokenSwitchLoaded_ = result->succeeded && result->identityMatched;
         });
 }
 
