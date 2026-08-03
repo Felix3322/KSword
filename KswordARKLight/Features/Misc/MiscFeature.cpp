@@ -97,8 +97,8 @@ struct BugcheckUploadResult {
 // captured text into UI rows. No handles are retained after the command returns.
 struct CommandResult {
     bool started = false;
-    DWORD exitCode = 0;
-    DWORD win32Error = 0;
+    DWORD exitCode = ERROR_PROCESS_ABORTED;
+    DWORD win32Error = ERROR_SUCCESS;
     std::wstring output;
     std::wstring errorText;
 };
@@ -354,9 +354,18 @@ CommandResult RunCaptureCommand(const std::wstring& commandLine, const DWORD tim
         }
     }
 
-    DWORD exitCode = 0;
+    DWORD exitCode = ERROR_PROCESS_ABORTED;
     if (::GetExitCodeProcess(process.hProcess, &exitCode)) {
         result.exitCode = exitCode;
+    }
+    else {
+        const DWORD exitCodeError = ::GetLastError();
+        if (result.win32Error == ERROR_SUCCESS) {
+            result.win32Error = exitCodeError;
+        }
+        if (result.errorText.empty()) {
+            result.errorText = GetLastErrorText(exitCodeError);
+        }
     }
     if (result.exitCode == STILL_ACTIVE) {
         result.exitCode = 258;
@@ -409,7 +418,11 @@ void AddCommandRow(
     const CommandResult& command,
     const std::wstring& cleanHint = L"已查询") {
     const std::wstring output = CollapseWhitespace(command.output);
-    if (command.started && command.exitCode == 0 && !output.empty()) {
+    if (command.started
+        && command.win32Error == ERROR_SUCCESS
+        && command.errorText.empty()
+        && command.exitCode == 0
+        && !output.empty()) {
         AppendRow(rows, category, item, cleanHint, source, L"Info", output);
         return;
     }
