@@ -65,6 +65,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
+#include <QVariantAnimation>
 
 #include <QtCharts/QChart>
 #include <QtCharts/QChartView>
@@ -89,6 +90,7 @@
 #include <pdhmsg.h>
 #include <PowrProf.h>
 #include <Psapi.h>
+#include <d3dkmthk.h>
 #include <dxgi1_6.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
@@ -96,6 +98,7 @@
 #pragma comment(lib, "Pdh.lib")
 #pragma comment(lib, "PowrProf.lib")
 #pragma comment(lib, "Psapi.lib")
+#pragma comment(lib, "Gdi32.lib")
 #pragma comment(lib, "Dxgi.lib")
 #pragma comment(lib, "Iphlpapi.lib")
 
@@ -1628,11 +1631,11 @@ namespace
         return QStringLiteral("磁盘 %1").arg(trimmedText);
     }
 
-    // parseGpuAdapterKeyFromEngineName 作用：
-    // - 从 PDH GPU Engine 实例名中解析 LUID；
+    // parseGpuAdapterKeyFromCounterName 作用：
+    // - 从 PDH GPU Engine 或 GPU Adapter Memory 实例名中解析 LUID；
     // - Windows 常见格式包含“luid_0xHIGH_0xLOW”，失败时返回 false。
-    bool parseGpuAdapterKeyFromEngineName(
-        const QString& engineNameText,
+    bool parseGpuAdapterKeyFromCounterName(
+        const QString& counterNameText,
         std::uint64_t* adapterKeyOut)
     {
         if (adapterKeyOut == nullptr)
@@ -1642,7 +1645,7 @@ namespace
 
         static const QRegularExpression luidRegex(
             QStringLiteral("luid_0x([0-9a-fA-F]+)_0x([0-9a-fA-F]+)"));
-        const QRegularExpressionMatch matchValue = luidRegex.match(engineNameText);
+        const QRegularExpressionMatch matchValue = luidRegex.match(counterNameText);
         if (!matchValue.hasMatch())
         {
             return false;
@@ -1659,6 +1662,195 @@ namespace
 
         *adapterKeyOut = ((highValue & 0xFFFFFFFFULL) << 32U) | (lowValue & 0xFFFFFFFFULL);
         return true;
+    }
+
+    // GpuAdapterTelemetrySnapshot：
+    // - 通过 DXGI 适配器 LUID 绑定 WDDM/D3DKMT 数据，避免 WMI AdapterRAM 的 32 位截断；
+    // - Frequency 是驱动当前时钟，MaxFrequency/MaxFrequencyOC 只用于最大值参考。
+    struct GpuAdapterTelemetrySnapshot
+    {
+        std::uint64_t dedicatedVideoMemoryBytes = 0;
+        std::uint64_t sharedSystemMemoryBytes = 0;
+        double currentCoreClockMhz = 0.0;
+        double maxCoreClockMhz = 0.0;
+        double currentMemoryClockMhz = 0.0;
+        double maxMemoryClockMhz = 0.0;
+    };
+
+    // queryD3dKmtAdapterInfo 作用：
+    // - 统一组装 D3DKMTQueryAdapterInfo 请求；
+    // - 返回 true 表示驱动接受该查询类型，旧 WDDM 驱动不支持时由调用方继续使用 DXGI 回退。
+    bool queryD3dKmtAdapterInfo(
+        const D3DKMT_HANDLE adapterHandle,
+        const KMTQUERYADAPTERINFOTYPE queryType,
+        void* queryBuffer,
+        const UINT queryBufferSize)
+    {
+        if (adapterHandle == 0 || queryBuffer == nullptr || queryBufferSize == 0)
+        {
+            return false;
+        }
+
+        D3DKMT_QUERYADAPTERINFO queryInfo{};
+        queryInfo.hAdapter = adapterHandle;
+        queryInfo.Type = queryType;
+        queryInfo.pPrivateDriverData = queryBuffer;
+        queryInfo.PrivateDriverDataSize = queryBufferSize;
+        return ::D3DKMTQueryAdapterInfo(&queryInfo) >= 0;
+    }
+
+    // queryGpuAdapterTelemetrySnapshot 作用：
+    // - 输入 DXGI 返回的同一适配器 LUID，读取真实显存段大小和实时 3D/显存频率；
+    // - 3D 节点通过 NODEMETADATA 识别，避免把 Copy/Video 节点时钟误当作 GPU 核心速度；
+    // - 任一 D3DKMT 查询成功即返回 true，缺失字段保持 0 供上层按字段回退。
+    bool queryGpuAdapterTelemetrySnapshot(
+        const LUID& adapterLuid,
+        GpuAdapterTelemetrySnapshot* snapshotOut)
+    {
+        if (snapshotOut == nullptr)
+        {
+            return false;
+        }
+        *snapshotOut = GpuAdapterTelemetrySnapshot{};
+
+        D3DKMT_OPENADAPTERFROMLUID openInfo{};
+        openInfo.AdapterLuid = adapterLuid;
+        if (::D3DKMTOpenAdapterFromLuid(&openInfo) < 0 || openInfo.hAdapter == 0)
+        {
+            return false;
+        }
+
+        bool anyQuerySucceeded = false;
+
+        D3DKMT_SEGMENTSIZEINFO segmentSizeInfo{};
+        if (queryD3dKmtAdapterInfo(
+                openInfo.hAdapter,
+                KMTQAITYPE_GETSEGMENTSIZE,
+                &segmentSizeInfo,
+                sizeof(segmentSizeInfo)))
+        {
+            snapshotOut->dedicatedVideoMemoryBytes =
+                static_cast<std::uint64_t>(segmentSizeInfo.DedicatedVideoMemorySize);
+            snapshotOut->sharedSystemMemoryBytes =
+                static_cast<std::uint64_t>(segmentSizeInfo.SharedSystemMemorySize);
+            anyQuerySucceeded = true;
+        }
+
+        D3DKMT_ADAPTER_PERFDATA adapterPerfData{};
+        adapterPerfData.PhysicalAdapterIndex = 0;
+        if (queryD3dKmtAdapterInfo(
+                openInfo.hAdapter,
+                KMTQAITYPE_ADAPTERPERFDATA,
+                &adapterPerfData,
+                sizeof(adapterPerfData)))
+        {
+            constexpr double hertzPerMegahertz = 1000000.0;
+            snapshotOut->currentMemoryClockMhz =
+                static_cast<double>(adapterPerfData.MemoryFrequency) / hertzPerMegahertz;
+            const double reportedMaxMemoryClockMhz = static_cast<double>(std::max(
+                adapterPerfData.MaxMemoryFrequency,
+                adapterPerfData.MaxMemoryFrequencyOC)) / hertzPerMegahertz;
+            snapshotOut->maxMemoryClockMhz = std::max(
+                snapshotOut->currentMemoryClockMhz,
+                reportedMaxMemoryClockMhz);
+            anyQuerySucceeded = true;
+        }
+
+        ULONG nodeCount = 1;
+        D3DKMT_QUERYSTATISTICS adapterStatistics{};
+        adapterStatistics.Type = D3DKMT_QUERYSTATISTICS_ADAPTER;
+        adapterStatistics.AdapterLuid = adapterLuid;
+        if (::D3DKMTQueryStatistics(&adapterStatistics) >= 0)
+        {
+            nodeCount = std::clamp(
+                adapterStatistics.QueryResult.AdapterInformation.NodeCount,
+                1UL,
+                64UL);
+        }
+
+        double fallbackCurrentClockMhz = 0.0;
+        double fallbackMaxClockMhz = 0.0;
+        bool found3dNode = false;
+        for (ULONG nodeOrdinal = 0; nodeOrdinal < nodeCount; ++nodeOrdinal)
+        {
+            D3DKMT_NODE_PERFDATA nodePerfData{};
+            nodePerfData.NodeOrdinal = nodeOrdinal;
+            nodePerfData.PhysicalAdapterIndex = 0;
+            if (!queryD3dKmtAdapterInfo(
+                    openInfo.hAdapter,
+                    KMTQAITYPE_NODEPERFDATA,
+                    &nodePerfData,
+                    sizeof(nodePerfData)))
+            {
+                continue;
+            }
+
+            constexpr double hertzPerMegahertz = 1000000.0;
+            const double currentClockMhz =
+                static_cast<double>(nodePerfData.Frequency) / hertzPerMegahertz;
+            const double reportedMaxClockMhz = static_cast<double>(std::max(
+                nodePerfData.MaxFrequency,
+                nodePerfData.MaxFrequencyOC)) / hertzPerMegahertz;
+            const double maxClockMhz = std::max(currentClockMhz, reportedMaxClockMhz);
+            fallbackCurrentClockMhz = std::max(fallbackCurrentClockMhz, currentClockMhz);
+            fallbackMaxClockMhz = std::max(fallbackMaxClockMhz, maxClockMhz);
+            anyQuerySucceeded = true;
+
+            D3DKMT_NODEMETADATA nodeMetadata{};
+            nodeMetadata.NodeOrdinalAndAdapterIndex = nodeOrdinal;
+            if (queryD3dKmtAdapterInfo(
+                    openInfo.hAdapter,
+                    KMTQAITYPE_NODEMETADATA,
+                    &nodeMetadata,
+                    sizeof(nodeMetadata))
+                && nodeMetadata.NodeData.EngineType == DXGK_ENGINE_TYPE_3D)
+            {
+                found3dNode = true;
+                snapshotOut->currentCoreClockMhz = std::max(
+                    snapshotOut->currentCoreClockMhz,
+                    currentClockMhz);
+                snapshotOut->maxCoreClockMhz = std::max(
+                    snapshotOut->maxCoreClockMhz,
+                    maxClockMhz);
+            }
+        }
+
+        if (!found3dNode || snapshotOut->currentCoreClockMhz <= 0.0)
+        {
+            snapshotOut->currentCoreClockMhz = fallbackCurrentClockMhz;
+        }
+        if (!found3dNode || snapshotOut->maxCoreClockMhz <= 0.0)
+        {
+            snapshotOut->maxCoreClockMhz = fallbackMaxClockMhz;
+        }
+
+        D3DKMT_CLOSEADAPTER closeInfo{};
+        closeInfo.hAdapter = openInfo.hAdapter;
+        ::D3DKMTCloseAdapter(&closeInfo);
+        return anyQuerySucceeded;
+    }
+
+    // formatGpuClockMhzText 作用：
+    // - 把驱动返回的 MHz 值格式化为整数；
+    // - 不支持实时性能数据时明确显示 N/A，避免把 0 MHz 误报为真实速度。
+    QString formatGpuClockMhzText(const double clockMhz)
+    {
+        return clockMhz > 0.0
+            ? QString::number(clockMhz, 'f', 0)
+            : QStringLiteral("N/A");
+    }
+
+    // formatGpuMemoryUsageGiBText 作用：
+    // - 区分系统级显存占用的真实 0 与计数器不可用；
+    // - 计数器不可用时显示 N/A，避免再次把采样失败误报为 0.00 GiB。
+    QString formatGpuMemoryUsageGiBText(
+        const double usageGiB,
+        const bool usageAvailable,
+        const int decimalPlaces = 2)
+    {
+        return usageAvailable
+            ? QString::number(std::max(0.0, usageGiB), 'f', decimalPlaces)
+            : QStringLiteral("N/A");
     }
 
     // formatDurationText 作用：
@@ -1729,6 +1921,18 @@ namespace
         QString driverDateText = QStringLiteral("N/A");     // driverDateText：驱动日期。
         QString pnpDeviceIdText = QStringLiteral("N/A");    // pnpDeviceIdText：PNP 设备ID。
         double dedicatedMemoryGiB = 0.0;                    // dedicatedMemoryGiB：专用显存 GiB。
+        struct AdapterSnapshot
+        {
+            int adapterIndex = -1;
+            QString adapterNameText = QStringLiteral("N/A");
+            double dedicatedMemoryGiB = 0.0;
+            double sharedMemoryGiB = 0.0;
+            double currentCoreClockMhz = 0.0;
+            double maxCoreClockMhz = 0.0;
+            double currentMemoryClockMhz = 0.0;
+            double maxMemoryClockMhz = 0.0;
+        };
+        QVector<AdapterSnapshot> adapterList;
     };
 
     // queryMemoryHardwareSummarySnapshot 作用：
@@ -1767,22 +1971,140 @@ namespace
     GpuHardwareSummarySnapshot queryGpuHardwareSummarySnapshot()
     {
         const QString scriptText = QStringLiteral(
-            "$gpu=Get-CimInstance Win32_VideoController | Select-Object -First 1 Name,DriverVersion,DriverDate,AdapterRAM,PNPDeviceID; "
-            "if($null -eq $gpu){'N/A|N/A|N/A|N/A|0'}else{\"$($gpu.Name)|$($gpu.DriverVersion)|$($gpu.DriverDate)|$($gpu.PNPDeviceID)|$($gpu.AdapterRAM)\"}");
+            "$gpu=Get-CimInstance Win32_VideoController | Select-Object -First 1 Name,DriverVersion,DriverDate,PNPDeviceID; "
+            "if($null -eq $gpu){'N/A|N/A|N/A|N/A'}else{\"$($gpu.Name)|$($gpu.DriverVersion)|$($gpu.DriverDate)|$($gpu.PNPDeviceID)\"}");
         const QString outputText = queryPowerShellTextSync(scriptText, 2800);
         const QStringList fieldList = outputText.split('|');
 
         GpuHardwareSummarySnapshot snapshot;
-        if (fieldList.size() >= 5)
+        if (fieldList.size() >= 4)
         {
             snapshot.adapterNameText = fieldList.at(0).trimmed();
             snapshot.driverVersionText = fieldList.at(1).trimmed();
             snapshot.driverDateText = fieldList.at(2).trimmed();
             snapshot.pnpDeviceIdText = fieldList.at(3).trimmed();
-            const double memoryBytes = fieldList.at(4).trimmed().toDouble();
-            snapshot.dedicatedMemoryGiB = memoryBytes / (1024.0 * 1024.0 * 1024.0);
+        }
+
+        // Win32_VideoController.AdapterRAM 是 32 位字段，大显存会截断到约 4 GiB；
+        // 容量必须从与性能采样相同的 DXGI LUID/WDDM 适配器读取。
+        IDXGIFactory6* factoryPointer = nullptr;
+        if (SUCCEEDED(::CreateDXGIFactory1(IID_PPV_ARGS(&factoryPointer)))
+            && factoryPointer != nullptr)
+        {
+            double selectedDedicatedMemoryGiB = -1.0;
+            for (UINT adapterIndex = 0;; ++adapterIndex)
+            {
+                IDXGIAdapter1* adapterPointer = nullptr;
+                const HRESULT enumStatus = factoryPointer->EnumAdapters1(adapterIndex, &adapterPointer);
+                if (enumStatus == DXGI_ERROR_NOT_FOUND)
+                {
+                    break;
+                }
+                if (FAILED(enumStatus) || adapterPointer == nullptr)
+                {
+                    continue;
+                }
+
+                DXGI_ADAPTER_DESC1 adapterDesc{};
+                adapterPointer->GetDesc1(&adapterDesc);
+                if ((adapterDesc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0)
+                {
+                    GpuHardwareSummarySnapshot::AdapterSnapshot adapterSnapshot;
+                    adapterSnapshot.adapterIndex = static_cast<int>(adapterIndex);
+                    const QString dxgiAdapterName =
+                        QString::fromWCharArray(adapterDesc.Description).trimmed();
+                    if (!dxgiAdapterName.isEmpty())
+                    {
+                        adapterSnapshot.adapterNameText = dxgiAdapterName;
+                    }
+
+                    GpuAdapterTelemetrySnapshot telemetrySnapshot;
+                    queryGpuAdapterTelemetrySnapshot(adapterDesc.AdapterLuid, &telemetrySnapshot);
+                    const std::uint64_t dedicatedMemoryBytes =
+                        telemetrySnapshot.dedicatedVideoMemoryBytes > 0
+                        ? telemetrySnapshot.dedicatedVideoMemoryBytes
+                        : static_cast<std::uint64_t>(adapterDesc.DedicatedVideoMemory);
+                    const std::uint64_t sharedMemoryBytes =
+                        telemetrySnapshot.sharedSystemMemoryBytes > 0
+                        ? telemetrySnapshot.sharedSystemMemoryBytes
+                        : static_cast<std::uint64_t>(adapterDesc.SharedSystemMemory);
+                    constexpr double oneGiBInBytes = 1024.0 * 1024.0 * 1024.0;
+                    adapterSnapshot.dedicatedMemoryGiB =
+                        static_cast<double>(dedicatedMemoryBytes) / oneGiBInBytes;
+                    adapterSnapshot.sharedMemoryGiB =
+                        static_cast<double>(sharedMemoryBytes) / oneGiBInBytes;
+                    adapterSnapshot.currentCoreClockMhz = telemetrySnapshot.currentCoreClockMhz;
+                    adapterSnapshot.maxCoreClockMhz = telemetrySnapshot.maxCoreClockMhz;
+                    adapterSnapshot.currentMemoryClockMhz = telemetrySnapshot.currentMemoryClockMhz;
+                    adapterSnapshot.maxMemoryClockMhz = telemetrySnapshot.maxMemoryClockMhz;
+                    snapshot.adapterList.push_back(adapterSnapshot);
+
+                    // 主 GPU 摘要优先选择专用显存最大的适配器，避免多 GPU 机器被核显占据。
+                    if (adapterSnapshot.dedicatedMemoryGiB > selectedDedicatedMemoryGiB)
+                    {
+                        selectedDedicatedMemoryGiB = adapterSnapshot.dedicatedMemoryGiB;
+                        snapshot.adapterNameText = adapterSnapshot.adapterNameText;
+                        snapshot.dedicatedMemoryGiB = adapterSnapshot.dedicatedMemoryGiB;
+                    }
+                }
+                adapterPointer->Release();
+            }
+            factoryPointer->Release();
         }
         return snapshot;
+    }
+
+    // formatGpuHardwareSummaryText 作用：
+    // - 在 UI 线程把 DXGI/WDDM 快照格式化到“显卡”信息页；
+    // - WMI 仅补充驱动与显示模式，不再承担显存容量识别。
+    QString formatGpuHardwareSummaryText(
+        const GpuHardwareSummarySnapshot& snapshot,
+        const QString& wmiText)
+    {
+        QStringList adapterBlockList;
+        for (const GpuHardwareSummarySnapshot::AdapterSnapshot& adapter : snapshot.adapterList)
+        {
+            const QString dedicatedMemoryText = adapter.dedicatedMemoryGiB > 0.0
+                ? QString::number(adapter.dedicatedMemoryGiB, 'f', 2)
+                : QStringLiteral("N/A");
+            const QString sharedMemoryText = adapter.sharedMemoryGiB > 0.0
+                ? QString::number(adapter.sharedMemoryGiB, 'f', 2)
+                : QStringLiteral("N/A");
+            adapterBlockList.push_back(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.gpu.static.telemetry.adapter"),
+                    QStringLiteral("[GPU %1 - DXGI/WDDM]\n名称: %2\n专用显存: %3 GiB\n共享 GPU 内存: %4 GiB\n核心频率: %5 MHz（最大 %6 MHz）\n显存频率: %7 MHz（最大 %8 MHz）"))
+                .arg(adapter.adapterIndex)
+                .arg(adapter.adapterNameText)
+                .arg(dedicatedMemoryText)
+                .arg(sharedMemoryText)
+                .arg(formatGpuClockMhzText(adapter.currentCoreClockMhz))
+                .arg(formatGpuClockMhzText(adapter.maxCoreClockMhz))
+                .arg(formatGpuClockMhzText(adapter.currentMemoryClockMhz))
+                .arg(formatGpuClockMhzText(adapter.maxMemoryClockMhz)));
+        }
+
+        if (adapterBlockList.isEmpty())
+        {
+            adapterBlockList.push_back(
+                ks::i18n::contextText(
+                    QStringLiteral("hardware.gpu.static.telemetry.unavailable"),
+                    QStringLiteral("未从 DXGI/WDDM 读取到 GPU 显存与频率信息。")));
+        }
+
+        const QString telemetryHeading = ks::i18n::contextText(
+            QStringLiteral("hardware.gpu.static.telemetry.heading"),
+            QStringLiteral("[实时 GPU 硬件信息]"));
+        const QString wmiHeading = ks::i18n::contextText(
+            QStringLiteral("hardware.gpu.static.wmi.heading"),
+            QStringLiteral("[WMI 驱动与显示信息]"));
+        return telemetryHeading
+            + QStringLiteral("\n")
+            + adapterBlockList.join(QStringLiteral("\n\n"))
+            + QStringLiteral("\n\n")
+            + wmiHeading
+            + QStringLiteral("\n")
+            + wmiText.trimmed();
     }
 
     // createNoFrameChartView 作用：
@@ -1809,11 +2131,10 @@ namespace
     QChartView* createPlotBackgroundChartView(QChart* chart, QWidget* parentWidget)
     {
         configureTransparentChartViewOnly(chart);
-        // 实时折线每秒刷新一次，使用短时长序列插值平滑新采样和滑动窗口；
-        // 时长明显短于采样周期，避免上一轮动画堆积到下一轮刷新。
-        chart->setAnimationOptions(QChart::AllAnimations);
-        chart->setAnimationDuration(260);
-        chart->setAnimationEasingCurve(QEasingCurve::OutCubic);
+        // QChart 的 SeriesAnimations 会按点下标把整条旧曲线形变成新曲线；
+        // 滑动窗口同时删除首点、追加尾点时，这会表现为每秒整图重绘。曲线数据保持即时更新，
+        // 仅由 animateLiveValueAxisRange 平滑移动可视 X 窗口。
+        chart->setAnimationOptions(QChart::NoAnimation);
         QChartView* chartView = new QChartView(chart, parentWidget);
         chartView->setRenderHint(QPainter::Antialiasing, true);
         chartView->setFrameShape(QFrame::NoFrame);
@@ -1824,6 +2145,85 @@ namespace
         configureCompressibleWidget(chartView, QSizePolicy::Expanding, QSizePolicy::Expanding);
         appendTransparentBackgroundStyle(chartView);
         return chartView;
+    }
+
+    // animateLiveValueAxisRange 作用：
+    // - 折线追加新点后只平滑移动 X 轴窗口，不对整条 QLineSeries 做点位形变；
+    // - 同一坐标轴在一次刷新中被双线共用时，后一次目标会替换前一次动画；
+    // - 260 ms 明显短于 1 s 采样周期，避免动画积压。
+    void animateLiveValueAxisRange(
+        QValueAxis* axisPointer,
+        const double targetMinValue,
+        const double targetMaxValue)
+    {
+        if (axisPointer == nullptr || targetMaxValue <= targetMinValue)
+        {
+            return;
+        }
+
+        const double startMinValue = axisPointer->min();
+        const double startMaxValue = axisPointer->max();
+        if (qFuzzyCompare(startMinValue + 1.0, targetMinValue + 1.0)
+            && qFuzzyCompare(startMaxValue + 1.0, targetMaxValue + 1.0))
+        {
+            axisPointer->setRange(targetMinValue, targetMaxValue);
+            return;
+        }
+
+        const QList<QVariantAnimation*> previousAnimations =
+            axisPointer->findChildren<QVariantAnimation*>(
+                QStringLiteral("kswordLiveAxisRangeAnimation"),
+                Qt::FindDirectChildrenOnly);
+        for (QVariantAnimation* previousAnimation : previousAnimations)
+        {
+            previousAnimation->stop();
+            delete previousAnimation;
+        }
+
+        QVariantAnimation* axisAnimation = new QVariantAnimation(axisPointer);
+        axisAnimation->setObjectName(QStringLiteral("kswordLiveAxisRangeAnimation"));
+        axisAnimation->setDuration(260);
+        axisAnimation->setEasingCurve(QEasingCurve::OutCubic);
+        axisAnimation->setStartValue(0.0);
+        axisAnimation->setEndValue(1.0);
+
+        const QPointer<QValueAxis> safeAxisPointer(axisPointer);
+        QObject::connect(
+            axisAnimation,
+            &QVariantAnimation::valueChanged,
+            axisPointer,
+            [safeAxisPointer,
+             startMinValue,
+             startMaxValue,
+             targetMinValue,
+             targetMaxValue](const QVariant& progressValue)
+            {
+                if (safeAxisPointer == nullptr)
+                {
+                    return;
+                }
+                const double progress = progressValue.toDouble();
+                safeAxisPointer->setRange(
+                    startMinValue + (targetMinValue - startMinValue) * progress,
+                    startMaxValue + (targetMaxValue - startMaxValue) * progress);
+            });
+        QObject::connect(
+            axisAnimation,
+            &QVariantAnimation::finished,
+            axisPointer,
+            [safeAxisPointer, targetMinValue, targetMaxValue]()
+            {
+                if (safeAxisPointer != nullptr)
+                {
+                    safeAxisPointer->setRange(targetMinValue, targetMaxValue);
+                }
+            });
+        QObject::connect(
+            axisAnimation,
+            &QVariantAnimation::finished,
+            axisAnimation,
+            &QObject::deleteLater);
+        axisAnimation->start();
     }
 
     // colorWithAlpha 作用：
@@ -1917,6 +2317,11 @@ namespace
         chartPointer->setBackgroundRoundness(0);
         chartPointer->setMargins(QMargins(0, 0, 0, 0));
         chartPointer->setTitle(titleText);
+        chartPointer->setTitleBrush(QBrush(KswordTheme::TextPrimaryColor()));
+        if (legendVisible)
+        {
+            chartPointer->legend()->setLabelColor(KswordTheme::TextSecondaryColor());
+        }
         chartPointer->setPlotAreaBackgroundVisible(true);
         chartPointer->setPlotAreaBackgroundBrush(QBrush(colorWithAlpha(accentColor, 18)));
         chartPointer->setPlotAreaBackgroundPen(QPen(colorWithAlpha(accentColor, 150), 1.0));
@@ -2084,7 +2489,7 @@ namespace
     {
         const QString scriptText = QStringLiteral(
             "$list=Get-CimInstance Win32_VideoController | "
-            "Select-Object Name,AdapterRAM,DriverVersion,VideoProcessor,CurrentHorizontalResolution,CurrentVerticalResolution,CurrentRefreshRate; "
+            "Select-Object Name,DriverVersion,VideoProcessor,CurrentHorizontalResolution,CurrentVerticalResolution,CurrentRefreshRate,PNPDeviceID; "
             "if($null -eq $list){'未读取到显卡信息'} else {$list | Format-Table -AutoSize | Out-String}");
         return queryPowerShellTextSync(scriptText, 5000);
     }
@@ -2702,6 +3107,8 @@ HardwareDock::~HardwareDock()
         ::PdhCloseQuery(reinterpret_cast<PDH_HQUERY>(m_cpuPerfQueryHandle));
         m_cpuPerfQueryHandle = nullptr;
         m_coreCounterHandles.clear();
+        m_cpuPerformanceCounterHandle = nullptr;
+        m_cpuFrequencyCounterHandle = nullptr;
     }
 
     if (m_diskPerfQueryHandle != nullptr)
@@ -2717,6 +3124,8 @@ HardwareDock::~HardwareDock()
         ::PdhCloseQuery(reinterpret_cast<PDH_HQUERY>(m_gpuPerfQueryHandle));
         m_gpuPerfQueryHandle = nullptr;
         m_gpuCounterHandle = nullptr;
+        m_gpuDedicatedMemoryCounterHandle = nullptr;
+        m_gpuSharedMemoryCounterHandle = nullptr;
     }
 }
 
@@ -5274,6 +5683,30 @@ void HardwareDock::initializePerformanceCounters()
         m_coreCounterHandles.push_back(counterHandle);
     }
 
+    // Windows 任务管理器式“速度”不能直接使用 ProcessorInformation.CurrentMhz：
+    // 现代 HWP/CPPC 平台常把它固定在基础频率。有效速度 = 基准频率 × 处理器性能百分比。
+    const auto addCpuTotalCounter =
+        [queryHandle](const QString& counterPath, void** counterHandleOut)
+        {
+            if (counterHandleOut == nullptr)
+            {
+                return;
+            }
+            PDH_HCOUNTER counterHandle = nullptr;
+            const PDH_STATUS addStatus = ::PdhAddEnglishCounterW(
+                queryHandle,
+                reinterpret_cast<LPCWSTR>(counterPath.utf16()),
+                0,
+                &counterHandle);
+            *counterHandleOut = addStatus == ERROR_SUCCESS ? counterHandle : nullptr;
+        };
+    addCpuTotalCounter(
+        QStringLiteral("\\Processor Information(_Total)\\% Processor Performance"),
+        &m_cpuPerformanceCounterHandle);
+    addCpuTotalCounter(
+        QStringLiteral("\\Processor Information(_Total)\\Processor Frequency"),
+        &m_cpuFrequencyCounterHandle);
+
     ::PdhCollectQueryData(queryHandle);
 }
 
@@ -5341,6 +5774,10 @@ void HardwareDock::refreshAllViews()
 
     std::vector<CpuPowerSnapshot> powerInfoList;
     sampleCpuPowerInfo(&powerInfoList);
+    double sampledCpuSpeedGhz = 0.0;
+    m_lastCpuSpeedGhz = sampleCpuEffectiveSpeed(&sampledCpuSpeedGhz)
+        ? sampledCpuSpeedGhz
+        : 0.0;
 
     ++m_sampleCounter;
     pushBoundedHistorySample(&m_cpuUsageHistoryPercent, totalCpuUsage);
@@ -5446,6 +5883,59 @@ bool HardwareDock::samplePerCoreUsage(
     }
 
     *totalUsageOut = validCount > 0 ? (usageSum / static_cast<double>(validCount)) : 0.0;
+    return true;
+}
+
+bool HardwareDock::sampleCpuEffectiveSpeed(double* speedGhzOut) const
+{
+    if (speedGhzOut == nullptr
+        || m_cpuPerformanceCounterHandle == nullptr
+        || m_cpuFrequencyCounterHandle == nullptr)
+    {
+        return false;
+    }
+
+    const auto readCounterValue =
+        [](void* counterHandle, double* valueOut)
+        {
+            if (counterHandle == nullptr || valueOut == nullptr)
+            {
+                return false;
+            }
+            PDH_FMT_COUNTERVALUE formattedValue{};
+            const PDH_STATUS status = ::PdhGetFormattedCounterValue(
+                reinterpret_cast<PDH_HCOUNTER>(counterHandle),
+                PDH_FMT_DOUBLE,
+                nullptr,
+                &formattedValue);
+            if (status != ERROR_SUCCESS
+                || (formattedValue.CStatus != PDH_CSTATUS_VALID_DATA
+                    && formattedValue.CStatus != PDH_CSTATUS_NEW_DATA)
+                || !std::isfinite(formattedValue.doubleValue))
+            {
+                return false;
+            }
+            *valueOut = formattedValue.doubleValue;
+            return true;
+        };
+
+    double performancePercent = 0.0;
+    double baseFrequencyMhz = 0.0;
+    if (!readCounterValue(m_cpuPerformanceCounterHandle, &performancePercent)
+        || !readCounterValue(m_cpuFrequencyCounterHandle, &baseFrequencyMhz))
+    {
+        return false;
+    }
+
+    const double effectiveFrequencyMhz = baseFrequencyMhz * performancePercent / 100.0;
+    if (!std::isfinite(effectiveFrequencyMhz)
+        || effectiveFrequencyMhz <= 0.0
+        || effectiveFrequencyMhz > 20000.0)
+    {
+        return false;
+    }
+
+    *speedGhzOut = effectiveFrequencyMhz / 1000.0;
     return true;
 }
 
@@ -5890,6 +6380,26 @@ bool HardwareDock::sampleGpuUsages(std::vector<GpuUsageSample>* sampleListOut)
         sample.adapterIndex = static_cast<int>(adapterIndex);
         sample.displayNameText = QString::fromWCharArray(adapterDesc.Description).trimmed();
         sample.dedicatedMemoryGiB = static_cast<double>(adapterDesc.DedicatedVideoMemory) / oneGiBInBytes;
+        sample.sharedMemoryGiB = static_cast<double>(adapterDesc.SharedSystemMemory) / oneGiBInBytes;
+
+        GpuAdapterTelemetrySnapshot telemetrySnapshot;
+        if (queryGpuAdapterTelemetrySnapshot(adapterDesc.AdapterLuid, &telemetrySnapshot))
+        {
+            sample.currentCoreClockMhz = telemetrySnapshot.currentCoreClockMhz;
+            sample.maxCoreClockMhz = telemetrySnapshot.maxCoreClockMhz;
+            sample.currentMemoryClockMhz = telemetrySnapshot.currentMemoryClockMhz;
+            sample.maxMemoryClockMhz = telemetrySnapshot.maxMemoryClockMhz;
+            if (telemetrySnapshot.dedicatedVideoMemoryBytes > 0)
+            {
+                sample.dedicatedMemoryGiB =
+                    static_cast<double>(telemetrySnapshot.dedicatedVideoMemoryBytes) / oneGiBInBytes;
+            }
+            if (telemetrySnapshot.sharedSystemMemoryBytes > 0)
+            {
+                sample.sharedMemoryGiB =
+                    static_cast<double>(telemetrySnapshot.sharedSystemMemoryBytes) / oneGiBInBytes;
+            }
+        }
 
         IDXGIAdapter3* adapter3Pointer = nullptr;
         const HRESULT queryInterfaceStatus = adapterPointer->QueryInterface(
@@ -5908,22 +6418,31 @@ bool HardwareDock::sampleGpuUsages(std::vector<GpuUsageSample>* sampleListOut)
                 &nonLocalMemoryInfo);
             if (SUCCEEDED(localStatus))
             {
-                sample.dedicatedUsedGiB =
-                    static_cast<double>(localMemoryInfo.CurrentUsage) / oneGiBInBytes;
+                // CurrentUsage 只表示当前进程的显存提交量，不能作为整张 GPU 的系统占用。
                 sample.dedicatedBudgetGiB =
                     static_cast<double>(localMemoryInfo.Budget) / oneGiBInBytes;
             }
             if (SUCCEEDED(nonLocalStatus))
             {
-                sample.sharedUsedGiB =
-                    static_cast<double>(nonLocalMemoryInfo.CurrentUsage) / oneGiBInBytes;
                 sample.sharedBudgetGiB =
                     static_cast<double>(nonLocalMemoryInfo.Budget) / oneGiBInBytes;
             }
             adapter3Pointer->Release();
         }
 
-        if (sample.sharedBudgetGiB <= 0.0)
+        if (sample.dedicatedMemoryGiB <= 0.0 && sample.dedicatedBudgetGiB > 0.0)
+        {
+            sample.dedicatedMemoryGiB = sample.dedicatedBudgetGiB;
+        }
+        if (sample.dedicatedBudgetGiB <= 0.0)
+        {
+            sample.dedicatedBudgetGiB = sample.dedicatedMemoryGiB;
+        }
+        if (sample.sharedMemoryGiB <= 0.0 && sample.sharedBudgetGiB > 0.0)
+        {
+            sample.sharedMemoryGiB = sample.sharedBudgetGiB;
+        }
+        if (sample.sharedMemoryGiB <= 0.0)
         {
             MEMORYSTATUSEX memoryStatus{};
             memoryStatus.dwLength = sizeof(memoryStatus);
@@ -5931,8 +6450,12 @@ bool HardwareDock::sampleGpuUsages(std::vector<GpuUsageSample>* sampleListOut)
             {
                 const double totalMemoryGiB =
                     static_cast<double>(memoryStatus.ullTotalPhys) / oneGiBInBytes;
-                sample.sharedBudgetGiB = std::max(0.5, totalMemoryGiB * 0.5);
+                sample.sharedMemoryGiB = std::max(0.5, totalMemoryGiB * 0.5);
             }
+        }
+        if (sample.sharedBudgetGiB <= 0.0)
+        {
+            sample.sharedBudgetGiB = sample.sharedMemoryGiB;
         }
 
         ensureGpuUtilizationDevice(sample, static_cast<int>(sampleListOut->size()));
@@ -5966,8 +6489,30 @@ bool HardwareDock::sampleGpuUsages(std::vector<GpuUsageSample>* sampleListOut)
             return true;
         }
 
+        PDH_HCOUNTER dedicatedMemoryCounterHandle = nullptr;
+        if (::PdhAddEnglishCounterW(
+                queryHandle,
+                L"\\GPU Adapter Memory(*)\\Dedicated Usage",
+                0,
+                &dedicatedMemoryCounterHandle) != ERROR_SUCCESS)
+        {
+            dedicatedMemoryCounterHandle = nullptr;
+        }
+
+        PDH_HCOUNTER sharedMemoryCounterHandle = nullptr;
+        if (::PdhAddEnglishCounterW(
+                queryHandle,
+                L"\\GPU Adapter Memory(*)\\Shared Usage",
+                0,
+                &sharedMemoryCounterHandle) != ERROR_SUCCESS)
+        {
+            sharedMemoryCounterHandle = nullptr;
+        }
+
         m_gpuPerfQueryHandle = queryHandle;
         m_gpuCounterHandle = counterHandle;
+        m_gpuDedicatedMemoryCounterHandle = dedicatedMemoryCounterHandle;
+        m_gpuSharedMemoryCounterHandle = sharedMemoryCounterHandle;
         ::PdhCollectQueryData(queryHandle);
         ::Sleep(1);
         ::PdhCollectQueryData(queryHandle);
@@ -6012,7 +6557,7 @@ bool HardwareDock::sampleGpuUsages(std::vector<GpuUsageSample>* sampleListOut)
                     const QString engineNameText = QString::fromWCharArray(
                         itemValue.szName != nullptr ? itemValue.szName : L"");
                     std::uint64_t adapterKey = 0;
-                    if (!parseGpuAdapterKeyFromEngineName(engineNameText, &adapterKey))
+                    if (!parseGpuAdapterKeyFromCounterName(engineNameText, &adapterKey))
                     {
                         continue;
                     }
@@ -6066,31 +6611,124 @@ bool HardwareDock::sampleGpuUsages(std::vector<GpuUsageSample>* sampleListOut)
         }
     }
 
-    // aggregate* 用途：维护旧聚合 GPU 页的兼容展示，动态设备页使用 sampleListOut。
-    GpuUsageSample aggregateSample = sampleListOut->front();
-    for (const GpuUsageSample& sample : *sampleListOut)
+    // GPU Adapter Memory 是 WDDM 的系统级显存占用；按实例名中的 LUID 汇总后，
+    // 与 DXGI 枚举出的适配器一一对应，避免把 KSword 进程自身的 CurrentUsage 当成全局值。
+    const auto applyGpuMemoryCounter = [sampleListOut, oneGiBInBytes](
+        void* counterHandleValue,
+        const bool dedicatedMemory)
     {
-        aggregateSample.overallUsagePercent =
-            std::max(aggregateSample.overallUsagePercent, sample.overallUsagePercent);
-        aggregateSample.usage3DPercent =
-            std::max(aggregateSample.usage3DPercent, sample.usage3DPercent);
-        aggregateSample.usageCopyPercent =
-            std::max(aggregateSample.usageCopyPercent, sample.usageCopyPercent);
-        aggregateSample.usageVideoEncodePercent =
-            std::max(aggregateSample.usageVideoEncodePercent, sample.usageVideoEncodePercent);
-        aggregateSample.usageVideoDecodePercent =
-            std::max(aggregateSample.usageVideoDecodePercent, sample.usageVideoDecodePercent);
-    }
-    m_gpuAdapterNameText = aggregateSample.displayNameText;
-    m_gpuDedicatedMemoryGiB = aggregateSample.dedicatedMemoryGiB;
-    m_gpuDedicatedUsedGiB = aggregateSample.dedicatedUsedGiB;
-    m_gpuDedicatedBudgetGiB = aggregateSample.dedicatedBudgetGiB;
-    m_gpuSharedUsedGiB = aggregateSample.sharedUsedGiB;
-    m_gpuSharedBudgetGiB = aggregateSample.sharedBudgetGiB;
-    m_gpuUsage3DPercent = aggregateSample.usage3DPercent;
-    m_gpuUsageCopyPercent = aggregateSample.usageCopyPercent;
-    m_gpuUsageVideoEncodePercent = aggregateSample.usageVideoEncodePercent;
-    m_gpuUsageVideoDecodePercent = aggregateSample.usageVideoDecodePercent;
+        if (counterHandleValue == nullptr)
+        {
+            return;
+        }
+
+        DWORD bufferSize = 0;
+        DWORD itemCount = 0;
+        PDH_STATUS queryStatus = ::PdhGetFormattedCounterArrayW(
+            reinterpret_cast<PDH_HCOUNTER>(counterHandleValue),
+            PDH_FMT_DOUBLE,
+            &bufferSize,
+            &itemCount,
+            nullptr);
+        if (queryStatus != PDH_MORE_DATA || bufferSize == 0 || itemCount == 0)
+        {
+            return;
+        }
+
+        std::vector<unsigned char> rawBuffer(bufferSize);
+        PDH_FMT_COUNTERVALUE_ITEM_W* itemPointer =
+            reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(rawBuffer.data());
+        queryStatus = ::PdhGetFormattedCounterArrayW(
+            reinterpret_cast<PDH_HCOUNTER>(counterHandleValue),
+            PDH_FMT_DOUBLE,
+            &bufferSize,
+            &itemCount,
+            itemPointer);
+        if (queryStatus != ERROR_SUCCESS)
+        {
+            return;
+        }
+
+        for (DWORD itemIndex = 0; itemIndex < itemCount; ++itemIndex)
+        {
+            const PDH_FMT_COUNTERVALUE_ITEM_W& itemValue = itemPointer[itemIndex];
+            const DWORD valueStatus = itemValue.FmtValue.CStatus;
+            if (valueStatus != PDH_CSTATUS_VALID_DATA
+                && valueStatus != PDH_CSTATUS_NEW_DATA)
+            {
+                continue;
+            }
+
+            const QString counterNameText = QString::fromWCharArray(
+                itemValue.szName != nullptr ? itemValue.szName : L"");
+            std::uint64_t adapterKey = 0;
+            if (!parseGpuAdapterKeyFromCounterName(counterNameText, &adapterKey))
+            {
+                continue;
+            }
+
+            const auto sampleIterator = std::find_if(
+                sampleListOut->begin(),
+                sampleListOut->end(),
+                [adapterKey](const GpuUsageSample& sample)
+                {
+                    return sample.adapterKey == adapterKey;
+                });
+            if (sampleIterator == sampleListOut->end())
+            {
+                continue;
+            }
+
+            const double usageGiB =
+                std::max(0.0, itemValue.FmtValue.doubleValue) / oneGiBInBytes;
+            if (dedicatedMemory)
+            {
+                sampleIterator->dedicatedUsedGiB += usageGiB;
+                sampleIterator->dedicatedUsageAvailable = true;
+            }
+            else
+            {
+                sampleIterator->sharedUsedGiB += usageGiB;
+                sampleIterator->sharedUsageAvailable = true;
+            }
+        }
+    };
+
+    applyGpuMemoryCounter(m_gpuDedicatedMemoryCounterHandle, true);
+    applyGpuMemoryCounter(m_gpuSharedMemoryCounterHandle, false);
+
+    // 旧聚合 GPU 页固定展示专用显存最大的主适配器；不能合并利用率后仍沿用“第一张卡”的频率/显存。
+    const auto primarySampleIterator = std::max_element(
+        sampleListOut->cbegin(),
+        sampleListOut->cend(),
+        [](const GpuUsageSample& leftSample, const GpuUsageSample& rightSample)
+        {
+            if (!qFuzzyCompare(
+                    leftSample.dedicatedMemoryGiB + 1.0,
+                    rightSample.dedicatedMemoryGiB + 1.0))
+            {
+                return leftSample.dedicatedMemoryGiB < rightSample.dedicatedMemoryGiB;
+            }
+            return leftSample.overallUsagePercent < rightSample.overallUsagePercent;
+        });
+    const GpuUsageSample& primarySample = *primarySampleIterator;
+    m_gpuAdapterNameText = primarySample.displayNameText;
+    m_gpuCurrentCoreClockMhz = primarySample.currentCoreClockMhz;
+    m_gpuMaxCoreClockMhz = primarySample.maxCoreClockMhz;
+    m_gpuCurrentMemoryClockMhz = primarySample.currentMemoryClockMhz;
+    m_gpuMaxMemoryClockMhz = primarySample.maxMemoryClockMhz;
+    m_gpuDedicatedMemoryGiB = primarySample.dedicatedMemoryGiB;
+    m_gpuSharedMemoryGiB = primarySample.sharedMemoryGiB;
+    m_gpuDedicatedUsedGiB = primarySample.dedicatedUsedGiB;
+    m_gpuDedicatedUsageAvailable = primarySample.dedicatedUsageAvailable;
+    m_gpuDedicatedBudgetGiB = primarySample.dedicatedBudgetGiB;
+    m_gpuSharedUsedGiB = primarySample.sharedUsedGiB;
+    m_gpuSharedUsageAvailable = primarySample.sharedUsageAvailable;
+    m_gpuSharedBudgetGiB = primarySample.sharedBudgetGiB;
+    m_gpuUsage3DPercent = primarySample.usage3DPercent;
+    m_gpuUsageCopyPercent = primarySample.usageCopyPercent;
+    m_gpuUsageVideoEncodePercent = primarySample.usageVideoEncodePercent;
+    m_gpuUsageVideoDecodePercent = primarySample.usageVideoDecodePercent;
     return true;
 }
 
@@ -6273,9 +6911,13 @@ bool HardwareDock::sampleGpuMemoryInfoByDxgi()
                 &nonLocalMemoryInfo);
             if (SUCCEEDED(localStatus) && SUCCEEDED(nonLocalStatus))
             {
-                m_gpuDedicatedUsedGiB = static_cast<double>(localMemoryInfo.CurrentUsage) / oneGiBInBytes;
+                // DXGI CurrentUsage 只覆盖当前进程；旧兼容路径仅保留预算信息，
+                // 不再把进程级数据伪装成系统显存占用。
+                m_gpuDedicatedUsedGiB = 0.0;
+                m_gpuDedicatedUsageAvailable = false;
                 m_gpuDedicatedBudgetGiB = static_cast<double>(localMemoryInfo.Budget) / oneGiBInBytes;
-                m_gpuSharedUsedGiB = static_cast<double>(nonLocalMemoryInfo.CurrentUsage) / oneGiBInBytes;
+                m_gpuSharedUsedGiB = 0.0;
+                m_gpuSharedUsageAvailable = false;
                 m_gpuSharedBudgetGiB = static_cast<double>(nonLocalMemoryInfo.Budget) / oneGiBInBytes;
 
                 // 某些设备 non-local budget 可能返回 0，回退到“物理内存一半”近似值。
@@ -6584,12 +7226,14 @@ void HardwareDock::updateUtilizationView(
     {
         const double dedicatedUpperGiB = std::max(
             0.5,
-            (m_gpuDedicatedBudgetGiB > 0.0 ? m_gpuDedicatedBudgetGiB : m_gpuDedicatedMemoryGiB));
+            (m_gpuDedicatedMemoryGiB > 0.0 ? m_gpuDedicatedMemoryGiB : m_gpuDedicatedBudgetGiB));
         m_gpuDedicatedMemoryAxisY->setRange(0.0, dedicatedUpperGiB);
     }
     if (m_gpuSharedMemoryAxisY != nullptr)
     {
-        const double sharedUpperGiB = std::max(0.5, m_gpuSharedBudgetGiB);
+        const double sharedUpperGiB = std::max(
+            0.5,
+            (m_gpuSharedMemoryGiB > 0.0 ? m_gpuSharedMemoryGiB : m_gpuSharedBudgetGiB));
         m_gpuSharedMemoryAxisY->setRange(0.0, sharedUpperGiB);
     }
 
@@ -6708,8 +7352,11 @@ void HardwareDock::updateUtilizationSidebarCards(
                 QStringLiteral("hardware.utilization.card.gpu.summary"),
                 QStringLiteral("%1%  %2/%3 GB"))
             .arg(gpuUsagePercent, 0, 'f', 0)
-            .arg(m_gpuDedicatedUsedGiB, 0, 'f', 1)
-            .arg((m_gpuDedicatedBudgetGiB > 0.0 ? m_gpuDedicatedBudgetGiB : m_gpuDedicatedMemoryGiB), 0, 'f', 1));
+            .arg(formatGpuMemoryUsageGiBText(
+                m_gpuDedicatedUsedGiB,
+                m_gpuDedicatedUsageAvailable,
+                1))
+            .arg((m_gpuDedicatedMemoryGiB > 0.0 ? m_gpuDedicatedMemoryGiB : m_gpuDedicatedBudgetGiB), 0, 'f', 1));
         m_gpuNavCard->appendSample(gpuUsagePercent);
     }
 }
@@ -6903,6 +7550,17 @@ void HardwareDock::updateGpuUtilizationDevice(
     GpuUtilizationDevice& device,
     const GpuUsageSample& sample)
 {
+    const double dedicatedCapacityGiB = sample.dedicatedMemoryGiB > 0.0
+        ? sample.dedicatedMemoryGiB
+        : sample.dedicatedBudgetGiB;
+    const double sharedCapacityGiB = sample.sharedMemoryGiB > 0.0
+        ? sample.sharedMemoryGiB
+        : sample.sharedBudgetGiB;
+    const QString currentCoreClockText = formatGpuClockMhzText(sample.currentCoreClockMhz);
+    const QString maxCoreClockText = formatGpuClockMhzText(sample.maxCoreClockMhz);
+    const QString currentMemoryClockText = formatGpuClockMhzText(sample.currentMemoryClockMhz);
+    const QString maxMemoryClockText = formatGpuClockMhzText(sample.maxMemoryClockMhz);
+
     if (device.adapterTitleLabel != nullptr)
     {
         device.adapterTitleLabel->setText(
@@ -6913,10 +7571,11 @@ void HardwareDock::updateGpuUtilizationDevice(
         device.summaryLabel->setText(
             ks::i18n::contextText(
                 QStringLiteral("hardware.utilization.device.gpu.summary"),
-                QStringLiteral("GPU 当前利用率：%1%    3D：%2%    Copy：%3%"))
+                QStringLiteral("GPU 当前利用率：%1%    3D：%2%    Copy：%3%    核心频率：%4 MHz"))
             .arg(sample.overallUsagePercent, 0, 'f', 1)
             .arg(sample.usage3DPercent, 0, 'f', 1)
-            .arg(sample.usageCopyPercent, 0, 'f', 1));
+            .arg(sample.usageCopyPercent, 0, 'f', 1)
+            .arg(currentCoreClockText));
     }
 
     for (GpuEngineChartEntry& chartEntry : device.engineCharts)
@@ -6972,12 +7631,12 @@ void HardwareDock::updateGpuUtilizationDevice(
     {
         const double dedicatedUpperGiB = std::max(
             0.5,
-            sample.dedicatedBudgetGiB > 0.0 ? sample.dedicatedBudgetGiB : sample.dedicatedMemoryGiB);
+            dedicatedCapacityGiB);
         device.dedicatedMemoryAxisY->setRange(0.0, dedicatedUpperGiB);
     }
     if (device.sharedMemoryAxisY != nullptr)
     {
-        device.sharedMemoryAxisY->setRange(0.0, std::max(0.5, sample.sharedBudgetGiB));
+        device.sharedMemoryAxisY->setRange(0.0, std::max(0.5, sharedCapacityGiB));
     }
     if (device.dedicatedMemoryChartView != nullptr
         && device.dedicatedMemoryChartView->chart() != nullptr)
@@ -6986,8 +7645,10 @@ void HardwareDock::updateGpuUtilizationDevice(
             ks::i18n::contextText(
                 QStringLiteral("hardware.utilization.gpu.dedicated_memory_title"),
                 QStringLiteral("专用 GPU 内存利用率  %1 / %2 GiB"))
-            .arg(sample.dedicatedUsedGiB, 0, 'f', 2)
-            .arg((sample.dedicatedBudgetGiB > 0.0 ? sample.dedicatedBudgetGiB : sample.dedicatedMemoryGiB), 0, 'f', 2));
+            .arg(formatGpuMemoryUsageGiBText(
+                sample.dedicatedUsedGiB,
+                sample.dedicatedUsageAvailable))
+            .arg(dedicatedCapacityGiB, 0, 'f', 2));
     }
     if (device.sharedMemoryChartView != nullptr
         && device.sharedMemoryChartView->chart() != nullptr)
@@ -6996,8 +7657,10 @@ void HardwareDock::updateGpuUtilizationDevice(
             ks::i18n::contextText(
                 QStringLiteral("hardware.utilization.gpu.shared_memory_title"),
                 QStringLiteral("共享 GPU 内存利用率  %1 / %2 GiB"))
-            .arg(sample.sharedUsedGiB, 0, 'f', 2)
-            .arg(sample.sharedBudgetGiB, 0, 'f', 2));
+            .arg(formatGpuMemoryUsageGiBText(
+                sample.sharedUsedGiB,
+                sample.sharedUsageAvailable))
+            .arg(sharedCapacityGiB, 0, 'f', 2));
     }
     if (device.detailLabel != nullptr)
     {
@@ -7007,18 +7670,28 @@ void HardwareDock::updateGpuUtilizationDevice(
                 QStringLiteral(
                 "利用率: %1%\n"
                 "3D: %2%   Copy: %3%   Video Encode: %4%   Video Decode: %5%\n"
-                "专用显存: %6 / %7 GiB\n"
-                "共享显存: %8 / %9 GiB\n"
-                "适配器索引: %10"))
+                "核心频率: %6 MHz（最大 %7 MHz）\n"
+                "显存频率: %8 MHz（最大 %9 MHz）\n"
+                "专用显存: %10 / %11 GiB\n"
+                "共享显存: %12 / %13 GiB\n"
+                "适配器索引: %14"))
             .arg(sample.overallUsagePercent, 0, 'f', 1)
             .arg(sample.usage3DPercent, 0, 'f', 1)
             .arg(sample.usageCopyPercent, 0, 'f', 1)
             .arg(sample.usageVideoEncodePercent, 0, 'f', 1)
             .arg(sample.usageVideoDecodePercent, 0, 'f', 1)
-            .arg(sample.dedicatedUsedGiB, 0, 'f', 2)
-            .arg((sample.dedicatedBudgetGiB > 0.0 ? sample.dedicatedBudgetGiB : sample.dedicatedMemoryGiB), 0, 'f', 2)
-            .arg(sample.sharedUsedGiB, 0, 'f', 2)
-            .arg(sample.sharedBudgetGiB, 0, 'f', 2)
+            .arg(currentCoreClockText)
+            .arg(maxCoreClockText)
+            .arg(currentMemoryClockText)
+            .arg(maxMemoryClockText)
+            .arg(formatGpuMemoryUsageGiBText(
+                sample.dedicatedUsedGiB,
+                sample.dedicatedUsageAvailable))
+            .arg(dedicatedCapacityGiB, 0, 'f', 2)
+            .arg(formatGpuMemoryUsageGiBText(
+                sample.sharedUsedGiB,
+                sample.sharedUsageAvailable))
+            .arg(sharedCapacityGiB, 0, 'f', 2)
             .arg(sample.adapterIndex));
     }
     if (device.navCard != nullptr)
@@ -7028,8 +7701,11 @@ void HardwareDock::updateGpuUtilizationDevice(
                 QStringLiteral("hardware.utilization.card.gpu.summary"),
                 QStringLiteral("%1%  %2/%3 GB"))
             .arg(sample.overallUsagePercent, 0, 'f', 0)
-            .arg(sample.dedicatedUsedGiB, 0, 'f', 1)
-            .arg((sample.dedicatedBudgetGiB > 0.0 ? sample.dedicatedBudgetGiB : sample.dedicatedMemoryGiB), 0, 'f', 1));
+            .arg(formatGpuMemoryUsageGiBText(
+                sample.dedicatedUsedGiB,
+                sample.dedicatedUsageAvailable,
+                1))
+            .arg(dedicatedCapacityGiB, 0, 'f', 1));
         device.navCard->appendSample(sample.overallUsagePercent);
     }
 }
@@ -7055,7 +7731,8 @@ void HardwareDock::updateTaskManagerDetailLabels(
         averageCpuUsage /= static_cast<double>(coreUsageList.size());
     }
 
-    // 计算 CPU 当前速度与基准速度（取全部核心平均值）。
+    // CallNtPowerInformation 在现代 HWP/CPPC 平台通常只返回基础频率；
+    // “速度”优先使用本轮 PDH 有效频率，Power API 仅作为不支持计数器时的回退。
     double currentMhzSum = 0.0;
     double maxMhzSum = 0.0;
     int cpuPowerCount = 0;
@@ -7071,9 +7748,12 @@ void HardwareDock::updateTaskManagerDetailLabels(
         }
         ++cpuPowerCount;
     }
-    const double currentCpuGhz = cpuPowerCount > 0
+    const double powerApiCurrentCpuGhz = cpuPowerCount > 0
         ? (currentMhzSum / static_cast<double>(cpuPowerCount) / 1000.0)
         : 0.0;
+    const double currentCpuGhz = m_lastCpuSpeedGhz > 0.0
+        ? m_lastCpuSpeedGhz
+        : powerApiCurrentCpuGhz;
     const double baseCpuGhz = cpuPowerCount > 0
         ? (maxMhzSum / static_cast<double>(cpuPowerCount) / 1000.0)
         : 0.0;
@@ -7338,6 +8018,17 @@ void HardwareDock::updateTaskManagerDetailLabels(
             .arg(linkMbps > 0.0 ? QString::number(linkMbps, 'f', 1) : QStringLiteral("N/A")));
     }
 
+    const double gpuDedicatedCapacityGiB = m_gpuDedicatedMemoryGiB > 0.0
+        ? m_gpuDedicatedMemoryGiB
+        : m_gpuDedicatedBudgetGiB;
+    const double gpuSharedCapacityGiB = m_gpuSharedMemoryGiB > 0.0
+        ? m_gpuSharedMemoryGiB
+        : m_gpuSharedBudgetGiB;
+    const QString gpuCurrentCoreClockText = formatGpuClockMhzText(m_gpuCurrentCoreClockMhz);
+    const QString gpuMaxCoreClockText = formatGpuClockMhzText(m_gpuMaxCoreClockMhz);
+    const QString gpuCurrentMemoryClockText = formatGpuClockMhzText(m_gpuCurrentMemoryClockMhz);
+    const QString gpuMaxMemoryClockText = formatGpuClockMhzText(m_gpuMaxMemoryClockMhz);
+
     if (m_gpuAdapterTitleLabel != nullptr)
     {
         m_gpuAdapterTitleLabel->setText(
@@ -7350,8 +8041,10 @@ void HardwareDock::updateTaskManagerDetailLabels(
             ks::i18n::contextText(
                 QStringLiteral("hardware.utilization.gpu.dedicated_memory_title"),
                 QStringLiteral("专用 GPU 内存利用率  %1 / %2 GiB"))
-            .arg(m_gpuDedicatedUsedGiB, 0, 'f', 2)
-            .arg(m_gpuDedicatedBudgetGiB > 0.0 ? m_gpuDedicatedBudgetGiB : m_gpuDedicatedMemoryGiB, 0, 'f', 2));
+            .arg(formatGpuMemoryUsageGiBText(
+                m_gpuDedicatedUsedGiB,
+                m_gpuDedicatedUsageAvailable))
+            .arg(gpuDedicatedCapacityGiB, 0, 'f', 2));
     }
     if (m_gpuSharedMemoryChartView != nullptr
         && m_gpuSharedMemoryChartView->chart() != nullptr)
@@ -7360,8 +8053,10 @@ void HardwareDock::updateTaskManagerDetailLabels(
             ks::i18n::contextText(
                 QStringLiteral("hardware.utilization.gpu.shared_memory_title"),
                 QStringLiteral("共享 GPU 内存利用率  %1 / %2 GiB"))
-            .arg(m_gpuSharedUsedGiB, 0, 'f', 2)
-            .arg(m_gpuSharedBudgetGiB, 0, 'f', 2));
+            .arg(formatGpuMemoryUsageGiBText(
+                m_gpuSharedUsedGiB,
+                m_gpuSharedUsageAvailable))
+            .arg(gpuSharedCapacityGiB, 0, 'f', 2));
     }
 
     if (m_gpuUtilDetailLabel != nullptr)
@@ -7374,11 +8069,13 @@ void HardwareDock::updateTaskManagerDetailLabels(
                 "利用率: %1%\n"
                 "均值: %2%   峰值: %3%   趋势: %4\n"
                 "3D: %5%   Copy: %6%   Video Encode: %7%   Video Decode: %8%\n"
-                "专用显存: %9 / %10 GiB\n"
-                "共享显存: %11 / %12 GiB\n"
-                "驱动版本: %13\n"
-                "驱动日期: %14\n"
-                "PNP: %15"))
+                "核心频率: %9 MHz（最大 %10 MHz）\n"
+                "显存频率: %11 MHz（最大 %12 MHz）\n"
+                "专用显存: %13 / %14 GiB\n"
+                "共享显存: %15 / %16 GiB\n"
+                "驱动版本: %17\n"
+                "驱动日期: %18\n"
+                "PNP: %19"))
             .arg(gpuUsagePercent, 0, 'f', 1)
             .arg(gpuStats.averageValue, 0, 'f', 1)
             .arg(gpuStats.peakValue, 0, 'f', 1)
@@ -7387,10 +8084,18 @@ void HardwareDock::updateTaskManagerDetailLabels(
             .arg(m_gpuUsageCopyPercent, 0, 'f', 1)
             .arg(m_gpuUsageVideoEncodePercent, 0, 'f', 1)
             .arg(m_gpuUsageVideoDecodePercent, 0, 'f', 1)
-            .arg(m_gpuDedicatedUsedGiB, 0, 'f', 2)
-            .arg((m_gpuDedicatedBudgetGiB > 0.0 ? m_gpuDedicatedBudgetGiB : m_gpuDedicatedMemoryGiB), 0, 'f', 2)
-            .arg(m_gpuSharedUsedGiB, 0, 'f', 2)
-            .arg(m_gpuSharedBudgetGiB, 0, 'f', 2)
+            .arg(gpuCurrentCoreClockText)
+            .arg(gpuMaxCoreClockText)
+            .arg(gpuCurrentMemoryClockText)
+            .arg(gpuMaxMemoryClockText)
+            .arg(formatGpuMemoryUsageGiBText(
+                m_gpuDedicatedUsedGiB,
+                m_gpuDedicatedUsageAvailable))
+            .arg(gpuDedicatedCapacityGiB, 0, 'f', 2)
+            .arg(formatGpuMemoryUsageGiBText(
+                m_gpuSharedUsedGiB,
+                m_gpuSharedUsageAvailable))
+            .arg(gpuSharedCapacityGiB, 0, 'f', 2)
             .arg(m_gpuDriverVersionText.isEmpty() ? QStringLiteral("N/A") : m_gpuDriverVersionText)
             .arg(m_gpuDriverDateText.isEmpty() ? QStringLiteral("N/A") : m_gpuDriverDateText)
             .arg(m_gpuPnpDeviceIdText.isEmpty() ? QStringLiteral("N/A") : m_gpuPnpDeviceIdText));
@@ -7485,11 +8190,11 @@ void HardwareDock::appendCoreSeriesPoint(CoreChartEntry& chartEntry, const doubl
         const double lastX = pointList.last().x();
         if (qFuzzyCompare(firstX, lastX))
         {
-            chartEntry.axisX->setRange(firstX - 1.0, lastX + 1.0);
+            animateLiveValueAxisRange(chartEntry.axisX, firstX - 1.0, lastX + 1.0);
         }
         else
         {
-            chartEntry.axisX->setRange(firstX, lastX);
+            animateLiveValueAxisRange(chartEntry.axisX, firstX, lastX);
         }
     }
     chartEntry.axisY->setRange(0.0, 100.0);
@@ -7523,11 +8228,11 @@ void HardwareDock::appendGeneralSeriesPoint(
     const double lastX = pointList.last().x();
     if (qFuzzyCompare(firstX, lastX))
     {
-        axisX->setRange(firstX - 1.0, lastX + 1.0);
+        animateLiveValueAxisRange(axisX, firstX - 1.0, lastX + 1.0);
     }
     else
     {
-        axisX->setRange(firstX, lastX);
+        animateLiveValueAxisRange(axisX, firstX, lastX);
     }
     double maxYValue = minAxisYValue + 1.0;
     for (const QPointF& pointValue : pointList)
@@ -7575,11 +8280,11 @@ void HardwareDock::appendFilledSeriesPoint(
     const double lastX = pointList.last().x();
     if (qFuzzyCompare(firstX, lastX))
     {
-        axisX->setRange(firstX - 1.0, lastX + 1.0);
+        animateLiveValueAxisRange(axisX, firstX - 1.0, lastX + 1.0);
     }
     else
     {
-        axisX->setRange(firstX, lastX);
+        animateLiveValueAxisRange(axisX, firstX, lastX);
     }
 
     // maxYValue 用途：按单条曲线可见历史设置纵轴上限，共轴双线稍后由 updateSharedSeriesAxisRange 再统一。
@@ -7640,11 +8345,11 @@ void HardwareDock::updateSharedSeriesAxisRange(
 
     if (qFuzzyCompare(firstXValue, lastXValue))
     {
-        axisX->setRange(firstXValue - 1.0, lastXValue + 1.0);
+        animateLiveValueAxisRange(axisX, firstXValue - 1.0, lastXValue + 1.0);
     }
     else
     {
-        axisX->setRange(firstXValue, lastXValue);
+        animateLiveValueAxisRange(axisX, firstXValue, lastXValue);
     }
     axisY->setRange(minAxisYValue, maxYValue * 1.15);
 }
@@ -8280,7 +8985,7 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
         const QString overviewText = overviewBaseText
             + QStringLiteral("\n[硬件设备总览]\n")
             + peripheralOverviewText;
-        const QString gpuText = buildGpuStaticTextSnapshot();
+        const QString gpuWmiText = buildGpuStaticTextSnapshot();
         const QString memoryText = buildMemoryStaticTextSnapshot();
         const MemoryHardwareSummarySnapshot memorySummary = queryMemoryHardwareSummarySnapshot();
         const GpuHardwareSummarySnapshot gpuSummary = queryGpuHardwareSummarySnapshot();
@@ -8292,7 +8997,7 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
 
         const bool invokeOk = QMetaObject::invokeMethod(
             safeThis.data(),
-            [safeThis, overviewText, gpuText, memoryText, memorySummary, gpuSummary]()
+            [safeThis, overviewText, gpuWmiText, memoryText, memorySummary, gpuSummary]()
             {
                 if (safeThis.isNull())
                 {
@@ -8300,17 +9005,24 @@ void HardwareDock::requestAsyncStaticInfoRefresh()
                 }
 
                 safeThis->m_cachedOverviewStaticText = overviewText;
-                safeThis->m_cachedGpuStaticText = gpuText;
+                safeThis->m_cachedGpuStaticText = formatGpuHardwareSummaryText(gpuSummary, gpuWmiText);
                 safeThis->m_cachedMemoryStaticText = memoryText;
                 safeThis->m_memorySpeedMhz = memorySummary.speedMhz;
                 safeThis->m_memorySlotUsed = memorySummary.usedSlots;
                 safeThis->m_memorySlotTotal = memorySummary.totalSlots;
                 safeThis->m_memoryFormFactorText = memorySummary.formFactorText;
-                safeThis->m_gpuAdapterNameText = gpuSummary.adapterNameText;
+                if (safeThis->m_gpuAdapterNameText.trimmed().isEmpty()
+                    || safeThis->m_gpuAdapterNameText == QStringLiteral("N/A"))
+                {
+                    safeThis->m_gpuAdapterNameText = gpuSummary.adapterNameText;
+                }
                 safeThis->m_gpuDriverVersionText = gpuSummary.driverVersionText;
                 safeThis->m_gpuDriverDateText = gpuSummary.driverDateText;
                 safeThis->m_gpuPnpDeviceIdText = gpuSummary.pnpDeviceIdText;
-                safeThis->m_gpuDedicatedMemoryGiB = gpuSummary.dedicatedMemoryGiB;
+                if (safeThis->m_gpuDedicatedMemoryGiB <= 0.0)
+                {
+                    safeThis->m_gpuDedicatedMemoryGiB = gpuSummary.dedicatedMemoryGiB;
+                }
                 safeThis->refreshStaticHardwareTexts(false);
                 safeThis->m_staticInfoRefreshing.store(false);
             },

@@ -218,10 +218,17 @@ private:
         double usageCopyPercent = 0.0;            // usageCopyPercent：Copy 引擎利用率。
         double usageVideoEncodePercent = 0.0;     // usageVideoEncodePercent：视频编码利用率。
         double usageVideoDecodePercent = 0.0;     // usageVideoDecodePercent：视频解码利用率。
+        double currentCoreClockMhz = 0.0;         // currentCoreClockMhz：当前 3D 核心频率 MHz。
+        double maxCoreClockMhz = 0.0;             // maxCoreClockMhz：驱动报告的最大 3D 核心频率 MHz。
+        double currentMemoryClockMhz = 0.0;       // currentMemoryClockMhz：当前显存频率 MHz。
+        double maxMemoryClockMhz = 0.0;           // maxMemoryClockMhz：驱动报告的最大显存频率 MHz。
         double dedicatedMemoryGiB = 0.0;          // dedicatedMemoryGiB：专用显存总量 GiB。
+        double sharedMemoryGiB = 0.0;             // sharedMemoryGiB：共享系统显存总量 GiB。
         double dedicatedUsedGiB = 0.0;            // dedicatedUsedGiB：专用显存已用 GiB。
+        bool dedicatedUsageAvailable = false;     // dedicatedUsageAvailable：系统级专用显存计数器是否有效。
         double dedicatedBudgetGiB = 0.0;          // dedicatedBudgetGiB：专用显存预算 GiB。
         double sharedUsedGiB = 0.0;               // sharedUsedGiB：共享显存已用 GiB。
+        bool sharedUsageAvailable = false;        // sharedUsageAvailable：系统级共享显存计数器是否有效。
         double sharedBudgetGiB = 0.0;             // sharedBudgetGiB：共享显存预算 GiB。
     };
 
@@ -383,6 +390,7 @@ private:
     bool samplePerCoreUsage(
         std::vector<double>* coreUsageOut,
         double* totalUsageOut);
+    bool sampleCpuEffectiveSpeed(double* speedGhzOut) const;
     bool sampleCpuPowerInfo(std::vector<CpuPowerSnapshot>* powerInfoOut);
     bool sampleMemoryUsage(double* memoryUsagePercentOut);
     bool sampleDiskRates(std::vector<DiskRateSample>* sampleListOut);
@@ -707,14 +715,21 @@ private:
     QString m_gpuDriverVersionText;          // m_gpuDriverVersionText：GPU 驱动版本。
     QString m_gpuDriverDateText;             // m_gpuDriverDateText：GPU 驱动日期文本。
     QString m_gpuPnpDeviceIdText;            // m_gpuPnpDeviceIdText：GPU PNP 设备ID。
+    double m_gpuCurrentCoreClockMhz = 0.0;    // m_gpuCurrentCoreClockMhz：当前 GPU 3D 核心频率 MHz。
+    double m_gpuMaxCoreClockMhz = 0.0;        // m_gpuMaxCoreClockMhz：最大 GPU 3D 核心频率 MHz。
+    double m_gpuCurrentMemoryClockMhz = 0.0;  // m_gpuCurrentMemoryClockMhz：当前显存频率 MHz。
+    double m_gpuMaxMemoryClockMhz = 0.0;      // m_gpuMaxMemoryClockMhz：最大显存频率 MHz。
     double m_gpuDedicatedMemoryGiB = 0.0;    // m_gpuDedicatedMemoryGiB：GPU 专用显存（GiB）。
+    double m_gpuSharedMemoryGiB = 0.0;       // m_gpuSharedMemoryGiB：GPU 可用共享系统内存（GiB）。
     double m_gpuUsage3DPercent = 0.0;        // m_gpuUsage3DPercent：3D 引擎利用率。
     double m_gpuUsageCopyPercent = 0.0;      // m_gpuUsageCopyPercent：Copy 引擎利用率。
     double m_gpuUsageVideoEncodePercent = 0.0; // m_gpuUsageVideoEncodePercent：视频编码引擎利用率。
     double m_gpuUsageVideoDecodePercent = 0.0; // m_gpuUsageVideoDecodePercent：视频解码引擎利用率。
     double m_gpuDedicatedUsedGiB = 0.0;      // m_gpuDedicatedUsedGiB：专用显存当前使用量。
+    bool m_gpuDedicatedUsageAvailable = false; // m_gpuDedicatedUsageAvailable：专用显存系统占用采样是否有效。
     double m_gpuDedicatedBudgetGiB = 0.0;    // m_gpuDedicatedBudgetGiB：专用显存预算上限。
     double m_gpuSharedUsedGiB = 0.0;         // m_gpuSharedUsedGiB：共享显存当前使用量。
+    bool m_gpuSharedUsageAvailable = false;  // m_gpuSharedUsageAvailable：共享显存系统占用采样是否有效。
     double m_gpuSharedBudgetGiB = 0.0;       // m_gpuSharedBudgetGiB：共享显存预算上限。
 
     QString m_systemVolumeText;              // m_systemVolumeText：系统盘卷标文本。
@@ -741,9 +756,13 @@ private:
     // PDH 性能计数器句柄（用 void* 规避头文件引入 Windows 细节）。
     void* m_cpuPerfQueryHandle = nullptr;     // m_cpuPerfQueryHandle：PDH 查询句柄。
     std::vector<void*> m_coreCounterHandles;  // m_coreCounterHandles：每核利用率计数器句柄。
+    void* m_cpuPerformanceCounterHandle = nullptr; // m_cpuPerformanceCounterHandle：CPU 总体性能百分比计数器。
+    void* m_cpuFrequencyCounterHandle = nullptr; // m_cpuFrequencyCounterHandle：CPU 基准频率计数器。
     void* m_diskPerfQueryHandle = nullptr;    // m_diskPerfQueryHandle：磁盘速率查询句柄。
     void* m_diskReadCounterHandle = nullptr;  // m_diskReadCounterHandle：磁盘读速率计数器句柄。
     void* m_diskWriteCounterHandle = nullptr; // m_diskWriteCounterHandle：磁盘写速率计数器句柄。
     void* m_gpuPerfQueryHandle = nullptr;     // m_gpuPerfQueryHandle：GPU 利用率查询句柄。
     void* m_gpuCounterHandle = nullptr;       // m_gpuCounterHandle：GPU 引擎利用率计数器句柄。
+    void* m_gpuDedicatedMemoryCounterHandle = nullptr; // m_gpuDedicatedMemoryCounterHandle：系统专用显存占用计数器句柄。
+    void* m_gpuSharedMemoryCounterHandle = nullptr; // m_gpuSharedMemoryCounterHandle：系统共享显存占用计数器句柄。
 };
