@@ -67,6 +67,93 @@ namespace
             << ", message=" << result.message;
     }
 
+    // DetailProcessIdentityHold 作用：
+    // - 在详情页同步动作期间持有经创建时间校验的进程句柄；
+    // - 防止旧详情窗口在 PID 复用后操作或展示另一个进程实例。
+    class DetailProcessIdentityHold final
+    {
+    public:
+        DetailProcessIdentityHold() = default;
+        ~DetailProcessIdentityHold()
+        {
+            if (m_processHandle != nullptr)
+            {
+                ::CloseHandle(m_processHandle);
+            }
+        }
+
+        DetailProcessIdentityHold(const DetailProcessIdentityHold&) = delete;
+        DetailProcessIdentityHold& operator=(const DetailProcessIdentityHold&) = delete;
+
+        bool acquire(
+            const std::uint32_t pid,
+            const std::uint64_t expectedCreationTime100ns,
+            std::string* const detailTextOut)
+        {
+            if (pid == 0U || expectedCreationTime100ns == 0U)
+            {
+                if (detailTextOut != nullptr)
+                {
+                    *detailTextOut = "process identity is unavailable; action skipped";
+                }
+                return false;
+            }
+
+            const HANDLE rawProcessHandle = ::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                FALSE,
+                pid);
+            if (rawProcessHandle == nullptr)
+            {
+                if (detailTextOut != nullptr)
+                {
+                    *detailTextOut = "OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) failed, error=" +
+                        std::to_string(::GetLastError());
+                }
+                return false;
+            }
+
+            FILETIME creationTime{};
+            FILETIME exitTime{};
+            FILETIME kernelTime{};
+            FILETIME userTime{};
+            if (!::GetProcessTimes(
+                    rawProcessHandle,
+                    &creationTime,
+                    &exitTime,
+                    &kernelTime,
+                    &userTime))
+            {
+                const DWORD error = ::GetLastError();
+                ::CloseHandle(rawProcessHandle);
+                if (detailTextOut != nullptr)
+                {
+                    *detailTextOut = "GetProcessTimes failed, error=" + std::to_string(error);
+                }
+                return false;
+            }
+
+            const std::uint64_t actualCreationTime100ns =
+                (static_cast<std::uint64_t>(creationTime.dwHighDateTime) << 32U) |
+                static_cast<std::uint64_t>(creationTime.dwLowDateTime);
+            if (actualCreationTime100ns == 0U ||
+                actualCreationTime100ns != expectedCreationTime100ns)
+            {
+                ::CloseHandle(rawProcessHandle);
+                if (detailTextOut != nullptr)
+                {
+                    *detailTextOut = "process identity changed (PID was reused); action skipped";
+                }
+                return false;
+            }
+
+            m_processHandle = rawProcessHandle;
+            return true;
+        }
+
+    private:
+        HANDLE m_processHandle = nullptr;
+    };
     // processPriorityLevelFromActionId 作用：
     // - 把 UI 菜单 ID 转成 ks::process 的优先级枚举；
     // - 输入 priorityActionId 为 0~5；
@@ -115,6 +202,14 @@ void ProcessDetailWindow::executeTerminateProcessComboAction()
         << "[ProcessDetailWindow] executeTerminateProcessComboAction: pid="
         << targetPid
         << eol;
+
+    std::string identityDetailText;
+    DetailProcessIdentityHold identityHold;
+    if (!identityHold.acquire(targetPid, m_baseRecord.creationTime100ns, &identityDetailText))
+    {
+        showActionResultMessage(QStringLiteral("结束进程"), false, identityDetailText, actionEvent);
+        return;
+    }
 
     struct TerminateMethodEntry
     {
@@ -227,6 +322,12 @@ void ProcessDetailWindow::executeSetPriorityActionById(const int priorityActionI
         << eol;
 
     std::string detailText;
+    DetailProcessIdentityHold identityHold;
+    if (!identityHold.acquire(m_baseRecord.pid, m_baseRecord.creationTime100ns, &detailText))
+    {
+        showActionResultMessage(QStringLiteral("设置进程优先级"), false, detailText, actionEvent);
+        return;
+    }
     const bool actionOk = ks::process::SetProcessPriority(
         m_baseRecord.pid,
         processPriorityLevelFromActionId(priorityActionId),
@@ -248,6 +349,16 @@ void ProcessDetailWindow::executeSetEfficiencyModeAction(const bool enableEffici
         << eol;
 
     std::string detailText;
+    DetailProcessIdentityHold identityHold;
+    if (!identityHold.acquire(m_baseRecord.pid, m_baseRecord.creationTime100ns, &detailText))
+    {
+        showActionResultMessage(
+            enableEfficiencyMode ? QStringLiteral("开启效率模式") : QStringLiteral("关闭效率模式"),
+            false,
+            detailText,
+            actionEvent);
+        return;
+    }
     const bool actionOk = ks::process::SetProcessEfficiencyMode(
         m_baseRecord.pid,
         enableEfficiencyMode,
@@ -276,6 +387,12 @@ void ProcessDetailWindow::executeOpenProcessFolderAction()
         << eol;
 
     std::string detailText;
+    DetailProcessIdentityHold identityHold;
+    if (!identityHold.acquire(m_baseRecord.pid, m_baseRecord.creationTime100ns, &detailText))
+    {
+        showActionResultMessage(QStringLiteral("打开所在目录"), false, detailText, actionEvent);
+        return;
+    }
     const bool actionOk = ks::process::OpenProcessFolder(m_baseRecord.pid, &detailText);
     showActionResultMessage(QStringLiteral("打开所在目录"), actionOk, detailText, actionEvent);
 }
@@ -294,6 +411,16 @@ void ProcessDetailWindow::executeRefreshPplProtectionLevelAction()
     std::uint32_t protectionLevel = 0;
     std::string displayText;
     std::string errorText;
+    DetailProcessIdentityHold identityHold;
+    if (!identityHold.acquire(m_baseRecord.pid, m_baseRecord.creationTime100ns, &errorText))
+    {
+        showActionResultMessage(
+            QStringLiteral("手动刷新PPL保护级别"),
+            false,
+            errorText,
+            actionEvent);
+        return;
+    }
     const bool queryOk = ks::process::QueryProcessProtectionLevelByPid(
         m_baseRecord.pid,
         &protectionLevel,
