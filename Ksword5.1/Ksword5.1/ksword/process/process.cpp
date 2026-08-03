@@ -3423,9 +3423,34 @@ namespace ks::process
             return false;
         }
 
-        ::WaitForSingleObject(processInfo.hProcess, 10000);
+        const DWORD waitResult = ::WaitForSingleObject(processInfo.hProcess, 10000);
+        if (waitResult != WAIT_OBJECT_0)
+        {
+            const DWORD waitError = waitResult == WAIT_FAILED ? ::GetLastError() : ERROR_GEN_FAILURE;
+            ::CloseHandle(processInfo.hThread);
+            ::CloseHandle(processInfo.hProcess);
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = waitResult == WAIT_TIMEOUT
+                    ? "taskkill timed out."
+                    : "WaitForSingleObject(taskkill) failed: " + FormatLastErrorMessage(waitError);
+            }
+            return false;
+        }
+
         DWORD exitCode = 0;
-        ::GetExitCodeProcess(processInfo.hProcess, &exitCode);
+        if (::GetExitCodeProcess(processInfo.hProcess, &exitCode) == FALSE)
+        {
+            const DWORD exitCodeError = ::GetLastError();
+            ::CloseHandle(processInfo.hThread);
+            ::CloseHandle(processInfo.hProcess);
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "GetExitCodeProcess(taskkill) failed: " + FormatLastErrorMessage(exitCodeError);
+            }
+            return false;
+        }
+
         ::CloseHandle(processInfo.hThread);
         ::CloseHandle(processInfo.hProcess);
 
