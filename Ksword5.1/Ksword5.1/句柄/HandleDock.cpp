@@ -1060,7 +1060,7 @@ void HandleDock::rebuildHandleTable()
         item->setText(static_cast<int>(HandleTableColumn::ProcessName), row.processName);
         item->setIcon(
             static_cast<int>(HandleTableColumn::ProcessName),
-            resolveProcessIconByPid(row.processId));
+            resolveProcessIconForRow(row));
         item->setText(static_cast<int>(HandleTableColumn::HandleValue), formatHex(row.handleValue, 0));
         item->setText(
             static_cast<int>(HandleTableColumn::TypeIndex),

@@ -585,21 +585,21 @@ private:
     // 传出：HandleDiffStatus。
     static HandleDiffStatus resolveHandleDiffFilterFromText(const QString& filterText);
 
-    // resolveProcessIconByPid 作用：
-    // - 根据 PID 解析进程图标并做缓存；
-    // - 同一个 PID 只在首次渲染时解析一次，后续直接复用缓存图标。
+    // resolveProcessIconForRow 作用：
+    // - 仅为当前句柄快照中的 PID + 创建时间实例解析并缓存进程图标；
+    // - 不能确认实例时返回默认图标，避免 PID 复用后错误归属路径或图标。
     // 调用方法：重建句柄表时调用。
-    // 传入 processId：目标进程 PID。
-    // 传出：QIcon 进程图标；失败时回退默认图标。
-    QIcon resolveProcessIconByPid(std::uint32_t processId);
+    // 传入 row：携带进程实例身份的句柄快照行。
+    // 传出：QIcon 进程图标；无法确认实例时回退默认图标。
+    QIcon resolveProcessIconForRow(const HandleRow& row);
 
     // queryProcessImagePathCached 作用：
-    // - 查询并缓存 PID 对应的进程路径；
-    // - 避免同一 PID 反复走路径查询。
-    // 调用方法：resolveProcessIconByPid 内部调用。
-    // 传入 processId：目标进程 PID。
-    // 传出：QString 进程路径；失败时返回空字符串。
-    QString queryProcessImagePathCached(std::uint32_t processId);
+    // - 查询并缓存指定进程实例对应的映像路径；
+    // - 校验与路径查询共用一个进程句柄，避免 PID 复用导致错配。
+    // 调用方法：resolveProcessIconForRow 内部调用。
+    // 传入 processId / expectedCreationTime：目标进程实例身份。
+    // 传出：QString 进程路径；身份无法确认或查询失败时返回空字符串。
+    QString queryProcessImagePathCached(std::uint32_t processId, std::uint64_t expectedCreationTime);
 
     // decodeGrantedAccessText 作用：
     // - 按对象类型把 GrantedAccess 位掩码翻译成语义权限文本；
@@ -661,6 +661,6 @@ private:
     std::vector<HandleObjectTypeEntry> m_objectTypeRows; // m_objectTypeRows：对象类型行缓存。
     std::unordered_map<std::uint16_t, std::string> m_typeNameCacheByIndex; // m_typeNameCacheByIndex：句柄刷新阶段生成的类型缓存。
     std::unordered_map<std::uint16_t, std::string> m_typeNameMapByIndexFromObjectTab; // m_typeNameMapByIndexFromObjectTab：对象类型页映射缓存。
-    QHash<quint32, QIcon> m_processIconCacheByPid; // m_processIconCacheByPid：PID -> 图标缓存。
-    QHash<quint32, QString> m_processImagePathCacheByPid; // m_processImagePathCacheByPid：PID -> 路径缓存。
+    QHash<QString, QIcon> m_processIconCacheByIdentity; // m_processIconCacheByIdentity：PID + 创建时间 -> 图标缓存。
+    QHash<QString, QString> m_processImagePathCacheByIdentity; // m_processImagePathCacheByIdentity：PID + 创建时间 -> 路径缓存。
 };
