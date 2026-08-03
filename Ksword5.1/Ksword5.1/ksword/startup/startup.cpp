@@ -1112,10 +1112,17 @@ namespace
             ::WaitForSingleObject(processInfo.hProcess, 1500);
         }
         output.finished = waitResult == WAIT_OBJECT_0;
-        DWORD exitCode = 0;
+        DWORD exitCode = ERROR_PROCESS_ABORTED;
         if (::GetExitCodeProcess(processInfo.hProcess, &exitCode) != FALSE)
         {
             output.exitCode = exitCode;
+        }
+        else if (output.errorCode == ERROR_SUCCESS)
+        {
+            const DWORD exitCodeError = ::GetLastError();
+            output.errorCode = exitCodeError == ERROR_SUCCESS
+                ? ERROR_GEN_FAILURE
+                : exitCodeError;
         }
         AppendPipeText(stdoutRead, output.stdoutText);
         AppendPipeText(stderrRead, output.stderrText);
