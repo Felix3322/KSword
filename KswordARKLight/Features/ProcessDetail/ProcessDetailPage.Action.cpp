@@ -353,6 +353,7 @@ void ProcessDetailPage::ExecuteProcessAction(int actionId) {
     using namespace Ksword::Features::Process;
     ProcessSnapshotRow row{};
     row.processId = processId_;
+    row.creationTime100ns = expectedCreationTime100ns_;
     row.parentProcessId = snapshot_.basic.parentProcessId;
     row.imageName = snapshot_.basic.processName;
     row.imagePath = snapshot_.basic.imagePath;
