@@ -965,7 +965,7 @@ void HudProcessListPanel::requestRefresh()
         return;
     }
 
-    const QHash<quint32, CounterSample> previousSamples = m_previousSamples;
+    const QHash<QString, CounterSample> previousSamples = m_previousSamples;
     const QHash<QString, QString> cachedImagePathByIdentity = m_imagePathByIdentity;
     const int logicalCpuCount = m_logicalCpuCount;
 
@@ -1032,7 +1032,7 @@ void HudProcessListPanel::restoreExpandedState(
 }
 
 HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
-    const QHash<quint32, CounterSample>& previousSamples,
+    const QHash<QString, CounterSample>& previousSamples,
     const QHash<QString, QString>& cachedImagePathByIdentity,
     const int logicalCpuCount)
 {
@@ -1137,11 +1137,16 @@ HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
             ::CloseHandle(processHandle);
         }
 
+        const QString processInstanceKey =
+            buildProcessInstanceKey(entry.pid, entry.creationTime100ns);
+
         entry.groupType = isWindowsSystemProcess(entry, windowsDirectoryPath)
             ? ProcessGroupType::WindowsSystem
             : ProcessGroupType::Background;
 
-        const auto previousIterator = previousSamples.constFind(entry.pid);
+        const auto previousIterator = processInstanceKey.isEmpty()
+            ? previousSamples.cend()
+            : previousSamples.constFind(processInstanceKey);
         if (previousIterator != previousSamples.cend())
         {
             const qint64 elapsedMs = nowMs - previousIterator->sampleMs;
@@ -1180,7 +1185,10 @@ HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
         entry.gpuPercent = gpuUsagePercentByPid.value(entry.pid, 0.0);
 
         result.entries.push_back(entry);
-        result.nextSamples.insert(entry.pid, nextSample);
+        if (!processInstanceKey.isEmpty())
+        {
+            result.nextSamples.insert(processInstanceKey, nextSample);
+        }
         result.totalCpuPercent += entry.cpuPercent;
         result.totalRamMB += entry.ramMB;
         result.totalDiskMBps += entry.diskMBps;
@@ -1821,6 +1829,18 @@ QTreeWidgetItem* HudProcessListPanel::updateOrCreateRow(
     itemPointer->setData(GpuColumn, kUsageRatioRole, usageRatioForEntry(entry, GpuColumn, maxRamMB, maxDiskMBps, maxNetKBps));
     itemPointer->setData(NetColumn, kUsageRatioRole, usageRatioForEntry(entry, NetColumn, maxRamMB, maxDiskMBps, maxNetKBps));
     return itemPointer;
+}
+
+QString HudProcessListPanel::buildProcessInstanceKey(
+    const quint32 pidValue,
+    const quint64 creationTime100ns)
+{
+    if (pidValue == 0 || creationTime100ns == 0)
+    {
+        return {};
+    }
+
+    return QStringLiteral("%1|%2").arg(pidValue).arg(creationTime100ns);
 }
 
 QString HudProcessListPanel::buildProcessIdentityKey(const quint32 pidValue, const QString& processName)

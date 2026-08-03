@@ -81,7 +81,7 @@ private:
     struct RefreshResult
     {
         QVector<ProcessEntry> entries;
-        QHash<quint32, CounterSample> nextSamples;
+        QHash<QString, CounterSample> nextSamples;
         double totalCpuPercent = 0.0;
         double totalRamMB = 0.0;
         double totalDiskMBps = 0.0;
@@ -104,7 +104,7 @@ private:
     void captureExpandedStateForItem(QTreeWidgetItem* itemPointer);
     void restoreExpandedState(QTreeWidgetItem* itemPointer, const QString& stateKey, bool defaultExpanded);
     static RefreshResult collectRefreshResult(
-        const QHash<quint32, CounterSample>& previousSamples,
+        const QHash<QString, CounterSample>& previousSamples,
         const QHash<QString, QString>& cachedImagePathByIdentity,
         int logicalCpuCount);
     void applyRefreshResult(const RefreshResult& result);
@@ -127,6 +127,7 @@ private:
         double maxRamMB,
         double maxDiskMBps,
         double maxNetKBps);
+    static QString buildProcessInstanceKey(quint32 pidValue, quint64 creationTime100ns);
     static QString buildProcessIdentityKey(quint32 pidValue, const QString& processName);
     QTreeWidgetItem* updateOrCreateRow(
         const ProcessEntry& entry,
@@ -148,7 +149,7 @@ private:
     bool m_refreshInProgress = false;
     int m_logicalCpuCount = 1;
     QColor m_tableTextColor = QColor(255, 255, 255);
-    QHash<quint32, CounterSample> m_previousSamples;
+    QHash<QString, CounterSample> m_previousSamples;
     QHash<QString, QString> m_imagePathByIdentity;
     QHash<QString, QIcon> m_iconCacheByIdentity;
     QHash<QString, QIcon> m_iconCacheByPath;
