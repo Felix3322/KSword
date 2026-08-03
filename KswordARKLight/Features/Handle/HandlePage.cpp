@@ -2,6 +2,8 @@
 
 #include "HandleClient.h"
 
+#include "../../Core/Common.h"
+
 #include "../../Ui/AsyncTask.h"
 #include "../../Ui/Controls.h"
 #include "../../Ui/FilterBar.h"
@@ -56,6 +58,9 @@ struct HandleFilterResult {
 };
 
 struct HandleRefreshSnapshot {
+    std::uint32_t processId = 0;
+    std::uint64_t processCreationTime100ns = 0;
+    bool identityMatched = false;
     HandleEnumView enumeration;
     std::vector<Ksword::Ui::VirtualListRow> rows;
 };
@@ -63,7 +68,9 @@ struct HandleRefreshSnapshot {
 struct HandleDetailTaskResult {
     std::uint64_t snapshotGeneration = 0;
     std::uint32_t processId = 0;
+    std::uint64_t processCreationTime100ns = 0;
     std::uint64_t handleValue = 0;
+    bool identityMatched = false;
     HandleObjectDetailView detail;
 };
 
@@ -72,6 +79,8 @@ struct HandleDetailTaskResult {
 // output behavior is value ownership for page lifetime.
 struct HandlePageState {
     HandleEnumView snapshot;
+    std::uint32_t snapshotProcessId = 0;
+    std::uint64_t snapshotProcessCreationTime100ns = 0;
     HandleObjectDetailView detail;
     Ksword::Ui::VirtualListView handleList;
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
@@ -127,6 +136,27 @@ std::wstring Utf8ToWide(const std::string& text) {
         wide.push_back(static_cast<wchar_t>(ch));
     }
     return wide;
+}
+
+// TryReadProcessCreationTime100ns returns the immutable process creation time
+// from an already-opened process handle. The caller retains that handle while a
+// PID-addressed driver request is in flight, preventing PID reuse.
+bool TryReadProcessCreationTime100ns(HANDLE process, std::uint64_t& creationTime100nsOut) {
+    creationTime100nsOut = 0;
+    if (!process) {
+        return false;
+    }
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    if (!::GetProcessTimes(process, &creationTime, &exitTime, &kernelTime, &userTime)) {
+        return false;
+    }
+    creationTime100nsOut =
+        (static_cast<std::uint64_t>(creationTime.dwHighDateTime) << 32U) |
+        static_cast<std::uint64_t>(creationTime.dwLowDateTime);
+    return creationTime100nsOut != 0U;
 }
 
 // BoolText returns a Chinese yes/no label. Input is a boolean; output is a
@@ -573,6 +603,18 @@ void HandlePage::Refresh() {
     state_->refreshTask->request(
         [processId] {
             HandleRefreshSnapshot snapshot{};
+            snapshot.processId = processId;
+            Ksword::Core::UniqueHandle process(::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                FALSE,
+                processId));
+            if (!process.valid() ||
+                !TryReadProcessCreationTime100ns(process.get(), snapshot.processCreationTime100ns)) {
+                return snapshot;
+            }
+            snapshot.identityMatched = true;
+            // Keep the verified process object alive until the PID-addressed
+            // driver enumeration returns, so the PID cannot be recycled.
             snapshot.enumeration = HandleAuditClient{}.EnumerateProcessHandles(processId);
             snapshot.rows = BuildVirtualHandleRows(snapshot.enumeration);
             return snapshot;
@@ -587,12 +629,19 @@ void HandlePage::Refresh() {
                 SetStatus(L"句柄后台枚举异常结束，请检查驱动状态与访问权限。");
                 return;
             }
+            const bool identityMatched = snapshot->identityMatched;
+            const std::uint32_t snapshotProcessId = snapshot->processId;
+            const std::uint64_t snapshotProcessCreationTime100ns = snapshot->processCreationTime100ns;
             state_->snapshot = std::move(snapshot->enumeration);
+            state_->snapshotProcessId = identityMatched ? snapshotProcessId : 0U;
+            state_->snapshotProcessCreationTime100ns = identityMatched
+                ? snapshotProcessCreationTime100ns
+                : 0U;
             state_->filterRows = std::make_shared<std::vector<Ksword::Ui::VirtualListRow>>(std::move(snapshot->rows));
             ++state_->snapshotGeneration;
             PopulateList();
             const std::wstring message = Utf8ToWide(state_->snapshot.io.message);
-            SetStatus(state_->snapshot.io.ok
+            SetStatus(identityMatched && state_->snapshot.io.ok
                 ? L"句柄枚举完成：返回 " + std::to_wstring(state_->snapshot.entries.size()) + L" 行；" + message
                 : L"句柄枚举失败：" + message);
         });
@@ -758,33 +807,60 @@ void HandlePage::PopulateDetail(const int rowIndex) {
         rowIndex >= static_cast<int>(state_->snapshot.entries.size())) {
         return;
     }
+    const HandleEntryView entry = state_->snapshot.entries[static_cast<std::size_t>(rowIndex)];
+    const std::uint32_t snapshotProcessId = state_->snapshotProcessId;
+    const std::uint64_t snapshotProcessCreationTime100ns = state_->snapshotProcessCreationTime100ns;
+    if (snapshotProcessId == 0U ||
+        snapshotProcessCreationTime100ns == 0U ||
+        entry.processId != snapshotProcessId) {
+        SetStatus(L"句柄对象详情查询异常结束。");
+        return;
+    }
+
     Ksword::Ui::ScopedListViewRedrawLock lock(detailList_);
     ListView_DeleteAllItems(detailList_);
     AddDetailRow(detailList_, L"状态", L"正在后台查询 ObjectHeader/ObjectType…", L"可切换或关闭页面");
 
-    const HandleEntryView entry = state_->snapshot.entries[static_cast<std::size_t>(rowIndex)];
     const std::uint64_t snapshotGeneration = state_->snapshotGeneration;
     ::SendMessageW(tab_, TCM_SETCURSEL, static_cast<WPARAM>(kDetailTabIndex), 0);
     currentTab_ = kDetailTabIndex;
     Layout();
     SetStatus(L"正在后台读取句柄 " + Hex32(entry.handleValue) + L" 的对象详情…");
     state_->detailTask->request(
-        [entry, snapshotGeneration] {
+        [entry, snapshotGeneration, snapshotProcessCreationTime100ns] {
             HandleDetailTaskResult result{};
             result.snapshotGeneration = snapshotGeneration;
             result.processId = entry.processId;
+            result.processCreationTime100ns = snapshotProcessCreationTime100ns;
             result.handleValue = entry.handleValue;
+            Ksword::Core::UniqueHandle process(::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                FALSE,
+                entry.processId));
+            std::uint64_t actualProcessCreationTime100ns = 0;
+            if (!process.valid() ||
+                !TryReadProcessCreationTime100ns(process.get(), actualProcessCreationTime100ns) ||
+                actualProcessCreationTime100ns != snapshotProcessCreationTime100ns) {
+                return result;
+            }
+            result.identityMatched = true;
+            // Keep the verified source process alive while the driver resolves
+            // the numeric handle value from its HandleTable.
             result.detail = HandleAuditClient{}.QueryHandleObject(entry.processId, entry.handleValue);
             return result;
         },
         [this, entry](std::uint64_t, std::optional<HandleDetailTaskResult>&& result, std::exception_ptr error) {
-            if (!state_ || error || !result.has_value()) {
+            if (!state_ || error || !result.has_value() || !result->identityMatched) {
                 if (state_) {
                     SetStatus(L"句柄对象详情查询异常结束。");
                 }
                 return;
             }
-            if (result->snapshotGeneration != state_->snapshotGeneration || result->processId != entry.processId || result->handleValue != entry.handleValue) {
+            if (result->snapshotGeneration != state_->snapshotGeneration ||
+                result->processId != entry.processId ||
+                result->processId != state_->snapshotProcessId ||
+                result->processCreationTime100ns != state_->snapshotProcessCreationTime100ns ||
+                result->handleValue != entry.handleValue) {
                 return;
             }
             state_->detail = std::move(result->detail);
