@@ -1804,6 +1804,7 @@ void BeginR0Injection(
     ProcessViewState& state,
     const bool dllMode,
     std::vector<DWORD> selectedPids,
+    std::vector<ProcessSnapshotRow> snapshotRows,
     std::wstring payloadPath) {
     if (!state.actionTask) {
         SetStatus(state, L"R0 注入任务不可用。");
@@ -1816,11 +1817,11 @@ void BeginR0Injection(
 
     SetStatus(state, dllMode ? L"正在后台执行 R0 DLL 注入…" : L"正在后台读取并执行 R0 Shellcode 注入…");
     state.actionTask->request(
-        [dllMode, selectedPids = std::move(selectedPids), payloadPath = std::move(payloadPath)]() mutable {
+        [dllMode, selectedPids = std::move(selectedPids), snapshotRows = std::move(snapshotRows), payloadPath = std::move(payloadPath)]() mutable {
             ProcessViewActionResult completed{};
             completed.result = dllMode
-                ? ExecuteR0ProcessDllInjection(selectedPids, payloadPath)
-                : ExecuteR0ProcessShellcodeInjection(selectedPids, payloadPath);
+                ? ExecuteR0ProcessDllInjection(selectedPids, snapshotRows, payloadPath)
+                : ExecuteR0ProcessShellcodeInjection(selectedPids, snapshotRows, payloadPath);
             completed.refreshRequired = true;
             return completed;
         },
@@ -1898,7 +1899,7 @@ void ExecuteMenuItem(ProcessViewState& state, ProcessActionId actionId) {
             return;
         }
 
-        BeginR0Injection(state, dllMode, pids, payloadPath);
+        BeginR0Injection(state, dllMode, pids, state.model.rows(), payloadPath);
         return;
     }
 

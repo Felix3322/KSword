@@ -326,14 +326,17 @@ bool ProcessDetailPage::HandleActionCommand(int controlId) {
             return true;
         }
         const DWORD processId = processId_;
+        Ksword::Features::Process::ProcessSnapshotRow actionTarget{};
+        actionTarget.processId = processId;
+        actionTarget.creationTime100ns = expectedCreationTime100ns_;
         ExecuteBackgroundAction(
             TabIndex::Actions,
             ActionStatus,
             dllMode ? L"● 正在后台执行 R0 DLL 注入…" : L"● 正在后台执行 R0 Shellcode 注入…",
-            [dllMode, processId, path] {
+            [dllMode, processId, actionTarget, path] {
                 const auto result = dllMode
-                    ? Ksword::Features::Process::ExecuteR0ProcessDllInjection({ processId }, path)
-                    : Ksword::Features::Process::ExecuteR0ProcessShellcodeInjection({ processId }, path);
+                    ? Ksword::Features::Process::ExecuteR0ProcessDllInjection({ processId }, { actionTarget }, path)
+                    : Ksword::Features::Process::ExecuteR0ProcessShellcodeInjection({ processId }, { actionTarget }, path);
                 ProcessDetailActionResult action{};
                 action.refreshRequired = result.success;
                 action.statusText = result.title + L"：" + result.detail;

@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <tlhelp32.h>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -363,7 +364,8 @@ Ksword::Core::UniqueHandle OpenProcessForAction(
     DWORD pid,
     ULONGLONG expectedCreationTime100ns,
     DWORD access,
-    std::wstring& errorText);
+    std::wstring& errorText,
+    bool rejectProtected = true);
 // ExecuteMultiMethodTerminate mirrors the full ProcessDock right-click action:
 // each target is checked after every method and the chain stops immediately
 // once its exit has been confirmed. The two-round cap prevents an unresponsive
@@ -467,8 +469,9 @@ Ksword::Core::UniqueHandle OpenProcessForAction(
     const DWORD pid,
     const ULONGLONG expectedCreationTime100ns,
     const DWORD access,
-    std::wstring& errorText) {
-    if (IsProtectedSystemPid(pid)) {
+    std::wstring& errorText,
+    const bool rejectProtected) {
+    if (rejectProtected && IsProtectedSystemPid(pid)) {
         errorText = L"protected system PID";
         return Ksword::Core::UniqueHandle();
     }
@@ -502,6 +505,29 @@ Ksword::Core::UniqueHandle OpenProcessForAction(
         return Ksword::Core::UniqueHandle();
     }
     return Ksword::Core::UniqueHandle(process);
+}
+
+// HoldProcessIdentityForDriverAction keeps a verified process object alive
+// while a driver operation still addresses that object by PID.
+bool HoldProcessIdentityForDriverAction(
+    const ProcessSnapshotRow& target,
+    const wchar_t* operation,
+    const bool rejectProtected,
+    ProcessActionResult& result,
+    Ksword::Core::UniqueHandle& identityHold) {
+    std::wstring identityError;
+    identityHold = OpenProcessForAction(
+        target.processId,
+        target.creationTime100ns,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+        identityError,
+        rejectProtected);
+    if (identityHold.valid()) {
+        return true;
+    }
+    AppendIoLine(result.detail, target.processId, operation, false, identityError);
+    result.success = false;
+    return false;
 }
 
 // NtSuspendOrResumeProcess invokes NtSuspendProcess or NtResumeProcess for one
@@ -788,11 +814,16 @@ bool KeyboardEnumOk(std::uint32_t status) {
 }
 
 // ExecuteKeyboardHotkeyScan queries R0 win32k hotkey/hook evidence for one
-// process. Inputs are the selected PID; processing uses ArkDriverClient only;
+// process. Inputs are one captured process row; processing uses ArkDriverClient only;
 // output is a ProcessActionResult suitable for the context menu status dialog.
-ProcessActionResult ExecuteKeyboardHotkeyScan(DWORD pid) {
+ProcessActionResult ExecuteKeyboardHotkeyScan(const ProcessSnapshotRow& target) {
     ProcessActionResult result;
     result.title = L"扫描进程热键";
+    const DWORD pid = target.processId;
+    Ksword::Core::UniqueHandle identityHold;
+    if (!HoldProcessIdentityForDriverAction(target, L"scan hotkeys", false, result, identityHold)) {
+        return result;
+    }
     const ksword::ark::DriverClient driverClient;
 
     const ksword::ark::KeyboardHotkeyEnumResult hotkeys = driverClient.enumerateKeyboardHotkeys(
@@ -934,11 +965,29 @@ ProcessActionResult ExecuteLocalProcessAction(
     return result;
 }
 // ExecutePplRefresh queries the R0 process enumeration table and extracts the
-// selected PIDs' protection bytes. Inputs are selected PIDs; processing uses
-// ArkDriverClient enumerateProcesses; output is an aggregated diagnostic result.
-ProcessActionResult ExecutePplRefresh(const std::vector<DWORD>& selectedPids) {
+// selected snapshot instances' protection bytes. Each verified handle remains
+// live through the shared driver query so a recycled PID cannot supply results.
+ProcessActionResult ExecutePplRefresh(const std::vector<ProcessSnapshotRow>& actionTargets) {
     ProcessActionResult result;
     result.title = L"手动刷新PPL保护级别";
+    result.success = true;
+
+    std::vector<ProcessSnapshotRow> verifiedTargets;
+    std::vector<Ksword::Core::UniqueHandle> identityHolds;
+    verifiedTargets.reserve(actionTargets.size());
+    identityHolds.reserve(actionTargets.size());
+    for (const ProcessSnapshotRow& target : actionTargets) {
+        Ksword::Core::UniqueHandle identityHold;
+        if (!HoldProcessIdentityForDriverAction(target, L"PPL refresh", false, result, identityHold)) {
+            continue;
+        }
+        verifiedTargets.push_back(target);
+        identityHolds.push_back(std::move(identityHold));
+    }
+    if (verifiedTargets.empty()) {
+        return result;
+    }
+
     const ksword::ark::DriverClient driverClient;
     const ksword::ark::ProcessEnumResult query = driverClient.enumerateProcesses(0);
     if (!query.io.ok) {
@@ -947,8 +996,8 @@ ProcessActionResult ExecutePplRefresh(const std::vector<DWORD>& selectedPids) {
         return result;
     }
 
-    result.success = true;
-    for (DWORD pid : selectedPids) {
+    for (const ProcessSnapshotRow& target : verifiedTargets) {
+        const DWORD pid = target.processId;
         const auto it = std::find_if(query.entries.begin(), query.entries.end(), [pid](const ksword::ark::ProcessEntry& row) {
             return row.processId == static_cast<std::uint32_t>(pid);
         });
@@ -1071,10 +1120,15 @@ ProcessActionResult ExecuteProcessAction(
         result.title = terminateTree ? L"R0结束进程树" : L"R0结束进程";
         result.success = true;
         const ksword::ark::DriverClient driverClient;
-        for (DWORD pid : targetPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(targetPids)) {
+            const DWORD pid = target.processId;
             if (IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"R0 terminate", false, L"protected system PID");
                 result.success = false;
+                continue;
+            }
+            Ksword::Core::UniqueHandle identityHold;
+            if (!HoldProcessIdentityForDriverAction(target, L"R0 terminate", true, result, identityHold)) {
                 continue;
             }
             // 每个 PID 独立调用 ArkDriverClient，因此会单独提交现有结束进程 IOCTL。
@@ -1090,10 +1144,15 @@ ProcessActionResult ExecuteProcessAction(
         result.title = L"R0挂起进程";
         result.success = true;
         const ksword::ark::DriverClient driverClient;
-        for (DWORD pid : selectedPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            const DWORD pid = target.processId;
             if (IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"R0 suspend", false, L"protected system PID");
                 result.success = false;
+                continue;
+            }
+            Ksword::Core::UniqueHandle identityHold;
+            if (!HoldProcessIdentityForDriverAction(target, L"R0 suspend", true, result, identityHold)) {
                 continue;
             }
             const ksword::ark::IoResult io = driverClient.suspendProcess(static_cast<std::uint32_t>(pid));
@@ -1109,10 +1168,15 @@ ProcessActionResult ExecuteProcessAction(
         result.title = L"R0设置PPL层级";
         result.success = true;
         const ksword::ark::DriverClient driverClient;
-        for (DWORD pid : selectedPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            const DWORD pid = target.processId;
             if (IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"set PPL", false, L"protected system PID");
                 result.success = false;
+                continue;
+            }
+            Ksword::Core::UniqueHandle identityHold;
+            if (!HoldProcessIdentityForDriverAction(target, L"set PPL", true, result, identityHold)) {
                 continue;
             }
             const ksword::ark::IoResult io = driverClient.setProcessProtection(static_cast<std::uint32_t>(pid), protectionLevel);
@@ -1128,10 +1192,15 @@ ProcessActionResult ExecuteProcessAction(
         result.title = L"R0设置进程完整性";
         result.success = true;
         const ksword::ark::DriverClient driverClient;
-        for (DWORD pid : selectedPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            const DWORD pid = target.processId;
             if (IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"set integrity", false, L"protected system PID");
                 result.success = false;
+                continue;
+            }
+            Ksword::Core::UniqueHandle identityHold;
+            if (!HoldProcessIdentityForDriverAction(target, L"set integrity", true, result, identityHold)) {
                 continue;
             }
             const ksword::ark::ProcessIntegrityResult io =
@@ -1160,10 +1229,20 @@ ProcessActionResult ExecuteProcessAction(
             result.success = ok;
             return result;
         }
-        for (DWORD pid : selectedPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            const DWORD pid = target.processId;
             if (visibilityAction == KSWORD_ARK_PROCESS_VISIBILITY_ACTION_HIDE && IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"visibility", false, L"protected system PID");
                 result.success = false;
+                continue;
+            }
+            Ksword::Core::UniqueHandle identityHold;
+            if (!HoldProcessIdentityForDriverAction(
+                    target,
+                    L"visibility",
+                    visibilityAction == KSWORD_ARK_PROCESS_VISIBILITY_ACTION_HIDE,
+                    result,
+                    identityHold)) {
                 continue;
             }
             const ksword::ark::ProcessVisibilityResult io = driverClient.setProcessVisibility(static_cast<std::uint32_t>(pid), visibilityAction, visibilityFlags);
@@ -1183,10 +1262,15 @@ ProcessActionResult ExecuteProcessAction(
         result.title = L"R0进程特殊标志";
         result.success = true;
         const ksword::ark::DriverClient driverClient;
-        for (DWORD pid : selectedPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            const DWORD pid = target.processId;
             if (IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"special flags", false, L"protected system PID");
                 result.success = false;
+                continue;
+            }
+            Ksword::Core::UniqueHandle identityHold;
+            if (!HoldProcessIdentityForDriverAction(target, L"special flags", true, result, identityHold)) {
                 continue;
             }
             const ksword::ark::ProcessSpecialFlagsResult io = driverClient.setProcessSpecialFlags(static_cast<std::uint32_t>(pid), specialAction);
@@ -1202,10 +1286,15 @@ ProcessActionResult ExecuteProcessAction(
         result.title = L"R0 DKOM从PspCidTable删除";
         result.success = true;
         const ksword::ark::DriverClient driverClient;
-        for (DWORD pid : selectedPids) {
+        for (const ProcessSnapshotRow& target : buildActionTargets(selectedPids)) {
+            const DWORD pid = target.processId;
             if (IsProtectedSystemPid(pid)) {
                 AppendIoLine(result.detail, pid, L"DKOM CID remove", false, L"protected system PID");
                 result.success = false;
+                continue;
+            }
+            Ksword::Core::UniqueHandle identityHold;
+            if (!HoldProcessIdentityForDriverAction(target, L"DKOM CID remove", true, result, identityHold)) {
                 continue;
             }
             const ksword::ark::ProcessDkomResult io = driverClient.dkomProcess(static_cast<std::uint32_t>(pid), KSWORD_ARK_PROCESS_DKOM_ACTION_REMOVE_FROM_PSP_CID_TABLE);
@@ -1225,7 +1314,7 @@ ProcessActionResult ExecuteProcessAction(
     case ProcessActionId::ClearCriticalProcess:
         return ExecuteLocalProcessAction(actionId, buildActionTargets(selectedPids));
     case ProcessActionId::RefreshPplProtectionLevel:
-        return ExecutePplRefresh(selectedPids);
+        return ExecutePplRefresh(buildActionTargets(selectedPids));
     case ProcessActionId::OpenMemoryOperation: {
         ProcessActionResult result;
         result.title = L"复制到内存读写页输入";
@@ -1240,7 +1329,13 @@ ProcessActionResult ExecuteProcessAction(
         if (selectedPids.size() != 1) {
             return FailureResult(L"扫描进程热键", selectedPids, L"扫描进程热键需要单选一个进程。");
         }
-        return ExecuteKeyboardHotkeyScan(selectedPids.front());
+        {
+            const std::vector<ProcessSnapshotRow> actionTargets = buildActionTargets(selectedPids);
+            if (actionTargets.size() != 1U) {
+                return FailureResult(L"扫描进程热键", selectedPids, L"扫描进程热键需要单选一个进程。");
+            }
+            return ExecuteKeyboardHotkeyScan(actionTargets.front());
+        }
     case ProcessActionId::OpenDetails:
         return FailureResult(L"进程详细信息", selectedPids, L"该动作由进程列表窗口直接打开详细信息页。");
     default:
@@ -1250,6 +1345,7 @@ ProcessActionResult ExecuteProcessAction(
 
 ProcessActionResult ExecuteR0ProcessDllInjection(
     const std::vector<DWORD>& selectedPids,
+    const std::vector<ProcessSnapshotRow>& snapshotRows,
     const std::wstring& dllPath) {
     if (selectedPids.size() != 1) {
         return FailureResult(L"R0 DLL注入", selectedPids, L"R0 DLL 注入需要单选一个进程。");
@@ -1258,12 +1354,22 @@ ProcessActionResult ExecuteR0ProcessDllInjection(
         return FailureResult(L"R0 DLL注入", selectedPids, L"未选择 DLL 文件。");
     }
 
+    const std::vector<ProcessSnapshotRow> actionTargets = BuildProcessActionTargets(selectedPids, snapshotRows);
+    if (actionTargets.size() != 1U) {
+        return FailureResult(L"R0 DLL注入", selectedPids, L"R0 DLL 注入需要单选一个进程。");
+    }
+
     ProcessActionResult result;
     result.title = L"R0 DLL注入";
-    const DWORD pid = selectedPids.front();
+    const ProcessSnapshotRow& target = actionTargets.front();
+    const DWORD pid = target.processId;
     if (IsProtectedSystemPid(pid)) {
         result.success = false;
         AppendIoLine(result.detail, pid, L"inject DLL", false, L"protected system PID");
+        return result;
+    }
+    Ksword::Core::UniqueHandle identityHold;
+    if (!HoldProcessIdentityForDriverAction(target, L"inject DLL", true, result, identityHold)) {
         return result;
     }
 
@@ -1281,6 +1387,7 @@ ProcessActionResult ExecuteR0ProcessDllInjection(
 
 ProcessActionResult ExecuteR0ProcessShellcodeInjection(
     const std::vector<DWORD>& selectedPids,
+    const std::vector<ProcessSnapshotRow>& snapshotRows,
     const std::wstring& shellcodePath) {
     if (selectedPids.size() != 1) {
         return FailureResult(L"R0 Shellcode注入", selectedPids, L"R0 Shellcode 注入需要单选一个进程。");
@@ -1292,12 +1399,22 @@ ProcessActionResult ExecuteR0ProcessShellcodeInjection(
         return FailureResult(L"R0 Shellcode注入", selectedPids, readError.c_str());
     }
 
+    const std::vector<ProcessSnapshotRow> actionTargets = BuildProcessActionTargets(selectedPids, snapshotRows);
+    if (actionTargets.size() != 1U) {
+        return FailureResult(L"R0 Shellcode注入", selectedPids, L"R0 Shellcode 注入需要单选一个进程。");
+    }
+
     ProcessActionResult result;
     result.title = L"R0 Shellcode注入";
-    const DWORD pid = selectedPids.front();
+    const ProcessSnapshotRow& target = actionTargets.front();
+    const DWORD pid = target.processId;
     if (IsProtectedSystemPid(pid)) {
         result.success = false;
         AppendIoLine(result.detail, pid, L"inject shellcode", false, L"protected system PID");
+        return result;
+    }
+    Ksword::Core::UniqueHandle identityHold;
+    if (!HoldProcessIdentityForDriverAction(target, L"inject shellcode", true, result, identityHold)) {
         return result;
     }
 

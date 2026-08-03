@@ -86,16 +86,18 @@ ProcessActionResult ExecuteProcessAction(
 DWORD PriorityClassForAction(ProcessActionId actionId);
 
 // ExecuteR0ProcessDllInjection / ExecuteR0ProcessShellcodeInjection mirror the
-// full Ksword5.1 ArkDriverClient process injection calls. Inputs are the selected
-// PID list and a user-picked payload path; processing validates single selection,
-// reads shellcode when needed, and calls the R0 injection IOCTL wrapper; output
-// is a display-ready operation result.
+// full Ksword5.1 ArkDriverClient process injection calls. Inputs are selected
+// PIDs, their captured snapshot rows, and a user-picked payload path; processing
+// holds each verified process instance through the R0 IOCTL; output is a
+// display-ready operation result.
 ProcessActionResult ExecuteR0ProcessDllInjection(
     const std::vector<DWORD>& selectedPids,
+    const std::vector<ProcessSnapshotRow>& snapshotRows,
     const std::wstring& dllPath);
 
 ProcessActionResult ExecuteR0ProcessShellcodeInjection(
     const std::vector<DWORD>& selectedPids,
+    const std::vector<ProcessSnapshotRow>& snapshotRows,
     const std::wstring& shellcodePath);
 
 } // namespace Ksword::Features::Process
