@@ -128,7 +128,6 @@ private:
         double maxDiskMBps,
         double maxNetKBps);
     static QString buildProcessInstanceKey(quint32 pidValue, quint64 creationTime100ns);
-    static QString buildProcessIdentityKey(quint32 pidValue, const QString& processName);
     QTreeWidgetItem* updateOrCreateRow(
         const ProcessEntry& entry,
         QTreeWidgetItem* parentItem,

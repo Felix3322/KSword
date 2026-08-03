@@ -1063,9 +1063,6 @@ HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
         entry.pid = static_cast<quint32>(processEntryNative.th32ProcessID);
         entry.parentPid = static_cast<quint32>(processEntryNative.th32ParentProcessID);
         entry.processName = QString::fromWCharArray(processEntryNative.szExeFile);
-        const QString processIdentityKey =
-            buildProcessIdentityKey(entry.pid, entry.processName);
-        entry.imagePath = cachedImagePathByIdentity.value(processIdentityKey);
 
         CounterSample nextSample{};
         nextSample.sampleMs = nowMs;
@@ -1083,8 +1080,32 @@ HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
                 static_cast<DWORD>(entry.pid));
         }
 
+        QString processInstanceKey;
         if (processHandle != nullptr)
         {
+            FILETIME creationTime{};
+            FILETIME exitTime{};
+            FILETIME kernelTime{};
+            FILETIME userTime{};
+            if (::GetProcessTimes(
+                processHandle,
+                &creationTime,
+                &exitTime,
+                &kernelTime,
+                &userTime) != FALSE)
+            {
+                entry.creationTime100ns = fileTimeToUint64(creationTime);
+                nextSample.cpuTime100ns =
+                    fileTimeToUint64(kernelTime) + fileTimeToUint64(userTime);
+            }
+
+            processInstanceKey =
+                buildProcessInstanceKey(entry.pid, entry.creationTime100ns);
+            if (!processInstanceKey.isEmpty())
+            {
+                entry.imagePath = cachedImagePathByIdentity.value(processInstanceKey);
+            }
+
             if (entry.imagePath.isEmpty())
             {
                 std::array<wchar_t, 32768> imagePathBuffer{};
@@ -1111,22 +1132,6 @@ HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
                 entry.ramMB = static_cast<double>(memoryInfo.WorkingSetSize) / (1024.0 * 1024.0);
             }
 
-            FILETIME creationTime{};
-            FILETIME exitTime{};
-            FILETIME kernelTime{};
-            FILETIME userTime{};
-            if (::GetProcessTimes(
-                processHandle,
-                &creationTime,
-                &exitTime,
-                &kernelTime,
-                &userTime) != FALSE)
-            {
-                entry.creationTime100ns = fileTimeToUint64(creationTime);
-                nextSample.cpuTime100ns =
-                    fileTimeToUint64(kernelTime) + fileTimeToUint64(userTime);
-            }
-
             IO_COUNTERS ioCounters{};
             if (::GetProcessIoCounters(processHandle, &ioCounters) != FALSE)
             {
@@ -1136,9 +1141,6 @@ HudProcessListPanel::RefreshResult HudProcessListPanel::collectRefreshResult(
 
             ::CloseHandle(processHandle);
         }
-
-        const QString processInstanceKey =
-            buildProcessInstanceKey(entry.pid, entry.creationTime100ns);
 
         entry.groupType = isWindowsSystemProcess(entry, windowsDirectoryPath)
             ? ProcessGroupType::WindowsSystem
@@ -1236,7 +1238,12 @@ void HudProcessListPanel::applyRefreshResult(const RefreshResult& result)
 
     for (const ProcessEntry& entry : entries)
     {
-        m_imagePathByIdentity.insert(buildProcessIdentityKey(entry.pid, entry.processName), entry.imagePath);
+        const QString processInstanceKey =
+            buildProcessInstanceKey(entry.pid, entry.creationTime100ns);
+        if (!processInstanceKey.isEmpty() && !entry.imagePath.isEmpty())
+        {
+            m_imagePathByIdentity.insert(processInstanceKey, entry.imagePath);
+        }
         switch (entry.groupType)
         {
         case ProcessGroupType::Application:
@@ -1843,18 +1850,17 @@ QString HudProcessListPanel::buildProcessInstanceKey(
     return QStringLiteral("%1|%2").arg(pidValue).arg(creationTime100ns);
 }
 
-QString HudProcessListPanel::buildProcessIdentityKey(const quint32 pidValue, const QString& processName)
-{
-    return QStringLiteral("%1|%2").arg(pidValue).arg(processName.trimmed().toLower());
-}
-
 QIcon HudProcessListPanel::resolveProcessIcon(const ProcessEntry& entry)
 {
-    const QString identityKey = buildProcessIdentityKey(entry.pid, entry.processName);
-    const auto identityCacheIterator = m_iconCacheByIdentity.constFind(identityKey);
-    if (identityCacheIterator != m_iconCacheByIdentity.cend())
+    const QString processInstanceKey =
+        buildProcessInstanceKey(entry.pid, entry.creationTime100ns);
+    if (!processInstanceKey.isEmpty())
     {
-        return identityCacheIterator.value();
+        const auto identityCacheIterator = m_iconCacheByIdentity.constFind(processInstanceKey);
+        if (identityCacheIterator != m_iconCacheByIdentity.cend())
+        {
+            return identityCacheIterator.value();
+        }
     }
 
     if (!entry.imagePath.isEmpty())
@@ -1862,7 +1868,10 @@ QIcon HudProcessListPanel::resolveProcessIcon(const ProcessEntry& entry)
         const auto pathCacheIterator = m_iconCacheByPath.constFind(entry.imagePath);
         if (pathCacheIterator != m_iconCacheByPath.cend())
         {
-            m_iconCacheByIdentity.insert(identityKey, pathCacheIterator.value());
+            if (!processInstanceKey.isEmpty())
+            {
+                m_iconCacheByIdentity.insert(processInstanceKey, pathCacheIterator.value());
+            }
             return pathCacheIterator.value();
         }
 
@@ -1875,7 +1884,10 @@ QIcon HudProcessListPanel::resolveProcessIcon(const ProcessEntry& entry)
                 if (!resolvedIcon.isNull())
                 {
                     m_iconCacheByPath.insert(entry.imagePath, resolvedIcon);
-                    m_iconCacheByIdentity.insert(identityKey, resolvedIcon);
+                    if (!processInstanceKey.isEmpty())
+                    {
+                        m_iconCacheByIdentity.insert(processInstanceKey, resolvedIcon);
+                    }
                     return resolvedIcon;
                 }
             }
@@ -1883,7 +1895,10 @@ QIcon HudProcessListPanel::resolveProcessIcon(const ProcessEntry& entry)
     }
 
     const QIcon fallbackIcon = QApplication::style()->standardIcon(QStyle::SP_FileIcon);
-    m_iconCacheByIdentity.insert(identityKey, fallbackIcon);
+    if (!processInstanceKey.isEmpty())
+    {
+        m_iconCacheByIdentity.insert(processInstanceKey, fallbackIcon);
+    }
     return fallbackIcon;
 }
 
