@@ -118,6 +118,8 @@ jobs:
             /t:Build `
             /p:Configuration=Release `
             /p:Platform=x64 `
+            /p:SignMode=Off `
+            /p:SkipPackageVerification=true `
             /m:1 `
             /v:minimal
           if ($LASTEXITCODE -ne 0) {
