@@ -191,8 +191,6 @@ KswordARKInjectOpenProcess(
     _Outptr_ PEPROCESS* ProcessObjectOut
     )
 {
-    OBJECT_ATTRIBUTES objectAttributes;
-    CLIENT_ID clientId;
     HANDLE processHandle = NULL;
     PEPROCESS processObject = NULL;
     NTSTATUS status = STATUS_SUCCESS;
@@ -214,20 +212,19 @@ KswordARKInjectOpenProcess(
         return status;
     }
 
-    InitializeObjectAttributes(&objectAttributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-    clientId.UniqueProcess = ULongToHandle(ProcessId);
-    clientId.UniqueThread = NULL;
-    status = ZwOpenProcess(&processHandle, desiredAccess, &objectAttributes, &clientId);
-    if (!NT_SUCCESS(status)) {
-        status = ObOpenObjectByPointer(
-            processObject,
-            OBJ_KERNEL_HANDLE,
-            NULL,
-            desiredAccess,
-            *PsProcessType,
-            KernelMode,
-            &processHandle);
-    }
+    /*
+     * Open the exact object returned by PsLookupProcessByProcessId. Reopening by
+     * numeric PID can select a different process if the target exits and the PID
+     * is reused between lookup and handle creation.
+     */
+    status = ObOpenObjectByPointer(
+        processObject,
+        OBJ_KERNEL_HANDLE,
+        NULL,
+        desiredAccess,
+        *PsProcessType,
+        KernelMode,
+        &processHandle);
 
     if (!NT_SUCCESS(status)) {
         ObDereferenceObject(processObject);
