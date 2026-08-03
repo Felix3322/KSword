@@ -360,8 +360,8 @@ KswordARKMemoryOpenProcessForQuery(
 Routine Description:
 
     以只读查询所需权限打开目标进程，同时保留 PEPROCESS 引用。中文说明：先
-    通过 PID 引用对象，再尝试 ZwOpenProcess，失败时用 ObOpenObjectByPointer
-    在 KernelMode 下兜底，和仓库已有进程操作风格保持一致。
+    通过 PID 引用对象，再用 ObOpenObjectByPointer 在 KernelMode 下为同一对象
+    创建句柄，避免 PID 退出并复用后查询落到另一进程。
 
 Arguments:
 
@@ -376,8 +376,6 @@ Return Value:
 
 --*/
 {
-    OBJECT_ATTRIBUTES objectAttributes;
-    CLIENT_ID clientId;
     HANDLE processHandle = NULL;
     PEPROCESS processObject = NULL;
     NTSTATUS status = STATUS_SUCCESS;
@@ -394,25 +392,18 @@ Return Value:
         return status;
     }
 
-    InitializeObjectAttributes(&objectAttributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-    clientId.UniqueProcess = ULongToHandle(ProcessId);
-    clientId.UniqueThread = NULL;
-
-    status = ZwOpenProcess(
-        &processHandle,
+    /*
+     * Bind the returned handle to the referenced process object. Reopening by
+     * numeric PID after PsLookupProcessByProcessId can select a recycled PID.
+     */
+    status = ObOpenObjectByPointer(
+        processObject,
+        OBJ_KERNEL_HANDLE,
+        NULL,
         DesiredAccess,
-        &objectAttributes,
-        &clientId);
-    if (!NT_SUCCESS(status)) {
-        status = ObOpenObjectByPointer(
-            processObject,
-            OBJ_KERNEL_HANDLE,
-            NULL,
-            DesiredAccess,
-            *PsProcessType,
-            KernelMode,
-            &processHandle);
-    }
+        *PsProcessType,
+        KernelMode,
+        &processHandle);
 
     if (!NT_SUCCESS(status)) {
         ObDereferenceObject(processObject);
