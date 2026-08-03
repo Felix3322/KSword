@@ -976,6 +976,8 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
 
             ks::process::CloseSuspendedProcessInitialThreadHandle(
                 launchResult.initialThreadHandle);
+            ks::process::CloseSuspendedProcessHandle(
+                launchResult.processHandle);
             updateTargetProcessRemarkByPid(
                 launchResult.processId,
                 QStringLiteral("已恢复，等待手动开始监听"));
@@ -997,8 +999,8 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
         if (selectedOption == 2)
         {
             std::string terminateError;
-            const bool terminateOk = ks::process::TerminateProcessByWin32(
-                launchResult.processId,
+            const bool terminateOk = ks::process::TerminateSuspendedProcessByHandle(
+                launchResult.processHandle,
                 &terminateError);
             if (!terminateOk)
             {
@@ -1024,6 +1026,8 @@ void ProcessTraceMonitorWidget::createSuspendedTargetProcess()
 
             ks::process::CloseSuspendedProcessInitialThreadHandle(
                 launchResult.initialThreadHandle);
+            ks::process::CloseSuspendedProcessHandle(
+                launchResult.processHandle);
             removeTrackedProcessFromTargetListByPid(
                 launchResult.processId,
                 QStringLiteral("用户终止进程并放弃追踪"));

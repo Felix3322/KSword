@@ -10460,6 +10460,7 @@
     "SuspendProcess": "SuspendProcess",
     "SuspendThread failed %1": "挂起线程失败 %1",
     "SuspendThread failed: ": "挂起线程失败： ",
+    "Suspended process handle is invalid.": "挂起目标进程句柄无效。",
     "Suspended(5)": "Suspended(5)",
     "Suspicious": "Suspicious",
     "SymInitialize failed %1": "SymInitialize 失败 %1",

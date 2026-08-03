@@ -174,9 +174,8 @@ namespace ks::process
     };
 
     // SuspendedProcessLaunchResult：受控挂起创建结果。
-    // - initialThreadHandle 为有效 Win32 句柄快照，必须由调用方通过
-    //   CloseSuspendedProcessInitialThreadHandle 关闭；
-    // - process handle 已由实现层关闭，调用方只保留 PID/TID 和主线程句柄。
+    // - initialThreadHandle 和 processHandle 都是有效 Win32 句柄快照，调用方必须关闭；
+    // - 保留 processHandle 可让后续终止始终作用于创建时的同一进程对象，而非重新按 PID 查询。
     struct SuspendedProcessLaunchResult
     {
         bool success = false;
@@ -185,6 +184,7 @@ namespace ks::process
         std::string detailText;
         std::uint32_t processId = 0;
         std::uint32_t threadId = 0;
+        std::uint64_t processHandle = 0;
         std::uint64_t initialThreadHandle = 0;
         bool usedUnelevatedToken = false;
         bool usedElevatedFallback = false;
@@ -696,8 +696,16 @@ namespace ks::process
         std::uint64_t initialThreadHandle,
         std::string* errorMessage);
 
+    // TerminateSuspendedProcessByHandle：用 LaunchSuspendedProcess 保留的原始进程句柄终止目标。
+    bool TerminateSuspendedProcessByHandle(
+        std::uint64_t processHandle,
+        std::string* errorMessage);
+
     // CloseSuspendedProcessInitialThreadHandle：关闭受控挂起创建返回的主线程句柄。
     void CloseSuspendedProcessInitialThreadHandle(std::uint64_t initialThreadHandle);
+
+    // CloseSuspendedProcessHandle：关闭受控挂起创建返回的原始进程句柄。
+    void CloseSuspendedProcessHandle(std::uint64_t processHandle);
 
     std::wstring GetCurrentProcessPath();
 

@@ -6351,12 +6351,9 @@ namespace ks::process
         const auto finalizeSuccess = [&localResult](PROCESS_INFORMATION& processInformation) {
             localResult.processId = static_cast<std::uint32_t>(processInformation.dwProcessId);
             localResult.threadId = static_cast<std::uint32_t>(processInformation.dwThreadId);
+            localResult.processHandle = reinterpret_cast<std::uint64_t>(processInformation.hProcess);
             localResult.initialThreadHandle = reinterpret_cast<std::uint64_t>(processInformation.hThread);
-            if (processInformation.hProcess != nullptr)
-            {
-                ::CloseHandle(processInformation.hProcess);
-                processInformation.hProcess = nullptr;
-            }
+            processInformation.hProcess = nullptr;
             processInformation.hThread = nullptr;
         };
         const auto buildMutableCommandLine = [&commandLineWide]() {
@@ -6480,12 +6477,49 @@ namespace ks::process
         return true;
     }
 
+    bool TerminateSuspendedProcessByHandle(
+        const std::uint64_t processHandle,
+        std::string* const errorMessage)
+    {
+        const HANDLE nativeProcessHandle = reinterpret_cast<HANDLE>(processHandle);
+        if (nativeProcessHandle == nullptr || nativeProcessHandle == INVALID_HANDLE_VALUE)
+        {
+            if (errorMessage != nullptr)
+            {
+                *errorMessage = "Suspended process handle is invalid.";
+            }
+            return false;
+        }
+
+        const BOOL terminateOk = ::TerminateProcess(nativeProcessHandle, 1);
+        const DWORD terminateError = terminateOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+        if (terminateOk != FALSE)
+        {
+            return true;
+        }
+
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "TerminateProcess failed: " + FormatLastErrorMessage(terminateError);
+        }
+        return false;
+    }
+
     void CloseSuspendedProcessInitialThreadHandle(const std::uint64_t initialThreadHandle)
     {
         const HANDLE threadHandle = reinterpret_cast<HANDLE>(initialThreadHandle);
         if (threadHandle != nullptr && threadHandle != INVALID_HANDLE_VALUE)
         {
             ::CloseHandle(threadHandle);
+        }
+    }
+
+    void CloseSuspendedProcessHandle(const std::uint64_t processHandle)
+    {
+        const HANDLE nativeProcessHandle = reinterpret_cast<HANDLE>(processHandle);
+        if (nativeProcessHandle != nullptr && nativeProcessHandle != INVALID_HANDLE_VALUE)
+        {
+            ::CloseHandle(nativeProcessHandle);
         }
     }
 

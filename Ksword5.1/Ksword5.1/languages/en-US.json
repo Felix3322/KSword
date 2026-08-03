@@ -10460,6 +10460,7 @@
     "SuspendProcess": "SuspendProcess",
     "SuspendThread failed %1": "SuspendThread failed %1",
     "SuspendThread failed: ": "SuspendThread failed: ",
+    "Suspended process handle is invalid.": "Suspended process handle is invalid.",
     "Suspended(5)": "Suspended(5)",
     "Suspicious": "Suspicious",
     "SymInitialize failed %1": "SymInitialize failed %1",
