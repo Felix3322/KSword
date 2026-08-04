@@ -144,6 +144,18 @@ private:
     // 调用方式：点击“一键复原”按钮时调用。
     void resetThemeColorToDefault();
 
+    // updateMainBackgroundColorPreview 作用：刷新独立主背景色预览与恢复按钮状态。
+    // 调用方式：载入配置、切换主题、选择颜色或恢复默认后调用。
+    void updateMainBackgroundColorPreview();
+
+    // chooseCustomMainBackgroundColor 作用：打开主背景色选择器，不改变主题强调色。
+    // 调用方式：点击“自定义主背景色”按钮时调用。
+    void chooseCustomMainBackgroundColor();
+
+    // resetMainBackgroundColorToDefault 作用：清除自定义主背景色并恢复跟随深浅主题。
+    // 调用方式：点击“恢复默认背景色”按钮时调用。
+    void resetMainBackgroundColorToDefault();
+
     // updateOpacityValueLabel 作用：
     // - 同步透明度百分比文本标签。
     // 调用方式：滑条值变化时调用。
@@ -232,6 +244,11 @@ private:
     QPushButton* m_chooseThemeColorButton = nullptr;
     QPushButton* m_resetThemeColorButton = nullptr;
 
+    // 主背景色与主题强调色独立保存；预览标签展示当前待应用的实际 RGB 值。
+    QLabel* m_mainBackgroundColorPreviewLabel = nullptr;
+    QPushButton* m_chooseMainBackgroundColorButton = nullptr;
+    QPushButton* m_resetMainBackgroundColorButton = nullptr;
+
     // m_backgroundPathEdit 作用：编辑背景图路径文本。
     QLineEdit* m_backgroundPathEdit = nullptr;
 
@@ -310,6 +327,9 @@ private:
 
     // m_pendingCustomThemeColor 作用：保存尚未点击“应用”的自定义主题色色值；空值表示默认色。
     QString m_pendingCustomThemeColor;
+
+    // m_pendingCustomMainBackgroundColor 作用：保存尚未应用的独立主背景色；空值表示跟随深浅主题。
+    QString m_pendingCustomMainBackgroundColor;
 
     // m_isApplyingUiState 作用：标记“正在回填 UI”，防止触发递归保存。
     bool m_isApplyingUiState = false;

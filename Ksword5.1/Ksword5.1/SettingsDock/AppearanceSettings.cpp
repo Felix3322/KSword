@@ -271,9 +271,9 @@ namespace
         return std::clamp(rawSeconds, 0, 60);
     }
 
-    // normalizeCustomThemeColor 作用：只接受完整的 RGB 色值，避免无效配置进入主题计算。
-    // 空值代表使用产品默认主题色。
-    QString normalizeCustomThemeColor(const QString& rawColorText)
+    // normalizeCustomRgbColor 作用：只接受完整的 RGB 色值，避免无效配置进入配色计算。
+    // 空值代表使用对应颜色角色的产品默认值。
+    QString normalizeCustomRgbColor(const QString& rawColorText)
     {
         const QColor colorValue(rawColorText.trimmed());
         return colorValue.isValid()
@@ -376,6 +376,7 @@ namespace
         ks::settings::AppearanceSettings defaultSettings;
         defaultSettings.themeMode = ks::settings::ThemeMode::FollowSystem;
         defaultSettings.customThemeColor.clear();
+        defaultSettings.customMainBackgroundColor.clear();
         defaultSettings.uiLanguage = QStringLiteral("system");
         defaultSettings.backgroundImagePath = QStringLiteral("Style/ksword_background.png");
         defaultSettings.backgroundOpacityPercent = 35;
@@ -496,9 +497,12 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     const QString themeText = rootObject.value(QStringLiteral("theme_mode"))
         .toString(themeModeToJsonText(loadedSettings.themeMode));
     loadedSettings.themeMode = themeModeFromJsonText(themeText);
-    loadedSettings.customThemeColor = normalizeCustomThemeColor(
+    loadedSettings.customThemeColor = normalizeCustomRgbColor(
         rootObject.value(QStringLiteral("custom_theme_color"))
         .toString(loadedSettings.customThemeColor));
+    loadedSettings.customMainBackgroundColor = normalizeCustomRgbColor(
+        rootObject.value(QStringLiteral("custom_main_background_color"))
+        .toString(loadedSettings.customMainBackgroundColor));
 
     const QString uiLanguageText = rootObject.value(QStringLiteral("ui_language"))
         .toString(loadedSettings.uiLanguage)
@@ -651,7 +655,10 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(QStringLiteral("theme_mode"), themeModeToJsonText(settings.themeMode));
     rootObject.insert(
         QStringLiteral("custom_theme_color"),
-        normalizeCustomThemeColor(settings.customThemeColor));
+        normalizeCustomRgbColor(settings.customThemeColor));
+    rootObject.insert(
+        QStringLiteral("custom_main_background_color"),
+        normalizeCustomRgbColor(settings.customMainBackgroundColor));
     rootObject.insert(
         QStringLiteral("ui_language"),
         settings.uiLanguage.trimmed().isEmpty() ? QStringLiteral("system") : settings.uiLanguage.trimmed());

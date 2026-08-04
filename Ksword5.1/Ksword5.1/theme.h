@@ -269,9 +269,35 @@ namespace KswordTheme
         { -111, -90, -67 }
     };
 
+    inline QColor DefaultMainBackgroundColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            WhiteColor(),
+            darkModeEnabled ? WindowOffset.dark : WindowOffset.light);
+    }
+
     inline QColor WindowColor()
     {
-        return ThemeOffsetColor(WhiteColor(), WindowOffset);
+        return DefaultMainBackgroundColor(IsDarkModeEnabled());
+    }
+
+    // CustomMainBackgroundColor 只控制主窗口及其 Dock 容器的背景种子，
+    // 与强调主题色完全独立；无效值表示继续使用当前深浅模式的内置背景色。
+    inline QColor CustomMainBackgroundColor;
+
+    inline void SetMainBackgroundColor(const QString& customColorText)
+    {
+        const QColor requestedColor(customColorText.trimmed());
+        CustomMainBackgroundColor = requestedColor.isValid()
+            ? requestedColor.toRgb()
+            : QColor();
+    }
+
+    inline QColor MainBackgroundColor()
+    {
+        return CustomMainBackgroundColor.isValid()
+            ? CustomMainBackgroundColor
+            : WindowColor();
     }
 
     inline QColor SurfaceColor()
@@ -321,7 +347,14 @@ namespace KswordTheme
         return ThemeOffsetColor(WhiteColor(), TextDisabledOffset);
     }
 
+    inline QColor MainBackgroundTextColor()
+    {
+        return EnsureTextContrast(TextPrimaryColor(), MainBackgroundColor());
+    }
+
     inline QString WindowColorHex() { return ThemeColorName(WindowColor()); }
+    inline QString MainBackgroundColorHex() { return ThemeColorName(MainBackgroundColor()); }
+    inline QString MainBackgroundTextColorHex() { return ThemeColorName(MainBackgroundTextColor()); }
     inline QString SurfaceColorHex() { return ThemeColorName(SurfaceColor()); }
     inline QString SurfaceAltColorHex() { return ThemeColorName(SurfaceAltColor()); }
     inline QString SurfaceMutedColorHex() { return ThemeColorName(SurfaceMutedColor()); }
@@ -649,7 +682,8 @@ namespace KswordTheme
     inline QString SurfaceAltHex() { return QStringLiteral("palette(alternate-base)"); }
     inline QString BorderHex() { return QStringLiteral("palette(mid)"); }
     inline QString TextPrimaryHex() { return QStringLiteral("palette(text)"); }
-    inline QString TextSecondaryHex() { return QStringLiteral("palette(mid)"); }
+    // 次级文字必须使用专用动态文字角色；palette(mid) 是边框色，在深色背景上对比度不足。
+    inline QString TextSecondaryHex() { return QStringLiteral("palette(placeholder-text)"); }
 
     inline QString ThemedButtonStyle()
     {

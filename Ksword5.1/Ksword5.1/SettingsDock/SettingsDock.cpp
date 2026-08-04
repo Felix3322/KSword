@@ -59,6 +59,25 @@ namespace
         return QString::number(ks::settings::normalizeWindowScaleFactor(scaleFactor), 'f', 2);
     }
 
+    // selectedThemeUsesDarkBackground 作用：为尚未应用的主题按钮状态计算默认主背景预览。
+    // 跟随系统时复用当前已生效的主题状态，强制主题时直接读取按钮 ID。
+    bool selectedThemeUsesDarkBackground(const QButtonGroup* themeButtonGroup)
+    {
+        if (themeButtonGroup != nullptr)
+        {
+            const int checkedThemeId = themeButtonGroup->checkedId();
+            if (checkedThemeId == static_cast<int>(ks::settings::ThemeMode::Dark))
+            {
+                return true;
+            }
+            if (checkedThemeId == static_cast<int>(ks::settings::ThemeMode::Light))
+            {
+                return false;
+            }
+        }
+        return KswordTheme::IsDarkModeEnabled();
+    }
+
     std::wstring queryCurrentExecutablePath()
     {
         std::vector<wchar_t> pathBuffer(1024, L'\0');
@@ -422,11 +441,48 @@ void SettingsDock::initializeAppearanceTab()
     themeLayout->addWidget(m_textAntialiasingCheckBox);
     appearanceRootLayout->addWidget(themeGroupBox);
 
-    // ===== 背景图分组 =====
-    QGroupBox* backgroundGroupBox = new QGroupBox(QStringLiteral("窗口背景图"), m_appearanceTab);
-    languageManager.bindText(backgroundGroupBox, QStringLiteral("settings.background.group"), QStringLiteral("窗口背景图"));
+    // ===== 窗口背景分组 =====
+    QGroupBox* backgroundGroupBox = new QGroupBox(QStringLiteral("窗口背景"), m_appearanceTab);
+    languageManager.bindText(backgroundGroupBox, QStringLiteral("settings.background.group"), QStringLiteral("窗口背景"));
     QVBoxLayout* backgroundLayout = new QVBoxLayout(backgroundGroupBox);
     backgroundLayout->setSpacing(8);
+
+    QLabel* mainBackgroundColorHintLabel = new QLabel(
+        QStringLiteral("主背景色可独立于主题色自定义；恢复默认后随浅色/深色模式切换。"),
+        backgroundGroupBox);
+    mainBackgroundColorHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        mainBackgroundColorHintLabel,
+        QStringLiteral("settings.background.color.hint"),
+        QStringLiteral("主背景色可独立于主题色自定义；恢复默认后随浅色/深色模式切换。"));
+    backgroundLayout->addWidget(mainBackgroundColorHintLabel);
+
+    QHBoxLayout* mainBackgroundColorActionLayout = new QHBoxLayout();
+    mainBackgroundColorActionLayout->setSpacing(6);
+    m_mainBackgroundColorPreviewLabel = new QLabel(backgroundGroupBox);
+    m_mainBackgroundColorPreviewLabel->setMinimumWidth(112);
+    m_mainBackgroundColorPreviewLabel->setAlignment(Qt::AlignCenter);
+    mainBackgroundColorActionLayout->addWidget(m_mainBackgroundColorPreviewLabel, 0);
+
+    m_chooseMainBackgroundColorButton = new QPushButton(
+        QStringLiteral("自定义主背景色"),
+        backgroundGroupBox);
+    languageManager.bindText(
+        m_chooseMainBackgroundColorButton,
+        QStringLiteral("settings.background.color.choose"),
+        QStringLiteral("自定义主背景色"));
+    mainBackgroundColorActionLayout->addWidget(m_chooseMainBackgroundColorButton, 0);
+
+    m_resetMainBackgroundColorButton = new QPushButton(
+        QStringLiteral("恢复默认背景色"),
+        backgroundGroupBox);
+    languageManager.bindText(
+        m_resetMainBackgroundColorButton,
+        QStringLiteral("settings.background.color.reset"),
+        QStringLiteral("恢复默认背景色"));
+    mainBackgroundColorActionLayout->addWidget(m_resetMainBackgroundColorButton, 0);
+    mainBackgroundColorActionLayout->addStretch();
+    backgroundLayout->addLayout(mainBackgroundColorActionLayout);
 
     QLabel* pathHintLabel = new QLabel(
         QStringLiteral("选择一张图片作为窗口背景（支持 PNG/JPG/BMP）。"),
@@ -810,6 +866,7 @@ void SettingsDock::bindAppearanceSignals()
 
     connect(m_themeButtonGroup, &QButtonGroup::idClicked, this, [this](int /*clickedId*/) {
         updateThemeButtonStyle();
+        updateMainBackgroundColorPreview();
         markPendingChanges(QStringLiteral("主题按钮切换"));
         });
 
@@ -819,6 +876,14 @@ void SettingsDock::bindAppearanceSignals()
 
     connect(m_resetThemeColorButton, &QPushButton::clicked, this, [this]() {
         resetThemeColorToDefault();
+        });
+
+    connect(m_chooseMainBackgroundColorButton, &QPushButton::clicked, this, [this]() {
+        chooseCustomMainBackgroundColor();
+        });
+
+    connect(m_resetMainBackgroundColorButton, &QPushButton::clicked, this, [this]() {
+        resetMainBackgroundColorToDefault();
         });
 
     connect(m_fontCombo, &QComboBox::currentIndexChanged, this, [this](const int /*fontIndex*/) {
@@ -972,6 +1037,8 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
 
     m_pendingCustomThemeColor = settings.customThemeColor;
     updateThemeColorPreview();
+    m_pendingCustomMainBackgroundColor = settings.customMainBackgroundColor;
+    updateMainBackgroundColorPreview();
 
     m_backgroundPathEdit->setText(settings.backgroundImagePath);
     m_backgroundOpacitySlider->setValue(settings.backgroundOpacityPercent);
@@ -1088,6 +1155,7 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         ? m_languageCombo->currentData().toString()
         : m_currentAppearanceSettings.uiLanguage;
     collectedSettings.customThemeColor = m_pendingCustomThemeColor;
+    collectedSettings.customMainBackgroundColor = m_pendingCustomMainBackgroundColor;
 
     // checkedThemeId 作用：读取当前选中的主题按钮 ID。
     const int checkedThemeId = m_themeButtonGroup->checkedId();
@@ -1305,6 +1373,69 @@ void SettingsDock::resetThemeColorToDefault()
     markPendingChanges(QStringLiteral("custom theme color restored"));
 }
 
+void SettingsDock::updateMainBackgroundColorPreview()
+{
+    if (m_mainBackgroundColorPreviewLabel == nullptr)
+    {
+        return;
+    }
+
+    const QColor previewColor = m_pendingCustomMainBackgroundColor.isEmpty()
+        ? KswordTheme::DefaultMainBackgroundColor(
+            selectedThemeUsesDarkBackground(m_themeButtonGroup))
+        : QColor(m_pendingCustomMainBackgroundColor);
+    const QColor readableTextColor = KswordTheme::EnsureTextContrast(
+        KswordTheme::TextPrimaryColor(),
+        previewColor);
+    const QString colorText = previewColor.name(QColor::HexRgb).toUpper();
+    m_mainBackgroundColorPreviewLabel->setText(colorText);
+    m_mainBackgroundColorPreviewLabel->setStyleSheet(
+        QStringLiteral("QLabel{background:%1;color:%2;border:1px solid %3;border-radius:3px;padding:5px;font-weight:600;}")
+        .arg(colorText)
+        .arg(KswordTheme::ThemeColorName(readableTextColor))
+        .arg(KswordTheme::BorderColorHex()));
+
+    if (m_resetMainBackgroundColorButton != nullptr)
+    {
+        m_resetMainBackgroundColorButton->setEnabled(
+            !m_pendingCustomMainBackgroundColor.isEmpty());
+    }
+}
+
+void SettingsDock::chooseCustomMainBackgroundColor()
+{
+    const QColor initialColor = m_pendingCustomMainBackgroundColor.isEmpty()
+        ? KswordTheme::DefaultMainBackgroundColor(
+            selectedThemeUsesDarkBackground(m_themeButtonGroup))
+        : QColor(m_pendingCustomMainBackgroundColor);
+    const QColor selectedColor = QColorDialog::getColor(
+        initialColor,
+        this,
+        ks::i18n::text(
+            QStringLiteral("settings.background.color.dialog.title"),
+            QStringLiteral("选择主背景色")));
+    if (!selectedColor.isValid())
+    {
+        return;
+    }
+
+    m_pendingCustomMainBackgroundColor = selectedColor.name(QColor::HexRgb).toUpper();
+    updateMainBackgroundColorPreview();
+    markPendingChanges(QStringLiteral("custom main background color selected"));
+}
+
+void SettingsDock::resetMainBackgroundColorToDefault()
+{
+    if (m_pendingCustomMainBackgroundColor.isEmpty())
+    {
+        return;
+    }
+
+    m_pendingCustomMainBackgroundColor.clear();
+    updateMainBackgroundColorPreview();
+    markPendingChanges(QStringLiteral("custom main background color restored"));
+}
+
 void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
 {
     if (m_isApplyingUiState)
@@ -1322,6 +1453,9 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
 
     if (nextSettings.themeMode == m_currentAppearanceSettings.themeMode
         && nextSettings.customThemeColor.compare(m_currentAppearanceSettings.customThemeColor, Qt::CaseInsensitive) == 0
+        && nextSettings.customMainBackgroundColor.compare(
+            m_currentAppearanceSettings.customMainBackgroundColor,
+            Qt::CaseInsensitive) == 0
         && nextSettings.uiLanguage.compare(m_currentAppearanceSettings.uiLanguage, Qt::CaseInsensitive) == 0
         && nextSettings.backgroundImagePath == m_currentAppearanceSettings.backgroundImagePath
         && nextSettings.backgroundOpacityPercent == m_currentAppearanceSettings.backgroundOpacityPercent
@@ -1438,6 +1572,10 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         << (m_currentAppearanceSettings.customThemeColor.isEmpty()
             ? "default"
             : m_currentAppearanceSettings.customThemeColor.toStdString())
+        << ", customMainBackgroundColor="
+        << (m_currentAppearanceSettings.customMainBackgroundColor.isEmpty()
+            ? "default"
+            : m_currentAppearanceSettings.customMainBackgroundColor.toStdString())
         << "，界面语言="
         << m_currentAppearanceSettings.uiLanguage.toStdString()
         << "，背景路径="

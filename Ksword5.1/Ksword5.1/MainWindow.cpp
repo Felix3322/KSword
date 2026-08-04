@@ -9581,22 +9581,31 @@ void MainWindow::applyAppearanceSettings(
     const bool themeColorChanged =
         isInitialAppearanceApply
         || previousSettings.customThemeColor.compare(settings.customThemeColor, Qt::CaseInsensitive) != 0;
+    const bool mainBackgroundColorChanged =
+        isInitialAppearanceApply
+        || previousSettings.customMainBackgroundColor.compare(
+            settings.customMainBackgroundColor,
+            Qt::CaseInsensitive) != 0;
     // 必须在读取任一 AccentColor 前更新种子，确保调色板、QSS 与绘制控件使用同一主题色。
     KswordTheme::SetPrimaryAccentColor(settings.customThemeColor);
+    // 主背景使用独立种子，不参与强调色偏移；空值继续跟随当前深浅主题。
+    KswordTheme::SetMainBackgroundColor(settings.customMainBackgroundColor);
     // 系统颜色方案通知已抵达时，previousSettings 再计算会得到新颜色方案；
     // 直接读取主题模块当前状态，才能识别 FollowSystem 的真实深浅色切换。
     const bool effectiveThemeChanged =
         isInitialAppearanceApply || KswordTheme::IsDarkModeEnabled() != darkModeEnabled;
     // themeVisualRefreshRequired 用途：作为所有专用主题控件的唯一重建条件。
-    // 深浅主题或自定义主题色任一变化，都必须进入同一刷新入口。
-    const bool themeVisualRefreshRequired = effectiveThemeChanged || themeColorChanged;
+    // 深浅主题、强调色或独立主背景色任一变化，都必须进入同一刷新入口。
+    const bool themeVisualRefreshRequired =
+        effectiveThemeChanged || themeColorChanged || mainBackgroundColorChanged;
     const bool backgroundPathChanged =
         isInitialAppearanceApply
         || previousSettings.backgroundImagePath.compare(
             settings.backgroundImagePath,
             Qt::CaseInsensitive) != 0;
     const bool backgroundChanged =
-        backgroundPathChanged
+        mainBackgroundColorChanged
+        || backgroundPathChanged
         || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent;
     const bool fontChanged =
         isInitialAppearanceApply
@@ -9686,7 +9695,8 @@ void MainWindow::applyAppearanceSettings(
             QStringLiteral("正在应用界面设置..."));
 
         KswordTheme::SetDarkModeEnabled(darkModeEnabled);
-        const QColor windowBackgroundColor = KswordTheme::WindowColor();
+        const QColor windowBackgroundColor = KswordTheme::MainBackgroundColor();
+        const QColor windowTextColor = KswordTheme::MainBackgroundTextColor();
         const QColor textColor = KswordTheme::TextPrimaryColor();
         const QColor baseColor = KswordTheme::SurfaceColor();
         const QColor alternateBaseColor = KswordTheme::SurfaceAltColor();
@@ -9696,13 +9706,14 @@ void MainWindow::applyAppearanceSettings(
         // 即使是纯黑/纯白，也必须显式设置 Window 颜色，避免系统接管背景。
         QPalette mainPalette = palette();
         mainPalette.setColor(QPalette::Window, windowBackgroundColor);
-        mainPalette.setColor(QPalette::WindowText, textColor);
+        mainPalette.setColor(QPalette::WindowText, windowTextColor);
         mainPalette.setColor(QPalette::Base, baseColor);
         mainPalette.setColor(QPalette::AlternateBase, alternateBaseColor);
         mainPalette.setColor(QPalette::Mid, midColor);
         mainPalette.setColor(QPalette::Midlight, KswordTheme::BorderStrongColor());
         mainPalette.setColor(QPalette::Dark, KswordTheme::PaletteDarkColor());
         mainPalette.setColor(QPalette::Text, textColor);
+        mainPalette.setColor(QPalette::PlaceholderText, KswordTheme::TextSecondaryColor());
         mainPalette.setColor(QPalette::Button, alternateBaseColor);
         mainPalette.setColor(QPalette::ButtonText, textColor);
         mainPalette.setColor(QPalette::ToolTipBase, baseColor);
@@ -9743,8 +9754,8 @@ void MainWindow::applyAppearanceSettings(
         {
             QPalette menuPalette = menuBar()->palette();
             menuPalette.setColor(QPalette::Window, windowBackgroundColor);
-            menuPalette.setColor(QPalette::WindowText, textColor);
-            menuPalette.setColor(QPalette::Text, textColor);
+            menuPalette.setColor(QPalette::WindowText, windowTextColor);
+            menuPalette.setColor(QPalette::Text, windowTextColor);
             menuBar()->setPalette(menuPalette);
             menuBar()->setAutoFillBackground(true);
         }
@@ -9753,7 +9764,7 @@ void MainWindow::applyAppearanceSettings(
         {
             QPalette dockPalette = m_pDockManager->palette();
             dockPalette.setColor(QPalette::Window, windowBackgroundColor);
-            dockPalette.setColor(QPalette::WindowText, textColor);
+            dockPalette.setColor(QPalette::WindowText, windowTextColor);
             dockPalette.setColor(QPalette::Text, textColor);
             m_pDockManager->setPalette(dockPalette);
             m_pDockManager->setAutoFillBackground(true);
@@ -9970,6 +9981,8 @@ void MainWindow::applyAppearanceSettings(
         << (effectiveThemeChanged ? "true" : "false")
         << ", backgroundChanged="
         << (backgroundChanged ? "true" : "false")
+        << ", mainBackgroundColorChanged="
+        << (mainBackgroundColorChanged ? "true" : "false")
         << ", fontChanged="
         << (fontChanged ? "true" : "false")
         << ", mainStyleRefresh="
@@ -10158,8 +10171,8 @@ const QPixmap* MainWindow::cachedBackgroundImage(const QString& rawImagePath) co
 
 void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
 {
-    const bool darkModeEnabled = isDarkModeEffective(m_currentAppearanceSettings);
-    const QColor baseColor = darkModeEnabled ? KswordTheme::BlackColor() : KswordTheme::WhiteColor();
+    // 纯色底与背景图合成都使用独立主背景色；未自定义时回退当前深浅主题默认色。
+    const QColor baseColor = KswordTheme::MainBackgroundColor();
 
     const int normalizedOpacityPercent = normalizeOpacityPercent(
         m_currentAppearanceSettings.backgroundOpacityPercent);
@@ -10199,7 +10212,7 @@ void MainWindow::applyFloatingDockContainerAppearance(ads::CFloatingDockContaine
     }
 
     const bool darkModeEnabled = isDarkModeEffective(m_currentAppearanceSettings);
-    const QColor baseColor = darkModeEnabled ? KswordTheme::BlackColor() : KswordTheme::WhiteColor();
+    const QColor baseColor = KswordTheme::MainBackgroundColor();
     const bool enableDockTransparencyForBackgroundImage =
         isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
     // sourceImage 用途：浮动容器复用线程池解码结果，不执行路径探测或文件加载。
@@ -10219,7 +10232,7 @@ void MainWindow::applyFloatingDockContainerAppearance(ads::CFloatingDockContaine
     floatingPalette.setBrush(QPalette::Window, backgroundBrush);
     floatingPalette.setColor(
         QPalette::WindowText,
-        darkModeEnabled ? KswordTheme::WhiteColor() : KswordTheme::BlackColor());
+        KswordTheme::MainBackgroundTextColor());
     floatingWidget->setPalette(floatingPalette);
     floatingWidget->setAutoFillBackground(true);
     floatingWidget->setAttribute(Qt::WA_StyledBackground, false);
@@ -10259,7 +10272,8 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     const int scrollBarHoverExtentPx = settings.useWideScrollBars ? 12 : 7;
     const int scrollBarExtentPx = settings.scrollBarAutoHideEnabled ? 3 : scrollBarHoverExtentPx;
     const int scrollBarRadiusPx = 0;
-    const QString windowBackgroundText = KswordTheme::WindowColorHex();
+    const QString windowBackgroundText = KswordTheme::MainBackgroundColorHex();
+    const QString windowTextColor = KswordTheme::MainBackgroundTextColorHex();
     const QString surfaceBackgroundText = KswordTheme::SurfaceColorHex();
     const QString surfaceAltBackgroundText = KswordTheme::SurfaceAltColorHex();
     const QString surfaceMutedBackgroundText = KswordTheme::SurfaceMutedColorHex();
@@ -10368,9 +10382,9 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
         "  background-color:palette(window) !important;"
         "  color:%1;"
         "}")
-        .arg(primaryTextColor)
+        .arg(windowTextColor)
         + dockBackgroundPolicyStyle.arg(
-            primaryTextColor);
+            windowTextColor);
 
     // depthOverlayStyle 作用：
     // - 为 Dock 面板、分组、表格和 Tab 增加边界/圆角/轻阴影感；
@@ -10889,11 +10903,11 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     {
         return rootStyle
             + QStringLiteral(
-                "QMenuBar{background-color:%1;color:%3;}"
-                "QMenuBar::item{background:transparent;color:%3;padding:2px 7px;}"
-                "QMenuBar::item:selected{background:%2;color:%3;}"
-                "QMenuBar::item:pressed{background:__LIGHT_MENUBAR_PRESSED__;color:%3;}"
-                "QStatusBar{background-color:%1;color:%3;}"
+                "QMenuBar{background-color:__WINDOW_BACKGROUND__;color:__WINDOW_TEXT__;}"
+                "QMenuBar::item{background:transparent;color:__WINDOW_TEXT__;padding:2px 7px;}"
+                "QMenuBar::item:selected{background:%2;color:__WINDOW_TEXT__;}"
+                "QMenuBar::item:pressed{background:__LIGHT_MENUBAR_PRESSED__;color:__WINDOW_TEXT__;}"
+                "QStatusBar{background-color:__WINDOW_BACKGROUND__;color:__WINDOW_TEXT__;}"
                 "QLineEdit,QSpinBox,QDoubleSpinBox{"
                 "  background:transparent !important;"
                 "  background-color:transparent !important;"
@@ -10944,6 +10958,8 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
                 .arg(activeThemeColor)
                 .arg(selectedTextColor)
                 .arg(windowBackgroundText)
+                .replace(QStringLiteral("__WINDOW_BACKGROUND__"), windowBackgroundText)
+                .replace(QStringLiteral("__WINDOW_TEXT__"), windowTextColor)
                 .replace(QStringLiteral("__LIGHT_MENUBAR_PRESSED__"), surfaceMutedBackgroundText)
             + sharedOverlayStyle
             + tooltipStyle
@@ -10955,11 +10971,11 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
 
     return rootStyle
         + QStringLiteral(
-            "QMenuBar{background-color:%1;color:%3;}"
-            "QMenuBar::item{background:transparent;color:%3;padding:2px 7px;}"
-            "QMenuBar::item:selected{background:%9;color:%3;}"
+            "QMenuBar{background-color:__WINDOW_BACKGROUND__;color:__WINDOW_TEXT__;}"
+            "QMenuBar::item{background:transparent;color:__WINDOW_TEXT__;padding:2px 7px;}"
+            "QMenuBar::item:selected{background:%9;color:__WINDOW_TEXT__;}"
             "QMenuBar::item:pressed{background:%10;color:%8;}"
-            "QStatusBar{background-color:%1;color:%3;}"
+            "QStatusBar{background-color:__WINDOW_BACKGROUND__;color:__WINDOW_TEXT__;}"
             "QLineEdit,QSpinBox,QDoubleSpinBox{"
             "  background:transparent !important;"
             "  background-color:transparent !important;"
@@ -11011,6 +11027,8 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
             .arg(selectedTextColor)
             .arg(KswordTheme::RgbaColorName(KswordTheme::PrimaryBlueColor, 71))
             .arg(KswordTheme::RgbaColorName(KswordTheme::PrimaryBlueColor, 97))
+            .replace(QStringLiteral("__WINDOW_BACKGROUND__"), windowBackgroundText)
+            .replace(QStringLiteral("__WINDOW_TEXT__"), windowTextColor)
         + sharedOverlayStyle
         + tooltipStyle
         + dockContentTransparentStyle

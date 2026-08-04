@@ -716,9 +716,9 @@ namespace ks::ui
 
     void CustomTitleBar::updateVisualState()
     {
-        const QString titleBarBackgroundText = KswordTheme::WindowColorHex();
+        const QString titleBarBackgroundText = KswordTheme::MainBackgroundColorHex();
         const QString titleBarBorderText = KswordTheme::BorderColorHex();
-        const QString titleTextColorText = KswordTheme::TextPrimaryColorHex();
+        const QString titleTextColorText = KswordTheme::MainBackgroundTextColorHex();
         const QString commandBackgroundText = KswordTheme::SurfaceColorHex();
         const QString commandTextColorText = KswordTheme::TextPrimaryColorHex();
         const QString commandBorderText = KswordTheme::BorderStrongColorHex();
