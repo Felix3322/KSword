@@ -237,8 +237,8 @@ Except where a file says otherwise, Ksword's own code is GPLv3-only. The [Ksword
 
 <a href="https://www.star-history.com/?repos=KSwordDEV%2FKSword&type=timeline&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=KSwordDEV/KSword&type=timeline&theme=dark&legend=top-left&sealed_token=z3lDzSCqYcrsHevfwWR-A7GrLv3t7XcjgLhW0yK13FvqFRvYRmGjEY5XNCqGHUE2-mvPVsKjV5EAbAtI7OTPisLY0q0652qBc5LJxbRZQpTYfSMqfcLy1r6MTWGj-JLLrObXIFhsqr5QQpxZJb8h5R5LvFURf-3JusERKoUegibW7nq8ADYLJ2FFdhvy" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=KSwordDEV/KSword&type=timeline&legend=top-left&sealed_token=z3lDzSCqYcrsHevfwWR-A7GrLv3t7XcjgLhW0yK13FvqFRvYRmGjEY5XNCqGHUE2-mvPVsKjV5EAbAtI7OTPisLY0q0652qBc5LJxbRZQpTYfSMqfcLy1r6MTWGj-JLLrObXIFhsqr5QQpxZJb8h5R5LvFURf-3JusERKoUegibW7nq8ADYLJ2FFdhvy" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=KSwordDEV/KSword&type=timeline&legend=top-left&sealed_token=z3lDzSCqYcrsHevfwWR-A7GrLv3t7XcjgLhW0yK13FvqFRvYRmGjEY5XNCqGHUE2-mvPVsKjV5EAbAtI7OTPisLY0q0652qBc5LJxbRZQpTYfSMqfcLy1r6MTWGj-JLLrObXIFhsqr5QQpxZJb8h5R5LvFURf-3JusERKoUegibW7nq8ADYLJ2FFdhvy" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=KSwordDEV/KSword&type=timeline&theme=dark&legend=top-left&sealed_token=hbas9yW4Wjk96TQwUcVo8iWbLMLjxz1Ageym2BTfRw2bV9g97jc35XTCzmb2yHYYxsOm4xNQrBp8kpr-mfkhnFg0-fSBW5otNIhxK0DEocUY0dBWKTMJ0vG7LsEBA0oNQIkZW2pCO44UEI3kps_J3yhO0jN_uvS1AArEXxLA4uGMoiFmiVzWuBuo6KlU" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=KSwordDEV/KSword&type=timeline&legend=top-left&sealed_token=hbas9yW4Wjk96TQwUcVo8iWbLMLjxz1Ageym2BTfRw2bV9g97jc35XTCzmb2yHYYxsOm4xNQrBp8kpr-mfkhnFg0-fSBW5otNIhxK0DEocUY0dBWKTMJ0vG7LsEBA0oNQIkZW2pCO44UEI3kps_J3yhO0jN_uvS1AArEXxLA4uGMoiFmiVzWuBuo6KlU" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=KSwordDEV/KSword&type=timeline&legend=top-left&sealed_token=hbas9yW4Wjk96TQwUcVo8iWbLMLjxz1Ageym2BTfRw2bV9g97jc35XTCzmb2yHYYxsOm4xNQrBp8kpr-mfkhnFg0-fSBW5otNIhxK0DEocUY0dBWKTMJ0vG7LsEBA0oNQIkZW2pCO44UEI3kps_J3yhO0jN_uvS1AArEXxLA4uGMoiFmiVzWuBuo6KlU" />
  </picture>
 </a>
