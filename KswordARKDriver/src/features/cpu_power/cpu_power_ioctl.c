@@ -16,6 +16,9 @@
 // - 控制路径必须同时经过 FILE_WRITE_ACCESS、UI 确认与安全策略。
 // ============================================================
 
+C_ASSERT(sizeof(KSWORD_ARK_CPU_POWER_CONTROL_REQUEST) == 144U);
+C_ASSERT(sizeof(KSWORD_ARK_CPU_POWER_RESPONSE) == 352U);
+
 // KswordARKCpuPowerLogControlResult：把控制失败原因和原始请求值写入统一 R0 日志。
 static VOID
 KswordARKCpuPowerLogControlResult(
@@ -40,8 +43,8 @@ KswordARKCpuPowerLogControlResult(
         logMessage,
         sizeof(logMessage),
         "CPU power control result: status=0x%08X, reason=%lu, apply=0x%08lX, request=0x%08lX, "
-        "pl1=%lu/%lu/%lu, pl2=%lu/%lu/%lu, turbo=%lu, hwp=%lu/%lu/%lu/%lu, ratio=%lu, "
-        "expected=%016I64X/%016I64X/%016I64X/%016I64X, fields=0x%08lX, response=0x%08lX, "
+        "pl1=%lu/%lu/%lu, pl2=%lu/%lu/%lu, turbo=%lu, hwp=%lu/%lu/%lu/%lu, ratio=%lu, perf=%lu, "
+        "expected=%016I64X/%016I64X/%016I64X/%016I64X/%016I64X, fields=0x%08lX, response=0x%08lX, "
         "capability=0x%016I64X, updated=%lu, failed=%lu.",
         (unsigned int)Status,
         Response->failureReason,
@@ -59,10 +62,12 @@ KswordARKCpuPowerLogControlResult(
         ControlRequest->hwpDesiredPerformance,
         ControlRequest->hwpEnergyPerformancePreference,
         ControlRequest->turboRatio,
+        ControlRequest->requestedMultiplier,
         ControlRequest->expectedPackagePowerLimit,
         ControlRequest->expectedMiscEnable,
         ControlRequest->expectedHwpRequest,
         ControlRequest->expectedTurboRatioLimit,
+        ControlRequest->expectedPerfControl,
         Response->fieldFlags,
         Response->responseFlags,
         Response->capabilityFlags,
@@ -134,6 +139,8 @@ KswordARKCpuPowerIoctlControl(
 {
     // controlRequest 指向完整固定输入包。
     KSWORD_ARK_CPU_POWER_CONTROL_REQUEST* controlRequest = NULL;
+    // controlRequestCopy 在清零 METHOD_BUFFERED 共用输出缓冲区前保存完整输入。
+    KSWORD_ARK_CPU_POWER_CONTROL_REQUEST controlRequestCopy;
     // response 指向固定输出快照。
     KSWORD_ARK_CPU_POWER_RESPONSE* response = NULL;
     // safetyContext 把 UI 确认交给统一 R0 安全策略。
@@ -145,7 +152,7 @@ KswordARKCpuPowerIoctlControl(
     NTSTATUS status = STATUS_SUCCESS;
     // targetText 是安全审计使用的固定目标说明。
     static const WCHAR targetText[] =
-        L"CPU RAPL HWP Turbo power-management MSRs";
+        L"CPU RAPL HWP Turbo ratio and performance-control MSRs";
 
     // 长度由统一 retrieval helper 重新验证。
     UNREFERENCED_PARAMETER(InputBufferLength);
@@ -171,6 +178,13 @@ KswordARKCpuPowerIoctlControl(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+    // METHOD_BUFFERED 的输入和输出可能指向同一个 SystemBuffer；必须先复制请求。
+    RtlCopyMemory(
+        &controlRequestCopy,
+        controlRequest,
+        sizeof(controlRequestCopy));
+    // 后续校验和应用只读取栈上副本，响应初始化不会再覆盖请求字段。
+    controlRequest = &controlRequestCopy;
     // 取得完整固定响应缓冲区。
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,

@@ -12,6 +12,8 @@
 
 // Intel 架构与 RAPL/HWP 文档定义的固定 MSR 编号。
 #define KSW_CPU_POWER_MSR_PLATFORM_INFO       0x000000CEUL
+#define KSW_CPU_POWER_MSR_PERF_STATUS         0x00000198UL
+#define KSW_CPU_POWER_MSR_PERF_CONTROL        0x00000199UL
 #define KSW_CPU_POWER_MSR_MISC_ENABLE         0x000001A0UL
 #define KSW_CPU_POWER_MSR_TURBO_RATIO_LIMIT   0x000001ADUL
 #define KSW_CPU_POWER_MSR_RAPL_POWER_UNIT     0x00000606UL
@@ -32,8 +34,11 @@
 #define KSW_CPU_POWER_MISC_TURBO_DISABLE_BIT 38UL
 #define KSW_CPU_POWER_PLATFORM_RATIO_BIT     28UL
 #define KSW_CPU_POWER_PLATFORM_TDP_BIT       29UL
+#define KSW_CPU_POWER_PERF_RATIO_SHIFT        8UL
+#define KSW_CPU_POWER_PERF_RATIO_MASK         0x000000000000FF00ULL
 
 // HWP 与 CPUID.06H 使用的架构能力位。
+#define KSW_CPU_POWER_CPUID1_EIST_BIT  7UL
 #define KSW_CPU_POWER_CPUID6_TURBO_BIT 1UL
 #define KSW_CPU_POWER_CPUID6_HWP_BIT   7UL
 #define KSW_CPU_POWER_CPUID6_EPP_BIT   10UL
@@ -198,6 +203,7 @@ KswordARKCpuPowerDecodeTimeWindowMilliseconds(
 static VOID
 KswordARKCpuPowerCaptureCpuid(
     _Inout_ KSWORD_ARK_CPU_POWER_RESPONSE* Response,
+    _Out_ BOOLEAN* PerfControlSupported,
     _Out_ BOOLEAN* TurboSupported,
     _Out_ BOOLEAN* HwpSupported,
     _Out_ BOOLEAN* HwpEppSupported
@@ -215,6 +221,7 @@ KswordARKCpuPowerCaptureCpuid(
     ULONG maximumExtendedLeaf = 0UL;
 
     // 初始化能力输出，避免旧值穿过无能力路径。
+    *PerfControlSupported = FALSE;
     *TurboSupported = FALSE;
     *HwpSupported = FALSE;
     *HwpEppSupported = FALSE;
@@ -254,6 +261,9 @@ KswordARKCpuPowerCaptureCpuid(
             &Response->family,
             &Response->model,
             &Response->stepping);
+        // ECX[7] 表示 Enhanced Intel SpeedStep，并声明 IA32_PERF_CTL 路径。
+        *PerfControlSupported = ((((ULONG)registers[2]) &
+            (1UL << KSW_CPU_POWER_CPUID1_EIST_BIT)) != 0UL) ? TRUE : FALSE;
         // ECX[31] 表示当前环境存在 hypervisor。
         if ((((ULONG)registers[2]) & (1UL << 31U)) != 0UL) {
             Response->responseFlags |=
@@ -430,6 +440,18 @@ KswordARKCpuPowerDecodeSnapshot(
         Response->capabilityFlags |= KSWORD_ARK_CPU_POWER_CAP_TURBO_CONTROL;
     }
 
+    // IA32_PERF_CTL[15:8] 是软件请求倍频；IA32_PERF_STATUS[15:8] 是当前倍频反馈。
+    if ((Response->fieldFlags & KSWORD_ARK_CPU_POWER_FIELD_PERF_CONTROL) != 0UL) {
+        Response->requestedMultiplier =
+            (ULONG)((Response->msrPerfControl >>
+                KSW_CPU_POWER_PERF_RATIO_SHIFT) & 0xFFULL);
+    }
+    if ((Response->fieldFlags & KSWORD_ARK_CPU_POWER_FIELD_PERF_STATUS) != 0UL) {
+        Response->currentMultiplier =
+            (ULONG)((Response->msrPerfStatus >>
+                KSW_CPU_POWER_PERF_RATIO_SHIFT) & 0xFFULL);
+    }
+
     // IA32_PM_ENABLE[0] 表示 HWP 已由固件或操作系统启用。
     if ((Response->fieldFlags & KSWORD_ARK_CPU_POWER_FIELD_PM_ENABLE) != 0UL &&
         (Response->msrPmEnable & 1ULL) != 0ULL) {
@@ -480,6 +502,8 @@ KswordARKCpuPowerQuerySnapshotUnlocked(
     _Out_ KSWORD_ARK_CPU_POWER_RESPONSE* Response
     )
 {
+    // perfControlSupported 来自 CPUID.1:ECX.EIST，作为读取 0x198/0x199 的架构门控。
+    BOOLEAN perfControlSupported = FALSE;
     // capability 状态由 CPUID 叶 6 输出。
     BOOLEAN turboSupported = FALSE;
     // hwpSupported 表示架构支持，不等于 IA32_PM_ENABLE 已开启。
@@ -508,6 +532,7 @@ KswordARKCpuPowerQuerySnapshotUnlocked(
     // 先采集 CPUID；该路径不访问型号相关 MSR。
     KswordARKCpuPowerCaptureCpuid(
         Response,
+        &perfControlSupported,
         &turboSupported,
         &hwpSupported,
         &hwpEppSupported);
@@ -529,6 +554,32 @@ KswordARKCpuPowerQuerySnapshotUnlocked(
     }
     if (hwpEppSupported != FALSE) {
         Response->capabilityFlags |= KSWORD_ARK_CPU_POWER_CAP_HWP_EPP;
+    }
+
+    // EIST 宣告 IA32_PERF_CTL/STATUS 时读取请求值与当前反馈。
+    if (perfControlSupported != FALSE) {
+        status = KswordARKCpuPowerReadMsr(
+            KSW_CPU_POWER_MSR_PERF_CONTROL,
+            &Response->msrPerfControl);
+        if (NT_SUCCESS(status)) {
+            Response->fieldFlags |= KSWORD_ARK_CPU_POWER_FIELD_PERF_CONTROL;
+            Response->capabilityFlags |=
+                KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL |
+                KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL_PROGRAMMABLE;
+        }
+        else if (NT_SUCCESS(firstFailure)) {
+            firstFailure = status;
+        }
+
+        status = KswordARKCpuPowerReadMsr(
+            KSW_CPU_POWER_MSR_PERF_STATUS,
+            &Response->msrPerfStatus);
+        if (NT_SUCCESS(status)) {
+            Response->fieldFlags |= KSWORD_ARK_CPU_POWER_FIELD_PERF_STATUS;
+        }
+        else if (NT_SUCCESS(firstFailure)) {
+            firstFailure = status;
+        }
     }
 
     // 读取 RAPL 单位。
@@ -749,7 +800,9 @@ KswordARKCpuPowerValidateExpectedSnapshot(
         ((Request->applyFlags & KSWORD_ARK_CPU_POWER_APPLY_HWP) != 0UL &&
             Request->expectedHwpRequest != Snapshot->msrHwpRequest) ||
         ((Request->applyFlags & KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO) != 0UL &&
-            Request->expectedTurboRatioLimit != Snapshot->msrTurboRatioLimit)) {
+            Request->expectedTurboRatioLimit != Snapshot->msrTurboRatioLimit) ||
+        ((Request->applyFlags & KSWORD_ARK_CPU_POWER_APPLY_PERF_CONTROL) != 0UL &&
+            Request->expectedPerfControl != Snapshot->msrPerfControl)) {
         // 标记 stale，供 UI 解释为“先刷新再重试”。
         Snapshot->responseFlags |=
             KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_STALE_SNAPSHOT;
@@ -781,6 +834,14 @@ KswordARKCpuPowerValidateRequest(
         Request->version != KSWORD_ARK_CPU_POWER_PROTOCOL_VERSION ||
         Request->applyFlags == 0UL ||
         (Request->applyFlags & ~KSWORD_ARK_CPU_POWER_APPLY_ALL) != 0UL ||
+        (Request->requestFlags &
+            ~(KSWORD_ARK_CPU_POWER_REQUEST_FLAG_UI_CONFIRMED |
+              KSWORD_ARK_CPU_POWER_REQUEST_FLAG_REQUIRE_CURRENT |
+              KSWORD_ARK_CPU_POWER_REQUEST_FLAG_TURBO_RATIO_ARRAY)) != 0UL ||
+        ((Request->requestFlags &
+            KSWORD_ARK_CPU_POWER_REQUEST_FLAG_TURBO_RATIO_ARRAY) != 0UL &&
+         (Request->applyFlags &
+            KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO) == 0UL) ||
         (Request->requestFlags &
             KSWORD_ARK_CPU_POWER_REQUEST_FLAG_UI_CONFIRMED) == 0UL) {
         Snapshot->failureReason =
@@ -941,15 +1002,54 @@ KswordARKCpuPowerValidateRequest(
     // Turbo Ratio 只在平台 bit 28 与 0x1AD 都可读时开放。
     if ((Request->applyFlags &
         KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO) != 0UL) {
-        // ratio 为一个 1..255 的全档位目标。
+        // ratio 为一个 1..255 的全档位目标；还原路径可提供逐档结构化数组。
         if ((Snapshot->capabilityFlags &
                 KSWORD_ARK_CPU_POWER_CAP_TURBO_RATIO_PROGRAMMABLE) == 0ULL ||
             (Snapshot->fieldFlags &
-                KSWORD_ARK_CPU_POWER_FIELD_TURBO_RATIO_LIMIT) == 0UL ||
-            Request->turboRatio == 0UL ||
-            Request->turboRatio > 0xFFUL) {
+                KSWORD_ARK_CPU_POWER_FIELD_TURBO_RATIO_LIMIT) == 0UL) {
             Snapshot->failureReason =
                 KSWORD_ARK_CPU_POWER_FAILURE_TURBO_RATIO;
+            return STATUS_NOT_SUPPORTED;
+        }
+
+        // 只验证硬件当前实现的非 0 档位，禁止把 0 或截断值写入有效档位。
+        BOOLEAN hasImplementedRatio = FALSE;
+        for (ULONG ratioIndex = 0UL;
+            ratioIndex < KSWORD_ARK_CPU_POWER_TURBO_RATIO_COUNT;
+            ++ratioIndex) {
+            if (Snapshot->turboRatios[ratioIndex] == 0UL) {
+                continue;
+            }
+            hasImplementedRatio = TRUE;
+            const ULONG targetRatio =
+                (Request->requestFlags &
+                    KSWORD_ARK_CPU_POWER_REQUEST_FLAG_TURBO_RATIO_ARRAY) != 0UL
+                ? Request->turboRatios[ratioIndex]
+                : Request->turboRatio;
+            if (targetRatio == 0UL || targetRatio > 0xFFUL) {
+                Snapshot->failureReason =
+                    KSWORD_ARK_CPU_POWER_FAILURE_TURBO_RATIO;
+                return STATUS_INVALID_PARAMETER;
+            }
+        }
+        if (hasImplementedRatio == FALSE) {
+            Snapshot->failureReason =
+                KSWORD_ARK_CPU_POWER_FAILURE_TURBO_RATIO;
+            return STATUS_NOT_SUPPORTED;
+        }
+    }
+
+    // 请求倍频只开放 IA32_PERF_CTL[15:8]，且必须通过 EIST 能力与可读性探测。
+    if ((Request->applyFlags &
+        KSWORD_ARK_CPU_POWER_APPLY_PERF_CONTROL) != 0UL) {
+        if ((Snapshot->capabilityFlags &
+                KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL_PROGRAMMABLE) == 0ULL ||
+            (Snapshot->fieldFlags &
+                KSWORD_ARK_CPU_POWER_FIELD_PERF_CONTROL) == 0UL ||
+            Request->requestedMultiplier == 0UL ||
+            Request->requestedMultiplier > 0xFFUL) {
+            Snapshot->failureReason =
+                KSWORD_ARK_CPU_POWER_FAILURE_PERF_CONTROL;
             return STATUS_NOT_SUPPORTED;
         }
     }
@@ -1108,6 +1208,36 @@ KswordARKCpuPowerApplyCurrentProcessor(
         }
     }
 
+    // 请求倍频只替换 IA32_PERF_CTL[15:8]，保留电压及所有型号相关位。
+    if ((Request->applyFlags &
+        KSWORD_ARK_CPU_POWER_APPLY_PERF_CONTROL) != 0UL) {
+        status = KswordARKCpuPowerReadMsr(
+            KSW_CPU_POWER_MSR_PERF_CONTROL,
+            &currentValue);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+        newValue = currentValue & ~KSW_CPU_POWER_PERF_RATIO_MASK;
+        newValue |= ((ULONGLONG)Request->requestedMultiplier) <<
+            KSW_CPU_POWER_PERF_RATIO_SHIFT;
+        status = KswordARKCpuPowerWriteMsr(
+            KSW_CPU_POWER_MSR_PERF_CONTROL,
+            newValue);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+        status = KswordARKCpuPowerReadMsr(
+            KSW_CPU_POWER_MSR_PERF_CONTROL,
+            &readbackValue);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
+        if (((readbackValue ^ newValue) &
+            KSW_CPU_POWER_PERF_RATIO_MASK) != 0ULL) {
+            return STATUS_DATA_ERROR;
+        }
+    }
+
     // HWP request 是每逻辑处理器状态，因此必须逐处理器更新。
     if ((Request->applyFlags & KSWORD_ARK_CPU_POWER_APPLY_HWP) != 0UL) {
         // 读取当前处理器请求并保留高 32 位 package/control 字段。
@@ -1180,9 +1310,14 @@ KswordARKCpuPowerApplyCurrentProcessor(
             if (((currentValue >> shift) & 0xFFULL) == 0ULL) {
                 continue;
             }
-            // 清除并写入同一个 all-core 目标 ratio。
+            // 普通操作写入同一目标；还原操作按结构化数组恢复每个档位。
+            const ULONG targetRatio =
+                (Request->requestFlags &
+                    KSWORD_ARK_CPU_POWER_REQUEST_FLAG_TURBO_RATIO_ARRAY) != 0UL
+                ? Request->turboRatios[ratioIndex]
+                : Request->turboRatio;
             newValue &= ~(0xFFULL << shift);
-            newValue |= ((ULONGLONG)Request->turboRatio) << shift;
+            newValue |= ((ULONGLONG)targetRatio) << shift;
             // 记录该字节用于写后验证。
             changedMask |= 0xFFULL << shift;
         }

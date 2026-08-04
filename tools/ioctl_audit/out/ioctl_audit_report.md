@@ -1,6 +1,6 @@
 # KswordARKDriver IOCTL Audit Report
 
-- Generated at: `2026-08-04T02:24:14.117778+00:00`
+- Generated at: `2026-08-04T03:38:58.361766+00:00`
 - Repository root: `C:\Users\Felix\CLionProjects\KSword`
 - Headers scanned: `45`
 - Registry scanned: `KswordARKDriver/src/dispatch/ioctl_registry.c`

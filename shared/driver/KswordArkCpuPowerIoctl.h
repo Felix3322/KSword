@@ -7,11 +7,11 @@
 // 作用：
 // - 定义 CPU 电源管理页面唯一的 R3/R0 通信协议；
 // - 查询接口只读取 CPUID 与经过异常保护的 Intel 架构 MSR；
-// - 控制接口只修改已探测且未锁定的 RAPL、HWP、Turbo 与 Turbo Ratio 字段；
+// - 控制接口只修改已探测且未锁定的 RAPL、HWP、Turbo、Turbo Ratio 与请求倍频字段；
 // - 不提供任意 MSR 编号或任意 64 位原始值写入能力。
 // ============================================================
 
-#define KSWORD_ARK_CPU_POWER_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_CPU_POWER_PROTOCOL_VERSION 2UL
 
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_CPU_POWER   0x8F2UL
 #define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_CPU_POWER 0x8F3UL
@@ -44,6 +44,8 @@
 #define KSWORD_ARK_CPU_POWER_FIELD_HWP_CAPABILITIES    0x00000080UL
 #define KSWORD_ARK_CPU_POWER_FIELD_HWP_REQUEST         0x00000100UL
 #define KSWORD_ARK_CPU_POWER_FIELD_TURBO_RATIO_LIMIT   0x00000200UL
+#define KSWORD_ARK_CPU_POWER_FIELD_PERF_STATUS         0x00000400UL
+#define KSWORD_ARK_CPU_POWER_FIELD_PERF_CONTROL        0x00000800UL
 
 #define KSWORD_ARK_CPU_POWER_CAP_RAPL                       0x0000000000000001ULL
 #define KSWORD_ARK_CPU_POWER_CAP_PACKAGE_POWER_LIMIT        0x0000000000000002ULL
@@ -56,6 +58,8 @@
 #define KSWORD_ARK_CPU_POWER_CAP_HWP_EPP                    0x0000000000000100ULL
 #define KSWORD_ARK_CPU_POWER_CAP_TURBO_RATIO_LIMIT          0x0000000000000200ULL
 #define KSWORD_ARK_CPU_POWER_CAP_TURBO_RATIO_PROGRAMMABLE   0x0000000000000400ULL
+#define KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL                0x0000000000000800ULL
+#define KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL_PROGRAMMABLE   0x0000000000001000ULL
 
 #define KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_UNSUPPORTED_VENDOR   0x00000001UL
 #define KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_PARTIAL_MSR          0x00000002UL
@@ -85,19 +89,23 @@
 #define KSWORD_ARK_CPU_POWER_FAILURE_TURBO_RATIO            15UL
 #define KSWORD_ARK_CPU_POWER_FAILURE_STALE_SNAPSHOT         16UL
 #define KSWORD_ARK_CPU_POWER_FAILURE_PROCESSOR_APPLY        17UL
+#define KSWORD_ARK_CPU_POWER_FAILURE_PERF_CONTROL           18UL
 
 #define KSWORD_ARK_CPU_POWER_APPLY_POWER_LIMITS 0x00000001UL
 #define KSWORD_ARK_CPU_POWER_APPLY_TURBO       0x00000002UL
 #define KSWORD_ARK_CPU_POWER_APPLY_HWP         0x00000004UL
 #define KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO 0x00000008UL
+#define KSWORD_ARK_CPU_POWER_APPLY_PERF_CONTROL 0x00000010UL
 #define KSWORD_ARK_CPU_POWER_APPLY_ALL \
     (KSWORD_ARK_CPU_POWER_APPLY_POWER_LIMITS | \
      KSWORD_ARK_CPU_POWER_APPLY_TURBO | \
      KSWORD_ARK_CPU_POWER_APPLY_HWP | \
-     KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO)
+     KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO | \
+     KSWORD_ARK_CPU_POWER_APPLY_PERF_CONTROL)
 
 #define KSWORD_ARK_CPU_POWER_REQUEST_FLAG_UI_CONFIRMED    0x00000001UL
 #define KSWORD_ARK_CPU_POWER_REQUEST_FLAG_REQUIRE_CURRENT 0x00000002UL
+#define KSWORD_ARK_CPU_POWER_REQUEST_FLAG_TURBO_RATIO_ARRAY 0x00000004UL
 
 // 无法从 MSR_PKG_POWER_INFO 取得 SKU 上限时，仍以 1000 W 作为协议绝对硬上限。
 #define KSWORD_ARK_CPU_POWER_ABSOLUTE_MAX_MILLIWATTS 1000000UL
@@ -124,11 +132,15 @@ typedef struct _KSWORD_ARK_CPU_POWER_CONTROL_REQUEST
     unsigned long hwpDesiredPerformance;
     unsigned long hwpEnergyPerformancePreference;
     unsigned long turboRatio;
-    unsigned long reserved[2];
+    unsigned long requestedMultiplier;
+    // turboRatios 仅在 TURBO_RATIO_ARRAY 标志置位时用于逐档精确还原。
+    unsigned long turboRatios[KSWORD_ARK_CPU_POWER_TURBO_RATIO_COUNT];
+    unsigned long reserved;
     unsigned long long expectedPackagePowerLimit;
     unsigned long long expectedMiscEnable;
     unsigned long long expectedHwpRequest;
     unsigned long long expectedTurboRatioLimit;
+    unsigned long long expectedPerfControl;
 } KSWORD_ARK_CPU_POWER_CONTROL_REQUEST;
 
 typedef struct _KSWORD_ARK_CPU_POWER_RESPONSE
@@ -161,6 +173,8 @@ typedef struct _KSWORD_ARK_CPU_POWER_RESPONSE
     unsigned long pl2Enabled;
     unsigned long pl2ClampEnabled;
     unsigned long turboEnabled;
+    unsigned long requestedMultiplier;
+    unsigned long currentMultiplier;
     unsigned long maximumNonTurboRatio;
     unsigned long maximumEfficiencyRatio;
     unsigned long hwpHighestPerformance;
@@ -181,6 +195,8 @@ typedef struct _KSWORD_ARK_CPU_POWER_RESPONSE
     unsigned long long msrHwpCapabilities;
     unsigned long long msrHwpRequest;
     unsigned long long msrTurboRatioLimit;
+    unsigned long long msrPerfStatus;
+    unsigned long long msrPerfControl;
     char vendorId[KSWORD_ARK_CPU_POWER_VENDOR_TEXT_CHARS];
     char brandText[KSWORD_ARK_CPU_POWER_BRAND_TEXT_CHARS];
 } KSWORD_ARK_CPU_POWER_RESPONSE;

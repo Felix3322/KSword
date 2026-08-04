@@ -2,6 +2,9 @@
 
 #include <sstream>
 
+static_assert(sizeof(KSWORD_ARK_CPU_POWER_CONTROL_REQUEST) == 144U);
+static_assert(sizeof(KSWORD_ARK_CPU_POWER_RESPONSE) == 352U);
+
 namespace ksword::ark
 {
     namespace
@@ -31,6 +34,8 @@ namespace ksword::ark
                 << ", capability=0x" << response.capabilityFlags
                 << std::dec
                 << ", reason=" << response.failureReason
+                << ", requestedMultiplier=" << response.requestedMultiplier
+                << ", currentMultiplier=" << response.currentMultiplier
                 << ", updated=" << response.updatedProcessorCount
                 << ", failed=" << response.failedProcessorCount;
             return stream.str();

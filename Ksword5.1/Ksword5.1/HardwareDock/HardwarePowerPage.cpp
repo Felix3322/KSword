@@ -225,6 +225,10 @@ namespace
             return powerText(
                 QStringLiteral("hardware.power.error.reason.processor_apply"),
                 QStringLiteral("至少一个逻辑处理器的 MSR 写入或回读校验失败。"));
+        case KSWORD_ARK_CPU_POWER_FAILURE_PERF_CONTROL:
+            return powerText(
+                QStringLiteral("hardware.power.error.reason.perf_control"),
+                QStringLiteral("请求倍频不可编程、IA32_PERF_CTL 不可读，或倍率不在 1 到 255 之间。"));
         default:
             return powerText(
                 QStringLiteral("hardware.power.error.reason.unknown"),
@@ -352,7 +356,7 @@ void HardwarePowerPage::initializeUi()
     rootLayout->addWidget(titleLabel, 0);
 
     auto* scopeLabel = new QLabel(
-        QStringLiteral("Windows 电源方案使用系统 API；R0 调节仅支持已探测的 Intel RAPL/HWP/Turbo 白名单字段。不会绕过 BIOS/微码锁，也不提供任意 MSR 写入。"),
+        QStringLiteral("Windows 电源方案使用系统 API；R0 调节仅支持已探测的 Intel RAPL/HWP/Turbo/请求倍频白名单字段。不会绕过 BIOS/微码锁，也不提供任意 MSR 写入。"),
         this);
     scopeLabel->setWordWrap(true);
     scopeLabel->setStyleSheet(
@@ -360,7 +364,7 @@ void HardwarePowerPage::initializeUi()
     language.bindText(
         scopeLabel,
         QStringLiteral("hardware.power.scope"),
-        QStringLiteral("Windows 电源方案使用系统 API；R0 调节仅支持已探测的 Intel RAPL/HWP/Turbo 白名单字段。不会绕过 BIOS/微码锁，也不提供任意 MSR 写入。"));
+        QStringLiteral("Windows 电源方案使用系统 API；R0 调节仅支持已探测的 Intel RAPL/HWP/Turbo/请求倍频白名单字段。不会绕过 BIOS/微码锁，也不提供任意 MSR 写入。"));
     rootLayout->addWidget(scopeLabel, 0);
 
     m_statusLabel = new QLabel(
@@ -402,10 +406,18 @@ void HardwarePowerPage::initializeUi()
         m_refreshAllButton,
         QStringLiteral("hardware.power.refresh"),
         QStringLiteral("刷新全部"));
+    m_restoreInitialStateButton = new QPushButton(
+        QStringLiteral("一键还原首次状态"),
+        schemeGroup);
+    language.bindText(
+        m_restoreInitialStateButton,
+        QStringLiteral("hardware.power.restore"),
+        QStringLiteral("一键还原首次状态"));
     schemeLayout->addWidget(schemeLabel, 0, 0);
     schemeLayout->addWidget(m_powerSchemeCombo, 0, 1);
     schemeLayout->addWidget(m_applyPowerSchemeButton, 0, 2);
     schemeLayout->addWidget(m_refreshAllButton, 0, 3);
+    schemeLayout->addWidget(m_restoreInitialStateButton, 1, 0, 1, 4);
     schemeLayout->setColumnStretch(1, 1);
     contentLayout->addWidget(schemeGroup, 0);
 
@@ -492,6 +504,26 @@ void HardwarePowerPage::initializeUi()
     turboLayout->addWidget(ratioLabel, 1, 0);
     turboLayout->addWidget(m_turboRatioSpin, 1, 1);
     turboLayout->addWidget(m_applyTurboRatioButton, 1, 2);
+    auto* requestedMultiplierLabel = new QLabel(
+        QStringLiteral("请求倍频（IA32_PERF_CTL）"),
+        turboGroup);
+    language.bindText(
+        requestedMultiplierLabel,
+        QStringLiteral("hardware.power.turbo.requested_multiplier"),
+        QStringLiteral("请求倍频（IA32_PERF_CTL）"));
+    m_requestedMultiplierSpin = new QSpinBox(turboGroup);
+    m_requestedMultiplierSpin->setRange(1, 255);
+    m_requestedMultiplierSpin->setSuffix(QStringLiteral(" x"));
+    m_applyRequestedMultiplierButton = new QPushButton(
+        QStringLiteral("应用请求倍频"),
+        turboGroup);
+    language.bindText(
+        m_applyRequestedMultiplierButton,
+        QStringLiteral("hardware.power.turbo.requested_multiplier_apply"),
+        QStringLiteral("应用请求倍频"));
+    turboLayout->addWidget(requestedMultiplierLabel, 2, 0);
+    turboLayout->addWidget(m_requestedMultiplierSpin, 2, 1);
+    turboLayout->addWidget(m_applyRequestedMultiplierButton, 2, 2);
     turboLayout->setColumnStretch(3, 1);
     contentLayout->addWidget(turboGroup, 0);
 
@@ -562,6 +594,9 @@ void HardwarePowerPage::initializeConnections()
     connect(m_applyPowerSchemeButton, &QPushButton::clicked, this, [this]() {
         applySelectedPowerScheme();
     });
+    connect(m_restoreInitialStateButton, &QPushButton::clicked, this, [this]() {
+        restoreInitialState();
+    });
     connect(m_applyPowerLimitsButton, &QPushButton::clicked, this, [this]() {
         sendControlRequest(
             KSWORD_ARK_CPU_POWER_APPLY_POWER_LIMITS,
@@ -585,6 +620,13 @@ void HardwarePowerPage::initializeConnections()
             powerText(
                 QStringLiteral("hardware.power.confirm.ratio"),
                 QStringLiteral("即将把 MSR_TURBO_RATIO_LIMIT 中所有已实现档位改为同一倍率。超出 CPU、主板或散热能力可能立即死机或产生计算错误。是否继续？")));
+    });
+    connect(m_applyRequestedMultiplierButton, &QPushButton::clicked, this, [this]() {
+        sendControlRequest(
+            KSWORD_ARK_CPU_POWER_APPLY_PERF_CONTROL,
+            powerText(
+                QStringLiteral("hardware.power.confirm.requested_multiplier"),
+                QStringLiteral("即将在全部逻辑处理器修改 IA32_PERF_CTL 请求倍频。Speed Shift、固件或微码可能限制或忽略该请求；过高倍率可能导致过热、死机或计算错误。是否继续？")));
     });
     connect(m_applyHwpButton, &QPushButton::clicked, this, [this]() {
         sendControlRequest(
@@ -663,6 +705,12 @@ void HardwarePowerPage::refreshPowerSchemes()
         }
     }
 
+    // 首次成功读取的活动方案作为本页面生命周期内的一键还原目标，后续刷新不覆盖。
+    if (activeError == ERROR_SUCCESS && activeGuid != nullptr &&
+        m_restorePowerSchemeGuid.isEmpty())
+    {
+        m_restorePowerSchemeGuid = guidBytes(*activeGuid);
+    }
     if (activeGuid != nullptr)
     {
         ::LocalFree(activeGuid);
@@ -674,6 +722,7 @@ void HardwarePowerPage::refreshPowerSchemes()
     const bool hasSchemes = m_powerSchemeCombo->count() > 0;
     m_powerSchemeCombo->setEnabled(hasSchemes);
     m_applyPowerSchemeButton->setEnabled(hasSchemes);
+    updateControlAvailability();
 }
 
 void HardwarePowerPage::applySelectedPowerScheme()
@@ -720,6 +769,153 @@ void HardwarePowerPage::applySelectedPowerScheme()
     refreshPowerSchemes();
 }
 
+void HardwarePowerPage::restoreInitialState()
+{
+    const QString errorTitle = powerText(
+        QStringLiteral("hardware.power.error.title"),
+        QStringLiteral("电源调节失败"));
+    if (m_restorePowerSchemeGuid.isEmpty() && !m_hasRestoreCpuSnapshot)
+    {
+        QMessageBox::critical(
+            this,
+            errorTitle,
+            powerText(
+                QStringLiteral("hardware.power.error.no_restore"),
+                QStringLiteral("尚未捕获可还原的首次状态，请先刷新。")));
+        return;
+    }
+
+    // 在确认前先刷新当前 CPU 状态，避免以失效能力判断是否需要风险确认。
+    if (m_hasRestoreCpuSnapshot)
+    {
+        refreshCpuPower();
+    }
+
+    const unsigned long initialCpuApplyFlags = restorableCpuApplyFlags();
+    if (initialCpuApplyFlags != 0UL &&
+        (m_riskConfirmCheck == nullptr || !m_riskConfirmCheck->isChecked()))
+    {
+        QMessageBox::critical(
+            this,
+            errorTitle,
+            powerText(
+                QStringLiteral("hardware.power.error.risk_unconfirmed"),
+                QStringLiteral("请先勾选硬件风险确认。")));
+        return;
+    }
+    if (initialCpuApplyFlags != 0UL)
+    {
+        const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST initialRequest =
+            buildRestoreControlRequest(initialCpuApplyFlags);
+        const QString validationError =
+            validateCpuPowerRequestForUi(initialRequest, m_snapshot);
+        if (!validationError.isEmpty())
+        {
+            setStatus(validationError, true);
+            QMessageBox::critical(this, errorTitle, validationError);
+            return;
+        }
+    }
+
+    if (QMessageBox::warning(
+            this,
+            powerText(
+                QStringLiteral("hardware.power.confirm.restore_title"),
+                QStringLiteral("确认一键还原")),
+            powerText(
+                QStringLiteral("hardware.power.confirm.restore"),
+                QStringLiteral("即将恢复本页首次有效刷新时捕获的 Windows 电源方案，以及当前仍可写的 PL1/PL2、Turbo、HWP、Turbo Ratio 和请求倍频。固件或 Windows 仍可能再次重写这些值。是否继续？")),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    bool restoredPowerScheme = false;
+    if (!m_restorePowerSchemeGuid.isEmpty())
+    {
+        GUID schemeGuid{};
+        if (!guidFromBytes(m_restorePowerSchemeGuid, &schemeGuid))
+        {
+            QMessageBox::critical(
+                this,
+                errorTitle,
+                powerText(
+                    QStringLiteral("hardware.power.error.restore_scheme_data"),
+                    QStringLiteral("首次捕获的 Windows 电源方案 GUID 数据无效。")));
+            return;
+        }
+        const DWORD schemeError = ::PowerSetActiveScheme(nullptr, &schemeGuid);
+        if (schemeError != ERROR_SUCCESS)
+        {
+            const QString message = powerText(
+                QStringLiteral("hardware.power.error.restore_scheme_apply"),
+                QStringLiteral("还原首次 Windows 电源方案失败，Win32=%1。"))
+                .arg(schemeError);
+            setStatus(message, true);
+            QMessageBox::critical(this, errorTitle, message);
+            return;
+        }
+        restoredPowerScheme = true;
+        refreshPowerSchemes();
+    }
+
+    bool restoredCpuState = false;
+    if (m_hasRestoreCpuSnapshot)
+    {
+        // Windows 方案可能立即重写 CPU 请求；重新采样后再构造 expected 字段。
+        refreshCpuPower();
+        const unsigned long cpuApplyFlags = restorableCpuApplyFlags();
+        if (cpuApplyFlags != 0UL)
+        {
+            if (m_riskConfirmCheck == nullptr || !m_riskConfirmCheck->isChecked())
+            {
+                QMessageBox::critical(
+                    this,
+                    errorTitle,
+                    powerText(
+                        QStringLiteral("hardware.power.error.risk_unconfirmed"),
+                        QStringLiteral("请先勾选硬件风险确认。")));
+                return;
+            }
+            const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST request =
+                buildRestoreControlRequest(cpuApplyFlags);
+            if (!executeControlRequest(request))
+            {
+                return;
+            }
+            restoredCpuState = true;
+        }
+    }
+
+    if (restoredPowerScheme && restoredCpuState)
+    {
+        setStatus(powerText(
+            QStringLiteral("hardware.power.status.restored"),
+            QStringLiteral("状态：已还原首次捕获的 Windows 电源方案和当前可写 CPU 设置。")));
+    }
+    else if (restoredPowerScheme)
+    {
+        setStatus(powerText(
+            QStringLiteral("hardware.power.status.restored_scheme_only"),
+            QStringLiteral("状态：已还原首次捕获的 Windows 电源方案；当前没有可写的 CPU 还原字段。")));
+    }
+    else if (restoredCpuState)
+    {
+        setStatus(powerText(
+            QStringLiteral("hardware.power.status.restored_cpu_only"),
+            QStringLiteral("状态：已还原首次捕获的当前可写 CPU 设置。")));
+    }
+    else
+    {
+        const QString message = powerText(
+            QStringLiteral("hardware.power.error.restore_unavailable"),
+            QStringLiteral("首次状态已捕获，但当前没有可执行的还原目标。"));
+        setStatus(message, true);
+        QMessageBox::critical(this, errorTitle, message);
+    }
+}
+
 void HardwarePowerPage::refreshCpuPower()
 {
     const ksword::ark::DriverClient client;
@@ -761,6 +957,12 @@ void HardwarePowerPage::applySnapshotToUi(const ksword::ark::CpuPowerResult& res
 
     m_snapshot = result.response;
     m_hasSnapshot = true;
+    // 首次有效协议快照是还原基线；控制成功后的刷新不能覆盖它。
+    if (!m_hasRestoreCpuSnapshot)
+    {
+        m_restoreCpuSnapshot = m_snapshot;
+        m_hasRestoreCpuSnapshot = true;
+    }
     const QString vendorText = QString::fromLatin1(m_snapshot.vendorId).trimmed();
     const QString brandText = QString::fromLatin1(m_snapshot.brandText).simplified();
     addSnapshotRow(
@@ -805,6 +1007,10 @@ void HardwarePowerPage::applySnapshotToUi(const ksword::ark::CpuPowerResult& res
         KSWORD_ARK_CPU_POWER_CAP_TURBO_RATIO_PROGRAMMABLE,
         m_snapshot.capabilityFlags,
         powerText(QStringLiteral("hardware.power.cap.turbo_ratio"), QStringLiteral("Turbo Ratio")));
+    appendCapability(
+        KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL_PROGRAMMABLE,
+        m_snapshot.capabilityFlags,
+        powerText(QStringLiteral("hardware.power.cap.requested_multiplier"), QStringLiteral("请求倍频")));
     appendCapability(
         KSWORD_ARK_CPU_POWER_CAP_HWP_ENABLED,
         m_snapshot.capabilityFlags,
@@ -855,9 +1061,11 @@ void HardwarePowerPage::applySnapshotToUi(const ksword::ark::CpuPowerResult& res
         powerText(QStringLiteral("hardware.power.row.turbo"), QStringLiteral("Turbo / Ratio")),
         powerText(
             QStringLiteral("hardware.power.value.turbo"),
-            QStringLiteral("Turbo=%1 | Non-Turbo=%2x | Ratio MSR=%3"))
+            QStringLiteral("Turbo=%1 | Non-Turbo=%2x | 请求=%3x | 当前=%4x | Ratio MSR=%5"))
             .arg(m_snapshot.turboEnabled)
             .arg(m_snapshot.maximumNonTurboRatio)
+            .arg(m_snapshot.requestedMultiplier)
+            .arg(m_snapshot.currentMultiplier)
             .arg(rawMsrText(m_snapshot.msrTurboRatioLimit)));
     addSnapshotRow(
         m_snapshotTable,
@@ -876,10 +1084,12 @@ void HardwarePowerPage::applySnapshotToUi(const ksword::ark::CpuPowerResult& res
     addSnapshotRow(
         m_snapshotTable,
         powerText(QStringLiteral("hardware.power.row.raw"), QStringLiteral("原始 MSR")),
-        QStringLiteral("0x610=%1 | 0x1A0=%2 | 0x774=%3")
+        QStringLiteral("0x610=%1 | 0x1A0=%2 | 0x774=%3 | 0x198=%4 | 0x199=%5")
             .arg(rawMsrText(m_snapshot.msrPackagePowerLimit))
             .arg(rawMsrText(m_snapshot.msrMiscEnable))
-            .arg(rawMsrText(m_snapshot.msrHwpRequest)));
+            .arg(rawMsrText(m_snapshot.msrHwpRequest))
+            .arg(rawMsrText(m_snapshot.msrPerfStatus))
+            .arg(rawMsrText(m_snapshot.msrPerfControl)));
     addSnapshotRow(
         m_snapshotTable,
         powerText(QStringLiteral("hardware.power.row.status"), QStringLiteral("R0 状态")),
@@ -930,6 +1140,11 @@ void HardwarePowerPage::applySnapshotToUi(const ksword::ark::CpuPowerResult& res
     if (displayedRatio > 0)
     {
         m_turboRatioSpin->setValue(displayedRatio);
+    }
+    if (m_snapshot.requestedMultiplier > 0UL)
+    {
+        m_requestedMultiplierSpin->setValue(
+            static_cast<int>(m_snapshot.requestedMultiplier));
     }
     const int hwpLowest = m_snapshot.hwpLowestPerformance != 0UL
         ? static_cast<int>(m_snapshot.hwpLowestPerformance)
@@ -1004,6 +1219,11 @@ void HardwarePowerPage::updateControlAvailability()
             KSWORD_ARK_CPU_POWER_CAP_TURBO_RATIO_PROGRAMMABLE) != 0ULL &&
         (m_snapshot.fieldFlags &
             KSWORD_ARK_CPU_POWER_FIELD_TURBO_RATIO_LIMIT) != 0UL;
+    const bool canProgramRequestedMultiplier = hasIntelSnapshot &&
+        (m_snapshot.capabilityFlags &
+            KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL_PROGRAMMABLE) != 0ULL &&
+        (m_snapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_PERF_CONTROL) != 0UL;
     const bool canControlHwp = hasIntelSnapshot &&
         (m_snapshot.capabilityFlags &
             KSWORD_ARK_CPU_POWER_CAP_HWP_ENABLED) != 0ULL &&
@@ -1037,12 +1257,21 @@ void HardwarePowerPage::updateControlAvailability()
     m_applyTurboButton->setEnabled(canControlTurbo && riskConfirmed);
     m_turboRatioSpin->setEnabled(canProgramTurboRatio);
     m_applyTurboRatioButton->setEnabled(canProgramTurboRatio && riskConfirmed);
+    m_requestedMultiplierSpin->setEnabled(canProgramRequestedMultiplier);
+    m_applyRequestedMultiplierButton->setEnabled(
+        canProgramRequestedMultiplier && riskConfirmed);
 
     m_hwpMinimumSpin->setEnabled(canControlHwp);
     m_hwpMaximumSpin->setEnabled(canControlHwp);
     m_hwpDesiredSpin->setEnabled(canControlHwp);
     m_hwpEppSpin->setEnabled(canControlHwpEpp);
     m_applyHwpButton->setEnabled(canControlHwp && riskConfirmed);
+
+    const bool hasRestoreBaseline = !m_restorePowerSchemeGuid.isEmpty() ||
+        m_hasRestoreCpuSnapshot;
+    const bool restoreWritesCpu = restorableCpuApplyFlags() != 0UL;
+    m_restoreInitialStateButton->setEnabled(
+        hasRestoreBaseline && (!restoreWritesCpu || riskConfirmed));
 }
 
 void HardwarePowerPage::setStatus(const QString& text, const bool isError)
@@ -1091,11 +1320,213 @@ KSWORD_ARK_CPU_POWER_CONTROL_REQUEST HardwarePowerPage::buildControlRequest(
         static_cast<unsigned long>(m_hwpEppSpin->value());
     request.turboRatio =
         static_cast<unsigned long>(m_turboRatioSpin->value());
+    request.requestedMultiplier =
+        static_cast<unsigned long>(m_requestedMultiplierSpin->value());
+    for (unsigned long ratioIndex = 0UL;
+        ratioIndex < KSWORD_ARK_CPU_POWER_TURBO_RATIO_COUNT;
+        ++ratioIndex)
+    {
+        request.turboRatios[ratioIndex] = request.turboRatio;
+    }
     request.expectedPackagePowerLimit = m_snapshot.msrPackagePowerLimit;
     request.expectedMiscEnable = m_snapshot.msrMiscEnable;
     request.expectedHwpRequest = m_snapshot.msrHwpRequest;
     request.expectedTurboRatioLimit = m_snapshot.msrTurboRatioLimit;
+    request.expectedPerfControl = m_snapshot.msrPerfControl;
     return request;
+}
+
+unsigned long HardwarePowerPage::restorableCpuApplyFlags() const
+{
+    if (!m_hasSnapshot || !m_hasRestoreCpuSnapshot ||
+        m_snapshot.vendor != KSWORD_ARK_CPU_POWER_VENDOR_INTEL ||
+        m_restoreCpuSnapshot.vendor != KSWORD_ARK_CPU_POWER_VENDOR_INTEL)
+    {
+        return 0UL;
+    }
+
+    unsigned long applyFlags = 0UL;
+    if ((m_snapshot.capabilityFlags &
+            KSWORD_ARK_CPU_POWER_CAP_PACKAGE_POWER_PROGRAMMABLE) != 0ULL &&
+        (m_snapshot.responseFlags &
+            KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_POWER_LIMIT_LOCKED) == 0UL &&
+        (m_snapshot.fieldFlags &
+            (KSWORD_ARK_CPU_POWER_FIELD_RAPL_UNIT |
+             KSWORD_ARK_CPU_POWER_FIELD_PACKAGE_POWER_LIMIT)) ==
+            (KSWORD_ARK_CPU_POWER_FIELD_RAPL_UNIT |
+             KSWORD_ARK_CPU_POWER_FIELD_PACKAGE_POWER_LIMIT) &&
+        (m_restoreCpuSnapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_PACKAGE_POWER_LIMIT) != 0UL)
+    {
+        applyFlags |= KSWORD_ARK_CPU_POWER_APPLY_POWER_LIMITS;
+    }
+    if ((m_snapshot.capabilityFlags &
+            KSWORD_ARK_CPU_POWER_CAP_TURBO_CONTROL) != 0ULL &&
+        (m_snapshot.fieldFlags & KSWORD_ARK_CPU_POWER_FIELD_MISC_ENABLE) != 0UL &&
+        (m_restoreCpuSnapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_MISC_ENABLE) != 0UL)
+    {
+        applyFlags |= KSWORD_ARK_CPU_POWER_APPLY_TURBO;
+    }
+    if ((m_snapshot.capabilityFlags &
+            KSWORD_ARK_CPU_POWER_CAP_HWP_ENABLED) != 0ULL &&
+        (m_snapshot.fieldFlags &
+            (KSWORD_ARK_CPU_POWER_FIELD_HWP_CAPABILITIES |
+             KSWORD_ARK_CPU_POWER_FIELD_HWP_REQUEST)) ==
+            (KSWORD_ARK_CPU_POWER_FIELD_HWP_CAPABILITIES |
+             KSWORD_ARK_CPU_POWER_FIELD_HWP_REQUEST) &&
+        (m_restoreCpuSnapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_HWP_REQUEST) != 0UL)
+    {
+        applyFlags |= KSWORD_ARK_CPU_POWER_APPLY_HWP;
+    }
+    if ((m_snapshot.capabilityFlags &
+            KSWORD_ARK_CPU_POWER_CAP_TURBO_RATIO_PROGRAMMABLE) != 0ULL &&
+        (m_snapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_TURBO_RATIO_LIMIT) != 0UL &&
+        (m_restoreCpuSnapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_TURBO_RATIO_LIMIT) != 0UL)
+    {
+        applyFlags |= KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO;
+    }
+    if ((m_snapshot.capabilityFlags &
+            KSWORD_ARK_CPU_POWER_CAP_PERF_CONTROL_PROGRAMMABLE) != 0ULL &&
+        (m_snapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_PERF_CONTROL) != 0UL &&
+        (m_restoreCpuSnapshot.fieldFlags &
+            KSWORD_ARK_CPU_POWER_FIELD_PERF_CONTROL) != 0UL &&
+        m_restoreCpuSnapshot.requestedMultiplier > 0UL &&
+        m_restoreCpuSnapshot.requestedMultiplier <= 0xFFUL)
+    {
+        applyFlags |= KSWORD_ARK_CPU_POWER_APPLY_PERF_CONTROL;
+    }
+    return applyFlags;
+}
+
+KSWORD_ARK_CPU_POWER_CONTROL_REQUEST HardwarePowerPage::buildRestoreControlRequest(
+    const unsigned long applyFlags) const
+{
+    KSWORD_ARK_CPU_POWER_CONTROL_REQUEST request{};
+    request.size = sizeof(request);
+    request.version = KSWORD_ARK_CPU_POWER_PROTOCOL_VERSION;
+    request.applyFlags = applyFlags;
+    request.requestFlags = KSWORD_ARK_CPU_POWER_REQUEST_FLAG_UI_CONFIRMED |
+        KSWORD_ARK_CPU_POWER_REQUEST_FLAG_REQUIRE_CURRENT;
+    if ((applyFlags & KSWORD_ARK_CPU_POWER_APPLY_TURBO_RATIO) != 0UL)
+    {
+        request.requestFlags |=
+            KSWORD_ARK_CPU_POWER_REQUEST_FLAG_TURBO_RATIO_ARRAY;
+    }
+
+    request.pl1Milliwatts = m_restoreCpuSnapshot.pl1Milliwatts;
+    request.pl2Milliwatts = m_restoreCpuSnapshot.pl2Milliwatts;
+    request.pl1Enabled = m_restoreCpuSnapshot.pl1Enabled;
+    request.pl1ClampEnabled = m_restoreCpuSnapshot.pl1ClampEnabled;
+    request.pl2Enabled = m_restoreCpuSnapshot.pl2Enabled;
+    request.pl2ClampEnabled = m_restoreCpuSnapshot.pl2ClampEnabled;
+    request.turboEnabled = m_restoreCpuSnapshot.turboEnabled;
+    request.hwpMinimumPerformance =
+        m_restoreCpuSnapshot.hwpMinimumPerformance;
+    request.hwpMaximumPerformance =
+        m_restoreCpuSnapshot.hwpMaximumPerformance;
+    request.hwpDesiredPerformance =
+        m_restoreCpuSnapshot.hwpDesiredPerformance;
+    request.hwpEnergyPerformancePreference =
+        (m_snapshot.capabilityFlags & KSWORD_ARK_CPU_POWER_CAP_HWP_EPP) != 0ULL
+        ? m_restoreCpuSnapshot.hwpEnergyPerformancePreference
+        : m_snapshot.hwpEnergyPerformancePreference;
+    request.requestedMultiplier = m_restoreCpuSnapshot.requestedMultiplier;
+    for (unsigned long ratioIndex = 0UL;
+        ratioIndex < KSWORD_ARK_CPU_POWER_TURBO_RATIO_COUNT;
+        ++ratioIndex)
+    {
+        request.turboRatios[ratioIndex] =
+            m_restoreCpuSnapshot.turboRatios[ratioIndex];
+        if (request.turboRatio == 0UL && request.turboRatios[ratioIndex] != 0UL)
+        {
+            request.turboRatio = request.turboRatios[ratioIndex];
+        }
+    }
+
+    request.expectedPackagePowerLimit = m_snapshot.msrPackagePowerLimit;
+    request.expectedMiscEnable = m_snapshot.msrMiscEnable;
+    request.expectedHwpRequest = m_snapshot.msrHwpRequest;
+    request.expectedTurboRatioLimit = m_snapshot.msrTurboRatioLimit;
+    request.expectedPerfControl = m_snapshot.msrPerfControl;
+    return request;
+}
+
+bool HardwarePowerPage::executeControlRequest(
+    const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST& request)
+{
+    const QString errorTitle = powerText(
+        QStringLiteral("hardware.power.error.title"),
+        QStringLiteral("电源调节失败"));
+    const QString validationError =
+        validateCpuPowerRequestForUi(request, m_snapshot);
+    if (!validationError.isEmpty())
+    {
+        setStatus(validationError, true);
+        QMessageBox::critical(this, errorTitle, validationError);
+        return false;
+    }
+
+    setStatus(powerText(
+        QStringLiteral("hardware.power.status.applying"),
+        QStringLiteral("状态：正在通过 KswordARK 应用并回读校验 CPU 电源设置...")));
+    const ksword::ark::DriverClient client;
+    const ksword::ark::CpuPowerResult result =
+        client.controlCpuPower(request);
+    const bool responseValid =
+        result.io.bytesReturned >= sizeof(KSWORD_ARK_CPU_POWER_RESPONSE) &&
+        result.response.size >= sizeof(KSWORD_ARK_CPU_POWER_RESPONSE) &&
+        result.response.version == KSWORD_ARK_CPU_POWER_PROTOCOL_VERSION;
+    if (!result.io.ok || !responseValid || result.response.lastStatus != 0L)
+    {
+        QString detail = QString::fromStdString(result.io.message);
+        if (responseValid &&
+            (result.response.responseFlags &
+                KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_STALE_SNAPSHOT) != 0UL)
+        {
+            detail = powerText(
+                QStringLiteral("hardware.power.error.stale"),
+                QStringLiteral("设置在提交前已被固件、Windows 或其他工具改变，请刷新后重试。"));
+        }
+        else if (responseValid &&
+            (result.response.responseFlags &
+                KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_WRITE_PARTIAL) != 0UL)
+        {
+            detail = powerText(
+                QStringLiteral("hardware.power.error.partial_write"),
+                QStringLiteral("部分逻辑处理器写入或回读失败；请立即刷新并检查当前值。R0=%1"))
+                .arg(ntStatusText(result.response.lastStatus));
+        }
+        else if (responseValid &&
+            result.response.failureReason !=
+                KSWORD_ARK_CPU_POWER_FAILURE_NONE)
+        {
+            detail = cpuPowerFailureReasonText(
+                result.response.failureReason,
+                request,
+                result.response) + QStringLiteral("\n") + detail;
+        }
+        const QString message = powerText(
+            QStringLiteral("hardware.power.error.control"),
+            QStringLiteral("CPU 电源设置未完整应用：%1"))
+            .arg(detail);
+        setStatus(message, true);
+        QMessageBox::critical(this, errorTitle, message);
+        refreshCpuPower();
+        setStatus(message, true);
+        return false;
+    }
+
+    refreshCpuPower();
+    setStatus(powerText(
+        QStringLiteral("hardware.power.status.applied"),
+        QStringLiteral("状态：CPU 电源设置已写入并回读验证，已更新逻辑处理器 %1 个。"))
+        .arg(result.response.updatedProcessorCount));
+    return true;
 }
 
 void HardwarePowerPage::sendControlRequest(
@@ -1148,61 +1579,7 @@ void HardwarePowerPage::sendControlRequest(
         return;
     }
 
-    setStatus(powerText(
-        QStringLiteral("hardware.power.status.applying"),
-        QStringLiteral("状态：正在通过 KswordARK 应用并回读校验 CPU 电源设置...")));
-    const ksword::ark::DriverClient client;
-    const ksword::ark::CpuPowerResult result =
-        client.controlCpuPower(request);
-    const bool responseValid =
-        result.io.bytesReturned >= sizeof(KSWORD_ARK_CPU_POWER_RESPONSE) &&
-        result.response.size >= sizeof(KSWORD_ARK_CPU_POWER_RESPONSE) &&
-        result.response.version == KSWORD_ARK_CPU_POWER_PROTOCOL_VERSION;
-    if (!result.io.ok || !responseValid || result.response.lastStatus != 0L)
-    {
-        QString detail = QString::fromStdString(result.io.message);
-        if (responseValid &&
-            (result.response.responseFlags &
-                KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_STALE_SNAPSHOT) != 0UL)
-        {
-            detail = powerText(
-                QStringLiteral("hardware.power.error.stale"),
-                QStringLiteral("设置在提交前已被固件、Windows 或其他工具改变，请刷新后重试。"));
-        }
-        else if (responseValid &&
-            (result.response.responseFlags &
-                KSWORD_ARK_CPU_POWER_RESPONSE_FLAG_WRITE_PARTIAL) != 0UL)
-        {
-            detail = powerText(
-                QStringLiteral("hardware.power.error.partial_write"),
-                QStringLiteral("部分逻辑处理器写入或回读失败；请立即刷新并检查当前值。R0=%1"))
-                .arg(ntStatusText(result.response.lastStatus));
-        }
-        else if (responseValid &&
-            result.response.failureReason !=
-                KSWORD_ARK_CPU_POWER_FAILURE_NONE)
-        {
-            detail = cpuPowerFailureReasonText(
-                result.response.failureReason,
-                request,
-                result.response) + QStringLiteral("\n") + detail;
-        }
-        const QString message = powerText(
-            QStringLiteral("hardware.power.error.control"),
-            QStringLiteral("CPU 电源设置未完整应用：%1"))
-            .arg(detail);
-        setStatus(message, true);
-        QMessageBox::critical(this, errorTitle, message);
-        refreshCpuPower();
-        setStatus(message, true);
-        return;
-    }
-
-    refreshCpuPower();
-    setStatus(powerText(
-        QStringLiteral("hardware.power.status.applied"),
-        QStringLiteral("状态：CPU 电源设置已写入并回读验证，已更新逻辑处理器 %1 个。"))
-        .arg(result.response.updatedProcessorCount));
+    (void)executeControlRequest(request);
 }
 
 void HardwarePowerPage::raisePowerLimitsToPlatformMaximum()

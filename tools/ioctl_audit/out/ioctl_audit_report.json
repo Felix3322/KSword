@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-04T02:24:14.117778+00:00",
+  "generatedAt": "2026-08-04T03:38:58.361766+00:00",
   "repoRoot": "C:\\Users\\Felix\\CLionProjects\\KSword",
   "inputs": {
     "headers": [
@@ -51,7 +51,7 @@
       "shared/driver/KswordArkWslSiloIoctl.h"
     ],
     "registry": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-    "macroCount": 3771
+    "macroCount": 3778
   },
   "rules": {
     "allowedAnyAccess": [],
