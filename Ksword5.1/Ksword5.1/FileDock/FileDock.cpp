@@ -28,6 +28,7 @@
 #include <QAbstractItemView>
 #include <QAction>
 #include <QByteArray>
+#include <QButtonGroup>
 #include <QClipboard>
 #include <QCheckBox>
 #include <QColor>
@@ -64,6 +65,7 @@
 #include <QPair>
 #include <QTextEdit>
 #include <QPointer>
+#include <QPalette>
 #include <QProgressBar>
 #include <QProcess>
 #include <QPushButton>
@@ -3198,11 +3200,193 @@ namespace
             "  color:palette(text) !important;"
             "}"
             "QDialog#%1 QHeaderView::section{"
-            "  background:transparent !important;"
-            "  background-color:transparent !important;"
+            "  background-color:palette(base) !important;"
             "  color:palette(text) !important;"
             "}")
             .arg(dialogObjectName);
+    }
+
+    // buildFileDetailDialogPalette：
+    // - 为文件属性窗口建立与进程属性窗口相同的 Window/Surface/Base 分层；
+    // - 显式设置 Base，避免 CodeEditor 和表格在不同主题下各自回退到系统颜色。
+    QPalette buildFileDetailDialogPalette(const QWidget* const fallbackWidget)
+    {
+        QPalette palette = qApp != nullptr
+            ? qApp->palette()
+            : (fallbackWidget != nullptr ? fallbackWidget->palette() : QPalette());
+        palette.setColor(QPalette::Window, KswordTheme::WindowColor());
+        palette.setColor(QPalette::WindowText, KswordTheme::TextPrimaryColor());
+        palette.setColor(QPalette::Base, KswordTheme::SurfaceColor());
+        palette.setColor(QPalette::AlternateBase, KswordTheme::SurfaceAltColor());
+        palette.setColor(QPalette::Text, KswordTheme::TextPrimaryColor());
+        palette.setColor(QPalette::Button, KswordTheme::SurfaceColor());
+        palette.setColor(QPalette::ButtonText, KswordTheme::TextPrimaryColor());
+        palette.setColor(QPalette::Mid, KswordTheme::BorderColor());
+        palette.setColor(QPalette::Highlight, KswordTheme::ControlAccentColor());
+        palette.setColor(
+            QPalette::HighlightedText,
+            KswordTheme::MaximumContrastMonochromeColor(KswordTheme::ControlAccentColor()));
+        palette.setColor(QPalette::Disabled, QPalette::WindowText, KswordTheme::TextDisabledColor());
+        palette.setColor(QPalette::Disabled, QPalette::Text, KswordTheme::TextDisabledColor());
+        palette.setColor(QPalette::Disabled, QPalette::ButtonText, KswordTheme::TextDisabledColor());
+        return palette;
+    }
+
+    // applyFileDetailSurfacePalette：
+    // - 为独立窗口及其页面强制不透明 Surface；
+    // - 防止透明子页露出 WindowColor，而编辑器/表格使用 Base 导致底色断层。
+    void applyFileDetailSurfacePalette(QWidget* const widget, const QPalette& palette)
+    {
+        if (widget == nullptr)
+        {
+            return;
+        }
+        widget->setPalette(palette);
+        widget->setAutoFillBackground(true);
+        widget->setAttribute(Qt::WA_StyledBackground, true);
+    }
+
+    // buildFileDetailDialogStyle：
+    // - 文件属性窗口复用进程属性的“Window 外层 + Surface 内容页 + 左侧导航”视觉层次；
+    // - 所有可读文本容器、表头和滚动区域均显式使用 Surface，避免同窗内文字底色不一致。
+    QString buildFileDetailDialogStyle()
+    {
+        return QStringLiteral(
+            "QDialog#FileDetailDialogRoot{"
+            "  background:%1;"
+            "  color:%2;"
+            "}"
+            "QDialog#FileDetailDialogRoot QGroupBox{"
+            "  border:1px solid %3;"
+            "  border-radius:4px;"
+            "  margin-top:8px;"
+            "  padding-top:8px;"
+            "  background:%4;"
+            "  color:%2;"
+            "}"
+            "QDialog#FileDetailDialogRoot QGroupBox::title{"
+            "  subcontrol-origin:margin;"
+            "  left:8px;"
+            "  padding:0 4px;"
+            "  color:%2;"
+            "}"
+            "QDialog#FileDetailDialogRoot QLineEdit,"
+            "QDialog#FileDetailDialogRoot QPlainTextEdit,"
+            "QDialog#FileDetailDialogRoot QTextEdit{"
+            "  background:%4;"
+            "  color:%2;"
+            "  border:1px solid %3;"
+            "  border-radius:3px;"
+            "  padding:3px 6px;"
+            "  selection-background-color:%5;"
+            "  selection-color:%7;"
+            "}"
+            "QDialog#FileDetailDialogRoot QTableWidget,"
+            "QDialog#FileDetailDialogRoot QTreeWidget{"
+            "  background:%4;"
+            "  alternate-background-color:%6;"
+            "  color:%2;"
+            "  border:1px solid %3;"
+            "  gridline-color:%3;"
+            "}"
+            "QDialog#FileDetailDialogRoot QAbstractScrollArea::viewport{"
+            "  background:%4;"
+            "  color:%2;"
+            "}"
+            "QDialog#FileDetailDialogRoot QTableCornerButton::section,"
+            "QDialog#FileDetailDialogRoot QHeaderView::section{"
+            "  background:%4;"
+            "  color:%2;"
+            "  border:1px solid %3;"
+            "  padding:4px;"
+            "  font-weight:600;"
+            "}"
+            "QDialog#FileDetailDialogRoot QTabWidget::pane{"
+            "  border:1px solid %3;"
+            "  background:%4;"
+            "}"
+            "QWidget#FileDetailTabNavigation{"
+            "  background:%4;"
+            "  border:1px solid %3;"
+            "  border-radius:4px;"
+            "}"
+            "QWidget#FileDetailTabNavigation QToolButton{"
+            "  background:%4;"
+            "  color:%2;"
+            "  border:1px solid %3;"
+            "  border-radius:3px;"
+            "  padding:5px 8px;"
+            "}"
+            "QWidget#FileDetailTabNavigation QToolButton:checked{"
+            "  background:%5;"
+            "  color:%7;"
+            "  border-color:%5;"
+            "}"
+            "QWidget#FileDetailTabNavigation QToolButton:hover:!checked{"
+            "  background:%6;"
+            "}"
+            "QDialog#FileDetailDialogRoot QPushButton{"
+            "  background:%4;"
+            "  color:%2;"
+            "  border:1px solid %3;"
+            "  border-radius:3px;"
+            "  padding:4px 10px;"
+            "}"
+            "QDialog#FileDetailDialogRoot QPushButton:hover{"
+            "  background:%6;"
+            "  border-color:%5;"
+            "}"
+            "QDialog#FileDetailDialogRoot QPushButton:pressed{"
+            "  background:%5;"
+            "  color:%7;"
+            "  border-color:%5;"
+            "}"
+            "QDialog#FileDetailDialogRoot QProgressBar{"
+            "  background:%6;"
+            "  color:%2;"
+            "  border:1px solid %3;"
+            "  border-radius:3px;"
+            "  text-align:center;"
+            "}"
+            "QDialog#FileDetailDialogRoot QProgressBar::chunk{"
+            "  background:%5;"
+            "  border-radius:2px;"
+            "}"
+            "QDialog#FileDetailDialogRoot QScrollBar:vertical{"
+            "  background:%4;"
+            "  width:12px;"
+            "  margin:0;"
+            "}"
+            "QDialog#FileDetailDialogRoot QScrollBar:horizontal{"
+            "  background:%4;"
+            "  height:12px;"
+            "  margin:0;"
+            "}"
+            "QDialog#FileDetailDialogRoot QScrollBar::handle:vertical,"
+            "QDialog#FileDetailDialogRoot QScrollBar::handle:horizontal{"
+            "  background:%5;"
+            "  min-height:20px;"
+            "  min-width:20px;"
+            "  border-radius:4px;"
+            "}"
+            "QDialog#FileDetailDialogRoot QScrollBar::handle:vertical:hover,"
+            "QDialog#FileDetailDialogRoot QScrollBar::handle:horizontal:hover{"
+            "  background:%1;"
+            "}"
+            "QDialog#FileDetailDialogRoot QScrollBar::add-line,"
+            "QDialog#FileDetailDialogRoot QScrollBar::sub-line,"
+            "QDialog#FileDetailDialogRoot QScrollBar::add-page,"
+            "QDialog#FileDetailDialogRoot QScrollBar::sub-page{"
+            "  background:%4;"
+            "  border:none;"
+            "}")
+            .arg(KswordTheme::WindowColorHex())
+            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::SurfaceColorHex())
+            .arg(KswordTheme::ControlAccentHex())
+            .arg(KswordTheme::SurfaceAltColorHex())
+            .arg(KswordTheme::OnAccentHex());
     }
 
     // buildLogPreviewText 作用：
@@ -3965,11 +4149,11 @@ namespace
             , m_filePath(filePath)
         {
             m_hashCancelRequested = std::make_shared<std::atomic_bool>(false);
+            // 文件属性与进程属性同为独立、非模态详情窗；不要继承隐藏 Dock 的子窗口外观。
+            setWindowFlag(Qt::Window, true);
+            setWindowModality(Qt::NonModal);
             setAttribute(Qt::WA_DeleteOnClose, true);
             setObjectName(QStringLiteral("FileDetailDialogRoot"));
-            setAttribute(Qt::WA_StyledBackground, true);
-            setAutoFillBackground(true);
-            setStyleSheet(buildOpaqueStandaloneDialogStyle(objectName()));
             setWindowTitle(QStringLiteral("文件属性 - %1").arg(QFileInfo(filePath).fileName()));
             // 文件属性窗内容可能包含超长路径、证书链和 PE 字段：
             // - 最大宽度按父窗口客户区 75% 限制；
@@ -3977,26 +4161,45 @@ namespace
             applyFileStandaloneWindowWidthLimit(
                 this,
                 resolveVisibleDialogParent(parent),
-                QSize(980, 680),
+                QSize(1160, 760),
                 0.75);
 
-            QVBoxLayout* rootLayout = new QVBoxLayout(this);
-            QTabWidget* tabWidget = new QTabWidget(this);
-            rootLayout->addWidget(tabWidget, 1);
+            // 采用与进程属性相同的左侧导航结构：QTabWidget 继续承载现有懒加载逻辑，
+            // 仅隐藏原生顶栏并改由可翻译的垂直导航按钮驱动。
+            QHBoxLayout* rootLayout = new QHBoxLayout(this);
+            rootLayout->setContentsMargins(8, 8, 8, 8);
+            rootLayout->setSpacing(6);
 
-            tabWidget->addTab(buildGeneralTab(), QStringLiteral("常规信息"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("reparse")), QStringLiteral("重解析点 / 符号链接"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("security")), QStringLiteral("安全与权限"));
-            tabWidget->addTab(buildHashTab(), QStringLiteral("哈希与完整性"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("usage")), QStringLiteral("文件占用"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("fileobject")), QStringLiteral("FileObject / Section / ControlArea"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("storage")), QStringLiteral("Storage / MountMgr / FVE"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("filters")), QStringLiteral("Minifilter / Instance / Volume"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("signature")), QStringLiteral("数字签名"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("pe")), QStringLiteral("PE信息"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("dependencies")), QStringLiteral("依赖 DLL"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("strings")), QStringLiteral("字符串"));
-            tabWidget->addTab(buildDeferredTab(QStringLiteral("hex")), QStringLiteral("十六进制"));
+            m_tabNavigation = new QWidget(this);
+            m_tabNavigation->setObjectName(QStringLiteral("FileDetailTabNavigation"));
+            m_tabNavigation->setFixedWidth(210);
+            m_tabNavigation->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+            QVBoxLayout* navigationLayout = new QVBoxLayout(m_tabNavigation);
+            navigationLayout->setContentsMargins(5, 5, 5, 5);
+            navigationLayout->setSpacing(4);
+
+            m_tabWidget = new QTabWidget(this);
+            m_tabWidget->tabBar()->hide();
+            m_tabNavigationButtonGroup = new QButtonGroup(this);
+            m_tabNavigationButtonGroup->setExclusive(true);
+            rootLayout->addWidget(m_tabNavigation);
+            rootLayout->addWidget(m_tabWidget, 1);
+
+            m_tabWidget->addTab(buildGeneralTab(), QStringLiteral("常规信息"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("reparse")), QStringLiteral("重解析点 / 符号链接"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("security")), QStringLiteral("安全与权限"));
+            m_tabWidget->addTab(buildHashTab(), QStringLiteral("哈希与完整性"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("usage")), QStringLiteral("文件占用"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("fileobject")), QStringLiteral("FileObject / Section / ControlArea"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("storage")), QStringLiteral("Storage / MountMgr / FVE"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("filters")), QStringLiteral("Minifilter / Instance / Volume"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("signature")), QStringLiteral("数字签名"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("pe")), QStringLiteral("PE信息"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("dependencies")), QStringLiteral("依赖 DLL"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("strings")), QStringLiteral("字符串"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("hex")), QStringLiteral("十六进制"));
+            // addTab 会让 Qt 重新显示 tabBar，必须在页面齐备后再次隐藏。
+            m_tabWidget->tabBar()->hide();
 
             const QList<QPair<QString, QString>> detailTabTranslations{
                 {QStringLiteral("file.detail.tab.general"), QStringLiteral("常规信息")},
@@ -4017,31 +4220,128 @@ namespace
             {
                 const auto& translation = detailTabTranslations.at(tabIndex);
                 ks::i18n::LanguageManager::instance().bindTab(
-                    tabWidget,
-                    tabWidget->widget(tabIndex),
+                    m_tabWidget,
+                    m_tabWidget->widget(tabIndex),
                     translation.first,
                     translation.second);
             }
 
-            connect(tabWidget, &QTabWidget::currentChanged, this, [this, tabWidget](const int tabIndex)
+            const QList<QString> navigationIconPathList{
+                QStringLiteral(":/Icon/process_details.svg"),
+                QStringLiteral(":/Icon/file_nav_forward.svg"),
+                QStringLiteral(":/Icon/file_owner.svg"),
+                QStringLiteral(":/Icon/process_performance.svg"),
+                QStringLiteral(":/Icon/process_main.svg"),
+                QStringLiteral(":/Icon/process_details.svg"),
+                QStringLiteral(":/Icon/disk_storage.svg"),
+                QStringLiteral(":/Icon/filter_funnel.svg"),
+                QStringLiteral(":/Icon/process_critical.svg"),
+                QStringLiteral(":/Icon/process_list.svg"),
+                QStringLiteral(":/Icon/process_copy_row.svg"),
+                QStringLiteral(":/Icon/file_find.svg"),
+                QStringLiteral(":/Icon/process_copy_cell.svg")
+            };
+            for (int tabIndex = 0; tabIndex < detailTabTranslations.size(); ++tabIndex)
+            {
+                const auto& translation = detailTabTranslations.at(tabIndex);
+                QToolButton* navigationButton = new QToolButton(m_tabNavigation);
+                navigationButton->setCheckable(true);
+                navigationButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+                navigationButton->setIcon(QIcon(navigationIconPathList.value(tabIndex)));
+                navigationButton->setIconSize(QSize(18, 18));
+                navigationButton->setMinimumHeight(30);
+                navigationButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+                ks::i18n::LanguageManager::instance().bindText(
+                    navigationButton,
+                    translation.first,
+                    translation.second);
+                ks::i18n::LanguageManager::instance().bindToolTip(
+                    navigationButton,
+                    translation.first,
+                    translation.second);
+                m_tabNavigationButtonGroup->addButton(navigationButton, tabIndex);
+                m_tabNavigationButtons.push_back(navigationButton);
+                navigationLayout->addWidget(navigationButton);
+                connect(navigationButton, &QToolButton::clicked, this, [this, tabIndex]()
+                    {
+                        if (m_tabWidget != nullptr)
+                        {
+                            m_tabWidget->setCurrentIndex(tabIndex);
+                        }
+                    });
+            }
+            navigationLayout->addStretch(1);
+
+            connect(m_tabWidget, &QTabWidget::currentChanged, this, [this](const int tabIndex)
                 {
-                    activateDeferredTab(tabWidget, tabIndex);
+                    if (tabIndex >= 0 && tabIndex < m_tabNavigationButtons.size())
+                    {
+                        QToolButton* const navigationButton = m_tabNavigationButtons.at(tabIndex);
+                        if (navigationButton != nullptr)
+                        {
+                            navigationButton->setChecked(true);
+                        }
+                    }
+                    activateDeferredTab(m_tabWidget, tabIndex);
                 });
+            if (!m_tabNavigationButtons.isEmpty())
+            {
+                m_tabNavigationButtons.front()->setChecked(true);
+            }
+            applyThemeStyle();
         }
 
     protected:
         void changeEvent(QEvent* event) override
         {
             QDialog::changeEvent(event);
-            if (event != nullptr && event->type() == QEvent::LanguageChange)
+            if (event == nullptr)
+            {
+                return;
+            }
+            if (event->type() == QEvent::LanguageChange)
             {
                 setWindowTitle(ks::i18n::displayText(QStringLiteral("文件属性 - %1"))
                     .arg(QFileInfo(m_filePath).fileName()));
                 refreshGeneralTabText();
+                return;
+            }
+            if (event->type() == QEvent::ApplicationPaletteChange ||
+                event->type() == QEvent::PaletteChange)
+            {
+                applyThemeStyle();
             }
         }
 
     private:
+        void applyThemeStyle()
+        {
+            if (m_themeStyleApplying)
+            {
+                return;
+            }
+            m_themeStyleApplying = true;
+
+            const QPalette dialogPalette = buildFileDetailDialogPalette(this);
+            QPalette surfacePalette = dialogPalette;
+            surfacePalette.setColor(QPalette::Window, KswordTheme::SurfaceColor());
+            surfacePalette.setColor(QPalette::WindowText, KswordTheme::TextPrimaryColor());
+            applyFileDetailSurfacePalette(this, dialogPalette);
+            setStyleSheet(buildFileDetailDialogStyle());
+
+            applyFileDetailSurfacePalette(m_tabNavigation, surfacePalette);
+            applyFileDetailSurfacePalette(m_tabWidget, surfacePalette);
+            if (m_tabWidget != nullptr)
+            {
+                for (int tabIndex = 0; tabIndex < m_tabWidget->count(); ++tabIndex)
+                {
+                    applyFileDetailSurfacePalette(m_tabWidget->widget(tabIndex), surfacePalette);
+                }
+            }
+
+            m_themeStyleApplying = false;
+        }
+
         struct HashCalculationResult
         {
             bool openOk = false;       // openOk：文件是否成功打开。
@@ -6184,6 +6484,8 @@ namespace
             const QString titleText = tabWidget->tabText(tabIndex);
             tabWidget->removeTab(tabIndex);
             tabWidget->insertTab(tabIndex, realPage, titleText);
+            // 新建的懒加载页也必须立即拿到 Surface 调色板，不能回退到系统 Base。
+            applyThemeStyle();
             tabWidget->setCurrentIndex(tabIndex);
             placeholderPage->deleteLater();
         }
@@ -6942,11 +7244,16 @@ namespace
 
     private:
         QString m_filePath;   // 当前详情窗口对应的文件路径。
+        QWidget* m_tabNavigation = nullptr; // 文件属性左侧导航容器。
+        QTabWidget* m_tabWidget = nullptr; // 继续承载现有的页面与懒加载机制。
+        QButtonGroup* m_tabNavigationButtonGroup = nullptr; // 保证左侧导航单选。
+        QVector<QToolButton*> m_tabNavigationButtons; // 与 Tab 索引一一对应，供切页时同步选中态。
         CodeEditorWidget* m_generalTextEditor = nullptr; // 常规页正文，语言切换时原位重建。
         QString m_generalNtPathText; // 常规页复用的 NT 路径，避免切换语言时重复查询。
         bool m_generalR0Loaded = false; // R0 文件信息是否已完成后台读取。
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
+        bool m_themeStyleApplying = false; // 避免 PaletteChange 触发样式重入。
     };
 }
 

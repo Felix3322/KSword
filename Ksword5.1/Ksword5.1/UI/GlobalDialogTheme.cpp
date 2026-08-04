@@ -102,8 +102,10 @@ namespace
         dialogPalette.setColor(QPalette::Button, alternateSurfaceColor);
         dialogPalette.setColor(QPalette::ButtonText, textColor);
         dialogPalette.setColor(QPalette::Mid, borderColor);
-        dialogPalette.setColor(QPalette::Highlight, KswordTheme::PrimaryBlueColor);
-        dialogPalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
+        dialogPalette.setColor(QPalette::Highlight, KswordTheme::ControlAccentColor());
+        dialogPalette.setColor(
+            QPalette::HighlightedText,
+            KswordTheme::MaximumContrastMonochromeColor(KswordTheme::ControlAccentColor()));
         return dialogPalette;
     }
 
@@ -121,15 +123,9 @@ namespace
 
         QString styleSheetText = QString::fromLatin1(
             "\n__MARKER__\n"
+            // Do not paint every descendant QWidget with the dialog Window layer here.
+            // Group boxes and other nested content panes deliberately use the Surface layer.
             "QDialog[%2=\"true\"]{"
-            "  background-color:__WINDOW_BACKGROUND__ !important;"
-            "  color:__WINDOW_TEXT__ !important;"
-            "}"
-            "QDialog[%2=\"true\"] QWidget{"
-            "  background-color:__WINDOW_BACKGROUND__ !important;"
-            "  color:__WINDOW_TEXT__ !important;"
-            "}"
-            "QDialog[%2=\"true\"] QLabel{"
             "  background-color:__WINDOW_BACKGROUND__ !important;"
             "  color:__WINDOW_TEXT__ !important;"
             "}"
@@ -160,6 +156,15 @@ namespace
             "  border:1px solid __BORDER__;"
             "  border-radius:4px;"
             "  margin-top:8px;"
+            "}"
+            "QDialog[%2=\"true\"] QGroupBox QLabel{"
+            "  background-color:transparent !important;"
+            "  color:__SURFACE_TEXT__ !important;"
+            "}"
+            "QDialog[%2=\"true\"] QCheckBox,"
+            "QDialog[%2=\"true\"] QRadioButton{"
+            "  background-color:transparent !important;"
+            "  color:__SURFACE_TEXT__ !important;"
             "}"
             "QDialog[%2=\"true\"] QTabWidget::pane{"
             "  background-color:__SURFACE_BACKGROUND__ !important;"

@@ -8284,6 +8284,7 @@
     "系统优化：正在应用 %1 -> %2（共 %3 个动作）。": "系统优化：正在应用 %1 -> %2（共 %3 个动作）。",
     "系统优化：正在应用 %1 -> %2（动作 %3/%4）。": "系统优化：正在应用 %1 -> %2（动作 %3/%4）。",
     "FileDetailDialogRoot": "FileDetailDialogRoot",
+    "FileDetailTabNavigation": "FileDetailTabNavigation",
     "FileDock": "FileDock",
     "FileDock.h": "FileDock.h",
     "FileHandle": "FileHandle",
