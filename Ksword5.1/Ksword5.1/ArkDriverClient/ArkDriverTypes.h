@@ -46,6 +46,7 @@
 #include "../../../shared/driver/KswordArkFilterIoctl.h"
 #include "../../../shared/driver/KswordArkKernelObjectIoctl.h"
 #include "../../../shared/driver/KswordArkHwidIoctl.h"
+#include "../../../shared/driver/KswordArkCpuPowerIoctl.h"
 #include "../../../shared/driver/KswordArkDebugOutputIoctl.h"
 #include "../../../shared/driver/KswordArkBugcheckIoctl.h"
 #include "../../../shared/driver/KswordArkUnloadedDriverIoctl.h"
@@ -74,6 +75,14 @@ namespace ksword::ark
         IoResult io;                                  // io：底层 DeviceIoControl 状态。
         bool unsupported = false;                     // unsupported：旧驱动未注册新 IOCTL 时为 true。
         KSWORD_ARK_HWID_DISPATCH_RESPONSE response{}; // response：R0 固定响应包。
+    };
+
+    // CpuPowerResult：保留 R0 CPU 电源固定响应及旧驱动兼容状态。
+    struct CpuPowerResult
+    {
+        IoResult io;                                   // io：底层 DeviceIoControl 状态。
+        bool unsupported = false;                      // unsupported：加载驱动尚未注册新 IOCTL。
+        KSWORD_ARK_CPU_POWER_RESPONSE response{};      // response：能力、原始 MSR 和解码值。
     };
 
     // DriverHandle owns one KswordARK control-device handle. It is move-only so

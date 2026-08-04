@@ -176,6 +176,8 @@ NTSTATUS KswordARKPlatformAuditIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST
 NTSTATUS KswordARKI8042AuditIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHwidIoctlQueryDispatch(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKHwidIoctlControlDispatch(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKCpuPowerIoctlQuery(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKCpuPowerIoctlControl(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDebugOutputIoctlControl(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKDebugOutputIoctlDrain(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKBugcheckIoctlSetBitmap(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -360,6 +362,8 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN, KswordARKDebugOutputIoctlDrain, "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
     { IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY, KswordARKHwidIoctlQueryDispatch, "IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL, KswordARKHwidIoctlControlDispatch, "IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_QUERY_CPU_POWER, KswordARKCpuPowerIoctlQuery, "IOCTL_KSWORD_ARK_QUERY_CPU_POWER", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
+    { IOCTL_KSWORD_ARK_CONTROL_CPU_POWER, KswordARKCpuPowerIoctlControl, "IOCTL_KSWORD_ARK_CONTROL_CPU_POWER", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_SET_BUGCHECK_BITMAP, KswordARKBugcheckIoctlSetBitmap, "IOCTL_KSWORD_ARK_SET_BUGCHECK_BITMAP", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_COMPLETION },
     { IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD, KswordARKBugcheckGuardIoctlConfigure, "IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     // RXPF owns its exact-build, write-access, confirmation-token and safety-policy gates.

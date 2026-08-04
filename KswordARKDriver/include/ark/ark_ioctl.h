@@ -38,6 +38,7 @@
 #include "driver/KswordArkDeviceAuditIoctl.h"
 #include "driver/KswordArkPlatformAuditIoctl.h"
 #include "driver/KswordArkHwidIoctl.h"
+#include "driver/KswordArkCpuPowerIoctl.h"
 #include "driver/KswordArkDebugOutputIoctl.h"
 #include "driver/KswordArkBugcheckIoctl.h"
 #include "driver/KswordArkUnloadedDriverIoctl.h"

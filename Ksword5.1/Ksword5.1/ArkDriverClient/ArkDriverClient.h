@@ -573,6 +573,11 @@ namespace ksword::ark
         // - 返回：HwidDispatchResult，保留 R0 原始状态和 unsupported 标记。
         HwidDispatchResult queryHwidDispatchState() const;
         HwidDispatchResult controlHwidDispatch(const KSWORD_ARK_HWID_DISPATCH_CONTROL_REQUEST& request) const;
+        // queryCpuPowerState / controlCpuPower：
+        // - 查询 Intel RAPL/HWP/Turbo 白名单能力，或提交带 expected snapshot 的结构化控制包；
+        // - Dock 不直接打开设备，也不暴露任意 MSR 写入入口。
+        CpuPowerResult queryCpuPowerState() const;
+        CpuPowerResult controlCpuPower(const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST& request) const;
         CidTableAuditResult enumCidTable(unsigned long flags = KSWORD_ARK_CID_ENUM_FLAG_INCLUDE_ALL, unsigned long maxEntries = 4096UL, unsigned long maxVisitCount = 65536UL, unsigned long startCid = 0UL, unsigned long endCid = 0UL) const;
         ObjectTypeTableAuditResult enumObjectTypeTable(unsigned long flags = KSWORD_ARK_OBJECT_TYPE_TABLE_FLAG_INCLUDE_ALL, unsigned long maxEntries = KSWORD_ARK_OBJECT_TYPE_TABLE_MAX_SLOTS, unsigned long startIndex = 0UL) const;
         KernelObjectSummaryAuditResult queryKernelObjectSummary(unsigned long targetKind, unsigned long cidValue = 0UL, std::uint64_t expectedObjectAddress = 0ULL, unsigned long flags = KSWORD_ARK_OBJECT_SUMMARY_FLAG_INCLUDE_ALL) const;

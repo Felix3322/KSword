@@ -244,6 +244,8 @@
     <ClCompile Include="src\features\i8042_audit\i8042_audit.c" />
     <ClCompile Include="src\features\hwid\hwid_dispatch_hooks.c" />
     <ClCompile Include="src\features\hwid\hwid_dispatch_ioctl.c" />
+    <ClCompile Include="src\features\cpu_power\cpu_power_runtime.c" />
+    <ClCompile Include="src\features\cpu_power\cpu_power_ioctl.c" />
     <ClCompile Include="src\features\rxpf\image_protection_manager.c" />
     <ClCompile Include="src\features\rxpf\page_fault_manager.c" />
     <ClCompile Include="src\features\rxpf\page_state_table.c" />
@@ -377,6 +379,8 @@
     <ClInclude Include="..\shared\driver\KswordArkHvmIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkSlatIommuAuditIoctl.h" />
     <ClInclude Include="..\shared\driver\KswordArkSystemTimeIoctl.h" />
+    <ClInclude Include="..\shared\driver\KswordArkCpuPowerIoctl.h" />
+    <ClInclude Include="src\features\cpu_power\cpu_power_runtime.h" />
     <ClInclude Include="..\shared\driver\KswordArkRxPfIoctl.h" />
     <ClInclude Include="src\features\rxpf\image_protection_manager.h" />
     <ClInclude Include="src\features\rxpf\page_fault_manager.h" />

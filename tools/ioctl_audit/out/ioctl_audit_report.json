@@ -1,32 +1,57 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-06-13T18:57:22.953394+00:00",
-  "repoRoot": "D:\\Projects\\Ksword5.1",
+  "generatedAt": "2026-08-04T02:24:14.117778+00:00",
+  "repoRoot": "C:\\Users\\Felix\\CLionProjects\\KSword",
   "inputs": {
     "headers": [
       "shared/driver/KswordArkAlpcIoctl.h",
+      "shared/driver/KswordArkBugcheckIoctl.h",
       "shared/driver/KswordArkCallbackIoctl.h",
       "shared/driver/KswordArkCapabilityIoctl.h",
+      "shared/driver/KswordArkCpuPowerIoctl.h",
+      "shared/driver/KswordArkDebugOutputIoctl.h",
+      "shared/driver/KswordArkDeviceAuditIoctl.h",
+      "shared/driver/KswordArkDriverBlindIoctl.h",
+      "shared/driver/KswordArkDriverDispatchIoctl.h",
+      "shared/driver/KswordArkDriverImageEditorIoctl.h",
       "shared/driver/KswordArkDynDataIoctl.h",
       "shared/driver/KswordArkFileIoctl.h",
       "shared/driver/KswordArkFileMonitorIoctl.h",
+      "shared/driver/KswordArkFilterIoctl.h",
       "shared/driver/KswordArkHandleIoctl.h",
+      "shared/driver/KswordArkHvmIoctl.h",
+      "shared/driver/KswordArkHwidIoctl.h",
+      "shared/driver/KswordArkI8042AuditIoctl.h",
+      "shared/driver/KswordArkKernelBaselineIoctl.h",
       "shared/driver/KswordArkKernelIoctl.h",
+      "shared/driver/KswordArkKernelObjectIoctl.h",
       "shared/driver/KswordArkKeyboardIoctl.h",
       "shared/driver/KswordArkMemoryIoctl.h",
+      "shared/driver/KswordArkMutationIoctl.h",
       "shared/driver/KswordArkNetworkIoctl.h",
+      "shared/driver/KswordArkPiDdbIoctl.h",
+      "shared/driver/KswordArkPlatformAuditIoctl.h",
       "shared/driver/KswordArkPreflightIoctl.h",
       "shared/driver/KswordArkProcessIoctl.h",
       "shared/driver/KswordArkRedirectIoctl.h",
       "shared/driver/KswordArkRegistryIoctl.h",
+      "shared/driver/KswordArkRxPfIoctl.h",
       "shared/driver/KswordArkSafetyIoctl.h",
       "shared/driver/KswordArkSectionIoctl.h",
+      "shared/driver/KswordArkSecurityAuditIoctl.h",
+      "shared/driver/KswordArkSlatIommuAuditIoctl.h",
+      "shared/driver/KswordArkStorageForensicsIoctl.h",
+      "shared/driver/KswordArkStorageIoctl.h",
+      "shared/driver/KswordArkSystemTimeIoctl.h",
       "shared/driver/KswordArkThreadIoctl.h",
       "shared/driver/KswordArkTrustIoctl.h",
+      "shared/driver/KswordArkUnloadedDriverIoctl.h",
+      "shared/driver/KswordArkWin32kIoctl.h",
+      "shared/driver/KswordArkWorkQueueIoctl.h",
       "shared/driver/KswordArkWslSiloIoctl.h"
     ],
     "registry": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-    "macroCount": 1103
+    "macroCount": 3771
   },
   "rules": {
     "allowedAnyAccess": [],
@@ -61,25 +86,29 @@
       "TRANSLATE",
       "STATUS"
     ],
-    "ignoredHeaders": [],
+    "ignoredHeaders": [
+      "KswordArkStorageControllerIoctl.h",
+      "shared/driver/KswordArkStorageControllerIoctl.h"
+    ],
     "notes": {
       "purpose": "Policy file for the KswordARKDriver IOCTL static auditor.",
       "allowedAnyAccess": "Add a full IOCTL_KSWORD_ARK_* name here only when FILE_ANY_ACCESS is intentional and documented.",
       "mutatingKeywords": "Tokens that usually indicate state-changing or destructive operations and should not stay FILE_ANY_ACCESS by default.",
       "queryKeywords": "Tokens that usually indicate read-only/query operations and should not require FILE_WRITE_ACCESS unless there is a documented reason.",
-      "ignoredHeaders": "Use repository-relative paths or basenames for generated/legacy headers that should be skipped."
+      "ignoredHeaders": "Use repository-relative paths or basenames for protocols owned by a different driver project; the storage-controller protocol is dispatched by KswordARKControllerDriver."
     }
   },
   "summary": {
-    "definedIoctlCount": 63,
-    "registeredIoctlCount": 63,
-    "registeredDefinitions": 63,
+    "definedIoctlCount": 169,
+    "registeredIoctlCount": 169,
+    "registeredDefinitions": 169,
     "unregisteredDefinitions": 0,
-    "highFindings": 8,
-    "mediumFindings": 0,
+    "highFindings": 14,
+    "mediumFindings": 6,
     "lowFindings": 0,
     "findingCategories": {
-      "mutating_any_access": 8
+      "mutating_any_access": 14,
+      "query_write_access": 6
     }
   },
   "ioctls": [
@@ -100,11 +129,55 @@
       "line": 17,
       "registered": true,
       "handler": "KswordARKAlpcIoctlQueryAlpcPort",
-      "registry_line": 113,
+      "registry_line": 279,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
       ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_BUGCHECK_BITMAP",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_SET_BUGCHECK_BITMAP",
+      "function_id": 2298,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270184,
+      "source": "shared/driver/KswordArkBugcheckIoctl.h",
+      "line": 24,
+      "registered": true,
+      "handler": "KswordARKBugcheckIoctlSetBitmap",
+      "registry_line": 353,
+      "mutating_keywords": [
+        "SET"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONFIGURE_BUGCHECK_GUARD",
+      "function_id": 2299,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270188,
+      "source": "shared/driver/KswordArkBugcheckIoctl.h",
+      "line": 56,
+      "registered": true,
+      "handler": "KswordARKBugcheckGuardIoctlConfigure",
+      "registry_line": 354,
+      "mutating_keywords": [],
+      "query_keywords": []
     },
     {
       "name": "IOCTL_KSWORD_ARK_SET_CALLBACK_RULES",
@@ -120,10 +193,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236928,
       "source": "shared/driver/KswordArkCallbackIoctl.h",
-      "line": 24,
+      "line": 27,
       "registered": true,
       "handler": "KswordARKCallbackIoctlSetRulesHandler",
-      "registry_line": 98,
+      "registry_line": 237,
       "mutating_keywords": [
         "SET"
       ],
@@ -143,10 +216,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236932,
       "source": "shared/driver/KswordArkCallbackIoctl.h",
-      "line": 31,
+      "line": 34,
       "registered": true,
       "handler": "KswordARKCallbackIoctlGetRuntimeStateHandler",
-      "registry_line": 99,
+      "registry_line": 238,
       "mutating_keywords": [],
       "query_keywords": [
         "GET"
@@ -166,10 +239,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236936,
       "source": "shared/driver/KswordArkCallbackIoctl.h",
-      "line": 38,
+      "line": 41,
       "registered": true,
       "handler": "KswordARKCallbackIoctlWaitEventHandler",
-      "registry_line": 100,
+      "registry_line": 239,
       "mutating_keywords": [],
       "query_keywords": [
         "WAIT"
@@ -189,10 +262,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236940,
       "source": "shared/driver/KswordArkCallbackIoctl.h",
-      "line": 45,
+      "line": 48,
       "registered": true,
       "handler": "KswordARKCallbackIoctlAnswerEventHandler",
-      "registry_line": 101,
+      "registry_line": 240,
       "mutating_keywords": [
         "ANSWER"
       ],
@@ -212,10 +285,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236944,
       "source": "shared/driver/KswordArkCallbackIoctl.h",
-      "line": 52,
+      "line": 55,
       "registered": true,
       "handler": "KswordARKCallbackIoctlCancelAllPendingHandler",
-      "registry_line": 102,
+      "registry_line": 241,
       "mutating_keywords": [
         "CANCEL"
       ],
@@ -235,10 +308,10 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269716,
       "source": "shared/driver/KswordArkCallbackIoctl.h",
-      "line": 59,
+      "line": 62,
       "registered": true,
       "handler": "KswordARKCallbackIoctlRemoveExternalCallbackHandler",
-      "registry_line": 103,
+      "registry_line": 242,
       "mutating_keywords": [
         "REMOVE"
       ],
@@ -258,13 +331,82 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236952,
       "source": "shared/driver/KswordArkCallbackIoctl.h",
-      "line": 66,
+      "line": 69,
       "registered": true,
       "handler": "KswordARKCallbackIoctlEnumCallbacksHandler",
-      "registry_line": 104,
+      "registry_line": 244,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_EX",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_REMOVE_EXTERNAL_CALLBACK_EX",
+      "function_id": 2183,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269724,
+      "source": "shared/driver/KswordArkCallbackIoctl.h",
+      "line": 76,
+      "registered": true,
+      "handler": "KswordARKCallbackIoctlRemoveExternalCallbackExHandler",
+      "registry_line": 243,
+      "mutating_keywords": [
+        "REMOVE"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_MINIFILTER_BYPASS_PIDS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_SET_MINIFILTER_BYPASS_PIDS",
+      "function_id": 2184,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236960,
+      "source": "shared/driver/KswordArkCallbackIoctl.h",
+      "line": 83,
+      "registered": true,
+      "handler": "KswordARKCallbackIoctlSetMinifilterBypassPidsHandler",
+      "registry_line": 245,
+      "mutating_keywords": [
+        "SET"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_MINIFILTER_BYPASS_PIDS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_MINIFILTER_BYPASS_PIDS",
+      "function_id": 2185,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236964,
+      "source": "shared/driver/KswordArkCallbackIoctl.h",
+      "line": 90,
+      "registered": true,
+      "handler": "KswordARKCallbackIoctlQueryMinifilterBypassPidsHandler",
+      "registry_line": 246,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
       ]
     },
     {
@@ -284,11 +426,265 @@
       "line": 19,
       "registered": true,
       "handler": "KswordARKCapabilityIoctlQueryDriverCapabilities",
-      "registry_line": 109,
+      "registry_line": 257,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
       ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_CPU_POWER",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_CPU_POWER",
+      "function_id": 2290,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS",
+      "access_value": 1,
+      "access_name": "FILE_READ_ACCESS",
+      "control_code": 2253768,
+      "source": "shared/driver/KswordArkCpuPowerIoctl.h",
+      "line": 19,
+      "registered": true,
+      "handler": "KswordARKCpuPowerIoctlQuery",
+      "registry_line": 351,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_CPU_POWER",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_CPU_POWER",
+      "function_id": 2291,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270156,
+      "source": "shared/driver/KswordArkCpuPowerIoctl.h",
+      "line": 26,
+      "registered": true,
+      "handler": "KswordARKCpuPowerIoctlControl",
+      "registry_line": 352,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_CONTROL",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_DEBUG_OUTPUT_CONTROL",
+      "function_id": 2296,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS | FILE_WRITE_ACCESS",
+      "access_value": 3,
+      "access_name": "FILE_READ_ACCESS|FILE_WRITE_ACCESS",
+      "control_code": 2286560,
+      "source": "shared/driver/KswordArkDebugOutputIoctl.h",
+      "line": 27,
+      "registered": true,
+      "handler": "KswordARKDebugOutputIoctlControl",
+      "registry_line": 347,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_DEBUG_OUTPUT_DRAIN",
+      "function_id": 2297,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS | FILE_WRITE_ACCESS",
+      "access_value": 3,
+      "access_name": "FILE_READ_ACCESS|FILE_WRITE_ACCESS",
+      "control_code": 2286564,
+      "source": "shared/driver/KswordArkDebugOutputIoctl.h",
+      "line": 34,
+      "registered": true,
+      "handler": "KswordARKDebugOutputIoctlDrain",
+      "registry_line": 348,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "DRAIN"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DEVICE_STACK_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_DEVICE_STACK_AUDIT",
+      "function_id": 2272,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237312,
+      "source": "shared/driver/KswordArkDeviceAuditIoctl.h",
+      "line": 20,
+      "registered": true,
+      "handler": "KswordARKDeviceAuditIoctlQueryDeviceStack",
+      "registry_line": 338,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_INPUT_STACK_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_INPUT_STACK_AUDIT",
+      "function_id": 2273,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237316,
+      "source": "shared/driver/KswordArkDeviceAuditIoctl.h",
+      "line": 27,
+      "registered": true,
+      "handler": "KswordARKDeviceAuditIoctlQueryInputStack",
+      "registry_line": 339,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_USB_TOPOLOGY_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_USB_TOPOLOGY_AUDIT",
+      "function_id": 2274,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237320,
+      "source": "shared/driver/KswordArkDeviceAuditIoctl.h",
+      "line": 34,
+      "registered": true,
+      "handler": "KswordARKDeviceAuditIoctlQueryUsbTopology",
+      "registry_line": 340,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT",
+      "function_id": 2275,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237324,
+      "source": "shared/driver/KswordArkDeviceAuditIoctl.h",
+      "line": 41,
+      "registered": true,
+      "handler": "KswordARKDeviceAuditIoctlQueryGpuDisplayWatchdog",
+      "registry_line": 341,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_COMMUNICATION",
+      "function_id": 2215,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269852,
+      "source": "shared/driver/KswordArkDriverBlindIoctl.h",
+      "line": 10,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlControlDriverCommunication",
+      "registry_line": 226,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_DISPATCH",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_DISPATCH",
+      "function_id": 2252,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270000,
+      "source": "shared/driver/KswordArkDriverDispatchIoctl.h",
+      "line": 10,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlControlDriverDispatch",
+      "registry_line": 227,
+      "mutating_keywords": [
+        "CONTROL",
+        "PATCH"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_IMAGE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_IMAGE",
+      "function_id": 2254,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270008,
+      "source": "shared/driver/KswordArkDriverImageEditorIoctl.h",
+      "line": 10,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlControlDriverImage",
+      "registry_line": 228,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_DYN_STATUS",
@@ -304,10 +700,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236444,
       "source": "shared/driver/KswordArkDynDataIoctl.h",
-      "line": 20,
+      "line": 26,
       "registered": true,
       "handler": "KswordARKDynDataIoctlQueryStatus",
-      "registry_line": 105,
+      "registry_line": 247,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY",
@@ -328,10 +724,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236448,
       "source": "shared/driver/KswordArkDynDataIoctl.h",
-      "line": 27,
+      "line": 33,
       "registered": true,
       "handler": "KswordARKDynDataIoctlQueryFields",
-      "registry_line": 106,
+      "registry_line": 248,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -351,10 +747,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236452,
       "source": "shared/driver/KswordArkDynDataIoctl.h",
-      "line": 34,
+      "line": 40,
       "registered": true,
       "handler": "KswordARKDynDataIoctlQueryCapabilities",
-      "registry_line": 107,
+      "registry_line": 249,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -374,14 +770,152 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269372,
       "source": "shared/driver/KswordArkDynDataIoctl.h",
-      "line": 41,
+      "line": 47,
       "registered": true,
       "handler": "KswordARKDynDataIoctlApplyProfile",
-      "registry_line": 108,
+      "registry_line": 250,
       "mutating_keywords": [
         "APPLY"
       ],
       "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE_EX",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_APPLY_DYN_PROFILE_EX",
+      "function_id": 2096,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269376,
+      "source": "shared/driver/KswordArkDynDataIoctl.h",
+      "line": 54,
+      "registered": true,
+      "handler": "KswordARKDynDataIoctlApplyProfileEx",
+      "registry_line": 251,
+      "mutating_keywords": [
+        "APPLY"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE_V4",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_APPLY_DYN_PROFILE_V4",
+      "function_id": 2144,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236800,
+      "source": "shared/driver/KswordArkDynDataIoctl.h",
+      "line": 61,
+      "registered": true,
+      "handler": "KswordARKDynDataIoctlApplyProfileV4",
+      "registry_line": 252,
+      "mutating_keywords": [
+        "APPLY"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_MODULES",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_DYN_V4_MODULES",
+      "function_id": 2145,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236804,
+      "source": "shared/driver/KswordArkDynDataIoctl.h",
+      "line": 68,
+      "registered": true,
+      "handler": "KswordARKDynDataIoctlQueryV4Modules",
+      "registry_line": 253,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_CAPABILITY_GROUPS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_DYN_V4_CAPABILITY_GROUPS",
+      "function_id": 2146,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236808,
+      "source": "shared/driver/KswordArkDynDataIoctl.h",
+      "line": 75,
+      "registered": true,
+      "handler": "KswordARKDynDataIoctlQueryV4CapabilityGroups",
+      "registry_line": 254,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_MISSING_ITEMS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_DYN_V4_MISSING_ITEMS",
+      "function_id": 2147,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236812,
+      "source": "shared/driver/KswordArkDynDataIoctl.h",
+      "line": 82,
+      "registered": true,
+      "handler": "KswordARKDynDataIoctlQueryV4MissingItems",
+      "registry_line": 255,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_ITEMS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_DYN_V4_ITEMS",
+      "function_id": 2148,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236816,
+      "source": "shared/driver/KswordArkDynDataIoctl.h",
+      "line": 89,
+      "registered": true,
+      "handler": "KswordARKDynDataIoctlQueryV4Items",
+      "registry_line": 256,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
     },
     {
       "name": "IOCTL_KSWORD_ARK_DELETE_PATH",
@@ -397,10 +931,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236432,
       "source": "shared/driver/KswordArkFileIoctl.h",
-      "line": 18,
+      "line": 21,
       "registered": true,
       "handler": "KswordARKFileIoctlDeletePath",
-      "registry_line": 86,
+      "registry_line": 201,
       "mutating_keywords": [
         "DELETE"
       ],
@@ -420,13 +954,59 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236488,
       "source": "shared/driver/KswordArkFileIoctl.h",
-      "line": 25,
+      "line": 28,
       "registered": true,
       "handler": "KswordARKFileIoctlQueryFileInfo",
-      "registry_line": 87,
+      "registry_line": 202,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_FILE_INTEGRITY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_SET_FILE_INTEGRITY",
+      "function_id": 2125,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269492,
+      "source": "shared/driver/KswordArkFileIoctl.h",
+      "line": 35,
+      "registered": true,
+      "handler": "KswordARKFileIoctlSetIntegrity",
+      "registry_line": 204,
+      "mutating_keywords": [
+        "SET"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_DIRECTORY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_ENUM_DIRECTORY",
+      "function_id": 2255,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS",
+      "access_value": 1,
+      "access_name": "FILE_READ_ACCESS",
+      "control_code": 2253628,
+      "source": "shared/driver/KswordArkFileIoctl.h",
+      "line": 42,
+      "registered": true,
+      "handler": "KswordARKFileIoctlEnumDirectory",
+      "registry_line": 203,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "ENUM"
       ]
     },
     {
@@ -443,10 +1023,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236500,
       "source": "shared/driver/KswordArkFileMonitorIoctl.h",
-      "line": 19,
+      "line": 67,
       "registered": true,
       "handler": "KswordARKFileMonitorIoctlControl",
-      "registry_line": 88,
+      "registry_line": 205,
       "mutating_keywords": [
         "CONTROL"
       ],
@@ -466,10 +1046,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236504,
       "source": "shared/driver/KswordArkFileMonitorIoctl.h",
-      "line": 26,
+      "line": 74,
       "registered": true,
       "handler": "KswordARKFileMonitorIoctlDrain",
-      "registry_line": 89,
+      "registry_line": 206,
       "mutating_keywords": [],
       "query_keywords": [
         "DRAIN"
@@ -489,14 +1069,37 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236508,
       "source": "shared/driver/KswordArkFileMonitorIoctl.h",
-      "line": 33,
+      "line": 81,
       "registered": true,
       "handler": "KswordARKFileMonitorIoctlQueryStatus",
-      "registry_line": 90,
+      "registry_line": 207,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY",
         "STATUS"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_MINIFILTER_INVENTORY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_MINIFILTER_INVENTORY",
+      "function_id": 2224,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237120,
+      "source": "shared/driver/KswordArkFilterIoctl.h",
+      "line": 18,
+      "registered": true,
+      "handler": "KswordARKMinifilterIoctlQueryInventory",
+      "registry_line": 314,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
       ]
     },
     {
@@ -516,7 +1119,7 @@
       "line": 18,
       "registered": true,
       "handler": "KswordARKHandleIoctlEnumProcessHandles",
-      "registry_line": 111,
+      "registry_line": 277,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
@@ -539,11 +1142,192 @@
       "line": 25,
       "registered": true,
       "handler": "KswordARKHandleIoctlQueryHandleObject",
-      "registry_line": 112,
+      "registry_line": 278,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
       ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_HVM",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_HVM",
+      "function_id": 2250,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237224,
+      "source": "shared/driver/KswordArkHvmIoctl.h",
+      "line": 14,
+      "registered": true,
+      "handler": "KswordARKHvmIoctlQuery",
+      "registry_line": 217,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_HVM",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_HVM",
+      "function_id": 2251,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269996,
+      "source": "shared/driver/KswordArkHvmIoctl.h",
+      "line": 16,
+      "registered": true,
+      "handler": "KswordARKHvmIoctlControl",
+      "registry_line": 218,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HVM_EPT_RULE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_HVM_EPT_RULE",
+      "function_id": 2232,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269920,
+      "source": "shared/driver/KswordArkHvmIoctl.h",
+      "line": 18,
+      "registered": true,
+      "handler": "KswordARKHvmIoctlEptRule",
+      "registry_line": 222,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HVM_EVENTS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_HVM_EVENTS",
+      "function_id": 2233,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269924,
+      "source": "shared/driver/KswordArkHvmIoctl.h",
+      "line": 20,
+      "registered": true,
+      "handler": "KswordARKHvmIoctlEvents",
+      "registry_line": 223,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_HWID_DISPATCH_QUERY",
+      "function_id": 2288,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237376,
+      "source": "shared/driver/KswordArkHwidIoctl.h",
+      "line": 18,
+      "registered": true,
+      "handler": "KswordARKHwidIoctlQueryDispatch",
+      "registry_line": 349,
+      "mutating_keywords": [
+        "PATCH"
+      ],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_HWID_DISPATCH_CONTROL",
+      "function_id": 2289,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237380,
+      "source": "shared/driver/KswordArkHwidIoctl.h",
+      "line": 25,
+      "registered": true,
+      "handler": "KswordARKHwidIoctlControlDispatch",
+      "registry_line": 350,
+      "mutating_keywords": [
+        "CONTROL",
+        "PATCH"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_I8042_AUDIT",
+      "function_id": 2277,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237332,
+      "source": "shared/driver/KswordArkI8042AuditIoctl.h",
+      "line": 17,
+      "registered": true,
+      "handler": "KswordARKI8042AuditIoctlQuery",
+      "registry_line": 345,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RESTORE_IDT_BASELINE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RESTORE_IDT_BASELINE",
+      "function_id": 2247,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269980,
+      "source": "shared/driver/KswordArkKernelBaselineIoctl.h",
+      "line": 9,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlRestoreIdtBaseline",
+      "registry_line": 214,
+      "mutating_keywords": [],
+      "query_keywords": []
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_SSDT",
@@ -559,10 +1343,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236440,
       "source": "shared/driver/KswordArkKernelIoctl.h",
-      "line": 21,
+      "line": 29,
       "registered": true,
       "handler": "KswordARKKernelIoctlEnumSsdt",
-      "registry_line": 91,
+      "registry_line": 208,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
@@ -582,14 +1366,104 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236484,
       "source": "shared/driver/KswordArkKernelIoctl.h",
-      "line": 28,
+      "line": 36,
       "registered": true,
       "handler": "KswordARKKernelIoctlQueryDriverObject",
-      "registry_line": 92,
+      "registry_line": 209,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
       ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_IOCTL_REGISTRY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_IOCTL_REGISTRY",
+      "function_id": 2212,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237072,
+      "source": "shared/driver/KswordArkKernelIoctl.h",
+      "line": 44,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlQueryIoctlRegistry",
+      "registry_line": 232,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_TIMER_DPC",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_ENUM_TIMER_DPC",
+      "function_id": 2213,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237076,
+      "source": "shared/driver/KswordArkKernelIoctl.h",
+      "line": 52,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlEnumTimerDpc",
+      "registry_line": 233,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "ENUM"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_IO_TIMER",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_IO_TIMER",
+      "function_id": 2219,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269868,
+      "source": "shared/driver/KswordArkKernelIoctl.h",
+      "line": 61,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlControlIoTimer",
+      "registry_line": 210,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_EXPERIMENTAL_RETURN_TO_FIRMWARE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_EXPERIMENTAL_RETURN_TO_FIRMWARE",
+      "function_id": 2214,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269848,
+      "source": "shared/driver/KswordArkKernelIoctl.h",
+      "line": 70,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlExperimentalReturnToFirmware",
+      "registry_line": 234,
+      "mutating_keywords": [],
+      "query_keywords": []
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_SHADOW_SSDT",
@@ -605,10 +1479,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236536,
       "source": "shared/driver/KswordArkKernelIoctl.h",
-      "line": 35,
+      "line": 134,
       "registered": true,
       "handler": "KswordARKKernelIoctlEnumShadowSsdt",
-      "registry_line": 93,
+      "registry_line": 211,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
@@ -628,10 +1502,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236540,
       "source": "shared/driver/KswordArkKernelIoctl.h",
-      "line": 42,
+      "line": 141,
       "registered": true,
       "handler": "KswordARKKernelIoctlScanInlineHooks",
-      "registry_line": 94,
+      "registry_line": 212,
       "mutating_keywords": [],
       "query_keywords": [
         "SCAN"
@@ -651,10 +1525,10 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269312,
       "source": "shared/driver/KswordArkKernelIoctl.h",
-      "line": 49,
+      "line": 148,
       "registered": true,
       "handler": "KswordARKKernelIoctlPatchInlineHook",
-      "registry_line": 95,
+      "registry_line": 213,
       "mutating_keywords": [
         "PATCH"
       ],
@@ -674,10 +1548,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236548,
       "source": "shared/driver/KswordArkKernelIoctl.h",
-      "line": 56,
+      "line": 155,
       "registered": true,
       "handler": "KswordARKKernelIoctlEnumIatEatHooks",
-      "registry_line": 96,
+      "registry_line": 224,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
@@ -697,14 +1571,175 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269336,
       "source": "shared/driver/KswordArkKernelIoctl.h",
-      "line": 63,
+      "line": 162,
       "registered": true,
       "handler": "KswordARKKernelIoctlForceUnloadDriver",
-      "registry_line": 97,
+      "registry_line": 225,
       "mutating_keywords": [
         "UNLOAD"
       ],
       "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_INTEGRITY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_DRIVER_INTEGRITY",
+      "function_id": 2121,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236708,
+      "source": "shared/driver/KswordArkKernelIoctl.h",
+      "line": 169,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlQueryDriverIntegrity",
+      "registry_line": 229,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_CPU_HARDWARE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_CPU_HARDWARE",
+      "function_id": 2122,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236712,
+      "source": "shared/driver/KswordArkKernelIoctl.h",
+      "line": 176,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlQueryCpuHardware",
+      "registry_line": 230,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PHYSICAL_MEMORY_LAYOUT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_PHYSICAL_MEMORY_LAYOUT",
+      "function_id": 2123,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236716,
+      "source": "shared/driver/KswordArkKernelIoctl.h",
+      "line": 183,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlQueryPhysicalMemoryLayout",
+      "registry_line": 231,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_CID_TABLE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_ENUM_CID_TABLE",
+      "function_id": 2168,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236896,
+      "source": "shared/driver/KswordArkKernelObjectIoctl.h",
+      "line": 20,
+      "registered": true,
+      "handler": "KswordARKKernelObjectIoctlEnumCidTable",
+      "registry_line": 315,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "ENUM"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_KERNEL_OBJECT_SUMMARY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_KERNEL_OBJECT_SUMMARY",
+      "function_id": 2169,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236900,
+      "source": "shared/driver/KswordArkKernelObjectIoctl.h",
+      "line": 27,
+      "registered": true,
+      "handler": "KswordARKKernelObjectIoctlQueryObjectSummary",
+      "registry_line": 316,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_IPC_SUMMARY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_IPC_SUMMARY",
+      "function_id": 2170,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236904,
+      "source": "shared/driver/KswordArkKernelObjectIoctl.h",
+      "line": 34,
+      "registered": true,
+      "handler": "KswordARKKernelObjectIoctlQueryIpcSummary",
+      "registry_line": 318,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_ENUM_OBJECT_TYPE_TABLE",
+      "function_id": 2171,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236908,
+      "source": "shared/driver/KswordArkKernelObjectIoctl.h",
+      "line": 41,
+      "registered": true,
+      "handler": "KswordARKKernelObjectIoctlEnumTypeTable",
+      "registry_line": 317,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "ENUM"
+      ]
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS",
@@ -723,7 +1758,7 @@
       "line": 18,
       "registered": true,
       "handler": "KswordARKKeyboardIoctlEnumHotkeys",
-      "registry_line": 133,
+      "registry_line": 308,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
@@ -746,7 +1781,7 @@
       "line": 25,
       "registered": true,
       "handler": "KswordARKKeyboardIoctlEnumHooks",
-      "registry_line": 134,
+      "registry_line": 309,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
@@ -766,10 +1801,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236492,
       "source": "shared/driver/KswordArkMemoryIoctl.h",
-      "line": 25,
+      "line": 30,
       "registered": true,
       "handler": "KswordARKMemoryIoctlQueryVirtualMemory",
-      "registry_line": 79,
+      "registry_line": 192,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -789,10 +1824,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236496,
       "source": "shared/driver/KswordArkMemoryIoctl.h",
-      "line": 32,
+      "line": 37,
       "registered": true,
       "handler": "KswordARKMemoryIoctlReadVirtualMemory",
-      "registry_line": 80,
+      "registry_line": 193,
       "mutating_keywords": [],
       "query_keywords": [
         "READ"
@@ -812,10 +1847,10 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269300,
       "source": "shared/driver/KswordArkMemoryIoctl.h",
-      "line": 39,
+      "line": 44,
       "registered": true,
       "handler": "KswordARKMemoryIoctlWriteVirtualMemory",
-      "registry_line": 81,
+      "registry_line": 194,
       "mutating_keywords": [
         "WRITE"
       ],
@@ -835,10 +1870,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236588,
       "source": "shared/driver/KswordArkMemoryIoctl.h",
-      "line": 46,
+      "line": 51,
       "registered": true,
       "handler": "KswordARKMemoryIoctlReadPhysicalMemory",
-      "registry_line": 82,
+      "registry_line": 195,
       "mutating_keywords": [],
       "query_keywords": [
         "READ"
@@ -858,10 +1893,10 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269360,
       "source": "shared/driver/KswordArkMemoryIoctl.h",
-      "line": 53,
+      "line": 58,
       "registered": true,
       "handler": "KswordARKMemoryIoctlWritePhysicalMemory",
-      "registry_line": 83,
+      "registry_line": 196,
       "mutating_keywords": [
         "WRITE"
       ],
@@ -881,10 +1916,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236596,
       "source": "shared/driver/KswordArkMemoryIoctl.h",
-      "line": 60,
+      "line": 65,
       "registered": true,
       "handler": "KswordARKMemoryIoctlTranslateVirtualAddress",
-      "registry_line": 84,
+      "registry_line": 197,
       "mutating_keywords": [],
       "query_keywords": [
         "TRANSLATE"
@@ -904,10 +1939,142 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236600,
       "source": "shared/driver/KswordArkMemoryIoctl.h",
-      "line": 67,
+      "line": 72,
       "registered": true,
       "handler": "KswordARKMemoryIoctlQueryPageTableEntry",
-      "registry_line": 85,
+      "registry_line": 198,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SCAN_KERNEL_EXECUTABLE_MEMORY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_SCAN_KERNEL_EXECUTABLE_MEMORY",
+      "function_id": 2097,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236612,
+      "source": "shared/driver/KswordArkMemoryIoctl.h",
+      "line": 79,
+      "registered": true,
+      "handler": "KswordARKMemoryIoctlScanKernelExecutableMemory",
+      "registry_line": 199,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "SCAN"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SCAN_KERNEL_MEMORY_EVIDENCE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_SCAN_KERNEL_MEMORY_EVIDENCE",
+      "function_id": 2098,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236616,
+      "source": "shared/driver/KswordArkMemoryIoctl.h",
+      "line": 86,
+      "registered": true,
+      "handler": "KswordARKMemoryIoctlScanKernelMemoryEvidence",
+      "registry_line": 200,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "SCAN"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_PREPARE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_MUTATION_PREPARE",
+      "function_id": 2104,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269408,
+      "source": "shared/driver/KswordArkMutationIoctl.h",
+      "line": 25,
+      "registered": true,
+      "handler": "KswordARKMutationIoctlPrepare",
+      "registry_line": 310,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_COMMIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_MUTATION_COMMIT",
+      "function_id": 2105,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269412,
+      "source": "shared/driver/KswordArkMutationIoctl.h",
+      "line": 32,
+      "registered": true,
+      "handler": "KswordARKMutationIoctlCommit",
+      "registry_line": 311,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_ROLLBACK",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_MUTATION_ROLLBACK",
+      "function_id": 2106,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269416,
+      "source": "shared/driver/KswordArkMutationIoctl.h",
+      "line": 39,
+      "registered": true,
+      "handler": "KswordARKMutationIoctlRollback",
+      "registry_line": 312,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_QUERY_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_MUTATION_QUERY_AUDIT",
+      "function_id": 2107,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS",
+      "access_value": 1,
+      "access_name": "FILE_READ_ACCESS",
+      "control_code": 2253036,
+      "source": "shared/driver/KswordArkMutationIoctl.h",
+      "line": 46,
+      "registered": true,
+      "handler": "KswordARKMutationIoctlQueryAudit",
+      "registry_line": 313,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -927,10 +2094,10 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269348,
       "source": "shared/driver/KswordArkNetworkIoctl.h",
-      "line": 18,
+      "line": 26,
       "registered": true,
       "handler": "KswordARKNetworkIoctlSetRules",
-      "registry_line": 131,
+      "registry_line": 299,
       "mutating_keywords": [
         "SET"
       ],
@@ -950,14 +2117,244 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236584,
       "source": "shared/driver/KswordArkNetworkIoctl.h",
-      "line": 25,
+      "line": 33,
       "registered": true,
       "handler": "KswordARKNetworkIoctlQueryStatus",
-      "registry_line": 132,
+      "registry_line": 300,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY",
         "STATUS"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_TCP_ENDPOINTS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_TCP_ENDPOINTS",
+      "function_id": 2208,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237056,
+      "source": "shared/driver/KswordArkNetworkIoctl.h",
+      "line": 40,
+      "registered": true,
+      "handler": "KswordARKNetworkIoctlQueryTcpEndpoints",
+      "registry_line": 301,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_UDP_ENDPOINTS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_UDP_ENDPOINTS",
+      "function_id": 2209,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237060,
+      "source": "shared/driver/KswordArkNetworkIoctl.h",
+      "line": 47,
+      "registered": true,
+      "handler": "KswordARKNetworkIoctlQueryUdpEndpoints",
+      "registry_line": 302,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_INVENTORY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_WFP_INVENTORY",
+      "function_id": 2210,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237064,
+      "source": "shared/driver/KswordArkNetworkIoctl.h",
+      "line": 54,
+      "registered": true,
+      "handler": "KswordARKNetworkIoctlQueryWfpInventory",
+      "registry_line": 303,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_NDIS_CHAIN",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_NDIS_CHAIN",
+      "function_id": 2211,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237068,
+      "source": "shared/driver/KswordArkNetworkIoctl.h",
+      "line": 61,
+      "registered": true,
+      "handler": "KswordARKNetworkIoctlQueryNdisChain",
+      "registry_line": 307,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_EVENTS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_WFP_EVENTS",
+      "function_id": 2217,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237092,
+      "source": "shared/driver/KswordArkNetworkIoctl.h",
+      "line": 68,
+      "registered": true,
+      "handler": "KswordARKNetworkIoctlQueryWfpEvents",
+      "registry_line": 304,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_TRAFFIC_PACKETS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_NETWORK_QUERY_TRAFFIC_PACKETS",
+      "function_id": 2218,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237096,
+      "source": "shared/driver/KswordArkNetworkIoctl.h",
+      "line": 75,
+      "registered": true,
+      "handler": "KswordARKNetworkIoctlQueryTrafficPackets",
+      "registry_line": 305,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_NETWORK_CONTROL_TRAFFIC_CAPTURE",
+      "function_id": 2220,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269872,
+      "source": "shared/driver/KswordArkNetworkIoctl.h",
+      "line": 82,
+      "registered": true,
+      "handler": "KswordARKNetworkIoctlControlTrafficCapture",
+      "registry_line": 306,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PIDDB",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_PIDDB",
+      "function_id": 2248,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237216,
+      "source": "shared/driver/KswordArkPiDdbIoctl.h",
+      "line": 10,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlQueryPiDdb",
+      "registry_line": 215,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_DELETE_PIDDB",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_DELETE_PIDDB",
+      "function_id": 2249,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269988,
+      "source": "shared/driver/KswordArkPiDdbIoctl.h",
+      "line": 12,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlDeletePiDdb",
+      "registry_line": 216,
+      "mutating_keywords": [
+        "DELETE"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_PLATFORM_AUDIT",
+      "function_id": 2276,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237328,
+      "source": "shared/driver/KswordArkPlatformAuditIoctl.h",
+      "line": 16,
+      "registered": true,
+      "handler": "KswordARKPlatformAuditIoctlQuery",
+      "registry_line": 343,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
       ]
     },
     {
@@ -977,7 +2374,7 @@
       "line": 19,
       "registered": true,
       "handler": "KswordARKPreflightIoctlQuery",
-      "registry_line": 120,
+      "registry_line": 288,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -997,10 +2394,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236420,
       "source": "shared/driver/KswordArkProcessIoctl.h",
-      "line": 40,
+      "line": 54,
       "registered": true,
       "handler": "KswordARKProcessIoctlTerminate",
-      "registry_line": 72,
+      "registry_line": 183,
       "mutating_keywords": [
         "TERMINATE"
       ],
@@ -1020,10 +2417,10 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236424,
       "source": "shared/driver/KswordArkProcessIoctl.h",
-      "line": 53,
+      "line": 67,
       "registered": true,
       "handler": "KswordARKProcessIoctlSuspend",
-      "registry_line": 73,
+      "registry_line": 184,
       "mutating_keywords": [
         "SUSPEND"
       ],
@@ -1043,10 +2440,33 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236428,
       "source": "shared/driver/KswordArkProcessIoctl.h",
-      "line": 65,
+      "line": 79,
       "registered": true,
       "handler": "KswordARKProcessIoctlSetPplLevel",
-      "registry_line": 74,
+      "registry_line": 185,
+      "mutating_keywords": [
+        "SET"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_PROCESS_INTEGRITY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_SET_PROCESS_INTEGRITY",
+      "function_id": 2124,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269488,
+      "source": "shared/driver/KswordArkProcessIoctl.h",
+      "line": 93,
+      "registered": true,
+      "handler": "KswordARKProcessIoctlSetIntegrity",
+      "registry_line": 186,
       "mutating_keywords": [
         "SET"
       ],
@@ -1066,13 +2486,82 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236436,
       "source": "shared/driver/KswordArkProcessIoctl.h",
-      "line": 79,
+      "line": 128,
       "registered": true,
       "handler": "KswordARKProcessIoctlEnumProcess",
-      "registry_line": 75,
+      "registry_line": 187,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_CROSSVIEW",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_CROSSVIEW",
+      "function_id": 2102,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236632,
+      "source": "shared/driver/KswordArkProcessIoctl.h",
+      "line": 359,
+      "registered": true,
+      "handler": "KswordARKProcessIoctlQueryCrossView",
+      "registry_line": 265,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_DETAIL",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_DETAIL",
+      "function_id": 2108,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236656,
+      "source": "shared/driver/KswordArkProcessIoctl.h",
+      "line": 370,
+      "registered": true,
+      "handler": "KswordARKProcessIoctlQueryDetail",
+      "registry_line": 269,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_RUNTIME_FIELDS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_PROCESS_RUNTIME_FIELDS",
+      "function_id": 2110,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236664,
+      "source": "shared/driver/KswordArkProcessIoctl.h",
+      "line": 377,
+      "registered": true,
+      "handler": "KswordARKProcessIoctlQueryRuntimeFields",
+      "registry_line": 271,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
       ]
     },
     {
@@ -1089,10 +2578,10 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269320,
       "source": "shared/driver/KswordArkProcessIoctl.h",
-      "line": 196,
+      "line": 654,
       "registered": true,
       "handler": "KswordARKProcessIoctlSetVisibility",
-      "registry_line": 76,
+      "registry_line": 188,
       "mutating_keywords": [
         "SET"
       ],
@@ -1112,10 +2601,10 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269328,
       "source": "shared/driver/KswordArkProcessIoctl.h",
-      "line": 221,
+      "line": 679,
       "registered": true,
       "handler": "KswordARKProcessIoctlSetSpecialFlags",
-      "registry_line": 77,
+      "registry_line": 189,
       "mutating_keywords": [
         "SET"
       ],
@@ -1135,13 +2624,34 @@
       "access_name": "FILE_WRITE_ACCESS",
       "control_code": 2269332,
       "source": "shared/driver/KswordArkProcessIoctl.h",
-      "line": 262,
+      "line": 720,
       "registered": true,
       "handler": "KswordARKProcessIoctlDkomProcess",
-      "registry_line": 78,
+      "registry_line": 190,
       "mutating_keywords": [
         "DKOM"
       ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_INJECT_PROCESS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_INJECT_PROCESS",
+      "function_id": 2099,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269388,
+      "source": "shared/driver/KswordArkProcessIoctl.h",
+      "line": 758,
+      "registered": true,
+      "handler": "KswordARKProcessIoctlInjectProcess",
+      "registry_line": 191,
+      "mutating_keywords": [],
       "query_keywords": []
     },
     {
@@ -1161,7 +2671,7 @@
       "line": 18,
       "registered": true,
       "handler": "KswordARKRedirectIoctlSetRules",
-      "registry_line": 129,
+      "registry_line": 297,
       "mutating_keywords": [
         "SET"
       ],
@@ -1184,7 +2694,7 @@
       "line": 25,
       "registered": true,
       "handler": "KswordARKRedirectIoctlQueryStatus",
-      "registry_line": 130,
+      "registry_line": 298,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY",
@@ -1208,7 +2718,7 @@
       "line": 23,
       "registered": true,
       "handler": "KswordARKRegistryIoctlReadValue",
-      "registry_line": 121,
+      "registry_line": 289,
       "mutating_keywords": [],
       "query_keywords": [
         "READ"
@@ -1231,7 +2741,7 @@
       "line": 30,
       "registered": true,
       "handler": "KswordARKRegistryIoctlEnumKey",
-      "registry_line": 122,
+      "registry_line": 290,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM"
@@ -1254,7 +2764,7 @@
       "line": 37,
       "registered": true,
       "handler": "KswordARKRegistryIoctlSetValue",
-      "registry_line": 123,
+      "registry_line": 291,
       "mutating_keywords": [
         "SET"
       ],
@@ -1277,7 +2787,7 @@
       "line": 44,
       "registered": true,
       "handler": "KswordARKRegistryIoctlDeleteValue",
-      "registry_line": 124,
+      "registry_line": 292,
       "mutating_keywords": [
         "DELETE"
       ],
@@ -1300,7 +2810,7 @@
       "line": 51,
       "registered": true,
       "handler": "KswordARKRegistryIoctlCreateKey",
-      "registry_line": 125,
+      "registry_line": 293,
       "mutating_keywords": [
         "CREATE"
       ],
@@ -1323,7 +2833,7 @@
       "line": 58,
       "registered": true,
       "handler": "KswordARKRegistryIoctlDeleteKey",
-      "registry_line": 126,
+      "registry_line": 294,
       "mutating_keywords": [
         "DELETE"
       ],
@@ -1346,7 +2856,7 @@
       "line": 65,
       "registered": true,
       "handler": "KswordARKRegistryIoctlRenameValue",
-      "registry_line": 127,
+      "registry_line": 295,
       "mutating_keywords": [
         "RENAME"
       ],
@@ -1369,10 +2879,232 @@
       "line": 72,
       "registered": true,
       "handler": "KswordARKRegistryIoctlRenameKey",
-      "registry_line": 128,
+      "registry_line": 296,
       "mutating_keywords": [
         "RENAME"
       ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_SUPPORT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_QUERY_SUPPORT",
+      "function_id": 2304,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270208,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 19,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlQuerySupport",
+      "registry_line": 356,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_REGISTER_PAGE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_REGISTER_PAGE",
+      "function_id": 2305,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270212,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 21,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlRegisterPage",
+      "registry_line": 357,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_CHANGE_PAGE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_CHANGE_PAGE",
+      "function_id": 2306,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270216,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 23,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlChangePage",
+      "registry_line": 358,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_PAGE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_QUERY_PAGE",
+      "function_id": 2307,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270220,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 25,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlQueryPage",
+      "registry_line": 359,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_WRITE_PAGE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_WRITE_PAGE",
+      "function_id": 2308,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270224,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 27,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlWritePage",
+      "registry_line": 360,
+      "mutating_keywords": [
+        "WRITE"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_SET_EMULATION",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_SET_EMULATION",
+      "function_id": 2309,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270228,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 29,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlSetEmulation",
+      "registry_line": 361,
+      "mutating_keywords": [
+        "SET"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_STATS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_QUERY_STATS",
+      "function_id": 2310,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270232,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 31,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlQueryStats",
+      "registry_line": 362,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_DRAIN_EVENTS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_DRAIN_EVENTS",
+      "function_id": 2311,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270236,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 33,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlDrainEvents",
+      "registry_line": 363,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "DRAIN"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_UNREGISTER_PAGE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_UNREGISTER_PAGE",
+      "function_id": 2312,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270240,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 35,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlUnregisterPage",
+      "registry_line": 364,
+      "mutating_keywords": [],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_RUN_SELF_TEST",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_RXPF_RUN_SELF_TEST",
+      "function_id": 2313,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2270244,
+      "source": "shared/driver/KswordArkRxPfIoctl.h",
+      "line": 37,
+      "registered": true,
+      "handler": "KswordARKRxpfIoctlRunSelfTest",
+      "registry_line": 365,
+      "mutating_keywords": [],
       "query_keywords": []
     },
     {
@@ -1392,7 +3124,7 @@
       "line": 18,
       "registered": true,
       "handler": "KswordARKSafetyIoctlQueryPolicy",
-      "registry_line": 118,
+      "registry_line": 286,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -1415,7 +3147,7 @@
       "line": 25,
       "registered": true,
       "handler": "KswordARKSafetyIoctlSetPolicy",
-      "registry_line": 119,
+      "registry_line": 287,
       "mutating_keywords": [
         "SET"
       ],
@@ -1438,7 +3170,7 @@
       "line": 18,
       "registered": true,
       "handler": "KswordARKSectionIoctlQueryProcessSection",
-      "registry_line": 114,
+      "registry_line": 281,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -1461,11 +3193,337 @@
       "line": 25,
       "registered": true,
       "handler": "KswordARKSectionIoctlQueryFileSectionMappings",
-      "registry_line": 115,
+      "registry_line": 282,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
       ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_SECURITY_STATUS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_SECURITY_STATUS",
+      "function_id": 2256,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237248,
+      "source": "shared/driver/KswordArkSecurityAuditIoctl.h",
+      "line": 20,
+      "registered": true,
+      "handler": "KswordARKSecurityAuditIoctlQuerySecurityStatus",
+      "registry_line": 326,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY",
+        "STATUS"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_TRUST_VIEW",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_DRIVER_TRUST_VIEW",
+      "function_id": 2257,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237252,
+      "source": "shared/driver/KswordArkSecurityAuditIoctl.h",
+      "line": 27,
+      "registered": true,
+      "handler": "KswordARKSecurityAuditIoctlQueryDriverTrustView",
+      "registry_line": 327,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_HYPERV_SUMMARY",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_HYPERV_SUMMARY",
+      "function_id": 2258,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237256,
+      "source": "shared/driver/KswordArkSecurityAuditIoctl.h",
+      "line": 34,
+      "registered": true,
+      "handler": "KswordARKSecurityAuditIoctlQueryHyperVSummary",
+      "registry_line": 328,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_APP_CONTROL_STATUS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_APP_CONTROL_STATUS",
+      "function_id": 2259,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237260,
+      "source": "shared/driver/KswordArkSecurityAuditIoctl.h",
+      "line": 41,
+      "registered": true,
+      "handler": "KswordARKSecurityAuditIoctlQueryAppControlStatus",
+      "registry_line": 329,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": [
+        "QUERY",
+        "STATUS"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_SLAT_IOMMU_AUDIT",
+      "function_id": 2253,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237236,
+      "source": "shared/driver/KswordArkSlatIommuAuditIoctl.h",
+      "line": 10,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlQuerySlatIommuAudit",
+      "registry_line": 219,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_RAW_DISK_BACKEND",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_RAW_DISK_BACKEND",
+      "function_id": 2244,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS",
+      "access_value": 1,
+      "access_name": "FILE_READ_ACCESS",
+      "control_code": 2253584,
+      "source": "shared/driver/KswordArkStorageForensicsIoctl.h",
+      "line": 19,
+      "registered": true,
+      "handler": "KswordARKStorageIoctlQueryRawDiskBackend",
+      "registry_line": 323,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_READ_RAW_DISK",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_READ_RAW_DISK",
+      "function_id": 2245,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS",
+      "access_value": 1,
+      "access_name": "FILE_READ_ACCESS",
+      "control_code": 2253588,
+      "source": "shared/driver/KswordArkStorageForensicsIoctl.h",
+      "line": 26,
+      "registered": true,
+      "handler": "KswordARKStorageIoctlReadRawDisk",
+      "registry_line": 324,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_WRITE_RAW_DISK",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_WRITE_RAW_DISK",
+      "function_id": 2246,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269976,
+      "source": "shared/driver/KswordArkStorageForensicsIoctl.h",
+      "line": 33,
+      "registered": true,
+      "handler": "KswordARKStorageIoctlWriteRawDisk",
+      "registry_line": 325,
+      "mutating_keywords": [
+        "WRITE"
+      ],
+      "query_keywords": []
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_VOLUME_STACK_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_VOLUME_STACK_AUDIT",
+      "function_id": 2240,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237184,
+      "source": "shared/driver/KswordArkStorageIoctl.h",
+      "line": 23,
+      "registered": true,
+      "handler": "KswordARKStorageIoctlQueryVolumeStackAudit",
+      "registry_line": 319,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_BITLOCKER_FVE_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_BITLOCKER_FVE_AUDIT",
+      "function_id": 2241,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237188,
+      "source": "shared/driver/KswordArkStorageIoctl.h",
+      "line": 30,
+      "registered": true,
+      "handler": "KswordARKStorageIoctlQueryBitLockerFveAudit",
+      "registry_line": 320,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_MOUNTMGR_MAPPING_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_MOUNTMGR_MAPPING_AUDIT",
+      "function_id": 2242,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237192,
+      "source": "shared/driver/KswordArkStorageIoctl.h",
+      "line": 37,
+      "registered": true,
+      "handler": "KswordARKStorageIoctlQueryMountMgrMappingAudit",
+      "registry_line": 321,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_FILESYSTEM_INTEGRITY_AUDIT",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_FILESYSTEM_INTEGRITY_AUDIT",
+      "function_id": 2243,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237196,
+      "source": "shared/driver/KswordArkStorageIoctl.h",
+      "line": 44,
+      "registered": true,
+      "handler": "KswordARKStorageIoctlQueryFileSystemIntegrityAudit",
+      "registry_line": 322,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_SYSTEM_TIME",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_SYSTEM_TIME",
+      "function_id": 2149,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236820,
+      "source": "shared/driver/KswordArkSystemTimeIoctl.h",
+      "line": 12,
+      "registered": true,
+      "handler": "KswordARKSystemTimeIoctlQuery",
+      "registry_line": 220,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_SYSTEM_TIME",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_SYSTEM_TIME",
+      "function_id": 2150,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269592,
+      "source": "shared/driver/KswordArkSystemTimeIoctl.h",
+      "line": 19,
+      "registered": true,
+      "handler": "KswordARKSystemTimeIoctlControl",
+      "registry_line": 221,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": []
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_THREAD",
@@ -1481,13 +3539,161 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236460,
       "source": "shared/driver/KswordArkThreadIoctl.h",
-      "line": 17,
+      "line": 23,
       "registered": true,
       "handler": "KswordARKThreadIoctlEnumThread",
-      "registry_line": 110,
+      "registry_line": 258,
       "mutating_keywords": [],
       "query_keywords": [
         "ENUM",
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_THREAD_CROSSVIEW",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_THREAD_CROSSVIEW",
+      "function_id": 2103,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236636,
+      "source": "shared/driver/KswordArkThreadIoctl.h",
+      "line": 30,
+      "registered": true,
+      "handler": "KswordARKThreadIoctlQueryCrossView",
+      "registry_line": 267,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY",
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_THREAD_DETAIL",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_THREAD_DETAIL",
+      "function_id": 2109,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236660,
+      "source": "shared/driver/KswordArkThreadIoctl.h",
+      "line": 41,
+      "registered": true,
+      "handler": "KswordARKThreadIoctlQueryDetail",
+      "registry_line": 273,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY",
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_THREAD_RUNTIME_FIELDS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_THREAD_RUNTIME_FIELDS",
+      "function_id": 2111,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236668,
+      "source": "shared/driver/KswordArkThreadIoctl.h",
+      "line": 48,
+      "registered": true,
+      "handler": "KswordARKThreadIoctlQueryRuntimeFields",
+      "registry_line": 275,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY",
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_TERMINATE_THREAD",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_TERMINATE_THREAD",
+      "function_id": 2127,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269500,
+      "source": "shared/driver/KswordArkThreadIoctl.h",
+      "line": 59,
+      "registered": true,
+      "handler": "KswordARKThreadIoctlTerminate",
+      "registry_line": 259,
+      "mutating_keywords": [
+        "TERMINATE"
+      ],
+      "query_keywords": [
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_SET_THREAD_SUSPENDED",
+      "function_id": 2128,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269504,
+      "source": "shared/driver/KswordArkThreadIoctl.h",
+      "line": 78,
+      "registered": true,
+      "handler": "KswordARKThreadIoctlSetSuspended",
+      "registry_line": 260,
+      "mutating_keywords": [
+        "SET",
+        "SUSPEND"
+      ],
+      "query_keywords": [
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_CONTROL_DRIVER_THREAD",
+      "function_id": 2129,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_WRITE_ACCESS",
+      "access_value": 2,
+      "access_name": "FILE_WRITE_ACCESS",
+      "control_code": 2269508,
+      "source": "shared/driver/KswordArkThreadIoctl.h",
+      "line": 101,
+      "registered": true,
+      "handler": "KswordARKThreadIoctlControlDriverThread",
+      "registry_line": 261,
+      "mutating_keywords": [
+        "CONTROL"
+      ],
+      "query_keywords": [
         "READ"
       ]
     },
@@ -1505,13 +3711,270 @@
       "access_name": "FILE_ANY_ACCESS",
       "control_code": 2236516,
       "source": "shared/driver/KswordArkTrustIoctl.h",
-      "line": 17,
+      "line": 20,
       "registered": true,
       "handler": "KswordARKTrustIoctlQueryImageTrust",
-      "registry_line": 117,
+      "registry_line": 284,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_IMAGE_SIGNATURE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_IMAGE_SIGNATURE",
+      "function_id": 2126,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS | FILE_WRITE_ACCESS",
+      "access_value": 3,
+      "access_name": "FILE_READ_ACCESS|FILE_WRITE_ACCESS",
+      "control_code": 2285880,
+      "source": "shared/driver/KswordArkTrustIoctl.h",
+      "line": 27,
+      "registered": true,
+      "handler": "KswordARKTrustIoctlQueryImageSignature",
+      "registry_line": 285,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_UNLOADED_DRIVERS",
+      "function_id": 2216,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237088,
+      "source": "shared/driver/KswordArkUnloadedDriverIoctl.h",
+      "line": 16,
+      "registered": true,
+      "handler": "KswordARKKernelIoctlQueryUnloadedDrivers",
+      "registry_line": 236,
+      "mutating_keywords": [
+        "UNLOAD"
+      ],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_PROFILE_STATUS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_PROFILE_STATUS",
+      "function_id": 2192,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236992,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 24,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryProfileStatus",
+      "registry_line": 330,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY",
+        "STATUS"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOWS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_WINDOWS",
+      "function_id": 2193,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2236996,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 31,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryWindows",
+      "registry_line": 331,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_GUI_THREADS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_GUI_THREADS",
+      "function_id": 2194,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237000,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 38,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryGuiThreads",
+      "registry_line": 332,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY",
+        "READ"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_HOTKEYS_PDB",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_HOTKEYS_PDB",
+      "function_id": 2195,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237004,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 45,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryHotkeysPdb",
+      "registry_line": 333,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_HOOKS_PDB",
+      "function_id": 2196,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237008,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 52,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryHooksPdb",
+      "registry_line": 334,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOW_DETAIL",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_WINDOW_DETAIL",
+      "function_id": 2197,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237012,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 63,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryWindowDetail",
+      "registry_line": 335,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_TIMERS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_TIMERS",
+      "function_id": 2198,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237016,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 71,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryTimers",
+      "registry_line": 336,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_EVENT_HOOKS",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_QUERY_WIN32K_EVENT_HOOKS",
+      "function_id": 2199,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_ANY_ACCESS",
+      "access_value": 0,
+      "access_name": "FILE_ANY_ACCESS",
+      "control_code": 2237020,
+      "source": "shared/driver/KswordArkWin32kIoctl.h",
+      "line": 79,
+      "registered": true,
+      "handler": "KswordARKWin32kIoctlQueryEventHooks",
+      "registry_line": 337,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "QUERY"
+      ]
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE",
+      "device_type_expr": "KSWORD_ARK_IOCTL_DEVICE_TYPE",
+      "device_type_value": 34,
+      "function_expr": "KSWORD_ARK_IOCTL_FUNCTION_ENUM_WORK_QUEUE",
+      "function_id": 2130,
+      "method_expr": "METHOD_BUFFERED",
+      "method_value": 0,
+      "method_name": "METHOD_BUFFERED",
+      "access_expr": "FILE_READ_ACCESS",
+      "access_value": 1,
+      "access_name": "FILE_READ_ACCESS",
+      "control_code": 2253128,
+      "source": "shared/driver/KswordArkWorkQueueIoctl.h",
+      "line": 16,
+      "registered": true,
+      "handler": "KswordARKWorkQueueIoctlEnum",
+      "registry_line": 263,
+      "mutating_keywords": [],
+      "query_keywords": [
+        "ENUM"
       ]
     },
     {
@@ -1531,7 +3994,7 @@
       "line": 17,
       "registered": true,
       "handler": "KswordARKWslSiloIoctlQuery",
-      "registry_line": 116,
+      "registry_line": 283,
       "mutating_keywords": [],
       "query_keywords": [
         "QUERY"
@@ -1544,441 +4007,1183 @@
       "handler": "KswordARKProcessIoctlTerminate",
       "string_name": "IOCTL_KSWORD_ARK_TERMINATE_PROCESS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 72
+      "line": 183
     },
     {
       "name": "IOCTL_KSWORD_ARK_SUSPEND_PROCESS",
       "handler": "KswordARKProcessIoctlSuspend",
       "string_name": "IOCTL_KSWORD_ARK_SUSPEND_PROCESS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 73
+      "line": 184
     },
     {
       "name": "IOCTL_KSWORD_ARK_SET_PPL_LEVEL",
       "handler": "KswordARKProcessIoctlSetPplLevel",
       "string_name": "IOCTL_KSWORD_ARK_SET_PPL_LEVEL",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 74
+      "line": 185
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_PROCESS_INTEGRITY",
+      "handler": "KswordARKProcessIoctlSetIntegrity",
+      "string_name": "IOCTL_KSWORD_ARK_SET_PROCESS_INTEGRITY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 186
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_PROCESS",
       "handler": "KswordARKProcessIoctlEnumProcess",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_PROCESS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 75
+      "line": 187
     },
     {
       "name": "IOCTL_KSWORD_ARK_SET_PROCESS_VISIBILITY",
       "handler": "KswordARKProcessIoctlSetVisibility",
       "string_name": "IOCTL_KSWORD_ARK_SET_PROCESS_VISIBILITY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 76
+      "line": 188
     },
     {
       "name": "IOCTL_KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS",
       "handler": "KswordARKProcessIoctlSetSpecialFlags",
       "string_name": "IOCTL_KSWORD_ARK_SET_PROCESS_SPECIAL_FLAGS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 77
+      "line": 189
     },
     {
       "name": "IOCTL_KSWORD_ARK_DKOM_PROCESS",
       "handler": "KswordARKProcessIoctlDkomProcess",
       "string_name": "IOCTL_KSWORD_ARK_DKOM_PROCESS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 78
+      "line": 190
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_INJECT_PROCESS",
+      "handler": "KswordARKProcessIoctlInjectProcess",
+      "string_name": "IOCTL_KSWORD_ARK_INJECT_PROCESS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 191
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_VIRTUAL_MEMORY",
       "handler": "KswordARKMemoryIoctlQueryVirtualMemory",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_VIRTUAL_MEMORY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 79
+      "line": 192
     },
     {
       "name": "IOCTL_KSWORD_ARK_READ_VIRTUAL_MEMORY",
       "handler": "KswordARKMemoryIoctlReadVirtualMemory",
       "string_name": "IOCTL_KSWORD_ARK_READ_VIRTUAL_MEMORY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 80
+      "line": 193
     },
     {
       "name": "IOCTL_KSWORD_ARK_WRITE_VIRTUAL_MEMORY",
       "handler": "KswordARKMemoryIoctlWriteVirtualMemory",
       "string_name": "IOCTL_KSWORD_ARK_WRITE_VIRTUAL_MEMORY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 81
+      "line": 194
     },
     {
       "name": "IOCTL_KSWORD_ARK_READ_PHYSICAL_MEMORY",
       "handler": "KswordARKMemoryIoctlReadPhysicalMemory",
       "string_name": "IOCTL_KSWORD_ARK_READ_PHYSICAL_MEMORY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 82
+      "line": 195
     },
     {
       "name": "IOCTL_KSWORD_ARK_WRITE_PHYSICAL_MEMORY",
       "handler": "KswordARKMemoryIoctlWritePhysicalMemory",
       "string_name": "IOCTL_KSWORD_ARK_WRITE_PHYSICAL_MEMORY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 83
+      "line": 196
     },
     {
       "name": "IOCTL_KSWORD_ARK_TRANSLATE_VIRTUAL_ADDRESS",
       "handler": "KswordARKMemoryIoctlTranslateVirtualAddress",
       "string_name": "IOCTL_KSWORD_ARK_TRANSLATE_VIRTUAL_ADDRESS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 84
+      "line": 197
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_PAGE_TABLE_ENTRY",
       "handler": "KswordARKMemoryIoctlQueryPageTableEntry",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_PAGE_TABLE_ENTRY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 85
+      "line": 198
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SCAN_KERNEL_EXECUTABLE_MEMORY",
+      "handler": "KswordARKMemoryIoctlScanKernelExecutableMemory",
+      "string_name": "IOCTL_KSWORD_ARK_SCAN_KERNEL_EXECUTABLE_MEMORY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 199
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SCAN_KERNEL_MEMORY_EVIDENCE",
+      "handler": "KswordARKMemoryIoctlScanKernelMemoryEvidence",
+      "string_name": "IOCTL_KSWORD_ARK_SCAN_KERNEL_MEMORY_EVIDENCE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 200
     },
     {
       "name": "IOCTL_KSWORD_ARK_DELETE_PATH",
       "handler": "KswordARKFileIoctlDeletePath",
       "string_name": "IOCTL_KSWORD_ARK_DELETE_PATH",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 86
+      "line": 201
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_FILE_INFO",
       "handler": "KswordARKFileIoctlQueryFileInfo",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_FILE_INFO",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 87
+      "line": 202
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_DIRECTORY",
+      "handler": "KswordARKFileIoctlEnumDirectory",
+      "string_name": "IOCTL_KSWORD_ARK_ENUM_DIRECTORY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 203
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_FILE_INTEGRITY",
+      "handler": "KswordARKFileIoctlSetIntegrity",
+      "string_name": "IOCTL_KSWORD_ARK_SET_FILE_INTEGRITY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 204
     },
     {
       "name": "IOCTL_KSWORD_ARK_FILE_MONITOR_CONTROL",
       "handler": "KswordARKFileMonitorIoctlControl",
       "string_name": "IOCTL_KSWORD_ARK_FILE_MONITOR_CONTROL",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 88
+      "line": 205
     },
     {
       "name": "IOCTL_KSWORD_ARK_FILE_MONITOR_DRAIN",
       "handler": "KswordARKFileMonitorIoctlDrain",
       "string_name": "IOCTL_KSWORD_ARK_FILE_MONITOR_DRAIN",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 89
+      "line": 206
     },
     {
       "name": "IOCTL_KSWORD_ARK_FILE_MONITOR_QUERY_STATUS",
       "handler": "KswordARKFileMonitorIoctlQueryStatus",
       "string_name": "IOCTL_KSWORD_ARK_FILE_MONITOR_QUERY_STATUS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 90
+      "line": 207
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_SSDT",
       "handler": "KswordARKKernelIoctlEnumSsdt",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_SSDT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 91
+      "line": 208
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_OBJECT",
       "handler": "KswordARKKernelIoctlQueryDriverObject",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_OBJECT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 92
+      "line": 209
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_IO_TIMER",
+      "handler": "KswordARKKernelIoctlControlIoTimer",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_IO_TIMER",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 210
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_SHADOW_SSDT",
       "handler": "KswordARKKernelIoctlEnumShadowSsdt",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_SHADOW_SSDT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 93
+      "line": 211
     },
     {
       "name": "IOCTL_KSWORD_ARK_SCAN_INLINE_HOOKS",
       "handler": "KswordARKKernelIoctlScanInlineHooks",
       "string_name": "IOCTL_KSWORD_ARK_SCAN_INLINE_HOOKS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 94
+      "line": 212
     },
     {
       "name": "IOCTL_KSWORD_ARK_PATCH_INLINE_HOOK",
       "handler": "KswordARKKernelIoctlPatchInlineHook",
       "string_name": "IOCTL_KSWORD_ARK_PATCH_INLINE_HOOK",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 95
+      "line": 213
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RESTORE_IDT_BASELINE",
+      "handler": "KswordARKKernelIoctlRestoreIdtBaseline",
+      "string_name": "IOCTL_KSWORD_ARK_RESTORE_IDT_BASELINE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 214
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PIDDB",
+      "handler": "KswordARKKernelIoctlQueryPiDdb",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_PIDDB",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 215
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_DELETE_PIDDB",
+      "handler": "KswordARKKernelIoctlDeletePiDdb",
+      "string_name": "IOCTL_KSWORD_ARK_DELETE_PIDDB",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 216
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_HVM",
+      "handler": "KswordARKHvmIoctlQuery",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_HVM",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 217
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_HVM",
+      "handler": "KswordARKHvmIoctlControl",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_HVM",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 218
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT",
+      "handler": "KswordARKKernelIoctlQuerySlatIommuAudit",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 219
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_SYSTEM_TIME",
+      "handler": "KswordARKSystemTimeIoctlQuery",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_SYSTEM_TIME",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 220
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_SYSTEM_TIME",
+      "handler": "KswordARKSystemTimeIoctlControl",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_SYSTEM_TIME",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 221
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HVM_EPT_RULE",
+      "handler": "KswordARKHvmIoctlEptRule",
+      "string_name": "IOCTL_KSWORD_ARK_HVM_EPT_RULE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 222
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HVM_EVENTS",
+      "handler": "KswordARKHvmIoctlEvents",
+      "string_name": "IOCTL_KSWORD_ARK_HVM_EVENTS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 223
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_IAT_EAT_HOOKS",
       "handler": "KswordARKKernelIoctlEnumIatEatHooks",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_IAT_EAT_HOOKS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 96
+      "line": 224
     },
     {
       "name": "IOCTL_KSWORD_ARK_FORCE_UNLOAD_DRIVER",
       "handler": "KswordARKKernelIoctlForceUnloadDriver",
       "string_name": "IOCTL_KSWORD_ARK_FORCE_UNLOAD_DRIVER",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 97
+      "line": 225
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION",
+      "handler": "KswordARKKernelIoctlControlDriverCommunication",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_COMMUNICATION",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 226
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_DISPATCH",
+      "handler": "KswordARKKernelIoctlControlDriverDispatch",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_DISPATCH",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 227
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_IMAGE",
+      "handler": "KswordARKKernelIoctlControlDriverImage",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_IMAGE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 228
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_INTEGRITY",
+      "handler": "KswordARKKernelIoctlQueryDriverIntegrity",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_INTEGRITY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 229
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_CPU_HARDWARE",
+      "handler": "KswordARKKernelIoctlQueryCpuHardware",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_CPU_HARDWARE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 230
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PHYSICAL_MEMORY_LAYOUT",
+      "handler": "KswordARKKernelIoctlQueryPhysicalMemoryLayout",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_PHYSICAL_MEMORY_LAYOUT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 231
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_IOCTL_REGISTRY",
+      "handler": "KswordARKKernelIoctlQueryIoctlRegistry",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_IOCTL_REGISTRY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 232
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_TIMER_DPC",
+      "handler": "KswordARKKernelIoctlEnumTimerDpc",
+      "string_name": "IOCTL_KSWORD_ARK_ENUM_TIMER_DPC",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 233
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_EXPERIMENTAL_RETURN_TO_FIRMWARE",
+      "handler": "KswordARKKernelIoctlExperimentalReturnToFirmware",
+      "string_name": "IOCTL_KSWORD_ARK_EXPERIMENTAL_RETURN_TO_FIRMWARE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 234
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS",
+      "handler": "KswordARKKernelIoctlQueryUnloadedDrivers",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 236
     },
     {
       "name": "IOCTL_KSWORD_ARK_SET_CALLBACK_RULES",
       "handler": "KswordARKCallbackIoctlSetRulesHandler",
       "string_name": "IOCTL_KSWORD_ARK_SET_CALLBACK_RULES",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 98
+      "line": 237
     },
     {
       "name": "IOCTL_KSWORD_ARK_GET_CALLBACK_RUNTIME_STATE",
       "handler": "KswordARKCallbackIoctlGetRuntimeStateHandler",
       "string_name": "IOCTL_KSWORD_ARK_GET_CALLBACK_RUNTIME_STATE",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 99
+      "line": 238
     },
     {
       "name": "IOCTL_KSWORD_ARK_WAIT_CALLBACK_EVENT",
       "handler": "KswordARKCallbackIoctlWaitEventHandler",
       "string_name": "IOCTL_KSWORD_ARK_WAIT_CALLBACK_EVENT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 100
+      "line": 239
     },
     {
       "name": "IOCTL_KSWORD_ARK_ANSWER_CALLBACK_EVENT",
       "handler": "KswordARKCallbackIoctlAnswerEventHandler",
       "string_name": "IOCTL_KSWORD_ARK_ANSWER_CALLBACK_EVENT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 101
+      "line": 240
     },
     {
       "name": "IOCTL_KSWORD_ARK_CANCEL_ALL_PENDING_DECISIONS",
       "handler": "KswordARKCallbackIoctlCancelAllPendingHandler",
       "string_name": "IOCTL_KSWORD_ARK_CANCEL_ALL_PENDING_DECISIONS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 102
+      "line": 241
     },
     {
       "name": "IOCTL_KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK",
       "handler": "KswordARKCallbackIoctlRemoveExternalCallbackHandler",
       "string_name": "IOCTL_KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 103
+      "line": 242
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_EX",
+      "handler": "KswordARKCallbackIoctlRemoveExternalCallbackExHandler",
+      "string_name": "IOCTL_KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_EX",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 243
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_CALLBACKS",
       "handler": "KswordARKCallbackIoctlEnumCallbacksHandler",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_CALLBACKS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 104
+      "line": 244
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_MINIFILTER_BYPASS_PIDS",
+      "handler": "KswordARKCallbackIoctlSetMinifilterBypassPidsHandler",
+      "string_name": "IOCTL_KSWORD_ARK_SET_MINIFILTER_BYPASS_PIDS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 245
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_MINIFILTER_BYPASS_PIDS",
+      "handler": "KswordARKCallbackIoctlQueryMinifilterBypassPidsHandler",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_MINIFILTER_BYPASS_PIDS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 246
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_DYN_STATUS",
       "handler": "KswordARKDynDataIoctlQueryStatus",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_DYN_STATUS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 105
+      "line": 247
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_DYN_FIELDS",
       "handler": "KswordARKDynDataIoctlQueryFields",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_DYN_FIELDS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 106
+      "line": 248
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_CAPABILITIES",
       "handler": "KswordARKDynDataIoctlQueryCapabilities",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_CAPABILITIES",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 107
+      "line": 249
     },
     {
       "name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE",
       "handler": "KswordARKDynDataIoctlApplyProfile",
       "string_name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 108
+      "line": 250
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE_EX",
+      "handler": "KswordARKDynDataIoctlApplyProfileEx",
+      "string_name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE_EX",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 251
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE_V4",
+      "handler": "KswordARKDynDataIoctlApplyProfileV4",
+      "string_name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE_V4",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 252
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_MODULES",
+      "handler": "KswordARKDynDataIoctlQueryV4Modules",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_MODULES",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 253
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_CAPABILITY_GROUPS",
+      "handler": "KswordARKDynDataIoctlQueryV4CapabilityGroups",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_CAPABILITY_GROUPS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 254
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_MISSING_ITEMS",
+      "handler": "KswordARKDynDataIoctlQueryV4MissingItems",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_MISSING_ITEMS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 255
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_ITEMS",
+      "handler": "KswordARKDynDataIoctlQueryV4Items",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_DYN_V4_ITEMS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 256
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_CAPABILITIES",
       "handler": "KswordARKCapabilityIoctlQueryDriverCapabilities",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_CAPABILITIES",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 109
+      "line": 257
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_THREAD",
       "handler": "KswordARKThreadIoctlEnumThread",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_THREAD",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 110
+      "line": 258
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_TERMINATE_THREAD",
+      "handler": "KswordARKThreadIoctlTerminate",
+      "string_name": "IOCTL_KSWORD_ARK_TERMINATE_THREAD",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 259
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED",
+      "handler": "KswordARKThreadIoctlSetSuspended",
+      "string_name": "IOCTL_KSWORD_ARK_SET_THREAD_SUSPENDED",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 260
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD",
+      "handler": "KswordARKThreadIoctlControlDriverThread",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_DRIVER_THREAD",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 261
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE",
+      "handler": "KswordARKWorkQueueIoctlEnum",
+      "string_name": "IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 263
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_CROSSVIEW",
+      "handler": "KswordARKProcessIoctlQueryCrossView",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_CROSSVIEW",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 265
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_THREAD_CROSSVIEW",
+      "handler": "KswordARKThreadIoctlQueryCrossView",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_THREAD_CROSSVIEW",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 267
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_DETAIL",
+      "handler": "KswordARKProcessIoctlQueryDetail",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_DETAIL",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 269
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_RUNTIME_FIELDS",
+      "handler": "KswordARKProcessIoctlQueryRuntimeFields",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_RUNTIME_FIELDS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 271
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_THREAD_DETAIL",
+      "handler": "KswordARKThreadIoctlQueryDetail",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_THREAD_DETAIL",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 273
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_THREAD_RUNTIME_FIELDS",
+      "handler": "KswordARKThreadIoctlQueryRuntimeFields",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_THREAD_RUNTIME_FIELDS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 275
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES",
       "handler": "KswordARKHandleIoctlEnumProcessHandles",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 111
+      "line": 277
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_HANDLE_OBJECT",
       "handler": "KswordARKHandleIoctlQueryHandleObject",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_HANDLE_OBJECT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 112
+      "line": 278
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_ALPC_PORT",
       "handler": "KswordARKAlpcIoctlQueryAlpcPort",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_ALPC_PORT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 113
+      "line": 279
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_SECTION",
       "handler": "KswordARKSectionIoctlQueryProcessSection",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_PROCESS_SECTION",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 114
+      "line": 281
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_FILE_SECTION_MAPPINGS",
       "handler": "KswordARKSectionIoctlQueryFileSectionMappings",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_FILE_SECTION_MAPPINGS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 115
+      "line": 282
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_WSL_SILO",
       "handler": "KswordARKWslSiloIoctlQuery",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_WSL_SILO",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 116
+      "line": 283
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_IMAGE_TRUST",
       "handler": "KswordARKTrustIoctlQueryImageTrust",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_IMAGE_TRUST",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 117
+      "line": 284
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_IMAGE_SIGNATURE",
+      "handler": "KswordARKTrustIoctlQueryImageSignature",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_IMAGE_SIGNATURE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 285
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_SAFETY_POLICY",
       "handler": "KswordARKSafetyIoctlQueryPolicy",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_SAFETY_POLICY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 118
+      "line": 286
     },
     {
       "name": "IOCTL_KSWORD_ARK_SET_SAFETY_POLICY",
       "handler": "KswordARKSafetyIoctlSetPolicy",
       "string_name": "IOCTL_KSWORD_ARK_SET_SAFETY_POLICY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 119
+      "line": 287
     },
     {
       "name": "IOCTL_KSWORD_ARK_QUERY_PREFLIGHT",
       "handler": "KswordARKPreflightIoctlQuery",
       "string_name": "IOCTL_KSWORD_ARK_QUERY_PREFLIGHT",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 120
+      "line": 288
     },
     {
       "name": "IOCTL_KSWORD_ARK_READ_REGISTRY_VALUE",
       "handler": "KswordARKRegistryIoctlReadValue",
       "string_name": "IOCTL_KSWORD_ARK_READ_REGISTRY_VALUE",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 121
+      "line": 289
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_REGISTRY_KEY",
       "handler": "KswordARKRegistryIoctlEnumKey",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_REGISTRY_KEY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 122
+      "line": 290
     },
     {
       "name": "IOCTL_KSWORD_ARK_SET_REGISTRY_VALUE",
       "handler": "KswordARKRegistryIoctlSetValue",
       "string_name": "IOCTL_KSWORD_ARK_SET_REGISTRY_VALUE",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 123
+      "line": 291
     },
     {
       "name": "IOCTL_KSWORD_ARK_DELETE_REGISTRY_VALUE",
       "handler": "KswordARKRegistryIoctlDeleteValue",
       "string_name": "IOCTL_KSWORD_ARK_DELETE_REGISTRY_VALUE",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 124
+      "line": 292
     },
     {
       "name": "IOCTL_KSWORD_ARK_CREATE_REGISTRY_KEY",
       "handler": "KswordARKRegistryIoctlCreateKey",
       "string_name": "IOCTL_KSWORD_ARK_CREATE_REGISTRY_KEY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 125
+      "line": 293
     },
     {
       "name": "IOCTL_KSWORD_ARK_DELETE_REGISTRY_KEY",
       "handler": "KswordARKRegistryIoctlDeleteKey",
       "string_name": "IOCTL_KSWORD_ARK_DELETE_REGISTRY_KEY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 126
+      "line": 294
     },
     {
       "name": "IOCTL_KSWORD_ARK_RENAME_REGISTRY_VALUE",
       "handler": "KswordARKRegistryIoctlRenameValue",
       "string_name": "IOCTL_KSWORD_ARK_RENAME_REGISTRY_VALUE",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 127
+      "line": 295
     },
     {
       "name": "IOCTL_KSWORD_ARK_RENAME_REGISTRY_KEY",
       "handler": "KswordARKRegistryIoctlRenameKey",
       "string_name": "IOCTL_KSWORD_ARK_RENAME_REGISTRY_KEY",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 128
+      "line": 296
     },
     {
       "name": "IOCTL_KSWORD_ARK_REDIRECT_SET_RULES",
       "handler": "KswordARKRedirectIoctlSetRules",
       "string_name": "IOCTL_KSWORD_ARK_REDIRECT_SET_RULES",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 129
+      "line": 297
     },
     {
       "name": "IOCTL_KSWORD_ARK_REDIRECT_QUERY_STATUS",
       "handler": "KswordARKRedirectIoctlQueryStatus",
       "string_name": "IOCTL_KSWORD_ARK_REDIRECT_QUERY_STATUS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 130
+      "line": 298
     },
     {
       "name": "IOCTL_KSWORD_ARK_NETWORK_SET_RULES",
       "handler": "KswordARKNetworkIoctlSetRules",
       "string_name": "IOCTL_KSWORD_ARK_NETWORK_SET_RULES",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 131
+      "line": 299
     },
     {
       "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_STATUS",
       "handler": "KswordARKNetworkIoctlQueryStatus",
       "string_name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_STATUS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 132
+      "line": 300
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_TCP_ENDPOINTS",
+      "handler": "KswordARKNetworkIoctlQueryTcpEndpoints",
+      "string_name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_TCP_ENDPOINTS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 301
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_UDP_ENDPOINTS",
+      "handler": "KswordARKNetworkIoctlQueryUdpEndpoints",
+      "string_name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_UDP_ENDPOINTS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 302
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_INVENTORY",
+      "handler": "KswordARKNetworkIoctlQueryWfpInventory",
+      "string_name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_INVENTORY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 303
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_EVENTS",
+      "handler": "KswordARKNetworkIoctlQueryWfpEvents",
+      "string_name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_EVENTS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 304
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_TRAFFIC_PACKETS",
+      "handler": "KswordARKNetworkIoctlQueryTrafficPackets",
+      "string_name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_TRAFFIC_PACKETS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 305
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE",
+      "handler": "KswordARKNetworkIoctlControlTrafficCapture",
+      "string_name": "IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 306
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_NDIS_CHAIN",
+      "handler": "KswordARKNetworkIoctlQueryNdisChain",
+      "string_name": "IOCTL_KSWORD_ARK_NETWORK_QUERY_NDIS_CHAIN",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 307
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS",
       "handler": "KswordARKKeyboardIoctlEnumHotkeys",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 133
+      "line": 308
     },
     {
       "name": "IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOOKS",
       "handler": "KswordARKKeyboardIoctlEnumHooks",
       "string_name": "IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOOKS",
       "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
-      "line": 134
+      "line": 309
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_PREPARE",
+      "handler": "KswordARKMutationIoctlPrepare",
+      "string_name": "IOCTL_KSWORD_ARK_MUTATION_PREPARE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 310
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_COMMIT",
+      "handler": "KswordARKMutationIoctlCommit",
+      "string_name": "IOCTL_KSWORD_ARK_MUTATION_COMMIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 311
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_ROLLBACK",
+      "handler": "KswordARKMutationIoctlRollback",
+      "string_name": "IOCTL_KSWORD_ARK_MUTATION_ROLLBACK",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 312
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_MUTATION_QUERY_AUDIT",
+      "handler": "KswordARKMutationIoctlQueryAudit",
+      "string_name": "IOCTL_KSWORD_ARK_MUTATION_QUERY_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 313
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_MINIFILTER_INVENTORY",
+      "handler": "KswordARKMinifilterIoctlQueryInventory",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_MINIFILTER_INVENTORY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 314
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_CID_TABLE",
+      "handler": "KswordARKKernelObjectIoctlEnumCidTable",
+      "string_name": "IOCTL_KSWORD_ARK_ENUM_CID_TABLE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 315
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_KERNEL_OBJECT_SUMMARY",
+      "handler": "KswordARKKernelObjectIoctlQueryObjectSummary",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_KERNEL_OBJECT_SUMMARY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 316
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE",
+      "handler": "KswordARKKernelObjectIoctlEnumTypeTable",
+      "string_name": "IOCTL_KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 317
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_IPC_SUMMARY",
+      "handler": "KswordARKKernelObjectIoctlQueryIpcSummary",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_IPC_SUMMARY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 318
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_VOLUME_STACK_AUDIT",
+      "handler": "KswordARKStorageIoctlQueryVolumeStackAudit",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_VOLUME_STACK_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 319
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_BITLOCKER_FVE_AUDIT",
+      "handler": "KswordARKStorageIoctlQueryBitLockerFveAudit",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_BITLOCKER_FVE_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 320
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_MOUNTMGR_MAPPING_AUDIT",
+      "handler": "KswordARKStorageIoctlQueryMountMgrMappingAudit",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_MOUNTMGR_MAPPING_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 321
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_FILESYSTEM_INTEGRITY_AUDIT",
+      "handler": "KswordARKStorageIoctlQueryFileSystemIntegrityAudit",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_FILESYSTEM_INTEGRITY_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 322
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_RAW_DISK_BACKEND",
+      "handler": "KswordARKStorageIoctlQueryRawDiskBackend",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_RAW_DISK_BACKEND",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 323
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_READ_RAW_DISK",
+      "handler": "KswordARKStorageIoctlReadRawDisk",
+      "string_name": "IOCTL_KSWORD_ARK_READ_RAW_DISK",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 324
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_WRITE_RAW_DISK",
+      "handler": "KswordARKStorageIoctlWriteRawDisk",
+      "string_name": "IOCTL_KSWORD_ARK_WRITE_RAW_DISK",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 325
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_SECURITY_STATUS",
+      "handler": "KswordARKSecurityAuditIoctlQuerySecurityStatus",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_SECURITY_STATUS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 326
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_TRUST_VIEW",
+      "handler": "KswordARKSecurityAuditIoctlQueryDriverTrustView",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_DRIVER_TRUST_VIEW",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 327
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_HYPERV_SUMMARY",
+      "handler": "KswordARKSecurityAuditIoctlQueryHyperVSummary",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_HYPERV_SUMMARY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 328
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_APP_CONTROL_STATUS",
+      "handler": "KswordARKSecurityAuditIoctlQueryAppControlStatus",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_APP_CONTROL_STATUS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 329
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_PROFILE_STATUS",
+      "handler": "KswordARKWin32kIoctlQueryProfileStatus",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_PROFILE_STATUS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 330
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOWS",
+      "handler": "KswordARKWin32kIoctlQueryWindows",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOWS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 331
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_GUI_THREADS",
+      "handler": "KswordARKWin32kIoctlQueryGuiThreads",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_GUI_THREADS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 332
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_HOTKEYS_PDB",
+      "handler": "KswordARKWin32kIoctlQueryHotkeysPdb",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_HOTKEYS_PDB",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 333
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB",
+      "handler": "KswordARKWin32kIoctlQueryHooksPdb",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_HOOKS_PDB",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 334
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOW_DETAIL",
+      "handler": "KswordARKWin32kIoctlQueryWindowDetail",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_WINDOW_DETAIL",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 335
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_TIMERS",
+      "handler": "KswordARKWin32kIoctlQueryTimers",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_TIMERS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 336
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_EVENT_HOOKS",
+      "handler": "KswordARKWin32kIoctlQueryEventHooks",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_WIN32K_EVENT_HOOKS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 337
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_DEVICE_STACK_AUDIT",
+      "handler": "KswordARKDeviceAuditIoctlQueryDeviceStack",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_DEVICE_STACK_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 338
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_INPUT_STACK_AUDIT",
+      "handler": "KswordARKDeviceAuditIoctlQueryInputStack",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_INPUT_STACK_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 339
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_USB_TOPOLOGY_AUDIT",
+      "handler": "KswordARKDeviceAuditIoctlQueryUsbTopology",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_USB_TOPOLOGY_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 340
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT",
+      "handler": "KswordARKDeviceAuditIoctlQueryGpuDisplayWatchdog",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_GPU_DISPLAY_WATCHDOG_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 341
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT",
+      "handler": "KswordARKPlatformAuditIoctlQuery",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 343
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT",
+      "handler": "KswordARKI8042AuditIoctlQuery",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 345
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_CONTROL",
+      "handler": "KswordARKDebugOutputIoctlControl",
+      "string_name": "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_CONTROL",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 347
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN",
+      "handler": "KswordARKDebugOutputIoctlDrain",
+      "string_name": "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 348
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY",
+      "handler": "KswordARKHwidIoctlQueryDispatch",
+      "string_name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 349
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL",
+      "handler": "KswordARKHwidIoctlControlDispatch",
+      "string_name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 350
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_QUERY_CPU_POWER",
+      "handler": "KswordARKCpuPowerIoctlQuery",
+      "string_name": "IOCTL_KSWORD_ARK_QUERY_CPU_POWER",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 351
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONTROL_CPU_POWER",
+      "handler": "KswordARKCpuPowerIoctlControl",
+      "string_name": "IOCTL_KSWORD_ARK_CONTROL_CPU_POWER",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 352
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_SET_BUGCHECK_BITMAP",
+      "handler": "KswordARKBugcheckIoctlSetBitmap",
+      "string_name": "IOCTL_KSWORD_ARK_SET_BUGCHECK_BITMAP",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 353
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD",
+      "handler": "KswordARKBugcheckGuardIoctlConfigure",
+      "string_name": "IOCTL_KSWORD_ARK_CONFIGURE_BUGCHECK_GUARD",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 354
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_SUPPORT",
+      "handler": "KswordARKRxpfIoctlQuerySupport",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_QUERY_SUPPORT",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 356
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_REGISTER_PAGE",
+      "handler": "KswordARKRxpfIoctlRegisterPage",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_REGISTER_PAGE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 357
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_CHANGE_PAGE",
+      "handler": "KswordARKRxpfIoctlChangePage",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_CHANGE_PAGE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 358
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_PAGE",
+      "handler": "KswordARKRxpfIoctlQueryPage",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_QUERY_PAGE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 359
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_WRITE_PAGE",
+      "handler": "KswordARKRxpfIoctlWritePage",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_WRITE_PAGE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 360
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_SET_EMULATION",
+      "handler": "KswordARKRxpfIoctlSetEmulation",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_SET_EMULATION",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 361
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_STATS",
+      "handler": "KswordARKRxpfIoctlQueryStats",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_QUERY_STATS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 362
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_DRAIN_EVENTS",
+      "handler": "KswordARKRxpfIoctlDrainEvents",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_DRAIN_EVENTS",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 363
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_UNREGISTER_PAGE",
+      "handler": "KswordARKRxpfIoctlUnregisterPage",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_UNREGISTER_PAGE",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 364
+    },
+    {
+      "name": "IOCTL_KSWORD_ARK_RXPF_RUN_SELF_TEST",
+      "handler": "KswordARKRxpfIoctlRunSelfTest",
+      "string_name": "IOCTL_KSWORD_ARK_RXPF_RUN_SELF_TEST",
+      "source": "KswordARKDriver/src/dispatch/ioctl_registry.c",
+      "line": 365
     }
   ],
   "findings": [
@@ -1992,7 +5197,20 @@
           "ANSWER"
         ],
         "source": "shared/driver/KswordArkCallbackIoctl.h",
-        "line": 45
+        "line": 48
+      }
+    },
+    {
+      "severity": "HIGH",
+      "category": "mutating_any_access",
+      "name": "IOCTL_KSWORD_ARK_APPLY_DYN_PROFILE_V4",
+      "message": "Mutating keyword matched but access is FILE_ANY_ACCESS.",
+      "details": {
+        "keywords": [
+          "APPLY"
+        ],
+        "source": "shared/driver/KswordArkDynDataIoctl.h",
+        "line": 61
       }
     },
     {
@@ -2005,7 +5223,7 @@
           "CANCEL"
         ],
         "source": "shared/driver/KswordArkCallbackIoctl.h",
-        "line": 52
+        "line": 55
       }
     },
     {
@@ -2018,7 +5236,7 @@
           "DELETE"
         ],
         "source": "shared/driver/KswordArkFileIoctl.h",
-        "line": 18
+        "line": 21
       }
     },
     {
@@ -2031,7 +5249,60 @@
           "CONTROL"
         ],
         "source": "shared/driver/KswordArkFileMonitorIoctl.h",
-        "line": 19
+        "line": 67
+      }
+    },
+    {
+      "severity": "HIGH",
+      "category": "mutating_any_access",
+      "name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_CONTROL",
+      "message": "Mutating keyword matched but access is FILE_ANY_ACCESS.",
+      "details": {
+        "keywords": [
+          "CONTROL",
+          "PATCH"
+        ],
+        "source": "shared/driver/KswordArkHwidIoctl.h",
+        "line": 25
+      }
+    },
+    {
+      "severity": "HIGH",
+      "category": "mutating_any_access",
+      "name": "IOCTL_KSWORD_ARK_HWID_DISPATCH_QUERY",
+      "message": "Mutating keyword matched but access is FILE_ANY_ACCESS.",
+      "details": {
+        "keywords": [
+          "PATCH"
+        ],
+        "source": "shared/driver/KswordArkHwidIoctl.h",
+        "line": 18
+      }
+    },
+    {
+      "severity": "HIGH",
+      "category": "mutating_any_access",
+      "name": "IOCTL_KSWORD_ARK_QUERY_APP_CONTROL_STATUS",
+      "message": "Mutating keyword matched but access is FILE_ANY_ACCESS.",
+      "details": {
+        "keywords": [
+          "CONTROL"
+        ],
+        "source": "shared/driver/KswordArkSecurityAuditIoctl.h",
+        "line": 41
+      }
+    },
+    {
+      "severity": "HIGH",
+      "category": "mutating_any_access",
+      "name": "IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS",
+      "message": "Mutating keyword matched but access is FILE_ANY_ACCESS.",
+      "details": {
+        "keywords": [
+          "UNLOAD"
+        ],
+        "source": "shared/driver/KswordArkUnloadedDriverIoctl.h",
+        "line": 16
       }
     },
     {
@@ -2044,7 +5315,20 @@
           "SET"
         ],
         "source": "shared/driver/KswordArkCallbackIoctl.h",
-        "line": 24
+        "line": 27
+      }
+    },
+    {
+      "severity": "HIGH",
+      "category": "mutating_any_access",
+      "name": "IOCTL_KSWORD_ARK_SET_MINIFILTER_BYPASS_PIDS",
+      "message": "Mutating keyword matched but access is FILE_ANY_ACCESS.",
+      "details": {
+        "keywords": [
+          "SET"
+        ],
+        "source": "shared/driver/KswordArkCallbackIoctl.h",
+        "line": 83
       }
     },
     {
@@ -2057,7 +5341,7 @@
           "SET"
         ],
         "source": "shared/driver/KswordArkProcessIoctl.h",
-        "line": 65
+        "line": 79
       }
     },
     {
@@ -2070,7 +5354,7 @@
           "SUSPEND"
         ],
         "source": "shared/driver/KswordArkProcessIoctl.h",
-        "line": 53
+        "line": 67
       }
     },
     {
@@ -2083,7 +5367,85 @@
           "TERMINATE"
         ],
         "source": "shared/driver/KswordArkProcessIoctl.h",
-        "line": 40
+        "line": 54
+      }
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "query_write_access",
+      "name": "IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN",
+      "message": "Query/read-only keyword matched but access requires FILE_WRITE_ACCESS.",
+      "details": {
+        "keywords": [
+          "DRAIN"
+        ],
+        "source": "shared/driver/KswordArkDebugOutputIoctl.h",
+        "line": 34
+      }
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "query_write_access",
+      "name": "IOCTL_KSWORD_ARK_QUERY_IMAGE_SIGNATURE",
+      "message": "Query/read-only keyword matched but access requires FILE_WRITE_ACCESS.",
+      "details": {
+        "keywords": [
+          "QUERY"
+        ],
+        "source": "shared/driver/KswordArkTrustIoctl.h",
+        "line": 27
+      }
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "query_write_access",
+      "name": "IOCTL_KSWORD_ARK_RXPF_DRAIN_EVENTS",
+      "message": "Query/read-only keyword matched but access requires FILE_WRITE_ACCESS.",
+      "details": {
+        "keywords": [
+          "DRAIN"
+        ],
+        "source": "shared/driver/KswordArkRxPfIoctl.h",
+        "line": 33
+      }
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "query_write_access",
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_PAGE",
+      "message": "Query/read-only keyword matched but access requires FILE_WRITE_ACCESS.",
+      "details": {
+        "keywords": [
+          "QUERY"
+        ],
+        "source": "shared/driver/KswordArkRxPfIoctl.h",
+        "line": 25
+      }
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "query_write_access",
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_STATS",
+      "message": "Query/read-only keyword matched but access requires FILE_WRITE_ACCESS.",
+      "details": {
+        "keywords": [
+          "QUERY"
+        ],
+        "source": "shared/driver/KswordArkRxPfIoctl.h",
+        "line": 31
+      }
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "query_write_access",
+      "name": "IOCTL_KSWORD_ARK_RXPF_QUERY_SUPPORT",
+      "message": "Query/read-only keyword matched but access requires FILE_WRITE_ACCESS.",
+      "details": {
+        "keywords": [
+          "QUERY"
+        ],
+        "source": "shared/driver/KswordArkRxPfIoctl.h",
+        "line": 19
       }
     }
   ]

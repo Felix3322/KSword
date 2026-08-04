@@ -3,6 +3,7 @@
 #include "../UI/VisibleTableWidget.h"
 #include "DiskMonitorPage.h"
 #include "MemoryCompositionHistoryWidget.h"
+#include "HardwarePowerPage.h"
 #include "HardwareR0EvidencePage.h"
 #include "HardwareOtherDevicesPage.h"
 #include "HardwareDeviceManagerPage.h"
@@ -3213,6 +3214,7 @@ void HardwareDock::initializeUi()
     initializeUtilizationTab();
     initializeOverviewTab();
     initializeCpuTab();
+    initializePowerTab();
     initializeGpuTab();
     initializeMemoryTab();
     initializeDiskMonitorTab();
@@ -4544,6 +4546,28 @@ void HardwareDock::initializeCpuTab()
     m_sideTabWidget->setTabToolTip(tabIndex, QStringLiteral("查看处理器型号、核心利用率、频率、温度和电压"));
     ks::i18n::LanguageManager::instance().bindTabToolTip(
         m_sideTabWidget, m_cpuPage, QStringLiteral("hardware.tooltip.cpu"), QStringLiteral("查看处理器型号、核心利用率、频率、温度和电压"));
+}
+
+void HardwareDock::initializePowerTab()
+{
+    // 电源页拥有独立的 Windows 电源方案与受控 R0 CPU 调节逻辑。
+    m_powerPage = new HardwarePowerPage(m_sideTabWidget);
+    const int tabIndex = m_sideTabWidget->addTab(
+        m_powerPage,
+        QStringLiteral("电源"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_sideTabWidget,
+        m_powerPage,
+        QStringLiteral("hardware.tab.power"),
+        QStringLiteral("电源"));
+    m_sideTabWidget->setTabToolTip(
+        tabIndex,
+        QStringLiteral("管理 Windows 电源方案与受控 CPU 功耗、Turbo 和 HWP 设置"));
+    ks::i18n::LanguageManager::instance().bindTabToolTip(
+        m_sideTabWidget,
+        m_powerPage,
+        QStringLiteral("hardware.tooltip.power"),
+        QStringLiteral("管理 Windows 电源方案与受控 CPU 功耗、Turbo 和 HWP 设置"));
 }
 
 void HardwareDock::initializeR0EvidenceTab()

@@ -177,6 +177,7 @@
     <ClCompile Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.cpp" />
     <ClCompile Include="HardwareDock\DiskMonitorStoragePanel.cpp" />
     <ClCompile Include="HardwareDock\MemoryCompositionHistoryWidget.cpp" />
+    <ClCompile Include="HardwareDock\HardwarePowerPage.cpp" />
     <ClCompile Include="HardwareDock\HardwareR0EvidencePage.cpp" />
     <ClCompile Include="HardwareDock\HardwareDeviceManagerPage.cpp" />
     <ClCompile Include="HardwareDock\HardwareOtherDevicesPage.cpp" />
@@ -452,6 +453,7 @@
     <ClCompile Include="ArkDriverClient\ArkDriverCallback.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverMutation.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverHwid.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverPower.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverDebugOutput.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverBugcheck.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverSystemTime.cpp" />
@@ -557,6 +559,7 @@
     <ClInclude Include="HardwareDock\DiskMonitorStorageLeaseCoordinator.h" />
     <ClInclude Include="HardwareDock\DiskMonitorStoragePanel.h" />
     <ClInclude Include="HardwareDock\MemoryCompositionHistoryWidget.h" />
+    <ClInclude Include="HardwareDock\HardwarePowerPage.h" />
     <ClInclude Include="HardwareDock\HardwareR0EvidencePage.h" />
     <ClInclude Include="HardwareDock\HardwareI8042AuditPage.h" />
     <QtMoc Include="HardwareDock\HardwareDeviceManagerPage.h" />

@@ -21,6 +21,7 @@
 class CodeEditorWidget;
 class DiskMonitorPage;
 class MemoryCompositionHistoryWidget;
+class HardwarePowerPage;
 class HardwareR0EvidencePage;
 class HardwareDeviceManagerPage;
 class HardwareOtherDevicesPage;
@@ -333,6 +334,7 @@ private:
     void initializeUtilizationNetworkSubTab();
     void initializeUtilizationGpuSubTab();
     void initializeCpuTab();
+    void initializePowerTab();
     void initializeR0EvidenceTab();
     void initializeGpuTab();
     void initializeMemoryTab();
@@ -634,6 +636,7 @@ private:
     QVBoxLayout* m_cpuLayout = nullptr;       // m_cpuLayout：CPU 布局。
     QLabel* m_cpuDetailLabel = nullptr;       // m_cpuDetailLabel：温度/电压等摘要标签。
     QTableWidget* m_cpuDetailTable = nullptr; // m_cpuDetailTable：每核详情表。
+    HardwarePowerPage* m_powerPage = nullptr; // m_powerPage：CPU 电源与性能调节 Tab。
     HardwareR0EvidencePage* m_r0EvidencePage = nullptr; // m_r0EvidencePage：R0 硬件证据页。
 
     // 显卡与内存页（原有文本页）。
