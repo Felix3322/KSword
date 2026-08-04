@@ -1,6 +1,8 @@
 #include <ntddk.h>
 #include <wdf.h>
+#include <ntstrsafe.h>
 
+#include "ark/ark_driver.h"
 #include "ark/ark_ioctl.h"
 #include "ark/ark_safety.h"
 #include "../../dispatch/ioctl_validation.h"
@@ -13,6 +15,67 @@
 // - 真实 CPUID/MSR 探测和修改位于 cpu_power_runtime.c；
 // - 控制路径必须同时经过 FILE_WRITE_ACCESS、UI 确认与安全策略。
 // ============================================================
+
+// KswordARKCpuPowerLogControlResult：把控制失败原因和原始请求值写入统一 R0 日志。
+static VOID
+KswordARKCpuPowerLogControlResult(
+    _In_ WDFDEVICE Device,
+    _In_ const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST* ControlRequest,
+    _In_ const KSWORD_ARK_CPU_POWER_RESPONSE* Response,
+    _In_ NTSTATUS Status
+    )
+{
+    // logMessage 保留一条可由 MainWindow 原样展示的完整诊断记录。
+    CHAR logMessage[KSWORD_ARK_LOG_ENTRY_MAX_BYTES] = { 0 };
+    // formatStatus 防止格式化失败时向日志队列提交未完成文本。
+    NTSTATUS formatStatus = STATUS_SUCCESS;
+
+    // 只有取得完整请求和响应后才记录结构化字段。
+    if (Device == NULL || ControlRequest == NULL || Response == NULL) {
+        return;
+    }
+
+    // 同时记录 reason、请求值、并发快照和响应能力，下一次失败无需猜测 UI 状态。
+    formatStatus = RtlStringCbPrintfA(
+        logMessage,
+        sizeof(logMessage),
+        "CPU power control result: status=0x%08X, reason=%lu, apply=0x%08lX, request=0x%08lX, "
+        "pl1=%lu/%lu/%lu, pl2=%lu/%lu/%lu, turbo=%lu, hwp=%lu/%lu/%lu/%lu, ratio=%lu, "
+        "expected=%016I64X/%016I64X/%016I64X/%016I64X, fields=0x%08lX, response=0x%08lX, "
+        "capability=0x%016I64X, updated=%lu, failed=%lu.",
+        (unsigned int)Status,
+        Response->failureReason,
+        ControlRequest->applyFlags,
+        ControlRequest->requestFlags,
+        ControlRequest->pl1Milliwatts,
+        ControlRequest->pl1Enabled,
+        ControlRequest->pl1ClampEnabled,
+        ControlRequest->pl2Milliwatts,
+        ControlRequest->pl2Enabled,
+        ControlRequest->pl2ClampEnabled,
+        ControlRequest->turboEnabled,
+        ControlRequest->hwpMinimumPerformance,
+        ControlRequest->hwpMaximumPerformance,
+        ControlRequest->hwpDesiredPerformance,
+        ControlRequest->hwpEnergyPerformancePreference,
+        ControlRequest->turboRatio,
+        ControlRequest->expectedPackagePowerLimit,
+        ControlRequest->expectedMiscEnable,
+        ControlRequest->expectedHwpRequest,
+        ControlRequest->expectedTurboRatioLimit,
+        Response->fieldFlags,
+        Response->responseFlags,
+        Response->capabilityFlags,
+        Response->updatedProcessorCount,
+        Response->failedProcessorCount);
+    // 失败使用 Warn，成功使用 Info，均进入现有 MainWindow R0 日志通道。
+    if (NT_SUCCESS(formatStatus)) {
+        (void)KswordARKDriverEnqueueLogFrame(
+            Device,
+            NT_SUCCESS(Status) ? "Info" : "Warn",
+            logMessage);
+    }
+}
 
 // KswordARKCpuPowerIoctlQuery：返回当前 CPU 电源能力与白名单 MSR 快照。
 NTSTATUS
@@ -132,6 +195,12 @@ KswordARKCpuPowerIoctlControl(
             KSWORD_ARK_CPU_POWER_FAILURE_REQUEST_HEADER;
         response->lastStatus = STATUS_INVALID_PARAMETER;
         *BytesReturned = sizeof(*response);
+        // 在返回前持久化精确的协议头失败上下文。
+        KswordARKCpuPowerLogControlResult(
+            Device,
+            controlRequest,
+            response,
+            STATUS_INVALID_PARAMETER);
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -149,6 +218,12 @@ KswordARKCpuPowerIoctlControl(
             KSWORD_ARK_CPU_POWER_FAILURE_SAFETY_POLICY;
         response->lastStatus = status;
         *BytesReturned = sizeof(*response);
+        // 安全策略拒绝也必须带上 reason 与请求字段。
+        KswordARKCpuPowerLogControlResult(
+            Device,
+            controlRequest,
+            response,
+            status);
         return status;
     }
 
@@ -156,5 +231,11 @@ KswordARKCpuPowerIoctlControl(
     status = KswordARKCpuPowerApply(controlRequest, response);
     // 无论语义成功或失败，固定响应都可供新客户端解释。
     *BytesReturned = sizeof(*response);
+    // 控制结果进入统一 R0 日志，包含运行时校验或处理器写入阶段的精确 reason。
+    KswordARKCpuPowerLogControlResult(
+        Device,
+        controlRequest,
+        response,
+        status);
     return status;
 }
