@@ -1335,43 +1335,13 @@ void ProcessDetailWindow::applyThemeStyle()
     if (m_signatureCheckBox != nullptr)
     {
         m_signatureCheckBox->setStyleSheet(QStringLiteral(
-            "QCheckBox { color:%1; font-weight:600; }"
-            "QCheckBox::indicator { border:1px solid %2; background:%3; width:13px; height:13px; }"
-            "QCheckBox::indicator:checked { background:%4; border:1px solid %4; }")
-            .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::BorderHex())
-            .arg(KswordTheme::SurfaceHex())
-            .arg(KswordTheme::PrimaryBlueHex));
+            "QCheckBox { color:%1; font-weight:600; }")
+            .arg(KswordTheme::TextPrimaryHex()));
     }
 
     if (m_tokenRawInfoClassCombo != nullptr || m_tokenRawInputModeCombo != nullptr)
     {
-        const QString comboStyle = QStringLiteral(
-            "QComboBox {"
-            "  border: 1px solid %1;"
-            "  border-radius: 4px;"
-            "  padding: 3px 8px;"
-            "  color: %2;"
-            "  background: %3;"
-            "}"
-            "QComboBox:hover {"
-            "  border-color: %4;"
-            "}"
-            "QComboBox::drop-down {"
-            "  border:none;"
-            "  width:20px;"
-            "}"
-            "QComboBox QAbstractItemView {"
-            "  background:%3;"
-            "  color:%2;"
-            "  border:1px solid %1;"
-            "  selection-background-color:%4;"
-            "  selection-color:palette(highlighted-text);"
-            "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+        const QString comboStyle = KswordTheme::ThemedComboBoxStyle();
         if (m_tokenRawInfoClassCombo != nullptr)
         {
             m_tokenRawInfoClassCombo->setStyleSheet(comboStyle);
@@ -3753,32 +3723,7 @@ void ProcessDetailWindow::initializeActionTab()
     // - 组合框继续使用项目蓝色描边；
     // - 紧凑按钮沿用统一蓝色按钮皮肤，避免局部控件风格割裂。
     const QString buttonStyle = buildBlueButtonStyle();
-    const QString comboStyle = QStringLiteral(
-        "QComboBox {"
-        "  border: 1px solid %1;"
-        "  border-radius: 4px;"
-        "  padding: 3px 8px;"
-        "  color: %2;"
-        "  background: %3;"
-        "}"
-        "QComboBox:hover {"
-        "  border-color: %4;"
-        "}"
-        "QComboBox::drop-down {"
-        "  border:none;"
-        "  width:20px;"
-        "}"
-        "QComboBox QAbstractItemView {"
-        "  background:%3;"
-        "  color:%2;"
-        "  border:1px solid %1;"
-        "  selection-background-color:%4;"
-        "  selection-color:palette(highlighted-text);"
-        "}")
-        .arg(KswordTheme::BorderColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex())
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+    const QString comboStyle = KswordTheme::ThemedComboBoxStyle();
     m_terminateActionCombo->setStyleSheet(comboStyle);
     m_priorityCombo->setStyleSheet(comboStyle);
     m_injectionModeCombo->setStyleSheet(comboStyle);
@@ -3835,9 +3780,8 @@ void ProcessDetailWindow::initializeModuleTab()
     m_signatureCheckBox = new QCheckBox("刷新时校验签名", m_moduleTab);
     m_signatureCheckBox->setChecked(true);
     m_signatureCheckBox->setStyleSheet(QStringLiteral(
-        "QCheckBox { color:%1; font-weight:600; }"
-        "QCheckBox::indicator:checked { background:%1; border:1px solid %1; }")
-        .arg(KswordTheme::PrimaryBlueHex));
+        "QCheckBox { color:%1; font-weight:600; }")
+        .arg(KswordTheme::TextPrimaryHex()));
     m_moduleStatusLabel = new QLabel("● 等待首次刷新", m_moduleTab);
     m_moduleStatusLabel->setStyleSheet(
         QStringLiteral("color:%1; font-weight:600;")
@@ -4283,32 +4227,7 @@ void ProcessDetailWindow::initializeTokenSwitchTab()
     m_refreshTokenAllInfoButton->setStyleSheet(buttonStyle);
     m_tokenRawApplyButton->setStyleSheet(buttonStyle);
 
-    const QString comboStyle = QStringLiteral(
-        "QComboBox {"
-        "  border: 1px solid %1;"
-        "  border-radius: 4px;"
-        "  padding: 3px 8px;"
-        "  color: %2;"
-        "  background: %3;"
-        "}"
-        "QComboBox:hover {"
-        "  border-color: %4;"
-        "}"
-        "QComboBox::drop-down {"
-        "  border:none;"
-        "  width:20px;"
-        "}"
-        "QComboBox QAbstractItemView {"
-        "  background:%3;"
-        "  color:%2;"
-        "  border:1px solid %1;"
-        "  selection-background-color:%4;"
-        "  selection-color:palette(highlighted-text);"
-        "}")
-        .arg(KswordTheme::BorderColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex())
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+    const QString comboStyle = KswordTheme::ThemedComboBoxStyle();
     m_tokenRawInfoClassCombo->setStyleSheet(comboStyle);
     m_tokenRawInputModeCombo->setStyleSheet(comboStyle);
 }

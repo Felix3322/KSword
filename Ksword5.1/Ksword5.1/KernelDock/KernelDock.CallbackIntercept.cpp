@@ -1400,55 +1400,9 @@ namespace
         return true;
     }
 
-    QString callbackRuleComboBackgroundHex()
-    {
-        return KswordTheme::SurfaceColorHex();
-    }
-
-    QString callbackRuleComboTextHex()
-    {
-        return KswordTheme::TextPrimaryColorHex();
-    }
-
     QString callbackRuleComboStyle()
     {
-        const QString backgroundHex = callbackRuleComboBackgroundHex();
-        const QString textHex = callbackRuleComboTextHex();
-        return QStringLiteral(
-            "QComboBox{"
-            "  background:%1;"
-            "  color:%2;"
-            "  border:1px solid %3;"
-            "  border-radius:2px;"
-            "  padding:2px 6px;"
-            "}"
-            "QComboBox::drop-down{"
-            "  border:0px;"
-            "}"
-            "QComboBox QAbstractItemView{"
-            "  background:%1;"
-            "  color:%2;"
-            "  border:1px solid %3;"
-            "  selection-background-color:%4;"
-            "  selection-color:palette(highlighted-text);"
-            "}"
-            "QComboBox QAbstractItemView::item{"
-            "  background:%1;"
-            "  color:%2;"
-            "}"
-            "QComboBox QAbstractItemView::item:hover{"
-            "  background:%5;"
-            "  color:%2;"
-            "}"
-            "QComboBox QAbstractItemView::item:selected{"
-            "  background:%4;"
-            "  color:palette(highlighted-text);"
-            "}")
-            .arg(backgroundHex)
-            .arg(textHex)
-            .arg(KswordTheme::BorderHex())
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::SurfaceAltHex());
+        return KswordTheme::ThemedComboBoxStyle();
     }
 
     void applyRuleComboStyle(QComboBox* comboBox)
@@ -1461,19 +1415,7 @@ namespace
         comboBox->setStyleSheet(callbackRuleComboStyle());
         if (comboBox->view() != nullptr)
         {
-            comboBox->view()->setStyleSheet(
-                QStringLiteral(
-                    "QAbstractItemView{"
-                    "  background:%1;"
-                    "  color:%2;"
-                    "  border:1px solid %3;"
-                    "  selection-background-color:%4;"
-                    "  selection-color:palette(highlighted-text);"
-                    "}")
-                .arg(callbackRuleComboBackgroundHex())
-                .arg(callbackRuleComboTextHex())
-                .arg(KswordTheme::BorderHex())
-                .arg(KswordTheme::PrimaryBlueHex));
+            comboBox->view()->setStyleSheet(KswordTheme::ThemedComboBoxPopupViewStyle());
         }
     }
 }

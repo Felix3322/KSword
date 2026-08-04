@@ -88,12 +88,13 @@ namespace
     QString blueInputStyle()
     {
         return QStringLiteral(
-            "QLineEdit,QComboBox,QSpinBox{border:1px solid %2;border-radius:3px;background:transparent;/* %3 */color:%4;padding:2px 6px;}"
-            "QLineEdit:focus,QComboBox:focus,QSpinBox:focus{border:1px solid %1;}")
+            "QLineEdit,QSpinBox{border:1px solid %2;border-radius:3px;background:transparent;/* %3 */color:%4;padding:2px 6px;}"
+            "QLineEdit:focus,QSpinBox:focus{border:1px solid %1;}")
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
             .arg(KswordTheme::BorderColorHex())
             .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex());
+            .arg(KswordTheme::TextPrimaryColorHex())
+            + KswordTheme::ThemedComboBoxStyle();
     }
 
     QString blueHeaderStyle()

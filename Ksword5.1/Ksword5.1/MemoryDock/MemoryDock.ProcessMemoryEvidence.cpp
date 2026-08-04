@@ -305,9 +305,8 @@ void MemoryDock::initializeProcessMemoryEvidenceTab()
     m_processMemoryEvidenceRiskOnlyCheck = new QCheckBox(QStringLiteral("仅风险项"), m_tabProcessMemoryEvidence);
     m_processMemoryEvidenceRiskOnlyCheck->setChecked(true);
     m_processMemoryEvidenceRiskOnlyCheck->setStyleSheet(QStringLiteral(
-        "QCheckBox { color:%1; font-weight:600; }"
-        "QCheckBox::indicator:checked { background:%1; border:1px solid %1; }")
-        .arg(KswordTheme::PrimaryBlueHex));
+        "QCheckBox { color:%1; font-weight:600; }")
+        .arg(KswordTheme::TextPrimaryHex()));
 
     m_processMemoryEvidenceImageOnlyCheck = new QCheckBox(QStringLiteral("仅 IMAGE"), m_tabProcessMemoryEvidence);
 

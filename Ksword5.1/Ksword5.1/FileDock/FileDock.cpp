@@ -2983,19 +2983,20 @@ namespace
     QString buildBlueInputStyle()
     {
         return QStringLiteral(
-            "QLineEdit,QComboBox,QPlainTextEdit,QTextEdit{"
+            "QLineEdit,QPlainTextEdit,QTextEdit{"
             "  border:1px solid %2;"
             "  border-radius:3px;"
             "  background:%3;"
             "  color:%4;"
             "  padding:2px 6px;"
             "}"
-            "QLineEdit:focus,QComboBox:focus,QPlainTextEdit:focus,QTextEdit:focus{"
+            "QLineEdit:focus,QPlainTextEdit:focus,QTextEdit:focus{"
             "  border:1px solid %1;}")
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
             .arg(KswordTheme::BorderColorHex())
             .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex());
+            .arg(KswordTheme::TextPrimaryColorHex())
+            + KswordTheme::ThemedComboBoxStyle();
     }
 
     // buildContextMenuStyle 作用：

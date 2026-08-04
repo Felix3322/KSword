@@ -266,9 +266,8 @@ void MemoryDock::initializeProcessPteTranslateTab()
     m_processPteTranslateRiskOnlyCheck = new QCheckBox(QStringLiteral("仅风险项"), m_tabProcessPteTranslate);
     m_processPteTranslateRiskOnlyCheck->setChecked(true);
     m_processPteTranslateRiskOnlyCheck->setStyleSheet(QStringLiteral(
-        "QCheckBox { color:%1; font-weight:600; }"
-        "QCheckBox::indicator:checked { background:%1; border:1px solid %1; }")
-        .arg(KswordTheme::PrimaryBlueHex));
+        "QCheckBox { color:%1; font-weight:600; }")
+        .arg(KswordTheme::TextPrimaryHex()));
 
     m_processPteTranslateAddressEdit = new QLineEdit(m_tabProcessPteTranslate);
     m_processPteTranslateAddressEdit->setClearButtonEnabled(true);

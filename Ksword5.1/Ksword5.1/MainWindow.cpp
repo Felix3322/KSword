@@ -392,7 +392,7 @@ namespace
 
     // dockTabHoverFillColor 作用：
     // - 返回 Dock 标签悬停时强制填充的背景色；
-    // - 普通标签 hover 使用弱蓝底，当前选中标签 hover 继续使用主蓝底；
+    // - 普通标签 hover 使用弱强调底，当前选中标签 hover 继续使用活动强调底；
     // - 避免浅色模式下选中 Dock 被 hover 补绘覆盖成淡蓝色。
     // 入参 activeTab：true 表示当前标签为 ADS 选中标签。
     // 返回：当前主题和标签状态对应的 hover 背景 QColor。
@@ -407,7 +407,7 @@ namespace
 
     // dockTabTextColor 作用：
     // - 返回 ADS Dock 标签文字的最终颜色；
-    // - 选中标签在深浅模式都使用白字，匹配深色活动背景；
+    // - 选中标签根据实际活动背景自动选择可读文字色；
     // - 未选中标签沿用当前主题主文字色。
     // 入参 activeTab：true=当前选中标签；false=普通标签。
     // 返回：可直接写入 QWidget/QLabel palette 与局部样式表的 QColor。
@@ -418,7 +418,7 @@ namespace
             return KswordTheme::TextPrimaryColor();
         }
 
-        // 活动标签使用专用前景色，不能复用亮强调色背景的 OnAccentColor。
+        // 活动标签使用专用前景色，按混合后的实际背景重新计算对比度。
         return KswordTheme::ActiveTabTextColor();
     }
 
@@ -1203,8 +1203,10 @@ namespace
         popupPalette.setColor(QPalette::Text, KswordTheme::TextPrimaryColor());
         popupPalette.setColor(QPalette::WindowText, KswordTheme::TextPrimaryColor());
         popupPalette.setColor(QPalette::ButtonText, KswordTheme::TextPrimaryColor());
-        popupPalette.setColor(QPalette::Highlight, KswordTheme::PrimaryBlueColor);
-        popupPalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
+        popupPalette.setColor(QPalette::Highlight, KswordTheme::ControlAccentColor());
+        popupPalette.setColor(
+            QPalette::HighlightedText,
+            KswordTheme::MaximumContrastMonochromeColor(KswordTheme::ControlAccentColor()));
         popupPalette.setColor(QPalette::Mid, KswordTheme::BorderColor());
         targetWidget->setPalette(popupPalette);
         targetWidget->setAutoFillBackground(true);
@@ -1214,58 +1216,19 @@ namespace
     // comboPopupViewStyle 作用：
     // - 生成直接写入 QComboBox Popup 视图的局部样式；
     // - Popup 是独立顶层窗口，不能依赖 MainWindow 的后代选择器继承背景；
-    // - 所有普通组合框使用当前主题的不透明列表底色，局部手写样式的组合框不受影响。
+    // - 所有组合框使用当前主题的不透明列表底色；已有直接 Popup 样式的业务控件仍会保留其专用视图规则。
     QString comboPopupViewStyle()
     {
-        const QString backgroundColor = KswordTheme::SurfaceColorHex();
-        const QString textColor = KswordTheme::TextPrimaryColorHex();
-        const QString borderColor = KswordTheme::BorderColorHex();
-        const QString hoverColor = KswordTheme::ThemeColorName(
-            KswordTheme::IsDarkModeEnabled()
-                ? KswordTheme::PrimaryBlueSubtleColor()
-                : KswordTheme::SurfaceMutedColor());
-
-        return QStringLiteral(
-            "QAbstractItemView{"
-            "  background-color:%1 !important;"
-            "  color:%2 !important;"
-            "  border:1px solid %3 !important;"
-            "  selection-background-color:%4 !important;"
-            "  selection-color:%5 !important;"
-            "  outline:0;"
-            "}"
-            "QAbstractScrollArea::viewport{"
-            "  background-color:%1 !important;"
-            "}"
-            "QAbstractItemView::item{"
-            "  background-color:%1 !important;"
-            "  color:%2 !important;"
-            "  min-height:22px;"
-            "  padding:2px 6px;"
-            "}"
-            "QAbstractItemView::item:hover{"
-            "  background-color:%6 !important;"
-            "  color:%2 !important;"
-            "}"
-            "QAbstractItemView::item:selected{"
-            "  background-color:%4 !important;"
-            "  color:%5 !important;"
-            "}")
-            .arg(backgroundColor)
-            .arg(textColor)
-            .arg(borderColor)
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::OnAccentHex())
-            .arg(hoverColor);
+        return KswordTheme::ThemedComboBoxPopupViewStyle();
     }
 
     // applyOpaqueComboPopupTheme 作用：
-    // - 输入：普通 QComboBox；
+    // - 输入：任意 QComboBox；
     // - 处理：直接主题化其 Popup QFrame、列表视图及 viewport；
     // - 返回：无。绕开 Qt Popup 顶层窗口不继承主窗口 QSS 的限制。
     void applyOpaqueComboPopupTheme(QComboBox* const comboBox)
     {
-        if (comboBox == nullptr || !comboBox->styleSheet().trimmed().isEmpty())
+        if (comboBox == nullptr)
         {
             return;
         }
@@ -1310,7 +1273,7 @@ namespace
     // GlobalComboPopupThemeFilter 作用：
     // - 监听应用范围内的 Popup 显示事件；
     // - 对新建、懒加载和主题切换后的普通组合框，重新执行不透明列表背景主题化；
-    // - 不处理业务控件已设置局部样式的组合框，保持其专用视觉设计。
+    // - 组合框本体可保留业务局部样式，但只要 Popup 没有直接样式就统一补齐不透明列表表面。
     class GlobalComboPopupThemeFilter final : public QObject
     {
     public:
@@ -2227,6 +2190,16 @@ namespace
     // - 便于主题切换时替换旧菜单样式，避免重复拼接与样式污染。
     constexpr const char* kContextMenuStyleBeginMarker = "/*KSWORD_CONTEXT_MENU_STYLE_BEGIN*/";
     constexpr const char* kContextMenuStyleEndMarker = "/*KSWORD_CONTEXT_MENU_STYLE_END*/";
+    // kControlContrastStyleBeginMarker / kControlContrastStyleEndMarker 作用：
+    // - 标记复选框、单选框和滑块的全局高对比样式；
+    // - 主题或自定义颜色变化时替换旧片段，避免重复追加。
+    constexpr const char* kControlContrastStyleBeginMarker = "/*KSWORD_CONTROL_CONTRAST_STYLE_BEGIN*/";
+    constexpr const char* kControlContrastStyleEndMarker = "/*KSWORD_CONTROL_CONTRAST_STYLE_END*/";
+    // kComboBoxStyleBeginMarker / kComboBoxStyleEndMarker 作用：
+    // - 标记组合框本体、箭头区和 Popup 列表的全局不透明主题样式；
+    // - 主背景或主题色变化时替换旧片段，避免应用级 QSS 重复追加。
+    constexpr const char* kComboBoxStyleBeginMarker = "/*KSWORD_COMBOBOX_STYLE_BEGIN*/";
+    constexpr const char* kComboBoxStyleEndMarker = "/*KSWORD_COMBOBOX_STYLE_END*/";
     // kDeferredDockLoadIntervalMs 作用：
     // - 控制“显示后补载”节流间隔；
     // - 避免 0ms 连续补载把 UI 线程再次打满。
@@ -3656,6 +3629,133 @@ namespace
             .arg(QString::fromLatin1(kContextMenuStyleEndMarker));
     }
 
+    // buildGlobalControlContrastStyleBlock 作用：
+    // - 为复选框、单选框、可勾选视图项和滑块提供完整的状态图形；
+    // - 所有活动边界相对控件表面至少保持 3:1 非文本对比度；
+    // - 勾号、半选横线和单选圆点按实际填充色选择黑/白图形。
+    QString buildGlobalControlContrastStyleBlock(const bool darkModeEnabled)
+    {
+        Q_UNUSED(darkModeEnabled);
+
+        const QColor accentColor = KswordTheme::ControlAccentColor();
+        const QColor accentHoverColor = KswordTheme::ControlAccentHoverColor();
+        const QColor accentPressedColor = KswordTheme::ControlAccentPressedColor();
+        const QColor disabledFillColor = KswordTheme::ControlDisabledFillColor();
+        const auto glyphPath = [](const QColor& fillColor, const QString& whitePath, const QString& blackPath) {
+            return KswordTheme::MaximumContrastMonochromeColor(fillColor) == KswordTheme::WhiteColor()
+                ? whitePath
+                : blackPath;
+        };
+
+        const QString whiteCheckPath = QStringLiteral(":/Icon/ks_control_check_white.svg");
+        const QString blackCheckPath = QStringLiteral(":/Icon/ks_control_check_black.svg");
+        const QString whiteDashPath = QStringLiteral(":/Icon/ks_control_dash_white.svg");
+        const QString blackDashPath = QStringLiteral(":/Icon/ks_control_dash_black.svg");
+        const QString whiteRadioPath = QStringLiteral(":/Icon/ks_control_radio_white.svg");
+        const QString blackRadioPath = QStringLiteral(":/Icon/ks_control_radio_black.svg");
+
+        QString controlStyle = QString::fromLatin1(
+            "\n__BEGIN_MARKER__\n"
+            "QCheckBox,QRadioButton{spacing:6px;}"
+            "QCheckBox:disabled,QRadioButton:disabled{color:__DISABLED_TEXT__; }"
+            "QCheckBox::indicator,QGroupBox::indicator,QListView::indicator,QTreeView::indicator,QTableView::indicator{"
+            "  width:15px;height:15px;"
+            "  border:2px solid __OUTLINE__;"
+            "  border-radius:3px;"
+            "  background:__SURFACE__;"
+            "  image:none;"
+            "}"
+            "QCheckBox::indicator:unchecked:hover,QGroupBox::indicator:unchecked:hover,QListView::indicator:unchecked:hover,QTreeView::indicator:unchecked:hover,QTableView::indicator:unchecked:hover{"
+            "  border-color:__ACCENT__;background:__SURFACE_ALT__;"
+            "}"
+            "QCheckBox::indicator:checked,QGroupBox::indicator:checked,QListView::indicator:checked,QTreeView::indicator:checked,QTableView::indicator:checked{"
+            "  border-color:__ACCENT__;background:__ACCENT__;image:url(__CHECK_ICON__);"
+            "}"
+            "QCheckBox::indicator:indeterminate,QGroupBox::indicator:indeterminate,QListView::indicator:indeterminate,QTreeView::indicator:indeterminate,QTableView::indicator:indeterminate{"
+            "  border-color:__ACCENT__;background:__ACCENT__;image:url(__DASH_ICON__);"
+            "}"
+            "QCheckBox::indicator:checked:hover,QGroupBox::indicator:checked:hover,QListView::indicator:checked:hover,QTreeView::indicator:checked:hover,QTableView::indicator:checked:hover{"
+            "  border-color:__ACCENT_HOVER__;background:__ACCENT_HOVER__;image:url(__CHECK_HOVER_ICON__);"
+            "}"
+            "QCheckBox::indicator:indeterminate:hover,QGroupBox::indicator:indeterminate:hover,QListView::indicator:indeterminate:hover,QTreeView::indicator:indeterminate:hover,QTableView::indicator:indeterminate:hover{"
+            "  border-color:__ACCENT_HOVER__;background:__ACCENT_HOVER__;image:url(__DASH_HOVER_ICON__);"
+            "}"
+            "QCheckBox::indicator:checked:pressed,QGroupBox::indicator:checked:pressed,QListView::indicator:checked:pressed,QTreeView::indicator:checked:pressed,QTableView::indicator:checked:pressed{"
+            "  border-color:__ACCENT_PRESSED__;background:__ACCENT_PRESSED__;image:url(__CHECK_PRESSED_ICON__);"
+            "}"
+            "QCheckBox::indicator:indeterminate:pressed,QGroupBox::indicator:indeterminate:pressed,QListView::indicator:indeterminate:pressed,QTreeView::indicator:indeterminate:pressed,QTableView::indicator:indeterminate:pressed{"
+            "  border-color:__ACCENT_PRESSED__;background:__ACCENT_PRESSED__;image:url(__DASH_PRESSED_ICON__);"
+            "}"
+            "QCheckBox::indicator:disabled,QGroupBox::indicator:disabled,QListView::indicator:disabled,QTreeView::indicator:disabled,QTableView::indicator:disabled{"
+            "  border-color:__DISABLED_OUTLINE__;background:__SURFACE_MUTED__;image:none;"
+            "}"
+            "QCheckBox::indicator:checked:disabled,QGroupBox::indicator:checked:disabled,QListView::indicator:checked:disabled,QTreeView::indicator:checked:disabled,QTableView::indicator:checked:disabled{"
+            "  border-color:__DISABLED_OUTLINE__;background:__DISABLED_FILL__;image:url(__CHECK_DISABLED_ICON__);"
+            "}"
+            "QCheckBox::indicator:indeterminate:disabled,QGroupBox::indicator:indeterminate:disabled,QListView::indicator:indeterminate:disabled,QTreeView::indicator:indeterminate:disabled,QTableView::indicator:indeterminate:disabled{"
+            "  border-color:__DISABLED_OUTLINE__;background:__DISABLED_FILL__;image:url(__DASH_DISABLED_ICON__);"
+            "}"
+            "QRadioButton::indicator{"
+            "  width:15px;height:15px;"
+            "  border:2px solid __OUTLINE__;"
+            "  border-radius:8px;"
+            "  background:__SURFACE__;"
+            "  image:none;"
+            "}"
+            "QRadioButton::indicator:unchecked:hover{border-color:__ACCENT__;background:__SURFACE_ALT__; }"
+            "QRadioButton::indicator:checked{border-color:__ACCENT__;background:__ACCENT__;image:url(__RADIO_ICON__); }"
+            "QRadioButton::indicator:checked:hover{border-color:__ACCENT_HOVER__;background:__ACCENT_HOVER__;image:url(__RADIO_HOVER_ICON__); }"
+            "QRadioButton::indicator:checked:pressed{border-color:__ACCENT_PRESSED__;background:__ACCENT_PRESSED__;image:url(__RADIO_PRESSED_ICON__); }"
+            "QRadioButton::indicator:disabled{border-color:__DISABLED_OUTLINE__;background:__SURFACE_MUTED__;image:none; }"
+            "QRadioButton::indicator:checked:disabled{border-color:__DISABLED_OUTLINE__;background:__DISABLED_FILL__;image:url(__RADIO_DISABLED_ICON__); }"
+            "QSlider::groove:horizontal{height:4px;border:1px solid __OUTLINE__;border-radius:2px;background:__SURFACE_MUTED__; }"
+            "QSlider::groove:vertical{width:4px;border:1px solid __OUTLINE__;border-radius:2px;background:__SURFACE_MUTED__; }"
+            "QSlider::handle:horizontal{width:14px;margin:-6px 0;border:2px solid __OUTLINE__;border-radius:8px;background:__ACCENT__; }"
+            "QSlider::handle:vertical{height:14px;margin:0 -6px;border:2px solid __OUTLINE__;border-radius:8px;background:__ACCENT__; }"
+            "QSlider::handle:horizontal:hover,QSlider::handle:vertical:hover{border-color:__ACCENT_HOVER__;background:__ACCENT_HOVER__; }"
+            "QSlider::handle:horizontal:pressed,QSlider::handle:vertical:pressed{border-color:__ACCENT_PRESSED__;background:__ACCENT_PRESSED__; }"
+            "QSlider::handle:horizontal:disabled,QSlider::handle:vertical:disabled{border-color:__DISABLED_OUTLINE__;background:__DISABLED_FILL__; }"
+            "__END_MARKER__\n");
+
+        controlStyle.replace(QStringLiteral("__BEGIN_MARKER__"), QString::fromLatin1(kControlContrastStyleBeginMarker));
+        controlStyle.replace(QStringLiteral("__END_MARKER__"), QString::fromLatin1(kControlContrastStyleEndMarker));
+        controlStyle.replace(QStringLiteral("__SURFACE__"), KswordTheme::SurfaceColorHex());
+        controlStyle.replace(QStringLiteral("__SURFACE_ALT__"), KswordTheme::SurfaceAltColorHex());
+        controlStyle.replace(QStringLiteral("__SURFACE_MUTED__"), KswordTheme::SurfaceMutedColorHex());
+        controlStyle.replace(QStringLiteral("__OUTLINE__"), KswordTheme::ControlOutlineHex());
+        controlStyle.replace(QStringLiteral("__ACCENT__"), KswordTheme::ThemeColorName(accentColor));
+        controlStyle.replace(QStringLiteral("__ACCENT_HOVER__"), KswordTheme::ThemeColorName(accentHoverColor));
+        controlStyle.replace(QStringLiteral("__ACCENT_PRESSED__"), KswordTheme::ThemeColorName(accentPressedColor));
+        controlStyle.replace(QStringLiteral("__DISABLED_TEXT__"), KswordTheme::TextDisabledColorHex());
+        controlStyle.replace(QStringLiteral("__DISABLED_OUTLINE__"), KswordTheme::ControlDisabledOutlineHex());
+        controlStyle.replace(QStringLiteral("__DISABLED_FILL__"), KswordTheme::ThemeColorName(disabledFillColor));
+        controlStyle.replace(QStringLiteral("__CHECK_ICON__"), glyphPath(accentColor, whiteCheckPath, blackCheckPath));
+        controlStyle.replace(QStringLiteral("__CHECK_HOVER_ICON__"), glyphPath(accentHoverColor, whiteCheckPath, blackCheckPath));
+        controlStyle.replace(QStringLiteral("__CHECK_PRESSED_ICON__"), glyphPath(accentPressedColor, whiteCheckPath, blackCheckPath));
+        controlStyle.replace(QStringLiteral("__CHECK_DISABLED_ICON__"), glyphPath(disabledFillColor, whiteCheckPath, blackCheckPath));
+        controlStyle.replace(QStringLiteral("__DASH_ICON__"), glyphPath(accentColor, whiteDashPath, blackDashPath));
+        controlStyle.replace(QStringLiteral("__DASH_HOVER_ICON__"), glyphPath(accentHoverColor, whiteDashPath, blackDashPath));
+        controlStyle.replace(QStringLiteral("__DASH_PRESSED_ICON__"), glyphPath(accentPressedColor, whiteDashPath, blackDashPath));
+        controlStyle.replace(QStringLiteral("__DASH_DISABLED_ICON__"), glyphPath(disabledFillColor, whiteDashPath, blackDashPath));
+        controlStyle.replace(QStringLiteral("__RADIO_ICON__"), glyphPath(accentColor, whiteRadioPath, blackRadioPath));
+        controlStyle.replace(QStringLiteral("__RADIO_HOVER_ICON__"), glyphPath(accentHoverColor, whiteRadioPath, blackRadioPath));
+        controlStyle.replace(QStringLiteral("__RADIO_PRESSED_ICON__"), glyphPath(accentPressedColor, whiteRadioPath, blackRadioPath));
+        controlStyle.replace(QStringLiteral("__RADIO_DISABLED_ICON__"), glyphPath(disabledFillColor, whiteRadioPath, blackRadioPath));
+        return controlStyle;
+    }
+
+    // buildGlobalComboBoxStyleBlock 作用：
+    // - 生成 QApplication 级组合框样式，使主窗口、独立 Dock、对话框共用同一不透明控件表面；
+    // - 具体颜色由 KswordTheme::ThemedComboBoxStyle 统一提供，主背景色和主题色变化时一并刷新。
+    QString buildGlobalComboBoxStyleBlock(const bool darkModeEnabled)
+    {
+        Q_UNUSED(darkModeEnabled);
+        return QStringLiteral("\n%1\n%2\n%3\n")
+            .arg(QString::fromLatin1(kComboBoxStyleBeginMarker))
+            .arg(KswordTheme::ThemedComboBoxStyle())
+            .arg(QString::fromLatin1(kComboBoxStyleEndMarker));
+    }
+
     // replaceMarkedStyleBlock 作用：
     // - 在已有 QApplication 样式表文本中替换一个带起止标记的样式块；
     // - 没有旧块时追加新块，旧块损坏时也按追加处理，避免误删其它 QSS；
@@ -3700,15 +3800,17 @@ namespace
     }
 
     // applyGlobalApplicationStyleBlocks 作用：
-    // - 合并更新 QApplication 级别 Tooltip/QMenu 样式块；
+    // - 合并更新 QApplication 级别 Tooltip/QMenu/交互控件/组合框样式块；
     // - 只在最终样式表内容确实变化时调用一次 QApplication::setStyleSheet；
     // - 避免原先 Tooltip 与 QMenu 分别 setStyleSheet 导致启动阶段全局 repolish 两次。
     // 调用方式：applyAppearanceSettings 内部调用。
-    // 入参 tooltipStyleBlock/contextMenuStyleBlock：已带标记的 QSS 片段。
+    // 入参 tooltipStyleBlock/contextMenuStyleBlock/controlContrastStyleBlock/comboBoxStyleBlock：已带标记的 QSS 片段。
     // 返回：实际触发 QApplication::setStyleSheet 时返回 true。
     bool applyGlobalApplicationStyleBlocks(
         const QString& tooltipStyleBlock,
         const QString& contextMenuStyleBlock,
+        const QString& controlContrastStyleBlock,
+        const QString& comboBoxStyleBlock,
         qint64* elapsedMsOut = nullptr,
         int* widgetCountOut = nullptr,
         int* styleLengthOut = nullptr)
@@ -3744,6 +3846,16 @@ namespace
             kContextMenuStyleBeginMarker,
             kContextMenuStyleEndMarker,
             contextMenuStyleBlock);
+        replaceMarkedStyleBlock(
+            appStyleSheetText,
+            kControlContrastStyleBeginMarker,
+            kControlContrastStyleEndMarker,
+            controlContrastStyleBlock);
+        replaceMarkedStyleBlock(
+            appStyleSheetText,
+            kComboBoxStyleBeginMarker,
+            kComboBoxStyleEndMarker,
+            comboBoxStyleBlock);
 
         if (styleLengthOut != nullptr)
         {
@@ -5810,53 +5922,11 @@ void MainWindow::showSettingsPanelFromMenu(bool showLanguageTab)
     settingsDialog.setWindowTitle(QStringLiteral("设置"));
     settingsDialog.setModal(false);
     settingsDialog.resize(760, 640);
-    const QString settingsComboTextColor = KswordTheme::TextPrimaryColorHex();
-    const QString settingsComboBorderColor = KswordTheme::BorderColorHex();
-    const QString settingsComboSelectionBackgroundColor = KswordTheme::PrimaryBlueSubtleHex();
     settingsDialog.setStyleSheet(QStringLiteral(
-        "QDialog{background:%1;color:%2;}"
-        "QDialog QComboBox{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  color:%3 !important;"
-        "  border:1px solid %4 !important;"
-        "  border-radius:3px;"
-        "  padding:2px 20px 2px 6px;"
-        "  min-height:22px;"
-        "}"
-        "QDialog QComboBox::drop-down{"
-        "  border:none !important;"
-        "  width:18px;"
-        "}"
-        "QDialog QComboBox QAbstractItemView{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  alternate-background-color:transparent !important;"
-        "  color:%3 !important;"
-        "  border:1px solid %4 !important;"
-        "  selection-background-color:%5 !important;"
-        "  selection-color:%6 !important;"
-        "  outline:0;"
-        "}"
-        "QDialog QComboBox QAbstractItemView::item{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  color:%3 !important;"
-        "}"
-        "QDialog QComboBox QAbstractItemView::item:hover{"
-        "  background-color:%5 !important;"
-        "  color:%6 !important;"
-        "}"
-        "QDialog QComboBox QAbstractItemView::item:selected{"
-        "  background-color:%5 !important;"
-        "  color:%6 !important;"
-        "}")
+        "QDialog{background:%1;color:%2;}")
         .arg(KswordTheme::SurfaceHex())
         .arg(KswordTheme::TextPrimaryHex())
-        .arg(settingsComboTextColor)
-        .arg(settingsComboBorderColor)
-        .arg(settingsComboSelectionBackgroundColor)
-        .arg(KswordTheme::OnAccentHex()));
+        + KswordTheme::ThemedComboBoxStyle());
 
     QVBoxLayout dialogLayout(&settingsDialog);
     dialogLayout.setContentsMargins(8, 8, 8, 8);
@@ -9734,6 +9804,8 @@ void MainWindow::applyAppearanceSettings(
             buildGlobalContextMenuStyleBlock(darkModeEnabled),
             &globalAppStyleApplyMs,
             &globalAppStyleWidgetCount,
+            buildGlobalControlContrastStyleBlock(darkModeEnabled),
+            buildGlobalComboBoxStyleBlock(darkModeEnabled),
             &globalAppStyleLength);
         if (globalAppStyleChanged || isInitialAppearanceApply)
         {
@@ -10283,15 +10355,22 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     const QString disabledTextColor = KswordTheme::TextDisabledColorHex();
     const QString selectedTextColor = KswordTheme::OnAccentHex();
     const QString activeThemeColor = KswordTheme::PrimaryBlueHex;
-    const QString activeThemeHoverColor = KswordTheme::PrimaryBlueSolidHoverHex();
-    const QString activeThemePressedColor = KswordTheme::PrimaryBluePressedHex;
+    const QString activeThemeHoverColor = KswordTheme::ControlAccentHoverHex();
+    const QString activeThemePressedColor = KswordTheme::ControlAccentPressedHex();
+    const QString controlAccentTextColor = KswordTheme::ThemeColorName(
+        KswordTheme::MaximumContrastMonochromeColor(KswordTheme::ControlAccentColor()));
     const QString subtleThemeColor = KswordTheme::PrimaryBlueSubtleHex();
-    const QString scrollBarHandleColor = KswordTheme::RgbaColorName(
-        KswordTheme::PrimaryBlueColor,
-        settings.scrollBarAutoHideEnabled ? 107 : 199);
-    const QString scrollBarHandleHoverColor = KswordTheme::RgbaColorName(
-        KswordTheme::PrimaryBlueColor,
-        235);
+    const QColor scrollBarBaseColor = settings.scrollBarAutoHideEnabled
+        ? KswordTheme::EnsureTextContrast(
+            KswordTheme::BlendColors(
+                KswordTheme::SurfaceColor(),
+                KswordTheme::ControlAccentColor(),
+                160),
+            KswordTheme::SurfaceColor(),
+            3.0)
+        : KswordTheme::ControlAccentColor();
+    const QString scrollBarHandleColor = KswordTheme::ThemeColorName(scrollBarBaseColor);
+    const QString scrollBarHandleHoverColor = KswordTheme::ControlAccentHoverHex();
     const QString panelBackgroundColor = KswordTheme::RgbaColorName(
         KswordTheme::SurfaceColor(),
         darkModeEnabled ? 240 : 242);
@@ -10320,13 +10399,6 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     // - 深色模式下如果子控件继续透明或继承错误 palette，会露出近白底；
     // - 因此 hover 时父子统一使用明确背景色，避免半透明/调色板回退。
     const QString dockTabChildHoverColor = tabHoverColor;
-    const QString comboTextColor = primaryTextColor;
-    const QString comboBorderColor = borderColorText;
-    const QString comboPopupHoverColor = tabHoverColor;
-    const QString comboArrowIconPath = darkModeEnabled
-        ? QStringLiteral(":/Icon/ks_combo_arrow_dark.svg")
-        : QStringLiteral(":/Icon/ks_combo_arrow_light.svg");
-
     const QString tooltipStyle = QStringLiteral(
         "QToolTip{"
         "  background-color:%1 !important;"
@@ -10503,96 +10575,12 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
         "}")
         .arg(activeThemeHoverColor)
         .arg(activeThemePressedColor)
-        .arg(selectedTextColor)
+        .arg(controlAccentTextColor)
         .arg(darkModeEnabled ? surfaceAltBackgroundText : subtleThemeColor)
         .arg(primaryTextColor)
         .arg(borderStrongColorText)
         .arg(surfaceMutedBackgroundText)
         .arg(disabledTextColor);
-
-    const QString comboBoxStyle = QStringLiteral(
-        "QComboBox{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  color:%1 !important;"
-        "  border:1px solid %2 !important;"
-        "  border-radius:3px;"
-        "  padding:2px 20px 2px 6px;"
-        "  min-height:22px;"
-        "  selection-background-color:%3 !important;"
-        "  selection-color:%5 !important;"
-        "}"
-        "QComboBox:hover{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  color:%1 !important;"
-        "  border-color:%3 !important;"
-        "}"
-        "QComboBox:focus,QComboBox:on{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  color:%1 !important;"
-        "  border-color:%3 !important;"
-        "}"
-        "QComboBox:disabled{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  color:%6 !important;"
-        "  border-color:%2 !important;"
-        "}"
-        "QComboBox::drop-down{"
-        "  border:none !important;"
-        "  background:transparent !important;"
-        "  width:18px;"
-        "}"
-        "QComboBox::down-arrow{"
-        "  image:url(%7);"
-        "  width:12px;"
-        "  height:12px;"
-        "  margin-right:4px;"
-        "  subcontrol-origin:padding;"
-        "  subcontrol-position:center right;"
-        "}"
-        "QComboBox::down-arrow:disabled{"
-        "  image:url(%7);"
-        "}"
-        "QComboBox QAbstractItemView{"
-        // 下拉列表是独立 Popup，不会继承组合框所在 Dock 的背景画刷。
-        // 不能设为透明，否则浅色主题会回退到平台 Popup 的黑色底。
-        "  background:%8 !important;"
-        "  background-color:%8 !important;"
-        "  alternate-background-color:%8 !important;"
-        "  color:%1 !important;"
-        "  border:1px solid %2 !important;"
-        "  selection-background-color:%3 !important;"
-        "  selection-color:%5 !important;"
-        "  outline:0;"
-        "}"
-        "QComboBox QAbstractItemView::viewport{"
-        "  background:%8 !important;"
-        "  background-color:%8 !important;"
-        "}"
-        "QComboBox QAbstractItemView::item{"
-        "  background:transparent !important;"
-        "  background-color:transparent !important;"
-        "  color:%1 !important;"
-        "}"
-        "QComboBox QAbstractItemView::item:hover{"
-        "  background-color:%4 !important;"
-        "  color:%1 !important;"
-        "}"
-        "QComboBox QAbstractItemView::item:selected{"
-        "  background-color:%3 !important;"
-        "  color:%5 !important;"
-        "}")
-        .arg(comboTextColor)
-        .arg(comboBorderColor)
-        .arg(activeTabColor)
-        .arg(comboPopupHoverColor)
-        .arg(selectedTextColor)
-        .arg(disabledTextColor)
-        .arg(comboArrowIconPath)
-        .arg(surfaceBackgroundText);
 
     // tabStyle 作用：统一普通 Tab 与 ADS Dock Tab 的颜色、边距和选中态。
     // 字号不在这里设置，保证所有 Tab 栏继承 Qt 默认应用字号。
@@ -10738,7 +10726,6 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     const QString sharedOverlayStyle = depthOverlayStyle
         + scrollBarOverlayStyle
         + buttonInteractionStyle
-        + comboBoxStyle
         + tabStyle;    // dockContentTransparentStyle 作用：
     // - 背景图可用时，把 Dock 内容区域常见容器背景全部改为透明；
     // - 修复“Dock 面板整体仍是黑底/白底，背景图只能从缝隙看到”的问题。

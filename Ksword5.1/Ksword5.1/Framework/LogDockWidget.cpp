@@ -241,25 +241,10 @@ namespace
     {
         return QStringLiteral(
             "QCheckBox {"
-            "  color: %4;"
+            "  color: %1;"
             "  spacing: 6px;"
-            "}"
-            "QCheckBox::indicator {"
-            "  width: 14px;"
-            "  height: 14px;"
-            "  border: 1px solid %2;"
-            "  border-radius: 2px;"
-            "  background: %5;"
-            "}"
-            "QCheckBox::indicator:checked {"
-            "  border: 1px solid %2;"
-            "  background: %3;"
             "}")
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::PrimaryBlueBorderHex)
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::SurfaceHex());
+            .arg(KswordTheme::TextPrimaryHex());
     }
 
     // buildBlueButtonStyleSheet 作用：

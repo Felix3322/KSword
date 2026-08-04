@@ -137,20 +137,21 @@ namespace
     QString buildComboAndSpinStyle()
     {
         return QStringLiteral(
-            "QComboBox, QSpinBox {"
+            "QSpinBox {"
             "  border: 1px solid %1;"
             "  border-radius: 3px;"
             "  background: %2;"
             "  color: %3;"
             "  padding: 2px 6px;"
             "}"
-            "QComboBox:hover, QSpinBox:hover {"
+            "QSpinBox:hover {"
             "  border-color: %4;"
             "}")
             .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::SurfaceHex())
             .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::PrimaryBlueHex);
+            .arg(KswordTheme::PrimaryBlueHex)
+            + KswordTheme::ThemedComboBoxStyle();
     }
 
     // buildHeaderStyle 作用：统一表头样式，保持主题一致。

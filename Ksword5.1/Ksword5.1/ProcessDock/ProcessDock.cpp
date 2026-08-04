@@ -3165,71 +3165,7 @@ namespace
     // 下拉框主题描边样式，保持与按钮同色系。
     QString buildBlueComboBoxStyle()
     {
-        const QString comboBackgroundColor = KswordTheme::SurfaceColorHex();
-        const QString comboTextColor = KswordTheme::TextPrimaryColorHex();
-        const QString comboBorderColor = KswordTheme::BorderColorHex();
-
-        return QStringLiteral(
-            "QComboBox#ProcessDockStrategyCombo,QComboBox#ProcessDockViewModeCombo{"
-            "  background-color:%1 !important;"
-            "  background:%1 !important;"
-            "  color:%2 !important;"
-            "  border:1px solid %3 !important;"
-            "  border-radius:3px;"
-            "  padding:2px 20px 2px 6px;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo:hover,QComboBox#ProcessDockViewModeCombo:hover{"
-            "  background-color:%5 !important;"
-            "  background:%5 !important;"
-            "  color:%2 !important;"
-            "  border:1px solid %4 !important;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo:focus,QComboBox#ProcessDockViewModeCombo:focus,"
-            "QComboBox#ProcessDockStrategyCombo:on,QComboBox#ProcessDockViewModeCombo:on{"
-            "  background-color:%1 !important;"
-            "  background:%1 !important;"
-            "  color:%2 !important;"
-            "  border:1px solid %4 !important;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo::drop-down,QComboBox#ProcessDockViewModeCombo::drop-down{"
-            "  background-color:%1 !important;"
-            "  background:%1 !important;"
-            "  border:none !important;"
-            "  width:18px;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo::down-arrow,QComboBox#ProcessDockViewModeCombo::down-arrow{"
-            "  image:none !important;"
-            "  width:0px;"
-            "  height:0px;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo QAbstractItemView,QComboBox#ProcessDockViewModeCombo QAbstractItemView{"
-            "  background-color:%1 !important;"
-            "  background:%1 !important;"
-            "  alternate-background-color:%1 !important;"
-            "  color:%2 !important;"
-            "  border:1px solid %3 !important;"
-            "  selection-background-color:%4 !important;"
-            "  selection-color:%6 !important;"
-            "  outline:0;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo QAbstractItemView::item,QComboBox#ProcessDockViewModeCombo QAbstractItemView::item{"
-            "  background-color:%1 !important;"
-            "  color:%2 !important;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo QAbstractItemView::item:hover,QComboBox#ProcessDockViewModeCombo QAbstractItemView::item:hover{"
-            "  background-color:%5 !important;"
-            "  color:%2 !important;"
-            "}"
-            "QComboBox#ProcessDockStrategyCombo QAbstractItemView::item:selected,QComboBox#ProcessDockViewModeCombo QAbstractItemView::item:selected{"
-            "  background-color:%4 !important;"
-            "  color:%6 !important;"
-            "}")
-            .arg(comboBackgroundColor)
-            .arg(comboTextColor)
-            .arg(comboBorderColor)
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::PrimaryBlueSubtleHex())
-            .arg(KswordTheme::OnAccentHex());
+        return KswordTheme::ThemedComboBoxStyle();
     }
 
     // buildBlueComboBoxPopupViewStyle 作用：
@@ -3238,40 +3174,7 @@ namespace
     // - 返回：仅作用于 popup view 的 QSS，主框样式仍由 buildBlueComboBoxStyle 负责。
     QString buildBlueComboBoxPopupViewStyle()
     {
-        const QString comboBackgroundColor = KswordTheme::SurfaceColorHex();
-        const QString comboHoverColor = KswordTheme::PrimaryBlueSubtleHex();
-        const QString comboTextColor = KswordTheme::TextPrimaryColorHex();
-        const QString comboBorderColor = KswordTheme::BorderColorHex();
-
-        return QStringLiteral(
-            "QAbstractItemView,QListView{"
-            "  background-color:%1 !important;"
-            "  background:%1 !important;"
-            "  alternate-background-color:%1 !important;"
-            "  color:%2 !important;"
-            "  border:1px solid %3 !important;"
-            "  outline:0;"
-            "}"
-            "QAbstractItemView::item,QListView::item{"
-            "  background-color:%1 !important;"
-            "  color:%2 !important;"
-            "  min-height:22px;"
-            "  padding:3px 8px;"
-            "}"
-            "QAbstractItemView::item:hover,QListView::item:hover{"
-            "  background-color:%5 !important;"
-            "  color:%2 !important;"
-            "}"
-            "QAbstractItemView::item:selected,QListView::item:selected{"
-            "  background-color:%4 !important;"
-            "  color:%6 !important;"
-            "}")
-            .arg(comboBackgroundColor)
-            .arg(comboTextColor)
-            .arg(comboBorderColor)
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(comboHoverColor)
-            .arg(KswordTheme::OnAccentHex());
+        return KswordTheme::ThemedComboBoxPopupViewStyle();
     }
 
     // applyBlueComboBoxRuntimeStyle 作用：
@@ -3296,8 +3199,10 @@ namespace
         comboPalette.setColor(QPalette::Button, QColor(comboBackgroundColor));
         comboPalette.setColor(QPalette::Text, QColor(comboTextColor));
         comboPalette.setColor(QPalette::ButtonText, QColor(comboTextColor));
-        comboPalette.setColor(QPalette::Highlight, KswordTheme::AccentColor(KswordTheme::AccentRole::Blue));
-        comboPalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
+        comboPalette.setColor(QPalette::Highlight, KswordTheme::ControlAccentColor());
+        comboPalette.setColor(
+            QPalette::HighlightedText,
+            KswordTheme::MaximumContrastMonochromeColor(KswordTheme::ControlAccentColor()));
         comboBoxPointer->setPalette(comboPalette);
 
         QAbstractItemView* popupView = comboBoxPointer->view();

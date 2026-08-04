@@ -66,10 +66,11 @@ namespace
 
     QString inputStyle()
     {
-        return QStringLiteral("QLineEdit,QComboBox{background:transparent;/* %1 */color:%2;border:1px solid %3;border-radius:3px;padding:4px 6px;}")
+        return QStringLiteral("QLineEdit{background:transparent;/* %1 */color:%2;border:1px solid %3;border-radius:3px;padding:4px 6px;}")
             .arg(KswordTheme::SurfaceHex())
             .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::BorderHex());
+            .arg(KswordTheme::BorderHex())
+            + KswordTheme::ThemedComboBoxStyle();
     }
 
     QString tableStyle()

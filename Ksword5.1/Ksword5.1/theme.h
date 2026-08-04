@@ -94,6 +94,28 @@ namespace KswordTheme
         return OffsetColor(baseColor, {}, alphaValue);
     }
 
+    // BlendColors 作用：按 overlayWeight/255 把覆盖色混入基础色。
+    // 用于“中性背景 + 强调色”的交互状态，避免再用固定蓝色 RGB 偏移破坏自定义主题色。
+    inline QColor BlendColors(
+        const QColor& baseColor,
+        const QColor& overlayColor,
+        const int overlayWeight)
+    {
+        const int safeWeight = ClampChannel(overlayWeight);
+        const int baseWeight = 255 - safeWeight;
+        const auto blendChannel = [baseWeight, safeWeight](
+            const int baseChannel,
+            const int overlayChannel) {
+            return (baseChannel * baseWeight + overlayChannel * safeWeight + 127) / 255;
+        };
+
+        return QColor(
+            blendChannel(baseColor.red(), overlayColor.red()),
+            blendChannel(baseColor.green(), overlayColor.green()),
+            blendChannel(baseColor.blue(), overlayColor.blue()),
+            baseColor.alpha());
+    }
+
     inline QColor ThemeLighterColor(const QColor& baseColor)
     {
         return ThemeOffsetColor(baseColor, UniformThemeOffset(10, 18));
@@ -276,13 +298,72 @@ namespace KswordTheme
             darkModeEnabled ? WindowOffset.dark : WindowOffset.light);
     }
 
-    inline QColor WindowColor()
+    inline QColor DefaultSurfaceColor(const bool darkModeEnabled)
     {
-        return DefaultMainBackgroundColor(IsDarkModeEnabled());
+        return OffsetColor(
+            WhiteColor(),
+            darkModeEnabled ? SurfaceOffset.dark : SurfaceOffset.light);
     }
 
-    // CustomMainBackgroundColor 只控制主窗口及其 Dock 容器的背景种子，
-    // 与强调主题色完全独立；无效值表示继续使用当前深浅模式的内置背景色。
+    inline QColor DefaultSurfaceAltColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            DefaultSurfaceColor(darkModeEnabled),
+            darkModeEnabled ? SurfaceAltOffset.dark : SurfaceAltOffset.light);
+    }
+
+    inline QColor DefaultSurfaceMutedColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            DefaultSurfaceColor(darkModeEnabled),
+            darkModeEnabled ? SurfaceMutedOffset.dark : SurfaceMutedOffset.light);
+    }
+
+    inline QColor DefaultBorderColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            DefaultSurfaceColor(darkModeEnabled),
+            darkModeEnabled ? BorderOffset.dark : BorderOffset.light);
+    }
+
+    inline QColor DefaultBorderStrongColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            DefaultSurfaceColor(darkModeEnabled),
+            darkModeEnabled ? BorderStrongOffset.dark : BorderStrongOffset.light);
+    }
+
+    inline QColor DefaultPaletteDarkColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            DefaultSurfaceColor(darkModeEnabled),
+            darkModeEnabled ? PaletteDarkOffset.dark : PaletteDarkOffset.light);
+    }
+
+    inline QColor DefaultTextPrimaryColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            WhiteColor(),
+            darkModeEnabled ? TextPrimaryOffset.dark : TextPrimaryOffset.light);
+    }
+
+    inline QColor DefaultTextSecondaryColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            WhiteColor(),
+            darkModeEnabled ? TextSecondaryOffset.dark : TextSecondaryOffset.light);
+    }
+
+    inline QColor DefaultTextDisabledColor(const bool darkModeEnabled)
+    {
+        return OffsetColor(
+            WhiteColor(),
+            darkModeEnabled ? TextDisabledOffset.dark : TextDisabledOffset.light);
+    }
+
+    // CustomMainBackgroundColor 是整套中性背景调色板的独立种子：窗口、面板、
+    // 表格、树、编辑器、对话框和边框都从它派生；强调色仍由 PrimaryBlueColor 单独控制。
+    // 无效值表示继续使用当前深浅模式的内置中性调色板。
     inline QColor CustomMainBackgroundColor;
 
     inline void SetMainBackgroundColor(const QString& customColorText)
@@ -297,54 +378,85 @@ namespace KswordTheme
     {
         return CustomMainBackgroundColor.isValid()
             ? CustomMainBackgroundColor
-            : WindowColor();
+            : DefaultMainBackgroundColor(IsDarkModeEnabled());
+    }
+
+    inline QColor WindowColor()
+    {
+        return MainBackgroundColor();
+    }
+
+    // RebasedNeutralRoleColor 作用：把内置中性角色相对默认窗口的 RGB 差值，
+    // 平移到用户的主背景种子。未自定义时直接返回原角色，保证默认主题像素不变。
+    inline QColor RebasedNeutralRoleColor(const QColor& defaultRoleColor)
+    {
+        if (!CustomMainBackgroundColor.isValid())
+        {
+            return defaultRoleColor;
+        }
+
+        const QColor defaultBackgroundColor = DefaultMainBackgroundColor(IsDarkModeEnabled());
+        return OffsetColor(
+            MainBackgroundColor(),
+            {
+                defaultRoleColor.red() - defaultBackgroundColor.red(),
+                defaultRoleColor.green() - defaultBackgroundColor.green(),
+                defaultRoleColor.blue() - defaultBackgroundColor.blue()
+            });
     }
 
     inline QColor SurfaceColor()
     {
-        return ThemeOffsetColor(WhiteColor(), SurfaceOffset);
+        return RebasedNeutralRoleColor(DefaultSurfaceColor(IsDarkModeEnabled()));
     }
 
     inline QColor SurfaceAltColor()
     {
-        return ThemeOffsetColor(SurfaceColor(), SurfaceAltOffset);
+        return RebasedNeutralRoleColor(DefaultSurfaceAltColor(IsDarkModeEnabled()));
     }
 
     inline QColor SurfaceMutedColor()
     {
-        // SurfaceMutedOffset 的两组数字都相对于 SurfaceColor 计算。
-        return ThemeOffsetColor(SurfaceColor(), SurfaceMutedOffset);
+        return RebasedNeutralRoleColor(DefaultSurfaceMutedColor(IsDarkModeEnabled()));
     }
 
     inline QColor BorderColor()
     {
-        return ThemeOffsetColor(SurfaceColor(), BorderOffset);
+        return RebasedNeutralRoleColor(DefaultBorderColor(IsDarkModeEnabled()));
     }
 
     inline QColor BorderStrongColor()
     {
-        return ThemeOffsetColor(SurfaceColor(), BorderStrongOffset);
+        return RebasedNeutralRoleColor(DefaultBorderStrongColor(IsDarkModeEnabled()));
     }
 
     inline QColor PaletteDarkColor()
     {
-        return ThemeOffsetColor(SurfaceColor(), PaletteDarkOffset);
+        return RebasedNeutralRoleColor(DefaultPaletteDarkColor(IsDarkModeEnabled()));
     }
 
     inline QColor TextPrimaryColor()
     {
-        // 文字偏移量以白色为统一基准，深色模式由此得到亮色文字。
-        return ThemeOffsetColor(WhiteColor(), TextPrimaryOffset);
+        const QColor defaultTextColor = DefaultTextPrimaryColor(IsDarkModeEnabled());
+        return CustomMainBackgroundColor.isValid()
+            ? EnsureTextContrast(defaultTextColor, SurfaceColor())
+            : defaultTextColor;
     }
 
     inline QColor TextSecondaryColor()
     {
-        return ThemeOffsetColor(WhiteColor(), TextSecondaryOffset);
+        const QColor defaultTextColor = DefaultTextSecondaryColor(IsDarkModeEnabled());
+        return CustomMainBackgroundColor.isValid()
+            ? EnsureTextContrast(defaultTextColor, SurfaceColor())
+            : defaultTextColor;
     }
 
     inline QColor TextDisabledColor()
     {
-        return ThemeOffsetColor(WhiteColor(), TextDisabledOffset);
+        const QColor defaultTextColor = DefaultTextDisabledColor(IsDarkModeEnabled());
+        return CustomMainBackgroundColor.isValid()
+            ? EnsureTextContrast(defaultTextColor, SurfaceColor(), 3.0)
+            : defaultTextColor;
     }
 
     inline QColor MainBackgroundTextColor()
@@ -530,26 +642,39 @@ namespace KswordTheme
         return AccentColor(AccentRole::Blue, -2, -28);
     }
 
-    // 强调色选中背景统一使用白字，保证进程详情页和菜单的蓝色选中态清晰可读。
+    // 强调色可能被用户设置成高亮度颜色；选中文字必须根据实际强调色自适应，
+    // 不能固定白字，否则亮绿色、黄色等背景上的可读性会明显下降。
     inline QColor OnAccentColor()
     {
-        return WhiteColor();
+        return EnsureTextContrast(TextPrimaryColor(), PrimaryAccentColor());
     }
     inline QString OnAccentHex() { return ThemeColorName(OnAccentColor()); }
 
-    // 活动标签使用比强调色更深的主题背景，并在深浅主题都使用白字。
-    inline constexpr ThemeRgbOffset ActiveTabBackgroundOffset{
+    inline bool UsesBuiltInColorSeeds()
+    {
+        return !CustomMainBackgroundColor.isValid()
+            && PrimaryAccentColor() == DefaultPrimaryAccentColor();
+    }
+
+    inline constexpr ThemeRgbOffset DefaultActiveTabBackgroundOffset{
         { 38, 55, 70 },
         { -65, -44, -22 }
     };
+
+    // 默认主题保留原活动标签像素；自定义任一颜色后以强调色为主，
+    // 避免互补色背景与主题色低比例混合成棕灰色。
     inline QColor ActiveTabBackgroundColor()
     {
-        return ThemeOffsetColor(SurfaceColor(), ActiveTabBackgroundOffset);
+        if (UsesBuiltInColorSeeds())
+        {
+            return ThemeOffsetColor(SurfaceColor(), DefaultActiveTabBackgroundOffset);
+        }
+        return AccentColor(AccentRole::Blue, -18, -26);
     }
 
     inline QColor ActiveTabTextColor()
     {
-        return WhiteColor();
+        return EnsureTextContrast(TextPrimaryColor(), ActiveTabBackgroundColor());
     }
 
     inline QString ActiveTabBackgroundHex() { return ThemeColorName(ActiveTabBackgroundColor()); }
@@ -645,22 +770,29 @@ namespace KswordTheme
     inline const QString PrimaryBlueBorderHex = QStringLiteral("palette(highlight)");
     inline const QString PrimaryBlueActiveHex = QStringLiteral("palette(highlight)");
 
-    inline constexpr ThemeRgbOffset PrimaryBlueSubtleOffset{
-        { 6, 28, 47 },
-        { -21, -11, 0 }
-    };
-    inline constexpr ThemeRgbOffset PrimaryBlueSurfacePressedOffset{
-        { -1, -1, 26 },
-        { -41, -19, 0 }
-    };
     inline constexpr ThemeRgbOffset ExitedRowBackgroundOffset{
         { 26, 28, 28 },
         { -19, -13, -7 }
     };
+    inline constexpr ThemeRgbOffset DefaultPrimaryBlueSubtleOffset{
+        { 6, 28, 47 },
+        { -21, -11, 0 }
+    };
+    inline constexpr ThemeRgbOffset DefaultPrimaryBlueSurfacePressedOffset{
+        { -1, -1, 26 },
+        { -41, -19, 0 }
+    };
 
     inline QColor PrimaryBlueSubtleColor()
     {
-        return ThemeOffsetColor(SurfaceColor(), PrimaryBlueSubtleOffset);
+        if (UsesBuiltInColorSeeds())
+        {
+            return ThemeOffsetColor(SurfaceColor(), DefaultPrimaryBlueSubtleOffset);
+        }
+        return BlendColors(
+            SurfaceColor(),
+            PrimaryAccentColor(),
+            IsDarkModeEnabled() ? 160 : 128);
     }
 
     inline QString PrimaryBlueSubtleHex()
@@ -675,8 +807,72 @@ namespace KswordTheme
 
     inline QColor PrimaryBlueSurfacePressedColor()
     {
-        return ThemeOffsetColor(SurfaceColor(), PrimaryBlueSurfacePressedOffset);
+        if (UsesBuiltInColorSeeds())
+        {
+            return ThemeOffsetColor(SurfaceColor(), DefaultPrimaryBlueSurfacePressedOffset);
+        }
+        return BlendColors(
+            SurfaceColor(),
+            PrimaryAccentColor(),
+            IsDarkModeEnabled() ? 196 : 170);
     }
+
+    // 交互控件的边界和状态标记属于非文本信息，至少需要 3:1 对比度。
+    // 这些角色专供复选框、单选框、滑块和滚动条使用，不能直接复用普通面板边框。
+    inline QColor ControlOutlineColor()
+    {
+        return EnsureTextContrast(BorderStrongColor(), SurfaceColor(), 3.0);
+    }
+
+    inline QColor ControlAccentColor()
+    {
+        return EnsureTextContrast(PrimaryAccentColor(), SurfaceColor(), 3.0);
+    }
+
+    inline QColor ControlAccentHoverColor()
+    {
+        return EnsureTextContrast(
+            AccentColor(AccentRole::Blue, 6, -20),
+            SurfaceColor(),
+            3.0);
+    }
+
+    inline QColor ControlAccentPressedColor()
+    {
+        return EnsureTextContrast(
+            PrimaryBlueSurfacePressedColor(),
+            SurfaceColor(),
+            3.0);
+    }
+
+    inline QColor ControlDisabledOutlineColor()
+    {
+        return EnsureTextContrast(TextDisabledColor(), SurfaceColor(), 3.0);
+    }
+
+    inline QColor ControlDisabledFillColor()
+    {
+        const QColor mutedAccentColor = BlendColors(
+            SurfaceMutedColor(),
+            ControlAccentColor(),
+            IsDarkModeEnabled() ? 72 : 56);
+        return EnsureTextContrast(mutedAccentColor, SurfaceColor(), 3.0);
+    }
+
+    inline QColor MaximumContrastMonochromeColor(const QColor& backgroundColor)
+    {
+        return ContrastRatio(WhiteColor(), backgroundColor)
+                >= ContrastRatio(BlackColor(), backgroundColor)
+            ? WhiteColor()
+            : BlackColor();
+    }
+
+    inline QString ControlOutlineHex() { return ThemeColorName(ControlOutlineColor()); }
+    inline QString ControlAccentHex() { return ThemeColorName(ControlAccentColor()); }
+    inline QString ControlAccentHoverHex() { return ThemeColorName(ControlAccentHoverColor()); }
+    inline QString ControlAccentPressedHex() { return ThemeColorName(ControlAccentPressedColor()); }
+    inline QString ControlDisabledOutlineHex() { return ThemeColorName(ControlDisabledOutlineColor()); }
+    inline QString ControlDisabledFillHex() { return ThemeColorName(ControlDisabledFillColor()); }
 
     inline QString SurfaceHex() { return QStringLiteral("palette(base)"); }
     inline QString SurfaceAltHex() { return QStringLiteral("palette(alternate-base)"); }
@@ -701,6 +897,179 @@ namespace KswordTheme
             .arg(OnAccentHex())
             .arg(PrimaryBluePressedHex)
             .arg(TextSecondaryHex());
+    }
+
+    // ThemedComboBoxPopupViewStyle / ThemedComboBoxStyle 作用：
+    // - 为普通、可编辑及嵌入表格的组合框提供同一套不透明表面、箭头区和 Popup 列表规则；
+    // - Popup 使用显式 base 表面，避免独立顶层窗口回退到平台默认的透明/黑色背景；
+    // - 所有交互边框和选中态使用 Control* 角色，随自定义主题色和主背景色同步更新。
+    inline QString ThemedComboBoxPopupViewStyle()
+    {
+        const QColor accentColor = ControlAccentColor();
+        const QString surfaceColor = SurfaceColorHex();
+        const QString textColor = TextPrimaryColorHex();
+        const QString outlineColor = ControlOutlineHex();
+        const QString hoverColor = SurfaceAltColorHex();
+        const QString accentColorText = ThemeColorName(accentColor);
+        const QString accentTextColor = ThemeColorName(MaximumContrastMonochromeColor(accentColor));
+
+        return QStringLiteral(
+            "QAbstractItemView{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "  alternate-background-color:%1 !important;"
+            "  color:%2 !important;"
+            "  border:1px solid %3 !important;"
+            "  selection-background-color:%5 !important;"
+            "  selection-color:%6 !important;"
+            "  outline:0;"
+            "}"
+            "QAbstractScrollArea::viewport{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "}"
+            "QAbstractItemView::item{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "  color:%2 !important;"
+            "  min-height:22px;"
+            "  padding:2px 6px;"
+            "}"
+            "QAbstractItemView::item:hover{"
+            "  background:%4 !important;"
+            "  background-color:%4 !important;"
+            "  color:%2 !important;"
+            "}"
+            "QAbstractItemView::item:selected{"
+            "  background:%5 !important;"
+            "  background-color:%5 !important;"
+            "  color:%6 !important;"
+            "}")
+            .arg(surfaceColor)
+            .arg(textColor)
+            .arg(outlineColor)
+            .arg(hoverColor)
+            .arg(accentColorText)
+            .arg(accentTextColor);
+    }
+
+    inline QString ThemedComboBoxStyle()
+    {
+        const QColor accentColor = ControlAccentColor();
+        const QString surfaceColor = SurfaceColorHex();
+        const QString surfaceAltColor = SurfaceAltColorHex();
+        const QString surfaceMutedColor = SurfaceMutedColorHex();
+        const QString textColor = TextPrimaryColorHex();
+        const QString disabledTextColor = TextDisabledColorHex();
+        const QString outlineColor = ControlOutlineHex();
+        const QString accentColorText = ThemeColorName(accentColor);
+        const QString accentHoverColor = ControlAccentHoverHex();
+        const QString accentPressedColor = ControlAccentPressedHex();
+        const QString disabledOutlineColor = ControlDisabledOutlineHex();
+        const QString accentTextColor = ThemeColorName(MaximumContrastMonochromeColor(accentColor));
+        const auto arrowPathForBackground = [](const QColor& backgroundColor) {
+            return MaximumContrastMonochromeColor(backgroundColor) == WhiteColor()
+                ? QStringLiteral(":/Icon/ks_control_down_white.svg")
+                : QStringLiteral(":/Icon/ks_control_down_black.svg");
+        };
+        const QString arrowPath = arrowPathForBackground(SurfaceAltColor());
+        const QString disabledArrowPath = arrowPathForBackground(SurfaceMutedColor());
+
+        return QStringLiteral(
+            "QComboBox{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "  color:%4 !important;"
+            "  border:1px solid %6 !important;"
+            "  border-radius:3px;"
+            "  padding:2px 24px 2px 6px;"
+            "  min-height:22px;"
+            "  selection-background-color:%7 !important;"
+            "  selection-color:%11 !important;"
+            "}"
+            "QComboBox:hover{"
+            "  background:%2 !important;"
+            "  background-color:%2 !important;"
+            "  color:%4 !important;"
+            "  border-color:%8 !important;"
+            "}"
+            "QComboBox:focus,QComboBox:on{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "  color:%4 !important;"
+            "  border-color:%9 !important;"
+            "}"
+            "QComboBox:disabled{"
+            "  background:%3 !important;"
+            "  background-color:%3 !important;"
+            "  color:%5 !important;"
+            "  border-color:%10 !important;"
+            "}"
+            "QComboBox::drop-down{"
+            "  background:%2 !important;"
+            "  background-color:%2 !important;"
+            "  border:none !important;"
+            "  border-left:1px solid %6 !important;"
+            "  width:20px;"
+            "}"
+            "QComboBox::drop-down:disabled{"
+            "  background:%3 !important;"
+            "  background-color:%3 !important;"
+            "  border-left-color:%10 !important;"
+            "}"
+            "QComboBox::down-arrow{"
+            "  image:url(%12);"
+            "  width:12px;"
+            "  height:12px;"
+            "  margin-right:4px;"
+            "  subcontrol-origin:padding;"
+            "  subcontrol-position:center right;"
+            "}"
+            "QComboBox::down-arrow:disabled{image:url(%13);}"
+            "QComboBox QAbstractItemView{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "  alternate-background-color:%1 !important;"
+            "  color:%4 !important;"
+            "  border:1px solid %6 !important;"
+            "  selection-background-color:%7 !important;"
+            "  selection-color:%11 !important;"
+            "  outline:0;"
+            "}"
+            "QComboBox QAbstractItemView::viewport{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "}"
+            "QComboBox QAbstractItemView::item{"
+            "  background:%1 !important;"
+            "  background-color:%1 !important;"
+            "  color:%4 !important;"
+            "  min-height:22px;"
+            "  padding:2px 6px;"
+            "}"
+            "QComboBox QAbstractItemView::item:hover{"
+            "  background:%2 !important;"
+            "  background-color:%2 !important;"
+            "  color:%4 !important;"
+            "}"
+            "QComboBox QAbstractItemView::item:selected{"
+            "  background:%7 !important;"
+            "  background-color:%7 !important;"
+            "  color:%11 !important;"
+            "}")
+            .arg(surfaceColor)
+            .arg(surfaceAltColor)
+            .arg(surfaceMutedColor)
+            .arg(textColor)
+            .arg(disabledTextColor)
+            .arg(outlineColor)
+            .arg(accentColorText)
+            .arg(accentHoverColor)
+            .arg(accentPressedColor)
+            .arg(disabledOutlineColor)
+            .arg(accentTextColor)
+            .arg(arrowPath)
+            .arg(disabledArrowPath);
     }
 
     inline QString ContextMenuStyle()

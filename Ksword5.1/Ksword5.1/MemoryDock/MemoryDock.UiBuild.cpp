@@ -282,9 +282,8 @@ void MemoryDock::initializeProcessModuleTab()
     m_moduleSignatureCheck = new QCheckBox("刷新时校验签名", modulePanel);
     m_moduleSignatureCheck->setChecked(true);
     m_moduleSignatureCheck->setStyleSheet(QStringLiteral(
-        "QCheckBox { color:%1; font-weight:600; }"
-        "QCheckBox::indicator:checked { background:%1; border:1px solid %1; }")
-        .arg(KswordTheme::PrimaryBlueHex));
+        "QCheckBox { color:%1; font-weight:600; }")
+        .arg(KswordTheme::TextPrimaryHex()));
 
     moduleTopBarLayout->addWidget(m_moduleRefreshButton);
     moduleTopBarLayout->addWidget(m_moduleSignatureCheck);

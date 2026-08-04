@@ -105,20 +105,21 @@ namespace
     QString buildInputStyle()
     {
         return QStringLiteral(
-            "QLineEdit,QComboBox,QSpinBox{"
+            "QLineEdit,QSpinBox{"
             "  border:1px solid %1;"
             "  border-radius:4px;"
             "  padding:3px 6px;"
             "  background:%2;"
             "  color:%3;"
             "}"
-            "QLineEdit:focus,QComboBox:focus,QSpinBox:focus{"
+            "QLineEdit:focus,QSpinBox:focus{"
             "  border:1px solid %4;"
             "}")
             .arg(KswordTheme::BorderColorHex())
             .arg(KswordTheme::SurfaceColorHex())
             .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
+            + KswordTheme::ThemedComboBoxStyle();
     }
 
     // buildTableStyle：

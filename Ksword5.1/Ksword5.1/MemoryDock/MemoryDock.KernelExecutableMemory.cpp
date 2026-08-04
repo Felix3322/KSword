@@ -399,9 +399,8 @@ void MemoryDock::initializeKernelExecutableMemoryScanTab()
     m_kernelExecutableRiskOnlyCheck = new QCheckBox(QStringLiteral("仅风险项"), m_tabKernelExecutableMemory);
     m_kernelExecutableRiskOnlyCheck->setChecked(true);
     m_kernelExecutableRiskOnlyCheck->setStyleSheet(QStringLiteral(
-        "QCheckBox { color:%1; font-weight:600; }"
-        "QCheckBox::indicator:checked { background:%1; border:1px solid %1; }")
-        .arg(KswordTheme::PrimaryBlueHex));
+        "QCheckBox { color:%1; font-weight:600; }")
+        .arg(KswordTheme::TextPrimaryHex()));
 
     m_kernelExecutableModuleFilterEdit = new QLineEdit(m_tabKernelExecutableMemory);
     m_kernelExecutableModuleFilterEdit->setClearButtonEnabled(true);

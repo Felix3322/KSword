@@ -48,20 +48,21 @@ namespace ksword::ui::hex_editor_internal
     QString buildInputStyle()
     {
         return QStringLiteral(
-            "QLineEdit,QComboBox {"
+            "QLineEdit {"
             "  border:1px solid %1;"
             "  border-radius:3px;"
             "  padding:2px 6px;"
             "  background:%2;"
             "  color:%3;"
             "}"
-            "QLineEdit:focus,QComboBox:focus {"
+            "QLineEdit:focus {"
             "  border:1px solid %4;"
             "}")
             .arg(KswordTheme::BorderColorHex())
             .arg(KswordTheme::SurfaceColorHex())
             .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
+            + KswordTheme::ThemedComboBoxStyle();
     }
 
     // buildHeaderStyle：

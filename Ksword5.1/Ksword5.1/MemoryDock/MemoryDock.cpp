@@ -35,24 +35,7 @@ namespace ksword::memory_dock_internal
 
     QString buildBlueComboStyle()
     {
-        return QStringLiteral(
-            "QComboBox {"
-            "  border: 1px solid %1;"
-            "  border-radius: 3px;"
-            "  padding: 2px 6px;"
-            "  background: %3;"
-            "  color: %4;"
-            "}"
-            "QComboBox:hover {"
-            "  border-color: %2;"
-            "}"
-            "QComboBox::drop-down {"
-            "  border: none;"
-            "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex());
+        return KswordTheme::ThemedComboBoxStyle();
     }
 
     QString buildBlueInputStyle()

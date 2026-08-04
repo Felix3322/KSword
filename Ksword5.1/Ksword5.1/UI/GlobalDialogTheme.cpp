@@ -39,30 +39,46 @@ namespace
     // - 后续刷新时据此区分“业务原样式”和“全局主题追加块”。
     constexpr const char* kGlobalDialogStyleMarker = "/* KSWORD_GLOBAL_DIALOG_THEME_BEGIN */";
 
-    // pureDialogBackgroundColor 作用：
-    // - 返回普通弹窗要求的纯色背景；
-    // - 深色模式固定黑色，浅色模式固定白色。
-    QColor pureDialogBackgroundColor(const bool darkModeEnabled)
+    // dialogWindowColor 作用：让普通弹窗使用全局窗口背景角色。
+    QColor dialogWindowColor(const bool darkModeEnabled)
     {
-        return darkModeEnabled ? KswordTheme::BlackColor() : KswordTheme::WhiteColor();
+        Q_UNUSED(darkModeEnabled);
+        return KswordTheme::WindowColor();
     }
 
-    // pureDialogTextColor 作用：
-    // - 返回与纯黑/纯白背景匹配的主文本色；
-    // - 保证输入框、标签、按钮文字在两种主题下可读。
-    QColor pureDialogTextColor(const bool darkModeEnabled)
+    // dialogSurfaceColor 作用：让输入区、列表和内容面板使用派生表面角色。
+    QColor dialogSurfaceColor(const bool darkModeEnabled)
     {
-        return darkModeEnabled ? KswordTheme::WhiteColor() : KswordTheme::BlackColor();
+        Q_UNUSED(darkModeEnabled);
+        return KswordTheme::SurfaceColor();
     }
 
-    // pureDialogBorderColor 作用：
-    // - 返回普通弹窗控件边框色；
-    // - 纯黑/纯白背景下使用中性灰边框做层次区分。
-    QColor pureDialogBorderColor(const bool darkModeEnabled)
+    // dialogAlternateSurfaceColor 作用：返回弹窗按钮和普通标签的次级表面色。
+    QColor dialogAlternateSurfaceColor(const bool darkModeEnabled)
     {
-        return KswordTheme::OffsetColor(
-            darkModeEnabled ? KswordTheme::BlackColor() : KswordTheme::WhiteColor(),
-            darkModeEnabled ? KswordTheme::UniformOffset(74) : KswordTheme::UniformOffset(-47));
+        Q_UNUSED(darkModeEnabled);
+        return KswordTheme::SurfaceAltColor();
+    }
+
+    // dialogWindowTextColor 作用：返回窗口背景上的自适应文字色。
+    QColor dialogWindowTextColor(const bool darkModeEnabled)
+    {
+        Q_UNUSED(darkModeEnabled);
+        return KswordTheme::MainBackgroundTextColor();
+    }
+
+    // dialogTextColor 作用：返回内容表面上的主文字色。
+    QColor dialogTextColor(const bool darkModeEnabled)
+    {
+        Q_UNUSED(darkModeEnabled);
+        return KswordTheme::TextPrimaryColor();
+    }
+
+    // dialogBorderColor 作用：返回随主背景种子派生的边框色。
+    QColor dialogBorderColor(const bool darkModeEnabled)
+    {
+        Q_UNUSED(darkModeEnabled);
+        return KswordTheme::BorderColor();
     }
 
     // buildDialogPalette 作用：
@@ -71,16 +87,19 @@ namespace
     QPalette buildDialogPalette(const QPalette& basePalette, const bool darkModeEnabled)
     {
         QPalette dialogPalette = basePalette;
-        const QColor backgroundColor = pureDialogBackgroundColor(darkModeEnabled);
-        const QColor textColor = pureDialogTextColor(darkModeEnabled);
-        const QColor borderColor = pureDialogBorderColor(darkModeEnabled);
+        const QColor windowColor = dialogWindowColor(darkModeEnabled);
+        const QColor surfaceColor = dialogSurfaceColor(darkModeEnabled);
+        const QColor alternateSurfaceColor = dialogAlternateSurfaceColor(darkModeEnabled);
+        const QColor windowTextColor = dialogWindowTextColor(darkModeEnabled);
+        const QColor textColor = dialogTextColor(darkModeEnabled);
+        const QColor borderColor = dialogBorderColor(darkModeEnabled);
 
-        dialogPalette.setColor(QPalette::Window, backgroundColor);
-        dialogPalette.setColor(QPalette::Base, backgroundColor);
-        dialogPalette.setColor(QPalette::AlternateBase, backgroundColor);
+        dialogPalette.setColor(QPalette::Window, windowColor);
+        dialogPalette.setColor(QPalette::Base, surfaceColor);
+        dialogPalette.setColor(QPalette::AlternateBase, alternateSurfaceColor);
         dialogPalette.setColor(QPalette::Text, textColor);
-        dialogPalette.setColor(QPalette::WindowText, textColor);
-        dialogPalette.setColor(QPalette::Button, backgroundColor);
+        dialogPalette.setColor(QPalette::WindowText, windowTextColor);
+        dialogPalette.setColor(QPalette::Button, alternateSurfaceColor);
         dialogPalette.setColor(QPalette::ButtonText, textColor);
         dialogPalette.setColor(QPalette::Mid, borderColor);
         dialogPalette.setColor(QPalette::Highlight, KswordTheme::PrimaryBlueColor);
@@ -90,89 +109,101 @@ namespace
 
     // buildGlobalDialogStyleSheetBlock 作用：
     // - 生成普通弹窗全局追加样式；
-    // - 背景、输入控件、下拉列表、滚动视口都显式填充纯黑/纯白。
+    // - 窗口、输入控件、列表和标签分别使用全局中性角色，完整跟随自定义主背景色。
     QString buildGlobalDialogStyleSheetBlock(const bool darkModeEnabled)
     {
-        const QString backgroundText = pureDialogBackgroundColor(darkModeEnabled).name(QColor::HexRgb).toUpper();
-        const QString textColorText = pureDialogTextColor(darkModeEnabled).name(QColor::HexRgb).toUpper();
-        const QString borderColorText = pureDialogBorderColor(darkModeEnabled).name(QColor::HexRgb).toUpper();
+        const QString windowBackgroundText = KswordTheme::ThemeColorName(dialogWindowColor(darkModeEnabled));
+        const QString surfaceBackgroundText = KswordTheme::ThemeColorName(dialogSurfaceColor(darkModeEnabled));
+        const QString alternateSurfaceText = KswordTheme::ThemeColorName(dialogAlternateSurfaceColor(darkModeEnabled));
+        const QString windowTextColorText = KswordTheme::ThemeColorName(dialogWindowTextColor(darkModeEnabled));
+        const QString textColorText = KswordTheme::ThemeColorName(dialogTextColor(darkModeEnabled));
+        const QString borderColorText = KswordTheme::ThemeColorName(dialogBorderColor(darkModeEnabled));
 
-        return QStringLiteral(
-            "\n%1\n"
+        QString styleSheetText = QString::fromLatin1(
+            "\n__MARKER__\n"
             "QDialog[%2=\"true\"]{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
+            "  background-color:__WINDOW_BACKGROUND__ !important;"
+            "  color:__WINDOW_TEXT__ !important;"
             "}"
             "QDialog[%2=\"true\"] QWidget{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
+            "  background-color:__WINDOW_BACKGROUND__ !important;"
+            "  color:__WINDOW_TEXT__ !important;"
             "}"
             "QDialog[%2=\"true\"] QLabel{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
+            "  background-color:__WINDOW_BACKGROUND__ !important;"
+            "  color:__WINDOW_TEXT__ !important;"
             "}"
             "QDialog[%2=\"true\"] QLineEdit,"
             "QDialog[%2=\"true\"] QTextEdit,"
             "QDialog[%2=\"true\"] QPlainTextEdit,"
             "QDialog[%2=\"true\"] QSpinBox,"
-            "QDialog[%2=\"true\"] QDoubleSpinBox,"
-            "QDialog[%2=\"true\"] QComboBox{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
-            "  border:1px solid %5;"
+            "QDialog[%2=\"true\"] QDoubleSpinBox{"
+            "  background-color:__SURFACE_BACKGROUND__ !important;"
+            "  color:__SURFACE_TEXT__ !important;"
+            "  border:1px solid __BORDER__;"
             "  border-radius:3px;"
             "  padding:3px 6px;"
-            "  selection-background-color:%6;"
-            "  selection-color:%8;"
+            "  selection-background-color:__ACCENT__;"
+            "  selection-color:__ON_ACCENT__;"
             "}"
             "QDialog[%2=\"true\"] QAbstractScrollArea,"
-            "QDialog[%2=\"true\"] QAbstractScrollArea::viewport,"
-            "QDialog[%2=\"true\"] QComboBox QAbstractItemView{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
-            "  border:1px solid %5;"
-            "  selection-background-color:%6;"
-            "  selection-color:%8;"
+            "QDialog[%2=\"true\"] QAbstractScrollArea::viewport{"
+            "  background-color:__SURFACE_BACKGROUND__ !important;"
+            "  color:__SURFACE_TEXT__ !important;"
+            "  border:1px solid __BORDER__;"
+            "  selection-background-color:__ACCENT__;"
+            "  selection-color:__ON_ACCENT__;"
             "}"
             "QDialog[%2=\"true\"] QGroupBox{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
-            "  border:1px solid %5;"
+            "  background-color:__SURFACE_BACKGROUND__ !important;"
+            "  color:__SURFACE_TEXT__ !important;"
+            "  border:1px solid __BORDER__;"
             "  border-radius:4px;"
             "  margin-top:8px;"
             "}"
             "QDialog[%2=\"true\"] QTabWidget::pane{"
-            "  background-color:%3 !important;"
-            "  border:1px solid %5;"
+            "  background-color:__SURFACE_BACKGROUND__ !important;"
+            "  border:1px solid __BORDER__;"
             "}"
             "QDialog[%2=\"true\"] QTabBar::tab{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
-            "  border:1px solid %5;"
+            "  background-color:__SURFACE_ALT__ !important;"
+            "  color:__SURFACE_TEXT__ !important;"
+            "  border:1px solid __BORDER__;"
             "  padding:4px 10px;"
             "}"
             "QDialog[%2=\"true\"] QTabBar::tab:selected{"
-            "  background-color:%6 !important;"
-            "  color:%8 !important;"
+            "  background-color:__ACCENT__ !important;"
+            "  color:__ON_ACCENT__ !important;"
             "}"
             "QDialog[%2=\"true\"] QMenu{"
-            "  background-color:%3 !important;"
-            "  color:%4 !important;"
-            "  border:1px solid %5;"
+            "  background-color:__SURFACE_BACKGROUND__ !important;"
+            "  color:__SURFACE_TEXT__ !important;"
+            "  border:1px solid __BORDER__;"
             "}"
             "QDialog[%2=\"true\"] QMenu::item:selected{"
-            "  background-color:%6 !important;"
-            "  color:%8 !important;"
+            "  background-color:__ACCENT__ !important;"
+            "  color:__ON_ACCENT__ !important;"
             "}"
-            "%7")
-            .arg(QString::fromLatin1(kGlobalDialogStyleMarker))
-            .arg(QString::fromLatin1(kGlobalDialogThemePropertyName))
-            .arg(backgroundText)
-            .arg(textColorText)
-            .arg(borderColorText)
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::OnAccentHex())
-            .arg(KswordTheme::ThemedButtonStyle());
+            "__COMBO_BOX_STYLE__"
+            "__BUTTON_STYLE__");
+        styleSheetText = styleSheetText.arg(QString::fromLatin1(kGlobalDialogThemePropertyName));
+        styleSheetText.replace(QStringLiteral("__MARKER__"), QString::fromLatin1(kGlobalDialogStyleMarker));
+        styleSheetText.replace(QStringLiteral("__WINDOW_BACKGROUND__"), windowBackgroundText);
+        styleSheetText.replace(QStringLiteral("__SURFACE_BACKGROUND__"), surfaceBackgroundText);
+        styleSheetText.replace(QStringLiteral("__SURFACE_ALT__"), alternateSurfaceText);
+        styleSheetText.replace(QStringLiteral("__WINDOW_TEXT__"), windowTextColorText);
+        styleSheetText.replace(QStringLiteral("__SURFACE_TEXT__"), textColorText);
+        styleSheetText.replace(QStringLiteral("__BORDER__"), borderColorText);
+        styleSheetText.replace(QStringLiteral("__ACCENT__"), KswordTheme::PrimaryBlueHex);
+        styleSheetText.replace(QStringLiteral("__ON_ACCENT__"), KswordTheme::OnAccentHex());
+        QString dialogComboBoxStyle = KswordTheme::ThemedComboBoxStyle();
+        dialogComboBoxStyle.replace(
+            QStringLiteral("QComboBox"),
+            QStringLiteral("QDialog[%1=\"true\"] QComboBox")
+                .arg(QString::fromLatin1(kGlobalDialogThemePropertyName)));
+        styleSheetText.replace(QStringLiteral("__COMBO_BOX_STYLE__"), dialogComboBoxStyle);
+        styleSheetText.replace(QStringLiteral("__BUTTON_STYLE__"), KswordTheme::ThemedButtonStyle());
+        return styleSheetText;
     }
 
     // originalStyleSheetForDialog 作用：

@@ -101,18 +101,19 @@ namespace
     QString blueInputStyle()
     {
         return QStringLiteral(
-            "QLineEdit,QComboBox,QSpinBox{"
+            "QLineEdit,QSpinBox{"
             "  border:1px solid %2;"
             "  border-radius:3px;"
             "  background:%3;"
             "  color:%4;"
             "  padding:2px 6px;"
             "}"
-            "QLineEdit:focus,QComboBox:focus,QSpinBox:focus{border:1px solid %1;}")
+            "QLineEdit:focus,QSpinBox:focus{border:1px solid %1;}")
             .arg(KswordTheme::PrimaryBlueHex)
             .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::SurfaceHex())
-            .arg(KswordTheme::TextPrimaryHex());
+            .arg(KswordTheme::TextPrimaryHex())
+            + KswordTheme::ThemedComboBoxStyle();
     }
 
     // 表头样式：突出列头，方便快速分辨字段。
