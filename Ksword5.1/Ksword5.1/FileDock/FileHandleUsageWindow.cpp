@@ -1,4 +1,5 @@
 #include "FileHandleUsageWindow.h"
+#include "../Internationalization/LanguageManager.h"
 
 // ============================================================
 // FileHandleUsageWindow.cpp
@@ -369,7 +370,9 @@ void FileHandleUsageWindow::rebuildTable(const std::vector<filedock::handleusage
         item->setText(
             static_cast<int>(TableColumn::MatchRule),
             entry.matchRuleText.trimmed().isEmpty()
-            ? (entry.matchedByDirectoryRule ? QStringLiteral("目录前缀") : QStringLiteral("精确"))
+            ? ks::i18n::sourceText(entry.matchedByDirectoryRule
+                ? QStringLiteral("目录前缀")
+                : QStringLiteral("精确"))
             : entry.matchRuleText);
         item->setText(
             static_cast<int>(TableColumn::Source),

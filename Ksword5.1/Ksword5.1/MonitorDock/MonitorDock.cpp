@@ -5114,7 +5114,7 @@ void MonitorDock::initializePerformancePanel()
         chart->setMargins(QMargins(0, 0, 0, 0));
 
         QBarCategoryAxis* axisX = new QBarCategoryAxis(chart);
-        axisX->append(QStringList{ QStringLiteral("当前") });
+        axisX->append(QStringList{ ks::i18n::sourceText(QStringLiteral("当前")) });
         axisX->setLabelsVisible(false);
         axisX->setGridLineVisible(false);
 
@@ -5225,32 +5225,32 @@ void MonitorDock::initializePerformancePanel()
     };
 
     createBarChartView(
-        QStringLiteral("CPU 占用率"),
+        ks::i18n::sourceText(QStringLiteral("CPU 占用率")),
         KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Cpu),
         &m_cpuBarSet,
         &m_cpuChartView);
     createBarChartView(
-        QStringLiteral("内存利用率"),
+        ks::i18n::sourceText(QStringLiteral("内存利用率")),
         KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Memory),
         &m_memoryBarSet,
         &m_memoryChartView);
     createLineChartView(
-        QStringLiteral("系统盘读写速率"),
+        ks::i18n::sourceText(QStringLiteral("系统盘读写速率")),
         KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Read),
         KswordTheme::PerformanceColor(KswordTheme::PerformanceRole::Write),
-        QStringLiteral("读取"),
-        QStringLiteral("写入"),
+        ks::i18n::sourceText(QStringLiteral("读取")),
+        ks::i18n::sourceText(QStringLiteral("写入")),
         &m_diskReadSeries,
         &m_diskWriteSeries,
         &m_diskAxisX,
         &m_diskAxisY,
         &m_diskChartView);
     createLineChartView(
-        QStringLiteral("网络收发速率"),
+        ks::i18n::sourceText(QStringLiteral("网络收发速率")),
         KswordTheme::SuccessColor(),
         KswordTheme::ErrorColor(),
-        QStringLiteral("下载"),
-        QStringLiteral("上传"),
+        ks::i18n::sourceText(QStringLiteral("下载")),
+        ks::i18n::sourceText(QStringLiteral("上传")),
         &m_networkRxSeries,
         &m_networkTxSeries,
         &m_networkAxisX,
@@ -5518,11 +5518,33 @@ void MonitorDock::refreshPerformanceCharts()
 
     if (m_cpuChartView != nullptr && m_cpuChartView->chart() != nullptr)
     {
-        m_cpuChartView->chart()->setTitle(QStringLiteral("CPU 占用率 %1%").arg(cpuUsagePercent, 0, 'f', 1));
+        m_cpuChartView->chart()->setTitle(
+            ks::i18n::sourceText(QStringLiteral("CPU 占用率 %1%"))
+                .arg(cpuUsagePercent, 0, 'f', 1));
     }
     if (m_memoryChartView != nullptr && m_memoryChartView->chart() != nullptr)
     {
-        m_memoryChartView->chart()->setTitle(QStringLiteral("内存利用率 %1%").arg(memoryUsagePercent, 0, 'f', 1));
+        m_memoryChartView->chart()->setTitle(
+            ks::i18n::sourceText(QStringLiteral("内存利用率 %1%"))
+                .arg(memoryUsagePercent, 0, 'f', 1));
+    }
+
+    // 图例不属于 QWidget 翻译树，在每轮采样时按当前语言重写。
+    if (m_diskReadSeries != nullptr)
+    {
+        m_diskReadSeries->setName(ks::i18n::sourceText(QStringLiteral("读取")));
+    }
+    if (m_diskWriteSeries != nullptr)
+    {
+        m_diskWriteSeries->setName(ks::i18n::sourceText(QStringLiteral("写入")));
+    }
+    if (m_networkRxSeries != nullptr)
+    {
+        m_networkRxSeries->setName(ks::i18n::sourceText(QStringLiteral("下载")));
+    }
+    if (m_networkTxSeries != nullptr)
+    {
+        m_networkTxSeries->setName(ks::i18n::sourceText(QStringLiteral("上传")));
     }
 
     // 采样磁盘与网络：折线图展示最近 m_perfHistoryLength 个采样点。
@@ -5572,13 +5594,15 @@ void MonitorDock::refreshPerformanceCharts()
 
     if (m_diskChartView != nullptr && m_diskChartView->chart() != nullptr)
     {
-        m_diskChartView->chart()->setTitle(QStringLiteral("系统盘读写速率  读:%1  写:%2")
+        m_diskChartView->chart()->setTitle(ks::i18n::sourceText(
+            QStringLiteral("系统盘读写速率  读:%1  写:%2"))
             .arg(bytesPerSecondToText(diskReadBytesPerSec))
             .arg(bytesPerSecondToText(diskWriteBytesPerSec)));
     }
     if (m_networkChartView != nullptr && m_networkChartView->chart() != nullptr)
     {
-        m_networkChartView->chart()->setTitle(QStringLiteral("网络收发速率  下:%1  上:%2")
+        m_networkChartView->chart()->setTitle(ks::i18n::sourceText(
+            QStringLiteral("网络收发速率  下:%1  上:%2"))
             .arg(bytesPerSecondToText(networkRxBytesPerSec))
             .arg(bytesPerSecondToText(networkTxBytesPerSec)));
     }
@@ -9412,7 +9436,9 @@ void MonitorDock::refreshWmiProvidersAsync()
                         << new QStandardItem(entry.nameSpaceText)
                         << new QStandardItem(entry.clsidText)
                         << new QStandardItem(QString::number(entry.eventClassCount))
-                        << new QStandardItem(entry.subscribable ? QStringLiteral("可订阅") : QStringLiteral("受限"));
+                        << new QStandardItem(ks::i18n::sourceText(entry.subscribable
+                            ? QStringLiteral("可订阅")
+                            : QStringLiteral("受限")));
                     guardThis->m_wmiProviderModel->appendRow(rowItems);
                 }
 
@@ -9570,9 +9596,10 @@ void MonitorDock::refreshWmiEventClassesAsync()
                     guardThis->m_wmiEventClassTable->setItem(
                         row,
                         2,
-                        new QTableWidgetItem(className.startsWith(QStringLiteral("Win32_"), Qt::CaseInsensitive)
+                        new QTableWidgetItem(className.startsWith(
+                            QStringLiteral("Win32_"), Qt::CaseInsensitive)
                             ? QStringLiteral("Win32")
-                            : QStringLiteral("其他")));
+                            : ks::i18n::sourceText(QStringLiteral("其他"))));
                 }
                 // 事件类刷新后重新计算折叠页目标高度，确保“WMI订阅”页不会因为行数变化撑爆折叠栏。
                 guardThis->updateWmiSubscribePanelCompactLayout();

@@ -1,4 +1,5 @@
 #include "OtherDock.h"
+#include "../UI/CodeEditorWidget.h"
 #include "../theme.h"
 
 // ============================================================
@@ -417,10 +418,10 @@ void OtherDock::showCreateDesktopDialog()
     securityLayout->addWidget(sddlEdit);
     rootLayout->addWidget(securityGroup);
 
-    QPlainTextEdit* summaryEdit = new QPlainTextEdit(&dialog);
+    // 参数摘要由本页按控件状态生成，使用统一编辑器以支持英语模式下的即时重绘。
+    CodeEditorWidget* summaryEdit = new CodeEditorWidget(&dialog);
     summaryEdit->setReadOnly(true);
-    summaryEdit->setFixedHeight(112);
-    summaryEdit->setStyleSheet(desktopCreateInputStyle());
+    summaryEdit->setFixedHeight(164);
     rootLayout->addWidget(summaryEdit);
 
     QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -444,7 +445,7 @@ void OtherDock::showCreateDesktopDialog()
             .arg(inheritableHandleCheck->isChecked() ? QStringLiteral("是") : QStringLiteral("否"))
             .arg(keepHandleCheck->isChecked() ? QStringLiteral("是") : QStringLiteral("否"))
             .arg(switchAfterCreateCheck->isChecked() ? QStringLiteral("是") : QStringLiteral("否"));
-        summaryEdit->setPlainText(lines.join('\n'));
+        summaryEdit->setLocalizedText(lines.join('\n'));
     };
 
     auto syncSecurityOptions = [&]() {

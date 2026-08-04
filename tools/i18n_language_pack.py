@@ -24,6 +24,12 @@ SKIPPED_SOURCE_LINE_MARKERS = {
     "RELEASE_META_BUILD_TIME_MARKER",
     "RELEASE_META_VERSION_MARKER",
 }
+# QSS 选择器和 palette 角色不是用户可见文本；样式模板拆行后仍必须从审计源中排除。
+QSS_SELECTOR_RE = re.compile(
+    r"^(?:Q[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\r\n]+\])?(?:::[A-Za-z_-][A-Za-z0-9_-]*)?)"
+    r"(?:\s+Q[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\r\n]+\])?(?:::[A-Za-z_-][A-Za-z0-9_-]*)?)*,?$"
+)
+QSS_PALETTE_TOKEN_RE = re.compile(r"^palette\([A-Za-z_][A-Za-z0-9_]*\)$")
 
 
 @dataclass
@@ -49,6 +55,8 @@ def is_extractable_literal(text: str) -> bool:
         return True
     value = text.strip()
     if not value or not LATIN_RE.search(value):
+        return False
+    if QSS_SELECTOR_RE.fullmatch(value) or QSS_PALETTE_TOKEN_RE.fullmatch(value):
         return False
     if any(marker in value for marker in ("\\", "://", "::", "{", "}", ";", "#")):
         return False

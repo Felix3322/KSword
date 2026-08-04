@@ -13,6 +13,7 @@
 
 #include "../theme.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../Internationalization/LanguageManager.h"
 #include "../UI/GlobalDialogTheme.h"
 
 #include <QAbstractItemModel>
@@ -3138,12 +3139,15 @@ void NetworkFirewallPage::deleteSelectedFirewallRules()
     }
 
     const int duplicateCount = ruleNameList.size() == 1 ? ruleNameDuplicateCount(ruleNameList.front()) : 0;
+    // 规则名称是系统原始数据；只翻译由页面生成的确认句式，避免改写规则证据。
     QString warningText = ruleNameList.size() == 1
-        ? QStringLiteral("确定删除规则“%1”吗？").arg(ruleNameList.front())
-        : QStringLiteral("确定删除选中的 %1 条规则吗？").arg(ruleNameList.size());
+        ? ks::i18n::sourceText(QStringLiteral("确定删除规则“%1”吗？")).arg(ruleNameList.front())
+        : ks::i18n::sourceText(QStringLiteral("确定删除选中的 %1 条规则吗？")).arg(ruleNameList.size());
     if (duplicateCount > 1)
     {
-        warningText.append(QStringLiteral("\n注意：同名规则存在 %1 条，Windows Firewall 将按名称删除同名项。").arg(duplicateCount));
+        warningText.append(ks::i18n::sourceText(
+            QStringLiteral("\n注意：同名规则存在 %1 条，Windows Firewall 将按名称删除同名项。"))
+            .arg(duplicateCount));
     }
 
     const QMessageBox::StandardButton button = QMessageBox::question(

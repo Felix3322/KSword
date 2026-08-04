@@ -945,10 +945,12 @@ void NetworkDock::initializeHostsFileEditorTab()
     else
     {
         m_hostsFileEditor->setCurrentFilePath(hostsFilePath);
-        m_hostsFileEditor->setRawText(ks::i18n::displayText(QStringLiteral(
-            "# hosts 文件读取失败。\n"
-            "# 目标路径: %1\n"
-            "# 如需直接保存系统 hosts，请以管理员权限运行程序。")).arg(hostsFilePath));
+        // hosts 正文必须保持原文；这里只翻译本程序生成的读取失败说明。
+        const QString hostsReadFailureText =
+            ks::i18n::sourceText(QStringLiteral("# hosts 文件读取失败。\n"))
+            + ks::i18n::sourceText(QStringLiteral("# 目标路径: %1\n")).arg(hostsFilePath)
+            + ks::i18n::sourceText(QStringLiteral("# 如需直接保存系统 hosts，请以管理员权限运行程序。"));
+        m_hostsFileEditor->setRawText(hostsReadFailureText);
 
         kLogEvent openHostsFailEvent;
         warn << openHostsFailEvent

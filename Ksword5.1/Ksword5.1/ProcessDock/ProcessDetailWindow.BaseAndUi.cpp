@@ -4321,10 +4321,11 @@ void ProcessDetailWindow::initializePebTab()
     m_pebDetailOutput->setText(QStringLiteral("PEB 与地址空间摘要将在此处显示。"));
     m_pebLayout->addWidget(m_pebDetailOutput, 1);
 
-    m_pebReadonlyReasonOutput = new QPlainTextEdit(m_pebTab);
+    // 只读字段说明属于程序生成的详情文本，使用统一编辑器以便英语模式即时重绘。
+    m_pebReadonlyReasonOutput = new CodeEditorWidget(m_pebTab);
     m_pebReadonlyReasonOutput->setReadOnly(true);
-    m_pebReadonlyReasonOutput->setMaximumHeight(120);
-    m_pebReadonlyReasonOutput->setPlainText(QStringLiteral(
+    m_pebReadonlyReasonOutput->setMaximumHeight(220);
+    m_pebReadonlyReasonOutput->setLocalizedText(QStringLiteral(
         "不可直接修改/不建议直接修改：\n"
         "- KernelCpuMs/UserCpuMs/WorkingSet/PrivateUsage/IO计数/PageFaultCount：系统统计计数，只能由内核/调度器/内存管理器更新。\n"
         "- VirtualAddressRegionPreview：地址空间枚举结果；应通过 VirtualAllocEx/VirtualProtectEx/Unmap/Map 等专门操作改变。\n"

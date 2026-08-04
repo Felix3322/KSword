@@ -11394,8 +11394,12 @@ void ProcessDock::appendCreateResultLine(const QString& lineText)
     {
         return;
     }
+
+    // 结果框混合固定提示和后端原始详情；仅转换可命中的固定提示，原始错误内容保持逐字不变。
     const QString timeText = QDateTime::currentDateTime().toString("HH:mm:ss");
-    m_createResultOutput->append(QString("[%1] %2").arg(timeText, lineText));
+    m_createResultOutput->append(QString("[%1] %2").arg(
+        timeText,
+        ks::i18n::sourceText(lineText)));
 }
 
 void ProcessDock::browseCreateProcessApplicationPath()
@@ -11843,7 +11847,7 @@ void ProcessDock::executeApplyTokenPrivilegeEditsOnly()
     ks::process::CreateProcessRequest request;
     if (!buildTokenPrivilegeEditRequestFromUi(&request, &errorText))
     {
-        appendCreateResultLine("参数解析失败: " + errorText);
+        appendCreateResultLine(ks::i18n::sourceText(QStringLiteral("参数解析失败: ")) + errorText);
         err << actionEvent
             << "[ProcessDock] 令牌调整参数解析失败, error="
             << errorText.toStdString()
@@ -11861,8 +11865,11 @@ void ProcessDock::executeApplyTokenPrivilegeEditsOnly()
     std::ostringstream desiredAccessStream;
     desiredAccessStream << "0x" << std::uppercase << std::hex << request.tokenDesiredAccess;
 
-    appendCreateResultLine(QString("令牌调整结果: %1").arg(adjustOk ? "成功" : "失败"));
-    appendCreateResultLine(QString::fromStdString(detailText.empty() ? "无附加信息" : detailText));
+    appendCreateResultLine(ks::i18n::sourceText(QStringLiteral("令牌调整结果: %1")).arg(
+        ks::i18n::sourceText(adjustOk ? QStringLiteral("成功") : QStringLiteral("失败"))));
+    appendCreateResultLine(detailText.empty()
+        ? ks::i18n::sourceText(QStringLiteral("无附加信息"))
+        : QString::fromStdString(detailText));
     (adjustOk ? info : err) << actionEvent
         << "[ProcessDock] 令牌调整完成, ok=" << (adjustOk ? "true" : "false")
         << ", sourcePid=" << request.tokenSourcePid
@@ -11882,7 +11889,7 @@ void ProcessDock::executeCreateProcessRequest()
     const ks::process::CreateProcessRequest request = buildCreateProcessRequestFromUi(&buildOk, &errorText);
     if (!buildOk)
     {
-        appendCreateResultLine("参数解析失败: " + errorText);
+        appendCreateResultLine(ks::i18n::sourceText(QStringLiteral("参数解析失败: ")) + errorText);
         err << createProcessEvent
             << "[ProcessDock] CreateProcess 参数解析失败, error="
             << errorText.toStdString()
@@ -11892,14 +11899,17 @@ void ProcessDock::executeCreateProcessRequest()
 
     ks::process::CreateProcessResult createResult{};
     const bool launchOk = ks::process::LaunchProcess(request, &createResult);
-    appendCreateResultLine(QString("调用结果: %1").arg(launchOk ? "成功" : "失败"));
-    appendCreateResultLine(QString("路径模式: %1").arg(createResult.usedTokenPath ? "Token" : "CreateProcessW"));
-    appendCreateResultLine(QString("错误码: %1").arg(createResult.win32Error));
+    appendCreateResultLine(ks::i18n::sourceText(QStringLiteral("调用结果: %1")).arg(
+        ks::i18n::sourceText(launchOk ? QStringLiteral("成功") : QStringLiteral("失败"))));
+    appendCreateResultLine(ks::i18n::sourceText(QStringLiteral("路径模式: %1")).arg(
+        createResult.usedTokenPath ? QStringLiteral("Token") : QStringLiteral("CreateProcessW")));
+    appendCreateResultLine(ks::i18n::sourceText(QStringLiteral("错误码: %1")).arg(createResult.win32Error));
     appendCreateResultLine(QString::fromStdString(createResult.detailText));
     if (createResult.processInfoAvailable)
     {
         appendCreateResultLine(
-            QString("输出 PI: pid=%1 tid=%2（后端已关闭返回的 hProcess/hThread 句柄快照: 0x%3 / 0x%4）")
+            ks::i18n::sourceText(QStringLiteral(
+                "输出 PI: pid=%1 tid=%2（后端已关闭返回的 hProcess/hThread 句柄快照: 0x%3 / 0x%4）"))
             .arg(createResult.dwProcessId)
             .arg(createResult.dwThreadId)
             .arg(QString::number(createResult.hProcess, 16))

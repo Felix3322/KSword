@@ -1,5 +1,7 @@
 #include "RegistryOptimizationPage.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../Internationalization/LanguageManager.h"
+#include "../UI/CodeEditorWidget.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
@@ -37,7 +39,6 @@
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QTableWidget>
-#include <QTextEdit>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeWidget>
@@ -1229,9 +1230,10 @@ void RegistryOptimizationPage::initializeUi()
     m_itemTable->setColumnWidth(kActionButtonColumn, kActionColumnWidth);
     rightLayout->addWidget(m_itemTable, 2);
 
-    m_detailText = new QTextEdit(rightWidget);
+    // 优化详情由程序按当前行生成，统一编辑器会保留规范源文本并在切换语言时重绘。
+    m_detailText = new CodeEditorWidget(rightWidget);
     m_detailText->setReadOnly(true);
-    m_detailText->setMinimumHeight(130);
+    m_detailText->setMinimumHeight(190);
     rightLayout->addWidget(m_detailText, 1);
 
     m_statusLabel = new QLabel(QStringLiteral("系统优化：等待加载 profiles JSON。"), this);
@@ -1289,7 +1291,7 @@ void RegistryOptimizationPage::loadOptimizationProfile()
     m_loadedProfilePath.clear();
     m_itemTable->setRowCount(0);
     m_groupTree->clear();
-    m_detailText->clear();
+    m_detailText->setLocalizedText(QString());
 
     QString selectedPath;
     for (const QString& candidatePath : profileCandidatePaths())
@@ -1466,7 +1468,10 @@ void RegistryOptimizationPage::rebuildItemTable()
             m_itemTable->setItem(tableRow, 0, new QTableWidgetItem(item.itemNameText));
             m_itemTable->setItem(tableRow, 1, new QTableWidgetItem(scopeDisplayText(scope.scopeText)));
             m_itemTable->setItem(tableRow, 2, new QTableWidgetItem(item.itemTypeText));
-            m_itemTable->setItem(tableRow, 3, new QTableWidgetItem(QStringLiteral("未检测")));
+            m_itemTable->setItem(
+                tableRow,
+                3,
+                new QTableWidgetItem(ks::i18n::sourceText(QStringLiteral("未检测"))));
             QTableWidgetItem* targetPlaceholderItem = new QTableWidgetItem();
             targetPlaceholderItem->setSizeHint(QSize(kTargetColumnWidth, kDefaultRowHeight));
             targetPlaceholderItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
@@ -1530,7 +1535,7 @@ void RegistryOptimizationPage::rebuildItemTable()
     }
     else
     {
-        m_detailText->clear();
+        m_detailText->setLocalizedText(QString());
     }
     updateStatusText(QStringLiteral("系统优化：当前显示 %1 行；来源 %2。").arg(m_itemTable->rowCount()).arg(m_loadedProfilePath));
     applyColumnPreset(m_columnPreset);
@@ -1660,7 +1665,7 @@ void RegistryOptimizationPage::updateDetailPanel(const int tableRow)
 {
     if (m_rebuildingTable || tableRow < 0 || tableRow >= m_visibleRows.size())
     {
-        m_detailText->clear();
+        m_detailText->setLocalizedText(QString());
         return;
     }
 
@@ -1688,7 +1693,7 @@ void RegistryOptimizationPage::updateDetailPanel(const int tableRow)
             lines << QStringLiteral("  * %1").arg(jsonString(action, QStringLiteral("summary"), QString::fromUtf8(QJsonDocument(action).toJson(QJsonDocument::Compact))));
         }
     }
-    m_detailText->setPlainText(lines.join(QLatin1Char('\n')));
+    m_detailText->setLocalizedText(lines.join(QLatin1Char('\n')));
 }
 
 void RegistryOptimizationPage::updateStatusText(const QString& text)
@@ -1905,7 +1910,7 @@ void RegistryOptimizationPage::beginStateApply(
     m_stateApplyAllOk = true;
     m_stateApplyRestartExplorer = false;
     setApplyControlsEnabled(false);
-    m_detailText->setPlainText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
+    m_detailText->setLocalizedText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
 
     if (m_stateApplyActions.isEmpty())
     {
@@ -1954,7 +1959,7 @@ void RegistryOptimizationPage::continueStateApply()
     m_stateApplyAllOk = m_stateApplyAllOk && actionOk;
     m_stateApplyDetailLines.append(actionDetailLines);
     ++m_stateApplyNextActionIndex;
-    m_detailText->setPlainText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
+    m_detailText->setLocalizedText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
     QTimer::singleShot(0, this, [this]() { continueStateApply(); });
 }
 
@@ -1993,7 +1998,7 @@ void RegistryOptimizationPage::completePendingAction(const bool actionOk, const 
     m_stateApplyDetailLines.append(actionDetailLines);
     m_stateApplyActiveAction = QJsonObject();
     ++m_stateApplyNextActionIndex;
-    m_detailText->setPlainText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
+    m_detailText->setLocalizedText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
     QTimer::singleShot(0, this, [this]() { continueStateApply(); });
 }
 
@@ -2005,7 +2010,7 @@ void RegistryOptimizationPage::finishStateApply()
     {
         m_stateApplyDetailLines << QStringLiteral("提示: 部分动作标记需要重启 Explorer 或重新登录后完全生效。");
     }
-    m_detailText->setPlainText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
+    m_detailText->setLocalizedText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
     refreshVisibleRowState(m_stateApplyTableRow);
     const bool allOk = m_stateApplyAllOk;
     const QString itemName = m_stateApplyItemName;
@@ -2038,7 +2043,7 @@ void RegistryOptimizationPage::cancelStateApply(const QString& reasonText)
     if (!reasonText.isEmpty())
     {
         m_stateApplyDetailLines << QStringLiteral("[已取消] %1").arg(reasonText);
-        m_detailText->setPlainText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
+        m_detailText->setLocalizedText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
         updateStatusText(QStringLiteral("系统优化：%1").arg(reasonText));
     }
     m_stateApplyInProgress = false;

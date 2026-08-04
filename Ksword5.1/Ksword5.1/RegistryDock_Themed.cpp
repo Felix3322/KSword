@@ -2081,7 +2081,9 @@ void RegistryDock::refreshValueTable()
             const int row = m_valueTable->rowCount();
             m_valueTable->insertRow(row);
 
-            QTableWidgetItem* nameItem = new QTableWidgetItem(valueName.isEmpty() ? QStringLiteral("(默认)") : valueName);
+            QTableWidgetItem* nameItem = new QTableWidgetItem(valueName.isEmpty()
+                ? ks::i18n::sourceText(QStringLiteral("(默认)"))
+                : valueName);
             nameItem->setData(Qt::UserRole, valueName);
             m_valueTable->setItem(row, 0, nameItem);
             m_valueTable->setItem(row, 1, new QTableWidgetItem(valueTypeToText(static_cast<DWORD>(valueEntry.valueType))));
@@ -2155,7 +2157,8 @@ void RegistryDock::refreshValueTable()
         }
 
         m_valueTable->insertRow(0);
-        QTableWidgetItem* nameItem = new QTableWidgetItem(QStringLiteral("(默认)"));
+        QTableWidgetItem* nameItem = new QTableWidgetItem(
+            ks::i18n::sourceText(QStringLiteral("(默认)")));
         nameItem->setData(Qt::UserRole, QString());
         m_valueTable->setItem(0, 0, nameItem);
         m_valueTable->setItem(0, 1, new QTableWidgetItem(valueTypeToText(defaultType)));

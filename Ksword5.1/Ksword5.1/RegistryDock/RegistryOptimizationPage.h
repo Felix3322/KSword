@@ -22,10 +22,10 @@ class QPushButton;
 class QProcess;
 class QSplitter;
 class QTableWidget;
-class QTextEdit;
 class QTemporaryDir;
 class QTreeWidget;
 class QTimer;
+class CodeEditorWidget;
 
 // RegistryOptimizationPage:
 // - Input: parent widget plus profiles/registry_optimization_items.json at runtime;
@@ -156,7 +156,7 @@ private:
     QSplitter* m_splitter = nullptr;             // Left groups, right item list/details.
     QTreeWidget* m_groupTree = nullptr;          // Dynamic group tree from JSON group_name.
     QTableWidget* m_itemTable = nullptr;         // Dynamic option rows and per-row controls.
-    QTextEdit* m_detailText = nullptr;           // Read-only selected item/action details.
+    CodeEditorWidget* m_detailText = nullptr;    // 选中项目/动作的只读详情，支持语言切换重绘。
     QLabel* m_statusLabel = nullptr;             // Profile load/apply status.
 
     QString m_loadedProfilePath;                 // Actual JSON path selected from candidates.

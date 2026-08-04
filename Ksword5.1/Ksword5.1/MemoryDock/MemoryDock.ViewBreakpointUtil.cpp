@@ -1,4 +1,5 @@
 #include "MemoryDock.Internal.h"
+#include "../Internationalization/LanguageManager.h"
 #include "../UI/TableInteractionSupport.h"
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
@@ -435,7 +436,11 @@ void MemoryDock::rebuildBreakpointTable()
         m_breakpointTable->setItem(row, 0, new QTableWidgetItem(formatAddress(entry.address)));
         m_breakpointTable->setItem(row, 1, new QTableWidgetItem(
             QString("0x%1").arg(entry.originalByte, 2, 16, QChar('0')).toUpper()));
-        m_breakpointTable->setItem(row, 2, new QTableWidgetItem(entry.enabled ? "启用" : "禁用"));
+        m_breakpointTable->setItem(
+            row,
+            2,
+            new QTableWidgetItem(ks::i18n::sourceText(
+                entry.enabled ? QStringLiteral("启用") : QStringLiteral("禁用"))));
         m_breakpointTable->setItem(row, 3, new QTableWidgetItem(QString::number(entry.hitCount)));
         m_breakpointTable->setItem(row, 4, new QTableWidgetItem(entry.description));
     }

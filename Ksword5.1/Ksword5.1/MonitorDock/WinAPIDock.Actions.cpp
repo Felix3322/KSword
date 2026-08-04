@@ -1,4 +1,5 @@
 #include "WinAPIDock.h"
+#include "../UI/CodeEditorWidget.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../OnlineScan/SandboxUploadActions.h"
 #include "../UI/TableInteractionSupport.h"
@@ -33,7 +34,6 @@
 #include <QMessageBox>
 #include <QModelIndex>
 #include <QPointer>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSet>
@@ -1152,10 +1152,10 @@ void WinAPIDock::showEventDetailDialog(const int rowValue)
     layout->setContentsMargins(10, 10, 10, 10);
     layout->setSpacing(8);
 
-    QPlainTextEdit* const detailEdit = new QPlainTextEdit(&dialog);
+    // 事件详情由本页拼装，使用统一编辑器以便英语模式即时重绘固定字段名。
+    CodeEditorWidget* const detailEdit = new CodeEditorWidget(&dialog);
     detailEdit->setReadOnly(true);
-    detailEdit->setPlainText(detailText);
-    detailEdit->setStyleSheet(blueInputStyle());
+    detailEdit->setLocalizedText(detailText);
     layout->addWidget(detailEdit, 1);
 
     QDialogButtonBox* const buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);

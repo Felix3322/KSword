@@ -1,5 +1,6 @@
 #include "ProcessDetailWindow.InternalCommon.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
+#include "../Internationalization/LanguageManager.h"
 
 using namespace process_detail_window_internal;
 
@@ -3410,7 +3411,7 @@ void ProcessDetailWindow::applyThreadInspectResult(const ThreadInspectRefreshRes
 
             auto* runtimeDetailItem = new QTableWidgetItem(
                 rowItem.r0RuntimeDetailText.trimmed().isEmpty()
-                ? QStringLiteral("线程 runtime detail 暂不可用。")
+                ? ks::i18n::sourceText(QStringLiteral("线程 runtime detail 暂不可用。"))
                 : rowItem.r0RuntimeDetailText);
             runtimeDetailItem->setToolTip(QStringLiteral(
                 "DetailStatus=%1\n"

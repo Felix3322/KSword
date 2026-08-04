@@ -5905,9 +5905,11 @@ void MainWindow::showLicenseFromMenu()
 
     QTextEdit licenseEditor(&licenseDialog);
     licenseEditor.setReadOnly(true);
-    licenseEditor.setPlainText(licenseText.trimmed().isEmpty()
-        ? QStringLiteral("LICENSE 文件为空。")
-        : licenseText);
+    // 许可证正文属于原始法律文本；仅本地缺失提示需要按当前界面语言显示。
+    const QString licenseDisplayText = licenseText.trimmed().isEmpty()
+        ? ks::i18n::sourceText(QStringLiteral("LICENSE 文件为空。"))
+        : licenseText;
+    licenseEditor.setPlainText(licenseDisplayText);
     dialogLayout.addWidget(&licenseEditor, 1);
 
     QPushButton closeButton(QStringLiteral("关闭"), &licenseDialog);

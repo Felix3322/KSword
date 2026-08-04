@@ -37,7 +37,6 @@ class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QMenu;
-class QPlainTextEdit;
 class QPushButton;
 class QTabWidget;
 class QTableWidget;
@@ -918,7 +917,7 @@ private:
     QComboBox* m_pebPriorityClassCombo = nullptr;   // 可编辑优先级。
     QLineEdit* m_pebEnvironmentNameEdit = nullptr;  // 环境变量名。
     QLineEdit* m_pebEnvironmentValueEdit = nullptr; // 环境变量值。
-    QPlainTextEdit* m_pebReadonlyReasonOutput = nullptr; // 不可直接修改字段说明。
+    CodeEditorWidget* m_pebReadonlyReasonOutput = nullptr; // 不可直接修改字段说明，支持语言切换重绘。
     CodeEditorWidget* m_pebDetailOutput = nullptr;   // PEB 信息输出框（统一文本编辑器组件，只读）。
     bool m_pebRefreshing = false;                  // PEB 页刷新状态。
     bool m_pebInitialRefreshStarted = false;       // PEB 页首次刷新是否已经按需启动。
