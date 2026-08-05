@@ -33,7 +33,7 @@
 </div>
 
 <h1 align="center">Ksword5.1</h1>
-<p align="center"><strong>全国最强开源 Windows ARK / 内核调试工具集</strong></p>
+<p align="center"><strong>开放源代码 Windows ARK / 内核调试工具集</strong></p>
 <p align="center">
   <a href="https://github.com/KSwordDEV/KSword/stargazers">
     <img alt="GitHub stars" src="https://img.shields.io/github/stars/KSwordDEV/KSword.svg?style=for-the-badge" />
