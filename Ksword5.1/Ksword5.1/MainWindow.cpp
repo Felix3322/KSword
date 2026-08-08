@@ -2224,17 +2224,24 @@ namespace
     // - Acrylic 毛玻璃通过组合特性作用于分层窗口，是本项目可用的模糊方案。
     // kWindowCompositionAttributeAccentPolicy 作用：WCA_ACCENT_POLICY 特性编号。
     constexpr DWORD kWindowCompositionAttributeAccentPolicy = 19;
-    // kAccentDisabled / kAccentEnableAcrylicBlurBehind 作用：ACCENT_STATE 取值。
+    // kAccentDisabled / kAccentEnableBlurBehind / kAccentEnableAcrylicBlurBehind 作用：
+    // ACCENT_STATE 取值。
+    // - BLURBEHIND(3)：传统高斯模糊，单道处理，开销更低；
+    // - ACRYLIC(4)：模糊 + 饱和度 + 噪点，质感更强，但在部分系统上会拖慢
+    //   窗口的 WM_MOUSEMOVE 投递，表现为悬停高亮不刷新（点击仍正常）。
+    // 两者都由 DWM 合成，应用侧成本相同。
     constexpr DWORD kAccentDisabled = 0;
+    constexpr DWORD kAccentEnableBlurBehind = 3;
     constexpr DWORD kAccentEnableAcrylicBlurBehind = 4;
     // kBackdropRefreshThrottleMs 作用：
     // - 毛玻璃重采样的合并窗口（毫秒）；
     // - 拖动与缩放会连续触发几何事件，节流后只在动作稳定时下发一次组合特性。
     constexpr int kBackdropRefreshThrottleMs = 40;
-    // kAcrylicTintAlpha 作用：
-    // - 毛玻璃着色层不透明度（0~255），由组合特性直接混合到模糊结果上；
+    // kBackdropTintAlpha 作用：
+    // - 模糊着色层不透明度（0~255），由组合特性直接混合到模糊结果上；
+    // - 高斯与亚克力两种模糊共用同一着色强度，切换材质时观感保持一致；
     // - 数值越低越通透，越高前景文字可读性越强。
-    constexpr int kAcrylicTintAlpha = 190;
+    constexpr int kBackdropTintAlpha = 190;
 
     // AccentPolicyData 说明：对应未公开的 ACCENT_POLICY 结构体布局。
     struct AccentPolicyData
@@ -4990,8 +4997,9 @@ void MainWindow::applyNativeWindowFrameVisualStyle()
 #endif
 }
 
-bool MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
+bool MainWindow::applyMainWindowBackdropMaterial(const BackdropBlurKind blurKind)
 {
+    const bool enableBackdrop = (blurKind != BackdropBlurKind::None);
 #ifdef Q_OS_WIN
     if (!testAttribute(Qt::WA_WState_Created))
     {
@@ -5007,7 +5015,7 @@ bool MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
     // - user32 的未导出组合特性入口，是唯一能给“分层透明窗口”加模糊的可用接口；
     // - DWM 的云母（DWMWA_SYSTEMBACKDROP_TYPE）要求窗口本身不透明，
     //   与 Qt 的 WA_TranslucentBackground 分层表面冲突，会回退成系统浅色底（表现为发白），
-    //   因此这里统一改用 Acrylic 毛玻璃，Windows 10 1803+ 与 Windows 11 均可用。
+    //   因此这里改用组合特性提供的模糊，Windows 10 1803+ 与 Windows 11 均可用。
     using SetWindowCompositionAttributeFunction = BOOL(WINAPI*)(HWND, void*);
     static SetWindowCompositionAttributeFunction setWindowCompositionAttribute =
         []() -> SetWindowCompositionAttributeFunction {
@@ -5024,34 +5032,42 @@ bool MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
         return false;
     }
 
-    // 从未启用过毛玻璃时无需关闭：避免默认不透明用户在每次启动都触碰未公开接口。
+    // requestedState 用途：把模糊种类映射为可比较的缓存值。
+    const int requestedState = static_cast<int>(blurKind);
+    // 从未启用过模糊时无需关闭：避免默认不透明用户在每次启动都触碰未公开接口。
     if (!enableBackdrop && m_backdropMaterialState < 0)
     {
-        m_backdropMaterialState = 0;
+        m_backdropMaterialState = static_cast<int>(BackdropBlurKind::None);
         return false;
     }
-    // m_backdropMaterialState 三态缓存：-1 未初始化，0/1 为上次应用状态。
-    // 主题色变化也要重刷着色，因此仅在“状态未变且非启用态”时才提前返回。
-    if (m_backdropMaterialState == (enableBackdrop ? 1 : 0) && !enableBackdrop)
+    // m_backdropMaterialState 缓存已下发的种类：-1 未初始化，其余为 BackdropBlurKind。
+    // 主题色变化与窗口移动都要重下发（重采样），因此仅在“已关闭且仍要关闭”时提前返回。
+    if (!enableBackdrop && m_backdropMaterialState == requestedState)
     {
         return false;
     }
-    m_backdropMaterialState = enableBackdrop ? 1 : 0;
+    m_backdropMaterialState = requestedState;
 
     // tintColor 用途：毛玻璃自带的着色层，由组合特性直接混合到模糊结果上，
     // 因此启用后根容器不再另画着色，避免出现双层叠加导致的浑浊。
     const QColor tintColor = KswordTheme::MainBackgroundColor();
     // gradientColorValue 采用 0xAABBGGRR 排布，注意与常见的 ARGB 顺序相反。
     const DWORD gradientColorValue =
-        (static_cast<DWORD>(kAcrylicTintAlpha) << 24)
+        (static_cast<DWORD>(kBackdropTintAlpha) << 24)
         | (static_cast<DWORD>(tintColor.blue()) << 16)
         | (static_cast<DWORD>(tintColor.green()) << 8)
         | static_cast<DWORD>(tintColor.red());
 
     AccentPolicyData accentPolicy{};
-    accentPolicy.accentState = enableBackdrop
-        ? kAccentEnableAcrylicBlurBehind
-        : kAccentDisabled;
+    accentPolicy.accentState = kAccentDisabled;
+    if (blurKind == BackdropBlurKind::Gaussian)
+    {
+        accentPolicy.accentState = kAccentEnableBlurBehind;
+    }
+    else if (blurKind == BackdropBlurKind::Acrylic)
+    {
+        accentPolicy.accentState = kAccentEnableAcrylicBlurBehind;
+    }
     accentPolicy.accentFlags = 0;
     accentPolicy.gradientColor = enableBackdrop ? gradientColorValue : 0;
     accentPolicy.animationId = 0;
@@ -5065,14 +5081,16 @@ bool MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
 
     kLogEvent backdropEvent;
     info << backdropEvent
-        << "[MainWindow] 窗口毛玻璃材质切换, enabled="
-        << (enableBackdrop ? "true" : "false")
+        << "[MainWindow] 窗口模糊材质切换, kind="
+        << (blurKind == BackdropBlurKind::Acrylic
+            ? "acrylic"
+            : (blurKind == BackdropBlurKind::Gaussian ? "gaussian" : "none"))
         << ", ok="
         << (applyOk != FALSE ? "true" : "false")
         << eol;
     return enableBackdrop && applyOk != FALSE;
 #else
-    Q_UNUSED(enableBackdrop);
+    Q_UNUSED(blurKind);
     return false;
 #endif
 }
@@ -10533,31 +10551,43 @@ void MainWindow::refreshWindowBackdropMaterial()
         : nullptr;
 
     // 材质决策按用户显式选择：
-    // - mica：始终毛玻璃；desktop：始终直透桌面；
-    // - auto（默认）：有背景图直透，无背景图毛玻璃。
+    // - blur：始终高斯模糊；acrylic：始终亚克力模糊；
+    // - desktop：始终直透桌面；
+    // - auto（默认）：有背景图直透，无背景图用高斯模糊。
+    // 兼容：旧配置值 mica 曾表示“始终毛玻璃”，当时底层是亚克力。
+    // 它对应的界面文案一直是“毛玻璃磨砂”，因此迁移到高斯模糊——
+    // 既符合用户当初选择的字面含义，也避开亚克力的悬停副作用；
+    // 想要亚克力质感的用户可显式选择新增的 acrylic 项。
     const QString translucencyMaterialMode =
         m_currentAppearanceSettings.backgroundTranslucencyMaterial.trimmed().toLower();
-    bool backdropWanted = false;
+    BackdropBlurKind blurKind = BackdropBlurKind::None;
     if (translucencyActive)
     {
-        if (translucencyMaterialMode == QStringLiteral("mica"))
+        if (translucencyMaterialMode == QStringLiteral("acrylic"))
         {
-            backdropWanted = true;
+            blurKind = BackdropBlurKind::Acrylic;
+        }
+        else if (translucencyMaterialMode == QStringLiteral("blur")
+            || translucencyMaterialMode == QStringLiteral("mica"))
+        {
+            blurKind = BackdropBlurKind::Gaussian;
         }
         else if (translucencyMaterialMode == QStringLiteral("desktop"))
         {
-            backdropWanted = false;
+            blurKind = BackdropBlurKind::None;
         }
         else
         {
-            backdropWanted = (sourceImage == nullptr);
+            blurKind = (sourceImage == nullptr)
+                ? BackdropBlurKind::Gaussian
+                : BackdropBlurKind::None;
         }
     }
 
-    // blurMaterialActive 用途：毛玻璃是否真正生效。
+    // blurMaterialActive 用途：模糊是否真正生效。
     // 生效时着色由系统合成，根容器必须完全透明；未生效（旧系统或调用失败）
     // 则回退为自绘着色层，保证前景文字仍然可读。
-    const bool blurMaterialActive = applyMainWindowBackdropMaterial(backdropWanted);
+    const bool blurMaterialActive = applyMainWindowBackdropMaterial(blurKind);
     if (m_mainRootContainer != nullptr)
     {
         static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer)->setTranslucentMode(

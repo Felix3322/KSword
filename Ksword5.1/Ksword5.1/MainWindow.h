@@ -254,13 +254,23 @@ private:
     QWidget* createDockPlaceholderWidget(const QString& titleText) const;
     void ensureDockContentInitialized(ads::CDockWidget* dockWidget);
 
+    // BackdropBlurKind 作用：
+    // - 描述透明区域使用哪种系统模糊；
+    // - 两种模糊都由 DWM 合成，应用侧成本相同，差别在 DWM 的处理道数与副作用。
+    enum class BackdropBlurKind
+    {
+        None = 0,    // None：不下发模糊，透明区域直接透出后方内容。
+        Gaussian,    // Gaussian：ACCENT_ENABLE_BLURBEHIND，单道高斯模糊，开销更低。
+        Acrylic,     // Acrylic：ACCENT_ENABLE_ACRYLICBLURBEHIND，含饱和度与噪点，质感更强。
+    };
+
     // applyMainWindowBackdropMaterial 作用：
-    // - 切换主窗口的 Acrylic 毛玻璃材质（SetWindowCompositionAttribute）；
+    // - 切换主窗口的系统模糊材质（SetWindowCompositionAttribute）；
     // - 透明模式下按“透明背景效果”选项启用，让透明区域呈现磨砂质感；
     // - 不使用 DWM 云母：云母要求窗口不透明，与分层透明窗口冲突会整窗发白。
-    // 入参 enableBackdrop：true=启用毛玻璃，false=关闭。
-    // 返回：true=毛玻璃已生效（着色由系统合成，根容器不再另画着色层）。
-    bool applyMainWindowBackdropMaterial(bool enableBackdrop);
+    // 入参 blurKind：要下发的模糊种类；None 表示关闭。
+    // 返回：true=模糊已生效（着色由系统合成，根容器不再另画着色层）。
+    bool applyMainWindowBackdropMaterial(BackdropBlurKind blurKind);
 
     // scheduleWindowBackdropRefresh 作用：
     // - 窗口移动、缩放、状态或激活变化后合并调度一次毛玻璃重采样；
@@ -630,7 +640,7 @@ private:
     quint64 m_backgroundImageValidationGeneration = 0; // m_backgroundImageValidationGeneration：淘汰过期异步结果的代次。
     bool m_backgroundImageReady = false; // m_backgroundImageReady：当前路径是否已验证并成功解码。
     bool m_backgroundReadinessRefreshPending = false; // m_backgroundReadinessRefreshPending：异步结果是否要求重建视觉。
-    int m_backdropMaterialState = -1; // m_backdropMaterialState：毛玻璃材质三态缓存（-1 未初始化，0 关闭，1 启用）。
+    int m_backdropMaterialState = -1; // m_backdropMaterialState：已下发的模糊种类缓存（-1 未初始化，其余为 BackdropBlurKind 值）。
     bool m_backdropRefreshQueued = false; // m_backdropRefreshQueued：是否已排队一次毛玻璃重采样。
     StartupProgressCallback m_startupProgressCallback; // m_startupProgressCallback：主窗口启动阶段进度回调。
     bool m_startupWindowVisibilityAdjusted = false; // m_startupWindowVisibilityAdjusted：是否已完成首次显示区域修正。

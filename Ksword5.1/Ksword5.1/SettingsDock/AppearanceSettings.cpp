@@ -533,8 +533,12 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
         .toString(loadedSettings.backgroundTranslucencyMaterial)
         .trimmed()
         .toLower();
+    // mica 是历史取值（当时底层为亚克力，界面文案是“毛玻璃磨砂”），
+    // 保留读入以免旧配置被静默重置，实际材质决策会把它按高斯模糊处理。
     loadedSettings.backgroundTranslucencyMaterial =
-        (translucencyMaterialText == QStringLiteral("mica")
+        (translucencyMaterialText == QStringLiteral("blur")
+            || translucencyMaterialText == QStringLiteral("acrylic")
+            || translucencyMaterialText == QStringLiteral("mica")
             || translucencyMaterialText == QStringLiteral("desktop"))
         ? translucencyMaterialText
         : QStringLiteral("auto");

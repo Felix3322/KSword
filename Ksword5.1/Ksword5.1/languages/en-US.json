@@ -4420,7 +4420,9 @@
     "process.action.terminate_delete_image.final_prompt": "Confirm terminating process %1 and permanently deleting its image file? This cannot be undone.",
     "hardware.power.risk_notice": "Warning: raising power or multiplier limits can cause overheating, throttling, data corruption, crashes, or reduced hardware lifespan. Save your work and have a recovery plan ready first.",
     "kernel.iotimer.control.start": "Start timer",
-    "kernel.iotimer.control.stop": "Stop timer"
+    "kernel.iotimer.control.stop": "Stop timer",
+    "settings.background.translucency_material.blur": "Frosted blur (recommended)",
+    "settings.background.translucency_material.acrylic": "Acrylic blur (richer look, may affect hover)"
   },
   "source_translations": {
     "驱动加载失败，失败原因是系统拒绝了未通过数字签名校验的内核驱动。\n\n操作阶段：%1\n错误码：%2\n系统信息：%3": "Driver load failed because Windows rejected a kernel driver that did not pass signature verification.\n\nOperation stage: %1\nError code: %2\nSystem information: %3",
@@ -25011,6 +25013,16 @@
     "仅在服务已暂停时可继续": "Can only continue while the service is paused",
     "仅在服务已停止或已暂停时可启动": "Can only start while the service is stopped or paused",
     "仅在服务正在运行或已暂停时可停止": "Can only stop while the service is running or paused",
-    "请先在列表中选择一个服务": "Select a service in the list first"
+    "请先在列表中选择一个服务": "Select a service in the list first",
+    "毛玻璃磨砂（推荐）": "Frosted blur (recommended)",
+    "亚克力磨砂（质感更强，可能影响悬停）": "Acrylic blur (richer look, may affect hover)",
+    "毛玻璃磨砂：透明区域显示模糊虚化的桌面，开销最低，推荐使用。亚克力磨砂：在模糊上叠加噪点与饱和度，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。": "Frosted blur: transparent areas show a blurred desktop; lowest cost and recommended. Acrylic blur: adds noise and saturation on top of the blur for a richer look, but on some systems it slows mouse-move delivery, so hover highlights stop refreshing (clicking is unaffected). Show desktop: transparent areas show the desktop sharply. Auto: see-through when a background image is set, frosted blur when there is none. Takes effect immediately.",
+    "%5\n\n是否继续？": "%5\n\nContinue?",
+    ", preview=\n": ", preview=\n",
+    "[FileDock] 部分项目无法移入回收站，已永久删除, panel=": "[FileDock] Some items could not be moved to the Recycle Bin and were permanently deleted, panel=",
+    "[MainWindow] 窗口模糊材质切换, kind=": "[MainWindow] Window blur material switched, kind=",
+    "确定要把选中的 %1 项移到回收站吗？\n\n": "Move the selected %1 item(s) to the Recycle Bin?\n\n",
+    "若某些项无法移入回收站（例如位于网络位置、可移动磁盘，或回收站已停用），": "If some items cannot be moved there (for example on a network location or removable drive, or when the Recycle Bin is disabled), ",
+    "将改为永久删除且无法还原；完成后会告知具体数量。": "they will be deleted permanently and cannot be restored. You will be told how many afterwards."
   }
 }

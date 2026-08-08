@@ -559,13 +559,15 @@ void SettingsDock::initializeAppearanceTab()
     // m_backgroundTranslucencyMaterialCombo 作用：选择透明背景的呈现方式（自动/云母/直透）。
     m_backgroundTranslucencyMaterialCombo = new QComboBox(backgroundGroupBox);
     m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("自动（有背景图直透，无图磨砂）"), QStringLiteral("auto"));
-    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("毛玻璃磨砂"), QStringLiteral("mica"));
+    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("毛玻璃磨砂（推荐）"), QStringLiteral("blur"));
+    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("亚克力磨砂（质感更强，可能影响悬停）"), QStringLiteral("acrylic"));
     m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("直透桌面（完全透明）"), QStringLiteral("desktop"));
-    m_backgroundTranslucencyMaterialCombo->setToolTip(QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面；直透桌面：透明区域清晰地直接看到桌面；自动：设置了背景图时直透，没有背景图时用磨砂。修改后立即生效。"));
-    languageManager.bindToolTip(m_backgroundTranslucencyMaterialCombo, QStringLiteral("settings.background.translucency_material.tooltip"), QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面；直透桌面：透明区域清晰地直接看到桌面；自动：设置了背景图时直透，没有背景图时用磨砂。修改后立即生效。"));
+    m_backgroundTranslucencyMaterialCombo->setToolTip(QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面，开销最低，推荐使用。亚克力磨砂：在模糊上叠加噪点与饱和度，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。"));
+    languageManager.bindToolTip(m_backgroundTranslucencyMaterialCombo, QStringLiteral("settings.background.translucency_material.tooltip"), QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面，开销最低，推荐使用。亚克力磨砂：在模糊上叠加噪点与饱和度，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。"));
     languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 0, QStringLiteral("settings.background.translucency_material.auto"), QStringLiteral("自动（有背景图直透，无图磨砂）"));
-    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 1, QStringLiteral("settings.background.translucency_material.mica"), QStringLiteral("毛玻璃磨砂"));
-    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 2, QStringLiteral("settings.background.translucency_material.desktop"), QStringLiteral("直透桌面（完全透明）"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 1, QStringLiteral("settings.background.translucency_material.blur"), QStringLiteral("毛玻璃磨砂（推荐）"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 2, QStringLiteral("settings.background.translucency_material.acrylic"), QStringLiteral("亚克力磨砂（质感更强，可能影响悬停）"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 3, QStringLiteral("settings.background.translucency_material.desktop"), QStringLiteral("直透桌面（完全透明）"));
     translucencyMaterialLayout->addWidget(m_backgroundTranslucencyMaterialCombo, 1);
     backgroundLayout->addLayout(translucencyMaterialLayout);
 
@@ -1087,8 +1089,15 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     }
     if (m_backgroundTranslucencyMaterialCombo != nullptr)
     {
-        const int materialIndex = m_backgroundTranslucencyMaterialCombo->findData(
-            settings.backgroundTranslucencyMaterial.trimmed().toLower());
+        // 历史取值 mica 已无对应项：它当初的界面文案就是“毛玻璃磨砂”，
+        // 因此回显到 blur，与材质决策里的迁移规则保持一致，
+        // 否则 findData 返回 -1 会让旧用户被静默改成“自动”。
+        QString materialKey = settings.backgroundTranslucencyMaterial.trimmed().toLower();
+        if (materialKey == QStringLiteral("mica"))
+        {
+            materialKey = QStringLiteral("blur");
+        }
+        const int materialIndex = m_backgroundTranslucencyMaterialCombo->findData(materialKey);
         m_backgroundTranslucencyMaterialCombo->setCurrentIndex(materialIndex >= 0 ? materialIndex : 0);
         m_backgroundTranslucencyMaterialCombo->setEnabled(settings.backgroundTransparencyEnabled);
     }
