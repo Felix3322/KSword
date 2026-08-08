@@ -2,10 +2,12 @@
 
 #include "ContextMenuCleanerTab.Internal.h"
 
+#include <QHash>
 #include <QSet>
 #include <QStringList>
 
 #include <array>
+#include <cstddef>
 #include <tuple>
 #include <vector>
 
@@ -67,6 +69,17 @@ namespace
     {
         return QStringLiteral("%1\\%2").arg(root.classesPath, classRelativePath);
     }
+
+    // ClassKeyBranchPresence：
+    // - 作用：记录一个 Classes 关联键下 shell / shellex / OpenWithProgids 分支是否存在；
+    // - 调用：格式右键菜单枚举用它把「每个关联键多次 RegOpenKeyEx 探测」收敛成一次子键枚举；
+    // - 输出：纯布尔快照，不持有注册表句柄；关联键不存在时三个字段全为 false。
+    struct ClassKeyBranchPresence
+    {
+        bool hasShellBranch = false;           // hasShellBranch：是否存在 shell 子键。
+        bool hasShellExtensionBranch = false;  // hasShellExtensionBranch：是否存在 shellex 子键。
+        bool hasOpenWithProgidsBranch = false; // hasOpenWithProgidsBranch：是否存在 OpenWithProgids 子键。
+    };
 
     // queryMergedClassValue：
     // - 输入 relativePath/valueName/preferredView：Classes 相对位置和值名；
@@ -575,9 +588,18 @@ QVector<ContextMenuCleanerTab::ContextMenuEntry> ContextMenuCleanerTab::enumerat
 namespace ks::misc::context_menu_cleaner_detail
 {
     // addFormatContextMenuLocations：
-    // - 扩展名直接 shell/shellex；
-    // - 默认/候选 ProgID shell/shellex；
-    // - SystemFileAssociations\.ext 与 PerceivedType shell/shellex。
+    // - 输入 outputList：调用方持有的扫描位置数组，本函数只追加不清空，空指针直接返回；
+    // - 处理：收集扩展名直接 shell/shellex、默认/候选 ProgID shell/shellex，
+    //   以及 SystemFileAssociations\.ext 与 PerceivedType 的 shell/shellex 父键；
+    // - 返回：无返回值，结果全部写入 outputList。
+    //
+    // 注册表往返收敛（这里是本页最重的一处扫描，必须把 O(扩展名 × 根) 次 RegOpenKeyEx 压下去）：
+    // 1) 三个 Classes 根的一级子键、以及各根 SystemFileAssociations 的一级子键各只枚举一次，
+    //    「扩展名/ProgID/感知类型 在该根是否存在」改为内存哈希查表，不存在时零注册表往返；
+    // 2) 每个关联键的 shell / shellex / OpenWithProgids 三个分支由一次子键枚举同时判定并缓存，
+    //    没有 shell 也没有 shellex 的关联键（绝大多数扩展名）直接跳过后续两次枚举；
+    // 3) 已探测过的菜单父键无论是否命中都记入 probedLocations，
+    //    避免三轮 sourceRoot 对同一个不存在的位置重复探测三遍。
     void addFormatContextMenuLocations(
         std::vector<RegistryLocationDefinition>* outputList)
     {
@@ -585,40 +607,198 @@ namespace ks::misc::context_menu_cleaner_detail
         {
             return;
         }
-        QSet<QString> seenLocations;
+
+        const std::array<ClassRootDefinition, 3> roots = classRoots();
+
+        // 根级一次性索引：
+        // - classesChildNameLists：各根 Classes 一级子键原始名，主循环直接复用，不再重复枚举；
+        // - classesChildNameSets/systemFileAssociationChildNameSets：同一批名字的小写集合，用于存在性查表；
+        // - 集合为空表示该根索引不可用（枚举失败或确实无子键），后续退回逐键探测保持原有覆盖面。
+        std::array<QStringList, 3> classesChildNameLists;
+        std::array<QSet<QString>, 3> classesChildNameSets;
+        std::array<QSet<QString>, 3> systemFileAssociationChildNameSets;
+        for (std::size_t rootIndex = 0; rootIndex < roots.size(); ++rootIndex)
+        {
+            const ClassRootDefinition& indexedRoot = roots[rootIndex];
+            classesChildNameLists[rootIndex] = enumerateRegistrySubKeys(
+                indexedRoot.rootKey,
+                indexedRoot.classesPath,
+                indexedRoot.viewFlag);
+            for (const QString& childName : classesChildNameLists[rootIndex])
+            {
+                classesChildNameSets[rootIndex].insert(childName.toLower());
+            }
+            if (!classesChildNameSets[rootIndex].contains(
+                    QStringLiteral("systemfileassociations")))
+            {
+                continue;
+            }
+            const QStringList associationChildNames = enumerateRegistrySubKeys(
+                indexedRoot.rootKey,
+                joinedClassPath(
+                    indexedRoot,
+                    QStringLiteral("SystemFileAssociations")),
+                indexedRoot.viewFlag);
+            for (const QString& childName : associationChildNames)
+            {
+                systemFileAssociationChildNameSets[rootIndex].insert(childName.toLower());
+            }
+        }
+
+        // associationKeyMayExist：
+        // - 输入 rootIndex/associationPath：Classes 根下标与关联相对路径（扩展名、ProgID 或 SystemFileAssociations\X）；
+        // - 处理：用根级索引判断该关联键是否可能存在，索引不可用时保守放行；
+        // - 返回：false 表示可以确定该键不存在，调用方可以省掉全部注册表往返。
+        const auto associationKeyMayExist =
+            [&classesChildNameSets, &systemFileAssociationChildNameSets](
+                const std::size_t rootIndex,
+                const QString& associationPath) -> bool
+        {
+            if (classesChildNameSets[rootIndex].isEmpty())
+            {
+                return true;
+            }
+            const qsizetype separatorIndex = associationPath.indexOf('\\');
+            const QString topLevelName = separatorIndex < 0
+                ? associationPath
+                : associationPath.left(separatorIndex);
+            if (!classesChildNameSets[rootIndex].contains(topLevelName.toLower()))
+            {
+                return false;
+            }
+            if (separatorIndex < 0)
+            {
+                return true;
+            }
+            if (topLevelName.compare(
+                    QStringLiteral("SystemFileAssociations"),
+                    Qt::CaseInsensitive) != 0
+                || systemFileAssociationChildNameSets[rootIndex].isEmpty())
+            {
+                return true;
+            }
+            const QString remainingPath = associationPath.mid(separatorIndex + 1);
+            if (remainingPath.contains('\\'))
+            {
+                return true;
+            }
+            return systemFileAssociationChildNameSets[rootIndex].contains(
+                remainingPath.toLower());
+        };
+
+        // branchPresenceCache：
+        // - 键为「根显示名|关联相对路径」小写文本，值为该关联键的分支存在性快照；
+        // - 同一个 ProgID 被多个扩展名引用、同一扩展名被三轮 sourceRoot 复扫时都直接命中缓存。
+        QHash<QString, ClassKeyBranchPresence> branchPresenceCache;
+
+        // branchPresenceOf：
+        // - 输入 rootIndex/associationPath：Classes 根下标与关联相对路径；
+        // - 处理：先做存在性查表，必要时用一次子键枚举同时判定 shell/shellex/OpenWithProgids，并写入缓存；
+        // - 返回：该关联键的分支存在性快照，键不存在或不可枚举时三个字段全为 false。
+        const auto branchPresenceOf =
+            [&roots, &branchPresenceCache, &associationKeyMayExist](
+                const std::size_t rootIndex,
+                const QString& associationPath) -> ClassKeyBranchPresence
+        {
+            const ClassRootDefinition& root = roots[rootIndex];
+            const QString cacheKey = QStringLiteral("%1|%2")
+                .arg(root.rootLabel, associationPath)
+                .toLower();
+            const auto cachedIterator = branchPresenceCache.constFind(cacheKey);
+            if (cachedIterator != branchPresenceCache.constEnd())
+            {
+                return cachedIterator.value();
+            }
+
+            ClassKeyBranchPresence presence;
+            if (associationKeyMayExist(rootIndex, associationPath))
+            {
+                const QStringList childNames = enumerateRegistrySubKeys(
+                    root.rootKey,
+                    joinedClassPath(root, associationPath),
+                    root.viewFlag);
+                for (const QString& childName : childNames)
+                {
+                    if (childName.compare(
+                            QStringLiteral("shell"),
+                            Qt::CaseInsensitive) == 0)
+                    {
+                        presence.hasShellBranch = true;
+                    }
+                    else if (childName.compare(
+                                 QStringLiteral("shellex"),
+                                 Qt::CaseInsensitive) == 0)
+                    {
+                        presence.hasShellExtensionBranch = true;
+                    }
+                    else if (childName.compare(
+                                 QStringLiteral("OpenWithProgids"),
+                                 Qt::CaseInsensitive) == 0)
+                    {
+                        presence.hasOpenWithProgidsBranch = true;
+                    }
+                }
+            }
+            branchPresenceCache.insert(cacheKey, presence);
+            return presence;
+        };
+
+        // probedLocations：
+        // - 记录「已探测过」而不是「已命中」的菜单父键身份；
+        // - 不存在的位置也会被记住，三轮 sourceRoot 不会对同一个空位置反复 RegOpenKeyEx。
+        QSet<QString> probedLocations;
 
         // appendMenuLocations：
-        // - 输入 Classes 根、相对关联键和来源描述；
-        // - 处理：仅当 shell 或 ContextMenuHandlers 真有子项时追加扫描位置；
-        // - 输出：同一个根键/视图/路径只追加一次，控制大规模扩展名扫描结果。
-        const auto appendMenuLocations = [outputList, &seenLocations](
-            const ClassRootDefinition& root,
-            const QString& associationPath,
-            const QString& sourceGroup) {
-            const std::array<std::tuple<QString, QString, bool, bool>, 2> menuKinds{
+        // - 输入 rootIndex/associationPath/sourceGroup：Classes 根下标、相对关联键和来源描述；
+        // - 处理：先按分支快照跳过没有 shell/shellex 的关联键，再只对真有子项的菜单父键追加扫描位置；
+        // - 输出：无返回值，同一个根键/视图/路径只追加一次，控制大规模扩展名扫描结果。
+        const auto appendMenuLocations =
+            [outputList, &roots, &probedLocations, &branchPresenceOf](
+                const std::size_t rootIndex,
+                const QString& associationPath,
+                const QString& sourceGroup)
+        {
+            const ClassRootDefinition& root = roots[rootIndex];
+            const ClassKeyBranchPresence presence = branchPresenceOf(
+                rootIndex,
+                associationPath);
+            if (!presence.hasShellBranch && !presence.hasShellExtensionBranch)
+            {
+                return;
+            }
+
+            const std::array<std::tuple<QString, QString, bool, bool, bool>, 2> menuKinds{
                 std::make_tuple(
                     QStringLiteral("shell"),
                     QStringLiteral("shell"),
                     true,
-                    false),
+                    false,
+                    presence.hasShellBranch),
                 std::make_tuple(
                     QStringLiteral("shellex\\ContextMenuHandlers"),
                     QStringLiteral("shellex"),
                     false,
-                    true)
+                    true,
+                    presence.hasShellExtensionBranch)
             };
-            for (const auto& [pathSuffix, entryKind, shellVerb, shellExtension] : menuKinds)
+            for (const auto& [pathSuffix, entryKind, shellVerb, shellExtension, branchPresent]
+                 : menuKinds)
             {
+                if (!branchPresent)
+                {
+                    continue;
+                }
                 const QString menuPath = QStringLiteral("%1\\%2\\%3")
                     .arg(root.classesPath, associationPath, pathSuffix);
                 const QString identity = QStringLiteral("%1|%2|%3")
                     .arg(root.rootLabel, menuPath)
                     .arg(root.viewFlag)
                     .toLower();
-                if (seenLocations.contains(identity))
+                if (probedLocations.contains(identity))
                 {
                     continue;
                 }
+                probedLocations.insert(identity);
                 if (enumerateRegistrySubKeys(
                         root.rootKey,
                         menuPath,
@@ -626,7 +806,6 @@ namespace ks::misc::context_menu_cleaner_detail
                 {
                     continue;
                 }
-                seenLocations.insert(identity);
                 outputList->push_back(RegistryLocationDefinition{
                     root.rootKey,
                     root.rootLabel,
@@ -641,36 +820,37 @@ namespace ks::misc::context_menu_cleaner_detail
         };
 
         // 扩展名关联扫描：
-        // - 每个来源根先读取本层扩展名及其默认 ProgID/OpenWithProgids；
-        // - ProgID 可能注册在另一视图或 HKLM，因此对三类 Classes 根分别探测。
-        const std::array<ClassRootDefinition, 3> roots = classRoots();
-        for (const ClassRootDefinition& sourceRoot : roots)
+        // - 每个来源根复用上面已经枚举好的扩展名列表，并读取其默认 ProgID/OpenWithProgids；
+        // - ProgID 可能注册在另一视图或 HKLM，因此对三类 Classes 根分别探测（存在性先查表）。
+        for (std::size_t sourceRootIndex = 0; sourceRootIndex < roots.size(); ++sourceRootIndex)
         {
-            const QStringList classNames = enumerateRegistrySubKeys(
-                sourceRoot.rootKey,
-                sourceRoot.classesPath,
-                sourceRoot.viewFlag);
-            for (const QString& extensionName : classNames)
+            const ClassRootDefinition& sourceRoot = roots[sourceRootIndex];
+            for (const QString& extensionName : classesChildNameLists[sourceRootIndex])
             {
                 if (!extensionName.startsWith('.'))
                 {
                     continue;
                 }
                 appendMenuLocations(
-                    sourceRoot,
+                    sourceRootIndex,
                     extensionName,
                     QStringLiteral("扩展名 %1").arg(extensionName));
 
                 // SystemFileAssociations 的 .ext 分支不依赖默认 ProgID；
                 // 在每个 Classes 根都探测，兼容用户覆盖和两种机器视图。
-                for (const ClassRootDefinition& targetRoot : roots)
+                for (std::size_t targetRootIndex = 0; targetRootIndex < roots.size(); ++targetRootIndex)
                 {
                     appendMenuLocations(
-                        targetRoot,
+                        targetRootIndex,
                         QStringLiteral("SystemFileAssociations\\%1").arg(extensionName),
                         QStringLiteral("格式关联 %1").arg(extensionName));
                 }
 
+                // extensionPresence 来自上面 appendMenuLocations 已经填好的缓存，这里是纯内存命中；
+                // 没有 OpenWithProgids 子键时跳过一次值枚举。
+                const ClassKeyBranchPresence extensionPresence = branchPresenceOf(
+                    sourceRootIndex,
+                    extensionName);
                 const QString extensionPath = joinedClassPath(
                     sourceRoot,
                     extensionName);
@@ -684,16 +864,19 @@ namespace ks::misc::context_menu_cleaner_detail
                 {
                     progIds.push_back(defaultProgId.trimmed());
                 }
-                const QString progidsPath =
-                    extensionPath + QStringLiteral("\\OpenWithProgids");
-                for (const RegistryValueSnapshot& value : enumerateRegistryValues(
-                         sourceRoot.rootKey,
-                         progidsPath,
-                         sourceRoot.viewFlag))
+                if (extensionPresence.hasOpenWithProgidsBranch)
                 {
-                    if (!value.valueName.trimmed().isEmpty())
+                    const QString progidsPath =
+                        extensionPath + QStringLiteral("\\OpenWithProgids");
+                    for (const RegistryValueSnapshot& value : enumerateRegistryValues(
+                             sourceRoot.rootKey,
+                             progidsPath,
+                             sourceRoot.viewFlag))
                     {
-                        progIds.push_back(value.valueName.trimmed());
+                        if (!value.valueName.trimmed().isEmpty())
+                        {
+                            progIds.push_back(value.valueName.trimmed());
+                        }
                     }
                 }
                 progIds.removeDuplicates();
@@ -707,10 +890,10 @@ namespace ks::misc::context_menu_cleaner_detail
                     {
                         continue;
                     }
-                    for (const ClassRootDefinition& targetRoot : roots)
+                    for (std::size_t targetRootIndex = 0; targetRootIndex < roots.size(); ++targetRootIndex)
                     {
                         appendMenuLocations(
-                            targetRoot,
+                            targetRootIndex,
                             progId,
                             QStringLiteral("%1 → %2").arg(extensionName, progId));
                     }
@@ -725,10 +908,10 @@ namespace ks::misc::context_menu_cleaner_detail
                     && !perceivedType.contains('\\')
                     && !perceivedType.contains('/'))
                 {
-                    for (const ClassRootDefinition& targetRoot : roots)
+                    for (std::size_t targetRootIndex = 0; targetRootIndex < roots.size(); ++targetRootIndex)
                     {
                         appendMenuLocations(
-                            targetRoot,
+                            targetRootIndex,
                             QStringLiteral("SystemFileAssociations\\%1")
                                 .arg(perceivedType.trimmed()),
                             QStringLiteral("%1 感知类型 %2")

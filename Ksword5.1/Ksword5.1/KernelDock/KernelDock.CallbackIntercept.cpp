@@ -46,17 +46,20 @@
 #include <QTableView>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QThreadPool>
 #include <QTimer>
 #include <QTimeZone>
 #include <QUrl>
 #include <QVariant>
 #include <QVBoxLayout>
+#include <QVector>
 
 #include <Windows.h>
 #include <sddl.h>
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 #include <vector>
 
 using ksword::kernel_dock_internal::kernelText;
@@ -1418,6 +1421,71 @@ namespace
             comboBox->view()->setStyleSheet(KswordTheme::ThemedComboBoxPopupViewStyle());
         }
     }
+
+    // resolveFileMonitorProcessNameText：
+    // - 输入 processId：R0 事件的发起进程；nameCache：调用方私有的 PID→进程名缓存；
+    // - 处理：命中缓存直接返回，未命中才 OpenProcess + QueryFullProcessImageNameW 取镜像名；
+    // - 返回：可直接填表的进程名文本；解析失败回落到 "PID %1"。
+    // 说明：只用 Win32 与 Qt 值类型，可在后台线程调用。
+    QString resolveFileMonitorProcessNameText(const quint32 processId, QHash<quint32, QString>& nameCache)
+    {
+        if (processId == 0U)
+        {
+            return QStringLiteral("Idle");
+        }
+        if (processId == 4U)
+        {
+            return QStringLiteral("System");
+        }
+        const auto cacheIterator = nameCache.constFind(processId);
+        if (cacheIterator != nameCache.constEnd())
+        {
+            return cacheIterator.value();
+        }
+
+        QString processName;
+        HANDLE processHandle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+        if (processHandle != nullptr)
+        {
+            wchar_t imagePathBuffer[MAX_PATH * 4] = {};
+            DWORD imagePathChars = static_cast<DWORD>(sizeof(imagePathBuffer) / sizeof(imagePathBuffer[0]));
+            if (::QueryFullProcessImageNameW(processHandle, 0, imagePathBuffer, &imagePathChars) != FALSE)
+            {
+                processName = QFileInfo(QString::fromWCharArray(imagePathBuffer, static_cast<int>(imagePathChars))).fileName();
+            }
+            ::CloseHandle(processHandle);
+        }
+        if (processName.isEmpty())
+        {
+            processName = QStringLiteral("PID %1").arg(processId);
+        }
+        nameCache.insert(processId, processName);
+        return processName;
+    }
+
+    // FileMonitorPreparedEvent：
+    // - 用途：后台 drain 任务回投给 UI 线程的纯值类型行数据；
+    // - 输入：R0 事件行加上后台已经解析好的进程名；
+    // - 输出：UI 线程只需按字段填表，不再触碰 OpenProcess。
+    struct FileMonitorPreparedEvent
+    {
+        ksword::ark::FileMonitorEventRow eventRow;  // eventRow：R0 原始事件行。
+        QString processNameText;                    // processNameText：后台解析好的进程名。
+    };
+
+    // FileMonitorDrainSnapshot：
+    // - 用途：一次后台 drain 的完整结果，全部是值类型；
+    // - 输入：由 QThreadPool 任务填充；
+    // - 输出：UI 线程据此追加表格行并刷新状态标签。
+    struct FileMonitorDrainSnapshot
+    {
+        bool ioOk = false;                          // ioOk：drain IOCTL 是否成功。
+        unsigned long win32Error = 0UL;             // win32Error：失败时的 Win32 错误码。
+        quint32 totalQueuedBeforeDrain = 0U;        // totalQueuedBeforeDrain：取出前队列深度。
+        quint32 droppedCount = 0U;                  // droppedCount：累计丢弃事件数。
+        QVector<FileMonitorPreparedEvent> events;   // events：已解析完进程名的事件行。
+        QHash<quint32, QString> resolvedNames;      // resolvedNames：本轮解析出的 PID→进程名，回投后并回主缓存。
+    };
 }
 
 class CallbackInterceptController final : public QObject
@@ -1825,38 +1893,13 @@ private:
 
     QString resolveProcessNameForFileMonitor(const quint32 processId)
     {
-        if (processId == 0U)
-        {
-            return QStringLiteral("Idle");
-        }
-        if (processId == 4U)
-        {
-            return QStringLiteral("System");
-        }
-        const auto cacheIterator = m_fileMonitorProcessNameCache.constFind(processId);
-        if (cacheIterator != m_fileMonitorProcessNameCache.constEnd())
-        {
-            return cacheIterator.value();
-        }
-
-        QString processName;
-        HANDLE processHandle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
-        if (processHandle != nullptr)
-        {
-            wchar_t imagePathBuffer[MAX_PATH * 4] = {};
-            DWORD imagePathChars = static_cast<DWORD>(sizeof(imagePathBuffer) / sizeof(imagePathBuffer[0]));
-            if (::QueryFullProcessImageNameW(processHandle, 0, imagePathBuffer, &imagePathChars) != FALSE)
-            {
-                processName = QFileInfo(QString::fromWCharArray(imagePathBuffer, static_cast<int>(imagePathChars))).fileName();
-            }
-            ::CloseHandle(processHandle);
-        }
-        if (processName.isEmpty())
-        {
-            processName = QStringLiteral("PID %1").arg(processId);
-        }
-        m_fileMonitorProcessNameCache.insert(processId, processName);
-        return processName;
+        // resolveProcessNameForFileMonitor：
+        // - 输入 processId：需要展示进程名的 PID；
+        // - 处理：复用控制器自己的 PID→进程名缓存，交给文件级解析函数完成 Win32 查询；
+        // - 返回：可直接填表的进程名文本。
+        // 说明：仅供 UI 线程的单次、低频路径（白名单表）使用；文件监控 drain 的批量
+        // 解析已经搬到后台线程，不再走这里。
+        return resolveFileMonitorProcessNameText(processId, m_fileMonitorProcessNameCache);
     }
 
     void startFileMonitorFsctlCapture()
@@ -1919,27 +1962,97 @@ private:
             return;
         }
 
-        const ksword::ark::DriverClient driverClient;
-        const ksword::ark::FileMonitorDrainResult drainResult = driverClient.drainFileMonitor(128UL, 0UL);
-        if (!drainResult.io.ok)
+        // drain IOCTL 每次都要 CreateFileW + 同步 DeviceIoControl，单批还要为每个新 PID
+        // 做一次 OpenProcess + QueryFullProcessImageNameW；1500ms 周期定时器直接在 UI
+        // 线程跑会持续掉帧。这里只投递后台任务，UI 线程仅负责回投后的填表。
+        if (m_fileMonitorDrainInFlight)
         {
-            m_fileMonitorStatusLabel->setText(kernelText("kernel.callback.intercept.file_monitor.status.read_failed", QStringLiteral("读取失败：error=%1")).arg(drainResult.io.win32Error));
+            return;
+        }
+        m_fileMonitorDrainInFlight = true;
+
+        const QHash<quint32, QString> nameCacheSnapshot = m_fileMonitorProcessNameCache;
+        QThreadPool::globalInstance()->start(
+            [guardThis, nameCacheSnapshot]()
+            {
+                QHash<quint32, QString> workerNameCache = nameCacheSnapshot;
+                FileMonitorDrainSnapshot snapshot;
+
+                const ksword::ark::DriverClient driverClient;
+                const ksword::ark::FileMonitorDrainResult drainResult = driverClient.drainFileMonitor(128UL, 0UL);
+                snapshot.ioOk = drainResult.io.ok;
+                snapshot.win32Error = drainResult.io.win32Error;
+                snapshot.totalQueuedBeforeDrain = drainResult.totalQueuedBeforeDrain;
+                snapshot.droppedCount = drainResult.droppedCount;
+                if (snapshot.ioOk)
+                {
+                    snapshot.events.reserve(static_cast<qsizetype>(drainResult.events.size()));
+                    for (const ksword::ark::FileMonitorEventRow& eventRow : drainResult.events)
+                    {
+                        FileMonitorPreparedEvent preparedEvent;
+                        preparedEvent.eventRow = eventRow;
+                        preparedEvent.processNameText =
+                            resolveFileMonitorProcessNameText(eventRow.processId, workerNameCache);
+                        snapshot.events.push_back(std::move(preparedEvent));
+                    }
+                    snapshot.resolvedNames = std::move(workerNameCache);
+                }
+
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr)
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(appInstance,
+                    [guardThis, snapshot = std::move(snapshot)]() mutable
+                    {
+                        if (guardThis.isNull())
+                        {
+                            return;
+                        }
+                        guardThis->applyFileMonitorDrainSnapshot(std::move(snapshot));
+                    });
+            });
+    }
+
+    void applyFileMonitorDrainSnapshot(FileMonitorDrainSnapshot snapshot)
+    {
+        // applyFileMonitorDrainSnapshot：
+        // - 输入 snapshot：后台 drain 任务产出的纯值类型结果；
+        // - 处理：合并进程名缓存、追加表格行、刷新过滤与状态标签；
+        // - 返回：无返回值，并清除在途标志允许下一次周期性 drain。
+        m_fileMonitorDrainInFlight = false;
+        if (m_fileMonitorTable == nullptr || m_fileMonitorStatusLabel == nullptr)
+        {
             return;
         }
 
-        for (const ksword::ark::FileMonitorEventRow& eventRow : drainResult.events)
+        if (!snapshot.ioOk)
         {
-            appendFileMonitorEventRow(eventRow);
+            m_fileMonitorStatusLabel->setText(kernelText("kernel.callback.intercept.file_monitor.status.read_failed", QStringLiteral("读取失败：error=%1")).arg(snapshot.win32Error));
+            return;
+        }
+
+        for (auto nameIterator = snapshot.resolvedNames.constBegin();
+             nameIterator != snapshot.resolvedNames.constEnd();
+             ++nameIterator)
+        {
+            m_fileMonitorProcessNameCache.insert(nameIterator.key(), nameIterator.value());
+        }
+
+        for (const FileMonitorPreparedEvent& preparedEvent : snapshot.events)
+        {
+            appendFileMonitorEventRow(preparedEvent.eventRow, preparedEvent.processNameText);
         }
         applyFileMonitorEventFilter();
         m_fileMonitorStatusLabel->setText(
             kernelText("kernel.callback.intercept.file_monitor.status.drained", QStringLiteral("读取 %1 条，队列前=%2，丢弃=%3"))
-            .arg(drainResult.events.size())
-            .arg(drainResult.totalQueuedBeforeDrain)
-            .arg(drainResult.droppedCount));
+            .arg(snapshot.events.size())
+            .arg(snapshot.totalQueuedBeforeDrain)
+            .arg(snapshot.droppedCount));
     }
 
-    void appendFileMonitorEventRow(const ksword::ark::FileMonitorEventRow& eventRow)
+    void appendFileMonitorEventRow(const ksword::ark::FileMonitorEventRow& eventRow, const QString& processNameText)
     {
         if (m_fileMonitorTable == nullptr)
         {
@@ -1955,7 +2068,7 @@ private:
         timeItem->setData(Qt::UserRole, isFsctlEvent);
         m_fileMonitorTable->setItem(rowIndex, static_cast<int>(FileMonitorColumn::Time), timeItem);
         m_fileMonitorTable->setItem(rowIndex, static_cast<int>(FileMonitorColumn::Pid), makeReadOnlyItem(QString::number(eventRow.processId)));
-        m_fileMonitorTable->setItem(rowIndex, static_cast<int>(FileMonitorColumn::Process), makeReadOnlyItem(resolveProcessNameForFileMonitor(eventRow.processId)));
+        m_fileMonitorTable->setItem(rowIndex, static_cast<int>(FileMonitorColumn::Process), makeReadOnlyItem(processNameText));
         m_fileMonitorTable->setItem(rowIndex, static_cast<int>(FileMonitorColumn::Path), makeReadOnlyItem(QString::fromStdWString(eventRow.path)));
         m_fileMonitorTable->setItem(rowIndex, static_cast<int>(FileMonitorColumn::FsctlName), makeReadOnlyItem(isFsctlEvent ? fileMonitorFsctlNameText(eventRow.fsControlCode) : QStringLiteral("-")));
         m_fileMonitorTable->setItem(rowIndex, static_cast<int>(FileMonitorColumn::ControlCode), makeReadOnlyItem(isFsctlEvent ? formatFileMonitorHex32(eventRow.fsControlCode) : QStringLiteral("-")));
@@ -4595,6 +4708,7 @@ private:
     QTableWidget* m_fileMonitorTable = nullptr;
     QTimer* m_fileMonitorDrainTimer = nullptr;
     QHash<quint32, QString> m_fileMonitorProcessNameCache;
+    bool m_fileMonitorDrainInFlight = false;    // m_fileMonitorDrainInFlight：后台 drain 任务在途标志，只在 UI 线程读写，防止周期定时器堆积请求。
 
     KSWORD_ARK_CALLBACK_RUNTIME_STATE m_runtimeState{};
     quint64 m_nextRuleVersion = 1ULL;

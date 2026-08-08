@@ -24,13 +24,12 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
-#include <QFileIconProvider>
-#include <QFileInfo>
 #include <QJsonParseError>
 #include <QGridLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -47,6 +46,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -65,7 +65,9 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <objbase.h>
 #include <Rpc.h>
+#include <Shellapi.h>
 #include <fwpmu.h>
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -81,6 +83,97 @@ struct NetworkAuditAsyncState
 
 namespace
 {
+    // kAuditProcessIdColumn / kAuditProcessNameColumn：
+    // - TCP、UDP 与 Cross-View 三张表都把 PID 放在第 0 列、进程名放在第 1 列；
+    // - 图标异步回补时按这两个列号定位单元格。
+    constexpr int kAuditProcessIdColumn = 0;
+    constexpr int kAuditProcessNameColumn = 1;
+
+    // auditProcessPlaceholderIcon 作用：
+    // - 返回审计页统一的进程占位图标，图标未解析完成或解析失败时顶上；
+    // - 入参：无；
+    // - 返回：共享 QIcon 引用，只能在 UI 线程使用。
+    const QIcon& auditProcessPlaceholderIcon()
+    {
+        static const QIcon placeholderIcon(QStringLiteral(":/Icon/process_main.svg"));
+        return placeholderIcon;
+    }
+
+    // extractProcessIconImageForPid 作用：
+    // - 在线程池工作线程里按 PID 解析可执行路径并向 Shell 查询小图标；
+    // - SHGetFileInfoW 依赖 COM，工作线程必须自己成对 CoInitializeEx / CoUninitialize；
+    // - 入参 processId：目标进程 PID；
+    // - 返回：可跨线程传递的 QImage，失败时返回空 QImage（调用方回退占位图标）。
+    QImage extractProcessIconImageForPid(const quint32 processId)
+    {
+        const std::string processPath = ks::process::QueryProcessPathByPid(processId);
+        if (processPath.empty())
+        {
+            return QImage();
+        }
+
+        const HRESULT comInitializeResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const bool comInitializedHere = SUCCEEDED(comInitializeResult);
+
+        const QString processPathText = QString::fromUtf8(processPath.c_str());
+        SHFILEINFOW shellFileInfo{};
+        const DWORD_PTR shellQueryResult = ::SHGetFileInfoW(
+            reinterpret_cast<const wchar_t*>(processPathText.utf16()),
+            0,
+            &shellFileInfo,
+            sizeof(shellFileInfo),
+            SHGFI_ICON | SHGFI_SMALLICON);
+
+        QImage processIconImage;
+        if (shellQueryResult != 0 && shellFileInfo.hIcon != nullptr)
+        {
+            // QImage::fromHICON 会复制像素数据，转换完成后必须归还 Shell 分配的 HICON。
+            processIconImage = QImage::fromHICON(shellFileInfo.hIcon);
+            ::DestroyIcon(shellFileInfo.hIcon);
+        }
+
+        if (comInitializedHere)
+        {
+            ::CoUninitialize();
+        }
+        return processIconImage;
+    }
+
+    // applyResolvedIconToAuditTableRows 作用：
+    // - 把异步解析完成的进程图标补到指定表中所有同 PID 的行上；
+    // - 入参 tableWidget：TCP / UDP / Cross-View 三张表之一，可为空；
+    // - 入参 processId：本次解析完成的 PID；
+    // - 入参 resolvedIcon：解析结果或占位图标；
+    // - 返回：无。该函数只能在 UI 线程调用。
+    void applyResolvedIconToAuditTableRows(
+        QTableWidget* const tableWidget,
+        const quint32 processId,
+        const QIcon& resolvedIcon)
+    {
+        if (tableWidget == nullptr)
+        {
+            return;
+        }
+
+        const QString processIdText = QString::number(processId);
+        for (int rowIndex = 0; rowIndex < tableWidget->rowCount(); ++rowIndex)
+        {
+            const QTableWidgetItem* const processIdItem =
+                tableWidget->item(rowIndex, kAuditProcessIdColumn);
+            if (processIdItem == nullptr || processIdItem->text() != processIdText)
+            {
+                continue;
+            }
+
+            QTableWidgetItem* const processNameItem =
+                tableWidget->item(rowIndex, kAuditProcessNameColumn);
+            if (processNameItem != nullptr)
+            {
+                processNameItem->setIcon(resolvedIcon);
+            }
+        }
+    }
+
     // createReadOnlyCell 作用：
     // - 创建不可编辑的表格单元格；
     // - 输入 cellText 为待显示文本；
@@ -2139,7 +2232,7 @@ QIcon NetworkAuditPage::resolveProcessIcon(const std::uint32_t processId)
 {
     if (processId == 0U)
     {
-        return QIcon(QStringLiteral(":/Icon/process_main.svg"));
+        return auditProcessPlaceholderIcon();
     }
 
     const quint32 processIdKey = static_cast<quint32>(processId);
@@ -2149,19 +2242,72 @@ QIcon NetworkAuditPage::resolveProcessIcon(const std::uint32_t processId)
         return cachedIterator.value();
     }
 
-    QIcon processIcon;
-    const std::string processPath = ks::process::QueryProcessPathByPid(processId);
-    if (!processPath.empty())
+    // 建表链路只允许做缓存查询：首屏有连接的进程常有上百个，
+    // 逐个 OpenProcess + Shell 图标提取会把整段建表拖到秒级。
+    scheduleProcessIconResolution(processId);
+    return auditProcessPlaceholderIcon();
+}
+
+void NetworkAuditPage::scheduleProcessIconResolution(const std::uint32_t processId)
+{
+    const quint32 processIdKey = static_cast<quint32>(processId);
+    if (processIdKey == 0U ||
+        m_processIconCache.contains(processIdKey) ||
+        m_processIconPendingPidSet.contains(processIdKey))
     {
-        static QFileIconProvider iconProvider;
-        processIcon = iconProvider.icon(QFileInfo(QString::fromUtf8(processPath.c_str())));
+        return;
     }
-    if (processIcon.isNull())
-    {
-        processIcon = QIcon(QStringLiteral(":/Icon/process_main.svg"));
-    }
-    m_processIconCache.insert(processIdKey, processIcon);
-    return processIcon;
+    m_processIconPendingPidSet.insert(processIdKey);
+
+    // 复用本页既有的“共享状态 + owner 复核”回投模式：
+    // 页面析构时 owner 已置空，工作线程不会向已销毁的 QWidget 投递调用。
+    const std::shared_ptr<NetworkAuditAsyncState> asyncState = m_asyncState;
+    QThreadPool::globalInstance()->start([asyncState, processIdKey]()
+        {
+            QImage processIconImage = extractProcessIconImageForPid(processIdKey);
+
+            std::lock_guard<std::mutex> dispatchLock(asyncState->mutex);
+            NetworkAuditPage* const receiver = asyncState->owner;
+            if (receiver == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                receiver,
+                [asyncState, processIdKey, processIconImage = std::move(processIconImage)]() mutable
+                {
+                    NetworkAuditPage* page = nullptr;
+                    {
+                        std::lock_guard<std::mutex> stateLock(asyncState->mutex);
+                        page = asyncState->owner;
+                    }
+                    if (page == nullptr)
+                    {
+                        return;
+                    }
+                    page->applyProcessIconResolutionResult(processIdKey, std::move(processIconImage));
+                },
+                Qt::QueuedConnection);
+        });
+}
+
+void NetworkAuditPage::applyProcessIconResolutionResult(
+    const std::uint32_t processId,
+    QImage iconImage)
+{
+    const quint32 processIdKey = static_cast<quint32>(processId);
+    m_processIconPendingPidSet.remove(processIdKey);
+
+    // QPixmap/QIcon 只能在 UI 线程构造；解析失败也写入缓存，避免同一 PID 反复冷查。
+    const QIcon resolvedIcon = iconImage.isNull()
+        ? auditProcessPlaceholderIcon()
+        : QIcon(QPixmap::fromImage(iconImage));
+    m_processIconCache.insert(processIdKey, resolvedIcon);
+
+    // 三张表的 PID 都在第 0 列、进程名都在第 1 列，直接按文本回补已落表的行。
+    applyResolvedIconToAuditTableRows(m_tcpTable, processIdKey, resolvedIcon);
+    applyResolvedIconToAuditTableRows(m_udpTable, processIdKey, resolvedIcon);
+    applyResolvedIconToAuditTableRows(m_crossSummaryTable, processIdKey, resolvedIcon);
 }
 
 void NetworkAuditPage::updateCrossViewActionState()

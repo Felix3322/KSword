@@ -40,6 +40,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QThreadPool>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -56,6 +57,7 @@
 #include <Windows.h>
 #include <Shellapi.h>
 #include <ShlObj.h>
+#include <objbase.h>
 
 namespace
 {
@@ -301,6 +303,103 @@ namespace
         if (!ok) return false;
         *valueOut = value;
         return true;
+    }
+
+    // kExplorerBroadcastTimeoutMs：
+    // - 作用：HWND_BROADCAST 广播时每个顶层窗口的应答超时上限（毫秒）；
+    // - 说明：广播已改在后台线程执行，超时只影响该线程，不再冻结 UI。
+    constexpr UINT kExplorerBroadcastTimeoutMs = 1500;
+
+    // kStateApplyGenerationProperty：
+    // - 作用：优化动作序列的代次，挂在页面对象的动态属性上；
+    // - 说明：后台广播回投 UI 线程时比对代次，避免把过期结果推进到新一轮应用序列。
+    constexpr const char* kStateApplyGenerationProperty = "kswordStateApplyGeneration";
+
+    // ExplorerNotifyOutcome：
+    // - 作用：承载 ExplorerNotify 广播执行结果的纯值类型对象，可安全跨线程回投；
+    // - 入参：无；
+    // - 返回：无。succeeded 表示动作是否成功，errorTextValue 为失败原因。
+    struct ExplorerNotifyOutcome
+    {
+        bool succeeded = false;     // 广播动作是否成功执行。
+        QString errorTextValue;     // 失败原因文本，成功时为空。
+    };
+
+    // actionUsesBlockingBroadcast：
+    // - 作用：判断动作是否属于会阻塞调用线程的 ExplorerNotify 广播（AssocChanged / Custom）；
+    // - 入参 actionObject：单条优化动作的 JSON 对象；
+    // - 返回：true 表示必须放到后台线程执行，否则 UI 会被顶层窗口的应答超时拖住。
+    bool actionUsesBlockingBroadcast(const QJsonObject& actionObject)
+    {
+        const QString familyText = jsonString(actionObject, QStringLiteral("action_family"),
+            jsonString(actionObject, QStringLiteral("action_tag"))).trimmed();
+        if (familyText.compare(QStringLiteral("ExplorerNotify"), Qt::CaseInsensitive) != 0)
+        {
+            return false;
+        }
+
+        const QString typeText = jsonString(actionObject, QStringLiteral("Type"));
+        return typeText.compare(QStringLiteral("AssocChanged"), Qt::CaseInsensitive) == 0 ||
+            typeText.compare(QStringLiteral("Custom"), Qt::CaseInsensitive) == 0;
+    }
+
+    // runExplorerNotifyBroadcast：
+    // - 作用：真正执行 ExplorerNotify 的 shell 通知与顶层窗口广播，调用线程会被阻塞；
+    // - 入参 actionObject：单条 ExplorerNotify 动作；
+    //         initializeComApartment：本线程是否需要自行初始化 COM 套间（后台线程必须传 true）；
+    // - 返回：执行结果值对象。全程只碰 Win32/Shell API，不触碰任何 QWidget。
+    ExplorerNotifyOutcome runExplorerNotifyBroadcast(const QJsonObject& actionObject, const bool initializeComApartment)
+    {
+        ExplorerNotifyOutcome outcome;
+        const QString typeText = jsonString(actionObject, QStringLiteral("Type"));
+
+        if (typeText.compare(QStringLiteral("AssocChanged"), Qt::CaseInsensitive) == 0)
+        {
+            bool comApartmentInitialized = false;
+            if (initializeComApartment)
+            {
+                comApartmentInitialized = SUCCEEDED(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
+            }
+            ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+            if (comApartmentInitialized)
+            {
+                ::CoUninitialize();
+            }
+            outcome.succeeded = true;
+            return outcome;
+        }
+
+        if (typeText.compare(QStringLiteral("Custom"), Qt::CaseInsensitive) == 0)
+        {
+            quint64 messageValue = 0;
+            quint64 wParamValue = 0;
+            const bool messageOk = parseHexInteger(jsonString(actionObject, QStringLiteral("msg")), &messageValue);
+            parseHexInteger(jsonString(actionObject, QStringLiteral("wParam"), QStringLiteral("0")), &wParamValue);
+            if (!messageOk)
+            {
+                outcome.errorTextValue = QStringLiteral("ExplorerNotify Custom 缺少有效 msg。");
+                return outcome;
+            }
+
+            const QString lParamText = jsonString(actionObject, QStringLiteral("lParam"));
+            const QByteArray lParamUtf16 = QByteArray(
+                reinterpret_cast<const char*>(lParamText.utf16()),
+                (lParamText.size() + 1) * static_cast<int>(sizeof(wchar_t)));
+            DWORD_PTR sendResult = 0;
+            ::SendMessageTimeoutW(
+                HWND_BROADCAST,
+                static_cast<UINT>(messageValue),
+                static_cast<WPARAM>(wParamValue),
+                lParamText.isEmpty() ? 0 : reinterpret_cast<LPARAM>(lParamUtf16.constData()),
+                SMTO_ABORTIFHUNG,
+                kExplorerBroadcastTimeoutMs,
+                &sendResult);
+            outcome.succeeded = true;
+            return outcome;
+        }
+
+        outcome.errorTextValue = QStringLiteral("暂不支持 ExplorerNotify 类型：%1").arg(typeText);
+        return outcome;
     }
 
     // hexStringToBytes:
@@ -1918,6 +2017,8 @@ void RegistryOptimizationPage::beginStateApply(
     };
     m_stateApplyAllOk = true;
     m_stateApplyRestartExplorer = false;
+    // 序列代次自增：上一轮仍在后台执行的广播动作回投时会被识别为过期并丢弃。
+    setProperty(kStateApplyGenerationProperty, property(kStateApplyGenerationProperty).toULongLong() + 1);
     setApplyControlsEnabled(false);
     m_detailText->setLocalizedText(m_stateApplyDetailLines.join(QLatin1Char('\n')));
 
@@ -1958,6 +2059,32 @@ void RegistryOptimizationPage::continueStateApply()
         {
             completePendingAction(false, startErrorText);
         }
+        return;
+    }
+
+    // ExplorerNotify 广播会对 HWND_BROADCAST 逐个顶层窗口等待应答，繁忙窗口各自等满超时，
+    // 留在 UI 线程会造成数秒冻结；这里改成后台线程执行，完成后回投继续推进动作序列。
+    if (actionUsesBlockingBroadcast(m_stateApplyActiveAction))
+    {
+        const QJsonObject broadcastAction = m_stateApplyActiveAction;
+        const QPointer<RegistryOptimizationPage> guardedSelf(this);
+        const quint64 requestGeneration = property(kStateApplyGenerationProperty).toULongLong();
+        QThreadPool::globalInstance()->start(
+            [guardedSelf, broadcastAction, requestGeneration]()
+            {
+                const ExplorerNotifyOutcome outcome = runExplorerNotifyBroadcast(broadcastAction, true);
+
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr) { return; }
+
+                QMetaObject::invokeMethod(appInstance,
+                    [guardedSelf, requestGeneration, outcome]()
+                    {
+                        if (guardedSelf.isNull()) { return; }
+                        if (guardedSelf->property(kStateApplyGenerationProperty).toULongLong() != requestGeneration) { return; }
+                        guardedSelf->completePendingAction(outcome.succeeded, outcome.errorTextValue);
+                    });
+            });
         return;
     }
 
@@ -2038,6 +2165,9 @@ void RegistryOptimizationPage::finishStateApply()
 void RegistryOptimizationPage::cancelStateApply(const QString& reasonText)
 {
     if (!m_stateApplyInProgress) return;
+
+    // 序列代次自增：仍在后台阻塞的广播动作完成后不再推进这一轮（或下一轮）序列。
+    setProperty(kStateApplyGenerationProperty, property(kStateApplyGenerationProperty).toULongLong() + 1);
 
     if (m_stateApplyProcess != nullptr)
     {
@@ -2513,42 +2643,14 @@ bool RegistryOptimizationPage::executeExplorerNotifyAction(const QJsonObject& ac
         return false;
     }
 
-    if (typeText.compare(QStringLiteral("AssocChanged"), Qt::CaseInsensitive) == 0)
+    // AssocChanged / Custom 的正常路径已由 continueStateApply 改走后台线程；
+    // 这里只保留同步兜底（不重复初始化 COM，UI 线程套间由 Qt 负责）。
+    const ExplorerNotifyOutcome outcome = runExplorerNotifyBroadcast(actionObject, false);
+    if (!outcome.succeeded && errorTextOut != nullptr)
     {
-        ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-        return true;
+        *errorTextOut = outcome.errorTextValue;
     }
-
-    if (typeText.compare(QStringLiteral("Custom"), Qt::CaseInsensitive) == 0)
-    {
-        quint64 messageValue = 0;
-        quint64 wParamValue = 0;
-        const bool messageOk = parseHexInteger(jsonString(actionObject, QStringLiteral("msg")), &messageValue);
-        parseHexInteger(jsonString(actionObject, QStringLiteral("wParam"), QStringLiteral("0")), &wParamValue);
-        if (!messageOk)
-        {
-            if (errorTextOut != nullptr) *errorTextOut = QStringLiteral("ExplorerNotify Custom 缺少有效 msg。");
-            return false;
-        }
-
-        const QString lParamText = jsonString(actionObject, QStringLiteral("lParam"));
-        const QByteArray lParamUtf16 = QByteArray(
-            reinterpret_cast<const char*>(lParamText.utf16()),
-            (lParamText.size() + 1) * static_cast<int>(sizeof(wchar_t)));
-        DWORD_PTR sendResult = 0;
-        ::SendMessageTimeoutW(
-            HWND_BROADCAST,
-            static_cast<UINT>(messageValue),
-            static_cast<WPARAM>(wParamValue),
-            lParamText.isEmpty() ? 0 : reinterpret_cast<LPARAM>(lParamUtf16.constData()),
-            SMTO_ABORTIFHUNG,
-            1500,
-            &sendResult);
-        return true;
-    }
-
-    if (errorTextOut != nullptr) *errorTextOut = QStringLiteral("暂不支持 ExplorerNotify 类型：%1").arg(typeText);
-    return false;
+    return outcome.succeeded;
 }
 
 bool RegistryOptimizationPage::evaluateConditionText(const QString& conditionText)

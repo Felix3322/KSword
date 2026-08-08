@@ -18,7 +18,9 @@
 #include <QWidget>
 #include <QVector>
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -663,4 +665,7 @@ private:
     std::unordered_map<std::uint16_t, std::string> m_typeNameMapByIndexFromObjectTab; // m_typeNameMapByIndexFromObjectTab：对象类型页映射缓存。
     QHash<QString, QIcon> m_processIconCacheByIdentity; // m_processIconCacheByIdentity：PID + 创建时间 -> 图标缓存。
     QHash<QString, QString> m_processImagePathCacheByIdentity; // m_processImagePathCacheByIdentity：PID + 创建时间 -> 路径缓存。
+    std::uint64_t m_processIconResolveGeneration = 0; // m_processIconResolveGeneration：进程图标后台解析代次，重建句柄表时递增以淘汰在途结果。
+    std::shared_ptr<std::atomic_bool> m_processIconResolveCancelFlag; // m_processIconResolveCancelFlag：进程图标后台解析取消位，重建句柄表时置位让上一轮扫描尽快退出。
+    std::vector<QTreeWidgetItem*> m_handleTableItemsByRowIndex; // m_handleTableItemsByRowIndex：按 m_rows 下标记录句柄表项指针，仅供图标异步回填定位，不持有所有权。
 };

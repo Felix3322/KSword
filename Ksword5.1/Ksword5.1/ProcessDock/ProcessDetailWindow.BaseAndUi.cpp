@@ -28,6 +28,73 @@ namespace
     constexpr int kInitialDetailDataRefreshDelayMs = 350;
     constexpr int kAffinityMatrixColumnCount = 6;
 
+    // 内嵌 Dock 懒加载的分帧间隔：
+    // - 第一段只等一帧，让 Tab 切换与占位文本先完成绘制；
+    // - 后续段落用 0ms 继续排队，保证每段之间都能回到事件循环处理绘制与输入。
+    constexpr int kEmbeddedViewBuildFirstStageDelayMs = 16;
+    constexpr int kEmbeddedViewBuildNextStageDelayMs = 0;
+
+    // 内嵌 Dock 构建排队标记的动态属性名：
+    // - 懒加载改成分帧后，Dock 指针在排队期间仍为空；
+    // - 用页面容器控件自身的动态属性记录“已排队”，随页面一起销毁，无需窗口类新增成员。
+    constexpr char kEmbeddedViewBuildPendingProperty[] = "kswordEmbeddedViewBuildPending";
+
+    // markEmbeddedViewBuildPending 作用：
+    // - 入参：内嵌页的容器控件指针；
+    // - 处理：容器尚未排队时打上排队标记，用于抑制用户来回切页造成的重复构建；
+    // - 返回：true 表示本次调用抢到了构建资格，false 表示已有排队中的构建任务。
+    bool markEmbeddedViewBuildPending(QWidget* const embeddedTabWidget)
+    {
+        if (embeddedTabWidget == nullptr)
+        {
+            return false;
+        }
+
+        if (embeddedTabWidget->property(kEmbeddedViewBuildPendingProperty).toBool())
+        {
+            return false;
+        }
+
+        embeddedTabWidget->setProperty(kEmbeddedViewBuildPendingProperty, true);
+        return true;
+    }
+
+    // clearEmbeddedViewBuildPending 作用：
+    // - 入参：内嵌页的容器控件指针；
+    // - 处理：构建流程走完（或中途放弃）后清除排队标记；
+    // - 返回：无。
+    void clearEmbeddedViewBuildPending(QWidget* const embeddedTabWidget)
+    {
+        if (embeddedTabWidget != nullptr)
+        {
+            embeddedTabWidget->setProperty(kEmbeddedViewBuildPendingProperty, false);
+        }
+    }
+
+    // attachEmbeddedDockToTabLayout 作用：
+    // - 入参：内嵌页布局、占位标签成员引用、已构建完成的 Dock 控件；
+    // - 处理：移除并延迟销毁占位标签，再把 Dock 按拉伸因子 1 挂进页面布局；
+    // - 返回：无。占位标签指针会被置空，避免重复移除。
+    void attachEmbeddedDockToTabLayout(
+        QVBoxLayout* const embeddedTabLayout,
+        QLabel*& embeddedPlaceholderLabel,
+        QWidget* const embeddedDockWidget)
+    {
+        if (embeddedTabLayout == nullptr || embeddedDockWidget == nullptr)
+        {
+            return;
+        }
+
+        if (embeddedPlaceholderLabel != nullptr)
+        {
+            embeddedTabLayout->removeWidget(embeddedPlaceholderLabel);
+            embeddedPlaceholderLabel->deleteLater();
+            embeddedPlaceholderLabel = nullptr;
+        }
+
+        embeddedTabLayout->addWidget(embeddedDockWidget, 1);
+    }
+
     QString buildAffinityCoreButtonStyle()
     {
         return QStringLiteral(
@@ -1780,22 +1847,45 @@ void ProcessDetailWindow::initializeEmbeddedHandleTab()
 
 void ProcessDetailWindow::ensureEmbeddedHandleView()
 {
+    // 作用：首次进入“句柄”页时懒加载内嵌 HandleDock，并锁定当前 PID。
+    // 入参：无，目标进程取自 m_baseRecord。
+    // 返回：无。与内存页一致按帧拆分：槽函数立即返回，控件树构造与 PID 聚焦分属两段事件循环。
     if (m_embeddedHandleDock != nullptr || m_embeddedHandleLayout == nullptr)
     {
         return;
     }
 
-    m_embeddedHandleDock = new HandleDock(m_embeddedHandleTab);
-    m_embeddedHandleDock->hide();
-    if (m_embeddedHandlePlaceholder != nullptr)
+    if (!markEmbeddedViewBuildPending(m_embeddedHandleTab))
     {
-        m_embeddedHandleLayout->removeWidget(m_embeddedHandlePlaceholder);
-        m_embeddedHandlePlaceholder->deleteLater();
-        m_embeddedHandlePlaceholder = nullptr;
+        return;
     }
-    m_embeddedHandleLayout->addWidget(m_embeddedHandleDock, 1);
-    m_embeddedHandleDock->focusProcessId(m_baseRecord.pid, false);
-    m_embeddedHandleDock->show();
+
+    QTimer::singleShot(kEmbeddedViewBuildFirstStageDelayMs, this, [this]() {
+        if (m_embeddedHandleDock != nullptr || m_embeddedHandleLayout == nullptr)
+        {
+            clearEmbeddedViewBuildPending(m_embeddedHandleTab);
+            return;
+        }
+
+        // 第一段：构造控件树并替换占位文本。
+        m_embeddedHandleDock = new HandleDock(m_embeddedHandleTab);
+        m_embeddedHandleDock->hide();
+        attachEmbeddedDockToTabLayout(
+            m_embeddedHandleLayout,
+            m_embeddedHandlePlaceholder,
+            m_embeddedHandleDock);
+        m_embeddedHandleDock->show();
+
+        // 第二段：按当前 PID 聚焦，句柄枚举本身已是异步实现。
+        const std::uint32_t targetProcessId = m_baseRecord.pid;
+        QTimer::singleShot(kEmbeddedViewBuildNextStageDelayMs, this, [this, targetProcessId]() {
+            if (m_embeddedHandleDock != nullptr)
+            {
+                m_embeddedHandleDock->focusProcessId(targetProcessId, false);
+            }
+            clearEmbeddedViewBuildPending(m_embeddedHandleTab);
+        });
+    });
 }
 
 void ProcessDetailWindow::initializeEmbeddedMemoryTab()
@@ -1814,23 +1904,54 @@ void ProcessDetailWindow::initializeEmbeddedMemoryTab()
 
 void ProcessDetailWindow::ensureEmbeddedMemoryView()
 {
+    // 作用：
+    // - 首次进入“内存”页时懒加载内嵌 MemoryDock，并把当前进程附加到该 Dock。
+    // - 这条链路是详情窗最重的一次同步开销：MemoryDock 构造函数内部同步枚举全系统进程，
+    //   focusProcessForOperations 会再枚举一次进程，随后 attachToProcess 还要遍历目标进程
+    //   的整个地址空间。三段叠在一次 Tab 点击里会让界面无响应数秒。
+    // - 因此改成分帧构建：槽函数立即返回让占位文本先绘制，控件树构造与进程附加各占一段
+    //   事件循环，段与段之间界面可以重绘并响应输入。
+    // 入参：无，目标进程取自 m_baseRecord。
+    // 返回：无。排队期间重复调用会被排队标记短路，不会构造出第二个 MemoryDock。
     if (m_embeddedMemoryDock != nullptr || m_embeddedMemoryLayout == nullptr)
     {
         return;
     }
 
-    m_embeddedMemoryDock = new MemoryDock(m_embeddedMemoryTab);
-    m_embeddedMemoryDock->hide();
-    if (m_embeddedMemoryPlaceholder != nullptr)
+    if (!markEmbeddedViewBuildPending(m_embeddedMemoryTab))
     {
-        m_embeddedMemoryLayout->removeWidget(m_embeddedMemoryPlaceholder);
-        m_embeddedMemoryPlaceholder->deleteLater();
-        m_embeddedMemoryPlaceholder = nullptr;
+        return;
     }
-    m_embeddedMemoryLayout->addWidget(m_embeddedMemoryDock, 1);
-    m_embeddedMemoryDock->setProcessDetailMemoryScope();
-    m_embeddedMemoryDock->focusProcessForOperations(m_baseRecord.pid, false);
-    m_embeddedMemoryDock->show();
+
+    // QTimer::singleShot 传入 this 作为上下文对象：窗口先于定时器销毁时回调不会执行，
+    // 与构造函数里首刷延迟的既有写法保持一致，无需额外的存活判断。
+    QTimer::singleShot(kEmbeddedViewBuildFirstStageDelayMs, this, [this]() {
+        if (m_embeddedMemoryDock != nullptr || m_embeddedMemoryLayout == nullptr)
+        {
+            clearEmbeddedViewBuildPending(m_embeddedMemoryTab);
+            return;
+        }
+
+        // 第一段：只做控件树构造与页面挂载，不触发目标进程附加。
+        m_embeddedMemoryDock = new MemoryDock(m_embeddedMemoryTab);
+        m_embeddedMemoryDock->hide();
+        attachEmbeddedDockToTabLayout(
+            m_embeddedMemoryLayout,
+            m_embeddedMemoryPlaceholder,
+            m_embeddedMemoryDock);
+        m_embeddedMemoryDock->setProcessDetailMemoryScope();
+        m_embeddedMemoryDock->show();
+
+        // 第二段：附加目标进程。pid 在构造这一段取定，保证与本次构建的目标一致。
+        const std::uint32_t targetProcessId = m_baseRecord.pid;
+        QTimer::singleShot(kEmbeddedViewBuildNextStageDelayMs, this, [this, targetProcessId]() {
+            if (m_embeddedMemoryDock != nullptr)
+            {
+                m_embeddedMemoryDock->focusProcessForOperations(targetProcessId, false);
+            }
+            clearEmbeddedViewBuildPending(m_embeddedMemoryTab);
+        });
+    });
 }
 
 void ProcessDetailWindow::initializeEmbeddedNetworkTab()
@@ -1849,24 +1970,47 @@ void ProcessDetailWindow::initializeEmbeddedNetworkTab()
 
 void ProcessDetailWindow::ensureEmbeddedNetworkView()
 {
+    // 作用：首次进入“网络”页时懒加载内嵌 NetworkDock，并只保留当前进程的连接。
+    // 入参：无，目标进程取自 m_baseRecord。
+    // 返回：无。与内存页一致按帧拆分，避免控件树构造与连接过滤挤在一次 Tab 点击里。
     if (m_embeddedNetworkDock != nullptr || m_embeddedNetworkLayout == nullptr)
     {
         return;
     }
 
-    m_embeddedNetworkDock = new NetworkDock(m_embeddedNetworkTab);
-    m_embeddedNetworkDock->hide();
-    if (m_embeddedNetworkPlaceholder != nullptr)
+    if (!markEmbeddedViewBuildPending(m_embeddedNetworkTab))
     {
-        m_embeddedNetworkLayout->removeWidget(m_embeddedNetworkPlaceholder);
-        m_embeddedNetworkPlaceholder->deleteLater();
-        m_embeddedNetworkPlaceholder = nullptr;
+        return;
     }
-    m_embeddedNetworkLayout->addWidget(m_embeddedNetworkDock, 1);
-    m_embeddedNetworkDock->setProcessDetailConnectionScope();
-    m_embeddedNetworkDock->focusConnectionsByPids(
-        QVector<quint32>{ static_cast<quint32>(m_baseRecord.pid) });
-    m_embeddedNetworkDock->show();
+
+    QTimer::singleShot(kEmbeddedViewBuildFirstStageDelayMs, this, [this]() {
+        if (m_embeddedNetworkDock != nullptr || m_embeddedNetworkLayout == nullptr)
+        {
+            clearEmbeddedViewBuildPending(m_embeddedNetworkTab);
+            return;
+        }
+
+        // 第一段：构造控件树、裁剪页面范围并替换占位文本。
+        m_embeddedNetworkDock = new NetworkDock(m_embeddedNetworkTab);
+        m_embeddedNetworkDock->hide();
+        attachEmbeddedDockToTabLayout(
+            m_embeddedNetworkLayout,
+            m_embeddedNetworkPlaceholder,
+            m_embeddedNetworkDock);
+        m_embeddedNetworkDock->setProcessDetailConnectionScope();
+        m_embeddedNetworkDock->show();
+
+        // 第二段：按当前 PID 过滤连接，连接枚举本身已是异步实现。
+        const quint32 targetProcessId = static_cast<quint32>(m_baseRecord.pid);
+        QTimer::singleShot(kEmbeddedViewBuildNextStageDelayMs, this, [this, targetProcessId]() {
+            if (m_embeddedNetworkDock != nullptr)
+            {
+                m_embeddedNetworkDock->focusConnectionsByPids(
+                    QVector<quint32>{ targetProcessId });
+            }
+            clearEmbeddedViewBuildPending(m_embeddedNetworkTab);
+        });
+    });
 }
 
 void ProcessDetailWindow::initializeSoundSourceTab()
@@ -1899,24 +2043,47 @@ void ProcessDetailWindow::initializeEmbeddedWindowTab()
 
 void ProcessDetailWindow::ensureEmbeddedWindowView()
 {
+    // 作用：首次进入“窗口”页时懒加载内嵌 OtherDock，并只保留当前进程的窗口列表。
+    // 入参：无，目标进程取自 m_baseRecord。
+    // 返回：无。与内存页一致按帧拆分，避免控件树构造与窗口枚举挤在一次 Tab 点击里。
     if (m_embeddedWindowDock != nullptr || m_embeddedWindowLayout == nullptr)
     {
         return;
     }
 
-    m_embeddedWindowDock = new OtherDock(m_embeddedWindowTab);
-    m_embeddedWindowDock->hide();
-    if (m_embeddedWindowPlaceholder != nullptr)
+    if (!markEmbeddedViewBuildPending(m_embeddedWindowTab))
     {
-        m_embeddedWindowLayout->removeWidget(m_embeddedWindowPlaceholder);
-        m_embeddedWindowPlaceholder->deleteLater();
-        m_embeddedWindowPlaceholder = nullptr;
+        return;
     }
-    m_embeddedWindowLayout->addWidget(m_embeddedWindowDock, 1);
-    m_embeddedWindowDock->setWindowListOnlyScope();
-    m_embeddedWindowDock->focusProcessIds(
-        QVector<quint32>{ static_cast<quint32>(m_baseRecord.pid) });
-    m_embeddedWindowDock->show();
+
+    QTimer::singleShot(kEmbeddedViewBuildFirstStageDelayMs, this, [this]() {
+        if (m_embeddedWindowDock != nullptr || m_embeddedWindowLayout == nullptr)
+        {
+            clearEmbeddedViewBuildPending(m_embeddedWindowTab);
+            return;
+        }
+
+        // 第一段：构造控件树、裁剪页面范围并替换占位文本。
+        m_embeddedWindowDock = new OtherDock(m_embeddedWindowTab);
+        m_embeddedWindowDock->hide();
+        attachEmbeddedDockToTabLayout(
+            m_embeddedWindowLayout,
+            m_embeddedWindowPlaceholder,
+            m_embeddedWindowDock);
+        m_embeddedWindowDock->setWindowListOnlyScope();
+        m_embeddedWindowDock->show();
+
+        // 第二段：按当前 PID 过滤窗口列表。
+        const quint32 targetProcessId = static_cast<quint32>(m_baseRecord.pid);
+        QTimer::singleShot(kEmbeddedViewBuildNextStageDelayMs, this, [this, targetProcessId]() {
+            if (m_embeddedWindowDock != nullptr)
+            {
+                m_embeddedWindowDock->focusProcessIds(
+                    QVector<quint32>{ targetProcessId });
+            }
+            clearEmbeddedViewBuildPending(m_embeddedWindowTab);
+        });
+    });
 }
 
 void ProcessDetailWindow::requestAsyncStaticDetailRefresh(const bool includeSignatureCheck)

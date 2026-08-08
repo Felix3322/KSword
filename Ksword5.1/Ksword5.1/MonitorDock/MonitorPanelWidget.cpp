@@ -12,6 +12,7 @@
 
 #include "../theme.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QEasingCurve>
 #include <QEvent>
@@ -20,15 +21,20 @@
 #include <QFont>
 #include <QLabel>
 #include <QList>
+#include <QMetaObject>
 #include <QPainter>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QSizePolicy>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
+#include <vector>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -111,6 +117,122 @@ namespace
             ? KswordTheme::WhiteColor()
             : KswordTheme::TextSecondaryColor();
     }
+
+    // MonitorPanelPdhCounterBundle 作用：
+    // - 承载后台线程创建好的 PDH 查询与计数器句柄；
+    // - 只保存 void* 值类型，便于整体回投 UI 线程接管，不牵扯任何 QWidget。
+    struct MonitorPanelPdhCounterBundle
+    {
+        void* cpuQueryHandle = nullptr;         // cpuQueryHandle：CPU 查询句柄。
+        std::vector<void*> coreCounterHandles;  // coreCounterHandles：每个逻辑核心的计数器句柄。
+        void* diskQueryHandle = nullptr;        // diskQueryHandle：磁盘查询句柄。
+        void* diskReadCounterHandle = nullptr;  // diskReadCounterHandle：磁盘读取速率计数器句柄。
+        void* diskWriteCounterHandle = nullptr; // diskWriteCounterHandle：磁盘写入速率计数器句柄。
+    };
+
+    // monitorPanelCounterInitializing 作用：
+    // - 标记当前是否已有一轮后台 PDH 初始化在执行；
+    // - 防止初始化未完成期间每秒刷新重复投递任务。
+    std::atomic_bool monitorPanelCounterInitializing{ false };
+
+    // createMonitorPanelPdhCounters 作用：
+    // - 入参 coreCount：逻辑核心数量，决定注册多少个 \Processor(n) 计数器；
+    // - 入参 needCpuCounters/needDiskCounters：控件尚未持有对应句柄时才重新创建，避免重试轮空跑；
+    // - 处理：在调用线程完成 PdhOpenQueryW/PdhAddEnglishCounterW 与首次基线采集，
+    //         进程内第一次调用会顺带加载 perflib 计数器名索引，耗时集中在这里；
+    // - 返回：句柄集合，失败字段保持 nullptr 由调用方按空句柄回退。
+    MonitorPanelPdhCounterBundle createMonitorPanelPdhCounters(
+        const int coreCount,
+        const bool needCpuCounters,
+        const bool needDiskCounters)
+    {
+        MonitorPanelPdhCounterBundle counterBundle;
+
+        // CPU 每核计数器：为每一个核心添加 \Processor(n)\% Processor Time。
+        PDH_HQUERY cpuQueryHandle = nullptr;
+        if (needCpuCounters
+            && ::PdhOpenQueryW(nullptr, 0, &cpuQueryHandle) == ERROR_SUCCESS
+            && cpuQueryHandle != nullptr)
+        {
+            const int safeCoreCount = std::max(0, coreCount);
+            counterBundle.coreCounterHandles.reserve(static_cast<std::size_t>(safeCoreCount));
+            for (int coreIndex = 0; coreIndex < safeCoreCount; ++coreIndex)
+            {
+                const QString counterPath = QStringLiteral("\\Processor(%1)\\% Processor Time").arg(coreIndex);
+                PDH_HCOUNTER cpuCounterHandle = nullptr;
+                const PDH_STATUS addCounterStatus = ::PdhAddEnglishCounterW(
+                    cpuQueryHandle,
+                    reinterpret_cast<LPCWSTR>(counterPath.utf16()),
+                    0,
+                    &cpuCounterHandle);
+                if (addCounterStatus != ERROR_SUCCESS || cpuCounterHandle == nullptr)
+                {
+                    // 某核心计数器创建失败时保留 nullptr，占位后续填 0。
+                    counterBundle.coreCounterHandles.push_back(nullptr);
+                    continue;
+                }
+                counterBundle.coreCounterHandles.push_back(cpuCounterHandle);
+            }
+
+            // 首次 collect 先建立基线，下一次采样得到稳定数据。
+            ::PdhCollectQueryData(cpuQueryHandle);
+            counterBundle.cpuQueryHandle = cpuQueryHandle;
+        }
+
+        // 磁盘计数器：读取系统总磁盘读写字节每秒速率，失败时整体丢弃。
+        PDH_HQUERY diskQueryHandle = nullptr;
+        if (needDiskCounters
+            && ::PdhOpenQueryW(nullptr, 0, &diskQueryHandle) == ERROR_SUCCESS
+            && diskQueryHandle != nullptr)
+        {
+            PDH_HCOUNTER readCounterHandle = nullptr;
+            PDH_HCOUNTER writeCounterHandle = nullptr;
+
+            const PDH_STATUS addReadStatus = ::PdhAddEnglishCounterW(
+                diskQueryHandle,
+                L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec",
+                0,
+                &readCounterHandle);
+            const PDH_STATUS addWriteStatus = ::PdhAddEnglishCounterW(
+                diskQueryHandle,
+                L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec",
+                0,
+                &writeCounterHandle);
+
+            if (addReadStatus == ERROR_SUCCESS
+                && addWriteStatus == ERROR_SUCCESS
+                && readCounterHandle != nullptr
+                && writeCounterHandle != nullptr)
+            {
+                ::PdhCollectQueryData(diskQueryHandle);
+                counterBundle.diskQueryHandle = diskQueryHandle;
+                counterBundle.diskReadCounterHandle = readCounterHandle;
+                counterBundle.diskWriteCounterHandle = writeCounterHandle;
+            }
+            else
+            {
+                ::PdhCloseQuery(diskQueryHandle);
+            }
+        }
+
+        return counterBundle;
+    }
+
+    // closeMonitorPanelPdhCounters 作用：
+    // - 入参 counterBundle：待释放的句柄集合；
+    // - 处理：关闭 PDH 查询，供控件已销毁或句柄已由更早一轮接管时丢弃结果；
+    // - 返回：无返回值。
+    void closeMonitorPanelPdhCounters(const MonitorPanelPdhCounterBundle& counterBundle)
+    {
+        if (counterBundle.cpuQueryHandle != nullptr)
+        {
+            ::PdhCloseQuery(reinterpret_cast<PDH_HQUERY>(counterBundle.cpuQueryHandle));
+        }
+        if (counterBundle.diskQueryHandle != nullptr)
+        {
+            ::PdhCloseQuery(reinterpret_cast<PDH_HQUERY>(counterBundle.diskQueryHandle));
+        }
+    }
 }
 
 MonitorPanelWidget::MonitorPanelWidget(QWidget* parent)
@@ -121,6 +243,7 @@ MonitorPanelWidget::MonitorPanelWidget(QWidget* parent)
     info << event << "[MonitorPanelWidget] 构造开始。" << eol;
 
     initializeUi();
+    // 计数器初始化和首帧采样都在后台线程完成，构造阶段只搭图表骨架，主窗口可以先出画面。
     initializeCounters();
 
     // 采样定时器：
@@ -133,7 +256,6 @@ MonitorPanelWidget::MonitorPanelWidget(QWidget* parent)
     });
     m_refreshTimer->start();
 
-    refreshMetrics();
     info << event << "[MonitorPanelWidget] 构造完成。" << eol;
 }
 
@@ -507,82 +629,93 @@ void MonitorPanelWidget::initializeUi()
 
 void MonitorPanelWidget::initializeCounters()
 {
-    // CPU 每核计数器初始化：
-    // - 句柄未创建时打开 PDH Query；
-    // - 为每一个核心添加 \Processor(n)\% Processor Time 计数器。
-    if (m_cpuPerfQueryHandle == nullptr)
+    // 计数器初始化整体异步化：
+    // - 进程内第一次 PdhAddEnglishCounterW 需要加载并解析 perflib 计数器名索引，
+    //   在主窗口构造链路里同步执行会让启动阶段整个界面卡住；
+    // - UI 线程这里只读取核心数量，PDH 调用全部交给线程池，完成后回投接管句柄。
+    if (m_cpuPerfQueryHandle != nullptr && m_diskPerfQueryHandle != nullptr)
     {
-        PDH_HQUERY cpuQueryHandle = nullptr;
-        const PDH_STATUS openCpuQueryStatus = ::PdhOpenQueryW(nullptr, 0, &cpuQueryHandle);
-        if (openCpuQueryStatus == ERROR_SUCCESS && cpuQueryHandle != nullptr)
-        {
-            m_cpuPerfQueryHandle = cpuQueryHandle;
-            m_coreCounterHandles.clear();
-            const int coreCount = m_cpuCoreBarSet != nullptr ? m_cpuCoreBarSet->count() : 0;
-            m_coreCounterHandles.reserve(static_cast<std::size_t>(std::max(0, coreCount)));
+        return;
+    }
 
-            for (int coreIndex = 0; coreIndex < coreCount; ++coreIndex)
+    // expectedInitializingValue 用途：CAS 期望值（false=当前没有初始化任务在跑）。
+    bool expectedInitializingValue = false;
+    if (!monitorPanelCounterInitializing.compare_exchange_strong(expectedInitializingValue, true))
+    {
+        return;
+    }
+
+    // coreCount 必须在 UI 线程读取：QBarSet 属于图表控件，后台线程不允许访问。
+    const int coreCount = m_cpuCoreBarSet != nullptr ? std::max(0, m_cpuCoreBarSet->count()) : 0;
+    const bool needCpuCounters = m_cpuPerfQueryHandle == nullptr;
+    const bool needDiskCounters = m_diskPerfQueryHandle == nullptr;
+
+    // guardedSelf 用途：后台任务可能晚于控件销毁，回投前必须验证生命周期。
+    const QPointer<MonitorPanelWidget> guardedSelf(this);
+    QThreadPool::globalInstance()->start(
+        [guardedSelf, coreCount, needCpuCounters, needDiskCounters]()
+        {
+            // 后台线程只做纯数据采集，产出的是可跨线程搬运的句柄值类型。
+            const MonitorPanelPdhCounterBundle counterBundle = createMonitorPanelPdhCounters(
+                coreCount,
+                needCpuCounters,
+                needDiskCounters);
+
+            // applicationInstance 与事件循环同寿命；工作线程不解引用控件指针。
+            QCoreApplication* const applicationInstance = QCoreApplication::instance();
+            if (applicationInstance == nullptr)
             {
-                const QString counterPath = QStringLiteral("\\Processor(%1)\\% Processor Time").arg(coreIndex);
-                PDH_HCOUNTER cpuCounterHandle = nullptr;
-                const PDH_STATUS addCounterStatus = ::PdhAddEnglishCounterW(
-                    cpuQueryHandle,
-                    reinterpret_cast<LPCWSTR>(counterPath.utf16()),
-                    0,
-                    &cpuCounterHandle);
-                if (addCounterStatus != ERROR_SUCCESS || cpuCounterHandle == nullptr)
+                closeMonitorPanelPdhCounters(counterBundle);
+                monitorPanelCounterInitializing.store(false);
+                return;
+            }
+
+            const bool invokeOk = QMetaObject::invokeMethod(
+                applicationInstance,
+                [guardedSelf, counterBundle]()
                 {
-                    // 某核心计数器创建失败时保留 nullptr，占位后续填 0。
-                    m_coreCounterHandles.push_back(nullptr);
-                    continue;
-                }
-                m_coreCounterHandles.push_back(cpuCounterHandle);
-            }
+                    if (guardedSelf.isNull())
+                    {
+                        closeMonitorPanelPdhCounters(counterBundle);
+                        monitorPanelCounterInitializing.store(false);
+                        return;
+                    }
 
-            // 首次 collect 先建立基线，下一次采样得到稳定数据。
-            ::PdhCollectQueryData(cpuQueryHandle);
-        }
-    }
+                    // 控件已持有句柄说明更早一轮初始化已完成，本轮结果直接丢弃避免泄漏。
+                    if (guardedSelf->m_cpuPerfQueryHandle == nullptr)
+                    {
+                        guardedSelf->m_cpuPerfQueryHandle = counterBundle.cpuQueryHandle;
+                        guardedSelf->m_coreCounterHandles = counterBundle.coreCounterHandles;
+                    }
+                    else if (counterBundle.cpuQueryHandle != nullptr)
+                    {
+                        ::PdhCloseQuery(reinterpret_cast<PDH_HQUERY>(counterBundle.cpuQueryHandle));
+                    }
 
-    // 磁盘计数器初始化：
-    // - 读取系统总磁盘读写字节每秒速率；
-    // - 失败时保持句柄为空，刷新阶段回退为 0。
-    if (m_diskPerfQueryHandle == nullptr)
-    {
-        PDH_HQUERY diskQueryHandle = nullptr;
-        const PDH_STATUS openDiskQueryStatus = ::PdhOpenQueryW(nullptr, 0, &diskQueryHandle);
-        if (openDiskQueryStatus == ERROR_SUCCESS && diskQueryHandle != nullptr)
-        {
-            PDH_HCOUNTER readCounterHandle = nullptr;
-            PDH_HCOUNTER writeCounterHandle = nullptr;
+                    if (guardedSelf->m_diskPerfQueryHandle == nullptr)
+                    {
+                        guardedSelf->m_diskPerfQueryHandle = counterBundle.diskQueryHandle;
+                        guardedSelf->m_diskReadCounterHandle = counterBundle.diskReadCounterHandle;
+                        guardedSelf->m_diskWriteCounterHandle = counterBundle.diskWriteCounterHandle;
+                    }
+                    else if (counterBundle.diskQueryHandle != nullptr)
+                    {
+                        ::PdhCloseQuery(reinterpret_cast<PDH_HQUERY>(counterBundle.diskQueryHandle));
+                    }
 
-            const PDH_STATUS addReadStatus = ::PdhAddEnglishCounterW(
-                diskQueryHandle,
-                L"\\PhysicalDisk(_Total)\\Disk Read Bytes/sec",
-                0,
-                &readCounterHandle);
-            const PDH_STATUS addWriteStatus = ::PdhAddEnglishCounterW(
-                diskQueryHandle,
-                L"\\PhysicalDisk(_Total)\\Disk Write Bytes/sec",
-                0,
-                &writeCounterHandle);
+                    // 句柄就绪后立即补一帧，避免初始化窗口期图表长时间停在 0；
+                    // 标记放在刷新之后清除，防止刷新内部又立刻投递一轮初始化任务。
+                    guardedSelf->refreshMetrics();
+                    monitorPanelCounterInitializing.store(false);
+                },
+                Qt::QueuedConnection);
 
-            if (addReadStatus == ERROR_SUCCESS
-                && addWriteStatus == ERROR_SUCCESS
-                && readCounterHandle != nullptr
-                && writeCounterHandle != nullptr)
+            if (!invokeOk)
             {
-                m_diskPerfQueryHandle = diskQueryHandle;
-                m_diskReadCounterHandle = readCounterHandle;
-                m_diskWriteCounterHandle = writeCounterHandle;
-                ::PdhCollectQueryData(diskQueryHandle);
+                closeMonitorPanelPdhCounters(counterBundle);
+                monitorPanelCounterInitializing.store(false);
             }
-            else
-            {
-                ::PdhCloseQuery(diskQueryHandle);
-            }
-        }
-    }
+        });
 }
 
 void MonitorPanelWidget::refreshMetrics()

@@ -1,11 +1,19 @@
 #include "NetworkDock.InternalCommon.h"
 
 #include <QAbstractItemModel>
+#include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QImage>
+#include <QPixmap>
 #include <QPointer>
+#include <QSet>
 
 #include <cstddef>
 #include <unordered_map>
+#include <utility>
+
+#include <objbase.h>
+#include <Shellapi.h>
 
 #pragma comment(lib, "Dnsapi.lib")
 
@@ -13,6 +21,98 @@ using namespace network_dock_detail;
 
 namespace
 {
+    // g_pendingPacketProcessIconPidMap 作用：
+    // - 记录“每个 NetworkDock 实例正在后台解析图标的 PID 集合”，用于同一 PID 去重；
+    // - 只在 UI 线程读写（调度点与回投点都在 UI 线程），因此不需要加锁；
+    // - 键仅作为身份标识使用，永远不会被解引用，宿主析构后由回投分支按键清理。
+    std::unordered_map<const NetworkDock*, QSet<quint32>> g_pendingPacketProcessIconPidMap;
+
+    // packetProcessPlaceholderIcon 作用：
+    // - 返回报文表进程列的统一占位图标，异步解析完成前先顶上，避免空图标导致行高抖动；
+    // - 入参：无；
+    // - 返回：共享 QIcon 引用，只能在 UI 线程使用。
+    const QIcon& packetProcessPlaceholderIcon()
+    {
+        static const QIcon placeholderIcon(QStringLiteral(":/Icon/process_main.svg"));
+        return placeholderIcon;
+    }
+
+    // extractProcessIconImageForPid 作用：
+    // - 在线程池工作线程里按 PID 解析可执行路径并向 Shell 查询小图标；
+    // - SHGetFileInfoW 需要本线程自己初始化 COM，因此这里成对 CoInitializeEx/CoUninitialize；
+    // - 入参 processId：目标进程 PID；
+    // - 返回：可跨线程传递的 QImage，失败时返回空 QImage（调用方回退占位图标）。
+    QImage extractProcessIconImageForPid(const std::uint32_t processId)
+    {
+        const std::string processPath = ks::process::QueryProcessPathByPid(processId);
+        if (processPath.empty())
+        {
+            return QImage();
+        }
+
+        const HRESULT comInitializeResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const bool comInitializedHere = SUCCEEDED(comInitializeResult);
+
+        const QString processPathText = QString::fromUtf8(processPath.c_str());
+        SHFILEINFOW shellFileInfo{};
+        const DWORD_PTR shellQueryResult = ::SHGetFileInfoW(
+            reinterpret_cast<const wchar_t*>(processPathText.utf16()),
+            0,
+            &shellFileInfo,
+            sizeof(shellFileInfo),
+            SHGFI_ICON | SHGFI_SMALLICON);
+
+        QImage processIconImage;
+        if (shellQueryResult != 0 && shellFileInfo.hIcon != nullptr)
+        {
+            // QImage::fromHICON 会复制像素数据，转换完成后必须归还 Shell 分配的 HICON。
+            processIconImage = QImage::fromHICON(shellFileInfo.hIcon);
+            ::DestroyIcon(shellFileInfo.hIcon);
+        }
+
+        if (comInitializedHere)
+        {
+            ::CoUninitialize();
+        }
+        return processIconImage;
+    }
+
+    // applyResolvedProcessIconToPacketRows 作用：
+    // - 图标异步解析完成后，把已经落表的同 PID 行的进程列图标补齐；
+    // - 入参 packetTable：报文主表；
+    // - 入参 processIdColumn / processNameColumn：PID 列与进程名列索引（由调用方从列枚举换算）；
+    // - 入参 processIdKey：本次解析完成的 PID；
+    // - 入参 resolvedIcon：解析结果或占位图标；
+    // - 返回：无。该函数只能在 UI 线程调用。
+    void applyResolvedProcessIconToPacketRows(
+        QTableWidget* const packetTable,
+        const int processIdColumn,
+        const int processNameColumn,
+        const quint32 processIdKey,
+        const QIcon& resolvedIcon)
+    {
+        if (packetTable == nullptr || processIdColumn < 0 || processNameColumn < 0)
+        {
+            return;
+        }
+
+        const QString processIdText = QString::number(processIdKey);
+        for (int rowIndex = 0; rowIndex < packetTable->rowCount(); ++rowIndex)
+        {
+            const QTableWidgetItem* const processIdItem = packetTable->item(rowIndex, processIdColumn);
+            if (processIdItem == nullptr || processIdItem->text() != processIdText)
+            {
+                continue;
+            }
+
+            QTableWidgetItem* const processNameItem = packetTable->item(rowIndex, processNameColumn);
+            if (processNameItem != nullptr)
+            {
+                processNameItem->setIcon(resolvedIcon);
+            }
+        }
+    }
+
     // kUnixMsTo100ns：
     // - Unix 毫秒时间戳转换到 100ns 时间轴单位的倍率；
     // - 网络抓包使用 Unix ms，ETW 同款时间轴使用 100ns，所以需要统一换算。
@@ -499,9 +599,80 @@ void NetworkDock::appendPacketToMonitorTable(const ks::network::PacketRecord& pa
     const ks::network::PacketRecord& displayRecord = cachedPacketIterator != m_packetBySequence.end()
         ? cachedPacketIterator->second
         : packetRecord;
-    const QIcon processIcon = resolveProcessIconByPid(
-        displayRecord.processId,
-        displayRecord.processName);
+
+    // 进程图标解析必须让出 50ms 批量刷新帧预算：
+    // - 命中 PID 缓存时直接复用，稳态零开销；
+    // - 未命中时先落占位图标，把 QueryProcessPathByPid + Shell 图标提取丢到线程池，
+    //   结果回投后再按 PID 回补已经落表的行，与远端域名异步补齐是同一套模式。
+    const quint32 processIdKey = static_cast<quint32>(displayRecord.processId);
+    QIcon processIcon = packetProcessPlaceholderIcon();
+    const auto processIconCacheIterator = m_processIconCacheByPid.constFind(processIdKey);
+    if (processIconCacheIterator != m_processIconCacheByPid.constEnd())
+    {
+        processIcon = processIconCacheIterator.value();
+    }
+    else if (processIdKey != 0U)
+    {
+        QSet<quint32>& pendingIconPidSet = g_pendingPacketProcessIconPidMap[this];
+        if (!pendingIconPidSet.contains(processIdKey))
+        {
+            pendingIconPidSet.insert(processIdKey);
+
+            // ownerKey 只当身份标识用（绝不解引用），保证宿主析构后仍能定位并清理在途集合。
+            const QPointer<NetworkDock> guardedSelf(this);
+            const NetworkDock* const ownerKey = this;
+            const int processIdColumn = toPacketColumn(PacketTableColumn::Pid);
+            const int processNameColumn = toPacketColumn(PacketTableColumn::ProcessName);
+            QThreadPool::globalInstance()->start(
+                [guardedSelf, ownerKey, processIdKey, processIdColumn, processNameColumn]()
+                {
+                    QImage processIconImage = extractProcessIconImageForPid(processIdKey);
+                    QCoreApplication* const appInstance = QCoreApplication::instance();
+                    if (appInstance == nullptr)
+                    {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        appInstance,
+                        [guardedSelf,
+                            ownerKey,
+                            processIdKey,
+                            processIdColumn,
+                            processNameColumn,
+                            processIconImage = std::move(processIconImage)]() mutable
+                        {
+                            // 无论宿主是否存活都先摘掉在途标记，避免残留条目永久挡住该 PID 的解析。
+                            const auto pendingIterator = g_pendingPacketProcessIconPidMap.find(ownerKey);
+                            if (pendingIterator != g_pendingPacketProcessIconPidMap.end())
+                            {
+                                pendingIterator->second.remove(processIdKey);
+                                if (pendingIterator->second.isEmpty())
+                                {
+                                    g_pendingPacketProcessIconPidMap.erase(pendingIterator);
+                                }
+                            }
+                            if (guardedSelf == nullptr)
+                            {
+                                return;
+                            }
+
+                            // QPixmap/QIcon 只能在 UI 线程构造，后台线程只回传 QImage。
+                            const QIcon resolvedIcon = processIconImage.isNull()
+                                ? packetProcessPlaceholderIcon()
+                                : QIcon(QPixmap::fromImage(processIconImage));
+                            guardedSelf->m_processIconCacheByPid.insert(processIdKey, resolvedIcon);
+                            applyResolvedProcessIconToPacketRows(
+                                guardedSelf->m_packetTable,
+                                processIdColumn,
+                                processNameColumn,
+                                processIdKey,
+                                resolvedIcon);
+                        },
+                        Qt::QueuedConnection);
+                });
+        }
+    }
+
     populatePacketRow(
         m_packetTable,
         newRow,

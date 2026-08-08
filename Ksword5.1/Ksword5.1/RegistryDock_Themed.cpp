@@ -20,6 +20,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -32,6 +33,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QPointer>
 #include <QProcess>
 #include <QPushButton>
@@ -43,13 +45,17 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextEdit>
+#include <QThreadPool>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -92,6 +98,23 @@ namespace
     constexpr int kRolePath = Qt::UserRole + 1;
     constexpr int kRoleLoaded = Qt::UserRole + 2;
     constexpr int kRolePlaceholder = Qt::UserRole + 3;
+    // kRoleLoadToken：子键懒加载令牌，非 0 表示该节点已有一次后台枚举在途；
+    // 后台结果回投 UI 线程时用它淘汰被新请求取代的过期结果。
+    constexpr int kRoleLoadToken = Qt::UserRole + 4;
+
+    // 子键懒加载节流：UI 线程每轮事件循环最多创建的子节点数量。
+    // HKCR 这类巨型键有上万个子键，一次性构造会让界面冻结数秒。
+    constexpr int kSubKeyItemBatchSize = 300;
+
+    // kPendingTreeSelectionProperty：
+    // - 作用：把“待定位路径”挂在键树控件的动态属性上；
+    // - 说明：子键加载改成异步后，路径定位只能逐级推进，后台落地后凭该属性继续下探；
+    //         用动态属性而非成员变量，避免为异步定位额外改动共享头文件。
+    constexpr const char* kPendingTreeSelectionProperty = "kswordPendingTreeSelectionPath";
+
+    // g_nextSubKeyLoadToken：
+    // - 作用：全局单调递增的懒加载令牌发号器，保证同一节点的新请求总能淘汰旧请求。
+    std::atomic<quint64> g_nextSubKeyLoadToken{ 1 };
 
     // 搜索结果节流：限制后台积压与表格对象数量，保证大量命中时 UI 仍可交互。
     constexpr std::size_t kMaxPendingSearchRows = 4096;
@@ -424,6 +447,208 @@ namespace
     {
         return result.io.ok &&
             result.status == KSWORD_ARK_REGISTRY_OPERATION_STATUS_SUCCESS;
+    }
+
+    // SubKeyEnumOutcome：
+    // - 作用：后台线程枚举子键后回投 UI 线程的纯值类型结果，不含任何 QWidget 引用；
+    // - 入参：无；
+    // - 返回：无。enumerationOk 为 false 时按 win32ErrorCode / failureText 输出失败原因。
+    struct SubKeyEnumOutcome
+    {
+        QStringList subKeyNames;                // 枚举到的子键名，保持注册表返回顺序。
+        bool enumerationOk = false;             // 枚举是否成功完成。
+        LONG win32ErrorCode = ERROR_SUCCESS;    // Win32 分支的打开失败码。
+        QString failureText;                    // R0 分支的失败描述。
+    };
+
+    // collectSubKeyNamesByWin32：
+    // - 作用：在后台线程用 Win32 API 枚举一个注册表键的全部子键名；
+    // - 入参 rootKey：根键句柄；subPath：根键下的相对路径，可为空表示根键本身；
+    // - 返回：枚举结果值对象；打开失败时 enumerationOk 为 false 并带上 Win32 错误码。
+    SubKeyEnumOutcome collectSubKeyNamesByWin32(HKEY rootKey, const QString& subPath)
+    {
+        SubKeyEnumOutcome outcome;
+
+        HKEY openedKey = nullptr;
+        const LONG openResult = ::RegOpenKeyExW(
+            rootKey,
+            subPath.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(subPath.utf16()),
+            0,
+            KEY_ENUMERATE_SUB_KEYS,
+            &openedKey);
+        if (openResult != ERROR_SUCCESS)
+        {
+            outcome.win32ErrorCode = openResult;
+            return outcome;
+        }
+
+        wchar_t nameBuffer[512] = {};
+        DWORD enumerationIndex = 0;
+        DWORD nameLength = static_cast<DWORD>(std::size(nameBuffer));
+        while (::RegEnumKeyExW(openedKey, enumerationIndex, nameBuffer, &nameLength, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+        {
+            outcome.subKeyNames.push_back(QString::fromWCharArray(nameBuffer, static_cast<int>(nameLength)));
+            ++enumerationIndex;
+            nameLength = static_cast<DWORD>(std::size(nameBuffer));
+        }
+
+        ::RegCloseKey(openedKey);
+        outcome.enumerationOk = true;
+        return outcome;
+    }
+
+    // collectSubKeyNamesByR0：
+    // - 作用：在后台线程通过 KswordARK 驱动枚举一个注册表键的全部子键名；
+    // - 入参 kernelKeyPath：\REGISTRY\... 形式的内核路径；
+    // - 返回：枚举结果值对象；驱动不可用或返回硬失败时 enumerationOk 为 false。
+    SubKeyEnumOutcome collectSubKeyNamesByR0(const QString& kernelKeyPath)
+    {
+        SubKeyEnumOutcome outcome;
+
+        const ksword::ark::DriverClient driverClient;
+        const ksword::ark::RegistryEnumResult enumResult = driverClient.enumerateRegistryKey(
+            kernelKeyPath.toStdWString(),
+            KSWORD_ARK_REGISTRY_ENUM_FLAG_INCLUDE_SUBKEYS);
+        if (!registryEnumUsable(enumResult))
+        {
+            outcome.failureText = registryEnumFailureText(QStringLiteral("R0枚举子键"), enumResult);
+            return outcome;
+        }
+
+        for (const ksword::ark::RegistrySubKeyEntry& subKeyEntry : enumResult.subKeys)
+        {
+            const QString subKeyName = QString::fromStdWString(subKeyEntry.name);
+            if (subKeyName.trimmed().isEmpty())
+            {
+                continue;
+            }
+            outcome.subKeyNames.push_back(subKeyName);
+        }
+
+        outcome.enumerationOk = true;
+        return outcome;
+    }
+
+    // resolveTreeItemByPath：
+    // - 作用：按注册表路径逐级在键树里定位节点，只查已存在的节点，不触发任何加载；
+    // - 入参 treeWidget：键树控件；registryPath：完整注册表路径；
+    // - 返回：命中的节点指针；路径上任一级缺失时返回 nullptr。
+    //   后台结果回投时用路径而不是裸指针重新定位，可彻底避免节点已被销毁的悬垂访问。
+    QTreeWidgetItem* resolveTreeItemByPath(QTreeWidget* treeWidget, const QString& registryPath)
+    {
+        if (treeWidget == nullptr)
+        {
+            return nullptr;
+        }
+
+        const QStringList segments = registryPath.split(QLatin1Char('\\'), Qt::SkipEmptyParts);
+        if (segments.isEmpty())
+        {
+            return nullptr;
+        }
+
+        QTreeWidgetItem* currentItem = nullptr;
+        for (int topLevelIndex = 0; topLevelIndex < treeWidget->topLevelItemCount(); ++topLevelIndex)
+        {
+            QTreeWidgetItem* candidateItem = treeWidget->topLevelItem(topLevelIndex);
+            if (candidateItem != nullptr && candidateItem->text(0).compare(segments.first(), Qt::CaseInsensitive) == 0)
+            {
+                currentItem = candidateItem;
+                break;
+            }
+        }
+        if (currentItem == nullptr)
+        {
+            return nullptr;
+        }
+
+        for (int segmentIndex = 1; segmentIndex < segments.size(); ++segmentIndex)
+        {
+            QTreeWidgetItem* nextItem = nullptr;
+            for (int childIndex = 0; childIndex < currentItem->childCount(); ++childIndex)
+            {
+                QTreeWidgetItem* childItem = currentItem->child(childIndex);
+                if (childItem == nullptr || childItem->data(0, kRolePlaceholder).toBool())
+                {
+                    continue;
+                }
+                if (childItem->text(0).compare(segments.at(segmentIndex), Qt::CaseInsensitive) == 0)
+                {
+                    nextItem = childItem;
+                    break;
+                }
+            }
+            if (nextItem == nullptr)
+            {
+                return nullptr;
+            }
+            currentItem = nextItem;
+        }
+
+        return currentItem;
+    }
+
+    // appendSubKeyItemsBatched：
+    // - 作用：把后台枚举出的子键名分批插入键树，每轮事件循环最多插入 kSubKeyItemBatchSize 个节点，
+    //         避免一次性构造上万个 QTreeWidgetItem 触发同等数量的模型信号而冻结界面；
+    // - 入参 guardedTree：键树弱引用；parentPath：目标父节点路径；requestToken：本次加载令牌；
+    //         subKeyNames：共享的子键名列表；startIndex：本批起始下标；onFinished：全部插入完成后的 UI 线程回调；
+    // - 返回：无。父节点已销毁或令牌已过期时直接放弃剩余插入。
+    void appendSubKeyItemsBatched(
+        const QPointer<QTreeWidget>& guardedTree,
+        const QString& parentPath,
+        const quint64 requestToken,
+        const std::shared_ptr<const QStringList>& subKeyNames,
+        const int startIndex,
+        const std::function<void()>& onFinished)
+    {
+        if (guardedTree.isNull() || subKeyNames == nullptr)
+        {
+            return;
+        }
+
+        QTreeWidgetItem* parentItem = resolveTreeItemByPath(guardedTree.data(), parentPath);
+        if (parentItem == nullptr)
+        {
+            return;
+        }
+        if (parentItem->data(0, kRoleLoadToken).toULongLong() != requestToken)
+        {
+            return;
+        }
+
+        const int totalCount = static_cast<int>(subKeyNames->size());
+        const int endIndex = std::min(startIndex + kSubKeyItemBatchSize, totalCount);
+        for (int nameIndex = startIndex; nameIndex < endIndex; ++nameIndex)
+        {
+            const QString& subKeyName = subKeyNames->at(nameIndex);
+            QTreeWidgetItem* childItem = new QTreeWidgetItem(parentItem);
+            childItem->setText(0, subKeyName);
+            childItem->setData(0, kRolePath, parentPath + QStringLiteral("\\") + subKeyName);
+            childItem->setData(0, kRoleLoaded, false);
+            childItem->setData(0, kRolePlaceholder, false);
+            childItem->setData(0, kRoleLoadToken, static_cast<qulonglong>(0));
+            // 用展开指示器策略代替占位子项：省掉与子键等量的第二批 QTreeWidgetItem。
+            childItem->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
+        }
+
+        if (endIndex < totalCount)
+        {
+            QTimer::singleShot(0, guardedTree.data(),
+                [guardedTree, parentPath, requestToken, subKeyNames, endIndex, onFinished]()
+                {
+                    appendSubKeyItemsBatched(guardedTree, parentPath, requestToken, subKeyNames, endIndex, onFinished);
+                });
+            return;
+        }
+
+        parentItem->setData(0, kRoleLoadToken, static_cast<qulonglong>(0));
+        parentItem->setData(0, kRoleLoaded, true);
+        parentItem->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicatorWhenChildless);
+        if (onFinished)
+        {
+            onFinished();
+        }
     }
 
     // NewRegistryValueInput 作用：
@@ -1067,10 +1292,9 @@ void RegistryDock::initializeRootItems()
         item->setData(0, kRolePath, QString::fromWCharArray(entry.fullName));
         item->setData(0, kRoleLoaded, false);
         item->setData(0, kRolePlaceholder, false);
-
-        QTreeWidgetItem* placeholder = new QTreeWidgetItem(item);
-        placeholder->setText(0, QStringLiteral("..."));
-        placeholder->setData(0, kRolePlaceholder, true);
+        item->setData(0, kRoleLoadToken, static_cast<qulonglong>(0));
+        // 根键一定可展开：用指示器策略代替占位子项，展开时才异步枚举真实子键。
+        item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
     }
 }
 bool RegistryDock::parseRegistryPath(const QString& pathText, HKEY* rootKeyOut, QString* subPathOut)
@@ -1862,6 +2086,10 @@ void RegistryDock::selectTreeItemByPath(const QString& path)
     const QStringList segments = normalized.split('\\', Qt::SkipEmptyParts);
     if (segments.isEmpty()) return;
 
+    // 记录待定位路径：子键加载已改为异步，本次调用只能走到“已加载”的最深一级，
+    // 剩余层级由后台枚举落地后的回调重新进入本函数继续下探。
+    m_keyTree->setProperty(kPendingTreeSelectionProperty, normalized);
+
     QTreeWidgetItem* current = nullptr;
     for (int i = 0; i < m_keyTree->topLevelItemCount(); ++i)
     {
@@ -1872,12 +2100,23 @@ void RegistryDock::selectTreeItemByPath(const QString& path)
             break;
         }
     }
-    if (current == nullptr) return;
+    if (current == nullptr)
+    {
+        m_keyTree->setProperty(kPendingTreeSelectionProperty, QString());
+        return;
+    }
 
-    ensureTreeItemLoaded(current);
+    bool waitingForSubKeyLoad = false;
     for (int i = 1; i < segments.size(); ++i)
     {
-        ensureTreeItemLoaded(current);
+        if (!current->data(0, kRoleLoaded).toBool())
+        {
+            // 该级还没有子键数据：投递一次后台枚举，本轮先停在这里。
+            ensureTreeItemLoaded(current);
+            waitingForSubKeyLoad = current->data(0, kRoleLoadToken).toULongLong() != 0;
+            break;
+        }
+
         QTreeWidgetItem* next = nullptr;
         for (int childIndex = 0; childIndex < current->childCount(); ++childIndex)
         {
@@ -1893,6 +2132,11 @@ void RegistryDock::selectTreeItemByPath(const QString& path)
         current = next;
     }
 
+    if (!waitingForSubKeyLoad)
+    {
+        m_keyTree->setProperty(kPendingTreeSelectionProperty, QString());
+    }
+
     QSignalBlocker blocker(m_keyTree);
     m_keyTree->setCurrentItem(current);
     m_keyTree->scrollToItem(current);
@@ -1902,6 +2146,8 @@ void RegistryDock::ensureTreeItemLoaded(QTreeWidgetItem* item)
 {
     if (item == nullptr || item->data(0, kRolePlaceholder).toBool()) return;
     if (item->data(0, kRoleLoaded).toBool()) return;
+    // 已有一次后台枚举在途：不重复投递，等它落地即可。
+    if (item->data(0, kRoleLoadToken).toULongLong() != 0) return;
 
     const QString itemPath = item->data(0, kRolePath).toString();
     {
@@ -1909,128 +2155,118 @@ void RegistryDock::ensureTreeItemLoaded(QTreeWidgetItem* item)
         dbg << event << "[RegistryDock] 展开节点并加载子键, path=" << itemPath.toStdString() << eol;
     }
 
-    item->takeChildren();
-
-    if (shouldUseRegistryR0())
-    {
-        const QString kernelPath = buildKernelRegistryPath(itemPath);
-        if (kernelPath.isEmpty())
-        {
-            item->setData(0, kRoleLoaded, true);
-            return;
-        }
-
-        const ksword::ark::DriverClient driverClient;
-        const ksword::ark::RegistryEnumResult enumResult = driverClient.enumerateRegistryKey(
-            kernelPath.toStdWString(),
-            KSWORD_ARK_REGISTRY_ENUM_FLAG_INCLUDE_SUBKEYS);
-        if (!registryEnumUsable(enumResult))
-        {
-            kLogEvent event;
-            warn << event
-                << "[RegistryDock] R0加载子键失败, path="
-                << itemPath.toStdString()
-                << ", detail="
-                << registryEnumFailureText(QStringLiteral("R0枚举子键"), enumResult).toStdString()
-                << eol;
-            item->setData(0, kRoleLoaded, true);
-            return;
-        }
-
-        int childCount = 0;
-        for (const ksword::ark::RegistrySubKeyEntry& subKeyEntry : enumResult.subKeys)
-        {
-            const QString name = QString::fromStdWString(subKeyEntry.name);
-            if (name.trimmed().isEmpty())
-            {
-                continue;
-            }
-
-            QTreeWidgetItem* child = new QTreeWidgetItem(item);
-            child->setText(0, name);
-            child->setData(0, kRolePath, item->data(0, kRolePath).toString() + QStringLiteral("\\") + name);
-            child->setData(0, kRoleLoaded, false);
-            child->setData(0, kRolePlaceholder, false);
-
-            QTreeWidgetItem* placeholder = new QTreeWidgetItem(child);
-            placeholder->setText(0, QStringLiteral("..."));
-            placeholder->setData(0, kRolePlaceholder, true);
-            ++childCount;
-        }
-
-        item->setData(0, kRoleLoaded, true);
-        {
-            kLogEvent event;
-            info << event
-                << "[RegistryDock] R0子键加载完成, path="
-                << itemPath.toStdString()
-                << ", returned="
-                << childCount
-                << ", total="
-                << enumResult.subKeyCount
-                << eol;
-        }
-        return;
-    }
-
-    HKEY root = nullptr;
+    // 枚举入参在 UI 线程算好后按值带进后台线程：后台只做纯数据采集，不碰任何控件。
+    const bool useRegistryR0 = shouldUseRegistryR0();
+    QString kernelPath;
+    HKEY rootKey = nullptr;
     QString subPath;
-    if (!parseRegistryPath(itemPath, &root, &subPath))
+    bool enumerationSourceReady = false;
+    if (useRegistryR0)
     {
+        kernelPath = buildKernelRegistryPath(itemPath);
+        enumerationSourceReady = !kernelPath.isEmpty();
+    }
+    else
+    {
+        enumerationSourceReady = parseRegistryPath(itemPath, &rootKey, &subPath);
+    }
+
+    if (!enumerationSourceReady)
+    {
+        qDeleteAll(item->takeChildren());
         item->setData(0, kRoleLoaded, true);
+        item->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicatorWhenChildless);
         return;
     }
 
-    HKEY key = nullptr;
-    LONG openResult = ::RegOpenKeyExW(root, subPath.isEmpty() ? nullptr : reinterpret_cast<const wchar_t*>(subPath.utf16()), 0, KEY_ENUMERATE_SUB_KEYS, &key);
+    // 后台枚举期间保留一个占位子项，维持展开箭头并给出“正在加载”的视觉反馈。
+    qDeleteAll(item->takeChildren());
+    QTreeWidgetItem* loadingPlaceholder = new QTreeWidgetItem(item);
+    loadingPlaceholder->setText(0, QStringLiteral("..."));
+    loadingPlaceholder->setData(0, kRolePlaceholder, true);
+    // 占位项不可选中：结果落地时它会被删除，避免删除当前项引发多余的导航。
+    loadingPlaceholder->setFlags(Qt::ItemIsEnabled);
 
-    if (openResult != ERROR_SUCCESS)
-    {
-        kLogEvent event;
-        warn << event
-            << "[RegistryDock] 加载子键失败, path="
-            << itemPath.toStdString()
-            << ", error="
-            << winErrorText(openResult).toStdString()
-            << eol;
-        item->setData(0, kRoleLoaded, true);
-        return;
-    }
+    const quint64 requestToken = g_nextSubKeyLoadToken.fetch_add(1, std::memory_order_relaxed);
+    item->setData(0, kRoleLoadToken, static_cast<qulonglong>(requestToken));
+    item->setChildIndicatorPolicy(QTreeWidgetItem::ShowIndicator);
 
-    wchar_t nameBuffer[512] = {};
-    DWORD index = 0;
-    DWORD nameLength = static_cast<DWORD>(std::size(nameBuffer));
-    int childCount = 0;
-    while (::RegEnumKeyExW(key, index, nameBuffer, &nameLength, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-    {
-        const QString name = QString::fromWCharArray(nameBuffer, static_cast<int>(nameLength));
-        QTreeWidgetItem* child = new QTreeWidgetItem(item);
-        child->setText(0, name);
-        child->setData(0, kRolePath, item->data(0, kRolePath).toString() + QStringLiteral("\\") + name);
-        child->setData(0, kRoleLoaded, false);
-        child->setData(0, kRolePlaceholder, false);
+    const QPointer<RegistryDock> guardedSelf(this);
+    const QPointer<QTreeWidget> guardedTree(m_keyTree);
+    QThreadPool::globalInstance()->start(
+        [guardedSelf, guardedTree, requestToken, itemPath, kernelPath, subPath, rootKey, useRegistryR0]()
+        {
+            const SubKeyEnumOutcome collected = useRegistryR0
+                ? collectSubKeyNamesByR0(kernelPath)
+                : collectSubKeyNamesByWin32(rootKey, subPath);
 
-        QTreeWidgetItem* placeholder = new QTreeWidgetItem(child);
-        placeholder->setText(0, QStringLiteral("..."));
-        placeholder->setData(0, kRolePlaceholder, true);
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr) { return; }
 
-        ++index;
-        ++childCount;
-        nameLength = static_cast<DWORD>(std::size(nameBuffer));
-    }
+            QMetaObject::invokeMethod(appInstance,
+                [guardedSelf, guardedTree, requestToken, itemPath, collected]()
+                {
+                    if (guardedTree.isNull()) { return; }
 
-    ::RegCloseKey(key);
-    item->setData(0, kRoleLoaded, true);
+                    // 用路径而不是裸指针重新定位：节点可能已在等待期间被销毁或重建。
+                    QTreeWidgetItem* targetItem = resolveTreeItemByPath(guardedTree.data(), itemPath);
+                    if (targetItem == nullptr) { return; }
+                    if (targetItem->data(0, kRoleLoadToken).toULongLong() != requestToken) { return; }
 
-    {
-        kLogEvent event;
-        info << event
-            << "[RegistryDock] 子键加载完成, path="
-            << itemPath.toStdString()
-            << ", childCount="
-            << childCount
-            << eol;
-    }
+                    qDeleteAll(targetItem->takeChildren());
+
+                    if (!collected.enumerationOk)
+                    {
+                        {
+                            kLogEvent event;
+                            warn << event
+                                << "[RegistryDock] 加载子键失败, path="
+                                << itemPath.toStdString()
+                                << ", error="
+                                << (collected.failureText.isEmpty()
+                                    ? winErrorText(collected.win32ErrorCode).toStdString()
+                                    : collected.failureText.toStdString())
+                                << eol;
+                        }
+                        targetItem->setData(0, kRoleLoadToken, static_cast<qulonglong>(0));
+                        targetItem->setData(0, kRoleLoaded, true);
+                        targetItem->setChildIndicatorPolicy(QTreeWidgetItem::DontShowIndicatorWhenChildless);
+                        return;
+                    }
+
+                    const int loadedChildCount = static_cast<int>(collected.subKeyNames.size());
+                    const std::shared_ptr<const QStringList> sharedSubKeyNames =
+                        std::make_shared<const QStringList>(collected.subKeyNames);
+                    const std::function<void()> onSubKeysApplied =
+                        [guardedSelf, guardedTree, itemPath, loadedChildCount]()
+                        {
+                            {
+                                kLogEvent event;
+                                info << event
+                                    << "[RegistryDock] 子键加载完成, path="
+                                    << itemPath.toStdString()
+                                    << ", childCount="
+                                    << loadedChildCount
+                                    << eol;
+                            }
+
+                            // 路径定位是逐级异步推进的：本级子键就位后继续下探待定位路径。
+                            if (guardedSelf.isNull() || guardedTree.isNull()) { return; }
+                            const QString pendingSelectionPath =
+                                guardedTree->property(kPendingTreeSelectionProperty).toString();
+                            if (pendingSelectionPath.isEmpty()) { return; }
+                            guardedSelf->selectTreeItemByPath(pendingSelectionPath);
+                        };
+
+                    appendSubKeyItemsBatched(
+                        guardedTree,
+                        itemPath,
+                        requestToken,
+                        sharedSubKeyNames,
+                        0,
+                        onSubKeysApplied);
+                });
+        });
 }
 
 void RegistryDock::refreshCurrentKey(bool)

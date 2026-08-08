@@ -7,6 +7,8 @@
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
+#include <QCoreApplication>
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -133,6 +135,30 @@ namespace
             packetRow.capturedBytes,
             packetRow.capturedBytes + capturedLength);
         return packetRecord;
+    }
+
+    // disableNetworkTrafficCaptureAsync 作用：
+    // - 把“关闭 R0 逐包数据面”的同步 IOCTL 丢到后台线程执行；
+    //   CreateFileW + DeviceIoControl 没有 OVERLAPPED，内核侧要注销 WFP callout，
+    //   在 UI 线程直接下发会造成可感知卡顿；
+    // - 入参：无（该控制面只有“启用/停用”两个幂等指令，这里固定下发停用）；
+    // - 返回：无，停用失败只写警告日志，不再回投 UI。
+    void disableNetworkTrafficCaptureAsync()
+    {
+        std::thread([]()
+            {
+                const ksword::ark::DriverClient driverClient;
+                const ksword::ark::NetworkTrafficCaptureControlResult captureControl =
+                    driverClient.controlNetworkTrafficCapture(false);
+                if (!captureControl.io.ok ||
+                    captureControl.response.status != KSWORD_ARK_NETWORK_STATUS_DISABLED)
+                {
+                    kLogEvent disableEvent;
+                    warn << disableEvent
+                         << "[NetworkDock] R0 逐包数据面停用失败: "
+                         << captureControl.io.message << eol;
+                }
+            }).detach();
     }
 }
 
@@ -1295,35 +1321,80 @@ void NetworkDock::startTrafficMonitor()
     const std::uint64_t generation = m_monitorGeneration.fetch_add(1) + 1ULL;
     m_monitorSource = TrafficMonitorSource::Starting;
     m_monitorRunning = true;
-    const ksword::ark::DriverClient driverClient;
-    const ksword::ark::NetworkTrafficCaptureControlResult captureControl =
-        driverClient.controlNetworkTrafficCapture(true);
-    const bool r0CaptureEnabled =
-        captureControl.io.ok &&
-        !captureControl.unsupported &&
-        captureControl.response.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
-        captureControl.response.enabled == 1UL;
-    if (!r0CaptureEnabled)
-    {
-        // 控制响应损坏或启用后业务拒绝时也做一次幂等停用，避免未知半成功状态。
-        (void)driverClient.controlNetworkTrafficCapture(false);
-        startR3TrafficMonitor(QString::fromStdString(captureControl.io.message));
-        kLogEvent fallbackEvent;
-        warn << fallbackEvent
-             << "[NetworkDock] R0 逐包数据面启用失败，已回退 R3: "
-             << captureControl.io.message << eol;
-        return;
-    }
-    // 新捕获会话由 R0 清空 ring 并从 sequence=1 重新计数，R3 cursor 必须同步归零。
-    m_r0LastEventSequence = 0ULL;
-    m_r0LastDroppedEventCount = 0ULL;
+
+    // 启用 R0 数据面是一次同步 IOCTL（CreateFileW + DeviceIoControl，无 OVERLAPPED），
+    // 内核侧要注册 WFP callout/filter 并初始化 ring buffer，因此整段控制流放到后台线程；
+    // UI 线程只先把按钮状态与“正在探测”提示落地，结果回投后再决定进 R0 还是回退 R3。
     if (m_monitorStatusLabel != nullptr)
     {
         m_monitorStatusLabel->setText(QStringLiteral("状态：正在探测 R0 WFP IPv4/IPv6 逐包数据源..."));
     }
-    refreshR0TrafficSnapshotAsync(generation, true);
-
     updateMonitorButtonState();
+
+    const QPointer<NetworkDock> guardedSelf(this);
+    std::thread([guardedSelf, generation]()
+        {
+            const ksword::ark::DriverClient driverClient;
+            const ksword::ark::NetworkTrafficCaptureControlResult captureControl =
+                driverClient.controlNetworkTrafficCapture(true);
+            const bool r0CaptureEnabled =
+                captureControl.io.ok &&
+                !captureControl.unsupported &&
+                captureControl.response.status == KSWORD_ARK_NETWORK_STATUS_APPLIED &&
+                captureControl.response.enabled == 1UL;
+            if (!r0CaptureEnabled)
+            {
+                // 控制响应损坏或启用后业务拒绝时也做一次幂等停用，避免未知半成功状态。
+                // 该停用与启用在同一后台线程内串行完成，不会再占用 UI 线程。
+                (void)driverClient.controlNetworkTrafficCapture(false);
+            }
+
+            const QString captureMessageText = QString::fromStdString(captureControl.io.message);
+            const std::string captureMessageLogText = captureControl.io.message;
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                appInstance,
+                [guardedSelf, generation, r0CaptureEnabled, captureMessageText, captureMessageLogText]()
+                {
+                    if (guardedSelf == nullptr)
+                    {
+                        return;
+                    }
+
+                    // 用户可能在探测返回前就点了停止或重新开始，此时本轮结果整体作废；
+                    // 若本轮确实把数据面打开了，还要再补一次异步幂等停用。
+                    if (guardedSelf->m_monitorGeneration.load() != generation ||
+                        guardedSelf->m_monitorSource != TrafficMonitorSource::Starting)
+                    {
+                        if (r0CaptureEnabled)
+                        {
+                            disableNetworkTrafficCaptureAsync();
+                        }
+                        return;
+                    }
+
+                    if (!r0CaptureEnabled)
+                    {
+                        guardedSelf->startR3TrafficMonitor(captureMessageText);
+                        kLogEvent fallbackEvent;
+                        warn << fallbackEvent
+                             << "[NetworkDock] R0 逐包数据面启用失败，已回退 R3: "
+                             << captureMessageLogText << eol;
+                        return;
+                    }
+
+                    // 新捕获会话由 R0 清空 ring 并从 sequence=1 重新计数，R3 cursor 必须同步归零。
+                    guardedSelf->m_r0LastEventSequence = 0ULL;
+                    guardedSelf->m_r0LastDroppedEventCount = 0ULL;
+                    guardedSelf->refreshR0TrafficSnapshotAsync(generation, true);
+                    guardedSelf->updateMonitorButtonState();
+                },
+                Qt::QueuedConnection);
+        }).detach();
 
     kLogEvent startEvent;
     info << startEvent << "[NetworkDock] 用户触发网络监控启动。" << eol;
@@ -1350,27 +1421,73 @@ void NetworkDock::stopTrafficMonitor()
         m_r0TrafficRefreshTimer->stop();
     }
 
-    bool r0StopConfirmed = true;
-    QString r0StopFailure;
-    if (sourceBeforeStop == TrafficMonitorSource::R0 ||
-        sourceBeforeStop == TrafficMonitorSource::Starting)
+    // 停用 R0 数据面同样是一次同步 IOCTL，放到后台线程执行，界面按“停用成功”乐观推进；
+    // m_monitorStopInProgress 保持置位直到停用回投，这样用户无法在停用尚未落地时抢先重启，
+    // 避免“启用/停用”两条后台控制流互相插队把数据面留在错误状态。
+    const bool r0DisableDispatched =
+        sourceBeforeStop == TrafficMonitorSource::R0 ||
+        sourceBeforeStop == TrafficMonitorSource::Starting;
+    if (r0DisableDispatched)
     {
-        const ksword::ark::DriverClient driverClient;
-        const ksword::ark::NetworkTrafficCaptureControlResult captureControl =
-            driverClient.controlNetworkTrafficCapture(false);
-        r0StopConfirmed =
-            captureControl.io.ok &&
-            !captureControl.unsupported &&
-            captureControl.response.status == KSWORD_ARK_NETWORK_STATUS_DISABLED &&
-            captureControl.response.enabled == 0UL;
-        if (!r0StopConfirmed)
-        {
-            r0StopFailure = QString::fromStdString(captureControl.io.message);
-            kLogEvent stopFailureEvent;
-            warn << stopFailureEvent
-                 << "[NetworkDock] R0 逐包数据面停用失败: "
-                 << captureControl.io.message << eol;
-        }
+        const QPointer<NetworkDock> guardedSelf(this);
+        const std::uint64_t stopGeneration = m_monitorGeneration.load();
+        std::thread([guardedSelf, stopGeneration]()
+            {
+                const ksword::ark::DriverClient driverClient;
+                const ksword::ark::NetworkTrafficCaptureControlResult captureControl =
+                    driverClient.controlNetworkTrafficCapture(false);
+                const bool r0StopConfirmed =
+                    captureControl.io.ok &&
+                    !captureControl.unsupported &&
+                    captureControl.response.status == KSWORD_ARK_NETWORK_STATUS_DISABLED &&
+                    captureControl.response.enabled == 0UL;
+                if (!r0StopConfirmed)
+                {
+                    kLogEvent stopFailureEvent;
+                    warn << stopFailureEvent
+                         << "[NetworkDock] R0 逐包数据面停用失败: "
+                         << captureControl.io.message << eol;
+                }
+
+                const QString r0StopFailure = r0StopConfirmed
+                    ? QString()
+                    : QString::fromStdString(captureControl.io.message);
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr)
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    appInstance,
+                    [guardedSelf, stopGeneration, r0StopFailure]()
+                    {
+                        if (guardedSelf == nullptr)
+                        {
+                            return;
+                        }
+
+                        // 停用已经落地，释放“停止中”闸门，按钮恢复可点。
+                        guardedSelf->m_monitorStopInProgress.store(false);
+                        guardedSelf->updateMonitorButtonState();
+                        if (r0StopFailure.isEmpty() ||
+                            guardedSelf->m_monitorStatusLabel == nullptr)
+                        {
+                            return;
+                        }
+
+                        // 停用失败提示只对“仍停在本轮停止结果上”的界面有效，
+                        // 用户已经重新开始抓包时不覆盖新的运行状态文本。
+                        if (guardedSelf->m_monitorGeneration.load() != stopGeneration ||
+                            guardedSelf->m_monitorSource != TrafficMonitorSource::Stopped)
+                        {
+                            return;
+                        }
+                        guardedSelf->m_monitorStatusLabel->setText(
+                            QStringLiteral("状态：界面已停止，但 R0 数据面停用失败：%1")
+                                .arg(r0StopFailure));
+                    },
+                    Qt::QueuedConnection);
+            }).detach();
     }
 
     // UI 立即切换到“停止中”，给用户及时反馈，避免误判“按钮没反应”。
@@ -1384,18 +1501,18 @@ void NetworkDock::stopTrafficMonitor()
     // R0/探测模式没有 R3 抓包线程需要 join，可在 UI 线程立即完成停止。
     if (sourceBeforeStop != TrafficMonitorSource::R3 || !m_trafficService->IsRunning())
     {
-        m_monitorStopInProgress.store(false);
+        // 已经派发异步停用时，停止闸门由停用回投负责释放，这里不能提前放开。
+        if (!r0DisableDispatched)
+        {
+            m_monitorStopInProgress.store(false);
+        }
         if (m_packetTimelineSessionActive)
         {
             endPacketTimelineMonitorSession();
         }
         if (m_monitorStatusLabel != nullptr)
         {
-            m_monitorStatusLabel->setText(
-                r0StopConfirmed
-                    ? QStringLiteral("状态：已停止（来源：无）")
-                    : QStringLiteral("状态：界面已停止，但 R0 数据面停用失败：%1")
-                        .arg(r0StopFailure));
+            m_monitorStatusLabel->setText(QStringLiteral("状态：已停止（来源：无）"));
         }
         updateMonitorButtonState();
         return;
@@ -1537,8 +1654,9 @@ void NetworkDock::refreshR0TrafficSnapshotAsync(
                 {
                     if (safeThis->m_monitorSource == TrafficMonitorSource::Stopped)
                     {
-                        const ksword::ark::DriverClient driverClient;
-                        (void)driverClient.controlNetworkTrafficCapture(false);
+                        // 纯兜底停用，没有后续步骤依赖它的完成顺序，直接丢后台执行，
+                        // 避免在 UI 线程的回投 lambda 里再下发一次同步 IOCTL。
+                        disableNetworkTrafficCaptureAsync();
                     }
                     return;
                 }

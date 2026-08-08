@@ -445,6 +445,21 @@ private:
     // - 作用：异步恢复选中删除项，避免恢复过程阻塞 UI。
     void recoverSelectedDeletedFilesAsync();
 
+    // installRecoveryTableMenu：
+    // - 作用：为删除项表格安装右键菜单（复制行 / 文件属性 / 恢复选中）。
+    void installRecoveryTableMenu();
+
+    // showDeletedFilePropertiesDialog：
+    // - 作用：展示单条删除项的完整取证属性（记录号、序列号、恢复能力等）。
+    // - 入参 rowIndex：表格行号，越界时不弹窗。
+    void showDeletedFilePropertiesDialog(int rowIndex);
+
+    // updateRecoveryViewState：
+    // - 作用：在“空状态引导页”和“结果表格”之间切换。
+    // - 入参 hasResults：true 显示表格，false 显示引导页。
+    // - 入参 emptyHintText：引导页上的说明文字。
+    void updateRecoveryViewState(bool hasResults, const QString& emptyHintText);
+
 private:
     // 根布局控件。
     QVBoxLayout* m_rootLayout = nullptr;       // FileDock 根布局。
@@ -460,6 +475,10 @@ private:
     QPushButton* m_recoveryExportButton = nullptr;  // 恢复导出按钮。
     QTableWidget* m_recoveryTable = nullptr;        // 删除项结果表格。
     QLabel* m_recoveryStatusLabel = nullptr;        // 扫描状态标签。
+    QStackedWidget* m_recoveryViewStack = nullptr;  // 结果区堆叠容器（引导页/结果表格二选一）。
+    QWidget* m_recoveryEmptyPage = nullptr;         // 空状态引导页容器。
+    QPushButton* m_recoveryEmptyScanButton = nullptr; // 引导页中央扫描按钮。
+    QLabel* m_recoveryEmptyHintLabel = nullptr;     // 引导页说明文字。
     std::vector<ks::file::NtfsDeletedFileEntry> m_deletedRecoveryItems; // 删除项缓存（含 resident 数据）。
     bool m_recoveryScanInProgress = false;          // 误删扫描后台任务运行状态。
     bool m_recoveryRecoverInProgress = false;       // 误删恢复后台任务运行状态。

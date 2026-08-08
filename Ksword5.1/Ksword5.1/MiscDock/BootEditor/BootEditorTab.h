@@ -24,6 +24,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QShowEvent;
 class QSplitter;
 class QSpinBox;
 class QTableWidget;
@@ -37,10 +38,18 @@ class BootEditorTab final : public QWidget
 
 public:
     // 构造函数：
-    // - 作用：初始化引导编辑器 UI，并触发首轮 BCD 枚举。
+    // - 作用：只初始化引导编辑器 UI 与信号连接，不做任何 BCD 枚举。
     // - 参数 parent：Qt 父控件。
+    // - 返回：无（构造函数）。
     explicit BootEditorTab(QWidget* parent = nullptr);
     ~BootEditorTab() override = default;
+
+protected:
+    // showEvent：
+    // - 作用：页面首次真正可见时才排队首轮 BCD 枚举，避免“杂项”页一构造就拉起 bcdedit。
+    // - 参数 event：Qt 显示事件。
+    // - 返回：无。
+    void showEvent(QShowEvent* event) override;
 
 private:
     // BcdEntry：
@@ -188,4 +197,7 @@ private:
     std::vector<BcdEntry> m_entryList;      // m_entryList：当前 BCD 枚举结果缓存。
     QString m_lastEnumRawText;              // m_lastEnumRawText：最近一次完整原始枚举文本。
     QString m_defaultIdentifierText;        // m_defaultIdentifierText：当前默认启动项标识符缓存。
+
+    // ===================== 首轮加载状态 =====================
+    bool m_firstShowHandled = false;        // m_firstShowHandled：是否已在首次可见时排队过首轮 BCD 枚举。
 };

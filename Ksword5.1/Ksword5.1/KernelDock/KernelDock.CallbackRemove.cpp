@@ -5,19 +5,30 @@
 #include "../theme.h"
 
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMetaObject>
+#include <QPointer>
 #include <QPushButton>
 #include <QStringList>
+#include <QThreadPool>
 #include <QVBoxLayout>
+
+#include <atomic>
 
 using ksword::kernel_dock_internal::kernelText;
 
 namespace
 {
+    // g_callbackRemoveResolveGeneration：
+    // - 用途：淘汰已被新一次“安全移除”取代的服务名反查回投；
+    // - 说明：手工移除面板全局只有一个实例，这里用文件级计数器避免改 KernelDock.h。
+    std::atomic<quint64> g_callbackRemoveResolveGeneration{ 0ULL };
+
     // callbackRemoveParseAddress：
     // - 作用：把输入文本解析为 64 位地址（支持 0x 前缀）。
     bool callbackRemoveParseAddress(const QString& textValue, quint64& addressOut)
@@ -337,34 +348,92 @@ void KernelDock::initializeCallbackRemovePanel()
 
         const QString modulePath = QString::fromWCharArray(responsePacket.modulePath);
         const QString responseServiceName = QString::fromWCharArray(responsePacket.serviceName);
-        const QString serviceName = callbackRemoveResolveServiceByModule(modulePath);
-        const QString detailText = kernelText("kernel.callback.remove.detail.full", QStringLiteral(
-            "安全移除请求已执行。\n"
-            "- 类型：%1\n"
-            "- 地址：0x%2\n"
-            "- 返回字节：%3\n"
-            "- NTSTATUS：0x%4\n"
-            "- 映射标志：%5\n"
-            "- 模块路径：%6\n"
-            "- 模块基址：0x%7\n"
-            "- 模块大小：0x%8\n"
-            "- 驱动返回服务名：%9\n"
-            "- 本地服务映射：%10\n"
-            "- 操作模式：%11"))
-            .arg(m_callbackRemoveTypeCombo->currentText())
-            .arg(QString::number(callbackAddress, 16).toUpper())
-            .arg(bytesReturned)
-            .arg(QString::number(static_cast<quint32>(responsePacket.ntstatus), 16).rightJustified(8, QLatin1Char('0')).toUpper())
-            .arg(callbackRemoveMappingText(responsePacket.mappingFlags))
-            .arg(modulePath.isEmpty() ? kernelText("kernel.callback.remove.placeholder.unresolved", QStringLiteral("未解析")) : modulePath)
-            .arg(QString::number(responsePacket.moduleBase, 16).toUpper())
-            .arg(QString::number(responsePacket.moduleSize, 16).toUpper())
-            .arg(responseServiceName.isEmpty() ? kernelText("kernel.callback.remove.placeholder.not_returned", QStringLiteral("未返回")) : responseServiceName)
-            .arg(serviceName.isEmpty() ? kernelText("kernel.callback.remove.placeholder.unmatched", QStringLiteral("未匹配")) : serviceName)
-            .arg(experimentalUnlinkEnabled
-                ? kernelText("kernel.callback.remove.unlink.compiled_but_unused", QStringLiteral("已编译扩展宏，但本页不执行 unlink"))
-                : kernelText("kernel.callback.remove.unlink.protocol_disabled", QStringLiteral("当前 shared 协议未启用 REMOVE_EXTERNAL_CALLBACK_EX")));
-        m_callbackRemoveDetailEditor->setText(detailText);
+
+        // composeCallbackRemoveDetailText：
+        // - 入参 localServiceNameText：本地 SCM 服务映射结果，未完成时用“未解析”占位；
+        // - 处理：把本轮移除响应的全部字段拼成详情文本，供同步渲染与异步补齐复用；
+        // - 返回：详情框展示文本。
+        const auto composeCallbackRemoveDetailText =
+            [typeText = m_callbackRemoveTypeCombo->currentText(),
+             callbackAddress,
+             bytesReturned,
+             ntstatusValue = static_cast<quint32>(responsePacket.ntstatus),
+             mappingText = callbackRemoveMappingText(responsePacket.mappingFlags),
+             modulePath,
+             moduleBase = static_cast<quint64>(responsePacket.moduleBase),
+             moduleSize = static_cast<quint64>(responsePacket.moduleSize),
+             responseServiceName,
+             experimentalUnlinkEnabled](const QString& localServiceNameText)
+        {
+            return kernelText("kernel.callback.remove.detail.full", QStringLiteral(
+                "安全移除请求已执行。\n"
+                "- 类型：%1\n"
+                "- 地址：0x%2\n"
+                "- 返回字节：%3\n"
+                "- NTSTATUS：0x%4\n"
+                "- 映射标志：%5\n"
+                "- 模块路径：%6\n"
+                "- 模块基址：0x%7\n"
+                "- 模块大小：0x%8\n"
+                "- 驱动返回服务名：%9\n"
+                "- 本地服务映射：%10\n"
+                "- 操作模式：%11"))
+                .arg(typeText)
+                .arg(QString::number(callbackAddress, 16).toUpper())
+                .arg(bytesReturned)
+                .arg(QString::number(ntstatusValue, 16).rightJustified(8, QLatin1Char('0')).toUpper())
+                .arg(mappingText)
+                .arg(modulePath.isEmpty() ? kernelText("kernel.callback.remove.placeholder.unresolved", QStringLiteral("未解析")) : modulePath)
+                .arg(QString::number(moduleBase, 16).toUpper())
+                .arg(QString::number(moduleSize, 16).toUpper())
+                .arg(responseServiceName.isEmpty() ? kernelText("kernel.callback.remove.placeholder.not_returned", QStringLiteral("未返回")) : responseServiceName)
+                .arg(localServiceNameText)
+                .arg(experimentalUnlinkEnabled
+                    ? kernelText("kernel.callback.remove.unlink.compiled_but_unused", QStringLiteral("已编译扩展宏，但本页不执行 unlink"))
+                    : kernelText("kernel.callback.remove.unlink.protocol_disabled", QStringLiteral("当前 shared 协议未启用 REMOVE_EXTERNAL_CALLBACK_EX")));
+        };
+
+        // 本地服务名反查要枚举全量 SCM 驱动服务并逐条 QueryServiceConfigW，最坏在秒级；
+        // 内核回调此刻已经被改，界面必须先把结果显示出来，映射列先占位“未解析”，
+        // 反查放进线程池，完成后按 generation 校验再替换详情文本。
+        const QString unmatchedServiceText = kernelText("kernel.callback.remove.placeholder.unmatched", QStringLiteral("未匹配"));
+        const QString unresolvedServiceText = kernelText("kernel.callback.remove.placeholder.unresolved", QStringLiteral("未解析"));
+        m_callbackRemoveDetailEditor->setText(composeCallbackRemoveDetailText(unresolvedServiceText));
+
+        const QPointer<KernelDock> guardedSelf(this);
+        const quint64 requestGeneration = g_callbackRemoveResolveGeneration.fetch_add(1ULL) + 1ULL;
+        QThreadPool::globalInstance()->start(
+            [guardedSelf, requestGeneration, modulePath, unmatchedServiceText, composeCallbackRemoveDetailText]()
+            {
+                const QString resolvedServiceName = callbackRemoveResolveServiceByModule(modulePath);
+                const QString localServiceNameText = resolvedServiceName.isEmpty()
+                    ? unmatchedServiceText
+                    : resolvedServiceName;
+
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr)
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(appInstance,
+                    [guardedSelf, requestGeneration, localServiceNameText, composeCallbackRemoveDetailText]()
+                    {
+                        if (guardedSelf == nullptr)
+                        {
+                            return;
+                        }
+                        if (g_callbackRemoveResolveGeneration.load() != requestGeneration)
+                        {
+                            return;
+                        }
+                        if (guardedSelf->m_callbackRemoveDetailEditor == nullptr)
+                        {
+                            return;
+                        }
+                        guardedSelf->m_callbackRemoveDetailEditor->setText(
+                            composeCallbackRemoveDetailText(localServiceNameText));
+                    });
+            });
 
         if (responsePacket.ntstatus >= 0)
         {

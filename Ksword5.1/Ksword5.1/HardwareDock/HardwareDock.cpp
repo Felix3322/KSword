@@ -70,6 +70,7 @@
 #include <QVariantAnimation>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -82,6 +83,7 @@
 #endif
 #include <Windows.h>
 #include <intrin.h>
+#include <Objbase.h>
 #include <Pdh.h>
 #include <pdhmsg.h>
 #include <PowrProf.h>
@@ -3058,6 +3060,99 @@ namespace
         }
         return probeResult;
     }
+
+    // HardwareDockCpuCounterBundle 作用：
+    // - 承载后台线程创建好的 CPU 相关 PDH 句柄与失败状态码；
+    // - 只保存值类型，便于整体回投 UI 线程接管，不牵扯任何 QWidget。
+    struct HardwareDockCpuCounterBundle
+    {
+        void* cpuQueryHandle = nullptr;              // cpuQueryHandle：CPU 查询句柄。
+        std::vector<void*> coreCounterHandles;       // coreCounterHandles：每个逻辑核心的计数器句柄。
+        void* cpuPerformanceCounterHandle = nullptr; // cpuPerformanceCounterHandle：处理器性能百分比计数器句柄。
+        void* cpuFrequencyCounterHandle = nullptr;   // cpuFrequencyCounterHandle：处理器基准频率计数器句柄。
+        PDH_STATUS openQueryStatus = ERROR_SUCCESS;  // openQueryStatus：PdhOpenQueryW 返回值，供失败日志使用。
+    };
+
+    // hardwareDockCpuCounterInitializing 作用：
+    // - 标记当前是否已有一轮后台 PDH 初始化在执行；
+    // - 防止初始化未完成期间每秒刷新重复投递任务。
+    std::atomic_bool hardwareDockCpuCounterInitializing{ false };
+
+    // createHardwareDockCpuCounters 作用：
+    // - 入参 coreCount：逻辑核心数量，决定注册多少个 \Processor(n) 计数器；
+    // - 处理：在调用线程完成 PdhOpenQueryW/PdhAddEnglishCounterW 与首次基线采集；
+    // - 返回：句柄集合，失败字段保持 nullptr 由调用方按空句柄回退。
+    HardwareDockCpuCounterBundle createHardwareDockCpuCounters(const int coreCount)
+    {
+        HardwareDockCpuCounterBundle counterBundle;
+
+        PDH_HQUERY queryHandle = nullptr;
+        counterBundle.openQueryStatus = ::PdhOpenQueryW(nullptr, 0, &queryHandle);
+        if (counterBundle.openQueryStatus != ERROR_SUCCESS || queryHandle == nullptr)
+        {
+            return counterBundle;
+        }
+
+        const int safeCoreCount = std::max(0, coreCount);
+        counterBundle.coreCounterHandles.reserve(static_cast<std::size_t>(safeCoreCount));
+        for (int coreIndex = 0; coreIndex < safeCoreCount; ++coreIndex)
+        {
+            const QString counterPath = QStringLiteral("\\Processor(%1)\\% Processor Time").arg(coreIndex);
+            PDH_HCOUNTER counterHandle = nullptr;
+            const PDH_STATUS addStatus = ::PdhAddEnglishCounterW(
+                queryHandle,
+                reinterpret_cast<LPCWSTR>(counterPath.utf16()),
+                0,
+                &counterHandle);
+            if (addStatus != ERROR_SUCCESS || counterHandle == nullptr)
+            {
+                // 某个核心计数器失败时占位 nullptr，后续采样按 0 处理。
+                counterBundle.coreCounterHandles.push_back(nullptr);
+                continue;
+            }
+            counterBundle.coreCounterHandles.push_back(counterHandle);
+        }
+
+        // Windows 任务管理器式“速度”不能直接使用 ProcessorInformation.CurrentMhz：
+        // 现代 HWP/CPPC 平台常把它固定在基础频率。有效速度 = 基准频率 × 处理器性能百分比。
+        const auto addCpuTotalCounter =
+            [queryHandle](const QString& counterPath, void** counterHandleOut)
+            {
+                if (counterHandleOut == nullptr)
+                {
+                    return;
+                }
+                PDH_HCOUNTER counterHandle = nullptr;
+                const PDH_STATUS addStatus = ::PdhAddEnglishCounterW(
+                    queryHandle,
+                    reinterpret_cast<LPCWSTR>(counterPath.utf16()),
+                    0,
+                    &counterHandle);
+                *counterHandleOut = addStatus == ERROR_SUCCESS ? counterHandle : nullptr;
+            };
+        addCpuTotalCounter(
+            QStringLiteral("\\Processor Information(_Total)\\% Processor Performance"),
+            &counterBundle.cpuPerformanceCounterHandle);
+        addCpuTotalCounter(
+            QStringLiteral("\\Processor Information(_Total)\\Processor Frequency"),
+            &counterBundle.cpuFrequencyCounterHandle);
+
+        ::PdhCollectQueryData(queryHandle);
+        counterBundle.cpuQueryHandle = queryHandle;
+        return counterBundle;
+    }
+
+    // closeHardwareDockCpuCounters 作用：
+    // - 入参 counterBundle：待释放的句柄集合；
+    // - 处理：关闭 PDH 查询，供控件已销毁或句柄已由更早一轮接管时丢弃结果；
+    // - 返回：无返回值。
+    void closeHardwareDockCpuCounters(const HardwareDockCpuCounterBundle& counterBundle)
+    {
+        if (counterBundle.cpuQueryHandle != nullptr)
+        {
+            ::PdhCloseQuery(reinterpret_cast<PDH_HQUERY>(counterBundle.cpuQueryHandle));
+        }
+    }
 }
 
 HardwareDock::HardwareDock(QWidget* parent)
@@ -5663,70 +5758,85 @@ void HardwareDock::refreshSystemVolumeInfo()
 
 void HardwareDock::initializePerformanceCounters()
 {
+    // 计数器初始化整体异步化：
+    // - PdhOpenQueryW + 逐核 PdhAddEnglishCounterW + \Processor Information 首次触达合计上百毫秒；
+    // - 原来只是延后到首帧之后，仍然压在 UI 线程；现在交给线程池，完成后回投接管句柄；
+    // - 句柄就绪前 samplePerCoreUsage 直接返回 false，界面按 0 占位显示。
     if (m_cpuPerfQueryHandle != nullptr)
     {
         return;
     }
 
-    PDH_HQUERY queryHandle = nullptr;
-    const PDH_STATUS queryStatus = ::PdhOpenQueryW(nullptr, 0, &queryHandle);
-    if (queryStatus != ERROR_SUCCESS || queryHandle == nullptr)
+    // expectedInitializingValue 用途：CAS 期望值（false=当前没有初始化任务在跑）。
+    bool expectedInitializingValue = false;
+    if (!hardwareDockCpuCounterInitializing.compare_exchange_strong(expectedInitializingValue, true))
     {
-        kLogEvent event;
-        warn << event
-            << "[HardwareDock] 初始化PDH失败：PdhOpenQueryW, status="
-            << queryStatus
-            << eol;
         return;
     }
 
-    m_cpuPerfQueryHandle = queryHandle;
-    m_coreCounterHandles.clear();
-    m_coreCounterHandles.reserve(m_coreChartEntries.size());
+    // coreCount 必须在 UI 线程读取：m_coreChartEntries 保存的是图表控件。
+    const int coreCount = static_cast<int>(m_coreChartEntries.size());
 
-    for (int coreIndex = 0; coreIndex < static_cast<int>(m_coreChartEntries.size()); ++coreIndex)
+    // applicationContext 与事件循环同寿命；工作线程不解引用 Dock 指针。
+    QObject* const applicationContext = QCoreApplication::instance();
+    if (applicationContext == nullptr)
     {
-        const QString counterPath = QStringLiteral("\\Processor(%1)\\% Processor Time").arg(coreIndex);
-        PDH_HCOUNTER counterHandle = nullptr;
-        const PDH_STATUS addStatus = ::PdhAddEnglishCounterW(
-            queryHandle,
-            reinterpret_cast<LPCWSTR>(counterPath.utf16()),
-            0,
-            &counterHandle);
-        if (addStatus != ERROR_SUCCESS || counterHandle == nullptr)
-        {
-            // 某个核心计数器失败时占位 nullptr，后续采样按 0 处理。
-            m_coreCounterHandles.push_back(nullptr);
-            continue;
-        }
-        m_coreCounterHandles.push_back(counterHandle);
+        hardwareDockCpuCounterInitializing.store(false);
+        return;
     }
 
-    // Windows 任务管理器式“速度”不能直接使用 ProcessorInformation.CurrentMhz：
-    // 现代 HWP/CPPC 平台常把它固定在基础频率。有效速度 = 基准频率 × 处理器性能百分比。
-    const auto addCpuTotalCounter =
-        [queryHandle](const QString& counterPath, void** counterHandleOut)
+    // safeThis 用途：后台任务可能晚于 Dock 销毁，回投后必须验证生命周期。
+    const QPointer<HardwareDock> safeThis(this);
+    QThreadPool::globalInstance()->start(
+        [applicationContext, safeThis, coreCount]()
         {
-            if (counterHandleOut == nullptr)
-            {
-                return;
-            }
-            PDH_HCOUNTER counterHandle = nullptr;
-            const PDH_STATUS addStatus = ::PdhAddEnglishCounterW(
-                queryHandle,
-                reinterpret_cast<LPCWSTR>(counterPath.utf16()),
-                0,
-                &counterHandle);
-            *counterHandleOut = addStatus == ERROR_SUCCESS ? counterHandle : nullptr;
-        };
-    addCpuTotalCounter(
-        QStringLiteral("\\Processor Information(_Total)\\% Processor Performance"),
-        &m_cpuPerformanceCounterHandle);
-    addCpuTotalCounter(
-        QStringLiteral("\\Processor Information(_Total)\\Processor Frequency"),
-        &m_cpuFrequencyCounterHandle);
+            // 后台线程只做纯数据采集，产出可跨线程搬运的句柄值类型。
+            const HardwareDockCpuCounterBundle counterBundle = createHardwareDockCpuCounters(coreCount);
 
-    ::PdhCollectQueryData(queryHandle);
+            const bool invokeOk = QMetaObject::invokeMethod(
+                applicationContext,
+                [safeThis, counterBundle]()
+                {
+                    if (safeThis.isNull())
+                    {
+                        closeHardwareDockCpuCounters(counterBundle);
+                        hardwareDockCpuCounterInitializing.store(false);
+                        return;
+                    }
+
+                    if (counterBundle.cpuQueryHandle == nullptr)
+                    {
+                        kLogEvent event;
+                        warn << event
+                            << "[HardwareDock] 初始化PDH失败：PdhOpenQueryW, status="
+                            << counterBundle.openQueryStatus
+                            << eol;
+                        hardwareDockCpuCounterInitializing.store(false);
+                        return;
+                    }
+
+                    if (safeThis->m_cpuPerfQueryHandle != nullptr)
+                    {
+                        // 更早一轮初始化已经接管句柄，本轮结果直接释放避免泄漏。
+                        closeHardwareDockCpuCounters(counterBundle);
+                        hardwareDockCpuCounterInitializing.store(false);
+                        return;
+                    }
+
+                    safeThis->m_cpuPerfQueryHandle = counterBundle.cpuQueryHandle;
+                    safeThis->m_coreCounterHandles = counterBundle.coreCounterHandles;
+                    safeThis->m_cpuPerformanceCounterHandle = counterBundle.cpuPerformanceCounterHandle;
+                    safeThis->m_cpuFrequencyCounterHandle = counterBundle.cpuFrequencyCounterHandle;
+                    hardwareDockCpuCounterInitializing.store(false);
+                },
+                Qt::QueuedConnection);
+
+            if (!invokeOk)
+            {
+                closeHardwareDockCpuCounters(counterBundle);
+                hardwareDockCpuCounterInitializing.store(false);
+            }
+        });
 }
 
 void HardwareDock::refreshAllViews()
@@ -6363,358 +6473,450 @@ bool HardwareDock::sampleGpuUsages(std::vector<GpuUsageSample>* sampleListOut)
         return false;
     }
 
-    // oneGiBInBytes 用途：把 DXGI 字节字段转换为任务管理器常见 GiB 文本。
-    constexpr double oneGiBInBytes = 1024.0 * 1024.0 * 1024.0;
-    IDXGIFactory6* factoryPointer = nullptr;
-    const HRESULT createFactoryStatus = ::CreateDXGIFactory1(IID_PPV_ARGS(&factoryPointer));
-    if (FAILED(createFactoryStatus) || factoryPointer == nullptr)
+    // GpuSamplingSharedState 作用：
+    // - GPU 采样需要 DXGI 全适配器枚举加 \GPU Engine(*) 通配符全实例数组格式化，
+    //   实例数等于“进程数 × 引擎类型”，放在每秒定时器里会持续占用 UI 线程；
+    // - 这里把整段采集搬到后台任务，UI 线程只读取最近一次快照；
+    // - 后台任务只读写这份共享状态，不触碰任何 QWidget。
+    struct GpuSamplingSharedState
     {
-        return false;
+        std::mutex stateMutex;                        // stateMutex：保护快照与 PDH 句柄。
+        std::vector<GpuUsageSample> cachedSampleList; // cachedSampleList：最近一次采样快照。
+        bool samplingInFlight = false;                // samplingInFlight：是否已有后台采样在执行。
+        void* pdhQueryHandle = nullptr;               // pdhQueryHandle：GPU PDH 查询句柄。
+        void* engineCounterHandle = nullptr;          // engineCounterHandle：GPU 引擎利用率计数器句柄。
+        void* dedicatedMemoryCounterHandle = nullptr; // dedicatedMemoryCounterHandle：专用显存占用计数器句柄。
+        void* sharedMemoryCounterHandle = nullptr;    // sharedMemoryCounterHandle：共享显存占用计数器句柄。
+    };
+
+    // 共享状态刻意堆分配且不回收：
+    // - 后台采样可能在进程退出阶段仍在运行，静态对象析构会与之竞争；
+    // - PDH 查询句柄同样交给进程退出统一回收，避免关闭正在被使用的查询。
+    static GpuSamplingSharedState* const gpuSamplingSharedState = new GpuSamplingSharedState();
+    GpuSamplingSharedState* const samplingStatePointer = gpuSamplingSharedState;
+
+    // shouldStartBackgroundSampling 用途：本次刷新是否需要投递新一轮后台采集。
+    bool shouldStartBackgroundSampling = false;
+    {
+        const std::lock_guard<std::mutex> stateLock(samplingStatePointer->stateMutex);
+        *sampleListOut = samplingStatePointer->cachedSampleList;
+        if (!samplingStatePointer->samplingInFlight)
+        {
+            samplingStatePointer->samplingInFlight = true;
+            shouldStartBackgroundSampling = true;
+        }
     }
 
-    sampleListOut->clear();
-    for (UINT adapterIndex = 0;; ++adapterIndex)
+    if (shouldStartBackgroundSampling)
     {
-        IDXGIAdapter1* adapterPointer = nullptr;
-        const HRESULT enumStatus = factoryPointer->EnumAdapters1(adapterIndex, &adapterPointer);
-        if (enumStatus == DXGI_ERROR_NOT_FOUND)
-        {
-            break;
-        }
-        if (FAILED(enumStatus) || adapterPointer == nullptr)
-        {
-            continue;
-        }
-
-        DXGI_ADAPTER_DESC1 adapterDesc{};
-        adapterPointer->GetDesc1(&adapterDesc);
-        if ((adapterDesc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
-        {
-            adapterPointer->Release();
-            continue;
-        }
-
-        GpuUsageSample sample;
-        sample.adapterKey = packLuidKey(adapterDesc.AdapterLuid);
-        sample.adapterIndex = static_cast<int>(adapterIndex);
-        sample.displayNameText = QString::fromWCharArray(adapterDesc.Description).trimmed();
-        sample.dedicatedMemoryGiB = static_cast<double>(adapterDesc.DedicatedVideoMemory) / oneGiBInBytes;
-        sample.sharedMemoryGiB = static_cast<double>(adapterDesc.SharedSystemMemory) / oneGiBInBytes;
-
-        GpuAdapterTelemetrySnapshot telemetrySnapshot;
-        if (queryGpuAdapterTelemetrySnapshot(adapterDesc.AdapterLuid, &telemetrySnapshot))
-        {
-            sample.currentCoreClockMhz = telemetrySnapshot.currentCoreClockMhz;
-            sample.maxCoreClockMhz = telemetrySnapshot.maxCoreClockMhz;
-            sample.currentMemoryClockMhz = telemetrySnapshot.currentMemoryClockMhz;
-            sample.maxMemoryClockMhz = telemetrySnapshot.maxMemoryClockMhz;
-            if (telemetrySnapshot.dedicatedVideoMemoryBytes > 0)
+        QThreadPool::globalInstance()->start(
+            [samplingStatePointer]()
             {
-                sample.dedicatedMemoryGiB =
-                    static_cast<double>(telemetrySnapshot.dedicatedVideoMemoryBytes) / oneGiBInBytes;
-            }
-            if (telemetrySnapshot.sharedSystemMemoryBytes > 0)
-            {
-                sample.sharedMemoryGiB =
-                    static_cast<double>(telemetrySnapshot.sharedSystemMemoryBytes) / oneGiBInBytes;
-            }
-        }
+                // DXGI 与 PDH 全部在本线程内完成，COM 接口指针不跨线程传递。
+                const HRESULT comInitializeStatus = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-        IDXGIAdapter3* adapter3Pointer = nullptr;
-        const HRESULT queryInterfaceStatus = adapterPointer->QueryInterface(
-            IID_PPV_ARGS(&adapter3Pointer));
-        if (SUCCEEDED(queryInterfaceStatus) && adapter3Pointer != nullptr)
-        {
-            DXGI_QUERY_VIDEO_MEMORY_INFO localMemoryInfo{};
-            DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalMemoryInfo{};
-            const HRESULT localStatus = adapter3Pointer->QueryVideoMemoryInfo(
-                0,
-                DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
-                &localMemoryInfo);
-            const HRESULT nonLocalStatus = adapter3Pointer->QueryVideoMemoryInfo(
-                0,
-                DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
-                &nonLocalMemoryInfo);
-            if (SUCCEEDED(localStatus))
-            {
-                // CurrentUsage 只表示当前进程的显存提交量，不能作为整张 GPU 的系统占用。
-                sample.dedicatedBudgetGiB =
-                    static_cast<double>(localMemoryInfo.Budget) / oneGiBInBytes;
-            }
-            if (SUCCEEDED(nonLocalStatus))
-            {
-                sample.sharedBudgetGiB =
-                    static_cast<double>(nonLocalMemoryInfo.Budget) / oneGiBInBytes;
-            }
-            adapter3Pointer->Release();
-        }
+                // 句柄先在锁内取出、结束时再写回：
+                // - 同一时刻只有一个采样任务，但任务可能落在不同线程上；
+                // - 借助互斥量建立内存可见性，避免上一轮写入对本轮不可见。
+                void* gpuQueryHandle = nullptr;
+                void* engineCounterHandle = nullptr;
+                void* dedicatedMemoryCounterHandle = nullptr;
+                void* sharedMemoryCounterHandle = nullptr;
+                {
+                    const std::lock_guard<std::mutex> stateLock(samplingStatePointer->stateMutex);
+                    gpuQueryHandle = samplingStatePointer->pdhQueryHandle;
+                    engineCounterHandle = samplingStatePointer->engineCounterHandle;
+                    dedicatedMemoryCounterHandle = samplingStatePointer->dedicatedMemoryCounterHandle;
+                    sharedMemoryCounterHandle = samplingStatePointer->sharedMemoryCounterHandle;
+                }
 
-        if (sample.dedicatedMemoryGiB <= 0.0 && sample.dedicatedBudgetGiB > 0.0)
-        {
-            sample.dedicatedMemoryGiB = sample.dedicatedBudgetGiB;
-        }
-        if (sample.dedicatedBudgetGiB <= 0.0)
-        {
-            sample.dedicatedBudgetGiB = sample.dedicatedMemoryGiB;
-        }
-        if (sample.sharedMemoryGiB <= 0.0 && sample.sharedBudgetGiB > 0.0)
-        {
-            sample.sharedMemoryGiB = sample.sharedBudgetGiB;
-        }
-        if (sample.sharedMemoryGiB <= 0.0)
-        {
-            MEMORYSTATUSEX memoryStatus{};
-            memoryStatus.dwLength = sizeof(memoryStatus);
-            if (::GlobalMemoryStatusEx(&memoryStatus) == TRUE)
-            {
-                const double totalMemoryGiB =
-                    static_cast<double>(memoryStatus.ullTotalPhys) / oneGiBInBytes;
-                sample.sharedMemoryGiB = std::max(0.5, totalMemoryGiB * 0.5);
-            }
-        }
-        if (sample.sharedBudgetGiB <= 0.0)
-        {
-            sample.sharedBudgetGiB = sample.sharedMemoryGiB;
-        }
+                // oneGiBInBytes 用途：把 DXGI 字节字段转换为任务管理器常见 GiB 文本。
+                constexpr double oneGiBInBytes = 1024.0 * 1024.0 * 1024.0;
+                // collectedSampleList 用途：本轮采集结果，成功后整体替换共享快照。
+                std::vector<GpuUsageSample> collectedSampleList;
+                // collectSucceeded 用途：DXGI 枚举失败时保留上一轮快照，不清空界面数据。
+                bool collectSucceeded = false;
 
-        ensureGpuUtilizationDevice(sample, static_cast<int>(sampleListOut->size()));
-        sampleListOut->push_back(sample);
-        adapterPointer->Release();
+                IDXGIFactory6* factoryPointer = nullptr;
+                const HRESULT createFactoryStatus = ::CreateDXGIFactory1(IID_PPV_ARGS(&factoryPointer));
+                if (SUCCEEDED(createFactoryStatus) && factoryPointer != nullptr)
+                {
+                    collectSucceeded = true;
+                    for (UINT adapterIndex = 0;; ++adapterIndex)
+                    {
+                        IDXGIAdapter1* adapterPointer = nullptr;
+                        const HRESULT enumStatus = factoryPointer->EnumAdapters1(adapterIndex, &adapterPointer);
+                        if (enumStatus == DXGI_ERROR_NOT_FOUND)
+                        {
+                            break;
+                        }
+                        if (FAILED(enumStatus) || adapterPointer == nullptr)
+                        {
+                            continue;
+                        }
+
+                        DXGI_ADAPTER_DESC1 adapterDesc{};
+                        adapterPointer->GetDesc1(&adapterDesc);
+                        if ((adapterDesc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+                        {
+                            adapterPointer->Release();
+                            continue;
+                        }
+
+                        GpuUsageSample sample;
+                        sample.adapterKey = packLuidKey(adapterDesc.AdapterLuid);
+                        sample.adapterIndex = static_cast<int>(adapterIndex);
+                        sample.displayNameText = QString::fromWCharArray(adapterDesc.Description).trimmed();
+                        sample.dedicatedMemoryGiB = static_cast<double>(adapterDesc.DedicatedVideoMemory) / oneGiBInBytes;
+                        sample.sharedMemoryGiB = static_cast<double>(adapterDesc.SharedSystemMemory) / oneGiBInBytes;
+
+                        GpuAdapterTelemetrySnapshot telemetrySnapshot;
+                        if (queryGpuAdapterTelemetrySnapshot(adapterDesc.AdapterLuid, &telemetrySnapshot))
+                        {
+                            sample.currentCoreClockMhz = telemetrySnapshot.currentCoreClockMhz;
+                            sample.maxCoreClockMhz = telemetrySnapshot.maxCoreClockMhz;
+                            sample.currentMemoryClockMhz = telemetrySnapshot.currentMemoryClockMhz;
+                            sample.maxMemoryClockMhz = telemetrySnapshot.maxMemoryClockMhz;
+                            if (telemetrySnapshot.dedicatedVideoMemoryBytes > 0)
+                            {
+                                sample.dedicatedMemoryGiB =
+                                    static_cast<double>(telemetrySnapshot.dedicatedVideoMemoryBytes) / oneGiBInBytes;
+                            }
+                            if (telemetrySnapshot.sharedSystemMemoryBytes > 0)
+                            {
+                                sample.sharedMemoryGiB =
+                                    static_cast<double>(telemetrySnapshot.sharedSystemMemoryBytes) / oneGiBInBytes;
+                            }
+                        }
+
+                        IDXGIAdapter3* adapter3Pointer = nullptr;
+                        const HRESULT queryInterfaceStatus = adapterPointer->QueryInterface(
+                            IID_PPV_ARGS(&adapter3Pointer));
+                        if (SUCCEEDED(queryInterfaceStatus) && adapter3Pointer != nullptr)
+                        {
+                            DXGI_QUERY_VIDEO_MEMORY_INFO localMemoryInfo{};
+                            DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalMemoryInfo{};
+                            const HRESULT localStatus = adapter3Pointer->QueryVideoMemoryInfo(
+                                0,
+                                DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+                                &localMemoryInfo);
+                            const HRESULT nonLocalStatus = adapter3Pointer->QueryVideoMemoryInfo(
+                                0,
+                                DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+                                &nonLocalMemoryInfo);
+                            if (SUCCEEDED(localStatus))
+                            {
+                                // CurrentUsage 只表示当前进程的显存提交量，不能作为整张 GPU 的系统占用。
+                                sample.dedicatedBudgetGiB =
+                                    static_cast<double>(localMemoryInfo.Budget) / oneGiBInBytes;
+                            }
+                            if (SUCCEEDED(nonLocalStatus))
+                            {
+                                sample.sharedBudgetGiB =
+                                    static_cast<double>(nonLocalMemoryInfo.Budget) / oneGiBInBytes;
+                            }
+                            adapter3Pointer->Release();
+                        }
+
+                        if (sample.dedicatedMemoryGiB <= 0.0 && sample.dedicatedBudgetGiB > 0.0)
+                        {
+                            sample.dedicatedMemoryGiB = sample.dedicatedBudgetGiB;
+                        }
+                        if (sample.dedicatedBudgetGiB <= 0.0)
+                        {
+                            sample.dedicatedBudgetGiB = sample.dedicatedMemoryGiB;
+                        }
+                        if (sample.sharedMemoryGiB <= 0.0 && sample.sharedBudgetGiB > 0.0)
+                        {
+                            sample.sharedMemoryGiB = sample.sharedBudgetGiB;
+                        }
+                        if (sample.sharedMemoryGiB <= 0.0)
+                        {
+                            MEMORYSTATUSEX memoryStatus{};
+                            memoryStatus.dwLength = sizeof(memoryStatus);
+                            if (::GlobalMemoryStatusEx(&memoryStatus) == TRUE)
+                            {
+                                const double totalMemoryGiB =
+                                    static_cast<double>(memoryStatus.ullTotalPhys) / oneGiBInBytes;
+                                sample.sharedMemoryGiB = std::max(0.5, totalMemoryGiB * 0.5);
+                            }
+                        }
+                        if (sample.sharedBudgetGiB <= 0.0)
+                        {
+                            sample.sharedBudgetGiB = sample.sharedMemoryGiB;
+                        }
+
+                        collectedSampleList.push_back(sample);
+                        adapterPointer->Release();
+                    }
+                    factoryPointer->Release();
+                }
+
+                if (collectSucceeded && !collectedSampleList.empty())
+                {
+                    // memoryCounterReadable 用途：只有本轮确实完成过一次 collect 才去读显存数组。
+                    bool memoryCounterReadable = false;
+                    if (gpuQueryHandle == nullptr)
+                    {
+                        // 首次注册 \GPU Engine(*) 通配符实例开销最大，现在完全落在后台线程。
+                        PDH_HQUERY queryHandle = nullptr;
+                        if (::PdhOpenQueryW(nullptr, 0, &queryHandle) == ERROR_SUCCESS && queryHandle != nullptr)
+                        {
+                            PDH_HCOUNTER counterHandle = nullptr;
+                            const PDH_STATUS addStatus = ::PdhAddEnglishCounterW(
+                                queryHandle,
+                                L"\\GPU Engine(*)\\Utilization Percentage",
+                                0,
+                                &counterHandle);
+                            if (addStatus != ERROR_SUCCESS || counterHandle == nullptr)
+                            {
+                                ::PdhCloseQuery(queryHandle);
+                            }
+                            else
+                            {
+                                PDH_HCOUNTER newDedicatedMemoryCounterHandle = nullptr;
+                                if (::PdhAddEnglishCounterW(
+                                        queryHandle,
+                                        L"\\GPU Adapter Memory(*)\\Dedicated Usage",
+                                        0,
+                                        &newDedicatedMemoryCounterHandle) != ERROR_SUCCESS)
+                                {
+                                    newDedicatedMemoryCounterHandle = nullptr;
+                                }
+
+                                PDH_HCOUNTER newSharedMemoryCounterHandle = nullptr;
+                                if (::PdhAddEnglishCounterW(
+                                        queryHandle,
+                                        L"\\GPU Adapter Memory(*)\\Shared Usage",
+                                        0,
+                                        &newSharedMemoryCounterHandle) != ERROR_SUCCESS)
+                                {
+                                    newSharedMemoryCounterHandle = nullptr;
+                                }
+
+                                gpuQueryHandle = queryHandle;
+                                engineCounterHandle = counterHandle;
+                                dedicatedMemoryCounterHandle = newDedicatedMemoryCounterHandle;
+                                sharedMemoryCounterHandle = newSharedMemoryCounterHandle;
+                                ::PdhCollectQueryData(queryHandle);
+                                ::Sleep(1);
+                                ::PdhCollectQueryData(queryHandle);
+                                memoryCounterReadable = true;
+                            }
+                        }
+                    }
+                    else if (::PdhCollectQueryData(reinterpret_cast<PDH_HQUERY>(gpuQueryHandle)) == ERROR_SUCCESS)
+                    {
+                        memoryCounterReadable = true;
+
+                        DWORD bufferSize = 0;
+                        DWORD itemCount = 0;
+                        PDH_STATUS queryStatus = ::PdhGetFormattedCounterArrayW(
+                            reinterpret_cast<PDH_HCOUNTER>(engineCounterHandle),
+                            PDH_FMT_DOUBLE,
+                            &bufferSize,
+                            &itemCount,
+                            nullptr);
+                        if (queryStatus == PDH_MORE_DATA && bufferSize > 0 && itemCount > 0)
+                        {
+                            std::vector<unsigned char> rawBuffer(bufferSize);
+                            PDH_FMT_COUNTERVALUE_ITEM_W* itemPointer =
+                                reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(rawBuffer.data());
+                            queryStatus = ::PdhGetFormattedCounterArrayW(
+                                reinterpret_cast<PDH_HCOUNTER>(engineCounterHandle),
+                                PDH_FMT_DOUBLE,
+                                &bufferSize,
+                                &itemCount,
+                                itemPointer);
+                            if (queryStatus == ERROR_SUCCESS)
+                            {
+                                for (DWORD itemIndex = 0; itemIndex < itemCount; ++itemIndex)
+                                {
+                                    const PDH_FMT_COUNTERVALUE_ITEM_W& itemValue = itemPointer[itemIndex];
+                                    if (itemValue.FmtValue.CStatus != ERROR_SUCCESS)
+                                    {
+                                        continue;
+                                    }
+
+                                    const QString engineNameText = QString::fromWCharArray(
+                                        itemValue.szName != nullptr ? itemValue.szName : L"");
+                                    std::uint64_t adapterKey = 0;
+                                    if (!parseGpuAdapterKeyFromCounterName(engineNameText, &adapterKey))
+                                    {
+                                        continue;
+                                    }
+
+                                    const QString engineKeyText = resolveGpuEngineKeyFromCounter(engineNameText);
+                                    if (engineKeyText.isEmpty())
+                                    {
+                                        continue;
+                                    }
+
+                                    GpuUsageSample* samplePointer = nullptr;
+                                    for (GpuUsageSample& sample : collectedSampleList)
+                                    {
+                                        if (sample.adapterKey == adapterKey)
+                                        {
+                                            samplePointer = &sample;
+                                            break;
+                                        }
+                                    }
+                                    if (samplePointer == nullptr)
+                                    {
+                                        continue;
+                                    }
+
+                                    const double engineUsagePercent =
+                                        std::clamp(itemValue.FmtValue.doubleValue, 0.0, 100.0);
+                                    if (engineKeyText == QStringLiteral("3d"))
+                                    {
+                                        samplePointer->usage3DPercent =
+                                            std::max(samplePointer->usage3DPercent, engineUsagePercent);
+                                    }
+                                    else if (engineKeyText == QStringLiteral("copy"))
+                                    {
+                                        samplePointer->usageCopyPercent =
+                                            std::max(samplePointer->usageCopyPercent, engineUsagePercent);
+                                    }
+                                    else if (engineKeyText == QStringLiteral("video_encode"))
+                                    {
+                                        samplePointer->usageVideoEncodePercent =
+                                            std::max(samplePointer->usageVideoEncodePercent, engineUsagePercent);
+                                    }
+                                    else if (engineKeyText == QStringLiteral("video_decode"))
+                                    {
+                                        samplePointer->usageVideoDecodePercent =
+                                            std::max(samplePointer->usageVideoDecodePercent, engineUsagePercent);
+                                    }
+                                    samplePointer->overallUsagePercent =
+                                        std::max(samplePointer->overallUsagePercent, engineUsagePercent);
+                                }
+                            }
+                        }
+                    }
+
+                    // GPU Adapter Memory 是 WDDM 的系统级显存占用；按实例名中的 LUID 汇总后，
+                    // 与 DXGI 枚举出的适配器一一对应，避免把 KSword 进程自身的 CurrentUsage 当成全局值。
+                    const auto applyGpuMemoryCounter = [&collectedSampleList, oneGiBInBytes](
+                        void* counterHandleValue,
+                        const bool dedicatedMemory)
+                    {
+                        if (counterHandleValue == nullptr)
+                        {
+                            return;
+                        }
+
+                        DWORD bufferSize = 0;
+                        DWORD itemCount = 0;
+                        PDH_STATUS queryStatus = ::PdhGetFormattedCounterArrayW(
+                            reinterpret_cast<PDH_HCOUNTER>(counterHandleValue),
+                            PDH_FMT_DOUBLE,
+                            &bufferSize,
+                            &itemCount,
+                            nullptr);
+                        if (queryStatus != PDH_MORE_DATA || bufferSize == 0 || itemCount == 0)
+                        {
+                            return;
+                        }
+
+                        std::vector<unsigned char> rawBuffer(bufferSize);
+                        PDH_FMT_COUNTERVALUE_ITEM_W* itemPointer =
+                            reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(rawBuffer.data());
+                        queryStatus = ::PdhGetFormattedCounterArrayW(
+                            reinterpret_cast<PDH_HCOUNTER>(counterHandleValue),
+                            PDH_FMT_DOUBLE,
+                            &bufferSize,
+                            &itemCount,
+                            itemPointer);
+                        if (queryStatus != ERROR_SUCCESS)
+                        {
+                            return;
+                        }
+
+                        for (DWORD itemIndex = 0; itemIndex < itemCount; ++itemIndex)
+                        {
+                            const PDH_FMT_COUNTERVALUE_ITEM_W& itemValue = itemPointer[itemIndex];
+                            const DWORD valueStatus = itemValue.FmtValue.CStatus;
+                            if (valueStatus != PDH_CSTATUS_VALID_DATA
+                                && valueStatus != PDH_CSTATUS_NEW_DATA)
+                            {
+                                continue;
+                            }
+
+                            const QString counterNameText = QString::fromWCharArray(
+                                itemValue.szName != nullptr ? itemValue.szName : L"");
+                            std::uint64_t adapterKey = 0;
+                            if (!parseGpuAdapterKeyFromCounterName(counterNameText, &adapterKey))
+                            {
+                                continue;
+                            }
+
+                            const auto sampleIterator = std::find_if(
+                                collectedSampleList.begin(),
+                                collectedSampleList.end(),
+                                [adapterKey](const GpuUsageSample& sample)
+                                {
+                                    return sample.adapterKey == adapterKey;
+                                });
+                            if (sampleIterator == collectedSampleList.end())
+                            {
+                                continue;
+                            }
+
+                            const double usageGiB =
+                                std::max(0.0, itemValue.FmtValue.doubleValue) / oneGiBInBytes;
+                            if (dedicatedMemory)
+                            {
+                                sampleIterator->dedicatedUsedGiB += usageGiB;
+                                sampleIterator->dedicatedUsageAvailable = true;
+                            }
+                            else
+                            {
+                                sampleIterator->sharedUsedGiB += usageGiB;
+                                sampleIterator->sharedUsageAvailable = true;
+                            }
+                        }
+                    };
+
+                    if (memoryCounterReadable)
+                    {
+                        applyGpuMemoryCounter(dedicatedMemoryCounterHandle, true);
+                        applyGpuMemoryCounter(sharedMemoryCounterHandle, false);
+                    }
+                }
+
+                {
+                    const std::lock_guard<std::mutex> stateLock(samplingStatePointer->stateMutex);
+                    samplingStatePointer->pdhQueryHandle = gpuQueryHandle;
+                    samplingStatePointer->engineCounterHandle = engineCounterHandle;
+                    samplingStatePointer->dedicatedMemoryCounterHandle = dedicatedMemoryCounterHandle;
+                    samplingStatePointer->sharedMemoryCounterHandle = sharedMemoryCounterHandle;
+                    if (collectSucceeded)
+                    {
+                        samplingStatePointer->cachedSampleList = collectedSampleList;
+                    }
+                    samplingStatePointer->samplingInFlight = false;
+                }
+
+                if (SUCCEEDED(comInitializeStatus))
+                {
+                    ::CoUninitialize();
+                }
+            });
     }
-    factoryPointer->Release();
 
     if (sampleListOut->empty())
     {
         return true;
     }
 
-    if (m_gpuPerfQueryHandle == nullptr)
+    // 详情页创建与卡片注册只能在 UI 线程做，因此放在快照回到本线程之后。
+    for (int sampleIndex = 0; sampleIndex < static_cast<int>(sampleListOut->size()); ++sampleIndex)
     {
-        PDH_HQUERY queryHandle = nullptr;
-        if (::PdhOpenQueryW(nullptr, 0, &queryHandle) != ERROR_SUCCESS || queryHandle == nullptr)
-        {
-            return true;
-        }
-
-        PDH_HCOUNTER counterHandle = nullptr;
-        const PDH_STATUS addStatus = ::PdhAddEnglishCounterW(
-            queryHandle,
-            L"\\GPU Engine(*)\\Utilization Percentage",
-            0,
-            &counterHandle);
-        if (addStatus != ERROR_SUCCESS || counterHandle == nullptr)
-        {
-            ::PdhCloseQuery(queryHandle);
-            return true;
-        }
-
-        PDH_HCOUNTER dedicatedMemoryCounterHandle = nullptr;
-        if (::PdhAddEnglishCounterW(
-                queryHandle,
-                L"\\GPU Adapter Memory(*)\\Dedicated Usage",
-                0,
-                &dedicatedMemoryCounterHandle) != ERROR_SUCCESS)
-        {
-            dedicatedMemoryCounterHandle = nullptr;
-        }
-
-        PDH_HCOUNTER sharedMemoryCounterHandle = nullptr;
-        if (::PdhAddEnglishCounterW(
-                queryHandle,
-                L"\\GPU Adapter Memory(*)\\Shared Usage",
-                0,
-                &sharedMemoryCounterHandle) != ERROR_SUCCESS)
-        {
-            sharedMemoryCounterHandle = nullptr;
-        }
-
-        m_gpuPerfQueryHandle = queryHandle;
-        m_gpuCounterHandle = counterHandle;
-        m_gpuDedicatedMemoryCounterHandle = dedicatedMemoryCounterHandle;
-        m_gpuSharedMemoryCounterHandle = sharedMemoryCounterHandle;
-        ::PdhCollectQueryData(queryHandle);
-        ::Sleep(1);
-        ::PdhCollectQueryData(queryHandle);
+        ensureGpuUtilizationDevice(
+            (*sampleListOut)[static_cast<std::size_t>(sampleIndex)],
+            sampleIndex);
     }
-    else
-    {
-        const PDH_HQUERY queryHandle = reinterpret_cast<PDH_HQUERY>(m_gpuPerfQueryHandle);
-        if (::PdhCollectQueryData(queryHandle) != ERROR_SUCCESS)
-        {
-            return true;
-        }
-
-        DWORD bufferSize = 0;
-        DWORD itemCount = 0;
-        PDH_STATUS queryStatus = ::PdhGetFormattedCounterArrayW(
-            reinterpret_cast<PDH_HCOUNTER>(m_gpuCounterHandle),
-            PDH_FMT_DOUBLE,
-            &bufferSize,
-            &itemCount,
-            nullptr);
-        if (queryStatus == PDH_MORE_DATA && bufferSize > 0 && itemCount > 0)
-        {
-            std::vector<unsigned char> rawBuffer(bufferSize);
-            PDH_FMT_COUNTERVALUE_ITEM_W* itemPointer =
-                reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(rawBuffer.data());
-            queryStatus = ::PdhGetFormattedCounterArrayW(
-                reinterpret_cast<PDH_HCOUNTER>(m_gpuCounterHandle),
-                PDH_FMT_DOUBLE,
-                &bufferSize,
-                &itemCount,
-                itemPointer);
-            if (queryStatus == ERROR_SUCCESS)
-            {
-                for (DWORD itemIndex = 0; itemIndex < itemCount; ++itemIndex)
-                {
-                    const PDH_FMT_COUNTERVALUE_ITEM_W& itemValue = itemPointer[itemIndex];
-                    if (itemValue.FmtValue.CStatus != ERROR_SUCCESS)
-                    {
-                        continue;
-                    }
-
-                    const QString engineNameText = QString::fromWCharArray(
-                        itemValue.szName != nullptr ? itemValue.szName : L"");
-                    std::uint64_t adapterKey = 0;
-                    if (!parseGpuAdapterKeyFromCounterName(engineNameText, &adapterKey))
-                    {
-                        continue;
-                    }
-
-                    const QString engineKeyText = resolveGpuEngineKeyFromCounter(engineNameText);
-                    if (engineKeyText.isEmpty())
-                    {
-                        continue;
-                    }
-
-                    GpuUsageSample* samplePointer = nullptr;
-                    for (GpuUsageSample& sample : *sampleListOut)
-                    {
-                        if (sample.adapterKey == adapterKey)
-                        {
-                            samplePointer = &sample;
-                            break;
-                        }
-                    }
-                    if (samplePointer == nullptr)
-                    {
-                        continue;
-                    }
-
-                    const double engineUsagePercent =
-                        std::clamp(itemValue.FmtValue.doubleValue, 0.0, 100.0);
-                    if (engineKeyText == QStringLiteral("3d"))
-                    {
-                        samplePointer->usage3DPercent =
-                            std::max(samplePointer->usage3DPercent, engineUsagePercent);
-                    }
-                    else if (engineKeyText == QStringLiteral("copy"))
-                    {
-                        samplePointer->usageCopyPercent =
-                            std::max(samplePointer->usageCopyPercent, engineUsagePercent);
-                    }
-                    else if (engineKeyText == QStringLiteral("video_encode"))
-                    {
-                        samplePointer->usageVideoEncodePercent =
-                            std::max(samplePointer->usageVideoEncodePercent, engineUsagePercent);
-                    }
-                    else if (engineKeyText == QStringLiteral("video_decode"))
-                    {
-                        samplePointer->usageVideoDecodePercent =
-                            std::max(samplePointer->usageVideoDecodePercent, engineUsagePercent);
-                    }
-                    samplePointer->overallUsagePercent =
-                        std::max(samplePointer->overallUsagePercent, engineUsagePercent);
-                }
-            }
-        }
-    }
-
-    // GPU Adapter Memory 是 WDDM 的系统级显存占用；按实例名中的 LUID 汇总后，
-    // 与 DXGI 枚举出的适配器一一对应，避免把 KSword 进程自身的 CurrentUsage 当成全局值。
-    const auto applyGpuMemoryCounter = [sampleListOut, oneGiBInBytes](
-        void* counterHandleValue,
-        const bool dedicatedMemory)
-    {
-        if (counterHandleValue == nullptr)
-        {
-            return;
-        }
-
-        DWORD bufferSize = 0;
-        DWORD itemCount = 0;
-        PDH_STATUS queryStatus = ::PdhGetFormattedCounterArrayW(
-            reinterpret_cast<PDH_HCOUNTER>(counterHandleValue),
-            PDH_FMT_DOUBLE,
-            &bufferSize,
-            &itemCount,
-            nullptr);
-        if (queryStatus != PDH_MORE_DATA || bufferSize == 0 || itemCount == 0)
-        {
-            return;
-        }
-
-        std::vector<unsigned char> rawBuffer(bufferSize);
-        PDH_FMT_COUNTERVALUE_ITEM_W* itemPointer =
-            reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(rawBuffer.data());
-        queryStatus = ::PdhGetFormattedCounterArrayW(
-            reinterpret_cast<PDH_HCOUNTER>(counterHandleValue),
-            PDH_FMT_DOUBLE,
-            &bufferSize,
-            &itemCount,
-            itemPointer);
-        if (queryStatus != ERROR_SUCCESS)
-        {
-            return;
-        }
-
-        for (DWORD itemIndex = 0; itemIndex < itemCount; ++itemIndex)
-        {
-            const PDH_FMT_COUNTERVALUE_ITEM_W& itemValue = itemPointer[itemIndex];
-            const DWORD valueStatus = itemValue.FmtValue.CStatus;
-            if (valueStatus != PDH_CSTATUS_VALID_DATA
-                && valueStatus != PDH_CSTATUS_NEW_DATA)
-            {
-                continue;
-            }
-
-            const QString counterNameText = QString::fromWCharArray(
-                itemValue.szName != nullptr ? itemValue.szName : L"");
-            std::uint64_t adapterKey = 0;
-            if (!parseGpuAdapterKeyFromCounterName(counterNameText, &adapterKey))
-            {
-                continue;
-            }
-
-            const auto sampleIterator = std::find_if(
-                sampleListOut->begin(),
-                sampleListOut->end(),
-                [adapterKey](const GpuUsageSample& sample)
-                {
-                    return sample.adapterKey == adapterKey;
-                });
-            if (sampleIterator == sampleListOut->end())
-            {
-                continue;
-            }
-
-            const double usageGiB =
-                std::max(0.0, itemValue.FmtValue.doubleValue) / oneGiBInBytes;
-            if (dedicatedMemory)
-            {
-                sampleIterator->dedicatedUsedGiB += usageGiB;
-                sampleIterator->dedicatedUsageAvailable = true;
-            }
-            else
-            {
-                sampleIterator->sharedUsedGiB += usageGiB;
-                sampleIterator->sharedUsageAvailable = true;
-            }
-        }
-    };
-
-    applyGpuMemoryCounter(m_gpuDedicatedMemoryCounterHandle, true);
-    applyGpuMemoryCounter(m_gpuSharedMemoryCounterHandle, false);
 
     // 旧聚合 GPU 页固定展示专用显存最大的主适配器；不能合并利用率后仍沿用“第一张卡”的频率/显存。
     const auto primarySampleIterator = std::max_element(

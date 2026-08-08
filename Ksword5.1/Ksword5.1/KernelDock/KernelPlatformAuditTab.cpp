@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -81,6 +82,39 @@ namespace
         auto* item = new QTableWidgetItem(text);
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         return item;
+    }
+
+    // g_platformModuleCompanyMutex / g_platformModuleCompanyCache：
+    // - 用途：modulePath → CompanyName 的进程级共享缓存；
+    // - 输入：由 refreshAsync 的 worker 线程在后台一次性解析后写入；
+    // - 输出：populatePage 只做查表，UI 线程不再打开 *.sys 读版本资源节。
+    std::mutex g_platformModuleCompanyMutex;
+    QHash<QString, QString> g_platformModuleCompanyCache;
+
+    // platformModuleCompanyLookup：
+    // - 输入 modulePath：审计行的模块路径；companyNameOut：命中时写回的厂商名；
+    // - 处理：加锁查共享缓存，不做任何磁盘访问；
+    // - 返回：命中返回 true，未命中返回 false 且不改动 companyNameOut。
+    bool platformModuleCompanyLookup(const QString& modulePath, QString& companyNameOut)
+    {
+        const std::lock_guard cacheLock(g_platformModuleCompanyMutex);
+        const auto cacheIterator = g_platformModuleCompanyCache.constFind(modulePath);
+        if (cacheIterator == g_platformModuleCompanyCache.constEnd())
+        {
+            return false;
+        }
+        companyNameOut = cacheIterator.value();
+        return true;
+    }
+
+    // platformModuleCompanyStore：
+    // - 输入 modulePath：审计行的模块路径；companyName：后台解析出的厂商名；
+    // - 处理：加锁写入共享缓存，供后续所有页面与刷新复用；
+    // - 返回：无返回值。
+    void platformModuleCompanyStore(const QString& modulePath, const QString& companyName)
+    {
+        const std::lock_guard cacheLock(g_platformModuleCompanyMutex);
+        g_platformModuleCompanyCache.insert(modulePath, companyName);
     }
 
     QString platformColumnButtonStyle(const bool selected)
@@ -621,6 +655,28 @@ void KernelPlatformAuditTab::refreshAsync()
             {
                 enrichWdfFunctionBaselines(result);
             }
+
+            {
+                const std::lock_guard workerLock(m_refreshMutex);
+                if (m_closing)
+                {
+                    return;
+                }
+            }
+            // 中文说明：CompanyName 解析要真实打开 \SystemRoot\System32\drivers\*.sys
+            // 并解析版本资源节，属于同步磁盘 I/O，必须留在 worker 线程；结果写进程级
+            // 缓存后，populatePage 跨 Page、跨刷新都只做查表。
+            for (const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry : result.entries)
+            {
+                const QString modulePath =
+                    fixedWide(entry.modulePath, KSWORD_ARK_PLATFORM_MODULE_PATH_CHARS);
+                QString cachedCompanyName;
+                if (platformModuleCompanyLookup(modulePath, cachedCompanyName))
+                {
+                    continue;
+                }
+                platformModuleCompanyStore(modulePath, companyNameForModule(modulePath));
+            }
             {
                 const std::lock_guard workerLock(m_refreshMutex);
                 if (m_closing)
@@ -712,7 +768,6 @@ void KernelPlatformAuditTab::populatePage(
         return;
     }
     page.table->setRowCount(0);
-    QHash<QString, QString> companyCache;
     for (const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry : result.entries)
     {
         // 中文说明：全局失败（例如模块快照不可用）会以本次请求的组合
@@ -733,10 +788,11 @@ void KernelPlatformAuditTab::populatePage(
         }
         const QString modulePath =
             fixedWide(entry.modulePath, KSWORD_ARK_PLATFORM_MODULE_PATH_CHARS);
-        if (!companyCache.contains(modulePath))
-        {
-            companyCache.insert(modulePath, companyNameForModule(modulePath));
-        }
+        // 中文说明：厂商名由 worker 线程预解析并写入进程级缓存；这里只查表。
+        // 未命中只可能出现在“还没跑过 worker 就重放旧结果”的路径上，保持占位，
+        // 绝不在 UI 线程回退到同步读盘。
+        QString companyNameText = QStringLiteral("-");
+        (void)platformModuleCompanyLookup(modulePath, companyNameText);
         const std::array<QString, ColumnCount> cells = {
             fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS),
             QString::number(entry.entryIndex),
@@ -744,7 +800,7 @@ void KernelPlatformAuditTab::populatePage(
             addressText(entry.originalAddress),
             hookText(entry.hookStatus),
             modulePath,
-            companyCache.value(modulePath),
+            companyNameText,
             addressText(entry.tableAddress),
             signatureDisplay,
             QStringLiteral("%1%").arg(entry.confidence),

@@ -21,6 +21,7 @@
 #include <QBrush>
 #include <QClipboard>
 #include <QColor>
+#include <QCoreApplication>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -36,6 +37,8 @@
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QThreadPool>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -244,12 +247,17 @@ void KernelDockCidTab::initializeConnections()
     connect(m_filterEdit, &QLineEdit::textChanged, this, [this]() {
         rebuildTable();
     });
+    // 详情去抖：
+    // - 连按方向键或逐字输入过滤词时，选中行会以按键频次变化；
+    // - 本地字段立即渲染，R0 对象摘要延后到最后一次变化之后再发一次 IOCTL。
+    m_detailRequestTimer = new QTimer(this);
+    m_detailRequestTimer->setSingleShot(true);
+    m_detailRequestTimer->setInterval(150);
+    connect(m_detailRequestTimer, &QTimer::timeout, this, [this]() {
+        requestKernelObjectSummaryAsync();
+    });
     connect(m_table, &QTableWidget::currentCellChanged, this, [this](int, int, int, int) {
-        const CidEvidenceRow* row = selectedRow();
-        if (m_detailEditor != nullptr)
-        {
-            m_detailEditor->setText(buildDetailText(row));
-        }
+        scheduleDetailRefresh();
     });
     connect(m_table, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& localPosition) {
         showContextMenu(localPosition);
@@ -592,19 +600,13 @@ void KernelDockCidTab::rebuildTable()
             reasonText,
             detailText);
         m_table->setCurrentCell(0, static_cast<int>(CidColumn::Kind));
-        if (m_detailEditor != nullptr)
-        {
-            m_detailEditor->setText(detailText);
-        }
+        scheduleDetailRefresh();
         return;
     }
 
     const int targetRow = m_table->currentRow() >= 0 ? m_table->currentRow() : 0;
     m_table->setCurrentCell(qMin(targetRow, m_table->rowCount() - 1), static_cast<int>(CidColumn::Kind));
-    if (m_detailEditor != nullptr)
-    {
-        m_detailEditor->setText(buildDetailText(selectedRow()));
-    }
+    scheduleDetailRefresh();
 }
 
 void KernelDockCidTab::showContextMenu(const QPoint& localPosition)
@@ -763,44 +765,142 @@ QString KernelDockCidTab::buildDetailText(const CidEvidenceRow* row) const
     lines << kernelText("kernel.cid.detail.detail_header", QStringLiteral("详情："));
     lines << safeText(row->detailText, kernelText("kernel.cid.placeholder.no_detail", QStringLiteral("<无详情>")));
 
+    // [KernelObjectSummary] 段需要一次驱动 IOCTL，已经拆到 requestKernelObjectSummaryAsync
+    // 的后台任务里补齐；本函数只做纯格式化，随选中行变化可以立即返回。
+    return lines.join('\n');
+}
+
+void KernelDockCidTab::scheduleDetailRefresh()
+{
+    // scheduleDetailRefresh：
+    // - 作用：选中行或表格内容变化后立即渲染本地详情，并把 R0 对象摘要请求推入去抖窗口；
+    // - 入参：无，直接读取当前选中行；
+    // - 返回：无返回值，同时作废所有在途的对象摘要回投。
+    ++m_detailGeneration;
+
+    const CidEvidenceRow* row = selectedRow();
+    m_detailBaseText = buildDetailText(row);
+    if (m_detailEditor != nullptr)
+    {
+        m_detailEditor->setText(m_detailBaseText);
+    }
+
+    if (m_detailRequestTimer == nullptr || row == nullptr)
+    {
+        return;
+    }
+    const unsigned long cidValue = row->cidValue != 0U
+        ? row->cidValue
+        : (row->isThread ? row->threadId : row->processId);
+    if (cidValue == 0U)
+    {
+        return;
+    }
+    m_detailRequestTimer->start();
+}
+
+void KernelDockCidTab::requestKernelObjectSummaryAsync()
+{
+    // requestKernelObjectSummaryAsync：
+    // - 作用：把 queryKernelObjectSummary 的 CreateFileW + 同步 IOCTL 搬到线程池，避免按键频次阻塞 UI；
+    // - 入参：无，按当前选中行生成请求参数；
+    // - 返回：无返回值，结果通过 QMetaObject::invokeMethod 回投并按 generation 淘汰。
+    const CidEvidenceRow* row = selectedRow();
+    if (row == nullptr)
+    {
+        return;
+    }
+
     const unsigned long targetKind = row->cidExpectedKind != KSWORD_ARK_CID_OBJECT_KIND_UNKNOWN
         ? row->cidExpectedKind
         : (row->isThread ? KSWORD_ARK_CID_OBJECT_KIND_THREAD : KSWORD_ARK_CID_OBJECT_KIND_PROCESS);
     const unsigned long cidValue = row->cidValue != 0U
         ? row->cidValue
         : (row->isThread ? row->threadId : row->processId);
-    if (cidValue != 0U)
+    if (cidValue == 0U)
     {
-        const ksword::ark::DriverClient client;
-        const ksword::ark::KernelObjectSummaryAuditResult summary =
-            client.queryKernelObjectSummary(targetKind, cidValue, row->objectAddress);
-        const auto& response = summary.response;
-        lines << QStringLiteral("");
-        lines << QStringLiteral("[KernelObjectSummary]");
-        lines << kernelText("kernel.cid.detail.io_summary", QStringLiteral("IO：%1，unsupported=%2，说明=%3"))
-            .arg(summary.io.ok ? QStringLiteral("OK") : QStringLiteral("FAIL"))
-            .arg(summary.unsupported ? QStringLiteral("true") : QStringLiteral("false"))
-            .arg(friendlyIoMessage(QString::fromStdString(summary.io.message)));
-        lines << QStringLiteral("Status：%1 (%2)").arg(formatHex32(response.status), objectSummaryStatusText(response.status));
-        lines << QStringLiteral("FieldFlags：%1").arg(formatHex32(response.fieldFlags));
-        lines << QStringLiteral("TargetKind：%1 (%2)").arg(formatHex32(response.targetKind), cidKindText(response.targetKind));
-        lines << QStringLiteral("CidValue：%1").arg(response.cidValue);
-        lines << QStringLiteral("LookupStatus：%1").arg(statusLabelText(response.lookupStatus));
-        lines << QStringLiteral("TypeStatus：%1").arg(statusLabelText(response.typeStatus));
-        lines << QStringLiteral("CounterStatus：%1").arg(statusLabelText(response.counterStatus));
-        lines << QStringLiteral("ObjectHeaderStatus：%1 (%2)").arg(formatHex32(response.objectHeaderStatus), objectHeaderStatusText(response.objectHeaderStatus));
-        lines << QStringLiteral("ObjectAddress：%1").arg(formatHex64(response.objectAddress));
-        lines << QStringLiteral("ExpectedObjectAddress：%1").arg(formatHex64(response.expectedObjectAddress));
-        lines << QStringLiteral("ObjectTypeAddress：%1").arg(formatHex64(response.objectTypeAddress));
-        lines << QStringLiteral("TypeIndex：%1").arg(response.typeIndex);
-        lines << QStringLiteral("PointerCount：%1").arg(response.pointerCount);
-        lines << QStringLiteral("HandleCount：%1").arg(response.handleCount);
-        lines << QStringLiteral("TypeName：%1").arg(safeText(fixedWideText(response.typeName, KSWORD_ARK_KERNEL_OBJECT_TYPE_NAME_CHARS)));
-        lines << QStringLiteral("Detail：%1").arg(safeText(fixedWideText(response.detail, KSWORD_ARK_KERNEL_OBJECT_DETAIL_CHARS)));
-        lines << QStringLiteral("DynDataCapabilityMask：%1").arg(formatHex64(response.dynDataCapabilityMask));
-        lines << QStringLiteral("OtNameOffset：%1").arg(formatHex32(response.otNameOffset));
-        lines << QStringLiteral("OtIndexOffset：%1").arg(formatHex32(response.otIndexOffset));
+        return;
     }
+    const std::uint64_t objectAddress = row->objectAddress;
+
+    const QPointer<KernelDockCidTab> guardedSelf(this);
+    const std::uint64_t requestGeneration = m_detailGeneration;
+    QThreadPool::globalInstance()->start(
+        [guardedSelf, requestGeneration, targetKind, cidValue, objectAddress]()
+        {
+            const ksword::ark::DriverClient client;
+            const ksword::ark::KernelObjectSummaryAuditResult summary =
+                client.queryKernelObjectSummary(targetKind, cidValue, objectAddress);
+            const QString summaryText = formatKernelObjectSummaryText(summary);
+
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(appInstance,
+                [guardedSelf, requestGeneration, summaryText]()
+                {
+                    if (guardedSelf == nullptr)
+                    {
+                        return;
+                    }
+                    if (guardedSelf->m_detailGeneration != requestGeneration)
+                    {
+                        return;
+                    }
+                    guardedSelf->appendKernelObjectSummaryText(summaryText);
+                });
+        });
+}
+
+void KernelDockCidTab::appendKernelObjectSummaryText(const QString& summaryText)
+{
+    // appendKernelObjectSummaryText：
+    // - 入参 summaryText：后台线程格式化好的 [KernelObjectSummary] 段；
+    // - 处理：拼接在本地详情文本之后，保证只在 UI 线程触碰 CodeEditorWidget；
+    // - 返回：无返回值。
+    if (m_detailEditor == nullptr)
+    {
+        return;
+    }
+    m_detailEditor->setText(m_detailBaseText + summaryText);
+}
+
+QString KernelDockCidTab::formatKernelObjectSummaryText(const ksword::ark::KernelObjectSummaryAuditResult& summary)
+{
+    // formatKernelObjectSummaryText：
+    // - 入参 summary：queryKernelObjectSummary 返回的纯值类型审计结果；
+    // - 处理：只做字符串格式化，可以安全地在后台线程执行；
+    // - 返回：以空行开头的详情追加段，可直接拼在本地详情文本之后。
+    const auto& response = summary.response;
+    QStringList lines;
+    lines << QStringLiteral("");
+    lines << QStringLiteral("");
+    lines << QStringLiteral("[KernelObjectSummary]");
+    lines << kernelText("kernel.cid.detail.io_summary", QStringLiteral("IO：%1，unsupported=%2，说明=%3"))
+        .arg(summary.io.ok ? QStringLiteral("OK") : QStringLiteral("FAIL"))
+        .arg(summary.unsupported ? QStringLiteral("true") : QStringLiteral("false"))
+        .arg(friendlyIoMessage(QString::fromStdString(summary.io.message)));
+    lines << QStringLiteral("Status：%1 (%2)").arg(formatHex32(response.status), objectSummaryStatusText(response.status));
+    lines << QStringLiteral("FieldFlags：%1").arg(formatHex32(response.fieldFlags));
+    lines << QStringLiteral("TargetKind：%1 (%2)").arg(formatHex32(response.targetKind), cidKindText(response.targetKind));
+    lines << QStringLiteral("CidValue：%1").arg(response.cidValue);
+    lines << QStringLiteral("LookupStatus：%1").arg(statusLabelText(response.lookupStatus));
+    lines << QStringLiteral("TypeStatus：%1").arg(statusLabelText(response.typeStatus));
+    lines << QStringLiteral("CounterStatus：%1").arg(statusLabelText(response.counterStatus));
+    lines << QStringLiteral("ObjectHeaderStatus：%1 (%2)").arg(formatHex32(response.objectHeaderStatus), objectHeaderStatusText(response.objectHeaderStatus));
+    lines << QStringLiteral("ObjectAddress：%1").arg(formatHex64(response.objectAddress));
+    lines << QStringLiteral("ExpectedObjectAddress：%1").arg(formatHex64(response.expectedObjectAddress));
+    lines << QStringLiteral("ObjectTypeAddress：%1").arg(formatHex64(response.objectTypeAddress));
+    lines << QStringLiteral("TypeIndex：%1").arg(response.typeIndex);
+    lines << QStringLiteral("PointerCount：%1").arg(response.pointerCount);
+    lines << QStringLiteral("HandleCount：%1").arg(response.handleCount);
+    lines << QStringLiteral("TypeName：%1").arg(safeText(fixedWideText(response.typeName, KSWORD_ARK_KERNEL_OBJECT_TYPE_NAME_CHARS)));
+    lines << QStringLiteral("Detail：%1").arg(safeText(fixedWideText(response.detail, KSWORD_ARK_KERNEL_OBJECT_DETAIL_CHARS)));
+    lines << QStringLiteral("DynDataCapabilityMask：%1").arg(formatHex64(response.dynDataCapabilityMask));
+    lines << QStringLiteral("OtNameOffset：%1").arg(formatHex32(response.otNameOffset));
+    lines << QStringLiteral("OtIndexOffset：%1").arg(formatHex32(response.otIndexOffset));
     return lines.join('\n');
 }
 

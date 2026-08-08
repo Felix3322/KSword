@@ -4,19 +4,24 @@
 #include "../UI/TableInteractionSupport.h"
 #include "../theme.h"
 
+#include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QHash>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
 #include <QRunnable>
@@ -29,11 +34,20 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
+#include <QVector>
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
+
+// 进程图标解析需要直接调用 Win32/Shell/COM 接口，这里在 Qt 头文件之后统一引入。
+// WIN32_LEAN_AND_MEAN 与 NOMINMAX 由工程预处理器统一定义，无需在本文件重复声明。
+#include <Windows.h>
+#include <Shellapi.h>
+#include <objbase.h>
 
 namespace
 {
@@ -246,6 +260,196 @@ namespace
         std::string m_statusText;        // m_statusText：按当前语言解析后的启动画面文案（UTF-8）。
         bool m_visible = false;          // m_visible：是否成功显示启动页。
     };
+
+    // kHandleProcessIconBatchSize 作用：
+    // - 控制后台图标解析一次回投多少个进程实例的结果；
+    // - 分批回投让图标逐步出现，同时把跨线程调用与视口重绘次数压在可控范围内。
+    constexpr qsizetype kHandleProcessIconBatchSize = 32;
+
+    // kHandleProcessIconCacheLimit 作用：
+    // - 限制“进程实例 -> 图标”缓存条目上限；
+    // - 防止长时间反复刷新后缓存无限增长。
+    constexpr qsizetype kHandleProcessIconCacheLimit = 4096;
+
+    // HandleProcessIconRequest 作用：
+    // - 描述一次待解析的进程实例图标请求；
+    // - 只含值类型字段，可安全复制到工作线程。
+    struct HandleProcessIconRequest
+    {
+        QString identityKey;                   // identityKey：PID + 创建时间组成的进程实例键。
+        std::uint32_t processId = 0;           // processId：目标进程 PID。
+        std::uint64_t processCreationTime = 0; // processCreationTime：目标进程创建时间，用于复核 PID 身份。
+    };
+
+    // HandleProcessIconResult 作用：
+    // - 描述一条已在后台解析完成的进程图标结果；
+    // - 只携带 QImage，QPixmap/QIcon 留给 UI 线程构造。
+    struct HandleProcessIconResult
+    {
+        QString identityKey; // identityKey：进程实例键，回填时用于定位缓存与表项。
+        QImage iconImage;    // iconImage：Shell 提取到的图标位图；为空表示未解析成功。
+    };
+
+    // HandleProcessIconComScope 作用：
+    // - 为图标解析工作线程按套间模式初始化 COM，并在析构时配对释放；
+    // - Shell 取图标会加载第三方图标处理器，缺少 COM 环境时可能失败。
+    // 入参：无。
+    // 返回：无（RAII 对象，作用域结束自动释放）。
+    class HandleProcessIconComScope final
+    {
+    public:
+        HandleProcessIconComScope()
+        {
+            // RPC_E_CHANGED_MODE 等失败码表示本线程套间已由他人建立，此时不能配对 CoUninitialize。
+            const HRESULT initializeResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            m_shouldUninitialize = SUCCEEDED(initializeResult);
+        }
+
+        ~HandleProcessIconComScope()
+        {
+            if (m_shouldUninitialize)
+            {
+                ::CoUninitialize();
+            }
+        }
+
+        HandleProcessIconComScope(const HandleProcessIconComScope&) = delete;
+        HandleProcessIconComScope& operator=(const HandleProcessIconComScope&) = delete;
+
+    private:
+        bool m_shouldUninitialize = false; // m_shouldUninitialize：COM 是否由本对象初始化。
+    };
+
+    // handleProcessPlaceholderIcon 作用：
+    // - 提供图标尚未解析或解析失败时统一使用的占位图标；
+    // - 只构造一次并全局共享，避免逐行重复读取资源文件。
+    // 入参：无。
+    // 返回：占位 QIcon 的常量引用。
+    const QIcon& handleProcessPlaceholderIcon()
+    {
+        static const QIcon placeholderIcon(QStringLiteral(":/Icon/process_main.svg"));
+        return placeholderIcon;
+    }
+
+    // buildHandleProcessIdentityKey 作用：
+    // - 用 PID + 创建时间拼出进程实例唯一键；
+    // - 键格式与 HandleDock.Icon.cpp 保持一致，两处共用同一份图标缓存。
+    // 入参 processId：进程 PID；processCreationTime：进程创建时间。
+    // 返回：进程实例键；任一字段为 0 时返回空串，表示无法确认实例。
+    QString buildHandleProcessIdentityKey(
+        const std::uint32_t processId,
+        const std::uint64_t processCreationTime)
+    {
+        if (processId == 0U || processCreationTime == 0U)
+        {
+            return {};
+        }
+        return QStringLiteral("%1|%2")
+            .arg(static_cast<qulonglong>(processId))
+            .arg(static_cast<qulonglong>(processCreationTime));
+    }
+
+    // handleProcessFileTimeToUint64 作用：
+    // - 把 FILETIME 折叠成 64 位整数，便于与快照里的创建时间直接比较。
+    // 入参 fileTimeValue：Win32 文件时间结构。
+    // 返回：对应的 64 位时间值。
+    std::uint64_t handleProcessFileTimeToUint64(const FILETIME& fileTimeValue)
+    {
+        ULARGE_INTEGER convertedValue{};
+        convertedValue.LowPart = fileTimeValue.dwLowDateTime;
+        convertedValue.HighPart = fileTimeValue.dwHighDateTime;
+        return convertedValue.QuadPart;
+    }
+
+    // queryHandleProcessImagePathInWorker 作用：
+    // - 在工作线程内复核进程实例身份并读取映像路径；
+    // - 语义与 HandleDock.Icon.cpp 的同步实现一致，只是搬离了 UI 线程；
+    // - 校验与路径查询共用同一个进程句柄，避免 PID 复用导致错配。
+    // 入参 processId：目标 PID；expectedCreationTime：快照记录的创建时间。
+    // 返回：映像路径；身份不匹配或查询失败时返回空串。
+    QString queryHandleProcessImagePathInWorker(
+        const std::uint32_t processId,
+        const std::uint64_t expectedCreationTime)
+    {
+        if (processId == 0U || expectedCreationTime == 0U)
+        {
+            return {};
+        }
+
+        const HANDLE processHandle = ::OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            static_cast<DWORD>(processId));
+        if (processHandle == nullptr)
+        {
+            return {};
+        }
+
+        FILETIME creationTime{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        const bool identityMatches =
+            ::GetProcessTimes(
+                processHandle,
+                &creationTime,
+                &exitTime,
+                &kernelTime,
+                &userTime) != FALSE
+            && handleProcessFileTimeToUint64(creationTime) == expectedCreationTime;
+        if (!identityMatches)
+        {
+            ::CloseHandle(processHandle);
+            return {};
+        }
+
+        std::vector<wchar_t> imagePathBuffer(32768, L'\0');
+        DWORD imagePathLength = static_cast<DWORD>(imagePathBuffer.size());
+        QString processImagePath;
+        if (::QueryFullProcessImageNameW(
+            processHandle,
+            0,
+            imagePathBuffer.data(),
+            &imagePathLength) != FALSE
+            && imagePathLength > 0U)
+        {
+            processImagePath = QString::fromWCharArray(
+                imagePathBuffer.data(),
+                static_cast<int>(imagePathLength));
+        }
+        ::CloseHandle(processHandle);
+        return processImagePath;
+    }
+
+    // extractHandleProcessIconImage 作用：
+    // - 在工作线程内通过 Shell 提取可执行文件小图标并转换为 QImage；
+    // - QImage 可跨线程传递，不涉及只能在 UI 线程使用的 QPixmap/QIcon/QFileIconProvider。
+    // 入参 imagePath：已复核过实例身份的进程映像路径。
+    // 返回：图标位图；路径为空或提取失败时返回空 QImage。
+    QImage extractHandleProcessIconImage(const QString& imagePath)
+    {
+        if (imagePath.trimmed().isEmpty())
+        {
+            return QImage();
+        }
+
+        // shellFileInfo 保存 Shell 分配的 HICON，转成 QImage 后必须由调用方销毁。
+        SHFILEINFOW shellFileInfo{};
+        const DWORD_PTR shellQueryResult = ::SHGetFileInfoW(
+            reinterpret_cast<const wchar_t*>(imagePath.utf16()),
+            0,
+            &shellFileInfo,
+            sizeof(shellFileInfo),
+            SHGFI_ICON | SHGFI_SMALLICON);
+        if (shellQueryResult == 0 || shellFileInfo.hIcon == nullptr)
+        {
+            return QImage();
+        }
+
+        QImage iconImage = QImage::fromHICON(shellFileInfo.hIcon);
+        ::DestroyIcon(shellFileInfo.hIcon);
+        return iconImage;
+    }
 }
 
 HandleDock::HandleDock(QWidget* parent)
@@ -1050,8 +1254,31 @@ void HandleDock::applyObjectTypeRefreshResult(
 void HandleDock::rebuildHandleTable()
 {
     m_tableWidget->clear();
+    // clear() 已经销毁全部旧表项：立刻递增代次淘汰在途的图标回投，并重建“行下标 -> 表项”映射。
+    ++m_processIconResolveGeneration;
+    const std::uint64_t iconResolveGeneration = m_processIconResolveGeneration;
+    m_handleTableItemsByRowIndex.assign(m_rows.size(), nullptr);
+
+    // 上一轮扫描的行下标已经失效，置位取消标志让它尽快退出线程池，避免连续过滤时堆积长任务。
+    if (m_processIconResolveCancelFlag != nullptr)
+    {
+        m_processIconResolveCancelFlag->store(true);
+    }
+    m_processIconResolveCancelFlag = std::make_shared<std::atomic_bool>(false);
+    const std::shared_ptr<std::atomic_bool> iconResolveCancelFlag = m_processIconResolveCancelFlag;
+
     const std::size_t totalRowCount = m_rows.size();
     HandleRenderSplashScope renderSplashScope(totalRowCount);
+
+    // 建表期间关闭排序：开启排序时每次 addTopLevelItem 都要做一次插入排序，
+    // 数万行会退化成整表反复搬移；建完统一恢复排序，Qt 会按当前排序列重排一次。
+    const bool sortingEnabledBeforeRebuild = m_tableWidget->isSortingEnabled();
+    m_tableWidget->setSortingEnabled(false);
+
+    // 图标请求在建表过程中就地收集，建表结束后一次性交给线程池；
+    // UI 线程本轮只做 QHash 查表，不再逐行 OpenProcess + QueryFullProcessImageNameW + Shell 取图标。
+    QVector<HandleProcessIconRequest> pendingIconRequests;
+    QHash<QString, QVector<int>> pendingIconRowIndicesByIdentity;
 
     for (std::size_t rowIndex = 0; rowIndex < m_rows.size(); ++rowIndex)
     {
@@ -1066,9 +1293,36 @@ void HandleDock::rebuildHandleTable()
             QString::number(row.processId),
             static_cast<qulonglong>(row.processId));
         item->setText(static_cast<int>(HandleTableColumn::ProcessName), row.processName);
-        item->setIcon(
-            static_cast<int>(HandleTableColumn::ProcessName),
-            resolveProcessIconForRow(row));
+        // 进程图标只查内存缓存：未命中先挂占位图并登记异步请求，真实图标由后台解析完成后回填。
+        const QString processIdentityKey =
+            buildHandleProcessIdentityKey(row.processId, row.processCreationTime);
+        const auto cachedIconIt = m_processIconCacheByIdentity.constFind(processIdentityKey);
+        if (cachedIconIt != m_processIconCacheByIdentity.constEnd())
+        {
+            item->setIcon(
+                static_cast<int>(HandleTableColumn::ProcessName),
+                cachedIconIt.value());
+        }
+        else
+        {
+            item->setIcon(
+                static_cast<int>(HandleTableColumn::ProcessName),
+                handleProcessPlaceholderIcon());
+            if (!processIdentityKey.isEmpty())
+            {
+                // 同一进程实例可能占据成百上千行，这里按实例键聚合行下标，后台只解析一次图标。
+                QVector<int>& identityRowIndexList = pendingIconRowIndicesByIdentity[processIdentityKey];
+                if (identityRowIndexList.isEmpty())
+                {
+                    pendingIconRequests.push_back(
+                        HandleProcessIconRequest{
+                            processIdentityKey,
+                            row.processId,
+                            row.processCreationTime });
+                }
+                identityRowIndexList.push_back(static_cast<int>(rowIndex));
+            }
+        }
         item->setNumericCell(
             static_cast<int>(HandleTableColumn::HandleValue),
             formatHex(row.handleValue, 0),
@@ -1148,6 +1402,7 @@ void HandleDock::rebuildHandleTable()
             item->setToolTip(static_cast<int>(HandleTableColumn::ObjectName), QStringLiteral("对象名未查询，可能受预算、类型白名单或开关限制。"));
         }
         m_tableWidget->addTopLevelItem(item);
+        m_handleTableItemsByRowIndex[rowIndex] = item;
 
         if (totalRowCount > 0
             && (((rowIndex + 1) % kHandleRenderProgressStep) == 0 || (rowIndex + 1) == totalRowCount))
@@ -1156,7 +1411,156 @@ void HandleDock::rebuildHandleTable()
         }
     }
 
+    if (sortingEnabledBeforeRebuild)
+    {
+        m_tableWidget->setSortingEnabled(true);
+    }
+
     renderSplashScope.finish();
+
+    if (pendingIconRequests.isEmpty())
+    {
+        return;
+    }
+
+    // 进程图标解析（OpenProcess + GetProcessTimes + QueryFullProcessImageNameW + Shell 取图标）
+    // 整体搬到线程池：后台只产出 QImage 值类型，QPixmap/QIcon 构造与表项刷新仍留在 UI 线程。
+    const QPointer<HandleDock> guardedSelf(this);
+    auto* iconResolveTask = QRunnable::create(
+        [guardedSelf,
+        iconResolveGeneration,
+        iconResolveCancelFlag,
+        pendingIconRequests,
+        pendingIconRowIndicesByIdentity]()
+        {
+            // Shell 图标处理器需要 COM 环境，工作线程自行初始化并在本任务结束时配对释放。
+            const HandleProcessIconComScope iconWorkerComScope;
+
+            QVector<HandleProcessIconResult> batchedIconResults;
+            batchedIconResults.reserve(kHandleProcessIconBatchSize);
+
+            // postBatchedIconResults 作用：把攒够的一批图标结果回投到 UI 线程，并清空批次缓冲。
+            // 入参：无（按引用使用外层的批次缓冲与行下标映射）。
+            // 返回：无。
+            const auto postBatchedIconResults =
+                [&guardedSelf, iconResolveGeneration, &pendingIconRowIndicesByIdentity, &batchedIconResults]()
+                {
+                    if (batchedIconResults.isEmpty())
+                    {
+                        return;
+                    }
+
+                    QCoreApplication* const appInstance = QCoreApplication::instance();
+                    if (appInstance == nullptr)
+                    {
+                        batchedIconResults.clear();
+                        return;
+                    }
+
+                    QMetaObject::invokeMethod(
+                        appInstance,
+                        [guardedSelf,
+                        iconResolveGeneration,
+                        rowIndicesByIdentity = pendingIconRowIndicesByIdentity,
+                        iconResults = batchedIconResults]()
+                        {
+                            if (guardedSelf == nullptr || guardedSelf->m_tableWidget == nullptr)
+                            {
+                                return;
+                            }
+                            // 代次一致才说明表格未被重建、登记的行下标与表项指针仍然有效。
+                            // 代次不一致时仍然写入图标缓存（进程实例 -> 图标的映射与代次无关），
+                            // 只是不再回填表项，下一轮建表可以直接命中缓存。
+                            const bool tableItemsStillValid =
+                                guardedSelf->m_processIconResolveGeneration == iconResolveGeneration;
+
+                            bool anyIconApplied = false;
+                            {
+                                // 逐条 setIcon 会触发一次 dataChanged 和一次视图行定位，数万行下会退化成整表扫描；
+                                // 这里在批量写回期间屏蔽模型信号，写完统一刷新一次视口。
+                                const QSignalBlocker tableModelBlocker(guardedSelf->m_tableWidget->model());
+                                for (const HandleProcessIconResult& iconResult : iconResults)
+                                {
+                                    // QPixmap 只能在 UI 线程构造；解析失败也写入占位图缓存，避免下一轮重复发起系统调用。
+                                    const QIcon resolvedProcessIcon = iconResult.iconImage.isNull()
+                                        ? handleProcessPlaceholderIcon()
+                                        : QIcon(QPixmap::fromImage(iconResult.iconImage));
+                                    if (guardedSelf->m_processIconCacheByIdentity.size() >= kHandleProcessIconCacheLimit)
+                                    {
+                                        guardedSelf->m_processIconCacheByIdentity.erase(
+                                            guardedSelf->m_processIconCacheByIdentity.begin());
+                                    }
+                                    guardedSelf->m_processIconCacheByIdentity.insert(
+                                        iconResult.identityKey,
+                                        resolvedProcessIcon);
+                                    if (!tableItemsStillValid)
+                                    {
+                                        continue;
+                                    }
+
+                                    const auto identityRowIndexIt =
+                                        rowIndicesByIdentity.constFind(iconResult.identityKey);
+                                    if (identityRowIndexIt == rowIndicesByIdentity.constEnd())
+                                    {
+                                        continue;
+                                    }
+                                    for (const int targetRowIndex : identityRowIndexIt.value())
+                                    {
+                                        if (targetRowIndex < 0 ||
+                                            static_cast<std::size_t>(targetRowIndex) >=
+                                            guardedSelf->m_handleTableItemsByRowIndex.size())
+                                        {
+                                            continue;
+                                        }
+                                        QTreeWidgetItem* const targetItem =
+                                            guardedSelf->m_handleTableItemsByRowIndex[
+                                                static_cast<std::size_t>(targetRowIndex)];
+                                        if (targetItem == nullptr)
+                                        {
+                                            continue;
+                                        }
+                                        targetItem->setIcon(
+                                            static_cast<int>(HandleTableColumn::ProcessName),
+                                            resolvedProcessIcon);
+                                        anyIconApplied = true;
+                                    }
+                                }
+                            }
+
+                            if (anyIconApplied && guardedSelf->m_tableWidget->viewport() != nullptr)
+                            {
+                                guardedSelf->m_tableWidget->viewport()->update();
+                            }
+                        },
+                        Qt::QueuedConnection);
+                    batchedIconResults.clear();
+                };
+
+            for (const HandleProcessIconRequest& iconRequest : pendingIconRequests)
+            {
+                if (guardedSelf == nullptr ||
+                    iconResolveCancelFlag->load(std::memory_order_relaxed))
+                {
+                    // 页面已销毁或表格已重建：剩余请求交给新一轮扫描，本任务立刻让出线程池线程。
+                    break;
+                }
+
+                const QString processImagePath = queryHandleProcessImagePathInWorker(
+                    iconRequest.processId,
+                    iconRequest.processCreationTime);
+                batchedIconResults.push_back(
+                    HandleProcessIconResult{
+                        iconRequest.identityKey,
+                        extractHandleProcessIconImage(processImagePath) });
+                if (batchedIconResults.size() >= kHandleProcessIconBatchSize)
+                {
+                    postBatchedIconResults();
+                }
+            }
+            postBatchedIconResults();
+        });
+    iconResolveTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(iconResolveTask);
 }
 
 

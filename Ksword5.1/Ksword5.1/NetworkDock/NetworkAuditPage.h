@@ -22,6 +22,7 @@
 #include <memory> // std::unique_ptr：异步快照对象托管。
 #include <vector> // std::vector：批量快照行缓存。
 
+class QImage;
 class QLabel;
 class QLineEdit;
 class QPoint;
@@ -321,10 +322,25 @@ private:
     void showCrossViewContextMenu(QTableWidget* tableWidget, const QPoint& localPosition);
 
     // resolveProcessIcon 作用：
-    // - 按 PID 的真实可执行路径提取系统图标并缓存；
-    // - 路径不可读时回退默认进程图标；
-    // - 返回：进程图标。
+    // - 只读取 PID 图标缓存，绝不在建表主链路里做 OpenProcess / Shell 图标提取；
+    // - 缓存未命中时先返回占位图标，并提交一次后台解析任务；
+    // - 输入 processId：目标进程 PID；
+    // - 返回：缓存图标或占位图标。
     QIcon resolveProcessIcon(std::uint32_t processId);
+
+    // scheduleProcessIconResolution 作用：
+    // - 把某个 PID 的可执行路径查询与 Shell 图标提取提交到全局线程池；
+    // - 同一 PID 通过 m_processIconPendingPidSet 去重，避免建表三张表重复投递；
+    // - 输入 processId：目标进程 PID；
+    // - 返回：无。只能在 UI 线程调用。
+    void scheduleProcessIconResolution(std::uint32_t processId);
+
+    // applyProcessIconResolutionResult 作用：
+    // - 接收后台线程回投的图标位图，构造 QIcon 写入缓存并补齐已经落表的同 PID 行；
+    // - 输入 processId：目标进程 PID；
+    // - 输入 iconImage：后台提取到的位图，空位图表示解析失败并回退占位图标；
+    // - 返回：无。只能在 UI 线程调用。
+    void applyProcessIconResolutionResult(std::uint32_t processId, QImage iconImage);
 
     // updateCrossViewActionState 作用：
     // - 按 TCP 选择与 PID 筛选状态更新按钮；
@@ -448,6 +464,7 @@ private:
     QString m_r0TcpStatusText; // 最近一次完整 R0 TCP 查询的协议状态，不把零行误报为成功。
     QString m_r0UdpStatusText; // 最近一次完整 R0 UDP 查询的协议状态。
     QHash<quint32, QIcon> m_processIconCache; // PID -> 真实进程图标缓存。
+    QSet<quint32> m_processIconPendingPidSet; // 正在后台解析图标的 PID，避免重复投递。
     ProcessActionHandler m_trackProcessHandler; // 原连接页“跟踪此进程”实现。
     ProcessActionHandler m_openProcessDetailHandler; // 原连接页“转到进程详细信息”实现。
     std::shared_ptr<NetworkAuditAsyncState> m_asyncState; // 跨线程回投共享状态；析构先清空 owner。

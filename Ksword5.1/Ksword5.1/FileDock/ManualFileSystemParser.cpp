@@ -163,6 +163,20 @@ namespace
         bool fsctlFallbackAllowed = false;                        // 本次缓存是否允许 FSCTL 回退解析。
     };
 
+    // NtfsRecordKeepPolicy 作用：
+    // - 控制扫描过程中哪些记录需要留在结果集里。
+    // 为什么需要它：
+    // - 误删扫描必须覆盖整个 $MFT：NTFS 记录号从低往高分配，删除后空闲的低号记录
+    //   会被优先复用，所以“已删除且未被复用”的记录几乎全部集中在 MFT 尾部；
+    //   只扫前若干万条会稳定得到 0 个删除项。
+    // - 但整卷 MFT 可达数百万条记录，全量保留会让内存随 MFT 规模线性膨胀，
+    //   因此误删扫描只保留删除项与目录（目录用于重建路径提示）。
+    enum class NtfsRecordKeepPolicy : int
+    {
+        All = 0,                  // 保留全部解析成功的记录（目录浏览用）。
+        DeletedAndDirectories = 1 // 只保留已删除记录与目录记录（误删扫描用）。
+    };
+
     std::mutex g_ntfsCacheMutex; // NTFS 缓存互斥锁。
     std::unordered_map<std::wstring, std::shared_ptr<NtfsCacheEntry>> g_ntfsCache; // 分卷缓存字典。
 
@@ -895,60 +909,117 @@ namespace
 
         const std::uint64_t totalClusters =
             static_cast<std::uint64_t>(volumeData.TotalClusters.QuadPart);
-        const std::uint64_t bitmapBytes = (totalClusters + 7ULL) / 8ULL;
-        constexpr std::uint64_t MaxBitmapBytes = 128ULL * 1024ULL * 1024ULL;
-        if (bitmapBytes == 0 || bitmapBytes > MaxBitmapBytes)
+        if (totalClusters == 0)
         {
-            errorTextOut = QStringLiteral("卷位图过大或为空, bytes=%1").arg(static_cast<qulonglong>(bitmapBytes));
+            errorTextOut = QStringLiteral("卷位图为空。");
             ::CloseHandle(volumeHandle);
             return false;
         }
 
-        STARTING_LCN_INPUT_BUFFER inputBuffer{};
-        inputBuffer.StartingLcn.QuadPart = 0;
+        // FSCTL_GET_VOLUME_BITMAP 一次只返回输出缓冲区装得下的那一段，
+        // 缓冲区不足时以 ERROR_MORE_DATA 返回并填满缓冲区，因此必须循环续读。
+        // 早期实现按“整卷位图一次拿全”申请缓冲区：大卷直接被上限挡掉，
+        // 位图缺失又会让所有非驻留项退化成“完整度未知 / 禁止导出”。
+        constexpr std::size_t BitmapChunkPayloadBytes = 8ULL * 1024ULL * 1024ULL;
+        constexpr std::uint64_t MaxBitmapBytes = 256ULL * 1024ULL * 1024ULL;
         const std::size_t headerBytes = offsetof(VOLUME_BITMAP_BUFFER, Buffer);
-        std::vector<std::uint8_t> outputBuffer(headerBytes + static_cast<std::size_t>(bitmapBytes) + 64ULL);
-        returnedBytes = 0;
-        if (::DeviceIoControl(
-            volumeHandle,
-            FSCTL_GET_VOLUME_BITMAP,
-            &inputBuffer,
-            static_cast<DWORD>(sizeof(inputBuffer)),
-            outputBuffer.data(),
-            static_cast<DWORD>(outputBuffer.size()),
-            &returnedBytes,
-            nullptr) == FALSE)
+        std::vector<std::uint8_t> outputBuffer(headerBytes + BitmapChunkPayloadBytes + 64ULL);
+
+        bitmapOut.startingLcn = 0;
+        bitmapOut.clusterCount = 0;
+        bitmapOut.bitmapBytes.clear();
+        bitmapOut.bitmapBytes.reserve(
+            static_cast<std::size_t>(
+                std::min<std::uint64_t>((totalClusters + 7ULL) / 8ULL, MaxBitmapBytes)));
+
+        std::uint64_t nextLcn = 0;
+        while (nextLcn < totalClusters)
         {
-            errorTextOut = QStringLiteral("FSCTL_GET_VOLUME_BITMAP失败, code=%1").arg(::GetLastError());
-            ::CloseHandle(volumeHandle);
-            return false;
+            STARTING_LCN_INPUT_BUFFER inputBuffer{};
+            inputBuffer.StartingLcn.QuadPart = static_cast<LONGLONG>(nextLcn);
+            returnedBytes = 0;
+            const BOOL queryOk = ::DeviceIoControl(
+                volumeHandle,
+                FSCTL_GET_VOLUME_BITMAP,
+                &inputBuffer,
+                static_cast<DWORD>(sizeof(inputBuffer)),
+                outputBuffer.data(),
+                static_cast<DWORD>(outputBuffer.size()),
+                &returnedBytes,
+                nullptr);
+            const DWORD queryErrorCode = queryOk != FALSE ? ERROR_SUCCESS : ::GetLastError();
+            if (queryOk == FALSE && queryErrorCode != ERROR_MORE_DATA)
+            {
+                ::CloseHandle(volumeHandle);
+                errorTextOut = QStringLiteral("FSCTL_GET_VOLUME_BITMAP失败, startLcn=%1, code=%2")
+                    .arg(static_cast<qulonglong>(nextLcn))
+                    .arg(queryErrorCode);
+                return false;
+            }
+            if (returnedBytes <= headerBytes)
+            {
+                ::CloseHandle(volumeHandle);
+                errorTextOut = QStringLiteral("卷位图返回长度不足, startLcn=%1")
+                    .arg(static_cast<qulonglong>(nextLcn));
+                return false;
+            }
+
+            const VOLUME_BITMAP_BUFFER* bitmapBuffer =
+                reinterpret_cast<const VOLUME_BITMAP_BUFFER*>(outputBuffer.data());
+            // 驱动会把 StartingLcn 向下对齐到字节边界；nextLcn 始终保持 8 的倍数，
+            // 因此这里对齐后的起点必须与请求一致，否则说明段间出现空洞，直接停止。
+            const std::uint64_t chunkStartLcn =
+                static_cast<std::uint64_t>(bitmapBuffer->StartingLcn.QuadPart);
+            if (chunkStartLcn != nextLcn)
+            {
+                break;
+            }
+
+            // BitmapSize 是“从 StartingLcn 到卷末尾的剩余簇数”，不是本段返回的簇数。
+            const std::uint64_t remainingClusters =
+                static_cast<std::uint64_t>(bitmapBuffer->BitmapSize.QuadPart);
+            const std::uint64_t payloadBytes =
+                static_cast<std::uint64_t>(returnedBytes) - headerBytes;
+            const std::uint64_t chunkClusters =
+                std::min<std::uint64_t>(remainingClusters, payloadBytes * 8ULL);
+            if (chunkClusters == 0)
+            {
+                break;
+            }
+            const std::uint64_t chunkBytes = (chunkClusters + 7ULL) / 8ULL;
+            if (chunkBytes > payloadBytes)
+            {
+                ::CloseHandle(volumeHandle);
+                errorTextOut = QStringLiteral("卷位图数据长度异常, startLcn=%1")
+                    .arg(static_cast<qulonglong>(chunkStartLcn));
+                return false;
+            }
+
+            const std::uint8_t* payloadPtr = outputBuffer.data() + headerBytes;
+            bitmapOut.bitmapBytes.insert(
+                bitmapOut.bitmapBytes.end(),
+                payloadPtr,
+                payloadPtr + static_cast<std::size_t>(chunkBytes));
+            bitmapOut.clusterCount += chunkClusters;
+            nextLcn = chunkStartLcn + chunkClusters;
+
+            // 超大卷只保留前段位图：部分覆盖仍可判定落在该范围内的删除项，
+            // 范围之外由 tryCountAllocatedClustersInRange 判为“无法评估”，不会误判为安全。
+            if (bitmapOut.bitmapBytes.size() >= static_cast<std::size_t>(MaxBitmapBytes))
+            {
+                errorTextOut = QStringLiteral("卷位图超过 %1MB 上限，仅加载前 %2 个簇。")
+                    .arg(static_cast<qulonglong>(MaxBitmapBytes / (1024ULL * 1024ULL)))
+                    .arg(static_cast<qulonglong>(bitmapOut.clusterCount));
+                break;
+            }
         }
         ::CloseHandle(volumeHandle);
 
-        if (returnedBytes < headerBytes)
+        if (bitmapOut.clusterCount == 0 || bitmapOut.bitmapBytes.empty())
         {
-            errorTextOut = QStringLiteral("卷位图返回长度不足。");
+            errorTextOut = QStringLiteral("卷位图未返回任何有效数据。");
             return false;
         }
-
-        const VOLUME_BITMAP_BUFFER* bitmapBuffer =
-            reinterpret_cast<const VOLUME_BITMAP_BUFFER*>(outputBuffer.data());
-        bitmapOut.startingLcn =
-            static_cast<std::uint64_t>(bitmapBuffer->StartingLcn.QuadPart);
-        bitmapOut.clusterCount =
-            static_cast<std::uint64_t>(bitmapBuffer->BitmapSize.QuadPart);
-
-        const std::uint64_t actualBitmapBytes = (bitmapOut.clusterCount + 7ULL) / 8ULL;
-        if (headerBytes + actualBitmapBytes > returnedBytes
-            || headerBytes + actualBitmapBytes > outputBuffer.size())
-        {
-            errorTextOut = QStringLiteral("卷位图数据长度异常。");
-            return false;
-        }
-
-        bitmapOut.bitmapBytes.assign(
-            outputBuffer.begin() + static_cast<std::ptrdiff_t>(headerBytes),
-            outputBuffer.begin() + static_cast<std::ptrdiff_t>(headerBytes + actualBitmapBytes));
         return true;
     }
 
@@ -1558,6 +1629,292 @@ namespace
         return true;
     }
 
+    // NtfsMftExtent 作用：
+    // - 表示 $MFT 自身的一个连续数据段，同时保存该段的起始 VCN；
+    // - 有了起始 VCN 才能把“逻辑记录号”换算回“卷内物理偏移”。
+    struct NtfsMftExtent
+    {
+        std::uint64_t startVcn = 0;            // 该段在 $MFT 内的起始虚拟簇号。
+        std::uint64_t startLcn = 0;            // 该段在卷内的起始逻辑簇号。
+        std::uint64_t clusterCount = 0;        // 该段的簇数量。
+    };
+
+    // NtfsMftLocator 作用：
+    // - 保存 $MFT 未命名主数据流的 runlist，把 MFT 记录号换算成卷内真实字节偏移。
+    // 为什么必须有它：
+    // - $MFT 在使用过一段时间的卷上几乎必然碎片化（MFT zone 用尽后按 extent 扩展）；
+    // - 若继续按“MFT 起始偏移 + 记录号 * 记录长度”线性推进，越过第一个 extent 后
+    //   读到的就是其它文件的数据：轻则解析失败导致扫描提前中断，
+    //   重则把恰好带 FILE 签名的旧数据解析成记录号错乱的假条目。
+    struct NtfsMftLocator
+    {
+        std::vector<NtfsMftExtent> extents;    // $MFT 数据段集合（按 VCN 升序）。
+        std::uint64_t bytesPerCluster = 0;     // 每簇字节数。
+        std::uint32_t bytesPerRecord = 0;      // 单条 MFT 记录字节数。
+        std::uint64_t validRecordCount = 0;    // 按 $MFT 数据长度推算的有效记录数。
+
+        // isUsable 作用：判断当前 locator 是否具备记录号换算能力。
+        bool isUsable() const
+        {
+            return !extents.empty() && bytesPerCluster > 0 && bytesPerRecord > 0;
+        }
+
+        // mappedRecordCapacity 作用：返回 runlist 实际覆盖到的记录数上限。
+        std::uint64_t mappedRecordCapacity() const
+        {
+            if (!isUsable())
+            {
+                return 0;
+            }
+            const NtfsMftExtent& lastExtent = extents.back();
+            if (lastExtent.startVcn >
+                std::numeric_limits<std::uint64_t>::max() - lastExtent.clusterCount)
+            {
+                return 0;
+            }
+            const std::uint64_t totalClusters = lastExtent.startVcn + lastExtent.clusterCount;
+            if (totalClusters > std::numeric_limits<std::uint64_t>::max() / bytesPerCluster)
+            {
+                return 0;
+            }
+            return (totalClusters * bytesPerCluster) / bytesPerRecord;
+        }
+
+        // tryMapRecordRange 作用：
+        // - 把 MFT 记录号换算成卷内字节偏移，并给出该记录所在数据段的剩余连续字节数；
+        // - 调用方可据此一次性读取多条相邻记录，避免逐条 1KB 读带来的巨大开销。
+        // 出参 volumeOffsetOut：记录首字节在卷内的绝对偏移。
+        // 出参 contiguousBytesOut：从该偏移起仍位于同一数据段的连续字节数。
+        // 返回值：记录号越界或落在稀疏段时返回 false。
+        bool tryMapRecordRange(
+            const std::uint64_t recordIndex,
+            std::uint64_t& volumeOffsetOut,
+            std::uint64_t& contiguousBytesOut) const
+        {
+            volumeOffsetOut = 0;
+            contiguousBytesOut = 0;
+            if (!isUsable()
+                || recordIndex > std::numeric_limits<std::uint64_t>::max() / bytesPerRecord)
+            {
+                return false;
+            }
+
+            const std::uint64_t logicalOffset = recordIndex * bytesPerRecord;
+            const std::uint64_t targetVcn = logicalOffset / bytesPerCluster;
+            const std::uint64_t inClusterOffset = logicalOffset % bytesPerCluster;
+
+            // extents 按 startVcn 升序排列，用二分定位目标 VCN 所属数据段。
+            const auto extentIt = std::upper_bound(
+                extents.begin(),
+                extents.end(),
+                targetVcn,
+                [](const std::uint64_t vcnValue, const NtfsMftExtent& extentValue) {
+                    return vcnValue < extentValue.startVcn;
+                });
+            if (extentIt == extents.begin())
+            {
+                return false;
+            }
+            const NtfsMftExtent& extentValue = *(extentIt - 1);
+            if (targetVcn >= extentValue.startVcn + extentValue.clusterCount)
+            {
+                return false;
+            }
+
+            const std::uint64_t clusterOffsetInExtent = targetVcn - extentValue.startVcn;
+            if (extentValue.startLcn >
+                std::numeric_limits<std::uint64_t>::max() - clusterOffsetInExtent)
+            {
+                return false;
+            }
+            const std::uint64_t targetLcn = extentValue.startLcn + clusterOffsetInExtent;
+            if (targetLcn > std::numeric_limits<std::uint64_t>::max() / bytesPerCluster)
+            {
+                return false;
+            }
+            const std::uint64_t clusterOffsetBytes = targetLcn * bytesPerCluster;
+            if (clusterOffsetBytes >
+                std::numeric_limits<std::uint64_t>::max() - inClusterOffset)
+            {
+                return false;
+            }
+
+            volumeOffsetOut = clusterOffsetBytes + inClusterOffset;
+            contiguousBytesOut =
+                (extentValue.clusterCount - clusterOffsetInExtent) * bytesPerCluster
+                - inClusterOffset;
+            return contiguousBytesOut >= bytesPerRecord;
+        }
+    };
+
+    // loadNtfsMftLocator 作用：
+    // - 读取 MFT 第 0 条记录（$MFT 自身），解析其未命名主数据流 runlist，构建记录号定位器。
+    // 调用方法：
+    // - 卷偏移兜底路径在开始遍历前调用一次。
+    // 入参 volumeHandle：已打开的卷句柄。
+    // 入参 mftStartOffset：引导扇区给出的 MFT 起始字节偏移（记录 0 一定位于此处）。
+    // 出参 locatorOut：构建成功的定位器。
+    // 出参 errorTextOut：失败原因文本。
+    // 返回值：成功返回 true，失败返回 false（调用方可退化为线性推进）。
+    bool loadNtfsMftLocator(
+        const HANDLE volumeHandle,
+        const std::uint64_t mftStartOffset,
+        const std::uint16_t bytesPerSector,
+        const std::uint64_t bytesPerCluster,
+        const std::uint32_t bytesPerRecord,
+        NtfsMftLocator& locatorOut,
+        QString& errorTextOut)
+    {
+        locatorOut = NtfsMftLocator{};
+        errorTextOut.clear();
+
+        std::vector<std::byte> firstRecordBytes(bytesPerRecord);
+        if (!readBytesAtSectorAlignedOffset(
+            volumeHandle,
+            mftStartOffset,
+            bytesPerRecord,
+            bytesPerSector,
+            QStringLiteral("读取$MFT记录0"),
+            0,
+            firstRecordBytes.data(),
+            errorTextOut))
+        {
+            return false;
+        }
+
+        NtfsRawRecord mftRecordValue{};
+        if (!parseNtfsRecord(firstRecordBytes, 0, bytesPerSector, false, mftRecordValue))
+        {
+            errorTextOut = QStringLiteral("解析 $MFT 记录 0 失败，无法建立 MFT runlist 映射。");
+            return false;
+        }
+        if (!mftRecordValue.nonResidentData || mftRecordValue.dataRuns.empty())
+        {
+            errorTextOut = QStringLiteral("$MFT 记录 0 未给出可用的非驻留 runlist。");
+            return false;
+        }
+
+        std::uint64_t currentVcn = 0;
+        locatorOut.extents.reserve(mftRecordValue.dataRuns.size());
+        for (const NtfsDataRun& runValue : mftRecordValue.dataRuns)
+        {
+            // $MFT 自身不应存在稀疏段；一旦出现说明 runlist 解析已经不可信。
+            if (runValue.isSparse || runValue.clusterCount == 0)
+            {
+                errorTextOut = QStringLiteral("$MFT runlist 含稀疏或空数据段，映射不可信。");
+                return false;
+            }
+            if (currentVcn > std::numeric_limits<std::uint64_t>::max() - runValue.clusterCount)
+            {
+                errorTextOut = QStringLiteral("$MFT runlist 虚拟簇号累加溢出。");
+                return false;
+            }
+
+            NtfsMftExtent extentValue{};
+            extentValue.startVcn = currentVcn;
+            extentValue.startLcn = runValue.startLcn;
+            extentValue.clusterCount = runValue.clusterCount;
+            locatorOut.extents.push_back(extentValue);
+            currentVcn += runValue.clusterCount;
+        }
+
+        locatorOut.bytesPerCluster = bytesPerCluster;
+        locatorOut.bytesPerRecord = bytesPerRecord;
+        locatorOut.validRecordCount =
+            (mftRecordValue.sizeBytes >= bytesPerRecord)
+            ? (mftRecordValue.sizeBytes / bytesPerRecord)
+            : 0;
+
+        // hasAttributeList 说明 $MFT 的 runlist 可能被拆到其它记录里，
+        // 这里只覆盖到本记录列出的部分，需要让调用方知道映射范围可能不完整。
+        if (mftRecordValue.hasAttributeList)
+        {
+            errorTextOut = QStringLiteral("$MFT 使用 $ATTRIBUTE_LIST，runlist 可能不完整。");
+        }
+        return locatorOut.isUsable();
+    }
+
+    // readNtfsRecordViaLocator 作用：
+    // - 借助 MFT runlist 映射读取单条记录，并在内部按大块缓存相邻记录；
+    // - 块缓存永远不跨数据段，因此块内偏移与记录号始终一一对应。
+    // 入参 chunkBytes/chunkFirstRecord/chunkRecordCount：调用方持有的块缓存状态。
+    // 出参 recordBytesOut：目标记录的原始字节。
+    // 返回值：成功返回 true；记录号无法映射或读取失败返回 false。
+    bool readNtfsRecordViaLocator(
+        const HANDLE volumeHandle,
+        const NtfsMftLocator& locatorValue,
+        const std::uint16_t bytesPerSector,
+        const std::uint64_t recordIndex,
+        const std::uint64_t parseCount,
+        std::vector<std::byte>& chunkBytes,
+        std::uint64_t& chunkFirstRecord,
+        std::uint64_t& chunkRecordCount,
+        std::vector<std::byte>& recordBytesOut,
+        QString& errorTextOut)
+    {
+        const std::uint32_t bytesPerRecord = locatorValue.bytesPerRecord;
+        if (bytesPerRecord == 0)
+        {
+            errorTextOut = QStringLiteral("MFT 记录长度为 0。");
+            return false;
+        }
+
+        const bool insideChunk =
+            (chunkRecordCount > 0)
+            && (recordIndex >= chunkFirstRecord)
+            && (recordIndex - chunkFirstRecord < chunkRecordCount);
+        if (!insideChunk)
+        {
+            std::uint64_t volumeOffset = 0;
+            std::uint64_t contiguousBytes = 0;
+            if (!locatorValue.tryMapRecordRange(recordIndex, volumeOffset, contiguousBytes))
+            {
+                chunkRecordCount = 0;
+                errorTextOut = QStringLiteral("记录号 %1 超出 $MFT runlist 覆盖范围。")
+                    .arg(static_cast<qulonglong>(recordIndex));
+                return false;
+            }
+
+            // 单次读取上限 1MB：兼顾吞吐与内存占用，且不跨越当前数据段。
+            constexpr std::uint64_t MftChunkTargetBytes = 1ULL * 1024ULL * 1024ULL;
+            const std::uint64_t remainingRecords = (parseCount > recordIndex)
+                ? (parseCount - recordIndex)
+                : 1ULL;
+            std::uint64_t chunkRecords = std::min<std::uint64_t>(
+                { MftChunkTargetBytes / bytesPerRecord,
+                  contiguousBytes / bytesPerRecord,
+                  remainingRecords });
+            if (chunkRecords == 0)
+            {
+                chunkRecords = 1;
+            }
+
+            const std::uint64_t chunkSizeBytes = chunkRecords * bytesPerRecord;
+            chunkBytes.resize(static_cast<std::size_t>(chunkSizeBytes));
+            if (!readBytesAtSectorAlignedOffset(
+                volumeHandle,
+                volumeOffset,
+                static_cast<std::uint32_t>(chunkSizeBytes),
+                bytesPerSector,
+                QStringLiteral("按$MFT runlist读取记录块"),
+                0,
+                chunkBytes.data(),
+                errorTextOut))
+            {
+                chunkRecordCount = 0;
+                return false;
+            }
+            chunkFirstRecord = recordIndex;
+            chunkRecordCount = chunkRecords;
+        }
+
+        const std::size_t inChunkOffset =
+            static_cast<std::size_t>((recordIndex - chunkFirstRecord) * bytesPerRecord);
+        recordBytesOut.resize(bytesPerRecord);
+        std::memcpy(recordBytesOut.data(), chunkBytes.data() + inChunkOffset, bytesPerRecord);
+        return true;
+    }
+
     // buildTypeText 作用：将文件类型映射为界面展示文本。
     QString buildTypeText(const QString& fileName, const bool isDirectory)
     {
@@ -1838,17 +2195,27 @@ namespace
         const bool copyRecordsOut,
         const bool captureResidentData,
         const bool keepNamelessRecords,
+        const NtfsRecordKeepPolicy keepPolicy,
         const std::function<void(int, const QString&)>& progressCallback,
         std::shared_ptr<const NtfsCacheEntry>* cacheEntryOut)
     {
         const std::wstring cacheKey = toWide(volumeRoot.toUpper());
         const qint64 nowMsec = QDateTime::currentMSecsSinceEpoch();
         constexpr qint64 NtfsCacheTtlMsec = 60000; // 缓存 60 秒，避免同卷短时间重复全盘扫描。
-        constexpr std::uint64_t NtfsHardMaxRecordCount = 1500000ULL; // 全局硬上限：兼顾大卷覆盖率与内存占用。
+        const bool keepDeletedAndDirectoriesOnly =
+            (keepPolicy == NtfsRecordKeepPolicy::DeletedAndDirectories);
+        // 硬上限按保留策略区分：
+        // - All 模式每条记录都进内存，必须压在 150 万条以内；
+        // - DeletedAndDirectories 模式只留删除项和目录，可以覆盖整个 $MFT，
+        //   这里给的是防病态的上界，实际扫描量由 $MFT 有效记录数决定。
+        const std::uint64_t NtfsHardMaxRecordCount =
+            keepDeletedAndDirectoriesOnly ? 64000000ULL : 1500000ULL;
         const std::uint64_t effectiveMaxRecordCount = (maxRecordCountHint == 0)
             ? NtfsHardMaxRecordCount
             : std::min<std::uint64_t>(maxRecordCountHint, NtfsHardMaxRecordCount);
-        if (useCache)
+        // 记录集不完整时禁止入缓存，否则会污染依赖全量记录的目录浏览。
+        const bool cacheAllowed = useCache && !keepDeletedAndDirectoriesOnly;
+        if (cacheAllowed)
         {
             std::scoped_lock<std::mutex> lock(g_ntfsCacheMutex);
             const auto cacheIt = g_ntfsCache.find(cacheKey);
@@ -1962,6 +2329,8 @@ namespace
         std::uint64_t parseCount = 0;                     // parseCount：计划解析记录数。
         bool usingVolumeFallback = false;                 // usingVolumeFallback：是否进入卷偏移直读回退。
         QString fallbackReasonText;                       // fallbackReasonText：回退原因日志文本。
+        NtfsMftLocator mftLocator;                        // mftLocator：$MFT 自身 runlist，卷偏移回退时用于精确定位记录。
+        bool usingMftLocator = false;                     // usingMftLocator：本轮是否按 runlist 映射记录号而非线性推进。
 
         // 第一优先级：直接读取 \\.\X:\$MFT。
         const QString mftPath = QStringLiteral("\\\\.\\%1\\$MFT").arg(volumeRoot.left(2).toUpper());
@@ -2033,7 +2402,7 @@ namespace
                         << eol;
                 }
 
-                if (useCache)
+                if (cacheAllowed)
                 {
                     std::shared_ptr<NtfsCacheEntry> cacheEntry = std::make_shared<NtfsCacheEntry>();
                     if (copyRecordsOut)
@@ -2071,27 +2440,43 @@ namespace
                     : (fallbackReasonText + QStringLiteral("; FSCTL回退失败: ") + fsctlErrorText);
             }
 
-            // 第二层回退：卷偏移连续读取（作为兜底方案保留）。
-            // 先读取 MFT 第 0 条记录（$MFT 自身），尽力拿到真实 MFT 数据长度。
-            // 这样可以避免直接按整个卷空间估算，导致 parseCount 被顶到 600000 上限。
+            // 第二层回退：卷偏移直读。
+            // 先读取 MFT 第 0 条记录（$MFT 自身），解析出它的 runlist：
+            // 1) runlist 给出真实 MFT 数据长度，避免按整卷空间估算把 parseCount 顶到硬上限；
+            // 2) 更关键的是能把记录号精确映射到卷内物理偏移，
+            //    $MFT 碎片化时不会像“线性推进”那样越过第一个 extent 后读到其它文件的数据。
             std::uint64_t estimatedMftRecordCount = 0;
             {
-                std::vector<std::byte> firstRecordBytes(bytesPerRecord);
-                QString firstRecordErrorText;
-                if (readBytesAtOffset(
+                QString locatorErrorText;
+                if (loadNtfsMftLocator(
                     volumeHandle,
                     mftStartOffset,
+                    bytesPerSector,
+                    bytesPerCluster,
                     bytesPerRecord,
-                    firstRecordBytes.data(),
-                    firstRecordErrorText))
+                    mftLocator,
+                    locatorErrorText))
                 {
-                    NtfsRawRecord mftRecordValue{};
-                    if (parseNtfsRecord(firstRecordBytes, 0, bytesPerSector, false, mftRecordValue)
-                        && mftRecordValue.sizeBytes >= bytesPerRecord)
+                    usingMftLocator = true;
+                    estimatedMftRecordCount = mftLocator.validRecordCount;
+                    const std::uint64_t mappedRecordCapacity = mftLocator.mappedRecordCapacity();
+                    if (mappedRecordCapacity > 0
+                        && (estimatedMftRecordCount == 0
+                            || estimatedMftRecordCount > mappedRecordCapacity))
                     {
-                        estimatedMftRecordCount =
-                            mftRecordValue.sizeBytes / static_cast<std::uint64_t>(bytesPerRecord);
+                        // runlist 覆盖范围才是真正能读到的上限，超出部分只会读到越界数据。
+                        estimatedMftRecordCount = mappedRecordCapacity;
                     }
+                    if (!locatorErrorText.isEmpty())
+                    {
+                        fallbackReasonText += QStringLiteral("; MFT映射告警: ") + locatorErrorText;
+                    }
+                }
+                else
+                {
+                    // 映射构建失败时退化为旧的线性推进，只能覆盖 $MFT 第一个数据段。
+                    fallbackReasonText +=
+                        QStringLiteral("; 构建$MFT映射失败(退化为线性推进): ") + locatorErrorText;
                 }
             }
 
@@ -2167,17 +2552,28 @@ namespace
                 << static_cast<qulonglong>(parseCount)
                 << ", estimatedByMft="
                 << static_cast<qulonglong>(estimatedMftRecordCount)
+                << ", mftLocator="
+                << (usingMftLocator ? "runlist" : "linear")
+                << ", mftExtents="
+                << mftLocator.extents.size()
                 << eol;
         }
 
         // 通用解析流程：从 sourceHandle 按记录序号读取并解析。
         std::vector<std::byte> recordBytes(bytesPerRecord);
+        std::vector<std::byte> locatorChunkBytes;      // locatorChunkBytes：runlist 模式下的记录块缓存。
+        std::uint64_t locatorChunkFirstRecord = 0;     // locatorChunkFirstRecord：块缓存首条记录号。
+        std::uint64_t locatorChunkRecordCount = 0;     // locatorChunkRecordCount：块缓存覆盖的记录条数。
         recordsOut.clear();
         recordsOut.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(parseCount, 200000ULL)));
         std::uint32_t consecutiveReadFailCount = 0;    // 连续读取失败计数：防止卷末尾反复失败造成长时间阻塞。
-        std::uint32_t consecutiveEmptyCount = 0;       // 连续空记录计数：回退模式用于提前停止无效扫描。
-        std::uint32_t consecutiveInvalidCount = 0;     // 连续无效记录计数：回退模式下用于识别“已离开有效 MFT 区间”。
+        std::uint32_t consecutiveEmptyCount = 0;       // 连续空记录计数：线性推进模式用于提前停止无效扫描。
+        std::uint32_t consecutiveInvalidCount = 0;     // 连续无效记录计数：线性推进模式下用于识别“已离开有效 MFT 区间”。
         std::uint64_t validRecordCount = 0;            // 已解析出的有效记录数，用于无效区间提前终止判定。
+        std::uint64_t totalReadFailCount = 0;          // 累计读取失败次数（诊断用）。
+        std::uint64_t totalInvalidCount = 0;           // 累计记录解析失败次数（诊断用）。
+        std::uint64_t stoppedAtIndex = parseCount;     // 实际停止位置（诊断用，等于 parseCount 表示走完全程）。
+        QString lastReadFailText;                      // 最后一次读取失败原因（诊断用）。
         int lastReportedPercent = -1;                  // lastReportedPercent：顺序扫描分支的最近一次上报百分比。
         for (std::uint64_t indexValue = 0; indexValue < parseCount; ++indexValue)
         {
@@ -2191,19 +2587,56 @@ namespace
                     lastReportedPercent = percentValue;
                     progressCallback(
                         percentValue,
-                        usingVolumeFallback
-                        ? QStringLiteral("按卷偏移扫描 MFT 记录")
-                        : QStringLiteral("按 $MFT 逻辑文件扫描记录"));
+                        usingMftLocator
+                        ? QStringLiteral("按 $MFT runlist 扫描记录")
+                        : (usingVolumeFallback
+                            ? QStringLiteral("按卷偏移扫描 MFT 记录")
+                            : QStringLiteral("按 $MFT 逻辑文件扫描记录")));
                 }
             }
 
-            const std::uint64_t offsetValue = sourceBaseOffset + indexValue * bytesPerRecord;
             QString readErrorText;
-            if (!readBytesAtOffset(sourceHandle, offsetValue, bytesPerRecord, recordBytes.data(), readErrorText))
+            bool readOk = false;
+            if (usingMftLocator)
+            {
+                // runlist 映射模式：记录号 → 卷内物理偏移，$MFT 碎片化也不会串位。
+                readOk = readNtfsRecordViaLocator(
+                    sourceHandle,
+                    mftLocator,
+                    bytesPerSector,
+                    indexValue,
+                    parseCount,
+                    locatorChunkBytes,
+                    locatorChunkFirstRecord,
+                    locatorChunkRecordCount,
+                    recordBytes,
+                    readErrorText);
+            }
+            else
+            {
+                // 线性推进模式：仅在 $MFT 逻辑文件可读、或 runlist 映射构建失败时使用。
+                // 卷句柄要求按逻辑扇区对齐访问，4K 扇区上 1KB 记录并不天然对齐，
+                // 因此这里统一走对齐读，避免 ReadFile 直接返回 ERROR_INVALID_PARAMETER。
+                const std::uint64_t offsetValue = sourceBaseOffset + indexValue * bytesPerRecord;
+                recordBytes.resize(bytesPerRecord);
+                readOk = readBytesAtSectorAlignedOffset(
+                    sourceHandle,
+                    offsetValue,
+                    bytesPerRecord,
+                    bytesPerSector,
+                    QStringLiteral("线性扫描 MFT 记录"),
+                    0,
+                    recordBytes.data(),
+                    readErrorText);
+            }
+            if (!readOk)
             {
                 ++consecutiveReadFailCount;
+                ++totalReadFailCount;
+                lastReadFailText = readErrorText;
                 if (consecutiveReadFailCount >= 8)
                 {
+                    stoppedAtIndex = indexValue;
                     break;
                 }
                 continue;
@@ -2214,8 +2647,9 @@ namespace
             if (!parseNtfsRecord(recordBytes, indexValue, bytesPerSector, captureResidentData, recordValue))
             {
                 ++consecutiveInvalidCount;
+                ++totalInvalidCount;
 
-                // 回退模式下，若出现大段全 0 区域，说明已到有效 MFT 尾部附近，可提前结束。
+                // 若出现大段全 0 区域，线性推进模式说明已到有效 MFT 尾部附近，可提前结束。
                 bool allZeroBytes = true;
                 for (const std::byte byteValue : recordBytes)
                 {
@@ -2228,8 +2662,12 @@ namespace
                 if (allZeroBytes)
                 {
                     ++consecutiveEmptyCount;
-                    if (usingVolumeFallback && indexValue > 4096 && consecutiveEmptyCount > 2048)
+                    if (usingVolumeFallback
+                        && !usingMftLocator
+                        && indexValue > 4096
+                        && consecutiveEmptyCount > 2048)
                     {
+                        stoppedAtIndex = indexValue;
                         break;
                     }
                 }
@@ -2238,16 +2676,34 @@ namespace
                     consecutiveEmptyCount = 0;
                 }
 
-                // 回退模式下，连续大量无效记录通常表示已跳出连续 MFT 数据区，
-                // 继续扫描只会显著拖慢解析，故在满足条件后提前终止。
+                // 这两处提前终止只对线性推进模式成立：那里连续无效确实代表已跳出 MFT 数据区。
+                // runlist 映射模式下每条记录都落在 $MFT 真实数据段内，
+                // 中间成片的未用记录属于正常现象，提前终止只会漏掉后半段删除项。
                 if (usingVolumeFallback
+                    && !usingMftLocator
                     && validRecordCount > 1024
                     && indexValue > 8192
                     && consecutiveInvalidCount > 8192)
                 {
+                    stoppedAtIndex = indexValue;
                     break;
                 }
                 continue;
+            }
+
+            // runlist 映射模式下核对记录头自带的 MFT record number（offset 0x2C）。
+            // 映射一旦出错就会产出记录号错乱的条目，而这些条目会被恢复流程当作真实
+            // 目标去读簇，因此这里宁可丢弃也不能放行。
+            // NTFS 3.0 及更早的记录没有该字段，值为 0 时不参与判定。
+            if (usingMftLocator && indexValue != 0 && recordBytes.size() >= 48)
+            {
+                const std::uint32_t headerRecordIndex = le32(recordBytes.data() + 44);
+                if (headerRecordIndex != 0
+                    && static_cast<std::uint64_t>(headerRecordIndex) != indexValue)
+                {
+                    ++consecutiveInvalidCount;
+                    continue;
+                }
             }
 
             consecutiveEmptyCount = 0;
@@ -2256,6 +2712,14 @@ namespace
             if (!keepNamelessRecords
                 && recordValue.fileName.isEmpty()
                 && recordValue.recordIndex != 5)
+            {
+                continue;
+            }
+            // 误删扫描只需要删除项，以及重建路径提示要用的目录记录（在用与否都要）。
+            // 在用的普通文件占 MFT 绝大多数，全部留下会让内存随 MFT 规模线性膨胀。
+            if (keepDeletedAndDirectoriesOnly
+                && recordValue.inUse
+                && !recordValue.isDirectory)
             {
                 continue;
             }
@@ -2268,13 +2732,71 @@ namespace
         }
         ::CloseHandle(volumeHandle);
 
+        // 扫描路径诊断：一次性给出走了哪条路径、计划/实际扫描量、失败分布。
+        // 「扫描完成但 0 项」有多种成因（提前中断 / 记录全在用 / 读取失败），
+        // 只看结果数分辨不出来，这条日志是定位入口。
+        // 全小写下划线 token 不会被 i18n 审计提取，改文案无需同步语言包。
+        {
+            std::uint64_t inUseCount = 0;
+            std::uint64_t directoryCount = 0;
+            std::uint64_t deletedFileCount = 0;
+            for (const NtfsRawRecord& recordValue : recordsOut)
+            {
+                if (recordValue.inUse)
+                {
+                    ++inUseCount;
+                }
+                if (recordValue.isDirectory)
+                {
+                    ++directoryCount;
+                }
+                if (!recordValue.inUse && !recordValue.isDirectory)
+                {
+                    ++deletedFileCount;
+                }
+            }
+
+            kLogEvent event;
+            info << event
+                << "ntfs_scan_diag"
+                << " volume="
+                << volumeRoot.toStdString()
+                << " source="
+                << (usingMftLocator
+                    ? "volume_runlist"
+                    : (usingVolumeFallback ? "volume_linear" : "mft_logical_file"))
+                << " parsecount="
+                << static_cast<qulonglong>(parseCount)
+                << " stoppedat="
+                << static_cast<qulonglong>(stoppedAtIndex)
+                << " records="
+                << recordsOut.size()
+                << " scanned="
+                << static_cast<qulonglong>(validRecordCount)
+                << " readfail="
+                << static_cast<qulonglong>(totalReadFailCount)
+                << " invalid="
+                << static_cast<qulonglong>(totalInvalidCount)
+                << " inuse="
+                << static_cast<qulonglong>(inUseCount)
+                << " dir="
+                << static_cast<qulonglong>(directoryCount)
+                << " deletedfile="
+                << static_cast<qulonglong>(deletedFileCount)
+                << " bytesperrecord="
+                << bytesPerRecord
+                << " lastreadfail="
+                << lastReadFailText.toStdString()
+                << eol;
+        }
+
         if (recordsOut.empty())
         {
             errorTextOut = QStringLiteral("MFT解析结果为空。");
             return false;
         }
 
-        if (useCache)
+        if (cacheAllowed)
         {
             std::shared_ptr<NtfsCacheEntry> cacheEntry = std::make_shared<NtfsCacheEntry>();
             if (copyRecordsOut)
@@ -2641,13 +3163,45 @@ namespace
             errorTextOut = QStringLiteral("卷偏移记录解析失败。");
             return false;
         }
-        const std::uint64_t rawRecordOffset =
-            mftStartOffset + recordByteOffset;
+
+        // 卷偏移回退优先按 $MFT 自身 runlist 定位：
+        // 直接用“MFT 起始偏移 + 记录号 * 记录长度”只在 $MFT 完全连续时才成立，
+        // 碎片化时会落到其它文件的数据上，导致扫描列表里明明存在的条目恢复不了。
+        std::uint64_t rawRecordOffset = mftStartOffset + recordByteOffset;
+        {
+            NtfsMftLocator mftLocator;
+            QString locatorErrorText;
+            std::uint64_t mappedOffset = 0;
+            std::uint64_t mappedContiguousBytes = 0;
+            if (loadNtfsMftLocator(
+                volumeHandle,
+                mftStartOffset,
+                bytesPerSector,
+                bytesPerCluster,
+                bytesPerRecord,
+                mftLocator,
+                locatorErrorText)
+                && mftLocator.tryMapRecordRange(
+                    fileReference,
+                    mappedOffset,
+                    mappedContiguousBytes))
+            {
+                rawRecordOffset = mappedOffset;
+            }
+            else if (!locatorErrorText.isEmpty())
+            {
+                fsctlErrorText += QStringLiteral("; $MFT映射不可用: ") + locatorErrorText;
+            }
+        }
+
         std::vector<std::byte> recordBytes(bytesPerRecord);
-        if (!readBytesAtOffset(
+        if (!readBytesAtSectorAlignedOffset(
             volumeHandle,
             rawRecordOffset,
             bytesPerRecord,
+            bytesPerSector,
+            QStringLiteral("卷偏移读取单条记录"),
+            0,
             recordBytes.data(),
             errorTextOut))
         {
@@ -2660,8 +3214,8 @@ namespace
         }
         ::CloseHandle(volumeHandle);
 
-        // 最后的卷偏移回退仅在 $MFT 连续时才成立；必须核对记录头中的
-        // MFT record number，防止碎片化时把同一物理偏移上的其它记录用于恢复。
+        // 无论走映射还是线性偏移，都必须核对记录头中的 MFT record number，
+        // 防止把同一物理偏移上的其它记录当成恢复目标。
         const std::uint32_t actualRawRecordIndex =
             recordBytes.size() >= 48
             ? le32(recordBytes.data() + 44)
@@ -3659,7 +4213,7 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
         std::shared_ptr<const NtfsCacheEntry> cacheSnapshot;
         constexpr std::uint64_t DirectoryListMaxRecords = 250000ULL; // 目录浏览优先响应速度，限制单次扫描规模。
         constexpr std::uint64_t DirectoryRetryMaxRecords = 1200000ULL; // 定位目录失败时扩展扫描上限，避免漏掉高编号目录项。
-        if (!loadNtfsRecords(volumeRoot, recordsValue, errorTextOut, DirectoryListMaxRecords, true, true, false, false, false, {}, &cacheSnapshot))
+        if (!loadNtfsRecords(volumeRoot, recordsValue, errorTextOut, DirectoryListMaxRecords, true, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &cacheSnapshot))
         {
             return false;
         }
@@ -3875,7 +4429,7 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
             std::vector<NtfsRawRecord> retryRecords;
             QString retryErrorText;
             std::shared_ptr<const NtfsCacheEntry> retrySnapshot;
-            if (loadNtfsRecords(volumeRoot, retryRecords, retryErrorText, DirectoryRetryMaxRecords, true, true, false, false, false, {}, &retrySnapshot))
+            if (loadNtfsRecords(volumeRoot, retryRecords, retryErrorText, DirectoryRetryMaxRecords, true, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &retrySnapshot))
             {
                 std::uint64_t retryDirIndex = 5;
                 if (retrySnapshot != nullptr && resolveNtfsDirectoryIndex(*retrySnapshot, pathSegments, retryDirIndex))
@@ -4035,7 +4589,10 @@ bool ks::file::ManualFileSystemParser::enumerateNtfsDeletedFiles(
 
     std::vector<NtfsRawRecord> recordsValue;
     const QString volumeRoot = trimVolumeRoot(volumeRootPath);
-    constexpr std::uint64_t DeletedScanMaxRecords = 1500000ULL; // 删除恢复默认拉满当前硬上限，优先提高命中率。
+    // 0 表示不额外设限：必须覆盖 $MFT 全部有效记录。
+    // NTFS 会优先复用低号空闲记录，"已删除且未被复用"的记录几乎全在 MFT 尾部；
+    // 之前固定扫前 150 万条，在大卷上扫到的全是在用记录，结果稳定为 0 项。
+    constexpr std::uint64_t DeletedScanMaxRecords = 0ULL;
     // 删除恢复优先保留 deleted 记录，因此这里禁用 FSCTL 路径，改走 $MFT/卷偏移扫描。
     if (!loadNtfsRecords(
         volumeRoot,
@@ -4047,6 +4604,7 @@ bool ks::file::ManualFileSystemParser::enumerateNtfsDeletedFiles(
         true,
         false,
         true,
+        NtfsRecordKeepPolicy::DeletedAndDirectories,
         progressCallback,
         nullptr))
     {
@@ -4067,6 +4625,17 @@ bool ks::file::ManualFileSystemParser::enumerateNtfsDeletedFiles(
         if (progressCallback)
         {
             progressCallback(86, QStringLiteral("已读取卷位图，开始估算完整度"));
+        }
+        // 成功但带告警说明位图只覆盖了卷的前一段，超出部分的完整度会保持“未知”。
+        if (!bitmapErrorText.isEmpty())
+        {
+            kLogEvent event;
+            warn << event
+                << "[FileDock] 误删扫描仅取到部分卷位图, volume="
+                << volumeRoot.toStdString()
+                << ", detail="
+                << bitmapErrorText.toStdString()
+                << eol;
         }
     }
     else if (!bitmapErrorText.isEmpty())
@@ -4179,6 +4748,20 @@ bool ks::file::ManualFileSystemParser::enumerateNtfsDeletedFiles(
         }
     }
 
+    // 触顶必须显式告知：修复 $MFT 映射后覆盖率大幅提高，静默截断会让用户
+    // 误以为“这就是全部删除项”，从而漏掉真正想找回的文件。
+    const bool truncatedByDisplayLimit = (deletedOut.size() >= MaxDeletedRecords);
+    if (truncatedByDisplayLimit)
+    {
+        kLogEvent event;
+        warn << event
+            << "[FileDock] 误删扫描结果已达显示上限，结果被截断, volume="
+            << volumeRoot.toStdString()
+            << ", limit="
+            << MaxDeletedRecords
+            << eol;
+    }
+
     std::sort(
         deletedOut.begin(),
         deletedOut.end(),
@@ -4245,7 +4828,11 @@ bool ks::file::ManualFileSystemParser::enumerateNtfsDeletedFiles(
         });
     if (progressCallback)
     {
-        progressCallback(100, QStringLiteral("删除项排序完成"));
+        progressCallback(
+            100,
+            truncatedByDisplayLimit
+            ? QStringLiteral("删除项排序完成（已达显示上限，结果被截断）")
+            : QStringLiteral("删除项排序完成"));
     }
     return true;
 }

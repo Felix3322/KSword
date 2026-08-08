@@ -231,12 +231,24 @@ namespace
         return true;
     }
 
+    // kWaitInitialSleepMs / kWaitMaxSleepMs bound the exponential backoff used by waitByHandle.
+    // The first probes stay tight so a fast transition is still reported promptly, while a slow
+    // one settles at two wakeups per second instead of the previous five-plus.
+    constexpr DWORD kWaitInitialSleepMs = 50;
+    constexpr DWORD kWaitMaxSleepMs = 500;
+
     // waitByHandle polls status until expectedState or timeout; finalStatus receives the last observed state.
+    // The idle gap grows 50ms -> 100ms -> ... -> 500ms instead of burning a fixed 180ms tick, and each sleep is
+    // clamped to the remaining budget so the caller-visible timeout is honoured at least as tightly as before.
+    // Deliberately not switched to NotifyServiceStatusChange: that API keeps writing into the SERVICE_NOTIFY
+    // buffer until its APC fires, and this helper does not own the SC_HANDLE it is given, so a pending
+    // notification could outlive both the buffer and the handle when the wait times out.
     bool waitByHandle(SC_HANDLE svc, DWORD expectedState, DWORD timeoutMs, ks::service::ServiceStatus* finalStatus)
     {
         if (svc == nullptr) { return false; }
         if (expectedState == 0) { return queryStatusByHandle(svc, finalStatus, nullptr, nullptr); }
         const auto start = std::chrono::steady_clock::now();
+        DWORD nextSleepMs = kWaitInitialSleepMs;
         for (;;)
         {
             ks::service::ServiceStatus current;
@@ -245,7 +257,10 @@ namespace
             if (current.currentState == expectedState) { return true; }
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             if (elapsed >= static_cast<long long>(timeoutMs)) { return false; }
-            std::this_thread::sleep_for(std::chrono::milliseconds(180));
+            const long long remainingMs = static_cast<long long>(timeoutMs) - elapsed;
+            const long long sleepThisRoundMs = (std::min)(static_cast<long long>(nextSleepMs), remainingMs);
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepThisRoundMs));
+            nextSleepMs = (std::min)(static_cast<DWORD>(nextSleepMs * 2), kWaitMaxSleepMs);
         }
     }
 

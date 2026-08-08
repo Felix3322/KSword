@@ -1805,7 +1805,16 @@ namespace
         return content;
     }
 
-    // queryBitLockerVolumeText：查询 Win32_EncryptableVolume 只读状态文本。
+    // queryBitLockerVolumeText 作用：
+    // - 用途：给出 Win32_EncryptableVolume 视角的 BitLocker 只读状态文本；
+    // - 入参：driveLetter 为目标盘符（例如 C:）；
+    // - 返回：可直接展示的状态文本。
+    // 说明：这里原本会 CoInitializeEx + CoCreateInstance(CLSID_WbemLocator) +
+    // ConnectServer(ROOT\CIMV2\Security\MicrosoftVolumeEncryption) + CoSetProxyBlanket，
+    // 但把 SELECT 语句拼出来之后从来没有 ExecQuery，最终仍旧只输出下面这一句降级文本；
+    // 也就是说整条 WMI 连接链（冷启动要拉起 provider host，几百毫秒到数秒）是白付的成本。
+    // 在真正实现 ExecQuery 之前直接返回同一句降级文本，不再连接 WMI；
+    // BitLocker 的真实可见状态由 Storage 页的“R0 审计补充 / BitLocker FVE”段落给出。
     QString queryBitLockerVolumeText(const QString& driveLetter)
     {
         if (driveLetter.trimmed().isEmpty())
@@ -1813,77 +1822,7 @@ namespace
             return QStringLiteral("BitLocker: <无盘符>");
         }
 
-        const HRESULT initResult = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        const bool needUninit = SUCCEEDED(initResult);
-        if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE)
-        {
-            return QStringLiteral("BitLocker WMI 初始化失败: 0x%1").arg(static_cast<unsigned long>(initResult), 0, 16).toUpper();
-        }
-
-        QString statusText = QStringLiteral("BitLocker: <未查询到>");
-        do
-        {
-            CComPtr<IWbemLocator> locator;
-            if (FAILED(::CoCreateInstance(
-                CLSID_WbemLocator,
-                nullptr,
-                CLSCTX_INPROC_SERVER,
-                IID_IWbemLocator,
-                reinterpret_cast<void**>(&locator))) || locator == nullptr)
-            {
-                statusText = QStringLiteral("BitLocker WMI: 无法创建 IWbemLocator");
-                break;
-            }
-
-            CComPtr<IWbemServices> services;
-            const HRESULT connectResult = locator->ConnectServer(
-                _bstr_t(L"ROOT\\CIMV2\\Security\\MicrosoftVolumeEncryption"),
-                nullptr,
-                nullptr,
-                nullptr,
-                0,
-                nullptr,
-                nullptr,
-                &services);
-            if (FAILED(connectResult) || services == nullptr)
-            {
-                statusText = QStringLiteral("BitLocker WMI: 连接命名空间失败 0x%1")
-                    .arg(static_cast<unsigned long>(connectResult), 0, 16)
-                    .toUpper();
-                break;
-            }
-
-            const HRESULT blanketResult = ::CoSetProxyBlanket(
-                services,
-                RPC_C_AUTHN_WINNT,
-                RPC_C_AUTHZ_NONE,
-                nullptr,
-                RPC_C_AUTHN_LEVEL_CALL,
-                RPC_C_IMP_LEVEL_IMPERSONATE,
-                nullptr,
-                EOAC_NONE);
-            if (FAILED(blanketResult))
-            {
-                statusText = QStringLiteral("BitLocker WMI: 安全上下文失败 0x%1")
-                    .arg(static_cast<unsigned long>(blanketResult), 0, 16)
-                    .toUpper();
-                break;
-            }
-
-            const QString queryText = QStringLiteral(
-                "SELECT * FROM Win32_EncryptableVolume WHERE DriveLetter='%1'")
-                .arg(driveLetter.left(2));
-            if (!queryText.isEmpty())
-            {
-                statusText = QStringLiteral("BitLocker WMI: 查询语句已准备，当前版本保留降级文本展示。");
-            }
-        } while (false);
-
-        if (needUninit)
-        {
-            ::CoUninitialize();
-        }
-        return statusText;
+        return QStringLiteral("BitLocker WMI: 查询语句已准备，当前版本保留降级文本展示。");
     }
 
     bool isCriticalProcessName(const QString& processName)
@@ -7461,10 +7400,87 @@ namespace
             // 存储/BitLocker 审计输出同样是“分组 + 名称: 值”：
             // - 用属性树展示，卷栈、挂载点、BitLocker 状态各占一行，可单独复制；
             // - 页面仍只读，不提供卸载、解锁、绕过等动作。
+            // 首屏只放占位报告：卷 IOCTL 与 4 个 R0 审计都在后台采集，切页不再等待。
 
-            const FileVolumeAuditSnapshot snapshot = queryFileVolumeAuditSnapshot(m_filePath);
+            QString placeholderText;
+            placeholderText += QStringLiteral("目标路径: %1\n").arg(QDir::toNativeSeparators(m_filePath));
+            placeholderText += QStringLiteral("正在加载...\n");
+            QWidget* placeholderReportView = buildSwitchableReportView(page, placeholderText);
+            layout->addWidget(placeholderReportView, 1);
+            startStorageAuditLoad(page, placeholderReportView);
+            return page;
+        }
+
+        void startStorageAuditLoad(QWidget* storagePage, QWidget* placeholderReportView)
+        {
+            // 用途：把 Storage / MountMgr / FVE 页的采集整体挪到后台线程。
+            // 输入：storagePage 为该页根控件；placeholderReportView 为首屏占位报告视图。
+            // 返回：无；采集完成后在 UI 线程用真实报告视图替换占位视图。
+            // 原因：卷 IOCTL（IOCTL_STORAGE_QUERY_PROPERTY 可能唤旋休眠盘）与 4 个
+            // ArkDriverClient 审计 IOCTL（每次都要 CreateFileW 打开设备再同步下发）
+            // 串起来单次切页要 0.3-3 秒，留在 QTabWidget::currentChanged 里就是整窗卡死。
+            if (storagePage == nullptr)
+            {
+                return;
+            }
+
+            const QString filePathSnapshot = m_filePath;
+            QPointer<FileDetailDialog> guardThis(this);
+            QPointer<QWidget> pageGuard(storagePage);
+            QPointer<QWidget> placeholderGuard(placeholderReportView);
+            auto* task = QRunnable::create(
+                [guardThis, pageGuard, placeholderGuard, filePathSnapshot]()
+                {
+                    // 后台只产出报告文本这一个值类型，不碰任何 QWidget。
+                    const QString reportText = buildStorageAuditReportText(filePathSnapshot);
+
+                    FileDetailDialog* const targetDialog = guardThis.data();
+                    if (targetDialog == nullptr)
+                    {
+                        return;
+                    }
+
+                    QMetaObject::invokeMethod(
+                        targetDialog,
+                        [guardThis, pageGuard, placeholderGuard, reportText]()
+                        {
+                            if (guardThis.isNull() || pageGuard.isNull())
+                            {
+                                return;
+                            }
+
+                            QWidget* const page = pageGuard.data();
+                            QVBoxLayout* const pageLayout = qobject_cast<QVBoxLayout*>(page->layout());
+                            if (pageLayout == nullptr)
+                            {
+                                return;
+                            }
+
+                            if (!placeholderGuard.isNull())
+                            {
+                                pageLayout->removeWidget(placeholderGuard.data());
+                                placeholderGuard->hide();
+                                placeholderGuard->deleteLater();
+                            }
+                            pageLayout->addWidget(buildSwitchableReportView(page, reportText), 1);
+                            // 采集回来后才建的视图同样要拿到 Surface 调色板，不能回退到系统 Base。
+                            guardThis->applyThemeStyle();
+                        },
+                        Qt::QueuedConnection);
+                });
+            task->setAutoDelete(true);
+            QThreadPool::globalInstance()->start(task);
+        }
+
+        static QString buildStorageAuditReportText(const QString& filePathText)
+        {
+            // 用途：生成 Storage / MountMgr / FVE 页的完整只读报告文本。
+            // 输入：filePathText 为目标文件路径。
+            // 返回：可直接交给 buildSwitchableReportView 的报告原文。
+            // 约束：本函数只做数据采集与字符串拼接，必须在后台线程调用。
+            const FileVolumeAuditSnapshot snapshot = queryFileVolumeAuditSnapshot(filePathText);
             QString content;
-            content += QStringLiteral("目标路径: %1\n").arg(QDir::toNativeSeparators(m_filePath));
+            content += QStringLiteral("目标路径: %1\n").arg(QDir::toNativeSeparators(filePathText));
             content += QStringLiteral("卷根: %1\n").arg(snapshot.volumeRoot.isEmpty() ? QStringLiteral("<unknown>") : snapshot.volumeRoot);
             content += QStringLiteral("卷栈: %1\n").arg(snapshot.volumeStackText.isEmpty() ? QStringLiteral("<unknown>") : snapshot.volumeStackText);
             content += QStringLiteral("挂载点: %1\n").arg(snapshot.mountPointsText.isEmpty() ? QStringLiteral("<unknown>") : snapshot.mountPointsText);
@@ -7525,8 +7541,7 @@ namespace
                 bitlockerAudit.responseFlags,
                 false);
             content += formatBitlockerFveAuditRows(bitlockerAudit);
-            layout->addWidget(buildSwitchableReportView(page, content), 1);
-            return page;
+            return content;
         }
 
         QWidget* buildFilterTopologyTab()
@@ -7741,6 +7756,67 @@ namespace
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
         bool m_themeStyleApplying = false; // 避免 PaletteChange 触发样式重入。
     };
+
+    // kRecoveryVolumeProbeGenerationProperty 作用：
+    // - 用途：记录“这是第几次卷探测请求”，以动态属性挂在恢复页的卷下拉框上；
+    // - 入参：无（作为 QObject::property/setProperty 的键使用）；
+    // - 返回：无。之所以不放进 FileDock 成员，是为了在不改动 FileDock.h 的前提下
+    //   仍然具备“淘汰被新请求取代的旧结果”的能力。
+    constexpr const char* const kRecoveryVolumeProbeGenerationProperty =
+        "ks_recovery_volume_probe_generation";
+
+    // kFileDeleteInProgressProperty 作用：
+    // - 用途：标记“删除任务正在后台执行”，以动态属性挂在 FileDock 上；
+    // - 入参：无（作为 QObject::property/setProperty 的键使用）；
+    // - 返回：无。语义与 m_transferInProgress 一致，同样只用于防重入。
+    constexpr const char* const kFileDeleteInProgressProperty = "ks_file_delete_in_progress";
+
+    // collectNtfsVolumeRootList 作用：
+    // - 用途：枚举当前可用于误删扫描的 NTFS 卷根，必须在后台线程调用；
+    // - 入参：无；内部自行枚举逻辑盘；
+    // - 返回：NTFS 卷根路径列表（原生分隔符，例如 C:\）。
+    // 说明：GetVolumeInformationW 在空光驱上会等待介质就绪、在断线的映射网络盘上会等待
+    // SMB 会话超时，所以先用 GetDriveTypeW 把光驱、网络映射和无根设备挡掉；同时用
+    // SetThreadErrorMode 关闭本线程的“请插入磁盘”系统弹窗，避免后台探测把模态框弹到用户脸上。
+    QVector<QString> collectNtfsVolumeRootList()
+    {
+        QVector<QString> ntfsVolumeRootList;
+
+        DWORD previousThreadErrorMode = 0;
+        const bool threadErrorModeChanged =
+            ::SetThreadErrorMode(SEM_FAILCRITICALERRORS, &previousThreadErrorMode) != FALSE;
+
+        const QFileInfoList driveInfoList = QDir::drives();
+        for (const QFileInfo& driveInfo : driveInfoList)
+        {
+            const QString volumeRootPath = QDir::toNativeSeparators(driveInfo.absoluteFilePath());
+            const UINT driveTypeValue = ::GetDriveTypeW(volumeRootPath.toStdWString().c_str());
+            if (driveTypeValue == DRIVE_CDROM
+                || driveTypeValue == DRIVE_REMOTE
+                || driveTypeValue == DRIVE_NO_ROOT_DIR
+                || driveTypeValue == DRIVE_UNKNOWN)
+            {
+                // 这几类要么必然不是可做误删扫描的本地卷，要么正是把 GetVolumeInformationW
+                // 拖到数秒甚至数十秒的元凶，直接跳过，不做后续探测。
+                continue;
+            }
+
+            const ks::file::ManualFsType fileSystemType =
+                ks::file::ManualFileSystemParser::detectFileSystemType(volumeRootPath);
+            if (fileSystemType != ks::file::ManualFsType::Ntfs)
+            {
+                continue;
+            }
+
+            ntfsVolumeRootList.push_back(volumeRootPath);
+        }
+
+        if (threadErrorModeChanged)
+        {
+            ::SetThreadErrorMode(previousThreadErrorMode, nullptr);
+        }
+        return ntfsVolumeRootList;
+    }
 }
 
 struct FileDock::FileOplockAccessRecord
@@ -10267,8 +10343,45 @@ void FileDock::initializeRecoveryPage()
     m_recoveryTable->verticalHeader()->setVisible(false);
     m_recoveryTable->horizontalHeader()->setStretchLastSection(true);
     m_recoveryTable->setAlternatingRowColors(true);
-    installFileTableCopyMenu(m_recoveryTable);
-    recoveryLayout->addWidget(m_recoveryTable, 1);
+    installRecoveryTableMenu();
+
+    // 结果区用堆叠容器：没有结果时显示居中的引导页，
+    // 否则工具条右端那个“扫描误删”按钮在整片空白表格旁边很难被注意到。
+    m_recoveryViewStack = new QStackedWidget(m_fileRecoveryPage);
+
+    m_recoveryEmptyPage = new QWidget(m_recoveryViewStack);
+    QVBoxLayout* emptyLayout = new QVBoxLayout(m_recoveryEmptyPage);
+    emptyLayout->setContentsMargins(24, 24, 24, 24);
+    emptyLayout->setSpacing(12);
+    emptyLayout->addStretch(1);
+
+    m_recoveryEmptyHintLabel = new QLabel(
+        QStringLiteral("选择 NTFS 卷后开始扫描，可在此列出仍可恢复的误删文件。"),
+        m_recoveryEmptyPage);
+    m_recoveryEmptyHintLabel->setAlignment(Qt::AlignCenter);
+    m_recoveryEmptyHintLabel->setWordWrap(true);
+    emptyLayout->addWidget(m_recoveryEmptyHintLabel, 0);
+
+    m_recoveryEmptyScanButton = new QPushButton(
+        QIcon(":/Icon/log_track.svg"),
+        QStringLiteral("开始扫描误删文件"),
+        m_recoveryEmptyPage);
+    m_recoveryEmptyScanButton->setStyleSheet(buildBlueButtonStyle());
+    m_recoveryEmptyScanButton->setMinimumHeight(38);
+    m_recoveryEmptyScanButton->setMinimumWidth(200);
+    m_recoveryEmptyScanButton->setToolTip(QStringLiteral("解析 NTFS MFT，扫描删除项"));
+
+    QHBoxLayout* emptyButtonLayout = new QHBoxLayout();
+    emptyButtonLayout->addStretch(1);
+    emptyButtonLayout->addWidget(m_recoveryEmptyScanButton, 0);
+    emptyButtonLayout->addStretch(1);
+    emptyLayout->addLayout(emptyButtonLayout, 0);
+    emptyLayout->addStretch(1);
+
+    m_recoveryViewStack->addWidget(m_recoveryEmptyPage);
+    m_recoveryViewStack->addWidget(m_recoveryTable);
+    m_recoveryViewStack->setCurrentWidget(m_recoveryEmptyPage);
+    recoveryLayout->addWidget(m_recoveryViewStack, 1);
 
     m_recoveryStatusLabel = new QLabel(QStringLiteral("请选择NTFS卷并开始扫描。"), m_fileRecoveryPage);
     recoveryLayout->addWidget(m_recoveryStatusLabel, 0);
@@ -10279,11 +10392,208 @@ void FileDock::initializeRecoveryPage()
     connect(m_recoveryScanButton, &QPushButton::clicked, this, [this]() {
         scanDeletedFilesForRecovery();
     });
+    connect(m_recoveryEmptyScanButton, &QPushButton::clicked, this, [this]() {
+        scanDeletedFilesForRecovery();
+    });
     connect(m_recoveryExportButton, &QPushButton::clicked, this, [this]() {
         recoverSelectedDeletedFiles();
     });
 
     refreshRecoveryVolumeList();
+}
+
+void FileDock::updateRecoveryViewState(const bool hasResults, const QString& emptyHintText)
+{
+    if (m_recoveryViewStack == nullptr)
+    {
+        return;
+    }
+    if (m_recoveryEmptyHintLabel != nullptr && !emptyHintText.isEmpty())
+    {
+        m_recoveryEmptyHintLabel->setText(emptyHintText);
+    }
+    m_recoveryViewStack->setCurrentWidget(
+        hasResults
+        ? static_cast<QWidget*>(m_recoveryTable)
+        : static_cast<QWidget*>(m_recoveryEmptyPage));
+}
+
+void FileDock::installRecoveryTableMenu()
+{
+    // installRecoveryTableMenu：
+    // - 输入：删除项结果表格的右键点击；
+    // - 处理：在通用的“复制当前行”之外，补上“文件属性”和“恢复选中”，
+    //   让这两个主操作不必再去工具条右端找按钮；
+    // - 返回：无。属性只读展示，恢复走与工具条按钮完全相同的入口。
+    if (m_recoveryTable == nullptr)
+    {
+        return;
+    }
+
+    m_recoveryTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_recoveryTable, &QTableWidget::customContextMenuRequested, this,
+        [this](const QPoint& localPosition)
+    {
+        if (m_recoveryTable == nullptr)
+        {
+            return;
+        }
+        const QModelIndex clickedIndex = m_recoveryTable->indexAt(localPosition);
+        // 右键空白处不改变既有多选；点在行上才把当前行切过去。
+        if (clickedIndex.isValid() && !m_recoveryTable->selectionModel()->isSelected(clickedIndex))
+        {
+            m_recoveryTable->selectRow(clickedIndex.row());
+        }
+
+        const int currentRow = clickedIndex.isValid()
+            ? clickedIndex.row()
+            : m_recoveryTable->currentRow();
+        const bool hasRow = currentRow >= 0
+            && currentRow < static_cast<int>(m_deletedRecoveryItems.size());
+        const bool hasSelection =
+            !m_recoveryTable->selectionModel()->selectedRows().isEmpty();
+
+        QMenu menu(m_recoveryTable);
+        menu.setStyleSheet(buildContextMenuStyle());
+
+        QAction* propertyAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_details.svg")),
+            QStringLiteral("文件属性"));
+        propertyAction->setEnabled(hasRow);
+
+        QAction* recoverAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/log_export.svg")),
+            QStringLiteral("恢复选中"));
+        recoverAction->setEnabled(hasSelection && !m_recoveryRecoverInProgress);
+
+        menu.addSeparator();
+        QAction* copyRowAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
+            QStringLiteral("复制当前行"));
+        copyRowAction->setEnabled(currentRow >= 0);
+
+        QAction* selectedAction =
+            menu.exec(m_recoveryTable->viewport()->mapToGlobal(localPosition));
+        if (selectedAction == nullptr)
+        {
+            return;
+        }
+        if (selectedAction == propertyAction)
+        {
+            showDeletedFilePropertiesDialog(currentRow);
+            return;
+        }
+        if (selectedAction == recoverAction)
+        {
+            recoverSelectedDeletedFiles();
+            return;
+        }
+        if (selectedAction != copyRowAction)
+        {
+            return;
+        }
+
+        QClipboard* clipboardObject = QApplication::clipboard();
+        if (clipboardObject == nullptr
+            || currentRow < 0
+            || currentRow >= m_recoveryTable->rowCount())
+        {
+            return;
+        }
+        QStringList fields;
+        fields.reserve(m_recoveryTable->columnCount());
+        for (int columnIndex = 0; columnIndex < m_recoveryTable->columnCount(); ++columnIndex)
+        {
+            const QTableWidgetItem* item = m_recoveryTable->item(currentRow, columnIndex);
+            fields.push_back(item != nullptr ? item->text() : QString());
+        }
+        clipboardObject->setText(fields.join(QLatin1Char('\t')));
+    });
+}
+
+void FileDock::showDeletedFilePropertiesDialog(const int rowIndex)
+{
+    if (rowIndex < 0 || rowIndex >= static_cast<int>(m_deletedRecoveryItems.size()))
+    {
+        return;
+    }
+    const ks::file::NtfsDeletedFileEntry& itemValue =
+        m_deletedRecoveryItems[static_cast<std::size_t>(rowIndex)];
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("DeletedFilePropertyDialog"));
+    dialog.setStyleSheet(buildOpaqueStandaloneDialogStyle(dialog.objectName()));
+    dialog.setWindowTitle(QStringLiteral("删除项属性"));
+    dialog.resize(620, 460);
+
+    QVBoxLayout* rootLayout = new QVBoxLayout(&dialog);
+
+    // 属性用只读表格展示：字段多且需要整段复制，比 QFormLayout 更实用。
+    QTableWidget* propertyTable = new ks::ui::VisibleTableWidget(&dialog);
+    propertyTable->setColumnCount(2);
+    propertyTable->setHorizontalHeaderLabels(QStringList{
+        QStringLiteral("属性"),
+        QStringLiteral("值") });
+    propertyTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    propertyTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    propertyTable->verticalHeader()->setVisible(false);
+    propertyTable->horizontalHeader()->setStretchLastSection(true);
+    propertyTable->setAlternatingRowColors(true);
+    installFileTableCopyMenu(propertyTable);
+
+    const QString integrityText = (itemValue.estimatedIntegrityPercent >= 0)
+        ? QStringLiteral("%1%").arg(itemValue.estimatedIntegrityPercent)
+        : QStringLiteral("未知");
+    const QString modifiedText = itemValue.modifiedTime.isValid()
+        ? itemValue.modifiedTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+        : QStringLiteral("-");
+
+    const QVector<QPair<QString, QString>> propertyRows{
+        { QStringLiteral("文件名"), itemValue.fileName },
+        { QStringLiteral("原始文件名是否保留"),
+          itemValue.hasOriginalName
+          ? QStringLiteral("是")
+          : QStringLiteral("否（当前为系统生成的占位名）") },
+        { QStringLiteral("路径提示"), itemValue.pathHint },
+        { QStringLiteral("大小"),
+          QStringLiteral("%1 (%2 字节)")
+              .arg(formatSizeText(itemValue.sizeBytes))
+              .arg(static_cast<qulonglong>(itemValue.sizeBytes)) },
+        { QStringLiteral("修改时间"), modifiedText },
+        { QStringLiteral("MFT 记录号"),
+          QString::number(static_cast<qulonglong>(itemValue.fileReference)) },
+        { QStringLiteral("MFT 序列号"), QString::number(itemValue.sequenceNumber) },
+        { QStringLiteral("完整度"), integrityText },
+        { QStringLiteral("恢复能力"), deletedFileRecoveryCapabilityText(itemValue) },
+        { QStringLiteral("驻留数据已就绪"),
+          itemValue.residentDataReady ? QStringLiteral("是") : QStringLiteral("否") },
+        { QStringLiteral("是否可安全恢复"),
+          isDeletedFileSafelyRecoverable(itemValue)
+          ? QStringLiteral("是")
+          : QStringLiteral("否（恢复入口会拒绝此项）") },
+    };
+
+    propertyTable->setRowCount(propertyRows.size());
+    for (int row = 0; row < propertyRows.size(); ++row)
+    {
+        propertyTable->setItem(row, 0, new QTableWidgetItem(propertyRows[row].first));
+        propertyTable->setItem(row, 1, new QTableWidgetItem(propertyRows[row].second));
+    }
+    propertyTable->resizeColumnToContents(0);
+    rootLayout->addWidget(propertyTable, 1);
+
+    QLabel* noteLabel = new QLabel(
+        QStringLiteral("以上为扫描时刻的 MFT 快照；恢复前会按记录号和序列号重新校验，不依赖此处的旧数据。"),
+        &dialog);
+    noteLabel->setWordWrap(true);
+    rootLayout->addWidget(noteLabel, 0);
+
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    buttonBox->button(QDialogButtonBox::Close)->setText(QStringLiteral("关闭"));
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    rootLayout->addWidget(buttonBox, 0);
+
+    dialog.exec();
 }
 
 void FileDock::refreshRecoveryVolumeList()
@@ -10293,35 +10603,109 @@ void FileDock::refreshRecoveryVolumeList()
         return;
     }
 
+    // 卷探测（GetDriveTypeW + GetVolumeInformationW）会在空光驱、断线映射网络盘上
+    // 阻塞数秒到数十秒，而本函数在“文件”页首次构造时就会被调用，留在 UI 线程等于
+    // 让整窗在首次点开 Tab 时假死。这里只做“清空列表 + 置灰入口”，真实探测放后台。
+    const quint64 requestGeneration =
+        m_recoveryVolumeCombo->property(kRecoveryVolumeProbeGenerationProperty).toULongLong() + 1U;
+    m_recoveryVolumeCombo->setProperty(
+        kRecoveryVolumeProbeGenerationProperty, static_cast<qulonglong>(requestGeneration));
+
     m_recoveryVolumeCombo->clear();
-    const QFileInfoList driveList = QDir::drives();
-    for (const QFileInfo& driveInfo : driveList)
+    m_recoveryVolumeCombo->setEnabled(false);
+    if (m_recoveryRefreshButton != nullptr)
     {
-        const QString rootPath = QDir::toNativeSeparators(driveInfo.absoluteFilePath());
-        const ks::file::ManualFsType fsType = ks::file::ManualFileSystemParser::detectFileSystemType(rootPath);
-        if (fsType != ks::file::ManualFsType::Ntfs)
+        m_recoveryRefreshButton->setEnabled(false);
+    }
+    if (m_recoveryScanButton != nullptr)
+    {
+        m_recoveryScanButton->setEnabled(false);
+        if (m_recoveryEmptyScanButton != nullptr) { m_recoveryEmptyScanButton->setEnabled(false); }
+    }
+    if (m_recoveryStatusLabel != nullptr)
+    {
+        m_recoveryStatusLabel->setText(QStringLiteral("正在刷新..."));
+    }
+
+    const QPointer<FileDock> guardedSelf(this);
+    QThreadPool::globalInstance()->start(
+        [guardedSelf, requestGeneration]()
         {
-            continue;
-        }
+            // 后台只产出值类型（卷根字符串列表），不触碰任何 QWidget。
+            const QVector<QString> ntfsVolumeRootList = collectNtfsVolumeRootList();
 
-        const QString displayText = QStringLiteral("%1 (NTFS)").arg(rootPath);
-        m_recoveryVolumeCombo->addItem(displayText, rootPath);
-    }
+            FileDock* const targetDock = guardedSelf.data();
+            if (targetDock == nullptr)
+            {
+                return;
+            }
 
-    if (m_recoveryVolumeCombo->count() == 0)
-    {
-        m_recoveryStatusLabel->setText(QStringLiteral("未检测到可扫描的 NTFS 卷。"));
-    }
-    else
-    {
-        m_recoveryStatusLabel->setText(QStringLiteral("已刷新卷列表，可执行误删扫描。"));
-    }
+            QMetaObject::invokeMethod(
+                targetDock,
+                [guardedSelf, requestGeneration, ntfsVolumeRootList]()
+                {
+                    if (guardedSelf.isNull())
+                    {
+                        return;
+                    }
 
-    kLogEvent event;
-    info << event
-        << "[FileDock] 刷新文件恢复卷列表, count="
-        << m_recoveryVolumeCombo->count()
-        << eol;
+                    FileDock* const dock = guardedSelf.data();
+                    if (dock->m_recoveryVolumeCombo == nullptr)
+                    {
+                        return;
+                    }
+                    // generation：只接受最后一次刷新请求的结果，淘汰已被取代的旧探测。
+                    const quint64 currentGeneration = dock->m_recoveryVolumeCombo
+                        ->property(kRecoveryVolumeProbeGenerationProperty)
+                        .toULongLong();
+                    if (currentGeneration != requestGeneration)
+                    {
+                        return;
+                    }
+
+                    dock->m_recoveryVolumeCombo->clear();
+                    for (const QString& volumeRootPath : ntfsVolumeRootList)
+                    {
+                        const QString displayText = QStringLiteral("%1 (NTFS)").arg(volumeRootPath);
+                        dock->m_recoveryVolumeCombo->addItem(displayText, volumeRootPath);
+                    }
+                    dock->m_recoveryVolumeCombo->setEnabled(true);
+
+                    if (dock->m_recoveryRefreshButton != nullptr)
+                    {
+                        dock->m_recoveryRefreshButton->setEnabled(true);
+                    }
+                    // 扫描按钮的禁用权归误删扫描/恢复任务：探测结束不能把它们置灰的状态改回去。
+                    if (dock->m_recoveryScanButton != nullptr
+                        && !dock->m_recoveryScanInProgress
+                        && !dock->m_recoveryRecoverInProgress)
+                    {
+                        dock->m_recoveryScanButton->setEnabled(true);
+                        if (dock->m_recoveryEmptyScanButton != nullptr) { dock->m_recoveryEmptyScanButton->setEnabled(true); }
+                    }
+
+                    if (dock->m_recoveryStatusLabel != nullptr)
+                    {
+                        if (dock->m_recoveryVolumeCombo->count() == 0)
+                        {
+                            dock->m_recoveryStatusLabel->setText(
+                                QStringLiteral("未检测到可扫描的 NTFS 卷。"));
+                        }
+                        else
+                        {
+                            dock->m_recoveryStatusLabel->setText(
+                                QStringLiteral("已刷新卷列表，可执行误删扫描。"));
+                        }
+                    }
+
+                    kLogEvent event;
+                    info << event
+                        << "[FileDock] 刷新文件恢复卷列表, count="
+                        << dock->m_recoveryVolumeCombo->count()
+                        << eol;
+                },
+                Qt::QueuedConnection);
+        });
 }
 
 void FileDock::scanDeletedFilesForRecovery()
@@ -10352,6 +10736,7 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
     if (m_recoveryScanButton != nullptr)
     {
         m_recoveryScanButton->setEnabled(false);
+        if (m_recoveryEmptyScanButton != nullptr) { m_recoveryEmptyScanButton->setEnabled(false); }
     }
     if (m_recoveryExportButton != nullptr)
     {
@@ -10429,6 +10814,7 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
                     if (safeThis->m_recoveryScanButton != nullptr)
                     {
                         safeThis->m_recoveryScanButton->setEnabled(true);
+                        if (safeThis->m_recoveryEmptyScanButton != nullptr) { safeThis->m_recoveryEmptyScanButton->setEnabled(true); }
                     }
                     if (safeThis->m_recoveryExportButton != nullptr)
                     {
@@ -10446,6 +10832,9 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
                             << ", error="
                             << errorText.toStdString()
                             << eol;
+                        safeThis->updateRecoveryViewState(
+                            false,
+                            QStringLiteral("扫描未能完成，可更换卷或确认程序以管理员权限运行后重试。"));
                         QMessageBox::warning(safeThis.data(), QStringLiteral("扫描失败"), errorText);
                         kPro.set(progressPid, "扫描失败", 0, 100.0f);
                         return;
@@ -10541,6 +10930,10 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
                         .arg(residentReadyCount)
                         .arg(nonResidentReadyCount)
                         .arg(highIntegrityCount));
+
+                    safeThis->updateRecoveryViewState(
+                        !safeThis->m_deletedRecoveryItems.empty(),
+                        QStringLiteral("本次扫描未发现仍可恢复的删除项，可更换卷后重新扫描。"));
 
                     kLogEvent event;
                     info << event
@@ -10658,6 +11051,7 @@ void FileDock::recoverSelectedDeletedFilesAsync()
     if (m_recoveryScanButton != nullptr)
     {
         m_recoveryScanButton->setEnabled(false);
+        if (m_recoveryEmptyScanButton != nullptr) { m_recoveryEmptyScanButton->setEnabled(false); }
     }
     if (m_recoveryExportButton != nullptr)
     {
@@ -10752,6 +11146,7 @@ void FileDock::recoverSelectedDeletedFilesAsync()
                 if (safeThis->m_recoveryScanButton != nullptr)
                 {
                     safeThis->m_recoveryScanButton->setEnabled(true);
+                    if (safeThis->m_recoveryEmptyScanButton != nullptr) { safeThis->m_recoveryEmptyScanButton->setEnabled(true); }
                 }
                 if (safeThis->m_recoveryExportButton != nullptr)
                 {
@@ -12111,6 +12506,13 @@ void FileDock::renameSelectedItem(FilePanelWidgets& panel)
 
 void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
 {
+    // 防重入：删除和跨面板传输一样是整批文件系统写操作，收尾还要刷新面板，
+    // 期间不能再接受第二次删除请求（否则两批任务会互相刷掉对方的结果）。
+    if (property(kFileDeleteInProgressProperty).toBool())
+    {
+        return;
+    }
+
     const std::vector<QString> paths = selectedPaths(panel);
     if (paths.empty())
     {
@@ -12149,98 +12551,160 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
 
     const int progressPid = kPro.add(this, "文件", "删除");
     kPro.set(progressPid, "删除开始", 0, 5.0f);
+    setProperty(kFileDeleteInProgressProperty, true);
 
-    QStringList errors;
-    // permanentlyDeleted：记录实际被永久删除（未能进回收站）的项，
-    // 用于结束后如实告知用户，而不是让两种结果看起来一样。
-    QStringList permanentlyDeleted;
-    for (std::size_t i = 0; i < paths.size(); ++i)
-    {
-        const QString path = paths[i];
-        bool removeOk = false;
+    // 删除整体搬到后台线程：moveToTrash 走 Shell IFileOperation（每项固定几十毫秒），
+    // 目录兜底还要 QDir::removeRecursively 走完整棵树，多选或删大目录时同步执行会把
+    // 事件循环占死数秒到数分钟，连 kPro 进度条都刷不出来。写法与同文件的
+    // transferSelectedItemsToOppositePanel 保持一致。
+    const bool sourceWasLeftPanel = &panel == &m_leftPanel;
+    const QString panelNameText = panel.panelNameText;
+    const QPointer<FileDock> guardedSelf(this);
+    const QPointer<QApplication> applicationGuard(qApp);
 
-        // 优先回收站删除，失败再使用硬删除兜底。
-        removeOk = QFile::moveToTrash(path);
-        if (!removeOk)
+    QThreadPool::globalInstance()->start(
+        [guardedSelf, applicationGuard, paths, panelNameText, sourceWasLeftPanel, progressPid]()
         {
-            QFileInfo info(path);
-            if (info.isDir())
+            // QFile::moveToTrash 内部要用 Shell 的 IFileOperation，必须在本线程自备
+            // COM 套间；RPC_E_CHANGED_MODE 表示已有套间，此时不能再配对 CoUninitialize。
+            const HRESULT comInitResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            const bool comUninitializeNeeded = SUCCEEDED(comInitResult);
+
+            QStringList errors;
+            // permanentlyDeleted：记录实际被永久删除（未能进回收站）的项，
+            // 用于结束后如实告知用户，而不是让两种结果看起来一样。
+            QStringList permanentlyDeleted;
+            const std::size_t totalCount = paths.size();
+            for (std::size_t itemIndex = 0; itemIndex < totalCount; ++itemIndex)
             {
-                if (isPathReparsePoint(path))
+                const QString path = paths[itemIndex];
+                bool removeOk = false;
+
+                // 优先回收站删除，失败再使用硬删除兜底。
+                removeOk = QFile::moveToTrash(path);
+                if (!removeOk)
                 {
-                    removeOk = (::RemoveDirectoryW(QDir::toNativeSeparators(path).toStdWString().c_str()) != FALSE);
+                    QFileInfo pathInfo(path);
+                    if (pathInfo.isDir())
+                    {
+                        if (isPathReparsePoint(path))
+                        {
+                            removeOk = (::RemoveDirectoryW(QDir::toNativeSeparators(path).toStdWString().c_str()) != FALSE);
+                        }
+                        else
+                        {
+                            removeOk = QDir(path).removeRecursively();
+                        }
+                    }
+                    else
+                    {
+                        removeOk = QFile::remove(path);
+                    }
+
+                    if (removeOk)
+                    {
+                        permanentlyDeleted << path;
+                    }
                 }
-                else
+
+                if (!removeOk)
                 {
-                    removeOk = QDir(path).removeRecursively();
+                    errors << QStringLiteral("删除失败：%1").arg(path);
+                }
+
+                if (!applicationGuard.isNull())
+                {
+                    const float progress = 5.0f +
+                        (static_cast<float>(itemIndex + 1) / static_cast<float>(totalCount)) * 90.0f;
+                    QMetaObject::invokeMethod(
+                        applicationGuard.data(),
+                        [progressPid, progress]()
+                        {
+                            kPro.set(progressPid, "删除处理中", 0, progress);
+                        },
+                        Qt::QueuedConnection);
                 }
             }
-            else
+
+            if (comUninitializeNeeded)
             {
-                removeOk = QFile::remove(path);
+                ::CoUninitialize();
             }
 
-            if (removeOk)
+            if (applicationGuard.isNull())
             {
-                permanentlyDeleted << path;
+                return;
             }
-        }
 
-        if (!removeOk)
-        {
-            errors << QStringLiteral("删除失败：%1").arg(path);
-        }
+            QMetaObject::invokeMethod(
+                applicationGuard.data(),
+                [guardedSelf,
+                    errors = std::move(errors),
+                    permanentlyDeleted = std::move(permanentlyDeleted),
+                    panelNameText,
+                    sourceWasLeftPanel,
+                    progressPid,
+                    totalCount]()
+                {
+                    kPro.set(progressPid, "删除完成", 0, 100.0f);
+                    if (guardedSelf.isNull())
+                    {
+                        return;
+                    }
 
-        const float progress = 5.0f + (static_cast<float>(i + 1) / static_cast<float>(paths.size())) * 90.0f;
-        kPro.set(progressPid, "删除处理中", 0, progress);
-    }
+                    FileDock* const dock = guardedSelf.data();
+                    dock->setProperty(kFileDeleteInProgressProperty, false);
+                    FilePanelWidgets& completedPanel = sourceWasLeftPanel
+                        ? dock->m_leftPanel
+                        : dock->m_rightPanel;
+                    dock->refreshPanel(completedPanel);
 
-    refreshPanel(panel);
-    kPro.set(progressPid, "删除完成", 0, 100.0f);
+                    // 有项目未能进回收站时必须显式告知：这些项已不可还原，
+                    // 用户需要据此判断还能不能靠回收站补救。
+                    if (!permanentlyDeleted.isEmpty())
+                    {
+                        kLogEvent permanentEvent;
+                        warn << permanentEvent
+                            << "[FileDock] 部分项目无法移入回收站，已永久删除, panel="
+                            << panelNameText.toStdString()
+                            << ", count="
+                            << permanentlyDeleted.size()
+                            << ", preview=\n"
+                            << buildLogPreviewText(permanentlyDeleted).toStdString()
+                            << eol;
+                        QMessageBox::warning(
+                            dock,
+                            QStringLiteral("部分项目已永久删除"),
+                            QStringLiteral(
+                                "有 %1 项无法移入回收站，已被永久删除，无法从回收站还原：\n\n%2")
+                                .arg(permanentlyDeleted.size())
+                                .arg(buildLogPreviewText(permanentlyDeleted)));
+                    }
 
-    // 有项目未能进回收站时必须显式告知：这些项已不可还原，
-    // 用户需要据此判断还能不能靠回收站补救。
-    if (!permanentlyDeleted.isEmpty())
-    {
-        kLogEvent permanentEvent;
-        warn << permanentEvent
-            << "[FileDock] 部分项目无法移入回收站，已永久删除, panel="
-            << panel.panelNameText.toStdString()
-            << ", count="
-            << permanentlyDeleted.size()
-            << ", preview=\n"
-            << buildLogPreviewText(permanentlyDeleted).toStdString()
-            << eol;
-        QMessageBox::warning(
-            this,
-            QStringLiteral("部分项目已永久删除"),
-            QStringLiteral(
-                "有 %1 项无法移入回收站，已被永久删除，无法从回收站还原：\n\n%2")
-                .arg(permanentlyDeleted.size())
-                .arg(buildLogPreviewText(permanentlyDeleted)));
-    }
+                    if (!errors.isEmpty())
+                    {
+                        kLogEvent event;
+                        warn << event
+                            << "[FileDock] 删除部分失败, panel="
+                            << panelNameText.toStdString()
+                            << ", errorCount="
+                            << errors.size()
+                            << ", errorPreview=\n"
+                            << buildLogPreviewText(errors).toStdString()
+                            << eol;
+                        return;
+                    }
 
-    if (!errors.isEmpty())
-    {
-        kLogEvent event;
-        warn << event
-            << "[FileDock] 删除部分失败, panel="
-            << panel.panelNameText.toStdString()
-            << ", errorCount="
-            << errors.size()
-            << ", errorPreview=\n"
-            << buildLogPreviewText(errors).toStdString()
-            << eol;
-        return;
-    }
-
-    kLogEvent event;
-    info << event
-        << "[FileDock] 删除完成, panel="
-        << panel.panelNameText.toStdString()
-        << ", count="
-        << paths.size()
-        << eol;
+                    kLogEvent event;
+                    info << event
+                        << "[FileDock] 删除完成, panel="
+                        << panelNameText.toStdString()
+                        << ", count="
+                        << totalCount
+                        << eol;
+                },
+                Qt::QueuedConnection);
+        });
 }
 
 void FileDock::deleteSelectedItemByDriver(FilePanelWidgets& panel)

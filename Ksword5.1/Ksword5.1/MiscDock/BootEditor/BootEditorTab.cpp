@@ -26,11 +26,13 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QShowEvent>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextCursor>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -135,9 +137,33 @@ namespace
 BootEditorTab::BootEditorTab(QWidget* parent)
     : QWidget(parent)
 {
+    // 构造期只搭 UI：
+    // - 首轮 BCD 枚举挪到 showEvent，避免“杂项”页一被创建就去拉起 bcdedit；
+    // - 状态栏保持 initializeUi 写入的“尚未加载”，语义与真实状态一致。
     initializeUi();
     initializeConnections();
-    refreshBcdEntries();
+}
+
+// showEvent：
+// - 作用：页面首次真正可见时排队一次 BCD 枚举，之后的显示/隐藏不再重复触发。
+// - 入参 event：Qt 显示事件，透传给基类。
+// - 返回：无。
+void BootEditorTab::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+
+    if (m_firstShowHandled)
+    {
+        return;
+    }
+
+    m_firstShowHandled = true;
+
+    // 延后到下一轮事件循环：保证页面先完成首帧绘制，再排队后台枚举。
+    QTimer::singleShot(0, this, [this]()
+        {
+            refreshBcdEntries();
+        });
 }
 
 void BootEditorTab::initializeUi()

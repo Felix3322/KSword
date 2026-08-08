@@ -2,7 +2,20 @@
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/TableInteractionSupport.h"
 
+#include <QCoreApplication>
+#include <QImage>
+#include <QPixmap>
+#include <QRunnable>
+#include <QSet>
+#include <QVector>
+
+#include <functional>
 #include <memory>
+#include <utility>
+
+#include <Shellapi.h>
+
+#pragma comment(lib, "Shell32.lib")
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::memory_dock_internal;
@@ -54,6 +67,500 @@ namespace
             QApplication::clipboard()->setText(rowText);
         }
     }
+
+    // ============================================================
+    // 异步刷新状态寄存
+    // 说明：本轮改造不扩充 MemoryDock.h 的成员，刷新代次/在途标记全部寄存在
+    // MemoryDock 对象自身的动态属性上。动态属性只在 UI 线程读写，且随控件析构
+    // 一起释放，不会像“按实例地址索引的文件级静态表”那样泄漏或串号。
+    // ============================================================
+
+    // 进程列表刷新代次：每提交一次后台枚举自增一次，回投结果按它淘汰过期快照。
+    constexpr const char* kProcessRefreshGenerationProperty = "kswordMemoryProcessRefreshGeneration";
+    // 进程列表刷新是否在途：在途期间新请求只合并成待办，不叠加第二次 Toolhelp 快照。
+    constexpr const char* kProcessRefreshInFlightProperty = "kswordMemoryProcessRefreshInFlight";
+    // 进程列表是否存在待补刷新，以及该待补请求是否要求保留当前选择。
+    constexpr const char* kProcessRefreshPendingProperty = "kswordMemoryProcessRefreshPending";
+    constexpr const char* kProcessRefreshPendingKeepSelectionProperty =
+        "kswordMemoryProcessRefreshPendingKeepSelection";
+    // 跨页跳转登记的待定位 PID：进程表由异步结果重建，定位只能等回填后再做。
+    constexpr const char* kProcessFocusPendingPidProperty = "kswordMemoryProcessFocusPendingPid";
+    // 区域枚举是否在途，以及是否存在待补的区域刷新请求。
+    constexpr const char* kRegionRefreshInFlightProperty = "kswordMemoryRegionRefreshInFlight";
+    constexpr const char* kRegionRefreshPendingProperty = "kswordMemoryRegionRefreshPending";
+    // 本次区域刷新是否由附加流程发起：附加按钮必须立即还控制权，禁止同步遍历地址空间。
+    constexpr const char* kRegionRefreshFromAttachProperty = "kswordMemoryRegionRefreshFromAttach";
+
+    // 图标路径角色：进程表第 0 列与模块树路径列都用它记录图标来源路径，
+    // 后台提取完成后按路径反查需要刷新的行。UserRole/UserRole+1 已被其它数据占用。
+    constexpr int kIconPathItemRole = Qt::UserRole + 2;
+
+    // readBoolProperty 作用：
+    // - 输入：属性宿主对象与属性名；
+    // - 处理：读取布尔动态属性，属性未设置时按 false 处理；
+    // - 返回：属性当前布尔值。
+    bool readBoolProperty(const QObject* const propertyOwner, const char* const propertyName)
+    {
+        return propertyOwner != nullptr && propertyOwner->property(propertyName).toBool();
+    }
+
+    // bumpGenerationProperty 作用：
+    // - 输入：属性宿主对象与代次属性名；
+    // - 处理：把代次自增一次并写回，只允许 UI 线程调用；
+    // - 返回：本次请求应携带的新代次。
+    quint64 bumpGenerationProperty(QObject* const propertyOwner, const char* const propertyName)
+    {
+        const quint64 nextGeneration = propertyOwner->property(propertyName).toULongLong() + 1ULL;
+        propertyOwner->setProperty(propertyName, QVariant::fromValue(nextGeneration));
+        return nextGeneration;
+    }
+
+    // ============================================================
+    // 图标异步解析
+    // 说明：QIcon/QPixmap/QFileIconProvider 只能在 UI 线程使用，工作线程一律
+    // 只产出可跨线程搬运的 QImage，落地成 QIcon 与写回表格都回到 UI 线程执行。
+    // ============================================================
+
+    // pathIconCache 作用：
+    // - 输入：无；
+    // - 处理：提供按绝对路径索引的图标缓存，只允许 UI 线程访问；
+    // - 返回：进程与模块共用的缓存引用。
+    QHash<QString, QIcon>& pathIconCache()
+    {
+        static QHash<QString, QIcon> iconCacheByPath;
+        return iconCacheByPath;
+    }
+
+    // IconApplyCallback：图标落地后在 UI 线程执行的回写动作（入参为路径与已构造图标）。
+    using IconApplyCallback = std::function<void(const QString&, const QIcon&)>;
+
+    // pathIconWaiterTable 作用：
+    // - 输入：无；
+    // - 处理：记录每个在途路径的回写等待者，同路径的重复请求只追加等待者，
+    //   不重复向 Shell 发起查询（多个 MemoryDock 实例共存时同样成立）；
+    // - 返回：等待表引用，只允许 UI 线程访问。
+    QHash<QString, QVector<IconApplyCallback>>& pathIconWaiterTable()
+    {
+        static QHash<QString, QVector<IconApplyCallback>> waiterTableByPath;
+        return waiterTableByPath;
+    }
+
+    // fallbackPathIcon 作用：
+    // - 输入：无；
+    // - 处理：提供图标尚未解析或解析失败时使用的占位图标；
+    // - 返回：共享占位图标引用。
+    const QIcon& fallbackPathIcon()
+    {
+        static const QIcon placeholderIcon(QStringLiteral(":/Icon/process_main.svg"));
+        return placeholderIcon;
+    }
+
+    // extractShellIconImageFromPath 作用：
+    // - 输入：可执行文件或模块的绝对路径；
+    // - 处理：在工作线程向 Windows Shell 查询小图标并复制成独立位图；
+    // - 返回：解析成功返回 QImage，失败返回空 QImage。
+    QImage extractShellIconImageFromPath(const QString& absolutePath)
+    {
+        // shellFileInfo 持有 Shell 分配的 HICON，转换成 QImage 后必须显式销毁。
+        SHFILEINFOW shellFileInfo{};
+        const DWORD_PTR shellQueryResult = ::SHGetFileInfoW(
+            reinterpret_cast<const wchar_t*>(absolutePath.utf16()),
+            0,
+            &shellFileInfo,
+            sizeof(shellFileInfo),
+            SHGFI_ICON | SHGFI_SMALLICON);
+        if (shellQueryResult == 0 || shellFileInfo.hIcon == nullptr)
+        {
+            return QImage();
+        }
+
+        QImage iconImage = QImage::fromHICON(shellFileInfo.hIcon);
+        ::DestroyIcon(shellFileInfo.hIcon);
+        return iconImage;
+    }
+
+    // lookupCachedPathIcon 作用：
+    // - 输入：绝对路径；
+    // - 处理：只查缓存，绝不触发任何磁盘或 Shell 查询，保证建表阶段零阻塞；
+    // - 返回：命中返回缓存图标，未命中返回占位图标。
+    QIcon lookupCachedPathIcon(const QString& absolutePath)
+    {
+        const QString normalizedPath = absolutePath.trimmed();
+        if (normalizedPath.isEmpty())
+        {
+            return fallbackPathIcon();
+        }
+
+        const auto cachedIt = pathIconCache().constFind(normalizedPath);
+        if (cachedIt != pathIconCache().constEnd())
+        {
+            return cachedIt.value();
+        }
+        return fallbackPathIcon();
+    }
+
+    // queuePathIconExtraction 作用：
+    // - 输入：绝对路径与图标落地后的 UI 线程回写动作；
+    // - 处理：缓存未命中时提交线程池任务做 Shell 查询，同路径并发请求合并成一个任务；
+    // - 返回：无，回写动作只会在 UI 线程被调用一次。
+    void queuePathIconExtraction(const QString& absolutePath, IconApplyCallback applyIconOnUiThread)
+    {
+        const QString normalizedPath = absolutePath.trimmed();
+        if (normalizedPath.isEmpty() || pathIconCache().contains(normalizedPath))
+        {
+            return;
+        }
+
+        auto waiterIt = pathIconWaiterTable().find(normalizedPath);
+        if (waiterIt != pathIconWaiterTable().end())
+        {
+            waiterIt.value().push_back(std::move(applyIconOnUiThread));
+            return;
+        }
+        pathIconWaiterTable().insert(
+            normalizedPath,
+            QVector<IconApplyCallback>{ std::move(applyIconOnUiThread) });
+
+        QRunnable* const extractionTask = QRunnable::create([normalizedPath]() {
+            QImage iconImage = extractShellIconImageFromPath(normalizedPath);
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr)
+            {
+                return;
+            }
+
+            QMetaObject::invokeMethod(
+                appInstance,
+                [normalizedPath, iconImage = std::move(iconImage)]() mutable {
+                    // QPixmap/QIcon 构造推迟到这里，确保只发生在 UI 线程。
+                    QIcon resolvedIcon = fallbackPathIcon();
+                    if (!iconImage.isNull())
+                    {
+                        const QPixmap iconPixmap = QPixmap::fromImage(iconImage);
+                        if (!iconPixmap.isNull())
+                        {
+                            resolvedIcon = QIcon(iconPixmap);
+                        }
+                    }
+                    pathIconCache().insert(normalizedPath, resolvedIcon);
+
+                    const QVector<IconApplyCallback> waiterList =
+                        pathIconWaiterTable().take(normalizedPath);
+                    for (const IconApplyCallback& waiterCallback : waiterList)
+                    {
+                        waiterCallback(normalizedPath, resolvedIcon);
+                    }
+                },
+                Qt::QueuedConnection);
+            });
+        extractionTask->setAutoDelete(true);
+        QThreadPool::globalInstance()->start(extractionTask);
+    }
+
+    // applyIconToProcessTableRows 作用：
+    // - 输入：进程表、图标对应的映像路径与已构造好的图标；
+    // - 处理：进程表允许排序，行号与缓存下标不再等价，只能按路径逐行反查回写；
+    // - 返回：无。
+    void applyIconToProcessTableRows(
+        QTableWidget* const processTable,
+        const QString& imagePath,
+        const QIcon& resolvedIcon)
+    {
+        if (processTable == nullptr)
+        {
+            return;
+        }
+
+        for (int rowIndex = 0; rowIndex < processTable->rowCount(); ++rowIndex)
+        {
+            QTableWidgetItem* const processNameItem = processTable->item(rowIndex, 0);
+            if (processNameItem != nullptr &&
+                processNameItem->data(kIconPathItemRole).toString() == imagePath)
+            {
+                processNameItem->setIcon(resolvedIcon);
+            }
+        }
+    }
+
+    // applyIconToModuleTreeRows 作用：
+    // - 输入：模块树、路径列下标、图标对应的模块路径与已构造好的图标；
+    // - 处理：按路径反查所有匹配节点并回写图标，不重建整棵树；
+    // - 返回：无。
+    void applyIconToModuleTreeRows(
+        QTreeWidget* const moduleTree,
+        const int pathColumnIndex,
+        const QString& modulePath,
+        const QIcon& resolvedIcon)
+    {
+        if (moduleTree == nullptr)
+        {
+            return;
+        }
+
+        for (int itemIndex = 0; itemIndex < moduleTree->topLevelItemCount(); ++itemIndex)
+        {
+            QTreeWidgetItem* const rowItem = moduleTree->topLevelItem(itemIndex);
+            if (rowItem != nullptr &&
+                rowItem->data(pathColumnIndex, kIconPathItemRole).toString() == modulePath)
+            {
+                rowItem->setIcon(pathColumnIndex, resolvedIcon);
+            }
+        }
+    }
+
+    // selectProcessRowByPid 作用：
+    // - 输入：进程表、进程下拉框与目标 PID；
+    // - 处理：定位目标行并滚动到可视区域，同时把下拉框切到同一目标（值未变化时不重设，
+    //   避免多触发一次 currentIndexChanged 引起的模块重复枚举）；
+    // - 返回：进程表命中并选中时返回 true。
+    bool selectProcessRowByPid(
+        QTableWidget* const processTable,
+        QComboBox* const processCombo,
+        const std::uint32_t pid)
+    {
+        bool rowSelected = false;
+        if (processTable != nullptr)
+        {
+            for (int rowIndex = 0; rowIndex < processTable->rowCount(); ++rowIndex)
+            {
+                QTableWidgetItem* const pidItem = processTable->item(rowIndex, 1);
+                if (pidItem == nullptr || pidItem->text().toUInt() != pid)
+                {
+                    continue;
+                }
+                processTable->selectRow(rowIndex);
+                processTable->scrollToItem(pidItem, QAbstractItemView::PositionAtCenter);
+                rowSelected = true;
+                break;
+            }
+        }
+
+        if (processCombo != nullptr)
+        {
+            const int comboIndex =
+                processCombo->findData(QVariant::fromValue(static_cast<uint>(pid)), Qt::UserRole);
+            if (comboIndex >= 0 && comboIndex != processCombo->currentIndex())
+            {
+                processCombo->setCurrentIndex(comboIndex);
+            }
+        }
+        return rowSelected;
+    }
+
+    // ============================================================
+    // 后台采集数据结构
+    // 说明：MemoryDock::ProcessEntry / RegionEntry 都是私有嵌套类型，无法出现在
+    // 文件级函数签名里，这里用等价的纯值类型承载采集结果，回到 UI 线程后再转换。
+    // ============================================================
+
+    // ProcessSnapshotRow 作用：
+    // - 保存后台线程采集到的单个进程信息，字段全部是值类型，可安全跨线程搬运。
+    struct ProcessSnapshotRow
+    {
+        std::uint32_t pid = 0;          // 进程 PID。
+        std::uint32_t sessionId = 0;    // 会话 ID。
+        QString processName;            // 进程名（Toolhelp 快照给出的映像文件名）。
+        QString imagePath;              // 映像完整路径，供图标解析使用（可能为空）。
+        double workingSetMB = 0.0;      // 工作集大小（MB），查询失败时保持 0。
+    };
+
+    // ProcessSnapshotResult 作用：
+    // - 保存一次进程枚举的完整结果与失败原因，由 UI 线程决定是否弹出提示。
+    struct ProcessSnapshotResult
+    {
+        bool snapshotCreated = false;       // CreateToolhelp32Snapshot 是否成功。
+        bool enumerationStarted = false;    // Process32FirstW 是否成功。
+        std::uint32_t lastErrorCode = 0;    // 失败时的 Win32 错误码。
+        std::vector<ProcessSnapshotRow> rows; // 按 PID 升序排列的进程快照。
+    };
+
+    // collectProcessSnapshotRows 作用：
+    // - 输入：无；
+    // - 处理：在工作线程完成 Toolhelp 快照、会话查询、工作集查询与映像路径解析，
+    //   全程不触碰任何 Qt 控件；
+    // - 返回：按 PID 升序排序的采集结果（含失败原因）。
+    ProcessSnapshotResult collectProcessSnapshotRows()
+    {
+        ProcessSnapshotResult snapshotResult;
+
+        // 进程枚举按需求使用 Toolhelp 快照接口。
+        HANDLE snapshotHandle = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshotHandle == INVALID_HANDLE_VALUE)
+        {
+            snapshotResult.lastErrorCode = static_cast<std::uint32_t>(::GetLastError());
+            return snapshotResult;
+        }
+        snapshotResult.snapshotCreated = true;
+
+        PROCESSENTRY32W processEntry{};
+        processEntry.dwSize = sizeof(processEntry);
+        if (::Process32FirstW(snapshotHandle, &processEntry) == FALSE)
+        {
+            snapshotResult.lastErrorCode = static_cast<std::uint32_t>(::GetLastError());
+            ::CloseHandle(snapshotHandle);
+            return snapshotResult;
+        }
+        snapshotResult.enumerationStarted = true;
+
+        do
+        {
+            ProcessSnapshotRow snapshotRow;
+            snapshotRow.pid = static_cast<std::uint32_t>(processEntry.th32ProcessID);
+            snapshotRow.processName = QString::fromWCharArray(processEntry.szExeFile);
+
+            DWORD sessionId = 0;
+            if (::ProcessIdToSessionId(toDwordPid(snapshotRow.pid), &sessionId) != FALSE)
+            {
+                snapshotRow.sessionId = static_cast<std::uint32_t>(sessionId);
+            }
+
+            // 尝试读取工作集大小：失败则保持 0，不影响主流程。
+            HANDLE processHandle = ::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                FALSE,
+                toDwordPid(snapshotRow.pid));
+            if (processHandle != nullptr)
+            {
+                PROCESS_MEMORY_COUNTERS_EX memoryCounter{};
+                if (::GetProcessMemoryInfo(
+                    processHandle,
+                    reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memoryCounter),
+                    sizeof(memoryCounter)) != FALSE)
+                {
+                    snapshotRow.workingSetMB =
+                        static_cast<double>(memoryCounter.WorkingSetSize) / (1024.0 * 1024.0);
+                }
+                ::CloseHandle(processHandle);
+            }
+
+            // 映像路径解析内部还会再打开一次进程句柄，因此同样留在后台线程完成。
+            snapshotRow.imagePath =
+                QString::fromStdString(ks::process::QueryProcessPathByPid(snapshotRow.pid));
+
+            snapshotResult.rows.push_back(std::move(snapshotRow));
+        } while (::Process32NextW(snapshotHandle, &processEntry) != FALSE);
+        ::CloseHandle(snapshotHandle);
+
+        // 为了稳定展示顺序，这里按 PID 升序排序。
+        std::sort(
+            snapshotResult.rows.begin(),
+            snapshotResult.rows.end(),
+            [](const ProcessSnapshotRow& left, const ProcessSnapshotRow& right) {
+                return left.pid < right.pid;
+            });
+        return snapshotResult;
+    }
+
+    // RegionSnapshotRow 作用：
+    // - 保存后台线程采集到的单个虚拟内存区域，字段全部是值类型，可安全跨线程搬运。
+    struct RegionSnapshotRow
+    {
+        std::uint64_t baseAddress = 0;  // 区域起始地址。
+        std::uint64_t regionSize = 0;   // 区域大小（字节）。
+        std::uint32_t protect = 0;      // 保护属性位（PAGE_*）。
+        std::uint32_t state = 0;        // 状态（MEM_COMMIT / MEM_RESERVE / MEM_FREE）。
+        std::uint32_t type = 0;         // 类型（MEM_IMAGE / MEM_MAPPED / MEM_PRIVATE）。
+        QString mappedFilePath;         // 映射文件路径（如果可获取）。
+    };
+
+    // collectVirtualMemoryRegionRows 作用：
+    // - 输入：目标进程句柄（调用方保证遍历期间句柄一直有效）；
+    // - 处理：从用户地址空间下限遍历到上限，IMAGE/MAPPED 区域附带解析映射文件路径，
+    //   全程无 Qt 控件访问，可直接在线程池任务里执行；
+    // - 返回：区域快照数组，地址空间不可读时返回空数组。
+    std::vector<RegionSnapshotRow> collectVirtualMemoryRegionRows(const HANDLE processHandle)
+    {
+        std::vector<RegionSnapshotRow> regionRows;
+        if (processHandle == nullptr)
+        {
+            return regionRows;
+        }
+
+        SYSTEM_INFO systemInfo{};
+        ::GetSystemInfo(&systemInfo);
+        const std::uint64_t minAddress =
+            reinterpret_cast<std::uintptr_t>(systemInfo.lpMinimumApplicationAddress);
+        const std::uint64_t maxAddress =
+            reinterpret_cast<std::uintptr_t>(systemInfo.lpMaximumApplicationAddress);
+
+        std::uint64_t currentAddress = minAddress;
+        while (currentAddress < maxAddress)
+        {
+            MEMORY_BASIC_INFORMATION mbi{};
+            const SIZE_T querySize = ::VirtualQueryEx(
+                processHandle,
+                reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(currentAddress)),
+                &mbi,
+                sizeof(mbi));
+            if (querySize != sizeof(mbi))
+            {
+                break;
+            }
+
+            RegionSnapshotRow regionRow{};
+            regionRow.baseAddress = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+            regionRow.regionSize = static_cast<std::uint64_t>(mbi.RegionSize);
+            regionRow.protect = static_cast<std::uint32_t>(mbi.Protect);
+            regionRow.state = static_cast<std::uint32_t>(mbi.State);
+            regionRow.type = static_cast<std::uint32_t>(mbi.Type);
+
+            // IMAGE/MAPPED 区域尽量解析映射文件路径，便于用户定位模块。
+            if (regionRow.state == MEM_COMMIT &&
+                (regionRow.type == MEM_IMAGE || regionRow.type == MEM_MAPPED))
+            {
+                wchar_t mappedPath[MAX_PATH] = {};
+                const DWORD length = ::GetMappedFileNameW(
+                    processHandle,
+                    mbi.BaseAddress,
+                    mappedPath,
+                    static_cast<DWORD>(std::size(mappedPath)));
+                if (length > 0)
+                {
+                    regionRow.mappedFilePath =
+                        QString::fromWCharArray(mappedPath, static_cast<int>(length));
+                }
+            }
+
+            regionRows.push_back(std::move(regionRow));
+            if (mbi.RegionSize == 0)
+            {
+                break;
+            }
+
+            const std::uint64_t nextAddress =
+                reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) +
+                static_cast<std::uint64_t>(mbi.RegionSize);
+            if (nextAddress <= currentAddress)
+            {
+                break;
+            }
+            currentAddress = nextAddress;
+        }
+        return regionRows;
+    }
+
+    // reportRegionEnumerateFailure 作用：
+    // - 输入：承载对话框的父窗口与枚举失败文本；
+    // - 处理：输出失败日志，优先走权限恢复提示，未被处理时退回普通告警框；
+    // - 返回：无。同步兜底路径与异步回投路径共用同一套提示，避免行为分叉。
+    void reportRegionEnumerateFailure(QWidget* const parentWidget, const QString& errorText)
+    {
+        kLogEvent regionEnumerateFailEvent;
+        err << regionEnumerateFailEvent
+            << "[MemoryDock] refreshMemoryRegionList: 枚举区域失败, error="
+            << errorText.toStdString()
+            << eol;
+
+        // privilegePromptHandled：记录区域枚举失败是否已由权限恢复提示处理。
+        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+            parentWidget,
+            QStringLiteral("枚举进程内存区域"),
+            errorText);
+        if (!privilegePromptHandled)
+        {
+            QMessageBox::warning(parentWidget, "区域刷新", errorText);
+        }
+    }
 }
 
 void MemoryDock::refreshProcessList(const bool keepSelection)
@@ -64,6 +571,15 @@ void MemoryDock::refreshProcessList(const bool keepSelection)
         << "[MemoryDock] refreshProcessList: 开始刷新进程列表, keepSelection="
         << (keepSelection ? "true" : "false")
         << eol;
+
+    // 已有枚举在途时不再叠加第二次 Toolhelp 快照：进程详情页一次 Tab 点击会连调两次，
+    // 后到的请求合并成一个待办，等在途结果落地后再补一轮。
+    if (readBoolProperty(this, kProcessRefreshInFlightProperty))
+    {
+        setProperty(kProcessRefreshPendingProperty, true);
+        setProperty(kProcessRefreshPendingKeepSelectionProperty, keepSelection);
+        return;
+    }
 
     // 刷新前记录当前选择 PID，刷新后尽量恢复体验。
     std::uint32_t previousPid = 0;
@@ -76,118 +592,208 @@ void MemoryDock::refreshProcessList(const bool keepSelection)
         }
     }
 
-    m_processCache.clear();
+    // m_processCache 不在这里清空：清空到回填之间会让下拉框/R0 读写页读到空缓存，
+    // 缓存与表格统一在回投后的提交阶段一次性替换。
+    setProperty(kProcessRefreshInFlightProperty, true);
+    const quint64 requestGeneration = bumpGenerationProperty(this, kProcessRefreshGenerationProperty);
+    const QPointer<MemoryDock> guardedSelf(this);
 
-    // 进程枚举按需求使用 Toolhelp 快照接口。
-    HANDLE snapshotHandle = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshotHandle == INVALID_HANDLE_VALUE)
-    {
-        kLogEvent snapshotFailEvent;
-        err << snapshotFailEvent
-            << "[MemoryDock] refreshProcessList: CreateToolhelp32Snapshot 失败, error="
-            << ::GetLastError()
-            << eol;
-        QMessageBox::warning(this, "进程刷新", "CreateToolhelp32Snapshot 失败。");
-        return;
-    }
+    QRunnable* const refreshProcessTask = QRunnable::create([guardedSelf, requestGeneration, previousPid]() {
+        // 后台线程只做纯数据采集：Toolhelp 快照、句柄查询、映像路径解析都不触碰 Qt 控件。
+        ProcessSnapshotResult snapshotResult = collectProcessSnapshotRows();
 
-    PROCESSENTRY32W processEntry{};
-    processEntry.dwSize = sizeof(processEntry);
-    if (::Process32FirstW(snapshotHandle, &processEntry) == FALSE)
-    {
-        kLogEvent processFirstFailEvent;
-        err << processFirstFailEvent
-            << "[MemoryDock] refreshProcessList: Process32FirstW 失败, error="
-            << ::GetLastError()
-            << eol;
-        ::CloseHandle(snapshotHandle);
-        return;
-    }
-
-    do
-    {
-        ProcessEntry entry{};
-        entry.pid = static_cast<std::uint32_t>(processEntry.th32ProcessID);
-        entry.processName = QString::fromWCharArray(processEntry.szExeFile);
-        entry.cpuPercent = 0.0; // CPU 为可选字段，当前版本保留 0。
-
-        DWORD sessionId = 0;
-        if (::ProcessIdToSessionId(toDwordPid(entry.pid), &sessionId) != FALSE)
+        QCoreApplication* const appInstance = QCoreApplication::instance();
+        if (appInstance == nullptr)
         {
-            entry.sessionId = static_cast<std::uint32_t>(sessionId);
+            return;
         }
 
-        // 尝试读取工作集大小：失败则保持 0，不影响主流程。
-        HANDLE processHandle = ::OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
-            FALSE,
-            toDwordPid(entry.pid));
-        if (processHandle != nullptr)
-        {
-            PROCESS_MEMORY_COUNTERS_EX memoryCounter{};
-            if (::GetProcessMemoryInfo(
-                processHandle,
-                reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memoryCounter),
-                sizeof(memoryCounter)) != FALSE)
-            {
-                entry.workingSetMB = static_cast<double>(memoryCounter.WorkingSetSize) / (1024.0 * 1024.0);
-            }
-            ::CloseHandle(processHandle);
-        }
-        m_processCache.push_back(std::move(entry));
-    } while (::Process32NextW(snapshotHandle, &processEntry) != FALSE);
-    ::CloseHandle(snapshotHandle);
+        QMetaObject::invokeMethod(
+            appInstance,
+            [guardedSelf, requestGeneration, previousPid, snapshotResult = std::move(snapshotResult)]() mutable {
+                if (guardedSelf == nullptr)
+                {
+                    return;
+                }
+                MemoryDock* const resultDock = guardedSelf.data();
 
-    // 为了稳定展示顺序，这里按 PID 升序排序。
-    std::sort(m_processCache.begin(), m_processCache.end(), [](const ProcessEntry& left, const ProcessEntry& right) {
-        return left.pid < right.pid;
+                // 代次过期说明期间又发起了新一轮枚举，旧快照直接丢弃。
+                if (resultDock->property(kProcessRefreshGenerationProperty).toULongLong() != requestGeneration)
+                {
+                    return;
+                }
+
+                if (!snapshotResult.snapshotCreated)
+                {
+                    kLogEvent snapshotFailEvent;
+                    err << snapshotFailEvent
+                        << "[MemoryDock] refreshProcessList: CreateToolhelp32Snapshot 失败, error="
+                        << snapshotResult.lastErrorCode
+                        << eol;
+                    resultDock->setProperty(kProcessRefreshInFlightProperty, false);
+                    resultDock->setProperty(kProcessRefreshPendingProperty, false);
+                    QMessageBox::warning(resultDock, "进程刷新", "CreateToolhelp32Snapshot 失败。");
+                    return;
+                }
+                if (!snapshotResult.enumerationStarted)
+                {
+                    kLogEvent processFirstFailEvent;
+                    err << processFirstFailEvent
+                        << "[MemoryDock] refreshProcessList: Process32FirstW 失败, error="
+                        << snapshotResult.lastErrorCode
+                        << eol;
+                    resultDock->setProperty(kProcessRefreshInFlightProperty, false);
+                    resultDock->setProperty(kProcessRefreshPendingProperty, false);
+                    return;
+                }
+
+                const auto snapshotRows =
+                    std::make_shared<std::vector<ProcessSnapshotRow>>(std::move(snapshotResult.rows));
+                auto commitProcessSnapshot = [guardedSelf, requestGeneration, previousPid, snapshotRows]() {
+                    if (guardedSelf == nullptr)
+                    {
+                        return;
+                    }
+                    MemoryDock* const commitDock = guardedSelf.data();
+                    if (commitDock->property(kProcessRefreshGenerationProperty).toULongLong() != requestGeneration)
+                    {
+                        return;
+                    }
+
+                    // 缓存与表格一次性替换，避免中途被其它页读到半成品。
+                    commitDock->m_processCache.clear();
+                    commitDock->m_processCache.reserve(snapshotRows->size());
+                    for (const ProcessSnapshotRow& snapshotRow : *snapshotRows)
+                    {
+                        ProcessEntry entry{};
+                        entry.pid = snapshotRow.pid;
+                        entry.sessionId = snapshotRow.sessionId;
+                        entry.processName = snapshotRow.processName;
+                        entry.cpuPercent = 0.0; // CPU 为可选字段，当前版本保留 0。
+                        entry.workingSetMB = snapshotRow.workingSetMB;
+                        commitDock->m_processCache.push_back(std::move(entry));
+                    }
+
+                    // 先重建进程表。
+                    QTableWidget* const processTable = commitDock->m_processTable;
+                    processTable->setSortingEnabled(false);
+                    processTable->setRowCount(static_cast<int>(snapshotRows->size()));
+                    for (int row = 0; row < static_cast<int>(commitDock->m_processCache.size()); ++row)
+                    {
+                        // 缓存与快照行一一对应（同一份采集结果按同一顺序转换），
+                        // 映像路径只保存在快照行里，仅用于图标解析。
+                        const ProcessEntry& entry = commitDock->m_processCache[static_cast<std::size_t>(row)];
+                        // 图标键统一用去空白后的路径，和后台提取任务、回写比对保持同一份文本。
+                        const QString imagePath =
+                            (*snapshotRows)[static_cast<std::size_t>(row)].imagePath.trimmed();
+
+                        // 进程名前附加图标：缓存命中直接用，未命中先给占位图，
+                        // Shell 查询在线程池完成后按路径回填对应单元格。
+                        QTableWidgetItem* const processNameItem = new QTableWidgetItem(entry.processName);
+                        processNameItem->setData(kIconPathItemRole, imagePath);
+                        processNameItem->setIcon(lookupCachedPathIcon(imagePath));
+                        processTable->setItem(row, 0, processNameItem);
+
+                        processTable->setItem(row, 1, new QTableWidgetItem(QString::number(entry.pid)));
+                        processTable->setItem(row, 2, new QTableWidgetItem(QString::number(entry.sessionId)));
+                        processTable->setItem(
+                            row,
+                            3,
+                            new QTableWidgetItem(QString::number(entry.cpuPercent, 'f', 2) + "%"));
+                        processTable->setItem(
+                            row,
+                            4,
+                            new QTableWidgetItem(QString("%1 MB").arg(entry.workingSetMB, 0, 'f', 1)));
+                    }
+                    processTable->setSortingEnabled(true);
+
+                    // 未命中缓存的映像路径统一提交后台提取，回调只改对应单元格图标，不重建整表。
+                    QSet<QString> queuedIconPaths;
+                    for (const ProcessSnapshotRow& snapshotRow : *snapshotRows)
+                    {
+                        const QString imagePath = snapshotRow.imagePath.trimmed();
+                        if (imagePath.isEmpty() || queuedIconPaths.contains(imagePath))
+                        {
+                            continue;
+                        }
+                        queuedIconPaths.insert(imagePath);
+                        queuePathIconExtraction(
+                            imagePath,
+                            [guardedSelf](const QString& resolvedPath, const QIcon& resolvedIcon) {
+                                if (guardedSelf == nullptr)
+                                {
+                                    return;
+                                }
+                                applyIconToProcessTableRows(
+                                    guardedSelf->m_processTable,
+                                    resolvedPath,
+                                    resolvedIcon);
+                            });
+                    }
+
+                    // 再同步重建顶部下拉框。
+                    commitDock->updateProcessComboFromCache();
+
+                    // 尝试恢复之前选中 PID。
+                    if (previousPid != 0)
+                    {
+                        for (int comboIndex = 0; comboIndex < commitDock->m_processCombo->count(); ++comboIndex)
+                        {
+                            if (commitDock->m_processCombo->itemData(comboIndex, Qt::UserRole).toUInt() == previousPid)
+                            {
+                                commitDock->m_processCombo->setCurrentIndex(comboIndex);
+                                break;
+                            }
+                        }
+                    }
+
+                    // 跨页跳转（focusProcessForOperations）登记的目标行只能等列表回填后再定位。
+                    const std::uint32_t pendingFocusPid = static_cast<std::uint32_t>(
+                        commitDock->property(kProcessFocusPendingPidProperty).toUInt());
+                    if (pendingFocusPid != 0)
+                    {
+                        commitDock->setProperty(kProcessFocusPendingPidProperty, 0U);
+                        selectProcessRowByPid(
+                            commitDock->m_processTable,
+                            commitDock->m_processCombo,
+                            pendingFocusPid);
+                    }
+
+                    // 输出刷新结束日志，记录本轮进程总数与恢复 PID。
+                    kLogEvent refreshProcessFinishEvent;
+                    info << refreshProcessFinishEvent
+                        << "[MemoryDock] refreshProcessList: 刷新完成, processCount="
+                        << commitDock->m_processCache.size()
+                        << ", previousPid="
+                        << previousPid
+                        << eol;
+
+                    // 本轮结束后释放在途标记，并把合并下来的待办请求补一轮。
+                    commitDock->setProperty(kProcessRefreshInFlightProperty, false);
+                    if (commitDock->property(kProcessRefreshPendingProperty).toBool())
+                    {
+                        const bool pendingKeepSelection =
+                            commitDock->property(kProcessRefreshPendingKeepSelectionProperty).toBool();
+                        commitDock->setProperty(kProcessRefreshPendingProperty, false);
+                        commitDock->refreshProcessList(pendingKeepSelection);
+                    }
+                };
+
+                // 右键菜单打开时先缓存本次提交，避免把用户正在操作的行整表换掉。
+                if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                        resultDock,
+                        QStringLiteral("memory-process-list-snapshot-apply"),
+                        {resultDock->m_processTable},
+                        commitProcessSnapshot))
+                {
+                    return;
+                }
+                commitProcessSnapshot();
+            },
+            Qt::QueuedConnection);
         });
-
-    // 先重建进程表。
-    m_processTable->setSortingEnabled(false);
-    m_processTable->setRowCount(static_cast<int>(m_processCache.size()));
-    static QHash<QString, QIcon> processIconCache;
-    for (int row = 0; row < static_cast<int>(m_processCache.size()); ++row)
-    {
-        const ProcessEntry& entry = m_processCache[static_cast<std::size_t>(row)];
-
-        // 进程名前附加图标：路径可得时使用 EXE 图标，否则回退默认图标。
-        const QString imagePath = QString::fromStdString(ks::process::QueryProcessPathByPid(entry.pid));
-        QTableWidgetItem* processNameItem = new QTableWidgetItem(entry.processName);
-        processNameItem->setIcon(resolveIconByPath(imagePath, processIconCache));
-        m_processTable->setItem(row, 0, processNameItem);
-
-        m_processTable->setItem(row, 1, new QTableWidgetItem(QString::number(entry.pid)));
-        m_processTable->setItem(row, 2, new QTableWidgetItem(QString::number(entry.sessionId)));
-        m_processTable->setItem(row, 3, new QTableWidgetItem(QString::number(entry.cpuPercent, 'f', 2) + "%"));
-        m_processTable->setItem(row, 4, new QTableWidgetItem(QString("%1 MB").arg(entry.workingSetMB, 0, 'f', 1)));
-    }
-    m_processTable->setSortingEnabled(true);
-
-    // 再同步重建顶部下拉框。
-    updateProcessComboFromCache();
-
-    // 尝试恢复之前选中 PID。
-    if (previousPid != 0)
-    {
-        for (int comboIndex = 0; comboIndex < m_processCombo->count(); ++comboIndex)
-        {
-            if (m_processCombo->itemData(comboIndex, Qt::UserRole).toUInt() == previousPid)
-            {
-                m_processCombo->setCurrentIndex(comboIndex);
-                break;
-            }
-        }
-    }
-
-    // 输出刷新结束日志，记录本轮进程总数与恢复 PID。
-    kLogEvent refreshProcessFinishEvent;
-    info << refreshProcessFinishEvent
-        << "[MemoryDock] refreshProcessList: 刷新完成, processCount="
-        << m_processCache.size()
-        << ", previousPid="
-        << previousPid
-        << eol;
+    refreshProcessTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(refreshProcessTask);
 }
 
 void MemoryDock::updateProcessComboFromCache()
@@ -256,8 +862,9 @@ void MemoryDock::rebuildModuleTableFromCache()
     const QSignalBlocker tableBlocker(m_moduleTable);
     m_moduleTable->clear();
 
-    // 图标按路径缓存，避免重建过滤时重复触发磁盘图标查询。
-    static QHash<QString, QIcon> moduleIconCache;
+    // 图标按路径缓存：未命中时只放占位图并记录来源路径，绝不在这里同步问 Shell。
+    // 模块动辄上百个，冷缓存时逐个 QFileIconProvider 查询会把首帧和过滤输入一起拖住。
+    const int modulePathColumnIndex = toModuleTreeColumnIndex(ModuleTreeColumn::Path);
     for (const ModuleEntry* moduleEntryPtr : filteredModules)
     {
         const ModuleEntry& entry = *moduleEntryPtr;
@@ -270,9 +877,10 @@ void MemoryDock::rebuildModuleTableFromCache()
             QString("0x%1").arg(entry.entryPointOffset, 0, 16).toUpper());
         rowItem->setText(toModuleTreeColumnIndex(ModuleTreeColumn::State), entry.runningState);
         rowItem->setText(toModuleTreeColumnIndex(ModuleTreeColumn::ThreadId), entry.threadIdText);
-        rowItem->setIcon(
-            toModuleTreeColumnIndex(ModuleTreeColumn::Path),
-            resolveIconByPath(entry.fullPath, moduleIconCache));
+        // 图标键统一用去空白后的路径，和后台提取任务、回写比对保持同一份文本。
+        const QString moduleIconPath = entry.fullPath.trimmed();
+        rowItem->setIcon(modulePathColumnIndex, lookupCachedPathIcon(moduleIconPath));
+        rowItem->setData(modulePathColumnIndex, kIconPathItemRole, moduleIconPath);
 
         // 保存基址与线程 ID，供双击跳转和右键动作反查。
         rowItem->setData(
@@ -309,8 +917,34 @@ void MemoryDock::rebuildModuleTableFromCache()
     }
 
     // 排序仍按路径列执行，和原先交互习惯保持一致。
-    m_moduleTable->sortItems(toModuleTreeColumnIndex(ModuleTreeColumn::Path), Qt::AscendingOrder);
+    m_moduleTable->sortItems(modulePathColumnIndex, Qt::AscendingOrder);
     m_moduleTable->setUpdatesEnabled(true);
+
+    // 未命中缓存的模块路径统一提交线程池提取图标，回调只改对应节点，不重建整棵树。
+    const QPointer<MemoryDock> guardedSelf(this);
+    QSet<QString> queuedIconPaths;
+    for (const ModuleEntry* moduleEntryPtr : filteredModules)
+    {
+        const QString modulePath = moduleEntryPtr->fullPath.trimmed();
+        if (modulePath.isEmpty() || queuedIconPaths.contains(modulePath))
+        {
+            continue;
+        }
+        queuedIconPaths.insert(modulePath);
+        queuePathIconExtraction(
+            modulePath,
+            [guardedSelf, modulePathColumnIndex](const QString& resolvedPath, const QIcon& resolvedIcon) {
+                if (guardedSelf == nullptr)
+                {
+                    return;
+                }
+                applyIconToModuleTreeRows(
+                    guardedSelf->m_moduleTable,
+                    modulePathColumnIndex,
+                    resolvedPath,
+                    resolvedIcon);
+            });
+    }
 
     // 重绘结束日志：用于确认过滤后可见数量。
     kLogEvent rebuildModuleTableEvent;
@@ -603,8 +1237,13 @@ bool MemoryDock::attachToProcess(
     m_attachedProcessName = processName;
     updateStatusBarText();
 
-    // 附加后立即刷新模块与区域，减少下一步等待。
+    // 附加后立即刷新模块与区域，减少下一步等待。两者都在后台执行，
+    // 附加按钮点下去之后界面立刻可用，不会因为目标进程地址空间庞大而白屏。
     refreshModuleListForPid(pid);
+
+    // 附加路径显式要求区域枚举走异步分支：此刻区域缓存必然为空（detachProcess 已清空），
+    // 若不打这个标记就会落到“缓存为空时同步遍历”的兜底分支上，重新把 UI 卡住。
+    setProperty(kRegionRefreshFromAttachProperty, true);
     refreshMemoryRegionList(true);
 
     if (showMessage)
@@ -637,33 +1276,33 @@ void MemoryDock::focusProcessForOperations(const std::uint32_t pid, const bool s
         return;
     }
 
-    refreshProcessList(true);
-    QString processName = QStringLiteral("PID_%1").arg(pid);
-    for (int row = 0; row < m_processTable->rowCount(); ++row)
+    // 进程列表刷新已改为异步，附加不能再等表格重建完成。进程名优先取现有缓存，
+    // 缓存未命中时只做一次映像路径查询（单个进程句柄，代价可忽略）。
+    QString processName;
+    for (const ProcessEntry& entry : m_processCache)
     {
-        QTableWidgetItem* pidItem = m_processTable->item(row, 1);
-        QTableWidgetItem* nameItem = m_processTable->item(row, 0);
-        if (pidItem == nullptr || nameItem == nullptr)
+        if (entry.pid == pid)
         {
-            continue;
-        }
-        if (pidItem->text().toUInt() == pid)
-        {
-            processName = nameItem->text().trimmed();
-            m_processTable->selectRow(row);
-            m_processTable->scrollToItem(pidItem, QAbstractItemView::PositionAtCenter);
+            processName = entry.processName.trimmed();
             break;
         }
     }
-
-    if (m_processCombo != nullptr)
+    if (processName.isEmpty())
     {
-        const int comboIndex = m_processCombo->findData(QVariant::fromValue(static_cast<uint>(pid)), Qt::UserRole);
-        if (comboIndex >= 0)
-        {
-            m_processCombo->setCurrentIndex(comboIndex);
-        }
+        const QString imagePath = QString::fromStdString(ks::process::QueryProcessPathByPid(pid));
+        processName = QFileInfo(imagePath).fileName().trimmed();
     }
+    if (processName.isEmpty())
+    {
+        processName = QStringLiteral("PID_%1").arg(pid);
+    }
+
+    // 目标行定位登记成待办：本轮异步刷新回填进程表后由提交阶段完成选中与滚动。
+    setProperty(kProcessFocusPendingPidProperty, static_cast<uint>(pid));
+    refreshProcessList(true);
+
+    // 当前表里已经存在该进程时立即定位，不必等异步结果回来。
+    (void)selectProcessRowByPid(m_processTable, m_processCombo, pid);
 
     attachToProcess(pid, processName, showMessage);
     if (m_tabWidget != nullptr && m_tabRegions != nullptr)
@@ -724,6 +1363,14 @@ void MemoryDock::detachProcess()
     // 先使所有基于旧附加上下文的异步快照失效。PTE/证据任务持有的是复制句柄，
     // 可以安全完成系统调用，但其结果不得再写回新的附加进程。
     m_processAttachmentGeneration.fetch_add(1U);
+
+    // 区域枚举的在途/待补标记与附加上下文绑定：不在这里复位，重新附加时会被上一轮
+    // 任务遗留的在途标记挡住，新目标永远等不到区域列表。旧任务回投时会先比对代次，
+    // 发现上下文已变就整段放弃，不会再回来碰这组标记。
+    setProperty(kRegionRefreshInFlightProperty, false);
+    setProperty(kRegionRefreshPendingProperty, false);
+    setProperty(kRegionRefreshFromAttachProperty, false);
+
     m_processPteTranslateRefreshTicket.fetch_add(1U);
     m_processMemoryEvidenceRefreshTicket.fetch_add(1U);
     m_processPteTranslateRefreshInProgress.store(false);
@@ -1245,6 +1892,13 @@ void MemoryDock::refreshMemoryRegionList(const bool forceRequery)
         << m_attachedPid
         << eol;
 
+    // 附加流程打的“必须异步”标记只对本次调用有效，读到后立刻清掉。
+    const bool requestedByAttach = readBoolProperty(this, kRegionRefreshFromAttachProperty);
+    if (requestedByAttach)
+    {
+        setProperty(kRegionRefreshFromAttachProperty, false);
+    }
+
     if (m_attachedProcessHandle == nullptr)
     {
         m_regionCache.clear();
@@ -1252,30 +1906,156 @@ void MemoryDock::refreshMemoryRegionList(const bool forceRequery)
         return;
     }
 
-    if (forceRequery || m_regionCache.empty())
+    if (!forceRequery && !m_regionCache.empty())
     {
-        QString errorText;
-        std::vector<RegionEntry> regionList;
-        if (!enumerateMemoryRegionsByVirtualQuery(m_attachedProcessHandle, regionList, &errorText))
-        {
-            kLogEvent regionEnumerateFailEvent;
-            err << regionEnumerateFailEvent
-                << "[MemoryDock] refreshMemoryRegionList: 枚举区域失败, error="
-                << errorText.toStdString()
-                << eol;
-            // privilegePromptHandled：记录区域枚举失败是否已由权限恢复提示处理。
-            const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
-                this,
-                QStringLiteral("枚举进程内存区域"),
-                errorText);
-            if (!privilegePromptHandled)
-            {
-                QMessageBox::warning(this, "区域刷新", errorText);
-            }
-            return;
-        }
-        m_regionCache = std::move(regionList);
+        // 缓存可用且未要求重查时只重新过滤，不再遍历地址空间。
+        applyRegionFilterAndRebuildTable();
+
+        // 区域刷新结束日志：记录缓存数量。
+        kLogEvent regionCachedFinishEvent;
+        info << regionCachedFinishEvent
+            << "[MemoryDock] refreshMemoryRegionList: 刷新完成, regionCount="
+            << m_regionCache.size()
+            << eol;
+        return;
     }
+
+    // 已有枚举在途时只登记一次待补请求：区域遍历动辄数百毫秒，重复点击不该叠加任务。
+    if (readBoolProperty(this, kRegionRefreshInFlightProperty))
+    {
+        setProperty(kRegionRefreshPendingProperty, true);
+        return;
+    }
+
+    // asyncAllowed 说明：附加流程和“表里已经有数据”的重查一律异步。
+    // 只有“缓存为空且没有在途任务”时保持同步 —— 那条路径上的调用方（扫描页收集
+    // 扫描范围）在调用返回后立刻读 m_regionCache，异步会让它直接判定为无区域可扫。
+    const bool asyncAllowed = requestedByAttach || !m_regionCache.empty();
+    std::uint32_t duplicateError = ERROR_SUCCESS;
+    const std::shared_ptr<void> processHandleLease =
+        asyncAllowed ? duplicateAttachedProcessHandleForWorker(&duplicateError) : std::shared_ptr<void>();
+    if (processHandleLease)
+    {
+        setProperty(kRegionRefreshInFlightProperty, true);
+
+        // 附加上下文代次：分离或重新附加后旧快照不得再写回新目标。
+        const std::uint64_t attachmentGeneration = m_processAttachmentGeneration.load();
+        const QPointer<MemoryDock> guardedSelf(this);
+
+        QRunnable* const enumerateRegionTask =
+            QRunnable::create([guardedSelf, processHandleLease, attachmentGeneration]() {
+                // 工作线程只做 VirtualQueryEx / GetMappedFileNameW 遍历，产出纯值类型行。
+                std::vector<RegionSnapshotRow> regionRows =
+                    collectVirtualMemoryRegionRows(static_cast<HANDLE>(processHandleLease.get()));
+
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr)
+                {
+                    return;
+                }
+
+                QMetaObject::invokeMethod(
+                    appInstance,
+                    [guardedSelf, attachmentGeneration, regionRows = std::move(regionRows)]() mutable {
+                        if (guardedSelf == nullptr)
+                        {
+                            return;
+                        }
+                        MemoryDock* const resultDock = guardedSelf.data();
+
+                        // 附加上下文已变化（分离/重新附加）时旧快照直接丢弃。注意这里不能
+                        // 顺手清在途标记：那组标记已经在 detachProcess 里复位并被新一轮
+                        // 任务重新占用，旧任务再清一次会让新任务失去去重保护。
+                        if (attachmentGeneration != resultDock->m_processAttachmentGeneration.load())
+                        {
+                            return;
+                        }
+
+                        if (regionRows.empty())
+                        {
+                            resultDock->setProperty(kRegionRefreshInFlightProperty, false);
+                            resultDock->setProperty(kRegionRefreshPendingProperty, false);
+                            reportRegionEnumerateFailure(
+                                resultDock,
+                                QStringLiteral("VirtualQueryEx 未返回有效区域。"));
+                            return;
+                        }
+
+                        const auto regionRowsSnapshot =
+                            std::make_shared<std::vector<RegionSnapshotRow>>(std::move(regionRows));
+                        auto commitRegionSnapshot = [guardedSelf, attachmentGeneration, regionRowsSnapshot]() {
+                            if (guardedSelf == nullptr)
+                            {
+                                return;
+                            }
+                            MemoryDock* const commitDock = guardedSelf.data();
+                            if (attachmentGeneration != commitDock->m_processAttachmentGeneration.load())
+                            {
+                                return;
+                            }
+
+                            // 缓存与表格一次性替换，避免过滤动作读到半成品缓存。
+                            commitDock->m_regionCache.clear();
+                            commitDock->m_regionCache.reserve(regionRowsSnapshot->size());
+                            for (const RegionSnapshotRow& regionRow : *regionRowsSnapshot)
+                            {
+                                RegionEntry entry{};
+                                entry.baseAddress = regionRow.baseAddress;
+                                entry.regionSize = regionRow.regionSize;
+                                entry.protect = regionRow.protect;
+                                entry.state = regionRow.state;
+                                entry.type = regionRow.type;
+                                entry.mappedFilePath = regionRow.mappedFilePath;
+                                commitDock->m_regionCache.push_back(std::move(entry));
+                            }
+                            commitDock->applyRegionFilterAndRebuildTable();
+
+                            // 区域刷新结束日志：记录缓存数量。
+                            kLogEvent regionRefreshFinishEvent;
+                            info << regionRefreshFinishEvent
+                                << "[MemoryDock] refreshMemoryRegionList: 刷新完成, regionCount="
+                                << commitDock->m_regionCache.size()
+                                << eol;
+
+                            // 在途标记留到提交阶段才释放：右键菜单打开时本次提交会被延后，
+                            // 期间必须继续挡住新任务，否则旧提交会覆盖更新的结果。
+                            commitDock->setProperty(kRegionRefreshInFlightProperty, false);
+
+                            // 合并下来的待补请求在本轮落地后再补一次，避免结果落后于用户操作。
+                            if (commitDock->property(kRegionRefreshPendingProperty).toBool())
+                            {
+                                commitDock->setProperty(kRegionRefreshPendingProperty, false);
+                                commitDock->refreshMemoryRegionList(true);
+                            }
+                        };
+
+                        // 右键菜单打开时先缓存本次提交，避免把用户正在操作的行整表换掉。
+                        if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
+                                resultDock,
+                                QStringLiteral("memory-region-list-snapshot-apply"),
+                                {resultDock->m_regionTable},
+                                commitRegionSnapshot))
+                        {
+                            return;
+                        }
+                        commitRegionSnapshot();
+                    },
+                    Qt::QueuedConnection);
+                });
+        enumerateRegionTask->setAutoDelete(true);
+        QThreadPool::globalInstance()->start(enumerateRegionTask);
+        return;
+    }
+
+    // 同步兜底：调用方需要立刻拿到区域缓存，或复制句柄失败（正常情况下不可达）。
+    QString errorText;
+    std::vector<RegionEntry> regionList;
+    if (!enumerateMemoryRegionsByVirtualQuery(m_attachedProcessHandle, regionList, &errorText))
+    {
+        reportRegionEnumerateFailure(this, errorText);
+        return;
+    }
+    m_regionCache = std::move(regionList);
 
     applyRegionFilterAndRebuildTable();
 
@@ -1300,61 +2080,20 @@ bool MemoryDock::enumerateMemoryRegionsByVirtualQuery(
 
     regionsOut.clear();
 
-    SYSTEM_INFO systemInfo{};
-    ::GetSystemInfo(&systemInfo);
-    const std::uint64_t minAddress = reinterpret_cast<std::uintptr_t>(systemInfo.lpMinimumApplicationAddress);
-    const std::uint64_t maxAddress = reinterpret_cast<std::uintptr_t>(systemInfo.lpMaximumApplicationAddress);
-
-    std::uint64_t currentAddress = minAddress;
-    while (currentAddress < maxAddress)
+    // 实际遍历下沉到无 Qt 依赖的采集函数：同一段逻辑同时服务这里的同步兜底
+    // 与 refreshMemoryRegionList 提交的线程池任务，避免两份实现慢慢走样。
+    const std::vector<RegionSnapshotRow> regionRows = collectVirtualMemoryRegionRows(processHandle);
+    regionsOut.reserve(regionRows.size());
+    for (const RegionSnapshotRow& regionRow : regionRows)
     {
-        MEMORY_BASIC_INFORMATION mbi{};
-        const SIZE_T querySize = ::VirtualQueryEx(
-            processHandle,
-            reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(currentAddress)),
-            &mbi,
-            sizeof(mbi));
-        if (querySize != sizeof(mbi))
-        {
-            break;
-        }
-
         RegionEntry entry{};
-        entry.baseAddress = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
-        entry.regionSize = static_cast<std::uint64_t>(mbi.RegionSize);
-        entry.protect = static_cast<std::uint32_t>(mbi.Protect);
-        entry.state = static_cast<std::uint32_t>(mbi.State);
-        entry.type = static_cast<std::uint32_t>(mbi.Type);
-
-        // IMAGE/MAPPED 区域尽量解析映射文件路径，便于用户定位模块。
-        if (entry.state == MEM_COMMIT && (entry.type == MEM_IMAGE || entry.type == MEM_MAPPED))
-        {
-            wchar_t mappedPath[MAX_PATH] = {};
-            const DWORD length = ::GetMappedFileNameW(
-                processHandle,
-                mbi.BaseAddress,
-                mappedPath,
-                static_cast<DWORD>(std::size(mappedPath)));
-            if (length > 0)
-            {
-                entry.mappedFilePath = QString::fromWCharArray(mappedPath, static_cast<int>(length));
-            }
-        }
-
+        entry.baseAddress = regionRow.baseAddress;
+        entry.regionSize = regionRow.regionSize;
+        entry.protect = regionRow.protect;
+        entry.state = regionRow.state;
+        entry.type = regionRow.type;
+        entry.mappedFilePath = regionRow.mappedFilePath;
         regionsOut.push_back(std::move(entry));
-        if (mbi.RegionSize == 0)
-        {
-            break;
-        }
-
-        const std::uint64_t nextAddress =
-            reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) +
-            static_cast<std::uint64_t>(mbi.RegionSize);
-        if (nextAddress <= currentAddress)
-        {
-            break;
-        }
-        currentAddress = nextAddress;
     }
 
     if (regionsOut.empty())

@@ -17,6 +17,7 @@
 #include <QCheckBox>
 #include <QApplication>
 #include <QClipboard>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QHeaderView>
@@ -490,7 +491,7 @@ namespace
 
     // findDeviceInfoDataByInstanceId 作用：
     // - 输入：PnP Instance ID；
-    // - 处理：重新打开 SetupAPI 设备集合并定位对应 SP_DEVINFO_DATA；
+    // - 处理：优先用 SetupDiOpenDeviceInfoW 精确打开单个 DevNode，失败再回退全类线性枚举；
     // - 返回：成功时填充 deviceInfoSetOut/deviceInfoDataOut，调用方必须 SetupDiDestroyDeviceInfoList。
     bool findDeviceInfoDataByInstanceId(
         const QString& instanceIdText,
@@ -510,7 +511,9 @@ namespace
         *deviceInfoSetOut = INVALID_HANDLE_VALUE;
         ZeroMemory(deviceInfoDataOut, sizeof(*deviceInfoDataOut));
         deviceInfoDataOut->cbSize = sizeof(SP_DEVINFO_DATA);
-        if (instanceIdText.trimmed().isEmpty())
+        // normalizedInstanceIdText 用途：统一去掉首尾空白，供精确定位与线性回退共用同一份文本。
+        const QString normalizedInstanceIdText = instanceIdText.trimmed();
+        if (normalizedInstanceIdText.isEmpty())
         {
             if (errorTextOut != nullptr)
             {
@@ -519,6 +522,29 @@ namespace
             return false;
         }
 
+        // 精确定位优先：
+        // - SetupDiCreateDeviceInfoList + SetupDiOpenDeviceInfoW 只解析目标 DevNode；
+        // - 避免 DIGCF_ALLCLASSES（不带 DIGCF_PRESENT）把数千个历史设备逐个读属性。
+        HDEVINFO targetedDeviceInfoSet = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+        if (targetedDeviceInfoSet != INVALID_HANDLE_VALUE)
+        {
+            SP_DEVINFO_DATA targetedDeviceInfoData{};
+            targetedDeviceInfoData.cbSize = sizeof(targetedDeviceInfoData);
+            if (SetupDiOpenDeviceInfoW(
+                targetedDeviceInfoSet,
+                reinterpret_cast<LPCWSTR>(normalizedInstanceIdText.utf16()),
+                nullptr,
+                0,
+                &targetedDeviceInfoData))
+            {
+                *deviceInfoSetOut = targetedDeviceInfoSet;
+                *deviceInfoDataOut = targetedDeviceInfoData;
+                return true;
+            }
+            SetupDiDestroyDeviceInfoList(targetedDeviceInfoSet);
+        }
+
+        // 回退路径：极少数 DevNode 无法被 SetupDiOpenDeviceInfoW 打开时，仍按旧逻辑线性扫描。
         HDEVINFO deviceInfoSet = SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES);
         if (deviceInfoSet == INVALID_HANDLE_VALUE)
         {
@@ -543,7 +569,7 @@ namespace
             {
                 candidateInstanceId = instanceIdFromDevInst(candidateData.DevInst);
             }
-            if (candidateInstanceId.compare(instanceIdText, Qt::CaseInsensitive) == 0)
+            if (candidateInstanceId.compare(normalizedInstanceIdText, Qt::CaseInsensitive) == 0)
             {
                 *deviceInfoSetOut = deviceInfoSet;
                 *deviceInfoDataOut = candidateData;
@@ -1507,12 +1533,18 @@ void HardwareDeviceManagerPage::uninstallSelectedDevice()
         return;
     }
 
+    // targetInstanceIdText 用途：
+    // - 确认框与后台任务期间 m_deviceList 可能被新快照整体替换，entryPointer 会失效；
+    // - 因此先按值复制卸载所需的全部信息，后续流程不再解引用快照指针。
+    const QString targetInstanceIdText = entryPointer->instanceIdText;
+    const QString targetDeviceNameText = safeDisplayText(entryPointer->nameText);
+
     const QString confirmText = QStringLiteral(
         "确定要卸载此设备吗？\n\n"
         "名称：%1\n"
         "Instance ID：\n%2\n\n"
         "该操作可能导致设备暂时不可用，并可能要求重启。")
-        .arg(safeDisplayText(entryPointer->nameText), safeDisplayText(entryPointer->instanceIdText));
+        .arg(targetDeviceNameText, safeDisplayText(targetInstanceIdText));
     if (QMessageBox::question(
         this,
         QStringLiteral("确认卸载设备"),
@@ -1523,28 +1555,104 @@ void HardwareDeviceManagerPage::uninstallSelectedDevice()
         return;
     }
 
-    QString errorText;
-    const bool uninstallOk = uninstallDeviceByInstanceId(entryPointer->instanceIdText, &errorText);
-    if (!uninstallOk)
+    // 复用刷新互斥标记：卸载期间禁止后台枚举与本操作并发访问同一 DevNode。
+    bool expectedRefreshingValue = false;
+    if (!m_refreshing.compare_exchange_strong(expectedRefreshingValue, true))
     {
-        // privilegePromptHandled：记录设备卸载失败是否已由权限恢复流程处理。
-        const bool privilegePromptHandled =
-            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("卸载设备"), errorText);
-        if (!privilegePromptHandled)
+        if (m_statusLabel != nullptr)
         {
-            QMessageBox::critical(
-                this,
-                QStringLiteral("卸载设备失败"),
-                errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+            m_statusLabel->setText(QStringLiteral("正在刷新，请等待当前枚举完成。"));
         }
         return;
     }
 
-    QMessageBox::information(
-        this,
-        QStringLiteral("卸载设备"),
-        QStringLiteral("设备卸载请求已提交。若设备仍显示或状态未变化，请刷新或重启系统。"));
-    refreshDevicesAsync(true);
+    // applicationContext 与事件循环同寿命；工作线程不解引用页面指针，只把结果回投主线程。
+    QObject* const applicationContext = QCoreApplication::instance();
+    if (applicationContext == nullptr)
+    {
+        m_refreshing.store(false);
+        return;
+    }
+
+    if (m_statusLabel != nullptr)
+    {
+        m_statusLabel->setText(QStringLiteral("正在卸载设备，请稍候..."));
+    }
+    if (m_refreshButton != nullptr)
+    {
+        m_refreshButton->setEnabled(false);
+    }
+    if (m_showAllDevicesCheck != nullptr)
+    {
+        m_showAllDevicesCheck->setEnabled(false);
+    }
+
+    const QPointer<HardwareDeviceManagerPage> safeThis(this);
+    std::thread([applicationContext, safeThis, targetInstanceIdText]()
+    {
+        // DIF_REMOVE 会加载类安装程序与协处理器，其中可能使用 COM；
+        // 工作线程必须自建单线程套间并配对释放，COM 指针不跨线程传递。
+        const HRESULT comInitializeStatus = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+        QString errorText;
+        const bool uninstallOk = uninstallDeviceByInstanceId(targetInstanceIdText, &errorText);
+
+        if (SUCCEEDED(comInitializeStatus))
+        {
+            CoUninitialize();
+        }
+
+        QMetaObject::invokeMethod(
+            applicationContext,
+            [safeThis, uninstallOk, errorText]()
+            {
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+
+                HardwareDeviceManagerPage* const pagePointer = safeThis.data();
+                pagePointer->m_refreshing.store(false);
+                if (pagePointer->m_refreshButton != nullptr)
+                {
+                    pagePointer->m_refreshButton->setEnabled(true);
+                }
+                if (pagePointer->m_showAllDevicesCheck != nullptr)
+                {
+                    pagePointer->m_showAllDevicesCheck->setEnabled(true);
+                }
+
+                if (!uninstallOk)
+                {
+                    if (pagePointer->m_statusLabel != nullptr)
+                    {
+                        pagePointer->m_statusLabel->setText(QStringLiteral("卸载设备失败"));
+                    }
+
+                    // privilegePromptHandled：记录设备卸载失败是否已由权限恢复流程处理。
+                    const bool privilegePromptHandled =
+                        ks::ui::promptForPrivilegeFailure(
+                            pagePointer,
+                            QStringLiteral("卸载设备"),
+                            errorText);
+                    if (!privilegePromptHandled)
+                    {
+                        QMessageBox::critical(
+                            pagePointer,
+                            QStringLiteral("卸载设备失败"),
+                            errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+                    }
+                    return;
+                }
+
+                QMessageBox::information(
+                    pagePointer,
+                    QStringLiteral("卸载设备"),
+                    QStringLiteral("设备卸载请求已提交。若设备仍显示或状态未变化，请刷新或重启系统。"));
+                pagePointer->refreshDevicesAsync(true);
+            },
+            Qt::QueuedConnection);
+    }).detach();
 }
 
 void HardwareDeviceManagerPage::deleteSelectedDeviceDriverPackage()
@@ -1574,12 +1682,15 @@ void HardwareDeviceManagerPage::deleteSelectedDeviceDriverPackage()
         return;
     }
 
+    // targetDeviceNameText 用途：确认框与后台任务期间快照可能被替换，先取值再走后续流程。
+    const QString targetDeviceNameText = safeDisplayText(entryPointer->nameText);
+
     const QString confirmText = QStringLiteral(
         "确定要从 Driver Store 删除此驱动包吗？\n\n"
         "设备：%1\n"
         "INF：%2\n\n"
         "建议先卸载设备，再删除驱动包。该操作可能影响同包驱动的其它设备。")
-        .arg(safeDisplayText(entryPointer->nameText), oemInfName);
+        .arg(targetDeviceNameText, oemInfName);
     if (QMessageBox::question(
         this,
         QStringLiteral("确认删除驱动包"),
@@ -1590,28 +1701,104 @@ void HardwareDeviceManagerPage::deleteSelectedDeviceDriverPackage()
         return;
     }
 
-    QString errorText;
-    const bool deleteOk = uninstallOemInfPackage(oemInfName, &errorText);
-    if (!deleteOk)
+    // 复用刷新互斥标记：删除驱动包期间禁止后台枚举与本操作并发触碰 Driver Store。
+    bool expectedRefreshingValue = false;
+    if (!m_refreshing.compare_exchange_strong(expectedRefreshingValue, true))
     {
-        // privilegePromptHandled：记录驱动包删除失败是否已由权限恢复流程处理。
-        const bool privilegePromptHandled =
-            ks::ui::promptForPrivilegeFailure(this, QStringLiteral("删除驱动包"), errorText);
-        if (!privilegePromptHandled)
+        if (m_statusLabel != nullptr)
         {
-            QMessageBox::critical(
-                this,
-                QStringLiteral("删除驱动包失败"),
-                errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+            m_statusLabel->setText(QStringLiteral("正在刷新，请等待当前枚举完成。"));
         }
         return;
     }
 
-    QMessageBox::information(
-        this,
-        QStringLiteral("删除驱动包"),
-        QStringLiteral("驱动包已删除：%1").arg(oemInfName));
-    refreshDevicesAsync(true);
+    // applicationContext 与事件循环同寿命；工作线程不解引用页面指针，只把结果回投主线程。
+    QObject* const applicationContext = QCoreApplication::instance();
+    if (applicationContext == nullptr)
+    {
+        m_refreshing.store(false);
+        return;
+    }
+
+    if (m_statusLabel != nullptr)
+    {
+        m_statusLabel->setText(QStringLiteral("正在删除驱动包，请稍候..."));
+    }
+    if (m_refreshButton != nullptr)
+    {
+        m_refreshButton->setEnabled(false);
+    }
+    if (m_showAllDevicesCheck != nullptr)
+    {
+        m_showAllDevicesCheck->setEnabled(false);
+    }
+
+    const QPointer<HardwareDeviceManagerPage> safeThis(this);
+    std::thread([applicationContext, safeThis, oemInfName]()
+    {
+        // SetupUninstallOEMInfW 会驱动 Driver Store 清理流程，内部可能使用 COM；
+        // 工作线程自建单线程套间并配对释放，COM 指针不跨线程传递。
+        const HRESULT comInitializeStatus = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+        QString errorText;
+        const bool deleteOk = uninstallOemInfPackage(oemInfName, &errorText);
+
+        if (SUCCEEDED(comInitializeStatus))
+        {
+            CoUninitialize();
+        }
+
+        QMetaObject::invokeMethod(
+            applicationContext,
+            [safeThis, oemInfName, deleteOk, errorText]()
+            {
+                if (safeThis.isNull())
+                {
+                    return;
+                }
+
+                HardwareDeviceManagerPage* const pagePointer = safeThis.data();
+                pagePointer->m_refreshing.store(false);
+                if (pagePointer->m_refreshButton != nullptr)
+                {
+                    pagePointer->m_refreshButton->setEnabled(true);
+                }
+                if (pagePointer->m_showAllDevicesCheck != nullptr)
+                {
+                    pagePointer->m_showAllDevicesCheck->setEnabled(true);
+                }
+
+                if (!deleteOk)
+                {
+                    if (pagePointer->m_statusLabel != nullptr)
+                    {
+                        pagePointer->m_statusLabel->setText(QStringLiteral("删除驱动包失败"));
+                    }
+
+                    // privilegePromptHandled：记录驱动包删除失败是否已由权限恢复流程处理。
+                    const bool privilegePromptHandled =
+                        ks::ui::promptForPrivilegeFailure(
+                            pagePointer,
+                            QStringLiteral("删除驱动包"),
+                            errorText);
+                    if (!privilegePromptHandled)
+                    {
+                        QMessageBox::critical(
+                            pagePointer,
+                            QStringLiteral("删除驱动包失败"),
+                            errorText.isEmpty() ? QStringLiteral("未知错误。") : errorText);
+                    }
+                    return;
+                }
+
+                QMessageBox::information(
+                    pagePointer,
+                    QStringLiteral("删除驱动包"),
+                    QStringLiteral("驱动包已删除：%1").arg(oemInfName));
+                pagePointer->refreshDevicesAsync(true);
+            },
+            Qt::QueuedConnection);
+    }).detach();
 }
 
 std::vector<HardwareDeviceManagerPage::DeviceEntry>

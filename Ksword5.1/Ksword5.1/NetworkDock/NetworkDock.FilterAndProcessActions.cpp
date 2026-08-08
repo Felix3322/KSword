@@ -8,11 +8,15 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
+#include <QHash>
 #include <QHeaderView>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPixmap>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QStandardItem>
 #include <QStandardItemModel>
@@ -20,11 +24,156 @@
 #include <algorithm>
 #include <string>
 #include <unordered_map>
+#include <utility>
+
+#include <objbase.h>
+#include <Shellapi.h>
 
 using namespace network_dock_detail;
 
 namespace
 {
+    // kMaxMonitorProcessIconExtractPerRound：
+    // - 单轮后台补图标的上限；
+    // - 首次刷新时系统里可能有 300+ 进程，一次全量冷查 Shell 图标会长时间占用线程池，
+    //   超出的部分留给后续刷新轮次继续补齐。
+    constexpr int kMaxMonitorProcessIconExtractPerRound = 128;
+
+    // MonitorProcessCandidateSnapshotItem：
+    // - 后台线程产出的进程候选原始数据，只包含可跨线程传递的值类型；
+    // - QIcon/QPixmap 一律不出现在这里，图标由 UI 线程按位图构造。
+    struct MonitorProcessCandidateSnapshotItem
+    {
+        std::uint32_t pid = 0; // 进程 PID。
+        QString processName;   // 进程名（已去空白）。
+    };
+
+    // MonitorProcessCandidateRefreshState：
+    // - 进程候选缓存的异步刷新调度状态；
+    // - latestRequestGeneration 用于淘汰被新请求取代的旧结果；
+    // - refreshInFlight 保证同一时刻只有一个后台枚举任务在跑。
+    struct MonitorProcessCandidateRefreshState
+    {
+        quint64 latestRequestGeneration = 0;
+        bool refreshInFlight = false;
+    };
+
+    // g_monitorProcessCandidateRefreshStateMap：
+    // - 按 NetworkDock 实例保存上面的调度状态；
+    // - 只在 UI 线程读写（派发点与回投点都在 UI 线程），因此不需要加锁；
+    // - 键仅作为身份标识，永不解引用，宿主析构后由回投分支按键清理。
+    std::unordered_map<const NetworkDock*, MonitorProcessCandidateRefreshState>
+        g_monitorProcessCandidateRefreshStateMap;
+
+    // monitorProcessPlaceholderIcon 作用：
+    // - 返回进程候选下拉的统一占位图标，真实图标解析完成前先顶上；
+    // - 入参：无；
+    // - 返回：共享 QIcon 引用，只能在 UI 线程使用。
+    const QIcon& monitorProcessPlaceholderIcon()
+    {
+        static const QIcon placeholderIcon(QStringLiteral(":/Icon/process_main.svg"));
+        return placeholderIcon;
+    }
+
+    // collectMonitorProcessCandidateSnapshot 作用：
+    // - 在线程池工作线程里做一次系统进程枚举，只产出 PID 与进程名；
+    // - EnumerateProcesses 内部会拉全局句柄快照与 PDH GPU 计数器，必须远离 UI 线程；
+    // - 入参：无；
+    // - 返回：可跨线程传递的候选原始数据列表。
+    std::vector<MonitorProcessCandidateSnapshotItem> collectMonitorProcessCandidateSnapshot()
+    {
+        const std::vector<ks::process::ProcessRecord> processList =
+            ks::process::EnumerateProcesses(ks::process::ProcessEnumStrategy::Auto);
+
+        std::vector<MonitorProcessCandidateSnapshotItem> snapshotList;
+        snapshotList.reserve(processList.size());
+        for (const ks::process::ProcessRecord& processRecord : processList)
+        {
+            if (processRecord.pid == 0)
+            {
+                continue;
+            }
+
+            MonitorProcessCandidateSnapshotItem snapshotItem;
+            snapshotItem.pid = processRecord.pid;
+            snapshotItem.processName = toQString(processRecord.processName).trimmed();
+            snapshotList.push_back(std::move(snapshotItem));
+        }
+        return snapshotList;
+    }
+
+    // collectMonitorProcessIconImages 作用：
+    // - 在线程池工作线程里为“尚无图标缓存”的 PID 提取 Shell 小图标位图；
+    // - 同一可执行路径只查询一次，并限制单轮提取数量，避免首次刷新长时间占用线程池；
+    // - SHGetFileInfoW 依赖 COM，工作线程必须自己成对 CoInitializeEx / CoUninitialize；
+    // - 入参 candidateSnapshotList：本轮枚举到的候选列表；
+    // - 入参 cachedIconPidSet：UI 线程已缓存图标的 PID 快照，命中的直接跳过；
+    // - 返回：PID -> 图标位图；位图为空表示解析失败，由 UI 线程回退占位图标。
+    QHash<quint32, QImage> collectMonitorProcessIconImages(
+        const std::vector<MonitorProcessCandidateSnapshotItem>& candidateSnapshotList,
+        const QSet<quint32>& cachedIconPidSet)
+    {
+        QHash<quint32, QImage> iconImageByPid;
+
+        const HRESULT comInitializeResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const bool comInitializedHere = SUCCEEDED(comInitializeResult);
+
+        QHash<QString, QImage> iconImageByExecutablePath;
+        int extractedCount = 0;
+        for (const MonitorProcessCandidateSnapshotItem& snapshotItem : candidateSnapshotList)
+        {
+            const quint32 processIdKey = static_cast<quint32>(snapshotItem.pid);
+            if (cachedIconPidSet.contains(processIdKey))
+            {
+                continue;
+            }
+            if (extractedCount >= kMaxMonitorProcessIconExtractPerRound)
+            {
+                break;
+            }
+            ++extractedCount;
+
+            const std::string processPath = ks::process::QueryProcessPathByPid(snapshotItem.pid);
+            if (processPath.empty())
+            {
+                iconImageByPid.insert(processIdKey, QImage());
+                continue;
+            }
+
+            const QString processPathText = QString::fromUtf8(processPath.c_str());
+            const auto pathIterator = iconImageByExecutablePath.constFind(processPathText);
+            if (pathIterator != iconImageByExecutablePath.constEnd())
+            {
+                iconImageByPid.insert(processIdKey, pathIterator.value());
+                continue;
+            }
+
+            SHFILEINFOW shellFileInfo{};
+            const DWORD_PTR shellQueryResult = ::SHGetFileInfoW(
+                reinterpret_cast<const wchar_t*>(processPathText.utf16()),
+                0,
+                &shellFileInfo,
+                sizeof(shellFileInfo),
+                SHGFI_ICON | SHGFI_SMALLICON);
+
+            QImage processIconImage;
+            if (shellQueryResult != 0 && shellFileInfo.hIcon != nullptr)
+            {
+                // QImage::fromHICON 会复制像素数据，转换完成后必须归还 Shell 分配的 HICON。
+                processIconImage = QImage::fromHICON(shellFileInfo.hIcon);
+                ::DestroyIcon(shellFileInfo.hIcon);
+            }
+            iconImageByExecutablePath.insert(processPathText, processIconImage);
+            iconImageByPid.insert(processIdKey, processIconImage);
+        }
+
+        if (comInitializedHere)
+        {
+            ::CoUninitialize();
+        }
+        return iconImageByPid;
+    }
+
     constexpr const char* kMonitorFilterConfigRelativePath = "config/wireshark.cfg";
     constexpr const char* kMonitorFilterJsonVersionKey = "version";
     constexpr const char* kMonitorFilterJsonGroupsKey = "groups";
@@ -226,6 +375,10 @@ QString NetworkDock::monitorFilterConfigPath() const
 
 void NetworkDock::refreshMonitorProcessCandidateList(const bool forceRefresh)
 {
+    // 该函数已由“同步全量枚举 + 逐进程图标提取”改成纯调度：
+    // - UI 线程只判节流并派发任务，绝不再在这里做 EnumerateProcesses / Shell 图标提取；
+    // - 后台任务分两段回投：先回投 PID+进程名让下拉立刻可用，再回投图标位图补齐显示；
+    // - 调用方本次拿到的仍是上一轮已缓存的 m_monitorProcessCandidateList。
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     constexpr qint64 kRefreshIntervalMs = 1200;
     if (!forceRefresh &&
@@ -235,44 +388,187 @@ void NetworkDock::refreshMonitorProcessCandidateList(const bool forceRefresh)
         return;
     }
 
-    std::vector<ks::process::ProcessRecord> processList = ks::process::EnumerateProcesses(
-        ks::process::ProcessEnumStrategy::Auto);
-
-    std::vector<MonitorProcessCandidate> candidateList;
-    candidateList.reserve(processList.size());
-    for (const ks::process::ProcessRecord& record : processList)
+    MonitorProcessCandidateRefreshState& refreshState =
+        g_monitorProcessCandidateRefreshStateMap[this];
+    if (refreshState.refreshInFlight)
     {
-        if (record.pid == 0)
-        {
-            continue;
-        }
+        return;
+    }
+    refreshState.refreshInFlight = true;
+    ++refreshState.latestRequestGeneration;
+    const quint64 requestGeneration = refreshState.latestRequestGeneration;
 
-        MonitorProcessCandidate candidate;
-        candidate.pid = record.pid;
-        candidate.processName = toQString(record.processName).trimmed();
-        if (candidate.processName.isEmpty())
-        {
-            candidate.processName = QStringLiteral("PID_%1").arg(record.pid);
-        }
-        candidate.processIcon = resolveProcessIconByPid(record.pid, record.processName);
-        candidate.displayText = QStringLiteral("%1 (%2)").arg(candidate.processName).arg(candidate.pid);
-        candidate.searchText = QStringLiteral("%1 %2")
-            .arg(candidate.processName.toLower())
-            .arg(QString::number(candidate.pid));
-        candidateList.push_back(std::move(candidate));
+    // 已缓存图标的 PID 快照随任务一起下发，后台只为新出现的进程做 Shell 图标提取。
+    QSet<quint32> cachedIconPidSet;
+    cachedIconPidSet.reserve(m_processIconCacheByPid.size());
+    for (auto iconCacheIterator = m_processIconCacheByPid.constBegin();
+        iconCacheIterator != m_processIconCacheByPid.constEnd();
+        ++iconCacheIterator)
+    {
+        cachedIconPidSet.insert(iconCacheIterator.key());
     }
 
-    std::sort(candidateList.begin(), candidateList.end(), [](const MonitorProcessCandidate& left, const MonitorProcessCandidate& right)
+    // refreshFocusedProcessSuggestionModels 作用：
+    // - 候选缓存或图标更新后，只为“当前正在输入的规则组”重建补全下拉；
+    // - 入参 dockInstance：宿主 NetworkDock；
+    // - 返回：无。
+    const auto refreshFocusedProcessSuggestionModels = [](NetworkDock* const dockInstance)
         {
-            if (left.processName.compare(right.processName, Qt::CaseInsensitive) == 0)
+            for (const std::unique_ptr<MonitorFilterRuleGroupUiState>& groupState :
+                dockInstance->m_monitorFilterRuleGroupUiList)
             {
-                return left.pid < right.pid;
+                if (groupState == nullptr ||
+                    groupState->processInputEdit == nullptr ||
+                    !groupState->processInputEdit->hasFocus())
+                {
+                    continue;
+                }
+                dockInstance->refreshProcessSuggestionModelForGroup(
+                    groupState->groupId,
+                    groupState->processInputEdit->text());
             }
-            return left.processName.compare(right.processName, Qt::CaseInsensitive) < 0;
-        });
+        };
 
-    m_monitorProcessCandidateList = std::move(candidateList);
-    m_monitorProcessCandidateLastRefreshMs = nowMs;
+    // ownerKey 只当身份标识用（绝不解引用），保证宿主析构后仍能定位并清理调度状态。
+    const QPointer<NetworkDock> guardedSelf(this);
+    const NetworkDock* const ownerKey = this;
+    QThreadPool::globalInstance()->start(
+        [guardedSelf, ownerKey, requestGeneration, cachedIconPidSet, refreshFocusedProcessSuggestionModels]()
+        {
+            // 第一段：只做进程枚举，尽快让下拉候选可用。
+            const std::vector<MonitorProcessCandidateSnapshotItem> candidateSnapshotList =
+                collectMonitorProcessCandidateSnapshot();
+
+            QCoreApplication* const nameStageAppInstance = QCoreApplication::instance();
+            if (nameStageAppInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                nameStageAppInstance,
+                [guardedSelf,
+                    ownerKey,
+                    requestGeneration,
+                    candidateSnapshotList,
+                    refreshFocusedProcessSuggestionModels]()
+                {
+                    const auto stateIterator = g_monitorProcessCandidateRefreshStateMap.find(ownerKey);
+                    if (stateIterator == g_monitorProcessCandidateRefreshStateMap.end() ||
+                        stateIterator->second.latestRequestGeneration != requestGeneration ||
+                        guardedSelf == nullptr)
+                    {
+                        return;
+                    }
+
+                    std::vector<MonitorProcessCandidate> candidateList;
+                    candidateList.reserve(candidateSnapshotList.size());
+                    for (const MonitorProcessCandidateSnapshotItem& snapshotItem : candidateSnapshotList)
+                    {
+                        MonitorProcessCandidate candidate;
+                        candidate.pid = snapshotItem.pid;
+                        candidate.processName = snapshotItem.processName;
+                        if (candidate.processName.isEmpty())
+                        {
+                            candidate.processName = QStringLiteral("PID_%1").arg(snapshotItem.pid);
+                        }
+
+                        // 图标只从缓存取，缓存未命中时先用占位图标，等第二段回投再补齐。
+                        const auto iconCacheIterator = guardedSelf->m_processIconCacheByPid.constFind(
+                            static_cast<quint32>(snapshotItem.pid));
+                        candidate.processIcon =
+                            iconCacheIterator != guardedSelf->m_processIconCacheByPid.constEnd()
+                            ? iconCacheIterator.value()
+                            : monitorProcessPlaceholderIcon();
+                        candidate.displayText = QStringLiteral("%1 (%2)")
+                            .arg(candidate.processName)
+                            .arg(candidate.pid);
+                        candidate.searchText = QStringLiteral("%1 %2")
+                            .arg(candidate.processName.toLower())
+                            .arg(QString::number(candidate.pid));
+                        candidateList.push_back(std::move(candidate));
+                    }
+
+                    std::sort(
+                        candidateList.begin(),
+                        candidateList.end(),
+                        [](const MonitorProcessCandidate& left, const MonitorProcessCandidate& right)
+                        {
+                            if (left.processName.compare(right.processName, Qt::CaseInsensitive) == 0)
+                            {
+                                return left.pid < right.pid;
+                            }
+                            return left.processName.compare(right.processName, Qt::CaseInsensitive) < 0;
+                        });
+
+                    guardedSelf->m_monitorProcessCandidateList = std::move(candidateList);
+                    guardedSelf->m_monitorProcessCandidateLastRefreshMs =
+                        QDateTime::currentMSecsSinceEpoch();
+                    refreshFocusedProcessSuggestionModels(guardedSelf.data());
+                },
+                Qt::QueuedConnection);
+
+            // 第二段：补齐尚无缓存的 PID 图标，同样全部在后台完成。
+            const QHash<quint32, QImage> iconImageByPid =
+                collectMonitorProcessIconImages(candidateSnapshotList, cachedIconPidSet);
+
+            QCoreApplication* const iconStageAppInstance = QCoreApplication::instance();
+            if (iconStageAppInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                iconStageAppInstance,
+                [guardedSelf,
+                    ownerKey,
+                    requestGeneration,
+                    iconImageByPid,
+                    refreshFocusedProcessSuggestionModels]()
+                {
+                    // 本轮任务结束：先释放调度位，让后续输入还能继续刷新候选。
+                    const auto stateIterator = g_monitorProcessCandidateRefreshStateMap.find(ownerKey);
+                    if (stateIterator == g_monitorProcessCandidateRefreshStateMap.end())
+                    {
+                        return;
+                    }
+                    if (stateIterator->second.latestRequestGeneration != requestGeneration)
+                    {
+                        return;
+                    }
+                    stateIterator->second.refreshInFlight = false;
+                    if (guardedSelf == nullptr)
+                    {
+                        g_monitorProcessCandidateRefreshStateMap.erase(stateIterator);
+                        return;
+                    }
+                    if (iconImageByPid.isEmpty())
+                    {
+                        return;
+                    }
+
+                    // QPixmap/QIcon 只能在 UI 线程构造；解析失败也写入缓存，避免同一 PID 反复冷查。
+                    for (auto iconImageIterator = iconImageByPid.constBegin();
+                        iconImageIterator != iconImageByPid.constEnd();
+                        ++iconImageIterator)
+                    {
+                        const QIcon resolvedIcon = iconImageIterator.value().isNull()
+                            ? monitorProcessPlaceholderIcon()
+                            : QIcon(QPixmap::fromImage(iconImageIterator.value()));
+                        guardedSelf->m_processIconCacheByPid.insert(iconImageIterator.key(), resolvedIcon);
+                    }
+
+                    for (MonitorProcessCandidate& candidate : guardedSelf->m_monitorProcessCandidateList)
+                    {
+                        const auto iconCacheIterator = guardedSelf->m_processIconCacheByPid.constFind(
+                            static_cast<quint32>(candidate.pid));
+                        if (iconCacheIterator != guardedSelf->m_processIconCacheByPid.constEnd())
+                        {
+                            candidate.processIcon = iconCacheIterator.value();
+                        }
+                    }
+                    refreshFocusedProcessSuggestionModels(guardedSelf.data());
+                },
+                Qt::QueuedConnection);
+        });
 }
 
 void NetworkDock::refreshProcessSuggestionModelForGroup(const int groupId, const QString& keywordText)
@@ -285,6 +581,8 @@ void NetworkDock::refreshProcessSuggestionModelForGroup(const int groupId, const
         return;
     }
 
+    // 只负责“调度一次后台刷新”，本次筛选仍在已缓存的候选列表上做纯字符串匹配；
+    // 后台结果回投后会再次为当前聚焦的输入框重建下拉，不需要用户重复敲键。
     refreshMonitorProcessCandidateList(false);
 
     const QString keyword = keywordText.trimmed().toLower();
@@ -705,6 +1003,8 @@ void NetworkDock::addProcessTargetByInput(const int groupId)
         return;
     }
 
+    // 这里只触发一次后台刷新（不阻塞点击）：候选缓存在用户输入阶段就已经在后台建好，
+    // 本次解析仍走“已缓存候选 -> PID 文本 -> GetProcessNameByPID”三级回退。
     refreshMonitorProcessCandidateList(true);
 
     const QString inputText = groupState->processInputEdit->text().trimmed();

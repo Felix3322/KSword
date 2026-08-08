@@ -24,6 +24,7 @@ class QLineEdit;
 class QPushButton;
 class QTableWidget;
 class QTableWidgetItem;
+class QTimer;
 class CodeEditorWidget;
 class QHBoxLayout;
 
@@ -137,8 +138,26 @@ private:
 
     // buildDetailText：
     // - 生成当前行详情文本；
-    // - 包含 CID 枚举摘要、sourceMask/anomalyFlags 及可选 ObjectSummary。
+    // - 只做纯格式化，不含任何驱动 IOCTL；[KernelObjectSummary] 段由后台任务补齐。
     QString buildDetailText(const CidEvidenceRow* row) const;
+
+    // scheduleDetailRefresh：
+    // - 输入：无，直接读取当前选中行；
+    // - 处理：立即渲染本地详情，并把 R0 对象摘要请求推入 150ms 去抖窗口；
+    // - 返回：无返回值，同时递增 generation 作废所有在途回投。
+    void scheduleDetailRefresh();
+
+    // requestKernelObjectSummaryAsync：
+    // - 输入：无，按当前选中行生成 targetKind/cidValue/objectAddress；
+    // - 处理：在 QThreadPool 里执行 queryKernelObjectSummary，回投时校验 generation；
+    // - 返回：无返回值，UI 只在回投槽内被触碰。
+    void requestKernelObjectSummaryAsync();
+
+    // appendKernelObjectSummaryText：
+    // - 输入 summaryText：后台线程格式化好的 [KernelObjectSummary] 段；
+    // - 处理：拼接在本地详情文本之后写入详情面板；
+    // - 返回：无返回值。
+    void appendKernelObjectSummaryText(const QString& summaryText);
 
     // buildDiagnosticDetailText：
     // - 输入：当前空表/筛选空命中的诊断原因；
@@ -174,6 +193,12 @@ private:
     static QString fixedWideText(const wchar_t* text, std::size_t maxChars);
     static bool cidSummaryTruncated(const CidTableSummary& summary);
 
+    // formatKernelObjectSummaryText：
+    // - 输入 summary：queryKernelObjectSummary 返回的纯值类型结果；
+    // - 处理：只做字符串格式化，可安全地在后台线程执行；
+    // - 返回：详情面板追加段文本。
+    static QString formatKernelObjectSummaryText(const ksword::ark::KernelObjectSummaryAuditResult& summary);
+
 private:
     QHBoxLayout* m_toolbarLayout = nullptr;
     QPushButton* m_refreshButton = nullptr;
@@ -181,8 +206,11 @@ private:
     QLabel* m_statusLabel = nullptr;
     QTableWidget* m_table = nullptr;
     CodeEditorWidget* m_detailEditor = nullptr;
+    QTimer* m_detailRequestTimer = nullptr;     // detailRequestTimer：R0 对象摘要请求的去抖定时器。
 
     std::atomic_bool m_refreshing{ false };
     CidTableSummary m_cidSummary;
     std::vector<CidEvidenceRow> m_rows;
+    QString m_detailBaseText;                   // detailBaseText：当前行的本地详情文本，回投时在其后追加摘要。
+    std::uint64_t m_detailGeneration = 0;       // detailGeneration：淘汰被新选中行取代的旧摘要回投。
 };
