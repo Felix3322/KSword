@@ -12,13 +12,13 @@ namespace ks::ui
 
             // ---------- 按钮基线 ----------
             // 未被局部样式接管的普通按钮统一为“中性表面 + 主题色交互”。
+            // 基线只允许颜色/边框属性：min-height、padding 等几何属性会穿透
+            // 局部样式改变紧凑布局（如标题栏图标按钮）的尺寸，一律禁止。
             "QPushButton{"
             "  background-color:__SURFACE_ALT__;"
             "  color:__TEXT__;"
             "  border:1px solid __BORDER__;"
-            "  border-radius:4px;"
-            "  padding:3px 10px;"
-            "  min-height:20px;"
+            "  border-radius:3px;"
             "}"
             "QPushButton:hover{"
             "  background-color:__SURFACE_MUTED__;"
@@ -53,8 +53,7 @@ namespace ks::ui
             "  background-color:__SURFACE__;"
             "  color:__TEXT__;"
             "  border:1px solid __BORDER__;"
-            "  border-radius:4px;"
-            "  padding:2px 6px;"
+            "  border-radius:3px;"
             "  selection-background-color:__ACCENT__;"
             "  selection-color:__ON_ACCENT__;"
             "}"
@@ -70,11 +69,11 @@ namespace ks::ui
             "}"
 
             // ---------- 分组框基线 ----------
+            // margin-top 是标题行所需的最小空间，与 Qt 原生标题高度一致。
             "QGroupBox{"
             "  border:1px solid __BORDER__;"
-            "  border-radius:6px;"
+            "  border-radius:4px;"
             "  margin-top:12px;"
-            "  padding-top:4px;"
             "}"
             "QGroupBox::title{"
             "  subcontrol-origin:margin;"
@@ -97,7 +96,6 @@ namespace ks::ui
             "  border:none;"
             "  border-right:1px solid __BORDER__;"
             "  border-bottom:1px solid __BORDER_STRONG__;"
-            "  padding:4px 8px;"
             "}"
             "QHeaderView::section:hover{"
             "  background-color:__SURFACE_MUTED__;"
@@ -108,12 +106,12 @@ namespace ks::ui
             "  background-color:__SURFACE_MUTED__;"
             "  color:__TEXT__;"
             "  border:1px solid __BORDER__;"
-            "  border-radius:4px;"
+            "  border-radius:3px;"
             "  text-align:center;"
             "}"
             "QProgressBar::chunk{"
             "  background-color:__ACCENT__;"
-            "  border-radius:3px;"
+            "  border-radius:2px;"
             "}"
 
             // ---------- 分割条基线 ----------

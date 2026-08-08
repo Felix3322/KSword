@@ -188,7 +188,26 @@ const QString QSS_MainWindow_dockStyle = R"(
         background-color: transparent;
         color: palette(text);
         border: none;
-        border-radius: 3px;
+        border-radius: 1px;
+    }
+
+    ads--CDockWidgetTab QPushButton,
+    ads--CDockWidgetTab QToolButton {
+        background-color: transparent;
+        color: palette(text);
+        border: none;
+        border-radius: 1px;
+    }
+
+    ads--CDockWidgetTab QPushButton:hover,
+    ads--CDockWidgetTab QToolButton:hover {
+        background-color: palette(highlight);
+        color: palette(highlighted-text);
+    }
+
+    ads--CDockWidgetTab[activeTab="true"] QPushButton,
+    ads--CDockWidgetTab[activeTab="true"] QToolButton {
+        color: palette(highlighted-text);
     }
 
     ads--CDockAreaTitleBar QToolButton:hover,
@@ -208,8 +227,7 @@ const QString QSS_MainWindow_dockStyle = R"(
     QScrollBar::handle:vertical {
         background-color: palette(highlight);
         min-height: 20px;
-        margin: 2px;
-        border-radius: 4px;
+        border-radius: 2px;
     }
 
     QScrollBar::handle:vertical:hover {
@@ -226,8 +244,7 @@ const QString QSS_MainWindow_dockStyle = R"(
     QScrollBar::handle:horizontal {
         background-color: palette(highlight);
         min-width: 20px;
-        margin: 2px;
-        border-radius: 4px;
+        border-radius: 2px;
     }
 
     QScrollBar::handle:horizontal:hover {
@@ -257,7 +274,7 @@ const QString QSS_Buttons_Light = R"(
         color: palette(highlighted-text) !important;
         border: 1px solid palette(highlight) !important;
         padding: 6px 16px;
-        border-radius: 4px;
+        border-radius: 1px;
         font-weight: 500;
         outline: none;
     }
@@ -291,7 +308,7 @@ const QString QSS_Buttons_Dark = R"(
         color: palette(highlighted-text) !important;
         border: 1px solid palette(highlight) !important;
         padding: 6px 16px;
-        border-radius: 4px;
+        border-radius: 1px;
         font-weight: 500;
         outline: none;
     }

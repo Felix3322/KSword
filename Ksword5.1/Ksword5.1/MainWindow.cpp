@@ -5719,7 +5719,7 @@ void MainWindow::initializeWindowDockMenuActions()
         return;
     }
 
-    // 直接使用 ADS 的原生 toggle action：菜单勾选、Dock 标题栏关闭、浮动和布局恢复
+    // 直接使用 ADS 的原生 toggle action：菜单勾选、Dock 标签关闭按钮、浮动和布局恢复
     // 都由同一份可见状态驱动，避免维护第二套布尔状态。
     m_windowMenu->clear();
     m_dockLog->setToggleViewActionMode(ads::CDockWidget::ActionModeToggle);
@@ -5744,6 +5744,50 @@ void MainWindow::initializeWindowDockMenuActions()
     m_windowMenu->addAction(logDockAction);
     m_windowMenu->addAction(monitorPanelAction);
     m_windowMenu->addAction(currentTasksAction);
+
+    // 主功能 Dock 的 toggle action：Tab 通过关闭按钮卸载后，从这里重新打开。
+    // MenuEntry 说明：dockKey 与 dock.<key> 语言键保持一致。
+    struct MainDockMenuEntry
+    {
+        ads::CDockWidget* dockWidget = nullptr; // dockWidget：主功能 Dock 指针。
+        const char* dockKey = nullptr;          // dockKey：语言包 dock.<key> 的 key 段。
+        const char* fallbackTitle = nullptr;    // fallbackTitle：语言包缺失时的兜底标题。
+    };
+    const MainDockMenuEntry mainDockMenuEntries[] = {
+        { m_dockWelcome, "welcome", "欢迎" },
+        { m_dockProcess, "process", "进程" },
+        { m_dockNetwork, "network", "网络" },
+        { m_dockMemory, "memory", "内存" },
+        { m_dockFile, "file", "文件" },
+        { m_dockScanner, "scanner", "扫描器" },
+        { m_dockDriver, "driver", "驱动" },
+        { m_dockKernel, "kernel", "内核" },
+        { m_dockMonitorTab, "monitor", "监控" },
+        { m_dockHardware, "hardware", "硬件" },
+        { m_dockPrivilege, "privilege", "权限" },
+        { m_dockWindow, "window", "窗口" },
+        { m_dockRegistry, "registry", "注册表" },
+        { m_dockHandle, "handle", "句柄" },
+        { m_dockStartup, "startup", "启动项" },
+        { m_dockService, "service", "服务" },
+        { m_dockMisc, "misc", "杂项" },
+        { m_dockPlugin, "plugin", "插件" },
+    };
+
+    m_windowMenu->addSeparator();
+    for (const MainDockMenuEntry& menuEntry : mainDockMenuEntries)
+    {
+        if (menuEntry.dockWidget == nullptr)
+        {
+            continue;
+        }
+        QAction* dockToggleAction = menuEntry.dockWidget->toggleViewAction();
+        ks::i18n::LanguageManager::instance().bindText(
+            dockToggleAction,
+            QStringLiteral("dock.%1").arg(QLatin1String(menuEntry.dockKey)),
+            QString::fromUtf8(menuEntry.fallbackTitle));
+        m_windowMenu->addAction(dockToggleAction);
+    }
 }
 
 QString MainWindow::buildTopActionButtonStyle() const
@@ -8858,10 +8902,13 @@ void MainWindow::initDockWidgets()
             QStringLiteral("dock.%1").arg(dockKey),
             title);
         dock->setWidget(widget, insertMode);
-        // DockWidgetClosable 禁用：统一去掉每个 Dock 标签旁边的关闭叉。
-        dock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
+        // DockWidgetClosable 启用：活动标签显示关闭按钮，可随时卸载 Tab；
+        // DeleteOnClose 关闭：只隐藏不销毁，通过“窗口”菜单可重新打开。
+        dock->setFeature(ads::CDockWidget::DockWidgetClosable, true);
+        dock->setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, false);
         dock->setFeature(ads::CDockWidget::DockWidgetMovable, true);
         dock->setFeature(ads::CDockWidget::DockWidgetFloatable, true);
+        dock->setToggleViewActionMode(ads::CDockWidget::ActionModeToggle);
 
         // Dock 背景属性初始化：
         // - 默认关闭 Dock 与内容根控件的自动背景填充；
