@@ -45,6 +45,7 @@
 #include <QFileInfo>
 #include <QFileDialog>
 #include <QFileSystemModel>
+#include <QFont>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -3176,6 +3177,114 @@ namespace
         });
     }
 
+    // propertyTreeToPlainText 作用：
+    // - 把“名称/值”两列属性树整棵导出为缩进文本；
+    // - 属性页从纯文本块改成属性树后，这里替代原来的“全选文本框再复制”。
+    // 入参 treeWidget：目标属性树；为空时返回空串。
+    // 返回：分组用方括号成行、属性行为“名称: 值”的多行文本。
+    QString propertyTreeToPlainText(const QTreeWidget* treeWidget)
+    {
+        if (treeWidget == nullptr)
+        {
+            return {};
+        }
+
+        QString exportedText;
+        for (int groupIndex = 0; groupIndex < treeWidget->topLevelItemCount(); ++groupIndex)
+        {
+            const QTreeWidgetItem* groupItem = treeWidget->topLevelItem(groupIndex);
+            if (groupItem == nullptr)
+            {
+                continue;
+            }
+
+            exportedText += groupItem->text(1).isEmpty()
+                ? QStringLiteral("[%1]\n").arg(groupItem->text(0))
+                : QStringLiteral("[%1] %2\n").arg(groupItem->text(0), groupItem->text(1));
+            for (int rowIndex = 0; rowIndex < groupItem->childCount(); ++rowIndex)
+            {
+                const QTreeWidgetItem* rowItem = groupItem->child(rowIndex);
+                if (rowItem == nullptr)
+                {
+                    continue;
+                }
+                exportedText += QStringLiteral("  %1: %2\n").arg(rowItem->text(0), rowItem->text(1));
+            }
+            exportedText += QStringLiteral("\n");
+        }
+        return exportedText;
+    }
+
+    // installPropertyTreeCopyMenu 作用：
+    // - 给“名称/值”两列属性树装上右键复制菜单；
+    // - 提供“只复制值 / 复制整行 / 复制全部”三种粒度：只读文本框时代想取一条路径
+    //   得先手工划选，属性树把每条属性变成独立行后应当直接可取。
+    // 入参 treeWidget：目标属性树；为空时忽略。
+    // 返回：无。
+    void installPropertyTreeCopyMenu(QTreeWidget* treeWidget)
+    {
+        if (treeWidget == nullptr)
+        {
+            return;
+        }
+
+        treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(
+            treeWidget,
+            &QTreeWidget::customContextMenuRequested,
+            treeWidget,
+            [treeWidget](const QPoint& localPosition)
+            {
+                QTreeWidgetItem* clickedItem = treeWidget->itemAt(localPosition);
+                if (clickedItem != nullptr)
+                {
+                    treeWidget->setCurrentItem(clickedItem);
+                }
+
+                QMenu menu(treeWidget);
+                menu.setStyleSheet(buildContextMenuStyle());
+                QAction* copyValueAction = menu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_copy_cell.svg")),
+                    QStringLiteral("复制值"));
+                QAction* copyRowAction = menu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
+                    QStringLiteral("复制当前行"));
+                QAction* copyAllAction = menu.addAction(
+                    QIcon(QStringLiteral(":/Icon/process_copy_row.svg")),
+                    QStringLiteral("复制全部"));
+                copyValueAction->setEnabled(clickedItem != nullptr && !clickedItem->text(1).isEmpty());
+                copyRowAction->setEnabled(clickedItem != nullptr);
+
+                QAction* selectedAction = menu.exec(treeWidget->viewport()->mapToGlobal(localPosition));
+                if (selectedAction == nullptr)
+                {
+                    return;
+                }
+
+                QString clipboardText;
+                if (selectedAction == copyValueAction && clickedItem != nullptr)
+                {
+                    clipboardText = clickedItem->text(1);
+                }
+                else if (selectedAction == copyRowAction && clickedItem != nullptr)
+                {
+                    clipboardText = clickedItem->text(1).isEmpty()
+                        ? clickedItem->text(0)
+                        : QStringLiteral("%1: %2").arg(clickedItem->text(0), clickedItem->text(1));
+                }
+                else if (selectedAction == copyAllAction)
+                {
+                    clipboardText = propertyTreeToPlainText(treeWidget);
+                }
+
+                QClipboard* clipboardObject = QApplication::clipboard();
+                if (clipboardObject != nullptr && !clipboardText.isEmpty())
+                {
+                    clipboardObject->setText(clipboardText);
+                }
+            });
+    }
+
     // buildOpaqueStandaloneDialogStyle 作用：
     // - 为“独立弹窗”覆盖父级 Dock 透明样式，防止浅色主题下出现黑底；
     // - 强制编辑区/表格区使用 palette(base) 作为不透明背景。
@@ -4303,7 +4412,7 @@ namespace
             {
                 setWindowTitle(ks::i18n::displayText(QStringLiteral("文件属性 - %1"))
                     .arg(QFileInfo(m_filePath).fileName()));
-                refreshGeneralTabText();
+                refreshGeneralTab();
                 return;
             }
             if (event->type() == QEvent::ApplicationPaletteChange ||
@@ -4359,23 +4468,35 @@ namespace
             QString rawStringText;     // rawStringText：从文件提取的原始字符串，不得翻译。
         };
 
+        static QString formatHexValue(const quint64 value, const int digitCount)
+        {
+            // 用途：统一 0x 前缀的十六进制写法。
+            // 说明：只把数字部分转大写。对整串调用 toUpper() 会连前缀一起变成 "0X"，
+            //       和 WinDbg、微软文档里的写法对不上，复制出去还要手工改。
+            // 入参 value：待格式化的值；digitCount：补零到的最少位数，<=0 表示不补零。
+            // 返回：例如 0x0000A020。
+            QString digitsText = QString::number(value, 16).toUpper();
+            if (digitCount > 0)
+            {
+                digitsText = digitsText.rightJustified(digitCount, QLatin1Char('0'));
+            }
+            return QStringLiteral("0x%1").arg(digitsText);
+        }
+
         static QString formatHex64(const std::uint64_t value)
         {
             // 用途：统一格式化 R0 诊断地址。
-            // 返回：0x 前缀大写十六进制字符串。
-            return QStringLiteral("0x%1")
-                .arg(static_cast<qulonglong>(value), 0, 16)
-                .toUpper();
+            // 返回：0x 前缀、数字部分大写的十六进制字符串。
+            return formatHexValue(static_cast<quint64>(value), 0);
         }
 
         static QString formatNtStatus(const long status)
         {
             // 用途：NTSTATUS 同时显示十六进制和十进制，便于对照 WinDbg。
             // 返回：例如 0xC0000034 (-1073741772)。
-            return QStringLiteral("0x%1 (%2)")
-                .arg(static_cast<qulonglong>(static_cast<std::uint32_t>(status)), 8, 16, QChar('0'))
-                .arg(status)
-                .toUpper();
+            return QStringLiteral("%1 (%2)")
+                .arg(formatHexValue(static_cast<quint64>(static_cast<std::uint32_t>(status)), 8))
+                .arg(status);
         }
 
         static QString formatAuditBool(const bool value)
@@ -4851,57 +4972,110 @@ namespace
             return content;
         }
 
-        QString formatLocalizedR0FileInfoText(const ksword::ark::FileInfoQueryResult& result) const
+        // appendPropertyGroup 作用：
+        // - 在属性树里新建一个默认展开的顶层分组；
+        // - 分组行加粗且不可选中，避免被当成一条属性复制走。
+        // 入参 tree：目标属性树；titleText：已翻译的分组标题。
+        // 返回：新建分组节点，生命周期由树接管。
+        static QTreeWidgetItem* appendPropertyGroup(QTreeWidget* tree, const QString& titleText)
         {
-            const auto translated = [](const QString& sourceText)
-                {
-                    return ks::i18n::displayText(sourceText);
-                };
-
-            QString content;
-            if (!result.io.ok)
-            {
-                content += translated(QStringLiteral("状态: Unavailable\n"));
-                content += translated(QStringLiteral("原因: %1\n"))
-                    .arg(translated(friendlyFileIoMessage(result.io.message)));
-                content += translated(QStringLiteral("Win32错误: %1\n"))
-                    .arg(result.io.win32Error);
-                return content;
-            }
-
-            content += translated(QStringLiteral("协议版本: %1\n")).arg(result.version);
-            content += translated(QStringLiteral("查询状态: %1 (%2)\n"))
-                .arg(fileInfoStatusText(result.queryStatus))
-                .arg(result.queryStatus);
-            content += translated(QStringLiteral("字段标志: 0x%1\n"))
-                .arg(result.fieldFlags, 8, 16, QChar('0')).toUpper();
-            content += QStringLiteral("OpenStatus: %1\n").arg(formatNtStatus(result.openStatus));
-            content += QStringLiteral("BasicStatus: %1\n").arg(formatNtStatus(result.basicStatus));
-            content += QStringLiteral("StandardStatus: %1\n").arg(formatNtStatus(result.standardStatus));
-            content += QStringLiteral("ObjectStatus: %1\n").arg(formatNtStatus(result.objectStatus));
-            content += QStringLiteral("NameStatus: %1\n").arg(formatNtStatus(result.nameStatus));
-            content += translated(QStringLiteral("大小(EndOfFile): %1 字节\n"))
-                .arg(static_cast<qlonglong>(result.endOfFile));
-            content += translated(QStringLiteral("分配大小: %1 字节\n"))
-                .arg(static_cast<qlonglong>(result.allocationSize));
-            content += translated(QStringLiteral("属性: %1\n"))
-                .arg(translated(fileAttributesToText(result.fileAttributes)));
-            content += translated(QStringLiteral("创建时间: %1\n")).arg(fileTimeToText(result.creationTime));
-            content += translated(QStringLiteral("最后访问: %1\n")).arg(fileTimeToText(result.lastAccessTime));
-            content += translated(QStringLiteral("最后写入: %1\n")).arg(fileTimeToText(result.lastWriteTime));
-            content += QStringLiteral("ChangeTime: %1\n").arg(fileTimeToText(result.changeTime));
-            content += QStringLiteral("FileObject: %1\n").arg(formatHex64(result.fileObjectAddress));
-            content += QStringLiteral("SectionObjectPointers: %1\n").arg(formatHex64(result.sectionObjectPointersAddress));
-            content += QStringLiteral("DataSectionObject: %1\n").arg(formatHex64(result.dataSectionObjectAddress));
-            content += QStringLiteral("ImageSectionObject: %1\n").arg(formatHex64(result.imageSectionObjectAddress));
-            content += translated(QStringLiteral("R0说明: %1\n"))
-                .arg(translated(friendlyFileIoMessage(result.io.message)));
-            return content;
+            QTreeWidgetItem* groupItem = new QTreeWidgetItem(tree);
+            groupItem->setText(0, titleText);
+            QFont groupFont = groupItem->font(0);
+            groupFont.setBold(true);
+            groupItem->setFont(0, groupFont);
+            groupItem->setFlags(groupItem->flags() & ~Qt::ItemIsSelectable);
+            groupItem->setExpanded(true);
+            return groupItem;
         }
 
-        void refreshGeneralTabText()
+        // appendPropertyRow 作用：
+        // - 往分组下追加一行“属性名 + 值”；
+        // - 值同时写入 ToolTip，超长路径被列宽截断时悬停仍可看全。
+        // 入参 groupItem：所属分组；nameText/valueText：已翻译的名称与值。
+        // 返回：新建行节点，生命周期由树接管。
+        static QTreeWidgetItem* appendPropertyRow(
+            QTreeWidgetItem* groupItem,
+            const QString& nameText,
+            const QString& valueText)
         {
-            if (m_generalTextEditor == nullptr)
+            QTreeWidgetItem* rowItem = new QTreeWidgetItem(groupItem);
+            rowItem->setText(0, nameText);
+            rowItem->setText(1, valueText);
+            rowItem->setToolTip(1, valueText);
+            return rowItem;
+        }
+
+        // formatFileSizeText 作用：
+        // - 文件大小同时给出易读单位和精确字节数，避免只有一串数字要用户自己数位数；
+        // - 不足 1KB 时没有换算价值，只给字节数。
+        // 入参 sizeBytes：字节数。
+        // 返回：例如“1.21 MB（1268736 字节）”。
+        static QString formatFileSizeText(const qulonglong sizeBytes)
+        {
+            static const std::array<const char*, 5> unitNames{ "B", "KB", "MB", "GB", "TB" };
+            double scaledValue = static_cast<double>(sizeBytes);
+            std::size_t unitIndex = 0;
+            while (scaledValue >= 1024.0 && (unitIndex + 1) < unitNames.size())
+            {
+                scaledValue /= 1024.0;
+                ++unitIndex;
+            }
+            if (unitIndex == 0)
+            {
+                return ks::i18n::displayText(QStringLiteral("%1 字节")).arg(sizeBytes);
+            }
+            return ks::i18n::displayText(QStringLiteral("%1 %2（%3 字节）"))
+                .arg(QString::number(scaledValue, 'f', 2))
+                .arg(QString::fromLatin1(unitNames[unitIndex]))
+                .arg(sizeBytes);
+        }
+
+        // fileAttributeFlagRows 作用：
+        // - 输入 attributes：FILE_ATTRIBUTE_* 位集合；
+        // - 处理：只展开已置位的属性，逐位给出 Win32 常量名和中文含义；
+        //   原先这些位被压成一个 A|B|C 串，除了记得住常量名的人谁都读不出来；
+        // - 返回：常量名/含义对的列表；一位都没置位时返回空列表，由调用方补一行说明。
+        static QList<QPair<QString, QString>> fileAttributeFlagRows(const std::uint32_t attributes)
+        {
+            QList<QPair<QString, QString>> flagRows;
+            const auto appendFlag =
+                [&flagRows, attributes](
+                    const std::uint32_t mask,
+                    const QString& nameText,
+                    const QString& descriptionText)
+                {
+                    if ((attributes & mask) != 0U)
+                    {
+                        flagRows.append(QPair<QString, QString>(nameText, descriptionText));
+                    }
+                };
+
+            appendFlag(FILE_ATTRIBUTE_READONLY, QStringLiteral("READONLY"), QStringLiteral("只读，写入前要先去掉该属性"));
+            appendFlag(FILE_ATTRIBUTE_HIDDEN, QStringLiteral("HIDDEN"), QStringLiteral("隐藏，资源管理器默认不显示"));
+            appendFlag(FILE_ATTRIBUTE_SYSTEM, QStringLiteral("SYSTEM"), QStringLiteral("系统文件，属于操作系统的一部分"));
+            appendFlag(FILE_ATTRIBUTE_DIRECTORY, QStringLiteral("DIRECTORY"), QStringLiteral("目录"));
+            appendFlag(FILE_ATTRIBUTE_ARCHIVE, QStringLiteral("ARCHIVE"), QStringLiteral("存档位，备份程序据此判断是否需要重新备份"));
+            appendFlag(FILE_ATTRIBUTE_DEVICE, QStringLiteral("DEVICE"), QStringLiteral("设备，保留给系统使用"));
+            appendFlag(FILE_ATTRIBUTE_NORMAL, QStringLiteral("NORMAL"), QStringLiteral("没有其它属性"));
+            appendFlag(FILE_ATTRIBUTE_TEMPORARY, QStringLiteral("TEMPORARY"), QStringLiteral("临时文件，系统会尽量把内容留在内存里"));
+            appendFlag(FILE_ATTRIBUTE_SPARSE_FILE, QStringLiteral("SPARSE_FILE"), QStringLiteral("稀疏文件，全零区段不实际占用磁盘"));
+            appendFlag(FILE_ATTRIBUTE_REPARSE_POINT, QStringLiteral("REPARSE_POINT"), QStringLiteral("重解析点，符号链接和装载点由它实现"));
+            appendFlag(FILE_ATTRIBUTE_COMPRESSED, QStringLiteral("COMPRESSED"), QStringLiteral("NTFS 压缩"));
+            appendFlag(FILE_ATTRIBUTE_OFFLINE, QStringLiteral("OFFLINE"), QStringLiteral("内容已转到离线存储，访问会明显变慢"));
+            appendFlag(FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, QStringLiteral("NOT_CONTENT_INDEXED"), QStringLiteral("不建内容索引，Windows 搜索不检索正文"));
+            appendFlag(FILE_ATTRIBUTE_ENCRYPTED, QStringLiteral("ENCRYPTED"), QStringLiteral("EFS 加密"));
+            appendFlag(FILE_ATTRIBUTE_INTEGRITY_STREAM, QStringLiteral("INTEGRITY_STREAM"), QStringLiteral("ReFS 完整性流，写入时带校验和"));
+            appendFlag(FILE_ATTRIBUTE_NO_SCRUB_DATA, QStringLiteral("NO_SCRUB_DATA"), QStringLiteral("排除在 ReFS 数据完整性扫描之外"));
+            return flagRows;
+        }
+
+        void refreshGeneralTab()
+        {
+            // 用途：按当前语言和已加载的 R0 数据重建常规页属性树。
+            // 处理：整棵清空后重建，语言切换与 R0 异步返回走同一条路径。
+            // 返回：无。
+            if (m_generalPropertyTree == nullptr)
             {
                 return;
             }
@@ -4920,60 +5094,173 @@ namespace
                 QStringLiteral("file.detail.value.yes"), QStringLiteral("是"));
             const QString noText = languageManager.contextText(
                 QStringLiteral("file.detail.value.no"), QStringLiteral("否"));
+            const QString timeFormat = QStringLiteral("yyyy-MM-dd HH:mm:ss");
 
-            QString content;
-            content += translated(QStringLiteral("[路径]\n"));
-            content += translated(QStringLiteral("Win32路径: %1\n")).arg(nativePath);
-            content += translated(QStringLiteral("NT路径: %1\n")).arg(ntPathText);
+            m_generalPropertyTree->clear();
+            m_generalPropertyTree->setHeaderLabels(QStringList{
+                translated(QStringLiteral("属性")),
+                translated(QStringLiteral("值"))
+                });
+
+            QTreeWidgetItem* pathGroup = appendPropertyGroup(
+                m_generalPropertyTree, translated(QStringLiteral("路径")));
+            appendPropertyRow(pathGroup, translated(QStringLiteral("Win32 路径")), nativePath);
+            appendPropertyRow(pathGroup, translated(QStringLiteral("NT 路径")), ntPathText);
+            appendPropertyRow(
+                pathGroup,
+                translated(QStringLiteral("查询来源")),
+                !m_generalR0Loaded
+                    ? translated(QStringLiteral("R3 QFileInfo（R0 信息正在后台加载）"))
+                    : (m_generalR0Info.io.ok
+                        ? translated(QStringLiteral("R3 QFileInfo + R0 KswordARK"))
+                        : translated(QStringLiteral("R3 QFileInfo（R0 不可用）"))));
+
+            QTreeWidgetItem* basicGroup = appendPropertyGroup(
+                m_generalPropertyTree, translated(QStringLiteral("基本信息")));
+            appendPropertyRow(basicGroup, translated(QStringLiteral("文件名")), info.fileName());
+            appendPropertyRow(basicGroup, translated(QStringLiteral("扩展名")), info.suffix());
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("大小")),
+                formatFileSizeText(static_cast<qulonglong>(std::max<qint64>(0, info.size()))));
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("创建时间")),
+                info.birthTime().toString(timeFormat));
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("修改时间")),
+                info.lastModified().toString(timeFormat));
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("访问时间")),
+                info.lastRead().toString(timeFormat));
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("可执行")),
+                info.isExecutable() ? yesText : noText);
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("隐藏")),
+                info.isHidden() ? yesText : noText);
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("可写")),
+                info.isWritable() ? yesText : noText);
+            appendPropertyRow(
+                basicGroup,
+                translated(QStringLiteral("重解析点")),
+                isPathReparsePoint(info.absoluteFilePath())
+                    ? translated(QStringLiteral("是（首屏只判断属性位，不追踪链接目标）"))
+                    : noText);
+
+            QTreeWidgetItem* kernelGroup = appendPropertyGroup(
+                m_generalPropertyTree, translated(QStringLiteral("内核视图（R0）")));
             if (!m_generalR0Loaded)
             {
-                content += translated(QStringLiteral("查询来源: R3 QFileInfo（R0 信息后台加载）\n\n"));
+                appendPropertyRow(
+                    kernelGroup,
+                    translated(QStringLiteral("状态")),
+                    translated(QStringLiteral("正在后台查询，属性窗口不会等待驱动返回")));
+                return;
             }
-            else if (m_generalR0Info.io.ok)
+            if (!m_generalR0Info.io.ok)
             {
-                content += translated(QStringLiteral("查询来源: R0 KswordARK + R3 QFileInfo\n\n"));
-            }
-            else
-            {
-                content += translated(QStringLiteral("查询来源: R3 QFileInfo（R0 不可用）\n\n"));
+                appendPropertyRow(
+                    kernelGroup,
+                    translated(QStringLiteral("状态")),
+                    translated(QStringLiteral("不可用")));
+                appendPropertyRow(
+                    kernelGroup,
+                    translated(QStringLiteral("原因")),
+                    translated(friendlyFileIoMessage(m_generalR0Info.io.message)));
+                appendPropertyRow(
+                    kernelGroup,
+                    translated(QStringLiteral("Win32 错误码")),
+                    QString::number(m_generalR0Info.io.win32Error));
+                return;
             }
 
-            content += translated(QStringLiteral("[R3 QFileInfo]\n"));
-            content += translated(QStringLiteral("完整路径: %1\n")).arg(info.absoluteFilePath());
-            content += translated(QStringLiteral("文件名: %1\n")).arg(info.fileName());
-            content += translated(QStringLiteral("类型: %1\n")).arg(info.suffix());
-            content += translated(QStringLiteral("大小: %1 字节\n")).arg(info.size());
-            content += translated(QStringLiteral("创建时间: %1\n"))
-                .arg(info.birthTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-            content += translated(QStringLiteral("修改时间: %1\n"))
-                .arg(info.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-            content += translated(QStringLiteral("访问时间: %1\n"))
-                .arg(info.lastRead().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-            content += translated(QStringLiteral("是否可执行: %1\n"))
-                .arg(info.isExecutable() ? yesText : noText);
-            content += translated(QStringLiteral("是否隐藏: %1\n"))
-                .arg(info.isHidden() ? yesText : noText);
-            content += translated(QStringLiteral("是否可写: %1\n"))
-                .arg(info.isWritable() ? yesText : noText);
-            content += translated(isPathReparsePoint(info.absoluteFilePath())
-                ? QStringLiteral("重解析点: 是（首屏仅做属性位判断，不同步追踪链接目标）\n")
-                : QStringLiteral("重解析点: 否\n"));
+            if (!m_generalR0Info.objectName.empty())
+            {
+                appendPropertyRow(
+                    kernelGroup,
+                    translated(QStringLiteral("R0 对象名")),
+                    QString::fromStdWString(m_generalR0Info.objectName));
+            }
+            appendPropertyRow(
+                kernelGroup,
+                translated(QStringLiteral("大小（EndOfFile）")),
+                formatFileSizeText(static_cast<qulonglong>(m_generalR0Info.endOfFile)));
+            appendPropertyRow(
+                kernelGroup,
+                translated(QStringLiteral("磁盘占用（分配大小）")),
+                formatFileSizeText(static_cast<qulonglong>(m_generalR0Info.allocationSize)));
+            appendPropertyRow(
+                kernelGroup,
+                translated(QStringLiteral("创建时间")),
+                fileTimeToText(m_generalR0Info.creationTime));
+            appendPropertyRow(
+                kernelGroup,
+                translated(QStringLiteral("最后访问")),
+                fileTimeToText(m_generalR0Info.lastAccessTime));
+            appendPropertyRow(
+                kernelGroup,
+                translated(QStringLiteral("最后写入")),
+                fileTimeToText(m_generalR0Info.lastWriteTime));
+            appendPropertyRow(
+                kernelGroup,
+                translated(QStringLiteral("元数据变更（ChangeTime）")),
+                fileTimeToText(m_generalR0Info.changeTime));
+            appendPropertyRow(
+                kernelGroup,
+                translated(QStringLiteral("R0 说明")),
+                translated(friendlyFileIoMessage(m_generalR0Info.io.message)));
 
-            content += translated(QStringLiteral("\n[R0 文件基础信息]\n"));
-            if (!m_generalR0Loaded)
+            QTreeWidgetItem* attributeGroup = appendPropertyGroup(
+                m_generalPropertyTree, translated(QStringLiteral("文件属性位")));
+            attributeGroup->setText(1, formatHexValue(m_generalR0Info.fileAttributes, 8));
+            const QList<QPair<QString, QString>> attributeRows =
+                fileAttributeFlagRows(m_generalR0Info.fileAttributes);
+            if (attributeRows.isEmpty())
             {
-                content += translated(QStringLiteral("正在后台加载，属性窗口首屏不会等待驱动查询完成...\n"));
+                appendPropertyRow(
+                    attributeGroup,
+                    translated(QStringLiteral("无置位属性")),
+                    QString());
             }
-            else
+            for (const QPair<QString, QString>& attributeRow : attributeRows)
             {
-                if (!m_generalR0Info.objectName.empty())
-                {
-                    content += translated(QStringLiteral("R0对象名: %1\n"))
-                        .arg(QString::fromStdWString(m_generalR0Info.objectName));
-                }
-                content += formatLocalizedR0FileInfoText(m_generalR0Info);
+                appendPropertyRow(attributeGroup, attributeRow.first, translated(attributeRow.second));
             }
-            m_generalTextEditor->setText(content);
+
+            // 驱动诊断地址对普通用户没有意义，默认折叠，需要时再展开。
+            QTreeWidgetItem* diagnosticGroup = appendPropertyGroup(
+                m_generalPropertyTree, translated(QStringLiteral("驱动诊断")));
+            diagnosticGroup->setExpanded(false);
+            appendPropertyRow(
+                diagnosticGroup,
+                translated(QStringLiteral("协议版本")),
+                QString::number(m_generalR0Info.version));
+            appendPropertyRow(
+                diagnosticGroup,
+                translated(QStringLiteral("查询状态")),
+                QStringLiteral("%1 (%2)")
+                    .arg(fileInfoStatusText(m_generalR0Info.queryStatus))
+                    .arg(m_generalR0Info.queryStatus));
+            appendPropertyRow(
+                diagnosticGroup,
+                translated(QStringLiteral("字段标志")),
+                formatHexValue(m_generalR0Info.fieldFlags, 8));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("OpenStatus"), formatNtStatus(m_generalR0Info.openStatus));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("BasicStatus"), formatNtStatus(m_generalR0Info.basicStatus));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("StandardStatus"), formatNtStatus(m_generalR0Info.standardStatus));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("ObjectStatus"), formatNtStatus(m_generalR0Info.objectStatus));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("NameStatus"), formatNtStatus(m_generalR0Info.nameStatus));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("FileObject"), formatHex64(m_generalR0Info.fileObjectAddress));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("SectionObjectPointers"), formatHex64(m_generalR0Info.sectionObjectPointersAddress));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("DataSectionObject"), formatHex64(m_generalR0Info.dataSectionObjectAddress));
+            appendPropertyRow(diagnosticGroup, QStringLiteral("ImageSectionObject"), formatHex64(m_generalR0Info.imageSectionObjectAddress));
         }
 
         void startHashCalculation(
@@ -5283,7 +5570,7 @@ namespace
             // 输入：info/ntPathText 为查询目标；界面数据由成员保存，便于语言切换时完整重绘。
             // 处理：工作线程调用 ArkDriverClient；UI 线程保存结果并按当前语言重建正文。
             // 返回：无；对话框关闭或控件释放后自动丢弃结果。
-            if (m_generalTextEditor == nullptr)
+            if (m_generalPropertyTree == nullptr)
             {
                 return;
             }
@@ -5316,7 +5603,7 @@ namespace
 
                             guardThis->m_generalR0Info = r0Info;
                             guardThis->m_generalR0Loaded = true;
-                            guardThis->refreshGeneralTabText();
+                            guardThis->refreshGeneralTab();
                         },
                         Qt::QueuedConnection);
                 });
@@ -6494,16 +6781,32 @@ namespace
         {
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
-            m_generalTextEditor = new CodeEditorWidget(page);
-            m_generalTextEditor->setReadOnly(true);
+
+            // 常规页原本是一整块只读文本：属性名和值靠冒号对齐，取一条路径要手工划选，
+            // 超长值只能左右找，属性位还被压成一个 A|B|C 串。改成两列属性树后，
+            // 每条属性是独立一行，可单独复制，分组可折叠，值列还能悬停看全。
+            m_generalPropertyTree = new QTreeWidget(page);
+            m_generalPropertyTree->setColumnCount(2);
+            m_generalPropertyTree->setRootIsDecorated(true);
+            m_generalPropertyTree->setAlternatingRowColors(true);
+            m_generalPropertyTree->setSelectionBehavior(QAbstractItemView::SelectRows);
+            m_generalPropertyTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            m_generalPropertyTree->setUniformRowHeights(true);
+            // 行的先后顺序本身有含义（路径→基本信息→内核视图），因此不开排序。
+            m_generalPropertyTree->setSortingEnabled(false);
+            if (m_generalPropertyTree->header() != nullptr)
+            {
+                m_generalPropertyTree->header()->setStretchLastSection(true);
+            }
+            installPropertyTreeCopyMenu(m_generalPropertyTree);
 
             const QFileInfo info(m_filePath);
             m_generalNtPathText = buildDriverNtPath(info.absoluteFilePath());
             m_generalR0Loaded = false;
             m_generalR0Info = {};
-            refreshGeneralTabText();
+            refreshGeneralTab();
 
-            layout->addWidget(m_generalTextEditor, 1);
+            layout->addWidget(m_generalPropertyTree, 1);
             startR0FileInfoLoad(info, m_generalNtPathText);
             return page;
         }
@@ -7252,7 +7555,7 @@ namespace
         QTabWidget* m_tabWidget = nullptr; // 继续承载现有的页面与懒加载机制。
         QButtonGroup* m_tabNavigationButtonGroup = nullptr; // 保证左侧导航单选。
         QVector<QToolButton*> m_tabNavigationButtons; // 与 Tab 索引一一对应，供切页时同步选中态。
-        CodeEditorWidget* m_generalTextEditor = nullptr; // 常规页正文，语言切换时原位重建。
+        QTreeWidget* m_generalPropertyTree = nullptr; // 常规页属性树，语言切换或 R0 返回时整棵重建。
         QString m_generalNtPathText; // 常规页复用的 NT 路径，避免切换语言时重复查询。
         bool m_generalR0Loaded = false; // R0 文件信息是否已完成后台读取。
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。
