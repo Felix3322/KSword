@@ -43,9 +43,19 @@ namespace
 
     // kPreferredMinimumSectionWidth/kAbsoluteMinimumSectionWidth 作用：
     // - 普通情况下列至少保留 24px，避免内容完全不可见；
-    // - 超多列/超窄窗口时允许继续压缩到 8px，尽量达成“默认不出横向滚动条”。
+    // - 这两个值只是兜底下限，真正决定压缩底线的是下面的“可读下限”。
     constexpr int kPreferredMinimumSectionWidth = 24;
     constexpr int kAbsoluteMinimumSectionWidth = 8;
+
+    // kReadableSectionWidthCap 作用：
+    // - 列宽压缩的“可读下限”上限：一列被压到连列头和首个词都读不出来时，
+    //   表格就只剩一排省略号，用户必须把窗口拉宽才能看内容——这不是自适应，是把问题推给用户；
+    // - 每列的可读下限取 min(首选宽度, 本常量)：短列（PID、CPU）按自身首选宽度封顶，
+    //   不会被这个值反向撑大；只有长内容列（路径、命令行、端点）会停在本值；
+    // - 当所有列的可读下限之和仍然超过 viewport 时，自动 fit 不再继续压缩，
+    //   列宽总和自然超出 viewport，由 Qt 按 ScrollBarAsNeeded 显示横向滚动条。
+    //   本文件全程不修改滚动条策略，因此横向滚动始终可用。
+    constexpr int kReadableSectionWidthCap = 96;
 
     // kHeaderHorizontalPadding/kCellHorizontalPadding 作用：
     // - 用字体度量估算列宽时补偿 item margin、网格线、排序箭头和图标留白；
@@ -590,6 +600,7 @@ namespace
     // fitWidthsToAvailableSpace 作用：
     // - 先按内容感知 preferredWidth 排列列宽；
     // - 若总宽超过 viewport，则按“首选宽度 - 每列最小宽度”的权重压缩到 availableWidth 内；
+    // - 压缩不会突破每列的可读下限；可读下限之和都放不下时保持原宽，让横向滚动条出现；
     // - 若总宽小于 viewport，则只把剩余空间分给长内容列，短字段列不会被强行均分放大；
     // - 控件列的 minimumWidth 来自真实控件尺寸，宁可出现横向滚动条也不把控件挤坏；
     // - 不隐藏列，不改变滚动条策略。
@@ -609,6 +620,12 @@ namespace
         for (VisibleSection& section : sections)
         {
             section.minimumWidth = std::max(1, section.minimumWidth);
+            // 可读下限：短列按自身首选宽度封顶，长内容列停在 kReadableSectionWidthCap。
+            // preferredWidth 在 sectionWidthHints 里已保证不小于 minimumWidth，
+            // 因此这里抬高后的 minimumWidth 仍不会超过 preferredWidth，宽表格分支不受影响。
+            section.minimumWidth = std::max(
+                section.minimumWidth,
+                std::min(section.preferredWidth, kReadableSectionWidthCap));
             section.fittedWidth = std::max(section.minimumWidth, section.preferredWidth);
         }
 
