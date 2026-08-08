@@ -11646,10 +11646,19 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
             << eol;
     }
 
+    // 文案必须说明回收站与降级规则：
+    // 用户对“删除”的预期来自资源管理器（进回收站、可还原），但下面的实现
+    // 在 moveToTrash 失败时会静默改为永久删除（网络位置、可移动磁盘、
+    // 超出回收站配额等场景常规性失败）。不提前说明就等于让不可逆操作
+    // 伪装成可撤销操作。
     const QMessageBox::StandardButton userChoice = QMessageBox::question(
         this,
         QStringLiteral("删除确认"),
-        QStringLiteral("确定删除选中的 %1 项吗？").arg(paths.size()),
+        QStringLiteral(
+            "确定要把选中的 %1 项移到回收站吗？\n\n"
+            "若某些项无法移入回收站（例如位于网络位置、可移动磁盘，或回收站已停用），"
+            "将改为永久删除且无法还原；完成后会告知具体数量。")
+            .arg(paths.size()),
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (userChoice != QMessageBox::Yes)
@@ -11661,6 +11670,9 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
     kPro.set(progressPid, "删除开始", 0, 5.0f);
 
     QStringList errors;
+    // permanentlyDeleted：记录实际被永久删除（未能进回收站）的项，
+    // 用于结束后如实告知用户，而不是让两种结果看起来一样。
+    QStringList permanentlyDeleted;
     for (std::size_t i = 0; i < paths.size(); ++i)
     {
         const QString path = paths[i];
@@ -11686,6 +11698,11 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
             {
                 removeOk = QFile::remove(path);
             }
+
+            if (removeOk)
+            {
+                permanentlyDeleted << path;
+            }
         }
 
         if (!removeOk)
@@ -11699,6 +11716,28 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
 
     refreshPanel(panel);
     kPro.set(progressPid, "删除完成", 0, 100.0f);
+
+    // 有项目未能进回收站时必须显式告知：这些项已不可还原，
+    // 用户需要据此判断还能不能靠回收站补救。
+    if (!permanentlyDeleted.isEmpty())
+    {
+        kLogEvent permanentEvent;
+        warn << permanentEvent
+            << "[FileDock] 部分项目无法移入回收站，已永久删除, panel="
+            << panel.panelNameText.toStdString()
+            << ", count="
+            << permanentlyDeleted.size()
+            << ", preview=\n"
+            << buildLogPreviewText(permanentlyDeleted).toStdString()
+            << eol;
+        QMessageBox::warning(
+            this,
+            QStringLiteral("部分项目已永久删除"),
+            QStringLiteral(
+                "有 %1 项无法移入回收站，已被永久删除，无法从回收站还原：\n\n%2")
+                .arg(permanentlyDeleted.size())
+                .arg(buildLogPreviewText(permanentlyDeleted)));
+    }
 
     if (!errors.isEmpty())
     {

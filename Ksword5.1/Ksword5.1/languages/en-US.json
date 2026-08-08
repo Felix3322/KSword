@@ -24998,6 +24998,9 @@
     "全不选": "Select none",
     "仅 Win32": "Win32 only",
     "自动刷新已开启，点击暂停": "Auto-refresh is on; click to pause",
-    "自动刷新已关闭，点击继续": "Auto-refresh is off; click to resume"
+    "自动刷新已关闭，点击继续": "Auto-refresh is off; click to resume",
+    "确定要把选中的 %1 项移到回收站吗？\n\n若某些项无法移入回收站（例如位于网络位置、可移动磁盘，或回收站已停用），将改为永久删除且无法还原；完成后会告知具体数量。": "Move the selected %1 item(s) to the Recycle Bin?\n\nAny item that cannot be moved there (for example on a network location or removable drive, or when the Recycle Bin is disabled) will be deleted permanently and cannot be restored. You will be told how many afterwards.",
+    "部分项目已永久删除": "Some items were permanently deleted",
+    "有 %1 项无法移入回收站，已被永久删除，无法从回收站还原：\n\n%2": "%1 item(s) could not be moved to the Recycle Bin and were permanently deleted; they cannot be restored from the Recycle Bin:\n\n%2"
   }
 }
