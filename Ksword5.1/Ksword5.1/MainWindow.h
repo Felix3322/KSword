@@ -255,28 +255,37 @@ private:
     void ensureDockContentInitialized(ads::CDockWidget* dockWidget);
 
     // BackdropBlurKind 作用：
-    // - 描述透明区域使用哪种系统模糊；
-    // - 两种模糊都由 DWM 合成，应用侧成本相同，差别在 DWM 的处理道数与副作用。
+    // - 描述“透明背景效果”配置解析后的磨砂实现方式。
     enum class BackdropBlurKind
     {
-        None = 0,    // None：不下发模糊，透明区域直接透出后方内容。
-        Gaussian,    // Gaussian：ACCENT_ENABLE_BLURBEHIND，单道高斯模糊，开销更低。
+        None = 0,    // None：不加磨砂，透明区域直接透出后方内容。
+        Gaussian,    // Gaussian：应用侧壁纸模糊（云母思路），不依赖系统组合特性。
         Acrylic,     // Acrylic：ACCENT_ENABLE_ACRYLICBLURBEHIND，含饱和度与噪点，质感更强。
     };
 
     // applyMainWindowBackdropMaterial 作用：
-    // - 切换主窗口的系统模糊材质（SetWindowCompositionAttribute）；
-    // - 透明模式下按“透明背景效果”选项启用，让透明区域呈现磨砂质感；
+    // - 下发/关闭主窗口的系统亚克力材质（SetWindowCompositionAttribute）；
+    // - 毛玻璃(Gaussian)不经过本函数生效：Windows 11 起 BLURBEHIND(3) 已退化为
+    //   纯透明且忽略着色，毛玻璃改为根容器自绘壁纸模糊底图
+    //   （见 queueWallpaperBackdropPreparation）；
     // - 不使用 DWM 云母：云母要求窗口不透明，与分层透明窗口冲突会整窗发白。
-    // 入参 blurKind：要下发的模糊种类；None 表示关闭。
-    // 返回：true=模糊已生效（着色由系统合成，根容器不再另画着色层）。
+    // 入参 blurKind：解析后的材质种类；仅 Acrylic 会启用系统材质。
+    // 返回：true=系统亚克力已生效（着色由系统合成，根容器不再另画着色层）。
     bool applyMainWindowBackdropMaterial(BackdropBlurKind blurKind);
 
+    // queueWallpaperBackdropPreparation 作用：
+    // - 在线程池中读取当前桌面壁纸并生成模糊底图，完成后回投 UI 线程刷新材质；
+    // - 单飞去重：进行中或已有有效结果时直接返回；
+    //   壁纸变更（WM_SETTINGCHANGE）会置脏并触发重新生成；
+    // - 取不到壁纸（纯色桌面/幻灯片）时保持空图，绘制端用主题着色层兜底。
+    void queueWallpaperBackdropPreparation();
+
     // scheduleWindowBackdropRefresh 作用：
-    // - 窗口移动、缩放、状态或激活变化后合并调度一次毛玻璃重采样；
+    // - 窗口移动、缩放、状态或激活变化后合并调度一次亚克力重采样；
     // - Acrylic 由 DWM 按窗口位置采样后方内容，不重新下发组合特性时
     //   会保留移动前的旧画面，或在失焦后停留在静态回退色；
-    // - 仅在毛玻璃已生效时执行，并按节流窗口合并连续事件。
+    // - 仅在亚克力已生效时执行，并按节流窗口合并连续事件；
+    //   毛玻璃底图与窗口位置无关，无需参与。
     void scheduleWindowBackdropRefresh();
 
     // refreshWindowBackdropMaterial 作用：
@@ -641,7 +650,11 @@ private:
     bool m_backgroundImageReady = false; // m_backgroundImageReady：当前路径是否已验证并成功解码。
     bool m_backgroundReadinessRefreshPending = false; // m_backgroundReadinessRefreshPending：异步结果是否要求重建视觉。
     int m_backdropMaterialState = -1; // m_backdropMaterialState：已下发的模糊种类缓存（-1 未初始化，其余为 BackdropBlurKind 值）。
-    bool m_backdropRefreshQueued = false; // m_backdropRefreshQueued：是否已排队一次毛玻璃重采样。
+    bool m_backdropRefreshQueued = false; // m_backdropRefreshQueued：是否已排队一次亚克力重采样。
+    QPixmap m_wallpaperBackdropPixmap; // m_wallpaperBackdropPixmap：毛玻璃模式的壁纸模糊底图（空=不可用，用着色层兜底）。
+    bool m_wallpaperBackdropPreparing = false; // m_wallpaperBackdropPreparing：壁纸模糊底图是否正在后台生成。
+    bool m_wallpaperBackdropPrepared = false;  // m_wallpaperBackdropPrepared：当前壁纸是否已完成过一次生成（含失败，避免坏路径反复重试）。
+    bool m_wallpaperBackdropStale = false;     // m_wallpaperBackdropStale：壁纸发生变化，底图需要重新生成。
     StartupProgressCallback m_startupProgressCallback; // m_startupProgressCallback：主窗口启动阶段进度回调。
     bool m_startupWindowVisibilityAdjusted = false; // m_startupWindowVisibilityAdjusted：是否已完成首次显示区域修正。
     bool m_deferredDockInitializationStarted = false; // m_deferredDockInitializationStarted：是否已启动显示后补载流程。

@@ -568,8 +568,8 @@ void SettingsDock::initializeAppearanceTab()
     m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("毛玻璃磨砂（推荐）"), QStringLiteral("blur"));
     m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("亚克力磨砂（质感更强，可能影响悬停）"), QStringLiteral("acrylic"));
     m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("直透桌面（完全透明）"), QStringLiteral("desktop"));
-    m_backgroundTranslucencyMaterialCombo->setToolTip(QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面，开销最低，推荐使用。亚克力磨砂：在模糊上叠加噪点与饱和度，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。"));
-    languageManager.bindToolTip(m_backgroundTranslucencyMaterialCombo, QStringLiteral("settings.background.translucency_material.tooltip"), QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面，开销最低，推荐使用。亚克力磨砂：在模糊上叠加噪点与饱和度，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。"));
+    m_backgroundTranslucencyMaterialCombo->setToolTip(QStringLiteral("毛玻璃磨砂：把当前桌面壁纸虚化后作为窗口底色（与系统云母同思路），不透出窗口后方的实时内容，性能稳定，推荐使用。亚克力磨砂：由系统实时模糊窗口后方内容，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。"));
+    languageManager.bindToolTip(m_backgroundTranslucencyMaterialCombo, QStringLiteral("settings.background.translucency_material.tooltip"), QStringLiteral("毛玻璃磨砂：把当前桌面壁纸虚化后作为窗口底色（与系统云母同思路），不透出窗口后方的实时内容，性能稳定，推荐使用。亚克力磨砂：由系统实时模糊窗口后方内容，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。"));
     languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 0, QStringLiteral("settings.background.translucency_material.auto"), QStringLiteral("自动（有背景图直透，无图磨砂）"));
     languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 1, QStringLiteral("settings.background.translucency_material.blur"), QStringLiteral("毛玻璃磨砂（推荐）"));
     languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 2, QStringLiteral("settings.background.translucency_material.acrylic"), QStringLiteral("亚克力磨砂（质感更强，可能影响悬停）"));

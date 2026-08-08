@@ -87,12 +87,15 @@
 #include "UI/CodeEditorWidget.h"
 #include "UI/GlobalDialogTheme.h"
 #include "UI/GlobalUiBaseStyle.h"
+#include "UI/WallpaperBackdrop.h"
 #include "UI/WindowChrome.h"
 #include "UI/SvgThemeIconManager.h"
 #include "UI/SmoothScrollSupport.h"
 #include "UI/ThemedMessageBox.h"
 #include "theme.h"
 #include "../../shared/KswordArkLogProtocol.h"
+// 驱动启动阶段记录的键名与阶段枚举，R0/R3 共用同一份定义。
+#include "../../shared/KswordArkStartupProtocol.h"
 #include <windows.h>
 // 菜单栏权限按钮涉及 Windows 令牌权限查询与提权动作。
 #ifndef NOMINMAX
@@ -2221,25 +2224,23 @@ namespace
     // 窗口组合特性（SetWindowCompositionAttribute）相关声明：
     // - DWM 云母要求窗口不透明，和 Qt 的 WA_TranslucentBackground 分层窗口互斥，
     //   强行启用会让 DWM 回退到系统浅色 fallback 底（表现为整窗发白）；
-    // - Acrylic 毛玻璃通过组合特性作用于分层窗口，是本项目可用的模糊方案。
+    // - Acrylic 通过组合特性作用于分层窗口，是本项目唯一走系统合成的模糊。
     // kWindowCompositionAttributeAccentPolicy 作用：WCA_ACCENT_POLICY 特性编号。
     constexpr DWORD kWindowCompositionAttributeAccentPolicy = 19;
-    // kAccentDisabled / kAccentEnableBlurBehind / kAccentEnableAcrylicBlurBehind 作用：
-    // ACCENT_STATE 取值。
-    // - BLURBEHIND(3)：传统高斯模糊，单道处理，开销更低；
-    // - ACRYLIC(4)：模糊 + 饱和度 + 噪点，质感更强，但在部分系统上会拖慢
-    //   窗口的 WM_MOUSEMOVE 投递，表现为悬停高亮不刷新（点击仍正常）。
-    // 两者都由 DWM 合成，应用侧成本相同。
+    // kAccentDisabled / kAccentEnableAcrylicBlurBehind 作用：ACCENT_STATE 取值。
+    // - ACRYLIC(4)：模糊 + 饱和度 + 噪点，由 DWM 合成，质感更强，但在部分系统上
+    //   会拖慢窗口的 WM_MOUSEMOVE 投递，表现为悬停高亮不刷新（点击仍正常）；
+    // - 传统 BLURBEHIND(3) 在 Windows 11 上已退化为纯透明且忽略着色，
+    //   因此“毛玻璃磨砂”不再走组合特性，改为应用侧壁纸模糊（见 WallpaperBackdrop）。
     constexpr DWORD kAccentDisabled = 0;
-    constexpr DWORD kAccentEnableBlurBehind = 3;
     constexpr DWORD kAccentEnableAcrylicBlurBehind = 4;
     // kBackdropRefreshThrottleMs 作用：
-    // - 毛玻璃重采样的合并窗口（毫秒）；
+    // - 亚克力重采样的合并窗口（毫秒）；
     // - 拖动与缩放会连续触发几何事件，节流后只在动作稳定时下发一次组合特性。
     constexpr int kBackdropRefreshThrottleMs = 40;
     // kBackdropTintAlpha 作用：
-    // - 模糊着色层不透明度（0~255），由组合特性直接混合到模糊结果上；
-    // - 高斯与亚克力两种模糊共用同一着色强度，切换材质时观感保持一致；
+    // - 磨砂着色层不透明度（0~255）：亚克力由组合特性混合到模糊结果上，
+    //   毛玻璃由根容器叠画在壁纸模糊底图上，两者共用同一强度，切换观感一致；
     // - 数值越低越通透，越高前景文字可读性越强。
     constexpr int kBackdropTintAlpha = 190;
 
@@ -3493,7 +3494,7 @@ namespace
         // - 需要顶层窗口已启用 WA_TranslucentBackground 才有实际穿透效果。
         // 入参 translucentEnabled：是否进入穿透绘制。
         // 入参 paintTintWhenNoImage：无背景图时是否自绘着色层；
-        //   毛玻璃已由系统合成着色时必须传 false，否则两层着色叠加会发浑。
+        //   亚克力已由系统合成着色时必须传 false，否则两层着色叠加会发浑。
         void setTranslucentMode(
             const bool translucentEnabled,
             const bool paintTintWhenNoImage)
@@ -3507,6 +3508,24 @@ namespace
             m_paintTintWhenNoImage = paintTintWhenNoImage;
             // 穿透绘制会留下透明像素，必须放弃“完全不透明绘制”性能假设。
             setAttribute(Qt::WA_OpaquePaintEvent, !translucentEnabled);
+            update();
+        }
+
+        // setWallpaperBackdropLayer 作用：
+        // - 设置毛玻璃模式的壁纸模糊底图；空图表示该层关闭；
+        // - 绘制时先把底图等比覆盖铺满，再叠主题着色层，
+        //   结构与系统云母（壁纸模糊 + 着色）一致。
+        // 入参 blurredWallpaper：低分辨率的壁纸模糊图，绘制时平滑放大。
+        void setWallpaperBackdropLayer(const QPixmap& blurredWallpaper)
+        {
+            const quint64 layerCacheKey =
+                blurredWallpaper.isNull() ? 0 : blurredWallpaper.cacheKey();
+            if (m_wallpaperBackdropCacheKey == layerCacheKey)
+            {
+                return;
+            }
+            m_wallpaperBackdropCacheKey = layerCacheKey;
+            m_wallpaperBackdropPixmap = blurredWallpaper;
             update();
         }
 
@@ -3524,14 +3543,28 @@ namespace
             if (m_translucentMode)
             {
                 painter.setCompositionMode(QPainter::CompositionMode_Source);
-                if (hasBackgroundImage)
+                if (!m_wallpaperBackdropPixmap.isNull())
+                {
+                    // 毛玻璃：先把壁纸模糊底图等比覆盖铺满（不透明），
+                    // 再叠一层主题着色，结构与系统云母（壁纸模糊+着色）一致。
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    painter.drawPixmap(
+                        coverTargetRectFor(m_wallpaperBackdropPixmap.size()),
+                        m_wallpaperBackdropPixmap,
+                        QRectF(QPointF(0, 0), m_wallpaperBackdropPixmap.size()));
+                    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+                    QColor backdropTintColor = m_baseColor;
+                    backdropTintColor.setAlpha(kBackdropTintAlpha);
+                    painter.fillRect(rect(), backdropTintColor);
+                }
+                else if (hasBackgroundImage)
                 {
                     // 有背景图：底色层完全透明，由图片自身 alpha 决定穿透程度。
                     painter.fillRect(rect(), Qt::transparent);
                 }
                 else if (m_paintTintWhenNoImage)
                 {
-                    // 无背景图且系统毛玻璃不可用：自绘半透明着色层兜底，
+                    // 无背景图且无系统/自绘磨砂可用：自绘半透明着色层兜底，
                     // 既透出桌面又保证前景文字可读。
                     QColor tintColor = m_baseColor;
                     tintColor.setAlpha(kTranslucentTintAlpha);
@@ -3539,7 +3572,7 @@ namespace
                 }
                 else
                 {
-                    // 无背景图且毛玻璃已生效：着色由系统合成，这里必须完全透明。
+                    // 无背景图且系统亚克力已生效：着色由系统合成，这里必须完全透明。
                     painter.fillRect(rect(), Qt::transparent);
                 }
                 painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
@@ -3556,23 +3589,32 @@ namespace
 
             painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
             painter.setOpacity(static_cast<double>(m_imageOpacityPercent) / 100.0);
-
-            QSizeF scaledImageSize = m_sourceImage.size();
-            scaledImageSize.scale(QSizeF(rect().size()), Qt::KeepAspectRatioByExpanding);
-            const QRectF targetRect(
-                (static_cast<double>(rect().width()) - scaledImageSize.width()) / 2.0,
-                (static_cast<double>(rect().height()) - scaledImageSize.height()) / 2.0,
-                scaledImageSize.width(),
-                scaledImageSize.height());
             painter.drawPixmap(
-                targetRect,
+                coverTargetRectFor(m_sourceImage.size()),
                 m_sourceImage,
                 QRectF(QPointF(0, 0), m_sourceImage.size()));
         }
 
     private:
+        // coverTargetRectFor 作用：
+        // - 计算“居中、等比覆盖”铺满当前控件时源图应绘制到的目标矩形。
+        // 入参 sourceSize：源图尺寸。
+        // 返回：目标绘制矩形（可能超出控件边界，由居中裁剪产生覆盖效果）。
+        QRectF coverTargetRectFor(const QSize& sourceSize) const
+        {
+            QSizeF scaledSize(sourceSize);
+            scaledSize.scale(QSizeF(rect().size()), Qt::KeepAspectRatioByExpanding);
+            return QRectF(
+                (static_cast<double>(rect().width()) - scaledSize.width()) / 2.0,
+                (static_cast<double>(rect().height()) - scaledSize.height()) / 2.0,
+                scaledSize.width(),
+                scaledSize.height());
+        }
+
         QColor m_baseColor = Qt::black;
         QPixmap m_sourceImage;
+        QPixmap m_wallpaperBackdropPixmap; // m_wallpaperBackdropPixmap：毛玻璃壁纸模糊底图（空=该层关闭）。
+        quint64 m_wallpaperBackdropCacheKey = 0; // m_wallpaperBackdropCacheKey：底图缓存键，避免重复重绘。
         int m_imageOpacityPercent = 0;
         quint64 m_sourceImageCacheKey = 0;
         bool m_translucentMode = false;      // m_translucentMode：背景透明区域是否穿透窗口。
@@ -4999,7 +5041,9 @@ void MainWindow::applyNativeWindowFrameVisualStyle()
 
 bool MainWindow::applyMainWindowBackdropMaterial(const BackdropBlurKind blurKind)
 {
-    const bool enableBackdrop = (blurKind != BackdropBlurKind::None);
+    // 系统组合特性只承担亚克力；毛玻璃(Gaussian)由根容器自绘壁纸模糊实现，
+    // 不再下发 BLURBEHIND(3)：该状态在 Windows 11 上已退化为纯透明且忽略着色。
+    const bool enableSystemAccent = (blurKind == BackdropBlurKind::Acrylic);
 #ifdef Q_OS_WIN
     if (!testAttribute(Qt::WA_WState_Created))
     {
@@ -5032,23 +5076,26 @@ bool MainWindow::applyMainWindowBackdropMaterial(const BackdropBlurKind blurKind
         return false;
     }
 
-    // requestedState 用途：把模糊种类映射为可比较的缓存值。
+    // requestedState 用途：把材质种类映射为可比较的缓存值。
     const int requestedState = static_cast<int>(blurKind);
-    // 从未启用过模糊时无需关闭：避免默认不透明用户在每次启动都触碰未公开接口。
-    if (!enableBackdrop && m_backdropMaterialState < 0)
+    // 从未启用过亚克力时无需关闭：避免不用系统材质的用户每次启动都触碰未公开接口。
+    if (!enableSystemAccent && m_backdropMaterialState < 0)
     {
-        m_backdropMaterialState = static_cast<int>(BackdropBlurKind::None);
+        m_backdropMaterialState = requestedState;
         return false;
     }
     // m_backdropMaterialState 缓存已下发的种类：-1 未初始化，其余为 BackdropBlurKind。
-    // 主题色变化与窗口移动都要重下发（重采样），因此仅在“已关闭且仍要关闭”时提前返回。
-    if (!enableBackdrop && m_backdropMaterialState == requestedState)
+    // 亚克力需要在主题色变化与窗口移动时重下发（重采样）；
+    // None/Gaussian 都不占用系统材质，二者之间切换无需重复下发关闭。
+    if (!enableSystemAccent
+        && m_backdropMaterialState != static_cast<int>(BackdropBlurKind::Acrylic))
     {
+        m_backdropMaterialState = requestedState;
         return false;
     }
     m_backdropMaterialState = requestedState;
 
-    // tintColor 用途：毛玻璃自带的着色层，由组合特性直接混合到模糊结果上，
+    // tintColor 用途：亚克力自带的着色层，由组合特性直接混合到模糊结果上，
     // 因此启用后根容器不再另画着色，避免出现双层叠加导致的浑浊。
     const QColor tintColor = KswordTheme::MainBackgroundColor();
     // gradientColorValue 采用 0xAABBGGRR 排布，注意与常见的 ARGB 顺序相反。
@@ -5059,17 +5106,10 @@ bool MainWindow::applyMainWindowBackdropMaterial(const BackdropBlurKind blurKind
         | static_cast<DWORD>(tintColor.red());
 
     AccentPolicyData accentPolicy{};
-    accentPolicy.accentState = kAccentDisabled;
-    if (blurKind == BackdropBlurKind::Gaussian)
-    {
-        accentPolicy.accentState = kAccentEnableBlurBehind;
-    }
-    else if (blurKind == BackdropBlurKind::Acrylic)
-    {
-        accentPolicy.accentState = kAccentEnableAcrylicBlurBehind;
-    }
+    accentPolicy.accentState =
+        enableSystemAccent ? kAccentEnableAcrylicBlurBehind : kAccentDisabled;
     accentPolicy.accentFlags = 0;
-    accentPolicy.gradientColor = enableBackdrop ? gradientColorValue : 0;
+    accentPolicy.gradientColor = enableSystemAccent ? gradientColorValue : 0;
     accentPolicy.animationId = 0;
 
     WindowCompositionAttributeData compositionData{};
@@ -5088,7 +5128,7 @@ bool MainWindow::applyMainWindowBackdropMaterial(const BackdropBlurKind blurKind
         << ", ok="
         << (applyOk != FALSE ? "true" : "false")
         << eol;
-    return enableBackdrop && applyOk != FALSE;
+    return enableSystemAccent && applyOk != FALSE;
 #else
     Q_UNUSED(blurKind);
     return false;
@@ -5223,6 +5263,15 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
             *result = TRUE;
             return true;
         }
+    }
+
+    if (nativeMessage->message == WM_SETTINGCHANGE
+        && nativeMessage->wParam == SPI_SETDESKWALLPAPER)
+    {
+        // 桌面壁纸变更：毛玻璃底图作废；仅在毛玻璃激活时才会真正重新生成。
+        m_wallpaperBackdropStale = true;
+        refreshWindowBackdropMaterial();
+        // 不吞消息，继续交给后续处理与基类。
     }
 
     if (nativeMessage->message == WM_GETMINMAXINFO)
@@ -10514,8 +10563,10 @@ const QPixmap* MainWindow::cachedBackgroundImage(const QString& rawImagePath) co
 
 void MainWindow::scheduleWindowBackdropRefresh()
 {
-    // 只有毛玻璃正在生效时才需要重采样；其余状态直接忽略，避免无谓的接口调用。
-    if (m_backdropMaterialState != 1 || m_backdropRefreshQueued)
+    // 只有系统亚克力正在生效时才需要按窗口位置重采样；
+    // 毛玻璃底图是静态壁纸模糊，与位置无关，其余状态同样直接忽略。
+    if (m_backdropMaterialState != static_cast<int>(BackdropBlurKind::Acrylic)
+        || m_backdropRefreshQueued)
     {
         return;
     }
@@ -10526,7 +10577,7 @@ void MainWindow::scheduleWindowBackdropRefresh()
     QTimer::singleShot(kBackdropRefreshThrottleMs, this, [this]()
         {
             m_backdropRefreshQueued = false;
-            if (m_backdropMaterialState != 1)
+            if (m_backdropMaterialState != static_cast<int>(BackdropBlurKind::Acrylic))
             {
                 return;
             }
@@ -10584,16 +10635,83 @@ void MainWindow::refreshWindowBackdropMaterial()
         }
     }
 
-    // blurMaterialActive 用途：模糊是否真正生效。
-    // 生效时着色由系统合成，根容器必须完全透明；未生效（旧系统或调用失败）
-    // 则回退为自绘着色层，保证前景文字仍然可读。
-    const bool blurMaterialActive = applyMainWindowBackdropMaterial(blurKind);
+    // acrylicMaterialActive 用途：系统亚克力是否真正生效。
+    // 生效时着色由系统合成，根容器必须完全透明；毛玻璃与直透则由根容器自绘。
+    const bool acrylicMaterialActive = applyMainWindowBackdropMaterial(blurKind);
+
+    // 毛玻璃：异步准备壁纸模糊底图；未就绪或取不到壁纸期间由着色层兜底。
+    if (blurKind == BackdropBlurKind::Gaussian)
+    {
+        queueWallpaperBackdropPreparation();
+    }
     if (m_mainRootContainer != nullptr)
     {
-        static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer)->setTranslucentMode(
+        MainWindowBackgroundWidget* const backgroundWidget =
+            static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer);
+        backgroundWidget->setWallpaperBackdropLayer(
+            blurKind == BackdropBlurKind::Gaussian ? m_wallpaperBackdropPixmap : QPixmap());
+        backgroundWidget->setTranslucentMode(
             translucencyActive,
-            !blurMaterialActive);
+            !acrylicMaterialActive);
     }
+}
+
+void MainWindow::queueWallpaperBackdropPreparation()
+{
+    // 单飞去重：正在生成直接返回；已完成过且壁纸未变化也无需重来
+    // （含“取不到壁纸”的失败结果，避免纯色桌面反复触发无效加载）。
+    if (m_wallpaperBackdropPreparing
+        || (m_wallpaperBackdropPrepared && !m_wallpaperBackdropStale))
+    {
+        return;
+    }
+    m_wallpaperBackdropPreparing = true;
+    m_wallpaperBackdropStale = false;
+
+    // windowRect 用途：在虚拟桌面坐标系中定位主窗口所在显示器，取对应壁纸。
+    const QRect windowRect = frameGeometry();
+    // guardedWindow 用途：后台任务可能晚于主窗口销毁，回投前必须验证生命周期。
+    const QPointer<MainWindow> guardedWindow(this);
+    QThreadPool::globalInstance()->start(
+        [guardedWindow, windowRect]()
+        {
+            // 壁纸路径查询（COM）、图片解码与盒式模糊全部在线程池执行，
+            // 不阻塞 Qt UI 事件循环。
+            const QString wallpaperFilePath =
+                KswordWallpaperBackdrop::QueryDesktopWallpaperFilePath(windowRect);
+            QImage blurredBackdropImage;
+            if (!wallpaperFilePath.isEmpty())
+            {
+                QImage wallpaperImage;
+                wallpaperImage.load(wallpaperFilePath);
+                blurredBackdropImage =
+                    KswordWallpaperBackdrop::BuildBlurredBackdropImage(wallpaperImage);
+            }
+
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                appInstance,
+                [guardedWindow, blurredBackdropImage]()
+                {
+                    if (guardedWindow == nullptr)
+                    {
+                        return;
+                    }
+                    MainWindow* const mainWindow = guardedWindow.data();
+                    mainWindow->m_wallpaperBackdropPreparing = false;
+                    mainWindow->m_wallpaperBackdropPrepared = true;
+                    // 失败保持空图：绘制端继续用着色层兜底，不做重试循环。
+                    mainWindow->m_wallpaperBackdropPixmap = blurredBackdropImage.isNull()
+                        ? QPixmap()
+                        : QPixmap::fromImage(blurredBackdropImage);
+                    // 生成期间壁纸又变了：置脏标记还在，刷新时会自动再排一轮。
+                    mainWindow->refreshWindowBackdropMaterial();
+                });
+        });
 }
 
 void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
