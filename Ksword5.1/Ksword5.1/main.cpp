@@ -1517,6 +1517,14 @@ int main(int argc, char* argv[])
     QApplication app(argc, argv);
     startupTraceRaw("QApplication constructed");
 
+    // 组织名/应用名必须在任何 QSettings 之前设置：默认构造的 QSettings 会取这两个值定位
+    // HKCU\Software\<组织>\<应用>。组织名为空时 Qt 的 Windows 注册表后端直接置 AccessError，
+    // 读永远拿默认值、写被静默丢弃——本程序此前正是这种状态，导致
+    // “不再弹出此类操作的确认提示”勾了也不生效、插件自动更新开关与插件许可证接受记录同样存不上。
+    // 这里补上后，上述三条链路才真正可用；键名沿用各调用点已有的分组前缀，不做迁移。
+    QCoreApplication::setOrganizationName(QStringLiteral("Ksword"));
+    QCoreApplication::setApplicationName(QStringLiteral("Ksword5.1"));
+
     // startupSystemFont 作用：
     // - 在读取并应用任何持久化字体 family 前保存 Qt/系统提供的完整字体基线；
     // - 后续“系统默认”恢复必须使用该值，不能从已被配置污染的 QApplication::font() 反推。
