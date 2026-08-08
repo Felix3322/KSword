@@ -215,6 +215,9 @@
     <ClInclude Include="src\platform\kernel_cache_fallback.h">
       <Filter>Header Files\Platform</Filter>
     </ClInclude>
+    <ClInclude Include="src\platform\kernel_object_probe.h">
+      <Filter>Header Files\Platform</Filter>
+    </ClInclude>
     <ClInclude Include="src\platform\runtime_signature_scan.h">
       <Filter>Header Files\Platform</Filter>
     </ClInclude>
@@ -718,6 +721,9 @@
       <Filter>Source Files\Platform</Filter>
     </ClCompile>
     <ClCompile Include="src\platform\kernel_cache_fallback.c">
+      <Filter>Source Files\Platform</Filter>
+    </ClCompile>
+    <ClCompile Include="src\platform\kernel_object_probe.c">
       <Filter>Source Files\Platform</Filter>
     </ClCompile>
     <ClCompile Include="src\platform\runtime_signature_scan.c">

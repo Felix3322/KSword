@@ -158,6 +158,7 @@
     <ClCompile Include="src\platform\token_layout_resolver.c" />
     <ClCompile Include="src\platform\dyndata_fallback_resolver.c" />
     <ClCompile Include="src\platform\kernel_cache_fallback.c" />
+    <ClCompile Include="src\platform\kernel_object_probe.c" />
     <ClCompile Include="src\platform\runtime_signature_scan.c" />
     <ClCompile Include="src\platform\kernel_module_identity.c" />
     <ClCompile Include="src\platform\pool_compat.c" />
@@ -295,6 +296,7 @@
     <ClInclude Include="src\platform\token_layout_resolver.h" />
     <ClInclude Include="src\platform\dyndata_fallback_resolver.h" />
     <ClInclude Include="src\platform\kernel_cache_fallback.h" />
+    <ClInclude Include="src\platform\kernel_object_probe.h" />
     <ClInclude Include="src\platform\runtime_signature_scan.h" />
     <ClInclude Include="src\platform\kernel_module_identity.h" />
     <ClInclude Include="src\platform\pool_compat.h" />

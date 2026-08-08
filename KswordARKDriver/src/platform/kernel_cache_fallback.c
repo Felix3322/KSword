@@ -25,6 +25,7 @@ Environment:
 
 #include <ntifs.h>
 #include "kernel_cache_fallback.h"
+#include "kernel_object_probe.h"
 #include "runtime_signature_scan.h"
 #include "pool_compat.h"
 
@@ -37,7 +38,6 @@ Environment:
 #define KSW_KERNEL_CACHE_MAX_PRIVATE_ENTRY 0x100UL
 #define KSW_KERNEL_CACHE_MAX_SAMPLE_ENTRIES 16UL
 #define KSW_KERNEL_CACHE_MAX_NAME_BYTES 520U
-#define KSW_KERNEL_CACHE_MAX_RESOURCE_LIST_STEPS 0x40000UL
 #define KSW_KERNEL_CACHE_MAX_AVL_ELEMENTS 0x10000UL
 #define KSW_KERNEL_CACHE_MAX_AVL_DEPTH 64UL
 
@@ -453,7 +453,7 @@ Routine Description:
     space only; it can never establish that the address is a real ERESOURCE,
     because every self-consistent LIST_ENTRY in a writable ntoskrnl section
     satisfies these conditions.  Identity is settled later by
-    KswordARKKernelCacheResourceIsSystemResource.
+    KswordARKKernelProbeResourceIsSystemResource.
 
 Return Value:
 
@@ -495,73 +495,6 @@ Return Value:
         return FALSE;
     }
     return TRUE;
-}
-
-static BOOLEAN
-KswordARKKernelCacheResourceIsSystemResource(
-    _In_ ULONG_PTR Address
-    )
-/*++
-
-Routine Description:
-
-    Prove that a candidate address really is a live ERESOURCE before any Ex
-    resource API touches it.  ExInitializeResourceLite links every resource
-    onto one global list, so a driver-owned resource supplies an anchor and no
-    ntoskrnl global has to be guessed.  The walk uses bounded fault-tolerant
-    reads and gives up rather than trusting a torn or hostile link.
-
-Arguments:
-
-    Address - Candidate ERESOURCE address; SystemResourcesList sits at zero
-        offset, so the list node and the resource share this address.
-
-Return Value:
-
-    TRUE only when the candidate is present on the global resource list.
-
---*/
-{
-    ERESOURCE anchor;
-    LIST_ENTRY node;
-    ULONG_PTR anchorHead = 0U;
-    ULONG_PTR current = 0U;
-    ULONG steps = 0UL;
-    BOOLEAN found = FALSE;
-
-    if (Address == 0U || (Address & (sizeof(PVOID) - 1U)) != 0U ||
-        !KswordARKKernelCacheIsKernelPointer(Address) ||
-        KeGetCurrentIrql() != PASSIVE_LEVEL) {
-        return FALSE;
-    }
-    RtlZeroMemory(&anchor, sizeof(anchor));
-    if (!NT_SUCCESS(ExInitializeResourceLite(&anchor))) {
-        return FALSE;
-    }
-    anchorHead = (ULONG_PTR)&anchor.SystemResourcesList;
-    current = (ULONG_PTR)anchor.SystemResourcesList.Flink;
-    for (steps = 0UL;
-         steps < KSW_KERNEL_CACHE_MAX_RESOURCE_LIST_STEPS;
-         ++steps) {
-        if (current == anchorHead) {
-            break;
-        }
-        if (current == Address) {
-            found = TRUE;
-            break;
-        }
-        if ((current & (sizeof(PVOID) - 1U)) != 0U ||
-            !KswordARKKernelCacheIsKernelPointer(current)) {
-            break;
-        }
-        RtlZeroMemory(&node, sizeof(node));
-        if (!KswordARKRuntimeReadMemory((const VOID*)current, &node, sizeof(node))) {
-            break;
-        }
-        current = (ULONG_PTR)node.Flink;
-    }
-    ExDeleteResourceLite(&anchor);
-    return found;
 }
 
 static BOOLEAN
@@ -878,7 +811,7 @@ KswordARKKernelCacheResolvePiDdb(
 
     candidate.Table = (PRTL_AVL_TABLE)bestTableReference->Address;
     candidate.Lock = (PERESOURCE)bestLockReference->Address;
-    if (!KswordARKKernelCacheResourceIsSystemResource(
+    if (!KswordARKKernelProbeResourceIsSystemResource(
             (ULONG_PTR)candidate.Lock)) {
         return;
     }
