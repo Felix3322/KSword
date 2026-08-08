@@ -3785,9 +3785,14 @@ void OtherDock::refreshWindowListAsync()
 
 bool OtherDock::passFilter(const WindowInfo& info) const
 {
-    if (!m_externalProcessIdFilterSet.isEmpty())
+    // 外部 PID 过滤（从进程页“查看窗口”跳过来时设置）只是一层额外收窄，
+    // 不能顶替下拉条件和关键字：此前这里直接 return，导致跳转过来之后
+    // “过滤模式”下拉和关键字输入框还亮着、还能改，却对结果毫无影响——
+    // 界面显示“可见窗口”，实际按“该 PID 的全部窗口”执行。
+    if (!m_externalProcessIdFilterSet.isEmpty() &&
+        !m_externalProcessIdFilterSet.contains(static_cast<quint32>(info.processId)))
     {
-        return m_externalProcessIdFilterSet.contains(static_cast<quint32>(info.processId));
+        return false;
     }
 
     // 条件过滤：先按下拉条件筛掉不符合的项。
