@@ -8288,16 +8288,16 @@ void FileDock::initializeConnections(FilePanelWidgets& panel)
         deleteSelectedItem(panel);
     });
 
-    // Ctrl+C/Ctrl+X/Ctrl+V 常用文件操作快捷键。
+    // Ctrl+C 必须保持“无副作用”：资源管理器里它只把内容放进剪贴板，
+    // 真正落盘要等 Ctrl+V。此前这里绑的是“立即复制到对侧面板”，
+    // 按下即写入目标目录且无确认，与用户预期完全相反；Ctrl+X 更是
+    // 直接移动源文件。现改为复制所选路径到剪贴板，并解绑 Ctrl+X。
+    // 面板间传输仍可用右键菜单的“复制到对侧面板/移动到对侧面板”，
+    // 那里的名字已经明确说明了动作与目标。
     QShortcut* copyShortcut = new QShortcut(QKeySequence::Copy, panel.fileView);
     copyShortcut->setContext(Qt::WidgetShortcut);
     connect(copyShortcut, &QShortcut::activated, this, [this, &panel]() {
-        copySelectedItems(panel);
-    });
-    QShortcut* cutShortcut = new QShortcut(QKeySequence::Cut, panel.fileView);
-    cutShortcut->setContext(Qt::WidgetShortcut);
-    connect(cutShortcut, &QShortcut::activated, this, [this, &panel]() {
-        cutSelectedItems(panel);
+        copySelectedItemPath(panel);
     });
 
     // QListView 使用自己的 WidgetShortcut，避免把 Enter/Delete 等按键扩散到地址栏和过滤输入框。
@@ -8312,8 +8312,7 @@ void FileDock::initializeConnections(FilePanelWidgets& panel)
     bindCompactShortcut(QKeySequence(Qt::Key_Enter), [this, &panel]() { openSelectedItems(panel); });
     bindCompactShortcut(QKeySequence(Qt::Key_F2), [this, &panel]() { renameSelectedItem(panel); });
     bindCompactShortcut(QKeySequence(Qt::Key_Delete), [this, &panel]() { deleteSelectedItem(panel); });
-    bindCompactShortcut(QKeySequence::Copy, [this, &panel]() { copySelectedItems(panel); });
-    bindCompactShortcut(QKeySequence::Cut, [this, &panel]() { cutSelectedItems(panel); });
+    bindCompactShortcut(QKeySequence::Copy, [this, &panel]() { copySelectedItemPath(panel); });
 
 }
 
@@ -10397,7 +10396,7 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     QMenu menu(this);
     menu.setStyleSheet(buildContextMenuStyle());
     QAction* openAction = menu.addAction(QIcon(":/Icon/process_start.svg"), QStringLiteral("打开/运行"));
-    QAction* copyPathAction = menu.addAction(QIcon(":/Icon/process_copy_cell.svg"), QStringLiteral("复制路径"));
+    QAction* copyPathAction = menu.addAction(QIcon(":/Icon/process_copy_cell.svg"), QStringLiteral("复制路径(Ctrl+C)"));
     QAction* copyKernelPathAction = menu.addAction(QIcon(":/Icon/process_copy_cell.svg"), QStringLiteral("复制内核模式地址"));
     QAction* copyShortNameAction = menu.addAction(QIcon(":/Icon/process_copy_cell.svg"), QStringLiteral("复制短文件名"));
     QAction* copyLinkTargetAction = menu.addAction(QIcon(":/Icon/process_copy_cell.svg"), QStringLiteral("复制链接目标"));
