@@ -380,6 +380,7 @@ namespace
         defaultSettings.uiLanguage = QStringLiteral("system");
         defaultSettings.backgroundImagePath = QStringLiteral("Style/ksword_background.png");
         defaultSettings.backgroundOpacityPercent = 35;
+        defaultSettings.backgroundTransparencyEnabled = false;
         defaultSettings.startupDefaultTabKey = QStringLiteral("welcome");
         defaultSettings.launchMaximizedOnStartup = true;
         defaultSettings.startupTopMostEnabled = false;
@@ -520,6 +521,10 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
     const int backgroundOpacityPercentValue = rootObject.value(QStringLiteral("background_opacity_percent"))
         .toInt(loadedSettings.backgroundOpacityPercent);
     loadedSettings.backgroundOpacityPercent = clampOpacityPercent(backgroundOpacityPercentValue);
+
+    loadedSettings.backgroundTransparencyEnabled = rootObject
+        .value(QStringLiteral("background_transparency_enabled"))
+        .toBool(loadedSettings.backgroundTransparencyEnabled);
 
     // startupDefaultTabKeyText 作用：读取启动默认页签字段，缺失或空值时回退 welcome。
     const QString startupDefaultTabKeyText = rootObject.value(QStringLiteral("startup_default_tab_key"))
@@ -664,6 +669,7 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
         settings.uiLanguage.trimmed().isEmpty() ? QStringLiteral("system") : settings.uiLanguage.trimmed());
     rootObject.insert(QStringLiteral("background_image_path"), settings.backgroundImagePath);
     rootObject.insert(QStringLiteral("background_opacity_percent"), clampOpacityPercent(settings.backgroundOpacityPercent));
+    rootObject.insert(QStringLiteral("background_transparency_enabled"), settings.backgroundTransparencyEnabled);
     rootObject.insert(
         QStringLiteral("startup_default_tab_key"),
         settings.startupDefaultTabKey.trimmed().isEmpty()

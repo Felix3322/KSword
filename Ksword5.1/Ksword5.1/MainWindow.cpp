@@ -3441,6 +3441,22 @@ namespace
             update();
         }
 
+        // setTranslucentMode 作用：
+        // - 切换“背景图透明区域穿透窗口”的绘制模式；
+        // - 穿透时底色层不再填充，由背景图自身 alpha 决定每个像素的透明度；
+        // - 需要顶层窗口已启用 WA_TranslucentBackground 才有实际穿透效果。
+        void setTranslucentMode(const bool translucentEnabled)
+        {
+            if (m_translucentMode == translucentEnabled)
+            {
+                return;
+            }
+            m_translucentMode = translucentEnabled;
+            // 穿透绘制会留下透明像素，必须放弃“完全不透明绘制”性能假设。
+            setAttribute(Qt::WA_OpaquePaintEvent, !translucentEnabled);
+            update();
+        }
+
     protected:
         void paintEvent(QPaintEvent* event) override
         {
@@ -3449,7 +3465,22 @@ namespace
             {
                 painter.setClipRegion(event->region());
             }
-            painter.fillRect(rect(), m_baseColor);
+
+            // translucentPaint 用途：只有穿透模式且背景图可用时才留透明像素；
+            // 无图或透明度为零时回退为普通底色填充，避免整窗悬空。
+            const bool translucentPaint = m_translucentMode
+                && !m_sourceImage.isNull()
+                && m_imageOpacityPercent > 0;
+            if (translucentPaint)
+            {
+                painter.setCompositionMode(QPainter::CompositionMode_Source);
+                painter.fillRect(rect(), Qt::transparent);
+                painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            }
+            else
+            {
+                painter.fillRect(rect(), m_baseColor);
+            }
 
             if (m_sourceImage.isNull() || m_imageOpacityPercent <= 0 || rect().isEmpty())
             {
@@ -3477,6 +3508,7 @@ namespace
         QPixmap m_sourceImage;
         int m_imageOpacityPercent = 0;
         quint64 m_sourceImageCacheKey = 0;
+        bool m_translucentMode = false; // m_translucentMode：背景图透明区域是否穿透窗口。
     };
 
     // buildBackgroundBrush 作用：
@@ -3970,6 +4002,14 @@ MainWindow::MainWindow(
         32,
         QStringLiteral("main.startup.progress.main_window_framework"),
         QStringLiteral("正在准备主界面..."));
+
+    // 背景穿透（per-pixel alpha）必须在原生窗口创建前声明：
+    // - 运行期切换需要销毁并重建 HWND，会丢失单实例属性、DWM 样式等句柄绑定状态；
+    // - 因此该设置只在启动时读取一次，运行期修改由外观设置页提示重启生效。
+    if (m_currentAppearanceSettings.backgroundTransparencyEnabled)
+    {
+        setAttribute(Qt::WA_TranslucentBackground, true);
+    }
 
     // 启用无边框模式：
     // - 由自绘标题栏接管最小化/最大化/关闭/置顶操作；
@@ -9692,6 +9732,17 @@ void MainWindow::applyAppearanceSettings(
         mainBackgroundColorChanged
         || backgroundPathChanged
         || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent;
+    // 背景穿透依赖启动时的 WA_TranslucentBackground 声明，运行期只提示重启生效。
+    const bool backgroundTransparencyChanged =
+        !isInitialAppearanceApply
+        && previousSettings.backgroundTransparencyEnabled != settings.backgroundTransparencyEnabled;
+    if (backgroundTransparencyChanged)
+    {
+        kLogEvent transparencyNoticeEvent;
+        warn << transparencyNoticeEvent
+            << "[MainWindow] 背景穿透设置已保存，重启 Ksword 后生效。"
+            << eol;
+    }
     const bool fontChanged =
         isInitialAppearanceApply
         || previousSettings.fontFamily.compare(settings.fontFamily, Qt::CaseInsensitive) != 0
@@ -9807,7 +9858,8 @@ void MainWindow::applyAppearanceSettings(
         mainPalette.setColor(QPalette::HighlightedText, KswordTheme::OnAccentColor());
         QApplication::setPalette(mainPalette);
         setPalette(mainPalette);
-        setAutoFillBackground(true);
+        // 背景穿透模式下主窗口不能自绘不透明底，否则穿透像素被 palette 底色盖住。
+        setAutoFillBackground(!testAttribute(Qt::WA_TranslucentBackground));
 
         QPalette toolTipPalette = mainPalette;
         toolTipPalette.setColor(QPalette::ToolTipBase, baseColor);
@@ -10271,9 +10323,14 @@ void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
         ? cachedBackgroundImage(m_currentAppearanceSettings.backgroundImagePath)
         : nullptr;
 
+    // translucencyActive 用途：窗口在启动时按配置声明了 per-pixel 透明；
+    // 此时底色层交给根容器按穿透模式绘制，主窗口自身不再填充不透明背景。
+    const bool translucencyActive = testAttribute(Qt::WA_TranslucentBackground);
     if (m_mainRootContainer != nullptr)
     {
-        static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer)->setBackground(
+        auto* backgroundWidget = static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer);
+        backgroundWidget->setTranslucentMode(translucencyActive);
+        backgroundWidget->setBackground(
             baseColor,
             sourceImage,
             normalizedOpacityPercent);
@@ -10282,7 +10339,7 @@ void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
     QPalette mainPalette = palette();
     mainPalette.setColor(QPalette::Window, baseColor);
     setPalette(mainPalette);
-    setAutoFillBackground(true);
+    setAutoFillBackground(!translucencyActive);
 
     if (m_pDockManager != nullptr)
     {

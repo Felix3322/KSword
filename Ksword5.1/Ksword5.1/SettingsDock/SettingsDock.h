@@ -264,6 +264,9 @@ private:
     // m_backgroundOpacityValueLabel 作用：显示透明度百分比文本。
     QLabel* m_backgroundOpacityValueLabel = nullptr;
 
+    // m_backgroundTransparencyCheckBox 作用：让背景图自身的透明区域透出窗口后方。
+    QCheckBox* m_backgroundTransparencyCheckBox = nullptr;
+
     // 日志通知设置：控制右侧通知卡片的开关、等级、时长与堆叠位置。
     QCheckBox* m_notificationCardsEnabledCheckBox = nullptr;
     QComboBox* m_notificationMinimumLevelCombo = nullptr;

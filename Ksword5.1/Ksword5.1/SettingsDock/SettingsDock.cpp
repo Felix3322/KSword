@@ -540,6 +540,13 @@ void SettingsDock::initializeAppearanceTab()
     m_backgroundOpacityValueLabel->setMinimumWidth(48);
     opacityLayout->addWidget(m_backgroundOpacityValueLabel);
 
+    // m_backgroundTransparencyCheckBox 作用：切换背景图片 alpha 透明区域是否穿透窗口显示桌面。
+    m_backgroundTransparencyCheckBox = new QCheckBox(QStringLiteral("背景图透明处显示桌面（重启后生效）"), backgroundGroupBox);
+    languageManager.bindText(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency"), QStringLiteral("背景图透明处显示桌面（重启后生效）"));
+    m_backgroundTransparencyCheckBox->setToolTip(QStringLiteral("勾选后，背景图片中透明的部分不再用底色填充，而是直接显示本窗口后面的桌面或其它窗口；需要使用带透明通道的图片（如 PNG），重启 Ksword 后生效。"));
+    languageManager.bindToolTip(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency.tooltip"), QStringLiteral("勾选后，背景图片中透明的部分不再用底色填充，而是直接显示本窗口后面的桌面或其它窗口；需要使用带透明通道的图片（如 PNG），重启 Ksword 后生效。"));
+    backgroundLayout->addWidget(m_backgroundTransparencyCheckBox);
+
     backgroundLayout->addLayout(opacityLayout);
     appearanceRootLayout->addWidget(backgroundGroupBox);
 
@@ -906,6 +913,10 @@ void SettingsDock::bindAppearanceSignals()
         }
         });
 
+    connect(m_backgroundTransparencyCheckBox, &QCheckBox::toggled, this, [this](const bool /*checkedState*/) {
+        markPendingChanges(QString());
+        });
+
     connect(m_browseBackgroundButton, &QToolButton::clicked, this, [this]() {
         openBackgroundFileDialog();
         });
@@ -1042,6 +1053,10 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
 
     m_backgroundPathEdit->setText(settings.backgroundImagePath);
     m_backgroundOpacitySlider->setValue(settings.backgroundOpacityPercent);
+    if (m_backgroundTransparencyCheckBox != nullptr)
+    {
+        m_backgroundTransparencyCheckBox->setChecked(settings.backgroundTransparencyEnabled);
+    }
     if (m_textAntialiasingCheckBox != nullptr)
     {
         m_textAntialiasingCheckBox->setChecked(settings.textAntialiasingEnabled);
@@ -1178,6 +1193,8 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
         : rawPathText;
 
     collectedSettings.backgroundOpacityPercent = m_backgroundOpacitySlider->value();
+    collectedSettings.backgroundTransparencyEnabled = m_backgroundTransparencyCheckBox != nullptr
+        && m_backgroundTransparencyCheckBox->isChecked();
     // 启动页字段已不再由设置页编辑；保存其它设置时保留当前内存值，避免意外覆盖旧配置。
     collectedSettings.startupDefaultTabKey = m_currentAppearanceSettings.startupDefaultTabKey;
     collectedSettings.launchMaximizedOnStartup =
@@ -1459,6 +1476,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.uiLanguage.compare(m_currentAppearanceSettings.uiLanguage, Qt::CaseInsensitive) == 0
         && nextSettings.backgroundImagePath == m_currentAppearanceSettings.backgroundImagePath
         && nextSettings.backgroundOpacityPercent == m_currentAppearanceSettings.backgroundOpacityPercent
+        && nextSettings.backgroundTransparencyEnabled == m_currentAppearanceSettings.backgroundTransparencyEnabled
         && nextSettings.launchMaximizedOnStartup == m_currentAppearanceSettings.launchMaximizedOnStartup
         && nextSettings.startupTopMostEnabled == m_currentAppearanceSettings.startupTopMostEnabled
         && nextSettings.autoRequestAdminOnStartup == m_currentAppearanceSettings.autoRequestAdminOnStartup

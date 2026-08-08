@@ -42,6 +42,7 @@ namespace ks::settings
     // customMainBackgroundColor：用户自定义的主背景色（#RRGGBB）；空值表示跟随当前深浅主题。
     // backgroundImagePath：背景图路径（可相对可绝对）；
     // backgroundOpacityPercent：背景图透明度（0~100）；
+    // backgroundTransparencyEnabled：是否让背景图片自身的 alpha 透明区域透出窗口后方；
     // startupDefaultTabKey：应用启动时默认激活的主页签 key（如 welcome/process/network）；
     // launchMaximizedOnStartup：下次启动时是否默认最大化显示；
     // startupTopMostEnabled：启动后是否自动启用最高级置顶，手动图钉切换会同步保存；
@@ -67,6 +68,7 @@ namespace ks::settings
         QString uiLanguage = QStringLiteral("system");
         QString backgroundImagePath = QStringLiteral("Style/ksword_background.png");
         int backgroundOpacityPercent = 35;
+        bool backgroundTransparencyEnabled = false;
         QString startupDefaultTabKey = QStringLiteral("welcome");
         bool launchMaximizedOnStartup = true;
         bool startupTopMostEnabled = false;
