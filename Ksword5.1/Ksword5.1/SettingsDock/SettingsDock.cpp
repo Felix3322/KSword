@@ -540,14 +540,38 @@ void SettingsDock::initializeAppearanceTab()
     m_backgroundOpacityValueLabel->setMinimumWidth(48);
     opacityLayout->addWidget(m_backgroundOpacityValueLabel);
 
-    // m_backgroundTransparencyCheckBox 作用：切换窗口透明背景（背景图 alpha 穿透 / 无图云母材质）。
+    backgroundLayout->addLayout(opacityLayout);
+
+    // m_backgroundTransparencyCheckBox 作用：切换窗口透明背景（背景图 alpha 穿透 / 云母材质）。
     m_backgroundTransparencyCheckBox = new QCheckBox(QStringLiteral("透明窗口背景（重启后生效）"), backgroundGroupBox);
     languageManager.bindText(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency"), QStringLiteral("透明窗口背景（重启后生效）"));
     m_backgroundTransparencyCheckBox->setToolTip(QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口使用系统云母模糊材质（Windows 11），旧系统直接透出桌面。重启 Ksword 后生效。"));
     languageManager.bindToolTip(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency.tooltip"), QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口使用系统云母模糊材质（Windows 11），旧系统直接透出桌面。重启 Ksword 后生效。"));
     backgroundLayout->addWidget(m_backgroundTransparencyCheckBox);
 
-    backgroundLayout->addLayout(opacityLayout);
+    // 透明背景效果选择行：勾选透明后可用，运行时立即切换材质，无需重启。
+    QHBoxLayout* translucencyMaterialLayout = new QHBoxLayout();
+    translucencyMaterialLayout->setSpacing(6);
+    QLabel* translucencyMaterialLabel = new QLabel(QStringLiteral("透明背景效果"), backgroundGroupBox);
+    languageManager.bindText(translucencyMaterialLabel, QStringLiteral("settings.background.translucency_material"), QStringLiteral("透明背景效果"));
+    translucencyMaterialLayout->addWidget(translucencyMaterialLabel);
+
+    // m_backgroundTranslucencyMaterialCombo 作用：选择透明背景的呈现方式（自动/云母/直透）。
+    m_backgroundTranslucencyMaterialCombo = new QComboBox(backgroundGroupBox);
+    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("自动（有背景图直透，无图云母）"), QStringLiteral("auto"));
+    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("云母模糊（Windows 11 磨砂）"), QStringLiteral("mica"));
+    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("直透桌面（完全透明）"), QStringLiteral("desktop"));
+    m_backgroundTranslucencyMaterialCombo->setToolTip(QStringLiteral("云母模糊：透明区域显示磨砂质感的桌面（仅 Windows 11）；直透桌面：透明区域直接看到桌面；自动：设置了背景图时直透，没有背景图时用云母。修改后立即生效。"));
+    languageManager.bindToolTip(m_backgroundTranslucencyMaterialCombo, QStringLiteral("settings.background.translucency_material.tooltip"), QStringLiteral("云母模糊：透明区域显示磨砂质感的桌面（仅 Windows 11）；直透桌面：透明区域直接看到桌面；自动：设置了背景图时直透，没有背景图时用云母。修改后立即生效。"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 0, QStringLiteral("settings.background.translucency_material.auto"), QStringLiteral("自动（有背景图直透，无图云母）"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 1, QStringLiteral("settings.background.translucency_material.mica"), QStringLiteral("云母模糊（Windows 11 磨砂）"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 2, QStringLiteral("settings.background.translucency_material.desktop"), QStringLiteral("直透桌面（完全透明）"));
+    translucencyMaterialLayout->addWidget(m_backgroundTranslucencyMaterialCombo, 1);
+    backgroundLayout->addLayout(translucencyMaterialLayout);
+
+    // 组合框可用性跟随透明总开关；初始状态由 applySettingsToUi 同步。
+    m_backgroundTranslucencyMaterialCombo->setEnabled(m_backgroundTransparencyCheckBox->isChecked());
+    connect(m_backgroundTransparencyCheckBox, &QCheckBox::toggled, m_backgroundTranslucencyMaterialCombo, &QWidget::setEnabled);
     appearanceRootLayout->addWidget(backgroundGroupBox);
 
     // ===== 交互与滚动分组 =====
@@ -917,6 +941,10 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QString());
         });
 
+    connect(m_backgroundTranslucencyMaterialCombo, &QComboBox::currentIndexChanged, this, [this](const int /*itemIndex*/) {
+        markPendingChanges(QString());
+        });
+
     connect(m_browseBackgroundButton, &QToolButton::clicked, this, [this]() {
         openBackgroundFileDialog();
         });
@@ -1057,6 +1085,13 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     {
         m_backgroundTransparencyCheckBox->setChecked(settings.backgroundTransparencyEnabled);
     }
+    if (m_backgroundTranslucencyMaterialCombo != nullptr)
+    {
+        const int materialIndex = m_backgroundTranslucencyMaterialCombo->findData(
+            settings.backgroundTranslucencyMaterial.trimmed().toLower());
+        m_backgroundTranslucencyMaterialCombo->setCurrentIndex(materialIndex >= 0 ? materialIndex : 0);
+        m_backgroundTranslucencyMaterialCombo->setEnabled(settings.backgroundTransparencyEnabled);
+    }
     if (m_textAntialiasingCheckBox != nullptr)
     {
         m_textAntialiasingCheckBox->setChecked(settings.textAntialiasingEnabled);
@@ -1195,6 +1230,9 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
     collectedSettings.backgroundOpacityPercent = m_backgroundOpacitySlider->value();
     collectedSettings.backgroundTransparencyEnabled = m_backgroundTransparencyCheckBox != nullptr
         && m_backgroundTransparencyCheckBox->isChecked();
+    collectedSettings.backgroundTranslucencyMaterial = m_backgroundTranslucencyMaterialCombo != nullptr
+        ? m_backgroundTranslucencyMaterialCombo->currentData().toString()
+        : m_currentAppearanceSettings.backgroundTranslucencyMaterial;
     // 启动页字段已不再由设置页编辑；保存其它设置时保留当前内存值，避免意外覆盖旧配置。
     collectedSettings.startupDefaultTabKey = m_currentAppearanceSettings.startupDefaultTabKey;
     collectedSettings.launchMaximizedOnStartup =
@@ -1477,6 +1515,7 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.backgroundImagePath == m_currentAppearanceSettings.backgroundImagePath
         && nextSettings.backgroundOpacityPercent == m_currentAppearanceSettings.backgroundOpacityPercent
         && nextSettings.backgroundTransparencyEnabled == m_currentAppearanceSettings.backgroundTransparencyEnabled
+        && nextSettings.backgroundTranslucencyMaterial == m_currentAppearanceSettings.backgroundTranslucencyMaterial
         && nextSettings.launchMaximizedOnStartup == m_currentAppearanceSettings.launchMaximizedOnStartup
         && nextSettings.startupTopMostEnabled == m_currentAppearanceSettings.startupTopMostEnabled
         && nextSettings.autoRequestAdminOnStartup == m_currentAppearanceSettings.autoRequestAdminOnStartup

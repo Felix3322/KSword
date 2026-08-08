@@ -6212,8 +6212,12 @@ void MainWindow::initPrivilegeStatusButtons()
         m_uiAccessStatusButton->setMinimumWidth(74);
     }
 
-    m_uiAccessStatusButton->setToolTip("UIAccess：点击重新启动并尝试启用跨权限界面访问");
-    m_r0StatusButton->setToolTip("R0：KswordARK 驱动服务快捷开关");
+    // 权限状态按钮 tooltip：这排按钮同时是“状态指示灯 + 快捷操作”，逐个说明含义与点击行为。
+    m_uiAccessStatusButton->setToolTip(QStringLiteral("UIAccess：跨权限窗口置顶能力状态。点击后重启程序并尝试启用/关闭该能力。"));
+    m_adminStatusButton->setToolTip(QStringLiteral("Admin：当前是否以管理员权限运行。非管理员时点击会以管理员身份重启程序。"));
+    m_debugStatusButton->setToolTip(QStringLiteral("Debug：调试特权（SeDebugPrivilege）状态，用于访问受保护进程。点击申请该特权（需要管理员）。"));
+    m_systemStatusButton->setToolTip(QStringLiteral("System：当前是否以 LocalSystem 系统账户运行。点击查看当前身份说明。"));
+    m_r0StatusButton->setToolTip(QStringLiteral("R0：KswordARK 内核驱动服务状态。点击启动或停止驱动（内核功能都依赖它）。"));
 
     // 把容器挂到功能条右侧。
     if (m_topActionRowLayout != nullptr)
@@ -8456,8 +8460,7 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     realWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     if (isKernelDock)
     {
-        const bool allowWallpaperThroughKernelDock =
-            isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
+        const bool allowWallpaperThroughKernelDock = shouldRenderTransparentDockContent();
         realWidget->setAutoFillBackground(!allowWallpaperThroughKernelDock);
         realWidget->setAttribute(Qt::WA_StyledBackground, !allowWallpaperThroughKernelDock);
     }
@@ -8813,8 +8816,7 @@ void MainWindow::repairKernelDockAfterLayoutRestore(const QString& reasonText)
         // 判断，直接确保 Dock 内容是 KernelDock 本体，避免恢复到旧占位页或空容器。
         // 背景图模式下不能再强制根控件自绘实底，否则会把主窗口背景图挡住。
         QWidget* oldWidget = m_dockKernel->takeWidget();
-        const bool allowWallpaperThroughKernelDock =
-            isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
+        const bool allowWallpaperThroughKernelDock = shouldRenderTransparentDockContent();
         m_kernelWidget->setAutoFillBackground(!allowWallpaperThroughKernelDock);
         m_kernelWidget->setAttribute(Qt::WA_StyledBackground, !allowWallpaperThroughKernelDock);
         m_kernelWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -8983,7 +8985,10 @@ void MainWindow::initDockWidgets()
         dock->setAttribute(Qt::WA_StyledBackground, false);
         if (widget != nullptr)
         {
-            const bool isRealKernelContent = isKernelDock && widget == m_kernelWidget;
+            // 透明背景模式下即使是 KernelDock 也不能自绘实底，否则盖住云母材质。
+            const bool isRealKernelContent = isKernelDock
+                && widget == m_kernelWidget
+                && !shouldRenderTransparentDockContent();
             // KernelDock paints its own tab surface.  Do not convert it to a transparent root here,
             // otherwise a restored startup kernel dock can inherit the dark ADS background before
             // its internal pages get a chance to repaint.
@@ -9804,7 +9809,10 @@ void MainWindow::applyAppearanceSettings(
     const bool backgroundChanged =
         mainBackgroundColorChanged
         || backgroundPathChanged
-        || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent;
+        || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent
+        || previousSettings.backgroundTranslucencyMaterial.compare(
+            settings.backgroundTranslucencyMaterial,
+            Qt::CaseInsensitive) != 0;
     // 背景穿透依赖启动时的 WA_TranslucentBackground 声明，运行期只提示重启生效。
     const bool backgroundTransparencyChanged =
         !isInitialAppearanceApply
@@ -9866,13 +9874,18 @@ void MainWindow::applyAppearanceSettings(
         // 只有路径首次加载或真实变化时才异步验证；主题与滚动条变化不会进入文件系统。
         queueBackgroundImageValidation(settings.backgroundImagePath);
     }
-    // enableDockTransparencyForBackgroundImage 用途：从当前代次的缓存结果决定透明策略。
-    const bool enableDockTransparencyForBackgroundImage =
-        isCachedBackgroundImageReady(settings.backgroundImagePath);
+    // windowTranslucencyActive 用途：窗口是否在启动时声明了 per-pixel 透明。
+    // 该状态在进程生命周期内固定，运行期改配置只提示重启。
+    const bool windowTranslucencyActive = testAttribute(Qt::WA_TranslucentBackground);
+    // enableDockContentTransparency 用途：决定 Dock 内容层是否透明。
+    // 背景图就绪要透出图片；启用透明窗口背景时同样必须透明，
+    // 否则 Dock 的不透明表面会盖住云母材质，只剩菜单栏区域可见。
+    const bool enableDockContentTransparency =
+        isCachedBackgroundImageReady(settings.backgroundImagePath) || windowTranslucencyActive;
     const bool dockTransparencyChanged =
         isInitialAppearanceApply
         || backgroundReadinessChanged
-        || previousBackgroundImageReady != enableDockTransparencyForBackgroundImage;
+        || (previousBackgroundImageReady || windowTranslucencyActive) != enableDockContentTransparency;
     const bool mainStyleRefreshRequired =
         themeVisualRefreshRequired
         || dockTransparencyChanged
@@ -9972,7 +9985,8 @@ void MainWindow::applyAppearanceSettings(
             menuPalette.setColor(QPalette::WindowText, windowTextColor);
             menuPalette.setColor(QPalette::Text, windowTextColor);
             menuBar()->setPalette(menuPalette);
-            menuBar()->setAutoFillBackground(true);
+            // 透明背景模式下菜单栏同样交给底层材质，避免出现唯一的不透明色块。
+            menuBar()->setAutoFillBackground(!testAttribute(Qt::WA_TranslucentBackground));
         }
 
         if (m_pDockManager != nullptr)
@@ -9982,7 +9996,8 @@ void MainWindow::applyAppearanceSettings(
             dockPalette.setColor(QPalette::WindowText, windowTextColor);
             dockPalette.setColor(QPalette::Text, textColor);
             m_pDockManager->setPalette(dockPalette);
-            m_pDockManager->setAutoFillBackground(true);
+            // 透明背景模式下 DockManager 不能自绘不透明底，否则整块盖住云母材质。
+            m_pDockManager->setAutoFillBackground(!testAttribute(Qt::WA_TranslucentBackground));
         }
     }
 
@@ -10044,7 +10059,7 @@ void MainWindow::applyAppearanceSettings(
             + buildAppearanceOverlayStyleSheet(
                 m_currentAppearanceSettings,
                 darkModeEnabled,
-                enableDockTransparencyForBackgroundImage);
+                enableDockContentTransparency);
 
         QElapsedTimer styleSheetApplyTimer;
         styleSheetApplyTimer.start();
@@ -10377,6 +10392,12 @@ bool MainWindow::isCachedBackgroundImageReady(const QString& rawImagePath) const
         && !m_backgroundImagePixmap.isNull();
 }
 
+bool MainWindow::shouldRenderTransparentDockContent() const
+{
+    return isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath)
+        || testAttribute(Qt::WA_TranslucentBackground);
+}
+
 const QPixmap* MainWindow::cachedBackgroundImage(const QString& rawImagePath) const
 {
     return isCachedBackgroundImageReady(rawImagePath)
@@ -10399,8 +10420,26 @@ void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
     // translucencyActive 用途：窗口在启动时按配置声明了 per-pixel 透明；
     // 此时底色层交给根容器按穿透模式绘制，主窗口自身不再填充不透明背景。
     const bool translucencyActive = testAttribute(Qt::WA_TranslucentBackground);
-    // 无背景图时启用系统云母材质补足质感；有背景图时关闭材质保持直透桌面。
-    applyMainWindowBackdropMaterial(translucencyActive && sourceImage == nullptr);
+    // 材质决策按用户显式选择：mica=始终云母，desktop=始终直透，auto=无图云母/有图直透。
+    const QString translucencyMaterialMode =
+        m_currentAppearanceSettings.backgroundTranslucencyMaterial.trimmed().toLower();
+    bool backdropWanted = false;
+    if (translucencyActive)
+    {
+        if (translucencyMaterialMode == QStringLiteral("mica"))
+        {
+            backdropWanted = true;
+        }
+        else if (translucencyMaterialMode == QStringLiteral("desktop"))
+        {
+            backdropWanted = false;
+        }
+        else
+        {
+            backdropWanted = (sourceImage == nullptr);
+        }
+    }
+    applyMainWindowBackdropMaterial(backdropWanted);
     if (m_mainRootContainer != nullptr)
     {
         auto* backgroundWidget = static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer);
@@ -10435,7 +10474,7 @@ void MainWindow::applyFloatingDockContainerAppearance(ads::CFloatingDockContaine
 
     const bool darkModeEnabled = isDarkModeEffective(m_currentAppearanceSettings);
     const QColor baseColor = KswordTheme::MainBackgroundColor();
-    const bool enableDockTransparencyForBackgroundImage =
+    const bool enableDockContentTransparency =
         isCachedBackgroundImageReady(m_currentAppearanceSettings.backgroundImagePath);
     // sourceImage 用途：浮动容器复用线程池解码结果，不执行路径探测或文件加载。
     const QPixmap* sourceImage =
@@ -10467,7 +10506,7 @@ void MainWindow::applyFloatingDockContainerAppearance(ads::CFloatingDockContaine
         + buildAppearanceOverlayStyleSheet(
             m_currentAppearanceSettings,
             darkModeEnabled,
-            enableDockTransparencyForBackgroundImage);
+            enableDockContentTransparency);
     floatingWidget->setStyleSheet(appearanceStyleSheet);
     refreshAdsDockTabVisualIdentities(floatingWidget);
 
@@ -10486,7 +10525,7 @@ void MainWindow::applyFloatingDockContainerAppearance(ads::CFloatingDockContaine
 QString MainWindow::buildAppearanceOverlayStyleSheet(
     const ks::settings::AppearanceSettings& settings,
     const bool darkModeEnabled,
-    const bool enableDockTransparencyForBackgroundImage) const
+    const bool enableDockContentTransparency) const
 {
     // tooltipStyle 作用：
     // - 强制全局提示框采用主题化背景和文字；
@@ -10564,7 +10603,7 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     // dockBackgroundPolicyStyle 作用：
     // - 背景图可用时：Dock 相关容器全部透明，让底图完整透出；
     // - 背景图不可用时：保持 DockManager 使用 palette(window) 作为背景底色。
-    const QString dockBackgroundPolicyStyle = enableDockTransparencyForBackgroundImage
+    const QString dockBackgroundPolicyStyle = enableDockContentTransparency
         ? QStringLiteral(
             "QDockWidget,"
             "QDockWidget::title,"
@@ -10880,7 +10919,7 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     // - 背景图可用时，把 Dock 内容区域常见容器背景全部改为透明；
     // - 修复“Dock 面板整体仍是黑底/白底，背景图只能从缝隙看到”的问题。
     // 注意：该片段只作用于 ads--CDockWidget 后代，不影响菜单栏等全局区域。
-    const QString dockContentTransparentStyle = enableDockTransparencyForBackgroundImage
+    const QString dockContentTransparentStyle = enableDockContentTransparency
         ? QStringLiteral(
             "ads--CDockWidget,"
             "ads--CDockWidget > QWidget,"
@@ -10920,7 +10959,7 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     // - 覆盖 depthOverlayStyle 中 ads--CDockAreaWidget 的半透明面板底色；
     // - 避免切换到某些 Dock 后共享 DockArea 被重新刷成纯色，导致背景图像“传染式”消失；
     // - 不覆盖 ads--CDockWidgetTab 本身，保留 Dock 标签页选中态和悬停态的主题色。
-    const QString finalDockAreaTransparentStyle = enableDockTransparencyForBackgroundImage
+    const QString finalDockAreaTransparentStyle = enableDockContentTransparency
         ? QStringLiteral(
             "ads--CDockManager,"
             "ads--CDockContainerWidget,"
@@ -10939,7 +10978,7 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     // - 无背景图：内核 Dock 根容器保持主题实底，防止 ADS 恢复布局后露出黑色父容器；
     // - 有背景图：根容器、Tab pane、StackedWidget 改为透明，让主窗口背景图透出。
     // 返回：仅控制内核 Dock 外层/页面容器背景，不触碰表格/树/列表等内容视图。
-    const QString kernelDockContainerStyle = enableDockTransparencyForBackgroundImage
+    const QString kernelDockContainerStyle = enableDockContentTransparency
         ? QStringLiteral(
             "ads--CDockWidget#ksDock_kernel,"
             "ads--CDockWidget#ksDock_kernel > QWidget,"
@@ -10969,7 +11008,7 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     // kernelDockContentStyle 作用：
     // - 背景图模式下，内核 Dock 内的表格/树/列表也透明，避免整块表格遮住背景图；
     // - 无背景图时保留主题实底，继续保持普通主题观感。
-    const QString kernelDockContentStyle = enableDockTransparencyForBackgroundImage
+    const QString kernelDockContentStyle = enableDockContentTransparency
         ? QStringLiteral(
             "ads--CDockWidget#ksDock_kernel QWidget#KernelDockRoot QTableView,"
             "ads--CDockWidget#ksDock_kernel QWidget#KernelDockRoot QTableWidget,"

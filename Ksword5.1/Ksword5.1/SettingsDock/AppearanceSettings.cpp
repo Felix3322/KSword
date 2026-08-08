@@ -381,6 +381,7 @@ namespace
         defaultSettings.backgroundImagePath = QStringLiteral("Style/ksword_background.png");
         defaultSettings.backgroundOpacityPercent = 35;
         defaultSettings.backgroundTransparencyEnabled = false;
+        defaultSettings.backgroundTranslucencyMaterial = QStringLiteral("auto");
         defaultSettings.startupDefaultTabKey = QStringLiteral("welcome");
         defaultSettings.launchMaximizedOnStartup = true;
         defaultSettings.startupTopMostEnabled = false;
@@ -526,6 +527,18 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
         .value(QStringLiteral("background_transparency_enabled"))
         .toBool(loadedSettings.backgroundTransparencyEnabled);
 
+    // 透明背景效果只接受既定枚举文本，未知值回退 auto，避免拼写残留破坏材质决策。
+    const QString translucencyMaterialText = rootObject
+        .value(QStringLiteral("background_translucency_material"))
+        .toString(loadedSettings.backgroundTranslucencyMaterial)
+        .trimmed()
+        .toLower();
+    loadedSettings.backgroundTranslucencyMaterial =
+        (translucencyMaterialText == QStringLiteral("mica")
+            || translucencyMaterialText == QStringLiteral("desktop"))
+        ? translucencyMaterialText
+        : QStringLiteral("auto");
+
     // startupDefaultTabKeyText 作用：读取启动默认页签字段，缺失或空值时回退 welcome。
     const QString startupDefaultTabKeyText = rootObject.value(QStringLiteral("startup_default_tab_key"))
         .toString(loadedSettings.startupDefaultTabKey)
@@ -670,6 +683,11 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
     rootObject.insert(QStringLiteral("background_image_path"), settings.backgroundImagePath);
     rootObject.insert(QStringLiteral("background_opacity_percent"), clampOpacityPercent(settings.backgroundOpacityPercent));
     rootObject.insert(QStringLiteral("background_transparency_enabled"), settings.backgroundTransparencyEnabled);
+    rootObject.insert(
+        QStringLiteral("background_translucency_material"),
+        settings.backgroundTranslucencyMaterial.trimmed().isEmpty()
+        ? QStringLiteral("auto")
+        : settings.backgroundTranslucencyMaterial.trimmed().toLower());
     rootObject.insert(
         QStringLiteral("startup_default_tab_key"),
         settings.startupDefaultTabKey.trimmed().isEmpty()

@@ -475,6 +475,13 @@ private:
     // 入参 rawImagePath：待匹配的配置路径；返回：缓存图片是否可直接使用。
     bool isCachedBackgroundImageReady(const QString& rawImagePath) const;
 
+    // shouldRenderTransparentDockContent 作用：
+    // - 判断 Dock 内容根控件是否必须放弃自绘实底；
+    // - 背景图就绪要透出图片，启用透明窗口背景时要透出云母材质或桌面；
+    // - 两者任一成立都不能让 Dock 画不透明背景，否则底层视觉被整块盖住。
+    // 返回：true=内容层应保持透明。
+    bool shouldRenderTransparentDockContent() const;
+
     // cachedBackgroundImage 作用：返回已在线程池完成解码的背景像素缓存。
     // 入参 rawImagePath：待匹配的配置路径；返回：可用图片指针，否则为空。
     const QPixmap* cachedBackgroundImage(const QString& rawImagePath) const;
@@ -488,12 +495,14 @@ private:
     // - 生成深色/浅色覆盖样式字符串，叠加在基础 QSS 之后。
     // 调用方式：applyAppearanceSettings 内部调用。
     // 入参 darkModeEnabled：是否使用深色样式。
-    // 入参 enableDockTransparencyForBackgroundImage：背景图可用时是否强制 Dock 背景透明。
+    // 入参 enableDockContentTransparency：是否强制 Dock 内容层透明；
+    //   背景图可用或窗口启用透明背景（云母/直透）时都必须为 true，
+    //   否则 Dock 会以不透明表面盖住底层背景图或系统材质。
     // 返回：拼接后的 QSS 片段。
     QString buildAppearanceOverlayStyleSheet(
         const ks::settings::AppearanceSettings& settings,
         bool darkModeEnabled,
-        bool enableDockTransparencyForBackgroundImage) const;
+        bool enableDockContentTransparency) const;
 
     // ADS Dock Manager
     QWidget* m_mainRootContainer = nullptr; // m_mainRootContainer：主窗口根容器（承载标题栏+Dock 管理器）。

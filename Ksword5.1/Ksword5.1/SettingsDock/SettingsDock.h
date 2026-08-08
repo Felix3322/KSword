@@ -267,6 +267,9 @@ private:
     // m_backgroundTransparencyCheckBox 作用：让背景图自身的透明区域透出窗口后方。
     QCheckBox* m_backgroundTransparencyCheckBox = nullptr;
 
+    // m_backgroundTranslucencyMaterialCombo 作用：选择透明背景效果（自动/云母/直透桌面）。
+    QComboBox* m_backgroundTranslucencyMaterialCombo = nullptr;
+
     // 日志通知设置：控制右侧通知卡片的开关、等级、时长与堆叠位置。
     QCheckBox* m_notificationCardsEnabledCheckBox = nullptr;
     QComboBox* m_notificationMinimumLevelCombo = nullptr;
