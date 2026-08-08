@@ -239,10 +239,6 @@
     "settings.background.group": "Window Background",
     "settings.background.opacity": "Background opacity (0% solid color, 100% image only)",
     "settings.background.opacity.tooltip": "Adjust the background image opacity",
-    "settings.background.transparency": "Show through transparent image areas",
-    "settings.background.transparency.tooltip": "When enabled, transparent areas in PNG and similar images reveal content behind the window",
-    "让背景图透明区域透底": "Show through transparent image areas",
-    "启用后，PNG 等图片的透明区域会显示窗口后方内容": "When enabled, transparent areas in PNG and similar images reveal content behind the window",
     "settings.background.path_hint": "Choose an image for the window background (PNG, JPG, or BMP).",
     "settings.background.reset.tooltip": "Restore the default background path",
     "settings.font.label": "Font",
@@ -11732,7 +11728,6 @@
     "[MainWindow][KernelDockRepair] skip inactive kernel dock, reason=": "[MainWindow][KernelDockRepair] skip inactive kernel dock, reason=",
     "[MainWindow][LazyDock] 可见惰性 Dock 触发即时加载, reason=": "[MainWindow][LazyDock] Lazy visible Dock triggered immediate load, reason=",
     "[MainWindow][LazyDock] 跳过重入初始化, dock=": "[MainWindow][LazyDock] Skipping re-entry initialization, dock=",
-    "[MainWindow][LazyDock] 页面内容已卸载, dock=": "[MainWindow][LazyDock] Dock content unloaded, dock=",
     "[MainWindow][R0Log] 已连接驱动日志设备。": "[MainWindow][R0Log] Driver log device connected.",
     "[MainWindow][R0Log] 等待日志设备上线：": "[MainWindow][R0Log] Waiting for log device online:",
     "[MainWindow][R0Log] 读取日志设备失败, error=": "[MainWindow][R0Log] Failed to read log device; error=",
@@ -15402,6 +15397,8 @@
     "启用后滚动条默认缩到很窄，鼠标悬停时展开到当前宽度档位": "When enabled, scrollbars default to a very narrow width and expand to the current size increment on hover.",
     "启用后，Agent 会在 CreateProcessW 成功时把同一个 APIMonitor_x64.dll 注入到新子进程；仅支持 x64 子进程。": "When enabled, Agent injects the same APIMonitor_x64.dll into new child processes upon successful CreateProcessW; supports x64 children only.",
     "启用后，当剪贴板出现匹配后缀的 HTTP/HTTPS 链接时自动弹出下载询问框。": "When enabled, automatically prompts for download when matching HTTP/HTTPS links appear in the clipboard.",
+    "启用后，PNG 等图片的透明区域会显示窗口后方内容": "When enabled, transparent areas of images such as PNG show the content behind the window",
+    "让背景图透明区域透底": "Let transparent areas of the background image show through",
     "启用固定 Provider 集合": "Enable fixed Provider set",
     "启用恢复环境 (recoveryenabled)": "Enable recovery environment (recoveryenabled)",
     "启用或暂停 NIDS 实时报文检测": "Enable or pause NIDS real-time packet detection",
@@ -24723,8 +24720,6 @@
     "统一 R0 安全策略拒绝了本次 CPU 电源修改。": "The unified Ring 0 safety policy denied this CPU power change.",
     "至少一个逻辑处理器的 MSR 写入或回读校验失败。": "MSR write or readback verification failed on at least one logical processor.",
     "该 CPU 未声明 HWP EPP 能力，EPP 字段不能修改。": "This CPU does not report HWP EPP support, so EPP cannot be changed.",
-    "请求头、操作标志或 UI 确认标志无效。": "The request header, operation flags, or UI confirmation flag is invalid.",
-    "让背景图透明区域透底": "Show through transparent image areas",
-    "启用后，PNG 等图片的透明区域会显示窗口后方内容": "When enabled, transparent areas in PNG and similar images reveal content behind the window"
+    "请求头、操作标志或 UI 确认标志无效。": "The request header, operation flags, or UI confirmation flag is invalid."
   }
 }

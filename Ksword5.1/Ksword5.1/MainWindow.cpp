@@ -3423,19 +3423,13 @@ namespace
         void setBackground(
             const QColor& baseColor,
             const QPixmap* sourceImage,
-            const int imageOpacityPercent,
-            const bool preserveImageTransparency)
+            const int imageOpacityPercent)
         {
             const int normalizedOpacityPercent = normalizeOpacityPercent(imageOpacityPercent);
             const quint64 sourceImageCacheKey = sourceImage == nullptr ? 0 : sourceImage->cacheKey();
-            const bool nextImageTransparency =
-                preserveImageTransparency
-                && sourceImage != nullptr
-                && sourceImage->hasAlphaChannel();
             if (m_baseColor == baseColor
                 && m_imageOpacityPercent == normalizedOpacityPercent
-                && m_sourceImageCacheKey == sourceImageCacheKey
-                && m_preserveImageTransparency == nextImageTransparency)
+                && m_sourceImageCacheKey == sourceImageCacheKey)
             {
                 return;
             }
@@ -3444,8 +3438,6 @@ namespace
             m_imageOpacityPercent = normalizedOpacityPercent;
             m_sourceImageCacheKey = sourceImageCacheKey;
             m_sourceImage = sourceImage == nullptr ? QPixmap() : *sourceImage;
-            m_preserveImageTransparency = nextImageTransparency;
-            setAttribute(Qt::WA_OpaquePaintEvent, !m_preserveImageTransparency);
             update();
         }
 
@@ -3457,16 +3449,7 @@ namespace
             {
                 painter.setClipRegion(event->region());
             }
-            if (m_preserveImageTransparency && !m_sourceImage.isNull())
-            {
-                painter.setCompositionMode(QPainter::CompositionMode_Source);
-                painter.fillRect(rect(), Qt::transparent);
-                painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-            }
-            else
-            {
-                painter.fillRect(rect(), m_baseColor);
-            }
+            painter.fillRect(rect(), m_baseColor);
 
             if (m_sourceImage.isNull() || m_imageOpacityPercent <= 0 || rect().isEmpty())
             {
@@ -3494,7 +3477,6 @@ namespace
         QPixmap m_sourceImage;
         int m_imageOpacityPercent = 0;
         quint64 m_sourceImageCacheKey = 0;
-        bool m_preserveImageTransparency = false;
     };
 
     // buildBackgroundBrush 作用：
@@ -3995,10 +3977,6 @@ MainWindow::MainWindow(
     setWindowFlag(Qt::FramelessWindowHint, true);
     setWindowFlag(Qt::WindowSystemMenuHint, true);
     setWindowFlag(Qt::WindowMinMaxButtonsHint, true);
-    // 背景图透明区域透底必须在原生句柄创建前启用，Qt Windows 平台才能建立 alpha 窗口表面。
-    setAttribute(Qt::WA_TranslucentBackground, m_currentAppearanceSettings.backgroundTransparencyEnabled);
-    setAttribute(Qt::WA_NoSystemBackground, m_currentAppearanceSettings.backgroundTransparencyEnabled);
-    setAutoFillBackground(!m_currentAppearanceSettings.backgroundTransparencyEnabled);
 
     // Dock 全局配置：
     // - 仅允许声明了 DockWidgetClosable 的辅助 Dock 显示活动标签关闭按钮；
@@ -5741,7 +5719,7 @@ void MainWindow::initializeWindowDockMenuActions()
         return;
     }
 
-    // 直接使用 ADS 的原生 toggle action：菜单勾选、Dock 标签关闭按钮、浮动和布局恢复
+    // 直接使用 ADS 的原生 toggle action：菜单勾选、Dock 标题栏关闭、浮动和布局恢复
     // 都由同一份可见状态驱动，避免维护第二套布尔状态。
     m_windowMenu->clear();
     m_dockLog->setToggleViewActionMode(ads::CDockWidget::ActionModeToggle);
@@ -5766,50 +5744,6 @@ void MainWindow::initializeWindowDockMenuActions()
     m_windowMenu->addAction(logDockAction);
     m_windowMenu->addAction(monitorPanelAction);
     m_windowMenu->addAction(currentTasksAction);
-
-    // 主功能 Dock 的 toggle action：Tab 通过关闭按钮卸载后，从这里重新打开。
-    // MenuEntry 说明：dockKey 与 dock.<key> 语言键保持一致。
-    struct MainDockMenuEntry
-    {
-        ads::CDockWidget* dockWidget = nullptr; // dockWidget：主功能 Dock 指针。
-        const char* dockKey = nullptr;          // dockKey：语言包 dock.<key> 的 key 段。
-        const char* fallbackTitle = nullptr;    // fallbackTitle：语言包缺失时的兜底标题。
-    };
-    const MainDockMenuEntry mainDockMenuEntries[] = {
-        { m_dockWelcome, "welcome", "欢迎" },
-        { m_dockProcess, "process", "进程" },
-        { m_dockNetwork, "network", "网络" },
-        { m_dockMemory, "memory", "内存" },
-        { m_dockFile, "file", "文件" },
-        { m_dockScanner, "scanner", "扫描器" },
-        { m_dockDriver, "driver", "驱动" },
-        { m_dockKernel, "kernel", "内核" },
-        { m_dockMonitorTab, "monitor", "监控" },
-        { m_dockHardware, "hardware", "硬件" },
-        { m_dockPrivilege, "privilege", "权限" },
-        { m_dockWindow, "window", "窗口" },
-        { m_dockRegistry, "registry", "注册表" },
-        { m_dockHandle, "handle", "句柄" },
-        { m_dockStartup, "startup", "启动项" },
-        { m_dockService, "service", "服务" },
-        { m_dockMisc, "misc", "杂项" },
-        { m_dockPlugin, "plugin", "插件" },
-    };
-
-    m_windowMenu->addSeparator();
-    for (const MainDockMenuEntry& menuEntry : mainDockMenuEntries)
-    {
-        if (menuEntry.dockWidget == nullptr)
-        {
-            continue;
-        }
-        QAction* dockToggleAction = menuEntry.dockWidget->toggleViewAction();
-        ks::i18n::LanguageManager::instance().bindText(
-            dockToggleAction,
-            QStringLiteral("dock.%1").arg(QLatin1String(menuEntry.dockKey)),
-            QString::fromUtf8(menuEntry.fallbackTitle));
-        m_windowMenu->addAction(dockToggleAction);
-    }
 }
 
 QString MainWindow::buildTopActionButtonStyle() const
@@ -8481,90 +8415,6 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     }
 }
 
-void MainWindow::unloadDockContent(ads::CDockWidget* dockWidget)
-{
-    if (dockWidget == nullptr)
-    {
-        return;
-    }
-    // 占位页状态没有可释放的资源；初始化中卸载会与挂载流程竞争，直接跳过。
-    if (!dockWidget->property("ks_lazy_initialized").toBool()
-        || dockWidget->property("ks_lazy_initializing").toBool())
-    {
-        return;
-    }
-
-    const QString dockKey = dockWidget->property("ks_lazy_key").toString().trimmed().toLower();
-    if (dockKey.isEmpty())
-    {
-        return;
-    }
-
-    const QString dockTitleText = dockWidget->windowTitle().trimmed().isEmpty()
-        ? dockKey
-        : dockWidget->windowTitle().trimmed();
-
-    // 卸载前先把当前标签切到同区域其它 Tab：
-    // - 让用户立刻看到“页面已卸载”的反馈；
-    // - 该 Dock 变为不可见后，下次点击 Tab 会经 visibilityChanged 重新懒加载。
-    ads::CDockAreaWidget* dockArea = dockWidget->dockAreaWidget();
-    if (dockArea != nullptr && dockArea->currentDockWidget() == dockWidget)
-    {
-        const QList<ads::CDockWidget*> openedDockList = dockArea->openedDockWidgets();
-        for (ads::CDockWidget* siblingDock : openedDockList)
-        {
-            if (siblingDock != nullptr && siblingDock != dockWidget)
-            {
-                siblingDock->setAsCurrentTab();
-                break;
-            }
-        }
-    }
-
-    // clearDockContentMember 作用：把懒加载成员指针复位为“未加载”状态，
-    // 与启动时占位页阶段完全一致，后续访问方沿用既有的空指针防护。
-    const auto clearDockContentMember = [this](const QString& memberKey)
-        {
-            if (memberKey == QStringLiteral("process")) { m_processWidget = nullptr; }
-            else if (memberKey == QStringLiteral("network")) { m_networkWidget = nullptr; }
-            else if (memberKey == QStringLiteral("memory")) { m_memoryWidget = nullptr; }
-            else if (memberKey == QStringLiteral("file")) { m_fileWidget = nullptr; }
-            else if (memberKey == QStringLiteral("scanner")) { m_scannerWidget = nullptr; }
-            else if (memberKey == QStringLiteral("monitor")) { m_monitorWidget = nullptr; }
-            else if (memberKey == QStringLiteral("hardware")) { m_hardwareWidget = nullptr; }
-            else if (memberKey == QStringLiteral("privilege")) { m_privilegeWidget = nullptr; }
-            else if (memberKey == QStringLiteral("window")) { m_windowWidget = nullptr; }
-            else if (memberKey == QStringLiteral("registry")) { m_registryWidget = nullptr; }
-            else if (memberKey == QStringLiteral("handle")) { m_handleWidget = nullptr; }
-            else if (memberKey == QStringLiteral("startup")) { m_startupWidget = nullptr; }
-            else if (memberKey == QStringLiteral("service")) { m_serviceWidget = nullptr; }
-            else if (memberKey == QStringLiteral("misc")) { m_miscWidget = nullptr; }
-            else if (memberKey == QStringLiteral("plugin")) { m_pluginWidget = nullptr; }
-        };
-
-    // 卸载动作：真实内容整体交还占位页，Tab 与布局位置全部保留。
-    QWidget* contentWidget = dockWidget->takeWidget();
-    QWidget* placeholderWidget = createDockPlaceholderWidget(dockTitleText);
-    placeholderWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    const bool shouldSuppressOuterScrollArea =
-        dockKey == QStringLiteral("network") || dockKey == QStringLiteral("hardware");
-    dockWidget->setWidget(
-        placeholderWidget,
-        shouldSuppressOuterScrollArea ? ads::CDockWidget::ForceNoScrollArea : ads::CDockWidget::AutoScrollArea);
-    dockWidget->setProperty("ks_lazy_initialized", false);
-    clearDockContentMember(dockKey);
-    if (contentWidget != nullptr)
-    {
-        contentWidget->deleteLater();
-    }
-
-    kLogEvent dockUnloadEvent;
-    info << dockUnloadEvent
-        << "[MainWindow][LazyDock] 页面内容已卸载, dock="
-        << dockKey.toStdString()
-        << eol;
-}
-
 void MainWindow::configureDockWidgetPersistentIdentity(
     ads::CDockWidget* dockWidget,
     const QString& dockKey) const
@@ -8657,23 +8507,6 @@ bool MainWindow::restoreDockLayoutFromConfig()
         << eol;
     if (restoreOk)
     {
-        // 旧版本“关闭即隐藏”语义可能把主功能 Dock 的 closed 状态写入布局配置；
-        // 新语义下主 Dock Tab 常驻（关闭按钮只卸载内容），恢复布局后统一重新打开，
-        // 修复历史配置导致的“Tab 消失且重启后仍缺失”问题。
-        const QList<ads::CDockWidget*> mainDockList{
-            m_dockWelcome, m_dockProcess, m_dockNetwork, m_dockMemory, m_dockFile,
-            m_dockScanner, m_dockDriver, m_dockKernel, m_dockMonitorTab, m_dockHardware,
-            m_dockPrivilege, m_dockWindow, m_dockRegistry, m_dockHandle, m_dockStartup,
-            m_dockService, m_dockMisc, m_dockPlugin,
-        };
-        for (ads::CDockWidget* mainDock : mainDockList)
-        {
-            if (mainDock != nullptr && mainDock->isClosed())
-            {
-                mainDock->toggleView(true);
-            }
-        }
-
         // ADS 恢复当前激活 Dock 时不会重新触发用户点击事件：
         // 如果恢复到惰性占位页（典型是上次退出时停在“内核”Dock），排到事件循环首轮加载，
         // 避免在“整理 Dock 布局”阶段同步创建重页面。
@@ -9025,32 +8858,10 @@ void MainWindow::initDockWidgets()
             QStringLiteral("dock.%1").arg(dockKey),
             title);
         dock->setWidget(widget, insertMode);
-        // 内容卸载白名单：这些懒加载 Dock 的活动标签显示关闭按钮，点击后只卸载
-        // 内容释放资源（Tab 保留，占位页回填，再次切换到该 Tab 时重新懒加载）。
-        // welcome 无懒加载工厂，kernel/driver 存在跨 Dock 共享页面，均不参与卸载。
-        static const QSet<QString> kUnloadableDockKeys = {
-            QStringLiteral("process"), QStringLiteral("network"), QStringLiteral("memory"),
-            QStringLiteral("file"), QStringLiteral("scanner"), QStringLiteral("monitor"),
-            QStringLiteral("hardware"), QStringLiteral("privilege"), QStringLiteral("window"),
-            QStringLiteral("registry"), QStringLiteral("handle"), QStringLiteral("startup"),
-            QStringLiteral("service"), QStringLiteral("misc"), QStringLiteral("plugin"),
-        };
-        const bool supportsContentUnload = kUnloadableDockKeys.contains(dockKey);
-        dock->setFeature(ads::CDockWidget::DockWidgetClosable, supportsContentUnload);
-        dock->setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, false);
+        // DockWidgetClosable 禁用：统一去掉每个 Dock 标签旁边的关闭叉。
+        dock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
         dock->setFeature(ads::CDockWidget::DockWidgetMovable, true);
         dock->setFeature(ads::CDockWidget::DockWidgetFloatable, true);
-        dock->setToggleViewActionMode(ads::CDockWidget::ActionModeToggle);
-        if (supportsContentUnload)
-        {
-            // CustomCloseHandling：关闭按钮只发 closeRequested，不真正关闭 Dock，
-            // 由 unloadDockContent 执行“卸载内容 + 占位页回填”。
-            dock->setFeature(ads::CDockWidget::CustomCloseHandling, true);
-            connect(dock, &ads::CDockWidget::closeRequested, this, [this, dock]()
-                {
-                    unloadDockContent(dock);
-                });
-        }
 
         // Dock 背景属性初始化：
         // - 默认关闭 Dock 与内容根控件的自动背景填充；
@@ -9880,8 +9691,7 @@ void MainWindow::applyAppearanceSettings(
     const bool backgroundChanged =
         mainBackgroundColorChanged
         || backgroundPathChanged
-        || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent
-        || previousSettings.backgroundTransparencyEnabled != settings.backgroundTransparencyEnabled;
+        || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent;
     const bool fontChanged =
         isInitialAppearanceApply
         || previousSettings.fontFamily.compare(settings.fontFamily, Qt::CaseInsensitive) != 0
@@ -10460,28 +10270,19 @@ void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
     const QPixmap* sourceImage = includeBackgroundImage && normalizedOpacityPercent > 0
         ? cachedBackgroundImage(m_currentAppearanceSettings.backgroundImagePath)
         : nullptr;
-    const bool preserveImageTransparency =
-        m_currentAppearanceSettings.backgroundTransparencyEnabled
-        && sourceImage != nullptr
-        && sourceImage->hasAlphaChannel();
-
-    // 动态切换时同步主窗口表面；构造函数已提前设置一次，避免首次创建句柄时失去 alpha 能力。
-    setAttribute(Qt::WA_TranslucentBackground, m_currentAppearanceSettings.backgroundTransparencyEnabled);
-    setAttribute(Qt::WA_NoSystemBackground, m_currentAppearanceSettings.backgroundTransparencyEnabled);
-    setAutoFillBackground(!m_currentAppearanceSettings.backgroundTransparencyEnabled);
 
     if (m_mainRootContainer != nullptr)
     {
         static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer)->setBackground(
             baseColor,
             sourceImage,
-            normalizedOpacityPercent,
-            preserveImageTransparency);
+            normalizedOpacityPercent);
     }
 
     QPalette mainPalette = palette();
     mainPalette.setColor(QPalette::Window, baseColor);
     setPalette(mainPalette);
+    setAutoFillBackground(true);
 
     if (m_pDockManager != nullptr)
     {
@@ -10664,18 +10465,13 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
             "}");
 
     // rootStyle 作用：
-    // - 普通模式使用 palette(window)（含背景图画刷）作为底图来源；
-    // - 透明模式交给根背景宿主清除 alpha，避免 QSS 重新填实窗口；
+    // - 主窗口继续使用 palette(window)（含背景图画刷）作为底图来源；
     // - 再叠加 Dock 背景策略样式。
-    const QString rootBackgroundStyle = settings.backgroundTransparencyEnabled
-        ? QStringLiteral("transparent")
-        : QStringLiteral("palette(window)");
     const QString rootStyle = QStringLiteral(
         "QMainWindow{"
-        "  background-color:%1 !important;"
-        "  color:%2;"
+        "  background-color:palette(window) !important;"
+        "  color:%1;"
         "}")
-        .arg(rootBackgroundStyle)
         .arg(windowTextColor)
         + dockBackgroundPolicyStyle.arg(
             windowTextColor);

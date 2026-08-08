@@ -254,13 +254,6 @@ private:
     QWidget* createDockPlaceholderWidget(const QString& titleText) const;
     void ensureDockContentInitialized(ads::CDockWidget* dockWidget);
 
-    // unloadDockContent 作用：
-    // - Dock 标签关闭按钮的自定义处理：卸载真实内容并回填占位页；
-    // - Tab 与布局位置保留，成员指针复位为未加载状态，释放页面资源；
-    // - 再次切换到该 Tab 时由 visibilityChanged 触发重新懒加载。
-    // 入参 dockWidget：发出 closeRequested 的懒加载 Dock。
-    void unloadDockContent(ads::CDockWidget* dockWidget);
-
     // configureDockWidgetPersistentIdentity 作用：
     // - 为每个 ADS Dock 设置稳定 objectName；
     // - ADS saveState/restoreState 依赖 objectName 匹配 Dock，不能依赖可变标题文本；
