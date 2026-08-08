@@ -255,11 +255,12 @@ private:
     void ensureDockContentInitialized(ads::CDockWidget* dockWidget);
 
     // applyMainWindowBackdropMaterial 作用：
-    // - 切换主窗口的 DWM 系统云母材质（Windows 11 22H2+）；
-    // - 穿透模式且未设置背景图时启用，让透明区域呈现云母质感；
-    // - 旧系统属性调用失败时静默降级为纯透明。
-    // 入参 enableBackdrop：true=启用云母材质，false=关闭。
-    void applyMainWindowBackdropMaterial(bool enableBackdrop);
+    // - 切换主窗口的 Acrylic 毛玻璃材质（SetWindowCompositionAttribute）；
+    // - 透明模式下按“透明背景效果”选项启用，让透明区域呈现磨砂质感；
+    // - 不使用 DWM 云母：云母要求窗口不透明，与分层透明窗口冲突会整窗发白。
+    // 入参 enableBackdrop：true=启用毛玻璃，false=关闭。
+    // 返回：true=毛玻璃已生效（着色由系统合成，根容器不再另画着色层）。
+    bool applyMainWindowBackdropMaterial(bool enableBackdrop);
 
     // configureDockWidgetPersistentIdentity 作用：
     // - 为每个 ADS Dock 设置稳定 objectName；

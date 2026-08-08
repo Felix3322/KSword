@@ -2218,14 +2218,36 @@ namespace
     // - 传给 DWMWA_BORDER_COLOR 后表示“不绘制可见边框”；
     // - 保留阴影与缩放能力，仅移除闪白边线。
     constexpr DWORD kDwmColorNone = 0xFFFFFFFE;
-    // kDwmSystemBackdropTypeAttribute 作用：
-    // - DWMWA_SYSTEMBACKDROP_TYPE（Windows 11 22H2+）；
-    // - 控制窗口透明区域后方由 DWM 合成的系统材质。
-    constexpr DWORD kDwmSystemBackdropTypeAttribute = 38;
-    // kDwmSystemBackdropTypeNone / kDwmSystemBackdropTypeMica 作用：
-    // - DWMSBT_NONE=1 关闭系统材质；DWMSBT_MAINWINDOW=2 为云母（Mica）。
-    constexpr DWORD kDwmSystemBackdropTypeNone = 1;
-    constexpr DWORD kDwmSystemBackdropTypeMica = 2;
+    // 窗口组合特性（SetWindowCompositionAttribute）相关声明：
+    // - DWM 云母要求窗口不透明，和 Qt 的 WA_TranslucentBackground 分层窗口互斥，
+    //   强行启用会让 DWM 回退到系统浅色 fallback 底（表现为整窗发白）；
+    // - Acrylic 毛玻璃通过组合特性作用于分层窗口，是本项目可用的模糊方案。
+    // kWindowCompositionAttributeAccentPolicy 作用：WCA_ACCENT_POLICY 特性编号。
+    constexpr DWORD kWindowCompositionAttributeAccentPolicy = 19;
+    // kAccentDisabled / kAccentEnableAcrylicBlurBehind 作用：ACCENT_STATE 取值。
+    constexpr DWORD kAccentDisabled = 0;
+    constexpr DWORD kAccentEnableAcrylicBlurBehind = 4;
+    // kAcrylicTintAlpha 作用：
+    // - 毛玻璃着色层不透明度（0~255），由组合特性直接混合到模糊结果上；
+    // - 数值越低越通透，越高前景文字可读性越强。
+    constexpr int kAcrylicTintAlpha = 190;
+
+    // AccentPolicyData 说明：对应未公开的 ACCENT_POLICY 结构体布局。
+    struct AccentPolicyData
+    {
+        DWORD accentState = 0;   // accentState：ACCENT_STATE 枚举值。
+        DWORD accentFlags = 0;   // accentFlags：边框绘制标志，本项目不需要。
+        DWORD gradientColor = 0; // gradientColor：着色色值，排布为 0xAABBGGRR。
+        DWORD animationId = 0;   // animationId：动画标识，保持 0。
+    };
+
+    // WindowCompositionAttributeData 说明：对应未公开的 WINDOWCOMPOSITIONATTRIBDATA。
+    struct WindowCompositionAttributeData
+    {
+        DWORD attribute = 0;          // attribute：WCA_* 特性编号。
+        void* dataPointer = nullptr;  // dataPointer：特性数据指针。
+        SIZE_T dataSizeBytes = 0;     // dataSizeBytes：特性数据字节数。
+    };
     // WDA_* 兼容常量：
     // - WDA_EXCLUDEFROMCAPTURE 在 Windows 10 20H2+ 支持，截图/录屏中直接隐藏窗口；
     // - WDA_MONITOR 是旧系统可用回退，截图/录屏中窗口区域显示为黑屏；
@@ -3455,16 +3477,23 @@ namespace
         }
 
         // setTranslucentMode 作用：
-        // - 切换“背景图透明区域穿透窗口”的绘制模式；
-        // - 穿透时底色层不再填充，由背景图自身 alpha 决定每个像素的透明度；
+        // - 切换“背景透明穿透”的绘制模式；
+        // - 穿透时底色层不再填充，由背景图自身 alpha 或系统材质决定透明度；
         // - 需要顶层窗口已启用 WA_TranslucentBackground 才有实际穿透效果。
-        void setTranslucentMode(const bool translucentEnabled)
+        // 入参 translucentEnabled：是否进入穿透绘制。
+        // 入参 paintTintWhenNoImage：无背景图时是否自绘着色层；
+        //   毛玻璃已由系统合成着色时必须传 false，否则两层着色叠加会发浑。
+        void setTranslucentMode(
+            const bool translucentEnabled,
+            const bool paintTintWhenNoImage)
         {
-            if (m_translucentMode == translucentEnabled)
+            if (m_translucentMode == translucentEnabled
+                && m_paintTintWhenNoImage == paintTintWhenNoImage)
             {
                 return;
             }
             m_translucentMode = translucentEnabled;
+            m_paintTintWhenNoImage = paintTintWhenNoImage;
             // 穿透绘制会留下透明像素，必须放弃“完全不透明绘制”性能假设。
             setAttribute(Qt::WA_OpaquePaintEvent, !translucentEnabled);
             update();
@@ -3489,13 +3518,18 @@ namespace
                     // 有背景图：底色层完全透明，由图片自身 alpha 决定穿透程度。
                     painter.fillRect(rect(), Qt::transparent);
                 }
-                else
+                else if (m_paintTintWhenNoImage)
                 {
-                    // 无背景图：画半透明主题着色层，透明部分交给 DWM 云母材质
-                    //（Windows 11）或直接透出桌面（旧系统），同时保证前景文字可读。
+                    // 无背景图且系统毛玻璃不可用：自绘半透明着色层兜底，
+                    // 既透出桌面又保证前景文字可读。
                     QColor tintColor = m_baseColor;
                     tintColor.setAlpha(kTranslucentTintAlpha);
                     painter.fillRect(rect(), tintColor);
+                }
+                else
+                {
+                    // 无背景图且毛玻璃已生效：着色由系统合成，这里必须完全透明。
+                    painter.fillRect(rect(), Qt::transparent);
                 }
                 painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
             }
@@ -3530,7 +3564,8 @@ namespace
         QPixmap m_sourceImage;
         int m_imageOpacityPercent = 0;
         quint64 m_sourceImageCacheKey = 0;
-        bool m_translucentMode = false; // m_translucentMode：背景图透明区域是否穿透窗口。
+        bool m_translucentMode = false;      // m_translucentMode：背景透明区域是否穿透窗口。
+        bool m_paintTintWhenNoImage = true;  // m_paintTintWhenNoImage：无背景图时是否自绘着色兜底。
     };
 
     // buildBackgroundBrush 作用：
@@ -4937,54 +4972,84 @@ void MainWindow::applyNativeWindowFrameVisualStyle()
 #endif
 }
 
-void MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
+bool MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
 {
 #ifdef Q_OS_WIN
     if (!testAttribute(Qt::WA_WState_Created))
     {
-        return;
+        return false;
     }
     const HWND mainWindowHandle = reinterpret_cast<HWND>(winId());
     if (mainWindowHandle == nullptr || ::IsWindow(mainWindowHandle) == FALSE)
     {
-        return;
+        return false;
     }
-    // m_backdropMaterialState 三态缓存：-1 未初始化，0/1 为上次应用状态。
-    if (m_backdropMaterialState == (enableBackdrop ? 1 : 0))
+
+    // setWindowCompositionAttribute 用途：
+    // - user32 的未导出组合特性入口，是唯一能给“分层透明窗口”加模糊的可用接口；
+    // - DWM 的云母（DWMWA_SYSTEMBACKDROP_TYPE）要求窗口本身不透明，
+    //   与 Qt 的 WA_TranslucentBackground 分层表面冲突，会回退成系统浅色底（表现为发白），
+    //   因此这里统一改用 Acrylic 毛玻璃，Windows 10 1803+ 与 Windows 11 均可用。
+    using SetWindowCompositionAttributeFunction = BOOL(WINAPI*)(HWND, void*);
+    static SetWindowCompositionAttributeFunction setWindowCompositionAttribute =
+        []() -> SetWindowCompositionAttributeFunction {
+            HMODULE user32ModuleHandle = ::GetModuleHandleW(L"user32.dll");
+            if (user32ModuleHandle == nullptr)
+            {
+                return nullptr;
+            }
+            return reinterpret_cast<SetWindowCompositionAttributeFunction>(
+                ::GetProcAddress(user32ModuleHandle, "SetWindowCompositionAttribute"));
+        }();
+    if (setWindowCompositionAttribute == nullptr)
     {
-        return;
+        return false;
+    }
+
+    // m_backdropMaterialState 三态缓存：-1 未初始化，0/1 为上次应用状态。
+    // 主题色变化也要重刷着色，因此仅在“状态未变且非启用态”时才提前返回。
+    if (m_backdropMaterialState == (enableBackdrop ? 1 : 0) && !enableBackdrop)
+    {
+        return false;
     }
     m_backdropMaterialState = enableBackdrop ? 1 : 0;
 
-    // sheet-of-glass：把 DWM frame 扩展到整个客户区，云母材质才会在
-    // 客户区的透明像素处合成；关闭时恢复零边距。
-    const MARGINS frameMargins = enableBackdrop
-        ? MARGINS{ -1, -1, -1, -1 }
-        : MARGINS{ 0, 0, 0, 0 };
-    (void)::DwmExtendFrameIntoClientArea(mainWindowHandle, &frameMargins);
+    // tintColor 用途：毛玻璃自带的着色层，由组合特性直接混合到模糊结果上，
+    // 因此启用后根容器不再另画着色，避免出现双层叠加导致的浑浊。
+    const QColor tintColor = KswordTheme::MainBackgroundColor();
+    // gradientColorValue 采用 0xAABBGGRR 排布，注意与常见的 ARGB 顺序相反。
+    const DWORD gradientColorValue =
+        (static_cast<DWORD>(kAcrylicTintAlpha) << 24)
+        | (static_cast<DWORD>(tintColor.blue()) << 16)
+        | (static_cast<DWORD>(tintColor.green()) << 8)
+        | static_cast<DWORD>(tintColor.red());
 
-    const DWORD backdropTypeValue = enableBackdrop
-        ? kDwmSystemBackdropTypeMica
-        : kDwmSystemBackdropTypeNone;
-    const HRESULT backdropResult = ::DwmSetWindowAttribute(
-        mainWindowHandle,
-        kDwmSystemBackdropTypeAttribute,
-        &backdropTypeValue,
-        sizeof(backdropTypeValue));
+    AccentPolicyData accentPolicy{};
+    accentPolicy.accentState = enableBackdrop
+        ? kAccentEnableAcrylicBlurBehind
+        : kAccentDisabled;
+    accentPolicy.accentFlags = 0;
+    accentPolicy.gradientColor = enableBackdrop ? gradientColorValue : 0;
+    accentPolicy.animationId = 0;
+
+    WindowCompositionAttributeData compositionData{};
+    compositionData.attribute = kWindowCompositionAttributeAccentPolicy;
+    compositionData.dataPointer = &accentPolicy;
+    compositionData.dataSizeBytes = sizeof(accentPolicy);
+
+    const BOOL applyOk = setWindowCompositionAttribute(mainWindowHandle, &compositionData);
 
     kLogEvent backdropEvent;
-    // Windows 10 不认识该属性返回 E_INVALIDARG：透明着色层直接叠在桌面上，
-    // 仍满足“无背景图也透明”，只是没有云母模糊质感。
     info << backdropEvent
-        << "[MainWindow] 系统云母材质切换, enabled="
+        << "[MainWindow] 窗口毛玻璃材质切换, enabled="
         << (enableBackdrop ? "true" : "false")
-        << ", hr=0x"
-        << std::hex
-        << static_cast<unsigned long>(backdropResult)
-        << std::dec
+        << ", ok="
+        << (applyOk != FALSE ? "true" : "false")
         << eol;
+    return enableBackdrop && applyOk != FALSE;
 #else
     Q_UNUSED(enableBackdrop);
+    return false;
 #endif
 }
 
@@ -10439,11 +10504,14 @@ void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
             backdropWanted = (sourceImage == nullptr);
         }
     }
-    applyMainWindowBackdropMaterial(backdropWanted);
+    // blurMaterialActive 用途：毛玻璃是否真正生效。
+    // 生效时着色由系统合成，根容器必须完全透明；未生效（旧系统或调用失败）
+    // 则回退为自绘着色层，保证前景文字仍然可读。
+    const bool blurMaterialActive = applyMainWindowBackdropMaterial(backdropWanted);
     if (m_mainRootContainer != nullptr)
     {
         auto* backgroundWidget = static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer);
-        backgroundWidget->setTranslucentMode(translucencyActive);
+        backgroundWidget->setTranslucentMode(translucencyActive, !blurMaterialActive);
         backgroundWidget->setBackground(
             baseColor,
             sourceImage,

@@ -545,8 +545,8 @@ void SettingsDock::initializeAppearanceTab()
     // m_backgroundTransparencyCheckBox 作用：切换窗口透明背景（背景图 alpha 穿透 / 云母材质）。
     m_backgroundTransparencyCheckBox = new QCheckBox(QStringLiteral("透明窗口背景（重启后生效）"), backgroundGroupBox);
     languageManager.bindText(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency"), QStringLiteral("透明窗口背景（重启后生效）"));
-    m_backgroundTransparencyCheckBox->setToolTip(QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口使用系统云母模糊材质（Windows 11），旧系统直接透出桌面。重启 Ksword 后生效。"));
-    languageManager.bindToolTip(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency.tooltip"), QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口使用系统云母模糊材质（Windows 11），旧系统直接透出桌面。重启 Ksword 后生效。"));
+    m_backgroundTransparencyCheckBox->setToolTip(QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口呈现毛玻璃磨砂效果。具体呈现方式可在下方“透明背景效果”中选择。重启 Ksword 后生效。"));
+    languageManager.bindToolTip(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency.tooltip"), QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口呈现毛玻璃磨砂效果。具体呈现方式可在下方“透明背景效果”中选择。重启 Ksword 后生效。"));
     backgroundLayout->addWidget(m_backgroundTransparencyCheckBox);
 
     // 透明背景效果选择行：勾选透明后可用，运行时立即切换材质，无需重启。
@@ -558,13 +558,13 @@ void SettingsDock::initializeAppearanceTab()
 
     // m_backgroundTranslucencyMaterialCombo 作用：选择透明背景的呈现方式（自动/云母/直透）。
     m_backgroundTranslucencyMaterialCombo = new QComboBox(backgroundGroupBox);
-    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("自动（有背景图直透，无图云母）"), QStringLiteral("auto"));
-    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("云母模糊（Windows 11 磨砂）"), QStringLiteral("mica"));
+    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("自动（有背景图直透，无图磨砂）"), QStringLiteral("auto"));
+    m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("毛玻璃磨砂"), QStringLiteral("mica"));
     m_backgroundTranslucencyMaterialCombo->addItem(QStringLiteral("直透桌面（完全透明）"), QStringLiteral("desktop"));
-    m_backgroundTranslucencyMaterialCombo->setToolTip(QStringLiteral("云母模糊：透明区域显示磨砂质感的桌面（仅 Windows 11）；直透桌面：透明区域直接看到桌面；自动：设置了背景图时直透，没有背景图时用云母。修改后立即生效。"));
-    languageManager.bindToolTip(m_backgroundTranslucencyMaterialCombo, QStringLiteral("settings.background.translucency_material.tooltip"), QStringLiteral("云母模糊：透明区域显示磨砂质感的桌面（仅 Windows 11）；直透桌面：透明区域直接看到桌面；自动：设置了背景图时直透，没有背景图时用云母。修改后立即生效。"));
-    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 0, QStringLiteral("settings.background.translucency_material.auto"), QStringLiteral("自动（有背景图直透，无图云母）"));
-    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 1, QStringLiteral("settings.background.translucency_material.mica"), QStringLiteral("云母模糊（Windows 11 磨砂）"));
+    m_backgroundTranslucencyMaterialCombo->setToolTip(QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面；直透桌面：透明区域清晰地直接看到桌面；自动：设置了背景图时直透，没有背景图时用磨砂。修改后立即生效。"));
+    languageManager.bindToolTip(m_backgroundTranslucencyMaterialCombo, QStringLiteral("settings.background.translucency_material.tooltip"), QStringLiteral("毛玻璃磨砂：透明区域显示模糊虚化的桌面；直透桌面：透明区域清晰地直接看到桌面；自动：设置了背景图时直透，没有背景图时用磨砂。修改后立即生效。"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 0, QStringLiteral("settings.background.translucency_material.auto"), QStringLiteral("自动（有背景图直透，无图磨砂）"));
+    languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 1, QStringLiteral("settings.background.translucency_material.mica"), QStringLiteral("毛玻璃磨砂"));
     languageManager.bindComboBoxItem(m_backgroundTranslucencyMaterialCombo, 2, QStringLiteral("settings.background.translucency_material.desktop"), QStringLiteral("直透桌面（完全透明）"));
     translucencyMaterialLayout->addWidget(m_backgroundTranslucencyMaterialCombo, 1);
     backgroundLayout->addLayout(translucencyMaterialLayout);
