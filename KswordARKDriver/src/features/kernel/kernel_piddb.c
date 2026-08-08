@@ -21,6 +21,7 @@ Environment:
 
 #define KSW_PIDDB_POOL_TAG 'bDiP'
 #define KSW_PIDDB_MAX_ENTRY_BYTES 4096UL
+#define KSW_PIDDB_HARD_WALK_LIMIT 4096UL
 
 typedef struct _KSW_PIDDB_LAYOUT
 {
@@ -271,7 +272,8 @@ KswordARKPiDdbQuery(
     ULONG maxRows = 0UL;
     ULONG rowCapacity = 0UL;
     PVOID entry = NULL;
-    BOOLEAN restart = TRUE;
+    PVOID restartKey = NULL;
+    ULONG walkedRows = 0UL;
 
     /* Validate the fixed header contract before writing variable rows. */
     if (Request == NULL || Response == NULL || BytesWritten == NULL ||
@@ -306,7 +308,13 @@ KswordARKPiDdbQuery(
         return STATUS_SUCCESS;
     }
 
-    /* Hold the exact internal resource while traversing the mutable AVL table. */
+    /*
+     * Hold the exact internal resource while traversing the AVL table.  The
+     * walk must not mutate it: RtlEnumerateGenericTableAvl writes RestartKey
+     * and WhichOrderedElement into the table, and this resource is held only
+     * shared, so concurrent readers would corrupt each other's traversal.  The
+     * WithoutSplaying variant keeps its cursor in the caller's restartKey.
+     */
     KeEnterCriticalRegion();
     if (!ExAcquireResourceSharedLite(layout.Lock, TRUE)) {
         KeLeaveCriticalRegion();
@@ -317,13 +325,18 @@ KswordARKPiDdbQuery(
     }
     __try {
         Response->totalRows = RtlNumberGenericTableElementsAvl(layout.Table);
-        while ((entry = RtlEnumerateGenericTableAvl(
+        while ((entry = RtlEnumerateGenericTableWithoutSplayingAvl(
                     layout.Table,
-                    restart)) != NULL) {
+                    &restartKey)) != NULL) {
             KSWORD_ARK_PIDDB_ROW row;
 
-            /* Only the first enumeration call restarts traversal. */
-            restart = FALSE;
+            /* Damaged AVL metadata must not turn a read-only query endless. */
+            if (walkedRows >= KSW_PIDDB_HARD_WALK_LIMIT) {
+                Response->responseFlags |=
+                    KSWORD_ARK_PIDDB_RESPONSE_FLAG_TRUNCATED;
+                break;
+            }
+            walkedRows += 1UL;
             if (!KswordARKPiDdbReadEntry(&layout, entry, &row)) {
                 Response->queryStatus = KSWORD_ARK_PIDDB_QUERY_STATUS_PARTIAL;
                 Response->lastStatus = STATUS_DATA_ERROR;
@@ -371,7 +384,8 @@ KswordARKPiDdbDelete(
     PVOID entry = NULL;
     PVOID matchedEntry = NULL;
     PVOID entryCopy = NULL;
-    BOOLEAN restart = TRUE;
+    PVOID restartKey = NULL;
+    ULONG walkedRows = 0UL;
     KSWORD_ARK_PIDDB_ROW row = { 0 };
     BOOLEAN deleted = FALSE;
     BOOLEAN stillPresent = FALSE;
@@ -413,10 +427,13 @@ KswordARKPiDdbDelete(
         return STATUS_SUCCESS;
     }
     __try {
-        while ((entry = RtlEnumerateGenericTableAvl(
+        while ((entry = RtlEnumerateGenericTableWithoutSplayingAvl(
                     layout.Table,
-                    restart)) != NULL) {
-            restart = FALSE;
+                    &restartKey)) != NULL) {
+            if (walkedRows >= KSW_PIDDB_HARD_WALK_LIMIT) {
+                break;
+            }
+            walkedRows += 1UL;
             if (!KswordARKPiDdbReadEntry(&layout, entry, &row)) {
                 continue;
             }
@@ -496,12 +513,18 @@ KswordARKPiDdbDelete(
     }
 
     /* Re-enumerate and require the exact identity to be absent before success. */
-    restart = TRUE;
+    restartKey = NULL;
+    walkedRows = 0UL;
     __try {
-        while ((entry = RtlEnumerateGenericTableAvl(
+        while ((entry = RtlEnumerateGenericTableWithoutSplayingAvl(
                     layout.Table,
-                    restart)) != NULL) {
-            restart = FALSE;
+                    &restartKey)) != NULL) {
+            /* A truncated re-scan cannot prove absence, so it must not pass. */
+            if (walkedRows >= KSW_PIDDB_HARD_WALK_LIMIT) {
+                stillPresent = TRUE;
+                break;
+            }
+            walkedRows += 1UL;
             if (KswordARKPiDdbReadEntry(&layout, entry, &row) &&
                 KswordARKPiDdbRowMatchesRequest(&row, Request)) {
                 stillPresent = TRUE;
