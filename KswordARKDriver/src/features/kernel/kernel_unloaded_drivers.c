@@ -19,6 +19,7 @@ Environment:
 #include "ci_hash_fallback.h"
 #include "ark/ark_dyndata.h"
 #include "../dyndata/dyndata_v4_internal.h"
+#include "../../platform/kernel_object_probe.h"
 
 #define KSW_MM_UNLOADED_DRIVER_SLOTS 50UL
 #define KSW_UNLOADED_DRIVER_MAX_ENTRY_BYTES 4096UL
@@ -554,10 +555,17 @@ Return Value:
     PVOID entry = NULL;
     ULONG walkedRows = 0UL;
 
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
     RtlZeroMemory(&layout, sizeof(layout));
     status = KswordARKUnloadedResolvePiDdbLayout(&layout);
     if (!NT_SUCCESS(status)) {
         return status;
+    }
+    // 中文说明：RVA 可能来自运行时启发式解析，取锁前必须确认它确实是资源。
+    if (!KswordARKKernelProbeResourceIsSystemResource((ULONG_PTR)layout.Lock)) {
+        return STATUS_OBJECT_TYPE_MISMATCH;
     }
 
     KeEnterCriticalRegion();
@@ -702,7 +710,11 @@ KswordARKUnloadedEnumerateCiHash(
 Routine Description:
 
     Traverse the singly linked g_KernelHashBucketList under its CI resource. Both
-    globals and every entry offset come from an identity-checked v4 profile.
+    globals and every entry offset come from an identity-checked v4 profile, or
+    from the runtime resolver when no profile matches.  Either way the lock is
+    proven to be a live ERESOURCE before it is acquired: this path blocks with
+    Wait=TRUE and is reachable from an IOCTL, so a misidentified object would
+    fault inside the kernel's lock path on every call.
 
 Return Value:
 
@@ -717,6 +729,9 @@ Return Value:
     NTSTATUS status = STATUS_SUCCESS;
     ULONG walkedRows = 0UL;
 
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
     RtlZeroMemory(&layout, sizeof(layout));
     status = KswordARKDynDataV4SnapshotCiKernelHashLayout(&layout);
     if (!NT_SUCCESS(status)) {
@@ -729,6 +744,9 @@ Return Value:
         layout.ModuleBase + layout.KernelHashBucketListRva);
     hashLock = (PERESOURCE)(ULONG_PTR)(
         layout.ModuleBase + layout.HashCacheLockRva);
+    if (!KswordARKKernelProbeResourceIsSystemResource((ULONG_PTR)hashLock)) {
+        return STATUS_OBJECT_TYPE_MISMATCH;
+    }
 
     KeEnterCriticalRegion();
     if (!ExAcquireResourceSharedLite(hashLock, TRUE)) {

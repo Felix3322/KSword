@@ -16,6 +16,7 @@ Environment:
 
 #include "kernel_piddb.h"
 #include "ark/ark_dyndata.h"
+#include "../../platform/kernel_object_probe.h"
 #include "../../platform/pool_compat.h"
 
 #define KSW_PIDDB_POOL_TAG 'bDiP'
@@ -152,6 +153,15 @@ KswordARKPiDdbResolveLayout(
             state.KernelGlobals.PiDDBLock,
             sizeof(ERESOURCE),
             &lockAddress)) {
+        return FALSE;
+    }
+
+    /*
+     * PiDdb sources include the runtime resolver, whose lock RVA comes from a
+     * heuristic scan.  Both callers acquire this resource and block, so prove
+     * the object is on the global resource list before publishing it.
+     */
+    if (!KswordARKKernelProbeResourceIsSystemResource((ULONG_PTR)lockAddress)) {
         return FALSE;
     }
 

@@ -11,6 +11,11 @@ Abstract:
     entry layouts, and ERESOURCE objects are accepted only after unique live
     chain/name validation and a non-blocking locked revalidation.
 
+    A candidate lock must be proven to sit on the global resource list before
+    it reaches ExAcquireResourceSharedLite.  Field-shape checks cannot settle
+    that question, and this module's candidate pool is wider than the anchored
+    scan alone: it falls back to a whole-image data-reference sweep.
+
 Environment:
 
     Kernel mode, PASSIVE_LEVEL read-only query path.
@@ -19,6 +24,7 @@ Environment:
 
 #include "ci_hash_fallback.h"
 #include "hook_scan_support.h"
+#include "../../platform/kernel_object_probe.h"
 #include "../../platform/runtime_signature_scan.h"
 #include "../../platform/pool_compat.h"
 
@@ -241,10 +247,34 @@ KswordARKCiHashInferListCandidate(
 }
 
 static BOOLEAN
+KswordARKCiHashOptionalPointerIsSane(
+    _In_opt_ const VOID* Pointer
+    )
+{
+    return Pointer == NULL ||
+        KswordARKCiHashIsKernelAddress((ULONG_PTR)Pointer);
+}
+
+static BOOLEAN
 KswordARKCiHashResourceIsPlausible(
     _In_ const KSW_RUNTIME_IMAGE_VIEW* View,
     _In_ ULONG_PTR Address
     )
+/*++
+
+Routine Description:
+
+    Cheap shape filter used while pairing candidates.  It narrows the search
+    space only; it can never establish that the address is a real ERESOURCE,
+    because every self-consistent LIST_ENTRY in a writable image section
+    satisfies these conditions.  Identity is settled by
+    KswordARKKernelProbeResourceIsSystemResource before the lock is acquired.
+
+Return Value:
+
+    TRUE when the candidate is shaped like a resource.
+
+--*/
 {
     ERESOURCE resource;
     LIST_ENTRY forward;
@@ -256,12 +286,17 @@ KswordARKCiHashResourceIsPlausible(
     if ((Address & (sizeof(PVOID) - 1U)) != 0U ||
         !KswordARKRuntimeAddressIsWritableData(View, Address, sizeof(resource)) ||
         !KswordARKRuntimeReadMemory((const VOID*)Address, &resource, sizeof(resource)) ||
-        resource.SystemResourcesList.Flink == NULL ||
-        resource.SystemResourcesList.Blink == NULL ||
-        resource.NumberOfSharedWaiters > 0x10000UL ||
-        resource.NumberOfExclusiveWaiters > 0x10000UL ||
-        (resource.OwnerTable != NULL &&
-         !KswordARKCiHashIsKernelAddress((ULONG_PTR)resource.OwnerTable)) ||
+        !KswordARKCiHashIsKernelAddress(
+            (ULONG_PTR)resource.SystemResourcesList.Flink) ||
+        !KswordARKCiHashIsKernelAddress(
+            (ULONG_PTR)resource.SystemResourcesList.Blink) ||
+        (((ULONG_PTR)resource.SystemResourcesList.Flink |
+          (ULONG_PTR)resource.SystemResourcesList.Blink) &
+         (sizeof(PVOID) - 1U)) != 0U ||
+        resource.ActiveCount < 0 ||
+        !KswordARKCiHashOptionalPointerIsSane(resource.OwnerTable) ||
+        !KswordARKCiHashOptionalPointerIsSane(resource.SharedWaiters) ||
+        !KswordARKCiHashOptionalPointerIsSane(resource.ExclusiveWaiters) ||
         !KswordARKRuntimeReadMemory(
             resource.SystemResourcesList.Flink,
             &forward,
@@ -573,6 +608,16 @@ KswordARKCiHashResolveRuntimeLayout(
         pairAmbiguous = FALSE;
     }
     if (bestLock == NULL || bestPairScore < 2UL || pairAmbiguous) {
+        status = STATUS_NOT_FOUND;
+        goto Exit;
+    }
+
+    /*
+     * Shape checks got us a candidate; only global-resource-list membership
+     * proves it is a resource.  Handing a non-resource to the Ex API faults
+     * inside the kernel's lock path, so this gate precedes the acquire.
+     */
+    if (!KswordARKKernelProbeResourceIsSystemResource(bestLock->Address)) {
         status = STATUS_NOT_FOUND;
         goto Exit;
     }
