@@ -1,6 +1,7 @@
 #include "GlobalUiSearch.h"
 
 #include "../include/ads/DockWidget.h"
+#include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
 
 #include <QAbstractButton>
@@ -18,8 +19,9 @@
 #include <QListWidgetItem>
 #include <QMouseEvent>
 #include <QPainter>
-#include <QScrollArea>
 #include <QPen>
+#include <QProgressBar>
+#include <QScrollArea>
 #include <QSet>
 #include <QStackedWidget>
 #include <QStyleOption>
@@ -50,6 +52,7 @@ namespace
     // - kComboBoxItemScanLimit：下拉框条目参与索引的数量上限；
     // - kHeaderColumnScanLimit：表头列参与索引的数量上限；
     // - kFlashDelayMs：Dock 置前后到点亮高亮之间的布局稳定等待；
+    // - kProgressContentHeight：扫描进行中弹层进度行的内容高度；
     // - kResultHtmlRole：列表项富文本内容的自定义数据角色。
     constexpr int kSearchDebounceIntervalMs = 220;
     constexpr int kMaxHitsPerDock = 24;
@@ -61,6 +64,7 @@ namespace
     constexpr int kComboBoxItemScanLimit = 60;
     constexpr int kHeaderColumnScanLimit = 80;
     constexpr int kFlashDelayMs = 140;
+    constexpr int kProgressContentHeight = 44;
     constexpr int kResultHtmlRole = Qt::UserRole + 41;
 
     // normalizeUiText：
@@ -730,6 +734,9 @@ namespace ks::ui
 
     void GlobalUiSearchController::dismissPopup()
     {
+        // 代数自增让仍在事件队列里的异步分片全部作废。
+        ++m_searchGeneration;
+        m_searchInProgress = false;
         if (m_searchDebounceTimer != nullptr)
         {
             m_searchDebounceTimer->stop();
@@ -875,6 +882,26 @@ namespace ks::ui
         m_emptyHintLabel->setObjectName(QStringLiteral("ksGlobalUiSearchEmptyHint"));
         m_emptyHintLabel->setAlignment(Qt::AlignCenter);
 
+        // 进度行：异步扫描进行中显示“正在搜索：Dock 名（n/N）”+ 进度条。
+        m_searchProgressRow = new QWidget(m_popupPanel);
+        m_searchProgressRow->setObjectName(QStringLiteral("ksGlobalUiSearchProgressRow"));
+        auto* progressLayout = new QVBoxLayout(m_searchProgressRow);
+        progressLayout->setContentsMargins(10, 6, 10, 8);
+        progressLayout->setSpacing(5);
+
+        m_searchProgressLabel = new QLabel(m_searchProgressRow);
+        m_searchProgressLabel->setObjectName(QStringLiteral("ksGlobalUiSearchProgressLabel"));
+
+        m_searchProgressBar = new QProgressBar(m_searchProgressRow);
+        m_searchProgressBar->setObjectName(QStringLiteral("ksGlobalUiSearchProgressBar"));
+        m_searchProgressBar->setTextVisible(false);
+        m_searchProgressBar->setFixedHeight(6);
+
+        progressLayout->addWidget(m_searchProgressLabel, 0);
+        progressLayout->addWidget(m_searchProgressBar, 0);
+        m_searchProgressRow->hide();
+
+        panelLayout->addWidget(m_searchProgressRow, 0);
         panelLayout->addWidget(m_resultListWidget, 1);
         panelLayout->addWidget(m_emptyHintLabel, 0);
     }
@@ -891,25 +918,105 @@ namespace ks::ui
         {
             return;
         }
+        if (m_searchInProgress && queryText == m_activeQueryText)
+        {
+            // 相同查询的扫描已在途（例如聚焦触发的重复启动），继续用它。
+            return;
+        }
 
-        const QList<ads::CDockWidget*> dockList = m_dockListProvider();
+        // 新代数使仍在事件队列中的旧扫描分片全部作废。
+        ++m_searchGeneration;
+        m_activeQueryText = queryText;
         m_currentHitList.clear();
+        m_pendingSearchDockList.clear();
+        const QList<ads::CDockWidget*> dockList = m_dockListProvider();
         for (ads::CDockWidget* dockWidget : dockList)
         {
-            if (dockWidget == nullptr)
+            if (dockWidget != nullptr)
             {
-                continue;
+                m_pendingSearchDockList.append(QPointer<ads::CDockWidget>(dockWidget));
             }
+        }
+        m_nextSearchDockIndex = 0;
+        m_searchInProgress = true;
+
+        // 进度态弹层：隐藏结果列表与空态，只显示进度行。
+        ensurePopupCreated();
+        if (m_resultListWidget != nullptr)
+        {
+            m_resultListWidget->clear();
+            m_resultListWidget->setVisible(false);
+        }
+        if (m_emptyHintLabel != nullptr)
+        {
+            m_emptyHintLabel->setVisible(false);
+        }
+        if (m_searchProgressBar != nullptr)
+        {
+            m_searchProgressBar->setRange(
+                0,
+                std::max(1, static_cast<int>(m_pendingSearchDockList.size())));
+            m_searchProgressBar->setValue(0);
+        }
+        if (m_searchProgressRow != nullptr)
+        {
+            m_searchProgressRow->setVisible(true);
+        }
+        if (!m_pendingSearchDockList.isEmpty()
+            && m_pendingSearchDockList.first() != nullptr)
+        {
+            updateSearchProgressUi(m_pendingSearchDockList.first()->windowTitle());
+        }
+        showPopupPanel();
+
+        const quint64 searchGeneration = m_searchGeneration;
+        QTimer::singleShot(0, this, [this, searchGeneration]() {
+            processNextSearchChunk(searchGeneration);
+        });
+    }
+
+    void GlobalUiSearchController::processNextSearchChunk(const quint64 searchGeneration)
+    {
+        if (searchGeneration != m_searchGeneration || !m_searchInProgress)
+        {
+            return;
+        }
+
+        const int dockCount = static_cast<int>(m_pendingSearchDockList.size());
+        if (m_nextSearchDockIndex >= dockCount
+            || m_currentHitList.size() >= kMaxTotalHits)
+        {
+            finishAsyncSearch();
+            return;
+        }
+
+        ads::CDockWidget* dockWidget =
+            m_pendingSearchDockList.at(m_nextSearchDockIndex).data();
+        if (dockWidget != nullptr)
+        {
+            updateSearchProgressUi(dockWidget->windowTitle());
+            // 懒加载补齐可能耗时数百毫秒，但只阻塞当前分片；
+            // 分片之间让出事件循环，进度条与输入保持响应。
             if (m_dockPreparer)
             {
                 m_dockPreparer(dockWidget);
             }
-            collectDockSearchHits(dockWidget, queryText, m_currentHitList);
-            if (m_currentHitList.size() >= kMaxTotalHits)
-            {
-                break;
-            }
+            collectDockSearchHits(dockWidget, m_activeQueryText, m_currentHitList);
         }
+        ++m_nextSearchDockIndex;
+        if (m_searchProgressBar != nullptr)
+        {
+            m_searchProgressBar->setValue(m_nextSearchDockIndex);
+        }
+
+        QTimer::singleShot(0, this, [this, searchGeneration]() {
+            processNextSearchChunk(searchGeneration);
+        });
+    }
+
+    void GlobalUiSearchController::finishAsyncSearch()
+    {
+        m_searchInProgress = false;
         if (m_currentHitList.size() > kMaxTotalHits)
         {
             m_currentHitList.resize(kMaxTotalHits);
@@ -922,8 +1029,28 @@ namespace ks::ui
                 return leftHit.matchRank < rightHit.matchRank;
             });
 
+        if (m_searchProgressRow != nullptr)
+        {
+            m_searchProgressRow->setVisible(false);
+        }
         rebuildResultList();
         showPopupPanel();
+    }
+
+    void GlobalUiSearchController::updateSearchProgressUi(const QString& dockTitleText)
+    {
+        if (m_searchProgressLabel == nullptr)
+        {
+            return;
+        }
+
+        const int dockCount = static_cast<int>(m_pendingSearchDockList.size());
+        const int displayIndex = std::min(m_nextSearchDockIndex + 1, std::max(1, dockCount));
+        m_searchProgressLabel->setText(
+            ks::i18n::sourceText(QStringLiteral("正在搜索：%1（%2/%3）"))
+                .arg(normalizeUiText(dockTitleText))
+                .arg(displayIndex)
+                .arg(dockCount));
     }
 
     void GlobalUiSearchController::rebuildResultList()
@@ -934,7 +1061,8 @@ namespace ks::ui
             return;
         }
 
-        const QString queryText = m_pendingQueryText.trimmed();
+        // 用扫描时的查询快照做高亮：防抖期间的新输入会另起一轮扫描。
+        const QString queryText = m_activeQueryText;
         const QString textPrimaryHex = KswordTheme::TextPrimaryColorHex();
         const QString textSecondaryHex = KswordTheme::TextSecondaryHex();
         const QString accentTextHex = KswordTheme::ThemeColorName(
@@ -997,11 +1125,26 @@ namespace ks::ui
             "  color:%3;"
             "  font-size:12px;"
             "  padding:14px 0;"
+            "}"
+            "#ksGlobalUiSearchPopup QLabel#ksGlobalUiSearchProgressLabel{"
+            "  color:%3;"
+            "  font-size:11px;"
+            "}"
+            "#ksGlobalUiSearchPopup QProgressBar#ksGlobalUiSearchProgressBar{"
+            "  background:%4;"
+            "  border:none;"
+            "  border-radius:3px;"
+            "}"
+            "#ksGlobalUiSearchPopup QProgressBar#ksGlobalUiSearchProgressBar::chunk{"
+            "  background:%5;"
+            "  border-radius:3px;"
             "}")
             .arg(
                 KswordTheme::SurfaceColorHex(),
                 KswordTheme::BorderStrongColorHex(),
-                KswordTheme::TextSecondaryHex()));
+                KswordTheme::TextSecondaryHex(),
+                KswordTheme::SurfaceAltColorHex(),
+                KswordTheme::ThemeColorName(KswordTheme::PrimaryAccentColor())));
 
         const int anchorWidth = m_popupAnchorWidget != nullptr ? m_popupAnchorWidget->width() : 460;
         const int panelWidth = std::clamp(
@@ -1011,9 +1154,15 @@ namespace ks::ui
         const int visibleRowCount = std::min(
             static_cast<int>(m_currentHitList.size()),
             kMaxVisibleResultRows);
-        const int contentHeight = m_currentHitList.isEmpty()
-            ? 48
-            : visibleRowCount * kResultItemHeight + 2;
+        int contentHeight = 48;
+        if (m_searchInProgress)
+        {
+            contentHeight = kProgressContentHeight;
+        }
+        else if (!m_currentHitList.isEmpty())
+        {
+            contentHeight = visibleRowCount * kResultItemHeight + 2;
+        }
         m_popupPanel->setFixedSize(panelWidth, contentHeight + 8);
 
         repositionPopupPanel();
@@ -1046,6 +1195,11 @@ namespace ks::ui
 
     void GlobalUiSearchController::activateHitAtRow(const int rowIndex)
     {
+        if (m_searchInProgress)
+        {
+            // 扫描期间列表尚未填充，行号与命中不对应，忽略激活请求。
+            return;
+        }
         if (rowIndex < 0 || rowIndex >= m_currentHitList.size())
         {
             return;

@@ -26,6 +26,7 @@ class QFrame;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QProgressBar;
 class QTimer;
 class QWidget;
 
@@ -131,9 +132,27 @@ namespace ks::ui
         void ensurePopupCreated();
 
         // runSearchNow：
-        // - 作用：立即执行一次搜索（防抖定时器到期或显式触发）；
-        // - 说明：查询过短时等效于收起弹层。
+        // - 作用：启动一次异步分片搜索（防抖定时器到期或显式触发）；
+        // - 说明：查询过短时等效于收起弹层；每次启动都会使在途扫描作废，
+        //   相同查询已在扫描中时直接续用当前扫描。
         void runSearchNow();
+
+        // processNextSearchChunk：
+        // - 作用：处理一个搜索分片（初始化并扫描一个 Dock），
+        //   然后通过 singleShot(0) 让出事件循环再排下一片；
+        // - 传入 searchGeneration：本次搜索的代数，与当前代数不符时
+        //   说明扫描已被新搜索/取消替代，直接丢弃。
+        void processNextSearchChunk(quint64 searchGeneration);
+
+        // finishAsyncSearch：
+        // - 作用：所有分片完成（或命中封顶）后收尾：排序命中、
+        //   隐藏进度行、填充结果列表并按结果尺寸重排弹层。
+        void finishAsyncSearch();
+
+        // updateSearchProgressUi：
+        // - 作用：刷新进度行文案“正在搜索：Dock 名（n/N）”；
+        // - 传入 dockTitleText：当前正在扫描的 Dock 标题。
+        void updateSearchProgressUi(const QString& dockTitleText);
 
         // rebuildResultList：
         // - 作用：按命中列表重建弹层列表项（含富文本高亮与路径行）。
@@ -174,10 +193,18 @@ namespace ks::ui
         QFrame* m_popupPanel = nullptr;           // m_popupPanel：结果弹层容器（宿主窗口子控件）。
         QListWidget* m_resultListWidget = nullptr;// m_resultListWidget：结果列表。
         QLabel* m_emptyHintLabel = nullptr;       // m_emptyHintLabel：无结果时的空态提示。
+        QWidget* m_searchProgressRow = nullptr;   // m_searchProgressRow：扫描进行中的进度行容器。
+        QLabel* m_searchProgressLabel = nullptr;  // m_searchProgressLabel：进度文案“正在搜索：Dock 名（n/N）”。
+        QProgressBar* m_searchProgressBar = nullptr; // m_searchProgressBar：按 Dock 数推进的进度条。
         QTimer* m_searchDebounceTimer = nullptr;  // m_searchDebounceTimer：输入防抖定时器。
 
         QString m_pendingQueryText;               // m_pendingQueryText：最近一次输入的查询文本。
-        QVector<UiSearchHit> m_currentHitList;    // m_currentHitList：当前展示的命中列表（与列表行一一对应）。
+        QString m_activeQueryText;                // m_activeQueryText：当前异步扫描采用的查询快照。
+        QVector<UiSearchHit> m_currentHitList;    // m_currentHitList：当前命中列表（完成后与列表行一一对应）。
+        QList<QPointer<ads::CDockWidget>> m_pendingSearchDockList; // m_pendingSearchDockList：本次扫描的 Dock 快照队列。
+        int m_nextSearchDockIndex = 0;            // m_nextSearchDockIndex：下一个待扫描 Dock 的队列索引。
+        quint64 m_searchGeneration = 0;           // m_searchGeneration：搜索代数；新搜索/取消时自增使在途分片作废。
+        bool m_searchInProgress = false;          // m_searchInProgress：当前是否有异步扫描在进行。
         bool m_searchModeActive = true;           // m_searchModeActive：标题栏是否处于搜索输入模式。
     };
 }
