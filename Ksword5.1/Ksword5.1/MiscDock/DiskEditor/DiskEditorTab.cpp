@@ -380,6 +380,9 @@ namespace ks::misc
         m_readButton = new QPushButton(QStringLiteral("读取"), m_toolbarWidget);
         m_writeButton = new QPushButton(QStringLiteral("写回"), m_toolbarWidget);
         m_partitionStartButton = new QPushButton(QStringLiteral("分区起点"), m_toolbarWidget);
+        m_readButton->setToolTip(QStringLiteral("读取当前偏移/长度处的磁盘数据到十六进制视图"));
+        m_writeButton->setToolTip(QStringLiteral("把十六进制视图中修改过的数据写回磁盘原位置（会覆盖原数据，操作危险）"));
+        m_partitionStartButton->setToolTip(QStringLiteral("把读取偏移跳转到所选分区的起始扇区"));
         m_refreshButton->setIcon(QIcon(QStringLiteral(":/Icon/process_refresh.svg")));
         m_readButton->setIcon(QIcon(QStringLiteral(":/Icon/disk_storage.svg")));
         m_writeButton->setIcon(QIcon(QStringLiteral(":/Icon/disk_save.svg")));
@@ -625,6 +628,8 @@ namespace ks::misc
         m_toolFileEdit->setStyleSheet(buildInputStyle());
         m_toolUseSelectionButton = new QPushButton(QStringLiteral("用当前读取"), rangeGroup);
         m_toolUsePartitionButton = new QPushButton(QStringLiteral("用当前分区"), rangeGroup);
+        m_toolUseSelectionButton->setToolTip(QStringLiteral("用当前读取/选中的范围填入下方工具的偏移和长度"));
+        m_toolUsePartitionButton->setToolTip(QStringLiteral("用当前所选分区的范围填入下方工具的偏移和长度"));
         m_toolBrowseOpenButton = new QPushButton(QStringLiteral("选输入文件"), rangeGroup);
         m_toolBrowseSaveButton = new QPushButton(QStringLiteral("选保存文件"), rangeGroup);
         for (QPushButton* button : { m_toolUseSelectionButton, m_toolUsePartitionButton, m_toolBrowseOpenButton, m_toolBrowseSaveButton })
@@ -675,6 +680,9 @@ namespace ks::misc
         m_importButton = new QPushButton(QStringLiteral("导入写盘"), actionGroup);
         m_compareButton = new QPushButton(QStringLiteral("对比文件"), actionGroup);
         m_scanButton = new QPushButton(QStringLiteral("读扫"), actionGroup);
+        m_hashButton->setToolTip(QStringLiteral("计算所选磁盘区间的哈希值，用于校验数据一致性"));
+        m_importButton->setToolTip(QStringLiteral("把外部文件的内容写入磁盘指定位置（会覆盖原有数据，操作危险）"));
+        m_scanButton->setToolTip(QStringLiteral("顺序读扫所选磁盘区间，检测可读性与坏道"));
         for (QPushButton* button : { m_searchButton, m_hashButton, m_exportButton, m_importButton, m_compareButton, m_scanButton })
         {
             button->setStyleSheet(buildToolButtonStyle());

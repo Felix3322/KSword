@@ -413,6 +413,8 @@ void HardwarePowerPage::initializeUi()
         m_restoreInitialStateButton,
         QStringLiteral("hardware.power.restore"),
         QStringLiteral("一键还原首次状态"));
+    m_restoreInitialStateButton->setToolTip(
+        QStringLiteral("把功耗墙、倍频、Turbo 等所有设置一键恢复到本页刚打开时的原始状态"));
     schemeLayout->addWidget(schemeLabel, 0, 0);
     schemeLayout->addWidget(m_powerSchemeCombo, 0, 1);
     schemeLayout->addWidget(m_applyPowerSchemeButton, 0, 2);
@@ -473,6 +475,10 @@ void HardwarePowerPage::initializeUi()
     m_raisePowerLimitsButton = new QPushButton(QStringLiteral("解除软件功耗墙（平台上限）"), raplGroup);
     language.bindText(m_applyPowerLimitsButton, QStringLiteral("hardware.power.rapl.apply"), QStringLiteral("应用 PL1 / PL2"));
     language.bindText(m_raisePowerLimitsButton, QStringLiteral("hardware.power.rapl.raise"), QStringLiteral("解除软件功耗墙（平台上限）"));
+    m_applyPowerLimitsButton->setToolTip(
+        QStringLiteral("把上面填写的 PL1（长时）/PL2（短时）功耗上限写入 CPU，单位瓦"));
+    m_raisePowerLimitsButton->setToolTip(
+        QStringLiteral("把功耗上限拉到平台允许的最高值，相当于解除软件功耗限制；可能升温降频，请谨慎使用"));
     raplLayout->addWidget(pl1Label, 0, 0);
     raplLayout->addWidget(m_pl1Spin, 0, 1);
     raplLayout->addWidget(m_pl1EnableCheck, 0, 2);
@@ -492,6 +498,7 @@ void HardwarePowerPage::initializeUi()
     language.bindText(m_turboEnableCheck, QStringLiteral("hardware.power.turbo.enable"), QStringLiteral("启用 Intel Turbo Boost"));
     m_applyTurboButton = new QPushButton(QStringLiteral("应用 Turbo 开关"), turboGroup);
     language.bindText(m_applyTurboButton, QStringLiteral("hardware.power.turbo.apply"), QStringLiteral("应用 Turbo 开关"));
+    m_applyTurboButton->setToolTip(QStringLiteral("打开或关闭 Intel 睿频加速（Turbo Boost）"));
     auto* ratioLabel = new QLabel(QStringLiteral("全档位 Turbo Ratio"), turboGroup);
     language.bindText(ratioLabel, QStringLiteral("hardware.power.turbo.ratio"), QStringLiteral("全档位 Turbo Ratio"));
     m_turboRatioSpin = new QSpinBox(turboGroup);
@@ -499,6 +506,8 @@ void HardwarePowerPage::initializeUi()
     m_turboRatioSpin->setSuffix(QStringLiteral(" x"));
     m_applyTurboRatioButton = new QPushButton(QStringLiteral("应用超频倍率"), turboGroup);
     language.bindText(m_applyTurboRatioButton, QStringLiteral("hardware.power.turbo.ratio_apply"), QStringLiteral("应用超频倍率"));
+    m_applyTurboRatioButton->setToolTip(
+        QStringLiteral("把设定的全核睿频倍率写入 CPU（超频操作，风险较高，可能导致不稳定或死机）"));
     turboLayout->addWidget(m_turboEnableCheck, 0, 0);
     turboLayout->addWidget(m_applyTurboButton, 0, 1);
     turboLayout->addWidget(ratioLabel, 1, 0);
@@ -521,6 +530,8 @@ void HardwarePowerPage::initializeUi()
         m_applyRequestedMultiplierButton,
         QStringLiteral("hardware.power.turbo.requested_multiplier_apply"),
         QStringLiteral("应用请求倍频"));
+    m_applyRequestedMultiplierButton->setToolTip(
+        QStringLiteral("向 CPU 写入请求的运行倍频（IA32_PERF_CTL 寄存器）"));
     turboLayout->addWidget(requestedMultiplierLabel, 2, 0);
     turboLayout->addWidget(m_requestedMultiplierSpin, 2, 1);
     turboLayout->addWidget(m_applyRequestedMultiplierButton, 2, 2);
@@ -548,6 +559,8 @@ void HardwarePowerPage::initializeUi()
     }
     m_applyHwpButton = new QPushButton(QStringLiteral("应用到全部逻辑处理器"), hwpGroup);
     language.bindText(m_applyHwpButton, QStringLiteral("hardware.power.hwp.apply"), QStringLiteral("应用到全部逻辑处理器"));
+    m_applyHwpButton->setToolTip(
+        QStringLiteral("把上方 Speed Shift/HWP 的最小、最大、期望性能与能效偏好应用到所有 CPU 逻辑核心"));
     hwpLayout->addWidget(hwpMinimumLabel, 0, 0);
     hwpLayout->addWidget(m_hwpMinimumSpin, 0, 1);
     hwpLayout->addWidget(hwpMaximumLabel, 0, 2);

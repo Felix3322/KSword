@@ -1146,9 +1146,11 @@ void NetworkFirewallPage::initializeEventMonitorUi()
 
     m_stopLiveButton = new QPushButton(QStringLiteral("停止实时"), m_eventMonitorPage);
     m_stopLiveButton->setEnabled(false);
+    m_stopLiveButton->setToolTip(QStringLiteral("停止实时监控防火墙（WFP）事件"));
     toolbarLayout->addWidget(m_stopLiveButton, 0);
 
     m_clearButton = new QPushButton(QStringLiteral("清空"), m_eventMonitorPage);
+    m_clearButton->setToolTip(QStringLiteral("清空下方的防火墙事件列表"));
     toolbarLayout->addWidget(m_clearButton, 0);
 
     m_searchEdit = new QLineEdit(m_eventMonitorPage);

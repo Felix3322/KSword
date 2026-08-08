@@ -6593,6 +6593,10 @@ namespace
             QPushButton* applyAceButton = new QPushButton(QStringLiteral("应用 ACE"), operationGroup);
             QPushButton* deleteAceButton = new QPushButton(QStringLiteral("删除选中 ACE"), operationGroup);
             QPushButton* refreshButton = new QPushButton(QStringLiteral("刷新权限"), operationGroup);
+            applyAceButton->setToolTip(
+                QStringLiteral("按上面选择的账户和权限，给该文件新增一条访问控制规则（ACE）"));
+            deleteAceButton->setToolTip(
+                QStringLiteral("删除列表中选中的那条文件访问控制规则（ACE）"));
             applyAceButton->setStyleSheet(buildBlueButtonStyle());
             deleteAceButton->setStyleSheet(buildBlueButtonStyle());
             refreshButton->setStyleSheet(buildBlueButtonStyle());

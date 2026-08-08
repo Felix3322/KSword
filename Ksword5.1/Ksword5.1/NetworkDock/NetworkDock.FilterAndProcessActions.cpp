@@ -411,7 +411,11 @@ void NetworkDock::addMonitorFilterRuleGroup()
     groupState->processInputEdit->setToolTip(QStringLiteral("输入后自动匹配系统进程，支持 PID/进程名。"));
     groupState->addProcessButton = new QPushButton(QStringLiteral("+"), processBlock);
     groupState->addProcessButton->setFixedWidth(26);
+    groupState->addProcessButton->setToolTip(
+        QStringLiteral("把上方输入框中的进程加入本规则组的进程过滤列表"));
     groupState->removeInvalidProcessButton = new QPushButton(QStringLiteral("清除失效"), processBlock);
+    groupState->removeInvalidProcessButton->setToolTip(
+        QStringLiteral("移除列表中已经关闭或不存在的进程"));
     groupState->clearProcessButton = new QPushButton(processBlock);
     groupState->clearProcessButton->setIcon(QIcon(":/Icon/log_clear.svg"));
     groupState->clearProcessButton->setToolTip(QStringLiteral("清空进程列表"));
@@ -464,7 +468,11 @@ void NetworkDock::addMonitorFilterRuleGroup()
             fieldState.inputEdit->setPlaceholderText(placeholderText);
             fieldState.addButton = new QPushButton(QStringLiteral("+"), block);
             fieldState.addButton->setFixedWidth(26);
+            fieldState.addButton->setToolTip(
+                QStringLiteral("把上方输入的地址或端口加入本条件的过滤列表"));
             fieldState.clearButton = new QPushButton(QStringLiteral("清空"), block);
+            fieldState.clearButton->setToolTip(
+                QStringLiteral("清空本条件已添加的所有过滤项"));
 
             topLayout->addWidget(label);
             topLayout->addWidget(fieldState.inputEdit, 1);

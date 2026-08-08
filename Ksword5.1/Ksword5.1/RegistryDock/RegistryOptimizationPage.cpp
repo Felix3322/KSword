@@ -1171,6 +1171,9 @@ void RegistryOptimizationPage::initializeUi()
     m_reloadButton = new QPushButton(QStringLiteral("重新加载 JSON"), this);
     m_refreshStateButton = new QPushButton(QStringLiteral("刷新可见状态"), this);
     m_cancelApplyButton = new QPushButton(QStringLiteral("取消应用"), this);
+    m_reloadButton->setToolTip(QStringLiteral("从配置文件重新读取优化项清单"));
+    m_refreshStateButton->setToolTip(QStringLiteral("重新读取注册表，刷新列表中各优化项的当前状态"));
+    m_cancelApplyButton->setToolTip(QStringLiteral("中止正在进行的批量应用操作"));
     m_reloadButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
     m_refreshStateButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
     m_cancelApplyButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
@@ -1508,6 +1511,7 @@ void RegistryOptimizationPage::rebuildItemTable()
 
             QPushButton* applyButton = new QPushButton(QStringLiteral("应用"), m_itemTable);
             applyButton->setObjectName(QStringLiteral("registryOptimizationApplyButton"));
+            applyButton->setToolTip(QStringLiteral("对这一项执行注册表优化设置"));
             applyButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
             applyButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
             applyButton->setFixedWidth(kActionColumnWidth - 14);

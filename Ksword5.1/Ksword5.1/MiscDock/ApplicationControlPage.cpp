@@ -643,6 +643,7 @@ namespace ks::misc
         m_filePathEdit->setPlaceholderText(QStringLiteral("输入 exe / dll / script 文件路径"));
         m_fileBrowseButton = new QPushButton(QStringLiteral("浏览…"), inputRow);
         m_fileDiagnoseButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("诊断"), inputRow);
+        m_fileDiagnoseButton->setToolTip(QStringLiteral("诊断所选文件是否会被 AppLocker / WDAC / Defender 拦截"));
 
         inputLayout->addWidget(m_filePathEdit, 1);
         inputLayout->addWidget(m_fileBrowseButton);

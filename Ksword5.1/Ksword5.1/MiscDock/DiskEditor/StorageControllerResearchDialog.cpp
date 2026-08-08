@@ -66,6 +66,8 @@ namespace ks::misc
         m_acquireButton = new QPushButton(QStringLiteral("取得独占会话"), this);
         m_releaseButton = new QPushButton(QStringLiteral("释放会话"), this);
         m_resetButton = new QPushButton(QStringLiteral("受控重置"), this);
+        m_acquireButton->setToolTip(QStringLiteral("取得对该存储控制器的独占访问会话，用于底层 BAR/DMA 操作"));
+        m_resetButton->setToolTip(QStringLiteral("对存储控制器执行受控复位（可能使设备暂时离线，操作危险）"));
         QPushButton* auditButton = new QPushButton(QStringLiteral("刷新审计"), this);
         sessionLayout->addWidget(refreshButton);
         sessionLayout->addWidget(m_acquireButton);
@@ -91,6 +93,8 @@ namespace ks::misc
         QHBoxLayout* transferButtons = new QHBoxLayout();
         m_readButton = new QPushButton(QStringLiteral("读取并建立条件写快照"), transferGroup);
         m_writeButton = new QPushButton(QStringLiteral("按快照写入并复读验证"), transferGroup);
+        m_readButton->setToolTip(QStringLiteral("读取该区间并建立“条件写”比对快照，供后续按快照安全写入"));
+        m_writeButton->setToolTip(QStringLiteral("仅当区间内容仍与快照一致时才写入，写完再读回校验，防止误写"));
         m_rollbackButton = new QPushButton(QStringLiteral("回滚最近一次写入"), transferGroup);
         transferButtons->addWidget(m_readButton);
         transferButtons->addWidget(m_writeButton);

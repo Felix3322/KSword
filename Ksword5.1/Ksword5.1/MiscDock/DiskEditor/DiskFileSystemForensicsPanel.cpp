@@ -324,6 +324,7 @@ namespace ks::misc
         m_extentButton = new QPushButton(
             QStringLiteral("解析物理区间"),
             extentGroup);
+        m_extentButton->setToolTip(QStringLiteral("解析所选文件在磁盘上的物理区段（扇区）位置"));
         m_fileBrowseButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
         m_extentButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
         extentToolbar->addWidget(m_filePathEdit, 0, 0);
@@ -360,6 +361,7 @@ namespace ks::misc
         m_reverseButton = new QPushButton(
             QStringLiteral("反查占用文件"),
             reverseGroup);
+        m_reverseButton->setToolTip(QStringLiteral("根据卷簇号（LCN）反查是哪个文件占用了该簇"));
         m_reverseButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
         reverseToolbar->addWidget(
             new QLabel(QStringLiteral("卷"), reverseGroup),
