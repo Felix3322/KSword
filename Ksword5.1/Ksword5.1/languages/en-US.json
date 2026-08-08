@@ -15390,7 +15390,7 @@
     "后退": "Backward",
     "向前": "Forward",
     "向后": "Next",
-    "否": "False",
+    "否": "No",
     "启动 HTTPS 代理失败：\n%1": "Failed to start HTTPS proxy:\n%1",
     "启动 KswordARK 驱动服务": "Start KswordARK driver service",
     "启动 PowerShell 脚本失败。\n\n%1": "Failed to start PowerShell script.\n\n%1",

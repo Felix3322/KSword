@@ -10,6 +10,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QBrush>
+#include <QChar>
 #include <QClipboard>
 #include <QColor>
 #include <QComboBox>
@@ -115,9 +116,14 @@ namespace
         {
             return QStringLiteral("Unavailable");
         }
+        // 补零到 16 位：表格按显示文本排序，不补零时 "0x7FF..." 会排在
+        // "0xFFFF..." 之后、长短不一的地址也会乱序，与已补零的对象类型/
+        // SSDT/内核 Hook 等页面表现相反。
+        // toUpper 只作用于十六进制位，避免把前缀一起写成 "0X"。
         return QStringLiteral("0x%1")
-            .arg(static_cast<qulonglong>(addressValue), 0, 16)
-            .toUpper();
+            .arg(QString::number(static_cast<qulonglong>(addressValue), 16)
+                     .rightJustified(16, QChar('0'))
+                     .toUpper());
     }
 
     // threadR0StatusText 作用：把共享协议状态转换为线程表短文本。
@@ -984,7 +990,7 @@ bool ProcessDock::threadRecordMatchesSearch(const ks::process::SystemThreadRecor
         QString::number(threadRecord.ownerPid),
         QString::fromStdString(threadRecord.ownerProcessName),
         threadClassText(threadRecord),
-        QString("0x%1").arg(static_cast<qulonglong>(threadRecord.startAddress), 0, 16).toUpper(),
+        hexPointerText(threadRecord.startAddress, false),
         QString("0x%1").arg(static_cast<qulonglong>(threadRecord.win32StartAddress), 0, 16).toUpper(),
         QString("0x%1").arg(static_cast<qulonglong>(threadRecord.tebBaseAddress), 0, 16).toUpper(),
         QString("0x%1").arg(static_cast<qulonglong>(threadRecord.r0KernelStack), 0, 16).toUpper(),
