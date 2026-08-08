@@ -36,6 +36,7 @@
 // 前置声明：减少头文件编译开销。
 class QComboBox;
 class QCheckBox;
+class QDoubleSpinBox;
 class QFormLayout;
 class QGroupBox;
 class QHeaderView;
@@ -785,9 +786,9 @@ private:
     QCheckBox* m_showKswordHiddenProcessCheck = nullptr; // 是否显示被 Ksword R0 摘链隐藏的进程。
     QLineEdit* m_processSearchLineEdit = nullptr; // 进程搜索框；用于按名称/PID/路径等关键词过滤当前列表。
     QLabel* m_refreshLabel = nullptr;         // 列表刷新间隔标签。
-    QLineEdit* m_tableRefreshIntervalEdit = nullptr; // 进程表格重绘间隔输入框，默认 2 秒。
-    QLabel* m_sampleIntervalLabel = nullptr;  // 记录打点间隔标签。
-    QLineEdit* m_refreshIntervalEdit = nullptr; // 记录打点/后台监视间隔输入框，允许小数秒，默认 1 秒。
+    QDoubleSpinBox* m_tableRefreshIntervalSpin = nullptr; // 进程表格重绘间隔步进框，0.5~60 秒，默认 2 秒。
+    QLabel* m_sampleIntervalLabel = nullptr;  // 活动采样间隔标签。
+    QDoubleSpinBox* m_refreshIntervalSpin = nullptr; // 活动采样/后台监视间隔步进框，0.05~60 秒，默认 1 秒。
 
     // ======== 进程活动记录面板 ========
     QWidget* m_activityPanelWidget = nullptr;       // m_activityPanelWidget：进程活动图表面板。

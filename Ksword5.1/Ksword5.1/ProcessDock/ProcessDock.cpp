@@ -28,7 +28,7 @@
 #include <QDateTime>
 #include <QEasingCurve>
 #include <QVariantAnimation>
-#include <QDoubleValidator>
+#include <QDoubleSpinBox>
 #include <QDir>
 #include <QEvent>
 #include <QFileDialog>
@@ -3874,37 +3874,52 @@ void ProcessDock::initializeTopControls()
 
     // 进程表刷新间隔：
     // - 该间隔只控制下方进程表格重绘频率，默认 2 秒；
-    // - 后台监视和活动打点默认走 1 秒采样，避免表格渲染成本影响记录精度。
-    m_refreshLabel = new QLabel("列表刷新(s):", this);
-    languageManager.bindText(m_refreshLabel, QStringLiteral("process.label.refresh_interval"), QStringLiteral("列表刷新(s):"));
-    m_tableRefreshIntervalEdit = new QLineEdit(this);
-    m_tableRefreshIntervalEdit->setText(QStringLiteral("2.0"));
-    m_tableRefreshIntervalEdit->setFixedWidth(64);
-    m_tableRefreshIntervalEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_tableRefreshIntervalEdit->setValidator(new QDoubleValidator(0.5, 60.0, 2, m_tableRefreshIntervalEdit));
-    m_tableRefreshIntervalEdit->setToolTip("只控制下方进程表格刷新频率，默认 2 秒。");
+    // - 后台监视和活动采样默认走 1 秒，避免表格渲染成本影响记录精度。
+    //
+    // 两个间隔都是带上下限的连续数值，因此用 QDoubleSpinBox 而不是
+    // QLineEdit + QDoubleValidator：校验器只会静默吞掉不合法的按键，
+    // 用户既看不到可用范围，也不知道自己为什么打不出想要的数；
+    // 步进控件把范围、步长和单位一次性摆在界面上，还能用箭头/滚轮调。
+    m_refreshLabel = new QLabel("列表刷新:", this);
+    languageManager.bindText(m_refreshLabel, QStringLiteral("process.label.refresh_interval"), QStringLiteral("列表刷新:"));
+    m_tableRefreshIntervalSpin = new QDoubleSpinBox(this);
+    m_tableRefreshIntervalSpin->setDecimals(1);
+    // 范围直接取自定时器实际使用的上下限常量，避免控件和 clamp 逻辑各说一套。
+    m_tableRefreshIntervalSpin->setRange(
+        static_cast<double>(ProcessTableMinimumIntervalMilliseconds) / 1000.0,
+        static_cast<double>(ProcessTableMaximumIntervalMilliseconds) / 1000.0);
+    m_tableRefreshIntervalSpin->setSingleStep(0.5);
+    m_tableRefreshIntervalSpin->setSuffix(QStringLiteral(" s"));
+    m_tableRefreshIntervalSpin->setValue(2.0);
+    m_tableRefreshIntervalSpin->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    // 关闭键盘跟踪：打字途中的半截数值不触发定时器重启，回车/失焦/步进才生效。
+    m_tableRefreshIntervalSpin->setKeyboardTracking(false);
+    m_tableRefreshIntervalSpin->setToolTip("只控制下方进程表格的刷新频率，可调 0.5~60 秒，默认 2 秒。");
     languageManager.bindToolTip(
-        m_tableRefreshIntervalEdit,
+        m_tableRefreshIntervalSpin,
         QStringLiteral("process.tooltip.table_interval"),
-        QStringLiteral("只控制下方进程表格刷新频率，默认 2 秒。"));
-    m_tableRefreshIntervalEdit->setStyleSheet(buildBlueLineEditStyle());
+        QStringLiteral("只控制下方进程表格的刷新频率，可调 0.5~60 秒，默认 2 秒。"));
 
-    // 记录/打点间隔输入框：
+    // 活动采样间隔：
     // - 允许小数秒，默认 1s；
     // - 该间隔驱动后台监视刷新和活动记录采样。
-    m_sampleIntervalLabel = new QLabel("记录打点(s):", this);
-    languageManager.bindText(m_sampleIntervalLabel, QStringLiteral("process.label.sample_interval"), QStringLiteral("记录打点(s):"));
-    m_refreshIntervalEdit = new QLineEdit(this);
-    m_refreshIntervalEdit->setText(QStringLiteral("1.0"));
-    m_refreshIntervalEdit->setFixedWidth(64);
-    m_refreshIntervalEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_refreshIntervalEdit->setValidator(new QDoubleValidator(0.05, 60.0, 3, m_refreshIntervalEdit));
-    m_refreshIntervalEdit->setToolTip("记录打点间隔，允许输入小数秒，默认 1；过小间隔会提高系统枚举开销。");
+    m_sampleIntervalLabel = new QLabel("采样间隔:", this);
+    languageManager.bindText(m_sampleIntervalLabel, QStringLiteral("process.label.sample_interval"), QStringLiteral("采样间隔:"));
+    m_refreshIntervalSpin = new QDoubleSpinBox(this);
+    m_refreshIntervalSpin->setDecimals(2);
+    m_refreshIntervalSpin->setRange(
+        static_cast<double>(ActivityMinimumIntervalMilliseconds) / 1000.0,
+        static_cast<double>(ActivityMaximumIntervalMilliseconds) / 1000.0);
+    m_refreshIntervalSpin->setSingleStep(0.05);
+    m_refreshIntervalSpin->setSuffix(QStringLiteral(" s"));
+    m_refreshIntervalSpin->setValue(1.0);
+    m_refreshIntervalSpin->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_refreshIntervalSpin->setKeyboardTracking(false);
+    m_refreshIntervalSpin->setToolTip("进程活动记录的采样间隔，可调 0.05~60 秒，默认 1 秒；间隔越小系统枚举开销越大。");
     languageManager.bindToolTip(
-        m_refreshIntervalEdit,
+        m_refreshIntervalSpin,
         QStringLiteral("process.tooltip.sample_interval"),
-        QStringLiteral("记录打点间隔，允许输入小数秒，默认 1；过小间隔会提高系统枚举开销。"));
-    m_refreshIntervalEdit->setStyleSheet(buildBlueLineEditStyle());
+        QStringLiteral("进程活动记录的采样间隔，可调 0.05~60 秒，默认 1 秒；间隔越小系统枚举开销越大。"));
 
     // 进程搜索框：
     // - 直接基于当前缓存做本地过滤，不额外触发系统查询；
@@ -3970,9 +3985,9 @@ void ProcessDock::initializeTopControls()
     m_controlLayout->addWidget(m_showKswordHiddenProcessCheck);
     m_controlLayout->addStretch(1);
     m_controlLayout->addWidget(m_refreshLabel);
-    m_controlLayout->addWidget(m_tableRefreshIntervalEdit);
+    m_controlLayout->addWidget(m_tableRefreshIntervalSpin);
     m_controlLayout->addWidget(m_sampleIntervalLabel);
-    m_controlLayout->addWidget(m_refreshIntervalEdit);
+    m_controlLayout->addWidget(m_refreshIntervalSpin);
     controlContainerLayout->addLayout(m_controlLayout);
     m_processPageLayout->addLayout(controlContainerLayout);
 }
@@ -4976,13 +4991,13 @@ void ProcessDock::initializeConnections()
         updateProcessActivityStatusLabel();
     });
 
-    // 记录打点间隔输入：
-    // - 支持 0.1 这类小数秒；
-    // - 编辑完成后立即应用到后台监视定时器。
-    connect(m_refreshIntervalEdit, &QLineEdit::editingFinished, this, [this]() {
+    // 两个间隔步进控件：
+    // - 已关闭键盘跟踪，valueChanged 只在回车/失焦/点箭头/滚轮时发出一次；
+    // - 用 valueChanged 而不是 editingFinished，否则点上下箭头调整后不会立即生效。
+    connect(m_refreshIntervalSpin, &QDoubleSpinBox::valueChanged, this, [this](double) {
         applyRefreshIntervalInput();
     });
-    connect(m_tableRefreshIntervalEdit, &QLineEdit::editingFinished, this, [this]() {
+    connect(m_tableRefreshIntervalSpin, &QDoubleSpinBox::valueChanged, this, [this](double) {
         applyTableRefreshIntervalInput();
     });
 
@@ -5409,18 +5424,11 @@ void ProcessDock::initializeTimer()
 
 int ProcessDock::refreshIntervalMillisecondsFromInput() const
 {
-    // 输入为空或非法时回退默认 1s；
-    // clamp 避免极小间隔造成后台枚举连续堆积。
-    bool parseOk = false;
-    double secondsValue = (m_refreshIntervalEdit != nullptr)
-        ? m_refreshIntervalEdit->text().trimmed().toDouble(&parseOk)
+    // 步进控件自身已把取值限制在合法范围内，控件缺失时回退默认 1s；
+    // clamp 保留为兜底，确保控件范围与定时器上下限常量始终一致。
+    const double safeSeconds = (m_refreshIntervalSpin != nullptr)
+        ? m_refreshIntervalSpin->value()
         : 1.0;
-    if (parseOk && !std::isfinite(secondsValue))
-    {
-        parseOk = false;
-        secondsValue = 1.0;
-    }
-    const double safeSeconds = parseOk ? secondsValue : 1.0;
     const double clampedSeconds = std::clamp(
         safeSeconds,
         static_cast<double>(ActivityMinimumIntervalMilliseconds) / 1000.0,
@@ -5437,11 +5445,12 @@ void ProcessDock::applyRefreshIntervalInput()
     const int intervalMs = refreshIntervalMillisecondsFromInput();
     const double normalizedSeconds = static_cast<double>(intervalMs) / 1000.0;
 
-    // 规范化显示，避免用户输入 0 或非法文本后仍看到误导值。
-    if (m_refreshIntervalEdit != nullptr)
+    // 回写规范化后的值：控件范围与常量一致时是无变化写入，
+    // 若将来两者出现偏差，界面显示的仍是定时器真正采用的间隔。
+    if (m_refreshIntervalSpin != nullptr)
     {
-        QSignalBlocker blocker(m_refreshIntervalEdit);
-        m_refreshIntervalEdit->setText(QString::number(normalizedSeconds, 'f', normalizedSeconds < 1.0 ? 2 : 1));
+        QSignalBlocker blocker(m_refreshIntervalSpin);
+        m_refreshIntervalSpin->setValue(normalizedSeconds);
     }
 
     if (m_refreshTimer != nullptr)
@@ -5456,7 +5465,7 @@ void ProcessDock::applyRefreshIntervalInput()
 
     kLogEvent logEvent;
     info << logEvent
-        << "[ProcessDock] 记录打点/后台监视间隔变更为 "
+        << "[ProcessDock] 活动采样/后台监视间隔变更为 "
         << intervalMs
         << " ms。"
         << eol;
@@ -5464,17 +5473,10 @@ void ProcessDock::applyRefreshIntervalInput()
 
 int ProcessDock::tableRefreshIntervalMillisecondsFromInput() const
 {
-    // 表格刷新默认 2 秒；该值只影响 UI 重绘，不影响 1 秒后台采样。
-    bool parseOk = false;
-    double secondsValue = (m_tableRefreshIntervalEdit != nullptr)
-        ? m_tableRefreshIntervalEdit->text().trimmed().toDouble(&parseOk)
+    // 表格刷新默认 2 秒；该值只影响 UI 重绘，不影响后台采样。
+    const double safeSeconds = (m_tableRefreshIntervalSpin != nullptr)
+        ? m_tableRefreshIntervalSpin->value()
         : 2.0;
-    if (parseOk && !std::isfinite(secondsValue))
-    {
-        parseOk = false;
-        secondsValue = 2.0;
-    }
-    const double safeSeconds = parseOk ? secondsValue : 2.0;
     const double clampedSeconds = std::clamp(
         safeSeconds,
         static_cast<double>(ProcessTableMinimumIntervalMilliseconds) / 1000.0,
@@ -5491,11 +5493,11 @@ void ProcessDock::applyTableRefreshIntervalInput()
     const int intervalMs = tableRefreshIntervalMillisecondsFromInput();
     const double normalizedSeconds = static_cast<double>(intervalMs) / 1000.0;
 
-    // 规范化显示，避免输入非法值后 UI 留下误导文本。
-    if (m_tableRefreshIntervalEdit != nullptr)
+    // 回写规范化后的值，保证界面显示的就是定时器真正采用的间隔。
+    if (m_tableRefreshIntervalSpin != nullptr)
     {
-        QSignalBlocker blocker(m_tableRefreshIntervalEdit);
-        m_tableRefreshIntervalEdit->setText(QString::number(normalizedSeconds, 'f', normalizedSeconds < 1.0 ? 2 : 1));
+        QSignalBlocker blocker(m_tableRefreshIntervalSpin);
+        m_tableRefreshIntervalSpin->setValue(normalizedSeconds);
     }
 
     updateProcessActivityStatusLabel();
