@@ -8,6 +8,13 @@ Abstract:
 
     Shared Section/ControlArea helper routines for Phase-7 queries.
 
+    ControlArea mapping walks run under EX_SPIN_LOCK at DISPATCH_LEVEL.  Two
+    containment tools stop working there: MmCopyMemory requires APC_LEVEL or
+    below, and __try/__except cannot catch an invalid kernel dereference — the
+    fault bugchecks instead of raising.  Everything that can be validated is
+    therefore validated before the lock is taken, and the walk itself only
+    touches memory that MmIsAddressValid confirms is resident.
+
 Environment:
 
     Kernel-mode Driver Framework
@@ -15,6 +22,16 @@ Environment:
 --*/
 
 #include "section_support.h"
+#include "../../platform/kernel_object_probe.h"
+
+#define KSW_SECTION_MAPPING_HARD_WALK_LIMIT 4096UL
+
+/*
+ * EPROCESS 是不透明结构，UniqueProcessId 的偏移随版本变化。中文说明：
+ * PsGetProcessId 会读到对象内部，因此常驻探测覆盖一段保守长度，而不是只
+ * 探测首个指针。
+ */
+#define KSW_SECTION_EPROCESS_PROBE_BYTES 0x800U
 
 typedef struct _MMVAD_SHORT
 {
@@ -78,6 +95,135 @@ typedef NTSTATUS
     _In_ PEPROCESS Process,
     _Outptr_ PFILE_OBJECT* FileObject
     );
+
+static BOOLEAN
+KswordARKSectionRangeIsResident(
+    _In_opt_ const volatile VOID* Address,
+    _In_ SIZE_T Size
+    )
+/*++
+
+Routine Description:
+
+    判断一段内核地址当前是否常驻。中文说明：持自旋锁后 IRQL 已在
+    DISPATCH_LEVEL，MmCopyMemory 与 SEH 都不能再兜底，只能在解引用前用
+    MmIsAddressValid 逐页确认。ControlArea 与 MMVAD 都来自非分页池，一旦
+    确认有效就不会在窗口内被换出。
+
+Arguments:
+
+    Address - 待检查范围起始地址。
+    Size - 待检查字节数。
+
+Return Value:
+
+    TRUE 表示整段常驻且可安全解引用。
+
+--*/
+{
+    ULONG_PTR current = (ULONG_PTR)Address;
+    ULONG_PTR end = 0U;
+
+    if (Address == NULL || Size == 0U ||
+        (current & (sizeof(PVOID) - 1U)) != 0U ||
+        current < (ULONG_PTR)MmSystemRangeStart ||
+        current > MAXULONG_PTR - Size) {
+        return FALSE;
+    }
+    end = current + Size - 1U;
+    for (;;) {
+        if (!MmIsAddressValid((PVOID)current)) {
+            return FALSE;
+        }
+        if ((current & ~(ULONG_PTR)(PAGE_SIZE - 1U)) ==
+            (end & ~(ULONG_PTR)(PAGE_SIZE - 1U))) {
+            break;
+        }
+        current = (current & ~(ULONG_PTR)(PAGE_SIZE - 1U)) + PAGE_SIZE;
+    }
+    return TRUE;
+}
+
+static BOOLEAN
+KswordARKSectionMappingWalkIsSafe(
+    _In_ PVOID ControlArea,
+    _In_ const KSW_DYN_STATE* DynState,
+    _Outptr_ PEX_SPIN_LOCK* LockOut,
+    _Outptr_ PLIST_ENTRY* ListHeadOut
+    )
+/*++
+
+Routine Description:
+
+    在升 IRQL 之前完成所有可做的校验。中文说明：偏移必须来自可用的
+    DynData；锁与链表头必须整体落在常驻内存内；链表头与两个邻接节点必须
+    通过 fault-tolerant 读互相自洽。任何一项不成立都拒绝进入自旋锁。
+
+Return Value:
+
+    TRUE 表示可以安全获取自旋锁并遍历。
+
+--*/
+{
+    PEX_SPIN_LOCK lock = NULL;
+    PLIST_ENTRY listHead = NULL;
+
+    if (LockOut == NULL || ListHeadOut == NULL) {
+        return FALSE;
+    }
+    *LockOut = NULL;
+    *ListHeadOut = NULL;
+    if (ControlArea == NULL || DynState == NULL ||
+        !KswordARKSectionIsOffsetPresent(DynState->Kernel.MmControlAreaListHead) ||
+        !KswordARKSectionIsOffsetPresent(DynState->Kernel.MmControlAreaLock)) {
+        return FALSE;
+    }
+    lock = (PEX_SPIN_LOCK)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaLock);
+    listHead = (PLIST_ENTRY)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaListHead);
+    if (!KswordARKSectionRangeIsResident(lock, sizeof(*lock)) ||
+        !KswordARKSectionRangeIsResident(listHead, sizeof(*listHead)) ||
+        !KswordARKKernelProbeListHeadIsSane((ULONG_PTR)listHead)) {
+        return FALSE;
+    }
+    *LockOut = lock;
+    *ListHeadOut = listHead;
+    return TRUE;
+}
+
+static BOOLEAN
+KswordARKSectionMappingNodeIsUsable(
+    _In_ PLIST_ENTRY Link,
+    _Outptr_ PMMVAD* VadOut
+    )
+/*++
+
+Routine Description:
+
+    锁内逐节点校验。中文说明：链表节点与其宿主 MMVAD 都必须常驻，否则
+    立即停止遍历——此刻已在 DISPATCH_LEVEL，错误解引用会直接蓝屏。
+
+Return Value:
+
+    TRUE 表示该节点可以安全读取。
+
+--*/
+{
+    PMMVAD vad = NULL;
+
+    if (VadOut == NULL) {
+        return FALSE;
+    }
+    *VadOut = NULL;
+    if (!KswordARKSectionRangeIsResident(Link, sizeof(*Link))) {
+        return FALSE;
+    }
+    vad = CONTAINING_RECORD(Link, MMVAD, ViewLinks);
+    if (!KswordARKSectionRangeIsResident(vad, sizeof(*vad))) {
+        return FALSE;
+    }
+    *VadOut = vad;
+    return TRUE;
+}
 
 BOOLEAN
 KswordARKSectionIsOffsetPresent(
@@ -483,55 +629,63 @@ Return Value:
     BOOLEAN lockHeld = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
+    ULONG walked = 0UL;
+
     if (ControlArea == NULL || DynState == NULL || Response == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
-
-    lock = (PEX_SPIN_LOCK)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaLock);
-    listHead = (PLIST_ENTRY)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaListHead);
-
-    __try {
-        oldIrql = ExAcquireSpinLockShared(lock);
-        lockHeld = TRUE;
-
-        if (listHead->Flink == NULL ||
-            listHead->Blink == NULL ||
-            listHead->Flink->Blink != listHead ||
-            listHead->Blink->Flink != listHead) {
-            status = STATUS_INVALID_PARAMETER;
-            __leave;
-        }
-
-        for (link = listHead->Flink; link != listHead; link = link->Flink) {
-            PMMVAD vad = CONTAINING_RECORD(link, MMVAD, ViewLinks);
-
-            if (Response->totalCount != MAXULONG) {
-                Response->totalCount += 1UL;
-            }
-
-            if ((size_t)Response->returnedCount < EntryCapacity) {
-                KSWORD_ARK_SECTION_MAPPING_ENTRY* entry = &Response->mappings[Response->returnedCount];
-                RtlZeroMemory(entry, sizeof(*entry));
-                entry->viewMapType = (ULONG)vad->ProcessUnion.ViewMapType;
-                if (vad->ProcessUnion.ViewMapType == KSWORD_ARK_SECTION_MAP_TYPE_PROCESS) {
-                    PEPROCESS mappedProcess = (PEPROCESS)((ULONG_PTR)vad->ProcessUnion.VadsProcess & ~(ULONG_PTR)KSWORD_ARK_SECTION_MAP_TYPE_PROCESS);
-                    if (mappedProcess != NULL) {
-                        entry->processId = HandleToULong(PsGetProcessId(mappedProcess));
-                    }
-                }
-                entry->startVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadStartAddress(vad);
-                entry->endVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadEndAddress(vad);
-                Response->returnedCount += 1UL;
-            }
-
-            if (link->Flink == NULL || link->Flink->Blink != link) {
-                status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
-        }
+    /* 中文说明：所有可在低 IRQL 完成的校验都必须发生在取锁之前。 */
+    if (!KswordARKSectionMappingWalkIsSafe(
+            ControlArea,
+            DynState,
+            &lock,
+            &listHead)) {
+        return STATUS_NOT_SUPPORTED;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = GetExceptionCode();
+
+    oldIrql = ExAcquireSpinLockShared(lock);
+    lockHeld = TRUE;
+
+    for (link = listHead->Flink; link != listHead; link = link->Flink) {
+        PMMVAD vad = NULL;
+
+        /* 中文说明：成环但自洽的链表会让 DISPATCH_LEVEL 遍历永不返回。 */
+        if (walked >= KSW_SECTION_MAPPING_HARD_WALK_LIMIT) {
+            Response->fieldFlags |= KSWORD_ARK_SECTION_FIELD_MAPPING_TRUNCATED;
+            break;
+        }
+        walked += 1UL;
+        if (!KswordARKSectionMappingNodeIsUsable(link, &vad)) {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        if (Response->totalCount != MAXULONG) {
+            Response->totalCount += 1UL;
+        }
+
+        if ((size_t)Response->returnedCount < EntryCapacity) {
+            KSWORD_ARK_SECTION_MAPPING_ENTRY* entry = &Response->mappings[Response->returnedCount];
+            RtlZeroMemory(entry, sizeof(*entry));
+            entry->viewMapType = (ULONG)vad->ProcessUnion.ViewMapType;
+            if (vad->ProcessUnion.ViewMapType == KSWORD_ARK_SECTION_MAP_TYPE_PROCESS) {
+                PEPROCESS mappedProcess = (PEPROCESS)((ULONG_PTR)vad->ProcessUnion.VadsProcess & ~(ULONG_PTR)KSWORD_ARK_SECTION_MAP_TYPE_PROCESS);
+                if (KswordARKSectionRangeIsResident(
+                        mappedProcess,
+                        KSW_SECTION_EPROCESS_PROBE_BYTES)) {
+                    entry->processId = HandleToULong(PsGetProcessId(mappedProcess));
+                }
+            }
+            entry->startVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadStartAddress(vad);
+            entry->endVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadEndAddress(vad);
+            Response->returnedCount += 1UL;
+        }
+
+        if (!KswordARKSectionRangeIsResident(link->Flink, sizeof(*link)) ||
+            link->Flink->Blink != link) {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
     }
 
     if (lockHeld) {
@@ -586,72 +740,77 @@ Return Value:
     BOOLEAN lockHeld = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
+    ULONG walked = 0UL;
+
     if (ControlArea == NULL || DynState == NULL || Response == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
-    if (!KswordARKSectionIsOffsetPresent(DynState->Kernel.MmControlAreaListHead) ||
-        !KswordARKSectionIsOffsetPresent(DynState->Kernel.MmControlAreaLock)) {
+    /* 中文说明：所有可在低 IRQL 完成的校验都必须发生在取锁之前。 */
+    if (!KswordARKSectionMappingWalkIsSafe(
+            ControlArea,
+            DynState,
+            &lock,
+            &listHead)) {
         return STATUS_NOT_SUPPORTED;
     }
 
-    lock = (PEX_SPIN_LOCK)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaLock);
-    listHead = (PLIST_ENTRY)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaListHead);
+    oldIrql = ExAcquireSpinLockShared(lock);
+    lockHeld = TRUE;
 
-    __try {
-        oldIrql = ExAcquireSpinLockShared(lock);
-        lockHeld = TRUE;
+    for (link = listHead->Flink; link != listHead; link = link->Flink) {
+        PMMVAD vad = NULL;
 
-        if (listHead->Flink == NULL ||
-            listHead->Blink == NULL ||
-            listHead->Flink->Blink != listHead ||
-            listHead->Blink->Flink != listHead) {
+        /* 中文说明：成环但自洽的链表会让 DISPATCH_LEVEL 遍历永不返回。 */
+        if (walked >= KSW_SECTION_MAPPING_HARD_WALK_LIMIT) {
+            Response->fieldFlags |=
+                KSWORD_ARK_FILE_SECTION_FIELD_MAPPING_TRUNCATED;
+            break;
+        }
+        walked += 1UL;
+        if (!KswordARKSectionMappingNodeIsUsable(link, &vad)) {
             status = STATUS_INVALID_PARAMETER;
-            __leave;
+            break;
         }
 
-        for (link = listHead->Flink; link != listHead; link = link->Flink) {
-            PMMVAD vad = CONTAINING_RECORD(link, MMVAD, ViewLinks);
+        if (Response->totalCount != MAXULONG) {
+            Response->totalCount += 1UL;
+        }
 
-            if (Response->totalCount != MAXULONG) {
-                Response->totalCount += 1UL;
-            }
-
-            if ((size_t)Response->returnedCount < EntryCapacity) {
-                KSWORD_ARK_FILE_SECTION_MAPPING_ENTRY* entry = &Response->mappings[Response->returnedCount];
-                RtlZeroMemory(entry, sizeof(*entry));
-                entry->sectionKind = SectionKind;
-                entry->viewMapType = (ULONG)vad->ProcessUnion.ViewMapType;
-                entry->controlAreaAddress = (ULONG64)(ULONG_PTR)ControlArea;
-                if (vad->ProcessUnion.ViewMapType == KSWORD_ARK_SECTION_MAP_TYPE_PROCESS) {
-                    PEPROCESS mappedProcess = (PEPROCESS)((ULONG_PTR)vad->ProcessUnion.VadsProcess & ~(ULONG_PTR)KSWORD_ARK_SECTION_MAP_TYPE_PROCESS);
-                    if (mappedProcess != NULL) {
-                        entry->processId = HandleToULong(PsGetProcessId(mappedProcess));
-                        if (Response->mappedProcessCount != MAXULONG) {
-                            Response->mappedProcessCount += 1UL;
-                        }
-                        if (SectionKind == KSWORD_ARK_FILE_SECTION_KIND_DATA &&
-                            Response->dataMappedProcessCount != MAXULONG) {
-                            Response->dataMappedProcessCount += 1UL;
-                        }
-                        if (SectionKind == KSWORD_ARK_FILE_SECTION_KIND_IMAGE &&
-                            Response->imageMappedProcessCount != MAXULONG) {
-                            Response->imageMappedProcessCount += 1UL;
-                        }
+        if ((size_t)Response->returnedCount < EntryCapacity) {
+            KSWORD_ARK_FILE_SECTION_MAPPING_ENTRY* entry = &Response->mappings[Response->returnedCount];
+            RtlZeroMemory(entry, sizeof(*entry));
+            entry->sectionKind = SectionKind;
+            entry->viewMapType = (ULONG)vad->ProcessUnion.ViewMapType;
+            entry->controlAreaAddress = (ULONG64)(ULONG_PTR)ControlArea;
+            if (vad->ProcessUnion.ViewMapType == KSWORD_ARK_SECTION_MAP_TYPE_PROCESS) {
+                PEPROCESS mappedProcess = (PEPROCESS)((ULONG_PTR)vad->ProcessUnion.VadsProcess & ~(ULONG_PTR)KSWORD_ARK_SECTION_MAP_TYPE_PROCESS);
+                if (KswordARKSectionRangeIsResident(
+                        mappedProcess,
+                        KSW_SECTION_EPROCESS_PROBE_BYTES)) {
+                    entry->processId = HandleToULong(PsGetProcessId(mappedProcess));
+                    if (Response->mappedProcessCount != MAXULONG) {
+                        Response->mappedProcessCount += 1UL;
+                    }
+                    if (SectionKind == KSWORD_ARK_FILE_SECTION_KIND_DATA &&
+                        Response->dataMappedProcessCount != MAXULONG) {
+                        Response->dataMappedProcessCount += 1UL;
+                    }
+                    if (SectionKind == KSWORD_ARK_FILE_SECTION_KIND_IMAGE &&
+                        Response->imageMappedProcessCount != MAXULONG) {
+                        Response->imageMappedProcessCount += 1UL;
                     }
                 }
-                entry->startVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadStartAddress(vad);
-                entry->endVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadEndAddress(vad);
-                Response->returnedCount += 1UL;
             }
-
-            if (link->Flink == NULL || link->Flink->Blink != link) {
-                status = STATUS_INVALID_PARAMETER;
-                __leave;
-            }
+            entry->startVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadStartAddress(vad);
+            entry->endVa = (ULONG64)(ULONG_PTR)KswordARKSectionVadEndAddress(vad);
+            Response->returnedCount += 1UL;
         }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = GetExceptionCode();
+
+        if (!KswordARKSectionRangeIsResident(link->Flink, sizeof(*link)) ||
+            link->Flink->Blink != link) {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
     }
 
     if (lockHeld) {
