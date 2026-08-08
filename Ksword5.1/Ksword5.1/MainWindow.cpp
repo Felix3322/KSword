@@ -86,6 +86,8 @@
 #include "Internationalization/LanguageManager.h"
 #include "UI/CodeEditorWidget.h"
 #include "UI/GlobalDialogTheme.h"
+#include "UI/GlobalUiBaseStyle.h"
+#include "UI/WindowChrome.h"
 #include "UI/SvgThemeIconManager.h"
 #include "UI/SmoothScrollSupport.h"
 #include "UI/ThemedMessageBox.h"
@@ -3807,6 +3809,7 @@ namespace
     // 入参 tooltipStyleBlock/contextMenuStyleBlock/controlContrastStyleBlock/comboBoxStyleBlock：已带标记的 QSS 片段。
     // 返回：实际触发 QApplication::setStyleSheet 时返回 true。
     bool applyGlobalApplicationStyleBlocks(
+        const QString& baseControlStyleBlock,
         const QString& tooltipStyleBlock,
         const QString& contextMenuStyleBlock,
         const QString& controlContrastStyleBlock,
@@ -3836,6 +3839,12 @@ namespace
         QString appStyleSheetText = appInstance->styleSheet();
         const QString oldStyleSheetText = appStyleSheetText;
 
+        // 基线块最先替换：首次追加时位于样式表最前，专用样式块和局部样式仍可覆盖。
+        replaceMarkedStyleBlock(
+            appStyleSheetText,
+            ks::ui::kBaseControlStyleBeginMarker,
+            ks::ui::kBaseControlStyleEndMarker,
+            baseControlStyleBlock);
         replaceMarkedStyleBlock(
             appStyleSheetText,
             kTooltipStyleBeginMarker,
@@ -4785,12 +4794,16 @@ void MainWindow::ensureNativeFramelessWindowStyle()
 
     // currentStyleValue 用途：保存当前窗口样式，供增量合并必需样式位。
     const LONG_PTR currentStyleValue = ::GetWindowLongPtrW(mainWindowHandle, GWL_STYLE);
-    // removeStyleMask 用途：显式移除系统标题栏样式，防止顶部出现白色非客户区。
-    const LONG_PTR removeStyleMask = WS_CAPTION;
     // requiredStyleMask 用途：无边框窗口仍需具备的系统交互能力掩码。
-    const LONG_PTR requiredStyleMask = WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU;
-    // updatedStyleValue 用途：合并后的目标样式值。
-    const LONG_PTR updatedStyleValue = ((currentStyleValue & ~removeStyleMask) | requiredStyleMask);
+    //
+    // 即使客户区由自绘标题栏完全接管，也必须保留 WS_CAPTION：Windows
+    // 会用它判断窗口是否具备常规的最小化/最大化语义，DWM 的还原、最大化、
+    // 最小化过渡动画以及 Aero Snap 才会按普通窗口路径运行。标准非客户区
+    // 仍由 WM_NCCALCSIZE 返回 0 移除，因此不会重新显示系统标题栏。
+    const LONG_PTR requiredStyleMask =
+        WS_CAPTION | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU;
+    // updatedStyleValue 用途：保留 Qt/Win32 其它样式，仅补齐系统窗口语义。
+    const LONG_PTR updatedStyleValue = currentStyleValue | requiredStyleMask;
 
     if (updatedStyleValue != currentStyleValue)
     {
@@ -5706,7 +5719,7 @@ void MainWindow::initializeWindowDockMenuActions()
         return;
     }
 
-    // 直接使用 ADS 的原生 toggle action：菜单勾选、Dock 标题栏关闭、浮动和布局恢复
+    // 直接使用 ADS 的原生 toggle action：菜单勾选、Dock 标签关闭按钮、浮动和布局恢复
     // 都由同一份可见状态驱动，避免维护第二套布尔状态。
     m_windowMenu->clear();
     m_dockLog->setToggleViewActionMode(ads::CDockWidget::ActionModeToggle);
@@ -5731,6 +5744,50 @@ void MainWindow::initializeWindowDockMenuActions()
     m_windowMenu->addAction(logDockAction);
     m_windowMenu->addAction(monitorPanelAction);
     m_windowMenu->addAction(currentTasksAction);
+
+    // 主功能 Dock 的 toggle action：Tab 通过关闭按钮卸载后，从这里重新打开。
+    // MenuEntry 说明：dockKey 与 dock.<key> 语言键保持一致。
+    struct MainDockMenuEntry
+    {
+        ads::CDockWidget* dockWidget = nullptr; // dockWidget：主功能 Dock 指针。
+        const char* dockKey = nullptr;          // dockKey：语言包 dock.<key> 的 key 段。
+        const char* fallbackTitle = nullptr;    // fallbackTitle：语言包缺失时的兜底标题。
+    };
+    const MainDockMenuEntry mainDockMenuEntries[] = {
+        { m_dockWelcome, "welcome", "欢迎" },
+        { m_dockProcess, "process", "进程" },
+        { m_dockNetwork, "network", "网络" },
+        { m_dockMemory, "memory", "内存" },
+        { m_dockFile, "file", "文件" },
+        { m_dockScanner, "scanner", "扫描器" },
+        { m_dockDriver, "driver", "驱动" },
+        { m_dockKernel, "kernel", "内核" },
+        { m_dockMonitorTab, "monitor", "监控" },
+        { m_dockHardware, "hardware", "硬件" },
+        { m_dockPrivilege, "privilege", "权限" },
+        { m_dockWindow, "window", "窗口" },
+        { m_dockRegistry, "registry", "注册表" },
+        { m_dockHandle, "handle", "句柄" },
+        { m_dockStartup, "startup", "启动项" },
+        { m_dockService, "service", "服务" },
+        { m_dockMisc, "misc", "杂项" },
+        { m_dockPlugin, "plugin", "插件" },
+    };
+
+    m_windowMenu->addSeparator();
+    for (const MainDockMenuEntry& menuEntry : mainDockMenuEntries)
+    {
+        if (menuEntry.dockWidget == nullptr)
+        {
+            continue;
+        }
+        QAction* dockToggleAction = menuEntry.dockWidget->toggleViewAction();
+        ks::i18n::LanguageManager::instance().bindText(
+            dockToggleAction,
+            QStringLiteral("dock.%1").arg(QLatin1String(menuEntry.dockKey)),
+            QString::fromUtf8(menuEntry.fallbackTitle));
+        m_windowMenu->addAction(dockToggleAction);
+    }
 }
 
 QString MainWindow::buildTopActionButtonStyle() const
@@ -8845,10 +8902,13 @@ void MainWindow::initDockWidgets()
             QStringLiteral("dock.%1").arg(dockKey),
             title);
         dock->setWidget(widget, insertMode);
-        // DockWidgetClosable 禁用：统一去掉每个 Dock 标签旁边的关闭叉。
-        dock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
+        // DockWidgetClosable 启用：活动标签显示关闭按钮，可随时卸载 Tab；
+        // DeleteOnClose 关闭：只隐藏不销毁，通过“窗口”菜单可重新打开。
+        dock->setFeature(ads::CDockWidget::DockWidgetClosable, true);
+        dock->setFeature(ads::CDockWidget::DockWidgetDeleteOnClose, false);
         dock->setFeature(ads::CDockWidget::DockWidgetMovable, true);
         dock->setFeature(ads::CDockWidget::DockWidgetFloatable, true);
+        dock->setToggleViewActionMode(ads::CDockWidget::ActionModeToggle);
 
         // Dock 背景属性初始化：
         // - 默认关闭 Dock 与内容根控件的自动背景填充；
@@ -9802,6 +9862,7 @@ void MainWindow::applyAppearanceSettings(
         QToolTip::setPalette(toolTipPalette);
 
         globalAppStyleChanged = applyGlobalApplicationStyleBlocks(
+            ks::ui::BuildGlobalBaseControlStyleBlock(),
             buildGlobalTooltipStyleBlock(darkModeEnabled),
             buildGlobalContextMenuStyleBlock(darkModeEnabled),
             buildGlobalControlContrastStyleBlock(darkModeEnabled),
@@ -9823,6 +9884,8 @@ void MainWindow::applyAppearanceSettings(
         // 深浅色变化时，已打开的标准和自定义对话框也应同步主题。
         ks::ui::RefreshGlobalMessageBoxTheme();
         ks::ui::RefreshGlobalDialogTheme();
+        // 已打开的原生标题栏子窗口同步染色，保持标题栏与主题背景一体。
+        ks::ui::RefreshAllWindowChrome();
 
         if (menuBar() != nullptr)
         {

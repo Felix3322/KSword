@@ -191,6 +191,25 @@ const QString QSS_MainWindow_dockStyle = R"(
         border-radius: 1px;
     }
 
+    ads--CDockWidgetTab QPushButton,
+    ads--CDockWidgetTab QToolButton {
+        background-color: transparent;
+        color: palette(text);
+        border: none;
+        border-radius: 1px;
+    }
+
+    ads--CDockWidgetTab QPushButton:hover,
+    ads--CDockWidgetTab QToolButton:hover {
+        background-color: palette(highlight);
+        color: palette(highlighted-text);
+    }
+
+    ads--CDockWidgetTab[activeTab="true"] QPushButton,
+    ads--CDockWidgetTab[activeTab="true"] QToolButton {
+        color: palette(highlighted-text);
+    }
+
     ads--CDockAreaTitleBar QToolButton:hover,
     ads--CDockAreaTitleBar QPushButton:hover {
         background-color: palette(highlight);
