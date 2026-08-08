@@ -601,7 +601,8 @@ void ProcessDetailPage::ApplyRawTokenValue() {
         std::wstring item;
         while (stream >> item) {
             unsigned long long value = 0;
-            if (!ParseUnsigned(item.starts_with(L"0x") || item.starts_with(L"0X") ? item : L"0x" + item, 0xFF, value)) {
+            const bool hasHexPrefix = item.size() >= 2 && item[0] == L'0' && std::towlower(item[1]) == L'x';
+            if (!ParseUnsigned(hasHexPrefix ? item : L"0x" + item, 0xFF, value)) {
                 SetPageStatus(TabIndex::TokenSwitch, TokenSwitchStatus, L"● 原始设置失败：非法字节 '" + item + L"'");
                 return;
             }
