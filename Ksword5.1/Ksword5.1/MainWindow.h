@@ -262,6 +262,19 @@ private:
     // 返回：true=毛玻璃已生效（着色由系统合成，根容器不再另画着色层）。
     bool applyMainWindowBackdropMaterial(bool enableBackdrop);
 
+    // scheduleWindowBackdropRefresh 作用：
+    // - 窗口移动、缩放、状态或激活变化后合并调度一次毛玻璃重采样；
+    // - Acrylic 由 DWM 按窗口位置采样后方内容，不重新下发组合特性时
+    //   会保留移动前的旧画面，或在失焦后停留在静态回退色；
+    // - 仅在毛玻璃已生效时执行，并按节流窗口合并连续事件。
+    void scheduleWindowBackdropRefresh();
+
+    // refreshWindowBackdropMaterial 作用：
+    // - 按当前“透明背景效果”配置决定是否启用毛玻璃，并同步根容器着色策略；
+    // - 首次外观应用发生在原生窗口创建之前，因此 showEvent 需要再调用一次，
+    //   否则启动时勾选的毛玻璃要等到下一次主题变更才会生效。
+    void refreshWindowBackdropMaterial();
+
     // configureDockWidgetPersistentIdentity 作用：
     // - 为每个 ADS Dock 设置稳定 objectName；
     // - ADS saveState/restoreState 依赖 objectName 匹配 Dock，不能依赖可变标题文本；
@@ -617,7 +630,8 @@ private:
     quint64 m_backgroundImageValidationGeneration = 0; // m_backgroundImageValidationGeneration：淘汰过期异步结果的代次。
     bool m_backgroundImageReady = false; // m_backgroundImageReady：当前路径是否已验证并成功解码。
     bool m_backgroundReadinessRefreshPending = false; // m_backgroundReadinessRefreshPending：异步结果是否要求重建视觉。
-    int m_backdropMaterialState = -1; // m_backdropMaterialState：云母材质三态缓存（-1 未初始化，0 关闭，1 启用）。
+    int m_backdropMaterialState = -1; // m_backdropMaterialState：毛玻璃材质三态缓存（-1 未初始化，0 关闭，1 启用）。
+    bool m_backdropRefreshQueued = false; // m_backdropRefreshQueued：是否已排队一次毛玻璃重采样。
     StartupProgressCallback m_startupProgressCallback; // m_startupProgressCallback：主窗口启动阶段进度回调。
     bool m_startupWindowVisibilityAdjusted = false; // m_startupWindowVisibilityAdjusted：是否已完成首次显示区域修正。
     bool m_deferredDockInitializationStarted = false; // m_deferredDockInitializationStarted：是否已启动显示后补载流程。

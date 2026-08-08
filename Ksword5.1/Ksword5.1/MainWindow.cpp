@@ -2227,6 +2227,10 @@ namespace
     // kAccentDisabled / kAccentEnableAcrylicBlurBehind 作用：ACCENT_STATE 取值。
     constexpr DWORD kAccentDisabled = 0;
     constexpr DWORD kAccentEnableAcrylicBlurBehind = 4;
+    // kBackdropRefreshThrottleMs 作用：
+    // - 毛玻璃重采样的合并窗口（毫秒）；
+    // - 拖动与缩放会连续触发几何事件，节流后只在动作稳定时下发一次组合特性。
+    constexpr int kBackdropRefreshThrottleMs = 40;
     // kAcrylicTintAlpha 作用：
     // - 毛玻璃着色层不透明度（0~255），由组合特性直接混合到模糊结果上；
     // - 数值越低越通透，越高前景文字可读性越强。
@@ -4580,6 +4584,7 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
     updateResizeBorderOverlays();
+    scheduleWindowBackdropRefresh();
     if (m_mainRootContainer != nullptr)
     {
         // 背景宿主在 paintEvent 中按当前真实 rect 计算缩放与居中位置。
@@ -4594,6 +4599,8 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 void MainWindow::moveEvent(QMoveEvent* event)
 {
     QMainWindow::moveEvent(event);
+    // 毛玻璃采样跟随窗口位置：不重新下发组合特性时，DWM 会保留移动前的模糊画面。
+    scheduleWindowBackdropRefresh();
     if (m_notificationCardManager != nullptr)
     {
         m_notificationCardManager->onHostGeometryChanged();
@@ -4659,6 +4666,9 @@ void MainWindow::showEvent(QShowEvent* event)
 
     ensureNativeFramelessWindowStyle();
     applyNativeWindowFrameVisualStyle();
+    // 初始化阶段的外观应用早于原生窗口创建，组合特性调用会被跳过；
+    // 这里在窗口句柄可用后补一次，确保启动即勾选的毛玻璃立刻生效。
+    refreshWindowBackdropMaterial();
     syncCustomTitleBarMaximizedState();
     updateResizeBorderOverlays();
     if (m_notificationCardManager != nullptr)
@@ -4738,10 +4748,18 @@ void MainWindow::changeEvent(QEvent* event)
     {
         syncCustomTitleBarMaximizedState();
         updateResizeBorderOverlays();
+        scheduleWindowBackdropRefresh();
         if (m_notificationCardManager != nullptr)
         {
             m_notificationCardManager->onHostGeometryChanged();
         }
+    }
+
+    // 激活状态变化同样要重采样：窗口重新获得焦点时，
+    // 系统可能已经把毛玻璃降级为静态回退色，需要再下发一次恢复。
+    if (event != nullptr && event->type() == QEvent::ActivationChange)
+    {
+        scheduleWindowBackdropRefresh();
     }
 }
 
@@ -5006,6 +5024,12 @@ bool MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
         return false;
     }
 
+    // 从未启用过毛玻璃时无需关闭：避免默认不透明用户在每次启动都触碰未公开接口。
+    if (!enableBackdrop && m_backdropMaterialState < 0)
+    {
+        m_backdropMaterialState = 0;
+        return false;
+    }
     // m_backdropMaterialState 三态缓存：-1 未初始化，0/1 为上次应用状态。
     // 主题色变化也要重刷着色，因此仅在“状态未变且非启用态”时才提前返回。
     if (m_backdropMaterialState == (enableBackdrop ? 1 : 0) && !enableBackdrop)
@@ -10470,22 +10494,47 @@ const QPixmap* MainWindow::cachedBackgroundImage(const QString& rawImagePath) co
         : nullptr;
 }
 
-void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
+void MainWindow::scheduleWindowBackdropRefresh()
 {
-    // 纯色底与背景图合成都使用独立主背景色；未自定义时回退当前深浅主题默认色。
-    const QColor baseColor = KswordTheme::MainBackgroundColor();
+    // 只有毛玻璃正在生效时才需要重采样；其余状态直接忽略，避免无谓的接口调用。
+    if (m_backdropMaterialState != 1 || m_backdropRefreshQueued)
+    {
+        return;
+    }
 
+    // 拖动与缩放会连续产生事件，这里合并成一次延迟刷新：
+    // - 既能在动作结束后拿到正确画面，也不会在拖动过程中反复下发组合特性。
+    m_backdropRefreshQueued = true;
+    QTimer::singleShot(kBackdropRefreshThrottleMs, this, [this]()
+        {
+            m_backdropRefreshQueued = false;
+            if (m_backdropMaterialState != 1)
+            {
+                return;
+            }
+            // 重新下发同一份组合特性，促使 DWM 按窗口新位置重新采样后方内容。
+            refreshWindowBackdropMaterial();
+            if (m_mainRootContainer != nullptr)
+            {
+                m_mainRootContainer->update();
+            }
+        });
+}
+
+void MainWindow::refreshWindowBackdropMaterial()
+{
+    // translucencyActive 用途：窗口是否在启动时声明了 per-pixel 透明。
+    const bool translucencyActive = testAttribute(Qt::WA_TranslucentBackground);
     const int normalizedOpacityPercent = normalizeOpacityPercent(
         m_currentAppearanceSettings.backgroundOpacityPercent);
-    // sourceImage 用途：只读取异步解码缓存，主题刷新不会再次访问原始路径。
-    const QPixmap* sourceImage = includeBackgroundImage && normalizedOpacityPercent > 0
+    // sourceImage 用途：只读取解码缓存，材质决策不访问文件系统。
+    const QPixmap* sourceImage = normalizedOpacityPercent > 0
         ? cachedBackgroundImage(m_currentAppearanceSettings.backgroundImagePath)
         : nullptr;
 
-    // translucencyActive 用途：窗口在启动时按配置声明了 per-pixel 透明；
-    // 此时底色层交给根容器按穿透模式绘制，主窗口自身不再填充不透明背景。
-    const bool translucencyActive = testAttribute(Qt::WA_TranslucentBackground);
-    // 材质决策按用户显式选择：mica=始终云母，desktop=始终直透，auto=无图云母/有图直透。
+    // 材质决策按用户显式选择：
+    // - mica：始终毛玻璃；desktop：始终直透桌面；
+    // - auto（默认）：有背景图直透，无背景图毛玻璃。
     const QString translucencyMaterialMode =
         m_currentAppearanceSettings.backgroundTranslucencyMaterial.trimmed().toLower();
     bool backdropWanted = false;
@@ -10504,15 +10553,38 @@ void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
             backdropWanted = (sourceImage == nullptr);
         }
     }
+
     // blurMaterialActive 用途：毛玻璃是否真正生效。
     // 生效时着色由系统合成，根容器必须完全透明；未生效（旧系统或调用失败）
     // 则回退为自绘着色层，保证前景文字仍然可读。
     const bool blurMaterialActive = applyMainWindowBackdropMaterial(backdropWanted);
     if (m_mainRootContainer != nullptr)
     {
-        auto* backgroundWidget = static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer);
-        backgroundWidget->setTranslucentMode(translucencyActive, !blurMaterialActive);
-        backgroundWidget->setBackground(
+        static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer)->setTranslucentMode(
+            translucencyActive,
+            !blurMaterialActive);
+    }
+}
+
+void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
+{
+    // 纯色底与背景图合成都使用独立主背景色；未自定义时回退当前深浅主题默认色。
+    const QColor baseColor = KswordTheme::MainBackgroundColor();
+
+    const int normalizedOpacityPercent = normalizeOpacityPercent(
+        m_currentAppearanceSettings.backgroundOpacityPercent);
+    // sourceImage 用途：只读取异步解码缓存，主题刷新不会再次访问原始路径。
+    const QPixmap* sourceImage = includeBackgroundImage && normalizedOpacityPercent > 0
+        ? cachedBackgroundImage(m_currentAppearanceSettings.backgroundImagePath)
+        : nullptr;
+
+    // translucencyActive 用途：窗口在启动时按配置声明了 per-pixel 透明；
+    // 此时底色层交给根容器按穿透模式绘制，主窗口自身不再填充不透明背景。
+    const bool translucencyActive = testAttribute(Qt::WA_TranslucentBackground);
+    refreshWindowBackdropMaterial();
+    if (m_mainRootContainer != nullptr)
+    {
+        static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer)->setBackground(
             baseColor,
             sourceImage,
             normalizedOpacityPercent);
