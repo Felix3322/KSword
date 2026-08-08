@@ -135,6 +135,8 @@ CodeTextEdit::CodeTextEdit(QWidget* parent)
     : QPlainTextEdit(parent)
 {
     QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    // 系统等宽字体缺少中文字形时 Windows 会回退到宋体，显式指定雅黑承接中文。
+    fixedFont.setFamilies(QStringList{ fixedFont.family(), QStringLiteral("Microsoft YaHei UI") });
     fixedFont.setPointSize(std::max(12, fixedFont.pointSize()));
     setFont(fixedFont);
     setTabStopDistance(QFontMetricsF(fixedFont).horizontalAdvance(QChar(' ')) * 4.0);

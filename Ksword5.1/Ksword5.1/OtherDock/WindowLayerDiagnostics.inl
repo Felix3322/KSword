@@ -1286,10 +1286,15 @@ namespace ks::window::layerdiag
             rollbackLayout->addWidget(m_restoreButton);
             operationLayout->addWidget(rollbackGroup);
 
+            // 系统等宽字体缺少中文字形时 Windows 会回退到宋体，显式指定雅黑承接中文。
+            QFont diagnosticsFixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+            diagnosticsFixedFont.setFamilies(
+                QStringList{ diagnosticsFixedFont.family(), QStringLiteral("Microsoft YaHei UI") });
+
             m_operationLog = new QPlainTextEdit(operationPage);
             m_operationLog->setReadOnly(true);
             m_operationLog->setLineWrapMode(QPlainTextEdit::NoWrap);
-            m_operationLog->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+            m_operationLog->setFont(diagnosticsFixedFont);
             operationLayout->addWidget(m_operationLog, 1);
 
             m_relationships = new QPlainTextEdit(tabs);
@@ -1299,7 +1304,7 @@ namespace ks::window::layerdiag
             {
                 edit->setReadOnly(true);
                 edit->setLineWrapMode(QPlainTextEdit::NoWrap);
-                edit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+                edit->setFont(diagnosticsFixedFont);
             }
             tabs->addTab(m_output, uiText("window.layer.tab.snapshot", "快照 / 对比"));
             tabs->addTab(operationPage, uiText("window.layer.tab.operations", "层级操作"));

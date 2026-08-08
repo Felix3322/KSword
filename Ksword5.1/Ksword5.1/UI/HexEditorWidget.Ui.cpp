@@ -199,6 +199,8 @@ void HexEditorWidget::initializeUi()
 
     // 表格字体加大并固定等宽，便于编辑十六进制内容。
     QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    // 系统等宽字体缺少中文字形时 Windows 会回退到宋体，显式指定雅黑承接中文。
+    fixedFont.setFamilies(QStringList{ fixedFont.family(), QStringLiteral("Microsoft YaHei UI") });
     fixedFont.setPointSize(std::max(fixedFont.pointSize(), 12));
     // ksword_preserve_custom_font 作用：阻止全局表格字体刷新覆盖 HEX 对齐所需的等宽字体。
     m_hexTable->setProperty("ksword_preserve_custom_font", true);

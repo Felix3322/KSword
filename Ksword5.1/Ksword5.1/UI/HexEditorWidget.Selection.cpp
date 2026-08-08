@@ -56,6 +56,8 @@ namespace
     QFont buildFixedPreviewFont()
     {
         QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        // 系统等宽字体缺少中文字形时 Windows 会回退到宋体，显式指定雅黑承接中文（UTF-16 预览会出现中文）。
+        fixedFont.setFamilies(QStringList{ fixedFont.family(), QStringLiteral("Microsoft YaHei UI") });
         fixedFont.setPointSize(std::max(fixedFont.pointSize(), 10));
         return fixedFont;
     }
