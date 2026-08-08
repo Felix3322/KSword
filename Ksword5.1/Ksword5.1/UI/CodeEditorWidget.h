@@ -22,6 +22,19 @@ class QWidget;
 
 class CodeTextEdit;
 
+namespace ks::ui
+{
+    // LocalizeGeneratedReport 作用：
+    // - 按行翻译“本程序自己生成的审计报告文本”，规则与 CodeEditorWidget 只读页完全一致：
+    //   整行命中语言包时直接替换，未命中时再尝试翻译“标签: 值”里冒号后的状态值；
+    // - 路径、哈希、地址等动态内容不会被改写。
+    // 用途：报告除了塞进只读文本框，也可能被解析成属性树等结构化视图；
+    //       两条路径必须共用同一套翻译逻辑，否则同一份数据换个视图就变回英文。
+    // 入参 sourceText：未翻译的报告原文。
+    // 返回：逐行翻译后的报告文本。
+    QString LocalizeGeneratedReport(const QString& sourceText);
+}
+
 // CodeEditorWidget：
 // - 统一的文本编辑器外壳；
 // - 对外提供基础文本读写、当前文件路径与文件编码会话访问。

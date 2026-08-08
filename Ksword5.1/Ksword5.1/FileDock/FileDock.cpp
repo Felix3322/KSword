@@ -3285,6 +3285,143 @@ namespace
             });
     }
 
+    // appendPropertyGroup 作用：
+    // - 在属性树里新建一个默认展开的顶层分组；
+    // - 分组行加粗且不可选中，避免被当成一条属性复制走。
+    // 入参 tree：目标属性树；titleText：已翻译的分组标题。
+    // 返回：新建分组节点，生命周期由树接管。
+    QTreeWidgetItem* appendPropertyGroup(QTreeWidget* tree, const QString& titleText)
+    {
+        QTreeWidgetItem* groupItem = new QTreeWidgetItem(tree);
+        groupItem->setText(0, titleText);
+        QFont groupFont = groupItem->font(0);
+        groupFont.setBold(true);
+        groupItem->setFont(0, groupFont);
+        groupItem->setFlags(groupItem->flags() & ~Qt::ItemIsSelectable);
+        groupItem->setExpanded(true);
+        return groupItem;
+    }
+
+    // appendPropertyRow 作用：
+    // - 往分组下追加一行“属性名 + 值”；
+    // - 值同时写入 ToolTip，超长路径被列宽截断时悬停仍可看全。
+    // 入参 groupItem：所属分组；nameText/valueText：已翻译的名称与值。
+    // 返回：新建行节点，生命周期由树接管。
+    QTreeWidgetItem* appendPropertyRow(
+        QTreeWidgetItem* groupItem,
+        const QString& nameText,
+        const QString& valueText)
+    {
+        QTreeWidgetItem* rowItem = new QTreeWidgetItem(groupItem);
+        rowItem->setText(0, nameText);
+        rowItem->setText(1, valueText);
+        rowItem->setToolTip(1, valueText);
+        return rowItem;
+    }
+
+    // configurePropertyTree 作用：
+    // - 统一属性树的外观与交互：两列、可折叠、不可编辑、不排序、带复制菜单；
+    // - 常规页和各审计页共用，避免同一个窗口里出现两套表现不一致的属性视图。
+    // 入参 treeWidget：目标属性树；为空时忽略。
+    // 返回：无。
+    void configurePropertyTree(QTreeWidget* treeWidget)
+    {
+        if (treeWidget == nullptr)
+        {
+            return;
+        }
+
+        treeWidget->setColumnCount(2);
+        treeWidget->setRootIsDecorated(true);
+        treeWidget->setAlternatingRowColors(true);
+        treeWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
+        treeWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        treeWidget->setUniformRowHeights(true);
+        // 行的先后顺序本身有含义（报告是按采集顺序写的），因此不开排序。
+        treeWidget->setSortingEnabled(false);
+        if (treeWidget->header() != nullptr)
+        {
+            treeWidget->header()->setStretchLastSection(true);
+        }
+        installPropertyTreeCopyMenu(treeWidget);
+    }
+
+    // buildReportPropertyTree 作用：
+    // - 输入 parent：父控件；reportText：本项目审计页统一生成的报告原文，
+    //   形如 “[分组]\n名称: 值\n”，分组之间以空行分隔；
+    // - 处理：先用 CodeEditorWidget 同一套逐行规则翻译，再按行解析成属性树：
+    //     · “[xxx]” 行成为分组；
+    //     · “名称: 值” 成为属性行；
+    //     · 说明性整句和续行跨两列整行显示，内容不丢也不会被硬塞进名称列；
+    // - 取舍说明：这里解析的是本程序自己拼出来的文本，格式由上游代码保证，不是外部输入。
+    //   更彻底的做法是让上游直接产出结构化数据，但那要改动十几处取证采集逻辑；
+    //   在展示层解析可以让这些页立刻摆脱纯文本框，且不冒改坏取证结果的风险。
+    // - 返回：已填好内容的属性树，调用方负责放进布局。
+    QTreeWidget* buildReportPropertyTree(QWidget* parent, const QString& reportText)
+    {
+        QTreeWidget* treeWidget = new QTreeWidget(parent);
+        configurePropertyTree(treeWidget);
+        treeWidget->setHeaderLabels(QStringList{
+            ks::i18n::displayText(QStringLiteral("属性")),
+            ks::i18n::displayText(QStringLiteral("值"))
+            });
+
+        QTreeWidgetItem* currentGroup = nullptr;
+        const QStringList reportLines =
+            ks::ui::LocalizeGeneratedReport(reportText).split(QLatin1Char('\n'));
+        for (const QString& reportLine : reportLines)
+        {
+            const QString trimmedLine = reportLine.trimmed();
+            if (trimmedLine.isEmpty())
+            {
+                continue;
+            }
+
+            if (trimmedLine.startsWith(QLatin1Char('[')) && trimmedLine.endsWith(QLatin1Char(']')))
+            {
+                currentGroup = appendPropertyGroup(
+                    treeWidget, trimmedLine.mid(1, trimmedLine.size() - 2));
+                continue;
+            }
+
+            if (currentGroup == nullptr)
+            {
+                // 报告开头常有几行不属于任何分组的字段，给它们一个默认分组承载。
+                currentGroup = appendPropertyGroup(
+                    treeWidget, ks::i18n::displayText(QStringLiteral("概要")));
+            }
+
+            // 只认第一个分隔符：时间戳、盘符、NT 路径里的冒号不会被误当成名值分界。
+            const qsizetype halfWidthIndex = trimmedLine.indexOf(QStringLiteral(": "));
+            const qsizetype fullWidthIndex = trimmedLine.indexOf(QChar(0xFF1A));
+            qsizetype separatorIndex = -1;
+            qsizetype separatorLength = 0;
+            if (halfWidthIndex >= 0 && (fullWidthIndex < 0 || halfWidthIndex < fullWidthIndex))
+            {
+                separatorIndex = halfWidthIndex;
+                separatorLength = 2;
+            }
+            else if (fullWidthIndex >= 0)
+            {
+                separatorIndex = fullWidthIndex;
+                separatorLength = 1;
+            }
+
+            if (separatorIndex <= 0)
+            {
+                QTreeWidgetItem* noteItem = appendPropertyRow(currentGroup, trimmedLine, QString());
+                noteItem->setFirstColumnSpanned(true);
+                continue;
+            }
+
+            appendPropertyRow(
+                currentGroup,
+                trimmedLine.left(separatorIndex),
+                trimmedLine.mid(separatorIndex + separatorLength).trimmed());
+        }
+        return treeWidget;
+    }
+
     // buildOpaqueStandaloneDialogStyle 作用：
     // - 为“独立弹窗”覆盖父级 Dock 透明样式，防止浅色主题下出现黑底；
     // - 强制编辑区/表格区使用 palette(base) 作为不透明背景。
@@ -4970,40 +5107,6 @@ namespace
             content += QStringLiteral("ImageSectionObject: %1\n").arg(formatHex64(result.imageSectionObjectAddress));
             content += QStringLiteral("R0说明: %1\n").arg(friendlyFileIoMessage(result.io.message));
             return content;
-        }
-
-        // appendPropertyGroup 作用：
-        // - 在属性树里新建一个默认展开的顶层分组；
-        // - 分组行加粗且不可选中，避免被当成一条属性复制走。
-        // 入参 tree：目标属性树；titleText：已翻译的分组标题。
-        // 返回：新建分组节点，生命周期由树接管。
-        static QTreeWidgetItem* appendPropertyGroup(QTreeWidget* tree, const QString& titleText)
-        {
-            QTreeWidgetItem* groupItem = new QTreeWidgetItem(tree);
-            groupItem->setText(0, titleText);
-            QFont groupFont = groupItem->font(0);
-            groupFont.setBold(true);
-            groupItem->setFont(0, groupFont);
-            groupItem->setFlags(groupItem->flags() & ~Qt::ItemIsSelectable);
-            groupItem->setExpanded(true);
-            return groupItem;
-        }
-
-        // appendPropertyRow 作用：
-        // - 往分组下追加一行“属性名 + 值”；
-        // - 值同时写入 ToolTip，超长路径被列宽截断时悬停仍可看全。
-        // 入参 groupItem：所属分组；nameText/valueText：已翻译的名称与值。
-        // 返回：新建行节点，生命周期由树接管。
-        static QTreeWidgetItem* appendPropertyRow(
-            QTreeWidgetItem* groupItem,
-            const QString& nameText,
-            const QString& valueText)
-        {
-            QTreeWidgetItem* rowItem = new QTreeWidgetItem(groupItem);
-            rowItem->setText(0, nameText);
-            rowItem->setText(1, valueText);
-            rowItem->setToolTip(1, valueText);
-            return rowItem;
         }
 
         // formatFileSizeText 作用：
@@ -6786,19 +6889,7 @@ namespace
             // 超长值只能左右找，属性位还被压成一个 A|B|C 串。改成两列属性树后，
             // 每条属性是独立一行，可单独复制，分组可折叠，值列还能悬停看全。
             m_generalPropertyTree = new QTreeWidget(page);
-            m_generalPropertyTree->setColumnCount(2);
-            m_generalPropertyTree->setRootIsDecorated(true);
-            m_generalPropertyTree->setAlternatingRowColors(true);
-            m_generalPropertyTree->setSelectionBehavior(QAbstractItemView::SelectRows);
-            m_generalPropertyTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
-            m_generalPropertyTree->setUniformRowHeights(true);
-            // 行的先后顺序本身有含义（路径→基本信息→内核视图），因此不开排序。
-            m_generalPropertyTree->setSortingEnabled(false);
-            if (m_generalPropertyTree->header() != nullptr)
-            {
-                m_generalPropertyTree->header()->setStretchLastSection(true);
-            }
-            installPropertyTreeCopyMenu(m_generalPropertyTree);
+            configurePropertyTree(m_generalPropertyTree);
 
             const QFileInfo info(m_filePath);
             m_generalNtPathText = buildDriverNtPath(info.absoluteFilePath());
@@ -6815,9 +6906,6 @@ namespace
         {
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
-            CodeEditorWidget* textEditorWidget = new CodeEditorWidget(page);
-            textEditorWidget->setReadOnly(true);
-
             QString content;
             if (!isPathReparsePoint(m_filePath))
             {
@@ -6829,8 +6917,7 @@ namespace
                 content += formatReparsePointText(m_filePath);
             }
 
-            textEditorWidget->setLocalizedText(content);
-            layout->addWidget(textEditorWidget, 1);
+            layout->addWidget(buildReportPropertyTree(page, content), 1);
             return page;
         }
 
@@ -7203,12 +7290,9 @@ namespace
         {
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
-            // 文件对象详情属于长文本审计输出：
-            // - 使用项目统一 CodeEditorWidget，避免 QTextEdit 在透明父级下出现黑底/不可读；
+            // 文件对象详情是“分组 + 名称: 值”的审计输出：
+            // - 用属性树展示，字段可逐条复制，说明性整句跨列成行；
             // - 只读展示，不提供关闭句柄、解锁、删除等动作。
-            CodeEditorWidget* editor = new CodeEditorWidget(page);
-            editor->setReadOnly(true);
-            layout->addWidget(editor, 1);
 
             const QString nativePath = QDir::toNativeSeparators(m_filePath);
             QString content;
@@ -7221,7 +7305,7 @@ namespace
             if (fileHandle == INVALID_HANDLE_VALUE)
             {
                 content += QStringLiteral("打开失败: %1\n").arg(::GetLastError());
-                editor->setLocalizedText(content);
+                layout->addWidget(buildReportPropertyTree(page, content), 1);
                 return page;
             }
 
@@ -7266,7 +7350,7 @@ namespace
             content += QStringLiteral("R3 DeletePending/Share: 通过 FileStandardInfo 和共享只读打开侧写。\n");
             content += QStringLiteral("R3 Shared flags: 采集句柄使用 READ|WRITE|DELETE 共享，仅用于只读探测。\n");
             ::CloseHandle(fileHandle);
-            editor->setLocalizedText(content);
+            layout->addWidget(buildReportPropertyTree(page, content), 1);
             return page;
         }
 
@@ -7274,12 +7358,9 @@ namespace
         {
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
-            // 存储/BitLocker 审计会生成多段长文本：
-            // - 使用统一 CodeEditorWidget 保持复制、搜索和不透明背景体验；
+            // 存储/BitLocker 审计输出同样是“分组 + 名称: 值”：
+            // - 用属性树展示，卷栈、挂载点、BitLocker 状态各占一行，可单独复制；
             // - 页面仍只读，不提供卸载、解锁、绕过等动作。
-            CodeEditorWidget* editor = new CodeEditorWidget(page);
-            editor->setReadOnly(true);
-            layout->addWidget(editor, 1);
 
             const FileVolumeAuditSnapshot snapshot = queryFileVolumeAuditSnapshot(m_filePath);
             QString content;
@@ -7344,7 +7425,7 @@ namespace
                 bitlockerAudit.responseFlags,
                 false);
             content += formatBitlockerFveAuditRows(bitlockerAudit);
-            editor->setLocalizedText(content);
+            layout->addWidget(buildReportPropertyTree(page, content), 1);
             return page;
         }
 
@@ -7352,12 +7433,9 @@ namespace
         {
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
-            // Minifilter 拓扑属于审计明细文本：
-            // - 使用项目统一 CodeEditorWidget，避免 QTextEdit 继承透明父级样式；
+            // Minifilter 拓扑同样是“分组 + 名称: 值”的审计明细：
+            // - 用属性树展示，每个过滤器/实例/卷的字段可逐条复制；
             // - 页面只展示枚举和 R0 inventory，不提供 detach/bypass/remove。
-            CodeEditorWidget* editor = new CodeEditorWidget(page);
-            editor->setReadOnly(true);
-            layout->addWidget(editor, 1);
 
             QString content;
             content += QStringLiteral("目标路径: %1\n").arg(QDir::toNativeSeparators(m_filePath));
@@ -7381,7 +7459,7 @@ namespace
                 minifilterAudit.responseFlags,
                 (minifilterAudit.responseFlags & KSWORD_ARK_MINIFILTER_INVENTORY_RESPONSE_FLAG_TRUNCATED) != 0U);
             content += formatMinifilterInventoryRows(minifilterAudit);
-            editor->setLocalizedText(content);
+            layout->addWidget(buildReportPropertyTree(page, content), 1);
             return page;
         }
 

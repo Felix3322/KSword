@@ -4425,6 +4425,7 @@
     "settings.background.translucency_material.acrylic": "Acrylic blur (richer look, may affect hover)"
   },
   "source_translations": {
+    "概要": "Summary",
     "%1 %2（%3 字节）": "%1 %2 (%3 bytes)",
     "Win32 路径": "Win32 path",
     "NT 路径": "NT path",

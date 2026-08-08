@@ -4425,6 +4425,7 @@
     "settings.background.translucency_material.acrylic": "亚克力磨砂（质感更强，可能影响悬停）"
   },
   "source_translations": {
+    "概要": "概要",
     "%1 %2（%3 字节）": "%1 %2（%3 字节）",
     "Win32 路径": "Win32 路径",
     "NT 路径": "NT 路径",

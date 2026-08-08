@@ -623,6 +623,14 @@ namespace
     }
 }
 
+namespace ks::ui
+{
+    QString LocalizeGeneratedReport(const QString& sourceText)
+    {
+        return localizeGeneratedReport(sourceText);
+    }
+}
+
 class BracketHighlighter final : public QSyntaxHighlighter
 {
 public:
