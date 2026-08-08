@@ -11,6 +11,12 @@ Abstract:
     exports.  No address is published until PE-section checks, uniqueness, and
     live semantic validation agree.  Ambiguous or empty structures fail closed.
 
+    Field-shape heuristics alone never authorize a kernel API call here.  A
+    candidate PiDDB lock must be proven to sit on the global resource list
+    before it reaches ExAcquireResourceSharedLite, and the cache table is
+    walked through bounded fault-tolerant reads instead of the Rtl generic
+    table API, which dereferences and mutates its argument unconditionally.
+
 Environment:
 
     Kernel mode, PASSIVE_LEVEL during DynData initialization.
@@ -31,6 +37,9 @@ Environment:
 #define KSW_KERNEL_CACHE_MAX_PRIVATE_ENTRY 0x100UL
 #define KSW_KERNEL_CACHE_MAX_SAMPLE_ENTRIES 16UL
 #define KSW_KERNEL_CACHE_MAX_NAME_BYTES 520U
+#define KSW_KERNEL_CACHE_MAX_RESOURCE_LIST_STEPS 0x40000UL
+#define KSW_KERNEL_CACHE_MAX_AVL_ELEMENTS 0x10000UL
+#define KSW_KERNEL_CACHE_MAX_AVL_DEPTH 64UL
 
 typedef struct _KSW_UNLOADED_LAYOUT_CANDIDATE
 {
@@ -423,10 +432,34 @@ KswordARKKernelCacheAvlTableIsPlausible(
 }
 
 static BOOLEAN
+KswordARKKernelCacheOptionalPointerIsSane(
+    _In_opt_ const VOID* Pointer
+    )
+{
+    return Pointer == NULL ||
+        KswordARKKernelCacheIsKernelPointer((ULONG_PTR)Pointer);
+}
+
+static BOOLEAN
 KswordARKKernelCacheResourceIsPlausible(
     _In_ const KSW_RUNTIME_IMAGE_VIEW* View,
     _In_ ULONG_PTR Address
     )
+/*++
+
+Routine Description:
+
+    Cheap shape filter used while pairing candidates.  It narrows the search
+    space only; it can never establish that the address is a real ERESOURCE,
+    because every self-consistent LIST_ENTRY in a writable ntoskrnl section
+    satisfies these conditions.  Identity is settled later by
+    KswordARKKernelCacheResourceIsSystemResource.
+
+Return Value:
+
+    TRUE when the candidate is shaped like a resource.
+
+--*/
 {
     ERESOURCE resource;
     LIST_ENTRY forward;
@@ -438,12 +471,17 @@ KswordARKKernelCacheResourceIsPlausible(
     if (View == NULL || (Address & (sizeof(PVOID) - 1U)) != 0U ||
         !KswordARKRuntimeAddressIsWritableData(View, Address, sizeof(resource)) ||
         !KswordARKRuntimeReadMemory((const VOID*)Address, &resource, sizeof(resource)) ||
-        resource.SystemResourcesList.Flink == NULL ||
-        resource.SystemResourcesList.Blink == NULL ||
-        resource.NumberOfSharedWaiters > 0x10000UL ||
-        resource.NumberOfExclusiveWaiters > 0x10000UL ||
-        (resource.OwnerTable != NULL &&
-         !KswordARKKernelCacheIsKernelPointer((ULONG_PTR)resource.OwnerTable)) ||
+        !KswordARKKernelCacheIsKernelPointer(
+            (ULONG_PTR)resource.SystemResourcesList.Flink) ||
+        !KswordARKKernelCacheIsKernelPointer(
+            (ULONG_PTR)resource.SystemResourcesList.Blink) ||
+        (((ULONG_PTR)resource.SystemResourcesList.Flink |
+          (ULONG_PTR)resource.SystemResourcesList.Blink) &
+         (sizeof(PVOID) - 1U)) != 0U ||
+        resource.ActiveCount < 0 ||
+        !KswordARKKernelCacheOptionalPointerIsSane(resource.OwnerTable) ||
+        !KswordARKKernelCacheOptionalPointerIsSane(resource.SharedWaiters) ||
+        !KswordARKKernelCacheOptionalPointerIsSane(resource.ExclusiveWaiters) ||
         !KswordARKRuntimeReadMemory(
             resource.SystemResourcesList.Flink,
             &forward,
@@ -457,6 +495,173 @@ KswordARKKernelCacheResourceIsPlausible(
         return FALSE;
     }
     return TRUE;
+}
+
+static BOOLEAN
+KswordARKKernelCacheResourceIsSystemResource(
+    _In_ ULONG_PTR Address
+    )
+/*++
+
+Routine Description:
+
+    Prove that a candidate address really is a live ERESOURCE before any Ex
+    resource API touches it.  ExInitializeResourceLite links every resource
+    onto one global list, so a driver-owned resource supplies an anchor and no
+    ntoskrnl global has to be guessed.  The walk uses bounded fault-tolerant
+    reads and gives up rather than trusting a torn or hostile link.
+
+Arguments:
+
+    Address - Candidate ERESOURCE address; SystemResourcesList sits at zero
+        offset, so the list node and the resource share this address.
+
+Return Value:
+
+    TRUE only when the candidate is present on the global resource list.
+
+--*/
+{
+    ERESOURCE anchor;
+    LIST_ENTRY node;
+    ULONG_PTR anchorHead = 0U;
+    ULONG_PTR current = 0U;
+    ULONG steps = 0UL;
+    BOOLEAN found = FALSE;
+
+    if (Address == 0U || (Address & (sizeof(PVOID) - 1U)) != 0U ||
+        !KswordARKKernelCacheIsKernelPointer(Address) ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return FALSE;
+    }
+    RtlZeroMemory(&anchor, sizeof(anchor));
+    if (!NT_SUCCESS(ExInitializeResourceLite(&anchor))) {
+        return FALSE;
+    }
+    anchorHead = (ULONG_PTR)&anchor.SystemResourcesList;
+    current = (ULONG_PTR)anchor.SystemResourcesList.Flink;
+    for (steps = 0UL;
+         steps < KSW_KERNEL_CACHE_MAX_RESOURCE_LIST_STEPS;
+         ++steps) {
+        if (current == anchorHead) {
+            break;
+        }
+        if (current == Address) {
+            found = TRUE;
+            break;
+        }
+        if ((current & (sizeof(PVOID) - 1U)) != 0U ||
+            !KswordARKKernelCacheIsKernelPointer(current)) {
+            break;
+        }
+        RtlZeroMemory(&node, sizeof(node));
+        if (!KswordARKRuntimeReadMemory((const VOID*)current, &node, sizeof(node))) {
+            break;
+        }
+        current = (ULONG_PTR)node.Flink;
+    }
+    ExDeleteResourceLite(&anchor);
+    return found;
+}
+
+static BOOLEAN
+KswordARKKernelCacheCollectAvlEntries(
+    _In_ const RTL_AVL_TABLE* Snapshot,
+    _In_ ULONG_PTR TableAddress,
+    _Out_writes_to_(Capacity, *CountOut) PVOID* Entries,
+    _In_ ULONG Capacity,
+    _Out_ ULONG* CountOut
+    )
+/*++
+
+Routine Description:
+
+    Walk the balanced tree with bounded fault-tolerant reads and collect user
+    data pointers.  This replaces RtlGetElementGenericTableAvl, which follows
+    every link without validation and additionally mutates OrderedPointer and
+    WhichOrderedElement inside a table that is only held shared.  Parent back
+    pointers, balance factors, and the element count must all agree, so a
+    structure that merely resembles a table fails here instead of inside the
+    Rtl walker.
+
+Return Value:
+
+    TRUE when the whole tree is intact and at least one element was collected.
+
+--*/
+{
+    ULONG_PTR nodeStack[KSW_KERNEL_CACHE_MAX_AVL_DEPTH];
+    ULONG_PTR parentStack[KSW_KERNEL_CACHE_MAX_AVL_DEPTH];
+    ULONG depth = 0UL;
+    ULONG visited = 0UL;
+    ULONG collected = 0UL;
+    ULONG_PTR sentinel = 0U;
+
+    if (Snapshot == NULL || TableAddress == 0U || Entries == NULL ||
+        Capacity == 0UL || CountOut == NULL) {
+        return FALSE;
+    }
+    *CountOut = 0UL;
+    if (Snapshot->NumberGenericTableElements == 0UL ||
+        Snapshot->NumberGenericTableElements > KSW_KERNEL_CACHE_MAX_AVL_ELEMENTS ||
+        Snapshot->BalancedRoot.LeftChild != NULL ||
+        Snapshot->BalancedRoot.RightChild == NULL) {
+        return FALSE;
+    }
+    RtlZeroMemory(nodeStack, sizeof(nodeStack));
+    RtlZeroMemory(parentStack, sizeof(parentStack));
+    sentinel = TableAddress + FIELD_OFFSET(RTL_AVL_TABLE, BalancedRoot);
+    nodeStack[0] = (ULONG_PTR)Snapshot->BalancedRoot.RightChild;
+    parentStack[0] = sentinel;
+    depth = 1UL;
+
+    while (depth != 0UL) {
+        RTL_BALANCED_LINKS links;
+        ULONG_PTR node = 0U;
+        ULONG_PTR expectedParent = 0U;
+        ULONG child = 0UL;
+        ULONG_PTR children[2];
+
+        depth -= 1UL;
+        node = nodeStack[depth];
+        expectedParent = parentStack[depth];
+        if ((node & (sizeof(PVOID) - 1U)) != 0U ||
+            !KswordARKKernelCacheIsKernelPointer(node)) {
+            return FALSE;
+        }
+        RtlZeroMemory(&links, sizeof(links));
+        if (!KswordARKRuntimeReadMemory((const VOID*)node, &links, sizeof(links)) ||
+            (ULONG_PTR)links.Parent != expectedParent ||
+            links.Balance < -1 || links.Balance > 1) {
+            return FALSE;
+        }
+        visited += 1UL;
+        if (visited > Snapshot->NumberGenericTableElements) {
+            return FALSE;
+        }
+        if (collected < Capacity) {
+            Entries[collected] = (PVOID)(node + sizeof(RTL_BALANCED_LINKS));
+            collected += 1UL;
+        }
+        children[0] = (ULONG_PTR)links.LeftChild;
+        children[1] = (ULONG_PTR)links.RightChild;
+        for (child = 0UL; child < RTL_NUMBER_OF(children); ++child) {
+            if (children[child] == 0U) {
+                continue;
+            }
+            if (depth >= KSW_KERNEL_CACHE_MAX_AVL_DEPTH) {
+                return FALSE;
+            }
+            nodeStack[depth] = children[child];
+            parentStack[depth] = node;
+            depth += 1UL;
+        }
+    }
+    if (visited != Snapshot->NumberGenericTableElements) {
+        return FALSE;
+    }
+    *CountOut = collected;
+    return collected != 0UL;
 }
 
 static ULONG
@@ -488,7 +693,8 @@ KswordARKKernelCachePairScore(
 
 static BOOLEAN
 KswordARKKernelCacheInferPiDdbEntryLayout(
-    _In_ PRTL_AVL_TABLE Table,
+    _In_reads_(SampleCount) PVOID const* Entries,
+    _In_ ULONG SampleCount,
     _Out_ KSW_PIDDB_LAYOUT_CANDIDATE* Layout
     )
 /*++
@@ -505,8 +711,6 @@ Return Value:
 
 --*/
 {
-    PVOID entries[KSW_KERNEL_CACHE_MAX_SAMPLE_ENTRIES];
-    ULONG elementCount = 0UL;
     ULONG sampleCount = 0UL;
     ULONG index = 0UL;
     ULONG nameOffset = 0UL;
@@ -518,19 +722,16 @@ Return Value:
     LONG bestPairOffset = -1;
     BOOLEAN pairTied = FALSE;
 
-    if (Table == NULL || Layout == NULL) {
+    if (Entries == NULL || Layout == NULL) {
         return FALSE;
     }
-    RtlZeroMemory(entries, sizeof(entries));
-    elementCount = RtlNumberGenericTableElementsAvl(Table);
-    sampleCount = min(elementCount, KSW_KERNEL_CACHE_MAX_SAMPLE_ENTRIES);
+    sampleCount = min(SampleCount, KSW_KERNEL_CACHE_MAX_SAMPLE_ENTRIES);
     if (sampleCount < 2UL) {
         return FALSE;
     }
     for (index = 0UL; index < sampleCount; ++index) {
-        entries[index] = RtlGetElementGenericTableAvl(Table, index);
-        if (entries[index] == NULL ||
-            !KswordARKKernelCacheIsKernelPointer((ULONG_PTR)entries[index])) {
+        if (Entries[index] == NULL ||
+            !KswordARKKernelCacheIsKernelPointer((ULONG_PTR)Entries[index])) {
             return FALSE;
         }
     }
@@ -542,7 +743,7 @@ Return Value:
 
         for (index = 0UL; index < sampleCount; ++index) {
             if (KswordARKKernelCacheReadDriverName(
-                    (const UCHAR*)entries[index],
+                    (const UCHAR*)Entries[index],
                     nameOffset,
                     NULL)) {
                 matches += 1UL;
@@ -575,11 +776,11 @@ Return Value:
             NTSTATUS loadStatus = STATUS_SUCCESS;
 
             if (!KswordARKRuntimeReadMemory(
-                    (const UCHAR*)entries[index] + pairOffset,
+                    (const UCHAR*)Entries[index] + pairOffset,
                     &timeDateStamp,
                     sizeof(timeDateStamp)) ||
                 !KswordARKRuntimeReadMemory(
-                    (const UCHAR*)entries[index] + pairOffset + sizeof(ULONG),
+                    (const UCHAR*)Entries[index] + pairOffset + sizeof(ULONG),
                     &loadStatus,
                     sizeof(loadStatus)) ||
                 timeDateStamp < 0x20000000UL ||
@@ -629,7 +830,8 @@ KswordARKKernelCacheResolvePiDdb(
     KSW_PIDDB_LAYOUT_CANDIDATE candidate;
     BOOLEAN acquired = FALSE;
 
-    if (View == NULL || References == NULL || Layout == NULL) {
+    if (View == NULL || References == NULL || Layout == NULL ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL) {
         return;
     }
     RtlZeroMemory(&candidate, sizeof(candidate));
@@ -676,20 +878,33 @@ KswordARKKernelCacheResolvePiDdb(
 
     candidate.Table = (PRTL_AVL_TABLE)bestTableReference->Address;
     candidate.Lock = (PERESOURCE)bestLockReference->Address;
+    if (!KswordARKKernelCacheResourceIsSystemResource(
+            (ULONG_PTR)candidate.Lock)) {
+        return;
+    }
+
     KeEnterCriticalRegion();
     acquired = ExAcquireResourceSharedLite(candidate.Lock, FALSE);
     if (acquired) {
         RTL_AVL_TABLE snapshot;
+        PVOID entries[KSW_KERNEL_CACHE_MAX_SAMPLE_ENTRIES];
+        ULONG entryCount = 0UL;
 
         RtlZeroMemory(&snapshot, sizeof(snapshot));
+        RtlZeroMemory(entries, sizeof(entries));
         if (KswordARKKernelCacheAvlTableIsPlausible(
                 View,
                 (ULONG_PTR)candidate.Table,
                 &snapshot) &&
-            snapshot.NumberGenericTableElements ==
-                RtlNumberGenericTableElementsAvl(candidate.Table) &&
+            KswordARKKernelCacheCollectAvlEntries(
+                &snapshot,
+                (ULONG_PTR)candidate.Table,
+                entries,
+                RTL_NUMBER_OF(entries),
+                &entryCount) &&
             KswordARKKernelCacheInferPiDdbEntryLayout(
-                candidate.Table,
+                entries,
+                entryCount,
                 &candidate)) {
             if ((ULONG_PTR)candidate.Table >= View->Base &&
                 (ULONG_PTR)candidate.Lock >= View->Base &&
