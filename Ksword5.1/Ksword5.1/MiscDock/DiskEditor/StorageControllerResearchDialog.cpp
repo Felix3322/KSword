@@ -65,7 +65,7 @@ namespace ks::misc
         QPushButton* refreshButton = new QPushButton(QStringLiteral("刷新状态"), this);
         m_acquireButton = new QPushButton(QStringLiteral("取得独占会话"), this);
         m_releaseButton = new QPushButton(QStringLiteral("释放会话"), this);
-        m_resetButton = new QPushButton(QStringLiteral("受控重置"), this);
+        m_resetButton = new QPushButton(QStringLiteral("受控复位"), this);
         m_acquireButton->setToolTip(QStringLiteral("取得对该存储控制器的独占访问会话，用于底层 BAR/DMA 操作"));
         m_resetButton->setToolTip(QStringLiteral("对存储控制器执行受控复位（可能使设备暂时离线，操作危险）"));
         QPushButton* auditButton = new QPushButton(QStringLiteral("刷新审计"), this);

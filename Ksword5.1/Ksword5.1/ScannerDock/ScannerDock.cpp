@@ -262,7 +262,7 @@ void ScannerDock::retranslateUi()
     m_pathEdit->setPlaceholderText(translated(
         "scanner.path.placeholder",
         "选择要进行结构化解析的 PE、ELF 或 Mach-O 文件"));
-    m_browseButton->setText(translated("scanner.action.browse", "浏览..."));
+    m_browseButton->setText(translated("scanner.action.browse", "浏览…"));
     m_scanButton->setText(translated("scanner.action.scan", "扫描"));
     m_browseButton->setToolTip(translated(
         "scanner.action.browse.tooltip",

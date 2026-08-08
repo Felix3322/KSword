@@ -379,7 +379,7 @@ namespace ks::misc
         m_refreshButton = new QPushButton(QStringLiteral("刷新磁盘"), m_toolbarWidget);
         m_readButton = new QPushButton(QStringLiteral("读取"), m_toolbarWidget);
         m_writeButton = new QPushButton(QStringLiteral("写回"), m_toolbarWidget);
-        m_partitionStartButton = new QPushButton(QStringLiteral("分区起点"), m_toolbarWidget);
+        m_partitionStartButton = new QPushButton(QStringLiteral("跳到分区起点"), m_toolbarWidget);
         m_readButton->setToolTip(QStringLiteral("读取当前偏移/长度处的磁盘数据到十六进制视图"));
         m_writeButton->setToolTip(QStringLiteral("把十六进制视图中修改过的数据写回磁盘原位置（会覆盖原数据，操作危险）"));
         m_partitionStartButton->setToolTip(QStringLiteral("把读取偏移跳转到所选分区的起始扇区"));
@@ -390,7 +390,6 @@ namespace ks::misc
         m_readButton->setStyleSheet(buildToolButtonStyle());
         m_writeButton->setStyleSheet(buildToolButtonStyle());
         m_partitionStartButton->setStyleSheet(buildToolButtonStyle());
-        m_writeButton->setToolTip(QStringLiteral("将当前 HEX 缓冲写回物理磁盘，默认只读保护开启"));
 
         m_offsetEdit = new QLineEdit(m_toolbarWidget);
         m_offsetEdit->setPlaceholderText(QStringLiteral("偏移，例如 0x0000000000000000"));
@@ -626,12 +625,12 @@ namespace ks::misc
         m_toolFileEdit = new QLineEdit(rangeGroup);
         m_toolFileEdit->setPlaceholderText(QStringLiteral("镜像导出/导入/对比文件路径"));
         m_toolFileEdit->setStyleSheet(buildInputStyle());
-        m_toolUseSelectionButton = new QPushButton(QStringLiteral("用当前读取"), rangeGroup);
-        m_toolUsePartitionButton = new QPushButton(QStringLiteral("用当前分区"), rangeGroup);
+        m_toolUseSelectionButton = new QPushButton(QStringLiteral("填入当前范围"), rangeGroup);
+        m_toolUsePartitionButton = new QPushButton(QStringLiteral("填入所选分区"), rangeGroup);
         m_toolUseSelectionButton->setToolTip(QStringLiteral("用当前读取/选中的范围填入下方工具的偏移和长度"));
         m_toolUsePartitionButton->setToolTip(QStringLiteral("用当前所选分区的范围填入下方工具的偏移和长度"));
-        m_toolBrowseOpenButton = new QPushButton(QStringLiteral("选输入文件"), rangeGroup);
-        m_toolBrowseSaveButton = new QPushButton(QStringLiteral("选保存文件"), rangeGroup);
+        m_toolBrowseOpenButton = new QPushButton(QStringLiteral("选择输入文件…"), rangeGroup);
+        m_toolBrowseSaveButton = new QPushButton(QStringLiteral("选择保存位置…"), rangeGroup);
         for (QPushButton* button : { m_toolUseSelectionButton, m_toolUsePartitionButton, m_toolBrowseOpenButton, m_toolBrowseSaveButton })
         {
             button->setStyleSheet(buildToolButtonStyle());
@@ -648,7 +647,7 @@ namespace ks::misc
         rangeLayout->addWidget(m_toolBrowseSaveButton, 1, 5);
         toolLayout->addWidget(rangeGroup, 0);
 
-        QGroupBox* actionGroup = new QGroupBox(QStringLiteral("强力工具"), toolPage);
+        QGroupBox* actionGroup = new QGroupBox(QStringLiteral("范围操作"), toolPage);
         actionGroup->setStyleSheet(buildInfoCardStyle());
         QGridLayout* actionLayout = new QGridLayout(actionGroup);
         m_searchPatternEdit = new QLineEdit(actionGroup);
@@ -675,20 +674,22 @@ namespace ks::misc
         m_scanBlockSpin->setSuffix(QStringLiteral(" B"));
         m_scanBlockSpin->setStyleSheet(buildInputStyle());
         m_searchButton = new QPushButton(QStringLiteral("搜索"), actionGroup);
-        m_hashButton = new QPushButton(QStringLiteral("哈希"), actionGroup);
+        m_hashButton = new QPushButton(QStringLiteral("计算哈希"), actionGroup);
         m_exportButton = new QPushButton(QStringLiteral("导出镜像"), actionGroup);
         m_importButton = new QPushButton(QStringLiteral("导入写盘"), actionGroup);
         m_compareButton = new QPushButton(QStringLiteral("对比文件"), actionGroup);
-        m_scanButton = new QPushButton(QStringLiteral("读扫"), actionGroup);
+        m_scanButton = new QPushButton(QStringLiteral("坏道扫描"), actionGroup);
         m_hashButton->setToolTip(QStringLiteral("计算所选磁盘区间的哈希值，用于校验数据一致性"));
         m_importButton->setToolTip(QStringLiteral("把外部文件的内容写入磁盘指定位置（会覆盖原有数据，操作危险）"));
-        m_scanButton->setToolTip(QStringLiteral("顺序读扫所选磁盘区间，检测可读性与坏道"));
+        m_scanButton->setToolTip(QStringLiteral("按块顺序读取所选磁盘范围，检测可读性与坏道"));
+        m_maxResultSpin->setToolTip(QStringLiteral("搜索结果最多保留的条数，超出后停止记录"));
+        m_scanBlockSpin->setToolTip(QStringLiteral("每次读取的块大小；块越大速度越快，定位坏道的位置越粗"));
         for (QPushButton* button : { m_searchButton, m_hashButton, m_exportButton, m_importButton, m_compareButton, m_scanButton })
         {
             button->setStyleSheet(buildToolButtonStyle());
         }
         m_importButton->setIcon(QIcon(QStringLiteral(":/Icon/disk_warning.svg")));
-        actionLayout->addWidget(new QLabel(QStringLiteral("模式"), actionGroup), 0, 0);
+        actionLayout->addWidget(new QLabel(QStringLiteral("搜索"), actionGroup), 0, 0);
         actionLayout->addWidget(m_searchPatternEdit, 0, 1, 1, 3);
         actionLayout->addWidget(m_searchModeCombo, 0, 4);
         actionLayout->addWidget(m_searchButton, 0, 5);
@@ -698,7 +699,7 @@ namespace ks::misc
         actionLayout->addWidget(m_exportButton, 1, 3);
         actionLayout->addWidget(m_compareButton, 1, 4);
         actionLayout->addWidget(m_importButton, 1, 5);
-        actionLayout->addWidget(new QLabel(QStringLiteral("结果/块"), actionGroup), 2, 0);
+        actionLayout->addWidget(new QLabel(QStringLiteral("结果上限/块大小"), actionGroup), 2, 0);
         actionLayout->addWidget(m_maxResultSpin, 2, 1);
         actionLayout->addWidget(m_scanBlockSpin, 2, 2);
         actionLayout->addWidget(m_scanButton, 2, 3);
@@ -2132,12 +2133,12 @@ namespace ks::misc
         const DiskDeviceInfo* disk = currentDisk();
         if (disk == nullptr)
         {
-            appendLog(QStringLiteral("读扫失败：未选择磁盘。"));
+            appendLog(QStringLiteral("坏道扫描失败：未选择磁盘。"));
             return;
         }
         if (m_busy)
         {
-            appendLog(QStringLiteral("读扫请求被忽略：当前已有后台任务。"));
+            appendLog(QStringLiteral("坏道扫描请求被忽略：当前已有后台任务。"));
             return;
         }
 
@@ -2152,8 +2153,8 @@ namespace ks::misc
         const std::uint32_t blockBytes = static_cast<std::uint32_t>(m_scanBlockSpin->value());
         m_busy = true;
         setControlsEnabledForBusy(true);
-        m_statusLabel->setText(QStringLiteral("状态：正在快速读扫..."));
-        appendLog(QStringLiteral("开始读扫：offset=%1 length=%2 block=%3")
+        m_statusLabel->setText(QStringLiteral("状态：正在坏道扫描..."));
+        appendLog(QStringLiteral("开始坏道扫描：offset=%1 length=%2 block=%3")
             .arg(hexOffsetText(offset))
             .arg(DiskEditorBackend::formatBytes(length))
             .arg(blockBytes));
@@ -2176,7 +2177,7 @@ namespace ks::misc
                 {
                     if (!safeThis.isNull())
                     {
-                        safeThis->applyRangeTaskResult(QStringLiteral("读扫"), std::move(result));
+                        safeThis->applyRangeTaskResult(QStringLiteral("坏道扫描"), std::move(result));
                     }
                 },
                 Qt::QueuedConnection);

@@ -2879,7 +2879,7 @@ void VirusTotalOnlineScan::ensureResultDialog()
 
     QHBoxLayout* topButtonLayout = new QHBoxLayout();
     topButtonLayout->setContentsMargins(10, 8, 10, 8);
-    QPushButton* runAllButton = new QPushButton(QStringLiteral("传入所有API"), resultDialog);
+    QPushButton* runAllButton = new QPushButton(QStringLiteral("调用所有 API"), resultDialog);
     QPushButton* exportAllButton = new QPushButton(QStringLiteral("导出所有API原始响应数据"), resultDialog);
     topButtonLayout->addWidget(runAllButton, 0);
     topButtonLayout->addWidget(exportAllButton, 0);

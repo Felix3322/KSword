@@ -4543,10 +4543,10 @@ void ProcessDock::initializeCreateProcessPage()
     m_inheritHandleCheck = new QCheckBox("bInheritHandles（是否继承句柄）=TRUE", basicGroup);
 
     m_applicationNameEdit = new QLineEdit(basicGroup);
-    m_applicationBrowseButton = new QPushButton("浏览...", basicGroup);
+    m_applicationBrowseButton = new QPushButton("浏览…", basicGroup);
     m_commandLineEdit = new QLineEdit(basicGroup);
     m_currentDirectoryEdit = new QLineEdit(basicGroup);
-    m_currentDirectoryBrowseButton = new QPushButton("浏览...", basicGroup);
+    m_currentDirectoryBrowseButton = new QPushButton("浏览…", basicGroup);
     m_environmentEditor = new QPlainTextEdit(basicGroup);
     m_creationFlagsEdit = new QLineEdit("0x00000000", basicGroup);
     m_environmentEditor->setPlaceholderText("每行一个 KEY=VALUE，留空则为 null。");
