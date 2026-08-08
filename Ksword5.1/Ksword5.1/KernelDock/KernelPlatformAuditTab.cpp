@@ -992,35 +992,18 @@ bool KernelPlatformAuditTab::confirmHalEdit(
         return false;
     }
 
-    const QString phrase = QStringLiteral("I UNDERSTAND HAL PATCH");
-    QDialog typedDialog(this);
-    typedDialog.setObjectName(QStringLiteral("ksHalEditTypedConfirmDialog"));
-    typedDialog.setStyleSheet(
-        KswordTheme::OpaqueDialogStyle(typedDialog.objectName()));
-    typedDialog.setWindowTitle(kernelText(
+    // 最终确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
+    QMessageBox finalBox(this);
+    finalBox.setIcon(QMessageBox::Warning);
+    finalBox.setWindowTitle(kernelText(
         "kernel.platform.hal.edit.typed.title",
-        QStringLiteral("输入确认短语")));
-    auto* layout = new QVBoxLayout(&typedDialog);
-    auto* prompt = new QLabel(
-        kernelText(
-            "kernel.platform.hal.edit.typed.body",
-            QStringLiteral("请输入 %1 以执行 HAL 函数指针替换："))
-            .arg(phrase),
-        &typedDialog);
-    prompt->setWordWrap(true);
-    auto* phraseEdit = new QLineEdit(&typedDialog);
-    phraseEdit->setPlaceholderText(phrase);
-    auto* buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-        &typedDialog);
-    layout->addWidget(prompt);
-    layout->addWidget(phraseEdit);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &typedDialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &typedDialog, &QDialog::reject);
-    phraseEdit->setFocus();
-    return typedDialog.exec() == QDialog::Accepted &&
-        phraseEdit->text() == phrase;
+        QStringLiteral("最终确认")));
+    finalBox.setText(kernelText(
+        "kernel.platform.hal.edit.final.body",
+        QStringLiteral("确认执行 HAL 函数指针替换？该操作会改变内核控制流，可能导致蓝屏。")));
+    finalBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    finalBox.setDefaultButton(QMessageBox::No);
+    return finalBox.exec() == QMessageBox::Yes;
 }
 
 void KernelPlatformAuditTab::setColumnGroup(const int groupIndex)

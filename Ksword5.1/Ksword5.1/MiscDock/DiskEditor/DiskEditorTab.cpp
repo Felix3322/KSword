@@ -1537,21 +1537,23 @@ namespace ks::misc
                 return;
             }
 
-            const QString confirmationPhrase = systemDisk
-                ? QStringLiteral("SYSTEM DISK WRITE")
-                : QStringLiteral("WRITE");
-            const QString confirmText = QInputDialog::getText(
+            // 最终确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
+            const auto confirmDecision = QMessageBox::warning(
                 this,
                 QStringLiteral("确认写回物理磁盘"),
-                QStringLiteral("该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。\n请输入 %5 确认：")
+                QStringLiteral("该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。%5\n\n确认写入？")
                     .arg(backendText)
                     .arg(disk->devicePath)
                     .arg(hexOffsetText(m_loadedBaseOffset))
                     .arg(currentBytes.size())
-                    .arg(confirmationPhrase));
-            if (confirmText != confirmationPhrase)
+                    .arg(systemDisk
+                        ? QStringLiteral("\n该磁盘包含当前启动或系统分区，写入可能导致系统无法启动。")
+                        : QString()),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+            if (confirmDecision != QMessageBox::Yes)
             {
-                appendLog(QStringLiteral("写回已取消：确认文本不匹配。"));
+                appendLog(QStringLiteral("写回已取消：用户在最终确认中选择了否。"));
                 return;
             }
         }
@@ -2006,16 +2008,19 @@ namespace ks::misc
 
         if (!ks::settings::dangerousActionConfirmationsSuppressed())
         {
-            const QString confirmText = QInputDialog::getText(
+            // 确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
+            const auto importDecision = QMessageBox::warning(
                 this,
                 QStringLiteral("确认导入写盘"),
-                QStringLiteral("该操作会把文件直接写入 %1 @ %2。\n文件：%3\n请输入 WRITE 确认：")
+                QStringLiteral("该操作会把文件直接写入 %1 @ %2，覆盖原有数据且不可撤销。\n文件：%3\n\n确认写入？")
                     .arg(disk->devicePath)
                     .arg(hexOffsetText(offset))
-                    .arg(filePath));
-            if (confirmText != QStringLiteral("WRITE"))
+                    .arg(filePath),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+            if (importDecision != QMessageBox::Yes)
             {
-                appendLog(QStringLiteral("导入已取消：确认文本不匹配。"));
+                appendLog(QStringLiteral("导入已取消：用户在确认中选择了否。"));
                 return;
             }
         }

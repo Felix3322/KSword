@@ -2108,32 +2108,19 @@ void DriverDock::scUnloadAndCleanupDriver(
         return;
     }
 
-    bool phraseAccepted = false;
-    const QString confirmationPhrase = QInputDialog::getText(
+    // 强确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
+    const auto strongConfirmation = QMessageBox::warning(
         this,
         driverText(
             "driver.cleanup.strong_confirm_title",
             QStringLiteral("不可逆清理强确认")),
         driverText(
-            "driver.cleanup.strong_confirm_prompt",
-            QStringLiteral("要继续，请准确输入 UNLOAD CLEANUP：")),
-        QLineEdit::Normal,
-        QString(),
-        &phraseAccepted);
-    if (!phraseAccepted)
+            "driver.cleanup.strong_confirm_final",
+            QStringLiteral("确认执行卸载并清理？服务注册与驱动文件将被删除，且无法撤销。")),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (strongConfirmation != QMessageBox::Yes)
     {
-        return;
-    }
-    if (confirmationPhrase != QStringLiteral("UNLOAD CLEANUP"))
-    {
-        QMessageBox::warning(
-            this,
-            driverText(
-                "driver.cleanup.title",
-                QStringLiteral("sc 卸载并清理")),
-            driverText(
-                "driver.cleanup.strong_confirm_mismatch",
-                QStringLiteral("确认短语不匹配，未执行任何操作。")));
         return;
     }
 

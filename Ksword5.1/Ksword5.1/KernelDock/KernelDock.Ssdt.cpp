@@ -541,20 +541,18 @@ void KernelDock::restoreSelectedSsdtBaseline()
         return;
     }
 
-    bool accepted = false;
-    const QString confirmation = QInputDialog::getText(
+    // 最终确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
+    const auto confirmation = QMessageBox::warning(
         this,
         kernelText(
             "kernel.ssdt.restore.confirm.title",
             QStringLiteral("最终确认")),
         kernelText(
-            "kernel.ssdt.restore.confirm.prompt",
-            QStringLiteral("请输入 RESTORE SSDT 继续：")),
-        QLineEdit::Normal,
-        QString(),
-        &accepted);
-    if (!accepted
-        || confirmation.trimmed() != QStringLiteral("RESTORE SSDT"))
+            "kernel.ssdt.restore.confirm.final",
+            QStringLiteral("确认按基线恢复该 SSDT 表项？该操作会改写内核数据。")),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (confirmation != QMessageBox::Yes)
     {
         return;
     }

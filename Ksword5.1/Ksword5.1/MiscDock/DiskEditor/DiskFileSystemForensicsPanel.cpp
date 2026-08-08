@@ -1284,22 +1284,15 @@ namespace ks::misc
             return;
         }
 
-        bool accepted = false;
-        const QString confirmation = QInputDialog::getText(
+        // 最终确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
+        const auto confirmation = QMessageBox::warning(
             this,
-            QStringLiteral("输入最终确认短语"),
-            QStringLiteral("请输入 ERASE EXACT EXTENTS 继续："),
-            QLineEdit::Normal,
-            QString(),
-            &accepted);
-        if (!accepted
-            || confirmation.trimmed()
-                != QStringLiteral("ERASE EXACT EXTENTS"))
+            QStringLiteral("精确区间擦除"),
+            QStringLiteral("确认对该文件的物理区间写零？数据将被永久抹除且无法恢复。"),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirmation != QMessageBox::Yes)
         {
-            QMessageBox::information(
-                this,
-                QStringLiteral("精确区间擦除"),
-                QStringLiteral("确认短语不匹配，未执行任何写入。"));
             return;
         }
 

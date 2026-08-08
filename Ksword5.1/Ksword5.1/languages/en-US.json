@@ -4409,7 +4409,15 @@
     "kernel.hvm.resident.start.tooltip": "Start the resident virtual machine monitor and keep it running for monitoring (affects system state — use with caution)",
     "kernel.hvm.resident.stop.tooltip": "Stop the resident virtual machine monitor and restore the system to its original state",
     "kernel.hvm.self_test.tooltip": "Test on each CPU core whether virtualization can be enabled normally",
-    "kernel.hvm.teardown.tooltip": "Release the memory and resources held by the virtualization backend"
+    "kernel.hvm.teardown.tooltip": "Release the memory and resources held by the virtualization backend",
+    "driver.cleanup.strong_confirm_final": "Confirm unload and cleanup? The service registration and driver file will be deleted, and this cannot be undone.",
+    "kernel.driver_image.confirm.final": "Confirm performing \"%1\"? Make sure you understand the risks described above.",
+    "kernel.hvm.confirm.final.prompt": "Confirm performing \"%1\"? This operation may make the system unstable.",
+    "kernel.hvm.confirm.final.title": "Final Confirmation",
+    "kernel.iotimer.control.confirm_final": "Confirm performing %1?",
+    "kernel.platform.hal.edit.final.body": "Confirm replacing the HAL function pointer? This alters kernel control flow and may cause a blue screen.",
+    "kernel.ssdt.restore.confirm.final": "Confirm restoring this SSDT entry from the baseline? This rewrites kernel data.",
+    "process.action.terminate_delete_image.final_prompt": "Confirm terminating process %1 and permanently deleting its image file? This cannot be undone."
   },
   "source_translations": {
     "驱动加载失败，失败原因是系统拒绝了未通过数字签名校验的内核驱动。\n\n操作阶段：%1\n错误码：%2\n系统信息：%3": "Driver load failed because Windows rejected a kernel driver that did not pass signature verification.\n\nOperation stage: %1\nError code: %2\nSystem information: %3",
@@ -24961,6 +24969,20 @@
     "重新读取该驱动对象当前的各个处理函数入口": "Re-read the current handler entries of this driver object",
     "附加到上面选中的进程，之后才能查看和搜索它的内存": "Attach to the process selected above; required before viewing or searching its memory",
     "限制只有本程序及其子进程能使用该桌面，其它程序无法访问": "Restrict the desktop to this program and its child processes; other programs cannot access it",
-    "限定搜索的地址范围；选“自定义范围”后可填写右侧的起止地址": "Limit the address range to search; choose 'Custom range' to fill in the start and end addresses on the right"
+    "限定搜索的地址范围；选“自定义范围”后可填写右侧的起止地址": "Limit the address range to search; choose 'Custom range' to fill in the start and end addresses on the right",
+    "\n该磁盘包含当前启动或系统分区，写入可能导致系统无法启动。": "\nThis disk contains the current boot or system partition; writing to it may make the system unbootable.",
+    "写回已取消：用户在最终确认中选择了否。": "Write-back cancelled: the user chose No at the final confirmation.",
+    "导入已取消：用户在确认中选择了否。": "Import cancelled: the user chose No at the confirmation.",
+    "确认修改系统时间相关设置？该操作会影响全局时间行为。": "Confirm changing the system time settings? This affects time behavior system-wide.",
+    "确认对该文件的物理区间写零？数据将被永久抹除且无法恢复。": "Confirm zeroing this file's physical extents? The data will be permanently erased and cannot be recovered.",
+    "确认执行 %1？": "Confirm performing %1?",
+    "确认执行 HAL 函数指针替换？该操作会改变内核控制流，可能导致蓝屏。": "Confirm replacing the HAL function pointer? This alters kernel control flow and may cause a blue screen.",
+    "确认执行“%1”？此操作可能导致系统不稳定。": "Confirm performing \"%1\"? This operation may make the system unstable.",
+    "确认执行“%1”？请确保已知晓上述风险。": "Confirm performing \"%1\"? Make sure you understand the risks described above.",
+    "确认执行卸载并清理？服务注册与驱动文件将被删除，且无法撤销。": "Confirm unload and cleanup? The service registration and driver file will be deleted, and this cannot be undone.",
+    "确认按基线恢复该 SSDT 表项？该操作会改写内核数据。": "Confirm restoring this SSDT entry from the baseline? This rewrites kernel data.",
+    "确认结束进程 %1 并永久删除其映像文件？此操作不可撤销。": "Confirm terminating process %1 and permanently deleting its image file? This cannot be undone.",
+    "该操作会把文件直接写入 %1 @ %2，覆盖原有数据且不可撤销。\n文件：%3\n\n确认写入？": "This writes the file directly to %1 @ %2, overwriting existing data irreversibly.\nFile: %3\n\nConfirm the write?",
+    "该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。%5\n\n确认写入？": "This writes directly to %2 @ %3 through \"%1\", %4 bytes in length.%5\n\nConfirm the write?"
   }
 }

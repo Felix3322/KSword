@@ -12631,26 +12631,23 @@ void ProcessDock::executeTerminateProcessActions(
 
     if (deleteImageAfterExit)
     {
-        const QString confirmationPhrase = QStringLiteral("DELETE %1")
-            .arg(actionTargets.front().record.pid);
-        bool accepted = false;
-        const QString typedPhrase = QInputDialog::getText(
+        // 最终确认改为直接点击：不再要求输入确认短语，改用默认聚焦“否”的高风险提示。
+        const auto finalAnswer = QMessageBox::warning(
             this,
             processContextText(
                 "process.action.terminate_delete_image.type_title",
                 QStringLiteral("最终确认永久删除")),
             processContextText(
-                "process.action.terminate_delete_image.type_prompt",
-                QStringLiteral("请输入 %1 以确认结束进程并永久删除其映像文件："))
-                .arg(confirmationPhrase),
-            QLineEdit::Normal,
-            QString(),
-            &accepted);
-        if (!accepted || typedPhrase.trimmed() != confirmationPhrase)
+                "process.action.terminate_delete_image.final_prompt",
+                QStringLiteral("确认结束进程 %1 并永久删除其映像文件？此操作不可撤销。"))
+                .arg(actionTargets.front().record.pid),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (finalAnswer != QMessageBox::Yes)
         {
             kLogEvent cancellationEvent;
             warn << cancellationEvent
-                << "[ProcessDock] 结束并删除映像动作已取消：最终确认短语不匹配。"
+                << "[ProcessDock] 结束并删除映像动作已取消：用户在最终确认中选择了否。"
                 << eol;
             clearContextActionBinding();
             return;

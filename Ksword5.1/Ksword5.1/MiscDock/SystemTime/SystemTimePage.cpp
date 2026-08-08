@@ -863,43 +863,15 @@ namespace ks::misc
             return false;
         }
 
-        const QString confirmationPhrase =
-            QStringLiteral("I UNDERSTAND SYSTEM TIME");
-        QDialog typedDialog(this);
-        typedDialog.setObjectName(
-            QStringLiteral("ksSystemTimeTypedConfirmDialog"));
-        typedDialog.setStyleSheet(
-            KswordTheme::OpaqueDialogStyle(
-                typedDialog.objectName()));
-        typedDialog.setWindowTitle(
-            QStringLiteral("输入确认短语"));
-        auto* dialogLayout = new QVBoxLayout(&typedDialog);
-        auto* promptLabel = new QLabel(
-            QStringLiteral("请输入 %1 以继续：")
-                .arg(confirmationPhrase),
-            &typedDialog);
-        promptLabel->setWordWrap(true);
-        auto* phraseEdit = new QLineEdit(&typedDialog);
-        phraseEdit->setPlaceholderText(confirmationPhrase);
-        auto* buttons = new QDialogButtonBox(
-            QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-            &typedDialog);
-        dialogLayout->addWidget(promptLabel);
-        dialogLayout->addWidget(phraseEdit);
-        dialogLayout->addWidget(buttons);
-        connect(
-            buttons,
-            &QDialogButtonBox::accepted,
-            &typedDialog,
-            &QDialog::accept);
-        connect(
-            buttons,
-            &QDialogButtonBox::rejected,
-            &typedDialog,
-            &QDialog::reject);
-        phraseEdit->setFocus();
-        return typedDialog.exec() == QDialog::Accepted &&
-            phraseEdit->text() == confirmationPhrase;
+        // 最终确认改为直接点击：不再要求输入确认短语，默认聚焦“否”避免误触。
+        QMessageBox finalBox(this);
+        finalBox.setIcon(QMessageBox::Warning);
+        finalBox.setWindowTitle(QStringLiteral("最终确认"));
+        finalBox.setText(
+            QStringLiteral("确认修改系统时间相关设置？该操作会影响全局时间行为。"));
+        finalBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+        finalBox.setDefaultButton(QMessageBox::No);
+        return finalBox.exec() == QMessageBox::Yes;
     }
 
     void SystemTimePage::updateStatusDisplay(

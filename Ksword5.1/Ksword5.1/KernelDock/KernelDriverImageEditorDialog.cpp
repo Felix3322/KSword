@@ -911,32 +911,16 @@ bool KernelDriverImageEditorDialog::confirmDanger(
         return false;
     }
 
-    bool accepted = false;
-    const QString input = QInputDialog::getText(
+    // 最终确认改为直接点击：不再要求输入确认短语，phrase 仅用于说明本次动作。
+    return QMessageBox::warning(
         self,
         windowTitle(),
         kernelText(
-            "kernel.driver_image.confirm.prompt",
-            QStringLiteral("请输入 %1 以确认已知风险："))
+            "kernel.driver_image.confirm.final",
+            QStringLiteral("确认执行“%1”？请确保已知晓上述风险。"))
             .arg(phrase),
-        QLineEdit::Normal,
-        QString(),
-        &accepted);
-    if (!accepted)
-    {
-        return false;
-    }
-    if (input.trimmed().compare(phrase, Qt::CaseInsensitive) != 0)
-    {
-        QMessageBox::warning(
-            self,
-            windowTitle(),
-            kernelText(
-                "kernel.driver_image.confirm.mismatch",
-                QStringLiteral("确认短语不匹配，操作未发送。")));
-        return false;
-    }
-    return true;
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No) == QMessageBox::Yes;
 }
 
 std::uint64_t KernelDriverImageEditorDialog::fieldValue(

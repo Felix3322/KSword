@@ -600,21 +600,20 @@ void KernelIoTimerTab::runControlAction(const std::uint32_t action)
         return;
     }
 
+    // 二次确认改为直接点击：不再要求输入确认短语，提示中直接写明动作与目标。
     const QString confirmationPhrase = QStringLiteral("%1 %2")
         .arg(isStart ? QStringLiteral("START") : QStringLiteral("STOP"))
         .arg(pointerText(row.timerAddress));
-    bool accepted = false;
-    const QString typedConfirmation = QInputDialog::getText(
+    const auto typedConfirmation = QMessageBox::warning(
         this,
         ioTimerText("kernel.iotimer.control.confirm_title", QStringLiteral("二次确认 IoTimer 控制")),
         ioTimerText(
-            "kernel.iotimer.control.confirm_prompt",
-            QStringLiteral("请输入 %1 继续："))
+            "kernel.iotimer.control.confirm_final",
+            QStringLiteral("确认执行 %1？"))
             .arg(confirmationPhrase),
-        QLineEdit::Normal,
-        QString(),
-        &accepted);
-    if (!accepted || typedConfirmation.trimmed() != confirmationPhrase)
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (typedConfirmation != QMessageBox::Yes)
     {
         return;
     }

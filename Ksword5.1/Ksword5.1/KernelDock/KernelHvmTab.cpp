@@ -804,18 +804,19 @@ bool KernelHvmTab::confirmTyped(
     {
         return false;
     }
-    bool accepted = false;
-    const QString input = QInputDialog::getText(
+
+    // 二次确认改为直接点击：不再要求手动输入确认短语。
+    // phrase 仍作为动作标识展示，让用户清楚本次确认的是哪一项操作。
+    const auto finalAnswer = QMessageBox::warning(
         this,
-        kernelText("kernel.hvm.confirm.typed.title", QStringLiteral("输入确认短语")),
+        kernelText("kernel.hvm.confirm.final.title", QStringLiteral("最终确认")),
         kernelText(
-            "kernel.hvm.confirm.typed.prompt",
-            QStringLiteral("请输入 %1 以继续："))
+            "kernel.hvm.confirm.final.prompt",
+            QStringLiteral("确认执行“%1”？此操作可能导致系统不稳定。"))
             .arg(phrase),
-        QLineEdit::Normal,
-        QString(),
-        &accepted);
-    return accepted && input == phrase;
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    return finalAnswer == QMessageBox::Yes;
 }
 
 void KernelHvmTab::updateButtons()
