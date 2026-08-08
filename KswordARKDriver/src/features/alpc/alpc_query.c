@@ -105,6 +105,14 @@ Return Value:
         return STATUS_NOT_FOUND;
     }
 
+    // 中文说明：这两个 offset 参与推算出一个会被写入的 push lock 地址，缺失哨兵
+    // 0xFFFFFFFF 会被当作真实偏移累加。上游 capability gate 目前覆盖了它们，但
+    // 本函数不能依赖调用方，必须和同文件其余字段一样 fail closed。
+    if (!KswordARKAlpcIsOffsetPresent(DynState->Kernel.AlpcHandleTable) ||
+        !KswordARKAlpcIsOffsetPresent(DynState->Kernel.AlpcHandleTableLock)) {
+        return STATUS_NOT_SUPPORTED;
+    }
+
     handleTable = (PUCHAR)communicationInfo + DynState->Kernel.AlpcHandleTable;
     handleTableLock = (PEX_PUSH_LOCK)((PUCHAR)handleTable + DynState->Kernel.AlpcHandleTableLock);
 
