@@ -1521,7 +1521,7 @@ namespace ks::misc
                     "目标：%1\n访问层：%2\n偏移：%3\n长度：%4 字节\n\n"
                     "物理写入可能立即破坏分区表、文件系统或启动数据。"
                     "断电、控制器异常或选错磁盘都可能导致不可恢复的数据损坏。"
-                    "%5\n\n是否进入最终文本确认？")
+                    "%5\n\n是否继续？")
                     .arg(disk->devicePath)
                     .arg(backendText)
                     .arg(hexOffsetText(m_loadedBaseOffset))

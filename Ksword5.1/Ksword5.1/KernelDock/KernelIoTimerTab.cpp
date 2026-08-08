@@ -600,9 +600,11 @@ void KernelIoTimerTab::runControlAction(const std::uint32_t action)
         return;
     }
 
-    // 二次确认改为直接点击：不再要求输入确认短语，提示中直接写明动作与目标。
+    // 二次确认改为直接点击：动作名与按钮文案保持一致，不使用英文口令。
     const QString confirmationPhrase = QStringLiteral("%1 %2")
-        .arg(isStart ? QStringLiteral("START") : QStringLiteral("STOP"))
+        .arg(isStart
+            ? ioTimerText("kernel.iotimer.control.start", QStringLiteral("启动定时器"))
+            : ioTimerText("kernel.iotimer.control.stop", QStringLiteral("停止定时器")))
         .arg(pointerText(row.timerAddress));
     const auto typedConfirmation = QMessageBox::warning(
         this,

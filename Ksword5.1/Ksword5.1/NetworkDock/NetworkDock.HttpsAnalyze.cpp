@@ -743,8 +743,8 @@ void NetworkDock::ensureHttpsRootCertificateTrusted()
         QStringLiteral("信任 HTTPS 根证书"),
         QStringLiteral("此操作会将 Ksword 根证书加入“当前用户”的受信任根证书颁发机构。\n\n"
             "仅在你拥有或获授权分析的流量环境中继续。是否信任该证书？"),
-        QMessageBox::Yes | QMessageBox::Cancel,
-        QMessageBox::Cancel);
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
     if (confirmation != QMessageBox::Yes)
     {
         return;
@@ -796,8 +796,8 @@ void NetworkDock::applyHttpsSystemProxy()
             "该代理会解密并显示通过此代理的 HTTPS 请求头和响应头，正文只转发不保存。停止代理或点击“还原系统代理”会恢复当前配置。是否继续？")
             .arg(listenAddressText)
             .arg(m_httpsListenPortSpin != nullptr ? m_httpsListenPortSpin->value() : 8889),
-        QMessageBox::Yes | QMessageBox::Cancel,
-        QMessageBox::Cancel);
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
     if (confirmation != QMessageBox::Yes)
     {
         return;

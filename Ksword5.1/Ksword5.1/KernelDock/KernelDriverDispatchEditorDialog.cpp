@@ -436,8 +436,8 @@ void KernelDriverDispatchEditorDialog::applySelectedDispatch()
         this,
         windowTitle(),
         warningText,
-        QMessageBox::Yes | QMessageBox::Cancel,
-        QMessageBox::Cancel) != QMessageBox::Yes)
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No) != QMessageBox::Yes)
     {
         return;
     }
@@ -528,8 +528,8 @@ void KernelDriverDispatchEditorDialog::abandonSelectedRecord()
         kernelText(
             "kernel.driver_dispatch.abandon.warning",
             QStringLiteral("放弃记录不会修改当前 MajorFunction 指针，但会永久丢弃 KSword 保存的原值和自动恢复资格。仅在外部冲突已由你人工处理，或你明确希望保留当前指针时使用。")),
-        QMessageBox::Yes | QMessageBox::Cancel,
-        QMessageBox::Cancel) != QMessageBox::Yes)
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No) != QMessageBox::Yes)
     {
         return;
     }

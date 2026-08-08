@@ -2979,8 +2979,8 @@ void KernelDock::restoreSelectedShadowSsdtBaseline()
                     0,
                     16)
                 .arg(snapshot.cleanBaselinePath),
-            QMessageBox::Yes | QMessageBox::Cancel,
-            QMessageBox::Cancel);
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
     if (warning != QMessageBox::Yes)
     {
         return;

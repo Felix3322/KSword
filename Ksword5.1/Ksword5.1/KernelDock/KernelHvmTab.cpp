@@ -727,7 +727,7 @@ void KernelHvmTab::prepareBackend()
             "MAXPHYADDR 超过 8 TiB 时会明确标记截断并禁止驻留启动。"
             "它不会执行 VMLAUNCH，但会增加不可分页内存占用；"
             "驱动卸载或“释放后端”会回收这些资源。"));
-    if (confirmTyped(warning, QStringLiteral("PREPARE HVM")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.prepare", QStringLiteral("准备 VMX/EPT"))))
     {
         runControlAsync(KSWORD_ARK_HVM_CONTROL_PREPARE, false);
     }
@@ -741,7 +741,7 @@ void KernelHvmTab::selfTestBackend()
             "这是高风险硬件自检：驱动会将系统线程依次绑定到每个 CPU，短暂调整 CR4.VMXE，执行 VMXON 后立即 VMXOFF，再恢复原始 CR4。"
             "已运行的 Hyper-V/VBS/其它 VMM、固件限制或异常 VMX 实现可能导致操作被拒绝、系统不稳定，极端情况下可能蓝屏。"
             "请先保存工作并确保你接受重启风险。"));
-    if (confirmTyped(warning, QStringLiteral("RUN VMX SELF TEST")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.self_test", QStringLiteral("逐 CPU 自检"))))
     {
         runControlAsync(KSWORD_ARK_HVM_CONTROL_SELF_TEST, true);
     }
@@ -757,7 +757,7 @@ void KernelHvmTab::launchControlledGuest()
             "任何 VMCS、EPT、固件、Hyper-V/VBS、嵌套虚拟化或处理器实现异常都可能导致系统不稳定、蓝屏或必须重启。"
             "请先保存全部工作；若检测到上层 Hypervisor，只能从 Nested VMX（partial）入口"
             "并在硬件确实暴露 VMX 时尝试，但这不代表能够运行 L2。"));
-    if (confirmTyped(warning, QStringLiteral("LAUNCH CONTROLLED GUEST")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.launch", QStringLiteral("启动一次性来宾"))))
     {
         runControlAsync(
             KSWORD_ARK_HVM_CONTROL_LAUNCH_TEST_GUEST,

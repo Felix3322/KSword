@@ -1277,8 +1277,8 @@ namespace ks::misc
                     .arg(entry.directoryPath)
                     .arg(entry.name)
                     .arg(entry.evidenceText),
-                QMessageBox::Yes | QMessageBox::Cancel,
-                QMessageBox::Cancel);
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
         if (warningResult != QMessageBox::Yes)
         {
             return;

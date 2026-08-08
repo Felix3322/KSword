@@ -440,7 +440,7 @@ void KernelDriverImageEditorDialog::applySelectedFields()
         .arg(m_canonicalDriverName)
         .arg(maskText(fieldMask))
         .arg(snapshot.generation);
-    if (!confirmDanger(warning, QStringLiteral("APPLY")))
+    if (!confirmDanger(warning, kernelText("kernel.driver_image.apply", QStringLiteral("原子应用字段"))))
     {
         return;
     }
@@ -486,7 +486,7 @@ void KernelDriverImageEditorDialog::hideFromLoadedModuleList()
         "kernel.driver_image.hide.warning",
         QStringLiteral("即将把 %1 从 PsLoadedModuleList 摘链并把其 InLoadOrderLinks 设为自环。该动作不会卸载镜像，但可能立即触发 PatchGuard，使卸载、崩溃转储、符号解析和模块枚举失效；隐藏 KSword 自身也可能让恢复通道在崩溃前来不及执行。"))
         .arg(m_canonicalDriverName);
-    if (!confirmDanger(warning, QStringLiteral("HIDE")))
+    if (!confirmDanger(warning, kernelText("kernel.driver_image.hide", QStringLiteral("从加载链隐藏"))))
     {
         return;
     }
@@ -551,7 +551,7 @@ void KernelDriverImageEditorDialog::restoreManagedState()
                 "kernel.driver_image.restore.with_link",
                 QStringLiteral("，并重新插入 PsLoadedModuleList"))
             : QString());
-    if (!confirmDanger(warning, QStringLiteral("RESTORE")))
+    if (!confirmDanger(warning, kernelText("kernel.driver_image.restore", QStringLiteral("恢复受管状态"))))
     {
         return;
     }
@@ -613,7 +613,7 @@ void KernelDriverImageEditorDialog::abandonRecoveryRecord()
         "kernel.driver_image.abandon.warning",
         QStringLiteral("即将永久放弃 %1 的全部恢复记录。当前任意字段值、隐藏链状态和冲突都不会改变；KSword 将释放 DriverObject 引用，并失去自动恢复所需的原值与邻居。"))
         .arg(m_canonicalDriverName);
-    if (!confirmDanger(warning, QStringLiteral("ABANDON")))
+    if (!confirmDanger(warning, kernelText("kernel.driver_image.abandon", QStringLiteral("放弃恢复记录"))))
     {
         return;
     }
@@ -895,7 +895,7 @@ bool KernelDriverImageEditorDialog::parseDesiredValues(
     return true;
 }
 
-// 两步确认只证明用户已读警告；短语与目标类别/值无关，不形成策略限制。
+// 两步确认只证明用户已读警告；动作名与按钮文案一致，不形成策略限制。
 bool KernelDriverImageEditorDialog::confirmDanger(
     const QString& warningText,
     const QString& phrase) const
@@ -905,8 +905,8 @@ bool KernelDriverImageEditorDialog::confirmDanger(
         self,
         windowTitle(),
         warningText,
-        QMessageBox::Yes | QMessageBox::Cancel,
-        QMessageBox::Cancel) != QMessageBox::Yes)
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No) != QMessageBox::Yes)
     {
         return false;
     }

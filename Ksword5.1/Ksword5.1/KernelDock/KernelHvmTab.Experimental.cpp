@@ -84,9 +84,7 @@ void KernelHvmTab::startResident()
     }
     if (confirmTyped(
             warning,
-            nestedPartial
-                ? QStringLiteral("START PARTIAL NESTED VMM")
-                : QStringLiteral("START RESIDENT VMM")))
+            kernelText("kernel.hvm.resident.start", QStringLiteral("启动驻留 VMM"))))
     {
         runControlAsync(
             KSWORD_ARK_HVM_CONTROL_START_RESIDENT,
@@ -105,7 +103,7 @@ void KernelHvmTab::stopResident()
             "停止操作会在每个仍驻留的 CPU 上发出私有 VMCALL，执行 VMCLEAR、"
             "VMXOFF 并恢复启动前 CR4。若任何 CPU 无法完成，驱动会保留"
             "rollback-required 状态和宿主栈，不能假装已经安全停止。"));
-    if (confirmTyped(warning, QStringLiteral("STOP RESIDENT VMM")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.resident.stop", QStringLiteral("停止驻留 VMM"))))
     {
         runControlAsync(
             KSWORD_ARK_HVM_CONTROL_STOP_RESIDENT,
@@ -122,7 +120,7 @@ void KernelHvmTab::validateNested()
             "VMPTRLD、VMREAD/VMWRITE 等需要操作数解码的指令当前返回 "
             "VMfailInvalid；VMLAUNCH/VMRESUME 不会运行 L2。继续仅表示接受"
             "能力探测和失败语义验证，不代表存在可用嵌套虚拟机。"));
-    if (confirmTyped(warning, QStringLiteral("VALIDATE PARTIAL NESTED")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.nested.validate", QStringLiteral("验证 Nested VMX（partial）"))))
     {
         runControlAsync(
             KSWORD_ARK_HVM_CONTROL_VALIDATE_NESTED,
@@ -142,7 +140,7 @@ void KernelHvmTab::validateEvmcs()
             "判断 eVMCS v1、根/来宾分区及所有权冲突。当前实现不会替换 "
             "VP-assist 页面、不会维护 clean fields，也不会启动 eVMCS；"
             "结果只能是 unsupported、capability-only 或 partial。"));
-    if (confirmTyped(warning, QStringLiteral("VALIDATE EVMCS CAPABILITY")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.evmcs.validate", QStringLiteral("验证 Hyper-V eVMCS（partial）"))))
     {
         runControlAsync(
             KSWORD_ARK_HVM_CONTROL_VALIDATE_NESTED,
@@ -300,7 +298,7 @@ void KernelHvmTab::addEptRule()
             "EPT 时还会同时移除执行。重叠范围中任一严格规则都会覆盖临时放行。"
             "临时放行只允许单 VCPU，并依赖 MTF 与 single-context INVEPT；"
             "当前版本因电源/卸载生命周期未闭环而硬禁用驻留启动。"));
-    if (confirmTyped(warning, QStringLiteral("ADD EPT RULE")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.ept.add", QStringLiteral("添加物理页规则..."))))
     {
         runEptRuleAsync(
             KSWORD_ARK_HVM_EPT_RULE_ADD,
@@ -368,7 +366,7 @@ void KernelHvmTab::removeEptRule()
             "移除会重算该物理范围上的所有重叠 tripwire。为避免 VM-exit 与规则"
             "表/EPT 叶并发，存在任一驻留 CPU 时驱动会返回 DEVICE_BUSY；必须"
             "先完整停止驻留，再修改规则。"));
-    if (confirmTyped(warning, QStringLiteral("REMOVE EPT RULE")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.ept.remove", QStringLiteral("移除规则..."))))
     {
         runEptRuleAsync(
             KSWORD_ARK_HVM_EPT_RULE_REMOVE,
@@ -389,7 +387,7 @@ void KernelHvmTab::clearEptRules()
             "清空会恢复所有拆分叶的基线权限并删除全部 tripwire。存在任一驻留 "
             "CPU 时驱动会返回 DEVICE_BUSY，不会边运行边修改共享规则或 EPT 叶；"
             "必须先完整停止驻留。"));
-    if (confirmTyped(warning, QStringLiteral("CLEAR EPT RULES")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.ept.clear", QStringLiteral("清空全部规则..."))))
     {
         runEptRuleAsync(
             KSWORD_ARK_HVM_EPT_RULE_CLEAR,
@@ -414,7 +412,7 @@ void KernelHvmTab::clearEvents()
         QStringLiteral(
             "事件环只能在所有驻留 CPU 停止后清空；清空不会改变 EPT 规则，"
             "但会永久丢弃当前保留的 VM-exit 取证记录。"));
-    if (confirmTyped(warning, QStringLiteral("CLEAR HVM EVENTS")))
+    if (confirmTyped(warning, kernelText("kernel.hvm.events.clear", QStringLiteral("清空已停止的事件环..."))))
     {
         runEventQueryAsync(true);
     }

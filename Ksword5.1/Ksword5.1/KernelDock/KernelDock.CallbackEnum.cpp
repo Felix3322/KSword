@@ -1388,8 +1388,8 @@ namespace
             parentWidget,
             kernelText("kernel.callback.enum.remove.experimental.title", QStringLiteral("强制移除（实验性）")),
             confirmText,
-            QMessageBox::Yes | QMessageBox::Cancel,
-            QMessageBox::Cancel);
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
         if (reply != QMessageBox::Yes)
         {
             if (statusLabel != nullptr)
