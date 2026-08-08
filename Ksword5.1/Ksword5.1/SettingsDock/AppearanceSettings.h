@@ -165,11 +165,17 @@ namespace ks::settings
     // 返回：true=可跳过重复模态确认；false=仍需逐次询问。
     bool dangerousActionConfirmationsSuppressed();
 
+    // MinimumWindowScaleFactor / MaximumWindowScaleFactor 作用：
+    // - 窗口缩放因子的唯一合法区间，normalizeWindowScaleFactor 按此钳制；
+    // - 设置页据此生成可选范围，避免界面限制与落盘钳制各写一份而失配。
+    inline constexpr double MinimumWindowScaleFactor = 0.50;
+    inline constexpr double MaximumWindowScaleFactor = 2.00;
+
     // normalizeWindowScaleFactor 作用：
     // - 统一校正窗口缩放因子到合法范围；
     // - 非法值（NaN/Inf/<=0）回退为 1.0。
     // 调用方式：读取配置、保存配置、启动前应用缩放时调用。
     // 入参 rawScaleFactor：原始缩放因子值。
-    // 返回：合法缩放因子（范围 0.50~2.00）。
+    // 返回：合法缩放因子（范围 MinimumWindowScaleFactor~MaximumWindowScaleFactor）。
     double normalizeWindowScaleFactor(double rawScaleFactor);
 }

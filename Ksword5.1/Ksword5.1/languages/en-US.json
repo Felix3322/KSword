@@ -305,9 +305,9 @@
     "settings.startup.hint": "Configure the window state and privilege requests used at the next launch.",
     "settings.startup.maximized": "Start maximized",
     "settings.startup.maximized.tooltip": "Open the main window maximized at the next launch",
-    "settings.startup.scale": "Window scale factor",
-    "settings.startup.scale.tooltip": "Main-window scale applied after restart: 1.00 = 100%, supported range 0.50 to 2.00",
-    "settings.startup.scale_hint": "Current: about %1% (applies after restart in addition to system scaling)",
+    "settings.startup.scale": "Window scale",
+    "settings.startup.scale.tooltip": "Main-window UI scale. Takes effect after restart and stacks on top of the system display scale.",
+    "settings.startup.scale_hint": "Takes effect after restart. The final size is the system display scale multiplied by this setting.",
     "settings.startup.taskmgr_hint": "Redirect the system Task Manager entry to KSword. Administrator privileges are required.",
     "settings.startup.taskmgr_install": "Use KSword for Task Manager",
     "settings.startup.taskmgr_install.tooltip": "Open KSword when Task Manager is launched",
@@ -4425,6 +4425,10 @@
     "settings.background.translucency_material.acrylic": "Acrylic blur (richer look, may affect hover)"
   },
   "source_translations": {
+    "窗口缩放": "Window scale",
+    "启动窗口缩放变化": "Startup window scale changed",
+    "主窗口界面缩放，重启后生效；与系统显示缩放叠加。": "Main-window UI scale. Takes effect after restart and stacks on top of the system display scale.",
+    "重启后生效；最终大小是系统显示缩放与此处设置相乘的结果。": "Takes effect after restart. The final size is the system display scale multiplied by this setting.",
     "受控复位": "Controlled reset",
     "坏道扫描": "Bad-sector scan",
     "坏道扫描失败：未选择磁盘。": "Bad-sector scan failed: no disk selected.",

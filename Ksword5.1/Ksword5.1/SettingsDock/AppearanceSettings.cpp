@@ -282,7 +282,7 @@ namespace
     }
 
     // clampWindowScaleFactorInternal 作用：
-    // - 把窗口缩放因子约束到 0.50~2.00；
+    // - 把窗口缩放因子约束到 MinimumWindowScaleFactor~MaximumWindowScaleFactor；
     // - 非法输入回退到 1.0。
     // 调用方式：配置读写与启动前应用缩放时调用。
     // 入参 rawScaleFactor：原始缩放因子。
@@ -293,13 +293,13 @@ namespace
         {
             return 1.0;
         }
-        if (rawScaleFactor < 0.50)
+        if (rawScaleFactor < ks::settings::MinimumWindowScaleFactor)
         {
-            return 0.50;
+            return ks::settings::MinimumWindowScaleFactor;
         }
-        if (rawScaleFactor > 2.00)
+        if (rawScaleFactor > ks::settings::MaximumWindowScaleFactor)
         {
-            return 2.00;
+            return ks::settings::MaximumWindowScaleFactor;
         }
         return rawScaleFactor;
     }

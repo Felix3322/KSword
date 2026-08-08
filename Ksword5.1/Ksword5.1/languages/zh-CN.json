@@ -305,9 +305,9 @@
     "settings.startup.hint": "设置应用下次启动时的窗口显示方式与权限申请行为。",
     "settings.startup.maximized": "启动时最大化",
     "settings.startup.maximized.tooltip": "下次启动主窗口时直接以最大化状态显示",
-    "settings.startup.scale": "窗口缩放因子",
-    "settings.startup.scale.tooltip": "主窗口缩放因子（重启生效）：1.00=100%，建议范围 0.50~2.00",
-    "settings.startup.scale_hint": "当前：约 %1%（重启后生效，系统缩放会叠加）",
+    "settings.startup.scale": "窗口缩放",
+    "settings.startup.scale.tooltip": "主窗口界面缩放，重启后生效；与系统显示缩放叠加。",
+    "settings.startup.scale_hint": "重启后生效；最终大小是系统显示缩放与此处设置相乘的结果。",
     "settings.startup.taskmgr_hint": "将系统任务管理器入口切换到 KSword。此操作需要管理员权限。",
     "settings.startup.taskmgr_install": "用 KSword 替代任务管理器",
     "settings.startup.taskmgr_install.tooltip": "打开任务管理器时改为启动 KSword",
@@ -4425,6 +4425,10 @@
     "settings.background.translucency_material.acrylic": "亚克力磨砂（质感更强，可能影响悬停）"
   },
   "source_translations": {
+    "窗口缩放": "窗口缩放",
+    "启动窗口缩放变化": "启动窗口缩放变化",
+    "主窗口界面缩放，重启后生效；与系统显示缩放叠加。": "主窗口界面缩放，重启后生效；与系统显示缩放叠加。",
+    "重启后生效；最终大小是系统显示缩放与此处设置相乘的结果。": "重启后生效；最终大小是系统显示缩放与此处设置相乘的结果。",
     "受控复位": "受控复位",
     "坏道扫描": "坏道扫描",
     "坏道扫描失败：未选择磁盘。": "坏道扫描失败：未选择磁盘。",

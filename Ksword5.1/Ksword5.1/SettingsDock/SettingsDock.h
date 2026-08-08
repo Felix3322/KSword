@@ -162,13 +162,6 @@ private:
     // 入参 opacityPercent：0~100 透明度值。
     void updateOpacityValueLabel(int opacityPercent);
 
-    // updateWindowScaleFactorHintLabel 作用：
-    // - 根据缩放因子更新百分比提示文案；
-    // - 明确提示“重启后生效”。
-    // 调用方式：缩放输入框变化或配置回填后调用。
-    // 入参 normalizedScaleFactor：已校正缩放因子。
-    void updateWindowScaleFactorHintLabel(double normalizedScaleFactor);
-
     // openBackgroundFileDialog 作用：
     // - 打开文件选择对话框，供用户挑选背景图路径。
     // 调用方式：点击“浏览背景图”按钮时调用。
@@ -310,10 +303,10 @@ private:
     // m_sliderWheelAdjustCheckBox 作用：设置滚轮是否可直接调整滑块值。
     QCheckBox* m_sliderWheelAdjustCheckBox = nullptr;
 
-    // m_startupWindowScaleFactorEdit 作用：设置下次启动主窗口缩放因子（重启生效）。
-    QLineEdit* m_startupWindowScaleFactorEdit = nullptr;
+    // m_startupWindowScaleSpin 作用：设置下次启动主窗口的缩放百分比（50~200，重启生效）。
+    QSpinBox* m_startupWindowScaleSpin = nullptr;
 
-    // m_startupWindowScaleHintLabel 作用：显示缩放因子对应百分比提示文本。
+    // m_startupWindowScaleHintLabel 作用：说明缩放的生效时机与系统缩放的叠加关系。
     QLabel* m_startupWindowScaleHintLabel = nullptr;
 
     // m_virusTotalApiKeyEdit 作用：编辑 VirusTotal 在线扫描 API Key。

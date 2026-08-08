@@ -48,15 +48,20 @@ namespace
     constexpr const char* IconResetBackground = ":/Icon/settings_background_reset.svg";
     constexpr wchar_t kUnlockerKeyName[] = L"Ksword.FileUnlocker";
 
-    // formatScaleFactorText 作用：
-    // - 把缩放因子格式化为两位小数字符串；
-    // - 统一输入框显示格式，避免精度噪声。
-    // 调用方式：配置回填与保存后 UI 刷新时调用。
-    // 入参 scaleFactor：已校正的缩放因子。
-    // 返回：例如 "1.00" 的文本。
-    QString formatScaleFactorText(const double scaleFactor)
+    // windowScalePercentFromFactor / windowScaleFactorFromPercent 作用：
+    // - 设置页按百分比呈现窗口缩放（与 Windows 显示设置一致），配置文件仍然存倍率；
+    // - 两个方向都过一遍 normalizeWindowScaleFactor，保证界面可选范围与落盘范围一致。
+    // 入参/返回：百分比整数（50~200）与缩放倍率（0.50~2.00）互转。
+    int windowScalePercentFromFactor(const double scaleFactor)
     {
-        return QString::number(ks::settings::normalizeWindowScaleFactor(scaleFactor), 'f', 2);
+        return static_cast<int>(std::lround(
+            ks::settings::normalizeWindowScaleFactor(scaleFactor) * 100.0));
+    }
+
+    double windowScaleFactorFromPercent(const int scalePercent)
+    {
+        return ks::settings::normalizeWindowScaleFactor(
+            static_cast<double>(scalePercent) / 100.0);
     }
 
     // selectedThemeUsesDarkBackground 作用：为尚未应用的主题按钮状态计算默认主背景预览。
@@ -218,7 +223,6 @@ void SettingsDock::changeEvent(QEvent* event)
     if (event != nullptr && event->type() == QEvent::LanguageChange)
     {
         updateSystemDefaultFontItemText();
-        updateWindowScaleFactorHintLabel(parseWindowScaleFactorFromUi());
         updateApplyButtonState();
     }
 }
@@ -707,29 +711,43 @@ void SettingsDock::initializeAppearanceTab()
     taskmgrHijackButtonLayout->addStretch(1);
     startupLayout->addLayout(taskmgrHijackButtonLayout);
 
-    // 启动缩放因子设置：重启后生效，用于统一控制主窗口 UI 缩放倍率。
+    // 启动窗口缩放设置：重启后生效，用于统一控制主窗口 UI 缩放。
     QHBoxLayout* startupScaleLayout = new QHBoxLayout();
     startupScaleLayout->setSpacing(6);
-    QLabel* startupScaleLabel = new QLabel(QStringLiteral("窗口缩放因子"), startupGroupBox);
-    languageManager.bindText(startupScaleLabel, QStringLiteral("settings.startup.scale"), QStringLiteral("窗口缩放因子"));
+    QLabel* startupScaleLabel = new QLabel(QStringLiteral("窗口缩放"), startupGroupBox);
+    languageManager.bindText(startupScaleLabel, QStringLiteral("settings.startup.scale"), QStringLiteral("窗口缩放"));
     startupScaleLayout->addWidget(startupScaleLabel, 0);
 
-    // m_startupWindowScaleFactorEdit 作用：输入下次启动主窗口缩放因子（1.00=100%）。
-    m_startupWindowScaleFactorEdit = new QLineEdit(startupGroupBox);
-    m_startupWindowScaleFactorEdit->setPlaceholderText(QStringLiteral("1.00"));
-    m_startupWindowScaleFactorEdit->setFixedWidth(96);
-    m_startupWindowScaleFactorEdit->setToolTip(
-        QStringLiteral("主窗口缩放因子（重启生效）：1.00=100%，建议范围 0.50~2.00"));
-    languageManager.bindToolTip(m_startupWindowScaleFactorEdit, QStringLiteral("settings.startup.scale.tooltip"), QStringLiteral("主窗口缩放因子（重启生效）：1.00=100%，建议范围 0.50~2.00"));
-    startupScaleLayout->addWidget(m_startupWindowScaleFactorEdit, 0);
+    // m_startupWindowScaleSpin 作用：设置下次启动的主窗口缩放百分比。
+    // 这里刻意不再用“缩放因子 1.00”这种倍率输入框：倍率是内部表示，
+    // 用户脑子里的量是百分比（和 Windows 显示设置一致）；旧的纯文本框
+    // 既没有校验器也不展示可用范围，输入 150（当成百分比）会被静默钳到 2.00。
+    // 步进框把范围、步长和单位都摆在界面上，越界根本输入不进去。
+    m_startupWindowScaleSpin = new QSpinBox(startupGroupBox);
+    m_startupWindowScaleSpin->setRange(
+        windowScalePercentFromFactor(ks::settings::MinimumWindowScaleFactor),
+        windowScalePercentFromFactor(ks::settings::MaximumWindowScaleFactor));
+    m_startupWindowScaleSpin->setSingleStep(5);
+    m_startupWindowScaleSpin->setSuffix(QStringLiteral(" %"));
+    m_startupWindowScaleSpin->setValue(100);
+    m_startupWindowScaleSpin->setKeyboardTracking(false);
+    m_startupWindowScaleSpin->setToolTip(
+        QStringLiteral("主窗口界面缩放，重启后生效；与系统显示缩放叠加。"));
+    languageManager.bindToolTip(m_startupWindowScaleSpin, QStringLiteral("settings.startup.scale.tooltip"), QStringLiteral("主窗口界面缩放，重启后生效；与系统显示缩放叠加。"));
+    startupScaleLayout->addWidget(m_startupWindowScaleSpin, 0);
     startupScaleLayout->addStretch(1);
     startupLayout->addLayout(startupScaleLayout);
 
-    // m_startupWindowScaleHintLabel 作用：显示缩放因子对应百分比提示。
+    // m_startupWindowScaleHintLabel 作用：说明生效时机与系统缩放的关系。
+    // 具体百分比已经由步进框自己显示，这里不再重复。
     m_startupWindowScaleHintLabel = new QLabel(
-        QStringLiteral("当前：约 100%（重启后生效，系统缩放会叠加）"),
+        QStringLiteral("重启后生效；最终大小是系统显示缩放与此处设置相乘的结果。"),
         startupGroupBox);
     m_startupWindowScaleHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        m_startupWindowScaleHintLabel,
+        QStringLiteral("settings.startup.scale_hint"),
+        QStringLiteral("重启后生效；最终大小是系统显示缩放与此处设置相乘的结果。"));
     startupLayout->addWidget(m_startupWindowScaleHintLabel);
 
     startupRootLayout->addWidget(startupGroupBox);
@@ -1011,12 +1029,10 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QStringLiteral("通知堆叠方向切换"));
         });
 
-    connect(m_startupWindowScaleFactorEdit, &QLineEdit::textChanged, this, [this](const QString& /*text*/) {
-        const double normalizedScaleFactor = parseWindowScaleFactorFromUi();
-        updateWindowScaleFactorHintLabel(normalizedScaleFactor);
+    connect(m_startupWindowScaleSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
         if (!m_isApplyingUiState)
         {
-            markPendingChanges(QStringLiteral("启动窗口缩放因子变化"));
+            markPendingChanges(QStringLiteral("启动窗口缩放变化"));
         }
         });
 
@@ -1173,11 +1189,10 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
         m_notificationStackDirectionCombo->setCurrentIndex(index >= 0 ? index : 0);
     }
 
-    if (m_startupWindowScaleFactorEdit != nullptr)
+    if (m_startupWindowScaleSpin != nullptr)
     {
-        const double normalizedScaleFactor =
-            ks::settings::normalizeWindowScaleFactor(settings.startupWindowScaleFactor);
-        m_startupWindowScaleFactorEdit->setText(formatScaleFactorText(normalizedScaleFactor));
+        m_startupWindowScaleSpin->setValue(
+            windowScalePercentFromFactor(settings.startupWindowScaleFactor));
     }
 
     // 在线扫描 API Key 回填：
@@ -1193,8 +1208,6 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     }
 
     updateOpacityValueLabel(settings.backgroundOpacityPercent);
-    updateWindowScaleFactorHintLabel(
-        ks::settings::normalizeWindowScaleFactor(settings.startupWindowScaleFactor));
     updateThemeButtonStyle();
 
     m_isApplyingUiState = false;
@@ -1611,10 +1624,10 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         }
     }
     m_isApplyingUiState = true;
-    if (m_startupWindowScaleFactorEdit != nullptr)
+    if (m_startupWindowScaleSpin != nullptr)
     {
-        m_startupWindowScaleFactorEdit->setText(
-            formatScaleFactorText(m_currentAppearanceSettings.startupWindowScaleFactor));
+        m_startupWindowScaleSpin->setValue(
+            windowScalePercentFromFactor(m_currentAppearanceSettings.startupWindowScaleFactor));
     }
     if (m_virusTotalApiKeyEdit != nullptr)
     {
@@ -1624,7 +1637,6 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
     {
         m_threatBookApiKeyEdit->setText(m_currentAppearanceSettings.threatBookApiKey);
     }
-    updateWindowScaleFactorHintLabel(m_currentAppearanceSettings.startupWindowScaleFactor);
     m_isApplyingUiState = false;
     m_hasPendingChanges = false;
     updateApplyButtonState();
@@ -1750,22 +1762,6 @@ void SettingsDock::updateOpacityValueLabel(const int opacityPercent)
     m_backgroundOpacityValueLabel->setText(QStringLiteral("%1%").arg(opacityPercent));
 }
 
-void SettingsDock::updateWindowScaleFactorHintLabel(const double normalizedScaleFactor)
-{
-    if (m_startupWindowScaleHintLabel == nullptr)
-    {
-        return;
-    }
-
-    const double safeScaleFactor = ks::settings::normalizeWindowScaleFactor(normalizedScaleFactor);
-    const int scalePercent = static_cast<int>(std::lround(safeScaleFactor * 100.0));
-    m_startupWindowScaleHintLabel->setText(
-        ks::i18n::text(
-            QStringLiteral("settings.startup.scale_hint"),
-            QStringLiteral("当前：约 %1%（重启后生效，系统缩放会叠加）"))
-        .arg(scalePercent));
-}
-
 void SettingsDock::launchTaskmgrHijackScript(const bool install)
 {
     if (!ks::ui::isCurrentProcessElevated())
@@ -1882,29 +1878,14 @@ void SettingsDock::launchTaskmgrHijackScript(const bool install)
 
 double SettingsDock::parseWindowScaleFactorFromUi() const
 {
-    const double currentScaleFactor =
-        ks::settings::normalizeWindowScaleFactor(m_currentAppearanceSettings.startupWindowScaleFactor);
-
-    if (m_startupWindowScaleFactorEdit == nullptr)
+    if (m_startupWindowScaleSpin == nullptr)
     {
-        return currentScaleFactor;
+        return ks::settings::normalizeWindowScaleFactor(
+            m_currentAppearanceSettings.startupWindowScaleFactor);
     }
 
-    QString rawScaleText = m_startupWindowScaleFactorEdit->text().trimmed();
-    if (rawScaleText.isEmpty())
-    {
-        return currentScaleFactor;
-    }
-
-    // 兼容中文输入法场景下使用逗号作为小数点。
-    rawScaleText.replace(',', '.');
-    bool convertOk = false;
-    const double parsedScaleFactor = rawScaleText.toDouble(&convertOk);
-    if (!convertOk)
-    {
-        return currentScaleFactor;
-    }
-    return ks::settings::normalizeWindowScaleFactor(parsedScaleFactor);
+    // 步进框只能产出合法百分比，不再需要解析文本和容错回退。
+    return windowScaleFactorFromPercent(m_startupWindowScaleSpin->value());
 }
 
 void SettingsDock::openBackgroundFileDialog()
