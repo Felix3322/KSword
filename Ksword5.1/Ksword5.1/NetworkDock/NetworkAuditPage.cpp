@@ -2307,7 +2307,7 @@ void NetworkAuditPage::showCrossViewContextMenu(
     QMenu menu(tableWidget);
     menu.setStyleSheet(KswordTheme::ContextMenuStyle());
     QAction* terminateAction = menu.addAction(
-        QIcon(QStringLiteral(":/Icon/process_uncritical.svg")),
+        QIcon(QStringLiteral(":/Icon/process_terminate.svg")),
         QStringLiteral("终止此 TCP 连接"));
     terminateAction->setVisible(tableWidget == m_tcpTable);
     terminateAction->setEnabled(canTerminateSelection);

@@ -410,9 +410,15 @@ void NetworkDock::initializeConnections()
         {
             if (m_autoRefreshConnectionButton != nullptr)
             {
+                // 图标必须跟随状态：开着时显示“暂停”表示可点击暂停，
+                // 关掉后显示“继续”。否则一个按下态的暂停图标会被读成
+                // “当前已暂停，点我恢复”，用户反而把正在工作的自动刷新关掉。
+                m_autoRefreshConnectionButton->setIcon(QIcon(
+                    checked ? QStringLiteral(":/Icon/process_pause.svg")
+                    : QStringLiteral(":/Icon/process_resume.svg")));
                 m_autoRefreshConnectionButton->setToolTip(
-                    checked ? QStringLiteral("自动刷新开关（已开启）")
-                    : QStringLiteral("自动刷新开关（已关闭）"));
+                    checked ? QStringLiteral("自动刷新已开启，点击暂停")
+                    : QStringLiteral("自动刷新已关闭，点击继续"));
             }
             if (m_connectionStatusLabel != nullptr)
             {
@@ -559,7 +565,7 @@ void NetworkDock::initializeConnections()
 
             QMenu contextMenu(this);
             contextMenu.setStyleSheet(KswordTheme::ContextMenuStyle());
-            QAction* terminateAction = contextMenu.addAction(QIcon(":/Icon/process_uncritical.svg"), QStringLiteral("终止此 TCP 连接"));
+            QAction* terminateAction = contextMenu.addAction(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("终止此 TCP 连接"));
             QAction* copyRowAction = contextMenu.addAction(QIcon(":/Icon/process_copy_row.svg"), QStringLiteral("复制行"));
             QAction* trackProcessAction = contextMenu.addAction(QIcon(":/Icon/log_track.svg"), QStringLiteral("跟踪此进程"));
             QAction* gotoProcessDetailAction = contextMenu.addAction(QIcon(":/Icon/process_details.svg"), QStringLiteral("转到进程详细信息"));
@@ -983,7 +989,7 @@ void NetworkDock::initializeConnections()
             QAction* copyHexAction = contextMenu.addAction(QIcon(":/Icon/process_copy_row.svg"), QStringLiteral("复制选中报文16进制"));
             // 报文重放动作：把单条报文自动填充到“请求构造”页，用户可二次编辑再执行。
             QAction* replayToManualRequestAction = contextMenu.addAction(
-                QIcon(":/Icon/process_refresh.svg"),
+                QIcon(":/Icon/codeeditor_paste.svg"),
                 QStringLiteral("重放到请求构造"));
             replayToManualRequestAction->setToolTip(QStringLiteral("将当前报文填充到请求构造页，便于快速重放。"));
             contextMenu.addSeparator();

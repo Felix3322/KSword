@@ -383,7 +383,7 @@ void DriverDock::initializeOverviewTab()
     m_refreshServiceButton->setFixedWidth(34);
 
     m_refreshModuleButton = new QPushButton(m_overviewPage);
-    m_refreshModuleButton->setIcon(QIcon(":/Icon/process_details.svg"));
+    m_refreshModuleButton->setIcon(QIcon(":/Icon/process_refresh.svg"));
     m_refreshModuleButton->setToolTip(
         driverText("driver.toolbar.refresh_modules.tooltip", QStringLiteral("刷新已加载内核模块")));
     m_refreshModuleButton->setFixedWidth(34);
@@ -588,7 +588,7 @@ void DriverDock::initializeOperateTab()
     actionLayout->setSpacing(6);
 
     m_registerOrUpdateButton = new QPushButton(m_operatePage);
-    m_registerOrUpdateButton->setIcon(QIcon(":/Icon/process_refresh.svg"));
+    m_registerOrUpdateButton->setIcon(QIcon(":/Icon/codeeditor_save.svg"));
     m_registerOrUpdateButton->setToolTip(
         driverText("driver.form.register_update.tooltip", QStringLiteral("注册新服务或更新现有服务")));
     m_registerOrUpdateButton->setFixedWidth(34);
@@ -606,15 +606,15 @@ void DriverDock::initializeOperateTab()
     m_unloadDriverButton->setFixedWidth(34);
 
     m_deleteServiceButton = new QPushButton(m_operatePage);
-    m_deleteServiceButton->setIcon(QIcon(":/Icon/process_uncritical.svg"));
+    m_deleteServiceButton->setIcon(QIcon(":/Icon/log_clear.svg"));
     m_deleteServiceButton->setToolTip(
         driverText("driver.form.delete.tooltip", QStringLiteral("删除驱动服务注册")));
     m_deleteServiceButton->setFixedWidth(34);
 
     m_refreshStateButton = new QPushButton(m_operatePage);
-    m_refreshStateButton->setIcon(QIcon(":/Icon/process_details.svg"));
+    m_refreshStateButton->setIcon(QIcon(":/Icon/process_refresh.svg"));
     m_refreshStateButton->setToolTip(
-        driverText("driver.form.refresh_state.tooltip", QStringLiteral("查询当前服务状态")));
+        driverText("driver.form.refresh_state.tooltip", QStringLiteral("刷新当前服务状态")));
     m_refreshStateButton->setFixedWidth(34);
 
     actionLayout->addWidget(m_registerOrUpdateButton);

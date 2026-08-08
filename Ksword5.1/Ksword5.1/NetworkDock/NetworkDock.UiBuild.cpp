@@ -250,7 +250,7 @@ void NetworkDock::initializeRateLimitTab()
     m_applyRateLimitButton->setToolTip(QStringLiteral("新增或更新限速规则"));
 
     m_removeRateLimitButton = new QPushButton(m_rateLimitPage);
-    m_removeRateLimitButton->setIcon(QIcon(":/Icon/process_uncritical.svg"));
+    m_removeRateLimitButton->setIcon(QIcon(":/Icon/log_clear.svg"));
     m_removeRateLimitButton->setToolTip(QStringLiteral("删除选中的限速规则"));
 
     m_clearRateLimitButton = new QPushButton(m_rateLimitPage);
@@ -333,10 +333,10 @@ void NetworkDock::initializeConnectionManageTab()
     m_autoRefreshConnectionButton->setCheckable(true);
     m_autoRefreshConnectionButton->setChecked(true);
     m_autoRefreshConnectionButton->setIcon(QIcon(":/Icon/process_pause.svg"));
-    m_autoRefreshConnectionButton->setToolTip(QStringLiteral("自动刷新开关（已开启）"));
+    m_autoRefreshConnectionButton->setToolTip(QStringLiteral("自动刷新已开启，点击暂停"));
 
     m_terminateTcpButton = new QPushButton(m_connectionManagePage);
-    m_terminateTcpButton->setIcon(QIcon(":/Icon/process_uncritical.svg"));
+    m_terminateTcpButton->setIcon(QIcon(":/Icon/process_terminate.svg"));
     m_terminateTcpButton->setToolTip(QStringLiteral("终止当前选中的 TCP 连接（DELETE_TCB）"));
 
     m_clearConnectionPidFilterButton = new QPushButton(m_connectionManagePage);

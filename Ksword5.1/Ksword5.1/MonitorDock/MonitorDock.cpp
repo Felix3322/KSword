@@ -5691,20 +5691,23 @@ void MonitorDock::initializeWmiTab()
     m_wmiEventClassControlLayout->setContentsMargins(0, 0, 0, 0);
     m_wmiEventClassControlLayout->setSpacing(4);
 
-    m_wmiSelectAllClassesButton = new QPushButton(QIcon(":/Icon/process_start.svg"), QString(), m_wmiSubscribePanel);
+    // 这三个是“选择辅助”而非流程控制：原先用 ▶/⏸ 会与同一面板的
+    // “开始订阅/暂停订阅”按钮视觉完全相同，用户想全选却启动了订阅。
+    // 播放类图标只保留给真正的流程控制，这里改用短文字，语义无歧义。
+    m_wmiSelectAllClassesButton = new QPushButton(QStringLiteral("全选"), m_wmiSubscribePanel);
     m_wmiSelectAllClassesButton->setToolTip(QStringLiteral("全选事件类"));
     m_wmiSelectAllClassesButton->setStyleSheet(blueButtonStyle());
-    m_wmiSelectAllClassesButton->setFixedWidth(32);
 
-    m_wmiSelectNoneClassesButton = new QPushButton(QIcon(":/Icon/process_pause.svg"), QString(), m_wmiSubscribePanel);
+    m_wmiSelectNoneClassesButton = new QPushButton(QStringLiteral("全不选"), m_wmiSubscribePanel);
     m_wmiSelectNoneClassesButton->setToolTip(QStringLiteral("全不选事件类"));
     m_wmiSelectNoneClassesButton->setStyleSheet(blueButtonStyle());
-    m_wmiSelectNoneClassesButton->setFixedWidth(32);
 
-    m_wmiSelectWin32ClassesButton = new QPushButton(QIcon(":/Icon/process_tree.svg"), QString(), m_wmiSubscribePanel);
+    m_wmiSelectWin32ClassesButton = new QPushButton(
+        QIcon(":/Icon/filter_funnel.svg"),
+        QStringLiteral("仅 Win32"),
+        m_wmiSubscribePanel);
     m_wmiSelectWin32ClassesButton->setToolTip(QStringLiteral("仅选择Win32_*"));
     m_wmiSelectWin32ClassesButton->setStyleSheet(blueButtonStyle());
-    m_wmiSelectWin32ClassesButton->setFixedWidth(32);
 
     m_wmiEventClassControlLayout->addWidget(new QLabel(QStringLiteral("事件类"), m_wmiSubscribePanel));
     m_wmiEventClassControlLayout->addStretch(1);
@@ -6661,9 +6664,9 @@ void MonitorDock::initializeEtwFilterPanels()
             actionLayout->setContentsMargins(0, 0, 0, 0);
             actionLayout->setSpacing(6);
 
-            addGroupButtonOut = new QPushButton(QIcon(":/Icon/codeeditor_new.svg"), QStringLiteral("新增规则组"), panelOut);
+            addGroupButtonOut = new QPushButton(QIcon(":/Icon/plus.svg"), QStringLiteral("新增规则组"), panelOut);
             addGroupButtonOut->setStyleSheet(blueButtonStyle());
-            applyButtonOut = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QStringLiteral("应用"), panelOut);
+            applyButtonOut = new QPushButton(QIcon(":/Icon/log_track.svg"), QStringLiteral("应用"), panelOut);
             applyButtonOut->setStyleSheet(blueButtonStyle());
             clearButtonOut = new QPushButton(QIcon(":/Icon/log_clear.svg"), QStringLiteral("清空"), panelOut);
             clearButtonOut->setStyleSheet(blueButtonStyle());

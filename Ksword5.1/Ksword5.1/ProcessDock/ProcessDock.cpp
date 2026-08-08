@@ -9343,7 +9343,7 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
         buildR0ActionIcon(":/Icon/process_resume.svg"),
         processContextText("process.menu.unhide", QStringLiteral("取消隐藏选中进程")));
     QAction* r0ClearHiddenProcessAction = r0VisibilitySubMenu->addAction(
-        buildR0ActionIcon(":/Icon/process_refresh.svg"),
+        buildR0ActionIcon(":/Icon/log_clear.svg"),
         processContextText("process.menu.clear_hidden", QStringLiteral("清空全部隐藏标记")));
     r0HideUnlinkOnlyAction->setToolTip(QStringLiteral("只摘除 ActiveProcessLinks，不修改 PID；Ksword 更容易按原 PID 找回和恢复。"));
     r0HidePatchPidOnlyAction->setToolTip(QStringLiteral("只修改 UniqueProcessId，不摘链；高风险，可能影响按原 PID 查找目标。"));

@@ -1694,7 +1694,7 @@ private:
         QHBoxLayout* monitorControlLayout = new QHBoxLayout();
         m_messageStartButton = new QPushButton(QIcon(":/Icon/process_start.svg"), QString(), hookPage);
         m_messageStopButton = new QPushButton(QIcon(":/Icon/process_pause.svg"), QString(), hookPage);
-        m_messageClearButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), QString(), hookPage);
+        m_messageClearButton = new QPushButton(QIcon(":/Icon/log_clear.svg"), QString(), hookPage);
         m_messageStartButton->setToolTip(QStringLiteral("开始消息监控"));
         m_messageStopButton->setToolTip(QStringLiteral("停止消息监控"));
         m_messageClearButton->setToolTip(QStringLiteral("清空当前消息列表"));
@@ -4318,8 +4318,8 @@ void OtherDock::showWindowContextMenu(const QPoint& localPos)
     QAction* activateAction = menu.addAction(QIcon(":/Icon/process_start.svg"), QStringLiteral("激活窗口"));
     QAction* topMostAction = menu.addAction(QIcon(":/Icon/process_priority.svg"), QStringLiteral("置顶/取消置顶"));
     QAction* showHideAction = menu.addAction(QIcon(":/Icon/process_pause.svg"), QStringLiteral("显示/隐藏"));
-    QAction* enableDisableAction = menu.addAction(QIcon(":/Icon/process_uncritical.svg"), QStringLiteral("启用/禁用"));
-    QAction* flashAction = menu.addAction(QIcon(":/Icon/process_refresh.svg"), QStringLiteral("闪烁窗口"));
+    QAction* enableDisableAction = menu.addAction(QIcon(":/Icon/process_suspend.svg"), QStringLiteral("启用/禁用"));
+    QAction* flashAction = menu.addAction(QIcon(":/Icon/window_picker_target.svg"), QStringLiteral("闪烁窗口"));
     QAction* protectCaptureAction = menu.addAction(QIcon(":/Icon/titlebar_capture_protected.svg"), QStringLiteral("启用防截图保护"));
     QAction* unprotectCaptureAction = menu.addAction(QIcon(":/Icon/titlebar_capture_allowed.svg"), QStringLiteral("取消防截图保护"));
     menu.addSeparator();

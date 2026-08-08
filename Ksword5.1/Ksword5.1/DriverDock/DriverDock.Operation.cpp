@@ -1830,14 +1830,14 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
         QStringLiteral("仅在默认浏览器中打开与所选驱动有关的 Bing 搜索，不读取或处理搜索结果。")));
     contextMenu.addSeparator();
     QAction* stopServiceAction = contextMenu.addAction(
-        QIcon(":/Icon/process_uncritical.svg"),
+        QIcon(":/Icon/process_terminate.svg"),
         driverText("driver.menu.stop_service", QStringLiteral("标准卸载（SCM / sc stop）")));
     stopServiceAction->setToolTip(
         driverText(
             "driver.menu.stop_service.tooltip",
             QStringLiteral("通过服务控制管理器发送 SERVICE_CONTROL_STOP，走 Windows 标准驱动卸载路径。")));
     QAction* scCleanupAction = contextMenu.addAction(
-        QIcon(":/Icon/process_uncritical.svg"),
+        QIcon(":/Icon/process_terminate.svg"),
         driverText(
             "driver.menu.sc_unload_cleanup",
             QStringLiteral("sc卸载并清理文件注册表")));
@@ -1862,14 +1862,14 @@ void DriverDock::showServiceTableContextMenu(const QPoint& localPosition)
             QStringLiteral("当前服务缺少可安全解析的绝对 .sys 路径，无法执行清理。")));
     }
     QAction* forceUnloadAction = contextMenu.addAction(
-        QIcon(":/Icon/process_uncritical.svg"),
+        QIcon(":/Icon/process_terminate.svg"),
         driverText("driver.menu.force_unload_driver_object", QStringLiteral("直接调用 DriverUnload")));
     forceUnloadAction->setToolTip(
         driverText(
             "driver.menu.force_unload_driver_object.tooltip",
             QStringLiteral("跳过 SCM/ZwUnloadDriver，仅调用 DriverObject->DriverUnload；不修改 MajorFunction，不强停线程，不强删设备。")));
     QAction* forceDestructiveUnloadAction = contextMenu.addAction(
-        QIcon(":/Icon/process_uncritical.svg"),
+        QIcon(":/Icon/process_terminate.svg"),
         driverText("driver.menu.destructive_unload_driver_object", QStringLiteral("DriverObject 强拆")));
     forceDestructiveUnloadAction->setToolTip(
         driverText(
@@ -2479,7 +2479,7 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
     }
     contextMenu.addSeparator();
     QAction* scCleanupAction = contextMenu.addAction(
-        QIcon(":/Icon/process_uncritical.svg"),
+        QIcon(":/Icon/process_terminate.svg"),
         driverText(
             "driver.menu.sc_unload_cleanup",
             QStringLiteral("sc卸载并清理文件注册表")));
@@ -2487,14 +2487,14 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
         "driver.menu.sc_unload_cleanup.module_tooltip",
         QStringLiteral("仅当模块完整路径在当前 SCM 驱动服务缓存中唯一匹配时，才允许走标准 sc 停止并清理。")));
     QAction* forceCleanupByBaseAction = contextMenu.addAction(
-        QIcon(":/Icon/process_uncritical.svg"),
+        QIcon(":/Icon/process_terminate.svg"),
         driverText("driver.menu.force_unload_by_base", QStringLiteral("按模块基址直接调用 DriverUnload")));
     forceCleanupByBaseAction->setToolTip(
         driverText(
             "driver.menu.force_unload_by_base.tooltip",
             QStringLiteral("按模块基址反查 DriverObject，跳过系统卸载路径，仅调用 DriverUnload。")));
     QAction* forceDeepCleanupByBaseAction = contextMenu.addAction(
-        QIcon(":/Icon/process_uncritical.svg"),
+        QIcon(":/Icon/process_terminate.svg"),
         driverText("driver.menu.deep_cleanup_by_base", QStringLiteral("按模块基址 DriverObject 强拆")));
     forceDeepCleanupByBaseAction->setToolTip(
         driverText(
@@ -2509,7 +2509,7 @@ void DriverDock::showModuleTableContextMenu(const QPoint& localPosition)
             "driver.menu.blind_irp.tooltip",
             QStringLiteral("按模块基址精确定位 DriverObject，只拒绝 CREATE/READ/WRITE/DEVICE_CONTROL/INTERNAL_DEVICE_CONTROL；保留 Cleanup、Close、PnP、Power 和 FastIo。")));
     QAction* restoreCommunicationAction = contextMenu.addAction(
-        QIcon(":/Icon/process_refresh.svg"),
+        QIcon(":/Icon/process_resume.svg"),
         driverText("driver.menu.restore_irp", QStringLiteral("恢复 IRP 通信")));
     restoreCommunicationAction->setToolTip(
         driverText(

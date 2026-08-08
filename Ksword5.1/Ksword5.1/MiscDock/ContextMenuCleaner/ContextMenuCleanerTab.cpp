@@ -124,7 +124,7 @@ void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
     if (area == MenuArea::UrlBinding)
     {
         areaWidgets->restoreButton = new QPushButton(
-            QIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+            QIcon(QStringLiteral(":/Icon/codeeditor_undo.svg")),
             QStringLiteral("恢复上次删除"),
             areaWidgets->toolbarWidget);
         areaWidgets->restoreButton->setToolTip(QStringLiteral("恢复上一次 URL 绑定删除前自动保存的注册表树"));

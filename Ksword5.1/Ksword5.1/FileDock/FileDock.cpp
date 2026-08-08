@@ -10409,8 +10409,8 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     QAction* renameAction = menu.addAction(QIcon(":/Icon/process_priority.svg"), QStringLiteral("重命名(F2)"));
     QAction* deleteAction = menu.addAction(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("删除(Delete)"));
     QAction* driverDeleteAction = menu.addAction(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动删除(R0)"));
-    QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_refresh.svg"), QStringLiteral("文件解锁器(R3/R0)"));
-    QMenu* addOplockMenu = menu.addMenu(QIcon(":/Icon/handle_refresh.svg"), QStringLiteral("添加 Oplock（访问计数）"));
+    QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("文件解锁器(R3/R0)"));
+    QMenu* addOplockMenu = menu.addMenu(QIcon(":/Icon/plus.svg"), QStringLiteral("添加 Oplock（访问计数）"));
     QAction* addOplockLevel1Action = addOplockMenu->addAction(QStringLiteral("Level 1 - 独占读写缓存，别人访问会计数"));
     QAction* addOplockLevel2Action = addOplockMenu->addAction(QStringLiteral("Level 2 - 共享只读缓存，别人写入会计数"));
     QAction* addOplockBatchAction = addOplockMenu->addAction(QStringLiteral("Batch - 缓存反复打开关闭，访问时计数"));
@@ -10458,7 +10458,7 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     // 分析动作改为顶层菜单，减少层级并提升右键操作效率。
     QAction* hashAction = menu.addAction(QIcon(":/Icon/log_track.svg"), QStringLiteral("计算哈希值"));
     QAction* signAction = menu.addAction(QIcon(":/Icon/process_critical.svg"), QStringLiteral("检查数字签名"));
-    QAction* entropyAction = menu.addAction(QIcon(":/Icon/process_uncritical.svg"), QStringLiteral("计算熵值"));
+    QAction* entropyAction = menu.addAction(QIcon(":/Icon/disk_analyze.svg"), QStringLiteral("计算熵值"));
     QAction* hexAction = menu.addAction(QIcon(":/Icon/process_details.svg"), QStringLiteral("十六进制查看"));
     QAction* peAction = menu.addAction(QIcon(":/Icon/process_list.svg"), QStringLiteral("在PE查看器中打开"));
     QAction* mappedProcessScanAction = menu.addAction(QIcon(":/Icon/process_tree.svg"), QStringLiteral("扫描映射进程(R0)"));

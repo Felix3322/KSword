@@ -410,7 +410,7 @@ void NetworkDock::initializeRouteTableTab()
     m_editRouteButton->setIcon(QIcon(":/Icon/process_details.svg"));
     m_editRouteButton->setToolTip(QStringLiteral("编辑选中路由"));
     m_removeRouteButton = new QPushButton(m_routeTablePage);
-    m_removeRouteButton->setIcon(QIcon(":/Icon/process_uncritical.svg"));
+    m_removeRouteButton->setIcon(QIcon(":/Icon/log_clear.svg"));
     m_removeRouteButton->setToolTip(QStringLiteral("删除选中活动路由及其同名持久副本"));
     m_routeStatusLabel = new QLabel(QStringLiteral("状态：等待刷新"), m_routeTablePage);
     m_routeStatusLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -750,7 +750,7 @@ void NetworkDock::initializeArpCacheTab()
     m_addArpButton->setToolTip(QStringLiteral("新增静态 ARP 缓存项"));
 
     m_removeArpButton = new QPushButton(m_arpCachePage);
-    m_removeArpButton->setIcon(QIcon(":/Icon/process_uncritical.svg"));
+    m_removeArpButton->setIcon(QIcon(":/Icon/log_clear.svg"));
     m_removeArpButton->setToolTip(QStringLiteral("删除选中的 ARP 缓存项"));
 
     m_flushArpButton = new QPushButton(m_arpCachePage);
@@ -806,7 +806,7 @@ void NetworkDock::initializeDnsCacheTab()
     m_dnsEntryEdit->setToolTip(QStringLiteral("删除指定域名的 DNS 缓存条目"));
 
     m_removeDnsButton = new QPushButton(QStringLiteral("删除"), m_dnsCachePage);
-    m_removeDnsButton->setIcon(QIcon(":/Icon/process_uncritical.svg"));
+    m_removeDnsButton->setIcon(QIcon(":/Icon/log_clear.svg"));
     m_removeDnsButton->setToolTip(QStringLiteral("删除输入框域名或表格选中的 DNS 缓存条目，支持多选"));
 
     m_flushDnsButton = new QPushButton(QStringLiteral("清空"), m_dnsCachePage);

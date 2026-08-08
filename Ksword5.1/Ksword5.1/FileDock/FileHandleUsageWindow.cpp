@@ -590,7 +590,7 @@ void FileHandleUsageWindow::showTableContextMenu(const QPoint& localPosition)
     QMenu menu(this);
     menu.setStyleSheet(KswordTheme::ContextMenuStyle());
     QAction* openProcessAction = menu.addAction(QIcon(":/Icon/process_details.svg"), QStringLiteral("转到进程详细信息"));
-    QAction* closeHandleAction = menu.addAction(QIcon(":/Icon/handle_refresh.svg"), QStringLiteral("关闭当前句柄(R3)"));
+    QAction* closeHandleAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("关闭当前句柄(R3)"));
     QAction* copyRowAction = menu.addAction(QIcon(":/Icon/handle_copy_row.svg"), QStringLiteral("复制整行"));
 
     QAction* selectedAction = menu.exec(m_resultTable->viewport()->mapToGlobal(localPosition));

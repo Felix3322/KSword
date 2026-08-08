@@ -561,7 +561,7 @@ void NetworkDock::showMultiThreadDownloadClipboardPrompt(const QString& urlText)
     startButton->setIcon(QIcon(":/Icon/process_start.svg"));
     startButton->setToolTip(QStringLiteral("按当前 URL 和保存目录创建下载任务"));
     QPushButton* cancelButton = new QPushButton(QStringLiteral("取消下载"), promptDialog); // cancelButton：取消本次询问按钮。
-    cancelButton->setIcon(QIcon(":/Icon/process_uncritical.svg"));
+    cancelButton->setIcon(QIcon(":/Icon/titlebar_close.svg"));
     cancelButton->setToolTip(QStringLiteral("关闭本次下载询问框，不创建任务"));
 
     QHBoxLayout* actionLayout = new QHBoxLayout(); // actionLayout：底部动作按钮布局。

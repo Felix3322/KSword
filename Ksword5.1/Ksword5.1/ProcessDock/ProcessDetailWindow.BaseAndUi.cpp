@@ -4779,7 +4779,7 @@ void ProcessDetailWindow::initializeConnections()
             buildProcessDetailR0ActionIcon(QStringLiteral(":/Icon/process_resume.svg")),
             QStringLiteral("取消隐藏当前进程"));
         QAction* clearHiddenAction = visibilityMenu.addAction(
-            buildProcessDetailR0ActionIcon(QStringLiteral(":/Icon/process_refresh.svg")),
+            buildProcessDetailR0ActionIcon(QStringLiteral(":/Icon/log_clear.svg")),
             QStringLiteral("清空全部隐藏标记"));
         hideUnlinkOnlyAction->setToolTip(QStringLiteral("只摘除 ActiveProcessLinks，不修改 PID；更容易按原 PID 找回和恢复。"));
         hidePatchPidOnlyAction->setToolTip(QStringLiteral("只修改 UniqueProcessId，不摘链；高风险，可能影响按原 PID 查找目标。"));
