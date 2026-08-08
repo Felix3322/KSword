@@ -188,7 +188,7 @@ const QString QSS_MainWindow_dockStyle = R"(
         background-color: transparent;
         color: palette(text);
         border: none;
-        border-radius: 1px;
+        border-radius: 3px;
     }
 
     ads--CDockAreaTitleBar QToolButton:hover,
@@ -208,7 +208,8 @@ const QString QSS_MainWindow_dockStyle = R"(
     QScrollBar::handle:vertical {
         background-color: palette(highlight);
         min-height: 20px;
-        border-radius: 2px;
+        margin: 2px;
+        border-radius: 4px;
     }
 
     QScrollBar::handle:vertical:hover {
@@ -225,7 +226,8 @@ const QString QSS_MainWindow_dockStyle = R"(
     QScrollBar::handle:horizontal {
         background-color: palette(highlight);
         min-width: 20px;
-        border-radius: 2px;
+        margin: 2px;
+        border-radius: 4px;
     }
 
     QScrollBar::handle:horizontal:hover {
@@ -255,7 +257,7 @@ const QString QSS_Buttons_Light = R"(
         color: palette(highlighted-text) !important;
         border: 1px solid palette(highlight) !important;
         padding: 6px 16px;
-        border-radius: 1px;
+        border-radius: 4px;
         font-weight: 500;
         outline: none;
     }
@@ -289,7 +291,7 @@ const QString QSS_Buttons_Dark = R"(
         color: palette(highlighted-text) !important;
         border: 1px solid palette(highlight) !important;
         padding: 6px 16px;
-        border-radius: 1px;
+        border-radius: 4px;
         font-weight: 500;
         outline: none;
     }

@@ -86,6 +86,8 @@
 #include "Internationalization/LanguageManager.h"
 #include "UI/CodeEditorWidget.h"
 #include "UI/GlobalDialogTheme.h"
+#include "UI/GlobalUiBaseStyle.h"
+#include "UI/WindowChrome.h"
 #include "UI/SvgThemeIconManager.h"
 #include "UI/SmoothScrollSupport.h"
 #include "UI/ThemedMessageBox.h"
@@ -3807,6 +3809,7 @@ namespace
     // 入参 tooltipStyleBlock/contextMenuStyleBlock/controlContrastStyleBlock/comboBoxStyleBlock：已带标记的 QSS 片段。
     // 返回：实际触发 QApplication::setStyleSheet 时返回 true。
     bool applyGlobalApplicationStyleBlocks(
+        const QString& baseControlStyleBlock,
         const QString& tooltipStyleBlock,
         const QString& contextMenuStyleBlock,
         const QString& controlContrastStyleBlock,
@@ -3836,6 +3839,12 @@ namespace
         QString appStyleSheetText = appInstance->styleSheet();
         const QString oldStyleSheetText = appStyleSheetText;
 
+        // 基线块最先替换：首次追加时位于样式表最前，专用样式块和局部样式仍可覆盖。
+        replaceMarkedStyleBlock(
+            appStyleSheetText,
+            ks::ui::kBaseControlStyleBeginMarker,
+            ks::ui::kBaseControlStyleEndMarker,
+            baseControlStyleBlock);
         replaceMarkedStyleBlock(
             appStyleSheetText,
             kTooltipStyleBeginMarker,
@@ -4785,12 +4794,16 @@ void MainWindow::ensureNativeFramelessWindowStyle()
 
     // currentStyleValue 用途：保存当前窗口样式，供增量合并必需样式位。
     const LONG_PTR currentStyleValue = ::GetWindowLongPtrW(mainWindowHandle, GWL_STYLE);
-    // removeStyleMask 用途：显式移除系统标题栏样式，防止顶部出现白色非客户区。
-    const LONG_PTR removeStyleMask = WS_CAPTION;
     // requiredStyleMask 用途：无边框窗口仍需具备的系统交互能力掩码。
-    const LONG_PTR requiredStyleMask = WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU;
-    // updatedStyleValue 用途：合并后的目标样式值。
-    const LONG_PTR updatedStyleValue = ((currentStyleValue & ~removeStyleMask) | requiredStyleMask);
+    //
+    // 即使客户区由自绘标题栏完全接管，也必须保留 WS_CAPTION：Windows
+    // 会用它判断窗口是否具备常规的最小化/最大化语义，DWM 的还原、最大化、
+    // 最小化过渡动画以及 Aero Snap 才会按普通窗口路径运行。标准非客户区
+    // 仍由 WM_NCCALCSIZE 返回 0 移除，因此不会重新显示系统标题栏。
+    const LONG_PTR requiredStyleMask =
+        WS_CAPTION | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU;
+    // updatedStyleValue 用途：保留 Qt/Win32 其它样式，仅补齐系统窗口语义。
+    const LONG_PTR updatedStyleValue = currentStyleValue | requiredStyleMask;
 
     if (updatedStyleValue != currentStyleValue)
     {
@@ -9802,6 +9815,7 @@ void MainWindow::applyAppearanceSettings(
         QToolTip::setPalette(toolTipPalette);
 
         globalAppStyleChanged = applyGlobalApplicationStyleBlocks(
+            ks::ui::BuildGlobalBaseControlStyleBlock(),
             buildGlobalTooltipStyleBlock(darkModeEnabled),
             buildGlobalContextMenuStyleBlock(darkModeEnabled),
             buildGlobalControlContrastStyleBlock(darkModeEnabled),
@@ -9823,6 +9837,8 @@ void MainWindow::applyAppearanceSettings(
         // 深浅色变化时，已打开的标准和自定义对话框也应同步主题。
         ks::ui::RefreshGlobalMessageBoxTheme();
         ks::ui::RefreshGlobalDialogTheme();
+        // 已打开的原生标题栏子窗口同步染色，保持标题栏与主题背景一体。
+        ks::ui::RefreshAllWindowChrome();
 
         if (menuBar() != nullptr)
         {

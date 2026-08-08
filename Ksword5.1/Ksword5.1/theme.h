@@ -886,7 +886,7 @@ namespace KswordTheme
         return QStringLiteral(
             "QPushButton,QToolButton{"
             "background-color:%1 !important;color:%2 !important;border:1px solid %3 !important;"
-            "border-radius:3px;padding:4px 10px;font-weight:600;}"
+            "border-radius:4px;padding:4px 10px;font-weight:600;}"
             "QPushButton:hover,QToolButton:hover{background-color:%4 !important;color:%5 !important;border-color:%4 !important;}"
             "QPushButton:pressed,QToolButton:pressed{background-color:%6 !important;color:%5 !important;border-color:%6 !important;}"
             "QPushButton:disabled,QToolButton:disabled{background-color:%1 !important;color:%7 !important;border-color:%3 !important;}")
@@ -981,7 +981,7 @@ namespace KswordTheme
             "  background-color:%1 !important;"
             "  color:%4 !important;"
             "  border:1px solid %6 !important;"
-            "  border-radius:3px;"
+            "  border-radius:4px;"
             "  padding:2px 24px 2px 6px;"
             "  min-height:22px;"
             "  selection-background-color:%7 !important;"
