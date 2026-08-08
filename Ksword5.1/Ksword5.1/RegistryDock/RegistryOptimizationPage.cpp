@@ -1884,7 +1884,12 @@ bool RegistryOptimizationPage::applyVisibleRow(const int tableRow)
     if (!state->warningText.isEmpty()) warningText += state->warningText + QLatin1Char('\n');
     const QString messageText = QStringLiteral("即将应用：\n%1\n作用域：%2\n目标：%3\n\n%4是否继续？")
         .arg(item.itemNameText, scopeDisplayText(scope.scopeText), state->labelText, warningText);
-    if (QMessageBox::question(this, QStringLiteral("确认系统优化"), messageText) != QMessageBox::Yes)
+    if (QMessageBox::question(
+            this,
+            QStringLiteral("确认系统优化"),
+            messageText,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
     {
         return false;
     }

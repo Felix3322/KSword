@@ -2236,7 +2236,9 @@ void NetworkAuditPage::terminateSelectedTcpConnection()
         QStringLiteral("确认终止连接？\nPID=%1\n本地=%2\n远端=%3")
             .arg(endpointRow.processId)
             .arg(endpointRow.localEndpointText)
-            .arg(endpointRow.remoteEndpointText));
+            .arg(endpointRow.remoteEndpointText),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
     if (confirmation != QMessageBox::Yes)
     {
         return;

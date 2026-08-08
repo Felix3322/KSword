@@ -132,7 +132,12 @@ void HandleDock::closeCurrentHandle()
         .arg(row->typeIndex)
         .arg(row->typeName)
         .arg(formatObjectNameDisplayText(*row));
-    if (QMessageBox::question(this, QStringLiteral("关闭句柄"), confirmText) != QMessageBox::Yes)
+    if (QMessageBox::question(
+            this,
+            QStringLiteral("关闭句柄"),
+            confirmText,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
     {
         return;
     }
@@ -191,7 +196,12 @@ void HandleDock::closeSameTypeHandlesInCurrentProcess()
         .arg(selectedRow->typeIndex)
         .arg(selectedRow->typeName)
         .arg(targetRows.size());
-    if (QMessageBox::question(this, QStringLiteral("批量关闭句柄"), confirmText) != QMessageBox::Yes)
+    if (QMessageBox::question(
+            this,
+            QStringLiteral("批量关闭句柄"),
+            confirmText,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
     {
         return;
     }

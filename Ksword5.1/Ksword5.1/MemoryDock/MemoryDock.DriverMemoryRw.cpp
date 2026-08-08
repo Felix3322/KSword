@@ -1298,20 +1298,10 @@ bool MemoryDock::confirmForceDriverMemoryWrite(
     const std::uint32_t requestedBytes,
     const QString& failureText)
 {
-    // 全局策略允许跳过重复模态框，但不会改变 force 标志、目标范围和驱动端验证。
-    if (ks::settings::dangerousActionConfirmationsSuppressed())
-    {
-        kLogEvent suppressedForceConfirmationEvent;
-        warn << suppressedForceConfirmationEvent
-            << "[MemoryDock] force-write modal confirmation suppressed; address="
-            << formatAddress(blockAddress).toStdString()
-            << ", bytes="
-            << requestedBytes
-            << ", reason="
-            << failureText.toStdString()
-            << eol;
-        return true;
-    }
+    // 这里不受“跳过危险操作重复确认”开关影响：
+    // 该开关承诺的是省掉用户已经答过一遍的重复询问，而走到本函数意味着
+    // R0 刚刚拒绝了这次普通写入，是否越过该保护属于全新决策，必须逐次询问。
+    // 自动返回 true 等于替用户同意了一次驱动已经否决的写入。
 
     // 强制确认入口：普通写入被 R0 拒绝后才会走到这里。
     QMessageBox warningBox(this);

@@ -480,7 +480,9 @@ void NetworkDock::terminateSelectedTcpConnection()
         .arg(toQString(targetConnection.localAddressText))
         .arg(targetConnection.localPort)
         .arg(toQString(targetConnection.remoteAddressText))
-        .arg(targetConnection.remotePort));
+        .arg(targetConnection.remotePort),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
     if (userChoice != QMessageBox::Yes)
     {
         return;

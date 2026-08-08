@@ -95,7 +95,9 @@ void NetworkDock::clearAllRateLimitRules()
     const int userChoice = QMessageBox::question(
         this,
         QStringLiteral("进程限速"),
-        QStringLiteral("确认清空全部限速规则吗？"));
+        QStringLiteral("确认清空全部限速规则吗？"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
     if (userChoice != QMessageBox::Yes)
     {
         return;
