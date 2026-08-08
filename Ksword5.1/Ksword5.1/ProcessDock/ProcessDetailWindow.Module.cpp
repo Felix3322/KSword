@@ -323,9 +323,9 @@ void ProcessDetailWindow::showModuleContextMenu(const QPoint& localPosition)
     QAction* gotoModuleAction = contextMenu.addAction(QIcon(":/Icon/process_details.svg"), "查看模块详情");
     QAction* openFolderAction = contextMenu.addAction(QIcon(":/Icon/process_open_folder.svg"), "打开文件夹");
     QAction* unloadAction = contextMenu.addAction(QIcon(":/Icon/process_terminate.svg"), "卸载");
-    QAction* suspendThreadAction = contextMenu.addAction(QIcon(":/Icon/process_suspend.svg"), "挂起Thread");
-    QAction* resumeThreadAction = contextMenu.addAction(QIcon(":/Icon/process_resume.svg"), "取消挂起Thread");
-    QAction* terminateThreadAction = contextMenu.addAction(QIcon(":/Icon/process_terminate.svg"), "结束Thread");
+    QAction* suspendThreadAction = contextMenu.addAction(QIcon(":/Icon/process_suspend.svg"), "挂起线程");
+    QAction* resumeThreadAction = contextMenu.addAction(QIcon(":/Icon/process_resume.svg"), "恢复线程");
+    QAction* terminateThreadAction = contextMenu.addAction(QIcon(":/Icon/process_terminate.svg"), "结束线程");
 
     QAction* selectedAction = contextMenu.exec(m_moduleTable->viewport()->mapToGlobal(localPosition));
     if (selectedAction == nullptr)
@@ -544,7 +544,7 @@ void ProcessDetailWindow::suspendCurrentModuleThread()
         warn << actionEvent
             << "[ProcessDetailWindow] suspendCurrentModuleThread: 缺少 ThreadID。"
             << eol;
-        showActionResultMessage("挂起 Thread", false, errorDetailText, actionEvent);
+        showActionResultMessage("挂起线程", false, errorDetailText, actionEvent);
         return;
     }
 
@@ -561,7 +561,7 @@ void ProcessDetailWindow::suspendCurrentModuleThread()
         << ", actionOk="
         << (actionOk ? "true" : "false")
         << eol;
-    showActionResultMessage("挂起 Thread", actionOk, detailText, actionEvent);
+    showActionResultMessage("挂起线程", actionOk, detailText, actionEvent);
 }
 
 void ProcessDetailWindow::resumeCurrentModuleThread()
@@ -579,7 +579,7 @@ void ProcessDetailWindow::resumeCurrentModuleThread()
         warn << actionEvent
             << "[ProcessDetailWindow] resumeCurrentModuleThread: 缺少 ThreadID。"
             << eol;
-        showActionResultMessage("取消挂起 Thread", false, errorDetailText, actionEvent);
+        showActionResultMessage("恢复线程", false, errorDetailText, actionEvent);
         return;
     }
 
@@ -596,7 +596,7 @@ void ProcessDetailWindow::resumeCurrentModuleThread()
         << ", actionOk="
         << (actionOk ? "true" : "false")
         << eol;
-    showActionResultMessage("取消挂起 Thread", actionOk, detailText, actionEvent);
+    showActionResultMessage("恢复线程", actionOk, detailText, actionEvent);
 }
 
 void ProcessDetailWindow::terminateCurrentModuleThread()
@@ -614,7 +614,7 @@ void ProcessDetailWindow::terminateCurrentModuleThread()
         warn << actionEvent
             << "[ProcessDetailWindow] terminateCurrentModuleThread: 缺少 ThreadID。"
             << eol;
-        showActionResultMessage("结束 Thread", false, errorDetailText, actionEvent);
+        showActionResultMessage("结束线程", false, errorDetailText, actionEvent);
         return;
     }
 
@@ -631,7 +631,7 @@ void ProcessDetailWindow::terminateCurrentModuleThread()
         << ", actionOk="
         << (actionOk ? "true" : "false")
         << eol;
-    showActionResultMessage("结束 Thread", actionOk, detailText, actionEvent);
+    showActionResultMessage("结束线程", actionOk, detailText, actionEvent);
     if (actionOk)
     {
         requestAsyncModuleRefresh(true);

@@ -37,7 +37,7 @@ namespace ksword::driver_dock_internal
             driverText("driver.header.status", QStringLiteral("状态")),
             driverText("driver.header.start_type", QStringLiteral("启动类型")),
             driverText("driver.header.error_control", QStringLiteral("错误控制")),
-            driverText("driver.header.image_path", QStringLiteral("镜像路径")),
+            driverText("driver.header.image_path", QStringLiteral("映像路径")),
             driverText("driver.header.description", QStringLiteral("描述"))
         };
     }

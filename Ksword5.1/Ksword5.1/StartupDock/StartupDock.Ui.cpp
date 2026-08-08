@@ -19,7 +19,7 @@ namespace startup_dock_detail
         return {
             startupText("startup.header.name", QStringLiteral("名称")),
             startupText("startup.header.publisher", QStringLiteral("发布者")),
-            startupText("startup.header.image_path", QStringLiteral("镜像路径")),
+            startupText("startup.header.image_path", QStringLiteral("映像路径")),
             startupText("startup.header.command", QStringLiteral("命令")),
             startupText("startup.header.location", QStringLiteral("来源位置")),
             startupText("startup.header.user", QStringLiteral("用户")),

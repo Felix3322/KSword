@@ -12375,7 +12375,7 @@ void FileDock::showSelectedFileOplockAccessRecords(FilePanelWidgets& panel)
         QStringLiteral("最近时间"),
         QStringLiteral("命中路径"),
         QStringLiteral("规则/来源"),
-        QStringLiteral("镜像路径")
+        QStringLiteral("映像路径")
     });
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setSelectionMode(QAbstractItemView::SingleSelection);
