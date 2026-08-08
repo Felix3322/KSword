@@ -3096,7 +3096,7 @@ private:
         customMaskEdit->setObjectName(QStringLiteral("ksCallbackRuleCustomMaskEdit"));
         customMaskEdit->setPlaceholderText(kernelText("kernel.callback.intercept.operation.custom_mask", QStringLiteral("自定义掩码")));
         customMaskEdit->setText(customMask != 0U ? operationMaskToText(customMask) : QString());
-        customMaskEdit->setToolTip(kernelText("kernel.callback.intercept.operation.custom_mask_tooltip", QStringLiteral("输入十六进制或十进制掩码；缺少 0x/0X 时会自动补全。")));
+        customMaskEdit->setToolTip(kernelText("kernel.callback.intercept.operation.custom_mask_tooltip", QStringLiteral("输入十六进制或十进制掩码；缺少 0x 前缀时会自动补全（大小写不敏感）。")));
         applyRuleLineEditStyle(customMaskEdit);
 
         connect(customMaskEdit, &QLineEdit::textEdited, m_hostPage, [this](const QString&) {

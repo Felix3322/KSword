@@ -718,7 +718,7 @@ namespace
 
     // parseUnsignedIntegerText：
     // - 解析 UI 输入中的十六进制/十进制无符号整数；
-    // - 支持 0x/0X 前缀和纯十进制；
+    // - 支持 0x 前缀（大小写不敏感）和纯十进制；
     // - 成功时写入 valueOut 并返回 true，失败返回 false。
     bool parseUnsignedIntegerText(const QString& inputText, std::uint64_t& valueOut)
     {
@@ -6277,9 +6277,9 @@ void ProcessDetailWindow::populatePebEditableFieldsFromText(const QString& detai
     const QString currentDirectoryText = captureSingleLine(
         QStringLiteral("^CurrentDirectory\\(%1\\):\\s*(.*)$").arg(escapedTarget));
     const QString imageBaseText = captureSingleLine(
-        QStringLiteral("^\\s*ImageBaseAddress:\\s*(0X[0-9A-Fa-f]+|0x[0-9A-Fa-f]+|[0-9]+)\\s*$"));
+        QStringLiteral("^\\s*ImageBaseAddress:\\s*(0[xX][0-9A-Fa-f]+|[0-9]+)\\s*$"));
     const QString affinityText = captureSingleLine(
-        QStringLiteral("^ProcessAffinity:\\s*(0X[0-9A-Fa-f]+|0x[0-9A-Fa-f]+|[0-9]+)\\s*$"));
+        QStringLiteral("^ProcessAffinity:\\s*(0[xX][0-9A-Fa-f]+|[0-9]+)\\s*$"));
     const QString priorityText = captureSingleLine(QStringLiteral("^PriorityClass:\\s*([^\\r\\n]+)\\s*$"));
 
     if (m_pebCommandLineEdit != nullptr)
