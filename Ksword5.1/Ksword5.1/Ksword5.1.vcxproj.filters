@@ -679,9 +679,6 @@
     <ClCompile Include="UI\WindowChrome.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="UI\WallpaperBackdrop.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="UI\PerformanceNavCard.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1559,9 +1556,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\WindowChrome.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="UI\WallpaperBackdrop.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="UI\ThemedMessageBox.h">

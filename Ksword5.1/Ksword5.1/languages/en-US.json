@@ -245,7 +245,7 @@
     "settings.background.translucency_material.auto": "Auto (desktop with image, frosted without)",
     "settings.background.translucency_material.desktop": "Desktop see-through (fully transparent)",
     "settings.background.translucency_material.mica": "Frosted glass",
-    "settings.background.translucency_material.tooltip": "Frosted blur: blurs your current desktop wallpaper and uses it as the window backdrop (same idea as the system Mica effect); live content behind the window does not show through; stable performance, recommended. Acrylic blur: the system blurs whatever is behind the window in real time for a richer look, but on some systems it slows mouse-move delivery, so hover highlights stop refreshing (clicking is unaffected). Show desktop: transparent areas show the desktop sharply. Auto: see-through when a background image is set, frosted blur when there is none. Takes effect immediately.",
+    "settings.background.translucency_material.tooltip": "Frosted glass: the system blurs whatever is behind the window in real time and overlays the theme tint. See-through desktop: transparent areas show the desktop sharply. Auto: see-through when a background image is set, frosted glass when there is none. Takes effect immediately.",
     "settings.background.transparency": "Transparent window background (restart required)",
     "settings.background.transparency.tooltip": "When checked the window background becomes transparent: with a background image set, its transparent areas (requires a PNG with an alpha channel) show the desktop behind; without a background image the window uses a frosted glass effect. Pick the exact style under \"Transparency style\" below. Restart Ksword to apply.",
     "settings.font.label": "Font",
@@ -4427,7 +4427,7 @@
     "kernel.iotimer.control.start": "Start timer",
     "kernel.iotimer.control.stop": "Stop timer",
     "settings.background.translucency_material.blur": "Frosted blur (recommended)",
-    "settings.background.translucency_material.acrylic": "Acrylic blur (richer look, may affect hover)"
+    "settings.background.translucency_material.acrylic": "Frosted glass"
   },
   "source_translations": {
     "即将按手工填写的地址移除内核回调。\n\n": "About to remove a kernel callback at the address you typed in.\n\n",
@@ -15601,7 +15601,7 @@
     "毛玻璃磨砂": "Frosted glass",
     "直透桌面（完全透明）": "Desktop see-through (fully transparent)",
     "毛玻璃磨砂：透明区域显示模糊虚化的桌面；直透桌面：透明区域清晰地直接看到桌面；自动：设置了背景图时直透，没有背景图时用磨砂。修改后立即生效。": "Frosted glass blurs the desktop behind transparent areas; desktop see-through shows the desktop sharply; auto uses see-through when a background image is set and frosted glass otherwise. Changes apply immediately.",
-    "勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口呈现毛玻璃磨砂效果。具体呈现方式可在下方“透明背景效果”中选择。重启 Ksword 后生效。": "When checked the window background becomes transparent: with a background image set, its transparent areas (requires a PNG with an alpha channel) show the desktop behind; without a background image the window uses a frosted glass effect. Pick the exact style under \"Transparency style\" below. Restart Ksword to apply.",
+    "勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口呈现磨砂玻璃效果。具体呈现方式可在下方“透明背景效果”中选择。重启 Ksword 后生效。": "When checked the window background becomes transparent: with a background image set, its transparent areas (requires a PNG with an alpha channel) show the desktop behind; without a background image the window uses a frosted glass effect. Pick the exact style under \"Transparency style\" below. Restart Ksword to apply.",
     "[MainWindow] 背景穿透设置已保存，重启 Ksword 后生效。": "[MainWindow] Background see-through setting saved; restart Ksword to apply.",
     "[MainWindow] 窗口毛玻璃材质切换, enabled=": "[MainWindow] Window frosted-glass material toggled, enabled=",
     ", ok=": ", ok=",
@@ -25110,7 +25110,8 @@
     "请先在列表中选择一个服务": "Select a service in the list first",
     "毛玻璃磨砂（推荐）": "Frosted blur (recommended)",
     "亚克力磨砂（质感更强，可能影响悬停）": "Acrylic blur (richer look, may affect hover)",
-    "毛玻璃磨砂：把当前桌面壁纸虚化后作为窗口底色（与系统云母同思路），不透出窗口后方的实时内容，性能稳定，推荐使用。亚克力磨砂：由系统实时模糊窗口后方内容，质感更强，但在部分系统上会拖慢鼠标移动消息，表现为鼠标悬停高亮不刷新（点击不受影响）。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用毛玻璃磨砂。修改后立即生效。": "Frosted blur: blurs your current desktop wallpaper and uses it as the window backdrop (same idea as the system Mica effect); live content behind the window does not show through; stable performance, recommended. Acrylic blur: the system blurs whatever is behind the window in real time for a richer look, but on some systems it slows mouse-move delivery, so hover highlights stop refreshing (clicking is unaffected). Show desktop: transparent areas show the desktop sharply. Auto: see-through when a background image is set, frosted blur when there is none. Takes effect immediately.",
+    "磨砂玻璃": "Frosted glass",
+    "磨砂玻璃：由系统实时模糊窗口后方内容并叠加主题着色。直透桌面：透明区域清晰地直接看到桌面。自动：设置了背景图时直透，没有背景图时用磨砂玻璃。修改后立即生效。": "Frosted glass: the system blurs whatever is behind the window in real time and overlays the theme tint. See-through desktop: transparent areas show the desktop sharply. Auto: see-through when a background image is set, frosted glass when there is none. Takes effect immediately.",
     "%5\n\n是否继续？": "%5\n\nContinue?",
     ", preview=\n": ", preview=\n",
     "[FileDock] 部分项目无法移入回收站，已永久删除, panel=": "[FileDock] Some items could not be moved to the Recycle Bin and were permanently deleted, panel=",

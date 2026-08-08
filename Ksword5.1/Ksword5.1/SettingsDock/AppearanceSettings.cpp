@@ -533,8 +533,8 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
         .toString(loadedSettings.backgroundTranslucencyMaterial)
         .trimmed()
         .toLower();
-    // mica 是历史取值（当时底层为亚克力，界面文案是“毛玻璃磨砂”），
-    // 保留读入以免旧配置被静默重置，实际材质决策会把它按高斯模糊处理。
+    // blur/mica 是历史取值（都表示“磨砂”），保留读入以免旧配置被静默重置，
+    // 实际材质决策与设置页回显都会把它们按亚克力磨砂处理。
     loadedSettings.backgroundTranslucencyMaterial =
         (translucencyMaterialText == QStringLiteral("blur")
             || translucencyMaterialText == QStringLiteral("acrylic")

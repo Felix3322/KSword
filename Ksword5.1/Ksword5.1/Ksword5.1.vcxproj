@@ -379,7 +379,6 @@
     <ClCompile Include="UI\GlobalDialogTheme.cpp" />
     <ClCompile Include="UI\GlobalUiBaseStyle.cpp" />
     <ClCompile Include="UI\GlobalRefreshShortcut.cpp" />
-    <ClCompile Include="UI\WallpaperBackdrop.cpp" />
     <ClCompile Include="UI\WindowChrome.cpp" />
     <ClCompile Include="UI\HexEditorWidget.cpp" />
     <ClCompile Include="UI\HexEditorWidget.Selection.cpp" />
@@ -637,7 +636,6 @@
     <ClInclude Include="UI\GlobalDialogTheme.h" />
     <ClInclude Include="UI\GlobalUiBaseStyle.h" />
     <ClInclude Include="UI\GlobalRefreshShortcut.h" />
-    <ClInclude Include="UI\WallpaperBackdrop.h" />
     <ClInclude Include="UI\WindowChrome.h" />
     <QtMoc Include="UI\HexEditorWidget.h" />
     <ClInclude Include="UI\HexEditorWidget.Internal.h" />
