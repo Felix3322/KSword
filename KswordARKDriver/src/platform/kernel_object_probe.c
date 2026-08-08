@@ -106,6 +106,55 @@ Return Value:
 }
 
 BOOLEAN
+KswordARKKernelProbeRangeIsResident(
+    _In_opt_ const volatile VOID* Address,
+    _In_ SIZE_T Size
+    )
+/*++
+
+Routine Description:
+
+    Confirm that every page of a kernel range is resident.  Callers use this
+    when IRQL is already at DISPATCH_LEVEL, where MmCopyMemory is unavailable
+    and a fault would bugcheck rather than raise.  Probing only the first and
+    last byte is not equivalent: a range spanning three or more pages can have
+    a non-resident page in the middle, and an unaligned range shorter than a
+    pointer can still straddle a page boundary.
+
+Arguments:
+
+    Address - Range start.
+    Size - Range length in bytes.
+
+Return Value:
+
+    TRUE when the whole range is resident and safe to dereference.
+
+--*/
+{
+    ULONG_PTR current = (ULONG_PTR)Address;
+    ULONG_PTR end = 0U;
+
+    if (Address == NULL || Size == 0U ||
+        !KswordARKKernelProbeIsKernelPointer(current) ||
+        current > MAXULONG_PTR - Size) {
+        return FALSE;
+    }
+    end = current + Size - 1U;
+    for (;;) {
+        if (!MmIsAddressValid((PVOID)current)) {
+            return FALSE;
+        }
+        if ((current & ~(ULONG_PTR)(PAGE_SIZE - 1U)) ==
+            (end & ~(ULONG_PTR)(PAGE_SIZE - 1U))) {
+            break;
+        }
+        current = (current & ~(ULONG_PTR)(PAGE_SIZE - 1U)) + PAGE_SIZE;
+    }
+    return TRUE;
+}
+
+BOOLEAN
 KswordARKKernelProbeListHeadIsSane(
     _In_ ULONG_PTR ListHeadAddress
     )

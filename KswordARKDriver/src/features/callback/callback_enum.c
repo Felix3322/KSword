@@ -20,6 +20,7 @@ Environment:
 #include "callback_external_core.h"
 #include "callback_extended_kernel.h"
 #include "ark/ark_dyndata.h"
+#include "../../platform/kernel_object_probe.h"
 
 #define KSWORD_ARK_CALLBACK_ENUM_TAG 'eCbK'
 #define KSWORD_ARK_CALLBACK_ENUM_MAX_ENTRIES 4096UL
@@ -550,10 +551,9 @@ Return Value:
     if (SourceAddress == NULL || DestinationBuffer == NULL || BytesToRead == 0U) {
         return FALSE;
     }
-    if (!MmIsAddressValid((PVOID)SourceAddress)) {
-        return FALSE;
-    }
-    if (BytesToRead > sizeof(ULONG_PTR) && !MmIsAddressValid((PUCHAR)SourceAddress + BytesToRead - 1U)) {
+    // 中文说明：多数调用点在自旋锁内（DISPATCH_LEVEL），SEH 拦不住内核页错误，
+    // 因此整段范围必须逐页确认常驻——只探测首尾会漏掉中间页和跨页的短读。
+    if (!KswordARKKernelProbeRangeIsResident(SourceAddress, BytesToRead)) {
         return FALSE;
     }
 

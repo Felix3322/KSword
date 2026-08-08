@@ -97,54 +97,6 @@ typedef NTSTATUS
     );
 
 static BOOLEAN
-KswordARKSectionRangeIsResident(
-    _In_opt_ const volatile VOID* Address,
-    _In_ SIZE_T Size
-    )
-/*++
-
-Routine Description:
-
-    判断一段内核地址当前是否常驻。中文说明：持自旋锁后 IRQL 已在
-    DISPATCH_LEVEL，MmCopyMemory 与 SEH 都不能再兜底，只能在解引用前用
-    MmIsAddressValid 逐页确认。ControlArea 与 MMVAD 都来自非分页池，一旦
-    确认有效就不会在窗口内被换出。
-
-Arguments:
-
-    Address - 待检查范围起始地址。
-    Size - 待检查字节数。
-
-Return Value:
-
-    TRUE 表示整段常驻且可安全解引用。
-
---*/
-{
-    ULONG_PTR current = (ULONG_PTR)Address;
-    ULONG_PTR end = 0U;
-
-    if (Address == NULL || Size == 0U ||
-        (current & (sizeof(PVOID) - 1U)) != 0U ||
-        current < (ULONG_PTR)MmSystemRangeStart ||
-        current > MAXULONG_PTR - Size) {
-        return FALSE;
-    }
-    end = current + Size - 1U;
-    for (;;) {
-        if (!MmIsAddressValid((PVOID)current)) {
-            return FALSE;
-        }
-        if ((current & ~(ULONG_PTR)(PAGE_SIZE - 1U)) ==
-            (end & ~(ULONG_PTR)(PAGE_SIZE - 1U))) {
-            break;
-        }
-        current = (current & ~(ULONG_PTR)(PAGE_SIZE - 1U)) + PAGE_SIZE;
-    }
-    return TRUE;
-}
-
-static BOOLEAN
 KswordARKSectionMappingWalkIsSafe(
     _In_ PVOID ControlArea,
     _In_ const KSW_DYN_STATE* DynState,
@@ -180,8 +132,8 @@ Return Value:
     }
     lock = (PEX_SPIN_LOCK)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaLock);
     listHead = (PLIST_ENTRY)((PUCHAR)ControlArea + DynState->Kernel.MmControlAreaListHead);
-    if (!KswordARKSectionRangeIsResident(lock, sizeof(*lock)) ||
-        !KswordARKSectionRangeIsResident(listHead, sizeof(*listHead)) ||
+    if (!KswordARKKernelProbeRangeIsResident(lock, sizeof(*lock)) ||
+        !KswordARKKernelProbeRangeIsResident(listHead, sizeof(*listHead)) ||
         !KswordARKKernelProbeListHeadIsSane((ULONG_PTR)listHead)) {
         return FALSE;
     }
@@ -214,11 +166,11 @@ Return Value:
         return FALSE;
     }
     *VadOut = NULL;
-    if (!KswordARKSectionRangeIsResident(Link, sizeof(*Link))) {
+    if (!KswordARKKernelProbeRangeIsResident(Link, sizeof(*Link))) {
         return FALSE;
     }
     vad = CONTAINING_RECORD(Link, MMVAD, ViewLinks);
-    if (!KswordARKSectionRangeIsResident(vad, sizeof(*vad))) {
+    if (!KswordARKKernelProbeRangeIsResident(vad, sizeof(*vad))) {
         return FALSE;
     }
     *VadOut = vad;
@@ -670,7 +622,7 @@ Return Value:
             entry->viewMapType = (ULONG)vad->ProcessUnion.ViewMapType;
             if (vad->ProcessUnion.ViewMapType == KSWORD_ARK_SECTION_MAP_TYPE_PROCESS) {
                 PEPROCESS mappedProcess = (PEPROCESS)((ULONG_PTR)vad->ProcessUnion.VadsProcess & ~(ULONG_PTR)KSWORD_ARK_SECTION_MAP_TYPE_PROCESS);
-                if (KswordARKSectionRangeIsResident(
+                if (KswordARKKernelProbeRangeIsResident(
                         mappedProcess,
                         KSW_SECTION_EPROCESS_PROBE_BYTES)) {
                     entry->processId = HandleToULong(PsGetProcessId(mappedProcess));
@@ -681,7 +633,7 @@ Return Value:
             Response->returnedCount += 1UL;
         }
 
-        if (!KswordARKSectionRangeIsResident(link->Flink, sizeof(*link)) ||
+        if (!KswordARKKernelProbeRangeIsResident(link->Flink, sizeof(*link)) ||
             link->Flink->Blink != link) {
             status = STATUS_INVALID_PARAMETER;
             break;
@@ -784,7 +736,7 @@ Return Value:
             entry->controlAreaAddress = (ULONG64)(ULONG_PTR)ControlArea;
             if (vad->ProcessUnion.ViewMapType == KSWORD_ARK_SECTION_MAP_TYPE_PROCESS) {
                 PEPROCESS mappedProcess = (PEPROCESS)((ULONG_PTR)vad->ProcessUnion.VadsProcess & ~(ULONG_PTR)KSWORD_ARK_SECTION_MAP_TYPE_PROCESS);
-                if (KswordARKSectionRangeIsResident(
+                if (KswordARKKernelProbeRangeIsResident(
                         mappedProcess,
                         KSW_SECTION_EPROCESS_PROBE_BYTES)) {
                     entry->processId = HandleToULong(PsGetProcessId(mappedProcess));
@@ -806,7 +758,7 @@ Return Value:
             Response->returnedCount += 1UL;
         }
 
-        if (!KswordARKSectionRangeIsResident(link->Flink, sizeof(*link)) ||
+        if (!KswordARKKernelProbeRangeIsResident(link->Flink, sizeof(*link)) ||
             link->Flink->Blink != link) {
             status = STATUS_INVALID_PARAMETER;
             break;
