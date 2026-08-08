@@ -6,7 +6,7 @@ Module Name:
 
 Abstract:
 
-    HAL 与 KMDF 绑定表的只读、失败关闭审计。
+    HAL 与 KMDF 绑定表审计，以及 HAL 函数槽的受控原子编辑。
 
 Environment:
 
@@ -3396,5 +3396,754 @@ KswordARKPlatformAuditIoctlQuery(
     }
     *BytesReturned = KSW_PLATFORM_RESPONSE_HEADER_SIZE +
         ((size_t)response->returnedCount * sizeof(KSWORD_ARK_PLATFORM_AUDIT_ENTRY));
+    return STATUS_SUCCESS;
+}
+
+typedef struct _KSW_PLATFORM_EDIT_SLOT
+{
+    PVOID TableAddress;
+    PVOID volatile* SlotAddress;
+    PVOID CurrentValue;
+} KSW_PLATFORM_EDIT_SLOT;
+
+#define KSW_PLATFORM_EDIT_RECORD_LIMIT 64UL
+
+typedef struct _KSW_PLATFORM_EDIT_RECORD
+{
+    BOOLEAN InUse;
+    ULONG Scope;
+    ULONG EntryIndex;
+    PVOID TableAddress;
+    PVOID volatile* SlotAddress;
+    PVOID OriginalValue;
+    PVOID AppliedValue;
+} KSW_PLATFORM_EDIT_RECORD;
+
+typedef struct _KSW_PLATFORM_EDIT_STATE
+{
+    FAST_MUTEX Lock;
+    volatile LONG Initialized;
+    KSW_PLATFORM_EDIT_RECORD Records[KSW_PLATFORM_EDIT_RECORD_LIMIT];
+} KSW_PLATFORM_EDIT_STATE;
+
+static KSW_PLATFORM_EDIT_STATE g_KswPlatformEditState;
+
+VOID
+KswordARKPlatformAuditInitialize(
+    VOID
+    )
+{
+    RtlZeroMemory(
+        &g_KswPlatformEditState,
+        sizeof(g_KswPlatformEditState));
+    ExInitializeFastMutex(&g_KswPlatformEditState.Lock);
+    InterlockedExchange(&g_KswPlatformEditState.Initialized, 1L);
+}
+
+VOID
+KswordARKPlatformAuditUninitialize(
+    VOID
+    )
+{
+    ULONG index = 0UL;
+
+    if (InterlockedCompareExchange(
+            &g_KswPlatformEditState.Initialized,
+            0L,
+            0L) == 0L ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return;
+    }
+
+    ExAcquireFastMutex(&g_KswPlatformEditState.Lock);
+    for (index = 0UL; index < KSW_PLATFORM_EDIT_RECORD_LIMIT; ++index) {
+        KSW_PLATFORM_EDIT_RECORD* record =
+            &g_KswPlatformEditState.Records[index];
+        if (!record->InUse || record->SlotAddress == NULL) {
+            continue;
+        }
+        __try {
+            (VOID)InterlockedCompareExchangePointer(
+                record->SlotAddress,
+                record->OriginalValue,
+                record->AppliedValue);
+            KeMemoryBarrier();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // 卸载恢复只覆盖本功能最后发布值；不可访问或第三方值均保持原样。
+        }
+        RtlZeroMemory(record, sizeof(*record));
+    }
+    ExReleaseFastMutex(&g_KswPlatformEditState.Lock);
+    InterlockedExchange(&g_KswPlatformEditState.Initialized, 0L);
+    RtlZeroMemory(
+        &g_KswPlatformEditState,
+        sizeof(g_KswPlatformEditState));
+}
+
+static NTSTATUS
+KswPlatformCommitEdit(
+    _In_ ULONG Scope,
+    _In_ ULONG EntryIndex,
+    _In_ const KSW_PLATFORM_EDIT_SLOT* Slot,
+    _In_ PVOID ExpectedValue,
+    _In_ PVOID NewValue,
+    _Out_ PVOID* PreviousValueOut
+    )
+{
+    KSW_PLATFORM_EDIT_RECORD* record = NULL;
+    KSW_PLATFORM_EDIT_RECORD* freeRecord = NULL;
+    PVOID previousValue = NULL;
+    ULONG index = 0UL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (Slot == NULL || Slot->TableAddress == NULL ||
+        Slot->SlotAddress == NULL || NewValue == NULL ||
+        PreviousValueOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *PreviousValueOut = NULL;
+    if (InterlockedCompareExchange(
+            &g_KswPlatformEditState.Initialized,
+            0L,
+            0L) == 0L) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    ExAcquireFastMutex(&g_KswPlatformEditState.Lock);
+    for (index = 0UL; index < KSW_PLATFORM_EDIT_RECORD_LIMIT; ++index) {
+        KSW_PLATFORM_EDIT_RECORD* candidate =
+            &g_KswPlatformEditState.Records[index];
+        if (!candidate->InUse) {
+            if (freeRecord == NULL) {
+                freeRecord = candidate;
+            }
+            continue;
+        }
+        if (candidate->Scope == Scope &&
+            candidate->EntryIndex == EntryIndex &&
+            candidate->TableAddress == Slot->TableAddress) {
+            record = candidate;
+            break;
+        }
+        // 同一物理槽不能以另一组逻辑身份建立第二条恢复记录，否则卸载时
+        // 两条 CAS 的原值链可能互相遮蔽，最终残留中间值。
+        if (candidate->SlotAddress == Slot->SlotAddress) {
+            status = STATUS_CONFLICTING_ADDRESSES;
+            goto Exit;
+        }
+    }
+    if (record != NULL &&
+        (record->SlotAddress != Slot->SlotAddress ||
+         record->AppliedValue != ExpectedValue)) {
+        status = STATUS_CONFLICTING_ADDRESSES;
+        goto Exit;
+    }
+    if (record == NULL && freeRecord == NULL) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Exit;
+    }
+
+    __try {
+        previousValue = InterlockedCompareExchangePointer(
+            Slot->SlotAddress,
+            NewValue,
+            ExpectedValue);
+        KeMemoryBarrier();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+        previousValue = ExpectedValue;
+    }
+    *PreviousValueOut = previousValue;
+    if (!NT_SUCCESS(status) || previousValue != ExpectedValue) {
+        if (NT_SUCCESS(status)) {
+            status = STATUS_REVISION_MISMATCH;
+        }
+        goto Exit;
+    }
+
+    if (record == NULL) {
+        record = freeRecord;
+        RtlZeroMemory(record, sizeof(*record));
+        record->InUse = TRUE;
+        record->Scope = Scope;
+        record->EntryIndex = EntryIndex;
+        record->TableAddress = Slot->TableAddress;
+        record->SlotAddress = Slot->SlotAddress;
+        record->OriginalValue = ExpectedValue;
+    }
+    record->AppliedValue = NewValue;
+    if (record->AppliedValue == record->OriginalValue) {
+        RtlZeroMemory(record, sizeof(*record));
+    }
+
+Exit:
+    ExReleaseFastMutex(&g_KswPlatformEditState.Lock);
+    return status;
+}
+
+static NTSTATUS
+KswPlatformResolveHalDispatchEditSlot(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG EntryIndex,
+    _Out_ KSW_PLATFORM_EDIT_SLOT* SlotOut
+    )
+{
+    PVOID tableAddress = KswPlatformGetRoutine(L"HalDispatchTable");
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
+    const KSW_PLATFORM_SLOT_DESCRIPTOR* descriptor = NULL;
+    ULONG version = 0UL;
+    ULONG slotCount = 0UL;
+    ULONG tableBytes = 0UL;
+
+    if (ModuleInfo == NULL || SlotOut == NULL || tableAddress == NULL) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+    tableOwner = KswordARKHookFindModuleForAddress(
+        ModuleInfo,
+        (ULONG_PTR)tableAddress);
+    if (!KswPlatformIsExpectedHalOwner(tableOwner) ||
+        !KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)tableAddress,
+            sizeof(version),
+            FALSE,
+            FALSE) ||
+        !KswordARKHookReadMemorySafe(
+            tableAddress,
+            &version,
+            sizeof(version))) {
+        return STATUS_DATA_ERROR;
+    }
+    slotCount = KswPlatformHalDispatchSlotCount(version);
+    if (slotCount == 0UL || EntryIndex >= slotCount) {
+        return STATUS_REVISION_MISMATCH;
+    }
+    tableBytes = g_KswHalDispatchSlots[slotCount - 1UL].Offset +
+        g_KswHalDispatchSlots[slotCount - 1UL].Width;
+    if (!KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)tableAddress,
+            tableBytes,
+            FALSE,
+            FALSE)) {
+        return STATUS_DATA_ERROR;
+    }
+    descriptor = &g_KswHalDispatchSlots[EntryIndex];
+    if (descriptor->SlotKind != KSWORD_ARK_PLATFORM_SLOT_FUNCTION ||
+        descriptor->Width != sizeof(PVOID)) {
+        return STATUS_OBJECT_TYPE_MISMATCH;
+    }
+
+    SlotOut->TableAddress = tableAddress;
+    SlotOut->SlotAddress = (PVOID volatile*)(
+        (UCHAR*)tableAddress + descriptor->Offset);
+    if (!KswordARKHookReadMemorySafe(
+            (const VOID*)SlotOut->SlotAddress,
+            &SlotOut->CurrentValue,
+            sizeof(SlotOut->CurrentValue))) {
+        RtlZeroMemory(SlotOut, sizeof(*SlotOut));
+        return STATUS_PARTIAL_COPY;
+    }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswPlatformResolveHalPrivateEditSlot(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG BuildNumber,
+    _In_ ULONG EntryIndex,
+    _Out_ KSW_PLATFORM_EDIT_SLOT* SlotOut
+    )
+{
+    const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR* build =
+        KswPlatformFindPrivateBuild(BuildNumber);
+    const KSW_PLATFORM_SLOT_DESCRIPTOR* descriptor = NULL;
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
+    PVOID tableAddress = KswPlatformGetRoutine(L"HalPrivateDispatchTable");
+    ULONG version = 0UL;
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
+
+    if (ModuleInfo == NULL || SlotOut == NULL || EntryIndex == 0UL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    tableOwner = KswordARKHookFindModuleForAddress(
+        ModuleInfo,
+        (ULONG_PTR)tableAddress);
+    if (tableAddress != NULL &&
+        KswPlatformIsExpectedHalOwner(tableOwner) &&
+        KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)tableAddress,
+            sizeof(version),
+            FALSE,
+            FALSE) &&
+        KswordARKHookReadMemorySafe(
+            tableAddress,
+            &version,
+            sizeof(version))) {
+        const KSW_PLATFORM_PRIVATE_BUILD_DESCRIPTOR* versionBuild =
+            KswPlatformFindPrivateVersion(version);
+        if (versionBuild == NULL) {
+            return STATUS_REVISION_MISMATCH;
+        }
+        if (!KswPlatformRangeInSection(
+                tableOwner,
+                (ULONG_PTR)tableAddress,
+                versionBuild->ByteSize,
+                FALSE,
+                FALSE)) {
+            return STATUS_DATA_ERROR;
+        }
+        build = versionBuild;
+        status = STATUS_SUCCESS;
+    }
+    else if (build != NULL) {
+        status = KswPlatformLocateHalPrivateBySignature(
+            ModuleInfo,
+            BuildNumber,
+            build,
+            &tableAddress,
+            &version);
+    }
+    if (!NT_SUCCESS(status) || build == NULL || version != build->Version) {
+        return NT_SUCCESS(status) ? STATUS_REVISION_MISMATCH : status;
+    }
+    if (EntryIndex - 1UL >= RTL_NUMBER_OF(g_KswHalPrivateSlots)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    descriptor = &g_KswHalPrivateSlots[EntryIndex - 1UL];
+    if (descriptor->Offset + descriptor->Width > build->ByteSize ||
+        descriptor->SlotKind != KSWORD_ARK_PLATFORM_SLOT_FUNCTION ||
+        descriptor->Width != sizeof(PVOID)) {
+        return STATUS_OBJECT_TYPE_MISMATCH;
+    }
+
+    SlotOut->TableAddress = tableAddress;
+    SlotOut->SlotAddress = (PVOID volatile*)(
+        (UCHAR*)tableAddress + descriptor->Offset);
+    if (!KswordARKHookReadMemorySafe(
+            (const VOID*)SlotOut->SlotAddress,
+            &SlotOut->CurrentValue,
+            sizeof(SlotOut->CurrentValue))) {
+        RtlZeroMemory(SlotOut, sizeof(*SlotOut));
+        return STATUS_PARTIAL_COPY;
+    }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswPlatformResolveHalAcpiEditSlot(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG BuildNumber,
+    _In_ ULONG EntryIndex,
+    _Out_ KSW_PLATFORM_EDIT_SLOT* SlotOut
+    )
+{
+    const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* locator =
+        KswPlatformFindRipLocator(
+            g_KswHalAcpiLocators,
+            RTL_NUMBER_OF(g_KswHalAcpiLocators),
+            BuildNumber);
+    KSW_PLATFORM_HAL_ACPI_VIEW view;
+    PVOID anchor = NULL;
+    PVOID tableAddress = NULL;
+    ULONG functionCount = 0UL;
+    ULONG byteSize = 0UL;
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
+
+    if (ModuleInfo == NULL || SlotOut == NULL || locator == NULL ||
+        !KswPlatformGetHalPowerAnchor(ModuleInfo, &anchor)) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    status = KswPlatformLocateRipTable(
+        ModuleInfo,
+        anchor,
+        locator,
+        KswPlatformValidateHalAcpiCandidate,
+        &tableAddress);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    RtlZeroMemory(&view, sizeof(view));
+    if (!KswordARKHookReadMemorySafe(
+            tableAddress,
+            &view,
+            FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions)) ||
+        !KswPlatformHalAcpiIdentityMatches(
+            &view,
+            &functionCount,
+            &byteSize) ||
+        EntryIndex >= functionCount ||
+        byteSize > sizeof(view) ||
+        !KswordARKHookReadMemorySafe(tableAddress, &view, byteSize) ||
+        !KswPlatformHalAcpiIdentityMatches(&view, NULL, NULL)) {
+        return STATUS_REVISION_MISMATCH;
+    }
+
+    SlotOut->TableAddress = tableAddress;
+    SlotOut->SlotAddress = (PVOID volatile*)(
+        (UCHAR*)tableAddress +
+        FIELD_OFFSET(KSW_PLATFORM_HAL_ACPI_VIEW, Functions) +
+        (EntryIndex * sizeof(PVOID)));
+    SlotOut->CurrentValue = view.Functions[EntryIndex];
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswPlatformResolveHalSubcomponentEditSlot(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG BuildNumber,
+    _In_ ULONG EntryIndex,
+    _Out_ KSW_PLATFORM_EDIT_SLOT* SlotOut
+    )
+{
+    const KSW_PLATFORM_RIP_LOCATOR_DESCRIPTOR* locator =
+        KswPlatformFindRipLocator(
+            g_KswHalSubcomponentLocators,
+            RTL_NUMBER_OF(g_KswHalSubcomponentLocators),
+            BuildNumber);
+    KSW_PLATFORM_HAL_SUBCOMPONENT
+        entries[KSW_PLATFORM_HAL_SUBCOMPONENT_MAX_COUNT];
+    PVOID anchor = NULL;
+    PVOID tableAddress = NULL;
+    ULONG entryCount = 0UL;
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
+
+    if (ModuleInfo == NULL || SlotOut == NULL || locator == NULL) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    entryCount = locator->ExpectedVersion;
+    anchor = locator->AnchorName != NULL ?
+        KswPlatformGetRoutine(locator->AnchorName) :
+        NULL;
+    status = KswPlatformLocateRipTable(
+        ModuleInfo,
+        anchor,
+        locator,
+        KswPlatformValidateHalSubcomponentCandidate,
+        &tableAddress);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (entryCount > RTL_NUMBER_OF(entries) || EntryIndex >= entryCount) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(entries, sizeof(entries));
+    if (!KswordARKHookReadMemorySafe(
+            tableAddress,
+            entries,
+            locator->TableByteSize) ||
+        !KswPlatformHalSubcomponentIdentityMatches(
+            ModuleInfo,
+            entries,
+            entryCount)) {
+        return STATUS_REVISION_MISMATCH;
+    }
+
+    SlotOut->TableAddress = tableAddress;
+    SlotOut->SlotAddress = (PVOID volatile*)(
+        (UCHAR*)tableAddress +
+        (EntryIndex * sizeof(KSW_PLATFORM_HAL_SUBCOMPONENT)) +
+        FIELD_OFFSET(KSW_PLATFORM_HAL_SUBCOMPONENT, Function));
+    SlotOut->CurrentValue = entries[EntryIndex].Function;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswPlatformResolveEditableHalSlot(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG BuildNumber,
+    _In_ ULONG Scope,
+    _In_ ULONG EntryIndex,
+    _Out_ KSW_PLATFORM_EDIT_SLOT* SlotOut
+    )
+{
+    if (SlotOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(SlotOut, sizeof(*SlotOut));
+    switch (Scope) {
+    case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH:
+        return KswPlatformResolveHalDispatchEditSlot(
+            ModuleInfo,
+            EntryIndex,
+            SlotOut);
+    case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE:
+        return KswPlatformResolveHalPrivateEditSlot(
+            ModuleInfo,
+            BuildNumber,
+            EntryIndex,
+            SlotOut);
+    case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI:
+        return KswPlatformResolveHalAcpiEditSlot(
+            ModuleInfo,
+            BuildNumber,
+            EntryIndex,
+            SlotOut);
+    case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS:
+        return KswPlatformResolveHalSubcomponentEditSlot(
+            ModuleInfo,
+            BuildNumber,
+            EntryIndex,
+            SlotOut);
+    default:
+        return STATUS_INVALID_PARAMETER;
+    }
+}
+
+static VOID
+KswPlatformLogControlResult(
+    _In_ WDFDEVICE Device,
+    _In_ const KSWORD_ARK_CONTROL_PLATFORM_AUDIT_RESPONSE* Response
+    )
+{
+    CHAR message[KSWORD_ARK_LOG_ENTRY_MAX_BYTES] = { 0 };
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (Response == NULL) {
+        return;
+    }
+    status = RtlStringCbPrintfA(
+        message,
+        sizeof(message),
+        "R0 HAL edit: scope=0x%08lX index=%lu status=%lu nt=0x%08X "
+        "table=0x%I64X slot=0x%I64X previous=0x%I64X "
+        "requested=0x%I64X current=0x%I64X flags=0x%08lX.",
+        Response->scope,
+        Response->entryIndex,
+        Response->status,
+        (unsigned int)Response->lastStatus,
+        Response->tableAddress,
+        Response->slotAddress,
+        Response->previousValue,
+        Response->requestedValue,
+        Response->currentValue,
+        Response->responseFlags);
+    if (NT_SUCCESS(status)) {
+        (VOID)KswordARKDriverEnqueueLogFrame(
+            Device,
+            Response->status == KSWORD_ARK_PLATFORM_CONTROL_STATUS_OK ?
+                "Warn" : "Error",
+            message);
+    }
+}
+
+NTSTATUS
+KswordARKPlatformAuditIoctlControl(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    )
+{
+    const KSWORD_ARK_CONTROL_PLATFORM_AUDIT_REQUEST* input = NULL;
+    KSWORD_ARK_CONTROL_PLATFORM_AUDIT_REQUEST requestSnapshot;
+    KSWORD_ARK_CONTROL_PLATFORM_AUDIT_RESPONSE* response = NULL;
+    KSW_HOOK_SYSTEM_MODULE_INFORMATION* moduleInfo = NULL;
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* targetOwner = NULL;
+    KSW_PLATFORM_EDIT_SLOT slot;
+    PVOID inputBuffer = NULL;
+    PVOID outputBuffer = NULL;
+    PVOID previousValue = NULL;
+    ULONG moduleInfoBytes = 0UL;
+    ULONG majorVersion = 0UL;
+    ULONG minorVersion = 0UL;
+    ULONG buildNumber = 0UL;
+    size_t actualInputBytes = 0U;
+    size_t actualOutputBytes = 0U;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    UNREFERENCED_PARAMETER(InputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+
+    if (BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0U;
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    status = KswordARKValidateDeviceIoControlWriteAccess(Request);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = KswordARKRetrieveRequiredInputBuffer(
+        Request,
+        sizeof(requestSnapshot),
+        &inputBuffer,
+        &actualInputBytes);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    RtlCopyMemory(&requestSnapshot, inputBuffer, sizeof(requestSnapshot));
+    input = &requestSnapshot;
+    status = KswordARKRetrieveRequiredOutputBuffer(
+        Request,
+        sizeof(*response),
+        &outputBuffer,
+        &actualOutputBytes);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    UNREFERENCED_PARAMETER(actualInputBytes);
+    UNREFERENCED_PARAMETER(actualOutputBytes);
+    response = (KSWORD_ARK_CONTROL_PLATFORM_AUDIT_RESPONSE*)outputBuffer;
+    RtlZeroMemory(response, sizeof(*response));
+    response->size = sizeof(*response);
+    response->version = KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION;
+    response->scope = input->scope;
+    response->entryIndex = input->entryIndex;
+    response->requestedValue = input->newValue;
+    response->status = KSWORD_ARK_PLATFORM_CONTROL_STATUS_INVALID_REQUEST;
+    response->lastStatus = STATUS_INVALID_PARAMETER;
+    *BytesReturned = sizeof(*response);
+
+    if (input->size != sizeof(*input) ||
+        input->version != KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION ||
+        input->tableAddress == 0ULL ||
+        input->newValue == 0ULL ||
+        input->reserved0 != 0UL ||
+        input->reserved1 != 0UL ||
+        (input->flags & ~KSWORD_ARK_PLATFORM_CONTROL_FLAG_UI_CONFIRMED) != 0UL) {
+        KswPlatformLogControlResult(Device, response);
+        return STATUS_SUCCESS;
+    }
+    if ((input->flags & KSWORD_ARK_PLATFORM_CONTROL_FLAG_UI_CONFIRMED) == 0UL ||
+        input->confirmationToken !=
+            KSWORD_ARK_PLATFORM_CONTROL_CONFIRMATION_TOKEN) {
+        response->status =
+            KSWORD_ARK_PLATFORM_CONTROL_STATUS_CONFIRMATION_REQUIRED;
+        response->lastStatus = STATUS_REQUEST_NOT_ACCEPTED;
+        KswPlatformLogControlResult(Device, response);
+        return STATUS_SUCCESS;
+    }
+
+    {
+        KSWORD_ARK_SAFETY_CONTEXT safetyContext = { 0 };
+        safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_KERNEL_PATCH;
+        safetyContext.ContextFlags =
+            KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED;
+        safetyContext.TargetText = L"Validated HAL function table slot";
+        safetyContext.TargetTextChars = (USHORT)(
+            RTL_NUMBER_OF(L"Validated HAL function table slot") - 1U);
+        status = KswordARKSafetyEvaluate(Device, &safetyContext);
+        if (!NT_SUCCESS(status)) {
+            response->status =
+                KSWORD_ARK_PLATFORM_CONTROL_STATUS_SAFETY_DENIED;
+            response->lastStatus = status;
+            KswPlatformLogControlResult(Device, response);
+            return STATUS_SUCCESS;
+        }
+    }
+
+    (VOID)PsGetVersion(&majorVersion, &minorVersion, &buildNumber, NULL);
+    UNREFERENCED_PARAMETER(majorVersion);
+    UNREFERENCED_PARAMETER(minorVersion);
+    status = KswordARKHookBuildModuleSnapshot(&moduleInfo, &moduleInfoBytes);
+    if (!NT_SUCCESS(status) || moduleInfo == NULL || moduleInfoBytes == 0UL) {
+        response->status = KSWORD_ARK_PLATFORM_CONTROL_STATUS_UNSUPPORTED;
+        response->lastStatus = NT_SUCCESS(status) ?
+            STATUS_UNSUCCESSFUL : status;
+        if (moduleInfo != NULL) {
+            ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+        }
+        KswPlatformLogControlResult(Device, response);
+        return STATUS_SUCCESS;
+    }
+
+    status = KswPlatformResolveEditableHalSlot(
+        moduleInfo,
+        buildNumber,
+        input->scope,
+        input->entryIndex,
+        &slot);
+    if (!NT_SUCCESS(status)) {
+        response->status =
+            status == STATUS_INVALID_PARAMETER ||
+            status == STATUS_OBJECT_TYPE_MISMATCH ?
+                KSWORD_ARK_PLATFORM_CONTROL_STATUS_INVALID_REQUEST :
+                KSWORD_ARK_PLATFORM_CONTROL_STATUS_UNSUPPORTED;
+        response->lastStatus = status;
+        ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+        KswPlatformLogControlResult(Device, response);
+        return STATUS_SUCCESS;
+    }
+    response->tableAddress = (ULONGLONG)(ULONG_PTR)slot.TableAddress;
+    response->slotAddress = (ULONGLONG)(ULONG_PTR)slot.SlotAddress;
+    response->previousValue = (ULONGLONG)(ULONG_PTR)slot.CurrentValue;
+    response->currentValue = response->previousValue;
+    response->responseFlags |=
+        KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TABLE_REVALIDATED;
+
+    if ((ULONGLONG)(ULONG_PTR)slot.TableAddress != input->tableAddress ||
+        (ULONGLONG)(ULONG_PTR)slot.CurrentValue != input->expectedValue) {
+        response->status =
+            KSWORD_ARK_PLATFORM_CONTROL_STATUS_STALE_SNAPSHOT;
+        response->lastStatus = STATUS_REVISION_MISMATCH;
+        ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+        KswPlatformLogControlResult(Device, response);
+        return STATUS_SUCCESS;
+    }
+
+    targetOwner = KswordARKHookFindModuleForAddress(
+        moduleInfo,
+        (ULONG_PTR)input->newValue);
+    if (targetOwner == NULL ||
+        !KswPlatformAddressSectionMatches(
+            targetOwner,
+            (ULONG_PTR)input->newValue,
+            TRUE)) {
+        response->status =
+            KSWORD_ARK_PLATFORM_CONTROL_STATUS_TARGET_INVALID;
+        response->lastStatus = STATUS_INVALID_ADDRESS;
+        ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+        KswPlatformLogControlResult(Device, response);
+        return STATUS_SUCCESS;
+    }
+    response->responseFlags |=
+        KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TARGET_EXECUTABLE;
+
+    if (input->newValue == input->expectedValue) {
+        response->status = KSWORD_ARK_PLATFORM_CONTROL_STATUS_OK;
+        response->lastStatus = STATUS_SUCCESS;
+        ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+        KswPlatformLogControlResult(Device, response);
+        return STATUS_SUCCESS;
+    }
+
+    status = KswPlatformCommitEdit(
+        input->scope,
+        input->entryIndex,
+        &slot,
+        (PVOID)(ULONG_PTR)input->expectedValue,
+        (PVOID)(ULONG_PTR)input->newValue,
+        &previousValue);
+    response->previousValue = (ULONGLONG)(ULONG_PTR)previousValue;
+    response->currentValue = response->previousValue;
+    if (status == STATUS_REVISION_MISMATCH ||
+        status == STATUS_CONFLICTING_ADDRESSES) {
+        response->status =
+            KSWORD_ARK_PLATFORM_CONTROL_STATUS_STALE_SNAPSHOT;
+        response->lastStatus = status;
+    }
+    else if (!NT_SUCCESS(status)) {
+        response->status =
+            KSWORD_ARK_PLATFORM_CONTROL_STATUS_WRITE_FAILED;
+        response->lastStatus = status;
+    }
+    else {
+        response->status = KSWORD_ARK_PLATFORM_CONTROL_STATUS_OK;
+        response->lastStatus = STATUS_SUCCESS;
+        response->currentValue = input->newValue;
+        response->responseFlags |=
+            KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_CHANGED;
+    }
+
+    ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+    KswPlatformLogControlResult(Device, response);
     return STATUS_SUCCESS;
 }

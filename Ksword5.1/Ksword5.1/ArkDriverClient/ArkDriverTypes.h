@@ -2568,10 +2568,10 @@ namespace ksword::ark
         std::vector<KSWORD_ARK_DEVICE_AUDIT_ENTRY> entries;
     };
 
-    // PlatformAuditResult 承载 HAL/WDF 统一只读审计结果。
+    // PlatformAuditResult 承载 HAL/WDF 统一审计结果。
     // 输入：queryPlatformAudit 返回，scopeMask 指定 HAL 表或 WDF 表/回调。
     // 处理：entries 保留地址、模块、结构/owner 证据和本地化 detailCode 参数。
-    // 返回行为：只读，不提供 patch、restore、unhook 或任意内存访问。
+    // 返回行为：查询本身只读；HAL 槽编辑必须另行调用 editPlatformAuditEntry。
     struct PlatformAuditResult : VariableAuditResultBase
     {
         std::uint32_t scopeMask = 0;
@@ -2579,6 +2579,14 @@ namespace ksword::ark
         std::uint32_t buildNumber = 0;
         std::uint32_t signaturePolicyFlags = 0;
         std::vector<KSWORD_ARK_PLATFORM_AUDIT_ENTRY> entries;
+    };
+
+    // PlatformAuditControlResult 承载一个受控 HAL 函数槽 CAS 的完整证据。
+    struct PlatformAuditControlResult
+    {
+        IoResult io;
+        bool unsupported = false;
+        KSWORD_ARK_CONTROL_PLATFORM_AUDIT_RESPONSE response{};
     };
 
     // I8042AuditResult 承载专用 i8042prt 描述符与端点证据。

@@ -585,7 +585,7 @@ void KernelDock::initializeUi()
         halAuditTabIndex,
         kernelText(
             "kernel.main.tab.hal_audit.tooltip",
-            QStringLiteral("只读审计 HalDispatchTable、HalPrivateDispatchTable、HalAcpiDispatchTable 与 HalSubComponents")));
+            QStringLiteral("审计 HalDispatchTable、HalPrivateDispatchTable、HalAcpiDispatchTable 与 HalSubComponents，并受控编辑已验证函数槽")));
 
     const int wdfAuditTabIndex = m_tabWidget->addTab(
         new KernelPlatformAuditTab(KernelPlatformAuditTab::Mode::Wdf, m_tabWidget),

@@ -8,15 +8,21 @@
 #include "../theme.h"
 
 #include <QAbstractItemView>
+#include <QAction>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QEvent>
+#include <QFormLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMetaObject>
+#include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
 #include <QShowEvent>
@@ -24,6 +30,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QVariant>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -60,6 +67,13 @@ namespace
         ColumnStatus,
         ColumnDetail,
         ColumnCount
+    };
+
+    enum PlatformItemRole : int
+    {
+        RoleScope = Qt::UserRole + 101,
+        RoleEntryIndex,
+        RoleTableAddress
     };
 
     QTableWidgetItem* readOnlyPlatformItem(const QString& text)
@@ -285,6 +299,27 @@ void KernelPlatformAuditTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
+    if (m_mode == Mode::Hal)
+    {
+        m_warningLabel = new QLabel(
+            kernelText(
+                "kernel.platform.hal.edit.warning",
+                QStringLiteral(
+                    "⚠ HAL 表项编辑会立即替换内核函数指针，错误地址可能造成整机冻结或蓝屏。"
+                    "仅函数槽可编辑；驱动会重新验证表身份、旧值和目标可执行节，但无法证明目标函数签名兼容。")),
+            this);
+        m_warningLabel->setWordWrap(true);
+        m_warningLabel->setStyleSheet(
+            QStringLiteral(
+                "QLabel{padding:8px;border:1px solid %1;border-radius:5px;"
+                "background:%2;color:%3;font-weight:600;}")
+                .arg(KswordTheme::WarningHex())
+                .arg(KswordTheme::ThemeColorName(
+                    KswordTheme::WarningBackgroundColor()))
+                .arg(KswordTheme::TextPrimaryHex()));
+        rootLayout->addWidget(m_warningLabel);
+    }
+
     auto* toolbar = new QHBoxLayout();
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(0);
@@ -381,6 +416,14 @@ void KernelPlatformAuditTab::retranslateUi()
         m_refreshButton->setToolTip(kernelText(
             "kernel.platform.toolbar.refresh.tooltip",
             QStringLiteral("重新读取经过结构与模块边界验证的只读审计快照")));
+    }
+    if (m_warningLabel != nullptr)
+    {
+        m_warningLabel->setText(kernelText(
+            "kernel.platform.hal.edit.warning",
+            QStringLiteral(
+                "⚠ HAL 表项编辑会立即替换内核函数指针，错误地址可能造成整机冻结或蓝屏。"
+                "仅函数槽可编辑；驱动会重新验证表身份、旧值和目标可执行节，但无法证明目标函数签名兼容。")));
     }
     if (m_columnGroupAButton != nullptr &&
         m_columnGroupBButton != nullptr &&
@@ -509,6 +552,18 @@ void KernelPlatformAuditTab::addPage(const unsigned long scope, const QString& t
     table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setAlternatingRowColors(true);
+    if (m_mode == Mode::Hal)
+    {
+        table->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(
+            table,
+            &QTableWidget::customContextMenuRequested,
+            this,
+            [this, table, scope](const QPoint& position)
+            {
+                showContextMenu(table, scope, position);
+            });
+    }
     table->verticalHeader()->setVisible(false);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     table->horizontalHeader()->setStretchLastSection(true);
@@ -698,9 +753,274 @@ void KernelPlatformAuditTab::populatePage(
         };
         for (int column = 0; column < ColumnCount; ++column)
         {
-            page.table->setItem(row, column, readOnlyPlatformItem(cells[static_cast<std::size_t>(column)]));
+            auto* item = readOnlyPlatformItem(
+                cells[static_cast<std::size_t>(column)]);
+            if (column == ColumnName)
+            {
+                item->setData(
+                    RoleScope,
+                    QVariant::fromValue<qulonglong>(entry.scope));
+                item->setData(
+                    RoleEntryIndex,
+                    QVariant::fromValue<qulonglong>(entry.entryIndex));
+                item->setData(
+                    RoleTableAddress,
+                    QVariant::fromValue<qulonglong>(entry.tableAddress));
+            }
+            page.table->setItem(row, column, item);
         }
     }
+}
+
+void KernelPlatformAuditTab::showContextMenu(
+    QTableWidget* table,
+    const unsigned long scope,
+    const QPoint& position)
+{
+    if (m_mode != Mode::Hal || table == nullptr)
+    {
+        return;
+    }
+    const QModelIndex index = table->indexAt(position);
+    if (!index.isValid())
+    {
+        return;
+    }
+    table->setCurrentCell(index.row(), index.column());
+    const QTableWidgetItem* nameItem = table->item(index.row(), ColumnName);
+    if (nameItem == nullptr)
+    {
+        return;
+    }
+    const unsigned long entryIndex =
+        nameItem->data(RoleEntryIndex).toULongLong();
+    const unsigned long long tableAddress =
+        nameItem->data(RoleTableAddress).toULongLong();
+    const auto entryIt = std::find_if(
+        m_lastResult.entries.cbegin(),
+        m_lastResult.entries.cend(),
+        [scope, entryIndex, tableAddress](
+            const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry)
+        {
+            return entry.scope == scope &&
+                entry.entryIndex == entryIndex &&
+                entry.tableAddress == tableAddress;
+        });
+
+    QMenu menu(table);
+    QAction* editAction = menu.addAction(kernelText(
+        "kernel.platform.hal.edit.action",
+        QStringLiteral("编辑 HAL 函数槽...")));
+    const bool editable =
+        entryIt != m_lastResult.entries.cend() &&
+        entryIt->rowKind == KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION &&
+        entryIt->slotKind == KSWORD_ARK_PLATFORM_SLOT_FUNCTION &&
+        entryIt->tableAddress != 0ULL &&
+        (entryIt->fieldFlags &
+         KSWORD_ARK_PLATFORM_FIELD_STRUCTURE_VALIDATED) != 0UL;
+    editAction->setEnabled(editable);
+    editAction->setToolTip(editable
+        ? kernelText(
+            "kernel.platform.hal.edit.action.tooltip",
+            QStringLiteral("输入新的已加载内核模块可执行地址，并经过双重确认后原子替换"))
+        : kernelText(
+            "kernel.platform.hal.edit.unavailable.tooltip",
+            QStringLiteral("仅结构已验证且具有表地址的 HAL 函数槽可编辑")));
+    if (menu.exec(table->viewport()->mapToGlobal(position)) == editAction &&
+        editable)
+    {
+        editHalEntry(*entryIt);
+    }
+}
+
+void KernelPlatformAuditTab::editHalEntry(
+    KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry)
+{
+    QDialog editor(this);
+    editor.setObjectName(QStringLiteral("ksHalEditDialog"));
+    editor.setStyleSheet(KswordTheme::OpaqueDialogStyle(editor.objectName()));
+    editor.setWindowTitle(kernelText(
+        "kernel.platform.hal.edit.dialog.title",
+        QStringLiteral("编辑 HAL 函数槽")));
+    auto* layout = new QVBoxLayout(&editor);
+    auto* riskLabel = new QLabel(
+        kernelText(
+            "kernel.platform.hal.edit.dialog.risk",
+            QStringLiteral(
+                "目标地址必须位于已加载内核模块的可执行节。R0 仍无法验证函数原型、调用约定或运行时语义；"
+                "不兼容的地址可能在该槽下一次被调用时立即使系统崩溃。")),
+        &editor);
+    riskLabel->setWordWrap(true);
+    riskLabel->setStyleSheet(
+        QStringLiteral("color:%1;font-weight:600;")
+            .arg(KswordTheme::WarningHex()));
+    layout->addWidget(riskLabel);
+
+    auto* form = new QFormLayout();
+    form->addRow(
+        kernelText("kernel.platform.hal.edit.field.name", QStringLiteral("函数槽")),
+        new QLabel(
+            fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS),
+            &editor));
+    form->addRow(
+        kernelText("kernel.platform.hal.edit.field.table", QStringLiteral("表地址")),
+        new QLabel(addressText(entry.tableAddress), &editor));
+    form->addRow(
+        kernelText("kernel.platform.hal.edit.field.current", QStringLiteral("当前地址")),
+        new QLabel(addressText(entry.liveAddress), &editor));
+    auto* addressEdit = new QLineEdit(&editor);
+    addressEdit->setPlaceholderText(QStringLiteral("0xFFFFF80000000000"));
+    addressEdit->setText(addressText(entry.liveAddress));
+    addressEdit->selectAll();
+    form->addRow(
+        kernelText("kernel.platform.hal.edit.field.new", QStringLiteral("新函数地址")),
+        addressEdit);
+    layout->addLayout(form);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+        &editor);
+    buttons->button(QDialogButtonBox::Ok)->setText(kernelText(
+        "kernel.platform.hal.edit.continue",
+        QStringLiteral("继续风险确认")));
+    connect(buttons, &QDialogButtonBox::accepted, &editor, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &editor, &QDialog::reject);
+    layout->addWidget(buttons);
+    addressEdit->setFocus();
+    if (editor.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+
+    unsigned long long newAddress = 0ULL;
+    if (!parseAddress(addressEdit->text(), newAddress))
+    {
+        QMessageBox::warning(
+            this,
+            kernelText(
+                "kernel.platform.hal.edit.invalid.title",
+                QStringLiteral("HAL 地址无效")),
+            kernelText(
+                "kernel.platform.hal.edit.invalid.body",
+                QStringLiteral("请输入非零的 64 位十六进制内核地址。")));
+        return;
+    }
+    if (newAddress == entry.liveAddress)
+    {
+        QMessageBox::information(
+            this,
+            kernelText(
+                "kernel.platform.hal.edit.no_change.title",
+                QStringLiteral("HAL 表项未修改")),
+            kernelText(
+                "kernel.platform.hal.edit.no_change.body",
+                QStringLiteral("新地址与当前地址相同，没有执行写入。")));
+        return;
+    }
+    if (!confirmHalEdit(entry, newAddress))
+    {
+        return;
+    }
+
+    ksword::ark::DriverClient client;
+    const auto result = client.editPlatformAuditEntry(
+        entry.scope,
+        entry.entryIndex,
+        entry.tableAddress,
+        entry.liveAddress,
+        newAddress,
+        true);
+    if (!result.io.ok ||
+        result.response.status != KSWORD_ARK_PLATFORM_CONTROL_STATUS_OK)
+    {
+        QMessageBox::critical(
+            this,
+            kernelText(
+                "kernel.platform.hal.edit.failed.title",
+                QStringLiteral("HAL 表项编辑失败")),
+            result.io.ok
+                ? controlStatusText(
+                    result.response.status,
+                    result.response.lastStatus)
+                : kernelText(
+                    "kernel.platform.hal.edit.transport_failed",
+                    QStringLiteral("R0 控制失败：%1"))
+                    .arg(QString::fromStdString(result.io.message)));
+        refreshAsync();
+        return;
+    }
+
+    QMessageBox::information(
+        this,
+        kernelText(
+            "kernel.platform.hal.edit.succeeded.title",
+            QStringLiteral("HAL 表项已修改")),
+        kernelText(
+            "kernel.platform.hal.edit.succeeded.body",
+            QStringLiteral("%1 已从 %2 原子替换为 %3。页面将立即重新读取 R0 快照。"))
+            .arg(fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS))
+            .arg(addressText(result.response.previousValue))
+            .arg(addressText(result.response.currentValue)));
+    refreshAsync();
+}
+
+bool KernelPlatformAuditTab::confirmHalEdit(
+    const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry,
+    const unsigned long long newAddress)
+{
+    QMessageBox warningBox(this);
+    warningBox.setObjectName(QStringLiteral("ksHalEditRiskDialog"));
+    warningBox.setStyleSheet(
+        KswordTheme::OpaqueDialogStyle(warningBox.objectName()));
+    warningBox.setIcon(QMessageBox::Warning);
+    warningBox.setWindowTitle(kernelText(
+        "kernel.platform.hal.edit.confirm.title",
+        QStringLiteral("HAL 内核函数指针风险确认")));
+    warningBox.setText(kernelText(
+        "kernel.platform.hal.edit.confirm.body",
+        QStringLiteral(
+            "即将修改 %1：\n%2 → %3\n\n"
+            "这会立即改变内核控制流。地址即使位于可执行节，也可能因函数签名不兼容造成冻结、蓝屏或数据损坏。"
+            "请确认已保存工作，并且当前环境允许整机故障。"))
+        .arg(fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS))
+        .arg(addressText(entry.liveAddress))
+        .arg(addressText(newAddress)));
+    warningBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    warningBox.setDefaultButton(QMessageBox::Cancel);
+    if (warningBox.exec() != QMessageBox::Ok)
+    {
+        return false;
+    }
+
+    const QString phrase = QStringLiteral("I UNDERSTAND HAL PATCH");
+    QDialog typedDialog(this);
+    typedDialog.setObjectName(QStringLiteral("ksHalEditTypedConfirmDialog"));
+    typedDialog.setStyleSheet(
+        KswordTheme::OpaqueDialogStyle(typedDialog.objectName()));
+    typedDialog.setWindowTitle(kernelText(
+        "kernel.platform.hal.edit.typed.title",
+        QStringLiteral("输入确认短语")));
+    auto* layout = new QVBoxLayout(&typedDialog);
+    auto* prompt = new QLabel(
+        kernelText(
+            "kernel.platform.hal.edit.typed.body",
+            QStringLiteral("请输入 %1 以执行 HAL 函数指针替换："))
+            .arg(phrase),
+        &typedDialog);
+    prompt->setWordWrap(true);
+    auto* phraseEdit = new QLineEdit(&typedDialog);
+    phraseEdit->setPlaceholderText(phrase);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+        &typedDialog);
+    layout->addWidget(prompt);
+    layout->addWidget(phraseEdit);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &typedDialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &typedDialog, &QDialog::reject);
+    phraseEdit->setFocus();
+    return typedDialog.exec() == QDialog::Accepted &&
+        phraseEdit->text() == phrase;
 }
 
 void KernelPlatformAuditTab::setColumnGroup(const int groupIndex)
@@ -804,6 +1124,81 @@ QString KernelPlatformAuditTab::addressText(const unsigned long long address)
     return address == 0ULL
         ? QStringLiteral("-")
         : QStringLiteral("0x%1").arg(address, 16, 16, QLatin1Char('0')).toUpper();
+}
+
+QString KernelPlatformAuditTab::controlStatusText(
+    const unsigned long status,
+    const long lastStatus)
+{
+    QString reason;
+    switch (status)
+    {
+    case KSWORD_ARK_PLATFORM_CONTROL_STATUS_CONFIRMATION_REQUIRED:
+        reason = kernelText(
+            "kernel.platform.hal.edit.status.confirmation_required",
+            QStringLiteral("确认信息被拒绝"));
+        break;
+    case KSWORD_ARK_PLATFORM_CONTROL_STATUS_UNSUPPORTED:
+        reason = kernelText(
+            "kernel.platform.hal.edit.status.unsupported",
+            QStringLiteral("当前系统布局未通过 HAL 表重新定位验证"));
+        break;
+    case KSWORD_ARK_PLATFORM_CONTROL_STATUS_STALE_SNAPSHOT:
+        reason = kernelText(
+            "kernel.platform.hal.edit.status.stale",
+            QStringLiteral("表地址或槽位当前值已变化，快照过期"));
+        break;
+    case KSWORD_ARK_PLATFORM_CONTROL_STATUS_TARGET_INVALID:
+        reason = kernelText(
+            "kernel.platform.hal.edit.status.target_invalid",
+            QStringLiteral("目标地址不属于已加载内核模块的可执行节"));
+        break;
+    case KSWORD_ARK_PLATFORM_CONTROL_STATUS_WRITE_FAILED:
+        reason = kernelText(
+            "kernel.platform.hal.edit.status.write_failed",
+            QStringLiteral("原子写入失败"));
+        break;
+    case KSWORD_ARK_PLATFORM_CONTROL_STATUS_SAFETY_DENIED:
+        reason = kernelText(
+            "kernel.platform.hal.edit.status.safety_denied",
+            QStringLiteral("中央内核修改安全策略拒绝了操作"));
+        break;
+    default:
+        reason = kernelText(
+            "kernel.platform.hal.edit.status.invalid",
+            QStringLiteral("请求或响应无效"));
+        break;
+    }
+    return kernelText(
+        "kernel.platform.hal.edit.status.format",
+        QStringLiteral("%1（NTSTATUS 0x%2）"))
+        .arg(reason)
+        .arg(
+            static_cast<unsigned long>(lastStatus),
+            8,
+            16,
+            QLatin1Char('0'))
+        .toUpper();
+}
+
+bool KernelPlatformAuditTab::parseAddress(
+    const QString& text,
+    unsigned long long& addressOut)
+{
+    QString normalized = text.trimmed();
+    if (normalized.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive))
+    {
+        normalized.remove(0, 2);
+    }
+    bool ok = false;
+    const qulonglong value = normalized.toULongLong(&ok, 16);
+    if (!ok || value == 0ULL)
+    {
+        addressOut = 0ULL;
+        return false;
+    }
+    addressOut = static_cast<unsigned long long>(value);
+    return true;
 }
 
 QString KernelPlatformAuditTab::statusText(const unsigned long status, const long lastStatus)

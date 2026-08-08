@@ -112,6 +112,18 @@ KswordARKDriverDispatchUninitialize(
     VOID
     );
 
+// HAL 表编辑事务在驱动生命周期内记录首次原值；卸载时仅在槽仍等于
+// 本功能最后发布值的情况下原子恢复，避免覆盖第三方并发修改。
+VOID
+KswordARKPlatformAuditInitialize(
+    VOID
+    );
+
+VOID
+KswordARKPlatformAuditUninitialize(
+    VOID
+    );
+
 NTSTATUS
 KswordARKDriverControlDispatch(
     _In_ const KSWORD_ARK_DRIVER_DISPATCH_REQUEST* Request,

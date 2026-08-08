@@ -562,6 +562,11 @@ namespace ksword::ark
         // - 处理：只通过受控 IOCTL 获取结构签名与模块边界验证后的证据；
         // - 返回：未知系统布局显式 unsupported/partial，不尝试裸偏移扫描。
         PlatformAuditResult queryPlatformAudit(unsigned long scopeMask = KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL, unsigned long maxRows = KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS) const;
+        // editPlatformAuditEntry：
+        // - 输入：查询快照中的 scope/index/table/current 与新的非零函数地址；
+        // - 处理：只通过 FILE_WRITE_ACCESS 控制协议请求 R0 重新定位并原子替换；
+        // - 返回：表/槽/前值/当前值证据；不暴露任意内核地址写入。
+        PlatformAuditControlResult editPlatformAuditEntry(unsigned long scope, unsigned long entryIndex, std::uint64_t tableAddress, std::uint64_t expectedValue, std::uint64_t newValue, bool uiConfirmed) const;
         // queryI8042Audit：
         // - 输入：最大行预算；
         // - 处理：通过专用只读 IOCTL 获取精确版本描述符验证后的键鼠端点；

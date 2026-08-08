@@ -62,6 +62,8 @@ Return Value:
     KswordARKCapabilityInitialize();
     KswordARKTrustInitialize();
     KswordARKSafetyInitialize();
+    // HAL 编辑事务只初始化锁和空记录表，不在加载阶段修改任何函数槽。
+    KswordARKPlatformAuditInitialize();
     // 系统变速加载阶段只准备同步和 DPC，不会在用户确认前修改系统计时源。
     KswordARKSystemTimeInitialize();
     // 在控制设备可见前捕获每 CPU 的不可变 IDT 基线；失败只禁用该诊断功能。
@@ -128,6 +130,7 @@ Return Value:
         // 框架失败时对称撤销系统变速状态，确保维护 DPC 不会残留。
         /* No RXPF exception-visible allocation may survive DriverEntry failure. */
         KswRxpfRuntimeUninitialize();
+        KswordARKPlatformAuditUninitialize();
         KswordARKSystemTimeUninitialize();
         // 中文说明：框架创建失败时撤销通信控制状态和所有潜在引用。
         // 先恢复映像字段和加载器链，再恢复 IRP/communication 槽位。
@@ -150,6 +153,7 @@ Return Value:
         // 控制设备不可见时不会有合法变速请求，立即释放其运行时状态。
         /* Restore any RXPF shadow IDT before the driver image can be discarded. */
         KswRxpfRuntimeUninitialize();
+        KswordARKPlatformAuditUninitialize();
         KswordARKSystemTimeUninitialize();
         // 中文说明：控制设备创建失败时不保留通信控制全局状态。
         // 映像事务可能持有其它 DriverObject 引用，必须在失败返回前释放。
@@ -173,6 +177,7 @@ Return Value:
         // 回调初始化回滚必须同时撤销可能的系统变速维护对象。
         /* Callback rollback also tears down optional RXPF state first. */
         KswRxpfRuntimeUninitialize();
+        KswordARKPlatformAuditUninitialize();
         KswordARKSystemTimeUninitialize();
         // 中文说明：回调初始化失败返回前撤销通信控制状态。
         // 对称恢复仍由映像事务拥有的字段和加载器链。
@@ -240,7 +245,8 @@ Return Value:
     /* Restore every RXPF shadow IDTR and drain #PF readers before other teardown. */
     KswRxpfRuntimeUninitialize();
 
-    // 最先停止系统计时钩子并恢复原始 HAL 槽，防止卸载后回调到本驱动映像。
+    // 先恢复受控 HAL 表编辑记录，再停止系统计时钩子；两者都只覆盖各自最后发布值。
+    KswordARKPlatformAuditUninitialize();
     KswordARKSystemTimeUninitialize();
     // 中文说明：最先恢复仍由本功能持有的 MajorFunction，并释放目标 DriverObject 引用。
     // 先撤销任意槽位编辑，再恢复可能位于其下层的五槽 communication blind。

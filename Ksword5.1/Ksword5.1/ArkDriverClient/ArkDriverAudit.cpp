@@ -1869,6 +1869,94 @@ namespace ksword::ark
         return result;
     }
 
+    PlatformAuditControlResult DriverClient::editPlatformAuditEntry(
+        const unsigned long scope,
+        const unsigned long entryIndex,
+        const std::uint64_t tableAddress,
+        const std::uint64_t expectedValue,
+        const std::uint64_t newValue,
+        const bool uiConfirmed) const
+    {
+        constexpr const char* operationName =
+            "IOCTL_KSWORD_ARK_CONTROL_PLATFORM_AUDIT";
+        constexpr std::uint32_t knownResponseFlags =
+            KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_CHANGED |
+            KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TARGET_EXECUTABLE |
+            KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TABLE_REVALIDATED;
+        PlatformAuditControlResult result{};
+        KSWORD_ARK_CONTROL_PLATFORM_AUDIT_REQUEST request{};
+        request.size = sizeof(request);
+        request.version = KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION;
+        request.scope = scope;
+        request.entryIndex = entryIndex;
+        request.flags = uiConfirmed
+            ? KSWORD_ARK_PLATFORM_CONTROL_FLAG_UI_CONFIRMED
+            : 0UL;
+        request.confirmationToken = uiConfirmed
+            ? KSWORD_ARK_PLATFORM_CONTROL_CONFIRMATION_TOKEN
+            : 0UL;
+        request.tableAddress = tableAddress;
+        request.expectedValue = expectedValue;
+        request.newValue = newValue;
+
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_CONTROL_PLATFORM_AUDIT,
+            &request,
+            sizeof(request),
+            &result.response,
+            sizeof(result.response));
+        if (!result.io.ok)
+        {
+            markUnsupportedIfNeeded(result, operationName);
+            return result;
+        }
+
+        const bool validScope =
+            result.response.scope ==
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH ||
+            result.response.scope ==
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE ||
+            result.response.scope ==
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI ||
+            result.response.scope ==
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS;
+        const bool responseValid =
+            result.io.bytesReturned == sizeof(result.response) &&
+            result.response.size == sizeof(result.response) &&
+            result.response.version ==
+                KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION &&
+            result.response.status <=
+                KSWORD_ARK_PLATFORM_CONTROL_STATUS_SAFETY_DENIED &&
+            validScope &&
+            result.response.scope == scope &&
+            result.response.entryIndex == entryIndex &&
+            result.response.reserved0 == 0UL &&
+            (result.response.responseFlags & ~knownResponseFlags) == 0UL &&
+            result.response.requestedValue == newValue &&
+            (((result.response.responseFlags &
+               KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_CHANGED) != 0UL) ==
+             (result.response.status ==
+                  KSWORD_ARK_PLATFORM_CONTROL_STATUS_OK &&
+              expectedValue != newValue));
+        if (!responseValid)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message =
+                std::string(operationName) + " invalid response";
+            std::memset(&result.response, 0, sizeof(result.response));
+            return result;
+        }
+
+        result.io.ntStatus = result.response.lastStatus;
+        result.io.message = std::string(operationName) +
+            " status=" + std::to_string(result.response.status) +
+            ", ntstatus=" +
+            std::to_string(
+                static_cast<std::uint32_t>(result.response.lastStatus));
+        return result;
+    }
+
     I8042AuditResult DriverClient::queryI8042Audit(const unsigned long maxRows) const
     {
         constexpr const char* operationName = "IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT";

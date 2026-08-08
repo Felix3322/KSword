@@ -1,6 +1,6 @@
 # KswordARKDriver IOCTL Audit Report
 
-- Generated at: `2026-08-04T03:38:58.361766+00:00`
+- Generated at: `2026-08-08T06:58:45.612070+00:00`
 - Repository root: `C:\Users\Felix\CLionProjects\KSword`
 - Headers scanned: `45`
 - Registry scanned: `KswordARKDriver/src/dispatch/ioctl_registry.c`
@@ -9,9 +9,9 @@
 
 | Metric | Value |
 | --- | --- |
-| Shared IOCTL definitions | 169 |
-| Registry entries | 169 |
-| Registered definitions | 169 |
+| Shared IOCTL definitions | 170 |
+| Registry entries | 170 |
+| Registered definitions | 170 |
 | Unregistered definitions | 0 |
 | HIGH findings | 14 |
 | MEDIUM findings | 6 |
@@ -162,7 +162,8 @@
 | IOCTL_KSWORD_ARK_NETWORK_CONTROL_TRAFFIC_CAPTURE | 0x8AC | METHOD_BUFFERED | FILE_WRITE_ACCESS | yes | KswordARKNetworkIoctlControlTrafficCapture | shared/driver/KswordArkNetworkIoctl.h:82 |
 | IOCTL_KSWORD_ARK_QUERY_PIDDB | 0x8C8 | METHOD_BUFFERED | FILE_ANY_ACCESS | yes | KswordARKKernelIoctlQueryPiDdb | shared/driver/KswordArkPiDdbIoctl.h:10 |
 | IOCTL_KSWORD_ARK_DELETE_PIDDB | 0x8C9 | METHOD_BUFFERED | FILE_WRITE_ACCESS | yes | KswordARKKernelIoctlDeletePiDdb | shared/driver/KswordArkPiDdbIoctl.h:12 |
-| IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT | 0x8E4 | METHOD_BUFFERED | FILE_ANY_ACCESS | yes | KswordARKPlatformAuditIoctlQuery | shared/driver/KswordArkPlatformAuditIoctl.h:16 |
+| IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT | 0x8E4 | METHOD_BUFFERED | FILE_ANY_ACCESS | yes | KswordARKPlatformAuditIoctlQuery | shared/driver/KswordArkPlatformAuditIoctl.h:18 |
+| IOCTL_KSWORD_ARK_CONTROL_PLATFORM_AUDIT | 0x8E6 | METHOD_BUFFERED | FILE_WRITE_ACCESS | yes | KswordARKPlatformAuditIoctlControl | shared/driver/KswordArkPlatformAuditIoctl.h:25 |
 | IOCTL_KSWORD_ARK_QUERY_PREFLIGHT | 0x81C | METHOD_BUFFERED | FILE_ANY_ACCESS | yes | KswordARKPreflightIoctlQuery | shared/driver/KswordArkPreflightIoctl.h:19 |
 | IOCTL_KSWORD_ARK_TERMINATE_PROCESS | 0x801 | METHOD_BUFFERED | FILE_ANY_ACCESS | yes | KswordARKProcessIoctlTerminate | shared/driver/KswordArkProcessIoctl.h:54 |
 | IOCTL_KSWORD_ARK_SUSPEND_PROCESS | 0x802 | METHOD_BUFFERED | FILE_ANY_ACCESS | yes | KswordARKProcessIoctlSuspend | shared/driver/KswordArkProcessIoctl.h:67 |

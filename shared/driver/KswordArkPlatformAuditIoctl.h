@@ -5,20 +5,29 @@
 // ============================================================
 // KswordArkPlatformAuditIoctl.h
 // 作用：
-// - 定义 R3 <-> R0 HAL/WDF 只读审计协议；
+// - 定义 R3 <-> R0 HAL/WDF 审计协议与 HAL 函数槽受控编辑协议；
 // - 地址只在公开导出、WDF 绑定表或经过结构校验的表内读取；
-// - 本协议不提供 patch、restore、unhook 或任意内存读写能力。
+// - HAL 编辑按 scope/index 在 R0 重新定位槽位，并以表地址、旧值和原子 CAS
+//   约束单个函数指针；不提供任意地址内存写入能力。
 // ============================================================
 
-#define KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION 3UL
+#define KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION 4UL
 
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PLATFORM_AUDIT 0x8E4UL
+#define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_PLATFORM_AUDIT 0x8E6UL
 #define IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT \
     CTL_CODE( \
         KSWORD_ARK_IOCTL_DEVICE_TYPE, \
         KSWORD_ARK_IOCTL_FUNCTION_QUERY_PLATFORM_AUDIT, \
         METHOD_BUFFERED, \
         FILE_ANY_ACCESS)
+
+#define IOCTL_KSWORD_ARK_CONTROL_PLATFORM_AUDIT \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_CONTROL_PLATFORM_AUDIT, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
 
 #define KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH       0x00000001UL
 #define KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE        0x00000002UL
@@ -130,6 +139,22 @@
 #define KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MATCH          23UL
 #define KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MISMATCH       24UL
 
+#define KSWORD_ARK_PLATFORM_CONTROL_FLAG_UI_CONFIRMED       0x00000001UL
+#define KSWORD_ARK_PLATFORM_CONTROL_CONFIRMATION_TOKEN      0x48414C45UL /* 'HALE' */
+
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_OK                    0UL
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_INVALID_REQUEST       1UL
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_CONFIRMATION_REQUIRED 2UL
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_UNSUPPORTED           3UL
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_STALE_SNAPSHOT        4UL
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_TARGET_INVALID        5UL
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_WRITE_FAILED          6UL
+#define KSWORD_ARK_PLATFORM_CONTROL_STATUS_SAFETY_DENIED         7UL
+
+#define KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_CHANGED             0x00000001UL
+#define KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TARGET_EXECUTABLE   0x00000002UL
+#define KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TABLE_REVALIDATED   0x00000004UL
+
 #define KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS 1024UL
 #define KSWORD_ARK_PLATFORM_HARD_MAX_ROWS    1024UL
 
@@ -195,3 +220,36 @@ typedef struct _KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE
     unsigned long reserved0;
     KSWORD_ARK_PLATFORM_AUDIT_ENTRY entries[1];
 } KSWORD_ARK_QUERY_PLATFORM_AUDIT_RESPONSE;
+
+typedef struct _KSWORD_ARK_CONTROL_PLATFORM_AUDIT_REQUEST
+{
+    // R3 提交刷新时的身份快照；R0 不直接使用 tableAddress 计算写地址。
+    unsigned long size;
+    unsigned long version;
+    unsigned long scope;
+    unsigned long entryIndex;
+    unsigned long flags;
+    unsigned long confirmationToken;
+    unsigned long reserved0;
+    unsigned long reserved1;
+    unsigned long long tableAddress;
+    unsigned long long expectedValue;
+    unsigned long long newValue;
+} KSWORD_ARK_CONTROL_PLATFORM_AUDIT_REQUEST;
+
+typedef struct _KSWORD_ARK_CONTROL_PLATFORM_AUDIT_RESPONSE
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long status;
+    unsigned long scope;
+    unsigned long entryIndex;
+    unsigned long responseFlags;
+    long lastStatus;
+    unsigned long reserved0;
+    unsigned long long tableAddress;
+    unsigned long long slotAddress;
+    unsigned long long previousValue;
+    unsigned long long currentValue;
+    unsigned long long requestedValue;
+} KSWORD_ARK_CONTROL_PLATFORM_AUDIT_RESPONSE;

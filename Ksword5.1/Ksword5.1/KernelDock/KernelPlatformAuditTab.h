@@ -11,6 +11,7 @@
 class QEvent;
 class QLabel;
 class QLineEdit;
+class QPoint;
 class QPushButton;
 class QShowEvent;
 class QTabWidget;
@@ -19,7 +20,8 @@ class QTableWidget;
 // KernelPlatformAuditTab：
 // - Hal 模式提供四个明确的 HAL 子表；
 // - Wdf 模式提供 KMDF 函数表和本驱动回调表；
-// - 所有数据都来自 ArkDriverClient 的只读、失败关闭协议。
+// - 查询保持只读；Hal 模式可通过 ArkDriverClient 发起重新定位、快照校验和
+//   原子 CAS 约束的函数槽编辑，Wdf 模式不提供写入口。
 class KernelPlatformAuditTab final : public QWidget
 {
 public:
@@ -49,6 +51,11 @@ private:
     void refreshAsync();
     void applyResult(ksword::ark::PlatformAuditResult result);
     void populatePage(Page& page, const ksword::ark::PlatformAuditResult& result);
+    void showContextMenu(QTableWidget* table, unsigned long scope, const QPoint& position);
+    void editHalEntry(KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry);
+    bool confirmHalEdit(
+        const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry,
+        unsigned long long newAddress);
     void setColumnGroup(int groupIndex);
     void applyColumnGroup();
     void updateColumnGroupButtons();
@@ -61,8 +68,11 @@ private:
     static QString signatureText(unsigned long signatureId);
     static QString detailText(const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry);
     static QString companyNameForModule(const QString& modulePath);
+    static QString controlStatusText(unsigned long status, long lastStatus);
+    static bool parseAddress(const QString& text, unsigned long long& addressOut);
 
     Mode m_mode;
+    QLabel* m_warningLabel = nullptr;
     QTabWidget* m_innerTabs = nullptr;
     QPushButton* m_refreshButton = nullptr;
     QPushButton* m_columnGroupAButton = nullptr;
