@@ -1,5 +1,6 @@
 #include "MonitorPanelWidget.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../../../shared/ui/KsPainterChart.h"
 
 // ============================================================
 // MonitorPanelWidget.cpp
@@ -25,16 +26,6 @@
 #include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
-
-#include <QtCharts/QBarCategoryAxis>
-#include <QtCharts/QBarSeries>
-#include <QtCharts/QBarSet>
-#include <QtCharts/QAbstractAxis>
-#include <QtCharts/QAreaSeries>
-#include <QtCharts/QChart>
-#include <QtCharts/QChartView>
-#include <QtCharts/QLineSeries>
-#include <QtCharts/QValueAxis>
 
 #include <algorithm>
 #include <cstddef>
@@ -1099,7 +1090,7 @@ void MonitorPanelWidget::applyChartTextTheme()
 void MonitorPanelWidget::updateCompactVisibility()
 {
     // 低高度保护：
-    // - QtCharts 在极小高度下仍会计算标题、plotArea、图例和坐标轴；
+    // - 极小高度下标题、plotArea、图例和坐标轴没有足够的可绘制空间；
     // - 直接隐藏所有 chart view，仅保留一行摘要，避免布局震荡或崩溃。
     const bool compactTextOnly = height() > 0 && height() < 200;
     if (m_compactSummaryLabel != nullptr)

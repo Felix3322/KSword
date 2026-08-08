@@ -1,4 +1,5 @@
 #include "HardwareDock.h"
+#include "../../../shared/ui/KsPainterChart.h"
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 #include "DiskMonitorPage.h"
@@ -67,12 +68,6 @@
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QVariantAnimation>
-
-#include <QtCharts/QChart>
-#include <QtCharts/QChartView>
-#include <QtCharts/QAreaSeries>
-#include <QtCharts/QLineSeries>
-#include <QtCharts/QValueAxis>
 
 #include <algorithm>
 #include <bit>

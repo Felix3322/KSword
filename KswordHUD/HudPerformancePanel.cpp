@@ -1,4 +1,5 @@
 #include "HudPerformancePanel.h"
+#include "../shared/ui/KsPainterChart.h"
 
 #include "PerformanceNavCard.h"
 
@@ -14,6 +15,7 @@
 #include <QListWidgetItem>
 #include <QMutexLocker>
 #include <QMetaObject>
+#include <QPainterPath>
 #include <QPainter>
 #include <QPointer>
 #include <QProcess>
@@ -27,12 +29,6 @@
 #include <QVBoxLayout>
 
 #include <QtConcurrent/QtConcurrentRun>
-
-#include <QtCharts/QChart>
-#include <QtCharts/QChartView>
-#include <QtCharts/QLegend>
-#include <QtCharts/QLineSeries>
-#include <QtCharts/QValueAxis>
 
 #include <algorithm>
 #include <cmath>

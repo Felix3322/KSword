@@ -19,12 +19,8 @@
 #include <QElapsedTimer>
 #include <QGraphicsOpacityEffect>
 
-// Qt Charts头文件（条形图相关）
-#include <QtCharts/QChart>
-#include <QtCharts/QBarSeries>
-#include <QtCharts/QBarSet>
-#include <QtCharts/QValueAxis>
-#include <QtCharts/QChartView>
+// 仓库内 QWidget + QPainter 图表组件。
+#include "../shared/ui/KsPainterChart.h"
 #include "hGet.h"
 
 class HudPerformancePanel;

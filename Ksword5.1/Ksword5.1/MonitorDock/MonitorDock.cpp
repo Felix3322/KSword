@@ -1,5 +1,6 @@
 
 #include "MonitorDock.h"
+#include "../../../shared/ui/KsPainterChart.h"
 #include <MonitorDock/EtwArchiveCompression.h>
 #include "../UI/VisibleTableWidget.h"
 #include "DirectKernelCallMonitorWidget.h"
@@ -69,14 +70,6 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QtEndian>
-
-#include <QtCharts/QBarCategoryAxis>
-#include <QtCharts/QBarSeries>
-#include <QtCharts/QBarSet>
-#include <QtCharts/QChart>
-#include <QtCharts/QChartView>
-#include <QtCharts/QLineSeries>
-#include <QtCharts/QValueAxis>
 
 #include <algorithm>
 #include <chrono>

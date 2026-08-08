@@ -24,7 +24,6 @@
 #include "HudPerformancePanel.h"
 #include "KswordHUD.h"
 // 命名空间（简化代码）
-//using namespace QtCharts;
 
 namespace
 {

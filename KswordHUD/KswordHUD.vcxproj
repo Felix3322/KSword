@@ -41,7 +41,7 @@
     <QtInstall Condition="'$(KSWORD_QT_DIR)' != ''">$(KSWORD_QT_DIR)</QtInstall>
     <QtInstall Condition="'$(QtInstall)' == '' and '$(QTDIR)' != ''">$(QTDIR)</QtInstall>
     <QtInstall Condition="'$(QtInstall)' == ''">Qt</QtInstall>
-    <QtModules>core;gui;widgets;opengl;openglwidgets;charts;concurrent</QtModules>
+    <QtModules>core;gui;widgets;opengl;openglwidgets;concurrent</QtModules>
     <QMakeExtraArgs>QMAKE_MSC_VER=1944 QMAKE_MSC_FULL_VER=194435217</QMakeExtraArgs>
     <QtBuildConfig>debug</QtBuildConfig>
   </PropertyGroup>
@@ -49,7 +49,7 @@
     <QtInstall Condition="'$(KSWORD_QT_DIR)' != ''">$(KSWORD_QT_DIR)</QtInstall>
     <QtInstall Condition="'$(QtInstall)' == '' and '$(QTDIR)' != ''">$(QTDIR)</QtInstall>
     <QtInstall Condition="'$(QtInstall)' == ''">Qt</QtInstall>
-    <QtModules>core;gui;widgets;opengl;openglwidgets;charts;concurrent</QtModules>
+    <QtModules>core;gui;widgets;opengl;openglwidgets;concurrent</QtModules>
     <QMakeExtraArgs>QMAKE_MSC_VER=1944 QMAKE_MSC_FULL_VER=194435217</QMakeExtraArgs>
     <QtBuildConfig>release</QtBuildConfig>
   </PropertyGroup>
@@ -118,6 +118,7 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="HudProcessListPanel.cpp" />
+    <ClCompile Include="..\shared\ui\KsPainterChart.cpp" />
     <ClCompile Include="HudPerformancePanel.cpp" />
     <ClCompile Include="KswordHUD.cpp">
       <DynamicSource Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">input</DynamicSource>
@@ -128,6 +129,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="PerformanceNavCard.cpp" />
     <ClInclude Include="HudProcessListPanel.h" />
+    <ClInclude Include="..\shared\ui\KsPainterChart.h" />
     <ClInclude Include="HudPerformancePanel.h" />
     <ClInclude Include="hGet.h" />
     <ClInclude Include="PerformanceNavCard.h" />

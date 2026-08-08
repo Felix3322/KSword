@@ -136,7 +136,7 @@ private:
 
     // updateCompactVisibility 作用：
     // - 当 Dock 高度过低时隐藏四张图，仅显示文字摘要；
-    // - 避免 QtCharts 在极小高度下反复布局造成闪烁或崩溃；
+    // - 避免自绘图表在极小高度下反复布局造成闪烁；
     // - 返回：无返回值，直接更新控件可见性。
     void updateCompactVisibility();
 
