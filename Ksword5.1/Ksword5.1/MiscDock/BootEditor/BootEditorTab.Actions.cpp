@@ -11,15 +11,22 @@
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QInputDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextCursor>
+#include <QThreadPool>
+#include <QTimer>
+#include <QVariant>
+
+#include <atomic>
 
 namespace
 {
@@ -52,6 +59,139 @@ namespace
             return false;
         }
         return defaultValue;
+    }
+
+    // ===================== 只读枚举异步化支撑 =====================
+    // 背景：
+    // - BootEditorTab 构造函数直接调用 refreshBcdEntries()，而构造函数与 refreshBcdEntries()
+    //   都位于 BootEditorTab.cpp，不在本次可修改范围内，无法把首轮枚举整体挪出构造期；
+    // - 因此改在 runBcdEdit 内部拦截“刷新专用只读枚举”：真正的 bcdedit 交给线程池执行，
+    //   调用方立刻拿到由上一轮缓存文本组成的占位结果，后台结果回投 UI 线程后再刷新一次；
+    // - 跨调用状态用 QObject 动态属性承载，既避开不可修改的头文件，
+    //   又保证控件析构时状态随对象一起消失，不会留下文件级残留。
+
+    // kEnumPendingGenerationProperty：进行中的枚举请求代号，属性缺失或为 0 表示当前没有后台任务。
+    constexpr char kEnumPendingGenerationProperty[] = "ks_bcdEnumPendingGeneration";
+    // kEnumReadyResultProperty：后台回投后暂存的枚举结果，等待下一次同步调用取走。
+    constexpr char kEnumReadyResultProperty[] = "ks_bcdEnumReadyResult";
+
+    // 枚举结果 QVariantMap 字段名：
+    // - 后台线程写入、UI 线程读取；
+    // - 集中定义避免两侧键名拼写漂移。
+    constexpr char kEnumResultStartSucceededKey[] = "startSucceeded";
+    constexpr char kEnumResultTimeoutKey[] = "timeout";
+    constexpr char kEnumResultExitCodeKey[] = "exitCode";
+    constexpr char kEnumResultStandardOutputKey[] = "standardOutput";
+    constexpr char kEnumResultStandardErrorKey[] = "standardError";
+
+    // kProcessStartTimeoutMs：等待子进程创建完成的上限（毫秒）。
+    constexpr int kProcessStartTimeoutMs = 3000;
+    // kProcessKillWaitMs：强杀后回收进程对象的等待上限（毫秒）。
+    constexpr int kProcessKillWaitMs = 1000;
+    // kBackgroundWaitSliceMs：后台等待的分段粒度（毫秒），用于定期复查进程状态与应用退出标记。
+    constexpr int kBackgroundWaitSliceMs = 200;
+
+    // g_enumRequestGenerationCounter：
+    // - 作用：全局单调递增的枚举请求代号，用于淘汰已被新请求取代的旧结果；
+    // - 说明：目前只在 UI 线程自增，用原子类型是为了防止后续被误用到其它线程。
+    std::atomic<quint64> g_enumRequestGenerationCounter{ 0 };
+
+    // g_placeholderLogOwnerObject：
+    // - 作用：记录“最近一次 runBcdEdit 返回的是异步占位结果”的控件地址；
+    // - 说明：appendCommandLog 读到同一地址时跳过本次日志，避免把缓存文本重复写进原始输出区；
+    // - 线程：只在 UI 线程读写。
+    const void* g_placeholderLogOwnerObject = nullptr;
+
+    // g_synchronousCommandDepth：
+    // - 作用：记录当前有几层写命令正卡在嵌套事件循环里等待；
+    // - 说明：>0 时禁止异步枚举结果触发刷新，避免重建表格顺带改写用户正在提交的编辑框内容；
+    // - 线程：只在 UI 线程读写。
+    int g_synchronousCommandDepth = 0;
+
+    // isBcdRefreshEnumRequest：
+    // - 作用：判断本次调用是否为刷新流程专用的整表只读枚举；
+    // - 入参 argumentList：bcdedit 参数列表；入参 commandDescription：调用方描述文本；
+    // - 返回：参数与描述同时匹配刷新专用枚举时返回 true，用户自定义命令不会被误判。
+    bool isBcdRefreshEnumRequest(const QStringList& argumentList, const QString& commandDescription)
+    {
+        if (commandDescription != QStringLiteral("枚举全部 BCD 条目"))
+        {
+            return false;
+        }
+        return argumentList.size() == 3
+            && argumentList.at(0).compare(QStringLiteral("/enum"), Qt::CaseInsensitive) == 0
+            && argumentList.at(1).compare(QStringLiteral("all"), Qt::CaseInsensitive) == 0
+            && argumentList.at(2).compare(QStringLiteral("/v"), Qt::CaseInsensitive) == 0;
+    }
+
+    // runBcdEditInCallingThread：
+    // - 作用：在当前线程内完整执行一次 bcdedit，产出可跨线程搬运的纯值类型结果；
+    // - 入参 argumentList：bcdedit 参数列表；入参 timeoutMs：整体执行超时上限（毫秒）；
+    // - 返回：含启动状态、超时标记、退出码与标准输出/标准错误文本的 QVariantMap。
+    QVariantMap runBcdEditInCallingThread(const QStringList& argumentList, const int timeoutMs)
+    {
+        QVariantMap resultMap;
+        resultMap.insert(QString::fromLatin1(kEnumResultStartSucceededKey), false);
+        resultMap.insert(QString::fromLatin1(kEnumResultTimeoutKey), false);
+        resultMap.insert(QString::fromLatin1(kEnumResultExitCodeKey), -1);
+        resultMap.insert(QString::fromLatin1(kEnumResultStandardOutputKey), QString());
+        resultMap.insert(QString::fromLatin1(kEnumResultStandardErrorKey), QString());
+
+        // 后台线程内刻意不设父对象：QProcess 生命周期完全由本函数栈决定，不跨线程共享。
+        QProcess backgroundProcess;
+        backgroundProcess.setProgram(QStringLiteral("bcdedit"));
+        backgroundProcess.setArguments(argumentList);
+        backgroundProcess.setProcessChannelMode(QProcess::SeparateChannels);
+        backgroundProcess.start();
+
+        if (!backgroundProcess.waitForStarted(kProcessStartTimeoutMs))
+        {
+            resultMap.insert(
+                QString::fromLatin1(kEnumResultStandardErrorKey),
+                backgroundProcess.errorString());
+            return resultMap;
+        }
+        resultMap.insert(QString::fromLatin1(kEnumResultStartSucceededKey), true);
+
+        // 分段等待：
+        // - 后台线程没有事件循环，waitForFinished 不会重入 UI，也就不需要 processEvents；
+        // - 切成小片是为了在应用退出时尽快松手，避免线程池收尾阶段被长命令拖住。
+        const int effectiveTimeoutMs = timeoutMs > 0 ? timeoutMs : kDefaultCommandTimeoutMs;
+        QElapsedTimer elapsedTimer;
+        elapsedTimer.start();
+        bool processFinished = false;
+        while (true)
+        {
+            if (backgroundProcess.waitForFinished(kBackgroundWaitSliceMs)
+                || backgroundProcess.state() == QProcess::NotRunning)
+            {
+                processFinished = true;
+                break;
+            }
+            if (elapsedTimer.elapsed() >= effectiveTimeoutMs || QCoreApplication::closingDown())
+            {
+                break;
+            }
+        }
+
+        if (processFinished)
+        {
+            resultMap.insert(QString::fromLatin1(kEnumResultExitCodeKey), backgroundProcess.exitCode());
+        }
+        else
+        {
+            backgroundProcess.kill();
+            backgroundProcess.waitForFinished(kProcessKillWaitMs);
+            resultMap.insert(QString::fromLatin1(kEnumResultTimeoutKey), true);
+        }
+
+        resultMap.insert(
+            QString::fromLatin1(kEnumResultStandardOutputKey),
+            QString::fromLocal8Bit(backgroundProcess.readAllStandardOutput()));
+        resultMap.insert(
+            QString::fromLatin1(kEnumResultStandardErrorKey),
+            QString::fromLocal8Bit(backgroundProcess.readAllStandardError()));
+        return resultMap;
     }
 }
 
@@ -754,6 +894,15 @@ void BootEditorTab::appendCommandLog(
     const QString& commandTitle,
     const BcdCommandResult& commandResult)
 {
+    // 异步占位结果不落日志：
+    // - 占位结果只是把上一轮缓存文本原样交还给刷新流程，用于让界面维持既有内容；
+    // - 后台真实结果回投后会再走一次刷新，那一次才写入日志，保证一次刷新只有一条记录。
+    if (g_placeholderLogOwnerObject == this)
+    {
+        g_placeholderLogOwnerObject = nullptr;
+        return;
+    }
+
     // 日志块格式：
     // - 首行展示时间与命令标题；
     // - 第二行开始展示原始输出；
@@ -779,6 +928,11 @@ BootEditorTab::BcdCommandResult BootEditorTab::runBcdEdit(
     const int timeoutMs,
     const QString& commandDescription)
 {
+    // 进入时先清掉占位日志标记：
+    // - 正常流程里 appendCommandLog 会紧跟着消费掉它；
+    // - 万一某个调用方没有写日志，这里兜底，避免误抑制下一条真实日志。
+    g_placeholderLogOwnerObject = nullptr;
+
     BcdCommandResult result;
     const QString commandVerb = argumentList.value(0).trimmed().toLower();
     const bool readOnlyCommand = commandVerb == QStringLiteral("/enum") ||
@@ -794,53 +948,253 @@ BootEditorTab::BcdCommandResult BootEditorTab::runBcdEdit(
         result.mergedOutputText = result.standardErrorText;
         return result;
     }
-    QProcess process(this);
+
+    // ============ 刷新专用只读枚举：整段交给线程池，UI 线程零阻塞 ============
+    if (isBcdRefreshEnumRequest(argumentList, commandDescription))
+    {
+        // 第一步：后台结果已经回投时直接取走，按同步语义返回，让刷新流程正常填表并写日志。
+        const QVariant readyResultVariant = property(kEnumReadyResultProperty);
+        if (readyResultVariant.isValid())
+        {
+            setProperty(kEnumReadyResultProperty, QVariant());
+
+            const QVariantMap readyResultMap = readyResultVariant.toMap();
+            result.startSucceeded =
+                readyResultMap.value(QString::fromLatin1(kEnumResultStartSucceededKey)).toBool();
+            result.timeout =
+                readyResultMap.value(QString::fromLatin1(kEnumResultTimeoutKey)).toBool();
+            result.exitCode =
+                readyResultMap.value(QString::fromLatin1(kEnumResultExitCodeKey)).toInt();
+            result.standardOutputText =
+                readyResultMap.value(QString::fromLatin1(kEnumResultStandardOutputKey)).toString();
+            result.standardErrorText =
+                readyResultMap.value(QString::fromLatin1(kEnumResultStandardErrorKey)).toString();
+            result.mergedOutputText = result.standardOutputText;
+            if (!result.standardErrorText.trimmed().isEmpty())
+            {
+                if (!result.mergedOutputText.trimmed().isEmpty())
+                {
+                    result.mergedOutputText += QStringLiteral("\n");
+                }
+                result.mergedOutputText += result.standardErrorText;
+            }
+
+            kLogEvent asyncResultEvent;
+            if (!result.startSucceeded)
+            {
+                err << asyncResultEvent
+                    << "[BootEditor] 命令启动失败: "
+                    << commandDescription.toStdString()
+                    << ", error="
+                    << result.standardErrorText.toStdString()
+                    << eol;
+            }
+            else if (result.timeout)
+            {
+                err << asyncResultEvent
+                    << "[BootEditor] 命令执行超时: "
+                    << commandDescription.toStdString()
+                    << ", timeoutMs="
+                    << timeoutMs
+                    << eol;
+            }
+            else if (result.exitCode == 0)
+            {
+                info << asyncResultEvent
+                    << "[BootEditor] 命令执行完成: "
+                    << commandDescription.toStdString()
+                    << ", exitCode="
+                    << result.exitCode
+                    << eol;
+            }
+            else
+            {
+                warn << asyncResultEvent
+                    << "[BootEditor] 命令返回非零: "
+                    << commandDescription.toStdString()
+                    << ", exitCode="
+                    << result.exitCode
+                    << eol;
+            }
+            return result;
+        }
+
+        // 第二步：没有现成结果就派发后台任务；已有任务在跑时直接复用，避免重复拉起 bcdedit。
+        if (property(kEnumPendingGenerationProperty).toULongLong() == 0)
+        {
+            // requestGeneration 用途：淘汰已被新请求取代的旧结果。
+            const quint64 requestGeneration = ++g_enumRequestGenerationCounter;
+            setProperty(
+                kEnumPendingGenerationProperty,
+                QVariant::fromValue<qulonglong>(requestGeneration));
+
+            // guardedSelf 用途：后台任务可能晚于控件销毁，回投前必须验证生命周期。
+            const QPointer<BootEditorTab> guardedSelf(this);
+            const QStringList requestArgumentList = argumentList;
+            const int requestTimeoutMs = timeoutMs;
+            QThreadPool::globalInstance()->start(
+                [guardedSelf, requestGeneration, requestArgumentList, requestTimeoutMs]()
+                {
+                    // 后台线程只做纯数据采集，产出可跨线程搬运的值类型。
+                    const QVariantMap collectedResultMap =
+                        runBcdEditInCallingThread(requestArgumentList, requestTimeoutMs);
+
+                    QCoreApplication* const appInstance = QCoreApplication::instance();
+                    if (appInstance == nullptr)
+                    {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        appInstance,
+                        [guardedSelf, requestGeneration, collectedResultMap]()
+                        {
+                            if (guardedSelf == nullptr)
+                            {
+                                return;
+                            }
+                            const quint64 currentPendingGeneration =
+                                guardedSelf->property(kEnumPendingGenerationProperty).toULongLong();
+                            if (currentPendingGeneration != requestGeneration)
+                            {
+                                return;
+                            }
+                            guardedSelf->setProperty(kEnumPendingGenerationProperty, QVariant());
+                            if (g_synchronousCommandDepth > 0)
+                            {
+                                // 此刻正卡在写命令的同步等待里：
+                                // - 这份快照拍摄于写入之前，本来就已过期；
+                                // - 现在刷新还会重建表格并改写用户正在提交的编辑框内容；
+                                // - 直接丢弃，写入流程收尾时会自行调用 refreshBcdEntries 重取。
+                                return;
+                            }
+                            guardedSelf->setProperty(kEnumReadyResultProperty, collectedResultMap);
+                            guardedSelf->refreshBcdEntries();
+                        });
+                });
+        }
+
+        // 第三步：立刻返回占位结果。
+        // - 沿用上一轮原始枚举文本，等待期间表格与编辑区保持既有内容，不会闪成空表；
+        // - 标记占位日志归属，避免把缓存文本重复写进“原始输出”区。
+        result.startSucceeded = true;
+        result.timeout = false;
+        result.exitCode = 0;
+        result.standardOutputText = m_lastEnumRawText;
+        result.mergedOutputText = m_lastEnumRawText;
+        g_placeholderLogOwnerObject = this;
+
+        if (m_lastEnumRawText.trimmed().isEmpty() && m_statusLabel != nullptr)
+        {
+            // 首轮加载没有历史数据可沿用，refreshBcdEntries 会写出“总条目 0”的摘要；
+            // 这里在下一轮事件循环把状态栏改回“尚未加载”，避免被误读成系统真的没有引导项。
+            QTimer::singleShot(0, this, [this]()
+                {
+                    if (m_statusLabel == nullptr)
+                    {
+                        return;
+                    }
+                    if (property(kEnumPendingGenerationProperty).toULongLong() == 0)
+                    {
+                        return;
+                    }
+                    m_statusLabel->setText(QStringLiteral("状态：尚未加载 BCD 数据"));
+                });
+        }
+        return result;
+    }
+
+    // ============ 其余命令：信号驱动的有界等待 ============
+    // 说明：
+    // - 写操作的调用方按返回值决定是否继续后续写入，必须保留同步语义；
+    // - 但等待方式不再是 waitForStarted 硬阻塞 + waitForFinished/processEvents 忙轮询：
+    //   进程结束、启动失败与超时全部由信号驱动，嵌套事件循环排除用户输入事件，
+    //   堵住等待期间点击其它页签触发懒加载重入构造的路径。
+    QProcess process; // 刻意不设父对象：嵌套事件循环期间父控件若被销毁会造成悬垂。
 
     process.setProgram(QStringLiteral("bcdedit"));
     process.setArguments(argumentList);
     process.setProcessChannelMode(QProcess::SeparateChannels);
 
     process.start();
-    result.startSucceeded = process.waitForStarted(3000);
-    if (!result.startSucceeded)
+
+    // buildStartFailureResult：
+    // - 作用：统一收敛“进程未能启动”的结果填充与错误日志；
+    // - 返回：已填好错误信息的命令结果。
+    const auto buildStartFailureResult = [&result, &process, &commandDescription]() -> BcdCommandResult
+        {
+            result.startSucceeded = false;
+            result.standardErrorText = process.errorString();
+            result.mergedOutputText = result.standardErrorText;
+            kLogEvent startFailedEvent;
+            err << startFailedEvent
+                << "[BootEditor] 命令启动失败: "
+                << commandDescription.toStdString()
+                << ", error="
+                << result.standardErrorText.toStdString()
+                << eol;
+            return result;
+        };
+
+    if (process.state() == QProcess::NotRunning)
     {
-        result.standardErrorText = process.errorString();
-        result.mergedOutputText = result.standardErrorText;
-        kLogEvent event;
-        err << event
-            << "[BootEditor] 命令启动失败: "
-            << commandDescription.toStdString()
-            << ", error="
-            << result.standardErrorText.toStdString()
-            << eol;
-        return result;
+        // CreateProcess 直接失败时 QProcess 会同步退回 NotRunning，无需进入等待。
+        return buildStartFailureResult();
     }
 
-    // 可响应等待策略：
-    // - 使用短周期 waitForFinished + processEvents；
-    // - 避免单次长阻塞造成“界面假死”。
-    QElapsedTimer elapsedTimer;
-    elapsedTimer.start();
-    while (process.state() != QProcess::NotRunning)
+    QEventLoop waitEventLoop;
+    QTimer waitTimeoutTimer;
+    waitTimeoutTimer.setSingleShot(true);
+    waitTimeoutTimer.setInterval(timeoutMs > 0 ? timeoutMs : kDefaultCommandTimeoutMs);
+
+    bool processFailedToStart = false;
+    bool waitTimedOut = false;
+
+    QObject::connect(&process, &QProcess::finished, &waitEventLoop,
+        [&waitEventLoop](int, QProcess::ExitStatus)
+        {
+            waitEventLoop.quit();
+        });
+    QObject::connect(&process, &QProcess::errorOccurred, &waitEventLoop,
+        [&waitEventLoop, &processFailedToStart](const QProcess::ProcessError processError)
+        {
+            if (processError != QProcess::FailedToStart)
+            {
+                return;
+            }
+            processFailedToStart = true;
+            waitEventLoop.quit();
+        });
+    QObject::connect(&waitTimeoutTimer, &QTimer::timeout, &waitEventLoop,
+        [&waitEventLoop, &waitTimedOut]()
+        {
+            waitTimedOut = true;
+            waitEventLoop.quit();
+        });
+
+    waitTimeoutTimer.start();
+    if (process.state() != QProcess::NotRunning)
     {
-        if (process.waitForFinished(50))
-        {
-            break;
-        }
-
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
-
-        if (elapsedTimer.elapsed() >= timeoutMs)
-        {
-            result.timeout = true;
-            process.kill();
-            process.waitForFinished(1000);
-            break;
-        }
+        // 嵌套等待期间标记同步深度：
+        // - 排除用户输入已经挡住“等待中点击其它页签触发懒加载重入构造”；
+        // - 深度标记再挡住异步枚举结果在此刻回投刷新，双保险。
+        ++g_synchronousCommandDepth;
+        waitEventLoop.exec(QEventLoop::ExcludeUserInputEvents);
+        --g_synchronousCommandDepth;
     }
+    waitTimeoutTimer.stop();
 
-    if (result.timeout)
+    if (processFailedToStart)
     {
+        return buildStartFailureResult();
+    }
+    result.startSucceeded = true;
+
+    if (waitTimedOut)
+    {
+        result.timeout = true;
+        process.kill();
+        process.waitForFinished(kProcessKillWaitMs);
+
         result.standardOutputText = QString::fromLocal8Bit(process.readAllStandardOutput());
         result.standardErrorText = QString::fromLocal8Bit(process.readAllStandardError());
         result.mergedOutputText = result.standardOutputText + QStringLiteral("\n") + result.standardErrorText;

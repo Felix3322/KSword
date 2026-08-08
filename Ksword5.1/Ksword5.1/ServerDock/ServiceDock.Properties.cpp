@@ -2,6 +2,7 @@
 
 #include <QFileDialog>
 #include <QSignalBlocker>
+#include <QVariant>
 
 using namespace service_dock_detail;
 
@@ -11,6 +12,59 @@ namespace
     // - 统一右侧属性页工具按钮图标尺寸；
     // - 与顶部工具栏保持一致，降低视觉割裂感。
     constexpr QSize kToolbarIconSize(16, 16);
+
+    // kDetailRenderDebounceMs 作用：
+    // - 主列表连续换选中行时的详情渲染去抖窗口；
+    // - 方向键连滚只在停下来之后触发一次重量级页签重建。
+    constexpr int kDetailRenderDebounceMs = 150;
+
+    // kDetailRenderTimerProperty 作用：
+    // - 存放“详情页延迟渲染”单发定时器指针；
+    // - 本次改动不扩展共享头 ServiceDock.h，故用动态属性承载这个状态。
+    constexpr const char* kDetailRenderTimerProperty = "service_detail_render_timer";
+
+    // kRenderedServiceNameProperty 作用：
+    // - 记录某个重量级页签当前展示的是哪个服务；
+    // - 切换页签时据此判断内容是否过期，避免无谓重查与冲掉未保存编辑。
+    constexpr const char* kRenderedServiceNameProperty = "service_detail_rendered_service";
+
+    // detailRenderTimerOf 作用：取出挂在 ServiceDock 上的延迟渲染定时器。
+    // 入参：ownerWidget 为 ServiceDock 实例。
+    // 返回：定时器指针；尚未初始化时返回 nullptr。
+    QTimer* detailRenderTimerOf(const QWidget* ownerWidget)
+    {
+        if (ownerWidget == nullptr)
+        {
+            return nullptr;
+        }
+        return qobject_cast<QTimer*>(ownerWidget->property(kDetailRenderTimerProperty).value<QObject*>());
+    }
+
+    // markDetailPageRendered 作用：记录某个重量级页签当前渲染的服务短名。
+    // 入参：detailPage 为页签根控件；serviceNameText 为已渲染的服务短名，空串表示作废。
+    // 返回：无。
+    void markDetailPageRendered(QWidget* detailPage, const QString& serviceNameText)
+    {
+        if (detailPage != nullptr)
+        {
+            detailPage->setProperty(kRenderedServiceNameProperty, serviceNameText);
+        }
+    }
+
+    // isDetailPageRenderedFor 作用：判断某个重量级页签的内容是否已对应指定服务。
+    // 入参：detailPage 为页签根控件；serviceNameText 为当前选中服务短名。
+    // 返回：内容已是该服务的最新渲染结果时返回 true。
+    bool isDetailPageRenderedFor(const QWidget* detailPage, const QString& serviceNameText)
+    {
+        if (detailPage == nullptr || serviceNameText.trimmed().isEmpty())
+        {
+            return false;
+        }
+
+        const QString renderedServiceNameText = detailPage->property(kRenderedServiceNameProperty).toString();
+        return !renderedServiceNameText.isEmpty()
+            && QString::compare(renderedServiceNameText, serviceNameText, Qt::CaseInsensitive) == 0;
+    }
 
     // isLocalSystemAccountText 作用：
     // - 判断账户文本是否代表 LocalSystem；
@@ -183,6 +237,60 @@ void ServiceDock::initializeDetailTabs()
     m_detailTabWidget->setTabToolTip(2, QStringLiteral("服务失败恢复动作配置"));
     m_detailTabWidget->setTabToolTip(3, QStringLiteral("服务依赖与反向依赖信息"));
     m_detailTabWidget->setTabToolTip(4, QStringLiteral("触发器、安全、风险与导出信息"));
+
+    // 恢复/依存关系/审计三页每次回填都要重新走 SCM（合计十余次到 services.exe 的 RPC），
+    // 早先在 itemSelectionChanged 里同步全渲染，方向键连滚时每行都要付这笔开销。
+    // 这里改成单发定时器统一调度：
+    // 1) 换选中行只重启定时器，连滚过程中不产生任何 SCM 往返；
+    // 2) 定时器只渲染当前可见的那一页，看不见的页留到切过去时再补。
+    QTimer* const detailRenderTimer = new QTimer(this);
+    detailRenderTimer->setSingleShot(true);
+    setProperty(kDetailRenderTimerProperty, QVariant::fromValue<QObject*>(detailRenderTimer));
+
+    connect(detailRenderTimer, &QTimer::timeout, this, [this]()
+        {
+            const int selectedIndex = findServiceIndexByName(selectedServiceName());
+            if (selectedIndex < 0 || selectedIndex >= static_cast<int>(m_serviceList.size()))
+            {
+                return;
+            }
+
+            const ServiceEntry& selectedEntry = m_serviceList[static_cast<std::size_t>(selectedIndex)];
+            QWidget* const visibleDetailPage = (m_detailTabWidget == nullptr)
+                ? nullptr
+                : m_detailTabWidget->currentWidget();
+
+            // 回填期间沿用与 updateDetailViewsFromSelection 相同的信号屏蔽语义。
+            const bool previousSyncFlag = m_detailUiSyncInProgress;
+            m_detailUiSyncInProgress = true;
+            if (visibleDetailPage == m_recoveryTabPage
+                && !isDetailPageRenderedFor(m_recoveryTabPage, selectedEntry.serviceNameText))
+            {
+                populateRecoveryTab(selectedEntry);
+            }
+            else if (visibleDetailPage == m_dependencyTabPage
+                && !isDetailPageRenderedFor(m_dependencyTabPage, selectedEntry.serviceNameText))
+            {
+                populateDependencyTab(selectedEntry);
+            }
+            else if (visibleDetailPage == m_auditTabPage
+                && !isDetailPageRenderedFor(m_auditTabPage, selectedEntry.serviceNameText))
+            {
+                populateAuditTab(selectedEntry);
+            }
+            m_detailUiSyncInProgress = previousSyncFlag;
+        });
+
+    connect(m_detailTabWidget, &QTabWidget::currentChanged, this, [this](const int)
+        {
+            // 切换页签时立即补渲染：这里不作废任何标记，
+            // 因此已经对应当前服务的页会被跳过，用户未保存的编辑不会被冲掉。
+            QTimer* const renderTimer = detailRenderTimerOf(this);
+            if (renderTimer != nullptr)
+            {
+                renderTimer->start(0);
+            }
+        });
 }
 
 void ServiceDock::initializeGeneralTab()
@@ -586,6 +694,7 @@ void ServiceDock::populateRecoveryTab(const ServiceEntry& entry)
         m_recoveryProgramEdit->setPlaceholderText(QString());
     }
     refreshRecoveryTabUiState();
+    markDetailPageRendered(m_recoveryTabPage, entry.serviceNameText);
 }
 
 void ServiceDock::populateDependencyTab(const ServiceEntry& entry)
@@ -594,6 +703,7 @@ void ServiceDock::populateDependencyTab(const ServiceEntry& entry)
     {
         m_dependencyEditor->setLocalizedText(buildDependencyDetailText(entry));
     }
+    markDetailPageRendered(m_dependencyTabPage, entry.serviceNameText);
 }
 
 void ServiceDock::populateAuditTab(const ServiceEntry& entry)
@@ -602,12 +712,14 @@ void ServiceDock::populateAuditTab(const ServiceEntry& entry)
     {
         m_auditEditor->setLocalizedText(buildAuditTabText(entry));
     }
+    markDetailPageRendered(m_auditTabPage, entry.serviceNameText);
 }
 
 void ServiceDock::updateDetailViewsFromSelection()
 {
     const int selectedIndex = findServiceIndexByName(selectedServiceName());
     const bool hasSelection = selectedIndex >= 0 && selectedIndex < static_cast<int>(m_serviceList.size());
+    QTimer* const detailRenderTimer = detailRenderTimerOf(this);
 
     m_detailUiSyncInProgress = true;
     if (!hasSelection)
@@ -641,15 +753,33 @@ void ServiceDock::updateDetailViewsFromSelection()
 
         if (m_dependencyEditor != nullptr) { m_dependencyEditor->setLocalizedText(QStringLiteral("未选择服务")); }
         if (m_auditEditor != nullptr) { m_auditEditor->setLocalizedText(QStringLiteral("未选择服务")); }
+
+        // 没有选中项时清空渲染标记并撤销待执行的延迟渲染。
+        markDetailPageRendered(m_recoveryTabPage, QString());
+        markDetailPageRendered(m_dependencyTabPage, QString());
+        markDetailPageRendered(m_auditTabPage, QString());
+        if (detailRenderTimer != nullptr)
+        {
+            detailRenderTimer->stop();
+        }
     }
     else
     {
         const ServiceEntry& entry = m_serviceList[static_cast<std::size_t>(selectedIndex)];
+        // 常规页与登录页完全来自内存缓存，没有 SCM 往返，继续同步回填。
         populateGeneralTab(entry);
         populateLogonTab(entry);
-        populateRecoveryTab(entry);
-        populateDependencyTab(entry);
-        populateAuditTab(entry);
+
+        // 恢复/依存关系/审计三页每次都要重新查 SCM：
+        // 先整体作废渲染标记（缓存数据可能已被刷新覆盖），
+        // 再交给单发定时器去抖后只渲染当前可见的那一页。
+        markDetailPageRendered(m_recoveryTabPage, QString());
+        markDetailPageRendered(m_dependencyTabPage, QString());
+        markDetailPageRendered(m_auditTabPage, QString());
+        if (detailRenderTimer != nullptr)
+        {
+            detailRenderTimer->start(kDetailRenderDebounceMs);
+        }
     }
     m_detailUiSyncInProgress = false;
 

@@ -50,7 +50,10 @@ namespace ks::ui
         // - themeColor：当前主题强调色；
         // - isDefaultThemeColor：true 时按契约跳过首次批量着色；
         // - progressCallback：回传已处理/总控件数，供启动进度条展示；
-        // - 返回批处理统计结果。
+        // - 控件遍历按时间预算分片：首片同步执行，其余片由事件循环续跑，
+        //   本函数返回时批处理可能尚未结束（分片期间新建的控件由事件过滤器兜底）；
+        // - 返回批处理统计结果：visitedWidgetCount 是本轮计划遍历的控件总数，
+        //   其余计数与耗时只覆盖同步执行的首片。
         SvgThemeIconApplyResult applyToApplication(
             QApplication* application,
             const QColor& themeColor,
@@ -68,6 +71,13 @@ namespace ks::ui
         ~SvgThemeIconManager() override = default;
         SvgThemeIconManager(const SvgThemeIconManager&) = delete;
         SvgThemeIconManager& operator=(const SvgThemeIconManager&) = delete;
+
+        // runIconApplySlice：
+        // - runGeneration：发起本轮批处理时记录的代次，不符即说明已被新一轮取代；
+        // - cacheHitCount：累加缓存命中次数，可为空；
+        // - 只处理时间预算内的控件，未处理完则用 QTimer::singleShot(0) 排下一片；
+        // - 返回本片实际替换或还原的图标槽位数量。
+        int runIconApplySlice(quint64 runGeneration, int* cacheHitCount);
 
         // 下列函数分别处理 QWidget、QAction、Tab 和单个 QIcon。
         int applyToWidget(QWidget* widgetPointer, int* cacheHitCount);

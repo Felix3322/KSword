@@ -3482,6 +3482,362 @@ namespace
         return ntStatus >= 0;
     }
 
+    // R0ServiceOperationOutcome 作用：
+    // - 输入：无；由后台线程执行 SCM 操作时逐字段填充；
+    // - 处理：把一次 R0 驱动服务启停的全部结论压成纯值类型，满足“跨线程只回投值类型”的约束；
+    // - 返回：各字段含义见成员注释，UI 线程拿到后才决定弹框与状态刷新。
+    struct R0ServiceOperationOutcome
+    {
+        bool succeeded = false;                  // succeeded：SCM 侧是否已到达目标状态。
+        bool alreadyInTargetState = false;       // alreadyInTargetState：进入时服务就已处于目标状态（不写“已创建并启动”日志）。
+        bool startServiceCallFailed = false;     // startServiceCallFailed：失败发生在 StartServiceW 本身，errorCode 可用于签名失败判定。
+        bool usedDirectNtUnloadFallback = false; // usedDirectNtUnloadFallback：停驱走了 NtUnloadDriver 直卸回退。
+        DWORD errorCode = ERROR_SUCCESS;         // errorCode：失败时的 Win32 错误码。
+        QString stageText;                       // stageText：失败阶段描述，可直接作为 R0 错误框标题行。
+        QString detailText;                      // detailText：失败排障详情，可直接进错误框“详细信息”。
+    };
+
+    // g_r0ServiceOperationInFlight 作用：
+    // - 输入：无；
+    // - 处理：R0 启停改为后台执行后，用进程级门闩挡掉重复点击造成的并发 SCM 操作；
+    //         MainWindow 是单实例窗口，这里用文件级静态状态即可覆盖全部入口；
+    // - 返回：无；true 表示线程池里已经有一次启停任务在跑。
+    std::atomic_bool g_r0ServiceOperationInFlight{ false };
+
+    // executeR0ServiceStopOnWorker 作用：
+    // - 输入：无；服务名固定取 kR0DriverServiceName；
+    // - 处理：在任意线程完成 SCM 连接 / ControlService / 等待 SERVICE_STOPPED / DeleteService 全过程，
+    //         全程不触碰任何 QWidget，也不读写 MainWindow 成员；
+    // - 返回：纯值类型结论；失败原因由 stageText / errorCode / detailText 描述。
+    R0ServiceOperationOutcome executeR0ServiceStopOnWorker()
+    {
+        R0ServiceOperationOutcome operationOutcome;
+
+        ScopedServiceHandle scmHandle(::OpenSCManagerW(nullptr, SERVICES_ACTIVE_DATABASE, SC_MANAGER_CONNECT));
+        if (!scmHandle.isValid())
+        {
+            operationOutcome.errorCode = ::GetLastError();
+            operationOutcome.stageText = QStringLiteral("R0 卸载失败：无法连接服务控制管理器。");
+            return operationOutcome;
+        }
+
+        ScopedServiceHandle serviceHandle(::OpenServiceW(
+            scmHandle.get(),
+            kR0DriverServiceName,
+            SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE));
+        if (!serviceHandle.isValid())
+        {
+            const DWORD openError = ::GetLastError();
+            if (openError == ERROR_SERVICE_DOES_NOT_EXIST)
+            {
+                operationOutcome.succeeded = true;
+                operationOutcome.alreadyInTargetState = true;
+                return operationOutcome;
+            }
+            operationOutcome.errorCode = openError;
+            operationOutcome.stageText = QStringLiteral("R0 卸载失败：无法打开驱动服务。");
+            return operationOutcome;
+        }
+
+        SERVICE_STATUS_PROCESS currentStatus{};
+        DWORD queryError = ERROR_SUCCESS;
+        if (!queryServiceStatus(serviceHandle.get(), currentStatus, queryError))
+        {
+            operationOutcome.errorCode = queryError;
+            operationOutcome.stageText = QStringLiteral("R0 卸载失败：读取驱动服务状态失败。");
+            return operationOutcome;
+        }
+
+        if (currentStatus.dwCurrentState != SERVICE_STOPPED)
+        {
+            if (currentStatus.dwCurrentState != SERVICE_STOP_PENDING)
+            {
+                SERVICE_STATUS ignoredStatus{};
+                if (::ControlService(serviceHandle.get(), SERVICE_CONTROL_STOP, &ignoredStatus) == FALSE)
+                {
+                    const DWORD stopError = ::GetLastError();
+                    if (stopError != ERROR_SERVICE_NOT_ACTIVE)
+                    {
+                        // 命中 1052（不接受 STOP 控制）时，回退到 NtUnloadDriver 直卸路径。
+                        if (stopError == ERROR_INVALID_SERVICE_CONTROL)
+                        {
+                            DWORD privilegeError = ERROR_SUCCESS;
+                            const bool privilegeOk =
+                                enableCurrentProcessPrivilege(SE_LOAD_DRIVER_NAME, &privilegeError);
+
+                            long ntUnloadStatus = 0;
+                            const bool unloadOk = tryNtUnloadDriverByServiceName(
+                                kR0DriverServiceName,
+                                &ntUnloadStatus);
+                            if (!unloadOk)
+                            {
+                                operationOutcome.errorCode = stopError;
+                                operationOutcome.stageText =
+                                    QStringLiteral("R0 卸载失败：ControlService 返回 1052，且 NtUnloadDriver 回退失败。");
+                                operationOutcome.detailText =
+                                    QStringLiteral("enablePrivilegeOk=%1, privilegeError=%2, ntUnloadStatus=0x%3")
+                                    .arg(privilegeOk ? QStringLiteral("true") : QStringLiteral("false"))
+                                    .arg(privilegeError)
+                                    .arg(static_cast<qulonglong>(static_cast<unsigned long>(ntUnloadStatus)), 8, 16, QChar('0'));
+                                return operationOutcome;
+                            }
+
+                            operationOutcome.usedDirectNtUnloadFallback = true;
+                            currentStatus.dwCurrentState = SERVICE_STOPPED;
+                        }
+                        else
+                        {
+                            operationOutcome.errorCode = stopError;
+                            operationOutcome.stageText = QStringLiteral("R0 卸载失败：停止驱动服务失败。");
+                            return operationOutcome;
+                        }
+                    }
+                }
+            }
+
+            if (!operationOutcome.usedDirectNtUnloadFallback)
+            {
+                SERVICE_STATUS_PROCESS latestStatus{};
+                DWORD waitError = ERROR_SUCCESS;
+                if (!waitServiceState(
+                    serviceHandle.get(),
+                    SERVICE_STOPPED,
+                    kR0ServiceStopWaitTimeoutMs,
+                    latestStatus,
+                    waitError))
+                {
+                    if (waitError != ERROR_SUCCESS)
+                    {
+                        operationOutcome.errorCode = waitError;
+                        operationOutcome.stageText = QStringLiteral("R0 卸载失败：等待服务停止时查询状态失败。");
+                    }
+                    else
+                    {
+                        operationOutcome.errorCode = ERROR_TIMEOUT;
+                        operationOutcome.stageText = QStringLiteral("R0 卸载失败：等待服务停止超时。");
+                        operationOutcome.detailText =
+                            buildServiceWaitDetailText(latestStatus, kR0ServiceStopWaitTimeoutMs);
+                    }
+                    return operationOutcome;
+                }
+            }
+        }
+
+        if (::DeleteService(serviceHandle.get()) == FALSE)
+        {
+            const DWORD deleteError = ::GetLastError();
+            if (deleteError != ERROR_SERVICE_MARKED_FOR_DELETE &&
+                deleteError != ERROR_SERVICE_DOES_NOT_EXIST)
+            {
+                operationOutcome.errorCode = deleteError;
+                operationOutcome.stageText = QStringLiteral("R0 卸载失败：删除驱动服务失败。");
+                return operationOutcome;
+            }
+        }
+
+        operationOutcome.succeeded = true;
+        return operationOutcome;
+    }
+
+    // executeR0ServiceStartOnWorker 作用：
+    // - 输入 nativeDriverPath：UI 线程已校验存在的 KswordARK.sys 本地路径（值传递，避免跨线程共享）；
+    // - 处理：在任意线程完成 SCM 连接 / CreateService 或 ChangeServiceConfig / StartService /
+    //         等待 SERVICE_RUNNING 全过程，全程不触碰任何 QWidget；
+    // - 返回：纯值类型结论；startServiceCallFailed 为 true 时由 UI 线程再判定是否属于签名失败。
+    R0ServiceOperationOutcome executeR0ServiceStartOnWorker(const QString& nativeDriverPath)
+    {
+        R0ServiceOperationOutcome operationOutcome;
+
+        ScopedServiceHandle scmHandle(::OpenSCManagerW(
+            nullptr,
+            SERVICES_ACTIVE_DATABASE,
+            SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
+        if (!scmHandle.isValid())
+        {
+            operationOutcome.errorCode = ::GetLastError();
+            operationOutcome.stageText = QStringLiteral("R0 启动失败：无法连接服务控制管理器。");
+            return operationOutcome;
+        }
+
+        ScopedServiceHandle serviceHandle(::OpenServiceW(
+            scmHandle.get(),
+            kR0DriverServiceName,
+            SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP | SERVICE_CHANGE_CONFIG | DELETE));
+        if (!serviceHandle.isValid())
+        {
+            const DWORD openError = ::GetLastError();
+            if (openError != ERROR_SERVICE_DOES_NOT_EXIST)
+            {
+                operationOutcome.errorCode = openError;
+                operationOutcome.stageText = QStringLiteral("R0 启动失败：无法打开已有驱动服务。");
+                return operationOutcome;
+            }
+
+            const std::wstring driverPathWide = nativeDriverPath.toStdWString();
+            serviceHandle.reset(::CreateServiceW(
+                scmHandle.get(),
+                kR0DriverServiceName,
+                kR0DriverDisplayName,
+                SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP | SERVICE_CHANGE_CONFIG | DELETE,
+                SERVICE_KERNEL_DRIVER,
+                SERVICE_DEMAND_START,
+                SERVICE_ERROR_NORMAL,
+                driverPathWide.c_str(),
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr));
+            if (!serviceHandle.isValid())
+            {
+                operationOutcome.errorCode = ::GetLastError();
+                operationOutcome.stageText = QStringLiteral("R0 启动失败：创建驱动服务失败。");
+                operationOutcome.detailText = QStringLiteral("驱动路径：%1").arg(nativeDriverPath);
+                return operationOutcome;
+            }
+        }
+        else
+        {
+            const std::wstring driverPathWide = nativeDriverPath.toStdWString();
+            if (::ChangeServiceConfigW(
+                serviceHandle.get(),
+                SERVICE_KERNEL_DRIVER,
+                SERVICE_DEMAND_START,
+                SERVICE_ERROR_NORMAL,
+                driverPathWide.c_str(),
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                kR0DriverDisplayName) == FALSE)
+            {
+                operationOutcome.errorCode = ::GetLastError();
+                operationOutcome.stageText = QStringLiteral("R0 启动失败：更新驱动服务配置失败。");
+                return operationOutcome;
+            }
+        }
+
+        SERVICE_STATUS_PROCESS currentStatus{};
+        DWORD queryError = ERROR_SUCCESS;
+        if (!queryServiceStatus(serviceHandle.get(), currentStatus, queryError))
+        {
+            operationOutcome.errorCode = queryError;
+            operationOutcome.stageText = QStringLiteral("R0 启动失败：读取服务状态失败。");
+            return operationOutcome;
+        }
+
+        if (isRunningLikeServiceState(currentStatus.dwCurrentState))
+        {
+            operationOutcome.succeeded = true;
+            operationOutcome.alreadyInTargetState = true;
+            return operationOutcome;
+        }
+
+        if (::StartServiceW(serviceHandle.get(), 0, nullptr) == FALSE)
+        {
+            const DWORD startError = ::GetLastError();
+            if (startError == ERROR_SERVICE_ALREADY_RUNNING)
+            {
+                operationOutcome.succeeded = true;
+                operationOutcome.alreadyInTargetState = true;
+                return operationOutcome;
+            }
+
+            // 签名/完整性校验失败与普通启动失败共用同一个错误码出口，
+            // 具体走哪种提示由 UI 线程用 MainWindow::isR0DriverSignatureFailure 判定。
+            operationOutcome.errorCode = startError;
+            operationOutcome.startServiceCallFailed = true;
+
+            // SCM 的错误码本身不区分失败原因，必须带上驱动自己留下的阶段记录，
+            // 用户才能在 issue 里直接给出可定位的信息。
+            operationOutcome.stageText = QStringLiteral("R0 启动失败：驱动服务启动失败。");
+            operationOutcome.detailText = QStringLiteral("驱动路径：%1\n%2")
+                .arg(nativeDriverPath)
+                .arg(describeR0StartupBreadcrumb());
+            return operationOutcome;
+        }
+
+        SERVICE_STATUS_PROCESS latestStatus{};
+        DWORD waitError = ERROR_SUCCESS;
+        if (!waitServiceState(
+            serviceHandle.get(),
+            SERVICE_RUNNING,
+            kR0ServiceStartWaitTimeoutMs,
+            latestStatus,
+            waitError))
+        {
+            if (waitError != ERROR_SUCCESS)
+            {
+                operationOutcome.errorCode = waitError;
+                operationOutcome.stageText = QStringLiteral("R0 启动失败：等待服务运行时查询状态失败。");
+            }
+            else
+            {
+                operationOutcome.errorCode = ERROR_TIMEOUT;
+                operationOutcome.stageText = QStringLiteral("R0 启动失败：等待驱动进入运行态超时。");
+                operationOutcome.detailText =
+                    QStringLiteral("当前状态：%1").arg(serviceStateToText(latestStatus.dwCurrentState));
+            }
+            return operationOutcome;
+        }
+
+        operationOutcome.succeeded = true;
+        return operationOutcome;
+    }
+
+    // dispatchR0ServiceStopToWorker 作用：
+    // - 输入 completionCallback：停驱结束后在 UI 线程执行的结果处理回调；
+    // - 处理：把整段 SCM 停止/等待/删除丢进全局线程池，完成后把值类型结论回投到 UI 线程；
+    // - 返回：无返回值；调用方立即返回，不再被 waitServiceState 的 ::Sleep 轮询冻住界面。
+    void dispatchR0ServiceStopToWorker(
+        std::function<void(const R0ServiceOperationOutcome&)> completionCallback)
+    {
+        QThreadPool::globalInstance()->start(
+            [completionCallback = std::move(completionCallback)]()
+            {
+                const R0ServiceOperationOutcome operationOutcome = executeR0ServiceStopOnWorker();
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr)
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    appInstance,
+                    [completionCallback, operationOutcome]()
+                    {
+                        completionCallback(operationOutcome);
+                    });
+            });
+    }
+
+    // dispatchR0ServiceStartToWorker 作用：
+    // - 输入 nativeDriverPath：已校验存在的驱动文件路径；completionCallback：UI 线程结果处理回调；
+    // - 处理：把整段 SCM 创建/启动/等待运行态丢进全局线程池，完成后把值类型结论回投到 UI 线程；
+    // - 返回：无返回值；调用方立即返回，启动超时上限不再体现为界面冻结。
+    void dispatchR0ServiceStartToWorker(
+        const QString& nativeDriverPath,
+        std::function<void(const R0ServiceOperationOutcome&)> completionCallback)
+    {
+        QThreadPool::globalInstance()->start(
+            [nativeDriverPath, completionCallback = std::move(completionCallback)]()
+            {
+                const R0ServiceOperationOutcome operationOutcome =
+                    executeR0ServiceStartOnWorker(nativeDriverPath);
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr)
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    appInstance,
+                    [completionCallback, operationOutcome]()
+                    {
+                        completionCallback(operationOutcome);
+                    });
+            });
+    }
+
     // buildPrivilegeButtonStyle 作用：
     // - 按“当前是否具备权限”生成按钮样式；
     // - true  -> 蓝底白字；
@@ -4409,20 +4765,55 @@ void MainWindow::closeEvent(QCloseEvent* event)
 
     // 关闭窗口时自动停止 R0 驱动：
     // - 先静默查询服务状态；
-    // - 若在运行则执行“静默停驱”（仅记录日志，不弹错误框）。
+    // - 若在运行则把整段 SCM 停驱交给线程池，UI 线程立刻把窗口藏起来，
+    //   不再让“SCM 卡在 STOP_PENDING”把关闭动作硬拖到 30 秒的假死。
     bool r0RunningBeforeExit = false;
     if (queryR0DriverServiceRunning(r0RunningBeforeExit, false) && r0RunningBeforeExit)
     {
-        const bool stopOk = stopR0DriverService(true);
-        kLogEvent autoStopEvent;
-        if (stopOk)
+        if (event != nullptr)
         {
-            info << autoStopEvent << "[MainWindow][R0] 关闭窗口时已自动停止并删除驱动服务。" << eol;
+            // 这里必须 ignore：一旦 accept，Qt 会按 quitOnLastWindowClosed 在停驱回调
+            // 执行前就结束事件循环，回调与日志都会丢失。
+            event->ignore();
         }
-        else
+        hide();
+
+        // 异步关闭流程只推进一次：窗口隐藏后若再收到关闭请求，直接返回，
+        // 避免重复派发停驱任务和重复排兜底定时器。
+        static bool asyncShutdownStarted = false;
+        if (asyncShutdownStarted)
         {
-            warn << autoStopEvent << "[MainWindow][R0] 关闭窗口时自动停驱失败（已静默处理）。" << eol;
+            return;
         }
+        asyncShutdownStarted = true;
+
+        dispatchR0ServiceStopToWorker(
+            [](const R0ServiceOperationOutcome& operationOutcome)
+            {
+                kLogEvent autoStopEvent;
+                if (operationOutcome.succeeded)
+                {
+                    info << autoStopEvent << "[MainWindow][R0] 关闭窗口时已自动停止并删除驱动服务。" << eol;
+                }
+                else
+                {
+                    warn << autoStopEvent << "[MainWindow][R0] 关闭窗口时自动停驱失败（已静默处理）。" << eol;
+                }
+                QApplication::quit();
+                QCoreApplication::exit(0);
+            });
+
+        // 兜底定时器：后台停驱异常挂住时也必须退出，避免窗口已隐藏却留下常驻进程。
+        // 超时上限取“停驱等待上限 + 2 秒余量”，正常路径永远比它先触发退出。
+        QTimer::singleShot(
+            static_cast<int>(kR0ServiceStopWaitTimeoutMs) + 2000,
+            QCoreApplication::instance(),
+            []()
+            {
+                QApplication::quit();
+                QCoreApplication::exit(0);
+            });
+        return;
     }
 
     // 接受关闭事件并主动触发应用退出。
@@ -6922,19 +7313,15 @@ void MainWindow::handleR0PermissionRequired(const unsigned long win32Error)
 
 void MainWindow::enableR0ForUserRequest()
 {
+    // 作用：
+    // - 输入：无；
+    // - 处理：R0 启动已改为后台执行，这里只负责派发；成功后的状态同步、失败提示、
+    //         按钮可用性都由 startR0DriverService 内部回投的回调统一处理；
+    // - 返回：无返回值。
     if (!startR0DriverService())
     {
-        m_r0DriverServiceRunning = false;
         refreshPrivilegeStatusButtons();
-        return;
     }
-
-    bool finalRunningState = false;
-    if (queryR0DriverServiceRunning(finalRunningState, true))
-    {
-        m_r0DriverServiceRunning = finalRunningState;
-    }
-    refreshPrivilegeStatusButtons();
 }
 
 void MainWindow::refreshPrivilegeStatusButtons()
@@ -7441,7 +7828,7 @@ void MainWindow::prepareR0DriverServiceStop()
     // - 先关闭本进程长期持有的日志/回调等待句柄；
     // - 再尽力通知驱动取消待决策回调、停止并清空文件监控运行态；
     // - 这些 IOCTL 失败不阻断 SCM stop，因为服务可能已经在停止或旧驱动不支持对应能力。
-    // 返回：无返回值；清理结果只进入日志，真正的停驱结果仍由 stopR0DriverService 返回。
+    // 返回：无返回值；清理结果只进入日志，真正的停驱结果由后台 SCM 任务回投后再应用。
     stopR0RuntimeConsumersBeforeServiceStop();
 
     const auto logBestEffortCleanupResult =
@@ -7822,164 +8209,73 @@ bool MainWindow::queryR0DriverServiceRunning(bool& runningOut, const bool fatalO
 
 bool MainWindow::stopR0DriverService(const bool suppressErrorDialog)
 {
-    bool usedDirectNtUnloadFallback = false;
+    // 作用：
+    // - 入参 suppressErrorDialog：true 表示静默停驱，失败只写日志不弹错误框；
+    // - 处理：UI 线程只做“收敛本进程持有的驱动句柄 + 派发”，SCM 停止/等待/删除整段交给线程池；
+    //         SCM 卡在 STOP_PENDING 时最长要等 30 秒，放在 UI 线程会让界面连重绘都停掉；
+    // - 返回：true 表示停驱请求已成功派发；真正的停驱结论由回投到 UI 线程的回调应用。
+    if (g_r0ServiceOperationInFlight.exchange(true))
+    {
+        // 已有一次 R0 启停在后台执行，重复请求直接丢弃，避免并发操作同一个 SCM 服务。
+        return false;
+    }
 
-    const auto reportStopFailure =
-        [this, suppressErrorDialog](
-            const QString& stageText,
-            const unsigned long errorCode,
-            const QString& detailText = QString())
+    // 停驱前的句柄收敛必须留在 UI 线程：它要停掉日志轮询线程与回调弹窗管理器，
+    // 这些对象的生命周期由主窗口持有，不能在工作线程上碰。
+    prepareR0DriverServiceStop();
+    if (m_r0StatusButton != nullptr)
+    {
+        m_r0StatusButton->setEnabled(false);
+    }
+
+    // guardedSelf 用途：后台任务可能晚于主窗口销毁，回投前必须验证生命周期。
+    const QPointer<MainWindow> guardedSelf(this);
+    dispatchR0ServiceStopToWorker(
+        [guardedSelf, suppressErrorDialog](const R0ServiceOperationOutcome& operationOutcome)
         {
-            if (!suppressErrorDialog)
+            g_r0ServiceOperationInFlight.store(false);
+            if (guardedSelf == nullptr)
             {
-                if (ks::ui::promptForPrivilegeFailure(this, QStringLiteral("卸载 R0"), errorCode))
-                {
-                    return;
-                }
-                showR0FatalError(stageText, errorCode, detailText);
+                return;
+            }
+            if (guardedSelf->m_r0StatusButton != nullptr)
+            {
+                guardedSelf->m_r0StatusButton->setEnabled(true);
+            }
+
+            if (operationOutcome.succeeded)
+            {
+                guardedSelf->m_r0DriverServiceRunning = false;
+                kLogEvent logEvent;
+                info << logEvent << "[MainWindow][R0] 已停止并删除 KswordARK 驱动服务。" << eol;
+                guardedSelf->refreshPrivilegeStatusButtons();
                 return;
             }
 
-            kLogEvent logEvent;
-            err << logEvent
-                << "[MainWindow][R0][AutoStop] stage="
-                << stageText.toStdString()
-                << ", error="
-                << errorCode
-                << ", detail="
-                << detailText.toStdString()
-                << eol;
-        };
-
-    ScopedServiceHandle scmHandle(::OpenSCManagerW(nullptr, SERVICES_ACTIVE_DATABASE, SC_MANAGER_CONNECT));
-    if (!scmHandle.isValid())
-    {
-        reportStopFailure(
-            QStringLiteral("R0 卸载失败：无法连接服务控制管理器。"),
-            ::GetLastError());
-        return false;
-    }
-
-    ScopedServiceHandle serviceHandle(::OpenServiceW(
-        scmHandle.get(),
-        kR0DriverServiceName,
-        SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE));
-    if (!serviceHandle.isValid())
-    {
-        const DWORD openError = ::GetLastError();
-        if (openError == ERROR_SERVICE_DOES_NOT_EXIST)
-        {
-            return true;
-        }
-        reportStopFailure(
-            QStringLiteral("R0 卸载失败：无法打开驱动服务。"),
-            openError);
-        return false;
-    }
-
-    SERVICE_STATUS_PROCESS status{};
-    DWORD queryError = ERROR_SUCCESS;
-    if (!queryServiceStatus(serviceHandle.get(), status, queryError))
-    {
-        reportStopFailure(
-            QStringLiteral("R0 卸载失败：读取驱动服务状态失败。"),
-            queryError);
-        return false;
-    }
-
-    if (status.dwCurrentState != SERVICE_STOPPED)
-    {
-        prepareR0DriverServiceStop();
-
-        if (status.dwCurrentState != SERVICE_STOP_PENDING)
-        {
-            SERVICE_STATUS ignoredStatus{};
-            if (::ControlService(serviceHandle.get(), SERVICE_CONTROL_STOP, &ignoredStatus) == FALSE)
+            if (suppressErrorDialog)
             {
-                const DWORD stopError = ::GetLastError();
-                if (stopError != ERROR_SERVICE_NOT_ACTIVE)
-                {
-                    // 命中 1052（不接受 STOP 控制）时，回退到 NtUnloadDriver 直卸路径。
-                    if (stopError == ERROR_INVALID_SERVICE_CONTROL)
-                    {
-                        DWORD privilegeError = ERROR_SUCCESS;
-                        const bool privilegeOk =
-                            enableCurrentProcessPrivilege(SE_LOAD_DRIVER_NAME, &privilegeError);
-
-                        long ntUnloadStatus = 0;
-                        const bool unloadOk = tryNtUnloadDriverByServiceName(
-                            kR0DriverServiceName,
-                            &ntUnloadStatus);
-                        if (!unloadOk)
-                        {
-                            reportStopFailure(
-                                QStringLiteral("R0 卸载失败：ControlService 返回 1052，且 NtUnloadDriver 回退失败。"),
-                                stopError,
-                                QStringLiteral("enablePrivilegeOk=%1, privilegeError=%2, ntUnloadStatus=0x%3")
-                                .arg(privilegeOk ? QStringLiteral("true") : QStringLiteral("false"))
-                                .arg(privilegeError)
-                                .arg(static_cast<qulonglong>(static_cast<unsigned long>(ntUnloadStatus)), 8, 16, QChar('0')));
-                            return false;
-                        }
-
-                        usedDirectNtUnloadFallback = true;
-                        status.dwCurrentState = SERVICE_STOPPED;
-                    }
-                    else
-                    {
-                        reportStopFailure(
-                            QStringLiteral("R0 卸载失败：停止驱动服务失败。"),
-                            stopError);
-                        return false;
-                    }
-                }
+                kLogEvent logEvent;
+                err << logEvent
+                    << "[MainWindow][R0][AutoStop] stage="
+                    << operationOutcome.stageText.toStdString()
+                    << ", error="
+                    << operationOutcome.errorCode
+                    << ", detail="
+                    << operationOutcome.detailText.toStdString()
+                    << eol;
             }
-        }
-
-        if (!usedDirectNtUnloadFallback)
-        {
-            SERVICE_STATUS_PROCESS latestStatus{};
-            DWORD waitError = ERROR_SUCCESS;
-            if (!waitServiceState(
-                serviceHandle.get(),
-                SERVICE_STOPPED,
-                kR0ServiceStopWaitTimeoutMs,
-                latestStatus,
-                waitError))
+            else if (!ks::ui::promptForPrivilegeFailure(
+                guardedSelf.data(),
+                QStringLiteral("卸载 R0"),
+                operationOutcome.errorCode))
             {
-                if (waitError != ERROR_SUCCESS)
-                {
-                    reportStopFailure(
-                        QStringLiteral("R0 卸载失败：等待服务停止时查询状态失败。"),
-                        waitError);
-                }
-                else
-                {
-                    reportStopFailure(
-                        QStringLiteral("R0 卸载失败：等待服务停止超时。"),
-                        ERROR_TIMEOUT,
-                        buildServiceWaitDetailText(latestStatus, kR0ServiceStopWaitTimeoutMs));
-                }
-                return false;
+                guardedSelf->showR0FatalError(
+                    operationOutcome.stageText,
+                    operationOutcome.errorCode,
+                    operationOutcome.detailText);
             }
-        }
-    }
-
-    if (::DeleteService(serviceHandle.get()) == FALSE)
-    {
-        const DWORD deleteError = ::GetLastError();
-        if (deleteError != ERROR_SERVICE_MARKED_FOR_DELETE &&
-            deleteError != ERROR_SERVICE_DOES_NOT_EXIST)
-        {
-            reportStopFailure(
-                QStringLiteral("R0 卸载失败：删除驱动服务失败。"),
-                deleteError);
-            return false;
-        }
-    }
-
-    kLogEvent logEvent;
-    info << logEvent << "[MainWindow][R0] 已停止并删除 KswordARK 驱动服务。" << eol;
+            guardedSelf->refreshPrivilegeStatusButtons();
+        });
     return true;
 }
 
@@ -8193,23 +8489,25 @@ bool MainWindow::enableWindowsTestModeAndPromptReboot()
 
 bool MainWindow::startR0DriverService()
 {
-    const auto reportStartFailure = [this](
-        const QString& stageText,
-        const unsigned long errorCode,
-        const QString& detailText = QString())
+    // 作用：
+    // - 输入：无；驱动固定取当前 exe 目录下的 KswordARK.sys；
+    // - 处理：UI 线程只做驱动文件校验与派发，SCM 创建/配置/启动/等待运行态整段交给线程池；
+    //         启动等待上限是 9 秒，放在 UI 线程会把整个界面冻住；
+    // - 返回：true 表示启动请求已成功派发；真正的启动结论由回投到 UI 线程的回调应用。
+    if (g_r0ServiceOperationInFlight.exchange(true))
     {
-        if (ks::ui::promptForPrivilegeFailure(this, QStringLiteral("启用 R0"), errorCode))
-        {
-            return;
-        }
-        showR0FatalError(stageText, errorCode, detailText);
-    };
+        // 已有一次 R0 启停在后台执行，重复请求直接丢弃，避免并发操作同一个 SCM 服务。
+        return false;
+    }
 
     const QString driverPath = QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("KswordARK.sys"));
     const QString nativeDriverPath = QDir::toNativeSeparators(driverPath);
     const QFileInfo driverFileInfo(driverPath);
     if (!driverFileInfo.exists() || !driverFileInfo.isFile())
     {
+        // 驱动文件缺失是立即可判的失败，不必为它派发后台任务。
+        g_r0ServiceOperationInFlight.store(false);
+        m_r0DriverServiceRunning = false;
         showR0FatalError(
             QStringLiteral("R0 启动失败：当前程序目录下不存在 KswordARK.sys。"),
             ERROR_FILE_NOT_FOUND,
@@ -8217,165 +8515,75 @@ bool MainWindow::startR0DriverService()
         return false;
     }
 
-    ScopedServiceHandle scmHandle(::OpenSCManagerW(
-        nullptr,
-        SERVICES_ACTIVE_DATABASE,
-        SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE));
-    if (!scmHandle.isValid())
+    if (m_r0StatusButton != nullptr)
     {
-        reportStartFailure(
-            QStringLiteral("R0 启动失败：无法连接服务控制管理器。"),
-            ::GetLastError());
-        return false;
+        m_r0StatusButton->setEnabled(false);
     }
 
-    ScopedServiceHandle serviceHandle(::OpenServiceW(
-        scmHandle.get(),
-        kR0DriverServiceName,
-        SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP | SERVICE_CHANGE_CONFIG | DELETE));
-    if (!serviceHandle.isValid())
-    {
-        const DWORD openError = ::GetLastError();
-        if (openError != ERROR_SERVICE_DOES_NOT_EXIST)
+    // guardedSelf 用途：后台任务可能晚于主窗口销毁，回投前必须验证生命周期。
+    const QPointer<MainWindow> guardedSelf(this);
+    dispatchR0ServiceStartToWorker(
+        nativeDriverPath,
+        [guardedSelf](const R0ServiceOperationOutcome& operationOutcome)
         {
-            reportStartFailure(
-                QStringLiteral("R0 启动失败：无法打开已有驱动服务。"),
-                openError);
-            return false;
-        }
+            g_r0ServiceOperationInFlight.store(false);
+            if (guardedSelf == nullptr)
+            {
+                return;
+            }
+            if (guardedSelf->m_r0StatusButton != nullptr)
+            {
+                guardedSelf->m_r0StatusButton->setEnabled(true);
+            }
 
-        const std::wstring driverPathWide = nativeDriverPath.toStdWString();
-        serviceHandle.reset(::CreateServiceW(
-            scmHandle.get(),
-            kR0DriverServiceName,
-            kR0DriverDisplayName,
-            SERVICE_QUERY_STATUS | SERVICE_START | SERVICE_STOP | SERVICE_CHANGE_CONFIG | DELETE,
-            SERVICE_KERNEL_DRIVER,
-            SERVICE_DEMAND_START,
-            SERVICE_ERROR_NORMAL,
-            driverPathWide.c_str(),
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr));
-        if (!serviceHandle.isValid())
-        {
-            reportStartFailure(
-                QStringLiteral("R0 启动失败：创建驱动服务失败。"),
-                ::GetLastError(),
-                QStringLiteral("驱动路径：%1").arg(nativeDriverPath));
-            return false;
-        }
-    }
-    else
-    {
-        const std::wstring driverPathWide = nativeDriverPath.toStdWString();
-        if (::ChangeServiceConfigW(
-            serviceHandle.get(),
-            SERVICE_KERNEL_DRIVER,
-            SERVICE_DEMAND_START,
-            SERVICE_ERROR_NORMAL,
-            driverPathWide.c_str(),
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            kR0DriverDisplayName) == FALSE)
-        {
-            reportStartFailure(
-                QStringLiteral("R0 启动失败：更新驱动服务配置失败。"),
-                ::GetLastError());
-            return false;
-        }
-    }
+            if (!operationOutcome.succeeded)
+            {
+                guardedSelf->m_r0DriverServiceRunning = false;
+                if (operationOutcome.startServiceCallFailed
+                    && guardedSelf->isR0DriverSignatureFailure(operationOutcome.errorCode))
+                {
+                    kLogEvent logEvent;
+                    fatal << logEvent
+                        << "[MainWindow][R0][Fatal] 驱动签名校验失败, error="
+                        << operationOutcome.errorCode
+                        << eol;
+                    guardedSelf->showUnsignedDriverFailureDialog(
+                        operationOutcome.errorCode,
+                        QStringLiteral("启动 KswordARK 驱动服务"));
+                }
+                else if (!ks::ui::promptForPrivilegeFailure(
+                    guardedSelf.data(),
+                    QStringLiteral("启用 R0"),
+                    operationOutcome.errorCode))
+                {
+                    guardedSelf->showR0FatalError(
+                        operationOutcome.stageText,
+                        operationOutcome.errorCode,
+                        operationOutcome.detailText);
+                }
+                guardedSelf->refreshPrivilegeStatusButtons();
+                return;
+            }
 
-    SERVICE_STATUS_PROCESS status{};
-    DWORD queryError = ERROR_SUCCESS;
-    if (!queryServiceStatus(serviceHandle.get(), status, queryError))
-    {
-        reportStartFailure(
-            QStringLiteral("R0 启动失败：读取服务状态失败。"),
-            queryError);
-        return false;
-    }
-
-    if (isRunningLikeServiceState(status.dwCurrentState))
-    {
-        m_r0DriverServiceRunning = true;
-        startR0RuntimeConsumersAfterServiceStart();
-        return true;
-    }
-
-    if (::StartServiceW(serviceHandle.get(), 0, nullptr) == FALSE)
-    {
-        const DWORD startError = ::GetLastError();
-        if (startError == ERROR_SERVICE_ALREADY_RUNNING)
-        {
-            m_r0DriverServiceRunning = true;
-            startR0RuntimeConsumersAfterServiceStart();
-            return true;
-        }
-
-        if (isR0DriverSignatureFailure(startError))
-        {
-            kLogEvent logEvent;
-            fatal << logEvent
-                << "[MainWindow][R0][Fatal] 驱动签名校验失败, error="
-                << startError
-                << eol;
-            showUnsignedDriverFailureDialog(
-                startError,
-                QStringLiteral("启动 KswordARK 驱动服务"));
-            return false;
-        }
-
-        // SCM 的错误码本身不区分失败原因，必须带上驱动自己留下的阶段记录，
-        // 用户才能在 issue 里直接给出可定位的信息。
-        reportStartFailure(
-            QStringLiteral("R0 启动失败：驱动服务启动失败。"),
-            startError,
-            QStringLiteral("驱动路径：%1\n%2")
-                .arg(nativeDriverPath)
-                .arg(describeR0StartupBreadcrumb()));
-        return false;
-    }
-
-    SERVICE_STATUS_PROCESS latestStatus{};
-    DWORD waitError = ERROR_SUCCESS;
-    if (!waitServiceState(
-        serviceHandle.get(),
-        SERVICE_RUNNING,
-        kR0ServiceStartWaitTimeoutMs,
-        latestStatus,
-        waitError))
-    {
-        if (waitError != ERROR_SUCCESS)
-        {
-            reportStartFailure(
-                QStringLiteral("R0 启动失败：等待服务运行时查询状态失败。"),
-                waitError);
-        }
-        else
-        {
-            showR0FatalError(
-                QStringLiteral("R0 启动失败：等待驱动进入运行态超时。"),
-                ERROR_TIMEOUT,
-                QStringLiteral("当前状态：%1").arg(serviceStateToText(latestStatus.dwCurrentState)));
-        }
-        return false;
-    }
-
-    m_r0DriverServiceRunning = true;
-    startR0RuntimeConsumersAfterServiceStart();
-    kLogEvent logEvent;
-    info << logEvent << "[MainWindow][R0] 已创建并启动 KswordARK 驱动服务。" << eol;
+            guardedSelf->m_r0DriverServiceRunning = true;
+            guardedSelf->startR0RuntimeConsumersAfterServiceStart();
+            if (!operationOutcome.alreadyInTargetState)
+            {
+                kLogEvent logEvent;
+                info << logEvent << "[MainWindow][R0] 已创建并启动 KswordARK 驱动服务。" << eol;
+            }
+            guardedSelf->refreshPrivilegeStatusButtons();
+        });
     return true;
 }
 
 void MainWindow::handleR0StatusButtonClicked()
 {
+    // 作用：
+    // - 输入：无；
+    // - 处理：先做一次轻量的 SCM 状态查询，再按当前状态派发后台启停任务；
+    //         UI 线程不再等待 SCM，按钮可用性与最终状态由启停回调统一刷新；
+    // - 返回：无返回值。
     bool runningNow = false;
     if (!queryR0DriverServiceRunning(runningNow, true))
     {
@@ -8383,33 +8591,13 @@ void MainWindow::handleR0StatusButtonClicked()
     }
     m_r0DriverServiceRunning = runningNow;
 
-    if (runningNow)
-    {
-        if (!stopR0DriverService())
-        {
-            refreshPrivilegeStatusButtons();
-            return;
-        }
-        m_r0DriverServiceRunning = false;
-        refreshPrivilegeStatusButtons();
-        return;
-    }
-
-    if (!startR0DriverService())
-    {
-        m_r0DriverServiceRunning = false;
-        refreshPrivilegeStatusButtons();
-        return;
-    }
-
-    bool finalRunningState = false;
-    if (!queryR0DriverServiceRunning(finalRunningState, true))
+    const bool dispatchOk = runningNow
+        ? stopR0DriverService()
+        : startR0DriverService();
+    if (!dispatchOk)
     {
         refreshPrivilegeStatusButtons();
-        return;
     }
-    m_r0DriverServiceRunning = finalRunningState;
-    refreshPrivilegeStatusButtons();
 }
 
 void MainWindow::requestAdminElevationRestart(const bool enableR0AfterRestart)
@@ -8683,6 +8871,18 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     dockWidget->setProperty("ks_lazy_initializing", true);
     const int progressPid = kPro.add(this, "页面", QStringLiteral("打开%1页").arg(dockTitleText).toStdString());
     kPro.set(progressPid, QStringLiteral("准备加载%1页").arg(dockTitleText).toStdString(), 0, 8.0f);
+
+    // 重页面的构造函数会独占 UI 线程几十到几百毫秒，期间连重绘都不会发生。
+    // 构造前先把当前挂着的占位页同步画出来（repaint 立即绘制，不进事件循环，
+    // 因此不存在 processEvents 的重入问题），用户等待时看到的才是“正在加载”，
+    // 而不是上一页的残影。
+    if (QWidget* const mountedPlaceholderWidget = dockWidget->widget())
+    {
+        if (mountedPlaceholderWidget->isVisible())
+        {
+            mountedPlaceholderWidget->repaint();
+        }
+    }
 
     const bool isNetworkDock = (dockKey == QStringLiteral("network"));
     const bool isKernelDock = (dockKey == QStringLiteral("kernel"));
@@ -9099,6 +9299,13 @@ void MainWindow::ensureVisibleLazyDocksInitialized(const QString& reasonText)
             continue;
         }
 
+        // 没有 ks_lazy_key 的 Dock（例如始终预建的欢迎页）本来就没有惰性内容，
+        // 放进补载流程只会白跑一遍进度条条目。
+        if (!dockWidget->property("ks_lazy_key").isValid())
+        {
+            continue;
+        }
+
         if (!isDockWidgetActiveForLazyInitialization(dockWidget, focusedDockWidget))
         {
             continue;
@@ -9116,6 +9323,29 @@ void MainWindow::ensureVisibleLazyDocksInitialized(const QString& reasonText)
             << (dockWidget->isVisible() ? "true" : "false")
             << eol;
         ensureDockContentInitialized(dockWidget);
+
+        if (!dockWidget->property("ks_lazy_initialized").toBool())
+        {
+            // 这一轮什么都没建（例如 dockKey 没有对应实现），不占用本轮配额，
+            // 也绝不能在这里排重试，否则会变成无限自调度。
+            continue;
+        }
+
+        // 分片补载：一次事件循环只允许构造一个重页面。
+        // 多个可见惰性 Dock（分屏或多标签同时可见）如果在同一次调用里连续构造，
+        // 各页几十到几百毫秒的构造成本会叠加成一次长阻塞；把剩余 Dock 让到下一轮
+        // 事件循环，至少能保证两页之间界面还能重绘和响应输入。
+        // guardedSelf 用途：延迟调度可能晚于主窗口销毁，回调前必须验证生命周期。
+        const QPointer<MainWindow> guardedSelf(this);
+        QTimer::singleShot(0, this, [guardedSelf, reasonText]()
+            {
+                if (guardedSelf == nullptr)
+                {
+                    return;
+                }
+                guardedSelf->ensureVisibleLazyDocksInitialized(reasonText);
+            });
+        return;
     }
 }
 

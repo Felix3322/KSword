@@ -1,5 +1,10 @@
 #include "ServiceDock.Internal.h"
 
+#include <QDateTime>
+#include <QHash>
+#include <QMutex>
+#include <QMutexLocker>
+
 #include <Softpub.h>
 #include <wintrust.h>
 
@@ -9,17 +14,34 @@ using namespace service_dock_detail;
 
 namespace
 {
-    // isFileTrustedByWindows checks a file signature with WinVerifyTrust.
-    // Input: filePathText is a UI QString path.
-    // Processing: converts only at the WinTrust boundary and keeps UI policy local.
-    // Return: true when Windows trusts the file, otherwise false.
-    bool isFileTrustedByWindows(const QString& filePathText)
-    {
-        if (filePathText.trimmed().isEmpty())
-        {
-            return false;
-        }
+    // kSignatureCacheEntryLimit 作用：
+    // - 限制签名结果缓存条目上限；
+    // - 触顶后整体清空，避免进程长时间运行后缓存无界增长。
+    constexpr int kSignatureCacheEntryLimit = 4096;
 
+    // signatureCacheMutex 作用：保护签名结果缓存。
+    // 入参：无。
+    // 返回：进程级唯一互斥量引用；全量枚举线程与单条刷新任务会并发访问缓存。
+    QMutex& signatureCacheMutex()
+    {
+        static QMutex mutexInstance;
+        return mutexInstance;
+    }
+
+    // signatureCacheMap 作用：缓存 WinVerifyTrust 的判定结论。
+    // 入参：无。
+    // 返回：以“小写路径|最后写入毫秒|文件字节数”为键的结果表引用。
+    QHash<QString, bool>& signatureCacheMap()
+    {
+        static QHash<QString, bool> cacheInstance;
+        return cacheInstance;
+    }
+
+    // verifyFileTrustByWinTrust 作用：真正执行一次 WinVerifyTrust 签名校验。
+    // 入参：filePathText 为已去掉首尾空白的文件路径。
+    // 返回：Windows 信任该文件时返回 true。
+    bool verifyFileTrustByWinTrust(const QString& filePathText)
+    {
         const std::wstring utf16Path = filePathText.toStdWString();
         WINTRUST_FILE_INFO fileInfo{};
         fileInfo.cbStruct = sizeof(fileInfo);
@@ -40,6 +62,54 @@ namespace
         trustData.dwStateAction = WTD_STATEACTION_CLOSE;
         ::WinVerifyTrust(nullptr, &policyGuid, &trustData);
         return verifyResult == ERROR_SUCCESS;
+    }
+
+    // isFileTrustedByWindows 作用：带缓存的签名校验入口。
+    // 入参：filePathText 为 UI 侧持有的文件路径文本。
+    // 返回：Windows 信任该文件时返回 true。
+    // 说明：目录签名（catalog）仍要搜 CatRoot 数据库并对文件做哈希，
+    //       单个文件典型几十到数百毫秒；这里按“路径 + 最后写入时间 + 大小”
+    //       缓存结论，避免同一个 exe 在列表刷新与单条刷新之间被反复验签。
+    bool isFileTrustedByWindows(const QString& filePathText)
+    {
+        const QString normalizedPathText = filePathText.trimmed();
+        if (normalizedPathText.isEmpty())
+        {
+            return false;
+        }
+
+        const QFileInfo targetFileInfo(normalizedPathText);
+        if (!targetFileInfo.exists() || !targetFileInfo.isFile())
+        {
+            return false;
+        }
+
+        const QString cacheKeyText = QStringLiteral("%1|%2|%3")
+            .arg(QDir::toNativeSeparators(normalizedPathText).toLower())
+            .arg(targetFileInfo.lastModified().toMSecsSinceEpoch())
+            .arg(targetFileInfo.size());
+
+        {
+            QMutexLocker cacheLocker(&signatureCacheMutex());
+            const QHash<QString, bool>::const_iterator cachedIterator =
+                signatureCacheMap().constFind(cacheKeyText);
+            if (cachedIterator != signatureCacheMap().constEnd())
+            {
+                return cachedIterator.value();
+            }
+        }
+
+        const bool trustedByWindows = verifyFileTrustByWinTrust(normalizedPathText);
+
+        {
+            QMutexLocker cacheLocker(&signatureCacheMutex());
+            if (signatureCacheMap().size() >= kSignatureCacheEntryLimit)
+            {
+                signatureCacheMap().clear();
+            }
+            signatureCacheMap().insert(cacheKeyText, trustedByWindows);
+        }
+        return trustedByWindows;
     }
 
     // queryFailureCommandTextByServiceName reads failure-action command via ks::service.
@@ -322,33 +392,52 @@ void ServiceDock::enumerateServiceList(
     }
 }
 
+namespace service_dock_detail
+{
+    // querySingleServiceSnapshot 作用：
+    // - 采集单个服务的完整快照（状态 + 配置 + ServiceDll + 风险标签）；
+    // - 全程只依赖 ks::service 与 Win32，不触碰任何 QWidget，可在后台线程调用。
+    // 入参：serviceNameText 为服务短名；entryOut 接收快照；errorTextOut 接收错误文本。
+    // 返回：采集成功返回 true；配置读取失败按严格模式返回 false。
+    // 说明：本函数声明未放进共享头 ServiceDock.Internal.h（本次改动不扩展该头），
+    //       调用方 ServiceDock.Actions.cpp 就地重复声明同一原型。
+    bool querySingleServiceSnapshot(
+        const QString& serviceNameText,
+        ServiceDock::ServiceEntry* entryOut,
+        QString* errorTextOut)
+    {
+        if (entryOut == nullptr || serviceNameText.trimmed().isEmpty())
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("querySingleServiceByName 参数无效");
+            }
+            return false;
+        }
+
+        ks::service::ServiceRecord serviceRecord;
+        std::string errorText;
+        if (!ks::service::QueryServiceRecord(
+            serviceNameText.trimmed().toStdWString(),
+            &serviceRecord,
+            &errorText))
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("查询服务失败：%1").arg(QString::fromUtf8(errorText.c_str()));
+            }
+            return false;
+        }
+
+        return buildServiceEntryFromRecord(serviceRecord, entryOut, errorTextOut, true);
+    }
+}
+
 bool ServiceDock::querySingleServiceByName(
     const QString& serviceNameText,
     ServiceEntry* entryOut,
     QString* errorTextOut) const
 {
-    if (entryOut == nullptr || serviceNameText.trimmed().isEmpty())
-    {
-        if (errorTextOut != nullptr)
-        {
-            *errorTextOut = QStringLiteral("querySingleServiceByName 参数无效");
-        }
-        return false;
-    }
-
-    ks::service::ServiceRecord serviceRecord;
-    std::string errorText;
-    if (!ks::service::QueryServiceRecord(
-        serviceNameText.trimmed().toStdWString(),
-        &serviceRecord,
-        &errorText))
-    {
-        if (errorTextOut != nullptr)
-        {
-            *errorTextOut = QStringLiteral("查询服务失败：%1").arg(QString::fromUtf8(errorText.c_str()));
-        }
-        return false;
-    }
-
-    return buildServiceEntryFromRecord(serviceRecord, entryOut, errorTextOut, true);
+    // 采集逻辑已下沉为可在任意线程复用的自由函数，这里只做转发。
+    return service_dock_detail::querySingleServiceSnapshot(serviceNameText, entryOut, errorTextOut);
 }

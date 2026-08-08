@@ -7,6 +7,7 @@
 #include <QDesktopServices>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QVariant>
 
 // 说明：由原聚合式实现迁移为独立 .cpp，成员函数实现保持原样。
 using namespace ksword::driver_dock_internal;
@@ -1551,10 +1552,113 @@ namespace
         return result;
     }
 
+    // DriverDock 后台刷新/SCM 操作的实例级状态属性名：
+    // - 作用：服务列表刷新、模块列表刷新与挂载/卸载/删除都改为线程池执行后，
+    //   需要按 DriverDock 实例记录“最新一次请求票据”和“SCM 操作进行中”标记；
+    // - 承载方式：不新增 DriverDock 头文件成员，改用 QObject 动态属性，随实例析构自动释放；
+    // - 线程约束：只在 UI 线程读写（请求下发与结果回投都发生在 UI 线程），无需额外加锁。
+    constexpr const char* kDriverServiceRefreshTicketProperty = "kswordDriverServiceRefreshTicket";
+    constexpr const char* kLoadedModuleRefreshTicketProperty = "kswordLoadedModuleRefreshTicket";
+    constexpr const char* kDriverServiceControlBusyProperty = "kswordDriverServiceControlBusy";
+
+    quint64 allocateDriverDockRefreshTicket(
+        QObject* ticketOwnerObject,
+        const char* ticketPropertyName)
+    {
+        // allocateDriverDockRefreshTicket：
+        // - 入参：承载票据的 DriverDock 实例、动态属性名；
+        // - 处理：在 UI 线程把票据自增一次并写回动态属性；
+        // - 返回：本次后台请求应携带的票据值。
+        if (ticketOwnerObject == nullptr)
+        {
+            return 0U;
+        }
+        const quint64 nextTicketValue =
+            static_cast<quint64>(ticketOwnerObject->property(ticketPropertyName).toULongLong()) + 1U;
+        ticketOwnerObject->setProperty(ticketPropertyName, QVariant::fromValue(nextTicketValue));
+        return nextTicketValue;
+    }
+
+    bool isDriverDockRefreshTicketCurrent(
+        const QObject* ticketOwnerObject,
+        const char* ticketPropertyName,
+        const quint64 requestTicketValue)
+    {
+        // isDriverDockRefreshTicketCurrent：
+        // - 入参：承载票据的 DriverDock 实例、动态属性名、后台任务携带的请求票据；
+        // - 处理：与动态属性里的最新票据比较，识别已被新请求取代的旧结果；
+        // - 返回：true 表示结果仍然有效，false 表示应直接丢弃。
+        if (ticketOwnerObject == nullptr)
+        {
+            return false;
+        }
+        return static_cast<quint64>(
+            ticketOwnerObject->property(ticketPropertyName).toULongLong()) == requestTicketValue;
+    }
+
+    bool tryBeginDriverServiceControlOperation(QObject* controlOwnerObject)
+    {
+        // tryBeginDriverServiceControlOperation：
+        // - 入参：发起挂载/卸载/删除的 DriverDock 实例；
+        // - 处理：检查并置位“SCM 操作进行中”标记，避免同一目标服务被并发下发多次控制请求；
+        // - 返回：true 表示本次请求可以下发，false 表示已有同类操作在跑。
+        if (controlOwnerObject == nullptr)
+        {
+            return false;
+        }
+        if (controlOwnerObject->property(kDriverServiceControlBusyProperty).toBool())
+        {
+            return false;
+        }
+        controlOwnerObject->setProperty(kDriverServiceControlBusyProperty, true);
+        return true;
+    }
+
+    void endDriverServiceControlOperation(QObject* controlOwnerObject)
+    {
+        // endDriverServiceControlOperation：
+        // - 入参：发起挂载/卸载/删除的 DriverDock 实例；
+        // - 处理：清除“SCM 操作进行中”标记，允许下一次控制请求；
+        // - 返回：无。
+        if (controlOwnerObject == nullptr)
+        {
+            return;
+        }
+        controlOwnerObject->setProperty(kDriverServiceControlBusyProperty, false);
+    }
+
+    void setDriverServiceControlButtonsEnabled(
+        QPushButton* loadDriverButton,
+        QPushButton* unloadDriverButton,
+        QPushButton* deleteServiceButton,
+        const bool enabledState)
+    {
+        // setDriverServiceControlButtonsEnabled：
+        // - 入参：挂载/卸载/删除三个按钮指针与目标可用状态；
+        // - 处理：逐个判空后设置 enabled，让后台 SCM 操作期间的“进行中”状态对用户可见；
+        // - 返回：无。
+        if (loadDriverButton != nullptr)
+        {
+            loadDriverButton->setEnabled(enabledState);
+        }
+        if (unloadDriverButton != nullptr)
+        {
+            unloadDriverButton->setEnabled(enabledState);
+        }
+        if (deleteServiceButton != nullptr)
+        {
+            deleteServiceButton->setEnabled(enabledState);
+        }
+    }
+
 }
 
 void DriverDock::refreshDriverServiceRecords()
 {
+    // 驱动服务列表刷新：
+    // - 入参：无；过滤条件仍由服务表自身的过滤器承担；
+    // - 处理：SCM 全量枚举与逐条 QueryServiceConfig 搬到线程池执行，UI 线程只负责结果落地；
+    // - 返回：无返回值；结果通过服务表与概览状态标签体现，过期票据的快照会被丢弃。
     const QPointer<DriverDock> guardThis(this);
     if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
         this,
@@ -1576,51 +1680,126 @@ void DriverDock::refreshDriverServiceRecords()
         << driverText("driver.log.refresh_services_start", QStringLiteral("[DriverDock] 开始刷新驱动服务列表。"))
         << eol;
 
-    std::vector<DriverServiceRecord> serviceRecordList;
-    std::string errorText;
-    if (!queryDriverServiceRecords(serviceRecordList, &errorText))
-    {
-        m_driverServiceCache.clear();
-        rebuildDriverServiceTableByFilter();
-        appendOperateLogLine(
-            driverText("driver.operation.refresh.service_failed", QStringLiteral("刷新服务失败：%1"))
-            .arg(QString::fromUtf8(errorText.c_str())));
-        if (m_overviewStatusLabel != nullptr)
+    // 刷新票据：刷新按钮连点、挂载/卸载/删除后的连带刷新都可能并发下发采集，
+    // 只有最后一次请求的结果允许落地，避免旧快照覆盖新快照。
+    const quint64 requestTicket =
+        allocateDriverDockRefreshTicket(this, kDriverServiceRefreshTicketProperty);
+
+    QRunnable* collectServiceTask = QRunnable::create(
+        [guardThis, requestTicket, refreshEvent]()
         {
-            m_overviewStatusLabel->setText(
-                driverText(
-                    "driver.operation.refresh.service_failed_status",
-                    QStringLiteral("状态：服务刷新失败（%1）"))
-                .arg(QString::fromUtf8(errorText.c_str())));
-        }
-        warn << refreshEvent
-            << driverText("driver.log.refresh_services_failed", QStringLiteral("[DriverDock] 刷新服务失败, detail="))
-            << errorText << eol;
-        return;
-    }
+            // 后台线程只做纯数据采集：queryDriverServiceRecords 是静态成员函数，
+            // 只访问 SCM 并产出值类型记录，不触碰任何 QWidget。
+            std::vector<DriverServiceRecord> collectedServiceRecords;
+            std::string collectErrorText;
+            const bool collectSucceeded = DriverDock::queryDriverServiceRecords(
+                collectedServiceRecords,
+                &collectErrorText);
 
-    m_driverServiceCache = std::move(serviceRecordList);
-    rebuildDriverServiceTableByFilter();
+            // 回投使用长生命周期的 QCoreApplication 作为 receiver，并在 UI 线程重新校验 QPointer，
+            // 这样 DriverDock 在采集期间析构时不会把悬垂指针传给 invokeMethod。
+            QCoreApplication* const applicationInstance = QCoreApplication::instance();
+            if (applicationInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                applicationInstance,
+                [guardThis,
+                 requestTicket,
+                 refreshEvent,
+                 collectSucceeded,
+                 collectedServiceRecords = std::move(collectedServiceRecords),
+                 collectErrorText]() mutable
+                {
+                    if (guardThis.isNull())
+                    {
+                        return;
+                    }
+                    if (!isDriverDockRefreshTicketCurrent(
+                        guardThis.data(),
+                        kDriverServiceRefreshTicketProperty,
+                        requestTicket))
+                    {
+                        return;
+                    }
 
-    if (m_overviewStatusLabel != nullptr)
-    {
-        m_overviewStatusLabel->setText(
-            driverText(
-                "driver.overview.count.filtered",
-                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
-            .arg(m_driverServiceCache.size())
-            .arg(m_serviceTable != nullptr ? m_serviceTable->rowCount() : 0)
-            .arg(m_loadedModuleCache.size())
-            .arg(m_moduleTable != nullptr ? m_moduleTable->rowCount() : 0));
-    }
+                    // 采集期间用户可能打开右键菜单：此时丢弃本次快照，
+                    // 菜单关闭后由屏障回投重新发起一次完整刷新，避免菜单依赖的行索引被重建打乱。
+                    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        guardThis.data(),
+                        QStringLiteral("driver-service-record-refresh"),
+                        { guardThis->m_serviceTable, guardThis->m_moduleTable },
+                        [guardThis]()
+                        {
+                            if (!guardThis.isNull())
+                            {
+                                guardThis->refreshDriverServiceRecords();
+                            }
+                        }))
+                    {
+                        return;
+                    }
 
-    info << refreshEvent
-        << driverText("driver.log.refresh_services_completed", QStringLiteral("[DriverDock] 刷新服务完成, count="))
-        << m_driverServiceCache.size() << eol;
+                    if (!collectSucceeded)
+                    {
+                        guardThis->m_driverServiceCache.clear();
+                        guardThis->rebuildDriverServiceTableByFilter();
+                        guardThis->appendOperateLogLine(
+                            driverText(
+                                "driver.operation.refresh.service_failed",
+                                QStringLiteral("刷新服务失败：%1"))
+                            .arg(QString::fromUtf8(collectErrorText.c_str())));
+                        if (guardThis->m_overviewStatusLabel != nullptr)
+                        {
+                            guardThis->m_overviewStatusLabel->setText(
+                                driverText(
+                                    "driver.operation.refresh.service_failed_status",
+                                    QStringLiteral("状态：服务刷新失败（%1）"))
+                                .arg(QString::fromUtf8(collectErrorText.c_str())));
+                        }
+                        warn << refreshEvent
+                            << driverText(
+                                "driver.log.refresh_services_failed",
+                                QStringLiteral("[DriverDock] 刷新服务失败, detail="))
+                            << collectErrorText << eol;
+                        return;
+                    }
+
+                    guardThis->m_driverServiceCache = std::move(collectedServiceRecords);
+                    guardThis->rebuildDriverServiceTableByFilter();
+
+                    if (guardThis->m_overviewStatusLabel != nullptr)
+                    {
+                        guardThis->m_overviewStatusLabel->setText(
+                            driverText(
+                                "driver.overview.count.filtered",
+                                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
+                            .arg(guardThis->m_driverServiceCache.size())
+                            .arg(guardThis->m_serviceTable != nullptr ? guardThis->m_serviceTable->rowCount() : 0)
+                            .arg(guardThis->m_loadedModuleCache.size())
+                            .arg(guardThis->m_moduleTable != nullptr ? guardThis->m_moduleTable->rowCount() : 0));
+                    }
+
+                    info << refreshEvent
+                        << driverText(
+                            "driver.log.refresh_services_completed",
+                            QStringLiteral("[DriverDock] 刷新服务完成, count="))
+                        << guardThis->m_driverServiceCache.size() << eol;
+                },
+                Qt::QueuedConnection);
+        });
+    collectServiceTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(collectServiceTask);
 }
 
 void DriverDock::refreshLoadedKernelModuleRecords()
 {
+    // 已加载内核模块列表刷新：
+    // - 入参：无；
+    // - 处理：EnumDeviceDrivers 与逐模块 GetDeviceDriverBaseNameW/GetDeviceDriverFileNameW
+    //   搬到线程池执行，UI 线程只负责结果落地并接续模块证据聚合；
+    // - 返回：无返回值；结果通过模块表与概览状态标签体现，过期票据的快照会被丢弃。
     const QPointer<DriverDock> guardThis(this);
     if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
         this,
@@ -1642,85 +1821,156 @@ void DriverDock::refreshLoadedKernelModuleRecords()
         << driverText("driver.log.refresh_modules_start", QStringLiteral("[DriverDock] 开始刷新已加载模块列表。"))
         << eol;
 
-    std::vector<LoadedKernelModuleRecord> moduleRecordList;
-    std::string errorText;
-    if (!queryLoadedKernelModuleRecords(moduleRecordList, &errorText))
-    {
-        ++m_moduleEvidenceQueryTicket;
-        m_moduleEvidenceQuerying = false;
-        if (m_refreshModuleEvidenceButton != nullptr)
+    // 刷新票据：与服务列表同理，模块刷新按钮连点或操作后的连带刷新只保留最后一次结果。
+    const quint64 requestTicket =
+        allocateDriverDockRefreshTicket(this, kLoadedModuleRefreshTicketProperty);
+
+    QRunnable* collectModuleTask = QRunnable::create(
+        [guardThis, requestTicket, refreshEvent]()
         {
-            m_refreshModuleEvidenceButton->setEnabled(true);
-        }
-        m_loadedModuleCache.clear();
-        m_loadedModuleEvidenceCache.clear();
-        rebuildLoadedModuleTable();
-        appendOperateLogLine(
-            driverText("driver.operation.refresh.module_failed", QStringLiteral("刷新模块失败：%1"))
-            .arg(QString::fromUtf8(errorText.c_str())));
-        if (m_overviewStatusLabel != nullptr)
-        {
-            m_overviewStatusLabel->setText(
-                driverText(
-                    "driver.operation.refresh.module_failed_status",
-                    QStringLiteral("状态：模块刷新失败（%1）"))
-                .arg(QString::fromUtf8(errorText.c_str())));
-        }
-        warn << refreshEvent
-            << driverText("driver.log.refresh_modules_failed", QStringLiteral("[DriverDock] 刷新模块失败, detail="))
-            << errorText << eol;
-        return;
-    }
+            // 后台线程只做纯数据采集：queryLoadedKernelModuleRecords 是静态成员函数，
+            // 只访问 psapi 并产出值类型记录，不触碰任何 QWidget。
+            std::vector<LoadedKernelModuleRecord> collectedModuleRecords;
+            std::string collectErrorText;
+            const bool collectSucceeded = DriverDock::queryLoadedKernelModuleRecords(
+                collectedModuleRecords,
+                &collectErrorText);
 
-    ++m_moduleEvidenceQueryTicket;
-    m_moduleEvidenceQuerying = false;
-    if (m_refreshModuleEvidenceButton != nullptr)
-    {
-        m_refreshModuleEvidenceButton->setEnabled(true);
-    }
+            QCoreApplication* const applicationInstance = QCoreApplication::instance();
+            if (applicationInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                applicationInstance,
+                [guardThis,
+                 requestTicket,
+                 refreshEvent,
+                 collectSucceeded,
+                 collectedModuleRecords = std::move(collectedModuleRecords),
+                 collectErrorText]() mutable
+                {
+                    if (guardThis.isNull())
+                    {
+                        return;
+                    }
+                    if (!isDriverDockRefreshTicketCurrent(
+                        guardThis.data(),
+                        kLoadedModuleRefreshTicketProperty,
+                        requestTicket))
+                    {
+                        return;
+                    }
 
-    m_loadedModuleCache = std::move(moduleRecordList);
-    m_loadedModuleEvidenceCache.clear();
-    m_loadedModuleEvidenceCache.reserve(m_loadedModuleCache.size());
-    for (const LoadedKernelModuleRecord& moduleRecord : m_loadedModuleCache)
-    {
-        m_loadedModuleEvidenceCache.push_back(buildPendingModuleEvidenceRecord(moduleRecord));
-    }
-    rebuildLoadedModuleTable();
+                    // 采集期间用户可能打开右键菜单：此时丢弃本次快照，菜单关闭后重新发起完整刷新。
+                    if (ks::ui::DeferTableUiCommitIfContextMenuOpen(
+                        guardThis.data(),
+                        QStringLiteral("driver-loaded-module-refresh"),
+                        { guardThis->m_serviceTable, guardThis->m_moduleTable },
+                        [guardThis]()
+                        {
+                            if (!guardThis.isNull())
+                            {
+                                guardThis->refreshLoadedKernelModuleRecords();
+                            }
+                        }))
+                    {
+                        return;
+                    }
 
-    if (m_overviewStatusLabel != nullptr)
-    {
-        m_overviewStatusLabel->setText(
-            driverText(
-                "driver.overview.count.filtered",
-                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
-            .arg(m_driverServiceCache.size())
-            .arg(m_serviceTable != nullptr ? m_serviceTable->rowCount() : 0)
-            .arg(m_loadedModuleCache.size())
-            .arg(m_moduleTable != nullptr ? m_moduleTable->rowCount() : 0));
-    }
-    if (m_moduleEvidenceStatusLabel != nullptr)
-    {
-        m_moduleEvidenceStatusLabel->setText(
-            driverText("driver.evidence.status.modules_refreshed", QStringLiteral("证据：模块列表已刷新。")));
-    }
-    if (!m_loadedModuleCache.empty())
-    {
-        // 模块证据聚合只在已有模块快照时启动：
-        // - 输入：当前 EnumDeviceDrivers 枚举出的模块缓存；
-        // - 处理：交给后台线程调用现有 ArkDriverClient 只读接口；
-        // - 返回：无；空列表直接停留在提示状态，避免刷新函数互相递归。
-        refreshLoadedModuleEvidenceAsync();
-    }
-    else if (m_moduleEvidenceStatusLabel != nullptr)
-    {
-        m_moduleEvidenceStatusLabel->setText(
-            driverText("driver.evidence.status.no_modules_short", QStringLiteral("证据：没有可聚合的模块。")));
-    }
+                    if (!collectSucceeded)
+                    {
+                        ++guardThis->m_moduleEvidenceQueryTicket;
+                        guardThis->m_moduleEvidenceQuerying = false;
+                        if (guardThis->m_refreshModuleEvidenceButton != nullptr)
+                        {
+                            guardThis->m_refreshModuleEvidenceButton->setEnabled(true);
+                        }
+                        guardThis->m_loadedModuleCache.clear();
+                        guardThis->m_loadedModuleEvidenceCache.clear();
+                        guardThis->rebuildLoadedModuleTable();
+                        guardThis->appendOperateLogLine(
+                            driverText(
+                                "driver.operation.refresh.module_failed",
+                                QStringLiteral("刷新模块失败：%1"))
+                            .arg(QString::fromUtf8(collectErrorText.c_str())));
+                        if (guardThis->m_overviewStatusLabel != nullptr)
+                        {
+                            guardThis->m_overviewStatusLabel->setText(
+                                driverText(
+                                    "driver.operation.refresh.module_failed_status",
+                                    QStringLiteral("状态：模块刷新失败（%1）"))
+                                .arg(QString::fromUtf8(collectErrorText.c_str())));
+                        }
+                        warn << refreshEvent
+                            << driverText(
+                                "driver.log.refresh_modules_failed",
+                                QStringLiteral("[DriverDock] 刷新模块失败, detail="))
+                            << collectErrorText << eol;
+                        return;
+                    }
 
-    info << refreshEvent
-        << driverText("driver.log.refresh_modules_completed", QStringLiteral("[DriverDock] 刷新模块完成, count="))
-        << m_loadedModuleCache.size() << eol;
+                    ++guardThis->m_moduleEvidenceQueryTicket;
+                    guardThis->m_moduleEvidenceQuerying = false;
+                    if (guardThis->m_refreshModuleEvidenceButton != nullptr)
+                    {
+                        guardThis->m_refreshModuleEvidenceButton->setEnabled(true);
+                    }
+
+                    guardThis->m_loadedModuleCache = std::move(collectedModuleRecords);
+                    guardThis->m_loadedModuleEvidenceCache.clear();
+                    guardThis->m_loadedModuleEvidenceCache.reserve(guardThis->m_loadedModuleCache.size());
+                    for (const LoadedKernelModuleRecord& moduleRecord : guardThis->m_loadedModuleCache)
+                    {
+                        guardThis->m_loadedModuleEvidenceCache.push_back(
+                            DriverDock::buildPendingModuleEvidenceRecord(moduleRecord));
+                    }
+                    guardThis->rebuildLoadedModuleTable();
+
+                    if (guardThis->m_overviewStatusLabel != nullptr)
+                    {
+                        guardThis->m_overviewStatusLabel->setText(
+                            driverText(
+                                "driver.overview.count.filtered",
+                                QStringLiteral("状态：驱动服务 %1 条（显示 %2 条），模块 %3 条（显示 %4 条）"))
+                            .arg(guardThis->m_driverServiceCache.size())
+                            .arg(guardThis->m_serviceTable != nullptr ? guardThis->m_serviceTable->rowCount() : 0)
+                            .arg(guardThis->m_loadedModuleCache.size())
+                            .arg(guardThis->m_moduleTable != nullptr ? guardThis->m_moduleTable->rowCount() : 0));
+                    }
+                    if (guardThis->m_moduleEvidenceStatusLabel != nullptr)
+                    {
+                        guardThis->m_moduleEvidenceStatusLabel->setText(
+                            driverText(
+                                "driver.evidence.status.modules_refreshed",
+                                QStringLiteral("证据：模块列表已刷新。")));
+                    }
+                    if (!guardThis->m_loadedModuleCache.empty())
+                    {
+                        // 模块证据聚合只在已有模块快照时启动：
+                        // - 输入：当前 EnumDeviceDrivers 枚举出的模块缓存；
+                        // - 处理：交给后台线程调用现有 ArkDriverClient 只读接口；
+                        // - 返回：无；空列表直接停留在提示状态，避免刷新函数互相递归。
+                        guardThis->refreshLoadedModuleEvidenceAsync();
+                    }
+                    else if (guardThis->m_moduleEvidenceStatusLabel != nullptr)
+                    {
+                        guardThis->m_moduleEvidenceStatusLabel->setText(
+                            driverText(
+                                "driver.evidence.status.no_modules_short",
+                                QStringLiteral("证据：没有可聚合的模块。")));
+                    }
+
+                    info << refreshEvent
+                        << driverText(
+                            "driver.log.refresh_modules_completed",
+                            QStringLiteral("[DriverDock] 刷新模块完成, count="))
+                        << guardThis->m_loadedModuleCache.size() << eol;
+                },
+                Qt::QueuedConnection);
+        });
+    collectModuleTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(collectModuleTask);
 }
 
 void DriverDock::fillObjectDriverNameFromSelection()
@@ -3974,6 +4224,11 @@ void DriverDock::registerOrUpdateDriverService()
 
 void DriverDock::loadSelectedDriverService()
 {
+    // 挂载驱动服务：
+    // - 入参：无；服务名与镜像路径取自操作页输入框，下发前完成快照；
+    // - 处理：StartServiceW 会同步等待 DriverEntry 返回，并在内部轮询最长 6 秒，
+    //   因此整段 SCM 调用放到线程池，UI 线程只保留输入校验、按钮禁用与结果落地；
+    // - 返回：无返回值；结果通过操作日志、权限提示与随后的服务/模块刷新体现。
     if (m_serviceNameEdit == nullptr)
     {
         return;
@@ -3991,70 +4246,131 @@ void DriverDock::loadSelectedDriverService()
         return;
     }
 
-    ks::service::ServiceStatus finalStatus;
-    std::string errorText;
-    std::uint32_t errorCode = 0;
-    if (!ks::service::StartServiceByName(
-        toWideString(serviceNameText),
-        6000,
-        SERVICE_RUNNING,
-        &finalStatus,
-        &errorText,
-        &errorCode))
+    // 忙标记 + 按钮禁用：挂载/卸载/删除针对同一服务，后台执行期间不允许重复下发。
+    if (!tryBeginDriverServiceControlOperation(this))
     {
-        (void)ks::ui::promptForPrivilegeFailure(
-            this,
-            QStringLiteral("挂载驱动服务"),
-            errorCode);
-        if (isDriverSignatureLoadError(static_cast<DWORD>(errorCode)))
-        {
-            const QString binaryPathText =
-                (m_binaryPathEdit == nullptr) ? QString() : m_binaryPathEdit->text().trimmed();
-            const QString adviceText =
-                buildDriverSignatureLoadAdvice(static_cast<DWORD>(errorCode), serviceNameText, binaryPathText);
-            appendOperateLogLine(adviceText);
-            err << operationEvent
-                << driverText(
-                    "driver.log.load.signature_failed",
-                    QStringLiteral("[DriverDock] 挂载失败：驱动签名/镜像校验失败, service="))
-                << serviceNameText.toStdString()
-                << ", error=" << errorCode
-                << ", path=" << binaryPathText.toStdString()
-                << eol;
-            return;
-        }
-
-        appendOperateLogLine(
-            driverText("driver.operation.load.failed", QStringLiteral("挂载失败：%1"))
-            .arg(QString::fromUtf8(errorText.c_str())));
-        err << operationEvent
-            << driverText("driver.log.load.failed", QStringLiteral("[DriverDock] 挂载失败, service="))
-            << serviceNameText.toStdString()
-            << ", error=" << errorCode
-            << ", detail=" << errorText
-            << eol;
         return;
     }
+    setDriverServiceControlButtonsEnabled(
+        m_loadDriverButton,
+        m_unloadDriverButton,
+        m_deleteServiceButton,
+        false);
 
-    appendOperateLogLine(finalStatus.currentState == SERVICE_RUNNING
-        ? driverText("driver.operation.load.success", QStringLiteral("挂载成功：service=%1"))
-            .arg(serviceNameText)
-        : driverText("driver.operation.load.completed", QStringLiteral("挂载结束：当前状态=%1"))
-            .arg(serviceStateToText(finalStatus.currentState)));
+    const QString binaryPathText =
+        (m_binaryPathEdit == nullptr) ? QString() : m_binaryPathEdit->text().trimmed();
+    const std::wstring serviceNameWide = toWideString(serviceNameText);
+    const QPointer<DriverDock> guardThis(this);
+    QRunnable* loadTask = QRunnable::create(
+        [guardThis, operationEvent, serviceNameText, binaryPathText, serviceNameWide]()
+        {
+            ks::service::ServiceStatus finalStatus{};
+            std::string errorText;
+            std::uint32_t errorCode = 0U;
+            const bool startSucceeded = ks::service::StartServiceByName(
+                serviceNameWide,
+                6000,
+                SERVICE_RUNNING,
+                &finalStatus,
+                &errorText,
+                &errorCode);
 
-    info << operationEvent
-        << driverText("driver.log.load.completed", QStringLiteral("[DriverDock] 挂载执行完成, service="))
-        << serviceNameText.toStdString()
-        << ", finalState=" << finalStatus.currentState
-        << eol;
+            QCoreApplication* const applicationInstance = QCoreApplication::instance();
+            if (applicationInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                applicationInstance,
+                [guardThis,
+                 operationEvent,
+                 serviceNameText,
+                 binaryPathText,
+                 startSucceeded,
+                 finalStatus,
+                 errorText,
+                 errorCode]()
+                {
+                    if (guardThis.isNull())
+                    {
+                        return;
+                    }
+                    endDriverServiceControlOperation(guardThis.data());
+                    setDriverServiceControlButtonsEnabled(
+                        guardThis->m_loadDriverButton,
+                        guardThis->m_unloadDriverButton,
+                        guardThis->m_deleteServiceButton,
+                        true);
 
-    refreshDriverServiceRecords();
-    refreshLoadedKernelModuleRecords();
+                    if (!startSucceeded)
+                    {
+                        (void)ks::ui::promptForPrivilegeFailure(
+                            guardThis,
+                            QStringLiteral("挂载驱动服务"),
+                            errorCode);
+                        if (isDriverSignatureLoadError(static_cast<DWORD>(errorCode)))
+                        {
+                            const QString adviceText = buildDriverSignatureLoadAdvice(
+                                static_cast<DWORD>(errorCode),
+                                serviceNameText,
+                                binaryPathText);
+                            guardThis->appendOperateLogLine(adviceText);
+                            err << operationEvent
+                                << driverText(
+                                    "driver.log.load.signature_failed",
+                                    QStringLiteral("[DriverDock] 挂载失败：驱动签名/镜像校验失败, service="))
+                                << serviceNameText.toStdString()
+                                << ", error=" << errorCode
+                                << ", path=" << binaryPathText.toStdString()
+                                << eol;
+                            return;
+                        }
+
+                        guardThis->appendOperateLogLine(
+                            driverText("driver.operation.load.failed", QStringLiteral("挂载失败：%1"))
+                            .arg(QString::fromUtf8(errorText.c_str())));
+                        err << operationEvent
+                            << driverText(
+                                "driver.log.load.failed",
+                                QStringLiteral("[DriverDock] 挂载失败, service="))
+                            << serviceNameText.toStdString()
+                            << ", error=" << errorCode
+                            << ", detail=" << errorText
+                            << eol;
+                        return;
+                    }
+
+                    guardThis->appendOperateLogLine(finalStatus.currentState == SERVICE_RUNNING
+                        ? driverText("driver.operation.load.success", QStringLiteral("挂载成功：service=%1"))
+                            .arg(serviceNameText)
+                        : driverText("driver.operation.load.completed", QStringLiteral("挂载结束：当前状态=%1"))
+                            .arg(guardThis->serviceStateToText(finalStatus.currentState)));
+
+                    info << operationEvent
+                        << driverText(
+                            "driver.log.load.completed",
+                            QStringLiteral("[DriverDock] 挂载执行完成, service="))
+                        << serviceNameText.toStdString()
+                        << ", finalState=" << finalStatus.currentState
+                        << eol;
+
+                    guardThis->refreshDriverServiceRecords();
+                    guardThis->refreshLoadedKernelModuleRecords();
+                },
+                Qt::QueuedConnection);
+        });
+    loadTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(loadTask);
 }
 
 
 void DriverDock::unloadSelectedDriverService()
 {
+    // 卸载驱动服务：
+    // - 入参：无；服务名取自操作页输入框，下发前完成快照；
+    // - 处理：ControlService(SERVICE_CONTROL_STOP) 会同步执行目标 DriverUnload，
+    //   并在内部轮询最长 6 秒，因此整段 SCM 调用放到线程池，UI 线程只留校验与结果落地；
+    // - 返回：无返回值；结果通过操作日志、权限提示与随后的服务/模块刷新体现。
     if (m_serviceNameEdit == nullptr)
     {
         return;
@@ -4072,52 +4388,110 @@ void DriverDock::unloadSelectedDriverService()
         return;
     }
 
-    ks::service::ServiceStatus finalStatus;
-    std::string errorText;
-    std::uint32_t errorCode = 0;
-    if (!ks::service::StopServiceByName(
-        toWideString(serviceNameText),
-        6000,
-        SERVICE_STOPPED,
-        &finalStatus,
-        &errorText,
-        &errorCode))
+    // 忙标记 + 按钮禁用：挂载/卸载/删除针对同一服务，后台执行期间不允许重复下发。
+    if (!tryBeginDriverServiceControlOperation(this))
     {
-        (void)ks::ui::promptForPrivilegeFailure(
-            this,
-            QStringLiteral("卸载驱动服务"),
-            errorCode);
-        appendOperateLogLine(
-            driverText("driver.operation.unload.failed", QStringLiteral("卸载失败：%1"))
-            .arg(QString::fromUtf8(errorText.c_str())));
-        err << operationEvent
-            << driverText("driver.log.unload.failed", QStringLiteral("[DriverDock] 卸载失败, service="))
-            << serviceNameText.toStdString()
-            << ", error=" << errorCode
-            << ", detail=" << errorText
-            << eol;
         return;
     }
+    setDriverServiceControlButtonsEnabled(
+        m_loadDriverButton,
+        m_unloadDriverButton,
+        m_deleteServiceButton,
+        false);
 
-    appendOperateLogLine(finalStatus.currentState == SERVICE_STOPPED
-        ? driverText("driver.operation.unload.success", QStringLiteral("卸载成功：service=%1"))
-            .arg(serviceNameText)
-        : driverText("driver.operation.unload.completed", QStringLiteral("卸载结束：当前状态=%1"))
-            .arg(serviceStateToText(finalStatus.currentState)));
+    const std::wstring serviceNameWide = toWideString(serviceNameText);
+    const QPointer<DriverDock> guardThis(this);
+    QRunnable* unloadTask = QRunnable::create(
+        [guardThis, operationEvent, serviceNameText, serviceNameWide]()
+        {
+            ks::service::ServiceStatus finalStatus{};
+            std::string errorText;
+            std::uint32_t errorCode = 0U;
+            const bool stopSucceeded = ks::service::StopServiceByName(
+                serviceNameWide,
+                6000,
+                SERVICE_STOPPED,
+                &finalStatus,
+                &errorText,
+                &errorCode);
 
-    info << operationEvent
-        << driverText("driver.log.unload.completed", QStringLiteral("[DriverDock] 卸载执行完成, service="))
-        << serviceNameText.toStdString()
-        << ", finalState=" << finalStatus.currentState
-        << eol;
+            QCoreApplication* const applicationInstance = QCoreApplication::instance();
+            if (applicationInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                applicationInstance,
+                [guardThis,
+                 operationEvent,
+                 serviceNameText,
+                 stopSucceeded,
+                 finalStatus,
+                 errorText,
+                 errorCode]()
+                {
+                    if (guardThis.isNull())
+                    {
+                        return;
+                    }
+                    endDriverServiceControlOperation(guardThis.data());
+                    setDriverServiceControlButtonsEnabled(
+                        guardThis->m_loadDriverButton,
+                        guardThis->m_unloadDriverButton,
+                        guardThis->m_deleteServiceButton,
+                        true);
 
-    refreshDriverServiceRecords();
-    refreshLoadedKernelModuleRecords();
+                    if (!stopSucceeded)
+                    {
+                        (void)ks::ui::promptForPrivilegeFailure(
+                            guardThis,
+                            QStringLiteral("卸载驱动服务"),
+                            errorCode);
+                        guardThis->appendOperateLogLine(
+                            driverText("driver.operation.unload.failed", QStringLiteral("卸载失败：%1"))
+                            .arg(QString::fromUtf8(errorText.c_str())));
+                        err << operationEvent
+                            << driverText(
+                                "driver.log.unload.failed",
+                                QStringLiteral("[DriverDock] 卸载失败, service="))
+                            << serviceNameText.toStdString()
+                            << ", error=" << errorCode
+                            << ", detail=" << errorText
+                            << eol;
+                        return;
+                    }
+
+                    guardThis->appendOperateLogLine(finalStatus.currentState == SERVICE_STOPPED
+                        ? driverText("driver.operation.unload.success", QStringLiteral("卸载成功：service=%1"))
+                            .arg(serviceNameText)
+                        : driverText("driver.operation.unload.completed", QStringLiteral("卸载结束：当前状态=%1"))
+                            .arg(guardThis->serviceStateToText(finalStatus.currentState)));
+
+                    info << operationEvent
+                        << driverText(
+                            "driver.log.unload.completed",
+                            QStringLiteral("[DriverDock] 卸载执行完成, service="))
+                        << serviceNameText.toStdString()
+                        << ", finalState=" << finalStatus.currentState
+                        << eol;
+
+                    guardThis->refreshDriverServiceRecords();
+                    guardThis->refreshLoadedKernelModuleRecords();
+                },
+                Qt::QueuedConnection);
+        });
+    unloadTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(unloadTask);
 }
 
 
 void DriverDock::deleteSelectedDriverService()
 {
+    // 删除驱动服务注册：
+    // - 入参：无；服务名取自操作页输入框，下发前完成快照；
+    // - 处理：DeleteServiceByName 会先尝试停服并轮询等待最长 4 秒，随后调用 DeleteService，
+    //   整段 SCM 调用放到线程池，UI 线程只留校验、按钮禁用与结果落地；
+    // - 返回：无返回值；结果通过操作日志、权限提示与随后的服务/模块刷新体现。
     if (m_serviceNameEdit == nullptr)
     {
         return;
@@ -4135,37 +4509,91 @@ void DriverDock::deleteSelectedDriverService()
         return;
     }
 
-    std::string errorText;
-    std::uint32_t errorCode = 0;
-    if (!ks::service::DeleteServiceByName(
-        toWideString(serviceNameText),
-        true,
-        4000,
-        &errorText,
-        &errorCode))
+    // 忙标记 + 按钮禁用：挂载/卸载/删除针对同一服务，后台执行期间不允许重复下发。
+    if (!tryBeginDriverServiceControlOperation(this))
     {
-        (void)ks::ui::promptForPrivilegeFailure(
-            this,
-            QStringLiteral("删除驱动服务"),
-            errorCode);
-        appendOperateLogLine(
-            driverText("driver.operation.delete.failed", QStringLiteral("删除失败：%1"))
-            .arg(QString::fromUtf8(errorText.c_str())));
-        err << operationEvent
-            << driverText("driver.log.delete.failed", QStringLiteral("[DriverDock] 删除失败, service="))
-            << serviceNameText.toStdString()
-            << ", error=" << errorCode
-            << ", detail=" << errorText
-            << eol;
         return;
     }
+    setDriverServiceControlButtonsEnabled(
+        m_loadDriverButton,
+        m_unloadDriverButton,
+        m_deleteServiceButton,
+        false);
 
-    appendOperateLogLine(
-        driverText("driver.operation.delete.succeeded", QStringLiteral("删除成功（或已标记删除）：service=%1"))
-        .arg(serviceNameText));
-    info << operationEvent
-        << driverText("driver.log.delete.completed", QStringLiteral("[DriverDock] 删除执行完成, service="))
-        << serviceNameText.toStdString() << eol;
-    refreshDriverServiceRecords();
-    refreshLoadedKernelModuleRecords();
+    const std::wstring serviceNameWide = toWideString(serviceNameText);
+    const QPointer<DriverDock> guardThis(this);
+    QRunnable* deleteTask = QRunnable::create(
+        [guardThis, operationEvent, serviceNameText, serviceNameWide]()
+        {
+            std::string errorText;
+            std::uint32_t errorCode = 0U;
+            const bool deleteSucceeded = ks::service::DeleteServiceByName(
+                serviceNameWide,
+                true,
+                4000,
+                &errorText,
+                &errorCode);
+
+            QCoreApplication* const applicationInstance = QCoreApplication::instance();
+            if (applicationInstance == nullptr)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                applicationInstance,
+                [guardThis,
+                 operationEvent,
+                 serviceNameText,
+                 deleteSucceeded,
+                 errorText,
+                 errorCode]()
+                {
+                    if (guardThis.isNull())
+                    {
+                        return;
+                    }
+                    endDriverServiceControlOperation(guardThis.data());
+                    setDriverServiceControlButtonsEnabled(
+                        guardThis->m_loadDriverButton,
+                        guardThis->m_unloadDriverButton,
+                        guardThis->m_deleteServiceButton,
+                        true);
+
+                    if (!deleteSucceeded)
+                    {
+                        (void)ks::ui::promptForPrivilegeFailure(
+                            guardThis,
+                            QStringLiteral("删除驱动服务"),
+                            errorCode);
+                        guardThis->appendOperateLogLine(
+                            driverText("driver.operation.delete.failed", QStringLiteral("删除失败：%1"))
+                            .arg(QString::fromUtf8(errorText.c_str())));
+                        err << operationEvent
+                            << driverText(
+                                "driver.log.delete.failed",
+                                QStringLiteral("[DriverDock] 删除失败, service="))
+                            << serviceNameText.toStdString()
+                            << ", error=" << errorCode
+                            << ", detail=" << errorText
+                            << eol;
+                        return;
+                    }
+
+                    guardThis->appendOperateLogLine(
+                        driverText(
+                            "driver.operation.delete.succeeded",
+                            QStringLiteral("删除成功（或已标记删除）：service=%1"))
+                        .arg(serviceNameText));
+                    info << operationEvent
+                        << driverText(
+                            "driver.log.delete.completed",
+                            QStringLiteral("[DriverDock] 删除执行完成, service="))
+                        << serviceNameText.toStdString() << eol;
+                    guardThis->refreshDriverServiceRecords();
+                    guardThis->refreshLoadedKernelModuleRecords();
+                },
+                Qt::QueuedConnection);
+        });
+    deleteTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(deleteTask);
 }

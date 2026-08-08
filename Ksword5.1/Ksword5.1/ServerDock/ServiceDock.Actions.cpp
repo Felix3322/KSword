@@ -3,21 +3,64 @@
 #include "../theme.h"
 
 #include <chrono>
+#include <QCoreApplication>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRunnable>
 #include <QSaveFile>
+#include <QSet>
 #include <QStringConverter>
 #include <QTextStream>
+#include <QThreadPool>
 
 #include <Shellapi.h>
 
 using namespace service_dock_detail;
 
+namespace service_dock_detail
+{
+    // querySingleServiceSnapshot 作用：
+    // - 采集单个服务的完整快照，可在后台线程调用（内部不触碰任何 QWidget）。
+    // 入参：serviceNameText 为服务短名；entryOut 接收快照；errorTextOut 接收错误文本。
+    // 返回：采集成功返回 true。
+    // 说明：实现位于 ServiceDock.Enumerate.cpp；本次改动不扩展共享头
+    //       ServiceDock.Internal.h，故在此就地重复声明同一原型。
+    bool querySingleServiceSnapshot(
+        const QString& serviceNameText,
+        ServiceDock::ServiceEntry* entryOut,
+        QString* errorTextOut);
+}
+
 namespace
 {
+    // kServiceActionTimeoutMs 作用：
+    // - 服务启停/暂停动作等待目标状态的最长毫秒数；
+    // - 这段轮询等待已经搬到后台线程，UI 线程不再被它阻塞。
+    constexpr std::uint32_t kServiceActionTimeoutMs = 6000;
+
+    // pendingServiceOperationKeySet 作用：
+    // - 记录“已经派发到后台、尚未回投结果”的服务操作；
+    // - ServiceDock.h 不在本次可改范围内，因此这份在途状态收敛到文件级；
+    // - 只在 UI 线程读写（派发点与回投点都在 UI 线程），无需额外加锁。
+    // 入参：无。
+    // 返回：在途操作键集合引用。
+    QSet<QString>& pendingServiceOperationKeySet()
+    {
+        static QSet<QString> pendingKeySet;
+        return pendingKeySet;
+    }
+
+    // buildServiceOperationKey 作用：为“操作类型 + 服务”生成在途去重键。
+    // 入参：operationTagText 为操作标识；serviceNameText 为服务短名。
+    // 返回：大小写无关的去重键。
+    QString buildServiceOperationKey(const QString& operationTagText, const QString& serviceNameText)
+    {
+        return operationTagText + QLatin1Char('|') + serviceNameText.trimmed().toLower();
+    }
+
     // buildServiceRegistryPath 作用：生成服务对应注册表路径文本。
     QString buildServiceRegistryPath(const QString& serviceNameText)
     {
@@ -190,6 +233,14 @@ void ServiceDock::refreshSelectedService()
         return;
     }
 
+    // 单条刷新会做 WinVerifyTrust 数字签名校验（目录签名要搜 CatRoot 并哈希文件），
+    // 单个文件几十到数百毫秒，必须和全量刷新一样走后台线程。
+    const QString operationKeyText = buildServiceOperationKey(QStringLiteral("refresh"), serviceNameText);
+    if (pendingServiceOperationKeySet().contains(operationKeyText))
+    {
+        return;
+    }
+
     const kLogEvent refreshEvent;
     info << refreshEvent
         << "[ServiceDock] 刷新单服务详情, service="
@@ -198,28 +249,69 @@ void ServiceDock::refreshSelectedService()
 
     const int progressPid = kPro.add(this, "服务管理", "刷新单服务详情");
     kPro.set(progressPid, "读取服务配置", 0, 45.0f);
+    pendingServiceOperationKeySet().insert(operationKeyText);
 
-    ServiceEntry updatedEntry;
-    QString errorText;
-    if (!querySingleServiceByName(serviceNameText, &updatedEntry, &errorText))
-    {
-        kPro.set(progressPid, "刷新失败", 0, 100.0f);
-        err << refreshEvent
-            << "[ServiceDock] 刷新单服务详情失败, service="
-            << serviceNameText.toStdString()
-            << ", error="
-            << errorText.toStdString()
-            << eol;
-        QMessageBox::warning(
-            this,
-            QStringLiteral("服务管理"),
-            QStringLiteral("刷新服务详情失败：\n%1").arg(errorText));
-        return;
-    }
+    // guardedSelf 用途：后台采集可能晚于页面销毁，回投前必须验证生命周期。
+    const QPointer<ServiceDock> guardedSelf(this);
+    QRunnable* const refreshTask = QRunnable::create(
+        [guardedSelf, serviceNameText, operationKeyText, progressPid, refreshEvent]()
+        {
+            // 后台只做纯数据采集，产出值类型 ServiceEntry / QString。
+            ServiceEntry updatedEntry;
+            QString errorText;
+            const bool querySucceeded = service_dock_detail::querySingleServiceSnapshot(
+                serviceNameText,
+                &updatedEntry,
+                &errorText);
 
-    applyServiceUpdateToCache(updatedEntry);
-    rebuildServiceTable();
-    kPro.set(progressPid, "刷新完成", 0, 100.0f);
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr)
+            {
+                return;
+            }
+
+            QMetaObject::invokeMethod(
+                appInstance,
+                [guardedSelf,
+                    serviceNameText,
+                    operationKeyText,
+                    progressPid,
+                    refreshEvent,
+                    querySucceeded,
+                    updatedEntry,
+                    errorText]()
+                {
+                    // 无论页面是否仍存活，都要先摘掉在途标记，避免残留导致后续刷新被永久拒绝。
+                    pendingServiceOperationKeySet().remove(operationKeyText);
+                    if (guardedSelf == nullptr)
+                    {
+                        return;
+                    }
+
+                    if (!querySucceeded)
+                    {
+                        kPro.set(progressPid, "刷新失败", 0, 100.0f);
+                        err << refreshEvent
+                            << "[ServiceDock] 刷新单服务详情失败, service="
+                            << serviceNameText.toStdString()
+                            << ", error="
+                            << errorText.toStdString()
+                            << eol;
+                        QMessageBox::warning(
+                            guardedSelf.data(),
+                            QStringLiteral("服务管理"),
+                            QStringLiteral("刷新服务详情失败：\n%1").arg(errorText));
+                        return;
+                    }
+
+                    guardedSelf->applyServiceUpdateToCache(updatedEntry);
+                    guardedSelf->rebuildServiceTable();
+                    kPro.set(progressPid, "刷新完成", 0, 100.0f);
+                },
+                Qt::QueuedConnection);
+        });
+    refreshTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(refreshTask);
 }
 
 void ServiceDock::startSelectedService()
@@ -296,6 +388,17 @@ bool ServiceDock::controlSelectedService(
         return false;
     }
 
+    // 控制动作现在异步执行，同一个服务在结果回投前不允许重复下发。
+    const QString operationKeyText = buildServiceOperationKey(QStringLiteral("control"), serviceNameText);
+    if (pendingServiceOperationKeySet().contains(operationKeyText))
+    {
+        QMessageBox::information(
+            this,
+            QStringLiteral("服务管理"),
+            QStringLiteral("当前服务处于状态切换中，请稍后再试。"));
+        return false;
+    }
+
     if (highRiskAction)
     {
         const QMessageBox::StandardButton confirmButton = QMessageBox::warning(
@@ -320,84 +423,152 @@ bool ServiceDock::controlSelectedService(
 
     const int progressPid = kPro.add(this, "服务管理", actionText.toStdString() + std::string(" - ") + serviceNameText.toStdString());
     kPro.set(progressPid, "下发服务控制指令", 0, 55.0f);
+    pendingServiceOperationKeySet().insert(operationKeyText);
+
+    // 下发期间先把控制按钮置灰，给出“正在执行”的直观反馈；
+    // 结果回投时统一用 syncToolbarStateWithSelection() 依据最新状态重算可用性。
+    if (m_startButton != nullptr) { m_startButton->setEnabled(false); }
+    if (m_stopButton != nullptr) { m_stopButton->setEnabled(false); }
+    if (m_pauseButton != nullptr) { m_pauseButton->setEnabled(false); }
+    if (m_continueButton != nullptr) { m_continueButton->setEnabled(false); }
+    if (m_generalStartButton != nullptr) { m_generalStartButton->setEnabled(false); }
+    if (m_generalStopButton != nullptr) { m_generalStopButton->setEnabled(false); }
+    if (m_generalPauseButton != nullptr) { m_generalPauseButton->setEnabled(false); }
+    if (m_generalContinueButton != nullptr) { m_generalContinueButton->setEnabled(false); }
 
     // UI layer only selects the action; ks::service owns SCM handles and Start/ControlService calls.
-    ks::service::ServiceStatus finalStatus;
-    std::string errorText;
-    std::uint32_t errorCode = 0;
-    const bool actionOk = useStartService
-        ? ks::service::StartServiceByName(
-            serviceNameText.toStdWString(),
-            6000,
-            expectedState,
-            &finalStatus,
-            &errorText,
-            &errorCode)
-        : ks::service::ControlServiceByName(
-            serviceNameText.toStdWString(),
+    // ks::service 内部会按 180ms 粒度轮询到期望状态或 kServiceActionTimeoutMs 超时，
+    // 停 spooler/WSearch 这类服务经常打满超时，因此整段下发 + 等待都放到后台线程。
+    // guardedSelf 用途：后台任务可能晚于页面销毁，回投前必须验证生命周期。
+    const QPointer<ServiceDock> guardedSelf(this);
+    const std::wstring serviceNameWide = serviceNameText.toStdWString();
+    QRunnable* const controlTask = QRunnable::create(
+        [guardedSelf,
+            serviceNameText,
+            serviceNameWide,
+            actionText,
+            operationKeyText,
+            progressPid,
+            actionEvent,
             desiredAccess,
             controlCode,
-            6000,
-            expectedState,
-            &finalStatus,
-            &errorText,
-            &errorCode);
-
-    if (!actionOk)
-    {
-        // privilegePromptHandled：权限恢复提示已展示时不再弹出通用服务失败框。
-        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
-            this,
-            actionText,
-            errorCode);
-        err << actionEvent
-            << "[ServiceDock] 服务动作执行失败, action="
-            << actionText.toStdString()
-            << ", service="
-            << serviceNameText.toStdString()
-            << ", error="
-            << errorCode
-            << ", detail="
-            << errorText
-            << eol;
-        kPro.set(progressPid, "执行失败", 0, 100.0f);
-        if (!privilegePromptHandled)
+            useStartService,
+            expectedState]()
         {
-            QMessageBox::warning(
-                this,
-                QStringLiteral("服务管理"),
-                QStringLiteral("操作失败：\n%1").arg(QString::fromUtf8(errorText.c_str())));
-        }
-        return false;
-    }
+            // 后台只做 SCM 下发与状态轮询，产出值类型结果。
+            ks::service::ServiceStatus finalStatus;
+            std::string errorText;
+            std::uint32_t errorCode = 0;
+            const bool actionOk = useStartService
+                ? ks::service::StartServiceByName(
+                    serviceNameWide,
+                    kServiceActionTimeoutMs,
+                    expectedState,
+                    &finalStatus,
+                    &errorText,
+                    &errorCode)
+                : ks::service::ControlServiceByName(
+                    serviceNameWide,
+                    desiredAccess,
+                    controlCode,
+                    kServiceActionTimeoutMs,
+                    expectedState,
+                    &finalStatus,
+                    &errorText,
+                    &errorCode);
 
-    kPro.set(progressPid, "等待状态稳定", 0, 80.0f);
-    const DWORD finalStateValue = finalStatus.currentState;
-    const bool waitOk = (expectedState == 0) || (finalStateValue == expectedState);
-    if (!waitOk)
-    {
-        warn << actionEvent
-            << "[ServiceDock] 服务动作已下发但状态未在超时内到达期望, action="
-            << actionText.toStdString()
-            << ", service="
-            << serviceNameText.toStdString()
-            << ", finalState="
-            << finalStateValue
-            << eol;
-    }
-    else
-    {
-        info << actionEvent
-            << "[ServiceDock] 服务动作执行成功, action="
-            << actionText.toStdString()
-            << ", service="
-            << serviceNameText.toStdString()
-            << eol;
-    }
+            const DWORD finalStateValue = static_cast<DWORD>(finalStatus.currentState);
 
-    kPro.set(progressPid, "刷新列表", 0, 92.0f);
-    requestAsyncRefresh(true);
-    kPro.set(progressPid, "执行完成", 0, 100.0f);
+            QCoreApplication* const appInstance = QCoreApplication::instance();
+            if (appInstance == nullptr)
+            {
+                return;
+            }
+
+            QMetaObject::invokeMethod(
+                appInstance,
+                [guardedSelf,
+                    serviceNameText,
+                    actionText,
+                    operationKeyText,
+                    progressPid,
+                    actionEvent,
+                    expectedState,
+                    actionOk,
+                    finalStateValue,
+                    errorText,
+                    errorCode]()
+                {
+                    // 无论页面是否仍存活，都要先摘掉在途标记，避免残留导致后续动作被永久拒绝。
+                    pendingServiceOperationKeySet().remove(operationKeyText);
+                    if (guardedSelf == nullptr)
+                    {
+                        return;
+                    }
+
+                    if (!actionOk)
+                    {
+                        // privilegePromptHandled：权限恢复提示已展示时不再弹出通用服务失败框。
+                        const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
+                            guardedSelf.data(),
+                            actionText,
+                            errorCode);
+                        err << actionEvent
+                            << "[ServiceDock] 服务动作执行失败, action="
+                            << actionText.toStdString()
+                            << ", service="
+                            << serviceNameText.toStdString()
+                            << ", error="
+                            << errorCode
+                            << ", detail="
+                            << errorText
+                            << eol;
+                        kPro.set(progressPid, "执行失败", 0, 100.0f);
+                        guardedSelf->syncToolbarStateWithSelection();
+                        if (!privilegePromptHandled)
+                        {
+                            QMessageBox::warning(
+                                guardedSelf.data(),
+                                QStringLiteral("服务管理"),
+                                QStringLiteral("操作失败：\n%1").arg(QString::fromUtf8(errorText.c_str())));
+                        }
+                        return;
+                    }
+
+                    kPro.set(progressPid, "等待状态稳定", 0, 80.0f);
+                    const bool waitOk = (expectedState == 0) || (finalStateValue == expectedState);
+                    if (!waitOk)
+                    {
+                        warn << actionEvent
+                            << "[ServiceDock] 服务动作已下发但状态未在超时内到达期望, action="
+                            << actionText.toStdString()
+                            << ", service="
+                            << serviceNameText.toStdString()
+                            << ", finalState="
+                            << finalStateValue
+                            << eol;
+                    }
+                    else
+                    {
+                        info << actionEvent
+                            << "[ServiceDock] 服务动作执行成功, action="
+                            << actionText.toStdString()
+                            << ", service="
+                            << serviceNameText.toStdString()
+                            << eol;
+                    }
+
+                    kPro.set(progressPid, "刷新列表", 0, 92.0f);
+                    guardedSelf->syncToolbarStateWithSelection();
+                    guardedSelf->requestAsyncRefresh(true);
+                    kPro.set(progressPid, "执行完成", 0, 100.0f);
+                },
+                Qt::QueuedConnection);
+        });
+    controlTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(controlTask);
+
+    // 返回值语义从“动作已完成”收敛为“动作已受理并派发到后台”。
     return true;
 }
 

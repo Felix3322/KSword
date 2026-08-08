@@ -40,6 +40,33 @@ namespace
     // kMaxHttpsParsedEntries 用途：限制 UI 和详情缓存的记录数，避免长期监控导致内存持续增长。
     constexpr int kMaxHttpsParsedEntries = 10000;
 
+    // g_httpsProxyBusyOperationActive 用途：
+    // - 标记 HTTPS 解析页是否有“根证书准备”或“代理停止”后台任务在执行；
+    // - 任务期间控制栏按钮统一置灰，既做重入保护，也给用户明确反馈；
+    // - 进程内只会存在一个 HTTPS 解析页，且读写全部发生在 UI 线程，
+    //   因此用文件级静态状态承载，避免为此改动被多个文件共用的 NetworkDock.h。
+    bool g_httpsProxyBusyOperationActive = false;
+
+    // buildHttpsProxyStatusText 作用：
+    // - 按代理运行状态拼出状态标签文本，供异步回调恢复标签时复用同一批文案。
+    // 参数 proxyRunning：代理是否处于运行状态。
+    // 参数 listenAddressText：当前监听地址文本。
+    // 参数 listenPort：当前监听端口。
+    // 返回：可直接交给 updateHttpsProxyStatusLabel 的状态文本。
+    QString buildHttpsProxyStatusText(
+        const bool proxyRunning,
+        const QString& listenAddressText,
+        const std::uint16_t listenPort)
+    {
+        if (!proxyRunning)
+        {
+            return QStringLiteral("状态：HTTPS代理未启动");
+        }
+        return QStringLiteral("状态：HTTPS代理已启动，监听 %1:%2")
+            .arg(listenAddressText)
+            .arg(listenPort);
+    }
+
     // buildHttpsDetailWindowStyle 作用：
     // - 为 HTTPS 详情窗生成独立主题样式；
     // - 重点覆盖 QPlainTextEdit/QTabWidget/QLabel，修复深色模式下残留白底。
@@ -690,6 +717,11 @@ void NetworkDock::startHttpsProxyService()
         appendHttpsProxyLogLine(QStringLiteral("HTTPS代理服务尚未初始化。"));
         return;
     }
+    if (g_httpsProxyBusyOperationActive)
+    {
+        // 已有证书准备或停止任务在跑，忽略这次点击，等回调结束后按钮会自动恢复。
+        return;
+    }
 
     const QHostAddress listenAddress(m_httpsListenAddressEdit != nullptr ? m_httpsListenAddressEdit->text().trimmed() : QStringLiteral("127.0.0.1"));
     if (listenAddress.isNull())
@@ -700,18 +732,58 @@ void NetworkDock::startHttpsProxyService()
     }
 
     const std::uint16_t listenPort = static_cast<std::uint16_t>(m_httpsListenPortSpin != nullptr ? m_httpsListenPortSpin->value() : 8889);
-    QString errorText;
-    if (!m_httpsProxyService->start(listenAddress, listenPort, &errorText))
-    {
-        appendHttpsProxyLogLine(QStringLiteral("启动失败：%1").arg(errorText));
-        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("启动 HTTPS 代理失败：\n%1").arg(errorText));
-        return;
-    }
 
-    m_httpsProxyRunning = true;
-    updateHttpsProxyStatusLabel(QStringLiteral("状态：HTTPS代理已启动，监听 %1:%2")
-        .arg(listenAddress.toString())
-        .arg(listenPort));
+    // 根证书生成/导出要拉起 powershell.exe，首次启动典型 1~5 秒；
+    // 这一段整体交给服务的后台线程，UI 线程只置灰按钮并显示准备中状态。
+    g_httpsProxyBusyOperationActive = true;
+    updateHttpsProxyStatusLabel(QStringLiteral("状态：正在准备根证书..."));
+
+    const QPointer<NetworkDock> guardedSelf(this);
+    m_httpsProxyService->ensureRootCertificateAsync(
+        false,
+        [guardedSelf, listenAddress, listenPort](const bool certificatePrepared, const QString& certificateErrorText)
+        {
+            g_httpsProxyBusyOperationActive = false;
+            if (guardedSelf == nullptr)
+            {
+                return;
+            }
+
+            NetworkDock* const networkDock = guardedSelf.data();
+            if (networkDock->m_httpsProxyService == nullptr)
+            {
+                networkDock->updateHttpsProxyStatusLabel(QStringLiteral("状态：HTTPS代理未启动"));
+                return;
+            }
+
+            QString failureText = certificateErrorText;
+            bool startSucceeded = false;
+            if (certificatePrepared)
+            {
+                QString startErrorText;
+                startSucceeded = networkDock->m_httpsProxyService->start(listenAddress, listenPort, &startErrorText);
+                if (!startSucceeded)
+                {
+                    failureText = startErrorText;
+                }
+            }
+
+            if (!startSucceeded)
+            {
+                networkDock->appendHttpsProxyLogLine(QStringLiteral("启动失败：%1").arg(failureText));
+                networkDock->updateHttpsProxyStatusLabel(
+                    buildHttpsProxyStatusText(networkDock->m_httpsProxyRunning, listenAddress.toString(), listenPort));
+                QMessageBox::warning(
+                    networkDock,
+                    QStringLiteral("HTTPS解析"),
+                    QStringLiteral("启动 HTTPS 代理失败：\n%1").arg(failureText));
+                return;
+            }
+
+            networkDock->m_httpsProxyRunning = true;
+            networkDock->updateHttpsProxyStatusLabel(
+                buildHttpsProxyStatusText(true, listenAddress.toString(), listenPort));
+        });
 }
 
 void NetworkDock::stopHttpsProxyService()
@@ -720,14 +792,35 @@ void NetworkDock::stopHttpsProxyService()
     {
         return;
     }
+    if (g_httpsProxyBusyOperationActive)
+    {
+        return;
+    }
 
-    m_httpsProxyService->stop();
+    // 等待会话线程退出可能耗时（会话线程可能正卡在证书生成的 powershell.exe 上），
+    // 这一段放到服务的后台线程，UI 线程只置灰按钮并显示停止中状态。
+    g_httpsProxyBusyOperationActive = true;
     m_httpsProxyRunning = false;
+    updateHttpsProxyStatusLabel(QStringLiteral("状态：正在停止HTTPS代理..."));
+
+    // 系统代理指向的是即将下线的端口，先同步还原（纯注册表写入，开销可忽略），
+    // 避免在会话收尾期间还有新流量被导向已停止的代理。
     if (m_httpsSystemProxySnapshotCaptured)
     {
         clearHttpsSystemProxy();
     }
-    updateHttpsProxyStatusLabel(QStringLiteral("状态：HTTPS代理已停止"));
+
+    const QPointer<NetworkDock> guardedSelf(this);
+    m_httpsProxyService->stopAsync(
+        [guardedSelf]()
+        {
+            g_httpsProxyBusyOperationActive = false;
+            if (guardedSelf == nullptr)
+            {
+                return;
+            }
+            guardedSelf->updateHttpsProxyStatusLabel(QStringLiteral("状态：HTTPS代理已停止"));
+        });
 }
 
 void NetworkDock::ensureHttpsRootCertificateTrusted()
@@ -735,6 +828,10 @@ void NetworkDock::ensureHttpsRootCertificateTrusted()
     if (m_httpsProxyService == nullptr)
     {
         appendHttpsProxyLogLine(QStringLiteral("HTTPS代理服务尚未初始化。"));
+        return;
+    }
+    if (g_httpsProxyBusyOperationActive)
+    {
         return;
     }
 
@@ -750,16 +847,43 @@ void NetworkDock::ensureHttpsRootCertificateTrusted()
         return;
     }
 
-    QString errorText;
-    if (!m_httpsProxyService->ensureRootCertificate(true, &errorText))
-    {
-        appendHttpsProxyLogLine(QStringLiteral("信任证书失败：%1").arg(errorText));
-        QMessageBox::warning(this, QStringLiteral("HTTPS解析"), QStringLiteral("信任根证书失败：\n%1").arg(errorText));
-        return;
-    }
+    // 生成根证书并导入信任根同样要跑 powershell.exe，整段交给后台线程。
+    g_httpsProxyBusyOperationActive = true;
+    updateHttpsProxyStatusLabel(QStringLiteral("状态：正在准备根证书..."));
 
-    appendHttpsProxyLogLine(QStringLiteral("HTTPS 根证书已生成并导入当前用户信任根。"));
-    updateHttpsProxyStatusLabel(QStringLiteral("状态：根证书已信任，可启动代理"));
+    const QPointer<NetworkDock> guardedSelf(this);
+    m_httpsProxyService->ensureRootCertificateAsync(
+        true,
+        [guardedSelf](const bool certificatePrepared, const QString& certificateErrorText)
+        {
+            g_httpsProxyBusyOperationActive = false;
+            if (guardedSelf == nullptr)
+            {
+                return;
+            }
+
+            NetworkDock* const networkDock = guardedSelf.data();
+            if (!certificatePrepared)
+            {
+                const QString listenAddressText = (networkDock->m_httpsProxyService != nullptr)
+                    ? networkDock->m_httpsProxyService->currentListenAddress().toString()
+                    : QString();
+                const std::uint16_t listenPort = (networkDock->m_httpsProxyService != nullptr)
+                    ? networkDock->m_httpsProxyService->currentListenPort()
+                    : static_cast<std::uint16_t>(0);
+                networkDock->appendHttpsProxyLogLine(QStringLiteral("信任证书失败：%1").arg(certificateErrorText));
+                networkDock->updateHttpsProxyStatusLabel(
+                    buildHttpsProxyStatusText(networkDock->m_httpsProxyRunning, listenAddressText, listenPort));
+                QMessageBox::warning(
+                    networkDock,
+                    QStringLiteral("HTTPS解析"),
+                    QStringLiteral("信任根证书失败：\n%1").arg(certificateErrorText));
+                return;
+            }
+
+            networkDock->appendHttpsProxyLogLine(QStringLiteral("HTTPS 根证书已生成并导入当前用户信任根。"));
+            networkDock->updateHttpsProxyStatusLabel(QStringLiteral("状态：根证书已信任，可启动代理"));
+        });
 }
 
 void NetworkDock::applyHttpsSystemProxy()
@@ -1235,12 +1359,27 @@ void NetworkDock::updateHttpsProxyStatusLabel(const QString& statusText)
     {
         m_httpsProxyStatusLabel->setText(statusText);
     }
+
+    // 后台证书准备/代理停止期间统一置灰控制栏：既防重入，也让用户看得出正在处理。
+    const bool busyOperationActive = g_httpsProxyBusyOperationActive;
     if (m_httpsStartProxyButton != nullptr)
     {
-        m_httpsStartProxyButton->setEnabled(!m_httpsProxyRunning);
+        m_httpsStartProxyButton->setEnabled(!m_httpsProxyRunning && !busyOperationActive);
     }
     if (m_httpsStopProxyButton != nullptr)
     {
-        m_httpsStopProxyButton->setEnabled(m_httpsProxyRunning);
+        m_httpsStopProxyButton->setEnabled(m_httpsProxyRunning && !busyOperationActive);
+    }
+    if (m_httpsTrustCertButton != nullptr)
+    {
+        m_httpsTrustCertButton->setEnabled(!busyOperationActive);
+    }
+    if (m_httpsApplyProxyButton != nullptr)
+    {
+        m_httpsApplyProxyButton->setEnabled(!busyOperationActive);
+    }
+    if (m_httpsClearProxyButton != nullptr)
+    {
+        m_httpsClearProxyButton->setEnabled(!busyOperationActive);
     }
 }

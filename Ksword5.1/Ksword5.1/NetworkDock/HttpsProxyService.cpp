@@ -3,6 +3,7 @@
 
 #include <algorithm>
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
@@ -11,6 +12,7 @@
 #include <QtCore/QPointer>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QThread>
+#include <QtCore/QThreadPool>
 #include <QtNetwork/QSslCertificate>
 #include <QtNetwork/QSslCipher>
 #include <QtNetwork/QSslConfiguration>
@@ -20,7 +22,16 @@
 #include <QtNetwork/QTcpServer>
 #include <QtNetwork/QTcpSocket>
 
+#include <utility>
 #include <vector>
+
+// Windows 证书存储：
+// - isRootTrusted 直接查当前用户 ROOT 存储，替代原先为了一个布尔值就拉起 powershell.exe 的做法；
+// - windows.h / WinSock2.h 已由 network_connection_tools.h 引入，这里只补 wincrypt 声明。
+#include <windows.h>
+#include <wincrypt.h>
+
+#pragma comment(lib, "Crypt32.lib")
 
 namespace ks::network
 {
@@ -38,6 +49,12 @@ namespace ks::network
         constexpr int kMaxHttpHeaderBytes = 64 * 1024;
         // kMaxPendingPlainBytes 用途：限制 TLS 握手完成前的待转发明文，避免慢握手造成无界缓存。
         constexpr int kMaxPendingPlainBytes = 4 * 1024 * 1024;
+        // kPowerShellTimeoutMs 用途：单次 PowerShell 脚本的执行上限。
+        constexpr int kPowerShellTimeoutMs = 120000;
+        // kSessionStopFirstWaitMs 用途：停止代理时对单个会话线程的首轮等待上限。
+        constexpr int kSessionStopFirstWaitMs = 3000;
+        // kSessionStopFinalWaitMs 用途：请求中断后对单个会话线程的补充等待上限。
+        constexpr int kSessionStopFinalWaitMs = 5000;
 
         // quoteForPowerShell 作用：
         // - 把文本包装成 PowerShell 单引号字面量。
@@ -46,6 +63,187 @@ namespace ks::network
             QString escapedText = textValue;
             escapedText.replace('\'', QStringLiteral("''"));
             return QStringLiteral("'%1'").arg(escapedText);
+        }
+
+        // powerShellExecutionMutex 作用：
+        // - 返回进程级 PowerShell 串行锁；
+        // - 后台根证书任务与会话线程的叶子证书生成共用同一份工作目录，必须串行执行，
+        //   否则可能出现一方正在导出 root_ca.pfx、另一方同时读取该文件的竞态。
+        // 返回：进程内唯一的互斥量引用。
+        std::mutex& powerShellExecutionMutex()
+        {
+            static std::mutex executionMutex;
+            return executionMutex;
+        }
+
+        // executePowerShellScript 作用：
+        // - 同步执行一段 PowerShell 脚本，只依赖值类型入参，可在任意线程调用；
+        // 参数 scriptText：脚本文本。
+        // 参数 standardOutputOut：标准输出，可为空。
+        // 参数 standardErrorOut：标准错误，可为空。
+        // 参数 errorTextOut：失败时输出错误文本，可为空。
+        // 返回：true=执行成功；false=启动失败、超时或退出码非零。
+        bool executePowerShellScript(
+            const QString& scriptText,
+            QString* standardOutputOut,
+            QString* standardErrorOut,
+            QString* errorTextOut)
+        {
+            const std::lock_guard<std::mutex> executionGuard(powerShellExecutionMutex());
+
+            QProcess processObject;
+            processObject.setProgram(QStringLiteral("powershell.exe"));
+
+            const QByteArray utf16ScriptBytes(
+                reinterpret_cast<const char*>(scriptText.utf16()),
+                scriptText.size() * static_cast<int>(sizeof(char16_t)));
+            processObject.setArguments({
+                QStringLiteral("-NoProfile"),
+                QStringLiteral("-ExecutionPolicy"),
+                QStringLiteral("Bypass"),
+                QStringLiteral("-EncodedCommand"),
+                QString::fromLatin1(utf16ScriptBytes.toBase64())
+                });
+            processObject.start();
+
+            if (!processObject.waitForStarted(2000))
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = QStringLiteral("PowerShell 启动失败。");
+                }
+                return false;
+            }
+
+            if (!processObject.waitForFinished(kPowerShellTimeoutMs))
+            {
+                processObject.kill();
+                processObject.waitForFinished(2000);
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = QStringLiteral("PowerShell 执行超时。");
+                }
+                return false;
+            }
+
+            const QString standardOutputText = QString::fromLocal8Bit(processObject.readAllStandardOutput()).trimmed();
+            const QString standardErrorText = QString::fromLocal8Bit(processObject.readAllStandardError()).trimmed();
+            if (standardOutputOut != nullptr)
+            {
+                *standardOutputOut = standardOutputText;
+            }
+            if (standardErrorOut != nullptr)
+            {
+                *standardErrorOut = standardErrorText;
+            }
+
+            if (processObject.exitStatus() != QProcess::NormalExit || processObject.exitCode() != 0)
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = QStringLiteral("PowerShell 执行失败：%1")
+                        .arg(standardErrorText.isEmpty() ? QStringLiteral("unknown") : standardErrorText);
+                }
+                return false;
+            }
+            return true;
+        }
+
+        // buildRootCertificateScriptText 作用：
+        // - 拼出“确保根证书存在（可选导入信任根）”的 PowerShell 脚本；
+        // - 同步与异步两条路径共用同一份脚本，避免两处文本漂移。
+        // 参数 rootPfxPath：根证书 PFX 路径。
+        // 参数 rootCerPath：根证书 CER 路径。
+        // 参数 installToTrustStore：是否把根证书导入当前用户信任根。
+        // 返回：可直接交给 executePowerShellScript 的脚本文本。
+        QString buildRootCertificateScriptText(
+            const QString& rootPfxPath,
+            const QString& rootCerPath,
+            const bool installToTrustStore)
+        {
+            const QString installFlagText = installToTrustStore ? QStringLiteral("1") : QStringLiteral("0");
+            return QStringLiteral(
+                "$ErrorActionPreference='Stop'; "
+                "$ProgressPreference='SilentlyContinue'; "
+                "$pfxPath=%1; "
+                "$cerPath=%2; "
+                "$installRoot=%3; "
+                "$friendly=%4; "
+                "$subject=%5; "
+                "$pwd=ConvertTo-SecureString %6 -AsPlainText -Force; "
+                "$rootCert=$null; "
+                "if(Test-Path $pfxPath){ "
+                "  $pfxData=Get-PfxData -FilePath $pfxPath -Password $pwd; "
+                "  $thumb=$pfxData.EndEntityCertificates[0].Thumbprint; "
+                "  $rootCert=Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1; "
+                "  if($null -eq $rootCert){ "
+                "    Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\\CurrentUser\\My -Password $pwd | Out-Null; "
+                "    $rootCert=Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1; "
+                "  } "
+                "} "
+                "if($null -eq $rootCert){ "
+                "  $rootCert=Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.FriendlyName -eq $friendly -or $_.Subject -eq $subject } | Sort-Object NotAfter -Descending | Select-Object -First 1; "
+                "} "
+                "if($null -ne $rootCert -and -not $rootCert.HasPrivateKey){ "
+                "  Remove-Item -Path ('Cert:\\CurrentUser\\My\\' + $rootCert.Thumbprint) -Force -ErrorAction SilentlyContinue; "
+                "  $rootCert=$null; "
+                "} "
+                "if($null -eq $rootCert){ "
+                "  $rootCert=New-SelfSignedCertificate -Type Custom -Subject $subject -FriendlyName $friendly -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm sha256 "
+                "    -CertStoreLocation 'Cert:\\CurrentUser\\My' -KeyExportPolicy Exportable -KeyUsage CertSign,CRLSign,DigitalSignature "
+                "    -TextExtension @('2.5.29.19={critical}{text}ca=true&pathlength=1') -NotAfter (Get-Date).AddYears(10); "
+                "} "
+                "Export-PfxCertificate -Cert $rootCert -FilePath $pfxPath -Password $pwd -Force | Out-Null; "
+                "Export-Certificate -Cert $rootCert -FilePath $cerPath -Force | Out-Null; "
+                "if($installRoot -eq '1'){ "
+                "  $trusted=Get-ChildItem Cert:\\CurrentUser\\Root | Where-Object { $_.Thumbprint -eq $rootCert.Thumbprint } | Select-Object -First 1; "
+                "  if($null -eq $trusted){ Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\\CurrentUser\\Root' | Out-Null; } "
+                "} "
+                "Write-Output $rootCert.Thumbprint;")
+                .arg(quoteForPowerShell(rootPfxPath))
+                .arg(quoteForPowerShell(rootCerPath))
+                .arg(quoteForPowerShell(installFlagText))
+                .arg(quoteForPowerShell(QString::fromLatin1(kRootFriendlyText)))
+                .arg(quoteForPowerShell(QString::fromLatin1(kRootSubjectText)))
+                .arg(quoteForPowerShell(QString::fromLatin1(kPfxPasswordText)));
+        }
+
+        // isThumbprintInCurrentUserRootStore 作用：
+        // - 在“当前用户-受信任的根证书颁发机构”存储里按 SHA-1 指纹查证书；
+        // - 纯本地 CryptoAPI 调用，微秒级返回，可在 UI 线程直接使用。
+        // 参数 thumbprintBytes：证书 SHA-1 指纹（20 字节）。
+        // 返回：true=已在信任根中；false=未找到或存储打不开。
+        bool isThumbprintInCurrentUserRootStore(const QByteArray& thumbprintBytes)
+        {
+            if (thumbprintBytes.size() != 20)
+            {
+                return false;
+            }
+
+            const HCERTSTORE trustedRootStoreHandle = ::CertOpenSystemStoreW(0, L"ROOT");
+            if (trustedRootStoreHandle == nullptr)
+            {
+                return false;
+            }
+
+            CRYPT_HASH_BLOB thumbprintBlob{};
+            thumbprintBlob.cbData = static_cast<DWORD>(thumbprintBytes.size());
+            thumbprintBlob.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(thumbprintBytes.constData()));
+
+            const PCCERT_CONTEXT matchedCertificateContext = ::CertFindCertificateInStore(
+                trustedRootStoreHandle,
+                X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                0,
+                CERT_FIND_SHA1_HASH,
+                &thumbprintBlob,
+                nullptr);
+            const bool certificateTrusted = matchedCertificateContext != nullptr;
+            if (matchedCertificateContext != nullptr)
+            {
+                ::CertFreeCertificateContext(matchedCertificateContext);
+            }
+            ::CertCloseStore(trustedRootStoreHandle, 0);
+            return certificateTrusted;
         }
 
         // currentTimestampMs 作用：
@@ -855,13 +1053,22 @@ namespace ks::network
                     }
                 }
 
+                // 会话线程可能正卡在叶子证书生成的 powershell.exe 上，等待必须带超时：
+                // 先给一轮常规等待，超时后请求中断并再次 quit，最后仍未退出就放弃等待，
+                // 绝不允许调用方（含析构路径）在这里无限期挂死。
                 for (const SessionWorker& worker : sessionWorkerList)
                 {
                     if (worker.thread.isNull() || worker.thread.data() == QThread::currentThread())
                     {
                         continue;
                     }
-                    worker.thread->wait();
+                    if (worker.thread->wait(kSessionStopFirstWaitMs))
+                    {
+                        continue;
+                    }
+                    worker.thread->requestInterruption();
+                    worker.thread->quit();
+                    worker.thread->wait(kSessionStopFinalWaitMs);
                 }
 
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -969,14 +1176,19 @@ namespace ks::network
             return false;
         }
 
-        QString errorText;
-        if (!ensureRootCertificate(false, &errorText))
+        // 正常流程里 UI 已经先调用 ensureRootCertificateAsync 在后台备妥根证书，
+        // 这里只做一次无锁快速校验；只有证书文件被外部删除等异常情况才退回同步生成。
+        if (!isRootCertificateReady())
         {
-            if (errorTextOut != nullptr)
+            QString errorText;
+            if (!ensureRootCertificate(false, &errorText))
             {
-                *errorTextOut = errorText;
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = errorText;
+                }
+                return false;
             }
-            return false;
         }
 
         stop();
@@ -1055,10 +1267,13 @@ namespace ks::network
             m_server->close();
             m_server.reset();
         }
+        // 若上一轮走的是 stopAsync，先回收那个后台收尾线程；它内部的等待都带超时，不会挂死。
+        joinStopWorkerThread();
         if (m_stopSessionWorkers)
         {
             // 会话线程会持有 service 回调；必须先等它们退出，再允许服务对象析构。
             const std::function<void()> stopSessionWorkers = std::move(m_stopSessionWorkers);
+            m_stopSessionWorkers = {};
             stopSessionWorkers();
         }
         m_listenAddress = QHostAddress();
@@ -1067,6 +1282,79 @@ namespace ks::network
         {
             emitStatus(QStringLiteral("HTTPS代理已停止。"));
         }
+    }
+
+    void HttpsMitmProxyService::stopAsync(std::function<void()> completionCallback)
+    {
+        // 关闭监听必须留在本线程：QTcpServer 有线程亲和性，不能交给后台线程处理。
+        const bool hadActiveProxy = m_server != nullptr || static_cast<bool>(m_stopSessionWorkers);
+        if (m_server != nullptr)
+        {
+            m_server->close();
+            m_server.reset();
+        }
+        joinStopWorkerThread();
+
+        std::function<void()> stopSessionWorkers = std::move(m_stopSessionWorkers);
+        m_stopSessionWorkers = {};
+        m_listenAddress = QHostAddress();
+        m_listenPort = 0;
+
+        if (!stopSessionWorkers)
+        {
+            if (hadActiveProxy)
+            {
+                emitStatus(QStringLiteral("HTTPS代理已停止。"));
+            }
+            if (completionCallback)
+            {
+                completionCallback();
+            }
+            return;
+        }
+
+        // stopSessionWorkers 只持有会话登记表的 shared_ptr，不触碰本服务对象，
+        // 因此即便服务先于后台线程析构，后台等待本身也是安全的。
+        const QPointer<HttpsMitmProxyService> guardedSelf(this);
+        m_stopWorkerThread = std::make_unique<std::thread>(
+            [guardedSelf, stopSessionWorkers = std::move(stopSessionWorkers), completionCallback, hadActiveProxy]()
+            {
+                stopSessionWorkers();
+
+                QCoreApplication* const appInstance = QCoreApplication::instance();
+                if (appInstance == nullptr)
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    appInstance,
+                    [guardedSelf, completionCallback, hadActiveProxy]()
+                    {
+                        if (!guardedSelf.isNull())
+                        {
+                            // 后台线程此时已经跑到最后一条语句，这里 join 只是回收句柄，不会长时间阻塞。
+                            guardedSelf->joinStopWorkerThread();
+                            if (hadActiveProxy)
+                            {
+                                guardedSelf->emitStatus(QStringLiteral("HTTPS代理已停止。"));
+                            }
+                        }
+                        if (completionCallback)
+                        {
+                            completionCallback();
+                        }
+                    },
+                    Qt::QueuedConnection);
+            });
+    }
+
+    void HttpsMitmProxyService::joinStopWorkerThread()
+    {
+        if (m_stopWorkerThread != nullptr && m_stopWorkerThread->joinable())
+        {
+            m_stopWorkerThread->join();
+        }
+        m_stopWorkerThread.reset();
     }
 
     bool HttpsMitmProxyService::isRunning() const
@@ -1088,62 +1376,15 @@ namespace ks::network
     {
         std::lock_guard<std::recursive_mutex> guard(m_certificateMutex);
 
-        if (m_rootCertificatePrepared
-            && QFile::exists(rootCertificatePfxPath())
-            && QFile::exists(rootCertificateCerPath())
-            && (!installToTrustStore || isRootTrusted()))
+        if (isRootCertificateReady() && (!installToTrustStore || isRootTrusted()))
         {
             return true;
         }
 
-        const QString pfxPath = rootCertificatePfxPath();
-        const QString cerPath = rootCertificateCerPath();
-        const QString installFlagText = installToTrustStore ? QStringLiteral("1") : QStringLiteral("0");
-
-        const QString scriptText = QStringLiteral(
-            "$ErrorActionPreference='Stop'; "
-            "$ProgressPreference='SilentlyContinue'; "
-            "$pfxPath=%1; "
-            "$cerPath=%2; "
-            "$installRoot=%3; "
-            "$friendly=%4; "
-            "$subject=%5; "
-            "$pwd=ConvertTo-SecureString %6 -AsPlainText -Force; "
-            "$rootCert=$null; "
-            "if(Test-Path $pfxPath){ "
-            "  $pfxData=Get-PfxData -FilePath $pfxPath -Password $pwd; "
-            "  $thumb=$pfxData.EndEntityCertificates[0].Thumbprint; "
-            "  $rootCert=Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1; "
-            "  if($null -eq $rootCert){ "
-            "    Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\\CurrentUser\\My -Password $pwd | Out-Null; "
-            "    $rootCert=Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1; "
-            "  } "
-            "} "
-            "if($null -eq $rootCert){ "
-            "  $rootCert=Get-ChildItem Cert:\\CurrentUser\\My | Where-Object { $_.FriendlyName -eq $friendly -or $_.Subject -eq $subject } | Sort-Object NotAfter -Descending | Select-Object -First 1; "
-            "} "
-            "if($null -ne $rootCert -and -not $rootCert.HasPrivateKey){ "
-            "  Remove-Item -Path ('Cert:\\CurrentUser\\My\\' + $rootCert.Thumbprint) -Force -ErrorAction SilentlyContinue; "
-            "  $rootCert=$null; "
-            "} "
-            "if($null -eq $rootCert){ "
-            "  $rootCert=New-SelfSignedCertificate -Type Custom -Subject $subject -FriendlyName $friendly -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm sha256 "
-            "    -CertStoreLocation 'Cert:\\CurrentUser\\My' -KeyExportPolicy Exportable -KeyUsage CertSign,CRLSign,DigitalSignature "
-            "    -TextExtension @('2.5.29.19={critical}{text}ca=true&pathlength=1') -NotAfter (Get-Date).AddYears(10); "
-            "} "
-            "Export-PfxCertificate -Cert $rootCert -FilePath $pfxPath -Password $pwd -Force | Out-Null; "
-            "Export-Certificate -Cert $rootCert -FilePath $cerPath -Force | Out-Null; "
-            "if($installRoot -eq '1'){ "
-            "  $trusted=Get-ChildItem Cert:\\CurrentUser\\Root | Where-Object { $_.Thumbprint -eq $rootCert.Thumbprint } | Select-Object -First 1; "
-            "  if($null -eq $trusted){ Import-Certificate -FilePath $cerPath -CertStoreLocation 'Cert:\\CurrentUser\\Root' | Out-Null; } "
-            "} "
-            "Write-Output $rootCert.Thumbprint;")
-            .arg(quoteForPowerShell(pfxPath))
-            .arg(quoteForPowerShell(cerPath))
-            .arg(quoteForPowerShell(installFlagText))
-            .arg(quoteForPowerShell(QString::fromLatin1(kRootFriendlyText)))
-            .arg(quoteForPowerShell(QString::fromLatin1(kRootSubjectText)))
-            .arg(quoteForPowerShell(QString::fromLatin1(kPfxPasswordText)));
+        const QString scriptText = buildRootCertificateScriptText(
+            rootCertificatePfxPath(),
+            rootCertificateCerPath(),
+            installToTrustStore);
 
         QString standardOutputText;
         QString standardErrorText;
@@ -1161,34 +1402,102 @@ namespace ks::network
         return true;
     }
 
+    void HttpsMitmProxyService::ensureRootCertificateAsync(
+        const bool installToTrustStore,
+        std::function<void(bool, QString)> completionCallback)
+    {
+        QCoreApplication* const appInstance = QCoreApplication::instance();
+
+        // 快速路径：证书文件齐备、信任状态也满足要求时不必拉起 powershell.exe。
+        // 这里刻意不去抢 m_certificateMutex，避免会话线程正在生成叶子证书时把 UI 线程一起拖住。
+        if (isRootCertificateReady() && (!installToTrustStore || isRootTrusted()))
+        {
+            if (completionCallback && appInstance != nullptr)
+            {
+                // 统一成“回调总是稍后在 UI 线程触发”，调用方不必区分快慢两条路径。
+                QMetaObject::invokeMethod(
+                    appInstance,
+                    [completionCallback]() { completionCallback(true, QString()); },
+                    Qt::QueuedConnection);
+            }
+            return;
+        }
+
+        const QString scriptText = buildRootCertificateScriptText(
+            rootCertificatePfxPath(),
+            rootCertificateCerPath(),
+            installToTrustStore);
+        const QPointer<HttpsMitmProxyService> guardedSelf(this);
+        QThreadPool::globalInstance()->start(
+            [guardedSelf, scriptText, completionCallback]()
+            {
+                // 后台线程只处理值类型入参与 QProcess，不触碰本服务对象的任何成员。
+                QString standardOutputText;
+                QString standardErrorText;
+                QString errorText;
+                const bool executed = executePowerShellScript(
+                    scriptText,
+                    &standardOutputText,
+                    &standardErrorText,
+                    &errorText);
+
+                QCoreApplication* const workerAppInstance = QCoreApplication::instance();
+                if (workerAppInstance == nullptr)
+                {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    workerAppInstance,
+                    [guardedSelf, executed, errorText, completionCallback]()
+                    {
+                        if (executed && !guardedSelf.isNull())
+                        {
+                            guardedSelf->m_rootCertificatePrepared = true;
+                        }
+                        if (completionCallback)
+                        {
+                            completionCallback(executed, errorText);
+                        }
+                    },
+                    Qt::QueuedConnection);
+            });
+    }
+
     bool HttpsMitmProxyService::isRootTrusted() const
     {
-        const QString pfxPath = rootCertificatePfxPath();
-        if (!QFile::exists(pfxPath))
+        // 只需要一个布尔值，没必要为此拉起 powershell.exe：
+        // 直接读导出的根证书 DER，再按 SHA-1 指纹查当前用户 ROOT 存储。
+        QFile rootCertificateFile(rootCertificateCerPath());
+        if (!rootCertificateFile.open(QIODevice::ReadOnly))
+        {
+            return false;
+        }
+        const QByteArray rootCertificateBytes = rootCertificateFile.readAll();
+        rootCertificateFile.close();
+        if (rootCertificateBytes.isEmpty())
         {
             return false;
         }
 
-        const QString scriptText = QStringLiteral(
-            "$ErrorActionPreference='Stop'; "
-            "$ProgressPreference='SilentlyContinue'; "
-            "$pfxPath=%1; "
-            "$pwd=ConvertTo-SecureString %2 -AsPlainText -Force; "
-            "$pfxData=Get-PfxData -FilePath $pfxPath -Password $pwd; "
-            "$thumb=$pfxData.EndEntityCertificates[0].Thumbprint; "
-            "$trusted=Get-ChildItem Cert:\\CurrentUser\\Root | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1; "
-            "if($null -eq $trusted){ Write-Output '0'; } else { Write-Output '1'; }")
-            .arg(quoteForPowerShell(pfxPath))
-            .arg(quoteForPowerShell(QString::fromLatin1(kPfxPasswordText)));
-
-        QString standardOutputText;
-        QString standardErrorText;
-        QString errorText;
-        if (!runPowerShellScript(scriptText, &standardOutputText, &standardErrorText, &errorText))
+        QSslCertificate rootCertificate(rootCertificateBytes, QSsl::Der);
+        if (rootCertificate.isNull())
+        {
+            // 兼容历史上可能写成 PEM 的根证书文件。
+            rootCertificate = QSslCertificate(rootCertificateBytes, QSsl::Pem);
+        }
+        if (rootCertificate.isNull())
         {
             return false;
         }
-        return standardOutputText.trimmed() == QStringLiteral("1");
+
+        return isThumbprintInCurrentUserRootStore(rootCertificate.digest(QCryptographicHash::Sha1));
+    }
+
+    bool HttpsMitmProxyService::isRootCertificateReady() const
+    {
+        return m_rootCertificatePrepared.load()
+            && QFile::exists(rootCertificatePfxPath())
+            && QFile::exists(rootCertificateCerPath());
     }
 
     bool HttpsMitmProxyService::loadHostCertificateBundle(
@@ -1350,62 +1659,9 @@ namespace ks::network
         QString* standardErrorOut,
         QString* errorTextOut) const
     {
-        QProcess processObject;
-        processObject.setProgram(QStringLiteral("powershell.exe"));
-
-        const QByteArray utf16ScriptBytes(
-            reinterpret_cast<const char*>(scriptText.utf16()),
-            scriptText.size() * static_cast<int>(sizeof(char16_t)));
-        processObject.setArguments({
-            QStringLiteral("-NoProfile"),
-            QStringLiteral("-ExecutionPolicy"),
-            QStringLiteral("Bypass"),
-            QStringLiteral("-EncodedCommand"),
-            QString::fromLatin1(utf16ScriptBytes.toBase64())
-            });
-        processObject.start();
-
-        if (!processObject.waitForStarted(2000))
-        {
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = QStringLiteral("PowerShell 启动失败。");
-            }
-            return false;
-        }
-
-        if (!processObject.waitForFinished(120000))
-        {
-            processObject.kill();
-            processObject.waitForFinished(2000);
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = QStringLiteral("PowerShell 执行超时。");
-            }
-            return false;
-        }
-
-        const QString standardOutputText = QString::fromLocal8Bit(processObject.readAllStandardOutput()).trimmed();
-        const QString standardErrorText = QString::fromLocal8Bit(processObject.readAllStandardError()).trimmed();
-        if (standardOutputOut != nullptr)
-        {
-            *standardOutputOut = standardOutputText;
-        }
-        if (standardErrorOut != nullptr)
-        {
-            *standardErrorOut = standardErrorText;
-        }
-
-        if (processObject.exitStatus() != QProcess::NormalExit || processObject.exitCode() != 0)
-        {
-            if (errorTextOut != nullptr)
-            {
-                *errorTextOut = QStringLiteral("PowerShell 执行失败：%1")
-                    .arg(standardErrorText.isEmpty() ? QStringLiteral("unknown") : standardErrorText);
-            }
-            return false;
-        }
-        return true;
+        // 实际执行体放在匿名 namespace 的自由函数里：后台证书任务可以直接复用它，
+        // 从而不必为了跑一段脚本而持有本服务对象的指针。
+        return executePowerShellScript(scriptText, standardOutputOut, standardErrorOut, errorTextOut);
     }
 
     QString HttpsMitmProxyService::hostCertificatePfxPath(const QString& hostName) const

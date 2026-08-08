@@ -5,6 +5,8 @@
 // 实现说明：
 // - 不修改 qrc 中的 SVG 源码，也不要求各个按钮改用新 API；
 // - 只在主题加载/切换时遍历一次现有控件；
+// - 遍历按时间预算切片，片间用 QTimer::singleShot(0) 让出事件循环，
+//   不在调用栈上调用 processEvents，避免主题刷新中途被重入；
 // - 后续懒加载控件通过同一事件过滤器进入共享缓存。
 // ============================================================
 
@@ -15,7 +17,6 @@
 #include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QEvent>
-#include <QEventLoop>
 #include <QHash>
 #include <QImage>
 #include <QList>
@@ -26,6 +27,7 @@
 #include <QSet>
 #include <QSize>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVariant>
 #include <QWidget>
 
@@ -57,6 +59,84 @@ namespace
     {
         static QHash<QByteArray, QIcon> iconCache;
         return iconCache;
+    }
+
+    // cachedIconsBySourceKey：
+    // - key 是源图 QIcon::cacheKey()，Qt 为每份图标数据分配单调递增序号，销毁后也不复用；
+    // - value 是该源图在当前强调色下的着色结果，空 QIcon 表示“已判定为非候选、不着色”；
+    // - 命中后可整段跳过 24x24 重渲染、逐像素候选判定和 SHA-256 像素签名。
+    QHash<qint64, QIcon>& cachedIconsBySourceKey()
+    {
+        static QHash<qint64, QIcon> sourceKeyedIconCache;
+        return sourceKeyedIconCache;
+    }
+
+    // MaximumSourceIconCacheEntries：
+    // - 源图身份缓存只是加速表，条目超限时整体丢弃重建；
+    // - 防止长时间运行中不断新建的 QIcon 让缓存无界增长。
+    constexpr int MaximumSourceIconCacheEntries = 4096;
+
+    // clearThemedIconCaches：
+    // - 强调色变化时必须同时清空像素签名缓存与源图身份缓存；
+    // - 只清其中一个会让旧强调色的结果被新一轮复用。
+    void clearThemedIconCaches()
+    {
+        cachedTintedIcons().clear();
+        cachedIconsBySourceKey().clear();
+    }
+
+    // IconApplySliceBudgetMilliseconds：
+    // - 单个切片允许占用 UI 线程的毫秒上限；
+    // - 超出预算立即让出事件循环，剩余控件下一片继续。
+    constexpr qint64 IconApplySliceBudgetMilliseconds = 8;
+
+    // IconApplyBudgetCheckStride：
+    // - 每处理这么多控件才读一次时钟；
+    // - 无图标控件的单次开销只有几微秒，逐个取时反而成为主要成本；
+    // - 取值偏小，保证少量“每个都要重新栅格化 SVG”的控件不会撑爆单片预算。
+    constexpr int IconApplyBudgetCheckStride = 8;
+
+    // IconApplySliceState：
+    // - SvgThemeIconManager 是进程内单例，分片状态随之只需一份，放在实现文件里即可；
+    // - generation 用于淘汰被新一轮主题切换取代的旧切片。
+    struct IconApplySliceState
+    {
+        QList<QPointer<QWidget>> pendingWidgets; // pendingWidgets：本轮待处理控件快照。
+        int nextWidgetIndex = 0;                 // nextWidgetIndex：下一个待处理控件下标。
+        QSet<QAction*> processedActions;         // processedActions：只做身份去重，从不解引用。
+        std::function<void(int, int)> progressCallback; // progressCallback：进度回传，可为空。
+        quint64 generation = 0;                  // generation：本轮批处理的代次。
+        bool nextSliceScheduled = false;         // nextSliceScheduled：下一片是否已排队。
+    };
+
+    // iconApplySliceState：
+    // - 返回进程内唯一的分片状态；
+    // - 只在 UI 线程访问，无需额外加锁。
+    IconApplySliceState& iconApplySliceState()
+    {
+        static IconApplySliceState sliceState;
+        return sliceState;
+    }
+
+    // iconApplyGenerationCounter：
+    // - 每次 applyToApplication 自增一次，作为本轮分片的身份；
+    // - 已排队的旧切片发现代次不符就整体放弃，不会把旧强调色写回控件。
+    quint64& iconApplyGenerationCounter()
+    {
+        static quint64 generationCounter = 0;
+        return generationCounter;
+    }
+
+    // resetIconApplySliceState：
+    // - 释放控件快照、动作去重集合与进度回调；
+    // - 避免管理器长期持有已关闭窗口的 QPointer 和调用点的闭包。
+    void resetIconApplySliceState(IconApplySliceState& sliceState)
+    {
+        sliceState.pendingWidgets.clear();
+        sliceState.nextWidgetIndex = 0;
+        sliceState.processedActions.clear();
+        sliceState.progressCallback = {};
+        sliceState.nextSliceScheduled = false;
     }
 
     // normalizedIconImage：
@@ -288,6 +368,15 @@ ks::ui::SvgThemeIconManager::applyToApplication(
     SvgThemeIconApplyResult result;
     QElapsedTimer elapsedTimer;
     elapsedTimer.start();
+
+    // 新一轮请求先丢弃上一轮残留状态并自增代次：已排队但尚未执行的旧切片
+    // 会在下次执行时发现代次不符而整体放弃，不会把旧强调色写回控件。
+    IconApplySliceState& sliceState = iconApplySliceState();
+    resetIconApplySliceState(sliceState);
+    ++iconApplyGenerationCounter();
+    const quint64 currentGeneration = iconApplyGenerationCounter();
+    sliceState.generation = currentGeneration;
+
     if (application == nullptr || !themeColor.isValid())
     {
         result.elapsedMilliseconds = elapsedTimer.elapsed();
@@ -319,55 +408,110 @@ ks::ui::SvgThemeIconManager::applyToApplication(
     // 避免用户反复试色让进程生命周期内的图标缓存无界增长。
     if (m_themeColor.isValid() && m_themeColor != themeColor)
     {
-        cachedTintedIcons().clear();
+        clearThemedIconCaches();
     }
     m_themeColor = themeColor;
     m_customTintActive = !isDefaultThemeColor;
-    // allWidgets() 返回裸指针快照，而进度回调会处理事件；先全部包进 QPointer，
-    // 防止回调期间的延迟销毁让后续遍历解引用悬空 QWidget。
+    // allWidgets() 返回裸指针快照，而分片处理会在片间让出事件循环；先全部包进
+    // QPointer，防止让出期间的延迟销毁让后续切片解引用悬空 QWidget。
     const QWidgetList currentWidgetList = application->allWidgets();
-    QList<QPointer<QWidget>> widgetList;
-    widgetList.reserve(currentWidgetList.size());
+    sliceState.pendingWidgets.reserve(currentWidgetList.size());
     for (QWidget* widgetPointer : currentWidgetList)
     {
-        widgetList.push_back(QPointer<QWidget>(widgetPointer));
+        sliceState.pendingWidgets.push_back(QPointer<QWidget>(widgetPointer));
     }
-    result.visitedWidgetCount = widgetList.size();
-    QSet<QAction*> processedActions; // processedActions：避免同一动作被多个父控件重复处理。
-    for (int widgetIndex = 0; widgetIndex < widgetList.size(); ++widgetIndex)
+    sliceState.progressCallback = progressCallback;
+    result.visitedWidgetCount = static_cast<int>(sliceState.pendingWidgets.size());
+
+    // 首片同步执行，调用点返回前当前活动窗口的图标基本已换色；剩余控件交给
+    // 事件循环逐片补齐。相比原先“每 64 个控件调一次 processEvents”，这里不再
+    // 在 applyAppearanceSettings 的函数栈上派发事件，因此不会把排队的延迟初始化
+    // 或另一次外观刷新重入到主题刷新中途。
+    // 分片期间新建的控件由 Polish 事件过滤器兜底，不会漏掉着色。
+    result.recoloredIconCount =
+        runIconApplySlice(currentGeneration, &result.cacheHitCount);
+    result.elapsedMilliseconds = elapsedTimer.elapsed();
+    return result;
+}
+
+int ks::ui::SvgThemeIconManager::runIconApplySlice(
+    const quint64 runGeneration,
+    int* cacheHitCount)
+{
+    IconApplySliceState& sliceState = iconApplySliceState();
+    if (sliceState.generation != runGeneration)
     {
-        QWidget* widgetPointer = widgetList.at(widgetIndex).data();
+        return 0;
+    }
+    sliceState.nextSliceScheduled = false;
+
+    QElapsedTimer sliceTimer;
+    sliceTimer.start();
+    int recoloredCount = 0; // recoloredCount：本片替换或还原的图标槽位数量。
+    const int totalWidgetCount =
+        static_cast<int>(sliceState.pendingWidgets.size());
+    while (sliceState.nextWidgetIndex < totalWidgetCount)
+    {
+        QWidget* const widgetPointer =
+            sliceState.pendingWidgets.at(sliceState.nextWidgetIndex).data();
+        ++sliceState.nextWidgetIndex;
         if (widgetPointer != nullptr)
         {
-            result.recoloredIconCount +=
-                applyToWidget(widgetPointer, &result.cacheHitCount);
+            recoloredCount += applyToWidget(widgetPointer, cacheHitCount);
 
             const QList<QAction*> actionList =
                 directWidgetActions(widgetPointer);
             for (QAction* actionPointer : actionList)
             {
-                if (actionPointer == nullptr || processedActions.contains(actionPointer))
+                if (actionPointer == nullptr ||
+                    sliceState.processedActions.contains(actionPointer))
                 {
                     continue;
                 }
-                processedActions.insert(actionPointer);
-                if (applyToAction(actionPointer, &result.cacheHitCount))
+                sliceState.processedActions.insert(actionPointer);
+                if (applyToAction(actionPointer, cacheHitCount))
                 {
-                    ++result.recoloredIconCount;
+                    ++recoloredCount;
                 }
             }
         }
 
-        if (progressCallback &&
-            (((widgetIndex + 1) % 64) == 0 ||
-             widgetIndex + 1 == widgetList.size()))
+        if ((sliceState.nextWidgetIndex % IconApplyBudgetCheckStride) == 0 &&
+            sliceTimer.elapsed() >= IconApplySliceBudgetMilliseconds)
         {
-            progressCallback(widgetIndex + 1, widgetList.size());
-            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            break;
         }
     }
-    result.elapsedMilliseconds = elapsedTimer.elapsed();
-    return result;
+
+    const int processedWidgetCount = sliceState.nextWidgetIndex;
+    const bool sliceRunFinished = processedWidgetCount >= totalWidgetCount;
+    // 先排下一片再回调进度：即使回调内部又触发了一次主题应用，旧代次的切片
+    // 也会在执行时自行退出，不会和新一轮互相覆盖。
+    if (!sliceRunFinished && !sliceState.nextSliceScheduled)
+    {
+        sliceState.nextSliceScheduled = true;
+        QTimer::singleShot(
+            0,
+            this,
+            [this, runGeneration]()
+            {
+                int ignoredCacheHitCount = 0; // ignoredCacheHitCount：续跑分片不再回传统计。
+                (void)runIconApplySlice(runGeneration, &ignoredCacheHitCount);
+            });
+    }
+
+    // 回调可能自带事件泵，先复制出来再调用，随后不再触碰分片状态。
+    const std::function<void(int, int)> progressCallbackCopy =
+        sliceState.progressCallback;
+    if (sliceRunFinished)
+    {
+        resetIconApplySliceState(sliceState);
+    }
+    if (progressCallbackCopy && totalWidgetCount > 0)
+    {
+        progressCallbackCopy(processedWidgetCount, totalWidgetCount);
+    }
+    return recoloredCount;
 }
 
 bool ks::ui::SvgThemeIconManager::eventFilter(
@@ -603,10 +747,44 @@ QIcon ks::ui::SvgThemeIconManager::themedIcon(
     {
         *cacheHitOut = false;
     }
+    if (sourceIcon.isNull())
+    {
+        return QIcon();
+    }
+
+    // 先按源图身份查一次廉价缓存：同一个 QIcon（含隐式共享副本）在多个控件上
+    // 重复出现时，直接跳过 24x24 重渲染、逐像素候选判定与 SHA-256 像素签名。
+    QHash<qint64, QIcon>& sourceKeyedIconCache = cachedIconsBySourceKey();
+    const qint64 sourceIconKey = sourceIcon.cacheKey();
+    const auto sourceCachedIterator = sourceKeyedIconCache.constFind(sourceIconKey);
+    if (sourceCachedIterator != sourceKeyedIconCache.constEnd())
+    {
+        const QIcon sourceCachedIcon = sourceCachedIterator.value();
+        if (cacheHitOut != nullptr && !sourceCachedIcon.isNull())
+        {
+            *cacheHitOut = true;
+        }
+        return sourceCachedIcon;
+    }
+
+    // rememberSourceKeyedResult：
+    // - 把本次结论登记进源图身份缓存，空 QIcon 表示“非候选、不着色”；
+    // - 原样返回入参，便于各出口一行收尾。
+    const auto rememberSourceKeyedResult =
+        [&sourceKeyedIconCache, sourceIconKey](const QIcon& resolvedIcon) -> QIcon
+        {
+            if (sourceKeyedIconCache.size() >= MaximumSourceIconCacheEntries)
+            {
+                sourceKeyedIconCache.clear();
+            }
+            sourceKeyedIconCache.insert(sourceIconKey, resolvedIcon);
+            return resolvedIcon;
+        };
+
     const QImage normalizedImage = normalizedIconImage(sourceIcon);
     if (!isThemeTintCandidate(sourceIcon, normalizedImage))
     {
-        return QIcon();
+        return rememberSourceKeyedResult(QIcon());
     }
 
     const QByteArray cacheKey = iconCacheKey(normalizedImage, m_themeColor);
@@ -617,7 +795,7 @@ QIcon ks::ui::SvgThemeIconManager::themedIcon(
         {
             *cacheHitOut = true;
         }
-        return cachedIterator.value();
+        return rememberSourceKeyedResult(cachedIterator.value());
     }
 
     QIcon replacementIcon; // replacementIcon：包含常用尺寸的最终主题图标。
@@ -640,5 +818,5 @@ QIcon ks::ui::SvgThemeIconManager::themedIcon(
     {
         cachedTintedIcons().insert(cacheKey, replacementIcon);
     }
-    return replacementIcon;
+    return rememberSourceKeyedResult(replacementIcon);
 }
