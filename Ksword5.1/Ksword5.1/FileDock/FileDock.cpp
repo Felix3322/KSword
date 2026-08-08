@@ -3422,6 +3422,82 @@ namespace
         return treeWidget;
     }
 
+    // g_preferPlainTextReportView 作用：
+    // - 记住用户最近一次选择的视图，之后新打开的页面沿用同一选择；
+    // - 只在进程内有效、不落盘：这是“这次排查我想怎么看”，不是需要长期保存的偏好。
+    bool g_preferPlainTextReportView = false;
+
+    // buildSwitchableView 作用：
+    // - 输入 parent、已填好的属性树和同一份内容的只读文本视图；
+    // - 处理：两者叠进 QStackedWidget，右上角放一个视图切换下拉框；
+    //   结构视图按字段分行，适合逐条查看和复制；原始文本保留完整报告，
+    //   适合 Ctrl+F 全文检索和整段贴进工单。两者各有不可替代的场合，
+    //   所以不替用户二选一，而是当场可切；
+    // - 返回：可直接放进页面布局的容器控件。
+    QWidget* buildSwitchableView(
+        QWidget* parent,
+        QTreeWidget* propertyTree,
+        CodeEditorWidget* textEditor)
+    {
+        QWidget* container = new QWidget(parent);
+        QVBoxLayout* containerLayout = new QVBoxLayout(container);
+        containerLayout->setContentsMargins(0, 0, 0, 0);
+        containerLayout->setSpacing(4);
+
+        auto& languageManager = ks::i18n::LanguageManager::instance();
+        QComboBox* viewModeCombo = new QComboBox(container);
+        viewModeCombo->addItem(QStringLiteral("结构视图"));
+        viewModeCombo->addItem(QStringLiteral("原始文本"));
+        languageManager.bindComboBoxItem(
+            viewModeCombo, 0, QStringLiteral("file.detail.view.structured"), QStringLiteral("结构视图"));
+        languageManager.bindComboBoxItem(
+            viewModeCombo, 1, QStringLiteral("file.detail.view.plain_text"), QStringLiteral("原始文本"));
+        viewModeCombo->setToolTip(
+            QStringLiteral("结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制"));
+        languageManager.bindToolTip(
+            viewModeCombo,
+            QStringLiteral("file.detail.view.tooltip"),
+            QStringLiteral("结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制"));
+
+        QHBoxLayout* headerLayout = new QHBoxLayout();
+        headerLayout->setContentsMargins(0, 0, 0, 0);
+        headerLayout->addStretch(1);
+        headerLayout->addWidget(viewModeCombo, 0);
+        containerLayout->addLayout(headerLayout, 0);
+
+        QStackedWidget* viewStack = new QStackedWidget(container);
+        viewStack->addWidget(propertyTree);
+        viewStack->addWidget(textEditor);
+        containerLayout->addWidget(viewStack, 1);
+
+        const int initialViewIndex = g_preferPlainTextReportView ? 1 : 0;
+        viewModeCombo->setCurrentIndex(initialViewIndex);
+        viewStack->setCurrentIndex(initialViewIndex);
+        QObject::connect(
+            viewModeCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            viewStack,
+            [viewStack](const int viewIndex)
+            {
+                viewStack->setCurrentIndex(viewIndex);
+                g_preferPlainTextReportView = viewIndex == 1;
+            });
+        return container;
+    }
+
+    // buildSwitchableReportView 作用：
+    // - 输入 parent 和审计页生成的报告原文；
+    // - 处理：同一份报告同时准备属性树和只读文本两种视图，并套上切换框；
+    //   文本视图走 setLocalizedText，与改版前的呈现完全一致，不丢任何既有能力；
+    // - 返回：可直接放进页面布局的容器控件。
+    QWidget* buildSwitchableReportView(QWidget* parent, const QString& reportText)
+    {
+        CodeEditorWidget* textEditor = new CodeEditorWidget(parent);
+        textEditor->setReadOnly(true);
+        textEditor->setLocalizedText(reportText);
+        return buildSwitchableView(parent, buildReportPropertyTree(parent, reportText), textEditor);
+    }
+
     // buildOpaqueStandaloneDialogStyle 作用：
     // - 为“独立弹窗”覆盖父级 Dock 透明样式，防止浅色主题下出现黑底；
     // - 强制编辑区/表格区使用 palette(base) 作为不透明背景。
@@ -5265,6 +5341,7 @@ namespace
                     kernelGroup,
                     translated(QStringLiteral("状态")),
                     translated(QStringLiteral("正在后台查询，属性窗口不会等待驱动返回")));
+                syncGeneralTextView();
                 return;
             }
             if (!m_generalR0Info.io.ok)
@@ -5281,6 +5358,7 @@ namespace
                     kernelGroup,
                     translated(QStringLiteral("Win32 错误码")),
                     QString::number(m_generalR0Info.io.win32Error));
+                syncGeneralTextView();
                 return;
             }
 
@@ -5364,6 +5442,24 @@ namespace
             appendPropertyRow(diagnosticGroup, QStringLiteral("SectionObjectPointers"), formatHex64(m_generalR0Info.sectionObjectPointersAddress));
             appendPropertyRow(diagnosticGroup, QStringLiteral("DataSectionObject"), formatHex64(m_generalR0Info.dataSectionObjectAddress));
             appendPropertyRow(diagnosticGroup, QStringLiteral("ImageSectionObject"), formatHex64(m_generalR0Info.imageSectionObjectAddress));
+
+            syncGeneralTextView();
+        }
+
+        // syncGeneralTextView 作用：
+        // - 把当前属性树导出成缩进文本，回填到常规页的文本视图；
+        // - 文本视图不再单独拼一份内容：两种视图共用同一份已翻译数据，
+        //   语言切换或 R0 结果到达后不会出现“树更新了、文本还是旧的”。
+        // 返回：无。
+        void syncGeneralTextView()
+        {
+            if (m_generalTextEditor == nullptr)
+            {
+                return;
+            }
+
+            // 树内容已经过翻译，这里必须用 setRawText，避免再翻一次。
+            m_generalTextEditor->setRawText(propertyTreeToPlainText(m_generalPropertyTree));
         }
 
         void startHashCalculation(
@@ -6888,8 +6984,11 @@ namespace
             // 常规页原本是一整块只读文本：属性名和值靠冒号对齐，取一条路径要手工划选，
             // 超长值只能左右找，属性位还被压成一个 A|B|C 串。改成两列属性树后，
             // 每条属性是独立一行，可单独复制，分组可折叠，值列还能悬停看全。
+            // 文本视图并未废弃，只是移到右上角切换框后面：整段复制和全文检索仍然需要它。
             m_generalPropertyTree = new QTreeWidget(page);
             configurePropertyTree(m_generalPropertyTree);
+            m_generalTextEditor = new CodeEditorWidget(page);
+            m_generalTextEditor->setReadOnly(true);
 
             const QFileInfo info(m_filePath);
             m_generalNtPathText = buildDriverNtPath(info.absoluteFilePath());
@@ -6897,7 +6996,8 @@ namespace
             m_generalR0Info = {};
             refreshGeneralTab();
 
-            layout->addWidget(m_generalPropertyTree, 1);
+            layout->addWidget(
+                buildSwitchableView(page, m_generalPropertyTree, m_generalTextEditor), 1);
             startR0FileInfoLoad(info, m_generalNtPathText);
             return page;
         }
@@ -6917,7 +7017,7 @@ namespace
                 content += formatReparsePointText(m_filePath);
             }
 
-            layout->addWidget(buildReportPropertyTree(page, content), 1);
+            layout->addWidget(buildSwitchableReportView(page, content), 1);
             return page;
         }
 
@@ -7305,7 +7405,7 @@ namespace
             if (fileHandle == INVALID_HANDLE_VALUE)
             {
                 content += QStringLiteral("打开失败: %1\n").arg(::GetLastError());
-                layout->addWidget(buildReportPropertyTree(page, content), 1);
+                layout->addWidget(buildSwitchableReportView(page, content), 1);
                 return page;
             }
 
@@ -7350,7 +7450,7 @@ namespace
             content += QStringLiteral("R3 DeletePending/Share: 通过 FileStandardInfo 和共享只读打开侧写。\n");
             content += QStringLiteral("R3 Shared flags: 采集句柄使用 READ|WRITE|DELETE 共享，仅用于只读探测。\n");
             ::CloseHandle(fileHandle);
-            layout->addWidget(buildReportPropertyTree(page, content), 1);
+            layout->addWidget(buildSwitchableReportView(page, content), 1);
             return page;
         }
 
@@ -7425,7 +7525,7 @@ namespace
                 bitlockerAudit.responseFlags,
                 false);
             content += formatBitlockerFveAuditRows(bitlockerAudit);
-            layout->addWidget(buildReportPropertyTree(page, content), 1);
+            layout->addWidget(buildSwitchableReportView(page, content), 1);
             return page;
         }
 
@@ -7459,7 +7559,7 @@ namespace
                 minifilterAudit.responseFlags,
                 (minifilterAudit.responseFlags & KSWORD_ARK_MINIFILTER_INVENTORY_RESPONSE_FLAG_TRUNCATED) != 0U);
             content += formatMinifilterInventoryRows(minifilterAudit);
-            layout->addWidget(buildReportPropertyTree(page, content), 1);
+            layout->addWidget(buildSwitchableReportView(page, content), 1);
             return page;
         }
 
@@ -7634,6 +7734,7 @@ namespace
         QButtonGroup* m_tabNavigationButtonGroup = nullptr; // 保证左侧导航单选。
         QVector<QToolButton*> m_tabNavigationButtons; // 与 Tab 索引一一对应，供切页时同步选中态。
         QTreeWidget* m_generalPropertyTree = nullptr; // 常规页属性树，语言切换或 R0 返回时整棵重建。
+        CodeEditorWidget* m_generalTextEditor = nullptr; // 常规页文本视图，内容由属性树导出，随树同步刷新。
         QString m_generalNtPathText; // 常规页复用的 NT 路径，避免切换语言时重复查询。
         bool m_generalR0Loaded = false; // R0 文件信息是否已完成后台读取。
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。

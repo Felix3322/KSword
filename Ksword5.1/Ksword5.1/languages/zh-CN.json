@@ -486,6 +486,9 @@
     "process.action.terminate_delete_image.type_prompt": "请输入 %1 以确认结束进程并永久删除其映像文件："
   },
   "context_translations": {
+    "file.detail.view.structured": "结构视图",
+    "file.detail.view.plain_text": "原始文本",
+    "file.detail.view.tooltip": "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制",
     "window.gui_handle.copy.all": "复制全部行",
     "window.gui_handle.copy.cell": "复制单元格",
     "window.gui_handle.copy.row": "复制当前行",
@@ -4425,6 +4428,9 @@
     "settings.background.translucency_material.acrylic": "亚克力磨砂（质感更强，可能影响悬停）"
   },
   "source_translations": {
+    "结构视图": "结构视图",
+    "原始文本": "原始文本",
+    "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制": "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制",
     "概要": "概要",
     "%1 %2（%3 字节）": "%1 %2（%3 字节）",
     "Win32 路径": "Win32 路径",

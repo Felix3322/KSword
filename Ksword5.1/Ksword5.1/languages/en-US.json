@@ -486,6 +486,9 @@
     "process.action.terminate_delete_image.type_prompt": "Type %1 to confirm ending the process and permanently deleting its image file:"
   },
   "context_translations": {
+    "file.detail.view.structured": "Structured",
+    "file.detail.view.plain_text": "Raw text",
+    "file.detail.view.tooltip": "Structured view puts each field on its own row for reading and copying one at a time; raw text keeps the full report for full-text search and copying it all at once",
     "window.gui_handle.copy.all": "Copy all rows",
     "window.gui_handle.copy.cell": "Copy cell",
     "window.gui_handle.copy.row": "Copy current row",
@@ -4425,6 +4428,9 @@
     "settings.background.translucency_material.acrylic": "Acrylic blur (richer look, may affect hover)"
   },
   "source_translations": {
+    "结构视图": "Structured",
+    "原始文本": "Raw text",
+    "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制": "Structured view puts each field on its own row for reading and copying one at a time; raw text keeps the full report for full-text search and copying it all at once",
     "概要": "Summary",
     "%1 %2（%3 字节）": "%1 %2 (%3 bytes)",
     "Win32 路径": "Win32 path",
