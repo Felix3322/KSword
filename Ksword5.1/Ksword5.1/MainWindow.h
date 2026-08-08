@@ -63,6 +63,7 @@ class CodeEditorWidget; // 前置声明：即时窗口可复用代码编辑器�
 namespace ks::ui
 {
     class CustomTitleBar; // 前置声明：主窗口自绘标题栏组件。
+    class GlobalUiSearchController; // 前置声明：标题栏全局页面搜索控制器。
     class NotificationCardManager;
 }
 
@@ -373,6 +374,24 @@ private:
     // - 绑定置顶/窗口控制/命令输入三类交互信号。
     void initCustomTitleBar();
 
+    // initGlobalUiSearchController 作用：
+    // - 创建标题栏“搜索”模式的全局页面搜索控制器；
+    // - 注入 Dock 列表、懒加载初始化与 Dock 置前激活回调；
+    // - 连接标题栏搜索文本与输入模式信号。
+    // 调用方式：initCustomTitleBar 完成标题栏创建后调用一次。
+    void initGlobalUiSearchController();
+
+    // collectSearchableDockWidgets 作用：
+    // - 汇总参与全局页面搜索的 Dock 列表（主功能 Dock + 辅助 Dock）；
+    // - 顺序即结果排列顺序，空指针由搜索侧忽略。
+    QList<ads::CDockWidget*> collectSearchableDockWidgets() const;
+
+    // activateDockForSearchNavigation 作用：
+    // - 搜索结果激活时把目标 Dock 置前：先补齐懒加载内容，
+    //   关闭态 Dock 先恢复显示，再在置顶保护下 raise 为当前页签。
+    // 入参 dockWidget：目标 Dock，空指针直接忽略。
+    void activateDockForSearchNavigation(ads::CDockWidget* dockWidget);
+
     // syncCustomTitleBarMaximizedState 作用：
     // - 统一计算主窗口“是否处于最大化态”并刷新标题栏第二按钮图标；
     // - 兼容 Qt 状态与 Win32 Zoomed 状态，避免切换瞬间图标不一致。
@@ -592,6 +611,7 @@ private:
     QDialog* m_logOutputWindow = nullptr;
     ks::ui::NotificationCardManager* m_notificationCardManager = nullptr;
     ks::ui::CustomTitleBar* m_customTitleBar = nullptr; // m_customTitleBar：主窗口自绘标题栏组件。
+    ks::ui::GlobalUiSearchController* m_globalUiSearchController = nullptr; // m_globalUiSearchController：标题栏全局页面搜索控制器。
     bool m_windowPinned = false;                        // m_windowPinned：主窗口当前是否置顶。
     bool m_captureProtectionEnabled = false;            // m_captureProtectionEnabled：主窗口当前是否启用截屏屏蔽。
 

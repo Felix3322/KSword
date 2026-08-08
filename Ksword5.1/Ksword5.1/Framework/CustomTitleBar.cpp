@@ -3,6 +3,7 @@
 #include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDate>
@@ -16,12 +17,14 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QStringList>
 #include <QTimer>
+#include <QToolButton>
 #include <QWidget>
 #include <QWindow>
 
@@ -361,7 +364,7 @@ namespace ks::ui
             return true;
         }
 
-        if (widgetBelongsTo(hitWidget, m_commandLineEdit))
+        if (widgetBelongsTo(hitWidget, m_centerInputGroup))
         {
             return false;
         }
@@ -604,11 +607,38 @@ namespace ks::ui
         m_leftLayout->addWidget(m_titleTextLabel, 0);
         m_leftLayout->addWidget(m_userBadgeButton, 0);
 
-        // 中间命令输入框：输入后回车即可触发“新控制台执行命令”。
-        m_commandLineEdit = new QLineEdit(this);
-        m_commandLineEdit->setPlaceholderText(QStringLiteral("输入命令后回车：将使用 cmd /K 在新控制台执行"));
+        // 中间输入组：左侧模式按钮（搜索/CMD）+ 输入框，外观合并为一个整体。
+        // 默认“搜索”模式做全局页面文本搜索；切到 CMD 模式后回车在新控制台执行。
+        m_centerInputGroup = new QWidget(this);
+        m_centerInputGroup->setObjectName(QStringLiteral("ksTitleInputGroup"));
+        m_centerInputGroup->setAttribute(Qt::WA_StyledBackground, true);
+        m_centerInputGroup->setFixedHeight(22);
+        m_centerInputLayout = new QHBoxLayout(m_centerInputGroup);
+        m_centerInputLayout->setContentsMargins(1, 1, 1, 1);
+        m_centerInputLayout->setSpacing(0);
+
+        m_inputModeButton = new QToolButton(m_centerInputGroup);
+        m_inputModeButton->setObjectName(QStringLiteral("ksTitleInputModeButton"));
+        m_inputModeButton->setPopupMode(QToolButton::InstantPopup);
+        m_inputModeButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        m_inputModeButton->setCursor(Qt::PointingHandCursor);
+        m_inputModeButton->setFocusPolicy(Qt::NoFocus);
+        m_inputModeButton->setFixedHeight(20);
+        m_inputModeButton->setToolTip(QStringLiteral("切换输入模式：页面搜索或 CMD 命令执行"));
+
+        m_inputModeMenu = new QMenu(m_inputModeButton);
+        m_searchModeAction = m_inputModeMenu->addAction(QStringLiteral("搜索"));
+        m_searchModeAction->setCheckable(true);
+        m_commandModeAction = m_inputModeMenu->addAction(QStringLiteral("CMD 命令"));
+        m_commandModeAction->setCheckable(true);
+        m_inputModeButton->setMenu(m_inputModeMenu);
+
+        m_commandLineEdit = new QLineEdit(m_centerInputGroup);
         m_commandLineEdit->setClearButtonEnabled(true);
-        m_commandLineEdit->setFixedHeight(22);
+        m_commandLineEdit->setFixedHeight(20);
+
+        m_centerInputLayout->addWidget(m_inputModeButton, 0);
+        m_centerInputLayout->addWidget(m_commandLineEdit, 1);
 
         // 右侧控制区：系统版本 + 当前时间/运行时长 + 截屏屏蔽 + 图钉 + 窗口按钮。
         m_rightWidget = new QWidget(this);
@@ -672,7 +702,7 @@ namespace ks::ui
         m_closeButton->setToolTip(QStringLiteral("关闭主窗口"));
 
         m_rootLayout->addWidget(m_leftWidget, 0, 0, Qt::AlignLeft | Qt::AlignVCenter);
-        m_rootLayout->addWidget(m_commandLineEdit, 0, 1, Qt::AlignCenter);
+        m_rootLayout->addWidget(m_centerInputGroup, 0, 1, Qt::AlignCenter);
         m_rootLayout->addWidget(m_rightWidget, 0, 2, Qt::AlignRight | Qt::AlignVCenter);
 
         m_timeStatusTimer = new QTimer(this);
@@ -699,12 +729,30 @@ namespace ks::ui
             emit requestCloseWindow();
         });
         connect(m_commandLineEdit, &QLineEdit::returnPressed, this, [this]() {
+            // 搜索模式的回车由 GlobalUiSearchController 的事件过滤器消费，
+            // 走不到这里；此处只负责 CMD 模式的命令提交。
+            if (m_searchInputModeActive)
+            {
+                return;
+            }
             const QString commandText = m_commandLineEdit->text().trimmed();
             if (commandText.isEmpty())
             {
                 return;
             }
             emit commandSubmitted(commandText);
+        });
+        connect(m_commandLineEdit, &QLineEdit::textChanged, this, [this](const QString& changedText) {
+            if (m_searchInputModeActive)
+            {
+                emit searchTextEdited(changedText);
+            }
+        });
+        connect(m_searchModeAction, &QAction::triggered, this, [this]() {
+            setTitleInputMode(true);
+        });
+        connect(m_commandModeAction, &QAction::triggered, this, [this]() {
+            setTitleInputMode(false);
         });
         connect(
             m_timeStatusTimer,
@@ -759,13 +807,36 @@ namespace ks::ui
             "  font-weight:500;"
             "  padding:0 4px;"
             "}"
-            "#ksCustomTitleBar QLineEdit{"
+            "#ksCustomTitleBar #ksTitleInputGroup{"
             "  background:%4;"
-            "  color:%5;"
             "  border:1px solid %6;"
             "  border-radius:3px;"
-            "  padding:1px 6px;"
+            "}"
+            "#ksCustomTitleBar #ksTitleInputGroup QLineEdit{"
+            "  background:transparent;"
+            "  color:%5;"
+            "  border:none;"
+            "  padding:0 6px;"
             "  font-size:12px;"
+            "}"
+            "#ksCustomTitleBar QToolButton#ksTitleInputModeButton{"
+            "  background:transparent;"
+            "  color:%5;"
+            "  border:none;"
+            "  border-right:1px solid %6;"
+            "  border-top-left-radius:2px;"
+            "  border-bottom-left-radius:2px;"
+            "  padding:0 7px;"
+            "  font-size:11px;"
+            "  font-weight:600;"
+            "}"
+            "#ksCustomTitleBar QToolButton#ksTitleInputModeButton::menu-indicator{"
+            "  image:none;"
+            "  width:0;"
+            "}"
+            "#ksCustomTitleBar QToolButton#ksTitleInputModeButton:hover{"
+            "  background:__TITLE_BUTTON_HOVER__;"
+            "  color:__TITLE_MODE_HOVER_TEXT__;"
             "}"
             "#ksCustomTitleBar QPushButton{"
             "  background:transparent;"
@@ -808,6 +879,7 @@ namespace ks::ui
             .arg(userBadgeBackgroundText)
             .arg(userBadgeTextColorText)
             .replace(QStringLiteral("__TITLE_BUTTON_HOVER__"), KswordTheme::PrimaryBlueSolidHoverHex())
+            .replace(QStringLiteral("__TITLE_MODE_HOVER_TEXT__"), KswordTheme::OnAccentHex())
             .replace(QStringLiteral("__TITLE_BUTTON_PRESSED__"), KswordTheme::PrimaryBluePressedHex)
             .replace(QStringLiteral("__TITLE_CLOSE_HOVER__"), KswordTheme::AccentHex(KswordTheme::AccentRole::Red, 53, 27))
             .replace(QStringLiteral("__TITLE_CLOSE_PRESSED__"), KswordTheme::AccentHex(KswordTheme::AccentRole::Red, 30, 4));
@@ -858,6 +930,8 @@ namespace ks::ui
         m_userBadgeButton->setToolTip(QStringLiteral("当前用户：%1").arg(m_rawUserNameText));
         updateUserBadgeWidth(displayUserNameText);
 
+        updateTitleInputModeVisuals();
+
         QIcon appIcon = resolveApplicationPreviewIcon();
         if (appIcon.isNull() && window() != nullptr)
         {
@@ -876,13 +950,77 @@ namespace ks::ui
 
     void CustomTitleBar::updateCommandLineWidth()
     {
-        if (m_commandLineEdit == nullptr)
+        if (m_centerInputGroup == nullptr)
         {
             return;
         }
 
         const int commandLineWidth = std::clamp(width() / 3, kCommandLineMinWidth, kCommandLineMaxWidth);
-        m_commandLineEdit->setFixedWidth(commandLineWidth);
+        m_centerInputGroup->setFixedWidth(commandLineWidth);
+    }
+
+    QLineEdit* CustomTitleBar::titleInputLineEdit() const
+    {
+        return m_commandLineEdit;
+    }
+
+    QWidget* CustomTitleBar::titleInputAnchorWidget() const
+    {
+        return m_centerInputGroup;
+    }
+
+    bool CustomTitleBar::isSearchInputModeActive() const
+    {
+        return m_searchInputModeActive;
+    }
+
+    void CustomTitleBar::setTitleInputMode(const bool searchModeActive)
+    {
+        if (m_searchInputModeActive == searchModeActive)
+        {
+            updateTitleInputModeVisuals();
+            return;
+        }
+
+        m_searchInputModeActive = searchModeActive;
+        updateTitleInputModeVisuals();
+        emit inputModeChanged(searchModeActive);
+        if (searchModeActive && m_commandLineEdit != nullptr
+            && !m_commandLineEdit->text().trimmed().isEmpty())
+        {
+            // 切回搜索模式时把已有文本重新交给搜索控制器恢复结果弹层。
+            emit searchTextEdited(m_commandLineEdit->text());
+        }
+        if (m_commandLineEdit != nullptr)
+        {
+            m_commandLineEdit->setFocus(Qt::OtherFocusReason);
+        }
+    }
+
+    void CustomTitleBar::updateTitleInputModeVisuals()
+    {
+        if (m_inputModeButton == nullptr
+            || m_commandLineEdit == nullptr
+            || m_searchModeAction == nullptr
+            || m_commandModeAction == nullptr)
+        {
+            return;
+        }
+
+        m_searchModeAction->setChecked(m_searchInputModeActive);
+        m_commandModeAction->setChecked(!m_searchInputModeActive);
+        if (m_searchInputModeActive)
+        {
+            m_inputModeButton->setText(QStringLiteral("搜索 ▾"));
+            m_commandLineEdit->setPlaceholderText(
+                QStringLiteral("搜索页面功能：输入关键词，Enter 跳转到匹配页面"));
+        }
+        else
+        {
+            m_inputModeButton->setText(QStringLiteral("CMD ▾"));
+            m_commandLineEdit->setPlaceholderText(
+                QStringLiteral("输入命令后回车：将使用 cmd /K 在新控制台执行"));
+        }
     }
 
     void CustomTitleBar::updateUserBadgeWidth(const QString& displayUserNameText)

@@ -87,6 +87,7 @@
 #include "UI/CodeEditorWidget.h"
 #include "UI/GlobalDialogTheme.h"
 #include "UI/GlobalUiBaseStyle.h"
+#include "UI/GlobalUiSearch.h"
 #include "UI/WindowChrome.h"
 #include "UI/SvgThemeIconManager.h"
 #include "UI/SmoothScrollSupport.h"
@@ -5632,6 +5633,8 @@ void MainWindow::initCustomTitleBar()
         executeCommandInNewConsole(commandText);
     });
 
+    initGlobalUiSearchController();
+
     kLogEvent initTitleBarEvent;
     info << initTitleBarEvent << "[MainWindow] 自绘标题栏初始化完成。" << eol;
 
@@ -5668,6 +5671,90 @@ void MainWindow::initCustomTitleBar()
                 << "x"
                 << m_customTitleBar->height()
                 << eol;
+        });
+}
+
+void MainWindow::initGlobalUiSearchController()
+{
+    if (m_customTitleBar == nullptr || m_globalUiSearchController != nullptr)
+    {
+        return;
+    }
+
+    // 弹层宿主是主窗口本体：无边框窗口下用子控件弹层可避免焦点被独立窗口抢走。
+    m_globalUiSearchController = new ks::ui::GlobalUiSearchController(
+        this,
+        m_customTitleBar->titleInputLineEdit(),
+        m_customTitleBar->titleInputAnchorWidget(),
+        this);
+    m_globalUiSearchController->setDockListProvider([this]() {
+        return collectSearchableDockWidgets();
+    });
+    m_globalUiSearchController->setDockPreparer([this](ads::CDockWidget* dockWidget) {
+        ensureDockContentInitialized(dockWidget);
+    });
+    m_globalUiSearchController->setDockActivator([this](ads::CDockWidget* dockWidget) {
+        activateDockForSearchNavigation(dockWidget);
+    });
+    m_globalUiSearchController->setSearchInputActive(
+        m_customTitleBar->isSearchInputModeActive());
+
+    connect(
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::searchTextEdited,
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::handleQueryEdited);
+    connect(
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::inputModeChanged,
+        m_globalUiSearchController,
+        &ks::ui::GlobalUiSearchController::setSearchInputActive);
+}
+
+QList<ads::CDockWidget*> MainWindow::collectSearchableDockWidgets() const
+{
+    // 顺序即结果排列顺序：主功能 Dock 在前，辅助 Dock 在后。
+    return QList<ads::CDockWidget*>{
+        m_dockWelcome,
+        m_dockProcess,
+        m_dockNetwork,
+        m_dockMemory,
+        m_dockFile,
+        m_dockScanner,
+        m_dockDriver,
+        m_dockKernel,
+        m_dockMonitorTab,
+        m_dockHardware,
+        m_dockPrivilege,
+        m_dockWindow,
+        m_dockRegistry,
+        m_dockHandle,
+        m_dockStartup,
+        m_dockService,
+        m_dockMisc,
+        m_dockPlugin,
+        m_dockLog,
+        m_dockMonitor,
+        m_dockCurrentOp
+    };
+}
+
+void MainWindow::activateDockForSearchNavigation(ads::CDockWidget* dockWidget)
+{
+    if (dockWidget == nullptr)
+    {
+        return;
+    }
+
+    ensureDockContentInitialized(dockWidget);
+    withTemporaryNonTopMostForDockSwitch([dockWidget]()
+        {
+            if (dockWidget->isClosed())
+            {
+                // 辅助 Dock（日志/监视/任务）允许关闭，激活前先恢复显示。
+                dockWidget->toggleView(true);
+            }
+            dockWidget->raise();
         });
 }
 

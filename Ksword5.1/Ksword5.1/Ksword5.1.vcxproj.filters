@@ -676,6 +676,9 @@
     <ClCompile Include="UI\GlobalRefreshShortcut.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\GlobalUiSearch.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\WindowChrome.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1555,6 +1558,9 @@
     <ClInclude Include="UI\GlobalRefreshShortcut.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <QtMoc Include="UI\GlobalUiSearch.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
     <ClInclude Include="UI\WindowChrome.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -3,9 +3,11 @@
 // ============================================================
 // CustomTitleBar.h
 // 作用说明：
-// 1) 提供主窗口自绘标题栏（左信息、中命令输入、右控制按钮）；
+// 1) 提供主窗口自绘标题栏（左信息、中“搜索/CMD”双模式输入、右控制按钮）；
 // 2) 提供置顶/最小化/最大化/关闭等交互信号；
-// 3) 支持深浅色主题切换和“33251 -> WangWei_CM”用户名特判展示。
+// 3) 中间输入框默认为“搜索”模式（全局页面文本搜索），
+//    点击左侧模式按钮可切换为 CMD 模式（cmd /K 新控制台执行）；
+// 4) 支持深浅色主题切换和“33251 -> WangWei_CM”用户名特判展示。
 // ============================================================
 
 #include "../Framework.h"
@@ -13,9 +15,12 @@
 #include <QPoint>
 #include <QWidget>
 
+class QAction;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPushButton;
+class QToolButton;
 class QGridLayout;
 class QHBoxLayout;
 class QMouseEvent;
@@ -92,6 +97,23 @@ namespace ks::ui
         // - 传出：无。
         void setCustomRightWidget(QWidget* customRightWidget);
 
+        // titleInputLineEdit：
+        // - 作用：暴露中间输入框，供全局搜索控制器安装键盘导航过滤器；
+        // - 调用：MainWindow 接线 GlobalUiSearchController 时调用；
+        // - 传出：中间输入框指针。
+        QLineEdit* titleInputLineEdit() const;
+
+        // titleInputAnchorWidget：
+        // - 作用：暴露中间输入组容器，作为搜索结果弹层的对齐锚点；
+        // - 调用：MainWindow 接线 GlobalUiSearchController 时调用；
+        // - 传出：输入组容器指针。
+        QWidget* titleInputAnchorWidget() const;
+
+        // isSearchInputModeActive：
+        // - 作用：查询当前输入模式；
+        // - 传出：true=搜索模式，false=CMD 模式。
+        bool isSearchInputModeActive() const;
+
     signals:
         // requestTogglePinned：
         // - 作用：请求切换置顶状态；
@@ -120,9 +142,21 @@ namespace ks::ui
 
         // commandSubmitted：
         // - 作用：提交命令行文本给主窗口执行；
-        // - 触发：命令输入框按下回车时触发；
+        // - 触发：CMD 模式下命令输入框按下回车时触发；
         // - 传入 commandText：用户输入的命令文本（未执行前文本）。
         void commandSubmitted(const QString& commandText);
+
+        // searchTextEdited：
+        // - 作用：把搜索模式下的输入文本转发给全局搜索控制器；
+        // - 触发：搜索模式下输入框文本变化、或从 CMD 切回搜索模式时触发；
+        // - 传入 searchText：当前输入框文本（未修剪）。
+        void searchTextEdited(const QString& searchText);
+
+        // inputModeChanged：
+        // - 作用：通知输入模式切换（用于收起/恢复搜索结果弹层）；
+        // - 触发：用户在模式菜单中切换搜索/CMD 时触发；
+        // - 传入 searchModeActive：true=搜索模式，false=CMD 模式。
+        void inputModeChanged(bool searchModeActive);
 
     protected:
         // resizeEvent：
@@ -164,8 +198,19 @@ namespace ks::ui
         void updateVisualState();
 
         // updateCommandLineWidth：
-        // - 作用：把命令输入框宽度调整为标题栏可用宽度的 1/3。
+        // - 作用：把中间输入组宽度调整为标题栏可用宽度的 1/3。
         void updateCommandLineWidth();
+
+        // setTitleInputMode：
+        // - 作用：切换搜索/CMD 输入模式并同步按钮、占位符与信号；
+        // - 调用：模式菜单动作触发时调用；
+        // - 传入 searchModeActive：true=搜索模式，false=CMD 模式。
+        void setTitleInputMode(bool searchModeActive);
+
+        // updateTitleInputModeVisuals：
+        // - 作用：按当前模式刷新模式按钮文本、菜单勾选与输入框占位符；
+        // - 调用：初始化、模式切换与主题刷新时调用。
+        void updateTitleInputModeVisuals();
 
         // updateUserBadgeWidth：
         // - 作用：根据当前展示用户名重新计算用户名徽标宽度；
@@ -227,7 +272,13 @@ namespace ks::ui
         QLabel* m_titleTextLabel = nullptr;       // m_titleTextLabel：标题文本（含编译日期）。
         QPushButton* m_userBadgeButton = nullptr; // m_userBadgeButton：用户名展示按钮（禁用态仅展示）。
 
-        QLineEdit* m_commandLineEdit = nullptr;   // m_commandLineEdit：标题栏中间命令输入框。
+        QWidget* m_centerInputGroup = nullptr;    // m_centerInputGroup：中间输入组容器（模式按钮+输入框一体外观）。
+        QHBoxLayout* m_centerInputLayout = nullptr; // m_centerInputLayout：中间输入组水平布局。
+        QToolButton* m_inputModeButton = nullptr; // m_inputModeButton：输入模式切换按钮（搜索/CMD）。
+        QMenu* m_inputModeMenu = nullptr;         // m_inputModeMenu：输入模式选择菜单。
+        QAction* m_searchModeAction = nullptr;    // m_searchModeAction：菜单“搜索”模式选项。
+        QAction* m_commandModeAction = nullptr;   // m_commandModeAction：菜单“CMD 命令”模式选项。
+        QLineEdit* m_commandLineEdit = nullptr;   // m_commandLineEdit：标题栏中间输入框（搜索/命令共用）。
 
         QWidget* m_rightWidget = nullptr;         // m_rightWidget：右侧按钮区容器。
         QHBoxLayout* m_rightLayout = nullptr;     // m_rightLayout：右侧按钮区布局。
@@ -249,6 +300,7 @@ namespace ks::ui
         bool m_isPinned = false;                  // m_isPinned：当前置顶状态。
         bool m_isMaximized = false;               // m_isMaximized：当前窗口是否最大化。
         bool m_darkModeEnabled = false;           // m_darkModeEnabled：当前是否深色主题。
+        bool m_searchInputModeActive = true;      // m_searchInputModeActive：中间输入框是否处于搜索模式（默认搜索）。
         bool m_dragCandidateActive = false;       // m_dragCandidateActive：当前是否处于标题栏拖动候选状态。
         bool m_dragInProgress = false;            // m_dragInProgress：当前是否已把拖动交给系统处理。
         unsigned long long m_processStartTickMilliseconds = 0ULL; // m_processStartTickMilliseconds：GetTickCount64 时间轴上的进程启动点。
