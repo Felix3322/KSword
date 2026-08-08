@@ -1,5 +1,11 @@
 # KSword Agent Notes
 
+## 共享记忆
+
+跨 agent / 开发者共享的项目知识放在 `.claude/memory/`，索引见 `.claude/memory/MEMORY.md`。
+改动主程序 UI、主题或窗口背景前，先读 `.claude/memory/ksword-ui-architecture.md`：其中记录了主题 token 体系、
+全局样式块链路、透明背景与毛玻璃的平台约束，以及已经踩过的坑。新增可复用经验时请一并更新该目录。
+
 ## 发行版制作流程
 
 本流程用于在仓库根目录 `C:\Users\Felix\CLionProjects\KSword` 生成包含完整 `Release\` 目录的 7z 发行包。默认参考旧包布局：`C:\Users\Felix\Downloads\KswordARK评估版本-260427-未签名R0-进程内存监控增强.7z`。
@@ -129,5 +135,6 @@ py -3.12 tools\pdb_offset_generator\launcher_report_intake.py $reportDir --corpu
 - 用户态 KswordARK 设备访问只通过 `Ksword5.1/Ksword5.1/ArkDriverClient/`，Dock UI 不直接调用 KswordARK `DeviceIoControl`。
 - `KswordCLI` 每新增、删除或调整一个命令/别名/参数时，必须同步更新 `KswordCLI` 内置 `help` 命令元数据，并同步更新 `docs/CLI使用文档.md`。
 - 新增源码必须同步更新对应 `.vcxproj` 和 `.vcxproj.filters`。
+- 语言包（`languages/*.json`）只能定点编辑；禁止用脚本 `json.load`/`json.dump` 整体重写，那会重排键序与缩进并产生数万行无意义 diff。
 - 第三方代码接入必须保留原有许可证文本。
 - 新增、删除或修改主程序用户可见文本时，必须同步 `Ksword5.1/Ksword5.1/languages/zh-CN.json` 与 `Ksword5.1/Ksword5.1/languages/en-US.json`，并通过 `python tools/i18n_language_pack.py audit --source-root Ksword5.1/Ksword5.1 --zh-pack Ksword5.1/Ksword5.1/languages/zh-CN.json --en-pack Ksword5.1/Ksword5.1/languages/en-US.json`。
