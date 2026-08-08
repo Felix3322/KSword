@@ -391,6 +391,7 @@
     <ClCompile Include="UI\TableColumnAutoFit.cpp" />
     <ClCompile Include="UI\TableFreezeSupport.cpp" />
     <ClCompile Include="UI\TableInteractionSupport.cpp" />
+    <ClCompile Include="UI\TextSearchReplaceSupport.cpp" />
     <ClCompile Include="UI\TableSnapshotCompare.cpp" />
     <ClCompile Include="UI\ThemedMessageBox.cpp" />
     <ClCompile Include="UI\UIBaseFunction.cpp" />
@@ -549,6 +550,7 @@
     <ClInclude Include="UI\TableColumnAutoFit.h" />
     <ClInclude Include="UI\TableFreezeSupport.h" />
     <ClInclude Include="UI\TableInteractionSupport.h" />
+    <ClInclude Include="UI\TextSearchReplaceSupport.h" />
     <ClInclude Include="UI\TableSnapshotCompare.h" />
     <ClInclude Include="UI\VisibleTableWidget.h" />
     <ClInclude Include="UI\UI_All.h" />

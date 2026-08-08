@@ -19,6 +19,7 @@
 #include "UI/TableColumnAutoFit.h"
 #include "UI/TableInteractionSupport.h"
 #include "UI/SmoothScrollSupport.h"
+#include "UI/TextSearchReplaceSupport.h"
 #include "Internationalization/LanguageManager.h"
 
 #ifndef NOMINMAX
@@ -1573,6 +1574,8 @@ int main(int argc, char* argv[])
     startupTraceRaw("InstallGlobalTableColumnAutoFit finished");
     ks::ui::InstallGlobalTableInteractionSupport(&app);
     ks::ui::InstallGlobalSmoothScrollSupport(&app);
+    // 全应用多行文本框统一支持 Ctrl+F 查找 / Ctrl+H 替换（含正则开关）。
+    ks::ui::InstallGlobalTextSearchReplaceSupport(&app);
     const QStringList argumentList = QCoreApplication::arguments();
     startupTraceRaw(
         std::string("QCoreApplication::arguments fetched, count=")
