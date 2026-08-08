@@ -17,9 +17,13 @@ Environment:
 #include "ark/ark_driver.h"
 #include "ark/ark_memory_evidence.h"
 #include "../../dispatch/ioctl_validation.h"
+#include "../../platform/pool_compat.h"
 
 #include <ntstrsafe.h>
 #include <stdarg.h>
+
+// 物理写入请求带尾随 data[]，栈快照放不下，改用池副本；tag 与其它 IOCTL 副本一致。
+#define KSWORD_ARK_MEMORY_TOOL_IOCTL_POOL_TAG 'pMsK'
 
 #ifndef STATUS_REQUEST_NOT_ACCEPTED
 #define STATUS_REQUEST_NOT_ACCEPTED ((NTSTATUS)0xC00000D0L)
@@ -112,6 +116,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_READ_PHYSICAL_MEMORY_REQUEST* readRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_READ_PHYSICAL_MEMORY_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -134,6 +140,14 @@ Return Value:
         KswordARKMemoryToolIoctlLog(Device, "Error", "R0 read-physical ioctl: input invalid, status=0x%08X.", (unsigned int)status);
         return status;
     }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先
+     * RtlZeroMemory 输出再读 physicalAddress/bytesToRead，不做快照就会
+     * 拿响应头字节当物理地址和长度去 MmCopyMemory。
+     */
+    RtlCopyMemory(&requestSnapshot, readRequest, sizeof(requestSnapshot));
+    readRequest = &requestSnapshot;
 
     if (readRequest->flags != 0UL ||
         readRequest->reserved != 0UL ||
@@ -354,6 +368,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_WRITE_PHYSICAL_MEMORY_REQUEST* writeRequest = NULL;
+    // writeRequestCopy 是请求头加尾随 data[] 的完整池副本，长度不定所以不能放栈上。
+    KSWORD_ARK_WRITE_PHYSICAL_MEMORY_REQUEST* writeRequestCopy = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -412,6 +428,22 @@ Return Value:
         return STATUS_INVALID_PARAMETER;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出共用同一个 SystemBuffer。后端会先
+     * RtlZeroMemory 输出缓冲，再读 physicalAddress/bytesToWrite 并把
+     * Request->data 拷进映射页；不先复制就等于拿响应头字节当物理地址，
+     * 把响应内容写进一段错误的物理内存。
+     */
+    writeRequestCopy = (KSWORD_ARK_WRITE_PHYSICAL_MEMORY_REQUEST*)KswordARKAllocateNonPagedPool(
+        requiredInputLength,
+        KSWORD_ARK_MEMORY_TOOL_IOCTL_POOL_TAG);
+    if (writeRequestCopy == NULL) {
+        KswordARKMemoryToolIoctlLog(Device, "Error", "R0 write-physical ioctl: input copy allocation failed, bytes=%Iu.", requiredInputLength);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlCopyMemory(writeRequestCopy, writeRequest, requiredInputLength);
+    writeRequest = writeRequestCopy;
+
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,
         sizeof(KSWORD_ARK_WRITE_PHYSICAL_MEMORY_RESPONSE),
@@ -419,6 +451,7 @@ Return Value:
         &actualOutputLength);
     if (!NT_SUCCESS(status)) {
         KswordARKMemoryToolIoctlLog(Device, "Error", "R0 write-physical ioctl: output invalid, status=0x%08X.", (unsigned int)status);
+        ExFreePoolWithTag(writeRequestCopy, KSWORD_ARK_MEMORY_TOOL_IOCTL_POOL_TAG);
         return status;
     }
 
@@ -440,6 +473,7 @@ Return Value:
         response->requestedPhysicalAddress = writeRequest->physicalAddress;
         *BytesReturned = sizeof(*response);
         KswordARKMemoryToolIoctlLog(Device, "Warn", "R0 write-physical requires force confirmation: pa=0x%I64X, bytes=%lu.", writeRequest->physicalAddress, (unsigned long)writeRequest->bytesToWrite);
+        ExFreePoolWithTag(writeRequestCopy, KSWORD_ARK_MEMORY_TOOL_IOCTL_POOL_TAG);
         return STATUS_SUCCESS;
     }
 
@@ -452,18 +486,21 @@ Return Value:
         status = KswordARKSafetyEvaluate(Device, &safetyContext);
         if (!NT_SUCCESS(status)) {
             KswordARKMemoryToolIoctlLog(Device, "Warn", "R0 write-physical denied by safety policy: pa=0x%I64X, bytes=%lu, status=0x%08X.", writeRequest->physicalAddress, (unsigned long)writeRequest->bytesToWrite, (unsigned int)status);
+            ExFreePoolWithTag(writeRequestCopy, KSWORD_ARK_MEMORY_TOOL_IOCTL_POOL_TAG);
             return status;
         }
     }
 
+    // 后端只看得到池副本，长度也必须换成副本长度，不能再用 SystemBuffer 长度。
     status = KswordARKDriverWritePhysicalMemory(
         outputBuffer,
         actualOutputLength,
         writeRequest,
-        actualInputLength,
+        requiredInputLength,
         BytesReturned);
     if (!NT_SUCCESS(status)) {
         KswordARKMemoryToolIoctlLog(Device, "Error", "R0 write-physical failed: pa=0x%I64X, bytes=%lu, status=0x%08X.", writeRequest->physicalAddress, (unsigned long)writeRequest->bytesToWrite, (unsigned int)status);
+        ExFreePoolWithTag(writeRequestCopy, KSWORD_ARK_MEMORY_TOOL_IOCTL_POOL_TAG);
         return status;
     }
 
@@ -480,6 +517,7 @@ Return Value:
             (unsigned long)response->bytesWritten);
     }
 
+    ExFreePoolWithTag(writeRequestCopy, KSWORD_ARK_MEMORY_TOOL_IOCTL_POOL_TAG);
     return STATUS_SUCCESS;
 }
 
@@ -658,6 +696,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_TRANSLATE_VIRTUAL_ADDRESS_REQUEST* translateRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_TRANSLATE_VIRTUAL_ADDRESS_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -680,6 +720,13 @@ Return Value:
         KswordARKMemoryToolIoctlLog(Device, "Error", "R0 translate-va ioctl: input invalid, status=0x%08X.", (unsigned int)status);
         return status;
     }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出共用同一个 SystemBuffer；后端清零输出后
+     * 才读 processId/virtualAddress，不做快照就会翻译一个错误的地址。
+     */
+    RtlCopyMemory(&requestSnapshot, translateRequest, sizeof(requestSnapshot));
+    translateRequest = &requestSnapshot;
 
     if (translateRequest->flags != 0UL || translateRequest->reserved != 0UL) {
         KswordARKMemoryToolIoctlLog(Device, "Warn", "R0 translate-va ioctl: flags/reserved rejected, flags=0x%08X.", (unsigned int)translateRequest->flags);
@@ -753,6 +800,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_PAGE_TABLE_ENTRY_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_PAGE_TABLE_ENTRY_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -775,6 +824,13 @@ Return Value:
         KswordARKMemoryToolIoctlLog(Device, "Error", "R0 query-pte ioctl: input invalid, status=0x%08X.", (unsigned int)status);
         return status;
     }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出共用同一个 SystemBuffer；后端清零输出后
+     * 才读 processId/virtualAddress，不做快照就会查错页表项。
+     */
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
 
     if (queryRequest->flags != 0UL || queryRequest->reserved != 0UL) {
         KswordARKMemoryToolIoctlLog(Device, "Warn", "R0 query-pte ioctl: flags/reserved rejected, flags=0x%08X.", (unsigned int)queryRequest->flags);

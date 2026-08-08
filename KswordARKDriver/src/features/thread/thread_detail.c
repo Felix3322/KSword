@@ -759,6 +759,19 @@ Return Value:
 }
 
 
+/*
+ * KSW_THREAD_RUNTIME_FIELD_REQUEST_SNAPSHOT
+ * METHOD_BUFFERED 请求快照的栈布局。中文说明：shared 协议用 items[1] 做变长
+ * 占位，这里把剩余 MAX_ITEMS-1 项补齐，handler 就能用一个对齐的栈局部完整
+ * 保存请求，不必为每次查询分配池内存。
+ */
+typedef struct _KSW_THREAD_RUNTIME_FIELD_REQUEST_SNAPSHOT
+{
+    KSWORD_ARK_THREAD_RUNTIME_FIELD_SAMPLE_REQUEST header;
+    KSWORD_ARK_RUNTIME_FIELD_SAMPLE_ITEM_REQUEST extraItems[
+        KSWORD_ARK_RUNTIME_FIELD_SAMPLE_MAX_ITEMS - 1U];
+} KSW_THREAD_RUNTIME_FIELD_REQUEST_SNAPSHOT;
+
 static size_t
 KswordARKThreadRuntimeFieldRequestHeaderSize(VOID)
 /*++
@@ -1077,10 +1090,13 @@ Return Value:
 
 --*/
 {
+    // requestSnapshot 覆盖协议上限（请求头 + MAX_ITEMS 个采样项），任何合法请求都放得下。
+    KSW_THREAD_RUNTIME_FIELD_REQUEST_SNAPSHOT requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
+    size_t snapshotLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(Device);
@@ -1101,6 +1117,16 @@ Return Value:
         return status;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先
+     * RtlZeroMemory 输出再读 itemCount 和 items[]，不做快照就是拿响应
+     * 字节当采样项，条目数和偏移全部脏掉。超出 MAX_ITEMS 的部分不复制，
+     * 后端的长度校验会据此判定 INVALID_REQUEST。
+     */
+    snapshotLength = min(actualInputLength, sizeof(requestSnapshot));
+    RtlZeroMemory(&requestSnapshot, sizeof(requestSnapshot));
+    RtlCopyMemory(&requestSnapshot, inputBuffer, snapshotLength);
+
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,
         KswordARKThreadRuntimeFieldSampleResponseHeaderSize(),
@@ -1113,7 +1139,7 @@ Return Value:
     return KswordARKDriverQueryThreadRuntimeFields(
         (KSWORD_ARK_RUNTIME_FIELD_SAMPLE_RESPONSE*)outputBuffer,
         actualOutputLength,
-        (const KSWORD_ARK_THREAD_RUNTIME_FIELD_SAMPLE_REQUEST*)inputBuffer,
-        actualInputLength,
+        &requestSnapshot.header,
+        snapshotLength,
         BytesReturned);
 }

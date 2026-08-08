@@ -87,6 +87,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_NETWORK_SET_RULES_REQUEST* setRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_NETWORK_SET_RULES_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -115,6 +117,14 @@ Return Value:
         KswordARKNetworkIoctlLog(Device, "Error", "R0 network set-rules input invalid, status=0x%08X.", (unsigned int)status);
         return status;
     }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先
+     * RtlZeroMemory 输出再按 ruleCount 遍历并拷贝 rules[]，不做快照就会
+     * 把响应头字节当规则数和规则内容装进防火墙表。
+     */
+    RtlCopyMemory(&requestSnapshot, setRequest, sizeof(requestSnapshot));
+    setRequest = &requestSnapshot;
 
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,

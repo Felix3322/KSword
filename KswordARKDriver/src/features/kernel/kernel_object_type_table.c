@@ -866,6 +866,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -888,6 +890,14 @@ Return Value:
     if (!NT_SUCCESS(status) || actualInputLength < sizeof(*queryRequest)) {
         return NT_SUCCESS(status) ? STATUS_BUFFER_TOO_SMALL : status;
     }
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先
+     * RtlZeroMemory 输出再读 maxEntries 当作枚举上界，不做快照就是拿
+     * 响应头字节当条目数用。
+     */
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
+
     if (queryRequest->version != KSWORD_ARK_KERNEL_OBJECT_PROTOCOL_VERSION ||
         (queryRequest->flags &
             (~KSWORD_ARK_OBJECT_TYPE_TABLE_FLAG_INCLUDE_ALL)) != 0UL) {

@@ -93,6 +93,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_PROCESS_SECTION_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_PROCESS_SECTION_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0;
@@ -117,7 +119,14 @@ Return Value:
         return status;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端清零输出后
+     * 才读 processId/flags/maxMappings，不做快照就会枚举错误的进程。
+     */
     queryRequest = (KSWORD_ARK_QUERY_PROCESS_SECTION_REQUEST*)inputBuffer;
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
+
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,
         KSWORD_ARK_SECTION_RESPONSE_HEADER_SIZE,
@@ -184,6 +193,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_FILE_SECTION_MAPPINGS_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_FILE_SECTION_MAPPINGS_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0;
@@ -208,7 +219,16 @@ Return Value:
         return status;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先
+     * RtlZeroMemory 输出并写响应头，再读 path/pathLengthChars 去构造
+     * UNICODE_STRING 交给 ZwCreateFile。不做快照就是拿响应头字节当路径
+     * 字符数用，直接产生内核越界读。
+     */
     queryRequest = (KSWORD_ARK_QUERY_FILE_SECTION_MAPPINGS_REQUEST*)inputBuffer;
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
+
     if (queryRequest->pathLengthChars == 0U ||
         queryRequest->pathLengthChars >= KSWORD_ARK_FILE_SECTION_PATH_MAX_CHARS ||
         queryRequest->path[queryRequest->pathLengthChars] != L'\0') {

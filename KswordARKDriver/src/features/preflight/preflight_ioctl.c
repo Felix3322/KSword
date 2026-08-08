@@ -88,6 +88,8 @@ Return Value:
 {
     KSWORD_ARK_QUERY_PREFLIGHT_REQUEST* preflightRequest = NULL;
     KSWORD_ARK_QUERY_PREFLIGHT_REQUEST defaultRequest = { 0 };
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_PREFLIGHT_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
@@ -115,7 +117,13 @@ Return Value:
     }
 
     if (hasInput) {
-        preflightRequest = (KSWORD_ARK_QUERY_PREFLIGHT_REQUEST*)inputBuffer;
+        /*
+         * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先
+         * RtlZeroMemory 输出再读 flags 决定跑哪些检查项，不做快照就会
+         * 拿响应头字节当 flags 用。
+         */
+        RtlCopyMemory(&requestSnapshot, inputBuffer, sizeof(requestSnapshot));
+        preflightRequest = &requestSnapshot;
         if (preflightRequest->size < sizeof(KSWORD_ARK_QUERY_PREFLIGHT_REQUEST) ||
             preflightRequest->version != KSWORD_ARK_PREFLIGHT_PROTOCOL_VERSION ||
             (preflightRequest->flags & ~KSWORD_ARK_PREFLIGHT_QUERY_FLAG_INCLUDE_ALL) != 0UL) {

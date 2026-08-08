@@ -99,6 +99,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_VIRTUAL_MEMORY_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_VIRTUAL_MEMORY_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
@@ -124,7 +126,14 @@ Return Value:
         return status;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端清零输出后
+     * 才读 processId/baseAddress，不做快照就会去枚举错误进程的错误区间。
+     */
     queryRequest = (KSWORD_ARK_QUERY_VIRTUAL_MEMORY_REQUEST*)inputBuffer;
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
+
     if ((queryRequest->flags & ~allowedFlags) != 0UL) {
         KswordARKMemoryIoctlLog(Device, "Warn", "R0 query-vm ioctl: flags rejected, flags=0x%08X.", (unsigned int)queryRequest->flags);
         return STATUS_INVALID_PARAMETER;

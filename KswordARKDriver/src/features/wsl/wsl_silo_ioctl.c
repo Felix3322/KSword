@@ -87,6 +87,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_WSL_SILO_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_WSL_SILO_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
@@ -112,7 +114,14 @@ Return Value:
         return status;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端清零输出后
+     * 才读 processId/threadId，不做快照就会去查一个错误的进程或线程。
+     */
     queryRequest = (KSWORD_ARK_QUERY_WSL_SILO_REQUEST*)inputBuffer;
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
+
     if ((queryRequest->flags & ~allowedFlags) != 0UL) {
         KswordARKWslSiloIoctlLog(Device, "Warn", "R0 query-wsl-silo: flags rejected, flags=0x%08X.", (unsigned int)queryRequest->flags);
         return STATUS_INVALID_PARAMETER;

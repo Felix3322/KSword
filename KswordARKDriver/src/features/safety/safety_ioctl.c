@@ -158,6 +158,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_SET_SAFETY_POLICY_REQUEST* setRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_SET_SAFETY_POLICY_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -186,6 +188,14 @@ Return Value:
         KswordARKSafetyIoctlLog(Device, "Error", "R0 set-safety-policy: input invalid, status=0x%08X.", (unsigned int)status);
         return status;
     }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先
+     * RtlZeroMemory 输出再读 expectedGeneration 和各策略开关，不做快照
+     * 就等于用响应头字节改写全局安全策略。
+     */
+    RtlCopyMemory(&requestSnapshot, setRequest, sizeof(requestSnapshot));
+    setRequest = &requestSnapshot;
 
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,

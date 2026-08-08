@@ -88,6 +88,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_ALPC_PORT_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_ALPC_PORT_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0;
@@ -112,7 +114,14 @@ Return Value:
         return status;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端清零输出后
+     * 才读 processId/handleValue，不做快照就会去查一个错误进程的句柄。
+     */
     queryRequest = (KSWORD_ARK_QUERY_ALPC_PORT_REQUEST*)inputBuffer;
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
+
     status = KswordARKRetrieveRequiredOutputBuffer(
         Request,
         sizeof(KSWORD_ARK_QUERY_ALPC_PORT_RESPONSE),

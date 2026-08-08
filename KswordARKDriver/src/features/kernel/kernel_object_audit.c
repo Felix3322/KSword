@@ -772,6 +772,8 @@ Return Value:
 {
     KSWORD_ARK_ENUM_CID_TABLE_REQUEST* enumRequest = NULL;
     KSWORD_ARK_ENUM_CID_TABLE_REQUEST defaultRequest = { 0 };
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_ENUM_CID_TABLE_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
@@ -795,7 +797,13 @@ Return Value:
         return status;
     }
     if (hasInput) {
-        enumRequest = (KSWORD_ARK_ENUM_CID_TABLE_REQUEST*)inputBuffer;
+        /*
+         * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端会先写
+         * 响应头再读 flags/maxVisitCount 当遍历预算，不做快照就是拿响应
+         * 字节当预算用。
+         */
+        RtlCopyMemory(&requestSnapshot, inputBuffer, sizeof(requestSnapshot));
+        enumRequest = &requestSnapshot;
     }
     else {
         enumRequest = &defaultRequest;
@@ -844,6 +852,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_KERNEL_OBJECT_SUMMARY_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_KERNEL_OBJECT_SUMMARY_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -859,6 +869,12 @@ Return Value:
         KswordARKKernelObjectIoctlLog(Device, "Error", "R0 query-object-summary ioctl: input invalid, status=0x%08X.", (unsigned int)status);
         return status;
     }
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端写响应头后
+     * 才读 targetKind/targetId，不做快照就会去统计一个错误的对象类别。
+     */
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
     status = KswordARKRetrieveRequiredOutputBuffer(Request, sizeof(KSWORD_ARK_QUERY_KERNEL_OBJECT_SUMMARY_RESPONSE), &outputBuffer, &actualOutputLength);
     if (!NT_SUCCESS(status)) {
         KswordARKKernelObjectIoctlLog(Device, "Error", "R0 query-object-summary ioctl: output invalid, status=0x%08X.", (unsigned int)status);
@@ -892,6 +908,8 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_IPC_SUMMARY_REQUEST* queryRequest = NULL;
+    // requestSnapshot 在后端清零共用 SystemBuffer 前保存完整请求。
+    KSWORD_ARK_QUERY_IPC_SUMMARY_REQUEST requestSnapshot;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0U;
     size_t actualOutputLength = 0U;
@@ -907,6 +925,12 @@ Return Value:
         KswordARKKernelObjectIoctlLog(Device, "Error", "R0 query-ipc-summary ioctl: input invalid, status=0x%08X.", (unsigned int)status);
         return status;
     }
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；后端写响应头后
+     * 才读 processId，不做快照就会去统计一个错误进程的 IPC 对象。
+     */
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+    queryRequest = &requestSnapshot;
     status = KswordARKRetrieveRequiredOutputBuffer(Request, sizeof(KSWORD_ARK_QUERY_IPC_SUMMARY_RESPONSE), &outputBuffer, &actualOutputLength);
     if (!NT_SUCCESS(status)) {
         KswordARKKernelObjectIoctlLog(Device, "Error", "R0 query-ipc-summary ioctl: output invalid, status=0x%08X.", (unsigned int)status);

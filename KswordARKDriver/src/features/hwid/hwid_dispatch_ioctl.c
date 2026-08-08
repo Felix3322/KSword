@@ -489,6 +489,8 @@ KswordARKHwidIoctlControlDispatch(
     )
 {
     KSWORD_ARK_HWID_DISPATCH_CONTROL_REQUEST* controlRequest = NULL;
+    // requestSnapshot 在写响应前保存完整请求，响应与请求共用同一 SystemBuffer。
+    KSWORD_ARK_HWID_DISPATCH_CONTROL_REQUEST requestSnapshot;
     KSWORD_ARK_HWID_DISPATCH_RESPONSE* response = NULL;
     KSWORD_ARK_SAFETY_CONTEXT safetyContext;
     NTSTATUS status = STATUS_SUCCESS;
@@ -513,6 +515,13 @@ KswordARKHwidIoctlControlDispatch(
     if (!NT_SUCCESS(status)) {
         return status;
     }
+
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；KswordARKHwidFillResponseLocked
+     * 写完响应后本函数还要读 action 记日志，不做快照日志里就全是响应头字节。
+     */
+    RtlCopyMemory(&requestSnapshot, controlRequest, sizeof(requestSnapshot));
+    controlRequest = &requestSnapshot;
 
     status = KswordARKRetrieveRequiredOutputBuffer(Request, sizeof(*response), (PVOID*)&response, &actualOutputLength);
     if (!NT_SUCCESS(status)) {

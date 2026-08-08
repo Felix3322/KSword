@@ -255,6 +255,8 @@ KswordARKHvmIoctlEptRule(
     size_t actualOutputLength = 0U;
     NTSTATUS status = STATUS_SUCCESS;
     const KSWORD_ARK_HVM_EPT_RULE_REQUEST* ruleRequest = NULL;
+    /* requestSnapshot 在运行时清零共用 SystemBuffer 前保存完整请求。 */
+    KSWORD_ARK_HVM_EPT_RULE_REQUEST requestSnapshot;
     KSWORD_ARK_HVM_EPT_RULE_RESPONSE* ruleResponse = NULL;
 
     /* Reject an invalid completion contract before touching request buffers. */
@@ -305,9 +307,17 @@ KswordARKHvmIoctlEptRule(
             ? STATUS_BUFFER_TOO_SMALL
             : status;
     }
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；KswordARKHvmEptRuleControl
+     * 会先 RtlZeroMemory 响应再读 operation/GPA/权限位，不做快照就会按响应头
+     * 字节去改一条完全不相干的 EPT 规则。
+     */
+    RtlCopyMemory(
+        &requestSnapshot,
+        inputBuffer,
+        sizeof(requestSnapshot));
     /* Bind fixed protocol views after both buffers are validated. */
-    ruleRequest =
-        (const KSWORD_ARK_HVM_EPT_RULE_REQUEST*)inputBuffer;
+    ruleRequest = &requestSnapshot;
     /* Bind the fixed protocol output view. */
     ruleResponse =
         (KSWORD_ARK_HVM_EPT_RULE_RESPONSE*)outputBuffer;
