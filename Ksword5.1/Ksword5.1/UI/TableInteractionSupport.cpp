@@ -48,6 +48,11 @@
 #include <algorithm>
 #include <utility>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+
 namespace
 {
     using ks::ui::TableComparisonModel;
@@ -94,11 +99,25 @@ namespace
         return commitList;
     }
 
+    // isLeftCtrlHeldForMultiSelect 作用：
+    // - 返回左 Ctrl 键当前是否处于物理按下状态（Issue #149）；
+    // - 用户按住左 Ctrl 跨行多选时，任意表格刷新都应像右键菜单打开时一样进入缓存刷新，
+    //   否则周期刷新重建模型会清空多选、打断操作；
+    // - 只查询左 Ctrl，与需求“检测一次左Ctrl是否按下”保持一致，不拦截右 Ctrl。
+    bool isLeftCtrlHeldForMultiSelect()
+    {
+        return (::GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0;
+    }
+
     // isDeferredTableUiCommitBlocked 作用：
-    // - 返回一次延迟提交关联的任一表格/树是否仍处于菜单生命周期内；
-    // - 每次真正执行前重新检查，覆盖 flush 过程中同步打开新菜单的重入场景。
+    // - 返回一次延迟提交是否仍需继续缓存：任一表格/树处于菜单生命周期内，或左 Ctrl 仍按住；
+    // - 每次真正执行前重新检查，覆盖 flush 过程中同步打开新菜单或用户仍在多选的重入场景。
     bool isDeferredTableUiCommitBlocked(const DeferredTableUiCommit& pendingCommit)
     {
+        if (isLeftCtrlHeldForMultiSelect())
+        {
+            return true;
+        }
         return std::any_of(
             pendingCommit.itemViewList.cbegin(),
             pendingCommit.itemViewList.cend(),
@@ -168,6 +187,23 @@ namespace
         }
     }
 
+    // scheduleDeferredTableUiCommitFlush 作用：
+    // - 把一次 flush 排到外层事件循环，供左 Ctrl 松开后回投被合并的表格刷新；
+    // - 同一路径可能被连续触发，但 flush 后队列清空，重复调度自然收敛为空操作；
+    // - flush 内部逐项复查 isDeferredTableUiCommitBlocked，左 Ctrl 仍按住时不会误提交。
+    void scheduleDeferredTableUiCommitFlush()
+    {
+        if (qApp == nullptr)
+        {
+            flushDeferredTableUiCommits();
+            return;
+        }
+        QTimer::singleShot(0, qApp, []()
+            {
+                flushDeferredTableUiCommits();
+            });
+    }
+
     // scheduleItemViewContextMenuEnd 作用：
     // - 菜单 Hide 事件发生在 QMenu::exec 返回之前；
     // - 把减深度和回投一起排到外层事件循环，确保业务槽先完成旧行/节点动作；
@@ -204,8 +240,9 @@ namespace
     }
 
     // deferItemViewUiCommitIfNeeded 作用：
-    // - 任一目标表格/树菜单打开时，按 owner/key 覆盖旧提交，防止高频刷新积压；
-    // - 没有菜单打开时返回 false，调用方继续当前 UI 提交流程。
+    // - 任一目标表格/树菜单打开，或用户仍按住左 Ctrl 多选时（Issue #149），
+    //   按 owner/key 覆盖旧提交，防止高频刷新积压并清空多选；
+    // - 两者都不成立时返回 false，调用方继续当前 UI 提交流程。
     bool deferItemViewUiCommitIfNeeded(
         QObject* owner,
         const QString& commitKey,
@@ -230,8 +267,15 @@ namespace
             contextMenuOpen =
                 contextMenuOpen || isItemViewContextMenuOpen(itemView);
         }
-        if (!contextMenuOpen)
+        // 右键菜单打开或用户仍按住左 Ctrl 多选（Issue #149）时都缓存刷新。
+        if (!contextMenuOpen && !isLeftCtrlHeldForMultiSelect())
         {
+            // 无需缓存：若队列仍有左 Ctrl 期间积压的提交（如松开事件因失焦丢失），
+            // 借本次刷新兜底安排一次 flush，避免旧提交长期滞留。
+            if (!deferredTableUiCommits().isEmpty())
+            {
+                scheduleDeferredTableUiCommitFlush();
+            }
             return false;
         }
 
@@ -2339,6 +2383,17 @@ namespace
                 return QObject::eventFilter(watchedObject, eventObject);
             }
 
+            if (eventObject->type() == QEvent::KeyRelease)
+            {
+                // 多选结束标志：Ctrl 松开后安排回投被缓存的表格刷新（Issue #149）。
+                // 排到外层事件循环再由 flush 复查左 Ctrl 物理状态，右 Ctrl 单独松开不会误提交。
+                auto* keyEvent = static_cast<QKeyEvent*>(eventObject);
+                if (keyEvent->key() == Qt::Key_Control && !keyEvent->isAutoRepeat())
+                {
+                    scheduleDeferredTableUiCommitFlush();
+                }
+            }
+
             if (eventObject->type() == QEvent::Show)
             {
                 // shownMenu 用途：识别业务代码刚刚显示的右键菜单。
@@ -2606,6 +2661,11 @@ namespace ks::ui
     bool IsItemViewUiCommitBlockedByContextMenu(
         const QList<QAbstractItemView*>& itemViewList)
     {
+        // 左 Ctrl 多选期间对所有表格生效，无关具体视图（Issue #149）。
+        if (isLeftCtrlHeldForMultiSelect())
+        {
+            return true;
+        }
         return std::any_of(
             itemViewList.cbegin(),
             itemViewList.cend(),

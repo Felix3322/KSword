@@ -36,21 +36,23 @@ namespace ks::ui
 
     // IsTableUiCommitBlockedByContextMenu 作用：
     // - 输入：一次 UI 提交会修改的全部表格；
-    // - 返回：任一表格的右键菜单仍打开时为 true；
+    // - 返回：任一表格的右键菜单仍打开，或用户仍按住左 Ctrl 多选时为 true（Issue #149）；
     // - 供携带大型可移动快照的刷新入口先判断，避免正常刷新为延迟回调复制整份数据。
     bool IsTableUiCommitBlockedByContextMenu(
         const QList<QTableView*>& tableList);
 
     // IsItemViewUiCommitBlockedByContextMenu 作用：
     // - 与表格版本相同，但同时支持 QTreeView/QTreeWidget；
-    // - 用于设备树、句柄树等带业务右键菜单的异步重建入口。
+    // - 用于设备树、句柄树等带业务右键菜单的异步重建入口；
+    // - 左 Ctrl 多选进行中时对所有视图统一返回 true（Issue #149）。
     bool IsItemViewUiCommitBlockedByContextMenu(
         const QList<QAbstractItemView*>& itemViewList);
 
     // DeferTableUiCommitIfContextMenuOpen 作用：
     // - 输入：提交任务所有者、稳定去重键、会被重建的表格集合和 UI 提交函数；
-    // - 处理：任一表格的右键菜单打开时只保留同 owner/key 的最新提交，菜单关闭后回投；
-    // - 返回：true 表示本次提交已延后，false 表示当前没有右键菜单，调用方应立即提交。
+    // - 处理：任一表格右键菜单打开或左 Ctrl 多选进行中时只保留同 owner/key 的最新提交，
+    //   菜单关闭且左 Ctrl 松开后回投（Issue #149）；
+    // - 返回：true 表示本次提交已延后，false 表示无需缓存，调用方应立即提交。
     // 调用方法：刷新函数在修改模型前调用；返回 true 时立即结束本轮刷新。
     bool DeferTableUiCommitIfContextMenuOpen(
         QObject* owner,
@@ -59,7 +61,7 @@ namespace ks::ui
         std::function<void()> commitAction);
 
     // DeferItemViewUiCommitIfContextMenuOpen 作用：
-    // - 为 QTableView 与 QTreeView 提供同一菜单屏障与 owner/key latest-wins 语义；
+    // - 为 QTableView 与 QTreeView 提供同一菜单/左 Ctrl 屏障与 owner/key latest-wins 语义；
     // - 刷新函数必须在清空缓存、模型或 item 前调用，返回 true 时立即结束。
     bool DeferItemViewUiCommitIfContextMenuOpen(
         QObject* owner,
