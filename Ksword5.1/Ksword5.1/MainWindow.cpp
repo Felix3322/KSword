@@ -41,6 +41,7 @@
 #include <QPointF>
 #include <QPixmap>
 #include <QPointer>
+#include <QProgressBar>
 #include <QPropertyAnimation>
 #include <QRectF>
 #include <QResizeEvent>
@@ -137,6 +138,13 @@ namespace
     // - 定义用户拖拽后的 ADS 布局配置文件名；
     // - 文件落在 exe 同级 config 目录，便于发行包独立携带配置。
     constexpr const char* kDockLayoutConfigFileName = "ksword_ads_layout.bin";
+
+    // kLazyDockPlaceholderProgressBarObjectName / kLazyDockPlaceholderStageLabelObjectName 作用：
+    // - 懒加载占位页里进度条与阶段文案的稳定 objectName；
+    // - 占位页由 createDockPlaceholderWidget 建好后就交给了 ADS，
+    //   初始化各阶段只能靠 findChild 反查这两个控件，因此名字必须固定。
+    constexpr const char* kLazyDockPlaceholderProgressBarObjectName = "ksLazyDockProgressBar";
+    constexpr const char* kLazyDockPlaceholderStageLabelObjectName = "ksLazyDockStageLabel";
 
     // kKswordDockTabPropertyName 作用：
     // - 给 ADS 主 Dock 标签打动态属性，供最终兜底 QSS 精准选择；
@@ -639,6 +647,54 @@ namespace
             configureDockTabStyleSurface(autoHideTab, kKswordAutoHideTabPropertyName);
             applyDockTabTextColor(autoHideTab, autoHideTab->property("activeTab").toBool());
         }
+    }
+
+    // updateLazyDockPlaceholderProgress 作用：
+    // - 把懒加载各阶段的进度与文案刷到占位页的进度条上；
+    // - 页面构造独占 UI 线程期间事件循环不会转，普通 update() 排的重绘要等到
+    //   构造结束才会画（那时占位页已被替换，等于没显示过），因此这里必须
+    //   repaint() 立即出图；repaint 是同步绘制、不派发事件，
+    //   不存在 processEvents 那种把延迟初始化重入进来的风险。
+    // 入参 dockWidget：正在初始化的 Dock；为空或占位页不可见时静默返回。
+    // 入参 stageText：当前阶段文案，直接显示给用户。
+    // 入参 progressPercent：0~100 的进度值，越界会被钳制。
+    // 返回：无返回值。
+    void updateLazyDockPlaceholderProgress(
+        ads::CDockWidget* dockWidget,
+        const QString& stageText,
+        const int progressPercent)
+    {
+        if (dockWidget == nullptr)
+        {
+            return;
+        }
+
+        // placeholderWidget 用途：当前仍挂在 Dock 上的占位页；
+        // 真实内容挂载后这里拿到的就不再是占位页，findChild 自然查不到进度条。
+        QWidget* const placeholderWidget = dockWidget->widget();
+        if (placeholderWidget == nullptr || !placeholderWidget->isVisible())
+        {
+            return;
+        }
+
+        QProgressBar* const loadProgressBar = placeholderWidget->findChild<QProgressBar*>(
+            QString::fromLatin1(kLazyDockPlaceholderProgressBarObjectName));
+        QLabel* const stageLabel = placeholderWidget->findChild<QLabel*>(
+            QString::fromLatin1(kLazyDockPlaceholderStageLabelObjectName));
+        if (loadProgressBar == nullptr && stageLabel == nullptr)
+        {
+            return;
+        }
+
+        if (loadProgressBar != nullptr)
+        {
+            loadProgressBar->setValue(qBound(0, progressPercent, 100));
+        }
+        if (stageLabel != nullptr)
+        {
+            stageLabel->setText(stageText);
+        }
+        placeholderWidget->repaint();
     }
 
     bool isDockWidgetActiveForLazyInitialization(
@@ -8814,6 +8870,10 @@ QWidget* MainWindow::createDockPlaceholderWidget(const QString& titleText) const
     placeholderWidget->setObjectName(QStringLiteral("ksLazyDockPlaceholder_%1").arg(titleText));
     placeholderWidget->setAutoFillBackground(false);
     placeholderWidget->setAttribute(Qt::WA_StyledBackground, false);
+    // 进度条的槽与块必须在这里显式声明：
+    // - 上面的 QWidget{background:transparent !important} 会连 QProgressBar 一起命中，
+    //   不带 !important 的全局进度条基线样式会被它压掉，槽变成完全透明；
+    // - 因此这里用同等强度的 !important 重新指定槽色与块色，不依赖层叠顺序。
     placeholderWidget->setStyleSheet(
         QStringLiteral(
             "QWidget{"
@@ -8823,7 +8883,17 @@ QWidget* MainWindow::createDockPlaceholderWidget(const QString& titleText) const
             "QLabel{"
             "  background:transparent !important;"
             "  background-color:transparent !important;"
-            "}"));
+            "}"
+            "QProgressBar{"
+            "  background-color:%1 !important;"
+            "  border:none !important;"
+            "  border-radius:3px;"
+            "}"
+            "QProgressBar::chunk{"
+            "  background-color:%2 !important;"
+            "  border-radius:3px;"
+            "}")
+        .arg(KswordTheme::SurfaceMutedColorHex(), KswordTheme::ControlAccentHex()));
 
     auto* placeholderLayout = new QVBoxLayout(placeholderWidget);
     placeholderLayout->setContentsMargins(24, 24, 24, 24);
@@ -8840,6 +8910,31 @@ QWidget* MainWindow::createDockPlaceholderWidget(const QString& titleText) const
     hintLabel->setAlignment(Qt::AlignCenter);
     hintLabel->setStyleSheet(QStringLiteral("font-size:12px;color:%1;").arg(KswordTheme::TextSecondaryHex()));
     placeholderLayout->addWidget(hintLabel);
+
+    // 阶段文案与进度条：初始化各阶段由 updateLazyDockPlaceholderProgress 同步刷新。
+    // 首次创建时留空/归零，页面尚未开始加载，不该显示任何进度。
+    QLabel* stageLabel = new QLabel(placeholderWidget);
+    stageLabel->setObjectName(QString::fromLatin1(kLazyDockPlaceholderStageLabelObjectName));
+    stageLabel->setAlignment(Qt::AlignCenter);
+    stageLabel->setStyleSheet(QStringLiteral("font-size:12px;color:%1;").arg(KswordTheme::TextSecondaryHex()));
+    placeholderLayout->addSpacing(12);
+    placeholderLayout->addWidget(stageLabel);
+
+    // 进度条水平居中且不铺满整页：整行拉伸的进度条在宽 Dock 上观感很差。
+    auto* progressRowLayout = new QHBoxLayout();
+    progressRowLayout->setContentsMargins(0, 0, 0, 0);
+    QProgressBar* loadProgressBar = new QProgressBar(placeholderWidget);
+    loadProgressBar->setObjectName(QString::fromLatin1(kLazyDockPlaceholderProgressBarObjectName));
+    loadProgressBar->setRange(0, 100);
+    loadProgressBar->setValue(0);
+    loadProgressBar->setTextVisible(false);
+    loadProgressBar->setFixedHeight(6);
+    loadProgressBar->setFixedWidth(260);
+    progressRowLayout->addStretch(1);
+    progressRowLayout->addWidget(loadProgressBar);
+    progressRowLayout->addStretch(1);
+    placeholderLayout->addLayout(progressRowLayout);
+
     placeholderLayout->addStretch(1);
     return placeholderWidget;
 }
@@ -8872,21 +8967,24 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     const int progressPid = kPro.add(this, "页面", QStringLiteral("打开%1页").arg(dockTitleText).toStdString());
     kPro.set(progressPid, QStringLiteral("准备加载%1页").arg(dockTitleText).toStdString(), 0, 8.0f);
 
-    // 重页面的构造函数会独占 UI 线程几十到几百毫秒，期间连重绘都不会发生。
-    // 构造前先把当前挂着的占位页同步画出来（repaint 立即绘制，不进事件循环，
-    // 因此不存在 processEvents 的重入问题），用户等待时看到的才是“正在加载”，
+    // 重页面的构造函数会独占 UI 线程几十到几百毫秒，期间连重绘都不会发生，
+    // 所以进度必须在进入构造之前就同步画出来，用户等待时看到的才是“正在加载”，
     // 而不是上一页的残影。
-    if (QWidget* const mountedPlaceholderWidget = dockWidget->widget())
-    {
-        if (mountedPlaceholderWidget->isVisible())
-        {
-            mountedPlaceholderWidget->repaint();
-        }
-    }
+    updateLazyDockPlaceholderProgress(
+        dockWidget,
+        QStringLiteral("准备加载%1页").arg(dockTitleText),
+        8);
 
     const bool isNetworkDock = (dockKey == QStringLiteral("network"));
     const bool isKernelDock = (dockKey == QStringLiteral("kernel"));
     QWidget* realWidget = nullptr;
+
+    // 这一阶段的画面是用户实际盯着的那一帧：紧接着的页面构造会把 UI 线程占满，
+    // 期间进度条停在此处不动是真实情况，不做假动画去掩饰。
+    updateLazyDockPlaceholderProgress(
+        dockWidget,
+        QStringLiteral("正在创建%1页内容").arg(dockTitleText),
+        30);
 
     if (dockKey == QStringLiteral("process"))
     {
@@ -8994,6 +9092,9 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     if (realWidget == nullptr)
     {
         kPro.set(progressPid, QStringLiteral("%1页无需加载").arg(dockTitleText).toStdString(), 0, 100.0f);
+        // 这个 Dock 没有可加载的真实内容，占位页会一直留在界面上：
+        // 进度条必须归零并清空阶段文案，否则会永久停在 30%，看起来像卡死。
+        updateLazyDockPlaceholderProgress(dockWidget, QString(), 0);
         dockWidget->setProperty("ks_lazy_initializing", false);
         return;
     }
@@ -9037,6 +9138,12 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
     }
 
     kPro.set(progressPid, QStringLiteral("正在挂载%1页").arg(dockTitleText).toStdString(), 0, 72.0f);
+    // 占位页最后一次刷新：挂载真实内容后它就被 takeWidget 摘下并 deleteLater，
+    // 因此 100% 那一帧没有意义，不再往上刷。
+    updateLazyDockPlaceholderProgress(
+        dockWidget,
+        QStringLiteral("正在挂载%1页").arg(dockTitleText),
+        80);
     QWidget* oldWidget = dockWidget->takeWidget();
     dockWidget->setWidget(
         realWidget,
