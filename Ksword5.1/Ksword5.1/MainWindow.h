@@ -254,6 +254,13 @@ private:
     QWidget* createDockPlaceholderWidget(const QString& titleText) const;
     void ensureDockContentInitialized(ads::CDockWidget* dockWidget);
 
+    // applyMainWindowBackdropMaterial 作用：
+    // - 切换主窗口的 DWM 系统云母材质（Windows 11 22H2+）；
+    // - 穿透模式且未设置背景图时启用，让透明区域呈现云母质感；
+    // - 旧系统属性调用失败时静默降级为纯透明。
+    // 入参 enableBackdrop：true=启用云母材质，false=关闭。
+    void applyMainWindowBackdropMaterial(bool enableBackdrop);
+
     // configureDockWidgetPersistentIdentity 作用：
     // - 为每个 ADS Dock 设置稳定 objectName；
     // - ADS saveState/restoreState 依赖 objectName 匹配 Dock，不能依赖可变标题文本；
@@ -600,6 +607,7 @@ private:
     quint64 m_backgroundImageValidationGeneration = 0; // m_backgroundImageValidationGeneration：淘汰过期异步结果的代次。
     bool m_backgroundImageReady = false; // m_backgroundImageReady：当前路径是否已验证并成功解码。
     bool m_backgroundReadinessRefreshPending = false; // m_backgroundReadinessRefreshPending：异步结果是否要求重建视觉。
+    int m_backdropMaterialState = -1; // m_backdropMaterialState：云母材质三态缓存（-1 未初始化，0 关闭，1 启用）。
     StartupProgressCallback m_startupProgressCallback; // m_startupProgressCallback：主窗口启动阶段进度回调。
     bool m_startupWindowVisibilityAdjusted = false; // m_startupWindowVisibilityAdjusted：是否已完成首次显示区域修正。
     bool m_deferredDockInitializationStarted = false; // m_deferredDockInitializationStarted：是否已启动显示后补载流程。

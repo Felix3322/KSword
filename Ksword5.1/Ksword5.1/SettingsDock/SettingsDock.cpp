@@ -540,11 +540,11 @@ void SettingsDock::initializeAppearanceTab()
     m_backgroundOpacityValueLabel->setMinimumWidth(48);
     opacityLayout->addWidget(m_backgroundOpacityValueLabel);
 
-    // m_backgroundTransparencyCheckBox 作用：切换背景图片 alpha 透明区域是否穿透窗口显示桌面。
-    m_backgroundTransparencyCheckBox = new QCheckBox(QStringLiteral("背景图透明处显示桌面（重启后生效）"), backgroundGroupBox);
-    languageManager.bindText(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency"), QStringLiteral("背景图透明处显示桌面（重启后生效）"));
-    m_backgroundTransparencyCheckBox->setToolTip(QStringLiteral("勾选后，背景图片中透明的部分不再用底色填充，而是直接显示本窗口后面的桌面或其它窗口；需要使用带透明通道的图片（如 PNG），重启 Ksword 后生效。"));
-    languageManager.bindToolTip(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency.tooltip"), QStringLiteral("勾选后，背景图片中透明的部分不再用底色填充，而是直接显示本窗口后面的桌面或其它窗口；需要使用带透明通道的图片（如 PNG），重启 Ksword 后生效。"));
+    // m_backgroundTransparencyCheckBox 作用：切换窗口透明背景（背景图 alpha 穿透 / 无图云母材质）。
+    m_backgroundTransparencyCheckBox = new QCheckBox(QStringLiteral("透明窗口背景（重启后生效）"), backgroundGroupBox);
+    languageManager.bindText(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency"), QStringLiteral("透明窗口背景（重启后生效）"));
+    m_backgroundTransparencyCheckBox->setToolTip(QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口使用系统云母模糊材质（Windows 11），旧系统直接透出桌面。重启 Ksword 后生效。"));
+    languageManager.bindToolTip(m_backgroundTransparencyCheckBox, QStringLiteral("settings.background.transparency.tooltip"), QStringLiteral("勾选后窗口背景变为透明：设置了背景图时，图片中透明的部分（需要带透明通道的 PNG）直接显示后面的桌面；没有背景图时，窗口使用系统云母模糊材质（Windows 11），旧系统直接透出桌面。重启 Ksword 后生效。"));
     backgroundLayout->addWidget(m_backgroundTransparencyCheckBox);
 
     backgroundLayout->addLayout(opacityLayout);

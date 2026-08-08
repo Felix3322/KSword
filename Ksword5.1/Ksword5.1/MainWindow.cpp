@@ -2218,6 +2218,14 @@ namespace
     // - 传给 DWMWA_BORDER_COLOR 后表示“不绘制可见边框”；
     // - 保留阴影与缩放能力，仅移除闪白边线。
     constexpr DWORD kDwmColorNone = 0xFFFFFFFE;
+    // kDwmSystemBackdropTypeAttribute 作用：
+    // - DWMWA_SYSTEMBACKDROP_TYPE（Windows 11 22H2+）；
+    // - 控制窗口透明区域后方由 DWM 合成的系统材质。
+    constexpr DWORD kDwmSystemBackdropTypeAttribute = 38;
+    // kDwmSystemBackdropTypeNone / kDwmSystemBackdropTypeMica 作用：
+    // - DWMSBT_NONE=1 关闭系统材质；DWMSBT_MAINWINDOW=2 为云母（Mica）。
+    constexpr DWORD kDwmSystemBackdropTypeNone = 1;
+    constexpr DWORD kDwmSystemBackdropTypeMica = 2;
     // WDA_* 兼容常量：
     // - WDA_EXCLUDEFROMCAPTURE 在 Windows 10 20H2+ 支持，截图/录屏中直接隐藏窗口；
     // - WDA_MONITOR 是旧系统可用回退，截图/录屏中窗口区域显示为黑屏；
@@ -3409,6 +3417,11 @@ namespace
     // MainWindowBackgroundWidget 作用：
     // - 作为主窗口根容器的唯一背景绘制者；
     // - 每次绘制都按当前真实 rect 执行“居中、等比覆盖”，避免启动阶段预测窗口尺寸。
+    // kTranslucentTintAlpha 作用：
+    // - 穿透模式无背景图时主题着色层的不透明度（0~255）；
+    // - 数值越低云母/桌面透出越多，越高前景可读性越强。
+    constexpr int kTranslucentTintAlpha = 165;
+
     class MainWindowBackgroundWidget final : public QWidget
     {
     public:
@@ -3466,15 +3479,24 @@ namespace
                 painter.setClipRegion(event->region());
             }
 
-            // translucentPaint 用途：只有穿透模式且背景图可用时才留透明像素；
-            // 无图或透明度为零时回退为普通底色填充，避免整窗悬空。
-            const bool translucentPaint = m_translucentMode
-                && !m_sourceImage.isNull()
-                && m_imageOpacityPercent > 0;
-            if (translucentPaint)
+            // hasBackgroundImage 用途：穿透模式下区分两种绘制路径。
+            const bool hasBackgroundImage = !m_sourceImage.isNull() && m_imageOpacityPercent > 0;
+            if (m_translucentMode)
             {
                 painter.setCompositionMode(QPainter::CompositionMode_Source);
-                painter.fillRect(rect(), Qt::transparent);
+                if (hasBackgroundImage)
+                {
+                    // 有背景图：底色层完全透明，由图片自身 alpha 决定穿透程度。
+                    painter.fillRect(rect(), Qt::transparent);
+                }
+                else
+                {
+                    // 无背景图：画半透明主题着色层，透明部分交给 DWM 云母材质
+                    //（Windows 11）或直接透出桌面（旧系统），同时保证前景文字可读。
+                    QColor tintColor = m_baseColor;
+                    tintColor.setAlpha(kTranslucentTintAlpha);
+                    painter.fillRect(rect(), tintColor);
+                }
                 painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
             }
             else
@@ -4912,6 +4934,57 @@ void MainWindow::applyNativeWindowFrameVisualStyle()
             << std::dec
             << eol;
     }
+#endif
+}
+
+void MainWindow::applyMainWindowBackdropMaterial(const bool enableBackdrop)
+{
+#ifdef Q_OS_WIN
+    if (!testAttribute(Qt::WA_WState_Created))
+    {
+        return;
+    }
+    const HWND mainWindowHandle = reinterpret_cast<HWND>(winId());
+    if (mainWindowHandle == nullptr || ::IsWindow(mainWindowHandle) == FALSE)
+    {
+        return;
+    }
+    // m_backdropMaterialState 三态缓存：-1 未初始化，0/1 为上次应用状态。
+    if (m_backdropMaterialState == (enableBackdrop ? 1 : 0))
+    {
+        return;
+    }
+    m_backdropMaterialState = enableBackdrop ? 1 : 0;
+
+    // sheet-of-glass：把 DWM frame 扩展到整个客户区，云母材质才会在
+    // 客户区的透明像素处合成；关闭时恢复零边距。
+    const MARGINS frameMargins = enableBackdrop
+        ? MARGINS{ -1, -1, -1, -1 }
+        : MARGINS{ 0, 0, 0, 0 };
+    (void)::DwmExtendFrameIntoClientArea(mainWindowHandle, &frameMargins);
+
+    const DWORD backdropTypeValue = enableBackdrop
+        ? kDwmSystemBackdropTypeMica
+        : kDwmSystemBackdropTypeNone;
+    const HRESULT backdropResult = ::DwmSetWindowAttribute(
+        mainWindowHandle,
+        kDwmSystemBackdropTypeAttribute,
+        &backdropTypeValue,
+        sizeof(backdropTypeValue));
+
+    kLogEvent backdropEvent;
+    // Windows 10 不认识该属性返回 E_INVALIDARG：透明着色层直接叠在桌面上，
+    // 仍满足“无背景图也透明”，只是没有云母模糊质感。
+    info << backdropEvent
+        << "[MainWindow] 系统云母材质切换, enabled="
+        << (enableBackdrop ? "true" : "false")
+        << ", hr=0x"
+        << std::hex
+        << static_cast<unsigned long>(backdropResult)
+        << std::dec
+        << eol;
+#else
+    Q_UNUSED(enableBackdrop);
 #endif
 }
 
@@ -10326,6 +10399,8 @@ void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
     // translucencyActive 用途：窗口在启动时按配置声明了 per-pixel 透明；
     // 此时底色层交给根容器按穿透模式绘制，主窗口自身不再填充不透明背景。
     const bool translucencyActive = testAttribute(Qt::WA_TranslucentBackground);
+    // 无背景图时启用系统云母材质补足质感；有背景图时关闭材质保持直透桌面。
+    applyMainWindowBackdropMaterial(translucencyActive && sourceImage == nullptr);
     if (m_mainRootContainer != nullptr)
     {
         auto* backgroundWidget = static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer);
