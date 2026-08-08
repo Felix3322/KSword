@@ -420,7 +420,17 @@ KswordArkCallbackAskUserDecision(
     }
     *decisionOut = KSWORD_ARK_DECISION_ALLOW;
 
-    if (runtime == NULL || runtime->WaitQueue == WDF_NO_HANDLE) {
+    if (runtime == NULL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    // 降级启动可能让 AskUser 队列缺席；此时 Ask 规则必须回落到自身默认决策，
+    // 而不是把一个未初始化的裁决交给调用方。
+    if (runtime->WaitQueue == WDF_NO_HANDLE) {
+        *decisionOut = eventInput->Match.AskDefaultDecision;
+        if (*decisionOut != KSWORD_ARK_DECISION_DENY) {
+            *decisionOut = KSWORD_ARK_DECISION_ALLOW;
+        }
         return STATUS_INVALID_DEVICE_STATE;
     }
 

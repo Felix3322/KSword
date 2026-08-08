@@ -4098,6 +4098,51 @@ private:
                 : KswordTheme::WarningAccentColor().name()));
     }
 
+    // describeDegradedCallbacks 列出本机上注册失败的内核回调。
+    // 驱动在这些情况下仍然正常加载，因此界面必须能说明"哪一项能力缺失、
+    // 原始 NTSTATUS 是多少"，而不是让用户以为规则失效是软件出错。
+    QString describeDegradedCallbacks(const KSWORD_ARK_CALLBACK_RUNTIME_STATE& runtimeState) const
+    {
+        const auto appendItem = [](QStringList& itemList, const QString& capabilityText, const long statusValue) {
+            if (statusValue == 0)
+            {
+                return;
+            }
+            itemList.append(
+                kernelText("kernel.callback.intercept.runtime.degraded_item", QStringLiteral("%1（status=0x%2）"))
+                .arg(capabilityText)
+                .arg(static_cast<unsigned long>(statusValue), 8, 16, QLatin1Char('0')));
+        };
+
+        QStringList degradedItems;
+        appendItem(
+            degradedItems,
+            kernelText("kernel.callback.intercept.runtime.capability.ask_user", QStringLiteral("用户询问队列")),
+            runtimeState.waitQueueStatus);
+        appendItem(
+            degradedItems,
+            kernelText("kernel.callback.intercept.runtime.capability.registry", QStringLiteral("注册表回调")),
+            runtimeState.registryCallbackStatus);
+        appendItem(
+            degradedItems,
+            kernelText("kernel.callback.intercept.runtime.capability.process", QStringLiteral("进程回调")),
+            runtimeState.processCallbackStatus);
+        appendItem(
+            degradedItems,
+            kernelText("kernel.callback.intercept.runtime.capability.thread", QStringLiteral("线程回调")),
+            runtimeState.threadCallbackStatus);
+        appendItem(
+            degradedItems,
+            kernelText("kernel.callback.intercept.runtime.capability.image", QStringLiteral("映像加载回调")),
+            runtimeState.imageCallbackStatus);
+        appendItem(
+            degradedItems,
+            kernelText("kernel.callback.intercept.runtime.capability.object", QStringLiteral("对象句柄回调")),
+            runtimeState.objectCallbackStatus);
+
+        return degradedItems.join(QStringLiteral("、"));
+    }
+
     bool queryRuntimeState(KSWORD_ARK_CALLBACK_RUNTIME_STATE* runtimeStateOut, QString* errorTextOut) const
     {
         if (runtimeStateOut == nullptr)
@@ -4152,6 +4197,18 @@ private:
             .arg(m_runtimeState.ruleCount)
             .arg(m_runtimeState.pendingDecisionCount)
             .arg(m_runtimeState.waitingReceiverCount));
+
+        // 少数机器上会因 altitude 冲突或回调槽位耗尽而缺少某几类回调，
+        // 驱动照常加载，这里把缺失项和原始状态明确告知用户。
+        const QString degradedText = describeDegradedCallbacks(m_runtimeState);
+        if (!degradedText.isEmpty())
+        {
+            appendAppLog(
+                kernelText(
+                    "kernel.callback.intercept.runtime.degraded",
+                    QStringLiteral("本机以降级模式运行，以下内核回调不可用：%1。KSword 其余功能不受影响。"))
+                .arg(degradedText));
+        }
         updateStatusLabel();
     }
 

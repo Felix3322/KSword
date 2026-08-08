@@ -46,6 +46,12 @@ KswordARKDriverCreateControlDevice(
     _Out_opt_ WDFDEVICE* DeviceOut
     );
 
+// 控制设备创建与发布分开：全部运行时初始化完成后才允许用户态打开设备。
+VOID
+KswordARKDriverPublishControlDevice(
+    _In_ WDFDEVICE Device
+    );
+
 // Function to select the device's USB configuration and get a WDFUSBDEVICE
 // handle.
 EVT_WDF_DEVICE_PREPARE_HARDWARE KswordARKDriverEvtDevicePrepareHardware;

@@ -804,6 +804,14 @@ KswordArkCallbackQueryRuntimeState(
     runtimeStateOut->pendingDecisionCount = KswordArkCallbackGetPendingDecisionCount();
     runtimeStateOut->waitingReceiverCount = KswordArkCallbackGetWaitingRequestCount();
 
+    // 降级启动后逐项回传原始注册状态，让 R3 能解释缺失的能力。
+    runtimeStateOut->waitQueueStatus = (long)runtime->WaitQueueStatus;
+    runtimeStateOut->registryCallbackStatus = (long)runtime->RegistryRegisterStatus;
+    runtimeStateOut->processCallbackStatus = (long)runtime->ProcessRegisterStatus;
+    runtimeStateOut->threadCallbackStatus = (long)runtime->ThreadRegisterStatus;
+    runtimeStateOut->imageCallbackStatus = (long)runtime->ImageRegisterStatus;
+    runtimeStateOut->objectCallbackStatus = (long)runtime->ObjectRegisterStatus;
+
     snapshot = KswordArkCallbackAcquireSnapshot();
     if (snapshot == NULL) {
         return;

@@ -56,9 +56,25 @@ Return Value:
     WDF_OBJECT_ATTRIBUTES attributes;
     WDFDRIVER driverHandle = WDF_NO_HANDLE;
     WDFDEVICE controlDevice = WDF_NO_HANDLE;
+    ULONG osBuildNumber = 0UL;
 
     // Initialize WPP tracing as soon as possible.
     WPP_INIT_TRACING(DriverObject, RegistryPath);
+    // 第一条 breadcrumb 必须先于任何可能失败的初始化，否则无法区分
+    // “驱动根本没进 DriverEntry（签名/CI/导入/KMDF 绑定）”和“进来后某一步失败”。
+    KswordArkStartupBreadcrumbInitialize(DriverObject, RegistryPath);
+
+    // INF 声明的最低系统是 10.0.16299；更低的系统直接给出确定的不支持状态，
+    // 而不是让后续内核回调注册产生一个无从解释的通用失败码。
+    KswordArkStartupStage(KswordArkStartStageOsVersionCheck);
+    osBuildNumber = KswordArkStartupGetOsBuildNumber();
+    if (osBuildNumber != 0UL && osBuildNumber < KSWORD_ARK_MINIMUM_SUPPORTED_OS_BUILD) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER,
+            "Unsupported OS build %lu, KswordARK requires 16299 or newer", osBuildNumber);
+        WPP_CLEANUP(DriverObject);
+        return KswordArkStartupFailure(KswordArkStartStageOsVersionCheck, STATUS_NOT_SUPPORTED);
+    }
+
     KswordARKCapabilityInitialize();
     KswordARKTrustInitialize();
     KswordARKSafetyInitialize();
@@ -119,6 +135,7 @@ Return Value:
     config.DriverInitFlags = WdfDriverInitNonPnpDriver;
     config.EvtDriverUnload = KswordARKDriverEvtDriverUnload;
 
+    KswordArkStartupStage(KswordArkStartStageWdfDriverCreate);
     status = WdfDriverCreate(
         DriverObject,
         RegistryPath,
@@ -144,9 +161,11 @@ Return Value:
         // DriverEntry 失败时关闭 APC 接收状态，保持初始化与退出路径对称。
         KswordARKThreadApcUninitialize();
         WPP_CLEANUP(DriverObject);
-        return status;
+        return KswordArkStartupFailure(KswordArkStartStageWdfDriverCreate, status);
     }
 
+    // 控制设备的内部阶段由 KswordARKDriverCreateControlDevice 自己登记，
+    // 失败时它已经写好 breadcrumb，这里只做资源回滚。
     status = KswordARKDriverCreateControlDevice(driverHandle, &controlDevice);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKDriverCreateControlDevice failed %!STATUS!", status);
@@ -170,29 +189,16 @@ Return Value:
         return status;
     }
 
+    // 内核回调是可选能力，不再是整个驱动的加载门槛：某台机器上的 altitude
+    // 冲突、回调槽位耗尽或资源不足只会关闭对应能力，KSword 的驱动、进程、
+    // 线程、内存、句柄、内核审计等其它功能仍然可用。
     status = KswordARKCallbackInitialize(controlDevice);
     if (!NT_SUCCESS(status)) {
-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "KswordARKCallbackInitialize failed %!STATUS!", status);
-        WdfObjectDelete(controlDevice);
-        // 回调初始化回滚必须同时撤销可能的系统变速维护对象。
-        /* Callback rollback also tears down optional RXPF state first. */
-        KswRxpfRuntimeUninitialize();
-        KswordARKPlatformAuditUninitialize();
-        KswordARKSystemTimeUninitialize();
-        // 中文说明：回调初始化失败返回前撤销通信控制状态。
-        // 对称恢复仍由映像事务拥有的字段和加载器链。
-        KswordARKDriverImageUninitialize();
-        KswordARKDriverDispatchUninitialize();
-        KswordARKDriverCommunicationUninitialize();
-        // Release any explicit HVM resources before returning initialization failure.
-        KswordARKHvmUninitialize();
-        // Release the boot-captured IDT table on callback initialization rollback.
-        KswordARKIdtBaselineUninitialize();
-        // 初始化回滚必须排空潜在并发请求，防止失败返回后遗留回调。
-        KswordARKThreadApcUninitialize();
-        WPP_CLEANUP(DriverObject);
-        return status;
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER,
+            "KswordARKCallbackInitialize degraded %!STATUS!", status);
     }
+    // 把实际注册成功的回调能力写进 breadcrumb，用户报告缺功能时可直接对照。
+    KswordArkStartupNoteCallbackMask(KswordARKCallbackGetRegisteredMask());
 
     status = KswordARKRedirectInitialize(DriverObject, controlDevice);
     if (!NT_SUCCESS(status)) {
@@ -214,6 +220,12 @@ Return Value:
     (void)KswordARKBugcheckInitialize(DriverObject, controlDevice);
     KswordARKBugcheckGuardInitialize();
 
+    // 所有运行时都已建立后才让控制设备对用户态可见。
+    KswordArkStartupStage(KswordArkStartStageControlDevicePublish);
+    KswordARKDriverPublishControlDevice(controlDevice);
+
+    // 终态记录会覆盖上一次启动留下的失败记录。
+    KswordArkStartupReady();
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
     return STATUS_SUCCESS;
 }

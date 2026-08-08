@@ -16,6 +16,7 @@ Environment:
 
 #include "callback_internal.h"
 #include "ark/ark_push_lock.h"
+#include "ark/ark_startup.h"
 
 NTSYSAPI
 PCHAR
@@ -79,12 +80,13 @@ KswordArkAllocateNonPaged(
 }
 
 VOID
-KswordArkCallbackLogFrame(
+KswordArkCallbackLogFrameForRuntime(
+    _In_opt_ KSWORD_ARK_CALLBACK_RUNTIME* runtime,
     _In_z_ PCSTR levelText,
     _In_z_ PCSTR messageText
     )
 {
-    KSWORD_ARK_CALLBACK_RUNTIME* runtime = KswordArkCallbackGetRuntime();
+    // 调用方在初始化阶段持有正在构建的 runtime，此时全局发布尚未发生。
     if (runtime == NULL || runtime->Device == WDF_NO_HANDLE) {
         return;
     }
@@ -93,6 +95,39 @@ KswordArkCallbackLogFrame(
         runtime->Device,
         levelText != NULL ? levelText : "Info",
         messageText != NULL ? messageText : "");
+}
+
+VOID
+KswordArkCallbackLogFormatForRuntime(
+    _In_opt_ KSWORD_ARK_CALLBACK_RUNTIME* runtime,
+    _In_z_ PCSTR levelText,
+    _In_z_ _Printf_format_string_ PCSTR formatText,
+    ...
+    )
+{
+    CHAR logBuffer[KSWORD_ARK_LOG_ENTRY_MAX_BYTES] = { 0 };
+    va_list argList;
+
+    if (formatText == NULL) {
+        KswordArkCallbackLogFrameForRuntime(runtime, levelText, "");
+        return;
+    }
+
+    va_start(argList, formatText);
+    (VOID)RtlStringCbVPrintfA(logBuffer, sizeof(logBuffer), formatText, argList);
+    va_end(argList);
+
+    KswordArkCallbackLogFrameForRuntime(runtime, levelText, logBuffer);
+}
+
+VOID
+KswordArkCallbackLogFrame(
+    _In_z_ PCSTR levelText,
+    _In_z_ PCSTR messageText
+    )
+{
+    // 稳态路径继续使用全局 runtime；启动期调用方必须改用 ForRuntime 版本。
+    KswordArkCallbackLogFrameForRuntime(KswordArkCallbackGetRuntime(), levelText, messageText);
 }
 
 VOID
@@ -307,11 +342,23 @@ KswordArkCallbackDestroyRuntime(
     (VOID)InterlockedExchange(&runtime->Stopping, 1L);
     (VOID)KswordArkCallbackCancelAllPendingForRuntime(runtime);
     KswordArkMinifilterCallbackUnregister(runtime);
-    KswordArkObjectCallbackUnregister(runtime);
-    KswordArkImageCallbackUnregister(runtime);
-    KswordArkThreadCallbackUnregister(runtime);
-    KswordArkProcessCallbackUnregister(runtime);
-    KswordArkRegistryCallbackUnregister(runtime);
+    // 只反注册真正注册成功的回调；降级启动时未注册的项必须原样跳过，
+    // 否则会对内核发出一次注定失败的注销调用。
+    if ((runtime->RegisteredCallbacksMask & KSWORD_ARK_CALLBACK_REGISTERED_OBJECT) != 0U) {
+        KswordArkObjectCallbackUnregister(runtime);
+    }
+    if ((runtime->RegisteredCallbacksMask & KSWORD_ARK_CALLBACK_REGISTERED_IMAGE) != 0U) {
+        KswordArkImageCallbackUnregister(runtime);
+    }
+    if ((runtime->RegisteredCallbacksMask & KSWORD_ARK_CALLBACK_REGISTERED_THREAD) != 0U) {
+        KswordArkThreadCallbackUnregister(runtime);
+    }
+    if ((runtime->RegisteredCallbacksMask & KSWORD_ARK_CALLBACK_REGISTERED_PROCESS) != 0U) {
+        KswordArkProcessCallbackUnregister(runtime);
+    }
+    if ((runtime->RegisteredCallbacksMask & KSWORD_ARK_CALLBACK_REGISTERED_REGISTRY) != 0U) {
+        KswordArkRegistryCallbackUnregister(runtime);
+    }
     KswordArkCallbackWaiterUninitialize(runtime);
 
     KswordARKAcquirePushLockExclusive(&runtime->SnapshotLock);
@@ -327,12 +374,103 @@ KswordArkCallbackDestroyRuntime(
     ExFreePoolWithTag(runtime, KSWORD_ARK_CALLBACK_TAG_RUNTIME);
 }
 
+static NTSTATUS
+KswordArkCallbackRegisterOne(
+    _In_ KSWORD_ARK_CALLBACK_RUNTIME* runtime,
+    _In_ ULONG capabilityBit,
+    _In_z_ PCSTR capabilityName,
+    _In_ NTSTATUS registerStatus
+    )
+/*++
+
+Routine Description:
+
+    Fold one callback registration result into the runtime. Success sets the
+    capability bit; failure only records the raw NTSTATUS and leaves the bit
+    clear, so a single unavailable kernel callback can no longer take the whole
+    driver down with it.
+
+Arguments:
+
+    runtime - Runtime being built. It is not published yet.
+    capabilityBit - KSWORD_ARK_CALLBACK_REGISTERED_* bit for this callback.
+    capabilityName - Short name used in the R3-visible log line.
+    registerStatus - Raw NTSTATUS returned by the registration API.
+
+Return Value:
+
+    The registerStatus argument, unmodified.
+
+--*/
+{
+    if (NT_SUCCESS(registerStatus)) {
+        runtime->RegisteredCallbacksMask |= capabilityBit;
+        return registerStatus;
+    }
+
+    // 常见原因：altitude 冲突、回调槽位已满、资源不足或重复注册。
+    KswordArkCallbackLogFormatForRuntime(
+        runtime,
+        "Warn",
+        "%s callback unavailable, status=0x%08lX. Driver continues without this capability.",
+        capabilityName,
+        (unsigned long)registerStatus);
+    return registerStatus;
+}
+
+ULONG
+KswordARKCallbackGetRegisteredMask(
+    VOID
+    )
+/*++
+
+Routine Description:
+
+    Report which callback capabilities are currently registered. DriverEntry
+    persists this into the startup breadcrumb so a degraded start is visible
+    without querying the driver.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    KSWORD_ARK_CALLBACK_REGISTERED_* bitmask, or zero when no runtime exists.
+
+--*/
+{
+    KSWORD_ARK_CALLBACK_RUNTIME* runtime = KswordArkCallbackGetRuntime();
+    return (runtime != NULL) ? runtime->RegisteredCallbacksMask : 0UL;
+}
+
 NTSTATUS
 KswordARKCallbackInitialize(
     _In_ WDFDEVICE Device
     )
+/*++
+
+Routine Description:
+
+    Build and publish the callback runtime. Every kernel callback here is an
+    optional capability: registration failures are recorded and the affected
+    feature is disabled, but the runtime is still published so the rest of the
+    driver keeps working.
+
+Arguments:
+
+    Device - Control device that owns the runtime and its log channel.
+
+Return Value:
+
+    STATUS_SUCCESS when every callback registered. The first registration
+    failure otherwise, purely as a diagnostic signal — the caller must treat a
+    failure status as "degraded", not as a reason to fail the load.
+
+--*/
 {
     KSWORD_ARK_CALLBACK_RUNTIME* runtime = NULL;
+    NTSTATUS firstFailureStatus = STATUS_SUCCESS;
     NTSTATUS status = STATUS_SUCCESS;
 
     if (Device == WDF_NO_HANDLE) {
@@ -345,11 +483,13 @@ KswordARKCallbackInitialize(
         return STATUS_SUCCESS;
     }
 
+    KswordArkStartupStage(KswordArkStartStageCallbackRuntimeAllocate);
     runtime = (KSWORD_ARK_CALLBACK_RUNTIME*)KswordArkAllocateNonPaged(
         sizeof(KSWORD_ARK_CALLBACK_RUNTIME),
         KSWORD_ARK_CALLBACK_TAG_RUNTIME);
     if (runtime == NULL) {
         KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
+        // 运行时分配失败同样只关闭回调模块；核心驱动仍然继续加载。
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -372,74 +512,73 @@ KswordARKCallbackInitialize(
     ExInitializePushLock(&runtime->MiniFilterBypassPidLock);
     InitializeListHead(&runtime->PendingDecisionList);
 
+    // AskUser 等待队列失败只关闭"询问用户"能力，其余回调照常注册。
+    KswordArkStartupStage(KswordArkStartStageCallbackWaitQueue);
     status = KswordArkCallbackWaiterInitialize(runtime);
+    runtime->WaitQueueStatus = status;
     if (!NT_SUCCESS(status)) {
-        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
-        KswordArkCallbackDestroyRuntime(runtime);
-        return status;
+        KswordArkCallbackLogFormatForRuntime(
+            runtime,
+            "Warn",
+            "AskUser wait queue unavailable, status=0x%08lX. Ask rules fall back to their default decision.",
+            (unsigned long)status);
+        firstFailureStatus = status;
     }
 
-    status = KswordArkRegistryCallbackRegister(runtime);
-    if (NT_SUCCESS(status)) {
-        runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_REGISTRY;
-    }
-    else {
-        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
-        KswordArkCallbackDestroyRuntime(runtime);
-        return status;
-    }
-
-    status = KswordArkProcessCallbackRegister(runtime);
-    if (NT_SUCCESS(status)) {
-        runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_PROCESS;
-    }
-    else {
-        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
-        KswordArkCallbackDestroyRuntime(runtime);
-        return status;
+    // 注册表回调使用固定 altitude 385201.5141，同 altitude 的另一实例会让它
+    // 返回 STATUS_FLT_INSTANCE_ALTITUDE_COLLISION。
+    KswordArkStartupStage(KswordArkStartStageRegistryCallback);
+    runtime->RegistryRegisterStatus = KswordArkCallbackRegisterOne(
+        runtime,
+        KSWORD_ARK_CALLBACK_REGISTERED_REGISTRY,
+        "Registry",
+        KswordArkRegistryCallbackRegister(runtime));
+    if (!NT_SUCCESS(runtime->RegistryRegisterStatus) && NT_SUCCESS(firstFailureStatus)) {
+        firstFailureStatus = runtime->RegistryRegisterStatus;
     }
 
-    status = KswordArkThreadCallbackRegister(runtime);
-    if (NT_SUCCESS(status)) {
-        runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_THREAD;
-    }
-    else {
-        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
-        KswordArkCallbackDestroyRuntime(runtime);
-        return status;
-    }
-
-    status = KswordArkImageCallbackRegister(runtime);
-    if (NT_SUCCESS(status)) {
-        runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_IMAGE;
-    }
-    else {
-        KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
-        KswordArkCallbackDestroyRuntime(runtime);
-        return status;
+    // 进程创建回调在重复注册或系统回调数量达上限时返回 STATUS_INVALID_PARAMETER。
+    KswordArkStartupStage(KswordArkStartStageProcessCallback);
+    runtime->ProcessRegisterStatus = KswordArkCallbackRegisterOne(
+        runtime,
+        KSWORD_ARK_CALLBACK_REGISTERED_PROCESS,
+        "Process",
+        KswordArkProcessCallbackRegister(runtime));
+    if (!NT_SUCCESS(runtime->ProcessRegisterStatus) && NT_SUCCESS(firstFailureStatus)) {
+        firstFailureStatus = runtime->ProcessRegisterStatus;
     }
 
-    status = KswordArkObjectCallbackRegister(runtime);
-    if (NT_SUCCESS(status)) {
-        runtime->RegisteredCallbacksMask |= KSWORD_ARK_CALLBACK_REGISTERED_OBJECT;
+    KswordArkStartupStage(KswordArkStartStageThreadCallback);
+    runtime->ThreadRegisterStatus = KswordArkCallbackRegisterOne(
+        runtime,
+        KSWORD_ARK_CALLBACK_REGISTERED_THREAD,
+        "Thread",
+        KswordArkThreadCallbackRegister(runtime));
+    if (!NT_SUCCESS(runtime->ThreadRegisterStatus) && NT_SUCCESS(firstFailureStatus)) {
+        firstFailureStatus = runtime->ThreadRegisterStatus;
     }
-    else {
-        // Degrade gracefully when object callback registration is denied.
-        // Typical case: ObRegisterCallbacks returns STATUS_ACCESS_DENIED due
-        // integrity/signing constraints. Keep driver alive without object callbacks.
-        if (status == STATUS_ACCESS_DENIED || status == STATUS_INVALID_IMAGE_HASH) {
-            KswordArkCallbackLogFormat(
-                "Warn",
-                "Object callback registration skipped, status=0x%08lX. "
-                "Driver continues without object callback feature.",
-                (unsigned long)status);
-            status = STATUS_SUCCESS;
-        }
-        else {
-            KswordARKReleasePushLockExclusive(&g_KswordArkCallbackRuntimeLock);
-            KswordArkCallbackDestroyRuntime(runtime);
-            return status;
-        }
+
+    // 映像加载回调全系统最多 64 个；装有多套 EDR/反作弊的机器会先耗尽槽位。
+    KswordArkStartupStage(KswordArkStartStageImageCallback);
+    runtime->ImageRegisterStatus = KswordArkCallbackRegisterOne(
+        runtime,
+        KSWORD_ARK_CALLBACK_REGISTERED_IMAGE,
+        "Image",
+        KswordArkImageCallbackRegister(runtime));
+    if (!NT_SUCCESS(runtime->ImageRegisterStatus) && NT_SUCCESS(firstFailureStatus)) {
+        firstFailureStatus = runtime->ImageRegisterStatus;
+    }
+
+    // 对象回调使用固定 altitude 385201.5142，冲突、资源不足和参数错误
+    // 现在与 STATUS_ACCESS_DENIED 一样只降级，不再区别对待。
+    KswordArkStartupStage(KswordArkStartStageObjectCallback);
+    runtime->ObjectRegisterStatus = KswordArkCallbackRegisterOne(
+        runtime,
+        KSWORD_ARK_CALLBACK_REGISTERED_OBJECT,
+        "Object",
+        KswordArkObjectCallbackRegister(runtime));
+    if (!NT_SUCCESS(runtime->ObjectRegisterStatus) && NT_SUCCESS(firstFailureStatus)) {
+        firstFailureStatus = runtime->ObjectRegisterStatus;
     }
 
     runtime->Initialized = TRUE;
@@ -448,9 +587,10 @@ KswordARKCallbackInitialize(
 
     KswordArkCallbackLogFormat(
         "Info",
-        "Callback runtime initialized, registeredMask=0x%08lX.",
-        (unsigned long)runtime->RegisteredCallbacksMask);
-    return STATUS_SUCCESS;
+        "Callback runtime initialized, registeredMask=0x%08lX, firstFailure=0x%08lX.",
+        (unsigned long)runtime->RegisteredCallbacksMask,
+        (unsigned long)firstFailureStatus);
+    return firstFailureStatus;
 }
 
 VOID

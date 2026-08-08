@@ -352,7 +352,8 @@ KswordArkRegistryCallbackRegister(
         &runtime->RegistryCookie,
         NULL);
     if (NT_SUCCESS(status)) {
-        KswordArkCallbackLogFrame("Info", "Registry callback registered.");
+        // 注册期全局 runtime 尚未发布，必须用显式 runtime 版本写日志。
+        KswordArkCallbackLogFrameForRuntime(runtime, "Info", "Registry callback registered.");
     }
     return status;
 }

@@ -486,6 +486,7 @@
     "process.action.terminate_delete_image.type_prompt": "Type %1 to confirm ending the process and permanently deleting its image file:"
   },
   "context_translations": {
+    "kernel.callback.remove.confirm": "About to remove a kernel callback at the address you typed in.\n\nClass: %1\nAddress: 0x%2\n\nYou typed this address by hand; this page has no enumerated source or trust data to cross-check it against.\nThis modifies kernel callback registration and may affect system stability. Continue?",
     "file.detail.view.structured": "Structured",
     "file.detail.view.plain_text": "Raw text",
     "file.detail.view.tooltip": "Structured view puts each field on its own row for reading and copying one at a time; raw text keeps the full report for full-text search and copying it all at once",
@@ -4428,6 +4429,9 @@
     "settings.background.translucency_material.acrylic": "Acrylic blur (richer look, may affect hover)"
   },
   "source_translations": {
+    "即将按手工填写的地址移除内核回调。\n\n": "About to remove a kernel callback at the address you typed in.\n\n",
+    "地址：0x%2\n\n": "Address: 0x%2\n\n",
+    "该地址由你手工输入，本页没有枚举行的来源与可信信息可供交叉核对。\n": "You typed this address by hand; this page has no enumerated source or trust data to cross-check it against.\n",
     "结构视图": "Structured",
     "原始文本": "Raw text",
     "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制": "Structured view puts each field on its own row for reading and copying one at a time; raw text keeps the full report for full-text search and copying it all at once",

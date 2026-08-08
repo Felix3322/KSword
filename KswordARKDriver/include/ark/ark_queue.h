@@ -16,7 +16,8 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(QUEUE_CONTEXT, QueueGetContext)
 
 NTSTATUS
 KswordARKDriverQueueInitialize(
-    _In_ WDFDEVICE Device
+    _In_ WDFDEVICE Device,
+    _In_ BOOLEAN PowerManaged
     );
 
 // Events from the IoQueue object

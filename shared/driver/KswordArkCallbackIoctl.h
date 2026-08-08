@@ -539,6 +539,17 @@ typedef struct _KSWORD_ARK_CALLBACK_RUNTIME_STATE
 
     unsigned long long appliedRuleVersion;
     unsigned long long appliedAtUtc100ns;
+
+    // Raw NTSTATUS of each callback registration attempt. A driver that starts
+    // in degraded mode keeps running with some of these set to a failure code,
+    // so R3 can tell "capability disabled on this machine" apart from "driver
+    // not loaded". Zero means the callback registered normally.
+    long waitQueueStatus;
+    long registryCallbackStatus;
+    long processCallbackStatus;
+    long threadCallbackStatus;
+    long imageCallbackStatus;
+    long objectCallbackStatus;
 } KSWORD_ARK_CALLBACK_RUNTIME_STATE;
 
 typedef struct _KSWORD_ARK_MINIFILTER_BYPASS_PID_REQUEST

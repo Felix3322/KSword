@@ -154,6 +154,7 @@
     <ClCompile Include="src\framework\device_control.c" />
     <ClCompile Include="src\framework\driver_entry.c" />
     <ClCompile Include="src\framework\io_queue.c" />
+    <ClCompile Include="src\framework\startup_breadcrumb.c" />
     <ClCompile Include="src\platform\process_resolver.c" />
     <ClCompile Include="src\platform\token_layout_resolver.c" />
     <ClCompile Include="src\platform\dyndata_fallback_resolver.c" />
@@ -270,6 +271,8 @@
     <ClInclude Include="Driver.h" />
     <ClInclude Include="include\ark\ark_device.h" />
     <ClInclude Include="include\ark\ark_driver.h" />
+    <ClInclude Include="include\ark\ark_startup.h" />
+    <ClInclude Include="..\shared\KswordArkStartupProtocol.h" />
     <ClInclude Include="include\ark\ark_push_lock.h" />
     <ClInclude Include="include\ark\ark_system_time.h" />
     <ClInclude Include="include\ark\ark_file.h" />
@@ -589,9 +592,13 @@
     <PropertyGroup>
       <KswordArkSignScript>$(MSBuildThisFileDirectory)..\scripts\Sign-KswordArkDriverVariant.ps1</KswordArkSignScript>
       <KswordArkPowerShellExe Condition="'$(KswordArkPowerShellExe)'==''">powershell</KswordArkPowerShellExe>
+      <!-- 发行构建加 /p:KswordArkRequireKernelSignature=true，让最终 .sys 未通过
+           signtool verify /kp 时直接失败，而不是把一个只有部分机器加载不了的
+           驱动打进发行包。 -->
+      <KswordArkSignStrictArg Condition="'$(KswordArkRequireKernelSignature)'=='true'"> -RequireKernelSignature</KswordArkSignStrictArg>
     </PropertyGroup>
     <Message Importance="High" Text="KswordARK: applying post-build driver variant signing for $(TargetPath). Set /p:KswordArkSkipAutoVariantSign=true to skip." />
-    <Exec Command="&quot;$(KswordArkPowerShellExe)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(KswordArkSignScript)&quot; -DriverPath &quot;$(TargetPath)&quot;" IgnoreStandardErrorWarningFormat="true" Condition="Exists('$(KswordArkSignScript)')" />
+    <Exec Command="&quot;$(KswordArkPowerShellExe)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(KswordArkSignScript)&quot; -DriverPath &quot;$(TargetPath)&quot;$(KswordArkSignStrictArg)" IgnoreStandardErrorWarningFormat="true" Condition="Exists('$(KswordArkSignScript)')" />
     <Error Condition="!Exists('$(KswordArkSignScript)')" Text="KswordARK driver variant signing script was not found: $(KswordArkSignScript)" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

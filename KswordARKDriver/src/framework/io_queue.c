@@ -23,7 +23,8 @@ Environment:
 
 NTSTATUS
 KswordARKDriverQueueInitialize(
-    _In_ WDFDEVICE Device
+    _In_ WDFDEVICE Device,
+    _In_ BOOLEAN PowerManaged
     )
 /*++
 
@@ -34,6 +35,9 @@ Routine Description:
 Arguments:
 
     Device - Handle to a framework device object.
+    PowerManaged - TRUE only for the compatibility PnP device. Control devices
+        never participate in power management, so their default queue must be
+        created with PowerManaged explicitly cleared instead of WdfUseDefault.
 
 Return Value:
 
@@ -52,9 +56,12 @@ Return Value:
         WdfIoQueueDispatchParallel
         );
 
+    // 显式写死电源管理属性，排除不同 KMDF 版本对 WdfUseDefault 的解析差异。
+    queueConfig.PowerManaged = PowerManaged ? WdfTrue : WdfFalse;
     queueConfig.EvtIoDeviceControl = KswordARKDriverEvtIoDeviceControl;
     queueConfig.EvtIoRead = KswordARKDriverEvtIoRead;
-    queueConfig.EvtIoStop = KswordARKDriverEvtIoStop;
+    // EvtIoStop 只在电源管理队列上有意义，控制设备队列必须留空。
+    queueConfig.EvtIoStop = PowerManaged ? KswordARKDriverEvtIoStop : NULL;
 
     status = WdfIoQueueCreate(
         Device,

@@ -113,6 +113,14 @@ typedef struct _KSWORD_ARK_CALLBACK_RUNTIME
     ULONG MiniFilterBypassPidCount;
     ULONG MiniFilterBypassPids[KSWORD_ARK_MINIFILTER_BYPASS_PID_MAX_COUNT];
     ULONG RegisteredCallbacksMask;
+    // 每一类回调的原始注册状态。降级启动后 R3 靠它解释某项能力为何缺失，
+    // 而不是只看到一个"驱动在线但功能不全"的模糊结论。
+    NTSTATUS WaitQueueStatus;
+    NTSTATUS RegistryRegisterStatus;
+    NTSTATUS ProcessRegisterStatus;
+    NTSTATUS ThreadRegisterStatus;
+    NTSTATUS ImageRegisterStatus;
+    NTSTATUS ObjectRegisterStatus;
     BOOLEAN Initialized;
 } KSWORD_ARK_CALLBACK_RUNTIME;
 
@@ -201,6 +209,23 @@ KswordArkCallbackLogFrame(
 
 VOID
 KswordArkCallbackLogFormat(
+    _In_z_ PCSTR levelText,
+    _In_z_ _Printf_format_string_ PCSTR formatText,
+    ...
+    );
+
+// 初始化阶段必须使用显式 runtime 版本：全局 runtime 直到五类回调注册完毕
+// 才会发布，用全局查找会让整段启动期日志被自己丢掉。
+VOID
+KswordArkCallbackLogFrameForRuntime(
+    _In_opt_ KSWORD_ARK_CALLBACK_RUNTIME* runtime,
+    _In_z_ PCSTR levelText,
+    _In_z_ PCSTR messageText
+    );
+
+VOID
+KswordArkCallbackLogFormatForRuntime(
+    _In_opt_ KSWORD_ARK_CALLBACK_RUNTIME* runtime,
     _In_z_ PCSTR levelText,
     _In_z_ _Printf_format_string_ PCSTR formatText,
     ...

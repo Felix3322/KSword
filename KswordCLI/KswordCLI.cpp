@@ -5318,6 +5318,15 @@ namespace
                        << L" waitingReceiverCount=" << response.waitingReceiverCount
                        << L" appliedRuleVersion=" << response.appliedRuleVersion
                        << L" appliedAtUtc100ns=" << response.appliedAtUtc100ns << L"\n";
+            // 降级启动时每类回调的原始 NTSTATUS，0 表示注册正常。
+            std::wcout << std::hex
+                       << L"waitQueueStatus=0x" << static_cast<std::uint32_t>(response.waitQueueStatus)
+                       << L" registryCallbackStatus=0x" << static_cast<std::uint32_t>(response.registryCallbackStatus)
+                       << L" processCallbackStatus=0x" << static_cast<std::uint32_t>(response.processCallbackStatus)
+                       << L" threadCallbackStatus=0x" << static_cast<std::uint32_t>(response.threadCallbackStatus)
+                       << L" imageCallbackStatus=0x" << static_cast<std::uint32_t>(response.imageCallbackStatus)
+                       << L" objectCallbackStatus=0x" << static_cast<std::uint32_t>(response.objectCallbackStatus)
+                       << std::dec << L"\n";
             return 0;
         }
         if (sub == L"wait-event")

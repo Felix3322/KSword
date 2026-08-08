@@ -2279,6 +2279,147 @@ namespace
     constexpr char kR0LogPrefixError[] = "[Error]";
     constexpr char kR0LogPrefixFatal[] = "[Fatal]";
 
+    // r0StartupStageText 作用：
+    // - 输入：驱动写入 Parameters 的 KSWORD_ARK_START_STAGE 阶段号；
+    // - 处理：映射为用户能直接转述给开发者的阶段名；
+    // - 返回：阶段名；未知阶段返回空串。
+    QString r0StartupStageText(const DWORD stageValue)
+    {
+        switch (stageValue)
+        {
+        case KswordArkStartStageEnteredDriverEntry:
+            return QStringLiteral("进入驱动入口");
+        case KswordArkStartStageOsVersionCheck:
+            return QStringLiteral("系统版本检查");
+        case KswordArkStartStageWdfDriverCreate:
+            return QStringLiteral("创建 WDF 驱动对象");
+        case KswordArkStartStageControlInitAllocate:
+            return QStringLiteral("分配控制设备初始化结构");
+        case KswordArkStartStageDeviceAssignName:
+            return QStringLiteral("指派控制设备名");
+        case KswordArkStartStageDeviceCreate:
+            return QStringLiteral("创建控制设备");
+        case KswordArkStartStageLogChannel:
+            return QStringLiteral("初始化日志通道");
+        case KswordArkStartStageDebugOutput:
+            return QStringLiteral("初始化内核调试输出缓冲");
+        case KswordArkStartStageSymbolicLink:
+            return QStringLiteral("创建符号链接");
+        case KswordArkStartStageDefaultQueue:
+            return QStringLiteral("创建默认 I/O 队列");
+        case KswordArkStartStageCallbackRuntimeAllocate:
+            return QStringLiteral("分配回调运行时");
+        case KswordArkStartStageCallbackWaitQueue:
+            return QStringLiteral("创建用户询问队列");
+        case KswordArkStartStageRegistryCallback:
+            return QStringLiteral("注册注册表回调");
+        case KswordArkStartStageProcessCallback:
+            return QStringLiteral("注册进程回调");
+        case KswordArkStartStageThreadCallback:
+            return QStringLiteral("注册线程回调");
+        case KswordArkStartStageImageCallback:
+            return QStringLiteral("注册映像加载回调");
+        case KswordArkStartStageObjectCallback:
+            return QStringLiteral("注册对象句柄回调");
+        case KswordArkStartStageControlDevicePublish:
+            return QStringLiteral("发布控制设备");
+        case KswordArkStartStageReady:
+            return QStringLiteral("启动完成");
+        default:
+            return QString();
+        }
+    }
+
+    // describeR0StartupBreadcrumb 作用：
+    // - 输入：无；直接读取 Services\KswordARK\Parameters 下驱动留下的启动记录；
+    // - 处理：把阶段号与原始 NTSTATUS 组装成可直接贴进 issue 的一段文字；
+    // - 返回：诊断文本；没有任何记录时返回明确的“未进入驱动入口”结论。
+    //
+    // SCM 只会把内核返回的失败折叠成 Win32 31，无法区分 WDF 队列失败和内核回调
+    // 注册失败；这段记录是把 31 还原成具体阶段与原始状态的唯一途径。
+    QString describeR0StartupBreadcrumb()
+    {
+        HKEY parametersKey = nullptr;
+        const LSTATUS openResult = ::RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            KSWORD_ARK_STARTUP_PARAMETERS_PATH,
+            0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &parametersKey);
+        if (openResult != ERROR_SUCCESS)
+        {
+            return QStringLiteral("驱动未留下启动记录，说明本次加载没有进入驱动入口，应优先检查 KswordARK.sys 的签名、Code Integrity 策略与系统版本。");
+        }
+
+        const auto readDword = [parametersKey](const wchar_t* const valueName, DWORD& valueOut) {
+            DWORD valueType = 0;
+            DWORD valueData = 0;
+            DWORD valueBytes = static_cast<DWORD>(sizeof(valueData));
+            const LSTATUS queryResult = ::RegQueryValueExW(
+                parametersKey,
+                valueName,
+                nullptr,
+                &valueType,
+                reinterpret_cast<LPBYTE>(&valueData),
+                &valueBytes);
+            if (queryResult != ERROR_SUCCESS || valueType != REG_DWORD)
+            {
+                return false;
+            }
+            valueOut = valueData;
+            return true;
+        };
+
+        DWORD stageValue = 0;
+        DWORD statusValue = 0;
+        const bool hasStage = readDword(KSWORD_ARK_STARTUP_VALUE_STAGE, stageValue);
+        const bool hasStatus = readDword(KSWORD_ARK_STARTUP_VALUE_STATUS, statusValue);
+
+        wchar_t buildBuffer[128] = {};
+        DWORD buildType = 0;
+        DWORD buildBytes = static_cast<DWORD>(sizeof(buildBuffer));
+        QString buildText;
+        if (::RegQueryValueExW(
+            parametersKey,
+            KSWORD_ARK_STARTUP_VALUE_BUILD,
+            nullptr,
+            &buildType,
+            reinterpret_cast<LPBYTE>(buildBuffer),
+            &buildBytes) == ERROR_SUCCESS && buildType == REG_SZ)
+        {
+            buildBuffer[std::size(buildBuffer) - 1] = L'\0';
+            buildText = QString::fromWCharArray(buildBuffer);
+        }
+
+        DWORD osBuildValue = 0;
+        const bool hasOsBuild = readDword(KSWORD_ARK_STARTUP_VALUE_OS_BUILD, osBuildValue);
+        ::RegCloseKey(parametersKey);
+
+        if (!hasStage)
+        {
+            return QStringLiteral("驱动留下的启动记录不完整，无法确定失败阶段。");
+        }
+
+        const QString stageName = r0StartupStageText(stageValue);
+        QString detailText = QStringLiteral("驱动最后到达的启动阶段：%1（stage=%2）")
+            .arg(stageName.isEmpty() ? QStringLiteral("未知阶段") : stageName)
+            .arg(stageValue);
+        if (hasStatus)
+        {
+            detailText += QStringLiteral("\n驱动内部状态：0x%1")
+                .arg(statusValue, 8, 16, QLatin1Char('0'));
+        }
+        if (!buildText.isEmpty())
+        {
+            detailText += QStringLiteral("\n驱动构建：%1").arg(buildText);
+        }
+        if (hasOsBuild && osBuildValue != 0)
+        {
+            detailText += QStringLiteral("\n系统内部版本：%1").arg(osBuildValue);
+        }
+        return detailText;
+    }
+
     // sharedR0DriverLogEvent 作用：
     // - 统一承载 R3 进程内“驱动日志转发”链路的 GUID；
     // - 满足“所有驱动输出走同一个 kLogEvent”要求。
@@ -8145,10 +8286,14 @@ bool MainWindow::startR0DriverService()
             return false;
         }
 
+        // SCM 的错误码本身不区分失败原因，必须带上驱动自己留下的阶段记录，
+        // 用户才能在 issue 里直接给出可定位的信息。
         reportStartFailure(
             QStringLiteral("R0 启动失败：驱动服务启动失败。"),
             startError,
-            QStringLiteral("驱动路径：%1").arg(nativeDriverPath));
+            QStringLiteral("驱动路径：%1\n%2")
+                .arg(nativeDriverPath)
+                .arg(describeR0StartupBreadcrumb()));
         return false;
     }
 

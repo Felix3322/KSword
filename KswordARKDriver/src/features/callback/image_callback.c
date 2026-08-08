@@ -75,11 +75,11 @@ KswordArkImageCallbackRegister(
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
-    UNREFERENCED_PARAMETER(runtime);
 
     status = PsSetLoadImageNotifyRoutine(KswordArkLoadImageNotify);
     if (NT_SUCCESS(status)) {
-        KswordArkCallbackLogFrame("Info", "Image load callback registered.");
+        // 注册期全局 runtime 尚未发布，必须用显式 runtime 版本写日志。
+        KswordArkCallbackLogFrameForRuntime(runtime, "Info", "Image load callback registered.");
     }
     return status;
 }

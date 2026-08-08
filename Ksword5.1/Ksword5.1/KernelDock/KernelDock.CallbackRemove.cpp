@@ -287,6 +287,29 @@ void KernelDock::initializeCallbackRemovePanel()
             return;
         }
 
+        // 同一个“安全移除”在枚举页是有前置确认的（KernelDock.CallbackEnum.cpp
+        // callbackEnumConfirmSafeRemove：Yes|No，默认 No），本页手工填地址这条路径却直接下发。
+        // 手工路径反而更该确认：地址是用户裸手打进来的，没有枚举行携带的来源/可信/移除策略
+        // 元数据可供交叉核对。这里补齐，措辞与枚举页保持一致。
+        const QString removeConfirmText =
+            kernelText("kernel.callback.remove.confirm", QStringLiteral(
+                "即将按手工填写的地址移除内核回调。\n\n"
+                "类别：%1\n"
+                "地址：0x%2\n\n"
+                "该地址由你手工输入，本页没有枚举行的来源与可信信息可供交叉核对。\n"
+                "此操作会修改内核回调注册，可能影响系统稳定性。是否继续？"))
+                .arg(m_callbackRemoveTypeCombo->currentText())
+                .arg(QString::number(callbackAddress, 16).toUpper());
+        if (QMessageBox::question(
+                this,
+                kernelText("kernel.callback.remove.title.short", QStringLiteral("回调移除")),
+                removeConfirmText,
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No) != QMessageBox::Yes)
+        {
+            return;
+        }
+
         KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_REQUEST requestPacket{};
         requestPacket.size = sizeof(requestPacket);
         requestPacket.version = KSWORD_ARK_EXTERNAL_CALLBACK_REMOVE_PROTOCOL_VERSION;

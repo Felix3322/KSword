@@ -84,11 +84,11 @@ KswordArkThreadCallbackRegister(
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
-    UNREFERENCED_PARAMETER(runtime);
 
     status = PsSetCreateThreadNotifyRoutine(KswordArkThreadCreateNotify);
     if (NT_SUCCESS(status)) {
-        KswordArkCallbackLogFrame("Info", "Thread create callback registered.");
+        // 注册期全局 runtime 尚未发布，必须用显式 runtime 版本写日志。
+        KswordArkCallbackLogFrameForRuntime(runtime, "Info", "Thread create callback registered.");
     }
     return status;
 }

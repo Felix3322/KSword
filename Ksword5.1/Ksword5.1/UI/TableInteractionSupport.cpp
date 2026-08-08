@@ -21,6 +21,7 @@
 #include <QHash>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QTreeView>
 #include <QIcon>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -518,6 +519,95 @@ namespace
     void copyVisibleRowsToClipboard(QTableView* tableView)
     {
         copyRowsToClipboard(tableView, allVisibleRows(tableView));
+    }
+
+    // copySelectedTreeRowsToClipboard 作用：
+    // - 给 QTreeView/QTreeWidget 这类层级视图补上 Ctrl+C；
+    // - 上面那条表格路径按“扁平行号”工作，对树没有意义（不同父节点下 row 会重复），
+    //   所以这里改走 QModelIndex：用 indexBelow() 沿视觉顺序遍历，命中选中行就取一行；
+    //   折叠起来的子节点会被 indexBelow 自然跳过，复制结果与用户看到的完全一致；
+    // - 没有选中项时回落到当前行，与表格路径的 includeCurrentFallback 语义保持一致；
+    // - 列按表头视觉顺序输出并跳过隐藏列，用户拖动过列序时复制结果跟着走。
+    // 入参 treeView：目标树视图；为空或无模型时忽略。
+    // 返回：无；结果写入系统剪贴板。
+    void copySelectedTreeRowsToClipboard(QTreeView* treeView)
+    {
+        if (treeView == nullptr || treeView->model() == nullptr)
+        {
+            return;
+        }
+
+        QItemSelectionModel* selectionModel = treeView->selectionModel();
+        QAbstractItemModel* modelObject = treeView->model();
+        if (selectionModel == nullptr)
+        {
+            return;
+        }
+
+        // 列序：优先按表头当前视觉顺序，没有表头时退回逻辑顺序。
+        QVector<int> columnList;
+        const int columnCount = modelObject->columnCount(treeView->rootIndex());
+        columnList.reserve(columnCount);
+        QHeaderView* headerView = treeView->header();
+        for (int position = 0; position < columnCount; ++position)
+        {
+            const int logicalColumn = headerView != nullptr
+                ? headerView->logicalIndex(position)
+                : position;
+            if (logicalColumn >= 0 && !treeView->isColumnHidden(logicalColumn))
+            {
+                columnList.push_back(logicalColumn);
+            }
+        }
+        if (columnList.isEmpty())
+        {
+            return;
+        }
+
+        QStringList lineList;
+        for (QModelIndex walkIndex = modelObject->index(0, 0, treeView->rootIndex());
+            walkIndex.isValid();
+            walkIndex = treeView->indexBelow(walkIndex))
+        {
+            // 用 isSelected(列 0) 判定整行：这些树一律是 SelectRows，选中即整行选中。
+            // 不用 isRowSelected(row, parent) 是因为它自 Qt 6.4 起已标记废弃。
+            if (!selectionModel->isSelected(walkIndex))
+            {
+                continue;
+            }
+
+            QStringList valueList;
+            valueList.reserve(columnList.size());
+            for (const int column : columnList)
+            {
+                valueList.push_back(normalizedTsvField(
+                    modelObject->data(walkIndex.sibling(walkIndex.row(), column), Qt::DisplayRole)));
+            }
+            lineList.push_back(valueList.join(QLatin1Char('\t')));
+        }
+
+        if (lineList.isEmpty())
+        {
+            const QModelIndex currentIndex = selectionModel->currentIndex();
+            if (!currentIndex.isValid())
+            {
+                return;
+            }
+
+            QStringList valueList;
+            valueList.reserve(columnList.size());
+            for (const int column : columnList)
+            {
+                valueList.push_back(normalizedTsvField(
+                    modelObject->data(currentIndex.sibling(currentIndex.row(), column), Qt::DisplayRole)));
+            }
+            lineList.push_back(valueList.join(QLatin1Char('\t')));
+        }
+
+        if (QClipboard* clipboardObject = QApplication::clipboard())
+        {
+            clipboardObject->setText(lineList.join(QLatin1Char('\n')));
+        }
     }
 
     // exportRowsToTsv 作用：
@@ -2472,6 +2562,23 @@ namespace
             QTableView* tableView = tableForEventObject(watchedObject);
             if (tableView == nullptr)
             {
+                // 树形视图不适用下面那条按扁平行号工作的表格路径，但 Ctrl+C 不该因此变成死键。
+                // 全局表格设施此前只认 QTableView，于是句柄树、设备树、内核对象树、文件占用树等
+                // 一大批列表按 Ctrl+C 毫无反应——用户对着一张能多选的列表复制不出任何东西。
+                if (eventType == QEvent::KeyPress)
+                {
+                    auto* treeKeyEvent = static_cast<QKeyEvent*>(eventObject);
+                    if (treeKeyEvent->matches(QKeySequence::Copy))
+                    {
+                        if (QTreeView* treeView =
+                                qobject_cast<QTreeView*>(itemViewForEventObject(watchedObject)))
+                        {
+                            copySelectedTreeRowsToClipboard(treeView);
+                            treeKeyEvent->accept();
+                            return true;
+                        }
+                    }
+                }
                 return QObject::eventFilter(watchedObject, eventObject);
             }
 

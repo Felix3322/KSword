@@ -26,7 +26,13 @@ param(
     [string] $SignToolPath,
 
     # NonFatal lets exploratory/manual callers preserve a zero exit code while still logging failures.
-    [switch] $NonFatal
+    [switch] $NonFatal,
+
+    # RequireKernelSignature turns the final `signtool verify /kp` result into a build error.
+    # Release packaging must set it (or KSWORD_REQUIRE_KERNEL_SIGNATURE=1) so a driver whose
+    # variant step silently fell back to test signing can never ship: on the affected user
+    # machine that would surface only as SCM error 31.
+    [switch] $RequireKernelSignature
 )
 
 Set-StrictMode -Version Latest
@@ -210,6 +216,44 @@ function Write-SignatureSummary {
     Write-Host "$Label signature status: $($signature.Status); subject: $subject"
 }
 
+# Assert-FinalKernelSignature:
+# - Inputs: the final driver path, the resolved signtool.exe and the strictness flag.
+# - Processing: runs `signtool verify /kp /all /v` (the kernel-mode driver policy) and prints the
+#   SHA256 of the exact bytes that will be distributed, so a build log can be matched against the
+#   file a user actually loaded.
+# - Returns: no value. Throws when the signature is invalid and strict verification was requested;
+#   otherwise logs a warning, because developer machines legitimately produce test-signed drivers.
+function Assert-FinalKernelSignature {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+
+        [Parameter(Mandatory = $true)]
+        [string] $SignToolPath,
+
+        [Parameter(Mandatory = $true)]
+        [bool] $Strict
+    )
+
+    $fileHash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
+    Write-Host "Final driver SHA256: $($fileHash.Hash)"
+
+    $output = & $SignToolPath verify /kp /all /v $Path 2>&1
+    $exitCode = $LASTEXITCODE
+    $output | ForEach-Object { Write-Host $_ }
+
+    if ($exitCode -eq 0) {
+        Write-Host 'Final kernel-mode signature verification passed.'
+        return
+    }
+
+    if ($Strict) {
+        throw "Final kernel signature verification failed with exit code $exitCode for $Path."
+    }
+
+    Write-Warning "Final kernel signature verification failed with exit code $exitCode. Set -RequireKernelSignature (or KSWORD_REQUIRE_KERNEL_SIGNATURE=1) to make this fatal for release builds."
+}
+
 # Invoke-LegacyDriverTestSign:
 # - Inputs: repository root and the driver path restored to its pre-variant contents.
 # - Processing: calls the pre-existing non-fatal test-signing script exactly as the old
@@ -258,7 +302,9 @@ function Invoke-KswordDriverVariantSign {
         [Parameter(Mandatory = $true)]
         [string] $RequestedDriverPath,
 
-        [string] $RequestedSignToolPath
+        [string] $RequestedSignToolPath,
+
+        [bool] $StrictSignatureCheck = $false
     )
 
     $repoRoot = Resolve-RepoRoot
@@ -340,10 +386,32 @@ function Invoke-KswordDriverVariantSign {
             Remove-Item -LiteralPath $preVariantBackup -Force
         }
     }
+
+    # The variant path and the legacy fallback both end here, so this is the only place that
+    # sees the exact bytes being distributed. Get-AuthenticodeSignature summaries above are
+    # informational only and never fail the build; this check is the one that can.
+    $verifySignTool = $null
+    try {
+        $verifySignTool = Resolve-SignTool -ExplicitSignToolPath $RequestedSignToolPath -CertificateDirectory $certificateDirectory
+    }
+    catch {
+        Write-Warning "Final signature verification skipped, signtool.exe was not found: $($_.Exception.Message)"
+    }
+
+    if ($verifySignTool) {
+        Assert-FinalKernelSignature -Path $driver -SignToolPath $verifySignTool -Strict $StrictSignatureCheck
+    }
 }
 
+# 发布构建通过参数或环境变量要求硬校验；开发机默认只警告，
+# 因为本地回退到测试签名时 /kp 必然失败。
+$strictSignatureCheck = $RequireKernelSignature.IsPresent -or ($env:KSWORD_REQUIRE_KERNEL_SIGNATURE -eq '1')
+
 try {
-    Invoke-KswordDriverVariantSign -RequestedDriverPath $DriverPath -RequestedSignToolPath $SignToolPath
+    Invoke-KswordDriverVariantSign `
+        -RequestedDriverPath $DriverPath `
+        -RequestedSignToolPath $SignToolPath `
+        -StrictSignatureCheck $strictSignatureCheck
 }
 catch {
     if ($NonFatal) {

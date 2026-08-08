@@ -262,7 +262,11 @@ KswordArkObjectCallbackRegister(
 
     status = ObRegisterCallbacks(&callbackRegistration, &runtime->ObRegistrationHandle);
     if (NT_SUCCESS(status)) {
-        KswordArkCallbackLogFrame("Info", "Object callbacks registered for Process/Thread.");
+        // 注册期全局 runtime 尚未发布，必须用显式 runtime 版本写日志。
+        KswordArkCallbackLogFrameForRuntime(
+            runtime,
+            "Info",
+            "Object callbacks registered for Process/Thread.");
     }
     return status;
 }

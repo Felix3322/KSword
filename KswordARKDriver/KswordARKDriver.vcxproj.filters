@@ -140,6 +140,12 @@
     <ClInclude Include="include\ark\ark_driver.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="include\ark\ark_startup.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\KswordArkStartupProtocol.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="include\ark\ark_push_lock.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -646,6 +652,9 @@
       <Filter>Source Files\Framework</Filter>
     </ClCompile>
     <ClCompile Include="src\framework\io_queue.c">
+      <Filter>Source Files\Framework</Filter>
+    </ClCompile>
+    <ClCompile Include="src\framework\startup_breadcrumb.c">
       <Filter>Source Files\Framework</Filter>
     </ClCompile>
     <ClCompile Include="src\dispatch\ioctl_dispatch.c">

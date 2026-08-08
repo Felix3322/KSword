@@ -24,6 +24,7 @@ Environment:
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (PAGE, KswordARKDriverCreateDevice)
 #pragma alloc_text (PAGE, KswordARKDriverCreateControlDevice)
+#pragma alloc_text (PAGE, KswordARKDriverPublishControlDevice)
 #pragma alloc_text (PAGE, KswordARKDriverEvtDevicePrepareHardware)
 #endif
 
@@ -41,11 +42,15 @@ KswordARKDriverCreateControlDevice(
 
 Routine Description:
 
-    Create a control device used by R3 to read driver log stream.
+    Create a control device used by R3 to read driver log stream. The device is
+    fully built here but stays unpublished: KswordARKDriverPublishControlDevice
+    must be called once every dependent runtime is up, so R3 can never open the
+    device while callback state is still being assembled.
 
 Arguments:
 
     Driver - WDF driver handle created in DriverEntry.
+    DeviceOut - Receives the created (still unpublished) control device.
 
 Return Value:
 
@@ -69,17 +74,21 @@ Return Value:
     }
 
     RtlInitUnicodeString(&sddlText, g_KswordArkControlDeviceSddl);
+    KswordArkStartupStage(KswordArkStartStageControlInitAllocate);
     deviceInit = WdfControlDeviceInitAllocate(Driver, &sddlText);
     if (deviceInit == NULL) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfControlDeviceInitAllocate failed");
-        return STATUS_INSUFFICIENT_RESOURCES;
+        return KswordArkStartupFailure(
+            KswordArkStartStageControlInitAllocate,
+            STATUS_INSUFFICIENT_RESOURCES);
     }
 
+    KswordArkStartupStage(KswordArkStartStageDeviceAssignName);
     status = WdfDeviceInitAssignName(deviceInit, &deviceName);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfDeviceInitAssignName failed %!STATUS!", status);
         WdfDeviceInitFree(deviceInit);
-        return status;
+        return KswordArkStartupFailure(KswordArkStartStageDeviceAssignName, status);
     }
 
     WdfDeviceInitSetDeviceType(deviceInit, FILE_DEVICE_UNKNOWN);
@@ -87,42 +96,50 @@ Return Value:
     WdfDeviceInitSetIoType(deviceInit, WdfDeviceIoBuffered);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttributes, DEVICE_CONTEXT);
+    KswordArkStartupStage(KswordArkStartStageDeviceCreate);
     status = WdfDeviceCreate(&deviceInit, &deviceAttributes, &device);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfDeviceCreate(control) failed %!STATUS!", status);
         if (deviceInit != NULL) {
             WdfDeviceInitFree(deviceInit);
         }
-        return status;
+        // 固定设备名冲突（例如旧实例未卸载干净）会在这里被记录成可定位的阶段。
+        return KswordArkStartupFailure(KswordArkStartStageDeviceCreate, status);
     }
 
+    KswordArkStartupStage(KswordArkStartStageLogChannel);
     status = KswordARKDriverInitializeLogChannel(device);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "KswordARKDriverInitializeLogChannel failed %!STATUS!", status);
         WdfObjectDelete(device);
-        return status;
+        return KswordArkStartupFailure(KswordArkStartStageLogChannel, status);
     }
 
     // 初始化内核调试输出环形缓冲区；只有用户显式开始捕获时才注册系统回调。
+    KswordArkStartupStage(KswordArkStartStageDebugOutput);
     status = KswordARKDebugOutputInitialize(device);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "KswordARKDebugOutputInitialize failed %!STATUS!", status);
         WdfObjectDelete(device);
-        return status;
+        return KswordArkStartupFailure(KswordArkStartStageDebugOutput, status);
     }
 
+    KswordArkStartupStage(KswordArkStartStageSymbolicLink);
     status = WdfDeviceCreateSymbolicLink(device, &symbolicName);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "WdfDeviceCreateSymbolicLink failed %!STATUS!", status);
         WdfObjectDelete(device);
-        return status;
+        // 符号链接冲突同样指向机器上仍存在的另一个 KswordARK 实例。
+        return KswordArkStartupFailure(KswordArkStartStageSymbolicLink, status);
     }
 
-    status = KswordARKDriverQueueInitialize(device);
+    KswordArkStartupStage(KswordArkStartStageDefaultQueue);
+    status = KswordARKDriverQueueInitialize(device, FALSE);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "KswordARKDriverQueueInitialize(control) failed %!STATUS!", status);
         WdfObjectDelete(device);
-        return status;
+        // WdfIoQueueCreate 返回 STATUS_UNSUCCESSFUL 时这里是唯一能记录原始状态的地方。
+        return KswordArkStartupFailure(KswordArkStartStageDefaultQueue, status);
     }
 
     status = KswordARKDynDataInitialize(device);
@@ -135,12 +152,41 @@ Return Value:
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "KswordARKDriverEnqueueLogFrame(startup) failed %!STATUS!", status);
     }
 
-    WdfControlFinishInitializing(device);
     if (DeviceOut != NULL) {
         *DeviceOut = device;
     }
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "Control log device created successfully");
     return STATUS_SUCCESS;
+}
+
+VOID
+KswordARKDriverPublishControlDevice(
+    _In_ WDFDEVICE Device
+    )
+/*++
+
+Routine Description:
+
+    Make the control device visible to user mode. Creating and publishing are
+    kept apart on purpose: WdfControlFinishInitializing used to run before the
+    callback runtime existed, which let R3 reach IOCTL handlers whose backing
+    state was still being built.
+
+Arguments:
+
+    Device - Control device returned by KswordARKDriverCreateControlDevice.
+
+Return Value:
+
+    VOID
+
+--*/
+{
+    PAGED_CODE();
+
+    // 所有依赖运行时都已就绪，此时才允许 I/O 管理器分发请求。
+    WdfControlFinishInitializing(Device);
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "Control log device published");
 }
 
 NTSTATUS
@@ -206,7 +252,8 @@ Return Value:
         return status;
     }
 
-    status = KswordARKDriverQueueInitialize(device);
+    // 兼容 PnP 设备参与电源管理，因此默认队列保留电源管理语义和 EvtIoStop。
+    status = KswordARKDriverQueueInitialize(device, TRUE);
     if (!NT_SUCCESS(status)) {
         return status;
     }

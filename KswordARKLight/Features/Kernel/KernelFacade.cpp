@@ -2770,16 +2770,28 @@ void AppendCallbackRuntimeRows(
         { L"RegisteredText", CallbackRegisteredMaskText(state.callbacksRegisteredMask) },
     }, L"已注册的 R0 回调类型。"), filter);
 
+    // AskUser 队列不是内核回调，但它和五类回调一样可以在降级启动中缺席，
+    // 因此单独给出原始状态，避免"规则设了询问用户却没弹窗"被误判为软件缺陷。
+    PushFilteredRow(result, Row({
+        { L"Source", source },
+        { L"Section", L"AskUserQueue" },
+        { L"Available", BoolText(state.waitQueueStatus == 0) },
+        { L"Status", HexText(static_cast<std::uint32_t>(state.waitQueueStatus)) },
+    }, L"用户询问队列不可用时，Ask 规则回落到规则自身的默认决策。"), filter);
+
     const struct {
         const wchar_t* name;
         std::uint32_t bit;
+        long registerStatus;
+        bool hasRegisterStatus;
     } callbackTypes[] = {
-        { L"Registry", 0x00000001UL },
-        { L"Process", 0x00000002UL },
-        { L"Thread", 0x00000004UL },
-        { L"Image", 0x00000008UL },
-        { L"Object", 0x00000010UL },
-        { L"Minifilter", 0x00000020UL },
+        { L"Registry", 0x00000001UL, state.registryCallbackStatus, true },
+        { L"Process", 0x00000002UL, state.processCallbackStatus, true },
+        { L"Thread", 0x00000004UL, state.threadCallbackStatus, true },
+        { L"Image", 0x00000008UL, state.imageCallbackStatus, true },
+        { L"Object", 0x00000010UL, state.objectCallbackStatus, true },
+        // Minifilter 的注册状态走独立的 minifilter 查询接口，不在本结构中。
+        { L"Minifilter", 0x00000020UL, 0L, false },
     };
     for (const auto& callbackType : callbackTypes) {
         PushFilteredRow(result, Row({
@@ -2788,6 +2800,10 @@ void AppendCallbackRuntimeRows(
             { L"Name", callbackType.name },
             { L"Mask", HexText(callbackType.bit) },
             { L"Registered", BoolText((state.callbacksRegisteredMask & callbackType.bit) != 0U) },
+            // 注册失败时这里是内核返回的原始 NTSTATUS，例如 altitude 冲突或槽位耗尽。
+            { L"Status", callbackType.hasRegisterStatus
+                ? HexText(static_cast<std::uint32_t>(callbackType.registerStatus))
+                : std::wstring(L"-") },
         }), filter);
     }
 

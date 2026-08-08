@@ -28,6 +28,7 @@
 #include <QFormLayout>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
@@ -2103,11 +2104,27 @@ void NetworkFirewallPage::showRuleContextMenu(const QPoint& localPosition)
         return;
     }
 
+    // 右键落在已经选中的行上时不能重设选择：selectRow 会把多选压回单行，
+    // 用户框选十条规则再右键“删除规则”，实际只删掉了鼠标底下那一条，
+    // 而且删完列表一刷新，剩下九条还在——看上去像操作没生效。
+    // 只有右键点在选区之外时才把选择移过去，这也是资源管理器的行为。
     const QModelIndex clickedIndex = m_ruleTable->indexAt(localPosition);
     if (clickedIndex.isValid())
     {
-        m_ruleTable->setCurrentCell(clickedIndex.row(), clickedIndex.column());
-        m_ruleTable->selectRow(clickedIndex.row());
+        QItemSelectionModel* ruleSelectionModel = m_ruleTable->selectionModel();
+        // 本表是 SelectRows，整行选中时点到的那一格自然也在选区内。
+        const bool clickedRowAlreadySelected =
+            ruleSelectionModel != nullptr && ruleSelectionModel->isSelected(clickedIndex);
+        if (!clickedRowAlreadySelected)
+        {
+            m_ruleTable->setCurrentCell(clickedIndex.row(), clickedIndex.column());
+            m_ruleTable->selectRow(clickedIndex.row());
+        }
+        else if (ruleSelectionModel != nullptr)
+        {
+            // 保留整片选区，只把“当前项”移到右键处，菜单里的单条动作仍有明确目标。
+            ruleSelectionModel->setCurrentIndex(clickedIndex, QItemSelectionModel::NoUpdate);
+        }
     }
 
     FirewallRuleEntry selectedEntry;

@@ -486,6 +486,7 @@
     "process.action.terminate_delete_image.type_prompt": "请输入 %1 以确认结束进程并永久删除其映像文件："
   },
   "context_translations": {
+    "kernel.callback.remove.confirm": "即将按手工填写的地址移除内核回调。\n\n类别：%1\n地址：0x%2\n\n该地址由你手工输入，本页没有枚举行的来源与可信信息可供交叉核对。\n此操作会修改内核回调注册，可能影响系统稳定性。是否继续？",
     "file.detail.view.structured": "结构视图",
     "file.detail.view.plain_text": "原始文本",
     "file.detail.view.tooltip": "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制",
@@ -4428,6 +4429,9 @@
     "settings.background.translucency_material.acrylic": "亚克力磨砂（质感更强，可能影响悬停）"
   },
   "source_translations": {
+    "即将按手工填写的地址移除内核回调。\n\n": "即将按手工填写的地址移除内核回调。\n\n",
+    "地址：0x%2\n\n": "地址：0x%2\n\n",
+    "该地址由你手工输入，本页没有枚举行的来源与可信信息可供交叉核对。\n": "该地址由你手工输入，本页没有枚举行的来源与可信信息可供交叉核对。\n",
     "结构视图": "结构视图",
     "原始文本": "原始文本",
     "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制": "结构视图按字段分行，便于逐条查看和复制；原始文本保留完整报告，便于全文检索和整段复制",
