@@ -7,12 +7,84 @@ class QTableView;
 
 #include <QList>
 #include <QString>
+#include <QTableWidgetItem>
+#include <QTreeWidget>
+#include <QVariant>
 #include <QtGlobal>
 
 #include <functional>
 
 namespace ks::ui
 {
+    // NumericSortRole 作用：
+    // - 存放“这一格用于排序的真实数值”，与 DisplayRole 的可读文本彻底分家；
+    // - 表格默认按 DisplayRole 的字符串比大小，于是 PID 排成 1/10/100/11/2、
+    //   512 KB 排在 2.50 MB 后面、不补零的十六进制地址完全乱序——这类问题在本仓
+    //   已经被四处 copy-paste 的私有 NumericItem 各修一遍，此处统一收口；
+    // - 不能用 Qt::UserRole：句柄页等已用它存行索引，会互相覆盖。
+    constexpr int NumericSortRole = Qt::UserRole + 900;
+
+    // NumericTableItem 作用：
+    // - 供 QTableWidget 使用的数值排序单元格：显示文本随便写（十六进制、KB/MB、带单位），
+    //   排序一律读 NumericSortRole；
+    // - 该角色缺失时回落到基类的字符串比较，混用不会崩。
+    class NumericTableItem final : public QTableWidgetItem
+    {
+    public:
+        // 构造函数：displayText 为界面文本，sortValue 为参与排序的真实数值。
+        NumericTableItem(const QString& displayText, const qulonglong sortValue)
+            : QTableWidgetItem(displayText)
+        {
+            setData(NumericSortRole, QVariant::fromValue<qulonglong>(sortValue));
+        }
+
+        // 构造函数重载：带符号数值（如可正可负的偏移、差值）。
+        NumericTableItem(const QString& displayText, const qlonglong sortValue)
+            : QTableWidgetItem(displayText)
+        {
+            setData(NumericSortRole, QVariant::fromValue<qlonglong>(sortValue));
+        }
+
+        bool operator<(const QTableWidgetItem& otherItem) const override
+        {
+            const QVariant leftValue = data(NumericSortRole);
+            const QVariant rightValue = otherItem.data(NumericSortRole);
+            if (!leftValue.isValid() || !rightValue.isValid())
+            {
+                return QTableWidgetItem::operator<(otherItem);
+            }
+            return leftValue.toDouble() < rightValue.toDouble();
+        }
+    };
+
+    // NumericTreeItem 作用：
+    // - QTreeWidget 版本；每列可各自带一个 NumericSortRole，未带该角色的列按原字符串比较。
+    class NumericTreeItem : public QTreeWidgetItem
+    {
+    public:
+        using QTreeWidgetItem::QTreeWidgetItem;
+
+        // setNumericCell 作用：一次写入某列的显示文本与排序数值。
+        void setNumericCell(const int column, const QString& displayText, const qulonglong sortValue)
+        {
+            setText(column, displayText);
+            setData(column, NumericSortRole, QVariant::fromValue<qulonglong>(sortValue));
+        }
+
+        bool operator<(const QTreeWidgetItem& otherItem) const override
+        {
+            const QTreeWidget* ownerTree = treeWidget();
+            const int sortedColumn = ownerTree != nullptr ? ownerTree->sortColumn() : 0;
+            const QVariant leftValue = data(sortedColumn, NumericSortRole);
+            const QVariant rightValue = otherItem.data(sortedColumn, NumericSortRole);
+            if (!leftValue.isValid() || !rightValue.isValid())
+            {
+                return QTreeWidgetItem::operator<(otherItem);
+            }
+            return leftValue.toDouble() < rightValue.toDouble();
+        }
+    };
+
     // InstallGlobalTableInteractionSupport 作用：
     // - 为应用内所有 QTableView/QTableWidget 统一提供 Ctrl 多选、Ctrl+C 复制和 TSV 导出；
     // - 保留业务表格的原有右键菜单，并在其末尾追加复制选中行和导出选中行；

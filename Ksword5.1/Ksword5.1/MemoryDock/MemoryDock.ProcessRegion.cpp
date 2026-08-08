@@ -1419,14 +1419,21 @@ void MemoryDock::applyRegionFilterAndRebuildTable()
     for (int row = 0; row < static_cast<int>(filteredRegions.size()); ++row)
     {
         const RegionEntry& entry = *filteredRegions[static_cast<std::size_t>(row)];
-        // 列 0 和列 1 附带 UserRole 原始值，便于排序/右键动作时可靠反查。
-        QTableWidgetItem* baseItem = new QTableWidgetItem(formatAddress(entry.baseAddress));
-        baseItem->setData(Qt::EditRole, QVariant::fromValue<qulonglong>(entry.baseAddress));
+        // 列 0 和列 1 附带 UserRole 原始值，便于右键动作时可靠反查。
+        //
+        // 这里原先还写了 setData(Qt::EditRole, 原始数值)：QTableWidgetItem::setData
+        // 内部把 EditRole 直接改写成 DisplayRole，于是 formatAddress()/formatSize()
+        // 生成的“0x00007FF6…/4.00 MB”当场被裸十进制数覆盖——一个内核分析工具的
+        // 内存区域表看不到十六进制地址。排序改由 NumericSortRole 承担，显示文本不再被动。
+        QTableWidgetItem* baseItem = new ks::ui::NumericTableItem(
+            formatAddress(entry.baseAddress),
+            static_cast<qulonglong>(entry.baseAddress));
         baseItem->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(static_cast<qulonglong>(entry.baseAddress)));
         m_regionTable->setItem(row, 0, baseItem);
 
-        QTableWidgetItem* sizeItem = new QTableWidgetItem(formatSize(entry.regionSize));
-        sizeItem->setData(Qt::EditRole, QVariant::fromValue<qulonglong>(entry.regionSize));
+        QTableWidgetItem* sizeItem = new ks::ui::NumericTableItem(
+            formatSize(entry.regionSize),
+            static_cast<qulonglong>(entry.regionSize));
         sizeItem->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(static_cast<qulonglong>(entry.regionSize)));
         m_regionTable->setItem(row, 1, sizeItem);
 

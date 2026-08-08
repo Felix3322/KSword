@@ -1056,27 +1056,46 @@ void HandleDock::rebuildHandleTable()
     for (std::size_t rowIndex = 0; rowIndex < m_rows.size(); ++rowIndex)
     {
         const HandleRow& row = m_rows[rowIndex];
-        auto* item = new QTreeWidgetItem();
-        item->setText(static_cast<int>(HandleTableColumn::ProcessId), QString::number(row.processId));
+        // 这张表是本页主力，动辄上万行，却整表按 DisplayRole 字符串排序：
+        // PID 排成 1/10/100/11/2，句柄值与对象地址因为十六进制不补零同样乱序，
+        // 句柄数/指针数按字符串比更是 9 大于 10。改用带 NumericSortRole 的行，
+        // 数值列各自挂真实数值，显示文本保持原样（十六进制仍是十六进制）。
+        auto* item = new ks::ui::NumericTreeItem();
+        item->setNumericCell(
+            static_cast<int>(HandleTableColumn::ProcessId),
+            QString::number(row.processId),
+            static_cast<qulonglong>(row.processId));
         item->setText(static_cast<int>(HandleTableColumn::ProcessName), row.processName);
         item->setIcon(
             static_cast<int>(HandleTableColumn::ProcessName),
             resolveProcessIconForRow(row));
-        item->setText(static_cast<int>(HandleTableColumn::HandleValue), formatHex(row.handleValue, 0));
-        item->setText(
+        item->setNumericCell(
+            static_cast<int>(HandleTableColumn::HandleValue),
+            formatHex(row.handleValue, 0),
+            static_cast<qulonglong>(row.handleValue));
+        item->setNumericCell(
             static_cast<int>(HandleTableColumn::TypeIndex),
-            formatTypeIndexDisplayText(row.typeIndex, row.typeName));
+            formatTypeIndexDisplayText(row.typeIndex, row.typeName),
+            static_cast<qulonglong>(row.typeIndex));
         const QString objectNameDisplayText = formatObjectNameDisplayText(row);
         item->setText(static_cast<int>(HandleTableColumn::ObjectName), objectNameDisplayText);
-        item->setText(static_cast<int>(HandleTableColumn::ObjectAddress), formatHex(row.objectAddress, 0));
-        item->setText(static_cast<int>(HandleTableColumn::GrantedAccess), formatHex(row.grantedAccess, 8));
+        item->setNumericCell(
+            static_cast<int>(HandleTableColumn::ObjectAddress),
+            formatHex(row.objectAddress, 0),
+            static_cast<qulonglong>(row.objectAddress));
+        item->setNumericCell(
+            static_cast<int>(HandleTableColumn::GrantedAccess),
+            formatHex(row.grantedAccess, 8),
+            static_cast<qulonglong>(row.grantedAccess));
         item->setText(static_cast<int>(HandleTableColumn::Attributes), formatHandleAttributes(row.attributes));
-        item->setText(
+        item->setNumericCell(
             static_cast<int>(HandleTableColumn::HandleCount),
-            formatOptionalObjectCount(row.handleCount, row.basicInfoAvailable));
-        item->setText(
+            formatOptionalObjectCount(row.handleCount, row.basicInfoAvailable),
+            static_cast<qulonglong>(row.basicInfoAvailable ? row.handleCount : 0));
+        item->setNumericCell(
             static_cast<int>(HandleTableColumn::PointerCount),
-            formatOptionalObjectCount(row.pointerCount, row.basicInfoAvailable));
+            formatOptionalObjectCount(row.pointerCount, row.basicInfoAvailable),
+            static_cast<qulonglong>(row.basicInfoAvailable ? row.pointerCount : 0));
         item->setText(static_cast<int>(HandleTableColumn::Source), formatHandleSourceText(row.sourceMode));
         item->setText(static_cast<int>(HandleTableColumn::DecodeStatus), formatHandleDecodeStatusText(row.decodeStatus));
         item->setText(static_cast<int>(HandleTableColumn::DiffStatus), formatHandleDiffStatusText(row.diffStatus));
