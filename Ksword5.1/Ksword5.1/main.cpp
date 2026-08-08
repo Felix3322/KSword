@@ -14,6 +14,7 @@
 #include "Framework.h"
 #include "UI/ThemedMessageBox.h"
 #include "UI/GlobalDialogTheme.h"
+#include "UI/GlobalRefreshShortcut.h"
 #include "UI/WindowChrome.h"
 #include "UI/TableColumnAutoFit.h"
 #include "UI/TableInteractionSupport.h"
@@ -1557,6 +1558,8 @@ int main(int argc, char* argv[])
     startupTraceRaw("InstallGlobalDialogTheme finished");
     ks::ui::InstallWindowChrome(&app);
     startupTraceRaw("InstallWindowChrome finished");
+    ks::ui::InstallGlobalRefreshShortcut(&app);
+    startupTraceRaw("InstallGlobalRefreshShortcut finished");
     ks::ui::InstallGlobalTableColumnAutoFit(&app);
     startupTraceRaw("InstallGlobalTableColumnAutoFit finished");
     ks::ui::InstallGlobalTableInteractionSupport(&app);

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="17.0">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -378,6 +378,7 @@
     </ClCompile>
     <ClCompile Include="UI\GlobalDialogTheme.cpp" />
     <ClCompile Include="UI\GlobalUiBaseStyle.cpp" />
+    <ClCompile Include="UI\GlobalRefreshShortcut.cpp" />
     <ClCompile Include="UI\WindowChrome.cpp" />
     <ClCompile Include="UI\HexEditorWidget.cpp" />
     <ClCompile Include="UI\HexEditorWidget.Selection.cpp" />
@@ -634,6 +635,7 @@
     <QtMoc Include="UI\KernelDisassemblyDialog.h" />
     <ClInclude Include="UI\GlobalDialogTheme.h" />
     <ClInclude Include="UI\GlobalUiBaseStyle.h" />
+    <ClInclude Include="UI\GlobalRefreshShortcut.h" />
     <ClInclude Include="UI\WindowChrome.h" />
     <QtMoc Include="UI\HexEditorWidget.h" />
     <ClInclude Include="UI\HexEditorWidget.Internal.h" />
