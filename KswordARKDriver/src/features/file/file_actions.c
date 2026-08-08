@@ -447,6 +447,15 @@ Return Value:
     if (PathText == NULL || PathLengthChars == 0U) {
         return STATUS_INVALID_PARAMETER;
     }
+    /*
+     * 长度上界必须在构造 UNICODE_STRING 之前复核。targetPath.Buffer 直接指向调用方
+     * 的缓冲，Length 一旦超出该缓冲的实际容量，ObpCaptureObjectName 会按 Length
+     * 拷贝并读到分配之外的页，直接 PAGE_FAULT_IN_NONPAGED_AREA。这里不假设调用方
+     * 已经校验过，保证任何长度错误都退化成 STATUS_INVALID_PARAMETER 而不是 bugcheck。
+     */
+    if (PathLengthChars >= KSWORD_ARK_FILE_INFO_PATH_MAX_CHARS) {
+        return STATUS_INVALID_PARAMETER;
+    }
 
     RtlZeroMemory(&targetPath, sizeof(targetPath));
     targetPath.Buffer = (PWCH)PathText;
@@ -708,6 +717,13 @@ Return Value:
     }
     *FileHandleOut = NULL;
     if (PathText == NULL || PathLengthChars == 0U) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    /*
+     * 与 KswordARKDriverOpenFileForQuery 同理：超长 Length 会让内核在捕获
+     * ObjectName 时读出调用方缓冲之外的页。上界在此复核，不依赖 handler 校验。
+     */
+    if (PathLengthChars >= KSWORD_ARK_FILE_INTEGRITY_PATH_MAX_CHARS) {
         return STATUS_INVALID_PARAMETER;
     }
 

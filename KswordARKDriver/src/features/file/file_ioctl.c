@@ -308,6 +308,7 @@ Return Value:
 --*/
 {
     KSWORD_ARK_QUERY_FILE_INFO_REQUEST* queryRequest = NULL;
+    KSWORD_ARK_QUERY_FILE_INFO_REQUEST requestSnapshot;
     PVOID inputBuffer = NULL;
     PVOID outputBuffer = NULL;
     size_t actualInputLength = 0;
@@ -337,15 +338,23 @@ Return Value:
         return status;
     }
 
+    /*
+     * METHOD_BUFFERED 的输入和输出是同一个 SystemBuffer；先复制完整请求，后端
+     * 清零并写入响应时才不会覆盖 flags/pathLengthChars/path。响应的 size 字段
+     * 与请求的 pathLengthChars 都落在偏移 +4，不做快照会让后续 ZwCreateFile 拿到
+     * sizeof(RESPONSE) 当作路径字符数，产生内核越界读。
+     */
     queryRequest = (KSWORD_ARK_QUERY_FILE_INFO_REQUEST*)inputBuffer;
-    if ((queryRequest->flags & ~allowedFlags) != 0UL) {
-        KswordARKFileIoctlLog(Device, "Warn", "R0 query-file-info ioctl: flags rejected, flags=0x%08X.", (unsigned int)queryRequest->flags);
+    RtlCopyMemory(&requestSnapshot, queryRequest, sizeof(requestSnapshot));
+
+    if ((requestSnapshot.flags & ~allowedFlags) != 0UL) {
+        KswordARKFileIoctlLog(Device, "Warn", "R0 query-file-info ioctl: flags rejected, flags=0x%08X.", (unsigned int)requestSnapshot.flags);
         return STATUS_INVALID_PARAMETER;
     }
-    if (queryRequest->pathLengthChars == 0U ||
-        queryRequest->pathLengthChars >= KSWORD_ARK_FILE_INFO_PATH_MAX_CHARS ||
-        queryRequest->path[queryRequest->pathLengthChars] != L'\0') {
-        KswordARKFileIoctlLog(Device, "Warn", "R0 query-file-info ioctl: path rejected, chars=%u.", (unsigned int)queryRequest->pathLengthChars);
+    if (requestSnapshot.pathLengthChars == 0U ||
+        requestSnapshot.pathLengthChars >= KSWORD_ARK_FILE_INFO_PATH_MAX_CHARS ||
+        requestSnapshot.path[requestSnapshot.pathLengthChars] != L'\0') {
+        KswordARKFileIoctlLog(Device, "Warn", "R0 query-file-info ioctl: path rejected, chars=%u.", (unsigned int)requestSnapshot.pathLengthChars);
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -362,10 +371,10 @@ Return Value:
     status = KswordARKDriverQueryFileInfo(
         outputBuffer,
         actualOutputLength,
-        queryRequest,
+        &requestSnapshot,
         BytesReturned);
     if (!NT_SUCCESS(status)) {
-        KswordARKFileIoctlLog(Device, "Error", "R0 query-file-info failed: chars=%u, status=0x%08X.", (unsigned int)queryRequest->pathLengthChars, (unsigned int)status);
+        KswordARKFileIoctlLog(Device, "Error", "R0 query-file-info failed: chars=%u, status=0x%08X.", (unsigned int)requestSnapshot.pathLengthChars, (unsigned int)status);
         return status;
     }
 
@@ -375,7 +384,7 @@ Return Value:
             Device,
             "Info",
             "R0 query-file-info success: chars=%u, status=%lu, fields=0x%08X.",
-            (unsigned int)queryRequest->pathLengthChars,
+            (unsigned int)requestSnapshot.pathLengthChars,
             (unsigned long)response->queryStatus,
             (unsigned int)response->fieldFlags);
     }
