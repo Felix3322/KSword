@@ -67,6 +67,20 @@ namespace ks::ui
             "  background-color:__SURFACE_MUTED__;"
             "  color:__TEXT_DISABLED__;"
             "}"
+            // 只读输入框必须与可编辑的区分开：项目里有上百处 setReadOnly(true)
+            // 的展示型输入框（进程详情的路径、命令行等），它们此前与可编辑控件
+            // 外观完全一致——有边框、能获得焦点、悬停还会高亮，用户会反复尝试
+            // 修改并以为程序卡了。这里给只读态一个明确的“非输入面”底色，
+            // 但保留文字颜色与可选中能力，因为内容仍然需要被阅读和复制。
+            "QLineEdit:read-only,QPlainTextEdit:read-only,QTextEdit:read-only,QSpinBox:read-only,QDoubleSpinBox:read-only,QDateEdit:read-only,QTimeEdit:read-only,QDateTimeEdit:read-only{"
+            "  background-color:__SURFACE_MUTED__;"
+            "}"
+            "QLineEdit:read-only:hover,QPlainTextEdit:read-only:hover,QTextEdit:read-only:hover,QSpinBox:read-only:hover,QDoubleSpinBox:read-only:hover,QDateEdit:read-only:hover,QTimeEdit:read-only:hover,QDateTimeEdit:read-only:hover{"
+            "  border-color:__BORDER__;"
+            "}"
+            "QLineEdit:read-only:focus,QPlainTextEdit:read-only:focus,QTextEdit:read-only:focus,QSpinBox:read-only:focus,QDoubleSpinBox:read-only:focus,QDateEdit:read-only:focus,QTimeEdit:read-only:focus,QDateTimeEdit:read-only:focus{"
+            "  border-color:__BORDER__;"
+            "}"
 
             // ---------- 分组框基线 ----------
             // margin-top 是标题行所需的最小空间，与 Qt 原生标题高度一致。

@@ -617,6 +617,13 @@ void ServiceDock::syncToolbarStateWithSelection()
         if (m_generalStopButton != nullptr) { m_generalStopButton->setEnabled(false); }
         if (m_generalPauseButton != nullptr) { m_generalPauseButton->setEnabled(false); }
         if (m_generalContinueButton != nullptr) { m_generalContinueButton->setEnabled(false); }
+        // 未选中服务时同样要说明原因，避免用户对着一排灰按钮猜。
+        const QString noSelectionText = QStringLiteral("请先在列表中选择一个服务");
+        m_startButton->setToolTip(noSelectionText);
+        m_stopButton->setToolTip(noSelectionText);
+        m_pauseButton->setToolTip(noSelectionText);
+        m_continueButton->setToolTip(noSelectionText);
+        m_applyStartTypeButton->setToolTip(noSelectionText);
         return;
     }
 
@@ -629,12 +636,58 @@ void ServiceDock::syncToolbarStateWithSelection()
         && (selectedEntry.currentState == SERVICE_STOPPED || selectedEntry.currentState == SERVICE_PAUSED));
     m_stopButton->setEnabled(!pendingState
         && (selectedEntry.currentState == SERVICE_RUNNING || selectedEntry.currentState == SERVICE_PAUSED));
+
+    // 选中服务后恢复常规 tooltip；过渡态则说明正在切换，
+    // 否则未选中分支写入的“请先选择一个服务”会一直残留。
+    if (pendingState)
+    {
+        const QString pendingText = QStringLiteral("服务正在切换状态，请等待完成");
+        m_startButton->setToolTip(pendingText);
+        m_stopButton->setToolTip(pendingText);
+        m_applyStartTypeButton->setToolTip(pendingText);
+    }
+    else
+    {
+        m_startButton->setToolTip(m_startButton->isEnabled()
+            ? QStringLiteral("启动当前服务")
+            : QStringLiteral("仅在服务已停止或已暂停时可启动"));
+        m_stopButton->setToolTip(m_stopButton->isEnabled()
+            ? QStringLiteral("停止当前服务（高风险动作）")
+            : QStringLiteral("仅在服务正在运行或已暂停时可停止"));
+        m_applyStartTypeButton->setToolTip(QStringLiteral("应用当前启动类型修改"));
+    }
     m_pauseButton->setEnabled(!pendingState
         && selectedEntry.currentState == SERVICE_RUNNING
         && canPauseContinue);
     m_continueButton->setEnabled(!pendingState
         && selectedEntry.currentState == SERVICE_PAUSED
         && canPauseContinue);
+
+    // 置灰必须说明原因：这两个按钮有三个互相独立的置灰来源
+    //（服务不支持暂停/继续、正处于过渡态、当前状态不符），
+    // 而 tooltip 此前恒为“暂停当前服务”。用户只看到灰按钮，
+    // 会反复换选服务、反复等待，却永远等不到它可用。
+    if (!canPauseContinue)
+    {
+        const QString unsupportedText = QStringLiteral("该服务不支持暂停/继续");
+        m_pauseButton->setToolTip(unsupportedText);
+        m_continueButton->setToolTip(unsupportedText);
+    }
+    else if (pendingState)
+    {
+        const QString pendingText = QStringLiteral("服务正在切换状态，请等待完成");
+        m_pauseButton->setToolTip(pendingText);
+        m_continueButton->setToolTip(pendingText);
+    }
+    else
+    {
+        m_pauseButton->setToolTip(m_pauseButton->isEnabled()
+            ? QStringLiteral("暂停当前服务")
+            : QStringLiteral("仅在服务正在运行时可暂停"));
+        m_continueButton->setToolTip(m_continueButton->isEnabled()
+            ? QStringLiteral("继续当前服务")
+            : QStringLiteral("仅在服务已暂停时可继续"));
+    }
     m_applyStartTypeButton->setEnabled(!pendingState);
     m_startTypeCombo->setEnabled(!pendingState);
     if (m_generalStartButton != nullptr) { m_generalStartButton->setEnabled(m_startButton->isEnabled()); }

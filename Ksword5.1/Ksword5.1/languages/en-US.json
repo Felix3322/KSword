@@ -25004,6 +25004,13 @@
     "有 %1 项无法移入回收站，已被永久删除，无法从回收站还原：\n\n%2": "%1 item(s) could not be moved to the Recycle Bin and were permanently deleted; they cannot be restored from the Recycle Bin:\n\n%2",
     "复制路径(Ctrl+C)": "Copy path (Ctrl+C)",
     "GlobalRefreshShortcut.h": "GlobalRefreshShortcut.h",
-    "InstallGlobalRefreshShortcut finished": "InstallGlobalRefreshShortcut finished"
+    "InstallGlobalRefreshShortcut finished": "InstallGlobalRefreshShortcut finished",
+    "该服务不支持暂停/继续": "This service does not support pause/continue",
+    "服务正在切换状态，请等待完成": "The service is changing state; please wait until it finishes",
+    "仅在服务正在运行时可暂停": "Can only pause while the service is running",
+    "仅在服务已暂停时可继续": "Can only continue while the service is paused",
+    "仅在服务已停止或已暂停时可启动": "Can only start while the service is stopped or paused",
+    "仅在服务正在运行或已暂停时可停止": "Can only stop while the service is running or paused",
+    "请先在列表中选择一个服务": "Select a service in the list first"
   }
 }
