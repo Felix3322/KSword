@@ -21,6 +21,7 @@ Environment:
 
 #include <ntimage.h>
 #include <ntstrsafe.h>
+#include <stdarg.h>
 
 // ntddk.h exposes these HAL_DISPATCH members as object-like convenience
 // macros.  Undefine the aliases in this translation unit so FIELD_OFFSET and
@@ -3246,6 +3247,117 @@ KswPlatformAddWdfCallbacks(
     }
 }
 
+static VOID
+KswordARKPlatformAuditLog(
+    _In_ WDFDEVICE Device,
+    _In_z_ PCSTR LevelText,
+    _In_z_ PCSTR FormatText,
+    ...
+    )
+/*++
+
+Routine Description:
+
+    Format and enqueue one platform-audit log line.
+
+Arguments:
+
+    Device - WDF device owning the log channel.
+    LevelText - Log level string.
+    FormatText - printf-style ANSI template.
+    ... - Template arguments.
+
+Return Value:
+
+    None.  Formatting or enqueue failures are ignored; diagnostics must never
+    change the outcome of the request they describe.
+
+--*/
+{
+    CHAR logMessage[KSWORD_ARK_LOG_ENTRY_MAX_BYTES] = { 0 };
+    va_list arguments;
+
+    va_start(arguments, FormatText);
+    if (NT_SUCCESS(RtlStringCbVPrintfA(logMessage, sizeof(logMessage), FormatText, arguments))) {
+        (VOID)KswordARKDriverEnqueueLogFrame(Device, LevelText, logMessage);
+    }
+    va_end(arguments);
+}
+
+static BOOLEAN
+KswordARKPlatformAuditRequestIsValid(
+    _In_ WDFDEVICE Device,
+    _In_ const KSWORD_ARK_QUERY_PLATFORM_AUDIT_REQUEST* RequestPacket,
+    _In_ BOOLEAN CallerSuppliedInput
+    )
+/*++
+
+Routine Description:
+
+    Validate the request packet, naming the field that failed.  The dispatch
+    layer only reports STATUS_INVALID_PARAMETER, which cannot distinguish a
+    protocol-version mismatch from a malformed packet; a user-mode binary built
+    against a different version of the shared header is by far the most common
+    cause and used to require reading the source to diagnose.
+
+Arguments:
+
+    Device - WDF device owning the log channel.
+    RequestPacket - Caller packet, or the driver's default packet.
+    CallerSuppliedInput - FALSE when the defaults are in use, so a rejection
+        would indicate a driver-side defect rather than a caller mismatch.
+
+Return Value:
+
+    TRUE when every field is acceptable.
+
+--*/
+{
+    if (RequestPacket == NULL) {
+        return FALSE;
+    }
+    if (RequestPacket->size != sizeof(*RequestPacket)) {
+        KswordARKPlatformAuditLog(
+            Device,
+            "Warn",
+            "Platform audit request rejected: size=%lu, expected=%lu, caller_supplied=%u.",
+            (unsigned long)RequestPacket->size,
+            (unsigned long)sizeof(*RequestPacket),
+            (unsigned)CallerSuppliedInput);
+        return FALSE;
+    }
+    if (RequestPacket->version != KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION) {
+        KswordARKPlatformAuditLog(
+            Device,
+            "Warn",
+            "Platform audit protocol mismatch: request_version=%lu, driver_version=%lu, "
+            "caller_supplied=%u. User-mode and driver binaries are from different builds.",
+            (unsigned long)RequestPacket->version,
+            (unsigned long)KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION,
+            (unsigned)CallerSuppliedInput);
+        return FALSE;
+    }
+    if (RequestPacket->flags != 0UL || RequestPacket->reserved0 != 0UL) {
+        KswordARKPlatformAuditLog(
+            Device,
+            "Warn",
+            "Platform audit request rejected: flags=0x%08lX, reserved0=0x%08lX, both must be zero.",
+            (unsigned long)RequestPacket->flags,
+            (unsigned long)RequestPacket->reserved0);
+        return FALSE;
+    }
+    if ((RequestPacket->scopeMask & ~KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL) != 0UL) {
+        KswordARKPlatformAuditLog(
+            Device,
+            "Warn",
+            "Platform audit request rejected: scopeMask=0x%08lX carries bits outside 0x%08lX.",
+            (unsigned long)RequestPacket->scopeMask,
+            (unsigned long)KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 NTSTATUS
 KswordARKPlatformAuditIoctlQuery(
     _In_ WDFDEVICE Device,
@@ -3273,7 +3385,6 @@ KswordARKPlatformAuditIoctlQuery(
     BOOLEAN hasInput = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
 
-    UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(OutputBufferLength);
 
     if (BytesReturned == NULL) {
@@ -3300,11 +3411,7 @@ KswordARKPlatformAuditIoctlQuery(
     requestPacket = hasInput ?
         (const KSWORD_ARK_QUERY_PLATFORM_AUDIT_REQUEST*)inputBuffer :
         &defaultRequest;
-    if (requestPacket->size != sizeof(*requestPacket) ||
-        requestPacket->version != KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION ||
-        requestPacket->flags != 0UL ||
-        requestPacket->reserved0 != 0UL ||
-        (requestPacket->scopeMask & ~KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL) != 0UL) {
+    if (!KswordARKPlatformAuditRequestIsValid(Device, requestPacket, hasInput)) {
         return STATUS_INVALID_PARAMETER;
     }
     scopeMask = requestPacket->scopeMask == 0UL ?
