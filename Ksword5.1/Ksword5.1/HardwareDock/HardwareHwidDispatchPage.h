@@ -115,7 +115,6 @@ private:
 private:
     QVBoxLayout* m_rootLayout = nullptr;      // m_rootLayout：页面根布局。
     QLabel* m_statusLabel = nullptr;          // m_statusLabel：顶部状态摘要。
-    QCheckBox* m_confirmRiskCheck = nullptr;  // m_confirmRiskCheck：用户确认蓝屏风险。
     QCheckBox* m_diskCheck = nullptr;         // m_diskCheck：\\Driver\\Disk 目标。
     QCheckBox* m_partMgrCheck = nullptr;      // m_partMgrCheck：\\Driver\\partmgr 目标。
     QCheckBox* m_mountMgrCheck = nullptr;     // m_mountMgrCheck：\\Driver\\mountmgr 目标。

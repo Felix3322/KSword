@@ -572,14 +572,19 @@ void HardwarePowerPage::initializeUi()
     hwpLayout->addWidget(m_applyHwpButton, 2, 0, 1, 4);
     contentLayout->addWidget(hwpGroup, 0);
 
-    m_riskConfirmCheck = new QCheckBox(
-        QStringLiteral("我已确认：提高功耗/倍率可能导致过热、降频、数据错误、死机或硬件寿命下降；已保存工作并准备恢复。"),
+    // 风险说明改为常驻文字：每次点击“应用”时仍会弹出确认框，
+    // 不再要求先勾选确认框才能解锁按钮（重复门槛，且忘记勾选只会得到一句报错）。
+    auto* riskNoticeLabel = new QLabel(
+        QStringLiteral("注意：提高功耗/倍率可能导致过热、降频、数据错误、死机或硬件寿命下降；请先保存工作并准备好恢复方案。"),
         contentWidget);
+    riskNoticeLabel->setWordWrap(true);
+    riskNoticeLabel->setStyleSheet(
+        QStringLiteral("color:%1;").arg(KswordTheme::WarningHex()));
     language.bindText(
-        m_riskConfirmCheck,
-        QStringLiteral("hardware.power.risk_confirm"),
-        QStringLiteral("我已确认：提高功耗/倍率可能导致过热、降频、数据错误、死机或硬件寿命下降；已保存工作并准备恢复。"));
-    contentLayout->addWidget(m_riskConfirmCheck, 0);
+        riskNoticeLabel,
+        QStringLiteral("hardware.power.risk_notice"),
+        QStringLiteral("注意：提高功耗/倍率可能导致过热、降频、数据错误、死机或硬件寿命下降；请先保存工作并准备好恢复方案。"));
+    contentLayout->addWidget(riskNoticeLabel, 0);
 
     auto* boundaryLabel = new QLabel(
         QStringLiteral("边界：MSR lock 置位后本页不会尝试清除；固件、Windows 电源管理或其他调校工具可能随时重写这些值。AMD 型号相关 SMU/PBO 暂不写入。"),
@@ -647,9 +652,6 @@ void HardwarePowerPage::initializeConnections()
             powerText(
                 QStringLiteral("hardware.power.confirm.hwp"),
                 QStringLiteral("即将在全部逻辑处理器修改 HWP min/max/desired/EPP。设置可能与 Windows 电源策略竞争。是否继续？")));
-    });
-    connect(m_riskConfirmCheck, &QCheckBox::toggled, this, [this](bool) {
-        updateControlAvailability();
     });
 }
 
@@ -805,17 +807,6 @@ void HardwarePowerPage::restoreInitialState()
     }
 
     const unsigned long initialCpuApplyFlags = restorableCpuApplyFlags();
-    if (initialCpuApplyFlags != 0UL &&
-        (m_riskConfirmCheck == nullptr || !m_riskConfirmCheck->isChecked()))
-    {
-        QMessageBox::critical(
-            this,
-            errorTitle,
-            powerText(
-                QStringLiteral("hardware.power.error.risk_unconfirmed"),
-                QStringLiteral("请先勾选硬件风险确认。")));
-        return;
-    }
     if (initialCpuApplyFlags != 0UL)
     {
         const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST initialRequest =
@@ -881,16 +872,6 @@ void HardwarePowerPage::restoreInitialState()
         const unsigned long cpuApplyFlags = restorableCpuApplyFlags();
         if (cpuApplyFlags != 0UL)
         {
-            if (m_riskConfirmCheck == nullptr || !m_riskConfirmCheck->isChecked())
-            {
-                QMessageBox::critical(
-                    this,
-                    errorTitle,
-                    powerText(
-                        QStringLiteral("hardware.power.error.risk_unconfirmed"),
-                        QStringLiteral("请先勾选硬件风险确认。")));
-                return;
-            }
             const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST request =
                 buildRestoreControlRequest(cpuApplyFlags);
             if (!executeControlRequest(request))
@@ -1209,8 +1190,6 @@ void HardwarePowerPage::applySnapshotToUi(const ksword::ark::CpuPowerResult& res
 
 void HardwarePowerPage::updateControlAvailability()
 {
-    const bool riskConfirmed = m_riskConfirmCheck != nullptr &&
-        m_riskConfirmCheck->isChecked();
     const bool hasIntelSnapshot = m_hasSnapshot &&
         m_snapshot.vendor == KSWORD_ARK_CPU_POWER_VENDOR_INTEL;
     const bool powerLimitLocked = m_hasSnapshot &&
@@ -1263,28 +1242,26 @@ void HardwarePowerPage::updateControlAvailability()
             widget->setEnabled(canProgramPowerLimits);
         }
     }
-    m_applyPowerLimitsButton->setEnabled(canProgramPowerLimits && riskConfirmed);
-    m_raisePowerLimitsButton->setEnabled(hasPlatformMaximum && riskConfirmed);
+    m_applyPowerLimitsButton->setEnabled(canProgramPowerLimits);
+    m_raisePowerLimitsButton->setEnabled(hasPlatformMaximum);
 
     m_turboEnableCheck->setEnabled(canControlTurbo);
-    m_applyTurboButton->setEnabled(canControlTurbo && riskConfirmed);
+    m_applyTurboButton->setEnabled(canControlTurbo);
     m_turboRatioSpin->setEnabled(canProgramTurboRatio);
-    m_applyTurboRatioButton->setEnabled(canProgramTurboRatio && riskConfirmed);
+    m_applyTurboRatioButton->setEnabled(canProgramTurboRatio);
     m_requestedMultiplierSpin->setEnabled(canProgramRequestedMultiplier);
     m_applyRequestedMultiplierButton->setEnabled(
-        canProgramRequestedMultiplier && riskConfirmed);
+        canProgramRequestedMultiplier);
 
     m_hwpMinimumSpin->setEnabled(canControlHwp);
     m_hwpMaximumSpin->setEnabled(canControlHwp);
     m_hwpDesiredSpin->setEnabled(canControlHwp);
     m_hwpEppSpin->setEnabled(canControlHwpEpp);
-    m_applyHwpButton->setEnabled(canControlHwp && riskConfirmed);
+    m_applyHwpButton->setEnabled(canControlHwp);
 
     const bool hasRestoreBaseline = !m_restorePowerSchemeGuid.isEmpty() ||
         m_hasRestoreCpuSnapshot;
-    const bool restoreWritesCpu = restorableCpuApplyFlags() != 0UL;
-    m_restoreInitialStateButton->setEnabled(
-        hasRestoreBaseline && (!restoreWritesCpu || riskConfirmed));
+    m_restoreInitialStateButton->setEnabled(hasRestoreBaseline);
 }
 
 void HardwarePowerPage::setStatus(const QString& text, const bool isError)
@@ -1557,17 +1534,6 @@ void HardwarePowerPage::sendControlRequest(
             powerText(
                 QStringLiteral("hardware.power.error.no_snapshot"),
                 QStringLiteral("没有可用于并发校验的 CPU 电源快照，请先刷新。")));
-        return;
-    }
-    if (m_riskConfirmCheck == nullptr ||
-        !m_riskConfirmCheck->isChecked())
-    {
-        QMessageBox::critical(
-            this,
-            errorTitle,
-            powerText(
-                QStringLiteral("hardware.power.error.risk_unconfirmed"),
-                QStringLiteral("请先勾选硬件风险确认。")));
         return;
     }
     const KSWORD_ARK_CPU_POWER_CONTROL_REQUEST request =

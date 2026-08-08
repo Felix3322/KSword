@@ -4417,7 +4417,8 @@
     "kernel.iotimer.control.confirm_final": "Confirm performing %1?",
     "kernel.platform.hal.edit.final.body": "Confirm replacing the HAL function pointer? This alters kernel control flow and may cause a blue screen.",
     "kernel.ssdt.restore.confirm.final": "Confirm restoring this SSDT entry from the baseline? This rewrites kernel data.",
-    "process.action.terminate_delete_image.final_prompt": "Confirm terminating process %1 and permanently deleting its image file? This cannot be undone."
+    "process.action.terminate_delete_image.final_prompt": "Confirm terminating process %1 and permanently deleting its image file? This cannot be undone.",
+    "hardware.power.risk_notice": "Warning: raising power or multiplier limits can cause overheating, throttling, data corruption, crashes, or reduced hardware lifespan. Save your work and have a recovery plan ready first."
   },
   "source_translations": {
     "驱动加载失败，失败原因是系统拒绝了未通过数字签名校验的内核驱动。\n\n操作阶段：%1\n错误码：%2\n系统信息：%3": "Driver load failed because Windows rejected a kernel driver that did not pass signature verification.\n\nOperation stage: %1\nError code: %2\nSystem information: %3",
@@ -24985,6 +24986,8 @@
     "确认按基线恢复该 SSDT 表项？该操作会改写内核数据。": "Confirm restoring this SSDT entry from the baseline? This rewrites kernel data.",
     "确认结束进程 %1 并永久删除其映像文件？此操作不可撤销。": "Confirm terminating process %1 and permanently deleting its image file? This cannot be undone.",
     "该操作会把文件直接写入 %1 @ %2，覆盖原有数据且不可撤销。\n文件：%3\n\n确认写入？": "This writes the file directly to %1 @ %2, overwriting existing data irreversibly.\nFile: %3\n\nConfirm the write?",
-    "该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。%5\n\n确认写入？": "This writes directly to %2 @ %3 through \"%1\", %4 bytes in length.%5\n\nConfirm the write?"
+    "该操作会通过“%1”直接写入 %2 @ %3，长度 %4 字节。%5\n\n确认写入？": "This writes directly to %2 @ %3 through \"%1\", %4 bytes in length.%5\n\nConfirm the write?",
+    "注意：提高功耗/倍率可能导致过热、降频、数据错误、死机或硬件寿命下降；请先保存工作并准备好恢复方案。": "Warning: raising power or multiplier limits can cause overheating, throttling, data corruption, crashes, or reduced hardware lifespan. Save your work and have a recovery plan ready first.",
+    "注意：启用/卸载派遣钩子可能导致蓝屏，请先保存工作并准备好恢复方案。": "Warning: enabling or removing the dispatch hook may cause a blue screen. Save your work and have a recovery plan ready first."
   }
 }

@@ -82,6 +82,4 @@ private:
     QSpinBox* m_hwpDesiredSpin = nullptr;              // m_hwpDesiredSpin：HWP desired，0=自动。
     QSpinBox* m_hwpEppSpin = nullptr;                  // m_hwpEppSpin：HWP EPP，0 性能/255 节能。
     QPushButton* m_applyHwpButton = nullptr;           // m_applyHwpButton：提交全逻辑处理器 HWP。
-
-    QCheckBox* m_riskConfirmCheck = nullptr;           // m_riskConfirmCheck：真实硬件修改确认。
 };

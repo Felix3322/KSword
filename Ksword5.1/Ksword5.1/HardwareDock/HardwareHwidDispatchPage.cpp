@@ -161,8 +161,14 @@ void HardwareHwidDispatchPage::initializeUi()
     m_statusLabel->setStyleSheet(QStringLiteral("font-weight:600;color:%1;").arg(KswordTheme::PrimaryBlueHex));
     m_rootLayout->addWidget(m_statusLabel, 0);
 
-    m_confirmRiskCheck = new QCheckBox(QStringLiteral("我已确认：启用/卸载 Dispatch hook 可能导致蓝屏，已准备好 WinDbg/恢复方案。"), this);
-    m_rootLayout->addWidget(m_confirmRiskCheck, 0);
+    // 风险说明改为常驻文字：真实下发前仍会弹出确认框，
+    // 不再要求先勾选确认框（重复门槛，且忘记勾选只会得到一句报错）。
+    auto* riskNoticeLabel = new QLabel(
+        QStringLiteral("注意：启用/卸载派遣钩子可能导致蓝屏，请先保存工作并准备好恢复方案。"),
+        this);
+    riskNoticeLabel->setWordWrap(true);
+    riskNoticeLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::WarningHex()));
+    m_rootLayout->addWidget(riskNoticeLabel, 0);
 
     QGroupBox* targetGroup = new QGroupBox(QStringLiteral("Dispatch 目标驱动"), this);
     QGridLayout* targetLayout = new QGridLayout(targetGroup);
@@ -344,12 +350,6 @@ void HardwareHwidDispatchPage::refreshStatus()
 
 void HardwareHwidDispatchPage::sendControlRequest(const unsigned long action, const bool dryRun)
 {
-    if (!dryRun && m_confirmRiskCheck != nullptr && !m_confirmRiskCheck->isChecked())
-    {
-        QMessageBox::critical(this, QStringLiteral("未确认风险"), QStringLiteral("必须先勾选蓝屏风险确认框，才能下发真实启用/卸载请求。"));
-        return;
-    }
-
     if (!dryRun)
     {
         const QMessageBox::StandardButton answer = QMessageBox::warning(
