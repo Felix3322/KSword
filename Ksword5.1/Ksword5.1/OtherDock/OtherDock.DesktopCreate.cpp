@@ -361,6 +361,8 @@ void OtherDock::showCreateDesktopDialog()
     heapSizeSpin->setRange(0, 262144);
     heapSizeSpin->setSuffix(QStringLiteral(" KB"));
     heapSizeSpin->setSpecialValueText(QStringLiteral("默认"));
+    heapSizeSpin->setToolTip(QStringLiteral("该桌面可用的界面内存上限，窗口很多时可调大；填 0 表示使用系统默认值"));
+    allowOtherAccountHookCheck->setToolTip(QStringLiteral("允许其它用户帐户的程序在该桌面上设置钩子；出于安全考虑通常不勾选"));
     heapSizeSpin->setStyleSheet(desktopCreateInputStyle());
     basicLayout->addRow(QStringLiteral("桌面名称"), desktopNameEdit);
     basicLayout->addRow(QStringLiteral("目标窗口站"), windowStationEdit);
@@ -402,6 +404,11 @@ void OtherDock::showCreateDesktopDialog()
     QCheckBox* keepHandleCheck = new QCheckBox(QStringLiteral("创建后在本进程保留桌面句柄"), securityGroup);
     QCheckBox* switchAfterCreateCheck = new QCheckBox(QStringLiteral("创建成功后立即切换到该桌面"), securityGroup);
     QCheckBox* customSddlCheck = new QCheckBox(QStringLiteral("使用自定义 SDDL 安全描述符"), securityGroup);
+    privateAccessCheck->setToolTip(QStringLiteral("限制只有本程序及其子进程能使用该桌面，其它程序无法访问"));
+    inheritableHandleCheck->setToolTip(QStringLiteral("允许本程序启动的子进程继承这个桌面句柄"));
+    keepHandleCheck->setToolTip(QStringLiteral("创建后不关闭句柄，保持桌面存在；取消勾选则桌面可能在无人使用时被系统回收"));
+    switchAfterCreateCheck->setToolTip(QStringLiteral("创建完成后立刻切换过去（切换后原桌面窗口会暂时看不到）"));
+    customSddlCheck->setToolTip(QStringLiteral("改用下方手写的 SDDL 字符串精确指定谁能访问该桌面，而不使用上面的勾选项"));
     QPlainTextEdit* sddlEdit = new QPlainTextEdit(securityGroup);
     privateAccessCheck->setToolTip(QStringLiteral("使用空 DACL 阻止其它进程按名称打开；当前进程使用创建返回句柄，子进程需要继承该句柄。"));
     inheritableHandleCheck->setChecked(true);

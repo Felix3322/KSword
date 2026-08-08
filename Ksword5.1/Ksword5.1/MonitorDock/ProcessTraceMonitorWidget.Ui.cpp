@@ -442,6 +442,10 @@ void ProcessTraceMonitorWidget::initializeUi()
     m_eventCaseCheck = new QCheckBox(QStringLiteral("区分大小写"), m_filterPanel);
     m_eventInvertCheck = new QCheckBox(QStringLiteral("反向"), m_filterPanel);
     m_eventKeepBottomCheck = new QCheckBox(QStringLiteral("保持贴底"), m_filterPanel);
+    m_eventRegexCheck->setToolTip(QStringLiteral("把筛选内容当作正则表达式匹配，而不是普通文字"));
+    m_eventCaseCheck->setToolTip(QStringLiteral("筛选时区分英文字母大小写"));
+    m_eventInvertCheck->setToolTip(QStringLiteral("反向筛选：只显示不符合条件的记录"));
+    m_eventKeepBottomCheck->setToolTip(QStringLiteral("有新记录时自动滚动到底部，便于持续观察最新事件"));
     m_eventKeepBottomCheck->setChecked(true);
     filterLayout->addWidget(m_eventRegexCheck, 2, 0);
     filterLayout->addWidget(m_eventCaseCheck, 2, 1);

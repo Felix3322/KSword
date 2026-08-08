@@ -146,6 +146,26 @@ void KernelDriverDispatchEditorDialog::initializeUi()
     m_abandonButton = new QPushButton(
         kernelText("kernel.driver_dispatch.abandon", QStringLiteral("放弃恢复记录")),
         this);
+    m_refreshButton->setToolTip(
+        kernelText(
+            "kernel.driver_dispatch.refresh.tooltip",
+            QStringLiteral("重新读取该驱动对象当前的各个处理函数入口")));
+    m_querySlotButton->setToolTip(
+        kernelText(
+            "kernel.driver_dispatch.query_slot.tooltip",
+            QStringLiteral("查看选中项的历史修改记录与当前事务状态")));
+    m_applyButton->setToolTip(
+        kernelText(
+            "kernel.driver_dispatch.apply.tooltip",
+            QStringLiteral("把上面填写的地址一次性写入选中项（会改变驱动的处理流程，可能导致系统不稳定或蓝屏）")));
+    m_restoreButton->setToolTip(
+        kernelText(
+            "kernel.driver_dispatch.restore.tooltip",
+            QStringLiteral("按之前保存的记录把该项恢复为原始入口")));
+    m_abandonButton->setToolTip(
+        kernelText(
+            "kernel.driver_dispatch.abandon.tooltip",
+            QStringLiteral("丢弃保存的恢复记录；丢弃后将无法再自动还原该项")));
     for (QPushButton* button : { m_applyButton, m_restoreButton, m_abandonButton })
     {
         button->setStyleSheet(KswordTheme::ThemedButtonStyle());

@@ -230,6 +230,10 @@ void ServiceDock::initializeGeneralTab()
     m_generalStartTypeCombo->addItem(QStringLiteral("手动"), static_cast<qulonglong>(SERVICE_DEMAND_START));
     m_generalStartTypeCombo->addItem(QStringLiteral("禁用"), static_cast<qulonglong>(SERVICE_DISABLED));
     m_generalDelayedAutoCheck = new QCheckBox(QStringLiteral("延迟自动启动"), m_generalTabPage);
+    m_generalStartTypeCombo->setToolTip(
+        QStringLiteral("设置该服务的启动方式：自动=开机自启，手动=按需启动，禁用=禁止启动"));
+    m_generalDelayedAutoCheck->setToolTip(
+        QStringLiteral("开机后延迟一段时间再启动该服务，可减轻开机瞬间的负载"));
 
     QWidget* startTypeRowWidget = new QWidget(m_generalTabPage);
     QHBoxLayout* startTypeRowLayout = new QHBoxLayout(startTypeRowWidget);
@@ -285,6 +289,12 @@ void ServiceDock::initializeLogonTab()
     m_logonLocalSystemRadio = new QRadioButton(QStringLiteral("本地系统帐户"), m_logonTabPage);
     m_logonDesktopInteractCheck = new QCheckBox(QStringLiteral("允许服务与桌面交互"), m_logonTabPage);
     m_logonAccountRadio = new QRadioButton(QStringLiteral("此帐户"), m_logonTabPage);
+    m_logonLocalSystemRadio->setToolTip(
+        QStringLiteral("以系统内置的高权限帐户运行该服务"));
+    m_logonDesktopInteractCheck->setToolTip(
+        QStringLiteral("允许该服务在当前登录用户的桌面上显示窗口（较老的机制，现代系统通常无效）"));
+    m_logonAccountRadio->setToolTip(
+        QStringLiteral("改用下方指定的用户帐户运行该服务"));
     m_logonAccountEdit = new QLineEdit(m_logonTabPage);
     m_logonPasswordEdit = new QLineEdit(m_logonTabPage);
     m_logonPasswordEdit->setEchoMode(QLineEdit::Password);
@@ -351,11 +361,25 @@ void ServiceDock::initializeRecoveryTab()
     m_recoveryRestartMinutesSpin = new QSpinBox(m_recoveryTabPage);
     m_recoveryRestartMinutesSpin->setRange(0, 1440);
     m_recoveryRestartMinutesSpin->setSuffix(QStringLiteral(" 分钟"));
+    m_recoveryFirstActionCombo->setToolTip(
+        QStringLiteral("服务第一次失败时执行的操作"));
+    m_recoverySecondActionCombo->setToolTip(
+        QStringLiteral("服务第二次失败时执行的操作"));
+    m_recoverySubsequentActionCombo->setToolTip(
+        QStringLiteral("服务第三次及以后失败时执行的操作"));
+    m_recoveryResetDaysSpin->setToolTip(
+        QStringLiteral("经过这些天没有再失败后，把失败计数清零重新计算"));
+    m_recoveryRestartMinutesSpin->setToolTip(
+        QStringLiteral("选择“重新启动服务”时，等待多久再重启"));
     m_recoveryFailureActionsFlagCheck = new QCheckBox(QStringLiteral("启用发生错误便停止时的操作"), m_recoveryTabPage);
+    m_recoveryFailureActionsFlagCheck->setToolTip(
+        QStringLiteral("服务以错误码异常结束时也触发上面的恢复操作；不勾选则只在崩溃时触发"));
     m_recoveryRebootMessageEdit = new QLineEdit(m_recoveryTabPage);
     m_recoveryProgramEdit = new QLineEdit(m_recoveryTabPage);
     m_recoveryArgumentsEdit = new QLineEdit(m_recoveryTabPage);
     m_recoveryAppendFailCountCheck = new QCheckBox(QStringLiteral("将失败计数附加到命令行结尾 (/fail=%1%)"), m_recoveryTabPage);
+    m_recoveryAppendFailCountCheck->setToolTip(
+        QStringLiteral("运行恢复程序时，在命令行末尾附加当前是第几次失败"));
     m_recoveryBrowseProgramButton = buildPropertyActionButton(m_recoveryTabPage, ":/Icon/process_open_folder.svg", QStringLiteral("浏览恢复动作程序路径"));
 
     QWidget* programRowWidget = new QWidget(m_recoveryTabPage);

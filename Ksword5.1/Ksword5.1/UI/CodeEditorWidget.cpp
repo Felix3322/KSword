@@ -1173,14 +1173,19 @@ void CodeEditorWidget::initializeUi()
 
     m_findPrevButton = new QToolButton(m_findPanel);
     m_findPrevButton->setText(QStringLiteral("↑"));
+    m_findPrevButton->setToolTip(QStringLiteral("向上查找上一个匹配项"));
     m_findNextButton = new QToolButton(m_findPanel);
     m_findNextButton->setText(QStringLiteral("↓"));
+    m_findNextButton->setToolTip(QStringLiteral("向下查找下一个匹配项"));
     m_replaceOneButton = new QToolButton(m_findPanel);
     m_replaceOneButton->setText(QStringLiteral("替换"));
+    m_replaceOneButton->setToolTip(QStringLiteral("替换当前这一处匹配，并跳到下一处"));
     m_replaceAllButton = new QToolButton(m_findPanel);
     m_replaceAllButton->setText(QStringLiteral("全部"));
+    m_replaceAllButton->setToolTip(QStringLiteral("一次性替换文中所有匹配项"));
     m_findCloseButton = new QToolButton(m_findPanel);
     m_findCloseButton->setText(QStringLiteral("关闭"));
+    m_findCloseButton->setToolTip(QStringLiteral("关闭查找替换栏"));
 
     m_findLayout->addWidget(m_findEdit, 1);
     m_findLayout->addWidget(m_replaceEdit, 1);
@@ -1200,8 +1205,10 @@ void CodeEditorWidget::initializeUi()
     m_gotoLineEdit->setPlaceholderText(QStringLiteral("行号(从1开始)"));
     m_gotoApplyButton = new QToolButton(m_gotoPanel);
     m_gotoApplyButton->setText(QStringLiteral("执行"));
+    m_gotoApplyButton->setToolTip(QStringLiteral("跳转到左侧输入的行号"));
     m_gotoCloseButton = new QToolButton(m_gotoPanel);
     m_gotoCloseButton->setText(QStringLiteral("关闭"));
+    m_gotoCloseButton->setToolTip(QStringLiteral("关闭跳转行栏"));
     m_gotoLayout->addWidget(new QLabel(QStringLiteral("跳转行:"), m_gotoPanel));
     m_gotoLayout->addWidget(m_gotoLineEdit, 1);
     m_gotoLayout->addWidget(m_gotoApplyButton);

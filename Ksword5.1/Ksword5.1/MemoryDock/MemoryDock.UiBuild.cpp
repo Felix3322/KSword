@@ -169,6 +169,10 @@ void MemoryDock::initializeToolbar()
     m_detachButton = new QPushButton("分离", toolbarContainer);
     m_refreshButton = new QPushButton("刷新", toolbarContainer);
     m_settingsButton = new QPushButton("设置", toolbarContainer);
+    m_attachButton->setToolTip("附加到上面选中的进程，之后才能查看和搜索它的内存");
+    m_detachButton->setToolTip("从当前进程分离，释放已打开的进程句柄");
+    m_refreshButton->setToolTip("重新枚举系统进程列表");
+    m_settingsButton->setToolTip("打开内存读写方式、扫描上限等选项");
     m_attachButton->setStyleSheet(buttonStyle);
     m_detachButton->setStyleSheet(buttonStyle);
     m_refreshButton->setStyleSheet(buttonStyle);
@@ -351,6 +355,9 @@ void MemoryDock::initializeMemoryRegionTab()
     m_regionCommittedOnlyCheck = new QCheckBox("仅已提交(MEM_COMMIT)", m_tabRegions);
     m_regionImageOnlyCheck = new QCheckBox("仅映像(IMAGE)", m_tabRegions);
     m_regionReadableOnlyCheck = new QCheckBox("仅可读", m_tabRegions);
+    m_regionCommittedOnlyCheck->setToolTip("只显示已实际分配物理内存的区域，隐藏仅保留未使用的区域");
+    m_regionImageOnlyCheck->setToolTip("只显示由 exe/dll 文件映射而来的内存区域");
+    m_regionReadableOnlyCheck->setToolTip("只显示当前可以读取的内存区域，隐藏不可访问的区域");
     m_regionCommittedOnlyCheck->setChecked(true);
     m_regionReadableOnlyCheck->setChecked(true);
     filterLayout->addWidget(m_regionCommittedOnlyCheck);
@@ -437,11 +444,20 @@ void MemoryDock::initializeMemorySearchTab()
     m_searchImageOnlyCheck = new QCheckBox("仅映像", conditionGroup);
     m_searchHeapOnlyCheck = new QCheckBox("仅堆(近似)", conditionGroup);
     m_searchStackOnlyCheck = new QCheckBox("仅栈(近似)", conditionGroup);
+    m_searchTypeCombo->setToolTip("选择要搜索的数据类型；类型必须和内存中实际存放的格式一致才能搜到");
+    m_searchRangeCombo->setToolTip("限定搜索的地址范围；选“自定义范围”后可填写右侧的起止地址");
+    m_searchImageOnlyCheck->setToolTip("只在 exe/dll 映射的内存中搜索");
+    m_searchHeapOnlyCheck->setToolTip("只在推测为堆（程序动态分配）的内存中搜索，判定为近似值");
+    m_searchStackOnlyCheck->setToolTip("只在推测为栈（函数局部变量）的内存中搜索，判定为近似值");
 
     m_firstScanButton = new QPushButton("首次扫描", conditionGroup);
     m_nextScanButton = new QPushButton("再次扫描", conditionGroup);
     m_resetScanButton = new QPushButton("重置", conditionGroup);
     m_cancelScanButton = new QPushButton("取消扫描", conditionGroup);
+    m_firstScanButton->setToolTip("按上面的条件全新搜索一遍内存，得到初始结果集");
+    m_nextScanButton->setToolTip("在上次结果的基础上继续筛选，逐步缩小范围（需先完成首次扫描）");
+    m_resetScanButton->setToolTip("清空已有搜索结果，回到可重新首次扫描的状态");
+    m_cancelScanButton->setToolTip("中止正在进行的扫描");
     m_firstScanButton->setStyleSheet(buttonStyle);
     m_nextScanButton->setStyleSheet(buttonStyle);
     m_resetScanButton->setStyleSheet(buttonStyle);
@@ -482,6 +498,7 @@ void MemoryDock::initializeMemorySearchTab()
     m_nextScanCompareCombo->addItem("增加", static_cast<int>(SearchCompareMode::Increased));
     m_nextScanCompareCombo->addItem("减少", static_cast<int>(SearchCompareMode::Decreased));
     m_nextScanCompareCombo->setStyleSheet(comboStyle);
+    m_nextScanCompareCombo->setToolTip("再次扫描时的筛选方式：可按新值比较，也可按“变化/未变化/增加/减少”筛选");
 
     m_nextScanValueEdit = new QLineEdit(compareGroup);
     m_nextScanValueBEdit = new QLineEdit(compareGroup);
@@ -549,6 +566,7 @@ void MemoryDock::initializeMemoryViewerTab()
     m_viewAddressEdit->setStyleSheet(buildBlueInputStyle());
     m_viewJumpButton = new QPushButton("跳转", m_tabViewer);
     m_viewJumpButton->setStyleSheet(buildBlueButtonStyle());
+    m_viewJumpButton->setToolTip("跳转到左侧输入的内存地址并显示该处内容");
     m_viewProtectLabel = new QLabel("保护属性: -", m_tabViewer);
     navLayout->addWidget(m_viewAddressEdit, 1);
     navLayout->addWidget(m_viewJumpButton);
@@ -599,6 +617,9 @@ void MemoryDock::initializeBreakpointBookmarkTab()
     m_addBreakpointButton = new QPushButton("添加断点", breakpointPanel);
     m_removeBreakpointButton = new QPushButton("删除断点", breakpointPanel);
     m_toggleBreakpointButton = new QPushButton("启用/禁用", breakpointPanel);
+    m_addBreakpointButton->setToolTip("在指定地址下断点，目标进程执行到该处时会中断");
+    m_removeBreakpointButton->setToolTip("删除选中的断点并恢复该处的原始字节");
+    m_toggleBreakpointButton->setToolTip("临时启用或停用选中的断点，不删除该条记录");
     m_addBreakpointButton->setStyleSheet(buttonStyle);
     m_removeBreakpointButton->setStyleSheet(buttonStyle);
     m_toggleBreakpointButton->setStyleSheet(buttonStyle);
@@ -633,6 +654,10 @@ void MemoryDock::initializeBreakpointBookmarkTab()
     m_removeBookmarkButton = new QPushButton("删除书签", bookmarkPanel);
     m_refreshBookmarkButton = new QPushButton("刷新值", bookmarkPanel);
     m_jumpBookmarkButton = new QPushButton("跳转", bookmarkPanel);
+    m_addBookmarkButton->setToolTip("把当前地址收藏为书签，便于之后快速回到该位置");
+    m_removeBookmarkButton->setToolTip("删除选中的书签");
+    m_refreshBookmarkButton->setToolTip("重新读取所有书签地址处的当前值");
+    m_jumpBookmarkButton->setToolTip("在内存查看器中跳转到选中书签的地址");
     m_addBookmarkButton->setStyleSheet(buttonStyle);
     m_removeBookmarkButton->setStyleSheet(buttonStyle);
     m_refreshBookmarkButton->setStyleSheet(buttonStyle);
@@ -713,15 +738,20 @@ void MemoryDock::initializeDriverMemoryRwTab()
     m_driverMemoryBeforeSpin->setRange(0, static_cast<int>(KSWORD_ARK_MEMORY_READ_MAX_BYTES / 2UL));
     m_driverMemoryBeforeSpin->setValue(1024);
     m_driverMemoryBeforeSpin->setSuffix(" B");
+    m_driverMemoryBeforeSpin->setToolTip("从中心地址往前额外读取的字节数");
 
     m_driverMemoryAfterSpin = new QSpinBox(requestGroup);
     m_driverMemoryAfterSpin->setRange(1, static_cast<int>(KSWORD_ARK_MEMORY_READ_MAX_BYTES / 2UL));
     m_driverMemoryAfterSpin->setValue(1024);
     m_driverMemoryAfterSpin->setSuffix(" B");
+    m_driverMemoryAfterSpin->setToolTip("从中心地址往后额外读取的字节数");
 
     m_driverMemoryReadButton = new QPushButton("R0读取", requestGroup);
     m_driverMemoryApplyButton = new QPushButton("应用差异到真实内存", requestGroup);
     m_driverMemoryResetButton = new QPushButton("清空缓存", requestGroup);
+    m_driverMemoryReadButton->setToolTip("通过驱动以内核权限读取上述范围的内存，可读取普通方式无法访问的地址");
+    m_driverMemoryApplyButton->setToolTip("把下方编辑器中改动过的字节写回目标内存（会真实修改进程数据，操作危险）");
+    m_driverMemoryResetButton->setToolTip("丢弃已读取的缓存与未应用的改动");
     m_driverMemoryReadButton->setStyleSheet(buttonStyle);
     m_driverMemoryApplyButton->setStyleSheet(buttonStyle);
     m_driverMemoryResetButton->setStyleSheet(buttonStyle);

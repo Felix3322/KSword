@@ -148,6 +148,34 @@ void KernelHvmTab::initializeUi()
             "kernel.hvm.resident.stop",
             QStringLiteral("停止驻留 VMM")),
         this);
+    m_refreshButton->setToolTip(
+        kernelText(
+            "kernel.hvm.refresh.tooltip",
+            QStringLiteral("重新检测当前 CPU 支持哪些硬件虚拟化能力")));
+    m_prepareButton->setToolTip(
+        kernelText(
+            "kernel.hvm.prepare.tooltip",
+            QStringLiteral("为硬件虚拟化分配所需内存与页表结构，是启动来宾前的准备步骤")));
+    m_selfTestButton->setToolTip(
+        kernelText(
+            "kernel.hvm.self_test.tooltip",
+            QStringLiteral("逐个 CPU 核心测试虚拟化功能是否可以正常开启")));
+    m_launchButton->setToolTip(
+        kernelText(
+            "kernel.hvm.launch.tooltip",
+            QStringLiteral("启动一个一次性的虚拟机来宾用于验证，运行后立即退出")));
+    m_teardownButton->setToolTip(
+        kernelText(
+            "kernel.hvm.teardown.tooltip",
+            QStringLiteral("释放虚拟化后端占用的内存与资源")));
+    m_startResidentButton->setToolTip(
+        kernelText(
+            "kernel.hvm.resident.start.tooltip",
+            QStringLiteral("启动常驻的虚拟机监控器，持续运行以便监控（会影响系统运行状态，请谨慎使用）")));
+    m_stopResidentButton->setToolTip(
+        kernelText(
+            "kernel.hvm.resident.stop.tooltip",
+            QStringLiteral("停止常驻的虚拟机监控器并恢复系统原状")));
     m_featureActionButton = new QPushButton(this);
     if (m_featureArea == FeatureArea::Ept)
     {
