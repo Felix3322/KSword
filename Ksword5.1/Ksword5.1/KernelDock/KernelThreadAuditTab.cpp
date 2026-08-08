@@ -60,7 +60,7 @@ namespace
             .arg(KswordTheme::TextPrimaryHex())
             .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::PrimaryBlueHex)
-            .arg(QStringLiteral("#FFFFFF"))
+            .arg(KswordTheme::OnAccentHex())
             .arg(KswordTheme::TextSecondaryHex());
     }
 

@@ -279,11 +279,12 @@ void WelcomeDock::initializeLanguageButtonStyle()
         return;
     }
 
-    // 静态样式只设置一次；透明边框为自绘 RGB 边框预留固定布局空间。
+    // 静态样式使用动态 palette 角色；主背景色或主题模式变化时无需重建控件。
+    // 透明边框为自绘 RGB 边框预留固定布局空间。
     m_languageSettingsBtn->setStyleSheet(QStringLiteral(
         "QPushButton#welcomeLanguageSettingsButton{"
-        "  background-color:#111827;"
-        "  color:#FFFFFF;"
+        "  background-color:%1;"
+        "  color:%2;"
         "  border:3px solid transparent;"
         "  border-radius:10px;"
         "  padding:8px 16px;"
@@ -291,13 +292,17 @@ void WelcomeDock::initializeLanguageButtonStyle()
         "  font-weight:700;"
         "}"
         "QPushButton#welcomeLanguageSettingsButton:hover{"
-        "  background-color:#1F2937;"
+        "  background-color:%3;"
         "}"
         "QPushButton#welcomeLanguageSettingsButton:pressed{"
-        "  background-color:#030712;"
+        "  background-color:%4;"
         "  padding-top:9px;"
         "  padding-bottom:7px;"
-        "}"));
+        "}")
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::TextPrimaryHex())
+        .arg(KswordTheme::SurfaceAltHex())
+        .arg(KswordTheme::BorderHex()));
 }
 
 void WelcomeDock::updateLanguageButtonRgbBorder()

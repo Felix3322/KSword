@@ -687,11 +687,12 @@ void KernelIoTimerTab::showContextMenu(const QPoint& localPosition)
     menu.setStyleSheet(QStringLiteral(
         "QMenu{background:%1;color:%2;border:1px solid %3;}"
         "QMenu::item{padding:5px 22px 5px 8px;}"
-        "QMenu::item:selected{background:%4;color:#FFFFFF;}")
+        "QMenu::item:selected{background:%4;color:%5;}")
         .arg(KswordTheme::SurfaceHex())
         .arg(KswordTheme::TextPrimaryHex())
         .arg(KswordTheme::BorderHex())
-        .arg(KswordTheme::PrimaryBlueHex));
+        .arg(KswordTheme::PrimaryBlueHex)
+        .arg(KswordTheme::OnAccentHex()));
     QAction* startAction = menu.addAction(
         QIcon(QStringLiteral(":/Icon/process_resume.svg")),
         ioTimerText("kernel.iotimer.control.start", QStringLiteral("启动 IoTimer")));

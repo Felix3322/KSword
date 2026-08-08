@@ -9804,10 +9804,10 @@ void MainWindow::applyAppearanceSettings(
         globalAppStyleChanged = applyGlobalApplicationStyleBlocks(
             buildGlobalTooltipStyleBlock(darkModeEnabled),
             buildGlobalContextMenuStyleBlock(darkModeEnabled),
-            &globalAppStyleApplyMs,
-            &globalAppStyleWidgetCount,
             buildGlobalControlContrastStyleBlock(darkModeEnabled),
             buildGlobalComboBoxStyleBlock(darkModeEnabled),
+            &globalAppStyleApplyMs,
+            &globalAppStyleWidgetCount,
             &globalAppStyleLength);
         if (globalAppStyleChanged || isInitialAppearanceApply)
         {
