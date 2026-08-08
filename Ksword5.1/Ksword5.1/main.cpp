@@ -460,16 +460,20 @@ namespace
     bool registerUnlockerContextMenu(const std::wstring& executablePath)
     {
         const std::wstring commandForFile = L"\"" + executablePath + L"\" --unlock \"%1\"";
-        const std::wstring commandForBackground = L"\"" + executablePath + L"\" --unlock \"%V\"";
 
         const std::wstring baseStar = L"Software\\Classes\\*\\shell\\" + std::wstring(kUnlockerKeyName);
         const std::wstring baseDirectory = L"Software\\Classes\\Directory\\shell\\" + std::wstring(kUnlockerKeyName);
         const std::wstring baseDrive = L"Software\\Classes\\Drive\\shell\\" + std::wstring(kUnlockerKeyName);
-        const std::wstring baseBackground =
-            L"Software\\Classes\\Directory\\Background\\shell\\" + std::wstring(kUnlockerKeyName);
         const std::wstring menuText = ks::i18n::contextText(
             QStringLiteral("main.unlocker.menu"),
             QStringLiteral("使用 Ksword 文件解锁器(R3/R0)")).toStdWString();
+
+        // 解锁器只对“选中的文件/文件夹/驱动器”有意义，因此不再注册 Directory\Background：
+        // 该位置是桌面和文件夹空白处的右键菜单，没有选中目标，菜单项纯属噪音。
+        // 旧版本写过这个键，注册时顺带清掉，避免升级后残留在桌面右键上。
+        deleteRegistryTreeBestEffort(
+            HKEY_CURRENT_USER,
+            L"Software\\Classes\\Directory\\Background\\shell\\" + std::wstring(kUnlockerKeyName));
 
         const bool starOk =
             writeRegistryString(HKEY_CURRENT_USER, baseStar, nullptr, menuText.c_str())
@@ -483,12 +487,8 @@ namespace
             writeRegistryString(HKEY_CURRENT_USER, baseDrive, nullptr, menuText.c_str())
             && writeRegistryString(HKEY_CURRENT_USER, baseDrive, L"Icon", executablePath)
             && writeRegistryString(HKEY_CURRENT_USER, baseDrive + L"\\command", nullptr, commandForFile);
-        const bool backgroundOk =
-            writeRegistryString(HKEY_CURRENT_USER, baseBackground, nullptr, menuText.c_str())
-            && writeRegistryString(HKEY_CURRENT_USER, baseBackground, L"Icon", executablePath)
-            && writeRegistryString(HKEY_CURRENT_USER, baseBackground + L"\\command", nullptr, commandForBackground);
 
-        return starOk && directoryOk && driveOk && backgroundOk;
+        return starOk && directoryOk && driveOk;
     }
 
     void unregisterUnlockerContextMenu()
@@ -502,6 +502,7 @@ namespace
         deleteRegistryTreeBestEffort(
             HKEY_CURRENT_USER,
             L"Software\\Classes\\Drive\\shell\\" + std::wstring(kUnlockerKeyName));
+        // Directory\Background 已不再注册，但仍要删：旧版本装过的用户需要被清理干净。
         deleteRegistryTreeBestEffort(
             HKEY_CURRENT_USER,
             L"Software\\Classes\\Directory\\Background\\shell\\" + std::wstring(kUnlockerKeyName));
