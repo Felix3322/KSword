@@ -400,6 +400,9 @@ namespace
         defaultSettings.notificationLogDisplaySeconds = 10;
         defaultSettings.notificationDisplayPlacement = ks::settings::NotificationDisplayPlacement::Screen;
         defaultSettings.notificationStackDirection = ks::settings::NotificationStackDirection::BottomUp;
+        defaultSettings.dumpAutoCheckEnabled = true;
+        defaultSettings.dumpAutoCheckPromptedPath.clear();
+        defaultSettings.dumpAutoCheckPromptedTimeMsec = 0;
         defaultSettings.suppressR0FeaturePrompts = false;
         defaultSettings.suppressDangerousActionConfirmations = false;
         defaultSettings.logWindowGeometryBase64.clear();
@@ -631,6 +634,18 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
         == QStringLiteral("top_down")
         ? NotificationStackDirection::TopDown
         : NotificationStackDirection::BottomUp;
+    loadedSettings.dumpAutoCheckEnabled = rootObject
+        .value(QStringLiteral("dump_auto_check_enabled"))
+        .toBool(loadedSettings.dumpAutoCheckEnabled);
+    loadedSettings.dumpAutoCheckPromptedPath = rootObject
+        .value(QStringLiteral("dump_auto_check_prompted_path"))
+        .toString();
+    // 时间戳按字符串存取：JSON 数值是 double，毫秒级时间戳落在 2^53 内虽然
+    // 不会丢精度，但用字符串更明确，也避免不同 Qt 版本的数值序列化差异。
+    loadedSettings.dumpAutoCheckPromptedTimeMsec = rootObject
+        .value(QStringLiteral("dump_auto_check_prompted_time_msec"))
+        .toString()
+        .toLongLong();
     loadedSettings.suppressR0FeaturePrompts = rootObject
         .value(QStringLiteral("suppress_r0_feature_prompts"))
         .toBool(loadedSettings.suppressR0FeaturePrompts);
@@ -746,6 +761,15 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
         settings.notificationStackDirection == NotificationStackDirection::TopDown
         ? QStringLiteral("top_down")
         : QStringLiteral("bottom_up"));
+    rootObject.insert(
+        QStringLiteral("dump_auto_check_enabled"),
+        settings.dumpAutoCheckEnabled);
+    rootObject.insert(
+        QStringLiteral("dump_auto_check_prompted_path"),
+        settings.dumpAutoCheckPromptedPath);
+    rootObject.insert(
+        QStringLiteral("dump_auto_check_prompted_time_msec"),
+        QString::number(settings.dumpAutoCheckPromptedTimeMsec));
     rootObject.insert(
         QStringLiteral("suppress_r0_feature_prompts"),
         settings.suppressR0FeaturePrompts);

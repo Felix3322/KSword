@@ -29,6 +29,7 @@ class QLineEdit;
 class QPushButton;
 class QTabWidget;
 class QTableWidget;
+class QTextBrowser;
 struct MinidumpAsyncState;
 
 namespace ks::minidump
@@ -46,6 +47,11 @@ public:
 
     // 析构函数作用：使尚未回到 UI 线程的异步解析结果失效。
     ~MinidumpDock() override;
+
+    // openDumpFile 作用：由外部指定转储文件并立即开始解析。
+    // 参数 filePath：转储文件完整路径；返回值：无。
+    // 供 MainWindow 的"发现新转储"询问弹窗在用户确认后调用。
+    void openDumpFile(const QString& filePath);
 
 protected:
     // changeEvent 作用：语言切换时重译固定控件并重绘已有解析结果。
@@ -69,6 +75,12 @@ private:
     // renderResult 作用：把解析结果渲染为概览、异常、流、模块等页签。
     // 参数 result：解析结果；返回值：无。实现位于 MinidumpDock.Tables.cpp。
     void renderResult(const ks::minidump::DumpParseResult& result);
+
+    // promptKswordRelatedCrash 作用：解析结果指向 KSword 自身组件时引导上报。
+    // 参数 result：解析结果；返回值：无。
+    // 只在命中肇事候选/调用栈/已卸载表时弹出——仅出现在已加载模块表里
+    // 不构成证据，KSword 运行期间它必然在表里。
+    void promptKswordRelatedCrash(const ks::minidump::DumpParseResult& result);
 
     // clearResultTabs 作用：移除全部结果页签（控件复用，不销毁）。
     void clearResultTabs();
@@ -101,7 +113,10 @@ private:
     QLabel* m_statusLabel = nullptr;    // m_statusLabel：展示当前任务及最终结果。
 
     QTabWidget* m_resultTabs = nullptr; // m_resultTabs：解析结果页签容器。
-    QTableWidget* m_analysisTable = nullptr;  // m_analysisTable：诊断结论“项目-内容”表。
+    // m_analysisView：诊断结论页。
+    // 这里刻意不用表格：结论是"一句话判断 + 证据链 + 建议"这种叙述性内容，
+    // 塞进"项目-内容"两列会让每条证据都重复一遍"发现"二字，关键结论也淹没在行里。
+    QTextBrowser* m_analysisView = nullptr;
     QTableWidget* m_blameTable = nullptr;     // m_blameTable：肇事模块候选表。
     QTableWidget* m_stackTable = nullptr;     // m_stackTable：疑似调用栈表。
     QTableWidget* m_registerTable = nullptr;  // m_registerTable：崩溃点寄存器表。

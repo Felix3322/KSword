@@ -11,10 +11,14 @@
 #include "MinidumpDock.h"
 
 #include "../Framework.h"
+#include "DumpAnalyzer.h"
+#include "DumpAutoCheck.h"
 #include "Internationalization/LanguageManager.h"
 #include "MinidumpParser.h"
 #include "UI/CodeEditorWidget.h"
+#include "theme.h"
 
+#include <QDesktopServices>
 #include <QDir>
 #include <QEvent>
 #include <QFile>
@@ -29,7 +33,9 @@
 #include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTextBrowser>
 #include <QThreadPool>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <exception>
@@ -47,6 +53,32 @@ struct MinidumpAsyncState
 
 namespace
 {
+    // dumpInputStyle / dumpButtonStyle 作用：
+    // - 给本页的输入框与按钮套上与其它 Dock 一致的主题外观；
+    // - 颜色一律取自 KswordTheme token，不写死任何色值，
+    //   这样主题切换与自定义强调色能同步生效。
+    QString dumpInputStyle()
+    {
+        return QStringLiteral(
+            "QLineEdit{"
+            "  border:1px solid %2;"
+            "  border-radius:4px;"
+            "  background:%3;"
+            "  color:%4;"
+            "  padding:2px 6px;"
+            "}"
+            "QLineEdit:focus{ border:1px solid %1; }")
+            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
+            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::SurfaceColorHex())
+            .arg(KswordTheme::TextPrimaryColorHex());
+    }
+
+    QString dumpButtonStyle()
+    {
+        return KswordTheme::ThemedButtonStyle();
+    }
+
     // defaultDumpDirectory 作用：给文件选择器一个有意义的起始目录。
     // 优先系统蓝屏小型转储目录，其次 Windows 目录（MEMORY.DMP 所在），
     // 都不存在时回退用户主目录；返回本地风格路径。
@@ -119,6 +151,17 @@ void MinidumpDock::buildUi()
     m_parseButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     m_exportButton->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
     m_exportButton->setEnabled(false);
+
+    // 主题化：此前这些控件用的是 Qt 默认外观，和其它 Dock 的蓝色主题对不上。
+    const QString inputStyle = dumpInputStyle();
+    const QString buttonStyle = dumpButtonStyle();
+    m_pathEdit->setStyleSheet(inputStyle);
+    for (QPushButton* const actionButton :
+        { m_browseButton, m_systemDirButton, m_parseButton, m_exportButton })
+    {
+        actionButton->setStyleSheet(buttonStyle);
+    }
+
     pathLayout->addWidget(m_pathLabel);
     pathLayout->addWidget(m_pathEdit, 1);
     pathLayout->addWidget(m_browseButton);
@@ -139,7 +182,9 @@ void MinidumpDock::buildUi()
     rootLayout->addWidget(m_resultTabs, 1);
 
     // 预创建全部表格与报告编辑器：语言切换/重复解析时复用，不反复销毁。
-    m_analysisTable = createReadOnlyTable(m_resultTabs);
+    m_analysisView = new QTextBrowser(m_resultTabs);
+    m_analysisView->setOpenExternalLinks(false);
+    m_analysisView->setFrameShape(QFrame::NoFrame);
     m_blameTable = createReadOnlyTable(m_resultTabs);
     m_stackTable = createReadOnlyTable(m_resultTabs);
     m_registerTable = createReadOnlyTable(m_resultTabs);
@@ -151,8 +196,7 @@ void MinidumpDock::buildUi()
     m_memoryTable = createReadOnlyTable(m_resultTabs);
     m_handleTable = createReadOnlyTable(m_resultTabs);
     m_unloadedTable = createReadOnlyTable(m_resultTabs);
-    // 诊断结论与调用栈都以长文本为主，允许换行以免关键结论被省略号截断。
-    m_analysisTable->setWordWrap(true);
+    // 肇事模块表的证据列是长文本，允许换行以免被省略号截断。
     m_blameTable->setWordWrap(true);
     // 调用栈表不拆 A/B/C：它的“来源”列标着「栈扫描（可能误报）」，
     // 一旦被列组预设隐藏，整页就再没有任何地方提示这些帧是猜的。
@@ -164,6 +208,27 @@ void MinidumpDock::buildUi()
     m_memoryPage = createStructuredTablePage(m_memoryTable, 6);
     m_handlePage = createStructuredTablePage(m_handleTable, 7);
     m_reportEditor = new CodeEditorWidget(m_resultTabs);
+
+    // 预创建的页全部以 m_resultTabs 为父，但此刻一个都还没 addTab。
+    // 有父而未进 tab 栈的控件会作为 QTabWidget 的普通子控件浮在客户区上，
+    // 表现就是"几个表格和列组按钮叠在一起"。必须显式隐藏，
+    // 由 addTab 负责在需要时显示；clearResultTabs 移除后也要重新隐藏。
+    for (QWidget* const pendingPage : {
+            static_cast<QWidget*>(m_analysisView),
+            static_cast<QWidget*>(m_blameTable),
+            static_cast<QWidget*>(m_overviewTable),
+            static_cast<QWidget*>(m_exceptionTable),
+            static_cast<QWidget*>(m_streamTable),
+            static_cast<QWidget*>(m_unloadedTable),
+            static_cast<QWidget*>(m_registerTable),
+            m_stackPage, m_modulePage, m_threadPage, m_memoryPage, m_handlePage,
+            static_cast<QWidget*>(m_reportEditor) })
+    {
+        if (pendingPage != nullptr)
+        {
+            pendingPage->hide();
+        }
+    }
 
     // 所有动作统一进入成员函数的校验流程。
     connect(m_browseButton, &QPushButton::clicked, this, [this]() { chooseFile(); });
@@ -384,10 +449,26 @@ void MinidumpDock::finishParse(
             kindText = translated("minidump.kind.unknown", "未知");
             break;
         }
-        setStatus(
-            "minidump.status.success",
-            "解析完成：%1（%2）。",
-            QStringList{ m_lastResult->filePath, kindText });
+        // 状态行放结论而不是路径：路径就在上方的输入框里，重复一遍没有信息量，
+        // 而"结论 + 可信度"是用户解析完最想立刻看到的一句话。
+        if (!m_lastResult->analysis.headline.isEmpty())
+        {
+            setStatus(
+                "minidump.status.success_analysis",
+                "%1（%2 · 可信度 %3）",
+                QStringList{
+                    ks::i18n::sourceText(m_lastResult->analysis.headline),
+                    kindText,
+                    ks::i18n::sourceText(ks::minidump::AnalysisConfidenceText(
+                        m_lastResult->analysis.confidence)) });
+        }
+        else
+        {
+            setStatus(
+                "minidump.status.success",
+                "解析完成：%1（%2）。",
+                QStringList{ m_lastResult->filePath, kindText });
+        }
     }
     else if (m_lastResult->recognized)
     {
@@ -403,6 +484,78 @@ void MinidumpDock::finishParse(
             "minidump.status.unrecognized",
             "不是受支持的转储文件：%1",
             QStringList{ ks::i18n::sourceText(m_lastResult->errorText) });
+    }
+
+    if (m_lastResult->success)
+    {
+        promptKswordRelatedCrash(*m_lastResult);
+    }
+}
+
+void MinidumpDock::openDumpFile(const QString& filePath)
+{
+    const QString normalizedPath = QDir::toNativeSeparators(filePath.trimmed());
+    if (normalizedPath.isEmpty() || m_pathEdit == nullptr)
+    {
+        return;
+    }
+    m_pathEdit->setText(normalizedPath);
+    beginParse();
+}
+
+void MinidumpDock::promptKswordRelatedCrash(const ks::minidump::DumpParseResult& result)
+{
+    const ks::minidump::KswordRelevance relevance =
+        ks::minidump::EvaluateKswordRelevance(result);
+    if (!relevance.related)
+    {
+        return;
+    }
+
+    {
+        kLogEvent relatedEvent;
+        warn << relatedEvent << "MinidumpDock 解析结果指向 KSword 自身组件: "
+             << result.filePath.toStdString()
+             << " 命中 " << relevance.matchedModules.join(QStringLiteral(",")).toStdString()
+             << eol;
+    }
+
+    QMessageBox messageBox(this);
+    messageBox.setIcon(QMessageBox::Warning);
+    messageBox.setWindowTitle(
+        translated("minidump.dialog.ksword_related.title", "这次崩溃与 KSword 有关"));
+    messageBox.setText(
+        translated("minidump.dialog.ksword_related.text", "这次崩溃与 KSword 有关"));
+    messageBox.setInformativeText(
+        ks::i18n::sourceText(
+            ks::minidump::BuildKswordReportGuidance(relevance, result.filePath)));
+
+    QPushButton* const qqButton = messageBox.addButton(
+        translated("minidump.dialog.ksword_related.qq", "加入 QQ 群反馈"),
+        QMessageBox::ActionRole);
+    QPushButton* const issueButton = messageBox.addButton(
+        translated("minidump.dialog.ksword_related.issue", "打开 GitHub Issues"),
+        QMessageBox::ActionRole);
+    QPushButton* const exportButton = messageBox.addButton(
+        translated("minidump.dialog.ksword_related.export", "先导出报告"),
+        QMessageBox::ActionRole);
+    messageBox.addButton(
+        translated("minidump.dialog.ksword_related.close", "知道了"),
+        QMessageBox::RejectRole);
+    messageBox.exec();
+
+    // 三个动作按钮都不关闭"下次还提示"的开关：与 KSword 有关的崩溃每次都值得提醒。
+    if (messageBox.clickedButton() == qqButton)
+    {
+        QDesktopServices::openUrl(QUrl(ks::minidump::KswordQqGroupUrl()));
+    }
+    else if (messageBox.clickedButton() == issueButton)
+    {
+        QDesktopServices::openUrl(QUrl(ks::minidump::KswordIssuesUrl()));
+    }
+    else if (messageBox.clickedButton() == exportButton)
+    {
+        exportReport();
     }
 }
 

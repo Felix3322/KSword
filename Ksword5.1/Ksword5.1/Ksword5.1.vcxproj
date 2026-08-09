@@ -298,6 +298,7 @@
     <ClCompile Include="MinidumpDock\DumpSymbolIndex.cpp" />
     <ClCompile Include="MinidumpDock\KernelDumpParser.cpp" />
     <ClCompile Include="MinidumpDock\DumpPhysicalMemory.cpp" />
+    <ClCompile Include="MinidumpDock\DumpAutoCheck.cpp" />
     <ClCompile Include="MinidumpDock\DumpPageTable.cpp" />
     <ClCompile Include="MinidumpDock\DumpKernelModuleList.cpp" />
     <ClCompile Include="MinidumpDock\MinidumpCodeText.cpp" />
@@ -622,6 +623,7 @@
     <ClInclude Include="MinidumpDock\DumpSymbolIndex.h" />
     <ClInclude Include="MinidumpDock\KernelDumpParser.h" />
     <ClInclude Include="MinidumpDock\DumpPhysicalMemory.h" />
+    <ClInclude Include="MinidumpDock\DumpAutoCheck.h" />
     <ClInclude Include="MinidumpDock\DumpPageTable.h" />
     <ClInclude Include="MinidumpDock\DumpKernelModuleList.h" />
     <ClInclude Include="MinidumpDock\MinidumpCodeText.h" />

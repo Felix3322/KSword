@@ -27,6 +27,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextBrowser>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -99,15 +100,25 @@ QTableWidget* MinidumpDock::createReadOnlyTable(QWidget* parent) const
     table->verticalHeader()->setVisible(false);
     table->horizontalHeader()->setSectionsMovable(true);
     table->horizontalHeader()->setStretchLastSection(true);
+    // 表头左对齐：末列被拉伸后会很宽，居中的表头文字会飘到列中央，
+    // 和左对齐的数据完全对不上。数据表的惯例本来也是左对齐。
+    table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     return table;
 }
 
 void MinidumpDock::clearResultTabs()
 {
     // 只摘下页签不销毁控件：全部表格/编辑器都是预创建的复用成员。
+    // removeTab 不会改变父子关系，被摘下的控件仍是 m_resultTabs 的子控件；
+    // 若不显式隐藏，它会作为普通子控件浮在当前页之上，看起来就是"表格重叠"。
     while (m_resultTabs->count() > 0)
     {
+        QWidget* const detachedPage = m_resultTabs->widget(0);
         m_resultTabs->removeTab(0);
+        if (detachedPage != nullptr)
+        {
+            detachedPage->hide();
+        }
     }
 }
 
@@ -304,53 +315,216 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
     // 恰恰最需要把「这不是崩溃现场」讲清楚，藏起来只会让人白找崩溃点。
     if (result.success && !analysis.headline.isEmpty())
     {
-        beginFill(m_analysisTable);
-        m_analysisTable->setColumnCount(2);
-        m_analysisTable->setHorizontalHeaderLabels({
-            translated("minidump.column.item", "项目"),
-            translated("minidump.column.content", "内容") });
-        // analysisRows：结论 + 可信度 + 归类（归类可能为空）+ 发现 N 行 + 建议 M 行。
-        const int analysisRowCount = 2 +
-            (analysis.category.isEmpty() ? 0 : 1) +
-            static_cast<int>(analysis.findings.size()) +
-            static_cast<int>(analysis.suggestions.size());
-        m_analysisTable->setRowCount(analysisRowCount);
-        int analysisRow = 0;
-        // appendAnalysisRow：统一写入一行“项目-内容”。
-        const auto appendAnalysisRow =
-            [this, &analysisRow](const QString& item, const QString& content)
-            {
-                m_analysisTable->setItem(analysisRow, 0, makeItem(item));
-                m_analysisTable->setItem(analysisRow, 1, makeItem(content));
-                ++analysisRow;
-            };
-        appendAnalysisRow(
-            translated("minidump.analysis.headline", "结论"),
-            ks::i18n::sourceText(analysis.headline));
-        appendAnalysisRow(
-            translated("minidump.analysis.confidence", "可信度"),
-            ks::i18n::sourceText(ks::minidump::AnalysisConfidenceText(analysis.confidence)));
+        // 结论页按"先说结论，再给证据，最后给动作"的顺序排版。
+        // 可信度用带底色的徽章而不是一行文字：它决定了这份结论该被多认真地对待，
+        // 必须一眼看到，不能和其它属性混在一起。
+        const QString accentHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Blue);
+        const QString textHex = KswordTheme::TextPrimaryColorHex();
+        const QString mutedHex = KswordTheme::TextDisabledColorHex();
+        const QString borderHex = KswordTheme::BorderColorHex();
+        const QString surfaceAltHex = KswordTheme::SurfaceAltColorHex();
+
+        // confidenceHex：可信度越低越要显眼地降调，避免低可信结论被当成定论。
+        QString confidenceHex = mutedHex;
+        switch (analysis.confidence)
+        {
+        case ks::minidump::AnalysisConfidence::High:
+            confidenceHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Red);
+            break;
+        case ks::minidump::AnalysisConfidence::Medium:
+            confidenceHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Orange);
+            break;
+        case ks::minidump::AnalysisConfidence::Low:
+            confidenceHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Yellow);
+            break;
+        case ks::minidump::AnalysisConfidence::None:
+        default:
+            break;
+        }
+
+        // escape：结论文本里可能出现 <> &，必须转义后再拼进 HTML。
+        const auto escape = [](const QString& text) { return text.toHtmlEscaped(); };
+
+        QString html;
+        html.reserve(2048);
+        html += QStringLiteral("<div style='color:%1;'>").arg(textHex);
+
+        // 一句话结论：整页最大的字号，单独成块。
+        html += QStringLiteral(
+            "<div style='font-size:15pt; font-weight:600; line-height:150%%; margin:2px 0 10px 0;'>%1</div>")
+            .arg(escape(ks::i18n::sourceText(analysis.headline)));
+
+        // 徽章行：可信度 + 故障归类。
+        html += QStringLiteral("<div style='margin-bottom:14px;'>");
+        html += QStringLiteral(
+            "<span style='background:%1; color:#FFFFFF; padding:3px 10px; "
+            "border-radius:4px; font-weight:600;'>%2 %3</span>")
+            .arg(confidenceHex)
+            .arg(translated("minidump.analysis.confidence", "可信度"))
+            .arg(escape(ks::i18n::sourceText(
+                ks::minidump::AnalysisConfidenceText(analysis.confidence))));
         if (!analysis.category.isEmpty())
         {
-            appendAnalysisRow(
-                translated("minidump.analysis.category", "故障归类"),
-                ks::i18n::sourceText(analysis.category));
+            html += QStringLiteral(
+                "&nbsp;&nbsp;<span style='background:%1; color:%2; padding:3px 10px; "
+                "border-radius:4px; border:1px solid %3;'>%4</span>")
+                .arg(surfaceAltHex)
+                .arg(textHex)
+                .arg(borderHex)
+                .arg(escape(ks::i18n::sourceText(analysis.category)));
         }
+        html += QStringLiteral("</div>");
+
+        // sectionHtml：统一渲染"小标题 + 条目列表"。
+        const auto sectionHtml =
+            [&escape, &accentHex, &textHex](const QString& title, const QStringList& items)
+            {
+                if (items.isEmpty())
+                {
+                    return QString();
+                }
+                QString block = QStringLiteral(
+                    "<div style='color:%1; font-weight:600; font-size:11pt; "
+                    "margin:0 0 6px 0;'>%2</div>")
+                    .arg(accentHex)
+                    .arg(escape(title));
+                block += QStringLiteral("<div style='margin:0 0 16px 0;'>");
+                for (const QString& item : items)
+                {
+                    // 用悬挂缩进的行而不是 <ul>：Qt 富文本对列表的边距控制很有限，
+                    // 长条目换行后会顶到项目符号下面，读起来更乱。
+                    block += QStringLiteral(
+                        "<div style='color:%1; line-height:160%%; margin-bottom:5px;'>"
+                        "<span style='color:%2;'>▸</span>&nbsp;%3</div>")
+                        .arg(textHex)
+                        .arg(accentHex)
+                        .arg(escape(item));
+                }
+                block += QStringLiteral("</div>");
+                return block;
+            };
+
+        QStringList localizedFindings;
         for (const QString& finding : analysis.findings)
         {
-            appendAnalysisRow(
-                translated("minidump.analysis.finding", "发现"),
-                ks::i18n::sourceText(finding));
+            localizedFindings.append(ks::i18n::sourceText(finding));
         }
+        QStringList localizedSuggestions;
         for (const QString& suggestion : analysis.suggestions)
         {
-            appendAnalysisRow(
-                translated("minidump.analysis.suggestion", "排查建议"),
-                ks::i18n::sourceText(suggestion));
+            localizedSuggestions.append(ks::i18n::sourceText(suggestion));
         }
-        endFill(m_analysisTable);
-        m_analysisTable->resizeRowsToContents();
-        m_resultTabs->addTab(m_analysisTable,
+
+        // 崩溃点：整份报告里最该被记住的一个地址，单独成块并用等宽字体，
+        // 免得在证据条目里跟其它文字混成一片。
+        if (result.faultingAddress != 0)
+        {
+            // faultSymbol：优先用肇事候选里与崩溃地址同模块的那条，给出"模块+偏移"。
+            QString faultSymbol;
+            for (const ks::minidump::BlameEntry& blame : analysis.blame)
+            {
+                if (blame.address == result.faultingAddress && !blame.moduleName.isEmpty())
+                {
+                    faultSymbol = QStringLiteral("%1+0x%2")
+                        .arg(blame.moduleName)
+                        .arg(QString::number(blame.offset, 16).toUpper());
+                    break;
+                }
+            }
+            html += QStringLiteral(
+                "<div style='background:%1; border:1px solid %2; border-radius:6px; "
+                "padding:8px 12px; margin-bottom:16px;'>"
+                "<span style='color:%3;'>%4</span>&nbsp;&nbsp;"
+                "<span style='font-family:Consolas,monospace; font-size:11pt; color:%5;'>%6</span>")
+                .arg(surfaceAltHex)
+                .arg(borderHex)
+                .arg(mutedHex)
+                .arg(translated("minidump.analysis.fault_address", "崩溃点"))
+                .arg(textHex)
+                .arg(hexText(result.faultingAddress));
+            if (!faultSymbol.isEmpty())
+            {
+                html += QStringLiteral(
+                    "&nbsp;&nbsp;<span style='color:%1; font-weight:600;'>%2</span>")
+                    .arg(accentHex)
+                    .arg(escape(faultSymbol));
+            }
+            html += QStringLiteral("</div>");
+        }
+
+        // 肇事模块候选直接嵌进本页：它是结论的直接依据，让用户为了看第一嫌疑
+        // 再跳一个页签没有道理。权重画成条形，相对高低一眼可见。
+        if (!analysis.blame.empty())
+        {
+            html += QStringLiteral(
+                "<div style='color:%1; font-weight:600; font-size:11pt; margin:0 0 8px 0;'>%2</div>")
+                .arg(accentHex)
+                .arg(escape(translated("minidump.analysis.blame_title", "肇事模块候选")));
+
+            // maxWeight：条形长度的基准。权重全为 0 时退化为等长，避免除零。
+            int maxWeight = 1;
+            for (const ks::minidump::BlameEntry& blame : analysis.blame)
+            {
+                maxWeight = std::max(maxWeight, blame.weight);
+            }
+
+            // 只列前若干条：候选表尾部通常是权重极低的噪音，完整列表在专页里。
+            constexpr std::size_t kInlineBlameLimit = 5;
+            const std::size_t shownCount =
+                std::min(kInlineBlameLimit, analysis.blame.size());
+            html += QStringLiteral("<table cellspacing='0' cellpadding='0' width='100%'>");
+            for (std::size_t blameIndex = 0; blameIndex < shownCount; ++blameIndex)
+            {
+                const ks::minidump::BlameEntry& blame = analysis.blame[blameIndex];
+                const int barPercent =
+                    std::clamp(blame.weight * 100 / maxWeight, 3, 100);
+                // 第一名用强调色，其余用中性色：排序本身已经表达了先后，
+                // 全部上色反而让"第一名"失去意义。
+                const QString barColor = (blameIndex == 0) ? confidenceHex : borderHex;
+                const QString nameText = blame.unloadedModule
+                    ? QStringLiteral("%1 [%2]")
+                        .arg(blame.moduleName, translated("minidump.blame.unloaded", "已卸载"))
+                    : blame.moduleName;
+                html += QStringLiteral(
+                    "<tr>"
+                    "<td width='34%%' style='padding:3px 8px 3px 0; color:%1;'>%2</td>"
+                    "<td width='50%%' style='padding:3px 0;'>"
+                    "<table cellspacing='0' cellpadding='0' width='100%%'><tr>"
+                    "<td width='%3%%' style='background:%4;'>&nbsp;</td>"
+                    "<td>&nbsp;</td></tr></table></td>"
+                    "<td width='16%%' style='padding:3px 0 3px 8px; color:%5;'>%6 %7</td>"
+                    "</tr>")
+                    .arg(textHex)
+                    .arg(escape(nameText))
+                    .arg(barPercent)
+                    .arg(barColor)
+                    .arg(mutedHex)
+                    .arg(translated("minidump.column.weight", "证据权重"))
+                    .arg(blame.weight);
+            }
+            html += QStringLiteral("</table>");
+            if (analysis.blame.size() > shownCount)
+            {
+                html += QStringLiteral(
+                    "<div style='color:%1; margin:4px 0 0 0;'>%2</div>")
+                    .arg(mutedHex)
+                    .arg(escape(translated(
+                        "minidump.analysis.blame_more",
+                        "更多候选与逐条证据见“肇事模块”页。")));
+            }
+            html += QStringLiteral("<div style='margin-bottom:16px;'></div>");
+        }
+
+        html += sectionHtml(
+            translated("minidump.analysis.findings_title", "证据"),
+            localizedFindings);
+        html += sectionHtml(
+            translated("minidump.analysis.suggestions_title", "接下来怎么做"),
+            localizedSuggestions);
+
+        html += QStringLiteral("</div>");
+        m_analysisView->setHtml(html);
+        m_resultTabs->addTab(m_analysisView,
             translated("minidump.tab.analysis", "诊断结论"));
     }
 

@@ -556,6 +556,9 @@
     <ClCompile Include="MinidumpDock\DumpPhysicalMemory.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpAutoCheck.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MinidumpDock\DumpPageTable.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1170,6 +1173,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MinidumpDock\DumpPhysicalMemory.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpAutoCheck.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MinidumpDock\DumpPageTable.h">

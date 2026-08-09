@@ -162,6 +162,7 @@ private:
         bool manualParsePendingShowWarning = false; // 待执行请求是否需要失败弹框。
         int manualParseRequestSerial = 0;      // 手动解析请求序列号（用于丢弃过期结果）。
         QString manualParsingPath;             // 当前后台解析正在处理的路径（用于避免同路径重复解析）。
+        int manualParsingReadMode = -1;        // 当前后台解析使用的读取方式索引；同路径换方式必须重解析。
     };
 
     struct FileOplockAccessRecord;

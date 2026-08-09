@@ -285,6 +285,9 @@ private:
     // m_suppressR0FeaturePromptsCheckBox 作用：设置是否关闭 R0 驱动未启用或权限不足时的自动提示。
     QCheckBox* m_suppressR0FeaturePromptsCheckBox = nullptr;
 
+    // m_dumpAutoCheckCheckBox 作用：设置启动后是否检查系统近期的新崩溃转储。
+    QCheckBox* m_dumpAutoCheckCheckBox = nullptr;
+
     // m_installTaskmgrHijackButton 作用：调用当前目录 TaskmgrHijack.ps1 安装 taskmgr.exe IFEO 映像劫持。
     QPushButton* m_installTaskmgrHijackButton = nullptr;
 

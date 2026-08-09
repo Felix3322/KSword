@@ -368,6 +368,26 @@ private:
     // 调用方式：MainWindow 构造末尾调用。
     void initAppearanceSettings();
 
+    // reattachDetachedFeatureDocks 作用：
+    // - 把布局恢复后仍游离在浮动容器里的主功能 Dock 收回主 Dock 区；
+    // - 用户的布局配置是在旧版本保存的，其中不含后来新增的 Dock，
+    //   ADS restoreState 不会为它们安置位置，结果就是"新功能默认以窗口弹出"；
+    // - 每次新增主功能 Dock 都会遇到同一问题，因此做成通用修复而不是特判。
+    // 调用方式：restoreDockLayoutFromConfig 之后调用一次。
+    void reattachDetachedFeatureDocks();
+
+    // checkRecentCrashDumps 作用：
+    // - 启动稳定后检查系统近 24 小时内是否产生过新的崩溃转储；
+    // - 有则弹窗询问是否立即解析，弹窗内含"不再检查"选项；
+    // - 同一个转储只询问一次，记录写入外观配置。
+    // 调用方式：showEvent 的延迟任务里调用一次；设置关闭时直接返回。
+    void checkRecentCrashDumps();
+
+    // openMinidumpDockWithFile 作用：
+    // - 激活"转储分析"页（必要时先完成懒加载），并让它解析指定文件。
+    // 入参 filePath：转储文件完整路径。
+    void openMinidumpDockWithFile(const QString& filePath);
+
     void setupDockLayout();
 
     // initCustomTitleBar 作用：

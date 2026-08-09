@@ -59,6 +59,11 @@ namespace ks::settings
     // sliderWheelAdjustEnabled：是否允许滚轮直接调整滑块值。
     // fontFamily：应用界面字体族；空值表示沿用系统默认字体。
     // textAntialiasingEnabled：是否以应用默认字体启用文本抗锯齿。
+    // dumpAutoCheckEnabled：启动后是否检查系统近期是否产生过新的崩溃转储。
+    // dumpAutoCheckPromptedPath / dumpAutoCheckPromptedTimeMsec：
+    //   已经问过用户的那个转储的路径与修改时间，用来避免同一个转储反复弹窗；
+    //   时间一并记录是因为 MEMORY.DMP 路径固定、内容会被后一次崩溃覆盖，
+    //   只比路径会漏掉新转储。
     // suppressR0FeaturePrompts：是否关闭 R0 驱动未启用或权限不足时的自动提示。
     // suppressDangerousActionConfirmations：是否跳过危险操作的重复模态确认；风险信息、预检和审计不受影响。
     // virusTotalApiKey：VirusTotal 在线扫描 API Key，供 OnlineScan 模块运行时读取。
@@ -91,6 +96,9 @@ namespace ks::settings
         int notificationLogDisplaySeconds = 10;
         NotificationDisplayPlacement notificationDisplayPlacement = NotificationDisplayPlacement::Screen;
         NotificationStackDirection notificationStackDirection = NotificationStackDirection::BottomUp;
+        bool dumpAutoCheckEnabled = true;
+        QString dumpAutoCheckPromptedPath;
+        qint64 dumpAutoCheckPromptedTimeMsec = 0;
         bool suppressR0FeaturePrompts = false;
         bool suppressDangerousActionConfirmations = false;
         QString logWindowGeometryBase64;

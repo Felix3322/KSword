@@ -4213,11 +4213,15 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
         std::vector<NtfsRawRecord> recordsValue;
         std::shared_ptr<const NtfsCacheEntry> cacheSnapshot;
         constexpr std::uint64_t DirectoryRetryMaxRecords = 1200000ULL; // 定位目录失败时扩展扫描上限，避免漏掉高编号目录项。
-        // 严格 MFT 模式一次就按扩展上限扫描：它不允许后续任何 WinAPI/FSCTL 补齐，
-        // 快速窗口漏掉的高编号记录将无法用别的途径找回。
-        const std::uint64_t DirectoryListMaxRecords = strictMftOnly
-            ? DirectoryRetryMaxRecords
-            : 250000ULL; // 普通手动模式优先响应速度，限制单次扫描规模。
+        // 严格 MFT 模式同样先用快速窗口起步。
+        // 一上来就按 120 万条扫描看似"更完整"，实际代价无法接受：
+        // 该模式的缓存键与普通模式不同（allowFsctlFallback=false），永远不会命中
+        // 普通模式留下的缓存，于是每次切到这个模式都要全量重扫一遍；
+        // 120 万条记录在解析后要占数百 MB 内存，扫描期间下拉框一直是禁用状态，
+        // 表现出来就是"一选这个模式界面就卡住"。
+        // 快速窗口定位不到目标目录时，下面的重试段会自动扩到 120 万条，
+        // 因此完整性并不依赖这里的初始值。
+        const std::uint64_t DirectoryListMaxRecords = 250000ULL;
         // allowFsctlFallback 在严格模式下必须关闭：FSCTL_GET_NTFS_FILE_RECORD 由
         // 文件系统驱动应答，会经过整条过滤链，正是本模式要绕开的路径。
         if (!loadNtfsRecords(volumeRoot, recordsValue, errorTextOut, DirectoryListMaxRecords, !strictMftOnly, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &cacheSnapshot))
@@ -4257,8 +4261,40 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
         }
         if (!resolveOk && strictMftOnly)
         {
-            // 严格模式宁可报错也不回退：返回一份掺了 WinAPI 行的列表，会让
-            // "MFT 独有条目"的判定彻底失效。
+            // 严格模式没有 WinAPI 兜底可用，只剩"扩大扫描窗口"这一条路：
+            // 目标目录的 MFT 记录号可能大于快速窗口。这里就地重试一次全量扫描，
+            // 而不是把重试留到后面的"结果为空"分支——那个分支要求先定位成功，
+            // 严格模式定位失败时根本走不到。
+            std::vector<NtfsRawRecord> retryRecords;
+            QString retryErrorText;
+            std::shared_ptr<const NtfsCacheEntry> retrySnapshot;
+            if (loadNtfsRecords(volumeRoot, retryRecords, retryErrorText, DirectoryRetryMaxRecords, false, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &retrySnapshot))
+            {
+                std::uint64_t retryDirIndex = 5;
+                if (retrySnapshot != nullptr &&
+                    resolveNtfsDirectoryIndex(*retrySnapshot, pathSegments, retryDirIndex))
+                {
+                    recordsValue.swap(retryRecords);
+                    cacheSnapshot = retrySnapshot;
+                    dirIndex = retryDirIndex;
+                    resolveOk = true;
+                    usedFullRangeScan = true;
+                    errorTextOut.clear();
+
+                    kLogEvent event;
+                    info << event
+                        << "[FileDock] 纯MFT解析扩大扫描后定位到目录, path="
+                        << QDir::toNativeSeparators(QDir::cleanPath(pathText)).toStdString()
+                        << ", fileReference="
+                        << static_cast<qulonglong>(dirIndex)
+                        << eol;
+                }
+            }
+        }
+        if (!resolveOk && strictMftOnly)
+        {
+            // 扩大扫描后仍定位不到：宁可报错也不回退。返回一份掺了 WinAPI 行的
+            // 列表会让"MFT 独有条目"的判定彻底失效。
             if (errorTextOut.isEmpty())
             {
                 errorTextOut = QStringLiteral(

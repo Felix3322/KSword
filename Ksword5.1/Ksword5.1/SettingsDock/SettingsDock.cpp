@@ -889,6 +889,44 @@ void SettingsDock::initializeFeaturesTab()
     r0PromptLayout->addWidget(m_suppressR0FeaturePromptsCheckBox);
 
     featuresRootLayout->addWidget(r0PromptGroupBox);
+
+    // ---- 崩溃转储自动检查 ----
+    QGroupBox* dumpCheckGroupBox = new QGroupBox(QStringLiteral("崩溃转储检查"), m_featuresTab);
+    languageManager.bindText(
+        dumpCheckGroupBox,
+        QStringLiteral("settings.features.dump.group"),
+        QStringLiteral("崩溃转储检查"));
+    QVBoxLayout* dumpCheckLayout = new QVBoxLayout(dumpCheckGroupBox);
+    dumpCheckLayout->setSpacing(8);
+
+    QLabel* dumpCheckHintLabel = new QLabel(
+        QStringLiteral("启动后检查系统近 24 小时内是否产生过新的崩溃转储，有则询问是否立即解析。"
+            "检查只读取文件名与时间，不会打开转储内容；同一个转储只会询问一次。"),
+        dumpCheckGroupBox);
+    dumpCheckHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        dumpCheckHintLabel,
+        QStringLiteral("settings.features.dump.hint"),
+        QStringLiteral("启动后检查系统近 24 小时内是否产生过新的崩溃转储，有则询问是否立即解析。"
+            "检查只读取文件名与时间，不会打开转储内容；同一个转储只会询问一次。"));
+    dumpCheckLayout->addWidget(dumpCheckHintLabel);
+
+    m_dumpAutoCheckCheckBox = new QCheckBox(
+        QStringLiteral("启动时检查新的崩溃转储"),
+        dumpCheckGroupBox);
+    languageManager.bindText(
+        m_dumpAutoCheckCheckBox,
+        QStringLiteral("settings.features.dump.auto_check"),
+        QStringLiteral("启动时检查新的崩溃转储"));
+    m_dumpAutoCheckCheckBox->setToolTip(
+        QStringLiteral("关闭后不再自动检查，仍可随时在“转储分析”页手动打开转储文件"));
+    languageManager.bindToolTip(
+        m_dumpAutoCheckCheckBox,
+        QStringLiteral("settings.features.dump.auto_check.tooltip"),
+        QStringLiteral("关闭后不再自动检查，仍可随时在“转储分析”页手动打开转储文件"));
+    dumpCheckLayout->addWidget(m_dumpAutoCheckCheckBox);
+
+    featuresRootLayout->addWidget(dumpCheckGroupBox);
     featuresRootLayout->addStretch();
     m_tabWidget->addTab(m_featuresTab, QStringLiteral("功能"));
     languageManager.bindTab(
@@ -899,6 +937,14 @@ void SettingsDock::initializeFeaturesTab()
 
     connect(
         m_suppressR0FeaturePromptsCheckBox,
+        &QCheckBox::toggled,
+        this,
+        [this](const bool /*checkedState*/) {
+            markPendingChanges(QString());
+        });
+
+    connect(
+        m_dumpAutoCheckCheckBox,
         &QCheckBox::toggled,
         this,
         [this](const bool /*checkedState*/) {
@@ -1144,6 +1190,14 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     {
         m_suppressR0FeaturePromptsCheckBox->setChecked(settings.suppressR0FeaturePrompts);
     }
+    if (m_dumpAutoCheckCheckBox != nullptr)
+    {
+        m_dumpAutoCheckCheckBox->setChecked(settings.dumpAutoCheckEnabled);
+    }
+    if (m_dumpAutoCheckCheckBox != nullptr)
+    {
+        m_dumpAutoCheckCheckBox->setChecked(settings.dumpAutoCheckEnabled);
+    }
 
     if (m_scrollBarWidthCombo != nullptr)
     {
@@ -1272,6 +1326,13 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
     collectedSettings.suppressR0FeaturePrompts =
         (m_suppressR0FeaturePromptsCheckBox != nullptr)
         && m_suppressR0FeaturePromptsCheckBox->isChecked();
+    collectedSettings.dumpAutoCheckEnabled =
+        (m_dumpAutoCheckCheckBox == nullptr) || m_dumpAutoCheckCheckBox->isChecked();
+    // 已提示转储的记录由启动检查流程写入，设置页只透传，避免保存设置时被清空。
+    collectedSettings.dumpAutoCheckPromptedPath =
+        m_currentAppearanceSettings.dumpAutoCheckPromptedPath;
+    collectedSettings.dumpAutoCheckPromptedTimeMsec =
+        m_currentAppearanceSettings.dumpAutoCheckPromptedTimeMsec;
     collectedSettings.useWideScrollBars =
         (m_scrollBarWidthCombo != nullptr) && m_scrollBarWidthCombo->currentData().toBool();
     collectedSettings.scrollBarAutoHideEnabled =

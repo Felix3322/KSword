@@ -8248,6 +8248,17 @@ void FileDock::changeEvent(QEvent* event)
 
 bool FileDock::eventFilter(QObject* watched, QEvent* event)
 {
+    // 读取方式下拉框吞掉滚轮：它的每一次切换都会触发一轮目录重解析，
+    // 纯 MFT / R0 IRP 这两种还是全卷级别的重活。鼠标从列表滚到工具条上时
+    // 一次滚动就能连着切好几档，等于连续排队几轮全盘扫描。
+    // 切换必须是用户点开下拉框做出的明确选择。
+    if (event != nullptr && event->type() == QEvent::Wheel &&
+        ((m_leftPanel.readModeCombo != nullptr && watched == m_leftPanel.readModeCombo) ||
+         (m_rightPanel.readModeCombo != nullptr && watched == m_rightPanel.readModeCombo)))
+    {
+        return true;
+    }
+
     // QFileSystemModel/QTreeView 在右键按下阶段会按默认鼠标选择规则更新当前行。
     // 这里提前处理文件列表 viewport 的右键：命中已选中行时保留现有多选集合；
     // 命中未选中行时切换为该单行，保证后续自定义菜单读取 selectedPaths() 一致。
@@ -8487,6 +8498,9 @@ void FileDock::initializePanel(FilePanelWidgets& panel, const QString& titleText
         QStringLiteral("作为exFAT解析"),
         QStringLiteral("作为MFT解析"),
         QStringLiteral("R0 IRP 解析") });
+    // 装事件过滤器吞掉滚轮：见 eventFilter 里的说明。
+    panel.readModeCombo->installEventFilter(this);
+    panel.readModeCombo->setFocusPolicy(Qt::StrongFocus);
     panel.readModeCombo->setToolTip(QStringLiteral(
         "切换目录读取方式：Windows API、R3 原始卷手动解析、"
         "R0 驱动目录解析，强制按 NTFS/FAT32/exFAT 解析，\n"
@@ -9896,12 +9910,16 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
     panel.manualRequestedFsType = requestedFsType;
     panel.manualRequestedReadMode = requestedReadMode;
 
-    // 若已有后台任务在跑，仅在“目标路径发生变化”时登记 pending。
-    // 同一路径重复触发（例如用户调排序/过滤）不再触发第二次全盘解析。
+    // 若已有后台任务在跑，仅在“目标请求发生变化”时登记 pending。
+    // 判据必须连读取方式一起比：同一个目录换一种解析方式，结果是完全不同的
+    // 两份数据（WinAPI 视图 / 纯 MFT 视图 / IRP 绕过视图）。只比路径会把
+    // 换方式的请求当成重复请求丢掉，最终表格里留着旧后端的结果，
+    // 下拉框却显示新方式——看起来就是"切了没反应"。
     if (panel.manualParseInProgress)
     {
         const bool samePathRunning =
-            (panel.manualParsingPath.compare(requestedPath, Qt::CaseInsensitive) == 0);
+            (panel.manualParsingPath.compare(requestedPath, Qt::CaseInsensitive) == 0)
+            && (panel.manualParsingReadMode == requestedReadMode);
         if (samePathRunning)
         {
             panel.manualParsePendingShowWarning =
@@ -9931,6 +9949,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
     panel.manualParsePendingShowWarning = false;
     panel.manualParseRequestSerial += 1;
     panel.manualParsingPath = requestedPath;
+    panel.manualParsingReadMode = requestedReadMode;
 
     // 记录请求上下文：用于后台线程回传时校验“结果是否过期”。
     const int requestSerial = panel.manualParseRequestSerial;

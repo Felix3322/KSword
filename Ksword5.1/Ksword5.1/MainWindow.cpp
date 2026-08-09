@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Framework/PrivilegeElevationPrompt.h"
+#include "MinidumpDock/DumpAutoCheck.h"
 #include <QMenu>
 #include <QAction>
 #include <QEasingCurve>
@@ -5339,6 +5340,12 @@ void MainWindow::showEvent(QShowEvent* event)
             ensureVisibleLazyDocksInitialized(QStringLiteral("showEvent-deferred-250"));
             repairKernelDockAfterLayoutRestore(QStringLiteral("showEvent-deferred-250"));
         });
+    // 崩溃转储检查排在最后：它会弹模态框，必须等首屏和懒加载都稳定下来再问，
+    // 否则用户一打开程序就被一个盖住空白界面的对话框拦住。
+    QTimer::singleShot(1500, this, [this]()
+        {
+            checkRecentCrashDumps();
+        });
 
     // 懒加载策略修正：
     // - 旧逻辑会在主窗口 show 后继续把所有未初始化 Dock 逐个补载；
@@ -9941,6 +9948,8 @@ void MainWindow::setupDockLayout()
         QStringLiteral("main.startup.progress.restore_dock_layout"),
         QStringLiteral("正在恢复界面布局..."));
     restoreDockLayoutFromConfig();
+    // 旧布局配置里没有后来新增的 Dock，ADS 不会安置它们，必须在这里收回主标签区。
+    reattachDetachedFeatureDocks();
     reportStartupProgress(
         82,
         QStringLiteral("main.startup.progress.refresh_dock_tabs"),
@@ -10273,6 +10282,189 @@ void MainWindow::openFileUnlockerDockByPath(const QString& filePath)
     info << unlockFileEvent
         << "[MainWindow] openFileUnlockerDockByPath delegated to FileDock unlocker."
         << eol;
+}
+
+void MainWindow::reattachDetachedFeatureDocks()
+{
+    if (m_pDockManager == nullptr || m_dockWelcome == nullptr)
+    {
+        return;
+    }
+
+    // 主 Dock 区以欢迎页为锚：它一定在保存的布局里，是唯一稳定的参照。
+    ads::CDockAreaWidget* const mainArea = m_dockWelcome->dockAreaWidget();
+    if (mainArea == nullptr)
+    {
+        return;
+    }
+
+    // 只处理左侧标签栏里的主功能 Dock。日志/监控/当前操作属于底部区域，
+    // 用户把它们拖成浮动窗口是正常用法，不能一并收回。
+    const QList<ads::CDockWidget*> featureDocks = {
+        m_dockProcess, m_dockNetwork, m_dockMemory, m_dockFile,
+        m_dockScanner, m_dockDriver, m_dockKernel, m_dockMonitorTab,
+        m_dockHardware, m_dockPrivilege, m_dockWindow, m_dockRegistry,
+        m_dockHandle, m_dockStartup, m_dockService, m_dockMisc,
+        m_dockMinidump, m_dockPlugin
+    };
+
+    QStringList reattachedKeys;
+    for (ads::CDockWidget* const dockWidget : featureDocks)
+    {
+        if (dockWidget == nullptr || dockWidget == m_dockWelcome)
+        {
+            continue;
+        }
+        // 判据是"所在容器不是主容器"，而不是 isFloating()：
+        // 恢复出来的 Dock 可能落在某个浮动容器的标签组里，此时它自身不算浮动，
+        // 但对用户来说同样是"独立窗口弹出来了"。
+        ads::CDockContainerWidget* const container = dockWidget->dockContainer();
+        if (container != nullptr && container == m_pDockManager)
+        {
+            continue;
+        }
+
+        m_pDockManager->addDockWidgetTabToArea(dockWidget, mainArea);
+        reattachedKeys.append(dockWidget->property("ks_lazy_key").toString());
+    }
+
+    if (reattachedKeys.isEmpty())
+    {
+        return;
+    }
+
+    kLogEvent layoutEvent;
+    info << layoutEvent
+        << "[MainWindow][ADS] 已把游离的功能页收回主标签区（旧布局配置中不含这些页）: "
+        << reattachedKeys.join(QStringLiteral(",")).toStdString()
+        << eol;
+}
+
+void MainWindow::openMinidumpDockWithFile(const QString& filePath)
+{
+    const QString normalizedPath = QDir::toNativeSeparators(filePath.trimmed());
+    if (normalizedPath.isEmpty() || m_dockMinidump == nullptr)
+    {
+        return;
+    }
+
+    // 转储分析页是懒加载的，先补内容再激活，避免拿到占位控件。
+    ensureDockContentInitialized(m_dockMinidump);
+    m_dockMinidump->toggleView(true);
+    m_dockMinidump->raise();
+    m_dockMinidump->setAsCurrentTab();
+
+    if (m_minidumpWidget == nullptr)
+    {
+        kLogEvent dumpEvent;
+        warn << dumpEvent
+            << "[MainWindow] 转储分析页未能初始化，无法自动解析: "
+            << normalizedPath.toStdString()
+            << eol;
+        return;
+    }
+    m_minidumpWidget->openDumpFile(normalizedPath);
+}
+
+void MainWindow::checkRecentCrashDumps()
+{
+    if (!m_currentAppearanceSettings.dumpAutoCheckEnabled)
+    {
+        return;
+    }
+
+    const ks::minidump::RecentDumpInfo recent = ks::minidump::FindRecentDump(24);
+    if (!recent.found)
+    {
+        return;
+    }
+
+    // 同一个转储只问一次。路径和时间一起比：MEMORY.DMP 路径固定、
+    // 内容会被下一次崩溃覆盖，只比路径会漏掉真正的新转储。
+    const qint64 recentTimeMsec = recent.modifiedTime.toMSecsSinceEpoch();
+    if (m_currentAppearanceSettings.dumpAutoCheckPromptedPath.compare(
+            recent.filePath, Qt::CaseInsensitive) == 0 &&
+        m_currentAppearanceSettings.dumpAutoCheckPromptedTimeMsec == recentTimeMsec)
+    {
+        return;
+    }
+
+    {
+        kLogEvent dumpEvent;
+        info << dumpEvent
+            << "[MainWindow] 发现近期崩溃转储: "
+            << recent.filePath.toStdString()
+            << " 时间 " << recent.modifiedTime.toString(Qt::ISODate).toStdString()
+            << " 窗口内共 " << recent.totalRecentCount << " 个"
+            << eol;
+    }
+
+    // sizeText：按 MB 展示，小于 1 MB 时保留一位小数，避免显示成 0 MB。
+    const double sizeMegabytes = static_cast<double>(recent.fileSizeBytes) / (1024.0 * 1024.0);
+    const QString sizeText = sizeMegabytes >= 1.0
+        ? QStringLiteral("%1 MB").arg(sizeMegabytes, 0, 'f', 1)
+        : QStringLiteral("%1 KB").arg(recent.fileSizeBytes / 1024.0, 0, 'f', 1);
+
+    QString bodyText = QStringLiteral(
+        "检测到系统在最近 24 小时内产生了新的崩溃转储：\n\n"
+        "文件：%1\n时间：%2\n大小：%3\n\n"
+        "是否现在解析它？")
+        .arg(recent.filePath)
+        .arg(recent.modifiedTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")))
+        .arg(sizeText);
+    if (recent.totalRecentCount > 1)
+    {
+        bodyText += QStringLiteral("\n\n（窗口内共有 %1 个转储，这里列出的是最新的一个。）")
+            .arg(recent.totalRecentCount);
+    }
+
+    QMessageBox messageBox(this);
+    messageBox.setIcon(QMessageBox::Question);
+    messageBox.setWindowTitle(
+        ks::i18n::text(QStringLiteral("mainwindow.dump.found.title"),
+            QStringLiteral("发现新的崩溃转储")));
+    messageBox.setText(ks::i18n::sourceText(bodyText));
+
+    QCheckBox* const disableCheckBox = new QCheckBox(
+        ks::i18n::text(QStringLiteral("mainwindow.dump.found.disable"),
+            QStringLiteral("不再检查新的崩溃转储（可在设置-功能中重新开启）")),
+        &messageBox);
+    messageBox.setCheckBox(disableCheckBox);
+
+    QPushButton* const parseButton = messageBox.addButton(
+        ks::i18n::text(QStringLiteral("mainwindow.dump.found.parse"), QStringLiteral("立即解析")),
+        QMessageBox::AcceptRole);
+    messageBox.addButton(
+        ks::i18n::text(QStringLiteral("mainwindow.dump.found.later"), QStringLiteral("以后再说")),
+        QMessageBox::RejectRole);
+    messageBox.exec();
+
+    // 无论选哪个都记下"已经问过这一个"，否则下次启动会重复打扰。
+    ks::settings::AppearanceSettings updatedSettings = m_currentAppearanceSettings;
+    updatedSettings.dumpAutoCheckPromptedPath = recent.filePath;
+    updatedSettings.dumpAutoCheckPromptedTimeMsec = recentTimeMsec;
+    if (disableCheckBox->isChecked())
+    {
+        updatedSettings.dumpAutoCheckEnabled = false;
+    }
+
+    QString saveErrorText;
+    if (!ks::settings::saveAppearanceSettings(updatedSettings, &saveErrorText))
+    {
+        kLogEvent dumpEvent;
+        warn << dumpEvent
+            << "[MainWindow] 保存转储检查状态失败: "
+            << saveErrorText.toStdString()
+            << eol;
+    }
+    // 设置页是打开设置对话框时才构造的局部对象，构造时会重新读 JSON，
+    // 因此这里写完文件即可，不需要额外同步某个常驻实例。
+    m_currentAppearanceSettings = updatedSettings;
+
+    if (messageBox.clickedButton() == parseButton)
+    {
+        openMinidumpDockWithFile(recent.filePath);
+    }
 }
 
 void MainWindow::initAppearanceSettings()
