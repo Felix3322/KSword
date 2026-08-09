@@ -82,6 +82,62 @@ namespace ks::ui
             "  border-color:__BORDER__;"
             "}"
 
+            // ---------- 数字/日期输入框的步进按钮 ----------
+            // 只要有任意一条 QSS 命中 QSpinBox，Qt 就会改用 QStyleSheetStyle 绘制
+            // CC_SpinBox。此时若不显式给出 up-button/down-button 与箭头规则，
+            // 上下按钮既不画箭头也不画完整背景，只在右边缘留下几段残缺边线——
+            // 用户看到的就是“一个点”，既认不出是加减，也不知道该点哪里。
+            // 类型选择器对子类同样生效，这一组同时覆盖 QSpinBox、QDoubleSpinBox
+            // 和 QDateEdit/QTimeEdit/QDateTimeEdit。
+            "QAbstractSpinBox::up-button{"
+            "  subcontrol-origin:border;"
+            "  subcontrol-position:top right;"
+            "  width:18px;"
+            "  margin:1px 1px 0px 0px;"
+            "  border-left:1px solid __BORDER__;"
+            "  border-top-right-radius:2px;"
+            "  background-color:__SURFACE_ALT__;"
+            "}"
+            "QAbstractSpinBox::down-button{"
+            "  subcontrol-origin:border;"
+            "  subcontrol-position:bottom right;"
+            "  width:18px;"
+            "  margin:0px 1px 1px 0px;"
+            "  border-left:1px solid __BORDER__;"
+            "  border-top:1px solid __BORDER__;"
+            "  border-bottom-right-radius:2px;"
+            "  background-color:__SURFACE_ALT__;"
+            "}"
+            "QAbstractSpinBox::up-button:hover,QAbstractSpinBox::down-button:hover{"
+            "  background-color:__SURFACE_MUTED__;"
+            "  border-left-color:__BORDER_STRONG__;"
+            "}"
+            "QAbstractSpinBox::up-button:pressed,QAbstractSpinBox::down-button:pressed{"
+            "  background-color:__ACCENT_PRESSED__;"
+            "}"
+            // :off 表示已经到达上下限，和 :disabled 一样必须给出可见反馈，
+            // 否则用户会以为按钮又坏了。
+            "QAbstractSpinBox::up-button:off,QAbstractSpinBox::down-button:off,QAbstractSpinBox::up-button:disabled,QAbstractSpinBox::down-button:disabled{"
+            "  background-color:__SURFACE_MUTED__;"
+            "  border-left-color:__BORDER__;"
+            "}"
+            "QAbstractSpinBox::up-arrow{"
+            "  image:url(__ARROW_UP__);"
+            "  width:10px;"
+            "  height:10px;"
+            "}"
+            "QAbstractSpinBox::down-arrow{"
+            "  image:url(__ARROW_DOWN__);"
+            "  width:10px;"
+            "  height:10px;"
+            "}"
+            "QAbstractSpinBox::up-arrow:off,QAbstractSpinBox::up-arrow:disabled{"
+            "  image:url(__ARROW_UP_OFF__);"
+            "}"
+            "QAbstractSpinBox::down-arrow:off,QAbstractSpinBox::down-arrow:disabled{"
+            "  image:url(__ARROW_DOWN_OFF__);"
+            "}"
+
             // ---------- 分组框基线 ----------
             // margin-top 是标题行所需的最小空间，与 Qt 原生标题高度一致。
             "QGroupBox{"
@@ -147,7 +203,37 @@ namespace ks::ui
 
             "__END_MARKER__\n");
 
+        // 步进箭头没法用 QSS 着色，只能按“按钮底色的最大对比单色”在黑白两版之间挑；
+        // 与 KswordTheme::ThemedComboBoxStyle 的下拉箭头用同一套判定，保证同一界面里
+        // 下拉框和数字框的箭头颜色不会一深一浅。
+        const auto arrowResourcePath = [](const QColor& backgroundColor, const bool pointingUp) {
+            const bool useWhite =
+                KswordTheme::MaximumContrastMonochromeColor(backgroundColor) ==
+                KswordTheme::WhiteColor();
+            if (pointingUp)
+            {
+                return useWhite
+                    ? QStringLiteral(":/Icon/ks_control_up_white.svg")
+                    : QStringLiteral(":/Icon/ks_control_up_black.svg");
+            }
+            return useWhite
+                ? QStringLiteral(":/Icon/ks_control_down_white.svg")
+                : QStringLiteral(":/Icon/ks_control_down_black.svg");
+        };
+
         baseControlStyle.replace(QStringLiteral("__BEGIN_MARKER__"), QString::fromLatin1(kBaseControlStyleBeginMarker));
+        baseControlStyle.replace(
+            QStringLiteral("__ARROW_UP_OFF__"),
+            QStringLiteral(":/Icon/ks_control_up_muted.svg"));
+        baseControlStyle.replace(
+            QStringLiteral("__ARROW_DOWN_OFF__"),
+            QStringLiteral(":/Icon/ks_control_down_muted.svg"));
+        baseControlStyle.replace(
+            QStringLiteral("__ARROW_UP__"),
+            arrowResourcePath(KswordTheme::SurfaceAltColor(), true));
+        baseControlStyle.replace(
+            QStringLiteral("__ARROW_DOWN__"),
+            arrowResourcePath(KswordTheme::SurfaceAltColor(), false));
         baseControlStyle.replace(QStringLiteral("__END_MARKER__"), QString::fromLatin1(kBaseControlStyleEndMarker));
         baseControlStyle.replace(QStringLiteral("__WINDOW__"), KswordTheme::MainBackgroundColorHex());
         baseControlStyle.replace(QStringLiteral("__SURFACE__"), KswordTheme::SurfaceColorHex());

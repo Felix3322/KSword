@@ -27,6 +27,10 @@
         <file alias="ks_control_radio_black.svg">Resource/Icon/system/ks_control_radio_black.svg</file>
         <file alias="ks_control_down_white.svg">Resource/Icon/system/ks_control_down_white.svg</file>
         <file alias="ks_control_down_black.svg">Resource/Icon/system/ks_control_down_black.svg</file>
+        <file alias="ks_control_up_white.svg">Resource/Icon/system/ks_control_up_white.svg</file>
+        <file alias="ks_control_up_black.svg">Resource/Icon/system/ks_control_up_black.svg</file>
+        <file alias="ks_control_up_muted.svg">Resource/Icon/system/ks_control_up_muted.svg</file>
+        <file alias="ks_control_down_muted.svg">Resource/Icon/system/ks_control_down_muted.svg</file>
 
         <!-- 进程面板图标资源 -->
         <file alias="process_main.svg">Resource/Icon/system/process_line.svg</file>

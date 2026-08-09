@@ -311,11 +311,8 @@ namespace
             "QSpinBox:hover, QSpinBox:focus {"
             "  border: 1px solid %4;"
             "}"
-            "QSpinBox::up-button, QSpinBox::down-button {"
-            "  width: 14px;"
-            "  border: none;"
-            "  background: transparent;"
-            "}"
+            // 步进按钮不在这里覆写：全局基线已经给出带箭头、带 hover/到限反馈的
+            // 完整实现，本地再改成透明无边框只会退回“看不出是按钮”的样子。
             "QLabel {"
             "  color: %3;"
             "}")
