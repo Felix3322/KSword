@@ -282,6 +282,8 @@ Return Value:
     KswordARKMutationUninitialize();
     // 随后停止并排空所有可能回调到本驱动映像的线程终止 APC。
     KswordARKThreadApcUninitialize();
+    // 目录枚举可能缓存了一个用于续扫的目录句柄，卸载前必须关闭。
+    KswordARKDriverResetDirectoryScanCache();
 
     // Stop crash callbacks before any other teardown can invalidate state used
     // by the nonpaged diagnostic path.

@@ -1919,6 +1919,19 @@ namespace
         return ks::file::QueryReparsePointInfo(nativePathText.toStdWString(), directoryHint);
     }
 
+    // reparseKindMarkerForBatch 作用：
+    // - 供平铺模型批量回填时使用的重解析点标记查询；
+    // - 与 reparseKindMarkerForPath 的区别在于**限额**：整批回填最多做
+    //   kMaxBatchReparseProbes 次同步查询，超出后一律返回空。
+    // 为什么要限额：
+    // - 每一行都要 GetFileAttributesW，重解析点行还要再打开文件发 FSCTL，
+    //   全都是 UI 线程上的同步文件 IO；
+    // - R0/IRP 读取方式本来就是用来看"WinAPI 视角有问题"的路径，对这些路径
+    //   Win32 查询可能长时间阻塞甚至挂住，一行卡住整个界面就没响应了；
+    // - 上万行的目录即使每行只花几十微秒，累计也是秒级卡顿。
+    // 代价是超出限额的行不显示重解析点标记，这比界面失去响应好得多。
+    constexpr int kMaxBatchReparseProbes = 512;
+
     QString reparseKindMarkerForPath(const QString& path)
     {
         const QString nativePathText = QDir::toNativeSeparators(path).trimmed();
@@ -9804,6 +9817,8 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
     }
 
     const QSet<QString> suspiciousNameSet = buildSuspiciousNameSet(suspiciousNames);
+    // reparseProbeBudget：本批回填允许的同步重解析点探测次数。
+    int reparseProbeBudget = kMaxBatchReparseProbes;
     for (const ks::file::ManualDirectoryEntry& itemValue : entries)
     {
         QList<QStandardItem*> rowItems;
@@ -9821,10 +9836,16 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
         rowItems.push_back(sizeItem);
 
         QString typeText = itemValue.typeText;
-        const QString reparseMarkerText = reparseKindMarkerForPath(itemValue.absolutePath);
-        if (!reparseMarkerText.isEmpty())
+        // 限额内才做同步探测，见 kMaxBatchReparseProbes 的说明。
+        if (reparseProbeBudget > 0)
         {
-            typeText = QStringLiteral("%1 / %2").arg(reparseMarkerText, typeText);
+            --reparseProbeBudget;
+            const QString reparseMarkerText =
+                reparseKindMarkerForPath(itemValue.absolutePath);
+            if (!reparseMarkerText.isEmpty())
+            {
+                typeText = QStringLiteral("%1 / %2").arg(reparseMarkerText, typeText);
+            }
         }
         rowItems.push_back(new QStandardItem(typeText));
         rowItems.push_back(new QStandardItem(itemValue.modifiedTime.isValid()
@@ -10055,14 +10076,22 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                 if (targetPanel.manualParseRequestSerial != requestSerial)
                 {
                     // 过期结果直接丢弃，避免“慢任务覆盖新路径数据”。
+                    // 运行状态只有在这一批结果确实属于当前那次运行时才清：
+                    // 路径不符说明面板已经在跑另一次解析，清了会让它误以为空闲。
                     if (targetPanel.manualParsingPath.compare(requestPath, Qt::CaseInsensitive) == 0)
                     {
                         targetPanel.manualParseInProgress = false;
                         targetPanel.manualParsingPath.clear();
-                        if (targetPanel.readModeCombo != nullptr)
-                        {
-                            targetPanel.readModeCombo->setEnabled(true);
-                        }
+                    }
+                    // 下拉框的可用性与运行状态解绑，无条件恢复。
+                    // 它是在本次请求开始时被禁用的，只要这次请求走到了终点
+                    //（无论采纳还是丢弃）就必须放开；放在上面的条件分支里，
+                    // 一旦路径对不上就再也没有人把它打开，表现就是"选了某个
+                    // 读取方式之后下拉框彻底点不动"。
+                    if (targetPanel.readModeCombo != nullptr &&
+                        !targetPanel.manualParseInProgress)
+                    {
+                        targetPanel.readModeCombo->setEnabled(true);
                     }
 
                     {
@@ -10199,6 +10228,8 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         }
                         const QSet<QString> suspiciousNameSet =
                             buildSuspiciousNameSet(suspiciousNames);
+                        // reparseProbeBudget：本批回填允许的同步重解析点探测次数。
+                        int reparseProbeBudget = kMaxBatchReparseProbes;
                         for (const ks::file::ManualDirectoryEntry& itemValue : *parsedEntriesSnapshot)
                         {
                             QList<QStandardItem*> rowItems;
@@ -10221,12 +10252,19 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                             rowItems.push_back(sizeItem);
 
                             QString typeText = itemValue.typeText;
-                            const QString reparseMarkerText =
-                                reparseKindMarkerForPath(itemValue.absolutePath);
-                            if (!reparseMarkerText.isEmpty())
+                            // 限额内才做同步探测，见 kMaxBatchReparseProbes 的说明。
+                            // 这条路径尤其关键：R0/IRP 读取方式一次可以回填上万行，
+                            // 逐行做 Win32 查询会把 UI 线程按住好几秒。
+                            if (reparseProbeBudget > 0)
                             {
-                                typeText = QStringLiteral("%1 / %2")
-                                    .arg(reparseMarkerText, typeText);
+                                --reparseProbeBudget;
+                                const QString reparseMarkerText =
+                                    reparseKindMarkerForPath(itemValue.absolutePath);
+                                if (!reparseMarkerText.isEmpty())
+                                {
+                                    typeText = QStringLiteral("%1 / %2")
+                                        .arg(reparseMarkerText, typeText);
+                                }
                             }
                             rowItems.push_back(new QStandardItem(typeText));
                             rowItems.push_back(new QStandardItem(
