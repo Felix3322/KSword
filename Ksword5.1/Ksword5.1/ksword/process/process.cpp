@@ -17,6 +17,8 @@
 #include <RestartManager.h>
 #include <pdh.h>
 #include <pdhmsg.h>
+#include <ShellScalingApi.h> // PROCESS_DPI_AWARENESS：DPI 感知列在 user32 路径不可用时的回退查询类型。
+#include <appmodel.h>        // APPMODEL_ERROR_NO_PACKAGE：区分“进程不属于任何程序包”与真实查询失败。
 
 #include <algorithm>   // std::max/std::clamp：衍生指标计算。
 #include <chrono>      // steady_clock：跨刷新轮次计时。
@@ -49,6 +51,8 @@
 #pragma comment(lib, "Version.lib")
 #pragma comment(lib, "Advapi32.lib")
 #pragma comment(lib, "Pdh.lib")
+// - User32：GetGuiResources，用于任务管理器对齐的 GDI / 用户对象计数列。
+#pragma comment(lib, "User32.lib")
 
 namespace
 {
@@ -297,6 +301,77 @@ namespace
         SystemHandleTableEntryInfoExLocal handles[1] = {}; // handles：变长句柄数组首元素。
     };
 
+    // 线程状态与等待原因常量：
+    // - KTHREAD_STATE::Waiting = 5；
+    // - KWAIT_REASON::Suspended = 5，WrSuspended = 12；
+    // - 任务管理器把“全部线程都处于挂起等待”的进程显示为“已挂起”。
+    constexpr ULONG SystemThreadStateWaiting = 5UL;
+    constexpr ULONG SystemThreadWaitReasonSuspended = 5UL;
+    constexpr ULONG SystemThreadWaitReasonWrSuspended = 12UL;
+
+    // ApplyProcessSuspendedStateFromThreadArray 作用：
+    // - 输入：SystemProcessInformation 缓冲区内的单条进程记录及其线程数量；
+    // - 处理：遍历紧随进程记录之后的线程数组，统计处于挂起等待的线程；
+    // - 返回：无返回值，判定结果直接写回 processRecord。
+    // 越界保护：线程数组必须完整落在缓冲区内，否则放弃判定并保持 processStateKnown = false。
+    void ApplyProcessSuspendedStateFromThreadArray(
+        ks::process::ProcessRecord& processRecord,
+        const BYTE* const processEntryPointer,
+        const BYTE* const bufferBegin,
+        const std::size_t bufferSize,
+        const std::uint32_t threadCount)
+    {
+        processRecord.suspendedThreadCount = 0;
+        processRecord.processSuspended = false;
+        processRecord.processStateKnown = false;
+
+        if (processEntryPointer == nullptr || bufferBegin == nullptr || bufferSize == 0)
+        {
+            return;
+        }
+        if (threadCount == 0)
+        {
+            // 无线程记录（例如 Idle 汇总项）按“运行中”处理，避免误显示为已挂起。
+            processRecord.processStateKnown = true;
+            return;
+        }
+
+        const BYTE* const threadArrayBegin = processEntryPointer + sizeof(SystemProcessInformationRecord);
+        if (threadArrayBegin < bufferBegin)
+        {
+            return;
+        }
+
+        const std::size_t consumedBytes = static_cast<std::size_t>(threadArrayBegin - bufferBegin);
+        const std::size_t threadArrayBytes =
+            static_cast<std::size_t>(threadCount) * sizeof(SystemThreadInformationRecord);
+        if (consumedBytes > bufferSize || threadArrayBytes > (bufferSize - consumedBytes))
+        {
+            return;
+        }
+
+        const auto* const threadArray =
+            reinterpret_cast<const SystemThreadInformationRecord*>(threadArrayBegin);
+        std::uint32_t suspendedCount = 0;
+        for (std::uint32_t threadIndex = 0; threadIndex < threadCount; ++threadIndex)
+        {
+            const SystemThreadInformationRecord& threadInfo = threadArray[threadIndex];
+            if (threadInfo.ThreadState != SystemThreadStateWaiting)
+            {
+                continue;
+            }
+            if (threadInfo.WaitReason == SystemThreadWaitReasonSuspended ||
+                threadInfo.WaitReason == SystemThreadWaitReasonWrSuspended)
+            {
+                ++suspendedCount;
+            }
+        }
+
+        processRecord.suspendedThreadCount = suspendedCount;
+        processRecord.processSuspended = (suspendedCount == threadCount);
+        processRecord.processStateKnown = true;
+    }
+
     // 格式化 Win32 错误码文本，便于 UI 提示详细失败原因。
     std::string FormatLastErrorMessage(const DWORD errorCode)
     {
@@ -350,6 +425,68 @@ namespace
             return nullptr;
         }
         return ::GetProcAddress(ntdllModule, functionName);
+    }
+
+    // ProcessBasicInformationFullLocal：
+    // - winternl.h 公开的 PROCESS_BASIC_INFORMATION 把 BasePriority 藏在 Reserved 字段里；
+    // - 这里使用完整布局，仅为读取任务管理器“基本优先级”列所需的 KPRIORITY。
+    struct ProcessBasicInformationFullLocal
+    {
+        NTSTATUS exitStatus = 0;                       // 进程退出码。
+        PVOID pebBaseAddress = nullptr;                // PEB 基址，本用途不使用。
+        ULONG_PTR affinityMask = 0;                    // 亲和性掩码，本用途不使用。
+        LONG basePriority = 0;                         // KPRIORITY：0~31 的基础优先级。
+        ULONG_PTR uniqueProcessId = 0;                 // PID。
+        ULONG_PTR inheritedFromUniqueProcessId = 0;    // 父进程 PID。
+    };
+
+    // ApplyProcessBasePriorityAndCycleTimeByHandle 作用：
+    // - 输入：已打开的进程句柄（至少具备 PROCESS_QUERY_LIMITED_INFORMATION）；
+    // - 处理：读取 KPRIORITY 基础优先级与累计 CPU 周期数；
+    // - 返回：无返回值，失败时保持记录内原值并让 cycleTimeKnown 维持 false。
+    // 说明：该函数只在非 NtQuery 枚举路径使用；NtQuery 路径已在枚举缓冲区里拿到同样的值。
+    void ApplyProcessBasePriorityAndCycleTimeByHandle(
+        ks::process::ProcessRecord& processRecord,
+        const HANDLE processHandle)
+    {
+        if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE)
+        {
+            return;
+        }
+
+        const auto ntQueryInformationProcess = reinterpret_cast<NtQueryInformationProcessFn>(
+            GetNtdllProcAddress("NtQueryInformationProcess"));
+        if (ntQueryInformationProcess != nullptr)
+        {
+            ProcessBasicInformationFullLocal basicInfo{};
+            ULONG returnLength = 0;
+            const NTSTATUS queryStatus = ntQueryInformationProcess(
+                processHandle,
+                ProcessBasicInformation,
+                &basicInfo,
+                static_cast<ULONG>(sizeof(basicInfo)),
+                &returnLength);
+            if (NT_SUCCESS(queryStatus) && returnLength >= sizeof(basicInfo))
+            {
+                processRecord.basePriority = static_cast<std::int32_t>(basicInfo.basePriority);
+            }
+        }
+
+        // QueryProcessCycleTime 声明在 realtimeapiset.h，不同 SDK 的默认包含情况不一致，
+        // 因此统一动态解析 kernel32 导出，避免编译期依赖。
+        using QueryProcessCycleTimeFn = BOOL(WINAPI*)(HANDLE, PULONG64);
+        HMODULE kernel32Module = ::GetModuleHandleW(L"kernel32.dll");
+        const auto queryProcessCycleTime = reinterpret_cast<QueryProcessCycleTimeFn>(
+            kernel32Module != nullptr ? ::GetProcAddress(kernel32Module, "QueryProcessCycleTime") : nullptr);
+        if (queryProcessCycleTime != nullptr)
+        {
+            ULONG64 cycleTimeValue = 0;
+            if (queryProcessCycleTime(processHandle, &cycleTimeValue) != FALSE)
+            {
+                processRecord.cycleTime = static_cast<std::uint64_t>(cycleTimeValue);
+                processRecord.cycleTimeKnown = true;
+            }
+        }
     }
 
     // 查询是否可提升某特权（SeDebug 等），用于关键进程设置等高权限操作。
@@ -537,6 +674,81 @@ namespace
         return 0;
     }
 
+    // ExtractGpuEngineDisplayText 作用：
+    // - 输入：PDH GPU Engine 实例名，形如
+    //   "pid_1234_luid_0x00000000_0x0000A1B2_phys_0_eng_3_engtype_3D"；
+    // - 处理：解析 phys_N 与 engtype_XXX 两段，拼成任务管理器同款 "GPU N - XXX"；
+    // - 返回：展示文本；实例名缺少可解析片段时返回空串，调用方据此跳过。
+    std::string ExtractGpuEngineDisplayText(const wchar_t* const rawInstanceName)
+    {
+        if (rawInstanceName == nullptr || rawInstanceName[0] == L'\0')
+        {
+            return std::string();
+        }
+
+        // 实例名全部由 ASCII 构成，先做一次小写归一，简化后续定位。
+        std::wstring instanceName(rawInstanceName);
+        std::wstring loweredName;
+        loweredName.reserve(instanceName.size());
+        for (const wchar_t nameChar : instanceName)
+        {
+            loweredName.push_back(static_cast<wchar_t>(std::towlower(nameChar)));
+        }
+
+        // 引擎类型：engtype_ 之后到字符串结尾（PDH 把它放在实例名末尾）。
+        std::string engineTypeText;
+        const std::size_t engineTypeOffset = loweredName.rfind(L"engtype_");
+        if (engineTypeOffset != std::wstring::npos)
+        {
+            const std::size_t valueOffset = engineTypeOffset + 8U;
+            if (valueOffset < instanceName.size())
+            {
+                engineTypeText = ks::str::Utf16ToUtf8(instanceName.substr(valueOffset));
+            }
+        }
+        if (engineTypeText.empty())
+        {
+            return std::string();
+        }
+
+        // 适配器序号：phys_ 之后的十进制数字，缺失时只显示引擎类型。
+        const std::size_t physicalOffset = loweredName.rfind(L"phys_");
+        if (physicalOffset == std::wstring::npos)
+        {
+            return engineTypeText;
+        }
+
+        const wchar_t* const digitBegin = instanceName.c_str() + physicalOffset + 5U;
+        if (*digitBegin == L'\0' || std::iswdigit(*digitBegin) == 0)
+        {
+            return engineTypeText;
+        }
+
+        wchar_t* digitEnd = nullptr;
+        const unsigned long physicalIndex = std::wcstoul(digitBegin, &digitEnd, 10);
+        if (digitEnd == digitBegin)
+        {
+            return engineTypeText;
+        }
+
+        return std::string("GPU ") + std::to_string(physicalIndex) + " - " + engineTypeText;
+    }
+
+    // GpuProcessUsageSample：单个进程在一轮 PDH 采样中的 GPU 占用摘要。
+    struct GpuProcessUsageSample
+    {
+        double utilizationPercent = 0.0; // utilizationPercent：该进程全部引擎累加后的 GPU 占用。
+        double topEnginePercent = 0.0;   // topEnginePercent：占用最高的单个引擎百分比。
+        std::string topEngineText;       // topEngineText：占用最高引擎的展示名，例如 "GPU 0 - 3D"。
+    };
+
+    // GpuProcessMemorySample：单个进程在一轮 PDH 采样中的显存占用。
+    struct GpuProcessMemorySample
+    {
+        std::uint64_t dedicatedBytes = 0; // dedicatedBytes：专用 GPU 内存字节数。
+        std::uint64_t sharedBytes = 0;    // sharedBytes：共享 GPU 内存字节数。
+    };
+
     // GpuPdhQueryState：保存跨刷新轮次复用的 PDH 查询对象。
     struct GpuPdhQueryState
     {
@@ -544,6 +756,17 @@ namespace
         HCOUNTER counterHandle = nullptr; // counterHandle：GPU Engine 通配计数器句柄。
         bool permanentlyUnavailable = false; // permanentlyUnavailable：当前系统没有可用 GPU Engine 计数器。
         bool hasBaselineSample = false;   // hasBaselineSample：百分比计数器需要至少两轮采样才有有效差值。
+    };
+
+    // GpuMemoryPdhQueryState：
+    // - 保存 \GPU Process Memory(*) 的专用/共享用量计数器；
+    // - 与 GPU Engine 查询相互独立，避免用户只显示显存列时被利用率计数器的基线逻辑拖累。
+    struct GpuMemoryPdhQueryState
+    {
+        HQUERY queryHandle = nullptr;              // queryHandle：PDH 查询句柄。
+        HCOUNTER dedicatedCounterHandle = nullptr; // dedicatedCounterHandle：Dedicated Usage 通配计数器。
+        HCOUNTER sharedCounterHandle = nullptr;    // sharedCounterHandle：Shared Usage 通配计数器。
+        bool permanentlyUnavailable = false;       // permanentlyUnavailable：当前系统没有该计数器集。
     };
 
     // gpuPdhQueryState 作用：
@@ -559,6 +782,24 @@ namespace
     // - 保护 PDH 查询句柄和内部采样状态；
     // - 避免多个 UI/后台线程同时刷新进程列表时破坏 PDH 查询。
     std::mutex& gpuPdhQueryMutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    // gpuMemoryPdhQueryState 作用：
+    // - 返回 GPU 显存计数器的函数内静态状态；
+    // - 只在 gpuMemoryPdhQueryMutex 保护下访问。
+    GpuMemoryPdhQueryState& gpuMemoryPdhQueryState()
+    {
+        static GpuMemoryPdhQueryState state;
+        return state;
+    }
+
+    // gpuMemoryPdhQueryMutex 作用：
+    // - 保护 GPU 显存 PDH 查询句柄；
+    // - 与 GPU Engine 查询使用各自独立的锁，避免互相阻塞。
+    std::mutex& gpuMemoryPdhQueryMutex()
     {
         static std::mutex mutex;
         return mutex;
@@ -598,6 +839,111 @@ namespace
             L"\\GPU Engine(*)\\Utilization Percentage",
             0,
             counterHandleOut);
+    }
+
+    // addPdhEnglishCounterByPath 作用：
+    // - 输入：已打开的 PDH 查询句柄与英文计数器路径；
+    // - 处理：优先 PdhAddEnglishCounterW，极旧环境回退 PdhAddCounterW；
+    // - 返回：PDH_STATUS，调用方据此决定是否放弃该计数器集。
+    PDH_STATUS addPdhEnglishCounterByPath(
+        const HQUERY queryHandle,
+        const wchar_t* const counterPath,
+        HCOUNTER* const counterHandleOut)
+    {
+        if (counterHandleOut == nullptr || counterPath == nullptr)
+        {
+            return ERROR_INVALID_PARAMETER;
+        }
+
+        HMODULE pdhModule = ::GetModuleHandleW(L"pdh.dll");
+        if (pdhModule == nullptr)
+        {
+            pdhModule = ::LoadLibraryW(L"pdh.dll");
+        }
+
+        const auto addEnglishCounter = reinterpret_cast<PdhAddEnglishCounterWFn>(
+            pdhModule != nullptr ? ::GetProcAddress(pdhModule, "PdhAddEnglishCounterW") : nullptr);
+        if (addEnglishCounter != nullptr)
+        {
+            return addEnglishCounter(queryHandle, counterPath, 0, counterHandleOut);
+        }
+        return ::PdhAddCounterW(queryHandle, counterPath, 0, counterHandleOut);
+    }
+
+    // resetGpuMemoryPdhQueryState 作用：
+    // - 关闭 GPU 显存 PDH 查询；
+    // - markUnavailable 为 true 时不再重复初始化，避免无该计数器集的机器每轮重试。
+    void resetGpuMemoryPdhQueryState(
+        GpuMemoryPdhQueryState& state,
+        const bool markUnavailable)
+    {
+        if (state.queryHandle != nullptr)
+        {
+            ::PdhCloseQuery(state.queryHandle);
+        }
+        state.queryHandle = nullptr;
+        state.dedicatedCounterHandle = nullptr;
+        state.sharedCounterHandle = nullptr;
+        if (markUnavailable)
+        {
+            state.permanentlyUnavailable = true;
+        }
+    }
+
+    // ensureGpuMemoryPdhQueryReadyLocked 作用：
+    // - 初始化 \GPU Process Memory(*) 的专用/共享用量通配计数器；
+    // - 调用方必须已经持有 gpuMemoryPdhQueryMutex；
+    // - 返回 false 表示当前系统/权限下无法读取 GPU 显存计数器。
+    bool ensureGpuMemoryPdhQueryReadyLocked(GpuMemoryPdhQueryState& state)
+    {
+        if (state.permanentlyUnavailable)
+        {
+            return false;
+        }
+        if (state.queryHandle != nullptr &&
+            state.dedicatedCounterHandle != nullptr &&
+            state.sharedCounterHandle != nullptr)
+        {
+            return true;
+        }
+
+        HQUERY queryHandle = nullptr;
+        PDH_STATUS status = ::PdhOpenQueryW(nullptr, 0, &queryHandle);
+        if (status != ERROR_SUCCESS || queryHandle == nullptr)
+        {
+            resetGpuMemoryPdhQueryState(state, true);
+            return false;
+        }
+
+        HCOUNTER dedicatedCounter = nullptr;
+        status = addPdhEnglishCounterByPath(
+            queryHandle,
+            L"\\GPU Process Memory(*)\\Dedicated Usage",
+            &dedicatedCounter);
+        if (status != ERROR_SUCCESS || dedicatedCounter == nullptr)
+        {
+            ::PdhCloseQuery(queryHandle);
+            resetGpuMemoryPdhQueryState(state, true);
+            return false;
+        }
+
+        HCOUNTER sharedCounter = nullptr;
+        status = addPdhEnglishCounterByPath(
+            queryHandle,
+            L"\\GPU Process Memory(*)\\Shared Usage",
+            &sharedCounter);
+        if (status != ERROR_SUCCESS || sharedCounter == nullptr)
+        {
+            ::PdhCloseQuery(queryHandle);
+            resetGpuMemoryPdhQueryState(state, true);
+            return false;
+        }
+
+        state.queryHandle = queryHandle;
+        state.dedicatedCounterHandle = dedicatedCounter;
+        state.sharedCounterHandle = sharedCounter;
+        state.permanentlyUnavailable = false;
+        return true;
     }
 
     // resetGpuPdhQueryState 作用：
@@ -661,19 +1007,20 @@ namespace
         return true;
     }
 
-    // QueryGpuUsagePercentByPid 作用：
+    // QueryGpuUsageByPid 作用：
     // - 读取 \GPU Engine(*)\Utilization Percentage；
     // - 按实例名中的 pid_XXXX 聚合同一进程的多个 engine；
-    // - 返回 PID -> GPU 百分比，失败时返回空表。
-    std::unordered_map<std::uint32_t, double> QueryGpuUsagePercentByPid()
+    // - 参数 collectEngineText 为 true 时额外记录占用最高的引擎展示名（任务管理器“GPU 引擎”列）；
+    // - 返回 PID -> GPU 占用摘要，失败时返回空表。
+    std::unordered_map<std::uint32_t, GpuProcessUsageSample> QueryGpuUsageByPid(const bool collectEngineText)
     {
-        std::unordered_map<std::uint32_t, double> gpuPercentByPid;
+        std::unordered_map<std::uint32_t, GpuProcessUsageSample> gpuUsageByPid;
 
         std::lock_guard<std::mutex> queryLock(gpuPdhQueryMutex());
         GpuPdhQueryState& state = gpuPdhQueryState();
         if (!ensureGpuPdhQueryReadyLocked(state))
         {
-            return gpuPercentByPid;
+            return gpuUsageByPid;
         }
 
         const PDH_STATUS collectStatus = ::PdhCollectQueryData(state.queryHandle);
@@ -681,14 +1028,14 @@ namespace
         {
             // 临时采样失败时允许下一轮重建查询，避免设备重置后长期卡死。
             resetGpuPdhQueryState(state, false);
-            return gpuPercentByPid;
+            return gpuUsageByPid;
         }
         if (!state.hasBaselineSample)
         {
             // GPU Engine Utilization Percentage 和 System Informer 同类 PDH 方案一样需要基线样本。
             // 首次 Collect 只建立内部历史值，下一次刷新再读取格式化数组，避免首轮误报异常。
             state.hasBaselineSample = true;
-            return gpuPercentByPid;
+            return gpuUsageByPid;
         }
 
         DWORD bufferSize = 0;
@@ -702,11 +1049,11 @@ namespace
         if (formatStatus == PDH_INVALID_DATA)
         {
             // PDH 许多百分比计数器需要两次 Collect；首轮无历史样本属于正常热身。
-            return gpuPercentByPid;
+            return gpuUsageByPid;
         }
         if (formatStatus != PDH_MORE_DATA || bufferSize == 0 || itemCount == 0)
         {
-            return gpuPercentByPid;
+            return gpuUsageByPid;
         }
 
         // PDH 输出缓冲区内既包含结构数组也包含实例名字符串；
@@ -723,10 +1070,10 @@ namespace
             itemList);
         if (formatStatus != ERROR_SUCCESS)
         {
-            return gpuPercentByPid;
+            return gpuUsageByPid;
         }
 
-        gpuPercentByPid.reserve(static_cast<std::size_t>(itemCount));
+        gpuUsageByPid.reserve(static_cast<std::size_t>(itemCount));
         for (DWORD itemIndex = 0; itemIndex < itemCount; ++itemIndex)
         {
             const PDH_FMT_COUNTERVALUE_ITEM_W& item = itemList[itemIndex];
@@ -747,40 +1094,177 @@ namespace
             }
 
             // 同一 PID 可能同时使用 3D/Copy/VideoDecode/Compute 等多个 engine，这里做总和。
-            gpuPercentByPid[processId] += enginePercent;
+            GpuProcessUsageSample& usageSample = gpuUsageByPid[processId];
+            usageSample.utilizationPercent += enginePercent;
+
+            // “GPU 引擎”列展示占用最高的那一个引擎，与任务管理器一致。
+            if (collectEngineText && enginePercent > usageSample.topEnginePercent)
+            {
+                std::string engineDisplayText = ExtractGpuEngineDisplayText(item.szName);
+                if (!engineDisplayText.empty())
+                {
+                    usageSample.topEnginePercent = enginePercent;
+                    usageSample.topEngineText = std::move(engineDisplayText);
+                }
+            }
         }
 
-        for (auto& gpuPair : gpuPercentByPid)
+        for (auto& gpuPair : gpuUsageByPid)
         {
             // UI 列按 0~100% 展示，异常累计值统一夹紧，避免多适配器场景破坏排序和高亮。
-            gpuPair.second = std::clamp(gpuPair.second, 0.0, 100.0);
+            gpuPair.second.utilizationPercent =
+                std::clamp(gpuPair.second.utilizationPercent, 0.0, 100.0);
         }
-        return gpuPercentByPid;
+        return gpuUsageByPid;
+    }
+
+    // QueryGpuProcessMemoryByPid 作用：
+    // - 读取 \GPU Process Memory(*)\Dedicated Usage 与 Shared Usage；
+    // - 两个计数器都是瞬时原始值，不需要基线样本；
+    // - 返回 PID -> 显存占用；计数器不可用时返回空表。
+    std::unordered_map<std::uint32_t, GpuProcessMemorySample> QueryGpuProcessMemoryByPid()
+    {
+        std::unordered_map<std::uint32_t, GpuProcessMemorySample> gpuMemoryByPid;
+
+        std::lock_guard<std::mutex> queryLock(gpuMemoryPdhQueryMutex());
+        GpuMemoryPdhQueryState& state = gpuMemoryPdhQueryState();
+        if (!ensureGpuMemoryPdhQueryReadyLocked(state))
+        {
+            return gpuMemoryByPid;
+        }
+
+        const PDH_STATUS collectStatus = ::PdhCollectQueryData(state.queryHandle);
+        if (collectStatus != ERROR_SUCCESS)
+        {
+            resetGpuMemoryPdhQueryState(state, false);
+            return gpuMemoryByPid;
+        }
+
+        // accumulateCounter：把一个通配计数器的全部实例按 PID 聚合到目标字段。
+        const auto accumulateCounter =
+            [&gpuMemoryByPid](const HCOUNTER counterHandle, const bool writeDedicated) -> void
+            {
+                if (counterHandle == nullptr)
+                {
+                    return;
+                }
+
+                DWORD bufferSize = 0;
+                DWORD itemCount = 0;
+                PDH_STATUS formatStatus = ::PdhGetFormattedCounterArrayW(
+                    counterHandle,
+                    PDH_FMT_LARGE,
+                    &bufferSize,
+                    &itemCount,
+                    nullptr);
+                if (formatStatus != PDH_MORE_DATA || bufferSize == 0 || itemCount == 0)
+                {
+                    return;
+                }
+
+                std::vector<std::uint64_t> itemStorage(
+                    (static_cast<std::size_t>(bufferSize) + sizeof(std::uint64_t) - 1U) /
+                    sizeof(std::uint64_t));
+                auto* const itemList = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(itemStorage.data());
+                formatStatus = ::PdhGetFormattedCounterArrayW(
+                    counterHandle,
+                    PDH_FMT_LARGE,
+                    &bufferSize,
+                    &itemCount,
+                    itemList);
+                if (formatStatus != ERROR_SUCCESS)
+                {
+                    return;
+                }
+
+                for (DWORD itemIndex = 0; itemIndex < itemCount; ++itemIndex)
+                {
+                    const PDH_FMT_COUNTERVALUE_ITEM_W& item = itemList[itemIndex];
+                    const std::uint32_t processId = ExtractPidFromGpuEngineInstanceName(item.szName);
+                    if (processId == 0 || item.FmtValue.CStatus != ERROR_SUCCESS)
+                    {
+                        continue;
+                    }
+                    if (item.FmtValue.largeValue <= 0)
+                    {
+                        continue;
+                    }
+
+                    // 同一进程可能在多个适配器上都有显存实例，按 PID 求和。
+                    const std::uint64_t usageBytes = static_cast<std::uint64_t>(item.FmtValue.largeValue);
+                    GpuProcessMemorySample& memorySample = gpuMemoryByPid[processId];
+                    if (writeDedicated)
+                    {
+                        memorySample.dedicatedBytes += usageBytes;
+                    }
+                    else
+                    {
+                        memorySample.sharedBytes += usageBytes;
+                    }
+                }
+            };
+
+        accumulateCounter(state.dedicatedCounterHandle, true);
+        accumulateCounter(state.sharedCounterHandle, false);
+        return gpuMemoryByPid;
     }
 
     // ApplyGpuUsageCountersToProcessList 作用：
     // - 将 PID 聚合后的 GPU 利用率写回进程快照；
+    // - 参数 detailDemandFlags 决定是否额外采集引擎名称与显存占用；
     // - PDH 不可用时保持默认 0，不影响进程枚举主流程。
-    void ApplyGpuUsageCountersToProcessList(std::vector<ks::process::ProcessRecord>& processList)
+    void ApplyGpuUsageCountersToProcessList(
+        std::vector<ks::process::ProcessRecord>& processList,
+        const std::uint32_t detailDemandFlags)
     {
         if (processList.empty())
         {
             return;
         }
 
-        const std::unordered_map<std::uint32_t, double> gpuPercentByPid =
-            QueryGpuUsagePercentByPid();
-        if (gpuPercentByPid.empty())
+        const bool collectEngineText =
+            (detailDemandFlags & ks::process::ProcessDetailDemand::GpuEngine) != 0U;
+        const std::unordered_map<std::uint32_t, GpuProcessUsageSample> gpuUsageByPid =
+            QueryGpuUsageByPid(collectEngineText);
+        if (!gpuUsageByPid.empty())
+        {
+            for (ks::process::ProcessRecord& processRecord : processList)
+            {
+                const auto gpuIt = gpuUsageByPid.find(processRecord.pid);
+                if (gpuIt == gpuUsageByPid.end())
+                {
+                    processRecord.gpuPercent = 0.0;
+                    continue;
+                }
+                processRecord.gpuPercent = gpuIt->second.utilizationPercent;
+                if (collectEngineText)
+                {
+                    processRecord.gpuEngineText = gpuIt->second.topEngineText;
+                }
+            }
+        }
+
+        // 显存列默认隐藏；只有用户显示相关列时才为整表付出一次额外 PDH 采样。
+        if ((detailDemandFlags & ks::process::ProcessDetailDemand::GpuMemory) == 0U)
+        {
+            return;
+        }
+
+        const std::unordered_map<std::uint32_t, GpuProcessMemorySample> gpuMemoryByPid =
+            QueryGpuProcessMemoryByPid();
+        if (gpuMemoryByPid.empty())
         {
             return;
         }
 
         for (ks::process::ProcessRecord& processRecord : processList)
         {
-            const auto gpuIt = gpuPercentByPid.find(processRecord.pid);
-            processRecord.gpuPercent = (gpuIt == gpuPercentByPid.end())
-                ? 0.0
-                : gpuIt->second;
+            const auto memoryIt = gpuMemoryByPid.find(processRecord.pid);
+            processRecord.gpuDedicatedMemoryBytes =
+                (memoryIt == gpuMemoryByPid.end()) ? 0ULL : memoryIt->second.dedicatedBytes;
+            processRecord.gpuSharedMemoryBytes =
+                (memoryIt == gpuMemoryByPid.end()) ? 0ULL : memoryIt->second.sharedBytes;
+            processRecord.gpuMemoryKnown = true;
         }
     }
 
@@ -1074,6 +1558,572 @@ namespace
         }
 
         return std::string();
+    }
+
+    // QueryVersionStringValue 作用：
+    // - 输入：映像完整路径与 StringFileInfo 中的条目名（例如 "FileDescription"）；
+    // - 处理：优先按文件自带的语言/代码页读取，缺失时回退英语代码页；
+    // - 返回：UTF-8 文本；文件没有版本资源或条目不存在时返回空串。
+    std::string QueryVersionStringValue(
+        const std::wstring& utf16Path,
+        const wchar_t* const valueName)
+    {
+        if (utf16Path.empty() || valueName == nullptr)
+        {
+            return std::string();
+        }
+
+        DWORD versionHandle = 0;
+        const DWORD versionInfoSize = ::GetFileVersionInfoSizeW(utf16Path.c_str(), &versionHandle);
+        if (versionInfoSize == 0)
+        {
+            return std::string();
+        }
+
+        std::vector<BYTE> versionInfoBuffer(versionInfoSize, 0);
+        if (::GetFileVersionInfoW(
+            utf16Path.c_str(),
+            0,
+            versionInfoSize,
+            versionInfoBuffer.data()) == FALSE)
+        {
+            return std::string();
+        }
+
+        struct LangAndCodePage
+        {
+            WORD language = 0;
+            WORD codePage = 0;
+        };
+        LangAndCodePage* translation = nullptr;
+        UINT translationSize = 0;
+        if (::VerQueryValueW(
+            versionInfoBuffer.data(),
+            L"\\VarFileInfo\\Translation",
+            reinterpret_cast<LPVOID*>(&translation),
+            &translationSize) != FALSE &&
+            translation != nullptr &&
+            translationSize >= sizeof(LangAndCodePage))
+        {
+            wchar_t queryPath[128] = {};
+            std::swprintf(
+                queryPath,
+                std::size(queryPath),
+                L"\\StringFileInfo\\%04x%04x\\%s",
+                translation[0].language,
+                translation[0].codePage,
+                valueName);
+
+            LPVOID stringValue = nullptr;
+            UINT stringLength = 0;
+            if (::VerQueryValueW(
+                versionInfoBuffer.data(),
+                queryPath,
+                &stringValue,
+                &stringLength) != FALSE &&
+                stringValue != nullptr &&
+                stringLength > 0)
+            {
+                return ks::str::Utf16ToUtf8(static_cast<const wchar_t*>(stringValue));
+            }
+        }
+
+        wchar_t fallbackPath[128] = {};
+        std::swprintf(
+            fallbackPath,
+            std::size(fallbackPath),
+            L"\\StringFileInfo\\040904B0\\%s",
+            valueName);
+
+        LPVOID fallbackValue = nullptr;
+        UINT fallbackLength = 0;
+        if (::VerQueryValueW(
+            versionInfoBuffer.data(),
+            fallbackPath,
+            &fallbackValue,
+            &fallbackLength) != FALSE &&
+            fallbackValue != nullptr &&
+            fallbackLength > 0)
+        {
+            return ks::str::Utf16ToUtf8(static_cast<const wchar_t*>(fallbackValue));
+        }
+
+        return std::string();
+    }
+
+    // ImageOsContextGuidMapping：
+    // - 映像清单 <supportedOS Id="{GUID}"/> 到系统名称的映射；
+    // - 顺序由新到旧，取匹配到的第一项，与任务管理器“操作系统上下文”显示最高受支持系统一致。
+    struct ImageOsContextGuidMapping
+    {
+        const wchar_t* guidText; // supportedOS Id 属性中的 GUID（小写，含花括号）。
+        const char* displayText; // 展示用系统名称。
+    };
+
+    const ImageOsContextGuidMapping ImageOsContextGuidMappings[] =
+    {
+        { L"{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}", "Windows 10" },
+        { L"{1f676c76-80e1-4239-95bb-83d0f6d0da78}", "Windows 8.1" },
+        { L"{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}", "Windows 8" },
+        { L"{35138b9a-5d96-4fbd-8e2d-a2440225f93a}", "Windows 7" },
+        { L"{e2011457-1546-43c5-a5fe-008deee3d3f0}", "Windows Vista" }
+    };
+
+    // QueryImageOsContextText 作用：
+    // - 输入：映像完整路径；
+    // - 处理：以“仅资源”方式映射 PE，读取 RT_MANIFEST 并在其中查找 supportedOS GUID；
+    // - 返回：匹配到的系统名称；映像没有兼容性清单时返回空串（任务管理器同样显示空）。
+    // 安全性：使用 LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE，不会执行目标映像中的代码。
+    std::string QueryImageOsContextText(const std::wstring& utf16Path)
+    {
+        if (utf16Path.empty())
+        {
+            return std::string();
+        }
+
+        const HMODULE imageModule = ::LoadLibraryExW(
+            utf16Path.c_str(),
+            nullptr,
+            LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE);
+        if (imageModule == nullptr)
+        {
+            return std::string();
+        }
+
+        std::string manifestText;
+        // 常见清单资源 ID：1=CREATEPROCESS_MANIFEST_RESOURCE_ID，2/3 为 ISOLATIONAWARE 变体。
+        for (WORD manifestId = 1; manifestId <= 3 && manifestText.empty(); ++manifestId)
+        {
+            const HRSRC resourceHandle = ::FindResourceW(
+                imageModule,
+                MAKEINTRESOURCEW(manifestId),
+                MAKEINTRESOURCEW(24 /* RT_MANIFEST */));
+            if (resourceHandle == nullptr)
+            {
+                continue;
+            }
+
+            const DWORD resourceSize = ::SizeofResource(imageModule, resourceHandle);
+            if (resourceSize == 0)
+            {
+                continue;
+            }
+
+            const HGLOBAL resourceData = ::LoadResource(imageModule, resourceHandle);
+            if (resourceData == nullptr)
+            {
+                continue;
+            }
+
+            const void* const resourceBytes = ::LockResource(resourceData);
+            if (resourceBytes == nullptr)
+            {
+                continue;
+            }
+
+            // 清单是 UTF-8 XML 文本；上限保护避免异常资源导致超大分配。
+            constexpr DWORD ManifestMaxBytes = 1024U * 1024U;
+            manifestText.assign(
+                static_cast<const char*>(resourceBytes),
+                static_cast<std::size_t>(std::min(resourceSize, ManifestMaxBytes)));
+        }
+
+        ::FreeLibrary(imageModule);
+        if (manifestText.empty())
+        {
+            return std::string();
+        }
+
+        // GUID 大小写在不同工具链生成的清单里不统一，统一转小写后再比对。
+        for (char& manifestChar : manifestText)
+        {
+            if (manifestChar >= 'A' && manifestChar <= 'Z')
+            {
+                manifestChar = static_cast<char>(manifestChar - 'A' + 'a');
+            }
+        }
+
+        for (const ImageOsContextGuidMapping& mapping : ImageOsContextGuidMappings)
+        {
+            const std::string guidNarrow = ks::str::Utf16ToUtf8(mapping.guidText);
+            if (manifestText.find(guidNarrow) != std::string::npos)
+            {
+                return std::string(mapping.displayText);
+            }
+        }
+
+        return std::string();
+    }
+
+    // ImageDescriptionCacheEntry：按映像路径缓存的“说明 / 操作系统上下文”解析结果。
+    struct ImageDescriptionCacheEntry
+    {
+        std::string fileDescription;    // 版本资源 FileDescription。
+        std::string osContextText;      // 清单 supportedOS 映射出的系统名。
+        bool descriptionResolved = false; // true 表示已尝试解析 FileDescription（含解析出空串）。
+        bool osContextResolved = false;   // true 表示已尝试解析清单。
+    };
+
+    // imageDescriptionCache 作用：
+    // - 说明与操作系统上下文只取决于磁盘上的映像文件，同名进程可以完全共享结果；
+    // - 缓存把“每进程每轮解析 PE”降为“每映像一次”，这是这两列可以常驻显示的前提。
+    std::unordered_map<std::string, ImageDescriptionCacheEntry>& imageDescriptionCache()
+    {
+        static std::unordered_map<std::string, ImageDescriptionCacheEntry> cache;
+        return cache;
+    }
+
+    // imageDescriptionCacheMutex 作用：保护 imageDescriptionCache，供后台多线程静态补齐并发访问。
+    std::mutex& imageDescriptionCacheMutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    // ImageDescriptionCacheMaximumEntryCount：
+    // - 缓存条目上限；达到上限后整体清空重建，避免长时间运行后无界增长。
+    constexpr std::size_t ImageDescriptionCacheMaximumEntryCount = 4096;
+
+    // ResolveImageDescriptionCached 作用：
+    // - 输入：映像路径与本次需要的字段（说明 / 操作系统上下文）；
+    // - 处理：命中缓存直接返回，未命中时解析一次并写回缓存；
+    // - 返回：无返回值，结果通过输出参数回传。
+    void ResolveImageDescriptionCached(
+        const std::string& imagePath,
+        const bool wantFileDescription,
+        const bool wantOsContext,
+        std::string* const fileDescriptionOut,
+        std::string* const osContextTextOut)
+    {
+        if (imagePath.empty() || (!wantFileDescription && !wantOsContext))
+        {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> cacheLock(imageDescriptionCacheMutex());
+            const auto cacheIt = imageDescriptionCache().find(imagePath);
+            if (cacheIt != imageDescriptionCache().end())
+            {
+                const ImageDescriptionCacheEntry& cachedEntry = cacheIt->second;
+                const bool descriptionSatisfied = !wantFileDescription || cachedEntry.descriptionResolved;
+                const bool osContextSatisfied = !wantOsContext || cachedEntry.osContextResolved;
+                if (descriptionSatisfied && osContextSatisfied)
+                {
+                    if (wantFileDescription && fileDescriptionOut != nullptr)
+                    {
+                        *fileDescriptionOut = cachedEntry.fileDescription;
+                    }
+                    if (wantOsContext && osContextTextOut != nullptr)
+                    {
+                        *osContextTextOut = cachedEntry.osContextText;
+                    }
+                    return;
+                }
+            }
+        }
+
+        // 解析阶段不持锁：PE 映射与版本资源读取都可能涉及磁盘 I/O。
+        const std::wstring utf16Path = ks::str::Utf8ToUtf16(imagePath);
+        std::string resolvedDescription;
+        std::string resolvedOsContext;
+        if (wantFileDescription)
+        {
+            resolvedDescription = QueryVersionStringValue(utf16Path, L"FileDescription");
+        }
+        if (wantOsContext)
+        {
+            resolvedOsContext = QueryImageOsContextText(utf16Path);
+        }
+
+        {
+            std::lock_guard<std::mutex> cacheLock(imageDescriptionCacheMutex());
+            if (imageDescriptionCache().size() >= ImageDescriptionCacheMaximumEntryCount)
+            {
+                imageDescriptionCache().clear();
+            }
+
+            ImageDescriptionCacheEntry& cacheEntry = imageDescriptionCache()[imagePath];
+            if (wantFileDescription)
+            {
+                cacheEntry.fileDescription = resolvedDescription;
+                cacheEntry.descriptionResolved = true;
+            }
+            if (wantOsContext)
+            {
+                cacheEntry.osContextText = resolvedOsContext;
+                cacheEntry.osContextResolved = true;
+            }
+        }
+
+        if (wantFileDescription && fileDescriptionOut != nullptr)
+        {
+            *fileDescriptionOut = std::move(resolvedDescription);
+        }
+        if (wantOsContext && osContextTextOut != nullptr)
+        {
+            *osContextTextOut = std::move(resolvedOsContext);
+        }
+    }
+
+    // QueryProcessUacVirtualizationStateByHandle 作用：
+    // - 输入：具备 PROCESS_QUERY_LIMITED_INFORMATION 的进程句柄；
+    // - 处理：读取令牌的 TokenVirtualizationAllowed / TokenVirtualizationEnabled；
+    // - 返回：UAC 虚拟化三态；无法打开令牌时返回 Unknown。
+    ks::process::ProcessFeatureState QueryProcessUacVirtualizationStateByHandle(const HANDLE processHandle)
+    {
+        if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE)
+        {
+            return ks::process::ProcessFeatureState::Unknown;
+        }
+
+        HANDLE tokenHandle = nullptr;
+        if (::OpenProcessToken(processHandle, TOKEN_QUERY, &tokenHandle) == FALSE || tokenHandle == nullptr)
+        {
+            return ks::process::ProcessFeatureState::Unknown;
+        }
+
+        DWORD virtualizationAllowed = 0;
+        DWORD returnLength = 0;
+        const BOOL allowedOk = ::GetTokenInformation(
+            tokenHandle,
+            TokenVirtualizationAllowed,
+            &virtualizationAllowed,
+            static_cast<DWORD>(sizeof(virtualizationAllowed)),
+            &returnLength);
+        if (allowedOk == FALSE)
+        {
+            ::CloseHandle(tokenHandle);
+            return ks::process::ProcessFeatureState::Unknown;
+        }
+        if (virtualizationAllowed == 0)
+        {
+            // 64 位进程与多数系统组件都不允许虚拟化，任务管理器显示“不允许”。
+            ::CloseHandle(tokenHandle);
+            return ks::process::ProcessFeatureState::NotAllowed;
+        }
+
+        DWORD virtualizationEnabled = 0;
+        const BOOL enabledOk = ::GetTokenInformation(
+            tokenHandle,
+            TokenVirtualizationEnabled,
+            &virtualizationEnabled,
+            static_cast<DWORD>(sizeof(virtualizationEnabled)),
+            &returnLength);
+        ::CloseHandle(tokenHandle);
+        if (enabledOk == FALSE)
+        {
+            return ks::process::ProcessFeatureState::Unknown;
+        }
+        return (virtualizationEnabled != 0)
+            ? ks::process::ProcessFeatureState::Enabled
+            : ks::process::ProcessFeatureState::Disabled;
+    }
+
+    // ApplyProcessMitigationStatesByHandle 作用：
+    // - 输入：进程句柄；
+    // - 处理：读取数据执行保护与控制流保护缓解策略；
+    // - 返回：true 表示至少有一项策略读取成功。
+    // 兼容性：GetProcessMitigationPolicy 从 Windows 8 起提供，动态解析后在旧系统上安全跳过。
+    bool ApplyProcessMitigationStatesByHandle(
+        ks::process::ProcessRecord& processRecord,
+        const HANDLE processHandle)
+    {
+        if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+
+        using GetProcessMitigationPolicyFn =
+            BOOL(WINAPI*)(HANDLE, PROCESS_MITIGATION_POLICY, PVOID, SIZE_T);
+        HMODULE kernel32Module = ::GetModuleHandleW(L"kernel32.dll");
+        const auto getProcessMitigationPolicy = reinterpret_cast<GetProcessMitigationPolicyFn>(
+            kernel32Module != nullptr
+            ? ::GetProcAddress(kernel32Module, "GetProcessMitigationPolicy")
+            : nullptr);
+        if (getProcessMitigationPolicy == nullptr)
+        {
+            return false;
+        }
+
+        bool anySucceeded = false;
+
+        PROCESS_MITIGATION_DEP_POLICY depPolicy{};
+        if (getProcessMitigationPolicy(
+            processHandle,
+            ProcessDEPPolicy,
+            &depPolicy,
+            sizeof(depPolicy)) != FALSE)
+        {
+            if (depPolicy.Enable == 0)
+            {
+                processRecord.dataExecutionPreventionState = ks::process::ProcessFeatureState::Disabled;
+            }
+            else
+            {
+                processRecord.dataExecutionPreventionState = (depPolicy.Permanent != FALSE)
+                    ? ks::process::ProcessFeatureState::EnabledPermanent
+                    : ks::process::ProcessFeatureState::Enabled;
+            }
+            anySucceeded = true;
+        }
+
+        PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY controlFlowGuardPolicy{};
+        if (getProcessMitigationPolicy(
+            processHandle,
+            ProcessControlFlowGuardPolicy,
+            &controlFlowGuardPolicy,
+            sizeof(controlFlowGuardPolicy)) != FALSE)
+        {
+            processRecord.controlFlowGuardState = (controlFlowGuardPolicy.EnableControlFlowGuard != 0)
+                ? ks::process::ProcessFeatureState::Enabled
+                : ks::process::ProcessFeatureState::Disabled;
+            anySucceeded = true;
+        }
+
+        // 硬件强制实施的堆栈保护（Intel CET 用户态影子栈）：
+        // - 该策略从 Windows 10 20H1 起提供，旧系统上调用会失败并保持 Unknown。
+        PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY userShadowStackPolicy{};
+        if (getProcessMitigationPolicy(
+            processHandle,
+            ProcessUserShadowStackPolicy,
+            &userShadowStackPolicy,
+            sizeof(userShadowStackPolicy)) != FALSE)
+        {
+            processRecord.hardwareStackProtectionState =
+                (userShadowStackPolicy.EnableUserShadowStack != 0U)
+                ? ks::process::ProcessFeatureState::Enabled
+                : ks::process::ProcessFeatureState::Disabled;
+            anySucceeded = true;
+        }
+
+        return anySucceeded;
+    }
+
+    // QueryProcessPackageFullName 作用：
+    // - 输入：具备 PROCESS_QUERY_LIMITED_INFORMATION 的进程句柄；
+    // - 处理：读取 UWP / MSIX 程序包全名；
+    // - 返回：true 表示判定成功（非打包进程也算成功，此时 packageNameOut 为空）。
+    // 兼容性：GetPackageFullName 从 Windows 8 起提供，动态解析后在旧系统上安全跳过。
+    bool QueryProcessPackageFullName(const HANDLE processHandle, std::string* const packageNameOut)
+    {
+        if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE || packageNameOut == nullptr)
+        {
+            return false;
+        }
+        packageNameOut->clear();
+
+        using GetPackageFullNameFn = LONG(WINAPI*)(HANDLE, UINT32*, PWSTR);
+        HMODULE kernel32Module = ::GetModuleHandleW(L"kernel32.dll");
+        const auto getPackageFullName = reinterpret_cast<GetPackageFullNameFn>(
+            kernel32Module != nullptr ? ::GetProcAddress(kernel32Module, "GetPackageFullName") : nullptr);
+        if (getPackageFullName == nullptr)
+        {
+            return false;
+        }
+
+        // PACKAGE_FULL_NAME_MAX_LENGTH 为 127 个字符，这里多留终止符空间。
+        UINT32 nameLength = 128;
+        std::wstring nameBuffer(nameLength, L'\0');
+        LONG queryResult = getPackageFullName(processHandle, &nameLength, nameBuffer.data());
+        if (queryResult == ERROR_INSUFFICIENT_BUFFER)
+        {
+            nameBuffer.assign(nameLength + 1U, L'\0');
+            queryResult = getPackageFullName(processHandle, &nameLength, nameBuffer.data());
+        }
+
+        if (queryResult == ERROR_SUCCESS)
+        {
+            nameBuffer.resize(::wcsnlen(nameBuffer.c_str(), nameBuffer.size()));
+            *packageNameOut = ks::str::Utf16ToUtf8(nameBuffer);
+            return true;
+        }
+
+        // APPMODEL_ERROR_NO_PACKAGE：目标不是打包应用，这是明确结论而不是失败。
+        return queryResult == APPMODEL_ERROR_NO_PACKAGE;
+    }
+
+    // QueryProcessDpiAwarenessLevel 作用：
+    // - 输入：进程句柄；
+    // - 处理：优先用 user32 的 DPI 感知上下文接口区分“每监视器 V2 / GDI 缩放”，
+    //   否则回退 shcore 的三态查询；
+    // - 返回：DPI 感知级别；两条路径都不可用时返回 Unknown。
+    ks::process::ProcessDpiAwarenessLevel QueryProcessDpiAwarenessLevel(const HANDLE processHandle)
+    {
+        if (processHandle == nullptr || processHandle == INVALID_HANDLE_VALUE)
+        {
+            return ks::process::ProcessDpiAwarenessLevel::Unknown;
+        }
+
+        using GetDpiAwarenessContextForProcessFn = DPI_AWARENESS_CONTEXT(WINAPI*)(HANDLE);
+        using AreDpiAwarenessContextsEqualFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
+        HMODULE user32Module = ::GetModuleHandleW(L"user32.dll");
+        const auto getDpiContextForProcess = reinterpret_cast<GetDpiAwarenessContextForProcessFn>(
+            user32Module != nullptr
+            ? ::GetProcAddress(user32Module, "GetDpiAwarenessContextForProcess")
+            : nullptr);
+        const auto areDpiContextsEqual = reinterpret_cast<AreDpiAwarenessContextsEqualFn>(
+            user32Module != nullptr
+            ? ::GetProcAddress(user32Module, "AreDpiAwarenessContextsEqual")
+            : nullptr);
+        if (getDpiContextForProcess != nullptr && areDpiContextsEqual != nullptr)
+        {
+            const DPI_AWARENESS_CONTEXT dpiContext = getDpiContextForProcess(processHandle);
+            if (dpiContext != nullptr)
+            {
+                // 比较顺序从具体到宽泛：V2 与 GDI 缩放都属于更细分的上下文，必须先判定。
+                if (areDpiContextsEqual(dpiContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != FALSE)
+                {
+                    return ks::process::ProcessDpiAwarenessLevel::PerMonitorAwareV2;
+                }
+                if (areDpiContextsEqual(dpiContext, DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED) != FALSE)
+                {
+                    return ks::process::ProcessDpiAwarenessLevel::UnawareGdiScaled;
+                }
+                if (areDpiContextsEqual(dpiContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE) != FALSE)
+                {
+                    return ks::process::ProcessDpiAwarenessLevel::PerMonitorAware;
+                }
+                if (areDpiContextsEqual(dpiContext, DPI_AWARENESS_CONTEXT_SYSTEM_AWARE) != FALSE)
+                {
+                    return ks::process::ProcessDpiAwarenessLevel::SystemAware;
+                }
+                if (areDpiContextsEqual(dpiContext, DPI_AWARENESS_CONTEXT_UNAWARE) != FALSE)
+                {
+                    return ks::process::ProcessDpiAwarenessLevel::Unaware;
+                }
+            }
+        }
+
+        // 回退路径：shcore 的 GetProcessDpiAwareness 只区分 Unaware / System / PerMonitor。
+        using GetProcessDpiAwarenessFn = HRESULT(WINAPI*)(HANDLE, PROCESS_DPI_AWARENESS*);
+        HMODULE shcoreModule = ::GetModuleHandleW(L"shcore.dll");
+        if (shcoreModule == nullptr)
+        {
+            shcoreModule = ::LoadLibraryW(L"shcore.dll");
+        }
+        const auto getProcessDpiAwareness = reinterpret_cast<GetProcessDpiAwarenessFn>(
+            shcoreModule != nullptr ? ::GetProcAddress(shcoreModule, "GetProcessDpiAwareness") : nullptr);
+        if (getProcessDpiAwareness == nullptr)
+        {
+            return ks::process::ProcessDpiAwarenessLevel::Unknown;
+        }
+
+        PROCESS_DPI_AWARENESS awarenessValue = PROCESS_DPI_UNAWARE;
+        if (FAILED(getProcessDpiAwareness(processHandle, &awarenessValue)))
+        {
+            return ks::process::ProcessDpiAwarenessLevel::Unknown;
+        }
+        switch (awarenessValue)
+        {
+        case PROCESS_SYSTEM_DPI_AWARE:
+            return ks::process::ProcessDpiAwarenessLevel::SystemAware;
+        case PROCESS_PER_MONITOR_DPI_AWARE:
+            return ks::process::ProcessDpiAwarenessLevel::PerMonitorAware;
+        case PROCESS_DPI_UNAWARE:
+        default:
+            return ks::process::ProcessDpiAwarenessLevel::Unaware;
+        }
     }
 
     // QueryFileSignatureInfo 作用：
@@ -2513,6 +3563,18 @@ namespace ks::process
             }
             processRecord.workingSetMB = static_cast<double>(processRecord.rawWorkingSetBytes) / (1024.0 * 1024.0);
             processRecord.ramMB = static_cast<double>(processRecord.rawPrivateBytes) / (1024.0 * 1024.0);
+
+            // 任务管理器内存列对齐：
+            // - Toolhelp 等非 NtQuery 路径没有 SYSTEM_PROCESS_INFORMATION，只能靠 Psapi 补齐；
+            // - 专用/共享工作集不在 PROCESS_MEMORY_COUNTERS_EX 中，保持 privateWorkingSetKnown=false，
+            //   由 UI 显示占位符而不是把“提交大小”伪装成“专用工作集”。
+            processRecord.peakWorkingSetBytes = static_cast<std::uint64_t>(memoryCounters.PeakWorkingSetSize);
+            processRecord.commitSizeBytes = static_cast<std::uint64_t>(memoryCounters.PagefileUsage);
+            processRecord.peakCommitSizeBytes = static_cast<std::uint64_t>(memoryCounters.PeakPagefileUsage);
+            processRecord.pagedPoolBytes = static_cast<std::uint64_t>(memoryCounters.QuotaPagedPoolUsage);
+            processRecord.nonPagedPoolBytes = static_cast<std::uint64_t>(memoryCounters.QuotaNonPagedPoolUsage);
+            processRecord.pageFaultCount = static_cast<std::uint64_t>(memoryCounters.PageFaultCount);
+            processRecord.memoryDetailKnown = true;
         }
 
         // 读取 IO 累计字节。
@@ -2523,7 +3585,21 @@ namespace ks::process
                 static_cast<std::uint64_t>(ioCounters.ReadTransferCount) +
                 static_cast<std::uint64_t>(ioCounters.WriteTransferCount) +
                 static_cast<std::uint64_t>(ioCounters.OtherTransferCount);
+
+            // 任务管理器的 6 个 I/O 列直接来自同一次查询，无额外开销。
+            processRecord.ioReadOperationCount = static_cast<std::uint64_t>(ioCounters.ReadOperationCount);
+            processRecord.ioWriteOperationCount = static_cast<std::uint64_t>(ioCounters.WriteOperationCount);
+            processRecord.ioOtherOperationCount = static_cast<std::uint64_t>(ioCounters.OtherOperationCount);
+            processRecord.ioReadTransferBytes = static_cast<std::uint64_t>(ioCounters.ReadTransferCount);
+            processRecord.ioWriteTransferBytes = static_cast<std::uint64_t>(ioCounters.WriteTransferCount);
+            processRecord.ioOtherTransferBytes = static_cast<std::uint64_t>(ioCounters.OtherTransferCount);
+            processRecord.ioDetailKnown = true;
         }
+
+        // 基础优先级与累计周期：
+        // - 基础优先级取 KPRIORITY（0~31），与任务管理器“基本优先级”列语义一致；
+        // - QueryProcessCycleTime 在 Windows 7+ 均可用，失败时保持 cycleTimeKnown=false。
+        ApplyProcessBasePriorityAndCycleTimeByHandle(processRecord, processHandle);
 
         // 若路径未填，顺带补一次路径。
         if (processRecord.imagePath.empty())
@@ -2771,6 +3847,186 @@ namespace ks::process
         return true;
     }
 
+    bool FillProcessOnDemandDetails(
+        ProcessRecord& processRecord,
+        const std::uint32_t detailDemandFlags,
+        std::uint32_t* const resolvedFlagsOut)
+    {
+        // resolvedFlags：本次真正采集成功的位，供调用方做“只采一次”的记账。
+        std::uint32_t resolvedFlags = ProcessDetailDemand::None;
+        const auto publishResolvedFlags = [resolvedFlagsOut, &resolvedFlags]() -> void
+            {
+                if (resolvedFlagsOut != nullptr)
+                {
+                    *resolvedFlagsOut = resolvedFlags;
+                }
+            };
+
+        if (detailDemandFlags == ProcessDetailDemand::None)
+        {
+            publishResolvedFlags();
+            return true;
+        }
+
+        bool anySucceeded = false;
+
+        // 第一组：只依赖磁盘上的映像文件，可以跨进程按路径共享解析结果。
+        const bool wantFileDescription =
+            (detailDemandFlags & ProcessDetailDemand::FileDescription) != 0U;
+        const bool wantOsContext =
+            (detailDemandFlags & ProcessDetailDemand::OsContext) != 0U;
+        if ((wantFileDescription || wantOsContext) && !processRecord.imagePath.empty())
+        {
+            std::string fileDescription;
+            std::string osContextText;
+            ResolveImageDescriptionCached(
+                processRecord.imagePath,
+                wantFileDescription,
+                wantOsContext,
+                &fileDescription,
+                &osContextText);
+            if (wantFileDescription)
+            {
+                processRecord.fileDescription = std::move(fileDescription);
+            }
+            if (wantOsContext)
+            {
+                processRecord.osContextText = std::move(osContextText);
+            }
+            resolvedFlags |= (detailDemandFlags & ProcessDetailDemand::ImageFileMask);
+            anySucceeded = true;
+        }
+
+        // 企业上下文：
+        // - Windows 信息保护（WIP/EDP）没有查询“任意进程企业上下文”的公开 API；
+        // - 未启用 WIP 的系统上任务管理器同样显示“个人”，这里保持同样语义，不做推断；
+        // - 值使用稳定英文标识，由 UI 层按当前语言翻译展示。
+        if ((detailDemandFlags & ProcessDetailDemand::EnterpriseContext) != 0U)
+        {
+            processRecord.enterpriseContextText = "Personal";
+            resolvedFlags |= ProcessDetailDemand::EnterpriseContext;
+            anySucceeded = true;
+        }
+
+        // 第二组：需要目标进程句柄。没有任何一位请求时直接跳过 OpenProcess。
+        constexpr std::uint32_t HandleRequiredMask =
+            ProcessDetailDemand::GuiResources |
+            ProcessDetailDemand::JobObject |
+            ProcessDetailDemand::MitigationPolicy |
+            ProcessDetailDemand::UacVirtualization |
+            ProcessDetailDemand::PackageName |
+            ProcessDetailDemand::DpiAwareness;
+        if ((detailDemandFlags & HandleRequiredMask) == 0U || processRecord.pid == 0)
+        {
+            publishResolvedFlags();
+            return anySucceeded;
+        }
+
+        // GetGuiResources 与 GetProcessMitigationPolicy 需要 PROCESS_QUERY_INFORMATION；
+        // 受保护进程只放行 LIMITED 版本，此时降级重试，能拿多少算多少。
+        HANDLE processHandle = ::OpenProcess(
+            PROCESS_QUERY_INFORMATION,
+            FALSE,
+            ToDwordPid(processRecord.pid));
+        if (processHandle == nullptr)
+        {
+            processHandle = ::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                FALSE,
+                ToDwordPid(processRecord.pid));
+        }
+        if (processHandle == nullptr)
+        {
+            publishResolvedFlags();
+            return anySucceeded;
+        }
+
+        if ((detailDemandFlags & ProcessDetailDemand::GuiResources) != 0U)
+        {
+            // GetGuiResources 失败时返回 0 且置 LastError；用 LastError 区分“真的是 0 个对象”。
+            ::SetLastError(ERROR_SUCCESS);
+            const DWORD gdiObjectCount = ::GetGuiResources(processHandle, GR_GDIOBJECTS);
+            const DWORD gdiQueryError = ::GetLastError();
+            ::SetLastError(ERROR_SUCCESS);
+            const DWORD userObjectCount = ::GetGuiResources(processHandle, GR_USEROBJECTS);
+            const DWORD userQueryError = ::GetLastError();
+            if (gdiQueryError == ERROR_SUCCESS || userQueryError == ERROR_SUCCESS)
+            {
+                processRecord.gdiObjectCount = static_cast<std::uint32_t>(gdiObjectCount);
+                processRecord.userObjectCount = static_cast<std::uint32_t>(userObjectCount);
+                processRecord.guiResourceKnown = true;
+                resolvedFlags |= ProcessDetailDemand::GuiResources;
+                anySucceeded = true;
+            }
+        }
+
+        if ((detailDemandFlags & ProcessDetailDemand::JobObject) != 0U)
+        {
+            BOOL inJobObject = FALSE;
+            if (::IsProcessInJob(processHandle, nullptr, &inJobObject) != FALSE)
+            {
+                processRecord.inJobObject = (inJobObject != FALSE);
+                processRecord.jobObjectKnown = true;
+                resolvedFlags |= ProcessDetailDemand::JobObject;
+                anySucceeded = true;
+            }
+        }
+
+        if ((detailDemandFlags & ProcessDetailDemand::MitigationPolicy) != 0U)
+        {
+            if (ApplyProcessMitigationStatesByHandle(processRecord, processHandle))
+            {
+                resolvedFlags |= ProcessDetailDemand::MitigationPolicy;
+                anySucceeded = true;
+            }
+        }
+
+        if ((detailDemandFlags & ProcessDetailDemand::UacVirtualization) != 0U)
+        {
+            const ProcessFeatureState virtualizationState =
+                QueryProcessUacVirtualizationStateByHandle(processHandle);
+            processRecord.uacVirtualizationState = virtualizationState;
+            if (virtualizationState != ProcessFeatureState::Unknown)
+            {
+                resolvedFlags |= ProcessDetailDemand::UacVirtualization;
+                anySucceeded = true;
+            }
+        }
+
+        if ((detailDemandFlags & ProcessDetailDemand::PackageName) != 0U)
+        {
+            std::string packageFullName;
+            if (QueryProcessPackageFullName(processHandle, &packageFullName))
+            {
+                processRecord.packageFullName = std::move(packageFullName);
+                processRecord.packageNameKnown = true;
+                resolvedFlags |= ProcessDetailDemand::PackageName;
+                anySucceeded = true;
+            }
+        }
+
+        if ((detailDemandFlags & ProcessDetailDemand::DpiAwareness) != 0U)
+        {
+            const ProcessDpiAwarenessLevel awarenessLevel = QueryProcessDpiAwarenessLevel(processHandle);
+            processRecord.dpiAwarenessLevel = awarenessLevel;
+            if (awarenessLevel != ProcessDpiAwarenessLevel::Unknown)
+            {
+                resolvedFlags |= ProcessDetailDemand::DpiAwareness;
+                anySucceeded = true;
+            }
+        }
+
+        ::CloseHandle(processHandle);
+        publishResolvedFlags();
+        return anySucceeded;
+    }
+
+    void ClearProcessImageDescriptionCache()
+    {
+        std::lock_guard<std::mutex> cacheLock(imageDescriptionCacheMutex());
+        imageDescriptionCache().clear();
+    }
+
     void UpdateDerivedCounters(
         ProcessRecord& processRecord,
         const CounterSample* previousSample,
@@ -2782,10 +4038,46 @@ namespace ks::process
         nextSampleOut.cpuTime100ns = processRecord.rawCpuTime100ns;
         nextSampleOut.ioBytes = processRecord.rawIoBytes;
         nextSampleOut.sampleTick100ns = currentTick100ns;
+        nextSampleOut.workingSetBytes = processRecord.rawWorkingSetBytes;
+        nextSampleOut.pageFaultCount = processRecord.pageFaultCount;
+        nextSampleOut.hasMemoryBaseline = processRecord.memoryDetailKnown;
 
         // RAM 同时保留申请内存与工作集，便于 UI 展示“申请/使用”两组数值。
         processRecord.workingSetMB = static_cast<double>(processRecord.rawWorkingSetBytes) / (1024.0 * 1024.0);
         processRecord.ramMB = static_cast<double>(processRecord.rawPrivateBytes) / (1024.0 * 1024.0);
+
+        // 共享工作集是派生量：只有拿到专用工作集才有意义，否则保持 0 并由 UI 显示占位符。
+        processRecord.sharedWorkingSetBytes =
+            (processRecord.privateWorkingSetKnown &&
+                processRecord.rawWorkingSetBytes > processRecord.privateWorkingSetBytes)
+            ? (processRecord.rawWorkingSetBytes - processRecord.privateWorkingSetBytes)
+            : 0ULL;
+
+        // 活动的专用工作集：
+        // - 语义是“专用工作集中仍在活动的部分”，被挂起/冻结的进程整份工作集都不活动；
+        // - 因此挂起进程记 0，其余等于专用工作集，与任务管理器同列的观察结果一致。
+        processRecord.activePrivateWorkingSetBytes =
+            (processRecord.processStateKnown && processRecord.processSuspended)
+            ? 0ULL
+            : processRecord.privateWorkingSetBytes;
+
+        // 工作集增量 / 页面错误增量：
+        // - 任务管理器的这两列都是“相邻两次刷新之间的变化量”，可以为负；
+        // - 首轮或上一轮没有内存基准时保持 0，避免把绝对值误显示成增量。
+        if (previousSample != nullptr && previousSample->hasMemoryBaseline && processRecord.memoryDetailKnown)
+        {
+            processRecord.workingSetDeltaBytes =
+                static_cast<std::int64_t>(processRecord.rawWorkingSetBytes) -
+                static_cast<std::int64_t>(previousSample->workingSetBytes);
+            processRecord.pageFaultDeltaCount =
+                static_cast<std::int64_t>(processRecord.pageFaultCount) -
+                static_cast<std::int64_t>(previousSample->pageFaultCount);
+        }
+        else
+        {
+            processRecord.workingSetDeltaBytes = 0;
+            processRecord.pageFaultDeltaCount = 0;
+        }
 
         // 无历史样本时，CPU/Disk 无法计算差值，GPU 保留 PDH 枚举阶段写入值。
         if (previousSample == nullptr)
@@ -2851,7 +4143,8 @@ namespace ks::process
 
     std::vector<ProcessRecord> EnumerateProcesses(
         const ProcessEnumStrategy strategy,
-        ProcessEnumStrategy* const actualStrategyOut)
+        ProcessEnumStrategy* const actualStrategyOut,
+        const std::uint32_t detailDemandFlags)
     {
         // applyHandleCountFallback 作用：
         // - 最后一遍用系统句柄快照覆盖句柄数量；
@@ -2885,9 +4178,9 @@ namespace ks::process
         // - 用 Windows PDH GPU Engine 计数器补齐每进程 GPU 利用率；
         // - 枚举策略本身不提供 GPU 字段，因此必须在返回列表前统一聚合。
         const auto applyGpuUsageFallback =
-            [](std::vector<ProcessRecord>& processList) -> void
+            [detailDemandFlags](std::vector<ProcessRecord>& processList) -> void
             {
-                ApplyGpuUsageCountersToProcessList(processList);
+                ApplyGpuUsageCountersToProcessList(processList, detailDemandFlags);
             };
 
         // 内部 lambda：Toolhelp 路径。
@@ -2994,6 +4287,48 @@ namespace ks::process
                     processRecord.ramMB = static_cast<double>(processRecord.rawPrivateBytes) / (1024.0 * 1024.0);
                     processRecord.startTimeText = ks::str::FileTime100nsToLocalText(processRecord.creationTime100ns);
                     processRecord.dynamicCountersReady = true;
+
+                    // 任务管理器对齐字段：
+                    // - 这些值都在同一份 NtQuerySystemInformation 缓冲区内，读取不产生额外系统调用；
+                    // - 因此无论用户是否显示对应列都直接填充，避免列切换时出现一轮空白。
+                    processRecord.basePriority = static_cast<std::int32_t>(processInfo->BasePriority);
+                    processRecord.cycleTime = static_cast<std::uint64_t>(processInfo->CycleTime);
+                    processRecord.cycleTimeKnown = true;
+                    processRecord.peakWorkingSetBytes = static_cast<std::uint64_t>(processInfo->PeakWorkingSetSize);
+                    processRecord.privateWorkingSetBytes =
+                        (processInfo->WorkingSetPrivateSize.QuadPart > 0)
+                        ? static_cast<std::uint64_t>(processInfo->WorkingSetPrivateSize.QuadPart)
+                        : 0ULL;
+                    processRecord.sharedWorkingSetBytes =
+                        (processRecord.rawWorkingSetBytes > processRecord.privateWorkingSetBytes)
+                        ? (processRecord.rawWorkingSetBytes - processRecord.privateWorkingSetBytes)
+                        : 0ULL;
+                    processRecord.privateWorkingSetKnown = true;
+                    processRecord.commitSizeBytes = static_cast<std::uint64_t>(processInfo->PagefileUsage);
+                    processRecord.peakCommitSizeBytes = static_cast<std::uint64_t>(processInfo->PeakPagefileUsage);
+                    processRecord.pagedPoolBytes = static_cast<std::uint64_t>(processInfo->QuotaPagedPoolUsage);
+                    processRecord.nonPagedPoolBytes = static_cast<std::uint64_t>(processInfo->QuotaNonPagedPoolUsage);
+                    processRecord.pageFaultCount = static_cast<std::uint64_t>(processInfo->PageFaultCount);
+                    processRecord.hardFaultCount = static_cast<std::uint64_t>(processInfo->HardFaultCount);
+                    processRecord.memoryDetailKnown = true;
+                    processRecord.ioReadOperationCount = static_cast<std::uint64_t>(processInfo->ReadOperationCount.QuadPart);
+                    processRecord.ioWriteOperationCount = static_cast<std::uint64_t>(processInfo->WriteOperationCount.QuadPart);
+                    processRecord.ioOtherOperationCount = static_cast<std::uint64_t>(processInfo->OtherOperationCount.QuadPart);
+                    processRecord.ioReadTransferBytes = static_cast<std::uint64_t>(processInfo->ReadTransferCount.QuadPart);
+                    processRecord.ioWriteTransferBytes = static_cast<std::uint64_t>(processInfo->WriteTransferCount.QuadPart);
+                    processRecord.ioOtherTransferBytes = static_cast<std::uint64_t>(processInfo->OtherTransferCount.QuadPart);
+                    processRecord.ioDetailKnown = true;
+
+                    // 运行/挂起状态：
+                    // - 线程数组紧跟在进程记录之后，同样已经在缓冲区里，无需再次查询；
+                    // - 判定规则与任务管理器一致：全部线程都处于 Waiting 且等待原因为
+                    //   Suspended / WrSuspended 时视为“已挂起”。
+                    ApplyProcessSuspendedStateFromThreadArray(
+                        processRecord,
+                        currentPointer,
+                        informationBuffer.data(),
+                        informationBuffer.size(),
+                        static_cast<std::uint32_t>(processInfo->NumberOfThreads));
 
                     if (processInfo->ImageName.Buffer != nullptr && processInfo->ImageName.Length > 0)
                     {

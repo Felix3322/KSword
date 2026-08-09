@@ -27,6 +27,62 @@ namespace ks::process
         Auto = 2                 // 自动：优先 NtQuery，失败时回退 Snapshot。
     };
 
+    // ProcessFeatureState：
+    // - 作用：统一表达“需要额外查询才能得到”的三/四态开关字段（DEP、控制流保护、UAC 虚拟化等）；
+    // - Unknown 表示尚未采集或查询失败，UI 层据此显示占位符而不是伪造“已禁用”。
+    enum class ProcessFeatureState : std::uint32_t
+    {
+        Unknown = 0,     // 未采集或查询失败。
+        NotAllowed,      // 该特性对目标进程不适用（例如 64 位进程不支持 UAC 虚拟化）。
+        Disabled,        // 已关闭。
+        Enabled,         // 已启用。
+        EnabledPermanent // 已启用且不可更改（DEP 永久开启）。
+    };
+
+    // ProcessDpiAwarenessLevel：
+    // - 作用：表达任务管理器“DPI 感知”列的取值；
+    // - Unknown 表示尚未采集或目标进程拒绝查询，UI 据此显示占位符。
+    enum class ProcessDpiAwarenessLevel : std::uint32_t
+    {
+        Unknown = 0,        // 未采集或查询失败。
+        Unaware,            // 无法识别 DPI。
+        SystemAware,        // 系统 DPI 感知。
+        PerMonitorAware,    // 每监视器 DPI 感知。
+        PerMonitorAwareV2,  // 每监视器 DPI 感知 V2。
+        UnawareGdiScaled    // 无法识别（GDI 缩放）。
+    };
+
+    // ProcessDetailDemand：
+    // - 作用：描述“本轮需要额外付出代价才能采集”的进程字段集合；
+    // - 调用方式：ProcessDock 按当前可见列计算位图并下发，未请求的字段保持默认值；
+    // - 目的：把任务管理器对齐列的采集成本限制在用户真正显示的列上，默认布局零额外开销。
+    namespace ProcessDetailDemand
+    {
+        constexpr std::uint32_t None = 0x00000000U;              // 不采集任何按需字段。
+        constexpr std::uint32_t GuiResources = 0x00000001U;      // GDI / USER 对象计数（动态，每轮变化）。
+        constexpr std::uint32_t JobObject = 0x00000002U;         // 作业对象归属（静态）。
+        constexpr std::uint32_t MitigationPolicy = 0x00000004U;  // 数据执行保护与控制流保护（静态）。
+        constexpr std::uint32_t UacVirtualization = 0x00000008U; // 令牌 UAC 虚拟化状态（静态）。
+        constexpr std::uint32_t FileDescription = 0x00000010U;   // 映像版本资源中的“说明”（静态，按路径缓存）。
+        constexpr std::uint32_t OsContext = 0x00000020U;         // 映像清单 supportedOS（静态，按路径缓存）。
+        constexpr std::uint32_t EnterpriseContext = 0x00000040U; // 企业上下文（WIP/EDP，静态）。
+        constexpr std::uint32_t GpuMemory = 0x00000080U;         // GPU 专用/共享显存（动态，PDH 全局一次）。
+        constexpr std::uint32_t GpuEngine = 0x00000100U;         // GPU 引擎名称（动态，PDH 全局一次）。
+        constexpr std::uint32_t PackageName = 0x00000200U;        // UWP 程序包全名（静态）。
+        constexpr std::uint32_t DpiAwareness = 0x00000400U;       // 进程 DPI 感知级别（静态）。
+
+        // PerProcessHandleMask：需要对每个进程单独打开句柄才能采集的位集合。
+        constexpr std::uint32_t PerProcessHandleMask =
+            GuiResources | JobObject | MitigationPolicy | UacVirtualization |
+            EnterpriseContext | PackageName | DpiAwareness;
+
+        // ImageFileMask：只依赖映像文件、可按路径缓存的位集合。
+        constexpr std::uint32_t ImageFileMask = FileDescription | OsContext;
+
+        // GpuMask：由 PDH 全局采样一次即可覆盖所有进程的位集合。
+        constexpr std::uint32_t GpuMask = GpuMemory | GpuEngine;
+    }
+
     // ProcessPriorityLevel：进程优先级枚举（映射 Win32 PriorityClass）。
     enum class ProcessPriorityLevel
     {
@@ -246,6 +302,85 @@ namespace ks::process
         bool staticDetailsReady = false;   // true 表示详情字段已完整填充。
         bool dynamicCountersReady = false; // true 表示性能计数器可用。
 
+        // ======== 任务管理器“详细信息”页对齐字段 ========
+        // 采集分层说明：
+        // - 本段前半部分（调度/内存/IO）来自 NtQuerySystemInformation 或 GetProcessMemoryInfo，
+        //   属于枚举时顺带得到的零额外开销数据，始终填充；
+        // - 本段后半部分（GUI 资源、作业、缓解策略、映像说明、GPU 显存等）需要额外句柄或解析，
+        //   仅在 ProcessDock 通过 ProcessDetailDemand 位图请求时才采集，未请求时保持默认值。
+
+        // -------- 运行状态 --------
+        std::uint32_t suspendedThreadCount = 0; // 处于 Suspended 等待状态的线程数量。
+        bool processSuspended = false;          // true 表示全部线程均被挂起（任务管理器“已挂起”）。
+        bool processStateKnown = false;         // true 表示本轮成功判定了运行/挂起状态。
+
+        // -------- 调度 --------
+        std::int32_t basePriority = 0;      // 基础优先级数值（0~31），任务管理器“基本优先级”。
+        std::uint64_t cycleTime = 0;        // 累计 CPU 周期数，任务管理器“周期”。
+        bool cycleTimeKnown = false;        // true 表示 cycleTime 有效（部分枚举路径拿不到）。
+
+        // -------- 内存 --------
+        std::uint64_t peakWorkingSetBytes = 0;    // 峰值工作集字节数。
+        std::uint64_t privateWorkingSetBytes = 0; // 专用工作集字节数（WorkingSetPrivateSize）。
+        std::uint64_t sharedWorkingSetBytes = 0;  // 共享工作集字节数（工作集 - 专用工作集，派生值）。
+        // activePrivateWorkingSetBytes：
+        // - 任务管理器“内存(活动的专用工作集)”列；
+        // - 语义是“专用工作集中仍处于活动状态的部分”，被冻结/挂起的进程为 0；
+        // - 由 privateWorkingSetBytes 与挂起状态派生，不额外查询。
+        std::uint64_t activePrivateWorkingSetBytes = 0;
+        std::uint64_t commitSizeBytes = 0;        // 提交大小（PagefileUsage）。
+        std::uint64_t peakCommitSizeBytes = 0;    // 峰值提交大小（PeakPagefileUsage）。
+        std::uint64_t pagedPoolBytes = 0;         // 分页缓冲池配额用量。
+        std::uint64_t nonPagedPoolBytes = 0;      // 非分页缓冲池配额用量。
+        std::uint64_t pageFaultCount = 0;         // 累计页面错误次数。
+        std::uint64_t hardFaultCount = 0;         // 累计硬页面错误次数（NtQuery 专有）。
+        std::int64_t workingSetDeltaBytes = 0;    // 相邻两轮工作集增量（可为负）。
+        std::int64_t pageFaultDeltaCount = 0;     // 相邻两轮页面错误增量（可为负，PID 复用时兜底）。
+        bool memoryDetailKnown = false;           // true 表示上面这组内存字段本轮已成功填充。
+        bool privateWorkingSetKnown = false;      // true 表示专用/共享工作集可用（仅 NtQuery 路径提供）。
+
+        // -------- I/O 计数 --------
+        std::uint64_t ioReadOperationCount = 0;  // I/O 读取次数。
+        std::uint64_t ioWriteOperationCount = 0; // I/O 写入次数。
+        std::uint64_t ioOtherOperationCount = 0; // I/O 其他次数。
+        std::uint64_t ioReadTransferBytes = 0;   // I/O 读取字节数。
+        std::uint64_t ioWriteTransferBytes = 0;  // I/O 写入字节数。
+        std::uint64_t ioOtherTransferBytes = 0;  // I/O 其他字节数。
+        bool ioDetailKnown = false;              // true 表示上面这组 I/O 字段本轮已成功填充。
+
+        // -------- GUI 资源（按需：ProcessDetailDemand::GuiResources） --------
+        std::uint32_t gdiObjectCount = 0;  // GDI 对象数量。
+        std::uint32_t userObjectCount = 0; // 用户对象数量。
+        bool guiResourceKnown = false;     // true 表示 GetGuiResources 查询成功。
+
+        // -------- 作业对象（按需：ProcessDetailDemand::JobObject） --------
+        bool inJobObject = false;    // true 表示进程归属某个作业对象。
+        bool jobObjectKnown = false; // true 表示作业归属查询成功。
+
+        // -------- 安全与缓解策略（按需） --------
+        ProcessFeatureState uacVirtualizationState = ProcessFeatureState::Unknown;  // UAC 虚拟化。
+        ProcessFeatureState dataExecutionPreventionState = ProcessFeatureState::Unknown; // 数据执行保护。
+        ProcessFeatureState controlFlowGuardState = ProcessFeatureState::Unknown;   // 控制流保护。
+        // hardwareStackProtectionState：
+        // - 任务管理器“硬件强制实施的堆栈保护”列；
+        // - 数据来源为 ProcessUserShadowStackPolicy 的 EnableUserShadowStack（Intel CET 影子栈）。
+        ProcessFeatureState hardwareStackProtectionState = ProcessFeatureState::Unknown;
+        // dpiAwarenessLevel：任务管理器“DPI 感知”列。
+        ProcessDpiAwarenessLevel dpiAwarenessLevel = ProcessDpiAwarenessLevel::Unknown;
+
+        // -------- 映像描述（按需） --------
+        std::string packageFullName;      // UWP 程序包全名，任务管理器“程序包名称”；非打包进程为空。
+        bool packageNameKnown = false;    // true 表示已成功判定是否属于某个程序包。
+        std::string fileDescription;      // 映像版本资源 FileDescription，任务管理器“描述”。
+        std::string osContextText;        // 映像清单 supportedOS 映射出的系统名，任务管理器“操作系统上下文”。
+        std::string enterpriseContextText;// 企业上下文（WIP/EDP）；未启用时为“个人”。
+
+        // -------- GPU 扩展（按需：ProcessDetailDemand::GpuMemory / GpuEngine） --------
+        std::uint64_t gpuDedicatedMemoryBytes = 0; // 专用 GPU 内存字节数。
+        std::uint64_t gpuSharedMemoryBytes = 0;    // 共享 GPU 内存字节数。
+        bool gpuMemoryKnown = false;               // true 表示本轮取到 GPU 显存计数器。
+        std::string gpuEngineText;                 // 占用最高的 GPU 引擎名称，例如 "GPU 0 - 3D"。
+
         // ======== R0 / EPROCESS 扩展信息（Phase 2） ========
         std::uint32_t r0Flags = 0;          // R0 枚举行原始 flags，例如隐藏进程标记。
         std::uint32_t r0FieldFlags = 0;     // KSWORD_ARK_PROCESS_FIELD_* 可用性位图。
@@ -366,6 +501,9 @@ namespace ks::process
         std::uint64_t networkRxBytes = 0;  // 上一轮按 PID 聚合的网络下行累计字节。
         std::uint64_t networkTxBytes = 0;  // 上一轮按 PID 聚合的网络上行累计字节。
         std::uint64_t sampleTick100ns = 0; // 采样时刻（steady_clock 转 100ns）。
+        std::uint64_t workingSetBytes = 0; // 上一轮工作集字节数，用于“工作集增量”列。
+        std::uint64_t pageFaultCount = 0;  // 上一轮累计页面错误次数，用于“页面错误增量”列。
+        bool hasMemoryBaseline = false;    // true 表示上面两个基准值有效（首轮采样时为 false）。
     };
 
     // BuildProcessIdentityKey 作用：
@@ -380,9 +518,13 @@ namespace ks::process
     // 参数 actualStrategyOut：
     // - 可选输出参数；
     // - 返回实际执行的枚举策略（例如 Auto 可能回退到 Snapshot）。
+    // 参数 detailDemandFlags：
+    // - ProcessDetailDemand 位图；仅影响“需要额外采样”的字段（当前为 GPU 显存/引擎）；
+    // - 传 None 时行为与旧版完全一致，不产生额外 PDH 查询。
     std::vector<ProcessRecord> EnumerateProcesses(
         ProcessEnumStrategy strategy,
-        ProcessEnumStrategy* actualStrategyOut = nullptr);
+        ProcessEnumStrategy* actualStrategyOut = nullptr,
+        std::uint32_t detailDemandFlags = ProcessDetailDemand::None);
 
     // EnumerateSystemThreads 作用：
     // - 枚举当前系统全部线程（优先 NtQuerySystemInformation）；
@@ -406,6 +548,30 @@ namespace ks::process
     // - false：跳过签名校验，仅填充基础静态信息（快速模式）。
     // 返回值：true 成功；false 表示部分字段无法获取。
     bool FillProcessStaticDetails(ProcessRecord& processRecord, bool includeSignatureCheck = true);
+
+    // FillProcessOnDemandDetails 作用：
+    // - 采集任务管理器对齐列中“需要额外句柄或额外解析”的字段；
+    // - 每一位只在 ProcessDock 判定对应列可见时才置位，未请求的字段完全跳过查询。
+    // 参数 processRecord：目标记录（按引用修改）。
+    // 参数 detailDemandFlags：ProcessDetailDemand 位图。
+    // 参数 resolvedFlagsOut：
+    // - 可选输出参数；返回本次“确实采集成功”的位；
+    // - 调用方据此把生命周期内不变的字段标记为已完成，避免每轮重复查询，
+    //   同时让被拒绝的进程在后续轮次继续重试。
+    // 返回值：
+    // - true 表示至少有一项被请求的字段采集成功；
+    // - false 表示目标进程无法打开或全部请求项均失败，调用方可据此保留占位显示。
+    bool FillProcessOnDemandDetails(
+        ProcessRecord& processRecord,
+        std::uint32_t detailDemandFlags,
+        std::uint32_t* resolvedFlagsOut = nullptr);
+
+    // ProcessDetailDemandForImageFileCacheClear 作用：
+    // - 清空“按映像路径缓存”的说明/操作系统上下文结果；
+    // - 供长时间运行后主动释放缓存，或在磁盘上的映像被替换后强制重新解析。
+    // 参数：无。
+    // 返回值：无。
+    void ClearProcessImageDescriptionCache();
 
     // RefreshProcessDynamicCounters 作用：
     // - 刷新 CPU 原始时间、RAM 工作集、IO 累计值等动态字段；

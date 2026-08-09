@@ -48,6 +48,7 @@
 #include <QLineEdit>
 #include <QList>
 #include <QListView>
+#include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
@@ -67,6 +68,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QShortcut>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSortFilterProxyModel>
@@ -178,7 +180,49 @@ namespace
         "句柄数",
         "HandleTable",
         "SectionObject",
-        "R0状态"
+        "R0状态",
+        // ======== 任务管理器“详细信息”页对齐列 ========
+        "程序包名称",
+        "状态",
+        "会话 ID",
+        "作业对象 ID",
+        "CPU 时间",
+        "周期",
+        "工作集(内存)",
+        "峰值工作集(内存)",
+        "工作集增量(内存)",
+        "内存(活动的专用工作集)",
+        "内存(专用工作集)",
+        "内存(共享工作集)",
+        "提交大小",
+        "分页缓冲池",
+        "非分页缓冲池",
+        "页面错误",
+        "页面错误增量",
+        "基本优先级",
+        "线程",
+        "用户对象",
+        "GDI 对象",
+        "I/O 读取",
+        "I/O 写入",
+        "I/O 其他",
+        "I/O 读取字节",
+        "I/O 写入字节",
+        "I/O 其他字节",
+        "操作系统上下文",
+        "平台",
+        "UAC 虚拟化",
+        "描述",
+        "数据执行保护",
+        "控制流保护",
+        "硬件强制实施的堆栈保护",
+        "企业上下文",
+        "DPI 感知",
+        "电源节流",
+        "GPU 引擎",
+        "专用 GPU 内存",
+        "共享 GPU 内存",
+        "类型"
     };
 
     const char* const ProcessTableHeaderKeys[] = {
@@ -202,8 +246,56 @@ namespace
         "process.table.header.handle_count",
         "process.table.header.handle_table",
         "process.table.header.section_object",
-        "process.table.header.r0_status"
+        "process.table.header.r0_status",
+        // ======== 任务管理器“详细信息”页对齐列 ========
+        "process.table.header.package_name",
+        "process.table.header.status",
+        "process.table.header.session_id",
+        "process.table.header.job_object",
+        "process.table.header.cpu_time",
+        "process.table.header.cycle_time",
+        "process.table.header.working_set",
+        "process.table.header.peak_working_set",
+        "process.table.header.working_set_delta",
+        "process.table.header.active_private_working_set",
+        "process.table.header.private_working_set",
+        "process.table.header.shared_working_set",
+        "process.table.header.commit_size",
+        "process.table.header.paged_pool",
+        "process.table.header.non_paged_pool",
+        "process.table.header.page_faults",
+        "process.table.header.page_fault_delta",
+        "process.table.header.base_priority",
+        "process.table.header.thread_count",
+        "process.table.header.user_objects",
+        "process.table.header.gdi_objects",
+        "process.table.header.io_reads",
+        "process.table.header.io_writes",
+        "process.table.header.io_other",
+        "process.table.header.io_read_bytes",
+        "process.table.header.io_write_bytes",
+        "process.table.header.io_other_bytes",
+        "process.table.header.os_context",
+        "process.table.header.platform",
+        "process.table.header.uac_virtualization",
+        "process.table.header.description",
+        "process.table.header.dep",
+        "process.table.header.cfg",
+        "process.table.header.hardware_stack_protection",
+        "process.table.header.enterprise_context",
+        "process.table.header.dpi_awareness",
+        "process.table.header.power_throttling",
+        "process.table.header.gpu_engine",
+        "process.table.header.gpu_dedicated_memory",
+        "process.table.header.gpu_shared_memory",
+        "process.table.header.process_type"
     };
+
+    // ProcessTableHeaderKeyCount：
+    // - 供 initializeProcessTable 在运行时校验“表头数量 == TableColumn::Count”；
+    // - TableColumn 是 ProcessDock 的私有嵌套枚举，无法在匿名命名空间内做编译期断言。
+    constexpr std::size_t ProcessTableHeaderKeyCount =
+        sizeof(ProcessTableHeaderKeys) / sizeof(ProcessTableHeaderKeys[0]);
 
     QString processContextText(const char* const key, const QString& sourceText)
     {
@@ -234,10 +326,140 @@ namespace
         return sourceText;
     }
 
+    // ======== 任务管理器对齐列的取值格式化辅助 ========
+    // 统一约定：
+    // - 内存类列沿用任务管理器的“千字节 + 千位分隔符”写法（例如 12,345 K）；
+    // - 计数类列使用带千位分隔符的整数；
+    // - 字段未采集或系统不提供时显示 "-"，绝不用 0 冒充真实值。
+
+    // ProcessColumnUnavailableText：未采集 / 不可用字段的统一占位符。
+    const QString ProcessColumnUnavailableText = QStringLiteral("-");
+
+    // processGroupedNumberText 作用：按当前区域设置给整数加千位分隔符。
+    QString processGroupedNumberText(const std::uint64_t value)
+    {
+        return QLocale::system().toString(static_cast<qulonglong>(value));
+    }
+
+    // processGroupedSignedNumberText 作用：
+    // - 输入：可能为负的增量值；
+    // - 处理：正数补 "+"、负数补 "-"、零显示为 "0"，方便快速判断变化方向；
+    // - 返回：带千位分隔符的带符号文本。
+    QString processGroupedSignedNumberText(const std::int64_t value)
+    {
+        if (value == 0)
+        {
+            return QStringLiteral("0");
+        }
+
+        // 先取绝对值再补符号：直接对 INT64_MIN 取负会溢出，这里用无符号中转。
+        const std::uint64_t magnitude = (value > 0)
+            ? static_cast<std::uint64_t>(value)
+            : (~static_cast<std::uint64_t>(value) + 1ULL);
+        return (value > 0 ? QStringLiteral("+") : QStringLiteral("-")) + processGroupedNumberText(magnitude);
+    }
+
+    // processKilobyteText 作用：
+    // - 把字节数换算为任务管理器风格的 "N K"；
+    // - 向上取整到 1 KB，避免几百字节的真实占用被显示成 0 K。
+    QString processKilobyteText(const std::uint64_t bytes)
+    {
+        const std::uint64_t kilobytes = (bytes == 0ULL) ? 0ULL : ((bytes + 1023ULL) / 1024ULL);
+        return processGroupedNumberText(kilobytes) + QStringLiteral(" K");
+    }
+
+    // processSignedKilobyteText 作用：把带符号的字节增量换算成 "+N K" / "-N K"。
+    QString processSignedKilobyteText(const std::int64_t deltaBytes)
+    {
+        if (deltaBytes == 0)
+        {
+            return QStringLiteral("0 K");
+        }
+
+        const std::uint64_t magnitude = (deltaBytes > 0)
+            ? static_cast<std::uint64_t>(deltaBytes)
+            : (~static_cast<std::uint64_t>(deltaBytes) + 1ULL);
+        const std::uint64_t kilobytes = (magnitude + 1023ULL) / 1024ULL;
+        return (deltaBytes > 0 ? QStringLiteral("+") : QStringLiteral("-"))
+            + processGroupedNumberText(kilobytes)
+            + QStringLiteral(" K");
+    }
+
+    // processMegabyteText 作用：GPU 显存列按任务管理器习惯显示为 MB。
+    QString processMegabyteText(const std::uint64_t bytes)
+    {
+        return QString::number(static_cast<double>(bytes) / (1024.0 * 1024.0), 'f', 1)
+            + QStringLiteral(" MB");
+    }
+
+    // processCpuTimeText 作用：把 100ns 单位的累计 CPU 时间格式化为 H:MM:SS。
+    QString processCpuTimeText(const std::uint64_t cpuTime100ns)
+    {
+        const std::uint64_t totalSeconds = cpuTime100ns / 10000000ULL;
+        const std::uint64_t hours = totalSeconds / 3600ULL;
+        const std::uint64_t minutes = (totalSeconds / 60ULL) % 60ULL;
+        const std::uint64_t seconds = totalSeconds % 60ULL;
+        return QStringLiteral("%1:%2:%3")
+            .arg(static_cast<qulonglong>(hours))
+            .arg(static_cast<qulonglong>(minutes), 2, 10, QChar('0'))
+            .arg(static_cast<qulonglong>(seconds), 2, 10, QChar('0'));
+    }
+
+    // processFeatureStateText 作用：
+    // - 把 UAC 虚拟化 / 数据执行保护 / 控制流保护的三四态枚举转成展示文本；
+    // - Unknown 表示尚未采集或查询被拒绝，统一显示占位符而不是“已禁用”。
+    QString processFeatureStateText(const ks::process::ProcessFeatureState featureState)
+    {
+        switch (featureState)
+        {
+        case ks::process::ProcessFeatureState::NotAllowed:
+            return processContextText("process.table.cell.feature_not_allowed", QStringLiteral("不允许"));
+        case ks::process::ProcessFeatureState::Disabled:
+            return processContextText("process.table.cell.feature_disabled", QStringLiteral("已禁用"));
+        case ks::process::ProcessFeatureState::Enabled:
+            return processContextText("process.table.cell.feature_enabled", QStringLiteral("已启用"));
+        case ks::process::ProcessFeatureState::EnabledPermanent:
+            return processContextText("process.table.cell.feature_enabled_permanent", QStringLiteral("已启用(永久)"));
+        default:
+            return ProcessColumnUnavailableText;
+        }
+    }
+
+    // processDpiAwarenessText 作用：
+    // - 把 DPI 感知级别转成任务管理器同款展示文本；
+    // - Unknown 表示尚未采集或查询被拒绝，统一显示占位符。
+    QString processDpiAwarenessText(const ks::process::ProcessDpiAwarenessLevel awarenessLevel)
+    {
+        switch (awarenessLevel)
+        {
+        case ks::process::ProcessDpiAwarenessLevel::Unaware:
+            return processContextText("process.table.cell.dpi_unaware", QStringLiteral("无法识别"));
+        case ks::process::ProcessDpiAwarenessLevel::UnawareGdiScaled:
+            return processContextText("process.table.cell.dpi_unaware_gdi", QStringLiteral("无法识别(GDI 缩放)"));
+        case ks::process::ProcessDpiAwarenessLevel::SystemAware:
+            return processContextText("process.table.cell.dpi_system", QStringLiteral("系统"));
+        case ks::process::ProcessDpiAwarenessLevel::PerMonitorAware:
+            return processContextText("process.table.cell.dpi_per_monitor", QStringLiteral("每监视器"));
+        case ks::process::ProcessDpiAwarenessLevel::PerMonitorAwareV2:
+            return processContextText("process.table.cell.dpi_per_monitor_v2", QStringLiteral("每监视器(V2)"));
+        default:
+            return ProcessColumnUnavailableText;
+        }
+    }
+
+    // processFeatureStateSortValue 作用：
+    // - 为上述枚举提供稳定的数值排序键；
+    // - Unknown 排在最前（-1），便于用户一眼找出未采集到的行。
+    double processFeatureStateSortValue(const ks::process::ProcessFeatureState featureState)
+    {
+        return (featureState == ks::process::ProcessFeatureState::Unknown)
+            ? -1.0
+            : static_cast<double>(static_cast<int>(featureState));
+    }
+
     // 常用图标路径常量（全部来自 qrc 的 /Icon 前缀资源）。
     constexpr const char* IconProcessMain = ":/Icon/process_main.svg";
     constexpr const char* IconRefresh = ":/Icon/process_refresh.svg";
-    constexpr const char* IconList = ":/Icon/process_list.svg";
     constexpr const char* IconStart = ":/Icon/process_start.svg";
     constexpr const char* IconPause = ":/Icon/process_pause.svg";
     constexpr const char* IconThreadTab = ":/Icon/process_threads.svg";
@@ -3837,26 +4059,16 @@ void ProcessDock::initializeTopControls()
         QStringLiteral("勾选：友好视图（默认）；取消勾选：树状视图。搜索或查看历史活动快照时自动使用扁平结果。"));
 
     // 视图模式下拉框：默认监视视图。
+    // 项由 rebuildViewModeComboItems 统一生成：内置预设在前，用户自定义视图追加在后。
     m_viewModeCombo = new QComboBox(this);
     m_viewModeCombo->setObjectName(QStringLiteral("ProcessDockViewModeCombo"));
-    m_viewModeCombo->addItem(QIcon(IconList), "监视视图");
-    m_viewModeCombo->addItem(QIcon(IconProcessMain), "详细信息视图");
-    languageManager.bindComboBoxItem(
-        m_viewModeCombo,
-        0,
-        QStringLiteral("process.view.monitor"),
-        QStringLiteral("监视视图"));
-    languageManager.bindComboBoxItem(
-        m_viewModeCombo,
-        1,
-        QStringLiteral("process.view.detail"),
-        QStringLiteral("详细信息视图"));
-    m_viewModeCombo->setCurrentIndex(static_cast<int>(ViewMode::Monitor));
-    m_viewModeCombo->setToolTip("切换监视视图 / 详细信息视图");
+    loadCustomViewsFromSettings();
+    rebuildViewModeComboItems();
+    m_viewModeCombo->setToolTip("切换列视图预设；可在“选择列”里把当前列保存为自定义视图。");
     languageManager.bindToolTip(
         m_viewModeCombo,
         QStringLiteral("process.tooltip.view_mode"),
-        QStringLiteral("切换监视视图 / 详细信息视图"));
+        QStringLiteral("切换列视图预设；可在“选择列”里把当前列保存为自定义视图。"));
     m_viewModeCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_viewModeCombo->setMinimumContentsLength(8);
     m_viewModeCombo->setMaximumWidth(180);
@@ -3979,6 +4191,21 @@ void ProcessDock::initializeTopControls()
         QStringLiteral("process.tooltip.hidden"),
         QStringLiteral("显示由 R0 摘链后仍可通过内核扫描读取的 Ksword 隐藏项。"));
 
+    // “选择列”入口：
+    // - 列集合已经对齐任务管理器“详细信息”页，仅靠表头右键逐列勾选不便于批量增减；
+    // - 这里提供与任务管理器一致的显式入口，表头右键菜单里也保留同名项。
+    m_columnChooserButton = new QPushButton(QStringLiteral("选择列"), this);
+    m_columnChooserButton->setToolTip(QStringLiteral("添加或移除进程列表中显示的列。"));
+    languageManager.bindText(
+        m_columnChooserButton,
+        QStringLiteral("process.toolbar.column_chooser"),
+        QStringLiteral("选择列"));
+    languageManager.bindToolTip(
+        m_columnChooserButton,
+        QStringLiteral("process.tooltip.column_chooser"),
+        QStringLiteral("添加或移除进程列表中显示的列。"));
+    m_columnChooserButton->setStyleSheet(buildBlueButtonStyle(false));
+
     // 按钮统一蓝色风格（图标按钮版本）。
     const QString buttonStyle = buildBlueButtonStyle(true);
     m_startButton->setStyleSheet(buttonStyle);
@@ -3990,6 +4217,7 @@ void ProcessDock::initializeTopControls()
     m_controlLayout->addWidget(m_viewModeCombo);
     m_controlLayout->addWidget(m_startButton);
     m_controlLayout->addWidget(m_pauseButton);
+    m_controlLayout->addWidget(m_columnChooserButton);
     m_controlLayout->addWidget(m_processSearchLineEdit);
     m_controlLayout->addWidget(m_kernelCompareCheck);
     m_controlLayout->addWidget(m_showKswordHiddenProcessCheck);
@@ -4301,6 +4529,19 @@ void ProcessDock::initializeProcessTable()
     // - 行数据只保存在模型的轻量 ProcessTableRow 中；
     // - 每轮刷新通过稳定行键增量发布删除/插入/重排/数据变化，避免 reset 整张表；
     // - 树状视图仍通过 Name 列缩进文本模拟，保持旧外观和交互语义。
+    // 列表头文本、i18n 键与 TableColumn 枚举必须严格一一对应，否则整张表的列会错位。
+    // TableColumn 是私有嵌套枚举，无法在表定义处做编译期断言，这里在启动路径上兜底自检。
+    if (ProcessTableHeaders.size() != static_cast<int>(TableColumn::Count) ||
+        ProcessTableHeaderKeyCount != static_cast<std::size_t>(TableColumn::Count))
+    {
+        kLogEvent logEvent;
+        err << logEvent
+            << "[ProcessDock] 列定义不一致：headerTextCount=" << ProcessTableHeaders.size()
+            << ", headerKeyCount=" << ProcessTableHeaderKeyCount
+            << ", columnCount=" << static_cast<int>(TableColumn::Count)
+            << eol;
+    }
+
     m_processTable = new ks::ui::TableActionTableView(this);
     // 进程表刷新频率和行数都较高：
     // - 禁用 MainWindow 全局 smooth-scroll 接管，避免滚轮事件被 QPropertyAnimation 重写；
@@ -4409,8 +4650,13 @@ void ProcessDock::initializeProcessTable()
         .arg(KswordTheme::SurfaceHex())
         .arg(KswordTheme::BorderHex()));
 
+    // 列布局配置必须在首次套用视图预设之前读入：
+    // applyViewMode 会在铺完预设后叠加用户覆盖，顺序反了会让自定义列在启动时被冲掉。
+    loadProcessColumnLayoutFromSettings();
+
     applyDefaultColumnWidths();
     applyViewMode(ViewMode::Monitor);
+    m_lastProcessDetailDemandFlags = currentProcessDetailDemandFlags();
     applyAdaptiveColumnWidths();
     m_processPageLayout->addWidget(m_processTable, 1);
 
@@ -4945,14 +5191,35 @@ void ProcessDock::initializeConnections()
 
     // 视图模式切换：重置默认可见列。
     connect(m_viewModeCombo, &QComboBox::currentIndexChanged, this, [this](const int modeIndex) {
+        // 程序重建下拉项期间不响应，避免 rebuildViewModeComboItems 触发多余的刷新。
+        if (m_viewModeComboUpdating)
+        {
+            return;
+        }
+
         m_activityTableSnapshotIndex = -1;
         m_activityTableSnapshotRecords.clear();
+
+        const int customIndex = currentCustomViewIndex();
         kLogEvent logEvent;
         info << logEvent
-            << "[ProcessDock] 视图模式切换, modeIndex=" << modeIndex
-            << ", detailMode=" << (modeIndex == static_cast<int>(ViewMode::Detail) ? "true" : "false")
+            << "[ProcessDock] 视图模式切换, itemIndex=" << modeIndex
+            << ", customViewIndex=" << customIndex
             << eol;
-        applyViewMode(static_cast<ViewMode>(modeIndex));
+
+        if (customIndex >= 0)
+        {
+            applyCustomView(customIndex);
+        }
+        else
+        {
+            // 切换内置预设时清空逐列覆盖：否则上一个视图里手动加的列会跟着带到新视图。
+            m_userColumnVisibilityOverride.clear();
+            saveProcessColumnLayoutToSettings();
+            applyViewMode(currentViewMode());
+        }
+
+        m_lastProcessDetailDemandFlags = currentProcessDetailDemandFlags();
         rebuildTable();
         requestAsyncRefresh(true);
     });
@@ -5000,6 +5267,14 @@ void ProcessDock::initializeConnections()
         stopProcessNetworkTrafficCapture();
         updateProcessActivityStatusLabel();
     });
+
+    // 选择列：打开添加/减少列对话框，与表头右键菜单里的同名项走同一实现。
+    if (m_columnChooserButton != nullptr)
+    {
+        connect(m_columnChooserButton, &QPushButton::clicked, this, [this]() {
+            showColumnChooserDialog();
+        });
+    }
 
     // 两个间隔步进控件：
     // - 已关闭键盘跟踪，valueChanged 只在回车/失焦/点箭头/滚轮时发出一次；
@@ -5628,62 +5903,277 @@ void ProcessDock::applyDefaultColumnWidths()
     m_processTable->setColumnWidth(toColumnIndex(TableColumn::HandleTable), 180);
     m_processTable->setColumnWidth(toColumnIndex(TableColumn::SectionObject), 180);
     m_processTable->setColumnWidth(toColumnIndex(TableColumn::R0Status), 130);
+
+    // ======== 任务管理器对齐列 ========
+    // 宽度按“表头文案 + 典型取值”估算，用户拖动后由全局列宽自适应器保留手动值。
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::PackageName), 280);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::Status), 90);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::SessionId), 80);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::JobObject), 100);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::CpuTime), 100);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::CycleTime), 140);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::WorkingSet), 120);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::PeakWorkingSet), 150);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::WorkingSetDelta), 150);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::ActivePrivateWorkingSet), 190);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::PrivateWorkingSet), 160);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::SharedWorkingSet), 160);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::CommitSize), 110);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::PagedPool), 120);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::NonPagedPool), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::PageFaults), 110);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::PageFaultDelta), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::BasePriority), 100);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::ThreadCount), 70);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::UserObjects), 90);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::GdiObjects), 90);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::IoReads), 100);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::IoWrites), 100);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::IoOther), 100);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::IoReadBytes), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::IoWriteBytes), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::IoOtherBytes), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::OsContext), 140);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::Platform), 90);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::UacVirtualization), 110);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::Description), 260);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::DataExecutionPrevention), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::ControlFlowGuard), 120);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::HardwareStackProtection), 190);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::EnterpriseContext), 110);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::DpiAwareness), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::PowerThrottling), 100);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::GpuEngine), 130);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::GpuDedicatedMemory), 140);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::GpuSharedMemory), 140);
+    m_processTable->setColumnWidth(toColumnIndex(TableColumn::ProcessType), 110);
+}
+
+std::vector<int> ProcessDock::defaultVisibleColumnsForViewMode(const ViewMode viewMode)
+{
+    // 输入：内置视图预设。
+    // 处理：给出该预设默认展示的列集合；每个预设都强制包含进程名与 PID。
+    // 返回：列逻辑索引集合，是 applyViewMode 与“恢复默认”共用的唯一事实来源。
+    std::vector<int> visibleColumns{
+        toColumnIndex(TableColumn::Name),
+        toColumnIndex(TableColumn::Pid)
+    };
+
+    const auto appendColumns = [&visibleColumns](const std::initializer_list<TableColumn> columns) -> void
+        {
+            for (const TableColumn column : columns)
+            {
+                visibleColumns.push_back(toColumnIndex(column));
+            }
+        };
+
+    switch (viewMode)
+    {
+    case ViewMode::Detail:
+        // 详细信息：静态与管理信息，不带性能计数器列。
+        appendColumns({
+            TableColumn::Status,
+            TableColumn::Signature,
+            TableColumn::Path,
+            TableColumn::ParentPid,
+            TableColumn::CommandLine,
+            TableColumn::User,
+            TableColumn::StartTime,
+            TableColumn::IsAdmin,
+            TableColumn::PplLevel,
+            TableColumn::Description,
+            TableColumn::Platform,
+            TableColumn::Protection,
+            TableColumn::Ppl,
+            TableColumn::HandleTable,
+            TableColumn::SectionObject,
+            TableColumn::R0Status });
+        break;
+
+    case ViewMode::Memory:
+        appendColumns({
+            TableColumn::WorkingSet,
+            TableColumn::PeakWorkingSet,
+            TableColumn::WorkingSetDelta,
+            TableColumn::ActivePrivateWorkingSet,
+            TableColumn::PrivateWorkingSet,
+            TableColumn::SharedWorkingSet,
+            TableColumn::CommitSize,
+            TableColumn::PagedPool,
+            TableColumn::NonPagedPool,
+            TableColumn::PageFaults,
+            TableColumn::PageFaultDelta });
+        break;
+
+    case ViewMode::DiskIo:
+        appendColumns({
+            TableColumn::Disk,
+            TableColumn::IoReads,
+            TableColumn::IoWrites,
+            TableColumn::IoOther,
+            TableColumn::IoReadBytes,
+            TableColumn::IoWriteBytes,
+            TableColumn::IoOtherBytes });
+        break;
+
+    case ViewMode::Gpu:
+        appendColumns({
+            TableColumn::Gpu,
+            TableColumn::GpuEngine,
+            TableColumn::GpuDedicatedMemory,
+            TableColumn::GpuSharedMemory,
+            TableColumn::CpuTime,
+            TableColumn::CycleTime });
+        break;
+
+    case ViewMode::Security:
+        appendColumns({
+            TableColumn::Signature,
+            TableColumn::User,
+            TableColumn::IsAdmin,
+            TableColumn::PplLevel,
+            TableColumn::UacVirtualization,
+            TableColumn::DataExecutionPrevention,
+            TableColumn::ControlFlowGuard,
+            TableColumn::HardwareStackProtection,
+            TableColumn::EnterpriseContext,
+            TableColumn::JobObject,
+            TableColumn::PackageName });
+        break;
+
+    case ViewMode::Kernel:
+        appendColumns({
+            TableColumn::Protection,
+            TableColumn::Ppl,
+            TableColumn::HandleTable,
+            TableColumn::SectionObject,
+            TableColumn::R0Status,
+            TableColumn::SessionId,
+            TableColumn::BasePriority,
+            TableColumn::ThreadCount,
+            TableColumn::HandleCount });
+        break;
+
+    case ViewMode::Monitor:
+    default:
+        appendColumns({
+            TableColumn::Cpu,
+            TableColumn::Ram,
+            TableColumn::Disk,
+            TableColumn::Gpu,
+            TableColumn::Net,
+            TableColumn::HandleCount,
+            TableColumn::Protection,
+            TableColumn::Ppl,
+            TableColumn::HandleTable,
+            TableColumn::SectionObject,
+            TableColumn::R0Status });
+        break;
+    }
+
+    return visibleColumns;
+}
+
+QString ProcessDock::viewModeDisplayName(const ViewMode viewMode)
+{
+    switch (viewMode)
+    {
+    case ViewMode::Detail:
+        return processContextText("process.view.detail", QStringLiteral("详细信息视图"));
+    case ViewMode::Memory:
+        return processContextText("process.view.memory", QStringLiteral("内存视图"));
+    case ViewMode::DiskIo:
+        return processContextText("process.view.disk_io", QStringLiteral("磁盘 I/O 视图"));
+    case ViewMode::Gpu:
+        return processContextText("process.view.gpu", QStringLiteral("GPU 视图"));
+    case ViewMode::Security:
+        return processContextText("process.view.security", QStringLiteral("安全策略视图"));
+    case ViewMode::Kernel:
+        return processContextText("process.view.kernel", QStringLiteral("内核证据视图"));
+    case ViewMode::Monitor:
+    default:
+        return processContextText("process.view.monitor", QStringLiteral("监视视图"));
+    }
 }
 
 void ProcessDock::applyViewMode(const ViewMode viewMode)
 {
+    if (m_processTable == nullptr)
+    {
+        return;
+    }
+
     const bool hideR0OnlyColumns = m_autoHideUnavailableR0Columns;
 
-    // 先全部隐藏，再按视图打开目标列，保证状态可预测。
+    // 先全部隐藏，再按预设打开目标列，保证状态可预测。
     for (int column = 0; column < static_cast<int>(TableColumn::Count); ++column)
     {
         m_processTable->setColumnHidden(column, true);
     }
 
-    // 监视视图：进程名 + PID + 性能计数器。
-    if (viewMode == ViewMode::Monitor)
+    for (const int columnIndex : defaultVisibleColumnsForViewMode(viewMode))
     {
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Name), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Pid), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Cpu), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Ram), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Disk), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Gpu), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Net), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::HandleCount), false);
-        if (!hideR0OnlyColumns)
+        if (columnIndex < 0 || columnIndex >= static_cast<int>(TableColumn::Count))
         {
-            m_processTable->setColumnHidden(toColumnIndex(TableColumn::Protection), false);
-            m_processTable->setColumnHidden(toColumnIndex(TableColumn::Ppl), false);
-            m_processTable->setColumnHidden(toColumnIndex(TableColumn::HandleTable), false);
-            m_processTable->setColumnHidden(toColumnIndex(TableColumn::SectionObject), false);
-            m_processTable->setColumnHidden(toColumnIndex(TableColumn::R0Status), false);
+            continue;
         }
-        applyAdaptiveColumnWidths();
+
+        // R0 扩展整轮不可用时不展示内核专属列：整列都会是 Unavailable，没有信息量。
+        if (hideR0OnlyColumns &&
+            processColumnGroupOf(static_cast<TableColumn>(columnIndex)) == ProcessColumnGroup::Kernel)
+        {
+            continue;
+        }
+        m_processTable->setColumnHidden(columnIndex, false);
+    }
+
+    // 用户在“选择列”里添加/移除的列必须压在视图预设之上，
+    // 否则每次切换视图都会把用户自己配的列冲掉。
+    applyUserColumnVisibilityOverrides();
+    applyAdaptiveColumnWidths();
+}
+
+void ProcessDock::applyCustomView(const int customIndex)
+{
+    if (m_processTable == nullptr ||
+        customIndex < 0 ||
+        customIndex >= static_cast<int>(m_customViews.size()))
+    {
         return;
     }
 
-    // 详细信息视图：按用户要求“不要性能计数器列”。
-    // 仅展示静态/管理相关信息列。
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::Name), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::Pid), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::Signature), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::Path), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::ParentPid), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::CommandLine), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::User), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::StartTime), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::IsAdmin), false);
-    m_processTable->setColumnHidden(toColumnIndex(TableColumn::PplLevel), false);
-    if (!hideR0OnlyColumns)
+    // 自定义视图直接定义完整列集合，因此不再叠加逐列覆盖：
+    // 用户此后在“选择列”里的调整会重新写入覆盖表，并可另存为新的视图。
+    m_userColumnVisibilityOverride.clear();
+
+    const ProcessCustomView& customView = m_customViews[static_cast<std::size_t>(customIndex)];
+    std::unordered_set<int> visibleColumnSet(
+        customView.visibleColumns.begin(),
+        customView.visibleColumns.end());
+    // 进程名与 PID 是行标识，任何视图都必须保留。
+    visibleColumnSet.insert(toColumnIndex(TableColumn::Name));
+    visibleColumnSet.insert(toColumnIndex(TableColumn::Pid));
+
+    for (int columnIndex = 0; columnIndex < static_cast<int>(TableColumn::Count); ++columnIndex)
     {
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Protection), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Ppl), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::HandleTable), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::SectionObject), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::R0Status), false);
+        bool shouldShow = (visibleColumnSet.find(columnIndex) != visibleColumnSet.end());
+        if (shouldShow &&
+            m_autoHideUnavailableR0Columns &&
+            processColumnGroupOf(static_cast<TableColumn>(columnIndex)) == ProcessColumnGroup::Kernel)
+        {
+            shouldShow = false;
+        }
+        m_processTable->setColumnHidden(columnIndex, !shouldShow);
     }
+
+    saveProcessColumnLayoutToSettings();
     applyAdaptiveColumnWidths();
+
+    kLogEvent logEvent;
+    info << logEvent
+        << "[ProcessDock] 已应用自定义视图, name=" << customView.name.toStdString()
+        << ", columnCount=" << visibleColumnSet.size()
+        << eol;
 }
 
 void ProcessDock::applyAdaptiveColumnWidths()
@@ -5784,7 +6274,9 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
 
     // 复制当前缓存快照给后台线程，避免跨线程读写冲突。
     const int strategyIndex = m_strategyCombo->currentIndex();
-    const bool detailModeEnabled = (currentViewMode() == ViewMode::Detail);
+    // 静态详情预算按“当前是否真的显示了需要打开进程才能补齐的列”判定，
+    // 而不是绑定在某个具体视图上：用户在任意视图手动加上命令行/描述列时同样需要补齐。
+    const bool detailModeEnabled = isStaticDetailIntensiveViewActive();
     const bool queryKernelProcessList =
         (m_kernelCompareCheck != nullptr && m_kernelCompareCheck->isChecked()) ||
         (m_showKswordHiddenProcessCheck != nullptr && m_showKswordHiddenProcessCheck->isChecked()) ||
@@ -5794,6 +6286,10 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
         detailModeEnabled
         ? (isFirstRefresh ? 96 : 48)   // 详细视图也做预算控制，避免首轮全量静态查询导致 UI 抖动。
         : (isFirstRefresh ? 8 : 4);    // 监视视图优先速度，预算更小。
+    // 按需采集位图：
+    // - 只有用户真正显示了 GDI 对象、作业、缓解策略、显存等列时，才让后台为它们付出额外句柄/PDH 成本；
+    // - 默认列布局下该值为 0，刷新开销与补齐这些列之前完全一致。
+    const std::uint32_t detailDemandFlags = currentProcessDetailDemandFlags();
     const std::uint32_t cpuCount = m_logicalCpuCount;
     auto previousCache = m_cacheByIdentity;
     auto previousCounters = m_counterSampleByIdentity;
@@ -5832,6 +6328,7 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
         detailModeEnabled,
         queryKernelProcessList,
         staticDetailFillBudget,
+        detailDemandFlags,
         cpuCount,
         progressPid,
         forceUiRefresh,
@@ -5843,6 +6340,7 @@ void ProcessDock::requestAsyncRefresh(const bool forceRefresh)
             detailModeEnabled,
             queryKernelProcessList,
             staticDetailFillBudget,
+            detailDemandFlags,
             localTicket,
             progressPid,
             previousCache,
@@ -6172,6 +6670,7 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
     const bool detailModeEnabled,
     const bool queryKernelProcessList,
     const int staticDetailFillBudget,
+    const std::uint32_t detailDemandFlags,
     const std::uint64_t refreshTicket,
     const int progressTaskPid,
     const std::unordered_map<std::string, CacheEntry>& previousCache,
@@ -6199,7 +6698,8 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
     const ks::process::ProcessEnumStrategy strategy = toStrategy(strategyIndex);
     std::vector<ks::process::ProcessRecord> latestProcessList = ks::process::EnumerateProcesses(
         strategy,
-        &refreshResult.actualStrategy);
+        &refreshResult.actualStrategy,
+        detailDemandFlags & ks::process::ProcessDetailDemand::GpuMask);
     const std::uint64_t sampleTick = steadyNow100ns();
     std::unordered_set<std::uint32_t> kernelOnlyPidSet;
     std::unordered_map<std::uint32_t, KernelProcessSnapshotEntry> kernelProcessByPid;
@@ -6358,6 +6858,28 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
             if (processRecord.startTimeText.empty()) processRecord.startTimeText = oldRecord.startTimeText;
             processRecord.isAdmin = oldRecord.isAdmin;
             processRecord.staticDetailsReady = oldRecord.staticDetailsReady;
+
+            // 任务管理器对齐列中的“进程生命周期内不变”字段同样走复用路径，
+            // 这样它们只在进程首次出现时采集一次，后续刷新零成本。
+            processRecord.inJobObject = oldRecord.inJobObject;
+            processRecord.jobObjectKnown = oldRecord.jobObjectKnown;
+            processRecord.uacVirtualizationState = oldRecord.uacVirtualizationState;
+            processRecord.dataExecutionPreventionState = oldRecord.dataExecutionPreventionState;
+            processRecord.controlFlowGuardState = oldRecord.controlFlowGuardState;
+            processRecord.hardwareStackProtectionState = oldRecord.hardwareStackProtectionState;
+            processRecord.dpiAwarenessLevel = oldRecord.dpiAwarenessLevel;
+            processRecord.packageNameKnown = oldRecord.packageNameKnown;
+            if (processRecord.packageFullName.empty()) processRecord.packageFullName = oldRecord.packageFullName;
+            if (processRecord.fileDescription.empty()) processRecord.fileDescription = oldRecord.fileDescription;
+            if (processRecord.osContextText.empty()) processRecord.osContextText = oldRecord.osContextText;
+            if (processRecord.enterpriseContextText.empty()) processRecord.enterpriseContextText = oldRecord.enterpriseContextText;
+            if (processRecord.architectureText.empty()) processRecord.architectureText = oldRecord.architectureText;
+
+            // GUI 资源计数是动态值：这里先继承旧值避免列在两轮之间闪烁，
+            // 本轮若仍被请求会立即覆盖为最新数字。
+            processRecord.gdiObjectCount = oldRecord.gdiObjectCount;
+            processRecord.userObjectCount = oldRecord.userObjectCount;
+            processRecord.guiResourceKnown = oldRecord.guiResourceKnown;
             ++refreshResult.reusedProcessCount;
 
             // 旧进程若静态字段还不完整，或签名仍 Pending，则进入“待补齐候选”。
@@ -6610,6 +7132,112 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
         refreshResult.imagePathFilledCount = filledCount.load();
     }
 
+    // 第二阶段补充二：任务管理器对齐列的按需字段采集。
+    // 分层策略：
+    // - 静态位（作业归属 / 缓解策略 / UAC 虚拟化 / 映像说明 / 操作系统上下文 / 企业上下文）
+    //   在进程生命周期内不变，只在首次成功前反复尝试，成功后记账并永久跳过；
+    // - 动态位（GDI 与用户对象计数）每轮都要重新读取，否则数字会停在首次采样值；
+    // - GPU 位由 EnumerateProcesses 内部一次性 PDH 采样覆盖全表，不在这里逐进程处理。
+    // 该阶段必须放在 imagePath 补齐之后：说明与操作系统上下文都依赖映像路径。
+    std::vector<std::uint32_t> onDemandResolvedFlagsByRecord(latestProcessList.size(), 0U);
+    if (detailDemandFlags != ks::process::ProcessDetailDemand::None)
+    {
+        constexpr std::uint32_t DynamicDemandMask = ks::process::ProcessDetailDemand::GuiResources;
+        const std::uint32_t requestedDynamicFlags = detailDemandFlags & DynamicDemandMask;
+        const std::uint32_t requestedStaticFlags =
+            detailDemandFlags & ~(DynamicDemandMask | ks::process::ProcessDetailDemand::GpuMask);
+
+        std::vector<std::uint32_t> onDemandRoundFlagsByRecord(latestProcessList.size(), 0U);
+        std::vector<std::size_t> onDemandIndices;
+        onDemandIndices.reserve(latestProcessList.size());
+
+        for (std::size_t recordIndex = 0; recordIndex < latestProcessList.size(); ++recordIndex)
+        {
+            const ks::process::ProcessRecord& processRecord = latestProcessList[recordIndex];
+
+            const auto oldCacheIt = previousCache.find(identityKeys[recordIndex]);
+            const std::uint32_t alreadyResolvedFlags =
+                (oldCacheIt == previousCache.end()) ? 0U : oldCacheIt->second.onDemandResolvedFlags;
+            onDemandResolvedFlagsByRecord[recordIndex] = alreadyResolvedFlags;
+
+            // PID 0 与“仅内核可见”记录没有可打开的用户态句柄，
+            // 跳过可以避免每轮为它们白白执行 OpenProcess。
+            if (processRecord.pid == 0 ||
+                kernelOnlyPidSet.find(processRecord.pid) != kernelOnlyPidSet.end())
+            {
+                continue;
+            }
+
+            std::uint32_t pendingStaticFlags = requestedStaticFlags & ~alreadyResolvedFlags;
+            if (processRecord.imagePath.empty())
+            {
+                // 映像路径还没补上时无法解析说明/清单，本轮先跳过并等待下一轮。
+                pendingStaticFlags &= ~ks::process::ProcessDetailDemand::ImageFileMask;
+            }
+
+            const std::uint32_t roundFlags = requestedDynamicFlags | pendingStaticFlags;
+            if (roundFlags == 0U)
+            {
+                continue;
+            }
+
+            onDemandRoundFlagsByRecord[recordIndex] = roundFlags;
+            onDemandIndices.push_back(recordIndex);
+        }
+
+        if (progressTaskPid > 0 && !onDemandIndices.empty())
+        {
+            kPro.set(progressTaskPid, "正在采集按需展示的进程详细列...", 49, 0.49f);
+        }
+
+        if (!onDemandIndices.empty())
+        {
+            // 这些查询以 OpenProcess + 若干轻量信息类为主，并发度与图标路径补齐保持一致；
+            // 由于默认列布局不会触发本阶段，这里的成本只在用户主动开启相关列后才产生。
+            const unsigned int hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
+            const unsigned int wantedThreads = std::min(8u, hardwareThreads);
+            const unsigned int workerCount = std::max(
+                1u,
+                std::min<unsigned int>(wantedThreads, static_cast<unsigned int>(onDemandIndices.size())));
+
+            std::atomic<std::size_t> nextTaskIndex{ 0 };
+            std::vector<std::thread> workerThreads;
+            workerThreads.reserve(workerCount);
+            for (unsigned int workerId = 0; workerId < workerCount; ++workerId)
+            {
+                workerThreads.emplace_back([&]() {
+                    for (;;)
+                    {
+                        const std::size_t taskOrder = nextTaskIndex.fetch_add(1);
+                        if (taskOrder >= onDemandIndices.size())
+                        {
+                            break;
+                        }
+
+                        const std::size_t recordIndex = onDemandIndices[taskOrder];
+                        std::uint32_t resolvedFlags = 0U;
+                        (void)ks::process::FillProcessOnDemandDetails(
+                            latestProcessList[recordIndex],
+                            onDemandRoundFlagsByRecord[recordIndex],
+                            &resolvedFlags);
+
+                        // 只把“确实成功”的静态位记为已完成：
+                        // 被拒绝访问的进程会在后续轮次继续重试，而不是永远显示占位符。
+                        onDemandResolvedFlagsByRecord[recordIndex] |=
+                            (resolvedFlags & ~DynamicDemandMask);
+                    }
+                    });
+            }
+            for (std::thread& workerThread : workerThreads)
+            {
+                if (workerThread.joinable())
+                {
+                    workerThread.join();
+                }
+            }
+        }
+    }
+
     // 第三阶段：计算性能差值并写回缓存（该阶段仍串行，保证逻辑简单稳定）。
     std::size_t processIndex = 0;
     for (std::size_t recordIndex = 0; recordIndex < latestProcessList.size(); ++recordIndex)
@@ -6668,6 +7296,7 @@ ProcessDock::RefreshResult ProcessDock::buildRefreshResult(
 
         CacheEntry cacheEntry{};
         cacheEntry.record = std::move(processRecord);
+        cacheEntry.onDemandResolvedFlags = onDemandResolvedFlagsByRecord[recordIndex];
         cacheEntry.missingRounds = 0;
         cacheEntry.isNewInLatestRound = isNewProcess[recordIndex];
         cacheEntry.isExitedInLatestRound = false;
@@ -6866,6 +7495,15 @@ void ProcessDock::rebuildTable()
     // - 把 DisplayRow 转成 FlatTableModel 可直接持有的轻量行快照；
     // - 所有颜色、排序键、图标都由 processTableData 按 role 懒解析；
     // - 这样每轮刷新只替换 vector，不再创建/销毁旧 item。
+    // “类型”列需要每行的应用/后台/系统归类。友好视图的 DisplayRow 已经带上该信息，
+    // 树状与列表视图则要单独算一次；仅在该列可见时才做，避免为隐藏列枚举窗口。
+    const bool processTypeColumnVisible = isProcessColumnVisible(TableColumn::ProcessType);
+    std::unordered_map<std::uint32_t, FriendlyProcessGroupType> friendlyGroupTypeByPid;
+    if (processTypeColumnVisible && !isFriendlyViewEnabled())
+    {
+        friendlyGroupTypeByPid = buildFriendlyGroupTypeByPid();
+    }
+
     std::vector<ProcessTableRow> tableRows;
     tableRows.reserve(displayRows.size());
     for (const DisplayRow& displayRow : displayRows)
@@ -6880,6 +7518,14 @@ void ProcessDock::rebuildTable()
         tableRow.record = processRecord;
         tableRow.rowKind = displayRow.rowKind;
         tableRow.friendlyGroupType = displayRow.friendlyGroupType;
+        if (!friendlyGroupTypeByPid.empty())
+        {
+            const auto groupTypeIt = friendlyGroupTypeByPid.find(processRecord.pid);
+            if (groupTypeIt != friendlyGroupTypeByPid.end())
+            {
+                tableRow.friendlyGroupType = groupTypeIt->second;
+            }
+        }
         tableRow.syntheticTitle = displayRow.syntheticTitle;
         tableRow.expansionKey = displayRow.expansionKey;
         tableRow.actionIdentityKeys = displayRow.actionIdentityKeys;
@@ -7263,21 +7909,20 @@ void ProcessDock::applyR0ColumnAvailability(const std::vector<DisplayRow>& displ
         toColumnIndex(TableColumn::R0Status)
     };
 
-    for (const int columnIndex : r0OnlyColumns)
+    if (shouldAutoHide)
     {
-        m_processTable->setColumnHidden(columnIndex, shouldAutoHide);
+        for (const int columnIndex : r0OnlyColumns)
+        {
+            m_processTable->setColumnHidden(columnIndex, true);
+        }
+        applyAdaptiveColumnWidths();
     }
-
-    if (!shouldAutoHide)
+    else
     {
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Protection), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::Ppl), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::HandleTable), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::SectionObject), false);
-        m_processTable->setColumnHidden(toColumnIndex(TableColumn::R0Status), false);
+        // R0 扩展重新可用时按“视图预设 + 用户列选择”整体重铺一次：
+        // 直接强制显示这几列会覆盖用户在“选择列”里主动隐藏它们的决定。
+        applyViewMode(currentViewMode());
     }
-
-    applyAdaptiveColumnWidths();
 
     kLogEvent logEvent;
     info << logEvent
@@ -8069,6 +8714,19 @@ QVariant ProcessDock::processTableData(const ProcessTableRow& tableRow, const in
         }
         return {};
     }
+    if (tableColumn == TableColumn::ProcessType)
+    {
+        // “类型”列的取值来自行的友好分组结果，而不是 ProcessRecord 字段；
+        // rebuildTable 会在任意视图模式下为真实进程行填好 friendlyGroupType。
+        if (role == Qt::DisplayRole)
+        {
+            return friendlyGroupTypeName(tableRow.friendlyGroupType);
+        }
+        if (role == ProcessNumericSortRole)
+        {
+            return static_cast<double>(static_cast<int>(tableRow.friendlyGroupType));
+        }
+    }
     if (tableRow.rowKind == ProcessTableRowKind::ApplicationAggregate)
     {
         // ApplicationAggregate is a synthetic application parent row:
@@ -8170,6 +8828,89 @@ QVariant ProcessDock::processTableData(const ProcessTableRow& tableRow, const in
             return ((processRecord.r0FieldFlags & KSWORD_ARK_PROCESS_FIELD_SECTION_OBJECT_AVAILABLE) != 0U) ? 1.0 : 0.0;
         case TableColumn::R0Status:
             return static_cast<double>(processRecord.r0Status);
+
+        // ======== 任务管理器对齐列的数值排序键 ========
+        // 展示文本带单位或千位分隔符，排序必须回到原始数值，否则 "9 K" 会排在 "10,240 K" 之后。
+        case TableColumn::Status:
+            return processRecord.processStateKnown
+                ? (processRecord.processSuspended ? 1.0 : 0.0)
+                : -1.0;
+        case TableColumn::SessionId:
+            return static_cast<double>(processRecord.sessionId);
+        case TableColumn::JobObject:
+            return processRecord.jobObjectKnown
+                ? (processRecord.inJobObject ? 1.0 : 0.0)
+                : -1.0;
+        case TableColumn::CpuTime:
+            return static_cast<double>(processRecord.rawCpuTime100ns);
+        case TableColumn::CycleTime:
+            return processRecord.cycleTimeKnown ? static_cast<double>(processRecord.cycleTime) : -1.0;
+        case TableColumn::WorkingSet:
+            return static_cast<double>(processRecord.rawWorkingSetBytes);
+        case TableColumn::PeakWorkingSet:
+            return static_cast<double>(processRecord.peakWorkingSetBytes);
+        case TableColumn::WorkingSetDelta:
+            return static_cast<double>(processRecord.workingSetDeltaBytes);
+        case TableColumn::ActivePrivateWorkingSet:
+            return static_cast<double>(processRecord.activePrivateWorkingSetBytes);
+        case TableColumn::PrivateWorkingSet:
+            return static_cast<double>(processRecord.privateWorkingSetBytes);
+        case TableColumn::SharedWorkingSet:
+            return static_cast<double>(processRecord.sharedWorkingSetBytes);
+        case TableColumn::CommitSize:
+            return static_cast<double>(processRecord.commitSizeBytes);
+        case TableColumn::PagedPool:
+            return static_cast<double>(processRecord.pagedPoolBytes);
+        case TableColumn::NonPagedPool:
+            return static_cast<double>(processRecord.nonPagedPoolBytes);
+        case TableColumn::PageFaults:
+            return static_cast<double>(processRecord.pageFaultCount);
+        case TableColumn::PageFaultDelta:
+            return static_cast<double>(processRecord.pageFaultDeltaCount);
+        case TableColumn::BasePriority:
+            return static_cast<double>(processRecord.basePriority);
+        case TableColumn::ThreadCount:
+            return static_cast<double>(processRecord.threadCount);
+        case TableColumn::UserObjects:
+            return processRecord.guiResourceKnown ? static_cast<double>(processRecord.userObjectCount) : -1.0;
+        case TableColumn::GdiObjects:
+            return processRecord.guiResourceKnown ? static_cast<double>(processRecord.gdiObjectCount) : -1.0;
+        case TableColumn::IoReads:
+            return static_cast<double>(processRecord.ioReadOperationCount);
+        case TableColumn::IoWrites:
+            return static_cast<double>(processRecord.ioWriteOperationCount);
+        case TableColumn::IoOther:
+            return static_cast<double>(processRecord.ioOtherOperationCount);
+        case TableColumn::IoReadBytes:
+            return static_cast<double>(processRecord.ioReadTransferBytes);
+        case TableColumn::IoWriteBytes:
+            return static_cast<double>(processRecord.ioWriteTransferBytes);
+        case TableColumn::IoOtherBytes:
+            return static_cast<double>(processRecord.ioOtherTransferBytes);
+        case TableColumn::UacVirtualization:
+            return processFeatureStateSortValue(processRecord.uacVirtualizationState);
+        case TableColumn::DataExecutionPrevention:
+            return processFeatureStateSortValue(processRecord.dataExecutionPreventionState);
+        case TableColumn::ControlFlowGuard:
+            return processFeatureStateSortValue(processRecord.controlFlowGuardState);
+        case TableColumn::HardwareStackProtection:
+            return processFeatureStateSortValue(processRecord.hardwareStackProtectionState);
+        case TableColumn::DpiAwareness:
+            return (processRecord.dpiAwarenessLevel == ks::process::ProcessDpiAwarenessLevel::Unknown)
+                ? -1.0
+                : static_cast<double>(static_cast<std::uint32_t>(processRecord.dpiAwarenessLevel));
+        case TableColumn::PowerThrottling:
+            return processRecord.efficiencyModeSupported
+                ? (processRecord.efficiencyModeEnabled ? 1.0 : 0.0)
+                : -1.0;
+        case TableColumn::GpuDedicatedMemory:
+            return processRecord.gpuMemoryKnown
+                ? static_cast<double>(processRecord.gpuDedicatedMemoryBytes)
+                : -1.0;
+        case TableColumn::GpuSharedMemory:
+            return processRecord.gpuMemoryKnown
+                ? static_cast<double>(processRecord.gpuSharedMemoryBytes)
+                : -1.0;
         default:
             return {};
         }
@@ -8689,6 +9430,49 @@ std::vector<ProcessDock::DisplayRow> ProcessDock::buildTreeDisplayOrder() const
     }
 
     return displayRows;
+}
+
+std::unordered_map<std::uint32_t, ProcessDock::FriendlyProcessGroupType>
+ProcessDock::buildFriendlyGroupTypeByPid() const
+{
+    // 输入：当前进程缓存。
+    // 处理：复用友好视图的三分类规则（可见窗口归属 -> 应用；Windows 目录下 -> 系统；其余 -> 后台）。
+    // 返回：PID 到分组类型的映射，供“类型”列在任意视图模式下取值。
+    std::unordered_map<std::uint32_t, FriendlyProcessGroupType> groupTypeByPid;
+    groupTypeByPid.reserve(m_cacheByIdentity.size() * 2U + 1U);
+
+    std::unordered_map<std::uint32_t, std::uint32_t> parentPidByPid;
+    parentPidByPid.reserve(m_cacheByIdentity.size() * 2U + 1U);
+    for (const auto& cachePair : m_cacheByIdentity)
+    {
+        parentPidByPid[cachePair.second.record.pid] = cachePair.second.record.parentPid;
+    }
+
+    const QSet<std::uint32_t> visibleWindowPidSet = collectVisibleWindowPidSet();
+    wchar_t windowsDirectoryBuffer[MAX_PATH]{};
+    QString windowsDirectoryPath;
+    const UINT windowsDirectoryLength = ::GetWindowsDirectoryW(windowsDirectoryBuffer, MAX_PATH);
+    if (windowsDirectoryLength > 0U)
+    {
+        windowsDirectoryPath = QDir::fromNativeSeparators(
+            QString::fromWCharArray(windowsDirectoryBuffer, static_cast<int>(windowsDirectoryLength))).toLower();
+    }
+
+    for (const auto& cachePair : m_cacheByIdentity)
+    {
+        const ks::process::ProcessRecord& processRecord = cachePair.second.record;
+        if (findFriendlyApplicationRootPid(processRecord.pid, parentPidByPid, visibleWindowPidSet) != 0U)
+        {
+            groupTypeByPid[processRecord.pid] = FriendlyProcessGroupType::Application;
+            continue;
+        }
+        groupTypeByPid[processRecord.pid] =
+            isFriendlyWindowsSystemProcess(processRecord, windowsDirectoryPath)
+            ? FriendlyProcessGroupType::WindowsSystem
+            : FriendlyProcessGroupType::Background;
+    }
+
+    return groupTypeByPid;
 }
 
 std::vector<ProcessDock::DisplayRow> ProcessDock::buildFriendlyDisplayOrder() const
@@ -10078,9 +10862,25 @@ void ProcessDock::showHeaderContextMenu(const QPoint& localPosition)
 {
     Q_UNUSED(localPosition);
 
-    // 每列一个勾选动作，允许用户动态显示/隐藏。
+    if (m_processTable == nullptr)
+    {
+        return;
+    }
+
     QMenu columnMenu(this);
     columnMenu.setStyleSheet(KswordTheme::ContextMenuStyle());
+
+    // 顶部入口指向完整的“选择列”对话框：列数已经接近任务管理器的全量集合，
+    // 只靠一次一项的右键菜单难以做批量增减。
+    QAction* const chooserAction = columnMenu.addAction(
+        processContextText("process.columns.menu.open_chooser", QStringLiteral("选择列...")));
+    QAction* const resetAction = columnMenu.addAction(
+        processContextText("process.columns.menu.reset_default", QStringLiteral("恢复默认列")));
+    columnMenu.addSeparator();
+
+    // 其余为逐列快捷勾选，保留原有的“点一下切一列”交互。
+    std::vector<QAction*> columnActions;
+    columnActions.reserve(static_cast<std::size_t>(TableColumn::Count));
     for (int columnIndex = 0; columnIndex < static_cast<int>(TableColumn::Count); ++columnIndex)
     {
         QAction* toggleAction = columnMenu.addAction(
@@ -10088,6 +10888,9 @@ void ProcessDock::showHeaderContextMenu(const QPoint& localPosition)
         toggleAction->setCheckable(true);
         toggleAction->setChecked(!m_processTable->isColumnHidden(columnIndex));
         toggleAction->setData(columnIndex);
+        // 进程名列是行标识，不允许整列隐藏。
+        toggleAction->setEnabled(columnIndex != toColumnIndex(TableColumn::Name));
+        columnActions.push_back(toggleAction);
     }
 
     QAction* selectedAction = columnMenu.exec(QCursor::pos());
@@ -10095,29 +10898,20 @@ void ProcessDock::showHeaderContextMenu(const QPoint& localPosition)
     {
         return;
     }
+    if (selectedAction == chooserAction)
+    {
+        showColumnChooserDialog();
+        return;
+    }
+    if (selectedAction == resetAction)
+    {
+        resetProcessColumnsToViewDefault();
+        return;
+    }
 
     const int columnIndex = selectedAction->data().toInt();
     const bool shouldShow = selectedAction->isChecked();
-    if (shouldShow && m_autoHideUnavailableR0Columns)
-    {
-        const TableColumn selectedColumn = static_cast<TableColumn>(columnIndex);
-        if (selectedColumn == TableColumn::Protection ||
-            selectedColumn == TableColumn::Ppl ||
-            selectedColumn == TableColumn::HandleTable ||
-            selectedColumn == TableColumn::SectionObject ||
-            selectedColumn == TableColumn::R0Status)
-        {
-            kLogEvent logEvent;
-            info << logEvent
-                << "[ProcessDock] 忽略 R0-only 列手动显示请求：当前所有可见行 R0 扩展均为 Unavailable, column="
-                << columnIndex
-                << eol;
-            return;
-        }
-    }
-
-    m_processTable->setColumnHidden(columnIndex, !shouldShow);
-    applyAdaptiveColumnWidths();
+    setProcessColumnVisible(columnIndex, shouldShow);
 
     kLogEvent logEvent;
     info << logEvent
@@ -10853,6 +11647,176 @@ QString ProcessDock::formatColumnText(const ks::process::ProcessRecord& processR
             processRecord.r0SectionObjectSource);
     case TableColumn::R0Status:
         return processR0StatusText(processRecord.r0Status);
+
+    // ======== 任务管理器“详细信息”页对齐列 ========
+    // 统一原则：字段未采集或系统不提供时显示占位符，不用 0 冒充真实值。
+    case TableColumn::PackageName:
+        if (!processRecord.packageNameKnown)
+        {
+            return ProcessColumnUnavailableText;
+        }
+        // 非打包进程在任务管理器里同样是空白，这里用占位符明确表达“不属于任何程序包”。
+        return processRecord.packageFullName.empty()
+            ? ProcessColumnUnavailableText
+            : QString::fromStdString(processRecord.packageFullName);
+    case TableColumn::Status:
+        if (!processRecord.processStateKnown)
+        {
+            return ProcessColumnUnavailableText;
+        }
+        return processRecord.processSuspended
+            ? processContextText("process.table.cell.status_suspended", QStringLiteral("已挂起"))
+            : processContextText("process.table.cell.status_running", QStringLiteral("正在运行"));
+    case TableColumn::SessionId:
+        return QString::number(processRecord.sessionId);
+    case TableColumn::JobObject:
+        // 作业对象 ID 没有公开查询接口；这里如实区分“不在作业中(0)”与“归属某个作业”。
+        if (!processRecord.jobObjectKnown)
+        {
+            return ProcessColumnUnavailableText;
+        }
+        return processRecord.inJobObject
+            ? processContextText("process.table.cell.job_object_member", QStringLiteral("归属作业"))
+            : QStringLiteral("0");
+    case TableColumn::CpuTime:
+        return processCpuTimeText(processRecord.rawCpuTime100ns);
+    case TableColumn::CycleTime:
+        return processRecord.cycleTimeKnown
+            ? processGroupedNumberText(processRecord.cycleTime)
+            : ProcessColumnUnavailableText;
+    case TableColumn::WorkingSet:
+        return processKilobyteText(processRecord.rawWorkingSetBytes);
+    case TableColumn::PeakWorkingSet:
+        return processRecord.memoryDetailKnown
+            ? processKilobyteText(processRecord.peakWorkingSetBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::WorkingSetDelta:
+        return processSignedKilobyteText(processRecord.workingSetDeltaBytes);
+    case TableColumn::ActivePrivateWorkingSet:
+        return processRecord.privateWorkingSetKnown
+            ? processKilobyteText(processRecord.activePrivateWorkingSetBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::PrivateWorkingSet:
+        return processRecord.privateWorkingSetKnown
+            ? processKilobyteText(processRecord.privateWorkingSetBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::SharedWorkingSet:
+        return processRecord.privateWorkingSetKnown
+            ? processKilobyteText(processRecord.sharedWorkingSetBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::CommitSize:
+        return processRecord.memoryDetailKnown
+            ? processKilobyteText(processRecord.commitSizeBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::PagedPool:
+        return processRecord.memoryDetailKnown
+            ? processKilobyteText(processRecord.pagedPoolBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::NonPagedPool:
+        return processRecord.memoryDetailKnown
+            ? processKilobyteText(processRecord.nonPagedPoolBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::PageFaults:
+        return processRecord.memoryDetailKnown
+            ? processGroupedNumberText(processRecord.pageFaultCount)
+            : ProcessColumnUnavailableText;
+    case TableColumn::PageFaultDelta:
+        return processRecord.memoryDetailKnown
+            ? processGroupedSignedNumberText(processRecord.pageFaultDeltaCount)
+            : ProcessColumnUnavailableText;
+    case TableColumn::BasePriority:
+        return QString::number(processRecord.basePriority);
+    case TableColumn::ThreadCount:
+        return QString::number(processRecord.threadCount);
+    case TableColumn::UserObjects:
+        return processRecord.guiResourceKnown
+            ? processGroupedNumberText(processRecord.userObjectCount)
+            : ProcessColumnUnavailableText;
+    case TableColumn::GdiObjects:
+        return processRecord.guiResourceKnown
+            ? processGroupedNumberText(processRecord.gdiObjectCount)
+            : ProcessColumnUnavailableText;
+    case TableColumn::IoReads:
+        return processRecord.ioDetailKnown
+            ? processGroupedNumberText(processRecord.ioReadOperationCount)
+            : ProcessColumnUnavailableText;
+    case TableColumn::IoWrites:
+        return processRecord.ioDetailKnown
+            ? processGroupedNumberText(processRecord.ioWriteOperationCount)
+            : ProcessColumnUnavailableText;
+    case TableColumn::IoOther:
+        return processRecord.ioDetailKnown
+            ? processGroupedNumberText(processRecord.ioOtherOperationCount)
+            : ProcessColumnUnavailableText;
+    case TableColumn::IoReadBytes:
+        return processRecord.ioDetailKnown
+            ? processGroupedNumberText(processRecord.ioReadTransferBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::IoWriteBytes:
+        return processRecord.ioDetailKnown
+            ? processGroupedNumberText(processRecord.ioWriteTransferBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::IoOtherBytes:
+        return processRecord.ioDetailKnown
+            ? processGroupedNumberText(processRecord.ioOtherTransferBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::OsContext:
+        // 没有兼容性清单的映像在任务管理器里同样是空白，这里统一用占位符表示“无声明”。
+        return processRecord.osContextText.empty()
+            ? ProcessColumnUnavailableText
+            : QString::fromStdString(processRecord.osContextText);
+    case TableColumn::Platform:
+        return processRecord.architectureText.empty()
+            ? ProcessColumnUnavailableText
+            : QString::fromStdString(processRecord.architectureText);
+    case TableColumn::UacVirtualization:
+        return processFeatureStateText(processRecord.uacVirtualizationState);
+    case TableColumn::Description:
+        return processRecord.fileDescription.empty()
+            ? ProcessColumnUnavailableText
+            : QString::fromStdString(processRecord.fileDescription);
+    case TableColumn::DataExecutionPrevention:
+        return processFeatureStateText(processRecord.dataExecutionPreventionState);
+    case TableColumn::ControlFlowGuard:
+        return processFeatureStateText(processRecord.controlFlowGuardState);
+    case TableColumn::HardwareStackProtection:
+        return processFeatureStateText(processRecord.hardwareStackProtectionState);
+    case TableColumn::DpiAwareness:
+        return processDpiAwarenessText(processRecord.dpiAwarenessLevel);
+    case TableColumn::EnterpriseContext:
+        if (processRecord.enterpriseContextText.empty())
+        {
+            return ProcessColumnUnavailableText;
+        }
+        if (processRecord.enterpriseContextText == "Personal")
+        {
+            return processContextText("process.table.cell.enterprise_personal", QStringLiteral("个人"));
+        }
+        return QString::fromStdString(processRecord.enterpriseContextText);
+    case TableColumn::PowerThrottling:
+        if (!processRecord.efficiencyModeSupported)
+        {
+            return ProcessColumnUnavailableText;
+        }
+        return processRecord.efficiencyModeEnabled
+            ? processFeatureStateText(ks::process::ProcessFeatureState::Enabled)
+            : processFeatureStateText(ks::process::ProcessFeatureState::Disabled);
+    case TableColumn::GpuEngine:
+        return processRecord.gpuEngineText.empty()
+            ? ProcessColumnUnavailableText
+            : QString::fromStdString(processRecord.gpuEngineText);
+    case TableColumn::GpuDedicatedMemory:
+        return processRecord.gpuMemoryKnown
+            ? processMegabyteText(processRecord.gpuDedicatedMemoryBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::GpuSharedMemory:
+        return processRecord.gpuMemoryKnown
+            ? processMegabyteText(processRecord.gpuSharedMemoryBytes)
+            : ProcessColumnUnavailableText;
+    case TableColumn::ProcessType:
+        // 类型依赖“应用 / 后台进程 / Windows 进程”的行分组结果，
+        // 该信息保存在 ProcessTableRow 而不是 ProcessRecord，由 processTableData 直接产出。
+        return QString();
     default:
         return QString();
     }
@@ -10961,6 +11925,18 @@ std::string ProcessDock::buildRulerPrefix(const int depth)
 int ProcessDock::toColumnIndex(const TableColumn column)
 {
     return static_cast<int>(column);
+}
+
+QString ProcessDock::processColumnDisplayName(const int columnIndex)
+{
+    // 输入：列逻辑索引。
+    // 处理：查列表头文本表并按当前语言翻译；表定义在本文件的匿名命名空间中。
+    // 返回：列名；索引越界时返回空串，调用方据此跳过该项。
+    if (columnIndex < 0 || columnIndex >= ProcessTableHeaders.size())
+    {
+        return QString();
+    }
+    return translatedProcessHeader(columnIndex, ProcessTableHeaders.at(columnIndex));
 }
 
 void ProcessDock::syncEditValueFromBitmaskChecks(
@@ -11323,6 +12299,23 @@ QString ProcessDock::friendlyGroupTitle(const FriendlyProcessGroupType groupType
     }
 }
 
+QString ProcessDock::friendlyGroupTypeName(const FriendlyProcessGroupType groupType)
+{
+    // 输入：友好视图分组类型。
+    // 处理：返回不带成员计数的短名称，供“类型”列逐行展示。
+    // 返回：与任务管理器“类型”列一致的应用 / 后台进程 / Windows 进程文本。
+    switch (groupType)
+    {
+    case FriendlyProcessGroupType::Application:
+        return processContextText("process.type.application", QStringLiteral("应用"));
+    case FriendlyProcessGroupType::WindowsSystem:
+        return processContextText("process.type.windows", QStringLiteral("Windows 进程"));
+    case FriendlyProcessGroupType::Background:
+    default:
+        return processContextText("process.type.background", QStringLiteral("后台进程"));
+    }
+}
+
 QString ProcessDock::friendlyExpansionKeyForGroup(const FriendlyProcessGroupType groupType)
 {
     // Inputs: friendly group type.
@@ -11389,23 +12382,114 @@ ks::process::ProcessRecord ProcessDock::aggregateFriendlyApplicationRecord(
     aggregateRecord.netKBps = 0.0;
     aggregateRecord.netRxKBps = 0.0;
     aggregateRecord.netTxKBps = 0.0;
+
+    // 任务管理器对齐列同样需要在聚合行上给出整棵应用的合计值，
+    // 否则折叠状态下这些列会只显示根进程的数字，与 CPU/内存列的语义不一致。
+    aggregateRecord.rawWorkingSetBytes = 0;
+    aggregateRecord.rawCpuTime100ns = 0;
+    aggregateRecord.cycleTime = 0;
+    aggregateRecord.peakWorkingSetBytes = 0;
+    aggregateRecord.privateWorkingSetBytes = 0;
+    aggregateRecord.activePrivateWorkingSetBytes = 0;
+    aggregateRecord.sharedWorkingSetBytes = 0;
+    aggregateRecord.commitSizeBytes = 0;
+    aggregateRecord.pagedPoolBytes = 0;
+    aggregateRecord.nonPagedPoolBytes = 0;
+    aggregateRecord.pageFaultCount = 0;
+    aggregateRecord.workingSetDeltaBytes = 0;
+    aggregateRecord.pageFaultDeltaCount = 0;
+    aggregateRecord.ioReadOperationCount = 0;
+    aggregateRecord.ioWriteOperationCount = 0;
+    aggregateRecord.ioOtherOperationCount = 0;
+    aggregateRecord.ioReadTransferBytes = 0;
+    aggregateRecord.ioWriteTransferBytes = 0;
+    aggregateRecord.ioOtherTransferBytes = 0;
+    aggregateRecord.gdiObjectCount = 0;
+    aggregateRecord.userObjectCount = 0;
+    aggregateRecord.gpuDedicatedMemoryBytes = 0;
+    aggregateRecord.gpuSharedMemoryBytes = 0;
+    aggregateRecord.suspendedThreadCount = 0;
+
+    // 可用性标记先清空，再对成员做“或”合并：
+    // 只要有一个成员进程拿到了该组字段，聚合行就展示合计值而不是占位符。
+    aggregateRecord.memoryDetailKnown = false;
+    aggregateRecord.privateWorkingSetKnown = false;
+    aggregateRecord.ioDetailKnown = false;
+    aggregateRecord.guiResourceKnown = false;
+    aggregateRecord.gpuMemoryKnown = false;
+    aggregateRecord.cycleTimeKnown = false;
+
+    // 只有全部成员线程都处于挂起状态时，应用整体才算“已挂起”。
+    std::uint32_t aggregateStateKnownCount = 0;
+    std::uint32_t aggregateSuspendedCount = 0;
+    std::uint32_t aggregateMemberCount = 0;
+
     for (const CacheEntry* entry : applicationEntries)
     {
         if (entry == nullptr)
         {
             continue;
         }
-        aggregateRecord.threadCount += entry->record.threadCount;
-        aggregateRecord.handleCount += entry->record.handleCount;
-        aggregateRecord.cpuPercent += entry->record.cpuPercent;
-        aggregateRecord.ramMB += entry->record.ramMB;
-        aggregateRecord.workingSetMB += entry->record.workingSetMB;
-        aggregateRecord.diskMBps += entry->record.diskMBps;
-        aggregateRecord.gpuPercent += entry->record.gpuPercent;
-        aggregateRecord.netKBps += entry->record.netKBps;
-        aggregateRecord.netRxKBps += entry->record.netRxKBps;
-        aggregateRecord.netTxKBps += entry->record.netTxKBps;
+        const ks::process::ProcessRecord& memberRecord = entry->record;
+        ++aggregateMemberCount;
+
+        aggregateRecord.threadCount += memberRecord.threadCount;
+        aggregateRecord.handleCount += memberRecord.handleCount;
+        aggregateRecord.cpuPercent += memberRecord.cpuPercent;
+        aggregateRecord.ramMB += memberRecord.ramMB;
+        aggregateRecord.workingSetMB += memberRecord.workingSetMB;
+        aggregateRecord.diskMBps += memberRecord.diskMBps;
+        aggregateRecord.gpuPercent += memberRecord.gpuPercent;
+        aggregateRecord.netKBps += memberRecord.netKBps;
+        aggregateRecord.netRxKBps += memberRecord.netRxKBps;
+        aggregateRecord.netTxKBps += memberRecord.netTxKBps;
+
+        aggregateRecord.rawWorkingSetBytes += memberRecord.rawWorkingSetBytes;
+        aggregateRecord.rawCpuTime100ns += memberRecord.rawCpuTime100ns;
+        aggregateRecord.cycleTime += memberRecord.cycleTime;
+        aggregateRecord.peakWorkingSetBytes += memberRecord.peakWorkingSetBytes;
+        aggregateRecord.privateWorkingSetBytes += memberRecord.privateWorkingSetBytes;
+        aggregateRecord.activePrivateWorkingSetBytes += memberRecord.activePrivateWorkingSetBytes;
+        aggregateRecord.sharedWorkingSetBytes += memberRecord.sharedWorkingSetBytes;
+        aggregateRecord.commitSizeBytes += memberRecord.commitSizeBytes;
+        aggregateRecord.pagedPoolBytes += memberRecord.pagedPoolBytes;
+        aggregateRecord.nonPagedPoolBytes += memberRecord.nonPagedPoolBytes;
+        aggregateRecord.pageFaultCount += memberRecord.pageFaultCount;
+        aggregateRecord.workingSetDeltaBytes += memberRecord.workingSetDeltaBytes;
+        aggregateRecord.pageFaultDeltaCount += memberRecord.pageFaultDeltaCount;
+        aggregateRecord.ioReadOperationCount += memberRecord.ioReadOperationCount;
+        aggregateRecord.ioWriteOperationCount += memberRecord.ioWriteOperationCount;
+        aggregateRecord.ioOtherOperationCount += memberRecord.ioOtherOperationCount;
+        aggregateRecord.ioReadTransferBytes += memberRecord.ioReadTransferBytes;
+        aggregateRecord.ioWriteTransferBytes += memberRecord.ioWriteTransferBytes;
+        aggregateRecord.ioOtherTransferBytes += memberRecord.ioOtherTransferBytes;
+        aggregateRecord.gdiObjectCount += memberRecord.gdiObjectCount;
+        aggregateRecord.userObjectCount += memberRecord.userObjectCount;
+        aggregateRecord.gpuDedicatedMemoryBytes += memberRecord.gpuDedicatedMemoryBytes;
+        aggregateRecord.gpuSharedMemoryBytes += memberRecord.gpuSharedMemoryBytes;
+        aggregateRecord.suspendedThreadCount += memberRecord.suspendedThreadCount;
+
+        aggregateRecord.memoryDetailKnown |= memberRecord.memoryDetailKnown;
+        aggregateRecord.privateWorkingSetKnown |= memberRecord.privateWorkingSetKnown;
+        aggregateRecord.ioDetailKnown |= memberRecord.ioDetailKnown;
+        aggregateRecord.guiResourceKnown |= memberRecord.guiResourceKnown;
+        aggregateRecord.gpuMemoryKnown |= memberRecord.gpuMemoryKnown;
+        aggregateRecord.cycleTimeKnown |= memberRecord.cycleTimeKnown;
+
+        if (memberRecord.processStateKnown)
+        {
+            ++aggregateStateKnownCount;
+            if (memberRecord.processSuspended)
+            {
+                ++aggregateSuspendedCount;
+            }
+        }
     }
+
+    aggregateRecord.processStateKnown =
+        (aggregateMemberCount > 0U && aggregateStateKnownCount == aggregateMemberCount);
+    aggregateRecord.processSuspended =
+        (aggregateRecord.processStateKnown && aggregateSuspendedCount == aggregateMemberCount);
     return aggregateRecord;
 }
 
@@ -11966,7 +13050,54 @@ bool ProcessDock::isFriendlyViewEnabled() const
 
 ProcessDock::ViewMode ProcessDock::currentViewMode() const
 {
-    return static_cast<ViewMode>(m_viewModeCombo->currentIndex());
+    // 下拉项的 data 约定：>=0 表示内置预设的 ViewMode 值，<0 表示自定义视图。
+    if (m_viewModeCombo == nullptr)
+    {
+        return ViewMode::Monitor;
+    }
+
+    bool parseOk = false;
+    const int dataValue = m_viewModeCombo->currentData().toInt(&parseOk);
+    if (!parseOk || dataValue < 0 || dataValue >= static_cast<int>(ViewMode::Count))
+    {
+        // 自定义视图没有对应的内置预设：按监视视图处理，
+        // 它只用于“恢复默认列”和刷新预算判定，不影响自定义视图当前的列集合。
+        return ViewMode::Monitor;
+    }
+    return static_cast<ViewMode>(dataValue);
+}
+
+int ProcessDock::currentCustomViewIndex() const
+{
+    if (m_viewModeCombo == nullptr)
+    {
+        return -1;
+    }
+
+    bool parseOk = false;
+    const int dataValue = m_viewModeCombo->currentData().toInt(&parseOk);
+    if (!parseOk || dataValue >= 0)
+    {
+        return -1;
+    }
+
+    const int customIndex = -dataValue - 1;
+    return (customIndex < static_cast<int>(m_customViews.size())) ? customIndex : -1;
+}
+
+bool ProcessDock::isStaticDetailIntensiveViewActive() const
+{
+    // 输入：进程表当前的列显隐状态。
+    // 处理：判断是否显示了需要逐进程打开句柄才能补齐的静态字段。
+    // 返回：true 表示后台刷新应使用更高的静态详情预算并执行签名校验。
+    // 这样做比把预算写死在“详细信息视图”上更准确：用户在监视视图里手动加上
+    // 命令行或描述列时，同样需要这些字段被真正补齐。
+    return isProcessColumnVisible(TableColumn::Signature) ||
+        isProcessColumnVisible(TableColumn::Path) ||
+        isProcessColumnVisible(TableColumn::CommandLine) ||
+        isProcessColumnVisible(TableColumn::User) ||
+        isProcessColumnVisible(TableColumn::Description) ||
+        isProcessColumnVisible(TableColumn::Platform);
 }
 
 void ProcessDock::executeR0TerminateProcessAction()

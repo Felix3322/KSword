@@ -173,7 +173,68 @@ private:
         HandleTable,   // EPROCESS.ObjectTable 是否可用。
         SectionObject, // EPROCESS.SectionObject 是否可用。
         R0Status,      // R0 扩展字段总体状态。
-        Count          // 列总数。
+
+        // ======== 与 Windows 任务管理器“详细信息”页对齐的补齐列 ========
+        // 说明：
+        // - 这些列一律追加在既有列之后，保证旧列的逻辑索引不变；
+        // - 默认全部隐藏，由“选择列”对话框或表头右键菜单按需开启；
+        // - 展示顺序可由用户拖动表头调整，不依赖此处的枚举顺序。
+        PackageName,             // 程序包名称（UWP / MSIX 包全名）。
+        Status,                  // 状态：运行中 / 已挂起。
+        SessionId,               // 会话 ID。
+        JobObject,               // 作业对象 ID（归属判定）。
+        CpuTime,                 // CPU 时间（内核态 + 用户态累计）。
+        CycleTime,               // 周期（累计 CPU 周期数）。
+        WorkingSet,              // 工作集(内存)。
+        PeakWorkingSet,          // 峰值工作集(内存)。
+        WorkingSetDelta,         // 工作集增量(内存)。
+        ActivePrivateWorkingSet, // 内存(活动的专用工作集)。
+        PrivateWorkingSet,       // 内存(专用工作集)。
+        SharedWorkingSet,        // 内存(共享工作集)。
+        CommitSize,              // 提交大小。
+        PagedPool,               // 分页缓冲池。
+        NonPagedPool,            // 非分页缓冲池。
+        PageFaults,              // 页面错误。
+        PageFaultDelta,          // 页面错误增量。
+        BasePriority,            // 基本优先级。
+        ThreadCount,             // 线程数量。
+        UserObjects,             // 用户对象。
+        GdiObjects,              // GDI 对象。
+        IoReads,                 // I/O 读取次数。
+        IoWrites,                // I/O 写入次数。
+        IoOther,                 // I/O 其他次数。
+        IoReadBytes,             // I/O 读取字节。
+        IoWriteBytes,            // I/O 写入字节。
+        IoOtherBytes,            // I/O 其他字节。
+        OsContext,               // 操作系统上下文（映像清单 supportedOS）。
+        Platform,                // 平台 / 体系结构。
+        UacVirtualization,       // UAC 虚拟化。
+        Description,             // 描述（映像版本资源 FileDescription）。
+        DataExecutionPrevention, // 数据执行保护。
+        ControlFlowGuard,        // 控制流保护。
+        HardwareStackProtection, // 硬件强制实施的堆栈保护（CET 影子栈）。
+        EnterpriseContext,       // 企业上下文。
+        DpiAwareness,            // DPI 感知。
+        PowerThrottling,         // 电源节流（效率模式）。
+        GpuEngine,               // GPU 引擎。
+        GpuDedicatedMemory,      // 专用 GPU 内存。
+        GpuSharedMemory,         // 共享 GPU 内存。
+        ProcessType,             // 类型：应用 / 后台进程 / Windows 进程。
+        Count                    // 列总数。
+    };
+
+    // ProcessColumnGroup：
+    // - 作用：把列按语义分组，仅用于“选择列”对话框的展示与检索；
+    // - 不影响列的逻辑索引，也不参与任何数据读写路径。
+    enum class ProcessColumnGroup : int
+    {
+        General = 0, // 常规：身份、路径、用户、启动信息。
+        Performance, // 性能：CPU / GPU / 磁盘 / 网络等实时指标。
+        Memory,      // 内存：工作集、提交、缓冲池、页面错误。
+        Io,          // I/O：读写次数与字节数。
+        Security,    // 安全：签名、完整性、缓解策略、虚拟化。
+        Kernel,      // 内核：R0 扩展字段。
+        Count        // 分组总数。
     };
 
     // ThreadTableColumn：线程页表格列索引定义。
@@ -229,11 +290,31 @@ private:
         Worker
     };
 
-    // ViewMode：两种视图模式。
+    // ViewMode：内置视图预设。
+    // 说明：
+    // - 每个预设都固定包含进程名与 PID，保证任何视图下都能辨认目标；
+    // - 预设只决定“默认显示哪些列”，用户在“选择列”里的调整会叠加在预设之上；
+    // - 用户自定义视图不属于本枚举，由 m_customViews 单独维护。
     enum class ViewMode : int
     {
-        Monitor = 0, // 监视视图（性能计数器列）。
-        Detail = 1   // 详细信息视图（展示所有补充字段）。
+        Monitor = 0, // 监视：CPU / 内存 / 磁盘 / GPU / 网络等实时计数器。
+        Detail,      // 详细信息：路径、命令行、用户、签名等静态与管理信息。
+        Memory,      // 内存分析：工作集、提交、缓冲池与页面错误。
+        DiskIo,      // 磁盘 I/O：读写次数与字节数。
+        Gpu,         // GPU：占用、引擎与显存。
+        Security,    // 安全与策略：签名、提升、虚拟化与各项缓解策略。
+        Kernel,      // 内核证据：R0 扩展字段。
+        Count        // 内置预设总数。
+    };
+
+    // ProcessCustomView：
+    // - 作用：保存用户自定义视图的名称与可见列集合；
+    // - 持久化在 QSettings 中，跨会话保留；
+    // - 应用时同样保证进程名与 PID 一定可见。
+    struct ProcessCustomView
+    {
+        QString name;                    // name：用户输入的视图名称，同时作为配置键。
+        std::vector<int> visibleColumns; // visibleColumns：该视图下需要显示的列逻辑索引。
     };
 
     // ProcessTableRowKind：
@@ -310,6 +391,11 @@ private:
         bool isKernelOnlyInLatestRound = false; // 最新刷新中是否仅内核枚举可见。
         std::uint32_t staticFillAttemptCount = 0; // 静态详情补齐尝试次数（含成功/失败）。
         std::uint32_t staticFillFailureCount = 0; // 静态详情连续失败次数（用于退避重试）。
+        // onDemandResolvedFlags：
+        // - 已经成功采集过的 ks::process::ProcessDetailDemand 静态位；
+        // - 作业归属、缓解策略、UAC 虚拟化、映像说明等字段在进程生命周期内不变，
+        //   记录后即可跳过后续每一轮的重复查询，只保留真正动态的 GUI 资源计数。
+        std::uint32_t onDemandResolvedFlags = 0;
     };
 
     // AffinityRestoreRetryState：
@@ -478,6 +564,12 @@ private:
     std::vector<DisplayRow> buildTreeDisplayOrder() const;
     std::vector<DisplayRow> buildListDisplayOrder() const;
     std::vector<DisplayRow> buildFriendlyDisplayOrder() const;
+    // buildFriendlyGroupTypeByPid 作用：
+    // - 在任意视图模式下算出每个 PID 的“应用 / 后台进程 / Windows 进程”归类；
+    // - 供任务管理器对齐的“类型”列在树状与列表视图下也能给出正确取值；
+    // - 只有该列可见时才会被调用，避免为不显示的列做窗口枚举。
+    // 返回：PID 到分组类型的映射。
+    std::unordered_map<std::uint32_t, FriendlyProcessGroupType> buildFriendlyGroupTypeByPid() const;
     std::vector<DisplayRow> buildActivitySnapshotDisplayOrder() const;
     void applyR0ColumnAvailability(const std::vector<DisplayRow>& displayRows);
 
@@ -488,11 +580,118 @@ private:
     bool isFriendlyViewEnabled() const;
     ViewMode currentViewMode() const;
 
+    // ======== 视图预设与自定义视图 ========
+    // defaultVisibleColumnsForViewMode 作用：
+    // - 返回某个内置预设默认显示的列集合；
+    // - 是 applyViewMode 与“恢复默认”共用的唯一事实来源。
+    // 参数 viewMode：目标预设。
+    // 返回：该预设的列逻辑索引集合（一定包含进程名与 PID）。
+    static std::vector<int> defaultVisibleColumnsForViewMode(ViewMode viewMode);
+
+    // viewModeDisplayName 作用：返回内置预设在下拉框中的显示名称。
+    static QString viewModeDisplayName(ViewMode viewMode);
+
+    // currentCustomViewIndex 作用：
+    // - 返回当前选中的自定义视图下标；
+    // - 返回 -1 表示当前选中的是内置预设。
+    int currentCustomViewIndex() const;
+
+    // applyCustomView 作用：
+    // - 按下标应用某个自定义视图的列集合；
+    // - 参数 customIndex：m_customViews 中的下标；越界时忽略。
+    void applyCustomView(int customIndex);
+
+    // rebuildViewModeComboItems 作用：
+    // - 依据内置预设与当前自定义视图列表重建下拉项；
+    // - 重建期间屏蔽信号，避免触发多余的视图切换与刷新。
+    void rebuildViewModeComboItems();
+
+    // saveCurrentColumnsAsCustomView 作用：
+    // - 把当前可见列保存为一个命名的自定义视图；同名时覆盖；
+    // - 参数 viewName：用户输入的名称（调用方负责去空白与非空校验）；
+    // - 返回：保存后该视图在 m_customViews 中的下标。
+    int saveCurrentColumnsAsCustomView(const QString& viewName);
+
+    // removeCustomView 作用：删除指定下标的自定义视图并回落到监视视图。
+    void removeCustomView(int customIndex);
+
+    // loadCustomViewsFromSettings / saveCustomViewsToSettings 作用：
+    // - 在 QSettings 中读写用户自定义视图列表。
+    void loadCustomViewsFromSettings();
+    void saveCustomViewsToSettings() const;
+
+    // isStaticDetailIntensiveViewActive 作用：
+    // - 判断当前可见列是否包含路径 / 命令行 / 用户 / 签名 / 描述这类需要打开进程的静态字段；
+    // - 后台刷新据此决定静态详情预算，避免把预算判定写死在“详细信息视图”上；
+    // - 返回：true 表示需要更高的静态详情补齐预算。
+    bool isStaticDetailIntensiveViewActive() const;
+
     // ======== 表格交互 ========
     void showTableContextMenu(const QPoint& localPosition);
     void showThreadTableContextMenu(const QPoint& localPosition);
     void showThreadHeaderContextMenu(const QPoint& localPosition);
     void showHeaderContextMenu(const QPoint& localPosition);
+
+    // ======== 进程表列管理（添加/减少列） ========
+    // showColumnChooserDialog 作用：
+    // - 打开“选择列”对话框，让用户按分组勾选需要显示的列；
+    // - 支持关键字搜索、全选、全不选与恢复当前视图默认；
+    // - 确定后写入用户列覆盖并立即应用，同时持久化到配置。
+    // 参数：无。
+    // 返回值：无。
+    void showColumnChooserDialog();
+
+    // setProcessColumnVisible 作用：
+    // - 统一的列显隐入口，负责写入用户覆盖、更新表格并刷新采集需求；
+    // - 参数 columnIndex：目标列逻辑索引；
+    // - 参数 visible：true 显示，false 隐藏；
+    // - 参数 persistImmediately：true 时立即写入配置，批量修改时可传 false 最后统一保存；
+    // - 返回值：无。
+    void setProcessColumnVisible(int columnIndex, bool visible, bool persistImmediately = true);
+
+    // applyUserColumnVisibilityOverrides 作用：
+    // - 在视图预设铺好基础显隐后，把用户的逐列选择叠加回去；
+    // - 这样切换“监视/详细”视图不会丢掉用户自己添加的列；
+    // - 返回值：无。
+    void applyUserColumnVisibilityOverrides();
+
+    // resetProcessColumnsToViewDefault 作用：
+    // - 清空用户列覆盖，让进程表回到当前视图模式的默认列集合；
+    // - 返回值：无。
+    void resetProcessColumnsToViewDefault();
+
+    // loadProcessColumnLayoutFromSettings / saveProcessColumnLayoutToSettings 作用：
+    // - 在 QSettings 中读写用户的列显隐选择，使配置跨会话保留；
+    // - 只保存“与视图默认不同”的项，避免默认列集合调整后被旧配置钉死；
+    // - 返回值：无。
+    void loadProcessColumnLayoutFromSettings();
+    void saveProcessColumnLayoutToSettings() const;
+
+    // currentProcessDetailDemandFlags 作用：
+    // - 按当前可见列计算 ks::process::ProcessDetailDemand 位图；
+    // - 后台刷新据此决定是否为 GDI/作业/缓解策略/显存等字段付出额外采集成本；
+    // - 返回值：需求位图；没有任何按需列可见时返回 None。
+    std::uint32_t currentProcessDetailDemandFlags() const;
+
+    // isProcessColumnVisible 作用：
+    // - 判断某列当前是否可见，供采集需求计算与对话框初始化复用；
+    // - 参数 column：目标列；
+    // - 返回值：true 表示该列当前显示。
+    bool isProcessColumnVisible(TableColumn column) const;
+
+    // processColumnGroupOf / processColumnGroupTitle 作用：
+    // - 提供“选择列”对话框所需的分组信息；
+    // - 仅影响对话框展示，不参与数据读写。
+    static ProcessColumnGroup processColumnGroupOf(TableColumn column);
+    static QString processColumnGroupTitle(ProcessColumnGroup group);
+
+    // processColumnDisplayName 作用：
+    // - 返回某列在当前语言下的表头名称（不含 CPU/RAM 汇总后缀）；
+    // - 列表头文本表定义在 ProcessDock.cpp 的匿名命名空间中，
+    //   该函数是其它翻译单元（如列选择对话框）访问列名的唯一入口。
+    // 参数 columnIndex：列逻辑索引。
+    // 返回：列名；索引越界时返回空串。
+    static QString processColumnDisplayName(int columnIndex);
     void copyCurrentCell();
     void copyCurrentRow();
     void copyCurrentThreadCell();
@@ -735,6 +934,11 @@ private:
         const ks::process::ProcessRecord& processRecord,
         const QString& normalizedWindowsDirectoryPath);
     static QString friendlyGroupTitle(FriendlyProcessGroupType groupType, int entryCount);
+    // friendlyGroupTypeName 作用：
+    // - 返回不含成员计数的分组短名，供任务管理器对齐的“类型”列逐行展示；
+    // - 参数 groupType：行所属的友好分组；
+    // - 返回：应用 / 后台进程 / Windows 进程文本。
+    static QString friendlyGroupTypeName(FriendlyProcessGroupType groupType);
     static QString friendlyExpansionKeyForGroup(FriendlyProcessGroupType groupType);
     static QString friendlyExpansionKeyForApplication(std::uint32_t rootPid);
     static ks::process::ProcessRecord aggregateFriendlyApplicationRecord(
@@ -747,6 +951,7 @@ private:
         bool detailModeEnabled,
         bool queryKernelProcessList,
         int staticDetailFillBudget,
+        std::uint32_t detailDemandFlags,
         std::uint64_t refreshTicket,
         int progressTaskPid,
         const std::unordered_map<std::string, CacheEntry>& previousCache,
@@ -789,6 +994,7 @@ private:
     QDoubleSpinBox* m_tableRefreshIntervalSpin = nullptr; // 进程表格重绘间隔步进框，0.5~60 秒，默认 2 秒。
     QLabel* m_sampleIntervalLabel = nullptr;  // 活动采样间隔标签。
     QDoubleSpinBox* m_refreshIntervalSpin = nullptr; // 活动采样/后台监视间隔步进框，0.05~60 秒，默认 1 秒。
+    QPushButton* m_columnChooserButton = nullptr; // “选择列”按钮：打开添加/减少列对话框。
 
     // ======== 进程活动记录面板 ========
     QWidget* m_activityPanelWidget = nullptr;       // m_activityPanelWidget：进程活动图表面板。
@@ -818,6 +1024,10 @@ private:
     QTableView* m_processTable = nullptr;     // 进程列表表格视图（支持列拖动/排序/右键）。
     ProcessTableModel* m_processTableModel = nullptr; // 进程列表轻量模型，避免刷新时重建 item。
     QSortFilterProxyModel* m_processSortProxy = nullptr; // 进程列表排序代理，保持数值列排序行为。
+    QHash<int, bool> m_userColumnVisibilityOverride; // 用户逐列显隐选择；键为列逻辑索引，缺省表示跟随视图默认。
+    std::vector<ProcessCustomView> m_customViews;    // 用户自定义视图列表，持久化在 QSettings。
+    bool m_viewModeComboUpdating = false;            // 程序重建下拉项期间屏蔽用户切换处理。
+    std::uint32_t m_lastProcessDetailDemandFlags = 0; // 最近一次下发给后台刷新的按需采集位图，用于变更时立即重刷。
     QHash<QString, bool> m_friendlyExpandedStateByKey; // 友好视图分类/应用聚合行展开状态；缺省按展开处理。
     int m_friendlySortColumn = static_cast<int>(TableColumn::Name); // 友好视图内部排序列，默认按进程名 A-Z。
     Qt::SortOrder m_friendlySortOrder = Qt::AscendingOrder; // 友好视图内部排序方向，点击表头切换。
