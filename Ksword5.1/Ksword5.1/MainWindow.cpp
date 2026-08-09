@@ -6179,6 +6179,7 @@ QList<ads::CDockWidget*> MainWindow::collectSearchableDockWidgets() const
         m_dockStartup,
         m_dockService,
         m_dockMisc,
+        m_dockMinidump,
         m_dockPlugin,
         m_dockLog,
         m_dockMonitor,
@@ -9089,6 +9090,11 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
         if (m_miscWidget == nullptr) { m_miscWidget = new MiscDock(this); }
         realWidget = m_miscWidget;
     }
+    else if (dockKey == QStringLiteral("minidump"))
+    {
+        if (m_minidumpWidget == nullptr) { m_minidumpWidget = new MinidumpDock(this); }
+        realWidget = m_minidumpWidget;
+    }
     if (realWidget == nullptr)
     {
         kPro.set(progressPid, QStringLiteral("%1页无需加载").arg(dockTitleText).toStdString(), 0, 100.0f);
@@ -9395,6 +9401,7 @@ void MainWindow::ensureVisibleLazyDocksInitialized(const QString& reasonText)
         m_dockStartup,
         m_dockService,
         m_dockMisc,
+        m_dockMinidump,
         m_dockPlugin
     };
 
@@ -9601,6 +9608,7 @@ void MainWindow::initDockWidgets()
     if (shouldEagerLoad(QStringLiteral("startup"))) { m_startupWidget = new StartupDock(this); }
     if (shouldEagerLoad(QStringLiteral("service"))) { m_serviceWidget = new ServiceDock(this); }
     if (shouldEagerLoad(QStringLiteral("misc"))) { m_miscWidget = new MiscDock(this); }
+    if (shouldEagerLoad(QStringLiteral("minidump"))) { m_minidumpWidget = new MinidumpDock(this); }
     if (shouldEagerLoad(QStringLiteral("plugin"))) { m_pluginWidget = ks::plugin_host::createTabPluginContainer(this); }
 
     reportStartupProgress(
@@ -9760,6 +9768,7 @@ void MainWindow::initDockWidgets()
     createLazyDockWidget(m_dockStartup, m_startupWidget, ks::i18n::text(QStringLiteral("dock.startup"), QStringLiteral("启动项")), QStringLiteral("startup"));
     createLazyDockWidget(m_dockService, m_serviceWidget, ks::i18n::text(QStringLiteral("dock.service"), QStringLiteral("服务")), QStringLiteral("service"));
     createLazyDockWidget(m_dockMisc, m_miscWidget, ks::i18n::text(QStringLiteral("dock.misc"), QStringLiteral("杂项")), QStringLiteral("misc"));
+    createLazyDockWidget(m_dockMinidump, m_minidumpWidget, ks::i18n::text(QStringLiteral("dock.minidump"), QStringLiteral("转储分析")), QStringLiteral("minidump"));
     createLazyDockWidget(m_dockPlugin, m_pluginWidget, ks::i18n::text(QStringLiteral("dock.plugin"), QStringLiteral("插件")), QStringLiteral("plugin"));
 
     // 三个辅助 Dock 始终创建并注册，关闭时只隐藏内容实例，确保菜单状态和 ADS 布局可恢复。
@@ -9809,6 +9818,7 @@ void MainWindow::initDockWidgets()
         m_dockStartup,
         m_dockService,
         m_dockMisc,
+        m_dockMinidump,
         m_dockPlugin
     };
     for (ads::CDockWidget* dockWidget : mainDockTabList)
@@ -9880,6 +9890,7 @@ void MainWindow::setupDockLayout()
     m_pDockManager->addDockWidgetTabToArea(m_dockStartup, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockService, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockMisc, leftDockArea);
+    m_pDockManager->addDockWidgetTabToArea(m_dockMinidump, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockPlugin, leftDockArea);
 
     // 方法2: 或者使用addDockWidget并指定CenterDockWidgetArea
@@ -10363,6 +10374,11 @@ void MainWindow::initAppearanceSettings()
         {
             targetDock = m_dockMisc;
             targetName = QStringLiteral("杂项");
+        }
+        else if (normalizedKey == QStringLiteral("minidump"))
+        {
+            targetDock = m_dockMinidump;
+            targetName = QStringLiteral("转储分析");
         }
         else if (normalizedKey == QStringLiteral("plugin"))
         {

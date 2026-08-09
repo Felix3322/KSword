@@ -55,6 +55,7 @@
 #include "WindowDock/WindowDock.h"
 #include "RegistryDock/RegistryDock.h"
 #include "MiscDock/MiscDock.h"
+#include "MinidumpDock/MinidumpDock.h"
 #include "句柄/HandleDock.h"
 
 class LogDockWidget; // 前置声明：日志 Dock 面板类型。
@@ -577,6 +578,7 @@ private:
     ads::CDockWidget* m_dockService = nullptr;
     ads::CDockWidget* m_dockPlugin = nullptr; // m_dockPlugin：Tab 型插件独立顶部页 Dock。
     ads::CDockWidget* m_dockMisc = nullptr;
+    ads::CDockWidget* m_dockMinidump = nullptr; // m_dockMinidump：转储分析页 Dock。
     ads::CDockWidget* m_dockHardware = nullptr; // m_dockHardware：硬件页 Dock。
     ads::CDockWidget* m_dockCurrentOp = nullptr; // m_dockCurrentOp：底部“当前任务”辅助 Dock。
     ads::CDockWidget* m_dockLog = nullptr; // m_dockLog：底部“日志窗口”辅助 Dock。
@@ -601,6 +603,7 @@ private:
     ServiceDock* m_serviceWidget = nullptr;
     QWidget* m_pluginWidget = nullptr; // m_pluginWidget：进程隔离 Tab 插件宿主容器。
     MiscDock* m_miscWidget = nullptr;
+    MinidumpDock* m_minidumpWidget = nullptr; // m_minidumpWidget：转储分析页内容控件。
     WindowDock* m_windowWidget = nullptr; // m_windowWidget：窗口页内容控件。
     RegistryDock* m_registryWidget = nullptr; // m_registryWidget：注册表页内容控件。
     HandleDock* m_handleWidget = nullptr;

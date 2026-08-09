@@ -1,0 +1,270 @@
+#pragma once
+
+// ============================================================
+// MinidumpFormat.h
+// 作用：
+// - 定义转储解析页（MinidumpDock）使用的格式中立数据模型；
+// - 同一套模型同时承载用户态 MDMP minidump 与内核 PAGEDUMP/PAGEDU64 转储；
+// - 提供带边界检查的只读文件视图 DumpFileView：
+//   所有按 RVA/文件偏移的访问都必须经过它，防止畸形转储导致越界读取。
+// 调用方式：
+// - 解析入口见 MinidumpParser.h 的 ks::minidump::ParseDumpFile；
+// - UI 渲染只消费本文件里的结构体，不接触原始文件字节。
+// ============================================================
+
+#include <QString>
+#include <QStringList>
+
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+namespace ks::minidump
+{
+    // DumpKind：被解析文件的总体类别，由文件签名判定。
+    enum class DumpKind
+    {
+        Unknown,      // Unknown：签名无法识别，不是受支持的转储文件。
+        UserMinidump, // UserMinidump：用户态 MDMP 小型转储（MiniDumpWriteDump 产物）。
+        KernelDump64, // KernelDump64：64 位内核转储（签名 PAGEDU64，蓝屏产物）。
+        KernelDump32, // KernelDump32：32 位内核转储（签名 PAGEDUMP，旧系统蓝屏产物）。
+    };
+
+    // DumpProperty：概览/详情表里的一行“属性-值”。
+    // name/value 均为中文规范文本，渲染层通过 ks::i18n::sourceText 按整串翻译。
+    struct DumpProperty
+    {
+        QString name;  // name：属性名（中文规范文本）。
+        QString value; // value：属性值文本（动态部分保持原样，状态词可翻译）。
+    };
+
+    // StreamEntry：MDMP 流目录中的一项；内核转储时用来展示 TRIAGE 数据块布局。
+    struct StreamEntry
+    {
+        std::uint32_t type = 0; // type：流类型编号（MINIDUMP_STREAM_TYPE 数值）。
+        QString typeName;       // typeName：流类型名（如 ThreadListStream）。
+        std::uint64_t rva = 0;  // rva：流数据在文件内的偏移。
+        std::uint64_t size = 0; // size：流数据字节数。
+        QString note;           // note：中文说明（该流承载什么信息）。
+    };
+
+    // ModuleEntry：一行已加载模块（用户态模块或内核驱动）。
+    struct ModuleEntry
+    {
+        QString name;                   // name：模块完整路径或名称。
+        std::uint64_t base = 0;         // base：加载基址。
+        std::uint64_t size = 0;         // size：映像大小（字节）。
+        std::uint32_t checksum = 0;     // checksum：PE 头 CheckSum 字段。
+        std::uint32_t timeDateStamp = 0; // timeDateStamp：PE 头时间戳（time_t）。
+        QString timestampText;          // timestampText：时间戳的本地时间文本。
+        QString version;                // version：文件版本（VS_FIXEDFILEINFO），可为空。
+        QString pdbName;                // pdbName：CodeView 记录里的 PDB 路径，可为空。
+        QString pdbGuidAge;             // pdbGuidAge：PDB GUID 与 Age 组合文本，可为空。
+    };
+
+    // AddressKind：一个数值被当作地址看待时的性质，用于给参数/寄存器加注解。
+    enum class AddressKind
+    {
+        Unknown,      // Unknown：无法判定。
+        NullPage,     // NullPage：落在 NULL 页（< 64KB），几乎必然是空指针解引用。
+        UserSpace,    // UserSpace：用户态地址范围。
+        KernelSpace,  // KernelSpace：内核地址范围（x64 高半区）。
+        Poison,       // Poison：调试器/分配器填充的哨兵值（未初始化或释放后使用）。
+    };
+
+    // AddressNote：对某个数值的完整解读结果（模块归属 + 性质说明）。
+    struct AddressNote
+    {
+        AddressKind kind = AddressKind::Unknown; // kind：地址性质分类。
+        QString moduleName;      // moduleName：命中的模块名，未命中时为空。
+        std::uint64_t moduleBase = 0; // moduleBase：命中模块的基址。
+        std::uint64_t offset = 0;     // offset：地址相对模块基址的偏移。
+        bool unloadedModule = false;  // unloadedModule：命中的是已卸载模块（高度可疑）。
+        QString symbolText;      // symbolText："模块名+0x偏移"，未命中模块时为空。
+        QString description;     // description：中文性质说明，可为空。
+    };
+
+    // StackFrameEntry：一帧“疑似调用栈”。本工程不加载 PDB，也不做 unwind，
+    // 帧来自栈内存扫描，因此顺序近似、且必然含误报，UI 上必须如实标注。
+    struct StackFrameEntry
+    {
+        std::uint32_t threadId = 0;   // threadId：所属线程 ID；内核转储用 0 表示崩溃线程。
+        int index = 0;                // index：帧序号，0 为当前指令指针。
+        std::uint64_t stackAddress = 0; // stackAddress：该返回地址所在的栈虚拟地址。
+        std::uint64_t address = 0;    // address：返回地址数值。
+        QString symbolText;           // symbolText："模块名+0x偏移"。
+        QString moduleName;           // moduleName：归属模块名，可为空。
+        bool fromContext = false;     // fromContext：true 表示取自 CONTEXT 的 IP（可信帧）。
+        bool unloadedModule = false;  // unloadedModule：归属到已卸载模块。
+    };
+
+    // RegisterEntry：崩溃点 CONTEXT 里的一个寄存器及其值解读。
+    struct RegisterEntry
+    {
+        std::uint32_t threadId = 0; // threadId：所属线程 ID；内核转储用 0。
+        QString name;               // name：寄存器名（Rip/Rsp/Rax…）。
+        std::uint64_t value = 0;    // value：寄存器值。
+        QString note;               // note：值的性质解读（模块归属 / poison / 空指针）。
+    };
+
+    // BlameEntry：一个“肇事模块”候选。多个证据命中同一模块会累加权重。
+    struct BlameEntry
+    {
+        QString moduleName;        // moduleName：候选模块名。
+        std::uint64_t moduleBase = 0; // moduleBase：模块基址。
+        std::uint64_t address = 0;    // address：命中的代表性地址。
+        std::uint64_t offset = 0;     // offset：address 相对基址的偏移。
+        int weight = 0;               // weight：证据权重合计，越大越可疑。
+        bool unloadedModule = false;  // unloadedModule：命中的是已卸载模块。
+        QStringList evidence;         // evidence：支撑该候选的证据描述（中文）。
+    };
+
+    // AnalysisConfidence：诊断结论的可信度。
+    enum class AnalysisConfidence
+    {
+        None,   // None：没有形成结论。
+        Low,    // Low：仅凭停止码分类推断，无地址级证据。
+        Medium, // Medium：有地址级证据但归属到系统模块或存在多个候选。
+        High,   // High：崩溃指令地址直接归属到某个第三方模块。
+    };
+
+    // DumpAnalysis：转储的综合诊断结论，是“报告”与“诊断”页的数据源。
+    struct DumpAnalysis
+    {
+        AnalysisConfidence confidence = AnalysisConfidence::None; // confidence：结论可信度。
+        QString headline;             // headline：一句话结论。
+        QString category;             // category：故障归类（驱动/硬件/文件系统/电源/软件…）。
+        QStringList findings;         // findings：逐条发现（证据链）。
+        QStringList suggestions;      // suggestions：下一步排查建议。
+        std::vector<BlameEntry> blame; // blame：肇事模块候选，已按权重降序排序。
+    };
+
+    // ThreadEntry：一行线程信息（含 ThreadInfo/ThreadNames 流的补充字段）。
+    struct ThreadEntry
+    {
+        std::uint32_t threadId = 0;      // threadId：线程 ID。
+        QString name;                    // name：线程名（ThreadNamesStream），可为空。
+        std::uint32_t suspendCount = 0;  // suspendCount：挂起计数。
+        std::uint32_t priorityClass = 0; // priorityClass：优先级类。
+        std::uint32_t priority = 0;      // priority：基础优先级。
+        std::uint64_t teb = 0;           // teb：TEB 地址。
+        std::uint64_t stackBase = 0;     // stackBase：转储捕获的栈内存起始地址。
+        std::uint64_t stackSize = 0;     // stackSize：转储捕获的栈字节数。
+        std::uint64_t instructionPointer = 0; // instructionPointer：上下文中的指令指针（Rip/Eip/Pc）。
+        std::uint64_t startAddress = 0;  // startAddress：线程起始地址（ThreadInfoListStream）。
+        QString cpuTimeText;             // cpuTimeText：用户态/内核态 CPU 时间文本，可为空。
+        QString ipSymbolText;            // ipSymbolText：指令指针的“模块名+0x偏移”，可为空。
+        QString startSymbolText;         // startSymbolText：起始地址的“模块名+0x偏移”，可为空。
+        bool faulting = false;           // faulting：是否为异常流指向的崩溃线程。
+    };
+
+    // MemoryRegionEntry：一行内存区域。来源可能是 MemoryList、Memory64List
+    // 或 MemoryInfoList，三者字段覆盖面不同，缺失字段留空。
+    struct MemoryRegionEntry
+    {
+        std::uint64_t base = 0;  // base：区域起始虚拟地址。
+        std::uint64_t size = 0;  // size：区域字节数。
+        QString state;           // state：MEM_COMMIT/RESERVE/FREE 文本（仅 MemoryInfoList 有）。
+        QString protect;         // protect：PAGE_* 保护属性文本（仅 MemoryInfoList 有）。
+        QString type;            // type：MEM_IMAGE/MAPPED/PRIVATE 文本（仅 MemoryInfoList 有）。
+        QString source;          // source：数据来源（中文：内存列表/64 位内存列表/内存信息列表）。
+    };
+
+    // HandleEntry：一行句柄信息（HandleDataStream）。
+    struct HandleEntry
+    {
+        std::uint64_t handleValue = 0;   // handleValue：句柄数值。
+        QString typeName;                // typeName：对象类型名（如 File、Mutant）。
+        QString objectName;              // objectName：对象名，可为空。
+        std::uint32_t attributes = 0;    // attributes：句柄属性位。
+        std::uint32_t grantedAccess = 0; // grantedAccess：授予的访问掩码。
+        std::uint32_t handleCount = 0;   // handleCount：对象句柄计数。
+        std::uint32_t pointerCount = 0;  // pointerCount：对象指针计数。
+    };
+
+    // UnloadedModuleEntry：一行已卸载模块。
+    // 用户态来自 UnloadedModuleListStream，内核来自 TRIAGE 区的已卸载驱动表。
+    struct UnloadedModuleEntry
+    {
+        QString name;                    // name：模块名。
+        std::uint64_t base = 0;          // base：卸载前的加载基址。
+        std::uint64_t endAddress = 0;    // endAddress：卸载前映像结束地址（内核表直接给出）。
+        std::uint32_t size = 0;          // size：映像大小。
+        std::uint32_t checksum = 0;      // checksum：PE CheckSum。
+        std::uint32_t timeDateStamp = 0; // timeDateStamp：PE 时间戳。
+        QString timestampText;           // timestampText：时间戳本地时间文本。
+    };
+
+    // DumpParseResult：一次转储解析的全部产物；UI 只消费这一个结构。
+    struct DumpParseResult
+    {
+        bool success = false;    // success：是否解析出可展示的核心信息。
+        bool recognized = false; // recognized：签名是否被识别（识别但损坏时 success=false）。
+        DumpKind kind = DumpKind::Unknown; // kind：转储类别。
+        QString errorText;       // errorText：失败原因（中文规范文本），成功时为空。
+        QString filePath;        // filePath：被解析文件完整路径。
+        std::uint64_t fileSize = 0; // fileSize：文件字节数。
+
+        std::vector<DumpProperty> overview;      // overview：概览页“属性-值”集合。
+        std::vector<DumpProperty> exceptionInfo; // exceptionInfo：异常/BugCheck 详情集合，可为空。
+        std::vector<StreamEntry> streams;        // streams：流目录（或内核 TRIAGE 布局）。
+        std::vector<ModuleEntry> modules;        // modules：模块/驱动列表。
+        std::vector<ThreadEntry> threads;        // threads：线程列表（内核转储通常为空）。
+        std::vector<MemoryRegionEntry> memoryRegions; // memoryRegions：内存区域列表。
+        std::vector<HandleEntry> handles;        // handles：句柄列表（仅带句柄流的用户态转储）。
+        std::vector<UnloadedModuleEntry> unloadedModules; // unloadedModules：已卸载模块列表。
+        std::vector<StackFrameEntry> stackFrames; // stackFrames：疑似调用栈（栈扫描产物，含误报）。
+        std::vector<RegisterEntry> registers;     // registers：崩溃点寄存器快照。
+        DumpAnalysis analysis;                    // analysis：综合诊断结论与肇事模块候选。
+        QStringList diagnostics;                 // diagnostics：解析过程中的非致命告警（中文文本）。
+
+        std::uint64_t memoryRegionTotal = 0; // memoryRegionTotal：文件中内存区域总数（含未展示部分）。
+        std::uint64_t memoryRegionShown = 0; // memoryRegionShown：实际填入 memoryRegions 的条数。
+        std::uint32_t pointerSize = 8;       // pointerSize：目标机指针宽度（4 或 8），栈扫描步长。
+        std::uint32_t bugCheckCode = 0;      // bugCheckCode：内核转储停止码，用户态转储为 0。
+        std::uint64_t bugCheckParameters[4] = {}; // bugCheckParameters：停止码的四个参数。
+        std::uint32_t exceptionCode = 0;     // exceptionCode：用户态异常码，内核转储可为 0。
+        std::uint64_t faultingAddress = 0;   // faultingAddress：崩溃指令地址（IP），0 表示未知。
+        std::uint32_t faultingThreadId = 0;  // faultingThreadId：崩溃线程 ID，用户态有效。
+    };
+
+    // DumpFileView：只读文件视图，负责所有带边界检查的字节访问。
+    // 使用方式：parser 先构造 { data, size }，随后一律用 contains/at/readStruct 取数。
+    struct DumpFileView
+    {
+        const unsigned char* data = nullptr; // data：映射后的文件首字节指针。
+        std::uint64_t size = 0;              // size：文件总字节数。
+
+        // contains 作用：判断 [offset, offset+bytes) 是否完整落在文件内。
+        // 传入 offset 文件偏移与 bytes 长度；返回是否安全可读（自动防加法溢出）。
+        bool contains(const std::uint64_t offset, const std::uint64_t bytes) const
+        {
+            if (data == nullptr || offset > size || bytes > size)
+            {
+                return false;
+            }
+            return offset + bytes <= size;
+        }
+
+        // at 作用：取得偏移处的原始指针；越界时返回 nullptr。
+        // 传入 offset 文件偏移与 bytes 需要读取的长度；返回可读指针或 nullptr。
+        const unsigned char* at(const std::uint64_t offset, const std::uint64_t bytes) const
+        {
+            return contains(offset, bytes) ? data + offset : nullptr;
+        }
+
+        // readStruct 作用：把偏移处的字节安全拷贝进 POD 结构体。
+        // 传入 offset 文件偏移与输出指针 valueOut；返回是否读取成功。
+        template <typename PodType>
+        bool readStruct(const std::uint64_t offset, PodType* const valueOut) const
+        {
+            const unsigned char* const source = at(offset, sizeof(PodType)); // source：待拷贝区域首指针。
+            if (source == nullptr || valueOut == nullptr)
+            {
+                return false;
+            }
+            std::memcpy(valueOut, source, sizeof(PodType));
+            return true;
+        }
+    };
+}

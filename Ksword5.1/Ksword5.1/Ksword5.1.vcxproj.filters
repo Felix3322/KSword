@@ -532,6 +532,51 @@
     <ClCompile Include="PrivilegeDock\PrivilegeDock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpAnalyzer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpBugCheckText.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpContextRegisters.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpMemoryReader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpStackWalker.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpSymbolIndex.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\KernelDumpParser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpPhysicalMemory.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpPageTable.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpKernelModuleList.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\MinidumpCodeText.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\MinidumpDock.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\MinidumpDock.Tables.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\MinidumpParser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\MinidumpParser.Streams.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ProcessDock\ProcessDetailWindow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1100,6 +1145,51 @@
     <QtMoc Include="PrivilegeDock\PrivilegeDock.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="MinidumpDock\DumpAnalyzer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpBugCheckText.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpContextRegisters.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpMemoryReader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpStackWalker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpSymbolIndex.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\KernelDumpParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpPhysicalMemory.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpPageTable.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpKernelModuleList.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\MinidumpCodeText.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\MinidumpDock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\MinidumpFormat.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\MinidumpParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\MinidumpParser.Internal.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <QtMoc Include="RegistryDock\RegistryDock.h">
       <Filter>Header Files</Filter>
     </QtMoc>
