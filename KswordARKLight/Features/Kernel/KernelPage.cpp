@@ -104,6 +104,9 @@ constexpr UINT_PTR kMenuCallbackOpenModuleFolder = 51107;
 constexpr UINT_PTR kMenuCallbackModuleFileDetail = 51108;
 constexpr UINT_PTR kMenuMinifilterSetBypass = 51109;
 constexpr UINT_PTR kMenuMinifilterClearBypass = 51110;
+constexpr UINT_PTR kMenuNetworkCaptureStart = 51190;
+constexpr UINT_PTR kMenuNetworkCaptureStop = 51191;
+constexpr UINT_PTR kMenuPiDdbDeleteEntry = 51192;
 constexpr UINT_PTR kMenuDriverObjectQueryDetail = 51111;
 constexpr UINT_PTR kMenuDriverObjectForceUnload = 51112;
 constexpr UINT_PTR kMenuNativeObjectQueryDetail = 51113;
@@ -2062,6 +2065,18 @@ LRESULT KernelPage::HandleMessage(HWND hwnd, const UINT msg, const WPARAM wParam
         }
         if (LOWORD(wParam) == kMenuCallbackModuleFileDetail) {
             ShowSelectedCallbackModuleFileDetail();
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuNetworkCaptureStart) {
+            ExecuteSelectedAction(KernelActionId::NetworkCaptureStart);
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuNetworkCaptureStop) {
+            ExecuteSelectedAction(KernelActionId::NetworkCaptureStop);
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuPiDdbDeleteEntry) {
+            ExecuteSelectedAction(KernelActionId::PiDdbDeleteEntry);
             return 0;
         }
         if (LOWORD(wParam) == kMenuMinifilterSetBypass) {
@@ -5022,6 +5037,31 @@ void KernelPage::ExecuteSelectedAction(const KernelActionId actionId) {
         requireSelectedRow = false;
         confirmTitle = L"清空 Minifilter 放行 PID";
         confirmText = L"将清空 R0 minifilter bypass PID 白名单。是否继续？";
+        break;
+    case KernelActionId::NetworkCaptureStart:
+        requireSelectedRow = false;
+        confirmTitle = L"启动逐包捕获";
+        confirmText =
+            L"将通过 ArkDriverClient::controlNetworkTrafficCapture 启动 R0 WFP 逐包采集。\n\n"
+            L"采集环是固定大小的非分页缓冲，不会无限增长；代价是 WFP callout 会对每个报文做一次拷贝，"
+            L"高流量时有可测量的开销。是否继续？";
+        break;
+    case KernelActionId::NetworkCaptureStop:
+        requireSelectedRow = false;
+        confirmTitle = L"停止逐包捕获";
+        confirmText =
+            L"将停止 R0 WFP 逐包采集。已在环中的报文仍然保留、仍可读取，只是不再有新报文进入。\n\n"
+            L"是否继续？";
+        break;
+    case KernelActionId::PiDdbDeleteEntry:
+        confirmTitle = L"删除 PiDDB 条目";
+        confirmText =
+            L"将通过 ArkDriverClient::deletePiDdbEntry 从 PiDDBCacheTable 中移除选中记录。\n\n"
+            L"驱动: " + FirstSelectedRowValue({ L"Driver", L"驱动" }) + L"\n"
+            L"条目地址: " + FirstSelectedRowValue({ L"Entry", L"条目地址" }) + L"\n"
+            L"时间戳: " + FirstSelectedRowValue({ L"TimeDateStamp", L"时间戳" }) + L"\n\n"
+            L"该记录是加载器留下的「这个驱动曾在本机通过校验」的证据，删除后无法恢复，"
+            L"也会改变取证结论。R0 会先核对该槽位是否仍与此处显示的一致，不一致则拒绝。是否继续？";
         break;
     case KernelActionId::FileMonitorStartFsctl:
         requireSelectedRow = false;
@@ -11565,6 +11605,14 @@ void KernelPage::ShowResultContextMenu(POINT screenPoint) {
             ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             ::AppendMenuW(menu, MF_STRING, kMenuMinifilterSetBypass, L"设置放行 PID（过滤/起点）");
             ::AppendMenuW(menu, MF_STRING, kMenuMinifilterClearBypass, L"清空放行 PID");
+        } else if (descriptor->id == KernelFeatureId::NetworkTrafficPackets) {
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(menu, MF_STRING, kMenuNetworkCaptureStart, L"启动逐包捕获");
+            ::AppendMenuW(menu, MF_STRING, kMenuNetworkCaptureStop, L"停止逐包捕获");
+        } else if (descriptor->id == KernelFeatureId::PiDdbCache) {
+            const bool hasEntry = !FirstSelectedRowField({ L"Entry", L"条目地址" }).empty();
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(menu, MF_STRING | (hasEntry ? MF_ENABLED : MF_GRAYED), kMenuPiDdbDeleteEntry, L"删除选中 PiDDB 条目");
         } else if (descriptor->id == KernelFeatureId::DynData) {
             ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             ::AppendMenuW(menu, MF_STRING, kMenuDynDataApplyMatchedProfile, L"应用匹配 DynData Profile");
@@ -12436,6 +12484,14 @@ bool KernelPage::ShowR0EvidenceContextMenu(POINT screenPoint, const KernelFeatur
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(menu, MF_STRING, kMenuMinifilterSetBypass, L"设置放行 PID（过滤框）");
         ::AppendMenuW(menu, MF_STRING, kMenuMinifilterClearBypass, L"清空驱动 PID 放行");
+    } else if (descriptor.id == KernelFeatureId::NetworkTrafficPackets) {
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING, kMenuNetworkCaptureStart, L"启动逐包捕获");
+        ::AppendMenuW(menu, MF_STRING, kMenuNetworkCaptureStop, L"停止逐包捕获");
+    } else if (descriptor.id == KernelFeatureId::PiDdbCache) {
+        const bool hasEntry = !FirstSelectedRowField({ L"Entry", L"条目地址" }).empty();
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING | (hasEntry ? MF_ENABLED : MF_GRAYED), kMenuPiDdbDeleteEntry, L"删除选中 PiDDB 条目");
     }
 
     ::TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);

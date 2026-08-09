@@ -6011,6 +6011,132 @@ KernelOperationResult ExecuteSetMinifilterBypassPids(const KernelActionRequest& 
 // buttons. Inputs are the selected action; processing goes through
 // ArkDriverClient and emits table rows for the Win32 panel; output is rendered
 // by the normal result pipeline.
+// ActionRowField reads one field out of the selected row snapshot. Inputs are the
+// request and the candidate column names; output is empty when the row does not
+// carry any of them.
+std::wstring ActionRowField(const KernelActionRequest& request, const std::vector<std::wstring>& names) {
+    for (const std::wstring& name : names) {
+        for (const auto& field : request.rowFields) {
+            if (field.first == name) {
+                return field.second;
+            }
+        }
+    }
+    return {};
+}
+
+// ParseHexOrDecimal accepts both the "0x..." form the tables print and a plain
+// decimal, because a user retyping a value by hand rarely reproduces the prefix.
+std::uint64_t ParseHexOrDecimal(const std::wstring& text) {
+    std::size_t begin = 0;
+    while (begin < text.size() && std::iswspace(text[begin]) != 0) {
+        ++begin;
+    }
+    std::size_t end = text.size();
+    while (end > begin && std::iswspace(text[end - 1]) != 0) {
+        --end;
+    }
+    const std::wstring trimmed = text.substr(begin, end - begin);
+    if (trimmed.empty()) {
+        return 0;
+    }
+    try {
+        if (trimmed.size() > 2 && trimmed[0] == L'0' && (trimmed[1] == L'x' || trimmed[1] == L'X')) {
+            return std::stoull(trimmed.substr(2), nullptr, 16);
+        }
+        return std::stoull(trimmed, nullptr, 10);
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
+// ExecuteNetworkCaptureControl starts or stops the R0 per-packet capture ring.
+// Starting it makes the driver copy packet headers into a fixed non-paged ring;
+// that ring is bounded, so leaving capture on does not grow without limit, but it
+// does keep the WFP callout doing work for every packet.
+KernelOperationResult ExecuteNetworkCaptureControl(const KernelActionRequest& request) {
+    const ksword::ark::DriverClient client;
+    const bool enable = request.actionId == KernelActionId::NetworkCaptureStart;
+    KernelOperationResult result;
+    result.supported = true;
+    // Stopping is not destructive: the ring keeps whatever it already holds and
+    // stays readable, only new packets stop arriving.
+    result.destructiveAction = false;
+
+    const ksword::ark::NetworkTrafficCaptureControlResult control = client.controlNetworkTrafficCapture(enable);
+    result.success = control.io.ok && !control.unsupported;
+    if (control.unsupported) {
+        result.message = L"当前 KswordARK 驱动未注册逐包捕获控制 IOCTL，无法" +
+            std::wstring(enable ? L"启动" : L"停止") + L"。请勿据此认为 R0 已停止采集。";
+    } else {
+        result.message = std::wstring(enable ? L"逐包捕获启动" : L"逐包捕获停止") +
+            (control.io.ok ? L"完成。" : L"失败。") + L" " + Utf8ToWide(control.io.message);
+    }
+    result.rows.push_back(Row({
+        { L"Section", L"NetworkTraffic" },
+        { L"Action", enable ? L"StartCapture" : L"StopCapture" },
+        { L"Status", control.io.ok ? L"OK" : L"FAIL" },
+        { L"Unsupported", BoolText(control.unsupported) },
+        { L"Win32", std::to_wstring(control.io.win32Error) },
+    }, L"The capture ring is a fixed non-paged buffer, so an enabled capture cannot grow without bound; "
+       L"what it does cost is per-packet work in the WFP callout. An unsupported result must not be read "
+       L"as 'capture is off' -- the driver simply never answered the question."));
+    return result;
+}
+
+// ExecutePiDdbDeleteEntry removes one PiDDBCacheTable record. This erases the
+// loader's evidence that a driver was ever vetted on this machine, which is
+// exactly why it is gated behind a confirmation and reports the matched entry
+// back: an operator should be able to see what was removed after the fact.
+KernelOperationResult ExecutePiDdbDeleteEntry(const KernelActionRequest& request) {
+    KernelOperationResult result;
+    result.supported = true;
+    result.destructiveAction = true;
+
+    ksword::ark::PiDdbEntry expected{};
+    expected.driverName = ActionRowField(request, { L"Driver", L"驱动" });
+    expected.entryAddress = ParseHexOrDecimal(ActionRowField(request, { L"Entry", L"条目地址" }));
+    expected.timeDateStamp =
+        static_cast<std::uint32_t>(ParseHexOrDecimal(ActionRowField(request, { L"TimeDateStamp", L"时间戳" })));
+    expected.loadStatus =
+        static_cast<long>(ParseHexOrDecimal(ActionRowField(request, { L"LoadStatus", L"加载状态" })));
+
+    if (expected.entryAddress == 0 || expected.driverName.empty()) {
+        result.success = false;
+        result.message = L"未能从选中行还原 PiDDB 条目（需要驱动名与条目地址），已放弃删除。";
+        return result;
+    }
+
+    const ksword::ark::DriverClient client;
+    // The expected entry is passed through so R0 can verify the slot still holds
+    // what the UI showed; force stays false, so a slot that changed underneath is
+    // refused rather than overwritten blind.
+    const ksword::ark::PiDdbDeleteResult remove = client.deletePiDdbEntry(expected, request.force, true);
+    result.success = remove.io.ok && !remove.unsupported;
+    if (remove.unsupported) {
+        result.message = L"当前 KswordARK 驱动未注册 PiDDB 删除 IOCTL。";
+    } else {
+        result.message = std::wstring(L"PiDDB 条目删除") + (result.success ? L"完成。" : L"失败。") +
+            L" " + Utf8ToWide(remove.io.message);
+    }
+    result.rows.push_back(Row({
+        { L"Section", L"PiDDB" },
+        { L"Action", L"DeleteEntry" },
+        { L"Status", remove.io.ok ? L"OK" : L"FAIL" },
+        { L"Unsupported", BoolText(remove.unsupported) },
+        { L"DeleteStatus", HexText(remove.status) },
+        { L"RemainingRows", std::to_wstring(remove.remainingRows) },
+        { L"RequestedDriver", expected.driverName },
+        { L"RequestedEntry", HexText(expected.entryAddress) },
+        { L"MatchedDriver", remove.matchedEntry.driverName },
+        { L"MatchedEntry", HexText(remove.matchedEntry.entryAddress) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(remove.lastStatus)) },
+    }, L"The entry the UI displayed is sent along so R0 can confirm the slot still matches before "
+       L"removing it; without force a slot that changed in between is refused instead of overwritten. "
+       L"Removing a record erases the loader's evidence that this driver was ever vetted here."));
+    return result;
+}
+
 KernelOperationResult ExecuteFileMonitorControl(const KernelActionRequest& request) {
     const ksword::ark::DriverClient client;
     KernelOperationResult result;
@@ -6508,6 +6634,11 @@ KernelOperationResult KernelFacade::ExecuteAction(const KernelActionRequest& req
     case KernelActionId::MinifilterSetBypassPids:
     case KernelActionId::MinifilterClearBypassPids:
         return ExecuteSetMinifilterBypassPids(request);
+    case KernelActionId::NetworkCaptureStart:
+    case KernelActionId::NetworkCaptureStop:
+        return ExecuteNetworkCaptureControl(request);
+    case KernelActionId::PiDdbDeleteEntry:
+        return ExecutePiDdbDeleteEntry(request);
     case KernelActionId::FileMonitorStartFsctl:
     case KernelActionId::FileMonitorDrain:
     case KernelActionId::FileMonitorClear:

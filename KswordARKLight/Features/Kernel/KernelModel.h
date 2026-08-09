@@ -179,7 +179,10 @@ enum class KernelActionId : std::uint32_t {
     DynDataApplyMatchedProfile,
     MutationCommitDryRun,
     MutationRollbackDryRun,
-    MutationRollbackConfirmed
+    MutationRollbackConfirmed,
+    NetworkCaptureStart,
+    NetworkCaptureStop,
+    PiDdbDeleteEntry
 };
 
 // KernelActionRequest carries one explicit action from the UI to the facade.
