@@ -20,6 +20,9 @@ Environment:
 #include <ntstrsafe.h>
 #include <stdarg.h>
 
+// 递归删除在调用方未提供输出缓冲时需要一块临时统计内存，用独立 tag 便于泄漏定位。
+#define KSWORD_ARK_FILE_IOCTL_POOL_TAG 'iFsK'
+
 static VOID
 KswordARKFileIoctlLog(
     _In_ WDFDEVICE Device,
@@ -197,26 +200,37 @@ Routine Description:
 
     Handle IOCTL_KSWORD_ARK_DELETE_PATH. The handler validates flags, path
     length, and null termination before invoking the file delete feature.
+    中文说明：带 RECURSIVE 标志时目录树在 R0 内部后序展开删除；调用方提供
+    输出缓冲时统计结果写入 KSWORD_ARK_DELETE_PATH_RESPONSE，未提供输出缓冲
+    的旧调用方仍然只拿到聚合 NTSTATUS。
 
 Arguments:
 
     Device - WDF device used for logging.
     Request - Current IOCTL request.
     InputBufferLength - Caller input length; consumed by WDF retrieval.
-    OutputBufferLength - Caller output length; unused for this IOCTL.
-    BytesReturned - Receives sizeof(request) on success and zero on failure.
+    OutputBufferLength - Caller output length; response packet is optional.
+    BytesReturned - Receives sizeof(response) when a response was written.
 
 Return Value:
 
-    NTSTATUS from validation or KswordARKDriverDeletePath.
+    NTSTATUS from validation, KswordARKDriverDeletePath or the recursive
+    delete feature. 写出响应包时返回 STATUS_SUCCESS，语义结果在 deleteStatus。
 
 --*/
 {
-    KSWORD_ARK_DELETE_PATH_REQUEST* deleteRequest = NULL;
+    KSWORD_ARK_DELETE_PATH_REQUEST requestSnapshot;
+    KSWORD_ARK_DELETE_PATH_RESPONSE* deleteResponse = NULL;
     PVOID inputBuffer = NULL;
+    PVOID outputBuffer = NULL;
     size_t actualInputLength = 0;
+    size_t actualOutputLength = 0;
+    BOOLEAN responsePresent = FALSE;
+    BOOLEAN responseAllocated = FALSE;
     BOOLEAN isDirectory = FALSE;
+    BOOLEAN isRecursive = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS operationStatus = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(InputBufferLength);
     UNREFERENCED_PARAMETER(OutputBufferLength);
@@ -232,21 +246,32 @@ Return Value:
         return status;
     }
 
-    deleteRequest = (KSWORD_ARK_DELETE_PATH_REQUEST*)inputBuffer;
-    isDirectory = ((deleteRequest->flags & KSWORD_ARK_DELETE_PATH_FLAG_DIRECTORY) != 0UL) ? TRUE : FALSE;
+    /*
+     * METHOD_BUFFERED 的输入视图和输出视图共用同一块 system buffer。
+     * 必须先整体快照请求，之后写响应包才不会把 flags/path 抹掉。
+     */
+    RtlCopyMemory(&requestSnapshot, inputBuffer, sizeof(requestSnapshot));
 
-    if ((deleteRequest->flags & (~KSWORD_ARK_DELETE_PATH_FLAG_DIRECTORY)) != 0UL) {
-        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: flags rejected, flags=0x%08X.", (unsigned int)deleteRequest->flags);
+    isDirectory = ((requestSnapshot.flags & KSWORD_ARK_DELETE_PATH_FLAG_DIRECTORY) != 0UL) ? TRUE : FALSE;
+    isRecursive = ((requestSnapshot.flags & KSWORD_ARK_DELETE_PATH_FLAG_RECURSIVE) != 0UL) ? TRUE : FALSE;
+
+    if ((requestSnapshot.flags & (~KSWORD_ARK_DELETE_PATH_FLAG_ALL)) != 0UL) {
+        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: flags rejected, flags=0x%08X.", (unsigned int)requestSnapshot.flags);
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (deleteRequest->pathLengthChars == 0U || deleteRequest->pathLengthChars >= KSWORD_ARK_DELETE_PATH_MAX_CHARS) {
-        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: path length rejected, chars=%u.", (unsigned int)deleteRequest->pathLengthChars);
+    if (isRecursive && !isDirectory) {
+        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: recursive flag requires directory flag, flags=0x%08X.", (unsigned int)requestSnapshot.flags);
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (deleteRequest->path[deleteRequest->pathLengthChars] != L'\0') {
-        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: path not null-terminated, chars=%u.", (unsigned int)deleteRequest->pathLengthChars);
+    if (requestSnapshot.pathLengthChars == 0U || requestSnapshot.pathLengthChars >= KSWORD_ARK_DELETE_PATH_MAX_CHARS) {
+        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: path length rejected, chars=%u.", (unsigned int)requestSnapshot.pathLengthChars);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (requestSnapshot.path[requestSnapshot.pathLengthChars] != L'\0') {
+        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: path not null-terminated, chars=%u.", (unsigned int)requestSnapshot.pathLengthChars);
         return STATUS_INVALID_PARAMETER;
     }
     {
@@ -255,26 +280,144 @@ Return Value:
         safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_FILE_DELETE;
         safetyContext.TargetProcessId = 0UL;
         safetyContext.ContextFlags = KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED;
-        safetyContext.TargetText = deleteRequest->path;
-        safetyContext.TargetTextChars = deleteRequest->pathLengthChars;
+        safetyContext.TargetText = requestSnapshot.path;
+        safetyContext.TargetTextChars = requestSnapshot.pathLengthChars;
         status = KswordARKSafetyEvaluate(Device, &safetyContext);
         if (!NT_SUCCESS(status)) {
-            KswordARKFileIoctlLog(Device, "Warn", "R0 delete denied by safety policy: chars=%u, status=0x%08X.", (unsigned int)deleteRequest->pathLengthChars, (unsigned int)status);
+            KswordARKFileIoctlLog(Device, "Warn", "R0 delete denied by safety policy: chars=%u, status=0x%08X.", (unsigned int)requestSnapshot.pathLengthChars, (unsigned int)status);
             return status;
         }
     }
 
-    KswordARKFileIoctlLog(Device, "Info", "R0 delete ioctl: chars=%u, directory=%u.", (unsigned int)deleteRequest->pathLengthChars, (unsigned int)isDirectory);
-    status = KswordARKDriverDeletePath(deleteRequest->path, deleteRequest->pathLengthChars, isDirectory);
-    if (NT_SUCCESS(status)) {
-        KswordARKFileIoctlLog(Device, "Info", "R0 delete success: chars=%u, directory=%u.", (unsigned int)deleteRequest->pathLengthChars, (unsigned int)isDirectory);
-        *BytesReturned = sizeof(KSWORD_ARK_DELETE_PATH_REQUEST);
+    // 响应包可选：旧版 R3 只发请求不收响应，此时保持“返回 NTSTATUS”的旧契约。
+    status = KswordARKRetrieveRequiredOutputBuffer(
+        Request,
+        sizeof(KSWORD_ARK_DELETE_PATH_RESPONSE),
+        &outputBuffer,
+        &actualOutputLength);
+    responsePresent = NT_SUCCESS(status) ? TRUE : FALSE;
+    status = STATUS_SUCCESS;
+
+    if (responsePresent) {
+        deleteResponse = (KSWORD_ARK_DELETE_PATH_RESPONSE*)outputBuffer;
     }
-    else {
-        KswordARKFileIoctlLog(Device, "Error", "R0 delete failed: chars=%u, directory=%u, status=0x%08X.", (unsigned int)deleteRequest->pathLengthChars, (unsigned int)isDirectory, (unsigned int)status);
+    else if (isRecursive) {
+        // 递归统计是遍历过程的必需状态，没有输出缓冲时用临时池内存承载。
+#pragma warning(push)
+#pragma warning(disable:4996)
+        deleteResponse = (KSWORD_ARK_DELETE_PATH_RESPONSE*)ExAllocatePoolWithTag(
+            NonPagedPoolNx,
+            sizeof(KSWORD_ARK_DELETE_PATH_RESPONSE),
+            KSWORD_ARK_FILE_IOCTL_POOL_TAG);
+#pragma warning(pop)
+        if (deleteResponse == NULL) {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        responseAllocated = TRUE;
     }
 
-    return status;
+    if (deleteResponse != NULL) {
+        RtlZeroMemory(deleteResponse, sizeof(*deleteResponse));
+        deleteResponse->size = sizeof(*deleteResponse);
+        deleteResponse->version = KSWORD_ARK_DELETE_PATH_RESPONSE_VERSION;
+        deleteResponse->requestFlags = requestSnapshot.flags;
+        deleteResponse->deleteStatus = KSWORD_ARK_DELETE_PATH_STATUS_UNKNOWN;
+    }
+
+    KswordARKFileIoctlLog(
+        Device,
+        "Info",
+        "R0 delete ioctl: chars=%u, directory=%u, recursive=%u, response=%u.",
+        (unsigned int)requestSnapshot.pathLengthChars,
+        (unsigned int)isDirectory,
+        (unsigned int)isRecursive,
+        (unsigned int)responsePresent);
+
+    if (!isRecursive) {
+        operationStatus = KswordARKDriverDeletePath(
+            requestSnapshot.path,
+            requestSnapshot.pathLengthChars,
+            isDirectory);
+        if (NT_SUCCESS(operationStatus)) {
+            KswordARKFileIoctlLog(Device, "Info", "R0 delete success: chars=%u, directory=%u.", (unsigned int)requestSnapshot.pathLengthChars, (unsigned int)isDirectory);
+        }
+        else {
+            KswordARKFileIoctlLog(Device, "Error", "R0 delete failed: chars=%u, directory=%u, status=0x%08X.", (unsigned int)requestSnapshot.pathLengthChars, (unsigned int)isDirectory, (unsigned int)operationStatus);
+        }
+
+        if (!responsePresent) {
+            return operationStatus;
+        }
+
+        deleteResponse->visitedCount = 1U;
+        deleteResponse->lastStatus = operationStatus;
+        if (NT_SUCCESS(operationStatus)) {
+            if (isDirectory) {
+                deleteResponse->deletedDirectoryCount = 1U;
+            }
+            else {
+                deleteResponse->deletedFileCount = 1U;
+            }
+            deleteResponse->deleteStatus = KSWORD_ARK_DELETE_PATH_STATUS_COMPLETED;
+            deleteResponse->lastStatus = STATUS_SUCCESS;
+        }
+        else {
+            deleteResponse->failedCount = 1U;
+            deleteResponse->deleteStatus = KSWORD_ARK_DELETE_PATH_STATUS_FAILED;
+            deleteResponse->failedPathLengthChars = requestSnapshot.pathLengthChars;
+            RtlCopyMemory(
+                deleteResponse->failedPath,
+                requestSnapshot.path,
+                (SIZE_T)requestSnapshot.pathLengthChars * sizeof(WCHAR));
+            deleteResponse->failedPath[requestSnapshot.pathLengthChars] = L'\0';
+        }
+        *BytesReturned = sizeof(*deleteResponse);
+        return STATUS_SUCCESS;
+    }
+
+    operationStatus = KswordARKDriverDeletePathTree(&requestSnapshot, deleteResponse);
+    if (!NT_SUCCESS(operationStatus)) {
+        KswordARKFileIoctlLog(
+            Device,
+            "Error",
+            "R0 recursive delete aborted: chars=%u, status=0x%08X.",
+            (unsigned int)requestSnapshot.pathLengthChars,
+            (unsigned int)operationStatus);
+        if (responseAllocated) {
+            ExFreePoolWithTag(deleteResponse, KSWORD_ARK_FILE_IOCTL_POOL_TAG);
+        }
+        return operationStatus;
+    }
+
+    KswordARKFileIoctlLog(
+        Device,
+        deleteResponse->deleteStatus == KSWORD_ARK_DELETE_PATH_STATUS_COMPLETED ? "Info" : "Warn",
+        "R0 recursive delete done: chars=%u, state=%lu, files=%lu, dirs=%lu, failed=%lu, visited=%lu, depth=%lu, flags=0x%08X, last=0x%08X.",
+        (unsigned int)requestSnapshot.pathLengthChars,
+        (unsigned long)deleteResponse->deleteStatus,
+        (unsigned long)deleteResponse->deletedFileCount,
+        (unsigned long)deleteResponse->deletedDirectoryCount,
+        (unsigned long)deleteResponse->failedCount,
+        (unsigned long)deleteResponse->visitedCount,
+        (unsigned long)deleteResponse->maxDepthReached,
+        (unsigned int)deleteResponse->responseFlags,
+        (unsigned int)deleteResponse->lastStatus);
+
+    if (responsePresent) {
+        *BytesReturned = sizeof(*deleteResponse);
+        return STATUS_SUCCESS;
+    }
+
+    // 无响应包的调用方只能靠 NTSTATUS 判断，因此把部分失败折叠成失败状态。
+    if (deleteResponse->deleteStatus != KSWORD_ARK_DELETE_PATH_STATUS_COMPLETED) {
+        operationStatus = deleteResponse->lastStatus != STATUS_SUCCESS
+            ? deleteResponse->lastStatus
+            : STATUS_UNSUCCESSFUL;
+    }
+    if (responseAllocated) {
+        ExFreePoolWithTag(deleteResponse, KSWORD_ARK_FILE_IOCTL_POOL_TAG);
+    }
+    return operationStatus;
 }
 
 NTSTATUS

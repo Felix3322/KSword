@@ -12,6 +12,23 @@ KswordARKDriverDeletePath(
     _In_ BOOLEAN isDirectory
     );
 
+/*
+ * KswordARKDriverDeletePathTree
+ * Inputs:
+ * - Request 为已快照并校验过的删除请求，Response 为已填好 size/version 的回执。
+ * Processing:
+ * - 在 R0 内用显式栈后序展开目录树逐项删除，重解析点只删链接本身；
+ *   深度与条目总数受 KSWORD_ARK_DELETE_PATH_MAX_* 限制。
+ * Return behavior:
+ * - 返回 STATUS_SUCCESS 表示遍历流程完成，删除语义结果写在 Response->deleteStatus；
+ *   参数非法或资源不足时返回对应 NTSTATUS。
+ */
+NTSTATUS
+KswordARKDriverDeletePathTree(
+    _In_ const KSWORD_ARK_DELETE_PATH_REQUEST* Request,
+    _Inout_ KSWORD_ARK_DELETE_PATH_RESPONSE* Response
+    );
+
 NTSTATUS
 KswordARKDriverQueryFileInfo(
     _Out_writes_bytes_(OutputBufferLength) PVOID OutputBuffer,

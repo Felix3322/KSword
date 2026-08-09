@@ -665,6 +665,9 @@
     <ClCompile Include="src\features\file\file_actions.c">
       <Filter>Source Files\Features</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\file\file_delete_recursive.c">
+      <Filter>Source Files\Features</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\file\file_directory_query.c">
       <Filter>Source Files\Features</Filter>
     </ClCompile>

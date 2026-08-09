@@ -119,6 +119,7 @@
 #include <condition_variable>
 #include <cctype>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -2865,13 +2866,24 @@ namespace
         return std::vector<std::uint32_t>(processIdSet.begin(), processIdSet.end());
     }
 
+    // 强制删除档要在展开每一层之前修权限，声明前置到这里，定义仍在多权限删除小节内。
+    DWORD takeOwnershipAndGrantFullControl(
+        const QString& path,
+        bool isDirectory,
+        QString* detailTextOut);
+    bool clearDeleteBlockingAttributes(const QString& path);
+
     // appendDriverDeleteTargetsPostOrder：
     // - 作用：把目录展开成“子项先删、目录后删”的后序列表；
-    // - 说明：重解析点目录不递归进入，只删除链接本身。
+    // - 说明：重解析点目录不递归进入，只删除链接本身；
+    // - repairPermissionBeforeEnumerate：强制删除档专用。目录 DACL 拒绝列举时
+    //   entryInfoList 只会返回空列表，展开结果会把非空目录当成空目录，
+    //   所以必须在枚举每一层之前先接管所有权并授权，否则后面删除必然失败。
     bool appendDriverDeleteTargetsPostOrder(
         const QString& rootPath,
         std::vector<DriverDeleteTarget>& targetsOut,
-        QString& errorTextOut)
+        QString& errorTextOut,
+        const bool repairPermissionBeforeEnumerate = false)
     {
         const QFileInfo rootInfo(rootPath);
         const bool rootExists = rootInfo.exists() || rootInfo.isSymLink();
@@ -2885,12 +2897,23 @@ namespace
         const bool isReparsePoint = isPathReparsePoint(rootPath);
         if (isDirectory && !isReparsePoint)
         {
+            if (repairPermissionBeforeEnumerate)
+            {
+                QString repairDetailText;
+                (void)takeOwnershipAndGrantFullControl(rootPath, true, &repairDetailText);
+                (void)clearDeleteBlockingAttributes(rootPath);
+            }
+
             const QFileInfoList childInfoList = QDir(rootPath).entryInfoList(
                 QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden | QDir::System,
                 QDir::DirsFirst | QDir::Name);
             for (const QFileInfo& childInfo : childInfoList)
             {
-                if (!appendDriverDeleteTargetsPostOrder(childInfo.absoluteFilePath(), targetsOut, errorTextOut))
+                if (!appendDriverDeleteTargetsPostOrder(
+                        childInfo.absoluteFilePath(),
+                        targetsOut,
+                        errorTextOut,
+                        repairPermissionBeforeEnumerate))
                 {
                     return false;
                 }
@@ -2899,6 +2922,671 @@ namespace
 
         targetsOut.push_back(DriverDeleteTarget{ rootPath, isDirectory });
         return true;
+    }
+
+    // ============================================================
+    // 多权限递归删除（issue #155）
+    // - 五个档位共用同一套“后序展开 + 逐项删除”的语义，差别只在权限手段；
+    // - R0 档优先让驱动在内核内部展开，避免 R3 枚举被目录 DACL 拒绝。
+    // ============================================================
+
+    // FileDeleteBatchStats：一批删除的统计与失败明细。
+    struct FileDeleteBatchStats
+    {
+        std::uint64_t recycledCount = 0U;            // 成功移入回收站的项数。
+        std::uint64_t deletedFileCount = 0U;         // 永久删除的文件数。
+        std::uint64_t deletedDirectoryCount = 0U;    // 永久删除的目录数。
+        std::uint64_t pendingRebootCount = 0U;       // 登记为重启后删除的项数。
+        std::uint64_t failedCount = 0U;              // 失败项数。
+        std::uint64_t skippedReparseCount = 0U;      // 只删链接本身、未跟进目标的重解析点数。
+        std::uint64_t permissionRepairCount = 0U;    // 触发过“接管所有权 + 授权”的项数。
+        bool driverUnavailable = false;              // R0 档：驱动设备打不开。
+        bool driverRecursionUnsupported = false;     // R0 档：旧驱动不支持内核递归，已回退 R3 展开。
+        QStringList errors;                          // 失败明细，用于日志与提示。
+        QStringList permanentlyDeleted;              // 回收站档中被降级为永久删除的项。
+    };
+
+    // clearDeleteBlockingAttributes：
+    // - 作用：清掉只读/隐藏/系统属性，这三者会直接让 DeleteFileW/RemoveDirectoryW 失败；
+    // - 返回：true 表示属性已可删除（本来就正常也算成功）。
+    bool clearDeleteBlockingAttributes(const QString& path)
+    {
+        const std::wstring nativePath = QDir::toNativeSeparators(path).toStdWString();
+        const DWORD attributes = ::GetFileAttributesW(nativePath.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES)
+        {
+            return false;
+        }
+
+        constexpr DWORD kBlockingAttributes =
+            FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM;
+        if ((attributes & kBlockingAttributes) == 0U)
+        {
+            return true;
+        }
+
+        DWORD newAttributes = attributes & ~kBlockingAttributes;
+        if (newAttributes == 0U)
+        {
+            newAttributes = FILE_ATTRIBUTE_NORMAL;
+        }
+        return ::SetFileAttributesW(nativePath.c_str(), newAttributes) != FALSE;
+    }
+
+    // allocateBuiltinAdministratorsSid：
+    // - 作用：构造 BUILTIN\Administrators（S-1-5-32-544）SID，调用方用 LocalFree 释放。
+    PSID allocateBuiltinAdministratorsSid()
+    {
+        PSID administratorsSid = nullptr;
+        if (::ConvertStringSidToSidW(L"S-1-5-32-544", &administratorsSid) == FALSE)
+        {
+            return nullptr;
+        }
+        return administratorsSid;
+    }
+
+    // takeOwnershipAndGrantFullControl：
+    // - 作用：把目标的所有者改为 BUILTIN\Administrators，并追加一条完全控制 ACE；
+    // - 说明：这是“强制删除”与 R3 兜底重试的权限手段，不改变文件内容；
+    // - 返回：Win32 错误码，ERROR_SUCCESS 表示所有者与 DACL 都已写入。
+    DWORD takeOwnershipAndGrantFullControl(
+        const QString& path,
+        const bool isDirectory,
+        QString* const detailTextOut)
+    {
+        // 接管所有权需要 SeTakeOwnershipPrivilege；把所有者设成 Administrators 而不是
+        // 当前账户还需要 SeRestorePrivilege，两者都只在管理员令牌里存在。
+        (void)enableFileContextPrivilege(SE_TAKE_OWNERSHIP_NAME);
+        (void)enableFileContextPrivilege(SE_RESTORE_NAME);
+        (void)enableFileContextPrivilege(SE_BACKUP_NAME);
+        (void)enableFileContextPrivilege(SE_SECURITY_NAME);
+
+        PSID administratorsSid = allocateBuiltinAdministratorsSid();
+        if (administratorsSid == nullptr)
+        {
+            const DWORD sidError = ::GetLastError();
+            if (detailTextOut != nullptr)
+            {
+                *detailTextOut = formatFileWin32Error(QStringLiteral("ConvertStringSidToSidW(S-1-5-32-544)"), sidError);
+            }
+            return sidError == ERROR_SUCCESS ? ERROR_INVALID_PARAMETER : sidError;
+        }
+
+        std::wstring nativePath = QDir::toNativeSeparators(path).toStdWString();
+        DWORD ownerResult = ::SetNamedSecurityInfoW(
+            nativePath.data(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            administratorsSid,
+            nullptr,
+            nullptr,
+            nullptr);
+
+        PACL oldDacl = nullptr;
+        PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
+        DWORD daclResult = ::GetNamedSecurityInfoW(
+            nativePath.data(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            nullptr,
+            nullptr,
+            &oldDacl,
+            nullptr,
+            &securityDescriptor);
+
+        PACL newDacl = nullptr;
+        if (daclResult == ERROR_SUCCESS)
+        {
+            EXPLICIT_ACCESS_W explicitAccess{};
+            explicitAccess.grfAccessPermissions = FILE_ALL_ACCESS;
+            explicitAccess.grfAccessMode = GRANT_ACCESS;
+            // 目录让新 ACE 向下继承，这样后续枚举与逐项删除才不会再被子项的继承规则挡住。
+            explicitAccess.grfInheritance = isDirectory
+                ? (CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE)
+                : NO_INHERITANCE;
+            explicitAccess.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+            explicitAccess.Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+            explicitAccess.Trustee.ptstrName = reinterpret_cast<LPWSTR>(administratorsSid);
+
+            daclResult = ::SetEntriesInAclW(1, &explicitAccess, oldDacl, &newDacl);
+            if (daclResult == ERROR_SUCCESS)
+            {
+                daclResult = ::SetNamedSecurityInfoW(
+                    nativePath.data(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    nullptr,
+                    nullptr,
+                    newDacl,
+                    nullptr);
+            }
+        }
+
+        if (newDacl != nullptr)
+        {
+            ::LocalFree(newDacl);
+        }
+        if (securityDescriptor != nullptr)
+        {
+            ::LocalFree(securityDescriptor);
+        }
+        ::LocalFree(administratorsSid);
+
+        if (detailTextOut != nullptr)
+        {
+            *detailTextOut = QStringLiteral("takeOwner=%1, grantDacl=%2")
+                .arg(ownerResult)
+                .arg(daclResult);
+        }
+
+        if (ownerResult != ERROR_SUCCESS)
+        {
+            return ownerResult;
+        }
+        return daclResult;
+    }
+
+    // removeSinglePathByWin32：
+    // - 作用：按目录/文件语义执行一次 Win32 删除；重解析点目录只删链接本身；
+    // - 返回：true 表示已删除，失败时通过 lastErrorOut 输出 Win32 错误码。
+    bool removeSinglePathByWin32(
+        const QString& path,
+        const bool isDirectory,
+        DWORD* const lastErrorOut)
+    {
+        const std::wstring nativePath = QDir::toNativeSeparators(path).toStdWString();
+        const BOOL removeOk = isDirectory
+            ? ::RemoveDirectoryW(nativePath.c_str())
+            : ::DeleteFileW(nativePath.c_str());
+        if (removeOk != FALSE)
+        {
+            return true;
+        }
+
+        if (lastErrorOut != nullptr)
+        {
+            *lastErrorOut = ::GetLastError();
+        }
+        return false;
+    }
+
+    // schedulePathDeleteOnReboot：
+    // - 作用：把目标登记到 PendingFileRenameOperations，由会话管理器在下次启动时删除；
+    // - 说明：需要管理员权限；目录必须在登记序列里排在其子项之后才能删成功。
+    bool schedulePathDeleteOnReboot(const QString& path, DWORD* const lastErrorOut)
+    {
+        const std::wstring nativePath = QDir::toNativeSeparators(path).toStdWString();
+        if (::MoveFileExW(nativePath.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT) != FALSE)
+        {
+            return true;
+        }
+
+        if (lastErrorOut != nullptr)
+        {
+            *lastErrorOut = ::GetLastError();
+        }
+        return false;
+    }
+
+    // deleteExpandedTargetByR3：
+    // - 输入：单个后序展开目标、是否允许提权修复；
+    // - 处理：先清属性直删，失败且允许提权时接管所有权并授权后重试；
+    // - 返回：true 表示已删除，失败时把可诊断的错误文本写入 errorTextOut。
+    bool deleteExpandedTargetByR3(
+        const DriverDeleteTarget& target,
+        const bool allowPermissionRepair,
+        bool* const permissionRepairedOut,
+        QString* const errorTextOut)
+    {
+        if (permissionRepairedOut != nullptr)
+        {
+            *permissionRepairedOut = false;
+        }
+
+        (void)clearDeleteBlockingAttributes(target.path);
+
+        DWORD lastError = ERROR_SUCCESS;
+        if (removeSinglePathByWin32(target.path, target.isDirectory, &lastError))
+        {
+            return true;
+        }
+
+        if (!allowPermissionRepair)
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = QStringLiteral("删除失败：%1（error=%2）")
+                    .arg(QDir::toNativeSeparators(target.path))
+                    .arg(lastError);
+            }
+            return false;
+        }
+
+        QString repairDetailText;
+        const DWORD repairResult =
+            takeOwnershipAndGrantFullControl(target.path, target.isDirectory, &repairDetailText);
+        if (permissionRepairedOut != nullptr)
+        {
+            *permissionRepairedOut = true;
+        }
+
+        (void)clearDeleteBlockingAttributes(target.path);
+        DWORD retryError = ERROR_SUCCESS;
+        if (removeSinglePathByWin32(target.path, target.isDirectory, &retryError))
+        {
+            return true;
+        }
+
+        if (errorTextOut != nullptr)
+        {
+            *errorTextOut = QStringLiteral("强制删除失败：%1（首次 error=%2，接管所有权=%3[%4]，重试 error=%5）")
+                .arg(QDir::toNativeSeparators(target.path))
+                .arg(lastError)
+                .arg(repairResult)
+                .arg(repairDetailText)
+                .arg(retryError);
+        }
+        return false;
+    }
+
+    // expandDeleteTargetsForBatch：
+    // - 作用：把用户选中的路径展开成后序删除序列；
+    // - 说明：强制删除档在枚举每一层之前接管所有权，否则目录拒绝列举时根本枚举不到子项。
+    std::vector<DriverDeleteTarget> expandDeleteTargetsForBatch(
+        const std::vector<QString>& paths,
+        const bool repairPermissionWhileExpanding,
+        FileDeleteBatchStats& statsInOut)
+    {
+        std::vector<DriverDeleteTarget> targets;
+        for (const QString& path : paths)
+        {
+            if (repairPermissionWhileExpanding)
+            {
+                const QFileInfo rootInfo(path);
+                QString repairDetailText;
+                (void)takeOwnershipAndGrantFullControl(path, rootInfo.isDir(), &repairDetailText);
+                (void)clearDeleteBlockingAttributes(path);
+            }
+
+            QString errorText;
+            if (!appendDriverDeleteTargetsPostOrder(
+                    path,
+                    targets,
+                    errorText,
+                    repairPermissionWhileExpanding))
+            {
+                statsInOut.failedCount += 1U;
+                statsInOut.errors.push_back(errorText);
+            }
+        }
+        return targets;
+    }
+
+    // appendDriverDeleteFailureDetail：
+    // - 作用：R0 删除失败时补充占用来源提示；
+    // - 说明：只扫描不结束进程，绕过文件解锁器的显式确认流程是不可接受的。
+    void appendDriverDeleteFailureDetail(
+        const QString& path,
+        const bool isDirectory,
+        const QString& baseDetailText,
+        FileDeleteBatchStats& statsInOut)
+    {
+        QStringList errorLines;
+        errorLines.push_back(baseDetailText);
+
+        if (!isDirectory)
+        {
+            QStringList scanDetails;
+            const std::vector<std::uint32_t> occupyPids =
+                collectOccupyProcessIdsByPath(path, &scanDetails);
+            errorLines.push_back(
+                QStringLiteral("occupyPidCount=%1, autoTerminate=disabled").arg(occupyPids.size()));
+            errorLines.push_back(
+                QStringLiteral("请先使用“文件解锁器”选择并确认要结束的占用进程，再重新执行驱动删除。"));
+            errorLines.append(scanDetails);
+        }
+
+        statsInOut.errors.push_back(errorLines.join(QStringLiteral(" | ")));
+    }
+
+    // deleteTreeByDriverPerNode：
+    // - 作用：旧驱动不支持内核递归时的回退路径，由 R3 展开后序序列逐项调用单点删除 IOCTL；
+    // - 说明：这条路径受 R3 枚举权限限制，目录拒绝列举时会失败，属于预期降级。
+    void deleteTreeByDriverPerNode(
+        ksword::ark::DriverHandle& driverHandle,
+        const QString& rootPath,
+        FileDeleteBatchStats& statsInOut)
+    {
+        std::vector<DriverDeleteTarget> targets;
+        QString expandErrorText;
+        if (!appendDriverDeleteTargetsPostOrder(rootPath, targets, expandErrorText))
+        {
+            statsInOut.failedCount += 1U;
+            statsInOut.errors.push_back(expandErrorText);
+            return;
+        }
+
+        for (const DriverDeleteTarget& target : targets)
+        {
+            std::string detailText;
+            if (deletePathByR0Driver(driverHandle, target.path, target.isDirectory, &detailText))
+            {
+                if (target.isDirectory)
+                {
+                    statsInOut.deletedDirectoryCount += 1U;
+                }
+                else
+                {
+                    statsInOut.deletedFileCount += 1U;
+                }
+                continue;
+            }
+
+            statsInOut.failedCount += 1U;
+            appendDriverDeleteFailureDetail(
+                target.path,
+                target.isDirectory,
+                QString::fromStdString(detailText),
+                statsInOut);
+        }
+    }
+
+    // describeDriverDeleteResponse：把 R0 统计响应转成一行可读诊断文本。
+    QString describeDriverDeleteResponse(
+        const QString& path,
+        const ksword::ark::DeletePathResult& driverResult)
+    {
+        const KSWORD_ARK_DELETE_PATH_RESPONSE& response = driverResult.response;
+        QString failedPathText;
+        if (response.failedPathLengthChars > 0U)
+        {
+            failedPathText = QString::fromWCharArray(
+                response.failedPath,
+                static_cast<int>(response.failedPathLengthChars));
+        }
+
+        return QStringLiteral(
+            "驱动删除未完成：%1（state=%2, files=%3, dirs=%4, failed=%5, visited=%6, depth=%7, "
+            "responseFlags=0x%8, lastStatus=0x%9, firstFailed=%10）")
+            .arg(QDir::toNativeSeparators(path))
+            .arg(response.deleteStatus)
+            .arg(response.deletedFileCount)
+            .arg(response.deletedDirectoryCount)
+            .arg(response.failedCount)
+            .arg(response.visitedCount)
+            .arg(response.maxDepthReached)
+            .arg(response.responseFlags, 0, 16)
+            .arg(static_cast<unsigned long>(static_cast<std::uint32_t>(response.lastStatus)), 0, 16)
+            .arg(failedPathText.isEmpty()
+                ? QStringLiteral("-")
+                : QDir::toNativeSeparators(failedPathText));
+    }
+
+    // runDriverDeleteBatch：R0 档执行体。
+    // - 目录优先交给驱动在内核内递归展开，这样目录 DACL 拒绝列举也能删干净；
+    // - 旧驱动拒绝递归标志时回退到 R3 展开逐项删除，并在统计里标记降级。
+    FileDeleteBatchStats runDriverDeleteBatch(
+        const std::vector<QString>& paths,
+        const std::function<void(float)>& progressCallback)
+    {
+        FileDeleteBatchStats stats;
+
+        std::string openDriverDetailText;
+        ksword::ark::DriverHandle driverHandle = openKswordArkDriverHandle(&openDriverDetailText);
+        if (!driverHandle.isValid())
+        {
+            stats.driverUnavailable = true;
+            stats.failedCount += static_cast<std::uint64_t>(paths.size());
+            stats.errors.push_back(
+                QStringLiteral("无法连接 KswordARK 驱动设备：%1")
+                    .arg(QString::fromStdString(openDriverDetailText)));
+            return stats;
+        }
+
+        const ksword::ark::DriverClient driverClient;
+        const std::size_t totalCount = paths.size();
+        for (std::size_t index = 0; index < totalCount; ++index)
+        {
+            const QString& path = paths[index];
+            const QFileInfo pathInfo(path);
+            const bool isDirectory = pathInfo.isDir();
+            const bool isReparsePointPath = isPathReparsePoint(path);
+            const bool wantRecursive = isDirectory && !isReparsePointPath;
+
+            const QString driverNtPath = buildDriverNtPath(path);
+            if (driverNtPath.isEmpty())
+            {
+                stats.failedCount += 1U;
+                stats.errors.push_back(
+                    QStringLiteral("NT 路径转换失败：%1").arg(QDir::toNativeSeparators(path)));
+            }
+            else
+            {
+                const ksword::ark::DeletePathResult driverResult = driverClient.deletePathEx(
+                    driverHandle,
+                    driverNtPath.toStdWString(),
+                    isDirectory,
+                    wantRecursive,
+                    true);
+
+                if (driverResult.unsupported)
+                {
+                    stats.driverRecursionUnsupported = true;
+                    deleteTreeByDriverPerNode(driverHandle, path, stats);
+                }
+                else if (!driverResult.io.ok)
+                {
+                    stats.failedCount += 1U;
+                    appendDriverDeleteFailureDetail(
+                        path,
+                        isDirectory,
+                        QStringLiteral("驱动删除失败：%1（%2）")
+                            .arg(QDir::toNativeSeparators(path))
+                            .arg(QString::fromStdString(driverResult.io.message)),
+                        stats);
+                }
+                else
+                {
+                    const KSWORD_ARK_DELETE_PATH_RESPONSE& response = driverResult.response;
+                    stats.deletedFileCount += response.deletedFileCount;
+                    stats.deletedDirectoryCount += response.deletedDirectoryCount;
+                    stats.failedCount += response.failedCount;
+                    stats.skippedReparseCount += response.skippedReparseCount;
+                    if (response.deleteStatus != KSWORD_ARK_DELETE_PATH_STATUS_COMPLETED)
+                    {
+                        if (response.failedCount == 0U)
+                        {
+                            // 限额截断这类情况本身没有失败节点，但结果并不完整，必须计一次失败。
+                            stats.failedCount += 1U;
+                        }
+                        appendDriverDeleteFailureDetail(
+                            path,
+                            isDirectory,
+                            describeDriverDeleteResponse(path, driverResult),
+                            stats);
+                    }
+                }
+            }
+
+            if (progressCallback)
+            {
+                progressCallback(
+                    5.0f + (static_cast<float>(index + 1) / static_cast<float>(totalCount)) * 90.0f);
+            }
+        }
+
+        driverHandle.reset();
+        return stats;
+    }
+
+    // runFileDeleteBatch：
+    // - 输入：选中路径集合、权限档位与进度回调；
+    // - 处理：按档位选择删除手段，目录在任何一档都按后序序列处理；
+    // - 返回：统计与失败明细，由 UI 线程汇总展示。
+    FileDeleteBatchStats runFileDeleteBatch(
+        const std::vector<QString>& paths,
+        const FileDeleteMode mode,
+        const std::function<void(float)>& progressCallback)
+    {
+        FileDeleteBatchStats stats;
+        if (paths.empty())
+        {
+            return stats;
+        }
+
+        if (mode == FileDeleteMode::DriverR0)
+        {
+            return runDriverDeleteBatch(paths, progressCallback);
+        }
+
+        if (mode == FileDeleteMode::RecycleBin)
+        {
+            // QFile::moveToTrash 内部要用 Shell 的 IFileOperation，必须在本线程自备
+            // COM 套间；RPC_E_CHANGED_MODE 表示已有套间，此时不能再配对 CoUninitialize。
+            const HRESULT comInitResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            const bool comUninitializeNeeded = SUCCEEDED(comInitResult);
+
+            const std::size_t totalCount = paths.size();
+            for (std::size_t index = 0; index < totalCount; ++index)
+            {
+                const QString& path = paths[index];
+                bool removeOk = QFile::moveToTrash(path);
+                if (removeOk)
+                {
+                    stats.recycledCount += 1U;
+                }
+                else
+                {
+                    // 回收站不可用（网络位置、可移动磁盘、回收站停用等）时降级为永久删除，
+                    // 这一步会改变可逆性，所以必须单独记账并在收尾时如实告诉用户。
+                    const QFileInfo pathInfo(path);
+                    if (pathInfo.isDir())
+                    {
+                        if (isPathReparsePoint(path))
+                        {
+                            removeOk = (::RemoveDirectoryW(
+                                QDir::toNativeSeparators(path).toStdWString().c_str()) != FALSE);
+                            if (removeOk)
+                            {
+                                stats.skippedReparseCount += 1U;
+                            }
+                        }
+                        else
+                        {
+                            removeOk = QDir(path).removeRecursively();
+                        }
+                        if (removeOk)
+                        {
+                            stats.deletedDirectoryCount += 1U;
+                        }
+                    }
+                    else
+                    {
+                        removeOk = QFile::remove(path);
+                        if (removeOk)
+                        {
+                            stats.deletedFileCount += 1U;
+                        }
+                    }
+
+                    if (removeOk)
+                    {
+                        stats.permanentlyDeleted.push_back(path);
+                    }
+                    else
+                    {
+                        stats.failedCount += 1U;
+                        stats.errors.push_back(
+                            QStringLiteral("删除失败：%1").arg(QDir::toNativeSeparators(path)));
+                    }
+                }
+
+                if (progressCallback)
+                {
+                    progressCallback(
+                        5.0f + (static_cast<float>(index + 1) / static_cast<float>(totalCount)) * 90.0f);
+                }
+            }
+
+            if (comUninitializeNeeded)
+            {
+                ::CoUninitialize();
+            }
+            return stats;
+        }
+
+        const bool forceMode = (mode == FileDeleteMode::ForceR3);
+        const bool pendingRebootMode = (mode == FileDeleteMode::PendingReboot);
+        if (pendingRebootMode)
+        {
+            // 会话管理器在启动早期按登记顺序执行删除，写入这张表需要 SeRestorePrivilege。
+            (void)enableFileContextPrivilege(SE_RESTORE_NAME);
+            (void)enableFileContextPrivilege(SE_BACKUP_NAME);
+        }
+
+        const std::vector<DriverDeleteTarget> targets =
+            expandDeleteTargetsForBatch(paths, forceMode, stats);
+        const std::size_t totalTargetCount = targets.size();
+        for (std::size_t index = 0; index < totalTargetCount; ++index)
+        {
+            const DriverDeleteTarget& target = targets[index];
+            const bool targetIsReparsePoint = target.isDirectory && isPathReparsePoint(target.path);
+
+            if (pendingRebootMode)
+            {
+                DWORD scheduleError = ERROR_SUCCESS;
+                if (schedulePathDeleteOnReboot(target.path, &scheduleError))
+                {
+                    stats.pendingRebootCount += 1U;
+                }
+                else
+                {
+                    stats.failedCount += 1U;
+                    stats.errors.push_back(
+                        QStringLiteral("登记重启后删除失败：%1（error=%2）")
+                            .arg(QDir::toNativeSeparators(target.path))
+                            .arg(scheduleError));
+                }
+            }
+            else
+            {
+                bool permissionRepaired = false;
+                QString errorText;
+                if (deleteExpandedTargetByR3(target, forceMode, &permissionRepaired, &errorText))
+                {
+                    if (target.isDirectory)
+                    {
+                        stats.deletedDirectoryCount += 1U;
+                    }
+                    else
+                    {
+                        stats.deletedFileCount += 1U;
+                    }
+                    if (targetIsReparsePoint)
+                    {
+                        stats.skippedReparseCount += 1U;
+                    }
+                }
+                else
+                {
+                    stats.failedCount += 1U;
+                    stats.errors.push_back(errorText);
+                }
+
+                if (permissionRepaired)
+                {
+                    stats.permissionRepairCount += 1U;
+                }
+            }
+
+            if (progressCallback)
+            {
+                progressCallback(
+                    5.0f + (static_cast<float>(index + 1) / static_cast<float>(totalTargetCount)) * 90.0f);
+            }
+        }
+
+        return stats;
     }
 
     // 手动解析模型列定义：名称/大小/类型/修改时间/完整路径/是否目录。
@@ -11678,7 +12366,25 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     QAction* cutAction = menu.addAction(QIcon(":/Icon/process_suspend.svg"), moveToPanelText);
     QAction* renameAction = menu.addAction(QIcon(":/Icon/process_priority.svg"), QStringLiteral("重命名(F2)"));
     QAction* deleteAction = menu.addAction(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("删除(Delete)"));
-    QAction* driverDeleteAction = menu.addAction(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动删除(R0)"));
+    // 删除方式按权限强度从低到高排列：越靠下越不可逆、要求的权限越高。
+    QMenu* deleteModeMenu = menu.addMenu(QIcon(":/Icon/process_terminate.svg"), QStringLiteral("删除方式（递归/多权限）"));
+    deleteModeMenu->setToolTipsVisible(true);
+    QAction* permanentDeleteAction = deleteModeMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("永久删除（R3·当前权限）"));
+    permanentDeleteAction->setToolTip(
+        QStringLiteral("以当前用户权限递归永久删除，不进回收站；目录按子项先删、目录后删的顺序处理。"));
+    QAction* forceDeleteAction = deleteModeMenu->addAction(
+        QIcon(":/Icon/file_owner.svg"), QStringLiteral("强制删除（R3·接管所有权）"));
+    forceDeleteAction->setToolTip(
+        QStringLiteral("清除只读/隐藏/系统属性，必要时接管所有权并授予完全控制后再递归删除；需要管理员权限。"));
+    QAction* pendingRebootDeleteAction = deleteModeMenu->addAction(
+        QIcon(":/Icon/process_resume.svg"), QStringLiteral("重启后删除（R3·启动时执行）"));
+    pendingRebootDeleteAction->setToolTip(
+        QStringLiteral("登记 PendingFileRenameOperations，由系统在下次重启早期删除；适合正被占用的目标，需要管理员权限。"));
+    QAction* driverDeleteAction = deleteModeMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动递归删除（R0·内核）"));
+    driverDeleteAction->setToolTip(
+        QStringLiteral("由 R0 驱动在内核展开目录树后序删除，目录拒绝列举时也能删干净；需要已启用 KswordARK 驱动。"));
     QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("文件解锁器(R3/R0)"));
     QMenu* addOplockMenu = menu.addMenu(QIcon(":/Icon/plus.svg"), QStringLiteral("添加 Oplock（访问计数）"));
     QAction* addOplockLevel1Action = addOplockMenu->addAction(QStringLiteral("Level 1 - 独占读写缓存，别人访问会计数"));
@@ -11759,6 +12465,10 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     cutAction->setEnabled(hasSelection);
     renameAction->setEnabled(isSingleSelection);
     deleteAction->setEnabled(hasSelection);
+    deleteModeMenu->setEnabled(hasSelection);
+    permanentDeleteAction->setEnabled(hasSelection);
+    forceDeleteAction->setEnabled(hasSelection);
+    pendingRebootDeleteAction->setEnabled(hasSelection);
     driverDeleteAction->setEnabled(hasSelection);
     unlockByDriverAction->setEnabled(isSingleSelection);
     const bool canAddOplock = singleFileOnly && !firstPathHasOplock;
@@ -11898,6 +12608,21 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     if (selectedAction == deleteAction)
     {
         deleteSelectedItem(panel);
+        return;
+    }
+    if (selectedAction == permanentDeleteAction)
+    {
+        deleteSelectedItemsWithMode(panel, FileDeleteMode::PermanentR3);
+        return;
+    }
+    if (selectedAction == forceDeleteAction)
+    {
+        deleteSelectedItemsWithMode(panel, FileDeleteMode::ForceR3);
+        return;
+    }
+    if (selectedAction == pendingRebootDeleteAction)
+    {
+        deleteSelectedItemsWithMode(panel, FileDeleteMode::PendingReboot);
         return;
     }
     if (selectedAction == driverDeleteAction)
@@ -12900,6 +13625,18 @@ void FileDock::renameSelectedItem(FilePanelWidgets& panel)
 
 void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
 {
+    // Delete 快捷键与右键顶层「删除」都走可还原的回收站档，
+    // 更强的权限手段统一放在「删除方式」子菜单里显式选择。
+    deleteSelectedItemsWithMode(panel, FileDeleteMode::RecycleBin);
+}
+
+void FileDock::deleteSelectedItemByDriver(FilePanelWidgets& panel)
+{
+    deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0);
+}
+
+void FileDock::deleteSelectedItemsWithMode(FilePanelWidgets& panel, const FileDeleteMode mode)
+{
     // 防重入：删除和跨面板传输一样是整批文件系统写操作，收尾还要刷新面板，
     // 期间不能再接受第二次删除请求（否则两批任务会互相刷掉对方的结果）。
     if (property(kFileDeleteInProgressProperty).toBool())
@@ -12913,29 +13650,89 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
         return;
     }
 
+    // 档位文案必须把“可逆性 + 权限手段”说清楚：
+    // 用户对“删除”的预期来自资源管理器（进回收站、可还原），而下面四档都不可撤销，
+    // 不提前说明就等于让不可逆操作伪装成可撤销操作。
+    QString modeNameText;
+    QString confirmTitleText;
+    QString confirmBodyText;
+    switch (mode)
     {
-        kLogEvent event;
-        info << event
+    case FileDeleteMode::RecycleBin:
+        modeNameText = QStringLiteral("删除到回收站");
+        confirmTitleText = QStringLiteral("删除确认");
+        confirmBodyText = QStringLiteral(
+            "确定要把选中的 %1 项移到回收站吗？\n\n"
+            "若某些项无法移入回收站（例如位于网络位置、可移动磁盘，或回收站已停用），"
+            "将改为永久删除且无法还原；完成后会告知具体数量。")
+            .arg(paths.size());
+        break;
+    case FileDeleteMode::PermanentR3:
+        modeNameText = QStringLiteral("永久删除");
+        confirmTitleText = QStringLiteral("永久删除确认");
+        confirmBodyText = QStringLiteral(
+            "将以当前用户权限永久删除选中的 %1 项，不进入回收站、无法还原。\n\n"
+            "目录会按“子项先删、目录后删”的顺序递归删除；符号链接/联接点只删除链接本身，"
+            "不会跟进到链接目标。是否继续？")
+            .arg(paths.size());
+        break;
+    case FileDeleteMode::ForceR3:
+        modeNameText = QStringLiteral("强制删除（接管所有权）");
+        confirmTitleText = QStringLiteral("强制删除确认");
+        confirmBodyText = QStringLiteral(
+            "将对选中的 %1 项执行强制删除：清除只读/隐藏/系统属性，必要时把所有者改为 "
+            "BUILTIN\\Administrators 并授予完全控制，然后递归永久删除。\n\n"
+            "所有权与访问控制项会被真实修改且不会自动还原，删除本身也无法撤销。是否继续？")
+            .arg(paths.size());
+        break;
+    case FileDeleteMode::PendingReboot:
+        modeNameText = QStringLiteral("重启后删除");
+        confirmTitleText = QStringLiteral("重启后删除确认");
+        confirmBodyText = QStringLiteral(
+            "将把选中的 %1 项登记到 PendingFileRenameOperations，由系统在下次重启的早期阶段删除。\n\n"
+            "适用于正被占用、当前无法删除的目标；登记后文件在重启前仍然存在，"
+            "删除结果要等重启后才能确认。是否继续？")
+            .arg(paths.size());
+        break;
+    case FileDeleteMode::DriverR0:
+    default:
+        modeNameText = QStringLiteral("驱动递归删除(R0)");
+        confirmTitleText = QStringLiteral("驱动删除确认");
+        confirmBodyText = QStringLiteral(
+            "将通过 KswordARK 驱动在内核直接硬删除选中的 %1 项，不进入回收站、无法还原。\n\n"
+            "目录树由 R0 递归展开后序删除，因此目录拒绝列举时也能删干净；"
+            "符号链接/联接点只删除链接本身。是否继续？")
+            .arg(paths.size());
+        break;
+    }
+
+    {
+        kLogEvent requestEvent;
+        info << requestEvent
             << "[FileDock] 删除请求, panel="
             << panel.panelNameText.toStdString()
+            << ", mode="
+            << modeNameText.toStdString()
             << ", count="
             << paths.size()
             << eol;
     }
 
-    // 文案必须说明回收站与降级规则：
-    // 用户对“删除”的预期来自资源管理器（进回收站、可还原），但下面的实现
-    // 在 moveToTrash 失败时会静默改为永久删除（网络位置、可移动磁盘、
-    // 超出回收站配额等场景常规性失败）。不提前说明就等于让不可逆操作
-    // 伪装成可撤销操作。
+    // 接管所有权与 PendingFileRenameOperations 都要求管理员令牌，
+    // 未提权时直接引导重启提权，避免用户在一堆 error=5 里猜原因。
+    if (mode == FileDeleteMode::ForceR3 || mode == FileDeleteMode::PendingReboot)
+    {
+        if (!ks::ui::isCurrentProcessElevated())
+        {
+            (void)ks::ui::requestAdministratorRestartForFeature(this, modeNameText);
+            return;
+        }
+    }
+
     const QMessageBox::StandardButton userChoice = QMessageBox::question(
         this,
-        QStringLiteral("删除确认"),
-        QStringLiteral(
-            "确定要把选中的 %1 项移到回收站吗？\n\n"
-            "若某些项无法移入回收站（例如位于网络位置、可移动磁盘，或回收站已停用），"
-            "将改为永久删除且无法还原；完成后会告知具体数量。")
-            .arg(paths.size()),
+        confirmTitleText,
+        confirmBodyText,
         QMessageBox::Yes | QMessageBox::No,
         QMessageBox::No);
     if (userChoice != QMessageBox::Yes)
@@ -12943,73 +13740,36 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
         return;
     }
 
-    const int progressPid = kPro.add(this, "文件", "删除");
+    const int progressPid = kPro.add(this, "文件", modeNameText.toStdString());
     kPro.set(progressPid, "删除开始", 0, 5.0f);
     setProperty(kFileDeleteInProgressProperty, true);
 
-    // 删除整体搬到后台线程：moveToTrash 走 Shell IFileOperation（每项固定几十毫秒），
-    // 目录兜底还要 QDir::removeRecursively 走完整棵树，多选或删大目录时同步执行会把
-    // 事件循环占死数秒到数分钟，连 kPro 进度条都刷不出来。写法与同文件的
-    // transferSelectedItemsToOppositePanel 保持一致。
+    // 删除整体放在后台线程：moveToTrash 走 Shell IFileOperation（每项固定几十毫秒），
+    // 递归展开还要走完整棵树，多选或删大目录时同步执行会把事件循环占死数秒到数分钟，
+    // 连 kPro 进度条都刷不出来。写法与同文件的 transferSelectedItemsToOppositePanel 保持一致。
     const bool sourceWasLeftPanel = &panel == &m_leftPanel;
     const QString panelNameText = panel.panelNameText;
     const QPointer<FileDock> guardedSelf(this);
     const QPointer<QApplication> applicationGuard(qApp);
 
     QThreadPool::globalInstance()->start(
-        [guardedSelf, applicationGuard, paths, panelNameText, sourceWasLeftPanel, progressPid]()
+        [guardedSelf, applicationGuard, paths, panelNameText, modeNameText, mode, sourceWasLeftPanel, progressPid]()
         {
-            // QFile::moveToTrash 内部要用 Shell 的 IFileOperation，必须在本线程自备
-            // COM 套间；RPC_E_CHANGED_MODE 表示已有套间，此时不能再配对 CoUninitialize。
-            const HRESULT comInitResult = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-            const bool comUninitializeNeeded = SUCCEEDED(comInitResult);
-
-            QStringList errors;
-            // permanentlyDeleted：记录实际被永久删除（未能进回收站）的项，
-            // 用于结束后如实告知用户，而不是让两种结果看起来一样。
-            QStringList permanentlyDeleted;
-            const std::size_t totalCount = paths.size();
-            for (std::size_t itemIndex = 0; itemIndex < totalCount; ++itemIndex)
-            {
-                const QString path = paths[itemIndex];
-                bool removeOk = false;
-
-                // 优先回收站删除，失败再使用硬删除兜底。
-                removeOk = QFile::moveToTrash(path);
-                if (!removeOk)
+            // 进度按整数百分比节流：大目录会产生上万次回调，逐次 post 会把主线程事件队列打爆。
+            int lastProgressBucket = 5;
+            const auto progressReporter =
+                [&lastProgressBucket, applicationGuard, progressPid](const float progress)
                 {
-                    QFileInfo pathInfo(path);
-                    if (pathInfo.isDir())
+                    const int bucket = static_cast<int>(progress);
+                    if (bucket <= lastProgressBucket)
                     {
-                        if (isPathReparsePoint(path))
-                        {
-                            removeOk = (::RemoveDirectoryW(QDir::toNativeSeparators(path).toStdWString().c_str()) != FALSE);
-                        }
-                        else
-                        {
-                            removeOk = QDir(path).removeRecursively();
-                        }
+                        return;
                     }
-                    else
+                    lastProgressBucket = bucket;
+                    if (applicationGuard.isNull())
                     {
-                        removeOk = QFile::remove(path);
+                        return;
                     }
-
-                    if (removeOk)
-                    {
-                        permanentlyDeleted << path;
-                    }
-                }
-
-                if (!removeOk)
-                {
-                    errors << QStringLiteral("删除失败：%1").arg(path);
-                }
-
-                if (!applicationGuard.isNull())
-                {
-                    const float progress = 5.0f +
-                        (static_cast<float>(itemIndex + 1) / static_cast<float>(totalCount)) * 90.0f;
                     QMetaObject::invokeMethod(
                         applicationGuard.data(),
                         [progressPid, progress]()
@@ -13017,13 +13777,9 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
                             kPro.set(progressPid, "删除处理中", 0, progress);
                         },
                         Qt::QueuedConnection);
-                }
-            }
+                };
 
-            if (comUninitializeNeeded)
-            {
-                ::CoUninitialize();
-            }
+            FileDeleteBatchStats stats = runFileDeleteBatch(paths, mode, progressReporter);
 
             if (applicationGuard.isNull())
             {
@@ -13033,12 +13789,13 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
             QMetaObject::invokeMethod(
                 applicationGuard.data(),
                 [guardedSelf,
-                    errors = std::move(errors),
-                    permanentlyDeleted = std::move(permanentlyDeleted),
+                    stats = std::move(stats),
                     panelNameText,
+                    modeNameText,
+                    mode,
                     sourceWasLeftPanel,
                     progressPid,
-                    totalCount]()
+                    originalCount = paths.size()]()
                 {
                     kPro.set(progressPid, "删除完成", 0, 100.0f);
                     if (guardedSelf.isNull())
@@ -13053,194 +13810,109 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
                         : dock->m_rightPanel;
                     dock->refreshPanel(completedPanel);
 
-                    // 有项目未能进回收站时必须显式告知：这些项已不可还原，
-                    // 用户需要据此判断还能不能靠回收站补救。
-                    if (!permanentlyDeleted.isEmpty())
+                    QStringList summaryLines;
+                    if (stats.recycledCount > 0U)
                     {
-                        kLogEvent permanentEvent;
-                        warn << permanentEvent
-                            << "[FileDock] 部分项目无法移入回收站，已永久删除, panel="
-                            << panelNameText.toStdString()
-                            << ", count="
-                            << permanentlyDeleted.size()
-                            << ", preview=\n"
-                            << buildLogPreviewText(permanentlyDeleted).toStdString()
-                            << eol;
-                        QMessageBox::warning(
-                            dock,
-                            QStringLiteral("部分项目已永久删除"),
-                            QStringLiteral(
-                                "有 %1 项无法移入回收站，已被永久删除，无法从回收站还原：\n\n%2")
-                                .arg(permanentlyDeleted.size())
-                                .arg(buildLogPreviewText(permanentlyDeleted)));
+                        summaryLines << QStringLiteral("已移入回收站：%1 项").arg(stats.recycledCount);
+                    }
+                    if ((stats.deletedFileCount + stats.deletedDirectoryCount) > 0U)
+                    {
+                        summaryLines << QStringLiteral("已永久删除：文件 %1 个、目录 %2 个")
+                            .arg(stats.deletedFileCount)
+                            .arg(stats.deletedDirectoryCount);
+                    }
+                    if (stats.pendingRebootCount > 0U)
+                    {
+                        summaryLines << QStringLiteral("已登记重启后删除：%1 项").arg(stats.pendingRebootCount);
+                    }
+                    if (stats.skippedReparseCount > 0U)
+                    {
+                        summaryLines << QStringLiteral("重解析点只删除了链接本身：%1 项")
+                            .arg(stats.skippedReparseCount);
+                    }
+                    if (stats.permissionRepairCount > 0U)
+                    {
+                        summaryLines << QStringLiteral("触发接管所有权/授权的项：%1 项（所有权与 DACL 已被修改，不会自动还原）")
+                            .arg(stats.permissionRepairCount);
+                    }
+                    if (stats.driverRecursionUnsupported)
+                    {
+                        summaryLines << QStringLiteral("当前 R0 驱动不支持内核递归删除，已回退为 R3 展开逐项删除。");
+                    }
+                    if (stats.failedCount > 0U)
+                    {
+                        summaryLines << QStringLiteral("失败：%1 项").arg(stats.failedCount);
                     }
 
-                    if (!errors.isEmpty())
                     {
-                        kLogEvent event;
-                        warn << event
-                            << "[FileDock] 删除部分失败, panel="
+                        kLogEvent completionEvent;
+                        (stats.failedCount > 0U ? warn : info) << completionEvent
+                            << "[FileDock] 删除完成, panel="
                             << panelNameText.toStdString()
-                            << ", errorCount="
-                            << errors.size()
+                            << ", mode="
+                            << modeNameText.toStdString()
+                            << ", requested="
+                            << originalCount
+                            << ", recycled="
+                            << stats.recycledCount
+                            << ", files="
+                            << stats.deletedFileCount
+                            << ", dirs="
+                            << stats.deletedDirectoryCount
+                            << ", pendingReboot="
+                            << stats.pendingRebootCount
+                            << ", failed="
+                            << stats.failedCount
                             << ", errorPreview=\n"
-                            << buildLogPreviewText(errors).toStdString()
+                            << buildLogPreviewText(stats.errors).toStdString()
                             << eol;
+                    }
+
+                    if (stats.driverUnavailable)
+                    {
+                        QMessageBox::warning(
+                            dock,
+                            QStringLiteral("驱动删除"),
+                            QStringLiteral("无法连接 KswordARK 驱动设备，请先启用 R0 驱动。\n\n%1")
+                                .arg(buildLogPreviewText(stats.errors)));
                         return;
                     }
 
-                    kLogEvent event;
-                    info << event
-                        << "[FileDock] 删除完成, panel="
-                        << panelNameText.toStdString()
-                        << ", count="
-                        << totalCount
-                        << eol;
+                    // 有项目未能进回收站时必须显式告知：这些项已不可还原，
+                    // 用户需要据此判断还能不能靠回收站补救。
+                    if (!stats.permanentlyDeleted.isEmpty())
+                    {
+                        QMessageBox::warning(
+                            dock,
+                            QStringLiteral("部分项目已永久删除"),
+                            QStringLiteral("有 %1 项无法移入回收站，已被永久删除，无法从回收站还原：\n\n%2")
+                                .arg(stats.permanentlyDeleted.size())
+                                .arg(buildLogPreviewText(stats.permanentlyDeleted)));
+                    }
+
+                    if (stats.failedCount > 0U)
+                    {
+                        QMessageBox::warning(
+                            dock,
+                            modeNameText,
+                            QStringLiteral("%1 未全部完成。\n\n%2\n\n失败明细（最多显示前若干条）：\n%3")
+                                .arg(modeNameText)
+                                .arg(summaryLines.join(QStringLiteral("\n")))
+                                .arg(buildLogPreviewText(stats.errors)));
+                        return;
+                    }
+
+                    if (mode == FileDeleteMode::PendingReboot && stats.pendingRebootCount > 0U)
+                    {
+                        QMessageBox::information(
+                            dock,
+                            modeNameText,
+                            QStringLiteral("%1\n\n目标仍然存在，系统会在下次重启的早期阶段执行删除。")
+                                .arg(summaryLines.join(QStringLiteral("\n"))));
+                    }
                 },
                 Qt::QueuedConnection);
         });
-}
-
-void FileDock::deleteSelectedItemByDriver(FilePanelWidgets& panel)
-{
-    const std::vector<QString> paths = selectedPaths(panel);
-    if (paths.empty())
-    {
-        return;
-    }
-
-    {
-        kLogEvent event;
-        info << event
-            << "[FileDock] 驱动删除请求, panel="
-            << panel.panelNameText.toStdString()
-            << ", count="
-            << paths.size()
-            << eol;
-    }
-
-    const QMessageBox::StandardButton userChoice = QMessageBox::question(
-        this,
-        QStringLiteral("驱动删除确认"),
-        QStringLiteral("将通过 KswordARK 驱动直接硬删除选中的 %1 项。\n此操作不会进入回收站，目录会递归删除，是否继续？")
-            .arg(paths.size()),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (userChoice != QMessageBox::Yes)
-    {
-        return;
-    }
-
-    std::vector<DriverDeleteTarget> deleteTargets;
-    QStringList prepareErrors;
-    for (const QString& path : paths)
-    {
-        QString errorText;
-        if (!appendDriverDeleteTargetsPostOrder(path, deleteTargets, errorText))
-        {
-            prepareErrors.push_back(errorText);
-        }
-    }
-
-    if (deleteTargets.empty())
-    {
-        kLogEvent event;
-        warn << event
-            << "[FileDock] 驱动删除取消：未生成可删除目标, panel="
-            << panel.panelNameText.toStdString()
-            << ", prepareErrorPreview=\n"
-            << buildLogPreviewText(prepareErrors).toStdString()
-            << eol;
-        return;
-    }
-
-    std::string openDriverDetailText;
-    ksword::ark::DriverHandle driverHandle = openKswordArkDriverHandle(&openDriverDetailText);
-    if (!driverHandle.isValid())
-    {
-        kLogEvent event;
-        warn << event
-            << "[FileDock] 驱动删除失败：无法连接驱动, panel="
-            << panel.panelNameText.toStdString()
-            << ", detail="
-            << openDriverDetailText
-            << eol;
-        QMessageBox::warning(
-            this,
-            QStringLiteral("驱动删除"),
-            QStringLiteral("无法连接 KswordARK 驱动设备，请先启用 R0 驱动。"));
-        return;
-    }
-
-    const int progressPid = kPro.add(this, "文件", "驱动删除");
-    kPro.set(progressPid, "驱动删除开始", 0, 5.0f);
-
-    QStringList deleteErrors = prepareErrors;
-    const std::size_t totalTargetCount = deleteTargets.size();
-    for (std::size_t index = 0; index < totalTargetCount; ++index)
-    {
-        const DriverDeleteTarget& target = deleteTargets[index];
-        std::string detailText;
-        bool deleteOk = deletePathByR0Driver(
-            driverHandle,
-            target.path,
-            target.isDirectory,
-            &detailText);
-        if (!deleteOk && !target.isDirectory)
-        {
-            // 驱动删除失败后仅扫描占用进程用于提示，禁止绕过文件解锁器的显式选择流程。
-            QStringList fallbackDetails;
-            const std::vector<std::uint32_t> occupyPids =
-                collectOccupyProcessIdsByPath(target.path, &fallbackDetails);
-
-            QStringList errorLines;
-            errorLines.push_back(QString::fromStdString(detailText));
-            errorLines.push_back(
-                QStringLiteral("occupyPidCount=%1, autoTerminate=disabled")
-                .arg(occupyPids.size()));
-            errorLines.push_back(QStringLiteral("请先使用“文件解锁器”选择并确认要结束的占用进程，再重新执行驱动删除。"));
-            errorLines.append(fallbackDetails);
-
-            deleteErrors.push_back(errorLines.join(QStringLiteral(" | ")));
-        }
-        else if (!deleteOk)
-        {
-            deleteErrors.push_back(QString::fromStdString(detailText));
-        }
-
-        const float progress =
-            5.0f + (static_cast<float>(index + 1) / static_cast<float>(totalTargetCount)) * 90.0f;
-        kPro.set(progressPid, "驱动删除处理中", 0, progress);
-    }
-
-    driverHandle.reset();
-
-    refreshPanel(panel);
-    kPro.set(progressPid, "驱动删除完成", 0, 100.0f);
-
-    if (!deleteErrors.isEmpty())
-    {
-        kLogEvent event;
-        warn << event
-            << "[FileDock] 驱动删除部分失败, panel="
-            << panel.panelNameText.toStdString()
-            << ", errorCount="
-            << deleteErrors.size()
-            << ", errorPreview=\n"
-            << buildLogPreviewText(deleteErrors).toStdString()
-            << eol;
-        return;
-    }
-
-    kLogEvent event;
-    info << event
-        << "[FileDock] 驱动删除完成, panel="
-        << panel.panelNameText.toStdString()
-        << ", originalCount="
-        << paths.size()
-        << ", targetCount="
-        << deleteTargets.size()
-        << eol;
 }
 
 void FileDock::unlockSelectedItemsByDriver(FilePanelWidgets& panel)

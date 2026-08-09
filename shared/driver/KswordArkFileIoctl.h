@@ -47,7 +47,35 @@
         FILE_READ_ACCESS)
 
 #define KSWORD_ARK_DELETE_PATH_FLAG_DIRECTORY 0x00000001UL
+// RECURSIVE：目录树在 R0 内部展开后序删除。R3 侧枚举会被目录 DACL 拒绝，
+// 而内核 Zw* 以 KernelMode 前置模式打开时跳过访问检查，所以递归必须留在 R0。
+#define KSWORD_ARK_DELETE_PATH_FLAG_RECURSIVE 0x00000002UL
+// CONTINUE_ON_ERROR：单项失败后继续删除同级其余项，最终由响应包汇总失败数。
+#define KSWORD_ARK_DELETE_PATH_FLAG_CONTINUE_ON_ERROR 0x00000004UL
+#define KSWORD_ARK_DELETE_PATH_FLAG_ALL \
+    (KSWORD_ARK_DELETE_PATH_FLAG_DIRECTORY | \
+     KSWORD_ARK_DELETE_PATH_FLAG_RECURSIVE | \
+     KSWORD_ARK_DELETE_PATH_FLAG_CONTINUE_ON_ERROR)
 #define KSWORD_ARK_DELETE_PATH_MAX_CHARS 1024U
+
+#define KSWORD_ARK_DELETE_PATH_RESPONSE_VERSION 1UL
+// 递归限额：深度上限约束显式栈规模，条目上限约束单次 IOCTL 的最长阻塞时间。
+#define KSWORD_ARK_DELETE_PATH_MAX_DEPTH 32UL
+#define KSWORD_ARK_DELETE_PATH_MAX_ENTRIES 262144UL
+// 递归过程中拼接出的完整 NT 子路径可以远长于请求路径，按 NT 路径上限单独设限。
+#define KSWORD_ARK_DELETE_PATH_TREE_MAX_CHARS 32767U
+
+// deleteStatus 区分“驱动通信成功”和“删除语义结果”，R3 不得把 PARTIAL 当作完成。
+#define KSWORD_ARK_DELETE_PATH_STATUS_UNKNOWN 0UL
+#define KSWORD_ARK_DELETE_PATH_STATUS_COMPLETED 1UL
+#define KSWORD_ARK_DELETE_PATH_STATUS_PARTIAL 2UL
+#define KSWORD_ARK_DELETE_PATH_STATUS_FAILED 3UL
+
+// responseFlags 说明本次遍历是否被限额截断，或是否遇到未跟进的重解析点。
+#define KSWORD_ARK_DELETE_PATH_RESPONSE_FLAG_DEPTH_LIMITED 0x00000001UL
+#define KSWORD_ARK_DELETE_PATH_RESPONSE_FLAG_ENTRY_LIMITED 0x00000002UL
+#define KSWORD_ARK_DELETE_PATH_RESPONSE_FLAG_REPARSE_SKIPPED 0x00000004UL
+#define KSWORD_ARK_DELETE_PATH_RESPONSE_FLAG_ENUM_FAILED 0x00000008UL
 
 #define KSWORD_ARK_FILE_INTEGRITY_PROTOCOL_VERSION 1UL
 #define KSWORD_ARK_FILE_INTEGRITY_FLAG_DIRECTORY 0x00000001UL
@@ -128,6 +156,28 @@ typedef struct _KSWORD_ARK_DELETE_PATH_REQUEST
     unsigned short reserved;
     wchar_t path[KSWORD_ARK_DELETE_PATH_MAX_CHARS];
 } KSWORD_ARK_DELETE_PATH_REQUEST;
+
+// KSWORD_ARK_DELETE_PATH_RESPONSE：递归删除的统计回执。
+// 输出缓冲区可选：旧版 R3 只发请求不收响应，驱动此时跳过响应写入。
+typedef struct _KSWORD_ARK_DELETE_PATH_RESPONSE
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long requestFlags;
+    unsigned long responseFlags;
+    unsigned long deleteStatus;
+    unsigned long deletedFileCount;
+    unsigned long deletedDirectoryCount;
+    unsigned long failedCount;
+    unsigned long skippedReparseCount;
+    unsigned long visitedCount;
+    unsigned long maxDepthReached;
+    unsigned long reserved;
+    long lastStatus;
+    unsigned short failedPathLengthChars;
+    unsigned short reserved2;
+    wchar_t failedPath[KSWORD_ARK_DELETE_PATH_MAX_CHARS];
+} KSWORD_ARK_DELETE_PATH_RESPONSE;
 
 typedef struct _KSWORD_ARK_QUERY_FILE_INFO_REQUEST
 {

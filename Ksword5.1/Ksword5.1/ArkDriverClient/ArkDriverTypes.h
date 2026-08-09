@@ -648,6 +648,18 @@ namespace ksword::ark
         std::uint32_t pathLengthChars = 0;   // pathLengthChars：驱动接收的 NT 路径字符数。
     };
 
+    // DeletePathResult 承载 R0 删除（单项或递归）的统计回执。
+    // 输入：由 DriverClient::deletePathEx 填充。
+    // 处理：io.ok 只表示 DeviceIoControl 成功；删除语义看 response.deleteStatus。
+    // 返回行为：unsupported=true 表示旧驱动不认识递归标志，调用方应回退到 R3 展开逐项删除。
+    struct DeletePathResult
+    {
+        IoResult io;                                // io：底层 DeviceIoControl 状态。
+        bool unsupported = false;                   // unsupported：旧驱动拒绝新 flags。
+        bool responseValid = false;                 // responseValid：是否解析到完整响应包。
+        KSWORD_ARK_DELETE_PATH_RESPONSE response{}; // response：R0 固定统计响应。
+    };
+
     // FileMonitorStatusResult 是 R0 文件系统 minifilter 运行状态的 R3 模型。
     struct FileMonitorStatusResult
     {

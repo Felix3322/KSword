@@ -201,6 +201,22 @@ namespace ksword::ark
         RegistryOperationResult renameRegistryKey(const std::wstring& kernelKeyPath, const std::wstring& newKeyName) const;
         IoResult deletePath(const std::wstring& ntPath, bool isDirectory) const;
         IoResult deletePath(DriverHandle& handle, const std::wstring& ntPath, bool isDirectory) const;
+        // deletePathEx：
+        // - 输入：驱动可打开的 NT 路径、目录标志、是否在 R0 内递归展开、单点失败是否继续；
+        // - 处理：封装带响应包的删除 IOCTL；recursive=true 时目录树完全由 R0 后序删除，
+        //   不再依赖 R3 枚举，因此目录 DACL 拒绝列举也能删干净；
+        // - 返回：DeletePathResult；unsupported=true 表示旧驱动，调用方需回退 R3 展开。
+        DeletePathResult deletePathEx(
+            const std::wstring& ntPath,
+            bool isDirectory,
+            bool recursive,
+            bool continueOnError = true) const;
+        DeletePathResult deletePathEx(
+            DriverHandle& handle,
+            const std::wstring& ntPath,
+            bool isDirectory,
+            bool recursive,
+            bool continueOnError = true) const;
 
         SsdtEnumResult enumerateSsdt(unsigned long flags) const;
         SsdtEnumResult enumerateShadowSsdt(unsigned long flags = KSWORD_ARK_ENUM_SSDT_FLAG_INCLUDE_UNRESOLVED) const;

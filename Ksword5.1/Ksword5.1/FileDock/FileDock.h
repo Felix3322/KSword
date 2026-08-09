@@ -46,6 +46,18 @@ class QTreeView;
 class QVBoxLayout;
 class QWidget;
 
+// FileDeleteMode：右键「删除」的权限档位，按“需要的权限强度”从低到高排列。
+// - 目录在任何一档都是递归后序删除（子项先删、目录后删），差别只在用什么权限去删；
+// - 越靠后的档位越不可逆，UI 必须在确认框里把差别说清楚。
+enum class FileDeleteMode
+{
+    RecycleBin,     // R3 当前权限，移入回收站，可从回收站还原。
+    PermanentR3,    // R3 当前权限，递归永久删除，不进回收站。
+    ForceR3,        // R3 提权：清属性 + 接管所有权 + 授权完全控制后递归永久删除。
+    PendingReboot,  // R3 提权：登记 PendingFileRenameOperations，下次重启时删除。
+    DriverR0        // R0 驱动：目录树在内核后序展开删除，绕过 R3 枚举与 ACL 限制。
+};
+
 // ============================================================
 // FileDock
 // 说明：
@@ -386,13 +398,20 @@ private:
     void renameSelectedItem(FilePanelWidgets& panel);
 
     // deleteSelectedItem：
-    // - 作用：删除当前选中项（当前实现走普通删除）。
+    // - 作用：删除当前选中项，走「移入回收站」这一档（Delete 快捷键入口）。
     void deleteSelectedItem(FilePanelWidgets& panel);
 
     // deleteSelectedItemByDriver：
-    // - 作用：通过 KswordARK 驱动对当前选中项执行硬删除。
-    // - 说明：目录删除由 R3 先展开为后序路径列表，再逐项交给驱动删除。
+    // - 作用：通过 KswordARK 驱动对当前选中项执行递归硬删除。
+    // - 说明：新驱动在 R0 内部展开目录树；旧驱动自动回退为 R3 后序展开逐项删除。
     void deleteSelectedItemByDriver(FilePanelWidgets& panel);
+
+    // deleteSelectedItemsWithMode：
+    // - 输入：panel 为动作来源面板，mode 为权限档位；
+    // - 处理：统一完成前置权限检查、确认文案、后台批量删除与结果汇总；
+    //   目录在所有档位都按“子项先删、目录后删”的后序语义处理；
+    // - 返回：无返回值，结果通过日志、进度条与消息框反馈。
+    void deleteSelectedItemsWithMode(FilePanelWidgets& panel, FileDeleteMode mode);
 
     // takeOwnershipSelectedItems：
     // - 作用：对当前选中项执行“取得所有权 + 授权完全控制”。

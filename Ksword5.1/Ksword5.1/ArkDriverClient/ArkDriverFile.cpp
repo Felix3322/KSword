@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
@@ -723,6 +724,119 @@ namespace ksword::ark
         stream << (result.ok ? ", ioctl=ok" : ", ioctl=fail, error=" + std::to_string(result.win32Error));
         result.message = stream.str();
         return result;
+    }
+
+    DeletePathResult DriverClient::deletePathEx(
+        const std::wstring& ntPath,
+        const bool isDirectory,
+        const bool recursive,
+        const bool continueOnError) const
+    {
+        DriverHandle handle = open();
+        return deletePathEx(handle, ntPath, isDirectory, recursive, continueOnError);
+    }
+
+    DeletePathResult DriverClient::deletePathEx(
+        DriverHandle& handle,
+        const std::wstring& ntPath,
+        const bool isDirectory,
+        const bool recursive,
+        const bool continueOnError) const
+    {
+        // 输入：NT 路径、目录标志与递归策略。
+        // 处理：下发带响应包的 DELETE_PATH IOCTL，递归展开完全发生在 R0。
+        // 返回：DeletePathResult，io.ok 表示通信成功，response.deleteStatus 表示删除语义。
+        DeletePathResult deleteResult{};
+        if (ntPath.empty() || ntPath.size() >= KSWORD_ARK_DELETE_PATH_MAX_CHARS)
+        {
+            deleteResult.io.ok = false;
+            deleteResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            deleteResult.io.message = "path too long for ioctl, chars=" + std::to_string(ntPath.size());
+            return deleteResult;
+        }
+        if (recursive && !isDirectory)
+        {
+            deleteResult.io.ok = false;
+            deleteResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            deleteResult.io.message = "recursive delete requires a directory target";
+            return deleteResult;
+        }
+
+        KSWORD_ARK_DELETE_PATH_REQUEST request{};
+        request.flags = (isDirectory ? KSWORD_ARK_DELETE_PATH_FLAG_DIRECTORY : 0UL) |
+            (recursive ? KSWORD_ARK_DELETE_PATH_FLAG_RECURSIVE : 0UL) |
+            (continueOnError ? KSWORD_ARK_DELETE_PATH_FLAG_CONTINUE_ON_ERROR : 0UL);
+        request.pathLengthChars = static_cast<unsigned short>(ntPath.size());
+        std::copy(ntPath.begin(), ntPath.end(), request.path);
+        request.path[request.pathLengthChars] = L'\0';
+
+        deleteResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_DELETE_PATH,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &deleteResult.response,
+            static_cast<unsigned long>(sizeof(deleteResult.response)),
+            &handle);
+
+        if (!deleteResult.io.ok)
+        {
+            // 旧驱动会因为不认识 RECURSIVE/CONTINUE_ON_ERROR 直接拒绝整包，
+            // 这里必须区分“驱动太旧”和“删除真的失败”，否则 UI 无从决定是否回退。
+            deleteResult.unsupported =
+                (recursive || continueOnError) && isUnsupportedIoctlError(deleteResult.io.win32Error);
+            std::ostringstream failStream;
+            failStream << "pathChars=" << ntPath.size()
+                << ", directory=" << (isDirectory ? 1 : 0)
+                << ", recursive=" << (recursive ? 1 : 0)
+                << ", ioctl=fail, error=" << deleteResult.io.win32Error;
+            if (deleteResult.unsupported)
+            {
+                failStream << ", reason=driver-too-old-for-recursive-delete";
+            }
+            deleteResult.io.message = failStream.str();
+            return deleteResult;
+        }
+
+        deleteResult.responseValid =
+            deleteResult.io.bytesReturned >= sizeof(deleteResult.response) &&
+            deleteResult.response.size == sizeof(deleteResult.response) &&
+            deleteResult.response.version == KSWORD_ARK_DELETE_PATH_RESPONSE_VERSION;
+        if (!deleteResult.responseValid)
+        {
+            // 老驱动即使删除成功也不会回填响应包，此时只能按“已完成单项删除”解释。
+            deleteResult.response = KSWORD_ARK_DELETE_PATH_RESPONSE{};
+            deleteResult.response.size = static_cast<unsigned long>(sizeof(deleteResult.response));
+            deleteResult.response.version = KSWORD_ARK_DELETE_PATH_RESPONSE_VERSION;
+            deleteResult.response.requestFlags = request.flags;
+            deleteResult.response.deleteStatus = KSWORD_ARK_DELETE_PATH_STATUS_COMPLETED;
+            deleteResult.response.visitedCount = 1UL;
+            if (isDirectory)
+            {
+                deleteResult.response.deletedDirectoryCount = 1UL;
+            }
+            else
+            {
+                deleteResult.response.deletedFileCount = 1UL;
+            }
+        }
+
+        std::ostringstream stream;
+        stream << "pathChars=" << ntPath.size()
+            << ", directory=" << (isDirectory ? 1 : 0)
+            << ", recursive=" << (recursive ? 1 : 0)
+            << ", state=" << deleteResult.response.deleteStatus
+            << ", files=" << deleteResult.response.deletedFileCount
+            << ", dirs=" << deleteResult.response.deletedDirectoryCount
+            << ", failed=" << deleteResult.response.failedCount
+            << ", visited=" << deleteResult.response.visitedCount
+            << ", depth=" << deleteResult.response.maxDepthReached
+            << ", responseFlags=0x" << std::hex << std::uppercase << deleteResult.response.responseFlags
+            << ", lastStatus=0x"
+            << static_cast<unsigned long>(static_cast<std::uint32_t>(deleteResult.response.lastStatus))
+            << std::dec << ", bytesReturned=" << deleteResult.io.bytesReturned
+            << ", responsePacket=" << (deleteResult.responseValid ? 1 : 0);
+        deleteResult.io.message = stream.str();
+        return deleteResult;
     }
 
     IoResult DriverClient::controlFileMonitor(
