@@ -182,7 +182,12 @@ enum class KernelActionId : std::uint32_t {
     MutationRollbackConfirmed,
     NetworkCaptureStart,
     NetworkCaptureStop,
-    PiDdbDeleteEntry
+    PiDdbDeleteEntry,
+    DriverDispatchRestore,
+    DriverDispatchAbandon,
+    DriverImageRestore,
+    DriverImageAbandon,
+    DriverCommunicationRestore
 };
 
 // KernelActionRequest carries one explicit action from the UI to the facade.

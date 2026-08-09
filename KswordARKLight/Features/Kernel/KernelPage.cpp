@@ -107,6 +107,11 @@ constexpr UINT_PTR kMenuMinifilterClearBypass = 51110;
 constexpr UINT_PTR kMenuNetworkCaptureStart = 51190;
 constexpr UINT_PTR kMenuNetworkCaptureStop = 51191;
 constexpr UINT_PTR kMenuPiDdbDeleteEntry = 51192;
+constexpr UINT_PTR kMenuDriverDispatchRestore = 51193;
+constexpr UINT_PTR kMenuDriverDispatchAbandon = 51194;
+constexpr UINT_PTR kMenuDriverImageRestore = 51195;
+constexpr UINT_PTR kMenuDriverImageAbandon = 51196;
+constexpr UINT_PTR kMenuDriverCommunicationRestore = 51197;
 constexpr UINT_PTR kMenuDriverObjectQueryDetail = 51111;
 constexpr UINT_PTR kMenuDriverObjectForceUnload = 51112;
 constexpr UINT_PTR kMenuNativeObjectQueryDetail = 51113;
@@ -2077,6 +2082,26 @@ LRESULT KernelPage::HandleMessage(HWND hwnd, const UINT msg, const WPARAM wParam
         }
         if (LOWORD(wParam) == kMenuPiDdbDeleteEntry) {
             ExecuteSelectedAction(KernelActionId::PiDdbDeleteEntry);
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuDriverDispatchRestore) {
+            ExecuteSelectedAction(KernelActionId::DriverDispatchRestore);
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuDriverDispatchAbandon) {
+            ExecuteSelectedAction(KernelActionId::DriverDispatchAbandon);
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuDriverImageRestore) {
+            ExecuteSelectedAction(KernelActionId::DriverImageRestore);
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuDriverImageAbandon) {
+            ExecuteSelectedAction(KernelActionId::DriverImageAbandon);
+            return 0;
+        }
+        if (LOWORD(wParam) == kMenuDriverCommunicationRestore) {
+            ExecuteSelectedAction(KernelActionId::DriverCommunicationRestore);
             return 0;
         }
         if (LOWORD(wParam) == kMenuMinifilterSetBypass) {
@@ -5052,6 +5077,50 @@ void KernelPage::ExecuteSelectedAction(const KernelActionId actionId) {
         confirmText =
             L"将停止 R0 WFP 逐包采集。已在环中的报文仍然保留、仍可读取，只是不再有新报文进入。\n\n"
             L"是否继续？";
+        break;
+    case KernelActionId::DriverDispatchRestore:
+        confirmTitle = L"恢复驱动派遣槽";
+        confirmText =
+            L"将把选中 MajorFunction 槽位写回本驱动记录的原始地址。\n\n"
+            L"槽位: " + FirstSelectedRowValue({ L"MajorFunction" }) + L"\n"
+            L"当前值: " + FirstSelectedRowValue({ L"Current" }) + L"\n"
+            L"原始值: " + FirstSelectedRowValue({ L"Original" }) + L"\n\n"
+            L"R0 会先核对代次与 DriverObject 身份；期间若被他人改写过则直接拒绝，"
+            L"不会覆盖。是否继续？";
+        break;
+    case KernelActionId::DriverDispatchAbandon:
+        confirmTitle = L"放弃派遣恢复记录";
+        confirmText =
+            L"将永久丢弃该 MajorFunction 槽位的恢复记录，内核中的当前值保持不变。\n\n"
+            L"槽位: " + FirstSelectedRowValue({ L"MajorFunction" }) + L"\n"
+            L"当前值: " + FirstSelectedRowValue({ L"Current" }) + L"\n"
+            L"原始值: " + FirstSelectedRowValue({ L"Original" }) + L"\n\n"
+            L"此操作不改内核状态，但之后将再也无法把该槽位恢复回原值。是否继续？";
+        break;
+    case KernelActionId::DriverImageRestore:
+        confirmTitle = L"恢复驱动镜像字段";
+        confirmText =
+            L"将按该行的 ManagedFields 掩码，把本驱动改过的镜像字段写回原值，并恢复加载器链。\n\n"
+            L"受管字段: " + FirstSelectedRowValue({ L"ManagedFields" }) + L"\n"
+            L"冲突字段: " + FirstSelectedRowValue({ L"ConflictFields" }) + L"\n\n"
+            L"冲突字段是已被第三方改写的部分，记录中的原值不再是它当时的值；"
+            L"恢复会覆盖对方的写入。是否继续？";
+        break;
+    case KernelActionId::DriverImageAbandon:
+        confirmTitle = L"放弃镜像恢复记录";
+        confirmText =
+            L"将永久丢弃该驱动镜像字段的恢复记录，当前值与链状态全部保持不变。\n\n"
+            L"受管字段: " + FirstSelectedRowValue({ L"ManagedFields" }) + L"\n\n"
+            L"此操作不改内核状态，但之后将再也无法恢复这些字段。是否继续？";
+        break;
+    case KernelActionId::DriverCommunicationRestore:
+        confirmTitle = L"恢复驱动通信";
+        confirmText =
+            L"将把该驱动被指向系统拒绝入口的派遣槽恢复为其自身处理例程。\n\n"
+            L"当前生效掩码: " + FirstSelectedRowValue({ L"ActiveMask" }) + L"\n"
+            L"可恢复掩码: " + FirstSelectedRowValue({ L"OwnedMask" }) + L"\n"
+            L"冲突掩码: " + FirstSelectedRowValue({ L"ConflictMask" }) + L"\n\n"
+            L"只恢复可恢复掩码内的槽位；冲突槽位由他人改写，会被有意跳过。是否继续？";
         break;
     case KernelActionId::PiDdbDeleteEntry:
         confirmTitle = L"删除 PiDDB 条目";
@@ -11613,6 +11682,20 @@ void KernelPage::ShowResultContextMenu(POINT screenPoint) {
             const bool hasEntry = !FirstSelectedRowField({ L"Entry", L"条目地址" }).empty();
             ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             ::AppendMenuW(menu, MF_STRING | (hasEntry ? MF_ENABLED : MF_GRAYED), kMenuPiDdbDeleteEntry, L"删除选中 PiDDB 条目");
+        } else if (descriptor->id == KernelFeatureId::DriverDispatchTable) {
+            const bool hasTarget = !FirstSelectedRowField({ L"ModuleBase" }).empty();
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverDispatchRestore, L"恢复派遣槽为原值");
+            ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverDispatchAbandon, L"放弃派遣恢复记录");
+        } else if (descriptor->id == KernelFeatureId::DriverImageFields) {
+            const bool hasTarget = !FirstSelectedRowField({ L"ModuleBase" }).empty();
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverImageRestore, L"恢复镜像字段为原值");
+            ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverImageAbandon, L"放弃镜像恢复记录");
+        } else if (descriptor->id == KernelFeatureId::DriverCommunication) {
+            const bool hasTarget = !FirstSelectedRowField({ L"DriverStart", L"ModuleBase" }).empty();
+            ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverCommunicationRestore, L"恢复驱动通信");
         } else if (descriptor->id == KernelFeatureId::DynData) {
             ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             ::AppendMenuW(menu, MF_STRING, kMenuDynDataApplyMatchedProfile, L"应用匹配 DynData Profile");
@@ -12492,6 +12575,20 @@ bool KernelPage::ShowR0EvidenceContextMenu(POINT screenPoint, const KernelFeatur
         const bool hasEntry = !FirstSelectedRowField({ L"Entry", L"条目地址" }).empty();
         ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         ::AppendMenuW(menu, MF_STRING | (hasEntry ? MF_ENABLED : MF_GRAYED), kMenuPiDdbDeleteEntry, L"删除选中 PiDDB 条目");
+    } else if (descriptor.id == KernelFeatureId::DriverDispatchTable) {
+        const bool hasTarget = !FirstSelectedRowField({ L"ModuleBase" }).empty();
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverDispatchRestore, L"恢复派遣槽为原值");
+        ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverDispatchAbandon, L"放弃派遣恢复记录");
+    } else if (descriptor.id == KernelFeatureId::DriverImageFields) {
+        const bool hasTarget = !FirstSelectedRowField({ L"ModuleBase" }).empty();
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverImageRestore, L"恢复镜像字段为原值");
+        ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverImageAbandon, L"放弃镜像恢复记录");
+    } else if (descriptor.id == KernelFeatureId::DriverCommunication) {
+        const bool hasTarget = !FirstSelectedRowField({ L"DriverStart", L"ModuleBase" }).empty();
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING | (hasTarget ? MF_ENABLED : MF_GRAYED), kMenuDriverCommunicationRestore, L"恢复驱动通信");
     }
 
     ::TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_LEFTALIGN, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);

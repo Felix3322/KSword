@@ -6137,6 +6137,167 @@ KernelOperationResult ExecutePiDdbDeleteEntry(const KernelActionRequest& request
     return result;
 }
 
+// DriverRecoveryIdentity is the target a restore/abandon addresses. Every field
+// is read back out of the row the user selected rather than retyped, because
+// these protocols verify identity and generation before touching anything: a
+// hand-entered value that no longer matches is refused, which looks like a bug
+// but is the protocol working.
+struct DriverRecoveryIdentity {
+    std::uint64_t moduleBase = 0;
+    std::uint64_t driverObjectAddress = 0;
+    std::uint32_t generation = 0;
+    unsigned long majorFunction = 0;
+    unsigned long fieldMask = 0;
+    std::wstring driverName;
+    bool valid = false;
+};
+
+DriverRecoveryIdentity BuildDriverRecoveryIdentity(const KernelActionRequest& request) {
+    DriverRecoveryIdentity identity;
+    identity.driverName = request.filterText;
+    identity.moduleBase = ParseHexOrDecimal(ActionRowField(request, { L"ModuleBase", L"DriverStart" }));
+    identity.driverObjectAddress = ParseHexOrDecimal(ActionRowField(request, { L"DriverObject" }));
+    identity.generation = static_cast<std::uint32_t>(ParseHexOrDecimal(ActionRowField(request, { L"Generation" })));
+    identity.majorFunction = static_cast<unsigned long>(ParseHexOrDecimal(ActionRowField(request, { L"MajorFunction" })));
+    identity.fieldMask = static_cast<unsigned long>(ParseHexOrDecimal(ActionRowField(request, { L"ManagedFields" })));
+    identity.valid = identity.moduleBase != 0 || !identity.driverName.empty();
+    return identity;
+}
+
+KernelOperationResult MakeRecoveryPrompt(const wchar_t* label) {
+    KernelOperationResult result;
+    result.supported = true;
+    result.success = false;
+    result.message = std::wstring(label) + L"：请先查询目标驱动并选中结果行，动作需要行内的模块基址与代次。";
+    return result;
+}
+
+// ExecuteDriverDispatchRecovery restores one MajorFunction slot to its recorded
+// original, or abandons the restore record while leaving the current value in
+// place. Abandon is the more dangerous of the two despite touching nothing: it
+// throws away the only record of what the slot used to be.
+KernelOperationResult ExecuteDriverDispatchRecovery(const KernelActionRequest& request) {
+    const DriverRecoveryIdentity identity = BuildDriverRecoveryIdentity(request);
+    const bool restore = request.actionId == KernelActionId::DriverDispatchRestore;
+    if (!identity.valid) {
+        return MakeRecoveryPrompt(restore ? L"恢复驱动派遣槽" : L"放弃派遣恢复记录");
+    }
+
+    const ksword::ark::DriverClient client;
+    const ksword::ark::DriverDispatchControlResult control = restore
+        ? client.restoreDriverDispatch(
+            identity.moduleBase, identity.driverName, identity.majorFunction,
+            identity.driverObjectAddress, identity.generation)
+        : client.abandonDriverDispatch(
+            identity.moduleBase, identity.driverName, identity.majorFunction,
+            identity.driverObjectAddress, identity.generation);
+
+    KernelOperationResult result;
+    result.supported = true;
+    result.destructiveAction = !restore;
+    result.success = control.io.ok && !control.unsupported;
+    result.message = std::wstring(restore ? L"派遣槽恢复" : L"派遣恢复记录放弃") +
+        (result.success ? L"完成。" : L"失败。") + L" " + Utf8ToWide(control.io.message);
+    result.rows.push_back(Row({
+        { L"Section", L"DriverDispatch" },
+        { L"Action", restore ? L"Restore" : L"Abandon" },
+        { L"Status", control.io.ok ? L"OK" : L"FAIL" },
+        { L"Unsupported", BoolText(control.unsupported) },
+        { L"MajorFunction", HexText(control.majorFunction) },
+        { L"State", std::to_wstring(control.state) },
+        { L"Generation", std::to_wstring(control.generation) },
+        { L"Current", HexText(control.currentDispatchAddress) },
+        { L"Original", HexText(control.originalDispatchAddress) },
+        { L"ResponseFlags", HexText(control.responseFlags) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(control.lastStatus)) },
+    }, L"Restore writes the recorded original back into the slot. Abandon changes nothing in the kernel "
+       L"but permanently drops the record of what the original was, so a later restore becomes "
+       L"impossible. The generation is checked first: if someone else altered the slot in between, the "
+       L"request is refused rather than applied on top."));
+    return result;
+}
+
+// ExecuteDriverImageRecovery restores the LDR image fields this driver still
+// holds records for, or drops those records. The field mask comes from the row's
+// ManagedFields so a restore covers exactly what was actually changed.
+KernelOperationResult ExecuteDriverImageRecovery(const KernelActionRequest& request) {
+    const DriverRecoveryIdentity identity = BuildDriverRecoveryIdentity(request);
+    const bool restore = request.actionId == KernelActionId::DriverImageRestore;
+    if (!identity.valid) {
+        return MakeRecoveryPrompt(restore ? L"恢复驱动镜像字段" : L"放弃镜像恢复记录");
+    }
+
+    const ksword::ark::DriverClient client;
+    const ksword::ark::DriverImageControlResult control = restore
+        ? client.restoreDriverImage(
+            identity.moduleBase, identity.driverName, identity.fieldMask, true,
+            identity.driverObjectAddress, identity.generation)
+        : client.abandonDriverImage(
+            identity.moduleBase, identity.driverName,
+            identity.driverObjectAddress, identity.generation);
+
+    KernelOperationResult result;
+    result.supported = true;
+    result.destructiveAction = !restore;
+    result.success = control.io.ok && !control.unsupported;
+    result.message = std::wstring(restore ? L"镜像字段恢复" : L"镜像恢复记录放弃") +
+        (result.success ? L"完成。" : L"失败。") + L" " + Utf8ToWide(control.io.message);
+    result.rows.push_back(Row({
+        { L"Section", L"DriverImage" },
+        { L"Action", restore ? L"Restore" : L"Abandon" },
+        { L"Status", control.io.ok ? L"OK" : L"FAIL" },
+        { L"Unsupported", BoolText(control.unsupported) },
+        { L"RequestedMask", HexText(identity.fieldMask) },
+        { L"ManagedFields", HexText(control.managedFieldMask) },
+        { L"OwnedFields", HexText(control.ownedFieldMask) },
+        { L"ConflictFields", HexText(control.conflictFieldMask) },
+        { L"ChangedFields", HexText(control.changedFieldMask) },
+        { L"State", std::to_wstring(control.state) },
+        { L"Generation", std::to_wstring(control.generation) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(control.lastStatus)) },
+    }, L"The restore mask comes from the row's ManagedFields, so it covers exactly the fields this "
+       L"driver actually changed. A field listed in conflictFieldMask was rewritten by a third party "
+       L"since — the recorded original is no longer what that field held before, and restoring it would "
+       L"overwrite someone else's value."));
+    return result;
+}
+
+// ExecuteDriverCommunicationRestore points a driver's dispatch surface back at
+// its own handlers after it was aimed at the system reject entry.
+KernelOperationResult ExecuteDriverCommunicationRestore(const KernelActionRequest& request) {
+    const DriverRecoveryIdentity identity = BuildDriverRecoveryIdentity(request);
+    if (!identity.valid) {
+        return MakeRecoveryPrompt(L"恢复驱动通信");
+    }
+
+    const ksword::ark::DriverClient client;
+    const ksword::ark::DriverCommunicationControlResult control =
+        client.restoreDriverCommunication(identity.moduleBase, identity.driverName);
+
+    KernelOperationResult result;
+    result.supported = true;
+    result.destructiveAction = false;
+    result.success = control.io.ok;
+    result.message = std::wstring(L"驱动通信恢复") + (result.success ? L"完成。" : L"失败。") +
+        L" " + Utf8ToWide(control.io.message);
+    result.rows.push_back(Row({
+        { L"Section", L"DriverCommunication" },
+        { L"Action", L"Restore" },
+        { L"Status", control.io.ok ? L"OK" : L"FAIL" },
+        { L"State", std::to_wstring(control.state) },
+        { L"TargetedMask", HexText(control.targetedMask) },
+        { L"ActiveMask", HexText(control.activeMask) },
+        { L"OwnedMask", HexText(control.ownedMask) },
+        { L"ConflictMask", HexText(control.conflictMask) },
+        { L"ChangedMask", HexText(control.changedMask) },
+        { L"Generation", std::to_wstring(control.generation) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(control.lastStatus)) },
+    }, L"Only the slots in ownedMask are restored — those are the ones this driver redirected and can "
+       L"still account for. Slots in conflictMask were rewritten by someone else and are deliberately "
+       L"left alone rather than reset to a value that is no longer theirs."));
+    return result;
+}
+
 KernelOperationResult ExecuteFileMonitorControl(const KernelActionRequest& request) {
     const ksword::ark::DriverClient client;
     KernelOperationResult result;
@@ -6639,6 +6800,14 @@ KernelOperationResult KernelFacade::ExecuteAction(const KernelActionRequest& req
         return ExecuteNetworkCaptureControl(request);
     case KernelActionId::PiDdbDeleteEntry:
         return ExecutePiDdbDeleteEntry(request);
+    case KernelActionId::DriverDispatchRestore:
+    case KernelActionId::DriverDispatchAbandon:
+        return ExecuteDriverDispatchRecovery(request);
+    case KernelActionId::DriverImageRestore:
+    case KernelActionId::DriverImageAbandon:
+        return ExecuteDriverImageRecovery(request);
+    case KernelActionId::DriverCommunicationRestore:
+        return ExecuteDriverCommunicationRestore(request);
     case KernelActionId::FileMonitorStartFsctl:
     case KernelActionId::FileMonitorDrain:
     case KernelActionId::FileMonitorClear:
