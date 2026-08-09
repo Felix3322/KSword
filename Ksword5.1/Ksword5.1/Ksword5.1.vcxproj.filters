@@ -68,6 +68,9 @@
     <ClCompile Include="MiscDock\SoundSource\SoundSourcePage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\RenderBenchmark\RenderBenchmarkPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1097,6 +1100,9 @@
     <QtMoc Include="MiscDock\SoundSource\SoundSourcePage.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="MiscDock\RenderBenchmark\RenderBenchmarkPage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h">
       <Filter>Header Files</Filter>
     </ClInclude>

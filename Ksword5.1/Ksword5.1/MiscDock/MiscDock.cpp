@@ -5,6 +5,7 @@
 #include "ContextMenuCleaner/ContextMenuCleanerTab.h"
 #include "Experimental/BugcheckGuardPage.h"
 #include "DiskEditor/DiskEditorTab.h"
+#include "RenderBenchmark/RenderBenchmarkPage.h"
 #include "SoundSource/SoundSourcePage.h"
 #include "SystemTime/SystemTimePage.h"
 
@@ -63,6 +64,7 @@ void MiscDock::initializeUi()
     m_contextMenuCleanerHostWidget = new QWidget(m_mainTabWidget);
     m_diskEditorHostWidget = new QWidget(m_mainTabWidget);
     m_applicationControlHostWidget = new QWidget(m_mainTabWidget);
+    m_renderBenchmarkHostWidget = new QWidget(m_mainTabWidget);
 
     m_bootEditorTabIndex = m_mainTabWidget->addTab(
         m_bootEditorHostWidget,
@@ -121,6 +123,19 @@ void MiscDock::initializeUi()
         m_applicationControlHostWidget,
         QIcon(QStringLiteral(":/Icon/process_details.svg")),
         QStringLiteral("应用控制"));
+
+    // 渲染基准页：
+    // - 量化主窗口整树重绘、拖动掉帧、DWM 合成与目标窗口响应；
+    // - 全部测量都在 UI 线程执行，只在用户显式点击时运行。
+    m_renderBenchmarkTabIndex = m_mainTabWidget->addTab(
+        m_renderBenchmarkHostWidget,
+        QIcon(QStringLiteral(":/Icon/codeeditor_replace.svg")),
+        QStringLiteral("渲染基准"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_renderBenchmarkHostWidget,
+        QStringLiteral("misc.render_benchmark.tab"),
+        QStringLiteral("渲染基准"));
 
     // 页签切换：按需初始化对应子页。
     connect(
@@ -184,6 +199,11 @@ void MiscDock::ensureTabInitialized(const int tabIndex)
     if (tabIndex == m_applicationControlTabIndex)
     {
         initializeApplicationControlPage();
+        return;
+    }
+    if (tabIndex == m_renderBenchmarkTabIndex)
+    {
+        initializeRenderBenchmarkPage();
         return;
     }
 }
@@ -270,4 +290,16 @@ void MiscDock::initializeApplicationControlPage()
     QVBoxLayout* const hostLayout = buildHostLayout(m_applicationControlHostWidget);
     m_applicationControlPage = new ks::misc::ApplicationControlPage(m_applicationControlHostWidget);
     hostLayout->addWidget(m_applicationControlPage, 1);
+}
+
+void MiscDock::initializeRenderBenchmarkPage()
+{
+    if (m_renderBenchmarkHostWidget == nullptr || m_renderBenchmarkPage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_renderBenchmarkHostWidget);
+    m_renderBenchmarkPage = new ks::misc::RenderBenchmarkPage(m_renderBenchmarkHostWidget);
+    hostLayout->addWidget(m_renderBenchmarkPage, 1);
 }

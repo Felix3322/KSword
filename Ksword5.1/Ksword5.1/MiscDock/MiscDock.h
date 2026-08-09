@@ -23,6 +23,7 @@ namespace ks::misc
     class SoundSourcePage;
     class SystemTimePage;
     class BugcheckGuardPage;
+    class RenderBenchmarkPage;
 }
 
 class MiscDock final : public QWidget
@@ -59,6 +60,7 @@ private:
     void initializeContextMenuCleanerTab();
     void initializeDiskEditorTab();
     void initializeApplicationControlPage();
+    void initializeRenderBenchmarkPage();
 
 private:
     QVBoxLayout* m_rootLayout = nullptr;      // m_rootLayout：杂项页根布局。
@@ -74,6 +76,7 @@ private:
     QWidget* m_contextMenuCleanerHostWidget = nullptr;  // m_contextMenuCleanerHostWidget：Shell 关联管理页占位控件。
     QWidget* m_diskEditorHostWidget = nullptr;          // m_diskEditorHostWidget：磁盘编辑页占位控件。
     QWidget* m_applicationControlHostWidget = nullptr;  // m_applicationControlHostWidget：应用控制页占位控件。
+    QWidget* m_renderBenchmarkHostWidget = nullptr;     // m_renderBenchmarkHostWidget：渲染基准页占位控件。
 
     // ===================== 页签索引 =====================
     int m_bootEditorTabIndex = -1;          // m_bootEditorTabIndex：引导页页签索引。
@@ -83,6 +86,7 @@ private:
     int m_contextMenuCleanerTabIndex = -1;  // m_contextMenuCleanerTabIndex：Shell 关联管理页页签索引。
     int m_diskEditorTabIndex = -1;          // m_diskEditorTabIndex：磁盘编辑页页签索引。
     int m_applicationControlTabIndex = -1;  // m_applicationControlTabIndex：应用控制页页签索引。
+    int m_renderBenchmarkTabIndex = -1;     // m_renderBenchmarkTabIndex：渲染基准页页签索引。
 
     // ===================== 子页组件（延迟赋值，未初始化时为 nullptr） =====================
     BootEditorTab* m_bootEditorTab = nullptr; // m_bootEditorTab：引导编辑器页组件。
@@ -92,4 +96,5 @@ private:
     ks::misc::SoundSourcePage* m_soundSourcePage = nullptr; // m_soundSourcePage：全局输出声音来源检测页。
     ks::misc::SystemTimePage* m_systemTimePage = nullptr; // m_systemTimePage：系统全局变速控制页。
     ks::misc::BugcheckGuardPage* m_bugcheckGuardPage = nullptr; // m_bugcheckGuardPage：实验性一次性蓝屏缓冲控制页。
+    ks::misc::RenderBenchmarkPage* m_renderBenchmarkPage = nullptr; // m_renderBenchmarkPage：窗口渲染与 DWM 合成基准页。
 };
