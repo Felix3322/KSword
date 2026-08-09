@@ -157,6 +157,170 @@ Return Value:
     }
 }
 
+static VOID
+KswordArkFileIrpReleaseManualName(
+    _Inout_ PKSWORD_ARK_FILE_IRP_TARGET Target,
+    _In_opt_ PFILE_OBJECT FileObject
+    )
+/*++
+
+Routine Description:
+
+    把手工 CREATE 用的名字缓冲从 FILE_OBJECT 上摘下来并释放。
+
+    这块缓冲挂到 FILE_OBJECT->FileName.Buffer 上之后就有了第二个潜在释放者：
+    引用归零时 nt!IopDeleteFile 会检查 FileName.Length，非零就用 tag 0 把
+    FileName.Buffer 释放掉（nt!IopDeleteFile+0x195）。本模块若也按自己的 tag 释放
+    同一个指针，就是一次确定性的重复释放 —— 每次 open/close 循环都会发生。
+
+    这种错误不一定当场崩：池块头被写坏后，可能要等后续某次无关的池操作做一致性校验
+    才爆 0x13A KERNEL_MODE_HEAP_CORRUPTION，栈上指向的是发现者而不是肇事者
+    （实测里发现者是 ndis/NETIO，而损坏块的归属标记是本模块的 KsFi）。开启驱动验证器
+    特殊池时，已释放块所在页已被取消映射，第二次释放读池头当场触发
+    0x50 PAGE_FAULT_IN_NONPAGED_AREA。
+
+    因此"摘"和"放"必须成对做，且必须在 ObDereferenceObject 之前：先清空 FileName
+    让 IopDeleteFile 无事可做，再由本模块按自己的 tag 释放。另有一种情况是文件系统
+    在重解析（reparse / 挂载点 / 符号链接 / DFS）时换掉了 FileName.Buffer，
+    此时 Target->ManualNameBuffer 已是野指针，一律不碰。
+
+Arguments:
+
+    Target - 目标视图；返回时 ManualNameBuffer 一律置空。
+    FileObject - 关联文件对象；为 NULL 表示尚未交给文件系统。
+
+Return Value:
+
+    无。
+
+--*/
+{
+    PWCHAR attached = (FileObject != NULL) ? FileObject->FileName.Buffer : NULL;
+
+    if (FileObject != NULL) {
+        //
+        // 先把缓冲从 FILE_OBJECT 上摘下来。IopDeleteFile 判的是 FileName.Length：
+        // 非零就会用 tag 0 再释放一次 FileName.Buffer（nt!IopDeleteFile+0x195）。
+        // 摘的动作和释放动作必须成对，缺一半就是重复释放或泄漏。
+        //
+        FileObject->FileName.Buffer = NULL;
+        FileObject->FileName.Length = 0U;
+        FileObject->FileName.MaximumLength = 0U;
+    }
+
+    if (FileObject == NULL || attached == Target->ManualNameBuffer) {
+        //
+        // 缓冲仍是本模块那块（两者同为 NULL 也走这里，释放是空操作）。
+        // 注意"指针没变"不等于"文件系统没动过"：nt!IoReplaceFileObjectName 在新名字
+        // 不超过 MaximumLength 时是原地 memset+memcpy（+0x2e 分支），指针原样保留。
+        // 上面那 32 个 WCHAR 的余量恰恰把重解析主动导向了这条原地改写分支。
+        // 但无论内容怎么变，这块的所有权仍在本模块，按本模块的 tag 释放是对的。
+        //
+        KswordArkFileIrpFree(Target->ManualNameBuffer);
+    }
+    else if (attached != NULL) {
+        //
+        // 指针被换过。nt!IoReplaceFileObjectName 的重新分配分支（+0x7f）用
+        // ExAllocatePool2(POOL_FLAG_PAGED, …, 'IoNm') 拿新块，并在 +0xa3 用
+        // ExFreePoolWithTag(旧块, 0) 把本模块那块直接释放掉了 —— tag 传 0 不做校验，
+        // 所以本模块的池块确实可以被一个无关组件放掉。因此 Target->ManualNameBuffer
+        // 此刻是野指针，一个字节都不能再碰。
+        //
+        // 换上来的这块按 I/O 管理器的约定归"丢弃 FILE_OBJECT 的一方"释放，且一律用
+        // tag 0（IopDeleteFile+0x195 与 IopParseDevice+0x16f0 都是这么做的）。既然
+        // 收尾权已经收归本模块，这块也得由本模块照同样的规矩放掉，否则就是泄漏。
+        //
+        ExFreePoolWithTag(attached, 0);
+    }
+
+    Target->ManualNameBuffer = NULL;
+}
+
+static VOID
+KswordArkFileIrpDisposeManualFileObject(
+    _Inout_ PKSWORD_ARK_FILE_IRP_TARGET Target,
+    _In_ PFILE_OBJECT FileObject
+    )
+/*++
+
+Routine Description:
+
+    丢弃手工构造的 FILE_OBJECT，且不让 I/O 管理器把收尾再做一遍。
+
+    引用归零会触发 nt!IopDeleteFile，它按"普通 FILE_OBJECT"的约定收尾，一口气做四件事：
+    经 IopCloseFile 发 IRP_MJ_CLEANUP、自己发 IRP_MJ_CLOSE、减一次 VPB 引用、
+    用 tag 0 释放 FileName.Buffer。判据是 Flags 里的 FO_HANDLE_CREATED /
+    FO_FILE_OPEN_CANCELLED，而手工构造的对象从来没进过句柄表，这两位恒为 0，
+    所以四件事全都会执行。
+
+    这四件事本模块自己全做过，而且是按 CREATE 的实际接收设备（Target->CreateDevice）
+    做的 —— I/O 管理器只会发给 IoGetRelatedDeviceObject 返回的栈顶设备，那正是本模块
+    要绕开的层。所以收尾权必须留在本模块，重复的那一份要掐掉。
+
+    掐法是 IopDeleteFile 的第一道判据：FileObject->DeviceObject 为 NULL 时它只调
+    IopDeleteFileObjectExtension 就返回。Vpb 与 FileName 一并清掉，这样即使将来
+    判据挪了位置，减 VPB 引用和释放名字缓冲这两条也各自还有一道独立的闸。
+
+    这不是绕过内核的取巧手段：nt!IopParseDevice 丢弃自己那个 FILE_OBJECT 时，
+    做的就是"释放名字缓冲 → FileName.Length 清零 → DeviceObject 置空 → 解引用"。
+
+Arguments:
+
+    Target - 目标视图；返回时 ManualNameBuffer 置空。
+    FileObject - 待丢弃的手工文件对象。
+
+Return Value:
+
+    无。
+
+--*/
+{
+    KswordArkFileIrpReleaseManualName(Target, FileObject);
+    FileObject->DeviceObject = NULL;
+    FileObject->Vpb = NULL;
+    ObDereferenceObject(FileObject);
+}
+
+static VOID
+KswordArkFileIrpCloseVolumeAnchor(
+    _In_opt_ PFILE_OBJECT VolumeFileObject,
+    _In_opt_ HANDLE VolumeHandle
+    )
+/*++
+
+Routine Description:
+
+    释放"卷锚点"——手工 CREATE 期间用来打开卷的那个句柄与文件对象。
+
+    手工路径从卷文件对象身上借出三个裸指针：挂载的文件系统设备、真实卷设备、
+    以及卷的 VPB。这三者的存活完全靠卷文件对象这一个引用担保：VPB 与其上挂载的
+    FS 设备由 VPB->ReferenceCount 保活，而卷上最后一个 FILE_OBJECT 消失后，
+    强制卸载 / 弹出介质 / BitLocker 锁卷都可以让 VPB 被回收、FS 设备被 IoDeleteDevice。
+    IoGetBaseFileSystemDeviceObject 和 Vpb->DeviceObject 返回的都是借用指针，
+    文档不保证源 FILE_OBJECT 释放之后仍然有效。
+
+    因此锚点必须一直持有到手工 CREATE 成功、本模块补上自己的设备与 VPB 引用为止，
+    在此之前的任何一条退出路径上才释放。提前放掉就是拿着已释放的设备对象发 IRP。
+
+Arguments:
+
+    VolumeFileObject - 卷文件对象；允许为 NULL。
+    VolumeHandle - 卷句柄；允许为 NULL。
+
+Return Value:
+
+    无。
+
+--*/
+{
+    if (VolumeFileObject != NULL) {
+        ObDereferenceObject(VolumeFileObject);
+    }
+    if (VolumeHandle != NULL) {
+        ZwClose(VolumeHandle);
+    }
+}
+
 static NTSTATUS
 KswordArkFileIrpCompletion(
     _In_ PDEVICE_OBJECT DeviceObject,
@@ -713,10 +877,12 @@ Return Value:
         fileSystemDevice = IoGetRelatedDeviceObject(volumeFileObject);
     }
 
-    ObDereferenceObject(volumeFileObject);
-    ZwClose(volumeHandle);
-
+    //
+    // 卷锚点一直持有到 CREATE 成功为止：上面这几个设备指针和下面要读的 realDevice->Vpb
+    // 都是从卷文件对象身上借来的，锚点一放，它们随时可能失效。
+    //
     if (fileSystemDevice == NULL || realDevice == NULL) {
+        KswordArkFileIrpCloseVolumeAnchor(volumeFileObject, volumeHandle);
         return STATUS_INVALID_DEVICE_STATE;
     }
 
@@ -739,6 +905,7 @@ Return Value:
         0U,
         (PVOID*)&manualFileObject);
     if (!NT_SUCCESS(status)) {
+        KswordArkFileIrpCloseVolumeAnchor(volumeFileObject, volumeHandle);
         return status;
     }
 
@@ -755,7 +922,8 @@ Return Value:
     nameBufferBytes = (ULONG)((relativeChars + 32U) * sizeof(WCHAR));
     Target->ManualNameBuffer = (PWCHAR)KswordArkFileIrpAllocate(nameBufferBytes);
     if (Target->ManualNameBuffer == NULL) {
-        ObDereferenceObject(manualFileObject);
+        KswordArkFileIrpDisposeManualFileObject(Target, manualFileObject);
+        KswordArkFileIrpCloseVolumeAnchor(volumeFileObject, volumeHandle);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     manualFileObject->FileName.Buffer = Target->ManualNameBuffer;
@@ -784,9 +952,8 @@ Return Value:
      */
     auxAccessData = KswordArkFileIrpAllocate(PAGE_SIZE);
     if (auxAccessData == NULL) {
-        KswordArkFileIrpFree(Target->ManualNameBuffer);
-        Target->ManualNameBuffer = NULL;
-        ObDereferenceObject(manualFileObject);
+        KswordArkFileIrpDisposeManualFileObject(Target, manualFileObject);
+        KswordArkFileIrpCloseVolumeAnchor(volumeFileObject, volumeHandle);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -813,9 +980,8 @@ Return Value:
             SeReleaseSubjectContext(&accessState.SubjectSecurityContext);
         }
         KswordArkFileIrpFree(auxAccessData);
-        KswordArkFileIrpFree(Target->ManualNameBuffer);
-        Target->ManualNameBuffer = NULL;
-        ObDereferenceObject(manualFileObject);
+        KswordArkFileIrpDisposeManualFileObject(Target, manualFileObject);
+        KswordArkFileIrpCloseVolumeAnchor(volumeFileObject, volumeHandle);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -873,9 +1039,13 @@ Return Value:
     KswordArkFileIrpFree(auxAccessData);
 
     if (!NT_SUCCESS(status)) {
-        KswordArkFileIrpFree(Target->ManualNameBuffer);
-        Target->ManualNameBuffer = NULL;
-        ObDereferenceObject(manualFileObject);
+        //
+        // CREATE 失败也必须走缴械入口：文件系统既然没打开成功，就不该再收到一份
+        // CLEANUP/CLOSE，而 IopDeleteFile 并不看 CREATE 的结果，只看 FILE_OBJECT
+        // 的形状。此外文件系统可能在失败前已经重解析过并换掉了 FileName.Buffer。
+        //
+        KswordArkFileIrpDisposeManualFileObject(Target, manualFileObject);
+        KswordArkFileIrpCloseVolumeAnchor(volumeFileObject, volumeHandle);
         return status;
     }
 
@@ -883,9 +1053,27 @@ Return Value:
     // 设备与 VPB 引用，收尾阶段的 CLEANUP/CLOSE 才配对。
     InterlockedIncrement(&manualFileObject->DeviceObject->ReferenceCount);
     if (manualFileObject->Vpb != NULL) {
-        InterlockedIncrement((PLONG)&manualFileObject->Vpb->ReferenceCount);
+        KIRQL vpbIrql = 0;
+
+        //
+        // VPB->ReferenceCount 必须在 VPB 自旋锁下改。内核那一侧
+        // （nt!IopDecrementVpbRefCount）做的是普通的 dec [Vpb+0x1C]，不是原子指令，
+        // 靠队列自旋锁保证互斥；而 IoAcquireVpbSpinLock 内部就是
+        // KeAcquireQueuedSpinLock(9)，与它是同一把锁（两侧反汇编已核对）。
+        // 用 Interlocked 与之并发等于一边加锁一边不加锁，更新会丢 —— 这个计数一旦
+        // 丢失，卷就可能在本模块仍持有文件对象时被卸载。
+        //
+        IoAcquireVpbSpinLock(&vpbIrql);
+        manualFileObject->Vpb->ReferenceCount += 1;
+        IoReleaseVpbSpinLock(vpbIrql);
         Target->VpbReferenced = TRUE;
     }
+
+    //
+    // 到这里本模块已经对设备与 VPB 各自持有一份自己的引用，借来的指针不再依赖
+    // 卷锚点担保，可以放掉锚点了。
+    //
+    KswordArkFileIrpCloseVolumeAnchor(volumeFileObject, volumeHandle);
 
     Target->FileObject = manualFileObject;
     Target->Manual = TRUE;
@@ -1040,7 +1228,12 @@ Return Value:
             *StageFlagsOut |= KSWORD_ARK_FILE_IRP_STAGE_CLEANUP;
 
             if (Target->VpbReferenced && Target->FileObject->Vpb != NULL) {
-                InterlockedDecrement((PLONG)&Target->FileObject->Vpb->ReferenceCount);
+                KIRQL vpbIrql = 0;
+
+                // 与 CREATE 成功后那次自增配对，同样必须在 VPB 自旋锁下做。
+                IoAcquireVpbSpinLock(&vpbIrql);
+                Target->FileObject->Vpb->ReferenceCount -= 1;
+                IoReleaseVpbSpinLock(vpbIrql);
                 Target->VpbReferenced = FALSE;
             }
 
@@ -1055,12 +1248,13 @@ Return Value:
         if (Target->FileObject->DeviceObject != NULL) {
             InterlockedDecrement(&Target->FileObject->DeviceObject->ReferenceCount);
         }
-        ObDereferenceObject(Target->FileObject);
+        //
+        // 上面这一整段（CLEANUP、VPB 减引用、CLOSE、设备减引用）正是 IopDeleteFile
+        // 在引用归零时会自己再做一遍的事。丢弃入口会先把 FILE_OBJECT 缴械再解引用，
+        // 顺序不能颠倒：缴械要读 DeviceObject/Vpb，而减引用也要读，都得排在解引用之前。
+        //
+        KswordArkFileIrpDisposeManualFileObject(Target, Target->FileObject);
         Target->FileObject = NULL;
-
-        // 文件系统可能在重解析时换掉 FileName.Buffer；只释放仍属于本模块的那块。
-        KswordArkFileIrpFree(Target->ManualNameBuffer);
-        Target->ManualNameBuffer = NULL;
         return;
     }
 
@@ -1387,13 +1581,19 @@ Return Value:
         }
         break;
 
+    // 下面三个控制码分支必须和其它分支一样、只用 DataBytes 推导长度。
+    // Request->inputBytes / outputBytes 是 R3 自述值，而实际交给目标驱动的缓冲
+    // 只有 DataBytes 字节（= max(实际输入长度, 与响应容量取小后的输出长度)）。
+    // 一旦自述值大于 DataBytes，目标驱动就会按自述长度往这块池内存里写，
+    // 直接越过分配边界 —— 正是 0x13A KERNEL_MODE_HEAP_CORRUPTION 的成因。
+    // 取小不改变正常路径：正常情况下两者本就相等。
     case IRP_MJ_FILE_SYSTEM_CONTROL:
         StackLocation->Parameters.FileSystemControl.FsControlCode =
             Request->controlCode;
         StackLocation->Parameters.FileSystemControl.InputBufferLength =
-            Request->inputBytes;
+            (Request->inputBytes < DataBytes) ? Request->inputBytes : DataBytes;
         StackLocation->Parameters.FileSystemControl.OutputBufferLength =
-            Request->outputBytes;
+            (Request->outputBytes < DataBytes) ? Request->outputBytes : DataBytes;
         break;
 
     case IRP_MJ_DEVICE_CONTROL:
@@ -1401,9 +1601,9 @@ Return Value:
         StackLocation->Parameters.DeviceIoControl.IoControlCode =
             Request->controlCode;
         StackLocation->Parameters.DeviceIoControl.InputBufferLength =
-            Request->inputBytes;
+            (Request->inputBytes < DataBytes) ? Request->inputBytes : DataBytes;
         StackLocation->Parameters.DeviceIoControl.OutputBufferLength =
-            Request->outputBytes;
+            (Request->outputBytes < DataBytes) ? Request->outputBytes : DataBytes;
         break;
 
     case IRP_MJ_LOCK_CONTROL:

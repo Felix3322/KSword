@@ -613,8 +613,15 @@ KswordARKHwidCompletionRoutine(
         oldRoutine = completionContext->OldRoutine;
         oldContext = completionContext->OldContext;
         oldControl = completionContext->OldControl;
-        KswordARKHwidRewriteSystemBuffer(completionContext, Irp);
-        KswordARKHwidRewriteDirectOrUserBuffer(completionContext, Irp);
+        /*
+         * 中文说明：改写只在请求成功时做——失败或取消的 IRP，输出缓冲的内容没有意义，
+         * 目标驱动甚至可能根本没往里写过。但上下文无论成败都必须在这里释放：
+         * 这是全模块唯一的 KSW_HWID_POOL_TAG 释放点，漏一次就是一次非分页池泄漏。
+         */
+        if (Irp != NULL && NT_SUCCESS(Irp->IoStatus.Status)) {
+            KswordARKHwidRewriteSystemBuffer(completionContext, Irp);
+            KswordARKHwidRewriteDirectOrUserBuffer(completionContext, Irp);
+        }
         ExFreePoolWithTag(completionContext, KSW_HWID_POOL_TAG);
     }
 
@@ -626,7 +633,14 @@ KswordARKHwidCompletionRoutine(
             (!NT_SUCCESS(completionStatus) && completionStatus != STATUS_CANCELLED && ((oldControl & SL_INVOKE_ON_ERROR) != 0U));
     }
 
-    if (oldRoutine != NULL && callOldRoutine != FALSE && Irp != NULL && Irp->StackCount > 1) {
+    /*
+     * 中文说明：本模块覆盖了这个栈位置原有的完成例程，IoCompleteRequest 已经把该位置
+     * 消费掉，不会再替它调用原例程——所以"是否调用"只能由上面按 OldControl 的
+     * SL_INVOKE_ON_* 位与完成状态重建出来的 callOldRoutine 决定。
+     * 不能再与 Irp->StackCount 相与：StackCount 是 IRP 分配时的栈位置总数，
+     * 与"上层是否安装过完成例程"无关，拿它当闸门会在单层设备栈上静默吞掉上层的回调。
+     */
+    if (oldRoutine != NULL && callOldRoutine != FALSE) {
         return oldRoutine(Device, Irp, oldContext);
     }
 
@@ -733,6 +747,14 @@ KswordARKHwidPrepareDispatchCompletion(
 
     IoStack->Context = completionContext;
     IoStack->CompletionRoutine = KswordARKHwidCompletionRoutine;
-    IoStack->Control |= SL_INVOKE_ON_SUCCESS;
+    /*
+     * 中文说明：三个 SL_INVOKE_ON_* 位必须全置。completionContext 只有完成例程里那一处
+     * 释放点，而完成例程只在 Control 里对应位与完成状态匹配时才被调用——只置
+     * SL_INVOKE_ON_SUCCESS 的话，IRP 一旦以非成功状态完成，这块非分页池就再没人回收。
+     * 这不是罕见路径：STORAGE_QUERY_PROPERTY / MOUNTMGR_QUERY_POINTS 的标准用法是先用
+     * 小缓冲探长度、拿 STATUS_BUFFER_OVERFLOW；ATA_PASS_THROUGH 在 NVMe 上普遍返回
+     * STATUS_INVALID_DEVICE_REQUEST。原完成例程的调用条件另按 OldControl 判定，不受影响。
+     */
+    IoStack->Control |= SL_INVOKE_ON_SUCCESS | SL_INVOKE_ON_ERROR | SL_INVOKE_ON_CANCEL;
     return TRUE;
 }
