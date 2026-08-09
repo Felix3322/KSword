@@ -280,20 +280,10 @@ void MiscDock::activateTabByIndex(const int tabIndex)
     m_mainTabWidget->setCurrentIndex(tabIndex);
 }
 
-void MiscDock::activateScannerTab()
-{
-    activateTabByIndex(m_scannerTabIndex);
-}
-
 MinidumpDock* MiscDock::activateMinidumpTab()
 {
     activateTabByIndex(m_minidumpTabIndex);
     return m_minidumpPage;
-}
-
-void MiscDock::activatePluginTab()
-{
-    activateTabByIndex(m_pluginTabIndex);
 }
 
 void MiscDock::initializeBootEditorTab()

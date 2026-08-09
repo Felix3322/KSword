@@ -40,22 +40,12 @@ public:
     explicit MiscDock(QWidget* parent = nullptr);
     ~MiscDock() override = default;
 
-    // ===================== 跨模块跳转入口 =====================
-    // 说明：
-    // - “扫描器”“转储分析”“插件”原本是顶层 Dock，外部按 dockKey 直接激活；
-    // - 并入杂项页后，这些入口统一改为“激活杂项 Dock + 调用下面的方法切到对应子页”；
-    // - 每个方法都会先按需构造子页，保证返回时拿到的是真实控件而不是占位控件。
-
-    // activateScannerTab：切换到“扫描器”子页。
-    void activateScannerTab();
-
-    // activateMinidumpTab：
-    // - 切换到“转储分析”子页并返回其控件；
-    // - 返回 nullptr 表示子页尚未成功构造，调用方应放弃后续操作。
+    // activateMinidumpTab 作用：
+    // - 切换到“转储分析”子页并返回其控件；该页原为顶层 Dock，现已并入本页；
+    // - 会先按需构造子页，保证返回的是真实控件而不是占位控件；
+    // - 返回 nullptr 表示子页未能构造，调用方应放弃后续操作。
+    // 唯一调用方是 MainWindow 的“发现新转储后自动解析”链路。
     MinidumpDock* activateMinidumpTab();
-
-    // activatePluginTab：切换到“插件”子页。
-    void activatePluginTab();
 
 private:
     // initializeUi：

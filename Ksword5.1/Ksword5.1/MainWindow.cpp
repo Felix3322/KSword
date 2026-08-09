@@ -9748,16 +9748,8 @@ void MainWindow::initDockWidgets()
     const QString startupDockKey = m_currentAppearanceSettings.startupDefaultTabKey.trimmed().toLower();
     const auto shouldEagerLoad = [&startupDockKey](const QString& dockKey) -> bool
         {
-            // 扫描器 / 转储分析 / 插件已并入杂项页：
-            // 旧配置里保存的这三个 key 仍然有效，此时要预加载的是承载它们的杂项 Dock。
-            const bool mergedIntoMisc =
-                startupDockKey == QStringLiteral("scanner") ||
-                startupDockKey == QStringLiteral("minidump") ||
-                startupDockKey == QStringLiteral("plugin");
-
             return dockKey == QStringLiteral("welcome") ||
                 (startupDockKey == QStringLiteral("winapi") && dockKey == QStringLiteral("monitor")) ||
-                (mergedIntoMisc && dockKey == QStringLiteral("misc")) ||
                 dockKey == startupDockKey;
         };
 
@@ -10707,12 +10699,6 @@ void MainWindow::initAppearanceSettings()
             targetDock = m_dockFile;
             targetName = QStringLiteral("文件");
         }
-        else if (normalizedKey == QStringLiteral("scanner"))
-        {
-            // 扫描器已并入杂项页：继续接受旧的 scanner 键，落到杂项 Dock 并在下面切到对应子页。
-            targetDock = m_dockMisc;
-            targetName = QStringLiteral("杂项/扫描器");
-        }
         else if (normalizedKey == QStringLiteral("driver"))
         {
             targetDock = m_dockDriver;
@@ -10774,18 +10760,6 @@ void MainWindow::initAppearanceSettings()
             targetDock = m_dockMisc;
             targetName = QStringLiteral("杂项");
         }
-        else if (normalizedKey == QStringLiteral("minidump"))
-        {
-            // 转储分析已并入杂项页，处理方式与 scanner 一致。
-            targetDock = m_dockMisc;
-            targetName = QStringLiteral("杂项/转储分析");
-        }
-        else if (normalizedKey == QStringLiteral("plugin"))
-        {
-            // 插件页已并入杂项页，处理方式与 scanner 一致。
-            targetDock = m_dockMisc;
-            targetName = QStringLiteral("杂项/插件");
-        }
         else if (normalizedKey == QStringLiteral("winapi"))
         {
             targetDock = m_dockMonitorTab;
@@ -10809,23 +10783,6 @@ void MainWindow::initAppearanceSettings()
             if (normalizedKey == QStringLiteral("winapi") && m_monitorWidget != nullptr)
             {
                 m_monitorWidget->activateMonitorTab(QStringLiteral("winapi"));
-            }
-            // 扫描器 / 转储分析 / 插件已并入杂项页：
-            // 激活杂项 Dock 之后还要把内部页签切到用户实际指定的那一页。
-            if (m_miscWidget != nullptr)
-            {
-                if (normalizedKey == QStringLiteral("scanner"))
-                {
-                    m_miscWidget->activateScannerTab();
-                }
-                else if (normalizedKey == QStringLiteral("minidump"))
-                {
-                    (void)m_miscWidget->activateMinidumpTab();
-                }
-                else if (normalizedKey == QStringLiteral("plugin"))
-                {
-                    m_miscWidget->activatePluginTab();
-                }
             }
             withTemporaryNonTopMostForDockSwitch([targetDock]()
                 {
