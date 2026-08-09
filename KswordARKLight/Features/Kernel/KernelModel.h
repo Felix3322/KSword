@@ -59,7 +59,9 @@ enum class KernelFeatureId : std::uint32_t {
     PlatformAudit,
     SystemTimeState,
     I8042Audit,
-    PiDdbCache
+    PiDdbCache,
+    RawDiskSectors,
+    NetworkTrafficPackets
 };
 
 // KernelFeatureBackend describes where a feature obtains data. Input is fixed

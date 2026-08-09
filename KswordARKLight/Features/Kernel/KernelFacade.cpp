@@ -2922,6 +2922,8 @@ bool IsArkDriverBacked(const KernelFeatureId id) {
     case KernelFeatureId::SystemTimeState:
     case KernelFeatureId::I8042Audit:
     case KernelFeatureId::PiDdbCache:
+    case KernelFeatureId::RawDiskSectors:
+    case KernelFeatureId::NetworkTrafficPackets:
         return true;
     default:
         return false;
@@ -4668,6 +4670,198 @@ KernelOperationResult QueryPiDdbCache(const KernelRequest& request) {
             { L"TimeDateStamp", HexText(entry.timeDateStamp) },
             { L"LoadStatus", HexText(static_cast<std::uint32_t>(entry.loadStatus)) },
             { L"Entry", HexText(entry.entryAddress) },
+        }, detail.str()));
+    }
+    return result;
+}
+
+// FormatIpAddress renders one 16-byte address slot. IPv4 rows leave the trailing
+// 12 bytes zeroed, so the family decides how many of them mean anything.
+std::wstring FormatIpAddress(const unsigned char* address, const unsigned long addressFamily) {
+    if (address == nullptr) {
+        return {};
+    }
+    std::wostringstream text;
+    // AF_INET6 is 23 on Windows; anything else is rendered as IPv4 because the
+    // driver only ever fills these two shapes.
+    if (addressFamily == 23UL) {
+        for (int group = 0; group < 8; ++group) {
+            if (group != 0) {
+                text << L':';
+            }
+            const unsigned value =
+                (static_cast<unsigned>(address[group * 2]) << 8) | static_cast<unsigned>(address[group * 2 + 1]);
+            text << std::hex << value;
+        }
+        return text.str();
+    }
+    text << static_cast<unsigned>(address[0]) << L'.' << static_cast<unsigned>(address[1]) << L'.'
+         << static_cast<unsigned>(address[2]) << L'.' << static_cast<unsigned>(address[3]);
+    return text.str();
+}
+
+// QueryRawDiskSectors reads sector-aligned bytes straight off a physical disk
+// through the driver's storage backend. The disk number comes from the filter
+// box and the byte offset from the start-address box; both are required because
+// there is no sane default for "which disk to read".
+KernelOperationResult QueryRawDiskSectors(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    unsigned long diskNumber = 0;
+    bool diskNumberValid = false;
+    if (!request.filterText.empty()) {
+        try {
+            diskNumber = static_cast<unsigned long>(std::stoul(request.filterText));
+            diskNumberValid = true;
+        } catch (const std::exception&) {
+            diskNumberValid = false;
+        }
+    }
+    if (!diskNumberValid) {
+        KernelOperationResult prompt;
+        prompt.supported = true;
+        prompt.success = false;
+        prompt.message = L"物理磁盘扇区：请在过滤框填写磁盘号（0 表示 PhysicalDrive0），起点地址填字节偏移。";
+        prompt.rows.push_back(Row({
+            { L"Hint", L"需要磁盘号" },
+            { L"Filter", L"磁盘号，例如 0" },
+            { L"StartAddress", L"字节偏移，会被向下对齐到扇区边界" },
+            { L"MaxRows", L"读取字节数，默认一个扇区" },
+        }, L"Reading a physical disk has no meaningful default target, so the disk number is required "
+           L"rather than guessed."));
+        return prompt;
+    }
+
+    KernelOperationResult result;
+    const ksword::ark::RawDiskBackendResult backend = client.queryRawDiskBackend(diskNumber);
+    ApplyIoSummary(request, L"Raw Disk", backend.io, result);
+    const KSWORD_ARK_QUERY_RAW_DISK_BACKEND_RESPONSE& info = backend.response;
+    const unsigned long sectorSize = info.logicalSectorSize != 0 ? info.logicalSectorSize : 512UL;
+    result.rows.push_back(Row({
+        { L"Status", backend.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(backend.unsupported) },
+        { L"Disk", std::to_wstring(info.diskNumber) },
+        { L"BackendStatus", HexText(info.status) },
+        { L"Capabilities", HexText(info.capabilityFlags) },
+        { L"AvailableBackends", HexText(info.availableBackendMask) },
+        { L"LogicalSector", std::to_wstring(info.logicalSectorSize) },
+        { L"PhysicalSector", std::to_wstring(info.physicalSectorSize) },
+        { L"DiskSize", std::to_wstring(info.diskSizeBytes) },
+        { L"BusType", std::to_wstring(info.busType) },
+        { L"Model", FixedWideField(info.model, KSWORD_ARK_RAW_DISK_MODEL_CHARS) },
+        { L"Serial", FixedWideField(info.serial, KSWORD_ARK_RAW_DISK_SERIAL_CHARS) },
+        { L"DevicePath", FixedWideField(info.devicePath, KSWORD_ARK_RAW_DISK_PATH_CHARS) },
+        { L"Detail", FixedWideField(info.detail, KSWORD_ARK_RAW_DISK_DETAIL_CHARS) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(info.lastStatus)) },
+    }, L"Backend capability for this disk. availableBackendMask lists which of the three storage paths "
+       L"the driver can actually use here."));
+    if (!backend.io.ok) {
+        return result;
+    }
+
+    // Both offset and length are snapped to the sector grid, because the storage
+    // path rejects anything else and a silent partial read would be worse.
+    const std::uint64_t alignedOffset = (request.startAddress / sectorSize) * sectorSize;
+    unsigned long requestedLength = request.maxRows == 0 ? sectorSize : request.maxRows;
+    requestedLength = ((requestedLength + sectorSize - 1) / sectorSize) * sectorSize;
+    if (requestedLength > KSWORD_ARK_RAW_DISK_MAX_TRANSFER_BYTES) {
+        requestedLength = KSWORD_ARK_RAW_DISK_MAX_TRANSFER_BYTES;
+    }
+
+    const ksword::ark::RawDiskReadResult read =
+        client.readRawDisk(diskNumber, 0UL, alignedOffset, requestedLength);
+    result.rows.push_back(Row({
+        { L"ReadStatus", HexText(read.status) },
+        { L"BackendUsed", std::to_wstring(read.backendUsed) },
+        { L"SectorSize", std::to_wstring(read.logicalSectorSize) },
+        { L"Offset", HexText(alignedOffset) },
+        { L"Requested", std::to_wstring(requestedLength) },
+        { L"Returned", std::to_wstring(read.bytes.size()) },
+        { L"Transport", read.io.ok ? L"OK" : L"Failed" },
+    }, L"Offset and length are aligned down/up to the logical sector size before the request is sent; "
+       L"the storage path rejects unaligned transfers outright."));
+
+    // 16 bytes per row keeps each line readable next to the offset column.
+    constexpr std::size_t kBytesPerRow = 16;
+    for (std::size_t offset = 0; offset < read.bytes.size(); offset += kBytesPerRow) {
+        const std::size_t chunk = (std::min)(kBytesPerRow, read.bytes.size() - offset);
+        std::wostringstream hex;
+        std::wostringstream ascii;
+        for (std::size_t index = 0; index < chunk; ++index) {
+            const unsigned char value = read.bytes[offset + index];
+            if (index != 0) {
+                hex << L' ';
+            }
+            hex << std::uppercase << std::hex << std::setw(2) << std::setfill(L'0') << static_cast<unsigned>(value);
+            ascii << (value >= 0x20 && value < 0x7F ? static_cast<wchar_t>(value) : L'.');
+        }
+        result.rows.push_back(Row({
+            { L"Offset", HexText(alignedOffset + offset) },
+            { L"Hex", hex.str() },
+            { L"Ascii", ascii.str() },
+        }, L"Raw sector bytes."));
+    }
+    return result;
+}
+
+// QueryNetworkTrafficPackets drains the R0 WFP per-packet ring. The capture is
+// off by default and its start/stop switch is a control action, so an empty
+// result here usually means capture was never turned on rather than that no
+// traffic occurred.
+KernelOperationResult QueryNetworkTrafficPackets(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const unsigned long maxRows = request.maxRows == 0
+        ? KSWORD_ARK_NETWORK_TRAFFIC_DEFAULT_REQUESTED_ROWS
+        : request.maxRows;
+    const ksword::ark::NetworkTrafficPacketResult query = client.queryNetworkTrafficPackets(0, maxRows);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"Network Traffic", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(query.version) },
+        { L"QueryStatus", HexText(query.status) },
+        { L"Capacity", std::to_wstring(query.capacity) },
+        { L"OldestSequence", std::to_wstring(query.oldestSequence) },
+        { L"NewestSequence", std::to_wstring(query.newestSequence) },
+        { L"NextCursor", std::to_wstring(query.nextSequence) },
+        { L"DroppedPackets", std::to_wstring(query.droppedPacketCount) },
+        { L"CursorGap", std::to_wstring(query.cursorGapCount) },
+        { L"Total", std::to_wstring(query.totalCount) },
+        { L"Returned", std::to_wstring(query.entries.size()) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"Packets come from the driver's own WFP capture ring, so no Npcap or raw-socket path is "
+       L"involved. Capture is off until it is explicitly started, which is why an empty ring with a "
+       L"zero newestSequence means it was never running rather than that the link was idle. "
+       L"droppedPacketCount counts packets the ring overwrote before anyone read them."));
+
+    for (const KSWORD_ARK_NETWORK_TRAFFIC_PACKET_ROW& row : query.entries) {
+        const std::wstring local =
+            FormatIpAddress(row.localAddress, row.addressFamily) + L":" + std::to_wstring(row.localPort);
+        const std::wstring remote =
+            FormatIpAddress(row.remoteAddress, row.addressFamily) + L":" + std::to_wstring(row.remotePort);
+        std::wostringstream detail;
+        detail << L"Sequence: " << row.sequence << L"\r\n"
+               << L"Timestamp: " << row.timestamp100ns << L"\r\n"
+               << L"Family: " << row.addressFamily << L"\r\n"
+               << L"Direction: " << row.direction << L"\r\n"
+               << L"Protocol: " << row.protocol << L"\r\n"
+               << L"ProcessId: " << row.processId << L"\r\n"
+               << L"Local: " << local << L"\r\n"
+               << L"Remote: " << remote << L"\r\n"
+               << L"TotalLength: " << row.totalPacketLength << L"\r\n"
+               << L"CapturedLength: " << row.capturedLength << L"\r\n"
+               << L"PayloadOffset: " << row.payloadOffset << L"\r\n"
+               << L"PayloadLength: " << row.payloadLength << L"\r\n"
+               << L"Flags: " << HexText(row.flags);
+        result.rows.push_back(Row({
+            { L"Sequence", std::to_wstring(row.sequence) },
+            { L"Direction", std::to_wstring(row.direction) },
+            { L"Protocol", std::to_wstring(row.protocol) },
+            { L"Local", local },
+            { L"Remote", remote },
+            { L"ProcessId", row.processId != 0 ? std::to_wstring(row.processId) : L"-" },
+            { L"Length", std::to_wstring(row.totalPacketLength) },
+            { L"Captured", std::to_wstring(row.capturedLength) },
         }, detail.str()));
     }
     return result;
@@ -6433,6 +6627,10 @@ KernelOperationResult KernelFacade::QueryArkDriverFeature(const KernelRequest& r
         return attachCapability(QueryI8042Audit(request));
     case KernelFeatureId::PiDdbCache:
         return attachCapability(QueryPiDdbCache(request));
+    case KernelFeatureId::RawDiskSectors:
+        return attachCapability(QueryRawDiskSectors(request));
+    case KernelFeatureId::NetworkTrafficPackets:
+        return attachCapability(QueryNetworkTrafficPackets(request));
     default:
         return MakeUnsupportedResult(request, L"该内核条目没有对应的 ArkDriverClient 只读 IOCTL。 ");
     }

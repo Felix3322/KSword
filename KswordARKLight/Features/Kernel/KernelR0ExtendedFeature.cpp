@@ -177,7 +177,17 @@ std::vector<KernelFeatureDescriptor> CreateR0ExtendedDescriptors() {
             KernelFeatureId::PiDdbCache,
             L"PiDDB 缓存",
             L"驱动诊断",
-            L"通过 ArkDriverClient 只读枚举 PiDDBCacheTable 中的驱动加载记录。")
+            L"通过 ArkDriverClient 只读枚举 PiDDBCacheTable 中的驱动加载记录。"),
+        Descriptor(
+            KernelFeatureId::RawDiskSectors,
+            L"物理磁盘扇区",
+            L"硬件",
+            L"通过 ArkDriverClient 按扇区对齐读取物理磁盘原始字节，用过滤框填盘号、起点填偏移。"),
+        Descriptor(
+            KernelFeatureId::NetworkTrafficPackets,
+            L"网络逐包捕获",
+            L"内核信息",
+            L"通过 ArkDriverClient 读取 R0 WFP 逐包环，无需 Npcap；抓包开关在下一版接入。")
     };
 }
 
