@@ -2766,6 +2766,65 @@ int ks::plugin_host::populateTabPlugins(QTabWidget* tabWidget, QWidget* owner)
     return addedTabs;
 }
 
+namespace
+{
+    // hostWindowIsLayered 作用：
+    // - 判断控件所在顶层窗口当前是否为分层窗口（WS_EX_LAYERED）。
+    // 为什么以此为判据而不是读 backgroundTransparencyEnabled 配置：
+    // - 背景透明只能在原生窗口创建前声明，改了配置但尚未重启时，
+    //   配置值与窗口实际状态并不一致；
+    // - 真正决定 Tab 插件能否显示的是窗口此刻是否分层。
+    // 入参 widgetValue：任意已挂到窗口树上的控件。
+    // 返回值：顶层窗口带 WS_EX_LAYERED 返回 true；无法判定时返回 false（按可用处理）。
+    bool hostWindowIsLayered(const QWidget* widgetValue)
+    {
+        if (widgetValue == nullptr)
+        {
+            return false;
+        }
+        const QWidget* topLevelWidget = widgetValue->window();
+        if (topLevelWidget == nullptr || !topLevelWidget->isVisible())
+        {
+            return false;
+        }
+        const HWND topLevelHandle =
+            reinterpret_cast<HWND>(const_cast<QWidget*>(topLevelWidget)->winId());
+        if (topLevelHandle == nullptr || ::IsWindow(topLevelHandle) == FALSE)
+        {
+            return false;
+        }
+        const LONG_PTR extendedStyle = ::GetWindowLongPtrW(topLevelHandle, GWL_EXSTYLE);
+        return (extendedStyle & WS_EX_LAYERED) != 0;
+    }
+
+    // PluginContainerShowWatcher 作用：
+    // - 在插件容器每次显示时回调，用于复查背景透明告警条是否该出现；
+    // - 容器创建时往往还没挂进窗口树，只有显示后才查得到顶层窗口句柄。
+    // 说明：只重写虚函数、不声明信号槽，因此无需 Q_OBJECT 与 moc 参与构建。
+    class PluginContainerShowWatcher final : public QObject
+    {
+    public:
+        PluginContainerShowWatcher(QObject* parentObject, std::function<void()> callbackValue)
+            : QObject(parentObject)
+            , m_callback(std::move(callbackValue))
+        {
+        }
+
+    protected:
+        bool eventFilter(QObject* watchedObject, QEvent* eventValue) override
+        {
+            if (eventValue->type() == QEvent::Show && m_callback)
+            {
+                m_callback();
+            }
+            return QObject::eventFilter(watchedObject, eventValue);
+        }
+
+    private:
+        std::function<void()> m_callback; // 显示时执行的复查回调。
+    };
+}
+
 QWidget* ks::plugin_host::createTabPluginContainer(QWidget* parent)
 {
     auto* container = new QWidget(parent);
@@ -2774,6 +2833,29 @@ QWidget* ks::plugin_host::createTabPluginContainer(QWidget* parent)
     auto* rootLayout = new QVBoxLayout(container);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
+
+    // 背景透明告警条：
+    // Tab 插件的画面由外部进程的 WS_CHILD 原生子窗口承载，而 Windows 的分层窗口
+    // （WA_TranslucentBackground + FramelessWindowHint 的组合结果）整窗由
+    // UpdateLayeredWindow 一次性合成，不会绘制原生子窗口——插件窗口存在、也收得到
+    // 消息，但永远画不出来。这是平台行为，样式层无法规避，只能如实告知。
+    auto* transparencyWarningBanner = new QWidget(container);
+    transparencyWarningBanner->setObjectName(QStringLiteral("ksTabPluginTransparencyWarning"));
+    auto* warningLayout = new QHBoxLayout(transparencyWarningBanner);
+    warningLayout->setContentsMargins(10, 6, 10, 6);
+    warningLayout->setSpacing(8);
+    auto* warningLabel = new QLabel(
+        ks::i18n::text(
+            QStringLiteral("plugin.tab.transparency.warning"),
+            // 整句写成单个字面量：i18n 审计逐个字面量提取，拆行会把同一句话
+            // 割成两条词条，翻译时无法保证语序。
+            QStringLiteral("已开启背景透明：Windows 分层窗口不会绘制插件的原生子窗口，Tab 插件可能无法显示或显示异常。如需使用，请在「设置 → 外观」关闭背景透明后重启程序。")),
+        transparencyWarningBanner);
+    warningLabel->setObjectName(QStringLiteral("ksTabPluginTransparencyWarningText"));
+    warningLabel->setWordWrap(true);
+    warningLayout->addWidget(warningLabel, 1);
+    transparencyWarningBanner->setVisible(false);
+    rootLayout->addWidget(transparencyWarningBanner, 0);
 
     auto* tabWidget = new QTabWidget(container);
     tabWidget->setObjectName(QStringLiteral("ksTabPluginHost"));
@@ -2796,7 +2878,10 @@ QWidget* ks::plugin_host::createTabPluginContainer(QWidget* parent)
         "QPushButton#ksTabPluginManageButton{background-color:%5;color:%6;border:1px solid %5;"
         "border-radius:3px;padding:6px 14px;font-weight:600;}"
         "QPushButton#ksTabPluginManageButton:hover{background-color:%9;border-color:%9;}"
-        "QPushButton#ksTabPluginManageButton:pressed{background-color:%10;border-color:%10;}")
+        "QPushButton#ksTabPluginManageButton:pressed{background-color:%10;border-color:%10;}"
+        "QWidget#ksTabPluginTransparencyWarning{background-color:%11;border:1px solid %12;"
+        "border-radius:3px;margin:6px 6px 0 6px;}"
+        "QLabel#ksTabPluginTransparencyWarningText{color:%12;}")
         .arg(KswordTheme::SurfaceColorHex())
         .arg(KswordTheme::TextPrimaryColorHex())
         .arg(KswordTheme::BorderColorHex())
@@ -2806,8 +2891,20 @@ QWidget* ks::plugin_host::createTabPluginContainer(QWidget* parent)
         .arg(KswordTheme::SurfaceMutedColorHex())
         .arg(KswordTheme::TextSecondaryColorHex())
         .arg(KswordTheme::PrimaryBlueSolidHoverHex())
-        .arg(KswordTheme::PrimaryBluePressedHex);
+        .arg(KswordTheme::PrimaryBluePressedHex)
+        .arg(KswordTheme::ThemeColorName(KswordTheme::WarningBackgroundColor()))
+        .arg(KswordTheme::WarningHex());
     container->setStyleSheet(pluginContainerStyle);
+
+    // 容器创建时可能还没挂进窗口树，顶层窗口句柄尚不可查；
+    // 放到事件循环下一轮再判定，并在每次显示时复查（切换 Dock 后仍准确）。
+    const auto refreshTransparencyWarning =
+        [container, transparencyWarningBanner]()
+        {
+            transparencyWarningBanner->setVisible(hostWindowIsLayered(container));
+        };
+    QTimer::singleShot(0, container, refreshTransparencyWarning);
+    container->installEventFilter(new PluginContainerShowWatcher(container, refreshTransparencyWarning));
 
     if (populateTabPlugins(tabWidget, container) == 0)
     {
