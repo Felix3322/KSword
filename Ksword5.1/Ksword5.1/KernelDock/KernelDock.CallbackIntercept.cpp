@@ -39,6 +39,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSize>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QStringList>
 #include <QStyledItemDelegate>
@@ -121,8 +122,11 @@ namespace
         Target,
         AccessMask,
         ProtectThreads,
+        KernelProtection,
+        Guard,
         RuleName,
         HitCount,
+        KernelApplyCount,
         Count
     };
 
@@ -1328,6 +1332,61 @@ namespace
     // - 输入 accessMask：KSWORD_ARK_PROCESS_PROTECT_ACCESS_* 组合；
     // - 处理：逐位翻译成人类可读的短标签；
     // - 返回：以 "+" 连接的摘要，空掩码返回占位符。
+    // processProtectKernelProtectionText：
+    // - 输入 protectionByte：PS_PROTECTION 原始字节，0 表示不施加内核保护；
+    // - 处理：拆出 Type/Signer 译成 "PP WinTcb [0x62]" 形式；
+    // - 返回：表格与菜单共用的展示文本。
+    QString processProtectKernelProtectionText(const quint32 protectionByte)
+    {
+        if (protectionByte == 0U)
+        {
+            return kernelText("kernel.callback.intercept.process_protect.kernel.none", QStringLiteral("不施加"));
+        }
+
+        const quint32 protectionType = protectionByte & 0x07U;
+        const quint32 signerValue = (protectionByte & 0xF0U) >> 4U;
+        const QString typeText = (protectionType == KSWORD_PS_PROTECTED_TYPE_FULL)
+            ? QStringLiteral("PP")
+            : QStringLiteral("PPL");
+        static const char* const signerNames[] = {
+            "None", "Authenticode", "CodeGen", "Antimalware",
+            "Lsa", "Windows", "WinTcb", "WinSystem", "App"
+        };
+        const QString signerText = (signerValue < (sizeof(signerNames) / sizeof(signerNames[0])))
+            ? QString::fromLatin1(signerNames[signerValue])
+            : QString::number(signerValue);
+        return QStringLiteral("%1 %2 [0x%3]")
+            .arg(typeText)
+            .arg(signerText)
+            .arg(protectionByte, 2, 16, QChar('0'));
+    }
+
+    // processProtectGuardSummaryText：
+    // - 输入规则 flags 与 hardenFlags；
+    // - 处理：把"创建即用/自愈/清调试端口"拼成一列摘要；
+    // - 返回：无任何守护动作时给占位符。
+    QString processProtectGuardSummaryText(const quint32 ruleFlags, const quint32 hardenFlags)
+    {
+        QStringList parts;
+        if ((ruleFlags & KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_APPLY_ON_CREATE) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.guard.on_create", QStringLiteral("创建即用"));
+        }
+        if ((ruleFlags & KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_SELF_HEAL) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.guard.self_heal", QStringLiteral("自愈"));
+        }
+        if ((hardenFlags & KSWORD_ARK_PROCESS_PROTECT_HARDEN_CLEAR_DEBUG_PORT) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.guard.clear_debug_port", QStringLiteral("清调试端口"));
+        }
+        if (parts.isEmpty())
+        {
+            return QStringLiteral("-");
+        }
+        return parts.join(QStringLiteral(" + "));
+    }
+
     QString processProtectAccessSummaryText(const quint32 accessMask)
     {
         QStringList parts;
@@ -1973,6 +2032,9 @@ private:
         });
         connect(m_processProtectApplyPresetButton, &QPushButton::clicked, m_hostPage, [this]() {
             applyProcessProtectPresetToSelection();
+        });
+        connect(m_processProtectApplyKernelButton, &QPushButton::clicked, m_hostPage, [this]() {
+            applyProcessProtectKernelPresetToSelection();
         });
         connect(m_processProtectRemoveRuleButton, &QPushButton::clicked, m_hostPage, [this]() {
             removeCurrentProcessProtectRule();
@@ -2716,10 +2778,34 @@ private:
                 QStringLiteral("System(4) 负责进程创建与退出清理。关闭后这些系统路径也会被削权，可能导致进程无法正常结束。")));
         m_processProtectTrustPeersCheck = new QCheckBox(
             kernelText("kernel.callback.intercept.process_protect.switch.trust_peers", QStringLiteral("受保护进程互信")), tabPage);
+        m_processProtectKernelCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.switch.kernel", QStringLiteral("启用内核 PP 层")), tabPage);
+        m_processProtectKernelCheck->setToolTip(
+            kernelText("kernel.callback.intercept.process_protect.switch.kernel_tip",
+                QStringLiteral("把目标进程打成 PP/PPL，交给 Windows 内核在所有句柄路径上强制执行；绕过本驱动回调也依然生效。")));
+        m_processProtectSelfHealCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.switch.self_heal", QStringLiteral("自愈巡检")), tabPage);
+        m_processProtectSelfHealCheck->setToolTip(
+            kernelText("kernel.callback.intercept.process_protect.switch.self_heal_tip",
+                QStringLiteral("周期性回读受保护进程的 Protection 字节，被外部改回时自动恢复并记一次篡改。")));
+        m_processProtectScanIntervalSpin = new QSpinBox(tabPage);
+        m_processProtectScanIntervalSpin->setRange(
+            static_cast<int>(KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_MIN_MS),
+            static_cast<int>(KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_MAX_MS));
+        m_processProtectScanIntervalSpin->setSingleStep(500);
+        m_processProtectScanIntervalSpin->setValue(
+            static_cast<int>(KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_DEFAULT_MS));
+        m_processProtectScanIntervalSpin->setSuffix(
+            kernelText("kernel.callback.intercept.process_protect.scan_interval_suffix", QStringLiteral(" ms")));
+        m_processProtectScanIntervalSpin->setToolTip(
+            kernelText("kernel.callback.intercept.process_protect.scan_interval_tip", QStringLiteral("自愈巡检周期")));
         switchLayout->addWidget(m_processProtectEnabledCheck, 0);
         switchLayout->addWidget(m_processProtectLogCheck, 0);
         switchLayout->addWidget(m_processProtectTrustSystemCheck, 0);
         switchLayout->addWidget(m_processProtectTrustPeersCheck, 0);
+        switchLayout->addWidget(m_processProtectKernelCheck, 0);
+        switchLayout->addWidget(m_processProtectSelfHealCheck, 0);
+        switchLayout->addWidget(m_processProtectScanIntervalSpin, 0);
         switchLayout->addStretch(1);
         m_processProtectApplyButton = new QPushButton(
             kernelText("kernel.callback.intercept.process_protect.apply", QStringLiteral("应用到驱动")), tabPage);
@@ -2783,6 +2869,63 @@ private:
         ruleInputLayout->addWidget(m_processProtectRemoveRuleButton, 0);
         tabLayout->addLayout(ruleInputLayout, 0);
 
+        // 内核 PP 层的参数单独一行：它决定的是"让 Windows 自己执行保护"，
+        // 与上面那行的句柄削权是两回事，混在一行容易被当成同一组开关。
+        auto* kernelInputLayout = new QHBoxLayout();
+        kernelInputLayout->setContentsMargins(0, 0, 0, 0);
+        kernelInputLayout->setSpacing(6);
+        auto* kernelLabel = new QLabel(
+            kernelText("kernel.callback.intercept.process_protect.kernel_label", QStringLiteral("内核保护档位")), tabPage);
+        kernelLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextPrimaryHex()));
+        m_processProtectKernelCombo = new QComboBox(tabPage);
+        m_processProtectKernelCombo->addItem(
+            processProtectKernelProtectionText(0U), static_cast<uint>(0U));
+        {
+            static const char* const signerNames[] = {
+                "Authenticode", "CodeGen", "Antimalware", "Lsa", "Windows", "WinTcb", "WinSystem"
+            };
+            const unsigned int typeValues[] = {
+                KSWORD_PS_PROTECTED_TYPE_LIGHT,
+                KSWORD_PS_PROTECTED_TYPE_FULL
+            };
+            for (const unsigned int typeValue : typeValues)
+            {
+                for (unsigned int signerIndex = 0U;
+                     signerIndex < (sizeof(signerNames) / sizeof(signerNames[0]));
+                     ++signerIndex)
+                {
+                    const unsigned int protectionByte = ((signerIndex + 1U) << 4U) | typeValue;
+                    m_processProtectKernelCombo->addItem(
+                        processProtectKernelProtectionText(protectionByte),
+                        static_cast<uint>(protectionByte));
+                }
+            }
+        }
+        m_processProtectApplyOnCreateCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.guard.on_create", QStringLiteral("创建即用")), tabPage);
+        m_processProtectApplyOnCreateCheck->setChecked(true);
+        m_processProtectApplyOnCreateCheck->setToolTip(
+            kernelText("kernel.callback.intercept.process_protect.guard.on_create_tip",
+                QStringLiteral("目标进程重启后，在它开始执行之前重新打上保护。")));
+        m_processProtectSelfHealRuleCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.guard.self_heal", QStringLiteral("自愈")), tabPage);
+        m_processProtectSelfHealRuleCheck->setChecked(true);
+        m_processProtectClearDebugPortCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.guard.clear_debug_port", QStringLiteral("清调试端口")), tabPage);
+        m_processProtectClearDebugPortCheck->setToolTip(
+            kernelText("kernel.callback.intercept.process_protect.guard.clear_debug_port_tip",
+                QStringLiteral("清空 EPROCESS.DebugPort，让已附加的用户态调试器失去调试对象。")));
+        m_processProtectApplyKernelButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.apply_kernel", QStringLiteral("套用内核档位到选中")), tabPage);
+        kernelInputLayout->addWidget(kernelLabel, 0);
+        kernelInputLayout->addWidget(m_processProtectKernelCombo, 0);
+        kernelInputLayout->addWidget(m_processProtectApplyOnCreateCheck, 0);
+        kernelInputLayout->addWidget(m_processProtectSelfHealRuleCheck, 0);
+        kernelInputLayout->addWidget(m_processProtectClearDebugPortCheck, 0);
+        kernelInputLayout->addWidget(m_processProtectApplyKernelButton, 0);
+        kernelInputLayout->addStretch(1);
+        tabLayout->addLayout(kernelInputLayout, 0);
+
         m_processProtectRuleTable = new ks::ui::VisibleTableWidget(tabPage);
         m_processProtectRuleTable->setColumnCount(static_cast<int>(ProcessProtectRuleColumn::Count));
         m_processProtectRuleTable->setHorizontalHeaderLabels(QStringList{
@@ -2791,8 +2934,11 @@ private:
             kernelText("kernel.callback.intercept.process_protect.header.target", QStringLiteral("受保护目标")),
             kernelText("kernel.callback.intercept.process_protect.header.access", QStringLiteral("拦截的权限")),
             kernelText("kernel.callback.intercept.process_protect.header.threads", QStringLiteral("含线程")),
+            kernelText("kernel.callback.intercept.process_protect.header.kernel", QStringLiteral("内核保护")),
+            kernelText("kernel.callback.intercept.process_protect.header.guard", QStringLiteral("守护")),
             kernelText("kernel.callback.intercept.process_protect.header.rule_name", QStringLiteral("规则名")),
-            kernelText("kernel.callback.intercept.process_protect.header.hits", QStringLiteral("命中次数"))
+            kernelText("kernel.callback.intercept.process_protect.header.hits", QStringLiteral("削权次数")),
+            kernelText("kernel.callback.intercept.process_protect.header.kernel_hits", QStringLiteral("施加次数"))
             });
         m_processProtectRuleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_processProtectRuleTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -2808,10 +2954,13 @@ private:
             m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::Enabled), 48);
             m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::Kind), 86);
             m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::Target), 280);
-            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::AccessMask), 320);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::AccessMask), 280);
             m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::ProtectThreads), 62);
-            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::RuleName), 140);
-            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::HitCount), 80);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::KernelProtection), 168);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::Guard), 190);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::RuleName), 130);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::HitCount), 76);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::KernelApplyCount), 76);
         }
         m_processProtectRuleTable->setStyleSheet(callbackRuleTableStyle());
         applyCallbackTableTransparency(m_processProtectRuleTable);
@@ -2903,7 +3052,11 @@ private:
         const bool protectThreads,
         const bool ruleEnabled,
         const QString& ruleNameText,
-        const qint64 hitCount)
+        const qint64 hitCount,
+        const quint32 kernelProtection,
+        const quint32 guardRuleFlags,
+        const quint32 hardenFlags,
+        const qint64 kernelApplyCount)
     {
         // 输入：一条完整的保护规则；处理：查重后追加只读行，勾选列可直接点选；
         // 返回：成功追加返回 true，重复或超限返回 false。
@@ -2958,6 +3111,19 @@ private:
         m_processProtectRuleTable->setItem(
             rowIndex, static_cast<int>(ProcessProtectRuleColumn::ProtectThreads), makeProcessProtectCheckItem(protectThreads));
 
+        QTableWidgetItem* kernelItem = makeReadOnlyItem(processProtectKernelProtectionText(kernelProtection));
+        kernelItem->setData(Qt::UserRole, kernelProtection);
+        m_processProtectRuleTable->setItem(
+            rowIndex, static_cast<int>(ProcessProtectRuleColumn::KernelProtection), kernelItem);
+
+        // 守护列同时承载规则标志与加固标志：UserRole 存规则位，UserRole+1 存加固位。
+        QTableWidgetItem* guardItem =
+            makeReadOnlyItem(processProtectGuardSummaryText(guardRuleFlags, hardenFlags));
+        guardItem->setData(Qt::UserRole, guardRuleFlags);
+        guardItem->setData(Qt::UserRole + 1, hardenFlags);
+        m_processProtectRuleTable->setItem(
+            rowIndex, static_cast<int>(ProcessProtectRuleColumn::Guard), guardItem);
+
         m_processProtectRuleTable->setItem(
             rowIndex, static_cast<int>(ProcessProtectRuleColumn::RuleName), makeReadOnlyItem(ruleNameText));
 
@@ -2965,7 +3131,87 @@ private:
             rowIndex,
             static_cast<int>(ProcessProtectRuleColumn::HitCount),
             makeReadOnlyItem(hitCount >= 0 ? QString::number(hitCount) : QStringLiteral("-")));
+        m_processProtectRuleTable->setItem(
+            rowIndex,
+            static_cast<int>(ProcessProtectRuleColumn::KernelApplyCount),
+            makeReadOnlyItem(kernelApplyCount >= 0 ? QString::number(kernelApplyCount) : QStringLiteral("-")));
         return true;
+    }
+
+    // collectProcessProtectKernelInputs：
+    // - 输入：内核档位下拉框与三个守护勾选；
+    // - 处理：读出 PS_PROTECTION 字节、规则守护位与加固位；
+    // - 返回：无；三个 out 参数在控件缺失时保持 0。
+    void collectProcessProtectKernelInputs(
+        quint32* const kernelProtectionOut,
+        quint32* const guardRuleFlagsOut,
+        quint32* const hardenFlagsOut) const
+    {
+        if (kernelProtectionOut != nullptr)
+        {
+            *kernelProtectionOut = m_processProtectKernelCombo != nullptr
+                ? static_cast<quint32>(m_processProtectKernelCombo->currentData().toUInt())
+                : 0U;
+        }
+        if (guardRuleFlagsOut != nullptr)
+        {
+            quint32 guardFlags = 0U;
+            if (m_processProtectApplyOnCreateCheck != nullptr && m_processProtectApplyOnCreateCheck->isChecked())
+            {
+                guardFlags |= KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_APPLY_ON_CREATE;
+            }
+            if (m_processProtectSelfHealRuleCheck != nullptr && m_processProtectSelfHealRuleCheck->isChecked())
+            {
+                guardFlags |= KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_SELF_HEAL;
+            }
+            *guardRuleFlagsOut = guardFlags;
+        }
+        if (hardenFlagsOut != nullptr)
+        {
+            *hardenFlagsOut =
+                (m_processProtectClearDebugPortCheck != nullptr && m_processProtectClearDebugPortCheck->isChecked())
+                ? KSWORD_ARK_PROCESS_PROTECT_HARDEN_CLEAR_DEBUG_PORT
+                : 0U;
+        }
+    }
+
+    void applyProcessProtectKernelPresetToSelection()
+    {
+        // 输入：当前选中行与内核档位控件；处理：改写该行的内核保护与守护列；
+        // 返回：无；改动只作用于 UI，需点击应用下发。
+        if (m_processProtectRuleTable == nullptr)
+        {
+            return;
+        }
+        const int rowIndex = m_processProtectRuleTable->currentRow();
+        if (rowIndex < 0)
+        {
+            return;
+        }
+
+        quint32 kernelProtection = 0U;
+        quint32 guardRuleFlags = 0U;
+        quint32 hardenFlags = 0U;
+        collectProcessProtectKernelInputs(&kernelProtection, &guardRuleFlags, &hardenFlags);
+
+        QTableWidgetItem* kernelItem =
+            m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::KernelProtection));
+        if (kernelItem != nullptr)
+        {
+            kernelItem->setText(processProtectKernelProtectionText(kernelProtection));
+            kernelItem->setData(Qt::UserRole, kernelProtection);
+        }
+        QTableWidgetItem* guardItem =
+            m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Guard));
+        if (guardItem != nullptr)
+        {
+            guardItem->setText(processProtectGuardSummaryText(guardRuleFlags, hardenFlags));
+            guardItem->setData(Qt::UserRole, guardRuleFlags);
+            guardItem->setData(Qt::UserRole + 1, hardenFlags);
+        }
+        setProcessProtectStatusText(
+            kernelText("kernel.callback.intercept.process_protect.status.kernel_preset_applied",
+                QStringLiteral("已套用内核档位到选中规则；点击“应用到驱动”后生效。")));
     }
 
     bool appendProcessProtectTrustedRow(
@@ -3107,8 +3353,24 @@ private:
             ? m_processProtectRuleNameEdit->text().trimmed().left(KSWORD_ARK_PROCESS_PROTECT_NAME_CHARS - 1U)
             : QString();
         const bool protectThreads = m_processProtectThreadsCheck != nullptr && m_processProtectThreadsCheck->isChecked();
+        quint32 kernelProtection = 0U;
+        quint32 guardRuleFlags = 0U;
+        quint32 hardenFlags = 0U;
+        collectProcessProtectKernelInputs(&kernelProtection, &guardRuleFlags, &hardenFlags);
 
-        if (!appendProcessProtectRuleRow(targetKind, processId, imageText, accessMask, protectThreads, true, ruleNameText, -1))
+        if (!appendProcessProtectRuleRow(
+                targetKind,
+                processId,
+                imageText,
+                accessMask,
+                protectThreads,
+                true,
+                ruleNameText,
+                -1,
+                kernelProtection,
+                guardRuleFlags,
+                hardenFlags,
+                -1))
         {
             setProcessProtectStatusText(
                 kernelText("kernel.callback.intercept.process_protect.status.add_rejected",
@@ -3246,6 +3508,14 @@ private:
         {
             globalFlags |= KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_PROTECTED_PEERS;
         }
+        if (m_processProtectKernelCheck != nullptr && m_processProtectKernelCheck->isChecked())
+        {
+            globalFlags |= KSWORD_ARK_PROCESS_PROTECT_FLAG_KERNEL_PROTECTION;
+        }
+        if (m_processProtectSelfHealCheck != nullptr && m_processProtectSelfHealCheck->isChecked())
+        {
+            globalFlags |= KSWORD_ARK_PROCESS_PROTECT_FLAG_SELF_HEAL_SCAN;
+        }
         return globalFlags;
     }
 
@@ -3273,6 +3543,10 @@ private:
                 m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::ProtectThreads));
             const QTableWidgetItem* nameItem =
                 m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::RuleName));
+            const QTableWidgetItem* kernelItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::KernelProtection));
+            const QTableWidgetItem* guardItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Guard));
             if (kindItem == nullptr || targetItem == nullptr || accessItem == nullptr)
             {
                 continue;
@@ -3282,6 +3556,16 @@ private:
             protectRule.ruleId = static_cast<unsigned long>(rowIndex) + 1UL;
             protectRule.targetKind = static_cast<unsigned long>(kindItem->data(Qt::UserRole).toUInt());
             protectRule.protectAccessMask = static_cast<unsigned long>(accessItem->data(Qt::UserRole).toUInt());
+            protectRule.kernelProtection = kernelItem != nullptr
+                ? static_cast<unsigned long>(kernelItem->data(Qt::UserRole).toUInt())
+                : 0UL;
+            protectRule.hardenFlags = guardItem != nullptr
+                ? static_cast<unsigned long>(guardItem->data(Qt::UserRole + 1).toUInt())
+                : 0UL;
+            if (guardItem != nullptr)
+            {
+                protectRule.flags |= static_cast<unsigned long>(guardItem->data(Qt::UserRole).toUInt());
+            }
             if (enabledItem != nullptr && enabledItem->checkState() == Qt::Checked)
             {
                 protectRule.flags |= KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_ENABLED;
@@ -3361,9 +3645,13 @@ private:
         const std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED> trustedList = collectProcessProtectTrustedFromUi();
         const quint32 globalFlags = collectProcessProtectGlobalFlags();
 
+        const unsigned long scanIntervalMs = m_processProtectScanIntervalSpin != nullptr
+            ? static_cast<unsigned long>(m_processProtectScanIntervalSpin->value())
+            : KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_DEFAULT_MS;
+
         const ksword::ark::DriverClient driverClient;
         const ksword::ark::IoResult ioResult =
-            driverClient.setProcessProtectConfig(globalFlags, ruleList, trustedList);
+            driverClient.setProcessProtectConfig(globalFlags, ruleList, trustedList, scanIntervalMs);
         if (!ioResult.ok)
         {
             const QString detailText = callbackRuleIoMessageText(QString::fromStdString(ioResult.message));
@@ -3443,6 +3731,18 @@ private:
         {
             m_processProtectTrustPeersCheck->setChecked((stateResponse.globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_PROTECTED_PEERS) != 0U);
         }
+        if (m_processProtectKernelCheck != nullptr)
+        {
+            m_processProtectKernelCheck->setChecked((stateResponse.globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_KERNEL_PROTECTION) != 0U);
+        }
+        if (m_processProtectSelfHealCheck != nullptr)
+        {
+            m_processProtectSelfHealCheck->setChecked((stateResponse.globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_SELF_HEAL_SCAN) != 0U);
+        }
+        if (m_processProtectScanIntervalSpin != nullptr && stateResponse.scanIntervalMs != 0U)
+        {
+            m_processProtectScanIntervalSpin->setValue(static_cast<int>(stateResponse.scanIntervalMs));
+        }
 
         if (m_processProtectRuleTable != nullptr)
         {
@@ -3461,7 +3761,13 @@ private:
                 (protectRule.flags & KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_PROTECT_THREADS) != 0UL,
                 (protectRule.flags & KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_ENABLED) != 0UL,
                 processProtectFixedWideToQString(protectRule.ruleName, KSWORD_ARK_PROCESS_PROTECT_NAME_CHARS),
-                static_cast<qint64>(stateResponse.ruleHitCounts[ruleIndex]));
+                static_cast<qint64>(stateResponse.ruleHitCounts[ruleIndex]),
+                static_cast<quint32>(protectRule.kernelProtection),
+                static_cast<quint32>(protectRule.flags &
+                    (KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_APPLY_ON_CREATE |
+                     KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_SELF_HEAL)),
+                static_cast<quint32>(protectRule.hardenFlags),
+                static_cast<qint64>(stateResponse.ruleKernelApplyCounts[ruleIndex]));
         }
 
         if (m_processProtectTrustedTable != nullptr)
@@ -3509,6 +3815,36 @@ private:
             .arg(static_cast<qulonglong>(stateResponse.evaluatedCount))
             .arg(static_cast<qulonglong>(stateResponse.strippedCount))
             .arg(static_cast<qulonglong>(stateResponse.trustedBypassCount));
+
+        statusParts << kernelText("kernel.callback.intercept.process_protect.status.kernel_counters",
+            QStringLiteral("内核层：施加 %1 次，自愈 %2 次，失败 %3 次，加固 %4 次，在管进程 %5 个，巡检 %6ms。"))
+            .arg(static_cast<qulonglong>(stateResponse.kernelApplyCount))
+            .arg(static_cast<qulonglong>(stateResponse.selfHealCount))
+            .arg(static_cast<qulonglong>(stateResponse.kernelApplyFailureCount))
+            .arg(static_cast<qulonglong>(stateResponse.hardenApplyCount))
+            .arg(stateResponse.trackedProcessCount)
+            .arg(stateResponse.scanIntervalMs);
+
+        if (stateResponse.lastKernelApplyStatus != 0)
+        {
+            statusParts << kernelText("kernel.callback.intercept.process_protect.status.kernel_last_failure",
+                QStringLiteral("最近一次施加失败 status=0x%1（通常是本机 DynData 缺少 EPROCESS 偏移）。"))
+                .arg(static_cast<quint32>(stateResponse.lastKernelApplyStatus), 8, 16, QChar('0'));
+        }
+
+        if (stateResponse.lastTamperUtc100ns != 0ULL)
+        {
+            const QString tamperImageText =
+                processProtectFixedWideToQString(stateResponse.lastTamperImage, KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS);
+            statusParts << kernelText("kernel.callback.intercept.process_protect.status.last_tamper",
+                QStringLiteral("最近一次篡改：%1 PID %2（%3）的保护被改成 0x%4，已恢复为 0x%5，规则 %6。"))
+                .arg(utc100nsToDisplayText(static_cast<quint64>(stateResponse.lastTamperUtc100ns)))
+                .arg(stateResponse.lastTamperProcessId)
+                .arg(tamperImageText.isEmpty() ? QStringLiteral("-") : tamperImageText)
+                .arg(stateResponse.lastTamperObservedProtection, 2, 16, QChar('0'))
+                .arg(stateResponse.lastTamperExpectedProtection, 2, 16, QChar('0'))
+                .arg(stateResponse.lastTamperRuleId);
+        }
 
         if (stateResponse.lastBlockedUtc100ns != 0ULL)
         {
@@ -5718,6 +6054,15 @@ private:
     QPushButton* m_processProtectRefreshButton = nullptr;
     QPushButton* m_processProtectClearButton = nullptr;
     QLabel* m_processProtectStatusLabel = nullptr;
+
+    QCheckBox* m_processProtectKernelCheck = nullptr;
+    QCheckBox* m_processProtectSelfHealCheck = nullptr;
+    QSpinBox* m_processProtectScanIntervalSpin = nullptr;
+    QComboBox* m_processProtectKernelCombo = nullptr;
+    QCheckBox* m_processProtectApplyOnCreateCheck = nullptr;
+    QCheckBox* m_processProtectSelfHealRuleCheck = nullptr;
+    QCheckBox* m_processProtectClearDebugPortCheck = nullptr;
+    QPushButton* m_processProtectApplyKernelButton = nullptr;
 
     QPlainTextEdit* m_appLogEditor = nullptr;
     QPlainTextEdit* m_eventLogEditor = nullptr;

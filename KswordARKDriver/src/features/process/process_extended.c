@@ -851,6 +851,118 @@ Return Value:
 }
 
 NTSTATUS
+KswordARKProcessReadProtectionByte(
+    _In_ PEPROCESS ProcessObject,
+    _Out_ UCHAR* ProtectionByteOut
+    )
+/*++
+
+Routine Description:
+
+    Read EPROCESS.Protection from an already referenced process object.
+    中文说明：PP 守护的巡检路径靠它判断保护字节是否被外部改回，因此偏移解析
+    顺序必须与写入路径 KswordARKProcessPatchProtectionByDynDataObject 完全一致，
+    否则会出现"按 A 偏移写、按 B 偏移读"的假篡改。
+
+Arguments:
+
+    ProcessObject - Referenced target EPROCESS.
+    ProtectionByteOut - Receives the current PS_PROTECTION raw byte.
+
+Return Value:
+
+    STATUS_SUCCESS when the byte was read; otherwise a resolution or access
+    failure status.
+
+--*/
+{
+    KSW_DYN_STATE dynState;
+    ULONG protectionOffset = KSW_DYN_OFFSET_UNAVAILABLE;
+    ULONG signatureOffset = KSW_DYN_OFFSET_UNAVAILABLE;
+    ULONG sectionSignatureOffset = KSW_DYN_OFFSET_UNAVAILABLE;
+
+    if (ProcessObject == NULL || ProtectionByteOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *ProtectionByteOut = 0U;
+
+    if (!KswordARKProcessRuntimeProtectionOffsets(
+            &protectionOffset,
+            &signatureOffset,
+            &sectionSignatureOffset)) {
+        RtlZeroMemory(&dynState, sizeof(dynState));
+        KswordARKDynDataSnapshot(&dynState);
+        protectionOffset = dynState.Kernel.EpProtection;
+    }
+
+    if (!KswordARKProcessIsOffsetPresent(protectionOffset)) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+
+    __try {
+        const UCHAR* protectionByte = (const UCHAR*)ProcessObject + protectionOffset;
+        RtlCopyMemory(ProtectionByteOut, protectionByte, sizeof(*ProtectionByteOut));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return GetExceptionCode();
+    }
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+KswordARKProcessClearDebugPortByObject(
+    _In_ PEPROCESS ProcessObject
+    )
+/*++
+
+Routine Description:
+
+    Zero EPROCESS.DebugPort so an attached user-mode debugger loses its debug
+    object and later attaches find no port. 中文说明：这里只写整个指针字段，
+    不触碰任何位域——DynData 提供字段偏移但不提供位偏移，位序在不同 Windows
+    版本之间会变，硬编码位号会在部分版本上写错位。
+
+Arguments:
+
+    ProcessObject - Referenced target EPROCESS.
+
+Return Value:
+
+    STATUS_SUCCESS when the field was zeroed and verified. STATUS_PROCEDURE_NOT_FOUND
+    when DynData has no DebugPort offset on this machine.
+
+--*/
+{
+    KSW_DYN_STATE dynState;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (ProcessObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(&dynState, sizeof(dynState));
+    KswordARKDynDataSnapshot(&dynState);
+    if (!KswordARKProcessIsOffsetPresent(dynState.Kernel.EpDebugPort)) {
+        return STATUS_PROCEDURE_NOT_FOUND;
+    }
+
+    __try {
+        PVOID* debugPortField = (PVOID*)((PUCHAR)ProcessObject + dynState.Kernel.EpDebugPort);
+        PVOID verifyValue = NULL;
+
+        *debugPortField = NULL;
+        verifyValue = *debugPortField;
+        if (verifyValue != NULL) {
+            status = STATUS_UNSUCCESSFUL;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        status = GetExceptionCode();
+    }
+    return status;
+}
+
+NTSTATUS
 KswordARKProcessPatchProtectionByDynData(
     _In_ ULONG ProcessId,
     _In_ UCHAR ProtectionLevel,

@@ -83,6 +83,34 @@ typedef struct _KSWORD_ARK_SUSPEND_PROCESS_REQUEST
         METHOD_BUFFERED, \
         FILE_ANY_ACCESS)
 
+// ------------------------------------------------------------
+// EPROCESS.Protection（PS_PROTECTION）位域
+// ------------------------------------------------------------
+// 单字节布局：Type 位 0-2、Audit 位 3、Signer 位 4-7。
+// IOCTL 名沿用历史的 SET_PPL_LEVEL，但协议本身同时覆盖 PPL 与完整 PP：
+// - LIGHT(1) 是 PPL（PsProtectedTypeProtectedLight），同级 signer 之间可互相打开；
+// - FULL(2) 是 PP（PsProtectedTypeProtected），比同 signer 的 PPL 更强，
+//   连 PPL 进程也无法取得它的高权限句柄。
+// 两者只差类型位，签名级别按 signer 查表，因此 R3 只要换 Type 就能在 PPL / PP
+// 之间切换，不需要新的 IOCTL。
+#define KSWORD_PS_PROTECTED_TYPE_NONE  ((unsigned char)0x00)
+#define KSWORD_PS_PROTECTED_TYPE_LIGHT ((unsigned char)0x01)
+#define KSWORD_PS_PROTECTED_TYPE_FULL  ((unsigned char)0x02)
+
+#define KSWORD_PS_PROTECTED_SIGNER_NONE_VALUE         ((unsigned char)0x00)
+#define KSWORD_PS_PROTECTED_SIGNER_AUTHENTICODE_VALUE ((unsigned char)0x01)
+#define KSWORD_PS_PROTECTED_SIGNER_CODEGEN_VALUE      ((unsigned char)0x02)
+#define KSWORD_PS_PROTECTED_SIGNER_ANTIMALWARE_VALUE  ((unsigned char)0x03)
+#define KSWORD_PS_PROTECTED_SIGNER_LSA_VALUE          ((unsigned char)0x04)
+#define KSWORD_PS_PROTECTED_SIGNER_WINDOWS_VALUE      ((unsigned char)0x05)
+#define KSWORD_PS_PROTECTED_SIGNER_WINTCB_VALUE       ((unsigned char)0x06)
+#define KSWORD_PS_PROTECTED_SIGNER_WINSYSTEM_VALUE    ((unsigned char)0x07)
+#define KSWORD_PS_PROTECTED_SIGNER_APP_VALUE          ((unsigned char)0x08)
+
+// 组装 Protection 字节。Audit 位不参与：本驱动没有它的签名级别映射，带上会被拒。
+#define KSWORD_PS_PROTECTION_MAKE(protectedType, signerValue) \
+    ((unsigned char)((((unsigned char)(signerValue)) << 4) | ((unsigned char)(protectedType) & 0x07)))
+
 typedef struct _KSWORD_ARK_SET_PPL_LEVEL_REQUEST
 {
     unsigned long processId;

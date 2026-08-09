@@ -1991,14 +1991,24 @@ void ShowContextMenu(ProcessViewState& state, POINT screenPoint) {
     appendAction(r0Menu, ProcessActionId::RefreshPplProtectionLevel, L"刷新PPL保护级别", hasProcessSelection);
 
     HMENU pplMenu = ::CreatePopupMenu();
-    appendAction(pplMenu, ProcessActionId::R0SetPplNone, L"关闭PPL保护 (0x00)", hasProcessSelection);
+    appendAction(pplMenu, ProcessActionId::R0SetPplNone, L"关闭进程保护 (0x00)", hasProcessSelection);
     appendAction(pplMenu, ProcessActionId::R0SetPplAuthenticode, L"Authenticode (0x11)", hasProcessSelection);
     appendAction(pplMenu, ProcessActionId::R0SetPplCodeGen, L"CodeGen (0x21)", hasProcessSelection);
     appendAction(pplMenu, ProcessActionId::R0SetPplAntimalware, L"Antimalware (0x31)", hasProcessSelection);
     appendAction(pplMenu, ProcessActionId::R0SetPplLsa, L"Lsa (0x41)", hasProcessSelection);
     appendAction(pplMenu, ProcessActionId::R0SetPplWindows, L"Windows (0x51)", hasProcessSelection);
     appendAction(pplMenu, ProcessActionId::R0SetPplWinTcb, L"WinTcb (0x61)", hasProcessSelection);
-    appendPopup(r0Menu, pplMenu, L"设置PPL");
+    appendPopup(r0Menu, pplMenu, L"设置PPL(轻量)");
+
+    // 完整 PP 比同 signer 的 PPL 更强：PPL 进程也拿不到 PP 进程的高权限句柄。
+    HMENU ppMenu = ::CreatePopupMenu();
+    appendAction(ppMenu, ProcessActionId::R0SetPpAuthenticode, L"Authenticode (0x12)", hasProcessSelection);
+    appendAction(ppMenu, ProcessActionId::R0SetPpCodeGen, L"CodeGen (0x22)", hasProcessSelection);
+    appendAction(ppMenu, ProcessActionId::R0SetPpAntimalware, L"Antimalware (0x32)", hasProcessSelection);
+    appendAction(ppMenu, ProcessActionId::R0SetPpLsa, L"Lsa (0x42)", hasProcessSelection);
+    appendAction(ppMenu, ProcessActionId::R0SetPpWindows, L"Windows (0x52)", hasProcessSelection);
+    appendAction(ppMenu, ProcessActionId::R0SetPpWinTcb, L"WinTcb (0x62)", hasProcessSelection);
+    appendPopup(r0Menu, ppMenu, L"设置PP(完整)");
 
     HMENU integrityMenu = ::CreatePopupMenu();
     appendAction(integrityMenu, ProcessActionId::R0SetIntegrityUntrusted, L"Untrusted (S-1-16-0)", hasProcessSelection);

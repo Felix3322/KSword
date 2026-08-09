@@ -25,6 +25,24 @@ KswordARKDriverSetProcessPplLevelByPid(
     );
 
 /*
+ * KswordARKDriverApplyProcessProtectionToObject
+ * Inputs:
+ * - processObject 是调用方已持有引用的目标 EPROCESS；
+ * - protectionLevel 是目标 PS_PROTECTION 字节，0 表示清除保护。
+ * Processing:
+ * - 与按 PID 的入口共用同一张 signer→签名级别表，但跳过
+ *   PsLookupProcessByProcessId：PP 守护在进程创建回调里拿到的就是对象，
+ *   而且 PID 可能被 DKOM 改写或已被复用。
+ * Return behavior:
+ * - 返回签名级别解析或 EPROCESS 写入的 NTSTATUS。
+ */
+NTSTATUS
+KswordARKDriverApplyProcessProtectionToObject(
+    _In_ PEPROCESS processObject,
+    _In_ UCHAR protectionLevel
+    );
+
+/*
  * KswordARKDriverSetProcessIntegrityByPid
  * Inputs:
  * - ProcessId selects the target process by PID.

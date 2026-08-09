@@ -487,7 +487,8 @@ namespace ksword::ark
         IoResult setProcessProtectConfig(
             unsigned long globalFlags,
             const std::vector<KSWORD_ARK_PROCESS_PROTECT_RULE>& rules,
-            const std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED>& trustedEntries) const;
+            const std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED>& trustedEntries,
+            unsigned long scanIntervalMs = KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_DEFAULT_MS) const;
         ProcessProtectStateResult queryProcessProtectState() const;
         IoResult answerCallbackEvent(const KSWORD_ARK_CALLBACK_ANSWER_REQUEST& request) const;
         IoResult cancelAllPendingCallbackDecisions() const;

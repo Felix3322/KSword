@@ -79,8 +79,8 @@ KswordArkProcessProtectGetState(
     return g_KswordArkProcessProtectState;
 }
 
-static VOID
-KswordArkProcessProtectLog(
+VOID
+KswordArkProcessProtectLogFormat(
     _In_ KSWORD_ARK_PROCESS_PROTECT_STATE* State,
     _In_z_ PCSTR LevelText,
     _In_z_ _Printf_format_string_ PCSTR FormatText,
@@ -101,8 +101,8 @@ KswordArkProcessProtectLog(
     va_end(argumentList);
 }
 
-static VOID
-KswordArkProcessProtectCopyFixedWide(
+VOID
+KswordArkProcessProtectCopyFixedWideText(
     _Out_writes_(DestinationChars) PWCHAR Destination,
     _In_ ULONG DestinationChars,
     _In_opt_z_ PCWSTR Source
@@ -268,8 +268,8 @@ Routine Description:
     return TRUE;
 }
 
-static BOOLEAN
-KswordArkProcessProtectIdentityMatch(
+BOOLEAN
+KswordArkProcessProtectIdentityMatchPublic(
     _In_ ULONG TargetKind,
     _In_ ULONG ConfiguredProcessId,
     _In_opt_z_ PCWSTR ConfiguredImage,
@@ -383,11 +383,11 @@ KswordArkProcessProtectRecordLastBlocked(
     State->LastBlockedOriginalAccess = (ULONG)OriginalAccess;
     State->LastBlockedGrantedAccess = (ULONG)GrantedAccess;
     State->LastBlockedIsThreadObject = TargetIsThreadObject ? 1UL : 0UL;
-    KswordArkProcessProtectCopyFixedWide(
+    KswordArkProcessProtectCopyFixedWideText(
         State->LastBlockedInitiatorImage,
         KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS,
         InitiatorImagePath);
-    KswordArkProcessProtectCopyFixedWide(
+    KswordArkProcessProtectCopyFixedWideText(
         State->LastBlockedTargetImage,
         KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS,
         TargetImagePath);
@@ -473,7 +473,7 @@ Return Value:
         if ((trustedEntry->flags & KSWORD_ARK_PROCESS_PROTECT_TRUSTED_FLAG_ENABLED) == 0UL) {
             continue;
         }
-        if (KswordArkProcessProtectIdentityMatch(
+        if (KswordArkProcessProtectIdentityMatchPublic(
                 trustedEntry->kind,
                 trustedEntry->processId,
                 trustedEntry->image,
@@ -492,7 +492,7 @@ Return Value:
 
         // 受保护进程互信：发起方只要也在这张表里就整体放行，不必再看目标命中哪条。
         if ((globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_PROTECTED_PEERS) != 0UL &&
-            KswordArkProcessProtectIdentityMatch(
+            KswordArkProcessProtectIdentityMatchPublic(
                 protectRule->targetKind,
                 protectRule->targetProcessId,
                 protectRule->targetImage,
@@ -505,7 +505,7 @@ Return Value:
         if (!matched &&
             (!TargetIsThreadObject ||
                 (protectRule->flags & KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_PROTECT_THREADS) != 0UL) &&
-            KswordArkProcessProtectIdentityMatch(
+            KswordArkProcessProtectIdentityMatchPublic(
                 protectRule->targetKind,
                 protectRule->targetProcessId,
                 protectRule->targetImage,
@@ -559,7 +559,7 @@ Return Value:
         TargetImagePath);
 
     if (logBlocked) {
-        KswordArkProcessProtectLog(
+        KswordArkProcessProtectLogFormat(
             state,
             "Warn",
             "Process protection stripped access, object=%s, initiatorPid=%lu, targetPid=%lu, "
@@ -619,12 +619,29 @@ KswordARKProcessProtectInitialize(
     state->Device = Device;
     ExInitializePushLock(&state->ConfigLock);
     ExInitializePushLock(&state->LastBlockedLock);
+    ExInitializePushLock(&state->TrackedLock);
+    ExInitializePushLock(&state->LastTamperLock);
+    KeInitializeEvent(&state->ScanWakeEvent, NotificationEvent, FALSE);
     // 默认信任 System，避免用户还没配白名单就把系统清理路径也削权。
     state->GlobalFlags = KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_SYSTEM;
+    state->ScanIntervalMs = KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_DEFAULT_MS;
     state->ObjectCallbackStatus = (LONG)STATUS_NOT_SUPPORTED;
 
     g_KswordArkProcessProtectState = state;
     KswordARKReleasePushLockExclusive(&g_KswordArkProcessProtectPublishLock);
+
+    // 巡检线程常驻但按配置空转：这样 R3 打开自愈开关时不需要重新拉起线程。
+    // 拉不起来只关闭自愈，句柄削权与创建时施加照常工作。
+    {
+        const NTSTATUS scanStatus = KswordArkProcessProtectKernelStart(state);
+        if (!NT_SUCCESS(scanStatus)) {
+            KswordArkProcessProtectLogFormat(
+                state,
+                "Warn",
+                "Process protection self-heal scan thread unavailable, status=0x%08lX.",
+                (unsigned long)scanStatus);
+        }
+    }
     return STATUS_SUCCESS;
 }
 
@@ -641,6 +658,8 @@ KswordARKProcessProtectUninitialize(
     KswordARKReleasePushLockExclusive(&g_KswordArkProcessProtectPublishLock);
 
     if (state != NULL) {
+        // 必须先等巡检线程退出：它持有 state 指针，全局撤销发布拦不住已在运行的那一轮。
+        KswordArkProcessProtectKernelStop(state);
         ExFreePoolWithTag(state, KSWORD_ARK_PROCESS_PROTECT_TAG_STATE);
     }
 }
@@ -655,8 +674,22 @@ KswordArkProcessProtectValidateRule(
         return STATUS_SUCCESS;
     }
 
-    if ((Rule->protectAccessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_ALL) == 0UL) {
+    // 一条启用的规则至少要做一件事：削权，或者施加内核 PP/PPL。
+    if ((Rule->protectAccessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_ALL) == 0UL &&
+        Rule->kernelProtection == 0UL) {
         return STATUS_INVALID_PARAMETER;
+    }
+
+    if (Rule->kernelProtection != 0UL) {
+        const ULONG protectionType = Rule->kernelProtection & 0x07UL;
+        const ULONG signerType = (Rule->kernelProtection & 0xF0UL) >> 4U;
+        if (Rule->kernelProtection > 0xFFUL ||
+            (protectionType != KSWORD_PS_PROTECTED_TYPE_LIGHT &&
+             protectionType != KSWORD_PS_PROTECTED_TYPE_FULL) ||
+            signerType == 0UL ||
+            signerType > KSWORD_PS_PROTECTED_SIGNER_APP_VALUE) {
+            return STATUS_INVALID_PARAMETER;
+        }
     }
 
     switch (Rule->targetKind) {
@@ -763,6 +796,7 @@ Routine Description:
         targetRule->targetImage[KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS - 1U] = L'\0';
         targetRule->ruleName[KSWORD_ARK_PROCESS_PROTECT_NAME_CHARS - 1U] = L'\0';
         targetRule->protectAccessMask &= KSWORD_ARK_PROCESS_PROTECT_ACCESS_ALL;
+        targetRule->hardenFlags &= KSWORD_ARK_PROCESS_PROTECT_HARDEN_ALL;
         if (targetRule->targetKind != KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID) {
             targetRule->targetProcessId = 0UL;
         }
@@ -797,7 +831,7 @@ Routine Description:
         state->RuleCount = 0UL;
         state->TrustedCount = 0UL;
         KswordARKReleasePushLockExclusive(&state->ConfigLock);
-        KswordArkProcessProtectLog(
+        KswordArkProcessProtectLogFormat(
             state,
             "Warn",
             "Process protection config rejected, status=0x%08lX.",
@@ -809,6 +843,11 @@ Routine Description:
     state->GlobalFlags = requestPacket->globalFlags;
     state->RuleCount = requestPacket->ruleCount;
     state->TrustedCount = requestPacket->trustedCount;
+    state->ScanIntervalMs =
+        (requestPacket->scanIntervalMs >= KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_MIN_MS &&
+         requestPacket->scanIntervalMs <= KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_MAX_MS)
+        ? requestPacket->scanIntervalMs
+        : KSWORD_ARK_PROCESS_PROTECT_SCAN_INTERVAL_DEFAULT_MS;
     state->ConfigVersion += 1ULL;
     state->AppliedAtUtc100ns = nowUtc;
     // 规则表已整体替换，旧命中计数不再对应任何一行，逐项清零而不是整块 memset：
@@ -816,11 +855,20 @@ Routine Description:
     for (entryIndex = 0UL; entryIndex < KSWORD_ARK_PROCESS_PROTECT_MAX_RULES; ++entryIndex) {
         state->RuleHitCounts[entryIndex] = 0LL;
     }
+    for (entryIndex = 0UL; entryIndex < KSWORD_ARK_PROCESS_PROTECT_MAX_RULES; ++entryIndex) {
+        state->RuleKernelApplyCounts[entryIndex] = 0LL;
+    }
     appliedConfigVersion = state->ConfigVersion;
 
     KswordARKReleasePushLockExclusive(&state->ConfigLock);
 
-    KswordArkProcessProtectLog(
+    // 台账里的期望值来自旧规则表，换表后必须作废，否则会按已删除的规则继续自愈。
+    KswordArkProcessProtectKernelResetTracking(state);
+    // 立刻唤醒巡检线程，让新配置一轮就生效，而不是等下一个周期。
+    KeSetEvent(&state->ScanWakeEvent, IO_NO_INCREMENT, FALSE);
+    KeClearEvent(&state->ScanWakeEvent);
+
+    KswordArkProcessProtectLogFormat(
         state,
         "Info",
         "Process protection config applied, enabled=%lu, rules=%lu, trusted=%lu, version=%I64u.",
@@ -878,6 +926,7 @@ KswordARKProcessProtectIoctlQueryState(
     responsePacket->globalFlags = state->GlobalFlags;
     responsePacket->ruleCount = state->RuleCount;
     responsePacket->trustedCount = state->TrustedCount;
+    responsePacket->scanIntervalMs = state->ScanIntervalMs;
     responsePacket->configVersion = (unsigned long long)state->ConfigVersion;
     responsePacket->appliedAtUtc100ns = (unsigned long long)state->AppliedAtUtc100ns.QuadPart;
     RtlCopyMemory(responsePacket->rules, state->Rules, sizeof(responsePacket->rules));
@@ -885,8 +934,14 @@ KswordARKProcessProtectIoctlQueryState(
     for (entryIndex = 0UL; entryIndex < KSWORD_ARK_PROCESS_PROTECT_MAX_RULES; ++entryIndex) {
         responsePacket->ruleHitCounts[entryIndex] =
             (unsigned long long)state->RuleHitCounts[entryIndex];
+        responsePacket->ruleKernelApplyCounts[entryIndex] =
+            (unsigned long long)state->RuleKernelApplyCounts[entryIndex];
     }
     KswordARKReleasePushLockShared(&state->ConfigLock);
+
+    KswordARKAcquirePushLockShared(&state->TrackedLock);
+    responsePacket->trackedProcessCount = state->TrackedCount;
+    KswordARKReleasePushLockShared(&state->TrackedLock);
 
     responsePacket->objectCallbackStatus = (long)InterlockedCompareExchange(&state->ObjectCallbackStatus, 0L, 0L);
     responsePacket->capabilityStatus =
@@ -906,15 +961,38 @@ KswordARKProcessProtectIoctlQueryState(
     responsePacket->lastBlockedOriginalAccess = state->LastBlockedOriginalAccess;
     responsePacket->lastBlockedGrantedAccess = state->LastBlockedGrantedAccess;
     responsePacket->lastBlockedIsThreadObject = state->LastBlockedIsThreadObject;
-    KswordArkProcessProtectCopyFixedWide(
+    KswordArkProcessProtectCopyFixedWideText(
         responsePacket->lastBlockedInitiatorImage,
         KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS,
         state->LastBlockedInitiatorImage);
-    KswordArkProcessProtectCopyFixedWide(
+    KswordArkProcessProtectCopyFixedWideText(
         responsePacket->lastBlockedTargetImage,
         KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS,
         state->LastBlockedTargetImage);
     KswordARKReleasePushLockShared(&state->LastBlockedLock);
+
+    responsePacket->kernelApplyCount =
+        (unsigned long long)InterlockedCompareExchange64(&state->KernelApplyCount, 0LL, 0LL);
+    responsePacket->selfHealCount =
+        (unsigned long long)InterlockedCompareExchange64(&state->SelfHealCount, 0LL, 0LL);
+    responsePacket->kernelApplyFailureCount =
+        (unsigned long long)InterlockedCompareExchange64(&state->KernelApplyFailureCount, 0LL, 0LL);
+    responsePacket->hardenApplyCount =
+        (unsigned long long)InterlockedCompareExchange64(&state->HardenApplyCount, 0LL, 0LL);
+    responsePacket->lastKernelApplyStatus =
+        (long)InterlockedCompareExchange(&state->LastKernelApplyStatus, 0L, 0L);
+
+    KswordARKAcquirePushLockShared(&state->LastTamperLock);
+    responsePacket->lastTamperUtc100ns = (unsigned long long)state->LastTamperUtc100ns.QuadPart;
+    responsePacket->lastTamperProcessId = state->LastTamperProcessId;
+    responsePacket->lastTamperObservedProtection = state->LastTamperObservedProtection;
+    responsePacket->lastTamperExpectedProtection = state->LastTamperExpectedProtection;
+    responsePacket->lastTamperRuleId = state->LastTamperRuleId;
+    KswordArkProcessProtectCopyFixedWideText(
+        responsePacket->lastTamperImage,
+        KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS,
+        state->LastTamperImage);
+    KswordARKReleasePushLockShared(&state->LastTamperLock);
 
     *CompleteBytesOut = sizeof(*responsePacket);
     return STATUS_SUCCESS;

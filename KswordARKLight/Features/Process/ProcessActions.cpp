@@ -631,9 +631,10 @@ bool SetEfficiencyModeForPid(DWORD pid, ULONGLONG expectedCreationTime100ns, boo
     return false;
 }
 
-// ProtectionLevelForAction maps the menu PPL commands to the one-byte
+// ProtectionLevelForAction maps the menu protection commands to the one-byte
 // PS_PROTECTION level accepted by IOCTL_KSWORD_ARK_SET_PPL_LEVEL. Input is a
-// menu id; output is false when the id is not a PPL command.
+// menu id; output is false when the id is not a protection command.
+// 低位是类型：0x?1 为 PPL（Light），0x?2 为完整 PP；高 4 位是 signer。
 bool ProtectionLevelForAction(ProcessActionId actionId, std::uint8_t& levelOut) {
     switch (actionId) {
     case ProcessActionId::R0SetPplNone: levelOut = 0x00; return true;
@@ -643,6 +644,12 @@ bool ProtectionLevelForAction(ProcessActionId actionId, std::uint8_t& levelOut) 
     case ProcessActionId::R0SetPplLsa: levelOut = 0x41; return true;
     case ProcessActionId::R0SetPplWindows: levelOut = 0x51; return true;
     case ProcessActionId::R0SetPplWinTcb: levelOut = 0x61; return true;
+    case ProcessActionId::R0SetPpAuthenticode: levelOut = 0x12; return true;
+    case ProcessActionId::R0SetPpCodeGen: levelOut = 0x22; return true;
+    case ProcessActionId::R0SetPpAntimalware: levelOut = 0x32; return true;
+    case ProcessActionId::R0SetPpLsa: levelOut = 0x42; return true;
+    case ProcessActionId::R0SetPpWindows: levelOut = 0x52; return true;
+    case ProcessActionId::R0SetPpWinTcb: levelOut = 0x62; return true;
     default: levelOut = 0; return false;
     }
 }

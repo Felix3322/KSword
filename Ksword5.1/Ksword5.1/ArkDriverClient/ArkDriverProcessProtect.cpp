@@ -9,7 +9,8 @@ namespace ksword::ark
     IoResult DriverClient::setProcessProtectConfig(
         const unsigned long globalFlags,
         const std::vector<KSWORD_ARK_PROCESS_PROTECT_RULE>& rules,
-        const std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED>& trustedEntries) const
+        const std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED>& trustedEntries,
+        const unsigned long scanIntervalMs) const
     {
         // 输入：UI 整理后的保护规则与信任白名单，两者都可以为空。
         // 处理：装配定长共享包并只经由 DriverClient 的统一 DeviceIoControl 下发；
@@ -41,6 +42,8 @@ namespace ksword::ark
         request.globalFlags = globalFlags;
         request.ruleCount = static_cast<unsigned long>(rules.size());
         request.trustedCount = static_cast<unsigned long>(trustedEntries.size());
+        // 越界值交给 R0 收敛成默认周期，这里不擅自改写用户输入。
+        request.scanIntervalMs = scanIntervalMs;
 
         for (std::size_t ruleIndex = 0U; ruleIndex < rules.size(); ++ruleIndex)
         {

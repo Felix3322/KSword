@@ -493,13 +493,13 @@ void ProcessDetailWindow::executeR0SetPplProtectionAction(
     const std::uint8_t protectionLevel,
     const QString& levelDisplayText)
 {
-    // R0 PPL 设置：
-    // - protectionLevel 为 PS_PROTECTION 原始字节；
+    // R0 进程保护设置：
+    // - protectionLevel 为 PS_PROTECTION 原始字节，Type=1 是 PPL、Type=2 是完整 PP；
     // - 动作前弹出确认，避免误把普通进程设置成高保护级别。
     const int confirmResult = QMessageBox::question(
         this,
-        QStringLiteral("确认 R0 设置 PPL 层级"),
-        QStringLiteral("将通过 R0 驱动修改当前进程 PPL/Protection 字段。\n\n进程: %1 (PID %2)\n目标: %3\n\n错误偏移或系统版本差异可能导致系统不稳定。是否继续？")
+        QStringLiteral("确认 R0 设置进程保护层级"),
+        QStringLiteral("将通过 R0 驱动修改当前进程 PPL/PP（EPROCESS.Protection）字段。\n\n进程: %1 (PID %2)\n目标: %3\n\n错误偏移或系统版本差异可能导致系统不稳定。是否继续？")
             .arg(QString::fromStdString(m_baseRecord.processName.empty() ? std::string("Unknown") : m_baseRecord.processName))
             .arg(m_baseRecord.pid)
             .arg(levelDisplayText),
@@ -522,7 +522,7 @@ void ProcessDetailWindow::executeR0SetPplProtectionAction(
     const ksword::ark::IoResult result = driverClient.setProcessProtection(m_baseRecord.pid, protectionLevel);
     std::ostringstream detailStream;
     appendExtendedIoResultDetail(result, detailStream);
-    showActionResultMessage(QStringLiteral("R0设置PPL层级"), result.ok, detailStream.str(), actionEvent);
+    showActionResultMessage(QStringLiteral("R0设置进程保护层级"), result.ok, detailStream.str(), actionEvent);
 }
 
 void ProcessDetailWindow::executeR0SetProcessHiddenAction(

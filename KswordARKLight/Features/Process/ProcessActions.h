@@ -57,7 +57,15 @@ enum class ProcessActionId {
     R0SetPplAntimalware,
     R0SetPplLsa,
     R0SetPplWindows,
-    R0SetPplWinTcb
+    R0SetPplWinTcb,
+    // 完整 PP（PsProtectedTypeProtected）。与上面的 PPL 共用同一个 IOCTL，
+    // 只是 PS_PROTECTION 字节里的类型位从 1 变成 2。
+    R0SetPpAuthenticode,
+    R0SetPpCodeGen,
+    R0SetPpAntimalware,
+    R0SetPpLsa,
+    R0SetPpWindows,
+    R0SetPpWinTcb
 };
 
 struct ProcessActionMenuItem {

@@ -420,6 +420,9 @@
     <ClCompile Include="src\features\process_protect\process_protect_runtime.c">
       <Filter>Source Files\Features\ProcessProtect</Filter>
     </ClCompile>
+    <ClCompile Include="src\features\process_protect\process_protect_kernel.c">
+      <Filter>Source Files\Features\ProcessProtect</Filter>
+    </ClCompile>
     <ClCompile Include="src\features\process_protect\process_protect_ioctl.c">
       <Filter>Source Files\Features\ProcessProtect</Filter>
     </ClCompile>

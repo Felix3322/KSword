@@ -247,14 +247,21 @@ bool ProcessDetailPage::HandleActionCommand(int controlId) {
     case ActionR0Suspend: ExecuteProcessAction(static_cast<int>(ProcessActionId::R0SuspendProcess)); return true;
     case ActionR0Ppl: {
         HMENU menu = ::CreatePopupMenu();
-        const std::array<std::pair<const wchar_t*, ProcessActionId>, 7> items{{
-            { L"关闭PPL保护 (0x00)", ProcessActionId::R0SetPplNone },
-            { L"Authenticode [0x11]", ProcessActionId::R0SetPplAuthenticode },
-            { L"CodeGen [0x21]", ProcessActionId::R0SetPplCodeGen },
-            { L"Antimalware [0x31]", ProcessActionId::R0SetPplAntimalware },
-            { L"Lsa [0x41]", ProcessActionId::R0SetPplLsa },
-            { L"Windows [0x51]", ProcessActionId::R0SetPplWindows },
-            { L"WinTcb [0x61]", ProcessActionId::R0SetPplWinTcb }
+        // 顺序与进程列表右键菜单一致：先 PPL(Type=1)，再完整 PP(Type=2)。
+        const std::array<std::pair<const wchar_t*, ProcessActionId>, 13> items{{
+            { L"关闭进程保护 (0x00)", ProcessActionId::R0SetPplNone },
+            { L"PPL Authenticode [0x11]", ProcessActionId::R0SetPplAuthenticode },
+            { L"PPL CodeGen [0x21]", ProcessActionId::R0SetPplCodeGen },
+            { L"PPL Antimalware [0x31]", ProcessActionId::R0SetPplAntimalware },
+            { L"PPL Lsa [0x41]", ProcessActionId::R0SetPplLsa },
+            { L"PPL Windows [0x51]", ProcessActionId::R0SetPplWindows },
+            { L"PPL WinTcb [0x61]", ProcessActionId::R0SetPplWinTcb },
+            { L"PP Authenticode [0x12]", ProcessActionId::R0SetPpAuthenticode },
+            { L"PP CodeGen [0x22]", ProcessActionId::R0SetPpCodeGen },
+            { L"PP Antimalware [0x32]", ProcessActionId::R0SetPpAntimalware },
+            { L"PP Lsa [0x42]", ProcessActionId::R0SetPpLsa },
+            { L"PP Windows [0x52]", ProcessActionId::R0SetPpWindows },
+            { L"PP WinTcb [0x62]", ProcessActionId::R0SetPpWinTcb }
         }};
         for (std::size_t i = 0; i < items.size(); ++i) {
             ::AppendMenuW(menu, MF_STRING, 1 + static_cast<UINT>(i), items[i].first);
@@ -262,7 +269,7 @@ bool ProcessDetailPage::HandleActionCommand(int controlId) {
         RECT button{}; ::GetWindowRect(Control(TabIndex::Actions, ActionR0Ppl), &button);
         const UINT command = ::TrackPopupMenu(menu, TPM_RETURNCMD, button.left, button.bottom, 0, hwnd_, nullptr);
         ::DestroyMenu(menu);
-        if (command && ConfirmDanger(hwnd_, L"修改 PPL 字段依赖正确的内核偏移，错误操作可能导致系统崩溃。是否继续？")) {
+        if (command && ConfirmDanger(hwnd_, L"修改 PPL/PP 保护字段依赖正确的内核偏移，错误操作可能导致系统崩溃。是否继续？")) {
             ExecuteProcessAction(static_cast<int>(items[command - 1].second));
         }
         return true;

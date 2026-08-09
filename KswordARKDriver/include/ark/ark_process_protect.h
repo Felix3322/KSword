@@ -73,6 +73,34 @@ KswordArkProcessProtectFilterHandleOperation(
     );
 
 /*
+ * KswordArkProcessProtectNotifyProcessCreate
+ * Inputs:
+ * - ProcessObject / ProcessId 是新建进程；
+ * - ImageFileName 是创建通知给出的映像 NT 路径，可为 NULL。
+ * Processing:
+ * - 由进程创建回调调用。匹配到带 kernelProtection 的规则时，在进程开始执行前
+ *   就把 PP/PPL 打上——这是"目标进程重启后保护还在"的唯一时机。
+ * Return behavior:
+ * - 无返回值；失败只累加计数并写日志，绝不阻断进程创建。
+ */
+VOID
+KswordArkProcessProtectNotifyProcessCreate(
+    _In_ PEPROCESS ProcessObject,
+    _In_ ULONG ProcessId,
+    _In_opt_ PCUNICODE_STRING ImageFileName
+    );
+
+/*
+ * KswordArkProcessProtectNotifyProcessExit
+ * Processing:
+ * - 由进程退出通知调用，把该 PID 移出自愈台账。
+ */
+VOID
+KswordArkProcessProtectNotifyProcessExit(
+    _In_ ULONG ProcessId
+    );
+
+/*
  * KswordARKProcessProtectIoctlSetConfig
  * Processing:
  * - 校验并整体替换保护配置。配置是一次性全量替换，不做增量合并。

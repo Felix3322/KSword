@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "callback_internal.h"
+#include "ark/ark_process_protect.h"
 
 VOID
 KswordArkProcessCreateNotifyEx(
@@ -32,11 +33,18 @@ KswordArkProcessCreateNotifyEx(
     ULONG operationType = KSWORD_ARK_PROCESS_OP_CREATE;
     NTSTATUS matchStatus = STATUS_SUCCESS;
 
-    UNREFERENCED_PARAMETER(Process);
-
     if (CreateInfo == NULL) {
+        // 退出通知：把进程移出 PP 自愈台账，避免死 PID 占位。
+        KswordArkProcessProtectNotifyProcessExit(HandleToULong(ProcessId));
         return;
     }
+
+    // 内核 PP 层先于通用规则执行：目标进程重启后只有这一个时机能在它开始执行
+    // 之前重新打上保护。它不改 CreationStatus，不会影响下面的 DENY 判定。
+    KswordArkProcessProtectNotifyProcessCreate(
+        Process,
+        HandleToULong(ProcessId),
+        CreateInfo->ImageFileName);
 
     (VOID)KswordArkResolveProcessImagePath(
         PsGetCurrentProcess(),

@@ -99,6 +99,8 @@ PsGetProcessImageFileName(
 #define KSWORD_PS_PROTECTED_SIGNER_LSA ((UCHAR)0x04)
 #define KSWORD_PS_PROTECTED_SIGNER_WINDOWS ((UCHAR)0x05)
 #define KSWORD_PS_PROTECTED_SIGNER_WINTCB ((UCHAR)0x06)
+#define KSWORD_PS_PROTECTED_SIGNER_WINSYSTEM ((UCHAR)0x07)
+#define KSWORD_PS_PROTECTED_SIGNER_APP ((UCHAR)0x08)
 
 #define KSWORD_ARK_ENUM_RESPONSE_HEADER_SIZE \
     (sizeof(KSWORD_ARK_ENUM_PROCESS_RESPONSE) - sizeof(KSWORD_ARK_PROCESS_ENTRY))
@@ -1414,6 +1416,17 @@ KswordARKDriverResolveSignatureLevelsFromSigner(
         *signatureLevel = SE_SIGNING_LEVEL_WINDOWS_TCB;
         *sectionSignatureLevel = SE_SIGNING_LEVEL_WINDOWS;
         return STATUS_SUCCESS;
+    case KSWORD_PS_PROTECTED_SIGNER_WINSYSTEM:
+        // WinSystem 是 System(PID 4) 使用的最高 signer。它本身没有用户态映像，
+        // 因此内核里的签名级别不具参考性；这里沿用 WinTcb 的组合，section 保持
+        // WINDOWS 而不是 WINDOWS_TCB——后者会让被提权的进程几乎加载不了任何 DLL。
+        *signatureLevel = SE_SIGNING_LEVEL_WINDOWS_TCB;
+        *sectionSignatureLevel = SE_SIGNING_LEVEL_WINDOWS;
+        return STATUS_SUCCESS;
+    case KSWORD_PS_PROTECTED_SIGNER_APP:
+        *signatureLevel = SE_SIGNING_LEVEL_STORE;
+        *sectionSignatureLevel = SE_SIGNING_LEVEL_STORE;
+        return STATUS_SUCCESS;
     default:
         return STATUS_INVALID_PARAMETER;
     }
@@ -1819,6 +1832,67 @@ Return Value:
 }
 
 NTSTATUS
+KswordARKDriverApplyProcessProtectionToObject(
+    _In_ PEPROCESS processObject,
+    _In_ UCHAR protectionLevel
+    )
+/*++
+
+Routine Description:
+
+    Apply a PS_PROTECTION byte to an already referenced process object.
+    中文说明：PP 守护在进程创建回调和巡检里都只有 PEPROCESS 而没有可信 PID
+    （PID 可能被 DKOM 改写，也可能已被复用），因此需要一个绕开
+    PsLookupProcessByProcessId 的入口。签名级别表在本文件内，所以解析放这里，
+    实际写入仍复用 DynData 拥有方的 process_extended.c。
+
+Arguments:
+
+    processObject - Referenced target EPROCESS.
+    protectionLevel - Target PS_PROTECTION raw byte；0 表示清除保护。
+
+Return Value:
+
+    NTSTATUS from signer resolution or the EPROCESS patch.
+
+--*/
+{
+    const UCHAR protectionType = (UCHAR)(protectionLevel & 0x07U);
+    UCHAR signerType = (UCHAR)((protectionLevel & 0xF0U) >> 4U);
+    UCHAR signatureLevel = SE_SIGNING_LEVEL_UNCHECKED;
+    UCHAR sectionSignatureLevel = SE_SIGNING_LEVEL_UNCHECKED;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (processObject == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (protectionLevel == 0U) {
+        signerType = KSWORD_PS_PROTECTED_SIGNER_NONE;
+    }
+    else if ((protectionType != KSWORD_PS_PROTECTED_TYPE_LIGHT &&
+              protectionType != KSWORD_PS_PROTECTED_TYPE_FULL) ||
+             signerType == KSWORD_PS_PROTECTED_SIGNER_NONE ||
+             signerType > KSWORD_PS_PROTECTED_SIGNER_APP) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = KswordARKDriverResolveSignatureLevelsFromSigner(
+        signerType,
+        &signatureLevel,
+        &sectionSignatureLevel);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    return KswordARKProcessPatchProtectionByDynDataObject(
+        processObject,
+        protectionLevel,
+        signatureLevel,
+        sectionSignatureLevel);
+}
+
+NTSTATUS
 KswordARKDriverSetProcessPplLevelByPid(
     _In_ ULONG processId,
     _In_ UCHAR protectionLevel
@@ -1830,10 +1904,17 @@ Routine Description:
     Set target process protection state by PID using PPLcontrol-style direct
     EPROCESS patching (Protection + SignatureLevel + SectionSignatureLevel).
 
+    中文说明：IOCTL 名沿用历史的 SET_PPL_LEVEL，但本入口同时受理两种保护类型：
+    Type==1 是 PPL（PsProtectedTypeProtectedLight），Type==2 是完整 PP
+    （PsProtectedTypeProtected）。两者只差 Protection 字节里的类型位，签名级别
+    仍按 signer 查表——内核判定"谁能打开谁"只看 Protection 字节，签名级别影响的
+    是该进程后续能加载哪些映像。
+
 Arguments:
 
     processId - Target process ID.
-    protectionLevel - Target protection level byte.
+    protectionLevel - Target PS_PROTECTION raw byte: Type 位 0-2、Audit 位 3、
+        Signer 位 4-7。
 
 Return Value:
 
@@ -1848,14 +1929,17 @@ Return Value:
         return STATUS_INVALID_PARAMETER;
     }
 
-    // PPLcontrol-compatible validation:
-    // - 0x00 disables PPL and clears signature levels;
-    // - non-zero requires PPL Type==1 and non-zero signer.
+    // 0x00 关闭保护并清空签名级别。
     if (protectionLevel == 0U) {
         return KswordARKDriverPatchProcessProtectionStateByPid(processId, 0U);
     }
 
-    if (protectionType != 0x01U || signerType == 0U) {
+    // 只接受 PPL 与 PP 两种类型；signer 必须落在有映射的 1..8 之内。
+    // Audit 位（bit 3）与签名级别无关，沿用旧行为原样写入，不在这里拦。
+    if ((protectionType != KSWORD_PS_PROTECTED_TYPE_LIGHT &&
+         protectionType != KSWORD_PS_PROTECTED_TYPE_FULL) ||
+        signerType == KSWORD_PS_PROTECTED_SIGNER_NONE ||
+        signerType > KSWORD_PS_PROTECTED_SIGNER_APP) {
         return STATUS_INVALID_PARAMETER;
     }
 

@@ -3804,9 +3804,9 @@ void ProcessDetailWindow::initializeActionTab()
         QStringLiteral("通过 R0 驱动挂起当前进程"),
         extendedActionGroup);
     m_r0SetPplButton = buildR0MenuButton(
-        QStringLiteral("R0 PPL"),
+        QStringLiteral("R0 保护"),
         QStringLiteral(":/Icon/process_critical.svg"),
-        QStringLiteral("通过 R0 驱动设置当前进程 PPL 层级"),
+        QStringLiteral("通过 R0 驱动设置当前进程 PPL/PP 保护层级"),
         extendedActionGroup);
     m_r0VisibilityButton = buildR0MenuButton(
         QStringLiteral("R0隐藏"),
@@ -4858,46 +4858,54 @@ void ProcessDetailWindow::initializeConnections()
         r0PplMenu.setStyleSheet(buildProcessDetailMenuStyle());
         QAction* noneAction = r0PplMenu.addAction(
             buildProcessDetailR0ActionIcon(QStringLiteral(":/Icon/process_critical.svg")),
-            QStringLiteral("关闭PPL保护 (0x00)"));
+            QStringLiteral("关闭进程保护 (0x00)"));
         noneAction->setData(0x00U);
-        r0PplMenu.addSeparator();
 
-        struct PplSignerPreset
+        // 与进程列表右键菜单同构：signer 列表共用，PPL(Type=1) 与 PP(Type=2) 分两组展示。
+        struct ProcessProtectionSignerPreset
         {
-            int signerValue = 0;             // signerValue：PPL Signer 数值。
-            const char* signerName = "";    // signerName：菜单展示名称。
-            const char* meaningText = "";   // meaningText：菜单展示释义。
-            bool supportedByDriver = false; // supportedByDriver：当前驱动是否支持。
+            int signerValue = 0;           // signerValue：Signer 数值。
+            const char* signerName = "";   // signerName：菜单展示名称。
+            const char* meaningText = "";  // meaningText：菜单展示释义。
         };
-        const PplSignerPreset presetList[] =
+        const ProcessProtectionSignerPreset presetList[] =
         {
-            { 1, "Authenticode", "签名代码（Authenticode）", true },
-            { 2, "CodeGen", "动态代码生成", true },
-            { 3, "Antimalware", "反恶意软件", true },
-            { 4, "Lsa", "本地安全机构", true },
-            { 5, "Windows", "Windows 组件", true },
-            { 6, "WinTcb", "可信计算基础（最高）", true },
-            { 7, "WinSystem", "系统 signer（当前驱动未启用）", false }
+            { 1, "Authenticode", "签名代码（Authenticode）" },
+            { 2, "CodeGen", "动态代码生成" },
+            { 3, "Antimalware", "反恶意软件" },
+            { 4, "Lsa", "本地安全机构" },
+            { 5, "Windows", "Windows 组件" },
+            { 6, "WinTcb", "可信计算基础（最高）" },
+            { 7, "WinSystem", "系统 signer（System 进程同级）" }
         };
-        for (const PplSignerPreset& presetEntry : presetList)
+        struct ProcessProtectionTypePreset
         {
-            const unsigned int protectionLevel =
-                (static_cast<unsigned int>(presetEntry.signerValue) << 4U) | 0x01U;
-            const QString protectionLevelHexText = QStringLiteral("0x%1")
-                .arg(protectionLevel, 2, 16, QChar('0'))
-                .toUpper();
-            QAction* presetAction = r0PplMenu.addAction(
-                buildProcessDetailR0ActionIcon(QStringLiteral(":/Icon/process_critical.svg")),
-                QStringLiteral("%1 (%2) → %3 [%4]")
-                .arg(QString::fromLatin1(presetEntry.signerName))
-                .arg(presetEntry.signerValue)
-                .arg(QString::fromUtf8(presetEntry.meaningText))
-                .arg(protectionLevelHexText));
-            presetAction->setData(protectionLevel);
-            if (!presetEntry.supportedByDriver)
+            unsigned int typeValue = 0;            // typeValue：PS_PROTECTION 类型位。
+            const char* sectionTextUtf8 = "";      // sectionTextUtf8：分组标题。
+        };
+        const ProcessProtectionTypePreset typeList[] =
+        {
+            { 1U, "PPL 轻量保护（Type=1）" },
+            { 2U, "PP 完整保护（Type=2，更强）" }
+        };
+        for (const ProcessProtectionTypePreset& typeEntry : typeList)
+        {
+            r0PplMenu.addSection(QString::fromUtf8(typeEntry.sectionTextUtf8));
+            for (const ProcessProtectionSignerPreset& presetEntry : presetList)
             {
-                presetAction->setEnabled(false);
-                presetAction->setToolTip(QStringLiteral("该 Signer 在当前驱动下暂无签名级别联动映射。"));
+                const unsigned int protectionLevel =
+                    (static_cast<unsigned int>(presetEntry.signerValue) << 4U) | typeEntry.typeValue;
+                const QString protectionLevelHexText = QStringLiteral("0x%1")
+                    .arg(protectionLevel, 2, 16, QChar('0'))
+                    .toUpper();
+                QAction* presetAction = r0PplMenu.addAction(
+                    buildProcessDetailR0ActionIcon(QStringLiteral(":/Icon/process_critical.svg")),
+                    QStringLiteral("%1 (%2) → %3 [%4]")
+                    .arg(QString::fromLatin1(presetEntry.signerName))
+                    .arg(presetEntry.signerValue)
+                    .arg(QString::fromUtf8(presetEntry.meaningText))
+                    .arg(protectionLevelHexText));
+                presetAction->setData(protectionLevel);
             }
         }
 
@@ -4911,11 +4919,11 @@ void ProcessDetailWindow::initializeConnections()
         {
             kLogEvent actionEvent;
             warn << actionEvent
-                << "[ProcessDetailWindow] R0 PPL 层级菜单值无效, levelValue="
+                << "[ProcessDetailWindow] R0 进程保护层级菜单值无效, levelValue="
                 << levelValue
                 << eol;
             showActionResultMessage(
-                QStringLiteral("R0设置PPL层级"),
+                QStringLiteral("R0设置进程保护层级"),
                 false,
                 std::string("invalid PPL level value"),
                 actionEvent);
