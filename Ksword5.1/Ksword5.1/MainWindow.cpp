@@ -11787,6 +11787,34 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
             .arg(borderColorText);
 
     const QString kernelDockStyle = kernelDockContainerStyle + kernelDockContentStyle;
+
+    // tabPluginOpaqueStyle 作用：
+    // - 让「插件」Dock 始终保持主题实底，不参与 Dock 内容透明。
+    // 为什么必须排除：
+    // - Tab 型插件通过 WA_NativeWindow 原生子窗口承载（ksExternalPluginNativeSurface），
+    //   外部插件进程的窗口被 SetParent 到这块 surface 上；
+    // - 原生子窗口不参与 Qt 的分层合成，父链一旦被刷成透明，
+    //   插件画面就会变成黑块/残影/整块不刷新。
+    // - PluginHost 自己设过实底（createTabPluginContainer），但那是普通声明，
+    //   压不过上面几段带 !important 的透明规则，因此这里用同样带 !important
+    //   且更具体（带 #objectName）的选择器把背景收回来。
+    // 返回：仅锁定插件 Dock 自身的容器层，不触碰其它 Dock。
+    const QString tabPluginOpaqueStyle = QStringLiteral(
+        "ads--CDockWidget#ksDock_plugin,"
+        "ads--CDockWidget#ksDock_plugin > QWidget,"
+        "ads--CDockWidget#ksDock_plugin QWidget#ksTabPluginContainer,"
+        "ads--CDockWidget#ksDock_plugin QWidget#ksTabPluginEmptyState,"
+        "ads--CDockWidget#ksDock_plugin QWidget#ksExternalPluginNativeSurface,"
+        "ads--CDockWidget#ksDock_plugin QTabWidget#ksTabPluginHost::pane,"
+        "ads--CDockWidget#ksDock_plugin QStackedWidget,"
+        "ads--CDockWidget#ksDock_plugin QStackedWidget > QWidget,"
+        "ads--CDockWidget#ksDock_plugin QPlainTextEdit{"
+        "  background:%1 !important;"
+        "  background-color:%1 !important;"
+        "  color:%2 !important;"
+        "}")
+        .arg(surfaceBackgroundText)
+        .arg(primaryTextColor);
     // finalOrdinaryTabHoverStyle 作用：
     // - 作为普通 QTabWidget/QTabBar 的最终 hover/pressed 兜底；
     // - 深色模式使用深灰、浅色模式使用浅灰，避免基础 QSS 或平台 palette 反向回退；
@@ -11883,6 +11911,7 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
             + dockContentTransparentStyle
             + finalDockAreaTransparentStyle
             + kernelDockStyle
+            + tabPluginOpaqueStyle
             + finalOrdinaryTabHoverStyle;
     }
 
@@ -11951,5 +11980,6 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
         + dockContentTransparentStyle
         + finalDockAreaTransparentStyle
         + kernelDockStyle
+        + tabPluginOpaqueStyle
         + finalOrdinaryTabHoverStyle;
 }
