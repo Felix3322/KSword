@@ -184,6 +184,17 @@
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Module.cpp" />
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Thread.cpp" />
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Token.cpp" />
+    <ClCompile Include="Features\Driver\DriverUnloadedView.cpp" />
+    <ClCompile Include="Features\Privilege\PrivilegeActions.cpp" />
+    <ClCompile Include="Features\Privilege\PrivilegeEnumerator.cpp" />
+    <ClCompile Include="Features\Privilege\PrivilegeFeature.cpp" />
+    <ClCompile Include="Features\Privilege\PrivilegeModel.cpp" />
+    <ClCompile Include="Features\Privilege\PrivilegeView.cpp" />
+    <ClCompile Include="Features\Service\ServiceActions.cpp" />
+    <ClCompile Include="Features\Service\ServiceEnumerator.cpp" />
+    <ClCompile Include="Features\Service\ServiceFeature.cpp" />
+    <ClCompile Include="Features\Service\ServiceModel.cpp" />
+    <ClCompile Include="Features\Service\ServiceView.cpp" />
     <ClCompile Include="Features\Startup\StartupActions.cpp" />
     <ClCompile Include="Features\Startup\StartupEnumerator.cpp" />
     <ClCompile Include="Features\Startup\StartupFeature.cpp" />
@@ -200,9 +211,11 @@
     <ClCompile Include="Ui\ListViewUtil.cpp" />
     <ClCompile Include="Ui\LoadingOverlay.cpp" />
     <ClCompile Include="Ui\MenuUtil.cpp" />
+    <ClCompile Include="Ui\NumericSortKey.cpp" />
     <ClCompile Include="Ui\PlaceholderPage.cpp" />
     <ClCompile Include="Ui\SplitterUtil.cpp" />
     <ClCompile Include="Ui\TabUtil.cpp" />
+    <ClCompile Include="Ui\TextFindSupport.cpp" />
     <ClCompile Include="Ui\Theme.cpp" />
     <ClCompile Include="Ui\TreeViewUtil.cpp" />
     <ClCompile Include="Ui\VirtualListView.cpp" />
@@ -229,6 +242,7 @@
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverRegistry.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverSection.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ksword\process\process.cpp" />
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ksword\service\service.cpp" />
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ksword\string\string.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -321,6 +335,17 @@
     <ClInclude Include="Features\ProcessDetail\ProcessDetailFeature.h" />
     <ClInclude Include="Features\ProcessDetail\ProcessDetailPage.h" />
     <ClInclude Include="Features\ProcessDetail\ProcessDetailTypes.h" />
+    <ClInclude Include="Features\Driver\DriverUnloadedView.h" />
+    <ClInclude Include="Features\Privilege\PrivilegeActions.h" />
+    <ClInclude Include="Features\Privilege\PrivilegeEnumerator.h" />
+    <ClInclude Include="Features\Privilege\PrivilegeFeature.h" />
+    <ClInclude Include="Features\Privilege\PrivilegeModel.h" />
+    <ClInclude Include="Features\Privilege\PrivilegeView.h" />
+    <ClInclude Include="Features\Service\ServiceActions.h" />
+    <ClInclude Include="Features\Service\ServiceEnumerator.h" />
+    <ClInclude Include="Features\Service\ServiceFeature.h" />
+    <ClInclude Include="Features\Service\ServiceModel.h" />
+    <ClInclude Include="Features\Service\ServiceView.h" />
     <ClInclude Include="Features\Startup\StartupActions.h" />
     <ClInclude Include="Features\Startup\StartupEnumerator.h" />
     <ClInclude Include="Features\Startup\StartupFeature.h" />
@@ -340,9 +365,11 @@
     <ClInclude Include="Ui\LoadingOverlay.h" />
     <ClInclude Include="Ui\MenuUtil.h" />
     <ClInclude Include="Ui\ModuleDescriptor.h" />
+    <ClInclude Include="Ui\NumericSortKey.h" />
     <ClInclude Include="Ui\PlaceholderPage.h" />
     <ClInclude Include="Ui\SplitterUtil.h" />
     <ClInclude Include="Ui\TabUtil.h" />
+    <ClInclude Include="Ui\TextFindSupport.h" />
     <ClInclude Include="Ui\Theme.h" />
     <ClInclude Include="Ui\TreeViewUtil.h" />
     <ClInclude Include="Ui\VirtualListView.h" />

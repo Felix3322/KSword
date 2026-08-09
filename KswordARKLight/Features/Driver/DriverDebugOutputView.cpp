@@ -70,6 +70,7 @@ struct DrainSnapshot {
 struct FilterSnapshot {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::vector<std::size_t> visibleIndexes;
 };
 
@@ -87,6 +88,7 @@ struct DriverDebugOutputViewState {
     std::vector<DebugRecordRow> visibleRows;
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     std::uint64_t snapshotGeneration = 0;
     std::uint64_t controlRequestId = 0;
     std::uint64_t captureSession = 0;
@@ -231,18 +233,22 @@ void RequestFilter(DriverDebugOutputViewState& state, std::wstring query) {
         return;
     }
     state.filterQuery = std::move(query);
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
     const std::uint64_t generation = state.snapshotGeneration;
     const auto rows = state.filterRows;
+    const bool useRegex = state.filterUseRegex;
     state.filterTask->request(
-        [rows, generation, query = state.filterQuery]() mutable {
+        [rows, generation, useRegex, query = state.filterQuery]() mutable {
             FilterSnapshot result{};
             result.generation = generation;
             result.query = std::move(query);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.useRegex = useRegex;
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<FilterSnapshot>&& result, std::exception_ptr error) {
-            if (error || !result.has_value() || result->generation != state.snapshotGeneration || result->query != state.filterQuery) {
+            if (error || !result.has_value() || result->generation != state.snapshotGeneration ||
+                result->query != state.filterQuery || result->useRegex != state.filterUseRegex) {
                 return;
             }
             const std::wstring selectedKey = StableKeyAt(state, ListView_GetNextItem(state.listView, -1, LVNI_SELECTED));

@@ -2,6 +2,7 @@
 
 #include "../../Ui/Controls.h"
 #include "../../Ui/FilterBar.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../Ui/Theme.h"
 #include "EtwFilterDialog.h"
 
@@ -13,6 +14,7 @@
 #include <cwctype>
 #include <iomanip>
 #include <iterator>
+#include <regex>
 #include <sstream>
 #include <vector>
 
@@ -87,6 +89,7 @@ LRESULT CALLBACK DetailWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(edit));
         if (edit != nullptr) {
             ::SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(Ksword::Ui::SystemUIFont()), TRUE);
+            Ksword::Ui::AttachTextFindSupport(edit);
         }
         delete text;
         return 0;
@@ -148,14 +151,22 @@ bool ContainsCaseInsensitive(const std::wstring& value, const std::wstring& quer
     return found != value.end();
 }
 
-bool MatchesEvent(const EtwEvent& eventRow, const std::wstring& query) {
-    return ContainsCaseInsensitive(NumberText(eventRow.processId), query) ||
-        ContainsCaseInsensitive(eventRow.timeText, query) ||
-        ContainsCaseInsensitive(eventRow.providerText, query) ||
-        ContainsCaseInsensitive(NumberText(eventRow.threadId), query) ||
-        ContainsCaseInsensitive(NumberText(eventRow.eventId), query) ||
-        ContainsCaseInsensitive(NumberText(eventRow.level), query) ||
-        ContainsCaseInsensitive(eventRow.summary, query);
+// MatchesEvent tests one captured event against the current query. Events are
+// matched field by field instead of through the shared row filter because the
+// ETW table is fed from a live ring of EtwEvent records rather than from a
+// materialized VirtualListRow snapshot. A non-null pattern means the ".*" toggle
+// is on and the expression compiled.
+bool MatchesEvent(const EtwEvent& eventRow, const std::wstring& query, const std::wregex* pattern) {
+    const auto matches = [&query, pattern](const std::wstring& text) {
+        return pattern != nullptr ? std::regex_search(text, *pattern) : ContainsCaseInsensitive(text, query);
+    };
+    return matches(NumberText(eventRow.processId)) ||
+        matches(eventRow.timeText) ||
+        matches(eventRow.providerText) ||
+        matches(NumberText(eventRow.threadId)) ||
+        matches(NumberText(eventRow.eventId)) ||
+        matches(NumberText(eventRow.level)) ||
+        matches(eventRow.summary);
 }
 
 // CopyTextToClipboard writes Unicode text for ETW menu actions. Inputs are owner
@@ -484,6 +495,7 @@ void EtwMonitorView::clearPendingEvents() {
 
 void EtwMonitorView::requestLocalFilter(std::wstring query) {
     localFilterQuery_ = std::move(query);
+    localFilterUseRegex_ = Ksword::Ui::GetFilterBarRegexEnabled(localFilterBar_);
     if (eventList_ == nullptr) {
         return;
     }
@@ -501,14 +513,26 @@ void EtwMonitorView::requestLocalFilter(std::wstring query) {
     }
     const auto snapshot = std::make_shared<const std::vector<EtwEvent>>(eventRows_);
     const std::uint64_t generation = eventGeneration_;
+    const bool useRegex = localFilterUseRegex_;
     localFilterTask_->request(
-        [snapshot, generation, query = localFilterQuery_]() mutable {
+        [snapshot, generation, useRegex, query = localFilterQuery_]() mutable {
             EtwEventFilterResult result{};
             result.generation = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
+            std::wregex compiled;
+            bool regexReady = false;
+            if (useRegex && !result.query.empty()) {
+                try {
+                    compiled.assign(result.query, std::regex_constants::ECMAScript | std::regex_constants::icase);
+                    regexReady = true;
+                } catch (const std::regex_error&) {
+                    regexReady = false;
+                }
+            }
             result.visibleIndexes.reserve(snapshot->size());
             for (std::size_t index = 0; index < snapshot->size(); ++index) {
-                if (MatchesEvent((*snapshot)[index], result.query)) {
+                if (MatchesEvent((*snapshot)[index], result.query, regexReady ? &compiled : nullptr)) {
                     result.visibleIndexes.push_back(index);
                 }
             }
@@ -524,7 +548,8 @@ void EtwMonitorView::requestLocalFilter(std::wstring query) {
 }
 
 void EtwMonitorView::applyLocalFilter(EtwEventFilterResult result) {
-    if (result.generation != eventGeneration_ || result.query != localFilterQuery_) {
+    if (result.generation != eventGeneration_ || result.query != localFilterQuery_ ||
+        result.useRegex != localFilterUseRegex_) {
         return;
     }
     visibleEventIndexes_ = std::move(result.visibleIndexes);

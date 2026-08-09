@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cwctype>
 #include <memory>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -53,6 +54,7 @@ struct HardwareDetailSnapshot {
 struct HardwareFilterResult {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::wstring selectedInstanceId;
     std::vector<bool> visibleIndexes;
 };
@@ -83,6 +85,7 @@ struct HardwareViewState {
     std::vector<bool> visibleIndexes;
     std::wstring statusText;
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     std::uint64_t displayGeneration = 0;
     std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<HardwareEnumerationResult>> refreshTask;
     std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<HardwareFilterResult>> filterTask;
@@ -400,22 +403,30 @@ bool ContainsInsensitive(const std::wstring& text, const std::wstring& query) {
     }) != text.end();
 }
 
-bool MatchesDevice(const HardwareDeviceNode& node, const std::wstring& query) {
-    return ContainsInsensitive(node.instanceId, query) ||
-        ContainsInsensitive(node.displayName, query) ||
-        ContainsInsensitive(node.className, query) ||
-        ContainsInsensitive(node.classGuid, query) ||
-        ContainsInsensitive(node.manufacturer, query) ||
-        ContainsInsensitive(node.serviceName, query) ||
-        ContainsInsensitive(node.driverKey, query) ||
-        ContainsInsensitive(node.location, query) ||
-        ContainsInsensitive(node.locationPaths, query) ||
-        ContainsInsensitive(node.hardwareIds, query) ||
-        ContainsInsensitive(node.compatibleIds, query) ||
-        ContainsInsensitive(node.upperFilters, query) ||
-        ContainsInsensitive(node.lowerFilters, query) ||
-        ContainsInsensitive(node.classUpperFilters, query) ||
-        ContainsInsensitive(node.classLowerFilters, query);
+// MatchesDevice tests one device node against the current query. The tree is
+// matched field by field rather than through VirtualListView::FilterRowIndexes
+// because a matching child has to keep its ancestors visible, so the caller
+// needs per-node answers rather than a row index list. A non-null pattern means
+// the user turned the ".*" toggle on and the expression compiled.
+bool MatchesDevice(const HardwareDeviceNode& node, const std::wstring& query, const std::wregex* pattern) {
+    const auto matches = [&query, pattern](const std::wstring& text) {
+        return pattern != nullptr ? std::regex_search(text, *pattern) : ContainsInsensitive(text, query);
+    };
+    return matches(node.instanceId) ||
+        matches(node.displayName) ||
+        matches(node.className) ||
+        matches(node.classGuid) ||
+        matches(node.manufacturer) ||
+        matches(node.serviceName) ||
+        matches(node.driverKey) ||
+        matches(node.location) ||
+        matches(node.locationPaths) ||
+        matches(node.hardwareIds) ||
+        matches(node.compatibleIds) ||
+        matches(node.upperFilters) ||
+        matches(node.lowerFilters) ||
+        matches(node.classUpperFilters) ||
+        matches(node.classLowerFilters);
 }
 
 HTREEITEM FindTreeItemByDeviceIndex(HWND tree, HTREEITEM item, int deviceIndex) {
@@ -474,7 +485,8 @@ HTREEITEM EnsureTreeItemVisible(HardwareViewState& state, const int deviceIndex)
 }
 
 void ApplyHardwareFilter(HardwareViewState& state, HardwareFilterResult result) {
-    if (result.generation != state.displayGeneration || result.query != state.filterQuery) {
+    if (result.generation != state.displayGeneration || result.query != state.filterQuery ||
+        result.useRegex != state.filterUseRegex) {
         return;
     }
     state.visibleIndexes = std::move(result.visibleIndexes);
@@ -499,21 +511,36 @@ void ApplyHardwareFilter(HardwareViewState& state, HardwareFilterResult result) 
 
 void RequestHardwareFilter(HardwareViewState& state, std::wstring query, std::wstring selectedInstanceId) {
     state.filterQuery = std::move(query);
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
     const std::vector<HardwareDeviceNode> devices = state.model.devices();
     const std::uint64_t generation = state.displayGeneration;
+    const bool useRegex = state.filterUseRegex;
     if (!state.filterTask) {
         return;
     }
     state.filterTask->request(
-        [devices, generation, query = state.filterQuery, selectedInstanceId = std::move(selectedInstanceId)]() mutable {
+        [devices, generation, useRegex, query = state.filterQuery, selectedInstanceId = std::move(selectedInstanceId)]() mutable {
             HardwareFilterResult result{};
             result.generation = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.selectedInstanceId = std::move(selectedInstanceId);
             result.visibleIndexes.assign(devices.size(), result.query.empty());
+            // Compiled once for the whole pass; a malformed pattern falls back
+            // to substring matching, matching the list-view filter's behavior.
+            std::wregex compiled;
+            bool regexReady = false;
+            if (useRegex && !result.query.empty()) {
+                try {
+                    compiled.assign(result.query, std::regex_constants::ECMAScript | std::regex_constants::icase);
+                    regexReady = true;
+                } catch (const std::regex_error&) {
+                    regexReady = false;
+                }
+            }
             if (!result.query.empty()) {
                 for (const HardwareDeviceNode& node : devices) {
-                    if (!MatchesDevice(node, result.query)) {
+                    if (!MatchesDevice(node, result.query, regexReady ? &compiled : nullptr)) {
                         continue;
                     }
                     int current = node.index;

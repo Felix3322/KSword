@@ -4,6 +4,7 @@
 
 #include "../../Ui/Controls.h"
 #include "../../Ui/LoadingOverlay.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../Ui/Theme.h"
 
 #include <commctrl.h>
@@ -868,7 +869,13 @@ HWND ProcessDetailPage::AddEdit(
     } else {
         style |= ES_AUTOHSCROLL;
     }
-    return AddControl(tab, exStyle, WC_EDITW, text, style, controlId, x, y, width, height);
+    HWND edit = AddControl(tab, exStyle, WC_EDITW, text, style, controlId, x, y, width, height);
+    // Every multi-line pane on this page routes through here, so attaching once
+    // covers the detail, evidence, PEB and token dumps in a single place.
+    if (multiline) {
+        Ksword::Ui::AttachTextFindSupport(edit);
+    }
+    return edit;
 }
 
 HWND ProcessDetailPage::AddCombo(TabIndex tab, int controlId, int x, int y, int width, int height) {

@@ -21,6 +21,7 @@ namespace Ksword::Features::Monitor {
 struct EtwEventFilterResult {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::vector<std::size_t> visibleIndexes;
 };
 
@@ -103,6 +104,7 @@ private:
     std::vector<EtwEvent> eventRows_;
     std::vector<std::size_t> visibleEventIndexes_;
     std::wstring localFilterQuery_;
+    bool localFilterUseRegex_ = false;
     std::uint64_t eventGeneration_ = 0;
     int eventContextColumn_ = 0;
     std::wstring eventTextScratch_;

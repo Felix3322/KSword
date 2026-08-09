@@ -61,6 +61,7 @@ int Height(const RECT& rc) {
 struct StartupFilterResult final {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::wstring selectedStableKey;
     std::wstring topStableKey;
     std::vector<std::size_t> visibleIndexes;
@@ -89,6 +90,7 @@ struct StartupViewState {
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
     std::wstring statusText = L"正在等待启动项快照…";
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     std::uint64_t displayGeneration = 0;
     bool actionInProgress = false;
     std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<StartupEnumerationResult>> refreshTask;
@@ -215,7 +217,8 @@ void SetActionControlsEnabled(StartupViewState& state, bool enabled) {
 }
 
 void ApplyStartupFilter(StartupViewState& state, StartupFilterResult result) {
-    if (result.generation != state.displayGeneration || result.query != state.filterQuery || !state.entryList.hwnd()) {
+    if (result.generation != state.displayGeneration || result.query != state.filterQuery ||
+        result.useRegex != state.filterUseRegex || !state.entryList.hwnd()) {
         return;
     }
 
@@ -263,19 +266,22 @@ void RequestStartupFilter(StartupViewState& state,
     std::wstring selectedStableKey,
     std::wstring topStableKey) {
     state.filterQuery = std::move(query);
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
     const auto rows = state.filterRows;
     const std::uint64_t generation = state.displayGeneration;
+    const bool useRegex = state.filterUseRegex;
     if (!state.filterTask || !rows) {
         return;
     }
     state.filterTask->request(
-        [rows, generation, query = state.filterQuery, selectedStableKey = std::move(selectedStableKey), topStableKey = std::move(topStableKey)]() mutable {
+        [rows, generation, useRegex, query = state.filterQuery, selectedStableKey = std::move(selectedStableKey), topStableKey = std::move(topStableKey)]() mutable {
             StartupFilterResult result{};
             result.generation = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.selectedStableKey = std::move(selectedStableKey);
             result.topStableKey = std::move(topStableKey);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<StartupFilterResult>&& result, std::exception_ptr error) {

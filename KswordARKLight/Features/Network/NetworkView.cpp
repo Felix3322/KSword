@@ -40,6 +40,7 @@ constexpr UINT kMsgFilterCompleted = WM_APP + 596;
 struct NetworkFilterResult {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::vector<std::size_t> visibleIndexes;
 };
 
@@ -57,6 +58,7 @@ struct NetworkViewState {
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
     int currentTab = 0;
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     std::uint64_t displayGeneration = 0;
     int contextColumn = 0;
     std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<std::vector<NetworkAuditPage>>> refreshTask;
@@ -167,7 +169,8 @@ void ApplyColumns(NetworkViewState& state, const NetworkAuditPage& page) {
 }
 
 void ApplyNetworkFilter(NetworkViewState& state, NetworkFilterResult result) {
-    if (result.generation != state.displayGeneration || result.query != state.filterQuery) {
+    if (result.generation != state.displayGeneration || result.query != state.filterQuery ||
+        result.useRegex != state.filterUseRegex) {
         return;
     }
     state.list.setVisibleIndexes(std::move(result.visibleIndexes));
@@ -178,17 +181,20 @@ void ApplyNetworkFilter(NetworkViewState& state, NetworkFilterResult result) {
 
 void RequestNetworkFilter(NetworkViewState& state, std::wstring query) {
     state.filterQuery = std::move(query);
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
     const auto rows = state.filterRows;
     const std::uint64_t generation = state.displayGeneration;
+    const bool useRegex = state.filterUseRegex;
     if (!state.filterTask || !rows) {
         return;
     }
     state.filterTask->request(
-        [rows, generation, query = state.filterQuery]() mutable {
+        [rows, generation, useRegex, query = state.filterQuery]() mutable {
             NetworkFilterResult result{};
             result.generation = generation;
             result.query = std::move(query);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.useRegex = useRegex;
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<NetworkFilterResult>&& result, std::exception_ptr error) {

@@ -3,6 +3,7 @@
 #include "../AuditCommon/AuditTable.h"
 #include "../../Ui/AsyncTask.h"
 #include "../../Ui/Controls.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../Ui/Theme.h"
 #include "../../../Ksword5.1/Ksword5.1/ArkDriverClient/ArkDriverClient.h"
 
@@ -520,6 +521,7 @@ bool CreateChildControls(HwidDispatchViewState& state) {
         0, 0, 0, 0, state.hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPlanEditId)), ::GetModuleHandleW(nullptr), nullptr);
     if (state.planEdit) {
         ::SendMessageW(state.planEdit, WM_SETFONT, reinterpret_cast<WPARAM>(Ksword::Ui::SystemUIFont()), TRUE);
+        Ksword::Ui::AttachTextFindSupport(state.planEdit);
     }
     RECT tableBounds{ 0, 0, 100, 100 };
     state.statusTable = Ksword::Features::AuditCommon::CreateReadOnlyAuditTable(

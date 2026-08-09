@@ -374,11 +374,8 @@ void MainWindow::queueDockMaterialization(const int dockIndex) {
             continue;
         }
         slot.materializing = true;
-        const std::wstring status = L"正在加载“" + modules_[moduleIndex].title + L"”页面…";
-        Ksword::Ui::SetPlaceholderPageLoading(slot.page, true, status);
-        if (slot.page && ::IsWindowVisible(slot.page)) {
-            ::UpdateWindow(slot.page);
-        }
+        const std::wstring status = L"准备加载“" + modules_[moduleIndex].title + L"”页面…";
+        Ksword::Ui::SetPlaceholderPageProgress(slot.page, status, 8);
         if (statusText_) {
             ::SetWindowTextW(statusText_, status.c_str());
         }
@@ -409,12 +406,29 @@ void MainWindow::materializeDockForDockIndex(const int dockIndex) {
             pageBounds = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
         }
 
+        // This is the frame the user actually stares at: the module factory on
+        // the next line owns the UI thread until it returns, so the bar stands
+        // still at this value for the whole construction. That is the honest
+        // picture and it is left alone -- a fake animation here would only hide
+        // which page is slow to build.
+        Ksword::Ui::SetPlaceholderPageProgress(
+            slot.page,
+            L"正在创建“" + modules_[moduleIndex].title + L"”页面内容…",
+            30);
+
         HWND realPage = createModulePage(modules_[moduleIndex], pageBounds);
         if (!realPage) {
             slot.materializing = false;
             Ksword::Ui::SetPlaceholderPageLoading(slot.page, false, L"页面创建失败，切换到此页面可重试。" );
             return;
         }
+
+        // Last refresh the placeholder ever gets: mounting the real content
+        // takes this HWND out of the dock, so a 100% frame would never be seen.
+        Ksword::Ui::SetPlaceholderPageProgress(
+            slot.page,
+            L"正在挂载“" + modules_[moduleIndex].title + L"”页面…",
+            80);
 
         HWND oldPage = slot.page;
         if (dockManager_->replaceDockContent(slot.dockIndex, realPage, true)) {

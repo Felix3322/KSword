@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <regex>
 
 namespace Ksword::Ui {
 namespace {
@@ -69,14 +70,51 @@ void VirtualListView::resetVisibleIndexes() {
     updateItemCount();
 }
 
-std::vector<std::size_t> VirtualListView::FilterRowIndexes(const std::vector<VirtualListRow>& rows, const std::wstring& query) {
+bool VirtualListView::IsValidFilterRegex(const std::wstring& query) {
+    if (query.empty()) {
+        return false;
+    }
+    try {
+        const std::wregex compiled(query, std::regex_constants::ECMAScript | std::regex_constants::icase);
+        static_cast<void>(compiled);
+    } catch (const std::regex_error&) {
+        return false;
+    }
+    return true;
+}
+
+std::vector<std::size_t> VirtualListView::FilterRowIndexes(
+    const std::vector<VirtualListRow>& rows,
+    const std::wstring& query,
+    const bool useRegex) {
+    // Compiling once outside the row loop matters: these snapshots run to tens
+    // of thousands of rows and each row carries every detail field as a cell.
+    std::wregex compiled;
+    bool regexReady = false;
+    if (useRegex && !query.empty()) {
+        try {
+            compiled.assign(query, std::regex_constants::ECMAScript | std::regex_constants::icase);
+            regexReady = true;
+        } catch (const std::regex_error&) {
+            regexReady = false;
+        }
+    }
+
     std::vector<std::size_t> indexes;
     indexes.reserve(rows.size());
     for (std::size_t index = 0; index < rows.size(); ++index) {
         const VirtualListRow& row = rows[index];
-        bool matched = ContainsCaseInsensitive(row.stableKey, query);
-        for (const std::wstring& cell : row.cells) {
-            matched = matched || ContainsCaseInsensitive(cell, query);
+        bool matched = false;
+        if (regexReady) {
+            matched = std::regex_search(row.stableKey, compiled);
+            for (const std::wstring& cell : row.cells) {
+                matched = matched || std::regex_search(cell, compiled);
+            }
+        } else {
+            matched = ContainsCaseInsensitive(row.stableKey, query);
+            for (const std::wstring& cell : row.cells) {
+                matched = matched || ContainsCaseInsensitive(cell, query);
+            }
         }
         if (matched) {
             indexes.push_back(index);

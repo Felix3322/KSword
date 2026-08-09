@@ -54,7 +54,21 @@ public:
 
     // FilterRowIndexes is data-only and can be called from a worker thread.
     // The query is matched case-insensitively against every cell and stable key.
-    static std::vector<std::size_t> FilterRowIndexes(const std::vector<VirtualListRow>& rows, const std::wstring& query);
+    //
+    // With useRegex the query is treated as an ECMAScript pattern instead of a
+    // substring. An invalid pattern falls back to substring matching rather than
+    // matching nothing: a filter box is edited one character at a time, so half
+    // of "foo(bar)" is an expected transient state, and blanking the table on
+    // every keystroke would make the mode unusable.
+    static std::vector<std::size_t> FilterRowIndexes(
+        const std::vector<VirtualListRow>& rows,
+        const std::wstring& query,
+        bool useRegex = false);
+
+    // IsValidFilterRegex reports whether a pattern compiles. Input is the query
+    // text; output is false for an empty or malformed pattern. It exists so the
+    // filter bar can show the mode is currently not in effect.
+    static bool IsValidFilterRegex(const std::wstring& query);
 
     // handleNotify returns true when the notification was handled.
     bool handleNotify(const NMHDR& header, LRESULT& result);

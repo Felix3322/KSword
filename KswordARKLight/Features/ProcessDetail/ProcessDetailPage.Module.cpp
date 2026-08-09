@@ -3,6 +3,8 @@
 #include "../../Ui/FilterBar.h"
 
 #include "../../Ui/Controls.h"
+#include "../../Ui/NumericSortKey.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../Ui/Theme.h"
 
 #include <commctrl.h>
@@ -392,16 +394,19 @@ std::vector<Ksword::Ui::VirtualListRow> BuildModuleVirtualRows(
         rows.push_back(std::move(row));
     }
     const int column = std::clamp(sortColumn, 0, 5);
+    // The size and thread-count columns are numeric, and an ordinal compare
+    // ordered them by printed characters: "512.0 KiB" sorted after "4.0 MiB"
+    // and 9 threads after 10. CompareCellsNumericAware reads the leading number
+    // back out of the cell and only falls back to text order for the path,
+    // signature and state columns.
     std::stable_sort(rows.begin(), rows.end(), [column, sortDescending](const auto& left, const auto& right) {
         const std::wstring& leftCell = left.cells[static_cast<std::size_t>(column)];
         const std::wstring& rightCell = right.cells[static_cast<std::size_t>(column)];
-        const int comparison = ::CompareStringOrdinal(
-            leftCell.c_str(), static_cast<int>(leftCell.size()),
-            rightCell.c_str(), static_cast<int>(rightCell.size()), FALSE);
-        if (comparison == CSTR_EQUAL) {
+        const int comparison = Ksword::Ui::CompareCellsNumericAware(leftCell, rightCell);
+        if (comparison == 0) {
             return left.stableKey < right.stableKey;
         }
-        return sortDescending ? comparison == CSTR_GREATER_THAN : comparison == CSTR_LESS_THAN;
+        return sortDescending ? comparison > 0 : comparison < 0;
     });
     return rows;
 }
@@ -508,6 +513,7 @@ LRESULT CALLBACK ModuleDetailWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
             0, 0, 0, 0, hwnd,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kModuleDetailEditId)),
             ::GetModuleHandleW(nullptr), nullptr);
+        Ksword::Ui::AttachTextFindSupport(state->edit);
         state->copyButton = ::CreateWindowExW(
             0, WC_BUTTONW, L"复制全部", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd,
@@ -771,6 +777,7 @@ void ProcessDetailPage::RequestModuleFilter(bool rebuildRows) {
     }
     const HWND filter = Control(TabIndex::Modules, ModuleFilter);
     moduleFilterQuery_ = filter ? Ksword::Ui::GetFilterBarText(filter) : moduleFilterQuery_;
+    moduleFilterUseRegex_ = Ksword::Ui::GetFilterBarRegexEnabled(filter);
     const auto existingRows = moduleFilterRows_;
     const auto source = pendingModuleEntries_ ? pendingModuleEntries_ : moduleEntries_;
     // Preserve request ordering when a refresh and typing overlap: the newest
@@ -783,12 +790,14 @@ void ProcessDetailPage::RequestModuleFilter(bool rebuildRows) {
     const int sortColumn = moduleSortColumn_;
     const bool sortDescending = moduleSortDescending_;
     const bool verifySignatures = moduleVerifySignatures_;
+    const bool useRegex = moduleFilterUseRegex_;
     SetPageStatus(TabIndex::Modules, ModuleStatus, L"● 正在后台筛选模块表...");
     moduleFilterTask_->request(
-        [source, existingRows, buildRows, generation, sortColumn, sortDescending, verifySignatures, query = moduleFilterQuery_]() mutable {
+        [source, existingRows, buildRows, generation, sortColumn, sortDescending, verifySignatures, useRegex, query = moduleFilterQuery_]() mutable {
             DetailTableFilterResult result{};
             result.sourceGeneration = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.sortColumn = sortColumn;
             result.sortDescending = sortDescending;
             if (buildRows) {
@@ -800,13 +809,14 @@ void ProcessDetailPage::RequestModuleFilter(bool rebuildRows) {
                 result.rows = existingRows;
             }
             if (result.rows) {
-                result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*result.rows, result.query);
+                result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*result.rows, result.query, useRegex);
             }
             return result;
         },
         [this](std::uint64_t, std::optional<DetailTableFilterResult>&& result, std::exception_ptr error) {
             if (error || !result.has_value() || result->sourceGeneration != moduleSourceGeneration_ ||
-                result->query != moduleFilterQuery_ || result->sortColumn != moduleSortColumn_ ||
+                result->query != moduleFilterQuery_ || result->useRegex != moduleFilterUseRegex_ ||
+                result->sortColumn != moduleSortColumn_ ||
                 result->sortDescending != moduleSortDescending_ || !result->rows) {
                 return;
             }

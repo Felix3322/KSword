@@ -2,10 +2,12 @@
 
 #include "Controls.h"
 #include "Theme.h"
+#include "VirtualListView.h"
 
 #include <algorithm>
 #include <commctrl.h>
 #include <cwctype>
+#include <string>
 
 namespace Ksword::Ui {
 namespace {
@@ -13,6 +15,7 @@ namespace {
 constexpr wchar_t kFilterBarClass[] = L"KswordARKLight.FilterBar";
 constexpr int kFilterEditId = 1;
 constexpr int kFilterClearId = 2;
+constexpr int kFilterRegexId = 3;
 constexpr UINT_PTR kFilterDebounceTimer = 1;
 constexpr UINT kFilterDebounceMilliseconds = 200;
 
@@ -20,6 +23,7 @@ struct FilterBarState final {
     int notificationId = 0;
     HWND edit = nullptr;
     HWND clearButton = nullptr;
+    HWND regexButton = nullptr;
     bool notifyParent = true;
 };
 
@@ -36,14 +40,42 @@ void NotifyChanged(HWND hwnd, const FilterBarState& state) {
     }
 }
 
+// RefreshRegexIndicator keeps the toggle honest about whether the pattern is
+// actually in effect. A malformed pattern silently degrades to substring
+// matching, so without this the box would look like it is filtering by regex
+// while doing something else.
+void RefreshRegexIndicator(const FilterBarState& state) {
+    if (!state.regexButton) {
+        return;
+    }
+    const bool enabled = ::SendMessageW(state.regexButton, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    if (!enabled) {
+        ::SetWindowTextW(state.regexButton, L".*");
+        return;
+    }
+    const int length = ::GetWindowTextLengthW(state.edit);
+    std::wstring query(static_cast<std::size_t>(std::max(0, length)) + 1U, L'\0');
+    if (length > 0) {
+        ::GetWindowTextW(state.edit, query.data(), length + 1);
+    }
+    query.resize(static_cast<std::size_t>(std::max(0, length)));
+    const std::wstring trimmed = Trim(std::move(query));
+    const bool usable = trimmed.empty() || VirtualListView::IsValidFilterRegex(trimmed);
+    ::SetWindowTextW(state.regexButton, usable ? L".*" : L".*!");
+}
+
 void Layout(HWND hwnd, FilterBarState& state) {
     RECT rect{};
     ::GetClientRect(hwnd, &rect);
     const int clientWidth = static_cast<int>(rect.right - rect.left);
     const int height = std::max(1, static_cast<int>(rect.bottom - rect.top));
     const int clearWidth = std::min(30, std::max(22, height));
+    const int regexWidth = clearWidth;
     if (state.edit) {
-        ::MoveWindow(state.edit, 0, 0, std::max(1, clientWidth - clearWidth), height, TRUE);
+        ::MoveWindow(state.edit, 0, 0, std::max(1, clientWidth - clearWidth - regexWidth), height, TRUE);
+    }
+    if (state.regexButton) {
+        ::MoveWindow(state.regexButton, std::max(0, clientWidth - clearWidth - regexWidth), 0, regexWidth, height, TRUE);
     }
     if (state.clearButton) {
         ::MoveWindow(state.clearButton, std::max(0, clientWidth - clearWidth), 0, clearWidth, height, TRUE);
@@ -63,9 +95,13 @@ LRESULT CALLBACK FilterBarProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
         if (state) {
             state->edit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
                 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFilterEditId)), ::GetModuleHandleW(nullptr), nullptr);
+            state->regexButton = ::CreateWindowExW(0, L"BUTTON", L".*",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE,
+                0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFilterRegexId)), ::GetModuleHandleW(nullptr), nullptr);
             state->clearButton = ::CreateWindowExW(0, L"BUTTON", L"×", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                 0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kFilterClearId)), ::GetModuleHandleW(nullptr), nullptr);
             ::SendMessageW(state->edit, WM_SETFONT, reinterpret_cast<WPARAM>(SystemUIFont()), TRUE);
+            ::SendMessageW(state->regexButton, WM_SETFONT, reinterpret_cast<WPARAM>(SystemUIFont()), TRUE);
             ::SendMessageW(state->clearButton, WM_SETFONT, reinterpret_cast<WPARAM>(SystemUIFont()), TRUE);
         }
         return 0;
@@ -79,8 +115,19 @@ LRESULT CALLBACK FilterBarProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
             break;
         }
         if (LOWORD(wParam) == kFilterEditId && HIWORD(wParam) == EN_CHANGE) {
+            RefreshRegexIndicator(*state);
             ::KillTimer(hwnd, kFilterDebounceTimer);
             ::SetTimer(hwnd, kFilterDebounceTimer, kFilterDebounceMilliseconds, nullptr);
+            return 0;
+        }
+        if (LOWORD(wParam) == kFilterRegexId && HIWORD(wParam) == BN_CLICKED) {
+            // Switching mode re-filters immediately: the text has not changed,
+            // so nothing else would trigger a refresh and the table would keep
+            // showing the previous mode's result.
+            RefreshRegexIndicator(*state);
+            ::KillTimer(hwnd, kFilterDebounceTimer);
+            NotifyChanged(hwnd, *state);
+            ::SetFocus(state->edit);
             return 0;
         }
         if (LOWORD(wParam) == kFilterClearId && HIWORD(wParam) == BN_CLICKED) {
@@ -180,6 +227,14 @@ void SetFilterBarText(HWND filterBar, const std::wstring& text, const bool notif
         ::KillTimer(filterBar, kFilterDebounceTimer);
         ::SetTimer(filterBar, kFilterDebounceTimer, kFilterDebounceMilliseconds, nullptr);
     }
+}
+
+bool GetFilterBarRegexEnabled(HWND filterBar) {
+    auto* state = filterBar ? reinterpret_cast<FilterBarState*>(::GetWindowLongPtrW(filterBar, GWLP_USERDATA)) : nullptr;
+    if (!state || !state->regexButton) {
+        return false;
+    }
+    return ::SendMessageW(state->regexButton, BM_GETCHECK, 0, 0) == BST_CHECKED;
 }
 
 void FocusFilterBar(HWND filterBar) {

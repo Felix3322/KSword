@@ -55,6 +55,12 @@
     <Filter Include="Features\Registry">
       <UniqueIdentifier>{2F4146D1-40A2-5E85-9FE3-366474A60E52}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Features\Privilege">
+      <UniqueIdentifier>{2F6C8A41-93D7-4B26-8E15-4A7C0B39D682}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Features\Service">
+      <UniqueIdentifier>{7B1E4C93-2A55-4E18-9C3F-6D2A1F84B570}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Features\Startup">
       <UniqueIdentifier>{CDB68D57-6002-5859-BDD2-B5B7ACE7251E}</UniqueIdentifier>
     </Filter>
@@ -357,6 +363,39 @@
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Module.cpp"><Filter>Features\ProcessDetail</Filter></ClCompile>
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Thread.cpp"><Filter>Features\ProcessDetail</Filter></ClCompile>
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Token.cpp"><Filter>Features\ProcessDetail</Filter></ClCompile>
+    <ClCompile Include="Features\Driver\DriverUnloadedView.cpp">
+      <Filter>Features\Driver</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Privilege\PrivilegeActions.cpp">
+      <Filter>Features\Privilege</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Privilege\PrivilegeEnumerator.cpp">
+      <Filter>Features\Privilege</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Privilege\PrivilegeFeature.cpp">
+      <Filter>Features\Privilege</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Privilege\PrivilegeModel.cpp">
+      <Filter>Features\Privilege</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Privilege\PrivilegeView.cpp">
+      <Filter>Features\Privilege</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Service\ServiceActions.cpp">
+      <Filter>Features\Service</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Service\ServiceEnumerator.cpp">
+      <Filter>Features\Service</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Service\ServiceFeature.cpp">
+      <Filter>Features\Service</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Service\ServiceModel.cpp">
+      <Filter>Features\Service</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\Service\ServiceView.cpp">
+      <Filter>Features\Service</Filter>
+    </ClCompile>
     <ClCompile Include="Features\Startup\StartupActions.cpp">
       <Filter>Features\Startup</Filter>
     </ClCompile>
@@ -403,6 +442,12 @@
       <Filter>Ui</Filter>
     </ClCompile>
     <ClCompile Include="Ui\MenuUtil.cpp">
+      <Filter>Ui</Filter>
+    </ClCompile>
+    <ClCompile Include="Ui\NumericSortKey.cpp">
+      <Filter>Ui</Filter>
+    </ClCompile>
+    <ClCompile Include="Ui\TextFindSupport.cpp">
       <Filter>Ui</Filter>
     </ClCompile>
     <ClCompile Include="Ui\PlaceholderPage.cpp">
@@ -764,6 +809,39 @@
     <ClInclude Include="Features\ProcessDetail\ProcessDetailTypes.h">
       <Filter>Features\ProcessDetail</Filter>
     </ClInclude>
+    <ClInclude Include="Features\Driver\DriverUnloadedView.h">
+      <Filter>Features\Driver</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Privilege\PrivilegeActions.h">
+      <Filter>Features\Privilege</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Privilege\PrivilegeEnumerator.h">
+      <Filter>Features\Privilege</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Privilege\PrivilegeFeature.h">
+      <Filter>Features\Privilege</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Privilege\PrivilegeModel.h">
+      <Filter>Features\Privilege</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Privilege\PrivilegeView.h">
+      <Filter>Features\Privilege</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Service\ServiceActions.h">
+      <Filter>Features\Service</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Service\ServiceEnumerator.h">
+      <Filter>Features\Service</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Service\ServiceFeature.h">
+      <Filter>Features\Service</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Service\ServiceModel.h">
+      <Filter>Features\Service</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\Service\ServiceView.h">
+      <Filter>Features\Service</Filter>
+    </ClInclude>
     <ClInclude Include="Features\Startup\StartupActions.h">
       <Filter>Features\Startup</Filter>
     </ClInclude>
@@ -819,6 +897,12 @@
       <Filter>Ui</Filter>
     </ClInclude>
     <ClInclude Include="Ui\ModuleDescriptor.h">
+      <Filter>Ui</Filter>
+    </ClInclude>
+    <ClInclude Include="Ui\NumericSortKey.h">
+      <Filter>Ui</Filter>
+    </ClInclude>
+    <ClInclude Include="Ui\TextFindSupport.h">
       <Filter>Ui</Filter>
     </ClInclude>
     <ClInclude Include="Ui\PlaceholderPage.h">

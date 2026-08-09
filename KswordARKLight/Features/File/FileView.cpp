@@ -66,6 +66,7 @@ struct DirectoryRefreshSnapshot {
 struct FileFilterResult {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::vector<std::size_t> visibleIndexes;
     std::wstring selectedPath;
     std::wstring topPath;
@@ -112,6 +113,7 @@ struct FileViewState {
     std::vector<std::size_t> visibleIndexes;
     std::wstring displayTextScratch;
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     std::wstring enumerationStatusText;
     std::uint64_t displayGeneration = 0;
     bool hideOverlayAfterFilter = false;
@@ -446,7 +448,8 @@ void BuildPresentationRows(FileViewState& state, DirectoryEnumerationResult resu
 // ApplyFileFilter installs a background-produced visible-index map and restores
 // selection/scroll position by full path whenever those entries still exist.
 void ApplyFileFilter(FileViewState& state, FileFilterResult result) {
-    if (!state.list || result.generation != state.displayGeneration || result.query != state.filterQuery) {
+    if (!state.list || result.generation != state.displayGeneration || result.query != state.filterQuery ||
+        result.useRegex != state.filterUseRegex) {
         return;
     }
     state.visibleIndexes = std::move(result.visibleIndexes);
@@ -498,19 +501,22 @@ void RequestFileFilter(FileViewState& state,
     std::wstring selectedPath,
     std::wstring topPath) {
     state.filterQuery = query;
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
     const std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> rows = state.filterRows;
     const std::uint64_t generation = state.displayGeneration;
+    const bool useRegex = state.filterUseRegex;
     if (!state.filterTask || !rows) {
         return;
     }
     state.filterTask->request(
-        [rows, generation, query, selectedPath = std::move(selectedPath), topPath = std::move(topPath)]() mutable {
+        [rows, generation, useRegex, query, selectedPath = std::move(selectedPath), topPath = std::move(topPath)]() mutable {
             FileFilterResult result{};
             result.generation = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.selectedPath = std::move(selectedPath);
             result.topPath = std::move(topPath);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<FileFilterResult>&& result, std::exception_ptr error) {

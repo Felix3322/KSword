@@ -52,6 +52,7 @@ constexpr UINT kMsgHandleDetailCompleted = WM_APP + 576;
 struct HandleFilterResult {
     std::uint64_t snapshotGeneration = 0;
     std::wstring query;
+    bool useRegex = false;
     std::wstring selectedStableKey;
     std::wstring topStableKey;
     std::vector<std::size_t> visibleIndexes;
@@ -86,6 +87,7 @@ struct HandlePageState {
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
     std::uint64_t snapshotGeneration = 0;
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     int contextColumn = 0;
     std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<HandleRefreshSnapshot>> refreshTask;
     std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<HandleFilterResult>> filterTask;
@@ -668,8 +670,10 @@ void HandlePage::RequestFilter(const std::wstring& query, std::wstring selectedS
         return;
     }
     state_->filterQuery = query;
+    state_->filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(filterBar_);
     const std::uint64_t generation = state_->snapshotGeneration;
     const auto filterRows = state_->filterRows;
+    const bool useRegex = state_->filterUseRegex;
     if (selectedStableKey.empty()) {
         selectedStableKey = StableKeyAtVisibleIndex(*state_, ListView_GetNextItem(handleList_, -1, LVNI_SELECTED));
     }
@@ -677,13 +681,14 @@ void HandlePage::RequestFilter(const std::wstring& query, std::wstring selectedS
         topStableKey = StableKeyAtVisibleIndex(*state_, ListView_GetTopIndex(handleList_));
     }
     state_->filterTask->request(
-        [filterRows, generation, query = state_->filterQuery, selectedStableKey = std::move(selectedStableKey), topStableKey = std::move(topStableKey)]() mutable {
+        [filterRows, generation, useRegex, query = state_->filterQuery, selectedStableKey = std::move(selectedStableKey), topStableKey = std::move(topStableKey)]() mutable {
             HandleFilterResult result{};
             result.snapshotGeneration = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.selectedStableKey = std::move(selectedStableKey);
             result.topStableKey = std::move(topStableKey);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*filterRows, result.query);
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*filterRows, result.query, useRegex);
             return result;
         },
         [this](std::uint64_t, std::optional<HandleFilterResult>&& result, std::exception_ptr error) {
@@ -693,7 +698,8 @@ void HandlePage::RequestFilter(const std::wstring& query, std::wstring selectedS
                 }
                 return;
             }
-            if (result->snapshotGeneration == state_->snapshotGeneration && result->query == state_->filterQuery) {
+            if (result->snapshotGeneration == state_->snapshotGeneration && result->query == state_->filterQuery &&
+                result->useRegex == state_->filterUseRegex) {
                 state_->handleList.setVisibleIndexes(std::move(result->visibleIndexes));
                 const auto& rows = state_->handleList.rows();
                 const auto& visible = state_->handleList.visibleIndexes();

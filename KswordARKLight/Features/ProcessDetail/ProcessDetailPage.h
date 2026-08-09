@@ -197,6 +197,7 @@ private:
     struct DetailTableFilterResult {
         std::uint64_t sourceGeneration = 0;
         std::wstring query;
+        bool useRegex = false;
         int sortColumn = 0;
         bool sortDescending = false;
         std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> rows;
@@ -416,7 +417,9 @@ private:
     std::uint64_t threadSourceGeneration_ = 0;
     std::uint64_t moduleSourceGeneration_ = 0;
     std::wstring threadFilterQuery_;
+    bool threadFilterUseRegex_ = false;
     std::wstring moduleFilterQuery_;
+    bool moduleFilterUseRegex_ = false;
     int moduleSortColumn_ = 0;
     bool moduleSortDescending_ = false;
     bool moduleVerifySignatures_ = true;

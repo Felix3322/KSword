@@ -4,6 +4,8 @@
 #include "KernelPageLayout.h"
 #include "../../Ui/Controls.h"
 #include "../../Ui/ListViewUtil.h"
+#include "../../Ui/NumericSortKey.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../../shared/driver/KswordArkCallbackIoctl.h"
 #include "../../../shared/driver/KswordArkCapabilityIoctl.h"
 #include "../../../shared/driver/KswordArkDynDataIoctl.h"
@@ -2770,6 +2772,9 @@ void KernelPage::CreateChildControls() {
         nullptr,
         ::GetModuleHandleW(nullptr),
         nullptr);
+    // The selected-row detail pane is where a single kernel object expands into
+    // dozens of lines, which is exactly where scanning by eye stops working.
+    Ksword::Ui::AttachTextFindSupport(detailEdit_);
     riskOnlyCheck_ = ::CreateWindowExW(0,
         WC_BUTTONW,
         L"仅风险项",
@@ -2962,6 +2967,10 @@ void KernelPage::CreateChildControls() {
         WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, 0, 0, 0, 0, hwnd_, nullptr, ::GetModuleHandleW(nullptr), nullptr);
     callbackEventLogEdit_ = ::CreateWindowExW(WS_EX_CLIENTEDGE, WC_EDITW, L"",
         WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL, 0, 0, 0, 0, hwnd_, nullptr, ::GetModuleHandleW(nullptr), nullptr);
+    // Both callback logs grow without bound while the driver is running, so
+    // finding one event in them is a search problem, not a scrolling one.
+    Ksword::Ui::AttachTextFindSupport(callbackAppLogEdit_);
+    Ksword::Ui::AttachTextFindSupport(callbackEventLogEdit_);
 
     callbackFileMonitorLabel_ = Ksword::Ui::CreateText(hwnd_, 0, L"文件系统事件", 0, 0, 0, 0);
     callbackStartFsctlButton_ = Ksword::Ui::CreateButton(hwnd_, kIdCallbackStartFsctl, L"启动 FSCTL 监控", 0, 0, 0, 0);
@@ -8411,10 +8420,15 @@ void KernelPage::SortResultRowsByColumn(const int columnIndex) {
     Ksword::Ui::ScopedListViewRedrawLock summaryListLock(summaryList_);
     Ksword::Ui::ScopedWindowRedrawLock objectTreeLock(objectNamespaceTree_);
 
+    // Nearly every kernel feature table puts addresses, sizes, counts and status
+    // codes in these columns, and a plain string compare orders them by their
+    // printed characters: 0x2 lands after 0x1FF and 9 lands after 10. The
+    // comparison is numeric whenever both cells start with a number and falls
+    // back to the case-insensitive string order otherwise.
     std::stable_sort(currentRows_.begin(), currentRows_.end(), [&](const auto& left, const auto& right) {
         const std::wstring leftValue = columnIndex < static_cast<int>(left.size()) ? left[static_cast<std::size_t>(columnIndex)] : std::wstring{};
         const std::wstring rightValue = columnIndex < static_cast<int>(right.size()) ? right[static_cast<std::size_t>(columnIndex)] : std::wstring{};
-        const int compare = _wcsicmp(leftValue.c_str(), rightValue.c_str());
+        const int compare = Ksword::Ui::CompareCellsNumericAware(leftValue, rightValue);
         return sortAscending_ ? compare < 0 : compare > 0;
     });
     SyncResultListVirtualRows();

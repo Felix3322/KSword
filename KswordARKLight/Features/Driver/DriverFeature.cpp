@@ -6,6 +6,7 @@
 #include "DriverModel.h"
 #include "DriverObjectView.h"
 #include "DriverOverviewView.h"
+#include "DriverUnloadedView.h"
 #include "../Kernel/KernelFeature.h"
 #include "../../Ui/Controls.h"
 #include "../../Ui/AsyncTask.h"
@@ -30,10 +31,14 @@ constexpr int kStatusTextId = 65004;
 constexpr int kOverviewTabIndex = 0;
 constexpr int kObjectTabIndex = 1;
 constexpr int kIntegrityTabIndex = 2;
-constexpr int kDynDataCapabilitiesTabIndex = 3;
-constexpr int kDriverStatusTabIndex = 4;
-constexpr int kDynDataTabIndex = 5;
-constexpr int kDebugOutputTabIndex = 6;
+// Unloaded-driver evidence sits next to integrity because they answer the same
+// question from opposite ends: integrity checks the drivers that are still here,
+// this one checks the traces of the ones that are not.
+constexpr int kUnloadedTabIndex = 3;
+constexpr int kDynDataCapabilitiesTabIndex = 4;
+constexpr int kDriverStatusTabIndex = 5;
+constexpr int kDynDataTabIndex = 6;
+constexpr int kDebugOutputTabIndex = 7;
 constexpr int kLoadingOverlayId = 65009;
 constexpr UINT kMsgRefreshCompleted = WM_APP + 590;
 
@@ -50,6 +55,7 @@ struct DriverFeaturePageState {
     HWND overviewView = nullptr;
     HWND objectView = nullptr;
     HWND integrityView = nullptr;
+    HWND unloadedView = nullptr;
     HWND dynDataCapabilitiesView = nullptr;
     HWND driverStatusView = nullptr;
     HWND dynDataView = nullptr;
@@ -87,6 +93,7 @@ void ShowChildPages(DriverFeaturePageState& state) {
     const bool overviewVisible = state.currentTab == kOverviewTabIndex;
     const bool objectVisible = state.currentTab == kObjectTabIndex;
     const bool integrityVisible = state.currentTab == kIntegrityTabIndex;
+    const bool unloadedVisible = state.currentTab == kUnloadedTabIndex;
     const bool dynDataCapabilitiesVisible = state.currentTab == kDynDataCapabilitiesTabIndex;
     const bool driverStatusVisible = state.currentTab == kDriverStatusTabIndex;
     const bool dynDataVisible = state.currentTab == kDynDataTabIndex;
@@ -99,6 +106,9 @@ void ShowChildPages(DriverFeaturePageState& state) {
     }
     if (state.integrityView) {
         ::ShowWindow(state.integrityView, integrityVisible ? SW_SHOW : SW_HIDE);
+    }
+    if (state.unloadedView) {
+        ::ShowWindow(state.unloadedView, unloadedVisible ? SW_SHOW : SW_HIDE);
     }
     if (state.dynDataCapabilitiesView) {
         ::ShowWindow(state.dynDataCapabilitiesView, dynDataCapabilitiesVisible ? SW_SHOW : SW_HIDE);
@@ -157,6 +167,7 @@ void LayoutChildren(DriverFeaturePageState& state) {
         state.overviewView,
         state.objectView,
         state.integrityView,
+        state.unloadedView,
         state.dynDataCapabilitiesView,
         state.driverStatusView,
         state.dynDataView,
@@ -213,6 +224,8 @@ void CopyCurrentTabTsv(DriverFeaturePageState& state) {
     std::wstring tsv;
     if (state.currentTab == kObjectTabIndex) {
         tsv = ExportDriverObjectViewTsv(state.objectView);
+    } else if (state.currentTab == kUnloadedTabIndex) {
+        tsv = ExportDriverUnloadedViewTsv(state.unloadedView);
     } else if (state.currentTab == kIntegrityTabIndex ||
         state.currentTab == kDynDataCapabilitiesTabIndex ||
         state.currentTab == kDriverStatusTabIndex ||
@@ -246,6 +259,7 @@ bool CreateChildControls(DriverFeaturePageState& state) {
     Ksword::Ui::AddTabPage(state.tab, kOverviewTabIndex, { L"驱动概览" });
     Ksword::Ui::AddTabPage(state.tab, kObjectTabIndex, { L"对象信息" });
     Ksword::Ui::AddTabPage(state.tab, kIntegrityTabIndex, { L"驱动完整性" });
+    Ksword::Ui::AddTabPage(state.tab, kUnloadedTabIndex, { L"已卸载驱动" });
     Ksword::Ui::AddTabPage(state.tab, kDynDataCapabilitiesTabIndex, { L"DynData能力" });
     Ksword::Ui::AddTabPage(state.tab, kDriverStatusTabIndex, { L"驱动状态" });
     Ksword::Ui::AddTabPage(state.tab, kDynDataTabIndex, { L"动态偏移 / DynData" });
@@ -267,6 +281,7 @@ bool CreateChildControls(DriverFeaturePageState& state) {
         65005,
         childBounds,
         Ksword::Features::Kernel::KernelFeatureId::DriverIntegrity);
+    state.unloadedView = CreateDriverUnloadedView(state.tab, childBounds);
     state.dynDataCapabilitiesView = Ksword::Features::Kernel::CreateKernelSingleFeaturePage(
         state.tab,
         65006,
@@ -286,6 +301,7 @@ bool CreateChildControls(DriverFeaturePageState& state) {
     if (!state.overviewView ||
         !state.objectView ||
         !state.integrityView ||
+        !state.unloadedView ||
         !state.dynDataCapabilitiesView ||
         !state.driverStatusView ||
         !state.dynDataView ||

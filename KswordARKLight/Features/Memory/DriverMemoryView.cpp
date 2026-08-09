@@ -6,6 +6,7 @@
 #include "../../Ui/Controls.h"
 #include "../../Ui/FilterBar.h"
 #include "../../Ui/ListViewUtil.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../Ui/Theme.h"
 #include "../../Ui/VirtualListView.h"
 
@@ -70,6 +71,7 @@ struct MemoryHistoryEntry {
 struct MemoryHistoryFilterResult {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::vector<std::size_t> visibleIndexes;
 };
 
@@ -92,6 +94,7 @@ struct DriverMemoryViewState {
     std::uint64_t nextHistorySequence = 1;
     std::uint64_t historyGeneration = 0;
     std::wstring historyFilterQuery;
+    bool historyFilterUseRegex = false;
     int historyContextColumn = 0;
     Ksword::Ui::VirtualListView historyList;
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> historyFilterRows;
@@ -144,7 +147,8 @@ std::vector<Ksword::Ui::ListViewColumn> MemoryHistoryColumns() {
 }
 
 void ApplyMemoryHistoryFilter(DriverMemoryViewState& state, MemoryHistoryFilterResult result) {
-    if (result.generation != state.historyGeneration || result.query != state.historyFilterQuery) {
+    if (result.generation != state.historyGeneration || result.query != state.historyFilterQuery ||
+        result.useRegex != state.historyFilterUseRegex) {
         return;
     }
     state.historyList.setVisibleIndexes(std::move(result.visibleIndexes));
@@ -152,17 +156,20 @@ void ApplyMemoryHistoryFilter(DriverMemoryViewState& state, MemoryHistoryFilterR
 
 void RequestMemoryHistoryFilter(DriverMemoryViewState& state, std::wstring query) {
     state.historyFilterQuery = std::move(query);
+    state.historyFilterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.historyFilter);
     const auto rows = state.historyFilterRows;
     const std::uint64_t generation = state.historyGeneration;
+    const bool useRegex = state.historyFilterUseRegex;
     if (!state.historyFilterTask || !rows) {
         return;
     }
     state.historyFilterTask->request(
-        [rows, generation, query = state.historyFilterQuery]() mutable {
+        [rows, generation, useRegex, query = state.historyFilterQuery]() mutable {
             MemoryHistoryFilterResult result{};
             result.generation = generation;
             result.query = std::move(query);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.useRegex = useRegex;
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<MemoryHistoryFilterResult>&& result, std::exception_ptr error) {
@@ -653,6 +660,7 @@ void CreateChildControls(DriverMemoryViewState& state) {
         0,
         0,
         ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | ES_WANTRETURN);
+    Ksword::Ui::AttachTextFindSupport(state.hexEdit);
     state.historyFilter = Ksword::Ui::CreateFilterBar(state.hwnd, kHistoryFilterId, L"筛选操作、PID、地址、状态", 0, 0, 0, 0);
     state.historyList.create(state.hwnd, kHistoryListId, 0, 0, 0, 0, LVS_SHOWSELALWAYS | LVS_SINGLESEL);
     state.historyList.addColumns(MemoryHistoryColumns());
@@ -668,6 +676,7 @@ void CreateChildControls(DriverMemoryViewState& state) {
         0,
         0,
         ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | ES_READONLY);
+    Ksword::Ui::AttachTextFindSupport(state.statusEdit);
 }
 
 // DriverMemoryViewWndProc dispatches page window messages. Inputs are standard

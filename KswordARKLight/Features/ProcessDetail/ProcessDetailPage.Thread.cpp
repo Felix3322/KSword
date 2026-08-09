@@ -493,6 +493,7 @@ void ProcessDetailPage::RequestThreadFilter(bool rebuildRows) {
     }
     const HWND filter = Control(TabIndex::Threads, ThreadFilter);
     threadFilterQuery_ = filter ? Ksword::Ui::GetFilterBarText(filter) : threadFilterQuery_;
+    threadFilterUseRegex_ = Ksword::Ui::GetFilterBarRegexEnabled(filter);
     const auto existingRows = threadFilterRows_;
     const auto source = pendingThreadEntries_ ? pendingThreadEntries_ : threadEntries_;
     // A newer collector snapshot remains pending until its display rows are
@@ -503,23 +504,25 @@ void ProcessDetailPage::RequestThreadFilter(bool rebuildRows) {
         return;
     }
     const std::uint64_t generation = threadSourceGeneration_;
+    const bool useRegex = threadFilterUseRegex_;
     SetPageStatus(TabIndex::Threads, ThreadStatus, L"● 正在后台筛选线程表...");
     threadFilterTask_->request(
-        [source, existingRows, buildRows, generation, query = threadFilterQuery_]() mutable {
+        [source, existingRows, buildRows, generation, useRegex, query = threadFilterQuery_]() mutable {
             DetailTableFilterResult result{};
             result.sourceGeneration = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.rows = buildRows
                 ? std::make_shared<const std::vector<Ksword::Ui::VirtualListRow>>(BuildThreadVirtualRows(*source))
                 : existingRows;
             if (result.rows) {
-                result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*result.rows, result.query);
+                result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*result.rows, result.query, useRegex);
             }
             return result;
         },
         [this](std::uint64_t, std::optional<DetailTableFilterResult>&& result, std::exception_ptr error) {
             if (error || !result.has_value() || result->sourceGeneration != threadSourceGeneration_ ||
-                result->query != threadFilterQuery_ || !result->rows) {
+                result->query != threadFilterQuery_ || result->useRegex != threadFilterUseRegex_ || !result->rows) {
                 return;
             }
             const HWND list = threadVirtualList_.hwnd();

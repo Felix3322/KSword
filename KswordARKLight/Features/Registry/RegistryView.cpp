@@ -7,6 +7,7 @@
 #include "../../Ui/FilterBar.h"
 #include "../../Ui/ListViewUtil.h"
 #include "../../Ui/LoadingOverlay.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../Ui/Theme.h"
 #include "../../Ui/TreeViewUtil.h"
 #include "../../Ui/VirtualListView.h"
@@ -78,6 +79,7 @@ struct RegistryTreeChildrenSnapshot {
 struct RegistryFilterResult {
     std::uint64_t generation = 0;
     std::wstring query;
+    bool useRegex = false;
     std::wstring selectedStableKey;
     std::wstring topStableKey;
     std::vector<std::size_t> visibleIndexes;
@@ -134,7 +136,9 @@ struct RegistryViewState {
     RegistrySnapshot snapshot;
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
     std::wstring valueFilterQuery;
+    bool valueFilterUseRegex = false;
     std::wstring treeFilterQuery;
+    bool treeFilterUseRegex = false;
     std::wstring treeLoadingPath;
     std::uint64_t displayGeneration = 0;
     bool operationInProgress = false;
@@ -517,10 +521,12 @@ void EnsureTreeChildrenLoaded(RegistryViewState& state, HTREEITEM item) {
     const std::wstring path = nodeData->path;
     const RegistryViewMode mode = state.mode;
     const std::wstring query = state.treeFilterBar ? Ksword::Ui::GetFilterBarText(state.treeFilterBar) : state.treeFilterQuery;
+    state.treeFilterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.treeFilterBar);
+    const bool useRegex = state.treeFilterUseRegex;
     state.treeLoadingPath = path;
     SetStatus(state, L"正在后台加载注册表树节点…");
     state.treeChildrenTask->request(
-        [path, mode, query] {
+        [path, mode, query, useRegex] {
             RegistryTreeChildrenSnapshot snapshot{};
             snapshot.path = path;
             snapshot.mode = mode;
@@ -532,7 +538,7 @@ void EnsureTreeChildrenLoaded(RegistryViewState& state, HTREEITEM item) {
                 for (const std::wstring& subKey : snapshot.subKeys) {
                     rows.push_back({ subKey, { subKey }, 0 });
                 }
-                const std::vector<std::size_t> visible = Ksword::Ui::VirtualListView::FilterRowIndexes(rows, snapshot.query);
+                const std::vector<std::size_t> visible = Ksword::Ui::VirtualListView::FilterRowIndexes(rows, snapshot.query, useRegex);
                 std::vector<std::wstring> filtered;
                 filtered.reserve(visible.size());
                 for (const std::size_t index : visible) {
@@ -631,7 +637,8 @@ std::wstring StableKeyFromListItem(const RegistryViewState& state, int item) {
 }
 
 void ApplyValueFilter(RegistryViewState& state, RegistryFilterResult result) {
-    if (!state.list.hwnd() || result.generation != state.displayGeneration || result.query != state.valueFilterQuery) {
+    if (!state.list.hwnd() || result.generation != state.displayGeneration || result.query != state.valueFilterQuery ||
+        result.useRegex != state.valueFilterUseRegex) {
         return;
     }
     state.list.setVisibleIndexes(std::move(result.visibleIndexes));
@@ -677,19 +684,22 @@ void RequestValueFilter(RegistryViewState& state,
     std::wstring selectedStableKey,
     std::wstring topStableKey) {
     state.valueFilterQuery = std::move(query);
+    state.valueFilterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.valueFilterBar);
     const auto rows = state.filterRows;
     const std::uint64_t generation = state.displayGeneration;
+    const bool useRegex = state.valueFilterUseRegex;
     if (!state.filterTask || !rows) {
         return;
     }
     state.filterTask->request(
-        [rows, generation, query = state.valueFilterQuery, selectedStableKey = std::move(selectedStableKey), topStableKey = std::move(topStableKey)]() mutable {
+        [rows, generation, useRegex, query = state.valueFilterQuery, selectedStableKey = std::move(selectedStableKey), topStableKey = std::move(topStableKey)]() mutable {
             RegistryFilterResult result{};
             result.generation = generation;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.selectedStableKey = std::move(selectedStableKey);
             result.topStableKey = std::move(topStableKey);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<RegistryFilterResult>&& result, std::exception_ptr error) {
@@ -1169,6 +1179,9 @@ bool CreateChildControls(RegistryViewState& state) {
     state.nameEdit = CreateEdit(state.hwnd, kNameEditId, ES_AUTOHSCROLL);
     state.typeCombo = CreateCombo(state.hwnd, kTypeComboId);
     state.dataEdit = CreateEdit(state.hwnd, kDataEditId, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL);
+    // Writable, so this one also gets replace: REG_MULTI_SZ and long REG_SZ
+    // payloads are routinely edited by hand here.
+    Ksword::Ui::AttachTextFindSupport(state.dataEdit);
     state.readButton = Ksword::Ui::CreateButton(state.hwnd, kReadButtonId, L"读取", 0, 0, 0, 0);
     state.writeButton = Ksword::Ui::CreateButton(state.hwnd, kWriteButtonId, L"写入", 0, 0, 0, 0);
     state.createKeyButton = Ksword::Ui::CreateButton(state.hwnd, kCreateKeyButtonId, L"建子键", 0, 0, 0, 0);

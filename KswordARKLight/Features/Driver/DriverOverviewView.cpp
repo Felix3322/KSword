@@ -6,6 +6,7 @@
 #include "../../Ui/FilterBar.h"
 #include "../../Ui/ListViewUtil.h"
 #include "../../Ui/LoadingOverlay.h"
+#include "../../Ui/TextFindSupport.h"
 #include "../../Ui/Theme.h"
 #include "../../Ui/VirtualListView.h"
 
@@ -51,6 +52,7 @@ struct DriverOverviewViewState {
     Ksword::Ui::VirtualListView virtualList;
     std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     std::uint64_t snapshotGeneration = 0;
     std::uint64_t detailRequestId = 0;
     int contextColumn = 0;
@@ -61,6 +63,7 @@ struct DriverOverviewViewState {
 struct OverviewFilterResult {
     std::uint64_t snapshotGeneration = 0;
     std::wstring query;
+    bool useRegex = false;
     std::vector<std::size_t> visibleIndexes;
 };
 
@@ -261,6 +264,7 @@ bool RegisterDetailDialogClass() {
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kOverviewDetailEditId)),
                     ::GetModuleHandleW(nullptr),
                     nullptr);
+                Ksword::Ui::AttachTextFindSupport(state->edit);
                 state->copyButton = Ksword::Ui::CreateButton(hwnd, kOverviewDetailCopyId, L"复制详情", 0, 0, 0, 0);
                 state->closeButton = Ksword::Ui::CreateButton(hwnd, kOverviewDetailCloseId, L"关闭", 0, 0, 0, 0);
                 Ksword::Ui::SetWindowFontRecursive(hwnd);
@@ -489,20 +493,24 @@ void RequestOverviewFilter(DriverOverviewViewState& state, std::wstring query) {
         return;
     }
     state.filterQuery = std::move(query);
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
     const std::uint64_t generation = state.snapshotGeneration;
     const auto rows = state.filterRows;
+    const bool useRegex = state.filterUseRegex;
     state.filterTask->request(
-        [rows, generation, query = state.filterQuery]() mutable {
+        [rows, generation, useRegex, query = state.filterQuery]() mutable {
             OverviewFilterResult result{};
             result.snapshotGeneration = generation;
             result.query = std::move(query);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.useRegex = useRegex;
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<OverviewFilterResult>&& result, std::exception_ptr error) {
             if (error || !result.has_value() ||
                 result->snapshotGeneration != state.snapshotGeneration ||
-                result->query != state.filterQuery) {
+                result->query != state.filterQuery ||
+                result->useRegex != state.filterUseRegex) {
                 return;
             }
             const int selected = ListView_GetNextItem(state.listView, -1, LVNI_SELECTED);

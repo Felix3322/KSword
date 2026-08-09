@@ -9,8 +9,10 @@
 #include "Misc/MiscFeature.h"
 #include "Monitor/MonitorFeature.h"
 #include "Network/NetworkFeature.h"
+#include "Privilege/PrivilegeFeature.h"
 #include "Process/ProcessFeature.h"
 #include "Registry/RegistryFeature.h"
+#include "Service/ServiceFeature.h"
 #include "Startup/StartupFeature.h"
 #include "Window/WindowFeature.h"
 
@@ -30,6 +32,8 @@ std::vector<Ksword::Ui::ModuleDescriptor> GetModuleDescriptors() {
         { 40007, L"硬件", L"仅保留设备管理。", Hardware::CreateHardwareFeaturePage },
         { 40008, L"窗口", L"窗口管理和详细信息；桌面管理已移除。", Window::CreateWindowFeaturePage },
         { 40009, L"启动项", L"启动项管理。", Startup::CreateStartupFeaturePage },
+        { 40014, L"服务", L"SCM 服务与驱动服务枚举、启停暂停继续、启动类型修改与配置风险标注。", Service::CreateServiceFeaturePage },
+        { 40015, L"权限", L"当前进程令牌的身份、完整性级别、组与全部特权，可启用/禁用并标注越权类特权。", Privilege::CreatePrivilegeFeaturePage },
         { 40011, L"网络", L"Network Stack 审计入口，当前显示 AFD/TCPIP/NSI/WFP 只读审计状态和后续 R0 接入点。", Network::CreateNetworkFeaturePage },
         { 40012, L"句柄", L"HandleTable/ObjectHeader/ObjectType 只读审计，复用 ArkDriverClient 句柄查询协议。", Handle::CreateHandleFeaturePage },
         { 40013, L"杂项安全", L"Security / CI / VBS / Hyper-V 只读审计入口，显示 R3 证据与 R0 capability 状态。", Misc::CreateMiscFeaturePage }

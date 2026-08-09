@@ -79,6 +79,7 @@ struct ProcessPresentationRow {
 struct ProcessFilterResult {
     std::uint64_t displayGeneration = 0;
     std::wstring query;
+    bool useRegex = false;
     std::vector<std::size_t> visibleIndexes;
     std::vector<std::wstring> selectedStableKeys;
     std::wstring topStableKey;
@@ -296,6 +297,7 @@ struct ProcessViewState {
     std::vector<std::size_t> visibleRowIndexes;
     std::wstring displayTextScratch;
     std::wstring filterQuery;
+    bool filterUseRegex = false;
     std::uint64_t displayGeneration = 0;
     bool hasLastActiveSnapshot = false;
     std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<struct ProcessRefreshSnapshot>> refreshTask;
@@ -1005,7 +1007,8 @@ LRESULT HandleVirtualListDisplayInfo(ProcessViewState& state, NMLVDISPINFOW* dis
 // ApplyProcessFilter installs a background-filtered index map while preserving
 // selection and the top visible logical row whenever they remain present.
 void ApplyProcessFilter(ProcessViewState& state, ProcessFilterResult result) {
-    if (!state.listView || result.displayGeneration != state.displayGeneration || result.query != state.filterQuery) {
+    if (!state.listView || result.displayGeneration != state.displayGeneration || result.query != state.filterQuery ||
+        result.useRegex != state.filterUseRegex) {
         return;
     }
 
@@ -1064,12 +1067,15 @@ void RequestProcessFilter(ProcessViewState& state,
     std::vector<std::wstring> selectedStableKeys,
     std::wstring topStableKey) {
     state.filterQuery = query;
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
     const std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> rows = state.filterRows;
     const std::uint64_t displayGeneration = state.displayGeneration;
+    const bool useRegex = state.filterUseRegex;
     if (!state.filterTask || !rows) {
         ProcessFilterResult result{};
         result.displayGeneration = displayGeneration;
         result.query = query;
+        result.useRegex = useRegex;
         result.selectedStableKeys = std::move(selectedStableKeys);
         result.topStableKey = std::move(topStableKey);
         result.visibleIndexes.resize(state.presentationRows.size());
@@ -1081,13 +1087,14 @@ void RequestProcessFilter(ProcessViewState& state,
     }
 
     state.filterTask->request(
-        [rows, displayGeneration, query, selectedStableKeys = std::move(selectedStableKeys), topStableKey = std::move(topStableKey)]() mutable {
+        [rows, displayGeneration, useRegex, query, selectedStableKeys = std::move(selectedStableKeys), topStableKey = std::move(topStableKey)]() mutable {
             ProcessFilterResult result{};
             result.displayGeneration = displayGeneration;
             result.query = std::move(query);
+            result.useRegex = useRegex;
             result.selectedStableKeys = std::move(selectedStableKeys);
             result.topStableKey = std::move(topStableKey);
-            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query);
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
             return result;
         },
         [&state](std::uint64_t, std::optional<ProcessFilterResult>&& result, std::exception_ptr error) {
