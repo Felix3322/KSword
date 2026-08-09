@@ -257,6 +257,12 @@
     <ClCompile Include="KernelDock\KernelSlatIommuAuditTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="KernelDock\KernelTextIntegrityTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="KernelDock\KernelVbsPostureTab.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1439,6 +1445,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelSlatIommuAuditTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelTextIntegrityTab.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="KernelDock\KernelVbsPostureTab.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="KernelDock\KernelPlatformAuditTab.h">

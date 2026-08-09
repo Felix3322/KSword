@@ -34,6 +34,8 @@ Routine Description:
 
     扫描单个页或大页地址。中文说明：先查询页表，Present 且非 NX 才视为
     executable；根据实际 pageSize 推进扫描，避免大页内重复生成大量相同行。
+    另外，属于代码节但已经不可执行或已经可写的页属于保护异常态，会在请求
+    带 INCLUDE_SECTION_ANOMALY 时一并返回，而不是被 NX 判断直接丢弃。
 
 Arguments:
 
@@ -59,6 +61,9 @@ Return Value:
     ULONG pageSize = PAGE_SIZE;
     ULONG64 pageBase = PageAddress;
     NTSTATUS status = STATUS_SUCCESS;
+    ULONG anomalyRisk = KSWORD_ARK_KERNEL_EXEC_RISK_NONE;
+    BOOLEAN pageIsExecutable = FALSE;
+    BOOLEAN pageIsWritable = FALSE;
 
     if (State == NULL || Request == NULL || ModuleEntry == NULL || NextAddressOut == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -112,10 +117,8 @@ Return Value:
         (pageInfo.effectiveFlags & KSWORD_ARK_PAGE_TABLE_FLAG_PRESENT) == 0UL) {
         return STATUS_UNSUCCESSFUL;
     }
-    if ((pageInfo.effectiveFlags & KSWORD_ARK_PAGE_TABLE_FLAG_NX) != 0UL) {
-        return STATUS_SUCCESS;
-    }
-
+    // section 归类必须在 NX 判断之前完成：代码节页一旦被改成 RW，页表上就带了
+    // NX，只看可执行页会把这种状态整个漏掉。
     RtlZeroMemory(&sectionOwner, sizeof(sectionOwner));
     KswordARKKernelExecClassifyPageBySections(
         SectionHeaders,
@@ -125,6 +128,29 @@ Return Value:
         pageBase,
         pageSize,
         &sectionOwner);
+
+    pageIsExecutable =
+        ((pageInfo.effectiveFlags & KSWORD_ARK_PAGE_TABLE_FLAG_NX) == 0UL) ? TRUE : FALSE;
+    pageIsWritable =
+        ((pageInfo.effectiveFlags & KSWORD_ARK_PAGE_TABLE_FLAG_WRITABLE) != 0UL) ? TRUE : FALSE;
+
+    // 代码节页的正常状态是只读可执行；不可执行或可写都属于异常态。
+    if (sectionOwner.Found && sectionOwner.IsTextLike) {
+        if (!pageIsExecutable) {
+            anomalyRisk |= KSWORD_ARK_KERNEL_EXEC_RISK_CODE_PAGE_NOT_EXECUTABLE;
+        }
+        if (pageIsWritable) {
+            anomalyRisk |= KSWORD_ARK_KERNEL_EXEC_RISK_CODE_PAGE_WRITABLE;
+        }
+    }
+
+    // 不可执行的页只有在被判定为代码节异常、且调用方显式要求时才继续处理。
+    if (!pageIsExecutable) {
+        if (anomalyRisk == 0UL ||
+            (Request->flags & KSWORD_ARK_KERNEL_EXEC_SCAN_FLAG_INCLUDE_SECTION_ANOMALY) == 0UL) {
+            return STATUS_SUCCESS;
+        }
+    }
 
     KswordARKKernelExecFillCandidate(
         pageBase,
@@ -136,10 +162,24 @@ Return Value:
         Request->hashBytes,
         &candidate);
 
-    if (!KswordARKKernelExecShouldReturnCandidate(
-        Request->flags,
-        candidate.ownerKind,
-        candidate.riskFlags)) {
+    // FillCandidate 假定入参是可执行页，因此会把「可写」直接判成 W+X。页已经
+    // 带 NX 时这个结论不成立，先撤掉再合入代码节异常位，避免结论自相矛盾。
+    if (!pageIsExecutable) {
+        candidate.riskFlags &= ~KSWORD_ARK_KERNEL_EXEC_RISK_WRITABLE_EXECUTABLE;
+        if (candidate.ownerKind == KSWORD_ARK_KERNEL_EXEC_OWNER_MODULE_WRITABLE_EXECUTABLE) {
+            candidate.ownerKind = KSWORD_ARK_KERNEL_EXEC_OWNER_MODULE_TEXT;
+        }
+    }
+
+    // 异常位在 FillCandidate 之后合入，避免影响原有的 ownerKind 归类逻辑。
+    candidate.riskFlags |= anomalyRisk;
+
+    // 代码节异常一旦命中就直接返回，不再受 include 分类过滤影响。
+    if (anomalyRisk == 0UL &&
+        !KswordARKKernelExecShouldReturnCandidate(
+            Request->flags,
+            candidate.ownerKind,
+            candidate.riskFlags)) {
         return STATUS_SUCCESS;
     }
 

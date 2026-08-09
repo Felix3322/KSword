@@ -387,6 +387,8 @@
     <ClInclude Include="src\features\kernel\driver_blind_internal.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_cpu_integrity.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_idt_baseline.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\kernel_idt_consistency.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\features\kernel\kernel_image_section_map.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkKernelBaselineIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
     <ClInclude Include="src\features\kernel\kernel_piddb.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\shared\driver\KswordArkPiDdbIoctl.h"><Filter>Header Files\Ark</Filter></ClInclude>
@@ -529,6 +531,12 @@
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_idt_baseline_ioctl.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\kernel_idt_consistency.c">
+      <Filter>Source Files\Features\Kernel</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\kernel\kernel_image_section_map.c">
       <Filter>Source Files\Features\Kernel</Filter>
     </ClCompile>
     <ClCompile Include="src\features\kernel\kernel_piddb.c">

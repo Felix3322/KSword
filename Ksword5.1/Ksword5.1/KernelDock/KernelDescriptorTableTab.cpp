@@ -566,6 +566,18 @@ QString KernelDescriptorTableTab::riskText(const std::uint32_t riskFlags)
     {
         risks.push_back(kernelText("kernel.descriptor.risk.baseline_changed", QStringLiteral("偏离启动期基线")));
     }
+    if ((riskFlags & KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_TABLE_DIVERGED) != 0U)
+    {
+        risks.push_back(kernelText("kernel.descriptor.risk.table_diverged", QStringLiteral("IDT 表与多数 CPU 不一致")));
+    }
+    if ((riskFlags & KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_TABLE_RELOCATED) != 0U)
+    {
+        risks.push_back(kernelText("kernel.descriptor.risk.table_relocated", QStringLiteral("IDT 表被重定位")));
+    }
+    if ((riskFlags & KSWORD_ARK_DRIVER_INTEGRITY_RISK_TARGET_NON_EXEC) != 0U)
+    {
+        risks.push_back(kernelText("kernel.descriptor.risk.target_non_exec", QStringLiteral("目标不在可执行节")));
+    }
     if (risks.isEmpty())
     {
         risks.push_back(hex32(riskFlags));

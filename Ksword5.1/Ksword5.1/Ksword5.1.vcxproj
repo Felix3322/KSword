@@ -219,6 +219,8 @@
     <ClCompile Include="KernelDock\KernelDescriptorTableTab.cpp" />
     <ClCompile Include="KernelDock\KernelHvmTab.cpp" />
     <ClCompile Include="KernelDock\KernelSlatIommuAuditTab.cpp" />
+    <ClCompile Include="KernelDock\KernelTextIntegrityTab.cpp" />
+    <ClCompile Include="KernelDock\KernelVbsPostureTab.cpp" />
     <ClCompile Include="KernelDock\KernelPlatformAuditTab.cpp" />
     <ClCompile Include="KernelDock\KernelHvmTab.Experimental.cpp" />
     <ClCompile Include="KernelDock\KernelHvmTab.Formatting.cpp" />
@@ -539,6 +541,8 @@
     <ClInclude Include="KernelDock\KernelDescriptorTableTab.h" />
     <ClInclude Include="KernelDock\KernelHvmTab.h" />
     <ClInclude Include="KernelDock\KernelSlatIommuAuditTab.h" />
+    <ClInclude Include="KernelDock\KernelTextIntegrityTab.h" />
+    <ClInclude Include="KernelDock\KernelVbsPostureTab.h" />
     <ClInclude Include="KernelDock\KernelPlatformAuditTab.h" />
     <ClInclude Include="KernelDock\KernelIoctlDecoderTab.h" />
     <ClInclude Include="KernelDock\KernelDockIpcTab.h" />

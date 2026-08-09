@@ -9,6 +9,8 @@ Environment:
 --*/
 #include "kernel_cpu_integrity.h"
 #include "kernel_idt_baseline.h"
+#include "kernel_idt_consistency.h"
+#include "kernel_image_section_map.h"
 #include <intrin.h>
 #include <ntstrsafe.h>
 #include <stdarg.h>
@@ -557,7 +559,8 @@ static VOID
 KswordARKCpuIntegrityEmitControlRows(
     _Inout_ KSW_DRIVER_INTEGRITY_BUILDER* Builder,
     _In_ const KSW_CPU_INTEGRITY_SAMPLE* Sample,
-    _In_opt_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo
+    _In_opt_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_opt_ const KSW_IDT_CONSISTENCY_VIEW* ConsistencyView
     )
 /*++
 Routine Description:
@@ -566,10 +569,14 @@ Arguments:
     Builder - Response builder.
     Sample - Captured CPU state.
     ModuleInfo - Optional module snapshot for MSR owner attribution.
+    ConsistencyView - Optional cross-CPU IDTR view used to score the table row.
 Return Value:
     None. Rows are appended to Builder.
 --*/
 {
+    ULONG consistencyRisk = 0UL;
+    ULONG tableRisk = KSWORD_ARK_DRIVER_INTEGRITY_RISK_NONE;
+    ULONG lstarSection = KSW_IMAGE_SECTION_RESULT_UNKNOWN;
     WCHAR detail[KSWORD_ARK_DRIVER_INTEGRITY_DETAIL_CHARS] = { 0 };
     ULONG riskFlags = KSWORD_ARK_DRIVER_INTEGRITY_RISK_NONE;
     ULONG lstarRisk = KSWORD_ARK_DRIVER_INTEGRITY_RISK_NONE;
@@ -599,8 +606,16 @@ Return Value:
     if (lstarOwner == NULL) {
         lstarRisk |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_MODULE_UNRESOLVED;
     }
-    else if (!KswordARKDriverIntegrityIsCoreKernelModule(lstarOwner)) {
-        lstarRisk |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_NON_CORE_OWNER;
+    else {
+        if (!KswordARKDriverIntegrityIsCoreKernelModule(lstarOwner)) {
+            lstarRisk |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_NON_CORE_OWNER;
+        }
+        // syscall 入口同样必须落在归属模块的可执行节内。
+        lstarSection = KswordARKImageClassifyAddress(lstarOwner, Sample->Lstar, NULL, 0UL, NULL);
+        if (lstarSection == KSW_IMAGE_SECTION_RESULT_NON_EXECUTABLE ||
+            lstarSection == KSW_IMAGE_SECTION_RESULT_OUTSIDE_SECTIONS) {
+            lstarRisk |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_TARGET_NON_EXEC;
+        }
     }
     if (Sample->SysenterEip != 0ULL) {
         if (sysenterOwner == NULL) {
@@ -617,9 +632,23 @@ Return Value:
     KswordARKDriverIntegrityAddEvidence(Builder, KSWORD_ARK_DRIVER_INTEGRITY_CLASS_MSR_ENTRY, 0ULL, Sample->SysenterEip,
         sysenterRisk,
         KSWORD_ARK_DRIVER_INTEGRITY_SOURCE_MSR | KSWORD_ARK_DRIVER_INTEGRITY_SOURCE_SYSTEM_MODULE, 70UL, Sample->Group, Sample->Number, ~0UL, sysenterOwner, L"SYSENTER_EIP captured read-only; x64 systems may leave this path unused.");
-    KswordARKCpuIntegrityFormatDetail(detail, RTL_NUMBER_OF(detail), L"IDTR base=0x%llX limit=0x%04X; GDTR base=0x%llX limit=0x%04X.", (ULONGLONG)Sample->Idtr.Base, Sample->Idtr.Limit, (ULONGLONG)Sample->Gdtr.Base, Sample->Gdtr.Limit);
+    // 描述符表汇总行现在带上跨 CPU 一致性与启动期基线的判定结果。
+    consistencyRisk = KswordARKIdtConsistencyClassify(ConsistencyView, Sample->Group, Sample->Number);
+    if ((consistencyRisk & KSW_IDT_CONSISTENCY_RISK_DIVERGED) != 0UL) {
+        tableRisk |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_TABLE_DIVERGED;
+    }
+    if ((consistencyRisk & KSW_IDT_CONSISTENCY_RISK_RELOCATED) != 0UL) {
+        tableRisk |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_TABLE_RELOCATED;
+    }
+    KswordARKCpuIntegrityFormatDetail(detail, RTL_NUMBER_OF(detail),
+        L"IDTR base=0x%llX limit=0x%04X; GDTR base=0x%llX limit=0x%04X; majority IDT base=0x%llX limit=0x%04lX on %lu/%lu CPU.",
+        (ULONGLONG)Sample->Idtr.Base, Sample->Idtr.Limit, (ULONGLONG)Sample->Gdtr.Base, Sample->Gdtr.Limit,
+        (ConsistencyView != NULL) ? ConsistencyView->MajorityBase : 0ULL,
+        (ConsistencyView != NULL) ? ConsistencyView->MajorityLimit : 0UL,
+        (ConsistencyView != NULL) ? ConsistencyView->MajorityCount : 0UL,
+        (ConsistencyView != NULL) ? ConsistencyView->CpuCount : 0UL);
     KswordARKDriverIntegrityAddEvidence(Builder, KSWORD_ARK_DRIVER_INTEGRITY_CLASS_DESCRIPTOR_TABLE, (ULONGLONG)Sample->Idtr.Base,
-        (ULONGLONG)Sample->Gdtr.Base, KSWORD_ARK_DRIVER_INTEGRITY_RISK_NONE,
+        (ULONGLONG)Sample->Gdtr.Base, tableRisk,
         KSWORD_ARK_DRIVER_INTEGRITY_SOURCE_IDT | KSWORD_ARK_DRIVER_INTEGRITY_SOURCE_GDT, 90UL, Sample->Group, Sample->Number, ~0UL, NULL, detail);
 }
 static VOID
@@ -672,6 +701,8 @@ Return Value:
         ULONG descriptorType = 0UL;
         ULONG descriptorDpl = 0UL;
         const KSW_HOOK_SYSTEM_MODULE_ENTRY* owner = NULL;
+        ULONG sectionResult = KSW_IMAGE_SECTION_RESULT_UNKNOWN;
+        WCHAR sectionName[KSW_IMAGE_SECTION_NAME_CHARS] = { 0 };
         WCHAR detail[KSWORD_ARK_DRIVER_INTEGRITY_DETAIL_CHARS] = { 0 };
         RtlZeroMemory(&entry, sizeof(entry));
         if (!KswordARKHookReadMemorySafe((const VOID*)(ULONG_PTR)entryAddress, &entry, sizeof(entry))) {
@@ -701,8 +732,17 @@ Return Value:
         if (owner == NULL) {
             riskFlags |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_MODULE_UNRESOLVED;
         }
-        else if (!KswordARKDriverIntegrityIsCoreKernelModule(owner)) {
-            riskFlags |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_NON_CORE_OWNER;
+        else {
+            if (!KswordARKDriverIntegrityIsCoreKernelModule(owner)) {
+                riskFlags |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_NON_CORE_OWNER;
+            }
+            // 落在映像区间内还不够，handler 必须位于该模块的可执行节里。
+            sectionResult = KswordARKImageClassifyAddress(
+                owner, handler, sectionName, RTL_NUMBER_OF(sectionName), NULL);
+            if (sectionResult == KSW_IMAGE_SECTION_RESULT_NON_EXECUTABLE ||
+                sectionResult == KSW_IMAGE_SECTION_RESULT_OUTSIDE_SECTIONS) {
+                riskFlags |= KSWORD_ARK_DRIVER_INTEGRITY_RISK_TARGET_NON_EXEC;
+            }
         }
         baselineAvailable = KswordARKIdtBaselineQuery(
             (USHORT)Sample->Group,
@@ -724,12 +764,14 @@ Return Value:
         KswordARKCpuIntegrityFormatDetail(
             detail,
             RTL_NUMBER_OF(detail),
-            L"IDT[%lu] gate=0x%llX handler=0x%llX selector=0x%04X attr=0x%04X; baseline=%ls handler=0x%llX generation=%lu.",
+            L"IDT[%lu] gate=0x%llX handler=0x%llX selector=0x%04X attr=0x%04X; section=%ls(%lu); baseline=%ls handler=0x%llX generation=%lu.",
             vector,
             entryAddress,
             handler,
             entry.Selector,
             entry.IstAndType,
+            (sectionName[0] != L'\0') ? sectionName : L"n/a",
+            sectionResult,
             baselineAvailable ? L"available" : L"unavailable",
             baselineHandler,
             baselineGeneration);
@@ -918,10 +960,14 @@ Return Value:
     ULONG groupIndex = 0UL;
     ULONG totalCpus = 0UL;
     ULONG allActiveCount = 0UL;
+    KSW_IDT_CONSISTENCY_VIEW* consistencyView = NULL;
     if (Builder == NULL || CpuCountOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     *CpuCountOut = 0UL;
+    // 先做一轮只读的全机 IDTR 采样，后续每个 CPU 的证据行都能引用多数派结论。
+    // 采集失败不影响其余证据，consistencyView 保持 NULL 即可。
+    (VOID)KswordARKIdtConsistencyCollect(&consistencyView);
     if (MaxIdtVectorsPerCpu == 0UL || MaxIdtVectorsPerCpu > KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_IDT_VECTORS) {
         MaxIdtVectorsPerCpu = KSWORD_ARK_DRIVER_INTEGRITY_DEFAULT_IDT_VECTORS;
     }
@@ -960,7 +1006,7 @@ Return Value:
             KeRevertToUserGroupAffinityThread(&previousAffinity);
             visitedInGroup += 1UL;
             totalCpus += 1UL;
-            KswordARKCpuIntegrityEmitControlRows(Builder, &sample, ModuleInfo);
+            KswordARKCpuIntegrityEmitControlRows(Builder, &sample, ModuleInfo, consistencyView);
             if ((Flags & KSWORD_ARK_DRIVER_INTEGRITY_FLAG_IDT_ENTRIES) != 0UL) {
                 KswordARKCpuIntegrityEmitIdtRows(Builder, &sample, ModuleInfo, MaxIdtVectorsPerCpu);
             }
@@ -970,6 +1016,8 @@ Return Value:
         }
     }
     *CpuCountOut = totalCpus;
+    // 一致性视图只在本次采集期间有效，归还它的非分页池。
+    KswordARKIdtConsistencyRelease(consistencyView);
     return STATUS_SUCCESS;
 #else
     UNREFERENCED_PARAMETER(Builder);

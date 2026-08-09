@@ -347,6 +347,12 @@ typedef struct _KSWORD_ARK_QUERY_IOCTL_REGISTRY_RESPONSE
 #define KSWORD_ARK_DRIVER_INTEGRITY_RISK_DYNDATA_UNAVAILABLE   0x00040000UL
 #define KSWORD_ARK_DRIVER_INTEGRITY_RISK_TRUNCATED             0x00080000UL
 #define KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_BASELINE_CHANGED  0x00100000UL
+// 本 CPU 的 IDTR 与多数派 CPU 不一致：典型的「只在当前核心上 lidt 换表」痕迹。
+#define KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_TABLE_DIVERGED    0x00200000UL
+// 本 CPU 的 IDTR 与驱动启动期抓取的基线不一致：整张 IDT 被搬到了新地址。
+#define KSWORD_ARK_DRIVER_INTEGRITY_RISK_IDT_TABLE_RELOCATED   0x00400000UL
+// 目标指针虽落在某个已加载模块内，但不在该模块的可执行节里。
+#define KSWORD_ARK_DRIVER_INTEGRITY_RISK_TARGET_NON_EXEC       0x00800000UL
 
 // Driver Integrity response field flags.
 // These bits describe which v2 typed columns were populated by R0. Older R3

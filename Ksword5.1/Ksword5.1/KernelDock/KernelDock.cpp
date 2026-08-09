@@ -16,6 +16,8 @@
 #include "KernelDescriptorTableTab.h"
 #include "KernelHvmTab.h"
 #include "KernelSlatIommuAuditTab.h"
+#include "KernelTextIntegrityTab.h"
+#include "KernelVbsPostureTab.h"
 #include "KernelDockIpcTab.h"
 #include "KernelDeviceDriverObjectsTab.h"
 #include "KernelIoTimerTab.h"
@@ -544,6 +546,30 @@ void KernelDock::initializeUi()
         kernelText(
             "kernel.main.tab.slat_iommu.tooltip",
             QStringLiteral("只读 EPT/NPT 虚拟-物理交叉视图、Hypervisor CPUID 与 DMAR/IVRS/IOMMU 运行时取证")));
+
+    const int textIntegrityTabIndex = m_tabWidget->addTab(
+        new KernelTextIntegrityTab(m_tabWidget),
+        tabIcon(QStringLiteral(":/Icon/process_details.svg")),
+        kernelText(
+            "kernel.main.tab.text_integrity.title",
+            QStringLiteral("代码完整性")));
+    m_tabWidget->setTabToolTip(
+        textIntegrityTabIndex,
+        kernelText(
+            "kernel.main.tab.text_integrity.tooltip",
+            QStringLiteral("把每个已加载模块的可执行节与重定位后的磁盘净映像全量逐字节比对，区分动态重定位位点与无法解释的代码改写")));
+
+    const int vbsPostureTabIndex = m_tabWidget->addTab(
+        new KernelVbsPostureTab(m_tabWidget),
+        tabIcon(QStringLiteral(":/Icon/process_priority.svg")),
+        kernelText(
+            "kernel.main.tab.vbs_posture.title",
+            QStringLiteral("VBS/HVCI")));
+    m_tabWidget->setTabToolTip(
+        vbsPostureTabIndex,
+        kernelText(
+            "kernel.main.tab.vbs_posture.tooltip",
+            QStringLiteral("区分 HVCI 策略位与运行时证据，识别「策略说开着但实际没跑」，并列出审计模式/测试签名/CI 调试等降级项")));
 
     m_timerDpcTabIndex = m_tabWidget->addTab(
         m_timerDpcPage,

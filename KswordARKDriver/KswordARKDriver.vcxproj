@@ -53,6 +53,8 @@
     <ClCompile Include="src\features\kernel\kernel_cpu_integrity.c" />
     <ClCompile Include="src\features\kernel\kernel_idt_baseline.c" />
     <ClCompile Include="src\features\kernel\kernel_idt_baseline_ioctl.c" />
+    <ClCompile Include="src\features\kernel\kernel_idt_consistency.c" />
+    <ClCompile Include="src\features\kernel\kernel_image_section_map.c" />
     <ClCompile Include="src\features\kernel\kernel_piddb.c" />
     <ClCompile Include="src\features\kernel\kernel_piddb_ioctl.c" />
     <ClCompile Include="src\features\hvm\hvm_runtime.c">
@@ -375,6 +377,8 @@
     <ClInclude Include="src\features\kernel\driver_blind_internal.h" />
     <ClInclude Include="src\features\kernel\kernel_cpu_integrity.h" />
     <ClInclude Include="src\features\kernel\kernel_idt_baseline.h" />
+    <ClInclude Include="src\features\kernel\kernel_idt_consistency.h" />
+    <ClInclude Include="src\features\kernel\kernel_image_section_map.h" />
     <ClInclude Include="..\shared\driver\KswordArkKernelBaselineIoctl.h" />
     <ClInclude Include="src\features\kernel\kernel_piddb.h" />
     <ClInclude Include="src\features\hvm\hvm_runtime.h" />

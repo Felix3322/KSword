@@ -878,6 +878,8 @@ namespace ksword::ark
     inline constexpr std::uint32_t KernelExecutableMemoryRiskModuleNonTextExecutable = KSWORD_ARK_KERNEL_EXEC_RISK_MODULE_NON_TEXT_EXECUTABLE;
     inline constexpr std::uint32_t KernelExecutableMemoryRiskSectionWritable = KSWORD_ARK_KERNEL_EXEC_RISK_SECTION_WRITABLE;
     inline constexpr std::uint32_t KernelExecutableMemoryRiskLargePage = KSWORD_ARK_KERNEL_EXEC_RISK_LARGE_PAGE;
+    inline constexpr std::uint32_t KernelExecutableMemoryRiskCodePageNotExecutable = KSWORD_ARK_KERNEL_EXEC_RISK_CODE_PAGE_NOT_EXECUTABLE;
+    inline constexpr std::uint32_t KernelExecutableMemoryRiskCodePageWritable = KSWORD_ARK_KERNEL_EXEC_RISK_CODE_PAGE_WRITABLE;
 
     // KernelExecutableMemoryPageEntry is the R3 model for one executable kernel
     // memory range. Input fields are copied from the Prompt-1 scan response.

@@ -141,6 +141,15 @@ namespace
         {
             parts << QStringLiteral("大页");
         }
+        // 代码节页的正常状态是只读可执行；下面两项是把 RX 改成 RW 之后留下的痕迹。
+        if (flags & ksword::ark::KernelExecutableMemoryRiskCodePageNotExecutable)
+        {
+            parts << QStringLiteral("代码页不可执行");
+        }
+        if (flags & ksword::ark::KernelExecutableMemoryRiskCodePageWritable)
+        {
+            parts << QStringLiteral("代码页可写");
+        }
         return parts.join(QStringLiteral(" | "));
     }
 

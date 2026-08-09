@@ -1404,6 +1404,314 @@ namespace
         }
         return bytes;
     }
+
+    // ---- 可执行节全量比对所需的 PE 结构辅助 ----
+
+#pragma pack(push, 1)
+    // IMAGE_DYNAMIC_RELOCATION_TABLE：动态重定位表头。
+    struct DynamicRelocationTableHeader
+    {
+        std::uint32_t version;
+        std::uint32_t size;
+    };
+
+    // IMAGE_DYNAMIC_RELOCATION64：每个符号一段，后面跟 IMAGE_BASE_RELOCATION 块。
+    struct DynamicRelocation64Header
+    {
+        std::uint64_t symbol;
+        std::uint32_t baseRelocSize;
+    };
+#pragma pack(pop)
+
+    // 本工具能够解码位点偏移的动态重定位符号。它们都是 x64 上真正会改写 .text
+    // 的那几类（import optimization 与两种间接控制转移改写）。
+    constexpr std::uint64_t kDynamicRelocImportControlTransfer = 3ULL;
+    constexpr std::uint64_t kDynamicRelocIndirControlTransfer = 4ULL;
+    constexpr std::uint64_t kDynamicRelocSwitchtableBranch = 5ULL;
+
+    // 一个动态重定位位点最多覆盖的字节数。x64 上被改写的是一条 call/jmp，
+    // 取 8 字节留出前缀与 ModRM 的余量。
+    constexpr std::uint32_t kDynamicRelocSiteSpan = 8U;
+
+    // 描述一个可执行节在映像中的范围。
+    struct ExecutableSection
+    {
+        std::uint32_t rva = 0;
+        std::uint32_t size = 0;
+        QString name;
+    };
+
+    QString sectionNameText(const IMAGE_SECTION_HEADER& section)
+    {
+        char buffer[IMAGE_SIZEOF_SHORT_NAME + 1] = { 0 };
+        std::memcpy(buffer, section.Name, IMAGE_SIZEOF_SHORT_NAME);
+        return QString::fromLatin1(buffer).trimmed();
+    }
+
+    // 收集映像里所有带 IMAGE_SCN_MEM_EXECUTE 的节。内存中的节长度取 VirtualSize
+    // 与 SizeOfRawData 的较大值，并被截断到 SizeOfImage 之内。
+    std::vector<ExecutableSection> collectExecutableSections(
+        const PreparedTrustedImage& prepared)
+    {
+        std::vector<ExecutableSection> sections;
+        for (std::uint16_t index = 0;
+             index < prepared.identity.sectionCount;
+             ++index)
+        {
+            IMAGE_SECTION_HEADER header = {};
+            const std::uint64_t offset =
+                prepared.identity.sectionTableOffset
+                + static_cast<std::uint64_t>(index)
+                    * sizeof(IMAGE_SECTION_HEADER);
+            if (!copyStructure(prepared.diskImage, offset, header))
+            {
+                break;
+            }
+            if ((header.Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0U)
+            {
+                continue;
+            }
+            std::uint32_t length = std::max<std::uint32_t>(
+                header.Misc.VirtualSize,
+                header.SizeOfRawData);
+            if (length == 0U
+                || header.VirtualAddress >= prepared.mappedImage.size())
+            {
+                continue;
+            }
+            const std::uint32_t available =
+                static_cast<std::uint32_t>(prepared.mappedImage.size())
+                - header.VirtualAddress;
+            length = std::min(length, available);
+            sections.push_back(
+                ExecutableSection{
+                    header.VirtualAddress,
+                    length,
+                    sectionNameText(header) });
+        }
+        return sections;
+    }
+
+    // 从 LoadConfig 目录定位动态重定位表，把可解码的位点 RVA 收进 sitesOut。
+    // 返回 false 表示遇到了本工具不解析的符号，调用方据此降低结论强度。
+    bool collectDynamicRelocationSites(
+        const PreparedTrustedImage& prepared,
+        std::vector<std::uint32_t>& sitesOut)
+    {
+        sitesOut.clear();
+
+        IMAGE_DOS_HEADER dos = {};
+        if (!copyStructure(prepared.diskImage, 0U, dos)
+            || dos.e_lfanew <= 0)
+        {
+            return true;
+        }
+        IMAGE_NT_HEADERS64 ntHeaders = {};
+        if (!copyStructure(
+                prepared.diskImage,
+                static_cast<std::uint64_t>(dos.e_lfanew),
+                ntHeaders)
+            || ntHeaders.OptionalHeader.Magic
+                != IMAGE_NT_OPTIONAL_HDR64_MAGIC
+            || ntHeaders.OptionalHeader.NumberOfRvaAndSizes
+                <= IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG)
+        {
+            return true;
+        }
+
+        const IMAGE_DATA_DIRECTORY loadConfigDirectory =
+            ntHeaders.OptionalHeader
+                .DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+        if (loadConfigDirectory.VirtualAddress == 0U
+            || loadConfigDirectory.Size < sizeof(std::uint32_t)
+            || loadConfigDirectory.VirtualAddress
+                >= prepared.mappedImage.size())
+        {
+            return true;
+        }
+
+        // LoadConfig 结构随版本增长，只有 Size 字段声明的部分才可以使用。
+        IMAGE_LOAD_CONFIG_DIRECTORY64 loadConfig = {};
+        const std::size_t copyBytes = std::min<std::size_t>(
+            {
+                sizeof(loadConfig),
+                static_cast<std::size_t>(loadConfigDirectory.Size),
+                prepared.mappedImage.size()
+                    - loadConfigDirectory.VirtualAddress
+            });
+        std::memcpy(
+            &loadConfig,
+            prepared.mappedImage.data() + loadConfigDirectory.VirtualAddress,
+            copyBytes);
+
+        constexpr std::size_t requiredSize =
+            offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64,
+                DynamicValueRelocTableSection)
+            + sizeof(loadConfig.DynamicValueRelocTableSection);
+        if (loadConfig.Size < requiredSize
+            || copyBytes < requiredSize
+            || loadConfig.DynamicValueRelocTableOffset == 0U
+            || loadConfig.DynamicValueRelocTableSection == 0U)
+        {
+            return true;
+        }
+
+        // DynamicValueRelocTableSection 是 1 基的节序号，偏移相对该节起始。
+        IMAGE_SECTION_HEADER hostSection = {};
+        const std::uint16_t sectionIndex =
+            static_cast<std::uint16_t>(
+                loadConfig.DynamicValueRelocTableSection - 1U);
+        if (sectionIndex >= prepared.identity.sectionCount
+            || !copyStructure(
+                prepared.diskImage,
+                prepared.identity.sectionTableOffset
+                    + static_cast<std::uint64_t>(sectionIndex)
+                        * sizeof(IMAGE_SECTION_HEADER),
+                hostSection))
+        {
+            return true;
+        }
+
+        const std::uint64_t tableRva =
+            static_cast<std::uint64_t>(hostSection.VirtualAddress)
+            + loadConfig.DynamicValueRelocTableOffset;
+        if (tableRva + sizeof(DynamicRelocationTableHeader)
+            > prepared.mappedImage.size())
+        {
+            return true;
+        }
+
+        DynamicRelocationTableHeader tableHeader = {};
+        std::memcpy(
+            &tableHeader,
+            prepared.mappedImage.data() + tableRva,
+            sizeof(tableHeader));
+        if (tableHeader.version != 1U || tableHeader.size == 0U)
+        {
+            // 版本不认识时不做任何解码，并让调用方保守处理。
+            return tableHeader.size == 0U;
+        }
+
+        const std::uint64_t entriesRva =
+            tableRva + sizeof(DynamicRelocationTableHeader);
+        if (entriesRva > prepared.mappedImage.size()
+            || tableHeader.size
+                > prepared.mappedImage.size() - entriesRva)
+        {
+            return true;
+        }
+
+        bool fullyParsed = true;
+        std::uint32_t consumed = 0U;
+        while (consumed + sizeof(DynamicRelocation64Header)
+               <= tableHeader.size)
+        {
+            DynamicRelocation64Header entry = {};
+            std::memcpy(
+                &entry,
+                prepared.mappedImage.data() + entriesRva + consumed,
+                sizeof(entry));
+            consumed += static_cast<std::uint32_t>(sizeof(entry));
+            if (entry.baseRelocSize == 0U
+                || entry.baseRelocSize > tableHeader.size - consumed)
+            {
+                fullyParsed = false;
+                break;
+            }
+
+            const std::uint32_t entrySize =
+                (entry.symbol == kDynamicRelocImportControlTransfer
+                 || entry.symbol == kDynamicRelocSwitchtableBranch)
+                    ? 4U
+                    : (entry.symbol == kDynamicRelocIndirControlTransfer
+                        ? 2U
+                        : 0U);
+            if (entrySize == 0U)
+            {
+                // 未知或未实现的符号：跳过它的数据，但记下解析不完整。
+                fullyParsed = false;
+                consumed += entry.baseRelocSize;
+                continue;
+            }
+
+            std::uint32_t blockConsumed = 0U;
+            while (blockConsumed + sizeof(IMAGE_BASE_RELOCATION)
+                   <= entry.baseRelocSize)
+            {
+                IMAGE_BASE_RELOCATION block = {};
+                std::memcpy(
+                    &block,
+                    prepared.mappedImage.data()
+                        + entriesRva + consumed + blockConsumed,
+                    sizeof(block));
+                if (block.SizeOfBlock < sizeof(block)
+                    || block.SizeOfBlock
+                        > entry.baseRelocSize - blockConsumed)
+                {
+                    fullyParsed = false;
+                    break;
+                }
+                const std::uint32_t payloadBytes =
+                    block.SizeOfBlock
+                    - static_cast<std::uint32_t>(sizeof(block));
+                for (std::uint32_t offsetInPayload = 0U;
+                     offsetInPayload + entrySize <= payloadBytes;
+                     offsetInPayload += entrySize)
+                {
+                    std::uint32_t raw = 0U;
+                    std::memcpy(
+                        &raw,
+                        prepared.mappedImage.data()
+                            + entriesRva + consumed + blockConsumed
+                            + sizeof(block) + offsetInPayload,
+                        entrySize);
+                    // 三种符号的低 12 位都是页内偏移。
+                    const std::uint32_t pageOffset = raw & 0x0FFFU;
+                    sitesOut.push_back(
+                        block.VirtualAddress + pageOffset);
+                }
+                blockConsumed += block.SizeOfBlock;
+            }
+            consumed += entry.baseRelocSize;
+        }
+
+        std::sort(sitesOut.begin(), sitesOut.end());
+        sitesOut.erase(
+            std::unique(sitesOut.begin(), sitesOut.end()),
+            sitesOut.end());
+        return fullyParsed;
+    }
+
+    // 判断 [rva, rva+length) 是否完全落在已知动态重定位位点覆盖的范围内。
+    bool rangeCoveredByDynamicRelocation(
+        const std::vector<std::uint32_t>& sites,
+        const std::uint32_t rva,
+        const std::uint32_t length)
+    {
+        if (sites.empty() || length == 0U)
+        {
+            return false;
+        }
+        for (std::uint32_t offset = 0U; offset < length; ++offset)
+        {
+            const std::uint32_t probe = rva + offset;
+            // 找到第一个起点大于 probe 的位点，它的前一个才可能覆盖 probe。
+            const auto upper = std::upper_bound(
+                sites.cbegin(),
+                sites.cend(),
+                probe);
+            if (upper == sites.cbegin())
+            {
+                return false;
+            }
+            const std::uint32_t site = *std::prev(upper);
+            if (probe - site >= kDynamicRelocSiteSpan)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 }
 
 namespace ks::kernel
@@ -1568,6 +1876,227 @@ namespace ks::kernel
             ? baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线不一致"))
             : baselineText(QStringLiteral("当前内存与身份、SHA256、Code Integrity 签名级别绑定的重定位映像基线一致"));
         return result;
+    }
+
+    std::vector<KernelTextIntegrityResult>
+    KernelCleanImageBaseline::scanExecutableSections(
+        const KernelTextScanOptions& options)
+    {
+        std::vector<KernelTextIntegrityResult> results;
+
+        std::vector<LoadedModule> modules;
+        QString errorText;
+        if (!enumerateLoadedModules(modules, errorText))
+        {
+            KernelTextIntegrityResult failure;
+            failure.statusText = errorText;
+            results.push_back(std::move(failure));
+            return results;
+        }
+
+        // 读块大小要同时受协议上限与调用方设置约束。
+        std::uint32_t chunkBytes = options.chunkBytes;
+        if (chunkBytes == 0U
+            || chunkBytes > KSWORD_ARK_MEMORY_READ_MAX_BYTES)
+        {
+            chunkBytes = KSWORD_ARK_MEMORY_READ_MAX_BYTES;
+        }
+
+        for (const LoadedModule& module : modules)
+        {
+            if (options.cancelFlag != nullptr
+                && options.cancelFlag->load())
+            {
+                break;
+            }
+            if (!options.moduleFilter.isEmpty()
+                && !module.name.contains(
+                    options.moduleFilter,
+                    Qt::CaseInsensitive))
+            {
+                continue;
+            }
+
+            KernelTextIntegrityResult result;
+            result.moduleBase = module.base;
+            result.moduleSize = module.size;
+            result.moduleName = module.name;
+            result.imagePath = module.filePath;
+
+            QString prepareError;
+            const PreparedTrustedImage* prepared =
+                cachedTrustedImage(module, prepareError);
+            if (prepared == nullptr)
+            {
+                result.statusText = prepareError;
+                if (options.onModuleComplete)
+                {
+                    options.onModuleComplete(result);
+                }
+                results.push_back(std::move(result));
+                continue;
+            }
+
+            result.identityMatched = true;
+            result.diskTrustVerified = prepared->diskTrustVerified;
+            result.relocationApplied = prepared->relocationApplied;
+            result.imageSha256 = prepared->sha256;
+
+            std::vector<std::uint32_t> dynamicSites;
+            result.unparsedDynamicRelocations =
+                !collectDynamicRelocationSites(*prepared, dynamicSites);
+
+            const std::vector<ExecutableSection> sections =
+                collectExecutableSections(*prepared);
+            result.executableSectionCount =
+                static_cast<std::uint32_t>(sections.size());
+            if (sections.empty())
+            {
+                result.statusText = baselineText(
+                    QStringLiteral("该映像没有可执行节，未做比对。"));
+                if (options.onModuleComplete)
+                {
+                    options.onModuleComplete(result);
+                }
+                results.push_back(std::move(result));
+                continue;
+            }
+
+            bool cancelled = false;
+            for (const ExecutableSection& section : sections)
+            {
+                std::uint32_t sectionOffset = 0U;
+                while (sectionOffset < section.size)
+                {
+                    if (options.cancelFlag != nullptr
+                        && options.cancelFlag->load())
+                    {
+                        cancelled = true;
+                        break;
+                    }
+
+                    const std::uint32_t readBytes = std::min(
+                        chunkBytes,
+                        section.size - sectionOffset);
+                    const std::uint32_t chunkRva =
+                        section.rva + sectionOffset;
+                    sectionOffset += readBytes;
+
+                    std::vector<std::uint8_t> observed;
+                    QString readError;
+                    if (!readKernelBytes(
+                            module.base + chunkRva,
+                            readBytes,
+                            observed,
+                            readError))
+                    {
+                        // 读不到的块只计量，不当作差异，避免把分页失败说成篡改。
+                        result.unreadableBytes += readBytes;
+                        continue;
+                    }
+                    result.scannedBytes += readBytes;
+
+                    const std::uint8_t* clean =
+                        prepared->mappedImage.data() + chunkRva;
+                    std::uint32_t index = 0U;
+                    while (index < readBytes)
+                    {
+                        if (clean[index] == observed[index])
+                        {
+                            ++index;
+                            continue;
+                        }
+                        // 把连续不同的字节合并成一个区间再分类。
+                        const std::uint32_t start = index;
+                        while (index < readBytes
+                               && clean[index] != observed[index])
+                        {
+                            ++index;
+                        }
+                        const std::uint32_t length = index - start;
+                        result.differingBytes += length;
+
+                        const std::uint32_t rangeRva = chunkRva + start;
+                        const bool known = rangeCoveredByDynamicRelocation(
+                            dynamicSites,
+                            rangeRva,
+                            length);
+                        if (known)
+                        {
+                            result.knownRangeCount += 1U;
+                        }
+                        else
+                        {
+                            result.unexplainedRangeCount += 1U;
+                        }
+
+                        if (result.ranges.size()
+                            >= options.maxRangesPerModule)
+                        {
+                            result.truncatedRangeCount += 1U;
+                            continue;
+                        }
+
+                        KernelTextDiffRange range;
+                        range.rva = rangeRva;
+                        range.length = length;
+                        range.kernelAddress = module.base + rangeRva;
+                        range.origin = known
+                            ? KernelTextDiffRange::Origin::KnownDynamicRelocation
+                            : KernelTextDiffRange::Origin::Unexplained;
+                        range.sectionName = section.name;
+                        const std::uint32_t previewBytes = std::min(
+                            length,
+                            options.maxRangeBytes);
+                        range.cleanBytes.assign(
+                            clean + start,
+                            clean + start + previewBytes);
+                        range.observedBytes.assign(
+                            observed.cbegin() + start,
+                            observed.cbegin() + start + previewBytes);
+                        result.ranges.push_back(std::move(range));
+                    }
+                }
+                if (cancelled)
+                {
+                    break;
+                }
+            }
+
+            result.available = true;
+            if (cancelled)
+            {
+                result.statusText = baselineText(
+                    QStringLiteral("扫描被取消，结果不完整。"));
+            }
+            else if (result.unexplainedRangeCount != 0U)
+            {
+                result.statusText = baselineText(
+                    QStringLiteral("发现无法用动态重定位解释的代码改写。"));
+            }
+            else if (result.knownRangeCount != 0U)
+            {
+                result.statusText = baselineText(
+                    QStringLiteral("仅存在动态重定位位点差异，未见异常改写。"));
+            }
+            else
+            {
+                result.statusText = baselineText(
+                    QStringLiteral("可执行节与重定位后的磁盘净映像一致。"));
+            }
+            if (options.onModuleComplete)
+            {
+                options.onModuleComplete(result);
+            }
+            results.push_back(std::move(result));
+
+            if (cancelled)
+            {
+                break;
+            }
+        }
+
+        return results;
     }
 
     std::vector<TrustedIdtBaselineResult>
