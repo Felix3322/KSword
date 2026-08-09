@@ -1,0 +1,728 @@
+#include "BusDeviceView.h"
+
+#include "DeviceTopologyEnumerator.h"
+#include "../../Ui/AsyncTask.h"
+#include "../../Ui/Controls.h"
+#include "../../Ui/FilterBar.h"
+#include "../../Ui/ListViewUtil.h"
+#include "../../Ui/LoadingOverlay.h"
+#include "../../Ui/Theme.h"
+#include "../../Ui/VirtualListView.h"
+
+#include <commctrl.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <cwchar>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace Ksword::Features::HardwareStats {
+namespace {
+
+constexpr wchar_t kBusDeviceViewClass[] = L"KswordARKLight.HardwareStats.BusDeviceView";
+
+constexpr int kRefreshButtonId = 66401;
+constexpr int kAllBusesCheckId = 66402;
+constexpr int kFilterBarId = 66403;
+constexpr int kBusListId = 66404;
+constexpr int kDetailListId = 66405;
+constexpr int kLoadingOverlayId = 66406;
+
+constexpr UINT kMenuCopyRow = 66451;
+constexpr UINT kMenuCopyVisible = 66452;
+constexpr UINT kMenuCopyDetail = 66453;
+constexpr UINT kMenuRefresh = 66454;
+
+constexpr UINT kMsgRefreshCompleted = WM_APP + 675;
+constexpr UINT kMsgFilterCompleted = WM_APP + 676;
+
+constexpr int kGap = 6;
+constexpr int kRowHeight = 24;
+constexpr int kHeaderHeight = kGap * 3 + kRowHeight * 2;
+constexpr int kDetailHeight = 180;
+constexpr int kStatusHeight = 22;
+constexpr int kColumnCount = 12;
+
+int Width(const RECT& rc) {
+    return rc.right > rc.left ? static_cast<int>(rc.right - rc.left) : 0;
+}
+
+int Height(const RECT& rc) {
+    return rc.bottom > rc.top ? static_cast<int>(rc.bottom - rc.top) : 0;
+}
+
+struct BusFilterResult final {
+    std::uint64_t generation = 0;
+    std::wstring query;
+    bool useRegex = false;
+    std::wstring selectedStableKey;
+    std::wstring topStableKey;
+    std::vector<std::size_t> visibleIndexes;
+};
+
+struct BusDeviceViewState final {
+    HWND hwnd = nullptr;
+    HWND refreshButton = nullptr;
+    HWND allBusesCheck = nullptr;
+    HWND filterBar = nullptr;
+    HWND detailList = nullptr;
+    HWND loadingOverlay = nullptr;
+    Ksword::Ui::VirtualListView busList;
+    BusDeviceSnapshot snapshot;
+    std::shared_ptr<const std::vector<Ksword::Ui::VirtualListRow>> filterRows;
+    std::wstring statusText = L"正在等待总线设备快照…";
+    std::wstring filterQuery;
+    bool filterUseRegex = false;
+    bool includeAllEnumerators = false;
+    std::uint64_t displayGeneration = 0;
+    std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<BusDeviceSnapshot>> refreshTask;
+    std::unique_ptr<Ksword::Ui::AsyncSnapshotTask<BusFilterResult>> filterTask;
+};
+
+BusDeviceViewState* StateFromWindow(HWND hwnd) {
+    return reinterpret_cast<BusDeviceViewState*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+void AddColumn(HWND list, int index, const wchar_t* title, int width) {
+    LVCOLUMNW column{};
+    column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+    column.pszText = const_cast<LPWSTR>(title);
+    column.cx = width;
+    column.iSubItem = index;
+    ListView_InsertColumn(list, index, &column);
+}
+
+void SetDetailText(HWND list, int row, int column, const std::wstring& text) {
+    if (column == 0) {
+        LVITEMW item{};
+        item.mask = LVIF_TEXT;
+        item.iItem = row;
+        item.iSubItem = 0;
+        item.pszText = const_cast<LPWSTR>(text.c_str());
+        ListView_InsertItem(list, &item);
+        return;
+    }
+    ListView_SetItemText(list, row, column, const_cast<LPWSTR>(text.c_str()));
+}
+
+bool CopyText(HWND owner, const std::wstring& text) {
+    if (text.empty() || !::OpenClipboard(owner)) {
+        return false;
+    }
+    ::EmptyClipboard();
+    const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = ::GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!memory) {
+        ::CloseClipboard();
+        return false;
+    }
+    void* target = ::GlobalLock(memory);
+    if (!target) {
+        ::GlobalFree(memory);
+        ::CloseClipboard();
+        return false;
+    }
+    std::memcpy(target, text.c_str(), bytes);
+    ::GlobalUnlock(memory);
+    if (!::SetClipboardData(CF_UNICODETEXT, memory)) {
+        ::GlobalFree(memory);
+        ::CloseClipboard();
+        return false;
+    }
+    ::CloseClipboard();
+    return true;
+}
+
+const BusDeviceRow* SelectedRow(const BusDeviceViewState& state) {
+    const HWND list = state.busList.hwnd();
+    const int selected = list ? ListView_GetNextItem(list, -1, LVNI_SELECTED) : -1;
+    const auto& visible = state.busList.visibleIndexes();
+    if (selected < 0 || static_cast<std::size_t>(selected) >= visible.size()) {
+        return nullptr;
+    }
+    const std::size_t rowIndex = visible[static_cast<std::size_t>(selected)];
+    return rowIndex < state.snapshot.rows.size() ? &state.snapshot.rows[rowIndex] : nullptr;
+}
+
+std::wstring StableKeyFromListItem(const BusDeviceViewState& state, int item) {
+    const auto& visible = state.busList.visibleIndexes();
+    const auto& rows = state.busList.rows();
+    if (item < 0 || static_cast<std::size_t>(item) >= visible.size()) {
+        return {};
+    }
+    const std::size_t sourceIndex = visible[static_cast<std::size_t>(item)];
+    return sourceIndex < rows.size() ? rows[sourceIndex].stableKey : std::wstring{};
+}
+
+std::vector<std::pair<std::wstring, std::wstring>> PropertiesForRow(const BusDeviceRow& row) {
+    std::vector<std::pair<std::wstring, std::wstring>> properties;
+    properties.emplace_back(L"设备描述", row.description);
+    properties.emplace_back(L"制造商", row.manufacturer);
+    properties.emplace_back(L"枚举器", row.enumeratorName);
+    properties.emplace_back(L"总线类型", row.busTypeText);
+    properties.emplace_back(L"总线类型 GUID", row.busTypeGuid);
+    properties.emplace_back(L"传统总线类型", row.legacyBusType);
+    properties.emplace_back(L"总线号", row.busNumber);
+    properties.emplace_back(L"地址", row.address);
+    properties.emplace_back(L"槽位号", row.uiNumber);
+    properties.emplace_back(L"位置信息", row.locationInfo);
+    properties.emplace_back(L"位置路径", row.locationPaths);
+    properties.emplace_back(L"已分配资源", row.resourceText.empty() ? std::wstring(L"无独占资源") : row.resourceText);
+    properties.emplace_back(L"设备类", row.deviceClass);
+    properties.emplace_back(L"驱动服务", row.service);
+    properties.emplace_back(L"驱动键", row.driverKey);
+    properties.emplace_back(L"状态", row.statusText);
+    properties.emplace_back(L"问题", row.problemText.empty() ? std::wstring(L"无") : row.problemText);
+    properties.emplace_back(L"实例 ID", row.instanceId);
+    return properties;
+}
+
+void ShowDetail(BusDeviceViewState& state) {
+    if (!state.detailList) {
+        return;
+    }
+    ListView_DeleteAllItems(state.detailList);
+    const BusDeviceRow* row = SelectedRow(state);
+    if (!row) {
+        SetDetailText(state.detailList, 0, 0, L"选择");
+        SetDetailText(state.detailList, 0, 1, L"未选择总线设备");
+        return;
+    }
+    const auto properties = PropertiesForRow(*row);
+    for (int index = 0; index < static_cast<int>(properties.size()); ++index) {
+        SetDetailText(state.detailList, index, 0, properties[static_cast<std::size_t>(index)].first);
+        SetDetailText(state.detailList, index, 1, properties[static_cast<std::size_t>(index)].second);
+    }
+}
+
+std::wstring RowsAsText(const BusDeviceViewState& state, bool visibleRows) {
+    const auto& rows = state.busList.rows();
+    const auto& visible = state.busList.visibleIndexes();
+    const HWND list = state.busList.hwnd();
+    std::wstring text;
+    for (std::size_t item = 0; item < visible.size(); ++item) {
+        if (!visibleRows &&
+            (!list || (ListView_GetItemState(list, static_cast<int>(item), LVIS_SELECTED) & LVIS_SELECTED) == 0)) {
+            continue;
+        }
+        const std::size_t rowIndex = visible[item];
+        if (rowIndex >= rows.size()) {
+            continue;
+        }
+        const auto& cells = rows[rowIndex].cells;
+        for (std::size_t column = 0; column < (std::min)(static_cast<std::size_t>(kColumnCount), cells.size()); ++column) {
+            if (column != 0) {
+                text += L'\t';
+            }
+            text += cells[column];
+        }
+        text += L"\r\n";
+    }
+    return text;
+}
+
+std::wstring DetailAsText(const BusDeviceViewState& state) {
+    const BusDeviceRow* row = SelectedRow(state);
+    if (!row) {
+        return {};
+    }
+    std::wstring text;
+    for (const auto& property : PropertiesForRow(*row)) {
+        text += property.first + L"\t" + property.second + L"\r\n";
+    }
+    return text;
+}
+
+void ApplyBusFilter(BusDeviceViewState& state, BusFilterResult result) {
+    if (result.generation != state.displayGeneration || result.query != state.filterQuery ||
+        result.useRegex != state.filterUseRegex || !state.busList.hwnd()) {
+        return;
+    }
+
+    state.busList.setVisibleIndexes(std::move(result.visibleIndexes));
+    const auto& visible = state.busList.visibleIndexes();
+    const auto& rows = state.busList.rows();
+    int selectedItem = -1;
+    int topItem = -1;
+    for (std::size_t item = 0; item < visible.size(); ++item) {
+        const std::size_t sourceIndex = visible[item];
+        if (sourceIndex >= rows.size()) {
+            continue;
+        }
+        if (selectedItem < 0 && rows[sourceIndex].stableKey == result.selectedStableKey) {
+            selectedItem = static_cast<int>(item);
+        }
+        if (topItem < 0 && rows[sourceIndex].stableKey == result.topStableKey) {
+            topItem = static_cast<int>(item);
+        }
+    }
+
+    HWND list = state.busList.hwnd();
+    ListView_SetItemState(list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    if (selectedItem >= 0) {
+        ListView_SetItemState(list, selectedItem, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    } else if (!visible.empty()) {
+        ListView_SetItemState(list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    }
+    if (topItem >= 0) {
+        ListView_EnsureVisible(list, topItem, FALSE);
+    }
+    ShowDetail(state);
+    if (!result.query.empty()) {
+        state.statusText = L"筛选结果 " + std::to_wstring(visible.size()) + L" / " +
+            std::to_wstring(rows.size()) + L" 项。";
+    }
+    ::InvalidateRect(state.hwnd, nullptr, TRUE);
+}
+
+void RequestBusFilter(BusDeviceViewState& state,
+    std::wstring query,
+    std::wstring selectedStableKey,
+    std::wstring topStableKey) {
+    state.filterQuery = std::move(query);
+    state.filterUseRegex = Ksword::Ui::GetFilterBarRegexEnabled(state.filterBar);
+    const auto rows = state.filterRows;
+    const std::uint64_t generation = state.displayGeneration;
+    const bool useRegex = state.filterUseRegex;
+    if (!state.filterTask || !rows) {
+        return;
+    }
+    state.filterTask->request(
+        [rows, generation, useRegex, query = state.filterQuery,
+            selectedStableKey = std::move(selectedStableKey), topStableKey = std::move(topStableKey)]() mutable {
+            BusFilterResult result{};
+            result.generation = generation;
+            result.query = std::move(query);
+            result.useRegex = useRegex;
+            result.selectedStableKey = std::move(selectedStableKey);
+            result.topStableKey = std::move(topStableKey);
+            result.visibleIndexes = Ksword::Ui::VirtualListView::FilterRowIndexes(*rows, result.query, useRegex);
+            return result;
+        },
+        [&state](std::uint64_t, std::optional<BusFilterResult>&& result, std::exception_ptr error) {
+            if (error || !result.has_value()) {
+                state.statusText = L"总线筛选任务异常结束，已保留当前结果。";
+                ::InvalidateRect(state.hwnd, nullptr, TRUE);
+                return;
+            }
+            ApplyBusFilter(state, std::move(*result));
+        });
+}
+
+void BuildRows(BusDeviceViewState& state) {
+    std::vector<Ksword::Ui::VirtualListRow> rows;
+    rows.reserve(state.snapshot.rows.size());
+    for (std::size_t index = 0; index < state.snapshot.rows.size(); ++index) {
+        const BusDeviceRow& device = state.snapshot.rows[index];
+        Ksword::Ui::VirtualListRow row{};
+        row.stableKey = device.instanceId;
+        row.itemData = static_cast<LPARAM>(index);
+        row.cells.reserve(kColumnCount + 3);
+        row.cells.push_back(device.description);
+        row.cells.push_back(device.enumeratorName);
+        row.cells.push_back(device.busTypeText);
+        row.cells.push_back(device.legacyBusType);
+        row.cells.push_back(device.busNumber);
+        row.cells.push_back(device.address);
+        row.cells.push_back(device.uiNumber);
+        row.cells.push_back(device.locationInfo);
+        row.cells.push_back(device.resourceText);
+        row.cells.push_back(device.service);
+        row.cells.push_back(device.statusText);
+        row.cells.push_back(device.instanceId);
+        // Detail-only text joins the filter input without becoming a column.
+        row.cells.push_back(device.manufacturer);
+        row.cells.push_back(device.locationPaths);
+        row.cells.push_back(device.busTypeGuid);
+        if (!device.problemText.empty()) {
+            row.textColor = RGB(176, 32, 32);
+        }
+        rows.push_back(std::move(row));
+    }
+
+    auto filterRows = std::make_shared<std::vector<Ksword::Ui::VirtualListRow>>(std::move(rows));
+    state.busList.setSharedRows(filterRows);
+    state.filterRows = std::move(filterRows);
+    ++state.displayGeneration;
+}
+
+void BeginBusRefresh(BusDeviceViewState& state) {
+    if (!state.refreshTask) {
+        return;
+    }
+    const bool firstLoad = state.busList.rows().empty();
+    state.statusText = state.refreshTask->running()
+        ? L"总线刷新已排队，等待当前快照完成…"
+        : L"正在后台枚举总线设备与资源分配…";
+    if (state.refreshButton) {
+        ::EnableWindow(state.refreshButton, FALSE);
+    }
+    if (firstLoad) {
+        Ksword::Ui::SetLoadingOverlay(state.loadingOverlay, true, L"正在枚举总线设备…");
+    }
+    ::InvalidateRect(state.hwnd, nullptr, TRUE);
+
+    const bool includeAll = state.includeAllEnumerators;
+    state.refreshTask->request(
+        [includeAll] { return EnumerateBusDevices(includeAll); },
+        [&state](std::uint64_t, std::optional<BusDeviceSnapshot>&& snapshot, std::exception_ptr error) {
+            if (state.refreshButton) {
+                ::EnableWindow(state.refreshButton, TRUE);
+            }
+            Ksword::Ui::SetLoadingOverlay(state.loadingOverlay, false);
+            if (error || !snapshot.has_value()) {
+                state.statusText = L"总线枚举异常结束。";
+                ::InvalidateRect(state.hwnd, nullptr, TRUE);
+                return;
+            }
+            if (!snapshot->success) {
+                state.statusText = snapshot->diagnosticText.empty() ? L"总线枚举失败。" : snapshot->diagnosticText;
+                ::InvalidateRect(state.hwnd, nullptr, TRUE);
+                return;
+            }
+
+            const HWND list = state.busList.hwnd();
+            const std::wstring selectedStableKey =
+                StableKeyFromListItem(state, list ? ListView_GetNextItem(list, -1, LVNI_SELECTED) : -1);
+            const std::wstring topStableKey =
+                StableKeyFromListItem(state, list ? ListView_GetTopIndex(list) : -1);
+
+            std::size_t withResources = 0;
+            std::size_t problems = 0;
+            for (const BusDeviceRow& row : snapshot->rows) {
+                if (!row.resourceText.empty()) {
+                    ++withResources;
+                }
+                if (!row.problemText.empty()) {
+                    ++problems;
+                }
+            }
+            const std::size_t total = snapshot->rows.size();
+
+            state.snapshot = std::move(*snapshot);
+            BuildRows(state);
+            state.statusText = L"共 " + std::to_wstring(total) + L" 个设备，占用硬件资源 " +
+                std::to_wstring(withResources) + L"，异常 " + std::to_wstring(problems) + L"。";
+            RequestBusFilter(state,
+                state.filterBar ? Ksword::Ui::GetFilterBarText(state.filterBar) : state.filterQuery,
+                selectedStableKey,
+                topStableKey);
+            ::InvalidateRect(state.hwnd, nullptr, TRUE);
+        });
+}
+
+void ShowContextMenu(BusDeviceViewState& state, POINT screenPoint) {
+    const BusDeviceRow* row = SelectedRow(state);
+    HMENU menu = ::CreatePopupMenu();
+    if (!menu) {
+        return;
+    }
+    ::AppendMenuW(menu, MF_STRING | (row ? MF_ENABLED : MF_GRAYED), kMenuCopyRow, L"复制选中行");
+    ::AppendMenuW(menu, MF_STRING, kMenuCopyVisible, L"复制可见行");
+    ::AppendMenuW(menu, MF_STRING | (row ? MF_ENABLED : MF_GRAYED), kMenuCopyDetail, L"复制详情");
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(menu, MF_STRING, kMenuRefresh, L"刷新");
+
+    const int command = ::TrackPopupMenu(
+        menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, state.hwnd, nullptr);
+    ::DestroyMenu(menu);
+
+    switch (static_cast<UINT>(command)) {
+    case kMenuCopyRow:
+        state.statusText = CopyText(state.hwnd, RowsAsText(state, false)) ? L"已复制选中行。" : L"复制失败。";
+        ::InvalidateRect(state.hwnd, nullptr, TRUE);
+        break;
+    case kMenuCopyVisible:
+        state.statusText = CopyText(state.hwnd, RowsAsText(state, true)) ? L"已复制可见行。" : L"复制失败。";
+        ::InvalidateRect(state.hwnd, nullptr, TRUE);
+        break;
+    case kMenuCopyDetail:
+        state.statusText = CopyText(state.hwnd, DetailAsText(state)) ? L"已复制详情。" : L"复制失败。";
+        ::InvalidateRect(state.hwnd, nullptr, TRUE);
+        break;
+    case kMenuRefresh:
+        BeginBusRefresh(state);
+        break;
+    default:
+        break;
+    }
+}
+
+void LayoutView(BusDeviceViewState& state) {
+    RECT client{};
+    ::GetClientRect(state.hwnd, &client);
+    const int width = Width(client);
+    const int height = Height(client);
+
+    if (state.refreshButton) {
+        ::MoveWindow(state.refreshButton, kGap, kGap, 80, kRowHeight, TRUE);
+    }
+    if (state.allBusesCheck) {
+        ::MoveWindow(state.allBusesCheck, kGap + 80 + kGap, kGap, 200, kRowHeight, TRUE);
+    }
+    const int secondRowY = kGap + kRowHeight + kGap;
+    if (state.filterBar) {
+        ::MoveWindow(state.filterBar, kGap, secondRowY, (std::max)(120, width - kGap * 2), kRowHeight, TRUE);
+    }
+
+    const int listTop = kHeaderHeight;
+    const int detailTop = (std::max)(listTop, height - kStatusHeight - kDetailHeight);
+    const int listHeight = (std::max)(0, detailTop - listTop - kGap);
+    if (HWND list = state.busList.hwnd()) {
+        ::MoveWindow(list, kGap, listTop, (std::max)(0, width - kGap * 2), listHeight, TRUE);
+    }
+    if (state.detailList) {
+        ::MoveWindow(state.detailList, kGap, detailTop, (std::max)(0, width - kGap * 2),
+            (std::max)(0, height - kStatusHeight - detailTop - kGap), TRUE);
+    }
+    if (state.loadingOverlay) {
+        ::MoveWindow(state.loadingOverlay, kGap, listTop, (std::max)(0, width - kGap * 2), listHeight, TRUE);
+    }
+}
+
+bool CreateChildControls(BusDeviceViewState& state) {
+    HWND hwnd = state.hwnd;
+    state.refreshButton = Ksword::Ui::CreateButton(hwnd, kRefreshButtonId, L"刷新", 0, 0, 0, 0);
+    state.allBusesCheck = ::CreateWindowExW(0, WC_BUTTONW, L"包含全部枚举器（较慢）",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAllBusesCheckId)),
+        ::GetModuleHandleW(nullptr), nullptr);
+    state.filterBar = Ksword::Ui::CreateFilterBar(
+        hwnd, kFilterBarId, L"筛选设备、总线类型、位置、资源与实例 ID", 0, 0, 0, 0);
+    if (!state.refreshButton || !state.allBusesCheck || !state.filterBar) {
+        return false;
+    }
+
+    if (!state.busList.create(hwnd, kBusListId, 0, 0, 1, 1, LVS_SHOWSELALWAYS | LVS_SINGLESEL)) {
+        return false;
+    }
+    state.busList.addColumns({
+        { 0, 280, LVCFMT_LEFT, L"设备" },
+        { 1, 90, LVCFMT_LEFT, L"枚举器" },
+        { 2, 100, LVCFMT_LEFT, L"总线类型" },
+        { 3, 110, LVCFMT_LEFT, L"传统总线类型" },
+        { 4, 70, LVCFMT_RIGHT, L"总线号" },
+        { 5, 160, LVCFMT_LEFT, L"地址" },
+        { 6, 70, LVCFMT_RIGHT, L"槽位" },
+        { 7, 170, LVCFMT_LEFT, L"位置信息" },
+        { 8, 300, LVCFMT_LEFT, L"已分配资源" },
+        { 9, 110, LVCFMT_LEFT, L"驱动服务" },
+        { 10, 90, LVCFMT_LEFT, L"状态" },
+        { 11, 300, LVCFMT_LEFT, L"实例 ID" },
+    });
+    if (HWND list = state.busList.hwnd()) {
+        ListView_SetExtendedListViewStyle(list,
+            LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+        ::SendMessageW(list, WM_SETFONT, reinterpret_cast<WPARAM>(Ksword::Ui::SystemUIFont()), TRUE);
+    }
+
+    state.detailList = Ksword::Ui::CreateReportListView(hwnd, kDetailListId, 0, 0, 1, 1, LVS_SINGLESEL);
+    if (state.detailList) {
+        AddColumn(state.detailList, 0, L"属性", 160);
+        AddColumn(state.detailList, 1, L"值", 700);
+        ListView_SetExtendedListViewStyle(state.detailList,
+            LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+    }
+
+    state.loadingOverlay = Ksword::Ui::CreateLoadingOverlay(hwnd, kLoadingOverlayId, { 0, 0, 1, 1 });
+    if (!state.detailList || !state.loadingOverlay) {
+        return false;
+    }
+
+    Ksword::Ui::SetWindowFontRecursive(hwnd);
+    return true;
+}
+
+LRESULT CALLBACK BusDeviceViewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* state = StateFromWindow(hwnd);
+    switch (msg) {
+    case WM_NCCREATE: {
+        auto owned = std::make_unique<BusDeviceViewState>();
+        owned->hwnd = hwnd;
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(owned.release()));
+        return TRUE;
+    }
+    case WM_CREATE:
+        if (state) {
+            if (!CreateChildControls(*state)) {
+                return -1;
+            }
+            state->refreshTask =
+                std::make_unique<Ksword::Ui::AsyncSnapshotTask<BusDeviceSnapshot>>(hwnd, kMsgRefreshCompleted);
+            state->filterTask =
+                std::make_unique<Ksword::Ui::AsyncSnapshotTask<BusFilterResult>>(hwnd, kMsgFilterCompleted);
+            LayoutView(*state);
+            ShowDetail(*state);
+            BeginBusRefresh(*state);
+        }
+        return 0;
+    case WM_SIZE:
+        if (state) {
+            LayoutView(*state);
+        }
+        return 0;
+    case WM_COMMAND:
+        if (!state) {
+            break;
+        }
+        {
+            const int id = LOWORD(wParam);
+            const int notification = HIWORD(wParam);
+            if (id == kFilterBarId && notification == EN_CHANGE) {
+                RequestBusFilter(*state, Ksword::Ui::GetFilterBarText(state->filterBar), {}, {});
+                return 0;
+            }
+            if (notification == BN_CLICKED) {
+                switch (id) {
+                case kRefreshButtonId:
+                    BeginBusRefresh(*state);
+                    return 0;
+                case kAllBusesCheckId:
+                    state->includeAllEnumerators =
+                        ::SendMessageW(state->allBusesCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                    // The scope decides which devnodes are enumerated at all, so
+                    // it can only take effect through a new background pass.
+                    BeginBusRefresh(*state);
+                    return 0;
+                default:
+                    break;
+                }
+            }
+        }
+        break;
+    case WM_NOTIFY:
+        if (state) {
+            const auto* header = reinterpret_cast<const NMHDR*>(lParam);
+            if (header) {
+                LRESULT result = 0;
+                if (state->busList.handleNotify(*header, result)) {
+                    return result;
+                }
+                if (header->hwndFrom == state->busList.hwnd() && header->code == LVN_ITEMCHANGED) {
+                    const auto* changed = reinterpret_cast<const NMLISTVIEW*>(lParam);
+                    if (changed && (changed->uNewState & LVIS_SELECTED) != 0) {
+                        ShowDetail(*state);
+                    }
+                    return 0;
+                }
+                if (header->hwndFrom == state->busList.hwnd() && header->code == NM_RCLICK) {
+                    POINT point{};
+                    ::GetCursorPos(&point);
+                    ShowContextMenu(*state, point);
+                    return 0;
+                }
+            }
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        ::SetBkMode(dc, TRANSPARENT);
+        ::SetTextColor(dc, Ksword::Ui::AppTheme().textColor);
+        return reinterpret_cast<LRESULT>(Ksword::Ui::AppTheme().windowBrush());
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+        if (state) {
+            PAINTSTRUCT paint{};
+            HDC dc = ::BeginPaint(hwnd, &paint);
+            RECT client{};
+            ::GetClientRect(hwnd, &client);
+            ::FillRect(dc, &client, Ksword::Ui::AppTheme().windowBrush());
+            RECT statusRect{ kGap, client.bottom - kStatusHeight, client.right - kGap, client.bottom };
+            Ksword::Ui::DrawTextLine(dc, state->statusText, statusRect,
+                Ksword::Ui::AppTheme().mutedTextColor, Ksword::Ui::SystemUIFont(),
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            ::EndPaint(hwnd, &paint);
+            return 0;
+        }
+        break;
+    default:
+        if (state) {
+            if (msg == kMsgRefreshCompleted && state->refreshTask) {
+                state->refreshTask->consume(hwnd, wParam, lParam);
+                return 0;
+            }
+            if (msg == kMsgFilterCompleted && state->filterTask) {
+                state->filterTask->consume(hwnd, wParam, lParam);
+                return 0;
+            }
+        }
+        if (msg == WM_NCDESTROY && state) {
+            if (state->refreshTask) {
+                state->refreshTask->cancel();
+            }
+            if (state->filterTask) {
+                state->filterTask->cancel();
+            }
+            state->busList.detach();
+            delete state;
+            ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        }
+        break;
+    }
+    return ::DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool EnsureBusDeviceViewClass() {
+    static bool registered = false;
+    if (registered) {
+        return true;
+    }
+    WNDCLASSW windowClass{};
+    windowClass.lpfnWndProc = BusDeviceViewProc;
+    windowClass.hInstance = ::GetModuleHandleW(nullptr);
+    windowClass.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    windowClass.hbrBackground = Ksword::Ui::AppTheme().windowBrush();
+    windowClass.lpszClassName = kBusDeviceViewClass;
+    registered = ::RegisterClassW(&windowClass) != 0 || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    return registered;
+}
+
+BusDeviceViewState* VerifiedState(HWND view) {
+    if (!view) {
+        return nullptr;
+    }
+    wchar_t className[64] = {};
+    if (::GetClassNameW(view, className, ARRAYSIZE(className)) <= 0 ||
+        std::wcscmp(className, kBusDeviceViewClass) != 0) {
+        return nullptr;
+    }
+    return StateFromWindow(view);
+}
+
+} // namespace
+
+HWND CreateBusDeviceView(HWND parent, const RECT& bounds) {
+    if (!parent || !EnsureBusDeviceViewClass()) {
+        return nullptr;
+    }
+    return ::CreateWindowExW(
+        0, kBusDeviceViewClass, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+        bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+        parent, nullptr, ::GetModuleHandleW(nullptr), nullptr);
+}
+
+void RefreshBusDeviceView(HWND view) {
+    if (BusDeviceViewState* state = VerifiedState(view)) {
+        BeginBusRefresh(*state);
+    }
+}
+
+std::wstring ExportBusDeviceViewTsv(HWND view) {
+    BusDeviceViewState* state = VerifiedState(view);
+    if (!state) {
+        return {};
+    }
+    std::wstring text =
+        L"设备\t枚举器\t总线类型\t传统总线类型\t总线号\t地址\t槽位\t位置信息\t已分配资源\t驱动服务\t状态\t实例 ID\r\n";
+    text += RowsAsText(*state, true);
+    return text;
+}
+
+} // namespace Ksword::Features::HardwareStats

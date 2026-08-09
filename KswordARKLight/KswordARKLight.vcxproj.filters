@@ -55,6 +55,9 @@
     <Filter Include="Features\Registry">
       <UniqueIdentifier>{2F4146D1-40A2-5E85-9FE3-366474A60E52}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Features\NetTools">
+      <UniqueIdentifier>{5C8D2E71-14B9-4A63-9F27-8E31D5A0C946}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Features\Privilege">
       <UniqueIdentifier>{2F6C8A41-93D7-4B26-8E15-4A7C0B39D682}</UniqueIdentifier>
     </Filter>
@@ -365,6 +368,30 @@
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Token.cpp"><Filter>Features\ProcessDetail</Filter></ClCompile>
     <ClCompile Include="Features\Driver\DriverUnloadedView.cpp">
       <Filter>Features\Driver</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsActions.cpp">
+      <Filter>Features\NetTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsConnectionView.cpp">
+      <Filter>Features\NetTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsDiagnostics.cpp">
+      <Filter>Features\NetTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsDiagnosticView.cpp">
+      <Filter>Features\NetTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsEnumerator.cpp">
+      <Filter>Features\NetTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsFeature.cpp">
+      <Filter>Features\NetTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsFirewallView.cpp">
+      <Filter>Features\NetTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\NetTools\NetToolsModel.cpp">
+      <Filter>Features\NetTools</Filter>
     </ClCompile>
     <ClCompile Include="Features\Privilege\PrivilegeActions.cpp">
       <Filter>Features\Privilege</Filter>
@@ -850,6 +877,30 @@
     </ClInclude>
     <ClInclude Include="Features\Driver\DriverUnloadedView.h">
       <Filter>Features\Driver</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsActions.h">
+      <Filter>Features\NetTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsConnectionView.h">
+      <Filter>Features\NetTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsDiagnostics.h">
+      <Filter>Features\NetTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsDiagnosticView.h">
+      <Filter>Features\NetTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsEnumerator.h">
+      <Filter>Features\NetTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsFeature.h">
+      <Filter>Features\NetTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsFirewallView.h">
+      <Filter>Features\NetTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\NetTools\NetToolsModel.h">
+      <Filter>Features\NetTools</Filter>
     </ClInclude>
     <ClInclude Include="Features\Privilege\PrivilegeActions.h">
       <Filter>Features\Privilege</Filter>
