@@ -193,6 +193,12 @@
     <ClCompile Include="Features\NetTools\NetToolsFeature.cpp" />
     <ClCompile Include="Features\NetTools\NetToolsFirewallView.cpp" />
     <ClCompile Include="Features\NetTools\NetToolsModel.cpp" />
+    <ClCompile Include="Features\WindowTools\WindowToolsCaptureView.cpp" />
+    <ClCompile Include="Features\WindowTools\WindowToolsClipboardView.cpp" />
+    <ClCompile Include="Features\WindowTools\WindowToolsCommon.cpp" />
+    <ClCompile Include="Features\WindowTools\WindowToolsFeature.cpp" />
+    <ClCompile Include="Features\WindowTools\WindowToolsHierarchyView.cpp" />
+    <ClCompile Include="Features\WindowTools\WindowToolsHotkeyView.cpp" />
     <ClCompile Include="Features\Privilege\PrivilegeActions.cpp" />
     <ClCompile Include="Features\Privilege\PrivilegeEnumerator.cpp" />
     <ClCompile Include="Features\Privilege\PrivilegeFeature.cpp" />
@@ -365,6 +371,12 @@
     <ClInclude Include="Features\NetTools\NetToolsFeature.h" />
     <ClInclude Include="Features\NetTools\NetToolsFirewallView.h" />
     <ClInclude Include="Features\NetTools\NetToolsModel.h" />
+    <ClInclude Include="Features\WindowTools\WindowToolsCaptureView.h" />
+    <ClInclude Include="Features\WindowTools\WindowToolsClipboardView.h" />
+    <ClInclude Include="Features\WindowTools\WindowToolsCommon.h" />
+    <ClInclude Include="Features\WindowTools\WindowToolsFeature.h" />
+    <ClInclude Include="Features\WindowTools\WindowToolsHierarchyView.h" />
+    <ClInclude Include="Features\WindowTools\WindowToolsHotkeyView.h" />
     <ClInclude Include="Features\Privilege\PrivilegeActions.h" />
     <ClInclude Include="Features\Privilege\PrivilegeEnumerator.h" />
     <ClInclude Include="Features\Privilege\PrivilegeFeature.h" />

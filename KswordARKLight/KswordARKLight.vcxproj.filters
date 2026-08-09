@@ -58,6 +58,9 @@
     <Filter Include="Features\NetTools">
       <UniqueIdentifier>{5C8D2E71-14B9-4A63-9F27-8E31D5A0C946}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Features\WindowTools">
+      <UniqueIdentifier>{9A47F2C6-38E1-4D75-B0A9-73C6E5B24187}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Features\Privilege">
       <UniqueIdentifier>{2F6C8A41-93D7-4B26-8E15-4A7C0B39D682}</UniqueIdentifier>
     </Filter>
@@ -368,6 +371,24 @@
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Token.cpp"><Filter>Features\ProcessDetail</Filter></ClCompile>
     <ClCompile Include="Features\Driver\DriverUnloadedView.cpp">
       <Filter>Features\Driver</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\WindowTools\WindowToolsCaptureView.cpp">
+      <Filter>Features\WindowTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\WindowTools\WindowToolsClipboardView.cpp">
+      <Filter>Features\WindowTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\WindowTools\WindowToolsCommon.cpp">
+      <Filter>Features\WindowTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\WindowTools\WindowToolsFeature.cpp">
+      <Filter>Features\WindowTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\WindowTools\WindowToolsHierarchyView.cpp">
+      <Filter>Features\WindowTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\WindowTools\WindowToolsHotkeyView.cpp">
+      <Filter>Features\WindowTools</Filter>
     </ClCompile>
     <ClCompile Include="Features\NetTools\NetToolsActions.cpp">
       <Filter>Features\NetTools</Filter>
@@ -877,6 +898,24 @@
     </ClInclude>
     <ClInclude Include="Features\Driver\DriverUnloadedView.h">
       <Filter>Features\Driver</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\WindowTools\WindowToolsCaptureView.h">
+      <Filter>Features\WindowTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\WindowTools\WindowToolsClipboardView.h">
+      <Filter>Features\WindowTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\WindowTools\WindowToolsCommon.h">
+      <Filter>Features\WindowTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\WindowTools\WindowToolsFeature.h">
+      <Filter>Features\WindowTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\WindowTools\WindowToolsHierarchyView.h">
+      <Filter>Features\WindowTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\WindowTools\WindowToolsHotkeyView.h">
+      <Filter>Features\WindowTools</Filter>
     </ClInclude>
     <ClInclude Include="Features\NetTools\NetToolsActions.h">
       <Filter>Features\NetTools</Filter>
