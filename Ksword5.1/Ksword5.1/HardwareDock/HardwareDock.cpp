@@ -77,6 +77,7 @@
 #include <limits>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -2762,7 +2763,9 @@ namespace
             QStringLiteral("CurrentVoltage"),
             QStringLiteral("无法解析"),
             QStringLiteral("未返回处理器对象"),
-            QStringLiteral("WMIC path Win32_Processor: 无输出")
+            QStringLiteral("WMIC path Win32_Processor: 无输出"),
+            QStringLiteral("SMBIOS Type4"),
+            QStringLiteral("SMBIOS RSMB")
         };
         return sensorReasonContainsAny(probeResult.reasonText, expectedVoltageMarkerList);
     }
@@ -2997,20 +3000,190 @@ namespace
         return probeResult;
     }
 
-    // queryCpuVoltageProbeResult 作用：
-    // - 查询 CPU 电压第一可用值（单位 V）；
-    // - 同时兼容 SMBIOS 位标志与十倍电压值编码；
-    // - 失败时返回结构化原因文本。
-    SensorProbeResult queryCpuVoltageProbeResult()
+    // decodeSmbiosProcessorVoltageText 作用：
+    // - 按 SMBIOS 规范解码 Type 4 Processor Information 的 Voltage 字节；
+    // - bit7 置位时低 7 位是“当前电压 × 10”，否则低 3 位是平台标称电压能力位；
+    // - 返回空字符串表示该字节不携带可用电压信息。
+    QString decodeSmbiosProcessorVoltageText(const unsigned char rawVoltage)
     {
+        if (rawVoltage == 0U)
+        {
+            return QString();
+        }
+        if ((rawVoltage & 0x80U) != 0U)
+        {
+            // decodedVolts 用途：SMBIOS 规定该编码下低 7 位为电压值的十倍整数。
+            const double decodedVolts = static_cast<double>(rawVoltage & 0x7FU) / 10.0;
+            if (decodedVolts > 0.0)
+            {
+                return QString::number(decodedVolts, 'f', 2) + QStringLiteral("V");
+            }
+            return QString();
+        }
+        if ((rawVoltage & 0x01U) != 0U)
+        {
+            return QStringLiteral("5.0V");
+        }
+        if ((rawVoltage & 0x02U) != 0U)
+        {
+            return QStringLiteral("3.3V");
+        }
+        if ((rawVoltage & 0x04U) != 0U)
+        {
+            return QStringLiteral("2.9V");
+        }
+        return QString();
+    }
+
+    // SmbiosVoltageReadResult 作用：
+    // - 承载一次 SMBIOS 直读的结论；
+    // - tableReadable 区分“固件表本身读不到”和“表读到了但不含可用电压”，前者才需要回退查询。
+    struct SmbiosVoltageReadResult
+    {
+        SensorProbeResult probeResult;  // probeResult：与其他探测统一的结构化结果。
+        bool tableReadable = false;     // tableReadable：SMBIOS 原始表是否成功取到。
+    };
+
+    // querySmbiosProcessorVoltageProbeResult 作用：
+    // - 直接在本进程读取 SMBIOS 原始表并解析首个中央处理器的 Voltage 字段；
+    // - Win32_Processor.CurrentVoltage 本身就转自这张表，直读可省掉 powershell.exe 启动与 WMI/WMIC 往返；
+    // - 该路径耗时在微秒级，从根上消除周期刷新触发 PowerShell 超时的可能。
+    SmbiosVoltageReadResult querySmbiosProcessorVoltageProbeResult()
+    {
+        SmbiosVoltageReadResult readResult;
+
+        // kRawSmbiosProvider 用途：firmware table provider 签名 'RSMB' 的大端整数形式。
+        constexpr DWORD kRawSmbiosProvider = 0x52534D42U;
+        const UINT requiredSize = ::GetSystemFirmwareTable(kRawSmbiosProvider, 0, nullptr, 0);
+        if (requiredSize == 0U)
+        {
+            readResult.probeResult.reasonText =
+                QStringLiteral("SMBIOS RSMB: 固件表不可用，GetLastError=%1").arg(::GetLastError());
+            return readResult;
+        }
+
+        std::vector<unsigned char> tableBuffer(static_cast<std::size_t>(requiredSize), 0U);
+        const UINT copiedSize = ::GetSystemFirmwareTable(
+            kRawSmbiosProvider,
+            0,
+            tableBuffer.data(),
+            requiredSize);
+        if (copiedSize == 0U || copiedSize > requiredSize)
+        {
+            readResult.probeResult.reasonText =
+                QStringLiteral("SMBIOS RSMB: 表读取失败，GetLastError=%1").arg(::GetLastError());
+            return readResult;
+        }
+
+        // kRawSmbiosHeaderSize 用途：RawSMBIOSData 头部固定 8 字节（调用方法/主次版本/DMI 修订 + 4 字节长度）。
+        constexpr std::size_t kRawSmbiosHeaderSize = 8U;
+        if (static_cast<std::size_t>(copiedSize) <= kRawSmbiosHeaderSize)
+        {
+            readResult.probeResult.reasonText = QStringLiteral("SMBIOS RSMB: 表长度异常（%1 字节）。").arg(copiedSize);
+            return readResult;
+        }
+
+        readResult.tableReadable = true;
+
+        const unsigned char* tableBegin = tableBuffer.data() + kRawSmbiosHeaderSize;
+        const std::size_t tableSize = static_cast<std::size_t>(copiedSize) - kRawSmbiosHeaderSize;
+
+        // rawVoltageFoundText 用途：找到了中央处理器结构但字节不可解码时保留原始值，便于诊断。
+        QString rawVoltageFoundText;
+        std::size_t structureOffset = 0U;
+        while (structureOffset + 4U <= tableSize)
+        {
+            const unsigned char structureType = tableBegin[structureOffset];
+            const unsigned char formattedLength = tableBegin[structureOffset + 1U];
+            if (formattedLength < 4U || structureOffset + formattedLength > tableSize)
+            {
+                break;
+            }
+            if (structureType == 127U)
+            {
+                // Type 127 = End-of-Table，后续内容不再有效。
+                break;
+            }
+
+            // Type 4 = Processor Information；偏移 0x05 为处理器类型，0x11 为 Voltage。
+            if (structureType == 4U && formattedLength > 0x11U && tableBegin[structureOffset + 0x05U] == 3U)
+            {
+                const unsigned char rawVoltage = tableBegin[structureOffset + 0x11U];
+                const QString voltageText = decodeSmbiosProcessorVoltageText(rawVoltage);
+                if (!voltageText.isEmpty())
+                {
+                    readResult.probeResult.valueText = voltageText;
+                    readResult.probeResult.sourceText = QStringLiteral("SMBIOS Type4 / Processor Voltage");
+                    readResult.probeResult.success = true;
+                    return readResult;
+                }
+                if (rawVoltageFoundText.isEmpty())
+                {
+                    rawVoltageFoundText = QStringLiteral("0x%1")
+                        .arg(QString::number(static_cast<unsigned int>(rawVoltage), 16).toUpper());
+                }
+            }
+
+            // 格式化区之后是字符串区，以连续两个 0 字节结束；空字符串区本身就是两个 0。
+            std::size_t stringAreaCursor = structureOffset + formattedLength;
+            while (stringAreaCursor + 1U < tableSize
+                && !(tableBegin[stringAreaCursor] == 0U && tableBegin[stringAreaCursor + 1U] == 0U))
+            {
+                ++stringAreaCursor;
+            }
+            structureOffset = stringAreaCursor + 2U;
+        }
+
+        if (!rawVoltageFoundText.isEmpty())
+        {
+            readResult.probeResult.reasonText =
+                QStringLiteral("SMBIOS Type4: Voltage=%1 无法解析（固件未填写实际核心电压）。")
+                .arg(rawVoltageFoundText);
+            return readResult;
+        }
+
+        readResult.probeResult.reasonText = QStringLiteral("SMBIOS Type4: 未找到中央处理器结构。");
+        return readResult;
+    }
+
+    // queryCpuVoltageProbeResultUncached 作用：
+    // - 查询 CPU 电压第一可用值（单位 V）；
+    // - 主路径直读 SMBIOS，只有固件表整体不可读时才回退 CIM 查询；
+    // - 同时兼容 SMBIOS 位标志与十倍电压值编码，失败时返回结构化原因文本。
+    SensorProbeResult queryCpuVoltageProbeResultUncached()
+    {
+        const SmbiosVoltageReadResult smbiosReadResult = querySmbiosProcessorVoltageProbeResult();
+        if (smbiosReadResult.probeResult.success)
+        {
+            return smbiosReadResult.probeResult;
+        }
+        if (smbiosReadResult.tableReadable)
+        {
+            // 固件表已读到却没有可用电压时，WMI/WMIC 只是同一字节的二次转译，
+            // 再起 powershell.exe 既拿不到新信息，又是本地日志里超时告警的唯一来源。
+            SensorProbeResult probeResult = smbiosReadResult.probeResult;
+            probeResult.expectedUnavailable = true;
+            probeResult.reasonText = QStringLiteral(
+                "当前系统未暴露CPU电压传感器；已保持N/A。"
+                "SMBIOS Type4 Voltage 由固件填写，多数平台不提供实时核心电压。原始诊断：")
+                + smbiosReadResult.probeResult.reasonText;
+            return probeResult;
+        }
+
         const QString voltageScript = QStringLiteral(
             "$ErrorActionPreference='Stop'; "
             "function Add-Reason($list,[string]$reason){ if(-not [string]::IsNullOrWhiteSpace($reason)){ [void]$list.Add($reason) } }; "
-            "function Format-Voltage([uint16]$raw){ "
-            "  if($raw -eq 0){ return $null }; "
+            // Win32_Processor.CurrentVoltage 已经把 SMBIOS 的 bit7 标志剥掉，
+            // 直接给出“电压 × 10”的整数（例如 0.8V 对应 8），因此先按十倍值解释，
+            // 只有落在标称能力位取值上时才退回 5.0/3.3/2.9V 的位判定。
+            "function Format-Voltage([int]$raw){ "
+            "  if($raw -le 0){ return $null }; "
             "  if(($raw -band 0x80) -ne 0){ "
             "    $decoded=(($raw -band 0x7F) / 10.0); "
-            "    if($decoded -gt 0){ return ([math]::Round($decoded,2)).ToString() + 'V' } "
+            "    if($decoded -gt 0){ return ([math]::Round($decoded,2)).ToString('0.00') + 'V' } "
+            "  }; "
+            "  if($raw -ge 5 -and $raw -le 100){ "
+            "    return ([math]::Round(($raw / 10.0),2)).ToString('0.00') + 'V'; "
             "  }; "
             "  if(($raw -band 0x1) -ne 0){ return '5.0V' }; "
             "  if(($raw -band 0x2) -ne 0){ return '3.3V' }; "
@@ -3028,35 +3201,57 @@ namespace
             "    Add-Reason $reasons ('CIM Win32_Processor: CurrentVoltage=' + [string]$cpu.CurrentVoltage + ' 无法解析'); "
             "  } "
             "} catch { Add-Reason $reasons ('CIM Win32_Processor: ' + $_.Exception.Message) } "
-            "try { "
-            "  $cpu=Get-WmiObject Win32_Processor -ErrorAction Stop | Select-Object -First 1; "
-            "  if($null -eq $cpu){ Add-Reason $reasons 'WMI Win32_Processor: 未返回处理器对象' } "
-            "  else { "
-            "    $voltage=Format-Voltage ([uint16]$cpu.CurrentVoltage); "
-            "    if($null -ne $voltage){ Emit-Success $voltage 'WMI Win32_Processor / CurrentVoltage' } "
-            "    Add-Reason $reasons ('WMI Win32_Processor: CurrentVoltage=' + [string]$cpu.CurrentVoltage + ' 无法解析'); "
-            "  } "
-            "} catch { Add-Reason $reasons ('WMI Win32_Processor: ' + $_.Exception.Message) } "
-            "try { "
-            "  $wmicText=& wmic.exe path Win32_Processor get CurrentVoltage /value 2>&1 | Out-String; "
-            "  if(-not [string]::IsNullOrWhiteSpace($wmicText)){ "
-            "    $match=[regex]::Match($wmicText,'CurrentVoltage=(\\d+)'); "
-            "    if($match.Success){ "
-            "      $voltage=Format-Voltage ([uint16]$match.Groups[1].Value); "
-            "      if($null -ne $voltage){ Emit-Success $voltage 'WMIC path Win32_Processor / CurrentVoltage' } "
-            "      Add-Reason $reasons ('WMIC path Win32_Processor: CurrentVoltage=' + $match.Groups[1].Value + ' 无法解析'); "
-            "    } else { Add-Reason $reasons ('WMIC path Win32_Processor: 返回=' + $wmicText.Trim()) } "
-            "  } else { Add-Reason $reasons 'WMIC path Win32_Processor: 无输出' } "
-            "} catch { Add-Reason $reasons ('WMIC path Win32_Processor: ' + $_.Exception.Message) } "
             "if($reasons.Count -le 0){ Add-Reason $reasons '未找到可用电压来源' }; "
             "Write-Output ('ERR|' + ($reasons -join ' || '));");
-        SensorProbeResult probeResult = parseSensorProbeOutput(queryPowerShellTextSync(voltageScript, 4200));
+
+        // 回退路径只保留 CIM 一条分支：
+        // - Get-WmiObject 与 wmic.exe 读的是同一份 WMI 数据，拿不到额外信息；
+        // - wmic.exe 在新版 Windows 上已是按需功能，缺失时会显著拉长整体耗时；
+        // - 分支收敛后单进程预算放宽到 9000 ms，冷启动 WMI 也能跑完。
+        SensorProbeResult probeResult = parseSensorProbeOutput(queryPowerShellTextSync(voltageScript, 9000));
+        if (!smbiosReadResult.probeResult.reasonText.isEmpty())
+        {
+            probeResult.reasonText = smbiosReadResult.probeResult.reasonText
+                + QStringLiteral(" || ")
+                + probeResult.reasonText;
+        }
         if (isExpectedCpuVoltageUnavailable(probeResult))
         {
             probeResult.expectedUnavailable = true;
             probeResult.reasonText = QStringLiteral(
                 "当前系统未暴露CPU电压传感器；已保持N/A。"
                 "Win32_Processor CurrentVoltage 常由SMBIOS决定，可能不是可读传感器。");
+        }
+        return probeResult;
+    }
+
+    // cpuVoltageProbeCacheMutex 用途：保护电压探测结论缓存，探测发生在后台线程。
+    // cpuVoltageProbeCacheValid 用途：标记缓存中是否已有确定结论。
+    // cpuVoltageProbeCacheResult 用途：保存已确定的电压探测结论。
+    std::mutex cpuVoltageProbeCacheMutex;
+    bool cpuVoltageProbeCacheValid = false;
+    SensorProbeResult cpuVoltageProbeCacheResult;
+
+    // queryCpuVoltageProbeResult 作用：
+    // - 对外提供带缓存的 CPU 电压探测；
+    // - Voltage 取自固件启动时填好的 SMBIOS 静态表，运行期不会变化，5 秒一轮的刷新没有必要重复探测；
+    // - 只缓存“读到有效值”和“确认平台不暴露”这两类确定结论，执行类失败留给下一轮重试。
+    SensorProbeResult queryCpuVoltageProbeResult()
+    {
+        {
+            const std::lock_guard<std::mutex> cacheGuard(cpuVoltageProbeCacheMutex);
+            if (cpuVoltageProbeCacheValid)
+            {
+                return cpuVoltageProbeCacheResult;
+            }
+        }
+
+        const SensorProbeResult probeResult = queryCpuVoltageProbeResultUncached();
+        if (probeResult.success || probeResult.expectedUnavailable)
+        {
+            const std::lock_guard<std::mutex> cacheGuard(cpuVoltageProbeCacheMutex);
+            cpuVoltageProbeCacheResult = probeResult;
+            cpuVoltageProbeCacheValid = true;
         }
         return probeResult;
     }
