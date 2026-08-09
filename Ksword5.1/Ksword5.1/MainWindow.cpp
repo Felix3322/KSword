@@ -5389,8 +5389,19 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 void MainWindow::moveEvent(QMoveEvent* event)
 {
     QMainWindow::moveEvent(event);
-    // 毛玻璃采样跟随窗口位置：不重新下发组合特性时，DWM 会保留移动前的模糊画面。
-    scheduleWindowBackdropRefresh();
+    // 同屏移动不再重下发组合特性：
+    // - DWM 的亚克力在合成器里模糊窗口“后方”的内容，与应用自己画的像素无关，
+    //   窗口移动时它会自动按新位置重采样，应用侧不需要踢它；
+    // - 而每次刷新都会跟一次根容器重绘，透明模式下所有 Dock 内容都是透明的，
+    //   父控件重绘会连带重画整棵 Dock 树，实测单次约 41ms，
+    //   在 40ms 节流下等于持续打满 UI 线程，直接造成拖动掉帧。
+    // 跨显示器仍刷新一次：换屏会按新 DPI 重建窗口表面，组合特性可能随之失效。
+    QScreen* const currentScreen = screen();
+    if (currentScreen != m_lastKnownScreen)
+    {
+        m_lastKnownScreen = currentScreen;
+        scheduleWindowBackdropRefresh();
+    }
     if (m_notificationCardManager != nullptr)
     {
         m_notificationCardManager->onHostGeometryChanged();
@@ -11514,12 +11525,11 @@ void MainWindow::scheduleWindowBackdropRefresh()
             {
                 return;
             }
-            // 重新下发同一份组合特性，促使 DWM 按窗口新位置重新采样后方内容。
+            // 只重新下发组合特性，恢复可能被系统降级掉的材质状态。
+            // 这里不再触发根容器重绘：亚克力由 DWM 在合成器里生成，
+            // 应用侧像素一个都没变，而透明模式下的整树重绘实测约 41ms。
+            // 真正需要重画背景的场景（尺寸变化）由 resizeEvent 自己 update。
             refreshWindowBackdropMaterial();
-            if (m_mainRootContainer != nullptr)
-            {
-                m_mainRootContainer->update();
-            }
         });
 }
 

@@ -69,6 +69,7 @@ namespace ks::ui
 }
 
 class QDialog;
+class QScreen;
 
 class MainWindow : public QMainWindow
 {
@@ -277,11 +278,12 @@ private:
     bool applyMainWindowBackdropMaterial(BackdropBlurKind blurKind);
 
     // scheduleWindowBackdropRefresh 作用：
-    // - 窗口移动、缩放、状态或激活变化后合并调度一次亚克力重采样；
-    // - Acrylic 由 DWM 按窗口位置采样后方内容，不重新下发组合特性时
-    //   会保留移动前的旧画面，或在失焦后停留在静态回退色；
-    // - 仅在亚克力已生效时执行，并按节流窗口合并连续事件；
-    //   毛玻璃底图与窗口位置无关，无需参与。
+    // - 窗口缩放、状态、激活变化或跨显示器后合并调度一次组合特性重下发；
+    // - 失焦、最小化恢复与换屏都可能让系统把亚克力降级为静态回退色，
+    //   需要重新下发才能恢复；
+    // - 同屏移动不调用：DWM 会自动按新位置重采样后方内容（实测三种处理方式
+    //   结果完全一致），继续刷新只会白白付出一次整树重绘；
+    // - 仅在亚克力已生效时执行，并按节流窗口合并连续事件。
     void scheduleWindowBackdropRefresh();
 
     // refreshWindowBackdropMaterial 作用：
@@ -699,6 +701,7 @@ private:
     bool m_backgroundReadinessRefreshPending = false; // m_backgroundReadinessRefreshPending：异步结果是否要求重建视觉。
     int m_backdropMaterialState = -1; // m_backdropMaterialState：已下发的模糊种类缓存（-1 未初始化，其余为 BackdropBlurKind 值）。
     bool m_backdropRefreshQueued = false; // m_backdropRefreshQueued：是否已排队一次亚克力重采样。
+    QScreen* m_lastKnownScreen = nullptr; // m_lastKnownScreen：上次 moveEvent 时所在屏幕，用于只在换屏时重下发组合特性。
     StartupProgressCallback m_startupProgressCallback; // m_startupProgressCallback：主窗口启动阶段进度回调。
     bool m_startupWindowVisibilityAdjusted = false; // m_startupWindowVisibilityAdjusted：是否已完成首次显示区域修正。
     bool m_deferredDockInitializationStarted = false; // m_deferredDockInitializationStarted：是否已启动显示后补载流程。
