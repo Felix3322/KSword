@@ -183,10 +183,18 @@ QWidget* MinidumpDock::createStructuredTablePage(
     pageLayout->addLayout(buttonLayout);
     pageLayout->addWidget(table, 1);
 
+    // currentGroup：当前生效的预设下标。本函数在 buildUi 阶段被调用，
+    // 那时表格还没有任何列，applyGroup 里的 setColumnHidden 全是空操作
+    //（Qt 对越界的 section 直接忽略）。于是 A 按钮被高亮成“当前视图”，
+    // 表格却在渲染后显示了全部列——高亮状态与实际不符。
+    // 记下当前下标，等列数真正就位时再重放一次。
+    auto currentGroup = std::make_shared<int>(0);
+
     // applyGroup：切换预设时先隐藏所有列，再仅显示目标组并更新按钮主题。
     const auto applyGroup =
-        [table, groups, buttons, activeStyle, inactiveStyle](const int groupIndex)
+        [table, groups, buttons, activeStyle, inactiveStyle, currentGroup](const int groupIndex)
         {
+            *currentGroup = groupIndex;
             for (int column = 0; column < table->columnCount(); ++column)
             {
                 table->setColumnHidden(column, true);
@@ -216,6 +224,21 @@ QWidget* MinidumpDock::createStructuredTablePage(
             [applyGroup, groupIndex]() { applyGroup(groupIndex); });
     }
     applyGroup(0);
+
+    // 列数从 0 变成实际值时（renderResult 里的 setColumnCount）重放当前预设。
+    // 只有这时候 setColumnHidden 才真正生效，否则按钮高亮与表格内容会长期不一致。
+    // 后续重复解析时列数不变、信号不发，用户手动选择的列组因此得以保留。
+    connect(
+        table->horizontalHeader(),
+        &QHeaderView::sectionCountChanged,
+        page,
+        [applyGroup, currentGroup](const int oldCount, const int newCount)
+        {
+            if (oldCount == 0 && newCount > 0)
+            {
+                applyGroup(*currentGroup);
+            }
+        });
 
     // 表头右键菜单允许逐列显隐；每次手动调整后取消 A/B/C 激活色，表示自定义布局。
     // QMenu 按项目规范显式设置背景/文字/选中态/禁用态，避免透明继承导致黑底黑字。
