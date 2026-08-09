@@ -1024,13 +1024,13 @@ namespace ks::minidump
 
         // ---------- 内存/驱动：必须先于归因完成 ----------
         // memory：已捕获内存的虚拟地址索引，栈扫描与名称读取都依赖它。
+        // physical/walker 必须声明在 memory 之前：memory 会持有 walker 的裸指针，
+        // 后声明者先析构，这个顺序保证 memory 在其后端还活着的时候被销毁。
+        PhysicalMemoryMap physical;
+        std::optional<PageTableWalker> walker;
         DumpMemoryReader memory;
         TriageDump64 triage{};
         bool hasTriage = false;
-        // physical/walker：完整/内核转储的物理页索引与虚拟地址翻译器。
-        // 两者必须活到本函数结束——memory 会持有 walker 的裸指针。
-        PhysicalMemoryMap physical;
-        std::optional<PageTableWalker> walker;
         if (dumpType == 4)
         {
             hasTriage = ParseTriageArea(view, result, memory, &triage);

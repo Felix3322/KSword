@@ -120,7 +120,7 @@ namespace ks::minidump
             return true;
         }
         // 块索引未命中时问页表：完整/内核转储的内存全靠这条路径。
-        if (m_pageTable != nullptr && bytes != 0)
+        if (m_pageTable != nullptr && bytes != 0 && bytes - 1 <= (~0ull) - virtualAddress)
         {
             std::uint64_t physicalAddress = 0;
             // 只验证首尾两页可达即可判断"这段内存在不在转储里"；
