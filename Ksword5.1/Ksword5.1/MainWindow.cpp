@@ -6369,7 +6369,6 @@ QList<ads::CDockWidget*> MainWindow::collectSearchableDockWidgets() const
         m_dockNetwork,
         m_dockMemory,
         m_dockFile,
-        m_dockScanner,
         m_dockDriver,
         m_dockKernel,
         m_dockMonitorTab,
@@ -6381,8 +6380,6 @@ QList<ads::CDockWidget*> MainWindow::collectSearchableDockWidgets() const
         m_dockStartup,
         m_dockService,
         m_dockMisc,
-        m_dockMinidump,
-        m_dockPlugin,
         m_dockLog,
         m_dockMonitor,
         m_dockCurrentOp
@@ -9209,11 +9206,6 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
         if (m_fileWidget == nullptr) { m_fileWidget = new FileDock(this); }
         realWidget = m_fileWidget;
     }
-    else if (dockKey == QStringLiteral("scanner"))
-    {
-        if (m_scannerWidget == nullptr) { m_scannerWidget = new ScannerDock(this); }
-        realWidget = m_scannerWidget;
-    }
     else if (dockKey == QStringLiteral("driver"))
     {
         if (m_driverWidget == nullptr)
@@ -9282,20 +9274,12 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
         if (m_serviceWidget == nullptr) { m_serviceWidget = new ServiceDock(this); }
         realWidget = m_serviceWidget;
     }
-    else if (dockKey == QStringLiteral("plugin"))
-    {
-        if (m_pluginWidget == nullptr) { m_pluginWidget = ks::plugin_host::createTabPluginContainer(this); }
-        realWidget = m_pluginWidget;
-    }
     else if (dockKey == QStringLiteral("misc"))
     {
+        // 扫描器 / 转储分析 / 插件已并入杂项页，不再各自占用顶层 Dock，
+        // 它们随杂项页内部的页签懒加载，这里只需构造杂项容器本身。
         if (m_miscWidget == nullptr) { m_miscWidget = new MiscDock(this); }
         realWidget = m_miscWidget;
-    }
-    else if (dockKey == QStringLiteral("minidump"))
-    {
-        if (m_minidumpWidget == nullptr) { m_minidumpWidget = new MinidumpDock(this); }
-        realWidget = m_minidumpWidget;
     }
     if (realWidget == nullptr)
     {
@@ -9591,7 +9575,6 @@ void MainWindow::ensureVisibleLazyDocksInitialized(const QString& reasonText)
         m_dockNetwork,
         m_dockMemory,
         m_dockFile,
-        m_dockScanner,
         m_dockDriver,
         m_dockKernel,
         m_dockMonitorTab,
@@ -9602,9 +9585,7 @@ void MainWindow::ensureVisibleLazyDocksInitialized(const QString& reasonText)
         m_dockHandle,
         m_dockStartup,
         m_dockService,
-        m_dockMisc,
-        m_dockMinidump,
-        m_dockPlugin
+        m_dockMisc
     };
 
     ads::CDockWidget* focusedDockWidget = m_pDockManager->focusedDockWidget();
@@ -9767,8 +9748,16 @@ void MainWindow::initDockWidgets()
     const QString startupDockKey = m_currentAppearanceSettings.startupDefaultTabKey.trimmed().toLower();
     const auto shouldEagerLoad = [&startupDockKey](const QString& dockKey) -> bool
         {
+            // 扫描器 / 转储分析 / 插件已并入杂项页：
+            // 旧配置里保存的这三个 key 仍然有效，此时要预加载的是承载它们的杂项 Dock。
+            const bool mergedIntoMisc =
+                startupDockKey == QStringLiteral("scanner") ||
+                startupDockKey == QStringLiteral("minidump") ||
+                startupDockKey == QStringLiteral("plugin");
+
             return dockKey == QStringLiteral("welcome") ||
                 (startupDockKey == QStringLiteral("winapi") && dockKey == QStringLiteral("monitor")) ||
+                (mergedIntoMisc && dockKey == QStringLiteral("misc")) ||
                 dockKey == startupDockKey;
         };
 
@@ -9789,7 +9778,6 @@ void MainWindow::initDockWidgets()
     if (shouldEagerLoad(QStringLiteral("network"))) { m_networkWidget = new NetworkDock(this); }
     if (shouldEagerLoad(QStringLiteral("memory"))) { m_memoryWidget = new MemoryDock(this); }
     if (shouldEagerLoad(QStringLiteral("file"))) { m_fileWidget = new FileDock(this); }
-    if (shouldEagerLoad(QStringLiteral("scanner"))) { m_scannerWidget = new ScannerDock(this); }
     if (shouldEagerLoad(QStringLiteral("driver"))) { m_driverWidget = new DriverDock(this); }
     // KernelDock 不再参与主 Dock 惰性占位：
     // - 它是启动恢复黑屏的唯一复现场景；
@@ -9810,8 +9798,6 @@ void MainWindow::initDockWidgets()
     if (shouldEagerLoad(QStringLiteral("startup"))) { m_startupWidget = new StartupDock(this); }
     if (shouldEagerLoad(QStringLiteral("service"))) { m_serviceWidget = new ServiceDock(this); }
     if (shouldEagerLoad(QStringLiteral("misc"))) { m_miscWidget = new MiscDock(this); }
-    if (shouldEagerLoad(QStringLiteral("minidump"))) { m_minidumpWidget = new MinidumpDock(this); }
-    if (shouldEagerLoad(QStringLiteral("plugin"))) { m_pluginWidget = ks::plugin_host::createTabPluginContainer(this); }
 
     reportStartupProgress(
         60,
@@ -9958,7 +9944,6 @@ void MainWindow::initDockWidgets()
     createLazyDockWidget(m_dockNetwork, m_networkWidget, ks::i18n::text(QStringLiteral("dock.network"), QStringLiteral("网络")), QStringLiteral("network"));
     createLazyDockWidget(m_dockMemory, m_memoryWidget, ks::i18n::text(QStringLiteral("dock.memory"), QStringLiteral("内存")), QStringLiteral("memory"));
     createLazyDockWidget(m_dockFile, m_fileWidget, ks::i18n::text(QStringLiteral("dock.file"), QStringLiteral("文件")), QStringLiteral("file"));
-    createLazyDockWidget(m_dockScanner, m_scannerWidget, ks::i18n::text(QStringLiteral("dock.scanner"), QStringLiteral("扫描器")), QStringLiteral("scanner"));
     createLazyDockWidget(m_dockDriver, m_driverWidget, ks::i18n::text(QStringLiteral("dock.driver"), QStringLiteral("驱动")), QStringLiteral("driver"));
     createLazyDockWidget(m_dockKernel, m_kernelWidget, ks::i18n::text(QStringLiteral("dock.kernel"), QStringLiteral("内核")), QStringLiteral("kernel"));
     createLazyDockWidget(m_dockMonitorTab, m_monitorWidget, ks::i18n::text(QStringLiteral("dock.monitor"), QStringLiteral("监控")), QStringLiteral("monitor"));
@@ -9970,8 +9955,6 @@ void MainWindow::initDockWidgets()
     createLazyDockWidget(m_dockStartup, m_startupWidget, ks::i18n::text(QStringLiteral("dock.startup"), QStringLiteral("启动项")), QStringLiteral("startup"));
     createLazyDockWidget(m_dockService, m_serviceWidget, ks::i18n::text(QStringLiteral("dock.service"), QStringLiteral("服务")), QStringLiteral("service"));
     createLazyDockWidget(m_dockMisc, m_miscWidget, ks::i18n::text(QStringLiteral("dock.misc"), QStringLiteral("杂项")), QStringLiteral("misc"));
-    createLazyDockWidget(m_dockMinidump, m_minidumpWidget, ks::i18n::text(QStringLiteral("dock.minidump"), QStringLiteral("转储分析")), QStringLiteral("minidump"));
-    createLazyDockWidget(m_dockPlugin, m_pluginWidget, ks::i18n::text(QStringLiteral("dock.plugin"), QStringLiteral("插件")), QStringLiteral("plugin"));
 
     // 三个辅助 Dock 始终创建并注册，关闭时只隐藏内容实例，确保菜单状态和 ADS 布局可恢复。
     m_dockLogWidget = new LogDockWidget(this);
@@ -10008,7 +9991,6 @@ void MainWindow::initDockWidgets()
         m_dockNetwork,
         m_dockMemory,
         m_dockFile,
-        m_dockScanner,
         m_dockDriver,
         m_dockKernel,
         m_dockMonitorTab,
@@ -10019,9 +10001,7 @@ void MainWindow::initDockWidgets()
         m_dockHandle,
         m_dockStartup,
         m_dockService,
-        m_dockMisc,
-        m_dockMinidump,
-        m_dockPlugin
+        m_dockMisc
     };
     for (ads::CDockWidget* dockWidget : mainDockTabList)
     {
@@ -10080,7 +10060,6 @@ void MainWindow::setupDockLayout()
     m_pDockManager->addDockWidgetTabToArea(m_dockNetwork, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockMemory, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockFile, leftDockArea);
-    m_pDockManager->addDockWidgetTabToArea(m_dockScanner, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockDriver, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockKernel, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockMonitorTab, leftDockArea);
@@ -10092,8 +10071,6 @@ void MainWindow::setupDockLayout()
     m_pDockManager->addDockWidgetTabToArea(m_dockStartup, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockService, leftDockArea);
     m_pDockManager->addDockWidgetTabToArea(m_dockMisc, leftDockArea);
-    m_pDockManager->addDockWidgetTabToArea(m_dockMinidump, leftDockArea);
-    m_pDockManager->addDockWidgetTabToArea(m_dockPlugin, leftDockArea);
 
     // 方法2: 或者使用addDockWidget并指定CenterDockWidgetArea
     // m_pDockManager->addDockWidget(ads::CenterDockWidgetArea, m_dockProcess, leftDockArea);
@@ -10497,10 +10474,9 @@ void MainWindow::reattachDetachedFeatureDocks()
     // 用户把它们拖成浮动窗口是正常用法，不能一并收回。
     const QList<ads::CDockWidget*> featureDocks = {
         m_dockProcess, m_dockNetwork, m_dockMemory, m_dockFile,
-        m_dockScanner, m_dockDriver, m_dockKernel, m_dockMonitorTab,
+        m_dockDriver, m_dockKernel, m_dockMonitorTab,
         m_dockHardware, m_dockPrivilege, m_dockWindow, m_dockRegistry,
-        m_dockHandle, m_dockStartup, m_dockService, m_dockMisc,
-        m_dockMinidump, m_dockPlugin
+        m_dockHandle, m_dockStartup, m_dockService, m_dockMisc
     };
 
     QStringList reattachedKeys;
@@ -10538,27 +10514,62 @@ void MainWindow::reattachDetachedFeatureDocks()
 void MainWindow::openMinidumpDockWithFile(const QString& filePath)
 {
     const QString normalizedPath = QDir::toNativeSeparators(filePath.trimmed());
-    if (normalizedPath.isEmpty() || m_dockMinidump == nullptr)
+    if (normalizedPath.isEmpty())
     {
         return;
     }
 
-    // 转储分析页是懒加载的，先补内容再激活，避免拿到占位控件。
-    ensureDockContentInitialized(m_dockMinidump);
-    m_dockMinidump->toggleView(true);
-    m_dockMinidump->raise();
-    m_dockMinidump->setAsCurrentTab();
-
-    if (m_minidumpWidget == nullptr)
+    // 转储分析已并入杂项页：先激活杂项 Dock 并补上它的内容，
+    // 再让杂项页把“转储分析”子页构造出来并切过去。
+    MiscDock* const miscDock = activateMiscDockForMergedTab(QStringLiteral("转储分析"));
+    if (miscDock == nullptr)
     {
         kLogEvent dumpEvent;
         warn << dumpEvent
-            << "[MainWindow] 转储分析页未能初始化，无法自动解析: "
+            << "[MainWindow] 杂项页未能初始化，无法自动解析转储: "
             << normalizedPath.toStdString()
             << eol;
         return;
     }
-    m_minidumpWidget->openDumpFile(normalizedPath);
+
+    MinidumpDock* const minidumpPage = miscDock->activateMinidumpTab();
+    if (minidumpPage == nullptr)
+    {
+        kLogEvent dumpEvent;
+        warn << dumpEvent
+            << "[MainWindow] 转储分析子页未能初始化，无法自动解析: "
+            << normalizedPath.toStdString()
+            << eol;
+        return;
+    }
+    minidumpPage->openDumpFile(normalizedPath);
+}
+
+MiscDock* MainWindow::activateMiscDockForMergedTab(const QString& tabDisplayName)
+{
+    // 输入：并入杂项页的子页显示名，仅用于日志定位。
+    // 处理：激活杂项 Dock 并确保其内容控件已构造。
+    // 返回：杂项页内容控件；返回 nullptr 表示 Dock 尚不可用，调用方应放弃跳转。
+    if (m_dockMisc == nullptr)
+    {
+        return nullptr;
+    }
+
+    // 杂项页同样是懒加载的，先补内容再激活，避免拿到占位控件。
+    ensureDockContentInitialized(m_dockMisc);
+    m_dockMisc->toggleView(true);
+    m_dockMisc->raise();
+    m_dockMisc->setAsCurrentTab();
+
+    if (m_miscWidget == nullptr)
+    {
+        kLogEvent jumpEvent;
+        warn << jumpEvent
+            << "[MainWindow] 杂项页内容未初始化，跳转失败: "
+            << tabDisplayName.toStdString()
+            << eol;
+    }
+    return m_miscWidget;
 }
 
 void MainWindow::checkRecentCrashDumps()
@@ -10698,8 +10709,9 @@ void MainWindow::initAppearanceSettings()
         }
         else if (normalizedKey == QStringLiteral("scanner"))
         {
-            targetDock = m_dockScanner;
-            targetName = QStringLiteral("扫描器");
+            // 扫描器已并入杂项页：继续接受旧的 scanner 键，落到杂项 Dock 并在下面切到对应子页。
+            targetDock = m_dockMisc;
+            targetName = QStringLiteral("杂项/扫描器");
         }
         else if (normalizedKey == QStringLiteral("driver"))
         {
@@ -10764,13 +10776,15 @@ void MainWindow::initAppearanceSettings()
         }
         else if (normalizedKey == QStringLiteral("minidump"))
         {
-            targetDock = m_dockMinidump;
-            targetName = QStringLiteral("转储分析");
+            // 转储分析已并入杂项页，处理方式与 scanner 一致。
+            targetDock = m_dockMisc;
+            targetName = QStringLiteral("杂项/转储分析");
         }
         else if (normalizedKey == QStringLiteral("plugin"))
         {
-            targetDock = m_dockPlugin;
-            targetName = QStringLiteral("插件");
+            // 插件页已并入杂项页，处理方式与 scanner 一致。
+            targetDock = m_dockMisc;
+            targetName = QStringLiteral("杂项/插件");
         }
         else if (normalizedKey == QStringLiteral("winapi"))
         {
@@ -10795,6 +10809,23 @@ void MainWindow::initAppearanceSettings()
             if (normalizedKey == QStringLiteral("winapi") && m_monitorWidget != nullptr)
             {
                 m_monitorWidget->activateMonitorTab(QStringLiteral("winapi"));
+            }
+            // 扫描器 / 转储分析 / 插件已并入杂项页：
+            // 激活杂项 Dock 之后还要把内部页签切到用户实际指定的那一页。
+            if (m_miscWidget != nullptr)
+            {
+                if (normalizedKey == QStringLiteral("scanner"))
+                {
+                    m_miscWidget->activateScannerTab();
+                }
+                else if (normalizedKey == QStringLiteral("minidump"))
+                {
+                    (void)m_miscWidget->activateMinidumpTab();
+                }
+                else if (normalizedKey == QStringLiteral("plugin"))
+                {
+                    m_miscWidget->activatePluginTab();
+                }
             }
             withTemporaryNonTopMostForDockSwitch([targetDock]()
                 {
@@ -12235,7 +12266,7 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     const QString kernelDockStyle = kernelDockContainerStyle + kernelDockContentStyle;
 
     // tabPluginOpaqueStyle 作用：
-    // - 让「插件」Dock 始终保持主题实底，不参与 Dock 内容透明。
+    // - 让「插件」页始终保持主题实底，不参与 Dock 内容透明。
     // 为什么必须排除：
     // - Tab 型插件通过 WA_NativeWindow 原生子窗口承载（ksExternalPluginNativeSurface），
     //   外部插件进程的窗口被 SetParent 到这块 surface 上；
@@ -12244,17 +12275,17 @@ QString MainWindow::buildAppearanceOverlayStyleSheet(
     // - PluginHost 自己设过实底（createTabPluginContainer），但那是普通声明，
     //   压不过上面几段带 !important 的透明规则，因此这里用同样带 !important
     //   且更具体（带 #objectName）的选择器把背景收回来。
-    // 返回：仅锁定插件 Dock 自身的容器层，不触碰其它 Dock。
+    // 锚点说明：
+    // - 插件页已并入「杂项」Dock，不再有独立的 ksDock_plugin，
+    //   因此改为锚定杂项页里的插件宿主占位控件 ksMiscPluginHost 及其整棵子树；
+    // - 只覆盖这一棵子树，杂项页的其它子页仍然正常参与内容透明。
     const QString tabPluginOpaqueStyle = QStringLiteral(
-        "ads--CDockWidget#ksDock_plugin,"
-        "ads--CDockWidget#ksDock_plugin > QWidget,"
-        "ads--CDockWidget#ksDock_plugin QWidget#ksTabPluginContainer,"
-        "ads--CDockWidget#ksDock_plugin QWidget#ksTabPluginEmptyState,"
-        "ads--CDockWidget#ksDock_plugin QWidget#ksExternalPluginNativeSurface,"
-        "ads--CDockWidget#ksDock_plugin QTabWidget#ksTabPluginHost::pane,"
-        "ads--CDockWidget#ksDock_plugin QStackedWidget,"
-        "ads--CDockWidget#ksDock_plugin QStackedWidget > QWidget,"
-        "ads--CDockWidget#ksDock_plugin QPlainTextEdit{"
+        "QWidget#ksMiscPluginHost,"
+        "QWidget#ksMiscPluginHost QWidget,"
+        "QWidget#ksTabPluginContainer,"
+        "QWidget#ksTabPluginEmptyState,"
+        "QWidget#ksExternalPluginNativeSurface,"
+        "QTabWidget#ksTabPluginHost::pane{"
         "  background:%1 !important;"
         "  background-color:%1 !important;"
         "  color:%2 !important;"

@@ -783,6 +783,9 @@
     "minidump.stack.from_scan": "Stack scan (may be false)"
   },
   "context_translations": {
+    "misc.scanner.tab": "Scanner",
+    "misc.minidump.tab": "Dump analysis",
+    "misc.plugin.tab": "Plugins",
     "process.table.header.package_name": "Package name",
     "process.table.header.active_private_working_set": "Memory (active private working set)",
     "process.table.header.hardware_stack_protection": "Hardware-enforced stack protection",
@@ -4904,6 +4907,13 @@
     "settings.background.translucency_material.acrylic": "Frosted glass"
   },
   "source_translations": {
+    "[MainWindow] 杂项页内容未初始化，跳转失败: ": "[MainWindow] misc page content is not initialized, navigation failed: ",
+    "[MainWindow] 杂项页未能初始化，无法自动解析转储: ": "[MainWindow] misc page failed to initialize, cannot auto-analyze dump: ",
+    "[MainWindow] 转储分析子页未能初始化，无法自动解析: ": "[MainWindow] dump analysis sub-page failed to initialize, cannot auto-analyze: ",
+    "ksMiscPluginHost": "ksMiscPluginHost",
+    "杂项/扫描器": "Misc/Scanner",
+    "杂项/插件": "Misc/Plugins",
+    "杂项/转储分析": "Misc/Dump analysis",
     "  %1: 平均 %2 ms / p95 %3 ms / 最差 %4 ms / 超预算 %5 of %6 (%7%)": "  %1: avg %2 ms / p95 %3 ms / worst %4 ms / over budget %5 of %6 (%7%)",
     "  %1: 无有效样本": "  %1: no valid samples",
     "  含义: 往返耗时即目标窗口 UI 线程被阻塞的时长；": "  Meaning: the round-trip time is how long the target window's UI thread stayed blocked; ",

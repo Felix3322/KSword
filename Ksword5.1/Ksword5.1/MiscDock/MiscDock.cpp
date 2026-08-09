@@ -9,6 +9,11 @@
 #include "SoundSource/SoundSourcePage.h"
 #include "SystemTime/SystemTimePage.h"
 
+// 扫描器 / 转储分析 / 插件原本是三个顶层 Dock，为精简 dock 栏入口已并入本页。
+#include "../MinidumpDock/MinidumpDock.h"
+#include "../ScannerDock/ScannerDock.h"
+#include "../PluginHost.h"
+
 #include "../Internationalization/LanguageManager.h"
 #include <QIcon>
 #include <QTabWidget>
@@ -65,6 +70,12 @@ void MiscDock::initializeUi()
     m_diskEditorHostWidget = new QWidget(m_mainTabWidget);
     m_applicationControlHostWidget = new QWidget(m_mainTabWidget);
     m_renderBenchmarkHostWidget = new QWidget(m_mainTabWidget);
+    m_scannerHostWidget = new QWidget(m_mainTabWidget);
+    m_minidumpHostWidget = new QWidget(m_mainTabWidget);
+    m_pluginHostWidget = new QWidget(m_mainTabWidget);
+    // 插件宿主必须能被主题样式单独锚定：Tab 插件用原生子窗口承载，
+    // 父链一旦被刷成透明，插件画面就会变成黑块或不刷新。
+    m_pluginHostWidget->setObjectName(QStringLiteral("ksMiscPluginHost"));
 
     m_bootEditorTabIndex = m_mainTabWidget->addTab(
         m_bootEditorHostWidget,
@@ -137,6 +148,39 @@ void MiscDock::initializeUi()
         QStringLiteral("misc.render_benchmark.tab"),
         QStringLiteral("渲染基准"));
 
+    // 以下三页原本是顶层 Dock，为精简 dock 栏入口并入杂项：
+    // - 页签顺序沿用它们在原 dock 栏中的相对先后（扫描器 -> 转储分析 -> 插件）；
+    // - 三页都保持懒加载，打开“杂项”本身不会把扫描器/转储解析/插件宿主一起建出来。
+    m_scannerTabIndex = m_mainTabWidget->addTab(
+        m_scannerHostWidget,
+        QIcon(QStringLiteral(":/Icon/disk_analyze.svg")),
+        QStringLiteral("扫描器"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_scannerHostWidget,
+        QStringLiteral("misc.scanner.tab"),
+        QStringLiteral("扫描器"));
+
+    m_minidumpTabIndex = m_mainTabWidget->addTab(
+        m_minidumpHostWidget,
+        QIcon(QStringLiteral(":/Icon/log_track.svg")),
+        QStringLiteral("转储分析"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_minidumpHostWidget,
+        QStringLiteral("misc.minidump.tab"),
+        QStringLiteral("转储分析"));
+
+    m_pluginTabIndex = m_mainTabWidget->addTab(
+        m_pluginHostWidget,
+        QIcon(QStringLiteral(":/Icon/process_details.svg")),
+        QStringLiteral("插件"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_pluginHostWidget,
+        QStringLiteral("misc.plugin.tab"),
+        QStringLiteral("插件"));
+
     // 页签切换：按需初始化对应子页。
     connect(
         m_mainTabWidget,
@@ -206,6 +250,50 @@ void MiscDock::ensureTabInitialized(const int tabIndex)
         initializeRenderBenchmarkPage();
         return;
     }
+    if (tabIndex == m_scannerTabIndex)
+    {
+        initializeScannerPage();
+        return;
+    }
+    if (tabIndex == m_minidumpTabIndex)
+    {
+        initializeMinidumpPage();
+        return;
+    }
+    if (tabIndex == m_pluginTabIndex)
+    {
+        initializePluginPage();
+        return;
+    }
+}
+
+void MiscDock::activateTabByIndex(const int tabIndex)
+{
+    if (m_mainTabWidget == nullptr || tabIndex < 0 || tabIndex >= m_mainTabWidget->count())
+    {
+        return;
+    }
+
+    // 先构造再切换：currentChanged 在目标已经是当前页时不会触发，
+    // 直接 setCurrentIndex 可能让调用方拿到尚未初始化的占位控件。
+    ensureTabInitialized(tabIndex);
+    m_mainTabWidget->setCurrentIndex(tabIndex);
+}
+
+void MiscDock::activateScannerTab()
+{
+    activateTabByIndex(m_scannerTabIndex);
+}
+
+MinidumpDock* MiscDock::activateMinidumpTab()
+{
+    activateTabByIndex(m_minidumpTabIndex);
+    return m_minidumpPage;
+}
+
+void MiscDock::activatePluginTab()
+{
+    activateTabByIndex(m_pluginTabIndex);
 }
 
 void MiscDock::initializeBootEditorTab()
@@ -302,4 +390,40 @@ void MiscDock::initializeRenderBenchmarkPage()
     QVBoxLayout* const hostLayout = buildHostLayout(m_renderBenchmarkHostWidget);
     m_renderBenchmarkPage = new ks::misc::RenderBenchmarkPage(m_renderBenchmarkHostWidget);
     hostLayout->addWidget(m_renderBenchmarkPage, 1);
+}
+
+void MiscDock::initializeScannerPage()
+{
+    if (m_scannerHostWidget == nullptr || m_scannerPage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_scannerHostWidget);
+    m_scannerPage = new ScannerDock(m_scannerHostWidget);
+    hostLayout->addWidget(m_scannerPage, 1);
+}
+
+void MiscDock::initializeMinidumpPage()
+{
+    if (m_minidumpHostWidget == nullptr || m_minidumpPage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_minidumpHostWidget);
+    m_minidumpPage = new MinidumpDock(m_minidumpHostWidget);
+    hostLayout->addWidget(m_minidumpPage, 1);
+}
+
+void MiscDock::initializePluginPage()
+{
+    if (m_pluginHostWidget == nullptr || m_pluginPage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_pluginHostWidget);
+    m_pluginPage = ks::plugin_host::createTabPluginContainer(m_pluginHostWidget);
+    hostLayout->addWidget(m_pluginPage, 1);
 }

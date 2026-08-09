@@ -5,7 +5,8 @@
 // 作用：
 // 1) 提供“杂项”总入口页；
 // 2) 通过内部 Tab 承载子功能模块；
-// 3) 当前包含“引导”“声音来源”“系统变速”“Shell 关联”“磁盘编辑”“应用控制”等子模块。
+// 3) 当前包含“引导”“声音来源”“系统变速”“Shell 关联”“磁盘编辑”“应用控制”等子模块；
+// 4) “扫描器”“转储分析”“插件”原为顶层 Dock，为精简 dock 栏入口数量已并入本页。
 // ============================================================
 
 #include "../Framework.h"
@@ -15,6 +16,8 @@
 class QTabWidget;
 class QVBoxLayout;
 class BootEditorTab;
+class MinidumpDock;
+class ScannerDock;
 namespace ks::misc
 {
     class DiskEditorTab;
@@ -36,6 +39,23 @@ public:
     // - 参数 parent：Qt 父控件。
     explicit MiscDock(QWidget* parent = nullptr);
     ~MiscDock() override = default;
+
+    // ===================== 跨模块跳转入口 =====================
+    // 说明：
+    // - “扫描器”“转储分析”“插件”原本是顶层 Dock，外部按 dockKey 直接激活；
+    // - 并入杂项页后，这些入口统一改为“激活杂项 Dock + 调用下面的方法切到对应子页”；
+    // - 每个方法都会先按需构造子页，保证返回时拿到的是真实控件而不是占位控件。
+
+    // activateScannerTab：切换到“扫描器”子页。
+    void activateScannerTab();
+
+    // activateMinidumpTab：
+    // - 切换到“转储分析”子页并返回其控件；
+    // - 返回 nullptr 表示子页尚未成功构造，调用方应放弃后续操作。
+    MinidumpDock* activateMinidumpTab();
+
+    // activatePluginTab：切换到“插件”子页。
+    void activatePluginTab();
 
 private:
     // initializeUi：
@@ -61,6 +81,15 @@ private:
     void initializeDiskEditorTab();
     void initializeApplicationControlPage();
     void initializeRenderBenchmarkPage();
+    void initializeScannerPage();
+    void initializeMinidumpPage();
+    void initializePluginPage();
+
+    // activateTabByIndex：
+    // - 作用：先构造目标页签对应的子页，再把它设为当前页；
+    // - 入参 tabIndex：目标页签索引，越界或负数会被忽略；
+    // - 返回：无。供上面三个跨模块跳转入口复用。
+    void activateTabByIndex(int tabIndex);
 
 private:
     QVBoxLayout* m_rootLayout = nullptr;      // m_rootLayout：杂项页根布局。
@@ -77,6 +106,9 @@ private:
     QWidget* m_diskEditorHostWidget = nullptr;          // m_diskEditorHostWidget：磁盘编辑页占位控件。
     QWidget* m_applicationControlHostWidget = nullptr;  // m_applicationControlHostWidget：应用控制页占位控件。
     QWidget* m_renderBenchmarkHostWidget = nullptr;     // m_renderBenchmarkHostWidget：渲染基准页占位控件。
+    QWidget* m_scannerHostWidget = nullptr;             // m_scannerHostWidget：扫描器页占位控件。
+    QWidget* m_minidumpHostWidget = nullptr;            // m_minidumpHostWidget：转储分析页占位控件。
+    QWidget* m_pluginHostWidget = nullptr;              // m_pluginHostWidget：插件页占位控件。
 
     // ===================== 页签索引 =====================
     int m_bootEditorTabIndex = -1;          // m_bootEditorTabIndex：引导页页签索引。
@@ -87,6 +119,9 @@ private:
     int m_diskEditorTabIndex = -1;          // m_diskEditorTabIndex：磁盘编辑页页签索引。
     int m_applicationControlTabIndex = -1;  // m_applicationControlTabIndex：应用控制页页签索引。
     int m_renderBenchmarkTabIndex = -1;     // m_renderBenchmarkTabIndex：渲染基准页页签索引。
+    int m_scannerTabIndex = -1;             // m_scannerTabIndex：扫描器页页签索引。
+    int m_minidumpTabIndex = -1;            // m_minidumpTabIndex：转储分析页页签索引。
+    int m_pluginTabIndex = -1;              // m_pluginTabIndex：插件页页签索引。
 
     // ===================== 子页组件（延迟赋值，未初始化时为 nullptr） =====================
     BootEditorTab* m_bootEditorTab = nullptr; // m_bootEditorTab：引导编辑器页组件。
@@ -97,4 +132,7 @@ private:
     ks::misc::SystemTimePage* m_systemTimePage = nullptr; // m_systemTimePage：系统全局变速控制页。
     ks::misc::BugcheckGuardPage* m_bugcheckGuardPage = nullptr; // m_bugcheckGuardPage：实验性一次性蓝屏缓冲控制页。
     ks::misc::RenderBenchmarkPage* m_renderBenchmarkPage = nullptr; // m_renderBenchmarkPage：窗口渲染与 DWM 合成基准页。
+    ScannerDock* m_scannerPage = nullptr;   // m_scannerPage：PE/ELF/Mach-O 扫描与安全编辑页。
+    MinidumpDock* m_minidumpPage = nullptr; // m_minidumpPage：崩溃转储分析页。
+    QWidget* m_pluginPage = nullptr;        // m_pluginPage：进程隔离 Tab 插件宿主容器。
 };

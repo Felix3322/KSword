@@ -396,9 +396,17 @@ private:
     void checkRecentCrashDumps();
 
     // openMinidumpDockWithFile 作用：
-    // - 激活"转储分析"页（必要时先完成懒加载），并让它解析指定文件。
+    // - 激活"转储分析"页（必要时先完成懒加载），并让它解析指定文件；
+    // - 该页已并入"杂项"Dock，函数内部会先激活杂项页再切到转储分析子页。
     // 入参 filePath：转储文件完整路径。
     void openMinidumpDockWithFile(const QString& filePath);
+
+    // activateMiscDockForMergedTab 作用：
+    // - 激活"杂项"Dock 并确保其内容控件已完成懒加载；
+    // - 供"扫描器/转储分析/插件"这些已并入杂项页的入口复用。
+    // 入参 tabDisplayName：目标子页显示名，仅用于失败时的日志定位。
+    // 返回：杂项页内容控件；返回 nullptr 表示 Dock 尚不可用。
+    MiscDock* activateMiscDockForMergedTab(const QString& tabDisplayName);
 
     void setupDockLayout();
 
@@ -598,7 +606,6 @@ private:
     ads::CDockWidget* m_dockNetwork = nullptr; // m_dockNetwork：网络页 Dock。
     ads::CDockWidget* m_dockMemory = nullptr; // m_dockMemory：内存页 Dock。
     ads::CDockWidget* m_dockFile = nullptr; // m_dockFile：文件页 Dock。
-    ads::CDockWidget* m_dockScanner = nullptr; // m_dockScanner：独立二进制扫描器 Dock。
     ads::CDockWidget* m_dockDriver = nullptr; // m_dockDriver：驱动页 Dock。
     ads::CDockWidget* m_dockKernel = nullptr; // m_dockKernel：内核页 Dock。
     ads::CDockWidget* m_dockMonitorTab = nullptr; // m_dockMonitorTab：监控页 Dock。
@@ -608,9 +615,7 @@ private:
     ads::CDockWidget* m_dockHandle = nullptr;
     ads::CDockWidget* m_dockStartup = nullptr; // m_dockStartup：启动项页 Dock。
     ads::CDockWidget* m_dockService = nullptr;
-    ads::CDockWidget* m_dockPlugin = nullptr; // m_dockPlugin：Tab 型插件独立顶部页 Dock。
     ads::CDockWidget* m_dockMisc = nullptr;
-    ads::CDockWidget* m_dockMinidump = nullptr; // m_dockMinidump：转储分析页 Dock。
     ads::CDockWidget* m_dockHardware = nullptr; // m_dockHardware：硬件页 Dock。
     ads::CDockWidget* m_dockCurrentOp = nullptr; // m_dockCurrentOp：底部“当前任务”辅助 Dock。
     ads::CDockWidget* m_dockLog = nullptr; // m_dockLog：底部“日志窗口”辅助 Dock。
@@ -623,7 +628,6 @@ private:
     NetworkDock* m_networkWidget = nullptr; // m_networkWidget：网络页内容控件。
     MemoryDock* m_memoryWidget = nullptr; // m_memoryWidget：内存页内容控件。
     FileDock* m_fileWidget = nullptr; // m_fileWidget：文件页内容控件。
-    ScannerDock* m_scannerWidget = nullptr; // m_scannerWidget：PE/ELF/Mach-O 扫描与安全编辑页。
     FileDock* m_shellUnlockerFileDock = nullptr; // m_shellUnlockerFileDock：Shell 右键文件解锁器隐藏宿主。
     DriverDock* m_driverWidget = nullptr; // m_driverWidget：驱动页内容控件。
     KernelDock* m_kernelWidget = nullptr; // m_kernelWidget：内核页内容控件。
@@ -633,9 +637,7 @@ private:
     PrivilegeDock* m_privilegeWidget = nullptr; // m_privilegeWidget：权限页内容控件。
     StartupDock* m_startupWidget = nullptr; // m_startupWidget：启动项页内容控件。
     ServiceDock* m_serviceWidget = nullptr;
-    QWidget* m_pluginWidget = nullptr; // m_pluginWidget：进程隔离 Tab 插件宿主容器。
     MiscDock* m_miscWidget = nullptr;
-    MinidumpDock* m_minidumpWidget = nullptr; // m_minidumpWidget：转储分析页内容控件。
     WindowDock* m_windowWidget = nullptr; // m_windowWidget：窗口页内容控件。
     RegistryDock* m_registryWidget = nullptr; // m_registryWidget：注册表页内容控件。
     HandleDock* m_handleWidget = nullptr;

@@ -783,6 +783,9 @@
     "minidump.stack.from_scan": "栈扫描（可能误报）"
   },
   "context_translations": {
+    "misc.scanner.tab": "扫描器",
+    "misc.minidump.tab": "转储分析",
+    "misc.plugin.tab": "插件",
     "process.table.header.package_name": "程序包名称",
     "process.table.header.active_private_working_set": "内存(活动的专用工作集)",
     "process.table.header.hardware_stack_protection": "硬件强制实施的堆栈保护",
@@ -4904,6 +4907,13 @@
     "settings.background.translucency_material.acrylic": "磨砂玻璃"
   },
   "source_translations": {
+    "[MainWindow] 杂项页内容未初始化，跳转失败: ": "[MainWindow] 杂项页内容未初始化，跳转失败: ",
+    "[MainWindow] 杂项页未能初始化，无法自动解析转储: ": "[MainWindow] 杂项页未能初始化，无法自动解析转储: ",
+    "[MainWindow] 转储分析子页未能初始化，无法自动解析: ": "[MainWindow] 转储分析子页未能初始化，无法自动解析: ",
+    "ksMiscPluginHost": "ksMiscPluginHost",
+    "杂项/扫描器": "杂项/扫描器",
+    "杂项/插件": "杂项/插件",
+    "杂项/转储分析": "杂项/转储分析",
     "  %1: 平均 %2 ms / p95 %3 ms / 最差 %4 ms / 超预算 %5 of %6 (%7%)": "  %1: 平均 %2 ms / p95 %3 ms / 最差 %4 ms / 超预算 %5 of %6 (%7%)",
     "  %1: 无有效样本": "  %1: 无有效样本",
     "  含义: 往返耗时即目标窗口 UI 线程被阻塞的时长；": "  含义: 往返耗时即目标窗口 UI 线程被阻塞的时长；",
