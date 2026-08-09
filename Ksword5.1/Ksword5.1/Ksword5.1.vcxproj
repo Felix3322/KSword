@@ -351,6 +351,7 @@
     <ClCompile Include="OtherDock\OtherDock.WindowProtection.cpp" />
     <ClCompile Include="OtherDock\OtherDock.cpp" />
     <ClCompile Include="OtherDock\WindowCaptureProtection.cpp" />
+    <ClCompile Include="OtherDock\WindowDwmControl.cpp" />
     <ClCompile Include="PrivilegeDock\PrivilegeDock.cpp" />
     <ClCompile Include="RegistryDock_Themed.cpp" />
     <ClCompile Include="RegistryDock\RegistryOptimizationPage.cpp" />

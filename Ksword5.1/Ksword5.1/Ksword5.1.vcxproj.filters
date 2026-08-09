@@ -529,6 +529,9 @@
     <ClCompile Include="OtherDock\WindowCaptureProtection.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="OtherDock\WindowDwmControl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="PrivilegeDock\PrivilegeDock.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
