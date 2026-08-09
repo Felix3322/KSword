@@ -209,6 +209,8 @@
     <ClCompile Include="src\features\kernel\kernel_ioctl.c" />
     <ClCompile Include="src\features\kernel\timer_dpc_query.c" />
     <ClCompile Include="src\features\callback\callback_ioctl.c" />
+    <ClCompile Include="src\features\process_protect\process_protect_runtime.c" />
+    <ClCompile Include="src\features\process_protect\process_protect_ioctl.c" />
     <ClCompile Include="src\features\redirect\redirect_runtime.c" />
     <ClCompile Include="src\features\redirect\redirect_registry.c" />
     <ClCompile Include="src\features\redirect\redirect_file.c" />
@@ -294,6 +296,8 @@
     <ClInclude Include="include\ark\ark_kernel.h" />
     <ClInclude Include="src\features\process\process_extended.h" />
     <ClInclude Include="src\features\process\process_crossview.h" />
+    <ClInclude Include="include\ark\ark_process_protect.h" />
+    <ClInclude Include="src\features\process_protect\process_protect_internal.h" />
     <ClInclude Include="src\features\callback\callback_internal.h" />
     <ClInclude Include="src\features\callback\callback_extended_internal.h" />
     <ClInclude Include="src\features\callback\callback_extended_kernel.h" />

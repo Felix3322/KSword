@@ -15,6 +15,7 @@ Environment:
 --*/
 
 #include "callback_internal.h"
+#include "ark/ark_process_protect.h"
 
 static const WCHAR g_KswordArkObAltitude[] = L"385201.5142";
 
@@ -117,6 +118,8 @@ KswordArkObjectPreOperation(
     ACCESS_MASK originalDesiredAccess = 0U;
     ACCESS_MASK stripMask = 0U;
     ACCESS_MASK strippedAccess = 0U;
+    PEPROCESS targetProcess = NULL;
+    BOOLEAN targetIsThreadObject = FALSE;
     NTSTATUS matchStatus = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(runtime);
@@ -146,23 +149,39 @@ KswordArkObjectPreOperation(
 
     if (OperationInformation->ObjectType == *PsProcessType) {
         callbackOperationMask = operationType | KSWORD_ARK_OBJECT_OP_TYPE_PROCESS;
+        targetProcess = (PEPROCESS)OperationInformation->Object;
+    }
+    else {
+        callbackOperationMask = operationType | KSWORD_ARK_OBJECT_OP_TYPE_THREAD;
+        targetIsThreadObject = TRUE;
+        targetProcess = PsGetThreadProcess((PETHREAD)OperationInformation->Object);
+    }
+
+    if (targetProcess != NULL) {
         (VOID)KswordArkResolveProcessImagePath(
-            (PEPROCESS)OperationInformation->Object,
+            targetProcess,
             targetPathBuffer,
             RTL_NUMBER_OF(targetPathBuffer),
             NULL);
     }
-    else {
-        PEPROCESS threadProcess = PsGetThreadProcess((PETHREAD)OperationInformation->Object);
-        callbackOperationMask = operationType | KSWORD_ARK_OBJECT_OP_TYPE_THREAD;
-        if (threadProcess != NULL) {
-            (VOID)KswordArkResolveProcessImagePath(
-                threadProcess,
-                targetPathBuffer,
-                RTL_NUMBER_OF(targetPathBuffer),
-                NULL);
-        }
-    }
+
+    (VOID)KswordArkResolveProcessImagePath(
+        PsGetCurrentProcess(),
+        initiatorPathBuffer,
+        RTL_NUMBER_OF(initiatorPathBuffer),
+        NULL);
+    RtlInitUnicodeString(&initiatorPath, initiatorPathBuffer);
+
+    // 进程保护先于通用回调规则执行：它有自己的规则表和信任白名单，两者削掉的
+    // 权限位取并集。这里复用已经解析好的映像路径，避免在句柄热路径上重复调用
+    // SeLocateProcessImageName；占位串在保护判定之后才写入，保证保护规则看到的
+    // 是真实路径或空串，而不是诊断文本。
+    (VOID)KswordArkProcessProtectFilterHandleOperation(
+        targetIsThreadObject,
+        targetProcess,
+        targetPathBuffer,
+        initiatorPathBuffer,
+        desiredAccessPointer);
 
     if (targetPathBuffer[0] == L'\0') {
         (VOID)RtlStringCbPrintfW(
@@ -173,13 +192,6 @@ KswordArkObjectPreOperation(
             (unsigned long)operationType);
     }
     RtlInitUnicodeString(&targetPath, targetPathBuffer);
-
-    (VOID)KswordArkResolveProcessImagePath(
-        PsGetCurrentProcess(),
-        initiatorPathBuffer,
-        RTL_NUMBER_OF(initiatorPathBuffer),
-        NULL);
-    RtlInitUnicodeString(&initiatorPath, initiatorPathBuffer);
 
     matchStatus = KswordArkCallbackMatchRule(
         KSWORD_ARK_CALLBACK_TYPE_OBJECT,
@@ -261,6 +273,9 @@ KswordArkObjectCallbackRegister(
     callbackRegistration.OperationRegistration = operationRegistration;
 
     status = ObRegisterCallbacks(&callbackRegistration, &runtime->ObRegistrationHandle);
+    // 进程保护完全挂在这一个句柄回调上：注册结果必须回填，否则 R3 无法区分
+    // "没配保护规则"和"这台机器上句柄回调根本挂不上"。
+    KswordArkProcessProtectNoteObjectCallbackState(NT_SUCCESS(status) ? TRUE : FALSE, status);
     if (NT_SUCCESS(status)) {
         // 注册期全局 runtime 尚未发布，必须用显式 runtime 版本写日志。
         KswordArkCallbackLogFrameForRuntime(
@@ -283,6 +298,7 @@ KswordArkObjectCallbackUnregister(
     if (runtime->ObRegistrationHandle != NULL) {
         ObUnRegisterCallbacks(runtime->ObRegistrationHandle);
         runtime->ObRegistrationHandle = NULL;
+        KswordArkProcessProtectNoteObjectCallbackState(FALSE, STATUS_NOT_SUPPORTED);
         KswordArkCallbackLogFrame("Info", "Object callbacks unregistered.");
     }
 }

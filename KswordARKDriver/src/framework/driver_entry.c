@@ -189,6 +189,14 @@ Return Value:
         return status;
     }
 
+    // 进程保护挂在对象回调的前置例程上，必须先于回调注册建好状态，
+    // 否则回调一挂上就可能读到尚未初始化的配置。分配失败只关闭保护能力。
+    status = KswordARKProcessProtectInitialize(controlDevice);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_WARNING, TRACE_DRIVER,
+            "KswordARKProcessProtectInitialize degraded %!STATUS!", status);
+    }
+
     // 内核回调是可选能力，不再是整个驱动的加载门槛：某台机器上的 altitude
     // 冲突、回调槽位耗尽或资源不足只会关闭对应能力，KSword 的驱动、进程、
     // 线程、内存、句柄、内核审计等其它功能仍然可用。
@@ -290,6 +298,8 @@ Return Value:
     KswordARKFileMonitorUninitialize();
     // minifilter 已停止后才销毁 callback runtime，避免 post-operation 路径访问已释放状态。
     KswordARKCallbackUninitialize();
+    // 对象回调已在上一步注销完毕，此时再没有前置例程会读保护配置，可以安全释放。
+    KswordARKProcessProtectUninitialize();
     KswordARKDynDataUninitialize();
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
 }

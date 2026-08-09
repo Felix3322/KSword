@@ -40,6 +40,7 @@
 #include <QScrollArea>
 #include <QSize>
 #include <QSplitter>
+#include <QStringList>
 #include <QStyledItemDelegate>
 #include <QStyle>
 #include <QTabWidget>
@@ -110,6 +111,25 @@ namespace
     {
         Pid = 0,
         Process,
+        Count
+    };
+
+    enum class ProcessProtectRuleColumn : int
+    {
+        Enabled = 0,
+        Kind,
+        Target,
+        AccessMask,
+        ProtectThreads,
+        RuleName,
+        HitCount,
+        Count
+    };
+
+    enum class ProcessProtectTrustedColumn : int
+    {
+        Kind = 0,
+        Target,
         Count
     };
 
@@ -1250,6 +1270,102 @@ namespace
         return QStringLiteral("0x%1").arg(value, 8, 16, QChar('0')).toUpper();
     }
 
+    // processProtectFixedWideToQString：
+    // - 输入 textBuffer/maxChars：R0 定长宽字符字段，未必带终止符；
+    // - 处理：在容量内查找终止符，越界时按满长度截断；
+    // - 返回：安全转换后的 QString。
+    QString processProtectFixedWideToQString(const wchar_t* const textBuffer, const std::size_t maxChars)
+    {
+        if (textBuffer == nullptr || maxChars == 0U)
+        {
+            return {};
+        }
+        std::size_t textLength = 0U;
+        while (textLength < maxChars && textBuffer[textLength] != L'\0')
+        {
+            ++textLength;
+        }
+        return QString::fromWCharArray(textBuffer, static_cast<int>(textLength));
+    }
+
+    // processProtectCopyQStringToFixedWide：
+    // - 输入 sourceText 与目标定长缓冲；
+    // - 处理：按容量截断并强制写入终止符，保证 R0 侧按 NUL 结尾比较不会越界；
+    // - 返回：无。
+    void processProtectCopyQStringToFixedWide(
+        const QString& sourceText,
+        wchar_t* const destination,
+        const std::size_t maxChars)
+    {
+        if (destination == nullptr || maxChars == 0U)
+        {
+            return;
+        }
+        const int copyChars = std::min<int>(sourceText.size(), static_cast<int>(maxChars) - 1);
+        if (copyChars > 0)
+        {
+            sourceText.left(copyChars).toWCharArray(destination);
+        }
+        destination[copyChars > 0 ? copyChars : 0] = L'\0';
+    }
+
+    QString processProtectKindText(const quint32 targetKind)
+    {
+        switch (targetKind)
+        {
+        case KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID:
+            return kernelText("kernel.callback.intercept.process_protect.kind.pid", QStringLiteral("PID"));
+        case KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_NAME:
+            return kernelText("kernel.callback.intercept.process_protect.kind.image_name", QStringLiteral("映像名"));
+        case KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_PATH:
+            return kernelText("kernel.callback.intercept.process_protect.kind.image_path", QStringLiteral("完整路径"));
+        default:
+            return kernelText("kernel.callback.intercept.process_protect.kind.unknown", QStringLiteral("未知"));
+        }
+    }
+
+    // processProtectAccessSummaryText：
+    // - 输入 accessMask：KSWORD_ARK_PROCESS_PROTECT_ACCESS_* 组合；
+    // - 处理：逐位翻译成人类可读的短标签；
+    // - 返回：以 "+" 连接的摘要，空掩码返回占位符。
+    QString processProtectAccessSummaryText(const quint32 accessMask)
+    {
+        QStringList parts;
+        if ((accessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_TERMINATE) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.access.terminate", QStringLiteral("结束进程"));
+        }
+        if ((accessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_VM_READ) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.access.vm_read", QStringLiteral("读内存"));
+        }
+        if ((accessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_VM_WRITE) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.access.vm_write", QStringLiteral("写内存"));
+        }
+        if ((accessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_CREATE_THREAD) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.access.create_thread", QStringLiteral("远程建线程"));
+        }
+        if ((accessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_SUSPEND_RESUME) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.access.suspend", QStringLiteral("挂起恢复"));
+        }
+        if ((accessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_SET_INFORMATION) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.access.set_information", QStringLiteral("改属性"));
+        }
+        if ((accessMask & KSWORD_ARK_PROCESS_PROTECT_ACCESS_DUP_HANDLE) != 0U)
+        {
+            parts << kernelText("kernel.callback.intercept.process_protect.access.dup_handle", QStringLiteral("复制句柄"));
+        }
+        if (parts.isEmpty())
+        {
+            return kernelText("kernel.callback.intercept.process_protect.access.none", QStringLiteral("（未选择）"));
+        }
+        return parts.join(QStringLiteral(" + "));
+    }
+
     QString formatFileMonitorHex64(const quint64 value)
     {
         return QStringLiteral("0x%1").arg(value, 16, 16, QChar('0')).toUpper();
@@ -1696,6 +1812,7 @@ private:
         createRuleTableTab(KSWORD_ARK_CALLBACK_TYPE_OBJECT, kernelText("kernel.callback.intercept.tab.object", QStringLiteral("对象管理器")));
         createRuleTableTab(KSWORD_ARK_CALLBACK_TYPE_MINIFILTER, kernelText("kernel.callback.intercept.tab.minifilter", QStringLiteral("文件系统微过滤器")));
         createMinifilterBypassPidTab(m_ruleTabWidget);
+        createProcessProtectTab(m_ruleTabWidget);
 
         auto* logTabWidget = new QTabWidget(scrollContent);
         m_appLogEditor = new QPlainTextEdit(logTabWidget);
@@ -1849,6 +1966,37 @@ private:
         });
         connect(m_minifilterBypassRefreshButton, &QPushButton::clicked, m_hostPage, [this]() {
             refreshMinifilterBypassPidsFromDriver();
+        });
+
+        connect(m_processProtectAddRuleButton, &QPushButton::clicked, m_hostPage, [this]() {
+            addProcessProtectRuleFromInput();
+        });
+        connect(m_processProtectApplyPresetButton, &QPushButton::clicked, m_hostPage, [this]() {
+            applyProcessProtectPresetToSelection();
+        });
+        connect(m_processProtectRemoveRuleButton, &QPushButton::clicked, m_hostPage, [this]() {
+            removeCurrentProcessProtectRule();
+        });
+        connect(m_processProtectTargetEdit, &QLineEdit::returnPressed, m_hostPage, [this]() {
+            addProcessProtectRuleFromInput();
+        });
+        connect(m_processProtectTrustedAddButton, &QPushButton::clicked, m_hostPage, [this]() {
+            addProcessProtectTrustedFromInput();
+        });
+        connect(m_processProtectTrustedRemoveButton, &QPushButton::clicked, m_hostPage, [this]() {
+            removeCurrentProcessProtectTrusted();
+        });
+        connect(m_processProtectTrustedTargetEdit, &QLineEdit::returnPressed, m_hostPage, [this]() {
+            addProcessProtectTrustedFromInput();
+        });
+        connect(m_processProtectApplyButton, &QPushButton::clicked, m_hostPage, [this]() {
+            applyProcessProtectToDriver();
+        });
+        connect(m_processProtectRefreshButton, &QPushButton::clicked, m_hostPage, [this]() {
+            refreshProcessProtectFromDriver();
+        });
+        connect(m_processProtectClearButton, &QPushButton::clicked, m_hostPage, [this]() {
+            clearProcessProtectAndApply();
         });
         connect(m_minifilterBypassPidEdit, &QLineEdit::returnPressed, m_hostPage, [this]() {
             addMinifilterBypassPidFromEdit();
@@ -2528,6 +2676,858 @@ private:
             m_minifilterBypassStatusLabel->setText(kernelText("kernel.callback.intercept.minifilter.status.refreshed", QStringLiteral("已从驱动刷新：%1 个 PID。")).arg(static_cast<qulonglong>(processIds.size())));
         }
         appendAppLog(kernelText("kernel.callback.intercept.minifilter.log.refreshed", QStringLiteral("Minifilter PID 放行已刷新：count=%1。")).arg(static_cast<qulonglong>(processIds.size())));
+    }
+
+    void createProcessProtectTab(QWidget* parentWidget)
+    {
+        // 输入：父 TabWidget；
+        // 处理：搭出总开关、保护规则表、信任白名单表和统计区；
+        // 返回：无，控件指针保存在成员变量中供按钮槽函数使用。
+        if (m_ruleTabWidget == nullptr)
+        {
+            return;
+        }
+
+        auto* tabPage = new QWidget(parentWidget);
+        auto* tabLayout = new QVBoxLayout(tabPage);
+        tabLayout->setContentsMargins(8, 8, 8, 8);
+        tabLayout->setSpacing(8);
+
+        auto* hintLabel = new QLabel(
+            kernelText("kernel.callback.intercept.process_protect.hint",
+                QStringLiteral("命中保护规则的进程/线程句柄会在对象管理器前置回调里被削权：OpenProcess 仍然成功，但拿到的句柄不再带有被禁用的权限位。目标进程打开自己始终放行；信任项优先于保护规则。")),
+            tabPage);
+        hintLabel->setWordWrap(true);
+        hintLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+        tabLayout->addWidget(hintLabel, 0);
+
+        auto* switchLayout = new QHBoxLayout();
+        switchLayout->setContentsMargins(0, 0, 0, 0);
+        switchLayout->setSpacing(12);
+        m_processProtectEnabledCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.switch.enabled", QStringLiteral("启用进程保护")), tabPage);
+        m_processProtectLogCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.switch.log", QStringLiteral("命中写驱动日志")), tabPage);
+        m_processProtectTrustSystemCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.switch.trust_system", QStringLiteral("信任 System 进程")), tabPage);
+        m_processProtectTrustSystemCheck->setChecked(true);
+        m_processProtectTrustSystemCheck->setToolTip(
+            kernelText("kernel.callback.intercept.process_protect.switch.trust_system_tip",
+                QStringLiteral("System(4) 负责进程创建与退出清理。关闭后这些系统路径也会被削权，可能导致进程无法正常结束。")));
+        m_processProtectTrustPeersCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.switch.trust_peers", QStringLiteral("受保护进程互信")), tabPage);
+        switchLayout->addWidget(m_processProtectEnabledCheck, 0);
+        switchLayout->addWidget(m_processProtectLogCheck, 0);
+        switchLayout->addWidget(m_processProtectTrustSystemCheck, 0);
+        switchLayout->addWidget(m_processProtectTrustPeersCheck, 0);
+        switchLayout->addStretch(1);
+        m_processProtectApplyButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.apply", QStringLiteral("应用到驱动")), tabPage);
+        m_processProtectRefreshButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.refresh", QStringLiteral("从驱动刷新")), tabPage);
+        m_processProtectClearButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.clear_apply", QStringLiteral("清空并应用")), tabPage);
+        switchLayout->addWidget(m_processProtectApplyButton, 0);
+        switchLayout->addWidget(m_processProtectRefreshButton, 0);
+        switchLayout->addWidget(m_processProtectClearButton, 0);
+        tabLayout->addLayout(switchLayout, 0);
+
+        auto* ruleInputLayout = new QHBoxLayout();
+        ruleInputLayout->setContentsMargins(0, 0, 0, 0);
+        ruleInputLayout->setSpacing(6);
+        m_processProtectKindCombo = new QComboBox(tabPage);
+        m_processProtectKindCombo->addItem(
+            processProtectKindText(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_NAME),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_NAME));
+        m_processProtectKindCombo->addItem(
+            processProtectKindText(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID));
+        m_processProtectKindCombo->addItem(
+            processProtectKindText(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_PATH),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_PATH));
+        m_processProtectTargetEdit = new QLineEdit(tabPage);
+        m_processProtectTargetEdit->setPlaceholderText(
+            kernelText("kernel.callback.intercept.process_protect.target_placeholder",
+                QStringLiteral("受保护目标：映像名 notepad.exe / PID 1234 / 完整路径 C:\\Windows\\notepad.exe")));
+        applyRuleLineEditStyle(m_processProtectTargetEdit);
+        m_processProtectPresetCombo = new QComboBox(tabPage);
+        m_processProtectPresetCombo->addItem(
+            kernelText("kernel.callback.intercept.process_protect.preset.standard", QStringLiteral("标准：结束/写内存/建线程/挂起")),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_ACCESS_DEFAULT));
+        m_processProtectPresetCombo->addItem(
+            kernelText("kernel.callback.intercept.process_protect.preset.strict", QStringLiteral("严格：全部危险权限")),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_ACCESS_ALL));
+        m_processProtectPresetCombo->addItem(
+            kernelText("kernel.callback.intercept.process_protect.preset.terminate_only", QStringLiteral("仅防结束进程")),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_ACCESS_TERMINATE));
+        m_processProtectThreadsCheck = new QCheckBox(
+            kernelText("kernel.callback.intercept.process_protect.protect_threads", QStringLiteral("含线程句柄")), tabPage);
+        m_processProtectThreadsCheck->setChecked(true);
+        m_processProtectRuleNameEdit = new QLineEdit(tabPage);
+        m_processProtectRuleNameEdit->setPlaceholderText(
+            kernelText("kernel.callback.intercept.process_protect.rule_name_placeholder", QStringLiteral("规则名（可选）")));
+        applyRuleLineEditStyle(m_processProtectRuleNameEdit);
+        m_processProtectAddRuleButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.add_rule", QStringLiteral("添加规则")), tabPage);
+        m_processProtectApplyPresetButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.apply_preset", QStringLiteral("套用到选中")), tabPage);
+        m_processProtectRemoveRuleButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.remove_rule", QStringLiteral("移除选中")), tabPage);
+        ruleInputLayout->addWidget(m_processProtectKindCombo, 0);
+        ruleInputLayout->addWidget(m_processProtectTargetEdit, 2);
+        ruleInputLayout->addWidget(m_processProtectPresetCombo, 0);
+        ruleInputLayout->addWidget(m_processProtectThreadsCheck, 0);
+        ruleInputLayout->addWidget(m_processProtectRuleNameEdit, 1);
+        ruleInputLayout->addWidget(m_processProtectAddRuleButton, 0);
+        ruleInputLayout->addWidget(m_processProtectApplyPresetButton, 0);
+        ruleInputLayout->addWidget(m_processProtectRemoveRuleButton, 0);
+        tabLayout->addLayout(ruleInputLayout, 0);
+
+        m_processProtectRuleTable = new ks::ui::VisibleTableWidget(tabPage);
+        m_processProtectRuleTable->setColumnCount(static_cast<int>(ProcessProtectRuleColumn::Count));
+        m_processProtectRuleTable->setHorizontalHeaderLabels(QStringList{
+            kernelText("kernel.callback.intercept.process_protect.header.enabled", QStringLiteral("启用")),
+            kernelText("kernel.callback.intercept.process_protect.header.kind", QStringLiteral("匹配方式")),
+            kernelText("kernel.callback.intercept.process_protect.header.target", QStringLiteral("受保护目标")),
+            kernelText("kernel.callback.intercept.process_protect.header.access", QStringLiteral("拦截的权限")),
+            kernelText("kernel.callback.intercept.process_protect.header.threads", QStringLiteral("含线程")),
+            kernelText("kernel.callback.intercept.process_protect.header.rule_name", QStringLiteral("规则名")),
+            kernelText("kernel.callback.intercept.process_protect.header.hits", QStringLiteral("命中次数"))
+            });
+        m_processProtectRuleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_processProtectRuleTable->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_processProtectRuleTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_processProtectRuleTable->setSortingEnabled(false);
+        m_processProtectRuleTable->setWordWrap(false);
+        m_processProtectRuleTable->verticalHeader()->setVisible(false);
+        m_processProtectRuleTable->setAlternatingRowColors(true);
+        {
+            QHeaderView* ruleHeader = m_processProtectRuleTable->horizontalHeader();
+            ruleHeader->setSectionResizeMode(QHeaderView::Interactive);
+            ruleHeader->setStretchLastSection(false);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::Enabled), 48);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::Kind), 86);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::Target), 280);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::AccessMask), 320);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::ProtectThreads), 62);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::RuleName), 140);
+            m_processProtectRuleTable->setColumnWidth(static_cast<int>(ProcessProtectRuleColumn::HitCount), 80);
+        }
+        m_processProtectRuleTable->setStyleSheet(callbackRuleTableStyle());
+        applyCallbackTableTransparency(m_processProtectRuleTable);
+        installCallbackTableCopyMenu(m_processProtectRuleTable, -1);
+        tabLayout->addWidget(m_processProtectRuleTable, 3);
+
+        auto* trustedLabel = new QLabel(
+            kernelText("kernel.callback.intercept.process_protect.trusted_title",
+                QStringLiteral("信任白名单（这些发起方打开受保护进程时不削权）")),
+            tabPage);
+        trustedLabel->setStyleSheet(QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextPrimaryHex()));
+        tabLayout->addWidget(trustedLabel, 0);
+
+        auto* trustedInputLayout = new QHBoxLayout();
+        trustedInputLayout->setContentsMargins(0, 0, 0, 0);
+        trustedInputLayout->setSpacing(6);
+        m_processProtectTrustedKindCombo = new QComboBox(tabPage);
+        m_processProtectTrustedKindCombo->addItem(
+            processProtectKindText(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_NAME),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_NAME));
+        m_processProtectTrustedKindCombo->addItem(
+            processProtectKindText(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID));
+        m_processProtectTrustedKindCombo->addItem(
+            processProtectKindText(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_PATH),
+            static_cast<uint>(KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_IMAGE_PATH));
+        m_processProtectTrustedTargetEdit = new QLineEdit(tabPage);
+        m_processProtectTrustedTargetEdit->setPlaceholderText(
+            kernelText("kernel.callback.intercept.process_protect.trusted_placeholder",
+                QStringLiteral("信任的发起方：映像名 / PID / 完整路径")));
+        applyRuleLineEditStyle(m_processProtectTrustedTargetEdit);
+        m_processProtectTrustedAddButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.trusted_add", QStringLiteral("添加信任")), tabPage);
+        m_processProtectTrustedRemoveButton = new QPushButton(
+            kernelText("kernel.callback.intercept.process_protect.trusted_remove", QStringLiteral("移除选中")), tabPage);
+        trustedInputLayout->addWidget(m_processProtectTrustedKindCombo, 0);
+        trustedInputLayout->addWidget(m_processProtectTrustedTargetEdit, 1);
+        trustedInputLayout->addWidget(m_processProtectTrustedAddButton, 0);
+        trustedInputLayout->addWidget(m_processProtectTrustedRemoveButton, 0);
+        tabLayout->addLayout(trustedInputLayout, 0);
+
+        m_processProtectTrustedTable = new ks::ui::VisibleTableWidget(tabPage);
+        m_processProtectTrustedTable->setColumnCount(static_cast<int>(ProcessProtectTrustedColumn::Count));
+        m_processProtectTrustedTable->setHorizontalHeaderLabels(QStringList{
+            kernelText("kernel.callback.intercept.process_protect.header.kind", QStringLiteral("匹配方式")),
+            kernelText("kernel.callback.intercept.process_protect.header.trusted_target", QStringLiteral("信任的发起方"))
+            });
+        m_processProtectTrustedTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_processProtectTrustedTable->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_processProtectTrustedTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_processProtectTrustedTable->setSortingEnabled(false);
+        m_processProtectTrustedTable->setWordWrap(false);
+        m_processProtectTrustedTable->verticalHeader()->setVisible(false);
+        m_processProtectTrustedTable->horizontalHeader()->setSectionResizeMode(
+            static_cast<int>(ProcessProtectTrustedColumn::Kind), QHeaderView::ResizeToContents);
+        m_processProtectTrustedTable->horizontalHeader()->setSectionResizeMode(
+            static_cast<int>(ProcessProtectTrustedColumn::Target), QHeaderView::Stretch);
+        m_processProtectTrustedTable->setStyleSheet(callbackRuleTableStyle());
+        applyCallbackTableTransparency(m_processProtectTrustedTable);
+        installCallbackTableCopyMenu(m_processProtectTrustedTable, -1);
+        tabLayout->addWidget(m_processProtectTrustedTable, 1);
+
+        m_processProtectStatusLabel = new QLabel(
+            kernelText("kernel.callback.intercept.process_protect.status.not_refreshed",
+                QStringLiteral("尚未从驱动刷新；编辑后点击“应用到驱动”生效。")),
+            tabPage);
+        m_processProtectStatusLabel->setWordWrap(true);
+        m_processProtectStatusLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
+        tabLayout->addWidget(m_processProtectStatusLabel, 0);
+
+        m_ruleTabWidget->addTab(
+            tabPage,
+            kernelText("kernel.callback.intercept.process_protect.tab", QStringLiteral("进程保护")));
+    }
+
+    QTableWidgetItem* makeProcessProtectCheckItem(const bool checkedState) const
+    {
+        auto* checkItem = new QTableWidgetItem();
+        checkItem->setFlags((checkItem->flags() & ~Qt::ItemIsEditable) | Qt::ItemIsUserCheckable);
+        checkItem->setCheckState(checkedState ? Qt::Checked : Qt::Unchecked);
+        return checkItem;
+    }
+
+    bool appendProcessProtectRuleRow(
+        const quint32 targetKind,
+        const quint32 targetProcessId,
+        const QString& targetImageText,
+        const quint32 accessMask,
+        const bool protectThreads,
+        const bool ruleEnabled,
+        const QString& ruleNameText,
+        const qint64 hitCount)
+    {
+        // 输入：一条完整的保护规则；处理：查重后追加只读行，勾选列可直接点选；
+        // 返回：成功追加返回 true，重复或超限返回 false。
+        if (m_processProtectRuleTable == nullptr)
+        {
+            return false;
+        }
+        if (m_processProtectRuleTable->rowCount() >= static_cast<int>(KSWORD_ARK_PROCESS_PROTECT_MAX_RULES))
+        {
+            return false;
+        }
+
+        const QString targetText = (targetKind == KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID)
+            ? QString::number(targetProcessId)
+            : targetImageText;
+        for (int rowIndex = 0; rowIndex < m_processProtectRuleTable->rowCount(); ++rowIndex)
+        {
+            const QTableWidgetItem* kindItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Kind));
+            const QTableWidgetItem* targetItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Target));
+            if (kindItem == nullptr || targetItem == nullptr)
+            {
+                continue;
+            }
+            if (static_cast<quint32>(kindItem->data(Qt::UserRole).toUInt()) == targetKind &&
+                targetItem->text().compare(targetText, Qt::CaseInsensitive) == 0)
+            {
+                return false;
+            }
+        }
+
+        const int rowIndex = m_processProtectRuleTable->rowCount();
+        m_processProtectRuleTable->insertRow(rowIndex);
+
+        m_processProtectRuleTable->setItem(
+            rowIndex, static_cast<int>(ProcessProtectRuleColumn::Enabled), makeProcessProtectCheckItem(ruleEnabled));
+
+        QTableWidgetItem* kindItem = makeReadOnlyItem(processProtectKindText(targetKind));
+        kindItem->setData(Qt::UserRole, targetKind);
+        m_processProtectRuleTable->setItem(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Kind), kindItem);
+
+        QTableWidgetItem* targetItem = makeReadOnlyItem(targetText);
+        targetItem->setData(Qt::UserRole, targetProcessId);
+        targetItem->setToolTip(targetText);
+        m_processProtectRuleTable->setItem(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Target), targetItem);
+
+        QTableWidgetItem* accessItem = makeReadOnlyItem(processProtectAccessSummaryText(accessMask));
+        accessItem->setData(Qt::UserRole, accessMask);
+        m_processProtectRuleTable->setItem(rowIndex, static_cast<int>(ProcessProtectRuleColumn::AccessMask), accessItem);
+
+        m_processProtectRuleTable->setItem(
+            rowIndex, static_cast<int>(ProcessProtectRuleColumn::ProtectThreads), makeProcessProtectCheckItem(protectThreads));
+
+        m_processProtectRuleTable->setItem(
+            rowIndex, static_cast<int>(ProcessProtectRuleColumn::RuleName), makeReadOnlyItem(ruleNameText));
+
+        m_processProtectRuleTable->setItem(
+            rowIndex,
+            static_cast<int>(ProcessProtectRuleColumn::HitCount),
+            makeReadOnlyItem(hitCount >= 0 ? QString::number(hitCount) : QStringLiteral("-")));
+        return true;
+    }
+
+    bool appendProcessProtectTrustedRow(
+        const quint32 targetKind,
+        const quint32 processId,
+        const QString& imageText)
+    {
+        if (m_processProtectTrustedTable == nullptr)
+        {
+            return false;
+        }
+        if (m_processProtectTrustedTable->rowCount() >= static_cast<int>(KSWORD_ARK_PROCESS_PROTECT_MAX_TRUSTED))
+        {
+            return false;
+        }
+
+        const QString targetText = (targetKind == KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID)
+            ? QString::number(processId)
+            : imageText;
+        for (int rowIndex = 0; rowIndex < m_processProtectTrustedTable->rowCount(); ++rowIndex)
+        {
+            const QTableWidgetItem* kindItem =
+                m_processProtectTrustedTable->item(rowIndex, static_cast<int>(ProcessProtectTrustedColumn::Kind));
+            const QTableWidgetItem* targetItem =
+                m_processProtectTrustedTable->item(rowIndex, static_cast<int>(ProcessProtectTrustedColumn::Target));
+            if (kindItem == nullptr || targetItem == nullptr)
+            {
+                continue;
+            }
+            if (static_cast<quint32>(kindItem->data(Qt::UserRole).toUInt()) == targetKind &&
+                targetItem->text().compare(targetText, Qt::CaseInsensitive) == 0)
+            {
+                return false;
+            }
+        }
+
+        const int rowIndex = m_processProtectTrustedTable->rowCount();
+        m_processProtectTrustedTable->insertRow(rowIndex);
+
+        QTableWidgetItem* kindItem = makeReadOnlyItem(processProtectKindText(targetKind));
+        kindItem->setData(Qt::UserRole, targetKind);
+        m_processProtectTrustedTable->setItem(rowIndex, static_cast<int>(ProcessProtectTrustedColumn::Kind), kindItem);
+
+        QTableWidgetItem* targetItem = makeReadOnlyItem(targetText);
+        targetItem->setData(Qt::UserRole, processId);
+        targetItem->setToolTip(targetText);
+        m_processProtectTrustedTable->setItem(rowIndex, static_cast<int>(ProcessProtectTrustedColumn::Target), targetItem);
+        return true;
+    }
+
+    // parseProcessProtectTargetInput：
+    // - 输入：匹配方式与用户输入文本；
+    // - 处理：PID 方式要求可解析成非零数值，映像方式要求非空；
+    // - 返回：解析成功返回 true 并写出 PID/映像文本，失败写出错误说明。
+    bool parseProcessProtectTargetInput(
+        const quint32 targetKind,
+        const QString& rawText,
+        quint32* processIdOut,
+        QString* imageTextOut,
+        QString* errorTextOut) const
+    {
+        const QString trimmedText = rawText.trimmed();
+        if (processIdOut != nullptr)
+        {
+            *processIdOut = 0U;
+        }
+        if (imageTextOut != nullptr)
+        {
+            imageTextOut->clear();
+        }
+
+        if (trimmedText.isEmpty())
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = kernelText("kernel.callback.intercept.process_protect.error.empty_target", QStringLiteral("请输入受保护目标。"));
+            }
+            return false;
+        }
+
+        if (targetKind == KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID)
+        {
+            quint32 processId = 0U;
+            if (!parseUnsignedText(trimmedText, &processId) || processId == 0U)
+            {
+                if (errorTextOut != nullptr)
+                {
+                    *errorTextOut = kernelText("kernel.callback.intercept.process_protect.error.invalid_pid", QStringLiteral("PID 无效：%1")).arg(trimmedText);
+                }
+                return false;
+            }
+            if (processIdOut != nullptr)
+            {
+                *processIdOut = processId;
+            }
+            return true;
+        }
+
+        if (trimmedText.size() >= static_cast<int>(KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS))
+        {
+            if (errorTextOut != nullptr)
+            {
+                *errorTextOut = kernelText("kernel.callback.intercept.process_protect.error.target_too_long", QStringLiteral("目标文本超过 %1 个字符。"))
+                    .arg(KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS - 1U);
+            }
+            return false;
+        }
+        if (imageTextOut != nullptr)
+        {
+            *imageTextOut = trimmedText;
+        }
+        return true;
+    }
+
+    void addProcessProtectRuleFromInput()
+    {
+        if (m_processProtectKindCombo == nullptr ||
+            m_processProtectTargetEdit == nullptr ||
+            m_processProtectPresetCombo == nullptr)
+        {
+            return;
+        }
+
+        const quint32 targetKind = static_cast<quint32>(m_processProtectKindCombo->currentData().toUInt());
+        quint32 processId = 0U;
+        QString imageText;
+        QString errorText;
+        if (!parseProcessProtectTargetInput(targetKind, m_processProtectTargetEdit->text(), &processId, &imageText, &errorText))
+        {
+            QMessageBox::warning(
+                m_hostPage,
+                kernelText("kernel.callback.intercept.process_protect.title", QStringLiteral("进程保护")),
+                errorText);
+            return;
+        }
+
+        const quint32 accessMask = static_cast<quint32>(m_processProtectPresetCombo->currentData().toUInt());
+        const QString ruleNameText = m_processProtectRuleNameEdit != nullptr
+            ? m_processProtectRuleNameEdit->text().trimmed().left(KSWORD_ARK_PROCESS_PROTECT_NAME_CHARS - 1U)
+            : QString();
+        const bool protectThreads = m_processProtectThreadsCheck != nullptr && m_processProtectThreadsCheck->isChecked();
+
+        if (!appendProcessProtectRuleRow(targetKind, processId, imageText, accessMask, protectThreads, true, ruleNameText, -1))
+        {
+            setProcessProtectStatusText(
+                kernelText("kernel.callback.intercept.process_protect.status.add_rejected",
+                    QStringLiteral("规则未添加：目标重复或已达上限 %1 条。")).arg(KSWORD_ARK_PROCESS_PROTECT_MAX_RULES));
+            return;
+        }
+
+        m_processProtectTargetEdit->clear();
+        if (m_processProtectRuleNameEdit != nullptr)
+        {
+            m_processProtectRuleNameEdit->clear();
+        }
+        setProcessProtectStatusText(
+            kernelText("kernel.callback.intercept.process_protect.status.rule_added",
+                QStringLiteral("已添加规则；点击“应用到驱动”后生效。")));
+    }
+
+    void removeCurrentProcessProtectRule()
+    {
+        if (m_processProtectRuleTable == nullptr)
+        {
+            return;
+        }
+        const int rowIndex = m_processProtectRuleTable->currentRow();
+        if (rowIndex < 0)
+        {
+            return;
+        }
+        m_processProtectRuleTable->removeRow(rowIndex);
+        setProcessProtectStatusText(
+            kernelText("kernel.callback.intercept.process_protect.status.rule_removed",
+                QStringLiteral("已移除选中规则；点击“应用到驱动”后生效。")));
+    }
+
+    void applyProcessProtectPresetToSelection()
+    {
+        // 输入：当前选中行与预设下拉框；处理：改写该行的权限掩码与线程开关；
+        // 返回：无；改动只作用于 UI，需点击应用下发。
+        if (m_processProtectRuleTable == nullptr || m_processProtectPresetCombo == nullptr)
+        {
+            return;
+        }
+        const int rowIndex = m_processProtectRuleTable->currentRow();
+        if (rowIndex < 0)
+        {
+            return;
+        }
+
+        const quint32 accessMask = static_cast<quint32>(m_processProtectPresetCombo->currentData().toUInt());
+        QTableWidgetItem* accessItem =
+            m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::AccessMask));
+        if (accessItem != nullptr)
+        {
+            accessItem->setText(processProtectAccessSummaryText(accessMask));
+            accessItem->setData(Qt::UserRole, accessMask);
+        }
+        QTableWidgetItem* threadItem =
+            m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::ProtectThreads));
+        if (threadItem != nullptr && m_processProtectThreadsCheck != nullptr)
+        {
+            threadItem->setCheckState(m_processProtectThreadsCheck->isChecked() ? Qt::Checked : Qt::Unchecked);
+        }
+        setProcessProtectStatusText(
+            kernelText("kernel.callback.intercept.process_protect.status.preset_applied",
+                QStringLiteral("已套用预设到选中规则；点击“应用到驱动”后生效。")));
+    }
+
+    void addProcessProtectTrustedFromInput()
+    {
+        if (m_processProtectTrustedKindCombo == nullptr || m_processProtectTrustedTargetEdit == nullptr)
+        {
+            return;
+        }
+
+        const quint32 targetKind = static_cast<quint32>(m_processProtectTrustedKindCombo->currentData().toUInt());
+        quint32 processId = 0U;
+        QString imageText;
+        QString errorText;
+        if (!parseProcessProtectTargetInput(targetKind, m_processProtectTrustedTargetEdit->text(), &processId, &imageText, &errorText))
+        {
+            QMessageBox::warning(
+                m_hostPage,
+                kernelText("kernel.callback.intercept.process_protect.title", QStringLiteral("进程保护")),
+                errorText);
+            return;
+        }
+
+        if (!appendProcessProtectTrustedRow(targetKind, processId, imageText))
+        {
+            setProcessProtectStatusText(
+                kernelText("kernel.callback.intercept.process_protect.status.trusted_rejected",
+                    QStringLiteral("信任项未添加：重复或已达上限 %1 条。")).arg(KSWORD_ARK_PROCESS_PROTECT_MAX_TRUSTED));
+            return;
+        }
+
+        m_processProtectTrustedTargetEdit->clear();
+        setProcessProtectStatusText(
+            kernelText("kernel.callback.intercept.process_protect.status.trusted_added",
+                QStringLiteral("已添加信任项；点击“应用到驱动”后生效。")));
+    }
+
+    void removeCurrentProcessProtectTrusted()
+    {
+        if (m_processProtectTrustedTable == nullptr)
+        {
+            return;
+        }
+        const int rowIndex = m_processProtectTrustedTable->currentRow();
+        if (rowIndex < 0)
+        {
+            return;
+        }
+        m_processProtectTrustedTable->removeRow(rowIndex);
+        setProcessProtectStatusText(
+            kernelText("kernel.callback.intercept.process_protect.status.trusted_removed",
+                QStringLiteral("已移除选中信任项；点击“应用到驱动”后生效。")));
+    }
+
+    quint32 collectProcessProtectGlobalFlags() const
+    {
+        quint32 globalFlags = 0U;
+        if (m_processProtectEnabledCheck != nullptr && m_processProtectEnabledCheck->isChecked())
+        {
+            globalFlags |= KSWORD_ARK_PROCESS_PROTECT_FLAG_ENABLED;
+        }
+        if (m_processProtectLogCheck != nullptr && m_processProtectLogCheck->isChecked())
+        {
+            globalFlags |= KSWORD_ARK_PROCESS_PROTECT_FLAG_LOG_BLOCKED;
+        }
+        if (m_processProtectTrustSystemCheck != nullptr && m_processProtectTrustSystemCheck->isChecked())
+        {
+            globalFlags |= KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_SYSTEM;
+        }
+        if (m_processProtectTrustPeersCheck != nullptr && m_processProtectTrustPeersCheck->isChecked())
+        {
+            globalFlags |= KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_PROTECTED_PEERS;
+        }
+        return globalFlags;
+    }
+
+    std::vector<KSWORD_ARK_PROCESS_PROTECT_RULE> collectProcessProtectRulesFromUi() const
+    {
+        // 输入：规则表格；处理：逐行装配共享协议行，ruleId 按行序重新编号；
+        // 返回：可直接交给 ArkDriverClient 的规则数组。
+        std::vector<KSWORD_ARK_PROCESS_PROTECT_RULE> ruleList;
+        if (m_processProtectRuleTable == nullptr)
+        {
+            return ruleList;
+        }
+
+        for (int rowIndex = 0; rowIndex < m_processProtectRuleTable->rowCount(); ++rowIndex)
+        {
+            const QTableWidgetItem* enabledItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Enabled));
+            const QTableWidgetItem* kindItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Kind));
+            const QTableWidgetItem* targetItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::Target));
+            const QTableWidgetItem* accessItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::AccessMask));
+            const QTableWidgetItem* threadItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::ProtectThreads));
+            const QTableWidgetItem* nameItem =
+                m_processProtectRuleTable->item(rowIndex, static_cast<int>(ProcessProtectRuleColumn::RuleName));
+            if (kindItem == nullptr || targetItem == nullptr || accessItem == nullptr)
+            {
+                continue;
+            }
+
+            KSWORD_ARK_PROCESS_PROTECT_RULE protectRule{};
+            protectRule.ruleId = static_cast<unsigned long>(rowIndex) + 1UL;
+            protectRule.targetKind = static_cast<unsigned long>(kindItem->data(Qt::UserRole).toUInt());
+            protectRule.protectAccessMask = static_cast<unsigned long>(accessItem->data(Qt::UserRole).toUInt());
+            if (enabledItem != nullptr && enabledItem->checkState() == Qt::Checked)
+            {
+                protectRule.flags |= KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_ENABLED;
+            }
+            if (threadItem != nullptr && threadItem->checkState() == Qt::Checked)
+            {
+                protectRule.flags |= KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_PROTECT_THREADS;
+            }
+            if (protectRule.targetKind == KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID)
+            {
+                protectRule.targetProcessId = static_cast<unsigned long>(targetItem->data(Qt::UserRole).toUInt());
+            }
+            else
+            {
+                processProtectCopyQStringToFixedWide(
+                    targetItem->text(), protectRule.targetImage, KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS);
+            }
+            processProtectCopyQStringToFixedWide(
+                nameItem != nullptr ? nameItem->text() : QString(),
+                protectRule.ruleName,
+                KSWORD_ARK_PROCESS_PROTECT_NAME_CHARS);
+
+            ruleList.push_back(protectRule);
+        }
+        return ruleList;
+    }
+
+    std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED> collectProcessProtectTrustedFromUi() const
+    {
+        std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED> trustedList;
+        if (m_processProtectTrustedTable == nullptr)
+        {
+            return trustedList;
+        }
+
+        for (int rowIndex = 0; rowIndex < m_processProtectTrustedTable->rowCount(); ++rowIndex)
+        {
+            const QTableWidgetItem* kindItem =
+                m_processProtectTrustedTable->item(rowIndex, static_cast<int>(ProcessProtectTrustedColumn::Kind));
+            const QTableWidgetItem* targetItem =
+                m_processProtectTrustedTable->item(rowIndex, static_cast<int>(ProcessProtectTrustedColumn::Target));
+            if (kindItem == nullptr || targetItem == nullptr)
+            {
+                continue;
+            }
+
+            KSWORD_ARK_PROCESS_PROTECT_TRUSTED trustedEntry{};
+            trustedEntry.flags = KSWORD_ARK_PROCESS_PROTECT_TRUSTED_FLAG_ENABLED;
+            trustedEntry.kind = static_cast<unsigned long>(kindItem->data(Qt::UserRole).toUInt());
+            if (trustedEntry.kind == KSWORD_ARK_PROCESS_PROTECT_TARGET_KIND_PID)
+            {
+                trustedEntry.processId = static_cast<unsigned long>(targetItem->data(Qt::UserRole).toUInt());
+            }
+            else
+            {
+                processProtectCopyQStringToFixedWide(
+                    targetItem->text(), trustedEntry.image, KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS);
+            }
+            trustedList.push_back(trustedEntry);
+        }
+        return trustedList;
+    }
+
+    void setProcessProtectStatusText(const QString& statusText)
+    {
+        if (m_processProtectStatusLabel != nullptr)
+        {
+            m_processProtectStatusLabel->setText(statusText);
+        }
+    }
+
+    void applyProcessProtectToDriver()
+    {
+        // 输入：当前表格与开关；处理：整表下发到 R0；
+        // 返回：无；成功后立即回读一次，让统计与能力状态与驱动对齐。
+        const std::vector<KSWORD_ARK_PROCESS_PROTECT_RULE> ruleList = collectProcessProtectRulesFromUi();
+        const std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED> trustedList = collectProcessProtectTrustedFromUi();
+        const quint32 globalFlags = collectProcessProtectGlobalFlags();
+
+        const ksword::ark::DriverClient driverClient;
+        const ksword::ark::IoResult ioResult =
+            driverClient.setProcessProtectConfig(globalFlags, ruleList, trustedList);
+        if (!ioResult.ok)
+        {
+            const QString detailText = callbackRuleIoMessageText(QString::fromStdString(ioResult.message));
+            setProcessProtectStatusText(
+                kernelText("kernel.callback.intercept.process_protect.status.apply_failed", QStringLiteral("应用失败：error=%1"))
+                .arg(ioResult.win32Error));
+            appendAppLog(
+                kernelText("kernel.callback.intercept.process_protect.log.apply_failed", QStringLiteral("进程保护配置应用失败：error=%1，detail=%2"))
+                .arg(ioResult.win32Error)
+                .arg(detailText));
+            QMessageBox::warning(
+                m_hostPage,
+                kernelText("kernel.callback.intercept.process_protect.title", QStringLiteral("进程保护")),
+                kernelText("kernel.callback.intercept.process_protect.error.apply_to_driver", QStringLiteral("应用到驱动失败，error=%1。"))
+                .arg(ioResult.win32Error));
+            return;
+        }
+
+        appendAppLog(
+            kernelText("kernel.callback.intercept.process_protect.log.applied", QStringLiteral("进程保护配置已应用：rules=%1，trusted=%2，flags=0x%3。"))
+            .arg(static_cast<qulonglong>(ruleList.size()))
+            .arg(static_cast<qulonglong>(trustedList.size()))
+            .arg(globalFlags, 8, 16, QChar('0')));
+        refreshProcessProtectFromDriver();
+    }
+
+    void clearProcessProtectAndApply()
+    {
+        if (m_processProtectRuleTable != nullptr)
+        {
+            m_processProtectRuleTable->setRowCount(0);
+        }
+        if (m_processProtectTrustedTable != nullptr)
+        {
+            m_processProtectTrustedTable->setRowCount(0);
+        }
+        if (m_processProtectEnabledCheck != nullptr)
+        {
+            m_processProtectEnabledCheck->setChecked(false);
+        }
+        applyProcessProtectToDriver();
+    }
+
+    void refreshProcessProtectFromDriver()
+    {
+        // 输入：无；处理：回读 R0 当前配置并重建两张表；
+        // 返回：无；失败只更新状态栏与日志，不清空本地编辑内容。
+        const ksword::ark::DriverClient driverClient;
+        const ksword::ark::ProcessProtectStateResult queryResult = driverClient.queryProcessProtectState();
+        if (!queryResult.io.ok)
+        {
+            const QString detailText = callbackRuleIoMessageText(QString::fromStdString(queryResult.io.message));
+            setProcessProtectStatusText(
+                kernelText("kernel.callback.intercept.process_protect.status.refresh_failed", QStringLiteral("刷新失败：error=%1"))
+                .arg(queryResult.io.win32Error));
+            appendAppLog(
+                kernelText("kernel.callback.intercept.process_protect.log.refresh_failed", QStringLiteral("进程保护状态刷新失败：error=%1，detail=%2"))
+                .arg(queryResult.io.win32Error)
+                .arg(detailText));
+            return;
+        }
+
+        const KSWORD_ARK_PROCESS_PROTECT_STATE_RESPONSE& stateResponse = queryResult.response;
+        if (m_processProtectEnabledCheck != nullptr)
+        {
+            m_processProtectEnabledCheck->setChecked((stateResponse.globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_ENABLED) != 0U);
+        }
+        if (m_processProtectLogCheck != nullptr)
+        {
+            m_processProtectLogCheck->setChecked((stateResponse.globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_LOG_BLOCKED) != 0U);
+        }
+        if (m_processProtectTrustSystemCheck != nullptr)
+        {
+            m_processProtectTrustSystemCheck->setChecked((stateResponse.globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_SYSTEM) != 0U);
+        }
+        if (m_processProtectTrustPeersCheck != nullptr)
+        {
+            m_processProtectTrustPeersCheck->setChecked((stateResponse.globalFlags & KSWORD_ARK_PROCESS_PROTECT_FLAG_TRUST_PROTECTED_PEERS) != 0U);
+        }
+
+        if (m_processProtectRuleTable != nullptr)
+        {
+            m_processProtectRuleTable->setRowCount(0);
+        }
+        const unsigned long safeRuleCount =
+            std::min<unsigned long>(stateResponse.ruleCount, KSWORD_ARK_PROCESS_PROTECT_MAX_RULES);
+        for (unsigned long ruleIndex = 0UL; ruleIndex < safeRuleCount; ++ruleIndex)
+        {
+            const KSWORD_ARK_PROCESS_PROTECT_RULE& protectRule = stateResponse.rules[ruleIndex];
+            appendProcessProtectRuleRow(
+                static_cast<quint32>(protectRule.targetKind),
+                static_cast<quint32>(protectRule.targetProcessId),
+                processProtectFixedWideToQString(protectRule.targetImage, KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS),
+                static_cast<quint32>(protectRule.protectAccessMask),
+                (protectRule.flags & KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_PROTECT_THREADS) != 0UL,
+                (protectRule.flags & KSWORD_ARK_PROCESS_PROTECT_RULE_FLAG_ENABLED) != 0UL,
+                processProtectFixedWideToQString(protectRule.ruleName, KSWORD_ARK_PROCESS_PROTECT_NAME_CHARS),
+                static_cast<qint64>(stateResponse.ruleHitCounts[ruleIndex]));
+        }
+
+        if (m_processProtectTrustedTable != nullptr)
+        {
+            m_processProtectTrustedTable->setRowCount(0);
+        }
+        const unsigned long safeTrustedCount =
+            std::min<unsigned long>(stateResponse.trustedCount, KSWORD_ARK_PROCESS_PROTECT_MAX_TRUSTED);
+        for (unsigned long trustedIndex = 0UL; trustedIndex < safeTrustedCount; ++trustedIndex)
+        {
+            const KSWORD_ARK_PROCESS_PROTECT_TRUSTED& trustedEntry = stateResponse.trusted[trustedIndex];
+            appendProcessProtectTrustedRow(
+                static_cast<quint32>(trustedEntry.kind),
+                static_cast<quint32>(trustedEntry.processId),
+                processProtectFixedWideToQString(trustedEntry.image, KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS));
+        }
+
+        setProcessProtectStatusText(buildProcessProtectStatusText(stateResponse));
+    }
+
+    // buildProcessProtectStatusText：
+    // - 输入：R0 状态包；
+    // - 处理：拼接能力状态、计数器和最近一次拦截；
+    // - 返回：状态栏展示文本。
+    QString buildProcessProtectStatusText(const KSWORD_ARK_PROCESS_PROTECT_STATE_RESPONSE& stateResponse) const
+    {
+        QStringList statusParts;
+        if (stateResponse.capabilityStatus == KSWORD_ARK_PROCESS_PROTECT_STATUS_CALLBACK_UNAVAILABLE)
+        {
+            statusParts << kernelText("kernel.callback.intercept.process_protect.status.callback_unavailable",
+                QStringLiteral("对象回调未注册（status=0x%1），本机无法执行进程保护。"))
+                .arg(static_cast<quint32>(stateResponse.objectCallbackStatus), 8, 16, QChar('0'));
+        }
+        else
+        {
+            statusParts << kernelText("kernel.callback.intercept.process_protect.status.summary",
+                QStringLiteral("已从驱动刷新：规则 %1 条，信任 %2 条，配置版本 %3。"))
+                .arg(stateResponse.ruleCount)
+                .arg(stateResponse.trustedCount)
+                .arg(static_cast<qulonglong>(stateResponse.configVersion));
+        }
+
+        statusParts << kernelText("kernel.callback.intercept.process_protect.status.counters",
+            QStringLiteral("判定 %1 次，削权 %2 次，信任放行 %3 次。"))
+            .arg(static_cast<qulonglong>(stateResponse.evaluatedCount))
+            .arg(static_cast<qulonglong>(stateResponse.strippedCount))
+            .arg(static_cast<qulonglong>(stateResponse.trustedBypassCount));
+
+        if (stateResponse.lastBlockedUtc100ns != 0ULL)
+        {
+            const QString initiatorText =
+                processProtectFixedWideToQString(stateResponse.lastBlockedInitiatorImage, KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS);
+            const QString targetText =
+                processProtectFixedWideToQString(stateResponse.lastBlockedTargetImage, KSWORD_ARK_PROCESS_PROTECT_IMAGE_CHARS);
+            statusParts << kernelText("kernel.callback.intercept.process_protect.status.last_blocked",
+                QStringLiteral("最近一次：%1 发起方 PID %2（%3）访问 PID %4（%5），规则 %6，0x%7 → 0x%8。"))
+                .arg(utc100nsToDisplayText(static_cast<quint64>(stateResponse.lastBlockedUtc100ns)))
+                .arg(stateResponse.lastBlockedInitiatorPid)
+                .arg(initiatorText.isEmpty() ? QStringLiteral("-") : initiatorText)
+                .arg(stateResponse.lastBlockedTargetPid)
+                .arg(targetText.isEmpty() ? QStringLiteral("-") : targetText)
+                .arg(stateResponse.lastBlockedRuleId)
+                .arg(stateResponse.lastBlockedOriginalAccess, 8, 16, QChar('0'))
+                .arg(stateResponse.lastBlockedGrantedAccess, 8, 16, QChar('0'));
+        }
+        return statusParts.join(QLatin1Char(' '));
     }
 
     void createRuleTableTab(quint32 callbackType, const QString& titleText)
@@ -4695,6 +5695,29 @@ private:
     QPushButton* m_minifilterBypassRefreshButton = nullptr;
     QLabel* m_minifilterBypassStatusLabel = nullptr;
     QTableWidget* m_minifilterBypassPidTable = nullptr;
+
+    QCheckBox* m_processProtectEnabledCheck = nullptr;
+    QCheckBox* m_processProtectLogCheck = nullptr;
+    QCheckBox* m_processProtectTrustSystemCheck = nullptr;
+    QCheckBox* m_processProtectTrustPeersCheck = nullptr;
+    QComboBox* m_processProtectKindCombo = nullptr;
+    QLineEdit* m_processProtectTargetEdit = nullptr;
+    QComboBox* m_processProtectPresetCombo = nullptr;
+    QCheckBox* m_processProtectThreadsCheck = nullptr;
+    QLineEdit* m_processProtectRuleNameEdit = nullptr;
+    QPushButton* m_processProtectAddRuleButton = nullptr;
+    QPushButton* m_processProtectApplyPresetButton = nullptr;
+    QPushButton* m_processProtectRemoveRuleButton = nullptr;
+    QTableWidget* m_processProtectRuleTable = nullptr;
+    QComboBox* m_processProtectTrustedKindCombo = nullptr;
+    QLineEdit* m_processProtectTrustedTargetEdit = nullptr;
+    QPushButton* m_processProtectTrustedAddButton = nullptr;
+    QPushButton* m_processProtectTrustedRemoveButton = nullptr;
+    QTableWidget* m_processProtectTrustedTable = nullptr;
+    QPushButton* m_processProtectApplyButton = nullptr;
+    QPushButton* m_processProtectRefreshButton = nullptr;
+    QPushButton* m_processProtectClearButton = nullptr;
+    QLabel* m_processProtectStatusLabel = nullptr;
 
     QPlainTextEdit* m_appLogEditor = nullptr;
     QPlainTextEdit* m_eventLogEditor = nullptr;

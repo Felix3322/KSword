@@ -22,6 +22,7 @@
 #include "../../../shared/driver/KswordArkMemoryIoctl.h"
 #include "../../../shared/driver/KswordArkMutationIoctl.h"
 #include "../../../shared/driver/KswordArkProcessIoctl.h"
+#include "../../../shared/driver/KswordArkProcessProtectIoctl.h"
 #include "../../../shared/driver/KswordArkThreadIoctl.h"
 #include "../../../shared/driver/KswordArkWorkQueueIoctl.h"
 #include "../../../shared/driver/KswordArkAlpcIoctl.h"
@@ -1931,6 +1932,17 @@ namespace ksword::ark
     {
         IoResult io;
         KSWORD_ARK_MINIFILTER_BYPASS_PID_RESPONSE response{};
+    };
+
+    // ProcessProtectStateResult wraps the handle-callback process protection state.
+    // 输入：无；DriverClient::queryProcessProtectState 负责填充。
+    // 处理：io 记录传输/协议结果，response 是 R0 当前生效的完整保护配置与计数器。
+    // 返回：结构本身无方法；调用方先看 io.ok，再看 response.capabilityStatus
+    //       区分"没配规则"和"这台机器上句柄回调挂不上"。
+    struct ProcessProtectStateResult
+    {
+        IoResult io;
+        KSWORD_ARK_PROCESS_PROTECT_STATE_RESPONSE response{};
     };
 
     // CallbackRemoveResult wraps the legacy external-callback removal response packet.

@@ -456,6 +456,7 @@
     <ClCompile Include="ArkDriverClient\ArkRuntimeDynData.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverCapabilities.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverProcess.cpp" />
+    <ClCompile Include="ArkDriverClient\ArkDriverProcessProtect.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverWorkQueue.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverHandle.cpp" />
     <ClCompile Include="ArkDriverClient\ArkDriverAlpc.cpp" />

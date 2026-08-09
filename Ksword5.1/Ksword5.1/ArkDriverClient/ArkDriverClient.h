@@ -482,6 +482,13 @@ namespace ksword::ark
         CallbackRuntimeResult queryCallbackRuntimeState() const;
         IoResult setMinifilterBypassPids(const std::vector<std::uint32_t>& processIds) const;
         MinifilterBypassPidResult queryMinifilterBypassPids() const;
+        // 基于对象管理器句柄回调的进程保护：配置是一次性全量替换，
+        // 未出现在 rules 里的进程立即失去保护。
+        IoResult setProcessProtectConfig(
+            unsigned long globalFlags,
+            const std::vector<KSWORD_ARK_PROCESS_PROTECT_RULE>& rules,
+            const std::vector<KSWORD_ARK_PROCESS_PROTECT_TRUSTED>& trustedEntries) const;
+        ProcessProtectStateResult queryProcessProtectState() const;
         IoResult answerCallbackEvent(const KSWORD_ARK_CALLBACK_ANSWER_REQUEST& request) const;
         IoResult cancelAllPendingCallbackDecisions() const;
         CallbackRemoveResult removeExternalCallback(const KSWORD_ARK_REMOVE_EXTERNAL_CALLBACK_REQUEST& request) const;
