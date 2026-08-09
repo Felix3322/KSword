@@ -170,35 +170,6 @@ namespace
         }
     }
 
-    // kernelDockBackgroundImageReady 作用：
-    // - 输入 rawImagePath：外观设置中的背景图路径，可为绝对路径或相对 exe 目录路径；
-    // - 处理：只做轻量存在性/文件性检查，避免 KernelDock 根控件在背景图模式下强行刷实底；
-    // - 返回：背景图可用返回 true，否则返回 false。
-    bool kernelDockBackgroundImageReady(const QString& rawImagePath)
-    {
-        const QString trimmedPath = rawImagePath.trimmed();
-        if (trimmedPath.isEmpty())
-        {
-            return false;
-        }
-
-        const QString resolvedPath = QDir::isAbsolutePath(trimmedPath)
-            ? QDir::cleanPath(trimmedPath)
-            : QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(trimmedPath);
-        const QFileInfo imageFileInfo(QDir::cleanPath(resolvedPath));
-        return imageFileInfo.exists() && imageFileInfo.isFile();
-    }
-
-    // kernelDockAllowWallpaperThroughRoot 作用：
-    // - 输入：无，直接读取当前外观设置；
-    // - 处理：判断全局背景图是否可用；
-    // - 返回：true 表示 KernelDock 根/页容器应透明，false 表示保持主题实底以规避 ADS 黑底。
-    bool kernelDockAllowWallpaperThroughRoot()
-    {
-        const ks::settings::AppearanceSettings settings = ks::settings::loadAppearanceSettings();
-        return kernelDockBackgroundImageReady(settings.backgroundImagePath);
-    }
-
     // statusLabelStyle：
     // - 作用：统一状态标签的颜色与字重。
     QString statusLabelStyle(const QString& colorHex)
@@ -384,67 +355,18 @@ QString KernelDock::displayStateSummary() const
 
 void KernelDock::initializeUi()
 {
+    // objectName 是 MainWindow 全局 QSS 的锚点
+    // （ads--CDockWidget#ksDock_kernel QWidget#KernelDockRoot ...），必须最先设置。
     setObjectName(QStringLiteral("KernelDockRoot"));
-    const bool allowWallpaperThroughRoot = kernelDockAllowWallpaperThroughRoot();
-    setAutoFillBackground(!allowWallpaperThroughRoot);
-    setAttribute(Qt::WA_StyledBackground, !allowWallpaperThroughRoot);
 
-    // rootContainerStyle 作用：
-    // - 无背景图时使用主题实底，继续规避 ADS 恢复布局后的黑色父容器；
-    // - 有背景图时只让根/页容器透明，数据视图仍保留实底，避免文字压在图片上不可读。
-    const QString rootContainerStyle = allowWallpaperThroughRoot
-        ? QStringLiteral(
-            "KernelDock#KernelDockRoot{background:transparent !important;color:%1 !important;}"
-            "KernelDock#KernelDockRoot QTabWidget::pane{background:transparent !important;border:1px solid %2;}"
-            "KernelDock#KernelDockRoot QStackedWidget,"
-            "KernelDock#KernelDockRoot QStackedWidget > QWidget{background:transparent !important;color:%1 !important;}")
-            .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::BorderHex())
-        : QStringLiteral(
-            "KernelDock#KernelDockRoot{background:%1 !important;color:%2 !important;}"
-            "KernelDock#KernelDockRoot QTabWidget::pane{background:%1 !important;border:1px solid %3;}"
-            "KernelDock#KernelDockRoot QStackedWidget,"
-            "KernelDock#KernelDockRoot QStackedWidget > QWidget{background:%1 !important;color:%2 !important;}")
-            .arg(KswordTheme::SurfaceHex())
-            .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::BorderHex());
-
-    // contentViewStyle 作用：
-    // - 背景图模式下表格/树/列表透明，避免内核 Dock 内部形成大块遮罩；
-    // - 无背景图时保持主题实底。
-    const QString contentViewStyle = allowWallpaperThroughRoot
-        ? QStringLiteral(
-            "KernelDock#KernelDockRoot QTableView,"
-            "KernelDock#KernelDockRoot QTableWidget,"
-            "KernelDock#KernelDockRoot QTreeView,"
-            "KernelDock#KernelDockRoot QTreeWidget,"
-            "KernelDock#KernelDockRoot QListView,"
-            "KernelDock#KernelDockRoot QListWidget,"
-            "KernelDock#KernelDockRoot QAbstractScrollArea,"
-            "KernelDock#KernelDockRoot QAbstractScrollArea > QWidget,"
-            "KernelDock#KernelDockRoot QAbstractScrollArea::viewport{"
-            "  background:transparent !important;"
-            "  background-color:transparent !important;"
-            "  alternate-background-color:transparent !important;"
-            "  color:%1 !important;"
-            "}")
-            .arg(KswordTheme::TextPrimaryHex())
-        : QStringLiteral(
-            "KernelDock#KernelDockRoot QTableView,"
-            "KernelDock#KernelDockRoot QTableWidget,"
-            "KernelDock#KernelDockRoot QTreeView,"
-            "KernelDock#KernelDockRoot QTreeWidget,"
-            "KernelDock#KernelDockRoot QListView,"
-            "KernelDock#KernelDockRoot QListWidget{"
-            "  background:%1 !important;"
-            "  alternate-background-color:%3 !important;"
-            "  color:%2 !important;"
-            "}")
-            .arg(KswordTheme::SurfaceHex())
-            .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::SurfaceAltHex());
-
-    setStyleSheet(rootContainerStyle + contentViewStyle);
+    // 这里刻意不设 styleSheet，也不设 autoFillBackground / WA_StyledBackground：
+    // 背景透明与否由 MainWindow 单点决定（判据是“背景图已就绪 或 窗口启用了透明背景”），
+    // 通过全局 QSS 与挂载时的属性设置下发，主题或外观变更时会整体重建。
+    //
+    // 这里曾经自带一份规则完全相同、只是选择器前缀不同的实现，判据却只检查“背景图文件是否存在”，
+    // 且路径只按 exe 目录解析。于是“开了透明窗口背景但没有背景图”这一最常见的配置被判成不透明；
+    // 而控件自身的 styleSheet 优先级高于祖先，这份错判会把全局 QSS 的正确规则整个压掉，
+    // 表现就是内核页在大多数情况下都不透明（issue #161）。判据只保留一处，才不会再次跑偏。
 
     m_rootLayout = new QVBoxLayout(this);
     m_rootLayout->setContentsMargins(6, 6, 6, 6);
