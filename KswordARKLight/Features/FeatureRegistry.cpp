@@ -3,6 +3,7 @@
 #include "Driver/DriverFeature.h"
 #include "File/FileFeature.h"
 #include "Hardware/HardwareFeature.h"
+#include "HardwareStats/HardwareStatsFeature.h"
 #include "Handle/HandleFeature.h"
 #include "Kernel/KernelFeature.h"
 #include "Memory/MemoryFeature.h"
@@ -15,6 +16,7 @@
 #include "Registry/RegistryFeature.h"
 #include "Service/ServiceFeature.h"
 #include "Startup/StartupFeature.h"
+#include "SysTools/SysToolsFeature.h"
 #include "Window/WindowFeature.h"
 #include "WindowTools/WindowToolsFeature.h"
 
@@ -38,6 +40,8 @@ std::vector<Ksword::Ui::ModuleDescriptor> GetModuleDescriptors() {
         { 40015, L"权限", L"当前进程令牌的身份、完整性级别、组与全部特权，可启用/禁用并标注越权类特权。", Privilege::CreatePrivilegeFeaturePage },
         { 40016, L"网络工具", L"TCP/UDP 连接管理与结束连接、ping/路由跟踪/DNS 诊断、防火墙规则只读枚举。", NetTools::CreateNetToolsFeaturePage },
         { 40017, L"窗口工具", L"剪贴板格式与占有者、窗口捕获保护、窗口层级与样式位诊断、全局热键占用探测。", WindowTools::CreateWindowToolsFeaturePage },
+        { 40018, L"系统工具", L"文件占用扫描、事件日志查看、右键菜单扩展禁用与恢复、系统时间与时区信息。", SysTools::CreateSysToolsFeaturePage },
+        { 40019, L"性能与总线", L"PDH 性能监控、磁盘活动、USB 拓扑与 PCI/ACPI 总线设备资源。", HardwareStats::CreateHardwareStatsFeaturePage },
         { 40011, L"网络", L"Network Stack 审计入口，当前显示 AFD/TCPIP/NSI/WFP 只读审计状态和后续 R0 接入点。", Network::CreateNetworkFeaturePage },
         { 40012, L"句柄", L"HandleTable/ObjectHeader/ObjectType 只读审计，复用 ArkDriverClient 句柄查询协议。", Handle::CreateHandleFeaturePage },
         { 40013, L"杂项安全", L"Security / CI / VBS / Hyper-V 只读审计入口，显示 R3 证据与 R0 capability 状态。", Misc::CreateMiscFeaturePage }

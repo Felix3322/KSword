@@ -193,12 +193,23 @@ void ResolveClsidDetails(ContextMenuEntry& entry, const std::wstring& rawValue) 
 
     const std::wstring clsidKey = L"CLSID\\" + clsid;
     entry.displayText = ReadRegistryString(HKEY_CLASSES_ROOT, clsidKey, nullptr);
+
+    // InprocServer32 holds a bare module path, so it is taken verbatim. Running
+    // it through the command-line splitter would truncate every DLL under a
+    // directory with a space in its name -- "C:\Program Files\..." being the
+    // overwhelmingly common case -- and report a present module as missing.
     std::wstring server = ReadRegistryString(HKEY_CLASSES_ROOT, clsidKey + L"\\InprocServer32", nullptr);
-    if (server.empty()) {
-        // A context-menu handler is normally in-process, but out-of-process
-        // registrations do exist and hiding them would leave a blank row.
-        server = ReadRegistryString(HKEY_CLASSES_ROOT, clsidKey + L"\\LocalServer32", nullptr);
+    if (!server.empty()) {
+        entry.modulePath = server;
+        entry.moduleFile = TrimQuotes(server);
+        entry.moduleExists = FileIsPresent(entry.moduleFile);
+        return;
     }
+
+    // A context-menu handler is normally in-process, but out-of-process
+    // registrations do exist and hiding them would leave a blank row.
+    // LocalServer32, unlike InprocServer32, really is a command line.
+    server = ReadRegistryString(HKEY_CLASSES_ROOT, clsidKey + L"\\LocalServer32", nullptr);
     if (server.empty()) {
         entry.diagnosticText += entry.diagnosticText.empty() ? L"" : L" ";
         entry.diagnosticText += L"CLSID 未注册 InprocServer32/LocalServer32。";

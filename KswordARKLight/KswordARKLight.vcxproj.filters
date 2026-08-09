@@ -55,6 +55,12 @@
     <Filter Include="Features\Registry">
       <UniqueIdentifier>{2F4146D1-40A2-5E85-9FE3-366474A60E52}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Features\HardwareStats">
+      <UniqueIdentifier>{3E8B7D42-6C19-4F58-A2D6-91B47E0F5C38}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Features\SysTools">
+      <UniqueIdentifier>{B62A9F15-4D80-47E3-8C51-2F09A6D3E874}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Features\NetTools">
       <UniqueIdentifier>{5C8D2E71-14B9-4A63-9F27-8E31D5A0C946}</UniqueIdentifier>
     </Filter>
@@ -371,6 +377,57 @@
     <ClCompile Include="Features\ProcessDetail\ProcessDetailPage.Token.cpp"><Filter>Features\ProcessDetail</Filter></ClCompile>
     <ClCompile Include="Features\Driver\DriverUnloadedView.cpp">
       <Filter>Features\Driver</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\BusDeviceView.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\DeviceTopologyEnumerator.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\DiskActivityView.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\HardwareStatsFeature.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\HardwareStatsModel.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\PerformanceSampler.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\PerformanceView.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\HardwareStats\UsbTopologyView.cpp">
+      <Filter>Features\HardwareStats</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\ContextMenuScanner.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\ContextMenuView.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\EventLogReader.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\EventLogView.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\FileHolderScanner.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\FileHolderView.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\SysToolsFeature.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\SystemTimeInfo.cpp">
+      <Filter>Features\SysTools</Filter>
+    </ClCompile>
+    <ClCompile Include="Features\SysTools\SystemTimeView.cpp">
+      <Filter>Features\SysTools</Filter>
     </ClCompile>
     <ClCompile Include="Features\WindowTools\WindowToolsCaptureView.cpp">
       <Filter>Features\WindowTools</Filter>
@@ -898,6 +955,57 @@
     </ClInclude>
     <ClInclude Include="Features\Driver\DriverUnloadedView.h">
       <Filter>Features\Driver</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\BusDeviceView.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\DeviceTopologyEnumerator.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\DiskActivityView.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\HardwareStatsFeature.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\HardwareStatsModel.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\PerformanceSampler.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\PerformanceView.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\HardwareStats\UsbTopologyView.h">
+      <Filter>Features\HardwareStats</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\ContextMenuScanner.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\ContextMenuView.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\EventLogReader.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\EventLogView.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\FileHolderScanner.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\FileHolderView.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\SysToolsFeature.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\SystemTimeInfo.h">
+      <Filter>Features\SysTools</Filter>
+    </ClInclude>
+    <ClInclude Include="Features\SysTools\SystemTimeView.h">
+      <Filter>Features\SysTools</Filter>
     </ClInclude>
     <ClInclude Include="Features\WindowTools\WindowToolsCaptureView.h">
       <Filter>Features\WindowTools</Filter>

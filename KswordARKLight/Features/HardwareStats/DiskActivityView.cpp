@@ -247,7 +247,9 @@ void BeginSample(DiskActivityViewState& state) {
             SYSTEMTIME now{};
             ::GetLocalTime(&now);
             wchar_t stamp[32] = {};
-            swprintf_s(stamp, L"%02u:%02u:%02u", now.wHour, now.wMinute, now.wSecond);
+            swprintf_s(stamp, L"%02u:%02u:%02u",
+                static_cast<unsigned>(now.wHour), static_cast<unsigned>(now.wMinute),
+                static_cast<unsigned>(now.wSecond));
             state.statusText = L"共 " + std::to_wstring(snapshot->disks.size()) + L" 个磁盘实例（含 _Total 汇总行），最近采样 " +
                 stamp + L"。" + snapshot->counterResolutionText;
             if (state.paused) {
@@ -525,6 +527,18 @@ bool EnsureDiskActivityViewClass() {
     return registered;
 }
 
+DiskActivityViewState* VerifiedState(HWND view) {
+    if (!view) {
+        return nullptr;
+    }
+    wchar_t className[64] = {};
+    if (::GetClassNameW(view, className, ARRAYSIZE(className)) <= 0 ||
+        std::wcscmp(className, kDiskActivityViewClass) != 0) {
+        return nullptr;
+    }
+    return StateFromWindow(view);
+}
+
 } // namespace
 
 HWND CreateDiskActivityView(HWND parent, const RECT& bounds) {
@@ -537,16 +551,14 @@ HWND CreateDiskActivityView(HWND parent, const RECT& bounds) {
         parent, nullptr, ::GetModuleHandleW(nullptr), nullptr);
 }
 
+void RefreshDiskActivityView(HWND view) {
+    if (DiskActivityViewState* state = VerifiedState(view)) {
+        BeginSample(*state);
+    }
+}
+
 std::wstring ExportDiskActivityViewTsv(HWND view) {
-    if (!view) {
-        return {};
-    }
-    wchar_t className[64] = {};
-    if (::GetClassNameW(view, className, ARRAYSIZE(className)) <= 0 ||
-        std::wcscmp(className, kDiskActivityViewClass) != 0) {
-        return {};
-    }
-    auto* state = StateFromWindow(view);
+    DiskActivityViewState* state = VerifiedState(view);
     if (!state) {
         return {};
     }

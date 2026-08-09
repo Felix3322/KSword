@@ -338,6 +338,12 @@ std::wstring FormatDeviceResources(DEVINST devInst) {
         text += part;
     };
 
+    // Message-signalled interrupts are collected separately. A single PCIe
+    // function routinely allocates a dozen or more of them, and listing each one
+    // inline would push the memory and I/O ranges -- the parts an operator
+    // actually reads -- off the end of the cell.
+    std::vector<long> messageIrqs;
+
     RES_DES current = static_cast<RES_DES>(logConf);
     bool ownsCurrent = false;
     for (;;) {
@@ -402,8 +408,17 @@ std::wstring FormatDeviceResources(DEVINST devInst) {
         case ResType_IRQ:
             if (data.size() >= sizeof(IRQ_DES)) {
                 const auto* description = reinterpret_cast<const IRQ_DES*>(data.data());
-                swprintf_s(buffer, L"IRQ %lu", static_cast<unsigned long>(description->IRQD_Alloc_Num));
-                append(buffer);
+                const ULONG allocated = description->IRQD_Alloc_Num;
+                // A message-signalled interrupt has no wire, so the PnP manager
+                // reports a vector that is negative when read as a signed value.
+                // Printing the raw unsigned number instead would show 4294967253
+                // where Device Manager shows -43.
+                if (allocated >= 0x80000000UL) {
+                    messageIrqs.push_back(static_cast<long>(static_cast<LONG>(allocated)));
+                } else {
+                    swprintf_s(buffer, L"IRQ %lu", static_cast<unsigned long>(allocated));
+                    append(buffer);
+                }
             }
             break;
         case ResType_BusNumber:
@@ -418,6 +433,21 @@ std::wstring FormatDeviceResources(DEVINST devInst) {
         ::CM_Free_Res_Des_Handle(current);
     }
     ::CM_Free_Log_Conf_Handle(logConf);
+
+    if (!messageIrqs.empty()) {
+        std::sort(messageIrqs.begin(), messageIrqs.end());
+        wchar_t buffer[128] = {};
+        if (messageIrqs.size() <= 4) {
+            for (const long vector : messageIrqs) {
+                swprintf_s(buffer, L"IRQ %ld (MSI)", vector);
+                append(buffer);
+            }
+        } else {
+            swprintf_s(buffer, L"IRQ %ld…%ld (MSI ×%zu)",
+                messageIrqs.front(), messageIrqs.back(), messageIrqs.size());
+            append(buffer);
+        }
+    }
     return text;
 }
 
@@ -505,14 +535,6 @@ UsbNode UsbNodeFromDevInfo(HDEVINFO set,
     node.revision = ExtractHexField(identitySource, L"REV_", 4);
     node.serialNumber = SerialNumberFromInstanceId(node.instanceId);
 
-    DWORD port = 0;
-    if (QueryUint32Property(set, info, kPropAddress, port)) {
-        node.portText = std::to_wstring(port);
-    } else if (!node.locationInfo.empty()) {
-        // Some hubs report only the textual location, which still names the port.
-        node.portText = node.locationInfo;
-    }
-
     node.statusText = DescribeDeviceStatus(info.DevInst, node.problemText);
     if (controllers.count(node.instanceId) != 0) {
         node.kind = UsbNodeKind::HostController;
@@ -520,6 +542,18 @@ UsbNode UsbNodeFromDevInfo(HDEVINFO set,
         node.kind = UsbNodeKind::Hub;
     } else {
         node.kind = UsbNodeKind::Device;
+    }
+
+    // DEVPKEY_Device_Address is the hub port number only for devnodes that hang
+    // off a hub. A host controller is a PCI function, where the same property
+    // holds the packed PCI device/function pair -- rendering that as a port would
+    // put a number like 1310720 in the port column.
+    DWORD port = 0;
+    if (node.kind != UsbNodeKind::HostController && QueryUint32Property(set, info, kPropAddress, port)) {
+        node.portText = std::to_wstring(port);
+    } else if (!node.locationInfo.empty()) {
+        // Some hubs report only the textual location, which still names the port.
+        node.portText = node.locationInfo;
     }
     return node;
 }

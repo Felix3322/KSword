@@ -121,26 +121,43 @@ const DriveDeviceMap& DriveMap() {
     return map;
 }
 
-// ObjectNameProbe runs NtQueryObject(ObjectNameInformation) on a helper thread
-// so a hung call cannot take the sweep with it.
+// ProbeOutcome distinguishes how a name query ended, because the sweep counts a
+// deliberately skipped non-disk handle differently from one it actually
+// inspected, and an abandoned query differently again.
+enum class ProbeOutcome {
+    Named,      // The object name was returned.
+    NotDisk,    // Filtered out before naming; never reached NtQueryObject.
+    Failed,     // The query ran and returned nothing usable.
+    TimedOut    // The helper thread was abandoned.
+};
+
+// ObjectNameProbe runs the blocking part of the sweep on a helper thread so a
+// hung call cannot take the sweep with it.
 //
-// Avoidance strategy, in the order it is applied by the sweep:
+// Avoidance strategy, in the order it is applied:
 //   1. Only handles whose object type index matches the File type are touched,
 //      so no other object class is ever named.
-//   2. Handles carrying the three granted-access masks that a synchronous named
-//      pipe end almost always shows (0x0012019F / 0x00120189 / 0x00100000) are
-//      dropped before duplication -- this is the classic pipe-deadlock pattern.
-//   3. Every survivor is duplicated and passed through GetFileType(). Only
-//      FILE_TYPE_DISK continues; pipes, consoles and character devices, which
-//      are the objects whose name query blocks on a peer that never replies, are
-//      answered by the I/O manager from the device object and never reach
-//      NtQueryObject.
-//   4. Whatever still gets through runs here, on a dedicated helper thread with
-//      a bounded wait. On timeout the helper is abandoned rather than killed:
-//      TerminateThread on a thread parked inside the object manager would leave
-//      process-wide locks held and can deadlock the whole application, which is
-//      strictly worse than leaking one thread and one handle. A replacement
-//      helper is created for the next handle, so the sweep always finishes.
+//   2. Every survivor is duplicated and, on the helper thread, passed through
+//      GetFileType(). Only FILE_TYPE_DISK continues. Pipes, consoles and
+//      character devices -- the objects whose name query blocks waiting on a
+//      peer that is under no obligation to answer -- are rejected here.
+//      GetFileType runs on the helper rather than on the sweep thread so that
+//      even it is covered by the timeout below.
+//   3. Whatever gets through is named on the same helper, with a bounded wait.
+//      On timeout the helper is abandoned rather than killed: TerminateThread on
+//      a thread parked inside the object manager would leave process-wide locks
+//      held and can deadlock the whole application, which is strictly worse than
+//      leaking one thread and one handle. A replacement helper is created for the
+//      next handle, so the sweep always finishes.
+//
+// Note on what is deliberately NOT done: the widely copied trick of dropping
+// handles whose granted access is 0x0012019F / 0x00120189 / 0x00100000 is not
+// used. Those masks are supposed to identify synchronous pipe ends, but
+// 0x0012019F is simply FILE_GENERIC_READ | FILE_GENERIC_WRITE -- what every
+// ordinary file opened for read/write carries -- so the heuristic silently
+// discards the majority of the handles this page exists to find. The type-index
+// and GetFileType gates above achieve the same protection without the false
+// negatives.
 class ObjectNameProbe final {
 public:
     explicit ObjectNameProbe(NtQueryObjectFn queryObject) : queryObject_(queryObject) {}
@@ -155,17 +172,17 @@ public:
     // queryName takes ownership of duplicatedHandle in every path, including
     // the timeout path where the abandoned helper closes it later. The caller
     // must never close the handle itself.
-    bool queryName(HANDLE duplicatedHandle, std::wstring& nameOut) {
+    ProbeOutcome queryName(HANDLE duplicatedHandle, std::wstring& nameOut) {
         nameOut.clear();
         if (!queryObject_ || !duplicatedHandle) {
             if (duplicatedHandle) {
                 ::CloseHandle(duplicatedHandle);
             }
-            return false;
+            return ProbeOutcome::Failed;
         }
         if (!ensureChannel()) {
             ::CloseHandle(duplicatedHandle);
-            return false;
+            return ProbeOutcome::Failed;
         }
 
         channel_->target = duplicatedHandle;
@@ -173,13 +190,13 @@ public:
         if (::WaitForSingleObject(channel_->replyEvent, kNameQueryTimeoutMs) != WAIT_OBJECT_0) {
             ++timeoutCount_;
             abandonChannel();
-            return false;
+            return ProbeOutcome::TimedOut;
         }
-        if (!channel_->ok) {
-            return false;
+        if (channel_->outcome != ProbeOutcome::Named) {
+            return channel_->outcome;
         }
         nameOut = channel_->name;
-        return true;
+        return ProbeOutcome::Named;
     }
 
     std::uint32_t timeoutCount() const noexcept {
@@ -192,7 +209,7 @@ private:
         HANDLE replyEvent = nullptr;
         HANDLE target = nullptr;
         std::wstring name;
-        bool ok = false;
+        ProbeOutcome outcome = ProbeOutcome::Failed;
         std::atomic_bool shutdown{ false };
 
         ~Channel() {
@@ -247,12 +264,21 @@ private:
                 HANDLE target = channel->target;
                 channel->target = nullptr;
                 std::wstring name;
-                const bool ok = target != nullptr && QueryNameDirect(queryObject, target, name);
+                ProbeOutcome outcome = ProbeOutcome::Failed;
                 if (target) {
+                    // GetFileType is answered by the I/O manager from the device
+                    // object without dispatching an IRP, but it still runs here
+                    // rather than on the sweep thread so that the timeout covers
+                    // every kernel call made against a foreign handle.
+                    if (::GetFileType(target) != FILE_TYPE_DISK) {
+                        outcome = ProbeOutcome::NotDisk;
+                    } else if (QueryNameDirect(queryObject, target, name)) {
+                        outcome = ProbeOutcome::Named;
+                    }
                     ::CloseHandle(target);
                 }
                 channel->name = std::move(name);
-                channel->ok = ok;
+                channel->outcome = outcome;
                 ::SetEvent(channel->replyEvent);
                 // An abandoned helper reaches this point whenever the kernel
                 // finally releases it. Exiting here is what keeps a timeout from
@@ -291,13 +317,6 @@ private:
     std::shared_ptr<Channel> channel_;
     std::uint32_t timeoutCount_ = 0;
 };
-
-// IsHangProneAccessMask reports the granted-access values a synchronous pipe
-// end is created with. Naming such a handle waits for a peer that is under no
-// obligation to ever answer, so the sweep drops them without looking.
-bool IsHangProneAccessMask(const ULONG grantedAccess) {
-    return grantedAccess == 0x0012019Fu || grantedAccess == 0x00120189u || grantedAccess == 0x00100000u;
-}
 
 std::wstring FormatAccessMask(const ULONG mask) {
     struct Bit {
@@ -597,7 +616,7 @@ FileHolderScanResult ScanFileHolders(const std::wstring& targetPath, const bool 
         // PID 0 is the idle process and PID 4 is System; neither can be opened
         // for PROCESS_DUP_HANDLE from user mode, so they are counted as skipped
         // instead of producing a failed OpenProcess per handle.
-        if (processId == 0 || processId == 4 || IsHangProneAccessMask(entry.GrantedAccess)) {
+        if (processId == 0 || processId == 4) {
             ++result.skippedHandles;
             continue;
         }
@@ -621,19 +640,15 @@ FileHolderScanResult ScanFileHolders(const std::wstring& targetPath, const bool 
             continue;
         }
 
-        // GetFileType is answered by the I/O manager from the device object
-        // without dispatching an IRP, so it cannot block the way a name query
-        // on the same handle would.
-        if (::GetFileType(duplicated) != FILE_TYPE_DISK) {
-            ::CloseHandle(duplicated);
+        std::wstring objectName;
+        // queryName owns the handle from here on, timeout path included.
+        const ProbeOutcome outcome = probe.queryName(duplicated, objectName);
+        if (outcome == ProbeOutcome::NotDisk) {
             ++result.skippedHandles;
             continue;
         }
-
         ++result.inspectedHandles;
-        std::wstring objectName;
-        // queryName owns the handle from here on, timeout path included.
-        if (!probe.queryName(duplicated, objectName) || objectName.empty()) {
+        if (outcome != ProbeOutcome::Named || objectName.empty()) {
             continue;
         }
 

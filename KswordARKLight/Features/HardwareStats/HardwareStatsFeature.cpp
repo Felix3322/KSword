@@ -76,7 +76,7 @@ void SetStatus(HardwareStatsPageState& state, const std::wstring& text) {
 // paying the query-open cost again.
 void ShowChildPages(HardwareStatsPageState& state) {
     const HWND views[] = { state.performanceView, state.diskView, state.usbView, state.busView };
-    for (int index = 0; index < static_cast<int>(std::size(views)); ++index) {
+    for (int index = 0; index < static_cast<int>(ARRAYSIZE(views)); ++index) {
         if (views[index]) {
             ::ShowWindow(views[index], state.currentTab == index ? SW_SHOW : SW_HIDE);
         }
@@ -129,6 +129,16 @@ void LayoutChildren(HardwareStatsPageState& state) {
 
 void RefreshCurrentTab(HardwareStatsPageState& state) {
     switch (state.currentTab) {
+    case kPerformanceTabIndex:
+        // The sampling tabs keep their own cadence; this only pulls one extra
+        // sample forward rather than restarting the timer.
+        RefreshPerformanceView(state.performanceView);
+        SetStatus(state, L"正在立即采样性能计数器…");
+        break;
+    case kDiskTabIndex:
+        RefreshDiskActivityView(state.diskView);
+        SetStatus(state, L"正在立即采样磁盘计数器…");
+        break;
     case kUsbTabIndex:
         RefreshUsbTopologyView(state.usbView);
         SetStatus(state, L"正在重新枚举 USB 设备树…");
@@ -138,9 +148,6 @@ void RefreshCurrentTab(HardwareStatsPageState& state) {
         SetStatus(state, L"正在重新枚举总线设备…");
         break;
     default:
-        // The sampling tabs own their own cadence; telling the user where the
-        // control actually lives is better than silently doing nothing.
-        SetStatus(state, L"该页按设定间隔自动采样，可用页内的“立即刷新”按钮取样一次。");
         break;
     }
 }

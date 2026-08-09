@@ -87,9 +87,13 @@ std::wstring FormatCount(const double value) {
 
     std::wstring grouped;
     grouped.reserve(digits.size() + digits.size() / 3 + 1);
+    // The first group is whatever is left over above a multiple of three, and a
+    // separator is only due once that group has been emitted. The index >= leading
+    // guard is what keeps the unsigned subtraction from wrapping on short numbers,
+    // which would otherwise put a separator inside a two-digit value.
     const std::size_t leading = digits.size() % 3 == 0 ? 3 : digits.size() % 3;
     for (std::size_t index = 0; index < digits.size(); ++index) {
-        if (index != 0 && (index - leading) % 3 == 0) {
+        if (index >= leading && (index - leading) % 3 == 0) {
             grouped += L',';
         }
         grouped += digits[index];

@@ -254,7 +254,9 @@ void BeginSample(PerformanceViewState& state) {
             SYSTEMTIME now{};
             ::GetLocalTime(&now);
             wchar_t stamp[32] = {};
-            swprintf_s(stamp, L"%02u:%02u:%02u", now.wHour, now.wMinute, now.wSecond);
+            swprintf_s(stamp, L"%02u:%02u:%02u",
+                static_cast<unsigned>(now.wHour), static_cast<unsigned>(now.wMinute),
+                static_cast<unsigned>(now.wSecond));
             state.statusText = L"共 " + std::to_wstring(snapshot->metrics.size()) + L" 项指标，最近采样 " +
                 stamp + L"。" + state.resolutionText;
             if (state.paused) {
@@ -534,6 +536,18 @@ bool EnsurePerformanceViewClass() {
     return registered;
 }
 
+PerformanceViewState* VerifiedState(HWND view) {
+    if (!view) {
+        return nullptr;
+    }
+    wchar_t className[64] = {};
+    if (::GetClassNameW(view, className, ARRAYSIZE(className)) <= 0 ||
+        std::wcscmp(className, kPerformanceViewClass) != 0) {
+        return nullptr;
+    }
+    return StateFromWindow(view);
+}
+
 } // namespace
 
 HWND CreatePerformanceView(HWND parent, const RECT& bounds) {
@@ -546,16 +560,14 @@ HWND CreatePerformanceView(HWND parent, const RECT& bounds) {
         parent, nullptr, ::GetModuleHandleW(nullptr), nullptr);
 }
 
+void RefreshPerformanceView(HWND view) {
+    if (PerformanceViewState* state = VerifiedState(view)) {
+        BeginSample(*state);
+    }
+}
+
 std::wstring ExportPerformanceViewTsv(HWND view) {
-    if (!view) {
-        return {};
-    }
-    wchar_t className[64] = {};
-    if (::GetClassNameW(view, className, ARRAYSIZE(className)) <= 0 ||
-        std::wcscmp(className, kPerformanceViewClass) != 0) {
-        return {};
-    }
-    auto* state = StateFromWindow(view);
+    PerformanceViewState* state = VerifiedState(view);
     if (!state) {
         return {};
     }

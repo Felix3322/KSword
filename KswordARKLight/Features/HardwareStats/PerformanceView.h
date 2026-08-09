@@ -11,6 +11,11 @@ namespace Ksword::Features::HardwareStats {
 // second timer; output is the child HWND or nullptr on failure.
 HWND CreatePerformanceView(HWND parent, const RECT& bounds);
 
+// RefreshPerformanceView takes one sample immediately without disturbing the
+// automatic cadence. Input is the view HWND; nothing is returned because the
+// result arrives asynchronously.
+void RefreshPerformanceView(HWND view);
+
 // ExportPerformanceViewTsv renders the currently visible rows as TSV. Input is
 // the view HWND; output is empty when the view is not a performance view.
 std::wstring ExportPerformanceViewTsv(HWND view);
