@@ -2293,12 +2293,9 @@ namespace
     // - 亚克力重采样的合并窗口（毫秒）；
     // - 拖动与缩放会连续触发几何事件，节流后只在动作稳定时下发一次组合特性。
     constexpr int kBackdropRefreshThrottleMs = 40;
-    // kBackdropTintAlpha 作用：
-    // - 亚克力着色层不透明度（0~255），由组合特性直接混合到模糊结果上；
-    // - 数值越低越通透，越高前景文字可读性越强。
-    constexpr int kBackdropTintAlpha = 190;
-
     // AccentPolicyData 说明：对应未公开的 ACCENT_POLICY 结构体布局。
+    // 注意：该结构没有模糊半径字段，亚克力的模糊强度由 DWM 内部固定，
+    // 因此“玻璃模糊半径”设置只能作用于自绘的背景图模糊层。
     struct AccentPolicyData
     {
         DWORD accentState = 0;   // accentState：ACCENT_STATE 枚举值。
@@ -3999,12 +3996,186 @@ namespace
         return rawOpacityPercent;
     }
 
+    // kMaxBlurSourceEdgePixels 作用：
+    // - 模糊前把背景图长边降采样到该上限；
+    // - 盒式模糊的代价随像素数线性增长，4K 壁纸直接模糊会让设置页拖动滑块时肉眼卡顿；
+    // - 模糊结果本身是低频信号，绘制时再放大回窗口尺寸不会暴露降采样损失。
+    constexpr int kMaxBlurSourceEdgePixels = 1280;
+    // kMaxBlurRadiusRatio 作用：
+    // - 100% 模糊强度对应的半径占降采样图长边的比例；
+    // - 用比例而非固定像素，保证不同分辨率的背景图在同一档位下观感一致。
+    constexpr double kMaxBlurRadiusRatio = 0.06;
+    // kBlurPassCount 作用：
+    // - 盒式模糊的叠加遍数；三遍即可把方形核收敛到肉眼无法分辨的高斯近似。
+    constexpr int kBlurPassCount = 3;
+
+    // applyBoxBlurPass 作用：
+    // - 对 ARGB32_Premultiplied 图像执行一次“水平 + 垂直”盒式模糊；
+    // - 预乘 alpha 下各通道可独立做线性平均，因此逐通道滑动窗口即可，
+    //   不需要先反预乘（反预乘会在近全透明像素上放大量化误差）。
+    // 调用方式：buildBlurredPixmap 内部按遍数循环调用。
+    // 入参 targetImage：就地模糊的图像，必须是 Format_ARGB32_Premultiplied；
+    // 入参 radiusPixels：单遍模糊半径（像素），<=0 时直接返回。
+    void applyBoxBlurPass(QImage& targetImage, const int radiusPixels)
+    {
+        if (radiusPixels <= 0
+            || targetImage.isNull()
+            || targetImage.format() != QImage::Format_ARGB32_Premultiplied)
+        {
+            return;
+        }
+
+        const int imageWidth = targetImage.width();
+        const int imageHeight = targetImage.height();
+        if (imageWidth <= 0 || imageHeight <= 0)
+        {
+            return;
+        }
+
+        // blurAxis 作用：沿单一方向做滑动窗口平均。
+        // 水平与垂直只差“下一个像素”与“下一条线”的字节步长，因此共用同一段实现，
+        // 避免两份几乎相同的边界处理代码各自漂移。
+        const auto blurAxis = [](uchar* const imageBits,
+            const int lineCount,
+            const int lineLength,
+            const int lineStrideBytes,
+            const int pixelStrideBytes,
+            const int passRadiusPixels)
+            {
+                if (lineLength <= 1)
+                {
+                    return;
+                }
+
+                // windowSize 用途：盒式窗口覆盖的像素数，中心像素两侧各 passRadiusPixels 个。
+                const int windowSize = passRadiusPixels * 2 + 1;
+                std::vector<QRgb> lineBuffer(static_cast<size_t>(lineLength));
+
+                for (int lineIndex = 0; lineIndex < lineCount; ++lineIndex)
+                {
+                    uchar* const lineStart =
+                        imageBits + static_cast<size_t>(lineIndex) * static_cast<size_t>(lineStrideBytes);
+
+                    // 先把整条线拷进缓冲：滑动窗口会边写边读，原地读取会取到已被覆盖的新值。
+                    for (int offset = 0; offset < lineLength; ++offset)
+                    {
+                        lineBuffer[static_cast<size_t>(offset)] = *reinterpret_cast<const QRgb*>(
+                            lineStart + static_cast<size_t>(offset) * static_cast<size_t>(pixelStrideBytes));
+                    }
+
+                    // 初始化窗口：越界位置按边缘像素补齐（clamp），
+                    // 否则窗口在两端只累加了部分像素，会沿图片边框留下一圈暗带。
+                    int sumRed = 0;
+                    int sumGreen = 0;
+                    int sumBlue = 0;
+                    int sumAlpha = 0;
+                    for (int windowOffset = -passRadiusPixels; windowOffset <= passRadiusPixels; ++windowOffset)
+                    {
+                        const QRgb samplePixel =
+                            lineBuffer[static_cast<size_t>(std::clamp(windowOffset, 0, lineLength - 1))];
+                        sumRed += qRed(samplePixel);
+                        sumGreen += qGreen(samplePixel);
+                        sumBlue += qBlue(samplePixel);
+                        sumAlpha += qAlpha(samplePixel);
+                    }
+
+                    for (int offset = 0; offset < lineLength; ++offset)
+                    {
+                        *reinterpret_cast<QRgb*>(
+                            lineStart + static_cast<size_t>(offset) * static_cast<size_t>(pixelStrideBytes)) =
+                            qRgba(
+                                sumRed / windowSize,
+                                sumGreen / windowSize,
+                                sumBlue / windowSize,
+                                sumAlpha / windowSize);
+
+                        const QRgb leavingPixel =
+                            lineBuffer[static_cast<size_t>(std::clamp(offset - passRadiusPixels, 0, lineLength - 1))];
+                        const QRgb enteringPixel =
+                            lineBuffer[static_cast<size_t>(std::clamp(offset + passRadiusPixels + 1, 0, lineLength - 1))];
+                        sumRed += qRed(enteringPixel) - qRed(leavingPixel);
+                        sumGreen += qGreen(enteringPixel) - qGreen(leavingPixel);
+                        sumBlue += qBlue(enteringPixel) - qBlue(leavingPixel);
+                        sumAlpha += qAlpha(enteringPixel) - qAlpha(leavingPixel);
+                    }
+                }
+            };
+
+        // bytesPerLine 可能带行末填充，因此纵向遍历必须以它为步长，不能假定 width*4。
+        const int bytesPerLine = static_cast<int>(targetImage.bytesPerLine());
+        uchar* const imageBits = targetImage.bits();
+        if (imageBits == nullptr)
+        {
+            return;
+        }
+        blurAxis(imageBits, imageHeight, imageWidth, bytesPerLine, 4, radiusPixels);
+        blurAxis(imageBits, imageWidth, imageHeight, 4, bytesPerLine, radiusPixels);
+    }
+
+    // buildBlurredPixmap 作用：
+    // - 按 0~100 的“玻璃模糊半径”强度生成背景图的模糊副本；
+    // - 供主窗口根容器与浮动 Dock 画刷共用，保证两处观感一致且只模糊一次。
+    // 调用方式：MainWindow::refreshBackgroundImageBlurCache 在半径或源图变化时调用。
+    // 入参 sourcePixmap：已解码的背景图原件；
+    // 入参 blurRadiusPercent：模糊强度百分比（0~100）。
+    // 返回：模糊后的位图；强度为 0 或源图为空时返回空位图，表示应直接使用原图。
+    QPixmap buildBlurredPixmap(const QPixmap& sourcePixmap, const int blurRadiusPercent)
+    {
+        const int normalizedPercent = normalizeOpacityPercent(blurRadiusPercent);
+        if (sourcePixmap.isNull() || normalizedPercent <= 0)
+        {
+            return QPixmap();
+        }
+
+        QImage workingImage = sourcePixmap.toImage();
+        if (workingImage.isNull())
+        {
+            return QPixmap();
+        }
+
+        const int sourceLongEdge = std::max(workingImage.width(), workingImage.height());
+        if (sourceLongEdge > kMaxBlurSourceEdgePixels)
+        {
+            workingImage = (workingImage.width() >= workingImage.height())
+                ? workingImage.scaledToWidth(kMaxBlurSourceEdgePixels, Qt::SmoothTransformation)
+                : workingImage.scaledToHeight(kMaxBlurSourceEdgePixels, Qt::SmoothTransformation);
+        }
+        if (workingImage.format() != QImage::Format_ARGB32_Premultiplied)
+        {
+            workingImage = workingImage.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        }
+        if (workingImage.isNull())
+        {
+            return QPixmap();
+        }
+
+        // totalRadiusPixels 用途：本次强度对应的总模糊半径；
+        // 分摊到多遍盒式模糊后，单遍半径至少为 1，否则整个循环等于空转。
+        const int workingLongEdge = std::max(workingImage.width(), workingImage.height());
+        const int totalRadiusPixels = static_cast<int>(std::lround(
+            static_cast<double>(workingLongEdge)
+            * kMaxBlurRadiusRatio
+            * (static_cast<double>(normalizedPercent) / 100.0)));
+        if (totalRadiusPixels <= 0)
+        {
+            return QPixmap();
+        }
+        const int passRadiusPixels = std::max(1, totalRadiusPixels / kBlurPassCount);
+
+        for (int passIndex = 0; passIndex < kBlurPassCount; ++passIndex)
+        {
+            applyBoxBlurPass(workingImage, passRadiusPixels);
+        }
+        return QPixmap::fromImage(workingImage);
+    }
+
     // MainWindowBackgroundWidget 作用：
     // - 作为主窗口根容器的唯一背景绘制者；
     // - 每次绘制都按当前真实 rect 执行“居中、等比覆盖”，避免启动阶段预测窗口尺寸。
     // kTranslucentTintAlpha 作用：
-    // - 穿透模式无背景图时主题着色层的不透明度（0~255）；
-    // - 数值越低云母/桌面透出越多，越高前景可读性越强。
+    // - 穿透模式无背景图时主题着色层的默认不透明度（0~255）；
+    // - 仅作为外观配置抵达前的初值，运行期由“直透着色不透明度”设置覆盖；
+    // - 数值越低桌面透出越多，越高前景可读性越强。
     constexpr int kTranslucentTintAlpha = 165;
 
     class MainWindowBackgroundWidget final : public QWidget
@@ -4046,17 +4217,24 @@ namespace
         // 入参 translucentEnabled：是否进入穿透绘制。
         // 入参 paintTintWhenNoImage：无背景图时是否自绘着色层；
         //   亚克力已由系统合成着色时必须传 false，否则两层着色叠加会发浑。
+        // 入参 tintAlpha：自绘着色层的不透明度（0~255），来自“直透着色不透明度”设置。
         void setTranslucentMode(
             const bool translucentEnabled,
-            const bool paintTintWhenNoImage)
+            const bool paintTintWhenNoImage,
+            const int tintAlpha)
         {
+            // hitTestSafeTintAlpha 用途：分层窗口对 alpha==0 的像素做输入穿透，
+            // 直透强度调到 0 时若真按 0 绘制，整窗会失去鼠标响应，因此下限钳到 1。
+            const int hitTestSafeTintAlpha = std::clamp(tintAlpha, 1, 255);
             if (m_translucentMode == translucentEnabled
-                && m_paintTintWhenNoImage == paintTintWhenNoImage)
+                && m_paintTintWhenNoImage == paintTintWhenNoImage
+                && m_tintAlpha == hitTestSafeTintAlpha)
             {
                 return;
             }
             m_translucentMode = translucentEnabled;
             m_paintTintWhenNoImage = paintTintWhenNoImage;
+            m_tintAlpha = hitTestSafeTintAlpha;
             // 穿透绘制会留下透明像素，必须放弃“完全不透明绘制”性能假设。
             setAttribute(Qt::WA_OpaquePaintEvent, !translucentEnabled);
             update();
@@ -4091,10 +4269,11 @@ namespace
                 }
                 else if (m_paintTintWhenNoImage)
                 {
-                    // 无背景图且系统磨砂不可用：自绘半透明着色层兜底，
-                    // 既透出桌面又保证前景文字可读。
+                    // 无背景图且系统磨砂不可用（含用户选择的“直透桌面”）：
+                    // 自绘半透明着色层，不透明度由“直透着色不透明度”设置决定，
+                    // 低值偏向直透桌面，高值偏向前景文字可读。
                     QColor tintColor = m_baseColor;
-                    tintColor.setAlpha(kTranslucentTintAlpha);
+                    tintColor.setAlpha(m_tintAlpha);
                     painter.fillRect(rect(), tintColor);
                 }
                 else
@@ -4145,6 +4324,7 @@ namespace
         quint64 m_sourceImageCacheKey = 0;
         bool m_translucentMode = false;      // m_translucentMode：背景透明区域是否穿透窗口。
         bool m_paintTintWhenNoImage = true;  // m_paintTintWhenNoImage：无背景图时是否自绘着色兜底。
+        int m_tintAlpha = kTranslucentTintAlpha; // m_tintAlpha：自绘着色层不透明度，由外观设置下发。
     };
 
     // buildBackgroundBrush 作用：
@@ -5663,9 +5843,13 @@ bool MainWindow::applyMainWindowBackdropMaterial(const BackdropBlurKind blurKind
     // tintColor 用途：亚克力自带的着色层，由组合特性直接混合到模糊结果上，
     // 因此启用后根容器不再另画着色，避免出现双层叠加导致的浑浊。
     const QColor tintColor = KswordTheme::MainBackgroundColor();
+    // acrylicTintAlpha 用途：着色层不透明度，由“磨砂着色不透明度”设置决定；
+    // 越低越通透（更接近纯模糊），越高前景文字可读性越强。
+    const int acrylicTintAlpha = ks::settings::tintAlphaFromOpacityPercent(
+        m_currentAppearanceSettings.acrylicTintOpacityPercent);
     // gradientColorValue 采用 0xAABBGGRR 排布，注意与常见的 ARGB 顺序相反。
     const DWORD gradientColorValue =
-        (static_cast<DWORD>(kBackdropTintAlpha) << 24)
+        (static_cast<DWORD>(acrylicTintAlpha) << 24)
         | (static_cast<DWORD>(tintColor.blue()) << 16)
         | (static_cast<DWORD>(tintColor.green()) << 8)
         | static_cast<DWORD>(tintColor.red());
@@ -10703,7 +10887,12 @@ void MainWindow::applyAppearanceSettings(
         || previousSettings.backgroundOpacityPercent != settings.backgroundOpacityPercent
         || previousSettings.backgroundTranslucencyMaterial.compare(
             settings.backgroundTranslucencyMaterial,
-            Qt::CaseInsensitive) != 0;
+            Qt::CaseInsensitive) != 0
+        // 玻璃观感三项都在 rebuildWindowBackgroundBrush 链路里生效（模糊副本、
+        // 系统着色 gradientColor、根容器自绘着色），因此并入同一个背景刷新条件。
+        || previousSettings.backgroundBlurRadiusPercent != settings.backgroundBlurRadiusPercent
+        || previousSettings.acrylicTintOpacityPercent != settings.acrylicTintOpacityPercent
+        || previousSettings.desktopTintOpacityPercent != settings.desktopTintOpacityPercent;
     // 背景穿透依赖启动时的 WA_TranslucentBackground 声明，运行期只提示重启生效。
     const bool backgroundTransparencyChanged =
         !isInitialAppearanceApply
@@ -11194,6 +11383,10 @@ void MainWindow::queueBackgroundImageValidation(const QString& rawImagePath)
     m_backgroundImageResolvedPath.clear();
     m_backgroundImagePixmap = QPixmap();
     m_backgroundImageReady = false;
+    // 模糊副本属于旧图，换路径时必须一并作废，否则新图解码前会短暂显示上一张的模糊结果。
+    m_backgroundImageBlurredPixmap = QPixmap();
+    m_backgroundImageBlurRadiusApplied = -1;
+    m_backgroundImageBlurSourceCacheKey = 0;
     if (cacheKey.isEmpty())
     {
         return;
@@ -11291,9 +11484,15 @@ bool MainWindow::shouldRenderTransparentDockContent() const
 
 const QPixmap* MainWindow::cachedBackgroundImage(const QString& rawImagePath) const
 {
-    return isCachedBackgroundImageReady(rawImagePath)
+    if (!isCachedBackgroundImageReady(rawImagePath))
+    {
+        return nullptr;
+    }
+    // 模糊副本只在“玻璃模糊半径”>0 且已由 refreshBackgroundImageBlurCache 生成时替换原图；
+    // 主窗口根容器与浮动 Dock 画刷都走这里，因此两者永远取到同一张底图。
+    return m_backgroundImageBlurredPixmap.isNull()
         ? &m_backgroundImagePixmap
-        : nullptr;
+        : &m_backgroundImageBlurredPixmap;
 }
 
 void MainWindow::scheduleWindowBackdropRefresh()
@@ -11371,14 +11570,43 @@ void MainWindow::refreshWindowBackdropMaterial()
     {
         static_cast<MainWindowBackgroundWidget*>(m_mainRootContainer)->setTranslucentMode(
             translucencyActive,
-            !acrylicMaterialActive);
+            !acrylicMaterialActive,
+            ks::settings::tintAlphaFromOpacityPercent(
+                m_currentAppearanceSettings.desktopTintOpacityPercent));
     }
+}
+
+void MainWindow::refreshBackgroundImageBlurCache()
+{
+    const int blurRadiusPercent = normalizeOpacityPercent(
+        m_currentAppearanceSettings.backgroundBlurRadiusPercent);
+    // sourceCacheKey 用途：换图或重新解码后 cacheKey 必然变化，据此淘汰过期模糊副本；
+    // 只比较半径会让“路径变了但半径没变”的场景继续用旧图的模糊结果。
+    const quint64 sourceCacheKey = m_backgroundImagePixmap.isNull()
+        ? 0
+        : m_backgroundImagePixmap.cacheKey();
+    if (m_backgroundImageBlurRadiusApplied == blurRadiusPercent
+        && m_backgroundImageBlurSourceCacheKey == sourceCacheKey)
+    {
+        return;
+    }
+
+    m_backgroundImageBlurRadiusApplied = blurRadiusPercent;
+    m_backgroundImageBlurSourceCacheKey = sourceCacheKey;
+    // 半径为 0 时不生成副本：cachedBackgroundImage 会回落到解码原图，零额外内存与耗时。
+    m_backgroundImageBlurredPixmap = (blurRadiusPercent > 0)
+        ? buildBlurredPixmap(m_backgroundImagePixmap, blurRadiusPercent)
+        : QPixmap();
 }
 
 void MainWindow::rebuildWindowBackgroundBrush(const bool includeBackgroundImage)
 {
     // 纯色底与背景图合成都使用独立主背景色；未自定义时回退当前深浅主题默认色。
     const QColor baseColor = KswordTheme::MainBackgroundColor();
+
+    // 模糊副本必须先于任何 cachedBackgroundImage 取图刷新：
+    // 本次调用链里的根容器、浮动 Dock 与材质决策都会读取该缓存。
+    refreshBackgroundImageBlurCache();
 
     const int normalizedOpacityPercent = normalizeOpacityPercent(
         m_currentAppearanceSettings.backgroundOpacityPercent);

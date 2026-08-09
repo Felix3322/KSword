@@ -263,6 +263,24 @@ private:
     // m_backgroundTranslucencyMaterialCombo 作用：选择透明背景效果（自动/云母/直透桌面）。
     QComboBox* m_backgroundTranslucencyMaterialCombo = nullptr;
 
+    // m_backgroundBlurRadiusSlider 作用：调整背景图自绘玻璃模糊的半径强度。
+    QSlider* m_backgroundBlurRadiusSlider = nullptr;
+
+    // m_backgroundBlurRadiusValueLabel 作用：显示当前模糊半径强度百分比。
+    QLabel* m_backgroundBlurRadiusValueLabel = nullptr;
+
+    // m_acrylicTintOpacitySlider 作用：调整磨砂玻璃着色层不透明度。
+    QSlider* m_acrylicTintOpacitySlider = nullptr;
+
+    // m_acrylicTintOpacityValueLabel 作用：显示磨砂着色不透明度百分比。
+    QLabel* m_acrylicTintOpacityValueLabel = nullptr;
+
+    // m_desktopTintOpacitySlider 作用：调整直透桌面模式着色层不透明度。
+    QSlider* m_desktopTintOpacitySlider = nullptr;
+
+    // m_desktopTintOpacityValueLabel 作用：显示直透着色不透明度百分比。
+    QLabel* m_desktopTintOpacityValueLabel = nullptr;
+
     // 日志通知设置：控制右侧通知卡片的开关、等级、时长与堆叠位置。
     QCheckBox* m_notificationCardsEnabledCheckBox = nullptr;
     QComboBox* m_notificationMinimumLevelCombo = nullptr;

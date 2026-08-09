@@ -382,6 +382,9 @@ namespace
         defaultSettings.backgroundOpacityPercent = 35;
         defaultSettings.backgroundTransparencyEnabled = false;
         defaultSettings.backgroundTranslucencyMaterial = QStringLiteral("auto");
+        defaultSettings.backgroundBlurRadiusPercent = 0;
+        defaultSettings.acrylicTintOpacityPercent = 75;
+        defaultSettings.desktopTintOpacityPercent = 65;
         defaultSettings.startupDefaultTabKey = QStringLiteral("welcome");
         defaultSettings.launchMaximizedOnStartup = true;
         defaultSettings.startupTopMostEnabled = false;
@@ -410,6 +413,14 @@ namespace
         defaultSettings.threatBookApiKey.clear();
         return defaultSettings;
     }
+}
+
+int ks::settings::tintAlphaFromOpacityPercent(const int opacityPercent)
+{
+    // 先钳制再换算：设置页与配置文件都可能带入越界值，
+    // 直接乘除会得到负 alpha 或 >255，QColor 会静默截断而掩盖配置错误。
+    const int normalizedPercent = clampOpacityPercent(opacityPercent);
+    return (normalizedPercent * 255 + 50) / 100;
 }
 
 QString ks::settings::themeModeToJsonText(const ThemeMode mode)
@@ -545,6 +556,18 @@ ks::settings::AppearanceSettings ks::settings::loadAppearanceSettings()
             || translucencyMaterialText == QStringLiteral("desktop"))
         ? translucencyMaterialText
         : QStringLiteral("auto");
+
+    // 玻璃观感三项（模糊半径 / 磨砂着色 / 直透着色）与背景图透明度共用同一 0~100 语义，
+    // 因此统一走 clampOpacityPercent，旧配置缺字段时保持默认值不变。
+    loadedSettings.backgroundBlurRadiusPercent = clampOpacityPercent(
+        rootObject.value(QStringLiteral("background_blur_radius_percent"))
+        .toInt(loadedSettings.backgroundBlurRadiusPercent));
+    loadedSettings.acrylicTintOpacityPercent = clampOpacityPercent(
+        rootObject.value(QStringLiteral("acrylic_tint_opacity_percent"))
+        .toInt(loadedSettings.acrylicTintOpacityPercent));
+    loadedSettings.desktopTintOpacityPercent = clampOpacityPercent(
+        rootObject.value(QStringLiteral("desktop_tint_opacity_percent"))
+        .toInt(loadedSettings.desktopTintOpacityPercent));
 
     // startupDefaultTabKeyText 作用：读取启动默认页签字段，缺失或空值时回退 welcome。
     const QString startupDefaultTabKeyText = rootObject.value(QStringLiteral("startup_default_tab_key"))
@@ -707,6 +730,15 @@ bool ks::settings::saveAppearanceSettings(const AppearanceSettings& settings, QS
         settings.backgroundTranslucencyMaterial.trimmed().isEmpty()
         ? QStringLiteral("auto")
         : settings.backgroundTranslucencyMaterial.trimmed().toLower());
+    rootObject.insert(
+        QStringLiteral("background_blur_radius_percent"),
+        clampOpacityPercent(settings.backgroundBlurRadiusPercent));
+    rootObject.insert(
+        QStringLiteral("acrylic_tint_opacity_percent"),
+        clampOpacityPercent(settings.acrylicTintOpacityPercent));
+    rootObject.insert(
+        QStringLiteral("desktop_tint_opacity_percent"),
+        clampOpacityPercent(settings.desktopTintOpacityPercent));
     rootObject.insert(
         QStringLiteral("startup_default_tab_key"),
         settings.startupDefaultTabKey.trimmed().isEmpty()

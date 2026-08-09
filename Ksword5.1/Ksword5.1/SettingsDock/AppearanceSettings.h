@@ -46,6 +46,14 @@ namespace ks::settings
     // backgroundTranslucencyMaterial：透明背景效果
     // （auto=有图直透无图磨砂，acrylic=始终亚克力磨砂，desktop=始终直透桌面；
     //   blur/mica 为历史取值，按 acrylic 处理）；
+    // backgroundBlurRadiusPercent：玻璃模糊半径强度（0~100，0=不模糊）；
+    //   作用于窗口背景图的自绘高斯模糊，主窗口与浮动 Dock 共用同一张模糊底图。
+    //   注意：系统亚克力（磨砂玻璃）的模糊半径由 Windows DWM 内部固定，
+    //   SetWindowCompositionAttribute 的 ACCENT_POLICY 不提供半径字段，无法调整。
+    // acrylicTintOpacityPercent：磨砂玻璃着色层不透明度（0~100）；
+    //   由组合特性的 gradientColor alpha 直接混合到系统模糊结果上，越低越通透。
+    // desktopTintOpacityPercent：直透模式着色层不透明度（0~100）；
+    //   系统磨砂未生效时由根容器自绘，0 表示几乎完全直透（仍保留 1/255 命中底线）。
     // startupDefaultTabKey：应用启动时默认激活的主页签 key（如 welcome/process/network）；
     // launchMaximizedOnStartup：下次启动时是否默认最大化显示；
     // startupTopMostEnabled：启动后是否自动启用最高级置顶，手动图钉切换会同步保存；
@@ -78,6 +86,9 @@ namespace ks::settings
         int backgroundOpacityPercent = 35;
         bool backgroundTransparencyEnabled = false;
         QString backgroundTranslucencyMaterial = QStringLiteral("auto");
+        int backgroundBlurRadiusPercent = 0;
+        int acrylicTintOpacityPercent = 75;
+        int desktopTintOpacityPercent = 65;
         QString startupDefaultTabKey = QStringLiteral("welcome");
         bool launchMaximizedOnStartup = true;
         bool startupTopMostEnabled = false;
@@ -105,6 +116,15 @@ namespace ks::settings
         QString virusTotalApiKey;
         QString threatBookApiKey;
     };
+
+    // tintAlphaFromOpacityPercent 作用：
+    // - 把 0~100 的着色不透明度换算成 0~255 的 alpha 通道值；
+    // - 磨砂着色（系统 gradientColor）与直透着色（根容器自绘）共用同一映射，
+    //   避免设置页显示的百分比和实际绘制的 alpha 各算一套而对不上。
+    // 调用方式：绘制着色层或下发组合特性前调用。
+    // 入参 opacityPercent：着色不透明度百分比，越界自动钳制到 0~100。
+    // 返回：0~255 的 alpha 值。
+    int tintAlphaFromOpacityPercent(int opacityPercent);
 
     // themeModeToJsonText 作用：
     // - 把主题枚举转成 JSON 存档文本。

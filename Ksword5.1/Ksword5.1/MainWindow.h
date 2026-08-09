@@ -269,7 +269,9 @@ private:
 
     // applyMainWindowBackdropMaterial 作用：
     // - 下发/关闭主窗口的系统亚克力材质（SetWindowCompositionAttribute）；
-    // - 透明模式下按“透明背景效果”选项启用，让透明区域呈现磨砂质感。
+    // - 透明模式下按“透明背景效果”选项启用，让透明区域呈现磨砂质感；
+    // - 着色层不透明度取自 m_currentAppearanceSettings.acrylicTintOpacityPercent，
+    //   模糊半径无法由此接口调整（ACCENT_POLICY 不含半径字段，由 DWM 内部固定）。
     // 入参 blurKind：解析后的材质种类；仅 Acrylic 会启用系统材质。
     // 返回：true=系统亚克力已生效（着色由系统合成，根容器不再另画着色层）。
     bool applyMainWindowBackdropMaterial(BackdropBlurKind blurKind);
@@ -287,6 +289,14 @@ private:
     // - 首次外观应用发生在原生窗口创建之前，因此 showEvent 需要再调用一次，
     //   否则启动时勾选的毛玻璃要等到下一次主题变更才会生效。
     void refreshWindowBackdropMaterial();
+
+    // refreshBackgroundImageBlurCache 作用：
+    // - 按“玻璃模糊半径”设置重建背景图的模糊副本，半径为 0 时清空副本；
+    // - 主窗口根容器与浮动 Dock 画刷都通过 cachedBackgroundImage 取图，
+    //   在这里统一生成既保证两者观感一致，又避免每次重绘都重新模糊；
+    // - 系统亚克力的模糊半径由 DWM 内部固定（ACCENT_POLICY 无半径字段），
+    //   因此可调半径只能作用于这一层自绘模糊。
+    void refreshBackgroundImageBlurCache();
 
     // configureDockWidgetPersistentIdentity 作用：
     // - 为每个 ADS Dock 设置稳定 objectName；
@@ -681,6 +691,9 @@ private:
     QString m_backgroundImageCacheKey; // m_backgroundImageCacheKey：当前异步验证对应的原始路径键。
     QString m_backgroundImageResolvedPath; // m_backgroundImageResolvedPath：线程池解析后的实际路径，仅供诊断。
     QPixmap m_backgroundImagePixmap; // m_backgroundImagePixmap：UI 线程持有的已解码背景像素。
+    QPixmap m_backgroundImageBlurredPixmap; // m_backgroundImageBlurredPixmap：按当前半径模糊后的副本；半径为 0 时为空。
+    int m_backgroundImageBlurRadiusApplied = -1; // m_backgroundImageBlurRadiusApplied：副本对应的模糊强度（-1=尚未生成）。
+    quint64 m_backgroundImageBlurSourceCacheKey = 0; // m_backgroundImageBlurSourceCacheKey：生成副本时的源图 cacheKey。
     quint64 m_backgroundImageValidationGeneration = 0; // m_backgroundImageValidationGeneration：淘汰过期异步结果的代次。
     bool m_backgroundImageReady = false; // m_backgroundImageReady：当前路径是否已验证并成功解码。
     bool m_backgroundReadinessRefreshPending = false; // m_backgroundReadinessRefreshPending：异步结果是否要求重建视觉。

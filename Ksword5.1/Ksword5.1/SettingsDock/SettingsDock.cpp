@@ -575,9 +575,114 @@ void SettingsDock::initializeAppearanceTab()
     translucencyMaterialLayout->addWidget(m_backgroundTranslucencyMaterialCombo, 1);
     backgroundLayout->addLayout(translucencyMaterialLayout);
 
-    // 组合框可用性跟随透明总开关；初始状态由 applySettingsToUi 同步。
+    // ===== 玻璃观感三滑块 =====
+    // 说明：磨砂玻璃由系统合成，其模糊半径在 Windows 内部固定（未公开的 ACCENT_POLICY
+    // 没有半径字段），因此“玻璃模糊半径”作用于应用自绘的背景图模糊层；
+    // 两个着色不透明度则分别对应磨砂着色（系统混合）与直透着色（自绘兜底）。
+    QLabel* blurRadiusHintLabel = new QLabel(
+        QStringLiteral("玻璃模糊半径（作用于背景图；0% 不模糊）"),
+        backgroundGroupBox);
+    blurRadiusHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        blurRadiusHintLabel,
+        QStringLiteral("settings.background.blur_radius"),
+        QStringLiteral("玻璃模糊半径（作用于背景图；0% 不模糊）"));
+    backgroundLayout->addWidget(blurRadiusHintLabel);
+
+    QHBoxLayout* blurRadiusLayout = new QHBoxLayout();
+    blurRadiusLayout->setSpacing(6);
+
+    // m_backgroundBlurRadiusSlider 作用：控制背景图自绘玻璃模糊的半径强度。
+    m_backgroundBlurRadiusSlider = new QSlider(Qt::Horizontal, backgroundGroupBox);
+    m_backgroundBlurRadiusSlider->setRange(0, 100);
+    m_backgroundBlurRadiusSlider->setSingleStep(1);
+    m_backgroundBlurRadiusSlider->setPageStep(5);
+    m_backgroundBlurRadiusSlider->setToolTip(QStringLiteral("把背景图模糊成毛玻璃质感，数值越大越糊。仅作用于背景图：磨砂玻璃是由 Windows 合成的，它的模糊半径由系统固定，应用无法调整。修改后立即生效。"));
+    languageManager.bindToolTip(
+        m_backgroundBlurRadiusSlider,
+        QStringLiteral("settings.background.blur_radius.tooltip"),
+        QStringLiteral("把背景图模糊成毛玻璃质感，数值越大越糊。仅作用于背景图：磨砂玻璃是由 Windows 合成的，它的模糊半径由系统固定，应用无法调整。修改后立即生效。"));
+    blurRadiusLayout->addWidget(m_backgroundBlurRadiusSlider, 1);
+
+    // m_backgroundBlurRadiusValueLabel 作用：展示当前模糊半径强度。
+    m_backgroundBlurRadiusValueLabel = new QLabel(QStringLiteral("0%"), backgroundGroupBox);
+    m_backgroundBlurRadiusValueLabel->setMinimumWidth(48);
+    blurRadiusLayout->addWidget(m_backgroundBlurRadiusValueLabel);
+
+    backgroundLayout->addLayout(blurRadiusLayout);
+
+    QLabel* acrylicTintHintLabel = new QLabel(
+        QStringLiteral("磨砂着色不透明度（越低越通透，越高文字越清晰）"),
+        backgroundGroupBox);
+    acrylicTintHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        acrylicTintHintLabel,
+        QStringLiteral("settings.background.acrylic_tint"),
+        QStringLiteral("磨砂着色不透明度（越低越通透，越高文字越清晰）"));
+    backgroundLayout->addWidget(acrylicTintHintLabel);
+
+    QHBoxLayout* acrylicTintLayout = new QHBoxLayout();
+    acrylicTintLayout->setSpacing(6);
+
+    // m_acrylicTintOpacitySlider 作用：控制磨砂玻璃着色层的不透明度。
+    m_acrylicTintOpacitySlider = new QSlider(Qt::Horizontal, backgroundGroupBox);
+    m_acrylicTintOpacitySlider->setRange(0, 100);
+    m_acrylicTintOpacitySlider->setSingleStep(1);
+    m_acrylicTintOpacitySlider->setPageStep(5);
+    m_acrylicTintOpacitySlider->setToolTip(QStringLiteral("“磨砂玻璃”效果上叠加的主题着色浓度。调到 0% 接近纯模糊，调高则更接近实色背景、前景文字更易读。仅在透明背景效果为磨砂玻璃时生效，修改后立即生效。"));
+    languageManager.bindToolTip(
+        m_acrylicTintOpacitySlider,
+        QStringLiteral("settings.background.acrylic_tint.tooltip"),
+        QStringLiteral("“磨砂玻璃”效果上叠加的主题着色浓度。调到 0% 接近纯模糊，调高则更接近实色背景、前景文字更易读。仅在透明背景效果为磨砂玻璃时生效，修改后立即生效。"));
+    acrylicTintLayout->addWidget(m_acrylicTintOpacitySlider, 1);
+
+    // m_acrylicTintOpacityValueLabel 作用：展示磨砂着色不透明度。
+    m_acrylicTintOpacityValueLabel = new QLabel(QStringLiteral("75%"), backgroundGroupBox);
+    m_acrylicTintOpacityValueLabel->setMinimumWidth(48);
+    acrylicTintLayout->addWidget(m_acrylicTintOpacityValueLabel);
+
+    backgroundLayout->addLayout(acrylicTintLayout);
+
+    QLabel* desktopTintHintLabel = new QLabel(
+        QStringLiteral("直透着色不透明度（0% 几乎完全看到桌面）"),
+        backgroundGroupBox);
+    desktopTintHintLabel->setWordWrap(true);
+    languageManager.bindText(
+        desktopTintHintLabel,
+        QStringLiteral("settings.background.desktop_tint"),
+        QStringLiteral("直透着色不透明度（0% 几乎完全看到桌面）"));
+    backgroundLayout->addWidget(desktopTintHintLabel);
+
+    QHBoxLayout* desktopTintLayout = new QHBoxLayout();
+    desktopTintLayout->setSpacing(6);
+
+    // m_desktopTintOpacitySlider 作用：控制直透桌面模式下自绘着色层的不透明度。
+    m_desktopTintOpacitySlider = new QSlider(Qt::Horizontal, backgroundGroupBox);
+    m_desktopTintOpacitySlider->setRange(0, 100);
+    m_desktopTintOpacitySlider->setSingleStep(1);
+    m_desktopTintOpacitySlider->setPageStep(5);
+    m_desktopTintOpacitySlider->setToolTip(QStringLiteral("“直透桌面”时窗口自绘的主题着色浓度。调到 0% 几乎完全透出桌面（仍保留最低限度的鼠标响应），调高则界面更实、文字更易读。没有背景图时生效，修改后立即生效。"));
+    languageManager.bindToolTip(
+        m_desktopTintOpacitySlider,
+        QStringLiteral("settings.background.desktop_tint.tooltip"),
+        QStringLiteral("“直透桌面”时窗口自绘的主题着色浓度。调到 0% 几乎完全透出桌面（仍保留最低限度的鼠标响应），调高则界面更实、文字更易读。没有背景图时生效，修改后立即生效。"));
+    desktopTintLayout->addWidget(m_desktopTintOpacitySlider, 1);
+
+    // m_desktopTintOpacityValueLabel 作用：展示直透着色不透明度。
+    m_desktopTintOpacityValueLabel = new QLabel(QStringLiteral("65%"), backgroundGroupBox);
+    m_desktopTintOpacityValueLabel->setMinimumWidth(48);
+    desktopTintLayout->addWidget(m_desktopTintOpacityValueLabel);
+
+    backgroundLayout->addLayout(desktopTintLayout);
+
+    // 组合框与两个着色滑块的可用性跟随透明总开关；初始状态由 applySettingsToUi 同步。
+    // 模糊半径作用于背景图自绘层，不依赖窗口透明，因此始终可用。
     m_backgroundTranslucencyMaterialCombo->setEnabled(m_backgroundTransparencyCheckBox->isChecked());
     connect(m_backgroundTransparencyCheckBox, &QCheckBox::toggled, m_backgroundTranslucencyMaterialCombo, &QWidget::setEnabled);
+    m_acrylicTintOpacitySlider->setEnabled(m_backgroundTransparencyCheckBox->isChecked());
+    connect(m_backgroundTransparencyCheckBox, &QCheckBox::toggled, m_acrylicTintOpacitySlider, &QWidget::setEnabled);
+    m_desktopTintOpacitySlider->setEnabled(m_backgroundTransparencyCheckBox->isChecked());
+    connect(m_backgroundTransparencyCheckBox, &QCheckBox::toggled, m_desktopTintOpacitySlider, &QWidget::setEnabled);
     appearanceRootLayout->addWidget(backgroundGroupBox);
 
     // ===== 交互与滚动分组 =====
@@ -1011,6 +1116,30 @@ void SettingsDock::bindAppearanceSignals()
         markPendingChanges(QString());
         });
 
+    connect(m_backgroundBlurRadiusSlider, &QSlider::valueChanged, this, [this](const int value) {
+        m_backgroundBlurRadiusValueLabel->setText(QStringLiteral("%1%").arg(value));
+        if (!m_isApplyingUiState)
+        {
+            markPendingChanges(QStringLiteral("玻璃模糊半径变化"));
+        }
+        });
+
+    connect(m_acrylicTintOpacitySlider, &QSlider::valueChanged, this, [this](const int value) {
+        m_acrylicTintOpacityValueLabel->setText(QStringLiteral("%1%").arg(value));
+        if (!m_isApplyingUiState)
+        {
+            markPendingChanges(QStringLiteral("磨砂着色不透明度变化"));
+        }
+        });
+
+    connect(m_desktopTintOpacitySlider, &QSlider::valueChanged, this, [this](const int value) {
+        m_desktopTintOpacityValueLabel->setText(QStringLiteral("%1%").arg(value));
+        if (!m_isApplyingUiState)
+        {
+            markPendingChanges(QStringLiteral("直透着色不透明度变化"));
+        }
+        });
+
     connect(m_browseBackgroundButton, &QToolButton::clicked, this, [this]() {
         openBackgroundFileDialog();
         });
@@ -1163,6 +1292,21 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
         m_backgroundTranslucencyMaterialCombo->setCurrentIndex(materialIndex >= 0 ? materialIndex : 0);
         m_backgroundTranslucencyMaterialCombo->setEnabled(settings.backgroundTransparencyEnabled);
     }
+    if (m_backgroundBlurRadiusSlider != nullptr)
+    {
+        // 模糊半径作用于背景图自绘层，与窗口是否透明无关，因此不跟随透明开关禁用。
+        m_backgroundBlurRadiusSlider->setValue(settings.backgroundBlurRadiusPercent);
+    }
+    if (m_acrylicTintOpacitySlider != nullptr)
+    {
+        m_acrylicTintOpacitySlider->setValue(settings.acrylicTintOpacityPercent);
+        m_acrylicTintOpacitySlider->setEnabled(settings.backgroundTransparencyEnabled);
+    }
+    if (m_desktopTintOpacitySlider != nullptr)
+    {
+        m_desktopTintOpacitySlider->setValue(settings.desktopTintOpacityPercent);
+        m_desktopTintOpacitySlider->setEnabled(settings.backgroundTransparencyEnabled);
+    }
     if (m_textAntialiasingCheckBox != nullptr)
     {
         m_textAntialiasingCheckBox->setChecked(settings.textAntialiasingEnabled);
@@ -1262,6 +1406,23 @@ void SettingsDock::applySettingsToUi(const ks::settings::AppearanceSettings& set
     }
 
     updateOpacityValueLabel(settings.backgroundOpacityPercent);
+    // 显式回填三个玻璃观感标签：setValue 在值未变化时不发 valueChanged，
+    // 只靠信号会让“配置值恰好等于滑块初值”的情况停留在构造时的占位文本。
+    if (m_backgroundBlurRadiusValueLabel != nullptr)
+    {
+        m_backgroundBlurRadiusValueLabel->setText(
+            QStringLiteral("%1%").arg(settings.backgroundBlurRadiusPercent));
+    }
+    if (m_acrylicTintOpacityValueLabel != nullptr)
+    {
+        m_acrylicTintOpacityValueLabel->setText(
+            QStringLiteral("%1%").arg(settings.acrylicTintOpacityPercent));
+    }
+    if (m_desktopTintOpacityValueLabel != nullptr)
+    {
+        m_desktopTintOpacityValueLabel->setText(
+            QStringLiteral("%1%").arg(settings.desktopTintOpacityPercent));
+    }
     updateThemeButtonStyle();
 
     m_isApplyingUiState = false;
@@ -1309,6 +1470,15 @@ ks::settings::AppearanceSettings SettingsDock::collectSettingsFromUi() const
     collectedSettings.backgroundTranslucencyMaterial = m_backgroundTranslucencyMaterialCombo != nullptr
         ? m_backgroundTranslucencyMaterialCombo->currentData().toString()
         : m_currentAppearanceSettings.backgroundTranslucencyMaterial;
+    collectedSettings.backgroundBlurRadiusPercent = m_backgroundBlurRadiusSlider != nullptr
+        ? m_backgroundBlurRadiusSlider->value()
+        : m_currentAppearanceSettings.backgroundBlurRadiusPercent;
+    collectedSettings.acrylicTintOpacityPercent = m_acrylicTintOpacitySlider != nullptr
+        ? m_acrylicTintOpacitySlider->value()
+        : m_currentAppearanceSettings.acrylicTintOpacityPercent;
+    collectedSettings.desktopTintOpacityPercent = m_desktopTintOpacitySlider != nullptr
+        ? m_desktopTintOpacitySlider->value()
+        : m_currentAppearanceSettings.desktopTintOpacityPercent;
     // 启动页字段已不再由设置页编辑；保存其它设置时保留当前内存值，避免意外覆盖旧配置。
     collectedSettings.startupDefaultTabKey = m_currentAppearanceSettings.startupDefaultTabKey;
     collectedSettings.launchMaximizedOnStartup =
@@ -1599,6 +1769,9 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
         && nextSettings.backgroundOpacityPercent == m_currentAppearanceSettings.backgroundOpacityPercent
         && nextSettings.backgroundTransparencyEnabled == m_currentAppearanceSettings.backgroundTransparencyEnabled
         && nextSettings.backgroundTranslucencyMaterial == m_currentAppearanceSettings.backgroundTranslucencyMaterial
+        && nextSettings.backgroundBlurRadiusPercent == m_currentAppearanceSettings.backgroundBlurRadiusPercent
+        && nextSettings.acrylicTintOpacityPercent == m_currentAppearanceSettings.acrylicTintOpacityPercent
+        && nextSettings.desktopTintOpacityPercent == m_currentAppearanceSettings.desktopTintOpacityPercent
         && nextSettings.launchMaximizedOnStartup == m_currentAppearanceSettings.launchMaximizedOnStartup
         && nextSettings.startupTopMostEnabled == m_currentAppearanceSettings.startupTopMostEnabled
         && nextSettings.autoRequestAdminOnStartup == m_currentAppearanceSettings.autoRequestAdminOnStartup
