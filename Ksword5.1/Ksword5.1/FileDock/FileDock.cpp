@@ -10319,10 +10319,26 @@ void FileDock::initializeRecoveryPage()
         "支持 Resident 与完整非驻留数据；非驻留文件必须导出到其它卷，恢复前后都会复核卷位图。"));
     m_recoveryExportButton->setStyleSheet(buildBlueButtonStyle());
 
+    // 扫描结果动辄上万条，必须能就地查找，否则只能靠滚动条翻找。
+    m_recoveryFilterEdit = new QLineEdit(toolWidget);
+    m_recoveryFilterEdit->setPlaceholderText(QStringLiteral("查找结果（文件名/路径/恢复能力）"));
+    m_recoveryFilterEdit->setClearButtonEnabled(true);
+    m_recoveryFilterEdit->setStyleSheet(buildBlueInputStyle());
+    m_recoveryFilterEdit->setToolTip(QStringLiteral(
+        "按输入内容实时筛选扫描结果，匹配行以外的条目会被隐藏。"));
+
+    m_recoveryFilterRegexButton = new QToolButton(toolWidget);
+    m_recoveryFilterRegexButton->setText(QStringLiteral(".*"));
+    m_recoveryFilterRegexButton->setCheckable(true);
+    m_recoveryFilterRegexButton->setToolTip(QStringLiteral(
+        "按正则表达式筛选，例如 \\.docx?$ 只看 doc/docx"));
+
     toolLayout->addWidget(new QLabel(QStringLiteral("卷: "), toolWidget), 0);
     toolLayout->addWidget(m_recoveryVolumeCombo, 1);
     toolLayout->addWidget(m_recoveryRefreshButton, 0);
     toolLayout->addWidget(m_recoveryScanButton, 0);
+    toolLayout->addWidget(m_recoveryFilterEdit, 1);
+    toolLayout->addWidget(m_recoveryFilterRegexButton, 0);
     toolLayout->addWidget(m_recoveryExportButton, 0);
     recoveryLayout->addWidget(toolWidget, 0);
 
@@ -10398,8 +10414,102 @@ void FileDock::initializeRecoveryPage()
     connect(m_recoveryExportButton, &QPushButton::clicked, this, [this]() {
         recoverSelectedDeletedFiles();
     });
+    connect(m_recoveryFilterEdit, &QLineEdit::textChanged, this, [this](const QString&) {
+        applyRecoveryFilter();
+    });
+    connect(m_recoveryFilterRegexButton, &QToolButton::toggled, this, [this](bool) {
+        applyRecoveryFilter();
+    });
 
     refreshRecoveryVolumeList();
+}
+
+void FileDock::applyRecoveryFilter()
+{
+    // applyRecoveryFilter：
+    // - 输入：查找框文本与正则开关；
+    // - 处理：逐行比对已缓存的删除项字段，用 setRowHidden 就地隐藏不匹配行；
+    // - 返回：无。只影响可见性，不改动 m_deletedRecoveryItems 与行号映射，
+    //   因此右键属性、恢复选中拿到的行号依然直接对应缓存下标。
+    if (m_recoveryTable == nullptr || m_recoveryFilterEdit == nullptr)
+    {
+        return;
+    }
+
+    const QString queryText = m_recoveryFilterEdit->text().trimmed();
+    const bool useRegex =
+        m_recoveryFilterRegexButton != nullptr && m_recoveryFilterRegexButton->isChecked();
+
+    QRegularExpression regexValue;
+    bool regexUsable = false;
+    if (!queryText.isEmpty() && useRegex)
+    {
+        regexValue = QRegularExpression(
+            queryText,
+            QRegularExpression::CaseInsensitiveOption);
+        regexUsable = regexValue.isValid();
+        // 正则写到一半必然是非法的，这里不把整张表清空，保持上一次的可见状态。
+        if (!regexUsable)
+        {
+            m_recoveryFilterEdit->setToolTip(QStringLiteral("正则表达式无效，已暂不筛选。"));
+            return;
+        }
+    }
+    m_recoveryFilterEdit->setToolTip(QStringLiteral(
+        "按输入内容实时筛选扫描结果，匹配行以外的条目会被隐藏。"));
+
+    const int rowCount = m_recoveryTable->rowCount();
+    int visibleCount = 0;
+    // 上万行逐行改可见性会触发大量重排，先关掉刷新再统一恢复。
+    m_recoveryTable->setUpdatesEnabled(false);
+    for (int row = 0; row < rowCount; ++row)
+    {
+        bool matched = queryText.isEmpty();
+        if (!matched && row < static_cast<int>(m_deletedRecoveryItems.size()))
+        {
+            const ks::file::NtfsDeletedFileEntry& itemValue =
+                m_deletedRecoveryItems[static_cast<std::size_t>(row)];
+            // 只比对用户真正会搜的三个字段，避免大小/时间数字造成误命中。
+            const QStringList searchFields{
+                itemValue.fileName,
+                itemValue.pathHint,
+                deletedFileRecoveryCapabilityText(itemValue) };
+            for (const QString& fieldText : searchFields)
+            {
+                if (useRegex)
+                {
+                    if (regexUsable && regexValue.match(fieldText).hasMatch())
+                    {
+                        matched = true;
+                        break;
+                    }
+                }
+                else if (fieldText.contains(queryText, Qt::CaseInsensitive))
+                {
+                    matched = true;
+                    break;
+                }
+            }
+        }
+
+        m_recoveryTable->setRowHidden(row, !matched);
+        if (matched)
+        {
+            ++visibleCount;
+        }
+    }
+    m_recoveryTable->setUpdatesEnabled(true);
+
+    if (m_recoveryStatusLabel != nullptr && !m_deletedRecoveryItems.empty())
+    {
+        m_recoveryStatusLabel->setText(
+            queryText.isEmpty()
+            ? m_recoveryBaseStatusText
+            : QStringLiteral("%1｜筛选出 %2 / %3 项")
+                .arg(m_recoveryBaseStatusText)
+                .arg(visibleCount)
+                .arg(rowCount));
+    }
 }
 
 void FileDock::updateRecoveryViewState(const bool hasResults, const QString& emptyHintText)
@@ -10922,18 +11032,24 @@ void FileDock::scanDeletedFilesForRecoveryAsync()
                             return item.estimatedIntegrityPercent >= 80;
                         }));
 
-                    safeThis->m_recoveryStatusLabel->setText(
+                    // 基准文案单独留存：筛选时要在它后面追加“筛选出 N / M 项”，
+                    // 清空查找框后还要能原样还原。
+                    safeThis->m_recoveryBaseStatusText =
                         QStringLiteral(
                             "扫描完成：%1 项（可安全恢复 %2 项：Resident %3，完整非驻留 %4；完整度≥80%% %5 项）")
                         .arg(safeThis->m_deletedRecoveryItems.size())
                         .arg(safelyRecoverableCount)
                         .arg(residentReadyCount)
                         .arg(nonResidentReadyCount)
-                        .arg(highIntegrityCount));
+                        .arg(highIntegrityCount);
+                    safeThis->m_recoveryStatusLabel->setText(safeThis->m_recoveryBaseStatusText);
 
                     safeThis->updateRecoveryViewState(
                         !safeThis->m_deletedRecoveryItems.empty(),
                         QStringLiteral("本次扫描未发现仍可恢复的删除项，可更换卷后重新扫描。"));
+
+                    // 重新扫描后沿用当前查找条件，省去用户再输一次。
+                    safeThis->applyRecoveryFilter();
 
                     kLogEvent event;
                     info << event

@@ -39,6 +39,7 @@ class QSplitter;
 class QStatusBar;
 class QTabWidget;
 class QTableWidget;
+class QToolButton;
 class QTreeView;
 class QVBoxLayout;
 class QWidget;
@@ -454,6 +455,11 @@ private:
     // - 入参 rowIndex：表格行号，越界时不弹窗。
     void showDeletedFilePropertiesDialog(int rowIndex);
 
+    // applyRecoveryFilter：
+    // - 作用：按查找框内容筛选删除项表格，支持子串与正则两种模式；
+    // - 说明：只改行可见性，不动缓存顺序，右键与恢复入口的行号映射保持有效。
+    void applyRecoveryFilter();
+
     // updateRecoveryViewState：
     // - 作用：在“空状态引导页”和“结果表格”之间切换。
     // - 入参 hasResults：true 显示表格，false 显示引导页。
@@ -475,6 +481,9 @@ private:
     QPushButton* m_recoveryExportButton = nullptr;  // 恢复导出按钮。
     QTableWidget* m_recoveryTable = nullptr;        // 删除项结果表格。
     QLabel* m_recoveryStatusLabel = nullptr;        // 扫描状态标签。
+    QLineEdit* m_recoveryFilterEdit = nullptr;      // 结果查找输入框。
+    QToolButton* m_recoveryFilterRegexButton = nullptr; // 查找的正则开关。
+    QString m_recoveryBaseStatusText;               // 未叠加筛选信息时的扫描统计文案。
     QStackedWidget* m_recoveryViewStack = nullptr;  // 结果区堆叠容器（引导页/结果表格二选一）。
     QWidget* m_recoveryEmptyPage = nullptr;         // 空状态引导页容器。
     QPushButton* m_recoveryEmptyScanButton = nullptr; // 引导页中央扫描按钮。
