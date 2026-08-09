@@ -155,6 +155,22 @@ namespace ksword::ark
         DirectoryEnumerationResult enumerateDirectory(
             const std::wstring& ntPath,
             unsigned long maxEntries = 16384UL) const;
+        // enumerateDirectoryByIrp：
+        // - 输入：驱动可打开的 NT 目录路径、目标栈层与 R3 总行预算；
+        // - 处理：R0 自建 IRP_MJ_DIRECTORY_CONTROL 直发指定层，分页合并结果；
+        // - 返回：行格式与 enumerateDirectory 一致，另含实际生效层与接收驱动名，
+        //   调用方据此判断本次是否真的绕过了过滤层。
+        FileIrpDirectoryResult enumerateDirectoryByIrp(
+            const std::wstring& ntPath,
+            unsigned long targetLayer = KSWORD_ARK_FILE_IRP_LAYER_BASE_FS,
+            unsigned long maxEntries = 16384UL) const;
+        // submitFileIrp：
+        // - 输入：完整的 IRP 构造参数；写语义与危险 major 必须由调用方置
+        //   uiConfirmed/allowDangerous，客户端只负责补齐确认令牌；
+        // - 处理：一次 IOCTL 完成"打开 → 发送目标 major → 收尾"；
+        // - 返回：各阶段 NTSTATUS、目标设备栈信息与输出数据。
+        FileIrpSubmitResult submitFileIrp(
+            const FileIrpSubmitRequestParams& params) const;
         // Read Authenticode PE certificate-table structure and cached Code
         // Integrity state through the driver. No WinTrust API is used.
         ImageSignatureQueryResult queryImageSignature(

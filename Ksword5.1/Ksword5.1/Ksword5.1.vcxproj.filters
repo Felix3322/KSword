@@ -179,6 +179,9 @@
     <ClCompile Include="FileDock\FileDock.HandleUsage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="FileDock\FileDock.IrpBuilder.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="FileDock\FileHandleUsageScanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -201,6 +204,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="FileDock\DriverFileSystemParser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="FileDock\IrpFileSystemParser.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ScannerDock\ScannerDock.cpp">
@@ -883,6 +889,9 @@
     <ClCompile Include="ArkDriverClient\ArkDriverFile.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="ArkDriverClient\ArkDriverFileIrp.cpp">
+      <Filter>Source Files\ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="ArkDriverClient\ArkDriverRegistry.cpp">
       <Filter>Source Files\ArkDriverClient</Filter>
     </ClCompile>
@@ -1427,6 +1436,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FileDock\DriverFileSystemParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="FileDock\IrpFileSystemParser.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FileDock\FileHandleUsageScanner.h">

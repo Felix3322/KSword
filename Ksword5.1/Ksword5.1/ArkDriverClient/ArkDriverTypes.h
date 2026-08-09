@@ -14,6 +14,7 @@
 #include "../../../shared/driver/KswordArkCapabilityIoctl.h"
 #include "../../../shared/driver/KswordArkDynDataIoctl.h"
 #include "../../../shared/driver/KswordArkFileIoctl.h"
+#include "../../../shared/driver/KswordArkFileIrpIoctl.h"
 #include "../../../shared/driver/KswordArkFileMonitorIoctl.h"
 #include "../../../shared/driver/KswordArkHandleIoctl.h"
 #include "../../../shared/driver/KswordArkKernelIoctl.h"
@@ -534,6 +535,90 @@ namespace ksword::ark
         long lastStatus = 0;               // ZwQueryDirectoryFile 或边界校验状态。
         std::wstring fileSystemName;       // R0 通过 FileFsAttributeInformation 返回的名称。
         std::vector<DirectoryEntryRecord> entries; // 已按驱动顺序合并的目录行。
+    };
+
+    // FileIrpDirectoryResult 承载"自建 IRP 直发某一栈层"的目录枚举结果。
+    // 行格式与 DirectoryEnumerationResult 完全一致，额外记录 R0 实际生效的栈层
+    // 与接收请求的驱动名：请求层与生效层不同就说明发生了回退，调用方不得把回退
+    // 结果当作"绕过过滤层后的视图"。
+    struct FileIrpDirectoryResult
+    {
+        IoResult io;                      // 最后一页的通信结果或本地校验错误。
+        bool unsupported = false;         // 旧驱动未注册 IRP 目录枚举 IOCTL。
+        bool capped = false;              // 达到 R3 总行预算，结果不是完整目录。
+        std::uint32_t queryStatus =
+            KSWORD_ARK_DIRECTORY_ENUM_STATUS_UNAVAILABLE; // 最后一页语义状态。
+        std::uint32_t responseFlags = 0;   // 最后一页 KSWORD_ARK_DIRECTORY_ENUM_RESPONSE_FLAG_*。
+        std::uint32_t requestedLayer = 0;  // R3 请求的 KSWORD_ARK_FILE_IRP_LAYER_*。
+        std::uint32_t resolvedLayer = 0;   // R0 实际投递的栈层。
+        long openStatus = 0;               // CREATE 阶段状态。
+        long lastStatus = 0;               // QUERY_DIRECTORY 或边界校验状态。
+        std::uint64_t targetDeviceAddress = 0; // 实际接收 IRP 的设备对象。
+        std::uint64_t targetDriverAddress = 0; // 该设备所属驱动对象。
+        std::wstring driverName;           // 接收请求的驱动名。
+        std::wstring fileSystemName;       // 目标卷文件系统名（可能为空）。
+        std::vector<DirectoryEntryRecord> entries; // 已按驱动顺序合并的目录行。
+    };
+
+    // FileIrpSubmitResult 承载一次通用 IRP 构造提交的完整结果。
+    // 各阶段 NTSTATUS 分开保留：UI 必须能区分"打开失败"与"目标 major 被目标驱动
+    // 拒绝"，两者在排查过滤层拦截时含义完全不同。
+    struct FileIrpSubmitResult
+    {
+        IoResult io;                       // 底层 DeviceIoControl 状态。
+        bool unsupported = false;          // 旧驱动未注册 IRP 提交 IOCTL。
+        std::uint32_t status =
+            KSWORD_ARK_FILE_IRP_STATUS_INVALID_REQUEST; // 协议级状态。
+        std::uint32_t stageFlags = 0;      // KSWORD_ARK_FILE_IRP_STAGE_*。
+        std::uint32_t majorFunction = 0;
+        std::uint32_t minorFunction = 0;
+        std::uint32_t requestedLayer = 0;
+        std::uint32_t resolvedLayer = 0;
+        long createStatus = 0;
+        long operationStatus = 0;
+        long cleanupStatus = 0;
+        long closeStatus = 0;
+        std::uint64_t information = 0;     // 目标 major 的 IoStatus.Information。
+        std::uint64_t fileObjectAddress = 0;
+        std::uint64_t targetDeviceAddress = 0;
+        std::uint64_t targetDriverAddress = 0;
+        std::uint64_t relatedDeviceAddress = 0;
+        std::uint64_t baseFsDeviceAddress = 0;
+        std::uint64_t vpbDeviceAddress = 0;
+        std::uint64_t dispatchAddress = 0; // 目标驱动上该 major 的分发入口。
+        std::uint32_t targetStackSize = 0;
+        std::uint32_t targetDeviceFlags = 0;
+        std::wstring driverName;
+        std::wstring deviceName;
+        std::vector<std::uint8_t> outputData; // 目标驱动写回的数据。
+    };
+
+    // FileIrpSubmitRequestParams 是 R3 侧的构造参数集合。
+    // 与协议结构分开，让 UI 只填自己关心的字段，长度与令牌由客户端统一补齐。
+    struct FileIrpSubmitRequestParams
+    {
+        std::wstring ntPath;               // 目标 NT 路径。
+        std::wstring pattern;              // DIRECTORY_CONTROL 的通配符，可空。
+        std::uint32_t majorFunction = 0;
+        std::uint32_t minorFunction = 0;
+        std::uint32_t targetLayer = KSWORD_ARK_FILE_IRP_LAYER_RELATED;
+        std::uint32_t flags = 0;           // KSWORD_ARK_FILE_IRP_FLAG_*（不含令牌位）。
+        std::uint32_t timeoutMs = 0;       // 0 表示使用 R0 默认超时。
+        std::uint32_t desiredAccess = 0;
+        std::uint32_t shareAccess = 0;
+        std::uint32_t createDisposition = 0;
+        std::uint32_t createOptions = 0;
+        std::uint32_t fileAttributes = 0;
+        std::uint32_t informationClass = 0;
+        std::uint32_t controlCode = 0;
+        std::uint32_t securityInformation = 0;
+        std::uint32_t lockKey = 0;
+        std::uint32_t outputBytes = 0;     // 期望的输出缓冲长度。
+        std::uint64_t byteOffset = 0;
+        std::uint64_t lockLength = 0;
+        std::vector<std::uint8_t> inputData; // 内联输入数据。
+        bool uiConfirmed = false;          // 写语义/危险 major 必须为 true。
+        bool allowDangerous = false;       // POWER/PNP/SHUTDOWN 等额外闸门。
     };
 
     // ImageSignatureQueryResult preserves the complete fixed R0 response so

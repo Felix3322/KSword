@@ -127,6 +127,7 @@
     <ClCompile Include="src\features\kernel\hook_scan_support.c" />
     <ClCompile Include="src\features\file\file_actions.c" />
     <ClCompile Include="src\features\file\file_directory_query.c" />
+    <ClCompile Include="src\features\file\file_irp_request.c" />
     <ClCompile Include="src\features\file_monitor\file_monitor_operation_map.c" />
     <ClCompile Include="src\features\file_monitor\file_monitor_runtime.c" />
     <ClCompile Include="src\features\file_monitor\file_monitor_ioctl.c" />
@@ -204,6 +205,7 @@
     <ClCompile Include="src\dispatch\ioctl_validation.c" />
     <ClCompile Include="src\features\process\process_ioctl.c" />
     <ClCompile Include="src\features\file\file_ioctl.c" />
+    <ClCompile Include="src\features\file\file_irp_ioctl.c" />
     <ClCompile Include="src\features\kernel\kernel_ioctl.c" />
     <ClCompile Include="src\features\kernel\timer_dpc_query.c" />
     <ClCompile Include="src\features\callback\callback_ioctl.c" />
@@ -276,6 +278,8 @@
     <ClInclude Include="include\ark\ark_push_lock.h" />
     <ClInclude Include="include\ark\ark_system_time.h" />
     <ClInclude Include="include\ark\ark_file.h" />
+    <ClInclude Include="include\ark\ark_file_irp.h" />
+    <ClInclude Include="..\shared\driver\KswordArkFileIrpIoctl.h" />
     <ClInclude Include="include\ark\ark_ioctl.h" />
     <ClInclude Include="include\ark\ark_log.h" />
     <ClInclude Include="include\ark\ark_debug_output.h" />

@@ -13,6 +13,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QString>
+#include <QStringList>
 
 #include <cstdint>
 #include <functional>
@@ -43,6 +44,20 @@ namespace ks::file
         QDateTime modifiedTime;            // 最后修改时间（无效时为空）。
         QString typeText;                  // 类型提示文本（目录/文件扩展名）。
         std::uint64_t ntfsFileReference = 0; // NTFS 场景下的文件引用号（用于恢复功能）。
+    };
+
+    // MftScanDiagnostics 作用：
+    // - 记录"纯 $MFT 视图"与"Windows API 视图"的差异；
+    // - mftOnly 集合是本功能的核心产出：只有直接解析 $MFT 才能看到、
+    //   而 FindFirstFile/目录索引看不到的条目，正是过滤层隐藏文件的典型特征；
+    // - winApiOnly 集合用于反向排查，通常来自扫描窗口不足或扫描期间的目录变化。
+    struct MftScanDiagnostics
+    {
+        bool comparisonAvailable = false;  // Windows API 对照是否成功执行。
+        int mftEntryCount = 0;             // 纯 MFT 视图条目数。
+        int winApiEntryCount = 0;          // Windows API 视图条目数。
+        QStringList mftOnlyNames;          // 只出现在 MFT 视图中的名称。
+        QStringList winApiOnlyNames;       // 只出现在 Windows API 视图中的名称。
     };
 
     // NtfsRecoveryCapability 作用：
@@ -109,13 +124,40 @@ namespace ks::file
         // - false 表示本次结果仍完全来自手动解析流程。
         // 返回值：
         // - 成功返回 true，失败返回 false。
+        // 入参 strictMftOnly：
+        // - true 时禁用全部 Windows API / FSCTL 回退与补齐，结果必须完全来自
+        //   原始 $MFT 字节；仅对 NTFS 有意义，其它文件系统忽略该参数。
         static bool enumerateDirectory(
             const QString& pathText,
             std::vector<ManualDirectoryEntry>& entriesOut,
             ManualFsType& fsTypeOut,
             QString& errorTextOut,
             bool* usedWinApiFallbackOut = nullptr,
-            ManualFsType requestedFsType = ManualFsType::Unknown);
+            ManualFsType requestedFsType = ManualFsType::Unknown,
+            bool strictMftOnly = false);
+
+        // enumerateDirectoryByMft 作用：
+        // - 只用原始 $MFT 解析目录，全程不经过文件系统驱动与 Windows API：
+        //   卷偏移直读 $MFT，禁用 FSCTL_GET_NTFS_FILE_RECORD 与任何 WinAPI 补齐；
+        // - 额外跑一次 Windows API 枚举做**对照**（不并入结果），把两个视图的差集
+        //   写入 diagnosticsOut，供 UI 标记疑似被隐藏的条目。
+        // 调用方法：
+        // - FileDock 选择"作为MFT解析"后在后台线程调用。
+        // 入参 pathText：
+        // - NTFS 卷上的目标目录路径。
+        // 出参 entriesOut：
+        // - 纯 MFT 视图的目录条目。
+        // 出参 errorTextOut：
+        // - 失败时返回原因；非 NTFS 卷会明确报告不支持。
+        // 出参 diagnosticsOut：
+        // - 可选，接收与 Windows API 视图的差异统计。
+        // 返回值：
+        // - 成功返回 true，失败返回 false。
+        static bool enumerateDirectoryByMft(
+            const QString& pathText,
+            std::vector<ManualDirectoryEntry>& entriesOut,
+            QString& errorTextOut,
+            MftScanDiagnostics* diagnosticsOut = nullptr);
 
         // enumerateNtfsDeletedFiles 作用：
         // - 扫描指定 NTFS 卷内“已删除”文件候选项。

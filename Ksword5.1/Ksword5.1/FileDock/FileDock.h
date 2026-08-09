@@ -11,6 +11,7 @@
 #include "../Framework.h"
 #include "ManualFileSystemParser.h"
 
+#include <QStringList>
 #include <QWidget>
 
 #include <cstdint>     // std::uint64_t：文件大小统计。
@@ -31,6 +32,7 @@ class QLabel;
 class QLineEdit;
 class QListView;
 class QMenu;
+class QPlainTextEdit;
 class QPushButton;
 class QStandardItemModel;
 class QStackedWidget;
@@ -86,6 +88,18 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    // ManualParseBackend：
+    // - 作用：把"读取方式"下拉框索引归一为后端类型，避免各调用点各自比较魔法索引；
+    // - WindowsApi 走 QFileSystemModel，不进入平铺解析链路。
+    enum class ManualParseBackend
+    {
+        WindowsApi = 0,   // Windows API（QFileSystemModel）。
+        ManualFs,         // R3 原始卷手动解析（自动识别或强制 NTFS/FAT32/exFAT）。
+        R0Driver,         // R0 ZwQueryDirectoryFile 分页枚举。
+        MftStrict,        // 纯 $MFT 扫描，禁用一切 WinAPI/FSCTL 回退。
+        R0Irp             // R0 自建 IRP 直发文件系统栈。
+    };
+
     // FilePanelWidgets：
     // - 作用：聚合单个文件面板的全部控件与运行时状态。
     struct FilePanelWidgets
@@ -142,6 +156,7 @@ private:
         int manualRequestedReadMode = 0;        // 当前模型对应的读取模式索引，防止 R3/R0 结果误复用。
         bool manualResultPartial = false;       // R0 分页/名称边界导致结果不完整时为 true。
         QString manualSourceDetail;             // 当前平铺模型的真实解析来源摘要。
+        QStringList manualSuspiciousNames;      // 只有绕过路径可见的条目名（疑似被隐藏）。
         bool manualParseInProgress = false;    // 手动解析后台任务是否正在运行。
         bool manualParsePending = false;       // 手动解析是否有待执行请求。
         bool manualParsePendingShowWarning = false; // 待执行请求是否需要失败弹框。
@@ -178,6 +193,44 @@ private:
     // initializeRecoveryPage：
     // - 作用：初始化“文件恢复”竖排 Tab 页面。
     void initializeRecoveryPage();
+
+    // ======================= IRP 构造 =========================
+    // initializeIrpBuilderPage：
+    // - 作用：初始化“IRP 构造”竖排 Tab 页面，覆盖全部 28 个 IRP_MJ_*。
+    void initializeIrpBuilderPage();
+
+    // applyIrpMajorPreset：
+    // - 输入：当前选中的 IRP_MJ_* 值；
+    // - 处理：按该 major 的定义启用/禁用参数字段并填入常用默认值，
+    //   同时对写语义与 PnP/电源类请求打开对应确认开关的要求；
+    // - 返回：无返回值。
+    void applyIrpMajorPreset(int majorFunction);
+
+    // submitConstructedIrp：
+    // - 作用：收集页面参数，在后台线程提交一次 R0 自建 IRP，并回填结果；
+    // - 说明：写语义与危险 major 在提交前会再次要求用户确认。
+    void submitConstructedIrp();
+
+    // updateIrpBuilderEnabledState：
+    // - 作用：按后台任务状态统一切换页面控件可用性。
+    void updateIrpBuilderEnabledState(bool submitting);
+
+    // irpMajorDisplayText / irpMinorDisplayText：
+    // - 作用：把 IRP_MJ_*/IRP_MN_* 数值映射为“数值 + 名称”的下拉文案。
+    static QString irpMajorDisplayText(int majorFunction);
+
+    // parseNumericField / parseHexPayload / formatHexDump：
+    // - 作用：页面输入解析与输出展示的公共实现；
+    // - parseNumericField 同时接受十进制与 0x 前缀十六进制，空串按 0 处理。
+    static bool parseNumericField(
+        const QString& text,
+        unsigned long long& valueOut,
+        QString& errorTextOut);
+    static bool parseHexPayload(
+        const QString& text,
+        std::vector<std::uint8_t>& bytesOut,
+        QString& errorTextOut);
+    static QString formatHexDump(const std::vector<std::uint8_t>& data);
 
     // ======================= 导航与状态 =======================
     // navigateToPath：
@@ -250,6 +303,37 @@ private:
     // - 作用：根据读取模式下拉框解析强制文件系统类型；
     // - 返回 Unknown 表示“手动自动识别”。
     ks::file::ManualFsType requestedManualFsTypeForPanel(const FilePanelWidgets& panel) const;
+
+    // manualParseBackendForPanel：
+    // - 作用：把读取方式下拉框索引映射为 ManualParseBackend；
+    // - 所有平铺解析分派都必须经过本函数，索引与后端的对应关系只维护一处。
+    ManualParseBackend manualParseBackendForPanel(const FilePanelWidgets& panel) const;
+
+    // parseBackendIsKernel：
+    // - 作用：判断结果是否来自 R0，供状态文案与日志区分 R0/R3 来源。
+    static bool parseBackendIsKernel(ManualParseBackend backend);
+
+    // parseBackendDisplayText / parseBackendLogTag：
+    // - 作用：为界面提示与结构化日志提供统一的后端名称。
+    static QString parseBackendDisplayText(ManualParseBackend backend);
+    static const char* parseBackendLogTag(ManualParseBackend backend);
+
+    // runManualParseBackend：
+    // - 输入：后端类型、目标路径与强制文件系统类型；
+    // - 处理：调用对应解析器，把差异诊断折叠进 sourceDetailOut 供状态栏展示；
+    // - 返回：解析成功返回 true，失败时 errorTextOut 含原因。
+    // - 说明：本函数只读文件系统与驱动，不触碰任何 UI 对象，可在后台线程调用。
+    static bool runManualParseBackend(
+        ManualParseBackend backend,
+        const QString& pathText,
+        ks::file::ManualFsType requestedFsType,
+        std::vector<ks::file::ManualDirectoryEntry>& entriesOut,
+        ks::file::ManualFsType& fsTypeOut,
+        QString& errorTextOut,
+        bool& usedWinApiFallbackOut,
+        bool& partialOut,
+        QString& sourceDetailOut,
+        QStringList& suspiciousNamesOut);
 
     // ======================= 文件操作 =========================
     // showPanelContextMenu：
@@ -469,10 +553,46 @@ private:
 private:
     // 根布局控件。
     QVBoxLayout* m_rootLayout = nullptr;       // FileDock 根布局。
-    QTabWidget* m_rootTabWidget = nullptr;     // 竖排根 Tab（文件管理 / 文件恢复）。
+    QTabWidget* m_rootTabWidget = nullptr;     // 竖排根 Tab（文件管理 / 文件恢复 / IRP 构造）。
     QWidget* m_fileManagerPage = nullptr;      // 文件管理页容器。
     QWidget* m_fileRecoveryPage = nullptr;     // 文件恢复页容器。
+    QWidget* m_irpBuilderPage = nullptr;       // IRP 构造页容器。
     QSplitter* m_mainSplitter = nullptr;       // 左右分栏分割器。
+
+    // IRP 构造页控件。参数字段一律用文本框而不是 spin box：
+    // IRP 参数普遍以十六进制常量形式出现在 WDK 文档里，强制十进制输入会让
+    // 用户在每次填 CreateOptions/IoControlCode 时都要手工换算。
+    QLineEdit* m_irpPathEdit = nullptr;             // 目标 NT/Win32 路径。
+    QComboBox* m_irpMajorCombo = nullptr;           // IRP_MJ_* 选择。
+    QLineEdit* m_irpMinorEdit = nullptr;            // IRP_MN_* 数值。
+    QComboBox* m_irpLayerCombo = nullptr;           // 目标栈层。
+    QLineEdit* m_irpDesiredAccessEdit = nullptr;    // CREATE：ACCESS_MASK。
+    QLineEdit* m_irpShareAccessEdit = nullptr;      // CREATE：共享位。
+    QLineEdit* m_irpCreateDispositionEdit = nullptr;// CREATE：处置方式。
+    QLineEdit* m_irpCreateOptionsEdit = nullptr;    // CREATE：选项位。
+    QLineEdit* m_irpFileAttributesEdit = nullptr;   // CREATE：文件属性。
+    QLineEdit* m_irpInformationClassEdit = nullptr; // 各类信息类/电源状态。
+    QLineEdit* m_irpControlCodeEdit = nullptr;      // DEVICE_CONTROL / FSCTL 控制码。
+    QLineEdit* m_irpSecurityInformationEdit = nullptr; // SECURITY_INFORMATION。
+    QLineEdit* m_irpByteOffsetEdit = nullptr;       // READ/WRITE/LOCK 偏移。
+    QLineEdit* m_irpLockKeyEdit = nullptr;          // LOCK_CONTROL Key。
+    QLineEdit* m_irpLockLengthEdit = nullptr;       // LOCK_CONTROL 长度。
+    QLineEdit* m_irpOutputBytesEdit = nullptr;      // 期望输出缓冲长度。
+    QLineEdit* m_irpTimeoutEdit = nullptr;          // 等待超时（毫秒）。
+    QLineEdit* m_irpPatternEdit = nullptr;          // DIRECTORY_CONTROL 通配符。
+    QPlainTextEdit* m_irpInputHexEdit = nullptr;    // 内联输入数据（十六进制）。
+    QCheckBox* m_irpConfirmCheck = nullptr;         // 写语义确认。
+    QCheckBox* m_irpAllowDangerousCheck = nullptr;  // PnP/电源等危险 major 额外确认。
+    QCheckBox* m_irpCreateOnlyCheck = nullptr;      // 只执行 CREATE。
+    QCheckBox* m_irpRestartScanCheck = nullptr;     // SL_RESTART_SCAN。
+    QCheckBox* m_irpSingleEntryCheck = nullptr;     // SL_RETURN_SINGLE_ENTRY。
+    QCheckBox* m_irpReparseCheck = nullptr;         // FILE_OPEN_REPARSE_POINT。
+    QCheckBox* m_irpDirectoryIntentCheck = nullptr; // FILE_DIRECTORY_FILE。
+    QPushButton* m_irpSendButton = nullptr;         // 发送按钮。
+    QLabel* m_irpStatusLabel = nullptr;             // 结果状态摘要。
+    QTableWidget* m_irpResultTable = nullptr;       // 各阶段状态与设备栈信息。
+    QPlainTextEdit* m_irpOutputHexEdit = nullptr;   // 目标驱动写回的数据。
+    bool m_irpSubmitInProgress = false;             // 提交任务是否在运行。
 
     // 文件恢复页控件。
     QComboBox* m_recoveryVolumeCombo = nullptr; // 恢复卷选择下拉框。

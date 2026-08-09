@@ -3,6 +3,7 @@
 #include "../UI/VisibleTableWidget.h"
 #include "FilePropertyPeAnalyzer.h"
 #include "DriverFileSystemParser.h"
+#include "IrpFileSystemParser.h"
 #include "FileHandleUsageScanner.h"
 #include "../Internationalization/LanguageManager.h"
 
@@ -2913,6 +2914,52 @@ namespace
         default:
             return QStringLiteral("Unknown");
         }
+    }
+
+    // markSuspiciousRowIfNeeded 作用：
+    // - 输入：刚构造好的一行、该行条目名、疑似隐藏项名称集合（已折叠大小写）；
+    // - 处理：命中时给整行加醒目底色和说明性 tooltip；
+    // - 说明：这份名单来自"绕过路径可见、常规路径不可见"的差集，是 MFT/IRP 两种
+    //   解析方式的核心产出。只在状态栏报一个数字，用户仍然无法定位到具体是哪几行。
+    void markSuspiciousRowIfNeeded(
+        const QList<QStandardItem*>& rowItems,
+        const QString& entryName,
+        const QSet<QString>& suspiciousNameSet)
+    {
+        if (suspiciousNameSet.isEmpty() ||
+            !suspiciousNameSet.contains(entryName.toCaseFolded()))
+        {
+            return;
+        }
+
+        // 用低透明度的告警色铺底：既要一眼看见，又不能盖掉选中态和交替行色。
+        QColor highlightColor(
+            KswordTheme::AccentHex(KswordTheme::AccentRole::Orange));
+        highlightColor.setAlpha(72);
+        const QString tipText = QStringLiteral(
+            "该条目只有绕过过滤层或直读 $MFT 才能看到，常规目录枚举视图中不存在。");
+        for (QStandardItem* rowItem : rowItems)
+        {
+            if (rowItem == nullptr)
+            {
+                continue;
+            }
+            rowItem->setBackground(highlightColor);
+            rowItem->setToolTip(tipText);
+        }
+    }
+
+    // buildSuspiciousNameSet 作用：把疑似隐藏项名单折叠大小写后转成集合，
+    // 避免在逐行回填时做 O(n) 线性查找。
+    QSet<QString> buildSuspiciousNameSet(const QStringList& names)
+    {
+        QSet<QString> nameSet;
+        nameSet.reserve(names.size() + 8);
+        for (const QString& nameText : names)
+        {
+            nameSet.insert(nameText.toCaseFolded());
+        }
+        return nameSet;
     }
 
     // 统一按钮样式，保持与主界面蓝色主题一致。
@@ -8294,12 +8341,22 @@ void FileDock::initializeUi()
     {
         m_rootTabWidget->addTab(m_fileRecoveryPage, QStringLiteral("文件恢复"));
     }
+    initializeIrpBuilderPage();
+    if (m_irpBuilderPage != nullptr)
+    {
+        m_rootTabWidget->addTab(m_irpBuilderPage, QStringLiteral("IRP 构造"));
+    }
     ks::i18n::LanguageManager::instance().bindTab(
         m_rootTabWidget, m_fileManagerPage, QStringLiteral("file.tab.manager"), QStringLiteral("文件管理"));
     if (m_fileRecoveryPage != nullptr)
     {
         ks::i18n::LanguageManager::instance().bindTab(
             m_rootTabWidget, m_fileRecoveryPage, QStringLiteral("file.tab.recovery"), QStringLiteral("文件恢复"));
+    }
+    if (m_irpBuilderPage != nullptr)
+    {
+        ks::i18n::LanguageManager::instance().bindTab(
+            m_rootTabWidget, m_irpBuilderPage, QStringLiteral("file.tab.irpbuilder"), QStringLiteral("IRP 构造"));
     }
 }
 
@@ -8427,10 +8484,15 @@ void FileDock::initializePanel(FilePanelWidgets& panel, const QString& titleText
         QStringLiteral("R0 驱动解析"),
         QStringLiteral("作为NTFS解析"),
         QStringLiteral("作为FAT32解析"),
-        QStringLiteral("作为exFAT解析") });
+        QStringLiteral("作为exFAT解析"),
+        QStringLiteral("作为MFT解析"),
+        QStringLiteral("R0 IRP 解析") });
     panel.readModeCombo->setToolTip(QStringLiteral(
         "切换目录读取方式：Windows API、R3 原始卷手动解析、"
-        "R0 驱动目录解析，或强制按 NTFS/FAT32/exFAT 解析。"));
+        "R0 驱动目录解析，强制按 NTFS/FAT32/exFAT 解析，\n"
+        "作为MFT解析（仅 NTFS：卷偏移直读 $MFT，禁用一切 WinAPI/FSCTL 回退），\n"
+        "R0 IRP 解析（内核自建 IRP 直发基础文件系统设备，绕过过滤层）。\n"
+        "后两种会与常规视图对照，把只有绕过路径可见的条目标为疑似隐藏项。"));
 
     panel.filterEdit = new QLineEdit(panel.toolWidget);
     panel.filterEdit->setPlaceholderText(QStringLiteral("快速过滤"));
@@ -9545,12 +9607,8 @@ void FileDock::applyReadModeToPanel(FilePanelWidgets& panel)
         panel.showSystemCheck->setEnabled(false);
         if (panel.parserStatusLabel != nullptr)
         {
-            if (currentModeUsesDriver(panel))
-            {
-                panel.parserStatusLabel->setText(
-                    QStringLiteral("解析器: R0 驱动解析 (待查询)"));
-            }
-            else
+            const ManualParseBackend backend = manualParseBackendForPanel(panel);
+            if (backend == ManualParseBackend::ManualFs)
             {
                 const ks::file::ManualFsType requestedFsType =
                     requestedManualFsTypeForPanel(panel);
@@ -9559,6 +9617,12 @@ void FileDock::applyReadModeToPanel(FilePanelWidgets& panel)
                     ? QStringLiteral("解析器: 手动解析")
                     : QStringLiteral("解析器: %1 (待解析)")
                         .arg(manualFsTypeToText(requestedFsType)));
+            }
+            else
+            {
+                panel.parserStatusLabel->setText(
+                    QStringLiteral("解析器: %1 (待查询)")
+                        .arg(parseBackendDisplayText(backend)));
             }
         }
     }
@@ -9658,26 +9722,25 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
     // usedWinApiFallback：记录手动 NTFS 解析是否已经降级到 Windows API。
     bool usedWinApiFallback = false;
     bool partialResult = false;
-    const bool driverMode = currentModeUsesDriver(panel);
+    QStringList suspiciousNames;
+    const ManualParseBackend parseBackend = manualParseBackendForPanel(panel);
+    const bool driverMode = parseBackendIsKernel(parseBackend);
+    const QString backendText = parseBackendDisplayText(parseBackend);
     const ks::file::ManualFsType requestedFsType = requestedManualFsTypeForPanel(panel);
     const int requestedReadMode = panel.readModeCombo != nullptr
         ? panel.readModeCombo->currentIndex()
         : 0;
-    const bool parseOk = driverMode
-        ? ks::file::DriverFileSystemParser::enumerateDirectory(
-            panel.currentPath,
-            entries,
-            fsType,
-            errorText,
-            &partialResult,
-            &sourceDetail)
-        : ks::file::ManualFileSystemParser::enumerateDirectory(
-            panel.currentPath,
-            entries,
-            fsType,
-            errorText,
-            &usedWinApiFallback,
-            requestedFsType);
+    const bool parseOk = runManualParseBackend(
+        parseBackend,
+        panel.currentPath,
+        requestedFsType,
+        entries,
+        fsType,
+        errorText,
+        usedWinApiFallback,
+        partialResult,
+        sourceDetail,
+        suspiciousNames);
 
     panel.manualModel->removeRows(0, panel.manualModel->rowCount());
     panel.lastManualFsType = fsType;
@@ -9685,30 +9748,27 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
     panel.manualRequestedReadMode = requestedReadMode;
     panel.manualResultPartial = partialResult;
     panel.manualSourceDetail = sourceDetail;
+    panel.manualSuspiciousNames = suspiciousNames;
     if (!parseOk)
     {
         // privilegePromptHandled：恢复提示已处理权限问题时不再显示手动解析通用错误。
         const bool privilegePromptHandled = ks::ui::promptForPrivilegeFailure(
             this,
             driverMode
-                ? QStringLiteral("R0 驱动解析目录")
+                ? QStringLiteral("%1目录").arg(backendText)
                 : QStringLiteral("读取原始文件系统数据"),
             errorText);
         panel.manualLoadedPath.clear();
         if (panel.parserStatusLabel != nullptr)
         {
             panel.parserStatusLabel->setText(
-                driverMode
-                    ? QStringLiteral("解析器: R0 驱动解析失败")
-                    : QStringLiteral("解析器: 手动解析失败"));
+                QStringLiteral("解析器: %1失败").arg(backendText));
         }
         if (showWarningMessage && !privilegePromptHandled)
         {
             QMessageBox::warning(
                 this,
-                driverMode
-                    ? QStringLiteral("R0 驱动解析失败")
-                    : QStringLiteral("手动解析失败"),
+                QStringLiteral("%1失败").arg(backendText),
                 QStringLiteral("路径: %1\n错误: %2")
                 .arg(QDir::toNativeSeparators(panel.currentPath))
                 .arg(errorText));
@@ -9717,7 +9777,7 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
         kLogEvent event;
         warn << event
             << "[FileDock] 目录解析失败, source="
-            << (driverMode ? "R0" : "R3-manual")
+            << parseBackendLogTag(parseBackend)
             << ", panel="
             << panel.panelNameText.toStdString()
             << ", path="
@@ -9728,6 +9788,7 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
         return false;
     }
 
+    const QSet<QString> suspiciousNameSet = buildSuspiciousNameSet(suspiciousNames);
     for (const ks::file::ManualDirectoryEntry& itemValue : entries)
     {
         QList<QStandardItem*> rowItems;
@@ -9756,17 +9817,22 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
             : QStringLiteral("-")));
         rowItems.push_back(new QStandardItem(QDir::toNativeSeparators(itemValue.absolutePath)));
         rowItems.push_back(new QStandardItem(itemValue.isDirectory ? QStringLiteral("1") : QStringLiteral("0")));
+        markSuspiciousRowIfNeeded(rowItems, itemValue.name, suspiciousNameSet);
         panel.manualModel->appendRow(rowItems);
     }
 
     if (panel.parserStatusLabel != nullptr)
     {
         // 手动链路失败后若已回退到 Windows API，则必须明确展示真实来源，避免 UI 误导。
-        if (driverMode)
+        if (!sourceDetail.isEmpty())
         {
-            panel.parserStatusLabel->setText(
-                QStringLiteral("解析器: %1")
-                .arg(sourceDetail));
+            QString statusText = QStringLiteral("解析器: %1").arg(sourceDetail);
+            if (!suspiciousNames.isEmpty())
+            {
+                statusText += QStringLiteral("；疑似隐藏项 %1 个")
+                    .arg(suspiciousNames.size());
+            }
+            panel.parserStatusLabel->setText(statusText);
         }
         else if (usedWinApiFallback)
         {
@@ -9786,7 +9852,7 @@ bool FileDock::reloadManualModel(FilePanelWidgets& panel, const bool showWarning
     kLogEvent event;
     info << event
         << "[FileDock] 目录解析完成, source="
-        << (driverMode ? "R0" : "R3-manual")
+        << parseBackendLogTag(parseBackend)
         << ", panel="
         << panel.panelNameText.toStdString()
         << ", partial="
@@ -9814,7 +9880,9 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
     const int requestedReadMode = panel.readModeCombo != nullptr
         ? panel.readModeCombo->currentIndex()
         : 0;
-    const bool driverMode = currentModeUsesDriver(panel);
+    const ManualParseBackend parseBackend = manualParseBackendForPanel(panel);
+    const bool driverMode = parseBackendIsKernel(parseBackend);
+    const QString backendText = parseBackendDisplayText(parseBackend);
 
     // 路径已经加载且当前没有任务运行时，直接复用结果，避免无意义重复解析。
     if (!panel.manualParseInProgress
@@ -9870,19 +9938,15 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
     const QString panelNameText = panel.panelNameText;
     const bool leftPanelRequest = (&panel == &m_leftPanel);
 
-    // 平铺解析进度条：R3 原始解析与 R0 驱动枚举共用同一套异步回填机制。
-    const QString parserTaskText = driverMode
-        ? QStringLiteral(" R0 驱动解析")
-        : QStringLiteral(" 手动解析");
+    // 平铺解析进度条：R3 原始解析与 R0 内核枚举共用同一套异步回填机制。
+    const QString parserTaskText = QStringLiteral(" ") + backendText;
     const int progressPid = kPro.add(this, "文件", (panelNameText + parserTaskText).toStdString());
     kPro.set(progressPid, "准备解析目录", 0, 5.0f);
 
     if (panel.parserStatusLabel != nullptr)
     {
         panel.parserStatusLabel->setText(
-            driverMode
-            ? QStringLiteral("解析器: R0 驱动解析中...")
-            : QStringLiteral("解析器: 手动解析中..."));
+            QStringLiteral("解析器: %1中...").arg(backendText));
     }
     if (panel.readModeCombo != nullptr)
     {
@@ -9893,7 +9957,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
         kLogEvent event;
         info << event
             << "[FileDock] 启动异步平铺解析, source="
-            << (driverMode ? "R0" : "R3")
+            << parseBackendLogTag(parseBackend)
             << ", panel="
             << panelNameText.toStdString()
             << ", path="
@@ -9904,10 +9968,10 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
     }
 
     QPointer<FileDock> safeThis(this);
-    std::thread([safeThis, leftPanelRequest, requestPath, requestedFsType, requestedReadMode, driverMode, panelNameText, showWarningMessage, requestSerial, progressPid]() {
+    std::thread([safeThis, leftPanelRequest, requestPath, requestedFsType, requestedReadMode, parseBackend, driverMode, backendText, panelNameText, showWarningMessage, requestSerial, progressPid]() {
         kPro.set(
             progressPid,
-            driverMode ? "R0 驱动枚举目录中" : "解析文件系统结构中",
+            (backendText + QStringLiteral("目录中")).toStdString(),
             0,
             35.0f);
 
@@ -9918,27 +9982,18 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
         bool usedWinApiFallback = false;
         bool partialResult = false;
         QString sourceDetail;
-        bool parseOk = false;
-        if (driverMode)
-        {
-            parseOk = ks::file::DriverFileSystemParser::enumerateDirectory(
-                requestPath,
-                parsedEntries,
-                parsedFsType,
-                parseErrorText,
-                &partialResult,
-                &sourceDetail);
-        }
-        else
-        {
-            parseOk = ks::file::ManualFileSystemParser::enumerateDirectory(
-                requestPath,
-                parsedEntries,
-                parsedFsType,
-                parseErrorText,
-                &usedWinApiFallback,
-                requestedFsType);
-        }
+        QStringList suspiciousNames;
+        const bool parseOk = runManualParseBackend(
+            parseBackend,
+            requestPath,
+            requestedFsType,
+            parsedEntries,
+            parsedFsType,
+            parseErrorText,
+            usedWinApiFallback,
+            partialResult,
+            sourceDetail,
+            suspiciousNames);
 
         kPro.set(progressPid, parseOk ? "生成目录列表中" : "解析失败，整理错误信息", 0, 78.0f);
 
@@ -9955,7 +10010,9 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
              requestPath,
              requestedFsType,
              requestedReadMode,
+             parseBackend,
              driverMode,
+             backendText,
              panelNameText,
              showWarningMessage,
              requestSerial,
@@ -9966,7 +10023,8 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
              parseErrorText,
              usedWinApiFallback,
              partialResult,
-             sourceDetail]() mutable {
+             sourceDetail,
+             suspiciousNames]() mutable {
                 if (safeThis.isNull())
                 {
                     kPro.set(progressPid, "界面已关闭", 0, 100.0f);
@@ -9991,7 +10049,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         kLogEvent event;
                         warn << event
                             << "[FileDock] 丢弃过期平铺解析结果, source="
-                            << (driverMode ? "R0" : "R3")
+                            << parseBackendLogTag(parseBackend)
                             << ", panel="
                             << panelNameText.toStdString()
                             << ", path="
@@ -10024,7 +10082,9 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                      requestPath,
                      requestedFsType,
                      requestedReadMode,
+                     parseBackend,
                      driverMode,
+                     backendText,
                      panelNameText,
                      showWarningMessage,
                      requestSerial,
@@ -10035,7 +10095,8 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                      parseErrorText,
                      usedWinApiFallback,
                      partialResult,
-                     sourceDetail]()
+                     sourceDetail,
+                     suspiciousNames]()
                 {
                     if (safeThis.isNull())
                     {
@@ -10056,6 +10117,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                     commitPanel.manualRequestedReadMode = requestedReadMode;
                     commitPanel.manualResultPartial = partialResult;
                     commitPanel.manualSourceDetail = sourceDetail;
+                    commitPanel.manualSuspiciousNames = suspiciousNames;
                     if (commitPanel.readModeCombo != nullptr)
                     {
                         commitPanel.readModeCombo->setEnabled(true);
@@ -10071,9 +10133,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         if (commitPanel.parserStatusLabel != nullptr)
                         {
                             commitPanel.parserStatusLabel->setText(
-                                driverMode
-                                ? QStringLiteral("解析器: R0 驱动解析失败")
-                                : QStringLiteral("解析器: 手动解析失败"));
+                                QStringLiteral("解析器: %1失败").arg(backendText));
                         }
 
                         // 原始文件系统枚举需要直接读取卷设备；普通令牌会返回 ERROR_ACCESS_DENIED。
@@ -10082,16 +10142,14 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                             ks::ui::promptForPrivilegeFailure(
                                 safeThis.data(),
                                 driverMode
-                                ? QStringLiteral("R0 驱动枚举目录")
+                                ? QStringLiteral("%1目录").arg(backendText)
                                 : QStringLiteral("读取原始文件系统数据"),
                                 parseErrorText);
                         if (showWarningMessage && !privilegePromptHandled)
                         {
                             QMessageBox::warning(
                                 safeThis.data(),
-                                driverMode
-                                ? QStringLiteral("R0 驱动解析失败")
-                                : QStringLiteral("手动解析失败"),
+                                QStringLiteral("%1失败").arg(backendText),
                                 QStringLiteral("路径: %1\n错误: %2")
                                 .arg(QDir::toNativeSeparators(requestPath))
                                 .arg(parseErrorText));
@@ -10100,7 +10158,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         kLogEvent event;
                         warn << event
                             << "[FileDock] 异步平铺解析失败, source="
-                            << (driverMode ? "R0" : "R3")
+                            << parseBackendLogTag(parseBackend)
                             << ", panel="
                             << panelNameText.toStdString()
                             << ", path="
@@ -10119,6 +10177,8 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                             commitPanel.fileView->setUpdatesEnabled(false);
                             commitPanel.compactFileView->setUpdatesEnabled(false);
                         }
+                        const QSet<QString> suspiciousNameSet =
+                            buildSuspiciousNameSet(suspiciousNames);
                         for (const ks::file::ManualDirectoryEntry& itemValue : *parsedEntriesSnapshot)
                         {
                             QList<QStandardItem*> rowItems;
@@ -10160,6 +10220,8 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                                 itemValue.isDirectory
                                 ? QStringLiteral("1")
                                 : QStringLiteral("0")));
+                            markSuspiciousRowIfNeeded(
+                                rowItems, itemValue.name, suspiciousNameSet);
                             commitPanel.manualModel->appendRow(rowItems);
                         }
                         if (commitPanel.manualProxyModel != nullptr)
@@ -10177,10 +10239,16 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         if (commitPanel.parserStatusLabel != nullptr)
                         {
                             // 异步路径与同步路径保持同一展示规则，并明确标示真实数据来源。
-                            if (driverMode)
+                            if (!sourceDetail.isEmpty())
                             {
-                                commitPanel.parserStatusLabel->setText(
-                                    QStringLiteral("解析器: %1").arg(sourceDetail));
+                                QString statusText =
+                                    QStringLiteral("解析器: %1").arg(sourceDetail);
+                                if (!suspiciousNames.isEmpty())
+                                {
+                                    statusText += QStringLiteral("；疑似隐藏项 %1 个")
+                                        .arg(suspiciousNames.size());
+                                }
+                                commitPanel.parserStatusLabel->setText(statusText);
                             }
                             else if (usedWinApiFallback)
                             {
@@ -10200,7 +10268,7 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                         kLogEvent event;
                         info << event
                             << "[FileDock] 异步平铺解析完成, source="
-                            << (driverMode ? "R0" : "R3")
+                            << parseBackendLogTag(parseBackend)
                             << ", panel="
                             << panelNameText.toStdString()
                             << ", fsType="
@@ -10218,9 +10286,10 @@ void FileDock::requestAsyncManualReload(FilePanelWidgets& panel, const bool show
                     safeThis->applyPanelFilterAndSort(commitPanel);
                     kPro.set(
                         progressPid,
-                        driverMode
-                        ? (parseOk ? "R0 驱动解析完成" : "R0 驱动解析失败")
-                        : (parseOk ? "手动解析完成" : "手动解析失败"),
+                        (backendText +
+                            (parseOk
+                                ? QStringLiteral("完成")
+                                : QStringLiteral("失败"))).toStdString(),
                         0,
                         100.0f);
 
@@ -10264,9 +10333,8 @@ bool FileDock::currentModeIsManual(const FilePanelWidgets& panel) const
 
 bool FileDock::currentModeUsesDriver(const FilePanelWidgets& panel) const
 {
-    // 读取模式索引 2 专用于 R0；其它平铺模式仍由 ManualFileSystemParser 处理。
-    return panel.readModeCombo != nullptr &&
-        panel.readModeCombo->currentIndex() == 2;
+    // R0 驱动解析与 R0 IRP 解析都由内核应答；其它平铺模式仍在 R3 完成。
+    return parseBackendIsKernel(manualParseBackendForPanel(panel));
 }
 
 ks::file::ManualFsType FileDock::requestedManualFsTypeForPanel(const FilePanelWidgets& panel) const
@@ -10284,8 +10352,160 @@ ks::file::ManualFsType FileDock::requestedManualFsTypeForPanel(const FilePanelWi
         return ks::file::ManualFsType::Fat32;
     case 5:
         return ks::file::ManualFsType::ExFat;
+    case 6:
+        // 纯 MFT 扫描只在 NTFS 上成立，强制按 NTFS 解析。
+        return ks::file::ManualFsType::Ntfs;
     default:
         return ks::file::ManualFsType::Unknown;
+    }
+}
+
+FileDock::ManualParseBackend FileDock::manualParseBackendForPanel(
+    const FilePanelWidgets& panel) const
+{
+    if (panel.readModeCombo == nullptr)
+    {
+        return ManualParseBackend::WindowsApi;
+    }
+
+    switch (panel.readModeCombo->currentIndex())
+    {
+    case 0:
+        return ManualParseBackend::WindowsApi;
+    case 2:
+        return ManualParseBackend::R0Driver;
+    case 6:
+        return ManualParseBackend::MftStrict;
+    case 7:
+        return ManualParseBackend::R0Irp;
+    default:
+        // 1/3/4/5 都是 R3 手动解析，区别只在强制文件系统类型。
+        return ManualParseBackend::ManualFs;
+    }
+}
+
+bool FileDock::parseBackendIsKernel(const ManualParseBackend backend)
+{
+    return backend == ManualParseBackend::R0Driver ||
+        backend == ManualParseBackend::R0Irp;
+}
+
+QString FileDock::parseBackendDisplayText(const ManualParseBackend backend)
+{
+    switch (backend)
+    {
+    case ManualParseBackend::R0Driver:
+        return QStringLiteral("R0 驱动解析");
+    case ManualParseBackend::R0Irp:
+        return QStringLiteral("R0 IRP 解析");
+    case ManualParseBackend::MftStrict:
+        return QStringLiteral("纯 MFT 解析");
+    case ManualParseBackend::ManualFs:
+        return QStringLiteral("手动解析");
+    case ManualParseBackend::WindowsApi:
+    default:
+        return QStringLiteral("Windows API");
+    }
+}
+
+const char* FileDock::parseBackendLogTag(const ManualParseBackend backend)
+{
+    switch (backend)
+    {
+    case ManualParseBackend::R0Driver:
+        return "R0";
+    case ManualParseBackend::R0Irp:
+        return "R0-IRP";
+    case ManualParseBackend::MftStrict:
+        return "R3-mft";
+    case ManualParseBackend::ManualFs:
+        return "R3-manual";
+    case ManualParseBackend::WindowsApi:
+    default:
+        return "WinAPI";
+    }
+}
+
+bool FileDock::runManualParseBackend(
+    const ManualParseBackend backend,
+    const QString& pathText,
+    const ks::file::ManualFsType requestedFsType,
+    std::vector<ks::file::ManualDirectoryEntry>& entriesOut,
+    ks::file::ManualFsType& fsTypeOut,
+    QString& errorTextOut,
+    bool& usedWinApiFallbackOut,
+    bool& partialOut,
+    QString& sourceDetailOut,
+    QStringList& suspiciousNamesOut)
+{
+    usedWinApiFallbackOut = false;
+    partialOut = false;
+    sourceDetailOut.clear();
+    suspiciousNamesOut.clear();
+
+    switch (backend)
+    {
+    case ManualParseBackend::R0Driver:
+        return ks::file::DriverFileSystemParser::enumerateDirectory(
+            pathText,
+            entriesOut,
+            fsTypeOut,
+            errorTextOut,
+            &partialOut,
+            &sourceDetailOut);
+
+    case ManualParseBackend::R0Irp:
+    {
+        ks::file::IrpScanDiagnostics diagnostics;
+        const bool parseOk = ks::file::IrpFileSystemParser::enumerateDirectory(
+            pathText,
+            entriesOut,
+            fsTypeOut,
+            errorTextOut,
+            &partialOut,
+            &sourceDetailOut,
+            &diagnostics);
+        if (parseOk)
+        {
+            suspiciousNamesOut = diagnostics.bypassOnlyNames;
+        }
+        return parseOk;
+    }
+
+    case ManualParseBackend::MftStrict:
+    {
+        ks::file::MftScanDiagnostics diagnostics;
+        fsTypeOut = ks::file::ManualFsType::Ntfs;
+        const bool parseOk = ks::file::ManualFileSystemParser::enumerateDirectoryByMft(
+            pathText,
+            entriesOut,
+            errorTextOut,
+            &diagnostics);
+        if (!parseOk)
+        {
+            return false;
+        }
+        suspiciousNamesOut = diagnostics.mftOnlyNames;
+        sourceDetailOut = diagnostics.comparisonAvailable
+            ? QStringLiteral("纯 MFT 解析；条目=%1；目录枚举视图=%2；仅 MFT 可见=%3")
+                .arg(diagnostics.mftEntryCount)
+                .arg(diagnostics.winApiEntryCount)
+                .arg(diagnostics.mftOnlyNames.size())
+            : QStringLiteral("纯 MFT 解析；条目=%1；未取得目录枚举对照")
+                .arg(diagnostics.mftEntryCount);
+        return true;
+    }
+
+    case ManualParseBackend::ManualFs:
+    case ManualParseBackend::WindowsApi:
+    default:
+        return ks::file::ManualFileSystemParser::enumerateDirectory(
+            pathText,
+            entriesOut,
+            fsTypeOut,
+            errorTextOut,
+            &usedWinApiFallbackOut,
+            requestedFsType);
     }
 }
 

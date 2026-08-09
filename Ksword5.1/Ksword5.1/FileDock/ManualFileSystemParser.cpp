@@ -4194,7 +4194,8 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
     ManualFsType& fsTypeOut,
     QString& errorTextOut,
     bool* usedWinApiFallbackOut,
-    const ManualFsType requestedFsType)
+    const ManualFsType requestedFsType,
+    const bool strictMftOnly)
 {
     entriesOut.clear();
     errorTextOut.clear();
@@ -4211,9 +4212,15 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
         const QString volumeRoot = trimVolumeRoot(pathText);
         std::vector<NtfsRawRecord> recordsValue;
         std::shared_ptr<const NtfsCacheEntry> cacheSnapshot;
-        constexpr std::uint64_t DirectoryListMaxRecords = 250000ULL; // 目录浏览优先响应速度，限制单次扫描规模。
         constexpr std::uint64_t DirectoryRetryMaxRecords = 1200000ULL; // 定位目录失败时扩展扫描上限，避免漏掉高编号目录项。
-        if (!loadNtfsRecords(volumeRoot, recordsValue, errorTextOut, DirectoryListMaxRecords, true, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &cacheSnapshot))
+        // 严格 MFT 模式一次就按扩展上限扫描：它不允许后续任何 WinAPI/FSCTL 补齐，
+        // 快速窗口漏掉的高编号记录将无法用别的途径找回。
+        const std::uint64_t DirectoryListMaxRecords = strictMftOnly
+            ? DirectoryRetryMaxRecords
+            : 250000ULL; // 普通手动模式优先响应速度，限制单次扫描规模。
+        // allowFsctlFallback 在严格模式下必须关闭：FSCTL_GET_NTFS_FILE_RECORD 由
+        // 文件系统驱动应答，会经过整条过滤链，正是本模式要绕开的路径。
+        if (!loadNtfsRecords(volumeRoot, recordsValue, errorTextOut, DirectoryListMaxRecords, !strictMftOnly, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &cacheSnapshot))
         {
             return false;
         }
@@ -4224,7 +4231,8 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
         bool resolveOk = (cacheSnapshot != nullptr)
             && resolveNtfsDirectoryIndex(*cacheSnapshot, pathSegments, dirIndex);
         // 快速 MFT 窗口可能不包含目标目录本身；直接从目录句柄取得真实文件引用号后继续纯 NTFS 枚举。
-        if (!resolveOk)
+        // 该兜底会打开目录句柄，属于 Windows API 路径，严格 MFT 模式下必须跳过。
+        if (!resolveOk && !strictMftOnly)
         {
             std::uint64_t pathFileReference = 0;
             QString referenceErrorText;
@@ -4246,6 +4254,17 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
                     << static_cast<qulonglong>(dirIndex)
                     << eol;
             }
+        }
+        if (!resolveOk && strictMftOnly)
+        {
+            // 严格模式宁可报错也不回退：返回一份掺了 WinAPI 行的列表，会让
+            // "MFT 独有条目"的判定彻底失效。
+            if (errorTextOut.isEmpty())
+            {
+                errorTextOut = QStringLiteral(
+                    "纯MFT解析未能在 $MFT 中定位该目录（扫描窗口不足或目录记录已损坏）。");
+            }
+            return false;
         }
         if (!resolveOk)
         {
@@ -4317,8 +4336,10 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
 
         // WinAPI 结果只作为完整性对照：发现缺项时先用 FSCTL_ENUM_USN_DATA 定向补齐高编号 MFT 记录。
         // 只有 NTFS 定向枚举仍无法取回的残余项目，才允许复制 WinAPI 行并标记真实回退来源。
+        // 严格 MFT 模式完全跳过本段：无论是 USN 定向补齐还是 WinAPI 合并，
+        // 都会把"文件系统愿意让你看到的条目"混进纯 MFT 视图，隐藏项检测随之失效。
         std::vector<ManualDirectoryEntry> winApiEntries;
-        if (enumerateDirectoryByWinApi(pathText, winApiEntries))
+        if (!strictMftOnly && enumerateDirectoryByWinApi(pathText, winApiEntries))
         {
             const auto buildExistingNameSet =
                 [&entriesOut]()
@@ -4429,7 +4450,7 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
             std::vector<NtfsRawRecord> retryRecords;
             QString retryErrorText;
             std::shared_ptr<const NtfsCacheEntry> retrySnapshot;
-            if (loadNtfsRecords(volumeRoot, retryRecords, retryErrorText, DirectoryRetryMaxRecords, true, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &retrySnapshot))
+            if (loadNtfsRecords(volumeRoot, retryRecords, retryErrorText, DirectoryRetryMaxRecords, !strictMftOnly, true, false, false, false, NtfsRecordKeepPolicy::All, {}, &retrySnapshot))
             {
                 std::uint64_t retryDirIndex = 5;
                 if (retrySnapshot != nullptr && resolveNtfsDirectoryIndex(*retrySnapshot, pathSegments, retryDirIndex))
@@ -4566,6 +4587,112 @@ bool ks::file::ManualFileSystemParser::enumerateDirectory(
             }
             return QString::compare(left.name, right.name, Qt::CaseInsensitive) < 0;
         });
+    return true;
+}
+
+bool ks::file::ManualFileSystemParser::enumerateDirectoryByMft(
+    const QString& pathText,
+    std::vector<ManualDirectoryEntry>& entriesOut,
+    QString& errorTextOut,
+    MftScanDiagnostics* diagnosticsOut)
+{
+    entriesOut.clear();
+    errorTextOut.clear();
+    if (diagnosticsOut != nullptr)
+    {
+        *diagnosticsOut = MftScanDiagnostics{};
+    }
+
+    const ManualFsType detectedType = detectFileSystemType(pathText);
+    if (detectedType != ManualFsType::Ntfs)
+    {
+        errorTextOut = QStringLiteral(
+            "纯MFT解析仅适用于 NTFS 卷，当前卷类型为 %1。")
+            .arg(detectedType == ManualFsType::Fat32
+                ? QStringLiteral("FAT32")
+                : (detectedType == ManualFsType::ExFat
+                    ? QStringLiteral("exFAT")
+                    : QStringLiteral("未知")));
+        return false;
+    }
+
+    ManualFsType resolvedType = ManualFsType::Ntfs;
+    bool usedWinApiFallback = false;
+    // strictMftOnly=true：结果必须完全来自卷偏移直读的 $MFT 字节。
+    if (!enumerateDirectory(
+            pathText,
+            entriesOut,
+            resolvedType,
+            errorTextOut,
+            &usedWinApiFallback,
+            ManualFsType::Ntfs,
+            true))
+    {
+        return false;
+    }
+
+    if (diagnosticsOut == nullptr)
+    {
+        return true;
+    }
+    diagnosticsOut->mftEntryCount = static_cast<int>(entriesOut.size());
+
+    /*
+     * 对照视图只用于比较，绝不并入结果。差集的两个方向含义不同：
+     * - mftOnly：$MFT 里有、目录枚举看不到，是过滤层/目录索引隐藏文件的典型特征；
+     * - winApiOnly：目录枚举看得到、$MFT 扫描窗口内没有，通常是扫描上限或
+     *   扫描期间目录变化造成的，不能当作异常证据。
+     */
+    std::vector<ManualDirectoryEntry> winApiEntries;
+    if (!enumerateDirectoryByWinApi(pathText, winApiEntries))
+    {
+        return true;
+    }
+    diagnosticsOut->comparisonAvailable = true;
+    diagnosticsOut->winApiEntryCount = static_cast<int>(winApiEntries.size());
+
+    QSet<QString> mftNameSet;
+    mftNameSet.reserve(static_cast<int>(entriesOut.size()) + 16);
+    for (const ManualDirectoryEntry& itemValue : entriesOut)
+    {
+        mftNameSet.insert(itemValue.name.toCaseFolded());
+    }
+    QSet<QString> winApiNameSet;
+    winApiNameSet.reserve(static_cast<int>(winApiEntries.size()) + 16);
+    for (const ManualDirectoryEntry& itemValue : winApiEntries)
+    {
+        winApiNameSet.insert(itemValue.name.toCaseFolded());
+    }
+
+    for (const ManualDirectoryEntry& itemValue : entriesOut)
+    {
+        if (!winApiNameSet.contains(itemValue.name.toCaseFolded()))
+        {
+            diagnosticsOut->mftOnlyNames.append(itemValue.name);
+        }
+    }
+    for (const ManualDirectoryEntry& itemValue : winApiEntries)
+    {
+        if (!mftNameSet.contains(itemValue.name.toCaseFolded()))
+        {
+            diagnosticsOut->winApiOnlyNames.append(itemValue.name);
+        }
+    }
+
+    if (!diagnosticsOut->mftOnlyNames.isEmpty())
+    {
+        kLogEvent event;
+        warn << event
+            << "[FileDock] 纯MFT解析发现目录枚举不可见的条目, path="
+            << QDir::toNativeSeparators(QDir::cleanPath(pathText)).toStdString()
+            << ", mftRows="
+            << diagnosticsOut->mftEntryCount
+            << ", winApiRows="
+            << diagnosticsOut->winApiEntryCount
+            << ", mftOnly="
+            << diagnosticsOut->mftOnlyNames.size()
+            << eol;
+    }
     return true;
 }
 

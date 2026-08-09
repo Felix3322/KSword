@@ -167,6 +167,12 @@
     <ClInclude Include="include\ark\ark_file.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="include\ark\ark_file_irp.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\driver\KswordArkFileIrpIoctl.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="include\ark\ark_ioctl.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -634,6 +640,12 @@
       <Filter>Source Files\Features</Filter>
     </ClCompile>
     <ClCompile Include="src\features\file\file_directory_query.c">
+      <Filter>Source Files\Features</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\file\file_irp_request.c">
+      <Filter>Source Files\Features</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\file\file_irp_ioctl.c">
       <Filter>Source Files\Features</Filter>
     </ClCompile>
     <ClCompile Include="src\features\file_monitor\file_monitor_operation_map.c">
