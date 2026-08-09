@@ -497,6 +497,10 @@ void KernelDock::initializeUi()
     // “Ksword自身驱动”容器不加入 KernelDock 顶层；
     // MainWindow 会把整个容器交给 DriverDock，原业务方法仍由 KernelDock 执行。
     m_selfDriverPage = new QWidget(this);
+    // DriverDock is lazy-loaded. Keep this transfer-only container hidden until
+    // it is reparented into DriverDock's tab widget, otherwise it appears at
+    // KernelDock's top-left corner when KernelDock becomes visible first.
+    m_selfDriverPage->hide();
     m_selfDriverPage->installEventFilter(this);
     m_selfDriverLayout = new QVBoxLayout(m_selfDriverPage);
     m_selfDriverLayout->setContentsMargins(4, 4, 4, 4);
