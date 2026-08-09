@@ -15,6 +15,10 @@
 #include <QString>
 #include <QStringList>
 
+// CrashHistoryEntry 在这里：解析结果要顺带带上系统事件日志的崩溃时间线。
+// CrashHistory.h 只依赖 Qt 与标准库，不会形成循环依赖。
+#include "CrashHistory.h"
+
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -94,8 +98,44 @@ namespace ks::minidump
         std::uint64_t address = 0;    // address：返回地址数值。
         QString symbolText;           // symbolText："模块名+0x偏移"。
         QString moduleName;           // moduleName：归属模块名，可为空。
+        QString functionText;         // functionText："模块!函数+0x偏移"，无符号时为空。
+        QString sourceText;           // sourceText："源文件:行号"，仅在映像与 PDB 都匹配时才填。
         bool fromContext = false;     // fromContext：true 表示取自 CONTEXT 的 IP（可信帧）。
         bool unloadedModule = false;  // unloadedModule：归属到已卸载模块。
+    };
+
+    // SymbolMatchState：一个模块的符号可用性与匹配结论。
+    // 单独立出来是因为“函数名可不可信”本身就是结论的一部分：转储记录的是崩溃
+    // 当时那一份映像，而磁盘上的那份完全可能已经重新编译过，此时行号会整体错位。
+    enum class SymbolMatchState
+    {
+        NotChecked,    // NotChecked：未尝试（模块缺基址/大小等）。
+        ImageMissing,  // ImageMissing：磁盘上找不到该映像，无法符号化。
+        ImageMismatch, // ImageMismatch：找到了但不是崩溃时那一份，已拒绝符号化。
+        NoSymbols,     // NoSymbols：映像匹配但没有配套 PDB，只能给到模块+偏移。
+        Matched,       // Matched：映像与 PDB 均匹配，函数名与行号可信。
+    };
+
+    // PoolTagCandidate：一个被识别出来的池标记，以及它的归属线索。
+    // 池损坏类停止码里，“被损坏的块归谁所有”往往比调用栈更能指向肇事者——
+    // 栈上出现的通常只是下一个来分配内存、因而撞上坏链表的“发现者”。
+    struct PoolTagCandidate
+    {
+        std::uint32_t rawValue = 0; // rawValue：原始 32 位值。
+        QString tagText;            // tagText：还原出的 4 字符标记，如 KsFi。
+        QString source;             // source：来自哪个停止码参数或哪个寄存器。
+        QString knownPurpose;       // knownPurpose：pooltag.txt 里的已知用途，可为空。
+        QStringList ownerModules;   // ownerModules：磁盘映像里出现过该标记的模块，可为空。
+    };
+
+    // ModuleSymbolStatus：单个模块的符号加载结果，UI 上如实展示，不藏不匹配。
+    struct ModuleSymbolStatus
+    {
+        QString moduleName;                                    // moduleName：模块名（无路径）。
+        SymbolMatchState state = SymbolMatchState::NotChecked;  // state：匹配结论。
+        QString imagePath;                                     // imagePath：实际使用的磁盘映像路径，可为空。
+        QString pdbPath;                                       // pdbPath：实际加载的 PDB 路径，可为空。
+        QString detail;                                        // detail：中文说明，含具体差异。
     };
 
     // RegisterEntry：崩溃点 CONTEXT 里的一个寄存器及其值解读。
@@ -114,6 +154,7 @@ namespace ks::minidump
         std::uint64_t moduleBase = 0; // moduleBase：模块基址。
         std::uint64_t address = 0;    // address：命中的代表性地址。
         std::uint64_t offset = 0;     // offset：address 相对基址的偏移。
+        QString functionText;         // functionText："模块!函数+0x偏移"，无符号时为空。
         int weight = 0;               // weight：证据权重合计，越大越可疑。
         bool unloadedModule = false;  // unloadedModule：命中的是已卸载模块。
         QStringList evidence;         // evidence：支撑该候选的证据描述（中文）。
@@ -216,6 +257,10 @@ namespace ks::minidump
         std::vector<StackFrameEntry> stackFrames; // stackFrames：疑似调用栈（栈扫描产物，含误报）。
         std::vector<RegisterEntry> registers;     // registers：崩溃点寄存器快照。
         DumpAnalysis analysis;                    // analysis：综合诊断结论与肇事模块候选。
+        std::vector<ModuleSymbolStatus> symbolStatus; // symbolStatus：逐模块的符号匹配结论。
+        std::vector<PoolTagCandidate> poolTags;   // poolTags：识别出的池标记及其归属线索。
+        std::vector<CrashHistoryEntry> crashHistory; // crashHistory：系统事件日志里的崩溃时间线。
+        QString symbolSearchPath;                 // symbolSearchPath：本次实际使用的符号搜索路径。
         QStringList diagnostics;                 // diagnostics：解析过程中的非致命告警（中文文本）。
 
         std::uint64_t memoryRegionTotal = 0; // memoryRegionTotal：文件中内存区域总数（含未展示部分）。

@@ -106,6 +106,8 @@ private:
 
     QLabel* m_pathLabel = nullptr;      // m_pathLabel：目标路径字段标题。
     QLineEdit* m_pathEdit = nullptr;    // m_pathEdit：当前转储文件路径。
+    QLabel* m_symbolPathLabel = nullptr;   // m_symbolPathLabel：符号路径字段标题。
+    QLineEdit* m_symbolPathEdit = nullptr; // m_symbolPathEdit：符号搜索路径，留空则用本地默认路径。
     QPushButton* m_browseButton = nullptr;   // m_browseButton：打开文件选择器。
     QPushButton* m_systemDirButton = nullptr; // m_systemDirButton：定位系统蓝屏转储目录。
     QPushButton* m_parseButton = nullptr;    // m_parseButton：启动解析。
@@ -128,6 +130,9 @@ private:
     QTableWidget* m_memoryTable = nullptr;    // m_memoryTable：内存区域表。
     QTableWidget* m_handleTable = nullptr;    // m_handleTable：句柄表。
     QTableWidget* m_unloadedTable = nullptr;  // m_unloadedTable：已卸载模块表。
+    QTableWidget* m_symbolTable = nullptr;    // m_symbolTable：逐模块符号匹配状态表。
+    QTableWidget* m_poolTagTable = nullptr;   // m_poolTagTable：池标记候选与归属表。
+    QTableWidget* m_crashHistoryTable = nullptr; // m_crashHistoryTable：系统崩溃时间线表。
     QWidget* m_stackPage = nullptr;     // m_stackPage：调用栈表的 A/B/C 包装页。
     QWidget* m_modulePage = nullptr;    // m_modulePage：模块表的 A/B/C 包装页。
     QWidget* m_threadPage = nullptr;    // m_threadPage：线程表的 A/B/C 包装页。

@@ -559,6 +559,15 @@
     <ClCompile Include="MinidumpDock\DumpAutoCheck.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpSymbolResolver.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpPoolTag.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MinidumpDock\CrashHistory.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MinidumpDock\DumpPageTable.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1176,6 +1185,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MinidumpDock\DumpAutoCheck.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpSymbolResolver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpPoolTag.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\CrashHistory.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MinidumpDock\DumpPageTable.h">

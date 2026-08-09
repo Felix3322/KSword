@@ -11,8 +11,11 @@
 #include "MinidumpDock.h"
 
 #include "../Framework.h"
+#include "CrashHistory.h"
 #include "DumpAnalyzer.h"
 #include "DumpAutoCheck.h"
+#include "DumpPoolTag.h"
+#include "DumpSymbolResolver.h"
 #include "Internationalization/LanguageManager.h"
 #include "MinidumpParser.h"
 #include "UI/CodeEditorWidget.h"
@@ -170,6 +173,20 @@ void MinidumpDock::buildUi()
     pathLayout->addWidget(m_exportButton);
     rootLayout->addLayout(pathLayout);
 
+    // 符号路径行：默认路径覆盖不到"自己编译出来的驱动"这种最常见的自查场景——
+    // 它的 .pdb 通常躺在构建输出目录里，既不在转储旁边也不在系统符号缓存里。
+    // 没有这个入口，本项目自己的驱动崩溃就永远只能看到 模块+偏移。
+    QHBoxLayout* const symbolLayout = new QHBoxLayout();
+    symbolLayout->setContentsMargins(0, 0, 0, 0);
+    symbolLayout->setSpacing(6);
+    m_symbolPathLabel = new QLabel(this);
+    m_symbolPathEdit = new QLineEdit(this);
+    m_symbolPathEdit->setClearButtonEnabled(true);
+    m_symbolPathEdit->setStyleSheet(inputStyle);
+    symbolLayout->addWidget(m_symbolPathLabel);
+    symbolLayout->addWidget(m_symbolPathEdit, 1);
+    rootLayout->addLayout(symbolLayout);
+
     // m_statusLabel：允许复制诊断状态，长路径自动换行。
     m_statusLabel = new QLabel(this);
     m_statusLabel->setWordWrap(true);
@@ -196,8 +213,15 @@ void MinidumpDock::buildUi()
     m_memoryTable = createReadOnlyTable(m_resultTabs);
     m_handleTable = createReadOnlyTable(m_resultTabs);
     m_unloadedTable = createReadOnlyTable(m_resultTabs);
+    m_symbolTable = createReadOnlyTable(m_resultTabs);
+    m_poolTagTable = createReadOnlyTable(m_resultTabs);
+    m_crashHistoryTable = createReadOnlyTable(m_resultTabs);
+    m_crashHistoryTable->setWordWrap(true);
     // 肇事模块表的证据列是长文本，允许换行以免被省略号截断。
     m_blameTable->setWordWrap(true);
+    // 符号状态表的"说明"列同理：不匹配的具体差异必须完整读到，不能被截断。
+    m_symbolTable->setWordWrap(true);
+    m_poolTagTable->setWordWrap(true);
     // 调用栈表不拆 A/B/C：它的“来源”列标着「栈扫描（可能误报）」，
     // 一旦被列组预设隐藏，整页就再没有任何地方提示这些帧是猜的。
     // 六列在正常窗口宽度下放得下，没必要为它牺牲这条提示。
@@ -221,6 +245,9 @@ void MinidumpDock::buildUi()
             static_cast<QWidget*>(m_streamTable),
             static_cast<QWidget*>(m_unloadedTable),
             static_cast<QWidget*>(m_registerTable),
+            static_cast<QWidget*>(m_symbolTable),
+            static_cast<QWidget*>(m_poolTagTable),
+            static_cast<QWidget*>(m_crashHistoryTable),
             m_stackPage, m_modulePage, m_threadPage, m_memoryPage, m_handlePage,
             static_cast<QWidget*>(m_reportEditor) })
     {
@@ -256,6 +283,14 @@ void MinidumpDock::retranslateUi()
     m_pathEdit->setPlaceholderText(translated(
         "minidump.path.placeholder",
         "选择要解析的转储文件（应用崩溃 .dmp / 蓝屏 Minidump / MEMORY.DMP）"));
+    m_symbolPathLabel->setText(translated("minidump.symbol.label", "符号路径"));
+    m_symbolPathEdit->setPlaceholderText(translated(
+        "minidump.symbol.placeholder",
+        "留空则搜索转储所在目录与本机符号缓存；分号分隔可加自己的构建输出目录"));
+    m_symbolPathEdit->setToolTip(translated(
+        "minidump.symbol.tooltip",
+        "只搜索本地目录，不联网下载符号。"
+        "映像与转储记录不一致时会明确判为不匹配，并拒绝给出会误导人的行号。"));
     m_browseButton->setText(translated("minidump.action.browse", "浏览…"));
     m_browseButton->setToolTip(translated(
         "minidump.action.browse.tooltip",
@@ -345,8 +380,10 @@ void MinidumpDock::beginParse()
     // generation：只有最新一代结果可以回写，避免旧解析覆盖新目标。
     const std::uint64_t generation = ++m_parseGeneration;
     const std::shared_ptr<MinidumpAsyncState> asyncState = m_asyncState;
+    // symbolPath：在 UI 线程取值后按值带进 worker，worker 内不得触碰控件。
+    const QString symbolPath = m_symbolPathEdit->text().trimmed();
     QThreadPool::globalInstance()->start(
-        [asyncState, generation, path]()
+        [asyncState, generation, path, symbolPath]()
         {
             // result：worker 中完成的解析产物；自包含，与文件映射无关联。
             // 解析的输入是不可信文件，畸形样本可能让某个列表申请超大内存。
@@ -357,6 +394,20 @@ void MinidumpDock::beginParse()
             {
                 result = std::make_shared<ks::minidump::DumpParseResult>(
                     ks::minidump::ParseDumpFile(path));
+                // 符号化放在解析之后、回主线程之前：DbgHelp 加载 PDB 可能耗时到
+                // 秒级，绝不能放在 UI 线程上。失败不影响已有结论，因此不改 success。
+                if (result->success)
+                {
+                    ks::minidump::ApplySymbols(symbolPath, *result);
+                    // 池标记归属同样可能读大量磁盘（要在模块映像里搜标记字节），
+                    // 一并留在 worker 里做。
+                    ks::minidump::ApplyPoolTagAttribution(*result);
+                    // 崩溃时间线：单看一个转储答不出"这次是蓝屏还是没转储的硬挂死"，
+                    // 也答不出"崩溃当时跑的是哪一次构建的驱动"。筛选器名过滤成
+                    // Ksword，是因为本项目最需要对账的就是自己那个驱动的映像时间戳。
+                    result->crashHistory = ks::minidump::CollectCrashHistory(
+                        30, QStringLiteral("Ksword"), nullptr);
+                }
             }
             catch (const std::exception& error)
             {

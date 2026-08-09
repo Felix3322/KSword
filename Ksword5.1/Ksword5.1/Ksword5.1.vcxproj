@@ -299,6 +299,9 @@
     <ClCompile Include="MinidumpDock\KernelDumpParser.cpp" />
     <ClCompile Include="MinidumpDock\DumpPhysicalMemory.cpp" />
     <ClCompile Include="MinidumpDock\DumpAutoCheck.cpp" />
+    <ClCompile Include="MinidumpDock\DumpSymbolResolver.cpp" />
+    <ClCompile Include="MinidumpDock\DumpPoolTag.cpp" />
+    <ClCompile Include="MinidumpDock\CrashHistory.cpp" />
     <ClCompile Include="MinidumpDock\DumpPageTable.cpp" />
     <ClCompile Include="MinidumpDock\DumpKernelModuleList.cpp" />
     <ClCompile Include="MinidumpDock\MinidumpCodeText.cpp" />
@@ -624,6 +627,9 @@
     <ClInclude Include="MinidumpDock\KernelDumpParser.h" />
     <ClInclude Include="MinidumpDock\DumpPhysicalMemory.h" />
     <ClInclude Include="MinidumpDock\DumpAutoCheck.h" />
+    <ClInclude Include="MinidumpDock\DumpSymbolResolver.h" />
+    <ClInclude Include="MinidumpDock\DumpPoolTag.h" />
+    <ClInclude Include="MinidumpDock\CrashHistory.h" />
     <ClInclude Include="MinidumpDock\DumpPageTable.h" />
     <ClInclude Include="MinidumpDock\DumpKernelModuleList.h" />
     <ClInclude Include="MinidumpDock\MinidumpCodeText.h" />

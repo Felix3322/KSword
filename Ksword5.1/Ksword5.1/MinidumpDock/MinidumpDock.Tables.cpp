@@ -13,6 +13,7 @@
 #include "MinidumpDock.h"
 
 #include "DumpAnalyzer.h"
+#include "DumpSymbolResolver.h"
 #include "Internationalization/LanguageManager.h"
 #include "MinidumpFormat.h"
 #include "UI/CodeEditorWidget.h"
@@ -532,9 +533,10 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
     if (!analysis.blame.empty())
     {
         beginFill(m_blameTable);
-        m_blameTable->setColumnCount(5);
+        m_blameTable->setColumnCount(6);
         m_blameTable->setHorizontalHeaderLabels({
             translated("minidump.column.suspect_module", "模块"),
+            translated("minidump.column.suspect_function", "函数"),
             translated("minidump.column.hit_address", "命中地址"),
             translated("minidump.column.module_offset", "模块内偏移"),
             translated("minidump.column.weight", "证据权重"),
@@ -550,16 +552,19 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
                          translated("minidump.blame.unloaded", "已卸载"))
                 : blame.moduleName;
             m_blameTable->setItem(blameRow, 0, makeItem(moduleText));
-            m_blameTable->setItem(blameRow, 1, makeItem(hexText(blame.address)));
-            m_blameTable->setItem(blameRow, 2, makeItem(hexText(blame.offset)));
-            m_blameTable->setItem(blameRow, 3, makeItem(QString::number(blame.weight)));
+            // 有符号时把函数名单列出来：归因到模块只能说明"哪个驱动"，
+            // 归因到函数才能直接落到代码上，这是本页最有价值的一列。
+            m_blameTable->setItem(blameRow, 1, makeItem(blame.functionText));
+            m_blameTable->setItem(blameRow, 2, makeItem(hexText(blame.address)));
+            m_blameTable->setItem(blameRow, 3, makeItem(hexText(blame.offset)));
+            m_blameTable->setItem(blameRow, 4, makeItem(QString::number(blame.weight)));
             // evidence：多条证据合成一行，用分号分隔，避免行数爆炸。
             QStringList localizedEvidence;
             for (const QString& evidence : blame.evidence)
             {
                 localizedEvidence.append(ks::i18n::sourceText(evidence));
             }
-            m_blameTable->setItem(blameRow, 4,
+            m_blameTable->setItem(blameRow, 5,
                 makeItem(localizedEvidence.join(QStringLiteral("；"))));
             ++blameRow;
         }
@@ -643,11 +648,12 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
     if (!result.stackFrames.empty())
     {
         beginFill(m_stackTable);
-        m_stackTable->setColumnCount(6);
+        m_stackTable->setColumnCount(7);
         m_stackTable->setHorizontalHeaderLabels({
             translated("minidump.column.thread_id", "线程 ID"),
             translated("minidump.column.frame_index", "帧"),
-            translated("minidump.column.symbol", "模块+偏移"),
+            translated("minidump.column.symbol", "符号"),
+            translated("minidump.column.source_location", "源码位置"),
             translated("minidump.column.frame_address", "返回地址"),
             translated("minidump.column.stack_address", "栈地址"),
             translated("minidump.column.frame_source", "来源") });
@@ -660,18 +666,25 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
                     ? QString::number(frame.threadId)
                     : translated("minidump.stack.crash_thread", "崩溃线程")));
             m_stackTable->setItem(stackRow, 1, makeItem(QString::number(frame.index)));
-            // symbolText：命中模块时给 模块+偏移；未命中的帧不会进表。
+            // 符号列优先给"模块!函数+偏移"，没有符号才退回"模块+偏移"。
+            // 合成一列而不是新开一列，是为了不把这张表撑到需要列组预设——
+            // 一旦分组，"来源"列可能被隐藏，那条误报提示就没地方说了。
+            const QString baseSymbol = frame.functionText.isEmpty()
+                ? frame.symbolText
+                : frame.functionText;
             const QString symbolText = frame.unloadedModule
                 ? QStringLiteral("%1 [%2]")
-                    .arg(frame.symbolText,
+                    .arg(baseSymbol,
                          translated("minidump.blame.unloaded", "已卸载"))
-                : frame.symbolText;
+                : baseSymbol;
             m_stackTable->setItem(stackRow, 2, makeItem(symbolText));
-            m_stackTable->setItem(stackRow, 3, makeItem(hexText(frame.address)));
-            m_stackTable->setItem(stackRow, 4,
+            // 源码位置只在映像与 PDB 都匹配时才有值，解析器已经把不可信的滤掉了。
+            m_stackTable->setItem(stackRow, 3, makeItem(frame.sourceText));
+            m_stackTable->setItem(stackRow, 4, makeItem(hexText(frame.address)));
+            m_stackTable->setItem(stackRow, 5,
                 makeItem(frame.stackAddress != 0 ? hexText(frame.stackAddress) : QString()));
             // 来源必须如实标注：只有第 0 帧取自 CONTEXT，其余都是扫描猜测。
-            m_stackTable->setItem(stackRow, 5,
+            m_stackTable->setItem(stackRow, 6,
                 makeItem(frame.fromContext
                     ? translated("minidump.stack.from_context", "上下文（可信）")
                     : translated("minidump.stack.from_scan", "栈扫描（可能误报）")));
@@ -680,6 +693,102 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
         endFill(m_stackTable);
         m_resultTabs->addTab(m_stackPage,
             translated("minidump.tab.stack", "调用栈"));
+    }
+
+    // ===================== 崩溃历史页 =====================
+    // 单看一个转储答不出两件事：这次到底是蓝屏还是"没有转储的硬挂死"，
+    // 以及崩溃当时跑的是哪一次构建的驱动。前者决定了还要不要去找转储文件，
+    // 后者决定了"修复到底生效没有"——两个判断都只能靠系统事件日志给答案。
+    if (!result.crashHistory.empty())
+    {
+        beginFill(m_crashHistoryTable);
+        m_crashHistoryTable->setColumnCount(4);
+        m_crashHistoryTable->setHorizontalHeaderLabels({
+            translated("minidump.column.event_time", "时间"),
+            translated("minidump.column.event_kind", "性质"),
+            translated("minidump.column.event_summary", "摘要"),
+            translated("minidump.column.detail", "说明") });
+        m_crashHistoryTable->setRowCount(
+            static_cast<int>(result.crashHistory.size()));
+        int historyRow = 0;
+        for (const ks::minidump::CrashHistoryEntry& entry : result.crashHistory)
+        {
+            m_crashHistoryTable->setItem(historyRow, 0,
+                makeItem(entry.time.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
+            m_crashHistoryTable->setItem(historyRow, 1,
+                makeItem(ks::i18n::sourceText(entry.kindText)));
+            m_crashHistoryTable->setItem(historyRow, 2,
+                makeItem(ks::i18n::sourceText(entry.summary)));
+            m_crashHistoryTable->setItem(historyRow, 3,
+                makeItem(ks::i18n::sourceText(entry.detail)));
+            ++historyRow;
+        }
+        endFill(m_crashHistoryTable);
+        m_resultTabs->addTab(m_crashHistoryTable,
+            translated("minidump.tab.crash_history", "崩溃历史"));
+    }
+
+    // ===================== 池标记页 =====================
+    // 池损坏类停止码（0x13A / 0xC2 / 0x19…）里，"被损坏的那块内存归谁"
+    // 比调用栈更能指向肇事者：栈上出现的往往只是下一个来分配内存、
+    // 因而撞上坏链表的发现者，两次崩溃可以是两个毫不相干的模块。
+    if (!result.poolTags.empty())
+    {
+        beginFill(m_poolTagTable);
+        m_poolTagTable->setColumnCount(4);
+        m_poolTagTable->setHorizontalHeaderLabels({
+            translated("minidump.column.pool_tag", "池标记"),
+            translated("minidump.column.pool_tag_source", "来源"),
+            translated("minidump.column.pool_tag_owner", "映像中出现该标记的模块"),
+            translated("minidump.column.pool_tag_purpose", "已知用途") });
+        m_poolTagTable->setRowCount(static_cast<int>(result.poolTags.size()));
+        int poolRow = 0;
+        for (const ks::minidump::PoolTagCandidate& candidate : result.poolTags)
+        {
+            m_poolTagTable->setItem(poolRow, 0, makeItem(candidate.tagText));
+            m_poolTagTable->setItem(poolRow, 1,
+                makeItem(ks::i18n::sourceText(candidate.source)));
+            m_poolTagTable->setItem(poolRow, 2,
+                makeItem(candidate.ownerModules.join(QStringLiteral("、"))));
+            m_poolTagTable->setItem(poolRow, 3, makeItem(candidate.knownPurpose));
+            ++poolRow;
+        }
+        endFill(m_poolTagTable);
+        m_resultTabs->addTab(m_poolTagTable,
+            translated("minidump.tab.pool_tags", "池标记"));
+    }
+
+    // ===================== 符号状态页 =====================
+    // 这一页的存在理由只有一条：让"函数名和行号到底可不可信"变成一个
+    // 用户看得见的结论。符号化最危险的失败方式不是报错，而是在映像已经
+    // 被重新编译过之后，安静地给出整体错位的行号。
+    if (!result.symbolStatus.empty())
+    {
+        beginFill(m_symbolTable);
+        m_symbolTable->setColumnCount(5);
+        m_symbolTable->setHorizontalHeaderLabels({
+            translated("minidump.column.module", "模块"),
+            translated("minidump.column.symbol_state", "符号状态"),
+            translated("minidump.column.image_path", "映像路径"),
+            translated("minidump.column.pdb_path", "PDB 路径"),
+            translated("minidump.column.detail", "说明") });
+        m_symbolTable->setRowCount(static_cast<int>(result.symbolStatus.size()));
+        int symbolRow = 0;
+        for (const ks::minidump::ModuleSymbolStatus& status : result.symbolStatus)
+        {
+            m_symbolTable->setItem(symbolRow, 0, makeItem(status.moduleName));
+            m_symbolTable->setItem(symbolRow, 1,
+                makeItem(ks::i18n::sourceText(
+                    ks::minidump::SymbolMatchStateText(status.state))));
+            m_symbolTable->setItem(symbolRow, 2, makeItem(status.imagePath));
+            m_symbolTable->setItem(symbolRow, 3, makeItem(status.pdbPath));
+            m_symbolTable->setItem(symbolRow, 4,
+                makeItem(ks::i18n::sourceText(status.detail)));
+            ++symbolRow;
+        }
+        endFill(m_symbolTable);
+        m_resultTabs->addTab(m_symbolTable,
+            translated("minidump.tab.symbols", "符号"));
     }
 
     // ===================== 寄存器页 =====================
