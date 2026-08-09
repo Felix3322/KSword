@@ -471,6 +471,45 @@
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverAlpc.cpp">
       <Filter>ArkDriverClient</Filter>
     </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverBlind.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverDispatch.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverHvm.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverImage.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverKernelBaseline.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverNetworkTraffic.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverPiDdb.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverPower.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverStorageForensics.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverSystemTime.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverVirtualization.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverWorkQueue.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkStorageControllerClient.cpp">
+      <Filter>ArkDriverClient</Filter>
+    </ClCompile>
     <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverCallback.cpp">
       <Filter>ArkDriverClient</Filter>
     </ClCompile>

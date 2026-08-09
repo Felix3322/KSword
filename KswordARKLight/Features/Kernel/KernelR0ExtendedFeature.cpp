@@ -122,7 +122,62 @@ std::vector<KernelFeatureDescriptor> CreateR0ExtendedDescriptors() {
             KernelFeatureId::IoctlRegistry,
             L"IOCTL 派遣表",
             L"驱动诊断",
-            L"通过 ArkDriverClient 查询 KswordARK 统一 IOCTL 派遣注册表及 capability 门槛。")
+            L"通过 ArkDriverClient 查询 KswordARK 统一 IOCTL 派遣注册表及 capability 门槛。"),
+        Descriptor(
+            KernelFeatureId::WorkQueueThreads,
+            L"内核工作队列",
+            L"内核信息",
+            L"通过 ArkDriverClient 只读枚举 ExWorkerQueue 工作项、例程地址与承载线程。"),
+        Descriptor(
+            KernelFeatureId::SlatIommuAudit,
+            L"SLAT / IOMMU 审计",
+            L"内核信息",
+            L"通过 ArkDriverClient 读取 EPT/NPT 跨视图探针与 DMAR/IVRS 固件证据。"),
+        Descriptor(
+            KernelFeatureId::HvmStatus,
+            L"VT-x / EPT 状态",
+            L"内核信息",
+            L"通过 ArkDriverClient 只读查询虚拟化能力、接管状态与 EPT 运行时代次。"),
+        Descriptor(
+            KernelFeatureId::HvmEvents,
+            L"VM-exit 事件",
+            L"内核信息",
+            L"通过 ArkDriverClient 拉取 R0 采集的 VM-exit 事件环，不改变接管状态。"),
+        Descriptor(
+            KernelFeatureId::DriverDispatchTable,
+            L"驱动派遣表",
+            L"驱动诊断",
+            L"通过 ArkDriverClient 只读查询任意 DriverObject 的 MajorFunction 当前值与基线。"),
+        Descriptor(
+            KernelFeatureId::DriverImageFields,
+            L"驱动镜像字段",
+            L"驱动诊断",
+            L"通过 ArkDriverClient 只读查询 LDR 镜像条目的名称、路径、基址与标志。"),
+        Descriptor(
+            KernelFeatureId::DriverCommunication,
+            L"驱动通信端点",
+            L"驱动诊断",
+            L"通过 ArkDriverClient 只读查询目标驱动的设备/符号链接通信面与当前管控状态。"),
+        Descriptor(
+            KernelFeatureId::PlatformAudit,
+            L"平台审计",
+            L"驱动诊断",
+            L"通过 ArkDriverClient 只读读取平台安全审计条目与其证据来源。"),
+        Descriptor(
+            KernelFeatureId::SystemTimeState,
+            L"系统计时状态",
+            L"硬件",
+            L"通过 ArkDriverClient 只读查询性能计数器后端、倍率接管状态与计时槽地址。"),
+        Descriptor(
+            KernelFeatureId::I8042Audit,
+            L"键鼠端点审计",
+            L"硬件",
+            L"通过 ArkDriverClient 只读枚举 i8042 键鼠过滤回调、承载模块与判定结果。"),
+        Descriptor(
+            KernelFeatureId::PiDdbCache,
+            L"PiDDB 缓存",
+            L"驱动诊断",
+            L"通过 ArkDriverClient 只读枚举 PiDDBCacheTable 中的驱动加载记录。")
     };
 }
 

@@ -2911,6 +2911,17 @@ bool IsArkDriverBacked(const KernelFeatureId id) {
     case KernelFeatureId::MinifilterBypassPids:
     case KernelFeatureId::KernelTimerDpc:
     case KernelFeatureId::IoctlRegistry:
+    case KernelFeatureId::WorkQueueThreads:
+    case KernelFeatureId::SlatIommuAudit:
+    case KernelFeatureId::HvmStatus:
+    case KernelFeatureId::HvmEvents:
+    case KernelFeatureId::DriverDispatchTable:
+    case KernelFeatureId::DriverImageFields:
+    case KernelFeatureId::DriverCommunication:
+    case KernelFeatureId::PlatformAudit:
+    case KernelFeatureId::SystemTimeState:
+    case KernelFeatureId::I8042Audit:
+    case KernelFeatureId::PiDdbCache:
         return true;
     default:
         return false;
@@ -4083,6 +4094,580 @@ KernelOperationResult QueryKernelTimerDpc(const KernelRequest& request) {
             { L"Flags", HexText(entry.flags) },
             { L"状态", L"Captured" },
             { L"Status", L"Captured" },
+        }, detail.str()));
+    }
+    return result;
+}
+
+// FixedWideField copies a fixed-size wide array out of a protocol row. The
+// driver pads these to their full length, so a plain wstring(ptr) would read
+// past the terminator when the field happens to be full.
+std::wstring FixedWideField(const wchar_t* field, const std::size_t capacity) {
+    if (field == nullptr || capacity == 0) {
+        return {};
+    }
+    std::size_t length = 0;
+    while (length < capacity && field[length] != L'\0') {
+        ++length;
+    }
+    return std::wstring(field, length);
+}
+
+// FixedAnsiField is the same for the ANSI vendor strings the CPUID paths return.
+std::wstring FixedAnsiField(const char* field, const std::size_t capacity) {
+    if (field == nullptr || capacity == 0) {
+        return {};
+    }
+    std::size_t length = 0;
+    while (length < capacity && field[length] != '\0') {
+        ++length;
+    }
+    std::wstring wide;
+    wide.reserve(length);
+    for (std::size_t index = 0; index < length; ++index) {
+        wide.push_back(static_cast<wchar_t>(static_cast<unsigned char>(field[index])));
+    }
+    return wide;
+}
+
+// AppendZeroResponseWarning flags a response the driver never actually filled.
+// These IOCTL handlers zero the output buffer before calling their worker and
+// still report the full length, so a worker that bails out early leaves a
+// response whose queryStatus reads as STATUS_SUCCESS. version/size are set by
+// the worker itself, so both being zero is the reliable "nothing ran" signal.
+void AppendZeroResponseWarning(
+    const std::uint32_t version,
+    const std::uint32_t size,
+    std::vector<KernelResultRow>& rows) {
+    if (version != 0 || size != 0) {
+        return;
+    }
+    rows.push_back(Row({
+        { L"Warning", L"R0 返回了全零响应" },
+        { L"Meaning", L"驱动侧 worker 未写入任何字段，其中的 0 状态不代表成功" },
+    }, L"IOCTL handler zeroes the output buffer before invoking its worker and still reports the full "
+       L"response length. version/size are written by the worker, so both being zero means the worker "
+       L"never ran and no field in this response should be trusted."));
+}
+
+// QueryWorkQueueThreads enumerates ExWorkerQueue work items and their hosting
+// threads. A work item whose routine sits outside any loaded module is the
+// interesting case, so the module columns stay visible even when empty.
+KernelOperationResult QueryWorkQueueThreads(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const unsigned long maxEntries = request.maxRows == 0
+        ? KSWORD_ARK_WORK_QUEUE_DEFAULT_MAX_ENTRIES
+        : request.maxRows;
+    const ksword::ark::WorkQueueEnumResult query =
+        client.enumerateWorkQueues(KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_ALL, maxEntries);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"Kernel WorkQueue", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(query.version) },
+        { L"QueryStatus", HexText(query.queryStatus) },
+        { L"StatusFlags", HexText(query.statusFlags) },
+        { L"Total", std::to_wstring(query.totalCount) },
+        { L"Returned", std::to_wstring(query.returnedCount) },
+        { L"Nodes", std::to_wstring(query.nodeCount) },
+        { L"QueuesVisited", std::to_wstring(query.queuesVisited) },
+        { L"CorruptLists", std::to_wstring(query.corruptListCount) },
+        { L"ReadFailures", std::to_wstring(query.readFailureCount) },
+        { L"ReferenceFailures", std::to_wstring(query.referenceFailureCount) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"ExWorkerQueue traversal is bounded per queue by the driver. Corrupt-list and read-failure "
+       L"counts stay visible so a partial walk is never mistaken for an empty one."));
+
+    for (const ksword::ark::WorkQueueEntry& entry : query.entries) {
+        const std::wstring moduleName = Utf8ToWide(entry.moduleName);
+        const std::wstring modulePath = Utf8ToWide(entry.modulePath);
+        std::wostringstream detail;
+        detail << L"RowKind: " << entry.rowKind << L"\r\n"
+               << L"QueueType: " << entry.queueType << L"\r\n"
+               << L"Priority: " << entry.priorityIndex << L"\r\n"
+               << L"Node: " << entry.nodeIndex << L"\r\n"
+               << L"Queue: " << HexText(entry.queueAddress) << L"\r\n"
+               << L"WorkItem: " << HexText(entry.workItemAddress) << L"\r\n"
+               << L"Routine: " << HexText(entry.routineAddress) << L"\r\n"
+               << L"Parameter: " << HexText(entry.parameterAddress) << L"\r\n"
+               << L"Thread: " << HexText(entry.threadObject) << L" (TID " << entry.threadId << L")\r\n"
+               << L"ModuleBase: " << HexText(entry.moduleBase) << L"\r\n"
+               << L"ModuleSize: " << HexText(entry.moduleSize) << L"\r\n"
+               << L"ModulePath: " << modulePath << L"\r\n"
+               << L"Flags: " << HexText(entry.flags) << L"\r\n"
+               << L"Status: " << HexText(entry.status);
+        result.rows.push_back(Row({
+            { L"QueueType", std::to_wstring(entry.queueType) },
+            { L"Priority", std::to_wstring(entry.priorityIndex) },
+            { L"Node", std::to_wstring(entry.nodeIndex) },
+            { L"Queue", HexText(entry.queueAddress) },
+            { L"WorkItem", HexText(entry.workItemAddress) },
+            { L"Routine", HexText(entry.routineAddress) },
+            { L"Module", moduleName.empty() ? L"(未归属模块)" : moduleName },
+            { L"ThreadId", entry.threadId != 0 ? std::to_wstring(entry.threadId) : L"-" },
+            { L"Thread", HexText(entry.threadObject) },
+            { L"Flags", HexText(entry.flags) },
+        }, detail.str()));
+    }
+    return result;
+}
+
+// QuerySlatIommuAudit reads the EPT/NPT cross-view probes plus DMAR/IVRS
+// firmware evidence. A clean guest-visible result cannot prove an opaque outer
+// SLAT is clean, which is why the probe mismatch counters are surfaced as their
+// own row rather than folded into a verdict.
+KernelOperationResult QuerySlatIommuAudit(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const bool includeMmio = (request.flags & KernelRequestFlagIncludeInternal) != 0;
+    const ksword::ark::SlatIommuAuditResult query = client.querySlatIommuAudit(includeMmio);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"SLAT/IOMMU Audit", query.io, result);
+    const KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT_RESPONSE& response = query.response;
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(response.version) },
+        { L"QueryStatus", HexText(static_cast<std::uint32_t>(response.queryStatus)) },
+        { L"RiskFlags", HexText(response.riskFlags) },
+        { L"FieldFlags", HexText(response.fieldFlags) },
+        { L"CpuVendor", FixedAnsiField(response.cpuVendor, KSWORD_ARK_SLAT_IOMMU_VENDOR_CHARS) },
+        { L"HypervisorVendor", FixedAnsiField(response.hypervisorVendor, KSWORD_ARK_SLAT_IOMMU_VENDOR_CHARS) },
+        { L"Probes", std::to_wstring(response.probeCount) },
+        { L"Mismatches", std::to_wstring(response.mismatchCount) },
+        { L"Unstable", std::to_wstring(response.unstableCount) },
+        { L"IommuRows", std::to_wstring(response.iommuRowCount) },
+        { L"ReservedMemory", std::to_wstring(response.reservedMemoryCount) },
+        { L"MalformedRows", std::to_wstring(response.malformedRowCount) },
+        { L"DmarStatus", HexText(static_cast<std::uint32_t>(response.dmarStatus)) },
+        { L"IvrsStatus", HexText(static_cast<std::uint32_t>(response.ivrsStatus)) },
+        { L"IommuInterface", HexText(static_cast<std::uint32_t>(response.iommuInterfaceStatus)) },
+        { L"VmxFeatureControl", HexText(response.vmxFeatureControl) },
+        { L"VmxEptVpidCaps", HexText(response.vmxEptVpidCapabilities) },
+        { L"AmdVmCr", HexText(response.amdVmCr) },
+        { L"CpuidCycles", std::to_wstring(response.cpuidCyclesMinimum) + L"/" +
+            std::to_wstring(response.cpuidCyclesMedian) + L"/" + std::to_wstring(response.cpuidCyclesMaximum) },
+    }, L"Probe mismatches and CPUID timing spread are reported as raw counts. A guest-visible view that "
+       L"looks clean cannot prove an outer SLAT is clean, so no verdict is derived here. "
+       L"DMAR/IVRS use STATUS_NOT_FOUND when the firmware table is simply absent."));
+    AppendZeroResponseWarning(response.version, response.size, result.rows);
+    return result;
+}
+
+// QueryHvmStatus reads virtualization capability and takeover state. It never
+// prepares, tests or tears down anything -- those are control actions.
+KernelOperationResult QueryHvmStatus(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const ksword::ark::HvmStatusResult query = client.queryHvmStatus();
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"HVM Status", query.io, result);
+    const KSWORD_ARK_QUERY_HVM_RESPONSE& response = query.response;
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(response.version) },
+        { L"QueryStatus", HexText(response.queryStatus) },
+        { L"StateFlags", HexText(response.stateFlags) },
+        { L"Generation", std::to_wstring(response.generation) },
+        { L"Processors", std::to_wstring(response.processorCount) },
+        { L"Prepared", std::to_wstring(response.preparedProcessorCount) },
+        { L"SelfTestPassed", std::to_wstring(response.selfTestPassedProcessorCount) },
+        { L"Resident", std::to_wstring(response.residentProcessorCount) },
+        { L"ResidentImpl", std::to_wstring(response.residentImplementation) },
+        { L"EptImpl", std::to_wstring(response.eptImplementation) },
+        { L"NestedImpl", std::to_wstring(response.nestedImplementation) },
+        { L"EvmcsImpl", std::to_wstring(response.evmcsImplementation) },
+        { L"EptRules", std::to_wstring(response.eptRuleCount) },
+        { L"EptPages", std::to_wstring(response.eptPageCount) },
+        { L"Events", std::to_wstring(response.eventCount) },
+        { L"DroppedEvents", std::to_wstring(response.droppedEventCount) },
+        { L"NestedState", std::to_wstring(response.nestedState) },
+        { L"EvmcsState", std::to_wstring(response.evmcsState) },
+        { L"FeatureFlags", HexText(response.featureFlags) },
+        { L"VmxBasic", HexText(response.vmxBasic) },
+    }, L"Read-only virtualization state. preparedProcessorCount below processorCount means the takeover "
+       L"is partial, which matters because a per-CPU view can differ from the machine-wide one."));
+    AppendZeroResponseWarning(response.version, response.size, result.rows);
+    return result;
+}
+
+// QueryHvmEvents drains the VM-exit event ring without clearing it. Clearing is
+// deliberately not offered here: another reader would silently lose events.
+KernelOperationResult QueryHvmEvents(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const unsigned long maxRows = request.maxRows == 0
+        ? KSWORD_ARK_HVM_MAX_EVENT_ROWS
+        : request.maxRows;
+    const ksword::ark::HvmEventResult query = client.queryHvmEvents(0, maxRows, false);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"HVM Events", query.io, result);
+    const KSWORD_ARK_HVM_EVENT_QUERY_RESPONSE& response = query.response;
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(response.version) },
+        { L"Returned", std::to_wstring(response.returnedRows) },
+        { L"Available", std::to_wstring(response.availableRows) },
+        { L"Dropped", std::to_wstring(response.droppedRows) },
+        { L"NewestSequence", std::to_wstring(response.newestSequence) },
+    }, L"Nonblocking snapshot of the VM-exit ring, read without clearing it so a second reader does not "
+       L"lose events. droppedRows counts entries overwritten before this read."));
+    AppendZeroResponseWarning(response.version, response.size, result.rows);
+
+    const unsigned long rowCount = response.returnedRows < KSWORD_ARK_HVM_MAX_EVENT_ROWS
+        ? response.returnedRows
+        : KSWORD_ARK_HVM_MAX_EVENT_ROWS;
+    for (unsigned long index = 0; index < rowCount; ++index) {
+        const KSWORD_ARK_HVM_EVENT_ROW& row = response.rows[index];
+        std::wostringstream rowDetail;
+        rowDetail << L"Sequence: " << row.sequence << L"\r\n"
+                  << L"Timestamp: " << row.timestamp << L"\r\n"
+                  << L"CPU: " << row.processorGroup << L":" << static_cast<unsigned>(row.processorNumber) << L"\r\n"
+                  << L"Type: " << row.type << L"\r\n"
+                  << L"ExitReason: " << HexText(row.exitReason) << L"\r\n"
+                  << L"Qualification: " << HexText(row.qualification) << L"\r\n"
+                  << L"GuestRip: " << HexText(row.guestRip) << L"\r\n"
+                  << L"GuestPhysical: " << HexText(row.guestPhysicalAddress) << L"\r\n"
+                  << L"GuestLinear: " << HexText(row.guestLinearAddress) << L"\r\n"
+                  << L"Access: " << HexText(row.access) << L"\r\n"
+                  << L"RuleId: " << row.ruleId << L"\r\n"
+                  << L"Status: " << HexText(static_cast<std::uint32_t>(row.status));
+        result.rows.push_back(Row({
+            { L"Sequence", std::to_wstring(row.sequence) },
+            { L"CPU", std::to_wstring(row.processorGroup) + L":" + std::to_wstring(static_cast<unsigned>(row.processorNumber)) },
+            { L"Type", std::to_wstring(row.type) },
+            { L"ExitReason", HexText(row.exitReason) },
+            { L"Qualification", HexText(row.qualification) },
+            { L"GuestRip", HexText(row.guestRip) },
+            { L"GuestPhysical", HexText(row.guestPhysicalAddress) },
+            { L"Access", HexText(row.access) },
+            { L"RuleId", std::to_wstring(row.ruleId) },
+        }, rowDetail.str()));
+    }
+    return result;
+}
+
+// BuildDriverTargetIdentity reads the target driver out of the shared filter
+// box. These three queries address one driver rather than enumerating, because
+// the underlying protocol is per-DriverObject.
+struct DriverTargetIdentity {
+    std::uint64_t moduleBase = 0;
+    std::wstring driverName;
+    bool valid = false;
+};
+
+DriverTargetIdentity BuildDriverTargetIdentity(const KernelRequest& request) {
+    DriverTargetIdentity identity;
+    identity.driverName = request.filterText;
+    identity.moduleBase = request.startAddress;
+    identity.valid = !identity.driverName.empty() || identity.moduleBase != 0;
+    return identity;
+}
+
+KernelOperationResult MakeDriverTargetPrompt(const KernelRequest& request, const wchar_t* label) {
+    KernelOperationResult result;
+    result.supported = true;
+    result.success = false;
+    result.message = std::wstring(label) + L"：请先在过滤框输入驱动名（例如 disk.sys），或在起点地址填入模块基址。";
+    result.rows.push_back(Row({
+        { L"Hint", L"需要指定目标驱动" },
+        { L"Filter", L"驱动名，例如 disk.sys" },
+        { L"StartAddress", L"可选，模块基址" },
+    }, L"This protocol addresses one DriverObject at a time rather than enumerating every driver, so a "
+       L"target has to be named before the query can run."));
+    static_cast<void>(request);
+    return result;
+}
+
+// QueryDriverDispatchTable reads one driver's MajorFunction slot against the
+// baseline the driver recorded. Read-only: no slot is written here.
+KernelOperationResult QueryDriverDispatchTable(const KernelRequest& request) {
+    const DriverTargetIdentity identity = BuildDriverTargetIdentity(request);
+    if (!identity.valid) {
+        return MakeDriverTargetPrompt(request, L"驱动派遣表");
+    }
+    const ksword::ark::DriverClient client;
+    const unsigned long majorFunction = request.idtVectorLimit;
+    const ksword::ark::DriverDispatchControlResult query =
+        client.queryDriverDispatch(identity.moduleBase, identity.driverName, majorFunction);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"Driver Dispatch", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(query.version) },
+        { L"Driver", identity.driverName.empty() ? HexText(identity.moduleBase) : identity.driverName },
+        { L"MajorFunction", HexText(query.majorFunction) },
+        { L"State", std::to_wstring(query.state) },
+        { L"Generation", std::to_wstring(query.generation) },
+        { L"ModuleBase", HexText(query.targetModuleBase) },
+        { L"DriverObject", HexText(query.driverObjectAddress) },
+        { L"Current", HexText(query.currentDispatchAddress) },
+        { L"Original", HexText(query.originalDispatchAddress) },
+        { L"Applied", HexText(query.appliedDispatchAddress) },
+        { L"ResponseFlags", HexText(query.responseFlags) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"Current versus original dispatch address for one MajorFunction slot. Use the row limit box to "
+       L"choose the major function index; 0 is IRP_MJ_CREATE."));
+    return result;
+}
+
+// QueryDriverImageFields reads one LDR image entry's identity fields together
+// with whatever restore record the driver still holds for them.
+KernelOperationResult QueryDriverImageFields(const KernelRequest& request) {
+    const DriverTargetIdentity identity = BuildDriverTargetIdentity(request);
+    if (!identity.valid) {
+        return MakeDriverTargetPrompt(request, L"驱动镜像字段");
+    }
+    const ksword::ark::DriverClient client;
+    const ksword::ark::DriverImageControlResult query =
+        client.queryDriverImage(identity.moduleBase, identity.driverName);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"Driver Image", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(query.version) },
+        { L"Driver", identity.driverName.empty() ? HexText(identity.moduleBase) : identity.driverName },
+        { L"State", std::to_wstring(query.state) },
+        { L"Generation", std::to_wstring(query.generation) },
+        { L"ModuleBase", HexText(query.targetModuleBase) },
+        { L"ManagedFields", HexText(query.managedFieldMask) },
+        { L"OwnedFields", HexText(query.ownedFieldMask) },
+        { L"ConflictFields", HexText(query.conflictFieldMask) },
+        { L"ChangedFields", HexText(query.changedFieldMask) },
+        { L"LayoutFlags", HexText(query.layoutFlags) },
+        { L"ResponseFlags", HexText(query.responseFlags) },
+        { L"LoaderStatus", HexText(static_cast<std::uint32_t>(query.loaderStatus)) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"A non-zero conflictFieldMask means a third party rewrote a field this driver still holds a "
+       L"restore record for, so the recorded original can no longer be assumed to be the live value."));
+    return result;
+}
+
+// QueryDriverCommunication reads whether a driver's dispatch surface is
+// currently pointed at the system reject entry, and who owns that state.
+KernelOperationResult QueryDriverCommunication(const KernelRequest& request) {
+    const DriverTargetIdentity identity = BuildDriverTargetIdentity(request);
+    if (!identity.valid) {
+        return MakeDriverTargetPrompt(request, L"驱动通信端点");
+    }
+    const ksword::ark::DriverClient client;
+    const ksword::ark::DriverCommunicationControlResult query =
+        client.queryDriverCommunication(identity.moduleBase, identity.driverName);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"Driver Communication", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Version", std::to_wstring(query.version) },
+        { L"Driver", identity.driverName.empty() ? HexText(identity.moduleBase) : identity.driverName },
+        { L"State", std::to_wstring(query.state) },
+        { L"Generation", std::to_wstring(query.generation) },
+        { L"TargetedMask", HexText(query.targetedMask) },
+        { L"ActiveMask", HexText(query.activeMask) },
+        { L"OwnedMask", HexText(query.ownedMask) },
+        { L"ConflictMask", HexText(query.conflictMask) },
+        { L"ChangedMask", HexText(query.changedMask) },
+        { L"DriverObject", HexText(query.driverObjectAddress) },
+        { L"DriverStart", HexText(query.driverStart) },
+        { L"RejectDispatch", HexText(query.rejectDispatchAddress) },
+        { L"ResponseFlags", HexText(query.responseFlags) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"activeMask lists the MajorFunction slots currently pointing at the system reject entry. "
+       L"ownedMask is the subset this driver may still restore; anything in conflictMask was rewritten "
+       L"by someone else and is no longer safe to restore blindly."));
+    return result;
+}
+
+// QueryPlatformAudit reads HAL table entries, WDF functions and WDF callbacks
+// with the driver's own signature-verified evidence attached.
+KernelOperationResult QueryPlatformAudit(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const unsigned long maxRows = request.maxRows == 0
+        ? KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS
+        : request.maxRows;
+    const ksword::ark::PlatformAuditResult query =
+        client.queryPlatformAudit(KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL, maxRows);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"Platform Audit", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(query.version) },
+        { L"QueryStatus", HexText(query.status) },
+        { L"ScopeMask", HexText(query.scopeMask) },
+        { L"ResponseFlags", HexText(query.responseFlags) },
+        { L"BuildNumber", std::to_wstring(query.buildNumber) },
+        { L"SignaturePolicy", HexText(query.signaturePolicyFlags) },
+        { L"Total", std::to_wstring(query.totalCount) },
+        { L"Returned", std::to_wstring(query.returnedCount) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"HAL/WDF slot evidence. Rows carry the driver's own confidence and signature id rather than a "
+       L"derived verdict, because an unrecognized prologue is not by itself evidence of a hook."));
+
+    for (const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry : query.entries) {
+        const std::wstring name = FixedWideField(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS);
+        const std::wstring modulePath = FixedWideField(entry.modulePath, KSWORD_ARK_PLATFORM_MODULE_PATH_CHARS);
+        std::wostringstream detail;
+        detail << L"Name: " << name << L"\r\n"
+               << L"Scope: " << entry.scope << L"\r\n"
+               << L"RowKind: " << entry.rowKind << L"\r\n"
+               << L"EntryIndex: " << entry.entryIndex << L"\r\n"
+               << L"Live: " << HexText(entry.liveAddress) << L"\r\n"
+               << L"Original: " << HexText(entry.originalAddress) << L"\r\n"
+               << L"Table: " << HexText(entry.tableAddress) << L"\r\n"
+               << L"ModuleBase: " << HexText(entry.moduleBase) << L"\r\n"
+               << L"ModuleSize: " << HexText(entry.moduleSize) << L"\r\n"
+               << L"ModulePath: " << modulePath << L"\r\n"
+               << L"HookStatus: " << HexText(entry.hookStatus) << L"\r\n"
+               << L"Confidence: " << entry.confidence << L"\r\n"
+               << L"SignatureId: " << entry.signatureId << L"\r\n"
+               << L"LastStatus: " << HexText(static_cast<std::uint32_t>(entry.lastStatus));
+        result.rows.push_back(Row({
+            { L"Name", name.empty() ? L"(未命名槽)" : name },
+            { L"Scope", std::to_wstring(entry.scope) },
+            { L"Index", std::to_wstring(entry.entryIndex) },
+            { L"Live", HexText(entry.liveAddress) },
+            { L"Original", HexText(entry.originalAddress) },
+            { L"HookStatus", HexText(entry.hookStatus) },
+            { L"Confidence", std::to_wstring(entry.confidence) },
+            { L"Module", modulePath },
+        }, detail.str()));
+    }
+    return result;
+}
+
+// QuerySystemTimeState reads which performance-counter backend is in use and
+// whether the multiplier is currently taken over. Read-only: the takeover
+// itself is a control action and is not reachable from here.
+KernelOperationResult QuerySystemTimeState(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const ksword::ark::SystemTimeQueryResult query = client.querySystemTime();
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"System Time", query.io, result);
+    const KSWORD_ARK_QUERY_SYSTEM_TIME_RESPONSE& response = query.response;
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(response.version) },
+        { L"QueryStatus", HexText(response.status) },
+        { L"StateFlags", HexText(response.stateFlags) },
+        { L"Generation", std::to_wstring(response.generation) },
+        { L"Factor", std::to_wstring(response.factor) },
+        { L"Backend", std::to_wstring(response.backend) },
+        { L"ResolutionMode", std::to_wstring(response.resolutionMode) },
+        { L"OsBuild", std::to_wstring(response.osBuildNumber) },
+        { L"CounterValue", HexText(response.counterValue) },
+        { L"CounterSource", HexText(response.counterSourceAddress) },
+        { L"PrimarySlot", HexText(response.primarySlotAddress) },
+        { L"SecondarySlot", HexText(response.secondarySlotAddress) },
+        { L"HvSharedPage", HexText(response.hypervisorSharedPageAddress) },
+        { L"HvOrigMultiplier", HexText(response.hypervisorOriginalMultiplier) },
+        { L"HvCurMultiplier", HexText(response.hypervisorCurrentMultiplier) },
+        { L"HvOrigBias", HexText(response.hypervisorOriginalBias) },
+        { L"HvCurBias", HexText(response.hypervisorCurrentBias) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(response.lastStatus)) },
+    }, L"A current multiplier or bias that differs from the recorded original means the system clock "
+       L"rate is being scaled by someone. Under a hypervisor the shared-page values are the ones that "
+       L"matter, since the guest-visible counter is derived from them."));
+    AppendZeroResponseWarning(response.version, response.size, result.rows);
+    return result;
+}
+
+// QueryI8042Audit enumerates the keyboard/mouse filter callbacks on the i8042
+// port stack. A callback whose owning module is not the expected class driver
+// is the classic shape of a kernel keylogger, so the owner module is a column
+// rather than a detail-only field.
+KernelOperationResult QueryI8042Audit(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const unsigned long maxRows = request.maxRows == 0
+        ? KSWORD_ARK_I8042_DEFAULT_MAX_ROWS
+        : request.maxRows;
+    const ksword::ark::I8042AuditResult query = client.queryI8042Audit(maxRows);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"i8042 Audit", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"Version", std::to_wstring(query.version) },
+        { L"QueryStatus", HexText(query.status) },
+        { L"ResponseFlags", HexText(query.responseFlags) },
+        { L"DescriptorId", std::to_wstring(query.descriptorId) },
+        { L"ImageBase", HexText(query.imageBase) },
+        { L"ImageSize", HexText(query.imageSize) },
+        { L"ImageTimeDateStamp", HexText(query.imageTimeDateStamp) },
+        { L"PdbAge", std::to_wstring(query.pdbAge) },
+        { L"Total", std::to_wstring(query.totalCount) },
+        { L"Returned", std::to_wstring(query.returnedCount) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"Endpoint rows are resolved against an exact i8042prt build descriptor. A zero descriptorId "
+       L"means the running build was not recognized and the offsets behind these rows are unverified."));
+
+    for (const KSWORD_ARK_I8042_AUDIT_ENTRY& entry : query.entries) {
+        const std::wstring pnpId = FixedWideField(entry.pnpId, KSWORD_ARK_I8042_PNP_ID_CHARS);
+        const std::wstring ownerPath = FixedWideField(entry.ownerModulePath, KSWORD_ARK_I8042_MODULE_PATH_CHARS);
+        std::wostringstream detail;
+        detail << L"PnpId: " << pnpId << L"\r\n"
+               << L"RowKind: " << entry.rowKind << L"\r\n"
+               << L"DeviceKind: " << entry.deviceKind << L"\r\n"
+               << L"EndpointKind: " << entry.endpointKind << L"\r\n"
+               << L"Verdict: " << entry.verdict << L"\r\n"
+               << L"DeviceObject: " << HexText(entry.deviceObject) << L"\r\n"
+               << L"ClassDeviceObject: " << HexText(entry.classDeviceObject) << L"\r\n"
+               << L"Callback: " << HexText(entry.callbackAddress) << L"\r\n"
+               << L"Context: " << HexText(entry.contextAddress) << L"\r\n"
+               << L"ModuleBase: " << HexText(entry.moduleBase) << L"\r\n"
+               << L"ModuleSize: " << HexText(entry.moduleSize) << L"\r\n"
+               << L"OwnerModule: " << ownerPath << L"\r\n"
+               << L"DetailCode: " << HexText(entry.detailCode) << L"\r\n"
+               << L"LastStatus: " << HexText(static_cast<std::uint32_t>(entry.lastStatus));
+        result.rows.push_back(Row({
+            { L"PnpId", pnpId },
+            { L"DeviceKind", std::to_wstring(entry.deviceKind) },
+            { L"EndpointKind", std::to_wstring(entry.endpointKind) },
+            { L"Verdict", std::to_wstring(entry.verdict) },
+            { L"Callback", HexText(entry.callbackAddress) },
+            { L"OwnerModule", ownerPath.empty() ? L"(未归属模块)" : ownerPath },
+            { L"DeviceObject", HexText(entry.deviceObject) },
+            { L"Status", HexText(entry.status) },
+        }, detail.str()));
+    }
+    return result;
+}
+
+// QueryPiDdbCache enumerates PiDDBCacheTable, which records every driver the
+// loader has vetted. Its entries survive an unload, so a driver that is gone
+// from the module list can still be named here.
+KernelOperationResult QueryPiDdbCache(const KernelRequest& request) {
+    const ksword::ark::DriverClient client;
+    const unsigned long maxRows = request.maxRows == 0
+        ? KSWORD_ARK_PIDDB_DEFAULT_ROWS
+        : request.maxRows;
+    const ksword::ark::PiDdbQueryResult query = client.queryPiDdb(maxRows);
+    KernelOperationResult result;
+    ApplyIoSummary(request, L"PiDDB Cache", query.io, result);
+    result.rows.push_back(Row({
+        { L"Status", query.io.ok ? L"OK" : L"Failed" },
+        { L"Unsupported", BoolText(query.unsupported) },
+        { L"QueryStatus", HexText(query.queryStatus) },
+        { L"ResponseFlags", HexText(query.responseFlags) },
+        { L"Total", std::to_wstring(query.totalRows) },
+        { L"Returned", std::to_wstring(query.entries.size()) },
+        { L"LastStatus", HexText(static_cast<std::uint32_t>(query.lastStatus)) },
+    }, L"PiDDBCacheTable is walked read-only. Entries persist after a driver unloads, which is why this "
+       L"table and the loaded-module list disagree by design."));
+
+    for (const ksword::ark::PiDdbEntry& entry : query.entries) {
+        std::wostringstream detail;
+        detail << L"Driver: " << entry.driverName << L"\r\n"
+               << L"Entry: " << HexText(entry.entryAddress) << L"\r\n"
+               << L"TimeDateStamp: " << HexText(entry.timeDateStamp) << L"\r\n"
+               << L"LoadStatus: " << HexText(static_cast<std::uint32_t>(entry.loadStatus));
+        result.rows.push_back(Row({
+            { L"Driver", entry.driverName },
+            { L"TimeDateStamp", HexText(entry.timeDateStamp) },
+            { L"LoadStatus", HexText(static_cast<std::uint32_t>(entry.loadStatus)) },
+            { L"Entry", HexText(entry.entryAddress) },
         }, detail.str()));
     }
     return result;
@@ -5826,6 +6411,28 @@ KernelOperationResult KernelFacade::QueryArkDriverFeature(const KernelRequest& r
         return attachCapability(QueryKernelTimerDpc(request));
     case KernelFeatureId::IoctlRegistry:
         return attachCapability(QueryIoctlRegistry(request));
+    case KernelFeatureId::WorkQueueThreads:
+        return attachCapability(QueryWorkQueueThreads(request));
+    case KernelFeatureId::SlatIommuAudit:
+        return attachCapability(QuerySlatIommuAudit(request));
+    case KernelFeatureId::HvmStatus:
+        return attachCapability(QueryHvmStatus(request));
+    case KernelFeatureId::HvmEvents:
+        return attachCapability(QueryHvmEvents(request));
+    case KernelFeatureId::DriverDispatchTable:
+        return attachCapability(QueryDriverDispatchTable(request));
+    case KernelFeatureId::DriverImageFields:
+        return attachCapability(QueryDriverImageFields(request));
+    case KernelFeatureId::DriverCommunication:
+        return attachCapability(QueryDriverCommunication(request));
+    case KernelFeatureId::PlatformAudit:
+        return attachCapability(QueryPlatformAudit(request));
+    case KernelFeatureId::SystemTimeState:
+        return attachCapability(QuerySystemTimeState(request));
+    case KernelFeatureId::I8042Audit:
+        return attachCapability(QueryI8042Audit(request));
+    case KernelFeatureId::PiDdbCache:
+        return attachCapability(QueryPiDdbCache(request));
     default:
         return MakeUnsupportedResult(request, L"该内核条目没有对应的 ArkDriverClient 只读 IOCTL。 ");
     }

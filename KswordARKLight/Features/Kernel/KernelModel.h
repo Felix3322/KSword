@@ -48,7 +48,18 @@ enum class KernelFeatureId : std::uint32_t {
     PdbProfileStatus,
     CidTableSummary,
     IpcSummary,
-    HookAuditSummary
+    HookAuditSummary,
+    WorkQueueThreads,
+    SlatIommuAudit,
+    HvmStatus,
+    HvmEvents,
+    DriverDispatchTable,
+    DriverImageFields,
+    DriverCommunication,
+    PlatformAudit,
+    SystemTimeState,
+    I8042Audit,
+    PiDdbCache
 };
 
 // KernelFeatureBackend describes where a feature obtains data. Input is fixed
