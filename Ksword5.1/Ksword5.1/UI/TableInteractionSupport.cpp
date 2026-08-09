@@ -767,9 +767,9 @@ namespace
 
             m_copyAllButton = createButton("复制全表", QStringLiteral(":/Icon/log_copy.svg"));
             m_exportButton = createButton("导出", QStringLiteral(":/Icon/log_export.svg"));
-            m_freezePaneButton = createButton("冻结窗格");
+            m_freezePaneButton = createButton("冻结行列");
             m_freezePaneButton->setToolTip(localizedSourceText(
-                "选中单元格后冻结：该行连同其上方仍可见的行会钉在列标题下方，该列连同其左侧仍可见的列会钉在最左侧"));
+                "冻结选中的行或列：行会钉在列标题正下方，列会固定在行表头右侧；支持一次冻结多选行"));
             m_pauseRefreshButton = createButton("停止刷新");
             m_pauseRefreshButton->setCheckable(true);
             layout->addWidget(m_copyAllButton);
@@ -783,18 +783,18 @@ namespace
             m_freezePaneMenu = new QMenu(m_freezePaneButton);
             m_freezePaneMenu->setStyleSheet(KswordTheme::ContextMenuStyle());
             m_freezeCurrentRowAction = m_freezePaneMenu->addAction(
-                localizedSourceText("冻结到当前行"));
+                localizedSourceText("冻结选中行"));
             m_freezeCurrentColumnAction = m_freezePaneMenu->addAction(
-                localizedSourceText("冻结到当前列"));
+                localizedSourceText("冻结选中列"));
             m_freezeCurrentCellAction = m_freezePaneMenu->addAction(
-                localizedSourceText("冻结到当前单元格"));
+                localizedSourceText("冻结选中行列"));
             m_freezePaneMenu->addSeparator();
             m_unfreezeRowsAction = m_freezePaneMenu->addAction(
                 localizedSourceText("取消冻结行"));
             m_unfreezeColumnsAction = m_freezePaneMenu->addAction(
                 localizedSourceText("取消冻结列"));
             m_unfreezeAllAction = m_freezePaneMenu->addAction(
-                localizedSourceText("取消全部窗格冻结"));
+                localizedSourceText("取消全部冻结"));
             m_freezePaneButton->setMenu(m_freezePaneMenu);
             m_freezePaneButton->setPopupMode(QToolButton::InstantPopup);
 
@@ -938,15 +938,15 @@ namespace
 
             m_copyAllButton->setText(localizedSourceText("复制全表"));
             m_exportButton->setText(localizedSourceText("导出"));
-            m_freezePaneButton->setText(localizedSourceText("冻结窗格"));
+            m_freezePaneButton->setText(localizedSourceText("冻结行列"));
             m_freezePaneButton->setToolTip(localizedSourceText(
-                "选中单元格后冻结：该行连同其上方仍可见的行会钉在列标题下方，该列连同其左侧仍可见的列会钉在最左侧"));
-            m_freezeCurrentRowAction->setText(localizedSourceText("冻结到当前行"));
-            m_freezeCurrentColumnAction->setText(localizedSourceText("冻结到当前列"));
-            m_freezeCurrentCellAction->setText(localizedSourceText("冻结到当前单元格"));
+                "冻结选中的行或列：行会钉在列标题正下方，列会固定在行表头右侧；支持一次冻结多选行"));
+            m_freezeCurrentRowAction->setText(localizedSourceText("冻结选中行"));
+            m_freezeCurrentColumnAction->setText(localizedSourceText("冻结选中列"));
+            m_freezeCurrentCellAction->setText(localizedSourceText("冻结选中行列"));
             m_unfreezeRowsAction->setText(localizedSourceText("取消冻结行"));
             m_unfreezeColumnsAction->setText(localizedSourceText("取消冻结列"));
-            m_unfreezeAllAction->setText(localizedSourceText("取消全部窗格冻结"));
+            m_unfreezeAllAction->setText(localizedSourceText("取消全部冻结"));
             m_cleanupButton->setText(localizedSourceText("清理"));
             m_doneCleanupButton->setText(localizedSourceText("完成"));
             m_deleteSelectedButton->setText(localizedSourceText("清理选中"));
@@ -1071,8 +1071,9 @@ namespace
         }
 
         // freezeToCurrentIndex 作用：
-        // - 冻结从当前视口顶部行到当前单元格所在行之间的可视行，钉到列表头正下方；
-        // - 冻结从当前视口最左列到当前单元格所在列之间的可视列，钉到行表头正右侧；
+        // - 行方向：把选中的行（多选全部生效，未选中回落到当前行）钉到列表头正下方；
+        // - 列方向：把当前单元格所在列固定到行表头右侧；
+        // - 只冻结选中的行列本身；其余内容——包括它们上方/左侧的行列——照常滚动；
         // - freezeRows/freezeColumns 控制本次只修改哪一个方向。
         void freezeToCurrentIndex(const bool freezeRows, const bool freezeColumns)
         {
@@ -1095,13 +1096,13 @@ namespace
             const QModelIndex currentIndex = tableView->currentIndex();
             if (freezeRows)
             {
-                m_frozenPaneController->freezeRowsThroughVisualRow(
-                    tableView->verticalHeader()->visualIndex(currentIndex.row()));
+                const QVector<int> selectedRows = selectedVisibleRows(tableView, true);
+                m_frozenPaneController->freezeRows(
+                    QList<int>(selectedRows.cbegin(), selectedRows.cend()));
             }
             if (freezeColumns)
             {
-                m_frozenPaneController->freezeColumnsThroughVisualColumn(
-                    tableView->horizontalHeader()->visualIndex(currentIndex.column()));
+                m_frozenPaneController->freezeColumns({ currentIndex.column() });
             }
             updatePosition();
             updateControls();

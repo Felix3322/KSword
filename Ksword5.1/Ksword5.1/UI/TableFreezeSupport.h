@@ -3,7 +3,9 @@
 #include "TableSnapshotCompare.h"
 
 #include <QAbstractTableModel>
+#include <QList>
 #include <QObject>
+#include <QPersistentModelIndex>
 #include <QPointer>
 
 class QEvent;
@@ -37,12 +39,12 @@ namespace ks::ui
     };
 
     // TableFrozenPaneController 作用：
-    // - 提供与 Excel「冻结拆分窗格」一致的语义：被冻结的行钉在列表头正下方、被冻结的列钉在
-    //   行表头正右侧，滚动区域从冻结区之后开始，冻结区之前的行列在解冻前不再可达；
-    // - 冻结区不是浮在视口上的贴图，而是通过 TableActionBarHost 把视口切小后单独占位，
-    //   因此滚动内容不会被冻结区遮住，也不会出现同一行既在冻结区又在滚动区的重影；
-    // - 冻结锚点取“执行冻结时视口顶部的那一行/最左的那一列”，所以对着第 800 行冻结不会把
-    //   前 800 行全部钉上来占满整屏；冻结区还会被限制在可用尺寸的一半以内；
+    // - “冻结行列”：把选中的行钉在列表头正下方、把选中的列固定在行表头右侧；
+    // - 只冻结选中的那几行/那一列本身，不会把它上方或左侧的内容一并冻结；
+    // - 被冻结的行列从滚动区中移出并单独占位（通过 TableActionBarHost 把视口切小），
+    //   其余内容——包括冻结点之前的行列——仍可完整滚动，不存在重影或滚不到的区域；
+    // - 冻结项用持久模型索引跟踪，行列增删或排序后仍钉住同一行数据；模型整体更换时自动解除；
+    // - 冻结区合计不超过可用尺寸的一半，超出预算的行列不接受冻结；
     // - 目标表格必须实现 TableActionBarHost（VisibleTableWidget / TableActionTableView 等），
     //   普通 QTableView 无法预留视口，canFreeze() 会返回 false。
     class TableFrozenPaneController final : public QObject
@@ -57,11 +59,10 @@ namespace ks::ui
         // canFreeze 作用：目标表格是否具备视口预留能力，决定冻结菜单是否可用。
         bool canFreeze() const;
 
-        // freezeRowsThroughVisualRow 作用：
-        // - 把「当前视口顶部行」到 lastVisualRow（含）之间的可视行冻结到列表头下方；
-        // - 返回实际冻结的行数，0 表示尺寸不足或参数无效，未做任何改动。
-        int freezeRowsThroughVisualRow(int lastVisualRow);
-        int freezeColumnsThroughVisualColumn(int lastVisualColumn);
+        // freezeRows 作用：冻结给定逻辑行（通常为选中行）；返回本次新冻结的行数，
+        // 0 表示行无效、已冻结或冻结预算不足，未做任何改动。
+        int freezeRows(const QList<int>& logicalRows);
+        int freezeColumns(const QList<int>& logicalColumns);
 
         void clearFrozenRows();
         void clearFrozenColumns();
@@ -76,6 +77,13 @@ namespace ks::ui
         bool eventFilter(QObject* watchedObject, QEvent* eventObject) override;
 
     private:
+        // FrozenLine 作用：一条被冻结的行或列。
+        struct FrozenLine
+        {
+            QPersistentModelIndex index; // 行冻结存 (row,0)，列冻结存 (0,column)；随模型增删/排序自动平移。
+            int extent = 0;              // 冻结时捕获的行高/列宽；源表隐藏该行列后原尺寸读不到了。
+        };
+
         void disconnectTarget();
         void connectTarget();
         void scheduleRefresh();
@@ -88,41 +96,28 @@ namespace ks::ui
         void mirrorColumnLayout(QTableView* pane);
         void mirrorRowLayout(QTableView* pane, int firstLogicalRow, int lastLogicalRow);
         void mirrorVisibleRowLayout(QTableView* pane);
-        void clampBandsToModel();
+        void applyFrozenRowFilter(QTableView* pane);
+        void applyFrozenColumnFilter(QTableView* pane);
+        void enforceFrozenState();
+        void unfreezeAllRows();
+        void unfreezeAllColumns();
         void layoutPanes();
         void syncPanes();
-        void setPaneVerticalToRow(QTableView* pane, int logicalRow);
-        void setPaneHorizontalToColumn(QTableView* pane, int logicalColumn);
         void setPaneVerticalToSource(QTableView* pane);
         void setPaneHorizontalToSource(QTableView* pane);
-        void applySourceScrollLimits();
 
-        int rowsBandHeight(int anchorVisual, int endVisual) const;
-        int columnsBandWidth(int anchorVisual, int endVisual) const;
-        int frozenRowsHeight() const;
-        int frozenColumnsWidth() const;
-        int logicalRowInRange(int anchorVisual, int endVisual, bool takeFirst) const;
-        int logicalColumnInRange(int anchorVisual, int endVisual, bool takeFirst) const;
-        int firstBandLogicalRow() const;
-        int lastBandLogicalRow() const;
-        int firstBandLogicalColumn() const;
-        int firstScrollableLogicalRow() const;
-        int firstScrollableLogicalColumn() const;
-        int topVisibleVisualRow() const;
-        int leftVisibleVisualColumn() const;
-        bool rowBandActive() const;
-        bool columnBandActive() const;
+        int totalFrozenRowsHeight() const;
+        int totalFrozenColumnsWidth() const;
+        int frozenRowsBudget() const;
+        int frozenColumnsBudget() const;
 
         QPointer<QTableView> m_targetTable;
         QPointer<QAbstractItemModel> m_targetModel;
         QPointer<QTableView> m_topPane;
         QPointer<QTableView> m_leftPane;
         QPointer<QTableView> m_cornerPane;
-        // 冻结区按“可视序号左闭右开区间”描述，anchor==end 表示该方向未冻结。
-        int m_rowAnchorVisual = 0;
-        int m_rowEndVisual = 0;
-        int m_columnAnchorVisual = 0;
-        int m_columnEndVisual = 0;
+        QList<FrozenLine> m_frozenRowLines;
+        QList<FrozenLine> m_frozenColumnLines;
         int m_appliedFrozenWidth = 0;
         int m_appliedFrozenHeight = 0;
         bool m_refreshing = false;
