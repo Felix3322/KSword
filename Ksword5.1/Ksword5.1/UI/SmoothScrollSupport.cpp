@@ -26,8 +26,6 @@ namespace
         "KSWORD_SMOOTH_SCROLL_ORIGINAL_HORIZONTAL_MODE";
     constexpr char kFrozenPaneAuxiliaryProperty[] =
         "KSWORD_TABLE_INTERACTION_FROZEN_PANE_AUXILIARY";
-    constexpr char kFrozenPaneSourceProperty[] =
-        "KSWORD_TABLE_INTERACTION_FROZEN_PANE_SOURCE";
     constexpr int kWheelAnimationDurationMs = 180;
     constexpr int kPixelAnimationDurationMs = 100;
 
@@ -216,13 +214,10 @@ namespace
             }
             if (itemView->property(kFrozenPaneAuxiliaryProperty).toBool())
             {
-                QAbstractItemView* sourceView = qobject_cast<QAbstractItemView*>(
-                    itemView->property(kFrozenPaneSourceProperty).value<QObject*>());
-                if (sourceView != nullptr)
-                {
-                    itemView->setVerticalScrollMode(sourceView->verticalScrollMode());
-                    itemView->setHorizontalScrollMode(sourceView->horizontalScrollMode());
-                }
+                // 冻结窗格的偏移由 TableFrozenPaneController 按像素直接写入滚动条，
+                // 跟随主表切到按整行滚动会让冻结区与主表错行，因此这里固定按像素。
+                itemView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+                itemView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
                 return;
             }
 

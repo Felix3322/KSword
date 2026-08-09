@@ -11,6 +11,7 @@
 #include <QRect>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QSize>
 #include <QTableView>
 #include <QTableWidget>
 #include <QTimer>
@@ -24,6 +25,11 @@ namespace ks::ui
     // Implemented by table subclasses that can reserve a strip immediately above the column
     // header. The action widget remains owned by its caller; this interface only manages the
     // table's layout reservation and supplies the matching geometry for that widget.
+    //
+    // The same mechanism carries the Excel-style frozen panes: a frozen band is not painted on
+    // top of the scrollable viewport, it is carved out of it. Reserving the band shrinks the
+    // viewport so the scrollable rows/columns start below/right of the frozen ones, which is
+    // what keeps a frozen row genuinely pinned instead of merely covering live content.
     class TableActionBarHost
     {
     public:
@@ -32,6 +38,11 @@ namespace ks::ui
         virtual void setTopActionBarHeight(int height) = 0;
         virtual int topActionBarHeight() const = 0;
         virtual QRect topActionBarGeometry() const = 0;
+
+        // frozenColumnsWidth is reserved between the row header and the viewport;
+        // frozenRowsHeight is reserved between the column header and the viewport.
+        virtual void setFrozenPaneReservation(int frozenColumnsWidth, int frozenRowsHeight) = 0;
+        virtual QSize frozenPaneReservation() const = 0;
     };
 
     namespace visible_table_detail
@@ -62,6 +73,35 @@ namespace ks::ui
                 return m_height;
             }
 
+            bool setFrozenPaneReservation(const int frozenColumnsWidth, const int frozenRowsHeight)
+            {
+                const int normalizedWidth = std::max(0, frozenColumnsWidth);
+                const int normalizedHeight = std::max(0, frozenRowsHeight);
+                if (m_frozenColumnsWidth == normalizedWidth && m_frozenRowsHeight == normalizedHeight)
+                {
+                    return false;
+                }
+
+                m_frozenColumnsWidth = normalizedWidth;
+                m_frozenRowsHeight = normalizedHeight;
+                return true;
+            }
+
+            int frozenColumnsWidth() const
+            {
+                return m_frozenColumnsWidth;
+            }
+
+            int frozenRowsHeight() const
+            {
+                return m_frozenRowsHeight;
+            }
+
+            bool hasReservation() const
+            {
+                return m_height > 0 || m_frozenColumnsWidth > 0 || m_frozenRowsHeight > 0;
+            }
+
             QRect geometry(const QTableView* tableView) const
             {
                 if (tableView == nullptr || tableView->viewport() == nullptr || m_height <= 0)
@@ -70,8 +110,13 @@ namespace ks::ui
                 }
 
                 const QRect viewportGeometry = tableView->viewport()->geometry();
-                int left = viewportGeometry.left();
-                int right = viewportGeometry.right();
+                const bool rightToLeft = tableView->isRightToLeft();
+                int left = rightToLeft
+                    ? viewportGeometry.left()
+                    : viewportGeometry.left() - m_frozenColumnsWidth;
+                int right = rightToLeft
+                    ? viewportGeometry.right() + m_frozenColumnsWidth
+                    : viewportGeometry.right();
                 if (const QHeaderView* verticalHeader = tableView->verticalHeader();
                     verticalHeader != nullptr && !verticalHeader->isHidden())
                 {
@@ -83,7 +128,7 @@ namespace ks::ui
                 const int headerHeight = horizontalHeader != nullptr && !horizontalHeader->isHidden()
                     ? horizontalHeader->height()
                     : 0;
-                const int top = viewportGeometry.top() - headerHeight - m_height;
+                const int top = viewportGeometry.top() - m_frozenRowsHeight - headerHeight - m_height;
                 return QRect(left, top, std::max(0, right - left + 1), m_height);
             }
 
@@ -96,17 +141,18 @@ namespace ks::ui
             }
 
             // Must be called after captureBaseViewportMargins().
-            QMargins adjustedViewportMargins() const
+            QMargins adjustedViewportMargins(const QTableView* tableView) const
             {
-                if (m_height <= 0)
+                if (!hasReservation())
                 {
                     return m_baseViewportMargins;
                 }
 
+                const bool rightToLeft = tableView != nullptr && tableView->isRightToLeft();
                 return QMargins(
-                    m_baseViewportMargins.left(),
-                    m_baseViewportMargins.top() + m_height,
-                    m_baseViewportMargins.right(),
+                    m_baseViewportMargins.left() + (rightToLeft ? 0 : m_frozenColumnsWidth),
+                    m_baseViewportMargins.top() + m_height + m_frozenRowsHeight,
+                    m_baseViewportMargins.right() + (rightToLeft ? m_frozenColumnsWidth : 0),
                     m_baseViewportMargins.bottom());
             }
 
@@ -115,7 +161,7 @@ namespace ks::ui
             // in that subclass rather than in this generic helper.
             void applyTableChrome(QTableView* tableView) const
             {
-                if (tableView == nullptr || tableView->viewport() == nullptr || m_height <= 0)
+                if (tableView == nullptr || tableView->viewport() == nullptr || !hasReservation())
                 {
                     return;
                 }
@@ -130,10 +176,13 @@ namespace ks::ui
                     ? verticalHeader->width()
                     : 0;
 
+                // Both headers stay glued to the table edge; the frozen bands live between them
+                // and the viewport, so the header offsets skip over the reserved bands.
                 const int verticalHeaderLeft = tableView->isRightToLeft()
-                    ? viewportGeometry.right() + 1
-                    : viewportGeometry.left() - verticalHeaderWidth;
-                const int horizontalHeaderTop = viewportGeometry.top() - horizontalHeaderHeight;
+                    ? viewportGeometry.right() + 1 + m_frozenColumnsWidth
+                    : viewportGeometry.left() - m_frozenColumnsWidth - verticalHeaderWidth;
+                const int horizontalHeaderTop =
+                    viewportGeometry.top() - m_frozenRowsHeight - horizontalHeaderHeight;
 
                 // QTableView connects each header's geometriesChanged signal directly back to
                 // updateGeometries(). At this point QTableView's own recursion guard has already
@@ -181,6 +230,79 @@ namespace ks::ui
         private:
             QMargins m_baseViewportMargins;
             int m_height = 0;
+            int m_frozenColumnsWidth = 0;
+            int m_frozenRowsHeight = 0;
+        };
+
+        // TableChromeHostView 作用：
+        // - 把顶部操作条与冻结窗格的视口预留、表头重排收敛成一份实现；
+        // - BaseTableView 只能是 QTableView 或其子类（如 QTableWidget）。
+        template <typename BaseTableView>
+        class TableChromeHostView : public BaseTableView, public TableActionBarHost
+        {
+        public:
+            using BaseTableView::BaseTableView;
+
+            void setTopActionBarHeight(const int height) override
+            {
+                if (!m_chromeLayout.setHeight(height))
+                {
+                    return;
+                }
+
+                this->updateGeometries();
+                this->update();
+            }
+
+            int topActionBarHeight() const override
+            {
+                return m_chromeLayout.height();
+            }
+
+            QRect topActionBarGeometry() const override
+            {
+                return m_chromeLayout.geometry(this);
+            }
+
+            void setFrozenPaneReservation(
+                const int frozenColumnsWidth,
+                const int frozenRowsHeight) override
+            {
+                if (!m_chromeLayout.setFrozenPaneReservation(frozenColumnsWidth, frozenRowsHeight))
+                {
+                    return;
+                }
+
+                this->updateGeometries();
+                this->update();
+            }
+
+            QSize frozenPaneReservation() const override
+            {
+                return QSize(
+                    m_chromeLayout.frozenColumnsWidth(),
+                    m_chromeLayout.frozenRowsHeight());
+            }
+
+        protected:
+            void updateGeometries() override
+            {
+                if (m_updatingChromeGeometry)
+                {
+                    return;
+                }
+
+                m_updatingChromeGeometry = true;
+                BaseTableView::updateGeometries();
+                m_chromeLayout.captureBaseViewportMargins(this->viewportMargins());
+                this->setViewportMargins(m_chromeLayout.adjustedViewportMargins(this));
+                m_chromeLayout.applyTableChrome(this);
+                m_updatingChromeGeometry = false;
+            }
+
+        private:
+            TableActionBarLayout m_chromeLayout;
+            bool m_updatingChromeGeometry = false;
         };
 
         inline std::pair<int, int> visibleRowRange(const QTableView* tableView)
@@ -274,34 +396,13 @@ namespace ks::ui
     // VisibleTableWidget keeps the complete QTableWidget model intact. In particular, every
     // off-screen item and sort role still participates in QTableWidget's normal full-data sort.
     // Only QAbstractItemView's repaint notification is clipped to rows intersecting the viewport.
-    class VisibleTableWidget final : public QTableWidget
-        , public TableActionBarHost
+    class VisibleTableWidget final
+        : public visible_table_detail::TableChromeHostView<QTableWidget>
     {
     public:
-        using QTableWidget::QTableWidget;
+        using TableChromeHostView<QTableWidget>::TableChromeHostView;
 
         static constexpr int LongTableRowThreshold = 64;
-
-        void setTopActionBarHeight(const int height) override
-        {
-            if (!m_actionBarLayout.setHeight(height))
-            {
-                return;
-            }
-
-            updateGeometries();
-            update();
-        }
-
-        int topActionBarHeight() const override
-        {
-            return m_actionBarLayout.height();
-        }
-
-        QRect topActionBarGeometry() const override
-        {
-            return m_actionBarLayout.geometry(this);
-        }
 
     protected:
         void paintEvent(QPaintEvent* eventObject) override
@@ -311,21 +412,6 @@ namespace ks::ui
                 return;
             }
             QTableWidget::paintEvent(eventObject);
-        }
-
-        void updateGeometries() override
-        {
-            if (m_updatingActionBarGeometry)
-            {
-                return;
-            }
-
-            m_updatingActionBarGeometry = true;
-            QTableWidget::updateGeometries();
-            m_actionBarLayout.captureBaseViewportMargins(viewportMargins());
-            setViewportMargins(m_actionBarLayout.adjustedViewportMargins());
-            m_actionBarLayout.applyTableChrome(this);
-            m_updatingActionBarGeometry = false;
         }
 
         void dataChanged(
@@ -372,40 +458,15 @@ namespace ks::ui
                 bottomRight.parent());
             QTableView::dataChanged(clippedTopLeft, clippedBottomRight, roles);
         }
-
-    private:
-        visible_table_detail::TableActionBarLayout m_actionBarLayout;
-        bool m_updatingActionBarGeometry = false;
     };
 
     // Use this for flat QTableView-based pages that need the same top action-bar reservation as
     // VisibleTableWidget. Its data/model behavior is otherwise identical to QTableView.
-    class TableActionTableView final : public QTableView
-        , public TableActionBarHost
+    class TableActionTableView final
+        : public visible_table_detail::TableChromeHostView<QTableView>
     {
     public:
-        using QTableView::QTableView;
-
-        void setTopActionBarHeight(const int height) override
-        {
-            if (!m_actionBarLayout.setHeight(height))
-            {
-                return;
-            }
-
-            updateGeometries();
-            update();
-        }
-
-        int topActionBarHeight() const override
-        {
-            return m_actionBarLayout.height();
-        }
-
-        QRect topActionBarGeometry() const override
-        {
-            return m_actionBarLayout.geometry(this);
-        }
+        using TableChromeHostView<QTableView>::TableChromeHostView;
 
     protected:
         void paintEvent(QPaintEvent* eventObject) override
@@ -416,25 +477,6 @@ namespace ks::ui
             }
             QTableView::paintEvent(eventObject);
         }
-
-        void updateGeometries() override
-        {
-            if (m_updatingActionBarGeometry)
-            {
-                return;
-            }
-
-            m_updatingActionBarGeometry = true;
-            QTableView::updateGeometries();
-            m_actionBarLayout.captureBaseViewportMargins(viewportMargins());
-            setViewportMargins(m_actionBarLayout.adjustedViewportMargins());
-            m_actionBarLayout.applyTableChrome(this);
-            m_updatingActionBarGeometry = false;
-        }
-
-    private:
-        visible_table_detail::TableActionBarLayout m_actionBarLayout;
-        bool m_updatingActionBarGeometry = false;
     };
 
     inline TableActionBarHost* TableActionBarHostFor(QTableView* tableView)

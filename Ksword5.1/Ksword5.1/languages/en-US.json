@@ -6622,7 +6622,7 @@
     "对表格、列表、文本区和滚动页的鼠标滚轮滚动使用缓动动画": "Animate mouse-wheel scrolling in tables, lists, text areas, and scrolling pages",
     "表格在捕获期间已重建，请重试。": "The table was rebuilt during capture. Please try again.",
     "表格规模超过停止刷新快照的安全上限，当前固定视图保留 %1/%2 行和 %3/%4 列；恢复刷新后可回到完整实时表格。": "The table exceeds the safe stopped-view snapshot limit. The fixed view retains %1 of %2 rows and %3 of %4 columns; resume refresh to return to the complete live table.",
-    "选择单元格后，可将其所在行及上方冻结到顶部、所在列及左侧冻结到左侧": "Select a cell, then freeze its row and all rows above at the top, or its column and all columns to the left",
+    "选中单元格后冻结：该行连同其上方仍可见的行会钉在列标题下方，该列连同其左侧仍可见的列会钉在最左侧": "Select a cell and freeze: that row plus the rows still visible above it are pinned under the column header, and that column plus the columns still visible to its left are pinned to the far left",
     "调整全局滚动条占用空间、平滑滚动、滚轮是否调整滑块，以及滚动条是否自动隐藏。": "Configure global scrollbar space, smooth scrolling, slider wheel input, and scrollbar auto-hide.",
     "快照 %1 已截断：源表共 %2 行，仅访问 %3 行并保留 %4 行。": "Snapshot %1 was truncated: the source has %2 rows; %3 rows were visited and %4 were retained.",
     "快照 %1 仅扫描源表前 %2/%3 列，并保留其中 %4 个可见列。": "Snapshot %1 scanned only the first %2 of %3 source columns and retained %4 visible columns.",

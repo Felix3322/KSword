@@ -686,10 +686,13 @@ namespace
             QStringLiteral("table_selected_export_"));
     }
 
-    class ComparisonTableView final : public QTableView
+    // ComparisonTableView 同时用于比对视图和停止刷新视图。它继承表格外框宿主，
+    // 因此停止刷新期间同样能像实时表一样预留冻结窗格所需的视口空间。
+    class ComparisonTableView final
+        : public ks::ui::visible_table_detail::TableChromeHostView<QTableView>
     {
     public:
-        using QTableView::QTableView;
+        using TableChromeHostView<QTableView>::TableChromeHostView;
 
     protected:
         void wheelEvent(QWheelEvent* eventObject) override
@@ -766,7 +769,7 @@ namespace
             m_exportButton = createButton("导出", QStringLiteral(":/Icon/log_export.svg"));
             m_freezePaneButton = createButton("冻结窗格");
             m_freezePaneButton->setToolTip(localizedSourceText(
-                "选择单元格后，可将其所在行及上方冻结到顶部、所在列及左侧冻结到左侧"));
+                "选中单元格后冻结：该行连同其上方仍可见的行会钉在列标题下方，该列连同其左侧仍可见的列会钉在最左侧"));
             m_pauseRefreshButton = createButton("停止刷新");
             m_pauseRefreshButton->setCheckable(true);
             layout->addWidget(m_copyAllButton);
@@ -860,17 +863,20 @@ namespace
                 });
             connect(m_unfreezeRowsAction, &QAction::triggered, this, [this]()
                 {
-                    m_frozenPaneController->setFrozenRowSectionCount(0);
+                    m_frozenPaneController->clearFrozenRows();
+                    updatePosition();
                     updateControls();
                 });
             connect(m_unfreezeColumnsAction, &QAction::triggered, this, [this]()
                 {
-                    m_frozenPaneController->setFrozenColumnSectionCount(0);
+                    m_frozenPaneController->clearFrozenColumns();
+                    updatePosition();
                     updateControls();
                 });
             connect(m_unfreezeAllAction, &QAction::triggered, this, [this]()
                 {
                     m_frozenPaneController->clearFrozenPanes();
+                    updatePosition();
                     updateControls();
                 });
             connect(m_pauseRefreshButton, &QToolButton::toggled, this, [this](const bool checked)
@@ -934,7 +940,7 @@ namespace
             m_exportButton->setText(localizedSourceText("导出"));
             m_freezePaneButton->setText(localizedSourceText("冻结窗格"));
             m_freezePaneButton->setToolTip(localizedSourceText(
-                "选择单元格后，可将其所在行及上方冻结到顶部、所在列及左侧冻结到左侧"));
+                "选中单元格后冻结：该行连同其上方仍可见的行会钉在列标题下方，该列连同其左侧仍可见的列会钉在最左侧"));
             m_freezeCurrentRowAction->setText(localizedSourceText("冻结到当前行"));
             m_freezeCurrentColumnAction->setText(localizedSourceText("冻结到当前列"));
             m_freezeCurrentCellAction->setText(localizedSourceText("冻结到当前单元格"));
@@ -960,6 +966,11 @@ namespace
                 return;
             }
 
+            // 冻结窗格会改变视口边距，操作条位置依赖那个结果，所以必须先刷新冻结窗格。
+            if (m_frozenPaneController != nullptr)
+            {
+                m_frozenPaneController->refreshGeometry();
+            }
             if (ks::ui::TableActionBarHost* host = ks::ui::TableActionBarHostFor(m_table.data()))
             {
                 host->setTopActionBarHeight(kActionBarHeight);
@@ -968,10 +979,6 @@ namespace
             }
             hideSourceViewportWidgets();
             updateComparisonOverlayGeometry();
-            if (m_frozenPaneController != nullptr)
-            {
-                m_frozenPaneController->refreshGeometry();
-            }
         }
 
     private:
@@ -1043,28 +1050,29 @@ namespace
             QTableView* tableView = activeTableView();
             const QModelIndex currentIndex =
                 tableView != nullptr ? tableView->currentIndex() : QModelIndex();
+            if (tableView != nullptr && m_frozenPaneController->targetTable() != tableView)
+            {
+                m_frozenPaneController->setTargetTable(tableView);
+            }
             const bool currentAvailable =
                 !m_inComparison &&
                 !m_pauseCaptureInProgress &&
-                tableView != nullptr &&
-                tableView->model() != nullptr &&
+                m_frozenPaneController->canFreeze() &&
                 currentIndex.isValid();
 
             m_freezeCurrentRowAction->setEnabled(currentAvailable);
             m_freezeCurrentColumnAction->setEnabled(currentAvailable);
             m_freezeCurrentCellAction->setEnabled(currentAvailable);
-            m_unfreezeRowsAction->setEnabled(
-                m_frozenPaneController->frozenRowSectionCount() > 0);
-            m_unfreezeColumnsAction->setEnabled(
-                m_frozenPaneController->frozenColumnSectionCount() > 0);
+            m_unfreezeRowsAction->setEnabled(m_frozenPaneController->frozenRowCount() > 0);
+            m_unfreezeColumnsAction->setEnabled(m_frozenPaneController->frozenColumnCount() > 0);
             m_unfreezeAllAction->setEnabled(
-                m_frozenPaneController->frozenRowSectionCount() > 0 ||
-                m_frozenPaneController->frozenColumnSectionCount() > 0);
+                m_frozenPaneController->frozenRowCount() > 0 ||
+                m_frozenPaneController->frozenColumnCount() > 0);
         }
 
         // freezeToCurrentIndex 作用：
-        // - 将当前单元格所在可视行及其上方行冻结到顶部；
-        // - 将当前单元格所在可视列及其左侧列冻结到左侧；
+        // - 冻结从当前视口顶部行到当前单元格所在行之间的可视行，钉到列表头正下方；
+        // - 冻结从当前视口最左列到当前单元格所在列之间的可视列，钉到行表头正右侧；
         // - freezeRows/freezeColumns 控制本次只修改哪一个方向。
         void freezeToCurrentIndex(const bool freezeRows, const bool freezeColumns)
         {
@@ -1079,27 +1087,23 @@ namespace
             {
                 m_frozenPaneController->setTargetTable(tableView);
             }
+            if (!m_frozenPaneController->canFreeze())
+            {
+                return;
+            }
 
             const QModelIndex currentIndex = tableView->currentIndex();
             if (freezeRows)
             {
-                const int visualRow =
-                    tableView->verticalHeader()->visualIndex(currentIndex.row());
-                if (visualRow >= 0)
-                {
-                    m_frozenPaneController->setFrozenRowSectionCount(visualRow + 1);
-                }
+                m_frozenPaneController->freezeRowsThroughVisualRow(
+                    tableView->verticalHeader()->visualIndex(currentIndex.row()));
             }
             if (freezeColumns)
             {
-                const int visualColumn =
-                    tableView->horizontalHeader()->visualIndex(currentIndex.column());
-                if (visualColumn >= 0)
-                {
-                    m_frozenPaneController->setFrozenColumnSectionCount(visualColumn + 1);
-                }
+                m_frozenPaneController->freezeColumnsThroughVisualColumn(
+                    tableView->horizontalHeader()->visualIndex(currentIndex.column()));
             }
-            m_frozenPaneController->refreshGeometry(true);
+            updatePosition();
             updateControls();
         }
 
