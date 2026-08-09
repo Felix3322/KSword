@@ -2263,7 +2263,6 @@ Return Value:
 {
     PIRP irp = NULL;
     PIO_STACK_LOCATION stackLocation = NULL;
-    PMDL bufferMdl = NULL;
     KSWORD_ARK_FILE_IRP_SYNC sync;
     BOOLEAN cancelled = FALSE;
     NTSTATUS status = STATUS_SUCCESS;
@@ -2282,6 +2281,12 @@ Return Value:
     KeInitializeEvent(&sync.Event, NotificationEvent, FALSE);
     sync.IoStatus.Status = STATUS_UNSUCCESSFUL;
 
+    /*
+     * 目录查询只挂 UserBuffer，不建 MDL。文件系统取缓冲用的是
+     * FsRtlGetUserBuffer：有 MdlAddress 就走 MDL 映射，否则用 UserBuffer，
+     * 两条路都成立。但少一层 MDL 就少一处出错面（映射失败、标志不全），
+     * 而这里的缓冲本来就是非分页池里的连续内存，直接给虚拟地址最直接。
+     */
     irp->MdlAddress = NULL;
     irp->AssociatedIrp.SystemBuffer = NULL;
     irp->UserBuffer = Buffer;
@@ -2291,16 +2296,6 @@ Return Value:
     irp->UserEvent = NULL;
     irp->Tail.Overlay.Thread = PsGetCurrentThread();
     irp->Tail.Overlay.OriginalFileObject = Target->FileObject;
-
-    if ((Target->TargetDevice->Flags & DO_DIRECT_IO) != 0UL) {
-        bufferMdl = IoAllocateMdl(Buffer, BufferBytes, FALSE, FALSE, NULL);
-        if (bufferMdl == NULL) {
-            IoFreeIrp(irp);
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        MmBuildMdlForNonPagedPool(bufferMdl);
-        irp->MdlAddress = bufferMdl;
-    }
 
     stackLocation = IoGetNextIrpStackLocation(irp);
     stackLocation->MajorFunction = IRP_MJ_DIRECTORY_CONTROL;
@@ -2333,10 +2328,6 @@ Return Value:
         *ReturnedBytesOut = (ULONG)sync.IoStatus.Information;
     }
 
-    if (bufferMdl != NULL) {
-        irp->MdlAddress = NULL;
-        IoFreeMdl(bufferMdl);
-    }
     IoFreeIrp(irp);
     return status;
 }
@@ -2405,8 +2396,23 @@ KswordARKDriverEnumerateDirectoryByIrp(
         return STATUS_SUCCESS;
     }
 
+    /*
+     * 目录枚举固定用托管路径打开，而不是按请求层手工构造 FILE_OBJECT。
+     *
+     * 原因：手工 CREATE 得到的 FILE_OBJECT 虽然能让 NTFS 返回 STATUS_SUCCESS，
+     * 但它缺少 I/O 管理器在正常路径上建立的完整关联（RelatedFileObject、
+     * 由 IopParseDevice 填充的字段等）。NTFS 随后在 IRP_MJ_DIRECTORY_CONTROL 里
+     * 用 NtfsDecodeFileObject 判定打开类型，判不出 UserDirectoryOpen 就直接回
+     * STATUS_INVALID_PARAMETER(0xC000000D)——实测 C:\ 上必现。
+     *
+     * 因此这里退一步：打开走 I/O 管理器，保证文件对象状态完整；
+     * 真正需要绕过过滤层的 IRP_MJ_DIRECTORY_CONTROL 仍然按 targetLayer 直发。
+     * 这正好覆盖隐藏文件最常用的拦截点——在目录查询完成时改写
+     * FILE_*_DIRECTORY_INFORMATION 链表；代价是 CREATE 阶段的拦截绕不过去，
+     * 该边界必须如实告诉调用方，不能声称"连打开都绕过了"。
+     */
     RtlZeroMemory(&openRequest, sizeof(openRequest));
-    openRequest.targetLayer = Request->targetLayer;
+    openRequest.targetLayer = KSWORD_ARK_FILE_IRP_LAYER_RELATED;
     openRequest.desiredAccess = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
     openRequest.shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     openRequest.createDisposition = FILE_OPEN;

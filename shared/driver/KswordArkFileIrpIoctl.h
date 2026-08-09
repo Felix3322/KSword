@@ -213,6 +213,14 @@ typedef struct _KSWORD_ARK_FILE_IRP_SUBMIT_RESPONSE
 // 复用 KSWORD_ARK_DIRECTORY_ENTRY 行格式与分页语义，只增加 targetLayer；
 // R3 用同一路径分别取 RELATED 与 BASE_FS/VPB_FS 两份结果做差集，
 // 差集即"只有绕过过滤层才能看见"的条目。
+//
+// 能力边界（必须如实告知调用方）：
+// 本接口只让 IRP_MJ_DIRECTORY_CONTROL 绕过过滤层，IRP_MJ_CREATE 仍走
+// I/O 管理器的正常路径。手工构造 FILE_OBJECT 去绕过 CREATE 会让 NTFS 在
+// 后续目录查询里判不出 UserDirectoryOpen 并返回 STATUS_INVALID_PARAMETER，
+// 因此打开阶段退回托管路径。也就是说：在目录查询完成时改写条目链表这类
+// 隐藏手法能被发现，只在 CREATE 上做拦截的则发现不了。
+// 需要连 CREATE 一起绕过时请用 IOCTL_KSWORD_ARK_FILE_IRP_SUBMIT 自行构造。
 typedef struct _KSWORD_ARK_FILE_IRP_ENUM_DIRECTORY_REQUEST
 {
     unsigned long version;

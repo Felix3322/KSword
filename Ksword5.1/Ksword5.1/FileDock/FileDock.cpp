@@ -8505,7 +8505,8 @@ void FileDock::initializePanel(FilePanelWidgets& panel, const QString& titleText
         "切换目录读取方式：Windows API、R3 原始卷手动解析、"
         "R0 驱动目录解析，强制按 NTFS/FAT32/exFAT 解析，\n"
         "作为MFT解析（仅 NTFS：卷偏移直读 $MFT，禁用一切 WinAPI/FSCTL 回退），\n"
-        "R0 IRP 解析（内核自建 IRP 直发基础文件系统设备，绕过过滤层）。\n"
+        "R0 IRP 解析（内核自建 IRP 把目录查询直发基础文件系统设备，绕过过滤层；\n"
+        "打开阶段仍走正常路径，只在 CREATE 上做的拦截发现不了）。\n"
         "后两种会与常规视图对照，把只有绕过路径可见的条目标为疑似隐藏项。"));
 
     panel.filterEdit = new QLineEdit(panel.toolWidget);

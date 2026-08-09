@@ -34,6 +34,10 @@ namespace ks::file
     // IrpFileSystemParser 作用：
     // - 通过 KswordARK 在内核自建 IRP 枚举目录，可选择投递到基础文件系统设备；
     // - 把固定协议行转换为 FileDock 已有的 ManualDirectoryEntry 模型。
+    // 能力边界：
+    // - 只有目录查询（IRP_MJ_DIRECTORY_CONTROL）绕过过滤层，打开（IRP_MJ_CREATE）
+    //   仍走正常路径。因此"在目录查询结果里抹掉条目"这类隐藏能被发现，
+    //   "只在打开时拦截"的则发现不了；差集为空不等于确认没有隐藏项。
     class IrpFileSystemParser final
     {
     public:

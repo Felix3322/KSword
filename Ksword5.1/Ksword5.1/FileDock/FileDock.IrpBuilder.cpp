@@ -435,6 +435,9 @@ void FileDock::initializeIrpBuilderPage()
     m_irpLayerCombo->setToolTip(QStringLiteral(
         "选择 IRP 投递到设备栈的哪一层。\n"
         "选择非栈顶时，连 IRP_MJ_CREATE 都由 R0 自行构造并直发，不经过过滤层。\n"
+        "注意：手工构造的文件对象缺少 I/O 管理器建立的完整关联，NTFS 在后续\n"
+        "目录查询等操作上可能回 STATUS_INVALID_PARAMETER，这属于预期现象；\n"
+        "只想绕过目录查询请改用文件页的“R0 IRP 解析”读取方式。\n"
         "目标层不可用时 R0 会回退到栈顶，并在结果里如实标出实际生效的层。"));
 
     m_irpTimeoutEdit = new QLineEdit(targetGroup);
