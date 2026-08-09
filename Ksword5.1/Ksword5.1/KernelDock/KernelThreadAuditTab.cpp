@@ -950,7 +950,7 @@ QString KernelThreadAuditTab::snapshotDiagnosticText(
         case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_UNSUPPORTED:
             diagnostics << threadAuditText(
                 "thread_audit.work_queue.query.unsupported",
-                QStringLiteral("当前驱动尚未加载工作队列精确布局；请刷新“Ksword自身驱动 / PDB Profile”后重试"));
+                QStringLiteral("PDB Profile 与运行期签名回退都未能定位工作队列布局；枚举已关闭"));
             break;
         case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_PARTIAL:
             diagnostics << threadAuditText(

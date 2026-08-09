@@ -27,13 +27,6 @@ Environment:
 #define KSW_WORK_QUEUE_MAX_PE_SECTIONS 96UL
 #define KSW_WORK_QUEUE_MAX_EX_POOL_INDEX 8UL
 
-typedef PETHREAD(NTAPI* KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN)(
-    _In_ PEPROCESS Process,
-    _In_opt_ PETHREAD Thread
-    );
-
-extern NTKERNELAPI PEPROCESS PsInitialSystemProcess;
-
 typedef struct _KSW_WORK_QUEUE_BUILDER
 {
     KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE* Response;
@@ -43,18 +36,6 @@ typedef struct _KSW_WORK_QUEUE_BUILDER
     KSW_DYN_V4_WORK_QUEUE_LAYOUT Layout;
     KSW_HOOK_SYSTEM_MODULE_INFORMATION* Modules;
 } KSW_WORK_QUEUE_BUILDER;
-
-static KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN
-KswordARKWorkQueueResolvePsGetNextProcessThread(
-    VOID
-    )
-{
-    UNICODE_STRING routineName;
-
-    RtlInitUnicodeString(&routineName, L"PsGetNextProcessThread");
-    return (KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN)
-        MmGetSystemRoutineAddress(&routineName);
-}
 
 static BOOLEAN
 KswordARKWorkQueueIsKernelAddress(
@@ -630,28 +611,33 @@ KswordARKWorkQueueEnumerateThreads(
     _In_ ULONG NodeIndex,
     _In_ ULONG64 WorkQueueAddress,
     _In_ ULONG64 PriQueueAddress,
-    _In_ KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN PsGetNextProcessThread
+    _In_opt_ const KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT* SystemThreads
     )
 {
+    KSW_WORK_QUEUE_THREAD_WALKER walker;
     PETHREAD threadCursor = NULL;
 
-    if (Builder == NULL || Builder->Stop ||
-        PsGetNextProcessThread == NULL ||
-        PsInitialSystemProcess == NULL) {
+    if (Builder == NULL || Builder->Stop) {
         return;
     }
 
     /*
      * ThreadListHead is a private, lockless queue list and cannot establish
      * that an arbitrary list-derived address is an object. Walk the System
-     * process through PsGetNextProcessThread instead; every cursor is already
-     * an Object Manager referenced ETHREAD. DynData is used only to read the
-     * referenced ETHREAD's embedded KTHREAD.Queue and reverse-match it to the
-     * target KPRIQUEUE.
+     * process with the shared thread cursor instead; whether it comes from the
+     * public walker or from the TID snapshot plus PsLookupThreadByThreadId,
+     * every cursor is an Object Manager referenced ETHREAD. DynData is used
+     * only to read the referenced ETHREAD's embedded KTHREAD.Queue and
+     * reverse-match it to the target KPRIQUEUE.
      */
-    threadCursor = PsGetNextProcessThread(PsInitialSystemProcess, NULL);
+    RtlZeroMemory(&walker, sizeof(walker));
+    KswordARKWorkQueueInitializeThreadWalker(&walker, SystemThreads);
+    if (!KswordARKWorkQueueThreadWalkerUsable(&walker)) {
+        return;
+    }
+
+    threadCursor = KswordARKWorkQueueThreadWalkerNext(&walker);
     while (threadCursor != NULL && !Builder->Stop) {
-        PETHREAD nextThread = NULL;
         ULONG64 ethreadAddress = 0ULL;
         ULONG64 kthreadAddress = 0ULL;
         ULONG64 queuePointer = 0ULL;
@@ -783,14 +769,11 @@ KswordARKWorkQueueEnumerateThreads(
 
 AdvanceThread:
         if (Builder->Stop) {
-            ObDereferenceObject(threadCursor);
-            threadCursor = NULL;
             break;
         }
-        nextThread = PsGetNextProcessThread(PsInitialSystemProcess, threadCursor);
-        ObDereferenceObject(threadCursor);
-        threadCursor = nextThread;
+        threadCursor = KswordARKWorkQueueThreadWalkerNext(&walker);
     }
+    KswordARKWorkQueueThreadWalkerClose(&walker);
 }
 
 static NTSTATUS
@@ -809,7 +792,8 @@ KswordARKDriverEnumerateWorkQueues(
         KSWORD_ARK_WORK_QUEUE_TYPE_DELAYED,
         KSWORD_ARK_WORK_QUEUE_TYPE_HYPERCRITICAL
     };
-    KSW_WORK_QUEUE_PS_GET_NEXT_PROCESS_THREAD_FN psGetNextProcessThread = NULL;
+    KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT systemThreads;
+    BOOLEAN workerThreadsUsable = FALSE;
     ULONG64 pspSystemPartitionAddress = 0ULL;
     ULONG64 prioritiesAddress = 0ULL;
     ULONG64 epartitionAddress = 0ULL;
@@ -826,6 +810,7 @@ KswordARKDriverEnumerateWorkQueues(
     *BytesWrittenOut = 0U;
     RtlZeroMemory(OutputBuffer, OutputBufferLength);
     RtlZeroMemory(&builder, sizeof(builder));
+    RtlZeroMemory(&systemThreads, sizeof(systemThreads));
     builder.Response = (KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE*)OutputBuffer;
     builder.Capacity = (ULONG)(
         (OutputBufferLength - KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE) /
@@ -867,6 +852,7 @@ KswordARKDriverEnumerateWorkQueues(
              KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) != 0UL &&
             (builder.Layout.RuntimeFlags &
              KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS) == 0UL) {
+            // 运行期布局没能描述线程字段，工作项仍可枚举，线程行显式降级。
             builder.Response->referenceFailureCount += 1UL;
             KswordARKWorkQueueMarkPartial(
                 &builder,
@@ -874,18 +860,26 @@ KswordARKDriverEnumerateWorkQueues(
                 STATUS_NOT_SUPPORTED);
         }
         else {
-            psGetNextProcessThread = KswordARKWorkQueueResolvePsGetNextProcessThread();
-        }
-        if ((psGetNextProcessThread == NULL || PsInitialSystemProcess == NULL) &&
-            (((builder.Layout.RuntimeFlags &
-               KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) == 0UL) ||
-             ((builder.Layout.RuntimeFlags &
-               KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS) != 0UL))) {
-            builder.Response->referenceFailureCount += 1UL;
-            KswordARKWorkQueueMarkPartial(
-                &builder,
-                KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
-                STATUS_PROCEDURE_NOT_FOUND);
+            KSW_WORK_QUEUE_THREAD_WALKER probeWalker;
+
+            /*
+             * ntoskrnl 并不导出 PsGetNextProcessThread，因此线程来源以
+             * System 进程 TID 快照为主：每个 TID 都经 PsLookupThreadByThreadId
+             * 取回被引用的 ETHREAD，身份强度与公开遍历例程一致。
+             */
+            (VOID)KswordARKWorkQueueCaptureSystemThreads(&systemThreads);
+            RtlZeroMemory(&probeWalker, sizeof(probeWalker));
+            KswordARKWorkQueueInitializeThreadWalker(&probeWalker, &systemThreads);
+            workerThreadsUsable =
+                KswordARKWorkQueueThreadWalkerUsable(&probeWalker);
+            KswordARKWorkQueueThreadWalkerClose(&probeWalker);
+            if (!workerThreadsUsable) {
+                builder.Response->referenceFailureCount += 1UL;
+                KswordARKWorkQueueMarkPartial(
+                    &builder,
+                    KSWORD_ARK_WORK_QUEUE_STATUS_REFERENCE_FAILURE,
+                    STATUS_PROCEDURE_NOT_FOUND);
+            }
         }
     }
 
@@ -894,6 +888,7 @@ KswordARKDriverEnumerateWorkQueues(
         builder.Response->queryStatus = KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_READ_FAILED;
         builder.Response->lastStatus = status;
         *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
+        KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
         return STATUS_SUCCESS;
     }
 
@@ -919,6 +914,7 @@ KswordARKDriverEnumerateWorkQueues(
         *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
         ExFreePoolWithTag(builder.Modules, KSW_HOOK_SCAN_TAG);
         builder.Modules = NULL;
+        KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
         return STATUS_SUCCESS;
     }
 
@@ -956,6 +952,7 @@ KswordARKDriverEnumerateWorkQueues(
         *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
         ExFreePoolWithTag(builder.Modules, KSW_HOOK_SCAN_TAG);
         builder.Modules = NULL;
+        KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
         return STATUS_SUCCESS;
     }
 
@@ -966,6 +963,7 @@ KswordARKDriverEnumerateWorkQueues(
         *BytesWrittenOut = KSWORD_ARK_ENUM_WORK_QUEUE_RESPONSE_HEADER_SIZE;
         ExFreePoolWithTag(builder.Modules, KSW_HOOK_SCAN_TAG);
         builder.Modules = NULL;
+        KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
         return STATUS_SUCCESS;
     }
     builder.Response->nodeCount = nodeCount;
@@ -1050,13 +1048,13 @@ KswordARKDriverEnumerateWorkQueues(
 
         if ((Request->flags & KSWORD_ARK_WORK_QUEUE_FLAG_INCLUDE_WORKER_THREADS) != 0UL &&
             !builder.Stop &&
-            psGetNextProcessThread != NULL) {
+            workerThreadsUsable) {
             KswordARKWorkQueueEnumerateThreads(
                 &builder,
                 nodeIndex,
                 workQueueAddress,
                 priQueueAddress,
-                psGetNextProcessThread);
+                &systemThreads);
         }
     }
 
@@ -1078,6 +1076,7 @@ KswordARKDriverEnumerateWorkQueues(
          sizeof(KSWORD_ARK_WORK_QUEUE_ENTRY));
     ExFreePoolWithTag(builder.Modules, KSW_HOOK_SCAN_TAG);
     builder.Modules = NULL;
+    KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
     return STATUS_SUCCESS;
 #endif
 }

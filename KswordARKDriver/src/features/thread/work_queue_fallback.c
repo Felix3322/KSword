@@ -9,8 +9,9 @@ Abstract:
     Runtime-signature fallback for Ex worker queues.  ExQueueWorkItem is the
     stable entry anchor.  The resolver validates the partition pointer chain,
     every live node queue, all priority list heads, public WORK_QUEUE_ITEM
-    fields, and (when possible) the ETHREAD queue pointer across referenced
-    System threads.  No fixed private Windows offsets are used.
+    fields, the ETHREAD queue pointer and the ETHREAD start address across
+    referenced System threads.  No fixed private Windows offsets are used and
+    no PDB profile is required.
 
 Environment:
 
@@ -34,11 +35,96 @@ Environment:
 #define KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN 0x0800UL
 #define KSW_WORK_QUEUE_FALLBACK_MAX_THREADS 512UL
 #define KSW_WORK_QUEUE_FALLBACK_WORKER_SAMPLES 8UL
+#define KSW_WORK_QUEUE_FALLBACK_SYSTEM_PROCESS_ID 4UL
+#define KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION_CLASS 5UL
+#define KSW_WORK_QUEUE_FALLBACK_SNAPSHOT_SLACK (64UL * 1024UL)
+#define KSW_WORK_QUEUE_FALLBACK_SNAPSHOT_LIMIT (32UL * 1024UL * 1024UL)
+// 起始地址偏移的判据：所有工作线程在该偏移上取到同一个值，该值落在 ntoskrnl
+// 可执行节内(即 ExpWorkerThread)，同时该偏移在整体样本上取值足够分散，
+// 从而排除「全 System 线程共用同一个常量」和各类池指针字段。
+#define KSW_WORK_QUEUE_FALLBACK_START_MIN_SAMPLES 8UL
+#define KSW_WORK_QUEUE_FALLBACK_START_MIN_DISTINCT 3UL
+#define KSW_WORK_QUEUE_FALLBACK_START_MIN_WORKERS 2UL
+#define KSW_WORK_QUEUE_FALLBACK_START_DISTINCT_SLOTS 4UL
 
 typedef PETHREAD(NTAPI* KSW_WORK_QUEUE_FALLBACK_NEXT_THREAD_FN)(
     _In_ PEPROCESS Process,
     _In_opt_ PETHREAD Thread
     );
+
+typedef struct _KSW_WORK_QUEUE_FALLBACK_THREAD_INFORMATION
+{
+    LARGE_INTEGER KernelTime;
+    LARGE_INTEGER UserTime;
+    LARGE_INTEGER CreateTime;
+    ULONG WaitTime;
+    PVOID StartAddress;
+    CLIENT_ID ClientId;
+    KPRIORITY Priority;
+    LONG BasePriority;
+    ULONG ContextSwitches;
+    ULONG ThreadState;
+    ULONG WaitReason;
+} KSW_WORK_QUEUE_FALLBACK_THREAD_INFORMATION;
+
+typedef struct _KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION
+{
+    ULONG NextEntryOffset;
+    ULONG NumberOfThreads;
+    UCHAR Reserved1[48];
+    UNICODE_STRING ImageName;
+    KPRIORITY BasePriority;
+    HANDLE UniqueProcessId;
+    PVOID Reserved2;
+    ULONG HandleCount;
+    ULONG SessionId;
+    PVOID Reserved3;
+    SIZE_T PeakVirtualSize;
+    SIZE_T VirtualSize;
+    ULONG Reserved4;
+    SIZE_T PeakWorkingSetSize;
+    SIZE_T WorkingSetSize;
+    PVOID Reserved5;
+    SIZE_T QuotaPagedPoolUsage;
+    PVOID Reserved6;
+    SIZE_T QuotaNonPagedPoolUsage;
+    SIZE_T PagefileUsage;
+    SIZE_T PeakPagefileUsage;
+    SIZE_T PrivatePageCount;
+    LARGE_INTEGER Reserved7[6];
+    KSW_WORK_QUEUE_FALLBACK_THREAD_INFORMATION Threads[1];
+} KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION;
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+ZwQuerySystemInformation(
+    _In_ ULONG SystemInformationClass,
+    _Out_writes_bytes_opt_(SystemInformationLength) PVOID SystemInformation,
+    _In_ ULONG SystemInformationLength,
+    _Out_opt_ PULONG ReturnLength
+    );
+
+NTKERNELAPI
+NTSTATUS
+PsLookupThreadByThreadId(
+    _In_ HANDLE ThreadId,
+    _Outptr_ PETHREAD* Thread
+    );
+
+// 每个候选偏移的证据累加器。ETHREAD 扫描窗口内每个指针宽槽位一份。
+typedef struct _KSW_WORK_QUEUE_FALLBACK_SLOT_STATS
+{
+    ULONG QueueMatches;
+    ULONG ZeroValues;
+    ULONG StartMatches;
+    ULONG StartMismatches;
+    ULONG WorkerSamples;
+    ULONG DistinctCount;
+    BOOLEAN WorkerConflict;
+    ULONG64 WorkerValue;
+    ULONG64 DistinctValues[KSW_WORK_QUEUE_FALLBACK_START_DISTINCT_SLOTS];
+} KSW_WORK_QUEUE_FALLBACK_SLOT_STATS;
 
 typedef struct _KSW_WORK_QUEUE_CHAIN
 {
@@ -53,6 +139,376 @@ typedef struct _KSW_WORK_QUEUE_CHAIN
 } KSW_WORK_QUEUE_CHAIN, *PKSW_WORK_QUEUE_CHAIN;
 
 extern NTKERNELAPI PEPROCESS PsInitialSystemProcess;
+
+static KSW_WORK_QUEUE_FALLBACK_NEXT_THREAD_FN
+KswordARKWorkQueueFallbackResolveNextThread(
+    VOID
+    )
+/*++
+
+Routine Description:
+
+    Probe the public process-thread walker.  Current kernels do not export it,
+    so callers must treat NULL as "use the TID snapshot path" instead of as a
+    hard failure.
+
+--*/
+{
+    UNICODE_STRING routineName;
+
+    RtlInitUnicodeString(&routineName, L"PsGetNextProcessThread");
+    return (KSW_WORK_QUEUE_FALLBACK_NEXT_THREAD_FN)
+        MmGetSystemRoutineAddress(&routineName);
+}
+
+static NTSTATUS
+KswordARKWorkQueueFallbackCaptureProcessSnapshot(
+    _Outptr_result_maybenull_ PVOID* SnapshotOut,
+    _Out_ ULONG* SnapshotBytesOut
+    )
+/*++
+
+Routine Description:
+
+    Capture one SystemProcessInformation snapshot with a bounded grow-retry.
+
+Return Value:
+
+    STATUS_SUCCESS with a pool block the caller frees, otherwise a query status.
+
+--*/
+{
+    ULONG requiredBytes = 0UL;
+    ULONG attempt = 0UL;
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+
+    if (SnapshotOut == NULL || SnapshotBytesOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *SnapshotOut = NULL;
+    *SnapshotBytesOut = 0UL;
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    status = ZwQuerySystemInformation(
+        KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION_CLASS,
+        NULL,
+        0UL,
+        &requiredBytes);
+    if (requiredBytes < sizeof(KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION)) {
+        requiredBytes = sizeof(KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION);
+    }
+
+    for (attempt = 0UL; attempt < 4UL; ++attempt) {
+        PVOID snapshot = NULL;
+        ULONG allocationBytes = 0UL;
+        ULONG returnedBytes = 0UL;
+
+        if (requiredBytes >
+            KSW_WORK_QUEUE_FALLBACK_SNAPSHOT_LIMIT -
+                KSW_WORK_QUEUE_FALLBACK_SNAPSHOT_SLACK) {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        allocationBytes = requiredBytes + KSW_WORK_QUEUE_FALLBACK_SNAPSHOT_SLACK;
+        snapshot = KswordARKAllocateNonPagedPool(
+            allocationBytes,
+            KSW_WORK_QUEUE_FALLBACK_TAG);
+        if (snapshot == NULL) {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        RtlZeroMemory(snapshot, allocationBytes);
+
+        status = ZwQuerySystemInformation(
+            KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION_CLASS,
+            snapshot,
+            allocationBytes,
+            &returnedBytes);
+        if (NT_SUCCESS(status)) {
+            if (returnedBytes == 0UL || returnedBytes > allocationBytes) {
+                returnedBytes = allocationBytes;
+            }
+            *SnapshotOut = snapshot;
+            *SnapshotBytesOut = returnedBytes;
+            return STATUS_SUCCESS;
+        }
+
+        ExFreePoolWithTag(snapshot, KSW_WORK_QUEUE_FALLBACK_TAG);
+        if (status != STATUS_INFO_LENGTH_MISMATCH &&
+            status != STATUS_BUFFER_TOO_SMALL) {
+            return status;
+        }
+        requiredBytes = returnedBytes > allocationBytes
+            ? returnedBytes
+            : allocationBytes;
+    }
+    return status;
+}
+
+NTSTATUS
+KswordARKWorkQueueCaptureSystemThreads(
+    _Out_ KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT* SnapshotOut
+    )
+/*++
+
+Routine Description:
+
+    Build the bounded System(PID 4) TID / StartAddress table.  The kernel does
+    not export a process-thread walker, so this table is what lets the work
+    queue path reach Object Manager referenced ETHREADs without a PDB profile.
+
+Return Value:
+
+    STATUS_SUCCESS with at least one row, otherwise a fail-closed status.
+
+--*/
+{
+    PVOID processSnapshot = NULL;
+    ULONG processSnapshotBytes = 0UL;
+    ULONG processOffset = 0UL;
+    KSW_WORK_QUEUE_SYSTEM_THREAD* entries = NULL;
+    ULONG count = 0UL;
+    BOOLEAN truncated = FALSE;
+    BOOLEAN found = FALSE;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (SnapshotOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(SnapshotOut, sizeof(*SnapshotOut));
+
+    status = KswordARKWorkQueueFallbackCaptureProcessSnapshot(
+        &processSnapshot,
+        &processSnapshotBytes);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    entries = (KSW_WORK_QUEUE_SYSTEM_THREAD*)KswordARKAllocateNonPagedPool(
+        KSW_WORK_QUEUE_SYSTEM_THREAD_MAX * sizeof(*entries),
+        KSW_WORK_QUEUE_FALLBACK_TAG);
+    if (entries == NULL) {
+        ExFreePoolWithTag(processSnapshot, KSW_WORK_QUEUE_FALLBACK_TAG);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(entries, KSW_WORK_QUEUE_SYSTEM_THREAD_MAX * sizeof(*entries));
+
+    while (processOffset < processSnapshotBytes && !found) {
+        const KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION* processInfo =
+            (const KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION*)
+                ((const UCHAR*)processSnapshot + processOffset);
+        ULONG remainingBytes = processSnapshotBytes - processOffset;
+        ULONG entryBytes = 0UL;
+        ULONG threadCapacity = 0UL;
+        ULONG threadCount = 0UL;
+        ULONG threadIndex = 0UL;
+
+        if (remainingBytes <
+            (ULONG)FIELD_OFFSET(
+                KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION,
+                Threads)) {
+            break;
+        }
+        entryBytes = processInfo->NextEntryOffset != 0UL
+            ? processInfo->NextEntryOffset
+            : remainingBytes;
+        if (entryBytes >
+                remainingBytes ||
+            entryBytes <
+                (ULONG)FIELD_OFFSET(
+                    KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION,
+                    Threads)) {
+            break;
+        }
+        if (HandleToULong(processInfo->UniqueProcessId) !=
+            KSW_WORK_QUEUE_FALLBACK_SYSTEM_PROCESS_ID) {
+            if (processInfo->NextEntryOffset == 0UL) {
+                break;
+            }
+            processOffset += processInfo->NextEntryOffset;
+            continue;
+        }
+
+        found = TRUE;
+        threadCapacity = (entryBytes -
+            (ULONG)FIELD_OFFSET(
+                KSW_WORK_QUEUE_FALLBACK_PROCESS_INFORMATION,
+                Threads)) /
+            (ULONG)sizeof(KSW_WORK_QUEUE_FALLBACK_THREAD_INFORMATION);
+        threadCount = processInfo->NumberOfThreads;
+        if (threadCount > threadCapacity) {
+            threadCount = threadCapacity;
+            truncated = TRUE;
+        }
+        for (threadIndex = 0UL; threadIndex < threadCount; ++threadIndex) {
+            const KSW_WORK_QUEUE_FALLBACK_THREAD_INFORMATION* threadInfo =
+                &processInfo->Threads[threadIndex];
+            ULONG threadId = HandleToULong(threadInfo->ClientId.UniqueThread);
+
+            if (threadId == 0UL ||
+                HandleToULong(threadInfo->ClientId.UniqueProcess) !=
+                    KSW_WORK_QUEUE_FALLBACK_SYSTEM_PROCESS_ID) {
+                continue;
+            }
+            if (count >= KSW_WORK_QUEUE_SYSTEM_THREAD_MAX) {
+                truncated = TRUE;
+                break;
+            }
+            entries[count].ThreadId = threadId;
+            entries[count].StartAddress =
+                (ULONG64)(ULONG_PTR)threadInfo->StartAddress;
+            count += 1UL;
+        }
+    }
+
+    ExFreePoolWithTag(processSnapshot, KSW_WORK_QUEUE_FALLBACK_TAG);
+    if (count == 0UL) {
+        ExFreePoolWithTag(entries, KSW_WORK_QUEUE_FALLBACK_TAG);
+        return STATUS_NOT_FOUND;
+    }
+    SnapshotOut->Entries = entries;
+    SnapshotOut->Count = count;
+    SnapshotOut->Truncated = truncated;
+    return STATUS_SUCCESS;
+}
+
+VOID
+KswordARKWorkQueueReleaseSystemThreads(
+    _Inout_ KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT* Snapshot
+    )
+{
+    if (Snapshot == NULL) {
+        return;
+    }
+    if (Snapshot->Entries != NULL) {
+        ExFreePoolWithTag(Snapshot->Entries, KSW_WORK_QUEUE_FALLBACK_TAG);
+    }
+    RtlZeroMemory(Snapshot, sizeof(*Snapshot));
+}
+
+VOID
+KswordARKWorkQueueInitializeThreadWalker(
+    _Out_ KSW_WORK_QUEUE_THREAD_WALKER* Walker,
+    _In_opt_ const KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT* Snapshot
+    )
+{
+    if (Walker == NULL) {
+        return;
+    }
+    RtlZeroMemory(Walker, sizeof(*Walker));
+    if (PsInitialSystemProcess != NULL) {
+        Walker->NextProcessThread =
+            KswordARKWorkQueueFallbackResolveNextThread();
+    }
+    if (Snapshot != NULL && Snapshot->Entries != NULL && Snapshot->Count != 0UL) {
+        Walker->Snapshot = Snapshot;
+    }
+}
+
+BOOLEAN
+KswordARKWorkQueueThreadWalkerUsable(
+    _In_ const KSW_WORK_QUEUE_THREAD_WALKER* Walker
+    )
+{
+    return Walker != NULL &&
+        (Walker->NextProcessThread != NULL || Walker->Snapshot != NULL);
+}
+
+PETHREAD
+KswordARKWorkQueueThreadWalkerNext(
+    _Inout_ KSW_WORK_QUEUE_THREAD_WALKER* Walker
+    )
+/*++
+
+Routine Description:
+
+    Advance to the next referenced System thread.  The walker owns the returned
+    reference and releases it on the next advance or on close.
+
+Return Value:
+
+    Referenced ETHREAD, or NULL when the walk is finished.
+
+--*/
+{
+    PETHREAD previous = NULL;
+    PETHREAD next = NULL;
+
+    if (Walker == NULL || Walker->Finished) {
+        return NULL;
+    }
+    previous = Walker->Current;
+
+    if (Walker->NextProcessThread != NULL) {
+        next = Walker->NextProcessThread(PsInitialSystemProcess, previous);
+        if (previous != NULL) {
+            ObDereferenceObject(previous);
+        }
+    }
+    else {
+        if (previous != NULL) {
+            ObDereferenceObject(previous);
+        }
+        while (Walker->Snapshot != NULL &&
+               Walker->NextIndex < Walker->Snapshot->Count) {
+            PETHREAD candidate = NULL;
+            ULONG threadId = Walker->Snapshot->Entries[Walker->NextIndex].ThreadId;
+
+            Walker->NextIndex += 1UL;
+            if (threadId == 0UL) {
+                continue;
+            }
+            // 线程可能在快照与查找之间退出；跳过即可，仍在表内的行不受影响。
+            if (NT_SUCCESS(PsLookupThreadByThreadId(
+                    ULongToHandle(threadId),
+                    &candidate)) &&
+                candidate != NULL) {
+                next = candidate;
+                break;
+            }
+        }
+    }
+
+    Walker->Current = next;
+    if (next == NULL) {
+        Walker->Finished = TRUE;
+    }
+    return next;
+}
+
+VOID
+KswordARKWorkQueueThreadWalkerClose(
+    _Inout_ KSW_WORK_QUEUE_THREAD_WALKER* Walker
+    )
+{
+    if (Walker == NULL) {
+        return;
+    }
+    if (Walker->Current != NULL) {
+        ObDereferenceObject(Walker->Current);
+        Walker->Current = NULL;
+    }
+    Walker->Finished = TRUE;
+}
+
+static ULONG64
+KswordARKWorkQueueFallbackLookupStartAddress(
+    _In_opt_ const KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT* Snapshot,
+    _In_ ULONG ThreadId
+    )
+{
+    ULONG index = 0UL;
+
+    if (Snapshot == NULL || Snapshot->Entries == NULL || ThreadId == 0UL) {
+        return 0ULL;
+    }
+    for (index = 0UL; index < Snapshot->Count; ++index) {
+        if (Snapshot->Entries[index].ThreadId == ThreadId) {
+            return Snapshot->Entries[index].StartAddress;
+        }
+    }
+    return 0ULL;
+}
 
 static BOOLEAN
 KswordARKWorkQueueFallbackIsKernelAddress(
@@ -461,79 +917,265 @@ KswordARKWorkQueueFallbackQueueAddressMatches(
     return FALSE;
 }
 
-static BOOLEAN
-KswordARKWorkQueueFallbackInferThreadQueueOffset(
-    _In_ const KSW_WORK_QUEUE_CHAIN* Chain,
-    _Out_ ULONG* OffsetOut
+static VOID
+KswordARKWorkQueueFallbackAccumulateSlot(
+    _Inout_ KSW_WORK_QUEUE_FALLBACK_SLOT_STATS* Slot,
+    _In_ ULONG64 Value,
+    _In_ BOOLEAN WorkerLike,
+    _In_ ULONG64 ExpectedStart
     )
+/*++
+
+Routine Description:
+
+    Fold one thread's value at one candidate offset into that offset's evidence.
+
+Return Value:
+
+    None.
+
+--*/
 {
-    UNICODE_STRING routineName;
-    KSW_WORK_QUEUE_FALLBACK_NEXT_THREAD_FN nextThreadFunction = NULL;
-    ULONG matchCounts[KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN / sizeof(PVOID)];
-    PETHREAD thread = NULL;
-    ULONG threadCount = 0UL;
-    ULONG offset = 0UL;
-    ULONG bestCount = 0UL;
-    LONG bestOffset = -1;
-    BOOLEAN tied = FALSE;
+    ULONG index = 0UL;
 
-    if (Chain == NULL || OffsetOut == NULL || PsInitialSystemProcess == NULL) {
-        return FALSE;
+    if (Value == 0ULL) {
+        Slot->ZeroValues += 1UL;
     }
-    RtlZeroMemory(matchCounts, sizeof(matchCounts));
-    RtlInitUnicodeString(&routineName, L"PsGetNextProcessThread");
-    nextThreadFunction = (KSW_WORK_QUEUE_FALLBACK_NEXT_THREAD_FN)
-        MmGetSystemRoutineAddress(&routineName);
-    if (nextThreadFunction == NULL) {
-        return FALSE;
-    }
-
-    thread = nextThreadFunction(PsInitialSystemProcess, NULL);
-    while (thread != NULL && threadCount < KSW_WORK_QUEUE_FALLBACK_MAX_THREADS) {
-        PETHREAD nextThread = NULL;
-
-        for (offset = 0UL;
-             offset + sizeof(ULONG_PTR) <= KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN;
-             offset += sizeof(PVOID)) {
-            ULONG_PTR value = 0U;
-
-            if (KswordARKRuntimeReadMemory(
-                    (const UCHAR*)thread + offset,
-                    &value,
-                    sizeof(value)) &&
-                KswordARKWorkQueueFallbackQueueAddressMatches(value, Chain)) {
-                matchCounts[offset / sizeof(PVOID)] += 1UL;
+    if (Slot->DistinctCount < KSW_WORK_QUEUE_FALLBACK_START_DISTINCT_SLOTS) {
+        for (index = 0UL; index < Slot->DistinctCount; ++index) {
+            if (Slot->DistinctValues[index] == Value) {
+                break;
             }
         }
-        nextThread = nextThreadFunction(PsInitialSystemProcess, thread);
-        ObDereferenceObject(thread);
-        thread = nextThread;
-        threadCount += 1UL;
-    }
-    if (thread != NULL) {
-        ObDereferenceObject(thread);
-    }
-
-    for (offset = 0UL;
-         offset + sizeof(ULONG_PTR) <= KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN;
-         offset += sizeof(PVOID)) {
-        ULONG count = matchCounts[offset / sizeof(PVOID)];
-
-        if (count < 2UL || count < bestCount) {
-            continue;
+        if (index == Slot->DistinctCount) {
+            Slot->DistinctValues[Slot->DistinctCount] = Value;
+            Slot->DistinctCount += 1UL;
         }
-        if (count == bestCount && bestCount != 0UL) {
-            tied = TRUE;
-            continue;
-        }
-        bestCount = count;
-        bestOffset = (LONG)offset;
-        tied = FALSE;
     }
-    if (bestOffset < 0 || tied) {
+    if (WorkerLike) {
+        if (Slot->WorkerSamples == 0UL) {
+            Slot->WorkerValue = Value;
+        }
+        else if (Slot->WorkerValue != Value) {
+            Slot->WorkerConflict = TRUE;
+        }
+        Slot->WorkerSamples += 1UL;
+    }
+    if (ExpectedStart != 0ULL) {
+        if (Value == ExpectedStart) {
+            Slot->StartMatches += 1UL;
+        }
+        else {
+            Slot->StartMismatches += 1UL;
+        }
+    }
+}
+
+static BOOLEAN
+KswordARKWorkQueueFallbackInferThreadOffsets(
+    _In_ const KSW_WORK_QUEUE_CHAIN* Chain,
+    _In_ const KSW_RUNTIME_IMAGE_VIEW* View,
+    _In_opt_ const KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT* Snapshot,
+    _Out_ ULONG* QueueOffsetOut,
+    _Out_ ULONG* StartAddressOffsetOut,
+    _Out_ BOOLEAN* StartAddressResolvedOut
+    )
+/*++
+
+Routine Description:
+
+    Infer _KTHREAD.Queue and _ETHREAD.StartAddress from live System threads in
+    one walk.  Queue wins by unique strongest match against the queues the
+    pointer chain already validated.
+
+    StartAddress is derived without any stored description: at the real offset
+    every Ex worker thread holds one identical value - ExpWorkerThread - which
+    must land inside ntoskrnl's executable range, while the same offset must
+    still vary across ordinary System threads.  Pool pointers (Queue, WaitBlock
+    objects, EPROCESS), data-section pointers and per-process constants all
+    fail one of those three tests, and ambiguity fails closed.
+
+    SystemProcessInformation start addresses are folded in as an extra
+    constraint when the kernel hands them out; they are only a strengthener
+    because unprivileged-caller hardening can zero that field.
+
+Return Value:
+
+    TRUE when the queue offset resolved; StartAddressResolvedOut reports the
+    start-address offset separately because it is only needed for thread rows.
+
+--*/
+{
+    const ULONG slotCount =
+        KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN / (ULONG)sizeof(PVOID);
+    KSW_WORK_QUEUE_THREAD_WALKER walker;
+    KSW_WORK_QUEUE_FALLBACK_SLOT_STATS* slots = NULL;
+    ULONG_PTR* values = NULL;
+    BOOLEAN* readable = NULL;
+    UCHAR* block = NULL;
+    SIZE_T blockBytes = 0U;
+    PETHREAD thread = NULL;
+    ULONG threadCount = 0UL;
+    ULONG expectedStartSamples = 0UL;
+    ULONG slot = 0UL;
+    ULONG bestQueueCount = 0UL;
+    ULONG bestQueueZeros = 0UL;
+    LONG bestQueueOffset = -1;
+    BOOLEAN queueTied = FALSE;
+    LONG startOffset = -1;
+    BOOLEAN startTied = FALSE;
+
+    if (Chain == NULL || View == NULL || QueueOffsetOut == NULL ||
+        StartAddressOffsetOut == NULL || StartAddressResolvedOut == NULL) {
         return FALSE;
     }
-    *OffsetOut = (ULONG)bestOffset;
+    *QueueOffsetOut = 0UL;
+    *StartAddressOffsetOut = 0UL;
+    *StartAddressResolvedOut = FALSE;
+
+    RtlZeroMemory(&walker, sizeof(walker));
+    KswordARKWorkQueueInitializeThreadWalker(&walker, Snapshot);
+    if (!KswordARKWorkQueueThreadWalkerUsable(&walker)) {
+        return FALSE;
+    }
+
+    blockBytes = ((SIZE_T)slotCount * sizeof(*slots)) +
+        ((SIZE_T)slotCount * sizeof(*values)) +
+        ((SIZE_T)slotCount * sizeof(*readable));
+    block = (UCHAR*)KswordARKAllocateNonPagedPool(
+        blockBytes,
+        KSW_WORK_QUEUE_FALLBACK_TAG);
+    if (block == NULL) {
+        KswordARKWorkQueueThreadWalkerClose(&walker);
+        return FALSE;
+    }
+    RtlZeroMemory(block, blockBytes);
+    slots = (KSW_WORK_QUEUE_FALLBACK_SLOT_STATS*)block;
+    values = (ULONG_PTR*)(block + ((SIZE_T)slotCount * sizeof(*slots)));
+    readable = (BOOLEAN*)(((UCHAR*)values) +
+        ((SIZE_T)slotCount * sizeof(*values)));
+
+    thread = KswordARKWorkQueueThreadWalkerNext(&walker);
+    while (thread != NULL && threadCount < KSW_WORK_QUEUE_FALLBACK_MAX_THREADS) {
+        ULONG64 expectedStart = KswordARKWorkQueueFallbackLookupStartAddress(
+            Snapshot,
+            HandleToULong(PsGetThreadId(thread)));
+        BOOLEAN workerLike = FALSE;
+
+        if (expectedStart != 0ULL &&
+            !KswordARKWorkQueueFallbackIsKernelAddress(
+                (ULONG_PTR)expectedStart)) {
+            expectedStart = 0ULL;
+        }
+        if (expectedStart != 0ULL) {
+            expectedStartSamples += 1UL;
+        }
+
+        for (slot = 0UL; slot < slotCount; ++slot) {
+            readable[slot] = KswordARKRuntimeReadMemory(
+                (const UCHAR*)thread + (slot * sizeof(PVOID)),
+                &values[slot],
+                sizeof(values[slot]));
+            if (readable[slot] &&
+                KswordARKWorkQueueFallbackQueueAddressMatches(
+                    values[slot],
+                    Chain)) {
+                slots[slot].QueueMatches += 1UL;
+                workerLike = TRUE;
+            }
+        }
+        for (slot = 0UL; slot < slotCount; ++slot) {
+            if (!readable[slot]) {
+                continue;
+            }
+            KswordARKWorkQueueFallbackAccumulateSlot(
+                &slots[slot],
+                (ULONG64)values[slot],
+                workerLike,
+                expectedStart);
+        }
+
+        threadCount += 1UL;
+        thread = KswordARKWorkQueueThreadWalkerNext(&walker);
+    }
+    KswordARKWorkQueueThreadWalkerClose(&walker);
+
+    /*
+     * _KTHREAD.Queue and the wait block object of a thread parked in
+     * KeRemoveQueue can both hold the queue address, so a raw match count can
+     * tie. The queue field is NULL on every System thread that never touched a
+     * queue, while a wait block object is populated for anything that ever
+     * waited, so the tie breaks on how often the slot reads back as NULL.
+     */
+    for (slot = 0UL; slot < slotCount; ++slot) {
+        const KSW_WORK_QUEUE_FALLBACK_SLOT_STATS* stats = &slots[slot];
+
+        if (stats->QueueMatches >= 2UL && stats->QueueMatches > bestQueueCount) {
+            bestQueueCount = stats->QueueMatches;
+        }
+    }
+    for (slot = 0UL; bestQueueCount != 0UL && slot < slotCount; ++slot) {
+        const KSW_WORK_QUEUE_FALLBACK_SLOT_STATS* stats = &slots[slot];
+
+        if (stats->QueueMatches != bestQueueCount) {
+            continue;
+        }
+        if (bestQueueOffset < 0 || stats->ZeroValues > bestQueueZeros) {
+            bestQueueOffset = (LONG)(slot * (ULONG)sizeof(PVOID));
+            bestQueueZeros = stats->ZeroValues;
+            queueTied = FALSE;
+        }
+        else if (stats->ZeroValues == bestQueueZeros) {
+            queueTied = TRUE;
+        }
+    }
+
+    for (slot = 0UL; slot < slotCount; ++slot) {
+        const KSW_WORK_QUEUE_FALLBACK_SLOT_STATS* stats = &slots[slot];
+        const ULONG offset = slot * (ULONG)sizeof(PVOID);
+        BOOLEAN startCandidate = FALSE;
+
+        if (expectedStartSamples >= KSW_WORK_QUEUE_FALLBACK_START_MIN_SAMPLES) {
+            // 内核交出了真实起始地址，直接用零反例的逐线程比对定位偏移。
+            startCandidate =
+                stats->StartMismatches == 0UL &&
+                stats->StartMatches >=
+                    KSW_WORK_QUEUE_FALLBACK_START_MIN_SAMPLES;
+        }
+        else {
+            // 起始地址被调用方加固抹零时，改用结构判据。
+            startCandidate =
+                stats->WorkerSamples >=
+                    KSW_WORK_QUEUE_FALLBACK_START_MIN_WORKERS &&
+                !stats->WorkerConflict &&
+                stats->DistinctCount >=
+                    KSW_WORK_QUEUE_FALLBACK_START_MIN_DISTINCT &&
+                KswordARKWorkQueueFallbackIsKernelAddress(
+                    (ULONG_PTR)stats->WorkerValue) &&
+                KswordARKRuntimeAddressIsExecutable(
+                    View,
+                    (ULONG_PTR)stats->WorkerValue,
+                    1U);
+        }
+        if (startCandidate) {
+            if (startOffset >= 0) {
+                startTied = TRUE;
+            }
+            else {
+                startOffset = (LONG)offset;
+            }
+        }
+    }
+    ExFreePoolWithTag(block, KSW_WORK_QUEUE_FALLBACK_TAG);
+
+    if (startOffset >= 0 && !startTied) {
+        *StartAddressOffsetOut = (ULONG)startOffset;
+        *StartAddressResolvedOut = TRUE;
+    }
+    if (bestQueueOffset < 0 || queueTied) {
+        return FALSE;
+    }
+    *QueueOffsetOut = (ULONG)bestQueueOffset;
     return TRUE;
 }
 
@@ -547,8 +1189,11 @@ KswordARKWorkQueueResolveRuntimeLayout(
     KSW_RUNTIME_IMAGE_VIEW view;
     KSW_RUNTIME_DATA_REFERENCE* references = NULL;
     KSW_WORK_QUEUE_CHAIN chain;
+    KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT systemThreads;
     ULONG referenceCount = 0UL;
     ULONG threadQueueOffset = 0UL;
+    ULONG threadStartOffset = 0UL;
+    BOOLEAN threadStartResolved = FALSE;
     NTSTATUS status = STATUS_NOT_SUPPORTED;
 
     if (LayoutOut == NULL) {
@@ -558,6 +1203,7 @@ KswordARKWorkQueueResolveRuntimeLayout(
     RtlZeroMemory(&state, sizeof(state));
     RtlZeroMemory(&view, sizeof(view));
     RtlZeroMemory(&chain, sizeof(chain));
+    RtlZeroMemory(&systemThreads, sizeof(systemThreads));
     if (KeGetCurrentIrql() > APC_LEVEL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
@@ -624,26 +1270,45 @@ KswordARKWorkQueueResolveRuntimeLayout(
         KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE |
         KSW_DYN_V4_WORK_QUEUE_RUNTIME_ITEMS;
 
-    if (KswordARKWorkQueueFallbackInferThreadQueueOffset(
+    /*
+     * Worker-thread rows need _KTHREAD.Queue and _ETHREAD.StartAddress. Both
+     * are inferred from live System threads here, so the thread half of this
+     * page no longer depends on an applied PDB profile. A profile-supplied
+     * offset is still accepted, but only when the live walk could not produce
+     * its own evidence: live evidence outranks a stored description.
+     */
+    (VOID)KswordARKWorkQueueCaptureSystemThreads(&systemThreads);
+    if (KswordARKWorkQueueFallbackInferThreadOffsets(
             &chain,
-            &threadQueueOffset) &&
-        state.Kernel.EtStartAddress != KSW_DYN_OFFSET_UNAVAILABLE &&
-        (state.KernelSources.EtStartAddress ==
-             KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
-         state.KernelSources.EtStartAddress ==
-             KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN)) {
-        LayoutOut->EthreadTcb = 0UL;
-        LayoutOut->KthreadQueue = threadQueueOffset;
-        LayoutOut->EthreadStartAddress = state.Kernel.EtStartAddress;
-        LayoutOut->KthreadTypeSize = threadQueueOffset + sizeof(PVOID);
-        LayoutOut->EthreadTypeSize = max(
-            LayoutOut->KthreadTypeSize,
-            LayoutOut->EthreadStartAddress + (ULONG)sizeof(PVOID));
-        LayoutOut->RuntimeFlags |= KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS;
+            &view,
+            &systemThreads,
+            &threadQueueOffset,
+            &threadStartOffset,
+            &threadStartResolved)) {
+        if (!threadStartResolved &&
+            state.Kernel.EtStartAddress != KSW_DYN_OFFSET_UNAVAILABLE &&
+            (state.KernelSources.EtStartAddress ==
+                 KSW_DYN_FIELD_SOURCE_PDB_PROFILE ||
+             state.KernelSources.EtStartAddress ==
+                 KSW_DYN_FIELD_SOURCE_RUNTIME_PATTERN)) {
+            threadStartOffset = state.Kernel.EtStartAddress;
+            threadStartResolved = TRUE;
+        }
+        if (threadStartResolved) {
+            LayoutOut->EthreadTcb = 0UL;
+            LayoutOut->KthreadQueue = threadQueueOffset;
+            LayoutOut->EthreadStartAddress = threadStartOffset;
+            LayoutOut->KthreadTypeSize = threadQueueOffset + sizeof(PVOID);
+            LayoutOut->EthreadTypeSize = max(
+                LayoutOut->KthreadTypeSize,
+                LayoutOut->EthreadStartAddress + (ULONG)sizeof(PVOID));
+            LayoutOut->RuntimeFlags |= KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS;
+        }
     }
     status = STATUS_SUCCESS;
 
 Exit:
+    KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
     ExFreePoolWithTag(references, KSW_WORK_QUEUE_FALLBACK_TAG);
     if (!NT_SUCCESS(status)) {
         RtlZeroMemory(LayoutOut, sizeof(*LayoutOut));
@@ -671,14 +1336,17 @@ Return Value:
 {
     KSW_DYN_V4_WORK_QUEUE_LAYOUT layout;
     KSW_WORK_QUEUE_CHAIN chain;
-    UNICODE_STRING routineName;
-    KSW_WORK_QUEUE_FALLBACK_NEXT_THREAD_FN nextThreadFunction = NULL;
+    KSW_RUNTIME_IMAGE_VIEW view;
+    KSW_WORK_QUEUE_SYSTEM_THREAD_SNAPSHOT systemThreads;
+    KSW_WORK_QUEUE_THREAD_WALKER walker;
     UCHAR* samples = NULL;
     UCHAR* workerSamples = NULL;
     UCHAR* otherSamples = NULL;
     ULONG workerCount = 0UL;
     ULONG otherCount = 0UL;
     ULONG threadQueueOffset = 0UL;
+    ULONG threadStartOffset = 0UL;
+    BOOLEAN threadStartResolved = FALSE;
     ULONG_PTR partitionGlobal = 0U;
     ULONG offset = 0UL;
     ULONG bit = 0UL;
@@ -693,25 +1361,37 @@ Return Value:
     RtlZeroMemory(FieldOut, sizeof(*FieldOut));
     RtlZeroMemory(&layout, sizeof(layout));
     RtlZeroMemory(&chain, sizeof(chain));
+    RtlZeroMemory(&view, sizeof(view));
+    RtlZeroMemory(&systemThreads, sizeof(systemThreads));
+    RtlZeroMemory(&walker, sizeof(walker));
     status = KswordARKWorkQueueResolveRuntimeLayout(&layout);
     if (!NT_SUCCESS(status) ||
         (layout.RuntimeFlags & KSW_DYN_V4_WORK_QUEUE_RUNTIME_THREADS) == 0UL ||
-        layout.ModuleBase > MAXULONG_PTR - layout.PspSystemPartitionRva) {
+        layout.ModuleBase > MAXULONG_PTR - layout.PspSystemPartitionRva ||
+        !KswordARKRuntimeInitializeImageView(
+            (PVOID)(ULONG_PTR)layout.ModuleBase,
+            layout.ModuleSize,
+            &view)) {
         return STATUS_NOT_SUPPORTED;
     }
     partitionGlobal = (ULONG_PTR)layout.ModuleBase +
         layout.PspSystemPartitionRva;
+    (VOID)KswordARKWorkQueueCaptureSystemThreads(&systemThreads);
     if (!KswordARKWorkQueueFallbackValidateChainCandidate(
             partitionGlobal,
             layout.EpartitionExPartition,
             layout.ExPartitionWorkQueues,
             layout.ExPoolUntrusted,
             &chain) ||
-        !KswordARKWorkQueueFallbackInferThreadQueueOffset(
+        !KswordARKWorkQueueFallbackInferThreadOffsets(
             &chain,
-            &threadQueueOffset) ||
-        threadQueueOffset != layout.KthreadQueue ||
-        PsInitialSystemProcess == NULL) {
+            &view,
+            &systemThreads,
+            &threadQueueOffset,
+            &threadStartOffset,
+            &threadStartResolved) ||
+        threadQueueOffset != layout.KthreadQueue) {
+        KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -720,6 +1400,7 @@ Return Value:
             KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN,
         KSW_WORK_QUEUE_FALLBACK_TAG);
     if (samples == NULL) {
+        KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     RtlZeroMemory(
@@ -731,18 +1412,15 @@ Return Value:
         (KSW_WORK_QUEUE_FALLBACK_WORKER_SAMPLES *
          KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN);
 
-    RtlInitUnicodeString(&routineName, L"PsGetNextProcessThread");
-    nextThreadFunction = (KSW_WORK_QUEUE_FALLBACK_NEXT_THREAD_FN)
-        MmGetSystemRoutineAddress(&routineName);
-    if (nextThreadFunction == NULL) {
+    KswordARKWorkQueueInitializeThreadWalker(&walker, &systemThreads);
+    if (!KswordARKWorkQueueThreadWalkerUsable(&walker)) {
         status = STATUS_PROCEDURE_NOT_FOUND;
         goto Exit;
     }
-    thread = nextThreadFunction(PsInitialSystemProcess, NULL);
+    thread = KswordARKWorkQueueThreadWalkerNext(&walker);
     while (thread != NULL &&
            (workerCount < KSW_WORK_QUEUE_FALLBACK_WORKER_SAMPLES ||
             otherCount < KSW_WORK_QUEUE_FALLBACK_WORKER_SAMPLES)) {
-        PETHREAD nextThread = NULL;
         ULONG_PTR queueAddress = 0U;
         BOOLEAN worker = FALSE;
         UCHAR* destination = NULL;
@@ -776,14 +1454,9 @@ Return Value:
                 }
             }
         }
-        nextThread = nextThreadFunction(PsInitialSystemProcess, thread);
-        ObDereferenceObject(thread);
-        thread = nextThread;
+        thread = KswordARKWorkQueueThreadWalkerNext(&walker);
     }
-    if (thread != NULL) {
-        ObDereferenceObject(thread);
-        thread = NULL;
-    }
+    KswordARKWorkQueueThreadWalkerClose(&walker);
     if (workerCount < 2UL || otherCount < 2UL) {
         status = STATUS_NOT_FOUND;
         goto Exit;
@@ -836,9 +1509,8 @@ Return Value:
     status = STATUS_SUCCESS;
 
 Exit:
-    if (thread != NULL) {
-        ObDereferenceObject(thread);
-    }
+    KswordARKWorkQueueThreadWalkerClose(&walker);
+    KswordARKWorkQueueReleaseSystemThreads(&systemThreads);
     ExFreePoolWithTag(samples, KSW_WORK_QUEUE_FALLBACK_TAG);
     if (!NT_SUCCESS(status)) {
         RtlZeroMemory(FieldOut, sizeof(*FieldOut));
