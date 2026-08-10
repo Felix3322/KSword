@@ -3,9 +3,9 @@
 // ============================================================
 // ApplicationControlPage.h
 // 作用：
-// 1) 在 MiscDock 内提供“应用控制”只读诊断页；
+// 1) 在 MiscDock 内提供“应用控制”诊断和受控编辑页；
 // 2) 聚合 AppLocker、WDAC / Code Integrity、Defender / ASR、平台安全、事件日志和文件诊断；
-// 3) 仅做查看、复制和导出，不做任何策略写入/删除/禁用。
+// 3) 支持查看、复制、导出，以及经过确认的 AppLocker、WDAC 和 Defender 配置编辑。
 // ============================================================
 
 #include "../Framework.h"
@@ -31,7 +31,7 @@ namespace ks::misc
     // ApplicationControlPage：
     // - 输入：Qt 父控件；
     // - 处理：异步采集 AppLocker / WDAC / Defender / Platform / CodeIntegrity / 文件诊断信息；
-    // - 输出：通过表格、状态标签和文本框展示，只读无副作用。
+    // - 输出：通过表格、状态标签和文本框展示诊断数据，并提供受控的配置编辑入口。
     class ApplicationControlPage final : public QWidget
     {
     public:
@@ -124,6 +124,27 @@ namespace ks::misc
         // - 无输入参数，无返回值。
         QWidget* buildFileDiagnosisPage();
 
+        // editAppLockerPolicy：
+        // - 读取本地 AppLocker XML 策略，在编辑器中确认后以 Replace 模式写回；
+        // - 无输入参数，无返回值。
+        void editAppLockerPolicy();
+
+        // editWdacPolicy：
+        // - 编辑用户选择的 WDAC 源 XML；可选编译并通过 CiTool 部署；
+        // - 无输入参数，无返回值。
+        void editWdacPolicy();
+
+        // editDefenderSetting：
+        // - 编辑 Defender 表格中当前选中的受支持配置项；
+        // - 无输入参数，无返回值。
+        void editDefenderSetting();
+
+        // runPowerShellMutationAsync：
+        // - 在后台执行已由 UI 确认的配置写入脚本，并在成功后刷新页面；
+        // - operationName 为用户可读操作名，scriptText 为写入脚本；
+        // - 无返回值。
+        void runPowerShellMutationAsync(const QString& operationName, const QString& scriptText);
+
         // initializeTable：
         // - 为表格设置统一的只读、行选择和右键菜单行为；
         // - table 为目标表格；columnResizeModeLast 为最后一列的拉伸方式；
@@ -173,26 +194,6 @@ namespace ks::misc
         // - 返回 nullptr 表示当前页无可导出表格。
         QTableWidget* currentExportTable() const;
 
-        // showTableContextMenu：
-        // - 为表格弹出复制/导出上下文菜单；
-        // - table 为目标表格，localPosition 为视口坐标；
-        // - 无返回值。
-        void showTableContextMenu(QTableWidget* table, const QPoint& localPosition);
-
-        // copyTableCell：
-        // - 将指定单元格复制到剪贴板；
-        // - 无返回值。
-        void copyTableCell(QTableWidget* table, int row, int column) const;
-
-        // copyTableRow：
-        // - 将指定整行复制为 TSV 风格文本；
-        // - 无返回值。
-        void copyTableRow(QTableWidget* table, int row) const;
-
-        // copySelectedRows：
-        // - 将表格当前选中行复制为 TSV 风格文本；
-        // - 无返回值。
-        void copySelectedRows(QTableWidget* table) const;
 
         // tableToTsv：
         // - 把表格全部内容导出为 TSV 文本；
@@ -259,6 +260,9 @@ namespace ks::misc
         QWidget* m_toolbarWidget = nullptr;         // m_toolbarWidget：顶部工具栏容器。
         QPushButton* m_refreshButton = nullptr;     // m_refreshButton：刷新按钮。
         QPushButton* m_exportButton = nullptr;      // m_exportButton：导出按钮。
+        QPushButton* m_appLockerEditButton = nullptr; // m_appLockerEditButton：AppLocker 策略编辑按钮。
+        QPushButton* m_wdacEditButton = nullptr;      // m_wdacEditButton：WDAC 源策略编辑按钮。
+        QPushButton* m_defenderEditButton = nullptr;  // m_defenderEditButton：Defender 配置编辑按钮。
         QLabel* m_statusLabel = nullptr;            // m_statusLabel：总体状态标签。
         QTabWidget* m_tabWidget = nullptr;          // m_tabWidget：五个子页的总 Tab。
 
@@ -292,5 +296,6 @@ namespace ks::misc
         QVector<EventRecord> m_eventRows;               // m_eventRows：最近一次完整事件日志缓存。
         QVector<KeyValueRecord> m_platformRows;         // m_platformRows：最近一次平台安全诊断缓存。
         std::uint64_t m_refreshGeneration = 0;           // m_refreshGeneration：UI 线程维护的刷新代次，阻止旧结果回写。
+        int m_pendingMutationCount = 0;                  // m_pendingMutationCount：正在执行的配置写入任务数。
     };
 }

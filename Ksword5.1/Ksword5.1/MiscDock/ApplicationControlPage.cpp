@@ -10,14 +10,16 @@
 
 #include <QApplication>
 #include <QAbstractItemView>
-#include <QClipboard>
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -26,14 +28,16 @@
 #include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMenu>
 #include <QMessageBox>
 #include <QPointer>
+#include <QPlainTextEdit>
 #include <QMetaObject>
+#include <QMetaType>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -494,11 +498,21 @@ namespace ks::misc
         m_appLockerSummary->setText(QStringLiteral("AppLocker 摘要会在后台刷新后显示。"));
         m_appLockerSummary->setMaximumHeight(160);
 
+        auto* actionRow = new QWidget(page);
+        auto* actionLayout = new QHBoxLayout(actionRow);
+        actionLayout->setContentsMargins(0, 0, 0, 0);
+        m_appLockerEditButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑策略…"), actionRow);
+        m_appLockerEditButton->setToolTip(QStringLiteral("读取本地 AppLocker XML 策略并在确认后写回。需要管理员权限。"));
+        actionLayout->addWidget(m_appLockerEditButton);
+        actionLayout->addStretch(1);
+
         m_appLockerTable = new ks::ui::VisibleTableWidget(page);
         initializeTable(m_appLockerTable, true);
 
         layout->addWidget(m_appLockerSummary, 0);
+        layout->addWidget(actionRow, 0);
         layout->addWidget(m_appLockerTable, 1);
+        connect(m_appLockerEditButton, &QPushButton::clicked, this, [this]() { editAppLockerPolicy(); });
         return page;
     }
 
@@ -514,6 +528,14 @@ namespace ks::misc
         m_wdacSummary->setText(QStringLiteral("WDAC / Code Integrity 摘要会在后台刷新后显示。"));
         m_wdacSummary->setMaximumHeight(160);
 
+        auto* actionRow = new QWidget(page);
+        auto* actionLayout = new QHBoxLayout(actionRow);
+        actionLayout->setContentsMargins(0, 0, 0, 0);
+        m_wdacEditButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑策略 XML…"), actionRow);
+        m_wdacEditButton->setToolTip(QStringLiteral("编辑 WDAC 源 XML；可选择编译并通过 CiTool 部署。部署前请确认策略经过验证。"));
+        actionLayout->addWidget(m_wdacEditButton);
+        actionLayout->addStretch(1);
+
         m_policyFileTable = new ks::ui::VisibleTableWidget(page);
         initializeTable(m_policyFileTable, true);
 
@@ -521,8 +543,10 @@ namespace ks::misc
         initializeTable(m_codeIntegrityEventTable, true);
 
         layout->addWidget(m_wdacSummary, 0);
+        layout->addWidget(actionRow, 0);
         layout->addWidget(m_policyFileTable, 1);
         layout->addWidget(m_codeIntegrityEventTable, 1);
+        connect(m_wdacEditButton, &QPushButton::clicked, this, [this]() { editWdacPolicy(); });
         return page;
     }
 
@@ -538,11 +562,21 @@ namespace ks::misc
         m_defenderSummary->setText(QStringLiteral("Defender 状态会在后台刷新后显示。"));
         m_defenderSummary->setMaximumHeight(160);
 
+        auto* actionRow = new QWidget(page);
+        auto* actionLayout = new QHBoxLayout(actionRow);
+        actionLayout->setContentsMargins(0, 0, 0, 0);
+        m_defenderEditButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑选中项…"), actionRow);
+        m_defenderEditButton->setToolTip(QStringLiteral("编辑表格当前选中的 Defender / ASR 配置。需要管理员权限，受篡改防护限制时系统会拒绝写入。"));
+        actionLayout->addWidget(m_defenderEditButton);
+        actionLayout->addStretch(1);
+
         m_defenderTable = new ks::ui::VisibleTableWidget(page);
         initializeTable(m_defenderTable, true);
 
         layout->addWidget(m_defenderSummary, 0);
+        layout->addWidget(actionRow, 0);
         layout->addWidget(m_defenderTable, 1);
+        connect(m_defenderEditButton, &QPushButton::clicked, this, [this]() { editDefenderSetting(); });
         return page;
     }
 
@@ -687,14 +721,14 @@ namespace ks::misc
         table->setSelectionBehavior(QAbstractItemView::SelectRows);
         table->setSelectionMode(QAbstractItemView::ExtendedSelection);
         table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        table->setContextMenuPolicy(Qt::CustomContextMenu);
+        // 全局表格支持会为 DefaultContextMenu 注册复制选中行和导出 TSV。
+        // 此处不得再手动追加同类动作，避免菜单出现两组复制入口。
+        table->setContextMenuPolicy(Qt::DefaultContextMenu);
         table->setAlternatingRowColors(true);
         table->setSortingEnabled(true);
         table->horizontalHeader()->setStretchLastSection(stretchLastColumn);
         table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        connect(table, &QTableWidget::customContextMenuRequested, this, [this, table](const QPoint& localPosition) {
-            showTableContextMenu(table, localPosition);
-        });
+
     }
 
     QTableWidget* ApplicationControlPage::currentExportTable() const
@@ -724,139 +758,479 @@ namespace ks::misc
         }
     }
 
-    void ApplicationControlPage::showTableContextMenu(QTableWidget* table, const QPoint& localPosition)
+    void ApplicationControlPage::runPowerShellMutationAsync(
+        const QString& operationName,
+        const QString& scriptText)
     {
-        if (table == nullptr)
+        ++m_pendingMutationCount;
+        if (m_refreshButton != nullptr) m_refreshButton->setEnabled(false);
+        if (m_exportButton != nullptr) m_exportButton->setEnabled(false);
+        if (m_appLockerEditButton != nullptr) m_appLockerEditButton->setEnabled(false);
+        if (m_wdacEditButton != nullptr) m_wdacEditButton->setEnabled(false);
+        if (m_defenderEditButton != nullptr) m_defenderEditButton->setEnabled(false);
+        if (m_statusLabel != nullptr)
+        {
+            m_statusLabel->setText(QStringLiteral("状态: 正在%1…").arg(operationName));
+        }
+
+        const QPointer<ApplicationControlPage> guardThis(this);
+        std::thread([guardThis, operationName, scriptText]() {
+            QString errorText;
+            const QString outputText = runPowerShellCaptureText(scriptText, 30000, &errorText);
+            const bool succeeded = outputText.contains(QStringLiteral("__OK__")) && errorText.trimmed().isEmpty();
+            QString diagnosticText = outputText;
+            diagnosticText.remove(QStringLiteral("__OK__"));
+            diagnosticText.remove(QStringLiteral("__ERROR__"));
+            diagnosticText = diagnosticText.trimmed();
+            if (!errorText.trimmed().isEmpty())
+            {
+                diagnosticText = diagnosticText.isEmpty()
+                    ? errorText.trimmed()
+                    : QStringLiteral("%1\n%2").arg(diagnosticText, errorText.trimmed());
+            }
+
+            QMetaObject::invokeMethod(qApp, [guardThis, operationName, succeeded, diagnosticText]() {
+                if (guardThis.isNull())
+                {
+                    return;
+                }
+
+                guardThis->m_pendingMutationCount = std::max(0, guardThis->m_pendingMutationCount - 1);
+                const bool hasPendingMutation = guardThis->m_pendingMutationCount > 0;
+                if (guardThis->m_refreshButton != nullptr) guardThis->m_refreshButton->setEnabled(!hasPendingMutation);
+                if (guardThis->m_exportButton != nullptr) guardThis->m_exportButton->setEnabled(!hasPendingMutation);
+                if (guardThis->m_appLockerEditButton != nullptr) guardThis->m_appLockerEditButton->setEnabled(!hasPendingMutation);
+                if (guardThis->m_wdacEditButton != nullptr) guardThis->m_wdacEditButton->setEnabled(!hasPendingMutation);
+                if (guardThis->m_defenderEditButton != nullptr) guardThis->m_defenderEditButton->setEnabled(!hasPendingMutation);
+
+                if (!succeeded)
+                {
+                    if (guardThis->m_statusLabel != nullptr)
+                    {
+                        guardThis->m_statusLabel->setText(QStringLiteral("状态: %1失败").arg(operationName));
+                    }
+                    QMessageBox::warning(
+                        guardThis.data(),
+                        operationName,
+                        QStringLiteral("操作失败。\n%1")
+                            .arg(diagnosticText.isEmpty() ? QStringLiteral("未返回额外错误信息。") : diagnosticText));
+                    return;
+                }
+
+                if (guardThis->m_statusLabel != nullptr)
+                {
+                    guardThis->m_statusLabel->setText(QStringLiteral("状态: %1完成，正在刷新…").arg(operationName));
+                }
+                QMessageBox::information(guardThis.data(), operationName, QStringLiteral("操作已完成，正在重新读取配置。"));
+                guardThis->refreshAsync();
+            }, Qt::QueuedConnection);
+        }).detach();
+    }
+
+    void ApplicationControlPage::editAppLockerPolicy()
+    {
+        if (m_pendingMutationCount > 0 || m_appLockerEditButton == nullptr)
         {
             return;
         }
 
-        const QModelIndex index = table->indexAt(localPosition);
-        if (index.isValid())
+        m_appLockerEditButton->setEnabled(false);
+        const QPointer<ApplicationControlPage> guardThis(this);
+        std::thread([guardThis]() {
+            const QString queryScript = QStringLiteral(
+                "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+                "try {"
+                "  $xml=[string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop);"
+                "  if([string]::IsNullOrWhiteSpace($xml)){Write-Output '__NO_POLICY__'} else {Write-Output '__OK__'; Write-Output $xml}"
+                "} catch { Write-Output '__ERROR__'; Write-Output $_.Exception.Message; exit 1 }");
+            QString errorText;
+            const QString outputText = runPowerShellCaptureText(queryScript, 15000, &errorText);
+
+            QMetaObject::invokeMethod(qApp, [guardThis, outputText, errorText]() {
+                if (guardThis.isNull())
+                {
+                    return;
+                }
+                if (guardThis->m_appLockerEditButton != nullptr)
+                {
+                    guardThis->m_appLockerEditButton->setEnabled(guardThis->m_pendingMutationCount == 0);
+                }
+
+                QString policyXml;
+                if (outputText.contains(QStringLiteral("__OK__")))
+                {
+                    policyXml = outputText.section(QChar::LineFeed, 1);
+                }
+                else if (outputText.contains(QStringLiteral("__NO_POLICY__")))
+                {
+                    policyXml = QStringLiteral("<AppLockerPolicy Version=\"1\">\n</AppLockerPolicy>\n");
+                }
+                else
+                {
+                    QString diagnosticText = outputText;
+                    diagnosticText.remove(QStringLiteral("__ERROR__"));
+                    diagnosticText = diagnosticText.trimmed();
+                    if (!errorText.trimmed().isEmpty())
+                    {
+                        diagnosticText = diagnosticText.isEmpty()
+                            ? errorText.trimmed()
+                            : QStringLiteral("%1\n%2").arg(diagnosticText, errorText.trimmed());
+                    }
+                    QMessageBox::warning(
+                        guardThis.data(),
+                        QStringLiteral("编辑 AppLocker 策略"),
+                        QStringLiteral("无法读取本地 AppLocker 策略。\n%1")
+                            .arg(diagnosticText.isEmpty() ? QStringLiteral("未返回额外错误信息。") : diagnosticText));
+                    return;
+                }
+
+                QDialog dialog(guardThis.data());
+                dialog.setWindowTitle(QStringLiteral("编辑 AppLocker 策略 XML"));
+                dialog.resize(900, 620);
+                auto* layout = new QVBoxLayout(&dialog);
+                auto* hintLabel = new QLabel(
+                    QStringLiteral("仅编辑本地策略。保存将以 Replace 模式写回并覆盖当前本地 AppLocker 策略，组策略下发的规则仍由组策略管理。"),
+                    &dialog);
+                hintLabel->setWordWrap(true);
+                hintLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+                auto* editor = new QPlainTextEdit(&dialog);
+                editor->setPlainText(policyXml);
+                editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+                auto* buttonBox = new QDialogButtonBox(&dialog);
+                QPushButton* applyButton = buttonBox->addButton(QStringLiteral("保存并应用"), QDialogButtonBox::AcceptRole);
+                buttonBox->addButton(QStringLiteral("取消"), QDialogButtonBox::RejectRole);
+                layout->addWidget(hintLabel);
+                layout->addWidget(editor, 1);
+                layout->addWidget(buttonBox);
+                QObject::connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+                QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+                if (dialog.exec() != QDialog::Accepted)
+                {
+                    return;
+                }
+
+                const QString editedXml = editor->toPlainText().trimmed();
+                QXmlStreamReader xmlReader(editedXml);
+                QString rootElementName;
+                while (!xmlReader.atEnd())
+                {
+                    xmlReader.readNext();
+                    if (rootElementName.isEmpty() && xmlReader.isStartElement())
+                    {
+                        rootElementName = xmlReader.name().toString();
+                    }
+                }
+                if (xmlReader.hasError() || rootElementName.compare(QStringLiteral("AppLockerPolicy"), Qt::CaseInsensitive) != 0)
+                {
+                    QMessageBox::warning(
+                        guardThis.data(),
+                        QStringLiteral("编辑 AppLocker 策略"),
+                        QStringLiteral("策略 XML 无效。根元素必须为 AppLockerPolicy。%1")
+                            .arg(xmlReader.hasError() ? QStringLiteral("\n%1").arg(xmlReader.errorString()) : QString()));
+                    return;
+                }
+
+                if (QMessageBox::warning(
+                    guardThis.data(),
+                    QStringLiteral("确认应用 AppLocker 策略"),
+                    QStringLiteral("将覆盖当前本地 AppLocker 策略。错误策略可能导致应用或脚本无法启动。是否继续？"),
+                    QMessageBox::Yes | QMessageBox::Cancel,
+                    QMessageBox::Cancel) != QMessageBox::Yes)
+                {
+                    return;
+                }
+
+                const QString encodedXml = QString::fromLatin1(editedXml.toUtf8().toBase64());
+                const QString applyScript = QStringLiteral(
+                    "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+                    "try {"
+                    "  $xml=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%1'));"
+                    "  Set-AppLockerPolicy -XmlPolicy $xml -Replace -ErrorAction Stop;"
+                    "  Write-Output '__OK__'"
+                    "} catch { Write-Output '__ERROR__'; Write-Output $_.Exception.Message; exit 1 }")
+                    .arg(encodedXml);
+                guardThis->runPowerShellMutationAsync(QStringLiteral("应用 AppLocker 策略"), applyScript);
+            }, Qt::QueuedConnection);
+        }).detach();
+    }
+
+    void ApplicationControlPage::editWdacPolicy()
+    {
+        if (m_pendingMutationCount > 0)
         {
-            table->setCurrentIndex(index);
-            if (table->selectionModel() != nullptr && !table->selectionModel()->isRowSelected(index.row(), QModelIndex()))
+            return;
+        }
+
+        const QString sourcePath = QFileDialog::getOpenFileName(
+            this,
+            QStringLiteral("选择 WDAC 源策略 XML"),
+            QString(),
+            QStringLiteral("WDAC 策略 XML (*.xml);;所有文件 (*.*)"));
+        if (sourcePath.isEmpty())
+        {
+            return;
+        }
+
+        QFile sourceFile(sourcePath);
+        if (!sourceFile.open(QIODevice::ReadOnly | QIODevice::Text))
+        {
+            QMessageBox::warning(this, QStringLiteral("编辑 WDAC 策略"), QStringLiteral("无法读取：%1").arg(sourcePath));
+            return;
+        }
+        const QString originalXml = QString::fromUtf8(sourceFile.readAll());
+        sourceFile.close();
+
+        QDialog dialog(this);
+        dialog.setWindowTitle(QStringLiteral("编辑 WDAC 源策略 XML"));
+        dialog.resize(900, 620);
+        auto* layout = new QVBoxLayout(&dialog);
+        auto* hintLabel = new QLabel(
+            QStringLiteral("保存仅更新所选 XML 源文件。选择“保存并部署”会调用 ConfigCI 编译为 CIP，再由 CiTool 更新系统策略。部署前请在测试环境验证策略。"),
+            &dialog);
+        hintLabel->setWordWrap(true);
+        hintLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        auto* editor = new QPlainTextEdit(&dialog);
+        editor->setPlainText(originalXml);
+        editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+        auto* buttonBox = new QDialogButtonBox(&dialog);
+        QPushButton* saveButton = buttonBox->addButton(QStringLiteral("保存源 XML"), QDialogButtonBox::AcceptRole);
+        QPushButton* deployButton = buttonBox->addButton(QStringLiteral("保存并部署"), QDialogButtonBox::ActionRole);
+        buttonBox->addButton(QStringLiteral("取消"), QDialogButtonBox::RejectRole);
+        bool deployRequested = false;
+        layout->addWidget(hintLabel);
+        layout->addWidget(editor, 1);
+        layout->addWidget(buttonBox);
+        QObject::connect(saveButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+        QObject::connect(deployButton, &QPushButton::clicked, &dialog, [&dialog, &deployRequested]() {
+            deployRequested = true;
+            dialog.accept();
+        });
+        QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted)
+        {
+            return;
+        }
+
+        const QString editedXml = editor->toPlainText().trimmed();
+        QXmlStreamReader xmlReader(editedXml);
+        QString rootElementName;
+        while (!xmlReader.atEnd())
+        {
+            xmlReader.readNext();
+            if (rootElementName.isEmpty() && xmlReader.isStartElement())
             {
-                table->selectRow(index.row());
+                rootElementName = xmlReader.name().toString();
             }
         }
-
-        QMenu menu(this);
-        menu.setStyleSheet(KswordTheme::ContextMenuStyle());
-        QAction* copyCellAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_copy.svg")), QStringLiteral("复制单元格"));
-        QAction* copyRowAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_clipboard.svg")), QStringLiteral("复制当前行"));
-        QAction* copySelectedAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_clipboard.svg")), QStringLiteral("复制选中行"));
-        menu.addSeparator();
-        QAction* exportAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_export.svg")), QStringLiteral("导出 TSV"));
-
-        QAction* selectedAction = menu.exec(table->viewport()->mapToGlobal(localPosition));
-        if (selectedAction == nullptr)
+        if (xmlReader.hasError() || rootElementName.compare(QStringLiteral("SiPolicy"), Qt::CaseInsensitive) != 0)
         {
-            return;
-        }
-
-        const int row = index.isValid() ? index.row() : table->currentRow();
-        const int column = index.isValid() ? index.column() : table->currentColumn();
-
-        if (selectedAction == copyCellAction)
-        {
-            copyTableCell(table, row, column);
-            return;
-        }
-        if (selectedAction == copyRowAction)
-        {
-            copyTableRow(table, row);
-            return;
-        }
-        if (selectedAction == copySelectedAction)
-        {
-            copySelectedRows(table);
-            return;
-        }
-        if (selectedAction == exportAction)
-        {
-            const QString tsvText = tableToTsv(table, true);
-            const QString outputPath = QFileDialog::getSaveFileName(
+            QMessageBox::warning(
                 this,
-                QStringLiteral("导出 TSV"),
-                QStringLiteral("application_control.tsv"),
-                QStringLiteral("TSV 文件 (*.tsv)"));
-            if (outputPath.isEmpty())
+                QStringLiteral("编辑 WDAC 策略"),
+                QStringLiteral("策略 XML 无效。根元素必须为 SiPolicy。%1")
+                    .arg(xmlReader.hasError() ? QStringLiteral("\n%1").arg(xmlReader.errorString()) : QString()));
+            return;
+        }
+
+        QSaveFile outputFile(sourcePath);
+        if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text) ||
+            outputFile.write(editedXml.toUtf8()) != editedXml.toUtf8().size() ||
+            !outputFile.commit())
+        {
+            QMessageBox::warning(this, QStringLiteral("编辑 WDAC 策略"), QStringLiteral("无法保存：%1").arg(sourcePath));
+            return;
+        }
+
+        if (!deployRequested)
+        {
+            QMessageBox::information(this, QStringLiteral("编辑 WDAC 策略"), QStringLiteral("已保存源 XML：%1").arg(sourcePath));
+            return;
+        }
+
+        const QFileInfo sourceInfo(sourcePath);
+        const QString binaryPath = sourceInfo.dir().absoluteFilePath(sourceInfo.completeBaseName() + QStringLiteral(".cip"));
+        if (QMessageBox::warning(
+            this,
+            QStringLiteral("确认部署 WDAC 策略"),
+            QStringLiteral("将编译并部署：\n%1\n\n错误的 WDAC 策略可能阻止应用、驱动或系统组件加载。是否继续？").arg(sourcePath),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        {
+            return;
+        }
+
+        const QString encodedSourcePath = QString::fromLatin1(sourcePath.toUtf8().toBase64());
+        const QString encodedBinaryPath = QString::fromLatin1(binaryPath.toUtf8().toBase64());
+        const QString deployScript = QStringLiteral(
+            "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+            "try {"
+            "  $xmlPath=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%1'));"
+            "  $binaryPath=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%2'));"
+            "  Import-Module ConfigCI -ErrorAction Stop;"
+            "  ConvertFrom-CIPolicy -XmlFilePath $xmlPath -BinaryFilePath $binaryPath -ErrorAction Stop;"
+            "  $ciTool=Join-Path $env:WINDIR 'System32\\CiTool.exe';"
+            "  if(-not (Test-Path -LiteralPath $ciTool)){throw '未找到 CiTool.exe；CIP 已生成但未部署。'};"
+            "  & $ciTool --update-policy $binaryPath;"
+            "  if($LASTEXITCODE -ne 0){throw ('CiTool 退出码 '+$LASTEXITCODE)};"
+            "  Write-Output '__OK__'"
+            "} catch { Write-Output '__ERROR__'; Write-Output $_.Exception.Message; exit 1 }")
+            .arg(encodedSourcePath, encodedBinaryPath);
+        runPowerShellMutationAsync(QStringLiteral("部署 WDAC 策略"), deployScript);
+    }
+
+    void ApplicationControlPage::editDefenderSetting()
+    {
+        if (m_pendingMutationCount > 0 || m_defenderTable == nullptr || m_defenderTable->currentRow() < 0)
+        {
+            QMessageBox::information(this, QStringLiteral("编辑 Defender 配置"), QStringLiteral("请先在表格中选中要编辑的配置项。"));
+            return;
+        }
+
+        const int selectedRow = m_defenderTable->currentRow();
+        const QTableWidgetItem* nameItem = m_defenderTable->item(selectedRow, 0);
+        const QTableWidgetItem* valueItem = m_defenderTable->item(selectedRow, 1);
+        const QString settingName = nameItem != nullptr ? nameItem->text().trimmed() : QString();
+        const QString currentValue = valueItem != nullptr ? valueItem->text().trimmed() : QString();
+
+        enum class DefenderSettingKind { ControlledFolderAccess, PuaProtection, NetworkProtection, AsrRule, RealTimeProtection };
+        DefenderSettingKind settingKind{};
+        QString asrRuleId;
+        if (settingName.compare(QStringLiteral("Controlled Folder Access"), Qt::CaseInsensitive) == 0)
+        {
+            settingKind = DefenderSettingKind::ControlledFolderAccess;
+        }
+        else if (settingName.compare(QStringLiteral("PUA Protection"), Qt::CaseInsensitive) == 0)
+        {
+            settingKind = DefenderSettingKind::PuaProtection;
+        }
+        else if (settingName.compare(QStringLiteral("Network Protection"), Qt::CaseInsensitive) == 0)
+        {
+            settingKind = DefenderSettingKind::NetworkProtection;
+        }
+        else if (settingName.compare(QStringLiteral("Real Time Protection"), Qt::CaseInsensitive) == 0)
+        {
+            settingKind = DefenderSettingKind::RealTimeProtection;
+        }
+        else
+        {
+            const QRegularExpression asrPattern(QStringLiteral("^ASR\\s+([0-9A-Fa-f-]{36})$"));
+            const QRegularExpressionMatch asrMatch = asrPattern.match(settingName);
+            if (!asrMatch.hasMatch())
             {
+                QMessageBox::information(
+                    this,
+                    QStringLiteral("编辑 Defender 配置"),
+                    QStringLiteral("当前项不支持在此编辑。支持受控文件夹访问、PUA、防网络保护、ASR 规则和实时保护。"));
                 return;
             }
+            settingKind = DefenderSettingKind::AsrRule;
+            asrRuleId = asrMatch.captured(1);
+        }
 
-            QFile outputFile(outputPath);
-            if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        QDialog dialog(this);
+        dialog.setWindowTitle(QStringLiteral("编辑 Defender 配置"));
+        auto* formLayout = new QFormLayout(&dialog);
+        auto* valueCombo = new QComboBox(&dialog);
+        formLayout->addRow(QStringLiteral("配置项"), new QLabel(settingName, &dialog));
+        formLayout->addRow(QStringLiteral("当前值"), new QLabel(currentValue, &dialog));
+        if (settingKind == DefenderSettingKind::RealTimeProtection)
+        {
+            valueCombo->addItem(QStringLiteral("启用"), true);
+            valueCombo->addItem(QStringLiteral("关闭"), false);
+        }
+        else if (settingKind == DefenderSettingKind::AsrRule)
+        {
+            valueCombo->addItem(QStringLiteral("禁用 (0)"), 0);
+            valueCombo->addItem(QStringLiteral("阻止 (1)"), 1);
+            valueCombo->addItem(QStringLiteral("审核 (2)"), 2);
+            valueCombo->addItem(QStringLiteral("警告 (6)"), 6);
+        }
+        else
+        {
+            valueCombo->addItem(QStringLiteral("关闭 (0)"), 0);
+            valueCombo->addItem(QStringLiteral("阻止/启用 (1)"), 1);
+            valueCombo->addItem(QStringLiteral("审核 (2)"), 2);
+        }
+        for (int index = 0; index < valueCombo->count(); ++index)
+        {
+            const QString valueText = valueCombo->itemData(index).typeId() == QMetaType::Bool
+                ? (valueCombo->itemData(index).toBool() ? QStringLiteral("True") : QStringLiteral("False"))
+                : valueCombo->itemData(index).toString();
+            if (valueText.compare(currentValue, Qt::CaseInsensitive) == 0)
             {
-                QMessageBox::warning(this, QStringLiteral("导出 TSV"), QStringLiteral("无法写入：%1").arg(outputPath));
-                return;
+                valueCombo->setCurrentIndex(index);
+                break;
             }
-            outputFile.write(tsvText.toUtf8());
-            outputFile.close();
-            QMessageBox::information(this, QStringLiteral("导出 TSV"), QStringLiteral("已导出：%1").arg(outputPath));
         }
-    }
-
-    void ApplicationControlPage::copyTableCell(QTableWidget* table, const int row, const int column) const
-    {
-        if (table == nullptr || row < 0 || column < 0)
+        formLayout->addRow(QStringLiteral("新值"), valueCombo);
+        auto* hintLabel = new QLabel(
+            QStringLiteral("写入使用 Set-MpPreference。篡改防护、组织策略或 Defender 服务不可用时，Windows 会拒绝该操作并显示详细错误。"),
+            &dialog);
+        hintLabel->setWordWrap(true);
+        hintLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        formLayout->addRow(hintLabel);
+        auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        buttonBox->button(QDialogButtonBox::Ok)->setText(QStringLiteral("应用"));
+        buttonBox->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+        formLayout->addRow(buttonBox);
+        QObject::connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        QObject::connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted)
         {
             return;
         }
 
-        QTableWidgetItem* item = table->item(row, column);
-        QApplication::clipboard()->setText(item != nullptr ? item->text() : QString());
-    }
-
-    void ApplicationControlPage::copyTableRow(QTableWidget* table, const int row) const
-    {
-        if (table == nullptr || row < 0)
+        if (QMessageBox::warning(
+            this,
+            QStringLiteral("确认修改 Defender 配置"),
+            QStringLiteral("将修改“%1”。是否继续？").arg(settingName),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
         {
             return;
         }
 
-        QStringList values;
-        for (int column = 0; column < table->columnCount(); ++column)
+        QString mutationScript;
+        if (settingKind == DefenderSettingKind::ControlledFolderAccess)
         {
-            QTableWidgetItem* item = table->item(row, column);
-            values.push_back(item != nullptr ? item->text() : QString());
+            mutationScript = QStringLiteral("Set-MpPreference -EnableControlledFolderAccess %1 -ErrorAction Stop").arg(valueCombo->currentData().toInt());
         }
-        QApplication::clipboard()->setText(values.join(QStringLiteral("\t")));
+        else if (settingKind == DefenderSettingKind::PuaProtection)
+        {
+            mutationScript = QStringLiteral("Set-MpPreference -PUAProtection %1 -ErrorAction Stop").arg(valueCombo->currentData().toInt());
+        }
+        else if (settingKind == DefenderSettingKind::NetworkProtection)
+        {
+            mutationScript = QStringLiteral("Set-MpPreference -EnableNetworkProtection %1 -ErrorAction Stop").arg(valueCombo->currentData().toInt());
+        }
+        else if (settingKind == DefenderSettingKind::RealTimeProtection)
+        {
+            mutationScript = QStringLiteral("Set-MpPreference -DisableRealtimeMonitoring $%1 -ErrorAction Stop")
+                .arg(valueCombo->currentData().toBool() ? QStringLiteral("false") : QStringLiteral("true"));
+        }
+        else
+        {
+            const QString encodedRuleId = QString::fromLatin1(asrRuleId.toUtf8().toBase64());
+            mutationScript = QStringLiteral(
+                "$ruleId=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%1'));"
+                "$pref=Get-MpPreference -ErrorAction Stop;"
+                "$ids=@($pref.AttackSurfaceReductionRules_Ids);"
+                "$actions=@($pref.AttackSurfaceReductionRules_Actions);"
+                "$found=$false;"
+                "for($i=0;$i -lt $ids.Count;$i++){if([string]$ids[$i] -ieq $ruleId){$actions[$i]=%2;$found=$true;break}};"
+                "if(-not $found){$ids+=@($ruleId);$actions+=@(%2)};"
+                "Set-MpPreference -AttackSurfaceReductionRules_Ids $ids -AttackSurfaceReductionRules_Actions $actions -ErrorAction Stop")
+                .arg(encodedRuleId)
+                .arg(valueCombo->currentData().toInt());
+        }
+        mutationScript = QStringLiteral(
+            "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+            "try { %1; Write-Output '__OK__' }"
+            "catch { Write-Output '__ERROR__'; Write-Output $_.Exception.Message; exit 1 }")
+            .arg(mutationScript);
+        runPowerShellMutationAsync(QStringLiteral("修改 Defender 配置"), mutationScript);
     }
 
-    void ApplicationControlPage::copySelectedRows(QTableWidget* table) const
-    {
-        if (table == nullptr || table->selectionModel() == nullptr)
-        {
-            return;
-        }
-
-        const QModelIndexList selectedRows = table->selectionModel()->selectedRows();
-        if (selectedRows.isEmpty())
-        {
-            const int currentRow = table->currentRow();
-            if (currentRow >= 0)
-            {
-                copyTableRow(table, currentRow);
-            }
-            return;
-        }
-
-        QStringList lines;
-        lines.reserve(selectedRows.size());
-        for (const QModelIndex& rowIndex : selectedRows)
-        {
-            QStringList values;
-            for (int column = 0; column < table->columnCount(); ++column)
-            {
-                QTableWidgetItem* item = table->item(rowIndex.row(), column);
-                values.push_back(item != nullptr ? item->text() : QString());
-            }
-            lines.push_back(values.join(QStringLiteral("\t")));
-        }
-        QApplication::clipboard()->setText(lines.join(QStringLiteral("\n")));
-    }
 
     QString ApplicationControlPage::tableToTsv(QTableWidget* table, const bool selectedOnly) const
     {
@@ -1383,28 +1757,34 @@ namespace ks::misc
             records.push_back(record);
         }
 
-        if (records.size() == 1)
+        QStringList queryFailureSummaries;
+        for (const KeyValueRecord& record : records)
         {
-            const KeyValueRecord& onlyRecord = records.front();
-            if (onlyRecord.nameText.contains(QStringLiteral("query"), Qt::CaseInsensitive)
-                && onlyRecord.valueText.contains(QStringLiteral("Failed"), Qt::CaseInsensitive))
+            const bool isDefenderFailure = record.nameText.contains(QStringLiteral("Defender"), Qt::CaseInsensitive)
+                && (record.valueText.contains(QStringLiteral("Failed"), Qt::CaseInsensitive)
+                    || record.valueText.contains(QStringLiteral("Unavailable"), Qt::CaseInsensitive));
+            if (!isDefenderFailure)
             {
-                QStringList detailParts;
-                detailParts << QStringLiteral("Defender 模块不可用或读取失败");
-                if (!onlyRecord.detailText.trimmed().isEmpty())
-                {
-                    detailParts << QStringLiteral("Detail=%1").arg(onlyRecord.detailText.trimmed());
-                }
-                if (!onlyRecord.valueText.trimmed().isEmpty())
-                {
-                    detailParts << QStringLiteral("Value=%1").arg(onlyRecord.valueText.trimmed());
-                }
-                if (!onlyRecord.nameText.trimmed().isEmpty())
-                {
-                    detailParts << QStringLiteral("Name=%1").arg(onlyRecord.nameText.trimmed());
-                }
-                return { records, detailParts.join(QStringLiteral(" | ")) };
+                continue;
             }
+
+            const QString detailText = record.detailText.trimmed();
+            if (detailText.contains(QStringLiteral("0x800106BA"), Qt::CaseInsensitive))
+            {
+                queryFailureSummaries.push_back(
+                    QStringLiteral("%1：HRESULT 0x800106BA，Microsoft Defender Antivirus Service (WinDefend) 未启动、已禁用或已由其他安全产品接管。")
+                        .arg(record.nameText));
+            }
+            else
+            {
+                queryFailureSummaries.push_back(
+                    QStringLiteral("%1：%2")
+                        .arg(record.nameText, detailText.isEmpty() ? QStringLiteral("未返回错误代码。") : detailText));
+            }
+        }
+        if (!queryFailureSummaries.isEmpty())
+        {
+            return { records, queryFailureSummaries.join(QStringLiteral("\n")) };
         }
 
         const QString summaryText = QStringLiteral("Defender 状态共 %1 条。").arg(records.size());
@@ -1566,24 +1946,43 @@ namespace ks::misc
             // 3) Defender / ASR 通过 PowerShell 输出为 JSON 数组，便于 UI 直读。
             const QString defenderScript = QStringLiteral(
                 "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+                "function Get-DefenderErrorDetail($errorRecord){"
+                "  $parts=@();$exception=$errorRecord.Exception;"
+                "  while($null -ne $exception){"
+                "    $parts+=('ErrorType='+$exception.GetType().FullName);"
+                "    if($exception.HResult -ne 0){$parts+=('HRESULT=0x{0:X8}' -f ($exception.HResult -band 0xFFFFFFFF))};"
+                "    foreach($propertyName in @('NativeErrorCode','ErrorCode','StatusCode')){"
+                "      $property=$exception.PSObject.Properties[$propertyName];"
+                "      if($null -ne $property -and $null -ne $property.Value){$parts+=($propertyName+'='+$property.Value)}"
+                "    };"
+                "    $exception=$exception.InnerException"
+                "  };"
+                "  foreach($match in [regex]::Matches([string]$errorRecord.Exception.Message,'(?i)0x[0-9a-f]{8}')){$parts+=('UnderlyingHRESULT='+$match.Value.ToUpper())};"
+                "  if(-not [string]::IsNullOrWhiteSpace($errorRecord.FullyQualifiedErrorId)){$parts+=('FullyQualifiedErrorId='+$errorRecord.FullyQualifiedErrorId)};"
+                "  if($null -ne $errorRecord.CategoryInfo){$parts+=('Category='+$errorRecord.CategoryInfo.Category)};"
+                "  ($parts | Select-Object -Unique) -join ' | '"
+                "};"
+                "$rows=@();$pref=$null;"
                 "try {"
-                "  $rows=@();"
                 "  $pref=Get-MpPreference -ErrorAction Stop;"
-                "  $status=Get-MpComputerStatus -ErrorAction Stop;"
                 "  $rows += [pscustomobject]@{Name='Controlled Folder Access'; Value=($pref.EnableControlledFolderAccess); Detail='0=Off,1=Block,2=Audit'};"
                 "  $rows += [pscustomobject]@{Name='PUA Protection'; Value=($pref.PUAProtection); Detail='0=Disabled,1=Enabled,2=Audit'};"
                 "  $rows += [pscustomobject]@{Name='Network Protection'; Value=($pref.EnableNetworkProtection); Detail='0=Disabled,1=Block,2=Audit'};"
-                "  if($status.PSObject.Properties['SmartScreenEnabled']) { $rows += [pscustomobject]@{Name='SmartScreen'; Value=($status.SmartScreenEnabled); Detail='Available from Get-MpComputerStatus'} }"
-                "  $asrIds=$pref.AttackSurfaceReductionRules_Ids;"
-                "  $asrActions=$pref.AttackSurfaceReductionRules_Actions;"
+                "  $asrIds=$pref.AttackSurfaceReductionRules_Ids;$asrActions=$pref.AttackSurfaceReductionRules_Actions;"
                 "  $count=[Math]::Min(@($asrIds).Count,@($asrActions).Count);"
                 "  for($i=0; $i -lt $count; $i++){ $rows += [pscustomobject]@{Name=('ASR '+$asrIds[$i]); Value=($asrActions[$i]); Detail='AttackSurfaceReduction rule'} }"
+                "} catch { $rows += [pscustomobject]@{Name='Defender preferences'; Value='Unavailable'; Detail=(Get-DefenderErrorDetail $_)} };"
+                "try {"
+                "  $status=Get-MpComputerStatus -ErrorAction Stop;"
+                "  if($status.PSObject.Properties['SmartScreenEnabled']) { $rows += [pscustomobject]@{Name='SmartScreen'; Value=($status.SmartScreenEnabled); Detail='Available from Get-MpComputerStatus'} };"
                 "  $rows += [pscustomobject]@{Name='Real Time Protection'; Value=($status.RealTimeProtectionEnabled); Detail='Get-MpComputerStatus'};"
-                "  $rows += [pscustomobject]@{Name='Tamper Protection'; Value=($status.IsTamperProtected); Detail='Get-MpComputerStatus'};"
-                "  $rows | ConvertTo-Json -Depth 4"
+                "  $rows += [pscustomobject]@{Name='Tamper Protection'; Value=($status.IsTamperProtected); Detail='Get-MpComputerStatus'}"
                 "} catch {"
-                "  [pscustomobject]@{Name='Defender query'; Value='Failed'; Detail=(($_.Exception.Message),'FullyQualifiedErrorId='+$_.FullyQualifiedErrorId,'Category='+$_.CategoryInfo.Category,'ErrorType='+$_.Exception.GetType().FullName,('HResult=0x{0:X8}' -f ($_.Exception.HResult -band 0xFFFFFFFF)) -join ' | ')} | ConvertTo-Json -Depth 3"
-                "}");
+                "  $detail=Get-DefenderErrorDetail $_;"
+                "  if($detail -match '(?i)0x800106ba'){$detail='HRESULT=0x800106BA | WinDefend service is not active | '+$detail};"
+                "  $rows += [pscustomobject]@{Name='Defender service status'; Value='Unavailable'; Detail=$detail}"
+                "};"
+                "$rows | ConvertTo-Json -Depth 4");
             QString defenderErrorText;
             const QString defenderJsonText = runPowerShellCaptureText(defenderScript, 15000, &defenderErrorText);
             if (!defenderJsonText.trimmed().isEmpty())
