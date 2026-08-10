@@ -498,6 +498,8 @@ void KernelPlatformAuditTab::retranslateUi()
         if (page.table != nullptr)
         {
             page.table->setHorizontalHeaderLabels(headers);
+            // setHorizontalHeaderLabels 会重建表头项，工具提示要跟着语言一起重挂。
+            applyLiveAddressHeaderTooltip(page.table, scopeIsEditable(page.scope));
         }
         QString title;
         switch (page.scope)
@@ -598,6 +600,9 @@ void KernelPlatformAuditTab::addPage(const unsigned long scope, const QString& t
     table->verticalHeader()->setVisible(false);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     table->horizontalHeader()->setStretchLastSection(true);
+    // 顶部常驻风险横幅移除后，事前口径改挂在「当前地址」列表头上；
+    // 漏调这一句会让风险文案只在进入编辑对话框之后才出现。
+    applyLiveAddressHeaderTooltip(table, scopeIsEditable(scope));
     m_innerTabs->addTab(table, title);
     m_pages.push_back(Page{ scope, table });
     applyColumnGroup();

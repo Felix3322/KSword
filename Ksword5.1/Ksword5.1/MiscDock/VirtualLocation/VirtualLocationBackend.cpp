@@ -1161,18 +1161,31 @@ namespace ks::misc::virtual_location
             return result;
         }
 
-        auto finalize = [&api, shouldUninitialize]() {
-            if (shouldUninitialize) {
-                api.roUninitialize();
+        /*
+         * 必须用作用域守卫而不是在每个 return 前手工调用：本函数里的 ComPtr 都是
+         * 函数作用域对象，手工 finalize 会让 RoUninitialize 先于它们析构执行，
+         * 即在套间拆掉之后才 Release 接口。超时路径尤其危险——Cancel 之后请求仍在飞，
+         * 拆套间会切断该线程上的 RPC 连接，再去 Release 跨进程的 IAsyncOperation
+         * 就可能访问违例，而这里是 detach 线程，崩溃即整进程崩溃。
+         * 守卫声明在所有 ComPtr 之前，局部对象逆序析构，于是 Release 一定先发生。
+         */
+        struct RoApartmentScope
+        {
+            const ComBaseApi* api = nullptr;
+            bool active = false;
+            ~RoApartmentScope()
+            {
+                if (active && api != nullptr) {
+                    api->roUninitialize();
+                }
             }
-        };
+        } roApartmentScope{ &api, shouldUninitialize };
 
         HSTRING classId = nullptr;
         const wchar_t* const className = L"Windows.Devices.Geolocation.Geolocator";
         HRESULT hr = api.windowsCreateString(
             className, static_cast<UINT32>(::wcslen(className)), &classId);
         if (FAILED(hr)) {
-            finalize();
             result.failureText = QStringLiteral("创建 WinRT 类名失败：HRESULT=0x%1")
                 .arg(static_cast<unsigned long>(hr), 8, 16, QLatin1Char('0'));
             return result;
@@ -1182,7 +1195,6 @@ namespace ks::misc::virtual_location
         hr = api.roActivateInstance(classId, inspectable.GetAddressOf());
         api.windowsDeleteString(classId);
         if (FAILED(hr) || inspectable == nullptr) {
-            finalize();
             result.failureText = QStringLiteral(
                 "激活 Geolocator 失败：HRESULT=0x%1。位置服务被关闭或桌面应用未获授权时会出现这个错误。")
                 .arg(static_cast<unsigned long>(hr), 8, 16, QLatin1Char('0'));
@@ -1192,7 +1204,6 @@ namespace ks::misc::virtual_location
         ComPtr<IGeolocator> geolocator;
         hr = inspectable.As(&geolocator);
         if (FAILED(hr) || geolocator == nullptr) {
-            finalize();
             result.failureText = QStringLiteral("获取 IGeolocator 失败：HRESULT=0x%1")
                 .arg(static_cast<unsigned long>(hr), 8, 16, QLatin1Char('0'));
             return result;
@@ -1202,7 +1213,6 @@ namespace ks::misc::virtual_location
         ComPtr<IAsyncOperation<Geoposition*>> operation;
         hr = geolocator->GetGeopositionAsync(operation.GetAddressOf());
         if (FAILED(hr) || operation == nullptr) {
-            finalize();
             result.failureText = QStringLiteral("发起定位请求失败：HRESULT=0x%1")
                 .arg(static_cast<unsigned long>(hr), 8, 16, QLatin1Char('0'));
             return result;
@@ -1211,7 +1221,6 @@ namespace ks::misc::virtual_location
         ComPtr<IAsyncInfo> asyncInfo;
         hr = operation.As(&asyncInfo);
         if (FAILED(hr) || asyncInfo == nullptr) {
-            finalize();
             result.failureText = QStringLiteral("获取 IAsyncInfo 失败：HRESULT=0x%1")
                 .arg(static_cast<unsigned long>(hr), 8, 16, QLatin1Char('0'));
             return result;
@@ -1230,7 +1239,6 @@ namespace ks::misc::virtual_location
             }
             if (::GetTickCount64() >= deadlineTick) {
                 (void)asyncInfo->Cancel();
-                finalize();
                 result.failureText = QStringLiteral("定位请求超时，系统在限定时间内没有返回坐标。");
                 return result;
             }
@@ -1240,7 +1248,6 @@ namespace ks::misc::virtual_location
         if (asyncStatus != AsyncStatus::Completed) {
             HRESULT errorCode = S_OK;
             (void)asyncInfo->get_ErrorCode(&errorCode);
-            finalize();
             result.failureText = QStringLiteral("定位请求未完成：HRESULT=0x%1")
                 .arg(static_cast<unsigned long>(errorCode), 8, 16, QLatin1Char('0'));
             return result;
@@ -1249,7 +1256,6 @@ namespace ks::misc::virtual_location
         ComPtr<IGeoposition> geoposition;
         hr = operation->GetResults(geoposition.GetAddressOf());
         if (FAILED(hr) || geoposition == nullptr) {
-            finalize();
             result.failureText = QStringLiteral("读取定位结果失败：HRESULT=0x%1")
                 .arg(static_cast<unsigned long>(hr), 8, 16, QLatin1Char('0'));
             return result;
@@ -1258,7 +1264,6 @@ namespace ks::misc::virtual_location
         ComPtr<IGeocoordinate> geocoordinate;
         hr = geoposition->get_Coordinate(geocoordinate.GetAddressOf());
         if (FAILED(hr) || geocoordinate == nullptr) {
-            finalize();
             result.failureText = QStringLiteral("读取坐标失败：HRESULT=0x%1")
                 .arg(static_cast<unsigned long>(hr), 8, 16, QLatin1Char('0'));
             return result;
@@ -1282,7 +1287,6 @@ namespace ks::misc::virtual_location
             }
         }
         if (!result.ok) {
-            finalize();
             result.failureText = QStringLiteral("系统返回的定位结果里没有可用的经纬度。");
             return result;
         }
@@ -1312,7 +1316,6 @@ namespace ks::misc::virtual_location
             result.sourceText = QStringLiteral("未知来源");
         }
 
-        finalize();
         return result;
     }
 

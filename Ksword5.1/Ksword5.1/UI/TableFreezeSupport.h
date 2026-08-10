@@ -82,12 +82,18 @@ namespace ks::ui
         {
             QPersistentModelIndex index; // 行冻结存 (row,0)，列冻结存 (0,column)；随模型增删/排序自动平移。
             int extent = 0;              // 冻结时捕获的行高/列宽；源表隐藏该行列后原尺寸读不到了。
+            // section 是最后一次已知的逻辑行号/列号。持久索引锚在单元格上，
+            // 表格 setRowCount(0) 重填后就会失效，而列的隐藏位不会随之清除；
+            // 没有它就既无法还原隐藏、也无法把冻结重新锚回去。
+            int section = -1;
         };
 
         void disconnectTarget();
         void connectTarget();
         void scheduleRefresh();
         void releaseTarget();
+        // 把当前冻结的行号/列号发布到目标表格属性上，供取数侧区分冻结与筛选。
+        void publishFrozenSections();
         void destroyPanes();
         void ensurePanes();
         QTableView* createPane(QPointer<QTableView>& guardedPane);
@@ -124,4 +130,13 @@ namespace ks::ui
         bool m_refreshScheduled = false;
         bool m_mirroringSections = false;
     };
+
+    /*
+     * 冻结是用 setRowHidden/setColumnHidden 把行列从主表挪到冻结窗格里的，
+     * 在 QTableView 上和"被筛选掉"共用同一个状态位。凡是按"可见行/可见列"
+     * 取数的地方（复制、导出、快照比对）都必须先问一下这两个函数，
+     * 否则用户特意钉住的行列恰恰不会出现在导出结果里。
+     */
+    bool isRowHiddenByFreeze(const QTableView* tableView, int row);
+    bool isColumnHiddenByFreeze(const QTableView* tableView, int column);
 }

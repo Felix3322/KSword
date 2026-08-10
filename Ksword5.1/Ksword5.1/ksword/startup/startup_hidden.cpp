@@ -885,6 +885,8 @@ namespace
         std::vector<std::uint8_t> buffer(64 * 1024);
         while (true)
         {
+            bytesNeeded = 0;
+            servicesReturned = 0;
             const BOOL enumResult = ::EnumServicesStatusExW(
                 managerHandle,
                 SC_ENUM_PROCESS_INFO,
@@ -896,17 +898,16 @@ namespace
                 &servicesReturned,
                 &resumeHandle,
                 nullptr);
-            if (enumResult == FALSE && ::GetLastError() == ERROR_MORE_DATA && bytesNeeded > buffer.size())
+            const DWORD lastError = (enumResult == FALSE) ? ::GetLastError() : ERROR_SUCCESS;
+            if (enumResult == FALSE && lastError != ERROR_MORE_DATA)
             {
-                // Grow once to the size the SCM asked for and retry the same resume position.
-                buffer.assign(static_cast<std::size_t>(bytesNeeded) + 4096, 0);
-                continue;
-            }
-            if (enumResult == FALSE && ::GetLastError() != ERROR_MORE_DATA)
-            {
+                // 名单不完整就别声称查成功，让上层走兜底，否则残缺名单会把正常服务判成隐藏项。
                 ::CloseServiceHandle(managerHandle);
                 return names;
             }
+
+            // 必须先消费再扩容：ERROR_MORE_DATA 只表示还没枚举完，SCM 已经往缓冲里写了
+            // servicesReturned 条并把 resumeHandle 前移，先扩容重试会让这一批永远取不回来。
             const auto* statusArray = reinterpret_cast<const ENUM_SERVICE_STATUS_PROCESSW*>(buffer.data());
             for (DWORD serviceIndex = 0; serviceIndex < servicesReturned; ++serviceIndex)
             {
@@ -918,6 +919,17 @@ namespace
             if (enumResult != FALSE)
             {
                 break;
+            }
+            if (bytesNeeded > buffer.size())
+            {
+                // Grow to the size the SCM asked for and continue from the advanced resume position.
+                buffer.assign(static_cast<std::size_t>(bytesNeeded) + 4096, 0);
+            }
+            else if (servicesReturned == 0)
+            {
+                // 既没进展也不要求扩容，再转下去就是死循环；当作查询失败交给兜底。
+                ::CloseServiceHandle(managerHandle);
+                return names;
             }
         }
         ::CloseServiceHandle(managerHandle);
@@ -1017,8 +1029,9 @@ namespace
     // TaskTreeRecord is one leaf of TaskCache\Tree: the visible task path and the GUID it points at.
     struct TaskTreeRecord
     {
-        std::wstring taskPathText; // Full task path such as \Microsoft\Windows\Foo\Bar.
-        std::wstring taskIdText;   // The {GUID} stored in the leaf's Id value, empty when absent.
+        std::wstring taskPathText;   // Full task path such as \Microsoft\Windows\Foo\Bar.
+        std::wstring taskIdText;     // The {GUID} stored in the leaf's Id value, empty when absent.
+        std::wstring treeSubKeyText; // The Tree leaf key itself; SD lives here, not under Tasks\{GUID}.
     };
 
     // CollectTaskTreeRecords walks TaskCache\Tree recursively and returns every leaf that carries an Id.
@@ -1039,6 +1052,7 @@ namespace
             TaskTreeRecord record;
             record.taskPathText = taskPathText;
             record.taskIdText = ToWide(ks::str::TrimCopy(idRecord->valueDataText));
+            record.treeSubKeyText = registrySubKey;
             recordsOut.push_back(std::move(record));
         }
         for (const std::wstring& childName : EnumerateRegistrySubKeys(HKEY_LOCAL_MACHINE, registrySubKey))
@@ -1185,7 +1199,10 @@ namespace
         {
             referencedIds.insert(LowerWideCopy(record.taskIdText));
             const std::wstring taskSubKey = tasksRoot + L"\\" + record.taskIdText;
-            const auto securityRecord = QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, taskSubKey, L"SD");
+            // SD 存在 TaskCache\Tree 的叶子上，不在 Tasks\{GUID} 下；从 Tasks 读会恒缺失，
+            // 把每一个正常任务都判成幽灵任务，同时真正的删 SD 手法反而检不出来。
+            const auto securityRecord =
+                QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, record.treeSubKeyText, L"SD");
             const auto actionsRecord = QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, taskSubKey, L"Actions");
             const auto pathRecord = QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, taskSubKey, L"Path");
             const bool apiVisible = !apiQueriedOk
@@ -1205,7 +1222,7 @@ namespace
             std::vector<std::string> reasonParts;
             if (securityDescriptorMissing)
             {
-                reasonParts.push_back(FromWide(L"TaskCache 项缺少 SD 安全描述符（任务计划程序界面与 Get-ScheduledTask 都会跳过该任务，但服务仍会执行）"));
+                reasonParts.push_back(FromWide(L"TaskCache\\Tree 叶子缺少 SD 安全描述符（任务计划程序界面与 Get-ScheduledTask 都会跳过该任务，但服务仍会执行）"));
             }
             if (!apiVisible)
             {
@@ -1221,7 +1238,10 @@ namespace
             finding.sourceTypeText = "Hidden-GhostScheduledTask";
             finding.itemNameText = FromWide(record.taskPathText);
             finding.commandText = FromWide(xmlPath);
-            finding.locationText = BuildRegistryLocationText(HKEY_LOCAL_MACHINE, tasksRoot + L"\\" + record.taskIdText);
+            // 缺 SD 时把用户直接带到出问题的 Tree 叶子，而不是仍然指向 Tasks\{GUID}。
+            finding.locationText = securityDescriptorMissing
+                ? BuildRegistryLocationText(HKEY_LOCAL_MACHINE, record.treeSubKeyText)
+                : BuildRegistryLocationText(HKEY_LOCAL_MACHINE, tasksRoot + L"\\" + record.taskIdText);
             finding.locationGroupText = BuildRegistryLocationText(HKEY_LOCAL_MACHINE, tasksRoot);
             finding.userText = FromWide(L"本机");
             finding.detailText = JoinStrings(reasonParts, FromWide(L"；"));

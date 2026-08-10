@@ -393,6 +393,29 @@ namespace
         return text;
     }
 
+    /*
+     * 复制、导出、快照比对都只取"可见"行列，而冻结是靠 setRowHidden/setColumnHidden
+     * 实现的，与筛选共用同一个状态位。若不区分，用户特意钉住的行列反而会从导出的
+     * 取证数据里消失，且没有任何提示。这里只把真正被筛掉的算作不可见。
+     */
+    bool isRowHiddenByFilter(const QTableView* tableView, const int row)
+    {
+        if (tableView == nullptr)
+        {
+            return false;
+        }
+        return tableView->isRowHidden(row) && !ks::ui::isRowHiddenByFreeze(tableView, row);
+    }
+
+    bool isColumnHiddenByFilter(const QTableView* tableView, const int column)
+    {
+        if (tableView == nullptr)
+        {
+            return false;
+        }
+        return tableView->isColumnHidden(column) && !ks::ui::isColumnHiddenByFreeze(tableView, column);
+    }
+
     QVector<int> selectedVisibleRows(QTableView* tableView, const bool includeCurrentFallback)
     {
         QVector<int> rowList;
@@ -405,7 +428,7 @@ namespace
         rowList.reserve(selectedIndexList.size());
         for (const QModelIndex& index : selectedIndexList)
         {
-            if (index.isValid() && !tableView->isRowHidden(index.row()))
+            if (index.isValid() && !isRowHiddenByFilter(tableView, index.row()))
             {
                 rowList.push_back(index.row());
             }
@@ -417,7 +440,7 @@ namespace
         if (rowList.isEmpty() && includeCurrentFallback)
         {
             const QModelIndex currentIndex = tableView->currentIndex();
-            if (currentIndex.isValid() && !tableView->isRowHidden(currentIndex.row()))
+            if (currentIndex.isValid() && !isRowHiddenByFilter(tableView, currentIndex.row()))
             {
                 rowList.push_back(currentIndex.row());
             }
@@ -437,7 +460,7 @@ namespace
         rowList.reserve(rowCount);
         for (int row = 0; row < rowCount; ++row)
         {
-            if (!tableView->isRowHidden(row))
+            if (!isRowHiddenByFilter(tableView, row))
             {
                 rowList.push_back(row);
             }
@@ -457,7 +480,7 @@ namespace
         columnList.reserve(columnCount);
         for (int column = 0; column < columnCount; ++column)
         {
-            if (!tableView->isColumnHidden(column))
+            if (!isColumnHiddenByFilter(tableView, column))
             {
                 columnList.push_back(column);
             }
@@ -498,7 +521,7 @@ namespace
 
         for (const int row : rowList)
         {
-            if (row < 0 || row >= modelObject->rowCount() || tableView->isRowHidden(row))
+            if (row < 0 || row >= modelObject->rowCount() || isRowHiddenByFilter(tableView, row))
             {
                 continue;
             }

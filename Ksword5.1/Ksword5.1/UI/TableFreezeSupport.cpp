@@ -29,6 +29,17 @@ namespace
     constexpr char kFrozenPaneSourceProperty[] =
         "KSWORD_TABLE_INTERACTION_FROZEN_PANE_SOURCE";
 
+    /*
+     * 冻结靠 setRowHidden/setColumnHidden 把行列从主表挪走，这与"被筛选掉"在
+     * QTableView 上是同一个状态位。复制、导出、快照比对都按"可见行/可见列"取数，
+     * 若不加区分，用户特意钉住的行列反而不会进导出结果。这里把冻结集发布到
+     * 表格属性上，让取数侧只排除真正被筛掉的行列。
+     */
+    constexpr char kFrozenHiddenRowsProperty[] =
+        "KSWORD_TABLE_INTERACTION_FROZEN_HIDDEN_ROWS";
+    constexpr char kFrozenHiddenColumnsProperty[] =
+        "KSWORD_TABLE_INTERACTION_FROZEN_HIDDEN_COLUMNS";
+
     // 冻结区最多吃掉可用尺寸的一半。没有这条上限，把大量行一次冻结就会把整屏钉死，
     // 滚动区高度归零，表格看上去彻底不动了。
     constexpr int kFrozenBandBudgetDivisor = 2;
@@ -320,7 +331,7 @@ namespace ks::ui
                 break;
             }
             m_frozenRowLines.push_back(
-                { QPersistentModelIndex(model->index(logicalRow, 0)), rowHeight });
+                { QPersistentModelIndex(model->index(logicalRow, 0)), rowHeight, logicalRow });
             tableView->setRowHidden(logicalRow, true);
             usedHeight += rowHeight;
             ++addedCount;
@@ -389,7 +400,7 @@ namespace ks::ui
                 break;
             }
             m_frozenColumnLines.push_back(
-                { QPersistentModelIndex(model->index(0, logicalColumn)), columnWidth });
+                { QPersistentModelIndex(model->index(0, logicalColumn)), columnWidth, logicalColumn });
             tableView->setColumnHidden(logicalColumn, true);
             usedWidth += columnWidth;
             ++addedCount;
@@ -456,21 +467,26 @@ namespace ks::ui
             }
         }
         m_frozenRowLines.clear();
+        publishFrozenSections();
     }
 
     void TableFrozenPaneController::unfreezeAllColumns()
     {
         if (!m_targetTable.isNull() && m_targetTable->model() != nullptr)
         {
+            const int columnCount = m_targetTable->model()->columnCount();
             for (const FrozenLine& line : m_frozenColumnLines)
             {
-                if (line.index.isValid())
+                // 索引失效时按 section 还原，否则「取消全部冻结」救不回被隐藏的列。
+                const int column = line.index.isValid() ? line.index.column() : line.section;
+                if (column >= 0 && column < columnCount)
                 {
-                    m_targetTable->setColumnHidden(line.index.column(), false);
+                    m_targetTable->setColumnHidden(column, false);
                 }
             }
         }
         m_frozenColumnLines.clear();
+        publishFrozenSections();
     }
 
     bool TableFrozenPaneController::eventFilter(QObject* watchedObject, QEvent* eventObject)
@@ -1091,15 +1107,44 @@ namespace ks::ui
             }
         }
 
+        const int columnCount = tableView->model()->columnCount();
+        const int rowCount = tableView->model()->rowCount();
         for (int i = m_frozenColumnLines.size() - 1; i >= 0; --i)
         {
             FrozenLine& line = m_frozenColumnLines[i];
             if (!line.index.isValid())
             {
-                m_frozenColumnLines.removeAt(i);
-                continue;
+                /*
+                 * 持久索引锚在第 0 行单元格上，业务刷新常见的 setRowCount(0) 会让它失效，
+                 * 而列的隐藏位不随 section 清除。此处若直接丢弃条目，该列就永久隐藏且
+                 * UI 再也解不开——取消冻结按钮会因计数归零而置灰。
+                 */
+                if (line.section < 0 || line.section >= columnCount)
+                {
+                    // 列本身没了：还原显示再丢弃，不留下解不开的隐藏列。
+                    if (line.section >= 0)
+                    {
+                        tableView->setColumnHidden(line.section, false);
+                    }
+                    m_frozenColumnLines.removeAt(i);
+                    continue;
+                }
+                if (rowCount <= 0)
+                {
+                    // 表格正在重填（行已清空、还没填回来）。保留冻结状态原样，
+                    // 等重填后的这一轮再把持久索引锚回去。
+                    continue;
+                }
+                line.index = QPersistentModelIndex(tableView->model()->index(0, line.section));
+                if (!line.index.isValid())
+                {
+                    tableView->setColumnHidden(line.section, false);
+                    m_frozenColumnLines.removeAt(i);
+                    continue;
+                }
             }
             const int column = line.index.column();
+            line.section = column;
             if (!tableView->isColumnHidden(column))
             {
                 const int columnWidth = tableView->horizontalHeader() != nullptr
@@ -1116,11 +1161,16 @@ namespace ks::ui
         while (!m_frozenColumnLines.isEmpty() && totalFrozenColumnsWidth() > columnBudget)
         {
             const FrozenLine line = m_frozenColumnLines.takeLast();
-            if (line.index.isValid())
+            // 持久索引可能已失效，此时只有 section 能定位到要还原的列。
+            const int column = line.index.isValid() ? line.index.column() : line.section;
+            if (column >= 0 && column < columnCount)
             {
-                tableView->setColumnHidden(line.index.column(), false);
+                tableView->setColumnHidden(column, false);
             }
         }
+
+        // 冻结集在本轮可能被重锚或裁剪过，发布出去供取数侧区分冻结与筛选。
+        publishFrozenSections();
     }
 
     void TableFrozenPaneController::layoutPanes()
@@ -1374,5 +1424,78 @@ namespace ks::ui
             0,
             (m_targetTable->viewport()->width() + m_appliedFrozenWidth) /
                 kFrozenBandBudgetDivisor);
+    }
+
+    void TableFrozenPaneController::publishFrozenSections()
+    {
+        QTableView* tableView = m_targetTable.data();
+        if (tableView == nullptr)
+        {
+            return;
+        }
+
+        QVariantList frozenRows;
+        frozenRows.reserve(m_frozenRowLines.size());
+        for (const FrozenLine& line : m_frozenRowLines)
+        {
+            const int row = line.index.isValid() ? line.index.row() : line.section;
+            if (row >= 0)
+            {
+                frozenRows.push_back(row);
+            }
+        }
+
+        QVariantList frozenColumns;
+        frozenColumns.reserve(m_frozenColumnLines.size());
+        for (const FrozenLine& line : m_frozenColumnLines)
+        {
+            const int column = line.index.isValid() ? line.index.column() : line.section;
+            if (column >= 0)
+            {
+                frozenColumns.push_back(column);
+            }
+        }
+
+        tableView->setProperty(kFrozenHiddenRowsProperty, frozenRows);
+        tableView->setProperty(kFrozenHiddenColumnsProperty, frozenColumns);
+    }
+
+    namespace
+    {
+        bool sectionListContains(
+            const QTableView* tableView,
+            const char* propertyName,
+            const int section)
+        {
+            if (tableView == nullptr || section < 0)
+            {
+                return false;
+            }
+            const QVariant stored = tableView->property(propertyName);
+            if (!stored.isValid())
+            {
+                return false;
+            }
+            const QVariantList sectionList = stored.toList();
+            for (const QVariant& entry : sectionList)
+            {
+                bool converted = false;
+                if (entry.toInt(&converted) == section && converted)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    bool isRowHiddenByFreeze(const QTableView* tableView, const int row)
+    {
+        return sectionListContains(tableView, kFrozenHiddenRowsProperty, row);
+    }
+
+    bool isColumnHiddenByFreeze(const QTableView* tableView, const int column)
+    {
+        return sectionListContains(tableView, kFrozenHiddenColumnsProperty, column);
     }
 }
