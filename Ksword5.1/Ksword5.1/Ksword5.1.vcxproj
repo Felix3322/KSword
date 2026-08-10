@@ -257,6 +257,8 @@
     <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp" />
     <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationBackend.cpp" />
     <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationPage.cpp" />
+    <ClCompile Include="MiscDock\DisableDse\DisableDseBackend.cpp" />
+    <ClCompile Include="MiscDock\DisableDse\DisableDsePage.cpp" />
     <ClCompile Include="MiscDock\Experimental\BugcheckGuardPage.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorBackend.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp" />
@@ -623,6 +625,8 @@
     <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h" />
     <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationBackend.h" />
     <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationPage.h" />
+    <ClInclude Include="MiscDock\DisableDse\DisableDseBackend.h" />
+    <ClInclude Include="MiscDock\DisableDse\DisableDsePage.h" />
     <ClInclude Include="MiscDock\Experimental\BugcheckGuardPage.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Internal.h" />

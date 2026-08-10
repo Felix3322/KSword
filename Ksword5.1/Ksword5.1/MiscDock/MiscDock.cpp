@@ -3,6 +3,7 @@
 #include "BootEditor/BootEditorTab.h"
 #include "ApplicationControlPage.h"
 #include "ContextMenuCleaner/ContextMenuCleanerTab.h"
+#include "DisableDse/DisableDsePage.h"
 #include "Experimental/BugcheckGuardPage.h"
 #include "DiskEditor/DiskEditorTab.h"
 #include "RenderBenchmark/RenderBenchmarkPage.h"
@@ -68,6 +69,7 @@ void MiscDock::initializeUi()
     m_systemTimeHostWidget = new QWidget(m_mainTabWidget);
     m_virtualLocationHostWidget = new QWidget(m_mainTabWidget);
     m_bugcheckGuardHostWidget = new QWidget(m_mainTabWidget);
+    m_disableDseHostWidget = new QWidget(m_mainTabWidget);
     m_contextMenuCleanerHostWidget = new QWidget(m_mainTabWidget);
     m_diskEditorHostWidget = new QWidget(m_mainTabWidget);
     m_applicationControlHostWidget = new QWidget(m_mainTabWidget);
@@ -125,6 +127,20 @@ void MiscDock::initializeUi()
         m_bugcheckGuardHostWidget,
         QStringLiteral("misc.experimental.tab"),
         QStringLiteral("实验性"));
+
+    // 驱动签名强制页：
+    // - 运行时反汇编定位 CI.dll!g_CiOptions，用 R0 事务化内核写临时关闭 DSE；
+    // - 写入前校验读回值的强制签名位与系统自报状态自洽，
+    //   HVCI 开启时直接禁用操作，页面析构还会兜底把原值写回。
+    m_disableDseTabIndex = m_mainTabWidget->addTab(
+        m_disableDseHostWidget,
+        QIcon(QStringLiteral(":/Icon/codeeditor_replace.svg")),
+        QStringLiteral("驱动签名"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_disableDseHostWidget,
+        QStringLiteral("misc.disable_dse.tab"),
+        QStringLiteral("驱动签名"));
 
     // Shell 关联管理页：
     // - 覆盖右键菜单、URL 绑定、打开方式和 Explorer 第三方主页项；
@@ -250,6 +266,11 @@ void MiscDock::ensureTabInitialized(const int tabIndex)
         initializeBugcheckGuardPage();
         return;
     }
+    if (tabIndex == m_disableDseTabIndex)
+    {
+        initializeDisableDsePage();
+        return;
+    }
     if (tabIndex == m_contextMenuCleanerTabIndex)
     {
         initializeContextMenuCleanerTab();
@@ -364,6 +385,18 @@ void MiscDock::initializeBugcheckGuardPage()
     QVBoxLayout* const hostLayout = buildHostLayout(m_bugcheckGuardHostWidget);
     m_bugcheckGuardPage = new ks::misc::BugcheckGuardPage(m_bugcheckGuardHostWidget);
     hostLayout->addWidget(m_bugcheckGuardPage, 1);
+}
+
+void MiscDock::initializeDisableDsePage()
+{
+    if (m_disableDseHostWidget == nullptr || m_disableDsePage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_disableDseHostWidget);
+    m_disableDsePage = new ks::misc::DisableDsePage(m_disableDseHostWidget);
+    hostLayout->addWidget(m_disableDsePage, 1);
 }
 
 void MiscDock::initializeContextMenuCleanerTab()

@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -119,6 +120,39 @@ namespace ks::misc
         refreshStatus();
     }
 
+    void VirtualLocationPage::changeEvent(QEvent* event)
+    {
+        QWidget::changeEvent(event);
+        if (event == nullptr)
+        {
+            return;
+        }
+        if (event->type() == QEvent::ApplicationPaletteChange
+            || event->type() == QEvent::PaletteChange)
+        {
+            applyScopeBannerStyle();
+        }
+    }
+
+    // applyScopeBannerStyle 作用：
+    // - 输入：无，读取当前主题的语义色；
+    // - 处理：下发生效范围横幅样式，构造期与主题切换后走同一条路径；
+    // - 返回：无，横幅尚未创建时静默跳过。
+    void VirtualLocationPage::applyScopeBannerStyle()
+    {
+        if (m_scopeLabel == nullptr)
+        {
+            return;
+        }
+        m_scopeLabel->setStyleSheet(
+            QStringLiteral(
+                "QLabel{padding:10px;border:1px solid %1;border-radius:5px;"
+                "background:%2;color:%3;}")
+                .arg(KswordTheme::WarningHex())
+                .arg(KswordTheme::ThemeColorName(KswordTheme::WarningBackgroundColor()))
+                .arg(KswordTheme::TextPrimaryHex()));
+    }
+
     void VirtualLocationPage::initializeUi()
     {
         auto& language = ks::i18n::LanguageManager::instance();
@@ -130,13 +164,7 @@ namespace ks::misc
         // ===================== 生效范围说明 =====================
         m_scopeLabel = new QLabel(this);
         m_scopeLabel->setWordWrap(true);
-        m_scopeLabel->setStyleSheet(
-            QStringLiteral(
-                "QLabel{padding:10px;border:1px solid %1;border-radius:5px;"
-                "background:%2;color:%3;}")
-                .arg(KswordTheme::WarningHex())
-                .arg(KswordTheme::ThemeColorName(KswordTheme::WarningBackgroundColor()))
-                .arg(KswordTheme::TextPrimaryHex()));
+        applyScopeBannerStyle();
         language.bindText(
             m_scopeLabel,
             QStringLiteral("misc.virtual_location.scope"),

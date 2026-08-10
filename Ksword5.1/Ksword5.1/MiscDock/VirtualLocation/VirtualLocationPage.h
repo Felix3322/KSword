@@ -38,10 +38,16 @@ namespace ks::misc
     protected:
         // 页面第一次真正可见时才读一次系统状态。
         void showEvent(QShowEvent* event) override;
+        // 语义色（Warning 及其背景）在 theme.h 里没有 palette 等价物，写进 QSS 就被
+        // 定死在下发那一刻的主题上；而同一段样式里的文字色是动态的 palette(text)。
+        // 主题切换时不重下发，横幅就会变成暗底黑字或浅底白字。
+        void changeEvent(QEvent* event) override;
 
     private:
         // initializeUi：建出说明、状态区、坐标输入区与操作区。
         void initializeUi();
+        // applyScopeBannerStyle：下发生效范围横幅样式，构造期与主题切换共用。
+        void applyScopeBannerStyle();
         // initializeConnections：把按钮、下拉与数值框接到各自的处理函数。
         void initializeConnections();
 

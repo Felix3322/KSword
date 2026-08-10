@@ -5,7 +5,7 @@
 // 作用：
 // 1) 提供“杂项”总入口页；
 // 2) 通过内部 Tab 承载子功能模块；
-// 3) 当前包含“引导”“声音来源”“系统变速”“虚拟定位”“Shell 关联”“磁盘编辑”“应用控制”等子模块；
+// 3) 当前包含“引导”“声音来源”“系统变速”“虚拟定位”“驱动签名”“Shell 关联”“磁盘编辑”“应用控制”等子模块；
 // 4) “扫描器”“转储分析”“插件”原为顶层 Dock，为精简 dock 栏入口数量已并入本页。
 // ============================================================
 
@@ -27,6 +27,7 @@ namespace ks::misc
     class SystemTimePage;
     class VirtualLocationPage;
     class BugcheckGuardPage;
+    class DisableDsePage;
     class RenderBenchmarkPage;
 }
 
@@ -69,6 +70,7 @@ private:
     void initializeSystemTimePage();
     void initializeVirtualLocationPage();
     void initializeBugcheckGuardPage();
+    void initializeDisableDsePage();
     void initializeContextMenuCleanerTab();
     void initializeDiskEditorTab();
     void initializeApplicationControlPage();
@@ -95,6 +97,7 @@ private:
     QWidget* m_systemTimeHostWidget = nullptr;          // m_systemTimeHostWidget：系统变速页占位控件。
     QWidget* m_virtualLocationHostWidget = nullptr;     // m_virtualLocationHostWidget：虚拟定位页占位控件。
     QWidget* m_bugcheckGuardHostWidget = nullptr;       // m_bugcheckGuardHostWidget：实验性页占位控件。
+    QWidget* m_disableDseHostWidget = nullptr;          // m_disableDseHostWidget：驱动签名强制页占位控件。
     QWidget* m_contextMenuCleanerHostWidget = nullptr;  // m_contextMenuCleanerHostWidget：Shell 关联管理页占位控件。
     QWidget* m_diskEditorHostWidget = nullptr;          // m_diskEditorHostWidget：磁盘编辑页占位控件。
     QWidget* m_applicationControlHostWidget = nullptr;  // m_applicationControlHostWidget：应用控制页占位控件。
@@ -109,6 +112,7 @@ private:
     int m_systemTimeTabIndex = -1;          // m_systemTimeTabIndex：系统变速页页签索引。
     int m_virtualLocationTabIndex = -1;     // m_virtualLocationTabIndex：虚拟定位页页签索引。
     int m_bugcheckGuardTabIndex = -1;       // m_bugcheckGuardTabIndex：实验性页页签索引。
+    int m_disableDseTabIndex = -1;          // m_disableDseTabIndex：驱动签名强制页页签索引。
     int m_contextMenuCleanerTabIndex = -1;  // m_contextMenuCleanerTabIndex：Shell 关联管理页页签索引。
     int m_diskEditorTabIndex = -1;          // m_diskEditorTabIndex：磁盘编辑页页签索引。
     int m_applicationControlTabIndex = -1;  // m_applicationControlTabIndex：应用控制页页签索引。
@@ -126,6 +130,7 @@ private:
     ks::misc::SystemTimePage* m_systemTimePage = nullptr; // m_systemTimePage：系统全局变速控制页。
     ks::misc::VirtualLocationPage* m_virtualLocationPage = nullptr; // m_virtualLocationPage：系统默认位置伪装页。
     ks::misc::BugcheckGuardPage* m_bugcheckGuardPage = nullptr; // m_bugcheckGuardPage：实验性一次性蓝屏缓冲控制页。
+    ks::misc::DisableDsePage* m_disableDsePage = nullptr; // m_disableDsePage：驱动签名强制（DSE）开关页。
     ks::misc::RenderBenchmarkPage* m_renderBenchmarkPage = nullptr; // m_renderBenchmarkPage：窗口渲染与 DWM 合成基准页。
     ScannerDock* m_scannerPage = nullptr;   // m_scannerPage：PE/ELF/Mach-O 扫描与安全编辑页。
     MinidumpDock* m_minidumpPage = nullptr; // m_minidumpPage：崩溃转储分析页。

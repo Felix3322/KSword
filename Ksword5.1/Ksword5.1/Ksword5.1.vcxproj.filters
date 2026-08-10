@@ -80,6 +80,12 @@
     <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\DisableDse\DisableDseBackend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DisableDse\DisableDsePage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MiscDock\Experimental\BugcheckGuardPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1134,6 +1140,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationPage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DisableDse\DisableDseBackend.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DisableDse\DisableDsePage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\Experimental\BugcheckGuardPage.h">

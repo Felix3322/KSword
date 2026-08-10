@@ -36,10 +36,16 @@ namespace ks::misc
         // 页面真正可见时才查询并轮询状态，隐藏后停止周期 IOCTL。
         void showEvent(QShowEvent* event) override;
         void hideEvent(QHideEvent* event) override;
+        // 语义色（Warning 及其背景）在 theme.h 里没有 palette 等价物，写进 QSS
+        // 就被定死在下发那一刻的主题上。主题切换时必须重下发，否则这条永久警告
+        // 会变成暗底黑字或浅底白字，正好读不出来。
+        void changeEvent(QEvent* event) override;
 
     private:
         // initializeUi：创建永久警告、倍率控件、确认开关和状态证据区。
         void initializeUi();
+        // applyWarningBannerStyle：下发永久警告横幅样式，构造期与主题切换共用。
+        void applyWarningBannerStyle();
         // initializeConnections：连接刷新、应用、恢复和定时状态查询。
         void initializeConnections();
         // refreshStatus：通过 ArkDriverClient 获取最新倍率、代次与接管状态。
