@@ -299,8 +299,11 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     // Thread runtime field sample is read-only and samples only bounded fields from PsLookupThreadByThreadId.
     { IOCTL_KSWORD_ARK_QUERY_THREAD_RUNTIME_FIELDS, KswordARKThreadIoctlQueryRuntimeFields, "IOCTL_KSWORD_ARK_QUERY_THREAD_RUNTIME_FIELDS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     // Handle/object/ALPC queries own their public-API and runtime-signature fallback paths.
-    { IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES, KswordARKHandleIoctlEnumProcessHandles, "IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
-    { IOCTL_KSWORD_ARK_QUERY_HANDLE_OBJECT, KswordARKHandleIoctlQueryHandleObject, "IOCTL_KSWORD_ARK_QUERY_HANDLE_OBJECT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    // Handle occupancy scans issue these IOCTLs at process/handle granularity.
+    // Their handlers keep validation and failure logs; dispatch success records
+    // are redundant and can evict the real diagnostic lines from the log ring.
+    { IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES, KswordARKHandleIoctlEnumProcessHandles, "IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
+    { IOCTL_KSWORD_ARK_QUERY_HANDLE_OBJECT, KswordARKHandleIoctlQueryHandleObject, "IOCTL_KSWORD_ARK_QUERY_HANDLE_OBJECT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS },
     { IOCTL_KSWORD_ARK_QUERY_ALPC_PORT, KswordARKAlpcIoctlQueryAlpcPort, "IOCTL_KSWORD_ARK_QUERY_ALPC_PORT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     // Section queries return public FILE_OBJECT/ControlArea evidence even when private mapping offsets are absent.
     { IOCTL_KSWORD_ARK_QUERY_PROCESS_SECTION, KswordARKSectionIoctlQueryProcessSection, "IOCTL_KSWORD_ARK_QUERY_PROCESS_SECTION", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },

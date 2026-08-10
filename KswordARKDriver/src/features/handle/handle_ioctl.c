@@ -148,7 +148,8 @@ Return Value:
         return status;
     }
 
-    if (*BytesReturned >= KSWORD_ARK_HANDLE_ENUM_RESPONSE_HEADER_SIZE) {
+    if ((enumRequest->flags & KSWORD_ARK_ENUM_HANDLE_FLAG_QUIET_LOG) == 0UL &&
+        *BytesReturned >= KSWORD_ARK_HANDLE_ENUM_RESPONSE_HEADER_SIZE) {
         KSWORD_ARK_ENUM_PROCESS_HANDLES_RESPONSE* responseHeader = (KSWORD_ARK_ENUM_PROCESS_HANDLES_RESPONSE*)outputBuffer;
         KswordARKHandleIoctlLog(
             Device,
@@ -241,7 +242,8 @@ Return Value:
         return status;
     }
 
-    if (*BytesReturned >= sizeof(KSWORD_ARK_QUERY_HANDLE_OBJECT_RESPONSE)) {
+    if ((queryRequest->flags & KSWORD_ARK_QUERY_OBJECT_FLAG_QUIET_LOG) == 0UL &&
+        *BytesReturned >= sizeof(KSWORD_ARK_QUERY_HANDLE_OBJECT_RESPONSE)) {
         KSWORD_ARK_QUERY_HANDLE_OBJECT_RESPONSE* response = (KSWORD_ARK_QUERY_HANDLE_OBJECT_RESPONSE*)outputBuffer;
         KswordARKHandleIoctlLog(
             Device,

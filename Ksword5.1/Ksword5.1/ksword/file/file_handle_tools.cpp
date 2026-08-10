@@ -2221,7 +2221,8 @@ namespace ks::file
                 if (processEntry.processId == 0) { continue; }
                 const ksword::ark::HandleEnumResult handleResult = driverClient.enumerateProcessHandles(
                     processEntry.processId,
-                    KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_ALL);
+                    KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_ALL |
+                        KSWORD_ARK_ENUM_HANDLE_FLAG_QUIET_LOG);
                 if (!handleResult.io.ok)
                 {
                     const bool invalidCid =
@@ -2280,7 +2281,8 @@ namespace ks::file
                     const ksword::ark::HandleObjectQueryResult objectResult = driverClient.queryHandleObject(
                         handleEntry.processId,
                         handleEntry.handleValue,
-                        KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL);
+                        KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL |
+                            KSWORD_ARK_QUERY_OBJECT_FLAG_QUIET_LOG);
                     consumeObjectResult(handleEntry, objectResult, false);
                 }
             }
@@ -2319,7 +2321,8 @@ namespace ks::file
                         pendingResults[index] = driverClient.queryHandleObject(
                             handleEntry.processId,
                             handleEntry.handleValue,
-                            KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL);
+                            KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL |
+                                KSWORD_ARK_QUERY_OBJECT_FLAG_QUIET_LOG);
                     }
                 };
 
@@ -2674,6 +2677,9 @@ namespace ks::file
                 options.progressCallback,
                 options.cancellationCallback);
         result = fileHandleResult;
+        result.kernelHandleTableAttempted = options.tryKernelHandleTable;
+        result.kernelHandleTableUsed = options.tryKernelHandleTable && kernelUsable;
+        result.r3HandleFallbackUsed = options.tryKernelHandleTable && !kernelUsable;
         if (IsCancellationRequested(options.cancellationCallback))
         {
             finishCancelledScan();

@@ -8864,6 +8864,7 @@ bool MainWindow::startR0DriverService()
 
             guardedSelf->m_r0DriverServiceRunning = true;
             guardedSelf->startR0RuntimeConsumersAfterServiceStart();
+            emit guardedSelf->r0DriverServiceStarted();
             if (!operationOutcome.alreadyInTargetState)
             {
                 kLogEvent logEvent;

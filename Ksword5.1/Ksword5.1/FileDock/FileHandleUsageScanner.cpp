@@ -81,6 +81,9 @@ namespace filedock::handleusage
             result.processImageMatchCount = backendResult.processImageMatchCount;
             result.loadedModuleMatchCount = backendResult.loadedModuleMatchCount;
             result.kernelHandleMatchCount = backendResult.kernelHandleMatchCount;
+            result.kernelHandleTableAttempted = backendResult.kernelHandleTableAttempted;
+            result.kernelHandleTableUsed = backendResult.kernelHandleTableUsed;
+            result.r3HandleFallbackUsed = backendResult.r3HandleFallbackUsed;
             result.elapsedMs = backendResult.elapsedMs;
             result.diagnosticText = ToQString(backendResult.diagnosticText);
             return result;

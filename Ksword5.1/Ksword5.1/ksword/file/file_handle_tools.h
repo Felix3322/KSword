@@ -255,6 +255,9 @@ namespace ks::file
         std::size_t processImageMatchCount = 0;
         std::size_t loadedModuleMatchCount = 0;
         std::size_t kernelHandleMatchCount = 0;
+        bool kernelHandleTableAttempted = false; // kernelHandleTableAttempted：本轮是否先调用了 R0 HandleTable 路径。
+        bool kernelHandleTableUsed = false;      // kernelHandleTableUsed：R0 路径是否可用并作为文件句柄结果来源。
+        bool r3HandleFallbackUsed = false;       // r3HandleFallbackUsed：R0 不可用后是否回落到 R3 DuplicateHandle。
         std::uint64_t elapsedMs = 0;
         std::wstring diagnosticText;
     };

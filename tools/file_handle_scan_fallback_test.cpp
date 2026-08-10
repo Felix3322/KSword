@@ -12,6 +12,11 @@
 //    churn and must not inflate the R0 object-query failure diagnostic.
 // 5. A successful partial query for an unnamed File object is unmatchable, but
 //    it is not an R0 transport/query failure.
+// 6. The batch scanner marks per-process enumeration and per-handle object
+//    queries as quiet, so a normal scan cannot flood the driver log with one
+//    or two success records for every handle it examines.
+// 7. When R0 is unavailable, the scanner records that R0 was attempted before
+//    entering the R3 fallback so the UI can wait for R0 start and rescan once.
 
 #include "../Ksword5.1/Ksword5.1/ksword/file/file_handle_tools.h"
 #include "../Ksword5.1/Ksword5.1/ArkDriverClient/ArkDriverClient.h"
@@ -28,6 +33,7 @@ namespace
 {
     constexpr int kEmptyScenario = 0;
     constexpr int kTypedHandleScenario = 1;
+    constexpr int kDriverUnavailableScenario = 2;
     constexpr std::uint32_t kHandleBase = 0x1000;
     constexpr std::uint32_t kNonFileHandleCount = 900;
     constexpr std::uint32_t kFileHandleCount = 100;
@@ -44,6 +50,8 @@ namespace
     std::atomic_uint32_t g_objectQueryCount = 0;
     std::atomic_uint32_t g_activeObjectQueryCount = 0;
     std::atomic_uint32_t g_peakObjectQueryCount = 0;
+    std::atomic_bool g_enumQuietFlagObserved = true;
+    std::atomic_bool g_queryQuietFlagObserved = true;
 
     void RecordQueryStarted()
     {
@@ -91,6 +99,13 @@ namespace ksword::ark
     ProcessEnumResult DriverClient::enumerateProcesses(unsigned long) const
     {
         ProcessEnumResult result{};
+        if (g_scenario.load(std::memory_order_acquire) == kDriverUnavailableScenario)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_FILE_NOT_FOUND;
+            result.io.message = "CreateFileW(KswordARK) failed, error=2";
+            return result;
+        }
         result.io.ok = true;
         ProcessEntry entry{};
         entry.processId = ::GetCurrentProcessId();
@@ -105,8 +120,12 @@ namespace ksword::ark
 
     HandleEnumResult DriverClient::enumerateProcessHandles(
         const std::uint32_t processId,
-        unsigned long) const
+        const unsigned long flags) const
     {
+        if ((flags & KSWORD_ARK_ENUM_HANDLE_FLAG_QUIET_LOG) == 0UL)
+        {
+            g_enumQuietFlagObserved.store(false, std::memory_order_release);
+        }
         HandleEnumResult result{};
         if (processId != ::GetCurrentProcessId())
         {
@@ -143,9 +162,13 @@ namespace ksword::ark
     HandleObjectQueryResult DriverClient::queryHandleObject(
         const std::uint32_t processId,
         const std::uint64_t handleValue,
-        unsigned long,
+        const unsigned long flags,
         unsigned long) const
     {
+        if ((flags & KSWORD_ARK_QUERY_OBJECT_FLAG_QUIET_LOG) == 0UL)
+        {
+            g_queryQuietFlagObserved.store(false, std::memory_order_release);
+        }
         g_objectQueryCount.fetch_add(1, std::memory_order_acq_rel);
         RecordQueryStarted();
 
@@ -301,6 +324,23 @@ int wmain()
         return 1;
     }
 
+    g_scenario.store(kDriverUnavailableScenario, std::memory_order_release);
+    g_r3FallbackEntered.store(false, std::memory_order_release);
+    g_cancelRequested.store(false, std::memory_order_release);
+    ks::file::HandleUsageScanOptions unavailableOptions{};
+    unavailableOptions.tryKernelHandleTable = true;
+    const ks::file::HandleUsageScanResult unavailableResult =
+        ks::file::ScanHandleUsageByPaths({ kTargetPath }, unavailableOptions);
+    const bool hasR3FallbackDiagnostic =
+        unavailableResult.diagnosticText.find(L"文件句柄来源:R3 DuplicateHandle") != std::wstring::npos;
+    if (!unavailableResult.kernelHandleTableAttempted ||
+        unavailableResult.kernelHandleTableUsed ||
+        !unavailableResult.r3HandleFallbackUsed ||
+        !hasR3FallbackDiagnostic)
+    {
+        return 12;
+    }
+
     g_scenario.store(kTypedHandleScenario, std::memory_order_release);
     g_kernelEnumerationCompleted.store(false, std::memory_order_release);
     g_r3FallbackEntered.store(false, std::memory_order_release);
@@ -308,6 +348,8 @@ int wmain()
     g_objectQueryCount.store(0, std::memory_order_release);
     g_activeObjectQueryCount.store(0, std::memory_order_release);
     g_peakObjectQueryCount.store(0, std::memory_order_release);
+    g_enumQuietFlagObserved.store(true, std::memory_order_release);
+    g_queryQuietFlagObserved.store(true, std::memory_order_release);
 
     ks::file::HandleUsageScanOptions typedOptions{};
     typedOptions.tryKernelHandleTable = true;
@@ -333,7 +375,11 @@ int wmain()
               << "FILE_LIKE_HANDLES=" << result.fileLikeHandleCount << '\n'
               << "MATCHED_HANDLES=" << result.matchedHandleCount << '\n'
               << "ENUM_CHURN_REPORTED_AS_ERROR=" << (hasEnumFailureDiagnostic ? 1 : 0) << '\n'
-              << "OBJECT_FAILURES=" << objectFailureDiagnosticCount << '\n';
+              << "OBJECT_FAILURES=" << objectFailureDiagnosticCount << '\n'
+              << "ENUM_QUIET_LOG=" << (g_enumQuietFlagObserved.load() ? 1 : 0) << '\n'
+              << "QUERY_QUIET_LOG=" << (g_queryQuietFlagObserved.load() ? 1 : 0) << '\n'
+              << "R0_ATTEMPT_RECORDED=" << (unavailableResult.kernelHandleTableAttempted ? 1 : 0) << '\n'
+              << "R3_FALLBACK_RECORDED=" << (unavailableResult.r3HandleFallbackUsed ? 1 : 0) << '\n';
 
     if (g_r3FallbackEntered.load(std::memory_order_acquire))
     {
@@ -362,6 +408,19 @@ int wmain()
     if (result.matchedHandleCount != 1)
     {
         return 6;
+    }
+    if (!g_enumQuietFlagObserved.load(std::memory_order_acquire))
+    {
+        return 10;
+    }
+    if (!g_queryQuietFlagObserved.load(std::memory_order_acquire))
+    {
+        return 11;
+    }
+    if (!result.kernelHandleTableAttempted || !result.kernelHandleTableUsed ||
+        result.r3HandleFallbackUsed)
+    {
+        return 13;
     }
     return 0;
 }

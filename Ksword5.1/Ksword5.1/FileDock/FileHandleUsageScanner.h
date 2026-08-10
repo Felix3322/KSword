@@ -52,6 +52,9 @@ namespace filedock::handleusage
         std::size_t processImageMatchCount = 0; // processImageMatchCount：命中“进程映像占用”的数量。
         std::size_t loadedModuleMatchCount = 0; // loadedModuleMatchCount：命中“模块加载占用”的数量。
         std::size_t kernelHandleMatchCount = 0; // kernelHandleMatchCount：R0 HandleTable 命中文件句柄数。
+        bool kernelHandleTableAttempted = false; // kernelHandleTableAttempted：是否先调用了 R0 HandleTable 扫描。
+        bool kernelHandleTableUsed = false;      // kernelHandleTableUsed：文件句柄结果是否来自 R0。
+        bool r3HandleFallbackUsed = false;       // r3HandleFallbackUsed：R0 不可用后是否回落到 R3。
         std::uint64_t elapsedMs = 0;           // elapsedMs：扫描耗时毫秒。
         QString diagnosticText;                // diagnosticText：诊断文本（失败计数/降级信息）。
     };

@@ -151,6 +151,10 @@ public slots:
     // 入参 filePath：目标文件或目录路径。
     void openFileUnlockerDockByPath(const QString& filePath);
 
+signals:
+    // r0DriverServiceStarted：R0 服务确认启动后通知等待中的功能重试其只读查询。
+    void r0DriverServiceStarted();
+
 protected:
     // eventFilter 作用：
     // - 监听 ADS 浮动 Dock 窗口的显示与尺寸变化；

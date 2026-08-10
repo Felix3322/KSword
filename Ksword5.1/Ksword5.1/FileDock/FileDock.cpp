@@ -8,6 +8,7 @@
 #include "IrpFileSystemParser.h"
 #include "FileHandleUsageScanner.h"
 #include "../Internationalization/LanguageManager.h"
+#include "../MainWindow.h"
 
 // ============================================================
 // FileDock.cpp
@@ -6591,6 +6592,9 @@ namespace
             refreshButton->setEnabled(false);
             table->clear();
             statusLabel->setText(QStringLiteral("● 正在扫描文件占用..."));
+            m_usageScanInProgress = true;
+            m_usageRetryAfterR0Start = false;
+            m_usageR0StartedDuringScan = false;
             m_usageScanCancelRequested->store(false);
 
             const std::vector<QString> targetPaths{ info.absoluteFilePath() };
@@ -6634,9 +6638,9 @@ namespace
                             const auto scanSnapshot =
                                 std::make_shared<filedock::handleusage::HandleUsageScanResult>(scanResult);
                             const auto commitSnapshot =
-                                [tableGuard, statusGuard, refreshGuard, scanSnapshot]()
+                                [guardThis, tableGuard, statusGuard, refreshGuard, scanSnapshot]()
                             {
-                                if (tableGuard == nullptr || statusGuard == nullptr ||
+                                if (guardThis == nullptr || tableGuard == nullptr || statusGuard == nullptr ||
                                     refreshGuard == nullptr)
                                 {
                                     return;
@@ -6695,6 +6699,38 @@ namespace
                                 }
                                 statusGuard->setText(statusText);
                                 refreshGuard->setEnabled(true);
+
+                                guardThis->m_usageScanInProgress = false;
+                                if (!scanSnapshot->r3HandleFallbackUsed)
+                                {
+                                    guardThis->m_usageRetryAfterR0Start = false;
+                                    guardThis->m_usageR0StartedDuringScan = false;
+                                    return;
+                                }
+
+                                // DriverClient 已在本轮先调用 R0，并由 MainWindow 在 UI 线程提示启用。
+                                // 若服务在 R3 回落期间启动，提交当前 R3 结果后只自动重扫一次；
+                                // 否则保持 R3 结果并等待后续的 R0 启动成功通知。
+                                if (guardThis->m_usageR0StartedDuringScan)
+                                {
+                                    guardThis->m_usageR0StartedDuringScan = false;
+                                    QMetaObject::invokeMethod(
+                                        guardThis.data(),
+                                        [guardThis, tableGuard, statusGuard, refreshGuard]()
+                                        {
+                                            if (guardThis != nullptr && tableGuard != nullptr &&
+                                                statusGuard != nullptr && refreshGuard != nullptr)
+                                            {
+                                                guardThis->refreshUsageTable(
+                                                    tableGuard.data(),
+                                                    statusGuard.data(),
+                                                    refreshGuard.data());
+                                            }
+                                        },
+                                        Qt::QueuedConnection);
+                                    return;
+                                }
+                                guardThis->m_usageRetryAfterR0Start = true;
                             };
 
                             if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
@@ -8314,9 +8350,8 @@ namespace
             // 用途：Phase-10 把现有文件占用扫描结果直接嵌入属性窗口。
             // 处理：这里只创建轻量 UI，不在首次切换 Tab 时自动扫描，避免系统句柄枚举
             //       和结果回填让属性窗口卡顿；用户点击“刷新占用”后再后台扫描。
-            //       Scanner 当前会优先使用用户态句柄快照，并在诊断中标记
-            //       DuplicateHandle/NtObjectName 等来源。后续 R0 HandleTable 增强可以
-            //       在 Scanner 内部扩展，属性页无需直接 DeviceIoControl。
+            //       Scanner 先调用 R0 HandleTable；R0 未启用时由全局入口提示用户，
+            //       本轮回落 R3，服务启用成功后属性页再自动重扫一次。
             QWidget* page = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(page);
 
@@ -8417,6 +8452,28 @@ namespace
                 {
                     terminateSelectedUsageProcess(table, statusLabel, refreshButton, true);
                 });
+
+            MainWindow* const mainWindow = qobject_cast<MainWindow*>(parentWidget() != nullptr
+                ? parentWidget()->window()
+                : nullptr);
+            if (mainWindow != nullptr)
+            {
+                connect(mainWindow, &MainWindow::r0DriverServiceStarted, this,
+                    [this, table, statusLabel, refreshButton]()
+                    {
+                        if (m_usageScanInProgress)
+                        {
+                            m_usageR0StartedDuringScan = true;
+                            return;
+                        }
+                        if (!m_usageRetryAfterR0Start)
+                        {
+                            return;
+                        }
+                        m_usageRetryAfterR0Start = false;
+                        refreshUsageTable(table, statusLabel, refreshButton);
+                    });
+            }
 
             if (m_initialTabKey == QStringLiteral("usage"))
             {
@@ -8864,6 +8921,9 @@ namespace
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
         std::shared_ptr<std::atomic_bool> m_usageScanCancelRequested; // 文件占用扫描取消标记，关闭属性窗时置位。
+        bool m_usageScanInProgress = false; // 属性页占用扫描是否仍在后台执行。
+        bool m_usageRetryAfterR0Start = false; // R3 回落结果是否等待下一次 R0 启动成功后重扫。
+        bool m_usageR0StartedDuringScan = false; // R0 是否在当前 R3 回落扫描完成前已经启动。
         bool m_themeStyleApplying = false; // 避免 PaletteChange 触发样式重入。
     };
 
