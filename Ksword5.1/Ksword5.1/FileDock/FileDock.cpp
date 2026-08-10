@@ -1,4 +1,5 @@
 #include "FileDock.h"
+#include "../Framework/DestructiveActionConfirmation.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/VisibleTableWidget.h"
 #include "../UI/UI_All.h"
@@ -5189,9 +5190,13 @@ namespace
     class FileDetailDialog final : public QDialog
     {
     public:
-        explicit FileDetailDialog(const QString& filePath, QWidget* parent = nullptr)
+        explicit FileDetailDialog(
+            const QString& filePath,
+            QWidget* parent = nullptr,
+            const QString& initialTabKey = QString())
             : QDialog(parent)
             , m_filePath(filePath)
+            , m_initialTabKey(initialTabKey.trimmed().toLower())
         {
             m_hashCancelRequested = std::make_shared<std::atomic_bool>(false);
             m_usageScanCancelRequested = std::make_shared<std::atomic_bool>(false);
@@ -5235,7 +5240,7 @@ namespace
             m_tabWidget->addTab(buildDeferredTab(QStringLiteral("reparse")), QStringLiteral("重解析点 / 符号链接"));
             m_tabWidget->addTab(buildDeferredTab(QStringLiteral("security")), QStringLiteral("安全与权限"));
             m_tabWidget->addTab(buildHashTab(), QStringLiteral("哈希与完整性"));
-            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("usage")), QStringLiteral("文件占用"));
+            m_tabWidget->addTab(buildDeferredTab(QStringLiteral("usage")), QStringLiteral("文件占用与解锁"));
             m_tabWidget->addTab(buildDeferredTab(QStringLiteral("fileobject")), QStringLiteral("FileObject / Section / ControlArea"));
             m_tabWidget->addTab(buildDeferredTab(QStringLiteral("storage")), QStringLiteral("Storage / MountMgr / FVE"));
             m_tabWidget->addTab(buildDeferredTab(QStringLiteral("filters")), QStringLiteral("Minifilter / Instance / Volume"));
@@ -5252,7 +5257,7 @@ namespace
                 {QStringLiteral("file.detail.tab.reparse"), QStringLiteral("重解析点 / 符号链接")},
                 {QStringLiteral("file.detail.tab.security"), QStringLiteral("安全与权限")},
                 {QStringLiteral("file.detail.tab.hash"), QStringLiteral("哈希与完整性")},
-                {QStringLiteral("file.detail.tab.usage"), QStringLiteral("文件占用")},
+                {QStringLiteral("file.detail.tab.usage"), QStringLiteral("文件占用与解锁")},
                 {QStringLiteral("file.detail.tab.fileobject"), QStringLiteral("FileObject / Section / ControlArea")},
                 {QStringLiteral("file.detail.tab.storage"), QStringLiteral("Storage / MountMgr / FVE")},
                 {QStringLiteral("file.detail.tab.filters"), QStringLiteral("Minifilter / Instance / Volume")},
@@ -5330,7 +5335,12 @@ namespace
                     }
                     activateDeferredTab(m_tabWidget, tabIndex);
                 });
-            if (!m_tabNavigationButtons.isEmpty())
+            constexpr int usageTabIndex = 4;
+            if (m_initialTabKey == QStringLiteral("usage"))
+            {
+                m_tabWidget->setCurrentIndex(usageTabIndex);
+            }
+            else if (!m_tabNavigationButtons.isEmpty())
             {
                 m_tabNavigationButtons.front()->setChecked(true);
             }
@@ -6381,6 +6391,186 @@ namespace
             }
         }
 
+        struct UsageSelection
+        {
+            std::uint32_t processId = 0;
+            std::uint64_t processCreationTime = 0;
+            std::uint64_t handleValue = 0;
+            QString processName;
+            QString matchedTargetPath;
+            bool matchedByDirectoryRule = false;
+        };
+
+        static constexpr int usageProcessIdRole = Qt::UserRole;
+        static constexpr int usageProcessCreationTimeRole = Qt::UserRole + 1;
+        static constexpr int usageHandleValueRole = Qt::UserRole + 2;
+        static constexpr int usageMatchedTargetPathRole = Qt::UserRole + 3;
+        static constexpr int usageDirectoryMatchRole = Qt::UserRole + 4;
+
+        static bool readUsageSelection(QTreeWidget* table, UsageSelection& selectionOut)
+        {
+            // 用途：从当前行取回扫描时的 PID/创建时间/句柄身份。
+            // 这些隐藏字段必须与可见行一起保存，操作前才能拒绝 PID 复用或陈旧句柄。
+            if (table == nullptr || table->currentItem() == nullptr)
+            {
+                return false;
+            }
+
+            QTreeWidgetItem* const item = table->currentItem();
+            selectionOut.processId = item->data(0, usageProcessIdRole).toUInt();
+            selectionOut.processCreationTime =
+                item->data(0, usageProcessCreationTimeRole).toULongLong();
+            selectionOut.handleValue = item->data(0, usageHandleValueRole).toULongLong();
+            selectionOut.processName = item->text(1);
+            selectionOut.matchedTargetPath = item->data(0, usageMatchedTargetPathRole).toString();
+            selectionOut.matchedByDirectoryRule = item->data(0, usageDirectoryMatchRole).toBool();
+            return selectionOut.processId != 0U;
+        }
+
+        void closeSelectedUsageHandle(
+            QTreeWidget* table,
+            QLabel* statusLabel,
+            QPushButton* refreshButton)
+        {
+            UsageSelection selection;
+            if (!readUsageSelection(table, selection))
+            {
+                QMessageBox::information(this, QStringLiteral("关闭句柄"), QStringLiteral("请先选择一条句柄记录。"));
+                return;
+            }
+            if (selection.processId <= 4U ||
+                selection.processId == static_cast<std::uint32_t>(::GetCurrentProcessId()) ||
+                selection.processCreationTime == 0U || selection.handleValue == 0U ||
+                isCriticalProcessName(selection.processName))
+            {
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("关闭句柄"),
+                    QStringLiteral("当前记录没有可关闭的远程句柄，或目标进程受保护。"));
+                return;
+            }
+
+            const QString processText = selection.processName.trimmed().isEmpty()
+                ? QStringLiteral("Unknown")
+                : selection.processName;
+            if (!ks::ui::confirmDestructiveAction(
+                    this,
+                    QStringLiteral("file-detail-usage-close-handle-r3"),
+                    QStringLiteral("关闭句柄（R3）"),
+                    QStringLiteral("%1（PID %2）的句柄 %3")
+                        .arg(processText)
+                        .arg(selection.processId)
+                        .arg(formatHex64(selection.handleValue)),
+                    QStringLiteral("关闭正在使用的文件句柄可能导致目标进程读写失败或数据丢失。")))
+            {
+                return;
+            }
+
+            std::string detailText;
+            const bool closeOk = ks::file::CloseRemoteHandle(
+                selection.processId,
+                selection.handleValue,
+                selection.processCreationTime,
+                selection.matchedTargetPath.toStdWString(),
+                selection.matchedByDirectoryRule,
+                detailText);
+            if (!closeOk)
+            {
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("关闭句柄（R3）"),
+                    QStringLiteral("关闭句柄失败：%1").arg(QString::fromStdString(detailText)));
+                return;
+            }
+
+            statusLabel->setText(QStringLiteral("● 句柄已关闭，正在重新扫描占用状态..."));
+            refreshUsageTable(table, statusLabel, refreshButton);
+        }
+
+        void terminateSelectedUsageProcess(
+            QTreeWidget* table,
+            QLabel* statusLabel,
+            QPushButton* refreshButton,
+            const bool useKernelDriver)
+        {
+            UsageSelection selection;
+            if (!readUsageSelection(table, selection))
+            {
+                QMessageBox::information(this, QStringLiteral("结束进程"), QStringLiteral("请先选择一条句柄记录。"));
+                return;
+            }
+            if (selection.processId <= 4U ||
+                selection.processId == static_cast<std::uint32_t>(::GetCurrentProcessId()) ||
+                selection.processCreationTime == 0U ||
+                isCriticalProcessName(selection.processName))
+            {
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("结束进程"),
+                    QStringLiteral("当前记录没有可结束的进程，或目标 PID 受保护。"));
+                return;
+            }
+
+            const QString actionTitle = useKernelDriver
+                ? QStringLiteral("结束进程（R0）")
+                : QStringLiteral("结束进程（R3）");
+            const QString processText = selection.processName.trimmed().isEmpty()
+                ? QStringLiteral("Unknown")
+                : selection.processName;
+            const QString riskText = useKernelDriver
+                ? QStringLiteral("驱动级结束操作不可逆，可能造成数据丢失、系统不稳定或蓝屏。")
+                : QStringLiteral("结束进程会丢失该进程未保存的数据。");
+            if (!ks::ui::confirmDestructiveAction(
+                    this,
+                    useKernelDriver
+                        ? QStringLiteral("file-detail-usage-terminate-r0")
+                        : QStringLiteral("file-detail-usage-terminate-r3"),
+                    actionTitle,
+                    QStringLiteral("PID %1（%2）").arg(selection.processId).arg(processText),
+                    riskText))
+            {
+                return;
+            }
+
+            std::string detailText;
+            bool terminateOk = false;
+            if (useKernelDriver)
+            {
+                // 先持有已校验创建时间的进程句柄，防止驱动按 PID 查找时命中复用后的新进程。
+                HANDLE verifiedProcessHandle = nullptr;
+                if (ks::file::OpenProcessForVerifiedAction(
+                        selection.processId,
+                        selection.processCreationTime,
+                        SYNCHRONIZE,
+                        verifiedProcessHandle,
+                        detailText))
+                {
+                    ksword::ark::DriverHandle driverHandle = openKswordArkDriverHandle(&detailText);
+                    if (driverHandle.isValid())
+                    {
+                        terminateOk = terminateProcessByR0Driver(driverHandle, selection.processId, &detailText);
+                    }
+                    ::CloseHandle(verifiedProcessHandle);
+                }
+            }
+            else
+            {
+                terminateOk = terminateProcessByR3(
+                    selection.processId,
+                    selection.processCreationTime,
+                    &detailText);
+            }
+
+            if (!terminateOk)
+            {
+                QMessageBox::warning(this, actionTitle, QString::fromStdString(detailText));
+                return;
+            }
+
+            statusLabel->setText(QStringLiteral("● 进程已结束，正在重新扫描占用状态..."));
+            refreshUsageTable(table, statusLabel, refreshButton);
+        }
+
         void refreshUsageTable(QTreeWidget* table, QLabel* statusLabel, QPushButton* refreshButton)
         {
             // 用途：异步刷新属性页内的文件占用列表。
@@ -6474,6 +6664,11 @@ namespace
                                         ? (entry.matchedByDirectoryRule ? QStringLiteral("目录前缀") : QStringLiteral("精确"))
                                         : entry.matchRuleText;
                                     item->setText(6, QStringLiteral("%1 | %2").arg(sourceText, ruleText));
+                                    item->setData(0, usageProcessIdRole, static_cast<qulonglong>(entry.processId));
+                                    item->setData(0, usageProcessCreationTimeRole, static_cast<qulonglong>(entry.processCreationTime));
+                                    item->setData(0, usageHandleValueRole, static_cast<qulonglong>(entry.handleValue));
+                                    item->setData(0, usageMatchedTargetPathRole, entry.matchedTargetPath);
+                                    item->setData(0, usageDirectoryMatchRole, entry.matchedByDirectoryRule);
                                     tableGuard->addTopLevelItem(item);
                                 }
                                 tableGuard->setSortingEnabled(true);
@@ -6483,6 +6678,10 @@ namespace
                                     tableGuard->resizeColumnToContents(1);
                                     tableGuard->resizeColumnToContents(2);
                                     tableGuard->resizeColumnToContents(3);
+                                }
+                                if (tableGuard->topLevelItemCount() > 0)
+                                {
+                                    tableGuard->setCurrentItem(tableGuard->topLevelItem(0));
                                 }
 
                                 QString statusText = QStringLiteral("● 扫描完成 %1 ms | 总句柄:%2 | 文件句柄:%3 | 命中:%4")
@@ -8123,11 +8322,37 @@ namespace
 
             QHBoxLayout* toolbarLayout = new QHBoxLayout();
             QPushButton* refreshButton = new QPushButton(QStringLiteral("刷新占用"), page);
+            refreshButton->setIcon(QIcon(QStringLiteral(":/Icon/handle_refresh.svg")));
+            refreshButton->setIconSize(QSize(16, 16));
+            refreshButton->setToolTip(QStringLiteral("重新扫描当前文件或目录的占用句柄"));
+
+            QPushButton* closeHandleButton = new QPushButton(QStringLiteral("关闭句柄（R3）"), page);
+            closeHandleButton->setIcon(QIcon(QStringLiteral(":/Icon/handle_close.svg")));
+            closeHandleButton->setIconSize(QSize(16, 16));
+            closeHandleButton->setToolTip(QStringLiteral("校验选中记录后，从用户态关闭该远程文件句柄"));
+            closeHandleButton->setEnabled(false);
+
+            QPushButton* terminateR3Button = new QPushButton(QStringLiteral("结束进程（R3）"), page);
+            terminateR3Button->setIcon(QIcon(QStringLiteral(":/Icon/process_terminate.svg")));
+            terminateR3Button->setIconSize(QSize(16, 16));
+            terminateR3Button->setToolTip(QStringLiteral("校验 PID 和进程创建时间后，从用户态结束占用进程"));
+            terminateR3Button->setEnabled(false);
+
+            QPushButton* terminateR0Button = new QPushButton(QStringLiteral("结束进程（R0）"), page);
+            terminateR0Button->setIcon(QIcon(QStringLiteral(":/Icon/process_terminate.svg")));
+            terminateR0Button->setIconSize(QSize(16, 16));
+            terminateR0Button->setToolTip(QStringLiteral("校验 PID 和进程创建时间后，由 KswordARK 驱动结束占用进程"));
+            terminateR0Button->setEnabled(false);
+
             QLabel* statusLabel = new QLabel(QStringLiteral("● 未扫描，点击“刷新占用”开始枚举文件占用。"), page);
             statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
             toolbarLayout->addWidget(refreshButton, 0);
-            toolbarLayout->addWidget(statusLabel, 1);
+            toolbarLayout->addWidget(closeHandleButton, 0);
+            toolbarLayout->addWidget(terminateR3Button, 0);
+            toolbarLayout->addWidget(terminateR0Button, 0);
+            toolbarLayout->addStretch(1);
             layout->addLayout(toolbarLayout);
+            layout->addWidget(statusLabel, 0);
 
             QTreeWidget* table = new QTreeWidget(page);
             table->setColumnCount(7);
@@ -8143,6 +8368,7 @@ namespace
             table->setRootIsDecorated(false);
             table->setAlternatingRowColors(true);
             table->setSelectionBehavior(QAbstractItemView::SelectRows);
+            table->setSelectionMode(QAbstractItemView::SingleSelection);
             table->setEditTriggers(QAbstractItemView::NoEditTriggers);
             table->setSortingEnabled(true);
             if (table->header() != nullptr)
@@ -8156,6 +8382,54 @@ namespace
                 {
                     refreshUsageTable(table, statusLabel, refreshButton);
                 });
+            connect(table, &QTreeWidget::currentItemChanged, this,
+                [closeHandleButton, terminateR3Button, terminateR0Button](QTreeWidgetItem* currentItem)
+                {
+                    const std::uint32_t processId = currentItem == nullptr
+                        ? 0U
+                        : currentItem->data(0, usageProcessIdRole).toUInt();
+                    const std::uint64_t creationTime = currentItem == nullptr
+                        ? 0U
+                        : currentItem->data(0, usageProcessCreationTimeRole).toULongLong();
+                    const std::uint64_t handleValue = currentItem == nullptr
+                        ? 0U
+                        : currentItem->data(0, usageHandleValueRole).toULongLong();
+                    const QString processName = currentItem == nullptr ? QString() : currentItem->text(1);
+                    const bool processActionAllowed = processId > 4U &&
+                        processId != static_cast<std::uint32_t>(::GetCurrentProcessId()) &&
+                        creationTime != 0U && !isCriticalProcessName(processName);
+                    closeHandleButton->setEnabled(processActionAllowed && handleValue != 0U);
+                    terminateR3Button->setEnabled(processActionAllowed);
+                    terminateR0Button->setEnabled(processActionAllowed);
+                });
+            connect(closeHandleButton, &QPushButton::clicked, this,
+                [this, table, statusLabel, refreshButton]()
+                {
+                    closeSelectedUsageHandle(table, statusLabel, refreshButton);
+                });
+            connect(terminateR3Button, &QPushButton::clicked, this,
+                [this, table, statusLabel, refreshButton]()
+                {
+                    terminateSelectedUsageProcess(table, statusLabel, refreshButton, false);
+                });
+            connect(terminateR0Button, &QPushButton::clicked, this,
+                [this, table, statusLabel, refreshButton]()
+                {
+                    terminateSelectedUsageProcess(table, statusLabel, refreshButton, true);
+                });
+
+            if (m_initialTabKey == QStringLiteral("usage"))
+            {
+                // 从“文件占用与解锁”入口进入时直接扫描；
+                // 普通属性窗口手动切页仍保持按需刷新，避免无意义的全系统枚举。
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, table, statusLabel, refreshButton]()
+                    {
+                        refreshUsageTable(table, statusLabel, refreshButton);
+                    },
+                    Qt::QueuedConnection);
+            }
             return page;
         }
 
@@ -8578,6 +8852,7 @@ namespace
 
     private:
         QString m_filePath;   // 当前详情窗口对应的文件路径。
+        QString m_initialTabKey; // 外部入口指定的初始页；usage 入口会自动扫描。
         QWidget* m_tabNavigation = nullptr; // 文件属性左侧导航容器。
         QTabWidget* m_tabWidget = nullptr; // 继续承载现有的页面与懒加载机制。
         QButtonGroup* m_tabNavigationButtonGroup = nullptr; // 保证左侧导航单选。
@@ -12518,7 +12793,8 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
         QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动(POSIX)"));
     driverPosixDeleteAction->setToolTip(QStringLiteral(
         "由 R0 使用 FileDispositionInformationEx 的 POSIX unlink 语义；是否可用取决于系统与文件系统，不回退到其它后端。"));
-    QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("文件解锁器(R3/R0)"));
+    QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("文件占用与解锁"));
+    unlockByDriverAction->setToolTip(QStringLiteral("在文件属性中扫描占用，并提供关闭句柄、R3/R0 结束进程操作"));
     QMenu* addOplockMenu = menu.addMenu(QIcon(":/Icon/plus.svg"), QStringLiteral("添加 Oplock（访问计数）"));
     QAction* addOplockLevel1Action = addOplockMenu->addAction(QStringLiteral("Level 1 - 独占读写缓存，别人访问会计数"));
     QAction* addOplockLevel2Action = addOplockMenu->addAction(QStringLiteral("Level 2 - 共享只读缓存，别人写入会计数"));
@@ -14819,10 +15095,8 @@ void FileDock::unlockPathsByDriver(
         return;
     }
 
-    // “文件解锁器”与“占用句柄扫描”共用同一份扫描数据和解锁动作。
-    // 旧实现会在后台线程中等待第二个选择对话框，既重复了结果页，也会在
-    // 扫描期间关闭窗口时产生陈旧回调。统一入口后，关闭句柄及 R3/R0 结束
-    // 进程动作都在结果窗口内完成。
+    // 旧解锁器入口直达文件属性的统一占用/解锁页。
+    // 属性窗口关闭时通过共享取消标记使扫描回调安全失效。
     Q_UNUSED(triggerTag);
     Q_UNUSED(panelForRefresh);
     openHandleUsageScanWindow(paths);
@@ -15721,7 +15995,7 @@ void FileDock::showColumnManagerDialog(FilePanelWidgets& panel)
         << eol;
 }
 
-void FileDock::showFileDetailDialog(const QString& filePath)
+void FileDock::showFileDetailDialog(const QString& filePath, const QString& initialTabKey)
 {
     QFileInfo fileInfo(filePath);
     if (!fileInfo.exists())
@@ -15735,7 +16009,7 @@ void FileDock::showFileDetailDialog(const QString& filePath)
     }
 
     // 非模态详情窗：允许同时打开多个属性页做对比。
-    FileDetailDialog* dialog = new FileDetailDialog(filePath, this);
+    FileDetailDialog* dialog = new FileDetailDialog(filePath, this, initialTabKey);
     dialog->setWindowFlag(Qt::WindowStaysOnTopHint, false);
     dialog->show();
     dialog->raise();

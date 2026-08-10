@@ -200,9 +200,6 @@
     <ClCompile Include="FileDock\FileHandleUsageScanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="FileDock\FileHandleUsageWindow.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="FileDock\FileMappedProcessWindow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1622,9 +1619,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FileDock\FileHandleUsageScanner.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="FileDock\FileHandleUsageWindow.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FileDock\FileMappedProcessWindow.h">

@@ -59,7 +59,7 @@ namespace filedock::handleusage
     // scanHandleUsageByPaths 作用：
     // - 扫描系统句柄并筛选“占用目标路径”的句柄；
     // - 支持文件和目录两种匹配规则（文件精确匹配、目录前缀匹配）。
-    // 调用方式：FileHandleUsageWindow 后台线程调用。
+    // 调用方式：文件属性“文件占用与解锁”页的后台线程调用。
     // 传入 absolutePaths：目标绝对路径集合（可多选）。
     // 传入 progressPid：进度条 id，0 表示不转接进度。
     // 传入 tryKernelHandleTable：true 表示优先尝试 R0 HandleTable；false 表示只做 R3/合成占用扫描。

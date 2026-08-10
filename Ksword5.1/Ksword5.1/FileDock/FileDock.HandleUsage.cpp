@@ -4,11 +4,10 @@
 // FileDock.HandleUsage.cpp
 // 作用：
 // - 承载 FileDock “占用句柄扫描”入口逻辑；
-// - 负责弹出结果窗口并桥接“转到进程详情”动作；
+// - 将旧解锁器入口统一导向文件属性的“文件占用与解锁”页；
 // - 避免继续膨胀 FileDock.cpp 主文件。
 // ============================================================
 
-#include "FileHandleUsageWindow.h"
 #include "FileMappedProcessWindow.h"
 
 #include <QFileInfo>
@@ -49,47 +48,13 @@ void FileDock::openHandleUsageScanWindow(const std::vector<QString>& scanPaths)
         return;
     }
 
-    // 第二步：创建独立结果窗口，并配置“打开进程详情”的桥接回调。
-    // 说明：Shell 右键启动时 FileDock 可能刚被懒加载，使用顶层窗口做父级可避免
-    // Dock 页面尚未完成绘制时把弹窗也拖进黑屏/透明继承状态。
-    QWidget* const dialogParent = (this->window() != nullptr) ? this->window() : this;
-    auto* scanWindow = new FileHandleUsageWindow(validPaths, dialogParent);
-    scanWindow->setAttribute(Qt::WA_DeleteOnClose, true);
-    scanWindow->setOpenProcessDetailCallback([this](const std::uint32_t processId)
-        {
-            const quint32 pidValue = static_cast<quint32>(processId);
-            QObject* topWindowObject = this->window();
-            if (topWindowObject == nullptr)
-            {
-                return;
-            }
-
-            const bool invokeOk = QMetaObject::invokeMethod(
-                topWindowObject,
-                "openProcessDetailByPid",
-                Qt::QueuedConnection,
-                Q_ARG(quint32, pidValue));
-            if (invokeOk)
-            {
-                return;
-            }
-
-            // 兜底：若主窗口未提供进程详情入口，则至少跳到“句柄Dock + PID过滤”。
-            (void)QMetaObject::invokeMethod(
-                topWindowObject,
-                "focusHandleDockByPid",
-                Qt::QueuedConnection,
-                Q_ARG(quint32, pidValue));
-        });
-
-    // 第三步：展示窗口并记录日志，便于后续链路审计。
-    scanWindow->show();
-    scanWindow->raise();
-    scanWindow->activateWindow();
+    // 属性窗口一次只表示一个目标。所有现有入口均限制为单选，
+    // 这里取首项仅作为旧内部签名的兼容保护，不再创建第二套结果页。
+    showFileDetailDialog(validPaths.front(), QStringLiteral("usage"));
 
     kLogEvent openWindowEvent;
     info << openWindowEvent
-        << "[FileDock] openHandleUsageScanWindow: targetCount="
+        << "[FileDock] openHandleUsageScanWindow: opened unified property usage page, targetCount="
         << validPaths.size()
         << eol;
 }

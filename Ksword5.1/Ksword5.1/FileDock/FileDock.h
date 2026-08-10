@@ -495,8 +495,8 @@ private:
     static std::size_t recordFileOplockAccessPrograms(FileOplockEntry& entry, std::uint64_t breakSequence);
 
     // unlockPathsByDriver：
-    // - 作用：兼容旧“文件解锁器”入口，并统一转交“占用句柄扫描”窗口；
-    // - 解锁窗口内提供关闭句柄、R3 结束进程、R0 结束进程，避免两套页面和后台等待 UI。
+    // - 作用：兼容旧“文件解锁器”入口，并统一转交属性窗口的“文件占用与解锁”页；
+    // - 该页内提供关闭句柄、R3 结束进程、R0 结束进程，不再存在独立解锁窗口。
     // - 参数 triggerTag / panelForRefresh 保留 ABI，旧调用方无需分叉。
     void unlockPathsByDriver(
         const std::vector<QString>& targetPaths,
@@ -508,12 +508,12 @@ private:
     void showColumnManagerDialog(FilePanelWidgets& panel);
 
     // showFileDetailDialog：
-    // - 作用：打开文件详情窗口（多 Tab 信息展示）。
-    void showFileDetailDialog(const QString& filePath);
+    // - 作用：打开文件详情窗口（多 Tab 信息展示）；initialTabKey 可直达指定页。
+    void showFileDetailDialog(const QString& filePath, const QString& initialTabKey = QString());
 
     // openHandleUsageScanWindow：
-    // - 作用：基于当前右键选中路径打开“占用句柄扫描结果”窗口；
-    // - 扫描结果独立展示，不阻塞 FileDock 主界面。
+    // - 作用：兼容原有调用点，打开属性窗口内的统一占用/解锁页；
+    // - 不再弹出独立扫描结果窗口。
     // - 参数 scanPaths：待扫描路径集合（文件或目录）。
     void openHandleUsageScanWindow(const std::vector<QString>& scanPaths);
 
