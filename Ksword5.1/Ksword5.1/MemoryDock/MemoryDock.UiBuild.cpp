@@ -165,6 +165,9 @@ void MemoryDock::initializeToolbar()
     m_processCombo->setStyleSheet(comboStyle);
     m_processCombo->setToolTip("选择目标进程（进程名 + PID）。");
 
+    // 弹层展开期间必须禁止重建下拉框，这里先建立对弹层窗口的监听。
+    installProcessComboPopupWatch();
+
     m_attachButton = new QPushButton("附加", toolbarContainer);
     m_detachButton = new QPushButton("分离", toolbarContainer);
     m_refreshButton = new QPushButton("刷新", toolbarContainer);
@@ -300,7 +303,7 @@ void MemoryDock::initializeProcessModuleTab()
     m_moduleStatusLabel = new QLabel("● 待刷新", modulePanel);
     m_moduleStatusLabel->setStyleSheet(
         QStringLiteral("color:%1; font-weight:600;")
-            .arg(KswordTheme::TextSecondaryColor().name(QColor::HexRgb)));
+            .arg(KswordTheme::TextSecondaryHex()));
     moduleTopBarLayout->addWidget(m_moduleStatusLabel);
     moduleLayout->addLayout(moduleTopBarLayout);
 

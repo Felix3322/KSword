@@ -160,6 +160,15 @@ void MemoryDock::initializeConnections()
         }
         });
 
+    // 下拉框上滚动滚轮会逐项连发 currentIndexChanged，每一项都直接开一轮模块枚举
+    // 会瞬间堆出几十个后台任务并把主线程淹没在回投里；这里统一做一次去抖。
+    m_processComboChangeTimer = new QTimer(this);
+    m_processComboChangeTimer->setSingleShot(true);
+    m_processComboChangeTimer->setInterval(200);
+    connect(m_processComboChangeTimer, &QTimer::timeout, this, [this]() {
+        refreshModuleListForPid(m_pendingModuleRefreshPid);
+        });
+
     connect(m_processCombo, &QComboBox::currentIndexChanged, this, [this](int indexValue) {
         // 顶部进程切换时只刷新模块预览，不自动附加。
         if (indexValue < 0)
@@ -175,7 +184,8 @@ void MemoryDock::initializeConnections()
             << ", pid="
             << pid
             << eol;
-        refreshModuleListForPid(pid);
+        m_pendingModuleRefreshPid = pid;
+        m_processComboChangeTimer->start();
         });
 
     connect(m_attachButton, &QPushButton::clicked, this, [this]() {

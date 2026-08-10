@@ -26,6 +26,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>

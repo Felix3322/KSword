@@ -563,6 +563,105 @@ namespace
     }
 }
 
+bool MemoryDock::eventFilter(QObject* watchedObject, QEvent* eventObject)
+{
+    // 只关心进程下拉框弹层窗口的隐藏：Qt 没有公开的“弹层已收起”信号，
+    // 这里靠弹层顶层窗口的 Hide 事件把被推迟的进程列表提交放回事件循环。
+    if (eventObject != nullptr &&
+        eventObject->type() == QEvent::Hide &&
+        m_processCombo != nullptr &&
+        m_processCombo->view() != nullptr &&
+        watchedObject == m_processCombo->view()->window())
+    {
+        // Hide 事件发生在 QComboBox 收尾之前，回投到外层事件循环再重建控件。
+        QTimer::singleShot(0, this, [this]() {
+            flushProcessComboDeferredCommit();
+            });
+    }
+    return QWidget::eventFilter(watchedObject, eventObject);
+}
+
+void MemoryDock::installProcessComboPopupWatch()
+{
+    if (m_processCombo == nullptr)
+    {
+        return;
+    }
+
+    // view() 会惰性创建弹层容器；这里主动创建一次，后续复用同一个顶层窗口。
+    QAbstractItemView* const popupView = m_processCombo->view();
+    if (popupView == nullptr)
+    {
+        return;
+    }
+    QWidget* const popupWindow = popupView->window();
+    if (popupWindow == nullptr || popupWindow == m_processCombo->window())
+    {
+        return;
+    }
+    popupWindow->installEventFilter(this);
+}
+
+bool MemoryDock::isProcessComboPopupOpen()
+{
+    if (m_processCombo == nullptr)
+    {
+        return false;
+    }
+    QAbstractItemView* const popupView = m_processCombo->view();
+    if (popupView == nullptr)
+    {
+        return false;
+    }
+    QWidget* const popupWindow = popupView->window();
+    return popupWindow != nullptr &&
+        popupWindow != m_processCombo->window() &&
+        popupWindow->isVisible();
+}
+
+bool MemoryDock::deferCommitWhileProcessComboPopupOpen(std::function<void()> commitAction)
+{
+    if (!commitAction)
+    {
+        return false;
+    }
+    if (!isProcessComboPopupOpen())
+    {
+        return false;
+    }
+
+    // 弹层展开时清空并重填下拉框会让弹层保持鼠标抓取而内容失效，
+    // 表现就是“点了下拉框之后整个界面点不动”。这里只保留最新一次提交。
+    kLogEvent deferCommitEvent;
+    info << deferCommitEvent
+        << "[MemoryDock] 进程下拉框展开中，推迟本轮进程列表提交。"
+        << eol;
+    m_processComboDeferredCommit = std::move(commitAction);
+    return true;
+}
+
+void MemoryDock::flushProcessComboDeferredCommit()
+{
+    if (!m_processComboDeferredCommit)
+    {
+        return;
+    }
+    if (isProcessComboPopupOpen())
+    {
+        // 弹层又被打开，继续等待下一次收起。
+        return;
+    }
+
+    std::function<void()> commitAction;
+    commitAction.swap(m_processComboDeferredCommit);
+
+    kLogEvent flushCommitEvent;
+    info << flushCommitEvent
+        << "[MemoryDock] 进程下拉框已收起，回投被推迟的进程列表提交。"
+        << eol;
+    commitAction();
+}
+
 void MemoryDock::refreshProcessList(const bool keepSelection)
 {
     // 输出刷新入口日志，记录是否尝试保留上次选择。
@@ -571,6 +670,10 @@ void MemoryDock::refreshProcessList(const bool keepSelection)
         << "[MemoryDock] refreshProcessList: 开始刷新进程列表, keepSelection="
         << (keepSelection ? "true" : "false")
         << eol;
+
+    // 兜底：弹层已收起但 Hide 回投丢失时，被推迟的旧提交在这里先落地，
+    // 否则在途标记会一直挂着，进程列表再也不会更新。
+    flushProcessComboDeferredCommit();
 
     // 已有枚举在途时不再叠加第二次 Toolhelp 快照：进程详情页一次 Tab 点击会连调两次，
     // 后到的请求合并成一个待办，等在途结果落地后再补一轮。
@@ -778,6 +881,13 @@ void MemoryDock::refreshProcessList(const bool keepSelection)
                         commitDock->refreshProcessList(pendingKeepSelection);
                     }
                 };
+
+                // 顶部进程下拉框展开时先缓存本次提交：正在展开的弹层被清空重填后
+                // 会继续抓着鼠标，用户会看到整个界面卡住。
+                if (resultDock->deferCommitWhileProcessComboPopupOpen(commitProcessSnapshot))
+                {
+                    return;
+                }
 
                 // 右键菜单打开时先缓存本次提交，避免把用户正在操作的行整表换掉。
                 if (ks::ui::DeferItemViewUiCommitIfContextMenuOpen(
@@ -1004,8 +1114,11 @@ bool MemoryDock::refreshModuleListForPid(const std::uint32_t pid)
     }
 
     // 使用 QPointer 守护 this，避免窗口销毁后异步回调访问悬空对象。
+    // 枚举走全局线程池而不是裸 detach 线程：连续切换进程时并发被池上限挡住，
+    // 不会因为每次切换都新建一条线程把系统拖垮。
     const QPointer<MemoryDock> selfGuard(this);
-    std::thread([selfGuard, pid, includeSignatureCheck, refreshTicket]() {
+    QRunnable* const refreshModuleTask = QRunnable::create(
+        [selfGuard, pid, includeSignatureCheck, refreshTicket]() {
         if (selfGuard == nullptr)
         {
             return;
@@ -1150,7 +1263,9 @@ bool MemoryDock::refreshModuleListForPid(const std::uint32_t pid)
                 }
                 commitModuleSnapshot();
             }, Qt::QueuedConnection);
-        }).detach();
+        });
+    refreshModuleTask->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(refreshModuleTask);
 
     return true;
 }

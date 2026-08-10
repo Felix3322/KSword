@@ -16,6 +16,7 @@
 #include <atomic>      // std::atomic：扫描取消标志、并发状态标志。
 #include <condition_variable> // std::condition_variable：等待已取消扫描线程退出。
 #include <cstdint>     // std::uint32_t / std::uint64_t：PID、地址等固定宽度整数。
+#include <functional>  // std::function：下拉框展开期间被推迟的 UI 提交。
 #include <memory>      // std::shared_ptr：扫描任务状态在后台线程退出前保持有效。
 #include <mutex>       // std::mutex：保护扫描任务计数。
 #include <string>      // std::string：日志与 Win32 调用时的字符串桥接。
@@ -25,6 +26,7 @@
 class QAction;
 class QCheckBox;
 class QComboBox;
+class QEvent;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
@@ -82,6 +84,13 @@ public:
     // - 供进程详情窗口内嵌时使用；
     // - 仅保留进程与模块、内存区域、内存搜索、内存查看器四个页面。
     void setProcessDetailMemoryScope();
+
+protected:
+    // eventFilter：
+    // - 作用：监听顶部进程下拉框弹层窗口的隐藏事件；
+    // - 弹层展开期间被推迟的进程列表提交在这里回投，避免重建正在展开的下拉框；
+    // - 返回：始终交回 QWidget 默认处理，不吞事件。
+    bool eventFilter(QObject* watchedObject, QEvent* eventObject) override;
 
 private:
     // ========================================================
@@ -342,6 +351,28 @@ private:
     // - 作用：根据 m_processCache 重建顶部“进程选择”下拉框。
     // - 返回：无。
     void updateProcessComboFromCache();
+
+    // installProcessComboPopupWatch：
+    // - 作用：给进程下拉框弹层窗口安装事件过滤器；
+    // - 说明：QComboBox 弹层是独立顶层窗口，只能靠 Hide 事件感知收起；
+    // - 返回：无，重复调用安全。
+    void installProcessComboPopupWatch();
+
+    // isProcessComboPopupOpen：
+    // - 作用：判断顶部进程下拉框的弹层是否正在展开；
+    // - 返回：true 表示弹层可见，此时重建下拉框会让弹层挂住鼠标抓取，界面变得点不动。
+    bool isProcessComboPopupOpen();
+
+    // deferCommitWhileProcessComboPopupOpen：
+    // - 作用：弹层展开期间缓存最新一次进程列表提交，等收起后再落地；
+    // - 参数 commitAction：完整的进程缓存/表格/下拉框提交动作；
+    // - 返回：true 表示已缓存，调用方应立即返回；false 表示可以直接提交。
+    bool deferCommitWhileProcessComboPopupOpen(std::function<void()> commitAction);
+
+    // flushProcessComboDeferredCommit：
+    // - 作用：弹层收起后执行被缓存的最新提交；
+    // - 返回：无。弹层又被打开时保持缓存继续等待。
+    void flushProcessComboDeferredCommit();
 
     // refreshModuleListForPid：
     // - 作用：按 PID 枚举模块并刷新模块列表。
@@ -804,6 +835,10 @@ private:
 
     // 工具栏控件。
     QComboBox* m_processCombo = nullptr;      // 进程选择下拉框。
+    // 弹层展开期间缓存的最新进程列表提交；收起后回投，避免重建正在展开的下拉框。
+    std::function<void()> m_processComboDeferredCommit;
+    QTimer* m_processComboChangeTimer = nullptr;      // 进程下拉框切换去抖定时器。
+    std::uint32_t m_pendingModuleRefreshPid = 0;      // 去抖窗口内最后一次选中的 PID。
     QPushButton* m_attachButton = nullptr;    // 附加按钮。
     QPushButton* m_detachButton = nullptr;    // 分离按钮。
     QPushButton* m_refreshButton = nullptr;   // 刷新按钮。
