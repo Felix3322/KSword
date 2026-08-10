@@ -255,6 +255,8 @@
     <ClCompile Include="MiscDock\SoundSource\SoundSourcePage.cpp" />
     <ClCompile Include="MiscDock\RenderBenchmark\RenderBenchmarkPage.cpp" />
     <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp" />
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationBackend.cpp" />
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationPage.cpp" />
     <ClCompile Include="MiscDock\Experimental\BugcheckGuardPage.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorBackend.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp" />
@@ -614,6 +616,8 @@
     <QtMoc Include="MiscDock\SoundSource\SoundSourcePage.h" />
     <ClInclude Include="MiscDock\RenderBenchmark\RenderBenchmarkPage.h" />
     <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h" />
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationBackend.h" />
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationPage.h" />
     <ClInclude Include="MiscDock\Experimental\BugcheckGuardPage.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Internal.h" />

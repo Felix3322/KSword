@@ -74,6 +74,12 @@
     <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationBackend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MiscDock\Experimental\BugcheckGuardPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1110,6 +1116,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationBackend.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationPage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\Experimental\BugcheckGuardPage.h">

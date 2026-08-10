@@ -8,6 +8,7 @@
 #include "RenderBenchmark/RenderBenchmarkPage.h"
 #include "SoundSource/SoundSourcePage.h"
 #include "SystemTime/SystemTimePage.h"
+#include "VirtualLocation/VirtualLocationPage.h"
 
 // 扫描器 / 转储分析 / 插件原本是三个顶层 Dock，为精简 dock 栏入口已并入本页。
 #include "../MinidumpDock/MinidumpDock.h"
@@ -65,6 +66,7 @@ void MiscDock::initializeUi()
     m_bootEditorHostWidget = new QWidget(m_mainTabWidget);
     m_soundSourceHostWidget = new QWidget(m_mainTabWidget);
     m_systemTimeHostWidget = new QWidget(m_mainTabWidget);
+    m_virtualLocationHostWidget = new QWidget(m_mainTabWidget);
     m_bugcheckGuardHostWidget = new QWidget(m_mainTabWidget);
     m_contextMenuCleanerHostWidget = new QWidget(m_mainTabWidget);
     m_diskEditorHostWidget = new QWidget(m_mainTabWidget);
@@ -96,6 +98,19 @@ void MiscDock::initializeUi()
         m_systemTimeHostWidget,
         QIcon(QStringLiteral(":/Icon/system_time.svg")),
         QStringLiteral("系统变速"));
+
+    // 虚拟定位页：
+    // - 把任意坐标写成 Windows 位置服务的“系统默认位置”，R3 被 ACL 拒绝时回退 R0 注册表 IOCTL；
+    // - 只影响走 Windows 定位 API 的调用方，页面内长期展示这条生效边界。
+    m_virtualLocationTabIndex = m_mainTabWidget->addTab(
+        m_virtualLocationHostWidget,
+        QIcon(QStringLiteral(":/Icon/virtual_location.svg")),
+        QStringLiteral("虚拟定位"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_virtualLocationHostWidget,
+        QStringLiteral("misc.virtual_location.tab"),
+        QStringLiteral("虚拟定位"));
 
     // 蓝屏缓冲页严格归入“实验性”：它只提供一次性 KeBugCheckEx 延迟，
     // 不承诺恢复系统，也不默认跳过最终 BugCheck。
@@ -225,6 +240,11 @@ void MiscDock::ensureTabInitialized(const int tabIndex)
         initializeSystemTimePage();
         return;
     }
+    if (tabIndex == m_virtualLocationTabIndex)
+    {
+        initializeVirtualLocationPage();
+        return;
+    }
     if (tabIndex == m_bugcheckGuardTabIndex)
     {
         initializeBugcheckGuardPage();
@@ -320,6 +340,18 @@ void MiscDock::initializeSystemTimePage()
     QVBoxLayout* const hostLayout = buildHostLayout(m_systemTimeHostWidget);
     m_systemTimePage = new ks::misc::SystemTimePage(m_systemTimeHostWidget);
     hostLayout->addWidget(m_systemTimePage, 1);
+}
+
+void MiscDock::initializeVirtualLocationPage()
+{
+    if (m_virtualLocationHostWidget == nullptr || m_virtualLocationPage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_virtualLocationHostWidget);
+    m_virtualLocationPage = new ks::misc::VirtualLocationPage(m_virtualLocationHostWidget);
+    hostLayout->addWidget(m_virtualLocationPage, 1);
 }
 
 void MiscDock::initializeBugcheckGuardPage()
