@@ -763,9 +763,11 @@ namespace ks::ui
         m_mutationRiskLabel->setWordWrap(true);
         m_mutationRiskLabel->setTextInteractionFlags(
             Qt::TextSelectableByMouse);
+        // 走语义色 token：写死的 #b3261e 在深色主题下对比度不够，且不跟随自定义强调色。
         m_mutationRiskLabel->setStyleSheet(QStringLiteral(
-            "QLabel{border:1px solid #b3261e;border-radius:6px;"
-            "padding:8px;color:#b3261e;font-weight:600;}"));
+            "QLabel{border:1px solid %1;border-radius:6px;"
+            "padding:8px;color:%1;font-weight:600;}")
+            .arg(KswordTheme::ErrorHex()));
         m_mutationRiskLabel->hide();
         layout->addWidget(m_mutationRiskLabel);
         m_mutationStatusLabel = new QLabel(this);
@@ -1111,8 +1113,9 @@ namespace ks::ui
             &editor);
         risk->setWordWrap(true);
         risk->setStyleSheet(QStringLiteral(
-            "QLabel{border:1px solid #b3261e;border-radius:6px;"
-            "padding:8px;color:#b3261e;font-weight:600;}"));
+            "QLabel{border:1px solid %1;border-radius:6px;"
+            "padding:8px;color:%1;font-weight:600;}")
+            .arg(KswordTheme::ErrorHex()));
         layout->addWidget(risk);
         auto* inputHint = new QLabel(
             QStringLiteral(

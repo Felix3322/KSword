@@ -189,6 +189,11 @@ private:
     void initializeUi();
     void initializeConnections();
     void retranslateUi();
+    // applyThemedStyle：集中下发依赖主题 token 的样式（摘要卡片外壳、卡片标题与数值）。
+    // 构造期调用一次，changeEvent 收到调色板变化时再调一次。
+    void applyThemedStyle();
+    // updateSummaryTiles：把当前快照写进 6 格摘要卡片下行的数值文本。
+    void updateSummaryTiles();
     void scheduleCurrentDetailViewRebuild();
     void rebuildCurrentDetailView();
     void applySnapshot(Snapshot snapshot, std::uint64_t ticket);

@@ -459,9 +459,9 @@ namespace
             "  background-color:transparent;"
             "}"
             "}")
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::BorderColorHex());
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::BorderHex());
     }
 
     // trimWideString：

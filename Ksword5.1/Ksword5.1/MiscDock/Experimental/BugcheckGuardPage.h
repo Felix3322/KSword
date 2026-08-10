@@ -25,9 +25,14 @@ namespace ks::misc
 
     protected:
         void showEvent(QShowEvent* event) override;
+        // 语义色（Warning/Error 及其背景）在 theme.h 里没有 palette 等价物，
+        // 写进 QSS 就被定死在下发那一刻的主题上。主题切换时必须重下发，
+        // 否则这条风险横幅会变成暗底黑字或浅底白字，正好读不出来。
+        void changeEvent(QEvent* event) override;
 
     private:
         void initializeUi();
+        void applyWarningBannerStyle();
         void refreshStatus();
         void enableGuard();
         void disableGuard();

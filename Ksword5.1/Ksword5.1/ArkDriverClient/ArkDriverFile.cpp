@@ -730,10 +730,11 @@ namespace ksword::ark
         const std::wstring& ntPath,
         const bool isDirectory,
         const bool recursive,
-        const bool continueOnError) const
+        const bool continueOnError,
+        const FileDeleteBackend backend) const
     {
         DriverHandle handle = open();
-        return deletePathEx(handle, ntPath, isDirectory, recursive, continueOnError);
+        return deletePathEx(handle, ntPath, isDirectory, recursive, continueOnError, backend);
     }
 
     DeletePathResult DriverClient::deletePathEx(
@@ -741,7 +742,8 @@ namespace ksword::ark
         const std::wstring& ntPath,
         const bool isDirectory,
         const bool recursive,
-        const bool continueOnError) const
+        const bool continueOnError,
+        const FileDeleteBackend backend) const
     {
         // 输入：NT 路径、目录标志与递归策略。
         // 处理：下发带响应包的 DELETE_PATH IOCTL，递归展开完全发生在 R0。
@@ -762,10 +764,32 @@ namespace ksword::ark
             return deleteResult;
         }
 
+        unsigned long backendFlag = 0UL;
+        const char* backendName = "native";
+        switch (backend)
+        {
+        case FileDeleteBackend::Native:
+            break;
+        case FileDeleteBackend::Irp:
+            backendFlag = KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_IRP;
+            backendName = "irp";
+            break;
+        case FileDeleteBackend::Posix:
+            backendFlag = KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_POSIX;
+            backendName = "posix";
+            break;
+        default:
+            deleteResult.io.ok = false;
+            deleteResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            deleteResult.io.message = "unknown file delete backend";
+            return deleteResult;
+        }
+
         KSWORD_ARK_DELETE_PATH_REQUEST request{};
         request.flags = (isDirectory ? KSWORD_ARK_DELETE_PATH_FLAG_DIRECTORY : 0UL) |
             (recursive ? KSWORD_ARK_DELETE_PATH_FLAG_RECURSIVE : 0UL) |
-            (continueOnError ? KSWORD_ARK_DELETE_PATH_FLAG_CONTINUE_ON_ERROR : 0UL);
+            (continueOnError ? KSWORD_ARK_DELETE_PATH_FLAG_CONTINUE_ON_ERROR : 0UL) |
+            backendFlag;
         request.pathLengthChars = static_cast<unsigned short>(ntPath.size());
         std::copy(ntPath.begin(), ntPath.end(), request.path);
         request.path[request.pathLengthChars] = L'\0';
@@ -780,18 +804,20 @@ namespace ksword::ark
 
         if (!deleteResult.io.ok)
         {
-            // 旧驱动会因为不认识 RECURSIVE/CONTINUE_ON_ERROR 直接拒绝整包，
-            // 这里必须区分“驱动太旧”和“删除真的失败”，否则 UI 无从决定是否回退。
+            // 旧驱动会因为不认识 RECURSIVE/CONTINUE_ON_ERROR/BACKEND_* 直接拒绝整包，
+            // 这里必须区分“能力不可用”和“删除真的失败”，否则 UI 无从决定是否回退。
             deleteResult.unsupported =
-                (recursive || continueOnError) && isUnsupportedIoctlError(deleteResult.io.win32Error);
+                (recursive || continueOnError || backend != FileDeleteBackend::Native) &&
+                isUnsupportedIoctlError(deleteResult.io.win32Error);
             std::ostringstream failStream;
             failStream << "pathChars=" << ntPath.size()
                 << ", directory=" << (isDirectory ? 1 : 0)
                 << ", recursive=" << (recursive ? 1 : 0)
+                << ", backend=" << backendName
                 << ", ioctl=fail, error=" << deleteResult.io.win32Error;
             if (deleteResult.unsupported)
             {
-                failStream << ", reason=driver-too-old-for-recursive-delete";
+                failStream << ", reason=driver-does-not-support-delete-mode";
             }
             deleteResult.io.message = failStream.str();
             return deleteResult;
@@ -824,6 +850,7 @@ namespace ksword::ark
         stream << "pathChars=" << ntPath.size()
             << ", directory=" << (isDirectory ? 1 : 0)
             << ", recursive=" << (recursive ? 1 : 0)
+            << ", backend=" << backendName
             << ", state=" << deleteResult.response.deleteStatus
             << ", files=" << deleteResult.response.deletedFileCount
             << ", dirs=" << deleteResult.response.deletedDirectoryCount

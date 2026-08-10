@@ -1660,15 +1660,15 @@ namespace
                 QStringLiteral("KSWORD_PLUGIN_THEME"),
                 KswordTheme::IsDarkModeEnabled() ? QStringLiteral("dark") : QStringLiteral("light"));
             environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_WINDOW"), KswordTheme::WindowColorHex());
-            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_SURFACE"), KswordTheme::SurfaceColorHex());
-            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_SURFACE_ALT"), KswordTheme::SurfaceAltColorHex());
-            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_TEXT_PRIMARY"), KswordTheme::TextPrimaryColorHex());
-            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_TEXT_SECONDARY"), KswordTheme::TextSecondaryColorHex());
-            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_BORDER"), KswordTheme::BorderColorHex());
+            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_SURFACE"), KswordTheme::SurfaceHex());
+            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_SURFACE_ALT"), KswordTheme::SurfaceAltHex());
+            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_TEXT_PRIMARY"), KswordTheme::TextPrimaryHex());
+            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_TEXT_SECONDARY"), KswordTheme::TextSecondaryHex());
+            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_BORDER"), KswordTheme::BorderHex());
             environment.insert(
                 QStringLiteral("KSWORD_PLUGIN_COLOR_ACCENT"),
                 KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
-            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_ON_ACCENT"), KswordTheme::OnAccentHex());
+            environment.insert(QStringLiteral("KSWORD_PLUGIN_COLOR_ON_ACCENT"), KswordTheme::OnAccentDynamicHex());
             m_process->setProcessEnvironment(environment);
 
             connect(m_process, &QProcess::started, this, [this]() {
@@ -2882,14 +2882,14 @@ QWidget* ks::plugin_host::createTabPluginContainer(QWidget* parent)
         "QWidget#ksTabPluginTransparencyWarning{background-color:%11;border:1px solid %12;"
         "border-radius:3px;margin:6px 6px 0 6px;}"
         "QLabel#ksTabPluginTransparencyWarningText{color:%12;}")
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex())
-        .arg(KswordTheme::BorderColorHex())
-        .arg(KswordTheme::SurfaceAltColorHex())
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::TextPrimaryHex())
+        .arg(KswordTheme::BorderHex())
+        .arg(KswordTheme::SurfaceAltHex())
         .arg(KswordTheme::ActiveTabBackgroundHex())
         .arg(KswordTheme::ActiveTabTextHex())
         .arg(KswordTheme::SurfaceMutedColorHex())
-        .arg(KswordTheme::TextSecondaryColorHex())
+        .arg(KswordTheme::TextSecondaryHex())
         .arg(KswordTheme::PrimaryBlueSolidHoverHex())
         .arg(KswordTheme::PrimaryBluePressedHex)
         .arg(KswordTheme::ThemeColorName(KswordTheme::WarningBackgroundColor()))

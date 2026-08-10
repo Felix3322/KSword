@@ -1,5 +1,6 @@
 #include "WinAPIDock.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../theme.h"
 
 // ============================================================
 // WinAPIDock.Ui.cpp
@@ -114,7 +115,7 @@ void WinAPIDock::initializeUi()
     processPanelLayout->setSpacing(8);
 
     QLabel* const processTitleLabel = new QLabel(QStringLiteral("目标进程"), m_processPanel);
-    processTitleLabel->setStyleSheet(buildStatusStyle(monitorInfoColorHex()));
+    processTitleLabel->setStyleSheet(buildStatusStyle(KswordTheme::PrimaryBlueHex));
 
     m_processIconLabel = new QLabel(m_processPanel);
     m_processIconLabel->setFixedSize(24, 24);
@@ -174,7 +175,7 @@ void WinAPIDock::initializeUi()
         createSectionTitle(
             QStringLiteral("WinAPI Agent 会话"),
             m_sessionPanel,
-            buildStatusStyle(monitorInfoColorHex())),
+            buildStatusStyle(KswordTheme::PrimaryBlueHex)),
         0);
 
     QFormLayout* const sessionFormLayout = new QFormLayout();
@@ -328,15 +329,8 @@ void WinAPIDock::initializeUi()
         createSectionTitle(
             QStringLiteral("Fake Success（命中 API 直接伪返回）"),
             fakeSuccessPanel,
-            buildStatusStyle(monitorInfoColorHex())),
+            buildStatusStyle(KswordTheme::PrimaryBlueHex)),
         0);
-
-    QLabel* const fakeHintLabel = new QLabel(
-        QStringLiteral("精确格式：模块名 + 导出名。示例：KernelBase.dll / CreateFileW。Fake 路径会上报事件，然后跳过原 API 并返回指定 RAX。"),
-        fakeSuccessPanel);
-    fakeHintLabel->setWordWrap(true);
-    fakeHintLabel->setStyleSheet(buildStatusStyle(monitorWarningColorHex()));
-    fakeSuccessLayout->addWidget(fakeHintLabel, 0);
 
     QFormLayout* const fakeFormLayout = new QFormLayout();
     fakeFormLayout->setContentsMargins(0, 0, 0, 0);
@@ -353,6 +347,9 @@ void WinAPIDock::initializeUi()
 
     m_fakeModuleEdit->setPlaceholderText(QStringLiteral("KernelBase.dll"));
     m_fakeApiEdit->setPlaceholderText(QStringLiteral("CreateFileW"));
+    // 精确匹配口径挂到对应输入框，避免面板顶部再压一段常驻说明。
+    m_fakeModuleEdit->setToolTip(QStringLiteral("精确匹配模块名，需要带扩展名。"));
+    m_fakeApiEdit->setToolTip(QStringLiteral("精确匹配导出名，区分 A/W 后缀。"));
     m_fakeReturnValueEdit->setPlaceholderText(QStringLiteral("0 / 1 / 0x0 / 0xFFFFFFFFFFFFFFFF"));
     m_fakeLastErrorValueEdit->setPlaceholderText(QStringLiteral("0 表示 ERROR_SUCCESS"));
     m_fakeReturnValueEdit->setText(QStringLiteral("0"));
@@ -370,7 +367,7 @@ void WinAPIDock::initializeUi()
     m_fakeReturnTypeCombo->addItem(QStringLiteral("HRESULT"), QStringLiteral("hresult"));
     m_fakeReturnTypeCombo->addItem(QStringLiteral("LSTATUS"), QStringLiteral("lstatus"));
     m_fakeReturnTypeCombo->addItem(QStringLiteral("SOCKET / int (WSA)"), QStringLiteral("socket"));
-    m_fakeReturnTypeCombo->setToolTip(QStringLiteral("模板只影响展示和结果码语义；v1 只伪造标量返回值，不写 out 参数。"));
+    m_fakeReturnTypeCombo->setToolTip(QStringLiteral("模板只影响展示和结果码语义；v1 只伪造标量返回值，不写 out 参数。Fake 路径会先上报事件，再跳过原 API 并返回指定 RAX。"));
     m_fakeReturnTypeCombo->setStyleSheet(blueInputStyle());
 
     m_fakeLastErrorKindCombo->addItem(QStringLiteral("不修改 LastError"), QStringLiteral("none"));

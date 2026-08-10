@@ -178,6 +178,11 @@ KswordARKWorkQueueLayoutValid(
                 Layout->KpriQueueEntryListHead,
                 listArrayBytes,
                 Layout->KpriQueueTypeSize) ||
+            (Layout->ExWorkQueueQueueIndex != 0UL &&
+             !KswordARKWorkQueueFieldFits(
+                 Layout->ExWorkQueueQueueIndex,
+                 sizeof(ULONG),
+                 Layout->ExWorkQueueTypeSize)) ||
             !KswordARKWorkQueueFieldFits(
                 Layout->WorkItemList,
                 sizeof(LIST_ENTRY),
@@ -995,8 +1000,12 @@ KswordARKDriverEnumerateWorkQueues(
                 &workQueueAddress,
                 sizeof(workQueueAddress)) ||
             !KswordARKWorkQueueIsKernelAddress(workQueueAddress) ||
-            (((builder.Layout.RuntimeFlags &
-               KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE) == 0UL) &&
+            /*
+             * 队列自述序号是唯一能在活内存上验证“走的确实是这个槽”的证据。
+             * 原先按 RuntimeFlags 判断，等于把最需要兜底的签名回退路径排除在
+             * 校验之外；改为只要上游给出了该偏移就强制校验，PDB 路径行为不变。
+             */
+            ((builder.Layout.ExWorkQueueQueueIndex != 0UL) &&
              (!KswordARKWorkQueueReadField(
                  workQueueAddress,
                  builder.Layout.ExWorkQueueQueueIndex,

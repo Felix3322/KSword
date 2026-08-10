@@ -255,6 +255,10 @@
     <ClCompile Include="MiscDock\SoundSource\SoundSourcePage.cpp" />
     <ClCompile Include="MiscDock\RenderBenchmark\RenderBenchmarkPage.cpp" />
     <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp" />
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationBackend.cpp" />
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationPage.cpp" />
+    <ClCompile Include="MiscDock\DisableDse\DisableDseBackend.cpp" />
+    <ClCompile Include="MiscDock\DisableDse\DisableDsePage.cpp" />
     <ClCompile Include="MiscDock\Experimental\BugcheckGuardPage.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskEditorBackend.cpp" />
     <ClCompile Include="MiscDock\DiskEditor\DiskDeletedEntryForensics.cpp" />
@@ -280,6 +284,8 @@
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Registry.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryRw.cpp" />
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemorySource.cpp" />
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryView.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.KernelExecutableMemory.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.KernelMemoryEvidence.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.ProcessMemoryEvidence.cpp" />
@@ -391,6 +397,7 @@
     <ClCompile Include="StartupDock\StartupDock.Ui.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Winsock.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Wmi.cpp" />
+    <ClCompile Include="StartupDock\StartupDock.Hidden.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Actions.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Helpers.cpp" />
     <ClCompile Include="StartupDock\StartupDock.RegistryCatalog.cpp" />
@@ -443,6 +450,7 @@
     <ClCompile Include="ksword\process\ProcessImageDeleteGuard.cpp" />
     <ClCompile Include="ksword\service\service.cpp" />
     <ClCompile Include="ksword\startup\startup.cpp" />
+    <ClCompile Include="ksword\startup\startup_hidden.cpp" />
     <ClCompile Include="ksword\string\string.cpp" />
     <QtRcc Include="Ksword5.qrc" />
     <QtUic Include="Ksword5.ui" />
@@ -574,6 +582,7 @@
     <ClInclude Include="ksword\profile\ProfileJsonLoader.h" />
     <ClInclude Include="ksword\service\service.h" />
     <ClInclude Include="ksword\startup\startup.h" />
+    <ClInclude Include="ksword\startup\startup_internal.h" />
     <ClInclude Include="ksword\string\string.h" />
     <ClInclude Include="theme.h" />
     <ClInclude Include="UI\FlatTableModel.h" />
@@ -614,6 +623,10 @@
     <QtMoc Include="MiscDock\SoundSource\SoundSourcePage.h" />
     <ClInclude Include="MiscDock\RenderBenchmark\RenderBenchmarkPage.h" />
     <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h" />
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationBackend.h" />
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationPage.h" />
+    <ClInclude Include="MiscDock\DisableDse\DisableDseBackend.h" />
+    <ClInclude Include="MiscDock\DisableDse\DisableDsePage.h" />
     <ClInclude Include="MiscDock\Experimental\BugcheckGuardPage.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.h" />
     <ClInclude Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Internal.h" />

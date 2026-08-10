@@ -1,5 +1,7 @@
 #include "startup.h"
 
+#include "startup_internal.h"
+
 #include "../string/string.h"
 
 #ifndef NOMINMAX
@@ -41,7 +43,10 @@
 #pragma comment(lib, "Version.lib")
 #pragma comment(lib, "Wintrust.lib")
 
-namespace
+// The first two helper blocks live in ks::startup::detail instead of an anonymous namespace so that
+// sibling translation units (startup_hidden.cpp) can reuse the same registry/entry plumbing.
+// A file-scope using-directive after the second block keeps every later unqualified call site intact.
+namespace ks::startup::detail
 {
     // The backend stores all public strings as UTF-8 and converts to UTF-16 only at Win32 boundaries.
     std::string FromWide(const std::wstring& text)
@@ -445,17 +450,8 @@ namespace
     }
 }
 
-namespace
+namespace ks::startup::detail
 {
-    // RegistryValueRecord stores one registry value converted to UTF-8 display text.
-    struct RegistryValueRecord
-    {
-        std::string valueNameText;
-        std::string valueDataText;
-        DWORD valueType = REG_NONE;
-        std::vector<std::uint8_t> rawData;
-    };
-
     // RootKeyText maps the limited root keys used by StartupDock-compatible enumerators.
     std::string RootKeyText(HKEY rootKey)
     {
@@ -1212,6 +1208,10 @@ namespace
     }
 }
 
+// Every later block in this file was written against unqualified helper names; the using-directive
+// keeps those call sites unchanged now that the helpers moved into ks::startup::detail.
+using namespace ks::startup::detail;
+
 namespace
 {
     // JsonValue is a small JSON DOM sufficient for PowerShell ConvertTo-Json results.
@@ -1763,9 +1763,9 @@ namespace
     }
 
     // BuildSingleValueSpecList centralizes fixed-value advanced registry persistence coverage.
-    const std::array<SingleValueSpec, 20>& BuildSingleValueSpecList()
+    const std::array<SingleValueSpec, 92>& BuildSingleValueSpecList()
     {
-        static const std::array<SingleValueSpec, 20> specs{ {
+        static const std::array<SingleValueSpec, 92> specs{ {
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", L"Shell", "WinlogonShell", L"本机", L"Winlogon Shell", false },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", L"Userinit", "WinlogonUserinit", L"本机", L"Winlogon Userinit", false },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", L"Taskman", "WinlogonTaskman", L"本机", L"Winlogon Taskman", false },
@@ -1785,15 +1785,97 @@ namespace
             { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager", L"Execute", "SessionManagerExecute", L"本机", L"会话管理器 Execute", false },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", L"Shell", "PoliciesSystemShell", L"本机", L"策略指定系统 Shell", false },
             { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows", L"Load", "WindowsLoad", L"当前用户", L"Windows 兼容 Load", false },
-            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows", L"Load", "MachineWindowsLoad", L"本机", L"系统级 Windows Load", false }
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows", L"Load", "MachineWindowsLoad", L"本机", L"系统级 Windows Load", false },
+            // Boot and session bring-up: these run before, or instead of, the normal logon chain.
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\SafeBoot", L"AlternateShell", "SafeBootAlternateShell", L"本机", L"安全模式备用 Shell", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager", L"S0InitialCommand", "S0InitialCommand", L"本机", L"会话管理器 S0InitialCommand", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\BootVerificationProgram", L"ImagePath", "BootVerificationProgram", L"本机", L"引导验证程序", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Terminal Server\\Wds\\rdpwd", L"StartupPrograms", "TerminalServerStartupPrograms", L"本机", L"远程桌面会话启动程序", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp", L"InitialProgram", "TerminalServerInitialProgram", L"本机", L"远程桌面初始程序", false },
+            // Winlogon slots that are not Shell/Userinit and therefore easy to overlook.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", L"mpnotify", "WinlogonMpNotify", L"本机", L"Winlogon 多重通知程序", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", L"System", "WinlogonSystem", L"本机", L"Winlogon System 登录执行项", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows", L"IconServiceLib", "IconServiceLib", L"本机", L"图标服务库", false },
+            // Authentication and networking providers loaded into long-lived system processes.
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\SecurityProviders", L"SecurityProviders", "SecurityProviders", L"本机", L"安全支持提供程序列表", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Services\\WinSock2\\Parameters", L"AutodialDLL", "AutodialDll", L"本机", L"自动拨号 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\NetworkProvider\\Order", L"ProviderOrder", "NetworkProviderOrder", L"本机", L"网络提供程序顺序", false },
+            // Crash and hang handlers: a debugger here is executed whenever the trigger fires.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug", L"Debugger", "AeDebug", L"本机", L"崩溃即时调试器", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug", L"Debugger", "AeDebug32", L"本机(32位)", L"32 位崩溃即时调试器", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\Windows Error Reporting\\Hangs", L"Debugger", "WerHangsDebugger", L"本机", L"无响应进程调试器", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\Windows Error Reporting\\Hangs", L"ReflectDebugger", "WerReflectDebugger", L"本机", L"无响应进程镜像调试器", false },
+            // Per-user logon hooks that need no administrative rights to install.
+            { HKEY_CURRENT_USER, L"Environment", L"UserInitMprLogonScript", "UserInitMprLogonScript", L"当前用户", L"用户登录脚本", false },
+            { HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"SCRNSAVE.EXE", "ScreenSaver", L"当前用户", L"屏幕保护程序", false },
+            // The undocumented Office test key loads a DLL into every Office application.
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Office test\\Special\\Perf", L"", "OfficeTest", L"当前用户", L"Office Test 加载 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Office test\\Special\\Perf", L"", "OfficeTestMachine", L"本机", L"Office Test 加载 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Office test\\Special\\Perf", L"", "OfficeTest32", L"本机(32位)", L"32 位 Office Test 加载 DLL", false },
+            // .NET profiler environment variables load an arbitrary DLL into every managed process.
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"COR_ENABLE_PROFILING", "DotNetProfilerEnableMachine", L"本机", L".NET 分析器开关", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"COR_PROFILER", "DotNetProfilerClsidMachine", L"本机", L".NET 分析器 CLSID", true },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"COR_PROFILER_PATH", "DotNetProfilerPathMachine", L"本机", L".NET 分析器 DLL 路径", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"CORECLR_ENABLE_PROFILING", "CoreClrProfilerEnableMachine", L"本机", L".NET Core 分析器开关", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"CORECLR_PROFILER", "CoreClrProfilerClsidMachine", L"本机", L".NET Core 分析器 CLSID", true },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"CORECLR_PROFILER_PATH", "CoreClrProfilerPathMachine", L"本机", L".NET Core 分析器 DLL 路径", false },
+            { HKEY_CURRENT_USER, L"Environment", L"COR_ENABLE_PROFILING", "DotNetProfilerEnableUser", L"当前用户", L".NET 分析器开关", false },
+            { HKEY_CURRENT_USER, L"Environment", L"COR_PROFILER", "DotNetProfilerClsidUser", L"当前用户", L".NET 分析器 CLSID", true },
+            { HKEY_CURRENT_USER, L"Environment", L"COR_PROFILER_PATH", "DotNetProfilerPathUser", L"当前用户", L".NET 分析器 DLL 路径", false },
+            { HKEY_CURRENT_USER, L"Environment", L"CORECLR_ENABLE_PROFILING", "CoreClrProfilerEnableUser", L"当前用户", L".NET Core 分析器开关", false },
+            { HKEY_CURRENT_USER, L"Environment", L"CORECLR_PROFILER", "CoreClrProfilerClsidUser", L"当前用户", L".NET Core 分析器 CLSID", true },
+            { HKEY_CURRENT_USER, L"Environment", L"CORECLR_PROFILER_PATH", "CoreClrProfilerPathUser", L"当前用户", L".NET Core 分析器 DLL 路径", false },
+            // AppDomainManager hijacking is configured through these two managed-runtime variables.
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"APPDOMAIN_MANAGER_ASM", "AppDomainManagerAsmMachine", L"本机", L"AppDomainManager 程序集", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"APPDOMAIN_MANAGER_TYPE", "AppDomainManagerTypeMachine", L"本机", L"AppDomainManager 类型", false },
+            { HKEY_CURRENT_USER, L"Environment", L"APPDOMAIN_MANAGER_ASM", "AppDomainManagerAsmUser", L"当前用户", L"AppDomainManager 程序集", false },
+            { HKEY_CURRENT_USER, L"Environment", L"APPDOMAIN_MANAGER_TYPE", "AppDomainManagerTypeUser", L"当前用户", L"AppDomainManager 类型", false },
+            // Additional debugger and DLL slots that no mainstream autostart tool inspects.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebugProtected", L"Debugger", "AeDebugProtected", L"本机", L"受保护进程崩溃调试器", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\AeDebugProtected", L"Debugger", "AeDebugProtected32", L"本机(32位)", L"32 位受保护进程崩溃调试器", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Cryptography\\Offload", L"ExpoOffload", "CryptoExpoOffload", L"本机", L"加密运算卸载 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Terminal Server Client", L"ClxDllPath", "RdpClxDll", L"本机", L"远程桌面客户端扩展 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Terminal Server\\AddIns\\TestDVCPlugin", L"Path", "RdpTestDvcPlugin", L"本机", L"远程桌面动态虚拟通道测试插件", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\SEMgr\\Wallet", L"DllName", "SeMgrWallet", L"本机", L"安全元件钱包 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\PushRouter\\Test", L"TestDllPath2", "PushRouterTestDll", L"本机", L"推送路由测试 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\WSMAN", L"NitsInjector", "WsmanNitsInjector", L"本机", L"WSMAN 注入测试 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\AirDrop", L"DllName", "AirDropDll", L"本机", L"AirDrop 组件 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\Test", L"AdmParseLibrary", "GroupPolicyAdmParser", L"本机", L"组策略模板解析库", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\PeerDist\\Extension", L"PeerdistDllName", "PeerDistExtension", L"本机", L"对等分发扩展 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Test", L"EventerHookDll", "WindowsUpdateTestHook", L"本机", L"Windows 更新测试钩子 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Setup\\Pending", L"SPReviewEnabler", "SetupPendingReview", L"本机", L"安装挂起复查程序", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Console", L"ConsoleIME", "ConsoleIme", L"本机", L"控制台输入法程序", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\SideBySide", L"PreferExternalManifest", "PreferExternalManifest", L"本机", L"优先使用外部清单开关", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Direct3D", L"LoadDebugRuntime", "Direct3DDebugRuntime", L"本机", L"Direct3D 调试运行时开关", false },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", L"RunGrpConv", "WinlogonRunGrpConv", L"当前用户", L"登录时运行组转换程序", false },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\HtmlHelp Author", L"location", "HtmlHelpAuthor", L"当前用户", L"HTML 帮助作者 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Diagnostics\\DiagTrack\\TestHooks", L"TestAggregatorDll", "DiagTrackTestHook", L"本机", L"遥测聚合器测试 DLL", false },
+            { HKEY_CURRENT_USER, L"Environment", L"UserInitLogonScript", "UserInitLogonScript", L"当前用户", L"用户登录脚本变量", false },
+            { HKEY_CURRENT_USER, L"Environment", L"UserInitLogonServer", "UserInitLogonServer", L"当前用户", L"用户登录脚本服务器", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Radio Support", L"SupportDLL", "BluetoothRadioSupport", L"本机", L"蓝牙无线电支持 DLL", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\ServerCore\\Shell Launcher", L"Shell", "ServerCoreShellLauncher", L"本机", L"Server Core 外壳启动器", false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Event Viewer", L"MicrosoftRedirectionProgram", "EventViewerRedirection", L"本机", L"事件查看器帮助重定向程序", false },
+            // Runtime injection variables honoured by managed, Java, CUDA and OpenSSL loaders.
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"JAVA_TOOL_OPTIONS", "JavaToolOptionsMachine", L"本机", L"Java 工具选项注入", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"_JAVA_OPTIONS", "JavaOptionsMachine", L"本机", L"Java 选项注入", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"CUDA_INJECTION64_PATH", "CudaInjectionMachine", L"本机", L"CUDA 注入库路径", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"INTEL_LIBITTNOTIFY64", "IntelIttNotifyMachine", L"本机", L"Intel ITT 通知库", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"OPENSSL_MODULES", "OpenSslModulesMachine", L"本机", L"OpenSSL 模块目录", false },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Session Manager\\Environment", L"APPX_PROCESS", "AppxProcessMachine", L"本机", L"AppX 运行时加载开关", false },
+            { HKEY_CURRENT_USER, L"Environment", L"JAVA_TOOL_OPTIONS", "JavaToolOptionsUser", L"当前用户", L"Java 工具选项注入", false },
+            { HKEY_CURRENT_USER, L"Environment", L"_JAVA_OPTIONS", "JavaOptionsUser", L"当前用户", L"Java 选项注入", false },
+            { HKEY_CURRENT_USER, L"Environment", L"CUDA_INJECTION64_PATH", "CudaInjectionUser", L"当前用户", L"CUDA 注入库路径", false },
+            { HKEY_CURRENT_USER, L"Environment", L"INTEL_LIBITTNOTIFY64", "IntelIttNotifyUser", L"当前用户", L"Intel ITT 通知库", false },
+            { HKEY_CURRENT_USER, L"Environment", L"OPENSSL_MODULES", "OpenSslModulesUser", L"当前用户", L"OpenSSL 模块目录", false },
+            { HKEY_CURRENT_USER, L"Environment", L"APPX_PROCESS", "AppxProcessUser", L"当前用户", L"AppX 运行时加载开关", false }
         } };
         return specs;
     }
 
     // BuildValueEnumSpecList centralizes advanced registry keys where all values are inspected.
-    const std::array<ValueEnumSpec, 19>& BuildValueEnumSpecList()
+    const std::array<ValueEnumSpec, 35>& BuildValueEnumSpecList()
     {
-        static const std::array<ValueEnumSpec, 19> specs{ {
+        static const std::array<ValueEnumSpec, 35> specs{ {
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellExecuteHooks", "ShellExecuteHooks", L"本机", L"Explorer Shell Execute Hooks", true, true },
             { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellExecuteHooks", "ShellExecuteHooksUser", L"当前用户", L"用户级 Explorer Shell Execute Hooks", true, true },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SharedTaskScheduler", "SharedTaskScheduler", L"本机", L"Explorer Shared Task Scheduler", true, false },
@@ -1812,15 +1894,35 @@ namespace
             { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Drivers32", "Drivers32Wow64", L"本机(32位)", L"32 位解码器/媒体驱动", false, false },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", "RunOnceExRoot", L"本机", L"RunOnceEx 根键直接值", false, false },
             { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", "RunOnceExRootUser", L"当前用户", L"用户级 RunOnceEx 根键直接值", false, false },
-            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", "RunOnceExRoot32", L"本机(32位)", L"32 位 RunOnceEx 根键直接值", false, false }
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx", "RunOnceExRoot32", L"本机(32位)", L"32 位 RunOnceEx 根键直接值", false, false },
+            // Font drivers and netsh helpers are DLL lists loaded by long-lived system components.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Font Drivers", "FontDrivers", L"本机", L"字体驱动列表", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Netsh", "NetshHelper", L"本机", L"netsh 助手 DLL", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Netsh", "NetshHelper32", L"本机(32位)", L"32 位 netsh 助手 DLL", false, false },
+            // WER loads these modules into a crashing process before the report is produced.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\Windows Error Reporting\\RuntimeExceptionHelperModules", "WerRuntimeExceptionHelper", L"本机", L"WER 运行时异常助手模块", false, false },
+            // StartupApproved records which logon items were switched off outside this tool.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run", "StartupApprovedRun", L"本机", L"登录项启用状态记录", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32", "StartupApprovedRun32", L"本机(32位)", L"32 位登录项启用状态记录", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder", "StartupApprovedFolder", L"本机", L"启动文件夹启用状态记录", false, false },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run", "StartupApprovedRunUser", L"当前用户", L"登录项启用状态记录", false, false },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32", "StartupApprovedRun32User", L"当前用户", L"32 位登录项启用状态记录", false, false },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder", "StartupApprovedFolderUser", L"当前用户", L"启动文件夹启用状态记录", false, false },
+            // DLL substitution lists consulted by the loader, the debugger and Explorer helpers.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Wow64\\x86", "Wow64x86Layer", L"本机", L"WOW64 x86 层 DLL 替换", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\KnownManagedDebuggingDlls", "KnownManagedDebuggingDlls", L"本机", L"托管调试 DLL 列表", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\MiniDumpAuxiliaryDlls", "MiniDumpAuxiliaryDlls", L"本机", L"小型转储辅助 DLL 列表", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MyComputer", "ExplorerMyComputerTools", L"本机", L"我的电脑工具路径", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\WirelessDocking\\DockingProviderDLLs", "WirelessDockingProviders", L"本机", L"无线扩展坞提供程序 DLL", false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\MSDTC\\XADLL", "MsdtcXaDll", L"本机", L"MSDTC XA 事务 DLL", false, false }
         } };
         return specs;
     }
 
     // BuildSubKeyValueSpecList centralizes subkey-driven advanced registry persistence coverage.
-    const std::array<SubKeyValueSpec, 15>& BuildSubKeyValueSpecList()
+    const std::array<SubKeyValueSpec, 60>& BuildSubKeyValueSpecList()
     {
-        static const std::array<SubKeyValueSpec, 15> specs{ {
+        static const std::array<SubKeyValueSpec, 60> specs{ {
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Active Setup\\Installed Components", L"StubPath", "ActiveSetup", L"本机", L"Active Setup StubPath", true, false, true },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options", L"Debugger", "IFEO-Debugger", L"本机", L"映像执行调试器劫持", false, false, false },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options", L"VerifierDlls", "IFEO-VerifierDlls", L"本机", L"映像验证器 DLL", false, false, false },
@@ -1835,7 +1937,58 @@ namespace
             { HKEY_CURRENT_USER, L"Software\\Microsoft\\Internet Explorer\\Explorer Bars", L"", "IEExplorerBar-User", L"当前用户", L"用户级 Explorer Bar", false, true, true },
             { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Print\\Monitors", L"Driver", "PrintMonitor", L"本机", L"打印监视器驱动", false, false, true },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellIconOverlayIdentifiers", L"", "ShellIconOverlay", L"本机", L"Shell 图标覆盖标识符", true, false, true },
-            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Sidebar\\Gadgets", L"Path", "SidebarGadget", L"本机", L"Sidebar Gadget 注册", false, false, true }
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Sidebar\\Gadgets", L"Path", "SidebarGadget", L"本机", L"Sidebar Gadget 注册", false, false, true },
+            // Service-hosted DLL providers: each subkey names a module a system service loads.
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Services\\W32Time\\TimeProviders", L"DllName", "TimeProvider", L"本机", L"时间提供程序", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\GPExtensions", L"DllName", "GroupPolicyExtension", L"本机", L"组策略客户端扩展", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Print\\Environments\\Windows x64\\Print Processors", L"Driver", "PrintProcessor", L"本机", L"打印处理器", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Print\\Environments\\Windows NT x86\\Print Processors", L"Driver", "PrintProcessor32", L"本机(32位)", L"32 位打印处理器", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\AMSI\\Providers", L"", "AmsiProvider", L"本机", L"AMSI 提供程序", false, true, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\TelemetryController", L"Command", "TelemetryController", L"本机", L"遥测控制器命令", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\InstalledSDB", L"DatabasePath", "AppCompatShimDatabase", L"本机", L"已安装应用兼容性补丁库", false, false, true },
+            // Protocol handlers are instantiated by Explorer, Office and every WinINet consumer.
+            { HKEY_LOCAL_MACHINE, L"Software\\Classes\\Protocols\\Filter", L"CLSID", "ProtocolFilter", L"本机", L"协议过滤器", true, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Classes\\Protocols\\Handler", L"CLSID", "ProtocolHandler", L"本机", L"协议处理器", true, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Classes\\Protocols\\Filter", L"CLSID", "ProtocolFilterUser", L"当前用户", L"用户级协议过滤器", true, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Classes\\Protocols\\Handler", L"CLSID", "ProtocolHandlerUser", L"当前用户", L"用户级协议处理器", true, false, true },
+            // Views of already-covered families that the previous table only checked in one hive.
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options", L"Debugger", "IFEO-Debugger32", L"本机(32位)", L"32 位映像执行调试器劫持", false, false, false },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Active Setup\\Installed Components", L"StubPath", "ActiveSetup32", L"本机(32位)", L"32 位 Active Setup StubPath", true, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Active Setup\\Installed Components", L"StubPath", "ActiveSetupUser", L"当前用户", L"用户级 Active Setup StubPath", true, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellIconOverlayIdentifiers", L"", "ShellIconOverlayUser", L"当前用户", L"用户级 Shell 图标覆盖标识符", true, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Browser Helper Objects", L"", "BHO32", L"本机(32位)", L"32 位 Browser Helper Object", false, true, true },
+            // Office add-ins load into a signed Microsoft host process on every document open.
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Office\\Word\\Addins", L"FriendlyName", "OfficeAddinWordUser", L"当前用户", L"Word 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Office\\Excel\\Addins", L"FriendlyName", "OfficeAddinExcelUser", L"当前用户", L"Excel 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Office\\PowerPoint\\Addins", L"FriendlyName", "OfficeAddinPowerPointUser", L"当前用户", L"PowerPoint 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Office\\Outlook\\Addins", L"FriendlyName", "OfficeAddinOutlookUser", L"当前用户", L"Outlook 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Office\\Word\\Addins", L"FriendlyName", "OfficeAddinWord", L"本机", L"Word 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Office\\Excel\\Addins", L"FriendlyName", "OfficeAddinExcel", L"本机", L"Excel 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Office\\PowerPoint\\Addins", L"FriendlyName", "OfficeAddinPowerPoint", L"本机", L"PowerPoint 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Office\\Outlook\\Addins", L"FriendlyName", "OfficeAddinOutlook", L"本机", L"Outlook 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Office\\Word\\Addins", L"FriendlyName", "OfficeAddinWord32", L"本机(32位)", L"32 位 Word 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Office\\Excel\\Addins", L"FriendlyName", "OfficeAddinExcel32", L"本机(32位)", L"32 位 Excel 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Office\\PowerPoint\\Addins", L"FriendlyName", "OfficeAddinPowerPoint32", L"本机(32位)", L"32 位 PowerPoint 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Office\\Outlook\\Addins", L"FriendlyName", "OfficeAddinOutlook32", L"本机(32位)", L"32 位 Outlook 加载项（子键名为 ProgID）", false, false, true },
+            // Subkey-driven load points documented by persistence research but absent from Autoruns.
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VolumeCaches", L"", "DiskCleanupHandler", L"本机", L"磁盘清理处理程序", true, false, true },
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\MUI\\CallbackDlls", L"DllPath", "MuiCallbackDll", L"本机", L"MUI 回调 DLL", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\IdentityStore\\Providers", L"ApPluginDLLPath", "IdentityStoreProvider", L"本机", L"标识存储提供程序 DLL", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Accessibility\\ATs", L"StartExe", "AccessibilityTool", L"本机", L"辅助功能工具", false, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\PostBootReminders", L"ShellExecute", "PostBootReminder", L"当前用户", L"启动后提醒程序", false, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\AppKey", L"ShellExecute", "AppKeyCommand", L"当前用户", L"多媒体按键命令", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Control Panel\\Legacy CPL Map", L"ShellExecute", "LegacyCplMap", L"本机", L"旧式控制面板映射", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Active Setup\\Installed Components", L"RealStubPath", "ActiveSetupRealStubPath", L"本机", L"Active Setup 真实 StubPath", true, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Clients\\Mail", L"DLLPath", "MailClientDll", L"本机", L"邮件客户端 MAPI DLL", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\VBA\\Monitors", L"CLSID", "VbaMonitor", L"本机", L"VBA 事件监视器", true, false, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\VBA\\VBE\\6.0\\Addins", L"FriendlyName", "VbeAddin", L"当前用户", L"VBE 加载项（子键名为 ProgID）", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\ALG\\ISV", L"", "AlgIsvPlugin", L"本机", L"应用层网关 ISV 插件", false, true, true },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Terminal Server Client\\Default\\Addins", L"Name", "RdpClientAddinUser", L"当前用户", L"远程桌面客户端插件", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Terminal Server Client\\Default\\Addins", L"Name", "RdpClientAddin", L"本机", L"远程桌面客户端插件", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\AutoplayHandlers\\Handlers", L"InvokeProgID", "AutoplayHandler", L"本机", L"自动播放处理程序", false, false, true },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Installer\\RunOnceEntries", L"", "InstallerRunOnceEntry", L"本机", L"Windows Installer 一次性执行项", false, false, true },
+            // FailureCommand runs whenever the service crashes, which makes it a durable trigger.
+            { HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Services", L"FailureCommand", "ServiceFailureCommand", L"本机", L"服务失败恢复命令", false, false, false }
         } };
         return specs;
     }
@@ -2006,6 +2159,232 @@ namespace
                 entry.canDelete = true;
                 entry.lastErrorCode = identityValid ? ERROR_SUCCESS : identityError;
                 entries.push_back(std::move(entry));
+            }
+        }
+    }
+
+    // ScriptFileBase names the anchor a non-registry autostart path is resolved against.
+    // Known folders are preferred over %ENV% so a poisoned environment cannot redirect the scan.
+    enum class ScriptFileBase : int
+    {
+        SystemRoot = 0, // %SystemRoot%: group policy scripts and machine-wide PowerShell profiles.
+        Documents,      // Documents known folder: per-user PowerShell profiles (may be OneDrive-redirected).
+        RoamingAppData, // Roaming AppData: Office startup directories and VBA projects.
+        ProgramFiles    // Program Files: PowerShell 7 machine-wide profiles.
+    };
+
+    // ScriptFileSpec describes one file-based autostart family that no registry key points at.
+    struct ScriptFileSpec
+    {
+        ScriptFileBase baseKind = ScriptFileBase::SystemRoot;
+        const wchar_t* relativePathText = L""; // Path under the base; directory or single file.
+        bool isDirectory = false;              // true: every file inside is an autostart payload.
+        const char* sourceTypeText = "";
+        const wchar_t* userText = L"";
+        const wchar_t* detailText = L"";
+    };
+
+    // BuildScriptFileSpecList centralizes the file-based autostart families.
+    // These execute without any Run key or scheduled task, which is exactly why they get missed.
+    const std::array<ScriptFileSpec, 23>& BuildScriptFileSpecList()
+    {
+        static const std::array<ScriptFileSpec, 23> specs{ {
+            // Group policy scripts run as SYSTEM at boot and as the user at logon.
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\Machine\\Scripts\\Startup", true, "GpoStartupScript", L"本机", L"组策略计算机启动脚本" },
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\Machine\\Scripts\\Shutdown", true, "GpoShutdownScript", L"本机", L"组策略计算机关机脚本" },
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\User\\Scripts\\Logon", true, "GpoLogonScript", L"本机", L"组策略用户登录脚本" },
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\User\\Scripts\\Logoff", true, "GpoLogoffScript", L"本机", L"组策略用户注销脚本" },
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\Machine\\Scripts\\scripts.ini", false, "GpoScriptManifest", L"本机", L"组策略计算机脚本清单" },
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\Machine\\Scripts\\psscripts.ini", false, "GpoPowerShellScriptManifest", L"本机", L"组策略计算机 PowerShell 脚本清单" },
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\User\\Scripts\\scripts.ini", false, "GpoUserScriptManifest", L"本机", L"组策略用户脚本清单" },
+            { ScriptFileBase::SystemRoot, L"System32\\GroupPolicy\\User\\Scripts\\psscripts.ini", false, "GpoUserPowerShellScriptManifest", L"本机", L"组策略用户 PowerShell 脚本清单" },
+            // Every PowerShell profile runs on each interactive shell start.
+            { ScriptFileBase::SystemRoot, L"System32\\WindowsPowerShell\\v1.0\\profile.ps1", false, "PowerShellAllHostsProfile", L"本机", L"所有用户所有宿主 PowerShell 配置文件" },
+            { ScriptFileBase::SystemRoot, L"System32\\WindowsPowerShell\\v1.0\\Microsoft.PowerShell_profile.ps1", false, "PowerShellConsoleProfile", L"本机", L"所有用户控制台 PowerShell 配置文件" },
+            { ScriptFileBase::SystemRoot, L"SysWOW64\\WindowsPowerShell\\v1.0\\profile.ps1", false, "PowerShellAllHostsProfile32", L"本机(32位)", L"32 位所有用户 PowerShell 配置文件" },
+            { ScriptFileBase::SystemRoot, L"SysWOW64\\WindowsPowerShell\\v1.0\\Microsoft.PowerShell_profile.ps1", false, "PowerShellConsoleProfile32", L"本机(32位)", L"32 位所有用户控制台 PowerShell 配置文件" },
+            { ScriptFileBase::Documents, L"WindowsPowerShell\\profile.ps1", false, "PowerShellUserAllHostsProfile", L"当前用户", L"用户所有宿主 PowerShell 配置文件" },
+            { ScriptFileBase::Documents, L"WindowsPowerShell\\Microsoft.PowerShell_profile.ps1", false, "PowerShellUserConsoleProfile", L"当前用户", L"用户控制台 PowerShell 配置文件" },
+            { ScriptFileBase::Documents, L"PowerShell\\profile.ps1", false, "PwshUserAllHostsProfile", L"当前用户", L"用户 PowerShell 7 所有宿主配置文件" },
+            { ScriptFileBase::Documents, L"PowerShell\\Microsoft.PowerShell_profile.ps1", false, "PwshUserConsoleProfile", L"当前用户", L"用户 PowerShell 7 控制台配置文件" },
+            { ScriptFileBase::ProgramFiles, L"PowerShell\\7\\profile.ps1", false, "PwshAllHostsProfile", L"本机", L"PowerShell 7 所有用户配置文件" },
+            { ScriptFileBase::ProgramFiles, L"PowerShell\\7\\Microsoft.PowerShell_profile.ps1", false, "PwshConsoleProfile", L"本机", L"PowerShell 7 所有用户控制台配置文件" },
+            // Office loads these locations on every document open without any registry entry.
+            { ScriptFileBase::RoamingAppData, L"Microsoft\\Word\\STARTUP", true, "OfficeWordStartup", L"当前用户", L"Word 启动目录加载项" },
+            { ScriptFileBase::RoamingAppData, L"Microsoft\\Excel\\XLSTART", true, "OfficeExcelXlStart", L"当前用户", L"Excel 自动打开目录" },
+            { ScriptFileBase::RoamingAppData, L"Microsoft\\AddIns", true, "OfficeUserAddIns", L"当前用户", L"Office 用户加载项目录" },
+            { ScriptFileBase::RoamingAppData, L"Microsoft\\Outlook\\VbaProject.OTM", false, "OutlookVbaProject", L"当前用户", L"Outlook VBA 工程" },
+            { ScriptFileBase::RoamingAppData, L"Microsoft\\Templates\\Normal.dotm", false, "WordNormalTemplate", L"当前用户", L"Word 通用模板（可携带自动宏）" }
+        } };
+        return specs;
+    }
+
+    // ResolveScriptFileBase turns a base kind into an absolute directory, or empty when unavailable.
+    std::wstring ResolveScriptFileBase(const ScriptFileBase baseKind)
+    {
+        switch (baseKind)
+        {
+        case ScriptFileBase::SystemRoot:
+            return QueryEnvironmentWide(L"SystemRoot");
+        case ScriptFileBase::Documents:
+            return KnownFolderPath(FOLDERID_Documents);
+        case ScriptFileBase::RoamingAppData:
+            return KnownFolderPath(FOLDERID_RoamingAppData);
+        case ScriptFileBase::ProgramFiles:
+            return KnownFolderPath(FOLDERID_ProgramFiles);
+        }
+        return std::wstring();
+    }
+
+    // AppendScriptFileEntry adds one report-only record for a file-based autostart payload.
+    // These files have no reversible backend operation: the enable/disable and delete paths only
+    // accept the two known Startup folders, so revalidating them here would be a lie.
+    void AppendScriptFileEntry(
+        std::vector<ks::startup::StartupEntry>& entries,
+        const ScriptFileSpec& spec,
+        const std::filesystem::path& filePath,
+        const std::wstring& groupPathText)
+    {
+        const std::string filePathText = ToNativeSeparators(FromWide(filePath.wstring()));
+        ks::startup::StartupEntry entry;
+        entry.category = ks::startup::StartupCategory::Logon;
+        entry.categoryText = ks::startup::CategoryToText(entry.category);
+        entry.itemNameText = FromWide(filePath.filename().wstring());
+        entry.commandText = filePathText;
+        entry.imagePathText = filePathText;
+        entry.publisherText = ks::startup::QueryPublisherTextByPath(entry.imagePathText);
+        entry.locationText = ToNativeSeparators(FromWide(groupPathText));
+        entry.userText = FromWide(spec.userText);
+        entry.sourceTypeText = spec.sourceTypeText;
+        entry.detailText = FromWide(spec.detailText);
+        entry.imagePathExists = true;
+        entry.canOpenFileLocation = true;
+        entry.uniqueIdText = "SCRIPTFILE|" + filePathText;
+        MarkEntryActionUnavailable(
+            entry,
+            ks::startup::StartupRiskLevel::Critical,
+            "script_file",
+            FromWide(L"脚本与加载项文件没有可逆的后端操作；请在确认内容后手工处理，删除组策略脚本还可能被策略刷新还原。"));
+        entry.canOpenRegistryLocation = false;
+        entries.push_back(std::move(entry));
+    }
+
+    // AppendScriptFileEntries walks every file-based autostart family in the catalog.
+    void AppendScriptFileEntries(std::vector<ks::startup::StartupEntry>& entries)
+    {
+        for (const ScriptFileSpec& spec : BuildScriptFileSpecList())
+        {
+            const std::wstring baseText = ResolveScriptFileBase(spec.baseKind);
+            if (baseText.empty())
+            {
+                continue;
+            }
+            const std::filesystem::path targetPath =
+                std::filesystem::path(baseText) / std::filesystem::path(spec.relativePathText);
+            std::error_code errorCode;
+            if (!spec.isDirectory)
+            {
+                // Single-file families: report the file only when it actually exists.
+                if (std::filesystem::is_regular_file(targetPath, errorCode) && !errorCode)
+                {
+                    AppendScriptFileEntry(entries, spec, targetPath, targetPath.parent_path().wstring());
+                }
+                continue;
+            }
+            if (!std::filesystem::is_directory(targetPath, errorCode) || errorCode)
+            {
+                continue;
+            }
+            // Directory families: every regular file inside is loaded, whatever its name.
+            std::size_t reportedCount = 0;
+            for (const auto& directoryEntry : std::filesystem::directory_iterator(targetPath, errorCode))
+            {
+                if (errorCode || reportedCount >= 64)
+                {
+                    break;
+                }
+                const std::filesystem::file_status linkStatus = directoryEntry.symlink_status(errorCode);
+                if (errorCode || std::filesystem::is_directory(linkStatus))
+                {
+                    continue;
+                }
+                ++reportedCount;
+                AppendScriptFileEntry(entries, spec, directoryEntry.path(), targetPath.wstring());
+            }
+        }
+    }
+
+    // GroupPolicyScriptSpec describes one policy phase whose scripts live three levels deep.
+    struct GroupPolicyScriptSpec
+    {
+        HKEY rootKey = nullptr;
+        const wchar_t* subKeyText = L"";
+        const char* sourceTypeText = "";
+        const wchar_t* userText = L"";
+        const wchar_t* detailText = L"";
+    };
+
+    // AppendGroupPolicyScriptEntries reads the policy script index that drives GPO script execution.
+    // Layout: <phase>\{GPO GUID}\{index} with Script and Parameters values, so a flat table cannot
+    // express it and the generic subkey walker would stop one level too early.
+    void AppendGroupPolicyScriptEntries(std::vector<ks::startup::StartupEntry>& entries)
+    {
+        static const std::array<GroupPolicyScriptSpec, 4> specs{ {
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\Scripts\\Startup", "GpoScriptStartup", L"本机", L"组策略启动脚本注册" },
+            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\Scripts\\Shutdown", "GpoScriptShutdown", L"本机", L"组策略关机脚本注册" },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\Scripts\\Logon", "GpoScriptLogon", L"当前用户", L"组策略登录脚本注册" },
+            { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Group Policy\\Scripts\\Logoff", "GpoScriptLogoff", L"当前用户", L"组策略注销脚本注册" }
+        } };
+
+        for (const GroupPolicyScriptSpec& spec : specs)
+        {
+            const std::wstring phaseSubKey(spec.subKeyText);
+            const std::string groupLocationText = BuildRegistryLocationText(spec.rootKey, phaseSubKey);
+            for (const std::wstring& policyName : EnumerateRegistrySubKeys(spec.rootKey, phaseSubKey))
+            {
+                const std::wstring policySubKey = phaseSubKey + L"\\" + policyName;
+                for (const std::wstring& indexName : EnumerateRegistrySubKeys(spec.rootKey, policySubKey))
+                {
+                    const std::wstring itemSubKey = policySubKey + L"\\" + indexName;
+                    const auto scriptRecord = QueryRegistryValueRecord(spec.rootKey, itemSubKey, L"Script");
+                    if (!scriptRecord.has_value() || ks::str::TrimCopy(scriptRecord->valueDataText).empty())
+                    {
+                        continue;
+                    }
+                    // Parameters are part of what actually executes, so they belong in the command text.
+                    const auto parameterRecord = QueryRegistryValueRecord(spec.rootKey, itemSubKey, L"Parameters");
+                    std::string commandText = scriptRecord->valueDataText;
+                    if (parameterRecord.has_value() && !ks::str::TrimCopy(parameterRecord->valueDataText).empty())
+                    {
+                        commandText += " " + parameterRecord->valueDataText;
+                    }
+                    ks::startup::StartupEntry entry;
+                    entry.category = ks::startup::StartupCategory::Registry;
+                    entry.categoryText = ks::startup::CategoryToText(entry.category);
+                    entry.itemNameText = FromWide(policyName) + "\\" + FromWide(indexName);
+                    entry.locationText = BuildRegistryLocationText(spec.rootKey, itemSubKey);
+                    entry.locationGroupText = groupLocationText;
+                    entry.userText = FromWide(spec.userText);
+                    entry.sourceTypeText = spec.sourceTypeText;
+                    entry.detailText = FromWide(spec.detailText);
+                    entry.uniqueIdText = "GPOSCRIPT|" + entry.locationText;
+                    FinalizeRegistryEntry(
+                        entry,
+                        commandText,
+                        std::string(),
+                        scriptRecord->valueNameText,
+                        false,
+                        false);
+                    ConfigureRegistryValueAction(
+                        entry,
+                        spec.rootKey,
+                        itemSubKey,
+                        *scriptRecord,
+                        ks::startup::StartupRiskLevel::Critical,
+                        "policy",
+                        FromWide(L"组策略脚本由策略引擎下发；本地修改会在下一次策略刷新时被还原，应从策略源头处理。"));
+                    entries.push_back(std::move(entry));
+                }
             }
         }
     }
@@ -5903,6 +6282,8 @@ namespace ks::startup
             return FromWide(L"\u9ad8\u7ea7\u6ce8\u518c\u8868");
         case StartupCategory::Wmi:
             return "WMI";
+        case StartupCategory::Hidden:
+            return FromWide(L"隐藏项");
         default:
             return FromWide(L"\u672a\u77e5");
         }
@@ -6076,6 +6457,8 @@ namespace ks::startup
         }
         AppendRunOnceExEntries(entries);
         AppendStartupFolderEntries(entries);
+        // Script and add-in files execute at logon without any registry pointer of their own.
+        AppendScriptFileEntries(entries);
         AppendDisabledRegistryRunEntries(entries);
         AppendDisabledStartupFolderEntries(entries);
         return entries;
@@ -6118,6 +6501,8 @@ namespace ks::startup
         AppendSingleValueEntries(entries);
         AppendValueEnumEntries(entries);
         AppendSubKeyValueEntries(entries);
+        // Policy scripts sit three levels deep, so they need their own walker.
+        AppendGroupPolicyScriptEntries(entries);
         return entries;
     }
 
@@ -6213,6 +6598,8 @@ namespace ks::startup
         append(EnumerateAdvancedRegistryEntries());
         append(EnumerateWinsockEntries());
         append(EnumerateWmiEntries());
+        // Hidden findings run last: they cross-check the same objects the enumerators above walked.
+        append(EnumerateHiddenEntries());
         return entries;
     }
 

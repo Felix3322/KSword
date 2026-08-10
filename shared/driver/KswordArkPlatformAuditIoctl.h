@@ -5,13 +5,15 @@
 // ============================================================
 // KswordArkPlatformAuditIoctl.h
 // 作用：
-// - 定义 R3 <-> R0 HAL/WDF 审计协议与 HAL 函数槽受控编辑协议；
+// - 定义 R3 <-> R0 HAL/WDF 审计协议与函数槽受控编辑协议；
 // - 地址只在公开导出、WDF 绑定表或经过结构校验的表内读取；
-// - HAL 编辑按 scope/index 在 R0 重新定位槽位，并以表地址、旧值和原子 CAS
-//   约束单个函数指针；不提供任意地址内存写入能力。
+// - 编辑按 scope/index 在 R0 重新定位槽位，并以表地址、旧值和原子 CAS
+//   约束单个函数指针；不提供任意地址内存写入能力；
+// - 可编辑 scope 为四个 HAL 子表与 WDF_FUNCTIONS。WDF_CALLBACKS 描述的是本
+//   驱动自身 .text 内的编译期函数地址，没有可写槽，永远只读。
 // ============================================================
 
-#define KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION 4UL
+#define KSWORD_ARK_PLATFORM_AUDIT_PROTOCOL_VERSION 5UL
 
 #define KSWORD_ARK_IOCTL_FUNCTION_QUERY_PLATFORM_AUDIT 0x8E4UL
 #define KSWORD_ARK_IOCTL_FUNCTION_CONTROL_PLATFORM_AUDIT 0x8E6UL
@@ -140,6 +142,8 @@
 #define KSWORD_ARK_PLATFORM_DETAIL_BASELINE_MISMATCH       24UL
 
 #define KSWORD_ARK_PLATFORM_CONTROL_FLAG_UI_CONFIRMED       0x00000001UL
+// 历史上只有 HAL 槽可编辑，令牌沿用 'HALE'；协议 v5 起同一令牌也覆盖
+// WDF_FUNCTIONS 槽，改值只会让新旧二进制互相拒绝，没有额外安全收益。
 #define KSWORD_ARK_PLATFORM_CONTROL_CONFIRMATION_TOKEN      0x48414C45UL /* 'HALE' */
 
 #define KSWORD_ARK_PLATFORM_CONTROL_STATUS_OK                    0UL
@@ -154,6 +158,9 @@
 #define KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_CHANGED             0x00000001UL
 #define KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TARGET_EXECUTABLE   0x00000002UL
 #define KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TABLE_REVALIDATED   0x00000004UL
+// 槽位所在节不可写（KMDF 绑定表就在 Wdf01000.sys 的只读节里），R0 先建立
+// MDL 可写别名再 CAS。HVCI 会拒绝提权，此时返回 WRITE_FAILED 且不置该位。
+#define KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_ALIAS_WRITE         0x00000008UL
 
 #define KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS 1024UL
 #define KSWORD_ARK_PLATFORM_HARD_MAX_ROWS    1024UL

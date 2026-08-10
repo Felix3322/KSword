@@ -43,31 +43,10 @@ namespace process_detail_window_internal
         return static_cast<int>(column);
     }
 
+    // 统一按钮样式全部走动态主题角色，详情窗口开着时切换深浅色也会跟随。
     QString buildBlueButtonStyle()
     {
-        return QStringLiteral(
-            "QPushButton {"
-            "  color: %1;"
-            "  background: %5;"
-            "  border: 1px solid %2;"
-            "  border-radius: 3px;"
-            "  padding: 4px 10px;"
-            "}"
-            "QPushButton:hover {"
-            "  background: %3;"
-            "  color: %6;"
-            "  border: 1px solid %3;"
-            "}"
-            "QPushButton:pressed {"
-            "  background: %4;"
-            "  color: %6;"
-            "}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, 0, -26))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::OnAccentHex());
+        return KswordTheme::ThemedButtonStyle();
     }
 
     QString buildProcessDetailRootStyle()
@@ -217,12 +196,12 @@ namespace process_detail_window_internal
             "  background:%4;"
             "}")
             .arg(KswordTheme::WindowColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
             .arg(KswordTheme::PrimaryBlueSubtleHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     QString buildProcessDetailMenuStyle()
@@ -252,12 +231,12 @@ namespace process_detail_window_internal
             "  background:%3;"
             "  margin:3px 6px;"
             "}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::TextSecondaryColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::TextSecondaryHex())
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     QIcon buildProcessDetailR0ActionIcon(const QString& iconPath)

@@ -234,7 +234,8 @@ namespace ks::file
 
     // HandleUsageScanOptions 作用：
     // - 控制文件占用扫描策略；
-    // - 默认先尝试 R0 HandleTable，失败或无命中时回退 R3 DuplicateHandle。
+    // - 默认先尝试 R0 HandleTable，仅当 R0 后端不可用时回退 R3 DuplicateHandle；
+    // - R0 成功但没有目标命中属于有效空结果，不能再次全量扫描 R3 句柄表。
     struct HandleUsageScanOptions
     {
         bool tryKernelHandleTable = true;

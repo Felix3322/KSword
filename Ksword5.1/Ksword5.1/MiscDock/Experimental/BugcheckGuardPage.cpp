@@ -5,6 +5,7 @@
 #include "../../theme.h"
 
 #include <QCheckBox>
+#include <QEvent>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -161,6 +162,40 @@ namespace ks::misc
         refreshStatus();
     }
 
+    void BugcheckGuardPage::changeEvent(QEvent* event)
+    {
+        QWidget::changeEvent(event);
+        if (event == nullptr)
+        {
+            return;
+        }
+        if (event->type() == QEvent::ApplicationPaletteChange
+            || event->type() == QEvent::PaletteChange)
+        {
+            applyWarningBannerStyle();
+        }
+    }
+
+    // applyWarningBannerStyle 作用：
+    // - 输入：无，读取当前主题的语义色；
+    // - 处理：下发风险横幅样式，构造期与主题切换后走同一条路径；
+    // - 返回：无，横幅尚未创建时静默跳过。
+    void BugcheckGuardPage::applyWarningBannerStyle()
+    {
+        if (m_warningLabel == nullptr)
+        {
+            return;
+        }
+        m_warningLabel->setStyleSheet(
+            QStringLiteral(
+                "QLabel{padding:10px;border:1px solid %1;border-radius:5px;"
+                "background:%2;color:%3;font-weight:650;}")
+                .arg(KswordTheme::ErrorHex())
+                .arg(KswordTheme::ThemeColorName(
+                    KswordTheme::WarningBackgroundColor()))
+                .arg(KswordTheme::TextPrimaryHex()));
+    }
+
     void BugcheckGuardPage::initializeUi()
     {
         auto* rootLayout = new QVBoxLayout(this);
@@ -170,14 +205,7 @@ namespace ks::misc
         auto& language = ks::i18n::LanguageManager::instance();
         m_warningLabel = new QLabel(this);
         m_warningLabel->setWordWrap(true);
-        m_warningLabel->setStyleSheet(
-            QStringLiteral(
-                "QLabel{padding:10px;border:1px solid %1;border-radius:5px;"
-                "background:%2;color:%3;font-weight:650;}")
-                .arg(KswordTheme::ErrorHex())
-                .arg(KswordTheme::ThemeColorName(
-                    KswordTheme::WarningBackgroundColor()))
-                .arg(KswordTheme::TextPrimaryHex()));
+        applyWarningBannerStyle();
         language.bindText(
             m_warningLabel,
             QStringLiteral("misc.experimental.bugcheck.warning"),

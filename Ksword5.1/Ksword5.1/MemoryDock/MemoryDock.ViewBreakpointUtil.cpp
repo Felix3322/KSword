@@ -137,10 +137,39 @@ void MemoryDock::reloadMemoryViewerPage()
             .arg(protectToText(static_cast<std::uint32_t>(mbi.Protect)))
             .arg(stateToText(static_cast<std::uint32_t>(mbi.State)))
             .arg(typeToText(static_cast<std::uint32_t>(mbi.Type))));
+
+        // 可写可执行的页是最值得警惕的组合，用语义色直接标出来，
+        // 免得用户在一长串属性文本里自己找。这里每次跳转都会重新下发，
+        // 所以用快照 token 取色是安全的。
+        const std::uint32_t baseProtect = static_cast<std::uint32_t>(mbi.Protect) & 0xFFU;
+        const bool executable = (baseProtect == PAGE_EXECUTE
+            || baseProtect == PAGE_EXECUTE_READ
+            || baseProtect == PAGE_EXECUTE_READWRITE
+            || baseProtect == PAGE_EXECUTE_WRITECOPY);
+        const bool writable = (baseProtect == PAGE_READWRITE
+            || baseProtect == PAGE_WRITECOPY
+            || baseProtect == PAGE_EXECUTE_READWRITE
+            || baseProtect == PAGE_EXECUTE_WRITECOPY);
+        QString protectColor = KswordTheme::TextSecondaryHex();
+        if (executable && writable)
+        {
+            protectColor = KswordTheme::ErrorHex();   // RWX：最高风险。
+        }
+        else if (executable)
+        {
+            protectColor = KswordTheme::WarningHex(); // 可执行但不可写。
+        }
+        else if (writable)
+        {
+            protectColor = KswordTheme::SuccessHex(); // 普通可读写数据页。
+        }
+        m_viewProtectLabel->setStyleSheet(QString("color:%1;").arg(protectColor));
     }
     else
     {
         m_viewProtectLabel->setText("保护属性: (查询失败)");
+        m_viewProtectLabel->setStyleSheet(
+            QString("color:%1;").arg(KswordTheme::TextSecondaryHex()));
     }
 
     m_viewerStatusLabel->setText(
@@ -602,6 +631,12 @@ void MemoryDock::updateStatusBarText()
         m_statusProcessLabel->setText("进程: 未附加");
         m_statusPidLabel->setText("PID: -");
         m_statusMemoryIoLabel->setText("内存读写: 未就绪");
+        if (m_dockHeaderStatusLabel != nullptr)
+        {
+            m_dockHeaderStatusLabel->setText("未附加进程，请先选择目标并点击“附加”。");
+        }
+        // 附加状态变了，语义色要跟着回到“未附加”的次要色。
+        applyMemoryDockSemanticStyles();
         return;
     }
 
@@ -609,6 +644,15 @@ void MemoryDock::updateStatusBarText()
     m_statusPidLabel->setText(QString("PID: %1").arg(m_attachedPid));
     m_statusMemoryIoLabel->setText(
         QString("内存读写: %1").arg(m_canReadWriteMemory ? "可读可写" : "只读"));
+    if (m_dockHeaderStatusLabel != nullptr)
+    {
+        m_dockHeaderStatusLabel->setText(
+            QString("已附加 %1 (PID %2)，内存%3。")
+                .arg(m_attachedProcessName)
+                .arg(m_attachedPid)
+                .arg(m_canReadWriteMemory ? "可读可写" : "只读"));
+    }
+    applyMemoryDockSemanticStyles();
 }
 
 bool MemoryDock::parseAddressText(const QString& text, std::uint64_t& valueOut)

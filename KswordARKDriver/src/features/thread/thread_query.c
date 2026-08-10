@@ -19,6 +19,7 @@ Environment:
 #include "ark/ark_dyndata.h"
 #include "thread_worker_state.h"
 #include "work_queue_fallback.h"
+#include "../../platform/runtime_signature_scan.h"
 
 #define KSWORD_ARK_THREAD_ENUM_RESPONSE_HEADER_SIZE \
     (sizeof(KSWORD_ARK_ENUM_THREAD_RESPONSE) - sizeof(KSWORD_ARK_THREAD_ENTRY))
@@ -318,14 +319,15 @@ Return Value:
         return STATUS_PROCEDURE_NOT_FOUND;
     }
 
-    __try {
-        RtlCopyMemory(&pointerValue, (PUCHAR)ThreadObject + Offset, sizeof(pointerValue));
-        *ValueOut = (ULONG64)(ULONG_PTR)pointerValue;
+    // 偏移加到 ETHREAD 上可能越过对象末尾，而内核态触碰未映射地址是
+    // bugcheck 0x50 而不是可捕获异常，必须走安全读而不是 __try。
+    if (!KswordARKRuntimeReadMemory(
+            (const UCHAR*)ThreadObject + Offset,
+            &pointerValue,
+            sizeof(pointerValue))) {
+        return STATUS_PARTIAL_COPY;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = GetExceptionCode();
-    }
-
+    *ValueOut = (ULONG64)(ULONG_PTR)pointerValue;
     return status;
 }
 
@@ -362,13 +364,13 @@ Return Value:
         return STATUS_PROCEDURE_NOT_FOUND;
     }
 
-    __try {
-        RtlCopyMemory(ValueOut, (PUCHAR)ThreadObject + Offset, sizeof(*ValueOut));
+    // 同上：DynData 偏移不保证落在对象内，安全读才能把越界变成失败而非蓝屏。
+    if (!KswordARKRuntimeReadMemory(
+            (const UCHAR*)ThreadObject + Offset,
+            ValueOut,
+            sizeof(*ValueOut))) {
+        return STATUS_PARTIAL_COPY;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = GetExceptionCode();
-    }
-
     return status;
 }
 

@@ -1,6 +1,8 @@
 #include "TableSnapshotCompare.h"
 
 #include "../Internationalization/LanguageManager.h"
+#include "../theme.h"
+#include "TableFreezeSupport.h"
 
 #include <QAbstractItemModel>
 #include <QBitArray>
@@ -684,17 +686,17 @@ namespace
 
     QColor earlierOnlyColor()
     {
-        return QColor(255, 0, 0, 96);
+        return KswordTheme::WithAlpha(KswordTheme::ErrorColor(), 96);
     }
 
     QColor laterOnlyColor()
     {
-        return QColor(0, 255, 0, 96);
+        return KswordTheme::WithAlpha(KswordTheme::SuccessColor(), 96);
     }
 
     QColor changedFieldColor()
     {
-        return QColor(255, 246, 201);
+        return KswordTheme::WithAlpha(KswordTheme::WarningColor(), 96);
     }
 }
 
@@ -826,10 +828,13 @@ namespace ks::ui
             const int sourceColumn = visualColumn < horizontalState.logicalIndexes.size()
                 ? horizontalState.logicalIndexes.at(visualColumn)
                 : visualColumn;
+            // 冻结列在源表里也是"隐藏"的，但那是用户特意钉住的列，
+            // 必须留在快照里，否则冻结期间的比对基线会凭空少列。
             if (sourceColumn < 0 ||
                 sourceColumn >= columnCount ||
                 (visualColumn < horizontalState.hiddenSections.size() &&
-                    horizontalState.hiddenSections.testBit(visualColumn)))
+                    horizontalState.hiddenSections.testBit(visualColumn) &&
+                    !isColumnHiddenByFreeze(tableView, sourceColumn)))
             {
                 continue;
             }
@@ -884,10 +889,12 @@ namespace ks::ui
             const int sourceRow = visualRow < verticalState.logicalIndexes.size()
                 ? verticalState.logicalIndexes.at(visualRow)
                 : visualRow;
+            // 同上：冻结行是用户钉住的证据行，不能因为源表隐藏就从快照里漏掉。
             if (sourceRow < 0 ||
                 sourceRow >= rowCount ||
                 (visualRow < verticalState.hiddenSections.size() &&
-                    verticalState.hiddenSections.testBit(visualRow)))
+                    verticalState.hiddenSections.testBit(visualRow) &&
+                    !isRowHiddenByFreeze(tableView, sourceRow)))
             {
                 continue;
             }

@@ -2926,7 +2926,7 @@ namespace
 
     // ============================================================
     // 多权限递归删除（issue #155）
-    // - 五个档位共用同一套“后序展开 + 逐项删除”的语义，差别只在权限手段；
+    // - 七个档位共用同一套“后序展开 + 逐项删除”的语义，差别只在权限/后端手段；
     // - R0 档优先让驱动在内核内部展开，避免 R3 枚举被目录 DACL 拒绝。
     // ============================================================
 
@@ -3324,9 +3324,11 @@ namespace
 
     // runDriverDeleteBatch：R0 档执行体。
     // - 目录优先交给驱动在内核内递归展开，这样目录 DACL 拒绝列举也能删干净；
-    // - 旧驱动拒绝递归标志时回退到 R3 展开逐项删除，并在统计里标记降级。
+    // - 仅底层方案可在旧驱动拒绝递归标志时回退 R3 展开；IRP/POSIX 必须安全失败，
+    //   避免用户选中的后端被静默替换。
     FileDeleteBatchStats runDriverDeleteBatch(
         const std::vector<QString>& paths,
+        const ksword::ark::FileDeleteBackend backend,
         const std::function<void(float)>& progressCallback)
     {
         FileDeleteBatchStats stats;
@@ -3367,12 +3369,28 @@ namespace
                     driverNtPath.toStdWString(),
                     isDirectory,
                     wantRecursive,
-                    true);
+                    true,
+                    backend);
 
                 if (driverResult.unsupported)
                 {
-                    stats.driverRecursionUnsupported = true;
-                    deleteTreeByDriverPerNode(driverHandle, path, stats);
+                    if (backend == ksword::ark::FileDeleteBackend::Native)
+                    {
+                        stats.driverRecursionUnsupported = true;
+                        deleteTreeByDriverPerNode(driverHandle, path, stats);
+                    }
+                    else
+                    {
+                        stats.failedCount += 1U;
+                        const QString backendText =
+                            backend == ksword::ark::FileDeleteBackend::Irp
+                                ? QStringLiteral("IRP")
+                                : QStringLiteral("POSIX");
+                        stats.errors.push_back(QStringLiteral(
+                            "当前 KswordARK 驱动不支持 R0 %1 删除后端，请重新部署本次构建的驱动：%2")
+                            .arg(backendText)
+                            .arg(QDir::toNativeSeparators(path)));
+                    }
                 }
                 else if (!driverResult.io.ok)
                 {
@@ -3434,9 +3452,26 @@ namespace
             return stats;
         }
 
-        if (mode == FileDeleteMode::DriverR0)
+        if (mode == FileDeleteMode::DriverR0Native)
         {
-            return runDriverDeleteBatch(paths, progressCallback);
+            return runDriverDeleteBatch(
+                paths,
+                ksword::ark::FileDeleteBackend::Native,
+                progressCallback);
+        }
+        if (mode == FileDeleteMode::DriverR0Irp)
+        {
+            return runDriverDeleteBatch(
+                paths,
+                ksword::ark::FileDeleteBackend::Irp,
+                progressCallback);
+        }
+        if (mode == FileDeleteMode::DriverR0Posix)
+        {
+            return runDriverDeleteBatch(
+                paths,
+                ksword::ark::FileDeleteBackend::Posix,
+                progressCallback);
         }
 
         if (mode == FileDeleteMode::RecycleBin)
@@ -3683,9 +3718,9 @@ namespace
             "QLineEdit:focus,QPlainTextEdit:focus,QTextEdit:focus{"
             "  border:1px solid %1;}")
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
             + KswordTheme::ThemedComboBoxStyle();
     }
 
@@ -3719,12 +3754,12 @@ namespace
             "  background:%3;"
             "  margin:2px 6px;"
             "}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
             .arg(disabledTextColor)
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     void installFileTableCopyMenu(QTableWidget* tableWidget, const int processIdColumn)
@@ -4390,12 +4425,12 @@ namespace
             "  border:none;"
             "}")
             .arg(KswordTheme::WindowColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
             .arg(KswordTheme::ControlAccentHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     // buildLogPreviewText 作用：
@@ -4446,10 +4481,10 @@ namespace
             "  background:%3;"
             "  color:%4;"
             "}")
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::SurfaceAltHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     // 递归复制目录：用于跨面板复制目录场景。
@@ -5158,6 +5193,7 @@ namespace
             , m_filePath(filePath)
         {
             m_hashCancelRequested = std::make_shared<std::atomic_bool>(false);
+            m_usageScanCancelRequested = std::make_shared<std::atomic_bool>(false);
             // 文件属性与进程属性同为独立、非模态详情窗；不要继承隐藏 Dock 的子窗口外观。
             setWindowFlag(Qt::Window, true);
             setWindowModality(Qt::NonModal);
@@ -5298,6 +5334,20 @@ namespace
                 m_tabNavigationButtons.front()->setChecked(true);
             }
             applyThemeStyle();
+        }
+
+        ~FileDetailDialog() override
+        {
+            // 关闭即销毁的属性窗不能留下继续跑全系统枚举的任务；两个后台入口
+            // 都只共享原子取消标记，不在析构线程等待，也不访问已经释放的控件。
+            if (m_hashCancelRequested != nullptr)
+            {
+                m_hashCancelRequested->store(true);
+            }
+            if (m_usageScanCancelRequested != nullptr)
+            {
+                m_usageScanCancelRequested->store(true);
+            }
         }
 
     protected:
@@ -6350,28 +6400,41 @@ namespace
             refreshButton->setEnabled(false);
             table->clear();
             statusLabel->setText(QStringLiteral("● 正在扫描文件占用..."));
+            m_usageScanCancelRequested->store(false);
 
             const std::vector<QString> targetPaths{ info.absoluteFilePath() };
+            const std::shared_ptr<std::atomic_bool> cancelRequested =
+                m_usageScanCancelRequested;
             QPointer<FileDetailDialog> guardThis(this);
             QPointer<QTreeWidget> tableGuard(table);
             QPointer<QLabel> statusGuard(statusLabel);
             QPointer<QPushButton> refreshGuard(refreshButton);
+            QPointer<QObject> uiDispatcher(QCoreApplication::instance());
 
-            auto* task = QRunnable::create([guardThis, tableGuard, statusGuard, refreshGuard, targetPaths]()
+            auto* task = QRunnable::create([guardThis, tableGuard, statusGuard, refreshGuard,
+                                            uiDispatcher, targetPaths, cancelRequested]()
                 {
                     const filedock::handleusage::HandleUsageScanResult scanResult =
-                        filedock::handleusage::scanHandleUsageByPaths(targetPaths, 0);
-                    FileDetailDialog* targetDialog = guardThis.data();
-                    if (targetDialog == nullptr)
+                        filedock::handleusage::scanHandleUsageByPaths(
+                            targetPaths,
+                            0,
+                            true,
+                            [cancelRequested]()
+                            {
+                                return cancelRequested->load();
+                            });
+                    QObject* dispatcher = uiDispatcher.data();
+                    if (cancelRequested->load() || dispatcher == nullptr)
                     {
                         return;
                     }
 
                     QMetaObject::invokeMethod(
-                        targetDialog,
-                        [guardThis, tableGuard, statusGuard, refreshGuard, scanResult]()
+                        dispatcher,
+                        [guardThis, tableGuard, statusGuard, refreshGuard,
+                         cancelRequested, scanResult]()
                         {
-                            if (guardThis == nullptr || tableGuard == nullptr ||
+                            if (cancelRequested->load() || guardThis == nullptr || tableGuard == nullptr ||
                                 statusGuard == nullptr || refreshGuard == nullptr)
                             {
                                 return;
@@ -8502,6 +8565,7 @@ namespace
         bool m_generalR0Loaded = false; // R0 文件信息是否已完成后台读取。
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
+        std::shared_ptr<std::atomic_bool> m_usageScanCancelRequested; // 文件占用扫描取消标记，关闭属性窗时置位。
         bool m_themeStyleApplying = false; // 避免 PaletteChange 触发样式重入。
     };
 
@@ -9932,7 +9996,7 @@ void FileDock::rebuildBreadcrumb(FilePanelWidgets& panel)
     panel.breadcrumbEditTriggerButton->setStyleSheet(QStringLiteral(
         "QPushButton{border:none;background:transparent;color:%1;}"
         "QPushButton:hover{background:%2;color:%1;}")
-        .arg(KswordTheme::TextPrimaryColorHex())
+        .arg(KswordTheme::TextPrimaryHex())
         .arg(KswordTheme::IsDarkModeEnabled() ? KswordTheme::SurfaceMutedColorHex() : KswordTheme::PrimaryBlueSubtleHex()));
     panel.breadcrumbLayout->addWidget(panel.breadcrumbEditTriggerButton, 1);
     connect(panel.breadcrumbEditTriggerButton, &QPushButton::clicked, this, [this, &panel]() {
@@ -11739,46 +11803,79 @@ void FileDock::refreshRecoveryVolumeList()
                         return;
                     }
 
-                    dock->m_recoveryVolumeCombo->clear();
-                    for (const QString& volumeRootPath : ntfsVolumeRootList)
+                    // commitVolumeList：卷列表落地动作，直接提交与弹层收起后的回投共用同一份实现。
+                    auto commitVolumeList = [guardedSelf, requestGeneration, ntfsVolumeRootList]()
                     {
-                        const QString displayText = QStringLiteral("%1 (NTFS)").arg(volumeRootPath);
-                        dock->m_recoveryVolumeCombo->addItem(displayText, volumeRootPath);
-                    }
-                    dock->m_recoveryVolumeCombo->setEnabled(true);
-
-                    if (dock->m_recoveryRefreshButton != nullptr)
-                    {
-                        dock->m_recoveryRefreshButton->setEnabled(true);
-                    }
-                    // 扫描按钮的禁用权归误删扫描/恢复任务：探测结束不能把它们置灰的状态改回去。
-                    if (dock->m_recoveryScanButton != nullptr
-                        && !dock->m_recoveryScanInProgress
-                        && !dock->m_recoveryRecoverInProgress)
-                    {
-                        dock->m_recoveryScanButton->setEnabled(true);
-                        if (dock->m_recoveryEmptyScanButton != nullptr) { dock->m_recoveryEmptyScanButton->setEnabled(true); }
-                    }
-
-                    if (dock->m_recoveryStatusLabel != nullptr)
-                    {
-                        if (dock->m_recoveryVolumeCombo->count() == 0)
+                        if (guardedSelf.isNull())
                         {
-                            dock->m_recoveryStatusLabel->setText(
-                                QStringLiteral("未检测到可扫描的 NTFS 卷。"));
+                            return;
                         }
-                        else
+                        FileDock* const commitDock = guardedSelf.data();
+                        if (commitDock->m_recoveryVolumeCombo == nullptr)
                         {
-                            dock->m_recoveryStatusLabel->setText(
-                                QStringLiteral("已刷新卷列表，可执行误删扫描。"));
+                            return;
                         }
-                    }
+                        // 延迟回投期间可能又发起了新一轮探测，落地前重新校验代次。
+                        const quint64 latestGeneration = commitDock->m_recoveryVolumeCombo
+                            ->property(kRecoveryVolumeProbeGenerationProperty)
+                            .toULongLong();
+                        if (latestGeneration != requestGeneration)
+                        {
+                            return;
+                        }
 
-                    kLogEvent event;
-                    info << event
-                        << "[FileDock] 刷新文件恢复卷列表, count="
-                        << dock->m_recoveryVolumeCombo->count()
-                        << eol;
+                        commitDock->m_recoveryVolumeCombo->clear();
+                        for (const QString& volumeRootPath : ntfsVolumeRootList)
+                        {
+                            const QString displayText = QStringLiteral("%1 (NTFS)").arg(volumeRootPath);
+                            commitDock->m_recoveryVolumeCombo->addItem(displayText, volumeRootPath);
+                        }
+                        commitDock->m_recoveryVolumeCombo->setEnabled(true);
+
+                        if (commitDock->m_recoveryRefreshButton != nullptr)
+                        {
+                            commitDock->m_recoveryRefreshButton->setEnabled(true);
+                        }
+                        // 扫描按钮的禁用权归误删扫描/恢复任务：探测结束不能把它们置灰的状态改回去。
+                        if (commitDock->m_recoveryScanButton != nullptr
+                            && !commitDock->m_recoveryScanInProgress
+                            && !commitDock->m_recoveryRecoverInProgress)
+                        {
+                            commitDock->m_recoveryScanButton->setEnabled(true);
+                            if (commitDock->m_recoveryEmptyScanButton != nullptr) { commitDock->m_recoveryEmptyScanButton->setEnabled(true); }
+                        }
+
+                        if (commitDock->m_recoveryStatusLabel != nullptr)
+                        {
+                            if (commitDock->m_recoveryVolumeCombo->count() == 0)
+                            {
+                                commitDock->m_recoveryStatusLabel->setText(
+                                    QStringLiteral("未检测到可扫描的 NTFS 卷。"));
+                            }
+                            else
+                            {
+                                commitDock->m_recoveryStatusLabel->setText(
+                                    QStringLiteral("已刷新卷列表，可执行误删扫描。"));
+                            }
+                        }
+
+                        kLogEvent event;
+                        info << event
+                            << "[FileDock] 刷新文件恢复卷列表, count="
+                            << commitDock->m_recoveryVolumeCombo->count()
+                            << eol;
+                    };
+
+                    // 卷下拉框展开期间清空重填，会让弹层继续抓着鼠标键盘但内容失效，
+                    // 界面表现为点不动；这里推迟到弹层收起后再落地。
+                    if (ks::ui::DeferUiCommitIfComboBoxPopupOpen(
+                            dock,
+                            QStringLiteral("file-recovery-volume-combo-apply"),
+                            commitVolumeList))
+                    {
+                        return;
+                    }
+                    commitVolumeList();
                 },
                 Qt::QueuedConnection);
         });
@@ -12381,10 +12478,23 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
         QIcon(":/Icon/process_resume.svg"), QStringLiteral("重启后删除（R3·启动时执行）"));
     pendingRebootDeleteAction->setToolTip(
         QStringLiteral("登记 PendingFileRenameOperations，由系统在下次重启早期删除；适合正被占用的目标，需要管理员权限。"));
-    QAction* driverDeleteAction = deleteModeMenu->addAction(
-        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动递归删除（R0·内核）"));
-    driverDeleteAction->setToolTip(
-        QStringLiteral("由 R0 驱动在内核展开目录树后序删除，目录拒绝列举时也能删干净；需要已启用 KswordARK 驱动。"));
+    // R0 作为顶层快捷入口，避免强制用户再穿过“删除方式”子菜单；三个动作仍共用
+    // 统一的不可逆确认、后台递归和统计链路。
+    QMenu* r0DeleteMenu = menu.addMenu(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("R0"));
+    r0DeleteMenu->setToolTipsVisible(true);
+    QAction* driverNativeDeleteAction = r0DeleteMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动（底层方案）"));
+    driverNativeDeleteAction->setToolTip(QStringLiteral(
+        "由 R0 用 ZwCreateFile/ZwSetInformationFile 删除；失败时保留现有的 DispositionEx 兼容重试。"));
+    QAction* driverIrpDeleteAction = r0DeleteMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动(IRP)"));
+    driverIrpDeleteAction->setToolTip(QStringLiteral(
+        "由 R0 构造 IRP_MJ_SET_INFORMATION/FileDispositionInformation 并投递完整文件系统栈；不回退到底层方案。"));
+    QAction* driverPosixDeleteAction = r0DeleteMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动(POSIX)"));
+    driverPosixDeleteAction->setToolTip(QStringLiteral(
+        "由 R0 使用 FileDispositionInformationEx 的 POSIX unlink 语义；是否可用取决于系统与文件系统，不回退到其它后端。"));
     QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("文件解锁器(R3/R0)"));
     QMenu* addOplockMenu = menu.addMenu(QIcon(":/Icon/plus.svg"), QStringLiteral("添加 Oplock（访问计数）"));
     QAction* addOplockLevel1Action = addOplockMenu->addAction(QStringLiteral("Level 1 - 独占读写缓存，别人访问会计数"));
@@ -12469,7 +12579,10 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     permanentDeleteAction->setEnabled(hasSelection);
     forceDeleteAction->setEnabled(hasSelection);
     pendingRebootDeleteAction->setEnabled(hasSelection);
-    driverDeleteAction->setEnabled(hasSelection);
+    r0DeleteMenu->setEnabled(hasSelection);
+    driverNativeDeleteAction->setEnabled(hasSelection);
+    driverIrpDeleteAction->setEnabled(hasSelection);
+    driverPosixDeleteAction->setEnabled(hasSelection);
     unlockByDriverAction->setEnabled(isSingleSelection);
     const bool canAddOplock = singleFileOnly && !firstPathHasOplock;
     addOplockMenu->setEnabled(canAddOplock);
@@ -12625,9 +12738,19 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
         deleteSelectedItemsWithMode(panel, FileDeleteMode::PendingReboot);
         return;
     }
-    if (selectedAction == driverDeleteAction)
+    if (selectedAction == driverNativeDeleteAction)
     {
         deleteSelectedItemByDriver(panel);
+        return;
+    }
+    if (selectedAction == driverIrpDeleteAction)
+    {
+        deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0Irp);
+        return;
+    }
+    if (selectedAction == driverPosixDeleteAction)
+    {
+        deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0Posix);
         return;
     }
     if (selectedAction == unlockByDriverAction)
@@ -13632,7 +13755,7 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
 
 void FileDock::deleteSelectedItemByDriver(FilePanelWidgets& panel)
 {
-    deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0);
+    deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0Native);
 }
 
 void FileDock::deleteSelectedItemsWithMode(FilePanelWidgets& panel, const FileDeleteMode mode)
@@ -13694,16 +13817,29 @@ void FileDock::deleteSelectedItemsWithMode(FilePanelWidgets& panel, const FileDe
             "删除结果要等重启后才能确认。是否继续？")
             .arg(paths.size());
         break;
-    case FileDeleteMode::DriverR0:
-    default:
-        modeNameText = QStringLiteral("驱动递归删除(R0)");
-        confirmTitleText = QStringLiteral("驱动删除确认");
+    case FileDeleteMode::DriverR0Native:
+        modeNameText = QStringLiteral("R0 驱动（底层方案）");
+        confirmTitleText = QStringLiteral("R0 底层删除确认");
         confirmBodyText = QStringLiteral(
-            "将通过 KswordARK 驱动在内核直接硬删除选中的 %1 项，不进入回收站、无法还原。\n\n"
-            "目录树由 R0 递归展开后序删除，因此目录拒绝列举时也能删干净；"
-            "符号链接/联接点只删除链接本身。是否继续？")
+            "将通过 KswordARK 驱动的底层 Zw* 方案硬删除选中的 %1 项，不进入回收站、无法还原。\n\n目录树由 R0 递归展开后序删除，因此目录拒绝列举时也能删干净；失败时会执行现有 DispositionEx 兼容重试。符号链接/联接点只删除链接本身。是否继续？")
             .arg(paths.size());
         break;
+    case FileDeleteMode::DriverR0Irp:
+        modeNameText = QStringLiteral("R0 驱动(IRP)");
+        confirmTitleText = QStringLiteral("R0 IRP 删除确认");
+        confirmBodyText = QStringLiteral(
+            "将由 KswordARK 驱动构造 IRP_MJ_SET_INFORMATION / FileDispositionInformation，通过完整文件系统栈硬删除选中的 %1 项，不进入回收站、无法还原。\n\n目录树仍由 R0 后序递归展开；此模式不会回退到底层方案。符号链接/联接点只删除链接本身。是否继续？")
+            .arg(paths.size());
+        break;
+    case FileDeleteMode::DriverR0Posix:
+        modeNameText = QStringLiteral("R0 驱动(POSIX)");
+        confirmTitleText = QStringLiteral("R0 POSIX 删除确认");
+        confirmBodyText = QStringLiteral(
+            "将由 KswordARK 驱动使用 FileDispositionInformationEx 的 POSIX unlink 语义，硬删除选中的 %1 项，不进入回收站、无法还原。\n\n目录树仍由 R0 后序递归展开；支持情况取决于 Windows 版本与文件系统，失败时不会回退到 IRP 或底层方案。是否继续？")
+            .arg(paths.size());
+        break;
+    default:
+        return;
     }
 
     {

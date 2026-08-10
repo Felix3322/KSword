@@ -252,9 +252,9 @@ void KernelIoctlDecoderTab::initializeUi()
         outputEdit->setText(QStringLiteral("—"));
         outputEdit->setStyleSheet(QStringLiteral(
             "QLineEdit{background:%1;color:%2;border:1px solid %3;border-radius:3px;padding:5px 8px;}")
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex()));
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex()));
         return outputEdit;
     };
 

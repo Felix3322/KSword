@@ -472,11 +472,33 @@ void WinAPIDock::refreshProcessListAsync()
 
 void WinAPIDock::populateProcessSelector(const std::vector<ks::process::ProcessRecord>& processList)
 {
-    m_processList = processList;
     if (m_processCombo == nullptr)
     {
+        m_processList = processList;
         return;
     }
+
+    // 弹层展开期间清空重填下拉框，会让弹层继续抓着鼠标键盘但内容失效，
+    // 用户看到的就是“点开进程下拉框之后界面点不动”；推迟到弹层收起后再落地。
+    // 缓存也一起推迟：进程缓存与下拉项必须保持同一份快照。
+    {
+        const QPointer<WinAPIDock> guardedSelf(this);
+        if (ks::ui::DeferUiCommitIfComboBoxPopupOpen(
+                this,
+                QStringLiteral("winapi-dock-process-selector-apply"),
+                [guardedSelf, processList]()
+                {
+                    if (!guardedSelf.isNull())
+                    {
+                        guardedSelf->populateProcessSelector(processList);
+                    }
+                }))
+        {
+            return;
+        }
+    }
+
+    m_processList = processList;
 
     std::uint32_t previousPid = 0;
     (void)currentSelectedPid(&previousPid);

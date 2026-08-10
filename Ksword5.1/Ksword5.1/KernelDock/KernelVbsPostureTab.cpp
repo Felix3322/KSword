@@ -82,24 +82,15 @@ void KernelVbsPostureTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    m_warningLabel = new QLabel(
-        kernelText(
-            "kernel.vbs_posture.warning",
-            QStringLiteral("⚠ 判定口径：策略位（SystemCodeIntegrityInformation 的 HVCI_KMCI_ENABLED）只说明「配置想开」，不代表 HVCI 正在强制执行。真正生效还需要 hypervisor 在位且 securekernel.exe / skci.dll 已加载。两侧证据不一致时本页会明确指出，不会因为策略位为 1 就判定为已启用。")),
-        this);
-    m_warningLabel->setWordWrap(true);
-    m_warningLabel->setStyleSheet(QStringLiteral(
-        "QLabel{padding:8px;border:1px solid %1;border-radius:4px;"
-        "background:%2;color:%3;font-weight:600;}")
-        .arg(KswordTheme::WarningHex())
-        .arg(KswordTheme::ThemeColorName(KswordTheme::WarningBackgroundColor()))
-        .arg(KswordTheme::TextPrimaryHex()));
-    rootLayout->addWidget(m_warningLabel);
-
     auto* toolbar = new QHBoxLayout();
     m_refreshButton = new QPushButton(
         kernelText("kernel.vbs_posture.refresh", QStringLiteral("刷新姿态")),
         this);
+    // 判定口径不占版面：挂在触发采集的按钮上，谁要看谁悬停。
+    m_refreshButton->setToolTip(
+        kernelText(
+            "kernel.vbs_posture.refresh.tooltip",
+            QStringLiteral("策略位只说明「配置想开」，HVCI 真正生效还需要 hypervisor 在位且 securekernel.exe / skci.dll 已加载。")));
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
     m_statusLabel = new QLabel(
         kernelText("kernel.vbs_posture.status.waiting", QStringLiteral("状态：等待刷新")),
@@ -136,6 +127,15 @@ void KernelVbsPostureTab::initializeUi()
         kernelText("kernel.vbs_posture.column.verdict", QStringLiteral("判定")),
         kernelText("kernel.vbs_posture.column.source", QStringLiteral("证据来源"))
     });
+    // 「两侧证据不一致按未启用处理」这条规则跟着它解释的那一列走。
+    QTableWidgetItem* verdictHeader = m_table->horizontalHeaderItem(PostureColumnVerdict);
+    if (verdictHeader != nullptr)
+    {
+        verdictHeader->setToolTip(
+            kernelText(
+                "kernel.vbs_posture.column.verdict.tooltip",
+                QStringLiteral("策略位与运行证据不一致时一律按未启用处理，不会因为策略位为 1 就判定为已启用。")));
+    }
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setAlternatingRowColors(true);

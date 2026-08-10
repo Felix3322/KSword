@@ -13,7 +13,9 @@
 #include <QDialog>
 
 #include <cstdint>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <vector>
 
 class QHBoxLayout;
@@ -40,6 +42,7 @@ public:
     // 参数 targetPaths：要扫描占用的目标路径列表。
     // 参数 parent：父窗口。
     explicit FileHandleUsageWindow(const std::vector<QString>& targetPaths, QWidget* parent = nullptr);
+    ~FileHandleUsageWindow() override;
 
     // setOpenProcessDetailCallback 作用：
     // - 注入“转到进程详情”的外部处理逻辑；
@@ -126,5 +129,6 @@ private:
     bool m_refreshPending = false;            // m_refreshPending：是否记录了待执行刷新请求。
     std::uint64_t m_refreshTicket = 0;        // m_refreshTicket：刷新序号，防乱序覆盖。
     int m_refreshProgressPid = 0;             // m_refreshProgressPid：kPro 任务 PID。
+    std::shared_ptr<std::atomic_bool> m_scanCancelRequested; // m_scanCancelRequested：窗口销毁后取消后台扫描。
     std::vector<filedock::handleusage::HandleUsageEntry> m_entries; // m_entries：当前结果缓存。
 };

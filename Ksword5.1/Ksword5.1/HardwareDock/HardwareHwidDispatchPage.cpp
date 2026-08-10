@@ -150,13 +150,6 @@ void HardwareHwidDispatchPage::initializeUi()
         .arg(KswordTheme::TextPrimaryHex()));
     m_rootLayout->addWidget(titleLabel, 0);
 
-    QLabel* scopeLabel = new QLabel(
-        QStringLiteral("仅修改所选设备的查询结果，不直接写入物理内存、固件或磁盘。网络选项目前仅影响 NSI/ARP 查询结果。"),
-        this);
-    scopeLabel->setWordWrap(true);
-    scopeLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    m_rootLayout->addWidget(scopeLabel, 0);
-
     m_statusLabel = new QLabel(QStringLiteral("状态：尚未查询驱动。"), this);
     m_statusLabel->setStyleSheet(QStringLiteral("font-weight:600;color:%1;").arg(KswordTheme::PrimaryBlueHex));
     m_rootLayout->addWidget(m_statusLabel, 0);
@@ -245,7 +238,8 @@ void HardwareHwidDispatchPage::initializeUi()
     m_dryRunButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("干跑验证"), this);
     m_dryRunButton->setToolTip(QStringLiteral("只验证目标驱动对象是否可引用，不实际替换派遣函数。"));
     m_enableButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_resume.svg")), QStringLiteral("启用派遣函数"), this);
-    m_enableButton->setToolTip(QStringLiteral("按所选目标替换 IRP_MJ_DEVICE_CONTROL 派遣函数；高风险，可能蓝屏。"));
+    // 作用域边界并入这个按钮：它是唯一真正改变系统行为的动作，说明放在这里最有机会被读到。
+    m_enableButton->setToolTip(QStringLiteral("按所选目标替换 IRP_MJ_DEVICE_CONTROL 派遣函数；高风险，可能蓝屏。只改变所选设备的查询结果，不直接写入物理内存、固件或磁盘；网络选项目前仅影响 NSI/ARP 查询结果。"));
     m_disableButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_terminate.svg")), QStringLiteral("卸载全部派遣函数"), this);
     m_disableButton->setToolTip(QStringLiteral("恢复本页安装过的全部 Dispatch hook；高风险，可能蓝屏。"));
     m_copyPlanButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), QStringLiteral("复制计划"), this);

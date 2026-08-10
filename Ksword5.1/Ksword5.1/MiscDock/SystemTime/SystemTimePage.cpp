@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHideEvent>
@@ -151,6 +152,40 @@ namespace ks::misc
         QWidget::hideEvent(event);
     }
 
+    void SystemTimePage::changeEvent(QEvent* event)
+    {
+        QWidget::changeEvent(event);
+        if (event == nullptr)
+        {
+            return;
+        }
+        if (event->type() == QEvent::ApplicationPaletteChange
+            || event->type() == QEvent::PaletteChange)
+        {
+            applyWarningBannerStyle();
+        }
+    }
+
+    // applyWarningBannerStyle 作用：
+    // - 输入：无，读取当前主题的语义色；
+    // - 处理：下发永久警告横幅样式，构造期与主题切换后走同一条路径；
+    // - 返回：无，横幅尚未创建时静默跳过。
+    void SystemTimePage::applyWarningBannerStyle()
+    {
+        if (m_warningLabel == nullptr)
+        {
+            return;
+        }
+        m_warningLabel->setStyleSheet(
+            QStringLiteral(
+                "QLabel{padding:10px;border:1px solid %1;border-radius:5px;"
+                "background:%2;color:%3;font-weight:600;}")
+                .arg(KswordTheme::WarningHex())
+                .arg(KswordTheme::ThemeColorName(
+                    KswordTheme::WarningBackgroundColor()))
+                .arg(KswordTheme::TextPrimaryHex()));
+    }
+
     void SystemTimePage::initializeUi()
     {
         auto* rootLayout = new QVBoxLayout(this);
@@ -166,14 +201,7 @@ namespace ks::misc
                 "严重时会造成冻结或蓝屏。请先保存工作，强烈建议仅在虚拟机中使用。"),
             this);
         m_warningLabel->setWordWrap(true);
-        m_warningLabel->setStyleSheet(
-            QStringLiteral(
-                "QLabel{padding:10px;border:1px solid %1;border-radius:5px;"
-                "background:%2;color:%3;font-weight:600;}")
-                .arg(KswordTheme::WarningHex())
-                .arg(KswordTheme::ThemeColorName(
-                    KswordTheme::WarningBackgroundColor()))
-                .arg(KswordTheme::TextPrimaryHex()));
+        applyWarningBannerStyle();
         rootLayout->addWidget(m_warningLabel);
 
         m_persistenceLabel = new QLabel(

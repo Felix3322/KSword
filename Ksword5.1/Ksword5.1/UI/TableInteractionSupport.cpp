@@ -26,6 +26,7 @@
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QComboBox>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
@@ -100,6 +101,22 @@ namespace
         return commitList;
     }
 
+    // isComboBoxPopupOpen 作用：
+    // - 返回当前是否有 QComboBox 弹层正展开；
+    // - 弹层是抓着鼠标键盘的独立顶层窗口，此时后台回填清空并重填下拉框，
+    //   会让弹层继续抓着输入但内容已失效，界面表现为“点了下拉框之后点不动”；
+    // - 判据取 activePopupWidget 的父控件：QComboBox 弹层容器的父对象就是组合框本身，
+    //   右键菜单的父对象不是，因此不会和菜单判据互相误伤。
+    bool isComboBoxPopupOpen()
+    {
+        QWidget* const activePopupWidget = QApplication::activePopupWidget();
+        if (activePopupWidget == nullptr)
+        {
+            return false;
+        }
+        return qobject_cast<QComboBox*>(activePopupWidget->parentWidget()) != nullptr;
+    }
+
     // isLeftCtrlHeldForMultiSelect 作用：
     // - 返回左 Ctrl 键当前是否处于物理按下状态（Issue #149）；
     // - 用户按住左 Ctrl 跨行多选时，任意表格刷新都应像右键菜单打开时一样进入缓存刷新，
@@ -115,7 +132,7 @@ namespace
     // - 每次真正执行前重新检查，覆盖 flush 过程中同步打开新菜单或用户仍在多选的重入场景。
     bool isDeferredTableUiCommitBlocked(const DeferredTableUiCommit& pendingCommit)
     {
-        if (isLeftCtrlHeldForMultiSelect())
+        if (isLeftCtrlHeldForMultiSelect() || isComboBoxPopupOpen())
         {
             return true;
         }
@@ -268,8 +285,8 @@ namespace
             contextMenuOpen =
                 contextMenuOpen || isItemViewContextMenuOpen(itemView);
         }
-        // 右键菜单打开或用户仍按住左 Ctrl 多选（Issue #149）时都缓存刷新。
-        if (!contextMenuOpen && !isLeftCtrlHeldForMultiSelect())
+        // 右键菜单打开、用户仍按住左 Ctrl 多选（Issue #149）、下拉框弹层展开时都缓存刷新。
+        if (!contextMenuOpen && !isLeftCtrlHeldForMultiSelect() && !isComboBoxPopupOpen())
         {
             // 无需缓存：若队列仍有左 Ctrl 期间积压的提交（如松开事件因失焦丢失），
             // 借本次刷新兜底安排一次 flush，避免旧提交长期滞留。
@@ -376,6 +393,29 @@ namespace
         return text;
     }
 
+    /*
+     * 复制、导出、快照比对都只取"可见"行列，而冻结是靠 setRowHidden/setColumnHidden
+     * 实现的，与筛选共用同一个状态位。若不区分，用户特意钉住的行列反而会从导出的
+     * 取证数据里消失，且没有任何提示。这里只把真正被筛掉的算作不可见。
+     */
+    bool isRowHiddenByFilter(const QTableView* tableView, const int row)
+    {
+        if (tableView == nullptr)
+        {
+            return false;
+        }
+        return tableView->isRowHidden(row) && !ks::ui::isRowHiddenByFreeze(tableView, row);
+    }
+
+    bool isColumnHiddenByFilter(const QTableView* tableView, const int column)
+    {
+        if (tableView == nullptr)
+        {
+            return false;
+        }
+        return tableView->isColumnHidden(column) && !ks::ui::isColumnHiddenByFreeze(tableView, column);
+    }
+
     QVector<int> selectedVisibleRows(QTableView* tableView, const bool includeCurrentFallback)
     {
         QVector<int> rowList;
@@ -388,7 +428,7 @@ namespace
         rowList.reserve(selectedIndexList.size());
         for (const QModelIndex& index : selectedIndexList)
         {
-            if (index.isValid() && !tableView->isRowHidden(index.row()))
+            if (index.isValid() && !isRowHiddenByFilter(tableView, index.row()))
             {
                 rowList.push_back(index.row());
             }
@@ -400,7 +440,7 @@ namespace
         if (rowList.isEmpty() && includeCurrentFallback)
         {
             const QModelIndex currentIndex = tableView->currentIndex();
-            if (currentIndex.isValid() && !tableView->isRowHidden(currentIndex.row()))
+            if (currentIndex.isValid() && !isRowHiddenByFilter(tableView, currentIndex.row()))
             {
                 rowList.push_back(currentIndex.row());
             }
@@ -420,7 +460,7 @@ namespace
         rowList.reserve(rowCount);
         for (int row = 0; row < rowCount; ++row)
         {
-            if (!tableView->isRowHidden(row))
+            if (!isRowHiddenByFilter(tableView, row))
             {
                 rowList.push_back(row);
             }
@@ -440,7 +480,7 @@ namespace
         columnList.reserve(columnCount);
         for (int column = 0; column < columnCount; ++column)
         {
-            if (!tableView->isColumnHidden(column))
+            if (!isColumnHiddenByFilter(tableView, column))
             {
                 columnList.push_back(column);
             }
@@ -481,7 +521,7 @@ namespace
 
         for (const int row : rowList)
         {
-            if (row < 0 || row >= modelObject->rowCount() || tableView->isRowHidden(row))
+            if (row < 0 || row >= modelObject->rowCount() || isRowHiddenByFilter(tableView, row))
             {
                 continue;
             }
@@ -767,9 +807,9 @@ namespace
 
             m_copyAllButton = createButton("复制全表", QStringLiteral(":/Icon/log_copy.svg"));
             m_exportButton = createButton("导出", QStringLiteral(":/Icon/log_export.svg"));
-            m_freezePaneButton = createButton("冻结窗格");
+            m_freezePaneButton = createButton("冻结行列");
             m_freezePaneButton->setToolTip(localizedSourceText(
-                "选中单元格后冻结：该行连同其上方仍可见的行会钉在列标题下方，该列连同其左侧仍可见的列会钉在最左侧"));
+                "冻结选中的行或列：行会钉在列标题正下方，列会固定在行表头右侧；支持一次冻结多选行"));
             m_pauseRefreshButton = createButton("停止刷新");
             m_pauseRefreshButton->setCheckable(true);
             layout->addWidget(m_copyAllButton);
@@ -783,18 +823,18 @@ namespace
             m_freezePaneMenu = new QMenu(m_freezePaneButton);
             m_freezePaneMenu->setStyleSheet(KswordTheme::ContextMenuStyle());
             m_freezeCurrentRowAction = m_freezePaneMenu->addAction(
-                localizedSourceText("冻结到当前行"));
+                localizedSourceText("冻结选中行"));
             m_freezeCurrentColumnAction = m_freezePaneMenu->addAction(
-                localizedSourceText("冻结到当前列"));
+                localizedSourceText("冻结选中列"));
             m_freezeCurrentCellAction = m_freezePaneMenu->addAction(
-                localizedSourceText("冻结到当前单元格"));
+                localizedSourceText("冻结选中行列"));
             m_freezePaneMenu->addSeparator();
             m_unfreezeRowsAction = m_freezePaneMenu->addAction(
                 localizedSourceText("取消冻结行"));
             m_unfreezeColumnsAction = m_freezePaneMenu->addAction(
                 localizedSourceText("取消冻结列"));
             m_unfreezeAllAction = m_freezePaneMenu->addAction(
-                localizedSourceText("取消全部窗格冻结"));
+                localizedSourceText("取消全部冻结"));
             m_freezePaneButton->setMenu(m_freezePaneMenu);
             m_freezePaneButton->setPopupMode(QToolButton::InstantPopup);
 
@@ -938,15 +978,15 @@ namespace
 
             m_copyAllButton->setText(localizedSourceText("复制全表"));
             m_exportButton->setText(localizedSourceText("导出"));
-            m_freezePaneButton->setText(localizedSourceText("冻结窗格"));
+            m_freezePaneButton->setText(localizedSourceText("冻结行列"));
             m_freezePaneButton->setToolTip(localizedSourceText(
-                "选中单元格后冻结：该行连同其上方仍可见的行会钉在列标题下方，该列连同其左侧仍可见的列会钉在最左侧"));
-            m_freezeCurrentRowAction->setText(localizedSourceText("冻结到当前行"));
-            m_freezeCurrentColumnAction->setText(localizedSourceText("冻结到当前列"));
-            m_freezeCurrentCellAction->setText(localizedSourceText("冻结到当前单元格"));
+                "冻结选中的行或列：行会钉在列标题正下方，列会固定在行表头右侧；支持一次冻结多选行"));
+            m_freezeCurrentRowAction->setText(localizedSourceText("冻结选中行"));
+            m_freezeCurrentColumnAction->setText(localizedSourceText("冻结选中列"));
+            m_freezeCurrentCellAction->setText(localizedSourceText("冻结选中行列"));
             m_unfreezeRowsAction->setText(localizedSourceText("取消冻结行"));
             m_unfreezeColumnsAction->setText(localizedSourceText("取消冻结列"));
-            m_unfreezeAllAction->setText(localizedSourceText("取消全部窗格冻结"));
+            m_unfreezeAllAction->setText(localizedSourceText("取消全部冻结"));
             m_cleanupButton->setText(localizedSourceText("清理"));
             m_doneCleanupButton->setText(localizedSourceText("完成"));
             m_deleteSelectedButton->setText(localizedSourceText("清理选中"));
@@ -1071,8 +1111,9 @@ namespace
         }
 
         // freezeToCurrentIndex 作用：
-        // - 冻结从当前视口顶部行到当前单元格所在行之间的可视行，钉到列表头正下方；
-        // - 冻结从当前视口最左列到当前单元格所在列之间的可视列，钉到行表头正右侧；
+        // - 行方向：把选中的行（多选全部生效，未选中回落到当前行）钉到列表头正下方；
+        // - 列方向：把当前单元格所在列固定到行表头右侧；
+        // - 只冻结选中的行列本身；其余内容——包括它们上方/左侧的行列——照常滚动；
         // - freezeRows/freezeColumns 控制本次只修改哪一个方向。
         void freezeToCurrentIndex(const bool freezeRows, const bool freezeColumns)
         {
@@ -1095,13 +1136,13 @@ namespace
             const QModelIndex currentIndex = tableView->currentIndex();
             if (freezeRows)
             {
-                m_frozenPaneController->freezeRowsThroughVisualRow(
-                    tableView->verticalHeader()->visualIndex(currentIndex.row()));
+                const QVector<int> selectedRows = selectedVisibleRows(tableView, true);
+                m_frozenPaneController->freezeRows(
+                    QList<int>(selectedRows.cbegin(), selectedRows.cend()));
             }
             if (freezeColumns)
             {
-                m_frozenPaneController->freezeColumnsThroughVisualColumn(
-                    tableView->horizontalHeader()->visualIndex(currentIndex.column()));
+                m_frozenPaneController->freezeColumns({ currentIndex.column() });
             }
             updatePosition();
             updateControls();
@@ -2532,6 +2573,16 @@ namespace
             }
             else if (eventObject->type() == QEvent::Hide)
             {
+                // 下拉框弹层收起是解除 isComboBoxPopupOpen 屏障的唯一时机；
+                // 弹层容器的父对象就是组合框本身，据此识别并回投被缓存的刷新。
+                if (QWidget* const hiddenWidget = qobject_cast<QWidget*>(watchedObject))
+                {
+                    if (qobject_cast<QComboBox*>(hiddenWidget->parentWidget()) != nullptr)
+                    {
+                        scheduleDeferredTableUiCommitFlush();
+                    }
+                }
+
                 // hiddenMenu 用途：业务菜单退出嵌套事件循环后释放对应表格的 UI 提交屏障。
                 QMenu* hiddenMenu = qobject_cast<QMenu*>(watchedObject);
                 if (hiddenMenu != nullptr)
@@ -2769,11 +2820,24 @@ namespace ks::ui
             std::move(commitAction));
     }
 
+    bool DeferUiCommitIfComboBoxPopupOpen(
+        QObject* owner,
+        const QString& commitKey,
+        std::function<void()> commitAction)
+    {
+        // 视图集合留空：该入口不重建表格，屏障只由下拉框弹层和左 Ctrl 决定。
+        return deferItemViewUiCommitIfNeeded(
+            owner,
+            commitKey,
+            {},
+            std::move(commitAction));
+    }
+
     bool IsItemViewUiCommitBlockedByContextMenu(
         const QList<QAbstractItemView*>& itemViewList)
     {
-        // 左 Ctrl 多选期间对所有表格生效，无关具体视图（Issue #149）。
-        if (isLeftCtrlHeldForMultiSelect())
+        // 左 Ctrl 多选期间、下拉框弹层展开期间对所有表格生效，无关具体视图（Issue #149）。
+        if (isLeftCtrlHeldForMultiSelect() || isComboBoxPopupOpen())
         {
             return true;
         }

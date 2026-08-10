@@ -479,8 +479,8 @@ namespace
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, 0, -26))
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
             .arg(paddingText)
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     // buildThreadSearchStyle 作用：统一线程页搜索框边框与焦点色。
@@ -498,8 +498,8 @@ namespace
             "  border: 1px solid %1;"
             "}")
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
             .arg(KswordTheme::TextPrimaryHex());
     }
 
@@ -519,13 +519,13 @@ namespace
             "QPushButton:hover:!checked{background:%5;color:%1;}"
             "QPushButton:checked{background:%6;color:%7;border-color:%6;}"
             "QPushButton:pressed{background:%8;color:%7;}")
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::BorderHex())
             .arg(outerRadius)
             .arg(KswordTheme::PrimaryBlueSubtleHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::OnAccentHex())
+            .arg(KswordTheme::OnAccentDynamicHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -10, -36));
     }
 }
@@ -1368,9 +1368,9 @@ QString ProcessDock::buildThreadContextMenuStyle() const
     // 右键菜单高风险点处理：
     // - 明确写死深浅色下背景与文字颜色；
     // - 禁止依赖默认样式，避免浅色模式出现黑底黑字问题。
-    const QString menuBackgroundColor = KswordTheme::SurfaceColorHex();
-    const QString menuTextColor = KswordTheme::TextPrimaryColorHex();
-    const QString menuBorderColor = KswordTheme::BorderColorHex();
+    const QString menuBackgroundColor = KswordTheme::SurfaceHex();
+    const QString menuTextColor = KswordTheme::TextPrimaryHex();
+    const QString menuBorderColor = KswordTheme::BorderHex();
     const QString menuDisabledColor = KswordTheme::TextDisabledColorHex();
 
     return QStringLiteral(
@@ -1401,7 +1401,7 @@ QString ProcessDock::buildThreadContextMenuStyle() const
         .arg(menuBorderColor)
         .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
         .arg(menuDisabledColor)
-        .arg(KswordTheme::OnAccentHex());
+        .arg(KswordTheme::OnAccentDynamicHex());
 }
 
 void ProcessDock::bindThreadContextActionToItem(QTreeWidgetItem* clickedItem)

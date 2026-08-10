@@ -3169,12 +3169,6 @@ void WindowDock::initializeUi()
             QStringLiteral("font-size:18px;font-weight:700;color:%1;")
             .arg(KswordTheme::TextPrimaryHex()));
         pageLayout->addWidget(pageTitleLabel, 0);
-
-        QLabel* pageHintLabel = new QLabel(QStringLiteral("只读审计页"), pageWidget);
-        pageHintLabel->setStyleSheet(
-            QStringLiteral("font-size:13px;color:%1;")
-            .arg(KswordTheme::TextSecondaryHex()));
-        pageLayout->addWidget(pageHintLabel, 0);
     };
 
     // makeInnerTabWidget 作用：

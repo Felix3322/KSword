@@ -1305,10 +1305,10 @@ protected:
 
         const QRectF plotRect = chartRect();
         const QColor borderColor = themeColorFromText(
-            KswordTheme::BorderColorHex(),
+            KswordTheme::BorderHex(),
             KswordTheme::BorderColor());
         const QColor textColor = themeColorFromText(
-            KswordTheme::TextSecondaryColorHex(),
+            KswordTheme::TextSecondaryHex(),
             KswordTheme::TextSecondaryColor());
 
         painter.setPen(QPen(borderColor, 1.0));
@@ -3385,13 +3385,13 @@ namespace
             "  background: %4;"
             "  color: %7;"
             "}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, 0, -26))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::PrimaryBlueBorderHex)
+            .arg(KswordTheme::PrimaryBlueHoverHex)
+            .arg(KswordTheme::PrimaryBluePressedHex)
             .arg(paddingText)
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::SurfaceHex())
+            .arg(QStringLiteral("palette(highlighted-text)"));
     }
 
     // 下拉框主题描边样式，保持与按钮同色系。
@@ -3420,8 +3420,8 @@ namespace
             return;
         }
 
-        const QString comboBackgroundColor = KswordTheme::SurfaceColorHex();
-        const QString comboTextColor = KswordTheme::TextPrimaryColorHex();
+        const QString comboBackgroundColor = KswordTheme::SurfaceHex();
+        const QString comboTextColor = KswordTheme::TextPrimaryHex();
 
         comboBoxPointer->setStyleSheet(buildBlueComboBoxStyle());
 
@@ -3471,10 +3471,10 @@ namespace
             "QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {"
             "  border: 1px solid %1;"
             "}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex());
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex());
     }
 
     // applyTransparentContainerStyle 作用：
@@ -3979,10 +3979,12 @@ void ProcessDock::initializeUi()
             "QTabBar::tab:selected{background-color:%2;color:%5;font-weight:700;}"
             "QTabBar::tab:hover:!selected{background-color:%3;color:%4;}" )
             .arg(ProcessTabMinHeightPx)
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::PrimaryBlueSubtleHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::OnAccentHex()));
+            .arg(KswordTheme::PrimaryBlueHex)
+            // 悬停底色没有蓝色系的动态角色可用，退回中性 alternate-base，
+            // 保证深浅色切换时不会残留旧主题的浅蓝方块。
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(QStringLiteral("palette(highlighted-text)")));
     }
 
     // “进程列表”页是本模块核心页面。
@@ -4304,11 +4306,11 @@ void ProcessDock::initializeProcessActivityPanel()
         "QPushButton:hover {"
         "  border:1px solid %4;"
         "}")
-        .arg(KswordTheme::TextPrimaryColorHex())
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::BorderColorHex())
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-        .arg(KswordTheme::OnAccentHex());
+        .arg(KswordTheme::TextPrimaryHex())
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::BorderHex())
+        .arg(KswordTheme::PrimaryBlueHex)
+        .arg(QStringLiteral("palette(highlighted-text)"));
 
     // 指标按钮必须可独立开关：
     // - 默认全部点亮，用户打开页面即可看到 CPU/内存/磁盘/网络/GPU 全部曲线；
@@ -10364,11 +10366,11 @@ void ProcessDock::showTableContextMenu(const QPoint& localPosition)
             "QToolButton:hover { border-color:%3; background:%4; }"
             "QToolButton:checked { color:%5; background:%3; border-color:%3; }"
             "QToolButton[affinityMixed=\"true\"] { border-color:%3; border-style:dashed; }")
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::OnAccentDynamicHex());
 
         const auto affinityCoordinates = std::make_shared<
             std::vector<ks::process::LogicalProcessorCoordinate>>(

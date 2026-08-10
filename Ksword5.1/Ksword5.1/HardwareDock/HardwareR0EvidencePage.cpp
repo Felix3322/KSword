@@ -152,11 +152,11 @@ namespace
             "QPushButton:hover{background:%3;}"
             "QPushButton:pressed{background:%1;color:%5;}"
             "QPushButton:disabled{color:%4;border-color:%4;background:transparent;}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::TextPrimaryHex())
             .arg(KswordTheme::PrimaryBlueSubtleHex())
-            .arg(KswordTheme::TextDisabledColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::TextSecondaryHex())
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     QString buildBlueInputStyle()
@@ -167,10 +167,10 @@ namespace
         return QStringLiteral(
             "QLineEdit{border:1px solid %1;border-radius:4px;padding:4px 6px;color:%2;background:transparent;/* %3 */}"
             "QLineEdit:focus{border:1px solid %4;}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::PrimaryBlueHex);
     }
 
     QString buildHeaderStyle()
@@ -179,7 +179,7 @@ namespace
         // 处理：构造表头蓝色强调样式。
         // 返回：stylesheet 文本。
         return QStringLiteral("QHeaderView::section{color:%1;font-weight:700;}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+            .arg(KswordTheme::PrimaryBlueHex);
     }
 
     QString statusStyle(const QString& colorText)
@@ -256,14 +256,14 @@ namespace
         // 处理：选中时使用主题主色背景，未选中时保持透明和主题文字色。
         // 返回：stylesheet 文本。
         const QString backgroundText = selected
-            ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
+            ? KswordTheme::PrimaryBlueHex
             : QStringLiteral("transparent");
         const QString borderText = selected
-            ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
-            : KswordTheme::BorderColorHex();
+            ? KswordTheme::PrimaryBlueHex
+            : KswordTheme::BorderHex();
         const QString textColor = selected
-            ? KswordTheme::OnAccentHex()
-            : KswordTheme::TextPrimaryColorHex();
+            ? KswordTheme::OnAccentDynamicHex()
+            : KswordTheme::TextPrimaryHex();
         return QStringLiteral(
             "QPushButton{min-width:24px;max-width:24px;padding:3px 0;border:1px solid %1;"
             "border-radius:0;color:%2;background:%3;font-weight:700;}"
@@ -272,8 +272,8 @@ namespace
             .arg(borderText)
             .arg(textColor)
             .arg(backgroundText)
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     void updateColumnPresetButtons(

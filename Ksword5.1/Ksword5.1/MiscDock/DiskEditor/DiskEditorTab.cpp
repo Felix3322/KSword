@@ -115,10 +115,10 @@ namespace
             "QLineEdit:focus,QSpinBox:focus{"
             "  border:1px solid %4;"
             "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::PrimaryBlueHex)
             + KswordTheme::ThemedComboBoxStyle();
     }
 
@@ -144,12 +144,11 @@ namespace
             "  padding:5px;"
             "  font-weight:700;"
             "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::PrimaryBlueHex);
     }
 
     // buildInfoCardStyle：
@@ -171,8 +170,8 @@ namespace
             "  left:10px;"
             "  padding:0 4px;"
             "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex());
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::TextPrimaryHex());
     }
 
     // setReadOnlyItem：
@@ -504,8 +503,8 @@ namespace ks::misc
         m_logEdit->setReadOnly(true);
         m_logEdit->setStyleSheet(
             QStringLiteral("QPlainTextEdit{border:none;background:%1;color:%2;}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex()));
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex()));
         logLayout->addWidget(m_logEdit, 1);
         rightLayout->addWidget(logGroup, 1);
 

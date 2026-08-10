@@ -3,11 +3,13 @@
 #include "BootEditor/BootEditorTab.h"
 #include "ApplicationControlPage.h"
 #include "ContextMenuCleaner/ContextMenuCleanerTab.h"
+#include "DisableDse/DisableDsePage.h"
 #include "Experimental/BugcheckGuardPage.h"
 #include "DiskEditor/DiskEditorTab.h"
 #include "RenderBenchmark/RenderBenchmarkPage.h"
 #include "SoundSource/SoundSourcePage.h"
 #include "SystemTime/SystemTimePage.h"
+#include "VirtualLocation/VirtualLocationPage.h"
 
 // 扫描器 / 转储分析 / 插件原本是三个顶层 Dock，为精简 dock 栏入口已并入本页。
 #include "../MinidumpDock/MinidumpDock.h"
@@ -65,7 +67,9 @@ void MiscDock::initializeUi()
     m_bootEditorHostWidget = new QWidget(m_mainTabWidget);
     m_soundSourceHostWidget = new QWidget(m_mainTabWidget);
     m_systemTimeHostWidget = new QWidget(m_mainTabWidget);
+    m_virtualLocationHostWidget = new QWidget(m_mainTabWidget);
     m_bugcheckGuardHostWidget = new QWidget(m_mainTabWidget);
+    m_disableDseHostWidget = new QWidget(m_mainTabWidget);
     m_contextMenuCleanerHostWidget = new QWidget(m_mainTabWidget);
     m_diskEditorHostWidget = new QWidget(m_mainTabWidget);
     m_applicationControlHostWidget = new QWidget(m_mainTabWidget);
@@ -97,6 +101,19 @@ void MiscDock::initializeUi()
         QIcon(QStringLiteral(":/Icon/system_time.svg")),
         QStringLiteral("系统变速"));
 
+    // 虚拟定位页：
+    // - 把任意坐标写成 Windows 位置服务的“系统默认位置”，R3 被 ACL 拒绝时回退 R0 注册表 IOCTL；
+    // - 只影响走 Windows 定位 API 的调用方，页面内长期展示这条生效边界。
+    m_virtualLocationTabIndex = m_mainTabWidget->addTab(
+        m_virtualLocationHostWidget,
+        QIcon(QStringLiteral(":/Icon/virtual_location.svg")),
+        QStringLiteral("虚拟定位"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_virtualLocationHostWidget,
+        QStringLiteral("misc.virtual_location.tab"),
+        QStringLiteral("虚拟定位"));
+
     // 蓝屏缓冲页严格归入“实验性”：它只提供一次性 KeBugCheckEx 延迟，
     // 不承诺恢复系统，也不默认跳过最终 BugCheck。
     m_bugcheckGuardTabIndex = m_mainTabWidget->addTab(
@@ -110,6 +127,20 @@ void MiscDock::initializeUi()
         m_bugcheckGuardHostWidget,
         QStringLiteral("misc.experimental.tab"),
         QStringLiteral("实验性"));
+
+    // 驱动签名强制页：
+    // - 运行时反汇编定位 CI.dll!g_CiOptions，用 R0 事务化内核写临时关闭 DSE；
+    // - 写入前校验读回值的强制签名位与系统自报状态自洽，
+    //   HVCI 开启时直接禁用操作，页面析构还会兜底把原值写回。
+    m_disableDseTabIndex = m_mainTabWidget->addTab(
+        m_disableDseHostWidget,
+        QIcon(QStringLiteral(":/Icon/codeeditor_replace.svg")),
+        QStringLiteral("驱动签名"));
+    ks::i18n::LanguageManager::instance().bindTab(
+        m_mainTabWidget,
+        m_disableDseHostWidget,
+        QStringLiteral("misc.disable_dse.tab"),
+        QStringLiteral("驱动签名"));
 
     // Shell 关联管理页：
     // - 覆盖右键菜单、URL 绑定、打开方式和 Explorer 第三方主页项；
@@ -225,9 +256,19 @@ void MiscDock::ensureTabInitialized(const int tabIndex)
         initializeSystemTimePage();
         return;
     }
+    if (tabIndex == m_virtualLocationTabIndex)
+    {
+        initializeVirtualLocationPage();
+        return;
+    }
     if (tabIndex == m_bugcheckGuardTabIndex)
     {
         initializeBugcheckGuardPage();
+        return;
+    }
+    if (tabIndex == m_disableDseTabIndex)
+    {
+        initializeDisableDsePage();
         return;
     }
     if (tabIndex == m_contextMenuCleanerTabIndex)
@@ -322,6 +363,18 @@ void MiscDock::initializeSystemTimePage()
     hostLayout->addWidget(m_systemTimePage, 1);
 }
 
+void MiscDock::initializeVirtualLocationPage()
+{
+    if (m_virtualLocationHostWidget == nullptr || m_virtualLocationPage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_virtualLocationHostWidget);
+    m_virtualLocationPage = new ks::misc::VirtualLocationPage(m_virtualLocationHostWidget);
+    hostLayout->addWidget(m_virtualLocationPage, 1);
+}
+
 void MiscDock::initializeBugcheckGuardPage()
 {
     if (m_bugcheckGuardHostWidget == nullptr || m_bugcheckGuardPage != nullptr)
@@ -332,6 +385,18 @@ void MiscDock::initializeBugcheckGuardPage()
     QVBoxLayout* const hostLayout = buildHostLayout(m_bugcheckGuardHostWidget);
     m_bugcheckGuardPage = new ks::misc::BugcheckGuardPage(m_bugcheckGuardHostWidget);
     hostLayout->addWidget(m_bugcheckGuardPage, 1);
+}
+
+void MiscDock::initializeDisableDsePage()
+{
+    if (m_disableDseHostWidget == nullptr || m_disableDsePage != nullptr)
+    {
+        return;
+    }
+
+    QVBoxLayout* const hostLayout = buildHostLayout(m_disableDseHostWidget);
+    m_disableDsePage = new ks::misc::DisableDsePage(m_disableDseHostWidget);
+    hostLayout->addWidget(m_disableDsePage, 1);
 }
 
 void MiscDock::initializeContextMenuCleanerTab()

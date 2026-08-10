@@ -69,7 +69,8 @@ public:
         Drivers,       // SCM 驱动（引导、系统、自动、手动或已禁用）。
         Tasks,         // 计划任务。
         Registry,      // 高级注册表持久化项。
-        Wmi            // WMI 持久化项。
+        Wmi,           // WMI 持久化项。
+        Hidden         // 隐藏项：两种系统视图对不上的自启动来源。
     };
 
     // StartupEntry：
@@ -143,6 +144,7 @@ private:
     void appendAdvancedRegistryEntries(std::vector<StartupEntry>* entryListOut);
     void appendWinsockEntries(std::vector<StartupEntry>* entryListOut);
     void appendWmiEntries(std::vector<StartupEntry>* entryListOut);
+    void appendHiddenEntries(std::vector<StartupEntry>* entryListOut);
 
     // ===================== 交互 =====================
     void showEntryContextMenu(StartupCategory category, QTableWidget* tableWidget, const QPoint& localPos);
@@ -193,6 +195,7 @@ private:
     QWidget* m_tasksPage = nullptr;           // m_tasksPage：计划任务页。
     QWidget* m_registryPage = nullptr;        // m_registryPage：高级注册表页。
     QWidget* m_wmiPage = nullptr;             // m_wmiPage：WMI 持久化页。
+    QWidget* m_hiddenPage = nullptr;          // m_hiddenPage：隐藏项页。
 
     QTableWidget* m_allTable = nullptr;       // m_allTable：总览表。
     QTableWidget* m_logonTable = nullptr;     // m_logonTable：登录项表。
@@ -201,6 +204,7 @@ private:
     QTableWidget* m_tasksTable = nullptr;     // m_tasksTable：任务表。
     QTreeWidget* m_registryTree = nullptr;    // m_registryTree：高级注册表树（按注册表位置分组）。
     QTableWidget* m_wmiTable = nullptr;       // m_wmiTable：WMI 持久化表。
+    QTableWidget* m_hiddenTable = nullptr;    // m_hiddenTable：隐藏项表。
 
     // ===================== 数据缓存 =====================
     std::vector<StartupEntry> m_entryList;    // m_entryList：全部启动项缓存。

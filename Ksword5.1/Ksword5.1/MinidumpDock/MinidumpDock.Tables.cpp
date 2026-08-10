@@ -150,19 +150,21 @@ QWidget* MinidumpDock::createStructuredTablePage(
     auto buttons = std::make_shared<std::vector<QPointer<QPushButton>>>(); // buttons：可安全失效的列组按钮。
 
     // activeStyle/inactiveStyle：当前预设使用主题强调色；自定义显隐时全部取消着色。
+    // 两个字符串都被 applyGroup 与表头右键菜单按值捕获，之后每次重下发用的都是同一份
+    // 文本——所以颜色必须全部取 palette 动态 token；一旦烘成静态色值，主题切换后
+    // 从外部再也够不着它们。激活态文字用 highlighted-text，正好配 palette(highlight) 底。
     const QString activeStyle = QStringLiteral(
-        "QPushButton { background:%1; color:%2; border:1px solid %1; padding:3px 10px; }")
-        .arg(
-            KswordTheme::AccentHex(KswordTheme::AccentRole::Blue),
-            KswordTheme::OnAccentHex()); // activeStyle：激活预设的样式。
+        "QPushButton { background:%1; color:palette(highlighted-text); "
+        "border:1px solid %1; padding:3px 10px; }")
+        .arg(KswordTheme::PrimaryBlueHex); // activeStyle：激活预设的样式。
     const QString inactiveStyle = QStringLiteral(
         "QPushButton { background:%1; color:%2; border:1px solid %3; padding:3px 10px; }"
         "QPushButton:hover { background:%4; }")
         .arg(
-            KswordTheme::SurfaceColorHex(),
-            KswordTheme::TextPrimaryColorHex(),
-            KswordTheme::BorderColorHex(),
-            KswordTheme::SurfaceAltColorHex()); // inactiveStyle：未选中或自定义布局样式。
+            KswordTheme::SurfaceHex(),
+            KswordTheme::TextPrimaryHex(),
+            KswordTheme::BorderHex(),
+            KswordTheme::SurfaceAltHex()); // inactiveStyle：未选中或自定义布局样式。
 
     for (int groupIndex = 0; groupIndex < groupCount; ++groupIndex)
     {
@@ -269,11 +271,11 @@ QWidget* MinidumpDock::createStructuredTablePage(
                 "QMenu::item:selected { background:%4; color:%5; }"
                 "QMenu::item:disabled { color:%6; }")
                 .arg(
-                    KswordTheme::SurfaceColorHex(),
-                    KswordTheme::TextPrimaryColorHex(),
-                    KswordTheme::BorderColorHex(),
+                    KswordTheme::SurfaceHex(),
+                    KswordTheme::TextPrimaryHex(),
+                    KswordTheme::BorderHex(),
                     KswordTheme::AccentHex(KswordTheme::AccentRole::Blue),
-                    KswordTheme::OnAccentHex(),
+                    KswordTheme::OnAccentDynamicHex(),
                     KswordTheme::TextDisabledColorHex()));
 
             // columnAction：勾选状态直接反映当前列可见性。
@@ -320,28 +322,36 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
         // 可信度用带底色的徽章而不是一行文字：它决定了这份结论该被多认真地对待，
         // 必须一眼看到，不能和其它属性混在一起。
         const QString accentHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Blue);
-        const QString textHex = KswordTheme::TextPrimaryColorHex();
+        const QString textHex = KswordTheme::TextPrimaryHex();
         const QString mutedHex = KswordTheme::TextDisabledColorHex();
-        const QString borderHex = KswordTheme::BorderColorHex();
-        const QString surfaceAltHex = KswordTheme::SurfaceAltColorHex();
+        const QString borderHex = KswordTheme::BorderHex();
+        const QString surfaceAltHex = KswordTheme::SurfaceAltHex();
 
-        // confidenceHex：可信度越低越要显眼地降调，避免低可信结论被当成定论。
-        QString confidenceHex = mutedHex;
+        // confidenceColor：可信度越低越要显眼地降调，避免低可信结论被当成定论。
+        QColor confidenceColor = KswordTheme::TextDisabledColor();
         switch (analysis.confidence)
         {
         case ks::minidump::AnalysisConfidence::High:
-            confidenceHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Red);
+            confidenceColor = KswordTheme::AccentColor(KswordTheme::AccentRole::Red);
             break;
         case ks::minidump::AnalysisConfidence::Medium:
-            confidenceHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Orange);
+            confidenceColor = KswordTheme::AccentColor(KswordTheme::AccentRole::Orange);
             break;
         case ks::minidump::AnalysisConfidence::Low:
-            confidenceHex = KswordTheme::AccentHex(KswordTheme::AccentRole::Yellow);
+            confidenceColor = KswordTheme::AccentColor(KswordTheme::AccentRole::Yellow);
             break;
         case ks::minidump::AnalysisConfidence::None:
         default:
             break;
         }
+        const QString confidenceHex = KswordTheme::ThemeColorName(confidenceColor);
+        // confidenceTextHex：徽章前景按徽章自己的底色反算，不能套 OnAccentHex()——
+        // 后者只对蓝色主强调色做过对比度校正，压在 Yellow（琥珀）和 None 的灰蓝上
+        // 白字只有 2:1，而这两档恰恰最需要用户看清"别把这个结论当定论"。
+        const QString confidenceTextHex = KswordTheme::ThemeColorName(
+            KswordTheme::EnsureTextContrast(
+                KswordTheme::TextPrimaryColor(),
+                confidenceColor));
 
         // escape：结论文本里可能出现 <> &，必须转义后再拼进 HTML。
         const auto escape = [](const QString& text) { return text.toHtmlEscaped(); };
@@ -358,9 +368,10 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
         // 徽章行：可信度 + 故障归类。
         html += QStringLiteral("<div style='margin-bottom:14px;'>");
         html += QStringLiteral(
-            "<span style='background:%1; color:#FFFFFF; padding:3px 10px; "
-            "border-radius:4px; font-weight:600;'>%2 %3</span>")
+            "<span style='background:%1; color:%2; padding:3px 10px; "
+            "border-radius:4px; font-weight:600;'>%3 %4</span>")
             .arg(confidenceHex)
+            .arg(confidenceTextHex)
             .arg(translated("minidump.analysis.confidence", "可信度"))
             .arg(escape(ks::i18n::sourceText(
                 ks::minidump::AnalysisConfidenceText(analysis.confidence))));

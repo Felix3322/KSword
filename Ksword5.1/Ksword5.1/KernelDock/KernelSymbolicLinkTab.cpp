@@ -86,7 +86,8 @@ void KernelSymbolicLinkTab::initializeUi()
 
     m_refreshButton = new QPushButton(this);
     m_refreshButton->setText(kernelText("kernel.symbolic_link.toolbar.refresh", QStringLiteral("刷新")));
-    m_refreshButton->setToolTip(kernelText("kernel.symbolic_link.toolbar.refresh.tooltip", QStringLiteral("枚举常见对象目录中的 SymbolicLink。")));
+    // 本页的解析边界并入刷新按钮提示，页面不再为一句说明常驻一行。
+    m_refreshButton->setToolTip(kernelText("kernel.symbolic_link.toolbar.refresh.tooltip", QStringLiteral("枚举常见对象目录中的 SymbolicLink。本页只解析目标，不递归展开；目标指向 Directory 时由「目录递归」页处理。")));
     m_refreshButton->setStyleSheet(buttonStyle());
 
     m_copyTargetButton = new QPushButton(this);
@@ -113,13 +114,6 @@ void KernelSymbolicLinkTab::initializeUi()
     toolLayout->addWidget(m_targetFilterEdit, 1);
     toolLayout->addWidget(m_statusLabel, 0);
     rootLayout->addLayout(toolLayout);
-
-    m_noteLabel = new QLabel(
-        kernelText("kernel.symbolic_link.note", QStringLiteral("说明：SymbolicLink 本身不是可递归容器，本页只解析目标；若目标指向 Directory，后续由目录递归 tab 处理。")),
-        this);
-    m_noteLabel->setWordWrap(true);
-    m_noteLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    rootLayout->addWidget(m_noteLabel, 0);
 
     m_table = new ks::ui::VisibleTableWidget(this);
     m_table->setColumnCount(static_cast<int>(Column::Count));

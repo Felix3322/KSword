@@ -260,6 +260,12 @@ Return Value:
         return STATUS_INVALID_PARAMETER;
     }
 
+    if ((requestSnapshot.flags & KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK) ==
+        KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK) {
+        KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: backend flags are mutually exclusive, flags=0x%08X.", (unsigned int)requestSnapshot.flags);
+        return STATUS_INVALID_PARAMETER;
+    }
+
     if (isRecursive && !isDirectory) {
         KswordARKFileIoctlLog(Device, "Warn", "R0 delete ioctl: recursive flag requires directory flag, flags=0x%08X.", (unsigned int)requestSnapshot.flags);
         return STATUS_INVALID_PARAMETER;
@@ -334,10 +340,11 @@ Return Value:
         (unsigned int)responsePresent);
 
     if (!isRecursive) {
-        operationStatus = KswordARKDriverDeletePath(
+        operationStatus = KswordARKDriverDeletePathWithFlags(
             requestSnapshot.path,
             requestSnapshot.pathLengthChars,
-            isDirectory);
+            isDirectory,
+            requestSnapshot.flags & KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK);
         if (NT_SUCCESS(operationStatus)) {
             KswordARKFileIoctlLog(Device, "Info", "R0 delete success: chars=%u, directory=%u.", (unsigned int)requestSnapshot.pathLengthChars, (unsigned int)isDirectory);
         }

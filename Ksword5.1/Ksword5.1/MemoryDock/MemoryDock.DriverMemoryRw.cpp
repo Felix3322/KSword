@@ -152,6 +152,38 @@ void MemoryDock::updateDriverMemoryBaseComboFromProcessCache()
         m_driverMemoryBaseCombo->setItemData(row, entry.processName, Qt::UserRole + 1);
     }
 
+    // 内核模块项排在进程项之后，显示文本直接写成可解析的“模块名+0”表达式，
+    // 用户选中即可读取模块头，再手动改偏移就能定位模块内任意位置。
+    if (!m_kernelModuleCache.empty())
+    {
+        m_driverMemoryBaseCombo->insertSeparator(m_driverMemoryBaseCombo->count());
+        for (const KernelModuleEntry& kernelEntry : m_kernelModuleCache)
+        {
+            if (kernelEntry.moduleName.isEmpty() || kernelEntry.baseAddress == 0ULL)
+            {
+                continue;
+            }
+
+            const QString itemText = QString("%1+0").arg(kernelEntry.moduleName);
+            // PID 位保持 0：进程匹配逻辑据此跳过内核模块项，不会把模块名误判成进程。
+            m_driverMemoryBaseCombo->addItem(itemText, QVariant::fromValue(static_cast<uint>(0U)));
+            const int kernelRow = m_driverMemoryBaseCombo->count() - 1;
+            m_driverMemoryBaseCombo->setItemData(kernelRow, QString(), Qt::UserRole + 1);
+            m_driverMemoryBaseCombo->setItemData(
+                kernelRow,
+                QVariant::fromValue(static_cast<qulonglong>(kernelEntry.baseAddress)),
+                driverMemoryKernelModuleBaseRole());
+            m_driverMemoryBaseCombo->setItemData(
+                kernelRow,
+                QString("内核模块 %1\n基址: 0x%2\n大小: %3 字节\n路径: %4")
+                    .arg(kernelEntry.moduleName)
+                    .arg(formatAddress(kernelEntry.baseAddress))
+                    .arg(kernelEntry.sizeBytes)
+                    .arg(kernelEntry.ntPath),
+                Qt::ToolTipRole);
+        }
+    }
+
     // 优先按上一次明确选择的 PID 恢复；恢复失败再按输入文本恢复。
     int restoreIndex = -1;
     if (previousPid != 0U)
@@ -286,9 +318,28 @@ bool MemoryDock::resolveDriverMemoryModuleExpression(
         return false;
     }
 
+    const std::uint64_t moduleOffset = static_cast<std::uint64_t>(parsedOffset);
+
+    // 内核虚拟内存来源下，模块名一律按内核模块解析，不去碰进程模块缓存。
+    if (currentDriverMemorySourceMode() == DriverMemorySourceMode::KernelVirtual)
+    {
+        return resolveDriverMemoryKernelModuleExpression(
+            moduleToken, moduleOffset, resolvedBaseOut, errorTextOut);
+    }
+
+    // 进程来源下若还没附加进程，直接回退到内核模块解析：
+    // 这样用户不必先附加任何进程也能输入 CI.dll+1A2B 这类内核表达式。
     if (m_attachedPid == 0U)
     {
-        errorTextOut = QStringLiteral("解析模块偏移前请先附加目标进程。");
+        QString kernelErrorText;
+        if (resolveDriverMemoryKernelModuleExpression(
+                moduleToken, moduleOffset, resolvedBaseOut, kernelErrorText))
+        {
+            return true;
+        }
+        errorTextOut = QStringLiteral(
+            "解析模块偏移前请先附加目标进程；若要定位内核模块，请把“来源”切换为内核虚拟内存。（%1）")
+            .arg(kernelErrorText);
         return false;
     }
     if (m_moduleRefreshInProgress.load())
@@ -322,7 +373,14 @@ bool MemoryDock::resolveDriverMemoryModuleExpression(
 
     if (matches.empty())
     {
-        errorTextOut = QString("当前附加进程 PID=%1 中未找到模块：%2。请刷新模块列表并确认模块名。")
+        // 用户态模块没命中时再试一次内核模块：很多排查场景是在附加着某个进程时查内核符号。
+        QString kernelErrorText;
+        if (resolveDriverMemoryKernelModuleExpression(
+                moduleToken, moduleOffset, resolvedBaseOut, kernelErrorText))
+        {
+            return true;
+        }
+        errorTextOut = QString("当前附加进程 PID=%1 与已加载内核模块中都未找到模块：%2。请刷新模块列表并确认模块名。")
             .arg(m_attachedPid)
             .arg(moduleToken);
         return false;
@@ -336,7 +394,6 @@ bool MemoryDock::resolveDriverMemoryModuleExpression(
     }
 
     const ModuleEntry& matchedModule = *matches.front();
-    const std::uint64_t moduleOffset = static_cast<std::uint64_t>(parsedOffset);
     if (matchedModule.baseAddress > (std::numeric_limits<std::uint64_t>::max)() - moduleOffset)
     {
         errorTextOut = QStringLiteral("模块基址与偏移相加发生地址回绕，已拒绝。");
@@ -520,6 +577,13 @@ void MemoryDock::prepareDriverMemoryReadAtAddress(
 
 void MemoryDock::driverReadMemoryFromUi()
 {
+    // 物理内存是一条完全独立的通道：不解析进程、模块与偏移基址，直接走物理读实现。
+    if (currentDriverMemorySourceMode() == DriverMemorySourceMode::Physical)
+    {
+        driverReadPhysicalMemoryFromUi();
+        return;
+    }
+
     const QString baseInputText = (m_driverMemoryBaseCombo == nullptr)
         ? QString()
         : m_driverMemoryBaseCombo->currentText().trimmed();
@@ -754,6 +818,8 @@ void MemoryDock::driverReadMemoryFromUi()
         static_cast<int>(readResult.data.size()));
     m_driverMemoryEditedBytes = m_driverMemoryOriginalBytes;
     m_driverMemoryHasSnapshot = true;
+    // 虚拟内存通道读到的快照永远不是物理快照，写回时据此选择通道。
+    m_driverMemorySnapshotIsPhysical = false;
 
     // 更新 HexEditor；编辑只改 R3 缓存，点击“应用差异”后才提交 R0。
     m_driverMemoryHexEditor->setEditable(true);
@@ -761,6 +827,9 @@ void MemoryDock::driverReadMemoryFromUi()
     m_driverMemoryHexEditor->setByteArray(
         m_driverMemoryEditedBytes,
         m_driverMemoryBaseAddress);
+
+    // 反汇编与文本视图跟随同一份快照刷新，保证三个视图看到的内容一致。
+    refreshDriverMemoryViewsFromSnapshot();
 
     // 刷新状态标签和按钮状态。
     m_driverMemoryApplyButton->setEnabled(false);
@@ -819,8 +888,12 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
         << m_driverMemoryEditedBytes.size()
         << eol;
 
-    const bool kernelAddressSnapshot = driverMemoryAddressLooksKernelVa(m_driverMemoryBaseAddress);
-    if ((!kernelAddressSnapshot && m_driverMemorySnapshotPid == 0U) || !m_driverMemoryHasSnapshot)
+    // 物理快照没有 PID 也没有内核 VA 特征，必须单独放行并走独立的写回通道。
+    const bool physicalSnapshot = m_driverMemorySnapshotIsPhysical;
+    const bool kernelAddressSnapshot =
+        !physicalSnapshot && driverMemoryAddressLooksKernelVa(m_driverMemoryBaseAddress);
+    if ((!kernelAddressSnapshot && !physicalSnapshot && m_driverMemorySnapshotPid == 0U)
+        || !m_driverMemoryHasSnapshot)
     {
         if (m_driverMemoryStatusLabel != nullptr)
         {
@@ -857,13 +930,15 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
                 "内核或进程内存修改可能立即造成数据损坏、权限边界失效、进程崩溃或系统蓝屏。\n"
                 "只写入和原始备份不同的字节，是否继续？")
             .arg(diffBlocks.size())
-            .arg(kernelAddressSnapshot
-                ? QStringLiteral("内核虚拟地址")
-                : QStringLiteral("PID=%1%2")
-                    .arg(m_driverMemorySnapshotPid)
-                    .arg(m_driverMemorySnapshotProcessName.isEmpty()
-                        ? QString()
-                        : QString(" (%1)").arg(m_driverMemorySnapshotProcessName))),
+            .arg(physicalSnapshot
+                ? QStringLiteral("物理内存（无事务、无回滚）")
+                : (kernelAddressSnapshot
+                    ? QStringLiteral("内核虚拟地址")
+                    : QStringLiteral("PID=%1%2")
+                        .arg(m_driverMemorySnapshotPid)
+                        .arg(m_driverMemorySnapshotProcessName.isEmpty()
+                            ? QString()
+                            : QString(" (%1)").arg(m_driverMemorySnapshotProcessName)))),
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
         if (confirmResult != QMessageBox::Yes)
@@ -881,10 +956,43 @@ void MemoryDock::driverApplyMemoryDiffFromUi()
         warn << suppressedConfirmationEvent
             << "[MemoryDock] dangerous confirmation suppressed by persistent setting; "
                "R0 snapshot verification and audit remain active, target="
-            << (kernelAddressSnapshot ? "kernel-va" : "process-va")
+            << (physicalSnapshot
+                ? "physical"
+                : (kernelAddressSnapshot ? "kernel-va" : "process-va"))
             << ", blocks="
             << diffBlocks.size()
             << eol;
+    }
+
+    // 物理内存写回是一条独立通道：按 4KB 切片提交，没有事务，也没有失败回滚。
+    if (physicalSnapshot)
+    {
+        QString physicalFailureText;
+        const bool physicalWriteOk = applyDriverMemoryPhysicalDiff(diffBlocks, physicalFailureText);
+        if (physicalWriteOk)
+        {
+            // 全部成功后把编辑缓存提升为新的基线，后续差异从这里重新计算。
+            m_driverMemoryOriginalBytes = m_driverMemoryEditedBytes;
+            if (m_driverMemoryApplyButton != nullptr)
+            {
+                m_driverMemoryApplyButton->setEnabled(false);
+            }
+            if (m_driverMemoryStatusLabel != nullptr)
+            {
+                m_driverMemoryStatusLabel->setText(
+                    QStringLiteral("物理内存写入完成，已提交 %1 个差异块。").arg(diffBlocks.size()));
+            }
+            refreshDriverMemoryViewsFromSnapshot();
+            return;
+        }
+
+        // 失败时保持基线不动，让用户能看到哪些字节仍与目标不一致。
+        if (m_driverMemoryStatusLabel != nullptr)
+        {
+            m_driverMemoryStatusLabel->setText(QStringLiteral("物理内存写入失败。"));
+        }
+        QMessageBox::warning(this, "驱动内存读写", physicalFailureText);
+        return;
     }
 
     // 按块调用驱动写入，单块超过驱动上限时拆分。
@@ -1273,6 +1381,7 @@ void MemoryDock::resetDriverMemoryRwState()
     m_driverMemoryOriginalBytes.clear();
     m_driverMemoryEditedBytes.clear();
     m_driverMemoryHasSnapshot = false;
+    m_driverMemorySnapshotIsPhysical = false;
 
     if (m_driverMemoryHexEditor != nullptr)
     {
@@ -1290,6 +1399,23 @@ void MemoryDock::resetDriverMemoryRwState()
     if (m_driverMemoryStatusLabel != nullptr)
     {
         m_driverMemoryStatusLabel->setText("缓存已清空。");
+    }
+
+    // 派生视图必须一起清空，否则反汇编与文本页会继续展示上一轮的陈旧内容。
+    m_driverMemoryDisasmRows.clear();
+    if (m_driverMemoryDisasmTable != nullptr)
+    {
+        m_driverMemoryDisasmTable->setRowCount(0);
+    }
+    if (m_driverMemoryDisasmBackendLabel != nullptr)
+    {
+        m_driverMemoryDisasmBackendLabel->setText(
+            QStringLiteral("尚未读取内存，先在上方设置目标并点击“R0 读取”。"));
+    }
+    if (m_driverMemoryTextView != nullptr)
+    {
+        m_driverMemoryTextView->setRawText(
+            QStringLiteral("尚未读取内存，先在上方设置目标并点击“R0 读取”。"));
     }
 }
 

@@ -73,12 +73,12 @@ namespace
             "QPushButton{min-width:28px;padding:4px 8px;border:1px solid %1;"
             "background:%2;color:%3;}"
             "QPushButton:hover{background:%4;}")
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::BorderHex())
             .arg(selected
-                     ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
+                     ? KswordTheme::PrimaryBlueHex
                      : KswordTheme::SurfaceAltHex())
             .arg(selected
-                     ? KswordTheme::OnAccentHex()
+                     ? KswordTheme::OnAccentDynamicHex()
                      : KswordTheme::TextPrimaryHex())
             .arg(KswordTheme::PrimaryBlueSolidHoverHex());
     }

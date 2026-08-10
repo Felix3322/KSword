@@ -193,14 +193,9 @@ namespace ks::misc
                 ? QStringLiteral("声音来源")
                 : QStringLiteral("当前进程的声音来源"),
             this);
+        m_titleLabel->setToolTip(
+            QStringLiteral("R3 采样 Core Audio 会话峰值、状态、音量与端点；R0 多源交叉核验会话 PID，只佐证进程身份，不读取或修改音频流。"));
         rootLayout->addWidget(m_titleLabel);
-
-        m_explanationLabel = new QLabel(
-            QStringLiteral(
-                "R3 连续采样 Core Audio 会话峰值、状态、音量与输出端点；R0 使用 Public API / ActiveProcessLinks / PspCidTable 和 EPROCESS 详情交叉核验会话 PID。R0 只佐证进程身份，不读取或修改音频流。"),
-            this);
-        m_explanationLabel->setWordWrap(true);
-        rootLayout->addWidget(m_explanationLabel);
 
         auto* toolbarLayout = new QHBoxLayout();
         toolbarLayout->setSpacing(6);
@@ -752,9 +747,6 @@ namespace ks::misc
         m_titleLabel->setStyleSheet(
             QStringLiteral("font-size:16px;font-weight:700;color:%1;")
             .arg(KswordTheme::TextPrimaryColorHex()));
-        m_explanationLabel->setStyleSheet(
-            QStringLiteral("color:%1;")
-            .arg(KswordTheme::TextSecondaryColorHex()));
         m_summaryLabel->setStyleSheet(
             QStringLiteral("font-weight:600;color:%1;")
             .arg(KswordTheme::TextPrimaryColorHex()));

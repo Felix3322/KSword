@@ -1821,7 +1821,7 @@ void RegistryOptimizationPage::refreshColumnPresetButtonStyles()
 {
     const QString inactiveStyle = KswordTheme::ThemedButtonStyle();
     const QString activeStyle = QStringLiteral(
-        "QPushButton{background:%1;color:white;border:1px solid %2;border-radius:3px;padding:3px 8px;font-weight:700;}"
+        "QPushButton{background:%1;color:palette(highlighted-text);border:1px solid %2;border-radius:3px;padding:3px 8px;font-weight:700;}"
         "QPushButton:hover{background:%3;}"
         "QPushButton:pressed{background:%4;}").arg(
             KswordTheme::PrimaryBlueHex,

@@ -48,11 +48,12 @@ namespace
     {
         switch (level)
         {
-        case kLogLevel::Debug: return QColor(QStringLiteral("#5A9BD5"));
-        case kLogLevel::Info: return QColor(QStringLiteral("#3CB371"));
-        case kLogLevel::Warn: return QColor(QStringLiteral("#E6A23C"));
-        case kLogLevel::Error: return QColor(QStringLiteral("#E05252"));
-        case kLogLevel::Fatal: return QColor(QStringLiteral("#C0392B"));
+        // 等级配色与日志面板 LogDockWidget::getLevelColor 保持同一套主题语义色。
+        case kLogLevel::Debug: return KswordTheme::AccentColor(KswordTheme::AccentRole::Blue, -12, -38);
+        case kLogLevel::Info: return KswordTheme::SuccessColor();
+        case kLogLevel::Warn: return KswordTheme::WarningColor();
+        case kLogLevel::Error: return KswordTheme::ErrorColor();
+        case kLogLevel::Fatal: return KswordTheme::AccentTextColor(KswordTheme::AccentRole::Red, KswordTheme::BlackColor());
         default: return QColor(KswordTheme::PrimaryBlueHex);
         }
     }

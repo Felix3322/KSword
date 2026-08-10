@@ -472,8 +472,9 @@ void ProcessTraceTimelineWidget::paintEvent(QPaintEvent* eventPointer)
                 appendRatePoint(downloadPolygon, ratePoint.time100ns, ratePoint.downloadBytesPerSecond);
             }
 
-            QColor uploadLineColor(76, 175, 80, 220);
-            QColor downloadLineColor(33, 150, 243, 220);
+            // 上行/下行沿用绿蓝语义色，但改由 KswordTheme 取值，保证跟随主题与自定义强调色。
+            const QColor uploadLineColor = KswordTheme::WithAlpha(KswordTheme::SuccessColor(), 220);
+            const QColor downloadLineColor = KswordTheme::WithAlpha(KswordTheme::InfoColor(), 220);
             painter.setBrush(Qt::NoBrush);
 
             // drawPolyline 需要至少两个点；单秒只有一个采样时退化成圆点，避免折线不可见。

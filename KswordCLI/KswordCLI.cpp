@@ -2736,7 +2736,12 @@ namespace
             request.physicalAddress = requireOptionU64(args, L"--address");
             request.bytesToRead = requireOptionU32(args, L"--bytes");
             if (request.bytesToRead > KSWORD_ARK_MEMORY_PHYSICAL_READ_MAX_BYTES) { std::wcerr << L"error: --bytes exceeds protocol max\n"; return 1; }
+            // 物理读响应有两个互不等价的数字，不能互相替代：
+            // headerSize = sizeof-sizeof(data) = 55，驱动用它判断“输出缓冲还剩多少可用”，
+            //   并按 55 + bytesCopied 回报 BytesWritten，所以分配和长度下限校验必须用它；
+            // dataOffset = offsetof(data) = 48，才是驱动 MmCopyMemory 真正写入负载的位置。
             constexpr std::size_t headerSize = sizeof(KSWORD_ARK_READ_PHYSICAL_MEMORY_RESPONSE) - sizeof(((KSWORD_ARK_READ_PHYSICAL_MEMORY_RESPONSE*)nullptr)->data);
+            constexpr std::size_t dataOffset = offsetof(KSWORD_ARK_READ_PHYSICAL_MEMORY_RESPONSE, data);
             std::vector<std::uint8_t> buffer(headerSize + request.bytesToRead, 0U);
             const int rc = sendRawIoctl(L"IOCTL_KSWORD_ARK_READ_PHYSICAL_MEMORY", IOCTL_KSWORD_ARK_READ_PHYSICAL_MEMORY, &request, sizeof(request), buffer, io);
             if (rc != 0) return rc;
@@ -2747,8 +2752,10 @@ namespace
                        << L" address=" << hex64(response->requestedPhysicalAddress)
                        << std::dec << L" requested=" << response->requestedBytes
                        << L" read=" << response->bytesRead << L" max=" << response->maxBytesPerRequest << L"\n";
-            const std::size_t dataBytes = std::min<std::size_t>(static_cast<std::size_t>(io.bytesReturned) - headerSize, response->bytesRead);
-            if (dump) hexdump(buffer.data() + headerSize, dataBytes);
+            // 负载起点只能是 data 的真实偏移，用 headerSize 会整体错位 7 字节；
+            // 长度只用 bytesRead 与缓冲余量取小，不能由基于 55 约定的 bytesReturned 反推。
+            const std::size_t dataBytes = std::min<std::size_t>(response->bytesRead, buffer.size() - dataOffset);
+            if (dump) hexdump(buffer.data() + dataOffset, dataBytes);
             return 0;
         }
         if (sub == L"write-phys")

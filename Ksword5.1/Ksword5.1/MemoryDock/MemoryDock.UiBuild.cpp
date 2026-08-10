@@ -133,14 +133,89 @@ void MemoryDock::initializeUi()
         << "[MemoryDock] initializeUi: 开始构建根布局。"
         << eol;
 
-    // 根布局只做三件事：顶部工具栏、中部 Tab、底部状态栏。
+    // 根布局：标题行、进程工具栏、中部 Tab、底部状态栏。
     m_rootLayout = new QVBoxLayout(this);
-    m_rootLayout->setContentsMargins(0, 0, 0, 0);
-    m_rootLayout->setSpacing(4);
+    m_rootLayout->setContentsMargins(6, 6, 6, 6);
+    m_rootLayout->setSpacing(6);
+
+    // 标题行与其它 Dock 保持同一套三段式：标题在左、状态摘要吃掉中间空白。
+    QHBoxLayout* headerLayout = new QHBoxLayout();
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(8);
+    m_dockTitleLabel = new QLabel(QStringLiteral("内存"), this);
+    m_dockTitleLabel->setStyleSheet(
+        QStringLiteral("font-size:18px;font-weight:700;color:%1;")
+            .arg(KswordTheme::TextPrimaryHex()));
+    m_dockHeaderStatusLabel = new QLabel(QStringLiteral("未附加进程，请先选择目标并点击“附加”。"), this);
+    m_dockHeaderStatusLabel->setStyleSheet(
+        QStringLiteral("font-size:13px;color:%1;").arg(KswordTheme::TextSecondaryHex()));
+    headerLayout->addWidget(m_dockTitleLabel, 0);
+    headerLayout->addWidget(m_dockHeaderStatusLabel, 1);
+    m_rootLayout->addLayout(headerLayout);
 
     initializeToolbar();
     initializeTabs();
     initializeStatusBar();
+
+    // 状态栏建立之后再统一下发一次语义色，保证底部标签也走同一条路径。
+    applyMemoryDockSemanticStyles();
+}
+
+void MemoryDock::applyMemoryDockSemanticStyles()
+{
+    // 高危写回按钮用错误语义色描边，和普通按钮区分开。
+    if (m_driverMemoryApplyButton != nullptr)
+    {
+        m_driverMemoryApplyButton->setStyleSheet(
+            QStringLiteral(
+                "QPushButton{border:1px solid %1;border-radius:3px;color:%1;padding:4px 10px;}"
+                "QPushButton:disabled{border:1px solid %2;color:%2;}")
+                .arg(KswordTheme::ErrorHex())
+                .arg(KswordTheme::TextSecondaryHex()));
+    }
+
+    // 底部状态栏：已附加用成功色，未附加保持次要色，读写不可用用警告色。
+    const bool attached = (m_attachedPid != 0U);
+    if (m_statusProcessLabel != nullptr)
+    {
+        m_statusProcessLabel->setStyleSheet(
+            QStringLiteral("color:%1;")
+                .arg(attached ? KswordTheme::SuccessHex() : KswordTheme::TextSecondaryHex()));
+    }
+    if (m_statusPidLabel != nullptr)
+    {
+        m_statusPidLabel->setStyleSheet(
+            QStringLiteral("color:%1;")
+                .arg(attached ? KswordTheme::TextPrimaryHex() : KswordTheme::TextSecondaryHex()));
+    }
+    if (m_statusMemoryIoLabel != nullptr)
+    {
+        // 已附加但拿不到读写权限是最需要被看见的状态，单独用警告色。
+        QString memoryIoColor = KswordTheme::TextSecondaryHex();
+        if (attached)
+        {
+            memoryIoColor = m_canReadWriteMemory
+                ? KswordTheme::SuccessHex()
+                : KswordTheme::WarningHex();
+        }
+        m_statusMemoryIoLabel->setStyleSheet(QStringLiteral("color:%1;").arg(memoryIoColor));
+    }
+}
+
+void MemoryDock::changeEvent(QEvent* eventObject)
+{
+    QWidget::changeEvent(eventObject);
+    if (eventObject == nullptr)
+    {
+        return;
+    }
+
+    // 调色板变化意味着深浅色切换，所有语义色快照都必须重新求值一次。
+    if (eventObject->type() == QEvent::ApplicationPaletteChange
+        || eventObject->type() == QEvent::PaletteChange)
+    {
+        applyMemoryDockSemanticStyles();
+    }
 }
 
 void MemoryDock::initializeToolbar()
@@ -154,37 +229,42 @@ void MemoryDock::initializeToolbar()
     // 顶部工具栏放在独立容器内，便于统一 margin 和 spacing。
     QWidget* toolbarContainer = new QWidget(this);
     m_toolbarLayout = new QHBoxLayout(toolbarContainer);
-    m_toolbarLayout->setContentsMargins(6, 6, 6, 2);
+    m_toolbarLayout->setContentsMargins(0, 0, 0, 0);
     m_toolbarLayout->setSpacing(6);
-
-    const QString buttonStyle = buildBlueButtonStyle();
-    const QString comboStyle = buildBlueComboStyle();
 
     m_processCombo = new QComboBox(toolbarContainer);
     m_processCombo->setMinimumWidth(280);
-    m_processCombo->setStyleSheet(comboStyle);
     m_processCombo->setToolTip("选择目标进程（进程名 + PID）。");
 
-    m_attachButton = new QPushButton("附加", toolbarContainer);
-    m_detachButton = new QPushButton("分离", toolbarContainer);
-    m_refreshButton = new QPushButton("刷新", toolbarContainer);
-    m_settingsButton = new QPushButton("设置", toolbarContainer);
+    // 弹层展开期间必须禁止重建下拉框，这里先建立对弹层窗口的监听。
+    installComboPopupWatch(m_processCombo);
+
+    // 按项目规范：动作按钮优先用图标库里的图标，并且每个按钮都要有 tooltip。
+    m_attachButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_start.svg")), "附加", toolbarContainer);
+    m_detachButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_terminate.svg")), "分离", toolbarContainer);
+    m_refreshButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_refresh.svg")), "刷新", toolbarContainer);
+    m_settingsButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_priority.svg")), "设置", toolbarContainer);
     m_attachButton->setToolTip("附加到上面选中的进程，之后才能查看和搜索它的内存");
     m_detachButton->setToolTip("从当前进程分离，释放已打开的进程句柄");
-    m_refreshButton->setToolTip("重新枚举系统进程列表");
+    m_refreshButton->setToolTip("重新枚举系统进程列表，或刷新当前页的数据");
     m_settingsButton->setToolTip("打开内存读写方式、扫描上限等选项");
-    m_attachButton->setStyleSheet(buttonStyle);
-    m_detachButton->setStyleSheet(buttonStyle);
-    m_refreshButton->setStyleSheet(buttonStyle);
-    m_settingsButton->setStyleSheet(buttonStyle);
+
+    // 分隔符把“附加/分离”这组进程动作与“刷新/设置”这组页面动作在视觉上分开。
+    QFrame* toolbarSeparator = new QFrame(toolbarContainer);
+    toolbarSeparator->setFrameShape(QFrame::VLine);
+    toolbarSeparator->setFrameShadow(QFrame::Sunken);
 
     m_toolbarLayout->addWidget(new QLabel("进程:", toolbarContainer));
     m_toolbarLayout->addWidget(m_processCombo, 1);
     m_toolbarLayout->addWidget(m_attachButton);
     m_toolbarLayout->addWidget(m_detachButton);
+    m_toolbarLayout->addWidget(toolbarSeparator);
     m_toolbarLayout->addWidget(m_refreshButton);
     m_toolbarLayout->addWidget(m_settingsButton);
-    m_toolbarLayout->addStretch(1);
 
     m_rootLayout->addWidget(toolbarContainer);
 }
@@ -213,6 +293,54 @@ void MemoryDock::initializeTabs()
     initializeProcessPteTranslateTab();
     initializeProcessMemoryEvidenceTab();
     initializeSystemMemoryAuditTab();
+
+    // 11 个页签的图标集中在这里设置：分散到各构建函数里会漏，也不好统一调整语义。
+    // 下标顺序与上面的构建顺序严格一一对应。
+    const char* const tabIconAliases[] = {
+        ":/Icon/process_list.svg",        // 进程与模块
+        ":/Icon/disk_storage.svg",        // 内存区域
+        ":/Icon/codeeditor_find.svg",     // 内存搜索
+        ":/Icon/process_details.svg",     // 内存查看器
+        ":/Icon/process_pause.svg",       // 断点与书签
+        ":/Icon/disk_save.svg",           // 驱动内存读写
+        ":/Icon/log_track.svg",           // 内核可执行页
+        ":/Icon/file_find.svg",           // 内核内存证据
+        ":/Icon/process_tree.svg",        // PTE / VA 翻译
+        ":/Icon/process_performance.svg", // 进程内存证据
+        ":/Icon/disk_analyze.svg"         // 系统内存审计
+    };
+    const int iconCount = static_cast<int>(sizeof(tabIconAliases) / sizeof(tabIconAliases[0]));
+    for (int tabIndex = 0; tabIndex < m_tabWidget->count() && tabIndex < iconCount; ++tabIndex)
+    {
+        m_tabWidget->setTabIcon(tabIndex, QIcon(QString::fromLatin1(tabIconAliases[tabIndex])));
+    }
+
+    // 后加的四个证据页原本漏了语义键绑定，这里补齐，让它们也能跟随语言切换。
+    ks::i18n::LanguageManager& languageManager = ks::i18n::LanguageManager::instance();
+    if (m_tabKernelExecutableMemory != nullptr)
+    {
+        languageManager.bindTab(
+            m_tabWidget, m_tabKernelExecutableMemory,
+            QStringLiteral("memory.tab.kernel_executable"), QStringLiteral("内核可执行页"));
+    }
+    if (m_tabKernelMemoryEvidence != nullptr)
+    {
+        languageManager.bindTab(
+            m_tabWidget, m_tabKernelMemoryEvidence,
+            QStringLiteral("memory.tab.kernel_memory_evidence"), QStringLiteral("内核内存证据"));
+    }
+    if (m_tabProcessPteTranslate != nullptr)
+    {
+        languageManager.bindTab(
+            m_tabWidget, m_tabProcessPteTranslate,
+            QStringLiteral("memory.tab.pte_translate"), QStringLiteral("PTE / VA 翻译"));
+    }
+    if (m_tabProcessMemoryEvidence != nullptr)
+    {
+        languageManager.bindTab(
+            m_tabWidget, m_tabProcessMemoryEvidence,
+            QStringLiteral("memory.tab.process_memory_evidence"), QStringLiteral("进程内存证据"));
+    }
 }
 
 void MemoryDock::initializeSystemMemoryAuditTab()
@@ -267,7 +395,6 @@ void MemoryDock::initializeProcessModuleTab()
     m_processTable->setColumnHidden(4, true);
     m_processTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_processTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_processTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     m_processTable->setShowGrid(true);
     processLayout->addWidget(m_processTable, 1);
 
@@ -300,7 +427,7 @@ void MemoryDock::initializeProcessModuleTab()
     m_moduleStatusLabel = new QLabel("● 待刷新", modulePanel);
     m_moduleStatusLabel->setStyleSheet(
         QStringLiteral("color:%1; font-weight:600;")
-            .arg(KswordTheme::TextSecondaryColor().name(QColor::HexRgb)));
+            .arg(KswordTheme::TextSecondaryHex()));
     moduleTopBarLayout->addWidget(m_moduleStatusLabel);
     moduleLayout->addLayout(moduleTopBarLayout);
 
@@ -315,7 +442,6 @@ void MemoryDock::initializeProcessModuleTab()
     m_moduleTable->setAlternatingRowColors(true);
     m_moduleTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_moduleTable->setSortingEnabled(true);
-    m_moduleTable->header()->setStyleSheet(buildBlueTableHeaderStyle());
     m_moduleTable->setColumnWidth(toModuleTreeColumnIndex(ModuleTreeColumn::Path), 460);
     m_moduleTable->setColumnWidth(toModuleTreeColumnIndex(ModuleTreeColumn::Size), 110);
     m_moduleTable->setColumnWidth(toModuleTreeColumnIndex(ModuleTreeColumn::Signature), 220);
@@ -349,12 +475,34 @@ void MemoryDock::initializeMemoryRegionTab()
     tabLayout->setContentsMargins(6, 6, 6, 6);
     tabLayout->setSpacing(6);
 
-    QHBoxLayout* filterLayout = new QHBoxLayout();
-    filterLayout->setContentsMargins(0, 0, 0, 0);
+    // 动作行：刷新按钮 + 关键字过滤 + 结果计数，和其它页保持同一套头部结构。
+    QHBoxLayout* actionLayout = new QHBoxLayout();
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(6);
+    m_regionRefreshButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_refresh.svg")), "刷新区域", m_tabRegions);
+    m_regionRefreshButton->setToolTip("重新枚举当前附加进程的内存区域");
+    m_regionFilterEdit = new QLineEdit(m_tabRegions);
+    m_regionFilterEdit->setPlaceholderText("按基址、保护属性或映射文件路径过滤");
+    m_regionFilterEdit->setClearButtonEnabled(true);
+    m_regionFilterEdit->setToolTip("输入关键字后只显示匹配的区域行");
+    m_regionStatusLabel = new QLabel("未附加进程。", m_tabRegions);
+    QFrame* regionActionSeparator = new QFrame(m_tabRegions);
+    regionActionSeparator->setFrameShape(QFrame::VLine);
+    regionActionSeparator->setFrameShadow(QFrame::Sunken);
+    actionLayout->addWidget(m_regionRefreshButton);
+    actionLayout->addWidget(regionActionSeparator);
+    actionLayout->addWidget(m_regionFilterEdit, 1);
+    actionLayout->addWidget(m_regionStatusLabel);
+    tabLayout->addLayout(actionLayout);
+
+    // 过滤开关收进分组框，避免和动作行挤在一起。
+    QGroupBox* filterGroup = new QGroupBox("过滤条件", m_tabRegions);
+    QHBoxLayout* filterLayout = new QHBoxLayout(filterGroup);
     filterLayout->setSpacing(10);
-    m_regionCommittedOnlyCheck = new QCheckBox("仅已提交(MEM_COMMIT)", m_tabRegions);
-    m_regionImageOnlyCheck = new QCheckBox("仅映像(IMAGE)", m_tabRegions);
-    m_regionReadableOnlyCheck = new QCheckBox("仅可读", m_tabRegions);
+    m_regionCommittedOnlyCheck = new QCheckBox("仅已提交(MEM_COMMIT)", filterGroup);
+    m_regionImageOnlyCheck = new QCheckBox("仅映像(IMAGE)", filterGroup);
+    m_regionReadableOnlyCheck = new QCheckBox("仅可读", filterGroup);
     m_regionCommittedOnlyCheck->setToolTip("只显示已实际分配物理内存的区域，隐藏仅保留未使用的区域");
     m_regionImageOnlyCheck->setToolTip("只显示由 exe/dll 文件映射而来的内存区域");
     m_regionReadableOnlyCheck->setToolTip("只显示当前可以读取的内存区域，隐藏不可访问的区域");
@@ -364,7 +512,7 @@ void MemoryDock::initializeMemoryRegionTab()
     filterLayout->addWidget(m_regionImageOnlyCheck);
     filterLayout->addWidget(m_regionReadableOnlyCheck);
     filterLayout->addStretch(1);
-    tabLayout->addLayout(filterLayout);
+    tabLayout->addWidget(filterGroup);
 
     m_regionTable = new ks::ui::VisibleTableWidget(m_tabRegions);
     m_regionTable->setColumnCount(6);
@@ -378,7 +526,6 @@ void MemoryDock::initializeMemoryRegionTab()
     m_regionTable->setSortingEnabled(true);
     m_regionTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_regionTable->verticalHeader()->setVisible(false);
-    m_regionTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     m_regionTable->horizontalHeader()->setStretchLastSection(true);
     tabLayout->addWidget(m_regionTable, 1);
 
@@ -450,10 +597,10 @@ void MemoryDock::initializeMemorySearchTab()
     m_searchHeapOnlyCheck->setToolTip("只在推测为堆（程序动态分配）的内存中搜索，判定为近似值");
     m_searchStackOnlyCheck->setToolTip("只在推测为栈（函数局部变量）的内存中搜索，判定为近似值");
 
-    m_firstScanButton = new QPushButton("首次扫描", conditionGroup);
-    m_nextScanButton = new QPushButton("再次扫描", conditionGroup);
-    m_resetScanButton = new QPushButton("重置", conditionGroup);
-    m_cancelScanButton = new QPushButton("取消扫描", conditionGroup);
+    m_firstScanButton = new QPushButton(QIcon(":/Icon/log_track.svg"), "首次扫描", conditionGroup);
+    m_nextScanButton = new QPushButton(QIcon(":/Icon/codeeditor_find.svg"), "再次扫描", conditionGroup);
+    m_resetScanButton = new QPushButton(QIcon(":/Icon/log_clear.svg"), "重置", conditionGroup);
+    m_cancelScanButton = new QPushButton(QIcon(":/Icon/process_terminate.svg"), "取消扫描", conditionGroup);
     m_firstScanButton->setToolTip("按上面的条件全新搜索一遍内存，得到初始结果集");
     m_nextScanButton->setToolTip("在上次结果的基础上继续筛选，逐步缩小范围（需先完成首次扫描）");
     m_resetScanButton->setToolTip("清空已有搜索结果，回到可重新首次扫描的状态");
@@ -523,8 +670,9 @@ void MemoryDock::initializeMemorySearchTab()
     m_searchResultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_searchResultTable->setAlternatingRowColors(true);
     m_searchResultTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    // 结果表默认允许按列排序；批量填表期间由 rebuildSearchResultTable 临时关闭再还原。
+    m_searchResultTable->setSortingEnabled(true);
     m_searchResultTable->verticalHeader()->setVisible(false);
-    m_searchResultTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     m_searchResultTable->horizontalHeader()->setStretchLastSection(true);
     tabLayout->addWidget(m_searchResultTable, 1);
 
@@ -564,7 +712,7 @@ void MemoryDock::initializeMemoryViewerTab()
     m_viewAddressEdit = new QLineEdit(m_tabViewer);
     m_viewAddressEdit->setPlaceholderText("输入地址后跳转");
     m_viewAddressEdit->setStyleSheet(buildBlueInputStyle());
-    m_viewJumpButton = new QPushButton("跳转", m_tabViewer);
+    m_viewJumpButton = new QPushButton(QIcon(":/Icon/codeeditor_goto.svg"), "跳转", m_tabViewer);
     m_viewJumpButton->setStyleSheet(buildBlueButtonStyle());
     m_viewJumpButton->setToolTip("跳转到左侧输入的内存地址并显示该处内容");
     m_viewProtectLabel = new QLabel("保护属性: -", m_tabViewer);
@@ -614,9 +762,9 @@ void MemoryDock::initializeBreakpointBookmarkTab()
     QHBoxLayout* bpButtonLayout = new QHBoxLayout();
     bpButtonLayout->setContentsMargins(0, 0, 0, 0);
     bpButtonLayout->setSpacing(6);
-    m_addBreakpointButton = new QPushButton("添加断点", breakpointPanel);
-    m_removeBreakpointButton = new QPushButton("删除断点", breakpointPanel);
-    m_toggleBreakpointButton = new QPushButton("启用/禁用", breakpointPanel);
+    m_addBreakpointButton = new QPushButton(QIcon(":/Icon/plus.svg"), "添加断点", breakpointPanel);
+    m_removeBreakpointButton = new QPushButton(QIcon(":/Icon/log_clear.svg"), "删除断点", breakpointPanel);
+    m_toggleBreakpointButton = new QPushButton(QIcon(":/Icon/process_pause.svg"), "启用/禁用", breakpointPanel);
     m_addBreakpointButton->setToolTip("在指定地址下断点，目标进程执行到该处时会中断");
     m_removeBreakpointButton->setToolTip("删除选中的断点并恢复该处的原始字节");
     m_toggleBreakpointButton->setToolTip("临时启用或停用选中的断点，不删除该条记录");
@@ -637,7 +785,6 @@ void MemoryDock::initializeBreakpointBookmarkTab()
     m_breakpointTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_breakpointTable->setAlternatingRowColors(true);
     m_breakpointTable->verticalHeader()->setVisible(false);
-    m_breakpointTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     m_breakpointTable->horizontalHeader()->setStretchLastSection(true);
     installMemoryUtilityCopyMenu(m_breakpointTable);
     breakpointLayout->addWidget(m_breakpointTable, 1);
@@ -650,10 +797,10 @@ void MemoryDock::initializeBreakpointBookmarkTab()
     QHBoxLayout* bmButtonLayout = new QHBoxLayout();
     bmButtonLayout->setContentsMargins(0, 0, 0, 0);
     bmButtonLayout->setSpacing(6);
-    m_addBookmarkButton = new QPushButton("添加书签", bookmarkPanel);
-    m_removeBookmarkButton = new QPushButton("删除书签", bookmarkPanel);
-    m_refreshBookmarkButton = new QPushButton("刷新值", bookmarkPanel);
-    m_jumpBookmarkButton = new QPushButton("跳转", bookmarkPanel);
+    m_addBookmarkButton = new QPushButton(QIcon(":/Icon/plus.svg"), "添加书签", bookmarkPanel);
+    m_removeBookmarkButton = new QPushButton(QIcon(":/Icon/log_clear.svg"), "删除书签", bookmarkPanel);
+    m_refreshBookmarkButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), "刷新值", bookmarkPanel);
+    m_jumpBookmarkButton = new QPushButton(QIcon(":/Icon/codeeditor_goto.svg"), "跳转", bookmarkPanel);
     m_addBookmarkButton->setToolTip("把当前地址收藏为书签，便于之后快速回到该位置");
     m_removeBookmarkButton->setToolTip("删除选中的书签");
     m_refreshBookmarkButton->setToolTip("重新读取所有书签地址处的当前值");
@@ -677,7 +824,6 @@ void MemoryDock::initializeBreakpointBookmarkTab()
     m_bookmarkTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_bookmarkTable->setAlternatingRowColors(true);
     m_bookmarkTable->verticalHeader()->setVisible(false);
-    m_bookmarkTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     m_bookmarkTable->horizontalHeader()->setStretchLastSection(true);
     installMemoryUtilityCopyMenu(m_bookmarkTable);
     bookmarkLayout->addWidget(m_bookmarkTable, 1);
@@ -707,32 +853,51 @@ void MemoryDock::initializeDriverMemoryRwTab()
     tabLayout->setContentsMargins(6, 6, 6, 6);
     tabLayout->setSpacing(6);
 
-    const QString inputStyle = buildBlueInputStyle();
-    const QString buttonStyle = buildBlueButtonStyle();
+    // ========================================================
+    // 目标分组：来源通道、目标对象、地址与读取预算
+    // ========================================================
 
-    QGroupBox* requestGroup = new QGroupBox("读取范围", m_tabDriverMemoryRw);
+    QGroupBox* requestGroup = new QGroupBox("读取目标", m_tabDriverMemoryRw);
     QGridLayout* requestLayout = new QGridLayout(requestGroup);
     requestLayout->setHorizontalSpacing(8);
     requestLayout->setVerticalSpacing(6);
 
+    // 来源下拉决定后续走哪条 R0 通道，条目顺序必须与 DriverMemorySourceMode 一致。
+    m_driverMemorySourceCombo = new QComboBox(requestGroup);
+    m_driverMemorySourceCombo->addItem("进程虚拟内存");
+    m_driverMemorySourceCombo->addItem("内核虚拟内存");
+    m_driverMemorySourceCombo->addItem("物理内存");
+    m_driverMemorySourceCombo->setToolTip(
+        "选择读写通道：进程虚拟内存按 PID 定位；内核虚拟内存直接使用内核地址；"
+        "物理内存绕过页表，单次读上限 64 KB、写上限 4 KB。");
+
     m_driverMemoryBaseCombo = new QComboBox(requestGroup);
     m_driverMemoryBaseCombo->setEditable(true);
     m_driverMemoryBaseCombo->setMinimumWidth(260);
-    m_driverMemoryBaseCombo->setStyleSheet(buildBlueComboStyle());
     m_driverMemoryBaseCombo->setToolTip(
-        "可输入 0、0x... 数值基址，或“模块名+十六进制偏移”（例如 client.dll+C125D9）；"
-        "其它非 0x 文本按进程名/PID 从下拉列表筛选目标进程。模块偏移使用当前附加进程的模块列表。"
-        "中心地址为 0xFFFF... 高半区时自动按内核虚拟地址读取，并忽略 PID。");
+        "可输入 0、0x... 数值基址，或“模块名+十六进制偏移”（例如 client.dll+C125D9 或 CI.dll+1A2B）；"
+        "其它非 0x 文本按进程名/PID 从下拉列表筛选目标进程。用户态模块取自当前附加进程，"
+        "内核模块取自“刷新内核模块”得到的列表。中心地址为 0xFFFF... 高半区时自动按内核虚拟地址读取。");
     m_driverMemoryBaseCombo->addItem("0", QVariant::fromValue(static_cast<uint>(0U)));
     m_driverMemoryBaseCombo->setItemData(0, QString(), Qt::UserRole + 1);
+
+    // 该框同样按进程缓存整体重建，展开期间必须一起受保护。
+    installComboPopupWatch(m_driverMemoryBaseCombo);
+
     if (m_driverMemoryBaseCombo->lineEdit() != nullptr)
     {
         m_driverMemoryBaseCombo->lineEdit()->setPlaceholderText("0 / 0x基址 / 模块+偏移 / 进程名或PID");
     }
 
+    // 内核模块列表按需加载：不点这个按钮就不会付出枚举全部内核模块的成本。
+    m_driverMemoryKernelModuleRefreshButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_refresh.svg")), "刷新内核模块", requestGroup);
+    m_driverMemoryKernelModuleRefreshButton->setToolTip(
+        "枚举系统已加载的内核模块，之后即可用“CI.dll+偏移”这类表达式直接定位内核地址。");
+
     m_driverMemoryAddressEdit = new QLineEdit(requestGroup);
-    m_driverMemoryAddressEdit->setPlaceholderText("用户态有效地址/偏移，或 0xFFFF... 内核虚拟地址");
-    m_driverMemoryAddressEdit->setStyleSheet(inputStyle);
+    m_driverMemoryAddressEdit->setPlaceholderText("用户态有效地址/偏移，或 0xFFFF... 内核虚拟地址，或物理地址");
+    m_driverMemoryAddressEdit->setClearButtonEnabled(true);
 
     m_driverMemoryBeforeSpin = new QSpinBox(requestGroup);
     m_driverMemoryBeforeSpin->setRange(0, static_cast<int>(KSWORD_ARK_MEMORY_READ_MAX_BYTES / 2UL));
@@ -746,43 +911,175 @@ void MemoryDock::initializeDriverMemoryRwTab()
     m_driverMemoryAfterSpin->setSuffix(" B");
     m_driverMemoryAfterSpin->setToolTip("从中心地址往后额外读取的字节数");
 
-    m_driverMemoryReadButton = new QPushButton("R0读取", requestGroup);
-    m_driverMemoryApplyButton = new QPushButton("应用差异到真实内存", requestGroup);
-    m_driverMemoryResetButton = new QPushButton("清空缓存", requestGroup);
-    m_driverMemoryReadButton->setToolTip("通过驱动以内核权限读取上述范围的内存，可读取普通方式无法访问的地址");
-    m_driverMemoryApplyButton->setToolTip("把下方编辑器中改动过的字节写回目标内存（会真实修改进程数据，操作危险）");
-    m_driverMemoryResetButton->setToolTip("丢弃已读取的缓存与未应用的改动");
-    m_driverMemoryReadButton->setStyleSheet(buttonStyle);
-    m_driverMemoryApplyButton->setStyleSheet(buttonStyle);
-    m_driverMemoryResetButton->setStyleSheet(buttonStyle);
-    m_driverMemoryApplyButton->setEnabled(false);
+    m_driverMemoryReadButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_details.svg")), "R0 读取", requestGroup);
+    m_driverMemoryReadButton->setToolTip(
+        "通过驱动以内核权限读取上述范围的内存，可读取普通方式无法访问的地址");
 
-    requestLayout->addWidget(new QLabel("基址/模块偏移/进程", requestGroup), 0, 0);
-    requestLayout->addWidget(m_driverMemoryBaseCombo, 0, 1, 1, 4);
+    requestLayout->addWidget(new QLabel("来源", requestGroup), 0, 0);
+    requestLayout->addWidget(m_driverMemorySourceCombo, 0, 1);
+    requestLayout->addWidget(new QLabel("目标", requestGroup), 0, 2);
+    requestLayout->addWidget(m_driverMemoryBaseCombo, 0, 3, 1, 2);
+    requestLayout->addWidget(m_driverMemoryKernelModuleRefreshButton, 0, 5);
     requestLayout->addWidget(new QLabel("中心地址", requestGroup), 1, 0);
     requestLayout->addWidget(m_driverMemoryAddressEdit, 1, 1, 1, 4);
+    requestLayout->addWidget(m_driverMemoryReadButton, 1, 5);
     requestLayout->addWidget(new QLabel("向前", requestGroup), 2, 0);
     requestLayout->addWidget(m_driverMemoryBeforeSpin, 2, 1);
     requestLayout->addWidget(new QLabel("向后", requestGroup), 2, 2);
     requestLayout->addWidget(m_driverMemoryAfterSpin, 2, 3);
-    requestLayout->addWidget(m_driverMemoryReadButton, 2, 4);
-    requestLayout->addWidget(m_driverMemoryApplyButton, 3, 3);
-    requestLayout->addWidget(m_driverMemoryResetButton, 3, 4);
+    // 让下拉框与地址框吃掉多余宽度，按钮列保持自身尺寸。
+    requestLayout->setColumnStretch(1, 1);
+    requestLayout->setColumnStretch(3, 2);
+    requestLayout->setColumnStretch(4, 1);
     tabLayout->addWidget(requestGroup);
+
+    // ========================================================
+    // 操作按钮条：写回、清空、转存、字符串写入
+    // ========================================================
+
+    QHBoxLayout* actionLayout = new QHBoxLayout();
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(6);
+
+    m_driverMemoryApplyButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/disk_save.svg")), "应用差异到真实内存", m_tabDriverMemoryRw);
+    m_driverMemoryApplyButton->setToolTip(
+        "把下方编辑器中改动过的字节写回目标内存。这会真实修改进程或内核数据，"
+        "内核路径带事务与失败回滚，用户态与物理内存路径没有回滚。");
+    m_driverMemoryApplyButton->setEnabled(false);
+
+    m_driverMemoryResetButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/log_clear.svg")), "清空缓存", m_tabDriverMemoryRw);
+    m_driverMemoryResetButton->setToolTip("丢弃已读取的缓存与未应用的改动");
+
+    m_driverMemoryDumpButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/log_export.svg")), "转存到文件", m_tabDriverMemoryRw);
+    m_driverMemoryDumpButton->setToolTip(
+        "把当前快照写入磁盘。保存为 .txt 时输出带地址与 ASCII 的十六进制转储，其余扩展名写原始字节。");
+
+    m_driverMemoryWriteStringButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/codeeditor_paste.svg")), "字符串写入", m_tabDriverMemoryRw);
+    m_driverMemoryWriteStringButton->setToolTip(
+        "按 ANSI 或 UTF-16LE 把一段字符串填入编辑缓存，确认后再用“应用差异到真实内存”写回。");
+
+    actionLayout->addWidget(m_driverMemoryApplyButton);
+    actionLayout->addWidget(m_driverMemoryResetButton);
+    actionLayout->addWidget(m_driverMemoryDumpButton);
+    actionLayout->addWidget(m_driverMemoryWriteStringButton);
+    actionLayout->addStretch(1);
+    tabLayout->addLayout(actionLayout);
+
+    // ========================================================
+    // 视图工具条：三视图切换 + 文本编码 + 当前范围
+    // ========================================================
+
+    QHBoxLayout* viewBarLayout = new QHBoxLayout();
+    viewBarLayout->setContentsMargins(0, 0, 0, 0);
+    viewBarLayout->setSpacing(4);
+
+    // 三个分段按钮互斥，等价于 OpenArk 那组 HexDump / Disassembly / TextView 单选。
+    const auto makeViewButton = [this](const QString& iconAlias,
+                                       const QString& labelText,
+                                       const QString& tipText) {
+        QToolButton* viewButton = new QToolButton(m_tabDriverMemoryRw);
+        viewButton->setIcon(QIcon(iconAlias));
+        viewButton->setText(labelText);
+        viewButton->setToolTip(tipText);
+        viewButton->setCheckable(true);
+        viewButton->setAutoExclusive(true);
+        viewButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        return viewButton;
+    };
+    m_driverMemoryHexViewButton = makeViewButton(
+        QStringLiteral(":/Icon/process_list.svg"), "十六进制",
+        "以十六进制与 ASCII 对照展示，可直接编辑字节");
+    m_driverMemoryDisasmViewButton = makeViewButton(
+        QStringLiteral(":/Icon/log_track.svg"), "反汇编",
+        "把当前缓存按目标位数解码成指令，只读展示");
+    m_driverMemoryTextViewButton = makeViewButton(
+        QStringLiteral(":/Icon/codeeditor_wrap.svg"), "文本",
+        "按选定编码把缓存渲染成可打印文本，只读展示");
+    m_driverMemoryHexViewButton->setChecked(true);
+
+    m_driverMemoryTextEncodingCombo = new QComboBox(m_tabDriverMemoryRw);
+    m_driverMemoryTextEncodingCombo->addItem("单字节");
+    m_driverMemoryTextEncodingCombo->addItem("UTF-16LE");
+    m_driverMemoryTextEncodingCombo->setToolTip("文本视图使用的解码方式");
+
+    // 竖线分隔符把视图切换与其它控件在视觉上分开。
+    QFrame* viewBarSeparator = new QFrame(m_tabDriverMemoryRw);
+    viewBarSeparator->setFrameShape(QFrame::VLine);
+    viewBarSeparator->setFrameShadow(QFrame::Sunken);
 
     m_driverMemoryRangeLabel = new QLabel("范围: 未读取", m_tabDriverMemoryRw);
     m_driverMemoryRangeLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    tabLayout->addWidget(m_driverMemoryRangeLabel);
+
+    viewBarLayout->addWidget(m_driverMemoryHexViewButton);
+    viewBarLayout->addWidget(m_driverMemoryDisasmViewButton);
+    viewBarLayout->addWidget(m_driverMemoryTextViewButton);
+    viewBarLayout->addWidget(viewBarSeparator);
+    viewBarLayout->addWidget(new QLabel("文本编码", m_tabDriverMemoryRw));
+    viewBarLayout->addWidget(m_driverMemoryTextEncodingCombo);
+    viewBarLayout->addWidget(m_driverMemoryRangeLabel, 1);
+    tabLayout->addLayout(viewBarLayout);
+
+    // ========================================================
+    // 视图堆栈：压栈顺序必须与 DriverMemoryViewMode 一致
+    // ========================================================
+
+    m_driverMemoryViewStack = new QStackedWidget(m_tabDriverMemoryRw);
 
     // HexEditor 在本页允许编辑，但 byteEdited 只更新 R3 缓存，不直接写目标进程。
-    m_driverMemoryHexEditor = new HexEditorWidget(m_tabDriverMemoryRw);
+    m_driverMemoryHexEditor = new HexEditorWidget(m_driverMemoryViewStack);
     m_driverMemoryHexEditor->setBytesPerRow(16);
     m_driverMemoryHexEditor->setEditable(true);
-    tabLayout->addWidget(m_driverMemoryHexEditor, 1);
+    m_driverMemoryViewStack->addWidget(m_driverMemoryHexEditor);
 
-    m_driverMemoryStatusLabel = new QLabel("支持 client.dll+C125D9 模块偏移；用户态地址也可从“内存区域”右键 R0读取；0xFFFF... 高半区地址走内核读取。", m_tabDriverMemoryRw);
+    // 反汇编页：顶部一行后端说明，下面是指令表。
+    QWidget* disasmPage = new QWidget(m_driverMemoryViewStack);
+    QVBoxLayout* disasmLayout = new QVBoxLayout(disasmPage);
+    disasmLayout->setContentsMargins(0, 0, 0, 0);
+    disasmLayout->setSpacing(4);
+    m_driverMemoryDisasmBackendLabel = new QLabel(
+        "尚未读取内存，先在上方设置目标并点击“R0 读取”。", disasmPage);
+    m_driverMemoryDisasmBackendLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_driverMemoryDisasmBackendLabel->setWordWrap(true);
+    disasmLayout->addWidget(m_driverMemoryDisasmBackendLabel);
+
+    // 用 VisibleTableWidget 而不是裸 QTableWidget，才能拿到全局操作条与冻结行列。
+    m_driverMemoryDisasmTable = new ks::ui::VisibleTableWidget(disasmPage);
+    m_driverMemoryDisasmTable->setColumnCount(5);
+    m_driverMemoryDisasmTable->setHorizontalHeaderLabels(
+        QStringList{ "地址", "偏移", "原始字节", "助记符", "操作数" });
+    m_driverMemoryDisasmTable->setAlternatingRowColors(true);
+    m_driverMemoryDisasmTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_driverMemoryDisasmTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_driverMemoryDisasmTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_driverMemoryDisasmTable->setSortingEnabled(true);
+    m_driverMemoryDisasmTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_driverMemoryDisasmTable->verticalHeader()->setVisible(false);
+    m_driverMemoryDisasmTable->verticalHeader()->setDefaultSectionSize(22);
+    disasmLayout->addWidget(m_driverMemoryDisasmTable, 1);
+    m_driverMemoryViewStack->addWidget(disasmPage);
+
+    // 文本页：只读代码编辑器，内容一律用 setRawText 写入，不参与语言包翻译。
+    m_driverMemoryTextView = new CodeEditorWidget(m_driverMemoryViewStack);
+    m_driverMemoryTextView->setReadOnly(true);
+    m_driverMemoryTextView->setRawText(
+        QStringLiteral("尚未读取内存，先在上方设置目标并点击“R0 读取”。"));
+    m_driverMemoryViewStack->addWidget(m_driverMemoryTextView);
+
+    m_driverMemoryViewStack->setCurrentIndex(static_cast<int>(DriverMemoryViewMode::Hex));
+    tabLayout->addWidget(m_driverMemoryViewStack, 1);
+
+    m_driverMemoryStatusLabel = new QLabel("等待读取。", m_tabDriverMemoryRw);
     m_driverMemoryStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_driverMemoryStatusLabel->setWordWrap(true);
     tabLayout->addWidget(m_driverMemoryStatusLabel);
+
+    // 危险按钮与状态标签使用语义色，构造期与主题切换走同一条下发路径。
+    applyMemoryDockSemanticStyles();
 
     m_tabWidget->addTab(m_tabDriverMemoryRw, "驱动内存读写");
     ks::i18n::LanguageManager::instance().bindTab(

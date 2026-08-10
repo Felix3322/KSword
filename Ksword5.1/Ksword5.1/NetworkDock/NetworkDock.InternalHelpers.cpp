@@ -139,12 +139,12 @@ namespace network_dock_detail
         // - 重点覆盖 QPlainTextEdit/QTabWidget/Page，修复深色模式下白底残留。
         QString buildPacketDetailWindowStyle()
         {
-            const QString windowBackground = KswordTheme::SurfaceColorHex();
-            const QString panelBackground = KswordTheme::SurfaceAltColorHex();
+            const QString windowBackground = KswordTheme::SurfaceHex();
+            const QString panelBackground = KswordTheme::SurfaceAltHex();
             const QString inputBackground = KswordTheme::SurfaceMutedColorHex();
-            const QString borderColor = KswordTheme::BorderColorHex();
-            const QString textColor = KswordTheme::TextPrimaryColorHex();
-            const QString secondaryTextColor = KswordTheme::TextSecondaryColorHex();
+            const QString borderColor = KswordTheme::BorderHex();
+            const QString textColor = KswordTheme::TextPrimaryHex();
+            const QString secondaryTextColor = KswordTheme::TextSecondaryHex();
             const QString accentColor = KswordTheme::AccentHex(KswordTheme::AccentRole::Blue);
 
             return QStringLiteral(
@@ -209,7 +209,7 @@ namespace network_dock_detail
                 .arg(secondaryTextColor)
                 .arg(inputBackground)
                 .arg(accentColor)
-                .arg(KswordTheme::OnAccentHex());
+                .arg(KswordTheme::OnAccentDynamicHex());
         }
 
         // PacketDetailWindow：

@@ -74,6 +74,18 @@
     <ClCompile Include="MiscDock\SystemTime\SystemTimePage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationBackend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\VirtualLocation\VirtualLocationPage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DisableDse\DisableDseBackend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MiscDock\DisableDse\DisableDsePage.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MiscDock\Experimental\BugcheckGuardPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -359,6 +371,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryRw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemorySource.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryView.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="MemoryDock\MemoryDock.KernelExecutableMemory.cpp">
@@ -703,6 +721,9 @@
     <ClCompile Include="StartupDock\StartupDock.Wmi.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="StartupDock\StartupDock.Hidden.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="StartupDock\StartupDock.Actions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -857,6 +878,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\startup\startup.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ksword\startup\startup_hidden.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\string\string.cpp">
@@ -1110,6 +1134,18 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\SystemTime\SystemTimePage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationBackend.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\VirtualLocation\VirtualLocationPage.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DisableDse\DisableDseBackend.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MiscDock\DisableDse\DisableDsePage.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MiscDock\Experimental\BugcheckGuardPage.h">
@@ -1565,6 +1601,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\startup\startup.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ksword\startup\startup_internal.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\string\string.h">

@@ -10,12 +10,15 @@
 
 #include "../Framework.h"
 #include "../ArkDriverClient/ArkDriverTypes.h"
+#include "../UI/KernelDisassemblyDialog.h" // ks::ui::DisassemblyRow：驱动读写页反汇编视图的行缓存需要完整类型。
 
+#include <QVector>     // QVector：保存反汇编解码结果行。
 #include <QWidget>
 
 #include <atomic>      // std::atomic：扫描取消标志、并发状态标志。
 #include <condition_variable> // std::condition_variable：等待已取消扫描线程退出。
 #include <cstdint>     // std::uint32_t / std::uint64_t：PID、地址等固定宽度整数。
+#include <functional>  // std::function：下拉框展开期间被推迟的 UI 提交。
 #include <memory>      // std::shared_ptr：扫描任务状态在后台线程退出前保持有效。
 #include <mutex>       // std::mutex：保护扫描任务计数。
 #include <string>      // std::string：日志与 Win32 调用时的字符串桥接。
@@ -25,6 +28,7 @@
 class QAction;
 class QCheckBox;
 class QComboBox;
+class QEvent;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
@@ -34,16 +38,24 @@ class QProgressBar;
 class QPushButton;
 class QSplitter;
 class QSpinBox;
+class QStackedWidget;
 class QStatusBar;
 class QTableWidget;
 class QTabWidget;
 class QTextEdit;
 class QTimer;
+class QToolButton;
 class QTreeWidget;
 class QVBoxLayout;
 class CodeEditorWidget;
 class HexEditorWidget;
 class SystemMemoryAuditPage;
+
+// 项目内 UI 组件前置声明：只用指针，避免把表格组件头拉进本头文件。
+namespace ks::ui
+{
+    class VisibleTableWidget;
+}
 
 // Windows 句柄类型前置声明。
 typedef void* HANDLE;
@@ -82,6 +94,26 @@ public:
     // - 供进程详情窗口内嵌时使用；
     // - 仅保留进程与模块、内存区域、内存搜索、内存查看器四个页面。
     void setProcessDetailMemoryScope();
+
+protected:
+    // eventFilter：
+    // - 作用：监听顶部进程下拉框弹层窗口的隐藏事件；
+    // - 弹层展开期间被推迟的进程列表提交在这里回投，避免重建正在展开的下拉框；
+    // - 返回：始终交回 QWidget 默认处理，不吞事件。
+    bool eventFilter(QObject* watchedObject, QEvent* eventObject) override;
+
+    // changeEvent：
+    // - 作用：在应用调色板变化时重新下发使用语义色的样式；
+    // - 参数 eventObject：Qt 传入的事件对象；
+    // - 说明：语义色 token 是调用瞬间的快照，不随主题自动更新，必须在这里重下发。
+    void changeEvent(QEvent* eventObject) override;
+
+private:
+    // applyMemoryDockSemanticStyles：
+    // - 作用：给危险操作按钮与状态栏标签下发语义色样式。
+    // - 说明：构造期与主题切换共用这一条路径，保证深浅色切换后颜色不会停在旧主题。
+    // - 返回：无；控件尚未创建时逐个跳过。
+    void applyMemoryDockSemanticStyles();
 
 private:
     // ========================================================
@@ -210,6 +242,39 @@ public:
         QString mappedFilePath;             // 映射文件路径。
         QString riskText;                   // 风险摘要。
         QString detailText;                 // 详情文本。
+    };
+
+public:
+    // KernelModuleEntry：
+    // - 作用：缓存一条已加载内核模块记录，供驱动读写页的目标下拉与“模块名+偏移”解析使用；
+    // - 说明：数据源是 R3 的 SystemModuleInformation 快照，与附加进程无关，因此独立于 ModuleEntry。
+    struct KernelModuleEntry
+    {
+        QString moduleName;             // 模块文件名，例如 CI.dll。
+        QString ntPath;                 // 模块 NT 路径，例如 \SystemRoot\system32\CI.dll。
+        std::uint64_t baseAddress = 0;  // 模块映像基址。
+        std::uint32_t sizeBytes = 0;    // 模块映像大小，用于偏移越界提示。
+        bool kernelImage = false;       // 是否为内核本体（ntoskrnl），用于置顶展示。
+    };
+
+    // DriverMemorySourceMode：
+    // - 作用：标识驱动读写页当前的目标来源通道；
+    // - 说明：枚举值顺序必须与来源下拉框的条目顺序一致，界面直接按索引转换。
+    enum class DriverMemorySourceMode : int
+    {
+        ProcessVirtual = 0, // 目标进程的用户态虚拟内存。
+        KernelVirtual,      // 内核虚拟地址空间。
+        Physical            // 物理内存。
+    };
+
+    // DriverMemoryViewMode：
+    // - 作用：标识驱动读写页当前展示的视图；
+    // - 说明：枚举值顺序必须与视图堆栈的压栈顺序一致，界面直接按索引切页。
+    enum class DriverMemoryViewMode : int
+    {
+        Hex = 0,        // 十六进制编辑视图。
+        Disassembly,    // 反汇编指令视图。
+        Text            // 可打印文本视图。
     };
 
 private:
@@ -342,6 +407,37 @@ private:
     // - 作用：根据 m_processCache 重建顶部“进程选择”下拉框。
     // - 返回：无。
     void updateProcessComboFromCache();
+
+    // installComboPopupWatch：
+    // - 作用：给下拉框的弹层窗口安装事件过滤器；
+    // - 参数 comboBox：需要在展开期间保护的下拉框；
+    // - 说明：QComboBox 弹层是独立顶层窗口，只能靠 Hide 事件感知收起；
+    // - 返回：无，重复调用安全。
+    void installComboPopupWatch(QComboBox* comboBox);
+
+    // isComboPopupVisible：
+    // - 作用：判断单个下拉框的弹层窗口当前是否可见；
+    // - 参数 comboBox：待检查的下拉框，可为空；
+    // - 返回：true 表示弹层正展开。
+    static bool isComboPopupVisible(QComboBox* comboBox);
+
+    // isProcessComboPopupOpen：
+    // - 作用：判断任一“按进程缓存重建”的下拉框弹层是否正在展开；
+    // - 说明：顶部进程框与 R0 读写页的目标进程框共用同一份进程缓存，
+    //   一次回填会同时重建两者，因此任一展开都必须推迟提交；
+    // - 返回：true 表示弹层可见，此时重建下拉框会让弹层挂住鼠标抓取，界面变得点不动。
+    bool isProcessComboPopupOpen();
+
+    // deferCommitWhileProcessComboPopupOpen：
+    // - 作用：弹层展开期间缓存最新一次进程列表提交，等收起后再落地；
+    // - 参数 commitAction：完整的进程缓存/表格/下拉框提交动作；
+    // - 返回：true 表示已缓存，调用方应立即返回；false 表示可以直接提交。
+    bool deferCommitWhileProcessComboPopupOpen(std::function<void()> commitAction);
+
+    // flushProcessComboDeferredCommit：
+    // - 作用：弹层收起后执行被缓存的最新提交；
+    // - 返回：无。弹层又被打开时保持缓存继续等待。
+    void flushProcessComboDeferredCommit();
 
     // refreshModuleListForPid：
     // - 作用：按 PID 枚举模块并刷新模块列表。
@@ -682,6 +778,106 @@ private:
 
 private:
     // ========================================================
+    // 驱动内存读写（Tab6）目标来源扩展：内核模块与物理内存
+    // ========================================================
+
+    // driverMemoryKernelModuleBaseRole：
+    // - 作用：返回下拉项里保存内核模块基址所用的 Qt 自定义数据角色。
+    // - 说明：进程项占用 Qt::UserRole 存 PID，内核模块另开角色以免语义混淆。
+    // - 返回：可直接传给 QComboBox::itemData 的角色值。
+    static int driverMemoryKernelModuleBaseRole();
+
+    // currentDriverMemorySourceMode：
+    // - 作用：读取来源下拉框当前选中的目标通道。
+    // - 返回：进程虚拟内存 / 内核虚拟内存 / 物理内存三者之一；控件未建立时返回进程虚拟内存。
+    DriverMemorySourceMode currentDriverMemorySourceMode() const;
+
+    // refreshKernelModuleCacheAsync：
+    // - 作用：异步枚举系统已加载内核模块并刷新目标下拉框。
+    // - 处理：线程池执行 SystemModuleInformation 快照，票据机制丢弃过期结果，回主线程提交。
+    // - 返回：无；已有一轮在跑时直接忽略本次请求。
+    void refreshKernelModuleCacheAsync();
+
+    // resolveDriverMemoryKernelModuleExpression：
+    // - 作用：把“内核模块名+偏移”解析成绝对内核虚拟地址。
+    // - 参数 moduleToken：模块名或含路径的模块标识，例如 CI.dll。
+    // - 参数 moduleOffset：已按十六进制解析出的偏移量。
+    // - 参数 resolvedBaseOut：输出模块基址与偏移相加后的绝对地址。
+    // - 参数 errorTextOut：失败时输出可展示给用户的精确原因。
+    // - 返回：true 命中唯一内核模块；false 表示缓存为空、未命中或命中多项。
+    bool resolveDriverMemoryKernelModuleExpression(
+        const QString& moduleToken,
+        std::uint64_t moduleOffset,
+        std::uint64_t& resolvedBaseOut,
+        QString& errorTextOut) const;
+
+    // driverReadPhysicalMemoryFromUi：
+    // - 作用：按界面参数通过 R0 读取物理内存并填充本页快照。
+    // - 处理：本地校验 52 位物理地址上限与 64KB 单次上限后调用物理读 IOCTL。
+    // - 返回：无；失败时清空快照并弹出诊断信息。
+    void driverReadPhysicalMemoryFromUi();
+
+    // applyDriverMemoryPhysicalDiff：
+    // - 作用：把差异块按 4KB 上限切片写回物理内存。
+    // - 参数 diffBlocks：待写入的连续差异块集合。
+    // - 参数 failureTextOut：失败时输出包含地址、状态码与已写入量的说明。
+    // - 返回：true 表示全部块写入成功；false 表示中途失败且不会自动回滚。
+    bool applyDriverMemoryPhysicalDiff(
+        const std::vector<DriverDiffBlock>& diffBlocks,
+        QString& failureTextOut);
+
+    // ========================================================
+    // 驱动内存读写（Tab6）多视图呈现与便捷操作
+    // ========================================================
+
+    // currentDriverMemoryArchitecture：
+    // - 作用：判断当前快照应当按哪种指令集反汇编。
+    // - 处理：内核与物理快照固定 x64，用户态快照按目标进程是否 WOW64 决定。
+    // - 返回：x86 或 x64 架构枚举；查询失败时保守返回 x64。
+    ks::ui::DisassemblyArchitecture currentDriverMemoryArchitecture() const;
+
+    // applyDriverMemoryViewMode：
+    // - 作用：切换十六进制 / 反汇编 / 文本三个视图并同步分段按钮状态。
+    // - 参数 viewMode：目标视图。
+    // - 返回：无；切到派生视图时会顺带触发一次重建。
+    void applyDriverMemoryViewMode(DriverMemoryViewMode viewMode);
+
+    // refreshDriverMemoryViewsFromSnapshot：
+    // - 作用：快照或编辑缓存变化后刷新当前可见的派生视图。
+    // - 返回：无；停留在十六进制视图时只清空另外两个视图的陈旧内容。
+    void refreshDriverMemoryViewsFromSnapshot();
+
+    // rebuildDriverMemoryDisassemblyView：
+    // - 作用：用 Zydis 解码当前编辑缓存并重建反汇编表格。
+    // - 处理：超过 64KB 的快照按预算截断，未成功解码的行以次要色标出。
+    // - 返回：无。
+    void rebuildDriverMemoryDisassemblyView();
+
+    // rebuildDriverMemoryTextView：
+    // - 作用：按当前编码设置把编辑缓存渲染成逐行可打印文本。
+    // - 返回：无；使用 setRawText 保证目标内存内容不被语言包翻译。
+    void rebuildDriverMemoryTextView();
+
+    // dumpDriverMemorySnapshotToFile：
+    // - 作用：把当前编辑缓存转存到磁盘文件。
+    // - 处理：按用户选择的扩展名决定写原始二进制还是可读的十六进制转储。
+    // - 返回：无。
+    void dumpDriverMemorySnapshotToFile();
+
+    // writeStringIntoDriverMemoryBuffer：
+    // - 作用：弹出对话框，把一段字符串按指定编码填入编辑缓存。
+    // - 处理：越界一律拒绝；只改本地缓存，真正写回仍走“应用差异”。
+    // - 返回：无。
+    void writeStringIntoDriverMemoryBuffer();
+
+    // showDriverMemoryDisassemblyContextMenu：
+    // - 作用：为反汇编表格提供复制与跳转右键菜单。
+    // - 参数 localPosition：右键点击处的表格视口坐标。
+    // - 返回：无。
+    void showDriverMemoryDisassemblyContextMenu(const QPoint& localPosition);
+
+private:
+    // ========================================================
     // 断点与书签（Tab5）相关函数
     // ========================================================
 
@@ -803,7 +999,13 @@ private:
     QStatusBar* m_statusBar = nullptr;        // 底部状态栏。
 
     // 工具栏控件。
+    QLabel* m_dockTitleLabel = nullptr;       // 页面标题标签（顶部三段头第一段）。
+    QLabel* m_dockHeaderStatusLabel = nullptr; // 顶部附加状态摘要（顶部三段头第二段）。
     QComboBox* m_processCombo = nullptr;      // 进程选择下拉框。
+    // 弹层展开期间缓存的最新进程列表提交；收起后回投，避免重建正在展开的下拉框。
+    std::function<void()> m_processComboDeferredCommit;
+    QTimer* m_processComboChangeTimer = nullptr;      // 进程下拉框切换去抖定时器。
+    std::uint32_t m_pendingModuleRefreshPid = 0;      // 去抖窗口内最后一次选中的 PID。
     QPushButton* m_attachButton = nullptr;    // 附加按钮。
     QPushButton* m_detachButton = nullptr;    // 分离按钮。
     QPushButton* m_refreshButton = nullptr;   // 刷新按钮。
@@ -831,6 +1033,9 @@ private:
     // ========================================================
 
     QWidget* m_tabRegions = nullptr;          // Tab2 页面容器。
+    QPushButton* m_regionRefreshButton = nullptr;    // 手动重新枚举内存区域。
+    QLineEdit* m_regionFilterEdit = nullptr;         // 按基址/保护属性/映射文件过滤。
+    QLabel* m_regionStatusLabel = nullptr;           // 区域数量与过滤结果摘要。
     QCheckBox* m_regionCommittedOnlyCheck = nullptr; // 仅已提交区域过滤。
     QCheckBox* m_regionImageOnlyCheck = nullptr;     // 仅 IMAGE 类型过滤。
     QCheckBox* m_regionReadableOnlyCheck = nullptr;  // 仅可读区域过滤。
@@ -901,6 +1106,19 @@ private:
     QLabel* m_driverMemoryRangeLabel = nullptr;       // 当前缓存范围标签。
     QLabel* m_driverMemoryStatusLabel = nullptr;      // R0 读写状态标签。
     HexEditorWidget* m_driverMemoryHexEditor = nullptr; // 可编辑缓存视图。
+
+    QComboBox* m_driverMemorySourceCombo = nullptr;   // 目标来源下拉：进程 / 内核 / 物理内存。
+    QPushButton* m_driverMemoryKernelModuleRefreshButton = nullptr; // 刷新已加载内核模块列表。
+    QPushButton* m_driverMemoryDumpButton = nullptr;  // 把当前快照转存到文件。
+    QPushButton* m_driverMemoryWriteStringButton = nullptr; // 打开字符串写入对话框。
+    QToolButton* m_driverMemoryHexViewButton = nullptr;    // 视图分段按钮：十六进制。
+    QToolButton* m_driverMemoryDisasmViewButton = nullptr; // 视图分段按钮：反汇编。
+    QToolButton* m_driverMemoryTextViewButton = nullptr;   // 视图分段按钮：文本。
+    QComboBox* m_driverMemoryTextEncodingCombo = nullptr;  // 文本视图编码选择：单字节 / UTF-16LE。
+    QStackedWidget* m_driverMemoryViewStack = nullptr;     // 三个视图的堆栈容器。
+    ks::ui::VisibleTableWidget* m_driverMemoryDisasmTable = nullptr; // 反汇编指令表。
+    QLabel* m_driverMemoryDisasmBackendLabel = nullptr;    // 反汇编后端与截断说明标签。
+    CodeEditorWidget* m_driverMemoryTextView = nullptr;    // 只读文本视图。
 
     // ========================================================
     // Tab7：内核可执行页扫描
@@ -1014,6 +1232,13 @@ private:
     QByteArray m_driverMemoryOriginalBytes;            // Tab6 读取备份。
     QByteArray m_driverMemoryEditedBytes;              // Tab6 当前编辑缓存。
     bool m_driverMemoryHasSnapshot = false;            // Tab6 是否存在可写快照。
+    bool m_driverMemorySnapshotIsPhysical = false;     // Tab6 当前快照是否来自物理内存通道。
+    DriverMemoryViewMode m_driverMemoryViewMode = DriverMemoryViewMode::Hex; // Tab6 当前视图。
+    QVector<ks::ui::DisassemblyRow> m_driverMemoryDisasmRows; // Tab6 反汇编解码结果缓存。
+
+    std::vector<KernelModuleEntry> m_kernelModuleCache;  // 已加载内核模块缓存（Tab6 目标下拉与表达式解析）。
+    std::atomic<bool> m_kernelModuleRefreshInProgress{ false }; // 内核模块列表是否正在刷新。
+    std::atomic<std::uint64_t> m_kernelModuleRefreshTicket{ 0 }; // 内核模块刷新票据。
 
     std::vector<ksword::ark::KernelExecutableMemoryPageEntry> m_kernelExecutableCache; // Tab7 扫描缓存。
     std::atomic<bool> m_kernelExecutableRefreshInProgress{ false }; // Tab7 是否正在刷新。

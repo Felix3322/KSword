@@ -24,7 +24,8 @@ namespace ks::startup
         Drivers,
         Tasks,
         Registry,
-        Wmi
+        Wmi,
+        Hidden // Cross-view findings: objects one Windows view exposes and another one hides.
     };
 
     // StartupActionKind identifies a backend operation without parsing display text.
@@ -204,6 +205,14 @@ namespace ks::startup
 
     // EnumerateWmiEntries returns WMI permanent event persistence records.
     std::vector<StartupEntry> EnumerateWmiEntries();
+
+    // EnumerateHiddenEntries returns persistence that ordinary Win32/COM enumeration cannot see.
+    // Findings come from comparing two views of the same object: the native NT registry view against
+    // the Win32 view, the registry service database against the SCM, the Task Scheduler registry
+    // cache against the Task Scheduler API, the configured Startup folder against the shell default,
+    // and per-user class registrations against machine-wide ones.
+    // Records are report-only: hidden objects are not addressable through the normal action locators.
+    std::vector<StartupEntry> EnumerateHiddenEntries();
 
     // EnumerateAllStartupEntries runs every backend enumerator in the standard StartupDock order.
     std::vector<StartupEntry> EnumerateAllStartupEntries();

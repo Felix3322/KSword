@@ -2,6 +2,9 @@
 
 #include "../Internationalization/LanguageManager.h"
 #include "../theme.h"
+// 表格交互与可视化表格基类：提供数值排序单元格、全局操作条与冻结行列能力。
+#include "../UI/TableInteractionSupport.h"
+#include "../UI/VisibleTableWidget.h"
 
 #include <QAbstractItemView>
 #include <QCoreApplication>
@@ -10,14 +13,18 @@
 #include <QDir>
 #include <QEvent>
 #include <QFile>
+#include <QFrame>
 #include <QGridLayout>
 #include <QHeaderView>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTimer>
@@ -250,26 +257,36 @@ namespace
         ULONGLONG ContiguousPagesAllocated;
     };
 
-    class NumericTableWidgetItem final : public QTableWidgetItem
+    // SummaryTileTitle 作用：
+    // - 描述一格摘要卡片上行小标题的 objectName 与英文源文案；
+    // - objectName 供语言切换后按 findChild 回查重译（标题是局部控件，不占成员变量）；
+    // - sourceText 交给 localized() 走语言包的 source_translations。
+    struct SummaryTileTitle
     {
-    public:
-        NumericTableWidgetItem(const QString& text, const qlonglong sortValue)
-            : QTableWidgetItem(text)
-            , m_sortValue(sortValue)
-        {
-        }
-
-        bool operator<(const QTableWidgetItem& other) const override
-        {
-            const auto* const numericOther = dynamic_cast<const NumericTableWidgetItem*>(&other);
-            return numericOther != nullptr
-                ? m_sortValue < numericOther->m_sortValue
-                : QTableWidgetItem::operator<(other);
-        }
-
-    private:
-        qlonglong m_sortValue = 0;
+        const char* objectName;
+        const char* sourceText;
     };
+
+    // kSummaryTileTitles 作用：
+    // - 按网格摆放顺序给出 6 格摘要卡片的小标题；
+    // - 顺序必须与 initializeUi 中的数值标签数组严格一一对应，否则标题会串格；
+    // - 构建与重译共用同一份表，避免两处文案写歪。
+    constexpr std::array<SummaryTileTitle, 6> kSummaryTileTitles{ {
+        { "kswordMemoryAuditTileTitleInstalled", "Installed RAM" },
+        { "kswordMemoryAuditTileTitleUsable", "Windows usable" },
+        { "kswordMemoryAuditTileTitleInUse", "In use" },
+        { "kswordMemoryAuditTileTitleAvailable", "Available" },
+        { "kswordMemoryAuditTileTitleCommit", "Commit" },
+        { "kswordMemoryAuditTileTitleUnattributed", "Unattributed" }
+    } };
+
+    // summaryTileObjectName 作用：
+    // - 返回摘要卡片外壳统一使用的 objectName；
+    // - 无入参；返回值同时被样式表选择器和 findChildren 使用，保证两处不会写歪。
+    QString summaryTileObjectName()
+    {
+        return QStringLiteral("kswordMemoryAuditSummaryTile");
+    }
 
     NtQuerySystemInformationFunction resolveNtQuerySystemInformation()
     {
@@ -499,9 +516,22 @@ namespace
         return new QTableWidgetItem(text);
     }
 
-    QTableWidgetItem* numericItem(const QString& text, const qlonglong value)
+    // numericItem 作用：
+    // - 生成一格“显示文本随便写、排序按真实数值”的单元格，供地址/大小/页数/计数列使用；
+    // - 入参 text 为界面文本（十六进制、KiB/MiB 均可），value 为参与排序的无符号真实值；
+    // - 返回新建的单元格，所有权随 setItem 交给表格。
+    QTableWidgetItem* numericItem(const QString& text, const qulonglong value)
     {
-        return new NumericTableWidgetItem(text, value);
+        return new ks::ui::NumericTableItem(text, value);
+    }
+
+    // signedNumericItem 作用：
+    // - numericItem 的有符号版本，专供可正可负的增量列（Delta）使用；
+    // - 入参 text 为带正负号的显示文本，value 为参与排序的有符号真实值；
+    // - 返回新建的单元格；不能改用无符号重载，否则负增量会被排到最大端。
+    QTableWidgetItem* signedNumericItem(const QString& text, const qlonglong value)
+    {
+        return new ks::ui::NumericTableItem(text, value);
     }
 
     void applyDeltaColor(QTableWidgetItem* item, const std::int64_t delta)
@@ -529,7 +559,34 @@ SystemMemoryAuditPage::SystemMemoryAuditPage(QWidget* parent)
 void SystemMemoryAuditPage::changeEvent(QEvent* event)
 {
     QWidget::changeEvent(event);
-    if (event == nullptr || event->type() != QEvent::LanguageChange)
+    if (event == nullptr)
+    {
+        return;
+    }
+
+    // 调色板变化（主题切换、跟随系统深浅色）时重新下发依赖 token 的样式。
+    // 表格里的增量列用的是快照 QColor，只能靠重建行才能换色，所以顺带打脏。
+    if (event->type() == QEvent::ApplicationPaletteChange ||
+        event->type() == QEvent::PaletteChange)
+    {
+        applyThemedStyle();
+        if (m_statusLabel != nullptr)
+        {
+            updateStatus();
+        }
+        if (m_hasSnapshot)
+        {
+            m_overviewDirty = true;
+            m_userResidencyTableDirty = true;
+            m_processTableDirty = true;
+            m_poolTagTableDirty = true;
+            m_bigPoolTableDirty = true;
+            scheduleCurrentDetailViewRebuild();
+        }
+        return;
+    }
+
+    if (event->type() != QEvent::LanguageChange)
     {
         return;
     }
@@ -555,8 +612,15 @@ void SystemMemoryAuditPage::initializeUi()
     rootLayout->setSpacing(6);
 
     QHBoxLayout* const controls = new QHBoxLayout();
-    m_refreshButton = new QPushButton(localized("Refresh snapshot"), this);
-    m_userResidencyScanButton = new QPushButton(localized("Deep scan user-mode residency"), this);
+    // 刷新按钮：整机内存快照的手动采集入口，沿用全局刷新图标别名。
+    m_refreshButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/process_refresh.svg")), localized("Refresh snapshot"), this);
+    m_refreshButton->setToolTip(localized("Re-collect the whole-machine physical memory snapshot."));
+    // 深度扫描按钮：逐进程遍历工作集属于耗时采集类操作，用 log_track 图标。
+    m_userResidencyScanButton = new QPushButton(
+        QIcon(QStringLiteral(":/Icon/log_track.svg")), localized("Deep scan user-mode residency"), this);
+    m_userResidencyScanButton->setToolTip(
+        localized("Walk every accessible process working set and attribute resident pages to their backing."));
     m_autoRefreshCheck = new QCheckBox(localized("Auto refresh"), this);
     m_autoRefreshCheck->setChecked(true);
     m_intervalSpin = new QSpinBox(this);
@@ -575,28 +639,54 @@ void SystemMemoryAuditPage::initializeUi()
     rootLayout->addLayout(controls);
 
     QGridLayout* const summaryLayout = new QGridLayout();
+    summaryLayout->setSpacing(6);
     m_installedLabel = new QLabel(this);
     m_totalLabel = new QLabel(this);
     m_inUseLabel = new QLabel(this);
     m_availableLabel = new QLabel(this);
     m_commitLabel = new QLabel(this);
     m_unattributedLabel = new QLabel(this);
+    // 数值标签顺序必须与 kSummaryTileTitles 一一对应，否则标题会挂到别人的数值上。
     const std::array<QLabel*, 6> summaryLabels{
         m_installedLabel, m_totalLabel, m_inUseLabel,
         m_availableLabel, m_commitLabel, m_unattributedLabel
     };
-    for (QLabel* const label : summaryLabels)
+
+    // buildSummaryTile 作用：
+    // - 把一格摘要包装成“上行小标题 + 下行大数值”的卡片，替换原来只有一圈细边框的裸标签；
+    // - 入参 valueLabel 为已创建好的数值标签（复用既有成员，不新增成员变量）；
+    // - 入参 titleEntry 提供该格的小标题 objectName 与英文源文案；
+    // - 返回可直接放进网格的卡片外壳，卡片与内部两行的配色统一由 applyThemedStyle 下发。
+    const auto buildSummaryTile = [this](
+        QLabel* const valueLabel,
+        const SummaryTileTitle& titleEntry) {
+        QFrame* const tile = new QFrame(this);
+        tile->setObjectName(summaryTileObjectName());
+        tile->setFrameShape(QFrame::NoFrame);
+        QVBoxLayout* const tileLayout = new QVBoxLayout(tile);
+        // 内边距交给样式表的 padding，这里保持 0，避免与 QSS 叠加成双倍留白。
+        tileLayout->setContentsMargins(0, 0, 0, 0);
+        tileLayout->setSpacing(2);
+
+        QLabel* const titleLabel = new QLabel(localized(titleEntry.sourceText), tile);
+        titleLabel->setObjectName(QString::fromLatin1(titleEntry.objectName));
+        valueLabel->setParent(tile);
+        valueLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        // 首帧还没有快照，先占一个短横线，避免卡片高度在第一次刷新时跳变。
+        valueLabel->setText(QStringLiteral("-"));
+        tileLayout->addWidget(titleLabel);
+        tileLayout->addWidget(valueLabel);
+        return tile;
+    };
+
+    for (std::size_t index = 0; index < summaryLabels.size(); ++index)
     {
-        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        label->setStyleSheet(QStringLiteral("font-weight: 600; padding: 4px 8px; border: 1px solid %1;")
-            .arg(KswordTheme::BorderColorHex()));
+        QFrame* const tile = buildSummaryTile(summaryLabels[index], kSummaryTileTitles[index]);
+        summaryLayout->addWidget(
+            tile,
+            static_cast<int>(index / 3),
+            static_cast<int>(index % 3));
     }
-    summaryLayout->addWidget(m_installedLabel, 0, 0);
-    summaryLayout->addWidget(m_totalLabel, 0, 1);
-    summaryLayout->addWidget(m_inUseLabel, 0, 2);
-    summaryLayout->addWidget(m_availableLabel, 1, 0);
-    summaryLayout->addWidget(m_commitLabel, 1, 1);
-    summaryLayout->addWidget(m_unattributedLabel, 1, 2);
     summaryLayout->setColumnStretch(0, 1);
     summaryLayout->setColumnStretch(1, 1);
     summaryLayout->setColumnStretch(2, 1);
@@ -623,7 +713,8 @@ void SystemMemoryAuditPage::initializeUi()
     QWidget* const userResidencyPage = new QWidget(m_detailTabs);
     QVBoxLayout* const userResidencyLayout = new QVBoxLayout(userResidencyPage);
     userResidencyLayout->setContentsMargins(0, 0, 0, 0);
-    m_userResidencyTable = new QTableWidget(userResidencyPage);
+    // 四张表统一改用 VisibleTableWidget：它在表头上方预留全局操作条，并支持冻结行列。
+    m_userResidencyTable = new ks::ui::VisibleTableWidget(userResidencyPage);
     configureTable(m_userResidencyTable, QStringList{
         localized("Process"), localized("PID"), localized("Resident kind"),
         localized("Backing / owner evidence"), localized("Resident references"),
@@ -635,7 +726,7 @@ void SystemMemoryAuditPage::initializeUi()
     QWidget* const processPage = new QWidget(m_detailTabs);
     QVBoxLayout* const processLayout = new QVBoxLayout(processPage);
     processLayout->setContentsMargins(0, 0, 0, 0);
-    m_processTable = new QTableWidget(processPage);
+    m_processTable = new ks::ui::VisibleTableWidget(processPage);
     configureTable(m_processTable, QStringList{
         localized("Process"), localized("PID"), localized("Session"),
         localized("Private resident"), localized("Working set"), localized("Shared WS refs"),
@@ -647,7 +738,7 @@ void SystemMemoryAuditPage::initializeUi()
     QWidget* const poolPage = new QWidget(m_detailTabs);
     QVBoxLayout* const poolLayout = new QVBoxLayout(poolPage);
     poolLayout->setContentsMargins(0, 0, 0, 0);
-    m_poolTagTable = new QTableWidget(poolPage);
+    m_poolTagTable = new ks::ui::VisibleTableWidget(poolPage);
     configureTable(m_poolTagTable, QStringList{
         localized("Tag"), localized("Paged bytes"), localized("Nonpaged bytes"),
         localized("Total bytes"), localized("Delta"), localized("Paged outstanding"),
@@ -658,7 +749,7 @@ void SystemMemoryAuditPage::initializeUi()
     QWidget* const bigPoolPage = new QWidget(m_detailTabs);
     QVBoxLayout* const bigPoolLayout = new QVBoxLayout(bigPoolPage);
     bigPoolLayout->setContentsMargins(0, 0, 0, 0);
-    m_bigPoolTable = new QTableWidget(bigPoolPage);
+    m_bigPoolTable = new ks::ui::VisibleTableWidget(bigPoolPage);
     configureTable(m_bigPoolTable, QStringList{
         localized("Tag"), localized("Virtual address"), localized("Size"),
         localized("Pool type"), localized("Delta"), localized("Source"), localized("Description")
@@ -680,12 +771,24 @@ void SystemMemoryAuditPage::initializeUi()
         m_detailTabs, poolPage, QStringLiteral("memory.audit.tab.pool_tags"), QStringLiteral("Pool 标签"));
     ks::i18n::LanguageManager::instance().bindTab(
         m_detailTabs, bigPoolPage, QStringLiteral("memory.audit.tab.big_pool"), QStringLiteral("Big Pool 分配"));
-    rootLayout->addWidget(m_detailTabs, 1);
 
     m_detailText = new QPlainTextEdit(this);
     m_detailText->setReadOnly(true);
-    m_detailText->setMaximumHeight(116);
-    rootLayout->addWidget(m_detailText);
+    m_detailText->setMinimumHeight(64);
+
+    // 详情说明区不再被 setMaximumHeight 钉死：Tab 与说明文本装进纵向分割器，
+    // 用户可以自行把说明区拖大来读完整段结论。
+    QSplitter* const detailSplitter = new QSplitter(Qt::Vertical, this);
+    detailSplitter->setObjectName(QStringLiteral("kswordMemoryAuditDetailSplitter"));
+    detailSplitter->setChildrenCollapsible(false);
+    detailSplitter->addWidget(m_detailTabs);
+    detailSplitter->addWidget(m_detailText);
+    detailSplitter->setStretchFactor(0, 3);
+    detailSplitter->setStretchFactor(1, 2);
+    // 只给 stretchFactor 而不给初值时，首帧两块都会按 sizeHint 之外的 0 高度参与分配，
+    // 说明区会塌成一条线；这里必须同时给一组初始尺寸。
+    detailSplitter->setSizes(QList<int>{ 420, 160 });
+    rootLayout->addWidget(detailSplitter, 1);
 
     m_statusLabel = new QLabel(this);
     m_statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -694,6 +797,82 @@ void SystemMemoryAuditPage::initializeUi()
     m_autoRefreshTimer = new QTimer(this);
     m_autoRefreshTimer->setInterval(m_intervalSpin->value() * 1000);
     m_autoRefreshTimer->start();
+
+    // 首次下发主题样式；之后由 changeEvent 的调色板分支重下发。
+    applyThemedStyle();
+}
+
+// applyThemedStyle 作用：
+// - 把本页所有依赖主题 token 的样式集中在一处下发：摘要卡片外壳、卡片小标题与大数值；
+// - 构造期调用一次，主题切换/系统深浅色切换时由 changeEvent 再调一次，
+//   否则快照型颜色会停在旧主题上；
+// - 无入参；无返回值；控件尚未创建时静默返回，容忍构造早期到达的调色板事件。
+void SystemMemoryAuditPage::applyThemedStyle()
+{
+    // 卡片外壳：底色 + 1px 边框 + 4px 圆角 + 8px 内边距，让 6 格摘要读起来是卡片而不是输入框。
+    const QString tileStyle = QStringLiteral(
+        "QFrame#%1{background:%2;border:1px solid %3;border-radius:4px;padding:8px;}")
+        .arg(summaryTileObjectName(), KswordTheme::SurfaceAltHex(), KswordTheme::BorderHex());
+    const QList<QFrame*> tiles = findChildren<QFrame*>(summaryTileObjectName());
+    for (QFrame* const tile : tiles)
+    {
+        tile->setStyleSheet(tileStyle);
+    }
+
+    // 上行小标题：次级文字色 + 12px，压在大数值之上做层次。
+    const QString titleStyle = QStringLiteral("QLabel{color:%1;font-size:12px;}")
+        .arg(KswordTheme::TextSecondaryHex());
+    for (const SummaryTileTitle& titleEntry : kSummaryTileTitles)
+    {
+        QLabel* const titleLabel = findChild<QLabel*>(QString::fromLatin1(titleEntry.objectName));
+        if (titleLabel != nullptr)
+        {
+            titleLabel->setStyleSheet(titleStyle);
+        }
+    }
+
+    // 下行大数值：主文字色 + 16px + 700 字重，是这一格真正要被读到的信息。
+    const QString valueStyle = QStringLiteral("QLabel{color:%1;font-size:16px;font-weight:700;}")
+        .arg(KswordTheme::TextPrimaryHex());
+    const std::array<QLabel*, 6> summaryLabels{
+        m_installedLabel, m_totalLabel, m_inUseLabel,
+        m_availableLabel, m_commitLabel, m_unattributedLabel
+    };
+    for (QLabel* const valueLabel : summaryLabels)
+    {
+        if (valueLabel != nullptr)
+        {
+            valueLabel->setStyleSheet(valueStyle);
+        }
+    }
+}
+
+// updateSummaryTiles 作用：
+// - 把当前快照写进 6 格摘要卡片的下行数值，标题固定在上行由 retranslateUi 维护；
+// - 采集完成与语言切换后都走这一个入口，避免两处各写一遍导致文案不一致；
+// - 无入参；无返回值；尚未拿到快照或控件未建时静默返回。
+void SystemMemoryAuditPage::updateSummaryTiles()
+{
+    if (m_installedLabel == nullptr || !m_hasSnapshot)
+    {
+        return;
+    }
+
+    m_installedLabel->setText(formatBytes(m_snapshot.installedPhysicalBytes));
+    m_totalLabel->setText(formatBytes(m_snapshot.totalPhysicalBytes));
+    // 下面三格是“绝对值 + 占比/上限”的组合，模板只有括号和斜杠，不需要进语言包。
+    m_inUseLabel->setText(QStringLiteral("%1 (%2)").arg(
+        formatBytes(m_snapshot.inUseBytes),
+        formatPercent(m_snapshot.inUseBytes, m_snapshot.totalPhysicalBytes)));
+    m_availableLabel->setText(QStringLiteral("%1 (%2)").arg(
+        formatBytes(m_snapshot.availableBytes),
+        formatPercent(m_snapshot.availableBytes, m_snapshot.totalPhysicalBytes)));
+    m_commitLabel->setText(QStringLiteral("%1 / %2").arg(
+        formatBytes(m_snapshot.committedBytes),
+        formatBytes(m_snapshot.commitLimitBytes)));
+    m_unattributedLabel->setText(QStringLiteral("%1 (%2)").arg(
+        formatBytes(m_snapshot.unattributedResidentBytes),
+        formatPercent(m_snapshot.unattributedResidentBytes, m_snapshot.totalPhysicalBytes)));
 }
 
 void SystemMemoryAuditPage::initializeConnections()
@@ -741,7 +920,10 @@ void SystemMemoryAuditPage::initializeConnections()
 void SystemMemoryAuditPage::retranslateUi()
 {
     m_refreshButton->setText(localized("Refresh snapshot"));
+    m_refreshButton->setToolTip(localized("Re-collect the whole-machine physical memory snapshot."));
     m_userResidencyScanButton->setText(localized("Deep scan user-mode residency"));
+    m_userResidencyScanButton->setToolTip(
+        localized("Walk every accessible process working set and attribute resident pages to their backing."));
     m_autoRefreshCheck->setText(localized("Auto refresh"));
     m_intervalSpin->setSuffix(localized(" s"));
     m_filterEdit->setPlaceholderText(localized("Filter process, category, file, tag, or address"));
@@ -778,20 +960,16 @@ void SystemMemoryAuditPage::retranslateUi()
     m_detailTabs->setTabText(3, localized("Pool tags"));
     m_detailTabs->setTabText(4, localized("Big Pool allocations"));
 
-    if (m_hasSnapshot)
+    // 摘要卡片的上行小标题是局部控件，按 objectName 回查后逐格重译。
+    for (const SummaryTileTitle& titleEntry : kSummaryTileTitles)
     {
-        m_installedLabel->setText(localized("Installed RAM: %1").arg(formatBytes(m_snapshot.installedPhysicalBytes)));
-        m_totalLabel->setText(localized("Windows usable: %1").arg(formatBytes(m_snapshot.totalPhysicalBytes)));
-        m_inUseLabel->setText(localized("In use: %1 (%2)")
-            .arg(formatBytes(m_snapshot.inUseBytes), formatPercent(m_snapshot.inUseBytes, m_snapshot.totalPhysicalBytes)));
-        m_availableLabel->setText(localized("Available: %1 (%2)")
-            .arg(formatBytes(m_snapshot.availableBytes), formatPercent(m_snapshot.availableBytes, m_snapshot.totalPhysicalBytes)));
-        m_commitLabel->setText(localized("Commit: %1 / %2")
-            .arg(formatBytes(m_snapshot.committedBytes), formatBytes(m_snapshot.commitLimitBytes)));
-        m_unattributedLabel->setText(localized("Unattributed: %1 (%2)")
-            .arg(formatBytes(m_snapshot.unattributedResidentBytes),
-                formatPercent(m_snapshot.unattributedResidentBytes, m_snapshot.totalPhysicalBytes)));
+        QLabel* const titleLabel = findChild<QLabel*>(QString::fromLatin1(titleEntry.objectName));
+        if (titleLabel != nullptr)
+        {
+            titleLabel->setText(localized(titleEntry.sourceText));
+        }
     }
+    updateSummaryTiles();
 }
 
 void SystemMemoryAuditPage::refreshSnapshot()
@@ -904,17 +1082,7 @@ void SystemMemoryAuditPage::applySnapshot(Snapshot snapshot, const std::uint64_t
 
     m_snapshot = std::move(snapshot);
     m_hasSnapshot = true;
-    m_installedLabel->setText(localized("Installed RAM: %1").arg(formatBytes(m_snapshot.installedPhysicalBytes)));
-    m_totalLabel->setText(localized("Windows usable: %1").arg(formatBytes(m_snapshot.totalPhysicalBytes)));
-    m_inUseLabel->setText(localized("In use: %1 (%2)")
-        .arg(formatBytes(m_snapshot.inUseBytes), formatPercent(m_snapshot.inUseBytes, m_snapshot.totalPhysicalBytes)));
-    m_availableLabel->setText(localized("Available: %1 (%2)")
-        .arg(formatBytes(m_snapshot.availableBytes), formatPercent(m_snapshot.availableBytes, m_snapshot.totalPhysicalBytes)));
-    m_commitLabel->setText(localized("Commit: %1 / %2")
-        .arg(formatBytes(m_snapshot.committedBytes), formatBytes(m_snapshot.commitLimitBytes)));
-    m_unattributedLabel->setText(localized("Unattributed: %1 (%2)")
-        .arg(formatBytes(m_snapshot.unattributedResidentBytes),
-            formatPercent(m_snapshot.unattributedResidentBytes, m_snapshot.totalPhysicalBytes)));
+    updateSummaryTiles();
     m_overviewDirty = true;
     m_processTableDirty = true;
     m_poolTagTableDirty = true;
@@ -1258,15 +1426,15 @@ void SystemMemoryAuditPage::rebuildUserResidencyTable()
         m_userResidencyTable->setItem(rowIndex, 2, textItem(category));
         m_userResidencyTable->setItem(rowIndex, 3, textItem(backingEvidence));
         m_userResidencyTable->setItem(rowIndex, 4, numericItem(
-            formatBytes(row.residentReferenceBytes), static_cast<qlonglong>(row.residentReferenceBytes)));
+            formatBytes(row.residentReferenceBytes), static_cast<qulonglong>(row.residentReferenceBytes)));
         m_userResidencyTable->setItem(rowIndex, 5, numericItem(
-            formatBytes(row.privateResidentBytes), static_cast<qlonglong>(row.privateResidentBytes)));
+            formatBytes(row.privateResidentBytes), static_cast<qulonglong>(row.privateResidentBytes)));
         m_userResidencyTable->setItem(rowIndex, 6, numericItem(
-            formatBytes(row.shareableResidentBytes), static_cast<qlonglong>(row.shareableResidentBytes)));
+            formatBytes(row.shareableResidentBytes), static_cast<qulonglong>(row.shareableResidentBytes)));
         m_userResidencyTable->setItem(rowIndex, 7, numericItem(
-            formatBytes(row.sharedResidentReferenceBytes), static_cast<qlonglong>(row.sharedResidentReferenceBytes)));
+            formatBytes(row.sharedResidentReferenceBytes), static_cast<qulonglong>(row.sharedResidentReferenceBytes)));
         m_userResidencyTable->setItem(rowIndex, 8, numericItem(
-            formatBytes(row.proportionalResidentBytes), static_cast<qlonglong>(row.proportionalResidentBytes)));
+            formatBytes(row.proportionalResidentBytes), static_cast<qulonglong>(row.proportionalResidentBytes)));
     }
 
     m_userResidencyTable->setSortingEnabled(true);
@@ -1296,14 +1464,16 @@ void SystemMemoryAuditPage::rebuildProcessTable()
         m_processTable->setItem(rowIndex, 0, textItem(row.name));
         m_processTable->setItem(rowIndex, 1, numericItem(QString::number(row.pid), row.pid));
         m_processTable->setItem(rowIndex, 2, numericItem(QString::number(row.sessionId), row.sessionId));
-        m_processTable->setItem(rowIndex, 3, numericItem(formatBytes(row.privateResidentBytes), static_cast<qlonglong>(row.privateResidentBytes)));
-        m_processTable->setItem(rowIndex, 4, numericItem(formatBytes(row.workingSetBytes), static_cast<qlonglong>(row.workingSetBytes)));
-        m_processTable->setItem(rowIndex, 5, numericItem(formatBytes(row.sharedResidentReferenceBytes), static_cast<qlonglong>(row.sharedResidentReferenceBytes)));
-        m_processTable->setItem(rowIndex, 6, numericItem(formatBytes(row.privateCommitBytes), static_cast<qlonglong>(row.privateCommitBytes)));
-        m_processTable->setItem(rowIndex, 7, numericItem(formatBytes(row.pagedPoolQuotaBytes), static_cast<qlonglong>(row.pagedPoolQuotaBytes)));
-        m_processTable->setItem(rowIndex, 8, numericItem(formatBytes(row.nonPagedPoolQuotaBytes), static_cast<qlonglong>(row.nonPagedPoolQuotaBytes)));
+        m_processTable->setItem(rowIndex, 3, numericItem(formatBytes(row.privateResidentBytes), static_cast<qulonglong>(row.privateResidentBytes)));
+        m_processTable->setItem(rowIndex, 4, numericItem(formatBytes(row.workingSetBytes), static_cast<qulonglong>(row.workingSetBytes)));
+        m_processTable->setItem(rowIndex, 5, numericItem(formatBytes(row.sharedResidentReferenceBytes), static_cast<qulonglong>(row.sharedResidentReferenceBytes)));
+        m_processTable->setItem(rowIndex, 6, numericItem(formatBytes(row.privateCommitBytes), static_cast<qulonglong>(row.privateCommitBytes)));
+        m_processTable->setItem(rowIndex, 7, numericItem(formatBytes(row.pagedPoolQuotaBytes), static_cast<qulonglong>(row.pagedPoolQuotaBytes)));
+        m_processTable->setItem(rowIndex, 8, numericItem(formatBytes(row.nonPagedPoolQuotaBytes), static_cast<qulonglong>(row.nonPagedPoolQuotaBytes)));
         m_processTable->setItem(rowIndex, 9, numericItem(QString::number(row.hardFaultCount), row.hardFaultCount));
-        QTableWidgetItem* const deltaItem = numericItem(formatDelta(row.privateResidentDeltaBytes), row.privateResidentDeltaBytes);
+        QTableWidgetItem* const deltaItem = signedNumericItem(
+            formatDelta(row.privateResidentDeltaBytes),
+            static_cast<qlonglong>(row.privateResidentDeltaBytes));
         applyDeltaColor(deltaItem, row.privateResidentDeltaBytes);
         m_processTable->setItem(rowIndex, 10, deltaItem);
     }
@@ -1331,14 +1501,16 @@ void SystemMemoryAuditPage::rebuildPoolTagTable()
         const int rowIndex = m_poolTagTable->rowCount();
         m_poolTagTable->insertRow(rowIndex);
         m_poolTagTable->setItem(rowIndex, 0, textItem(row.tagText));
-        m_poolTagTable->setItem(rowIndex, 1, numericItem(formatBytes(row.pagedBytes), static_cast<qlonglong>(row.pagedBytes)));
-        m_poolTagTable->setItem(rowIndex, 2, numericItem(formatBytes(row.nonPagedBytes), static_cast<qlonglong>(row.nonPagedBytes)));
-        m_poolTagTable->setItem(rowIndex, 3, numericItem(formatBytes(total), static_cast<qlonglong>(total)));
-        QTableWidgetItem* const deltaItem = numericItem(formatDelta(row.totalDeltaBytes), row.totalDeltaBytes);
+        m_poolTagTable->setItem(rowIndex, 1, numericItem(formatBytes(row.pagedBytes), static_cast<qulonglong>(row.pagedBytes)));
+        m_poolTagTable->setItem(rowIndex, 2, numericItem(formatBytes(row.nonPagedBytes), static_cast<qulonglong>(row.nonPagedBytes)));
+        m_poolTagTable->setItem(rowIndex, 3, numericItem(formatBytes(total), static_cast<qulonglong>(total)));
+        QTableWidgetItem* const deltaItem = signedNumericItem(
+            formatDelta(row.totalDeltaBytes),
+            static_cast<qlonglong>(row.totalDeltaBytes));
         applyDeltaColor(deltaItem, row.totalDeltaBytes);
         m_poolTagTable->setItem(rowIndex, 4, deltaItem);
-        m_poolTagTable->setItem(rowIndex, 5, numericItem(QString::number(row.pagedOutstanding), static_cast<qlonglong>(row.pagedOutstanding)));
-        m_poolTagTable->setItem(rowIndex, 6, numericItem(QString::number(row.nonPagedOutstanding), static_cast<qlonglong>(row.nonPagedOutstanding)));
+        m_poolTagTable->setItem(rowIndex, 5, numericItem(QString::number(row.pagedOutstanding), static_cast<qulonglong>(row.pagedOutstanding)));
+        m_poolTagTable->setItem(rowIndex, 6, numericItem(QString::number(row.nonPagedOutstanding), static_cast<qulonglong>(row.nonPagedOutstanding)));
         m_poolTagTable->setItem(rowIndex, 7, textItem(metadata.source));
         m_poolTagTable->setItem(rowIndex, 8, textItem(metadata.description));
     }
@@ -1367,10 +1539,12 @@ void SystemMemoryAuditPage::rebuildBigPoolTable()
         const int rowIndex = m_bigPoolTable->rowCount();
         m_bigPoolTable->insertRow(rowIndex);
         m_bigPoolTable->setItem(rowIndex, 0, textItem(row.tagText));
-        m_bigPoolTable->setItem(rowIndex, 1, numericItem(addressText, static_cast<qlonglong>(row.virtualAddress)));
-        m_bigPoolTable->setItem(rowIndex, 2, numericItem(formatBytes(row.sizeBytes), static_cast<qlonglong>(row.sizeBytes)));
+        m_bigPoolTable->setItem(rowIndex, 1, numericItem(addressText, static_cast<qulonglong>(row.virtualAddress)));
+        m_bigPoolTable->setItem(rowIndex, 2, numericItem(formatBytes(row.sizeBytes), static_cast<qulonglong>(row.sizeBytes)));
         m_bigPoolTable->setItem(rowIndex, 3, textItem(poolType));
-        QTableWidgetItem* const deltaItem = numericItem(formatDelta(row.sizeDeltaBytes), row.sizeDeltaBytes);
+        QTableWidgetItem* const deltaItem = signedNumericItem(
+            formatDelta(row.sizeDeltaBytes),
+            static_cast<qlonglong>(row.sizeDeltaBytes));
         applyDeltaColor(deltaItem, row.sizeDeltaBytes);
         m_bigPoolTable->setItem(rowIndex, 4, deltaItem);
         m_bigPoolTable->setItem(rowIndex, 5, textItem(metadata.source));

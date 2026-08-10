@@ -19,6 +19,37 @@ namespace ksword::ark
 
         constexpr std::size_t kWriteRequestHeaderSize =
             offsetof(KSWORD_ARK_WRITE_VIRTUAL_MEMORY_REQUEST, data);
+
+        // 物理读响应：驱动用 sizeof-sizeof(data)=55 计算“输出缓冲还剩多少可用”，
+        // 却把负载写到 ->data（offsetof=48）。两个数字都要用，且不能互相替代。
+        constexpr std::size_t kPhysicalReadResponseAllocSize =
+            sizeof(KSWORD_ARK_READ_PHYSICAL_MEMORY_RESPONSE)
+            - sizeof(((KSWORD_ARK_READ_PHYSICAL_MEMORY_RESPONSE*)nullptr)->data);   // 55
+        constexpr std::size_t kPhysicalReadDataOffset =
+            offsetof(KSWORD_ARK_READ_PHYSICAL_MEMORY_RESPONSE, data);               // 48
+        constexpr std::size_t kPhysicalWriteRequestAllocSize =
+            sizeof(KSWORD_ARK_WRITE_PHYSICAL_MEMORY_REQUEST)
+            - sizeof(((KSWORD_ARK_WRITE_PHYSICAL_MEMORY_REQUEST*)nullptr)->data);   // 31
+
+        // kPhysicalAddressMax 用途：与 R0 memory_physical.c 的 52 位上限保持一致。
+        constexpr std::uint64_t kPhysicalAddressMax = 0x000FFFFFFFFFFFFFULL;
+
+        // isPhysicalRangeAcceptable 用途：复刻 R0 区间判据，长度为 0 时只校验起点，
+        // 其余情况同时检查上限和回绕，避免把注定被拒绝的请求发给驱动。
+        bool isPhysicalRangeAcceptable(
+            const std::uint64_t physicalAddress,
+            const std::uint64_t length)
+        {
+            if (physicalAddress > kPhysicalAddressMax)
+            {
+                return false;
+            }
+            if (length == 0ULL)
+            {
+                return true;
+            }
+            return length <= (kPhysicalAddressMax - physicalAddress + 1ULL);
+        }
     }
 
     VirtualMemoryQueryResult DriverClient::queryVirtualMemory(
@@ -282,6 +313,226 @@ namespace ksword::ark
             << ", fields=0x" << std::hex << std::uppercase << writeResult.fieldFlags
             << ", nt=0x" << std::hex << static_cast<unsigned long>(writeResult.copyStatus);
         if (writeResult.writeStatus == KSWORD_ARK_MEMORY_WRITE_STATUS_FORCE_REQUIRED)
+        {
+            stream << ", force-required";
+        }
+        writeResult.io.message = stream.str();
+        return writeResult;
+    }
+
+    PhysicalMemoryReadResult DriverClient::readPhysicalMemory(
+        const std::uint64_t physicalAddress,
+        const std::uint32_t bytesToRead,
+        const unsigned long flags,
+        DriverHandle* const existingHandle) const
+    {
+        // request 用途：承载物理读参数；物理协议没有 processId，只有地址和长度。
+        PhysicalMemoryReadResult readResult{};
+        KSWORD_ARK_READ_PHYSICAL_MEMORY_REQUEST request{};
+
+        // 驱动对物理读只接受 flags 为 0，任何保留位都会被直接判为无效参数。
+        if (flags != 0UL)
+        {
+            readResult.io.ok = false;
+            readResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            readResult.io.message = "物理内存读取不接受任何 flags，flags 必须为 0";
+            return readResult;
+        }
+
+        // 长度上限先在 R3 拦截，避免构造超过驱动限制的响应缓冲。
+        if (bytesToRead > KSWORD_ARK_MEMORY_PHYSICAL_READ_MAX_BYTES)
+        {
+            readResult.io.ok = false;
+            readResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            readResult.io.message = "物理内存读取长度超出驱动单次上限 64KB";
+            return readResult;
+        }
+
+        // 地址上限与回绕在 R3 复核一次，判据与 R0 完全一致。
+        if (!isPhysicalRangeAcceptable(physicalAddress, static_cast<std::uint64_t>(bytesToRead)))
+        {
+            readResult.io.ok = false;
+            readResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            readResult.io.message = "物理地址超出 52 位上限或区间回绕";
+            return readResult;
+        }
+
+        // request 字段逐项填充；reserved/reserved2 保持零值，驱动会逐个校验。
+        request.flags = 0UL;
+        request.physicalAddress = physicalAddress;
+        request.bytesToRead = bytesToRead;
+
+        // 输出缓冲必须按驱动的可用空间判据 kPhysicalReadResponseAllocSize 打底，
+        // 只给 kPhysicalReadDataOffset + N 会被驱动判成 BUFFER_TOO_SMALL。
+        std::vector<std::uint8_t> responseBuffer(
+            kPhysicalReadResponseAllocSize + static_cast<std::size_t>(bytesToRead),
+            0U);
+        readResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_READ_PHYSICAL_MEMORY,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            responseBuffer.data(),
+            static_cast<unsigned long>(responseBuffer.size()),
+            existingHandle);
+        if (!readResult.io.ok)
+        {
+            readResult.io.message =
+                "DeviceIoControl(IOCTL_KSWORD_ARK_READ_PHYSICAL_MEMORY) failed, error=" +
+                std::to_string(readResult.io.win32Error);
+            return readResult;
+        }
+
+        // 驱动即使在 IRQL/范围拒绝路径上也会回满响应头，长度不足说明协议不匹配。
+        if (readResult.io.bytesReturned < kPhysicalReadResponseAllocSize)
+        {
+            readResult.io.ok = false;
+            readResult.io.message =
+                "read-physical response too small, bytesReturned=" +
+                std::to_string(readResult.io.bytesReturned);
+            return readResult;
+        }
+
+        // responseHeader 指向 METHOD_BUFFERED 响应头，只读解析。
+        const auto* responseHeader =
+            reinterpret_cast<const KSWORD_ARK_READ_PHYSICAL_MEMORY_RESPONSE*>(responseBuffer.data());
+        readResult.version = static_cast<std::uint32_t>(responseHeader->version);
+        readResult.headerSize = static_cast<std::uint32_t>(responseHeader->headerSize);
+        readResult.fieldFlags = static_cast<std::uint32_t>(responseHeader->fieldFlags);
+        readResult.readStatus = static_cast<std::uint32_t>(responseHeader->readStatus);
+        readResult.copyStatus = static_cast<long>(responseHeader->copyStatus);
+        readResult.source = static_cast<std::uint32_t>(responseHeader->source);
+        readResult.requestedPhysicalAddress =
+            static_cast<std::uint64_t>(responseHeader->requestedPhysicalAddress);
+        readResult.requestedBytes = static_cast<std::uint32_t>(responseHeader->requestedBytes);
+        readResult.bytesRead = static_cast<std::uint32_t>(responseHeader->bytesRead);
+        readResult.maxBytesPerRequest = static_cast<std::uint32_t>(responseHeader->maxBytesPerRequest);
+
+        // 负载起点只能是 data 成员的真实偏移；用 headerSize 或 55 会整体错位 7 字节。
+        // 长度只用 bytesRead 与缓冲余量取小，不能由 bytesReturned 反推。
+        const std::size_t dataCapacity = responseBuffer.size() - kPhysicalReadDataOffset;
+        const std::size_t dataBytes = std::min<std::size_t>(
+            static_cast<std::size_t>(readResult.bytesRead),
+            dataCapacity);
+        if (dataBytes > 0U)
+        {
+            readResult.data.assign(
+                responseBuffer.begin() + static_cast<std::ptrdiff_t>(kPhysicalReadDataOffset),
+                responseBuffer.begin() + static_cast<std::ptrdiff_t>(kPhysicalReadDataOffset + dataBytes));
+        }
+
+        // message 汇总关键诊断字段，供 UI 状态栏直接展示。
+        std::ostringstream stream;
+        stream << "pa=0x" << std::hex << std::uppercase << readResult.requestedPhysicalAddress
+            << std::dec << ", requested=" << readResult.requestedBytes
+            << ", read=" << readResult.bytesRead
+            << ", parsed=" << readResult.data.size()
+            << ", status=" << readResult.readStatus
+            << ", source=" << readResult.source
+            << ", fields=0x" << std::hex << std::uppercase << readResult.fieldFlags
+            << ", nt=0x" << static_cast<unsigned long>(readResult.copyStatus);
+        readResult.io.message = stream.str();
+        return readResult;
+    }
+
+    PhysicalMemoryWriteResult DriverClient::writePhysicalMemory(
+        const std::uint64_t physicalAddress,
+        const std::vector<std::uint8_t>& bytes,
+        const unsigned long flags,
+        DriverHandle* const existingHandle) const
+    {
+        // writeResult 用途：承载 R0 固定响应和 DeviceIoControl 状态。
+        PhysicalMemoryWriteResult writeResult{};
+
+        // 空负载和超限负载都会被驱动拒绝，这里提前挡掉。
+        if (bytes.empty() || bytes.size() > KSWORD_ARK_MEMORY_PHYSICAL_WRITE_MAX_BYTES)
+        {
+            writeResult.io.ok = false;
+            writeResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            writeResult.io.message = "物理内存写入长度必须非零且不超过 4KB";
+            return writeResult;
+        }
+
+        // flags 只允许 UI_CONFIRMED 与 FORCE 的组合，其余位驱动一律判无效参数。
+        constexpr unsigned long allowedWriteFlags =
+            KSWORD_ARK_PHYSICAL_WRITE_FLAG_UI_CONFIRMED | KSWORD_ARK_PHYSICAL_WRITE_FLAG_FORCE;
+        if ((flags & ~allowedWriteFlags) != 0UL)
+        {
+            writeResult.io.ok = false;
+            writeResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            writeResult.io.message = "物理内存写入 flags 只接受 UI_CONFIRMED 与 FORCE 的组合";
+            return writeResult;
+        }
+
+        // 地址上限与回绕在 R3 复核一次，判据与 R0 完全一致。
+        if (!isPhysicalRangeAcceptable(physicalAddress, static_cast<std::uint64_t>(bytes.size())))
+        {
+            writeResult.io.ok = false;
+            writeResult.io.win32Error = ERROR_INVALID_PARAMETER;
+            writeResult.io.message = "物理地址超出 52 位上限或区间回绕";
+            return writeResult;
+        }
+
+        // inputBuffer 按物理写请求头 + data[] 构造，负载走 request->data 成员拷贝，
+        // 不手算偏移，避免与结构体真实布局脱节。
+        std::vector<std::uint8_t> inputBuffer(kPhysicalWriteRequestAllocSize + bytes.size(), 0U);
+        auto* request =
+            reinterpret_cast<KSWORD_ARK_WRITE_PHYSICAL_MEMORY_REQUEST*>(inputBuffer.data());
+        request->flags = flags;
+        request->physicalAddress = physicalAddress;
+        request->bytesToWrite = static_cast<unsigned long>(bytes.size());
+        std::copy(bytes.begin(), bytes.end(), request->data);
+
+        // response 是固定大小结构，映射和拷贝两个阶段的状态由 R0 分别填写。
+        KSWORD_ARK_WRITE_PHYSICAL_MEMORY_RESPONSE response{};
+        writeResult.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_WRITE_PHYSICAL_MEMORY,
+            inputBuffer.data(),
+            static_cast<unsigned long>(inputBuffer.size()),
+            &response,
+            static_cast<unsigned long>(sizeof(response)),
+            existingHandle);
+        if (!writeResult.io.ok)
+        {
+            writeResult.io.message =
+                "DeviceIoControl(IOCTL_KSWORD_ARK_WRITE_PHYSICAL_MEMORY) failed, error=" +
+                std::to_string(writeResult.io.win32Error);
+            return writeResult;
+        }
+        if (writeResult.io.bytesReturned < sizeof(response))
+        {
+            writeResult.io.ok = false;
+            writeResult.io.message =
+                "write-physical response too small, bytesReturned=" +
+                std::to_string(writeResult.io.bytesReturned);
+            return writeResult;
+        }
+
+        // 解析响应字段，供 UI 判断成功、需要 FORCE 还是失败。
+        writeResult.version = static_cast<std::uint32_t>(response.version);
+        writeResult.fieldFlags = static_cast<std::uint32_t>(response.fieldFlags);
+        writeResult.writeStatus = static_cast<std::uint32_t>(response.writeStatus);
+        writeResult.mapStatus = static_cast<long>(response.mapStatus);
+        writeResult.copyStatus = static_cast<long>(response.copyStatus);
+        writeResult.source = static_cast<std::uint32_t>(response.source);
+        writeResult.requestedPhysicalAddress =
+            static_cast<std::uint64_t>(response.requestedPhysicalAddress);
+        writeResult.requestedBytes = static_cast<std::uint32_t>(response.requestedBytes);
+        writeResult.bytesWritten = static_cast<std::uint32_t>(response.bytesWritten);
+        writeResult.maxBytesPerRequest = static_cast<std::uint32_t>(response.maxBytesPerRequest);
+
+        // message 汇总本次物理写入结果，map/copy 两个 NTSTATUS 都保留。
+        std::ostringstream stream;
+        stream << "pa=0x" << std::hex << std::uppercase << writeResult.requestedPhysicalAddress
+            << std::dec << ", requested=" << writeResult.requestedBytes
+            << ", written=" << writeResult.bytesWritten
+            << ", status=" << writeResult.writeStatus
+            << ", source=" << writeResult.source
+            << ", flags=0x" << std::hex << std::uppercase << flags
+            << ", fields=0x" << std::hex << std::uppercase << writeResult.fieldFlags
+            << ", map=0x" << std::hex << static_cast<unsigned long>(writeResult.mapStatus)
+            << ", nt=0x" << std::hex << static_cast<unsigned long>(writeResult.copyStatus);
+        // 未带 FORCE 时 io.ok 仍为 true，但驱动一个字节都没写，必须靠 writeStatus 分辨。
+        if (writeResult.writeStatus == KSWORD_ARK_MEMORY_PHYSICAL_WRITE_STATUS_FORCE_REQUIRED)
         {
             stream << ", force-required";
         }

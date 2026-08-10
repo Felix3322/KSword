@@ -421,9 +421,15 @@ void MonitorPanelWidget::initializeUi()
     m_memoryUsageSeries->setName(ks::i18n::contextText(
         QStringLiteral("monitor.panel.memory.usage"), QStringLiteral("占用")));
 
-    const QColor memoryUsedColor(86, 166, 255);
-    const QColor memoryStandbyColor(255, 184, 92);
-    const QColor memoryAvailableColor(92, 210, 145);
+    // 组成色沿用“已用=蓝 / 提交缓存=橙 / 可用=绿”的语义配色，
+    // 但改从主题角色取色：偏移量与磁盘/网络两张图的 Read/Write/Disk 一致，
+    // 四张图在深浅主题与自定义强调色下保持成套。
+    const QColor memoryUsedColor =
+        KswordTheme::AccentColor(KswordTheme::AccentRole::Blue, 30, 4);
+    const QColor memoryStandbyColor =
+        KswordTheme::AccentColor(KswordTheme::AccentRole::Orange, 40, 14);
+    const QColor memoryAvailableColor =
+        KswordTheme::AccentColor(KswordTheme::AccentRole::Green, 40, 14);
     QPen memoryUsedPen(memoryUsedColor);
     QPen memoryStandbyPen(memoryStandbyColor);
     QPen memoryAvailablePen(memoryAvailableColor);

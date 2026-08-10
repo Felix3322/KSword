@@ -85,7 +85,6 @@ private:
     static QString ntStatusText(long status);
     static QString fixedAscii(const char* text, int capacity);
 
-    QLabel* m_warningLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_summaryLabel = nullptr;
     QPushButton* m_refreshButton = nullptr;

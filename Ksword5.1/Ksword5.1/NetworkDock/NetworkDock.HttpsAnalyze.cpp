@@ -72,13 +72,15 @@ namespace
     // - 重点覆盖 QPlainTextEdit/QTabWidget/QLabel，修复深色模式下残留白底。
     QString buildHttpsDetailWindowStyle()
     {
-        const QString windowBackground = KswordTheme::SurfaceColorHex();
-        const QString panelBackground = KswordTheme::SurfaceAltColorHex();
-        const QString inputBackground = KswordTheme::SurfaceMutedColorHex();
-        const QString borderColor = KswordTheme::BorderColorHex();
-        const QString textColor = KswordTheme::TextPrimaryColorHex();
-        const QString secondaryTextColor = KswordTheme::TextSecondaryColorHex();
-        const QString accentColor = KswordTheme::AccentHex(KswordTheme::AccentRole::Blue);
+        const QString windowBackground = KswordTheme::SurfaceHex();
+        const QString panelBackground = KswordTheme::SurfaceAltHex();
+        // 静音底色在 palette 里没有对应角色，退一档取 alternate-base；
+        // 输入区仍有 1px 边框区分，视觉差异可以忽略。
+        const QString inputBackground = KswordTheme::SurfaceAltHex();
+        const QString borderColor = KswordTheme::BorderHex();
+        const QString textColor = KswordTheme::TextPrimaryHex();
+        const QString secondaryTextColor = KswordTheme::TextSecondaryHex();
+        const QString accentColor = KswordTheme::PrimaryBlueHex;
 
         return QStringLiteral(
             "QWidget{"
@@ -142,7 +144,7 @@ namespace
             .arg(secondaryTextColor)
             .arg(inputBackground)
             .arg(accentColor)
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     class HttpsParsedDetailWindow final : public QWidget
@@ -518,7 +520,8 @@ void NetworkDock::initializeHttpsAnalyzeTab()
 
     m_httpsStartProxyButton = new QPushButton(QStringLiteral("启动代理"), m_httpsAnalyzePage);
     m_httpsStartProxyButton->setIcon(QIcon(":/Icon/process_start.svg"));
-    m_httpsStartProxyButton->setToolTip(QStringLiteral("启动本地 HTTPS 解析代理。"));
+    // 抓取范围并入启动按钮：用户在这里决定要不要开，也正是在这里需要知道抓不到什么。
+    m_httpsStartProxyButton->setToolTip(QStringLiteral("启动本地 HTTPS 解析代理。只记录经过本地系统代理的 HTTP/1.1 流量；QUIC/HTTP/3、直连流量和启用证书锁定的应用不会进入本表。"));
 
     m_httpsStopProxyButton = new QPushButton(QStringLiteral("停止代理"), m_httpsAnalyzePage);
     m_httpsStopProxyButton->setIcon(QIcon(":/Icon/process_pause.svg"));
@@ -551,13 +554,6 @@ void NetworkDock::initializeHttpsAnalyzeTab()
     m_httpsAnalyzeControlLayout->addWidget(m_httpsClearProxyButton);
     m_httpsAnalyzeControlLayout->addWidget(m_httpsProxyStatusLabel, 1);
     m_httpsAnalyzeLayout->addLayout(m_httpsAnalyzeControlLayout);
-
-    QLabel* captureScopeLabel = new QLabel(
-        QStringLiteral("范围：仅记录经过本地系统代理的 HTTP/1.1 流量。QUIC/HTTP/3、直连流量和启用证书锁定的应用不会进入本表。"),
-        m_httpsAnalyzePage);
-    captureScopeLabel->setWordWrap(true);
-    captureScopeLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    m_httpsAnalyzeLayout->addWidget(captureScopeLabel);
 
     QHBoxLayout* parsedFilterLayout = new QHBoxLayout();
     parsedFilterLayout->setSpacing(6);

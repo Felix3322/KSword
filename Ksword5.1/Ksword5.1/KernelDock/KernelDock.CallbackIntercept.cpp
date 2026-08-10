@@ -159,11 +159,17 @@ namespace
     // callbackAllowWallpaperThroughControls 作用：
     // - 输入：无，读取当前外观配置；
     // - 处理：用于驱动回调 Tab 判断局部表格/面板是否应透明；
-    // - 返回：true 表示背景图模式，局部容器应尽量透明。
+    // - 返回：true 表示应透出后方内容，局部容器应尽量透明。
+    //
+    // 两个条件必须都算，与 MainWindow::shouldRenderTransparentDockContent() 保持同一口径：
+    // 只看背景图存不存在，会把「开了透明窗口背景但没设背景图」这个常见配置判成不透明，
+    // 而控件自身 styleSheet 压过 MainWindow 下发的全局 QSS，错判之后没有任何东西能纠正它。
+    // 这正是 issue #161 的成因（另见 KernelDock.cpp 中同一问题的注释）。
     bool callbackAllowWallpaperThroughControls()
     {
         const ks::settings::AppearanceSettings settings = ks::settings::loadAppearanceSettings();
-        return callbackBackgroundImageReady(settings.backgroundImagePath);
+        return callbackBackgroundImageReady(settings.backgroundImagePath)
+            || settings.backgroundTransparencyEnabled;
     }
 
     class OpaqueTableEditorDelegate final : public QStyledItemDelegate

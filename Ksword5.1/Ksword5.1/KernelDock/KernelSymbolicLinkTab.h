@@ -64,7 +64,6 @@ private:
     QLineEdit* m_filterEdit = nullptr;
     QLineEdit* m_targetFilterEdit = nullptr;
     QLabel* m_statusLabel = nullptr;
-    QLabel* m_noteLabel = nullptr;
     QTableWidget* m_table = nullptr;
 
     std::vector<KernelSymbolicLinkEntry> m_allRows;

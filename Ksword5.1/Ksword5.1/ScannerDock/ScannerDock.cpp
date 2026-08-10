@@ -199,18 +199,11 @@ void ScannerDock::buildUi()
     inspectionLayout->addWidget(m_resultTabs);
     m_mainTabs->addTab(m_inspectionPage, QString());
 
-    // editorLayout：常驻风险说明位于输入控件之前，打开页面即可看到。
+    // editorLayout：直接从输入控件开始，风险口径改挂在各控件的 tooltip 上。
     m_editorPage = new QWidget(m_mainTabs);
     auto* editorLayout = new QVBoxLayout(m_editorPage);
     editorLayout->setContentsMargins(12, 12, 12, 12);
     editorLayout->setSpacing(10);
-
-    m_editorWarningLabel = new QLabel(m_editorPage);
-    m_editorWarningLabel->setWordWrap(true);
-    m_editorWarningLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_editorWarningLabel->setStyleSheet(QStringLiteral(
-        "QLabel { padding: 10px; border: 1px solid #D89B24; border-radius: 4px; }"));
-    editorLayout->addWidget(m_editorWarningLabel);
 
     // editForm：只收集等长替换所需的偏移与新字节，不提供插入/删除入口。
     auto* editForm = new QFormLayout();
@@ -276,17 +269,23 @@ void ScannerDock::retranslateUi()
     m_mainTabs->setTabText(
         m_mainTabs->indexOf(m_editorPage),
         translated("scanner.tab.editor", "安全字节编辑"));
-    m_editorWarningLabel->setText(translated(
-        "scanner.editor.warning",
-        "高风险操作：这里只允许等长字节替换，不支持插入或删除。应用时会比较原始字节并复核整文件快照，再通过同目录临时文件原子替换；默认保留带时间戳的备份。Windows 在释放文件锁到原子替换之间仍存在极短竞态，并发映射写入也可能破坏快照假设。修改后请重新扫描确认。"));
     m_offsetLabel->setText(translated("scanner.editor.offset", "文件偏移"));
     m_replacementLabel->setText(translated("scanner.editor.replacement", "替换字节（十六进制）"));
+    m_replacementEdit->setToolTip(translated(
+        "scanner.editor.replacement.tooltip",
+        "只支持等长替换：字节数必须与原始内容完全一致，不能插入或删除。"));
     m_backupCheckBox->setText(translated(
         "scanner.editor.create_backup",
         "应用前创建独立备份（推荐）"));
+    m_backupCheckBox->setToolTip(translated(
+        "scanner.editor.create_backup.tooltip",
+        "备份是同目录下带时间戳的独立副本，不会覆盖之前的备份。"));
     m_riskCheckBox->setText(translated(
         "scanner.editor.risk_ack",
         "我已核对目标、偏移和字节，并理解修改二进制文件的风险"));
+    m_riskCheckBox->setToolTip(translated(
+        "scanner.editor.risk_ack.tooltip",
+        "从释放文件锁到原子替换之间仍有极短竞态，其它进程的并发写入可能破坏快照校验。"));
     m_applyPatchButton->setText(translated("scanner.editor.apply", "核对并应用"));
     m_applyPatchButton->setToolTip(translated(
         "scanner.editor.apply.tooltip",

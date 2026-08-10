@@ -66,6 +66,19 @@ namespace
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         return item;
     }
+
+    // setHeaderTip 作用：
+    // - 输入 table/column/tipText：目标表格、列序号和悬停说明；
+    // - 处理：把判定口径挂到它解释的那一列表头上；
+    // - 返回：无，表头项缺失时静默跳过。
+    void setHeaderTip(QTableWidget* table, const int column, const QString& tipText)
+    {
+        QTableWidgetItem* headerItem = table->horizontalHeaderItem(column);
+        if (headerItem != nullptr)
+        {
+            headerItem->setToolTip(tipText);
+        }
+    }
 }
 
 KernelTextIntegrityTab::KernelTextIntegrityTab(QWidget* parent)
@@ -103,24 +116,15 @@ void KernelTextIntegrityTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    m_warningLabel = new QLabel(
-        kernelText(
-            "kernel.text_integrity.warning",
-            QStringLiteral("⚠ 判定口径：比对基准是磁盘净映像按当前加载基址重定位后的结果。落在 PE 动态重定位位点上的差异（import optimization / retpoline）由加载器在启动期写入，属于正常现象，本页单独归类。其余差异一律标为「无法解释」。分页换出导致的读取失败只计入不可读字节，不会被算成篡改。")),
-        this);
-    m_warningLabel->setWordWrap(true);
-    m_warningLabel->setStyleSheet(QStringLiteral(
-        "QLabel{padding:8px;border:1px solid %1;border-radius:4px;"
-        "background:%2;color:%3;font-weight:600;}")
-        .arg(KswordTheme::WarningHex())
-        .arg(KswordTheme::ThemeColorName(KswordTheme::WarningBackgroundColor()))
-        .arg(KswordTheme::TextPrimaryHex()));
-    rootLayout->addWidget(m_warningLabel);
-
     auto* toolbar = new QHBoxLayout();
     m_scanButton = new QPushButton(
         kernelText("kernel.text_integrity.scan", QStringLiteral("开始扫描")),
         this);
+    // 判定口径不占版面：挂在触发扫描的按钮上，谁要看谁悬停。
+    m_scanButton->setToolTip(
+        kernelText(
+            "kernel.text_integrity.scan.tooltip",
+            QStringLiteral("比对基准是磁盘净映像按当前加载基址重定位后的结果。")));
     m_scanButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
     m_cancelButton = new QPushButton(
         kernelText("kernel.text_integrity.cancel", QStringLiteral("取消")),
@@ -138,6 +142,10 @@ void KernelTextIntegrityTab::initializeUi()
             "kernel.text_integrity.unexplained_only",
             QStringLiteral("只看无法解释的差异")),
         this);
+    m_unexplainedOnlyCheck->setToolTip(
+        kernelText(
+            "kernel.text_integrity.unexplained_only.tooltip",
+            QStringLiteral("勾选后隐藏归类为动态重定位的差异，只留下无法用已知机制解释的区间。")));
     m_unexplainedOnlyCheck->setChecked(true);
     m_statusLabel = new QLabel(
         kernelText(
@@ -179,6 +187,25 @@ void KernelTextIntegrityTab::initializeUi()
         kernelText("kernel.text_integrity.module.trust", QStringLiteral("磁盘信任")),
         kernelText("kernel.text_integrity.module.status", QStringLiteral("结论"))
     });
+    // 归类规则跟着它解释的那一列走，比页首堆一段总说明更容易对上号。
+    setHeaderTip(
+        m_moduleTable,
+        ModuleColumnUnreadable,
+        kernelText(
+            "kernel.text_integrity.module.unreadable.tooltip",
+            QStringLiteral("分页换出导致的读取失败只计入这里，不会被算成篡改。")));
+    setHeaderTip(
+        m_moduleTable,
+        ModuleColumnKnown,
+        kernelText(
+            "kernel.text_integrity.module.known.tooltip",
+            QStringLiteral("落在 PE 动态重定位位点上的差异（import optimization / retpoline）由加载器在启动期写入，属于正常现象。")));
+    setHeaderTip(
+        m_moduleTable,
+        ModuleColumnUnexplained,
+        kernelText(
+            "kernel.text_integrity.module.unexplained.tooltip",
+            QStringLiteral("无法用任何已知机制解释的差异字节数；HVCI 正在强制执行时这里非零尤其严重。")));
     m_moduleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_moduleTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_moduleTable->setAlternatingRowColors(true);

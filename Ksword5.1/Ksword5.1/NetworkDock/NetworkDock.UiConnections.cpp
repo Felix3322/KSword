@@ -245,103 +245,11 @@ void NetworkDock::initializeConnections()
                 openPacketDetailWindowBySequenceId(sequenceId);
             }
         });
-    connect(m_nidsAlertTable, &QWidget::customContextMenuRequested, this,
-        [this, nidsAlertSequenceForRow](const QPoint& position)
-        {
-            if (m_nidsAlertTable == nullptr)
-            {
-                return;
-            }
-
-            const QModelIndex index = m_nidsAlertTable->indexAt(position);
-            if (!index.isValid())
-            {
-                return;
-            }
-            // 右键锚定：
-            // - 输入：用户鼠标所在告警行；
-            // - 处理：先同步当前行，再展示菜单，避免“复制告警行”复制到旧选中行或详情定位不一致；
-            // - 返回：无，后续动作仍然只读。
-            m_nidsAlertTable->setCurrentCell(index.row(), index.column());
-            m_nidsAlertTable->selectRow(index.row());
-
-            QMenu contextMenu(this);
-            contextMenu.setStyleSheet(KswordTheme::ContextMenuStyle());
-            QAction* detailAction = contextMenu.addAction(QIcon(":/Icon/process_details.svg"), QStringLiteral("查看关联报文详情"));
-            QAction* copyRowAction = contextMenu.addAction(QIcon(":/Icon/process_copy_row.svg"), QStringLiteral("复制告警行"));
-            const QTableWidgetItem* processIdItem = m_nidsAlertTable->item(
-                index.row(),
-                toNidsAlertColumn(NidsAlertTableColumn::Pid));
-            std::uint32_t processId = 0;
-            const bool hasProcessId = processIdItem != nullptr &&
-                ks::online_scan::tryParsePidFromText(processIdItem->text(), &processId) &&
-                processId != 0U;
-            QAction* openProcessDetailAction = contextMenu.addAction(
-                QIcon(":/Icon/process_details.svg"),
-                QStringLiteral("转到进程详细信息"));
-            openProcessDetailAction->setEnabled(hasProcessId);
-            QAction* uploadVirusTotalAction = ks::online_scan::addVirusTotalSandboxMenu(
-                &contextMenu,
-                this,
-                [this, index]() -> ks::online_scan::SandboxUploadTarget
-                {
-                    // 输入：NIDS 告警表当前行。
-                    // 处理：从 PID 列解析关联进程并查询 EXE。
-                    // 返回：待上传路径和来源说明。
-                    ks::online_scan::SandboxUploadTarget uploadTarget;
-                    const QTableWidgetItem* pidItem =
-                        (m_nidsAlertTable != nullptr && index.isValid())
-                        ? m_nidsAlertTable->item(index.row(), toNidsAlertColumn(NidsAlertTableColumn::Pid))
-                        : nullptr;
-                    std::uint32_t targetPid = 0;
-                    if (pidItem == nullptr || !ks::online_scan::tryParsePidFromText(pidItem->text(), &targetPid))
-                    {
-                        uploadTarget.errorText = QStringLiteral("当前 NIDS 告警没有可解析 PID。");
-                        return uploadTarget;
-                    }
-                    uploadTarget.filePath = QString::fromStdString(ks::process::QueryProcessPathByPid(targetPid));
-                    uploadTarget.sourceText = QStringLiteral("NIDS 告警 PID=%1").arg(targetPid);
-                    return uploadTarget;
-                });
-            QAction* selectedAction = contextMenu.exec(m_nidsAlertTable->viewport()->mapToGlobal(position));
-            if (selectedAction == nullptr)
-            {
-                return;
-            }
-
-            if (selectedAction == detailAction)
-            {
-                std::uint64_t sequenceId = 0;
-                if (nidsAlertSequenceForRow(index.row(), sequenceId))
-                {
-                    openPacketDetailWindowBySequenceId(sequenceId);
-                }
-                return;
-            }
-
-            if (selectedAction == copyRowAction)
-            {
-                QStringList rowTextList;
-                rowTextList.reserve(m_nidsAlertTable->columnCount());
-                for (int columnIndex = 0; columnIndex < m_nidsAlertTable->columnCount(); ++columnIndex)
-                {
-                    QTableWidgetItem* item = m_nidsAlertTable->item(index.row(), columnIndex);
-                    rowTextList.push_back(item == nullptr ? QString() : item->text());
-                }
-                if (QGuiApplication::clipboard() != nullptr)
-                {
-                    QGuiApplication::clipboard()->setText(rowTextList.join('\t'));
-                }
-            }
-            else if (selectedAction == openProcessDetailAction)
-            {
-                ks::ui::OpenProcessDetailByPid(processId);
-            }
-            if (selectedAction == uploadVirusTotalAction)
-            {
-                return;
-            }
-        });
+    // NIDS 告警表右键菜单说明：
+    // - 该菜单此前在这里和 initializeNidsTab() 各注册过一次，两个槽都会 QMenu::exec()；
+    // - Qt 按连接顺序依次调用槽，于是一次右键先弹“复制类”菜单，关掉后又立刻弹出“详情类”菜单，
+    //   表现为连续右键两次看到的菜单内容不一致；
+    // - 现统一由 NetworkDock.Nids.cpp 的 initializeNidsTab() 注册唯一一份合并后的菜单，此处不再注册。
 
     // 流量时间轴连接：
     // - ProcessTraceTimelineWidget 内部复用了 ETW 页的框选、拖拽和滚轮缩放工具；

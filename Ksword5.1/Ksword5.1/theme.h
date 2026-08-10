@@ -880,6 +880,10 @@ namespace KswordTheme
     inline QString TextPrimaryHex() { return QStringLiteral("palette(text)"); }
     // 次级文字必须使用专用动态文字角色；palette(mid) 是边框色，在深色背景上对比度不足。
     inline QString TextSecondaryHex() { return QStringLiteral("palette(placeholder-text)"); }
+    // OnAccentDynamicHex 作用：强调色之上的文字色，取 palette 角色而不是当场求值。
+    // applyAppearanceSettings 把 QPalette::HighlightedText 设成了 OnAccentColor()，两者取值一致；
+    // 区别是这个版本跟着主题切换走，适合写进构造期就一次性下发、之后不再重建的 QSS。
+    inline QString OnAccentDynamicHex() { return QStringLiteral("palette(highlighted-text)"); }
 
     inline QString ThemedButtonStyle()
     {

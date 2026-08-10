@@ -6,11 +6,13 @@
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QEvent>
+#include <QHash>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QScrollBar>
+#include <QSet>
 #include <QSize>
 #include <QTableView>
 #include <QTimer>
@@ -27,7 +29,18 @@ namespace
     constexpr char kFrozenPaneSourceProperty[] =
         "KSWORD_TABLE_INTERACTION_FROZEN_PANE_SOURCE";
 
-    // 冻结区最多吃掉可用尺寸的一半。没有这条上限，对着靠下的行执行冻结就会把整屏钉死，
+    /*
+     * 冻结靠 setRowHidden/setColumnHidden 把行列从主表挪走，这与"被筛选掉"在
+     * QTableView 上是同一个状态位。复制、导出、快照比对都按"可见行/可见列"取数，
+     * 若不加区分，用户特意钉住的行列反而不会进导出结果。这里把冻结集发布到
+     * 表格属性上，让取数侧只排除真正被筛掉的行列。
+     */
+    constexpr char kFrozenHiddenRowsProperty[] =
+        "KSWORD_TABLE_INTERACTION_FROZEN_HIDDEN_ROWS";
+    constexpr char kFrozenHiddenColumnsProperty[] =
+        "KSWORD_TABLE_INTERACTION_FROZEN_HIDDEN_COLUMNS";
+
+    // 冻结区最多吃掉可用尺寸的一半。没有这条上限，把大量行一次冻结就会把整屏钉死，
     // 滚动区高度归零，表格看上去彻底不动了。
     constexpr int kFrozenBandBudgetDivisor = 2;
 
@@ -35,7 +48,7 @@ namespace
     constexpr int kMirrorRowMargin = 3;
 
     // FrozenPaneTableView 作用：
-    // - 冻结窗格用的只读附属视图，与主表共享模型与选择模型；
+    // - 冻结区用的只读附属视图，与主表共享模型与选择模型；
     // - 自身不接受滚轮与滚动，一切滚动交还主表，再由控制器把窗格对齐回去。
     class FrozenPaneTableView final : public QTableView
     {
@@ -76,7 +89,7 @@ namespace
 
     private:
         // sourceScrollPoint / restoreSourceScroll 作用：
-        // - 冻结区与主表共用选择模型，点中的行往往并不在主表可视区内；
+        // - 冻结区与主表共用选择模型，点中的行在主表里是隐藏的；
         // - QAbstractItemView 在 currentChanged 里会 scrollTo(current)，不还原就会整表乱跳。
         QPoint sourceScrollPoint() const
         {
@@ -229,7 +242,15 @@ namespace ks::ui
 
     TableFrozenPaneController::~TableFrozenPaneController()
     {
-        releaseTarget();
+        // The production controller is owned by TableActionBar, which in turn is a
+        // direct child of the target table. QWidget destroys its children while the
+        // target table's most-derived C++ object is already gone, but QPointer is not
+        // cleared until QObject's destructor runs. Calling releaseTarget() here can
+        // therefore dispatch virtual table methods through a partially destroyed
+        // object. QObject already disconnects every connection owned by this
+        // controller, and the target table owns the auxiliary panes, so destruction
+        // only needs to let the guarded members tear down locally. Explicit target
+        // changes still use setTargetTable()/releaseTarget() while both objects live.
     }
 
     void TableFrozenPaneController::setTargetTable(QTableView* tableView)
@@ -240,7 +261,7 @@ namespace ks::ui
             return;
         }
 
-        // 冻结锚点是“可视序号”，换一张表之后完全没有意义，因此一并解冻。
+        // 换目标表格时先把旧表的冻结行列还原为可见，再清空状态。
         releaseTarget();
         m_targetTable = tableView;
         m_targetModel = tableView != nullptr ? tableView->model() : nullptr;
@@ -261,7 +282,7 @@ namespace ks::ui
             TableActionBarHostFor(m_targetTable.data()) != nullptr;
     }
 
-    int TableFrozenPaneController::freezeRowsThroughVisualRow(const int lastVisualRow)
+    int TableFrozenPaneController::freezeRows(const QList<int>& logicalRows)
     {
         if (!canFreeze() || m_targetTable->verticalHeader() == nullptr)
         {
@@ -269,39 +290,69 @@ namespace ks::ui
         }
 
         QTableView* tableView = m_targetTable.data();
-        const int sectionCount = tableView->verticalHeader()->count();
-        if (lastVisualRow < 0 || lastVisualRow >= sectionCount)
+        QHeaderView* header = tableView->verticalHeader();
+        QAbstractItemModel* model = tableView->model();
+        const int rowCount = model->rowCount();
+
+        QSet<int> alreadyFrozen;
+        for (const FrozenLine& line : m_frozenRowLines)
         {
-            return 0;
+            if (line.index.isValid())
+            {
+                alreadyFrozen.insert(line.index.row());
+            }
         }
 
-        int anchorVisual = topVisibleVisualRow();
-        if (anchorVisual < 0 || anchorVisual > lastVisualRow)
+        // 候选按可视顺序排序：多选不连续行时冻结区内保持屏幕上原来的相对顺序。
+        QList<QPair<int, int>> candidateList; // (可视行, 逻辑行)
+        QSet<int> seenRows;
+        for (const int logicalRow : logicalRows)
         {
-            anchorVisual = lastVisualRow;
+            if (logicalRow < 0 || logicalRow >= rowCount ||
+                seenRows.contains(logicalRow) ||
+                alreadyFrozen.contains(logicalRow) ||
+                tableView->isRowHidden(logicalRow))
+            {
+                continue;
+            }
+            seenRows.insert(logicalRow);
+            const int visualRow = header->visualIndex(logicalRow);
+            if (visualRow >= 0)
+            {
+                candidateList.push_back({ visualRow, logicalRow });
+            }
         }
-        const int endVisual = lastVisualRow + 1;
+        std::sort(candidateList.begin(), candidateList.end());
 
-        const int budget = std::max(
-            0,
-            (tableView->viewport()->height() + m_appliedFrozenHeight) / kFrozenBandBudgetDivisor);
-        while (anchorVisual < endVisual &&
-            rowsBandHeight(anchorVisual, endVisual) > budget)
+        const int budget = frozenRowsBudget();
+        int usedHeight = totalFrozenRowsHeight();
+        int addedCount = 0;
+        for (const auto& [visualRow, logicalRow] : candidateList)
         {
-            ++anchorVisual;
-        }
-        if (anchorVisual >= endVisual || rowsBandHeight(anchorVisual, endVisual) <= 0)
-        {
-            return 0;
+            const int rowHeight = header->sectionSize(logicalRow);
+            if (rowHeight <= 0)
+            {
+                continue;
+            }
+            if (usedHeight + rowHeight > budget)
+            {
+                break;
+            }
+            m_frozenRowLines.push_back(
+                { QPersistentModelIndex(model->index(logicalRow, 0)), rowHeight, logicalRow });
+            tableView->setRowHidden(logicalRow, true);
+            usedHeight += rowHeight;
+            ++addedCount;
         }
 
-        m_rowAnchorVisual = anchorVisual;
-        m_rowEndVisual = endVisual;
-        refreshGeometry();
-        return m_rowEndVisual - m_rowAnchorVisual;
+        if (addedCount > 0)
+        {
+            refreshGeometry();
+        }
+        return addedCount;
     }
 
-    int TableFrozenPaneController::freezeColumnsThroughVisualColumn(const int lastVisualColumn)
+    int TableFrozenPaneController::freezeColumns(const QList<int>& logicalColumns)
     {
         if (!canFreeze() || m_targetTable->horizontalHeader() == nullptr)
         {
@@ -309,77 +360,141 @@ namespace ks::ui
         }
 
         QTableView* tableView = m_targetTable.data();
-        const int sectionCount = tableView->horizontalHeader()->count();
-        if (lastVisualColumn < 0 || lastVisualColumn >= sectionCount)
+        QHeaderView* header = tableView->horizontalHeader();
+        QAbstractItemModel* model = tableView->model();
+        const int columnCount = model->columnCount();
+
+        QSet<int> alreadyFrozen;
+        for (const FrozenLine& line : m_frozenColumnLines)
         {
-            return 0;
+            if (line.index.isValid())
+            {
+                alreadyFrozen.insert(line.index.column());
+            }
         }
 
-        int anchorVisual = leftVisibleVisualColumn();
-        if (anchorVisual < 0 || anchorVisual > lastVisualColumn)
+        QList<QPair<int, int>> candidateList; // (可视列, 逻辑列)
+        QSet<int> seenColumns;
+        for (const int logicalColumn : logicalColumns)
         {
-            anchorVisual = lastVisualColumn;
+            if (logicalColumn < 0 || logicalColumn >= columnCount ||
+                seenColumns.contains(logicalColumn) ||
+                alreadyFrozen.contains(logicalColumn) ||
+                tableView->isColumnHidden(logicalColumn))
+            {
+                continue;
+            }
+            seenColumns.insert(logicalColumn);
+            const int visualColumn = header->visualIndex(logicalColumn);
+            if (visualColumn >= 0)
+            {
+                candidateList.push_back({ visualColumn, logicalColumn });
+            }
         }
-        const int endVisual = lastVisualColumn + 1;
+        std::sort(candidateList.begin(), candidateList.end());
 
-        const int budget = std::max(
-            0,
-            (tableView->viewport()->width() + m_appliedFrozenWidth) / kFrozenBandBudgetDivisor);
-        while (anchorVisual < endVisual &&
-            columnsBandWidth(anchorVisual, endVisual) > budget)
+        const int budget = frozenColumnsBudget();
+        int usedWidth = totalFrozenColumnsWidth();
+        int addedCount = 0;
+        for (const auto& [visualColumn, logicalColumn] : candidateList)
         {
-            ++anchorVisual;
-        }
-        if (anchorVisual >= endVisual || columnsBandWidth(anchorVisual, endVisual) <= 0)
-        {
-            return 0;
+            const int columnWidth = header->sectionSize(logicalColumn);
+            if (columnWidth <= 0)
+            {
+                continue;
+            }
+            if (usedWidth + columnWidth > budget)
+            {
+                break;
+            }
+            m_frozenColumnLines.push_back(
+                { QPersistentModelIndex(model->index(0, logicalColumn)), columnWidth, logicalColumn });
+            tableView->setColumnHidden(logicalColumn, true);
+            usedWidth += columnWidth;
+            ++addedCount;
         }
 
-        m_columnAnchorVisual = anchorVisual;
-        m_columnEndVisual = endVisual;
-        refreshGeometry();
-        return m_columnEndVisual - m_columnAnchorVisual;
+        if (addedCount > 0)
+        {
+            refreshGeometry();
+        }
+        return addedCount;
     }
 
     void TableFrozenPaneController::clearFrozenRows()
     {
-        if (m_rowEndVisual == m_rowAnchorVisual)
+        if (m_frozenRowLines.isEmpty())
         {
             return;
         }
-        m_rowAnchorVisual = 0;
-        m_rowEndVisual = 0;
+        unfreezeAllRows();
         refreshGeometry();
     }
 
     void TableFrozenPaneController::clearFrozenColumns()
     {
-        if (m_columnEndVisual == m_columnAnchorVisual)
+        if (m_frozenColumnLines.isEmpty())
         {
             return;
         }
-        m_columnAnchorVisual = 0;
-        m_columnEndVisual = 0;
+        unfreezeAllColumns();
         refreshGeometry();
     }
 
     void TableFrozenPaneController::clearFrozenPanes()
     {
-        m_rowAnchorVisual = 0;
-        m_rowEndVisual = 0;
-        m_columnAnchorVisual = 0;
-        m_columnEndVisual = 0;
+        if (m_frozenRowLines.isEmpty() && m_frozenColumnLines.isEmpty())
+        {
+            return;
+        }
+        unfreezeAllRows();
+        unfreezeAllColumns();
         refreshGeometry();
     }
 
     int TableFrozenPaneController::frozenRowCount() const
     {
-        return rowBandActive() ? m_rowEndVisual - m_rowAnchorVisual : 0;
+        return m_frozenRowLines.size();
     }
 
     int TableFrozenPaneController::frozenColumnCount() const
     {
-        return columnBandActive() ? m_columnEndVisual - m_columnAnchorVisual : 0;
+        return m_frozenColumnLines.size();
+    }
+
+    void TableFrozenPaneController::unfreezeAllRows()
+    {
+        if (!m_targetTable.isNull() && m_targetTable->model() != nullptr)
+        {
+            for (const FrozenLine& line : m_frozenRowLines)
+            {
+                if (line.index.isValid())
+                {
+                    m_targetTable->setRowHidden(line.index.row(), false);
+                }
+            }
+        }
+        m_frozenRowLines.clear();
+        publishFrozenSections();
+    }
+
+    void TableFrozenPaneController::unfreezeAllColumns()
+    {
+        if (!m_targetTable.isNull() && m_targetTable->model() != nullptr)
+        {
+            const int columnCount = m_targetTable->model()->columnCount();
+            for (const FrozenLine& line : m_frozenColumnLines)
+            {
+                // 索引失效时按 section 还原，否则「取消全部冻结」救不回被隐藏的列。
+                const int column = line.index.isValid() ? line.index.column() : line.section;
+                if (column >= 0 && column < columnCount)
+                {
+                    m_targetTable->setColumnHidden(column, false);
+                }
+            }
+        }
+        m_frozenColumnLines.clear();
+        publishFrozenSections();
     }
 
     bool TableFrozenPaneController::eventFilter(QObject* watchedObject, QEvent* eventObject)
@@ -442,13 +557,12 @@ namespace ks::ui
                 return;
             }
             m_refreshing = true;
-            applySourceScrollLimits();
             syncPanes();
             m_refreshing = false;
         };
         const auto onSectionChanged = [this]()
         {
-            if (!m_mirroringSections)
+            if (!m_mirroringSections && !m_refreshing)
             {
                 scheduleRefresh();
             }
@@ -486,6 +600,8 @@ namespace ks::ui
 
         if (!m_targetModel.isNull())
         {
+            // 行列增删和排序由 FrozenLine 里的持久索引自动平移，这里只需触发一次
+            // 延迟刷新，让 enforceFrozenState 丢弃失效项并重新校正隐藏状态。
             const auto onModelChanged = [this]() { scheduleRefresh(); };
             connect(m_targetModel, &QAbstractItemModel::modelReset, this, onModelChanged);
             connect(m_targetModel, &QAbstractItemModel::rowsInserted, this, onModelChanged);
@@ -502,11 +618,10 @@ namespace ks::ui
         {
             return;
         }
-        // 没有任何冻结时无事可做。进程表这类每秒重建模型的表格挂着大量这种信号，
+        // 没有任何冻结时无事可做。进程表这类每秒重建内容的表格挂着大量这种信号，
         // 白跑一轮虽然便宜，但没必要。
-        const bool hasBands =
-            m_rowEndVisual > m_rowAnchorVisual || m_columnEndVisual > m_columnAnchorVisual;
-        if (!hasBands &&
+        if (m_frozenRowLines.isEmpty() &&
+            m_frozenColumnLines.isEmpty() &&
             m_topPane.isNull() &&
             m_leftPane.isNull() &&
             m_cornerPane.isNull() &&
@@ -525,6 +640,8 @@ namespace ks::ui
 
     void TableFrozenPaneController::releaseTarget()
     {
+        unfreezeAllRows();
+        unfreezeAllColumns();
         destroyPanes();
         if (!m_targetTable.isNull())
         {
@@ -532,22 +649,10 @@ namespace ks::ui
             {
                 host->setFrozenPaneReservation(0, 0);
             }
-            if (QScrollBar* scrollBar = m_targetTable->verticalScrollBar())
-            {
-                scrollBar->setMinimum(0);
-            }
-            if (QScrollBar* scrollBar = m_targetTable->horizontalScrollBar())
-            {
-                scrollBar->setMinimum(0);
-            }
         }
         disconnectTarget();
         m_targetTable.clear();
         m_targetModel.clear();
-        m_rowAnchorVisual = 0;
-        m_rowEndVisual = 0;
-        m_columnAnchorVisual = 0;
-        m_columnEndVisual = 0;
         m_appliedFrozenWidth = 0;
         m_appliedFrozenHeight = 0;
     }
@@ -576,8 +681,8 @@ namespace ks::ui
 
     void TableFrozenPaneController::ensurePanes()
     {
-        const bool rowsFrozen = rowBandActive();
-        const bool columnsFrozen = columnBandActive();
+        const bool rowsFrozen = !m_frozenRowLines.isEmpty() && m_appliedFrozenHeight > 0;
+        const bool columnsFrozen = !m_frozenColumnLines.isEmpty() && m_appliedFrozenWidth > 0;
         if (!rowsFrozen && !columnsFrozen)
         {
             destroyPanes();
@@ -861,152 +966,6 @@ namespace ks::ui
         m_mirroringSections = false;
     }
 
-    void TableFrozenPaneController::clampBandsToModel()
-    {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr)
-        {
-            return;
-        }
-
-        const int rowSectionCount =
-            tableView->verticalHeader() != nullptr ? tableView->verticalHeader()->count() : 0;
-        const int columnSectionCount =
-            tableView->horizontalHeader() != nullptr ? tableView->horizontalHeader()->count() : 0;
-
-        m_rowAnchorVisual = std::clamp(m_rowAnchorVisual, 0, rowSectionCount);
-        m_rowEndVisual = std::clamp(m_rowEndVisual, 0, rowSectionCount);
-        m_columnAnchorVisual = std::clamp(m_columnAnchorVisual, 0, columnSectionCount);
-        m_columnEndVisual = std::clamp(m_columnEndVisual, 0, columnSectionCount);
-
-        // 视口被拉小或行高变大时，旧的冻结区可能已经超出预算，这里再收一次。
-        const int rowBudget = std::max(
-            0,
-            (tableView->viewport()->height() + m_appliedFrozenHeight) / kFrozenBandBudgetDivisor);
-        while (m_rowAnchorVisual < m_rowEndVisual &&
-            rowsBandHeight(m_rowAnchorVisual, m_rowEndVisual) > rowBudget)
-        {
-            ++m_rowAnchorVisual;
-        }
-        if (m_rowAnchorVisual >= m_rowEndVisual)
-        {
-            m_rowAnchorVisual = 0;
-            m_rowEndVisual = 0;
-        }
-
-        const int columnBudget = std::max(
-            0,
-            (tableView->viewport()->width() + m_appliedFrozenWidth) / kFrozenBandBudgetDivisor);
-        while (m_columnAnchorVisual < m_columnEndVisual &&
-            columnsBandWidth(m_columnAnchorVisual, m_columnEndVisual) > columnBudget)
-        {
-            ++m_columnAnchorVisual;
-        }
-        if (m_columnAnchorVisual >= m_columnEndVisual)
-        {
-            m_columnAnchorVisual = 0;
-            m_columnEndVisual = 0;
-        }
-    }
-
-    void TableFrozenPaneController::layoutPanes()
-    {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->viewport() == nullptr)
-        {
-            return;
-        }
-
-        const QRect viewportGeometry = tableView->viewport()->geometry();
-        const int frozenWidth = m_appliedFrozenWidth;
-        const int frozenHeight = m_appliedFrozenHeight;
-        const int headerHeight = headerBandHeight(tableView);
-        const int headerWidth = headerBandWidth(tableView);
-        const bool rightToLeft = tableView->isRightToLeft();
-        const int bandLeft = rightToLeft
-            ? viewportGeometry.right() + 1
-            : viewportGeometry.left() - frozenWidth;
-        const int cornerLeft = rightToLeft ? bandLeft : bandLeft - headerWidth;
-
-        if (!m_topPane.isNull())
-        {
-            mirrorColumnLayout(m_topPane.data());
-            m_topPane->setGeometry(
-                viewportGeometry.left(),
-                viewportGeometry.top() - frozenHeight,
-                viewportGeometry.width(),
-                frozenHeight);
-            m_topPane->setVisible(frozenHeight > 0 && viewportGeometry.width() > 0);
-            m_topPane->raise();
-        }
-        if (!m_leftPane.isNull())
-        {
-            mirrorColumnLayout(m_leftPane.data());
-            m_leftPane->setGeometry(
-                bandLeft,
-                viewportGeometry.top(),
-                frozenWidth,
-                viewportGeometry.height());
-            m_leftPane->setVisible(frozenWidth > 0 && viewportGeometry.height() > 0);
-            m_leftPane->raise();
-        }
-        if (!m_cornerPane.isNull())
-        {
-            mirrorColumnLayout(m_cornerPane.data());
-            m_cornerPane->setGeometry(
-                cornerLeft,
-                viewportGeometry.top() - frozenHeight - headerHeight,
-                frozenWidth + headerWidth,
-                frozenHeight + headerHeight);
-            m_cornerPane->setVisible(
-                (frozenWidth + headerWidth) > 0 && (frozenHeight + headerHeight) > 0);
-            m_cornerPane->raise();
-        }
-
-        const int bandFirstRow = firstBandLogicalRow();
-        if (bandFirstRow >= 0)
-        {
-            const int bandLastRow = lastBandLogicalRow();
-            if (!m_topPane.isNull())
-            {
-                mirrorRowLayout(m_topPane.data(), bandFirstRow, bandLastRow);
-            }
-            if (!m_cornerPane.isNull())
-            {
-                mirrorRowLayout(m_cornerPane.data(), bandFirstRow, bandLastRow);
-            }
-        }
-    }
-
-    void TableFrozenPaneController::syncPanes()
-    {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->model() == nullptr)
-        {
-            return;
-        }
-
-        const int bandFirstRow = firstBandLogicalRow();
-        const int bandFirstColumn = firstBandLogicalColumn();
-
-        if (!m_topPane.isNull())
-        {
-            setPaneVerticalToRow(m_topPane.data(), bandFirstRow);
-            setPaneHorizontalToSource(m_topPane.data());
-        }
-        if (!m_leftPane.isNull())
-        {
-            mirrorVisibleRowLayout(m_leftPane.data());
-            setPaneVerticalToSource(m_leftPane.data());
-            setPaneHorizontalToColumn(m_leftPane.data(), bandFirstColumn);
-        }
-        if (!m_cornerPane.isNull())
-        {
-            setPaneVerticalToRow(m_cornerPane.data(), bandFirstRow);
-            setPaneHorizontalToColumn(m_cornerPane.data(), bandFirstColumn);
-        }
-    }
-
     void TableFrozenPaneController::mirrorVisibleRowLayout(QTableView* pane)
     {
         QTableView* tableView = m_targetTable.data();
@@ -1041,30 +1000,270 @@ namespace ks::ui
             std::min(rowCount - 1, lastRow + kMirrorRowMargin));
     }
 
-    void TableFrozenPaneController::setPaneVerticalToRow(QTableView* pane, const int logicalRow)
+    void TableFrozenPaneController::applyFrozenRowFilter(QTableView* pane)
     {
-        if (pane == nullptr || pane->verticalHeader() == nullptr)
+        QTableView* tableView = m_targetTable.data();
+        if (pane == nullptr || tableView == nullptr || tableView->model() == nullptr)
         {
             return;
         }
-        const int position = logicalRow >= 0
-            ? std::max(0, pane->verticalHeader()->sectionPosition(logicalRow))
-            : 0;
-        setPaneScrollValue(pane->verticalScrollBar(), position);
+
+        QHash<int, int> frozenRowHeights;
+        for (const FrozenLine& line : m_frozenRowLines)
+        {
+            if (line.index.isValid())
+            {
+                frozenRowHeights.insert(line.index.row(), line.extent);
+            }
+        }
+
+        m_mirroringSections = true;
+        const int rowCount = tableView->model()->rowCount();
+        for (int row = 0; row < rowCount; ++row)
+        {
+            const auto heightIterator = frozenRowHeights.constFind(row);
+            const bool frozen = heightIterator != frozenRowHeights.cend();
+            if (pane->isRowHidden(row) == frozen)
+            {
+                pane->setRowHidden(row, !frozen);
+            }
+            if (frozen && pane->rowHeight(row) != heightIterator.value())
+            {
+                pane->setRowHeight(row, heightIterator.value());
+            }
+        }
+        m_mirroringSections = false;
     }
 
-    void TableFrozenPaneController::setPaneHorizontalToColumn(
-        QTableView* pane,
-        const int logicalColumn)
+    void TableFrozenPaneController::applyFrozenColumnFilter(QTableView* pane)
     {
-        if (pane == nullptr || pane->horizontalHeader() == nullptr)
+        QTableView* tableView = m_targetTable.data();
+        if (pane == nullptr || tableView == nullptr || tableView->model() == nullptr)
         {
             return;
         }
-        const int position = logicalColumn >= 0
-            ? std::max(0, pane->horizontalHeader()->sectionPosition(logicalColumn))
-            : 0;
-        setPaneScrollValue(pane->horizontalScrollBar(), position);
+
+        QHash<int, int> frozenColumnWidths;
+        for (const FrozenLine& line : m_frozenColumnLines)
+        {
+            if (line.index.isValid())
+            {
+                frozenColumnWidths.insert(line.index.column(), line.extent);
+            }
+        }
+
+        m_mirroringSections = true;
+        const int columnCount = tableView->model()->columnCount();
+        for (int column = 0; column < columnCount; ++column)
+        {
+            const auto widthIterator = frozenColumnWidths.constFind(column);
+            const bool frozen = widthIterator != frozenColumnWidths.cend();
+            if (pane->isColumnHidden(column) == frozen)
+            {
+                pane->setColumnHidden(column, !frozen);
+            }
+            if (frozen && pane->columnWidth(column) != widthIterator.value())
+            {
+                pane->setColumnWidth(column, widthIterator.value());
+            }
+        }
+        m_mirroringSections = false;
+    }
+
+    // enforceFrozenState 作用：
+    // - 丢弃已被模型删除的冻结项（持久索引失效）；
+    // - 业务刷新把我们隐藏的行列重新显示时，重新捕获尺寸并再次隐藏；
+    // - 视口缩小后冻结区超出预算时，从末尾开始解冻直到回到预算之内。
+    void TableFrozenPaneController::enforceFrozenState()
+    {
+        QTableView* tableView = m_targetTable.data();
+        if (tableView == nullptr || tableView->model() == nullptr)
+        {
+            m_frozenRowLines.clear();
+            m_frozenColumnLines.clear();
+            return;
+        }
+
+        for (int i = m_frozenRowLines.size() - 1; i >= 0; --i)
+        {
+            FrozenLine& line = m_frozenRowLines[i];
+            if (!line.index.isValid())
+            {
+                m_frozenRowLines.removeAt(i);
+                continue;
+            }
+            const int row = line.index.row();
+            if (!tableView->isRowHidden(row))
+            {
+                const int rowHeight = tableView->verticalHeader() != nullptr
+                    ? tableView->verticalHeader()->sectionSize(row)
+                    : 0;
+                if (rowHeight > 0)
+                {
+                    line.extent = rowHeight;
+                }
+                tableView->setRowHidden(row, true);
+            }
+        }
+        const int rowBudget = frozenRowsBudget();
+        while (!m_frozenRowLines.isEmpty() && totalFrozenRowsHeight() > rowBudget)
+        {
+            const FrozenLine line = m_frozenRowLines.takeLast();
+            if (line.index.isValid())
+            {
+                tableView->setRowHidden(line.index.row(), false);
+            }
+        }
+
+        const int columnCount = tableView->model()->columnCount();
+        const int rowCount = tableView->model()->rowCount();
+        for (int i = m_frozenColumnLines.size() - 1; i >= 0; --i)
+        {
+            FrozenLine& line = m_frozenColumnLines[i];
+            if (!line.index.isValid())
+            {
+                /*
+                 * 持久索引锚在第 0 行单元格上，业务刷新常见的 setRowCount(0) 会让它失效，
+                 * 而列的隐藏位不随 section 清除。此处若直接丢弃条目，该列就永久隐藏且
+                 * UI 再也解不开——取消冻结按钮会因计数归零而置灰。
+                 */
+                if (line.section < 0 || line.section >= columnCount)
+                {
+                    // 列本身没了：还原显示再丢弃，不留下解不开的隐藏列。
+                    if (line.section >= 0)
+                    {
+                        tableView->setColumnHidden(line.section, false);
+                    }
+                    m_frozenColumnLines.removeAt(i);
+                    continue;
+                }
+                if (rowCount <= 0)
+                {
+                    // 表格正在重填（行已清空、还没填回来）。保留冻结状态原样，
+                    // 等重填后的这一轮再把持久索引锚回去。
+                    continue;
+                }
+                line.index = QPersistentModelIndex(tableView->model()->index(0, line.section));
+                if (!line.index.isValid())
+                {
+                    tableView->setColumnHidden(line.section, false);
+                    m_frozenColumnLines.removeAt(i);
+                    continue;
+                }
+            }
+            const int column = line.index.column();
+            line.section = column;
+            if (!tableView->isColumnHidden(column))
+            {
+                const int columnWidth = tableView->horizontalHeader() != nullptr
+                    ? tableView->horizontalHeader()->sectionSize(column)
+                    : 0;
+                if (columnWidth > 0)
+                {
+                    line.extent = columnWidth;
+                }
+                tableView->setColumnHidden(column, true);
+            }
+        }
+        const int columnBudget = frozenColumnsBudget();
+        while (!m_frozenColumnLines.isEmpty() && totalFrozenColumnsWidth() > columnBudget)
+        {
+            const FrozenLine line = m_frozenColumnLines.takeLast();
+            // 持久索引可能已失效，此时只有 section 能定位到要还原的列。
+            const int column = line.index.isValid() ? line.index.column() : line.section;
+            if (column >= 0 && column < columnCount)
+            {
+                tableView->setColumnHidden(column, false);
+            }
+        }
+
+        // 冻结集在本轮可能被重锚或裁剪过，发布出去供取数侧区分冻结与筛选。
+        publishFrozenSections();
+    }
+
+    void TableFrozenPaneController::layoutPanes()
+    {
+        QTableView* tableView = m_targetTable.data();
+        if (tableView == nullptr || tableView->viewport() == nullptr)
+        {
+            return;
+        }
+
+        const QRect viewportGeometry = tableView->viewport()->geometry();
+        const int frozenWidth = m_appliedFrozenWidth;
+        const int frozenHeight = m_appliedFrozenHeight;
+        const int headerHeight = headerBandHeight(tableView);
+        const int headerWidth = headerBandWidth(tableView);
+        const bool rightToLeft = tableView->isRightToLeft();
+        const int bandLeft = rightToLeft
+            ? viewportGeometry.right() + 1
+            : viewportGeometry.left() - frozenWidth;
+        const int cornerLeft = rightToLeft ? bandLeft : bandLeft - headerWidth;
+
+        if (!m_topPane.isNull())
+        {
+            mirrorColumnLayout(m_topPane.data());
+            applyFrozenRowFilter(m_topPane.data());
+            m_topPane->setGeometry(
+                viewportGeometry.left(),
+                viewportGeometry.top() - frozenHeight,
+                viewportGeometry.width(),
+                frozenHeight);
+            m_topPane->setVisible(frozenHeight > 0 && viewportGeometry.width() > 0);
+            m_topPane->raise();
+        }
+        if (!m_leftPane.isNull())
+        {
+            applyFrozenColumnFilter(m_leftPane.data());
+            mirrorVisibleRowLayout(m_leftPane.data());
+            m_leftPane->setGeometry(
+                bandLeft,
+                viewportGeometry.top(),
+                frozenWidth,
+                viewportGeometry.height());
+            m_leftPane->setVisible(frozenWidth > 0 && viewportGeometry.height() > 0);
+            m_leftPane->raise();
+        }
+        if (!m_cornerPane.isNull())
+        {
+            applyFrozenRowFilter(m_cornerPane.data());
+            applyFrozenColumnFilter(m_cornerPane.data());
+            m_cornerPane->setGeometry(
+                cornerLeft,
+                viewportGeometry.top() - frozenHeight - headerHeight,
+                frozenWidth + headerWidth,
+                frozenHeight + headerHeight);
+            m_cornerPane->setVisible(
+                (frozenWidth + headerWidth) > 0 && (frozenHeight + headerHeight) > 0);
+            m_cornerPane->raise();
+        }
+    }
+
+    void TableFrozenPaneController::syncPanes()
+    {
+        QTableView* tableView = m_targetTable.data();
+        if (tableView == nullptr || tableView->model() == nullptr)
+        {
+            return;
+        }
+
+        if (!m_topPane.isNull())
+        {
+            // 非冻结行全部隐藏，内容顶端就是第一条冻结行，纵向锁死在 0。
+            setPaneScrollValue(m_topPane->verticalScrollBar(), 0);
+            setPaneHorizontalToSource(m_topPane.data());
+        }
+        if (!m_leftPane.isNull())
+        {
+            mirrorVisibleRowLayout(m_leftPane.data());
+            setPaneVerticalToSource(m_leftPane.data());
+            setPaneScrollValue(m_leftPane->horizontalScrollBar(), 0);
+        }
+        if (!m_cornerPane.isNull())
+        {
+            setPaneScrollValue(m_cornerPane->verticalScrollBar(), 0);
+            setPaneScrollValue(m_cornerPane->horizontalScrollBar(), 0);
+        }
     }
 
     void TableFrozenPaneController::setPaneVerticalToSource(QTableView* pane)
@@ -1117,50 +1316,6 @@ namespace ks::ui
             std::max(0, sectionPosition - tableView->columnViewportPosition(firstColumn)));
     }
 
-    void TableFrozenPaneController::applySourceScrollLimits()
-    {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->model() == nullptr)
-        {
-            return;
-        }
-
-        // Excel 语义：冻结之后滚动区只覆盖冻结区之后的行列，冻结区之前的内容在解冻前不可达。
-        // 抬高滚动条下限即可，比“滚完再纠正”稳，也不会和平滑滚动动画来回打架。
-        // 按像素滚动时滚动条数值是内容像素偏移，按整行滚动时是可视序号，两者分别取对应的边界。
-        QScrollBar* verticalScrollBar = tableView->verticalScrollBar();
-        const int scrollableRow = rowBandActive() ? firstScrollableLogicalRow() : -1;
-        int verticalMinimum = 0;
-        if (scrollableRow >= 0 && tableView->verticalHeader() != nullptr)
-        {
-            const int boundary =
-                tableView->verticalScrollMode() == QAbstractItemView::ScrollPerPixel
-                ? tableView->verticalHeader()->sectionPosition(scrollableRow)
-                : m_rowEndVisual;
-            verticalMinimum = std::clamp(boundary, 0, verticalScrollBar->maximum());
-        }
-        if (verticalScrollBar->minimum() != verticalMinimum)
-        {
-            verticalScrollBar->setMinimum(verticalMinimum);
-        }
-
-        QScrollBar* horizontalScrollBar = tableView->horizontalScrollBar();
-        const int scrollableColumn = columnBandActive() ? firstScrollableLogicalColumn() : -1;
-        int horizontalMinimum = 0;
-        if (scrollableColumn >= 0 && tableView->horizontalHeader() != nullptr)
-        {
-            const int boundary =
-                tableView->horizontalScrollMode() == QAbstractItemView::ScrollPerPixel
-                ? tableView->horizontalHeader()->sectionPosition(scrollableColumn)
-                : m_columnEndVisual;
-            horizontalMinimum = std::clamp(boundary, 0, horizontalScrollBar->maximum());
-        }
-        if (horizontalScrollBar->minimum() != horizontalMinimum)
-        {
-            horizontalScrollBar->setMinimum(horizontalMinimum);
-        }
-    }
-
     void TableFrozenPaneController::refreshGeometry()
     {
         if (m_refreshing)
@@ -1177,26 +1332,39 @@ namespace ks::ui
             return;
         }
 
+        // 未冻结时的快速通道：updatePosition 在 Resize/Show 等高频路径上会直接调进来。
+        if (m_frozenRowLines.isEmpty() &&
+            m_frozenColumnLines.isEmpty() &&
+            m_topPane.isNull() &&
+            m_leftPane.isNull() &&
+            m_cornerPane.isNull() &&
+            m_appliedFrozenWidth == 0 &&
+            m_appliedFrozenHeight == 0 &&
+            m_targetModel == m_targetTable->model())
+        {
+            return;
+        }
+
         m_refreshing = true;
 
         if (m_targetModel != m_targetTable->model())
         {
-            // 业务代码整体换掉模型后，按可视序号记录的锚点已经指向别的数据了，直接解冻。
+            // 业务代码整体换掉模型后，旧模型上的持久索引已经失效，直接解除全部冻结。
             disconnectTarget();
             destroyPanes();
-            m_rowAnchorVisual = 0;
-            m_rowEndVisual = 0;
-            m_columnAnchorVisual = 0;
-            m_columnEndVisual = 0;
+            m_frozenRowLines.clear();
+            m_frozenColumnLines.clear();
             m_targetModel = m_targetTable->model();
             connectTarget();
         }
 
-        clampBandsToModel();
+        enforceFrozenState();
 
         if (TableActionBarHost* host = TableActionBarHostFor(m_targetTable.data()))
         {
-            host->setFrozenPaneReservation(frozenColumnsWidth(), frozenRowsHeight());
+            host->setFrozenPaneReservation(
+                totalFrozenColumnsWidth(),
+                totalFrozenRowsHeight());
             const QSize reservation = host->frozenPaneReservation();
             m_appliedFrozenWidth = reservation.width();
             m_appliedFrozenHeight = reservation.height();
@@ -1204,219 +1372,138 @@ namespace ks::ui
         else
         {
             // 普通 QTableView 无法预留视口，强行叠加只会遮住数据，这里直接放弃冻结。
-            m_rowAnchorVisual = 0;
-            m_rowEndVisual = 0;
-            m_columnAnchorVisual = 0;
-            m_columnEndVisual = 0;
+            unfreezeAllRows();
+            unfreezeAllColumns();
             m_appliedFrozenWidth = 0;
             m_appliedFrozenHeight = 0;
         }
 
         ensurePanes();
         layoutPanes();
-        applySourceScrollLimits();
         syncPanes();
         m_refreshing = false;
     }
 
-    int TableFrozenPaneController::rowsBandHeight(
-        const int anchorVisual,
-        const int endVisual) const
+    int TableFrozenPaneController::totalFrozenRowsHeight() const
     {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->verticalHeader() == nullptr)
-        {
-            return 0;
-        }
-
         int height = 0;
-        const int sectionCount = tableView->verticalHeader()->count();
-        for (int visualIndex = std::max(0, anchorVisual);
-            visualIndex < std::min(endVisual, sectionCount);
-            ++visualIndex)
+        for (const FrozenLine& line : m_frozenRowLines)
         {
-            const int logicalIndex = tableView->verticalHeader()->logicalIndex(visualIndex);
-            if (logicalIndex >= 0 && !tableView->isRowHidden(logicalIndex))
+            if (line.index.isValid())
             {
-                height += tableView->rowHeight(logicalIndex);
+                height += line.extent;
             }
         }
         return height;
     }
 
-    int TableFrozenPaneController::columnsBandWidth(
-        const int anchorVisual,
-        const int endVisual) const
+    int TableFrozenPaneController::totalFrozenColumnsWidth() const
     {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->horizontalHeader() == nullptr)
-        {
-            return 0;
-        }
-
         int width = 0;
-        const int sectionCount = tableView->horizontalHeader()->count();
-        for (int visualIndex = std::max(0, anchorVisual);
-            visualIndex < std::min(endVisual, sectionCount);
-            ++visualIndex)
+        for (const FrozenLine& line : m_frozenColumnLines)
         {
-            const int logicalIndex = tableView->horizontalHeader()->logicalIndex(visualIndex);
-            if (logicalIndex >= 0 && !tableView->isColumnHidden(logicalIndex))
+            if (line.index.isValid())
             {
-                width += tableView->columnWidth(logicalIndex);
+                width += line.extent;
             }
         }
         return width;
     }
 
-    int TableFrozenPaneController::frozenRowsHeight() const
+    int TableFrozenPaneController::frozenRowsBudget() const
     {
-        return rowsBandHeight(m_rowAnchorVisual, m_rowEndVisual);
+        if (m_targetTable.isNull() || m_targetTable->viewport() == nullptr)
+        {
+            return 0;
+        }
+        return std::max(
+            0,
+            (m_targetTable->viewport()->height() + m_appliedFrozenHeight) /
+                kFrozenBandBudgetDivisor);
     }
 
-    int TableFrozenPaneController::frozenColumnsWidth() const
+    int TableFrozenPaneController::frozenColumnsBudget() const
     {
-        return columnsBandWidth(m_columnAnchorVisual, m_columnEndVisual);
+        if (m_targetTable.isNull() || m_targetTable->viewport() == nullptr)
+        {
+            return 0;
+        }
+        return std::max(
+            0,
+            (m_targetTable->viewport()->width() + m_appliedFrozenWidth) /
+                kFrozenBandBudgetDivisor);
     }
 
-    int TableFrozenPaneController::firstBandLogicalRow() const
-    {
-        return logicalRowInRange(m_rowAnchorVisual, m_rowEndVisual, true);
-    }
-
-    int TableFrozenPaneController::lastBandLogicalRow() const
-    {
-        return logicalRowInRange(m_rowAnchorVisual, m_rowEndVisual, false);
-    }
-
-    int TableFrozenPaneController::firstBandLogicalColumn() const
-    {
-        return logicalColumnInRange(m_columnAnchorVisual, m_columnEndVisual, true);
-    }
-
-    int TableFrozenPaneController::firstScrollableLogicalRow() const
+    void TableFrozenPaneController::publishFrozenSections()
     {
         QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->verticalHeader() == nullptr)
+        if (tableView == nullptr)
         {
-            return -1;
-        }
-        return logicalRowInRange(m_rowEndVisual, tableView->verticalHeader()->count(), true);
-    }
-
-    int TableFrozenPaneController::firstScrollableLogicalColumn() const
-    {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->horizontalHeader() == nullptr)
-        {
-            return -1;
-        }
-        return logicalColumnInRange(m_columnEndVisual, tableView->horizontalHeader()->count(), true);
-    }
-
-    int TableFrozenPaneController::logicalRowInRange(
-        const int anchorVisual,
-        const int endVisual,
-        const bool takeFirst) const
-    {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->verticalHeader() == nullptr)
-        {
-            return -1;
+            return;
         }
 
-        const int sectionCount = tableView->verticalHeader()->count();
-        int result = -1;
-        for (int visualIndex = std::max(0, anchorVisual);
-            visualIndex < std::min(endVisual, sectionCount);
-            ++visualIndex)
+        QVariantList frozenRows;
+        frozenRows.reserve(m_frozenRowLines.size());
+        for (const FrozenLine& line : m_frozenRowLines)
         {
-            const int logicalIndex = tableView->verticalHeader()->logicalIndex(visualIndex);
-            if (logicalIndex < 0 || tableView->isRowHidden(logicalIndex))
+            const int row = line.index.isValid() ? line.index.row() : line.section;
+            if (row >= 0)
             {
-                continue;
-            }
-            result = logicalIndex;
-            if (takeFirst)
-            {
-                break;
+                frozenRows.push_back(row);
             }
         }
-        return result;
-    }
 
-    int TableFrozenPaneController::logicalColumnInRange(
-        const int anchorVisual,
-        const int endVisual,
-        const bool takeFirst) const
-    {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->horizontalHeader() == nullptr)
+        QVariantList frozenColumns;
+        frozenColumns.reserve(m_frozenColumnLines.size());
+        for (const FrozenLine& line : m_frozenColumnLines)
         {
-            return -1;
-        }
-
-        const int sectionCount = tableView->horizontalHeader()->count();
-        int result = -1;
-        for (int visualIndex = std::max(0, anchorVisual);
-            visualIndex < std::min(endVisual, sectionCount);
-            ++visualIndex)
-        {
-            const int logicalIndex = tableView->horizontalHeader()->logicalIndex(visualIndex);
-            if (logicalIndex < 0 || tableView->isColumnHidden(logicalIndex))
+            const int column = line.index.isValid() ? line.index.column() : line.section;
+            if (column >= 0)
             {
-                continue;
-            }
-            result = logicalIndex;
-            if (takeFirst)
-            {
-                break;
+                frozenColumns.push_back(column);
             }
         }
-        return result;
+
+        tableView->setProperty(kFrozenHiddenRowsProperty, frozenRows);
+        tableView->setProperty(kFrozenHiddenColumnsProperty, frozenColumns);
     }
 
-    int TableFrozenPaneController::topVisibleVisualRow() const
+    namespace
     {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->verticalHeader() == nullptr)
+        bool sectionListContains(
+            const QTableView* tableView,
+            const char* propertyName,
+            const int section)
         {
-            return -1;
+            if (tableView == nullptr || section < 0)
+            {
+                return false;
+            }
+            const QVariant stored = tableView->property(propertyName);
+            if (!stored.isValid())
+            {
+                return false;
+            }
+            const QVariantList sectionList = stored.toList();
+            for (const QVariant& entry : sectionList)
+            {
+                bool converted = false;
+                if (entry.toInt(&converted) == section && converted)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
-
-        int logicalRow = tableView->rowAt(0);
-        if (logicalRow < 0)
-        {
-            logicalRow = logicalRowInRange(0, tableView->verticalHeader()->count(), true);
-        }
-        return logicalRow >= 0 ? tableView->verticalHeader()->visualIndex(logicalRow) : -1;
     }
 
-    int TableFrozenPaneController::leftVisibleVisualColumn() const
+    bool isRowHiddenByFreeze(const QTableView* tableView, const int row)
     {
-        QTableView* tableView = m_targetTable.data();
-        if (tableView == nullptr || tableView->horizontalHeader() == nullptr)
-        {
-            return -1;
-        }
-
-        int logicalColumn = tableView->columnAt(0);
-        if (logicalColumn < 0)
-        {
-            logicalColumn = logicalColumnInRange(0, tableView->horizontalHeader()->count(), true);
-        }
-        return logicalColumn >= 0
-            ? tableView->horizontalHeader()->visualIndex(logicalColumn)
-            : -1;
+        return sectionListContains(tableView, kFrozenHiddenRowsProperty, row);
     }
 
-    bool TableFrozenPaneController::rowBandActive() const
+    bool isColumnHiddenByFreeze(const QTableView* tableView, const int column)
     {
-        return m_rowEndVisual > m_rowAnchorVisual && frozenRowsHeight() > 0;
-    }
-
-    bool TableFrozenPaneController::columnBandActive() const
-    {
-        return m_columnEndVisual > m_columnAnchorVisual && frozenColumnsWidth() > 0;
+        return sectionListContains(tableView, kFrozenHiddenColumnsProperty, column);
     }
 }

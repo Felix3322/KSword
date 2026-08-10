@@ -237,7 +237,7 @@ void KernelDock::initializeCallbackRemovePanel()
     m_callbackRemoveContentWidget = new QWidget(m_callbackEnumPage);
     m_callbackRemoveContentWidget->setObjectName(QStringLiteral("ksCallbackRemoveEmbeddedPanel"));
     m_callbackRemoveContentWidget->setStyleSheet(QStringLiteral(
-        "#ksCallbackRemoveEmbeddedPanel{border:1px solid %1;border-radius:3px;background:%2;}")
+        "#ksCallbackRemoveEmbeddedPanel{border:1px solid %1;border-radius:3px;background:transparent;/* %2 */}")
         .arg(KswordTheme::BorderHex())
         .arg(KswordTheme::SurfaceHex()));
 

@@ -80,19 +80,19 @@ QString WinAPIDock::blueInputStyle()
         "QTableWidget{border:1px solid %2;border-radius:3px;background:transparent;background-color:transparent;color:%4;padding:2px 6px;gridline-color:%2;alternate-background-color:transparent;}"
         "QTableWidget::viewport{background:transparent;background-color:transparent;}"
         "QLineEdit:focus{border:1px solid %1;}")
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-        .arg(KswordTheme::BorderColorHex())
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex());
+        .arg(KswordTheme::PrimaryBlueHex)
+        .arg(KswordTheme::BorderHex())
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::TextPrimaryHex());
 }
 
 QString WinAPIDock::blueHeaderStyle()
 {
     return QStringLiteral(
         "QHeaderView::section{color:%1;background:transparent;/* %2 */border:1px solid %3;padding:4px;font-weight:600;}")
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::BorderColorHex());
+        .arg(KswordTheme::PrimaryBlueHex)
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::BorderHex());
 }
 
 QString WinAPIDock::buildStatusStyle(const QString& colorHex)

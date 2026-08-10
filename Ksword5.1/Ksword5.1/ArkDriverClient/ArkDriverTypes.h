@@ -648,10 +648,21 @@ namespace ksword::ark
         std::uint32_t pathLengthChars = 0;   // pathLengthChars：驱动接收的 NT 路径字符数。
     };
 
+    // FileDeleteBackend：DELETE_PATH IOCTL 的单节点执行后端。
+    // Native 保留原有底层 Zw* 方案；Irp 通过文件系统栈投递 IRP_MJ_SET_INFORMATION；
+    // Posix 强制使用 FileDispositionInformationEx 的 POSIX unlink 语义。
+    enum class FileDeleteBackend : std::uint32_t
+    {
+        Native = 0U,
+        Irp = 1U,
+        Posix = 2U
+    };
+
     // DeletePathResult 承载 R0 删除（单项或递归）的统计回执。
     // 输入：由 DriverClient::deletePathEx 填充。
     // 处理：io.ok 只表示 DeviceIoControl 成功；删除语义看 response.deleteStatus。
-    // 返回行为：unsupported=true 表示旧驱动不认识递归标志，调用方应回退到 R3 展开逐项删除。
+    // 返回行为：unsupported=true 表示驱动不认识所选递归/后端标志；仅 Native
+    // 可回退到旧版 R3 展开逐项删除，Irp/Posix 必须显式报告后端不可用。
     struct DeletePathResult
     {
         IoResult io;                                // io：底层 DeviceIoControl 状态。
@@ -869,6 +880,41 @@ namespace ksword::ark
         std::uint32_t requestedBytes = 0;       // requestedBytes：请求写入长度。
         std::uint32_t bytesWritten = 0;         // bytesWritten：实际写入长度。
         std::uint32_t maxBytesPerRequest = 0;   // maxBytesPerRequest：驱动限制。
+    };
+
+    // PhysicalMemoryReadResult 是 R0 读物理内存的 R3 模型。
+    // 物理协议不携带 processId，也没有进程查找步骤，因此不含 lookupStatus。
+    struct PhysicalMemoryReadResult
+    {
+        IoResult io;                    // io：DeviceIoControl 调用状态。
+        std::uint32_t version = 0;      // version：协议版本。
+        std::uint32_t headerSize = 0;   // headerSize：R0 自报响应头大小，仅供诊断，不用于定位 data。
+        std::uint32_t fieldFlags = 0;   // fieldFlags：KSWORD_ARK_MEMORY_FIELD_*。
+        std::uint32_t readStatus = KSWORD_ARK_MEMORY_PHYSICAL_READ_STATUS_UNAVAILABLE; // readStatus：R0 物理读聚合状态。
+        long copyStatus = 0;            // copyStatus：MmCopyMemory 的 NTSTATUS。
+        std::uint32_t source = 0;       // source：数据来源，物理读固定为 MM_COPY_PHYSICAL_MEMORY。
+        std::uint64_t requestedPhysicalAddress = 0; // requestedPhysicalAddress：请求物理地址。
+        std::uint32_t requestedBytes = 0;       // requestedBytes：请求长度。
+        std::uint32_t bytesRead = 0;            // bytesRead：R0 返回有效长度。
+        std::uint32_t maxBytesPerRequest = 0;   // maxBytesPerRequest：驱动单次读上限。
+        std::vector<std::uint8_t> data;         // data：读回物理字节，部分成功时长度可小于请求。
+    };
+
+    // PhysicalMemoryWriteResult 是 R0 受控写物理内存的 R3 模型。
+    // 物理写走 MmMapIoSpaceEx 映射再拷贝，因此比虚拟写多一个 mapStatus。
+    struct PhysicalMemoryWriteResult
+    {
+        IoResult io;                    // io：DeviceIoControl 调用状态。
+        std::uint32_t version = 0;      // version：协议版本。
+        std::uint32_t fieldFlags = 0;   // fieldFlags：KSWORD_ARK_MEMORY_FIELD_*，含 FORCE_WRITE_REQUIRED/USED。
+        std::uint32_t writeStatus = KSWORD_ARK_MEMORY_PHYSICAL_WRITE_STATUS_UNAVAILABLE; // writeStatus：R0 物理写聚合状态。
+        long mapStatus = 0;             // mapStatus：MmMapIoSpaceEx 映射阶段的 NTSTATUS。
+        long copyStatus = 0;            // copyStatus：映射后 RtlCopyMemory 阶段的 NTSTATUS。
+        std::uint32_t source = 0;       // source：写入来源，物理写固定为 MM_MAP_PHYSICAL_MEMORY。
+        std::uint64_t requestedPhysicalAddress = 0; // requestedPhysicalAddress：请求物理地址。
+        std::uint32_t requestedBytes = 0;       // requestedBytes：请求写入长度。
+        std::uint32_t bytesWritten = 0;         // bytesWritten：实际写入长度。
+        std::uint32_t maxBytesPerRequest = 0;   // maxBytesPerRequest：驱动单次写上限。
     };
 
     // Kernel executable-memory permission bits used by the R3 display model.
@@ -2682,7 +2728,8 @@ namespace ksword::ark
     // PlatformAuditResult 承载 HAL/WDF 统一审计结果。
     // 输入：queryPlatformAudit 返回，scopeMask 指定 HAL 表或 WDF 表/回调。
     // 处理：entries 保留地址、模块、结构/owner 证据和本地化 detailCode 参数。
-    // 返回行为：查询本身只读；HAL 槽编辑必须另行调用 editPlatformAuditEntry。
+    // 返回行为：查询本身只读；HAL 槽与 KMDF 绑定表槽的编辑必须另行调用
+    // editPlatformAuditEntry。
     struct PlatformAuditResult : VariableAuditResultBase
     {
         std::uint32_t scopeMask = 0;
@@ -2692,7 +2739,8 @@ namespace ksword::ark
         std::vector<KSWORD_ARK_PLATFORM_AUDIT_ENTRY> entries;
     };
 
-    // PlatformAuditControlResult 承载一个受控 HAL 函数槽 CAS 的完整证据。
+    // PlatformAuditControlResult 承载一次受控函数槽 CAS 的完整证据。
+    // responseFlags 的 ALIAS_WRITE 位表示槽位在只读节，R0 经 MDL 可写别名提交。
     struct PlatformAuditControlResult
     {
         IoResult io;

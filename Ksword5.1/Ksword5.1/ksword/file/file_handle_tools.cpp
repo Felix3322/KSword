@@ -2064,8 +2064,10 @@ namespace ks::file
         HandleUsageScanResult ScanKernelHandleTableOccupancy(
             const std::vector<TargetPathPattern>& targetPatterns,
             const std::unordered_map<std::uint32_t, std::wstring>& processNameMap,
-            const CancellationCallback& cancellationCallback)
+            const CancellationCallback& cancellationCallback,
+            bool& kernelUsableOut)
         {
+            kernelUsableOut = false;
             HandleUsageScanResult result{};
             if (targetPatterns.empty())
             {
@@ -2089,6 +2091,7 @@ namespace ks::file
             }
 
             std::unordered_set<std::uint64_t> emittedHandleKeySet;
+            std::size_t enumSucceededCount = 0;
             std::size_t enumFailedCount = 0;
             std::size_t objectQueryFailedCount = 0;
             std::size_t nonFileSkippedCount = 0;
@@ -2103,9 +2106,14 @@ namespace ks::file
                 const ksword::ark::HandleEnumResult handleResult = driverClient.enumerateProcessHandles(
                     processEntry.processId,
                     KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_ALL);
-                if (!handleResult.io.ok || handleResult.entries.empty())
+                if (!handleResult.io.ok)
                 {
                     ++enumFailedCount;
+                    continue;
+                }
+                ++enumSucceededCount;
+                if (handleResult.entries.empty())
+                {
                     continue;
                 }
                 result.totalHandleCount += handleResult.entries.size();
@@ -2168,6 +2176,9 @@ namespace ks::file
             result.fileLikeHandleCount = result.entries.size();
             result.matchedHandleCount = result.entries.size();
             result.kernelHandleMatchCount = result.entries.size();
+            // 至少一个进程的 HandleTable IOCTL 成功就说明 R0 路径可用；
+            // 该进程没有句柄或全系统没有目标命中都属于有效空结果。
+            kernelUsableOut = enumSucceededCount > 0;
             std::vector<std::wstring> diagnosticList;
             diagnosticList.push_back(L"KernelHandleTable进程:" + std::to_wstring(processResult.entries.size()));
             if (enumFailedCount > 0) { diagnosticList.push_back(L"R0枚举失败进程:" + std::to_wstring(enumFailedCount)); }
@@ -2471,22 +2482,23 @@ namespace ks::file
             kernelHandleResult = ScanKernelHandleTableOccupancy(
                 targetPatterns,
                 processNameMap,
-                options.cancellationCallback);
+                options.cancellationCallback,
+                kernelUsable);
             if (IsCancellationRequested(options.cancellationCallback))
             {
                 finishCancelledScan();
                 return result;
             }
-            kernelUsable = kernelHandleResult.diagnosticText.find(L"KernelHandleTable进程:") != std::wstring::npos;
         }
 
-        const HandleUsageScanResult fileHandleResult = kernelHandleResult.entries.empty()
-            ? ScanFileHandleOccupancyByR3(
+        const HandleUsageScanResult fileHandleResult =
+            options.tryKernelHandleTable && kernelUsable
+            ? kernelHandleResult
+            : ScanFileHandleOccupancyByR3(
                 targetPatterns,
                 processNameMap,
                 options.progressCallback,
-                options.cancellationCallback)
-            : kernelHandleResult;
+                options.cancellationCallback);
         result = fileHandleResult;
         if (IsCancellationRequested(options.cancellationCallback))
         {
@@ -2533,7 +2545,7 @@ namespace ks::file
         result.matchedHandleCount = result.entries.size();
         std::vector<std::wstring> diagnosticList;
         diagnosticList.push_back(result.diagnosticText);
-        if (options.tryKernelHandleTable && kernelHandleResult.entries.empty())
+        if (options.tryKernelHandleTable && !kernelUsable)
         {
             if (!TrimWideCopy(kernelHandleResult.diagnosticText).empty())
             {

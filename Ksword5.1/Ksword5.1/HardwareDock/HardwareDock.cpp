@@ -129,16 +129,12 @@ namespace
         pageLayout->setSpacing(6);
 
         QLabel* titleLabel = new QLabel(titleText, pageWidget);
+        // 页面口径挂在标题上，不再单独占一行：四个只读审计页共用这个工厂，省下的是四行版面。
+        titleLabel->setToolTip(hintText);
         titleLabel->setStyleSheet(
             QStringLiteral("font-size:18px;font-weight:700;color:%1;")
             .arg(KswordTheme::TextPrimaryHex()));
         pageLayout->addWidget(titleLabel, 0);
-
-        QLabel* hintLabel = new QLabel(hintText, pageWidget);
-        hintLabel->setStyleSheet(
-            QStringLiteral("font-size:13px;color:%1;")
-            .arg(KswordTheme::TextSecondaryHex()));
-        pageLayout->addWidget(hintLabel, 0);
 
         CodeEditorWidget* editor = new CodeEditorWidget(pageWidget);
         editor->setReadOnly(true);
@@ -318,9 +314,9 @@ namespace
         return QStringLiteral(
             "QLineEdit{border:1px solid %1;border-radius:4px;padding:4px 6px;color:%2;background:transparent;/* %3 */}"
             "QLineEdit:focus{border:1px solid %4;}")
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::SurfaceColorHex())
+            .arg(KswordTheme::SurfaceHex())
             .arg(KswordTheme::PrimaryBlueHex);
     }
 
@@ -400,10 +396,10 @@ namespace
             : QStringLiteral("transparent");
         const QString borderText = selected
             ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
-            : KswordTheme::BorderColorHex();
+            : KswordTheme::BorderHex();
         const QString textColor = selected
-            ? KswordTheme::OnAccentHex()
-            : KswordTheme::TextPrimaryColorHex();
+            ? KswordTheme::OnAccentDynamicHex()
+            : KswordTheme::TextPrimaryHex();
         return QStringLiteral(
             "QPushButton{min-width:24px;max-width:24px;padding:3px 0;border:1px solid %1;"
             "border-radius:0;color:%2;background:%3;font-weight:700;}"
@@ -413,7 +409,7 @@ namespace
             .arg(textColor)
             .arg(backgroundText)
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     // updateColumnPresetButtons 作用：
@@ -712,13 +708,6 @@ namespace
                 static_cast<double>(coreCount) /
                 static_cast<double>(columnCount))));
         return CpuCoreGridShape{columnCount, rowCount};
-    }
-
-    // buildStatusColor 作用：
-    // - 深浅色模式下返回统一可读的次级文本颜色。
-    QColor buildStatusColor()
-    {
-        return KswordTheme::TextSecondaryColor();
     }
 
     // formatHardwareAuditHex32 作用：
@@ -3577,7 +3566,7 @@ void HardwareDock::initializeOverviewTab()
         ks::i18n::contextText(QStringLiteral("hardware.overview.sampling"), QStringLiteral("采样中...")),
         m_overviewPage);
     m_overviewSummaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     m_overviewLayout->addWidget(m_overviewSummaryLabel, 0);
 
     m_overviewEditor = new CodeEditorWidget(m_overviewPage);
@@ -4208,7 +4197,7 @@ void HardwareDock::initializeUtilizationCpuSubTab()
         m_utilizationCpuSubPage);
     configureCompressibleLabel(m_utilizationSummaryLabel);
     m_utilizationSummaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     cpuSubLayout->addWidget(m_utilizationSummaryLabel, 0);
 
     m_coreChartScrollArea = new QScrollArea(m_utilizationCpuSubPage);
@@ -4318,7 +4307,7 @@ void HardwareDock::initializeUtilizationMemorySubTab()
         m_utilizationMemorySubPage);
     configureCompressibleLabel(m_memoryUtilSummaryLabel);
     m_memoryUtilSummaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     memorySubLayout->addWidget(m_memoryUtilSummaryLabel, 0);
 
     m_memoryCompositionHistoryWidget = new MemoryCompositionHistoryWidget(m_utilizationMemorySubPage);
@@ -4378,7 +4367,7 @@ void HardwareDock::initializeUtilizationDiskSubTab()
         m_utilizationDiskSubPage);
     configureCompressibleLabel(m_diskUtilSummaryLabel);
     m_diskUtilSummaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     diskSubLayout->addWidget(m_diskUtilSummaryLabel, 0);
 
     m_diskReadLineSeries = new QLineSeries(m_utilizationDiskSubPage);
@@ -4479,7 +4468,7 @@ void HardwareDock::initializeUtilizationNetworkSubTab()
         m_utilizationNetworkSubPage);
     configureCompressibleLabel(m_networkUtilSummaryLabel);
     m_networkUtilSummaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     networkSubLayout->addWidget(m_networkUtilSummaryLabel, 0);
 
     m_networkRxLineSeries = new QLineSeries(m_utilizationNetworkSubPage);
@@ -4595,7 +4584,7 @@ void HardwareDock::initializeUtilizationGpuSubTab()
         m_utilizationGpuSubPage);
     configureCompressibleLabel(m_gpuUtilSummaryLabel);
     m_gpuUtilSummaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     gpuSubLayout->addWidget(m_gpuUtilSummaryLabel, 0);
 
     // GPU 引擎四宫格：
@@ -4797,7 +4786,7 @@ void HardwareDock::initializeCpuTab()
 
     m_cpuDetailLabel = new QLabel(QStringLiteral("温度/电压读取中..."), m_cpuPage);
     m_cpuDetailLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     m_cpuLayout->addWidget(m_cpuDetailLabel, 0);
 
     m_cpuDetailTable = new ks::ui::VisibleTableWidget(m_cpuPage);
@@ -5174,7 +5163,7 @@ void HardwareDock::initializeCoreCharts()
             chartEntry.containerWidget);
         configureCompressibleLabel(chartEntry.titleLabel);
         chartEntry.titleLabel->setStyleSheet(
-            QStringLiteral("color:%1;font-weight:600;").arg(buildStatusColor().name()));
+            QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
         chartEntry.titleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         containerLayout->addWidget(chartEntry.titleLabel, 0);
 
@@ -5452,7 +5441,7 @@ void HardwareDock::createDiskUtilizationDevicePage(DiskUtilizationDevice* device
         devicePointer->pageWidget);
     configureCompressibleLabel(devicePointer->summaryLabel);
     devicePointer->summaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     pageLayout->addWidget(devicePointer->summaryLabel, 0);
 
     devicePointer->readLineSeries = new QLineSeries(devicePointer->pageWidget);
@@ -5554,7 +5543,7 @@ void HardwareDock::createNetworkUtilizationDevicePage(NetworkUtilizationDevice* 
         devicePointer->pageWidget);
     configureCompressibleLabel(devicePointer->summaryLabel);
     devicePointer->summaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     pageLayout->addWidget(devicePointer->summaryLabel, 0);
 
     devicePointer->rxLineSeries = new QLineSeries(devicePointer->pageWidget);
@@ -5659,7 +5648,7 @@ void HardwareDock::createGpuUtilizationDevicePage(GpuUtilizationDevice* devicePo
     devicePointer->summaryLabel = new QLabel(QStringLiteral("GPU采样初始化中..."), devicePointer->pageWidget);
     configureCompressibleLabel(devicePointer->summaryLabel);
     devicePointer->summaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(buildStatusColor().name()));
+        QStringLiteral("color:%1;font-size:14px;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
     pageLayout->addWidget(devicePointer->summaryLabel, 0);
 
     devicePointer->engineHostWidget = new QWidget(devicePointer->pageWidget);

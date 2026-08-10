@@ -1882,7 +1882,8 @@ namespace ksword::ark
         constexpr std::uint32_t knownResponseFlags =
             KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_CHANGED |
             KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TARGET_EXECUTABLE |
-            KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TABLE_REVALIDATED;
+            KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_TABLE_REVALIDATED |
+            KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_ALIAS_WRITE;
         PlatformAuditControlResult result{};
         KSWORD_ARK_CONTROL_PLATFORM_AUDIT_REQUEST request{};
         request.size = sizeof(request);
@@ -1911,6 +1912,8 @@ namespace ksword::ark
             return result;
         }
 
+        // WDF_CALLBACKS 不在此列：那些行是本驱动 .text 内的编译期地址，R0 没有
+        // 对应的可写槽，请求会被 resolve 阶段拒绝。
         const bool validScope =
             result.response.scope ==
                 KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH ||
@@ -1919,7 +1922,9 @@ namespace ksword::ark
             result.response.scope ==
                 KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI ||
             result.response.scope ==
-                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS;
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS ||
+            result.response.scope ==
+                KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_FUNCTIONS;
         const bool responseValid =
             result.io.bytesReturned == sizeof(result.response) &&
             result.response.size == sizeof(result.response) &&

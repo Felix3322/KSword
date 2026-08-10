@@ -111,6 +111,13 @@ void HexEditorWidget::initializeSelectionInspector()
 
 void HexEditorWidget::updateSelectionInspector()
 {
+    // 选区检查器是所有选区变更的统一汇聚点，因此对外广播也放在这里，
+    // 保证外部拿到通知时 selectedBytes()/selectionRange() 已经是最新状态。
+    std::uint64_t notifyStartOffset = 0;
+    std::uint64_t notifyEndOffset = 0;
+    const bool notifyHasSelection = selectionRange(notifyStartOffset, notifyEndOffset);
+    emit selectionChanged(notifyStartOffset, notifyEndOffset, notifyHasSelection);
+
     if (m_selectionSummaryLabel == nullptr ||
         m_selectionHexPreviewLabel == nullptr ||
         m_selectionAsciiPreviewLabel == nullptr ||
@@ -173,6 +180,28 @@ QByteArray HexEditorWidget::buildSelectedByteArray() const
         selectedBytes.push_back(m_buffer.at(static_cast<int>(offset)));
     }
     return selectedBytes;
+}
+
+QByteArray HexEditorWidget::selectedBytes() const
+{
+    // 直接转调既有内部实现，避免选区语义出现第二份定义。
+    return buildSelectedByteArray();
+}
+
+bool HexEditorWidget::selectionRange(
+    std::uint64_t& startOffsetOut,
+    std::uint64_t& endOffsetOut) const
+{
+    // collectSelectedOffsets 已保证升序去重，取首尾即可还原区间。
+    const std::vector<std::uint64_t> offsetList = collectSelectedOffsets();
+    if (offsetList.empty())
+    {
+        return false;
+    }
+
+    startOffsetOut = offsetList.front();
+    endOffsetOut = offsetList.back() + 1U;
+    return true;
 }
 
 QString HexEditorWidget::formatSelectionHexPreview(const QByteArray& selectedBytes) const

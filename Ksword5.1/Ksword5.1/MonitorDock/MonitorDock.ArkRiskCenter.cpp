@@ -141,12 +141,12 @@ namespace
             "QMenu::item{padding:5px 24px 5px 24px;background:transparent;}"
             "QMenu::item:selected{background:%4;color:%6;}"
             "QMenu::item:disabled{color:%5;}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::TextSecondaryColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::TextSecondaryHex())
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     void copyArkRiskTableCurrentRow(QTableWidget* table)
@@ -933,7 +933,7 @@ void MonitorDock::refreshArkRiskCenterAsync()
                             .arg(deferredStatusLines->join(QStringLiteral("；"))));
                         guardThis->m_arkRiskStatusLabel->setStyleSheet(
                             QStringLiteral("color:%1; font-weight:700;")
-                                .arg(KswordTheme::SuccessColor().name(QColor::HexRgb)));
+                                .arg(KswordTheme::TextPrimaryHex()));
                     }
                 };
                 if (ks::ui::DeferTableUiCommitIfContextMenuOpen(

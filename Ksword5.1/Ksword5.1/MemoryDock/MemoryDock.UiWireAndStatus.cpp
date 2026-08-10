@@ -160,6 +160,15 @@ void MemoryDock::initializeConnections()
         }
         });
 
+    // 下拉框上滚动滚轮会逐项连发 currentIndexChanged，每一项都直接开一轮模块枚举
+    // 会瞬间堆出几十个后台任务并把主线程淹没在回投里；这里统一做一次去抖。
+    m_processComboChangeTimer = new QTimer(this);
+    m_processComboChangeTimer->setSingleShot(true);
+    m_processComboChangeTimer->setInterval(200);
+    connect(m_processComboChangeTimer, &QTimer::timeout, this, [this]() {
+        refreshModuleListForPid(m_pendingModuleRefreshPid);
+        });
+
     connect(m_processCombo, &QComboBox::currentIndexChanged, this, [this](int indexValue) {
         // 顶部进程切换时只刷新模块预览，不自动附加。
         if (indexValue < 0)
@@ -175,7 +184,8 @@ void MemoryDock::initializeConnections()
             << ", pid="
             << pid
             << eol;
-        refreshModuleListForPid(pid);
+        m_pendingModuleRefreshPid = pid;
+        m_processComboChangeTimer->start();
         });
 
     connect(m_attachButton, &QPushButton::clicked, this, [this]() {
@@ -521,6 +531,20 @@ void MemoryDock::initializeConnections()
     connect(m_regionCommittedOnlyCheck, &QCheckBox::toggled, this, applyRegionFilter);
     connect(m_regionImageOnlyCheck, &QCheckBox::toggled, this, applyRegionFilter);
     connect(m_regionReadableOnlyCheck, &QCheckBox::toggled, this, applyRegionFilter);
+
+    // 关键字过滤只重排已有缓存，不重新枚举，输入时即时生效。
+    connect(m_regionFilterEdit, &QLineEdit::textChanged, this, [this](const QString&) {
+        applyRegionFilterAndRebuildTable();
+        });
+
+    // 手动刷新会强制重新枚举一次区域，用于目标进程刚分配完内存的场景。
+    connect(m_regionRefreshButton, &QPushButton::clicked, this, [this]() {
+        kLogEvent regionRefreshClickEvent;
+        info << regionRefreshClickEvent
+            << "[MemoryDock] 内存区域页点击刷新。"
+            << eol;
+        refreshMemoryRegionList(true);
+        });
 
     connect(m_regionTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int column) {
         Q_UNUSED(column);
@@ -1252,6 +1276,89 @@ void MemoryDock::initializeConnections()
                     QString("缓存已修改：差异块=%1，点击“应用差异到真实内存”后才会写入。")
                     .arg(diffBlocks.size()));
             }
+
+            // 改一个字节可能改变整条指令，派生视图必须跟着重算。
+            refreshDriverMemoryViewsFromSnapshot();
+        });
+
+    // 来源切换要同步调整可用控件：物理内存通道没有目标进程与模块的概念。
+    connect(m_driverMemorySourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this](int) {
+            const DriverMemorySourceMode sourceMode = currentDriverMemorySourceMode();
+            const bool physicalMode = (sourceMode == DriverMemorySourceMode::Physical);
+            if (m_driverMemoryBaseCombo != nullptr)
+            {
+                m_driverMemoryBaseCombo->setEnabled(!physicalMode);
+            }
+            if (m_driverMemoryKernelModuleRefreshButton != nullptr)
+            {
+                m_driverMemoryKernelModuleRefreshButton->setEnabled(!physicalMode);
+            }
+            if (m_driverMemoryAddressEdit != nullptr)
+            {
+                m_driverMemoryAddressEdit->setPlaceholderText(physicalMode
+                    ? QStringLiteral("物理地址，例如 0x1000；单次读上限 64 KB")
+                    : QStringLiteral("用户态有效地址/偏移，或 0xFFFF... 内核虚拟地址，或物理地址"));
+            }
+            if (m_driverMemoryStatusLabel != nullptr)
+            {
+                m_driverMemoryStatusLabel->setText(physicalMode
+                    ? QStringLiteral("已切换到物理内存通道：读上限 64 KB，写上限每块 4 KB 且没有回滚。")
+                    : (sourceMode == DriverMemorySourceMode::KernelVirtual
+                        ? QStringLiteral("已切换到内核虚拟内存通道：可用“模块名+偏移”定位内核模块。")
+                        : QStringLiteral("已切换到进程虚拟内存通道。")));
+            }
+        });
+
+    // 内核模块列表按需加载，避免每次打开页面都付出全量枚举成本。
+    connect(m_driverMemoryKernelModuleRefreshButton, &QPushButton::clicked, this, [this]() {
+        kLogEvent kernelModuleRefreshClickEvent;
+        info << kernelModuleRefreshClickEvent
+            << "[MemoryDock] 驱动内存读写页点击刷新内核模块。"
+            << eol;
+        refreshKernelModuleCacheAsync();
+        });
+
+    connect(m_driverMemoryDumpButton, &QPushButton::clicked, this, [this]() {
+        dumpDriverMemorySnapshotToFile();
+        });
+
+    connect(m_driverMemoryWriteStringButton, &QPushButton::clicked, this, [this]() {
+        writeStringIntoDriverMemoryBuffer();
+        });
+
+    // 三个分段按钮互斥，只在被选中时切换视图，避免取消选中时重复触发。
+    connect(m_driverMemoryHexViewButton, &QToolButton::toggled, this, [this](bool checked) {
+        if (checked)
+        {
+            applyDriverMemoryViewMode(DriverMemoryViewMode::Hex);
+        }
+        });
+    connect(m_driverMemoryDisasmViewButton, &QToolButton::toggled, this, [this](bool checked) {
+        if (checked)
+        {
+            applyDriverMemoryViewMode(DriverMemoryViewMode::Disassembly);
+        }
+        });
+    connect(m_driverMemoryTextViewButton, &QToolButton::toggled, this, [this](bool checked) {
+        if (checked)
+        {
+            applyDriverMemoryViewMode(DriverMemoryViewMode::Text);
+        }
+        });
+
+    connect(m_driverMemoryTextEncodingCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this](int) {
+            // 编码只影响文本视图，其它视图无需重建。
+            if (m_driverMemoryViewMode == DriverMemoryViewMode::Text)
+            {
+                rebuildDriverMemoryTextView();
+            }
+        });
+
+    connect(m_driverMemoryDisasmTable, &QTableWidget::customContextMenuRequested, this,
+        [this](const QPoint& localPosition) {
+            showDriverMemoryDisassemblyContextMenu(localPosition);
         });
 
     // ========================================================
