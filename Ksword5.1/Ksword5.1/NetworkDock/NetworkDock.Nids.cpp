@@ -130,6 +130,37 @@ namespace
             QApplication::clipboard()->setText(rowTexts.join(QChar('\n')));
         }
     }
+
+    // nidsAlertSequenceForRow：
+    // - 输入：NIDS 表格指针、目标行号和时间列索引（列枚举是 NetworkDock 的类内成员，
+    //   匿名命名空间取不到，故由调用方换算好列号传入）；
+    // - 处理：从时间列的 Qt::UserRole 取出该告警关联的报文序号；
+    // - 返回：取到非零序号时为 true，行号越界、单元格缺失或序号无效时为 false。
+    bool nidsAlertSequenceForRow(
+        QTableWidget* table,
+        const int row,
+        const int timeColumn,
+        std::uint64_t& sequenceIdOut)
+    {
+        if (table == nullptr || row < 0 || row >= table->rowCount())
+        {
+            return false;
+        }
+
+        const QTableWidgetItem* timeItem = table->item(row, timeColumn);
+        if (timeItem == nullptr)
+        {
+            return false;
+        }
+
+        const QVariant sequenceVariant = timeItem->data(Qt::UserRole);
+        if (!sequenceVariant.isValid())
+        {
+            return false;
+        }
+        sequenceIdOut = static_cast<std::uint64_t>(sequenceVariant.toULongLong());
+        return sequenceIdOut != 0;
+    }
 }
 
 void NetworkDock::initializeNidsTab()
@@ -198,8 +229,10 @@ void NetworkDock::initializeNidsTab()
     {
         // 右键菜单：
         // - 输入：用户在 NIDS 告警表中的点击位置；
-        // - 处理：定位当前行，提供单元格/当前行/多选行复制；
-        // - 返回：无，菜单只复制审计证据，不修改规则或连接。
+        // - 处理：定位当前行，提供关联报文详情，以及单元格/当前行/多选行复制；
+        // - 返回：无，菜单只查看和复制审计证据，不修改规则或连接。
+        // 唯一性说明：本表的右键菜单只在这里注册。initializeConnections() 曾重复注册过一份
+        // “详情类”菜单，两个槽各自 exec() 会让一次右键先后弹出两个内容不同的菜单。
         if (m_nidsAlertTable == nullptr)
         {
             return;
@@ -213,6 +246,18 @@ void NetworkDock::initializeNidsTab()
 
         QMenu menu(m_nidsAlertTable);
         menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+        // 关联报文详情：告警行在时间列的 UserRole 里记录了触发它的报文序号。
+        std::uint64_t relatedPacketSequenceId = 0;
+        const bool hasRelatedPacket = nidsAlertSequenceForRow(
+            m_nidsAlertTable,
+            m_nidsAlertTable->currentRow(),
+            toNidsAlertColumn(NidsAlertTableColumn::Time),
+            relatedPacketSequenceId);
+        QAction* viewPacketDetailAction = menu.addAction(
+            QIcon(QStringLiteral(":/Icon/process_details.svg")),
+            QStringLiteral("查看关联报文详情"));
+        viewPacketDetailAction->setEnabled(hasRelatedPacket);
+        menu.addSeparator();
         QAction* copyCellAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_copy.svg")), QStringLiteral("复制单元格"));
         QAction* copyRowAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), QStringLiteral("复制当前行"));
         QAction* copySelectedRowsAction = menu.addAction(QIcon(QStringLiteral(":/Icon/log_clipboard.svg")), QStringLiteral("复制选中行"));
@@ -265,7 +310,11 @@ void NetworkDock::initializeNidsTab()
         }
 
         const QAction* selectedAction = menu.exec(m_nidsAlertTable->viewport()->mapToGlobal(localPosition));
-        if (selectedAction == copyCellAction)
+        if (selectedAction == viewPacketDetailAction)
+        {
+            openPacketDetailWindowBySequenceId(relatedPacketSequenceId);
+        }
+        else if (selectedAction == copyCellAction)
         {
             const QTableWidgetItem* item = m_nidsAlertTable->item(
                 m_nidsAlertTable->currentRow(),
