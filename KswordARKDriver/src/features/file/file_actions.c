@@ -17,6 +17,7 @@ Environment:
 
 #include <ntifs.h>
 #include "ark/ark_driver.h"
+#include "ark/ark_file_irp.h"
 
 #include <ntstrsafe.h>
 
@@ -1315,8 +1316,8 @@ Return Value:
         FileBasicInformation);
 }
 
-NTSTATUS
-KswordARKDriverDeletePath(
+static NTSTATUS
+KswordARKDriverDeletePathByIrp(
     _In_reads_(pathLengthChars) PCWSTR pathText,
     _In_ USHORT pathLengthChars,
     _In_ BOOLEAN isDirectory
@@ -1325,14 +1326,157 @@ KswordARKDriverDeletePath(
 
 Routine Description:
 
-    Delete a single NT path via ZwCreateFile + FileDispositionInformation.
-    Directories must already be empty; recursive ordering is handled by R3.
+    使用现有通用 IRP 引擎投递 IRP_MJ_SET_INFORMATION /
+    FileDispositionInformation。目标固定为 RELATED 栈顶，因此 CREATE、目标请求与
+    CLEANUP/CLOSE 都经过完整文件系统栈；本后端不会回退到 ZwSetInformationFile。
+
+Arguments:
+
+    pathText/pathLengthChars - 已校验的 NT 路径。
+    isDirectory - TRUE 表示 CREATE 阶段要求目录语义。
+
+Return Value:
+
+    CREATE、目标 IRP 或收尾阶段的首个失败 NTSTATUS；全部完成时返回 STATUS_SUCCESS。
+
+--*/
+{
+    KSWORD_ARK_FILE_IRP_SUBMIT_REQUEST* request = NULL;
+    KSWORD_ARK_FILE_IRP_SUBMIT_RESPONSE* response = NULL;
+    FILE_DISPOSITION_INFORMATION dispositionInformation;
+    const SIZE_T requestBytes = KSWORD_ARK_FILE_IRP_SUBMIT_REQUEST_HEADER_SIZE;
+    const SIZE_T responseBytes = KSWORD_ARK_FILE_IRP_SUBMIT_RESPONSE_HEADER_SIZE;
+    size_t bytesWritten = 0U;
+    NTSTATUS transportStatus;
+    NTSTATUS resultStatus = STATUS_UNSUCCESSFUL;
+
+    if (pathText == NULL || pathLengthChars == 0U ||
+        pathLengthChars >= KSWORD_ARK_FILE_IRP_PATH_MAX_CHARS) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    request = (KSWORD_ARK_FILE_IRP_SUBMIT_REQUEST*)
+        KswordARKDriverFileAllocateNonPaged(requestBytes);
+    response = (KSWORD_ARK_FILE_IRP_SUBMIT_RESPONSE*)
+        KswordARKDriverFileAllocateNonPaged(responseBytes);
+    if (request == NULL || response == NULL) {
+        resultStatus = STATUS_INSUFFICIENT_RESOURCES;
+        goto Exit;
+    }
+
+    RtlZeroMemory(request, requestBytes);
+    request->version = KSWORD_ARK_FILE_IRP_PROTOCOL_VERSION;
+    request->size = KSWORD_ARK_FILE_IRP_SUBMIT_REQUEST_HEADER_SIZE;
+    request->flags =
+        KSWORD_ARK_FILE_IRP_FLAG_UI_CONFIRMED |
+        KSWORD_ARK_FILE_IRP_FLAG_OPEN_REPARSE_POINT;
+    if (isDirectory) {
+        request->flags |= KSWORD_ARK_FILE_IRP_FLAG_DIRECTORY_INTENT;
+    }
+    request->confirmationToken = KSWORD_ARK_FILE_IRP_CONFIRMATION_TOKEN;
+    request->majorFunction = IRP_MJ_SET_INFORMATION;
+    request->targetLayer = KSWORD_ARK_FILE_IRP_LAYER_RELATED;
+    request->timeoutMs = KSWORD_ARK_FILE_IRP_DEFAULT_TIMEOUT_MS;
+    request->desiredAccess = DELETE | SYNCHRONIZE | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES;
+    request->shareAccess = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    request->createDisposition = FILE_OPEN;
+    request->createOptions = isDirectory ? 0UL : FILE_NON_DIRECTORY_FILE;
+    request->fileAttributes = FILE_ATTRIBUTE_NORMAL;
+    request->informationClass = FileDispositionInformation;
+    request->inputBytes = (ULONG)sizeof(dispositionInformation);
+    request->pathLengthChars = pathLengthChars;
+    RtlCopyMemory(
+        request->path,
+        pathText,
+        (SIZE_T)pathLengthChars * sizeof(WCHAR));
+    request->path[pathLengthChars] = L'\0';
+
+    RtlZeroMemory(&dispositionInformation, sizeof(dispositionInformation));
+    dispositionInformation.DeleteFile = TRUE;
+    transportStatus = KswordARKDriverSubmitFileIrp(
+        response,
+        responseBytes,
+        request,
+        &dispositionInformation,
+        (ULONG)sizeof(dispositionInformation),
+        &bytesWritten);
+    if (!NT_SUCCESS(transportStatus)) {
+        resultStatus = transportStatus;
+        goto Exit;
+    }
+    if (bytesWritten < KSWORD_ARK_FILE_IRP_SUBMIT_RESPONSE_HEADER_SIZE) {
+        resultStatus = STATUS_INFO_LENGTH_MISMATCH;
+        goto Exit;
+    }
+    if (!NT_SUCCESS(response->createStatus)) {
+        resultStatus = response->createStatus;
+        goto Exit;
+    }
+    if ((response->stageFlags & KSWORD_ARK_FILE_IRP_STAGE_OPERATION) == 0UL) {
+        resultStatus = response->operationStatus;
+        goto Exit;
+    }
+    if (!NT_SUCCESS(response->operationStatus)) {
+        resultStatus = response->operationStatus;
+        goto Exit;
+    }
+    if ((response->stageFlags & KSWORD_ARK_FILE_IRP_STAGE_CLEANUP) != 0UL &&
+        !NT_SUCCESS(response->cleanupStatus)) {
+        resultStatus = response->cleanupStatus;
+        goto Exit;
+    }
+    if ((response->stageFlags & KSWORD_ARK_FILE_IRP_STAGE_CLOSE) != 0UL &&
+        !NT_SUCCESS(response->closeStatus)) {
+        resultStatus = response->closeStatus;
+        goto Exit;
+    }
+
+    resultStatus = STATUS_SUCCESS;
+
+Exit:
+    if (response != NULL) {
+        ExFreePoolWithTag(response, 'fOsK');
+    }
+    if (request != NULL) {
+        ExFreePoolWithTag(request, 'fOsK');
+    }
+    return resultStatus;
+}
+
+NTSTATUS
+KswordARKDriverDeletePath(
+    _In_reads_(pathLengthChars) PCWSTR pathText,
+    _In_ USHORT pathLengthChars,
+    _In_ BOOLEAN isDirectory
+    )
+{
+    return KswordARKDriverDeletePathWithFlags(
+        pathText,
+        pathLengthChars,
+        isDirectory,
+        0UL);
+}
+
+NTSTATUS
+KswordARKDriverDeletePathWithFlags(
+    _In_reads_(pathLengthChars) PCWSTR pathText,
+    _In_ USHORT pathLengthChars,
+    _In_ BOOLEAN isDirectory,
+    _In_ ULONG deleteFlags
+    )
+/*++
+
+Routine Description:
+
+    按 deleteFlags 选择底层 Zw*、自建 IRP 或 POSIX unlink 后端删除单一 NT 路径。
+    目录必须已为空；递归后序调度由 file_delete_recursive.c 统一处理。
 
 Arguments:
 
     pathText - Target NT path, for example \??\C:\Temp\a.txt.
     pathLengthChars - Character length excluding trailing null.
     isDirectory - TRUE when target should be opened as directory.
+    deleteFlags - KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK 中的互斥后端标志。
 
 Return Value:
 
@@ -1352,6 +1496,15 @@ Return Value:
 
     if (pathText == NULL || pathLengthChars == 0U) {
         return STATUS_INVALID_PARAMETER;
+    }
+    if ((deleteFlags & (~KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK)) != 0UL ||
+        (deleteFlags & KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK) ==
+            KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if ((deleteFlags & KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_IRP) != 0UL) {
+        return KswordARKDriverDeletePathByIrp(pathText, pathLengthChars, isDirectory);
     }
 
     RtlInitUnicodeString(&targetPath, pathText);
@@ -1397,6 +1550,22 @@ Return Value:
 
     status = KswordARKDriverNormalizeReadOnlyAttribute(fileHandle);
     if (!NT_SUCCESS(status) && status != STATUS_INVALID_PARAMETER) {
+        ZwClose(fileHandle);
+        return status;
+    }
+
+    if ((deleteFlags & KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_POSIX) != 0UL) {
+        status = KswordARKDriverDeleteFileWithDispositionEx(fileHandle);
+        if (!NT_SUCCESS(status) &&
+            (status == STATUS_CANNOT_DELETE || status == STATUS_USER_MAPPED_FILE)) {
+            const NTSTATUS flushStatus = KswordARKDriverFlushImageSectionForDelete(fileHandle);
+            if (NT_SUCCESS(flushStatus)) {
+                status = KswordARKDriverDeleteFileWithDispositionEx(fileHandle);
+            }
+            else if (status == STATUS_CANNOT_DELETE) {
+                status = flushStatus;
+            }
+        }
         ZwClose(fileHandle);
         return status;
     }

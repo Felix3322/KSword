@@ -55,7 +55,9 @@ enum class FileDeleteMode
     PermanentR3,    // R3 当前权限，递归永久删除，不进回收站。
     ForceR3,        // R3 提权：清属性 + 接管所有权 + 授权完全控制后递归永久删除。
     PendingReboot,  // R3 提权：登记 PendingFileRenameOperations，下次重启时删除。
-    DriverR0        // R0 驱动：目录树在内核后序展开删除，绕过 R3 枚举与 ACL 限制。
+    DriverR0Native, // R0 驱动：底层 Zw* 方案，保留现有兼容回退。
+    DriverR0Irp,    // R0 驱动：IRP_MJ_SET_INFORMATION 穿过完整文件系统栈。
+    DriverR0Posix   // R0 驱动：FileDispositionInformationEx POSIX unlink 语义。
 };
 
 // ============================================================
@@ -218,6 +220,12 @@ private:
     //   同时对写语义与 PnP/电源类请求打开对应确认开关的要求；
     // - 返回：无返回值。
     void applyIrpMajorPreset(int majorFunction);
+
+    // applyIrpOperationPreset：
+    // - 输入：常用操作预设 ID；
+    // - 处理：一次性填充 Major、InformationClass、访问权、输入缓冲和目录标志；
+    // - 说明：只填参数不发送，写操作仍要求用户显式确认。
+    void applyIrpOperationPreset(int presetId);
 
     // submitConstructedIrp：
     // - 作用：收集页面参数，在后台线程提交一次 R0 自建 IRP，并回填结果；
@@ -583,6 +591,7 @@ private:
     // IRP 参数普遍以十六进制常量形式出现在 WDK 文档里，强制十进制输入会让
     // 用户在每次填 CreateOptions/IoControlCode 时都要手工换算。
     QLineEdit* m_irpPathEdit = nullptr;             // 目标 NT/Win32 路径。
+    QComboBox* m_irpOperationPresetCombo = nullptr; // 常用操作预设；只填参数、不自动发送。
     QComboBox* m_irpMajorCombo = nullptr;           // IRP_MJ_* 选择。
     QLineEdit* m_irpMinorEdit = nullptr;            // IRP_MN_* 数值。
     QComboBox* m_irpLayerCombo = nullptr;           // 目标栈层。

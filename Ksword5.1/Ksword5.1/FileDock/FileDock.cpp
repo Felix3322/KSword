@@ -2926,7 +2926,7 @@ namespace
 
     // ============================================================
     // 多权限递归删除（issue #155）
-    // - 五个档位共用同一套“后序展开 + 逐项删除”的语义，差别只在权限手段；
+    // - 七个档位共用同一套“后序展开 + 逐项删除”的语义，差别只在权限/后端手段；
     // - R0 档优先让驱动在内核内部展开，避免 R3 枚举被目录 DACL 拒绝。
     // ============================================================
 
@@ -3324,9 +3324,11 @@ namespace
 
     // runDriverDeleteBatch：R0 档执行体。
     // - 目录优先交给驱动在内核内递归展开，这样目录 DACL 拒绝列举也能删干净；
-    // - 旧驱动拒绝递归标志时回退到 R3 展开逐项删除，并在统计里标记降级。
+    // - 仅底层方案可在旧驱动拒绝递归标志时回退 R3 展开；IRP/POSIX 必须安全失败，
+    //   避免用户选中的后端被静默替换。
     FileDeleteBatchStats runDriverDeleteBatch(
         const std::vector<QString>& paths,
+        const ksword::ark::FileDeleteBackend backend,
         const std::function<void(float)>& progressCallback)
     {
         FileDeleteBatchStats stats;
@@ -3367,12 +3369,28 @@ namespace
                     driverNtPath.toStdWString(),
                     isDirectory,
                     wantRecursive,
-                    true);
+                    true,
+                    backend);
 
                 if (driverResult.unsupported)
                 {
-                    stats.driverRecursionUnsupported = true;
-                    deleteTreeByDriverPerNode(driverHandle, path, stats);
+                    if (backend == ksword::ark::FileDeleteBackend::Native)
+                    {
+                        stats.driverRecursionUnsupported = true;
+                        deleteTreeByDriverPerNode(driverHandle, path, stats);
+                    }
+                    else
+                    {
+                        stats.failedCount += 1U;
+                        const QString backendText =
+                            backend == ksword::ark::FileDeleteBackend::Irp
+                                ? QStringLiteral("IRP")
+                                : QStringLiteral("POSIX");
+                        stats.errors.push_back(QStringLiteral(
+                            "当前 KswordARK 驱动不支持 R0 %1 删除后端，请重新部署本次构建的驱动：%2")
+                            .arg(backendText)
+                            .arg(QDir::toNativeSeparators(path)));
+                    }
                 }
                 else if (!driverResult.io.ok)
                 {
@@ -3434,9 +3452,26 @@ namespace
             return stats;
         }
 
-        if (mode == FileDeleteMode::DriverR0)
+        if (mode == FileDeleteMode::DriverR0Native)
         {
-            return runDriverDeleteBatch(paths, progressCallback);
+            return runDriverDeleteBatch(
+                paths,
+                ksword::ark::FileDeleteBackend::Native,
+                progressCallback);
+        }
+        if (mode == FileDeleteMode::DriverR0Irp)
+        {
+            return runDriverDeleteBatch(
+                paths,
+                ksword::ark::FileDeleteBackend::Irp,
+                progressCallback);
+        }
+        if (mode == FileDeleteMode::DriverR0Posix)
+        {
+            return runDriverDeleteBatch(
+                paths,
+                ksword::ark::FileDeleteBackend::Posix,
+                progressCallback);
         }
 
         if (mode == FileDeleteMode::RecycleBin)
@@ -12414,10 +12449,23 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
         QIcon(":/Icon/process_resume.svg"), QStringLiteral("重启后删除（R3·启动时执行）"));
     pendingRebootDeleteAction->setToolTip(
         QStringLiteral("登记 PendingFileRenameOperations，由系统在下次重启早期删除；适合正被占用的目标，需要管理员权限。"));
-    QAction* driverDeleteAction = deleteModeMenu->addAction(
-        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动递归删除（R0·内核）"));
-    driverDeleteAction->setToolTip(
-        QStringLiteral("由 R0 驱动在内核展开目录树后序删除，目录拒绝列举时也能删干净；需要已启用 KswordARK 驱动。"));
+    // R0 作为顶层快捷入口，避免强制用户再穿过“删除方式”子菜单；三个动作仍共用
+    // 统一的不可逆确认、后台递归和统计链路。
+    QMenu* r0DeleteMenu = menu.addMenu(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("R0"));
+    r0DeleteMenu->setToolTipsVisible(true);
+    QAction* driverNativeDeleteAction = r0DeleteMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动（底层方案）"));
+    driverNativeDeleteAction->setToolTip(QStringLiteral(
+        "由 R0 用 ZwCreateFile/ZwSetInformationFile 删除；失败时保留现有的 DispositionEx 兼容重试。"));
+    QAction* driverIrpDeleteAction = r0DeleteMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动(IRP)"));
+    driverIrpDeleteAction->setToolTip(QStringLiteral(
+        "由 R0 构造 IRP_MJ_SET_INFORMATION/FileDispositionInformation 并投递完整文件系统栈；不回退到底层方案。"));
+    QAction* driverPosixDeleteAction = r0DeleteMenu->addAction(
+        QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动(POSIX)"));
+    driverPosixDeleteAction->setToolTip(QStringLiteral(
+        "由 R0 使用 FileDispositionInformationEx 的 POSIX unlink 语义；是否可用取决于系统与文件系统，不回退到其它后端。"));
     QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("文件解锁器(R3/R0)"));
     QMenu* addOplockMenu = menu.addMenu(QIcon(":/Icon/plus.svg"), QStringLiteral("添加 Oplock（访问计数）"));
     QAction* addOplockLevel1Action = addOplockMenu->addAction(QStringLiteral("Level 1 - 独占读写缓存，别人访问会计数"));
@@ -12502,7 +12550,10 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
     permanentDeleteAction->setEnabled(hasSelection);
     forceDeleteAction->setEnabled(hasSelection);
     pendingRebootDeleteAction->setEnabled(hasSelection);
-    driverDeleteAction->setEnabled(hasSelection);
+    r0DeleteMenu->setEnabled(hasSelection);
+    driverNativeDeleteAction->setEnabled(hasSelection);
+    driverIrpDeleteAction->setEnabled(hasSelection);
+    driverPosixDeleteAction->setEnabled(hasSelection);
     unlockByDriverAction->setEnabled(isSingleSelection);
     const bool canAddOplock = singleFileOnly && !firstPathHasOplock;
     addOplockMenu->setEnabled(canAddOplock);
@@ -12658,9 +12709,19 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
         deleteSelectedItemsWithMode(panel, FileDeleteMode::PendingReboot);
         return;
     }
-    if (selectedAction == driverDeleteAction)
+    if (selectedAction == driverNativeDeleteAction)
     {
         deleteSelectedItemByDriver(panel);
+        return;
+    }
+    if (selectedAction == driverIrpDeleteAction)
+    {
+        deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0Irp);
+        return;
+    }
+    if (selectedAction == driverPosixDeleteAction)
+    {
+        deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0Posix);
         return;
     }
     if (selectedAction == unlockByDriverAction)
@@ -13665,7 +13726,7 @@ void FileDock::deleteSelectedItem(FilePanelWidgets& panel)
 
 void FileDock::deleteSelectedItemByDriver(FilePanelWidgets& panel)
 {
-    deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0);
+    deleteSelectedItemsWithMode(panel, FileDeleteMode::DriverR0Native);
 }
 
 void FileDock::deleteSelectedItemsWithMode(FilePanelWidgets& panel, const FileDeleteMode mode)
@@ -13727,16 +13788,29 @@ void FileDock::deleteSelectedItemsWithMode(FilePanelWidgets& panel, const FileDe
             "删除结果要等重启后才能确认。是否继续？")
             .arg(paths.size());
         break;
-    case FileDeleteMode::DriverR0:
-    default:
-        modeNameText = QStringLiteral("驱动递归删除(R0)");
-        confirmTitleText = QStringLiteral("驱动删除确认");
+    case FileDeleteMode::DriverR0Native:
+        modeNameText = QStringLiteral("R0 驱动（底层方案）");
+        confirmTitleText = QStringLiteral("R0 底层删除确认");
         confirmBodyText = QStringLiteral(
-            "将通过 KswordARK 驱动在内核直接硬删除选中的 %1 项，不进入回收站、无法还原。\n\n"
-            "目录树由 R0 递归展开后序删除，因此目录拒绝列举时也能删干净；"
-            "符号链接/联接点只删除链接本身。是否继续？")
+            "将通过 KswordARK 驱动的底层 Zw* 方案硬删除选中的 %1 项，不进入回收站、无法还原。\n\n目录树由 R0 递归展开后序删除，因此目录拒绝列举时也能删干净；失败时会执行现有 DispositionEx 兼容重试。符号链接/联接点只删除链接本身。是否继续？")
             .arg(paths.size());
         break;
+    case FileDeleteMode::DriverR0Irp:
+        modeNameText = QStringLiteral("R0 驱动(IRP)");
+        confirmTitleText = QStringLiteral("R0 IRP 删除确认");
+        confirmBodyText = QStringLiteral(
+            "将由 KswordARK 驱动构造 IRP_MJ_SET_INFORMATION / FileDispositionInformation，通过完整文件系统栈硬删除选中的 %1 项，不进入回收站、无法还原。\n\n目录树仍由 R0 后序递归展开；此模式不会回退到底层方案。符号链接/联接点只删除链接本身。是否继续？")
+            .arg(paths.size());
+        break;
+    case FileDeleteMode::DriverR0Posix:
+        modeNameText = QStringLiteral("R0 驱动(POSIX)");
+        confirmTitleText = QStringLiteral("R0 POSIX 删除确认");
+        confirmBodyText = QStringLiteral(
+            "将由 KswordARK 驱动使用 FileDispositionInformationEx 的 POSIX unlink 语义，硬删除选中的 %1 项，不进入回收站、无法还原。\n\n目录树仍由 R0 后序递归展开；支持情况取决于 Windows 版本与文件系统，失败时不会回退到 IRP 或底层方案。是否继续？")
+            .arg(paths.size());
+        break;
+    default:
+        return;
     }
 
     {

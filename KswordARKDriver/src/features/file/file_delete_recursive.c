@@ -62,6 +62,7 @@ typedef struct _KSWORD_ARK_DELETE_TREE_CONTEXT
     ULONG FrameCount;
     PUCHAR BatchPool;
     KSWORD_ARK_DELETE_PATH_RESPONSE* Response;
+    ULONG DeleteFlags;
     BOOLEAN ContinueOnError;
     BOOLEAN Aborted;
 } KSWORD_ARK_DELETE_TREE_CONTEXT, *PKSWORD_ARK_DELETE_TREE_CONTEXT;
@@ -180,6 +181,7 @@ static NTSTATUS
 KswordARKDeleteTreePrepareContext(
     _Inout_ PKSWORD_ARK_DELETE_TREE_CONTEXT Context,
     _In_ KSWORD_ARK_DELETE_PATH_RESPONSE* Response,
+    _In_ ULONG DeleteFlags,
     _In_ BOOLEAN ContinueOnError
     )
 /*++
@@ -192,6 +194,7 @@ Arguments:
 
     Context - 待初始化的递归上下文。
     Response - 统计回执，由调用方持有。
+    DeleteFlags - 要传给单节点删除器的 BACKEND_* 标志。
     ContinueOnError - TRUE 表示单点失败后继续处理同级其余项。
 
 Return Value:
@@ -209,6 +212,7 @@ Return Value:
 
     RtlZeroMemory(Context, sizeof(*Context));
     Context->Response = Response;
+    Context->DeleteFlags = DeleteFlags;
     Context->ContinueOnError = ContinueOnError;
 
     Context->PathBuffer = (PWCHAR)KswordARKDeleteTreeAllocate(pathBytes);
@@ -318,10 +322,11 @@ Return Value:
     }
 
     Context->PathBuffer[PathLengthChars] = L'\0';
-    status = KswordARKDriverDeletePath(
+    status = KswordARKDriverDeletePathWithFlags(
         Context->PathBuffer,
         (USHORT)PathLengthChars,
-        IsDirectory);
+        IsDirectory,
+        Context->DeleteFlags);
     if (!NT_SUCCESS(status)) {
         KswordARKDeleteTreeRecordFailure(Context, PathLengthChars, status);
         return FALSE;
@@ -980,7 +985,11 @@ Return Value:
     continueOnError =
         ((Request->flags & KSWORD_ARK_DELETE_PATH_FLAG_CONTINUE_ON_ERROR) != 0UL) ? TRUE : FALSE;
 
-    status = KswordARKDeleteTreePrepareContext(&context, Response, continueOnError);
+    status = KswordARKDeleteTreePrepareContext(
+        &context,
+        Response,
+        Request->flags & KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK,
+        continueOnError);
     if (!NT_SUCCESS(status)) {
         return status;
     }

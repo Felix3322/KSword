@@ -13,6 +13,25 @@ KswordARKDriverDeletePath(
     );
 
 /*
+ * KswordARKDriverDeletePathWithFlags
+ * Inputs:
+ * - deleteFlags 只接收 KSWORD_ARK_DELETE_PATH_FLAG_BACKEND_MASK；未设置表示
+ *   原有底层 Zw* 方案，BACKEND_IRP/POSIX 显式选择对应实现。
+ * Processing:
+ * - 三个后端共用路径校验与递归调度边界；底层/POSIX 共用只读属性归一化，
+ *   IRP 后端保留目标文件系统对传统 FileDispositionInformation 的原生判定。
+ * Return behavior:
+ * - 返回所选后端的 NTSTATUS；不支持的文件系统/系统能力原样失败，不跨后端降级。
+ */
+NTSTATUS
+KswordARKDriverDeletePathWithFlags(
+    _In_reads_(pathLengthChars) PCWSTR pathText,
+    _In_ USHORT pathLengthChars,
+    _In_ BOOLEAN isDirectory,
+    _In_ ULONG deleteFlags
+    );
+
+/*
  * KswordARKDriverDeletePathTree
  * Inputs:
  * - Request 为已快照并校验过的删除请求，Response 为已填好 size/version 的回执。

@@ -31,6 +31,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
@@ -41,6 +42,26 @@
 
 namespace
 {
+    // IrpOperationPresetId：把常见文件动作映射为一组可审阅的 IRP 参数。
+    // 预设只填充界面，不直接执行；写语义的确认复选框仍由用户亲自勾选。
+    enum IrpOperationPresetId
+    {
+        IrpPresetCustom = 0,
+        IrpPresetQueryAllInformation,
+        IrpPresetRead,
+        IrpPresetWrite,
+        IrpPresetFlush,
+        IrpPresetCreateFile,
+        IrpPresetCreateDirectory,
+        IrpPresetEnumerateDirectory,
+        IrpPresetDeleteLegacy,
+        IrpPresetDeletePosix,
+        IrpPresetTruncateZero,
+        IrpPresetSetNormalAttributes,
+        IrpPresetQueryVolume,
+        IrpPresetQuerySecurity
+    };
+
     // kIrpMajorNames 作用：
     // - 提供全部 28 个 IRP_MJ_* 的规范名称，索引即 major 数值；
     // - 名称与 WDK 定义逐一对应，便于把界面选项直接对照文档。
@@ -82,6 +103,7 @@ namespace
     {
         switch (majorFunction)
         {
+        case 0:   // IRP_MJ_CREATE（FILE_CREATE/OPEN_IF 等可能创建或覆盖目标）
         case 1:   // IRP_MJ_CREATE_NAMED_PIPE
         case 4:   // IRP_MJ_WRITE
         case 6:   // IRP_MJ_SET_INFORMATION
@@ -395,6 +417,25 @@ void FileDock::initializeIrpBuilderPage()
     m_irpPathEdit->setToolTip(QStringLiteral(
         "Win32 路径会自动转换为 \\??\\ 命名空间路径；也可直接填 NT 路径。"));
 
+    m_irpOperationPresetCombo = new QComboBox(targetGroup);
+    m_irpOperationPresetCombo->setStyleSheet(inputStyle);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("自定义（手工参数）"), IrpPresetCustom);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("查询文件全部信息"), IrpPresetQueryAllInformation);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("读取文件"), IrpPresetRead);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("写入文件（填写下方十六进制数据）"), IrpPresetWrite);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("刷新文件缓冲"), IrpPresetFlush);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("创建空文件"), IrpPresetCreateFile);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("创建目录"), IrpPresetCreateDirectory);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("枚举目录"), IrpPresetEnumerateDirectory);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("删除（FileDispositionInformation）"), IrpPresetDeleteLegacy);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("删除（POSIX / FileDispositionInformationEx）"), IrpPresetDeletePosix);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("截断为 0 字节"), IrpPresetTruncateZero);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("设置基本属性为 NORMAL"), IrpPresetSetNormalAttributes);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("查询卷属性"), IrpPresetQueryVolume);
+    m_irpOperationPresetCombo->addItem(QStringLiteral("查询安全描述符"), IrpPresetQuerySecurity);
+    m_irpOperationPresetCombo->setToolTip(QStringLiteral(
+        "选择常用操作后自动填写 Major、访问权、InformationClass 与输入结构。预设只填参数、不自动发送；写操作仍需显式勾选确认。"));
+
     QPushButton* browseButton = new QPushButton(
         QStringLiteral("浏览..."),
         targetGroup);
@@ -447,6 +488,9 @@ void FileDock::initializeIrpBuilderPage()
         "等待完成的毫秒数，上限 60000；超时后 R0 会取消 IRP 并等待其排空。"));
 
     int targetRow = 0;
+    targetLayout->addWidget(new QLabel(QStringLiteral("常用操作:"), targetGroup), targetRow, 0);
+    targetLayout->addWidget(m_irpOperationPresetCombo, targetRow, 1, 1, 5);
+    ++targetRow;
     targetLayout->addWidget(new QLabel(QStringLiteral("目标路径:"), targetGroup), targetRow, 0);
     targetLayout->addWidget(m_irpPathEdit, targetRow, 1, 1, 4);
     targetLayout->addWidget(browseButton, targetRow, 5);
@@ -674,14 +718,194 @@ void FileDock::initializeIrpBuilderPage()
             m_irpPathEdit->setText(QDir::toNativeSeparators(selectedPath));
         }
     });
+    connect(m_irpOperationPresetCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        applyIrpOperationPreset(m_irpOperationPresetCombo->currentData().toInt());
+    });
     connect(m_irpMajorCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         applyIrpMajorPreset(m_irpMajorCombo->currentData().toInt());
+        if (m_irpOperationPresetCombo != nullptr &&
+            m_irpOperationPresetCombo->currentData().toInt() != IrpPresetCustom)
+        {
+            const QSignalBlocker blocker(m_irpOperationPresetCombo);
+            m_irpOperationPresetCombo->setCurrentIndex(0);
+        }
     });
     connect(m_irpSendButton, &QPushButton::clicked, this, [this]() {
         submitConstructedIrp();
     });
 
     applyIrpMajorPreset(0);
+}
+
+void FileDock::applyIrpOperationPreset(const int presetId)
+{
+    // “自定义”只解除预设标记，不清空用户当前正在编辑的参数。
+    if (presetId == IrpPresetCustom || m_irpMajorCombo == nullptr)
+    {
+        return;
+    }
+
+    const auto setEditText = [](QLineEdit* edit, const QString& text) {
+        if (edit != nullptr)
+        {
+            edit->setText(text);
+        }
+    };
+    const auto selectMajor = [this](const int majorFunction) {
+        const QSignalBlocker blocker(m_irpMajorCombo);
+        const int comboIndex = m_irpMajorCombo->findData(majorFunction);
+        if (comboIndex >= 0)
+        {
+            m_irpMajorCombo->setCurrentIndex(comboIndex);
+        }
+        applyIrpMajorPreset(majorFunction);
+    };
+
+    // 先恢复一套保守、可审阅的 CREATE 基线，再按具体动作覆盖。所有预设固定从
+    // RELATED 栈顶进入；用户仍可在填参后主动改成 BASE_FS/VPB/DEVICE 做差异实验。
+    setEditText(m_irpMinorEdit, QStringLiteral("0"));
+    setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100080"));
+    setEditText(m_irpShareAccessEdit, QStringLiteral("0x00000007"));
+    setEditText(m_irpCreateDispositionEdit, QStringLiteral("1"));
+    setEditText(m_irpCreateOptionsEdit, QStringLiteral("0x00000040"));
+    setEditText(m_irpFileAttributesEdit, QStringLiteral("0x00000080"));
+    setEditText(m_irpInformationClassEdit, QStringLiteral("0"));
+    setEditText(m_irpControlCodeEdit, QStringLiteral("0"));
+    setEditText(m_irpSecurityInformationEdit, QStringLiteral("0"));
+    setEditText(m_irpByteOffsetEdit, QStringLiteral("0"));
+    setEditText(m_irpLockKeyEdit, QStringLiteral("0"));
+    setEditText(m_irpLockLengthEdit, QStringLiteral("0"));
+    setEditText(m_irpOutputBytesEdit, QStringLiteral("0"));
+    setEditText(m_irpTimeoutEdit, QStringLiteral("10000"));
+    setEditText(m_irpPatternEdit, QString());
+    if (m_irpInputHexEdit != nullptr)
+    {
+        m_irpInputHexEdit->clear();
+    }
+    if (m_irpLayerCombo != nullptr)
+    {
+        const int relatedIndex = m_irpLayerCombo->findData(
+            static_cast<unsigned int>(KSWORD_ARK_FILE_IRP_LAYER_RELATED));
+        if (relatedIndex >= 0)
+        {
+            m_irpLayerCombo->setCurrentIndex(relatedIndex);
+        }
+    }
+    m_irpConfirmCheck->setChecked(false);
+    m_irpAllowDangerousCheck->setChecked(false);
+    m_irpCreateOnlyCheck->setChecked(false);
+    m_irpRestartScanCheck->setChecked(false);
+    m_irpSingleEntryCheck->setChecked(false);
+    m_irpReparseCheck->setChecked(true);
+    m_irpDirectoryIntentCheck->setChecked(false);
+
+    QString presetHintText;
+    switch (presetId)
+    {
+    case IrpPresetQueryAllInformation:
+        selectMajor(5); // IRP_MJ_QUERY_INFORMATION
+        setEditText(m_irpInformationClassEdit, QStringLiteral("18")); // FileAllInformation
+        setEditText(m_irpOutputBytesEdit, QStringLiteral("4096"));
+        presetHintText = QStringLiteral("已填入查询 FileAllInformation 的安全栈顶预设。");
+        break;
+    case IrpPresetRead:
+        selectMajor(3); // IRP_MJ_READ
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100001"));
+        setEditText(m_irpOutputBytesEdit, QStringLiteral("4096"));
+        presetHintText = QStringLiteral("已填入从偏移 0 读取 4096 字节的预设，可修改偏移与长度。");
+        break;
+    case IrpPresetWrite:
+        selectMajor(4); // IRP_MJ_WRITE
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100002"));
+        presetHintText = QStringLiteral("已填入写入预设；请在下方填写十六进制数据，并勾选写入确认。");
+        break;
+    case IrpPresetFlush:
+        selectMajor(9); // IRP_MJ_FLUSH_BUFFERS
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100002"));
+        presetHintText = QStringLiteral("已填入刷新文件缓冲预设。");
+        break;
+    case IrpPresetCreateFile:
+        selectMajor(0); // IRP_MJ_CREATE
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100182"));
+        setEditText(m_irpCreateDispositionEdit, QStringLiteral("2")); // FILE_CREATE
+        m_irpReparseCheck->setChecked(false);
+        presetHintText = QStringLiteral("已填入 FILE_CREATE 空文件预设；目标必须不存在，并需勾选写入确认。");
+        break;
+    case IrpPresetCreateDirectory:
+        selectMajor(0); // IRP_MJ_CREATE
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100181"));
+        setEditText(m_irpCreateDispositionEdit, QStringLiteral("2")); // FILE_CREATE
+        setEditText(m_irpCreateOptionsEdit, QStringLiteral("0"));
+        m_irpReparseCheck->setChecked(false);
+        m_irpDirectoryIntentCheck->setChecked(true);
+        presetHintText = QStringLiteral("已填入 FILE_CREATE 目录预设；目标必须不存在，并需勾选写入确认。");
+        break;
+    case IrpPresetEnumerateDirectory:
+        selectMajor(12); // IRP_MJ_DIRECTORY_CONTROL
+        setEditText(m_irpMinorEdit, QStringLiteral("1")); // IRP_MN_QUERY_DIRECTORY
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100081"));
+        setEditText(m_irpCreateOptionsEdit, QStringLiteral("0"));
+        setEditText(m_irpInformationClassEdit, QStringLiteral("37")); // FileIdBothDirectoryInformation
+        setEditText(m_irpOutputBytesEdit, QStringLiteral("65536"));
+        setEditText(m_irpPatternEdit, QStringLiteral("*"));
+        m_irpRestartScanCheck->setChecked(true);
+        m_irpDirectoryIntentCheck->setChecked(true);
+        presetHintText = QStringLiteral("已填入 FileIdBothDirectoryInformation 目录枚举预设。");
+        break;
+    case IrpPresetDeleteLegacy:
+        selectMajor(6); // IRP_MJ_SET_INFORMATION
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00110000"));
+        setEditText(m_irpInformationClassEdit, QStringLiteral("13")); // FileDispositionInformation
+        m_irpInputHexEdit->setPlainText(QStringLiteral("01")); // BOOLEAN DeleteFile
+        presetHintText = QStringLiteral("已填入传统 IRP 删除预设；目录目标需另勾 FILE_DIRECTORY_FILE，并需写入确认。");
+        break;
+    case IrpPresetDeletePosix:
+        selectMajor(6); // IRP_MJ_SET_INFORMATION
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00110000"));
+        setEditText(m_irpInformationClassEdit, QStringLiteral("64")); // FileDispositionInformationEx
+        // DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE
+        m_irpInputHexEdit->setPlainText(QStringLiteral("13 00 00 00"));
+        presetHintText = QStringLiteral("已填入 IRP POSIX 删除预设；支持情况取决于系统与文件系统，并需写入确认。");
+        break;
+    case IrpPresetTruncateZero:
+        selectMajor(6); // IRP_MJ_SET_INFORMATION
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100002"));
+        setEditText(m_irpInformationClassEdit, QStringLiteral("20")); // FileEndOfFileInformation
+        m_irpInputHexEdit->setPlainText(QStringLiteral("00 00 00 00 00 00 00 00"));
+        presetHintText = QStringLiteral("已填入 FileEndOfFileInformation 截断到 0 字节预设，并需写入确认。");
+        break;
+    case IrpPresetSetNormalAttributes:
+        selectMajor(6); // IRP_MJ_SET_INFORMATION
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00100100"));
+        setEditText(m_irpInformationClassEdit, QStringLiteral("4")); // FileBasicInformation
+        // 四个时间戳保持为 0（不修改），FileAttributes=FILE_ATTRIBUTE_NORMAL，末尾为 x64 对齐。
+        m_irpInputHexEdit->setPlainText(QStringLiteral(
+            "00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00\n"
+            "00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00\n"
+            "80 00 00 00 00 00 00 00"));
+        presetHintText = QStringLiteral("已填入 FileBasicInformation 的 NORMAL 属性模板，并需写入确认。");
+        break;
+    case IrpPresetQueryVolume:
+        selectMajor(10); // IRP_MJ_QUERY_VOLUME_INFORMATION
+        setEditText(m_irpInformationClassEdit, QStringLiteral("5")); // FileFsAttributeInformation
+        setEditText(m_irpOutputBytesEdit, QStringLiteral("1024"));
+        presetHintText = QStringLiteral("已填入 FileFsAttributeInformation 卷属性查询预设。");
+        break;
+    case IrpPresetQuerySecurity:
+        selectMajor(20); // IRP_MJ_QUERY_SECURITY
+        setEditText(m_irpDesiredAccessEdit, QStringLiteral("0x00120080"));
+        setEditText(m_irpSecurityInformationEdit, QStringLiteral("0x00000007"));
+        setEditText(m_irpOutputBytesEdit, QStringLiteral("4096"));
+        presetHintText = QStringLiteral("已填入所有者、组与 DACL 安全描述符查询预设。");
+        break;
+    default:
+        return;
+    }
+
+    if (m_irpStatusLabel != nullptr)
+    {
+        m_irpStatusLabel->setText(presetHintText);
+    }
 }
 
 void FileDock::applyIrpMajorPreset(const int majorFunction)
@@ -772,7 +996,9 @@ void FileDock::applyIrpMajorPreset(const int majorFunction)
     // 写语义与危险 major 的勾选要求直接反映到界面提示上。
     const bool writeLike = majorIsWriteLike(majorFunction);
     const bool dangerous = majorIsDangerous(majorFunction);
-    m_irpConfirmCheck->setEnabled(writeLike || dangerous);
+    // CREATE 阶段的 disposition/options 也可能让“查询类 major”创建或删除目标，
+    // 因此确认项始终可操作；真正是否必选由提交前预检与 R0 双重判定。
+    m_irpConfirmCheck->setEnabled(true);
     m_irpAllowDangerousCheck->setEnabled(dangerous);
     if (!writeLike && !dangerous)
     {
@@ -821,6 +1047,10 @@ void FileDock::updateIrpBuilderEnabledState(const bool submitting)
     {
         m_irpMajorCombo->setEnabled(!submitting);
     }
+    if (m_irpOperationPresetCombo != nullptr)
+    {
+        m_irpOperationPresetCombo->setEnabled(!submitting);
+    }
     if (m_irpLayerCombo != nullptr)
     {
         m_irpLayerCombo->setEnabled(!submitting);
@@ -853,7 +1083,28 @@ void FileDock::submitConstructedIrp()
     }
 
     const int majorFunction = m_irpMajorCombo->currentData().toInt();
-    const bool writeLike = majorIsWriteLike(majorFunction);
+    unsigned long long createDispositionPreview = 0U;
+    unsigned long long createOptionsPreview = 0U;
+    QString previewErrorText;
+    if (m_irpCreateDispositionEdit != nullptr)
+    {
+        (void)parseNumericField(
+            m_irpCreateDispositionEdit->text().trimmed().section(QChar(' '), 0, 0),
+            createDispositionPreview,
+            previewErrorText);
+    }
+    previewErrorText.clear();
+    if (m_irpCreateOptionsEdit != nullptr)
+    {
+        (void)parseNumericField(
+            m_irpCreateOptionsEdit->text().trimmed().section(QChar(' '), 0, 0),
+            createOptionsPreview,
+            previewErrorText);
+    }
+    const bool createStageMutates =
+        (createDispositionPreview >= 2U && createDispositionPreview <= 5U) ||
+        ((createOptionsPreview & 0x00001000ULL) != 0U); // FILE_DELETE_ON_CLOSE
+    const bool writeLike = majorIsWriteLike(majorFunction) || createStageMutates;
     const bool dangerous = majorIsDangerous(majorFunction);
     if ((writeLike || dangerous) && !m_irpConfirmCheck->isChecked())
     {

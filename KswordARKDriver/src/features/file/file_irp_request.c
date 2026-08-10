@@ -1428,6 +1428,7 @@ Return Value:
 --*/
 {
     switch (MajorFunction) {
+    case IRP_MJ_CREATE:
     case IRP_MJ_WRITE:
     case IRP_MJ_SET_INFORMATION:
     case IRP_MJ_SET_EA:
@@ -1444,6 +1445,30 @@ Return Value:
     default:
         return FALSE;
     }
+}
+
+static BOOLEAN
+KswordArkFileIrpRequestHasWriteSemantics(
+    _In_ const KSWORD_ARK_FILE_IRP_SUBMIT_REQUEST* Request
+    )
+/*++
+
+Routine Description:
+
+    在 major 判定之外审计 CREATE 阶段的 disposition/options。查询类 major 也要先
+    打开目标；如果调用方把该打开改成 FILE_CREATE/OPEN_IF/OVERWRITE 或
+    FILE_DELETE_ON_CLOSE，它同样会改变文件系统，必须要求确认令牌。
+
+--*/
+{
+    if (KswordArkFileIrpMajorIsWriteLike(Request->majorFunction)) {
+        return TRUE;
+    }
+    if (Request->createDisposition >= FILE_CREATE &&
+        Request->createDisposition <= FILE_OVERWRITE_IF) {
+        return TRUE;
+    }
+    return ((Request->createOptions & FILE_DELETE_ON_CLOSE) != 0UL) ? TRUE : FALSE;
 }
 
 static BOOLEAN
@@ -1980,7 +2005,7 @@ KswordARKDriverSubmitFileIrp(
     }
 
     // 写语义与危险 major 的双重闸门：先看令牌，再看专用标志。
-    if (KswordArkFileIrpMajorIsWriteLike(Request->majorFunction) ||
+    if (KswordArkFileIrpRequestHasWriteSemantics(Request) ||
         KswordArkFileIrpMajorIsDangerous(Request->majorFunction)) {
         if ((Request->flags & KSWORD_ARK_FILE_IRP_FLAG_UI_CONFIRMED) == 0UL ||
             Request->confirmationToken != KSWORD_ARK_FILE_IRP_CONFIRMATION_TOKEN) {

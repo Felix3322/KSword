@@ -648,10 +648,21 @@ namespace ksword::ark
         std::uint32_t pathLengthChars = 0;   // pathLengthChars：驱动接收的 NT 路径字符数。
     };
 
+    // FileDeleteBackend：DELETE_PATH IOCTL 的单节点执行后端。
+    // Native 保留原有底层 Zw* 方案；Irp 通过文件系统栈投递 IRP_MJ_SET_INFORMATION；
+    // Posix 强制使用 FileDispositionInformationEx 的 POSIX unlink 语义。
+    enum class FileDeleteBackend : std::uint32_t
+    {
+        Native = 0U,
+        Irp = 1U,
+        Posix = 2U
+    };
+
     // DeletePathResult 承载 R0 删除（单项或递归）的统计回执。
     // 输入：由 DriverClient::deletePathEx 填充。
     // 处理：io.ok 只表示 DeviceIoControl 成功；删除语义看 response.deleteStatus。
-    // 返回行为：unsupported=true 表示旧驱动不认识递归标志，调用方应回退到 R3 展开逐项删除。
+    // 返回行为：unsupported=true 表示驱动不认识所选递归/后端标志；仅 Native
+    // 可回退到旧版 R3 展开逐项删除，Irp/Posix 必须显式报告后端不可用。
     struct DeletePathResult
     {
         IoResult io;                                // io：底层 DeviceIoControl 状态。
