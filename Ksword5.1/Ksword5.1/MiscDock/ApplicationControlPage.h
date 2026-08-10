@@ -49,6 +49,7 @@ namespace ks::misc
         // AppLockerRuleRecord：AppLocker 规则行的只读展示模型。
         struct AppLockerRuleRecord
         {
+            QString idText;             // idText：规则唯一 ID，用于右键编辑和删除。
             QString collectionText;     // collectionText：规则集合显示名。
             QString actionText;         // actionText：Allow / Deny。
             QString userText;           // userText：用户或组文本。
@@ -132,7 +133,7 @@ namespace ks::misc
         // editWdacPolicy：
         // - 编辑用户选择的 WDAC 源 XML；可选编译并通过 CiTool 部署；
         // - 无输入参数，无返回值。
-        void editWdacPolicy();
+        void editWdacPolicy(const QString& sourcePath = QString());
 
         // editDefenderSetting：
         // - 编辑 Defender 表格中当前选中的受支持配置项；
@@ -144,6 +145,20 @@ namespace ks::misc
         // - operationName 为用户可读操作名，scriptText 为写入脚本；
         // - 无返回值。
         void runPowerShellMutationAsync(const QString& operationName, const QString& scriptText);
+
+        // 三个可编辑页面的右键菜单；全局设施会自动追加复制和 TSV 导出。
+        void showAppLockerContextMenu(const QPoint& localPosition);
+        void showWdacContextMenu(const QPoint& localPosition);
+        void showDefenderContextMenu(const QPoint& localPosition);
+
+        // AppLocker 路径规则、WDAC 源 XML、Defender / ASR 的新增和删除操作。
+        void addAppLockerRule();
+        void editAppLockerRule(int row);
+        void deleteAppLockerRule();
+        void addWdacPolicy();
+        void deleteWdacPolicy();
+        void addDefenderAsrRule();
+        void deleteDefenderSetting();
 
         // initializeTable：
         // - 为表格设置统一的只读、行选择和右键菜单行为；

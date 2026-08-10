@@ -28,6 +28,7 @@
 #include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPointer>
 #include <QPlainTextEdit>
@@ -40,6 +41,8 @@
 #include <QSaveFile>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QUuid>
+#include <QVariant>
 #include <QVBoxLayout>
 #include <QXmlStreamReader>
 
@@ -400,7 +403,11 @@ namespace
     // fillTable：
     // - 以纯文本二维数组重建 QTableWidget；
     // - headers 为列标题。
-    void fillTable(QTableWidget* table, const QStringList& headers, const QVector<QStringList>& rows)
+    void fillTable(
+        QTableWidget* table,
+        const QStringList& headers,
+        const QVector<QStringList>& rows,
+        const QVector<QVariant>& firstColumnUserData = {})
     {
         if (table == nullptr)
         {
@@ -420,7 +427,12 @@ namespace
             for (int column = 0; column < headers.size(); ++column)
             {
                 const QString cellText = column < values.size() ? values.at(column) : QString();
-                table->setItem(row, column, makeReadOnlyItem(cellText));
+                QTableWidgetItem* item = makeReadOnlyItem(cellText);
+                if (column == 0 && row < firstColumnUserData.size())
+                {
+                    item->setData(Qt::UserRole, firstColumnUserData.at(row));
+                }
+                table->setItem(row, column, item);
             }
         }
 
@@ -429,6 +441,39 @@ namespace
         {
             table->horizontalHeader()->setStretchLastSection(true);
         }
+    }
+
+    // selectTableContextRow：同步右键命中的行，空白区域返回 -1。
+    int selectTableContextRow(QTableWidget* table, const QPoint& localPosition)
+    {
+        if (table == nullptr)
+        {
+            return -1;
+        }
+
+        const QModelIndex index = table->indexAt(localPosition);
+        if (!index.isValid())
+        {
+            return -1;
+        }
+
+        table->setCurrentIndex(index);
+        if (table->selectionModel() != nullptr && !table->selectionModel()->isRowSelected(index.row(), QModelIndex()))
+        {
+            table->selectRow(index.row());
+        }
+        return index.row();
+    }
+
+    // tableCellText：安全读取表格单元格的显示文本。
+    QString tableCellText(const QTableWidget* table, const int row, const int column)
+    {
+        if (table == nullptr || row < 0 || column < 0)
+        {
+            return QString();
+        }
+        const QTableWidgetItem* item = table->item(row, column);
+        return item != nullptr ? item->text().trimmed() : QString();
     }
 }
 
@@ -508,11 +553,15 @@ namespace ks::misc
 
         m_appLockerTable = new ks::ui::VisibleTableWidget(page);
         initializeTable(m_appLockerTable, true);
+        m_appLockerTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
         layout->addWidget(m_appLockerSummary, 0);
         layout->addWidget(actionRow, 0);
         layout->addWidget(m_appLockerTable, 1);
         connect(m_appLockerEditButton, &QPushButton::clicked, this, [this]() { editAppLockerPolicy(); });
+        connect(m_appLockerTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& localPosition) {
+            showAppLockerContextMenu(localPosition);
+        });
         return page;
     }
 
@@ -538,6 +587,7 @@ namespace ks::misc
 
         m_policyFileTable = new ks::ui::VisibleTableWidget(page);
         initializeTable(m_policyFileTable, true);
+        m_policyFileTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
         m_codeIntegrityEventTable = new ks::ui::VisibleTableWidget(page);
         initializeTable(m_codeIntegrityEventTable, true);
@@ -547,6 +597,9 @@ namespace ks::misc
         layout->addWidget(m_policyFileTable, 1);
         layout->addWidget(m_codeIntegrityEventTable, 1);
         connect(m_wdacEditButton, &QPushButton::clicked, this, [this]() { editWdacPolicy(); });
+        connect(m_policyFileTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& localPosition) {
+            showWdacContextMenu(localPosition);
+        });
         return page;
     }
 
@@ -572,11 +625,15 @@ namespace ks::misc
 
         m_defenderTable = new ks::ui::VisibleTableWidget(page);
         initializeTable(m_defenderTable, true);
+        m_defenderTable->setContextMenuPolicy(Qt::CustomContextMenu);
 
         layout->addWidget(m_defenderSummary, 0);
         layout->addWidget(actionRow, 0);
         layout->addWidget(m_defenderTable, 1);
         connect(m_defenderEditButton, &QPushButton::clicked, this, [this]() { editDefenderSetting(); });
+        connect(m_defenderTable, &QTableWidget::customContextMenuRequested, this, [this](const QPoint& localPosition) {
+            showDefenderContextMenu(localPosition);
+        });
         return page;
     }
 
@@ -755,6 +812,83 @@ namespace ks::misc
         case 4: return m_eventTable;
         case 5: return m_fileDiagnosisTable;
         default: return nullptr;
+        }
+    }
+
+    void ApplicationControlPage::showAppLockerContextMenu(const QPoint& localPosition)
+    {
+        const int selectedRow = selectTableContextRow(m_appLockerTable, localPosition);
+        QMenu menu(this);
+        menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+        QAction* addAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("新增路径规则…"));
+        QAction* editAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑选中规则…"));
+        QAction* deleteAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("删除选中规则"));
+        editAction->setEnabled(selectedRow >= 0);
+        deleteAction->setEnabled(selectedRow >= 0);
+
+        QAction* selectedAction = menu.exec(m_appLockerTable->viewport()->mapToGlobal(localPosition));
+        if (selectedAction == addAction)
+        {
+            addAppLockerRule();
+        }
+        else if (selectedAction == editAction)
+        {
+            editAppLockerRule(selectedRow);
+        }
+        else if (selectedAction == deleteAction)
+        {
+            deleteAppLockerRule();
+        }
+    }
+
+    void ApplicationControlPage::showWdacContextMenu(const QPoint& localPosition)
+    {
+        const int selectedRow = selectTableContextRow(m_policyFileTable, localPosition);
+        QMenu menu(this);
+        menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+        QAction* addAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("新增源策略 XML…"));
+        QAction* editAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑源策略 XML…"));
+        QAction* deleteAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("删除源策略 XML…"));
+
+        QAction* selectedAction = menu.exec(m_policyFileTable->viewport()->mapToGlobal(localPosition));
+        if (selectedAction == addAction)
+        {
+            addWdacPolicy();
+        }
+        else if (selectedAction == editAction)
+        {
+            const QString selectedPath = tableCellText(m_policyFileTable, selectedRow, 0);
+            editWdacPolicy(selectedPath.endsWith(QStringLiteral(".xml"), Qt::CaseInsensitive) ? selectedPath : QString());
+        }
+        else if (selectedAction == deleteAction)
+        {
+            deleteWdacPolicy();
+        }
+    }
+
+    void ApplicationControlPage::showDefenderContextMenu(const QPoint& localPosition)
+    {
+        const int selectedRow = selectTableContextRow(m_defenderTable, localPosition);
+        QMenu menu(this);
+        menu.setStyleSheet(KswordTheme::ContextMenuStyle());
+        QAction* addAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("新增 ASR 规则…"));
+        QAction* editAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑选中配置…"));
+        QAction* deleteAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("删除/重置选中配置"));
+        editAction->setEnabled(selectedRow >= 0);
+        deleteAction->setEnabled(selectedRow >= 0);
+
+        QAction* selectedAction = menu.exec(m_defenderTable->viewport()->mapToGlobal(localPosition));
+        if (selectedAction == addAction)
+        {
+            addDefenderAsrRule();
+        }
+        else if (selectedAction == editAction)
+        {
+            editDefenderSetting();
+        }
+        else if (selectedAction == deleteAction)
+        {
+            deleteDefenderSetting();
         }
     }
 
@@ -945,7 +1079,7 @@ namespace ks::misc
                     "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
                     "try {"
                     "  $xml=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%1'));"
-                    "  Set-AppLockerPolicy -XmlPolicy $xml -Replace -ErrorAction Stop;"
+                    "  Set-AppLockerPolicy -XmlPolicy $xml -ErrorAction Stop;"
                     "  Write-Output '__OK__'"
                     "} catch { Write-Output '__ERROR__'; Write-Output $_.Exception.Message; exit 1 }")
                     .arg(encodedXml);
@@ -954,18 +1088,238 @@ namespace ks::misc
         }).detach();
     }
 
-    void ApplicationControlPage::editWdacPolicy()
+    void ApplicationControlPage::addAppLockerRule()
+    {
+        editAppLockerRule(-1);
+    }
+
+    void ApplicationControlPage::editAppLockerRule(const int row)
+    {
+        const bool isNewRule = row < 0;
+        if (m_pendingMutationCount > 0 || m_appLockerTable == nullptr)
+        {
+            return;
+        }
+
+        QString ruleId;
+        QString initialCollectionText = QStringLiteral("EXE");
+        QString initialActionText = QStringLiteral("Allow");
+        QString initialSidText = QStringLiteral("S-1-1-0");
+        QString initialNameText = QStringLiteral("Ksword Path Rule");
+        QString initialDescriptionText;
+        QString initialPathText;
+        if (!isNewRule)
+        {
+            if (row >= m_appLockerTable->rowCount())
+            {
+                return;
+            }
+            const QTableWidgetItem* idItem = m_appLockerTable->item(row, 0);
+            ruleId = idItem != nullptr ? idItem->data(Qt::UserRole).toString().trimmed() : QString();
+            if (ruleId.isEmpty())
+            {
+                QMessageBox::information(this, QStringLiteral("编辑 AppLocker 规则"), QStringLiteral("当前规则没有可写入的本地规则 ID，可能由组策略下发。"));
+                return;
+            }
+            if (!tableCellText(m_appLockerTable, row, 4).contains(QStringLiteral("Path"), Qt::CaseInsensitive))
+            {
+                QMessageBox::information(
+                    this,
+                    QStringLiteral("编辑 AppLocker 规则"),
+                    QStringLiteral("右键表单只编辑路径规则。发布者和哈希规则请使用“编辑策略…”中的 XML 编辑器。"));
+                editAppLockerPolicy();
+                return;
+            }
+
+            initialCollectionText = tableCellText(m_appLockerTable, row, 0);
+            initialActionText = tableCellText(m_appLockerTable, row, 1);
+            initialSidText = tableCellText(m_appLockerTable, row, 3);
+            initialNameText = tableCellText(m_appLockerTable, row, 6);
+            initialDescriptionText = initialNameText;
+            const QRegularExpression pathPattern(QStringLiteral("Path=([^;|]+)"), QRegularExpression::CaseInsensitiveOption);
+            const QRegularExpressionMatch pathMatch = pathPattern.match(tableCellText(m_appLockerTable, row, 5));
+            initialPathText = pathMatch.hasMatch() ? pathMatch.captured(1).trimmed() : QString();
+        }
+
+        QDialog dialog(this);
+        dialog.setWindowTitle(isNewRule ? QStringLiteral("新增 AppLocker 路径规则") : QStringLiteral("编辑 AppLocker 路径规则"));
+        auto* formLayout = new QFormLayout(&dialog);
+        auto* collectionCombo = new QComboBox(&dialog);
+        collectionCombo->addItem(QStringLiteral("EXE"), QStringLiteral("Exe"));
+        collectionCombo->addItem(QStringLiteral("DLL"), QStringLiteral("Dll"));
+        collectionCombo->addItem(QStringLiteral("MSI"), QStringLiteral("Msi"));
+        collectionCombo->addItem(QStringLiteral("Script"), QStringLiteral("Script"));
+        auto* actionCombo = new QComboBox(&dialog);
+        actionCombo->addItem(QStringLiteral("Allow"));
+        actionCombo->addItem(QStringLiteral("Deny"));
+        auto* sidEdit = new QLineEdit(initialSidText, &dialog);
+        auto* nameEdit = new QLineEdit(initialNameText, &dialog);
+        auto* pathEdit = new QLineEdit(initialPathText, &dialog);
+        auto* descriptionEdit = new QLineEdit(initialDescriptionText, &dialog);
+        pathEdit->setPlaceholderText(QStringLiteral("例如 %WINDIR%\\* 或 C:\\Program Files\\App\\*"));
+        for (int index = 0; index < collectionCombo->count(); ++index)
+        {
+            if (collectionCombo->itemText(index).compare(initialCollectionText, Qt::CaseInsensitive) == 0)
+            {
+                collectionCombo->setCurrentIndex(index);
+                break;
+            }
+        }
+        collectionCombo->setEnabled(isNewRule);
+        actionCombo->setCurrentIndex(initialActionText.compare(QStringLiteral("Deny"), Qt::CaseInsensitive) == 0 ? 1 : 0);
+        formLayout->addRow(QStringLiteral("规则集合"), collectionCombo);
+        formLayout->addRow(QStringLiteral("操作"), actionCombo);
+        formLayout->addRow(QStringLiteral("用户或组 SID"), sidEdit);
+        formLayout->addRow(QStringLiteral("规则名称"), nameEdit);
+        formLayout->addRow(QStringLiteral("路径"), pathEdit);
+        formLayout->addRow(QStringLiteral("说明"), descriptionEdit);
+        auto* hintLabel = new QLabel(
+            QStringLiteral("新增和编辑仅写入本地 AppLocker 路径规则。规则 ID、XML 转义和策略写回由程序处理，需要管理员权限。"),
+            &dialog);
+        hintLabel->setWordWrap(true);
+        hintLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        formLayout->addRow(hintLabel);
+        auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        buttonBox->button(QDialogButtonBox::Ok)->setText(isNewRule ? QStringLiteral("新增") : QStringLiteral("应用"));
+        buttonBox->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+        formLayout->addRow(buttonBox);
+        connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted)
+        {
+            return;
+        }
+
+        const QString pathText = pathEdit->text().trimmed();
+        const QString sidText = sidEdit->text().trimmed();
+        const QString nameText = nameEdit->text().trimmed();
+        if (pathText.isEmpty() || sidText.isEmpty() || nameText.isEmpty())
+        {
+            QMessageBox::warning(this, QStringLiteral("AppLocker 路径规则"), QStringLiteral("路径、用户或组 SID 和规则名称不能为空。"));
+            return;
+        }
+        if (QMessageBox::warning(
+            this,
+            isNewRule ? QStringLiteral("确认新增 AppLocker 规则") : QStringLiteral("确认修改 AppLocker 规则"),
+            QStringLiteral("将写入本地 AppLocker 策略。错误规则可能阻止应用或脚本启动。是否继续？"),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        {
+            return;
+        }
+
+        const auto encoded = [](const QString& text) {
+            return QString::fromLatin1(text.toUtf8().toBase64());
+        };
+        const QString effectiveRuleId = isNewRule ? QUuid::createUuid().toString() : ruleId;
+        QString mutationScript;
+        if (isNewRule)
+        {
+            mutationScript = QStringLiteral(
+                "$ruleId=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%1'));"
+                "$collectionType=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%2'));"
+                "$action=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%3'));"
+                "$sid=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%4'));"
+                "$name=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%5'));"
+                "$description=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%6'));"
+                "$path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%7'));"
+                "$xml=[string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop);"
+                "$doc=New-Object System.Xml.XmlDocument;"
+                "if([string]::IsNullOrWhiteSpace($xml)){$doc.LoadXml('<AppLockerPolicy Version=\"1\"></AppLockerPolicy>')}else{$doc.LoadXml($xml)};"
+                "$collection=$null;foreach($candidate in $doc.DocumentElement.SelectNodes('RuleCollection')){if($candidate.GetAttribute('Type') -eq $collectionType){$collection=$candidate;break}};"
+                "if($null -eq $collection){$collection=$doc.CreateElement('RuleCollection');$collection.SetAttribute('Type',$collectionType);$collection.SetAttribute('EnforcementMode','Enabled');[void]$doc.DocumentElement.AppendChild($collection)};"
+                "$rule=$doc.CreateElement('FilePathRule');$rule.SetAttribute('Id',$ruleId);$rule.SetAttribute('Name',$name);$rule.SetAttribute('Description',$description);$rule.SetAttribute('UserOrGroupSid',$sid);$rule.SetAttribute('Action',$action);"
+                "$conditions=$doc.CreateElement('Conditions');$condition=$doc.CreateElement('FilePathCondition');$condition.SetAttribute('Path',$path);[void]$conditions.AppendChild($condition);[void]$rule.AppendChild($conditions);[void]$collection.AppendChild($rule);"
+                "Set-AppLockerPolicy -XmlPolicy $doc.OuterXml -ErrorAction Stop")
+                .arg(encoded(effectiveRuleId))
+                .arg(encoded(collectionCombo->currentData().toString()))
+                .arg(encoded(actionCombo->currentText()))
+                .arg(encoded(sidText))
+                .arg(encoded(nameText))
+                .arg(encoded(descriptionEdit->text()))
+                .arg(encoded(pathText));
+        }
+        else
+        {
+            mutationScript = QStringLiteral(
+                "$ruleId=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%1'));"
+                "$action=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%2'));"
+                "$sid=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%3'));"
+                "$name=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%4'));"
+                "$description=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%5'));"
+                "$path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%6'));"
+                "$xml=[string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop);if([string]::IsNullOrWhiteSpace($xml)){throw '未配置本地 AppLocker 策略'};"
+                "$doc=New-Object System.Xml.XmlDocument;$doc.LoadXml($xml);$rule=$null;foreach($candidate in $doc.SelectNodes('//*')){if($candidate.HasAttribute('Id') -and $candidate.GetAttribute('Id') -ieq $ruleId){$rule=$candidate;break}};"
+                "if($null -eq $rule){throw '所选规则不在本地策略中，可能由组策略下发'};if($rule.LocalName -ne 'FilePathRule'){throw '所选规则不是路径规则'};"
+                "$rule.SetAttribute('Name',$name);$rule.SetAttribute('Description',$description);$rule.SetAttribute('UserOrGroupSid',$sid);$rule.SetAttribute('Action',$action);$condition=$rule.SelectSingleNode('Conditions/FilePathCondition');if($null -eq $condition){throw '未找到路径条件'};$condition.SetAttribute('Path',$path);"
+                "Set-AppLockerPolicy -XmlPolicy $doc.OuterXml -ErrorAction Stop")
+                .arg(encoded(effectiveRuleId))
+                .arg(encoded(actionCombo->currentText()))
+                .arg(encoded(sidText))
+                .arg(encoded(nameText))
+                .arg(encoded(descriptionEdit->text()))
+                .arg(encoded(pathText));
+        }
+        mutationScript = QStringLiteral(
+            "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+            "try{%1;Write-Output '__OK__'}catch{Write-Output '__ERROR__';Write-Output $_.Exception.Message;exit 1}")
+            .arg(mutationScript);
+        runPowerShellMutationAsync(isNewRule ? QStringLiteral("新增 AppLocker 路径规则") : QStringLiteral("修改 AppLocker 路径规则"), mutationScript);
+    }
+
+    void ApplicationControlPage::deleteAppLockerRule()
+    {
+        if (m_pendingMutationCount > 0 || m_appLockerTable == nullptr || m_appLockerTable->currentRow() < 0)
+        {
+            return;
+        }
+        const int row = m_appLockerTable->currentRow();
+        const QTableWidgetItem* idItem = m_appLockerTable->item(row, 0);
+        const QString ruleId = idItem != nullptr ? idItem->data(Qt::UserRole).toString().trimmed() : QString();
+        if (ruleId.isEmpty())
+        {
+            QMessageBox::information(this, QStringLiteral("删除 AppLocker 规则"), QStringLiteral("当前规则没有可写入的本地规则 ID，可能由组策略下发。"));
+            return;
+        }
+        if (QMessageBox::warning(
+            this,
+            QStringLiteral("确认删除 AppLocker 规则"),
+            QStringLiteral("将从本地 AppLocker 策略删除“%1”。是否继续？").arg(tableCellText(m_appLockerTable, row, 6)),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        {
+            return;
+        }
+
+        const QString encodedRuleId = QString::fromLatin1(ruleId.toUtf8().toBase64());
+        const QString mutationScript = QStringLiteral(
+            "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+            "try{"
+            "$ruleId=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%1'));$xml=[string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop);if([string]::IsNullOrWhiteSpace($xml)){throw '未配置本地 AppLocker 策略'};"
+            "$doc=New-Object System.Xml.XmlDocument;$doc.LoadXml($xml);$rule=$null;foreach($candidate in $doc.SelectNodes('//*')){if($candidate.HasAttribute('Id') -and $candidate.GetAttribute('Id') -ieq $ruleId){$rule=$candidate;break}};"
+            "if($null -eq $rule){throw '所选规则不在本地策略中，可能由组策略下发'};$collection=$rule.ParentNode;[void]$collection.RemoveChild($rule);if($collection.SelectNodes('*[contains(local-name(),\"Rule\")]').Count -eq 0){[void]$collection.ParentNode.RemoveChild($collection)};"
+            "Set-AppLockerPolicy -XmlPolicy $doc.OuterXml -ErrorAction Stop;Write-Output '__OK__'"
+            "}catch{Write-Output '__ERROR__';Write-Output $_.Exception.Message;exit 1}")
+            .arg(encodedRuleId);
+        runPowerShellMutationAsync(QStringLiteral("删除 AppLocker 规则"), mutationScript);
+    }
+
+    void ApplicationControlPage::editWdacPolicy(const QString& requestedSourcePath)
     {
         if (m_pendingMutationCount > 0)
         {
             return;
         }
 
-        const QString sourcePath = QFileDialog::getOpenFileName(
-            this,
-            QStringLiteral("选择 WDAC 源策略 XML"),
-            QString(),
-            QStringLiteral("WDAC 策略 XML (*.xml);;所有文件 (*.*)"));
+        QString sourcePath = requestedSourcePath;
+        if (sourcePath.isEmpty())
+        {
+            sourcePath = QFileDialog::getOpenFileName(
+                this,
+                QStringLiteral("选择 WDAC 源策略 XML"),
+                QString(),
+                QStringLiteral("WDAC 策略 XML (*.xml);;所有文件 (*.*)"));
+        }
         if (sourcePath.isEmpty())
         {
             return;
@@ -1076,6 +1430,84 @@ namespace ks::misc
             "} catch { Write-Output '__ERROR__'; Write-Output $_.Exception.Message; exit 1 }")
             .arg(encodedSourcePath, encodedBinaryPath);
         runPowerShellMutationAsync(QStringLiteral("部署 WDAC 策略"), deployScript);
+    }
+
+    void ApplicationControlPage::addWdacPolicy()
+    {
+        if (m_pendingMutationCount > 0)
+        {
+            return;
+        }
+
+        const QString sourcePath = QFileDialog::getSaveFileName(
+            this,
+            QStringLiteral("新增 WDAC 源策略 XML"),
+            QStringLiteral("wdac-policy.xml"),
+            QStringLiteral("WDAC 策略 XML (*.xml)"));
+        if (sourcePath.isEmpty())
+        {
+            return;
+        }
+        if (QFileInfo::exists(sourcePath) && QMessageBox::warning(
+            this,
+            QStringLiteral("新增 WDAC 源策略"),
+            QStringLiteral("文件已存在，继续将覆盖该源 XML。是否继续？"),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        {
+            return;
+        }
+
+        const QString policyTemplate = QStringLiteral(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<SiPolicy xmlns=\"urn:schemas-microsoft-com:sipolicy\">\n"
+            "</SiPolicy>\n");
+        QSaveFile outputFile(sourcePath);
+        if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text) ||
+            outputFile.write(policyTemplate.toUtf8()) != policyTemplate.toUtf8().size() ||
+            !outputFile.commit())
+        {
+            QMessageBox::warning(this, QStringLiteral("新增 WDAC 源策略"), QStringLiteral("无法创建：%1").arg(sourcePath));
+            return;
+        }
+        QMessageBox::information(
+            this,
+            QStringLiteral("新增 WDAC 源策略"),
+            QStringLiteral("已创建 XML 草稿。请在编辑器中补充有效策略内容后再编译部署。"));
+        editWdacPolicy(sourcePath);
+    }
+
+    void ApplicationControlPage::deleteWdacPolicy()
+    {
+        if (m_pendingMutationCount > 0)
+        {
+            return;
+        }
+
+        const QString sourcePath = QFileDialog::getOpenFileName(
+            this,
+            QStringLiteral("选择要删除的 WDAC 源策略 XML"),
+            QString(),
+            QStringLiteral("WDAC 策略 XML (*.xml);;所有文件 (*.*)"));
+        if (sourcePath.isEmpty())
+        {
+            return;
+        }
+        if (QMessageBox::warning(
+            this,
+            QStringLiteral("确认删除 WDAC 源策略"),
+            QStringLiteral("将删除源 XML：\n%1\n\n已部署的 CIP 策略不会随文件删除自动卸载。是否继续？").arg(sourcePath),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        {
+            return;
+        }
+        if (!QFile::remove(sourcePath))
+        {
+            QMessageBox::warning(this, QStringLiteral("删除 WDAC 源策略"), QStringLiteral("无法删除：%1").arg(sourcePath));
+            return;
+        }
+        QMessageBox::information(this, QStringLiteral("删除 WDAC 源策略"), QStringLiteral("已删除源 XML：%1").arg(sourcePath));
     }
 
     void ApplicationControlPage::editDefenderSetting()
@@ -1231,6 +1663,145 @@ namespace ks::misc
         runPowerShellMutationAsync(QStringLiteral("修改 Defender 配置"), mutationScript);
     }
 
+
+    void ApplicationControlPage::addDefenderAsrRule()
+    {
+        if (m_pendingMutationCount > 0)
+        {
+            return;
+        }
+
+        QDialog dialog(this);
+        dialog.setWindowTitle(QStringLiteral("新增 ASR 规则"));
+        auto* formLayout = new QFormLayout(&dialog);
+        auto* ruleIdEdit = new QLineEdit(&dialog);
+        ruleIdEdit->setPlaceholderText(QStringLiteral("输入 ASR 规则 GUID，例如 D4F..."));
+        auto* actionCombo = new QComboBox(&dialog);
+        actionCombo->addItem(QStringLiteral("禁用 (0)"), 0);
+        actionCombo->addItem(QStringLiteral("阻止 (1)"), 1);
+        actionCombo->addItem(QStringLiteral("审核 (2)"), 2);
+        actionCombo->addItem(QStringLiteral("警告 (6)"), 6);
+        formLayout->addRow(QStringLiteral("ASR 规则 GUID"), ruleIdEdit);
+        formLayout->addRow(QStringLiteral("操作"), actionCombo);
+        auto* hintLabel = new QLabel(
+            QStringLiteral("请输入 Microsoft 支持的 ASR 规则 GUID。程序会保留现有 ASR 规则并添加新项，需要管理员权限。"),
+            &dialog);
+        hintLabel->setWordWrap(true);
+        hintLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        formLayout->addRow(hintLabel);
+        auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        buttonBox->button(QDialogButtonBox::Ok)->setText(QStringLiteral("新增"));
+        buttonBox->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+        formLayout->addRow(buttonBox);
+        connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted)
+        {
+            return;
+        }
+
+        const QUuid ruleUuid(ruleIdEdit->text().trimmed());
+        if (ruleUuid.isNull())
+        {
+            QMessageBox::warning(this, QStringLiteral("新增 ASR 规则"), QStringLiteral("ASR 规则 GUID 格式无效。"));
+            return;
+        }
+        if (QMessageBox::warning(
+            this,
+            QStringLiteral("确认新增 ASR 规则"),
+            QStringLiteral("将新增 ASR 规则 %1。是否继续？").arg(ruleUuid.toString(QUuid::WithoutBraces)),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        {
+            return;
+        }
+
+        const QString encodedRuleId = QString::fromLatin1(ruleUuid.toString(QUuid::WithoutBraces).toUtf8().toBase64());
+        QString mutationScript = QStringLiteral(
+            "$ruleId=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%1'));"
+            "$pref=Get-MpPreference -ErrorAction Stop;$ids=@($pref.AttackSurfaceReductionRules_Ids);$actions=@($pref.AttackSurfaceReductionRules_Actions);"
+            "foreach($id in $ids){if([string]$id -ieq $ruleId){throw '该 ASR 规则已存在，请使用编辑操作'}};"
+            "$ids+=@($ruleId);$actions+=@(%2);"
+            "Set-MpPreference -AttackSurfaceReductionRules_Ids $ids -AttackSurfaceReductionRules_Actions $actions -ErrorAction Stop")
+            .arg(encodedRuleId)
+            .arg(actionCombo->currentData().toInt());
+        mutationScript = QStringLiteral(
+            "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+            "try{%1;Write-Output '__OK__'}catch{Write-Output '__ERROR__';Write-Output $_.Exception.Message;exit 1}")
+            .arg(mutationScript);
+        runPowerShellMutationAsync(QStringLiteral("新增 ASR 规则"), mutationScript);
+    }
+
+    void ApplicationControlPage::deleteDefenderSetting()
+    {
+        if (m_pendingMutationCount > 0 || m_defenderTable == nullptr || m_defenderTable->currentRow() < 0)
+        {
+            return;
+        }
+
+        const int row = m_defenderTable->currentRow();
+        const QString settingName = tableCellText(m_defenderTable, row, 0);
+        QString mutationScript;
+        QString operationName;
+        const QRegularExpression asrPattern(QStringLiteral("^ASR\\s+([0-9A-Fa-f-]{36})$"));
+        const QRegularExpressionMatch asrMatch = asrPattern.match(settingName);
+        if (asrMatch.hasMatch())
+        {
+            const QString encodedRuleId = QString::fromLatin1(asrMatch.captured(1).toUtf8().toBase64());
+            operationName = QStringLiteral("删除 ASR 规则");
+            mutationScript = QStringLiteral(
+                "$ruleId=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%1'));"
+                "$pref=Get-MpPreference -ErrorAction Stop;$ids=@($pref.AttackSurfaceReductionRules_Ids);$actions=@($pref.AttackSurfaceReductionRules_Actions);$newIds=@();$newActions=@();$found=$false;"
+                "for($i=0;$i -lt $ids.Count;$i++){if([string]$ids[$i] -ieq $ruleId){$found=$true;continue};$newIds+=@($ids[$i]);if($i -lt $actions.Count){$newActions+=@($actions[$i])}};"
+                "if(-not $found){throw '未找到 ASR 规则'};Set-MpPreference -AttackSurfaceReductionRules_Ids $newIds -AttackSurfaceReductionRules_Actions $newActions -ErrorAction Stop")
+                .arg(encodedRuleId);
+        }
+        else if (settingName.compare(QStringLiteral("Controlled Folder Access"), Qt::CaseInsensitive) == 0)
+        {
+            operationName = QStringLiteral("重置受控文件夹访问");
+            mutationScript = QStringLiteral("Set-MpPreference -EnableControlledFolderAccess 0 -ErrorAction Stop");
+        }
+        else if (settingName.compare(QStringLiteral("PUA Protection"), Qt::CaseInsensitive) == 0)
+        {
+            operationName = QStringLiteral("重置 PUA 保护");
+            mutationScript = QStringLiteral("Set-MpPreference -PUAProtection 0 -ErrorAction Stop");
+        }
+        else if (settingName.compare(QStringLiteral("Network Protection"), Qt::CaseInsensitive) == 0)
+        {
+            operationName = QStringLiteral("重置网络保护");
+            mutationScript = QStringLiteral("Set-MpPreference -EnableNetworkProtection 0 -ErrorAction Stop");
+        }
+        else if (settingName.compare(QStringLiteral("Real Time Protection"), Qt::CaseInsensitive) == 0)
+        {
+            operationName = QStringLiteral("重置实时保护");
+            mutationScript = QStringLiteral("Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop");
+        }
+        else
+        {
+            QMessageBox::information(
+                this,
+                QStringLiteral("删除/重置 Defender 配置"),
+                QStringLiteral("当前项没有可由 Defender 命令行删除或重置的接口。"));
+            return;
+        }
+
+        if (QMessageBox::warning(
+            this,
+            QStringLiteral("确认%1").arg(operationName),
+            asrMatch.hasMatch()
+                ? QStringLiteral("将删除 ASR 规则“%1”。是否继续？").arg(settingName)
+                : QStringLiteral("将把“%1”重置为默认关闭状态。是否继续？").arg(settingName),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        {
+            return;
+        }
+        mutationScript = QStringLiteral(
+            "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+            "try{%1;Write-Output '__OK__'}catch{Write-Output '__ERROR__';Write-Output $_.Exception.Message;exit 1}")
+            .arg(mutationScript);
+        runPowerShellMutationAsync(operationName, mutationScript);
+    }
 
     QString ApplicationControlPage::tableToTsv(QTableWidget* table, const bool selectedOnly) const
     {
@@ -1470,6 +2041,7 @@ namespace ks::misc
                 AppLockerRuleRecord record;
                 record.collectionText = collectionTypeText;
                 const QXmlStreamAttributes attributes = reader.attributes();
+                record.idText = attributes.value(QStringLiteral("Id")).toString();
                 record.actionText = attributes.value(QStringLiteral("Action")).toString();
                 record.sidText = attributes.value(QStringLiteral("UserOrGroupSid")).toString();
                 record.userText = sidToFriendlyText(record.sidText);
@@ -2384,7 +2956,9 @@ namespace ks::misc
         }
 
         QVector<QStringList> appLockerRows;
+        QVector<QVariant> appLockerRuleIds;
         appLockerRows.reserve(m_appLockerRules.size());
+        appLockerRuleIds.reserve(m_appLockerRules.size());
         for (const AppLockerRuleRecord& record : m_appLockerRules)
         {
             appLockerRows.push_back(QStringList{
@@ -2397,6 +2971,7 @@ namespace ks::misc
                 record.descriptionText,
                 record.riskText
             });
+            appLockerRuleIds.push_back(record.idText);
         }
         fillTable(
             m_appLockerTable,
@@ -2410,7 +2985,8 @@ namespace ks::misc
                 QStringLiteral("描述"),
                 QStringLiteral("风险")
             },
-            appLockerRows);
+            appLockerRows,
+            appLockerRuleIds);
 
         QVector<QStringList> policyRows;
         policyRows.reserve(policyFiles.size());
