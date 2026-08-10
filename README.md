@@ -211,6 +211,22 @@ Build the native launcher and generate the readable release support manifest:
 & $msbuild '.\Launcher\Launcher.vcxproj' /t:Build /p:Configuration=Release /p:Platform=x64 /m
 ```
 
+### MSVC and WDK recovery notes
+
+Keep the standard MSVC toolchain for this project; it is not adapted to LLVM. If a main-application link emits `LNK1000` with `IMAGE::BuildImage` or an `.iobj` failure, run one clean rebuild with Whole Program Optimization and LTCG disabled **for that build only**. Do not edit the project files to make the change persistent and do not immediately run another normal build after it: the WPO-disabled output invalidates the normal incremental-build cache. Confirm the real MSBuild exit code and a nonzero `Ksword5.1\x64\Release\Ksword5.1.exe` instead. Updating, downgrading, or reinstalling MSVC is only a later option if this one-shot recovery also reproduces the linker failure.
+
+For the x64 kernel driver, a WDK post-build `ApiValidator`/`aitstatic` failure can be an architecture-selection problem after `KswordARK.sys` has already linked. Verify that the `.sys` was freshly linked and that the stalled MSBuild has no active compiler, linker, or validator child process before stopping that exact process. Then run the validator separately with the x64 WDK binary directory (substitute the installed WDK version):
+
+```powershell
+$solutionDir = (Resolve-Path '.\Ksword5.1').Path + '\'
+$apiValidatorX64 = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
+& $msbuild '.\KswordARKDriver\KswordARKDriver.vcxproj' /t:ApiValidator `
+  /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=$solutionDir `
+  /p:ApiValidator_ApiExtractorExePath=$apiValidatorX64 /m:1 /v:minimal
+```
+
+`Driver is 'Universal'.` confirms that standalone API/architecture validation. It does not prove a full driver build, INF/CAT generation, signing, or driver-load acceptance; report and validate those stages separately. A compiler or linker failure that occurs before the `.sys` is updated remains a real build failure and must be fixed directly.
+
 If the current machine does not have a WDK or driver-signing environment, build the user-mode projects first. The release process can reuse an existing unsigned R0 release artifact.
 
 ## Release and Run

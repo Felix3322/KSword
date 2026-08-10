@@ -28,6 +28,35 @@ $qtMsBuild=(Resolve-Path '.deps\QtVsTools\msbuild').Path
 & $msbuild 'APIMonitor_x64\APIMonitor_x64.vcxproj' /t:Build /p:Configuration=Release /p:Platform=x64 /m:1 /v:minimal
 ```
 
+#### 主程序 `LNK1000` / `IMAGE::BuildImage` 恢复
+
+如果主程序的 MSVC 链接日志包含 `LNK1000`、`IMAGE::BuildImage` 或 `.iobj`，不要改用 LLVM、`amd64\MSBuild.exe`、替代 TargetName，也不要自动升级或降级 MSVC。先且仅执行一次干净重建，并仅对这次构建禁用 Whole Program Optimization：
+
+```powershell
+& "$env:USERPROFILE\.codex\skills\ksword-build-check\scripts\Invoke-KSwordBuildCheck.ps1" `
+  -RepositoryRoot (Get-Location).Path `
+  -Action Rebuild `
+  -DisableWholeProgramOptimization
+```
+
+该兼容开关只在本次构建使用的临时 props 中关闭 WPO/LTCG，不改动工程文件。成功必须同时满足 `BUILD_RESULT=SUCCESS`、`EXIT_CODE=0`，且 `Ksword5.1\x64\Release\Ksword5.1.exe` 非零；随后不要为了“复查”立刻再跑普通 Build（WPO 禁用会使常规增量缓存失效），需要时只用 `-VerifyArtifactOnly`。只有该恢复路径也复现失败后，才考虑安装 VS servicing update 或并列 v143 工具集。
+
+#### 驱动 WDK x64 `ApiValidator` 后置校验
+
+驱动仍由标准 MSVC/WDK 构建。若 `KswordARK.sys` 已在链接阶段更新、但 WDK 后置阶段因错误选择 ARM64 `ApiValidator`/`aitstatic` 或无子进程的静默卡住，不得把被中止的 `/t:Build` 说成整体成功：先确认实际报错发生在链接之后，记录精确 MSBuild PID/命令行，并确认没有活跃的 `cl.exe`、`link.exe` 或验证器子进程，才可以停止该**唯一**卡住的 MSBuild。
+
+随后以 x64 验证器单独校验刚链接的 `.sys`：
+
+```powershell
+$solutionDir=(Resolve-Path 'Ksword5.1').Path + '\'
+$apiValidatorX64='C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
+& $msbuild 'KswordARKDriver\KswordARKDriver.vcxproj' /t:ApiValidator `
+  /p:Configuration=Release /p:Platform=x64 /p:SolutionDir=$solutionDir `
+  /p:ApiValidator_ApiExtractorExePath=$apiValidatorX64 /m:1 /v:minimal
+```
+
+`Driver is 'Universal'.` 是该独立验证的通过标志。它只证明已链接驱动的 API/体系结构合规，不替代完整 Build、INF/CAT、签名或实际加载验证；这些状态必须单独报告。`10.0.26100.0` 应替换为本机已安装的 WDK 版本。若链接前已经失败，修复原始编译/链接错误，而不是使用此后置校验路径。
+
 驱动项目依赖 WDK。如果当前机器无法构建驱动，不要阻塞发行包制作；沿用统一 Release 目录中的已有未签名 R0 产物：`Ksword5.1\x64\Release\KswordARK.sys`、`Ksword5.1\x64\Release\KswordARK.pdb`、`Ksword5.1\x64\Release\KswordARKDriver.inf`。
 
 ### 2. 搭建发行目录
