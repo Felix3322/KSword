@@ -76,7 +76,6 @@ private:
     static bool parseAddress(const QString& text, unsigned long long& addressOut);
 
     Mode m_mode;
-    QLabel* m_warningLabel = nullptr;
     QTabWidget* m_innerTabs = nullptr;
     QPushButton* m_refreshButton = nullptr;
     QPushButton* m_columnGroupAButton = nullptr;
