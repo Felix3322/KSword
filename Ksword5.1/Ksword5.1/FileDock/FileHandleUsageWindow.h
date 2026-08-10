@@ -110,6 +110,12 @@ private:
     // - 成功后刷新扫描结果，失败则弹出错误原因。
     void closeCurrentRemoteHandle();
 
+    // terminateCurrentProcess 作用：
+    // - 复用当前扫描记录的 PID 创建时间，先锁定同一进程对象再执行结束；
+    // - useKernelDriver=true 时由 R0 结束，否则使用 R3 TerminateProcess；
+    // - 作为旧“文件解锁器”的进程兜底动作，避免再弹出第二套选择窗口。
+    void terminateCurrentProcess(bool useKernelDriver);
+
     // showTableContextMenu 作用：弹出右键菜单（复制/转到进程详情）。
     void showTableContextMenu(const QPoint& localPosition);
 
@@ -121,6 +127,9 @@ private:
     QHBoxLayout* m_toolbarLayout = nullptr;   // m_toolbarLayout：顶部工具栏布局。
     QPushButton* m_refreshButton = nullptr;   // m_refreshButton：刷新按钮（图标）。
     QPushButton* m_openProcessButton = nullptr; // m_openProcessButton：转到进程详情按钮（图标）。
+    QPushButton* m_closeHandleButton = nullptr; // m_closeHandleButton：关闭当前远程句柄按钮。
+    QPushButton* m_terminateProcessButton = nullptr; // m_terminateProcessButton：R3 结束当前进程按钮。
+    QPushButton* m_terminateProcessR0Button = nullptr; // m_terminateProcessR0Button：R0 结束当前进程按钮。
     QLabel* m_targetLabel = nullptr;          // m_targetLabel：目标路径摘要标签。
     QLabel* m_statusLabel = nullptr;          // m_statusLabel：扫描状态标签。
     QTreeWidget* m_resultTable = nullptr;     // m_resultTable：扫描结果表。

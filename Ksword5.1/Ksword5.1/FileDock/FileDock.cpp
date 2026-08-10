@@ -14819,6 +14819,15 @@ void FileDock::unlockPathsByDriver(
         return;
     }
 
+    // “文件解锁器”与“占用句柄扫描”共用同一份扫描数据和解锁动作。
+    // 旧实现会在后台线程中等待第二个选择对话框，既重复了结果页，也会在
+    // 扫描期间关闭窗口时产生陈旧回调。统一入口后，关闭句柄及 R3/R0 结束
+    // 进程动作都在结果窗口内完成。
+    Q_UNUSED(triggerTag);
+    Q_UNUSED(panelForRefresh);
+    openHandleUsageScanWindow(paths);
+    return;
+
     enum class RefreshTarget
     {
         Both = 0,

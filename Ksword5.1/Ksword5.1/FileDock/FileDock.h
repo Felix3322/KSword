@@ -495,9 +495,9 @@ private:
     static std::size_t recordFileOplockAccessPrograms(FileOplockEntry& entry, std::uint64_t breakSequence);
 
     // unlockPathsByDriver：
-    // - 作用：执行“文件解锁器”核心流程（扫描占用 + 用户选择 + R3/R0 结束进程）；
-    // - 参数 triggerTag：触发来源标签（右键菜单/系统右键）。
-    // - 参数 panelForRefresh：可选，仅刷新指定面板；为空时刷新左右面板。
+    // - 作用：兼容旧“文件解锁器”入口，并统一转交“占用句柄扫描”窗口；
+    // - 解锁窗口内提供关闭句柄、R3 结束进程、R0 结束进程，避免两套页面和后台等待 UI。
+    // - 参数 triggerTag / panelForRefresh 保留 ABI，旧调用方无需分叉。
     void unlockPathsByDriver(
         const std::vector<QString>& targetPaths,
         const QString& triggerTag,

@@ -1,4 +1,6 @@
 #include "FileHandleUsageWindow.h"
+#include "../ArkDriverClient/ArkDriverClient.h"
+#include "../Framework/DestructiveActionConfirmation.h"
 #include "../Internationalization/LanguageManager.h"
 
 // ============================================================
@@ -26,6 +28,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRunnable>
+#include <QStringList>
 #include <QThreadPool>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -33,6 +36,7 @@
 #include <QVBoxLayout>
 
 #include <memory>
+#include <string>
 #include <utility>
 
 namespace
@@ -79,6 +83,19 @@ namespace
         return QStringLiteral("0x%1")
             .arg(static_cast<qulonglong>(value), 0, 16)
             .toUpper();
+    }
+
+    bool isCriticalProcessName(const QString& processName)
+    {
+        static const QStringList criticalNameList{
+            QStringLiteral("smss.exe"),
+            QStringLiteral("csrss.exe"),
+            QStringLiteral("wininit.exe"),
+            QStringLiteral("services.exe"),
+            QStringLiteral("lsass.exe"),
+            QStringLiteral("winlogon.exe")
+        };
+        return criticalNameList.contains(processName.trimmed(), Qt::CaseInsensitive);
     }
 
 }
@@ -143,6 +160,28 @@ void FileHandleUsageWindow::initializeUi()
     m_openProcessButton->setToolTip(QStringLiteral("转到当前行的进程详细信息"));
     m_openProcessButton->setStyleSheet(buildBlueButtonStyle());
 
+    // 解锁动作：占用扫描结果就是唯一的解锁工作台，直接对当前行执行可验证的动作。
+    m_closeHandleButton = new QPushButton(this);
+    m_closeHandleButton->setIcon(QIcon(":/Icon/handle_close.svg"));
+    m_closeHandleButton->setIconSize(QSize(16, 16));
+    m_closeHandleButton->setFixedSize(28, 28);
+    m_closeHandleButton->setToolTip(ks::i18n::sourceText(QStringLiteral("关闭当前句柄(R3)")));
+    m_closeHandleButton->setStyleSheet(buildBlueButtonStyle());
+
+    m_terminateProcessButton = new QPushButton(this);
+    m_terminateProcessButton->setIcon(QIcon(":/Icon/process_terminate.svg"));
+    m_terminateProcessButton->setIconSize(QSize(16, 16));
+    m_terminateProcessButton->setFixedSize(28, 28);
+    m_terminateProcessButton->setToolTip(ks::i18n::sourceText(QStringLiteral("结束进程")));
+    m_terminateProcessButton->setStyleSheet(buildBlueButtonStyle());
+
+    m_terminateProcessR0Button = new QPushButton(this);
+    m_terminateProcessR0Button->setIcon(QIcon(":/Icon/process_terminate.svg"));
+    m_terminateProcessR0Button->setIconSize(QSize(16, 16));
+    m_terminateProcessR0Button->setFixedSize(28, 28);
+    m_terminateProcessR0Button->setToolTip(ks::i18n::sourceText(QStringLiteral("R0结束进程")));
+    m_terminateProcessR0Button->setStyleSheet(buildBlueButtonStyle());
+
     QStringList pathTextList;
     for (const QString& pathText : m_targetPaths)
     {
@@ -155,6 +194,9 @@ void FileHandleUsageWindow::initializeUi()
 
     m_toolbarLayout->addWidget(m_refreshButton);
     m_toolbarLayout->addWidget(m_openProcessButton);
+    m_toolbarLayout->addWidget(m_closeHandleButton);
+    m_toolbarLayout->addWidget(m_terminateProcessButton);
+    m_toolbarLayout->addWidget(m_terminateProcessR0Button);
     m_toolbarLayout->addWidget(m_targetLabel, 1);
 
     m_statusLabel = new QLabel(QStringLiteral("● 等待扫描"), this);
@@ -206,6 +248,21 @@ void FileHandleUsageWindow::initializeConnections()
     connect(m_openProcessButton, &QPushButton::clicked, this, [this]()
         {
             openCurrentProcessDetail();
+        });
+
+    connect(m_closeHandleButton, &QPushButton::clicked, this, [this]()
+        {
+            closeCurrentRemoteHandle();
+        });
+
+    connect(m_terminateProcessButton, &QPushButton::clicked, this, [this]()
+        {
+            terminateCurrentProcess(false);
+        });
+
+    connect(m_terminateProcessR0Button, &QPushButton::clicked, this, [this]()
+        {
+            terminateCurrentProcess(true);
         });
 
     connect(m_resultTable, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& localPosition)
@@ -591,6 +648,112 @@ void FileHandleUsageWindow::closeCurrentRemoteHandle()
         QStringLiteral("关闭句柄失败：%1").arg(QString::fromStdString(detailText)));
 }
 
+void FileHandleUsageWindow::terminateCurrentProcess(const bool useKernelDriver)
+{
+    const filedock::handleusage::HandleUsageEntry* entry = selectedEntry();
+    if (entry == nullptr)
+    {
+        QMessageBox::information(this, QStringLiteral("结束进程"), QStringLiteral("请先选择一条句柄记录。"));
+        return;
+    }
+
+    const filedock::handleusage::HandleUsageEntry selectedProcessEntry = *entry;
+    if (selectedProcessEntry.processId <= 4U ||
+        selectedProcessEntry.processId == static_cast<std::uint32_t>(::GetCurrentProcessId()) ||
+        selectedProcessEntry.processCreationTime == 0U ||
+        isCriticalProcessName(selectedProcessEntry.processName))
+    {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("结束进程"),
+            QStringLiteral("当前记录没有可关闭的远程句柄，或目标 PID 受保护。"));
+        return;
+    }
+
+    const QString actionTitle = useKernelDriver
+        ? ks::i18n::sourceText(QStringLiteral("R0结束进程"))
+        : ks::i18n::sourceText(QStringLiteral("结束进程"));
+    const QString targetText = ks::i18n::sourceText(QStringLiteral("PID %1（%2）"))
+        .arg(selectedProcessEntry.processId)
+        .arg(selectedProcessEntry.processName.trimmed().isEmpty()
+            ? QStringLiteral("Unknown")
+            : selectedProcessEntry.processName);
+    const QString riskText = useKernelDriver
+        ? ks::i18n::sourceText(QStringLiteral(
+            "R0 结束操作不可逆，可能造成数据丢失、系统不稳定或蓝屏。请确认目标无误后再继续。"))
+        : QString();
+    if (!ks::ui::confirmDestructiveAction(
+            this,
+            useKernelDriver
+                ? QStringLiteral("file-handle-usage-terminate-r0")
+                : QStringLiteral("file-handle-usage-terminate-r3"),
+            actionTitle,
+            targetText,
+            riskText))
+    {
+        return;
+    }
+
+    std::string detailText;
+    HANDLE verifiedProcessHandle = nullptr;
+    if (!ks::file::OpenProcessForVerifiedAction(
+            selectedProcessEntry.processId,
+            selectedProcessEntry.processCreationTime,
+            useKernelDriver ? SYNCHRONIZE : (PROCESS_TERMINATE | SYNCHRONIZE),
+            verifiedProcessHandle,
+            detailText))
+    {
+        QMessageBox::warning(this, actionTitle, QString::fromStdString(detailText));
+        return;
+    }
+
+    bool terminateOk = false;
+    if (useKernelDriver)
+    {
+        ksword::ark::DriverClient driverClient;
+        const ksword::ark::IoResult driverResult = driverClient.terminateProcess(
+            selectedProcessEntry.processId,
+            static_cast<long>(0xC0000005U));
+        detailText = driverResult.message;
+        terminateOk = driverResult.ok;
+    }
+    else
+    {
+        const BOOL terminateResult = ::TerminateProcess(
+            verifiedProcessHandle,
+            static_cast<UINT>(0xC0000005U));
+        terminateOk = terminateResult != FALSE;
+        if (!terminateOk)
+        {
+            detailText = "TerminateProcess failed, error=" + std::to_string(::GetLastError());
+        }
+    }
+    ::CloseHandle(verifiedProcessHandle);
+
+    kLogEvent terminateEvent;
+    if (terminateOk)
+    {
+        info << terminateEvent
+            << "[FileHandleUsageWindow] terminateCurrentProcess success: method="
+            << (useKernelDriver ? "R0" : "R3")
+            << ", pid="
+            << selectedProcessEntry.processId
+            << eol;
+        requestRefresh(true);
+        return;
+    }
+
+    warn << terminateEvent
+        << "[FileHandleUsageWindow] terminateCurrentProcess failed: method="
+        << (useKernelDriver ? "R0" : "R3")
+        << ", pid="
+        << selectedProcessEntry.processId
+        << ", detail="
+        << detailText
+        << eol;
+    QMessageBox::warning(this, actionTitle, QString::fromStdString(detailText));
+}
+
 void FileHandleUsageWindow::showTableContextMenu(const QPoint& localPosition)
 {
     if (m_resultTable == nullptr)
@@ -609,6 +772,12 @@ void FileHandleUsageWindow::showTableContextMenu(const QPoint& localPosition)
     menu.setStyleSheet(KswordTheme::ContextMenuStyle());
     QAction* openProcessAction = menu.addAction(QIcon(":/Icon/process_details.svg"), QStringLiteral("转到进程详细信息"));
     QAction* closeHandleAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("关闭当前句柄(R3)"));
+    QAction* terminateProcessAction = menu.addAction(
+        QIcon(":/Icon/process_terminate.svg"),
+        ks::i18n::sourceText(QStringLiteral("结束进程")));
+    QAction* terminateProcessR0Action = menu.addAction(
+        QIcon(":/Icon/process_terminate.svg"),
+        ks::i18n::sourceText(QStringLiteral("R0结束进程")));
     QAction* copyRowAction = menu.addAction(QIcon(":/Icon/handle_copy_row.svg"), QStringLiteral("复制整行"));
 
     QAction* selectedAction = menu.exec(m_resultTable->viewport()->mapToGlobal(localPosition));
@@ -624,6 +793,16 @@ void FileHandleUsageWindow::showTableContextMenu(const QPoint& localPosition)
     if (selectedAction == closeHandleAction)
     {
         closeCurrentRemoteHandle();
+        return;
+    }
+    if (selectedAction == terminateProcessAction)
+    {
+        terminateCurrentProcess(false);
+        return;
+    }
+    if (selectedAction == terminateProcessR0Action)
+    {
+        terminateCurrentProcess(true);
         return;
     }
     if (selectedAction == copyRowAction)
