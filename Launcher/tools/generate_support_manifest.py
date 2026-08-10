@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the Launcher identity index from the published DynData v3 pack."""
+"""Generate the Launcher identity index from a published DynData v3-or-newer pack."""
 
 from __future__ import annotations
 
@@ -132,10 +132,10 @@ def identity_key(profile: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def generate(source: dict[str, Any], pack: dict[str, Any]) -> dict[str, Any]:
-    """合并目录与已发布矩阵；输入源目录和 v3 pack，输出 Launcher 清单。"""
+    """合并目录与已发布矩阵；输入源目录和 v3 或更高版本 pack，输出 Launcher 清单。"""
     modules_by_id = validate_source(source)
     if int(pack.get("packVersion", 0)) < 3 or not isinstance(pack.get("profiles"), list):
-        raise ValueError("ark_dyndata_pack_v3.json must be a v3 profile pack")
+        raise ValueError("Launcher support manifest requires a v3-or-newer profile pack")
 
     deduplicated: dict[tuple[Any, ...], dict[str, Any]] = {}
     for raw_profile in pack["profiles"]:

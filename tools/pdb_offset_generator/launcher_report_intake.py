@@ -243,6 +243,50 @@ def validate_module(raw: dict[str, Any], bin_path: Path, expected_sha256: str) -
     }
 
 
+def report_validation_diagnostics(
+    modules: list[dict[str, Any]],
+    extra_bins: list[str],
+) -> tuple[list[str], list[str]]:
+    """Separate report-fatal attachment failures from legacy optional omissions.
+
+    An older Launcher emitted every inspected module in report.json but copied
+    only collection candidates.  LXCORE is neither compatibility-required nor a
+    collection-only module, so its missing attachment is a known report-bundle
+    omission and cannot contribute a profile.  It is retained as a warning;
+    every other module error, including all PE, hash, RSDS, and required-module
+    failures, remains fatal.
+    """
+    errors = [f"extra_binary:{name}" for name in extra_bins]
+    warnings: list[str] = []
+    for module in modules:
+        file_name = str(module.get("fileName") or "<unknown>")
+        module_errors = module.get("errors", [])
+        if not isinstance(module_errors, list):
+            errors.append(f"{file_name}:errors_not_array")
+            continue
+        optional_module = (
+            not bool(module.get("compatibilityRequired"))
+            and not bool(module.get("collectionOnly"))
+        )
+        for error in module_errors:
+            if optional_module and error == "binary_missing":
+                warnings.append(f"{file_name}:binary_missing_optional")
+            else:
+                errors.append(f"{file_name}:{error}")
+    return errors, warnings
+
+
+def publishable_modules(modules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only attachment-validated modules eligible for corpus import.
+
+    Report-level validity can tolerate the known optional LXCORE omission from
+    legacy bundles.  Import must still never dereference or publish that absent
+    attachment, so every subsequent PE/PDB/profile operation receives only
+    individually validated module records.
+    """
+    return [module for module in modules if bool(module.get("valid"))]
+
+
 def validate_report(report_dir: Path) -> dict[str, Any]:
     report_dir = report_dir.resolve()
     if not report_dir.is_dir():
@@ -279,12 +323,7 @@ def validate_report(report_dir: Path) -> dict[str, Any]:
         modules.append(validate_module(raw, bin_path, checksums[bin_key]))
 
     extra_bins = sorted(set(bins) - expected_bins)
-    errors = [f"extra_binary:{name}" for name in extra_bins]
-    errors.extend(
-        f"{module.get('fileName')}:{error}"
-        for module in modules
-        for error in module.get("errors", [])
-    )
+    errors, warnings = report_validation_diagnostics(modules, extra_bins)
     report_id = sha256_file(report_path)[:16]
     os_info = report.get("os") if isinstance(report.get("os"), dict) else {}
     return {
@@ -299,6 +338,7 @@ def validate_report(report_dir: Path) -> dict[str, Any]:
         "modules": modules,
         "valid": not errors and bool(modules),
         "errors": errors,
+        "warnings": warnings,
     }
 
 
@@ -492,12 +532,13 @@ def commit_report(result: dict[str, Any], corpus_root: Path, report_dir: Path, s
     staged_pdb_dir = staging / "pdb"
     generated_profile_dir = staging / "generated-profiles"
     staging.mkdir(parents=True, exist_ok=True)
+    modules = publishable_modules(result["modules"])
     for name in REPORT_METADATA_FILES:
         source = report_dir / name
         if source.is_file():
             atomic_copy(source, metadata_dir / name)
 
-    for module in result["modules"]:
+    for module in modules:
         print(f"[stage PE] {module['fileName']} {module['version']}", flush=True)
         source = Path(module["source"])
         normalized = normalized_dir / module["canonicalFileName"]
@@ -520,7 +561,7 @@ def commit_report(result: dict[str, Any], corpus_root: Path, report_dir: Path, s
         module["stagedPdb"] = str(staged_pdb)
 
     generated_profiles: list[tuple[dict[str, Any], Path]] = []
-    for module in result["modules"]:
+    for module in modules:
         if compatibility_profile_class(module) is None:
             continue
         print(f"[profile generate] {module['fileName']}", flush=True)
@@ -535,7 +576,7 @@ def commit_report(result: dict[str, Any], corpus_root: Path, report_dir: Path, s
 
     non_collection_modules = [
         module
-        for module in result["modules"]
+        for module in modules
         if not bool(module.get("collectionOnly"))
     ]
     if not generated_profiles and non_collection_modules:
@@ -556,7 +597,7 @@ def commit_report(result: dict[str, Any], corpus_root: Path, report_dir: Path, s
             "duplicateGroups": 0,
         }
 
-    for module in result["modules"]:
+    for module in modules:
         print(f"[commit] {module['fileName']}", flush=True)
         module["peDestination"] = str(canonical_pe_path(corpus_root, module))
         module["peCommitStatus"] = atomic_copy(Path(module["normalizedPe"]), Path(module["peDestination"]), module["sha256"])

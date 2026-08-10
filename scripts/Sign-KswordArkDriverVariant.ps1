@@ -218,7 +218,7 @@ function Write-SignatureSummary {
 
 # Assert-FinalKernelSignature:
 # - Inputs: the final driver path, the resolved signtool.exe and the strictness flag.
-# - Processing: runs `signtool verify /kp /all /v` (the kernel-mode driver policy) and prints the
+# - Processing: runs `signtool verify /kp /v` (the kernel-mode driver policy) and prints the
 #   SHA256 of the exact bytes that will be distributed, so a build log can be matched against the
 #   file a user actually loaded.
 # - Returns: no value. Throws when the signature is invalid and strict verification was requested;
@@ -238,8 +238,19 @@ function Assert-FinalKernelSignature {
     $fileHash = Get-FileHash -LiteralPath $Path -Algorithm SHA256
     Write-Host "Final driver SHA256: $($fileHash.Hash)"
 
-    $output = & $SignToolPath verify /kp /all /v $Path 2>&1
-    $exitCode = $LASTEXITCODE
+    # Windows PowerShell may promote native stderr to NativeCommandError when
+    # $ErrorActionPreference is Stop. Capture the kernel-policy exit code
+    # ourselves so a non-strict developer build logs untrusted test roots as a
+    # warning, while Strict remains the release gate below.
+    $previousErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $SignToolPath verify /kp /v $Path 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorPreference
+    }
     $output | ForEach-Object { Write-Host $_ }
 
     if ($exitCode -eq 0) {

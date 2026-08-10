@@ -37,7 +37,7 @@
   </ItemGroup>
   <ItemGroup><ResourceCompile Include="Launcher.rc" /><Image Include="..\Ksword5.1\Ksword5.1\Resource\Logo\KswordLogo.ico" /></ItemGroup>
   <Target Name="GenerateLauncherSupportManifest" BeforeTargets="Build">
-    <PropertyGroup><LauncherPython Condition="'$(LauncherPython)'==''">python</LauncherPython><LauncherPack>$(MSBuildProjectDirectory)\..\Ksword5.1\Ksword5.1\profiles\ark_dyndata_pack_v3.json</LauncherPack><LauncherManifest>$(TargetDir)profiles\launcher_support_manifest.json</LauncherManifest></PropertyGroup>
+    <PropertyGroup><LauncherPython Condition="'$(LauncherPython)'==''">python</LauncherPython><LauncherPack>$(MSBuildProjectDirectory)\..\Ksword5.1\Ksword5.1\profiles\ark_dyndata_pack_v4.json</LauncherPack><LauncherManifest>$(TargetDir)profiles\launcher_support_manifest.json</LauncherManifest></PropertyGroup>
     <Error Condition="!Exists('$(LauncherPack)')" Text="Launcher support source pack was not found: $(LauncherPack)" />
     <MakeDir Directories="$(TargetDir)profiles" />
     <Exec Command="&quot;$(LauncherPython)&quot; &quot;$(ProjectDir)tools\generate_support_manifest.py&quot; --source &quot;$(ProjectDir)support_manifest_source.json&quot; --pack &quot;$(LauncherPack)&quot; --output &quot;$(LauncherManifest)&quot;" />

@@ -255,7 +255,16 @@ def deep_library_paths(manifest: dict[str, Any], manifest_path: Path) -> list[Pa
         if not candidate.exists():
             candidate = (REPO_ROOT / relative_path).resolve()
         output.append(candidate)
-    return output
+    if output:
+        return output
+
+    # Earlier release manifests predate deepOffsetLibraries. The deep JSON
+    # files are still shipped beside the pack, so discover that canonical
+    # profile directory instead of reporting a false missing-library failure.
+    deep_directory = manifest_path.parent / "pdb_deep_offsets"
+    if not deep_directory.is_dir():
+        return []
+    return sorted(deep_directory.glob("*_deep_offsets.json"), key=lambda path: path.name.lower())
 
 
 def build_profile_view(profile: dict[str, Any], field_dictionary: list[str]) -> PackProfileView:

@@ -8,6 +8,71 @@ from unittest import mock
 import launcher_report_intake as intake
 
 
+class LauncherBundleContractTests(unittest.TestCase):
+    def test_bundle_copies_every_reported_module_from_inspected_set(self) -> None:
+        bundle_source = (
+            Path(__file__).resolve().parents[2]
+            / "Launcher"
+            / "Bundle.cpp"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("for (const ModuleFinding& finding : scan.inspected)", bundle_source)
+        self.assertNotIn(
+            "for (const ModuleFinding& finding : scan.collectionCandidates) if (finding.module.classId != 0)",
+            bundle_source,
+        )
+
+
+class LauncherReportValidationPolicyTests(unittest.TestCase):
+    def test_missing_non_required_non_collection_module_is_a_warning(self) -> None:
+        errors, warnings = intake.report_validation_diagnostics(
+            [
+                {
+                    "fileName": "lxcore.sys",
+                    "compatibilityRequired": False,
+                    "collectionOnly": False,
+                    "errors": ["binary_missing"],
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual([], errors)
+        self.assertEqual(["lxcore.sys:binary_missing_optional"], warnings)
+
+    def test_missing_compatibility_module_remains_an_error(self) -> None:
+        errors, warnings = intake.report_validation_diagnostics(
+            [
+                {
+                    "fileName": "ntoskrnl.exe",
+                    "compatibilityRequired": True,
+                    "collectionOnly": False,
+                    "errors": ["binary_missing"],
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(["ntoskrnl.exe:binary_missing"], errors)
+        self.assertEqual([], warnings)
+
+    def test_publishable_modules_excludes_optional_missing_attachment(self) -> None:
+        modules = intake.publishable_modules(
+            [
+                {"fileName": "ntoskrnl.exe", "valid": True},
+                {
+                    "fileName": "lxcore.sys",
+                    "valid": False,
+                    "compatibilityRequired": False,
+                    "collectionOnly": False,
+                    "errors": ["binary_missing"],
+                },
+            ]
+        )
+
+        self.assertEqual(["ntoskrnl.exe"], [module["fileName"] for module in modules])
+
+
 class CompatibilityProfilePolicyTests(unittest.TestCase):
     def test_compatibility_modules_remain_profile_candidates(self) -> None:
         self.assertEqual(
@@ -41,6 +106,7 @@ class CompatibilityProfilePolicyTests(unittest.TestCase):
                 "canonicalFileName": "fltmgr.sys",
                 "source": str(source),
                 "classId": 48,
+                "valid": True,
                 "collectionOnly": True,
                 "arch": "amd64",
                 "version": "10.0.26100.1",

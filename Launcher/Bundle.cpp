@@ -151,7 +151,9 @@ bool PrepareUploadBundle(const RuntimePaths& paths, const SupportManifest& manif
 
     std::vector<std::wstring> sourcePaths;
     sourcePaths.push_back(scan.kernel.path);
-    for (const ModuleFinding& finding : scan.collectionCandidates) if (finding.module.classId != 0) sourcePaths.push_back(finding.module.path);
+    for (const ModuleFinding& finding : scan.inspected) {
+        if (finding.module.classId != 0) sourcePaths.push_back(finding.module.path);
+    }
     std::sort(sourcePaths.begin(), sourcePaths.end());
     sourcePaths.erase(std::unique(sourcePaths.begin(), sourcePaths.end()), sourcePaths.end());
     const size_t sourceCount = sourcePaths.size();

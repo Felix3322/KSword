@@ -1350,6 +1350,23 @@ def build_pack_field_dictionary(records: list[ProfileRecord]) -> tuple[list[str]
     return field_names, field_index
 
 
+def records_for_pack_version(records: list[ProfileRecord], pack_version: int) -> list[ProfileRecord]:
+    """Return records representable by one compact pack format.
+
+    v1/v2 require legacy field pairs, v3 can encode typed-only records, and v4
+    is the only format that can carry v4-only module capability items. Keeping
+    this selection at the publisher boundary preserves legacy artifacts when a
+    newer module class has no meaningful old-format projection.
+    """
+    if pack_version not in KSW_SUPPORTED_PACK_VERSIONS:
+        raise ValueError(f"unsupported pack version: {pack_version}")
+    if pack_version in {KSW_PACK_VERSION_V1, KSW_PACK_VERSION_V2}:
+        return [record for record in records if record.field_count > 0]
+    if pack_version == KSW_PACK_VERSION_V3:
+        return [record for record in records if record.field_count > 0 or record.typed_items]
+    return [record for record in records if record.field_count > 0 or record.typed_items or record.v4_items]
+
+
 def build_pack_typed_items(record: ProfileRecord, pack_version: int) -> list[dict[str, Any]]:
     """Build pack typed items for one profile record.
 
@@ -1557,12 +1574,15 @@ def build_profile_pack(records: list[ProfileRecord], pack_version: int) -> dict[
     """
     if pack_version not in KSW_SUPPORTED_PACK_VERSIONS:
         raise ValueError(f"unsupported pack version: {pack_version}")
-    field_dictionary, field_index = build_pack_field_dictionary(records)
+    selected_records = records_for_pack_version(records, pack_version)
+    if not selected_records:
+        raise ValueError(f"no profiles are representable in pack version {pack_version}")
+    field_dictionary, field_index = build_pack_field_dictionary(selected_records)
     return {
         "schemaVersion": KSW_SCHEMA_VERSION,
         "packVersion": pack_version,
         "fieldDictionary": field_dictionary,
-        "profiles": [build_pack_profile_entry(record, field_index, pack_version) for record in records],
+        "profiles": [build_pack_profile_entry(record, field_index, pack_version) for record in selected_records],
     }
 
 

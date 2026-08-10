@@ -28,6 +28,9 @@ public:
     // 入参 parent：Qt 父对象指针。
     explicit SettingsDock(QWidget* parent = nullptr);
 
+    // applySettings 作用：保存当前设置并发出变更信号；由对话框固定操作栏调用。
+    void applySettings();
+
     // currentAppearanceSettings 作用：
     // - 返回当前内存中的外观设置快照。
     // 调用方式：MainWindow 初始化时读取一次默认设置。
@@ -47,6 +50,9 @@ signals:
     // 调用方式：内部保存成功后 emit。
     // 入参 settings：最新界面与启动配置。
     void appearanceSettingsChanged(const ks::settings::AppearanceSettings& settings);
+
+    // pendingChangesChanged 作用：同步对话框固定“应用”按钮的可用状态。
+    void pendingChangesChanged(bool hasPendingChanges);
 
 private:
     // initializeUi 作用：
@@ -337,7 +343,7 @@ private:
     QLineEdit* m_threatBookApiKeyEdit = nullptr;
 
     // m_applySettingsButton 作用：统一提交当前设置改动并触发实际生效。
-    QPushButton* m_applySettingsButton = nullptr;
+
 
     // m_saveOnlineScanKeysButton 作用：在线扫描页单独保存 API Key 的按钮。
     QPushButton* m_saveOnlineScanKeysButton = nullptr;

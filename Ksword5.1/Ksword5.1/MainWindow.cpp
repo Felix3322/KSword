@@ -43,11 +43,13 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QPropertyAnimation>
 #include <QRectF>
 #include <QResizeEvent>
 #include <QSizePolicy>
 #include <QScrollBar>
+#include <QScrollArea>
 #include <QImageReader>
 #include <QImage>
 #include <QThreadPool>
@@ -7050,19 +7052,48 @@ void MainWindow::showSettingsPanelFromMenu(bool showLanguageTab)
     dialogLayout.setSpacing(6);
 
     // 设置面板改为顶部菜单即时对话框，每次打开读取当前 JSON，避免占用主 Tab 栏空间。
-    SettingsDock settingsPanel(&settingsDialog);
+    auto* settingsScrollArea = new QScrollArea(&settingsDialog);
+    settingsScrollArea->setWidgetResizable(true);
+    settingsScrollArea->setFrameShape(QFrame::NoFrame);
+    settingsScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    settingsScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    auto* settingsPanel = new SettingsDock();
+    settingsScrollArea->setWidget(settingsPanel);
     if (showLanguageTab)
     {
-        settingsPanel.showLanguageSettingsTab();
+        settingsPanel->showLanguageSettingsTab();
     }
     connect(
-        &settingsPanel,
+        settingsPanel,
         &SettingsDock::appearanceSettingsChanged,
         this,
         [this](const ks::settings::AppearanceSettings& settings) {
             applyAppearanceSettings(settings, QStringLiteral("顶部菜单设置变更"));
         });
-    dialogLayout.addWidget(&settingsPanel, 1);
+    dialogLayout.addWidget(settingsScrollArea, 1);
+
+    // 固定操作栏不放入滚动区域，保证“应用/取消”始终可见。
+    auto* actionLayout = new QHBoxLayout();
+    actionLayout->addStretch(1);
+    auto* cancelButton = new QPushButton(QStringLiteral("取消"), &settingsDialog);
+    auto* applyButton = new QPushButton(QStringLiteral("应用"), &settingsDialog);
+    auto& languageManager = ks::i18n::LanguageManager::instance();
+    languageManager.bindText(cancelButton, QStringLiteral("common.cancel"), QStringLiteral("取消"));
+    languageManager.bindText(applyButton, QStringLiteral("settings.apply"), QStringLiteral("应用"));
+    languageManager.bindToolTip(applyButton, QStringLiteral("settings.apply.tooltip"), QStringLiteral("应用当前设置改动"));
+    cancelButton->setMinimumWidth(72);
+    applyButton->setMinimumWidth(72);
+    cancelButton->setFixedHeight(30);
+    applyButton->setFixedHeight(30);
+    applyButton->setEnabled(false);
+    actionLayout->addWidget(cancelButton);
+    actionLayout->addWidget(applyButton);
+    dialogLayout.addLayout(actionLayout);
+
+    connect(applyButton, &QPushButton::clicked, settingsPanel, &SettingsDock::applySettings);
+    connect(cancelButton, &QPushButton::clicked, &settingsDialog, &QDialog::reject);
+    connect(settingsPanel, &SettingsDock::pendingChangesChanged, applyButton, &QPushButton::setEnabled);
 
     settingsDialog.exec();
 }

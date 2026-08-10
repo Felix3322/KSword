@@ -231,7 +231,7 @@ void SettingsDock::changeEvent(QEvent* event)
 
 void SettingsDock::initializeUi()
 {
-    // rootLayout 作用：SettingsDock 根布局，承载 Tab 控件与跨页可见的应用按钮。
+    // rootLayout 作用：SettingsDock 根布局，仅承载可滚动的设置页签内容。
     QVBoxLayout* rootLayout = new QVBoxLayout(this);
     rootLayout->setContentsMargins(10, 10, 10, 10);
     rootLayout->setSpacing(8);
@@ -240,25 +240,6 @@ void SettingsDock::initializeUi()
     m_tabWidget = new QTabWidget(this);
     m_tabWidget->setTabPosition(QTabWidget::North);
     rootLayout->addWidget(m_tabWidget);
-
-    // 应用按钮固定在页签下方，切换“外观 / 语言 / 启动”时仍可提交同一份待保存设置。
-    QHBoxLayout* actionLayout = new QHBoxLayout();
-    actionLayout->addStretch(1);
-    m_applySettingsButton = new QPushButton(QStringLiteral("应用"), this);
-    ks::i18n::LanguageManager::instance().bindText(
-        m_applySettingsButton,
-        QStringLiteral("settings.apply"),
-        QStringLiteral("应用"));
-    m_applySettingsButton->setMinimumWidth(72);
-    m_applySettingsButton->setFixedHeight(30);
-    m_applySettingsButton->setToolTip(QStringLiteral("应用当前设置改动"));
-    ks::i18n::LanguageManager::instance().bindToolTip(
-        m_applySettingsButton,
-        QStringLiteral("settings.apply.tooltip"),
-        QStringLiteral("应用当前设置改动"));
-    m_applySettingsButton->setEnabled(false);
-    actionLayout->addWidget(m_applySettingsButton, 0);
-    rootLayout->addLayout(actionLayout);
 
     setLayout(rootLayout);
 }
@@ -1211,9 +1192,11 @@ void SettingsDock::bindAppearanceSignals()
         }
         });
 
-    connect(m_applySettingsButton, &QPushButton::clicked, this, [this]() {
-        saveAndEmitFromUi(QStringLiteral("点击应用按钮"));
-        });
+}
+
+void SettingsDock::applySettings()
+{
+    saveAndEmitFromUi(QStringLiteral("点击应用按钮"));
 }
 
 void SettingsDock::loadSettingsFromJson()
@@ -1582,16 +1565,7 @@ void SettingsDock::updateSystemDefaultFontItemText()
 
 void SettingsDock::updateApplyButtonState()
 {
-    if (m_applySettingsButton != nullptr)
-    {
-        m_applySettingsButton->setEnabled(m_hasPendingChanges);
-        m_applySettingsButton->setToolTip(
-            m_hasPendingChanges
-            ? ks::i18n::text(
-                QStringLiteral("settings.apply.pending"),
-                QStringLiteral("应用当前设置改动（语言/主题/背景和系统右键菜单立即生效，部分启动选项下次启动生效）"))
-            : ks::i18n::text(QStringLiteral("settings.apply.clean"), QStringLiteral("当前设置已应用，无待提交改动")));
-    }
+    emit pendingChangesChanged(m_hasPendingChanges);
 
     // 在线扫描页保存按钮与外观页“应用”按钮共用同一个待保存状态，
     // 这样用户在任意设置页点击保存都会落盘完整配置。
