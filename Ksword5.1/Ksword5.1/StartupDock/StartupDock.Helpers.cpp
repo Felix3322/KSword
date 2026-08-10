@@ -232,6 +232,8 @@ namespace startup_dock_detail
                 return StartupDock::StartupCategory::Registry;
             case ks::startup::StartupCategory::Wmi:
                 return StartupDock::StartupCategory::Wmi;
+            case ks::startup::StartupCategory::Hidden:
+                return StartupDock::StartupCategory::Hidden;
             default:
                 return StartupDock::StartupCategory::All;
             }

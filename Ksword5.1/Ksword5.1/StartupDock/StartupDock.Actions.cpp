@@ -279,6 +279,7 @@ void StartupDock::initializeConnections()
     bindTableContextMenu(StartupCategory::Drivers, m_driversTable);
     bindTableContextMenu(StartupCategory::Tasks, m_tasksTable);
     bindTableContextMenu(StartupCategory::Wmi, m_wmiTable);
+    bindTableContextMenu(StartupCategory::Hidden, m_hiddenTable);
 
     if (m_registryTree != nullptr)
     {
@@ -1187,6 +1188,9 @@ int StartupDock::findEntryIndexByTableRow(const StartupCategory category, const 
         return -1;
     case StartupCategory::Wmi:
         tableWidget = m_wmiTable;
+        break;
+    case StartupCategory::Hidden:
+        tableWidget = m_hiddenTable;
         break;
     default:
         break;

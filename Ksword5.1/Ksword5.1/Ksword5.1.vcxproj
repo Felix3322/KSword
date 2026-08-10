@@ -393,6 +393,7 @@
     <ClCompile Include="StartupDock\StartupDock.Ui.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Winsock.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Wmi.cpp" />
+    <ClCompile Include="StartupDock\StartupDock.Hidden.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Actions.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Helpers.cpp" />
     <ClCompile Include="StartupDock\StartupDock.RegistryCatalog.cpp" />
@@ -445,6 +446,7 @@
     <ClCompile Include="ksword\process\ProcessImageDeleteGuard.cpp" />
     <ClCompile Include="ksword\service\service.cpp" />
     <ClCompile Include="ksword\startup\startup.cpp" />
+    <ClCompile Include="ksword\startup\startup_hidden.cpp" />
     <ClCompile Include="ksword\string\string.cpp" />
     <QtRcc Include="Ksword5.qrc" />
     <QtUic Include="Ksword5.ui" />
@@ -576,6 +578,7 @@
     <ClInclude Include="ksword\profile\ProfileJsonLoader.h" />
     <ClInclude Include="ksword\service\service.h" />
     <ClInclude Include="ksword\startup\startup.h" />
+    <ClInclude Include="ksword\startup\startup_internal.h" />
     <ClInclude Include="ksword\string\string.h" />
     <ClInclude Include="theme.h" />
     <ClInclude Include="UI\FlatTableModel.h" />

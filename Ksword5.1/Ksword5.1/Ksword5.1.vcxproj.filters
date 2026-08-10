@@ -709,6 +709,9 @@
     <ClCompile Include="StartupDock\StartupDock.Wmi.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="StartupDock\StartupDock.Hidden.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="StartupDock\StartupDock.Actions.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -863,6 +866,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\startup\startup.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ksword\startup\startup_hidden.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\string\string.cpp">
@@ -1577,6 +1583,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\startup\startup.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ksword\startup\startup_internal.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\string\string.h">

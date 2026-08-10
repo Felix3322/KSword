@@ -109,6 +109,8 @@ QString StartupDock::categoryToText(const StartupCategory category)
         return startupText("startup.category.registry", QStringLiteral("高级注册表"));
     case StartupCategory::Wmi:
         return startupText("startup.category.wmi", QStringLiteral("WMI"));
+    case StartupCategory::Hidden:
+        return startupText("startup.category.hidden", QStringLiteral("隐藏项"));
     default:
         return startupText("startup.category.unknown", QStringLiteral("未知"));
     }
@@ -162,6 +164,8 @@ StartupDock::StartupCategory StartupDock::currentCategory() const
         return StartupCategory::Registry;
     case 6:
         return StartupCategory::Wmi;
+    case 7:
+        return StartupCategory::Hidden;
     default:
         return StartupCategory::All;
     }
@@ -185,6 +189,8 @@ QTableWidget* StartupDock::currentCategoryTable() const
         return nullptr;
     case StartupCategory::Wmi:
         return m_wmiTable;
+    case StartupCategory::Hidden:
+        return m_hiddenTable;
     default:
         return m_allTable;
     }
@@ -234,6 +240,10 @@ QIcon StartupDock::resolveEntryIcon(const StartupEntry& entry)
         else if (entry.category == StartupCategory::Registry)
         {
             resolvedIcon = createBlueIcon(":/Icon/file_find.svg");
+        }
+        else if (entry.category == StartupCategory::Hidden)
+        {
+            resolvedIcon = createBlueIcon(":/Icon/startup_hidden.svg");
         }
         else
         {
@@ -349,11 +359,12 @@ void StartupDock::applyRefreshResult(std::vector<StartupEntry> entryList)
         m_servicesTable,
         m_driversTable,
         m_tasksTable,
-        m_wmiTable
+        m_wmiTable,
+        m_hiddenTable
     };
     if (ks::ui::IsTableUiCommitBlockedByContextMenu(startupTables))
     {
-        // 六张分类表来自同一快照，菜单关闭后必须原子替换，
+        // 七张分类表来自同一快照，菜单关闭后必须原子替换，
         // 避免各标签页缓存与可见行处于不同代次。
         const QPointer<StartupDock> safeThis(this);
         ks::ui::DeferTableUiCommitIfContextMenuOpen(

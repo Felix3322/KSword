@@ -252,6 +252,7 @@ void StartupDock::initializeTabs()
     m_tasksPage = createSingleTablePage(&m_tasksTable, m_sideTabWidget);
     m_registryPage = createRegistryTreePage(&m_registryTree, m_sideTabWidget);
     m_wmiPage = createSingleTablePage(&m_wmiTable, m_sideTabWidget);
+    m_hiddenPage = createSingleTablePage(&m_hiddenTable, m_sideTabWidget);
 
     m_sideTabWidget->addTab(
         m_allPage,
@@ -281,6 +282,10 @@ void StartupDock::initializeTabs()
         m_wmiPage,
         QIcon(":/Icon/process_tree.svg"),
         startupText("startup.tab.wmi", QStringLiteral("WMI")));
+    m_sideTabWidget->addTab(
+        m_hiddenPage,
+        QIcon(":/Icon/startup_hidden.svg"),
+        startupText("startup.tab.hidden", QStringLiteral("隐藏项")));
     const QList<QPair<QWidget*, QPair<QString, QString>>> tabTranslations{
         {m_allPage, {QStringLiteral("startup.tab.overview"), QStringLiteral("总览")}},
         {m_logonPage, {QStringLiteral("startup.tab.logon"), QStringLiteral("登录")}},
@@ -288,7 +293,8 @@ void StartupDock::initializeTabs()
         {m_driversPage, {QStringLiteral("startup.tab.drivers"), QStringLiteral("驱动")}},
         {m_tasksPage, {QStringLiteral("startup.tab.tasks"), QStringLiteral("计划任务")}},
         {m_registryPage, {QStringLiteral("startup.tab.registry"), QStringLiteral("高级注册表")}},
-        {m_wmiPage, {QStringLiteral("startup.tab.wmi"), QStringLiteral("WMI")}}
+        {m_wmiPage, {QStringLiteral("startup.tab.wmi"), QStringLiteral("WMI")}},
+        {m_hiddenPage, {QStringLiteral("startup.tab.hidden"), QStringLiteral("隐藏项")}}
     };
     for (const auto& tabTranslation : tabTranslations)
     {
@@ -309,7 +315,8 @@ void StartupDock::applyTranslatedHeaders()
         m_servicesTable,
         m_driversTable,
         m_tasksTable,
-        m_wmiTable
+        m_wmiTable,
+        m_hiddenTable
     };
     for (QTableWidget* tableWidget : tableList)
     {
@@ -333,6 +340,7 @@ void StartupDock::rebuildAllTables()
     rebuildTableForCategory(StartupCategory::Tasks, m_tasksTable);
     rebuildRegistryTree();
     rebuildTableForCategory(StartupCategory::Wmi, m_wmiTable);
+    rebuildTableForCategory(StartupCategory::Hidden, m_hiddenTable);
 }
 
 void StartupDock::rebuildTableForCategory(const StartupCategory category, QTableWidget* tableWidget)
