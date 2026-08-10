@@ -940,6 +940,21 @@ QString KernelThreadAuditTab::snapshotDiagnosticText(
     QStringList diagnostics;
     if (mode == Mode::WorkQueueThreads)
     {
+        // IOCTL 没送达时 workQueueQueryStatus 仍是 R3 结构体默认值(UNSUPPORTED)，
+        // 把它当成 R0 的布局结论上报会把“没有驱动”误报成“布局定位失败”。
+        if ((snapshot.diagnosticFlags & DiagnosticWorkQueueTransportFailed) != 0U)
+        {
+            diagnostics <<
+                ((snapshot.diagnosticFlags & DiagnosticWorkQueueUnsupported) != 0U
+                ? threadAuditText(
+                    "thread_audit.work_queue.transport.unsupported",
+                    QStringLiteral("驱动不识别工作队列 IOCTL，驱动版本过旧"))
+                : threadAuditText(
+                    "thread_audit.work_queue.transport.unavailable",
+                    QStringLiteral("驱动未加载或未连接，本次查询 R0 未参与")));
+            diagnostics << QStringLiteral("Win32=%1").arg(snapshot.r0Win32Error);
+            return diagnostics.join(QStringLiteral(" | "));
+        }
         switch (snapshot.workQueueQueryStatus)
         {
         case KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_OK:
@@ -977,11 +992,10 @@ QString KernelThreadAuditTab::snapshotDiagnosticText(
                 .arg(snapshot.workQueueQueryStatus);
             break;
         }
-        if ((snapshot.diagnosticFlags & DiagnosticWorkQueueTransportFailed) != 0U)
-        {
-            diagnostics << QStringLiteral("Win32=%1").arg(snapshot.r0Win32Error);
-        }
-        if ((snapshot.diagnosticFlags & DiagnosticWorkQueuePartial) != 0U)
+        // 任何非 OK 结论都附上 NTSTATUS，否则 UNSUPPORTED 只剩一句结论，
+        // 无法区分是布局搜索失败、映像不可用还是读取失败。
+        if ((snapshot.diagnosticFlags & DiagnosticWorkQueuePartial) != 0U ||
+            snapshot.workQueueQueryStatus != KSWORD_ARK_WORK_QUEUE_QUERY_STATUS_OK)
         {
             diagnostics << QStringLiteral(
                 "corrupt=%1, read=%2, reference=%3, NTSTATUS=0x%4")

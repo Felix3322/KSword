@@ -30,6 +30,8 @@ Environment:
 #define KSW_WORK_QUEUE_FALLBACK_PARTITION_SCAN 0x0100UL
 #define KSW_WORK_QUEUE_FALLBACK_QUEUE_SCAN 0x0100UL
 #define KSW_WORK_QUEUE_FALLBACK_MAX_POOL_INDEX 8UL
+// 优先级链表数组之后的自述字段窗口：队列自身的 partition 回指与队列序号都落在这里。
+#define KSW_WORK_QUEUE_FALLBACK_TAIL_SCAN 0x0180UL
 #define KSW_WORK_QUEUE_FALLBACK_MAX_NODES 64UL
 #define KSW_WORK_QUEUE_FALLBACK_PRIORITY_COUNT 32UL
 #define KSW_WORK_QUEUE_FALLBACK_THREAD_SCAN 0x0800UL
@@ -133,6 +135,8 @@ typedef struct _KSW_WORK_QUEUE_CHAIN
     ULONG ExPartitionWorkQueues;
     ULONG PoolIndex;
     ULONG PriQueueOffset;
+    ULONG PartitionBackOffset;
+    ULONG QueueIndexOffset;
     ULONG NodeCount;
     ULONG ValidationScore;
     ULONG_PTR QueueAddresses[KSW_WORK_QUEUE_FALLBACK_MAX_NODES];
@@ -589,20 +593,35 @@ KswordARKWorkQueueFallbackFindPriQueueOffset(
 
 Routine Description:
 
-    Locate one unique array of 32 reciprocal priority list heads inside a live
-    queue.  Empty and populated heads are both validated; populated heads add
-    evidence so unrelated arrays do not win on shape alone.
+    Locate the one array of 32 reciprocal priority list heads inside a live
+    queue.
+
+    The scan steps by one pointer while the array strides by one LIST_ENTRY,
+    so a shape-only test always accepts two windows: the real EntryListHead
+    array, and the window starting one pointer earlier, which pairs the
+    preceding dispatcher-header wait list with the first 31 real heads. Both
+    contain 32 reciprocal heads, so neither occupancy scoring nor a tie-break
+    can separate them - the earlier window is not weaker evidence, it is an
+    equally well-formed alias sitting exactly one pointer before the truth.
+
+    The discriminator is the right edge: the real array must END. Probing one
+    element past the window must fail, which is true only for the genuine
+    array (whose successor field is a counter, not a list head). The aliased
+    window's 33rd probe lands on the array's own last element and stays valid,
+    so it is rejected. The left edge must never be used for this: the element
+    before the real array is a valid list head, so a left-edge test would
+    select the alias instead.
 
 Return Value:
 
-    TRUE only for one strongest array offset.
+    TRUE only when exactly one window survives the right-edge test.
 
 --*/
 {
     ULONG candidateOffset = 0UL;
     ULONG bestOffset = 0UL;
     ULONG bestScore = 0UL;
-    BOOLEAN tied = FALSE;
+    ULONG survivors = 0UL;
 
     if (OffsetOut == NULL || ScoreOut == NULL ||
         !KswordARKWorkQueueFallbackIsKernelAddress(QueueAddress)) {
@@ -613,6 +632,7 @@ Return Value:
          candidateOffset += sizeof(PVOID)) {
         ULONG priorityIndex = 0UL;
         ULONG score = 0UL;
+        ULONG_PTR tailAddress = 0U;
         BOOLEAN valid = TRUE;
 
         for (priorityIndex = 0UL;
@@ -631,22 +651,142 @@ Return Value:
             }
             score += nonEmpty ? 2UL : 1UL;
         }
-        if (!valid || score < bestScore) {
+        if (!valid) {
             continue;
         }
-        if (score == bestScore && bestScore != 0UL) {
-            tied = TRUE;
+        tailAddress = QueueAddress + candidateOffset +
+            ((ULONG_PTR)KSW_WORK_QUEUE_FALLBACK_PRIORITY_COUNT *
+             sizeof(LIST_ENTRY));
+        if (tailAddress < QueueAddress ||
+            KswordARKWorkQueueFallbackValidateListHead(tailAddress, NULL)) {
+            // 第 33 项仍是合法链表头，说明这个窗口没有在数组真正的末尾结束。
             continue;
         }
+        survivors += 1UL;
         bestOffset = candidateOffset;
         bestScore = score;
-        tied = FALSE;
     }
-    if (bestScore < KSW_WORK_QUEUE_FALLBACK_PRIORITY_COUNT || tied) {
+    if (survivors != 1UL ||
+        bestScore < KSW_WORK_QUEUE_FALLBACK_PRIORITY_COUNT) {
         return FALSE;
     }
     *OffsetOut = bestOffset;
     *ScoreOut = bestScore;
+    return TRUE;
+}
+
+static BOOLEAN
+KswordARKWorkQueueFallbackFindPartitionBackOffset(
+    _In_ ULONG_PTR QueueAddress,
+    _In_ ULONG PriQueueOffset,
+    _In_ ULONG_PTR ExPartition,
+    _Out_ ULONG* OffsetOut
+    )
+/*++
+
+Routine Description:
+
+    Find where the queue names its owning partition. Walking
+    partition -> work queues -> queue only proves the forward direction; a
+    lookalike global that happens to hold a plausible pointer chain would pass
+    it. Requiring the queue to point back at the same partition object closes
+    the loop, and the offset is discovered at runtime rather than assumed.
+
+Return Value:
+
+    TRUE when exactly one slot past the priority array holds ExPartition.
+
+--*/
+{
+    ULONG offset = 0UL;
+    ULONG found = 0UL;
+    ULONG foundOffset = 0UL;
+    const ULONG arrayEnd = PriQueueOffset +
+        (KSW_WORK_QUEUE_FALLBACK_PRIORITY_COUNT * (ULONG)sizeof(LIST_ENTRY));
+
+    if (OffsetOut == NULL) {
+        return FALSE;
+    }
+    *OffsetOut = 0UL;
+    for (offset = arrayEnd;
+         offset < arrayEnd + KSW_WORK_QUEUE_FALLBACK_TAIL_SCAN;
+         offset += sizeof(PVOID)) {
+        ULONG_PTR value = 0U;
+
+        if (!KswordARKWorkQueueFallbackReadPointer(
+                QueueAddress + offset,
+                &value)) {
+            continue;
+        }
+        if (value == ExPartition) {
+            found += 1UL;
+            foundOffset = offset;
+        }
+    }
+    if (found != 1UL) {
+        return FALSE;
+    }
+    *OffsetOut = foundOffset;
+    return TRUE;
+}
+
+static BOOLEAN
+KswordARKWorkQueueFallbackFindQueueIndexOffset(
+    _In_ ULONG_PTR FirstQueue,
+    _In_ ULONG_PTR SecondQueue,
+    _In_ ULONG PriQueueOffset,
+    _Out_ ULONG* OffsetOut
+    )
+/*++
+
+Routine Description:
+
+    Find where a queue records its own slot number, by requiring slot 0 to read
+    back 0 and slot 1 to read back 1 at the same offset. Optional evidence: it
+    lets the consumer re-check on live memory that it is walking the slot it
+    thinks it is.
+
+Return Value:
+
+    TRUE when exactly one offset satisfies both queues.
+
+--*/
+{
+    ULONG offset = 0UL;
+    ULONG found = 0UL;
+    ULONG foundOffset = 0UL;
+    const ULONG arrayEnd = PriQueueOffset +
+        (KSW_WORK_QUEUE_FALLBACK_PRIORITY_COUNT * (ULONG)sizeof(LIST_ENTRY));
+
+    if (OffsetOut == NULL) {
+        return FALSE;
+    }
+    *OffsetOut = 0UL;
+    for (offset = arrayEnd;
+         offset < arrayEnd + KSW_WORK_QUEUE_FALLBACK_TAIL_SCAN;
+         offset += sizeof(ULONG)) {
+        ULONG firstValue = 0UL;
+        ULONG secondValue = 0UL;
+
+        if (!KswordARKRuntimeReadMemory(
+                (const VOID*)(FirstQueue + offset),
+                &firstValue,
+                sizeof(firstValue)) ||
+            !KswordARKRuntimeReadMemory(
+                (const VOID*)(SecondQueue + offset),
+                &secondValue,
+                sizeof(secondValue))) {
+            continue;
+        }
+        if (firstValue == 0UL && secondValue == 1UL) {
+            found += 1UL;
+            foundOffset = offset;
+        }
+    }
+    if (found != 1UL) {
+        return FALSE;
+    }
+    *OffsetOut = foundOffset;
     return TRUE;
 }
 
@@ -665,6 +805,8 @@ KswordARKWorkQueueFallbackValidateChainCandidate(
     ULONG nodeCount = (ULONG)KeQueryHighestNodeNumber() + 1UL;
     ULONG nodeIndex = 0UL;
     ULONG sharedPriQueueOffset = MAXULONG;
+    ULONG sharedBackOffset = MAXULONG;
+    ULONG queueIndexOffset = 0UL;
     ULONG totalScore = 0UL;
     KSW_WORK_QUEUE_CHAIN candidate;
 
@@ -689,6 +831,7 @@ KswordARKWorkQueueFallbackValidateChainCandidate(
         ULONG_PTR nodeQueueArray = 0U;
         ULONG_PTR queueAddress = 0U;
         ULONG priQueueOffset = 0UL;
+        ULONG backOffset = 0UL;
         ULONG queueScore = 0UL;
 
         if (!KswordARKWorkQueueFallbackReadPointer(
@@ -704,12 +847,37 @@ KswordARKWorkQueueFallbackValidateChainCandidate(
                 &priQueueOffset,
                 &queueScore) ||
             (sharedPriQueueOffset != MAXULONG &&
-             priQueueOffset != sharedPriQueueOffset)) {
+             priQueueOffset != sharedPriQueueOffset) ||
+            !KswordARKWorkQueueFallbackFindPartitionBackOffset(
+                queueAddress,
+                priQueueOffset,
+                exPartition,
+                &backOffset) ||
+            (sharedBackOffset != MAXULONG && backOffset != sharedBackOffset)) {
             return FALSE;
         }
         sharedPriQueueOffset = priQueueOffset;
+        sharedBackOffset = backOffset;
         candidate.QueueAddresses[nodeIndex] = queueAddress;
         totalScore += queueScore;
+
+        if (nodeIndex == 0UL &&
+            PoolIndex + 1UL < KSW_WORK_QUEUE_FALLBACK_MAX_POOL_INDEX) {
+            ULONG_PTR siblingQueue = 0U;
+
+            // 队列序号是可选的加分证据，解不出来不阻断链路判定。
+            if (KswordARKWorkQueueFallbackReadPointer(
+                    nodeQueueArray +
+                        ((ULONG_PTR)(PoolIndex + 1UL) * sizeof(PVOID)),
+                    &siblingQueue) &&
+                KswordARKWorkQueueFallbackIsKernelAddress(siblingQueue)) {
+                (VOID)KswordARKWorkQueueFallbackFindQueueIndexOffset(
+                    queueAddress,
+                    siblingQueue,
+                    priQueueOffset,
+                    &queueIndexOffset);
+            }
+        }
     }
 
     candidate.PartitionGlobal = PartitionGlobal;
@@ -717,6 +885,8 @@ KswordARKWorkQueueFallbackValidateChainCandidate(
     candidate.ExPartitionWorkQueues = WorkQueuesOffset;
     candidate.PoolIndex = PoolIndex;
     candidate.PriQueueOffset = sharedPriQueueOffset;
+    candidate.PartitionBackOffset = sharedBackOffset;
+    candidate.QueueIndexOffset = queueIndexOffset;
     candidate.NodeCount = nodeCount;
     candidate.ValidationScore = totalScore;
     *ChainOut = candidate;
@@ -728,11 +898,29 @@ KswordARKWorkQueueFallbackChainsEqual(
     _In_ const KSW_WORK_QUEUE_CHAIN* Left,
     _In_ const KSW_WORK_QUEUE_CHAIN* Right
     )
+/*++
+
+Routine Description:
+
+    Decide whether two candidates describe the same queues. Identity is the
+    resolved result, not the description that produced it: two distinct globals
+    both holding the same partition pointer reach the identical queue set and
+    must not count as a contradiction, while candidates that reach different
+    queues still do.
+
+--*/
 {
-    return Left->PartitionGlobal == Right->PartitionGlobal &&
-        Left->PartitionExPartition == Right->PartitionExPartition &&
-        Left->ExPartitionWorkQueues == Right->ExPartitionWorkQueues &&
-        Left->PoolIndex == Right->PoolIndex &&
+    ULONG nodeIndex = 0UL;
+
+    if (Left->NodeCount != Right->NodeCount) {
+        return FALSE;
+    }
+    for (nodeIndex = 0UL; nodeIndex < Left->NodeCount; ++nodeIndex) {
+        if (Left->QueueAddresses[nodeIndex] != Right->QueueAddresses[nodeIndex]) {
+            return FALSE;
+        }
+    }
+    return Left->PoolIndex == Right->PoolIndex &&
         Left->PriQueueOffset == Right->PriQueueOffset;
 }
 
@@ -741,7 +929,8 @@ KswordARKWorkQueueFallbackFindChain(
     _In_ const KSW_RUNTIME_IMAGE_VIEW* View,
     _In_reads_(ReferenceCount) const KSW_RUNTIME_DATA_REFERENCE* References,
     _In_ ULONG ReferenceCount,
-    _Out_ KSW_WORK_QUEUE_CHAIN* ChainOut
+    _Out_ KSW_WORK_QUEUE_CHAIN* ChainOut,
+    _Out_ BOOLEAN* AmbiguousOut
     )
 {
     KSW_WORK_QUEUE_CHAIN best;
@@ -749,58 +938,86 @@ KswordARKWorkQueueFallbackFindChain(
     BOOLEAN ambiguous = FALSE;
     ULONG referenceIndex = 0UL;
 
+    if (AmbiguousOut != NULL) {
+        *AmbiguousOut = FALSE;
+    }
     if (View == NULL || References == NULL || ChainOut == NULL) {
         return FALSE;
     }
     RtlZeroMemory(&best, sizeof(best));
     for (referenceIndex = 0UL; referenceIndex < ReferenceCount; ++referenceIndex) {
+        ULONG_PTR partition = 0U;
         ULONG partitionOffset = 0UL;
 
+        // 分区指针在整条 reference 上是不变量，先读一次再进内层扫描。
         if (!KswordARKRuntimeAddressIsWritableData(
                 View,
                 References[referenceIndex].Address,
-                sizeof(PVOID))) {
+                sizeof(PVOID)) ||
+            !KswordARKWorkQueueFallbackReadPointer(
+                References[referenceIndex].Address,
+                &partition) ||
+            !KswordARKWorkQueueFallbackIsKernelAddress(partition)) {
             continue;
         }
         for (partitionOffset = 0UL;
              partitionOffset < KSW_WORK_QUEUE_FALLBACK_PARTITION_SCAN;
              partitionOffset += sizeof(PVOID)) {
+            ULONG_PTR exPartition = 0U;
             ULONG workQueuesOffset = 0UL;
 
+            if (!KswordARKWorkQueueFallbackReadPointer(
+                    partition + partitionOffset,
+                    &exPartition) ||
+                !KswordARKWorkQueueFallbackIsKernelAddress(exPartition)) {
+                continue;
+            }
             for (workQueuesOffset = 0UL;
                  workQueuesOffset < KSW_WORK_QUEUE_FALLBACK_PARTITION_SCAN;
                  workQueuesOffset += sizeof(PVOID)) {
-                ULONG poolIndex = 0UL;
+                ULONG_PTR workQueues = 0U;
+                KSW_WORK_QUEUE_CHAIN candidate;
 
-                for (poolIndex = 0UL;
-                     poolIndex < KSW_WORK_QUEUE_FALLBACK_MAX_POOL_INDEX;
-                     ++poolIndex) {
-                    KSW_WORK_QUEUE_CHAIN candidate;
-
-                    RtlZeroMemory(&candidate, sizeof(candidate));
-                    if (!KswordARKWorkQueueFallbackValidateChainCandidate(
-                            References[referenceIndex].Address,
-                            partitionOffset,
-                            workQueuesOffset,
-                            poolIndex,
-                            &candidate) ||
-                        candidate.ValidationScore < bestScore) {
-                        continue;
-                    }
-                    if (candidate.ValidationScore == bestScore &&
-                        bestScore != 0UL &&
-                        !KswordARKWorkQueueFallbackChainsEqual(
-                            &candidate,
-                            &best)) {
-                        ambiguous = TRUE;
-                        continue;
-                    }
-                    best = candidate;
-                    bestScore = candidate.ValidationScore;
-                    ambiguous = FALSE;
+                if (!KswordARKWorkQueueFallbackReadPointer(
+                        exPartition + workQueuesOffset,
+                        &workQueues) ||
+                    !KswordARKWorkQueueFallbackIsKernelAddress(workQueues)) {
+                    continue;
                 }
+
+                /*
+                 * 池序号不参与搜索。ExPoolUntrusted 是 _EXQUEUEINDEX 的序号 0，
+                 * 是数组下标语义而不是需要猜的私有偏移；把它放进同一套打分里
+                 * 只会让两个已分配的队列互相判成歧义，而打分本身对“哪个槽才对”
+                 * 零信息量。选错槽会静默产出贴错标签的证据，因此这里固定取 0，
+                 * 验不过就 fail-closed，不退而求其次去试别的槽。
+                 */
+                RtlZeroMemory(&candidate, sizeof(candidate));
+                if (!KswordARKWorkQueueFallbackValidateChainCandidate(
+                        References[referenceIndex].Address,
+                        partitionOffset,
+                        workQueuesOffset,
+                        0UL,
+                        &candidate) ||
+                    candidate.ValidationScore < bestScore) {
+                    continue;
+                }
+                if (candidate.ValidationScore == bestScore &&
+                    bestScore != 0UL &&
+                    !KswordARKWorkQueueFallbackChainsEqual(
+                        &candidate,
+                        &best)) {
+                    ambiguous = TRUE;
+                    continue;
+                }
+                best = candidate;
+                bestScore = candidate.ValidationScore;
+                ambiguous = FALSE;
             }
         }
+    }
+    if (AmbiguousOut != NULL) {
+        *AmbiguousOut = ambiguous;
     }
     if (bestScore == 0UL || ambiguous) {
         return FALSE;
@@ -1194,6 +1411,7 @@ KswordARKWorkQueueResolveRuntimeLayout(
     ULONG threadQueueOffset = 0UL;
     ULONG threadStartOffset = 0UL;
     BOOLEAN threadStartResolved = FALSE;
+    BOOLEAN chainAmbiguous = FALSE;
     NTSTATUS status = STATUS_NOT_SUPPORTED;
 
     if (LayoutOut == NULL) {
@@ -1207,8 +1425,14 @@ KswordARKWorkQueueResolveRuntimeLayout(
     if (KeGetCurrentIrql() > APC_LEVEL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
+    /*
+     * 签名回退只需要 ntoskrnl 的映像范围，而映像身份是无条件从已加载模块表
+     * 采集的。NtosActive 表示“已应用 System Informer / PDB profile”，拿它
+     * 当门槛会把这条本该无 profile 可用的回退重新绑回 PDB，
+     * 于是没有 profile 时整条路径直接以 STATUS_DEVICE_NOT_READY 退出。
+     */
     KswordARKDynDataSnapshot(&state);
-    if (!state.NtosActive || state.Ntoskrnl.imageBase == 0ULL ||
+    if (state.Ntoskrnl.imageBase == 0ULL ||
         state.Ntoskrnl.sizeOfImage == 0UL ||
         !KswordARKRuntimeInitializeImageView(
             (PVOID)(ULONG_PTR)state.Ntoskrnl.imageBase,
@@ -1231,17 +1455,40 @@ KswordARKWorkQueueResolveRuntimeLayout(
         KSW_WORK_QUEUE_FALLBACK_SCAN_BYTES,
         references,
         KSW_WORK_QUEUE_FALLBACK_MAX_REFERENCES);
-    if (referenceCount == 0UL ||
-        !KswordARKWorkQueueFallbackFindChain(
+    /*
+     * 四个失败点各自返回可区分的 NTSTATUS：它们共用一个笼统的 NOT_SUPPORTED
+     * 时，R3 只能看到“回退失败”，无法判断是锚点没产出引用、指针链没收敛、
+     * 内建优先级表没定位，还是全局变量落在映像外。
+     */
+    if (referenceCount == 0UL) {
+        // 锚点例程没扫出任何 RIP 相对数据引用。
+        status = STATUS_NOT_FOUND;
+        goto Exit;
+    }
+    if (!KswordARKWorkQueueFallbackFindChain(
             &view,
             references,
             referenceCount,
-            &chain) ||
-        !KswordARKWorkQueueFallbackFindPriorityIndexes(
+            &chain,
+            &chainAmbiguous)) {
+        // 分区 -> ExPartition -> WorkQueues 指针链没有唯一解：
+        // 无任何候选通过与多条互相矛盾的链同分，是两种不同的失败，分开上报。
+        status = chainAmbiguous
+            ? STATUS_OBJECT_NAME_COLLISION
+            : STATUS_OBJECT_PATH_NOT_FOUND;
+        goto Exit;
+    }
+    if (!KswordARKWorkQueueFallbackFindPriorityIndexes(
             &view,
-            LayoutOut->RuntimePriorityIndexes) ||
-        chain.PartitionGlobal < view.Base ||
+            LayoutOut->RuntimePriorityIndexes)) {
+        // ExpBuiltinPriorities 未能从锚点代码的 RVA 位移还原。
+        status = STATUS_OBJECT_NAME_NOT_FOUND;
+        goto Exit;
+    }
+    if (chain.PartitionGlobal < view.Base ||
         chain.PartitionGlobal - view.Base > MAXULONG) {
+        // 命中的全局变量不在 ntoskrnl 映像范围内。
+        status = STATUS_INTEGER_OVERFLOW;
         goto Exit;
     }
 
@@ -1258,13 +1505,30 @@ KswordARKWorkQueueResolveRuntimeLayout(
         (ULONG)FIELD_OFFSET(WORK_QUEUE_ITEM, WorkerRoutine);
     LayoutOut->WorkItemParameter =
         (ULONG)FIELD_OFFSET(WORK_QUEUE_ITEM, Parameter);
+    LayoutOut->ExWorkQueueQueueIndex = chain.QueueIndexOffset;
     LayoutOut->ExPoolUntrusted = chain.PoolIndex;
     LayoutOut->EpartitionTypeSize = chain.PartitionExPartition + sizeof(PVOID);
     LayoutOut->ExPartitionTypeSize =
         chain.ExPartitionWorkQueues + sizeof(PVOID);
     LayoutOut->KpriQueueTypeSize = chain.PriQueueOffset +
         (KSW_WORK_QUEUE_FALLBACK_PRIORITY_COUNT * sizeof(LIST_ENTRY));
+    /*
+     * 队列类型大小取所有已验证字段的上界。沿用 KpriQueueTypeSize 会把
+     * partition 回指和队列序号裁在结构之外，使下游的 FieldFits 校验退化成
+     * “用偏移推出的大小去校验同一个偏移”，等于没有校验。
+     */
     LayoutOut->ExWorkQueueTypeSize = LayoutOut->KpriQueueTypeSize;
+    if (chain.PartitionBackOffset + sizeof(PVOID) >
+        LayoutOut->ExWorkQueueTypeSize) {
+        LayoutOut->ExWorkQueueTypeSize =
+            chain.PartitionBackOffset + (ULONG)sizeof(PVOID);
+    }
+    if (chain.QueueIndexOffset != 0UL &&
+        chain.QueueIndexOffset + sizeof(ULONG) >
+            LayoutOut->ExWorkQueueTypeSize) {
+        LayoutOut->ExWorkQueueTypeSize =
+            chain.QueueIndexOffset + (ULONG)sizeof(ULONG);
+    }
     LayoutOut->WorkItemTypeSize = sizeof(WORK_QUEUE_ITEM);
     LayoutOut->RuntimeFlags =
         KSW_DYN_V4_WORK_QUEUE_RUNTIME_SIGNATURE |
