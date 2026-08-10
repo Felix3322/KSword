@@ -6,7 +6,8 @@ Module Name:
 
 Abstract:
 
-    HAL 与 KMDF 绑定表审计，以及 HAL 函数槽的受控原子编辑。
+    HAL 与 KMDF 绑定表审计，以及两者函数槽的受控原子编辑。KMDF 绑定表位于
+    Wdf01000.sys 的只读节，提交路径会为它建立临时 MDL 可写别名。
 
 Environment:
 
@@ -1103,6 +1104,32 @@ KswPlatformRangeInSection(
         }
     }
     return FALSE;
+}
+
+static BOOLEAN
+KswPlatformRangeInWritableDataSection(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_ENTRY* Module,
+    _In_ ULONG_PTR Address,
+    _In_ SIZE_T ByteCount
+    )
+/*++
+
+Routine Description:
+
+    判定范围所在的非执行节是否带 IMAGE_SCN_MEM_WRITE。用两次现有查询表达，
+    避免为一个编辑期判据改动被十余处只读路径依赖的节校验函数：第一次确认范围
+    确实落在某个非执行节内，第二次确认它不是"非执行且不可写"的节。
+
+Return Value:
+
+    TRUE 表示槽位落在可写数据节，直接 CAS 即可；FALSE 时调用方必须先建立 MDL
+    可写别名，否则写只读映像页会直接 bug check 0xBE。
+
+--*/
+{
+    return (BOOLEAN)(
+        KswPlatformRangeInSection(Module, Address, ByteCount, FALSE, FALSE) &&
+        !KswPlatformRangeInSection(Module, Address, ByteCount, FALSE, TRUE));
 }
 
 static BOOLEAN
@@ -3511,6 +3538,8 @@ typedef struct _KSW_PLATFORM_EDIT_SLOT
     PVOID TableAddress;
     PVOID volatile* SlotAddress;
     PVOID CurrentValue;
+    // 槽位所在节没有 IMAGE_SCN_MEM_WRITE 时置位；KMDF 绑定表就是这种情况。
+    BOOLEAN RequiresWritableAlias;
 } KSW_PLATFORM_EDIT_SLOT;
 
 #define KSW_PLATFORM_EDIT_RECORD_LIMIT 64UL
@@ -3518,6 +3547,7 @@ typedef struct _KSW_PLATFORM_EDIT_SLOT
 typedef struct _KSW_PLATFORM_EDIT_RECORD
 {
     BOOLEAN InUse;
+    BOOLEAN RequiresWritableAlias;
     ULONG Scope;
     ULONG EntryIndex;
     PVOID TableAddress;
@@ -3528,12 +3558,131 @@ typedef struct _KSW_PLATFORM_EDIT_RECORD
 
 typedef struct _KSW_PLATFORM_EDIT_STATE
 {
-    FAST_MUTEX Lock;
+    // 用 ERESOURCE 而不是 FAST_MUTEX：只读节槽位要在锁内调用
+    // MmProtectMdlSystemAddress 建立可写别名，而该例程只允许 PASSIVE_LEVEL，
+    // FAST_MUTEX 会把 IRQL 提到 APC_LEVEL。
+    ERESOURCE Lock;
     volatile LONG Initialized;
     KSW_PLATFORM_EDIT_RECORD Records[KSW_PLATFORM_EDIT_RECORD_LIMIT];
 } KSW_PLATFORM_EDIT_STATE;
 
 static KSW_PLATFORM_EDIT_STATE g_KswPlatformEditState;
+
+static NTSTATUS
+KswPlatformExchangeSlotPointer(
+    _In_ PVOID volatile* SlotAddress,
+    _In_ BOOLEAN RequiresWritableAlias,
+    _In_opt_ PVOID ExpectedValue,
+    _In_opt_ PVOID NewValue,
+    _Out_ PVOID* PreviousValueOut
+    )
+/*++
+
+Routine Description:
+
+    对单个函数指针槽做一次原子 CAS。槽位落在只读映像节时（KMDF 绑定表即如
+    此），先用 MDL 建立可写系统别名再在别名上 CAS：别名与原地址映射同一物理
+    页，lock cmpxchg 对物理内存原子，与其它 CPU 经原地址的访问依然互斥。
+    直接写只读映像页会触发 ATTEMPTED_WRITE_TO_READONLY_MEMORY，__except 拦不
+    住，所以这条判据必须在调用前定好。
+
+Arguments:
+
+    SlotAddress - 指针宽度且不跨页的槽位地址。
+    RequiresWritableAlias - 槽位所在节缺少 IMAGE_SCN_MEM_WRITE 时为 TRUE。
+    ExpectedValue - CAS 比较值。
+    NewValue - CAS 写入值。
+    PreviousValueOut - 回写 CAS 读到的原值；CAS 未发生时为 ExpectedValue。
+
+Return Value:
+
+    STATUS_SUCCESS 表示 CAS 已执行（是否换值由调用方比对 PreviousValueOut）。
+    HVCI 下 MmProtectMdlSystemAddress 会拒绝提权，此时返回其 NTSTATUS。
+
+--*/
+{
+    PMDL mdl = NULL;
+    PVOID mappedAddress = NULL;
+    PVOID volatile* aliasSlot = NULL;
+    BOOLEAN pagesLocked = FALSE;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (SlotAddress == NULL || PreviousValueOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *PreviousValueOut = ExpectedValue;
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    if (!RequiresWritableAlias) {
+        __try {
+            *PreviousValueOut = InterlockedCompareExchangePointer(
+                SlotAddress,
+                NewValue,
+                ExpectedValue);
+            KeMemoryBarrier();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            *PreviousValueOut = ExpectedValue;
+            status = GetExceptionCode();
+        }
+        return status;
+    }
+
+    __try {
+        mdl = IoAllocateMdl(
+            (PVOID)SlotAddress,
+            (ULONG)sizeof(PVOID),
+            FALSE,
+            FALSE,
+            NULL);
+        if (mdl == NULL) {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            __leave;
+        }
+        // 只读映像页用 IoModifyAccess 探测会直接抛异常，必须按只读锁定后再
+        // 单独提权临时别名，原映射的保护属性始终不动。
+        MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+        pagesLocked = TRUE;
+        mappedAddress = MmMapLockedPagesSpecifyCache(
+            mdl,
+            KernelMode,
+            MmCached,
+            NULL,
+            FALSE,
+            NormalPagePriority | MdlMappingNoExecute);
+        if (mappedAddress == NULL) {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            __leave;
+        }
+        status = MmProtectMdlSystemAddress(mdl, PAGE_READWRITE);
+        if (!NT_SUCCESS(status)) {
+            __leave;
+        }
+        aliasSlot = (PVOID volatile*)mappedAddress;
+        *PreviousValueOut = InterlockedCompareExchangePointer(
+            aliasSlot,
+            NewValue,
+            ExpectedValue);
+        KeMemoryBarrier();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        *PreviousValueOut = ExpectedValue;
+        status = GetExceptionCode();
+    }
+
+    if (mappedAddress != NULL) {
+        MmUnmapLockedPages(mappedAddress, mdl);
+    }
+    if (mdl != NULL) {
+        if (pagesLocked) {
+            MmUnlockPages(mdl);
+        }
+        IoFreeMdl(mdl);
+    }
+    return status;
+}
 
 VOID
 KswordARKPlatformAuditInitialize(
@@ -3543,7 +3692,10 @@ KswordARKPlatformAuditInitialize(
     RtlZeroMemory(
         &g_KswPlatformEditState,
         sizeof(g_KswPlatformEditState));
-    ExInitializeFastMutex(&g_KswPlatformEditState.Lock);
+    if (!NT_SUCCESS(ExInitializeResourceLite(&g_KswPlatformEditState.Lock))) {
+        // 锁不可用时编辑入口保持关闭，查询路径不受影响。
+        return;
+    }
     InterlockedExchange(&g_KswPlatformEditState.Initialized, 1L);
 }
 
@@ -3562,27 +3714,31 @@ KswordARKPlatformAuditUninitialize(
         return;
     }
 
-    ExAcquireFastMutex(&g_KswPlatformEditState.Lock);
+    KeEnterCriticalRegion();
+    (VOID)ExAcquireResourceExclusiveLite(&g_KswPlatformEditState.Lock, TRUE);
+    // 在锁内翻转标志：任何已经排在锁上的提交都会在拿到锁后看到 0 并立即退出，
+    // 不会在恢复完成之后又写回一个已经作废的值。
+    InterlockedExchange(&g_KswPlatformEditState.Initialized, 0L);
     for (index = 0UL; index < KSW_PLATFORM_EDIT_RECORD_LIMIT; ++index) {
         KSW_PLATFORM_EDIT_RECORD* record =
             &g_KswPlatformEditState.Records[index];
+        PVOID previousValue = NULL;
         if (!record->InUse || record->SlotAddress == NULL) {
             continue;
         }
-        __try {
-            (VOID)InterlockedCompareExchangePointer(
-                record->SlotAddress,
-                record->OriginalValue,
-                record->AppliedValue);
-            KeMemoryBarrier();
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            // 卸载恢复只覆盖本功能最后发布值；不可访问或第三方值均保持原样。
-        }
+        // 卸载恢复只覆盖本功能最后发布值；不可访问、别名提权被拒或第三方
+        // 值都保持原样，因此这里忽略返回状态。
+        (VOID)KswPlatformExchangeSlotPointer(
+            record->SlotAddress,
+            record->RequiresWritableAlias,
+            record->AppliedValue,
+            record->OriginalValue,
+            &previousValue);
         RtlZeroMemory(record, sizeof(*record));
     }
-    ExReleaseFastMutex(&g_KswPlatformEditState.Lock);
-    InterlockedExchange(&g_KswPlatformEditState.Initialized, 0L);
+    ExReleaseResourceLite(&g_KswPlatformEditState.Lock);
+    KeLeaveCriticalRegion();
+    ExDeleteResourceLite(&g_KswPlatformEditState.Lock);
     RtlZeroMemory(
         &g_KswPlatformEditState,
         sizeof(g_KswPlatformEditState));
@@ -3617,7 +3773,20 @@ KswPlatformCommitEdit(
         return STATUS_DEVICE_NOT_READY;
     }
 
-    ExAcquireFastMutex(&g_KswPlatformEditState.Lock);
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    KeEnterCriticalRegion();
+    (VOID)ExAcquireResourceExclusiveLite(&g_KswPlatformEditState.Lock, TRUE);
+    // 卸载会在锁内把标志翻成 0；排在锁上的提交必须复查，否则会在恢复之后再写。
+    if (InterlockedCompareExchange(
+            &g_KswPlatformEditState.Initialized,
+            0L,
+            0L) == 0L) {
+        status = STATUS_DEVICE_NOT_READY;
+        goto Exit;
+    }
     for (index = 0UL; index < KSW_PLATFORM_EDIT_RECORD_LIMIT; ++index) {
         KSW_PLATFORM_EDIT_RECORD* candidate =
             &g_KswPlatformEditState.Records[index];
@@ -3651,17 +3820,12 @@ KswPlatformCommitEdit(
         goto Exit;
     }
 
-    __try {
-        previousValue = InterlockedCompareExchangePointer(
-            Slot->SlotAddress,
-            NewValue,
-            ExpectedValue);
-        KeMemoryBarrier();
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = GetExceptionCode();
-        previousValue = ExpectedValue;
-    }
+    status = KswPlatformExchangeSlotPointer(
+        Slot->SlotAddress,
+        Slot->RequiresWritableAlias,
+        ExpectedValue,
+        NewValue,
+        &previousValue);
     *PreviousValueOut = previousValue;
     if (!NT_SUCCESS(status) || previousValue != ExpectedValue) {
         if (NT_SUCCESS(status)) {
@@ -3674,6 +3838,7 @@ KswPlatformCommitEdit(
         record = freeRecord;
         RtlZeroMemory(record, sizeof(*record));
         record->InUse = TRUE;
+        record->RequiresWritableAlias = Slot->RequiresWritableAlias;
         record->Scope = Scope;
         record->EntryIndex = EntryIndex;
         record->TableAddress = Slot->TableAddress;
@@ -3686,7 +3851,8 @@ KswPlatformCommitEdit(
     }
 
 Exit:
-    ExReleaseFastMutex(&g_KswPlatformEditState.Lock);
+    ExReleaseResourceLite(&g_KswPlatformEditState.Lock);
+    KeLeaveCriticalRegion();
     return status;
 }
 
@@ -3960,7 +4126,70 @@ KswPlatformResolveHalSubcomponentEditSlot(
 }
 
 static NTSTATUS
-KswPlatformResolveEditableHalSlot(
+KswPlatformResolveWdfFunctionEditSlot(
+    _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
+    _In_ ULONG EntryIndex,
+    _Out_ KSW_PLATFORM_EDIT_SLOT* SlotOut
+    )
+/*++
+
+Routine Description:
+
+    在 KMDF 完整绑定表中重新定位一个函数槽。判据与查询路径逐条相同：表指针
+    必须属于 Wdf01000.sys，整表必须落在同一非执行节内，索引必须在表项数以
+    内。R3 传入的 tableAddress 只用于事后比对，不参与地址计算。
+
+    该表由框架自身持有，系统上所有 KMDF 驱动（含本驱动）共享同一份，因此一个
+    槽位的改动是全局的——调用方必须已经取得明确的用户确认。
+
+--*/
+{
+    // WdfFunctions 声明为 const，编辑路径要在同一地址上做 CAS，所以取槽地址时
+    // 显式去掉 const；写入权限由下面的模块与节判据决定，不由类型决定。
+    const WDFFUNC* functionTable = WdfFunctions;
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* tableOwner = NULL;
+    ULONG functionCount = (ULONG)WdfFunctionTableNumEntries;
+    WDFFUNC currentValue = NULL;
+
+    if (ModuleInfo == NULL || SlotOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (functionTable == NULL ||
+        functionCount == 0UL ||
+        functionCount > KSWORD_ARK_PLATFORM_HARD_MAX_ROWS) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    if (EntryIndex >= functionCount) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    tableOwner = KswordARKHookFindModuleForAddress(
+        ModuleInfo,
+        (ULONG_PTR)functionTable);
+    if (!KswPlatformModuleNameEquals(tableOwner, "Wdf01000.sys") ||
+        !KswPlatformRangeInSection(
+            tableOwner,
+            (ULONG_PTR)functionTable,
+            (SIZE_T)functionCount * sizeof(WDFFUNC),
+            FALSE,
+            FALSE)) {
+        return STATUS_DATA_ERROR;
+    }
+    if (!KswordARKHookReadMemorySafe(
+            &functionTable[EntryIndex],
+            &currentValue,
+            sizeof(currentValue))) {
+        return STATUS_PARTIAL_COPY;
+    }
+
+    SlotOut->TableAddress = (PVOID)(ULONG_PTR)functionTable;
+    SlotOut->SlotAddress =
+        (PVOID volatile*)(ULONG_PTR)&functionTable[EntryIndex];
+    SlotOut->CurrentValue = (PVOID)(ULONG_PTR)currentValue;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KswPlatformResolveEditableSlot(
     _In_ const KSW_HOOK_SYSTEM_MODULE_INFORMATION* ModuleInfo,
     _In_ ULONG BuildNumber,
     _In_ ULONG Scope,
@@ -3968,37 +4197,72 @@ KswPlatformResolveEditableHalSlot(
     _Out_ KSW_PLATFORM_EDIT_SLOT* SlotOut
     )
 {
+    const KSW_HOOK_SYSTEM_MODULE_ENTRY* slotOwner = NULL;
+    NTSTATUS status = STATUS_INVALID_PARAMETER;
+
     if (SlotOut == NULL) {
         return STATUS_INVALID_PARAMETER;
     }
     RtlZeroMemory(SlotOut, sizeof(*SlotOut));
     switch (Scope) {
     case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH:
-        return KswPlatformResolveHalDispatchEditSlot(
+        status = KswPlatformResolveHalDispatchEditSlot(
             ModuleInfo,
             EntryIndex,
             SlotOut);
+        break;
     case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE:
-        return KswPlatformResolveHalPrivateEditSlot(
+        status = KswPlatformResolveHalPrivateEditSlot(
             ModuleInfo,
             BuildNumber,
             EntryIndex,
             SlotOut);
+        break;
     case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI:
-        return KswPlatformResolveHalAcpiEditSlot(
+        status = KswPlatformResolveHalAcpiEditSlot(
             ModuleInfo,
             BuildNumber,
             EntryIndex,
             SlotOut);
+        break;
     case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS:
-        return KswPlatformResolveHalSubcomponentEditSlot(
+        status = KswPlatformResolveHalSubcomponentEditSlot(
             ModuleInfo,
             BuildNumber,
             EntryIndex,
             SlotOut);
+        break;
+    case KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_FUNCTIONS:
+        status = KswPlatformResolveWdfFunctionEditSlot(
+            ModuleInfo,
+            EntryIndex,
+            SlotOut);
+        break;
     default:
+        // WDF_CALLBACKS 描述的是本驱动 .text 内的编译期地址，没有可写槽。
         return STATUS_INVALID_PARAMETER;
     }
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (SlotOut->SlotAddress == NULL) {
+        RtlZeroMemory(SlotOut, sizeof(*SlotOut));
+        return STATUS_INVALID_ADDRESS;
+    }
+
+    // 槽位所在节缺少 IMAGE_SCN_MEM_WRITE 时（KMDF 绑定表就在只读节里），直接
+    // CAS 会 bug check 0xBE，必须让提交路径改走 MDL 可写别名。判不出归属时同样
+    // 走别名：别名路径对可写页也成立，而地址真的无效时探测会抛异常并被捕获。
+    slotOwner = KswordARKHookFindModuleForAddress(
+        ModuleInfo,
+        (ULONG_PTR)SlotOut->SlotAddress);
+    SlotOut->RequiresWritableAlias = (BOOLEAN)(
+        slotOwner == NULL ||
+        !KswPlatformRangeInWritableDataSection(
+            slotOwner,
+            (ULONG_PTR)SlotOut->SlotAddress,
+            sizeof(PVOID)));
+    return STATUS_SUCCESS;
 }
 
 static VOID
@@ -4016,7 +4280,7 @@ KswPlatformLogControlResult(
     status = RtlStringCbPrintfA(
         message,
         sizeof(message),
-        "R0 HAL edit: scope=0x%08lX index=%lu status=%lu nt=0x%08X "
+        "R0 platform slot edit: scope=0x%08lX index=%lu status=%lu nt=0x%08X "
         "table=0x%I64X slot=0x%I64X previous=0x%I64X "
         "requested=0x%I64X current=0x%I64X flags=0x%08lX.",
         Response->scope,
@@ -4134,9 +4398,16 @@ KswordARKPlatformAuditIoctlControl(
         safetyContext.Operation = KSWORD_ARK_SAFETY_OPERATION_KERNEL_PATCH;
         safetyContext.ContextFlags =
             KSWORD_ARK_SAFETY_CONTEXT_FLAG_UI_CONFIRMED;
-        safetyContext.TargetText = L"Validated HAL function table slot";
-        safetyContext.TargetTextChars = (USHORT)(
-            RTL_NUMBER_OF(L"Validated HAL function table slot") - 1U);
+        if (input->scope == KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_FUNCTIONS) {
+            safetyContext.TargetText = L"Validated KMDF binding table slot";
+            safetyContext.TargetTextChars = (USHORT)(
+                RTL_NUMBER_OF(L"Validated KMDF binding table slot") - 1U);
+        }
+        else {
+            safetyContext.TargetText = L"Validated HAL function table slot";
+            safetyContext.TargetTextChars = (USHORT)(
+                RTL_NUMBER_OF(L"Validated HAL function table slot") - 1U);
+        }
         status = KswordARKSafetyEvaluate(Device, &safetyContext);
         if (!NT_SUCCESS(status)) {
             response->status =
@@ -4162,7 +4433,7 @@ KswordARKPlatformAuditIoctlControl(
         return STATUS_SUCCESS;
     }
 
-    status = KswPlatformResolveEditableHalSlot(
+    status = KswPlatformResolveEditableSlot(
         moduleInfo,
         buildNumber,
         input->scope,
@@ -4248,6 +4519,10 @@ KswordARKPlatformAuditIoctlControl(
         response->currentValue = input->newValue;
         response->responseFlags |=
             KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_CHANGED;
+        if (slot.RequiresWritableAlias) {
+            response->responseFlags |=
+                KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_ALIAS_WRITE;
+        }
     }
 
     ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);

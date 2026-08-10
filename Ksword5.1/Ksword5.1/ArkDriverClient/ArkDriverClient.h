@@ -604,6 +604,7 @@ namespace ksword::ark
         PlatformAuditResult queryPlatformAudit(unsigned long scopeMask = KSWORD_ARK_PLATFORM_AUDIT_SCOPE_ALL, unsigned long maxRows = KSWORD_ARK_PLATFORM_DEFAULT_MAX_ROWS) const;
         // editPlatformAuditEntry：
         // - 输入：查询快照中的 scope/index/table/current 与新的非零函数地址；
+        //   scope 只接受四个 HAL 子表与 WDF_FUNCTIONS，WDF_CALLBACKS 无可写槽；
         // - 处理：只通过 FILE_WRITE_ACCESS 控制协议请求 R0 重新定位并原子替换；
         // - 返回：表/槽/前值/当前值证据；不暴露任意内核地址写入。
         PlatformAuditControlResult editPlatformAuditEntry(unsigned long scope, unsigned long entryIndex, std::uint64_t tableAddress, std::uint64_t expectedValue, std::uint64_t newValue, bool uiConfirmed) const;

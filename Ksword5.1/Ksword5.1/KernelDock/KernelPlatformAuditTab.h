@@ -20,8 +20,9 @@ class QTableWidget;
 // KernelPlatformAuditTab：
 // - Hal 模式提供四个明确的 HAL 子表；
 // - Wdf 模式提供 KMDF 函数表和本驱动回调表；
-// - 查询保持只读；Hal 模式可通过 ArkDriverClient 发起重新定位、快照校验和
-//   原子 CAS 约束的函数槽编辑，Wdf 模式不提供写入口。
+// - 查询保持只读；四个 HAL 子表页与 WDF 函数页都可通过 ArkDriverClient 发起
+//   重新定位、快照校验和原子 CAS 约束的函数槽编辑；
+// - WDF 回调页列的是本驱动 .text 内的编译期地址，没有可写槽，始终只读。
 class KernelPlatformAuditTab final : public QWidget
 {
 public:
@@ -52,10 +53,13 @@ private:
     void applyResult(ksword::ark::PlatformAuditResult result);
     void populatePage(Page& page, const ksword::ark::PlatformAuditResult& result);
     void showContextMenu(QTableWidget* table, unsigned long scope, const QPoint& position);
-    void editHalEntry(KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry);
-    bool confirmHalEdit(
+    void editFunctionSlot(KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry);
+    bool confirmSlotEdit(
         const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry,
         unsigned long long newAddress);
+    // 可编辑判据只按 scope 走：WDF 回调页与 Wdf 模式其余只读行都排除在外。
+    static bool scopeIsEditable(unsigned long scope);
+    QString tableFamilyName() const;
     void setColumnGroup(int groupIndex);
     void applyColumnGroup();
     void updateColumnGroupButtons();

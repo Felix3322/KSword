@@ -2682,7 +2682,8 @@ namespace ksword::ark
     // PlatformAuditResult 承载 HAL/WDF 统一审计结果。
     // 输入：queryPlatformAudit 返回，scopeMask 指定 HAL 表或 WDF 表/回调。
     // 处理：entries 保留地址、模块、结构/owner 证据和本地化 detailCode 参数。
-    // 返回行为：查询本身只读；HAL 槽编辑必须另行调用 editPlatformAuditEntry。
+    // 返回行为：查询本身只读；HAL 槽与 KMDF 绑定表槽的编辑必须另行调用
+    // editPlatformAuditEntry。
     struct PlatformAuditResult : VariableAuditResultBase
     {
         std::uint32_t scopeMask = 0;
@@ -2692,7 +2693,8 @@ namespace ksword::ark
         std::vector<KSWORD_ARK_PLATFORM_AUDIT_ENTRY> entries;
     };
 
-    // PlatformAuditControlResult 承载一个受控 HAL 函数槽 CAS 的完整证据。
+    // PlatformAuditControlResult 承载一次受控函数槽 CAS 的完整证据。
+    // responseFlags 的 ALIAS_WRITE 位表示槽位在只读节，R0 经 MDL 可写别名提交。
     struct PlatformAuditControlResult
     {
         IoResult io;

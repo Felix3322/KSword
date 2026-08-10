@@ -84,6 +84,30 @@ namespace
         return item;
     }
 
+    // applyLiveAddressHeaderTooltip：
+    // - 输入 table：审计页表格；editable：该 scope 是否存在可写函数槽；
+    // - 处理：把原顶部常驻横幅里的编辑判定口径挂到「当前地址」列表头，只读页不挂；
+    // - 返回：无返回值。
+    void applyLiveAddressHeaderTooltip(QTableWidget* table, const bool editable)
+    {
+        if (table == nullptr)
+        {
+            return;
+        }
+        QTableWidgetItem* headerItem = table->horizontalHeaderItem(ColumnLiveAddress);
+        if (headerItem == nullptr)
+        {
+            return;
+        }
+        headerItem->setToolTip(editable
+            ? kernelText(
+                "kernel.platform.header.live.editable.tooltip",
+                QStringLiteral(
+                    "仅函数槽可改写；R0 会复核表身份、旧值与目标可执行节，"
+                    "但无法证明函数签名兼容，错误地址会立即造成冻结或蓝屏。"))
+            : QString());
+    }
+
     // g_platformModuleCompanyMutex / g_platformModuleCompanyCache：
     // - 用途：modulePath → CompanyName 的进程级共享缓存；
     // - 输入：由 refreshAsync 的 worker 线程在后台一次性解析后写入；
@@ -123,14 +147,14 @@ namespace
             "QPushButton{min-width:28px;padding:4px 8px;border:1px solid %1;"
             "background:%2;color:%3;}"
             "QPushButton:hover{background:%4;}")
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::BorderHex())
             .arg(selected
-                     ? KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)
+                     ? KswordTheme::PrimaryBlueHex
                      : KswordTheme::SurfaceAltHex())
             .arg(selected
-                     ? KswordTheme::OnAccentHex()
+                     ? KswordTheme::OnAccentDynamicHex()
                      : KswordTheme::TextPrimaryHex())
-            .arg(KswordTheme::PrimaryBlueSolidHoverHex());
+            .arg(KswordTheme::PrimaryBlueHoverHex);
     }
 
     bool validateRuntimeCleanPointer(
@@ -333,27 +357,8 @@ void KernelPlatformAuditTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    if (m_mode == Mode::Hal)
-    {
-        m_warningLabel = new QLabel(
-            kernelText(
-                "kernel.platform.hal.edit.warning",
-                QStringLiteral(
-                    "⚠ HAL 表项编辑会立即替换内核函数指针，错误地址可能造成整机冻结或蓝屏。"
-                    "仅函数槽可编辑；驱动会重新验证表身份、旧值和目标可执行节，但无法证明目标函数签名兼容。")),
-            this);
-        m_warningLabel->setWordWrap(true);
-        m_warningLabel->setStyleSheet(
-            QStringLiteral(
-                "QLabel{padding:8px;border:1px solid %1;border-radius:5px;"
-                "background:%2;color:%3;font-weight:600;}")
-                .arg(KswordTheme::WarningHex())
-                .arg(KswordTheme::ThemeColorName(
-                    KswordTheme::WarningBackgroundColor()))
-                .arg(KswordTheme::TextPrimaryHex()));
-        rootLayout->addWidget(m_warningLabel);
-    }
-
+    // 中文说明：只读审计页不再用常驻横幅占顶部版面；编辑判定口径改挂「当前地址」
+    // 列表头，真正下手时编辑对话框的风险文案与写入前的二次确认仍会完整复述。
     auto* toolbar = new QHBoxLayout();
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(0);
@@ -450,14 +455,6 @@ void KernelPlatformAuditTab::retranslateUi()
         m_refreshButton->setToolTip(kernelText(
             "kernel.platform.toolbar.refresh.tooltip",
             QStringLiteral("重新读取经过结构与模块边界验证的只读审计快照")));
-    }
-    if (m_warningLabel != nullptr)
-    {
-        m_warningLabel->setText(kernelText(
-            "kernel.platform.hal.edit.warning",
-            QStringLiteral(
-                "⚠ HAL 表项编辑会立即替换内核函数指针，错误地址可能造成整机冻结或蓝屏。"
-                "仅函数槽可编辑；驱动会重新验证表身份、旧值和目标可执行节，但无法证明目标函数签名兼容。")));
     }
     if (m_columnGroupAButton != nullptr &&
         m_columnGroupBButton != nullptr &&
@@ -586,7 +583,7 @@ void KernelPlatformAuditTab::addPage(const unsigned long scope, const QString& t
     table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setAlternatingRowColors(true);
-    if (m_mode == Mode::Hal)
+    if (scopeIsEditable(scope))
     {
         table->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(
@@ -833,7 +830,7 @@ void KernelPlatformAuditTab::showContextMenu(
     const unsigned long scope,
     const QPoint& position)
 {
-    if (m_mode != Mode::Hal || table == nullptr)
+    if (!scopeIsEditable(scope) || table == nullptr)
     {
         return;
     }
@@ -865,8 +862,9 @@ void KernelPlatformAuditTab::showContextMenu(
 
     QMenu menu(table);
     QAction* editAction = menu.addAction(kernelText(
-        "kernel.platform.hal.edit.action",
-        QStringLiteral("编辑 HAL 函数槽...")));
+        "kernel.platform.slot.edit.action",
+        QStringLiteral("编辑 %1 函数槽..."))
+        .arg(tableFamilyName()));
     const bool editable =
         entryIt != m_lastResult.entries.cend() &&
         entryIt->rowKind == KSWORD_ARK_PLATFORM_AUDIT_ROW_FUNCTION &&
@@ -877,35 +875,45 @@ void KernelPlatformAuditTab::showContextMenu(
     editAction->setEnabled(editable);
     editAction->setToolTip(editable
         ? kernelText(
-            "kernel.platform.hal.edit.action.tooltip",
+            "kernel.platform.slot.edit.action.tooltip",
             QStringLiteral("输入新的已加载内核模块可执行地址，并经过双重确认后原子替换"))
         : kernelText(
-            "kernel.platform.hal.edit.unavailable.tooltip",
-            QStringLiteral("仅结构已验证且具有表地址的 HAL 函数槽可编辑")));
+            "kernel.platform.slot.edit.unavailable.tooltip",
+            QStringLiteral("仅结构已验证且具有表地址的函数槽可编辑")));
     if (menu.exec(table->viewport()->mapToGlobal(position)) == editAction &&
         editable)
     {
-        editHalEntry(*entryIt);
+        editFunctionSlot(*entryIt);
     }
 }
 
-void KernelPlatformAuditTab::editHalEntry(
+void KernelPlatformAuditTab::editFunctionSlot(
     KSWORD_ARK_PLATFORM_AUDIT_ENTRY entry)
 {
+    const QString familyName = tableFamilyName();
     QDialog editor(this);
-    editor.setObjectName(QStringLiteral("ksHalEditDialog"));
+    editor.setObjectName(QStringLiteral("ksPlatformSlotEditDialog"));
     editor.setStyleSheet(KswordTheme::OpaqueDialogStyle(editor.objectName()));
     editor.setWindowTitle(kernelText(
-        "kernel.platform.hal.edit.dialog.title",
-        QStringLiteral("编辑 HAL 函数槽")));
+        "kernel.platform.slot.edit.dialog.title",
+        QStringLiteral("编辑 %1 函数槽"))
+        .arg(familyName));
     auto* layout = new QVBoxLayout(&editor);
-    auto* riskLabel = new QLabel(
-        kernelText(
-            "kernel.platform.hal.edit.dialog.risk",
+    QString riskText = kernelText(
+        "kernel.platform.slot.edit.dialog.risk",
+        QStringLiteral(
+            "目标地址必须位于已加载内核模块的可执行节。R0 仍无法验证函数原型、调用约定或运行时语义；"
+            "不兼容的地址可能在该槽下一次被调用时立即使系统崩溃。"));
+    if (m_mode == Mode::Wdf)
+    {
+        riskText.append(QChar(QLatin1Char('\n')));
+        riskText.append(kernelText(
+            "kernel.platform.slot.edit.dialog.risk.shared",
             QStringLiteral(
-                "目标地址必须位于已加载内核模块的可执行节。R0 仍无法验证函数原型、调用约定或运行时语义；"
-                "不兼容的地址可能在该槽下一次被调用时立即使系统崩溃。")),
-        &editor);
+                "该槽位于 Wdf01000.sys 的只读节，由系统上所有 KMDF 驱动共享；"
+                "R0 会为它建立临时 MDL 可写别名后提交，改动对每一个 KMDF 驱动同时生效。")));
+    }
+    auto* riskLabel = new QLabel(riskText, &editor);
     riskLabel->setWordWrap(true);
     riskLabel->setStyleSheet(
         QStringLiteral("color:%1;font-weight:600;")
@@ -914,22 +922,62 @@ void KernelPlatformAuditTab::editHalEntry(
 
     auto* form = new QFormLayout();
     form->addRow(
-        kernelText("kernel.platform.hal.edit.field.name", QStringLiteral("函数槽")),
+        kernelText("kernel.platform.slot.edit.field.name", QStringLiteral("函数槽")),
         new QLabel(
             fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS),
             &editor));
     form->addRow(
-        kernelText("kernel.platform.hal.edit.field.table", QStringLiteral("表地址")),
+        kernelText("kernel.platform.slot.edit.field.table", QStringLiteral("表地址")),
         new QLabel(addressText(entry.tableAddress), &editor));
     form->addRow(
-        kernelText("kernel.platform.hal.edit.field.current", QStringLiteral("当前地址")),
+        kernelText("kernel.platform.slot.edit.field.current", QStringLiteral("当前地址")),
         new QLabel(addressText(entry.liveAddress), &editor));
     auto* addressEdit = new QLineEdit(&editor);
     addressEdit->setPlaceholderText(QStringLiteral("0xFFFFF80000000000"));
     addressEdit->setText(addressText(entry.liveAddress));
     addressEdit->selectAll();
+
+    // 磁盘基线可用时给一个一键回填入口：恢复被改写的槽位是这个页面最常见的
+    // 用途，手抄 16 位十六进制地址既慢又容易错一位。
+    const bool baselineAvailable =
+        (entry.fieldFlags & KSWORD_ARK_PLATFORM_FIELD_ORIGINAL_ADDRESS) != 0UL &&
+        entry.originalAddress != 0ULL;
+    if (baselineAvailable)
+    {
+        auto* originalRow = new QWidget(&editor);
+        auto* originalLayout = new QHBoxLayout(originalRow);
+        originalLayout->setContentsMargins(0, 0, 0, 0);
+        originalLayout->addWidget(
+            new QLabel(addressText(entry.originalAddress), originalRow), 1);
+        auto* restoreButton = new QPushButton(
+            kernelText(
+                "kernel.platform.slot.edit.field.original.fill",
+                QStringLiteral("填入")),
+            originalRow);
+        restoreButton->setToolTip(kernelText(
+            "kernel.platform.slot.edit.field.original.fill.tooltip",
+            QStringLiteral("把磁盘映像基线解析出的原始地址填入下方输入框")));
+        restoreButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+        const unsigned long long originalAddress = entry.originalAddress;
+        connect(
+            restoreButton,
+            &QPushButton::clicked,
+            addressEdit,
+            [addressEdit, originalAddress]()
+            {
+                addressEdit->setText(addressText(originalAddress));
+                addressEdit->selectAll();
+                addressEdit->setFocus();
+            });
+        originalLayout->addWidget(restoreButton);
+        form->addRow(
+            kernelText(
+                "kernel.platform.slot.edit.field.original",
+                QStringLiteral("原始地址（磁盘基线）")),
+            originalRow);
+    }
     form->addRow(
-        kernelText("kernel.platform.hal.edit.field.new", QStringLiteral("新函数地址")),
+        kernelText("kernel.platform.slot.edit.field.new", QStringLiteral("新函数地址")),
         addressEdit);
     layout->addLayout(form);
 
@@ -937,7 +985,7 @@ void KernelPlatformAuditTab::editHalEntry(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
         &editor);
     buttons->button(QDialogButtonBox::Ok)->setText(kernelText(
-        "kernel.platform.hal.edit.continue",
+        "kernel.platform.slot.edit.continue",
         QStringLiteral("继续风险确认")));
     connect(buttons, &QDialogButtonBox::accepted, &editor, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &editor, &QDialog::reject);
@@ -954,10 +1002,10 @@ void KernelPlatformAuditTab::editHalEntry(
         QMessageBox::warning(
             this,
             kernelText(
-                "kernel.platform.hal.edit.invalid.title",
-                QStringLiteral("HAL 地址无效")),
+                "kernel.platform.slot.edit.invalid.title",
+                QStringLiteral("地址无效")),
             kernelText(
-                "kernel.platform.hal.edit.invalid.body",
+                "kernel.platform.slot.edit.invalid.body",
                 QStringLiteral("请输入非零的 64 位十六进制内核地址。")));
         return;
     }
@@ -966,14 +1014,14 @@ void KernelPlatformAuditTab::editHalEntry(
         QMessageBox::information(
             this,
             kernelText(
-                "kernel.platform.hal.edit.no_change.title",
-                QStringLiteral("HAL 表项未修改")),
+                "kernel.platform.slot.edit.no_change.title",
+                QStringLiteral("表项未修改")),
             kernelText(
-                "kernel.platform.hal.edit.no_change.body",
+                "kernel.platform.slot.edit.no_change.body",
                 QStringLiteral("新地址与当前地址相同，没有执行写入。")));
         return;
     }
-    if (!confirmHalEdit(entry, newAddress))
+    if (!confirmSlotEdit(entry, newAddress))
     {
         return;
     }
@@ -992,55 +1040,76 @@ void KernelPlatformAuditTab::editHalEntry(
         QMessageBox::critical(
             this,
             kernelText(
-                "kernel.platform.hal.edit.failed.title",
-                QStringLiteral("HAL 表项编辑失败")),
+                "kernel.platform.slot.edit.failed.title",
+                QStringLiteral("%1 表项编辑失败")).arg(familyName),
             result.io.ok
                 ? controlStatusText(
                     result.response.status,
                     result.response.lastStatus)
                 : kernelText(
-                    "kernel.platform.hal.edit.transport_failed",
+                    "kernel.platform.slot.edit.transport_failed",
                     QStringLiteral("R0 控制失败：%1"))
                     .arg(QString::fromStdString(result.io.message)));
         refreshAsync();
         return;
     }
 
+    QString successBody = kernelText(
+        "kernel.platform.slot.edit.succeeded.body",
+        QStringLiteral("%1 已从 %2 原子替换为 %3。页面将立即重新读取 R0 快照。"))
+        .arg(fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS))
+        .arg(addressText(result.response.previousValue))
+        .arg(addressText(result.response.currentValue));
+    if ((result.response.responseFlags &
+         KSWORD_ARK_PLATFORM_CONTROL_RESPONSE_ALIAS_WRITE) != 0UL)
+    {
+        successBody.append(QChar(QLatin1Char('\n')));
+        successBody.append(kernelText(
+            "kernel.platform.slot.edit.succeeded.alias",
+            QStringLiteral("槽位所在节只读，本次写入经 R0 的临时 MDL 可写别名提交。")));
+    }
     QMessageBox::information(
         this,
         kernelText(
-            "kernel.platform.hal.edit.succeeded.title",
-            QStringLiteral("HAL 表项已修改")),
-        kernelText(
-            "kernel.platform.hal.edit.succeeded.body",
-            QStringLiteral("%1 已从 %2 原子替换为 %3。页面将立即重新读取 R0 快照。"))
-            .arg(fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS))
-            .arg(addressText(result.response.previousValue))
-            .arg(addressText(result.response.currentValue)));
+            "kernel.platform.slot.edit.succeeded.title",
+            QStringLiteral("%1 表项已修改")).arg(familyName),
+        successBody);
     refreshAsync();
 }
 
-bool KernelPlatformAuditTab::confirmHalEdit(
+bool KernelPlatformAuditTab::confirmSlotEdit(
     const KSWORD_ARK_PLATFORM_AUDIT_ENTRY& entry,
     const unsigned long long newAddress)
 {
-    QMessageBox warningBox(this);
-    warningBox.setObjectName(QStringLiteral("ksHalEditRiskDialog"));
-    warningBox.setStyleSheet(
-        KswordTheme::OpaqueDialogStyle(warningBox.objectName()));
-    warningBox.setIcon(QMessageBox::Warning);
-    warningBox.setWindowTitle(kernelText(
-        "kernel.platform.hal.edit.confirm.title",
-        QStringLiteral("HAL 内核函数指针风险确认")));
-    warningBox.setText(kernelText(
-        "kernel.platform.hal.edit.confirm.body",
+    const QString familyName = tableFamilyName();
+    QString confirmBody = kernelText(
+        "kernel.platform.slot.edit.confirm.body",
         QStringLiteral(
             "即将修改 %1：\n%2 → %3\n\n"
             "这会立即改变内核控制流。地址即使位于可执行节，也可能因函数签名不兼容造成冻结、蓝屏或数据损坏。"
             "请确认已保存工作，并且当前环境允许整机故障。"))
         .arg(fixedWide(entry.name, KSWORD_ARK_PLATFORM_NAME_CHARS))
         .arg(addressText(entry.liveAddress))
-        .arg(addressText(newAddress)));
+        .arg(addressText(newAddress));
+    if (m_mode == Mode::Wdf)
+    {
+        confirmBody.append(QChar(QLatin1Char('\n')));
+        confirmBody.append(kernelText(
+            "kernel.platform.slot.edit.confirm.shared",
+            QStringLiteral(
+                "该槽属于全系统共享的 KMDF 绑定表，KSword 自身的驱动也在使用它；"
+                "一旦不可用，可能连卸载驱动这条退路都会失效。")));
+    }
+
+    QMessageBox warningBox(this);
+    warningBox.setObjectName(QStringLiteral("ksPlatformSlotEditRiskDialog"));
+    warningBox.setStyleSheet(
+        KswordTheme::OpaqueDialogStyle(warningBox.objectName()));
+    warningBox.setIcon(QMessageBox::Warning);
+    warningBox.setWindowTitle(kernelText(
+        "kernel.platform.slot.edit.confirm.title",
+        QStringLiteral("%1 内核函数指针风险确认")).arg(familyName));
+    warningBox.setText(confirmBody);
     warningBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
     warningBox.setDefaultButton(QMessageBox::Cancel);
     if (warningBox.exec() != QMessageBox::Ok)
@@ -1052,14 +1121,31 @@ bool KernelPlatformAuditTab::confirmHalEdit(
     QMessageBox finalBox(this);
     finalBox.setIcon(QMessageBox::Warning);
     finalBox.setWindowTitle(kernelText(
-        "kernel.platform.hal.edit.typed.title",
+        "kernel.platform.slot.edit.final.title",
         QStringLiteral("最终确认")));
     finalBox.setText(kernelText(
-        "kernel.platform.hal.edit.final.body",
-        QStringLiteral("确认执行 HAL 函数指针替换？该操作会改变内核控制流，可能导致蓝屏。")));
+        "kernel.platform.slot.edit.final.body",
+        QStringLiteral("确认执行 %1 函数指针替换？该操作会改变内核控制流，可能导致蓝屏。"))
+        .arg(familyName));
     finalBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
     finalBox.setDefaultButton(QMessageBox::No);
     return finalBox.exec() == QMessageBox::Yes;
+}
+
+bool KernelPlatformAuditTab::scopeIsEditable(const unsigned long scope)
+{
+    return scope == KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_DISPATCH ||
+        scope == KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_PRIVATE ||
+        scope == KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_ACPI ||
+        scope == KSWORD_ARK_PLATFORM_AUDIT_SCOPE_HAL_SUBCOMPONENTS ||
+        scope == KSWORD_ARK_PLATFORM_AUDIT_SCOPE_WDF_FUNCTIONS;
+}
+
+QString KernelPlatformAuditTab::tableFamilyName() const
+{
+    return m_mode == Mode::Hal
+        ? kernelText("kernel.platform.family.hal", QStringLiteral("HAL"))
+        : kernelText("kernel.platform.family.wdf", QStringLiteral("KMDF 绑定表"));
 }
 
 void KernelPlatformAuditTab::setColumnGroup(const int groupIndex)
@@ -1174,42 +1260,42 @@ QString KernelPlatformAuditTab::controlStatusText(
     {
     case KSWORD_ARK_PLATFORM_CONTROL_STATUS_CONFIRMATION_REQUIRED:
         reason = kernelText(
-            "kernel.platform.hal.edit.status.confirmation_required",
+            "kernel.platform.slot.edit.status.confirmation_required",
             QStringLiteral("确认信息被拒绝"));
         break;
     case KSWORD_ARK_PLATFORM_CONTROL_STATUS_UNSUPPORTED:
         reason = kernelText(
-            "kernel.platform.hal.edit.status.unsupported",
-            QStringLiteral("当前系统布局未通过 HAL 表重新定位验证"));
+            "kernel.platform.slot.edit.status.unsupported",
+            QStringLiteral("当前系统布局未通过表重新定位验证"));
         break;
     case KSWORD_ARK_PLATFORM_CONTROL_STATUS_STALE_SNAPSHOT:
         reason = kernelText(
-            "kernel.platform.hal.edit.status.stale",
+            "kernel.platform.slot.edit.status.stale",
             QStringLiteral("表地址或槽位当前值已变化，快照过期"));
         break;
     case KSWORD_ARK_PLATFORM_CONTROL_STATUS_TARGET_INVALID:
         reason = kernelText(
-            "kernel.platform.hal.edit.status.target_invalid",
+            "kernel.platform.slot.edit.status.target_invalid",
             QStringLiteral("目标地址不属于已加载内核模块的可执行节"));
         break;
     case KSWORD_ARK_PLATFORM_CONTROL_STATUS_WRITE_FAILED:
         reason = kernelText(
-            "kernel.platform.hal.edit.status.write_failed",
-            QStringLiteral("原子写入失败"));
+            "kernel.platform.slot.edit.status.write_failed",
+            QStringLiteral("原子写入失败；槽位在只读节时，HVCI 会拒绝建立可写别名"));
         break;
     case KSWORD_ARK_PLATFORM_CONTROL_STATUS_SAFETY_DENIED:
         reason = kernelText(
-            "kernel.platform.hal.edit.status.safety_denied",
+            "kernel.platform.slot.edit.status.safety_denied",
             QStringLiteral("中央内核修改安全策略拒绝了操作"));
         break;
     default:
         reason = kernelText(
-            "kernel.platform.hal.edit.status.invalid",
+            "kernel.platform.slot.edit.status.invalid",
             QStringLiteral("请求或响应无效"));
         break;
     }
     return kernelText(
-        "kernel.platform.hal.edit.status.format",
+        "kernel.platform.slot.edit.status.format",
         QStringLiteral("%1（NTSTATUS 0x%2）"))
         .arg(reason)
         .arg(
