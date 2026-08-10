@@ -140,4 +140,16 @@ namespace ks::ui
         const QString& commitKey,
         const QList<QAbstractItemView*>& itemViewList,
         std::function<void()> commitAction);
+
+    // DeferUiCommitIfComboBoxPopupOpen 作用：
+    // - 输入：提交任务所有者、稳定去重键和 UI 提交函数；
+    // - 处理：任意 QComboBox 弹层展开时只保留同 owner/key 的最新提交，弹层收起后回投；
+    // - 返回：true 表示本次提交已延后，false 表示可以立即提交。
+    // 调用方法：不重建表格、只重建下拉框内容的异步回填入口在改动控件前调用。
+    // Why：弹层是抓着鼠标键盘的独立顶层窗口，展开期间被清空重填后会继续抓着输入但内容失效，
+    //      用户看到的就是“点开下拉框之后整个界面点不动”。
+    bool DeferUiCommitIfComboBoxPopupOpen(
+        QObject* owner,
+        const QString& commitKey,
+        std::function<void()> commitAction);
 }

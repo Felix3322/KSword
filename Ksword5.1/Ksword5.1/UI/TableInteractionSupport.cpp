@@ -26,6 +26,7 @@
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QComboBox>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
@@ -100,6 +101,22 @@ namespace
         return commitList;
     }
 
+    // isComboBoxPopupOpen 作用：
+    // - 返回当前是否有 QComboBox 弹层正展开；
+    // - 弹层是抓着鼠标键盘的独立顶层窗口，此时后台回填清空并重填下拉框，
+    //   会让弹层继续抓着输入但内容已失效，界面表现为“点了下拉框之后点不动”；
+    // - 判据取 activePopupWidget 的父控件：QComboBox 弹层容器的父对象就是组合框本身，
+    //   右键菜单的父对象不是，因此不会和菜单判据互相误伤。
+    bool isComboBoxPopupOpen()
+    {
+        QWidget* const activePopupWidget = QApplication::activePopupWidget();
+        if (activePopupWidget == nullptr)
+        {
+            return false;
+        }
+        return qobject_cast<QComboBox*>(activePopupWidget->parentWidget()) != nullptr;
+    }
+
     // isLeftCtrlHeldForMultiSelect 作用：
     // - 返回左 Ctrl 键当前是否处于物理按下状态（Issue #149）；
     // - 用户按住左 Ctrl 跨行多选时，任意表格刷新都应像右键菜单打开时一样进入缓存刷新，
@@ -115,7 +132,7 @@ namespace
     // - 每次真正执行前重新检查，覆盖 flush 过程中同步打开新菜单或用户仍在多选的重入场景。
     bool isDeferredTableUiCommitBlocked(const DeferredTableUiCommit& pendingCommit)
     {
-        if (isLeftCtrlHeldForMultiSelect())
+        if (isLeftCtrlHeldForMultiSelect() || isComboBoxPopupOpen())
         {
             return true;
         }
@@ -268,8 +285,8 @@ namespace
             contextMenuOpen =
                 contextMenuOpen || isItemViewContextMenuOpen(itemView);
         }
-        // 右键菜单打开或用户仍按住左 Ctrl 多选（Issue #149）时都缓存刷新。
-        if (!contextMenuOpen && !isLeftCtrlHeldForMultiSelect())
+        // 右键菜单打开、用户仍按住左 Ctrl 多选（Issue #149）、下拉框弹层展开时都缓存刷新。
+        if (!contextMenuOpen && !isLeftCtrlHeldForMultiSelect() && !isComboBoxPopupOpen())
         {
             // 无需缓存：若队列仍有左 Ctrl 期间积压的提交（如松开事件因失焦丢失），
             // 借本次刷新兜底安排一次 flush，避免旧提交长期滞留。
@@ -2533,6 +2550,16 @@ namespace
             }
             else if (eventObject->type() == QEvent::Hide)
             {
+                // 下拉框弹层收起是解除 isComboBoxPopupOpen 屏障的唯一时机；
+                // 弹层容器的父对象就是组合框本身，据此识别并回投被缓存的刷新。
+                if (QWidget* const hiddenWidget = qobject_cast<QWidget*>(watchedObject))
+                {
+                    if (qobject_cast<QComboBox*>(hiddenWidget->parentWidget()) != nullptr)
+                    {
+                        scheduleDeferredTableUiCommitFlush();
+                    }
+                }
+
                 // hiddenMenu 用途：业务菜单退出嵌套事件循环后释放对应表格的 UI 提交屏障。
                 QMenu* hiddenMenu = qobject_cast<QMenu*>(watchedObject);
                 if (hiddenMenu != nullptr)
@@ -2770,11 +2797,24 @@ namespace ks::ui
             std::move(commitAction));
     }
 
+    bool DeferUiCommitIfComboBoxPopupOpen(
+        QObject* owner,
+        const QString& commitKey,
+        std::function<void()> commitAction)
+    {
+        // 视图集合留空：该入口不重建表格，屏障只由下拉框弹层和左 Ctrl 决定。
+        return deferItemViewUiCommitIfNeeded(
+            owner,
+            commitKey,
+            {},
+            std::move(commitAction));
+    }
+
     bool IsItemViewUiCommitBlockedByContextMenu(
         const QList<QAbstractItemView*>& itemViewList)
     {
-        // 左 Ctrl 多选期间对所有表格生效，无关具体视图（Issue #149）。
-        if (isLeftCtrlHeldForMultiSelect())
+        // 左 Ctrl 多选期间、下拉框弹层展开期间对所有表格生效，无关具体视图（Issue #149）。
+        if (isLeftCtrlHeldForMultiSelect() || isComboBoxPopupOpen())
         {
             return true;
         }

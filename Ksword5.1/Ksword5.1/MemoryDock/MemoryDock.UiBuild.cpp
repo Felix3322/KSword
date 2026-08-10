@@ -166,7 +166,7 @@ void MemoryDock::initializeToolbar()
     m_processCombo->setToolTip("选择目标进程（进程名 + PID）。");
 
     // 弹层展开期间必须禁止重建下拉框，这里先建立对弹层窗口的监听。
-    installProcessComboPopupWatch();
+    installComboPopupWatch(m_processCombo);
 
     m_attachButton = new QPushButton("附加", toolbarContainer);
     m_detachButton = new QPushButton("分离", toolbarContainer);
@@ -728,6 +728,10 @@ void MemoryDock::initializeDriverMemoryRwTab()
         "中心地址为 0xFFFF... 高半区时自动按内核虚拟地址读取，并忽略 PID。");
     m_driverMemoryBaseCombo->addItem("0", QVariant::fromValue(static_cast<uint>(0U)));
     m_driverMemoryBaseCombo->setItemData(0, QString(), Qt::UserRole + 1);
+
+    // 该框同样按进程缓存整体重建，展开期间必须一起受保护。
+    installComboPopupWatch(m_driverMemoryBaseCombo);
+
     if (m_driverMemoryBaseCombo->lineEdit() != nullptr)
     {
         m_driverMemoryBaseCombo->lineEdit()->setPlaceholderText("0 / 0x基址 / 模块+偏移 / 进程名或PID");

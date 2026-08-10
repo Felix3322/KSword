@@ -352,14 +352,23 @@ private:
     // - 返回：无。
     void updateProcessComboFromCache();
 
-    // installProcessComboPopupWatch：
-    // - 作用：给进程下拉框弹层窗口安装事件过滤器；
+    // installComboPopupWatch：
+    // - 作用：给下拉框的弹层窗口安装事件过滤器；
+    // - 参数 comboBox：需要在展开期间保护的下拉框；
     // - 说明：QComboBox 弹层是独立顶层窗口，只能靠 Hide 事件感知收起；
     // - 返回：无，重复调用安全。
-    void installProcessComboPopupWatch();
+    void installComboPopupWatch(QComboBox* comboBox);
+
+    // isComboPopupVisible：
+    // - 作用：判断单个下拉框的弹层窗口当前是否可见；
+    // - 参数 comboBox：待检查的下拉框，可为空；
+    // - 返回：true 表示弹层正展开。
+    static bool isComboPopupVisible(QComboBox* comboBox);
 
     // isProcessComboPopupOpen：
-    // - 作用：判断顶部进程下拉框的弹层是否正在展开；
+    // - 作用：判断任一“按进程缓存重建”的下拉框弹层是否正在展开；
+    // - 说明：顶部进程框与 R0 读写页的目标进程框共用同一份进程缓存，
+    //   一次回填会同时重建两者，因此任一展开都必须推迟提交；
     // - 返回：true 表示弹层可见，此时重建下拉框会让弹层挂住鼠标抓取，界面变得点不动。
     bool isProcessComboPopupOpen();
 

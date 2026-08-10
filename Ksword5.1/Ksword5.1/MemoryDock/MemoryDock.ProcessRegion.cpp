@@ -565,58 +565,69 @@ namespace
 
 bool MemoryDock::eventFilter(QObject* watchedObject, QEvent* eventObject)
 {
-    // 只关心进程下拉框弹层窗口的隐藏：Qt 没有公开的“弹层已收起”信号，
+    // 只关心受保护下拉框弹层窗口的隐藏：Qt 没有公开的“弹层已收起”信号，
     // 这里靠弹层顶层窗口的 Hide 事件把被推迟的进程列表提交放回事件循环。
-    if (eventObject != nullptr &&
-        eventObject->type() == QEvent::Hide &&
-        m_processCombo != nullptr &&
-        m_processCombo->view() != nullptr &&
-        watchedObject == m_processCombo->view()->window())
+    if (eventObject != nullptr && eventObject->type() == QEvent::Hide)
     {
-        // Hide 事件发生在 QComboBox 收尾之前，回投到外层事件循环再重建控件。
-        QTimer::singleShot(0, this, [this]() {
-            flushProcessComboDeferredCommit();
-            });
+        const bool isWatchedPopup =
+            (m_processCombo != nullptr && m_processCombo->view() != nullptr &&
+                watchedObject == m_processCombo->view()->window()) ||
+            (m_driverMemoryBaseCombo != nullptr && m_driverMemoryBaseCombo->view() != nullptr &&
+                watchedObject == m_driverMemoryBaseCombo->view()->window());
+        if (isWatchedPopup)
+        {
+            // Hide 事件发生在 QComboBox 收尾之前，回投到外层事件循环再重建控件。
+            QTimer::singleShot(0, this, [this]() {
+                flushProcessComboDeferredCommit();
+                });
+        }
     }
     return QWidget::eventFilter(watchedObject, eventObject);
 }
 
-void MemoryDock::installProcessComboPopupWatch()
+void MemoryDock::installComboPopupWatch(QComboBox* const comboBox)
 {
-    if (m_processCombo == nullptr)
+    if (comboBox == nullptr)
     {
         return;
     }
 
     // view() 会惰性创建弹层容器；这里主动创建一次，后续复用同一个顶层窗口。
-    QAbstractItemView* const popupView = m_processCombo->view();
+    QAbstractItemView* const popupView = comboBox->view();
     if (popupView == nullptr)
     {
         return;
     }
     QWidget* const popupWindow = popupView->window();
-    if (popupWindow == nullptr || popupWindow == m_processCombo->window())
+    if (popupWindow == nullptr || popupWindow == comboBox->window())
     {
         return;
     }
     popupWindow->installEventFilter(this);
 }
 
-bool MemoryDock::isProcessComboPopupOpen()
+bool MemoryDock::isComboPopupVisible(QComboBox* const comboBox)
 {
-    if (m_processCombo == nullptr)
+    if (comboBox == nullptr)
     {
         return false;
     }
-    QAbstractItemView* const popupView = m_processCombo->view();
+    QAbstractItemView* const popupView = comboBox->view();
     if (popupView == nullptr)
     {
         return false;
     }
     QWidget* const popupWindow = popupView->window();
     return popupWindow != nullptr &&
-        popupWindow != m_processCombo->window() &&
+        popupWindow != comboBox->window() &&
         popupWindow->isVisible();
+}
+
+bool MemoryDock::isProcessComboPopupOpen()
+{
+    // 一次进程缓存回填会同时重建这两个下拉框，任一展开都不能提交。
+    return isComboPopupVisible(m_processCombo) ||
+        isComboPopupVisible(m_driverMemoryBaseCombo);
 }
 
 bool MemoryDock::deferCommitWhileProcessComboPopupOpen(std::function<void()> commitAction)

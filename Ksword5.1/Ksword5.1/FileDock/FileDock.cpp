@@ -3683,9 +3683,9 @@ namespace
             "QLineEdit:focus,QPlainTextEdit:focus,QTextEdit:focus{"
             "  border:1px solid %1;}")
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
             + KswordTheme::ThemedComboBoxStyle();
     }
 
@@ -3719,12 +3719,12 @@ namespace
             "  background:%3;"
             "  margin:2px 6px;"
             "}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
             .arg(disabledTextColor)
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     void installFileTableCopyMenu(QTableWidget* tableWidget, const int processIdColumn)
@@ -4390,12 +4390,12 @@ namespace
             "  border:none;"
             "}")
             .arg(KswordTheme::WindowColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
             .arg(KswordTheme::ControlAccentHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     // buildLogPreviewText 作用：
@@ -4446,10 +4446,10 @@ namespace
             "  background:%3;"
             "  color:%4;"
             "}")
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::SurfaceAltHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     // 递归复制目录：用于跨面板复制目录场景。
@@ -9932,7 +9932,7 @@ void FileDock::rebuildBreadcrumb(FilePanelWidgets& panel)
     panel.breadcrumbEditTriggerButton->setStyleSheet(QStringLiteral(
         "QPushButton{border:none;background:transparent;color:%1;}"
         "QPushButton:hover{background:%2;color:%1;}")
-        .arg(KswordTheme::TextPrimaryColorHex())
+        .arg(KswordTheme::TextPrimaryHex())
         .arg(KswordTheme::IsDarkModeEnabled() ? KswordTheme::SurfaceMutedColorHex() : KswordTheme::PrimaryBlueSubtleHex()));
     panel.breadcrumbLayout->addWidget(panel.breadcrumbEditTriggerButton, 1);
     connect(panel.breadcrumbEditTriggerButton, &QPushButton::clicked, this, [this, &panel]() {
@@ -11739,46 +11739,79 @@ void FileDock::refreshRecoveryVolumeList()
                         return;
                     }
 
-                    dock->m_recoveryVolumeCombo->clear();
-                    for (const QString& volumeRootPath : ntfsVolumeRootList)
+                    // commitVolumeList：卷列表落地动作，直接提交与弹层收起后的回投共用同一份实现。
+                    auto commitVolumeList = [guardedSelf, requestGeneration, ntfsVolumeRootList]()
                     {
-                        const QString displayText = QStringLiteral("%1 (NTFS)").arg(volumeRootPath);
-                        dock->m_recoveryVolumeCombo->addItem(displayText, volumeRootPath);
-                    }
-                    dock->m_recoveryVolumeCombo->setEnabled(true);
-
-                    if (dock->m_recoveryRefreshButton != nullptr)
-                    {
-                        dock->m_recoveryRefreshButton->setEnabled(true);
-                    }
-                    // 扫描按钮的禁用权归误删扫描/恢复任务：探测结束不能把它们置灰的状态改回去。
-                    if (dock->m_recoveryScanButton != nullptr
-                        && !dock->m_recoveryScanInProgress
-                        && !dock->m_recoveryRecoverInProgress)
-                    {
-                        dock->m_recoveryScanButton->setEnabled(true);
-                        if (dock->m_recoveryEmptyScanButton != nullptr) { dock->m_recoveryEmptyScanButton->setEnabled(true); }
-                    }
-
-                    if (dock->m_recoveryStatusLabel != nullptr)
-                    {
-                        if (dock->m_recoveryVolumeCombo->count() == 0)
+                        if (guardedSelf.isNull())
                         {
-                            dock->m_recoveryStatusLabel->setText(
-                                QStringLiteral("未检测到可扫描的 NTFS 卷。"));
+                            return;
                         }
-                        else
+                        FileDock* const commitDock = guardedSelf.data();
+                        if (commitDock->m_recoveryVolumeCombo == nullptr)
                         {
-                            dock->m_recoveryStatusLabel->setText(
-                                QStringLiteral("已刷新卷列表，可执行误删扫描。"));
+                            return;
                         }
-                    }
+                        // 延迟回投期间可能又发起了新一轮探测，落地前重新校验代次。
+                        const quint64 latestGeneration = commitDock->m_recoveryVolumeCombo
+                            ->property(kRecoveryVolumeProbeGenerationProperty)
+                            .toULongLong();
+                        if (latestGeneration != requestGeneration)
+                        {
+                            return;
+                        }
 
-                    kLogEvent event;
-                    info << event
-                        << "[FileDock] 刷新文件恢复卷列表, count="
-                        << dock->m_recoveryVolumeCombo->count()
-                        << eol;
+                        commitDock->m_recoveryVolumeCombo->clear();
+                        for (const QString& volumeRootPath : ntfsVolumeRootList)
+                        {
+                            const QString displayText = QStringLiteral("%1 (NTFS)").arg(volumeRootPath);
+                            commitDock->m_recoveryVolumeCombo->addItem(displayText, volumeRootPath);
+                        }
+                        commitDock->m_recoveryVolumeCombo->setEnabled(true);
+
+                        if (commitDock->m_recoveryRefreshButton != nullptr)
+                        {
+                            commitDock->m_recoveryRefreshButton->setEnabled(true);
+                        }
+                        // 扫描按钮的禁用权归误删扫描/恢复任务：探测结束不能把它们置灰的状态改回去。
+                        if (commitDock->m_recoveryScanButton != nullptr
+                            && !commitDock->m_recoveryScanInProgress
+                            && !commitDock->m_recoveryRecoverInProgress)
+                        {
+                            commitDock->m_recoveryScanButton->setEnabled(true);
+                            if (commitDock->m_recoveryEmptyScanButton != nullptr) { commitDock->m_recoveryEmptyScanButton->setEnabled(true); }
+                        }
+
+                        if (commitDock->m_recoveryStatusLabel != nullptr)
+                        {
+                            if (commitDock->m_recoveryVolumeCombo->count() == 0)
+                            {
+                                commitDock->m_recoveryStatusLabel->setText(
+                                    QStringLiteral("未检测到可扫描的 NTFS 卷。"));
+                            }
+                            else
+                            {
+                                commitDock->m_recoveryStatusLabel->setText(
+                                    QStringLiteral("已刷新卷列表，可执行误删扫描。"));
+                            }
+                        }
+
+                        kLogEvent event;
+                        info << event
+                            << "[FileDock] 刷新文件恢复卷列表, count="
+                            << commitDock->m_recoveryVolumeCombo->count()
+                            << eol;
+                    };
+
+                    // 卷下拉框展开期间清空重填，会让弹层继续抓着鼠标键盘但内容失效，
+                    // 界面表现为点不动；这里推迟到弹层收起后再落地。
+                    if (ks::ui::DeferUiCommitIfComboBoxPopupOpen(
+                            dock,
+                            QStringLiteral("file-recovery-volume-combo-apply"),
+                            commitVolumeList))
+                    {
+                        return;
+                    }
+                    commitVolumeList();
                 },
                 Qt::QueuedConnection);
         });
