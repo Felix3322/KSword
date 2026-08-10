@@ -2091,10 +2091,12 @@ namespace ks::file
             }
 
             std::unordered_set<std::uint64_t> emittedHandleKeySet;
+            std::unordered_map<std::uint32_t, bool> fileTypeIndexCache;
             std::size_t enumSucceededCount = 0;
             std::size_t enumFailedCount = 0;
             std::size_t objectQueryFailedCount = 0;
             std::size_t nonFileSkippedCount = 0;
+            std::size_t fileLikeHandleCount = 0;
             for (const ksword::ark::ProcessEntry& processEntry : processResult.entries)
             {
                 if (IsCancellationRequested(cancellationCallback))
@@ -2126,21 +2128,56 @@ namespace ks::file
                     }
                     const std::uint64_t handleKey = BuildHandleKey(handleEntry.processId, handleEntry.handleValue);
                     if (emittedHandleKeySet.find(handleKey) != emittedHandleKeySet.end()) { continue; }
+
+                    // Object type indexes are system-wide for the current boot. Query one
+                    // representative handle to classify an index, then avoid an expensive
+                    // object-name IOCTL for every later handle of a known non-File type.
+                    bool cachedFileType = false;
+                    if (handleEntry.objectTypeIndex != 0)
+                    {
+                        const auto cachedType = fileTypeIndexCache.find(handleEntry.objectTypeIndex);
+                        if (cachedType != fileTypeIndexCache.end())
+                        {
+                            if (!cachedType->second)
+                            {
+                                ++nonFileSkippedCount;
+                                continue;
+                            }
+                            cachedFileType = true;
+                        }
+                    }
+
                     const ksword::ark::HandleObjectQueryResult objectResult = driverClient.queryHandleObject(
                         handleEntry.processId,
                         handleEntry.handleValue,
                         KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL);
                     if (!objectResult.io.ok || objectResult.queryStatus == KSWORD_ARK_OBJECT_QUERY_STATUS_HANDLE_REFERENCE_FAILED)
                     {
+                        if (cachedFileType)
+                        {
+                            ++fileLikeHandleCount;
+                        }
                         ++objectQueryFailedCount;
                         continue;
                     }
                     const std::wstring typeName = objectResult.typeName;
-                    if (!EqualsInsensitive(typeName, L"File") && !ContainsInsensitive(typeName, L"File"))
+                    const bool queryIdentifiedFile =
+                        EqualsInsensitive(typeName, L"File") || ContainsInsensitive(typeName, L"File");
+                    const std::uint32_t resolvedTypeIndex = objectResult.objectTypeIndex != 0
+                        ? objectResult.objectTypeIndex
+                        : handleEntry.objectTypeIndex;
+                    if (resolvedTypeIndex != 0 && !TrimWideCopy(typeName).empty())
+                    {
+                        fileTypeIndexCache[resolvedTypeIndex] = queryIdentifiedFile;
+                    }
+                    const bool isFileType = queryIdentifiedFile ||
+                        (cachedFileType && TrimWideCopy(typeName).empty());
+                    if (!isFileType)
                     {
                         ++nonFileSkippedCount;
                         continue;
                     }
+                    ++fileLikeHandleCount;
                     const std::wstring objectName = objectResult.objectName;
                     if (TrimWideCopy(objectName).empty())
                     {
@@ -2173,7 +2210,7 @@ namespace ks::file
                 }
             }
 
-            result.fileLikeHandleCount = result.entries.size();
+            result.fileLikeHandleCount = fileLikeHandleCount;
             result.matchedHandleCount = result.entries.size();
             result.kernelHandleMatchCount = result.entries.size();
             // 至少一个进程的 HandleTable IOCTL 成功就说明 R0 路径可用；
