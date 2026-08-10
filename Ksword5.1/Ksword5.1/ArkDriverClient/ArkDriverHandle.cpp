@@ -56,7 +56,10 @@ namespace ksword::ark
         request.flags = flags;
         request.processId = processId;
 
+        constexpr std::size_t headerSize =
+            sizeof(KSWORD_ARK_ENUM_PROCESS_HANDLES_RESPONSE) - sizeof(KSWORD_ARK_HANDLE_ENTRY);
         std::vector<std::uint8_t> responseBuffer(1024U * 1024U, 0U);
+        enumResult.processId = processId;
         enumResult.io = deviceIoControl(
             IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES,
             &request,
@@ -65,14 +68,28 @@ namespace ksword::ark
             static_cast<unsigned long>(responseBuffer.size()));
         if (!enumResult.io.ok)
         {
+            // The driver returns a populated response header for transient
+            // failures such as STATUS_INVALID_CID. Preserve that NTSTATUS so
+            // callers can distinguish normal process churn from protocol or
+            // transport failures. Some Windows versions report zero output
+            // bytes for a failed DeviceIoControl, so callers still need a
+            // conservative process-liveness fallback.
+            if (enumResult.io.bytesReturned >= headerSize)
+            {
+                const auto* responseHeader =
+                    reinterpret_cast<const KSWORD_ARK_ENUM_PROCESS_HANDLES_RESPONSE*>(responseBuffer.data());
+                enumResult.version = static_cast<std::uint32_t>(responseHeader->version);
+                enumResult.processId = static_cast<std::uint32_t>(responseHeader->processId);
+                enumResult.overallStatus = static_cast<std::uint32_t>(responseHeader->overallStatus);
+                enumResult.lastStatus = static_cast<long>(responseHeader->lastStatus);
+                enumResult.io.ntStatus = enumResult.lastStatus;
+            }
             enumResult.io.message =
                 "DeviceIoControl(IOCTL_KSWORD_ARK_ENUM_PROCESS_HANDLES) failed, error=" +
                 std::to_string(enumResult.io.win32Error);
             return enumResult;
         }
 
-        constexpr std::size_t headerSize =
-            sizeof(KSWORD_ARK_ENUM_PROCESS_HANDLES_RESPONSE) - sizeof(KSWORD_ARK_HANDLE_ENTRY);
         if (enumResult.io.bytesReturned < headerSize)
         {
             enumResult.io.ok = false;

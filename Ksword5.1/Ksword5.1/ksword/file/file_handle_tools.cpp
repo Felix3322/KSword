@@ -6,14 +6,17 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <cwctype>
 #include <iomanip>
 #include <iterator>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 
@@ -36,6 +39,7 @@ namespace ks::file
         constexpr ULONG kObjectTypeInformationClass = 2;
         constexpr ULONG kMaxReparseBufferBytes = 16U * 1024U;
         constexpr NTSTATUS kStatusInfoLengthMismatch = static_cast<NTSTATUS>(0xC0000004);
+        constexpr NTSTATUS kStatusInvalidCid = static_cast<NTSTATUS>(0xC000000B);
         constexpr NTSTATUS kStatusBufferOverflow = static_cast<NTSTATUS>(0x80000005);
         constexpr NTSTATUS kStatusBufferTooSmall = static_cast<NTSTATUS>(0xC0000023);
         constexpr std::uint32_t kReparseTagMicrosoftFlag = 0x80000000U;
@@ -47,6 +51,24 @@ namespace ks::file
             0x8000001BU;
 #endif
         constexpr USHORT kSymbolicLinkRelativeFlag = 1U;
+
+        bool IsProcessGone(const std::uint32_t processId)
+        {
+            const HANDLE processHandle = ::OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                FALSE,
+                processId);
+            if (processHandle == nullptr)
+            {
+                return ::GetLastError() == ERROR_INVALID_PARAMETER;
+            }
+
+            DWORD exitCode = STILL_ACTIVE;
+            const bool gone = ::GetExitCodeProcess(processHandle, &exitCode) != FALSE &&
+                exitCode != STILL_ACTIVE;
+            ::CloseHandle(processHandle);
+            return gone;
+        }
 
         // IsCancellationRequested：集中处理可选取消回调，避免扫描循环遗漏关闭请求。
         bool IsCancellationRequested(const CancellationCallback& cancellationCallback)
@@ -2097,6 +2119,98 @@ namespace ks::file
             std::size_t objectQueryFailedCount = 0;
             std::size_t nonFileSkippedCount = 0;
             std::size_t fileLikeHandleCount = 0;
+            std::vector<ksword::ark::HandleEntry> pendingFileHandles;
+
+            const auto consumeObjectResult =
+                [&](const ksword::ark::HandleEntry& handleEntry,
+                    const ksword::ark::HandleObjectQueryResult& objectResult,
+                    const bool cachedFileType)
+            {
+                if (!objectResult.io.ok)
+                {
+                    if (cachedFileType)
+                    {
+                        ++fileLikeHandleCount;
+                    }
+                    ++objectQueryFailedCount;
+                    return;
+                }
+                if (objectResult.queryStatus == KSWORD_ARK_OBJECT_QUERY_STATUS_PROCESS_LOOKUP_FAILED ||
+                    objectResult.queryStatus == KSWORD_ARK_OBJECT_QUERY_STATUS_HANDLE_REFERENCE_FAILED)
+                {
+                    if (cachedFileType)
+                    {
+                        ++fileLikeHandleCount;
+                    }
+                    return;
+                }
+
+                const std::wstring typeName = objectResult.typeName;
+                const bool queryIdentifiedFile =
+                    EqualsInsensitive(typeName, L"File") || ContainsInsensitive(typeName, L"File");
+                const std::uint32_t resolvedTypeIndex = objectResult.objectTypeIndex != 0
+                    ? objectResult.objectTypeIndex
+                    : handleEntry.objectTypeIndex;
+                if (resolvedTypeIndex != 0 && !TrimWideCopy(typeName).empty())
+                {
+                    fileTypeIndexCache[resolvedTypeIndex] = queryIdentifiedFile;
+                }
+                const bool isFileType = queryIdentifiedFile ||
+                    (cachedFileType && TrimWideCopy(typeName).empty());
+                if (!isFileType)
+                {
+                    ++nonFileSkippedCount;
+                    return;
+                }
+                ++fileLikeHandleCount;
+                const std::wstring objectName = objectResult.objectName;
+                if (TrimWideCopy(objectName).empty())
+                {
+                    // A successful object query may legitimately have no
+                    // comparable name (anonymous File objects, endpoints, or
+                    // a per-object name lookup that returned partial data).
+                    // It cannot match a target path, but it is not an R0
+                    // transport failure and must not inflate the error count.
+                    return;
+                }
+
+                std::wstring matchedTargetPath;
+                bool matchedByDirectoryRule = false;
+                if (!MatchTargetPath(
+                        NormalizePathForCompare(objectName),
+                        targetPatterns,
+                        matchedTargetPath,
+                        matchedByDirectoryRule))
+                {
+                    return;
+                }
+
+                const std::uint64_t handleKey =
+                    BuildHandleKey(handleEntry.processId, handleEntry.handleValue);
+                if (emittedHandleKeySet.find(handleKey) != emittedHandleKeySet.end())
+                {
+                    return;
+                }
+
+                HandleUsageEntry entry{};
+                entry.processId = handleEntry.processId;
+                entry.processName = ProcessNameOf(processNameMap, entry.processId);
+                entry.handleValue = handleEntry.handleValue;
+                entry.typeIndex = static_cast<std::uint16_t>(objectResult.objectTypeIndex);
+                entry.typeName = typeName.empty() ? L"File" : typeName;
+                entry.objectName = objectName;
+                entry.grantedAccess = objectResult.actualGrantedAccess != 0
+                    ? objectResult.actualGrantedAccess
+                    : handleEntry.grantedAccess;
+                entry.attributes = handleEntry.attributes;
+                entry.matchedTargetPath = matchedTargetPath;
+                entry.matchedByDirectoryRule = matchedByDirectoryRule;
+                entry.matchRuleText = BuildPathRuleText(L"文件句柄", matchedByDirectoryRule);
+                entry.enumerationSource = L"Kernel HandleTable";
+                emittedHandleKeySet.insert(handleKey);
+                result.entries.push_back(std::move(entry));
+            };
+
             for (const ksword::ark::ProcessEntry& processEntry : processResult.entries)
             {
                 if (IsCancellationRequested(cancellationCallback))
@@ -2110,6 +2224,16 @@ namespace ks::file
                     KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_ALL);
                 if (!handleResult.io.ok)
                 {
+                    const bool invalidCid =
+                        handleResult.io.ntStatus == kStatusInvalidCid ||
+                        handleResult.lastStatus == kStatusInvalidCid;
+                    const bool invalidParameterForGoneProcess =
+                        handleResult.io.win32Error == ERROR_INVALID_PARAMETER &&
+                        IsProcessGone(processEntry.processId);
+                    if (invalidCid || invalidParameterForGoneProcess)
+                    {
+                        continue;
+                    }
                     ++enumFailedCount;
                     continue;
                 }
@@ -2147,66 +2271,79 @@ namespace ks::file
                         }
                     }
 
+                    if (cachedFileType)
+                    {
+                        pendingFileHandles.push_back(handleEntry);
+                        continue;
+                    }
+
                     const ksword::ark::HandleObjectQueryResult objectResult = driverClient.queryHandleObject(
                         handleEntry.processId,
                         handleEntry.handleValue,
                         KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL);
-                    if (!objectResult.io.ok || objectResult.queryStatus == KSWORD_ARK_OBJECT_QUERY_STATUS_HANDLE_REFERENCE_FAILED)
+                    consumeObjectResult(handleEntry, objectResult, false);
+                }
+            }
+
+            if (!pendingFileHandles.empty())
+            {
+                std::vector<ksword::ark::HandleObjectQueryResult> pendingResults(
+                    pendingFileHandles.size());
+                std::atomic_size_t nextIndex{ 0 };
+                std::atomic_bool cancellationObserved{ false };
+                std::mutex cancellationMutex;
+                constexpr std::size_t kMaxObjectQueryWorkers = 8U;
+                const std::size_t workerCount = std::min<std::size_t>(
+                    kMaxObjectQueryWorkers,
+                    pendingFileHandles.size());
+
+                const auto queryWorker = [&]()
+                {
+                    while (!cancellationObserved.load(std::memory_order_acquire))
                     {
-                        if (cachedFileType)
+                        const std::size_t index = nextIndex.fetch_add(1, std::memory_order_acq_rel);
+                        if (index >= pendingFileHandles.size())
                         {
-                            ++fileLikeHandleCount;
+                            return;
                         }
-                        ++objectQueryFailedCount;
-                        continue;
-                    }
-                    const std::wstring typeName = objectResult.typeName;
-                    const bool queryIdentifiedFile =
-                        EqualsInsensitive(typeName, L"File") || ContainsInsensitive(typeName, L"File");
-                    const std::uint32_t resolvedTypeIndex = objectResult.objectTypeIndex != 0
-                        ? objectResult.objectTypeIndex
-                        : handleEntry.objectTypeIndex;
-                    if (resolvedTypeIndex != 0 && !TrimWideCopy(typeName).empty())
-                    {
-                        fileTypeIndexCache[resolvedTypeIndex] = queryIdentifiedFile;
-                    }
-                    const bool isFileType = queryIdentifiedFile ||
-                        (cachedFileType && TrimWideCopy(typeName).empty());
-                    if (!isFileType)
-                    {
-                        ++nonFileSkippedCount;
-                        continue;
-                    }
-                    ++fileLikeHandleCount;
-                    const std::wstring objectName = objectResult.objectName;
-                    if (TrimWideCopy(objectName).empty())
-                    {
-                        ++objectQueryFailedCount;
-                        continue;
-                    }
+                        {
+                            std::lock_guard<std::mutex> cancellationLock(cancellationMutex);
+                            if (IsCancellationRequested(cancellationCallback))
+                            {
+                                cancellationObserved.store(true, std::memory_order_release);
+                                return;
+                            }
+                        }
 
-                    std::wstring matchedTargetPath;
-                    bool matchedByDirectoryRule = false;
-                    if (!MatchTargetPath(NormalizePathForCompare(objectName), targetPatterns, matchedTargetPath, matchedByDirectoryRule))
-                    {
-                        continue;
+                        const ksword::ark::HandleEntry& handleEntry = pendingFileHandles[index];
+                        pendingResults[index] = driverClient.queryHandleObject(
+                            handleEntry.processId,
+                            handleEntry.handleValue,
+                            KSWORD_ARK_QUERY_OBJECT_FLAG_INCLUDE_ALL);
                     }
+                };
 
-                    HandleUsageEntry entry{};
-                    entry.processId = handleEntry.processId;
-                    entry.processName = ProcessNameOf(processNameMap, entry.processId);
-                    entry.handleValue = handleEntry.handleValue;
-                    entry.typeIndex = static_cast<std::uint16_t>(objectResult.objectTypeIndex);
-                    entry.typeName = typeName.empty() ? L"File" : typeName;
-                    entry.objectName = objectName;
-                    entry.grantedAccess = objectResult.actualGrantedAccess != 0 ? objectResult.actualGrantedAccess : handleEntry.grantedAccess;
-                    entry.attributes = handleEntry.attributes;
-                    entry.matchedTargetPath = matchedTargetPath;
-                    entry.matchedByDirectoryRule = matchedByDirectoryRule;
-                    entry.matchRuleText = BuildPathRuleText(L"文件句柄", matchedByDirectoryRule);
-                    entry.enumerationSource = L"Kernel HandleTable";
-                    emittedHandleKeySet.insert(handleKey);
-                    result.entries.push_back(std::move(entry));
+                std::vector<std::thread> workers;
+                workers.reserve(workerCount);
+                for (std::size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex)
+                {
+                    workers.emplace_back(queryWorker);
+                }
+                for (std::thread& worker : workers)
+                {
+                    worker.join();
+                }
+
+                if (cancellationObserved.load(std::memory_order_acquire) ||
+                    IsCancellationRequested(cancellationCallback))
+                {
+                    result.diagnosticText = L"扫描已取消。";
+                    return result;
+                }
+
+                for (std::size_t index = 0; index < pendingFileHandles.size(); ++index)
+                {
+                    consumeObjectResult(pendingFileHandles[index], pendingResults[index], true);
                 }
             }
 
