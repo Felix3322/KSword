@@ -1010,9 +1010,17 @@ KswordARKWorkQueueFallbackFindChain(
                     ambiguous = TRUE;
                     continue;
                 }
+                /*
+                 * 歧义标志必须是粘性的：只有严格更高分的候选才有资格清零。
+                 * ChainsEqual 只比较解析结果，同一批队列会被多个候选重复命中，
+                 * 若同分候选也清零，先前记录的「另一条同分矛盾链」就被抹掉，
+                 * 唯一性判定这道 fail-closed 闸门等于失效。
+                 */
+                if (candidate.ValidationScore > bestScore) {
+                    ambiguous = FALSE;
+                }
                 best = candidate;
                 bestScore = candidate.ValidationScore;
-                ambiguous = FALSE;
             }
         }
     }
