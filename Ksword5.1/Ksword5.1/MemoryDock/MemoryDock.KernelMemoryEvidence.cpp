@@ -210,36 +210,6 @@ namespace
         return QStringLiteral("%1 %2 %3").arg(algorithm, section.isEmpty() ? QStringLiteral(".text?") : section, hex64(entry.contentHash));
     }
 
-    class EvidenceNumericItem final : public QTableWidgetItem
-    {
-    public:
-        EvidenceNumericItem(const QString& displayText, const qulonglong numericValue)
-            : QTableWidgetItem(displayText)
-        {
-            // 输入：显示文本与排序数值。
-            // 处理：把数值放入 UserRole，保留 DisplayRole 十六进制格式。
-            // 返回：构造函数无返回值。
-            setData(Qt::UserRole, QVariant::fromValue<qulonglong>(numericValue));
-            setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-        }
-
-        bool operator<(const QTableWidgetItem& other) const override
-        {
-            // 输入：另一表格项。
-            // 处理：优先按 UserRole 数值排序。
-            // 返回：true 表示当前项应排在前面。
-            bool leftOk = false;
-            bool rightOk = false;
-            const qulonglong leftValue = data(Qt::UserRole).toULongLong(&leftOk);
-            const qulonglong rightValue = other.data(Qt::UserRole).toULongLong(&rightOk);
-            if (leftOk && rightOk)
-            {
-                return leftValue < rightValue;
-            }
-            return QTableWidgetItem::operator<(other);
-        }
-    };
-
     QTableWidgetItem* textItem(const QString& text)
     {
         // 输入：展示文本。
@@ -255,17 +225,8 @@ namespace
         // 输入：无。
         // 处理：生成不透明右键菜单样式，防止继承透明背景。
         // 返回：可直接用于 QMenu::setStyleSheet 的字符串。
-        return QStringLiteral(
-            "QMenu{background:%1;color:%2;border:1px solid %3;}"
-            "QMenu::item{padding:5px 24px 5px 24px;background:transparent;}"
-            "QMenu::item:selected{background:%4;color:%6;}"
-            "QMenu::item:disabled{color:%5;}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::TextSecondaryColorHex())
-            .arg(KswordTheme::OnAccentHex());
+        // 右键菜单一律走全局主题实现，避免每个页面各拼一份互相漂移的 QSS。
+        return KswordTheme::ContextMenuStyle();
     }
 
     QString evidenceRowText(QTableWidget* table, const int rowIndex)
@@ -356,10 +317,13 @@ namespace
 
     QTableWidgetItem* numericItem(const QString& text, const qulonglong value)
     {
-        // 输入：展示文本和排序数值。
-        // 处理：创建带数值排序能力的 item。
+        // 输入：展示文本（十六进制地址或 KB/MB 大小）和参与排序的真实数值。
+        // 处理：统一走全局 ks::ui::NumericTableItem，排序读 NumericSortRole，
+        //       不再自建私有 item，也不会和地址列自用的 Qt::UserRole+1 缓存索引抢角色。
         // 返回：交给 QTableWidget 接管生命周期的 item。
-        return new EvidenceNumericItem(text, value);
+        ks::ui::NumericTableItem* item = new ks::ui::NumericTableItem(text, value);
+        item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+        return item;
     }
 
     QString evidenceTableDetailText(const ksword::ark::KernelMemoryEvidenceEntry& entry)
@@ -461,6 +425,8 @@ void MemoryDock::initializeKernelMemoryEvidenceTab()
     tabLayout->setContentsMargins(6, 6, 6, 6);
     tabLayout->setSpacing(6);
 
+    // 第一层动作行：只保留“刷新 + 过滤 + 状态”，扫描参数整体下沉到第二层分组框，
+    // 否则 8 个控件挤在一条工具条里，窄窗口下输入框会被压到只剩几个像素。
     QHBoxLayout* toolLayout = new QHBoxLayout();
     toolLayout->setContentsMargins(0, 0, 0, 0);
     toolLayout->setSpacing(8);
@@ -469,46 +435,70 @@ void MemoryDock::initializeKernelMemoryEvidenceTab()
     m_kernelMemoryEvidenceRefreshButton->setToolTip(QStringLiteral("刷新内核内存证据"));
     m_kernelMemoryEvidenceRefreshButton->setStyleSheet(buildBlueButtonStyle());
 
-    m_kernelMemoryEvidenceRiskOnlyCheck = new QCheckBox(QStringLiteral("仅风险项"), m_tabKernelMemoryEvidence);
-    m_kernelMemoryEvidenceRiskOnlyCheck->setChecked(true);
-
-    m_kernelMemoryEvidenceIncludeNonModuleCheck = new QCheckBox(QStringLiteral("包含非模块执行范围"), m_tabKernelMemoryEvidence);
-    m_kernelMemoryEvidenceIncludeNonModuleCheck->setToolTip(QStringLiteral("需要填写起止地址；不会默认扫描全内核地址空间。"));
+    // 竖线分隔符把“刷新”这个写查询动作与右侧的本地过滤在视觉上分开。
+    QFrame* evidenceActionSeparator = new QFrame(m_tabKernelMemoryEvidence);
+    evidenceActionSeparator->setFrameShape(QFrame::VLine);
+    evidenceActionSeparator->setFrameShadow(QFrame::Sunken);
 
     m_kernelMemoryEvidenceFilterEdit = new QLineEdit(m_tabKernelMemoryEvidence);
     m_kernelMemoryEvidenceFilterEdit->setClearButtonEnabled(true);
     m_kernelMemoryEvidenceFilterEdit->setPlaceholderText(QStringLiteral("过滤 owner / detail / risk / hash"));
+    m_kernelMemoryEvidenceFilterEdit->setToolTip(QStringLiteral("输入关键字后只显示匹配的证据行"));
     m_kernelMemoryEvidenceFilterEdit->setStyleSheet(buildBlueInputStyle());
-
-    m_kernelMemoryEvidenceStartEdit = new QLineEdit(m_tabKernelMemoryEvidence);
-    m_kernelMemoryEvidenceStartEdit->setPlaceholderText(QStringLiteral("起始VA(可选)"));
-    m_kernelMemoryEvidenceStartEdit->setMaximumWidth(150);
-    m_kernelMemoryEvidenceStartEdit->setStyleSheet(buildBlueInputStyle());
-
-    m_kernelMemoryEvidenceEndEdit = new QLineEdit(m_tabKernelMemoryEvidence);
-    m_kernelMemoryEvidenceEndEdit->setPlaceholderText(QStringLiteral("结束VA(可选)"));
-    m_kernelMemoryEvidenceEndEdit->setMaximumWidth(150);
-    m_kernelMemoryEvidenceEndEdit->setStyleSheet(buildBlueInputStyle());
-
-    m_kernelMemoryEvidenceMaxRowsSpin = new QSpinBox(m_tabKernelMemoryEvidence);
-    m_kernelMemoryEvidenceMaxRowsSpin->setRange(16, static_cast<int>(KSWORD_ARK_MEMORY_EVIDENCE_HARD_MAX_ROWS));
-    m_kernelMemoryEvidenceMaxRowsSpin->setValue(static_cast<int>(KSWORD_ARK_MEMORY_EVIDENCE_DEFAULT_MAX_ROWS));
-    m_kernelMemoryEvidenceMaxRowsSpin->setToolTip(QStringLiteral("最大返回行数"));
 
     m_kernelMemoryEvidenceStatusLabel = new QLabel(QStringLiteral("状态：等待刷新"), m_tabKernelMemoryEvidence);
     m_kernelMemoryEvidenceStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_kernelMemoryEvidenceStatusLabel->setStyleSheet(statusStyle(KswordTheme::TextSecondaryHex()));
 
     toolLayout->addWidget(m_kernelMemoryEvidenceRefreshButton);
-    toolLayout->addWidget(m_kernelMemoryEvidenceRiskOnlyCheck);
-    toolLayout->addWidget(m_kernelMemoryEvidenceIncludeNonModuleCheck);
-    toolLayout->addWidget(m_kernelMemoryEvidenceStartEdit);
-    toolLayout->addWidget(m_kernelMemoryEvidenceEndEdit);
-    toolLayout->addWidget(new QLabel(QStringLiteral("行数:"), m_tabKernelMemoryEvidence));
-    toolLayout->addWidget(m_kernelMemoryEvidenceMaxRowsSpin);
+    toolLayout->addWidget(evidenceActionSeparator);
     toolLayout->addWidget(m_kernelMemoryEvidenceFilterEdit, 1);
     toolLayout->addWidget(m_kernelMemoryEvidenceStatusLabel);
     tabLayout->addLayout(toolLayout);
+
+    // 第二层扫描参数分组：两个开关一行，三组“标签 + 输入”一行，网格保证标签与输入始终成对。
+    QGroupBox* evidenceScanParamGroup = new QGroupBox(QStringLiteral("扫描参数"), m_tabKernelMemoryEvidence);
+    QGridLayout* evidenceScanParamLayout = new QGridLayout(evidenceScanParamGroup);
+    evidenceScanParamLayout->setContentsMargins(8, 6, 8, 6);
+    evidenceScanParamLayout->setHorizontalSpacing(8);
+    evidenceScanParamLayout->setVerticalSpacing(6);
+
+    m_kernelMemoryEvidenceRiskOnlyCheck = new QCheckBox(QStringLiteral("仅显示风险项"), evidenceScanParamGroup);
+    m_kernelMemoryEvidenceRiskOnlyCheck->setChecked(true);
+    m_kernelMemoryEvidenceRiskOnlyCheck->setToolTip(QStringLiteral("只显示驱动判定 riskFlags 非零的证据行"));
+
+    m_kernelMemoryEvidenceIncludeNonModuleCheck = new QCheckBox(QStringLiteral("包含非模块执行范围"), evidenceScanParamGroup);
+    m_kernelMemoryEvidenceIncludeNonModuleCheck->setToolTip(QStringLiteral("需要填写起止地址；不会默认扫描全内核地址空间。"));
+
+    // 起止 VA 只在勾选“包含非模块执行范围”时参与查询，占位符给出典型内核地址写法。
+    m_kernelMemoryEvidenceStartEdit = new QLineEdit(evidenceScanParamGroup);
+    m_kernelMemoryEvidenceStartEdit->setPlaceholderText(QStringLiteral("0xFFFFF80000000000"));
+    m_kernelMemoryEvidenceStartEdit->setToolTip(QStringLiteral("非模块执行范围扫描的起始虚拟地址，勾选后必填"));
+    m_kernelMemoryEvidenceStartEdit->setMinimumWidth(150);
+    m_kernelMemoryEvidenceStartEdit->setStyleSheet(buildBlueInputStyle());
+
+    m_kernelMemoryEvidenceEndEdit = new QLineEdit(evidenceScanParamGroup);
+    m_kernelMemoryEvidenceEndEdit->setPlaceholderText(QStringLiteral("0xFFFFF80001000000"));
+    m_kernelMemoryEvidenceEndEdit->setToolTip(QStringLiteral("非模块执行范围扫描的结束虚拟地址，必须大于起始地址"));
+    m_kernelMemoryEvidenceEndEdit->setMinimumWidth(150);
+    m_kernelMemoryEvidenceEndEdit->setStyleSheet(buildBlueInputStyle());
+
+    m_kernelMemoryEvidenceMaxRowsSpin = new QSpinBox(evidenceScanParamGroup);
+    m_kernelMemoryEvidenceMaxRowsSpin->setRange(16, static_cast<int>(KSWORD_ARK_MEMORY_EVIDENCE_HARD_MAX_ROWS));
+    m_kernelMemoryEvidenceMaxRowsSpin->setValue(static_cast<int>(KSWORD_ARK_MEMORY_EVIDENCE_DEFAULT_MAX_ROWS));
+    m_kernelMemoryEvidenceMaxRowsSpin->setToolTip(QStringLiteral("最大返回行数"));
+
+    // 第 0 行两个开关各占两列，第 1 行三组标签/输入，末列留伸缩位吸收窗口多余宽度。
+    evidenceScanParamLayout->addWidget(m_kernelMemoryEvidenceRiskOnlyCheck, 0, 0, 1, 2);
+    evidenceScanParamLayout->addWidget(m_kernelMemoryEvidenceIncludeNonModuleCheck, 0, 2, 1, 4);
+    evidenceScanParamLayout->addWidget(new QLabel(QStringLiteral("起始 VA"), evidenceScanParamGroup), 1, 0);
+    evidenceScanParamLayout->addWidget(m_kernelMemoryEvidenceStartEdit, 1, 1);
+    evidenceScanParamLayout->addWidget(new QLabel(QStringLiteral("结束 VA"), evidenceScanParamGroup), 1, 2);
+    evidenceScanParamLayout->addWidget(m_kernelMemoryEvidenceEndEdit, 1, 3);
+    evidenceScanParamLayout->addWidget(new QLabel(QStringLiteral("最大行数"), evidenceScanParamGroup), 1, 4);
+    evidenceScanParamLayout->addWidget(m_kernelMemoryEvidenceMaxRowsSpin, 1, 5);
+    evidenceScanParamLayout->setColumnStretch(6, 1);
+    tabLayout->addWidget(evidenceScanParamGroup);
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, m_tabKernelMemoryEvidence);
     tabLayout->addWidget(splitter, 1);
@@ -531,7 +521,6 @@ void MemoryDock::initializeKernelMemoryEvidenceTab()
     m_kernelMemoryEvidenceTable->setAlternatingRowColors(true);
     m_kernelMemoryEvidenceTable->setSortingEnabled(true);
     m_kernelMemoryEvidenceTable->verticalHeader()->setVisible(false);
-    m_kernelMemoryEvidenceTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     installEvidenceCopyMenu(m_kernelMemoryEvidenceTable);
     splitter->addWidget(m_kernelMemoryEvidenceTable);
 
@@ -572,7 +561,12 @@ void MemoryDock::refreshKernelMemoryEvidenceAsync()
         const bool endOk = parseAddressText(m_kernelMemoryEvidenceEndEdit != nullptr ? m_kernelMemoryEvidenceEndEdit->text().trimmed() : QString(), endAddress);
         if (!startOk || !endOk || startAddress >= endAddress)
         {
+            // 参数校验失败直接退出采集态：此处尚未置灰按钮，只需还原忙标志并提示。
             m_kernelMemoryEvidenceRefreshInProgress.store(false);
+            kLogEvent invalidRangeEvent;
+            info << invalidRangeEvent
+                << "[MemoryDock] refreshKernelMemoryEvidenceAsync: 非模块执行范围起止 VA 无效，已放弃本次采集。"
+                << eol;
             if (m_kernelMemoryEvidenceStatusLabel != nullptr)
             {
                 m_kernelMemoryEvidenceStatusLabel->setText(QStringLiteral("状态：非模块执行范围需要有效的起始/结束 VA。"));
@@ -589,13 +583,16 @@ void MemoryDock::refreshKernelMemoryEvidenceAsync()
             ? m_kernelMemoryEvidenceMaxRowsSpin->value()
             : static_cast<int>(KSWORD_ARK_MEMORY_EVIDENCE_DEFAULT_MAX_ROWS));
 
+    // 进入采集态：按钮置灰并改写提示，状态标签给出“正在采集”，
+    // 两者都在结果回到主线程后由 commitSnapshot 统一恢复。
     if (m_kernelMemoryEvidenceRefreshButton != nullptr)
     {
         m_kernelMemoryEvidenceRefreshButton->setEnabled(false);
+        m_kernelMemoryEvidenceRefreshButton->setToolTip(QStringLiteral("正在采集内核内存证据，请等待本轮查询结束"));
     }
     if (m_kernelMemoryEvidenceStatusLabel != nullptr)
     {
-        m_kernelMemoryEvidenceStatusLabel->setText(QStringLiteral("状态：查询中..."));
+        m_kernelMemoryEvidenceStatusLabel->setText(QStringLiteral("状态：正在采集内核内存证据…"));
         m_kernelMemoryEvidenceStatusLabel->setStyleSheet(statusStyle(KswordTheme::PrimaryBlueHex));
     }
 
@@ -627,9 +624,12 @@ void MemoryDock::refreshKernelMemoryEvidenceAsync()
                     }
 
                     guardThis->m_kernelMemoryEvidenceRefreshInProgress.store(false);
+                    // 退出采集态：按钮恢复可点并把 tooltip 换回常态文案，成功/失败两条路径共用。
                     if (guardThis->m_kernelMemoryEvidenceRefreshButton != nullptr)
                     {
                         guardThis->m_kernelMemoryEvidenceRefreshButton->setEnabled(true);
+                        guardThis->m_kernelMemoryEvidenceRefreshButton->setToolTip(
+                            QStringLiteral("刷新内核内存证据"));
                     }
 
                     const ksword::ark::KernelMemoryEvidenceResult& snapshot = *resultSnapshot;
@@ -726,10 +726,12 @@ void MemoryDock::rebuildKernelMemoryEvidenceTable()
     {
         const std::size_t cacheIndex = visibleIndexes[static_cast<std::size_t>(row)];
         const auto& entry = m_kernelMemoryEvidenceCache[cacheIndex];
-        QTableWidgetItem* addressItem = numericItem(hex64(entry.virtualAddress), entry.virtualAddress);
+        // 虚拟地址列：显示 0x 十六进制，排序用 64 位原值，否则点表头会退化成字符串序。
+        QTableWidgetItem* addressItem = numericItem(hex64(entry.virtualAddress), static_cast<qulonglong>(entry.virtualAddress));
         addressItem->setData(Qt::UserRole + 1, QVariant::fromValue<qulonglong>(static_cast<qulonglong>(cacheIndex)));
         m_kernelMemoryEvidenceTable->setItem(row, evidenceColumnIndex(EvidenceColumn::Address), addressItem);
-        m_kernelMemoryEvidenceTable->setItem(row, evidenceColumnIndex(EvidenceColumn::Size), numericItem(sizeText(entry.regionSize), entry.regionSize));
+        // 区域大小列：显示 KB/MB/GB，排序用字节数，避免 512 KB 排到 2.50 MB 后面。
+        m_kernelMemoryEvidenceTable->setItem(row, evidenceColumnIndex(EvidenceColumn::Size), numericItem(sizeText(entry.regionSize), static_cast<qulonglong>(entry.regionSize)));
         m_kernelMemoryEvidenceTable->setItem(row, evidenceColumnIndex(EvidenceColumn::Kind), textItem(evidenceKindText(entry.evidenceKind)));
         m_kernelMemoryEvidenceTable->setItem(row, evidenceColumnIndex(EvidenceColumn::Owner),
             textItem(QStringLiteral("%1 %2").arg(ownerKindText(entry.ownerKind), wideToQString(entry.ownerName))));
@@ -742,7 +744,7 @@ void MemoryDock::rebuildKernelMemoryEvidenceTable()
     {
         const QString detailText = m_kernelMemoryEvidenceCache.empty()
             ? QStringLiteral("内核内存证据当前没有缓存行；可能是驱动未返回结果、查询失败或尚未刷新。")
-            : QStringLiteral("当前过滤条件隐藏了全部 %1 条内核内存证据；请清空过滤或关闭“仅风险项”。")
+            : QStringLiteral("当前过滤条件隐藏了全部 %1 条内核内存证据；请清空过滤或关闭“仅显示风险项”。")
                 .arg(static_cast<qulonglong>(m_kernelMemoryEvidenceCache.size()));
         setEvidenceDiagnosticRow(
             m_kernelMemoryEvidenceTable,

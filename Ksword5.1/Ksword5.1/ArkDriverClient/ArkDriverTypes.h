@@ -871,6 +871,41 @@ namespace ksword::ark
         std::uint32_t maxBytesPerRequest = 0;   // maxBytesPerRequest：驱动限制。
     };
 
+    // PhysicalMemoryReadResult 是 R0 读物理内存的 R3 模型。
+    // 物理协议不携带 processId，也没有进程查找步骤，因此不含 lookupStatus。
+    struct PhysicalMemoryReadResult
+    {
+        IoResult io;                    // io：DeviceIoControl 调用状态。
+        std::uint32_t version = 0;      // version：协议版本。
+        std::uint32_t headerSize = 0;   // headerSize：R0 自报响应头大小，仅供诊断，不用于定位 data。
+        std::uint32_t fieldFlags = 0;   // fieldFlags：KSWORD_ARK_MEMORY_FIELD_*。
+        std::uint32_t readStatus = KSWORD_ARK_MEMORY_PHYSICAL_READ_STATUS_UNAVAILABLE; // readStatus：R0 物理读聚合状态。
+        long copyStatus = 0;            // copyStatus：MmCopyMemory 的 NTSTATUS。
+        std::uint32_t source = 0;       // source：数据来源，物理读固定为 MM_COPY_PHYSICAL_MEMORY。
+        std::uint64_t requestedPhysicalAddress = 0; // requestedPhysicalAddress：请求物理地址。
+        std::uint32_t requestedBytes = 0;       // requestedBytes：请求长度。
+        std::uint32_t bytesRead = 0;            // bytesRead：R0 返回有效长度。
+        std::uint32_t maxBytesPerRequest = 0;   // maxBytesPerRequest：驱动单次读上限。
+        std::vector<std::uint8_t> data;         // data：读回物理字节，部分成功时长度可小于请求。
+    };
+
+    // PhysicalMemoryWriteResult 是 R0 受控写物理内存的 R3 模型。
+    // 物理写走 MmMapIoSpaceEx 映射再拷贝，因此比虚拟写多一个 mapStatus。
+    struct PhysicalMemoryWriteResult
+    {
+        IoResult io;                    // io：DeviceIoControl 调用状态。
+        std::uint32_t version = 0;      // version：协议版本。
+        std::uint32_t fieldFlags = 0;   // fieldFlags：KSWORD_ARK_MEMORY_FIELD_*，含 FORCE_WRITE_REQUIRED/USED。
+        std::uint32_t writeStatus = KSWORD_ARK_MEMORY_PHYSICAL_WRITE_STATUS_UNAVAILABLE; // writeStatus：R0 物理写聚合状态。
+        long mapStatus = 0;             // mapStatus：MmMapIoSpaceEx 映射阶段的 NTSTATUS。
+        long copyStatus = 0;            // copyStatus：映射后 RtlCopyMemory 阶段的 NTSTATUS。
+        std::uint32_t source = 0;       // source：写入来源，物理写固定为 MM_MAP_PHYSICAL_MEMORY。
+        std::uint64_t requestedPhysicalAddress = 0; // requestedPhysicalAddress：请求物理地址。
+        std::uint32_t requestedBytes = 0;       // requestedBytes：请求写入长度。
+        std::uint32_t bytesWritten = 0;         // bytesWritten：实际写入长度。
+        std::uint32_t maxBytesPerRequest = 0;   // maxBytesPerRequest：驱动单次写上限。
+    };
+
     // Kernel executable-memory permission bits used by the R3 display model.
     // Input: values parsed from the kernel executable page scan response.
     // Processing: MemoryDock maps these bits to readable R/W/X/NX/Large labels.

@@ -6,31 +6,12 @@ namespace ksword::memory_dock_internal
     // 主题样式函数：统一按钮/输入框/下拉框风格。
     // ========================================================
 
+    // 按钮样式统一转调全局主题实现：
+    // 页面自己拼 QSS 会和 UI/GlobalUiBaseStyle.cpp 的基线打架，
+    // 而且那份基线已经覆盖了 hover/pressed/checked/disabled 全部状态。
     QString buildBlueButtonStyle()
     {
-        return QStringLiteral(
-            "QPushButton {"
-            "  color: %1;"
-            "  background: %5;"
-            "  border: 1px solid %2;"
-            "  border-radius: 3px;"
-            "  padding: 4px 10px;"
-            "}"
-            "QPushButton:hover {"
-            "  background: %3;"
-            "  color: %6;"
-            "  border: 1px solid %3;"
-            "}"
-            "QPushButton:pressed {"
-            "  background: %4;"
-            "  color: %6;"
-            "}")
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::PrimaryBlueBorderHex)
-            .arg(KswordTheme::PrimaryBlueHoverHex)
-            .arg(KswordTheme::PrimaryBluePressedHex)
-            .arg(KswordTheme::SurfaceHex())
-            .arg(QStringLiteral("palette(highlighted-text)"));
+        return KswordTheme::ThemedButtonStyle();
     }
 
     QString buildBlueComboStyle()
@@ -38,39 +19,11 @@ namespace ksword::memory_dock_internal
         return KswordTheme::ThemedComboBoxStyle();
     }
 
+    // 输入框不再下发页面私有样式：全局基线已经给 QLineEdit / QTextEdit /
+    // QPlainTextEdit 统一了边框、圆角与焦点态，返回空串即为“交还基线”。
     QString buildBlueInputStyle()
     {
-        return QStringLiteral(
-            "QLineEdit, QTextEdit, QPlainTextEdit {"
-            "  border: 1px solid %2;"
-            "  border-radius: 3px;"
-            "  background: %3;"
-            "  color: %4;"
-            "  padding: 3px 5px;"
-            "}"
-            "QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {"
-            "  border: 1px solid %1;"
-            "}")
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::BorderHex())
-            .arg(KswordTheme::SurfaceHex())
-            .arg(KswordTheme::TextPrimaryHex());
-    }
-
-    // 表格表头统一主题样式，确保“内存页”整体视觉与主主题贴合。
-    QString buildBlueTableHeaderStyle()
-    {
-        return QStringLiteral(
-            "QHeaderView::section {"
-            "  color:%1;"
-            "  background:transparent; /* %2 */"
-            "  border:1px solid %3;"
-            "  padding:4px;"
-            "  font-weight:600;"
-            "}")
-            .arg(KswordTheme::PrimaryBlueHex)
-            .arg(KswordTheme::SurfaceHex())
-            .arg(KswordTheme::BorderHex());
+        return QString();
     }
 
     // 十六进制查看器常量：每行 16 字节，共 32 行，每页 512 字节。

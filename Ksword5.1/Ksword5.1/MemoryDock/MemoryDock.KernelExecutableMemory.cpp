@@ -2,7 +2,9 @@
 #include "../UI/TableInteractionSupport.h"
 #include "../UI/VisibleTableWidget.h"
 
+#include <QColor>      // QColor：风险行前景色着色使用。
 #include <QPixmap>
+#include <QProgressBar> // QProgressBar：扫描进行中的不确定态进度条。
 
 #include <memory>
 
@@ -17,10 +19,12 @@ namespace
     enum class KernelExecutableColumn : int
     {
         Va = 0,
+        RegionSize,
         PageCount,
         PageSize,
         Permissions,
         Owner,
+        ModuleBase,
         ModulePath,
         RiskFlags,
         Count
@@ -82,6 +86,32 @@ namespace
         return QStringLiteral("0x%1")
             .arg(static_cast<qulonglong>(value), 16, 16, QChar('0'))
             .toUpper();
+    }
+
+    QString byteSizeText(const std::uint64_t byteCount)
+    {
+        // 输入：字节数，用于区域大小这类需要横向比较体量的列。
+        // 处理：按 1024 进位折算到 KB/MB/GB，1KB 以下保留原始字节数，避免小页区间被折没。
+        // 返回：带单位的可读文本；真正的排序依据由 NumericTableItem 的原始字节数提供。
+        constexpr double kUnitStep = 1024.0;
+        if (byteCount < 1024ULL)
+        {
+            return QStringLiteral("%1 B").arg(static_cast<qulonglong>(byteCount));
+        }
+
+        double scaledValue = static_cast<double>(byteCount) / kUnitStep;
+        // 单位表按 KB 起步，最大到 TB；超出范围时停在最后一个单位上继续放大数值。
+        constexpr int kUnitCount = 4;
+        const char* const unitNames[kUnitCount] = { "KB", "MB", "GB", "TB" };
+        int unitIndex = 0;
+        while (scaledValue >= kUnitStep && unitIndex + 1 < kUnitCount)
+        {
+            scaledValue /= kUnitStep;
+            ++unitIndex;
+        }
+        return QStringLiteral("%1 %2")
+            .arg(scaledValue, 0, 'f', 2)
+            .arg(QString::fromLatin1(unitNames[unitIndex]));
     }
 
     QString permissionText(const std::uint32_t flags)
@@ -153,6 +183,29 @@ namespace
         return parts.join(QStringLiteral(" | "));
     }
 
+    QColor kernelExecutableRiskColor(const std::uint32_t flags)
+    {
+        // 输入：KernelExecutableMemoryRisk* 位集合。
+        // 处理：把“可写又可执行”这一类可直接落 shellcode 的风险判为错误级，其余风险位判为警告级。
+        // 返回：无风险时返回无效 QColor（调用方据此跳过着色），否则返回该行文字应使用的前景色。
+        // 说明：这里刻意使用 ErrorColor()/WarningColor() 快照函数——逐行着色发生在每次填表时，
+        //       主题切换会触发重新刷新填表，颜色天然跟随，属于快照 token 的合法用法。
+        if (flags == 0U)
+        {
+            return QColor();
+        }
+
+        constexpr std::uint32_t severeRiskMask =
+            ksword::ark::KernelExecutableMemoryRiskWritableExecutable |
+            ksword::ark::KernelExecutableMemoryRiskSectionWritable |
+            ksword::ark::KernelExecutableMemoryRiskCodePageWritable;
+        if ((flags & severeRiskMask) != 0U)
+        {
+            return KswordTheme::ErrorColor();
+        }
+        return KswordTheme::WarningColor();
+    }
+
     QString ownerKindText(const std::uint32_t ownerKind)
     {
         // 输入：Prompt-1 响应中的 ownerKind 枚举值。
@@ -172,36 +225,6 @@ namespace
         }
     }
 
-    class KernelExecutableNumericItem final : public QTableWidgetItem
-    {
-    public:
-        // 输入：显示文本和原始数值，显示文本按调用方格式保留。
-        // 处理：数值只写入 UserRole，避免 Qt 把 EditRole 合并到 DisplayRole 后覆盖 VA 十六进制文本。
-        // 返回：构造函数无返回值，item 生命周期交给 QTableWidget。
-        KernelExecutableNumericItem(const QString& text, const qulonglong numericValue)
-            : QTableWidgetItem(text)
-        {
-            setData(Qt::UserRole, QVariant::fromValue<qulonglong>(numericValue));
-            setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-        }
-
-        // 输入：同列其它 item。
-        // 处理：两侧都有 UserRole 数值时按数值排序，否则退回 Qt 默认文本排序。
-        // 返回：true 表示当前 item 应排在 other 之前。
-        bool operator<(const QTableWidgetItem& other) const override
-        {
-            bool leftOk = false;
-            bool rightOk = false;
-            const qulonglong leftValue = data(Qt::UserRole).toULongLong(&leftOk);
-            const qulonglong rightValue = other.data(Qt::UserRole).toULongLong(&rightOk);
-            if (leftOk && rightOk)
-            {
-                return leftValue < rightValue;
-            }
-            return QTableWidgetItem::operator<(other);
-        }
-    };
-
     QTableWidgetItem* createTextItem(const QString& text)
     {
         // 输入：单元格展示文本。
@@ -217,17 +240,8 @@ namespace
         // 输入：无。
         // 处理：生成不透明右键菜单样式，避免透明父容器造成黑底黑字。
         // 返回：可直接设置到 QMenu 的样式字符串。
-        return QStringLiteral(
-            "QMenu{background:%1;color:%2;border:1px solid %3;}"
-            "QMenu::item{padding:5px 24px 5px 24px;background:transparent;}"
-            "QMenu::item:selected{background:%4;color:%6;}"
-            "QMenu::item:disabled{color:%5;}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::TextSecondaryColorHex())
-            .arg(KswordTheme::OnAccentHex());
+        // 右键菜单一律走全局主题实现，避免每个页面各拼一份互相漂移的 QSS。
+        return KswordTheme::ContextMenuStyle();
     }
 
     QString kernelExecutableRowText(QTableWidget* table, const int rowIndex)
@@ -305,10 +319,12 @@ namespace
         QTableWidgetItem* vaItem = createTextItem(QStringLiteral("<无可执行页证据>"));
         vaItem->setData(Qt::UserRole + 2, detailText);
         table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::Va), vaItem);
+        table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::RegionSize), createTextItem(QStringLiteral("N/A")));
         table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::PageCount), createTextItem(QStringLiteral("N/A")));
         table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::PageSize), createTextItem(QStringLiteral("N/A")));
         table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::Permissions), createTextItem(QStringLiteral("N/A")));
         table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::Owner), createTextItem(QStringLiteral("诊断")));
+        table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::ModuleBase), createTextItem(QStringLiteral("N/A")));
         table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::ModulePath), createTextItem(QStringLiteral("N/A")));
         table->setItem(0, kernelExecutableColumnIndex(KernelExecutableColumn::RiskFlags), createTextItem(detailText));
         table->setCurrentCell(0, kernelExecutableColumnIndex(KernelExecutableColumn::Va));
@@ -316,10 +332,14 @@ namespace
 
     QTableWidgetItem* createNumericItem(const QString& text, const qulonglong numericValue)
     {
-        // 输入：展示文本和用于排序/反查的原始数值。
-        // 处理：使用自定义 item 保留 DisplayRole 文本，同时用 UserRole 提供数值排序。
+        // 输入：展示文本（十六进制 VA、带单位大小、纯数字计数皆可）与参与排序的原始数值。
+        // 处理：统一改用全局 ks::ui::NumericTableItem，排序读 NumericSortRole，DisplayRole 文本不被覆盖；
+        //       另外把原始数值写进 Qt::UserRole，供详情面板按 VA 反查缓存行（沿用旧的反查约定）。
         // 返回：交给 QTableWidget 接管生命周期的 item 指针。
-        return new KernelExecutableNumericItem(text, numericValue);
+        ks::ui::NumericTableItem* item = new ks::ui::NumericTableItem(text, numericValue);
+        item->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(numericValue));
+        item->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+        return item;
     }
 
     bool entryMatchesModuleFilter(
@@ -405,8 +425,19 @@ void MemoryDock::initializeKernelExecutableMemoryScanTab()
     m_kernelExecutableRefreshButton->setToolTip(QStringLiteral("扫描内核可执行内存"));
     m_kernelExecutableRefreshButton->setStyleSheet(buildBlueButtonStyle());
 
+    // 扫描进度条：R0 扫描一次返回，没有分段进度可报，这里用不确定态进度条表达“正在进行”。
+    // 不新增成员变量，刷新入口通过 objectName + findChild 取回，避免改动 MemoryDock.h。
+    QProgressBar* scanProgressBar = new QProgressBar(m_tabKernelExecutableMemory);
+    scanProgressBar->setObjectName(QStringLiteral("kernelExecutableScanProgress"));
+    scanProgressBar->setRange(0, 0);
+    scanProgressBar->setTextVisible(false);
+    scanProgressBar->setFixedWidth(120);
+    scanProgressBar->setToolTip(QStringLiteral("内核可执行页扫描进行中"));
+    scanProgressBar->setVisible(false);
+
     m_kernelExecutableRiskOnlyCheck = new QCheckBox(QStringLiteral("仅风险项"), m_tabKernelExecutableMemory);
     m_kernelExecutableRiskOnlyCheck->setChecked(true);
+    m_kernelExecutableRiskOnlyCheck->setToolTip(QStringLiteral("只显示风险标志非零的可执行页，取消勾选可查看全部扫描结果"));
     m_kernelExecutableRiskOnlyCheck->setStyleSheet(QStringLiteral(
         "QCheckBox { color:%1; font-weight:600; }")
         .arg(KswordTheme::TextPrimaryHex()));
@@ -414,13 +445,16 @@ void MemoryDock::initializeKernelExecutableMemoryScanTab()
     m_kernelExecutableModuleFilterEdit = new QLineEdit(m_tabKernelExecutableMemory);
     m_kernelExecutableModuleFilterEdit->setClearButtonEnabled(true);
     m_kernelExecutableModuleFilterEdit->setPlaceholderText(QStringLiteral("按模块路径过滤，如 ntoskrnl.exe / drivers\\xxx.sys"));
+    m_kernelExecutableModuleFilterEdit->setToolTip(QStringLiteral("按模块路径子串过滤扫描结果，不区分大小写；留空显示全部"));
     m_kernelExecutableModuleFilterEdit->setStyleSheet(buildBlueInputStyle());
 
     m_kernelExecutableStatusLabel = new QLabel(QStringLiteral("状态：等待刷新"), m_tabKernelExecutableMemory);
     m_kernelExecutableStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_kernelExecutableStatusLabel->setToolTip(QStringLiteral("显示最近一次内核可执行页扫描的统计结果"));
     m_kernelExecutableStatusLabel->setStyleSheet(kernelExecutableStatusStyle(KswordTheme::TextSecondaryHex()));
 
     toolLayout->addWidget(m_kernelExecutableRefreshButton, 0);
+    toolLayout->addWidget(scanProgressBar, 0);
     toolLayout->addWidget(m_kernelExecutableRiskOnlyCheck, 0);
     toolLayout->addWidget(m_kernelExecutableModuleFilterEdit, 1);
     toolLayout->addWidget(m_kernelExecutableStatusLabel, 0);
@@ -433,10 +467,12 @@ void MemoryDock::initializeKernelExecutableMemoryScanTab()
     m_kernelExecutableTable->setColumnCount(kernelExecutableColumnIndex(KernelExecutableColumn::Count));
     m_kernelExecutableTable->setHorizontalHeaderLabels(QStringList{
         QStringLiteral("VA"),
+        QStringLiteral("区域大小"),
         QStringLiteral("页数"),
         QStringLiteral("页大小"),
         QStringLiteral("权限"),
         QStringLiteral("Owner"),
+        QStringLiteral("模块基址"),
         QStringLiteral("模块路径"),
         QStringLiteral("风险标志")
         });
@@ -446,10 +482,10 @@ void MemoryDock::initializeKernelExecutableMemoryScanTab()
     m_kernelExecutableTable->setAlternatingRowColors(true);
     m_kernelExecutableTable->setSortingEnabled(true);
     m_kernelExecutableTable->verticalHeader()->setVisible(false);
-    m_kernelExecutableTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     m_kernelExecutableTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_kernelExecutableTable->horizontalHeader()->setSectionResizeMode(kernelExecutableColumnIndex(KernelExecutableColumn::ModulePath), QHeaderView::Stretch);
     m_kernelExecutableTable->setColumnWidth(kernelExecutableColumnIndex(KernelExecutableColumn::Va), 170);
+    m_kernelExecutableTable->setColumnWidth(kernelExecutableColumnIndex(KernelExecutableColumn::ModuleBase), 170);
     m_kernelExecutableTable->setColumnWidth(kernelExecutableColumnIndex(KernelExecutableColumn::Owner), 180);
     m_kernelExecutableTable->setColumnWidth(kernelExecutableColumnIndex(KernelExecutableColumn::RiskFlags), 220);
     installKernelExecutableCopyMenu(m_kernelExecutableTable);
@@ -482,14 +518,24 @@ void MemoryDock::refreshKernelExecutableMemoryScanAsync()
         return;
     }
 
+    // 扫描期间禁用刷新入口，避免重复下发 IOCTL；进度条和状态标签同步进入“扫描中”表现。
     if (m_kernelExecutableRefreshButton != nullptr)
     {
         m_kernelExecutableRefreshButton->setEnabled(false);
     }
     if (m_kernelExecutableStatusLabel != nullptr)
     {
-        m_kernelExecutableStatusLabel->setText(QStringLiteral("状态：扫描中..."));
+        m_kernelExecutableStatusLabel->setText(QStringLiteral("状态：正在扫描内核可执行页…"));
         m_kernelExecutableStatusLabel->setStyleSheet(kernelExecutableStatusStyle(KswordTheme::PrimaryBlueHex));
+    }
+    if (m_tabKernelExecutableMemory != nullptr)
+    {
+        QProgressBar* busyBar = m_tabKernelExecutableMemory->findChild<QProgressBar*>(
+            QStringLiteral("kernelExecutableScanProgress"));
+        if (busyBar != nullptr)
+        {
+            busyBar->setVisible(true);
+        }
     }
 
     const std::uint64_t ticket = m_kernelExecutableRefreshTicket.fetch_add(1U) + 1U;
@@ -521,10 +567,20 @@ void MemoryDock::refreshKernelExecutableMemoryScanAsync()
                         return;
                     }
 
+                    // 结果回到主线程：先恢复刷新入口和进度条，再按 io.ok 分支写状态摘要。
                     guardThis->m_kernelExecutableRefreshInProgress.store(false);
                     if (guardThis->m_kernelExecutableRefreshButton != nullptr)
                     {
                         guardThis->m_kernelExecutableRefreshButton->setEnabled(true);
+                    }
+                    if (guardThis->m_tabKernelExecutableMemory != nullptr)
+                    {
+                        QProgressBar* busyBar = guardThis->m_tabKernelExecutableMemory->findChild<QProgressBar*>(
+                            QStringLiteral("kernelExecutableScanProgress"));
+                        if (busyBar != nullptr)
+                        {
+                            busyBar->setVisible(false);
+                        }
                     }
 
                     const ksword::ark::KernelExecutableMemoryScanResult& snapshot = *resultSnapshot;
@@ -630,8 +686,12 @@ void MemoryDock::rebuildKernelExecutableMemoryScanTable()
     for (int row = 0; row < static_cast<int>(visibleEntries.size()); ++row)
     {
         const ksword::ark::KernelExecutableMemoryPageEntry& entry = *visibleEntries[static_cast<std::size_t>(row)];
+        // 数值列一律走 NumericTableItem：VA/模块基址按十六进制展示但按真实数值排序，
+        // 区域大小按 KB/MB 展示但按字节数排序，页数/页大小按原始计数排序。
         m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::Va),
             createNumericItem(hexValue(entry.virtualAddress), entry.virtualAddress));
+        m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::RegionSize),
+            createNumericItem(byteSizeText(entry.regionSize), entry.regionSize));
         m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::PageCount),
             createNumericItem(QString::number(entry.pageCount), entry.pageCount));
         m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::PageSize),
@@ -640,10 +700,29 @@ void MemoryDock::rebuildKernelExecutableMemoryScanTable()
             createTextItem(permissionText(entry.permissionFlags)));
         m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::Owner),
             createTextItem(ownerKindText(entry.ownerKind)));
+        // 模块基址为 0 表示这段可执行页没有匹配到已加载模块，此时展示 N/A 但排序值仍取 0。
+        m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::ModuleBase),
+            createNumericItem(
+                entry.moduleBase != 0ULL ? hexValue(entry.moduleBase) : QStringLiteral("N/A"),
+                entry.moduleBase));
         m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::ModulePath),
             createTextItem(wideToQString(entry.modulePath)));
         m_kernelExecutableTable->setItem(row, kernelExecutableColumnIndex(KernelExecutableColumn::RiskFlags),
             createTextItem(riskFlagsText(entry.riskFlags)));
+
+        // 风险行整行着色：可写可执行一类判错误色，其余风险位判警告色，无风险行保持默认前景。
+        const QColor riskColor = kernelExecutableRiskColor(entry.riskFlags);
+        if (riskColor.isValid())
+        {
+            for (int column = 0; column < m_kernelExecutableTable->columnCount(); ++column)
+            {
+                QTableWidgetItem* cellItem = m_kernelExecutableTable->item(row, column);
+                if (cellItem != nullptr)
+                {
+                    cellItem->setForeground(riskColor);
+                }
+            }
+        }
     }
     if (visibleEntries.empty())
     {

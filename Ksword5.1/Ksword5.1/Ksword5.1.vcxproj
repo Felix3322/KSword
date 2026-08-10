@@ -282,6 +282,8 @@
     <ClCompile Include="MiscDock\ContextMenuCleaner\ContextMenuCleanerTab.Registry.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryRw.cpp" />
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemorySource.cpp" />
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryView.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.KernelExecutableMemory.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.KernelMemoryEvidence.cpp" />
     <ClCompile Include="MemoryDock\MemoryDock.ProcessMemoryEvidence.cpp" />

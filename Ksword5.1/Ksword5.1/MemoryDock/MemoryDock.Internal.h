@@ -14,6 +14,7 @@
 #include "../ArkDriverClient/ArkDriverClient.h"
 #include "../UI/CodeEditorWidget.h"
 #include "../UI/HexEditorWidget.h"
+#include "../UI/VisibleTableWidget.h" // ks::ui::VisibleTableWidget：反汇编表等长表格的统一基类。
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -26,6 +27,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
@@ -33,6 +35,7 @@
 #include <QFileIconProvider>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHash>
@@ -56,6 +59,7 @@
 #include <QSize>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QStringList>
 #include <QTabWidget>
@@ -63,6 +67,7 @@
 #include <QTableWidgetItem>
 #include <QThreadPool>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -94,10 +99,10 @@
 namespace ksword::memory_dock_internal
 {
     // UI 样式函数：输入为空，返回主题样式表文本。
+    // 三个函数都只是全局主题实现的薄封装，表头样式已整体交还 GlobalUiBaseStyle。
     QString buildBlueButtonStyle();
     QString buildBlueComboStyle();
     QString buildBlueInputStyle();
-    QString buildBlueTableHeaderStyle();
 
     // 十六进制查看器分页常量：每页固定 16 * 32 = 512 字节。
     extern const int kHexBytesPerRow;

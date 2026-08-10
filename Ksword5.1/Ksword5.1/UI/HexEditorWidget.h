@@ -172,6 +172,19 @@ public:
     // - 未选中有效字节时返回 0。
     std::uint64_t selectedOffset() const;
 
+    // selectedBytes：
+    // - 作用：返回当前选区覆盖的字节副本，供外部（如内存搜索/回写）直接取用；
+    // - 内部直接复用选区收集逻辑，按偏移升序拼接，非连续选区同样会被压实为连续字节；
+    // - 返回：选区字节副本；无选区时返回空 QByteArray。
+    QByteArray selectedBytes() const;
+
+    // selectionRange：
+    // - 作用：取当前选区在缓冲区内的半开偏移区间，便于外部换算绝对地址；
+    // - 出参 startOffsetOut：命中时写入选区最小偏移（包含）；
+    // - 出参 endOffsetOut：命中时写入选区最大偏移加一（不包含）；
+    // - 返回：有选区返回 true；无选区返回 false，且两个出参保持原值不被修改。
+    bool selectionRange(std::uint64_t& startOffsetOut, std::uint64_t& endOffsetOut) const;
+
 signals:
     // byteEdited：
     // - 作用：用户编辑字节后触发；
@@ -186,6 +199,16 @@ signals:
     // currentAddressChanged：
     // - 作用：用户切换选中单元格时触发。
     void currentAddressChanged(std::uint64_t absoluteAddress);
+
+    // selectionChanged：
+    // - 作用：选区刷新时触发，让外部感知“选了哪一段字节”；
+    // - startOffset：选区最小偏移（包含），无选区时为 0；
+    // - endOffset：选区最大偏移加一（不包含），无选区时为 0；
+    // - hasSelection：true 表示当前存在有效选区，false 表示选区为空。
+    void selectionChanged(
+        std::uint64_t startOffset,
+        std::uint64_t endOffset,
+        bool hasSelection);
 
     // aboutToShowContextMenu：
     // - 作用：在弹出右键菜单前允许外部追加动作；

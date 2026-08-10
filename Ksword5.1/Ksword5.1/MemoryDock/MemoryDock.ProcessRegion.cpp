@@ -2259,7 +2259,12 @@ void MemoryDock::applyRegionFilterAndRebuildTable()
         << (m_regionReadableOnlyCheck->isChecked() ? "true" : "false")
         << eol;
 
-    // 过滤条件组合：已提交 / IMAGE / 可读。
+    // 关键字过滤：留空表示不筛，命中判据覆盖基址文本、保护属性与映射文件路径。
+    const QString filterKeyword = (m_regionFilterEdit != nullptr)
+        ? m_regionFilterEdit->text().trimmed()
+        : QString();
+
+    // 过滤条件组合：已提交 / IMAGE / 可读 / 关键字。
     std::vector<const RegionEntry*> filteredRegions;
     filteredRegions.reserve(m_regionCache.size());
     for (const RegionEntry& entry : m_regionCache)
@@ -2275,6 +2280,17 @@ void MemoryDock::applyRegionFilterAndRebuildTable()
         if (m_regionReadableOnlyCheck->isChecked() && !isReadableProtect(entry.protect))
         {
             continue;
+        }
+        if (!filterKeyword.isEmpty())
+        {
+            const bool keywordMatched =
+                formatAddress(entry.baseAddress).contains(filterKeyword, Qt::CaseInsensitive)
+                || protectToText(entry.protect).contains(filterKeyword, Qt::CaseInsensitive)
+                || entry.mappedFilePath.contains(filterKeyword, Qt::CaseInsensitive);
+            if (!keywordMatched)
+            {
+                continue;
+            }
         }
         filteredRegions.push_back(&entry);
     }
@@ -2308,6 +2324,22 @@ void MemoryDock::applyRegionFilterAndRebuildTable()
         m_regionTable->setItem(row, 5, new QTableWidgetItem(entry.mappedFilePath));
     }
     m_regionTable->setSortingEnabled(true);
+
+    // 状态标签明确写出“显示了多少 / 一共多少”，避免用户把过滤结果误当成全部区域。
+    if (m_regionStatusLabel != nullptr)
+    {
+        if (m_attachedPid == 0U)
+        {
+            m_regionStatusLabel->setText("未附加进程。");
+        }
+        else
+        {
+            m_regionStatusLabel->setText(
+                QString("显示 %1 / 共 %2 个区域")
+                    .arg(filteredRegions.size())
+                    .arg(m_regionCache.size()));
+        }
+    }
 
     // 过滤结束日志：记录最终展示条目数。
     kLogEvent regionFilterFinishEvent;

@@ -367,6 +367,12 @@
     <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryRw.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemorySource.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MemoryDock\MemoryDock.DriverMemoryView.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MemoryDock\MemoryDock.KernelExecutableMemory.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

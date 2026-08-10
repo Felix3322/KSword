@@ -697,7 +697,11 @@ void MemoryDock::rebuildSearchResultTable()
     {
         const SearchResultEntry& entry = m_searchResultCache[static_cast<std::size_t>(row)];
 
-        QTableWidgetItem* addressItem = new QTableWidgetItem(formatAddress(entry.address));
+        // 地址列用数值排序项：显示的是定宽十六进制文本，排序必须按真实数值走，
+        // 否则点表头排序会退化成字符串序。Qt::UserRole 仍保留给既有跳转逻辑读取。
+        QTableWidgetItem* addressItem = new ks::ui::NumericTableItem(
+            formatAddress(entry.address),
+            static_cast<qulonglong>(entry.address));
         addressItem->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(static_cast<qulonglong>(entry.address)));
         m_searchResultTable->setItem(row, 0, addressItem);
 
@@ -714,6 +718,9 @@ void MemoryDock::rebuildSearchResultTable()
         m_searchResultTable->setItem(row, 3, new QTableWidgetItem(entry.noteText));
     }
     m_searchResultTable->setUpdatesEnabled(true);
+    // 填表结束后恢复排序能力：构造期开启的排序在批量写入前被临时关掉，这里必须还原，
+    // 否则结果表在第一次扫描之后就永远不能再按地址排序。
+    m_searchResultTable->setSortingEnabled(true);
 
     // 当结果被截断显示时，在工具提示中给出明确说明。
     if (hiddenCount > 0)

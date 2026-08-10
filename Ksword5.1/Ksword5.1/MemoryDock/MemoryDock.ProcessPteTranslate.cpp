@@ -3,6 +3,13 @@
 #include "../UI/VisibleTableWidget.h"
 #include "../UI/TableColumnAutoFit.h"
 
+// 分层工具条用到的 Qt 控件在这里显式补齐：Internal.h 虽然已经聚合了同名头，
+// 但那份聚合头是多人共用的，本页面不依赖它的收录清单，避免它增删条目时被连累。
+#include <QFrame>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QLabel>
+
 #include <memory>
 
 using namespace ksword::memory_dock_internal;
@@ -89,17 +96,8 @@ namespace
         // - 输入：无；
         // - 处理：生成不透明右键菜单样式；
         // - 返回：QMenu 样式文本。
-        return QStringLiteral(
-            "QMenu{background:%1;color:%2;border:1px solid %3;}"
-            "QMenu::item{padding:5px 24px 5px 24px;background:transparent;}"
-            "QMenu::item:selected{background:%4;color:%6;}"
-            "QMenu::item:disabled{color:%5;}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::TextSecondaryColorHex())
-            .arg(KswordTheme::OnAccentHex());
+        // 右键菜单一律走全局主题实现，避免每个页面各拼一份互相漂移的 QSS。
+        return KswordTheme::ContextMenuStyle();
     }
 
     void copyPteCurrentRow(QTableWidget* table)
@@ -151,6 +149,8 @@ namespace
             QMenu menu(table);
             menu.setStyleSheet(pteMenuStyle());
             QAction* copyRowAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_copy_row.svg")), QStringLiteral("复制当前行"));
+            // 菜单项也补上 tooltip：与页面内其它按钮保持一致的可发现性。
+            copyRowAction->setToolTip(QStringLiteral("把选中行的全部列以制表符分隔复制到剪贴板"));
             copyRowAction->setEnabled(table->currentRow() >= 0);
             if (menu.exec(table->viewport()->mapToGlobal(localPosition)) == copyRowAction)
             {
@@ -190,29 +190,9 @@ namespace
         table->setCurrentCell(0, pteTranslateColumnIndex(PteTranslateColumn::VirtualAddress));
     }
 
-    // 便于按数值排序的表格项。
-    class NumericItem final : public QTableWidgetItem
-    {
-    public:
-        NumericItem(const QString& text, const qulonglong numericValue)
-            : QTableWidgetItem(text)
-        {
-            setData(Qt::UserRole, QVariant::fromValue<qulonglong>(numericValue));
-        }
-
-        bool operator<(const QTableWidgetItem& other) const override
-        {
-            bool leftOk = false;
-            bool rightOk = false;
-            const qulonglong leftValue = data(Qt::UserRole).toULongLong(&leftOk);
-            const qulonglong rightValue = other.data(Qt::UserRole).toULongLong(&rightOk);
-            if (leftOk && rightOk)
-            {
-                return leftValue < rightValue;
-            }
-            return QTableWidgetItem::operator<(other);
-        }
-    };
+    // 数值列一律改用 ks::ui::NumericTableItem：排序值写在 NumericSortRole 上，
+    // 页面本地那份把数值塞进 Qt::UserRole 的私有 NumericItem 已删除，避免与
+    // 其它页面的 UserRole 约定互相踩踏，也不必再各自维护一份 operator<。
 
     // 生成用于详情窗的多行文本。
     QString buildPteDetailText(const MemoryDock::ProcessMemoryEvidenceEntry& entry)
@@ -255,42 +235,75 @@ void MemoryDock::initializeProcessPteTranslateTab()
     tabLayout->setContentsMargins(6, 6, 6, 6);
     tabLayout->setSpacing(6);
 
-    QHBoxLayout* toolLayout = new QHBoxLayout();
-    toolLayout->setContentsMargins(0, 0, 0, 0);
-    toolLayout->setSpacing(8);
+    // 第一层（动作行）：只放“点一下立刻有反馈”的动作与状态回显，
+    // 采样口径全部下沉到第二层的“翻译参数”分组里。
+    QHBoxLayout* actionLayout = new QHBoxLayout();
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(8);
 
     m_processPteTranslateRefreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QStringLiteral("刷新"), m_tabProcessPteTranslate);
     m_processPteTranslateRefreshButton->setToolTip(QStringLiteral("基于当前附加进程采集 PTE / VA 翻译证据"));
     m_processPteTranslateRefreshButton->setStyleSheet(buildBlueButtonStyle());
 
+    // 竖线分隔符：把“执行动作”和“视图过滤”在视觉上切开，不再一排糊成一条。
+    QFrame* actionSeparator = new QFrame(m_tabProcessPteTranslate);
+    actionSeparator->setFrameShape(QFrame::VLine);
+    actionSeparator->setFrameShadow(QFrame::Sunken);
+
     m_processPteTranslateRiskOnlyCheck = new QCheckBox(QStringLiteral("仅风险项"), m_tabProcessPteTranslate);
     m_processPteTranslateRiskOnlyCheck->setChecked(true);
+    m_processPteTranslateRiskOnlyCheck->setToolTip(QStringLiteral("只保留风险判定不为正常的页记录"));
     m_processPteTranslateRiskOnlyCheck->setStyleSheet(QStringLiteral(
         "QCheckBox { color:%1; font-weight:600; }")
         .arg(KswordTheme::TextPrimaryHex()));
-
-    m_processPteTranslateAddressEdit = new QLineEdit(m_tabProcessPteTranslate);
-    m_processPteTranslateAddressEdit->setClearButtonEnabled(true);
-    m_processPteTranslateAddressEdit->setPlaceholderText(QStringLiteral("输入 VA，例如 0x7FF6..."));
-    m_processPteTranslateAddressEdit->setStyleSheet(buildBlueInputStyle());
-
-    m_processPteTranslatePageCountSpin = new QSpinBox(m_tabProcessPteTranslate);
-    m_processPteTranslatePageCountSpin->setRange(1, 256);
-    m_processPteTranslatePageCountSpin->setValue(16);
-    m_processPteTranslatePageCountSpin->setToolTip(QStringLiteral("每次采样的页数上限"));
 
     m_processPteTranslateStatusLabel = new QLabel(QStringLiteral("状态：等待刷新"), m_tabProcessPteTranslate);
     m_processPteTranslateStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_processPteTranslateStatusLabel->setStyleSheet(QStringLiteral("color:%1; font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
 
-    toolLayout->addWidget(m_processPteTranslateRefreshButton);
-    toolLayout->addWidget(m_processPteTranslateRiskOnlyCheck);
-    toolLayout->addWidget(new QLabel(QStringLiteral("VA"), m_tabProcessPteTranslate));
-    toolLayout->addWidget(m_processPteTranslateAddressEdit, 1);
-    toolLayout->addWidget(new QLabel(QStringLiteral("页数"), m_tabProcessPteTranslate));
-    toolLayout->addWidget(m_processPteTranslatePageCountSpin);
-    toolLayout->addWidget(m_processPteTranslateStatusLabel);
-    tabLayout->addLayout(toolLayout);
+    // 状态标签吃掉剩余宽度（stretch=1），长状态文本不会把左侧动作挤走。
+    actionLayout->addWidget(m_processPteTranslateRefreshButton);
+    actionLayout->addWidget(actionSeparator);
+    actionLayout->addWidget(m_processPteTranslateRiskOnlyCheck);
+    actionLayout->addWidget(m_processPteTranslateStatusLabel, 1);
+    tabLayout->addLayout(actionLayout);
+
+    // 第二层：采样参数分组，起点 VA 与采样页数各配一个文字标签，
+    // 避免用户对着一个孤零零的“VA”缩写猜它到底要填什么。
+    QGroupBox* translateParameterGroup = new QGroupBox(QStringLiteral("翻译参数"), m_tabProcessPteTranslate);
+    QGridLayout* translateParameterLayout = new QGridLayout(translateParameterGroup);
+    translateParameterLayout->setContentsMargins(10, 8, 10, 8);
+    translateParameterLayout->setHorizontalSpacing(8);
+    translateParameterLayout->setVerticalSpacing(6);
+
+    // 参数名统一走次级文字色（动态 token，主题切换能跟随），与输入内容拉开主次。
+    const QString parameterCaptionStyle =
+        QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex());
+
+    QLabel* addressCaption = new QLabel(QStringLiteral("起始虚拟地址"), translateParameterGroup);
+    addressCaption->setStyleSheet(parameterCaptionStyle);
+
+    m_processPteTranslateAddressEdit = new QLineEdit(translateParameterGroup);
+    m_processPteTranslateAddressEdit->setClearButtonEnabled(true);
+    m_processPteTranslateAddressEdit->setPlaceholderText(QStringLiteral("输入 VA，例如 0x7FF6..."));
+    m_processPteTranslateAddressEdit->setToolTip(QStringLiteral("采样起点虚拟地址，留空则沿用查看器当前地址"));
+    m_processPteTranslateAddressEdit->setStyleSheet(buildBlueInputStyle());
+
+    QLabel* pageCountCaption = new QLabel(QStringLiteral("采样页数"), translateParameterGroup);
+    pageCountCaption->setStyleSheet(parameterCaptionStyle);
+
+    m_processPteTranslatePageCountSpin = new QSpinBox(translateParameterGroup);
+    m_processPteTranslatePageCountSpin->setRange(1, 256);
+    m_processPteTranslatePageCountSpin->setValue(16);
+    m_processPteTranslatePageCountSpin->setToolTip(QStringLiteral("每次采样的页数上限"));
+
+    // 网格布局：第 1 列留给可拉伸的 VA 输入框，页数控件保持自然宽度贴在右侧。
+    translateParameterLayout->addWidget(addressCaption, 0, 0);
+    translateParameterLayout->addWidget(m_processPteTranslateAddressEdit, 0, 1);
+    translateParameterLayout->addWidget(pageCountCaption, 0, 2);
+    translateParameterLayout->addWidget(m_processPteTranslatePageCountSpin, 0, 3);
+    translateParameterLayout->setColumnStretch(1, 1);
+    tabLayout->addWidget(translateParameterGroup);
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, m_tabProcessPteTranslate);
     tabLayout->addWidget(splitter, 1);
@@ -317,7 +330,6 @@ void MemoryDock::initializeProcessPteTranslateTab()
     m_processPteTranslateTable->setAlternatingRowColors(true);
     m_processPteTranslateTable->setSortingEnabled(true);
     m_processPteTranslateTable->verticalHeader()->setVisible(false);
-    m_processPteTranslateTable->horizontalHeader()->setStyleSheet(buildBlueTableHeaderStyle());
     m_processPteTranslateTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_processPteTranslateTable->horizontalHeader()->setSectionResizeMode(pteTranslateColumnIndex(PteTranslateColumn::MappedFile), QHeaderView::Stretch);
     installPteCopyMenu(m_processPteTranslateTable);
@@ -343,9 +355,31 @@ void MemoryDock::refreshProcessPteTranslateAsync()
         return;
     }
 
+    kLogEvent refreshEvent;
+    info << refreshEvent
+        << "[MemoryDock] refreshProcessPteTranslateAsync: 开始解析页表，刷新按钮已置灰。"
+        << eol;
+
+    // 进入采集前先把反馈给足：按钮压灰防重复点击，状态标签明确写“正在解析页表…”。
+    if (m_processPteTranslateRefreshButton != nullptr)
+    {
+        m_processPteTranslateRefreshButton->setEnabled(false);
+    }
+    if (m_processPteTranslateStatusLabel != nullptr)
+    {
+        m_processPteTranslateStatusLabel->setText(QStringLiteral("状态：正在解析页表…"));
+        m_processPteTranslateStatusLabel->setStyleSheet(
+            QStringLiteral("color:%1; font-weight:600;").arg(KswordTheme::PrimaryBlueHex));
+    }
+
     if (m_attachedProcessHandle == nullptr || m_attachedPid == 0U)
     {
+        // 未附加就直接退出：上面已经压灰了按钮，这里必须把它放回来，否则页面永远点不动。
         m_processPteTranslateRefreshInProgress.store(false);
+        if (m_processPteTranslateRefreshButton != nullptr)
+        {
+            m_processPteTranslateRefreshButton->setEnabled(true);
+        }
         if (m_processPteTranslateStatusLabel != nullptr)
         {
             m_processPteTranslateStatusLabel->setText(QStringLiteral("状态：请先附加进程。"));
@@ -377,16 +411,7 @@ void MemoryDock::refreshProcessPteTranslateAsync()
         return;
     }
 
-    if (m_processPteTranslateRefreshButton != nullptr)
-    {
-        m_processPteTranslateRefreshButton->setEnabled(false);
-    }
-    if (m_processPteTranslateStatusLabel != nullptr)
-    {
-        m_processPteTranslateStatusLabel->setText(QStringLiteral("状态：采集中..."));
-        m_processPteTranslateStatusLabel->setStyleSheet(QStringLiteral("color:%1; font-weight:600;").arg(KswordTheme::PrimaryBlueHex));
-    }
-
+    // 按钮与状态已在函数入口统一置位，此处不再重复下发，直接取采样参数。
     std::uint64_t baseAddress = 0ULL;
     if (m_processPteTranslateAddressEdit != nullptr)
     {
@@ -491,17 +516,23 @@ void MemoryDock::refreshProcessPteTranslateAsync()
                     std::make_shared<std::vector<ProcessMemoryEvidenceEntry>>(std::move(entries));
                 auto commitSnapshot = [guardThis, ticket, attachmentGeneration, entriesSnapshot]() mutable
                 {
-                    if (guardThis == nullptr ||
-                        ticket != guardThis->m_processPteTranslateRefreshTicket.load() ||
-                        attachmentGeneration != guardThis->m_processAttachmentGeneration.load())
+                    if (guardThis == nullptr)
                     {
                         return;
                     }
 
+                    // 无论快照是否过期，回到主线程就先把“刷新中”状态拆掉：
+                    // 旧写法把恢复放在 ticket 校验之后，一旦重新附加进程就会把按钮永久压灰。
                     guardThis->m_processPteTranslateRefreshInProgress.store(false);
                     if (guardThis->m_processPteTranslateRefreshButton != nullptr)
                     {
                         guardThis->m_processPteTranslateRefreshButton->setEnabled(true);
+                    }
+
+                    if (ticket != guardThis->m_processPteTranslateRefreshTicket.load() ||
+                        attachmentGeneration != guardThis->m_processAttachmentGeneration.load())
+                    {
+                        return;
                     }
 
                     guardThis->m_processPteTranslateCache = std::move(*entriesSnapshot);
@@ -556,6 +587,7 @@ void MemoryDock::rebuildProcessPteTranslateTable()
         visibleEntries.push_back(&entry);
     }
 
+    // 批量填表前先关排序：否则每写一格 Qt 就重排一次，既慢又会把行号敲乱。
     m_processPteTranslateVisibleCount = visibleEntries.size();
     const QSignalBlocker blocker(m_processPteTranslateTable);
     m_processPteTranslateTable->setSortingEnabled(false);
@@ -563,16 +595,18 @@ void MemoryDock::rebuildProcessPteTranslateTable()
     for (int row = 0; row < static_cast<int>(visibleEntries.size()); ++row)
     {
         const ProcessMemoryEvidenceEntry& entry = *visibleEntries[static_cast<std::size_t>(row)];
-        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::VirtualAddress), new NumericItem(hex64(entry.virtualAddress), entry.virtualAddress));
-        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::RegionBase), new NumericItem(hex64(entry.regionBaseAddress), entry.regionBaseAddress));
+        // 地址列：显示 16 进制文本，排序走真实 64 位数值，不会退化成字符串序。
+        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::VirtualAddress), new ks::ui::NumericTableItem(hex64(entry.virtualAddress), static_cast<qulonglong>(entry.virtualAddress)));
+        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::RegionBase), new ks::ui::NumericTableItem(hex64(entry.regionBaseAddress), static_cast<qulonglong>(entry.regionBaseAddress)));
         m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Valid), makeReadOnlyItem(entry.valid ? QStringLiteral("Yes") : QStringLiteral("No")));
         m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Shared), makeReadOnlyItem(entry.shared ? QStringLiteral("Yes") : QStringLiteral("No")));
         m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Locked), makeReadOnlyItem(entry.locked ? QStringLiteral("Yes") : QStringLiteral("No")));
         m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::LargePage), makeReadOnlyItem(entry.largePage ? QStringLiteral("Yes") : QStringLiteral("No")));
         m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Bad), makeReadOnlyItem(entry.bad ? QStringLiteral("Yes") : QStringLiteral("No")));
-        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::ShareCount), new NumericItem(QString::number(entry.shareCount), entry.shareCount));
-        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Win32Protection), new NumericItem(QStringLiteral("0x%1").arg(entry.win32Protection, 8, 16, QChar('0')).toUpper(), entry.win32Protection));
-        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Node), new NumericItem(QString::number(entry.node), entry.node));
+        // 引用计数、保护属性位图、NUMA 节点同样是数值列，一律挂 NumericSortRole。
+        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::ShareCount), new ks::ui::NumericTableItem(QString::number(entry.shareCount), static_cast<qulonglong>(entry.shareCount)));
+        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Win32Protection), new ks::ui::NumericTableItem(QStringLiteral("0x%1").arg(entry.win32Protection, 8, 16, QChar('0')).toUpper(), static_cast<qulonglong>(entry.win32Protection)));
+        m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Node), new ks::ui::NumericTableItem(QString::number(entry.node), static_cast<qulonglong>(entry.node)));
         m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::MappedFile), makeReadOnlyItem(entry.mappedFilePath.isEmpty() ? QStringLiteral("—") : entry.mappedFilePath));
         m_processPteTranslateTable->setItem(row, pteTranslateColumnIndex(PteTranslateColumn::Risk), makeReadOnlyItem(entry.riskText));
     }
@@ -589,6 +623,7 @@ void MemoryDock::rebuildProcessPteTranslateTable()
     {
         m_processPteTranslateTable->setCurrentCell(0, pteTranslateColumnIndex(PteTranslateColumn::VirtualAddress));
     }
+    // 填表完毕再把排序打开，与上面的 setSortingEnabled(false) 成对包夹。
     m_processPteTranslateTable->setSortingEnabled(true);
     ks::ui::RequestTableColumnAutoFit(m_processPteTranslateTable);
 }
@@ -622,8 +657,10 @@ void MemoryDock::showProcessPteTranslateDetailByCurrentRow()
         return;
     }
 
+    // 反查键跟着填表侧一起迁到 NumericSortRole：
+    // NumericTableItem 把真实数值写在 Qt::UserRole + 900，再读 Qt::UserRole 会永远取不到值。
     bool ok = false;
-    const qulonglong addressValue = addressItem->data(Qt::UserRole).toULongLong(&ok);
+    const qulonglong addressValue = addressItem->data(ks::ui::NumericSortRole).toULongLong(&ok);
     if (!ok)
     {
         return;

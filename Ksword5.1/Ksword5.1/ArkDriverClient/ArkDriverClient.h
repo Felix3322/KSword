@@ -137,6 +137,40 @@ namespace ksword::ark
             const std::vector<std::uint8_t>& bytes,
             unsigned long flags = 0UL,
             DriverHandle* existingHandle = nullptr) const;
+        // readPhysicalMemory：
+        // - 输入：physicalAddress 为起始物理地址，上限 0x000FFFFFFFFFFFFF 且区间不得回绕；
+        //   bytesToRead 为本次读取长度，上限 KSWORD_ARK_MEMORY_PHYSICAL_READ_MAX_BYTES(64KB)；
+        //   flags 必须为 0，驱动对任何非 0 位直接返回 STATUS_INVALID_PARAMETER，
+        //   本函数会在发出 IOCTL 之前本地拒绝；existingHandle 可复用已打开的控制句柄。
+        // - 处理：按“驱动认定的响应头长度 + bytesToRead”分配输出缓冲，发出
+        //   IOCTL_KSWORD_ARK_READ_PHYSICAL_MEMORY，再从 data 成员的真实偏移解析负载。
+        //   驱动计算可用空间用的是 sizeof-sizeof(data)，写负载却用 offsetof(data)，
+        //   两个数字不相等，因此分配长度和解析偏移必须分别取值，不能互相替代。
+        // - 返回：PhysicalMemoryReadResult；io.ok 只表示 IOCTL 通信成功，
+        //   数据是否有效要看 readStatus 与 bytesRead。
+        PhysicalMemoryReadResult readPhysicalMemory(
+            std::uint64_t physicalAddress,
+            std::uint32_t bytesToRead,
+            unsigned long flags = 0UL,
+            DriverHandle* existingHandle = nullptr) const;
+        // writePhysicalMemory：
+        // - 输入：physicalAddress 为起始物理地址，上限 0x000FFFFFFFFFFFFF 且区间不得回绕；
+        //   bytes 为待写入负载，长度必须非 0 且不超过
+        //   KSWORD_ARK_MEMORY_PHYSICAL_WRITE_MAX_BYTES(4KB)；flags 只允许
+        //   KSWORD_ARK_PHYSICAL_WRITE_FLAG_UI_CONFIRMED 与 KSWORD_ARK_PHYSICAL_WRITE_FLAG_FORCE
+        //   的组合，其余位由本函数本地拒绝；existingHandle 可复用已打开的控制句柄。
+        // - 处理：按“物理写请求头 + bytes.size()”分配输入缓冲，负载通过 request->data
+        //   成员拷贝，发出 IOCTL_KSWORD_ARK_WRITE_PHYSICAL_MEMORY；R0 侧先
+        //   MmMapIoSpaceEx 映射目标页，再在 __try 内拷贝，映射与拷贝分别有独立状态。
+        // - 返回：PhysicalMemoryWriteResult；io.ok 只表示 IOCTL 通信成功。
+        //   特别注意：未带 KSWORD_ARK_PHYSICAL_WRITE_FLAG_FORCE 时驱动不会写入任何字节，
+        //   而是返回 writeStatus=KSWORD_ARK_MEMORY_PHYSICAL_WRITE_STATUS_FORCE_REQUIRED
+        //   并且 io.ok 仍为 true，调用方必须检查 writeStatus 才能判断是否真的写成功。
+        PhysicalMemoryWriteResult writePhysicalMemory(
+            std::uint64_t physicalAddress,
+            const std::vector<std::uint8_t>& bytes,
+            unsigned long flags = KSWORD_ARK_PHYSICAL_WRITE_FLAG_UI_CONFIRMED,
+            DriverHandle* existingHandle = nullptr) const;
         // queryKernelMemoryEvidence：
         // - 输入：只读采集 flags、行数/字节预算和可选地址半开区间。
         // - 处理：封装 IOCTL_KSWORD_ARK_SCAN_KERNEL_MEMORY_EVIDENCE，解析变长 evidence rows。
