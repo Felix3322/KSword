@@ -86,10 +86,16 @@ namespace
 FileHandleUsageWindow::FileHandleUsageWindow(const std::vector<QString>& targetPaths, QWidget* parent)
     : QDialog(parent)
     , m_targetPaths(targetPaths)
+    , m_scanCancelRequested(std::make_shared<std::atomic_bool>(false))
 {
     initializeUi();
     initializeConnections();
     requestRefresh(true);
+}
+
+FileHandleUsageWindow::~FileHandleUsageWindow()
+{
+    m_scanCancelRequested->store(true);
 }
 
 void FileHandleUsageWindow::setOpenProcessDetailCallback(OpenProcessDetailCallback callback)
@@ -240,21 +246,33 @@ void FileHandleUsageWindow::requestRefresh(const bool forceRefresh)
 
     const std::vector<QString> targetPathsSnapshot = m_targetPaths;
     const int progressPid = m_refreshProgressPid;
+    m_scanCancelRequested->store(false);
+    const std::shared_ptr<std::atomic_bool> cancelRequested = m_scanCancelRequested;
     QPointer<FileHandleUsageWindow> guardThis(this);
-    auto* refreshTask = QRunnable::create([guardThis, currentTicket, targetPathsSnapshot, progressPid]()
+    QPointer<QObject> uiDispatcher(QCoreApplication::instance());
+    auto* refreshTask = QRunnable::create(
+        [guardThis, uiDispatcher, currentTicket, targetPathsSnapshot, progressPid, cancelRequested]()
         {
             const filedock::handleusage::HandleUsageScanResult refreshResult =
-                filedock::handleusage::scanHandleUsageByPaths(targetPathsSnapshot, progressPid);
-            if (guardThis == nullptr)
+                filedock::handleusage::scanHandleUsageByPaths(
+                    targetPathsSnapshot,
+                    progressPid,
+                    true,
+                    [cancelRequested]()
+                    {
+                        return cancelRequested->load();
+                    });
+            QObject* dispatcher = uiDispatcher.data();
+            if (cancelRequested->load() || dispatcher == nullptr)
             {
                 return;
             }
 
             QMetaObject::invokeMethod(
-                guardThis,
-                [guardThis, currentTicket, refreshResult]()
+                dispatcher,
+                [guardThis, cancelRequested, currentTicket, refreshResult]()
                 {
-                    if (guardThis == nullptr)
+                    if (cancelRequested->load() || guardThis == nullptr)
                     {
                         return;
                     }

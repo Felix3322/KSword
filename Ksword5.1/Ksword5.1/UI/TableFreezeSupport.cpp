@@ -242,7 +242,15 @@ namespace ks::ui
 
     TableFrozenPaneController::~TableFrozenPaneController()
     {
-        releaseTarget();
+        // The production controller is owned by TableActionBar, which in turn is a
+        // direct child of the target table. QWidget destroys its children while the
+        // target table's most-derived C++ object is already gone, but QPointer is not
+        // cleared until QObject's destructor runs. Calling releaseTarget() here can
+        // therefore dispatch virtual table methods through a partially destroyed
+        // object. QObject already disconnects every connection owned by this
+        // controller, and the target table owns the auxiliary panes, so destruction
+        // only needs to let the guarded members tear down locally. Explicit target
+        // changes still use setTargetTable()/releaseTarget() while both objects live.
     }
 
     void TableFrozenPaneController::setTargetTable(QTableView* tableView)

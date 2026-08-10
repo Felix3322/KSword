@@ -5193,6 +5193,7 @@ namespace
             , m_filePath(filePath)
         {
             m_hashCancelRequested = std::make_shared<std::atomic_bool>(false);
+            m_usageScanCancelRequested = std::make_shared<std::atomic_bool>(false);
             // 文件属性与进程属性同为独立、非模态详情窗；不要继承隐藏 Dock 的子窗口外观。
             setWindowFlag(Qt::Window, true);
             setWindowModality(Qt::NonModal);
@@ -5333,6 +5334,20 @@ namespace
                 m_tabNavigationButtons.front()->setChecked(true);
             }
             applyThemeStyle();
+        }
+
+        ~FileDetailDialog() override
+        {
+            // 关闭即销毁的属性窗不能留下继续跑全系统枚举的任务；两个后台入口
+            // 都只共享原子取消标记，不在析构线程等待，也不访问已经释放的控件。
+            if (m_hashCancelRequested != nullptr)
+            {
+                m_hashCancelRequested->store(true);
+            }
+            if (m_usageScanCancelRequested != nullptr)
+            {
+                m_usageScanCancelRequested->store(true);
+            }
         }
 
     protected:
@@ -6385,28 +6400,41 @@ namespace
             refreshButton->setEnabled(false);
             table->clear();
             statusLabel->setText(QStringLiteral("● 正在扫描文件占用..."));
+            m_usageScanCancelRequested->store(false);
 
             const std::vector<QString> targetPaths{ info.absoluteFilePath() };
+            const std::shared_ptr<std::atomic_bool> cancelRequested =
+                m_usageScanCancelRequested;
             QPointer<FileDetailDialog> guardThis(this);
             QPointer<QTreeWidget> tableGuard(table);
             QPointer<QLabel> statusGuard(statusLabel);
             QPointer<QPushButton> refreshGuard(refreshButton);
+            QPointer<QObject> uiDispatcher(QCoreApplication::instance());
 
-            auto* task = QRunnable::create([guardThis, tableGuard, statusGuard, refreshGuard, targetPaths]()
+            auto* task = QRunnable::create([guardThis, tableGuard, statusGuard, refreshGuard,
+                                            uiDispatcher, targetPaths, cancelRequested]()
                 {
                     const filedock::handleusage::HandleUsageScanResult scanResult =
-                        filedock::handleusage::scanHandleUsageByPaths(targetPaths, 0);
-                    FileDetailDialog* targetDialog = guardThis.data();
-                    if (targetDialog == nullptr)
+                        filedock::handleusage::scanHandleUsageByPaths(
+                            targetPaths,
+                            0,
+                            true,
+                            [cancelRequested]()
+                            {
+                                return cancelRequested->load();
+                            });
+                    QObject* dispatcher = uiDispatcher.data();
+                    if (cancelRequested->load() || dispatcher == nullptr)
                     {
                         return;
                     }
 
                     QMetaObject::invokeMethod(
-                        targetDialog,
-                        [guardThis, tableGuard, statusGuard, refreshGuard, scanResult]()
+                        dispatcher,
+                        [guardThis, tableGuard, statusGuard, refreshGuard,
+                         cancelRequested, scanResult]()
                         {
-                            if (guardThis == nullptr || tableGuard == nullptr ||
+                            if (cancelRequested->load() || guardThis == nullptr || tableGuard == nullptr ||
                                 statusGuard == nullptr || refreshGuard == nullptr)
                             {
                                 return;
@@ -8537,6 +8565,7 @@ namespace
         bool m_generalR0Loaded = false; // R0 文件信息是否已完成后台读取。
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
+        std::shared_ptr<std::atomic_bool> m_usageScanCancelRequested; // 文件占用扫描取消标记，关闭属性窗时置位。
         bool m_themeStyleApplying = false; // 避免 PaletteChange 触发样式重入。
     };
 
