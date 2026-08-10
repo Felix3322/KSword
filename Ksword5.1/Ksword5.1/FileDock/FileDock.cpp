@@ -1,6 +1,7 @@
 #include "FileDock.h"
 #include "../Framework/PrivilegeElevationPrompt.h"
 #include "../UI/VisibleTableWidget.h"
+#include "../UI/UI_All.h"
 #include "FilePropertyPeAnalyzer.h"
 #include "DriverFileSystemParser.h"
 #include "IrpFileSystemParser.h"
@@ -7666,64 +7667,86 @@ namespace
                 return;
             }
 
-            QWidget* realPage = nullptr;
-            if (lazyKey == QStringLiteral("security"))
-            {
-                realPage = buildSecurityTab();
-            }
-            else if (lazyKey == QStringLiteral("reparse"))
-            {
-                realPage = buildReparseTab();
-            }
-            else if (lazyKey == QStringLiteral("usage"))
-            {
-                realPage = buildUsageTab();
-            }
-            else if (lazyKey == QStringLiteral("fileobject"))
-            {
-                realPage = buildFileObjectTab();
-            }
-            else if (lazyKey == QStringLiteral("storage"))
-            {
-                realPage = buildStorageTab();
-            }
-            else if (lazyKey == QStringLiteral("filters"))
-            {
-                realPage = buildFilterTopologyTab();
-            }
-            else if (lazyKey == QStringLiteral("signature"))
-            {
-                realPage = buildSignatureTab();
-            }
-            else if (lazyKey == QStringLiteral("pe"))
-            {
-                realPage = buildPeTab();
-            }
-            else if (lazyKey == QStringLiteral("dependencies"))
-            {
-                realPage = buildDependencyTab();
-            }
-            else if (lazyKey == QStringLiteral("strings"))
-            {
-                realPage = buildStringsTab();
-            }
-            else if (lazyKey == QStringLiteral("hex"))
-            {
-                realPage = buildHexTab();
-            }
+            const QPointer<QTabWidget> tabGuard(tabWidget);
+            const QPointer<QWidget> placeholderGuard(placeholderPage);
+            ks::ui::scheduleDeferredTabActivation(
+                this,
+                tabWidget,
+                tabIndex,
+                placeholderPage,
+                [this, tabGuard, placeholderGuard, tabIndex, lazyKey]()
+                {
+                    if (tabGuard.isNull() || placeholderGuard.isNull() ||
+                        tabGuard->currentIndex() != tabIndex ||
+                        tabGuard->widget(tabIndex) != placeholderGuard.data())
+                    {
+                        return;
+                    }
 
-            if (realPage == nullptr)
-            {
-                return;
-            }
+                    QWidget* realPage = nullptr;
+                    if (lazyKey == QStringLiteral("security"))
+                    {
+                        realPage = buildSecurityTab();
+                    }
+                    else if (lazyKey == QStringLiteral("reparse"))
+                    {
+                        realPage = buildReparseTab();
+                    }
+                    else if (lazyKey == QStringLiteral("usage"))
+                    {
+                        realPage = buildUsageTab();
+                    }
+                    else if (lazyKey == QStringLiteral("fileobject"))
+                    {
+                        realPage = buildFileObjectTab();
+                    }
+                    else if (lazyKey == QStringLiteral("storage"))
+                    {
+                        realPage = buildStorageTab();
+                    }
+                    else if (lazyKey == QStringLiteral("filters"))
+                    {
+                        realPage = buildFilterTopologyTab();
+                    }
+                    else if (lazyKey == QStringLiteral("signature"))
+                    {
+                        realPage = buildSignatureTab();
+                    }
+                    else if (lazyKey == QStringLiteral("pe"))
+                    {
+                        realPage = buildPeTab();
+                    }
+                    else if (lazyKey == QStringLiteral("dependencies"))
+                    {
+                        realPage = buildDependencyTab();
+                    }
+                    else if (lazyKey == QStringLiteral("strings"))
+                    {
+                        realPage = buildStringsTab();
+                    }
+                    else if (lazyKey == QStringLiteral("hex"))
+                    {
+                        realPage = buildHexTab();
+                    }
 
-            const QString titleText = tabWidget->tabText(tabIndex);
-            tabWidget->removeTab(tabIndex);
-            tabWidget->insertTab(tabIndex, realPage, titleText);
-            // 新建的懒加载页也必须立即拿到 Surface 调色板，不能回退到系统 Base。
-            applyThemeStyle();
-            tabWidget->setCurrentIndex(tabIndex);
-            placeholderPage->deleteLater();
+                    if (realPage == nullptr || tabGuard.isNull() || placeholderGuard.isNull() ||
+                        tabGuard->widget(tabIndex) != placeholderGuard.data())
+                    {
+                        if (realPage != nullptr)
+                        {
+                            realPage->deleteLater();
+                        }
+                        return;
+                    }
+
+                    const QString titleText = tabGuard->tabText(tabIndex);
+                    tabGuard->removeTab(tabIndex);
+                    tabGuard->insertTab(tabIndex, realPage, titleText);
+                    // 新建的懒加载页也必须立即拿到 Surface 调色板，不能回退到系统 Base。
+                    applyThemeStyle();
+                    tabGuard->setCurrentIndex(tabIndex);
+                    placeholderGuard->deleteLater();
+                });
         }
 
         QWidget* buildGeneralTab()

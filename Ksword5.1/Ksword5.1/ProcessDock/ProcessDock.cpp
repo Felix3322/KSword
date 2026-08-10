@@ -4208,6 +4208,22 @@ void ProcessDock::initializeTopControls()
         QStringLiteral("添加或移除进程列表中显示的列。"));
     m_columnChooserButton->setStyleSheet(buildBlueButtonStyle(false));
 
+    // 句柄回调进程保护入口：
+    // - 仅负责跳转到 KernelDock 的统一规则页；
+    // - 具体规则编辑、驱动应用和状态刷新仍由回调保护页面管理。
+    m_processProtectCallbackButton = new QPushButton(QStringLiteral("句柄回调保护"), this);
+    m_processProtectCallbackButton->setToolTip(
+        QStringLiteral("打开内核句柄回调的进程保护规则页。"));
+    languageManager.bindText(
+        m_processProtectCallbackButton,
+        QStringLiteral("process.toolbar.callback_process_protect"),
+        QStringLiteral("句柄回调保护"));
+    languageManager.bindToolTip(
+        m_processProtectCallbackButton,
+        QStringLiteral("process.tooltip.callback_process_protect"),
+        QStringLiteral("打开内核句柄回调的进程保护规则页。"));
+    m_processProtectCallbackButton->setStyleSheet(buildBlueButtonStyle(false));
+
     // 按钮统一蓝色风格（图标按钮版本）。
     const QString buttonStyle = buildBlueButtonStyle(true);
     m_startButton->setStyleSheet(buttonStyle);
@@ -4220,6 +4236,7 @@ void ProcessDock::initializeTopControls()
     m_controlLayout->addWidget(m_startButton);
     m_controlLayout->addWidget(m_pauseButton);
     m_controlLayout->addWidget(m_columnChooserButton);
+    m_controlLayout->addWidget(m_processProtectCallbackButton);
     m_controlLayout->addWidget(m_processSearchLineEdit);
     m_controlLayout->addWidget(m_kernelCompareCheck);
     m_controlLayout->addWidget(m_showKswordHiddenProcessCheck);
@@ -5275,6 +5292,13 @@ void ProcessDock::initializeConnections()
     {
         connect(m_columnChooserButton, &QPushButton::clicked, this, [this]() {
             showColumnChooserDialog();
+        });
+    }
+
+    if (m_processProtectCallbackButton != nullptr)
+    {
+        connect(m_processProtectCallbackButton, &QPushButton::clicked, this, [this]() {
+            emit requestFocusProcessProtectByCallback();
         });
     }
 

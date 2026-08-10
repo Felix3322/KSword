@@ -102,6 +102,11 @@ public slots:
     void focusHandleDockByPid(quint32 pid);
     void focusHandleDockByPids(const QString& pidListText);
 
+    // focusProcessProtectByCallback：
+    // - 将“内核”Dock 置顶并切换到对象句柄回调的进程保护页；
+    // - 供进程页快捷入口调用，不复制回调规则编辑逻辑。
+    void focusProcessProtectByCallback();
+
     // focusMemoryDockByPid 作用：
     // - 将“内存”Dock 置顶并附加目标进程，便于执行内存区域查看与转储。
     // 调用方式：进程页右键菜单“跳转到内存操作”调用。

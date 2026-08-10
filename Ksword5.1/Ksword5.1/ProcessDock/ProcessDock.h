@@ -127,6 +127,10 @@ public:
         std::uint32_t pid,
         std::uint64_t creationTime100ns);
 
+signals:
+    // requestFocusProcessProtectByCallback：进程页快捷入口请求主窗口打开统一回调保护页。
+    void requestFocusProcessProtectByCallback();
+
 protected:
     // eventFilter 作用：
     // - 捕获进程页内的鼠标点击；
@@ -995,6 +999,7 @@ private:
     QLabel* m_sampleIntervalLabel = nullptr;  // 活动采样间隔标签。
     QDoubleSpinBox* m_refreshIntervalSpin = nullptr; // 活动采样/后台监视间隔步进框，0.05~60 秒，默认 1 秒。
     QPushButton* m_columnChooserButton = nullptr; // “选择列”按钮：打开添加/减少列对话框。
+    QPushButton* m_processProtectCallbackButton = nullptr; // “句柄回调保护”快捷入口。
 
     // ======== 进程活动记录面板 ========
     QWidget* m_activityPanelWidget = nullptr;       // m_activityPanelWidget：进程活动图表面板。

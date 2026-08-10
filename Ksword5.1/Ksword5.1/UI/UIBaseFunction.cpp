@@ -2,8 +2,12 @@
 #include "../theme.h"
 
 #include <QLabel>
+#include <QPointer>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <utility>
 
 QWidget* createBasicPlaceholder(const QString& tipText/* = "Placeholder panel"*/)
 {
@@ -37,4 +41,34 @@ QWidget* createBasicPlaceholder(const QString& tipText/* = "Placeholder panel"*/
     layout->setContentsMargins(0, 0, 0, 0);
 
     return placeholder;
+}
+
+void ks::ui::scheduleDeferredTabActivation(
+    QObject* context,
+    QTabWidget* tabWidget,
+    const int tabIndex,
+    QWidget* placeholderPage,
+    DeferredTabActivationCallback callback)
+{
+    if (context == nullptr || tabWidget == nullptr || placeholderPage == nullptr || !callback)
+    {
+        return;
+    }
+
+    const QPointer<QObject> contextGuard(context);
+    const QPointer<QTabWidget> tabGuard(tabWidget);
+    const QPointer<QWidget> placeholderGuard(placeholderPage);
+    QTimer::singleShot(
+        0,
+        context,
+        [contextGuard, tabGuard, placeholderGuard, tabIndex, callback = std::move(callback)]()
+        {
+            if (contextGuard.isNull() || tabGuard.isNull() || placeholderGuard.isNull() ||
+                tabGuard->currentIndex() != tabIndex ||
+                tabGuard->widget(tabIndex) != placeholderGuard.data())
+            {
+                return;
+            }
+            callback();
+        });
 }

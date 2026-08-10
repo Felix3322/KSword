@@ -544,6 +544,12 @@ public:
     // - 返回：无返回值。供 MainWindow 在 ADS 恢复布局/显示后兜底调用。
     void ensureCurrentTabReadyForDisplay();
 
+    // focusProcessProtectTab：
+    // - 输入：无；
+    // - 处理：切换到“内核审计与回调 -> 驱动回调 -> 进程保护”；
+    // - 返回：无；供进程页快捷入口复用同一套回调保护页面。
+    void focusProcessProtectTab();
+
     // displayStateSummary：
     // - 输入：无；
     // - 处理：汇总顶层 Tab、当前页和对象命名空间内层 Tab 的可见/尺寸/初始化状态；

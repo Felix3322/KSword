@@ -933,6 +933,8 @@
     "process.columns.menu.reset_default": "Restore default columns",
     "process.toolbar.column_chooser": "Select columns",
     "process.tooltip.column_chooser": "Add or remove the columns shown in the process list.",
+    "process.toolbar.callback_process_protect": "Handle-callback protection",
+    "process.tooltip.callback_process_protect": "Open the process-protection rules for kernel handle callbacks.",
     "kernel.callback.remove.confirm": "About to remove a kernel callback at the address you typed in.\n\nClass: %1\nAddress: 0x%2\n\nYou typed this address by hand; this page has no enumerated source or trust data to cross-check it against.\nThis modifies kernel callback registration and may affect system stability. Continue?",
     "file.detail.view.structured": "Structured",
     "file.detail.view.plain_text": "Raw text",
@@ -4987,6 +4989,8 @@
     "settings.background.translucency_material.acrylic": "Frosted glass"
   },
   "source_translations": {
+    "句柄回调保护": "Handle-callback protection",
+    "打开内核句柄回调的进程保护规则页。": "Open the process-protection rules for kernel handle callbacks.",
     "kswordFrozenHeaderBridged": "kswordFrozenHeaderBridged",
     ", depth=": ", depth=",
     ", dirs=": ", dirs=",

@@ -9229,7 +9229,15 @@ void MainWindow::ensureDockContentInitialized(ads::CDockWidget* dockWidget)
 
     if (dockKey == QStringLiteral("process"))
     {
-        if (m_processWidget == nullptr) { m_processWidget = new ProcessDock(this); }
+        if (m_processWidget == nullptr)
+        {
+            m_processWidget = new ProcessDock(this);
+            connect(
+                m_processWidget,
+                &ProcessDock::requestFocusProcessProtectByCallback,
+                this,
+                &MainWindow::focusProcessProtectByCallback);
+        }
         realWidget = m_processWidget;
     }
     else if (dockKey == QStringLiteral("network"))
@@ -9807,7 +9815,15 @@ void MainWindow::initDockWidgets()
         [this]() {
             showSettingsPanelFromMenu(true);
         });
-    if (shouldEagerLoad(QStringLiteral("process"))) { m_processWidget = new ProcessDock(this); }
+    if (shouldEagerLoad(QStringLiteral("process")))
+    {
+        m_processWidget = new ProcessDock(this);
+        connect(
+            m_processWidget,
+            &ProcessDock::requestFocusProcessProtectByCallback,
+            this,
+            &MainWindow::focusProcessProtectByCallback);
+    }
     if (shouldEagerLoad(QStringLiteral("network"))) { m_networkWidget = new NetworkDock(this); }
     if (shouldEagerLoad(QStringLiteral("memory"))) { m_memoryWidget = new MemoryDock(this); }
     if (shouldEagerLoad(QStringLiteral("file"))) { m_fileWidget = new FileDock(this); }
@@ -10242,6 +10258,25 @@ void MainWindow::focusHandleDockByPids(const QString& pidListText)
         withTemporaryNonTopMostForDockSwitch([this]() { m_dockHandle->raise(); });
         m_dockHandle->setVisible(true);
     }
+}
+
+void MainWindow::focusProcessProtectByCallback()
+{
+    if (m_dockKernel != nullptr)
+    {
+        ensureDockContentInitialized(m_dockKernel);
+    }
+    if (m_kernelWidget == nullptr || m_dockKernel == nullptr)
+    {
+        return;
+    }
+
+    m_kernelWidget->focusProcessProtectTab();
+    withTemporaryNonTopMostForDockSwitch([this]()
+        {
+            m_dockKernel->raise();
+        });
+    m_dockKernel->setVisible(true);
 }
 
 void MainWindow::focusMemoryDockByPid(const quint32 pid)

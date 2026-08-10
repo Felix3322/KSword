@@ -321,6 +321,23 @@ void KernelDock::ensureCurrentTabReadyForDisplay()
     update();
 }
 
+void KernelDock::focusProcessProtectTab()
+{
+    if (m_tabWidget == nullptr ||
+        m_kernelAuditInnerTabWidget == nullptr ||
+        m_kernelAuditTabIndex < 0 ||
+        m_callbackTabIndex < 0)
+    {
+        return;
+    }
+
+    // 先选择二级“驱动回调”，再切入顶层聚合页；这样顶层页首次初始化时
+    // ensureTabInitialized 会直接构造进程保护页面，而不是先落到默认的 Inline Hook。
+    m_kernelAuditInnerTabWidget->setCurrentIndex(m_callbackTabIndex);
+    m_tabWidget->setCurrentIndex(m_kernelAuditTabIndex);
+    ensureTabInitialized(m_kernelAuditTabIndex);
+}
+
 QString KernelDock::displayStateSummary() const
 {
     if (m_tabWidget == nullptr)

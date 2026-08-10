@@ -933,6 +933,8 @@
     "process.columns.menu.reset_default": "恢复默认列",
     "process.toolbar.column_chooser": "选择列",
     "process.tooltip.column_chooser": "添加或移除进程列表中显示的列。",
+    "process.toolbar.callback_process_protect": "句柄回调保护",
+    "process.tooltip.callback_process_protect": "打开内核句柄回调的进程保护规则页。",
     "kernel.callback.remove.confirm": "即将按手工填写的地址移除内核回调。\n\n类别：%1\n地址：0x%2\n\n该地址由你手工输入，本页没有枚举行的来源与可信信息可供交叉核对。\n此操作会修改内核回调注册，可能影响系统稳定性。是否继续？",
     "file.detail.view.structured": "结构视图",
     "file.detail.view.plain_text": "原始文本",
@@ -4987,6 +4989,8 @@
     "settings.background.translucency_material.acrylic": "磨砂玻璃"
   },
   "source_translations": {
+    "句柄回调保护": "句柄回调保护",
+    "打开内核句柄回调的进程保护规则页。": "打开内核句柄回调的进程保护规则页。",
     "kswordFrozenHeaderBridged": "kswordFrozenHeaderBridged",
     ", depth=": ", depth=",
     ", dirs=": ", dirs=",
