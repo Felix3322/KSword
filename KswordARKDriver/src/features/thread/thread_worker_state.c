@@ -16,6 +16,7 @@ Environment:
 
 #include "ark/ark_driver.h"
 #include "thread_worker_state.h"
+#include "../../platform/runtime_signature_scan.h"
 
 VOID
 KswordARKThreadMarkFailure(
@@ -67,7 +68,6 @@ Return Value:
 {
     ULONG64 storageValue = 0ULL;
     ULONG64 valueMask = 0ULL;
-    NTSTATUS status = STATUS_SUCCESS;
 
     if (ThreadObject == NULL || Field == NULL || ValueOut == NULL) {
         return STATUS_INVALID_PARAMETER;
@@ -82,17 +82,16 @@ Return Value:
         return STATUS_DATA_ERROR;
     }
 
-    __try {
-        RtlCopyMemory(
+    /*
+     * 这里必须走安全读。字段偏移可能来自运行期推断，加到 ETHREAD 上可以越过
+     * 对象末尾；而内核态触碰未映射地址产生的是 bugcheck 0x50 而不是可捕获的
+     * 异常，__try/__except 在这条路径上只是看起来安全。
+     */
+    if (!KswordARKRuntimeReadMemory(
+            (const UCHAR*)ThreadObject + Field->Offset,
             &storageValue,
-            (PUCHAR)ThreadObject + Field->Offset,
-            Field->StorageBytes);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        status = GetExceptionCode();
-    }
-    if (!NT_SUCCESS(status)) {
-        return status;
+            Field->StorageBytes)) {
+        return STATUS_PARTIAL_COPY;
     }
 
     valueMask = Field->BitCount == 64UL

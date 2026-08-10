@@ -17,6 +17,7 @@ Environment:
 #include <ntifs.h>
 #include "process_resolver.h"
 #include "token_layout_resolver.h"
+#include "runtime_signature_scan.h"
 
 #define KSW_RUNTIME_PROCESS_SCAN_BYTES 0x1000U
 #define KSW_RUNTIME_THREAD_SCAN_BYTES 0x1000U
@@ -156,30 +157,35 @@ KswordARKDriverReadAccessorValue(
     }
     *ValueOut = 0U;
 
-    __try {
+    // 位移来自对访问器代码的反汇编解码，猜错时会落到对象之外，同样要安全读。
+    {
         const UCHAR* address = (const UCHAR*)Object + Displacement->Offset;
+        ULONG64 raw = 0ULL;
+        SIZE_T width = 0U;
+
         switch (Displacement->LoadKind) {
         case KswordAccessorAddress:
             *ValueOut = (ULONG_PTR)address;
-            break;
+            return TRUE;
         case KswordAccessorLoadPointer:
-            *ValueOut = *(const ULONG_PTR*)address;
+            width = sizeof(ULONG_PTR);
             break;
         case KswordAccessorLoadUlong:
-            *ValueOut = *(const ULONG*)address;
+            width = sizeof(ULONG);
             break;
         case KswordAccessorLoadUshort:
-            *ValueOut = *(const USHORT*)address;
+            width = sizeof(USHORT);
             break;
         case KswordAccessorLoadUchar:
-            *ValueOut = *(const UCHAR*)address;
+            width = sizeof(UCHAR);
             break;
         default:
             return FALSE;
         }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return FALSE;
+        if (!KswordARKRuntimeReadMemory(address, &raw, width)) {
+            return FALSE;
+        }
+        *ValueOut = (ULONG_PTR)raw;
     }
     return TRUE;
 }
@@ -323,15 +329,23 @@ KswordARKDriverResolveActiveProcessLinksOffset(
         UniqueProcessIdOffset + (LONG)sizeof(HANDLE);
     link = (PLIST_ENTRY)((PUCHAR)Process + activeProcessLinksOffset);
 
-    __try {
-        if (link->Flink == NULL || link->Blink == NULL ||
-            link->Flink->Blink != link ||
-            link->Blink->Flink != link) {
+    /*
+     * 互反性校验要二次解引用 Flink/Blink，而这两个值来自候选偏移处的内存，
+     * 在偏移猜错时就是任意值。逐跳安全读，别在异常边界里直接跟指针走。
+     */
+    {
+        LIST_ENTRY head;
+        LIST_ENTRY forward;
+        LIST_ENTRY backward;
+
+        if (!KswordARKRuntimeReadMemory(link, &head, sizeof(head)) ||
+            head.Flink == NULL || head.Blink == NULL ||
+            !KswordARKRuntimeReadMemory(head.Flink, &forward, sizeof(forward)) ||
+            !KswordARKRuntimeReadMemory(head.Blink, &backward, sizeof(backward)) ||
+            forward.Blink != link ||
+            backward.Flink != link) {
             return -1;
         }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return -1;
     }
     return activeProcessLinksOffset;
 }
@@ -465,13 +479,8 @@ Return Value:
     }
     *ValueOut = 0U;
 
-    __try {
-        *ValueOut = *(volatile const ULONG_PTR*)Address;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return FALSE;
-    }
-    return TRUE;
+    // 同 ReadListEntryGuarded：候选地址不可信，异常边界挡不住未映射内核地址。
+    return KswordARKRuntimeReadMemory(Address, ValueOut, sizeof(*ValueOut));
 }
 
 static BOOLEAN
@@ -501,14 +510,12 @@ Return Value:
     }
     RtlZeroMemory(EntryOut, sizeof(*EntryOut));
 
-    __try {
-        EntryOut->Flink = Address->Flink;
-        EntryOut->Blink = Address->Blink;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return FALSE;
-    }
-    return TRUE;
+    /*
+     * 候选地址来自上一跳链表里读出的任意指针，完全可能没有映射。内核态触碰
+     * 未映射地址产生的是 bugcheck 0x50 而不是可捕获异常，__try/__except 拦不住
+     * ——这条路径曾在 DriverEntry 的偏移探测阶段直接蓝屏。必须走 MmCopyMemory。
+     */
+    return KswordARKRuntimeReadMemory(Address, EntryOut, sizeof(*EntryOut));
 }
 
 static BOOLEAN
