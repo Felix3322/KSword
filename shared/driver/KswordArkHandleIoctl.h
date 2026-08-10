@@ -38,6 +38,14 @@
 #define KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_ALL \
     (KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_OBJECT | KSWORD_ARK_ENUM_HANDLE_FLAG_INCLUDE_TYPE_INDEX)
 
+// A PID can exit after the process snapshot and before its HandleTable is
+// enumerated. A quiet batch scan treats this transport status as expected
+// churn; malformed requests and every other failure must remain observable.
+#define KSWORD_ARK_NTSTATUS_INVALID_CID                  0xC000000BUL
+#define KSWORD_ARK_ENUM_HANDLE_STATUS_IS_EXPECTED_CHURN(flags, status) \
+    ((((flags) & KSWORD_ARK_ENUM_HANDLE_FLAG_QUIET_LOG) != 0UL) && \
+     ((unsigned long)(status) == KSWORD_ARK_NTSTATUS_INVALID_CID))
+
 #define KSWORD_ARK_HANDLE_FIELD_OBJECT_PRESENT          0x00000001UL
 #define KSWORD_ARK_HANDLE_FIELD_GRANTED_ACCESS_PRESENT  0x00000002UL
 #define KSWORD_ARK_HANDLE_FIELD_ATTRIBUTES_PRESENT      0x00000004UL

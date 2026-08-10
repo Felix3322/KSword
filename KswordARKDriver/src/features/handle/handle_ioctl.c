@@ -138,13 +138,15 @@ Return Value:
 
     status = KswordARKDriverEnumerateProcessHandles(outputBuffer, actualOutputLength, enumRequest, BytesReturned);
     if (!NT_SUCCESS(status)) {
-        KswordARKHandleIoctlLog(
-            Device,
-            "Error",
-            "R0 enum-handle failed: pid=%lu, status=0x%08X, outBytes=%Iu.",
-            (unsigned long)enumRequest->processId,
-            (unsigned int)status,
-            *BytesReturned);
+        if (!KSWORD_ARK_ENUM_HANDLE_STATUS_IS_EXPECTED_CHURN(enumRequest->flags, status)) {
+            KswordARKHandleIoctlLog(
+                Device,
+                "Error",
+                "R0 enum-handle failed: pid=%lu, status=0x%08X, outBytes=%Iu.",
+                (unsigned long)enumRequest->processId,
+                (unsigned int)status,
+                *BytesReturned);
+        }
         return status;
     }
 

@@ -19,6 +19,9 @@
 
 namespace filedock::handleusage
 {
+    // HandleUsageProgressCallback 作用：把后台扫描的阶段/百分比安全交给 UI 层显示。
+    using HandleUsageProgressCallback = std::function<void(const QString& stageText, float progressValue)>;
+
     // HandleUsageEntry 作用：
     // - 表示一条命中的占用句柄记录；
     // - 同时承载句柄信息、所属进程信息、命中路径信息。
@@ -72,5 +75,6 @@ namespace filedock::handleusage
         const std::vector<QString>& absolutePaths,
         int progressPid = 0,
         bool tryKernelHandleTable = true,
-        const std::function<bool()>& cancellationCallback = {});
+        const std::function<bool()>& cancellationCallback = {},
+        const HandleUsageProgressCallback& progressCallback = {});
 }

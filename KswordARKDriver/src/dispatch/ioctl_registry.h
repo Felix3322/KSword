@@ -33,6 +33,8 @@ typedef struct _KSWORD_ARK_IOCTL_ENTRY
 #define KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS 0x00000001UL
 // 可选的 best-effort IOCTL 可设置该位，成功与失败完成均不进入通用 R0 日志。
 #define KSWORD_ARK_IOCTL_FLAG_QUIET_COMPLETION 0x00000002UL
+// 仅用于扫描型 IOCTL：进程在快照后退出会返回 STATUS_INVALID_CID，dispatch 层不将其当作错误记录。
+#define KSWORD_ARK_IOCTL_FLAG_QUIET_INVALID_CID 0x00000004UL
 #define KSWORD_ARK_IOCTL_CAPABILITY_NONE 0ULL
 
 _Must_inspect_result_

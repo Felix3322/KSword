@@ -94,17 +94,25 @@ namespace filedock::handleusage
         const std::vector<QString>& absolutePaths,
         const int progressPid,
         const bool tryKernelHandleTable,
-        const std::function<bool()>& cancellationCallback)
+        const std::function<bool()>& cancellationCallback,
+        const HandleUsageProgressCallback& progressCallback)
     {
         ks::file::HandleUsageScanOptions options{};
         options.tryKernelHandleTable = tryKernelHandleTable;
         options.cancellationCallback = cancellationCallback;
-        if (progressPid > 0)
+        if (progressPid > 0 || progressCallback)
         {
             // ProgressCallback 只转接纯文本和百分比，具体进度条生命周期仍由 FileDock 窗口控制。
-            options.progressCallback = [progressPid](const std::string& stepText, const float progressValue)
+            options.progressCallback = [progressPid, progressCallback](const std::string& stepText, const float progressValue)
             {
-                kPro.set(progressPid, stepText, 0, progressValue);
+                if (progressPid > 0)
+                {
+                    kPro.set(progressPid, stepText, 0, progressValue);
+                }
+                if (progressCallback)
+                {
+                    progressCallback(QString::fromStdString(stepText), progressValue);
+                }
             };
         }
 

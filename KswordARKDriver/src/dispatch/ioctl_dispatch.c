@@ -127,7 +127,9 @@ Return Value:
     status = ioctlEntry->Handler(device, Request, InputBufferLength, OutputBufferLength, &completeBytes);
     if ((ioctlEntry->Flags & KSWORD_ARK_IOCTL_FLAG_QUIET_COMPLETION) == 0UL &&
         !((ioctlEntry->Flags & KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS) != 0UL &&
-        (NT_SUCCESS(status) || status == STATUS_PENDING))) {
+        (NT_SUCCESS(status) || status == STATUS_PENDING)) &&
+        !((ioctlEntry->Flags & KSWORD_ARK_IOCTL_FLAG_QUIET_INVALID_CID) != 0UL &&
+        status == STATUS_INVALID_CID)) {
         KswordARKDispatchLog(
             device,
             NT_SUCCESS(status) || status == STATUS_PENDING ? "Info" : "Warn",

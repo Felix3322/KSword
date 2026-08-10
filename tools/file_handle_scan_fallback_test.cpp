@@ -17,6 +17,8 @@
 //    or two success records for every handle it examines.
 // 7. When R0 is unavailable, the scanner records that R0 was attempted before
 //    entering the R3 fallback so the UI can wait for R0 start and rescan once.
+// 8. A QUIET_LOG enumeration racing a process exit must classify
+//    STATUS_INVALID_CID as expected churn; every other status remains visible.
 
 #include "../Ksword5.1/Ksword5.1/ksword/file/file_handle_tools.h"
 #include "../Ksword5.1/Ksword5.1/ArkDriverClient/ArkDriverClient.h"
@@ -368,6 +370,15 @@ int wmain()
         result.diagnosticText.find(L"R0枚举失败进程:") != std::wstring::npos;
     const std::size_t objectFailureDiagnosticCount =
         DiagnosticCount(result.diagnosticText, L"R0对象查询失败:");
+    const bool quietInvalidCid = KSWORD_ARK_ENUM_HANDLE_STATUS_IS_EXPECTED_CHURN(
+        KSWORD_ARK_ENUM_HANDLE_FLAG_QUIET_LOG,
+        kNtStatusInvalidCid);
+    const bool nonQuietInvalidCid = KSWORD_ARK_ENUM_HANDLE_STATUS_IS_EXPECTED_CHURN(
+        0UL,
+        kNtStatusInvalidCid);
+    const bool quietAccessDenied = KSWORD_ARK_ENUM_HANDLE_STATUS_IS_EXPECTED_CHURN(
+        KSWORD_ARK_ENUM_HANDLE_FLAG_QUIET_LOG,
+        static_cast<long>(0xC0000022UL));
 
     std::cout << "R3_FALLBACK=" << (g_r3FallbackEntered.load() ? 1 : 0) << '\n'
               << "OBJECT_QUERIES=" << queryCount << '\n'
@@ -379,7 +390,10 @@ int wmain()
               << "ENUM_QUIET_LOG=" << (g_enumQuietFlagObserved.load() ? 1 : 0) << '\n'
               << "QUERY_QUIET_LOG=" << (g_queryQuietFlagObserved.load() ? 1 : 0) << '\n'
               << "R0_ATTEMPT_RECORDED=" << (unavailableResult.kernelHandleTableAttempted ? 1 : 0) << '\n'
-              << "R3_FALLBACK_RECORDED=" << (unavailableResult.r3HandleFallbackUsed ? 1 : 0) << '\n';
+              << "R3_FALLBACK_RECORDED=" << (unavailableResult.r3HandleFallbackUsed ? 1 : 0) << '\n'
+              << "QUIET_INVALID_CID=" << (quietInvalidCid ? 1 : 0) << '\n'
+              << "NONQUIET_INVALID_CID=" << (nonQuietInvalidCid ? 1 : 0) << '\n'
+              << "QUIET_ACCESS_DENIED=" << (quietAccessDenied ? 1 : 0) << '\n';
 
     if (g_r3FallbackEntered.load(std::memory_order_acquire))
     {
@@ -421,6 +435,10 @@ int wmain()
         result.r3HandleFallbackUsed)
     {
         return 13;
+    }
+    if (!quietInvalidCid || nonQuietInvalidCid || quietAccessDenied)
+    {
+        return 14;
     }
     return 0;
 }

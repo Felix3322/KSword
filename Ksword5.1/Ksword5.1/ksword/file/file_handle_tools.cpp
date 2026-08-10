@@ -2086,6 +2086,7 @@ namespace ks::file
         HandleUsageScanResult ScanKernelHandleTableOccupancy(
             const std::vector<TargetPathPattern>& targetPatterns,
             const std::unordered_map<std::uint32_t, std::wstring>& processNameMap,
+            const ProgressCallback& progressCallback,
             const CancellationCallback& cancellationCallback,
             bool& kernelUsableOut)
         {
@@ -2211,12 +2212,23 @@ namespace ks::file
                 result.entries.push_back(std::move(entry));
             };
 
-            for (const ksword::ark::ProcessEntry& processEntry : processResult.entries)
+            for (std::size_t processIndex = 0; processIndex < processResult.entries.size(); ++processIndex)
             {
+                const ksword::ark::ProcessEntry& processEntry = processResult.entries[processIndex];
                 if (IsCancellationRequested(cancellationCallback))
                 {
                     result.diagnosticText = L"扫描已取消。";
                     return result;
+                }
+                if (progressCallback &&
+                    (processIndex == 0U ||
+                        ((processIndex + 1U) % 16U) == 0U ||
+                        processIndex + 1U == processResult.entries.size()))
+                {
+                    const float progressValue = 10.0f +
+                        (60.0f * static_cast<float>(processIndex + 1U) /
+                            static_cast<float>(processResult.entries.size()));
+                    progressCallback("开始扫描占用来源", progressValue);
                 }
                 if (processEntry.processId == 0) { continue; }
                 const ksword::ark::HandleEnumResult handleResult = driverClient.enumerateProcessHandles(
@@ -2289,6 +2301,7 @@ namespace ks::file
 
             if (!pendingFileHandles.empty())
             {
+                if (progressCallback) { progressCallback("开始扫描占用来源", 75.0f); }
                 std::vector<ksword::ark::HandleObjectQueryResult> pendingResults(
                     pendingFileHandles.size());
                 std::atomic_size_t nextIndex{ 0 };
@@ -2349,6 +2362,7 @@ namespace ks::file
                     consumeObjectResult(pendingFileHandles[index], pendingResults[index], true);
                 }
             }
+            if (progressCallback) { progressCallback("开始扫描占用来源", 90.0f); }
 
             result.fileLikeHandleCount = fileLikeHandleCount;
             result.matchedHandleCount = result.entries.size();
@@ -2659,6 +2673,7 @@ namespace ks::file
             kernelHandleResult = ScanKernelHandleTableOccupancy(
                 targetPatterns,
                 processNameMap,
+                options.progressCallback,
                 options.cancellationCallback,
                 kernelUsable);
             if (IsCancellationRequested(options.cancellationCallback))

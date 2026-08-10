@@ -6592,6 +6592,12 @@ namespace
             refreshButton->setEnabled(false);
             table->clear();
             statusLabel->setText(QStringLiteral("● 正在扫描文件占用..."));
+            if (m_usageScanProgressBar != nullptr)
+            {
+                m_usageScanProgressBar->setRange(0, 100);
+                m_usageScanProgressBar->setValue(0);
+                m_usageScanProgressBar->setFormat(QStringLiteral("%p%"));
+            }
             m_usageScanInProgress = true;
             m_usageRetryAfterR0Start = false;
             m_usageR0StartedDuringScan = false;
@@ -6604,10 +6610,11 @@ namespace
             QPointer<QTreeWidget> tableGuard(table);
             QPointer<QLabel> statusGuard(statusLabel);
             QPointer<QPushButton> refreshGuard(refreshButton);
+            QPointer<QProgressBar> progressGuard(m_usageScanProgressBar);
             QPointer<QObject> uiDispatcher(QCoreApplication::instance());
 
             auto* task = QRunnable::create([guardThis, tableGuard, statusGuard, refreshGuard,
-                                            uiDispatcher, targetPaths, cancelRequested]()
+                                             progressGuard, uiDispatcher, targetPaths, cancelRequested]()
                 {
                     const filedock::handleusage::HandleUsageScanResult scanResult =
                         filedock::handleusage::scanHandleUsageByPaths(
@@ -6617,6 +6624,29 @@ namespace
                             [cancelRequested]()
                             {
                                 return cancelRequested->load();
+                            },
+                            [guardThis, progressGuard, uiDispatcher, cancelRequested](
+                                const QString&,
+                                const float progressValue)
+                            {
+                                QObject* const dispatcher = uiDispatcher.data();
+                                if (cancelRequested->load() || guardThis == nullptr ||
+                                    progressGuard == nullptr || dispatcher == nullptr)
+                                {
+                                    return;
+                                }
+                                const int percentage = static_cast<int>(std::clamp(progressValue, 0.0f, 100.0f));
+                                QMetaObject::invokeMethod(
+                                    dispatcher,
+                                    [guardThis, progressGuard, cancelRequested, percentage]()
+                                    {
+                                        if (!cancelRequested->load() && guardThis != nullptr &&
+                                            progressGuard != nullptr)
+                                        {
+                                            progressGuard->setValue(percentage);
+                                        }
+                                    },
+                                    Qt::QueuedConnection);
                             });
                     QObject* dispatcher = uiDispatcher.data();
                     if (cancelRequested->load() || dispatcher == nullptr)
@@ -6627,7 +6657,7 @@ namespace
                     QMetaObject::invokeMethod(
                         dispatcher,
                         [guardThis, tableGuard, statusGuard, refreshGuard,
-                         cancelRequested, scanResult]()
+                         progressGuard, cancelRequested, scanResult]()
                         {
                             if (cancelRequested->load() || guardThis == nullptr || tableGuard == nullptr ||
                                 statusGuard == nullptr || refreshGuard == nullptr)
@@ -6638,7 +6668,7 @@ namespace
                             const auto scanSnapshot =
                                 std::make_shared<filedock::handleusage::HandleUsageScanResult>(scanResult);
                             const auto commitSnapshot =
-                                [guardThis, tableGuard, statusGuard, refreshGuard, scanSnapshot]()
+                                [guardThis, tableGuard, statusGuard, refreshGuard, progressGuard, scanSnapshot]()
                             {
                                 if (guardThis == nullptr || tableGuard == nullptr || statusGuard == nullptr ||
                                     refreshGuard == nullptr)
@@ -6698,6 +6728,10 @@ namespace
                                     statusText += QStringLiteral(" | %1").arg(scanSnapshot->diagnosticText);
                                 }
                                 statusGuard->setText(statusText);
+                                if (progressGuard != nullptr)
+                                {
+                                    progressGuard->setValue(100);
+                                }
                                 refreshGuard->setEnabled(true);
 
                                 guardThis->m_usageScanInProgress = false;
@@ -8389,6 +8423,13 @@ namespace
             layout->addLayout(toolbarLayout);
             layout->addWidget(statusLabel, 0);
 
+            QProgressBar* usageProgressBar = new QProgressBar(page);
+            usageProgressBar->setRange(0, 100);
+            usageProgressBar->setValue(0);
+            usageProgressBar->setFormat(QStringLiteral("%p%"));
+            m_usageScanProgressBar = usageProgressBar;
+            layout->addWidget(usageProgressBar, 0);
+
             QTreeWidget* table = new QTreeWidget(page);
             table->setColumnCount(7);
             table->setHeaderLabels(QStringList{
@@ -8921,6 +8962,7 @@ namespace
         ksword::ark::FileInfoQueryResult m_generalR0Info{}; // 保留原始 R0 数据供双语重绘。
         std::shared_ptr<std::atomic_bool> m_hashCancelRequested; // 哈希计算取消标记，后台线程共享。
         std::shared_ptr<std::atomic_bool> m_usageScanCancelRequested; // 文件占用扫描取消标记，关闭属性窗时置位。
+        QProgressBar* m_usageScanProgressBar = nullptr; // 属性页文件占用扫描的阶段进度条。
         bool m_usageScanInProgress = false; // 属性页占用扫描是否仍在后台执行。
         bool m_usageRetryAfterR0Start = false; // R3 回落结果是否等待下一次 R0 启动成功后重扫。
         bool m_usageR0StartedDuringScan = false; // R0 是否在当前 R3 回落扫描完成前已经启动。
@@ -12853,7 +12895,9 @@ void FileDock::showPanelContextMenu(FilePanelWidgets& panel, const QPoint& local
         QIcon(":/Icon/process_terminate.svg"), QStringLiteral("驱动(POSIX)"));
     driverPosixDeleteAction->setToolTip(QStringLiteral(
         "由 R0 使用 FileDispositionInformationEx 的 POSIX unlink 语义；是否可用取决于系统与文件系统，不回退到其它后端。"));
-    QAction* unlockByDriverAction = menu.addAction(QIcon(":/Icon/handle_close.svg"), QStringLiteral("文件占用与解锁"));
+    QAction* unlockByDriverAction = menu.addAction(
+        QIcon(":/Icon/handle_close.svg"),
+        ks::i18n::displayText(QStringLiteral("文件解锁器")));
     unlockByDriverAction->setToolTip(QStringLiteral("在文件属性中扫描占用，并提供关闭句柄、R3/R0 结束进程操作"));
     QMenu* addOplockMenu = menu.addMenu(QIcon(":/Icon/plus.svg"), QStringLiteral("添加 Oplock（访问计数）"));
     QAction* addOplockLevel1Action = addOplockMenu->addAction(QStringLiteral("Level 1 - 独占读写缓存，别人访问会计数"));
