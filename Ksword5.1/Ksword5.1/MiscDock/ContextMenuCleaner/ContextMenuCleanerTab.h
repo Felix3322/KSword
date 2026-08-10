@@ -219,7 +219,6 @@ namespace ks::misc
 
     private:
         QVBoxLayout* m_rootLayout = nullptr;   // m_rootLayout：本页根布局。
-        QLabel* m_hintLabel = nullptr;         // m_hintLabel：注册表清理风险说明。
         QTabWidget* m_areaTabWidget = nullptr; // m_areaTabWidget：七类 Shell 关联子 Tab 容器。
         AreaWidgets m_ieWidgets;               // m_ieWidgets：IE 右键菜单子页控件组。
         AreaWidgets m_desktopWidgets;          // m_desktopWidgets：桌面右键菜单子页控件组。

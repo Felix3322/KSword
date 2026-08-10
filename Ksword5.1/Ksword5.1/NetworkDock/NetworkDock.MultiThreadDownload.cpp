@@ -826,7 +826,7 @@ void NetworkDock::initializeMultiThreadDownloadTab()
         captureSettingsGroup); // captureHintLabel：下载捕获设置使用提示标签。
     captureHintLabel->setWordWrap(true);
     captureHintLabel->setStyleSheet(
-        QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryColorHex()));
+        QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
 
     captureSettingsLayout->addWidget(m_multiDownloadAutoCaptureClipboardCheck, 0, 0, 1, 3);
     captureSettingsLayout->addWidget(suffixLabel, 1, 0);

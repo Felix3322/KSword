@@ -90,10 +90,10 @@ namespace
         return QStringLiteral(
             "QLineEdit,QSpinBox{border:1px solid %2;border-radius:3px;background:transparent;/* %3 */color:%4;padding:2px 6px;}"
             "QLineEdit:focus,QSpinBox:focus{border:1px solid %1;}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
             + KswordTheme::ThemedComboBoxStyle();
     }
 
@@ -133,7 +133,7 @@ namespace
 
     QString monitorIdleColorHex()
     {
-        return KswordTheme::TextSecondaryColorHex();
+        return KswordTheme::TextSecondaryHex();
     }
 
     QPushButton* createIconButton(QWidget* parentWidget, const QString& iconPath, const QString& tooltipText)

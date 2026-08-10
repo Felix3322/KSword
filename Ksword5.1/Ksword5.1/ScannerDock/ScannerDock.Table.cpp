@@ -180,15 +180,15 @@ QWidget* ScannerDock::createStructuredTablePage(
         "QPushButton { background:%1; color:%2; border:1px solid %1; padding:3px 10px; }")
         .arg(
             KswordTheme::AccentHex(KswordTheme::AccentRole::Blue),
-            KswordTheme::OnAccentHex()); // activeStyle：激活预设的样式。
+            KswordTheme::OnAccentDynamicHex()); // activeStyle：激活预设的样式。
     const QString inactiveStyle = QStringLiteral(
         "QPushButton { background:%1; color:%2; border:1px solid %3; padding:3px 10px; }"
         "QPushButton:hover { background:%4; }")
         .arg(
-            KswordTheme::SurfaceColorHex(),
-            KswordTheme::TextPrimaryColorHex(),
-            KswordTheme::BorderColorHex(),
-            KswordTheme::SurfaceAltColorHex()); // inactiveStyle：未选中或自定义布局样式。
+            KswordTheme::SurfaceHex(),
+            KswordTheme::TextPrimaryHex(),
+            KswordTheme::BorderHex(),
+            KswordTheme::SurfaceAltHex()); // inactiveStyle：未选中或自定义布局样式。
 
     for (int groupIndex = 0; groupIndex < groupCount; ++groupIndex)
     {
@@ -271,11 +271,11 @@ QWidget* ScannerDock::createStructuredTablePage(
                 "QMenu::item:selected { background:%4; color:%5; }"
                 "QMenu::item:disabled { color:%6; }")
                 .arg(
-                    KswordTheme::SurfaceColorHex(),
-                    KswordTheme::TextPrimaryColorHex(),
-                    KswordTheme::BorderColorHex(),
+                    KswordTheme::SurfaceHex(),
+                    KswordTheme::TextPrimaryHex(),
+                    KswordTheme::BorderHex(),
                     KswordTheme::AccentHex(KswordTheme::AccentRole::Blue),
-                    KswordTheme::OnAccentHex(),
+                    KswordTheme::OnAccentDynamicHex(),
                     KswordTheme::TextDisabledColorHex()));
 
             // columnAction：勾选状态直接反映当前列可见性。

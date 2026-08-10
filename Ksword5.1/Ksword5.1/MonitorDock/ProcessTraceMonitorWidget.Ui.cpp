@@ -337,17 +337,11 @@ void ProcessTraceMonitorWidget::initializeUi()
     controlLayout->setContentsMargins(6, 6, 6, 6);
     controlLayout->setSpacing(6);
 
-    QLabel* strategyLabel = new QLabel(
-        QStringLiteral("策略：固定启用宽覆盖 ETW Provider，结合进程快照维护目标进程树，只保留与目标有关的事件。"),
-        m_controlPanel);
-    strategyLabel->setWordWrap(true);
-    strategyLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    controlLayout->addWidget(strategyLabel, 1);
-
+    // 采集策略说明并入启动按钮的悬停提示，控制栏不再被一整行常驻文字占掉宽度。
     m_startButton = createIconButton(
         m_controlPanel,
         ":/Icon/process_start.svg",
-        QStringLiteral("开始监控已选择的目标进程"));
+        QStringLiteral("开始监控已选择的目标进程。固定启用宽覆盖 ETW Provider，结合进程快照维护目标进程树，只保留与目标有关的事件。"));
     m_startButton->setStyleSheet(blueButtonStyle());
     controlLayout->addWidget(m_startButton, 0);
 

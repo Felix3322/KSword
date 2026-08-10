@@ -55,6 +55,7 @@
 #include <QWidget>
 
 #include "../Internationalization/LanguageManager.h"
+#include "../theme.h"
 
 #include <array>
 #include <optional>
@@ -1880,9 +1881,11 @@ namespace ks::window::dwmctl
             {
                 return;
             }
+            // 描边取 palette(mid)：写死的半透明黑在深色主题下会和底色糊成一片，
+            // 选到深色时连按钮边界都看不出来。
             row.colorButton->setStyleSheet(
-                QStringLiteral("QPushButton{background:%1;border:1px solid rgba(0,0,0,0.35);border-radius:4px; }")
-                    .arg(row.customColor.name(QColor::HexRgb)));
+                QStringLiteral("QPushButton{background:%1;border:1px solid %2;border-radius:4px; }")
+                    .arg(row.customColor.name(QColor::HexRgb), KswordTheme::BorderHex()));
             row.colorButton->setToolTip(row.customColor.name(QColor::HexRgb).toUpper());
         }
 
@@ -1893,8 +1896,8 @@ namespace ks::window::dwmctl
                 return;
             }
             m_accentColorButton->setStyleSheet(
-                QStringLiteral("QPushButton{background:%1;border:1px solid rgba(0,0,0,0.35);border-radius:4px; }")
-                    .arg(m_accentColor.name(QColor::HexRgb)));
+                QStringLiteral("QPushButton{background:%1;border:1px solid %2;border-radius:4px; }")
+                    .arg(m_accentColor.name(QColor::HexRgb), KswordTheme::BorderHex()));
             m_accentColorButton->setToolTip(m_accentColor.name(QColor::HexRgb).toUpper());
         }
 

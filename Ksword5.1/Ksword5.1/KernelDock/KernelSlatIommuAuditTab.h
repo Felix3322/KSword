@@ -45,7 +45,6 @@ private:
     static QString hex64(std::uint64_t value);
     static QString fixedAscii(const char* text, int capacity);
 
-    QLabel* m_warningLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_summaryLabel = nullptr;
     QPushButton* m_refreshButton = nullptr;

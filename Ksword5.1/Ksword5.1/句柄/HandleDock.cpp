@@ -52,35 +52,16 @@
 namespace
 {
     // buildBlueButtonStyle 作用：
-    // - 生成项目统一蓝色按钮样式；
-    // - iconOnly=true 时使用紧凑尺寸，适合图标按钮。
+    // - 生成项目统一按钮样式，颜色全部来自动态主题角色，深浅色切换实时跟随；
+    // - iconOnly=true 时收紧内边距，适合 28x28 图标按钮。
     QString buildBlueButtonStyle(const bool iconOnly)
     {
-        const QString paddingText = iconOnly ? QStringLiteral("4px") : QStringLiteral("4px 10px");
-        return QStringLiteral(
-            "QPushButton {"
-            "  color: %1;"
-            "  background: %6;"
-            "  border: 1px solid %2;"
-            "  border-radius: 3px;"
-            "  padding: %5;"
-            "}"
-            "QPushButton:hover {"
-            "  background: %3;"
-            "  color: %7;"
-            "  border: 1px solid %3;"
-            "}"
-            "QPushButton:pressed {"
-            "  background: %4;"
-            "  color: %7;"
-            "}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, 0, -26))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
-            .arg(paddingText)
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::OnAccentHex());
+        QString buttonStyle = KswordTheme::ThemedButtonStyle();
+        if (iconOnly)
+        {
+            buttonStyle += QStringLiteral("QPushButton{padding:4px;}");
+        }
+        return buttonStyle;
     }
 
     // installReadOnlyTreeCopyMenu 作用：
@@ -623,14 +604,6 @@ void HandleDock::initializeObjectHeaderTab()
     m_objectHeaderLayout->setContentsMargins(6, 6, 6, 6);
     m_objectHeaderLayout->setSpacing(6);
 
-    // Object Header 页只做只读证据展示，不承载关闭/修改类动作。
-    QLabel* headerHintLabel = new QLabel(
-        QStringLiteral("本页展示当前选中句柄的对象头、对象类型归属、解码状态和风险标记。"),
-        m_objectHeaderPage);
-    headerHintLabel->setWordWrap(true);
-    headerHintLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    m_objectHeaderLayout->addWidget(headerHintLabel);
-
     m_handleDetailStatusLabel = new QLabel(QStringLiteral("● 请选择一个句柄查看对象头证据"), m_objectHeaderPage);
     m_handleDetailStatusLabel->setStyleSheet(
         QStringLiteral("color:%1;font-weight:600;").arg(KswordTheme::TextSecondaryHex()));
@@ -654,6 +627,10 @@ void HandleDock::initializeObjectHeaderTab()
     m_objectHeaderLayout->addWidget(m_handleDetailTable, 1);
 
     m_tabWidget->addTab(m_objectHeaderPage, QIcon(":/Icon/process_critical.svg"), QStringLiteral("Object Header"));
+    // Object Header 页只做只读证据展示，不承载关闭/修改类动作；页面职责挂到页签提示上，不再占用版面。
+    m_tabWidget->setTabToolTip(
+        m_tabWidget->indexOf(m_objectHeaderPage),
+        QStringLiteral("展示选中句柄的对象头、对象类型归属、解码状态和风险标记。"));
 }
 
 void HandleDock::initializeObjectTypeTab()

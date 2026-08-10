@@ -544,9 +544,12 @@ void KernelThreadAuditTab::applyColumnPreset(const ViewPreset preset)
 
 void KernelThreadAuditTab::updatePresetButtons()
 {
+    // 选中态前景走 palette(highlighted-text)，与 palette(highlight) 底色配对；
+    // 用户把系统强调色改成浅色时也不会出现白底白字。
     const QString activeStyle = QStringLiteral(
-        "QPushButton{background:%1;color:white;border:1px solid %1;border-radius:3px;font-weight:600;}")
-        .arg(KswordTheme::PrimaryBlueHex);
+        "QPushButton{background:%1;color:%2;border:1px solid %1;border-radius:3px;font-weight:600;}")
+        .arg(KswordTheme::PrimaryBlueHex)
+        .arg(QStringLiteral("palette(highlighted-text)"));
     const QString inactiveStyle = QStringLiteral(
         "QPushButton{background:%1;color:%2;border:1px solid %3;border-radius:3px;}")
         .arg(KswordTheme::SurfaceHex())

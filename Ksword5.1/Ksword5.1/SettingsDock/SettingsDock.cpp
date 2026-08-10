@@ -222,10 +222,20 @@ ks::settings::AppearanceSettings SettingsDock::currentAppearanceSettings() const
 void SettingsDock::changeEvent(QEvent* event)
 {
     QWidget::changeEvent(event);
-    if (event != nullptr && event->type() == QEvent::LanguageChange)
+    if (event == nullptr)
+    {
+        return;
+    }
+    if (event->type() == QEvent::LanguageChange)
     {
         updateSystemDefaultFontItemText();
         updateApplyButtonState();
+    }
+    // 跟随系统模式下深浅色由系统翻转，不经过“应用”按钮，
+    // 这里补一次重下发，避免主题按钮自身停在旧主题的快照配色上。
+    if (event->type() == QEvent::ApplicationPaletteChange && m_themeButtonGroup != nullptr)
+    {
+        updateThemeButtonStyle();
     }
 }
 
@@ -1624,7 +1634,7 @@ void SettingsDock::updateThemeColorPreview()
         QStringLiteral("QLabel{background:%1;color:%2;border:1px solid %3;border-radius:3px;padding:5px;font-weight:600;}")
         .arg(colorText)
         .arg(KswordTheme::ThemeColorName(readableTextColor))
-        .arg(KswordTheme::BorderColorHex()));
+        .arg(KswordTheme::BorderHex()));
 
     if (m_resetThemeColorButton != nullptr)
     {
@@ -1701,7 +1711,7 @@ void SettingsDock::updateMainBackgroundColorPreview()
         QStringLiteral("QLabel{background:%1;color:%2;border:1px solid %3;border-radius:3px;padding:5px;font-weight:600;}")
         .arg(colorText)
         .arg(KswordTheme::ThemeColorName(readableTextColor))
-        .arg(KswordTheme::BorderColorHex()));
+        .arg(KswordTheme::BorderHex()));
 
     if (m_resetMainBackgroundColorButton != nullptr)
     {
@@ -1922,6 +1932,11 @@ void SettingsDock::saveAndEmitFromUi(const QString& triggerReason)
 
     emit appearanceSettingsChanged(m_currentAppearanceSettings);
 
+    // appearanceSettingsChanged 是直连信号，返回时全局主题已经切换完成。
+    // SurfaceMuted/PrimaryBlueSubtle 在 palette 里没有等价物，只能在这里重取快照重下发，
+    // 否则这排主题按钮会停在切换前的旧配色上。
+    updateThemeButtonStyle();
+
     QMessageBox::information(
         this,
         ks::i18n::text(
@@ -1945,8 +1960,8 @@ void SettingsDock::updateThemeButtonStyle()
             "QToolButton:hover{"
             "  background:%3;"
             "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceAltHex())
             .arg(KswordTheme::SurfaceMutedColorHex())
         : QStringLiteral(
             "QToolButton{"
@@ -1957,7 +1972,7 @@ void SettingsDock::updateThemeButtonStyle()
             "QToolButton:hover{"
             "  background:%3;"
             "}")
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::PrimaryBlueSubtleHex())
             .arg(KswordTheme::PrimaryBlueSubtleHex());
 

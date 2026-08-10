@@ -93,7 +93,6 @@ private:
     QWidget* m_inspectionPage = nullptr; // m_inspectionPage：只读解析页容器。
     QWidget* m_editorPage = nullptr; // m_editorPage：等长字节编辑页容器。
 
-    QLabel* m_editorWarningLabel = nullptr; // m_editorWarningLabel：常驻高风险说明。
     QLabel* m_offsetLabel = nullptr; // m_offsetLabel：文件偏移字段标题。
     QLineEdit* m_offsetEdit = nullptr; // m_offsetEdit：十进制/十六进制文件偏移。
     QLabel* m_replacementLabel = nullptr; // m_replacementLabel：替换字节字段标题。

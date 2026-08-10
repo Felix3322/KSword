@@ -264,7 +264,7 @@ void KernelObjectDirectoryDeepTab::initializeUi()
     m_refreshButton->setToolTip(kernelText("kernel.object_directory.toolbar.refresh.tooltip", QStringLiteral("后台递归枚举指定 Object Manager Directory。")));
 
     m_statusLabel = new QLabel(kernelText("kernel.object_directory.status.waiting", QStringLiteral("状态：等待刷新")), this);
-    m_statusLabel->setStyleSheet(statusLabelStyle(KswordTheme::TextSecondaryColorHex()));
+    m_statusLabel->setStyleSheet(statusLabelStyle(KswordTheme::TextSecondaryHex()));
 
     toolLayout->addWidget(rootPathLabel, 0);
     toolLayout->addWidget(m_rootPathEdit, 1);
@@ -336,7 +336,7 @@ void KernelObjectDirectoryDeepTab::setRefreshRunning(const bool running)
         m_statusLabel->setText(running
             ? kernelText("kernel.object_directory.status.enumerating", QStringLiteral("状态：递归枚举中..."))
             : kernelText("kernel.object_directory.status.idle", QStringLiteral("状态：空闲")));
-        m_statusLabel->setStyleSheet(statusLabelStyle(running ? KswordTheme::InfoHex() : KswordTheme::TextSecondaryColorHex()));
+        m_statusLabel->setStyleSheet(statusLabelStyle(running ? KswordTheme::InfoHex() : KswordTheme::TextSecondaryHex()));
     }
 }
 

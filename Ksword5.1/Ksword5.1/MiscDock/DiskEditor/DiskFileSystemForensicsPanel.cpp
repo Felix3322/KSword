@@ -65,11 +65,11 @@ namespace
             "background:%2;alternate-background-color:%3;color:%4;}"
             "QHeaderView::section{border:none;border-bottom:1px solid %1;"
             "background:transparent;color:%5;padding:5px;font-weight:700;}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)));
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::PrimaryBlueHex));
         return table;
     }
 

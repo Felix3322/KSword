@@ -1,6 +1,7 @@
 #include "TableSnapshotCompare.h"
 
 #include "../Internationalization/LanguageManager.h"
+#include "../theme.h"
 
 #include <QAbstractItemModel>
 #include <QBitArray>
@@ -684,17 +685,17 @@ namespace
 
     QColor earlierOnlyColor()
     {
-        return QColor(255, 0, 0, 96);
+        return KswordTheme::WithAlpha(KswordTheme::ErrorColor(), 96);
     }
 
     QColor laterOnlyColor()
     {
-        return QColor(0, 255, 0, 96);
+        return KswordTheme::WithAlpha(KswordTheme::SuccessColor(), 96);
     }
 
     QColor changedFieldColor()
     {
-        return QColor(255, 246, 201);
+        return KswordTheme::WithAlpha(KswordTheme::WarningColor(), 96);
     }
 }
 

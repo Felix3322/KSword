@@ -56,12 +56,7 @@ namespace
 
     QString buttonStyle()
     {
-        return QStringLiteral("QPushButton{background:%1;color:%2;border-radius:3px;padding:4px 10px;}"
-                              "QPushButton:disabled{background:%3;color:%4;}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::OnAccentHex())
-            .arg(KswordTheme::SurfaceMutedColorHex())
-            .arg(KswordTheme::TextDisabledColorHex());
+        return KswordTheme::ThemedButtonStyle();
     }
 
     QString inputStyle()
@@ -73,13 +68,18 @@ namespace
             + KswordTheme::ThemedComboBoxStyle();
     }
 
+    // tableStyle 作用：
+    // - 输入：无；
+    // - 处理：只用 palette 角色，样式在构造期下发一次也能跟着主题走；
+    //   换成 *ColorHex() 会把当时的主题色定死，深色模式下表格会停在白底。
+    // - 返回：可直接传给 QTableWidget::setStyleSheet 的样式文本。
     QString tableStyle()
     {
         return QStringLiteral("QTableWidget{background:%1;color:%2;alternate-background-color:%3;gridline-color:%4;}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::BorderColorHex());
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(KswordTheme::BorderHex());
     }
 
     QTableWidgetItem* readOnlyItem(const QString& textValue)

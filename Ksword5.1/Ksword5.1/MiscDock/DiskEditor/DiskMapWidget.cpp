@@ -193,7 +193,7 @@ namespace ks::misc
                 ? sizeText
                 : QStringLiteral("%1\n%2").arg(labelText, sizeText);
 
-            painter.setPen(Qt::white);
+            painter.setPen(KswordTheme::MaximumContrastMonochromeColor(baseColor));
             QFont segmentFont = painter.font();
             segmentFont.setBold(true);
             painter.setFont(segmentFont);

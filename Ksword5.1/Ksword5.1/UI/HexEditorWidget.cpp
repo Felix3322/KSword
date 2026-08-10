@@ -34,13 +34,13 @@ namespace ksword::ui::hex_editor_internal
             "  background:%6;"
             "  color:%7;"
             "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::PrimaryBlueHoverHex)
+            .arg(KswordTheme::PrimaryBluePressedHex)
+            .arg(QStringLiteral("palette(highlighted-text)"));
     }
 
     // buildInputStyle：
@@ -58,10 +58,10 @@ namespace ksword::ui::hex_editor_internal
             "QLineEdit:focus {"
             "  border:1px solid %4;"
             "}")
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::PrimaryBlueHex)
             + KswordTheme::ThemedComboBoxStyle();
     }
 
@@ -77,8 +77,8 @@ namespace ksword::ui::hex_editor_internal
             "  padding:4px;"
             "  font-weight:600;"
             "}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::SurfaceColorHex());
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::SurfaceHex());
     }
 
     // buildMenuStyle：
@@ -105,11 +105,11 @@ namespace ksword::ui::hex_editor_internal
             "  background:%3;"
             "  margin:4px 8px;"
             "}")
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
             .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::OnAccentDynamicHex());
     }
 
     // buildMatchColor：

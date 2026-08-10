@@ -1507,10 +1507,12 @@ void RegistryDock::refreshRegistryDriverModeIndicator()
     }
 
     m_driverRegistryModeLabel->setText(QStringLiteral("R0读写: 关闭"));
+    // 关闭态没有语义色可言，边框/文字一律走动态 palette，胶囊本身不再自带底色。
     m_driverRegistryModeLabel->setStyleSheet(QStringLiteral(
         "QLabel{border:1px solid %1;border-radius:3px;"
-        "background:%2;color:%1;padding:2px 6px;font-weight:600;}"
-    ).arg(KswordTheme::BorderColorHex())
+        "background:transparent;/* %3 */color:%2;padding:2px 6px;font-weight:600;}"
+    ).arg(KswordTheme::BorderHex())
+     .arg(KswordTheme::TextSecondaryHex())
      .arg(KswordTheme::RgbaColorName(KswordTheme::SurfaceAltColor(), 36)));
     m_driverRegistryModeLabel->setToolTip(QStringLiteral("驱动不可用，当前使用标准注册表模式。"));
 }

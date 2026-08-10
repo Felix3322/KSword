@@ -67,9 +67,9 @@ namespace
     {
         QWidget* separatorWidget = new QWidget(parentWidget);
         separatorWidget->setFixedSize(1, 20);
+        // 分隔线用动态 token 取色，主题切换时无需重新下发样式。
         separatorWidget->setStyleSheet(
-            QStringLiteral("background-color:%1;")
-                .arg(KswordTheme::RgbaColorName(KswordTheme::TextSecondaryColor(), 120)));
+            QStringLiteral("background-color:%1;").arg(KswordTheme::BorderHex()));
         return separatorWidget;
     }
 

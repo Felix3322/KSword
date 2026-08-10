@@ -1,6 +1,7 @@
 #include "StorageControllerResearchDialog.h"
 
 #include "../../SettingsDock/AppearanceSettings.h"
+#include "../../theme.h"
 #include <QDateTime>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -45,8 +46,12 @@ namespace ks::misc
                 "复读不是硬件原子操作，不能消除设备并发写、固件缓存或掉电风险。"),
             this);
         m_riskLabel->setWordWrap(true);
-        m_riskLabel->setStyleSheet(QStringLiteral(
-            "QLabel{padding:10px;border:1px solid #D05050;background:#351D1D;color:#FFB0B0;font-weight:600;}"));
+        // 风险横幅取主题语义色：边框/底色走错误语义，文字走正文色，浅色主题下不再是突兀的暗红块。
+        m_riskLabel->setStyleSheet(
+            QStringLiteral("QLabel{padding:10px;border:1px solid %1;background:%2;color:%3;font-weight:600;}")
+                .arg(KswordTheme::ErrorHex())
+                .arg(KswordTheme::ThemeColorName(KswordTheme::ErrorBackgroundColor()))
+                .arg(KswordTheme::TextPrimaryColorHex()));
         root->addWidget(m_riskLabel);
 
         QGroupBox* stateGroup = new QGroupBox(QStringLiteral("资源与一致性"), this);

@@ -62,6 +62,19 @@ namespace
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         return item;
     }
+
+    // setHeaderTip 作用：
+    // - 输入 table/column/tipText：目标表格、列序号和悬停说明；
+    // - 处理：把判定口径挂到它解释的那一列表头上；
+    // - 返回：无，表头项缺失时静默跳过。
+    void setHeaderTip(QTableWidget* table, const int column, const QString& tipText)
+    {
+        QTableWidgetItem* headerItem = table->horizontalHeaderItem(column);
+        if (headerItem != nullptr)
+        {
+            headerItem->setToolTip(tipText);
+        }
+    }
 }
 
 KernelSlatIommuAuditTab::KernelSlatIommuAuditTab(QWidget* parent)
@@ -89,31 +102,25 @@ void KernelSlatIommuAuditTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    m_warningLabel = new QLabel(
-        kernelText(
-            "kernel.slat_iommu.warning",
-            QStringLiteral("⚠ 只读取证边界：本页比较来宾可见的内核虚拟视图与物理别名，并解析 CPUID、DMAR/IVRS 和公开 IOMMU 接口。外层 Hypervisor 可用 EPT/NPT 对执行和读取提供不同视图，因此“未发现异常”不等于已证明不存在 Hook。可选 MMIO 读取不会写寄存器，但错误固件地址仍可能被平台拒绝或触发硬件异常。")),
-        this);
-    m_warningLabel->setWordWrap(true);
-    m_warningLabel->setStyleSheet(QStringLiteral(
-        "QLabel{padding:8px;border:1px solid %1;border-radius:4px;"
-        "background:%2;color:%3;font-weight:600;}")
-        .arg(KswordTheme::WarningHex())
-        .arg(KswordTheme::ThemeColorName(
-            KswordTheme::WarningBackgroundColor()))
-        .arg(KswordTheme::TextPrimaryHex()));
-    rootLayout->addWidget(m_warningLabel);
-
     auto* toolbar = new QHBoxLayout();
     m_refreshButton = new QPushButton(
         kernelText("kernel.slat_iommu.refresh", QStringLiteral("刷新取证")),
         this);
     m_refreshButton->setStyleSheet(KswordTheme::ThemedButtonStyle());
+    // 取证边界跟着触发它的按钮走，不再在页首铺一段常驻说明。
+    m_refreshButton->setToolTip(
+        kernelText(
+            "kernel.slat_iommu.refresh.tooltip",
+            QStringLiteral("只读取证：比较来宾可见的内核虚拟视图与物理别名，并解析 CPUID、DMAR/IVRS 和公开 IOMMU 接口。")));
     m_includeMmioCheck = new QCheckBox(
         kernelText(
             "kernel.slat_iommu.include_mmio",
             QStringLiteral("读取 IOMMU MMIO 状态（只读，可能被固件/平台拒绝）")),
         this);
+    m_includeMmioCheck->setToolTip(
+        kernelText(
+            "kernel.slat_iommu.include_mmio.tooltip",
+            QStringLiteral("只读寄存器、不写入，但错误的固件地址仍可能被平台拒绝或触发硬件异常。")));
     m_statusLabel = new QLabel(
         kernelText(
             "kernel.slat_iommu.status.waiting",
@@ -151,6 +158,13 @@ void KernelSlatIommuAuditTab::initializeUi()
         kernelText("kernel.slat_iommu.probe.verdict", QStringLiteral("交叉视图")),
         QStringLiteral("NTSTATUS")
     });
+    // 判定口径挂在它解释的那一列表头上，比页首堆一段总说明更容易对上号。
+    setHeaderTip(
+        m_probeTable,
+        ProbeColumnVerdict,
+        kernelText(
+            "kernel.slat_iommu.probe.verdict.tooltip",
+            QStringLiteral("外层 Hypervisor 可用 EPT/NPT 对执行和读取提供不同视图，因此“未发现异常”不等于已证明不存在 Hook。")));
     m_probeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_probeTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_probeTable->setAlternatingRowColors(true);

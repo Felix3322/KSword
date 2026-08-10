@@ -105,11 +105,11 @@ namespace
             "QToolButton:hover { border-color:%3; background:%4; }"
             "QToolButton:checked { color:%5; background:%3; border-color:%3; }"
             "QToolButton:disabled { color:%6; border-color:%2; background:transparent; }")
-            .arg(KswordTheme::TextPrimaryColorHex())
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::SurfaceAltColorHex())
-            .arg(KswordTheme::OnAccentHex())
+            .arg(KswordTheme::TextPrimaryHex())
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::SurfaceAltHex())
+            .arg(QStringLiteral("palette(highlighted-text)"))
             .arg(KswordTheme::TextSecondaryHex());
     }
 
@@ -4043,13 +4043,6 @@ void ProcessDetailWindow::initializeKernelObjectTab()
     m_kernelObjectLayout->setContentsMargins(6, 6, 6, 6);
     m_kernelObjectLayout->setSpacing(8);
 
-    QLabel* hintLabel = new QLabel(
-        QStringLiteral("查看当前进程的内核对象、字段状态和内存映射信息。"),
-        m_kernelObjectTab);
-    hintLabel->setWordWrap(true);
-    hintLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    m_kernelObjectLayout->addWidget(hintLabel);
-
     QGroupBox* summaryGroup = new QGroupBox(QStringLiteral("R0 扩展摘要"), m_kernelObjectTab);
     QFormLayout* summaryFormLayout = new QFormLayout(summaryGroup);
     summaryFormLayout->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -4521,7 +4514,8 @@ void ProcessDetailWindow::initializeKernelCallbackTab()
         QStringLiteral("刷新内核回调表"),
         m_kernelCallbackTab);
     m_refreshKernelCallbackButton->setToolTip(QStringLiteral(
-        "异步读取 PEB.KernelCallbackTable，并核对回调地址所属模块与内存保护属性。"));
+        "异步读取 PEB.KernelCallbackTable，并核对回调地址所属模块与内存保护属性。\n"
+        "读取来源为 NativePEB 或 Wow64PEB 中的用户态内核回调表。"));
     m_refreshKernelCallbackButton->setStyleSheet(buildBlueButtonStyle());
     topBarLayout->addWidget(m_refreshKernelCallbackButton);
 
@@ -4529,14 +4523,6 @@ void ProcessDetailWindow::initializeKernelCallbackTab()
     m_kernelCallbackStatusLabel->setStyleSheet(buildStateLabelStyle(statusSecondaryColor(), 600));
     topBarLayout->addWidget(m_kernelCallbackStatusLabel, 1);
     m_kernelCallbackLayout->addLayout(topBarLayout);
-
-    auto* descriptionLabel = new QLabel(
-        QStringLiteral(
-            "读取 NativePEB 或 Wow64PEB 中的用户态内核回调表。非模块可执行地址、不可执行地址和读取失败项会标为异常。"),
-        m_kernelCallbackTab);
-    descriptionLabel->setWordWrap(true);
-    descriptionLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    m_kernelCallbackLayout->addWidget(descriptionLabel);
 
     m_kernelCallbackTable = new ks::ui::VisibleTableWidget(m_kernelCallbackTab);
     m_kernelCallbackTable->setColumnCount(7);
@@ -4548,6 +4534,11 @@ void ProcessDetailWindow::initializeKernelCallbackTab()
         << QStringLiteral("模块偏移")
         << QStringLiteral("保护属性")
         << QStringLiteral("状态"));
+    if (QTableWidgetItem* const callbackStateHeaderItem = m_kernelCallbackTable->horizontalHeaderItem(6))
+    {
+        callbackStateHeaderItem->setToolTip(QStringLiteral(
+            "非模块可执行地址、不可执行地址和读取失败项会标为异常。"));
+    }
     m_kernelCallbackTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_kernelCallbackTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_kernelCallbackTable->setSelectionMode(QAbstractItemView::SingleSelection);

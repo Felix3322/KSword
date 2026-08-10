@@ -48,13 +48,6 @@ void ContextMenuCleanerTab::initializeUi()
     m_rootLayout->setContentsMargins(6, 6, 6, 6);
     m_rootLayout->setSpacing(6);
 
-    m_hintLabel = new QLabel(
-        QStringLiteral("提示：本页统一管理右键菜单、URL 绑定、文件打开方式和资源管理器主页第三方程序。URL 绑定删除前会自动备份并可一键恢复；其他分类不会自动备份。操作前请确认来源，更改后通常需要重启 Explorer 或相关程序才会完全刷新。"),
-        this);
-    m_hintLabel->setWordWrap(true);
-    m_hintLabel->setStyleSheet(QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    m_rootLayout->addWidget(m_hintLabel);
-
     m_areaTabWidget = new QTabWidget(this);
     m_areaTabWidget->setObjectName(QStringLiteral("ksContextMenuCleanerAreaTabs"));
     m_rootLayout->addWidget(m_areaTabWidget, 1);
@@ -120,7 +113,11 @@ void ContextMenuCleanerTab::createAreaPage(const MenuArea area)
     areaWidgets->refreshButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_refresh.svg")), QStringLiteral("刷新"), areaWidgets->toolbarWidget);
     areaWidgets->refreshButton->setToolTip(QStringLiteral("重新枚举当前分类的 Shell 关联注册表项目"));
     areaWidgets->deleteButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_terminate.svg")), QStringLiteral("删除选中"), areaWidgets->toolbarWidget);
-    areaWidgets->deleteButton->setToolTip(QStringLiteral("删除表格选中项对应的注册表子树或值"));
+    // 备份口径按分类不同，挂在删除按钮上比页首一段通用说明更贴近实际动作。
+    areaWidgets->deleteButton->setToolTip(
+        area == MenuArea::UrlBinding
+            ? QStringLiteral("删除表格选中项对应的注册表子树或值。本分类删除前会自动备份，可用「恢复上次删除」还原；更改后通常需要重启 Explorer 或相关程序才会完全刷新。")
+            : QStringLiteral("删除表格选中项对应的注册表子树或值。本分类不会自动备份；更改后通常需要重启 Explorer 或相关程序才会完全刷新。"));
     if (area == MenuArea::UrlBinding)
     {
         areaWidgets->restoreButton = new QPushButton(

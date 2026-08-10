@@ -241,10 +241,12 @@ void BootEditorTab::initializeToolbar()
         elevated
         ? QStringLiteral("权限：管理员（可编辑）")
         : QStringLiteral("权限：非管理员（多数写操作会失败）"));
+    // 管理员态改用 palette(highlight) 动态取色，主题切换时自动跟随；
+    // 非管理员态保留语义警告橙，它本来就该在深浅色下都是同一个橙。
     m_adminHintLabel->setStyleSheet(
         elevated
         ? QStringLiteral("color:%1;font-weight:600;")
-            .arg(KswordTheme::InfoColor().name(QColor::HexRgb))
+            .arg(KswordTheme::PrimaryBlueHex)
         : QStringLiteral("color:%1;font-weight:600;")
             .arg(KswordTheme::WarningColor().name(QColor::HexRgb)));
     m_toolbarLayout->addWidget(m_adminHintLabel);

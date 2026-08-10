@@ -219,10 +219,10 @@ namespace
             "}"
             "QLineEdit:focus,QPlainTextEdit:focus,QTextEdit:focus{"
             "  border:1px solid %1;}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex())
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex())
             + KswordTheme::ThemedComboBoxStyle();
     }
 

@@ -645,27 +645,17 @@ void DriverDock::initializeDebugOutputTab()
     m_debugOutputLayout->setContentsMargins(4, 4, 4, 4);
     m_debugOutputLayout->setSpacing(6);
 
-    QLabel* hintLabel = new QLabel(
-        driverText(
-            "driver.debug.hint",
-            QStringLiteral("显示内核调试输出；仅展示当前筛选器允许的消息。")),
-        m_debugOutputPage);
-    hintLabel->setWordWrap(true);
-    ks::i18n::LanguageManager::instance().bindText(
-        hintLabel,
-        QStringLiteral("driver.debug.hint"),
-        QStringLiteral("说明：此页通过 KswordARK R0 回调捕获 DbgPrint/DbgPrintEx/KdPrintEx。"
-                       "仅显示通过当前内核调试筛选器的消息。"));
-    m_debugOutputLayout->addWidget(hintLabel);
-
     m_debugToolLayout = new QHBoxLayout();
     m_debugToolLayout->setContentsMargins(0, 0, 0, 0);
     m_debugToolLayout->setSpacing(6);
 
     m_startCaptureButton = new QPushButton(m_debugOutputPage);
     m_startCaptureButton->setIcon(QIcon(":/Icon/process_start.svg"));
+    // 捕获来源与筛选口径并入启动按钮，页首不再常驻一行说明。
     m_startCaptureButton->setToolTip(
-        driverText("driver.debug.start.tooltip", QStringLiteral("启动调试输出捕获")));
+        driverText(
+            "driver.debug.start.tooltip",
+            QStringLiteral("启动调试输出捕获。经 KswordARK R0 回调捕获 DbgPrint/DbgPrintEx/KdPrintEx，只显示通过当前内核调试筛选器的消息。")));
     m_startCaptureButton->setFixedWidth(34);
 
     m_stopCaptureButton = new QPushButton(m_debugOutputPage);

@@ -47,7 +47,6 @@ private:
     static QString hex64(std::uint64_t value);
     static QString hex32(std::uint32_t value);
 
-    QLabel* m_warningLabel = nullptr;
     QLabel* m_verdictLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLineEdit* m_moduleFilterEdit = nullptr;

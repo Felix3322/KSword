@@ -100,10 +100,10 @@ QString ProcessTraceMonitorWidget::blueInputStyle()
         "QTableWidget{border:1px solid %2;border-radius:3px;background:transparent;background-color:transparent;color:%4;padding:2px 6px;gridline-color:%2;alternate-background-color:transparent;}"
         "QTableWidget::viewport{background:transparent;background-color:transparent;}"
         "QLineEdit:focus{border:1px solid %1;}")
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-        .arg(KswordTheme::BorderColorHex())
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex())
+        .arg(KswordTheme::PrimaryBlueHex)
+        .arg(KswordTheme::BorderHex())
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::TextPrimaryHex())
         + KswordTheme::ThemedComboBoxStyle();
 }
 
@@ -111,9 +111,9 @@ QString ProcessTraceMonitorWidget::blueHeaderStyle()
 {
     return QStringLiteral(
         "QHeaderView::section{color:%1;background:transparent;/* %2 */border:1px solid %3;padding:4px;font-weight:600;}")
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::BorderColorHex());
+        .arg(KswordTheme::PrimaryBlueHex)
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::BorderHex());
 }
 
 QString ProcessTraceMonitorWidget::collapsePanelStyle()
@@ -135,9 +135,9 @@ QString ProcessTraceMonitorWidget::collapsePanelStyle()
         "  color:%2;"
         "  border:none;"
         "}")
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex())
-        .arg(KswordTheme::BorderColorHex());
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::TextPrimaryHex())
+        .arg(KswordTheme::BorderHex());
 }
 
 QString ProcessTraceMonitorWidget::collapseHeaderButtonStyle()
@@ -165,9 +165,9 @@ QString ProcessTraceMonitorWidget::collapseHeaderButtonStyle()
         "  color:%2;"
         "  border-color:%5;"
         "}")
-        .arg(KswordTheme::SurfaceAltColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex())
-        .arg(KswordTheme::BorderColorHex())
+        .arg(KswordTheme::SurfaceAltHex())
+        .arg(KswordTheme::TextPrimaryHex())
+        .arg(KswordTheme::BorderHex())
         .arg(KswordTheme::PrimaryBlueSubtleHex())
         .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue));
 }
@@ -240,7 +240,7 @@ QString ProcessTraceMonitorWidget::monitorErrorColorHex()
 
 QString ProcessTraceMonitorWidget::monitorIdleColorHex()
 {
-    return KswordTheme::TextSecondaryColorHex();
+    return KswordTheme::TextSecondaryHex();
 }
 
 QString ProcessTraceMonitorWidget::providerTypeFromName(const QString& providerNameText)

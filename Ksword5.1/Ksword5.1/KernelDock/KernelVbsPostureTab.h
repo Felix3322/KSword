@@ -68,7 +68,6 @@ private:
     static QString ntStatusText(long status);
     static QString fixedWide(const wchar_t* text, std::size_t capacity);
 
-    QLabel* m_warningLabel = nullptr;
     QLabel* m_verdictLabel = nullptr;
     QLabel* m_statusLabel = nullptr;
     QLabel* m_downgradeLabel = nullptr;

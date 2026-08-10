@@ -192,10 +192,9 @@ void HexEditorWidget::initializeUi()
             "  background:transparent; /* %1 */"
             "  border:none;"
             "}")
-        .arg(KswordTheme::SurfaceColorHex())
-        .arg(KswordTheme::SurfaceAltColorHex())
-        .arg(KswordTheme::TextPrimaryColorHex())
-        .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue)));
+        .arg(KswordTheme::SurfaceHex())
+        .arg(KswordTheme::SurfaceAltHex())
+        .arg(KswordTheme::TextPrimaryHex()));
 
     // 表格字体加大并固定等宽，便于编辑十六进制内容。
     QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);

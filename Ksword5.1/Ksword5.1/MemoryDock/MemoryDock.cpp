@@ -25,12 +25,12 @@ namespace ksword::memory_dock_internal
             "  background: %4;"
             "  color: %6;"
             "}")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, 0, -26))
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue, -14, -40))
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::OnAccentHex());
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::PrimaryBlueBorderHex)
+            .arg(KswordTheme::PrimaryBlueHoverHex)
+            .arg(KswordTheme::PrimaryBluePressedHex)
+            .arg(KswordTheme::SurfaceHex())
+            .arg(QStringLiteral("palette(highlighted-text)"));
     }
 
     QString buildBlueComboStyle()

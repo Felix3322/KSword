@@ -511,23 +511,14 @@ namespace ks::misc
 
         ks::i18n::LanguageManager& languageManager = ks::i18n::LanguageManager::instance();
 
-        QLabel* const introLabel = new QLabel(
-            QStringLiteral("量化本机的窗口渲染与 DWM 合成开销。所有测量都在 UI 线程执行——被测对象就是 UI 线程本身，"
-                "因此每项测试运行时界面会短暂无响应，属于预期行为。结论随 Windows 版本和当前外观设置变化，此页只报告实测值。"),
-            this);
-        introLabel->setWordWrap(true);
-        languageManager.bindText(
-            introLabel,
-            QStringLiteral("misc.render_benchmark.intro"),
-            QStringLiteral("量化本机的窗口渲染与 DWM 合成开销。所有测量都在 UI 线程执行——被测对象就是 UI 线程本身，"
-                "因此每项测试运行时界面会短暂无响应，属于预期行为。结论随 Windows 版本和当前外观设置变化，此页只报告实测值。"));
-        rootLayout->addWidget(introLabel);
-
         // ===== 顶部操作条 =====
         QHBoxLayout* const topActionLayout = new QHBoxLayout();
         topActionLayout->setSpacing(6);
 
         m_runAllButton = new QPushButton(QStringLiteral("运行全部测试"), this);
+        // 被测对象就是 UI 线程本身，这条必须让用户在点之前看到，否则会把预期内的卡顿当成崩溃。
+        m_runAllButton->setToolTip(
+            QStringLiteral("所有测量都在 UI 线程执行，每项测试运行时界面会短暂无响应，属于预期行为。结论随 Windows 版本和当前外观设置变化，此页只报告实测值。"));
         languageManager.bindText(
             m_runAllButton,
             QStringLiteral("misc.render_benchmark.run_all"),

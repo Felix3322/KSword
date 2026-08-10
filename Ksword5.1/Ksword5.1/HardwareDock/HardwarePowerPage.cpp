@@ -353,19 +353,12 @@ void HardwarePowerPage::initializeUi()
         titleLabel,
         QStringLiteral("hardware.power.title"),
         QStringLiteral("CPU 电源与性能调节"));
+    // 调节口径原为标题下的常驻说明，改挂标题 tooltip，需要时悬停可见。
+    language.bindToolTip(
+        titleLabel,
+        QStringLiteral("hardware.power.title.tooltip"),
+        QStringLiteral("R0 调节仅写入已探测的 Intel RAPL/HWP/Turbo/请求倍频白名单字段，不绕过 BIOS/微码锁，也不提供任意 MSR 写入。"));
     rootLayout->addWidget(titleLabel, 0);
-
-    auto* scopeLabel = new QLabel(
-        QStringLiteral("Windows 电源方案使用系统 API；R0 调节仅支持已探测的 Intel RAPL/HWP/Turbo/请求倍频白名单字段。不会绕过 BIOS/微码锁，也不提供任意 MSR 写入。"),
-        this);
-    scopeLabel->setWordWrap(true);
-    scopeLabel->setStyleSheet(
-        QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    language.bindText(
-        scopeLabel,
-        QStringLiteral("hardware.power.scope"),
-        QStringLiteral("Windows 电源方案使用系统 API；R0 调节仅支持已探测的 Intel RAPL/HWP/Turbo/请求倍频白名单字段。不会绕过 BIOS/微码锁，也不提供任意 MSR 写入。"));
-    rootLayout->addWidget(scopeLabel, 0);
 
     m_statusLabel = new QLabel(
         powerText(
@@ -475,8 +468,9 @@ void HardwarePowerPage::initializeUi()
     m_raisePowerLimitsButton = new QPushButton(QStringLiteral("解除软件功耗墙（平台上限）"), raplGroup);
     language.bindText(m_applyPowerLimitsButton, QStringLiteral("hardware.power.rapl.apply"), QStringLiteral("应用 PL1 / PL2"));
     language.bindText(m_raisePowerLimitsButton, QStringLiteral("hardware.power.rapl.raise"), QStringLiteral("解除软件功耗墙（平台上限）"));
+    // 写入边界并入这个按钮：值会不会被别人改回去，是按下去之前该知道的事。
     m_applyPowerLimitsButton->setToolTip(
-        QStringLiteral("把上面填写的 PL1（长时）/PL2（短时）功耗上限写入 CPU，单位瓦"));
+        QStringLiteral("把上面填写的 PL1（长时）/PL2（短时）功耗上限写入 CPU，单位瓦。MSR lock 置位后本页不会尝试清除；固件、Windows 电源管理或其他调校工具可能随时重写这些值。AMD 型号相关 SMU/PBO 暂不写入。"));
     m_raisePowerLimitsButton->setToolTip(
         QStringLiteral("把功耗上限拉到平台允许的最高值，相当于解除软件功耗限制；可能升温降频，请谨慎使用"));
     raplLayout->addWidget(pl1Label, 0, 0);
@@ -586,17 +580,6 @@ void HardwarePowerPage::initializeUi()
         QStringLiteral("注意：提高功耗/倍率可能导致过热、降频、数据错误、死机或硬件寿命下降；请先保存工作并准备好恢复方案。"));
     contentLayout->addWidget(riskNoticeLabel, 0);
 
-    auto* boundaryLabel = new QLabel(
-        QStringLiteral("边界：MSR lock 置位后本页不会尝试清除；固件、Windows 电源管理或其他调校工具可能随时重写这些值。AMD 型号相关 SMU/PBO 暂不写入。"),
-        contentWidget);
-    boundaryLabel->setWordWrap(true);
-    boundaryLabel->setStyleSheet(
-        QStringLiteral("color:%1;").arg(KswordTheme::TextSecondaryHex()));
-    language.bindText(
-        boundaryLabel,
-        QStringLiteral("hardware.power.boundary"),
-        QStringLiteral("边界：MSR lock 置位后本页不会尝试清除；固件、Windows 电源管理或其他调校工具可能随时重写这些值。AMD 型号相关 SMU/PBO 暂不写入。"));
-    contentLayout->addWidget(boundaryLabel, 0);
     contentLayout->addStretch(1);
 
     scrollArea->setWidget(contentWidget);

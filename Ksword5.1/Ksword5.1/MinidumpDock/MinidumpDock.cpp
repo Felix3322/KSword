@@ -58,8 +58,8 @@ namespace
 {
     // dumpInputStyle / dumpButtonStyle 作用：
     // - 给本页的输入框与按钮套上与其它 Dock 一致的主题外观；
-    // - 颜色一律取自 KswordTheme token，不写死任何色值，
-    //   这样主题切换与自定义强调色能同步生效。
+    // - 颜色一律取自 KswordTheme 的动态 token（展开为 palette(...) 字面量），
+    //   由 Qt 在每次绘制时按控件当前调色板求值，主题切换能同步生效。
     QString dumpInputStyle()
     {
         return QStringLiteral(
@@ -71,10 +71,10 @@ namespace
             "  padding:2px 6px;"
             "}"
             "QLineEdit:focus{ border:1px solid %1; }")
-            .arg(KswordTheme::AccentHex(KswordTheme::AccentRole::Blue))
-            .arg(KswordTheme::BorderColorHex())
-            .arg(KswordTheme::SurfaceColorHex())
-            .arg(KswordTheme::TextPrimaryColorHex());
+            .arg(KswordTheme::PrimaryBlueHex)
+            .arg(KswordTheme::BorderHex())
+            .arg(KswordTheme::SurfaceHex())
+            .arg(KswordTheme::TextPrimaryHex());
     }
 
     QString dumpButtonStyle()

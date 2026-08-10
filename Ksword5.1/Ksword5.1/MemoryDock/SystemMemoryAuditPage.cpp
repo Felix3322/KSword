@@ -589,7 +589,7 @@ void SystemMemoryAuditPage::initializeUi()
     {
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         label->setStyleSheet(QStringLiteral("font-weight: 600; padding: 4px 8px; border: 1px solid %1;")
-            .arg(KswordTheme::BorderColorHex()));
+            .arg(KswordTheme::BorderHex()));
     }
     summaryLayout->addWidget(m_installedLabel, 0, 0);
     summaryLayout->addWidget(m_totalLabel, 0, 1);

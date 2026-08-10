@@ -4814,6 +4814,16 @@ MainWindow::MainWindow(
     // - 外观系统。
     // 提前读取一次外观配置，便于在 initDockWidgets 阶段确定启动默认页签的预加载策略。
     m_currentAppearanceSettings = ks::settings::loadAppearanceSettings();
+
+    // 三个主题种子必须早于任何页面构造，不能等到下面的 initAppearanceSettings：
+    // 大量页面在构造期就把 KswordTheme::*ColorHex() 求值成固定色串进自己的 QSS，
+    // 而控件自身的 setStyleSheet 压得过之后重建的全局 QSS。种子设晚了，
+    // 启动即预加载的页面（如启动默认页所在的 Dock）会永久停在浅色/默认强调色上。
+    // 这里只写种子，palette 与全局样式块仍由 initAppearanceSettings 统一下发。
+    KswordTheme::SetDarkModeEnabled(isDarkModeEffective(m_currentAppearanceSettings));
+    KswordTheme::SetPrimaryAccentColor(m_currentAppearanceSettings.customThemeColor);
+    KswordTheme::SetMainBackgroundColor(m_currentAppearanceSettings.customMainBackgroundColor);
+
     reportStartupProgress(
         32,
         QStringLiteral("main.startup.progress.main_window_framework"),

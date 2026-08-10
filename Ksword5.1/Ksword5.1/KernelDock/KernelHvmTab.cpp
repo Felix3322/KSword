@@ -85,42 +85,10 @@ void KernelHvmTab::initializeUi()
     rootLayout->setContentsMargins(6, 6, 6, 6);
     rootLayout->setSpacing(6);
 
-    QString warningText = kernelText(
-        "kernel.hvm.warning",
-        QStringLiteral(
-            "⚠ 内核虚拟化实验后端：VMX/EPT 操作可能因异常 VM-exit、错误 MTRR "
-            "类型、EPT misconfiguration、固件或其它 VMM 冲突造成系统不稳定、"
-            "蓝屏或必须重启。EPT 严格规则只是取证 tripwire：命中后记录并"
-            "去虚拟化，不注入异常，原访问仍可能在同一 RIP 原生重试并成功。"
-            "当前可卸载驱动因缺少完整电源转换/卸载所有权而硬禁用驻留 START。"
-            "危险确认可按全局偏好减少重复弹窗，但驱动硬门控、确认令牌、强制"
-            "标志、目标复核和审计始终保留。"));
-    if (m_featureArea == FeatureArea::NestedVmx)
-    {
-        warningText += kernelText(
-            "kernel.hvm.warning.nested_partial",
-            QStringLiteral(
-                "\nNested VMX 当前仅为实验性 partial 指令分派：vmcs12/vmcs02、"
-                "L2 退出反射和 shadow EPT 尚未完整，因此不会声称或允许成功运行 L2。"));
-    }
-    else if (m_featureArea == FeatureArea::Evmcs)
-    {
-        warningText += kernelText(
-            "kernel.hvm.warning.evmcs_partial",
-            QStringLiteral(
-                "\nHyper-V eVMCS 当前仅做 TLFS 能力、根/来宾分区与 VP-assist "
-                "所有权检查；未接管 VP-assist 页面和 clean fields，不会标为 active。"));
-    }
-    m_warningLabel = new QLabel(warningText, this);
-    m_warningLabel->setWordWrap(true);
-    m_warningLabel->setStyleSheet(QStringLiteral(
-        "QLabel{padding:8px;border:1px solid %1;border-radius:4px;"
-        "background:%2;color:%3;font-weight:600;}")
-        .arg(KswordTheme::WarningHex())
-        .arg(KswordTheme::ThemeColorName(
-            KswordTheme::WarningBackgroundColor()))
-        .arg(KswordTheme::TextPrimaryHex()));
-    rootLayout->addWidget(m_warningLabel);
+    // 危险口径不占版面：跟着真正触发硬件操作的按钮走，点击后的确认框里还有完整版。
+    const QString hazardTip = kernelText(
+        "kernel.hvm.hazard.tooltip",
+        QStringLiteral("VMX/EPT 操作可能因异常 VM-exit、错误 MTRR 类型、EPT misconfiguration 或与其它 VMM 冲突导致系统不稳定甚至蓝屏。"));
 
     auto* toolbar = new QHBoxLayout();
     m_refreshButton = new QPushButton(
@@ -155,15 +123,18 @@ void KernelHvmTab::initializeUi()
     m_prepareButton->setToolTip(
         kernelText(
             "kernel.hvm.prepare.tooltip",
-            QStringLiteral("为硬件虚拟化分配所需内存与页表结构，是启动来宾前的准备步骤")));
+            QStringLiteral("为硬件虚拟化分配所需内存与页表结构，是启动来宾前的准备步骤"))
+        + QLatin1Char('\n') + hazardTip);
     m_selfTestButton->setToolTip(
         kernelText(
             "kernel.hvm.self_test.tooltip",
-            QStringLiteral("逐个 CPU 核心测试虚拟化功能是否可以正常开启")));
+            QStringLiteral("逐个 CPU 核心测试虚拟化功能是否可以正常开启"))
+        + QLatin1Char('\n') + hazardTip);
     m_launchButton->setToolTip(
         kernelText(
             "kernel.hvm.launch.tooltip",
-            QStringLiteral("启动一个一次性的虚拟机来宾用于验证，运行后立即退出")));
+            QStringLiteral("启动一个一次性的虚拟机来宾用于验证，运行后立即退出"))
+        + QLatin1Char('\n') + hazardTip);
     m_teardownButton->setToolTip(
         kernelText(
             "kernel.hvm.teardown.tooltip",
@@ -171,7 +142,11 @@ void KernelHvmTab::initializeUi()
     m_startResidentButton->setToolTip(
         kernelText(
             "kernel.hvm.resident.start.tooltip",
-            QStringLiteral("启动常驻的虚拟机监控器，持续运行以便监控（会影响系统运行状态，请谨慎使用）")));
+            QStringLiteral("启动常驻的虚拟机监控器，持续运行以便监控（会影响系统运行状态，请谨慎使用）"))
+        + QLatin1Char('\n')
+        + kernelText(
+            "kernel.hvm.resident.start.gate_tooltip",
+            QStringLiteral("当前可卸载驱动缺少完整电源转换与卸载所有权，驻留启动被硬禁用，关闭危险确认也无法绕过。")));
     m_stopResidentButton->setToolTip(
         kernelText(
             "kernel.hvm.resident.stop.tooltip",
@@ -183,6 +158,10 @@ void KernelHvmTab::initializeUi()
             kernelText(
                 "kernel.hvm.ept.actions",
                 QStringLiteral("EPT 规则与事件")));
+        m_featureActionButton->setToolTip(
+            kernelText(
+                "kernel.hvm.ept.actions.tooltip",
+                QStringLiteral("EPT 严格规则只是取证 tripwire：命中后记录并去虚拟化，不注入异常，原访问仍可能在同一 RIP 原生重试并成功。")));
         auto* eptMenu = new QMenu(m_featureActionButton);
         QAction* addRule = eptMenu->addAction(
             kernelText(
@@ -235,6 +214,10 @@ void KernelHvmTab::initializeUi()
             kernelText(
                 "kernel.hvm.nested.validate",
                 QStringLiteral("验证 Nested VMX（partial）")));
+        m_featureActionButton->setToolTip(
+            kernelText(
+                "kernel.hvm.nested.validate.tooltip",
+                QStringLiteral("仅为实验性 partial 指令分派：vmcs12/vmcs02、L2 退出反射与 shadow EPT 尚未完整，不会声称也不允许成功运行 L2。")));
         connect(
             m_featureActionButton,
             &QPushButton::clicked,
@@ -247,6 +230,10 @@ void KernelHvmTab::initializeUi()
             kernelText(
                 "kernel.hvm.evmcs.validate",
                 QStringLiteral("验证 Hyper-V eVMCS（partial）")));
+        m_featureActionButton->setToolTip(
+            kernelText(
+                "kernel.hvm.evmcs.validate.tooltip",
+                QStringLiteral("仅做 TLFS 能力、根/来宾分区与 VP-assist 所有权检查；不接管 VP-assist 页面和 clean fields，不会标为 active。")));
         connect(
             m_featureActionButton,
             &QPushButton::clicked,
