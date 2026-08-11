@@ -198,6 +198,20 @@ namespace
     {
         QStringList riskTagList;
 
+        // 来源异常优先进入风险链路，确保主列表与审计页都能直接呈现交叉比对结论。
+        if (entry.registryScanCompleted
+            && !entry.scmRecordPresent
+            && entry.registryKeyPresent)
+        {
+            riskTagList.push_back(QStringLiteral("被 SCM 隐藏的幽灵服务"));
+        }
+        else if (entry.registryScanCompleted
+            && entry.scmRecordPresent
+            && !entry.registryKeyPresent)
+        {
+            riskTagList.push_back(QStringLiteral("仅 SCM 存在的异常服务"));
+        }
+
         const QFileInfo imageFileInfo(entry.imagePathText);
         if (entry.imagePathText.trimmed().isEmpty() || !imageFileInfo.exists())
         {
@@ -250,7 +264,10 @@ namespace
             riskTagList.push_back(QStringLiteral("配置缺失"));
         }
 
-        const QString failureCommandText = queryFailureCommandTextByServiceName(entry.serviceNameText).toLower();
+        // 注册表独有项可能完全无法 OpenService；只对 SCM 可见项查询失败动作命令。
+        const QString failureCommandText = entry.scmRecordPresent
+            ? queryFailureCommandTextByServiceName(entry.serviceNameText).toLower()
+            : QString();
         if (failureCommandText.contains(QStringLiteral("powershell"))
             || failureCommandText.contains(QStringLiteral("cmd.exe"))
             || failureCommandText.contains(QStringLiteral("wscript"))
@@ -262,6 +279,44 @@ namespace
 
         riskTagList.removeDuplicates();
         return riskTagList;
+    }
+
+    // finalizeServiceSourceAndRisk 作用：统一生成来源文本、风险标签和列表摘要。
+    // 入参：entryOut 已包含 SCM/注册表存在标志及基础配置。
+    // 返回：无；函数原位更新用于 UI 的派生字段。
+    void finalizeServiceSourceAndRisk(ServiceDock::ServiceEntry* entryOut)
+    {
+        if (entryOut == nullptr)
+        {
+            return;
+        }
+
+        if (!entryOut->registryScanCompleted)
+        {
+            entryOut->sourceStatusText = QStringLiteral("注册表扫描失败（未交叉验证）");
+        }
+        else if (entryOut->scmRecordPresent && entryOut->registryKeyPresent)
+        {
+            entryOut->sourceStatusText = QStringLiteral("SCM + 注册表");
+        }
+        else if (!entryOut->scmRecordPresent && entryOut->registryKeyPresent)
+        {
+            entryOut->sourceStatusText = QStringLiteral("仅注册表（被 SCM 隐藏的幽灵服务）");
+        }
+        else if (entryOut->scmRecordPresent && !entryOut->registryKeyPresent)
+        {
+            entryOut->sourceStatusText = QStringLiteral("仅 SCM（异常服务）");
+        }
+        else
+        {
+            entryOut->sourceStatusText = QStringLiteral("来源不可用");
+        }
+
+        entryOut->riskTagList = evaluateRiskTagList(*entryOut);
+        entryOut->riskSummaryText = entryOut->riskTagList.isEmpty()
+            ? QStringLiteral("低")
+            : entryOut->riskTagList.join(QStringLiteral(" | "));
+        entryOut->hasRisk = !entryOut->riskTagList.isEmpty();
     }
 
     // buildServiceEntryFromRecord converts a Qt-free ks::service record into the UI cache row.
@@ -285,6 +340,7 @@ namespace
 
         ServiceDock::ServiceEntry entry;
         entry.serviceNameText = QString::fromStdWString(serviceRecord.serviceName).trimmed();
+        entry.scmRecordPresent = true;
         entry.displayNameText = QString::fromStdWString(serviceRecord.displayName).trimmed();
         if (entry.displayNameText.isEmpty())
         {
@@ -316,11 +372,6 @@ namespace
             entry.descriptionText = QStringLiteral("读取服务配置失败：%1")
                 .arg(errorText.isEmpty() ? QStringLiteral("未知错误") : errorText);
             entry.serviceDllPathText = queryServiceDllPathFromRegistry(entry.serviceNameText);
-            entry.riskTagList = evaluateRiskTagList(entry);
-            entry.riskSummaryText = entry.riskTagList.isEmpty()
-                ? QStringLiteral("低")
-                : entry.riskTagList.join(QStringLiteral(" | "));
-            entry.hasRisk = !entry.riskTagList.isEmpty();
             *entryOut = std::move(entry);
             return true;
         }
@@ -339,11 +390,74 @@ namespace
         entry.serviceDllPathText = queryServiceDllPathFromRegistry(entry.serviceNameText);
         entry.delayedAutoStart = (entry.startTypeValue == SERVICE_AUTO_START) && serviceRecord.config.delayedAutoStart;
         entry.startTypeText = startTypeToText(entry.startTypeValue, entry.delayedAutoStart);
-        entry.riskTagList = evaluateRiskTagList(entry);
-        entry.riskSummaryText = entry.riskTagList.isEmpty()
-            ? QStringLiteral("低")
-            : entry.riskTagList.join(QStringLiteral(" | "));
-        entry.hasRisk = !entry.riskTagList.isEmpty();
+
+        *entryOut = std::move(entry);
+        return true;
+    }
+
+    // isRegistryOnlyServiceCandidate 作用：过滤性能提供程序键和未实例化的用户服务模板。
+    // 入参：snapshot 为注册表独立扫描结果。
+    // 返回：具有有效 Type，且应当出现在 SCM 全量枚举中的配置才返回 true。
+    bool isRegistryOnlyServiceCandidate(
+        const service_dock_detail::RegistryServiceSnapshot& snapshot)
+    {
+        if (!snapshot.keyReadable
+            || !snapshot.hasServiceType
+            || (snapshot.serviceTypeValue & SERVICE_TYPE_ALL) == 0)
+        {
+            return false;
+        }
+
+        const bool userServiceTemplate =
+            (snapshot.serviceTypeValue & SERVICE_USER_SERVICE) != 0
+            && (snapshot.serviceTypeValue & SERVICE_USERSERVICE_INSTANCE) == 0;
+        return !userServiceTemplate;
+    }
+
+    // buildServiceEntryFromRegistrySnapshot 作用：构造 SCM 枚举中缺失的幽灵服务行。
+    // 入参：snapshot 来自独立注册表扫描；entryOut 接收可直接渲染的数据。
+    // 返回：配置满足服务候选规则并成功构造时返回 true。
+    bool buildServiceEntryFromRegistrySnapshot(
+        const service_dock_detail::RegistryServiceSnapshot& snapshot,
+        ServiceDock::ServiceEntry* entryOut)
+    {
+        if (entryOut == nullptr || !isRegistryOnlyServiceCandidate(snapshot))
+        {
+            return false;
+        }
+
+        ServiceDock::ServiceEntry entry;
+        entry.serviceNameText = snapshot.serviceNameText.trimmed();
+        entry.displayNameText = snapshot.displayNameText.trimmed().isEmpty()
+            ? entry.serviceNameText
+            : snapshot.displayNameText.trimmed();
+        entry.descriptionText = snapshot.descriptionText.trimmed();
+        entry.commandLineText = snapshot.binaryPathText.trimmed();
+        entry.imagePathText = normalizeServiceImagePath(entry.commandLineText);
+        entry.accountText = snapshot.accountText.trimmed().isEmpty()
+            ? QStringLiteral("N/A")
+            : snapshot.accountText.trimmed();
+        entry.currentState = 0;
+        entry.stateText = QStringLiteral("SCM 不可见");
+        entry.controlsAccepted = 0;
+        entry.processId = 0;
+        entry.startTypeValue = snapshot.hasStartType ? snapshot.startTypeValue : 0;
+        entry.serviceTypeValue = snapshot.serviceTypeValue;
+        entry.errorControlValue = snapshot.hasErrorControl ? snapshot.errorControlValue : 0;
+        entry.delayedAutoStart = snapshot.delayedAutoStart
+            && entry.startTypeValue == SERVICE_AUTO_START;
+        entry.startTypeText = snapshot.hasStartType
+            ? startTypeToText(entry.startTypeValue, entry.delayedAutoStart)
+            : QStringLiteral("未知");
+        entry.serviceTypeText = serviceTypeToText(entry.serviceTypeValue);
+        entry.errorControlText = snapshot.hasErrorControl
+            ? errorControlToText(entry.errorControlValue)
+            : QStringLiteral("未知");
+        entry.serviceDllPathText = normalizeServiceImagePath(snapshot.serviceDllPathText);
+        entry.scmRecordPresent = false;
+        entry.registryKeyPresent = true;
+        entry.registryScanCompleted = true;
+        finalizeServiceSourceAndRisk(&entry);
 
         *entryOut = std::move(entry);
         return true;
@@ -364,11 +478,15 @@ void ServiceDock::enumerateServiceList(
     }
 
     serviceListOut->clear();
+    if (errorTextOut != nullptr)
+    {
+        errorTextOut->clear();
+    }
 
     std::vector<ks::service::ServiceRecord> serviceRecordList;
     std::string errorText;
     if (!ks::service::EnumerateServiceRecords(
-        SERVICE_WIN32_OWN_PROCESS | SERVICE_WIN32_SHARE_PROCESS,
+        SERVICE_TYPE_ALL,
         SERVICE_STATE_ALL,
         &serviceRecordList,
         &errorText))
@@ -380,29 +498,82 @@ void ServiceDock::enumerateServiceList(
         return;
     }
 
-    serviceListOut->reserve(serviceRecordList.size());
+    // 注册表作为独立来源一次性扫描；扫描失败时保留 SCM 列表，但不产生伪造的来源差异。
+    std::vector<service_dock_detail::RegistryServiceSnapshot> registrySnapshotList;
+    QString registryErrorText;
+    const bool registryScanCompleted =
+        service_dock_detail::enumerateRegistryServiceSnapshots(
+            &registrySnapshotList,
+            &registryErrorText);
+
+    QHash<QString, int> registryIndexByLowerName;
+    if (registryScanCompleted)
+    {
+        registryIndexByLowerName.reserve(static_cast<qsizetype>(registrySnapshotList.size()));
+        for (int registryIndex = 0;
+            registryIndex < static_cast<int>(registrySnapshotList.size());
+            ++registryIndex)
+        {
+            const QString lowerNameText = registrySnapshotList[
+                static_cast<std::size_t>(registryIndex)].serviceNameText.toLower();
+            if (!lowerNameText.isEmpty())
+            {
+                registryIndexByLowerName.insert(lowerNameText, registryIndex);
+            }
+        }
+    }
+
+    QHash<QString, bool> scmNameSet;
+    scmNameSet.reserve(static_cast<qsizetype>(serviceRecordList.size()));
+    serviceListOut->reserve(serviceRecordList.size() + registrySnapshotList.size());
     for (const ks::service::ServiceRecord& serviceRecord : serviceRecordList)
     {
         ServiceEntry serviceEntry;
         QString buildErrorText;
         if (buildServiceEntryFromRecord(serviceRecord, &serviceEntry, &buildErrorText, false))
         {
+            const QString lowerNameText = serviceEntry.serviceNameText.toLower();
+            serviceEntry.registryScanCompleted = registryScanCompleted;
+            serviceEntry.registryKeyPresent = registryScanCompleted
+                && registryIndexByLowerName.contains(lowerNameText);
+            finalizeServiceSourceAndRisk(&serviceEntry);
+            scmNameSet.insert(lowerNameText, true);
             serviceListOut->push_back(std::move(serviceEntry));
         }
+    }
+
+    if (registryScanCompleted)
+    {
+        // 只把“有有效 Type 且不属于用户服务模板”的注册表独有项加入列表，
+        // 避免把 .NET 性能提供程序键和 per-user 服务模板误报为 rootkit。
+        for (const service_dock_detail::RegistryServiceSnapshot& registrySnapshot : registrySnapshotList)
+        {
+            const QString lowerNameText = registrySnapshot.serviceNameText.toLower();
+            if (lowerNameText.isEmpty() || scmNameSet.contains(lowerNameText))
+            {
+                continue;
+            }
+
+            ServiceEntry registryOnlyEntry;
+            if (buildServiceEntryFromRegistrySnapshot(registrySnapshot, &registryOnlyEntry))
+            {
+                serviceListOut->push_back(std::move(registryOnlyEntry));
+            }
+        }
+    }
+    else if (errorTextOut != nullptr)
+    {
+        *errorTextOut = QStringLiteral("SCM 枚举成功，但注册表独立扫描失败：%1")
+            .arg(registryErrorText);
     }
 }
 
 namespace service_dock_detail
 {
-    // querySingleServiceSnapshot 作用：
-    // - 采集单个服务的完整快照（状态 + 配置 + ServiceDll + 风险标签）；
-    // - 全程只依赖 ks::service 与 Win32，不触碰任何 QWidget，可在后台线程调用。
-    // 入参：serviceNameText 为服务短名；entryOut 接收快照；errorTextOut 接收错误文本。
-    // 返回：采集成功返回 true；配置读取失败按严格模式返回 false。
-    // 说明：本函数声明未放进共享头 ServiceDock.Internal.h（本次改动不扩展该头），
-    //       调用方 ServiceDock.Actions.cpp 就地重复声明同一原型。
     bool querySingleServiceSnapshot(
         const QString& serviceNameText,
+        const bool sourceScmRecordPresent,
+        const bool sourceRegistryScanCompleted,
         ServiceDock::ServiceEntry* entryOut,
         QString* errorTextOut)
     {
@@ -415,21 +586,63 @@ namespace service_dock_detail
             return false;
         }
 
+        RegistryServiceSnapshot registrySnapshot;
+        QString registryErrorText;
+        DWORD registryErrorCode = ERROR_SUCCESS;
+        const bool registryQuerySucceeded = queryRegistryServiceSnapshot(
+            serviceNameText,
+            &registrySnapshot,
+            &registryErrorText,
+            &registryErrorCode);
+
         ks::service::ServiceRecord serviceRecord;
-        std::string errorText;
-        if (!ks::service::QueryServiceRecord(
+        std::string scmErrorText;
+        const bool scmQuerySucceeded = ks::service::QueryServiceRecord(
             serviceNameText.trimmed().toStdWString(),
             &serviceRecord,
-            &errorText))
+            &scmErrorText);
+
+        ServiceDock::ServiceEntry updatedEntry;
+        if (scmQuerySucceeded)
+        {
+            if (!buildServiceEntryFromRecord(
+                serviceRecord,
+                &updatedEntry,
+                errorTextOut,
+                true))
+            {
+                return false;
+            }
+        }
+        else if (!sourceScmRecordPresent
+            && registryQuerySucceeded
+            && buildServiceEntryFromRegistrySnapshot(registrySnapshot, &updatedEntry))
+        {
+            // SCM 枚举原本就不可见时允许继续使用注册表独立快照。
+        }
+        else
         {
             if (errorTextOut != nullptr)
             {
-                *errorTextOut = QStringLiteral("查询服务失败：%1").arg(QString::fromUtf8(errorText.c_str()));
+                *errorTextOut = QStringLiteral("查询服务失败：%1")
+                    .arg(QString::fromUtf8(scmErrorText.c_str()));
             }
             return false;
         }
 
-        return buildServiceEntryFromRecord(serviceRecord, entryOut, errorTextOut, true);
+        // 单条刷新保留全量 EnumServicesStatusEx 的来源结论；直接 OpenService 成功
+        // 只能用于丰富配置，不能抹掉“枚举中不可见”这一检测证据。
+        updatedEntry.scmRecordPresent = sourceScmRecordPresent;
+        const bool registryAbsenceConfirmed =
+            registryErrorCode == ERROR_FILE_NOT_FOUND
+            || registryErrorCode == ERROR_PATH_NOT_FOUND;
+        updatedEntry.registryScanCompleted = sourceRegistryScanCompleted
+            && (registryQuerySucceeded || registryAbsenceConfirmed);
+        updatedEntry.registryKeyPresent = registryQuerySucceeded;
+        finalizeServiceSourceAndRisk(&updatedEntry);
+
+        *entryOut = std::move(updatedEntry);
+        return true;
     }
 }
 
@@ -438,6 +651,20 @@ bool ServiceDock::querySingleServiceByName(
     ServiceEntry* entryOut,
     QString* errorTextOut) const
 {
-    // 采集逻辑已下沉为可在任意线程复用的自由函数，这里只做转发。
-    return service_dock_detail::querySingleServiceSnapshot(serviceNameText, entryOut, errorTextOut);
+    bool sourceScmRecordPresent = true;
+    bool sourceRegistryScanCompleted = true;
+    const int existingIndex = findServiceIndexByName(serviceNameText);
+    if (existingIndex >= 0 && existingIndex < static_cast<int>(m_serviceList.size()))
+    {
+        const ServiceEntry& existingEntry = m_serviceList[static_cast<std::size_t>(existingIndex)];
+        sourceScmRecordPresent = existingEntry.scmRecordPresent;
+        sourceRegistryScanCompleted = existingEntry.registryScanCompleted;
+    }
+
+    return service_dock_detail::querySingleServiceSnapshot(
+        serviceNameText,
+        sourceScmRecordPresent,
+        sourceRegistryScanCompleted,
+        entryOut,
+        errorTextOut);
 }

@@ -107,6 +107,7 @@ public:
         QString serviceTypeText;      // serviceTypeText：服务类型文本。
         QString errorControlText;     // errorControlText：错误控制文本。
         QString serviceDllPathText;   // serviceDllPathText：服务 DLL 路径（svchost 类服务）。
+        QString sourceStatusText;     // sourceStatusText：SCM 与注册表交叉比对后的来源状态。
         QString riskSummaryText;      // riskSummaryText：风险摘要文本。
         QStringList riskTagList;      // riskTagList：风险标签列表。
         std::uint32_t processId = 0;  // processId：当前服务关联 PID。
@@ -116,6 +117,9 @@ public:
         DWORD serviceTypeValue = 0;   // serviceTypeValue：配置服务类型原始值。
         DWORD errorControlValue = 0;  // errorControlValue：配置错误控制原始值。
         bool delayedAutoStart = false; // delayedAutoStart：是否延迟自动启动。
+        bool scmRecordPresent = false; // scmRecordPresent：本轮 EnumServicesStatusEx 是否返回该服务。
+        bool registryKeyPresent = false; // registryKeyPresent：注册表 Services 根键是否存在同名项。
+        bool registryScanCompleted = false; // registryScanCompleted：独立注册表扫描是否完整结束。
         bool hasRisk = false;         // hasRisk：是否命中至少一个风险标签。
     };
 
@@ -199,6 +203,9 @@ private:
     void stopSelectedService();
     void pauseSelectedService();
     void continueSelectedService();
+    void deleteSelectedService();
+    void deleteSelectedServiceAndFile();
+    void deleteSelectedServiceInternal(bool deleteBinaryFile);
     void applySelectedStartType();
     void copySelectedServiceName();
     void openSelectedServiceRegistryPath();

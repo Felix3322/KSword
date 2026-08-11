@@ -787,7 +787,8 @@ void ServiceDock::updateDetailViewsFromSelection()
     refreshLogonTabUiState();
     refreshRecoveryTabUiState();
 
-    const bool enableApplyButtons = hasSelection;
+    const bool enableApplyButtons = hasSelection
+        && m_serviceList[static_cast<std::size_t>(selectedIndex)].scmRecordPresent;
     if (m_generalApplyButton != nullptr) { m_generalApplyButton->setEnabled(enableApplyButtons); }
     if (m_generalReloadButton != nullptr) { m_generalReloadButton->setEnabled(enableApplyButtons); }
     if (m_logonApplyButton != nullptr) { m_logonApplyButton->setEnabled(enableApplyButtons); }

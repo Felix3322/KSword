@@ -153,17 +153,22 @@ namespace service_dock_detail
             return QString();
         }
 
-        // \??\ 前缀常见于驱动路径，UI 展示时移除该内核命名空间前缀更直观。
-        if (normalizedText.startsWith(QStringLiteral("\\??\\")))
+        // 先展开整个命令行中的环境变量；驱动与 Win32 服务都可能把变量放在引号内。
+        const std::wstring rawTextWide = normalizedText.toStdWString();
+        const DWORD expandedLength = ::ExpandEnvironmentStringsW(
+            rawTextWide.c_str(),
+            nullptr,
+            0);
+        if (expandedLength > 0 && expandedLength < 32768)
         {
-            normalizedText = normalizedText.mid(4);
-        }
-
-        // %SystemRoot% 变量在服务 BinaryPath 中很常见，这里先做展开再提取路径。
-        if (normalizedText.startsWith(QStringLiteral("%SystemRoot%"), Qt::CaseInsensitive))
-        {
-            const QString systemRootText = qEnvironmentVariable("SystemRoot", QStringLiteral("C:\\Windows"));
-            normalizedText.replace(0, QStringLiteral("%SystemRoot%").size(), systemRootText);
+            std::vector<wchar_t> expandedBuffer(expandedLength + 1, L'\0');
+            if (::ExpandEnvironmentStringsW(
+                rawTextWide.c_str(),
+                expandedBuffer.data(),
+                static_cast<DWORD>(expandedBuffer.size())) > 0)
+            {
+                normalizedText = QString::fromWCharArray(expandedBuffer.data()).trimmed();
+            }
         }
 
         if (normalizedText.startsWith('"'))
@@ -171,26 +176,67 @@ namespace service_dock_detail
             const int endQuoteIndex = normalizedText.indexOf('"', 1);
             if (endQuoteIndex > 1)
             {
-                return QDir::toNativeSeparators(normalizedText.mid(1, endQuoteIndex - 1));
+                normalizedText = normalizedText.mid(1, endQuoteIndex - 1);
             }
         }
-
-        const QStringList suffixList{ QStringLiteral(".exe"), QStringLiteral(".dll"), QStringLiteral(".sys") };
-        for (const QString& suffixText : suffixList)
+        else
         {
-            const int suffixIndex = normalizedText.indexOf(suffixText, 0, Qt::CaseInsensitive);
-            if (suffixIndex > 0)
+            const QStringList suffixList{
+                QStringLiteral(".exe"),
+                QStringLiteral(".dll"),
+                QStringLiteral(".sys")
+            };
+            bool suffixMatched = false;
+            for (const QString& suffixText : suffixList)
             {
-                return QDir::toNativeSeparators(normalizedText.left(suffixIndex + suffixText.size()));
+                const int suffixIndex = normalizedText.indexOf(
+                    suffixText,
+                    0,
+                    Qt::CaseInsensitive);
+                if (suffixIndex > 0)
+                {
+                    normalizedText = normalizedText.left(suffixIndex + suffixText.size());
+                    suffixMatched = true;
+                    break;
+                }
+            }
+            if (!suffixMatched)
+            {
+                const int firstSpaceIndex = normalizedText.indexOf(QLatin1Char(' '));
+                if (firstSpaceIndex > 0)
+                {
+                    normalizedText = normalizedText.left(firstSpaceIndex);
+                }
             }
         }
 
-        const int firstSpaceIndex = normalizedText.indexOf(' ');
-        if (firstSpaceIndex > 0)
+        // 驱动 ImagePath 常见三种内核/相对写法，统一还原为可供 QFile/DeleteFileW 使用的绝对路径。
+        if (normalizedText.startsWith(QStringLiteral("\\??\\")))
         {
-            return QDir::toNativeSeparators(normalizedText.left(firstSpaceIndex));
+            normalizedText = normalizedText.mid(4);
+        }
+        else if (normalizedText.startsWith(QStringLiteral("\\\\?\\")))
+        {
+            normalizedText = normalizedText.mid(4);
         }
 
-        return QDir::toNativeSeparators(normalizedText);
+        const QString systemRootText = qEnvironmentVariable(
+            "SystemRoot",
+            QStringLiteral("C:\\Windows"));
+        if (normalizedText.startsWith(QStringLiteral("\\SystemRoot\\"), Qt::CaseInsensitive))
+        {
+            normalizedText = systemRootText + normalizedText.mid(QStringLiteral("\\SystemRoot").size());
+        }
+        else if (normalizedText.startsWith(QStringLiteral("SystemRoot\\"), Qt::CaseInsensitive))
+        {
+            normalizedText = systemRootText + QLatin1Char('\\')
+                + normalizedText.mid(QStringLiteral("SystemRoot\\").size());
+        }
+        else if (normalizedText.startsWith(QStringLiteral("System32\\"), Qt::CaseInsensitive))
+        {
+            normalizedText = systemRootText + QLatin1Char('\\') + normalizedText;
+        }
+
+        return QDir::cleanPath(QDir::toNativeSeparators(normalizedText));
     }
 }

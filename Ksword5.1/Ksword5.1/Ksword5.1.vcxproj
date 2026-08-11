@@ -386,10 +386,12 @@
     <ClCompile Include="ServerDock\ServiceDock.cpp" />
     <ClCompile Include="ServerDock\ServiceDock.Actions.cpp" />
     <ClCompile Include="ServerDock\ServiceDock.Advanced.cpp" />
+    <ClCompile Include="ServerDock\ServiceDock.Delete.cpp" />
     <ClCompile Include="ServerDock\ServiceDock.Enumerate.cpp" />
     <ClCompile Include="ServerDock\ServiceDock.Helpers.cpp" />
     <ClCompile Include="ServerDock\ServiceDock.Properties.Apply.cpp" />
     <ClCompile Include="ServerDock\ServiceDock.Properties.cpp" />
+    <ClCompile Include="ServerDock\ServiceDock.Registry.cpp" />
     <ClCompile Include="ServerDock\ServiceDock.Ui.cpp" />
     <ClCompile Include="StartupDock\StartupDock.cpp" />
     <ClCompile Include="StartupDock\StartupDock.Detail.cpp" />

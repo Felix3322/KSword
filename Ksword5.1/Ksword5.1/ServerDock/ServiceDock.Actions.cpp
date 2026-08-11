@@ -20,20 +20,6 @@
 
 using namespace service_dock_detail;
 
-namespace service_dock_detail
-{
-    // querySingleServiceSnapshot 作用：
-    // - 采集单个服务的完整快照，可在后台线程调用（内部不触碰任何 QWidget）。
-    // 入参：serviceNameText 为服务短名；entryOut 接收快照；errorTextOut 接收错误文本。
-    // 返回：采集成功返回 true。
-    // 说明：实现位于 ServiceDock.Enumerate.cpp；本次改动不扩展共享头
-    //       ServiceDock.Internal.h，故在此就地重复声明同一原型。
-    bool querySingleServiceSnapshot(
-        const QString& serviceNameText,
-        ServiceDock::ServiceEntry* entryOut,
-        QString* errorTextOut);
-}
-
 namespace
 {
     // kServiceActionTimeoutMs 作用：
@@ -127,6 +113,15 @@ void ServiceDock::showServiceContextMenu(const QPoint& localPos)
     QAction* pauseAction = contextMenu.addAction(createBlueIcon(":/Icon/process_pause.svg"), QStringLiteral("暂停服务"));
     QAction* continueAction = contextMenu.addAction(createBlueIcon(":/Icon/process_resume.svg"), QStringLiteral("继续服务"));
     contextMenu.addSeparator();
+    QAction* deleteServiceAction = contextMenu.addAction(
+        createBlueIcon(":/Icon/log_clear.svg"),
+        QStringLiteral("删除服务"));
+    QAction* deleteServiceAndFileAction = contextMenu.addAction(
+        createBlueIcon(":/Icon/log_clear.svg"),
+        QStringLiteral("删除服务并删除其文件"));
+    deleteServiceAction->setToolTip(QStringLiteral("删除 SCM 服务注册；SCM 不可见时删除对应注册表服务键"));
+    deleteServiceAndFileAction->setToolTip(QStringLiteral("复核停止状态和文件独占引用后，删除服务注册与服务文件"));
+    contextMenu.addSeparator();
     QAction* jumpProcessAction = contextMenu.addAction(createBlueIcon(":/Icon/process_details.svg"), QStringLiteral("转到进程详细信息"));
     QAction* jumpHandleAction = contextMenu.addAction(createBlueIcon(":/Icon/process_list.svg"), QStringLiteral("跳转句柄筛选"));
     contextMenu.addSeparator();
@@ -147,6 +142,13 @@ void ServiceDock::showServiceContextMenu(const QPoint& localPos)
     continueAction->setEnabled(m_continueButton != nullptr && m_continueButton->isEnabled());
     refreshAction->setEnabled(m_refreshCurrentButton != nullptr && m_refreshCurrentButton->isEnabled());
     copyNameAction->setEnabled(!selectedServiceName().isEmpty());
+    const int selectedIndex = findServiceIndexByName(selectedServiceName());
+    const bool hasSelectedEntry = selectedIndex >= 0
+        && selectedIndex < static_cast<int>(m_serviceList.size());
+    deleteServiceAction->setEnabled(hasSelectedEntry);
+    deleteServiceAndFileAction->setEnabled(
+        hasSelectedEntry
+        && !m_serviceList[static_cast<std::size_t>(selectedIndex)].imagePathText.trimmed().isEmpty());
     openRegistryAction->setEnabled(!selectedServiceName().isEmpty());
     jumpProcessAction->setEnabled(!selectedServiceName().isEmpty());
     jumpHandleAction->setEnabled(!selectedServiceName().isEmpty());
@@ -178,6 +180,14 @@ void ServiceDock::showServiceContextMenu(const QPoint& localPos)
     else if (selectedAction == continueAction)
     {
         continueSelectedService();
+    }
+    else if (selectedAction == deleteServiceAction)
+    {
+        deleteSelectedService();
+    }
+    else if (selectedAction == deleteServiceAndFileAction)
+    {
+        deleteSelectedServiceAndFile();
     }
     else if (selectedAction == jumpProcessAction)
     {
@@ -251,16 +261,34 @@ void ServiceDock::refreshSelectedService()
     kPro.set(progressPid, "读取服务配置", 0, 45.0f);
     pendingServiceOperationKeySet().insert(operationKeyText);
 
+    const int selectedIndex = findServiceIndexByName(serviceNameText);
+    const bool sourceScmRecordPresent = selectedIndex >= 0
+        && selectedIndex < static_cast<int>(m_serviceList.size())
+        ? m_serviceList[static_cast<std::size_t>(selectedIndex)].scmRecordPresent
+        : true;
+    const bool sourceRegistryScanCompleted = selectedIndex >= 0
+        && selectedIndex < static_cast<int>(m_serviceList.size())
+        ? m_serviceList[static_cast<std::size_t>(selectedIndex)].registryScanCompleted
+        : true;
+
     // guardedSelf 用途：后台采集可能晚于页面销毁，回投前必须验证生命周期。
     const QPointer<ServiceDock> guardedSelf(this);
     QRunnable* const refreshTask = QRunnable::create(
-        [guardedSelf, serviceNameText, operationKeyText, progressPid, refreshEvent]()
+        [guardedSelf,
+            serviceNameText,
+            operationKeyText,
+            progressPid,
+            refreshEvent,
+            sourceScmRecordPresent,
+            sourceRegistryScanCompleted]()
         {
             // 后台只做纯数据采集，产出值类型 ServiceEntry / QString。
             ServiceEntry updatedEntry;
             QString errorText;
             const bool querySucceeded = service_dock_detail::querySingleServiceSnapshot(
                 serviceNameText,
+                sourceScmRecordPresent,
+                sourceRegistryScanCompleted,
                 &updatedEntry,
                 &errorText);
 
@@ -851,7 +879,7 @@ void ServiceDock::exportCurrentListAsTsv()
 
     QTextStream outputStream(&outputFile);
     outputStream.setEncoding(QStringConverter::Utf8);
-    outputStream << "服务名\t显示名\t状态\t启动类型\tPID\t账户\tBinaryPath\tServiceDll\t风险\n";
+    outputStream << "服务名\t显示名\t状态\t启动类型\tPID\t账户\tBinaryPath\tServiceDll\t来源\t风险\n";
 
     for (int rowIndex = 0; rowIndex < m_serviceTable->rowCount(); ++rowIndex)
     {
@@ -878,6 +906,7 @@ void ServiceDock::exportCurrentListAsTsv()
             << entry.accountText << '\t'
             << entry.commandLineText << '\t'
             << entry.serviceDllPathText << '\t'
+            << entry.sourceStatusText << '\t'
             << entry.riskSummaryText << '\n';
     }
 
@@ -925,6 +954,10 @@ void ServiceDock::exportSelectedServiceAsJson()
     rootObject.insert(QStringLiteral("service_type"), static_cast<int>(entry.serviceTypeValue));
     rootObject.insert(QStringLiteral("error_control"), static_cast<int>(entry.errorControlValue));
     rootObject.insert(QStringLiteral("delayed_auto_start"), entry.delayedAutoStart);
+    rootObject.insert(QStringLiteral("source_status"), entry.sourceStatusText);
+    rootObject.insert(QStringLiteral("scm_record_present"), entry.scmRecordPresent);
+    rootObject.insert(QStringLiteral("registry_key_present"), entry.registryKeyPresent);
+    rootObject.insert(QStringLiteral("registry_scan_completed"), entry.registryScanCompleted);
     rootObject.insert(QStringLiteral("risk_summary"), entry.riskSummaryText);
 
     QJsonArray riskArray;

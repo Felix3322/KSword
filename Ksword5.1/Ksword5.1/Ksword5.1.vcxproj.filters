@@ -688,6 +688,9 @@
     <ClCompile Include="ServerDock\ServiceDock.Advanced.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ServerDock\ServiceDock.Delete.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ServerDock\ServiceDock.Enumerate.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -698,6 +701,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ServerDock\ServiceDock.Properties.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ServerDock\ServiceDock.Registry.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ServerDock\ServiceDock.Ui.cpp">

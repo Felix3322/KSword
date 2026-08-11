@@ -491,7 +491,9 @@ bool ServiceDock::entryMatchesCurrentFilter(const ServiceEntry& entry) const
         + entry.descriptionText + QLatin1Char('\n')
         + entry.imagePathText + QLatin1Char('\n')
         + entry.commandLineText + QLatin1Char('\n')
-        + entry.accountText;
+        + entry.accountText + QLatin1Char('\n')
+        + entry.sourceStatusText + QLatin1Char('\n')
+        + entry.riskSummaryText;
     return haystackText.contains(keywordText, Qt::CaseInsensitive);
 }
 
@@ -551,6 +553,8 @@ void ServiceDock::updateSummaryText()
     int runningCount = 0;
     int autoStartCount = 0;
     int riskCount = 0;
+    int registryOnlyCount = 0;
+    int scmOnlyCount = 0;
     for (const ServiceEntry& entry : m_serviceList)
     {
         if (entry.currentState == SERVICE_RUNNING)
@@ -565,15 +569,29 @@ void ServiceDock::updateSummaryText()
         {
             ++riskCount;
         }
+        if (entry.registryScanCompleted
+            && !entry.scmRecordPresent
+            && entry.registryKeyPresent)
+        {
+            ++registryOnlyCount;
+        }
+        if (entry.registryScanCompleted
+            && entry.scmRecordPresent
+            && !entry.registryKeyPresent)
+        {
+            ++scmOnlyCount;
+        }
     }
 
     const int visibleCount = (m_serviceTable == nullptr) ? 0 : m_serviceTable->rowCount();
     m_summaryLabel->setText(
-        QStringLiteral("状态：总计 %1，运行中 %2，自动启动 %3，风险 %4，当前可见 %5")
+        QStringLiteral("状态：总计 %1，运行中 %2，自动启动 %3，风险 %4，幽灵 %5，SCM 异常 %6，当前可见 %7")
         .arg(m_serviceList.size())
         .arg(runningCount)
         .arg(autoStartCount)
         .arg(riskCount)
+        .arg(registryOnlyCount)
+        .arg(scmOnlyCount)
         .arg(visibleCount));
 }
 
@@ -628,18 +646,29 @@ void ServiceDock::syncToolbarStateWithSelection()
     }
 
     const ServiceEntry& selectedEntry = m_serviceList[static_cast<std::size_t>(selectedIndex)];
-    const bool pendingState = isServiceStatePending(selectedEntry.currentState);
+    const bool scmRecordPresent = selectedEntry.scmRecordPresent;
+    const bool pendingState = scmRecordPresent
+        && isServiceStatePending(selectedEntry.currentState);
     const bool canPauseContinue = (selectedEntry.controlsAccepted & SERVICE_ACCEPT_PAUSE_CONTINUE) != 0;
 
     m_refreshCurrentButton->setEnabled(true);
-    m_startButton->setEnabled(!pendingState
+    m_startButton->setEnabled(scmRecordPresent
+        && !pendingState
         && (selectedEntry.currentState == SERVICE_STOPPED || selectedEntry.currentState == SERVICE_PAUSED));
-    m_stopButton->setEnabled(!pendingState
+    m_stopButton->setEnabled(scmRecordPresent
+        && !pendingState
         && (selectedEntry.currentState == SERVICE_RUNNING || selectedEntry.currentState == SERVICE_PAUSED));
 
     // 选中服务后恢复常规 tooltip；过渡态则说明正在切换，
     // 否则未选中分支写入的“请先选择一个服务”会一直残留。
-    if (pendingState)
+    if (!scmRecordPresent)
+    {
+        const QString unavailableText = QStringLiteral("该条目未出现在 SCM 枚举中，仅提供注册表取证与删除操作");
+        m_startButton->setToolTip(unavailableText);
+        m_stopButton->setToolTip(unavailableText);
+        m_applyStartTypeButton->setToolTip(unavailableText);
+    }
+    else if (pendingState)
     {
         const QString pendingText = QStringLiteral("服务正在切换状态，请等待完成");
         m_startButton->setToolTip(pendingText);
@@ -656,10 +685,12 @@ void ServiceDock::syncToolbarStateWithSelection()
             : QStringLiteral("仅在服务正在运行或已暂停时可停止"));
         m_applyStartTypeButton->setToolTip(QStringLiteral("应用当前启动类型修改"));
     }
-    m_pauseButton->setEnabled(!pendingState
+    m_pauseButton->setEnabled(scmRecordPresent
+        && !pendingState
         && selectedEntry.currentState == SERVICE_RUNNING
         && canPauseContinue);
-    m_continueButton->setEnabled(!pendingState
+    m_continueButton->setEnabled(scmRecordPresent
+        && !pendingState
         && selectedEntry.currentState == SERVICE_PAUSED
         && canPauseContinue);
 
@@ -667,7 +698,13 @@ void ServiceDock::syncToolbarStateWithSelection()
     //（服务不支持暂停/继续、正处于过渡态、当前状态不符），
     // 而 tooltip 此前恒为“暂停当前服务”。用户只看到灰按钮，
     // 会反复换选服务、反复等待，却永远等不到它可用。
-    if (!canPauseContinue)
+    if (!scmRecordPresent)
+    {
+        const QString unavailableText = QStringLiteral("该条目未出现在 SCM 枚举中，无法执行服务控制");
+        m_pauseButton->setToolTip(unavailableText);
+        m_continueButton->setToolTip(unavailableText);
+    }
+    else if (!canPauseContinue)
     {
         const QString unsupportedText = QStringLiteral("该服务不支持暂停/继续");
         m_pauseButton->setToolTip(unsupportedText);
@@ -688,8 +725,8 @@ void ServiceDock::syncToolbarStateWithSelection()
             ? QStringLiteral("继续当前服务")
             : QStringLiteral("仅在服务已暂停时可继续"));
     }
-    m_applyStartTypeButton->setEnabled(!pendingState);
-    m_startTypeCombo->setEnabled(!pendingState);
+    m_applyStartTypeButton->setEnabled(scmRecordPresent && !pendingState);
+    m_startTypeCombo->setEnabled(scmRecordPresent && !pendingState);
     if (m_generalStartButton != nullptr) { m_generalStartButton->setEnabled(m_startButton->isEnabled()); }
     if (m_generalStopButton != nullptr) { m_generalStopButton->setEnabled(m_stopButton->isEnabled()); }
     if (m_generalPauseButton != nullptr) { m_generalPauseButton->setEnabled(m_pauseButton->isEnabled()); }
@@ -739,7 +776,13 @@ void ServiceDock::onServiceSelectionChanged()
 
 QString ServiceDock::buildAuditTabText(const ServiceEntry& entry) const
 {
-    return buildDetailSectionText(QStringLiteral("触发器"), buildTriggerDetailText(entry))
+    const QString sourceDetailText = QStringLiteral("交叉比对：%1\nSCM 枚举：%2\n注册表键：%3")
+        .arg(entry.sourceStatusText)
+        .arg(entry.scmRecordPresent ? QStringLiteral("存在") : QStringLiteral("未发现"))
+        .arg(entry.registryKeyPresent ? QStringLiteral("存在") : QStringLiteral("未发现"));
+    return buildDetailSectionText(QStringLiteral("独立来源"), sourceDetailText)
+        + QStringLiteral("\n\n")
+        + buildDetailSectionText(QStringLiteral("触发器"), buildTriggerDetailText(entry))
         + QStringLiteral("\n\n")
         + buildDetailSectionText(QStringLiteral("安全"), buildSecurityDetailText(entry))
         + QStringLiteral("\n\n")
@@ -752,6 +795,7 @@ QString ServiceDock::buildBasicInfoText(const ServiceEntry& entry) const
 {
     QString detailText;
     detailText += QStringLiteral("服务名：%1\n").arg(entry.serviceNameText);
+    detailText += QStringLiteral("来源交叉验证：%1\n").arg(entry.sourceStatusText);
     detailText += QStringLiteral("显示名：%1\n").arg(entry.displayNameText);
     detailText += QStringLiteral("状态：%1\n").arg(entry.stateText);
     detailText += QStringLiteral("PID：%1\n").arg(entry.processId == 0 ? QStringLiteral("-") : QString::number(entry.processId));
