@@ -29589,6 +29589,12 @@
     "读取 Services 注册表根键信息": "Read Services Registry root-key information",
     "部分成功": "Partial success",
     "重新验证服务身份": "Revalidate service identity",
-    "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};": "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker module does not provide required command: '+$commandName)}};"
+    "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};": "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker module does not provide required command: '+$commandName)}};",
+    "AppLocker 模块不可用": "AppLocker module unavailable",
+    "AppLocker 模块不可用。\n": "AppLocker module unavailable.\n",
+    "WDAC、Defender、平台安全、事件日志和文件诊断仍可使用。": "WDAC, Defender, platform security, event logs, and file diagnostics remain available.",
+    "Windows 家庭版通常不支持 AppLocker。\n": "Windows Home editions typically do not support AppLocker.\n",
+    "if($null -eq $module){throw 'AppLocker PowerShell 模块不可用'};": "if($null -eq $module){throw 'AppLocker PowerShell module unavailable'};",
+    "当前 Windows 未提供 AppLocker PowerShell 管理组件，无法读取、创建或修改 AppLocker 策略。\n": "The current Windows installation does not provide the AppLocker PowerShell management component. AppLocker policies cannot be read, created, or modified.\n"
   }
 }

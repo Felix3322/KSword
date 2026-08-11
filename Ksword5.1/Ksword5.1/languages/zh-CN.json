@@ -29589,6 +29589,12 @@
     "读取 Services 注册表根键信息": "读取 Services 注册表根键信息",
     "部分成功": "部分成功",
     "重新验证服务身份": "重新验证服务身份",
-    "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};": "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};"
+    "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};": "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};",
+    "AppLocker 模块不可用": "AppLocker 模块不可用",
+    "AppLocker 模块不可用。\n": "AppLocker 模块不可用。\n",
+    "WDAC、Defender、平台安全、事件日志和文件诊断仍可使用。": "WDAC、Defender、平台安全、事件日志和文件诊断仍可使用。",
+    "Windows 家庭版通常不支持 AppLocker。\n": "Windows 家庭版通常不支持 AppLocker。\n",
+    "if($null -eq $module){throw 'AppLocker PowerShell 模块不可用'};": "if($null -eq $module){throw 'AppLocker PowerShell 模块不可用'};",
+    "当前 Windows 未提供 AppLocker PowerShell 管理组件，无法读取、创建或修改 AppLocker 策略。\n": "当前 Windows 未提供 AppLocker PowerShell 管理组件，无法读取、创建或修改 AppLocker 策略。\n"
   }
 }

@@ -324,11 +324,13 @@ namespace
         return text;
     }
 
-    // appLockerPowerShellPrelude：显式加载模块，避免 PowerShell 自动加载被策略或宿主环境关闭。
+    // appLockerPowerShellPrelude：显式定位和加载模块，避免自动加载和 PSModulePath 差异。
     QString appLockerPowerShellPrelude()
     {
         return QStringLiteral(
-            "Import-Module AppLocker -ErrorAction Stop;"
+            "$module=Get-Module -ListAvailable -Name AppLocker | Select-Object -First 1;"
+            "if($null -eq $module){throw 'AppLocker PowerShell 模块不可用'};"
+            "Import-Module -Name $module.Path -ErrorAction Stop;"
             "foreach($commandName in @('Get-AppLockerPolicy','Set-AppLockerPolicy','Test-AppLockerPolicy')){"
             "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};");
     }
@@ -557,6 +559,7 @@ namespace ks::misc
         actionLayout->setContentsMargins(0, 0, 0, 0);
         m_appLockerEditButton = new QPushButton(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑策略…"), actionRow);
         m_appLockerEditButton->setToolTip(QStringLiteral("读取本地 AppLocker XML 策略并在确认后写回。需要管理员权限。"));
+        m_appLockerEditButton->setEnabled(false);
         actionLayout->addWidget(m_appLockerEditButton);
         actionLayout->addStretch(1);
 
@@ -832,8 +835,10 @@ namespace ks::misc
         QAction* addAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("新增路径规则…"));
         QAction* editAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("编辑选中规则…"));
         QAction* deleteAction = menu.addAction(QIcon(QStringLiteral(":/Icon/process_details.svg")), QStringLiteral("删除选中规则"));
-        editAction->setEnabled(selectedRow >= 0);
-        deleteAction->setEnabled(selectedRow >= 0);
+        const bool canModify = m_appLockerModuleAvailable && m_pendingMutationCount == 0;
+        addAction->setEnabled(canModify);
+        editAction->setEnabled(canModify && selectedRow >= 0);
+        deleteAction->setEnabled(canModify && selectedRow >= 0);
 
         QAction* selectedAction = menu.exec(m_appLockerTable->viewport()->mapToGlobal(localPosition));
         if (selectedAction == addAction)
@@ -942,7 +947,7 @@ namespace ks::misc
                 const bool hasPendingMutation = guardThis->m_pendingMutationCount > 0;
                 if (guardThis->m_refreshButton != nullptr) guardThis->m_refreshButton->setEnabled(!hasPendingMutation);
                 if (guardThis->m_exportButton != nullptr) guardThis->m_exportButton->setEnabled(!hasPendingMutation);
-                if (guardThis->m_appLockerEditButton != nullptr) guardThis->m_appLockerEditButton->setEnabled(!hasPendingMutation);
+                if (guardThis->m_appLockerEditButton != nullptr) guardThis->m_appLockerEditButton->setEnabled(!hasPendingMutation && guardThis->m_appLockerModuleAvailable);
                 if (guardThis->m_wdacEditButton != nullptr) guardThis->m_wdacEditButton->setEnabled(!hasPendingMutation);
                 if (guardThis->m_defenderEditButton != nullptr) guardThis->m_defenderEditButton->setEnabled(!hasPendingMutation);
 
@@ -972,7 +977,7 @@ namespace ks::misc
 
     void ApplicationControlPage::editAppLockerPolicy()
     {
-        if (m_pendingMutationCount > 0 || m_appLockerEditButton == nullptr)
+        if (!m_appLockerModuleAvailable || m_pendingMutationCount > 0 || m_appLockerEditButton == nullptr)
         {
             return;
         }
@@ -996,7 +1001,8 @@ namespace ks::misc
                 }
                 if (guardThis->m_appLockerEditButton != nullptr)
                 {
-                    guardThis->m_appLockerEditButton->setEnabled(guardThis->m_pendingMutationCount == 0);
+                    guardThis->m_appLockerEditButton->setEnabled(
+                        guardThis->m_appLockerModuleAvailable && guardThis->m_pendingMutationCount == 0);
                 }
 
                 QString policyXml;
@@ -1105,7 +1111,7 @@ namespace ks::misc
     void ApplicationControlPage::editAppLockerRule(const int row)
     {
         const bool isNewRule = row < 0;
-        if (m_pendingMutationCount > 0 || m_appLockerTable == nullptr)
+        if (!m_appLockerModuleAvailable || m_pendingMutationCount > 0 || m_appLockerTable == nullptr)
         {
             return;
         }
@@ -1278,7 +1284,7 @@ namespace ks::misc
 
     void ApplicationControlPage::deleteAppLockerRule()
     {
-        if (m_pendingMutationCount > 0 || m_appLockerTable == nullptr || m_appLockerTable->currentRow() < 0)
+        if (!m_appLockerModuleAvailable || m_pendingMutationCount > 0 || m_appLockerTable == nullptr || m_appLockerTable->currentRow() < 0)
         {
             return;
         }
@@ -2382,6 +2388,10 @@ namespace ks::misc
         {
             m_exportButton->setEnabled(false);
         }
+        if (m_appLockerEditButton != nullptr)
+        {
+            m_appLockerEditButton->setEnabled(false);
+        }
         if (m_statusLabel != nullptr)
         {
             m_statusLabel->setText(QStringLiteral("状态: 正在刷新…"));
@@ -2479,10 +2489,13 @@ namespace ks::misc
                 .arg(sipolicyFile.exists() ? QStringLiteral("存在") : QStringLiteral("未找到"))
                 .arg(activeCount);
 
-            // 2) AppLocker 通过 PowerShell 拉取有效策略 XML。
-            const QString appLockerScript = appLockerPowerShellPrelude() + QStringLiteral(
+            // 2) AppLocker：先探测模块。Windows 家庭版等不提供该模块时，不把能力缺失误报为权限或服务故障。
+            const QString appLockerScript = QStringLiteral(
                 "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+                "$module=Get-Module -ListAvailable -Name AppLocker | Select-Object -First 1;"
+                "if($null -eq $module){Write-Output '__APPLOCKER_MODULE_UNAVAILABLE__';exit 0};"
                 "try {"
+                "  Import-Module -Name $module.Path -ErrorAction Stop;"
                 "  $xml=[string](Get-AppLockerPolicy -Effective -Xml -ErrorAction Stop);"
                 "  if([string]::IsNullOrWhiteSpace($xml)){Write-Output '__NO_POLICY__'; exit 0};"
                 "  Write-Output '__OK__';"
@@ -2498,6 +2511,14 @@ namespace ks::misc
             if (appLockerOutput.startsWith(QStringLiteral("__OK__")))
             {
                 appLockerXmlText = appLockerOutput.section(QChar::LineFeed, 1);
+            }
+            else if (appLockerOutput.contains(QStringLiteral("__APPLOCKER_MODULE_UNAVAILABLE__")))
+            {
+                appLockerSummary = QStringLiteral(
+                    "AppLocker 模块不可用。\n"
+                    "当前 Windows 未提供 AppLocker PowerShell 管理组件，无法读取、创建或修改 AppLocker 策略。\n"
+                    "Windows 家庭版通常不支持 AppLocker。\n"
+                    "WDAC、Defender、平台安全、事件日志和文件诊断仍可使用。");
             }
             else if (appLockerOutput.contains(QStringLiteral("__NO_POLICY__")))
             {
@@ -2936,6 +2957,7 @@ namespace ks::misc
         }
 
         m_appLockerRules = std::move(appLockerRules);
+        m_appLockerModuleAvailable = !appLockerSummary.startsWith(QStringLiteral("AppLocker 模块不可用"));
 
         if (m_statusLabel != nullptr)
         {
@@ -2945,6 +2967,10 @@ namespace ks::misc
         if (m_appLockerSummary != nullptr)
         {
             m_appLockerSummary->setText(appLockerSummary);
+        }
+        if (m_appLockerEditButton != nullptr)
+        {
+            m_appLockerEditButton->setEnabled(m_appLockerModuleAvailable && m_pendingMutationCount == 0);
         }
         if (m_wdacSummary != nullptr)
         {

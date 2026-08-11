@@ -312,5 +312,6 @@ namespace ks::misc
         QVector<KeyValueRecord> m_platformRows;         // m_platformRows：最近一次平台安全诊断缓存。
         std::uint64_t m_refreshGeneration = 0;           // m_refreshGeneration：UI 线程维护的刷新代次，阻止旧结果回写。
         int m_pendingMutationCount = 0;                  // m_pendingMutationCount：正在执行的配置写入任务数。
+        bool m_appLockerModuleAvailable = false;         // m_appLockerModuleAvailable：当前系统是否提供 AppLocker 管理模块。
     };
 }
