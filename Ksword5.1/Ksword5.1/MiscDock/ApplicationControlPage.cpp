@@ -324,6 +324,15 @@ namespace
         return text;
     }
 
+    // appLockerPowerShellPrelude：显式加载模块，避免 PowerShell 自动加载被策略或宿主环境关闭。
+    QString appLockerPowerShellPrelude()
+    {
+        return QStringLiteral(
+            "Import-Module AppLocker -ErrorAction Stop;"
+            "foreach($commandName in @('Get-AppLockerPolicy','Set-AppLockerPolicy','Test-AppLockerPolicy')){"
+            "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};");
+    }
+
     // jsonValueToText：
     // - 将 JSON 值转换为展示文本；
     // - 对数组和对象做紧凑化回退，避免丢信息。
@@ -971,7 +980,7 @@ namespace ks::misc
         m_appLockerEditButton->setEnabled(false);
         const QPointer<ApplicationControlPage> guardThis(this);
         std::thread([guardThis]() {
-            const QString queryScript = QStringLiteral(
+            const QString queryScript = appLockerPowerShellPrelude() + QStringLiteral(
                 "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
                 "try {"
                 "  $xml=[string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop);"
@@ -1075,7 +1084,7 @@ namespace ks::misc
                 }
 
                 const QString encodedXml = QString::fromLatin1(editedXml.toUtf8().toBase64());
-                const QString applyScript = QStringLiteral(
+                const QString applyScript = appLockerPowerShellPrelude() + QStringLiteral(
                     "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
                     "try {"
                     "  $xml=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%1'));"
@@ -1260,7 +1269,7 @@ namespace ks::misc
                 .arg(encoded(descriptionEdit->text()))
                 .arg(encoded(pathText));
         }
-        mutationScript = QStringLiteral(
+        mutationScript = appLockerPowerShellPrelude() + QStringLiteral(
             "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
             "try{%1;Write-Output '__OK__'}catch{Write-Output '__ERROR__';Write-Output $_.Exception.Message;exit 1}")
             .arg(mutationScript);
@@ -1292,7 +1301,7 @@ namespace ks::misc
         }
 
         const QString encodedRuleId = QString::fromLatin1(ruleId.toUtf8().toBase64());
-        const QString mutationScript = QStringLiteral(
+        const QString mutationScript = appLockerPowerShellPrelude() + QStringLiteral(
             "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
             "try{"
             "$ruleId=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%1'));$xml=[string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop);if([string]::IsNullOrWhiteSpace($xml)){throw '未配置本地 AppLocker 策略'};"
@@ -2471,7 +2480,7 @@ namespace ks::misc
                 .arg(activeCount);
 
             // 2) AppLocker 通过 PowerShell 拉取有效策略 XML。
-            const QString appLockerScript = QStringLiteral(
+            const QString appLockerScript = appLockerPowerShellPrelude() + QStringLiteral(
                 "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
                 "try {"
                 "  $xml=[string](Get-AppLockerPolicy -Effective -Xml -ErrorAction Stop);"
@@ -3325,7 +3334,7 @@ namespace ks::misc
             {
                 QString escapedFilePath = filePath;
                 escapedFilePath.replace(QStringLiteral("'"), QStringLiteral("''"));
-                const QString testScript = QStringLiteral(
+                const QString testScript = appLockerPowerShellPrelude() + QStringLiteral(
                     "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
                     "try {"
                     "  $path='%1';"

@@ -29588,6 +29588,7 @@
     "该条目未出现在 SCM 枚举中，无法执行服务控制": "This entry did not appear in SCM enumeration, so service control is unavailable",
     "读取 Services 注册表根键信息": "Read Services Registry root-key information",
     "部分成功": "Partial success",
-    "重新验证服务身份": "Revalidate service identity"
+    "重新验证服务身份": "Revalidate service identity",
+    "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker 模块未提供必需命令: '+$commandName)}};": "if($null -eq (Get-Command $commandName -ErrorAction SilentlyContinue)){throw ('AppLocker module does not provide required command: '+$commandName)}};"
   }
 }
