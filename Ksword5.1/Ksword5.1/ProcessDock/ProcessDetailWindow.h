@@ -22,6 +22,7 @@
 #include <deque>
 #include <string>
 #include <vector>
+#include "../../../shared/driver/KswordArkKeyboardIoctl.h"
 
 #include "../../../shared/driver/KswordArkThreadIoctl.h"
 
@@ -230,6 +231,8 @@ private:
         QString processName;             // 所属进程名。
         QString sourceText;              // 来源：窗口热键/菜单/Accelerator/.lnk 等。
         QString detailText;              // 额外上下文。
+        bool hasR0MutationSnapshot = false; // 是否携带可提交的完整 R0 tagHOTKEY 快照。
+        KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY r0MutationSnapshot{}; // 编辑/删除的预期值快照。
     };
 
     // HotkeyInspectRefreshResult：进程热键异步刷新结果。
@@ -456,6 +459,8 @@ private:
     // 返回：无。
     void applyHotkeyRefreshResult(const HotkeyInspectRefreshResult& refreshResult);
     // editSelectedHotkey：验证当前选中来源并通过稳定公开接口写入窗口或 .lnk 热键。
+    // deleteSelectedHotkey：删除选中的公开接口热键或快照保护的 R0 RegisterHotKey 项。
+    void deleteSelectedHotkey();
     void editSelectedHotkey();
     void rebuildHotkeyTable();
     void updateHotkeyStatusLabel(const QString& statusText, bool refreshing);
@@ -845,6 +850,7 @@ private:
 
     // ======== 进程热键页控件与状态 ========
     QVBoxLayout* m_hotkeyLayout = nullptr;       // 进程热键页总布局。
+    QPushButton* m_deleteHotkeyButton = nullptr;  // 删除当前支持来源的热键。
     QPushButton* m_refreshHotkeyButton = nullptr; // 刷新热键按钮。
     QPushButton* m_editHotkeyButton = nullptr;    // 编辑当前支持来源的热键。
     QLabel* m_hotkeyStatusLabel = nullptr;       // 热键扫描状态。

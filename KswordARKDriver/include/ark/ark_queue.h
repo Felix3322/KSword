@@ -20,8 +20,19 @@ KswordARKDriverQueueInitialize(
     _In_ BOOLEAN PowerManaged
     );
 
+VOID
+KswordARKDriverDispatchDeviceControl(
+    _In_ WDFDEVICE Device,
+    _In_opt_ WDFQUEUE Queue,
+    _In_ WDFREQUEST Request,
+    _In_ size_t OutputBufferLength,
+    _In_ size_t InputBufferLength,
+    _In_ ULONG IoControlCode
+    );
+
 // Events from the IoQueue object
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL KswordARKDriverEvtIoDeviceControl;
+EVT_WDF_IO_IN_CALLER_CONTEXT KswordARKDriverEvtIoInCallerContext;
 EVT_WDF_IO_QUEUE_IO_READ KswordARKDriverEvtIoRead;
 EVT_WDF_IO_QUEUE_IO_STOP KswordARKDriverEvtIoStop;
 

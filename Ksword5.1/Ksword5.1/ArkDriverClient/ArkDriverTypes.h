@@ -2091,6 +2091,14 @@ namespace ksword::ark
         std::uint64_t threadInfo = 0;
         std::uint64_t threadObject = 0;
         std::uint64_t windowObject = 0;
+        std::uint64_t windowHandle = 0;
+        std::uint64_t destinationHandle = 0;
+        std::uint64_t callbackAddress = 0;
+        std::uint64_t childListFlink = 0;
+        std::uint64_t childListBlink = 0;
+        std::uint64_t snapshotHash = 0;
+        std::uint32_t objectSize = 0;
+        std::uint32_t entryFlags = 0;
         std::wstring detail;
     };
 
@@ -2112,6 +2120,14 @@ namespace ksword::ark
         std::uint32_t hotkeyVkOffset = 0;
         std::uint32_t hotkeyIdOffset = 0;
         std::vector<KeyboardHotkeyEntry> entries;
+    };
+
+
+    // KeyboardHotkeyMutationResult 承载一次快照保护的 R0 热键编辑或删除响应。
+    struct KeyboardHotkeyMutationResult
+    {
+        IoResult io;
+        KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY_RESPONSE response{};
     };
 
     // KeyboardHookEntry 是 R0 win32k WH_KEYBOARD/WH_KEYBOARD_LL 链的一行 R3 模型。

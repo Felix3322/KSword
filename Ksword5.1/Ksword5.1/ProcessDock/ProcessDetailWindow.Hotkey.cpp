@@ -40,6 +40,8 @@ namespace
         QString processName;
         QString sourceText;
         QString detailText;
+        bool hasR0MutationSnapshot = false;
+        KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY r0MutationSnapshot{};
     };
 
     struct KeyboardHookCandidate
@@ -96,6 +98,39 @@ namespace
             return QStringLiteral("当前驱动版本尚未提供键盘热键/钩子审计入口");
         }
         return rawText;
+    }
+
+    QString keyboardMutationFailureText(
+        const ksword::ark::KeyboardHotkeyMutationResult& result)
+    {
+        if (!result.io.ok)
+        {
+            return QString::fromStdString(result.io.message);
+        }
+        switch (result.response.status)
+        {
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_INVALID_REQUEST:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.invalid_request"), QStringLiteral("驱动拒绝了无效的热键变更请求。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_CONFIRMATION_REQUIRED:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.confirmation_required"), QStringLiteral("驱动要求重新确认此高风险操作。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_UNSUPPORTED_BUILD:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.unsupported_build"), QStringLiteral("当前 win32kfull.sys 身份或内部布局与已验证版本不一致，驱动已安全拒绝。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_CALLER_CONTEXT_REQUIRED:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.caller_context"), QStringLiteral("必须从当前交互式桌面的 GUI 线程执行此操作。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_STALE_SNAPSHOT:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.stale_snapshot"), QStringLiteral("热键对象或链表已变化，请刷新后重试。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_UNSAFE_TARGET:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.unsafe_target"), QStringLiteral("目标不是可安全修改的普通独立热键项。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_CONFLICT:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.conflict"), QStringLiteral("目标组合已由另一个 RegisterHotKey 项占用。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_OPERATION_FAILED:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.operation_failed"), QStringLiteral("驱动写后验证失败；若已开始写入，已尝试回滚。"));
+        case KSWORD_ARK_KEYBOARD_MUTATION_STATUS_SAFETY_DENIED:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.safety_denied"), QStringLiteral("统一安全策略未允许内核修改操作。"));
+        default:
+            return hotkeyUiText(QStringLiteral("process.hotkey.r0.unknown_failure"), QStringLiteral("驱动返回未知变更状态：%1。"))
+                .arg(result.response.status);
+        }
     }
 
     QString hex64Text(const std::uint64_t value)
@@ -1175,6 +1210,31 @@ namespace
             row.hotkeyId = entry.hotkeyId;
             row.modifiers = entry.modifiers;
             row.virtualKey = entry.virtualKey;
+            row.r0MutationSnapshot.source = entry.source;
+            row.r0MutationSnapshot.status = entry.status;
+            row.r0MutationSnapshot.flags = entry.flags;
+            row.r0MutationSnapshot.bucketIndex = entry.bucketIndex;
+            row.r0MutationSnapshot.depth = entry.depth;
+            row.r0MutationSnapshot.modifiers = entry.modifiers;
+            row.r0MutationSnapshot.modifierFlags2 = entry.modifierFlags2;
+            row.r0MutationSnapshot.virtualKey = entry.virtualKey;
+            row.r0MutationSnapshot.hotkeyId = entry.hotkeyId;
+            row.r0MutationSnapshot.processId = entry.processId;
+            row.r0MutationSnapshot.threadId = entry.threadId;
+            row.r0MutationSnapshot.hotkeyObject = entry.hotkeyObject;
+            row.r0MutationSnapshot.nextHotkeyObject = entry.nextHotkeyObject;
+            row.r0MutationSnapshot.sessionGlobals = entry.sessionGlobals;
+            row.r0MutationSnapshot.threadInfo = entry.threadInfo;
+            row.r0MutationSnapshot.windowHandle = entry.windowHandle;
+            row.r0MutationSnapshot.destinationHandle = entry.destinationHandle;
+            row.r0MutationSnapshot.callbackAddress = entry.callbackAddress;
+            row.r0MutationSnapshot.childListFlink = entry.childListFlink;
+            row.r0MutationSnapshot.childListBlink = entry.childListBlink;
+            row.r0MutationSnapshot.snapshotHash = entry.snapshotHash;
+            row.r0MutationSnapshot.objectSize = entry.objectSize;
+            row.r0MutationSnapshot.entryFlags = entry.entryFlags;
+            row.hasR0MutationSnapshot =
+                (entry.entryFlags & KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_MUTABLE) != 0UL;
             row.hotkeyText = hotkeyTextFromParts(entry.modifiers, entry.virtualKey);
             row.processId = entry.processId == 0U ? processId : entry.processId;
             row.threadId = entry.threadId;
@@ -1452,7 +1512,8 @@ namespace
     bool isEditableHotkeySource(const QString& sourceText)
     {
         return sourceText == QStringLiteral("窗口热键") ||
-               sourceText == QStringLiteral("快捷方式热键");
+               sourceText == QStringLiteral("快捷方式热键") ||
+               sourceText == QStringLiteral("R0 RegisterHotKey");
     }
 
     bool setWindowActivationHotkey(
@@ -1797,6 +1858,13 @@ void ProcessDetailWindow::initializeHotkeyTab()
         QStringLiteral("process.hotkey.edit.tooltip"),
         QStringLiteral("修改选中的窗口激活热键或 .lnk 快捷方式热键；双击行也可编辑")));
     m_editHotkeyButton->setEnabled(false);
+    m_deleteHotkeyButton = new QPushButton(
+        hotkeyUiText(QStringLiteral("process.hotkey.delete"), QStringLiteral("删除热键")),
+        hotkeyGroup);
+    m_deleteHotkeyButton->setToolTip(hotkeyUiText(
+        QStringLiteral("process.hotkey.delete.tooltip"),
+        QStringLiteral("删除选中的窗口、快捷方式或可安全修改的 R0 RegisterHotKey 热键")));
+    m_deleteHotkeyButton->setEnabled(false);
     m_hotkeyStatusLabel = new QLabel(QStringLiteral("● 尚未刷新"), hotkeyGroup);
     m_hotkeyStatusLabel->setMinimumWidth(0);
     m_hotkeyStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -1806,6 +1874,7 @@ void ProcessDetailWindow::initializeHotkeyTab()
     topBarLayout->addWidget(m_refreshHotkeyButton);
     topBarLayout->addWidget(m_editHotkeyButton);
     topBarLayout->addWidget(m_hotkeyStatusLabel, 1);
+    topBarLayout->addWidget(m_deleteHotkeyButton);
     hotkeyGroupLayout->addLayout(topBarLayout);
 
     m_hotkeyTable = new ks::ui::VisibleTableWidget(hotkeyGroup);
@@ -1840,10 +1909,17 @@ void ProcessDetailWindow::initializeHotkeyTab()
     connect(m_editHotkeyButton, &QPushButton::clicked, this, [this]() {
         editSelectedHotkey();
     });
+    connect(m_deleteHotkeyButton, &QPushButton::clicked, this, [this]() {
+        deleteSelectedHotkey();
+    });
     connect(m_hotkeyTable, &QTableWidget::itemSelectionChanged, this, [this]() {
         if (m_editHotkeyButton != nullptr)
         {
             m_editHotkeyButton->setEnabled(!m_hotkeyRefreshing && m_hotkeyTable->currentRow() >= 0);
+        }
+        if (m_deleteHotkeyButton != nullptr)
+        {
+            m_deleteHotkeyButton->setEnabled(!m_hotkeyRefreshing && m_hotkeyTable->currentRow() >= 0);
         }
     });
     connect(m_hotkeyTable, &QTableWidget::cellDoubleClicked, this, [this](const int, const int) {
@@ -1856,6 +1932,7 @@ void ProcessDetailWindow::initializeHotkeyTab()
     const QString buttonStyle = buildBlueButtonStyle();
     m_refreshHotkeyButton->setStyleSheet(buttonStyle);
     m_editHotkeyButton->setStyleSheet(buttonStyle);
+    m_deleteHotkeyButton->setStyleSheet(buttonStyle);
 }
 
 void ProcessDetailWindow::editSelectedHotkey()
@@ -1891,6 +1968,7 @@ void ProcessDetailWindow::editSelectedHotkey()
     }
 
     const HotkeyInspectItem row = m_hotkeyRows.at(static_cast<std::size_t>(rowIndexValue));
+    const bool isR0Hotkey = row.sourceText == QStringLiteral("R0 RegisterHotKey");
     if (!isEditableHotkeySource(row.sourceText))
     {
         QMessageBox::information(
@@ -1898,7 +1976,17 @@ void ProcessDetailWindow::editSelectedHotkey()
             titleText,
             hotkeyUiText(
                 QStringLiteral("process.hotkey.edit.unsupported"),
-                QStringLiteral("此来源是只读审计数据。当前仅支持修改窗口激活热键和 .lnk 快捷方式热键；PE Accelerator、菜单显示文本和 R0 热键表不能安全在线改写。")));
+                QStringLiteral("此来源是只读审计数据。当前仅支持修改窗口激活热键、.lnk 快捷方式热键和通过安全快照验证的 R0 RegisterHotKey 项。")));
+        return;
+    }
+    if (isR0Hotkey && !row.hasR0MutationSnapshot)
+    {
+        QMessageBox::warning(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.r0.not_mutable"),
+                QStringLiteral("该 R0 热键不是普通独立项，或枚举时未取得完整对象快照，因此不能修改。")));
         return;
     }
 
@@ -1917,6 +2005,16 @@ void ProcessDetailWindow::editSelectedHotkey()
         return;
     }
 
+    if (isR0Hotkey && editedText.isEmpty())
+    {
+        QMessageBox::information(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.r0.use_delete"),
+                QStringLiteral("R0 热键请使用“删除热键”按钮删除；编辑操作必须提供新的组合。")));
+        return;
+    }
     std::uint32_t modifiers = 0;
     std::uint32_t virtualKey = 0;
     if (!editedText.isEmpty() && !parseHotkeyText(editedText, modifiers, virtualKey))
@@ -1929,7 +2027,11 @@ void ProcessDetailWindow::editSelectedHotkey()
                 QStringLiteral("无法识别该热键。请使用 Ctrl、Shift、Alt 加字母、数字、F1-F24 或常用功能键。")));
         return;
     }
-    if ((modifiers & MOD_WIN) != 0U)
+    if (isR0Hotkey)
+    {
+        modifiers |= row.modifiers & MOD_NOREPEAT;
+    }
+    if (!isR0Hotkey && (modifiers & MOD_WIN) != 0U)
     {
         QMessageBox::warning(
             this,
@@ -1937,6 +2039,49 @@ void ProcessDetailWindow::editSelectedHotkey()
             hotkeyUiText(
                 QStringLiteral("process.hotkey.edit.win_unsupported"),
                 QStringLiteral("Windows 键不受 WM_SETHOTKEY 或 .lnk 热键字段支持，请改用 Ctrl、Shift 或 Alt。")));
+        return;
+    }
+
+    if (isR0Hotkey)
+    {
+        const QString confirmText = hotkeyUiText(
+            QStringLiteral("process.hotkey.r0.edit.confirm"),
+            QStringLiteral("这会在内核 USER 临界区内修改 RegisterHotKey 对象。驱动只接受完全一致的快照，并验证除组合键及必要链指针外的所有字节保持不变。\n\n确认将 %1 修改为 %2？"))
+            .arg(row.hotkeyText, hotkeyTextFromParts(modifiers, virtualKey));
+        if (QMessageBox::warning(
+                this,
+                titleText,
+                confirmText,
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No) != QMessageBox::Yes)
+        {
+            return;
+        }
+
+        const ksword::ark::KeyboardHotkeyMutationResult mutationResult =
+            ksword::ark::DriverClient().mutateKeyboardHotkey(
+                row.r0MutationSnapshot,
+                KSWORD_ARK_KEYBOARD_MUTATION_OPERATION_EDIT,
+                modifiers,
+                virtualKey);
+        if (!mutationResult.io.ok ||
+            mutationResult.response.status != KSWORD_ARK_KEYBOARD_MUTATION_STATUS_OK ||
+            (mutationResult.response.responseFlags &
+                KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_OTHER_BYTES_SAME) == 0UL)
+        {
+            QMessageBox::critical(
+                this,
+                titleText,
+                hotkeyUiText(QStringLiteral("process.hotkey.edit.failed"), QStringLiteral("热键修改失败：%1"))
+                    .arg(keyboardMutationFailureText(mutationResult)));
+            return;
+        }
+        QMessageBox::information(
+            this,
+            titleText,
+            hotkeyUiText(QStringLiteral("process.hotkey.edit.success"), QStringLiteral("热键已修改为 %1。"))
+                .arg(hotkeyTextFromParts(modifiers, virtualKey)));
+        requestAsyncHotkeyRefresh();
         return;
     }
 
@@ -1974,6 +2119,134 @@ void ProcessDetailWindow::editSelectedHotkey()
     requestAsyncHotkeyRefresh();
 }
 
+
+void ProcessDetailWindow::deleteSelectedHotkey()
+{
+    const QString titleText = hotkeyUiText(
+        QStringLiteral("process.hotkey.delete.title"),
+        QStringLiteral("删除热键"));
+    if (m_hotkeyTable == nullptr || m_hotkeyTable->currentRow() < 0)
+    {
+        QMessageBox::information(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.select_row"),
+                QStringLiteral("请先选择一条热键记录。")));
+        return;
+    }
+
+    const QTableWidgetItem* rowIdentityItem = m_hotkeyTable->item(m_hotkeyTable->currentRow(), 0);
+    bool rowIndexOk = false;
+    const qulonglong rowIndexValue = rowIdentityItem != nullptr
+        ? rowIdentityItem->data(kHotkeyRowIndexRole).toULongLong(&rowIndexOk)
+        : 0ULL;
+    if (!rowIndexOk || rowIndexValue >= m_hotkeyRows.size())
+    {
+        QMessageBox::warning(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.edit.stale"),
+                QStringLiteral("所选记录已失效，请刷新后重试。")));
+        return;
+    }
+
+    const HotkeyInspectItem row = m_hotkeyRows.at(static_cast<std::size_t>(rowIndexValue));
+    const bool isR0Hotkey = row.sourceText == QStringLiteral("R0 RegisterHotKey");
+    if (!isEditableHotkeySource(row.sourceText))
+    {
+        QMessageBox::information(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.delete.unsupported"),
+                QStringLiteral("该来源是只读审计数据，不能删除。")));
+        return;
+    }
+    if (isR0Hotkey && !row.hasR0MutationSnapshot)
+    {
+        QMessageBox::warning(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.r0.not_mutable"),
+                QStringLiteral("该 R0 热键不是普通独立项，或枚举时未取得完整对象快照，因此不能修改。")));
+        return;
+    }
+
+    const QString confirmText = isR0Hotkey
+        ? hotkeyUiText(
+            QStringLiteral("process.hotkey.r0.delete.confirm"),
+            QStringLiteral("这会在内核 USER 临界区内调用 win32k 的标准热键删除路径。驱动会重新验证完整对象快照，并拒绝回调、占位或含子项的对象。\n\n确认删除 %1（%2）？"))
+            .arg(row.hotkeyText, row.objectText)
+        : hotkeyUiText(
+            QStringLiteral("process.hotkey.delete.confirm"),
+            QStringLiteral("确认删除 %1（%2）？"))
+            .arg(row.hotkeyText, row.objectText);
+    const QMessageBox::StandardButton confirmed = isR0Hotkey
+        ? QMessageBox::warning(
+            this,
+            titleText,
+            confirmText,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No)
+        : QMessageBox::question(
+            this,
+            titleText,
+            confirmText,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+    if (confirmed != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    QString errorText;
+    if (isR0Hotkey)
+    {
+        const ksword::ark::KeyboardHotkeyMutationResult mutationResult =
+            ksword::ark::DriverClient().mutateKeyboardHotkey(
+                row.r0MutationSnapshot,
+                KSWORD_ARK_KEYBOARD_MUTATION_OPERATION_DELETE);
+        if (!mutationResult.io.ok ||
+            mutationResult.response.status != KSWORD_ARK_KEYBOARD_MUTATION_STATUS_OK ||
+            (mutationResult.response.responseFlags &
+                KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_CHANGED) == 0UL)
+        {
+            errorText = keyboardMutationFailureText(mutationResult);
+        }
+    }
+    else
+    {
+        bool conflictDetected = false;
+        const bool deleted = row.sourceText == QStringLiteral("窗口热键")
+            ? setWindowActivationHotkey(row.objectText, row.processId, 0U, 0U, errorText, conflictDetected)
+            : setShellShortcutHotkey(row.objectText, 0U, 0U, errorText);
+        if (!deleted && errorText.isEmpty())
+        {
+            errorText = hotkeyUiText(
+                QStringLiteral("process.hotkey.delete.operation_failed"),
+                QStringLiteral("公开接口未能清除该热键。"));
+        }
+    }
+
+    if (!errorText.isEmpty())
+    {
+        QMessageBox::critical(
+            this,
+            titleText,
+            hotkeyUiText(
+                QStringLiteral("process.hotkey.delete.failed"),
+                QStringLiteral("热键删除失败：%1")).arg(errorText));
+        return;
+    }
+    QMessageBox::information(
+        this,
+        titleText,
+        hotkeyUiText(QStringLiteral("process.hotkey.delete.success"), QStringLiteral("热键已删除。")));
+    requestAsyncHotkeyRefresh();
+}
 void ProcessDetailWindow::showHotkeyTabAndRefresh()
 {
     // 右键菜单直达入口：
@@ -2044,6 +2317,10 @@ void ProcessDetailWindow::requestAsyncHotkeyRefresh()
     }
     updateHotkeyStatusLabel(QStringLiteral("● 正在扫描进程热键..."), true);
 
+    if (m_deleteHotkeyButton != nullptr)
+    {
+        m_deleteHotkeyButton->setEnabled(false);
+    }
     if (m_hotkeyRefreshProgressPid == 0)
     {
         m_hotkeyRefreshProgressPid = kPro.addReusable(this, "进程详情", "扫描进程热键");
@@ -2078,6 +2355,8 @@ void ProcessDetailWindow::requestAsyncHotkeyRefresh()
                 row.processName = candidate.processName;
                 row.sourceText = candidate.sourceText;
                 row.detailText = candidate.detailText;
+                row.hasR0MutationSnapshot = candidate.hasR0MutationSnapshot;
+                row.r0MutationSnapshot = candidate.r0MutationSnapshot;
                 refreshResult.rows.push_back(std::move(row));
             }
 
@@ -2405,6 +2684,8 @@ void ProcessDetailWindow::requestAsyncKeyboardRefresh()
                 row.processName = candidate.processName;
                 row.sourceText = candidate.sourceText;
                 row.detailText = candidate.detailText;
+                row.hasR0MutationSnapshot = candidate.hasR0MutationSnapshot;
+                row.r0MutationSnapshot = candidate.r0MutationSnapshot;
                 refreshResult.hotkeyRows.push_back(std::move(row));
             }
 

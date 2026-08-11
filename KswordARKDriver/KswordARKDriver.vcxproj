@@ -230,6 +230,7 @@
     <ClCompile Include="src\features\network\network_ioctl.c" />
     <ClCompile Include="src\features\keyboard\keyboard_query.c" />
     <ClCompile Include="src\features\keyboard\keyboard_ioctl.c" />
+    <ClCompile Include="src\features\keyboard\keyboard_mutation.c" />
     <ClCompile Include="src\features\storage\storage_audit.c" />
     <ClCompile Include="src\features\storage\storage_ioctl.c" />
     <ClCompile Include="src\features\storage\storage_forensics.c" />
@@ -352,6 +353,7 @@
     <ClInclude Include="include\ark\ark_redirect.h" />
     <ClInclude Include="include\ark\ark_network.h" />
     <ClInclude Include="include\ark\ark_keyboard.h" />
+    <ClInclude Include="src\features\keyboard\keyboard_internal.h" />
     <ClInclude Include="include\ark\ark_storage.h" />
     <ClInclude Include="include\ark\ark_mutation.h" />
     <ClInclude Include="..\shared\driver\KswordArkKernelObjectIoctl.h" />

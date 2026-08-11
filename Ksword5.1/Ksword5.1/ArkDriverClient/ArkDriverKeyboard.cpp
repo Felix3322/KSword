@@ -132,6 +132,14 @@ namespace ksword::ark
             row.threadInfo = static_cast<std::uint64_t>(sourceEntry->threadInfo);
             row.threadObject = static_cast<std::uint64_t>(sourceEntry->threadObject);
             row.windowObject = static_cast<std::uint64_t>(sourceEntry->windowObject);
+            row.windowHandle = static_cast<std::uint64_t>(sourceEntry->windowHandle);
+            row.destinationHandle = static_cast<std::uint64_t>(sourceEntry->destinationHandle);
+            row.callbackAddress = static_cast<std::uint64_t>(sourceEntry->callbackAddress);
+            row.childListFlink = static_cast<std::uint64_t>(sourceEntry->childListFlink);
+            row.childListBlink = static_cast<std::uint64_t>(sourceEntry->childListBlink);
+            row.snapshotHash = static_cast<std::uint64_t>(sourceEntry->snapshotHash);
+            row.objectSize = static_cast<std::uint32_t>(sourceEntry->objectSize);
+            row.entryFlags = static_cast<std::uint32_t>(sourceEntry->entryFlags);
             row.detail = fixedKeyboardWideToString(sourceEntry->detail, KSWORD_ARK_KEYBOARD_DETAIL_CHARS);
             enumResult.entries.push_back(std::move(row));
         }
@@ -147,6 +155,68 @@ namespace ksword::ark
         return enumResult;
     }
 
+
+    KeyboardHotkeyMutationResult DriverClient::mutateKeyboardHotkey(
+        const KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY& entry,
+        const unsigned long operation,
+        const unsigned long newModifiers,
+        const unsigned long newVirtualKey) const
+    {
+        KeyboardHotkeyMutationResult result{};
+        KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY_REQUEST request{};
+
+        request.size = sizeof(request);
+        request.version = KSWORD_ARK_KEYBOARD_PROTOCOL_VERSION;
+        request.operation = operation;
+        request.flags = KSWORD_ARK_KEYBOARD_MUTATION_FLAG_UI_CONFIRMED;
+        request.confirmationToken = KSWORD_ARK_KEYBOARD_MUTATION_CONFIRMATION_TOKEN;
+        request.expectedBucketIndex = entry.bucketIndex;
+        request.expectedModifiers = entry.modifiers;
+        request.expectedModifierFlags2 = entry.modifierFlags2;
+        request.expectedVirtualKey = entry.virtualKey;
+        request.expectedHotkeyId = entry.hotkeyId;
+        request.newModifiers = newModifiers;
+        request.newVirtualKey = newVirtualKey;
+        request.hotkeyObject = entry.hotkeyObject;
+        request.sessionGlobals = entry.sessionGlobals;
+        request.expectedThreadInfo = entry.threadInfo;
+        request.expectedWindowHandle = entry.windowHandle;
+        request.expectedDestinationHandle = entry.destinationHandle;
+        request.expectedCallbackAddress = entry.callbackAddress;
+        request.expectedNextHotkeyObject = entry.nextHotkeyObject;
+        request.expectedChildListFlink = entry.childListFlink;
+        request.expectedChildListBlink = entry.childListBlink;
+        request.expectedSnapshotHash = entry.snapshotHash;
+
+        // 强制在当前 GUI 调用线程建立 Win32 USER 上下文，驱动会拒绝 worker-only 调用。
+        (void)::GetDesktopWindow();
+        result.io = deviceIoControl(
+            IOCTL_KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY,
+            &request,
+            static_cast<unsigned long>(sizeof(request)),
+            &result.response,
+            static_cast<unsigned long>(sizeof(result.response)));
+        if (!result.io.ok)
+        {
+            result.io.message =
+                "DeviceIoControl(IOCTL_KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY) failed, error=" +
+                std::to_string(result.io.win32Error);
+            return result;
+        }
+        if (result.io.bytesReturned < sizeof(result.response) ||
+            result.response.size != sizeof(result.response) ||
+            result.response.version != KSWORD_ARK_KEYBOARD_PROTOCOL_VERSION)
+        {
+            result.io.ok = false;
+            result.io.win32Error = ERROR_INVALID_DATA;
+            result.io.message = "keyboard-hotkey mutation response invalid";
+            return result;
+        }
+        result.io.ntStatus = result.response.lastStatus;
+        result.io.message = "status=" + std::to_string(result.response.status) +
+            ", ntstatus=" + std::to_string(result.response.lastStatus);
+        return result;
+    }
     KeyboardHookEnumResult DriverClient::enumerateKeyboardHooks(
         const std::uint32_t processId,
         const unsigned long flags,

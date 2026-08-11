@@ -94,6 +94,7 @@ Return Value:
     WdfDeviceInitSetDeviceType(deviceInit, FILE_DEVICE_UNKNOWN);
     WdfDeviceInitSetExclusive(deviceInit, FALSE);
     WdfDeviceInitSetIoType(deviceInit, WdfDeviceIoBuffered);
+    WdfDeviceInitSetIoInCallerContextCallback(deviceInit, KswordARKDriverEvtIoInCallerContext);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttributes, DEVICE_CONTEXT);
     KswordArkStartupStage(KswordArkStartStageDeviceCreate);
@@ -220,6 +221,7 @@ Return Value:
     WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpPowerCallbacks);
     pnpPowerCallbacks.EvtDevicePrepareHardware = KswordARKDriverEvtDevicePrepareHardware;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpPowerCallbacks);
+    WdfDeviceInitSetIoInCallerContextCallback(DeviceInit, KswordARKDriverEvtIoInCallerContext);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttributes, DEVICE_CONTEXT);
     status = WdfDeviceCreate(&DeviceInit, &deviceAttributes, &device);

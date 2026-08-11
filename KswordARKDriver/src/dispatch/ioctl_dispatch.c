@@ -60,8 +60,9 @@ Return Value:
 }
 
 VOID
-KswordARKDriverEvtIoDeviceControl(
-    _In_ WDFQUEUE Queue,
+KswordARKDriverDispatchDeviceControl(
+    _In_ WDFDEVICE Device,
+    _In_opt_ WDFQUEUE Queue,
     _In_ WDFREQUEST Request,
     _In_ size_t OutputBufferLength,
     _In_ size_t InputBufferLength,
@@ -88,7 +89,6 @@ Return Value:
 
 --*/
 {
-    WDFDEVICE device = WdfIoQueueGetDevice(Queue);
     const KSWORD_ARK_IOCTL_ENTRY* ioctlEntry = NULL;
     NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
     size_t completeBytes = 0;
@@ -105,14 +105,14 @@ Return Value:
 
     ioctlEntry = KswordARKLookupIoctlEntry(IoControlCode);
     if (ioctlEntry == NULL || ioctlEntry->Handler == NULL) {
-        KswordARKDispatchLog(device, "Warn", "Unsupported ioctl=0x%08X.", (unsigned int)IoControlCode);
+        KswordARKDispatchLog(Device, "Warn", "Unsupported ioctl=0x%08X.", (unsigned int)IoControlCode);
         WdfRequestCompleteWithInformation(Request, status, completeBytes);
         return;
     }
 
     if (!KswordARKCapabilityIsIoctlAllowed(ioctlEntry->RequiredCapability, &status)) {
         KswordARKDispatchLog(
-            device,
+            Device,
             "Warn",
             "IOCTL denied by capability gate: name=%s, code=0x%08X, required=0x%I64X, status=0x%08X.",
             ioctlEntry->Name != NULL ? ioctlEntry->Name : "<unnamed>",
@@ -124,14 +124,14 @@ Return Value:
         return;
     }
 
-    status = ioctlEntry->Handler(device, Request, InputBufferLength, OutputBufferLength, &completeBytes);
+    status = ioctlEntry->Handler(Device, Request, InputBufferLength, OutputBufferLength, &completeBytes);
     if ((ioctlEntry->Flags & KSWORD_ARK_IOCTL_FLAG_QUIET_COMPLETION) == 0UL &&
         !((ioctlEntry->Flags & KSWORD_ARK_IOCTL_FLAG_QUIET_SUCCESS) != 0UL &&
         (NT_SUCCESS(status) || status == STATUS_PENDING)) &&
         !((ioctlEntry->Flags & KSWORD_ARK_IOCTL_FLAG_QUIET_INVALID_CID) != 0UL &&
         status == STATUS_INVALID_CID)) {
         KswordARKDispatchLog(
-            device,
+            Device,
             NT_SUCCESS(status) || status == STATUS_PENDING ? "Info" : "Warn",
             "IOCTL complete: name=%s, code=0x%08X, status=0x%08X, in=%Iu, out=%Iu, bytes=%Iu.",
             ioctlEntry->Name != NULL ? ioctlEntry->Name : "<unnamed>",
@@ -145,4 +145,22 @@ Return Value:
     if (status != STATUS_PENDING) {
         WdfRequestCompleteWithInformation(Request, status, completeBytes);
     }
+}
+
+VOID
+KswordARKDriverEvtIoDeviceControl(
+    _In_ WDFQUEUE Queue,
+    _In_ WDFREQUEST Request,
+    _In_ size_t OutputBufferLength,
+    _In_ size_t InputBufferLength,
+    _In_ ULONG IoControlCode
+    )
+{
+    KswordARKDriverDispatchDeviceControl(
+        WdfIoQueueGetDevice(Queue),
+        Queue,
+        Request,
+        OutputBufferLength,
+        InputBufferLength,
+        IoControlCode);
 }

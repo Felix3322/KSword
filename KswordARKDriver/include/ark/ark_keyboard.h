@@ -22,4 +22,14 @@ KswordARKDriverEnumerateKeyboardHooks(
     _Out_ size_t* BytesWrittenOut
     );
 
+NTSTATUS
+KswordARKKeyboardIoctlMutateHotkey(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request,
+    _In_ size_t InputBufferLength,
+    _In_ size_t OutputBufferLength,
+    _Out_ size_t* BytesReturned
+    );
+
+
 EXTERN_C_END

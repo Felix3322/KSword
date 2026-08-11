@@ -79,6 +79,42 @@ Return Value:
 }
 
 VOID
+KswordARKDriverEvtIoInCallerContext(
+    _In_ WDFDEVICE Device,
+    _In_ WDFREQUEST Request
+    )
+{
+    WDF_REQUEST_PARAMETERS parameters;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    WDF_REQUEST_PARAMETERS_INIT(&parameters);
+    WdfRequestGetParameters(Request, &parameters);
+    if (parameters.Type == WdfRequestTypeDeviceControl &&
+        parameters.Parameters.DeviceIoControl.IoControlCode ==
+            IOCTL_KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY) {
+        KswordARKDriverDispatchDeviceControl(
+            Device,
+            WDF_NO_HANDLE,
+            Request,
+            parameters.Parameters.DeviceIoControl.OutputBufferLength,
+            parameters.Parameters.DeviceIoControl.InputBufferLength,
+            parameters.Parameters.DeviceIoControl.IoControlCode);
+        return;
+    }
+
+    status = WdfDeviceEnqueueRequest(Device, Request);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(
+            TRACE_LEVEL_ERROR,
+            TRACE_QUEUE,
+            "WdfDeviceEnqueueRequest failed %!STATUS!",
+            status);
+        WdfRequestComplete(Request, status);
+    }
+}
+
+
+VOID
 KswordARKDriverEvtIoRead(
     _In_ WDFQUEUE Queue,
     _In_ WDFREQUEST Request,

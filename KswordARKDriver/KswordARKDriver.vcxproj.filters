@@ -341,6 +341,9 @@
     <ClInclude Include="include\ark\ark_keyboard.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="src\features\keyboard\keyboard_internal.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="include\ark\ark_storage.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -960,6 +963,9 @@
       <Filter>Source Files\Features\Keyboard</Filter>
     </ClCompile>
     <ClCompile Include="src\features\keyboard\keyboard_ioctl.c">
+      <Filter>Source Files\Features\Keyboard</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\keyboard\keyboard_mutation.c">
       <Filter>Source Files\Features\Keyboard</Filter>
     </ClCompile>
     <ClCompile Include="src\features\win32k\win32k_timer.c">

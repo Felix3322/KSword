@@ -145,6 +145,7 @@ NTSTATUS KswordARKNetworkIoctlControlTrafficCapture(_In_ WDFDEVICE Device, _In_ 
 NTSTATUS KswordARKNetworkIoctlQueryNdisChain(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKeyboardIoctlEnumHotkeys(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKKeyboardIoctlEnumHooks(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
+NTSTATUS KswordARKKeyboardIoctlMutateHotkey(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMutationIoctlPrepare(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMutationIoctlCommit(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
 NTSTATUS KswordARKMutationIoctlRollback(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ size_t InputBufferLength, _In_ size_t OutputBufferLength, _Out_ size_t* BytesReturned);
@@ -335,6 +336,7 @@ static const KSWORD_ARK_IOCTL_ENTRY g_KswordArkIoctlTable[] = {
     { IOCTL_KSWORD_ARK_NETWORK_QUERY_NDIS_CHAIN, KswordARKNetworkIoctlQueryNdisChain, "IOCTL_KSWORD_ARK_NETWORK_QUERY_NDIS_CHAIN", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS, KswordARKKeyboardIoctlEnumHotkeys, "IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOOKS, KswordARKKeyboardIoctlEnumHooks, "IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOOKS", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
+    { IOCTL_KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY, KswordARKKeyboardIoctlMutateHotkey, "IOCTL_KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_MUTATION_PREPARE, KswordARKMutationIoctlPrepare, "IOCTL_KSWORD_ARK_MUTATION_PREPARE", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_MUTATION_COMMIT, KswordARKMutationIoctlCommit, "IOCTL_KSWORD_ARK_MUTATION_COMMIT", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },
     { IOCTL_KSWORD_ARK_MUTATION_ROLLBACK, KswordARKMutationIoctlRollback, "IOCTL_KSWORD_ARK_MUTATION_ROLLBACK", KSWORD_ARK_IOCTL_CAPABILITY_NONE, KSWORD_ARK_IOCTL_FLAG_NONE },

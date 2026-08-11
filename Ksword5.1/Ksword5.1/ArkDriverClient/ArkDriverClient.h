@@ -550,6 +550,12 @@ namespace ksword::ark
         bool supportsExternalCallbackExperimentalUnlink() const;
         CallbackEnumResult enumerateCallbacks(unsigned long flags = KSWORD_ARK_ENUM_CALLBACK_FLAG_INCLUDE_ALL) const;
         KeyboardHotkeyEnumResult enumerateKeyboardHotkeys(std::uint32_t processId = 0, unsigned long flags = KSWORD_ARK_KEYBOARD_ENUM_FLAG_INCLUDE_SYSTEM | KSWORD_ARK_KEYBOARD_ENUM_FLAG_INCLUDE_DIAGNOSTICS, unsigned long maxEntries = 2048UL) const;
+        KeyboardHotkeyMutationResult mutateKeyboardHotkey(
+            const KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY& entry,
+            unsigned long operation,
+            unsigned long newModifiers = 0UL,
+            unsigned long newVirtualKey = 0UL) const;
+
         KeyboardHookEnumResult enumerateKeyboardHooks(std::uint32_t processId = 0, unsigned long flags = KSWORD_ARK_KEYBOARD_ENUM_FLAG_INCLUDE_THREAD_HOOKS | KSWORD_ARK_KEYBOARD_ENUM_FLAG_INCLUDE_GLOBAL_HOOKS | KSWORD_ARK_KEYBOARD_ENUM_FLAG_INCLUDE_DIAGNOSTICS, unsigned long maxEntries = 2048UL) const;
         DriverCapabilitiesQueryResult queryDriverCapabilities() const;
         DynDataStatusResult queryDynDataStatus() const;

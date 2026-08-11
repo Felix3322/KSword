@@ -5,15 +5,18 @@
 // ============================================================
 // KswordArkKeyboardIoctl.h
 // 作用：
-// - 定义 R3 <-> R0 键盘热键/钩子只读枚举协议；
+// - 定义 R3 <-> R0 键盘热键/钩子枚举协议；
 // - 热键枚举面向 win32k RegisterHotKey 内部表；
 // - 钩子枚举面向 WH_KEYBOARD / WH_KEYBOARD_LL 链，仅返回诊断信息。
+// - 热键编辑/删除只接受枚举返回的完整快照，并在 USER 临界区内重新验证；
+// - 编辑只改变 modifiers、virtualKey 及换桶所需的 next 链接，其他对象字节必须不变。
 // ============================================================
 
-#define KSWORD_ARK_KEYBOARD_PROTOCOL_VERSION 1UL
+#define KSWORD_ARK_KEYBOARD_PROTOCOL_VERSION 2UL
 
 #define KSWORD_ARK_IOCTL_FUNCTION_ENUM_KEYBOARD_HOTKEYS 0x847UL
 #define KSWORD_ARK_IOCTL_FUNCTION_ENUM_KEYBOARD_HOOKS   0x848UL
+#define KSWORD_ARK_IOCTL_FUNCTION_MUTATE_KEYBOARD_HOTKEY 0x849UL
 
 #define IOCTL_KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS \
     CTL_CODE( \
@@ -28,6 +31,14 @@
         KSWORD_ARK_IOCTL_FUNCTION_ENUM_KEYBOARD_HOOKS, \
         METHOD_BUFFERED, \
         FILE_ANY_ACCESS)
+
+#define IOCTL_KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY \
+    CTL_CODE( \
+        KSWORD_ARK_IOCTL_DEVICE_TYPE, \
+        KSWORD_ARK_IOCTL_FUNCTION_MUTATE_KEYBOARD_HOTKEY, \
+        METHOD_BUFFERED, \
+        FILE_WRITE_ACCESS)
+
 
 #define KSWORD_ARK_KEYBOARD_ENUM_FLAG_INCLUDE_SYSTEM        0x00000001UL
 #define KSWORD_ARK_KEYBOARD_ENUM_FLAG_FILTER_PROCESS        0x00000002UL
@@ -63,6 +74,38 @@
 
 #define KSWORD_ARK_KEYBOARD_DETAIL_CHARS 128U
 
+
+#define KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_MAIN          0x00000001UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_HAS_CHILDREN  0x00000002UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_PLACEHOLDER   0x00000004UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_CALLBACK      0x00000008UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_MUTABLE       0x00000010UL
+
+#define KSWORD_ARK_KEYBOARD_MUTATION_OPERATION_EDIT         1UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_OPERATION_DELETE       2UL
+
+#define KSWORD_ARK_KEYBOARD_MUTATION_FLAG_UI_CONFIRMED      0x00000001UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_CONFIRMATION_TOKEN     0x484B4559UL /* 'HKEY' */
+
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_OK                    0UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_INVALID_REQUEST       1UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_CONFIRMATION_REQUIRED 2UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_UNSUPPORTED_BUILD     3UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_CALLER_CONTEXT_REQUIRED 4UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_STALE_SNAPSHOT        5UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_UNSAFE_TARGET         6UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_CONFLICT              7UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_OPERATION_FAILED      8UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_STATUS_SAFETY_DENIED         9UL
+
+#define KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_IDENTITY_VALIDATED 0x00000001UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_CALLER_VALIDATED   0x00000002UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_SNAPSHOT_VALIDATED 0x00000004UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_CHANGED            0x00000008UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_REBUCKETED         0x00000010UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_OTHER_BYTES_SAME   0x00000020UL
+#define KSWORD_ARK_KEYBOARD_MUTATION_RESPONSE_ROLLED_BACK         0x00000040UL
+
 typedef struct _KSWORD_ARK_ENUM_KEYBOARD_REQUEST
 {
     unsigned long version;
@@ -96,6 +139,15 @@ typedef struct _KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY
     unsigned long long threadObject;
     unsigned long long windowObject;
     wchar_t detail[KSWORD_ARK_KEYBOARD_DETAIL_CHARS];
+    // v2 尾部扩展保持 v1 字段偏移不变，旧客户端仍可按 entrySize 跳过。
+    unsigned long long windowHandle;
+    unsigned long long destinationHandle;
+    unsigned long long callbackAddress;
+    unsigned long long childListFlink;
+    unsigned long long childListBlink;
+    unsigned long long snapshotHash;
+    unsigned long objectSize;
+    unsigned long entryFlags;
 } KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY;
 
 typedef struct _KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS_RESPONSE
@@ -118,12 +170,65 @@ typedef struct _KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS_RESPONSE
     KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY entries[1];
 } KSWORD_ARK_ENUM_KEYBOARD_HOTKEYS_RESPONSE;
 
+typedef struct _KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY_REQUEST
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long operation;
+    unsigned long flags;
+    unsigned long confirmationToken;
+    unsigned long expectedBucketIndex;
+    unsigned long expectedModifiers;
+    unsigned long expectedModifierFlags2;
+    unsigned long expectedVirtualKey;
+    unsigned long expectedHotkeyId;
+    unsigned long newModifiers;
+    unsigned long newVirtualKey;
+    unsigned long reserved0;
+    unsigned long reserved1;
+    unsigned long long hotkeyObject;
+    unsigned long long sessionGlobals;
+    unsigned long long expectedThreadInfo;
+    unsigned long long expectedWindowHandle;
+    unsigned long long expectedDestinationHandle;
+    unsigned long long expectedCallbackAddress;
+    unsigned long long expectedNextHotkeyObject;
+    unsigned long long expectedChildListFlink;
+    unsigned long long expectedChildListBlink;
+    unsigned long long expectedSnapshotHash;
+} KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY_REQUEST;
+
+typedef struct _KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY_RESPONSE
+{
+    unsigned long size;
+    unsigned long version;
+    unsigned long status;
+    unsigned long operation;
+    unsigned long responseFlags;
+    long lastStatus;
+    unsigned long previousBucketIndex;
+    unsigned long currentBucketIndex;
+    unsigned long previousModifiers;
+    unsigned long currentModifiers;
+    unsigned long previousVirtualKey;
+    unsigned long currentVirtualKey;
+    unsigned long imageTimeDateStamp;
+    unsigned long imageSize;
+    unsigned long pdbAge;
+    unsigned long reserved0;
+    unsigned long long hotkeyObject;
+    unsigned long long sessionGlobals;
+    unsigned long long previousSnapshotHash;
+    unsigned long long currentSnapshotHash;
+} KSWORD_ARK_MUTATE_KEYBOARD_HOTKEY_RESPONSE;
+
 typedef struct _KSWORD_ARK_KEYBOARD_HOOK_ENTRY
 {
     unsigned long source;
     unsigned long status;
     unsigned long flags;
     unsigned long hookType;
+
     unsigned long hookScope;
     unsigned long processId;
     unsigned long threadId;

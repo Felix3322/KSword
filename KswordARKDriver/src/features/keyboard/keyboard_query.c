@@ -16,6 +16,7 @@ Environment:
 
 #include "ark/ark_keyboard.h"
 #include "../kernel/hook_scan_support.h"
+#include "keyboard_internal.h"
 
 #include <ntstrsafe.h>
 
@@ -38,6 +39,14 @@ Environment:
 #define KSWORD_ARK_KEYBOARD_HOTKEY_THREADINFO_OFFSET 0x00UL
 #define KSWORD_ARK_KEYBOARD_HOTKEY_WINDOW_OFFSET     0x10UL
 #define KSWORD_ARK_KEYBOARD_HOTKEY_FLAGS2_OFFSET     0x22UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_CALLBACK_OFFSET   0x08UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_DESTINATION_OFFSET 0x18UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_CHILD_LIST_OFFSET 0x38UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_OBJECT_SIZE       0x48UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_NEXT_V26100_OFFSET 0x30UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_MODIFIERS_V26100_OFFSET 0x20UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_VK_V26100_OFFSET  0x24UL
+#define KSWORD_ARK_KEYBOARD_HOTKEY_PLACEHOLDER_FLAG  0x0100U
 
 #define KSWORD_ARK_HOOK_THREAD_ARRAY_OFFSET        0x3C0UL
 #define KSWORD_ARK_HOOK_DESKTOP_INFO_OFFSET        0x1F8UL
@@ -103,6 +112,27 @@ KswordARKKeyboardLooksLikeKernelPointer(
 #else
     return Value >= 0x80000000UL ? TRUE : FALSE;
 #endif
+}
+
+ULONG64
+KswordARKKeyboardHashHotkeyObject(
+    _In_reads_bytes_(ObjectBytes) const UCHAR* Object,
+    _In_ SIZE_T ObjectBytes
+    )
+{
+    ULONG64 hashValue = 14695981039346656037ULL;
+    SIZE_T byteIndex = 0U;
+
+    if (Object == NULL || ObjectBytes == 0U) {
+        return 0ULL;
+    }
+
+    for (byteIndex = 0U; byteIndex < ObjectBytes; ++byteIndex) {
+        hashValue ^= (ULONG64)Object[byteIndex];
+        hashValue *= 1099511628211ULL;
+    }
+
+    return hashValue;
 }
 
 static BOOLEAN
@@ -384,6 +414,79 @@ KswordARKKeyboardResolveHotkeyLayout(
     return TRUE;
 }
 
+NTSTATUS
+KswordARKKeyboardResolveHotkeyRuntime(
+    _Out_ KSW_KEYBOARD_HOTKEY_RUNTIME* RuntimeOut
+    )
+{
+    KSW_HOOK_SYSTEM_MODULE_INFORMATION* moduleInfo = NULL;
+    ULONG moduleInfoBytes = 0UL;
+    KSW_HOOK_SYSTEM_MODULE_ENTRY win32kfullEntry;
+    KSW_HOOK_SYSTEM_MODULE_ENTRY win32kbaseEntry;
+    KSWORD_USER_GET_SILO_GLOBALS_FN userGetSiloGlobals = NULL;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (RuntimeOut == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(RuntimeOut, sizeof(*RuntimeOut));
+
+    status = KswordARKHookBuildModuleSnapshot(&moduleInfo, &moduleInfoBytes);
+    if (!NT_SUCCESS(status) || moduleInfo == NULL || moduleInfoBytes == 0UL) {
+        return NT_SUCCESS(status) ? STATUS_NOT_FOUND : status;
+    }
+
+    if (!KswordARKKeyboardFindModuleByName(moduleInfo, "win32kfull.sys", &win32kfullEntry) ||
+        !KswordARKKeyboardFindModuleByName(moduleInfo, "win32kbase.sys", &win32kbaseEntry)) {
+        status = STATUS_NOT_FOUND;
+        goto Cleanup;
+    }
+
+    RuntimeOut->Win32kfullBase = win32kfullEntry.ImageBase;
+    RuntimeOut->Win32kfullSize = win32kfullEntry.ImageSize;
+    RuntimeOut->Win32kbaseBase = win32kbaseEntry.ImageBase;
+    RuntimeOut->Win32kbaseSize = win32kbaseEntry.ImageSize;
+    if (!KswordARKKeyboardResolveIsHotKeyBody(
+            &win32kfullEntry,
+            &RuntimeOut->IsHotKeyAddress) ||
+        !KswordARKKeyboardResolveHotkeyLayout(
+            RuntimeOut->IsHotKeyAddress,
+            &RuntimeOut->TableOffset,
+            &RuntimeOut->TableBase,
+            &RuntimeOut->NextOffset,
+            &RuntimeOut->ModifiersOffset,
+            &RuntimeOut->VkOffset,
+            &RuntimeOut->IdOffset)) {
+        status = STATUS_NOT_FOUND;
+        goto Cleanup;
+    }
+
+    userGetSiloGlobals = KswordARKKeyboardResolveUserGetSiloGlobals(&win32kbaseEntry);
+    if (userGetSiloGlobals != NULL) {
+        __try {
+            RuntimeOut->SessionGlobals = (ULONG_PTR)userGetSiloGlobals();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            status = GetExceptionCode();
+            RuntimeOut->SessionGlobals = 0U;
+            goto Cleanup;
+        }
+    }
+
+    if (RuntimeOut->TableBase == 0U && RuntimeOut->SessionGlobals == 0U) {
+        status = STATUS_INVALID_DEVICE_STATE;
+        goto Cleanup;
+    }
+    status = STATUS_SUCCESS;
+
+Cleanup:
+    ExFreePoolWithTag(moduleInfo, KSW_HOOK_SCAN_TAG);
+    if (!NT_SUCCESS(status)) {
+        RtlZeroMemory(RuntimeOut, sizeof(*RuntimeOut));
+    }
+    return status;
+}
+
 static VOID
 KswordARKKeyboardFillHotkeyThreadIdentity(
     _In_ ULONG_PTR ThreadInfo,
@@ -456,6 +559,11 @@ KswordARKKeyboardAppendHotkeyEntry(
     ULONG_PTR threadInfo = 0U;
     ULONG_PTR threadObject = 0U;
     ULONG_PTR windowObject = 0U;
+    UCHAR objectBytes[KSWORD_ARK_KEYBOARD_HOTKEY_OBJECT_SIZE] = { 0 };
+    ULONG_PTR callbackAddress = 0U;
+    ULONG_PTR destinationHandle = 0U;
+    ULONG_PTR childListFlink = 0U;
+    ULONG_PTR childListBlink = 0U;
 
     if (Response == NULL || HotkeyObject == 0U) {
         return;
@@ -494,6 +602,57 @@ KswordARKKeyboardAppendHotkeyEntry(
     tempEntry.windowObject = (ULONG64)windowObject;
     tempEntry.modifiers = (ULONG)modifiers;
     tempEntry.modifierFlags2 = (ULONG)flags2;
+    tempEntry.windowHandle = (ULONG64)windowObject;
+    tempEntry.entryFlags = KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_MAIN;
+    if (NextOffset == KSWORD_ARK_KEYBOARD_HOTKEY_NEXT_V26100_OFFSET &&
+        ModifiersOffset == KSWORD_ARK_KEYBOARD_HOTKEY_MODIFIERS_V26100_OFFSET &&
+        VkOffset == KSWORD_ARK_KEYBOARD_HOTKEY_VK_V26100_OFFSET &&
+        IdOffset == (KSWORD_ARK_KEYBOARD_HOTKEY_VK_V26100_OFFSET + sizeof(ULONG)) &&
+        KswordARKHookReadMemorySafe(
+            (const VOID*)HotkeyObject,
+            objectBytes,
+            sizeof(objectBytes))) {
+        RtlCopyMemory(
+            &callbackAddress,
+            objectBytes + KSWORD_ARK_KEYBOARD_HOTKEY_CALLBACK_OFFSET,
+            sizeof(callbackAddress));
+        RtlCopyMemory(
+            &destinationHandle,
+            objectBytes + KSWORD_ARK_KEYBOARD_HOTKEY_DESTINATION_OFFSET,
+            sizeof(destinationHandle));
+        RtlCopyMemory(
+            &childListFlink,
+            objectBytes + KSWORD_ARK_KEYBOARD_HOTKEY_CHILD_LIST_OFFSET,
+            sizeof(childListFlink));
+        RtlCopyMemory(
+            &childListBlink,
+            objectBytes + KSWORD_ARK_KEYBOARD_HOTKEY_CHILD_LIST_OFFSET + sizeof(PVOID),
+            sizeof(childListBlink));
+        tempEntry.callbackAddress = (ULONG64)callbackAddress;
+        tempEntry.destinationHandle = (ULONG64)destinationHandle;
+        tempEntry.childListFlink = (ULONG64)childListFlink;
+        tempEntry.childListBlink = (ULONG64)childListBlink;
+        tempEntry.objectSize = (ULONG)sizeof(objectBytes);
+        tempEntry.snapshotHash = KswordARKKeyboardHashHotkeyObject(objectBytes, sizeof(objectBytes));
+        if (childListFlink != (HotkeyObject + KSWORD_ARK_KEYBOARD_HOTKEY_CHILD_LIST_OFFSET) ||
+            childListBlink != (HotkeyObject + KSWORD_ARK_KEYBOARD_HOTKEY_CHILD_LIST_OFFSET)) {
+            tempEntry.entryFlags |= KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_HAS_CHILDREN;
+        }
+        if ((flags2 & KSWORD_ARK_KEYBOARD_HOTKEY_PLACEHOLDER_FLAG) != 0U) {
+            tempEntry.entryFlags |= KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_PLACEHOLDER;
+        }
+        if (callbackAddress != 0U) {
+            tempEntry.entryFlags |= KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_CALLBACK;
+        }
+        if (threadInfo != 0U && callbackAddress == 0U && flags2 == 0U &&
+            tempEntry.virtualKey != 0UL && tempEntry.virtualKey <= 0xFFUL &&
+            (tempEntry.modifiers & ~0x0000400FUL) == 0UL &&
+            childListFlink == (HotkeyObject + KSWORD_ARK_KEYBOARD_HOTKEY_CHILD_LIST_OFFSET) &&
+            childListBlink == (HotkeyObject + KSWORD_ARK_KEYBOARD_HOTKEY_CHILD_LIST_OFFSET) &&
+            BucketIndex == (tempEntry.virtualKey & (KSWORD_ARK_KEYBOARD_HOTKEY_BUCKETS - 1UL))) {
+            tempEntry.entryFlags |= KSWORD_ARK_KEYBOARD_HOTKEY_ENTRY_FLAG_MUTABLE;
+        }
+    }
     KswordARKKeyboardFillHotkeyThreadIdentity(
         threadInfo,
         &threadObject,
