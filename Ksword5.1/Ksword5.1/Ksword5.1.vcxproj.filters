@@ -775,6 +775,9 @@
     <ClCompile Include="UI\GlobalUiSearch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="UI\CommandExecutionPopup.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="UI\WindowChrome.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1745,6 +1748,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <QtMoc Include="UI\GlobalUiSearch.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <QtMoc Include="UI\CommandExecutionPopup.h">
       <Filter>Header Files</Filter>
     </QtMoc>
     <ClInclude Include="UI\WindowChrome.h">

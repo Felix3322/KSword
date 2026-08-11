@@ -92,11 +92,13 @@
 #include "UI/GlobalDialogTheme.h"
 #include "UI/GlobalUiBaseStyle.h"
 #include "UI/GlobalUiSearch.h"
+#include "UI/CommandExecutionPopup.h"
 #include "UI/WindowChrome.h"
 #include "UI/SvgThemeIconManager.h"
 #include "UI/SmoothScrollSupport.h"
 #include "UI/ThemedMessageBox.h"
 #include "theme.h"
+#include "ksword/process/process.h"
 #include "../../shared/KswordArkLogProtocol.h"
 // 驱动启动阶段记录的键名与阶段枚举，R0/R3 共用同一份定义。
 #include "../../shared/KswordArkStartupProtocol.h"
@@ -6348,6 +6350,28 @@ void MainWindow::initGlobalUiSearchController()
         m_customTitleBar->titleInputLineEdit(),
         m_customTitleBar->titleInputAnchorWidget(),
         this);
+    m_commandExecutionPopup = new ks::ui::CommandExecutionPopup(
+        this,
+        m_customTitleBar->titleInputAnchorWidget(),
+        m_customTitleBar->titleInputLineEdit(),
+        this);
+    connect(
+        m_customTitleBar,
+        &ks::ui::CustomTitleBar::inputModeChanged,
+        this,
+        [this](const bool searchModeActive) {
+            if (m_commandExecutionPopup != nullptr)
+            {
+                m_commandExecutionPopup->setCommandModeActive(!searchModeActive);
+            }
+        });
+    connect(
+        m_commandExecutionPopup,
+        &ks::ui::CommandExecutionPopup::executeRequested,
+        this,
+        [this](const QString& commandText, const ks::ui::CommandExecutionOptions& options) {
+            executeCommandWithOptions(commandText, options);
+        });
     m_globalUiSearchController->setDockListProvider([this]() {
         return collectSearchableDockWidgets();
     });
@@ -6617,10 +6641,73 @@ void MainWindow::toggleCaptureProtectionState()
 
 void MainWindow::executeCommandInNewConsole(const QString& commandText)
 {
+    // 默认入口保留原有“回车直接打开可见 CMD”的行为；有弹层时沿用用户上次选择。
+    ks::ui::CommandExecutionOptions options;
+    options.workingDirectory = QDir::currentPath();
+    if (m_commandExecutionPopup != nullptr)
+    {
+        options = m_commandExecutionPopup->currentOptions();
+    }
+    executeCommandWithOptions(commandText, options);
+}
+
+void MainWindow::executeCommandWithOptions(
+    const QString& commandText,
+    const ks::ui::CommandExecutionOptions& options)
+{
     const QString trimmedCommandText = commandText.trimmed();
     if (trimmedCommandText.isEmpty())
     {
         return;
+    }
+
+    // workingDirectoryText 作用：把弹层输入规范化成 CreateProcess 可接受的目录。
+    QString workingDirectoryText = options.workingDirectory.trimmed();
+    if (workingDirectoryText.isEmpty())
+    {
+        workingDirectoryText = QDir::currentPath();
+    }
+    workingDirectoryText = QDir::toNativeSeparators(workingDirectoryText);
+    const QFileInfo workingDirectoryInfo(workingDirectoryText);
+    if (!workingDirectoryInfo.isDir())
+    {
+        QMessageBox::warning(
+            this,
+            ks::i18n::text(QStringLiteral("cmd.popup.directory.invalid.title"), QStringLiteral("执行目录无效")),
+            ks::i18n::text(
+                QStringLiteral("cmd.popup.directory.invalid.message"),
+                QStringLiteral("目录不存在或不可访问：%1"))
+                .arg(workingDirectoryText));
+        return;
+    }
+
+    if (options.userMode == ks::ui::CommandExecutionOptions::UserMode::ProcessToken
+        && options.tokenSourcePid == 0U)
+    {
+        QMessageBox::warning(
+            this,
+            ks::i18n::text(QStringLiteral("cmd.popup.token.invalid.title"), QStringLiteral("令牌 PID 无效")),
+            ks::i18n::text(
+                QStringLiteral("cmd.popup.token.invalid.message"),
+                QStringLiteral("请输入有效的进程 PID。")));
+        return;
+    }
+
+    // SYSTEM 用户权限较高：执行入口统一再次确认，避免任何信号直连路径绕过弹层确认。
+    if (options.userMode == ks::ui::CommandExecutionOptions::UserMode::System)
+    {
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this,
+            ks::i18n::text(QStringLiteral("cmd.popup.system.confirm.title"), QStringLiteral("确认 SYSTEM 用户")),
+            ks::i18n::text(
+                QStringLiteral("cmd.popup.system.confirm.message"),
+                QStringLiteral("即将以 SYSTEM 用户执行命令，命令可能访问当前用户无法访问的系统资源。\n\n是否继续？")),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+        {
+            return;
+        }
     }
 
     kLogEvent commandEvent;
@@ -6629,6 +6716,7 @@ void MainWindow::executeCommandInNewConsole(const QString& commandText)
         << trimmedCommandText.toStdString()
         << eol;
 
+    // commandInterpreterPath 作用：使用系统 ComSpec，避免发行包目录中的同名文件劫持命令解释器。
     QString commandInterpreterPath = qEnvironmentVariable("ComSpec").trimmed();
     if (commandInterpreterPath.isEmpty())
     {
@@ -6636,50 +6724,149 @@ void MainWindow::executeCommandInNewConsole(const QString& commandText)
     }
     commandInterpreterPath = QDir::toNativeSeparators(commandInterpreterPath);
 
-    const QString commandLineText = QStringLiteral("\"%1\" /K %2")
-        .arg(commandInterpreterPath, trimmedCommandText);
-    std::wstring commandInterpreterPathWide = commandInterpreterPath.toStdWString();
-    std::wstring commandLineWide = commandLineText.toStdWString();
-    std::vector<wchar_t> commandLineBuffer(commandLineWide.begin(), commandLineWide.end());
-    commandLineBuffer.push_back(L'\0');
+    // commandSwitchText 作用：可见窗口使用 /K 保持交互，后台模式使用 /C 执行后退出。
+    const QString commandSwitchText = options.openConsoleWindow
+        ? QStringLiteral("/K")
+        : QStringLiteral("/C");
+    const QString commandLineText = QStringLiteral("\"%1\" %2 %3")
+        .arg(commandInterpreterPath)
+        .arg(commandSwitchText)
+        .arg(trimmedCommandText);
 
-    STARTUPINFOW startupInfo{};
-    startupInfo.cb = sizeof(startupInfo);
-    startupInfo.dwFlags = STARTF_USESHOWWINDOW;
-    startupInfo.wShowWindow = SW_SHOWNORMAL;
-
-    PROCESS_INFORMATION processInfo{};
-    const BOOL createProcessResult = ::CreateProcessW(
-        commandInterpreterPathWide.c_str(),
-        commandLineBuffer.data(),
-        nullptr,
-        nullptr,
-        FALSE,
-        CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
-        nullptr,
-        nullptr,
-        &startupInfo,
-        &processInfo);
-    if (createProcessResult == FALSE)
+    // 管理员选项通过 ShellExecuteEx 的 runas 动词触发标准 UAC，不伪造或绕过安全边界。
+    const bool currentUserSelected = options.userMode
+        == ks::ui::CommandExecutionOptions::UserMode::CurrentUser;
+    const bool administratorRequested = options.privilegeMode
+        == ks::ui::CommandExecutionOptions::PrivilegeMode::Administrator;
+    if (currentUserSelected && administratorRequested && !hasAdminPrivilege())
     {
-        const DWORD errorCode = ::GetLastError();
+        const std::wstring commandInterpreterPathWide = commandInterpreterPath.toStdWString();
+        const std::wstring commandParametersWide =
+            (commandSwitchText + QStringLiteral(" ") + trimmedCommandText).toStdWString();
+        const std::wstring workingDirectoryWide = workingDirectoryText.toStdWString();
+
+        SHELLEXECUTEINFOW shellExecuteInfo{};
+        shellExecuteInfo.cbSize = sizeof(shellExecuteInfo);
+        shellExecuteInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
+        shellExecuteInfo.lpVerb = L"runas";
+        shellExecuteInfo.lpFile = commandInterpreterPathWide.c_str();
+        shellExecuteInfo.lpParameters = commandParametersWide.c_str();
+        shellExecuteInfo.lpDirectory = workingDirectoryWide.c_str();
+        shellExecuteInfo.nShow = options.openConsoleWindow ? SW_SHOWNORMAL : SW_HIDE;
+
+        if (::ShellExecuteExW(&shellExecuteInfo) == FALSE)
+        {
+            const DWORD errorCode = ::GetLastError();
+            err << commandEvent
+                << "[MainWindow] 标题栏命令执行失败, errorCode="
+                << errorCode
+                << eol;
+            QMessageBox::warning(
+                this,
+                ks::i18n::text(QStringLiteral("cmd.popup.execute_failed.title"), QStringLiteral("执行命令失败")),
+                ks::i18n::text(
+                    QStringLiteral("cmd.popup.execute_failed.message"),
+                    QStringLiteral("无法启动 cmd.exe。\n错误码：%1\n%2"))
+                    .arg(errorCode)
+                    .arg(QStringLiteral("UAC 可能已取消。")));
+            return;
+        }
+
+        const DWORD processId = shellExecuteInfo.hProcess != nullptr
+            ? ::GetProcessId(shellExecuteInfo.hProcess)
+            : 0U;
+        if (shellExecuteInfo.hProcess != nullptr)
+        {
+            ::CloseHandle(shellExecuteInfo.hProcess);
+        }
+        info << commandEvent
+            << "[MainWindow] 标题栏命令执行已启动, pid="
+            << processId
+            << eol;
+        return;
+    }
+
+    // tokenSourcePid 作用：选择令牌模式时记录 SYSTEM、指定进程或普通 Shell 的源 PID。
+    DWORD tokenSourcePid = 0U;
+    if (options.userMode == ks::ui::CommandExecutionOptions::UserMode::System)
+    {
+        tokenSourcePid = 4U;
+    }
+    else if (options.userMode == ks::ui::CommandExecutionOptions::UserMode::ProcessToken)
+    {
+        tokenSourcePid = options.tokenSourcePid;
+    }
+    else if (options.privilegeMode
+        == ks::ui::CommandExecutionOptions::PrivilegeMode::Standard
+        && hasAdminPrivilege())
+    {
+        // 已提升实例用 Explorer 令牌回到普通用户；普通实例直接创建即可保持普通权限。
+        DWORD shellProcessId = 0U;
+        const HWND shellWindow = ::GetShellWindow();
+        if (shellWindow != nullptr)
+        {
+            ::GetWindowThreadProcessId(shellWindow, &shellProcessId);
+        }
+        if (shellProcessId == 0U)
+        {
+            const DWORD errorCode = ERROR_NOT_FOUND;
+            err << commandEvent
+                << "[MainWindow] 标题栏命令执行失败, errorCode="
+                << errorCode
+                << eol;
+            QMessageBox::warning(
+                this,
+                ks::i18n::text(QStringLiteral("cmd.popup.execute_failed.title"), QStringLiteral("执行命令失败")),
+                ks::i18n::text(
+                    QStringLiteral("cmd.popup.execute_failed.message"),
+                    QStringLiteral("无法启动 cmd.exe。\n错误码：%1\n%2"))
+                    .arg(errorCode)
+                    .arg(QStringLiteral("未找到交互式 Shell 进程，无法获取普通用户令牌。")));
+            return;
+        }
+        tokenSourcePid = shellProcessId;
+    }
+
+    ks::process::CreateProcessRequest request;
+    request.useApplicationName = true;
+    request.applicationName = commandInterpreterPath.toStdString();
+    request.useCommandLine = true;
+    request.commandLine = commandLineText.toStdString();
+    request.creationFlags = (options.openConsoleWindow ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW)
+        | CREATE_UNICODE_ENVIRONMENT;
+    request.useCurrentDirectory = true;
+    request.currentDirectory = workingDirectoryText.toStdString();
+    request.startupInfo.useValue = true;
+    request.startupInfo.dwFlags = STARTF_USESHOWWINDOW;
+    request.startupInfo.wShowWindow = static_cast<std::uint16_t>(
+        options.openConsoleWindow ? SW_SHOWNORMAL : SW_HIDE);
+    request.tokenModeEnabled = tokenSourcePid != 0U;
+    request.tokenSourcePid = tokenSourcePid;
+
+    ks::process::CreateProcessResult result;
+    if (!ks::process::LaunchProcess(request, &result))
+    {
+        const DWORD errorCode = result.win32Error != 0U
+            ? static_cast<DWORD>(result.win32Error)
+            : ERROR_GEN_FAILURE;
         err << commandEvent
             << "[MainWindow] 标题栏命令执行失败, errorCode="
             << errorCode
             << eol;
         QMessageBox::warning(
             this,
-            QStringLiteral("执行命令"),
-            QStringLiteral("启动 cmd 失败，错误码：%1").arg(errorCode));
+            ks::i18n::text(QStringLiteral("cmd.popup.execute_failed.title"), QStringLiteral("执行命令失败")),
+            ks::i18n::text(
+                QStringLiteral("cmd.popup.execute_failed.message"),
+                QStringLiteral("无法启动 cmd.exe。\n错误码：%1\n%2"))
+                .arg(errorCode)
+                .arg(QString::fromStdString(result.detailText)));
         return;
     }
 
-    ::CloseHandle(processInfo.hThread);
-    ::CloseHandle(processInfo.hProcess);
-
     info << commandEvent
         << "[MainWindow] 标题栏命令执行已启动, pid="
-        << processInfo.dwProcessId
+        << result.dwProcessId
         << eol;
 }
 

@@ -65,6 +65,8 @@ namespace ks::ui
 {
     class CustomTitleBar; // 前置声明：主窗口自绘标题栏组件。
     class GlobalUiSearchController; // 前置声明：标题栏全局页面搜索控制器。
+    class CommandExecutionPopup; // 前置声明：标题栏 CMD 命令选项弹层。
+    struct CommandExecutionOptions; // 前置声明：CMD 命令启动选项快照。
     class NotificationCardManager;
 }
 
@@ -525,9 +527,18 @@ private:
 
     // executeCommandInNewConsole 作用：
     // - 使用 CREATE_NEW_CONSOLE 打开可见 cmd 并执行 /K 命令；
-    // - 命令执行后控制台不会自动关闭。
+    // - 没有弹层实例时回退到当前用户、当前权限和可见 CMD 窗口。
     // 入参 commandText：要执行的命令文本（用户输入）。
     void executeCommandInNewConsole(const QString& commandText);
+
+    // executeCommandWithOptions 作用：
+    // - 按标题栏 CMD 弹层给出的目录、用户、权限和窗口选项启动命令；
+    // - 普通 CreateProcess、令牌 CreateProcessAsUser 与 UAC runas 均在这里统一收口。
+    // 入参 commandText：要执行的命令文本；
+    // 入参 options：弹层当前选项快照。
+    void executeCommandWithOptions(
+        const QString& commandText,
+        const ks::ui::CommandExecutionOptions& options);
 
     // applyAppearanceSettings 作用：
     // - 把主题模式、背景图、透明度应用到主窗口；
@@ -658,6 +669,7 @@ private:
     ks::ui::NotificationCardManager* m_notificationCardManager = nullptr;
     ks::ui::CustomTitleBar* m_customTitleBar = nullptr; // m_customTitleBar：主窗口自绘标题栏组件。
     ks::ui::GlobalUiSearchController* m_globalUiSearchController = nullptr; // m_globalUiSearchController：标题栏全局页面搜索控制器。
+    ks::ui::CommandExecutionPopup* m_commandExecutionPopup = nullptr; // m_commandExecutionPopup：标题栏 CMD 选项弹层。
     bool m_windowPinned = false;                        // m_windowPinned：主窗口当前是否置顶。
     bool m_captureProtectionEnabled = false;            // m_captureProtectionEnabled：主窗口当前是否启用截屏屏蔽。
 
