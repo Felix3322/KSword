@@ -5,7 +5,7 @@
 // Namespace: ks::scanner
 // Purpose:
 // - Define a Qt-free, format-neutral model for binary inspection.
-// - Scan PE32/PE32+, ELF32/ELF64, thin Mach-O, and universal Mach-O.
+// - Scan PE32/PE32+, ELF32/ELF64, Mach-O, and ISO9660/Joliet images.
 // - Return bounded key/value and tabular data that UI, CLI, or tests can render.
 //
 // Security boundary:
@@ -36,16 +36,18 @@ namespace ks::scanner
         Elf64,
         MachO32,
         MachO64,
-        MachOUniversal
+        MachOUniversal,
+        Iso9660
     };
 
     // ByteOrder describes how multi-byte fields in the selected object are stored.
-    // Universal Mach-O files report the byte order of the fat header itself.
+    // BothEndian is used for ISO9660 fields that carry paired LE/BE copies.
     enum class ByteOrder
     {
         Unknown = 0,
         LittleEndian,
-        BigEndian
+        BigEndian,
+        BothEndian
     };
 
     // DiagnosticSeverity lets frontends distinguish recoverable truncation from a
@@ -86,6 +88,41 @@ namespace ks::scanner
         std::uint64_t offset = 0;
     };
 
+    // AttackPathSeverity 作用：表达攻击链证据对最终判定的影响等级。
+    // 该枚举与解析错误级别分离，避免把“文件损坏”误当成“恶意行为”。
+    enum class AttackPathSeverity
+    {
+        Information = 0,
+        Suspicious,
+        High,
+        Critical
+    };
+
+    // AttackPathEvidence 作用：保存一条可独立复核的静态证据。
+    // code/stage 使用稳定 ASCII 标识，UI 根据标识本地化说明文本。
+    struct AttackPathEvidence
+    {
+        std::string code;
+        std::string stage;
+        std::string artifact;
+        std::string mitreTechnique;
+        AttackPathSeverity severity = AttackPathSeverity::Information;
+        std::uint32_t score = 0;
+        bool hasOffset = false;
+        std::uint64_t offset = 0;
+    };
+
+    // AttackPathDetection 作用：聚合多阶段证据并给出有上限的规则评分。
+    // matched 只在满足规则阈值与关键行为组合时置位，不以单一哈希定性。
+    struct AttackPathDetection
+    {
+        bool matched = false;
+        std::uint32_t score = 0;
+        std::string ruleId;
+        std::string family;
+        std::vector<AttackPathEvidence> evidence;
+    };
+
     // ScanOptions bounds memory usage, entry walks, and strings from hostile files.
     // Values are intentionally conservative for an interactive desktop application.
     struct ScanOptions
@@ -110,6 +147,7 @@ namespace ks::scanner
         std::vector<BinaryField> headers;
         std::vector<BinaryTable> tables;
         std::vector<BinaryDiagnostic> diagnostics;
+        AttackPathDetection attackPath;
     };
 
     // ScanBinaryFile loads and scans one ordinary file.

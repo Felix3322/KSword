@@ -196,8 +196,10 @@
     <ClCompile Include="ksword\file\file_handle_tools.cpp" />
     <ClCompile Include="ksword\file\pe_analyzer.cpp" />
     <ClCompile Include="ksword\scanner\atomic_file_patch.cpp" />
+    <ClCompile Include="ksword\scanner\attack_path_detector.cpp" />
     <ClCompile Include="ksword\scanner\binary_scanner.cpp" />
     <ClCompile Include="ksword\scanner\elf_scanner.cpp" />
+    <ClCompile Include="ksword\scanner\iso9660_scanner.cpp" />
     <ClCompile Include="ksword\scanner\macho_scanner.cpp" />
     <ClCompile Include="ksword\profile\ProfileJsonLoader.cpp" />
     <ClCompile Include="KernelDock\KernelDock.cpp" />

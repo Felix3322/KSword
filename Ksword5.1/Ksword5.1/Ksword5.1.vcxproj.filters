@@ -850,10 +850,16 @@
     <ClCompile Include="ksword\scanner\atomic_file_patch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ksword\scanner\attack_path_detector.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ksword\scanner\binary_scanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\scanner\elf_scanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ksword\scanner\iso9660_scanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\scanner\macho_scanner.cpp">

@@ -168,7 +168,9 @@ namespace ks::scanner::detail
         {
             static_assert(std::is_unsigned_v<TUnsigned>);
             constexpr std::size_t width = sizeof(TUnsigned);
-            if (!contains(offset, width) || byteOrder_ == ByteOrder::Unknown)
+            if (!contains(offset, width) ||
+                byteOrder_ == ByteOrder::Unknown ||
+                byteOrder_ == ByteOrder::BothEndian)
             {
                 return false;
             }
@@ -329,6 +331,37 @@ namespace ks::scanner::detail
 
     bool ParseMachO(
         std::span<const std::uint8_t> bytes,
+        const ScanOptions& options,
+        BinaryScanResult& result);
+
+    // ContainerMember 作用：描述容器内成员在父快照中的精确只读范围。
+    struct ContainerMember
+    {
+        std::string path;
+        std::uint64_t offset = 0;
+        std::uint64_t size = 0;
+        bool directory = false;
+    };
+
+    // ParseIso9660 作用：只读解析 ISO9660 主卷与目录记录，不挂载镜像。
+    // 攻击路径检测在相同的稳定内存快照上完成，不会提取或执行容器成员。
+    bool ParseIso9660(
+        std::span<const std::uint8_t> bytes,
+        const ScanOptions& options,
+        BinaryScanResult& result);
+
+    // DetectAttackPathInPe 作用：在已稳定读取的单个 PE 快照上追加行为证据。
+    void DetectAttackPathInPe(
+        std::span<const std::uint8_t> bytes,
+        std::string_view artifact,
+        std::uint64_t baseOffset,
+        const ScanOptions& options,
+        BinaryScanResult& result);
+
+    // DetectAttackPathInContainer 作用：关联宿主、同名依赖与内嵌载荷证据。
+    void DetectAttackPathInContainer(
+        std::span<const std::uint8_t> bytes,
+        const std::vector<ContainerMember>& members,
         const ScanOptions& options,
         BinaryScanResult& result);
 }

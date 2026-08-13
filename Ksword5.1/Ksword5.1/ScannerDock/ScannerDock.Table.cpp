@@ -7,9 +7,11 @@
 #include <QAction>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QMenu>
 #include <QPointer>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
@@ -75,6 +77,10 @@ QString ScannerDock::localizedTableTitle(
     {
         return translated("scanner.table.program_headers", "程序头");
     }
+    if (id == QStringLiteral("container_entries"))
+    {
+        return translated("scanner.table.container_entries", "容器成员");
+    }
     return ks::i18n::sourceText(fromBackendUtf8(fallback));
 }
 
@@ -131,7 +137,104 @@ QString ScannerDock::localizedColumnTitle(const std::string& fallback) const
     {
         return translated("scanner.column.ordinal", "序号");
     }
+    if (normalized == QStringLiteral("path"))
+    {
+        return translated("scanner.column.path", "路径");
+    }
+    if (normalized == QStringLiteral("extent"))
+    {
+        return translated("scanner.column.extent", "区段号");
+    }
+    if (normalized == QStringLiteral("volume id"))
+    {
+        return translated("scanner.column.volume_id", "卷标识");
+    }
+    if (normalized == QStringLiteral("filename encoding"))
+    {
+        return translated("scanner.column.filename_encoding", "文件名编码");
+    }
+    if (normalized == QStringLiteral("logical block size"))
+    {
+        return translated("scanner.column.logical_block_size", "逻辑块大小");
+    }
+    if (normalized == QStringLiteral("container entries"))
+    {
+        return translated("scanner.column.container_entries", "容器成员数");
+    }
+    if (normalized == QStringLiteral("volume descriptor offset"))
+    {
+        return translated("scanner.column.volume_descriptor_offset", "卷描述符偏移");
+    }
+    if (normalized == QStringLiteral("root directory extent"))
+    {
+        return translated("scanner.column.root_directory_extent", "根目录区段号");
+    }
+    if (normalized == QStringLiteral("root directory size"))
+    {
+        return translated("scanner.column.root_directory_size", "根目录大小");
+    }
     return ks::i18n::sourceText(value);
+}
+
+QString ScannerDock::localizedTableValue(
+    const std::string& tableId,
+    const int column,
+    const std::string& fallback) const
+{
+    const QString id = fromBackendUtf8(tableId).toLower();
+    const QString value = fromBackendUtf8(fallback);
+    if (id == QStringLiteral("container_entries") && column == 1)
+    {
+        if (value == QStringLiteral("Directory"))
+        {
+            return translated("scanner.container.type.directory", "目录");
+        }
+        if (value == QStringLiteral("File"))
+        {
+            return translated("scanner.container.type.file", "文件");
+        }
+        if (value == QStringLiteral("File (multi-extent)"))
+        {
+            return translated("scanner.container.type.multi_extent", "文件（多区段）");
+        }
+    }
+    return ks::i18n::sourceText(value);
+}
+
+QString ScannerDock::localizedDiagnosticMessage(
+    const std::string& code,
+    const std::string& fallback) const
+{
+    const QString id = fromBackendUtf8(code).toLower();
+    if (id == QStringLiteral("iso.volume_descriptor_invalid"))
+    {
+        return translated("scanner.diagnostic.iso.volume_invalid", "ISO9660 卷描述符或根目录无效。");
+    }
+    if (id == QStringLiteral("iso.directory_record_invalid"))
+    {
+        return translated("scanner.diagnostic.iso.directory_invalid", "ISO9660 目录记录被截断或格式错误。");
+    }
+    if (id == QStringLiteral("iso.identifier_invalid"))
+    {
+        return translated("scanner.diagnostic.iso.identifier_invalid", "ISO9660 文件标识超出目录记录范围。");
+    }
+    if (id == QStringLiteral("iso.extent_mismatch"))
+    {
+        return translated("scanner.diagnostic.iso.extent_mismatch", "ISO9660 区段的小端与大端副本不一致。");
+    }
+    if (id == QStringLiteral("iso.extent_out_of_bounds"))
+    {
+        return translated("scanner.diagnostic.iso.extent_out_of_bounds", "ISO9660 成员区段超出镜像快照。");
+    }
+    if (id == QStringLiteral("iso.entry_limit_reached"))
+    {
+        return translated("scanner.diagnostic.iso.entry_limit", "ISO9660 遍历已在成员数量上限处停止。");
+    }
+    if (id == QStringLiteral("iso.read_only_analysis"))
+    {
+        return translated("scanner.diagnostic.iso.read_only", "镜像仅从稳定字节快照解析；未挂载镜像，也未执行成员。");
+    }
+    return ks::i18n::sourceText(fromBackendUtf8(fallback));
 }
 
 QString ScannerDock::diagnosticSeverityText(const int severity) const
@@ -147,6 +250,159 @@ QString ScannerDock::diagnosticSeverityText(const int severity) const
     default:
         return translated("scanner.severity.unknown", "未知");
     }
+}
+
+QString ScannerDock::attackPathSeverityText(const int severity) const
+{
+    switch (static_cast<ks::scanner::AttackPathSeverity>(severity))
+    {
+    case ks::scanner::AttackPathSeverity::Information:
+        return translated("scanner.attack.severity.information", "信息");
+    case ks::scanner::AttackPathSeverity::Suspicious:
+        return translated("scanner.attack.severity.suspicious", "可疑");
+    case ks::scanner::AttackPathSeverity::High:
+        return translated("scanner.attack.severity.high", "高危");
+    case ks::scanner::AttackPathSeverity::Critical:
+        return translated("scanner.attack.severity.critical", "严重");
+    default:
+        return translated("scanner.severity.unknown", "未知");
+    }
+}
+
+QString ScannerDock::attackPathStageText(const std::string& stage) const
+{
+    const QString id = fromBackendUtf8(stage).toLower();
+    if (id == QStringLiteral("sideload"))
+    {
+        return translated("scanner.attack.stage.sideload", "DLL 侧载");
+    }
+    if (id == QStringLiteral("elevation"))
+    {
+        return translated("scanner.attack.stage.elevation", "权限提升");
+    }
+    if (id == QStringLiteral("masquerade"))
+    {
+        return translated("scanner.attack.stage.masquerade", "进程伪装");
+    }
+    if (id == QStringLiteral("payload_decode"))
+    {
+        return translated("scanner.attack.stage.payload_decode", "载荷解码");
+    }
+    if (id == QStringLiteral("persistence"))
+    {
+        return translated("scanner.attack.stage.persistence", "驱动服务");
+    }
+    if (id == QStringLiteral("defense_evasion"))
+    {
+        return translated("scanner.attack.stage.defense_evasion", "防护破坏");
+    }
+    return ks::i18n::sourceText(fromBackendUtf8(stage));
+}
+
+QString ScannerDock::attackPathEvidenceText(const std::string& code) const
+{
+    const QString id = fromBackendUtf8(code).toLower();
+    if (id == QStringLiteral("container.libcef_sideload_pair"))
+    {
+        return translated("scanner.attack.evidence.sideload_pair", "容器内 PE 的导入表指向同目录 libcef.dll。");
+    }
+    if (id == QStringLiteral("proxy.cef_surface"))
+    {
+        return translated("scanner.attack.evidence.cef_surface", "DLL 提供 cef_execute_process、cef_initialize 等 CEF 代理导出。");
+    }
+    if (id == QStringLiteral("proxy.cmstplua_uac"))
+    {
+        return translated("scanner.attack.evidence.cmstplua", "发现 CMSTPLUA 提权 moniker、CoGetObject 与管理员令牌检查组合。");
+    }
+    if (id == QStringLiteral("proxy.peb_masquerade"))
+    {
+        return translated("scanner.attack.evidence.peb_masquerade", "发现把 PEB 进程参数改写为 C:\\Windows\\explorer.exe 的组合证据。");
+    }
+    if (id == QStringLiteral("proxy.driver_service"))
+    {
+        return translated("scanner.attack.evidence.driver_service", "发现创建并启动 GhostSystemDriver 内核驱动服务的组合证据。");
+    }
+    if (id == QStringLiteral("proxy.avp_evasion"))
+    {
+        return translated("scanner.attack.evidence.avp_evasion", "提权/驱动投递路径同时检查 avp.exe，符合安全软件规避。");
+    }
+    if (id == QStringLiteral("embedded.double_base64_driver"))
+    {
+        return translated("scanner.attack.evidence.embedded_driver", "UTF-16 Base64 经两层 Base64 和十六进制解码后得到 PE 驱动。");
+    }
+    if (id == QStringLiteral("driver.defender_registry"))
+    {
+        return translated("scanner.attack.evidence.defender_registry", "驱动同时修改 TamperProtection、实时防护和多个 Defender 服务键。");
+    }
+    if (id == QStringLiteral("driver.security_process_kill"))
+    {
+        return translated("scanner.attack.evidence.process_kill", "驱动导入 ZwTerminateProcess 并包含多家安全产品进程目标。");
+    }
+    if (id == QStringLiteral("driver.unload_360"))
+    {
+        return translated("scanner.attack.evidence.unload_360", "驱动调用 ZwUnloadDriver 并清理 360 注册表树。");
+    }
+    return fromBackendUtf8(code);
+}
+
+QWidget* ScannerDock::createAttackPathPage(
+    const ks::scanner::BinaryScanResult& result) const
+{
+    auto* page = new QWidget(m_resultTabs); // page：攻击路径结论与证据表的容器。
+    auto* layout = new QVBoxLayout(page); // layout：先显示结论，再显示逐条证据。
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+
+    auto* verdictLabel = new QLabel(page); // verdictLabel：展示最终阈值判定和规则版本。
+    verdictLabel->setWordWrap(true);
+    verdictLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    verdictLabel->setText(
+        result.attackPath.matched
+            ? translated(
+                "scanner.attack.verdict.detected",
+                "检测到 EXIT / GhostSystemDriver 攻击路径：评分 %1/100，规则 %2。")
+                .arg(result.attackPath.score)
+                .arg(fromBackendUtf8(result.attackPath.ruleId))
+            : translated(
+                "scanner.attack.verdict.below_threshold",
+                "发现相关静态证据，但未达到攻击路径阈值：评分 %1/100，规则 %2。")
+                .arg(result.attackPath.score)
+                .arg(fromBackendUtf8(result.attackPath.ruleId)));
+    layout->addWidget(verdictLabel);
+
+    auto* table = createReadOnlyTable(page); // table：每行对应一个可复核证据与原始偏移。
+    table->setColumnCount(7);
+    table->setHorizontalHeaderLabels({
+        translated("scanner.column.severity", "级别"),
+        translated("scanner.attack.column.stage", "阶段"),
+        translated("scanner.attack.column.evidence", "静态证据"),
+        translated("scanner.attack.column.artifact", "对象"),
+        QStringLiteral("MITRE ATT&CK"),
+        translated("scanner.attack.column.score", "评分"),
+        translated("scanner.column.offset", "偏移")
+    });
+    table->setRowCount(static_cast<int>(result.attackPath.evidence.size()));
+    for (int row = 0; row < table->rowCount(); ++row)
+    {
+        const auto& evidence = result.attackPath.evidence[static_cast<std::size_t>(row)];
+        table->setItem(row, 0, new QTableWidgetItem(
+            attackPathSeverityText(static_cast<int>(evidence.severity))));
+        table->setItem(row, 1, new QTableWidgetItem(attackPathStageText(evidence.stage)));
+        table->setItem(row, 2, new QTableWidgetItem(attackPathEvidenceText(evidence.code)));
+        table->setItem(row, 3, new QTableWidgetItem(fromBackendUtf8(evidence.artifact)));
+        table->setItem(row, 4, new QTableWidgetItem(fromBackendUtf8(evidence.mitreTechnique)));
+        table->setItem(row, 5, new QTableWidgetItem(QStringLiteral("+%1").arg(evidence.score)));
+        table->setItem(
+            row,
+            6,
+            new QTableWidgetItem(
+                evidence.hasOffset
+                    ? QStringLiteral("0x%1").arg(evidence.offset, 0, 16).toUpper()
+                    : translated("scanner.attack.offset.decoded", "解码后对象")));
+    }
+    table->resizeColumnsToContents();
+    layout->addWidget(table, 1);
+    return page;
 }
 
 QWidget* ScannerDock::createStructuredTablePage(

@@ -781,6 +781,13 @@ namespace ks::scanner
             }
             result.tables.push_back(std::move(imports));
             AppendPeExports(std::span<const std::uint8_t>(bytes), options, result);
+            // 攻击路径检测复用同一稳定快照，不重新打开文件，也不会调用 PE 入口点。
+            detail::DetectAttackPathInPe(
+                std::span<const std::uint8_t>(bytes),
+                "<selected-file>",
+                0,
+                options,
+                result);
             result.success = true;
             return true;
         }
@@ -810,6 +817,20 @@ namespace ks::scanner
             default:
                 return false;
             }
+        }
+
+        // ISO9660 卷描述符固定从 2048 字节扇区 16 开始；这里只做分派魔数检查。
+        bool LooksLikeIso9660(const std::span<const std::uint8_t> bytes)
+        {
+            constexpr std::size_t descriptorOffset = 16U * 2048U;
+            constexpr std::size_t signatureOffset = descriptorOffset + 1U;
+            return bytes.size() >= descriptorOffset + 7U &&
+                bytes[signatureOffset] == 'C' &&
+                bytes[signatureOffset + 1U] == 'D' &&
+                bytes[signatureOffset + 2U] == '0' &&
+                bytes[signatureOffset + 3U] == '0' &&
+                bytes[signatureOffset + 4U] == '1' &&
+                bytes[descriptorOffset + 6U] == 1U;
         }
     }
 
@@ -867,12 +888,17 @@ namespace ks::scanner
             detail::ParseMachO(view, options, result);
             return result;
         }
+        if (LooksLikeIso9660(view))
+        {
+            detail::ParseIso9660(view, options, result);
+            return result;
+        }
 
         AddDiagnostic(
             result,
             DiagnosticSeverity::Information,
             "format.unsupported",
-            "The file is not PE, ELF, or Mach-O.");
+            "The file is not PE, ELF, Mach-O, or ISO9660.");
         return result;
     }
 
@@ -887,6 +913,7 @@ namespace ks::scanner
         case BinaryFormat::MachO32: return "Mach-O 32";
         case BinaryFormat::MachO64: return "Mach-O 64";
         case BinaryFormat::MachOUniversal: return "Universal Mach-O";
+        case BinaryFormat::Iso9660: return "ISO9660";
         case BinaryFormat::Unknown:
         default:
             return "Unknown";
@@ -899,6 +926,7 @@ namespace ks::scanner
         {
         case ByteOrder::LittleEndian: return "Little-endian";
         case ByteOrder::BigEndian: return "Big-endian";
+        case ByteOrder::BothEndian: return "Both-endian";
         case ByteOrder::Unknown:
         default:
             return "Unknown";

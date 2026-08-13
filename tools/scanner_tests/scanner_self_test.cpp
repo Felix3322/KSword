@@ -5,6 +5,7 @@
 // tools/scanner_tests/scanner_self_test.cpp
 // Purpose:
 // - Exercise a real KSword PE plus synthetic cross-endian ELF/Mach-O inputs.
+// - Exercise ISO9660 traversal and EXIT/GhostSystemDriver attack-path rules.
 // - Verify recognized malformed files fail without an out-of-bounds walk.
 // - Verify atomic patch backup, compare-before-write, and range rejection.
 //
@@ -18,10 +19,14 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cwchar>
 #include <iostream>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -89,6 +94,117 @@ namespace
             bytes[offset + index] =
                 static_cast<std::uint8_t>(value >> (shiftIndex * 8U));
         }
+    }
+
+    // PutBoth16/PutBoth32 生成 ISO9660 要求的小端/大端成对字段。
+    void PutBoth16(
+        std::vector<std::uint8_t>& bytes,
+        const std::size_t offset,
+        const std::uint16_t value)
+    {
+        Put16(bytes, offset, value, ks::scanner::ByteOrder::LittleEndian);
+        Put16(bytes, offset + 2U, value, ks::scanner::ByteOrder::BigEndian);
+    }
+
+    void PutBoth32(
+        std::vector<std::uint8_t>& bytes,
+        const std::size_t offset,
+        const std::uint32_t value)
+    {
+        Put32(bytes, offset, value, ks::scanner::ByteOrder::LittleEndian);
+        Put32(bytes, offset + 4U, value, ks::scanner::ByteOrder::BigEndian);
+    }
+
+    std::string Base64Encode(const std::span<const std::uint8_t> input)
+    {
+        static constexpr char alphabet[] =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string output;
+        output.reserve(((input.size() + 2U) / 3U) * 4U);
+        for (std::size_t offset = 0; offset < input.size(); offset += 3U)
+        {
+            const std::size_t remaining = input.size() - offset;
+            const std::uint32_t value =
+                (static_cast<std::uint32_t>(input[offset]) << 16U) |
+                (remaining > 1U
+                    ? static_cast<std::uint32_t>(input[offset + 1U]) << 8U
+                    : 0U) |
+                (remaining > 2U
+                    ? static_cast<std::uint32_t>(input[offset + 2U])
+                    : 0U);
+            output.push_back(alphabet[(value >> 18U) & 0x3FU]);
+            output.push_back(alphabet[(value >> 12U) & 0x3FU]);
+            output.push_back(remaining > 1U ? alphabet[(value >> 6U) & 0x3FU] : '=');
+            output.push_back(remaining > 2U ? alphabet[value & 0x3FU] : '=');
+        }
+        return output;
+    }
+
+    std::string HexEncode(const std::span<const std::uint8_t> input)
+    {
+        static constexpr char digits[] = "0123456789ABCDEF";
+        std::string output;
+        output.reserve(input.size() * 2U);
+        for (const std::uint8_t byte : input)
+        {
+            output.push_back(digits[byte >> 4U]);
+            output.push_back(digits[byte & 0x0FU]);
+        }
+        return output;
+    }
+
+    // MakeMinimalPeWithStrings 只生成供静态规则读取的 PE 外壳，不包含可执行代码。
+    std::vector<std::uint8_t> MakeMinimalPeWithStrings(
+        const std::vector<std::string>& strings)
+    {
+        std::vector<std::uint8_t> bytes(0x100U, 0);
+        bytes[0] = 'M';
+        bytes[1] = 'Z';
+        Put32(bytes, 0x3CU, 0x80U, ks::scanner::ByteOrder::LittleEndian);
+        bytes[0x80U] = 'P';
+        bytes[0x81U] = 'E';
+        for (const std::string& value : strings)
+        {
+            bytes.insert(bytes.end(), value.begin(), value.end());
+            bytes.push_back(0);
+        }
+        return bytes;
+    }
+
+    std::vector<std::uint8_t> MakeSyntheticAttackProxy()
+    {
+        std::vector<std::uint8_t> driver = MakeMinimalPeWithStrings({
+            "TamperProtection", "DisableRealtimeMonitoring", "WdFilter",
+            "WdBoot", "WinDefend", "ZwSetValueKey", "MsMpEng.exe",
+            "NisSrv.exe", "360tray.exe", "ZwTerminateProcess",
+            "ZwUnloadDriver", "\\Registry\\Machine\\SOFTWARE\\360"
+        });
+        driver.resize(4096U, 0);
+        const std::string hexLayer = HexEncode(driver);
+        const std::string secondLayer = Base64Encode(
+            std::span<const std::uint8_t>(
+                reinterpret_cast<const std::uint8_t*>(hexLayer.data()),
+                hexLayer.size()));
+        const std::string firstLayer = Base64Encode(
+            std::span<const std::uint8_t>(
+                reinterpret_cast<const std::uint8_t*>(secondLayer.data()),
+                secondLayer.size()));
+
+        std::vector<std::uint8_t> proxy = MakeMinimalPeWithStrings({
+            "cef_execute_process", "cef_initialize", "cef_shutdown",
+            "Elevation:Administrator!new:",
+            "3E5FC7F9-9A51-4367-9063-A120244FBEC7",
+            "CoGetObject", "CheckTokenMembership", "explorer.exe",
+            "NtQueryInformationProcess", "ReadProcessMemory", "GhostSystemDriver",
+            "CreateServiceW", "StartServiceW", "avp.exe"
+        });
+        // 实样本的外层字符串为 UTF-16LE；测试保持相同编码并超过最小长度门槛。
+        for (const char character : firstLayer)
+        {
+            proxy.push_back(static_cast<std::uint8_t>(character));
+            proxy.push_back(0);
+        }
+        return proxy;
     }
 
     std::vector<std::uint8_t> MakeElf(
@@ -205,6 +321,95 @@ namespace
         return bytes;
     }
 
+    // WriteDirectoryRecord 生成单个 ISO9660 Level 1 目录记录并返回记录长度。
+    std::size_t WriteDirectoryRecord(
+        std::vector<std::uint8_t>& image,
+        const std::size_t offset,
+        const std::uint32_t extent,
+        const std::uint32_t dataSize,
+        const std::uint8_t flags,
+        const std::span<const std::uint8_t> identifier)
+    {
+        const std::size_t padding = (identifier.size() % 2U) == 0 ? 1U : 0U;
+        const std::size_t recordLength = 33U + identifier.size() + padding;
+        image[offset] = static_cast<std::uint8_t>(recordLength);
+        image[offset + 1U] = 0;
+        PutBoth32(image, offset + 2U, extent);
+        PutBoth32(image, offset + 10U, dataSize);
+        image[offset + 25U] = flags;
+        PutBoth16(image, offset + 28U, 1U);
+        image[offset + 32U] = static_cast<std::uint8_t>(identifier.size());
+        std::copy(identifier.begin(), identifier.end(), image.begin() + offset + 33U);
+        return recordLength;
+    }
+
+    std::vector<std::uint8_t> MakeIso9660(
+        const std::string& fileName,
+        const std::vector<std::uint8_t>& fileBytes)
+    {
+        constexpr std::size_t blockSize = 2048U;
+        constexpr std::uint32_t rootExtent = 20U;
+        constexpr std::uint32_t fileExtent = 21U;
+        const std::size_t fileBlocks = (fileBytes.size() + blockSize - 1U) / blockSize;
+        const std::size_t totalBlocks = fileExtent + std::max<std::size_t>(fileBlocks, 1U);
+        std::vector<std::uint8_t> image(totalBlocks * blockSize, 0);
+
+        // 主卷描述符只填充解析器与 ISO 规范要求的关键字段。
+        const std::size_t descriptor = 16U * blockSize;
+        image[descriptor] = 1U;
+        const std::string signature = "CD001";
+        std::copy(signature.begin(), signature.end(), image.begin() + descriptor + 1U);
+        image[descriptor + 6U] = 1U;
+        const std::string volumeId = "KSWORD_TEST";
+        std::fill(image.begin() + descriptor + 40U, image.begin() + descriptor + 72U, ' ');
+        std::copy(volumeId.begin(), volumeId.end(), image.begin() + descriptor + 40U);
+        PutBoth32(image, descriptor + 80U, static_cast<std::uint32_t>(totalBlocks));
+        PutBoth16(image, descriptor + 120U, 1U);
+        PutBoth16(image, descriptor + 124U, 1U);
+        PutBoth16(image, descriptor + 128U, static_cast<std::uint16_t>(blockSize));
+
+        const std::array<std::uint8_t, 1> currentIdentifier{ 0U };
+        WriteDirectoryRecord(
+            image,
+            descriptor + 156U,
+            rootExtent,
+            static_cast<std::uint32_t>(blockSize),
+            0x02U,
+            currentIdentifier);
+        const std::size_t terminator = 17U * blockSize;
+        image[terminator] = 255U;
+        std::copy(signature.begin(), signature.end(), image.begin() + terminator + 1U);
+        image[terminator + 6U] = 1U;
+
+        // 根目录含“当前目录”“父目录”和一个普通文件记录。
+        std::size_t recordOffset = rootExtent * blockSize;
+        recordOffset += WriteDirectoryRecord(
+            image,
+            recordOffset,
+            rootExtent,
+            static_cast<std::uint32_t>(blockSize),
+            0x02U,
+            currentIdentifier);
+        const std::array<std::uint8_t, 1> parentIdentifier{ 1U };
+        recordOffset += WriteDirectoryRecord(
+            image,
+            recordOffset,
+            rootExtent,
+            static_cast<std::uint32_t>(blockSize),
+            0x02U,
+            parentIdentifier);
+        const std::vector<std::uint8_t> fileIdentifier(fileName.begin(), fileName.end());
+        WriteDirectoryRecord(
+            image,
+            recordOffset,
+            fileExtent,
+            static_cast<std::uint32_t>(fileBytes.size()),
+            0,
+            fileIdentifier);
+        std::copy(fileBytes.begin(), fileBytes.end(), image.begin() + fileExtent * blockSize);
+        return image;
+    }
+
     bool WriteBytes(
         const std::wstring& path,
         const std::vector<std::uint8_t>& bytes)
@@ -296,6 +501,19 @@ namespace
         return iterator == result.tables.end() ? nullptr : &*iterator;
     }
 
+    bool HasAttackEvidence(
+        const ks::scanner::BinaryScanResult& result,
+        const std::string_view code)
+    {
+        return std::any_of(
+            result.attackPath.evidence.begin(),
+            result.attackPath.evidence.end(),
+            [code](const ks::scanner::AttackPathEvidence& evidence)
+            {
+                return evidence.code == code;
+            });
+    }
+
     void ScanSynthetic(
         const std::wstring& path,
         const std::vector<std::uint8_t>& bytes,
@@ -336,6 +554,9 @@ namespace
 
 int wmain(const int argc, wchar_t** argv)
 {
+    // 单元缓冲保证快速终止时仍保留最后一个完成的合成断言。
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
     const std::wstring testDirectory = CreateTestDirectory();
     Expect(!testDirectory.empty(), "create isolated test directory");
     if (testDirectory.empty())
@@ -440,6 +661,54 @@ int wmain(const int argc, wchar_t** argv)
     const ks::scanner::BinaryTable* slices = FindTable(universal, "slices");
     Expect(slices != nullptr && slices->rows.size() == 2, "universal file lists both slices");
 
+    // 合成 ISO 用纯数据构造；测试不会挂载镜像或调用其中的 PE 字节。
+    const std::wstring benignIsoPath = pathFor(L"benign.iso");
+    const std::vector<std::uint8_t> benignIso = MakeIso9660(
+        "README.BIN;1",
+        MakeMinimalPeWithStrings({ "synthetic benign fixture" }));
+    Expect(WriteBytes(benignIsoPath, benignIso), "write benign synthetic ISO9660");
+    const ks::scanner::BinaryScanResult benignIsoResult =
+        ks::scanner::ScanBinaryFile(benignIsoPath);
+    Expect(benignIsoResult.success, "synthetic ISO9660 parses successfully");
+    Expect(
+        benignIsoResult.format == ks::scanner::BinaryFormat::Iso9660,
+        "synthetic ISO9660 format classified");
+    Expect(
+        FindTable(benignIsoResult, "container_entries") != nullptr,
+        "synthetic ISO9660 exposes container entries");
+    Expect(!benignIsoResult.attackPath.matched, "benign ISO9660 stays below attack threshold");
+
+    const std::wstring attackIsoPath = pathFor(L"attack-path.iso");
+    const std::vector<std::uint8_t> attackIso = MakeIso9660(
+        "LIBCEF.DLL;1",
+        MakeSyntheticAttackProxy());
+    Expect(WriteBytes(attackIsoPath, attackIso), "write synthetic attack-path ISO9660");
+    const ks::scanner::BinaryScanResult attackIsoResult =
+        ks::scanner::ScanBinaryFile(attackIsoPath);
+    Expect(attackIsoResult.success, "attack-path ISO9660 parses successfully");
+    Expect(attackIsoResult.attackPath.matched, "EXIT/GhostSystemDriver attack path detected");
+    Expect(
+        HasAttackEvidence(attackIsoResult, "proxy.cmstplua_uac"),
+        "CMSTPLUA elevation evidence reported");
+    Expect(
+        HasAttackEvidence(attackIsoResult, "embedded.double_base64_driver"),
+        "double-Base64 embedded driver evidence reported");
+    Expect(
+        HasAttackEvidence(attackIsoResult, "driver.defender_registry") &&
+            HasAttackEvidence(attackIsoResult, "driver.security_process_kill"),
+        "decoded driver defense-impairment evidence reported");
+
+    std::vector<std::uint8_t> malformedIso = benignIso;
+    constexpr std::size_t rootExtentBigEndian = 16U * 2048U + 156U + 6U;
+    malformedIso[rootExtentBigEndian] ^= 0x01U;
+    const std::wstring malformedIsoPath = pathFor(L"malformed.iso");
+    Expect(WriteBytes(malformedIsoPath, malformedIso), "write malformed ISO9660");
+    const ks::scanner::BinaryScanResult malformedIsoResult =
+        ks::scanner::ScanBinaryFile(malformedIsoPath);
+    Expect(
+        malformedIsoResult.recognized && !malformedIsoResult.success,
+        "mismatched ISO9660 both-endian extent rejected safely");
+
     const std::wstring truncatedElfPath = pathFor(L"truncated-elf.bin");
     WriteBytes(truncatedElfPath, { 0x7F, 'E', 'L', 'F', 2, 1 });
     const ks::scanner::BinaryScanResult truncatedElf =
@@ -480,7 +749,7 @@ int wmain(const int argc, wchar_t** argv)
         excessiveMachResult.recognized && !excessiveMachResult.success,
         "excessive Mach-O command count rejected safely");
 
-    if (argc >= 3)
+    if (argc >= 3 && std::wcscmp(argv[2], L"--attack-sample") != 0)
     {
         const ks::scanner::BinaryScanResult realElf =
             ks::scanner::ScanBinaryFile(argv[2]);
@@ -503,7 +772,9 @@ int wmain(const int argc, wchar_t** argv)
         Expect(symbols != nullptr && !symbols->rows.empty(), "real ELF symbols populated");
     }
 
-    if (argc >= 4)
+    if (argc >= 4 &&
+        std::wcscmp(argv[2], L"--attack-sample") != 0 &&
+        std::wcscmp(argv[3], L"--attack-sample") != 0)
     {
         const ks::scanner::BinaryScanResult realMach =
             ks::scanner::ScanBinaryFile(argv[3]);
@@ -527,6 +798,34 @@ int wmain(const int argc, wchar_t** argv)
         Expect(symbols != nullptr && !symbols->rows.empty(), "real Mach-O symbols populated");
         Expect(imports != nullptr && !imports->rows.empty(), "real Mach-O imports populated");
         Expect(exports != nullptr && !exports->rows.empty(), "real Mach-O exports populated");
+    }
+
+    // 可选真实样本路径只进入 ScanBinaryFile；该分支不会 ShellExecute、加载或挂载目标。
+    for (int argument = 2; argument + 1 < argc; ++argument)
+    {
+        if (std::wcscmp(argv[argument], L"--attack-sample") != 0)
+        {
+            continue;
+        }
+        const ks::scanner::BinaryScanResult attackSample =
+            ks::scanner::ScanBinaryFile(argv[argument + 1]);
+        std::cout << "[INFO] attack sample format="
+                  << ks::scanner::FormatName(attackSample.format)
+                  << " score=" << attackSample.attackPath.score
+                  << " evidence=" << attackSample.attackPath.evidence.size()
+                  << '\n';
+        Expect(attackSample.success, "external attack sample parses successfully");
+        Expect(
+            attackSample.format == ks::scanner::BinaryFormat::Iso9660,
+            "external attack sample classified as ISO9660");
+        Expect(attackSample.attackPath.matched, "external attack sample matches attack path");
+        Expect(
+            HasAttackEvidence(attackSample, "container.libcef_sideload_pair"),
+            "external attack sample contains libcef side-load pair");
+        Expect(
+            HasAttackEvidence(attackSample, "driver.defender_registry"),
+            "external attack sample contains decoded driver impairment evidence");
+        break;
     }
 
     const std::wstring patchPath = pathFor(L"patch-target.bin");
@@ -634,6 +933,7 @@ int wmain(const int argc, wchar_t** argv)
         L"macho32le.bin", L"macho32be.bin", L"macho64le.bin", L"macho64be.bin",
         L"universal.bin", L"truncated-elf.bin", L"truncated-macho.bin",
         L"truncated-pe.bin", L"excessive-elf.bin", L"excessive-macho.bin",
+        L"benign.iso", L"attack-path.iso", L"malformed.iso",
         L"patch-target.bin", L"patch-target.backup.bin", L"locked-target.bin"
     };
     for (const wchar_t* fileName : generatedFiles)

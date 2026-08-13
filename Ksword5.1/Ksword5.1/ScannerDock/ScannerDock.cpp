@@ -142,7 +142,7 @@ ScannerDock::ScannerDock(QWidget* parent)
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     buildUi();
     retranslateUi();
-    setStatus("scanner.status.ready", "请选择 PE、ELF 或 Mach-O 文件开始扫描。");
+    setStatus("scanner.status.ready", "请选择 PE、ELF、Mach-O 或 ISO9660 镜像开始扫描。");
 }
 
 ScannerDock::~ScannerDock()
@@ -254,7 +254,7 @@ void ScannerDock::retranslateUi()
     m_pathLabel->setText(translated("scanner.path.label", "文件路径"));
     m_pathEdit->setPlaceholderText(translated(
         "scanner.path.placeholder",
-        "选择要进行结构化解析的 PE、ELF 或 Mach-O 文件"));
+        "选择要进行结构化解析和攻击路径检测的二进制文件或镜像"));
     m_browseButton->setText(translated("scanner.action.browse", "浏览…"));
     m_scanButton->setText(translated("scanner.action.scan", "扫描"));
     m_browseButton->setToolTip(translated(
@@ -262,7 +262,7 @@ void ScannerDock::retranslateUi()
         "选择要扫描或安全编辑的普通文件"));
     m_scanButton->setToolTip(translated(
         "scanner.action.scan.tooltip",
-        "在后台解析 PE、ELF 或 Mach-O 结构"));
+        "在后台只读解析 PE、ELF、Mach-O 或 ISO9660/Joliet 结构与攻击路径"));
     m_mainTabs->setTabText(
         m_mainTabs->indexOf(m_inspectionPage),
         translated("scanner.tab.inspection", "结构化扫描"));
@@ -315,7 +315,7 @@ void ScannerDock::chooseFile()
         m_pathEdit->text().trimmed(),
         translated(
             "scanner.dialog.file_filter",
-            "二进制文件 (*.exe *.dll *.sys *.efi *.elf *.so *.dylib *.o *.bin);;所有文件 (*.*)"));
+            "二进制与镜像 (*.exe *.dll *.sys *.efi *.elf *.so *.dylib *.o *.bin *.img *.iso);;所有文件 (*.*)"));
     if (selectedPath.isEmpty())
     {
         return;
@@ -397,7 +397,17 @@ void ScannerDock::finishScan(
     m_lastResult = std::move(result);
     renderResult(*m_lastResult);
 
-    if (m_lastResult->success)
+    if (m_lastResult->success && m_lastResult->attackPath.matched)
+    {
+        setStatus(
+            "scanner.status.attack_detected",
+            "扫描完成并检测到 EXIT / GhostSystemDriver 攻击路径：%1，评分 %2/100。",
+            QStringList{
+                scannedPath,
+                QString::number(m_lastResult->attackPath.score)
+            });
+    }
+    else if (m_lastResult->success)
     {
         setStatus(
             "scanner.status.success",
@@ -419,7 +429,7 @@ void ScannerDock::finishScan(
     {
         setStatus(
             "scanner.status.unsupported",
-            "未识别为受支持的 PE、ELF 或 Mach-O 文件：%1",
+            "未识别为受支持的 PE、ELF、Mach-O 或 ISO9660 文件：%1",
             QStringList{ scannedPath });
     }
 }
@@ -489,6 +499,13 @@ void ScannerDock::renderResult(const ks::scanner::BinaryScanResult& result)
     summaryTable->resizeColumnsToContents();
     m_resultTabs->addTab(summaryTable, translated("scanner.result.summary", "摘要"));
 
+    if (!result.attackPath.evidence.empty())
+    {
+        m_resultTabs->addTab(
+            createAttackPathPage(result),
+            translated("scanner.result.attack_path", "攻击路径"));
+    }
+
     auto* headerTable = createReadOnlyTable(m_resultTabs);
     headerTable->setColumnCount(2);
     headerTable->setHorizontalHeaderLabels({
@@ -526,8 +543,10 @@ void ScannerDock::renderResult(const ks::scanner::BinaryScanResult& result)
             for (int column = 0; column < table->columnCount(); ++column)
             {
                 const QString value = column < static_cast<int>(sourceRow.size())
-                    ? ks::i18n::sourceText(
-                        fromUtf8(sourceRow[static_cast<std::size_t>(column)]))
+                    ? localizedTableValue(
+                        sourceTable.id,
+                        column,
+                        sourceRow[static_cast<std::size_t>(column)])
                     : QString();
                 table->setItem(row, column, new QTableWidgetItem(value));
             }
@@ -564,7 +583,7 @@ void ScannerDock::renderResult(const ks::scanner::BinaryScanResult& result)
             row,
             2,
             new QTableWidgetItem(
-                ks::i18n::sourceText(fromUtf8(diagnostic.message))));
+                localizedDiagnosticMessage(diagnostic.code, diagnostic.message)));
         diagnosticsTable->setItem(
             row,
             3,

@@ -25,7 +25,7 @@ namespace ks::scanner
 }
 
 // ScannerDock 作用：
-// - 提供独立的 PE/ELF/Mach-O 结构化扫描页；
+// - 提供 PE/ELF/Mach-O/ISO9660 结构化扫描和攻击路径检测页；
 // - 提供“原字节比较 + 等长替换 + 原子提交”的普通文件安全编辑页；
 // - 扫描与大文件复制均在线程池执行，避免阻塞主界面。
 class ScannerDock final : public QWidget
@@ -72,11 +72,24 @@ private:
     // createStructuredTablePage 作用：为宽表建立互补 A/B/C 列组和表头列菜单。
     QWidget* createStructuredTablePage(QTableWidget* table, int columnCount) const;
 
+    // createAttackPathPage 作用：展示规则结论、评分和逐条可复核证据。
+    QWidget* createAttackPathPage(const ks::scanner::BinaryScanResult& result) const;
+
     // 以下辅助函数统一处理本地化、诊断级别和状态栏状态。
     QString translated(const char* key, const char* fallback) const;
     QString localizedTableTitle(const std::string& tableId, const std::string& fallback) const;
     QString localizedColumnTitle(const std::string& fallback) const;
+    QString localizedTableValue(
+        const std::string& tableId,
+        int column,
+        const std::string& fallback) const;
+    QString localizedDiagnosticMessage(
+        const std::string& code,
+        const std::string& fallback) const;
     QString diagnosticSeverityText(int severity) const;
+    QString attackPathSeverityText(int severity) const;
+    QString attackPathStageText(const std::string& stage) const;
+    QString attackPathEvidenceText(const std::string& code) const;
     void setStatus(const char* key, const char* fallback, const QStringList& arguments = {});
     void refreshStatus();
     void setScanBusy(bool busy);
