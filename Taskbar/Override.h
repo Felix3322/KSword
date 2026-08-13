@@ -13,20 +13,21 @@ public:
     explicit GlowIconButton(const QString& iconPath, const QSize& iconSize, QWidget* parent = nullptr)
         : QPushButton(parent) {
         // 1. 加载图标并验证
-        QIcon originalIcon(iconPath);
+        originalIcon = QIcon(iconPath);
+        configuredIconSize = iconSize;
         if (originalIcon.isNull()) {
             qWarning() << "图标加载失败！路径：" << iconPath;
             return;
         }
 
         // 2. 精准变色（只处理图标本体，保留透明背景）
-        QIcon coloredIcon = colorizeIcon(originalIcon, iconSize, QColor("#43A0FF"));
+        QIcon coloredIcon = colorizeIcon(originalIcon, iconSize, m_tintColor);
         setIcon(coloredIcon);
         setIconSize(iconSize); // 强制图标尺寸
 
         // 3. 发光效果
         glowEffect = new QGraphicsDropShadowEffect(this);
-        glowEffect->setColor(QColor("#43A0FF"));
+        glowEffect->setColor(m_tintColor);
         glowEffect->setBlurRadius(8); // 发光强度（适中）
         glowEffect->setOffset(0, 0);
         glowEffect->setEnabled(false);
@@ -50,21 +51,50 @@ public:
         )");
     }
 
+    // setTintColor：输入为图标和发光目标色；重新着色现有图标并更新悬停视觉，无返回值。
+    void setTintColor(const QColor& color) {
+        if (m_tintColor == color || originalIcon.isNull()) {
+            return;
+        }
+
+        m_tintColor = color;
+        setIcon(colorizeIcon(originalIcon, configuredIconSize, m_tintColor));
+        if (glowEffect != nullptr) {
+            glowEffect->setColor(m_tintColor);
+        }
+        const QString colorName = m_tintColor.name();
+        setStyleSheet(QStringLiteral(
+            "QPushButton { border: 0px solid %1; border-radius: 3px; padding: 3px; background-color: transparent; }"
+            "QPushButton:hover { border-color: %1; }"
+            "QPushButton:pressed { background-color: rgba(%2, %3, %4, 36); }")
+            .arg(colorName)
+            .arg(m_tintColor.red())
+            .arg(m_tintColor.green())
+            .arg(m_tintColor.blue()));
+    }
+
 protected:
     // 鼠标进入：启用发光
     void enterEvent(QEnterEvent* event) override {
-        glowEffect->setEnabled(true);
+        if (glowEffect != nullptr) {
+            glowEffect->setEnabled(true);
+        }
         QPushButton::enterEvent(event);
     }
 
     // 鼠标离开：关闭发光
     void leaveEvent(QEvent* event) override {
-        glowEffect->setEnabled(false);
+        if (glowEffect != nullptr) {
+            glowEffect->setEnabled(false);
+        }
         QPushButton::leaveEvent(event);
     }
 
 private:
-    QGraphicsDropShadowEffect* glowEffect;
+    QGraphicsDropShadowEffect* glowEffect = nullptr; // 图标按钮悬停时使用的发光效果。
+    QIcon originalIcon;                    // 未着色原始图标，用于切换主题时重新染色。
+    QSize configuredIconSize;              // 图标重着色时保持的固定像素尺寸。
+    QColor m_tintColor = QColor("#43A0FF"); // 当前主题下的图标着色。
 
     // 精准变色算法：只处理非透明的深色像素
     QIcon colorizeIcon(const QIcon& original, const QSize& iconSize, const QColor& targetColor) {

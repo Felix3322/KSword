@@ -124,6 +124,10 @@
     <ClCompile Include="Override.cpp" />
     <ClCompile Include="DisplayRestartMonitor.cpp" />
     <ClCompile Include="SosHotkeyLauncher.cpp" />
+    <ClCompile Include="TaskbarEarthquakeAudioPlayer.cpp" />
+    <ClCompile Include="TaskbarEarthquakeClient.cpp" />
+    <ClCompile Include="TaskbarNotificationService.cpp" />
+    <ClCompile Include="TaskbarSettingsDialog.cpp" />
     <ClCompile Include="SpectrumWidget.cpp">
       <DynamicSource Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">input</DynamicSource>
       <QtMocFileName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(Filename).moc</QtMocFileName>
@@ -142,6 +146,10 @@
     <QtMoc Include="SpectrumWidget.h" />
     <QtMoc Include="TaskbarSharedState.h" />
     <QtMoc Include="AudioAnalyze.h" />
+    <QtMoc Include="TaskbarEarthquakeClient.h" />
+    <QtMoc Include="TaskbarNotificationService.h" />
+    <QtMoc Include="TaskbarSettingsDialog.h" />
+    <ClInclude Include="TaskbarEarthquakeAudioPlayer.h" />
     <ClInclude Include="Function.h" />
     <ClInclude Include="SosHotkeyLauncher.h" />
   </ItemGroup>
@@ -151,4 +159,16 @@
   </ImportGroup>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <!-- Taskbar 使用 Qt Multimedia 播放可选地震 WAV；Release 输出必须随程序部署对应 DLL 和媒体插件。 -->
+  <Target Name="DeployTaskbarQtRuntime" AfterTargets="Build" Condition="'$(Configuration)|$(Platform)'=='Release|x64' and Exists('$(TargetPath)')">
+    <PropertyGroup>
+      <TaskbarQtDeployExe Condition="'$(TaskbarQtDeployExe)'=='' and '$(KSWORD_QT_DIR)'!='' and Exists('$(KSWORD_QT_DIR)\bin\windeployqt.exe')">$(KSWORD_QT_DIR)\bin\windeployqt.exe</TaskbarQtDeployExe>
+      <TaskbarQtDeployExe Condition="'$(TaskbarQtDeployExe)'=='' and Exists('$(MSBuildProjectDirectory)\..\.deps\Qt\6.9.3\msvc2022_64\bin\windeployqt.exe')">$(MSBuildProjectDirectory)\..\.deps\Qt\6.9.3\msvc2022_64\bin\windeployqt.exe</TaskbarQtDeployExe>
+      <TaskbarQtDeployExe Condition="'$(TaskbarQtDeployExe)'=='' and '$(QtInstall)'!='' and Exists('$(QtInstall)\bin\windeployqt.exe')">$(QtInstall)\bin\windeployqt.exe</TaskbarQtDeployExe>
+      <TaskbarQtDeployExe Condition="'$(TaskbarQtDeployExe)'=='' and '$(QTDIR)'!='' and Exists('$(QTDIR)\bin\windeployqt.exe')">$(QTDIR)\bin\windeployqt.exe</TaskbarQtDeployExe>
+    </PropertyGroup>
+    <Message Importance="High" Text="Taskbar: deploying Qt runtime and multimedia plugins to $(TargetDir)" Condition="Exists('$(TaskbarQtDeployExe)')" />
+    <Exec Command="&quot;$(TaskbarQtDeployExe)&quot; --release --force --compiler-runtime --dir &quot;$(TargetDir).&quot; &quot;$(TargetPath)&quot;" Condition="Exists('$(TaskbarQtDeployExe)')" />
+    <Warning Condition="!Exists('$(TaskbarQtDeployExe)')" Text="Taskbar: windeployqt.exe was not found; Release output may be missing Qt Multimedia runtime files." />
+  </Target>
 </Project>

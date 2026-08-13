@@ -1,6 +1,7 @@
 #include "Taskbar.h"
 #include "Function.h"
 #include "Override.h"
+#include "TaskbarSettingsDialog.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -16,7 +17,12 @@
 #include <qtimer.h>
 #include <QDateTime>
 #include <QCoreApplication>
+#include <QGraphicsColorizeEffect>
+#include <QGraphicsOpacityEffect>
+#include <QEasingCurve>
+#include <QPropertyAnimation>
 #include <QSizePolicy>
+#include <QStackedLayout>
 #include <QProcessEnvironment>
 #include <Qscreen.h>
 
@@ -223,38 +229,57 @@ bool Taskbar::nativeEvent(const QByteArray& eventType, void* message, qintptr* r
     return QMainWindow::nativeEvent(eventType, message, result);
 }
 
-Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState, QWidget* parent)
-    : QMainWindow(parent),
-      m_leftSpectrum(nullptr),
-      m_rightSpectrum(nullptr),
-      m_sharedState(sharedState),
-      m_targetScreenGeometry(targetScreen ? targetScreen->geometry() : QRect()),
-      m_targetScreenName(targetScreen ? targetScreen->name() : QString()),
-      m_targetDevicePixelRatio(targetScreen ? targetScreen->devicePixelRatio() : 1.0),
-      cpuBarContainer(nullptr),
-      timer(nullptr),
-      timeLabel(nullptr),
-      networkSpeedContainer(nullptr),
-      uploadSpeedLabel(nullptr),
-      downloadSpeedLabel(nullptr),
-      networkUiTimer(nullptr),
-      isAppBarRegistered(false),
-      centralWidget(nullptr),
-      rightBtnContainer(nullptr),
-      rightBtnLayout(nullptr),
-      exitBtn(nullptr),
-      appBarMessageId(0),
-      cpuUpdateTimer(nullptr)
+Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState,
+                 TaskbarNotificationService* notificationService, QWidget* parent)
+    : QMainWindow(parent)
+    , m_leftSpectrum(nullptr)
+    , m_rightSpectrum(nullptr)
+    , m_sharedState(sharedState)
+    , m_notificationService(notificationService)
+    , m_targetScreenGeometry(targetScreen ? targetScreen->geometry() : QRect())
+    , m_targetScreenName(targetScreen ? targetScreen->name() : QString())
+    , m_targetDevicePixelRatio(targetScreen ? targetScreen->devicePixelRatio() : 1.0)
+    , cpuBarContainer(nullptr)
+    , timer(nullptr)
+    , timeLabel(nullptr)
+    , contentLabel(nullptr)
+    , logoLabel(nullptr)
+    , logoColorEffect(nullptr)
+    , networkSpeedContainer(nullptr)
+    , uploadSpeedLabel(nullptr)
+    , downloadSpeedLabel(nullptr)
+    , networkUiTimer(nullptr)
+    , isAppBarRegistered(false)
+    , centralWidget(nullptr)
+    , normalCenterWidget(nullptr)
+    , notificationCenterWidget(nullptr)
+    , centerStackLayout(nullptr)
+    , normalCenterOpacity(nullptr)
+    , notificationCenterOpacity(nullptr)
+    , notificationSourceLabel(nullptr)
+    , notificationTitleLabel(nullptr)
+    , notificationBodyLabel(nullptr)
+    , notificationVisible(false)
+    , earthquakePresentation(false)
+    , alertFlashTimer(nullptr)
+    , alertFlashBright(false)
+    , rightBtnContainer(nullptr)
+    , rightBtnLayout(nullptr)
+    , exitBtn(nullptr)
+    , lockBtn(nullptr)
+    , toolBtn(nullptr)
+    , settingsBtn(nullptr)
+    , userBtn(nullptr)
+    , settingsDialog(nullptr)
+    , appBarMessageId(0)
+    , cpuUpdateTimer(nullptr)
 {
-    // 1. 窗口基本属性设置。
+    // Taskbar 为每个 QScreen 建立独立 AppBar 窗口，但中央通知内容和警报状态由全局服务共享。
     setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::ToolTip);
     setFixedHeight(kTaskbarLogicalHeight);
     setAttribute(Qt::WA_TranslucentBackground, false);
 
-    // 2. 创建中心容器与外层布局。
     centralWidget = new QWidget(this);
-    centralWidget->setStyleSheet("background-color: #0A0F16;");
-
     QVBoxLayout* vLayout = new QVBoxLayout(centralWidget);
     vLayout->setContentsMargins(0, 0, 0, 0);
     vLayout->setSpacing(0);
@@ -265,221 +290,180 @@ Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState, QWidget
     hLayout->setContentsMargins(2, 2, 2, 2);
     hLayout->setSpacing(5);
 
-    // -------------------------- 左侧 Logo --------------------------
-    QLabel* logoLabel = new QLabel(centralWidget);
+    // 左侧 Logo 使用图形效果统一在地震警报态变黑，不需要复制或新增 WindowsMarker 图标。
+    logoLabel = new QLabel(centralWidget);
     QPixmap pixmap(":/Image/Resource/Image/MainLogo.png");
     if (!pixmap.isNull()) {
         logoLabel->setFixedHeight(kTaskbarContentHeight);
         logoLabel->setMinimumWidth(1);
-
-        QPixmap scaledPix = pixmap.scaled(
-            QSize(QWIDGETSIZE_MAX, logoLabel->height()),
-            Qt::KeepAspectRatio,
-            Qt::SmoothTransformation
-        );
-        logoLabel->setPixmap(scaledPix);
+        logoLabel->setPixmap(pixmap.scaled(QSize(QWIDGETSIZE_MAX, logoLabel->height()),
+            Qt::KeepAspectRatio, Qt::SmoothTransformation));
         logoLabel->setAlignment(Qt::AlignCenter);
-        logoLabel->setScaledContents(false);
-        logoLabel->setStyleSheet("color: #00FFFF;");
     }
+    logoColorEffect = new QGraphicsColorizeEffect(logoLabel);
+    logoColorEffect->setColor(Qt::black);
+    logoColorEffect->setStrength(0.0);
+    logoLabel->setGraphicsEffect(logoColorEffect);
     hLayout->addWidget(logoLabel);
 
-    // -------------------------- 左侧文字 --------------------------
-    QLabel* contentLabel = new QLabel(centralWidget);
+    contentLabel = new QLabel(centralWidget);
     contentLabel->setText(QStringLiteral("· %1 [Dev].").arg(resolveCurrentUserNameText()));
-
-    contentLabel->setStyleSheet(R"(
-        QLabel {
-            border: none;
-            background: transparent;
-            padding: 5px 0;
-            color: #00FFFF;
-            font-size: 12px;
-        }
-        )");
     contentLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     hLayout->addWidget(contentLabel);
     hLayout->addStretch(1);
 
-    // -------------------------- 创建左右频谱组件 --------------------------
+    // 常态页继续使用原始双频谱和时钟；通知页与其完全叠放，不会改变任务栏宽度或 AppBar 几何。
     m_leftSpectrum = new SpectrumWidget(SpectrumWidget::CenterToLeft, this);
-    m_leftSpectrum->setFixedHeight(kTaskbarContentHeight);
-    m_leftSpectrum->setMinimumWidth(spectrumMinimumWidthForScreen());
-    m_leftSpectrum->setMaximumWidth(spectrumMaximumWidthForScreen());
-
     m_rightSpectrum = new SpectrumWidget(SpectrumWidget::CenterToRight, this);
+    m_leftSpectrum->setFixedHeight(kTaskbarContentHeight);
     m_rightSpectrum->setFixedHeight(kTaskbarContentHeight);
-    m_rightSpectrum->setMinimumWidth(spectrumMinimumWidthForScreen());
-    m_rightSpectrum->setMaximumWidth(spectrumMaximumWidthForScreen());
-
-    // -------------------------- 连接共享频谱数据 --------------------------
-    if (m_sharedState) {
-        connect(
-            m_sharedState,
-            &TaskbarSharedState::spectrumDataReady,
-            this,
-            &Taskbar::onSpectrumDataReady,
-            Qt::QueuedConnection
-        );
-    }
-
-    // -------------------------- 时间标签 --------------------------
+    m_leftSpectrum->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_rightSpectrum->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     timeLabel = new QLabel(centralWidget);
-    timeLabel->setStyleSheet(R"(
-        QLabel {
-            border: none;
-            background: transparent;
-            color: #00FFFF;
-            font-size: 12px;
-            padding: 0px 0px;
-        }
-    )");
     timeLabel->setAlignment(Qt::AlignCenter);
     timeLabel->setMinimumWidth(52);
 
-    // -------------------------- 中部频谱+时间 --------------------------
-    m_leftSpectrum->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_rightSpectrum->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    QWidget* centerHost = new QWidget(centralWidget);
+    centerHost->setMinimumWidth(spectrumMinimumWidthForScreen() * 2 + timeLabel->minimumWidth());
+    centerHost->setMaximumWidth(spectrumMaximumWidthForScreen() * 2 + timeLabel->minimumWidth());
+    centerHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    centerStackLayout = new QStackedLayout(centerHost);
+    centerStackLayout->setContentsMargins(0, 0, 0, 0);
+    centerStackLayout->setStackingMode(QStackedLayout::StackAll);
 
-    QHBoxLayout* spectrumTimeLayout = new QHBoxLayout();
-    spectrumTimeLayout->setSpacing(0);
+    normalCenterWidget = new QWidget(centerHost);
+    QHBoxLayout* spectrumTimeLayout = new QHBoxLayout(normalCenterWidget);
     spectrumTimeLayout->setContentsMargins(0, 0, 0, 0);
+    spectrumTimeLayout->setSpacing(0);
     spectrumTimeLayout->addWidget(m_leftSpectrum);
     spectrumTimeLayout->addWidget(timeLabel);
     spectrumTimeLayout->addWidget(m_rightSpectrum);
-    hLayout->addLayout(spectrumTimeLayout);
 
+    notificationCenterWidget = new QWidget(centerHost);
+    QHBoxLayout* notificationLayout = new QHBoxLayout(notificationCenterWidget);
+    notificationLayout->setContentsMargins(4, 0, 4, 0);
+    notificationLayout->setSpacing(5);
+    notificationSourceLabel = new QLabel(notificationCenterWidget);
+    notificationSourceLabel->setFixedWidth(52);
+    notificationSourceLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    notificationTitleLabel = new QLabel(notificationCenterWidget);
+    notificationTitleLabel->setMinimumWidth(84);
+    notificationTitleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    notificationBodyLabel = new QLabel(notificationCenterWidget);
+    notificationBodyLabel->setMinimumWidth(0);
+    notificationBodyLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    notificationBodyLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    notificationBodyLabel->setTextFormat(Qt::PlainText);
+    notificationLayout->addWidget(notificationSourceLabel);
+    notificationLayout->addWidget(notificationTitleLabel);
+    notificationLayout->addWidget(notificationBodyLabel, 1);
+
+    normalCenterOpacity = new QGraphicsOpacityEffect(normalCenterWidget);
+    normalCenterOpacity->setOpacity(1.0);
+    normalCenterWidget->setGraphicsEffect(normalCenterOpacity);
+    notificationCenterOpacity = new QGraphicsOpacityEffect(notificationCenterWidget);
+    notificationCenterOpacity->setOpacity(0.0);
+    notificationCenterWidget->setGraphicsEffect(notificationCenterOpacity);
+    centerStackLayout->addWidget(normalCenterWidget);
+    centerStackLayout->addWidget(notificationCenterWidget);
+    hLayout->addWidget(centerHost);
     hLayout->addStretch(1);
 
-    // -------------------------- 右上角按钮组容器 --------------------------
-    rightBtnContainer = new QWidget(centralWidget);
-    rightBtnContainer->setStyleSheet("background: transparent;");
-    rightBtnContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
-
-    rightBtnLayout = new QHBoxLayout(rightBtnContainer);
-    rightBtnLayout->setContentsMargins(0, 0, 0, 0);
-    rightBtnLayout->setSpacing(1);
-
-    // -------------------------- CPU 核心占用率柱状图 --------------------------
+    // CPU 与网络采样仍直接读取已有的共享状态对象，不因通知模块额外创建采样线程。
     cpuBarContainer = new QWidget(centralWidget);
-    cpuBarContainer->setStyleSheet("background: transparent;");
-
     QHBoxLayout* cpuBarLayout = new QHBoxLayout(cpuBarContainer);
     cpuBarLayout->setContentsMargins(3, 3, 3, 3);
     cpuBarLayout->setSpacing(2);
-
-    SYSTEM_INFO sysInfo;
+    SYSTEM_INFO sysInfo = {};
     GetSystemInfo(&sysInfo);
-    int coreCount = static_cast<int>(sysInfo.dwNumberOfProcessors);
+    const int coreCount = static_cast<int>(sysInfo.dwNumberOfProcessors);
     cpuBars.resize(coreCount);
-
-    for (int i = 0; i < coreCount; ++i) {
+    for (int index = 0; index < coreCount; ++index) {
         QLabel* bar = new QLabel(cpuBarContainer);
-        bar->setStyleSheet("background-color: #00FFFF;");
         bar->setAlignment(Qt::AlignBottom);
-
-        cpuBars[i] = bar;
+        cpuBars[index] = bar;
         cpuBarLayout->addWidget(bar);
-
-        QLayoutItem* barItem = cpuBarLayout->itemAt(i);
-        barItem->setAlignment(Qt::AlignBottom);
     }
-
-    // 将 CPU 柱图加入右侧区域。
     hLayout->addWidget(cpuBarContainer);
 
-    // -------------------------- CPU 旁边新增网络速率区（两行） --------------------------
     networkSpeedContainer = new QWidget(centralWidget);
-    networkSpeedContainer->setStyleSheet("background: transparent;");
     networkSpeedContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     networkSpeedContainer->setMinimumWidth(74);
-
     QVBoxLayout* networkSpeedLayout = new QVBoxLayout(networkSpeedContainer);
     networkSpeedLayout->setContentsMargins(2, 2, 2, 2);
     networkSpeedLayout->setSpacing(0);
-
     uploadSpeedLabel = new QLabel(networkSpeedContainer);
-    uploadSpeedLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    uploadSpeedLabel->setStyleSheet(
-        "border: none; background: transparent; color: #00FFFF; font-size: 10px;"
-    );
-    uploadSpeedLabel->setText(QStringLiteral("\u21910B/s"));
-
     downloadSpeedLabel = new QLabel(networkSpeedContainer);
+    uploadSpeedLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     downloadSpeedLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    downloadSpeedLabel->setStyleSheet(
-        "border: none; background: transparent; color: #00FFFF; font-size: 10px;"
-    );
-    downloadSpeedLabel->setText(QStringLiteral("\u21930B/s"));
-
     networkSpeedLayout->addWidget(uploadSpeedLabel);
     networkSpeedLayout->addWidget(downloadSpeedLabel);
     hLayout->addWidget(networkSpeedContainer);
 
-    // -------------------------- 右侧功能按钮 --------------------------
-    QSize iconSize(20, 20);
-
-    GlowIconButton* lockBtn = new GlowIconButton(
-        ":/Icon/Resource/Icon/lock_line.svg",
-        iconSize,
-        rightBtnContainer
-    );
+    // 右上角图标按钮均提供悬停说明；设置图标使用 Taskbar 已有 SVG 资源库而非 WindowsMarker 图标。
+    const QSize iconSize(20, 20);
+    rightBtnContainer = new QWidget(centralWidget);
+    rightBtnContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    rightBtnLayout = new QHBoxLayout(rightBtnContainer);
+    rightBtnLayout->setContentsMargins(0, 0, 0, 0);
+    rightBtnLayout->setSpacing(1);
+    lockBtn = new GlowIconButton(":/Icon/Resource/Icon/lock_line.svg", iconSize, rightBtnContainer);
+    lockBtn->setToolTip(QStringLiteral("锁定工作站"));
+    toolBtn = new GlowIconButton(":/Icon/Resource/Icon/tool_line.svg", iconSize, rightBtnContainer);
+    toolBtn->setToolTip(QStringLiteral("打开命令提示符"));
+    settingsBtn = new GlowIconButton(":/Icon/Resource/svg/system/settings_6_line.svg", iconSize, rightBtnContainer);
+    settingsBtn->setToolTip(QStringLiteral("通知设置"));
+    userBtn = new GlowIconButton(":/Icon/Resource/Icon/user_2_line.svg", iconSize, rightBtnContainer);
+    userBtn->setToolTip(QStringLiteral("用户自定义功能"));
+    exitBtn = new GlowIconButton(":/Icon/Resource/Icon/exit_fill.svg", iconSize, rightBtnContainer);
+    exitBtn->setToolTip(QStringLiteral("退出任务栏"));
     rightBtnLayout->addWidget(lockBtn);
-    QObject::connect(lockBtn, &QPushButton::clicked, lockWorkstation);
-
-    GlowIconButton* toolBtn = new GlowIconButton(
-        ":/Icon/Resource/Icon/tool_line.svg",
-        iconSize,
-        rightBtnContainer
-    );
     rightBtnLayout->addWidget(toolBtn);
-    QObject::connect(toolBtn, &QPushButton::clicked, openCmd);
-
-    GlowIconButton* userBtn = new GlowIconButton(
-        ":/Icon/Resource/Icon/user_2_line.svg",
-        iconSize,
-        rightBtnContainer
-    );
+    rightBtnLayout->addWidget(settingsBtn);
     rightBtnLayout->addWidget(userBtn);
-    QObject::connect(userBtn, &QPushButton::clicked, userCustomFunction);
-
-    exitBtn = new GlowIconButton(
-        ":/Icon/Resource/Icon/exit_fill.svg",
-        iconSize,
-        rightBtnContainer
-    );
     rightBtnLayout->addWidget(exitBtn);
-
     rightBtnLayout->setAlignment(Qt::AlignRight);
+    connect(lockBtn, &QPushButton::clicked, lockWorkstation);
+    connect(toolBtn, &QPushButton::clicked, openCmd);
+    connect(settingsBtn, &QPushButton::clicked, this, &Taskbar::showSettingsDialog);
+    connect(userBtn, &QPushButton::clicked, userCustomFunction);
     connect(exitBtn, &QPushButton::clicked, this, &Taskbar::onExitClicked);
-
     hLayout->addWidget(rightBtnContainer);
 
     vLayout->addLayout(hLayout);
     setCentralWidget(centralWidget);
+    applyTaskbarTheme(false, QColor(QStringLiteral("#0A0F16")));
 
-    // -------------------------- 启动时间与 CPU 刷新 --------------------------
+    // 保持现有的频谱、时间、CPU 和网络刷新节奏；通知服务只增加自己的轻量 UI 状态信号。
+    if (m_sharedState) {
+        connect(m_sharedState, &TaskbarSharedState::spectrumDataReady, this,
+            &Taskbar::onSpectrumDataReady, Qt::QueuedConnection);
+    }
     timer = new QTimer(this);
     timer->setInterval(500);
     connect(timer, &QTimer::timeout, this, &Taskbar::updateTime);
     timer->start();
     updateTime();
-
-    RegisterAsAppBar();
-
     cpuUpdateTimer = new QTimer(this);
     cpuUpdateTimer->setInterval(200);
     connect(cpuUpdateTimer, &QTimer::timeout, this, &Taskbar::updateCPUUsage);
     cpuUpdateTimer->start();
     updateCPUUsage();
-
-    // -------------------------- 启动网络采样线程与文本刷新 --------------------------
     networkUiTimer = new QTimer(this);
     networkUiTimer->setInterval(250);
     connect(networkUiTimer, &QTimer::timeout, this, &Taskbar::updateNetworkSpeedLabels);
     networkUiTimer->start();
-
     updateNetworkSpeedLabels();
+
+    alertFlashTimer = new QTimer(this);
+    alertFlashTimer->setInterval(280);
+    connect(alertFlashTimer, &QTimer::timeout, this, &Taskbar::updateAlertFlash);
+    if (m_notificationService != nullptr) {
+        connect(m_notificationService, &TaskbarNotificationService::presentationChanged, this,
+            &Taskbar::onNotificationPresentationChanged);
+        updateNotificationPresentation();
+    }
+    RegisterAsAppBar();
 }
 
 int Taskbar::appBarThicknessInNativePixels() const
@@ -723,6 +707,248 @@ void Taskbar::updateNetworkSpeedLabels()
 
     uploadSpeedLabel->setText(QStringLiteral("\u2191%1").arg(formatNetworkSpeed(up)));
     downloadSpeedLabel->setText(QStringLiteral("\u2193%1").arg(formatNetworkSpeed(down)));
+}
+
+void Taskbar::onNotificationPresentationChanged()
+{
+    // 所有显示器由同一通知服务触发该槽，因此每个屏幕在同一事件循环内切换到相同内容。
+    updateNotificationPresentation();
+}
+
+void Taskbar::updateNotificationPresentation()
+{
+    // 地震优先级最高且不淡入；普通通知与常态频谱/时钟严格通过半秒淡出再半秒淡入切换。
+    if (m_notificationService == nullptr)
+    {
+        return;
+    }
+
+    const TaskbarNotificationView notification = m_notificationService->currentNotification();
+    if (m_notificationService->earthquakeActive())
+    {
+        showEarthquakePresentation(notification);
+        return;
+    }
+
+    if (m_notificationService->hasVisibleNotification())
+    {
+        transitionToNotification(notification);
+        return;
+    }
+
+    transitionToNormalCenter();
+}
+
+void Taskbar::updateNotificationText(const TaskbarNotificationView& notification)
+{
+    // 所有文本使用单行省略策略，固定高度任务栏不会被长设备路径或剪贴板内容撑开。
+    notificationSourceLabel->setText(notification.source);
+    notificationTitleLabel->setText(notification.title);
+    notificationBodyLabel->setText(notification.body);
+    notificationBodyLabel->setToolTip(notification.body);
+    displayedNotification = notification;
+}
+
+void Taskbar::transitionToNotification(const TaskbarNotificationView& notification)
+{
+    // 相同普通通知的状态刷新不重复启动动画，避免地震源多报次造成中央区域闪烁。
+    if (!earthquakePresentation && notificationVisible &&
+        displayedNotification.title == notification.title && displayedNotification.body == notification.body &&
+        displayedNotification.source == notification.source)
+    {
+        return;
+    }
+
+    stopCentralAnimations();
+    if (earthquakePresentation)
+    {
+        // 地震结束后先让当前警报正文半秒淡出，再淡入排队的普通通知；不让频谱短暂插入。
+        earthquakePresentation = false;
+        if (alertFlashTimer != nullptr)
+        {
+            alertFlashTimer->stop();
+        }
+        animateOpacity(notificationCenterOpacity, notificationCenterOpacity->opacity(), 0.0, [this, notification]() {
+            updateNotificationText(notification);
+            applyTaskbarTheme(false, QColor(QStringLiteral("#0A0F16")));
+            animateOpacity(notificationCenterOpacity, 0.0, 1.0, []() {});
+        });
+        notificationVisible = true;
+        return;
+    }
+
+    if (notificationVisible)
+    {
+        // 普通通知之间使用完整的 0.5s 淡出和 0.5s 淡入，内容替换只发生在完全透明后。
+        animateOpacity(notificationCenterOpacity, notificationCenterOpacity->opacity(), 0.0, [this, notification]() {
+            updateNotificationText(notification);
+            animateOpacity(notificationCenterOpacity, 0.0, 1.0, []() {});
+        });
+        return;
+    }
+
+    // 常态频谱与时钟先半秒降低到隐藏，再显示并半秒淡入普通通知。
+    animateOpacity(normalCenterOpacity, normalCenterOpacity->opacity(), 0.0, [this, notification]() {
+        updateNotificationText(notification);
+        animateOpacity(notificationCenterOpacity, 0.0, 1.0, []() {});
+    });
+    notificationVisible = true;
+}
+
+void Taskbar::transitionToNormalCenter()
+{
+    // 没有待显示通知时，反向执行半秒淡出通知和半秒淡入频谱/时钟。
+    if (!notificationVisible)
+    {
+        return;
+    }
+
+    stopCentralAnimations();
+    if (earthquakePresentation)
+    {
+        earthquakePresentation = false;
+        if (alertFlashTimer != nullptr)
+        {
+            alertFlashTimer->stop();
+        }
+    }
+    animateOpacity(notificationCenterOpacity, notificationCenterOpacity->opacity(), 0.0, [this]() {
+        applyTaskbarTheme(false, QColor(QStringLiteral("#0A0F16")));
+        animateOpacity(normalCenterOpacity, 0.0, 1.0, []() {});
+    });
+    notificationVisible = false;
+    displayedNotification = TaskbarNotificationView();
+}
+
+void Taskbar::showEarthquakePresentation(const TaskbarNotificationView& notification)
+{
+    // 新地震到达时立即抛弃当前过渡和普通通知可见状态，不执行淡入效果。
+    const bool sameWarning = earthquakePresentation && displayedNotification.title == notification.title &&
+        displayedNotification.body == notification.body;
+    stopCentralAnimations();
+    updateNotificationText(notification);
+    normalCenterOpacity->setOpacity(0.0);
+    notificationCenterOpacity->setOpacity(1.0);
+    notificationVisible = true;
+    earthquakePresentation = true;
+    if (!sameWarning || !alertFlashTimer->isActive())
+    {
+        alertFlashBright = true;
+        applyTaskbarTheme(true, QColor(QStringLiteral("#D90000")));
+        alertFlashTimer->start();
+    }
+}
+
+void Taskbar::animateOpacity(QGraphicsOpacityEffect* effect, qreal startOpacity, qreal endOpacity,
+                              const std::function<void()>& completed)
+{
+    // 每条动画严格固定为 500ms，形成用户要求的淡入/淡出节奏而不会改动任务栏布局尺寸。
+    if (effect == nullptr)
+    {
+        if (completed)
+        {
+            completed();
+        }
+        return;
+    }
+
+    QPropertyAnimation* animation = new QPropertyAnimation(effect, "opacity", this);
+    animation->setDuration(500);
+    animation->setStartValue(startOpacity);
+    animation->setEndValue(endOpacity);
+    animation->setEasingCurve(QEasingCurve::InOutQuad);
+    centralAnimations.push_back(animation);
+    connect(animation, &QPropertyAnimation::finished, this, [this, animation, completed]() {
+        centralAnimations.removeAll(animation);
+        if (completed)
+        {
+            completed();
+        }
+        animation->deleteLater();
+    });
+    animation->start();
+}
+
+void Taskbar::stopCentralAnimations()
+{
+    // 地震抢占或新的状态切换会取消旧动画，确保不会有过期的 finished 回调覆盖新内容。
+    const QList<QPropertyAnimation*> runningAnimations = centralAnimations;
+    centralAnimations.clear();
+    for (QPropertyAnimation* animation : runningAnimations)
+    {
+        if (animation != nullptr)
+        {
+            animation->stop();
+            animation->deleteLater();
+        }
+    }
+}
+
+void Taskbar::applyTaskbarTheme(bool earthquakeAlert, const QColor& backgroundColor)
+{
+    // 警报态整条 Taskbar 使用黑色前景；普通态还原原有深色底和青色信息色。
+    const QColor foreground = earthquakeAlert ? QColor(Qt::black) : QColor(QStringLiteral("#00FFFF"));
+    const QString foregroundName = foreground.name();
+    centralWidget->setStyleSheet(QStringLiteral("background-color: %1;").arg(backgroundColor.name()));
+    contentLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; padding: 5px 0; color: %1; font-size: 12px;")
+        .arg(foregroundName));
+    timeLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; color: %1; font-size: 12px;")
+        .arg(foregroundName));
+    notificationSourceLabel->setStyleSheet(QStringLiteral("background: transparent; color: %1; font-size: 10px;")
+        .arg(foregroundName));
+    notificationTitleLabel->setStyleSheet(QStringLiteral("background: transparent; color: %1; font-size: 12px; font-weight: 600;")
+        .arg(foregroundName));
+    notificationBodyLabel->setStyleSheet(QStringLiteral("background: transparent; color: %1; font-size: 11px;")
+        .arg(foregroundName));
+    uploadSpeedLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; color: %1; font-size: 10px;")
+        .arg(foregroundName));
+    downloadSpeedLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; color: %1; font-size: 10px;")
+        .arg(foregroundName));
+    for (QLabel* bar : cpuBars)
+    {
+        if (bar != nullptr)
+        {
+            bar->setStyleSheet(QStringLiteral("background-color: %1;").arg(foregroundName));
+        }
+    }
+    m_leftSpectrum->setBarColor(foreground);
+    m_rightSpectrum->setBarColor(foreground);
+    logoColorEffect->setStrength(earthquakeAlert ? 1.0 : 0.0);
+    for (GlowIconButton* button : { lockBtn, toolBtn, settingsBtn, userBtn })
+    {
+        if (button != nullptr)
+        {
+            button->setTintColor(foreground);
+        }
+    }
+    if (exitBtn != nullptr)
+    {
+        static_cast<GlowIconButton*>(exitBtn)->setTintColor(foreground);
+    }
+}
+
+void Taskbar::updateAlertFlash()
+{
+    // 红色和略微红黑的背景每 280ms 切换一次，文字、表格和图标始终保持黑色。
+    if (!earthquakePresentation)
+    {
+        return;
+    }
+    alertFlashBright = !alertFlashBright;
+    applyTaskbarTheme(true, alertFlashBright ? QColor(QStringLiteral("#D90000"))
+        : QColor(QStringLiteral("#480000")));
+}
+
+void Taskbar::showSettingsDialog()
+{
+    // 每个屏幕窗口最多保留一个非模态设置对话框，但它们连接到相同的全局通知服务和配置文件。
+    if (settingsDialog == nullptr)
+    {
+        settingsDialog = new TaskbarSettingsDialog(m_notificationService, this);
+    }
+    settingsDialog->show();
+    settingsDialog->raise();
+    settingsDialog->activateWindow();
 }
 
 void Taskbar::onSpectrumDataReady(const QVector<float>& spectrumData)

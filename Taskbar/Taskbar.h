@@ -3,6 +3,7 @@
 
 #include "SpectrumWidget.h"
 #include "TaskbarSharedState.h"
+#include "TaskbarNotificationService.h"
 
 #include <QMainWindow>
 #include <QHBoxLayout>
@@ -11,6 +12,11 @@
 #include <QTimer>
 #include <QString>
 #include <QRect>
+#include <QColor>
+#include <QGraphicsOpacityEffect>
+#include <QPropertyAnimation>
+#include <QList>
+#include <functional>
 #include <windows.h>
 #include <shellapi.h>
 #include <QCloseEvent>
@@ -18,6 +24,10 @@
 #include <cstdint>
 
 class QScreen;
+class QStackedLayout;
+class QGraphicsColorizeEffect;
+class TaskbarSettingsDialog;
+class GlowIconButton;
 
 #pragma comment(lib, "shell32.lib")
 
@@ -26,13 +36,15 @@ class Taskbar : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState, QWidget* parent = nullptr);
+    explicit Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState,
+        TaskbarNotificationService* notificationService, QWidget* parent = nullptr);
     ~Taskbar() override;
 
 private:
     SpectrumWidget* m_leftSpectrum;      // 左侧频谱组件
     SpectrumWidget* m_rightSpectrum;     // 右侧频谱组件
     TaskbarSharedState* m_sharedState;   // 多窗口共享的音频、CPU、网络采样状态
+    TaskbarNotificationService* m_notificationService; // 多窗口共享通知服务和地震警报状态。
     QRect m_targetScreenGeometry;        // 当前窗口启动时绑定的目标显示器矩形
     QString m_targetScreenName;          // Qt screen name used to match the corresponding Win32 monitor.
     qreal m_targetDevicePixelRatio;      // Scale factor used when converting Qt DIP geometry to native pixels.
@@ -41,6 +53,9 @@ private:
     QVector<QLabel*> cpuBars;            // CPU 每核心柱子集合
     QTimer* timer;                       // 时间刷新定时器
     QLabel* timeLabel;                   // 时间文本标签
+    QLabel* contentLabel;                // 左侧当前用户名文本，地震时需要同步改为黑色。
+    QLabel* logoLabel;                   // 左侧 Logo，地震时通过图形效果整体着黑。
+    QGraphicsColorizeEffect* logoColorEffect; // 左侧 Logo 的警报态黑色着色效果。
 
     QWidget* networkSpeedContainer;      // 网络速率显示容器
     QLabel* uploadSpeedLabel;            // 上行速率文本标签
@@ -50,11 +65,30 @@ private:
     bool isAppBarRegistered;             // 是否已经注册 ABM_NEW
 
     QWidget* centralWidget;
+    QWidget* normalCenterWidget;         // 保存频谱和时钟的常态中央页面。
+    QWidget* notificationCenterWidget;   // 显示来源、标题和正文的通知中央页面。
+    QStackedLayout* centerStackLayout;   // 用 StackAll 保持两个页面可交叉淡入淡出。
+    QGraphicsOpacityEffect* normalCenterOpacity; // 常态中央页面透明度效果。
+    QGraphicsOpacityEffect* notificationCenterOpacity; // 通知中央页面透明度效果。
+    QLabel* notificationSourceLabel;     // 通知来源短文本。
+    QLabel* notificationTitleLabel;      // 通知标题文本。
+    QLabel* notificationBodyLabel;       // 通知正文文本。
+    QList<QPropertyAnimation*> centralAnimations; // 当前中央区域的全部透明度动画。
+    TaskbarNotificationView displayedNotification; // 已渲染通知，用于忽略重复刷新。
+    bool notificationVisible;             // 当前中央区域是否已切换到通知页。
+    bool earthquakePresentation;          // 当前是否由地震预警无淡入地接管中央区域。
+    QTimer* alertFlashTimer;              // 地震期间在红色和红黑色之间闪烁背景。
+    bool alertFlashBright;                // 当前闪烁相位，true 代表亮红背景。
 
     QWidget* rightBtnContainer;          // 右侧按钮组容器
     QHBoxLayout* rightBtnLayout;         // 右侧按钮组布局
 
     QPushButton* exitBtn;                // 退出按钮
+    GlowIconButton* lockBtn;              // 锁定工作站图标按钮。
+    GlowIconButton* toolBtn;              // 打开命令提示符图标按钮。
+    GlowIconButton* settingsBtn;          // 打开通知设置图标按钮。
+    GlowIconButton* userBtn;              // 预留用户扩展图标按钮。
+    TaskbarSettingsDialog* settingsDialog; // 当前显示器可打开的非模态设置窗口。
 
     // AppBar 注册与系统消息处理。
     // AppBar thickness helper: no input; converts logical window height to native pixels; returns pixel height.
@@ -81,6 +115,17 @@ private:
     // 采样与显示相关辅助逻辑。
     QString formatNetworkSpeed(std::uint64_t bytesPerSecond) const;
     void updateNetworkSpeedLabels();
+    void updateNotificationPresentation();
+    void updateNotificationText(const TaskbarNotificationView& notification);
+    void transitionToNotification(const TaskbarNotificationView& notification);
+    void transitionToNormalCenter();
+    void showEarthquakePresentation(const TaskbarNotificationView& notification);
+    void animateOpacity(QGraphicsOpacityEffect* effect, qreal startOpacity, qreal endOpacity,
+        const std::function<void()>& completed);
+    void stopCentralAnimations();
+    void applyTaskbarTheme(bool earthquakeAlert, const QColor& backgroundColor);
+    void updateAlertFlash();
+    void showSettingsDialog();
 
 protected:
     // 在窗口关闭时确保注销 AppBar 并安全停止后台线程。
@@ -91,6 +136,7 @@ private slots:
     void onExitClicked();
     void updateTime();
     void updateCPUUsage();
+    void onNotificationPresentationChanged();
 };
 
 #endif

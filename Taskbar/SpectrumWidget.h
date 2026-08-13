@@ -3,6 +3,7 @@
 #define SPECTRUMWIDGET_H
 
 #include <QWidget>
+#include <QColor>
 #include <QVector>
 #include <QElapsedTimer>
 
@@ -22,6 +23,9 @@ public:
     ~SpectrumWidget();
 
     void setSpectrumData(const QVector<float>& data);
+
+    // setBarColor：输入为频谱条目标颜色；更新绘制颜色并请求重绘，无返回值。
+    void setBarColor(const QColor& color);
 
     // 设置条形的最大高度比例（0.0-1.0）
     void setMaxHeightRatio(float ratio) { m_maxHeightRatio = qBound(0.1f, ratio, 1.0f); }

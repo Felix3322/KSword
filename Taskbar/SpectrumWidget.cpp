@@ -43,6 +43,17 @@ void SpectrumWidget::setSpectrumData(const QVector<float>& data)
     }
 }
 
+void SpectrumWidget::setBarColor(const QColor& color)
+{
+    // 输入为主题颜色；保存后立即请求重绘，使地震警报态的前景色同步到频谱条。
+    if (m_barColor == color) {
+        return;
+    }
+
+    m_barColor = color;
+    update();
+}
+
 void SpectrumWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);

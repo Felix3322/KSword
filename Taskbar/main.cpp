@@ -1,6 +1,8 @@
 #include "Taskbar.h"
 #include "DisplayRestartMonitor.h"
 #include "SosHotkeyLauncher.h"
+#include "TaskbarEarthquakeClient.h"
+#include "TaskbarNotificationService.h"
 #include "TaskbarSharedState.h"
 
 #include <QtWidgets/QApplication>
@@ -73,13 +75,18 @@ int main(int argc, char* argv[])
     TaskbarSharedState sharedState(&app);
     sharedState.start();
 
+    // 地震客户端与系统通知服务均为进程唯一：所有桌面接收同一来源状态和同一通知队列。
+    TaskbarEarthquakeClient earthquakeClient(&app);
+    earthquakeClient.start();
+    TaskbarNotificationService notificationService(&earthquakeClient, &app);
+
     // 每个显示器创建一个完全相同的 Taskbar 窗口，并分别向系统申请顶部 AppBar 边缘。
     QVector<Taskbar*> windows;
     const QList<QScreen*> screens = QGuiApplication::screens();
     windows.reserve(screens.size());
 
     for (QScreen* screen : screens) {
-        Taskbar* window = new Taskbar(screen, &sharedState);
+        Taskbar* window = new Taskbar(screen, &sharedState, &notificationService);
         windows.append(window);
         window->show();
     }
