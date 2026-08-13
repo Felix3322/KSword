@@ -3944,6 +3944,12 @@ void ProcessDetailWindow::initializeModuleTab()
     m_moduleTopBarLayout->setContentsMargins(0, 0, 0, 0);
     m_moduleTopBarLayout->setSpacing(8);
     m_refreshModuleButton = new QPushButton(QIcon(":/Icon/process_refresh.svg"), "刷新模块", m_moduleTab);
+    m_dllHijackScanButton = new QPushButton(
+        QIcon(":/Icon/process_details.svg"),
+        ks::i18n::sourceText(QStringLiteral("DLL 劫持检测")),
+        m_moduleTab);
+    m_dllHijackScanButton->setToolTip(ks::i18n::sourceText(
+        QStringLiteral("只读比较程序目录 DLL 与架构匹配、签名可信的系统 DLL；不会加载待检 DLL")));
     m_signatureCheckBox = new QCheckBox("刷新时校验签名", m_moduleTab);
     m_signatureCheckBox->setChecked(true);
     m_signatureCheckBox->setStyleSheet(QStringLiteral(
@@ -3954,6 +3960,7 @@ void ProcessDetailWindow::initializeModuleTab()
         QStringLiteral("color:%1; font-weight:600;")
         .arg(KswordTheme::TextSecondaryHex()));
     m_moduleTopBarLayout->addWidget(m_refreshModuleButton);
+    m_moduleTopBarLayout->addWidget(m_dllHijackScanButton);
     m_moduleTopBarLayout->addWidget(m_signatureCheckBox);
     m_moduleTopBarLayout->addStretch(1);
     m_moduleTopBarLayout->addWidget(m_moduleStatusLabel);
@@ -3995,6 +4002,7 @@ void ProcessDetailWindow::initializeModuleTab()
         .arg(KswordTheme::BorderHex()));
 
     m_refreshModuleButton->setStyleSheet(buildBlueButtonStyle());
+    m_dllHijackScanButton->setStyleSheet(buildBlueButtonStyle());
 }
 
 void ProcessDetailWindow::initializeTokenTab()
@@ -5054,6 +5062,11 @@ void ProcessDetailWindow::initializeConnections()
             << "[ProcessDetailWindow] 用户点击“刷新模块”, pid=" << m_baseRecord.pid
             << eol;
         requestAsyncModuleRefresh(true);
+    });
+
+    // DLL 劫持检测始终在后台只读执行，不复用注入/加载路径。
+    connect(m_dllHijackScanButton, &QPushButton::clicked, this, [this]() {
+        requestAsyncDllHijackScan();
     });
 
     // 模块表右键菜单。

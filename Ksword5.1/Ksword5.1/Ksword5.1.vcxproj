@@ -369,6 +369,7 @@
     <ClCompile Include="RegistryDock\RegistryOptimizationPage.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.BaseAndUi.cpp" />
+    <ClCompile Include="ProcessDock\ProcessDetailWindow.DllHijack.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.Module.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.Hotkey.cpp" />
     <ClCompile Include="ProcessDock\ProcessDetailWindow.PdbCatalog.cpp" />
@@ -452,6 +453,7 @@
     <ClCompile Include="ksword\network\network_format_tools.cpp" />
     <ClCompile Include="ksword\network\network_nids.cpp" />
     <ClCompile Include="ksword\network\network_process_etw_monitor.cpp" />
+    <ClCompile Include="ksword\process\dll_hijack_detector.cpp" />
     <ClCompile Include="ksword\process\process.cpp" />
     <ClCompile Include="ksword\process\ProcessImageDeleteGuard.cpp" />
     <ClCompile Include="ksword\service\service.cpp" />
@@ -582,6 +584,7 @@
     <ClInclude Include="ksword\network\network_nids.h" />
     <ClInclude Include="ksword\network\network_process_etw_monitor.h" />
     <ClInclude Include="ksword\network\network_request_tools.h" />
+    <ClInclude Include="ksword\process\dll_hijack_detector.h" />
     <ClInclude Include="ksword\process\process.h" />
     <ClInclude Include="ksword\process\ProcessImageDeleteGuard.h" />
     <ClInclude Include="ksword\profile\ProfileJsonLoader.h" />

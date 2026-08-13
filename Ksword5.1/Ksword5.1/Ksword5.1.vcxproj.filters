@@ -628,6 +628,9 @@
     <ClCompile Include="ProcessDock\ProcessDetailWindow.BaseAndUi.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ProcessDock\ProcessDetailWindow.DllHijack.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ProcessDock\ProcessDetailWindow.Module.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -884,6 +887,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\network\network_process_etw_monitor.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ksword\process\dll_hijack_detector.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ksword\process\process.cpp">
@@ -1613,6 +1619,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\profile\ProfileJsonLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ksword\process\dll_hijack_detector.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ksword\process\process.h">

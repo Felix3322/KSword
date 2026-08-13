@@ -510,6 +510,9 @@ private:
     void applyModuleRefreshResult(const ModuleRefreshResult& refreshResult);
     void rebuildModuleTable();
     void updateModuleStatusLabel(const QString& statusText, bool refreshing);
+    // requestAsyncDllHijackScan：只读扫描程序目录与实际加载模块，
+    // 使用签名可信的架构匹配系统 DLL 作为基线，不加载任何待检 DLL。
+    void requestAsyncDllHijackScan();
 
     // ======== 模块表右键 ========
     void showModuleContextMenu(const QPoint& localPosition);
@@ -777,6 +780,7 @@ private:
     QVBoxLayout* m_moduleLayout = nullptr;     // 模块页总布局。
     QHBoxLayout* m_moduleTopBarLayout = nullptr; // 模块页顶部工具栏布局。
     QPushButton* m_refreshModuleButton = nullptr; // 模块刷新按钮。
+    QPushButton* m_dllHijackScanButton = nullptr; // 只读 DLL 劫持检测按钮。
     QCheckBox* m_signatureCheckBox = nullptr;  // 是否刷新时做签名校验。
     QLabel* m_moduleStatusLabel = nullptr;     // 模块刷新状态标签。
     QTreeWidget* m_moduleTable = nullptr;      // 模块表格。
@@ -808,6 +812,8 @@ private:
     bool m_firstModuleRefreshDone = false;     // 首轮模块刷新是否已完成。
     std::uint64_t m_moduleRefreshTicket = 0;   // 模块刷新序号（防乱序）。
     int m_moduleRefreshProgressPid = 0;        // 首轮模块刷新对应的 kPro 任务 PID。
+    bool m_dllHijackScanRunning = false;       // DLL 劫持检测后台任务运行标记。
+    std::uint64_t m_dllHijackScanTicket = 0;   // DLL 劫持检测结果防乱序序号。
 
     // ======== 线程细节刷新状态 ========
     bool m_threadInspectRefreshing = false;        // 线程细节是否正在刷新。
