@@ -27,7 +27,8 @@ namespace ks::minidump
     void DumpMemoryReader::addRange(
         const std::uint64_t virtualAddress,
         const std::uint64_t fileOffset,
-        const std::uint64_t bytes)
+        const std::uint64_t bytes,
+        const QString& source)
     {
         if (bytes == 0 || virtualAddress == 0 || m_ranges.size() >= kMaxRanges)
         {
@@ -42,6 +43,7 @@ namespace ks::minidump
         range.virtualAddress = virtualAddress;
         range.fileOffset = fileOffset;
         range.bytes = bytes;
+        range.source = source;
         m_ranges.push_back(range);
     }
 
@@ -164,6 +166,25 @@ namespace ks::minidump
         }
         std::memcpy(buffer, source, static_cast<std::size_t>(bytes));
         return true;
+    }
+
+    void DumpMemoryReader::appendCapturedRanges(
+        std::vector<DumpMemoryRange>* const rangesOut) const
+    {
+        if (!m_finalized || rangesOut == nullptr)
+        {
+            return;
+        }
+        rangesOut->reserve(rangesOut->size() + m_ranges.size());
+        for (const Range& range : m_ranges)
+        {
+            DumpMemoryRange entry{};
+            entry.virtualAddress = range.virtualAddress;
+            entry.fileOffset = range.fileOffset;
+            entry.bytes = range.bytes;
+            entry.source = range.source;
+            rangesOut->push_back(std::move(entry));
+        }
     }
 
 }

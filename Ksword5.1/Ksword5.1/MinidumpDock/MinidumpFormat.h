@@ -211,6 +211,18 @@ namespace ks::minidump
         QString source;          // source：数据来源（中文：内存列表/64 位内存列表/内存信息列表）。
     };
 
+    // DumpMemoryRange：一段可从原始转储文件重新读取的虚拟内存。
+    // 与 memoryRegions 的区别是：后者可以只来自 MemoryInfoList（只含属性），
+    // 本结构只保存确实捕获了字节、且文件偏移通过解析期边界校验的范围。
+    // UI 用它在不保留整份 DMP 映射的前提下，安全地按虚拟地址重开文件读取。
+    struct DumpMemoryRange
+    {
+        std::uint64_t virtualAddress = 0; // virtualAddress：目标机中首字节的虚拟地址。
+        std::uint64_t fileOffset = 0;     // fileOffset：首字节在 DMP 内的文件偏移。
+        std::uint64_t bytes = 0;          // bytes：连续且实际捕获的字节数。
+        QString source;                   // source：捕获来源，如 TRIAGE 数据块或线程栈。
+    };
+
     // DumpByteBlock：一段可在界面中预览的原始转储字节。
     // 数据仅来自已经通过文件边界校验的连续捕获范围，previewBytes 限定在安全的
     // 小窗口内；完整范围及跨页/跨块读取由后续内存查看器负责。
@@ -257,6 +269,9 @@ namespace ks::minidump
         QString errorText;       // errorText：失败原因（中文规范文本），成功时为空。
         QString filePath;        // filePath：被解析文件完整路径。
         std::uint64_t fileSize = 0; // fileSize：文件字节数。
+        // fileLastModifiedUtcMs：解析时文件的 UTC 修改时间戳，用于内存查看器拒绝
+        // 读取解析后被同路径替换的 DMP；-1 表示文件系统未提供该时间。
+        std::int64_t fileLastModifiedUtcMs = -1;
 
         std::vector<DumpProperty> overview;      // overview：概览页“属性-值”集合。
         std::vector<DumpProperty> exceptionInfo; // exceptionInfo：异常/BugCheck 详情集合，可为空。
@@ -268,6 +283,9 @@ namespace ks::minidump
         std::vector<ModuleEntry> modules;        // modules：模块/驱动列表。
         std::vector<ThreadEntry> threads;        // threads：线程列表（内核转储通常为空）。
         std::vector<MemoryRegionEntry> memoryRegions; // memoryRegions：内存区域列表。
+        // capturedMemoryRanges：可由内存查看器从 DMP 重读的虚拟内存范围。
+        // 它不持有任何文件映射，避免异步解析结束后留下悬空文件视图。
+        std::vector<DumpMemoryRange> capturedMemoryRanges;
         std::vector<DumpByteBlock> byteBlocks; // byteBlocks：可安全预览的原始内存块。
         std::vector<HandleEntry> handles;        // handles：句柄列表（仅带句柄流的用户态转储）。
         std::vector<UnloadedModuleEntry> unloadedModules; // unloadedModules：已卸载模块列表。

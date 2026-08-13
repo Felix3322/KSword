@@ -30,6 +30,7 @@ class QPushButton;
 class QTabWidget;
 class QTableWidget;
 class QTextBrowser;
+class DumpMemoryView;
 struct MinidumpAsyncState;
 
 namespace ks::minidump
@@ -140,6 +141,7 @@ private:
     QWidget* m_memoryPage = nullptr;    // m_memoryPage：内存表的 A/B/C 包装页。
     QWidget* m_handlePage = nullptr;    // m_handlePage：句柄表的 A/B/C 包装页。
     CodeEditorWidget* m_rawMemoryEditor = nullptr; // m_rawMemoryEditor：已验证 TRIAGE 数据块的只读十六进制预览。
+    DumpMemoryView* m_memoryView = nullptr; // m_memoryView：按虚拟地址重开 DMP 的只读内存查看器。
     CodeEditorWidget* m_reportEditor = nullptr; // m_reportEditor：全文报告只读编辑器。
 
     std::shared_ptr<ks::minidump::DumpParseResult> m_lastResult; // m_lastResult：语言切换时重绘的最近结果。

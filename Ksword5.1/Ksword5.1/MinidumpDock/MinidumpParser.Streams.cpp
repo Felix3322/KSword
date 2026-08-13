@@ -752,7 +752,8 @@ namespace ks::minidump::detail
                 memory->addRange(
                     thread.Stack.StartOfMemoryRange,
                     thread.Stack.Memory.Rva,
-                    thread.Stack.Memory.DataSize);
+                    thread.Stack.Memory.DataSize,
+                    QStringLiteral("线程栈"));
             }
             // 收集栈扫描输入：真正的扫描要等模块索引与内存索引都就绪后再做。
             if (scanInputsOut != nullptr && thread.Stack.Memory.DataSize != 0)
@@ -991,7 +992,10 @@ namespace ks::minidump::detail
                     if (memory != nullptr)
                     {
                         memory->addRange(
-                            descriptor.StartOfMemoryRange, dataOffset, descriptor.DataSize);
+                            descriptor.StartOfMemoryRange,
+                            dataOffset,
+                            descriptor.DataSize,
+                            QStringLiteral("64 位内存列表"));
                     }
                     // DataSize 完全由文件控制，逐段累加可能绕回。一旦绕回，
                     // 后续所有段的文件偏移都会指向无关字节，而 addRange 的
@@ -1039,7 +1043,8 @@ namespace ks::minidump::detail
                         memory->addRange(
                             descriptor.StartOfMemoryRange,
                             descriptor.Memory.Rva,
-                            descriptor.Memory.DataSize);
+                            descriptor.Memory.DataSize,
+                            QStringLiteral("内存列表"));
                     }
                     if (!useInfoList && !hasDataList)
                     {

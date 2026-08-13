@@ -14,6 +14,7 @@
 
 #include "DumpAnalyzer.h"
 #include "DumpByteView.h"
+#include "DumpMemoryView.h"
 #include "DumpSymbolResolver.h"
 #include "Internationalization/LanguageManager.h"
 #include "MinidumpFormat.h"
@@ -1043,6 +1044,20 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
         m_rawMemoryEditor->setRawText(rawText);
         m_resultTabs->addTab(m_rawMemoryEditor,
             translated("minidump.tab.raw_memory", "原始内存"));
+    }
+
+    // ===================== 内存查看器页 =====================
+    // 预览页只保留少量 TRIAGE 块的前部字节；查看器则按解析期验证过的
+    // 地址映射重开 DMP，能翻页读取完整块，也同时覆盖 MDMP 内存流和线程栈。
+    if (!result.capturedMemoryRanges.empty())
+    {
+        m_memoryView->setDumpData(result);
+        m_resultTabs->addTab(m_memoryView,
+            translated("minidump.tab.memory_view", "内存查看器"));
+    }
+    else
+    {
+        m_memoryView->clearData();
     }
 
     // ===================== 句柄页 =====================

@@ -30,9 +30,14 @@ namespace ks::minidump
     {
     public:
         // addRange 作用：登记一段“虚拟地址 ↔ 文件偏移”的映射。
-        // 传入 virtualAddress 目标机地址、fileOffset 文件内偏移、bytes 长度；
+        // 传入 virtualAddress 目标机地址、fileOffset 文件内偏移、bytes 长度与
+        // source 捕获来源；
         // 长度为 0 或越界的段会被忽略。
-        void addRange(std::uint64_t virtualAddress, std::uint64_t fileOffset, std::uint64_t bytes);
+        void addRange(
+            std::uint64_t virtualAddress,
+            std::uint64_t fileOffset,
+            std::uint64_t bytes,
+            const QString& source = QString());
 
         // finalize 作用：剔除文件内越界的段并按虚拟地址排序，供查询使用。
         // 不做重叠合并——真实转储里内存块本就不重叠，find() 已用回溯兜住少量重叠。
@@ -62,6 +67,11 @@ namespace ks::minidump
         // rangeCount 作用：返回已登记的内存块数量。
         std::size_t rangeCount() const { return m_ranges.size(); }
 
+        // appendCapturedRanges 作用：导出已完成文件边界校验的块索引。
+        // 只导出真实 addRange() 注册的数据，不导出页表后端翻译的临时结果；
+        // 每段保留注册时的来源，供查看器区分线程栈、TRIAGE 块等证据。
+        void appendCapturedRanges(std::vector<DumpMemoryRange>* rangesOut) const;
+
     private:
         // Range：一段被捕获的内存。
         struct Range
@@ -69,6 +79,7 @@ namespace ks::minidump
             std::uint64_t virtualAddress = 0; // virtualAddress：块在目标机中的起始地址。
             std::uint64_t fileOffset = 0;     // fileOffset：块在转储文件里的偏移。
             std::uint64_t bytes = 0;          // bytes：块长度。
+            QString source;                   // source：该内存的捕获来源。
         };
 
         // find 作用：定位覆盖 [virtualAddress, +bytes) 的块；找不到返回 nullptr。

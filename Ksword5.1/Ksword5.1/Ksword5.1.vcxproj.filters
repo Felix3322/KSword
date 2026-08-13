@@ -574,6 +574,9 @@
     <ClCompile Include="MinidumpDock\DumpMemoryReader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpMemoryView.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MinidumpDock\DumpStackWalker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1236,6 +1239,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MinidumpDock\DumpMemoryReader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpMemoryView.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MinidumpDock\DumpStackWalker.h">

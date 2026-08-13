@@ -52,6 +52,10 @@ namespace ks::minidump
         constexpr std::uint32_t kMaxTriageByteBlockPreviews = 128;
         // kTriageByteBlockPreviewBytes：每个数据块的原始预览上限。
         constexpr std::uint32_t kTriageByteBlockPreviewBytes = 512;
+        // kMaximumSecondaryDumpDataSearchBytes：辅助黑盒记录的最大搜索窗口。
+        // 不能对完整内存转储逐字节扫描数十 GB；Windows triage 记录位于文件前部，
+        // 16 MiB 已覆盖常见小型转储的 Secondary Dump Data 区。
+        constexpr std::uint64_t kMaximumSecondaryDumpDataSearchBytes = 16ull * 1024ull * 1024ull;
         // kMaxDriverNameChars：DUMP_STRING 驱动名的最大字符数（防畸形长度）。
         constexpr std::uint32_t kMaxDriverNameChars = 1024;
         // kUnloadedDriverSlots：内核 MmUnloadedDrivers 数组的固定槽位数。
@@ -285,6 +289,23 @@ namespace ks::minidump
         constexpr std::uint32_t kKdOffsetPrcbCurrentThread = 0x2B4;
         constexpr std::uint32_t kKdOffsetPrcbNumber = 0x2BE;
         constexpr std::uint32_t kKdSizeEThread = 0x2C0;
+        // EPROCESS ImageFileName 是固定 15 字节 ANSI 字段。字段偏移随内核版本变化，
+        // 不能仅按 EPROCESS 快照大小猜测。下列偏移只覆盖已用 Microsoft PDB 验证的
+        // Win10 20H1（19041）；其它内核版本宁可不展示，也不把快照中的任意文本
+        // 误报成崩溃进程名。
+        constexpr std::uint32_t kEprocessImageFileNameBytes = 15;
+        constexpr std::uint32_t kEprocessImageFileNameOffsetWin10_20H1 = 0x5A8;
+
+        // EprocessImageFileNameOffset 作用：返回当前内核构建已验证的
+        // _EPROCESS.ImageFileName 偏移。传入内核 BuildLab 的构建号；未知时返回 0。
+        std::uint32_t EprocessImageFileNameOffset(const std::uint32_t kernelBuild)
+        {
+            // 当前仅验证 Windows 10 2004 (19041) x64 PDB。新版本必须先用其
+            // 对应 ntkrnlmp PDB 复核，不能把 19041 的布局外推到其它版本。
+            return kernelBuild == 19041
+                ? kEprocessImageFileNameOffsetWin10_20H1
+                : 0;
+        }
 
         // Hex 作用：把无符号整数格式化成 0x 大写十六进制文本。
         QString Hex(const std::uint64_t value)
@@ -464,12 +485,346 @@ namespace ks::minidump
                 : QStringLiteral("%1（原始值 %2）").arg(name, Hex(rawState));
         }
 
+        // SecondaryDumpDataRecordHeader：Windows 内核 Secondary Dump Data 的通用记录头。
+        // 记录先以 provider GUID 和长度包装，随后才是特定 blackbox body。
+        // GUID 与字段偏移依据本机 WinDbg !blackboxpnp 对照验证；字符串长度、偏移和
+        // 字段值都在解析期做边界校验，无法确认时只报告“未发现”，绝不猜测设备状态。
+#pragma pack(push, 1)
+        struct BlackboxGuid
+        {
+            std::uint32_t data1;
+            std::uint16_t data2;
+            std::uint16_t data3;
+            std::uint8_t data4[8];
+        };
+
+        struct SecondaryDumpDataRecordHeader
+        {
+            BlackboxGuid providerId;         // 0x00：PnP blackbox provider GUID。
+            std::uint32_t recordBytes;       // 0x10：provider 载荷字节数。
+            std::uint32_t reserved;          // 0x14：保留。
+        };
+
+        struct BlackboxPnpBodyPrefix
+        {
+            std::uint32_t version;           // 0x00：PnP blackbox body 版本。
+            std::uint32_t reserved[4];       // 0x04：当前公开扩展保留字段。
+            std::uint64_t activityTime;      // 0x14：活动时间 FILETIME。
+            std::uint32_t eventInformation;  // 0x1C：PnP 事件信息。
+            std::uint32_t eventInProgress;   // 0x20：是否仍在处理。
+            std::uint32_t problemCode;       // 0x24：CM_PROB_* 设备问题码。
+            std::uint32_t vetoType;          // 0x28：PnP veto 类型。
+            std::uint32_t reserved2;         // 0x2C：保留，随后是 NUL 终止的 DeviceId。
+        };
+
+        // BlackboxBsdBodyPrefix：BSD（Boot Status Data）黑盒的稳定前缀。
+        // Version、ProductType 和 LastReferenceTime 的偏移已与 WinDbg
+        // !blackboxbsd 的输出逐字段核对；其余位域和版本相关字段不作臆测。
+        struct BlackboxBsdBodyPrefix
+        {
+            std::uint32_t reserved;             // 0x00：记录内部保留字段。
+            std::uint32_t version;              // 0x04：BSD 记录版本/大小。
+            std::uint32_t productType;          // 0x08：VER_NT_* 产品类型。
+            std::uint8_t reservedToReferenceTime[0x18]; // 0x0C..0x23：版本相关状态位。
+            std::uint64_t lastReferenceTime;    // 0x24：最近启动状态参考时间 FILETIME。
+        };
+#pragma pack(pop)
+        static_assert(sizeof(BlackboxGuid) == 0x10);
+        static_assert(sizeof(SecondaryDumpDataRecordHeader) == 0x18);
+        static_assert(sizeof(BlackboxPnpBodyPrefix) == 0x30);
+        static_assert(sizeof(BlackboxBsdBodyPrefix) == 0x2C);
+
+        constexpr BlackboxGuid kBlackboxPnpProviderId = {
+            0xB7631941u, 0x532Au, 0x4CD6u,
+            { 0xB1u, 0xB1u, 0xEDu, 0xB5u, 0x91u, 0x7Du, 0x45u, 0x57u } };
+        constexpr BlackboxGuid kBlackboxBsdProviderId = {
+            0xF57308DFu, 0xCC45u, 0x4E01u,
+            { 0xADu, 0x76u, 0x29u, 0xA4u, 0xEBu, 0xB0u, 0x10u, 0xECu } };
+        constexpr BlackboxGuid kBlackboxNtfsProviderId = {
+            0x00AFE9C4u, 0x940Du, 0x4213u,
+            { 0x80u, 0x16u, 0xCDu, 0x37u, 0x19u, 0xB5u, 0xBCu, 0x20u } };
+        constexpr BlackboxGuid kBlackboxWinlogonProviderId = {
+            0x80CC79CFu, 0xA719u, 0x4AF1u,
+            { 0xBFu, 0x97u, 0xFEu, 0x29u, 0xFFu, 0x76u, 0xEBu, 0xC1u } };
+        constexpr BlackboxGuid kBlackboxCodeIntegrityProviderId = {
+            0x4EE76BD8u, 0x3CF4u, 0x44A0u,
+            { 0xA0u, 0xACu, 0x39u, 0x37u, 0x64u, 0x3Eu, 0x37u, 0xA3u } };
+        constexpr std::uint32_t kMaximumBlackboxPnpRecordBytes = 64u * 1024u;
+        constexpr std::uint32_t kMaximumBlackboxPnpDeviceIdBytes = 8u * 1024u;
+
+        bool GuidEquals(const BlackboxGuid& left, const BlackboxGuid& right)
+        {
+            return std::memcmp(&left, &right, sizeof(BlackboxGuid)) == 0;
+        }
+
+        // SecondaryDumpDataSearchEnd 作用：返回辅助黑盒允许搜索到的文件尾后位置。
+        // 小型转储全量扫描，完整转储限制为固定窗口，保证后台解析不会因文件规模失控。
+        std::uint64_t SecondaryDumpDataSearchEnd(const DumpFileView& view)
+        {
+            return std::min(view.size,
+                kKernelHeader64Bytes + kMaximumSecondaryDumpDataSearchBytes);
+        }
+
+        QString PnpProblemCodeText(const std::uint32_t code)
+        {
+            switch (code)
+            {
+            case 0: return QStringLiteral("无设备问题");
+            case 10: return QStringLiteral("Code 10：设备无法启动");
+            case 14: return QStringLiteral("Code 14：设备需要重启");
+            case 18: return QStringLiteral("Code 18：需要重新安装设备驱动");
+            case 22: return QStringLiteral("Code 22：设备已被禁用");
+            case 24: return QStringLiteral("Code 24：设备不存在、工作异常，或其驱动未正确安装");
+            case 28: return QStringLiteral("Code 28：未安装设备驱动");
+            case 31: return QStringLiteral("Code 31：Windows 无法加载设备所需驱动");
+            case 32: return QStringLiteral("Code 32：设备驱动服务已被禁用");
+            case 39: return QStringLiteral("Code 39：设备驱动无法加载");
+            case 43: return QStringLiteral("Code 43：设备报告了问题并已停止");
+            default: return QStringLiteral("CM_PROB=%1").arg(code);
+            }
+        }
+
+        // TryParseBlackboxPnp 作用：在 triage 附加区中定位并解析 PnP 黑盒。
+        // provider GUID 是强签名；随后要求长度、UTF-16 设备 ID 和问题码都合理，
+        // 防止将任意字节序列误报成设备事件。
+        void TryParseBlackboxPnp(const DumpFileView& view, DumpParseResult& result)
+        {
+            constexpr std::uint64_t kSearchStart = kKernelHeader64Bytes;
+            const std::uint64_t searchEnd = SecondaryDumpDataSearchEnd(view);
+            if (searchEnd <= kSearchStart ||
+                searchEnd - kSearchStart <
+                    sizeof(SecondaryDumpDataRecordHeader) + sizeof(BlackboxPnpBodyPrefix))
+            {
+                return;
+            }
+
+            for (std::uint64_t offset = kSearchStart;
+                 offset <= searchEnd - sizeof(SecondaryDumpDataRecordHeader) - sizeof(BlackboxPnpBodyPrefix);
+                 offset += sizeof(std::uint32_t))
+            {
+                SecondaryDumpDataRecordHeader recordHeader{};
+                if (!view.readStruct(offset, &recordHeader) ||
+                    !GuidEquals(recordHeader.providerId, kBlackboxPnpProviderId) ||
+                    recordHeader.recordBytes < sizeof(BlackboxPnpBodyPrefix) ||
+                    recordHeader.recordBytes > kMaximumBlackboxPnpRecordBytes)
+                {
+                    continue;
+                }
+
+                const std::uint64_t bodyOffset = offset + sizeof(SecondaryDumpDataRecordHeader);
+                if (recordHeader.recordBytes > view.size - bodyOffset)
+                {
+                    continue;
+                }
+                BlackboxPnpBodyPrefix evidence{};
+                if (!view.readStruct(bodyOffset, &evidence) || evidence.version == 0)
+                {
+                    continue;
+                }
+
+                const std::uint64_t deviceIdOffset = bodyOffset + sizeof(BlackboxPnpBodyPrefix);
+                const std::uint64_t maximumDeviceIdBytes = std::min<std::uint64_t>(
+                    kMaximumBlackboxPnpDeviceIdBytes,
+                    recordHeader.recordBytes - sizeof(BlackboxPnpBodyPrefix));
+                std::uint64_t deviceIdByteCount = 0;
+                while (deviceIdByteCount + sizeof(char16_t) <= maximumDeviceIdBytes)
+                {
+                    std::uint16_t character = 0;
+                    if (!view.readStruct(deviceIdOffset + deviceIdByteCount, &character))
+                    {
+                        break;
+                    }
+                    if (character == 0)
+                    {
+                        break;
+                    }
+                    deviceIdByteCount += sizeof(char16_t);
+                }
+                if (deviceIdByteCount == 0 ||
+                    deviceIdByteCount + sizeof(char16_t) > maximumDeviceIdBytes)
+                {
+                    continue;
+                }
+
+                const unsigned char* const deviceIdData = view.at(
+                    deviceIdOffset, deviceIdByteCount);
+                if (deviceIdData == nullptr)
+                {
+                    continue;
+                }
+                const QString deviceId = QString::fromUtf16(
+                    reinterpret_cast<const char16_t*>(deviceIdData),
+                    static_cast<qsizetype>(deviceIdByteCount / sizeof(char16_t)))
+                    .trimmed();
+                if (deviceId.isEmpty() || deviceId.contains(QChar::ReplacementCharacter))
+                {
+                    continue;
+                }
+
+                result.overview.push_back({ QStringLiteral("PnP 黑盒"),
+                    QStringLiteral("已捕获（版本 %1，记录偏移 %2）")
+                        .arg(evidence.version)
+                        .arg(Hex(offset)) });
+                result.exceptionInfo.push_back({ QStringLiteral("PnP 黑盒设备 ID"), deviceId });
+                result.exceptionInfo.push_back({ QStringLiteral("PnP 黑盒设备问题"),
+                    PnpProblemCodeText(evidence.problemCode) });
+                result.exceptionInfo.push_back({ QStringLiteral("PnP 黑盒活动时间"),
+                    FileTimeToText(evidence.activityTime) });
+                result.exceptionInfo.push_back({ QStringLiteral("PnP 黑盒事件信息"),
+                    QStringLiteral("%1（活动中：%2，Veto 类型：%3）")
+                        .arg(evidence.eventInformation)
+                        .arg(evidence.eventInProgress)
+                        .arg(evidence.vetoType) });
+                if (evidence.problemCode != 0)
+                {
+                    result.diagnostics.append(
+                        QStringLiteral("PnP 黑盒记录到设备问题：%1，设备 ID：%2。")
+                            .arg(PnpProblemCodeText(evidence.problemCode), deviceId));
+                }
+                return;
+            }
+        }
+
+        // TryParseBlackboxBsd 作用：提取系统启动/关机状态黑盒的已验证稳定字段。
+        // BSD 记录有大量随 Windows 版本演进的位域，当前只展示经 WinDbg 交叉验证的
+        // 版本、产品类型和最近参考时间，不把未公开字段解释为“异常启动”。
+        void TryParseBlackboxBsd(const DumpFileView& view, DumpParseResult& result)
+        {
+            constexpr std::uint64_t kSearchStart = kKernelHeader64Bytes;
+            const std::uint64_t searchEnd = SecondaryDumpDataSearchEnd(view);
+            if (searchEnd <= kSearchStart ||
+                searchEnd - kSearchStart <
+                    sizeof(SecondaryDumpDataRecordHeader) + sizeof(BlackboxBsdBodyPrefix))
+            {
+                return;
+            }
+
+            for (std::uint64_t offset = kSearchStart;
+                 offset <= searchEnd - sizeof(SecondaryDumpDataRecordHeader) -
+                     sizeof(BlackboxBsdBodyPrefix);
+                 offset += sizeof(std::uint32_t))
+            {
+                SecondaryDumpDataRecordHeader recordHeader{};
+                if (!view.readStruct(offset, &recordHeader) ||
+                    !GuidEquals(recordHeader.providerId, kBlackboxBsdProviderId) ||
+                    recordHeader.recordBytes < sizeof(BlackboxBsdBodyPrefix) ||
+                    recordHeader.recordBytes > kMaximumBlackboxPnpRecordBytes)
+                {
+                    continue;
+                }
+
+                const std::uint64_t bodyOffset = offset + sizeof(SecondaryDumpDataRecordHeader);
+                if (recordHeader.recordBytes > view.size - bodyOffset)
+                {
+                    continue;
+                }
+                BlackboxBsdBodyPrefix evidence{};
+                if (!view.readStruct(bodyOffset, &evidence) || evidence.version == 0)
+                {
+                    continue;
+                }
+
+                result.overview.push_back({ QStringLiteral("BSD 启动状态黑盒"),
+                    QStringLiteral("已捕获（版本 %1，产品类型 %2，记录偏移 %3）")
+                        .arg(Hex(evidence.version))
+                        .arg(ProductTypeText(evidence.productType))
+                        .arg(Hex(offset)) });
+                const QString referenceTime = FileTimeToText(evidence.lastReferenceTime);
+                if (!referenceTime.isEmpty())
+                {
+                    result.overview.push_back({ QStringLiteral("最近启动状态参考时间"),
+                        referenceTime });
+                }
+                return;
+            }
+        }
+
+        // TryReportBlackboxNtfs 作用：报告 NTFS 黑盒是否由转储实际保存。
+        // NTFS 事件数组布局会随版本变化，尚未逐版本验证时只显示 provider、记录偏移
+        // 与载荷长度，避免把版本相关的条目误读为 I/O 或 oplock 失败。
+        void TryReportBlackboxNtfs(const DumpFileView& view, DumpParseResult& result)
+        {
+            constexpr std::uint64_t kSearchStart = kKernelHeader64Bytes;
+            const std::uint64_t searchEnd = SecondaryDumpDataSearchEnd(view);
+            if (searchEnd <= kSearchStart ||
+                searchEnd - kSearchStart < sizeof(SecondaryDumpDataRecordHeader))
+            {
+                return;
+            }
+
+            for (std::uint64_t offset = kSearchStart;
+                 offset <= searchEnd - sizeof(SecondaryDumpDataRecordHeader);
+                 offset += sizeof(std::uint32_t))
+            {
+                SecondaryDumpDataRecordHeader recordHeader{};
+                if (!view.readStruct(offset, &recordHeader) ||
+                    !GuidEquals(recordHeader.providerId, kBlackboxNtfsProviderId) ||
+                    recordHeader.recordBytes == 0 ||
+                    recordHeader.recordBytes > kMaximumBlackboxPnpRecordBytes)
+                {
+                    continue;
+                }
+                const std::uint64_t bodyOffset = offset + sizeof(SecondaryDumpDataRecordHeader);
+                if (recordHeader.recordBytes > view.size - bodyOffset)
+                {
+                    continue;
+                }
+                result.overview.push_back({ QStringLiteral("NTFS 黑盒"),
+                    QStringLiteral("已捕获（载荷 %1 字节，记录偏移 %2）")
+                        .arg(recordHeader.recordBytes)
+                        .arg(Hex(offset)) });
+                return;
+            }
+        }
+
+        // TryReportBlackboxPresence 作用：报告已被转储保存、但当前版本没有稳定公开
+        // 字段布局的辅助黑盒。只输出 provider 载荷元数据，避免把私有二进制字段伪装成
+        // 登录或代码完整性结论；后续取得逐版本布局验证后可在这里扩展字段解析。
+        void TryReportBlackboxPresence(
+            const DumpFileView& view,
+            const BlackboxGuid& providerId,
+            const QString& name,
+            DumpParseResult& result)
+        {
+            constexpr std::uint64_t kSearchStart = kKernelHeader64Bytes;
+            const std::uint64_t searchEnd = SecondaryDumpDataSearchEnd(view);
+            if (searchEnd <= kSearchStart ||
+                searchEnd - kSearchStart < sizeof(SecondaryDumpDataRecordHeader))
+            {
+                return;
+            }
+            for (std::uint64_t offset = kSearchStart;
+                 offset <= searchEnd - sizeof(SecondaryDumpDataRecordHeader);
+                 offset += sizeof(std::uint32_t))
+            {
+                SecondaryDumpDataRecordHeader recordHeader{};
+                if (!view.readStruct(offset, &recordHeader) ||
+                    !GuidEquals(recordHeader.providerId, providerId) ||
+                    recordHeader.recordBytes == 0 ||
+                    recordHeader.recordBytes > kMaximumBlackboxPnpRecordBytes)
+                {
+                    continue;
+                }
+                const std::uint64_t bodyOffset = offset + sizeof(SecondaryDumpDataRecordHeader);
+                if (recordHeader.recordBytes > view.size - bodyOffset)
+                {
+                    continue;
+                }
+                result.overview.push_back({ name,
+                    QStringLiteral("已捕获（载荷 %1 字节，记录偏移 %2，详细字段待版本验证）")
+                        .arg(recordHeader.recordBytes)
+                        .arg(Hex(offset)) });
+                return;
+            }
+        }
+
         // ParseTriageExecutionContext 作用：把 TRIAGE 保存的当前处理器、线程、
         // 进程快照转成独立的“崩溃现场”事实页。字段偏移来自转储自己的
         // KDDEBUGGER_DATA64 兼容块，避免依赖固定 Windows 版本的私有结构偏移。
         void ParseTriageExecutionContext(
             const DumpFileView& view,
             const TriageDump64& triage,
+            const std::uint32_t kernelBuild,
             DumpParseResult& result)
         {
             constexpr std::uint32_t kKdDebuggerDataMaximumBytes = 0x380;
@@ -566,6 +921,21 @@ namespace ks::minidump
             const bool havePeb = TriageSnapshotRead(
                 view, triage.ProcessOffset, kdSizeEProcess, kdOffsetEprocessPeb,
                 &processPeb);
+            const std::uint32_t imageNameOffset = EprocessImageFileNameOffset(kernelBuild);
+            char imageNameBytes[kEprocessImageFileNameBytes]{};
+            bool haveImageName = false;
+            if (imageNameOffset != 0 && imageNameOffset <= kdSizeEProcess &&
+                kEprocessImageFileNameBytes <= kdSizeEProcess - imageNameOffset)
+            {
+                const unsigned char* const imageNameData = view.at(
+                    static_cast<std::uint64_t>(triage.ProcessOffset) + imageNameOffset,
+                    kEprocessImageFileNameBytes);
+                if (imageNameData != nullptr)
+                {
+                    std::memcpy(imageNameBytes, imageNameData, sizeof(imageNameBytes));
+                    haveImageName = true;
+                }
+            }
 
             result.executionContext.push_back({
                 QStringLiteral("KD 调试数据大小"), Hex(kdHeader.Size) });
@@ -620,6 +990,34 @@ namespace ks::minidump
             {
                 result.executionContext.push_back({
                     QStringLiteral("进程 PEB"), Hex(processPeb) });
+            }
+            if (haveImageName)
+            {
+                std::size_t imageNameLength = 0;
+                while (imageNameLength < kEprocessImageFileNameBytes &&
+                    imageNameBytes[imageNameLength] != '\0')
+                {
+                    ++imageNameLength;
+                }
+                const QString imageName = QString::fromLatin1(
+                    imageNameBytes, static_cast<qsizetype>(imageNameLength)).trimmed();
+                const bool printable = !imageName.isEmpty() &&
+                    std::all_of(
+                        imageName.cbegin(), imageName.cend(),
+                        [](const QChar character)
+                        {
+                            return character.unicode() >= 0x20 && character.unicode() <= 0x7E;
+                        });
+                if (printable)
+                {
+                    result.executionContext.push_back({
+                        QStringLiteral("崩溃时当前进程映像"), imageName });
+                }
+            }
+            else if (imageNameOffset == 0)
+            {
+                result.diagnostics.append(QStringLiteral(
+                    "当前内核版本的 EPROCESS 映像名偏移未经验证，未展示崩溃进程名。"));
             }
         }
 
@@ -1037,7 +1435,11 @@ namespace ks::minidump
                 ++result.memoryRegionTotal;
                 ++result.memoryRegionShown;
                 result.memoryRegions.push_back(std::move(entry));
-                memory.addRange(block.Address, block.Offset, block.Size);
+                memory.addRange(
+                    block.Address,
+                    block.Offset,
+                    block.Size,
+                    QStringLiteral("TRIAGE 数据块"));
 
                 // 原始预览：只复制经 TriageRangeValid 验证的前若干块与有限字节，
                 // 防止恶意 DMP 用大量块或超大长度耗尽内存。完整块长度仍保留在元数据，
@@ -1070,17 +1472,30 @@ namespace ks::minidump
             if (triage.DataPageAddress != 0 &&
                 TriageRangeValid(view, triage.DataPageOffset, triage.DataPageSize))
             {
-                memory.addRange(triage.DataPageAddress, triage.DataPageOffset, triage.DataPageSize);
+                memory.addRange(
+                    triage.DataPageAddress,
+                    triage.DataPageOffset,
+                    triage.DataPageSize,
+                    QStringLiteral("TRIAGE 附加数据页"));
             }
             if (triage.TopOfStack != 0 &&
                 TriageRangeValid(view, triage.CallStackOffset, triage.SizeOfCallStack))
             {
-                memory.addRange(triage.TopOfStack, triage.CallStackOffset, triage.SizeOfCallStack);
+                memory.addRange(
+                    triage.TopOfStack,
+                    triage.CallStackOffset,
+                    triage.SizeOfCallStack,
+                    QStringLiteral("崩溃线程内核栈"));
             }
             memory.finalize(view);
 
             // 已卸载驱动表要在内存索引建好之后解析，才能读到名字缓冲区。
             ParseTriageUnloadedDrivers(view, memory, triage, result);
+
+            // 已卸载驱动名读取完后，解析期内存索引不再参与后续工作。此处导出
+            // 已验证的轻量映射，供 UI 在解析返回后安全重开 DMP 并按地址浏览。
+            // 放在这里而非调用 memory.finalize() 后立即导出，避免后续流程遗漏。
+            memory.appendCapturedRanges(&result.capturedMemoryRanges);
 
             *triageOut = triage;
             return true;
@@ -1339,7 +1754,7 @@ namespace ks::minidump
             hasTriage = ParseTriageArea(view, result, memory, &triage);
             if (hasTriage)
             {
-                ParseTriageExecutionContext(view, triage, result);
+                ParseTriageExecutionContext(view, triage, header.MinorVersion, result);
             }
         }
         else
@@ -1425,6 +1840,22 @@ namespace ks::minidump
             }
             memory.finalize(view);
         }
+
+        // PnP blackbox 属于内核写入的 Secondary Dump Data，与 triage 目录和页表
+        // 无关。无论当前 DMP 是否还能建立页表，都尝试按 provider GUID 只读提取。
+        TryParseBlackboxPnp(view, result);
+        TryParseBlackboxBsd(view, result);
+        TryReportBlackboxNtfs(view, result);
+        TryReportBlackboxPresence(
+            view,
+            kBlackboxWinlogonProviderId,
+            QStringLiteral("Winlogon 黑盒"),
+            result);
+        TryReportBlackboxPresence(
+            view,
+            kBlackboxCodeIntegrityProviderId,
+            QStringLiteral("代码完整性黑盒"),
+            result);
 
         // modules：模块地址索引，后面所有“地址 → 模块”的翻译都靠它。
         ModuleIndex modules;

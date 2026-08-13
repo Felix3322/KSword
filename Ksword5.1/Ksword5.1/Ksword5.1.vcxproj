@@ -303,6 +303,7 @@
     <ClCompile Include="MinidumpDock\DumpBugCheckText.cpp" />
     <ClCompile Include="MinidumpDock\DumpContextRegisters.cpp" />
     <ClCompile Include="MinidumpDock\DumpMemoryReader.cpp" />
+    <ClCompile Include="MinidumpDock\DumpMemoryView.cpp" />
     <ClCompile Include="MinidumpDock\DumpStackWalker.cpp" />
     <ClCompile Include="MinidumpDock\DumpSymbolIndex.cpp" />
     <ClCompile Include="MinidumpDock\KernelDumpParser.cpp" />
@@ -646,6 +647,7 @@
     <ClInclude Include="MinidumpDock\DumpBugCheckText.h" />
     <ClInclude Include="MinidumpDock\DumpContextRegisters.h" />
     <ClInclude Include="MinidumpDock\DumpMemoryReader.h" />
+    <ClInclude Include="MinidumpDock\DumpMemoryView.h" />
     <ClInclude Include="MinidumpDock\DumpStackWalker.h" />
     <ClInclude Include="MinidumpDock\DumpSymbolIndex.h" />
     <ClInclude Include="MinidumpDock\KernelDumpParser.h" />

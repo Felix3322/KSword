@@ -339,6 +339,9 @@ namespace ks::minidump
             }
             // 线程栈全部登记完毕，此时才能定型内存索引。
             memory.finalize(view);
+            // 解析期内存索引在函数返回后会销毁；把已校验的轻量映射随结果带回 UI，
+            // 让查看器可以稍后只读重开 DMP，而不把整个文件常驻内存。
+            memory.appendCapturedRanges(&result.capturedMemoryRanges);
 
             // 起始地址的模块归属要等 ThreadInfoList 合入之后才能算。
             for (ThreadEntry& thread : result.threads)
@@ -449,6 +452,7 @@ namespace ks::minidump
             return result;
         }
         result.fileSize = static_cast<std::uint64_t>(dumpFile.size());
+        result.fileLastModifiedUtcMs = fileInfo.lastModified().toUTC().toMSecsSinceEpoch();
         if (result.fileSize < 8)
         {
             result.errorText = QStringLiteral("文件过小，不可能是有效转储。");
