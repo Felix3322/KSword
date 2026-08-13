@@ -48,7 +48,9 @@ namespace
     // - 返回值 true：需要按风险项做红色高亮，false：保持普通样式。
     bool isUntrustedStartupEntry(const StartupDock::StartupEntry& entry)
     {
-        return entry.publisherText.contains(QStringLiteral("(Untrusted)"), Qt::CaseInsensitive);
+        return entry.publisherText.contains(QStringLiteral("(Untrusted)"), Qt::CaseInsensitive)
+            || (entry.category == StartupDock::StartupCategory::ImageHijack
+                && entry.backendEntry.riskLevel == ks::startup::StartupRiskLevel::Critical);
     }
 
     // createStartupTable 作用：
@@ -250,6 +252,7 @@ void StartupDock::initializeTabs()
     m_servicesPage = createSingleTablePage(&m_servicesTable, m_sideTabWidget);
     m_driversPage = createSingleTablePage(&m_driversTable, m_sideTabWidget);
     m_tasksPage = createSingleTablePage(&m_tasksTable, m_sideTabWidget);
+    m_imageHijackPage = createSingleTablePage(&m_imageHijackTable, m_sideTabWidget);
     m_registryPage = createRegistryTreePage(&m_registryTree, m_sideTabWidget);
     m_wmiPage = createSingleTablePage(&m_wmiTable, m_sideTabWidget);
     m_hiddenPage = createSingleTablePage(&m_hiddenTable, m_sideTabWidget);
@@ -275,6 +278,10 @@ void StartupDock::initializeTabs()
         QIcon(":/Icon/process_refresh.svg"),
         startupText("startup.tab.tasks", QStringLiteral("计划任务")));
     m_sideTabWidget->addTab(
+        m_imageHijackPage,
+        QIcon(":/Icon/startup_image_hijack.svg"),
+        startupText("startup.tab.image_hijack", QStringLiteral("映像劫持")));
+    m_sideTabWidget->addTab(
         m_registryPage,
         QIcon(":/Icon/file_find.svg"),
         startupText("startup.tab.registry", QStringLiteral("高级注册表")));
@@ -292,6 +299,7 @@ void StartupDock::initializeTabs()
         {m_servicesPage, {QStringLiteral("startup.tab.services"), QStringLiteral("服务")}},
         {m_driversPage, {QStringLiteral("startup.tab.drivers"), QStringLiteral("驱动")}},
         {m_tasksPage, {QStringLiteral("startup.tab.tasks"), QStringLiteral("计划任务")}},
+        {m_imageHijackPage, {QStringLiteral("startup.tab.image_hijack"), QStringLiteral("映像劫持")}},
         {m_registryPage, {QStringLiteral("startup.tab.registry"), QStringLiteral("高级注册表")}},
         {m_wmiPage, {QStringLiteral("startup.tab.wmi"), QStringLiteral("WMI")}},
         {m_hiddenPage, {QStringLiteral("startup.tab.hidden"), QStringLiteral("隐藏项")}}
@@ -315,6 +323,7 @@ void StartupDock::applyTranslatedHeaders()
         m_servicesTable,
         m_driversTable,
         m_tasksTable,
+        m_imageHijackTable,
         m_wmiTable,
         m_hiddenTable
     };
@@ -338,6 +347,7 @@ void StartupDock::rebuildAllTables()
     rebuildTableForCategory(StartupCategory::Services, m_servicesTable);
     rebuildTableForCategory(StartupCategory::Drivers, m_driversTable);
     rebuildTableForCategory(StartupCategory::Tasks, m_tasksTable);
+    rebuildTableForCategory(StartupCategory::ImageHijack, m_imageHijackTable);
     rebuildRegistryTree();
     rebuildTableForCategory(StartupCategory::Wmi, m_wmiTable);
     rebuildTableForCategory(StartupCategory::Hidden, m_hiddenTable);

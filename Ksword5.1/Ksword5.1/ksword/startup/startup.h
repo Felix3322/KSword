@@ -23,6 +23,7 @@ namespace ks::startup
         Services,
         Drivers,
         Tasks,
+        ImageHijack,
         Registry,
         Wmi,
         Hidden // Cross-view findings: objects one Windows view exposes and another one hides.
@@ -196,6 +197,10 @@ namespace ks::startup
 
     // EnumerateTaskEntries returns Scheduled Task records collected through PowerShell.
     std::vector<StartupEntry> EnumerateTaskEntries();
+
+    // EnumerateImageHijackEntries returns executable redirection and image-load findings from
+    // IFEO, filtered IFEO subkeys, Application Verifier DLL settings, and SilentProcessExit.
+    std::vector<StartupEntry> EnumerateImageHijackEntries();
 
     // EnumerateAdvancedRegistryEntries returns Explorer/Winlogon/LSA/COM style registry persistence.
     std::vector<StartupEntry> EnumerateAdvancedRegistryEntries();

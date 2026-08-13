@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -1920,13 +1921,10 @@ namespace
     }
 
     // BuildSubKeyValueSpecList centralizes subkey-driven advanced registry persistence coverage.
-    const std::array<SubKeyValueSpec, 60>& BuildSubKeyValueSpecList()
+    const std::array<SubKeyValueSpec, 56>& BuildSubKeyValueSpecList()
     {
-        static const std::array<SubKeyValueSpec, 60> specs{ {
+        static const std::array<SubKeyValueSpec, 56> specs{ {
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Active Setup\\Installed Components", L"StubPath", "ActiveSetup", L"本机", L"Active Setup StubPath", true, false, true },
-            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options", L"Debugger", "IFEO-Debugger", L"本机", L"映像执行调试器劫持", false, false, false },
-            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options", L"VerifierDlls", "IFEO-VerifierDlls", L"本机", L"映像验证器 DLL", false, false, false },
-            { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit", L"MonitorProcess", "SilentProcessExit", L"本机", L"SilentProcessExit 监视进程", false, false, false },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Notify", L"DLLName", "WinlogonNotify", L"本机", L"Winlogon Notify 包", false, false, true },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Providers", L"", "CredentialProvider", L"本机", L"Credential Provider", false, true, true },
             { HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Provider Filters", L"", "CredentialProviderFilter", L"本机", L"Credential Provider Filter", false, true, true },
@@ -1952,7 +1950,6 @@ namespace
             { HKEY_CURRENT_USER, L"Software\\Classes\\Protocols\\Filter", L"CLSID", "ProtocolFilterUser", L"当前用户", L"用户级协议过滤器", true, false, true },
             { HKEY_CURRENT_USER, L"Software\\Classes\\Protocols\\Handler", L"CLSID", "ProtocolHandlerUser", L"当前用户", L"用户级协议处理器", true, false, true },
             // Views of already-covered families that the previous table only checked in one hive.
-            { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options", L"Debugger", "IFEO-Debugger32", L"本机(32位)", L"32 位映像执行调试器劫持", false, false, false },
             { HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Active Setup\\Installed Components", L"StubPath", "ActiveSetup32", L"本机(32位)", L"32 位 Active Setup StubPath", true, false, true },
             { HKEY_CURRENT_USER, L"Software\\Microsoft\\Active Setup\\Installed Components", L"StubPath", "ActiveSetupUser", L"当前用户", L"用户级 Active Setup StubPath", true, false, true },
             { HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ShellIconOverlayIdentifiers", L"", "ShellIconOverlayUser", L"当前用户", L"用户级 Shell 图标覆盖标识符", true, false, true },
@@ -2547,6 +2544,392 @@ namespace
                 entries.push_back(std::move(entry));
             }
         }
+    }
+
+    constexpr std::uint64_t kIfeoApplicationVerifierFlag = 0x100ULL;
+    constexpr std::uint64_t kIfeoSilentProcessExitFlag = 0x200ULL;
+    constexpr std::uint64_t kSilentExitLaunchMonitorProcessFlag = 0x1ULL;
+
+    struct IfeoRegistryViewSpec
+    {
+        const wchar_t* rootSubKeyText = L"";
+        const wchar_t* scopeText = L"";
+        const char* identityText = "";
+    };
+
+    const std::array<IfeoRegistryViewSpec, 2>& BuildIfeoRegistryViewSpecList()
+    {
+        static const std::array<IfeoRegistryViewSpec, 2> specs{ {
+            {
+                L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+                L"本机",
+                "native"
+            },
+            {
+                L"Software\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+                L"本机(32位)",
+                "wow64"
+            }
+        } };
+        return specs;
+    }
+
+    std::optional<std::uint64_t> ParseRegistryUnsignedValue(const RegistryValueRecord& valueRecord)
+    {
+        if (valueRecord.valueType == REG_DWORD && valueRecord.rawData.size() >= sizeof(std::uint32_t))
+        {
+            std::uint32_t value = 0;
+            std::memcpy(&value, valueRecord.rawData.data(), sizeof(value));
+            return value;
+        }
+        if (valueRecord.valueType == REG_DWORD_BIG_ENDIAN && valueRecord.rawData.size() >= sizeof(std::uint32_t))
+        {
+            const auto* bytes = valueRecord.rawData.data();
+            return (static_cast<std::uint64_t>(bytes[0]) << 24U)
+                | (static_cast<std::uint64_t>(bytes[1]) << 16U)
+                | (static_cast<std::uint64_t>(bytes[2]) << 8U)
+                | static_cast<std::uint64_t>(bytes[3]);
+        }
+        if (valueRecord.valueType == REG_QWORD && valueRecord.rawData.size() >= sizeof(std::uint64_t))
+        {
+            std::uint64_t value = 0;
+            std::memcpy(&value, valueRecord.rawData.data(), sizeof(value));
+            return value;
+        }
+
+        const std::string text = ks::str::TrimCopy(valueRecord.valueDataText);
+        if (text.empty())
+        {
+            return std::nullopt;
+        }
+        const bool hexadecimal = StartsWithI(text, "0x");
+        const char* numberStart = text.c_str() + (hexadecimal ? 2 : 0);
+        char* numberEnd = nullptr;
+        errno = 0;
+        const unsigned long long value = std::strtoull(numberStart, &numberEnd, hexadecimal ? 16 : 10);
+        if (numberEnd == numberStart || *numberEnd != '\0' || errno == ERANGE)
+        {
+            return std::nullopt;
+        }
+        return static_cast<std::uint64_t>(value);
+    }
+
+    bool RegistryFlagEnabled(
+        const std::optional<RegistryValueRecord>& valueRecord,
+        const std::uint64_t flagMask)
+    {
+        if (!valueRecord.has_value())
+        {
+            return false;
+        }
+        const auto value = ParseRegistryUnsignedValue(*valueRecord);
+        return value.has_value() && ((*value & flagMask) != 0ULL);
+    }
+
+    bool HasNonEmptyRegistryValue(const std::optional<RegistryValueRecord>& valueRecord)
+    {
+        return valueRecord.has_value()
+            && !ks::str::TrimCopy(valueRecord->valueDataText).empty();
+    }
+
+    std::string BuildFilteredImageDisplayName(
+        const std::wstring& imageName,
+        const RegistryValueRecord& filterFullPathRecord)
+    {
+        std::string displayName = FromWide(imageName);
+        const std::string filterFullPath = ks::str::TrimCopy(filterFullPathRecord.valueDataText);
+        if (!filterFullPath.empty())
+        {
+            displayName += " [" + filterFullPath + "]";
+        }
+        return displayName;
+    }
+
+    void AppendImageHijackValueEntry(
+        std::vector<ks::startup::StartupEntry>& entries,
+        const std::wstring& itemSubKey,
+        const std::wstring& groupSubKey,
+        const std::string& imageDisplayName,
+        const wchar_t* scopeText,
+        const RegistryValueRecord& valueRecord,
+        const char* sourceTypeText,
+        const wchar_t* detailText,
+        const bool active)
+    {
+        ks::startup::StartupEntry entry;
+        entry.category = ks::startup::StartupCategory::ImageHijack;
+        entry.categoryText = ks::startup::CategoryToText(entry.category);
+        entry.itemNameText = imageDisplayName;
+        entry.locationText = BuildRegistryLocationText(HKEY_LOCAL_MACHINE, itemSubKey);
+        entry.locationGroupText = BuildRegistryLocationText(HKEY_LOCAL_MACHINE, groupSubKey);
+        entry.userText = FromWide(scopeText);
+        entry.sourceTypeText = sourceTypeText;
+        entry.detailText = FromWide(detailText);
+        entry.uniqueIdText = "IMAGEHIJACK|" + entry.locationText + "|" + valueRecord.valueNameText;
+        FinalizeRegistryEntry(
+            entry,
+            valueRecord.valueDataText,
+            std::string(),
+            valueRecord.valueNameText,
+            false,
+            false);
+        ConfigureRegistryValueAction(
+            entry,
+            HKEY_LOCAL_MACHINE,
+            itemSubKey,
+            valueRecord,
+            active
+                ? ks::startup::StartupRiskLevel::Critical
+                : ks::startup::StartupRiskLevel::Elevated,
+            "image_hijack",
+            FromWide(L"映像劫持项能够在目标进程启动或退出时执行额外代码；禁用前请确认它不是受控调试或测试配置。"));
+        entry.enabled = true;
+        entries.push_back(std::move(entry));
+    }
+
+    void AppendIfeoViewEntries(
+        std::vector<ks::startup::StartupEntry>& entries,
+        const IfeoRegistryViewSpec& viewSpec)
+    {
+        const std::wstring rootSubKey(viewSpec.rootSubKeyText);
+        for (const std::wstring& imageName : EnumerateRegistrySubKeys(HKEY_LOCAL_MACHINE, rootSubKey))
+        {
+            const std::wstring imageSubKey = rootSubKey + L"\\" + imageName;
+            const auto globalFlagRecord = QueryRegistryValueRecord(
+                HKEY_LOCAL_MACHINE,
+                imageSubKey,
+                L"GlobalFlag");
+
+            const auto debuggerRecord = QueryRegistryValueRecord(
+                HKEY_LOCAL_MACHINE,
+                imageSubKey,
+                L"Debugger");
+            if (HasNonEmptyRegistryValue(debuggerRecord))
+            {
+                AppendImageHijackValueEntry(
+                    entries,
+                    imageSubKey,
+                    rootSubKey,
+                    FromWide(imageName),
+                    viewSpec.scopeText,
+                    *debuggerRecord,
+                    viewSpec.identityText[0] == 'w' ? "IFEO-Debugger32" : "IFEO-Debugger",
+                    L"检测到 IFEO Debugger；目标进程启动时会先执行该命令。",
+                    true);
+            }
+
+            const bool verifierEnabled = RegistryFlagEnabled(
+                globalFlagRecord,
+                kIfeoApplicationVerifierFlag);
+            const auto verifierDllsRecord = QueryRegistryValueRecord(
+                HKEY_LOCAL_MACHINE,
+                imageSubKey,
+                L"VerifierDlls");
+            if (HasNonEmptyRegistryValue(verifierDllsRecord))
+            {
+                AppendImageHijackValueEntry(
+                    entries,
+                    imageSubKey,
+                    rootSubKey,
+                    FromWide(imageName),
+                    viewSpec.scopeText,
+                    *verifierDllsRecord,
+                    viewSpec.identityText[0] == 'w' ? "IFEO-VerifierDlls32" : "IFEO-VerifierDlls",
+                    verifierEnabled
+                        ? L"检测到已启用的 IFEO VerifierDlls；指定 DLL 会随目标进程加载。"
+                        : L"检测到 IFEO VerifierDlls，但 GlobalFlag 未启用应用程序验证器。",
+                    verifierEnabled);
+            }
+
+            const bool useFilterEnabled = RegistryFlagEnabled(
+                QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, imageSubKey, L"UseFilter"),
+                0x1ULL);
+            for (const std::wstring& filterName : EnumerateRegistrySubKeys(HKEY_LOCAL_MACHINE, imageSubKey))
+            {
+                const std::wstring filterSubKey = imageSubKey + L"\\" + filterName;
+                const auto filterFullPathRecord = QueryRegistryValueRecord(
+                    HKEY_LOCAL_MACHINE,
+                    filterSubKey,
+                    L"FilterFullPath");
+                if (!HasNonEmptyRegistryValue(filterFullPathRecord))
+                {
+                    continue;
+                }
+                const std::string filteredDisplayName = BuildFilteredImageDisplayName(
+                    imageName,
+                    *filterFullPathRecord);
+                const auto filteredDebuggerRecord = QueryRegistryValueRecord(
+                    HKEY_LOCAL_MACHINE,
+                    filterSubKey,
+                    L"Debugger");
+                if (HasNonEmptyRegistryValue(filteredDebuggerRecord))
+                {
+                    AppendImageHijackValueEntry(
+                        entries,
+                        filterSubKey,
+                        rootSubKey,
+                        filteredDisplayName,
+                        viewSpec.scopeText,
+                        *filteredDebuggerRecord,
+                        viewSpec.identityText[0] == 'w' ? "IFEO-FilteredDebugger32" : "IFEO-FilteredDebugger",
+                        useFilterEnabled
+                            ? L"检测到按完整路径生效的 IFEO Debugger。"
+                            : L"检测到带 FilterFullPath 的 IFEO Debugger，但 UseFilter 未启用。",
+                        useFilterEnabled);
+                }
+
+                const auto filteredGlobalFlagRecord = QueryRegistryValueRecord(
+                    HKEY_LOCAL_MACHINE,
+                    filterSubKey,
+                    L"GlobalFlag");
+                const bool filteredVerifierEnabled = useFilterEnabled
+                    && (RegistryFlagEnabled(filteredGlobalFlagRecord, kIfeoApplicationVerifierFlag)
+                        || verifierEnabled);
+                const auto filteredVerifierDllsRecord = QueryRegistryValueRecord(
+                    HKEY_LOCAL_MACHINE,
+                    filterSubKey,
+                    L"VerifierDlls");
+                if (HasNonEmptyRegistryValue(filteredVerifierDllsRecord))
+                {
+                    AppendImageHijackValueEntry(
+                        entries,
+                        filterSubKey,
+                        rootSubKey,
+                        filteredDisplayName,
+                        viewSpec.scopeText,
+                        *filteredVerifierDllsRecord,
+                        viewSpec.identityText[0] == 'w' ? "IFEO-FilteredVerifierDlls32" : "IFEO-FilteredVerifierDlls",
+                        filteredVerifierEnabled
+                            ? L"检测到按完整路径生效的 IFEO VerifierDlls；指定 DLL 会随目标进程加载。"
+                            : L"检测到带 FilterFullPath 的 IFEO VerifierDlls，但路径过滤或应用程序验证器未启用。",
+                        filteredVerifierEnabled);
+                }
+            }
+        }
+    }
+
+    bool IsIfeoFlagEnabledForImage(
+        const std::wstring& imageName,
+        const std::uint64_t flagMask)
+    {
+        for (const IfeoRegistryViewSpec& viewSpec : BuildIfeoRegistryViewSpecList())
+        {
+            const std::wstring imageSubKey = std::wstring(viewSpec.rootSubKeyText) + L"\\" + imageName;
+            if (RegistryFlagEnabled(
+                    QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, imageSubKey, L"GlobalFlag"),
+                    flagMask))
+            {
+                return true;
+            }
+            const bool useFilterEnabled = RegistryFlagEnabled(
+                QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, imageSubKey, L"UseFilter"),
+                0x1ULL);
+            if (!useFilterEnabled)
+            {
+                continue;
+            }
+            for (const std::wstring& filterName : EnumerateRegistrySubKeys(HKEY_LOCAL_MACHINE, imageSubKey))
+            {
+                const std::wstring filterSubKey = imageSubKey + L"\\" + filterName;
+                if (!HasNonEmptyRegistryValue(QueryRegistryValueRecord(
+                        HKEY_LOCAL_MACHINE,
+                        filterSubKey,
+                        L"FilterFullPath")))
+                {
+                    continue;
+                }
+                if (RegistryFlagEnabled(
+                        QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, filterSubKey, L"GlobalFlag"),
+                        flagMask))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    void AppendSilentProcessExitEntries(std::vector<ks::startup::StartupEntry>& entries)
+    {
+        const std::wstring silentRoot =
+            L"Software\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit";
+        const auto globalMonitorProcessRecord = QueryRegistryValueRecord(
+            HKEY_LOCAL_MACHINE,
+            silentRoot,
+            L"MonitorProcess");
+        bool globalMonitorProcessActive = false;
+
+        for (const std::wstring& imageName : EnumerateRegistrySubKeys(HKEY_LOCAL_MACHINE, silentRoot))
+        {
+            const std::wstring imageSubKey = silentRoot + L"\\" + imageName;
+            const bool launchMonitorEnabled = RegistryFlagEnabled(
+                QueryRegistryValueRecord(HKEY_LOCAL_MACHINE, imageSubKey, L"ReportingMode"),
+                kSilentExitLaunchMonitorProcessFlag);
+            const bool silentExitEnabled = IsIfeoFlagEnabledForImage(
+                imageName,
+                kIfeoSilentProcessExitFlag);
+            const bool active = launchMonitorEnabled && silentExitEnabled;
+            const auto monitorProcessRecord = QueryRegistryValueRecord(
+                HKEY_LOCAL_MACHINE,
+                imageSubKey,
+                L"MonitorProcess");
+            if (HasNonEmptyRegistryValue(monitorProcessRecord))
+            {
+                AppendImageHijackValueEntry(
+                    entries,
+                    imageSubKey,
+                    silentRoot,
+                    FromWide(imageName),
+                    L"本机",
+                    *monitorProcessRecord,
+                    "SilentProcessExit-MonitorProcess",
+                    active
+                        ? L"SilentProcessExit 已启用启动监视进程；目标进程静默退出时会执行该命令。"
+                        : L"检测到 SilentProcessExit MonitorProcess，但 IFEO GlobalFlag 或 ReportingMode 未形成有效启动链。",
+                    active);
+            }
+            else if (active && HasNonEmptyRegistryValue(globalMonitorProcessRecord))
+            {
+                globalMonitorProcessActive = true;
+            }
+        }
+
+        if (HasNonEmptyRegistryValue(globalMonitorProcessRecord))
+        {
+            AppendImageHijackValueEntry(
+                entries,
+                silentRoot,
+                silentRoot,
+                FromWide(L"全局 SilentProcessExit"),
+                L"本机",
+                *globalMonitorProcessRecord,
+                "SilentProcessExit-GlobalMonitorProcess",
+                globalMonitorProcessActive
+                    ? L"全局 SilentProcessExit 监视进程已被至少一个目标使用。"
+                    : L"检测到全局 SilentProcessExit MonitorProcess，但当前未发现完整的启动链。",
+                globalMonitorProcessActive);
+        }
+    }
+
+    bool IsImageHijackRegistrySubKey(const std::wstring& subKeyText)
+    {
+        const std::wstring lowerSubKey = LowerWideCopy(subKeyText);
+        const std::array<std::wstring, 3> roots{ {
+            LowerWideCopy(L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options"),
+            LowerWideCopy(L"Software\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options"),
+            LowerWideCopy(L"Software\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit")
+        } };
+        for (const std::wstring& root : roots)
+        {
+            if (lowerSubKey == root
+                || (lowerSubKey.size() > root.size()
+                    && lowerSubKey.starts_with(root)
+                    && lowerSubKey[root.size()] == L'\\'))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // QueryServiceBinaryPathText extracts the configured image path from QueryServiceConfig.
@@ -4039,9 +4422,12 @@ namespace
             ks::startup::StartupEntry entry;
             const bool logonSource = IsKnownRunLocation(rootKey, record.subKey)
                 || LowerWideCopy(record.subKey).find(L"\\runonceex") != std::wstring::npos;
+            const bool imageHijackSource = IsImageHijackRegistrySubKey(record.subKey);
             entry.category = logonSource
                 ? ks::startup::StartupCategory::Logon
-                : ks::startup::StartupCategory::Registry;
+                : (imageHijackSource
+                    ? ks::startup::StartupCategory::ImageHijack
+                    : ks::startup::StartupCategory::Registry);
             entry.categoryText = ks::startup::CategoryToText(entry.category);
             entry.itemNameText = record.itemName.empty()
                 ? (record.valueName.empty() ? FromWide(L"(\u9ed8\u8ba4\u503c)") : FromWide(record.valueName))
@@ -4053,7 +4439,7 @@ namespace
                 : FromWide(L"\u672c\u673a");
             entry.sourceTypeText = logonSource
                 ? RunSourceTypeForSubKey(record.subKey)
-                : "RegistryBackup";
+                : (imageHijackSource ? "ImageHijackBackup" : "RegistryBackup");
             entry.detailText =
                 metadataScope + "|" + FromWide(L"KSword 备份=") + FromWide(backupId);
             entry.uniqueIdText =
@@ -6278,6 +6664,8 @@ namespace ks::startup
             return FromWide(L"\u9a71\u52a8");
         case StartupCategory::Tasks:
             return FromWide(L"\u8ba1\u5212\u4efb\u52a1");
+        case StartupCategory::ImageHijack:
+            return FromWide(L"映像劫持");
         case StartupCategory::Registry:
             return FromWide(L"\u9ad8\u7ea7\u6ce8\u518c\u8868");
         case StartupCategory::Wmi:
@@ -6495,6 +6883,17 @@ namespace ks::startup
         return entries;
     }
 
+    std::vector<StartupEntry> EnumerateImageHijackEntries()
+    {
+        std::vector<StartupEntry> entries;
+        for (const IfeoRegistryViewSpec& viewSpec : BuildIfeoRegistryViewSpecList())
+        {
+            AppendIfeoViewEntries(entries, viewSpec);
+        }
+        AppendSilentProcessExitEntries(entries);
+        return entries;
+    }
+
     std::vector<StartupEntry> EnumerateAdvancedRegistryEntries()
     {
         std::vector<StartupEntry> entries;
@@ -6595,6 +6994,7 @@ namespace ks::startup
         append(EnumerateServiceEntries());
         append(EnumerateDriverEntries());
         append(EnumerateTaskEntries());
+        append(EnumerateImageHijackEntries());
         append(EnumerateAdvancedRegistryEntries());
         append(EnumerateWinsockEntries());
         append(EnumerateWmiEntries());

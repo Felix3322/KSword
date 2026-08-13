@@ -105,6 +105,8 @@ QString StartupDock::categoryToText(const StartupCategory category)
         return startupText("startup.category.drivers", QStringLiteral("驱动"));
     case StartupCategory::Tasks:
         return startupText("startup.category.tasks", QStringLiteral("计划任务"));
+    case StartupCategory::ImageHijack:
+        return startupText("startup.category.image_hijack", QStringLiteral("映像劫持"));
     case StartupCategory::Registry:
         return startupText("startup.category.registry", QStringLiteral("高级注册表"));
     case StartupCategory::Wmi:
@@ -161,10 +163,12 @@ StartupDock::StartupCategory StartupDock::currentCategory() const
     case 4:
         return StartupCategory::Tasks;
     case 5:
-        return StartupCategory::Registry;
+        return StartupCategory::ImageHijack;
     case 6:
-        return StartupCategory::Wmi;
+        return StartupCategory::Registry;
     case 7:
+        return StartupCategory::Wmi;
+    case 8:
         return StartupCategory::Hidden;
     default:
         return StartupCategory::All;
@@ -185,6 +189,8 @@ QTableWidget* StartupDock::currentCategoryTable() const
         return m_driversTable;
     case StartupCategory::Tasks:
         return m_tasksTable;
+    case StartupCategory::ImageHijack:
+        return m_imageHijackTable;
     case StartupCategory::Registry:
         return nullptr;
     case StartupCategory::Wmi:
@@ -236,6 +242,10 @@ QIcon StartupDock::resolveEntryIcon(const StartupEntry& entry)
         else if (entry.category == StartupCategory::Tasks)
         {
             resolvedIcon = createBlueIcon(":/Icon/process_refresh.svg");
+        }
+        else if (entry.category == StartupCategory::ImageHijack)
+        {
+            resolvedIcon = createBlueIcon(":/Icon/startup_image_hijack.svg");
         }
         else if (entry.category == StartupCategory::Registry)
         {
@@ -359,12 +369,13 @@ void StartupDock::applyRefreshResult(std::vector<StartupEntry> entryList)
         m_servicesTable,
         m_driversTable,
         m_tasksTable,
+        m_imageHijackTable,
         m_wmiTable,
         m_hiddenTable
     };
     if (ks::ui::IsTableUiCommitBlockedByContextMenu(startupTables))
     {
-        // 七张分类表来自同一快照，菜单关闭后必须原子替换，
+        // 八张分类表来自同一快照，菜单关闭后必须原子替换，
         // 避免各标签页缓存与可见行处于不同代次。
         const QPointer<StartupDock> safeThis(this);
         ks::ui::DeferTableUiCommitIfContextMenuOpen(

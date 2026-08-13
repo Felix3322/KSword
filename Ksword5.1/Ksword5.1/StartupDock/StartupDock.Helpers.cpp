@@ -228,6 +228,8 @@ namespace startup_dock_detail
                 return StartupDock::StartupCategory::Drivers;
             case ks::startup::StartupCategory::Tasks:
                 return StartupDock::StartupCategory::Tasks;
+            case ks::startup::StartupCategory::ImageHijack:
+                return StartupDock::StartupCategory::ImageHijack;
             case ks::startup::StartupCategory::Registry:
                 return StartupDock::StartupCategory::Registry;
             case ks::startup::StartupCategory::Wmi:
