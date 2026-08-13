@@ -7,7 +7,7 @@
 // - 支持用户态 MDMP minidump（应用崩溃转储）与内核 PAGEDUMP/PAGEDU64
 //   转储（蓝屏 DMP，含 C:\Windows\Minidump 小型转储）；
 // - 展示诊断结论、肇事模块候选、概览、异常/停止码、调用栈、寄存器、
-//   流目录、模块/驱动、线程、内存、句柄、已卸载模块与全文报告；
+//   流目录、模块/驱动、线程、内存、原始内存预览、句柄、已卸载模块与全文报告；
 //   解析在线程池执行，不阻塞 UI。
 // 调用方式：
 // - MainWindow 按 dockKey "minidump" 懒加载创建本控件；
@@ -139,6 +139,7 @@ private:
     QWidget* m_threadPage = nullptr;    // m_threadPage：线程表的 A/B/C 包装页。
     QWidget* m_memoryPage = nullptr;    // m_memoryPage：内存表的 A/B/C 包装页。
     QWidget* m_handlePage = nullptr;    // m_handlePage：句柄表的 A/B/C 包装页。
+    CodeEditorWidget* m_rawMemoryEditor = nullptr; // m_rawMemoryEditor：已验证 TRIAGE 数据块的只读十六进制预览。
     CodeEditorWidget* m_reportEditor = nullptr; // m_reportEditor：全文报告只读编辑器。
 
     std::shared_ptr<ks::minidump::DumpParseResult> m_lastResult; // m_lastResult：语言切换时重绘的最近结果。

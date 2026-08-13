@@ -47,6 +47,11 @@ namespace ks::minidump
         constexpr std::uint32_t kMaxDriverEntries = 4096;
         // kMaxTriageDataBlocks：TRIAGE 数据块解析上限。
         constexpr std::uint32_t kMaxTriageDataBlocks = 65536;
+        // kMaxTriageByteBlockPreviews：原始预览页最多保留的数据块数。目录可能有数百
+        // 条，全部复制到结果中会徒增内存与 UI 成本，前若干条已经覆盖核心现场。
+        constexpr std::uint32_t kMaxTriageByteBlockPreviews = 128;
+        // kTriageByteBlockPreviewBytes：每个数据块的原始预览上限。
+        constexpr std::uint32_t kTriageByteBlockPreviewBytes = 512;
         // kMaxDriverNameChars：DUMP_STRING 驱动名的最大字符数（防畸形长度）。
         constexpr std::uint32_t kMaxDriverNameChars = 1024;
         // kUnloadedDriverSlots：内核 MmUnloadedDrivers 数组的固定槽位数。
@@ -1033,6 +1038,33 @@ namespace ks::minidump
                 ++result.memoryRegionShown;
                 result.memoryRegions.push_back(std::move(entry));
                 memory.addRange(block.Address, block.Offset, block.Size);
+
+                // 原始预览：只复制经 TriageRangeValid 验证的前若干块与有限字节，
+                // 防止恶意 DMP 用大量块或超大长度耗尽内存。完整块长度仍保留在元数据，
+                // UI 会明确说明未展示的尾部字节。
+                if (result.byteBlocks.size() < kMaxTriageByteBlockPreviews)
+                {
+                    const std::uint32_t previewBytes = std::min<std::uint32_t>(
+                        block.Size, kTriageByteBlockPreviewBytes);
+                    const unsigned char* const preview = view.at(block.Offset, previewBytes);
+                    if (preview != nullptr)
+                    {
+                        DumpByteBlock byteBlock{};
+                        byteBlock.address = block.Address;
+                        byteBlock.fileOffset = block.Offset;
+                        byteBlock.capturedBytes = block.Size;
+                        byteBlock.source = QStringLiteral("TRIAGE 数据块");
+                        byteBlock.previewBytes.assign(preview, preview + previewBytes);
+                        result.byteBlocks.push_back(std::move(byteBlock));
+                    }
+                }
+            }
+            if (blockCount > kMaxTriageByteBlockPreviews)
+            {
+                result.diagnostics.append(
+                    QStringLiteral("TRIAGE 数据块共有 %1 条，原始预览仅保留前 %2 条。")
+                        .arg(blockCount)
+                        .arg(kMaxTriageByteBlockPreviews));
             }
             // 附加数据页与内核栈同样登记进内存索引，供地址读取使用。
             if (triage.DataPageAddress != 0 &&

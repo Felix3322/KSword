@@ -299,6 +299,7 @@
     <ClCompile Include="MiscDock\BootEditor\BootEditorTab.cpp" />
     <ClCompile Include="MiscDock\MiscDock.cpp" />
     <ClCompile Include="MinidumpDock\DumpAnalyzer.cpp" />
+    <ClCompile Include="MinidumpDock\DumpByteView.cpp" />
     <ClCompile Include="MinidumpDock\DumpBugCheckText.cpp" />
     <ClCompile Include="MinidumpDock\DumpContextRegisters.cpp" />
     <ClCompile Include="MinidumpDock\DumpMemoryReader.cpp" />
@@ -641,6 +642,7 @@
     <QtMoc Include="MiscDock\DiskEditor\DiskMapWidget.h" />
     <QtMoc Include="MiscDock\MiscDock.h" />
     <ClInclude Include="MinidumpDock\DumpAnalyzer.h" />
+    <ClInclude Include="MinidumpDock\DumpByteView.h" />
     <ClInclude Include="MinidumpDock\DumpBugCheckText.h" />
     <ClInclude Include="MinidumpDock\DumpContextRegisters.h" />
     <ClInclude Include="MinidumpDock\DumpMemoryReader.h" />

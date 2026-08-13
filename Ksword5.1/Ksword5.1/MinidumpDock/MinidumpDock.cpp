@@ -232,7 +232,10 @@ void MinidumpDock::buildUi()
     m_threadPage = createStructuredTablePage(m_threadTable, 13);
     m_memoryPage = createStructuredTablePage(m_memoryTable, 6);
     m_handlePage = createStructuredTablePage(m_handleTable, 7);
+    m_rawMemoryEditor = new CodeEditorWidget(m_resultTabs);
+    m_rawMemoryEditor->setReadOnly(true);
     m_reportEditor = new CodeEditorWidget(m_resultTabs);
+    m_reportEditor->setReadOnly(true);
 
     // 预创建的页全部以 m_resultTabs 为父，但此刻一个都还没 addTab。
     // 有父而未进 tab 栈的控件会作为 QTabWidget 的普通子控件浮在客户区上，
@@ -251,6 +254,7 @@ void MinidumpDock::buildUi()
             static_cast<QWidget*>(m_poolTagTable),
             static_cast<QWidget*>(m_crashHistoryTable),
             m_stackPage, m_modulePage, m_threadPage, m_memoryPage, m_handlePage,
+            static_cast<QWidget*>(m_rawMemoryEditor),
             static_cast<QWidget*>(m_reportEditor) })
     {
         if (pendingPage != nullptr)

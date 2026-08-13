@@ -211,6 +211,18 @@ namespace ks::minidump
         QString source;          // source：数据来源（中文：内存列表/64 位内存列表/内存信息列表）。
     };
 
+    // DumpByteBlock：一段可在界面中预览的原始转储字节。
+    // 数据仅来自已经通过文件边界校验的连续捕获范围，previewBytes 限定在安全的
+    // 小窗口内；完整范围及跨页/跨块读取由后续内存查看器负责。
+    struct DumpByteBlock
+    {
+        std::uint64_t address = 0;      // address：预览第一字节的目标机虚拟地址。
+        std::uint64_t fileOffset = 0;   // fileOffset：该字节在转储文件中的偏移。
+        std::uint64_t capturedBytes = 0; // capturedBytes：该捕获块完整字节数。
+        QString source;                 // source：捕获来源，例如 TRIAGE 数据块。
+        std::vector<unsigned char> previewBytes; // previewBytes：受限原始预览字节。
+    };
+
     // HandleEntry：一行句柄信息（HandleDataStream）。
     struct HandleEntry
     {
@@ -256,6 +268,7 @@ namespace ks::minidump
         std::vector<ModuleEntry> modules;        // modules：模块/驱动列表。
         std::vector<ThreadEntry> threads;        // threads：线程列表（内核转储通常为空）。
         std::vector<MemoryRegionEntry> memoryRegions; // memoryRegions：内存区域列表。
+        std::vector<DumpByteBlock> byteBlocks; // byteBlocks：可安全预览的原始内存块。
         std::vector<HandleEntry> handles;        // handles：句柄列表（仅带句柄流的用户态转储）。
         std::vector<UnloadedModuleEntry> unloadedModules; // unloadedModules：已卸载模块列表。
         std::vector<StackFrameEntry> stackFrames; // stackFrames：疑似调用栈（栈扫描产物，含误报）。

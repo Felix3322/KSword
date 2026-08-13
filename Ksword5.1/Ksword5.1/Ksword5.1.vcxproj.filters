@@ -562,6 +562,9 @@
     <ClCompile Include="MinidumpDock\DumpAnalyzer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="MinidumpDock\DumpByteView.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="MinidumpDock\DumpBugCheckText.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1221,6 +1224,9 @@
       <Filter>Header Files</Filter>
     </QtMoc>
     <ClInclude Include="MinidumpDock\DumpAnalyzer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MinidumpDock\DumpByteView.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="MinidumpDock\DumpBugCheckText.h">

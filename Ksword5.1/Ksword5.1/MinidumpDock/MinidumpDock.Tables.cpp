@@ -13,6 +13,7 @@
 #include "MinidumpDock.h"
 
 #include "DumpAnalyzer.h"
+#include "DumpByteView.h"
 #include "DumpSymbolResolver.h"
 #include "Internationalization/LanguageManager.h"
 #include "MinidumpFormat.h"
@@ -998,6 +999,50 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
         endFill(m_memoryTable);
         m_resultTabs->addTab(m_memoryPage,
             translated("minidump.tab.memory", "内存区域"));
+    }
+
+    // ===================== 原始内存预览页 =====================
+    // TRIAGE 数据块是小型内核转储直接随文件保存的零散内存。这里展示解析器
+    // 已完成边界校验后复制的有限预览，绝不让 UI 回读文件，也不暗示这是完整内存。
+    if (!result.byteBlocks.empty())
+    {
+        QString rawText;
+        rawText.reserve(static_cast<qsizetype>(result.byteBlocks.size() * 2000));
+        for (std::size_t index = 0; index < result.byteBlocks.size(); ++index)
+        {
+            const ks::minidump::DumpByteBlock& block = result.byteBlocks[index];
+            if (index != 0)
+            {
+                rawText += QLatin1Char('\n');
+            }
+            const std::uint64_t previewBytes = block.previewBytes.size();
+            const std::uint64_t omittedBytes = block.capturedBytes > previewBytes
+                ? block.capturedBytes - previewBytes
+                : 0;
+            rawText += QStringLiteral("[%1 %2]\n%3: %4\n%5: %6\n%7: %8\n%9: %10 %11\n%12: %13 %14\n\n")
+                .arg(translated("minidump.raw.block", "数据块"))
+                .arg(index + 1)
+                .arg(translated("minidump.raw.source", "来源"))
+                .arg(block.source)
+                .arg(translated("minidump.raw.address", "虚拟地址"))
+                .arg(hexText(block.address))
+                .arg(translated("minidump.raw.file_offset", "文件偏移"))
+                .arg(hexText(block.fileOffset))
+                .arg(translated("minidump.raw.captured_size", "完整捕获大小"))
+                .arg(block.capturedBytes)
+                .arg(translated("minidump.raw.bytes", "字节"))
+                .arg(translated("minidump.raw.preview_size", "预览大小"))
+                .arg(previewBytes)
+                .arg(translated("minidump.raw.bytes", "字节"));
+            rawText += ks::minidump::FormatDumpBytes(
+                block.address,
+                block.previewBytes.empty() ? nullptr : block.previewBytes.data(),
+                previewBytes,
+                omittedBytes);
+        }
+        m_rawMemoryEditor->setRawText(rawText);
+        m_resultTabs->addTab(m_rawMemoryEditor,
+            translated("minidump.tab.raw_memory", "原始内存"));
     }
 
     // ===================== 句柄页 =====================
