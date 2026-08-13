@@ -248,6 +248,10 @@ namespace ks::minidump
 
         std::vector<DumpProperty> overview;      // overview：概览页“属性-值”集合。
         std::vector<DumpProperty> exceptionInfo; // exceptionInfo：异常/BugCheck 详情集合，可为空。
+        // executionContext：崩溃现场的当前 CPU / KTHREAD / EPROCESS 快照信息。
+        // 目前由 x64 TRIAGE_DUMP64 的 KDDEBUGGER_DATA64 动态偏移解析而来；
+        // 不把未被转储捕获或无法验证的字段伪装成零值。
+        std::vector<DumpProperty> executionContext;
         std::vector<StreamEntry> streams;        // streams：流目录（或内核 TRIAGE 布局）。
         std::vector<ModuleEntry> modules;        // modules：模块/驱动列表。
         std::vector<ThreadEntry> threads;        // threads：线程列表（内核转储通常为空）。

@@ -124,6 +124,7 @@ private:
     QTableWidget* m_registerTable = nullptr;  // m_registerTable：崩溃点寄存器表。
     QTableWidget* m_overviewTable = nullptr;  // m_overviewTable：概览“属性-值”表。
     QTableWidget* m_exceptionTable = nullptr; // m_exceptionTable：异常/停止码详情表。
+    QTableWidget* m_executionContextTable = nullptr; // m_executionContextTable：崩溃现场 CPU/线程/进程快照表。
     QTableWidget* m_streamTable = nullptr;    // m_streamTable：流目录/TRIAGE 布局表。
     QTableWidget* m_moduleTable = nullptr;    // m_moduleTable：模块/驱动表。
     QTableWidget* m_threadTable = nullptr;    // m_threadTable：线程表。

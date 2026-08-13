@@ -207,6 +207,7 @@ void MinidumpDock::buildUi()
     m_registerTable = createReadOnlyTable(m_resultTabs);
     m_overviewTable = createReadOnlyTable(m_resultTabs);
     m_exceptionTable = createReadOnlyTable(m_resultTabs);
+    m_executionContextTable = createReadOnlyTable(m_resultTabs);
     m_streamTable = createReadOnlyTable(m_resultTabs);
     m_moduleTable = createReadOnlyTable(m_resultTabs);
     m_threadTable = createReadOnlyTable(m_resultTabs);
@@ -242,6 +243,7 @@ void MinidumpDock::buildUi()
             static_cast<QWidget*>(m_blameTable),
             static_cast<QWidget*>(m_overviewTable),
             static_cast<QWidget*>(m_exceptionTable),
+            static_cast<QWidget*>(m_executionContextTable),
             static_cast<QWidget*>(m_streamTable),
             static_cast<QWidget*>(m_unloadedTable),
             static_cast<QWidget*>(m_registerTable),

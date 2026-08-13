@@ -655,6 +655,32 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
             translated("minidump.tab.exception", "异常信息"));
     }
 
+    // ===================== 崩溃现场页 =====================
+    // TRIAGE 小型内核转储会保存当前 CPU、KTHREAD 与 EPROCESS 的局部快照。
+    // 它们与“线程”页的用户态 MINIDUMP_THREAD 不同，不能混在一起展示。
+    if (!result.executionContext.empty())
+    {
+        beginFill(m_executionContextTable);
+        m_executionContextTable->setColumnCount(2);
+        m_executionContextTable->setHorizontalHeaderLabels({
+            translated("minidump.column.property", "属性"),
+            translated("minidump.column.value", "值") });
+        m_executionContextTable->setRowCount(
+            static_cast<int>(result.executionContext.size()));
+        int contextRow = 0;
+        for (const ks::minidump::DumpProperty& property : result.executionContext)
+        {
+            m_executionContextTable->setItem(contextRow, 0,
+                makeItem(ks::i18n::sourceText(property.name)));
+            m_executionContextTable->setItem(contextRow, 1,
+                makeItem(ks::i18n::sourceText(property.value)));
+            ++contextRow;
+        }
+        endFill(m_executionContextTable);
+        m_resultTabs->addTab(m_executionContextTable,
+            translated("minidump.tab.execution_context", "崩溃现场"));
+    }
+
     // ===================== 调用栈页 =====================
     if (!result.stackFrames.empty())
     {
@@ -1109,6 +1135,17 @@ QString MinidumpDock::buildReportText(const ks::minidump::DumpParseResult& resul
         for (const ks::minidump::DumpProperty& property : result.exceptionInfo)
         {
             lines.append(QStringLiteral("%1: %2").arg(property.name, property.value));
+        }
+        lines.append(QString());
+    }
+
+    if (!result.executionContext.empty())
+    {
+        lines.append(QStringLiteral("[崩溃现场]"));
+        for (const ks::minidump::DumpProperty& property : result.executionContext)
+        {
+            lines.append(QStringLiteral("%1: %2")
+                .arg(property.name, property.value));
         }
         lines.append(QString());
     }

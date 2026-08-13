@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <optional>
 #include <vector>
 
@@ -141,6 +142,40 @@ namespace ks::minidump
         static_assert(offsetof(TriageDump64, TopOfStack) == 0x48,
             "TopOfStack 必须位于 0x48");
 
+        // TriageDump64Prefix：TRIAGE_DUMP64 到 DebuggerDataSize 的稳定前缀。
+        // 崩溃现场只依赖此前字段；显式前缀同时锁定该读取范围，避免遇到截断文件时
+        // 把 TRIAGE 区后的任意字节解释成可用字段。
+        struct TriageDump64Prefix
+        {
+            std::uint32_t ServicePackBuild;
+            std::uint32_t SizeOfDump;
+            std::uint32_t ValidOffset;
+            std::uint32_t ContextOffset;
+            std::uint32_t ExceptionOffset;
+            std::uint32_t MmOffset;
+            std::uint32_t UnloadedDriversOffset;
+            std::uint32_t PrcbOffset;
+            std::uint32_t ProcessOffset;
+            std::uint32_t ThreadOffset;
+            std::uint32_t CallStackOffset;
+            std::uint32_t SizeOfCallStack;
+            std::uint32_t DriverListOffset;
+            std::uint32_t DriverCount;
+            std::uint32_t StringPoolOffset;
+            std::uint32_t StringPoolSize;
+            std::uint32_t BrokenDriverOffset;
+            std::uint32_t TriageOptions;
+            std::uint64_t TopOfStack;
+            std::uint8_t ArchitectureSpecific[16];
+            std::uint64_t DataPageAddress;
+            std::uint32_t DataPageOffset;
+            std::uint32_t DataPageSize;
+            std::uint32_t DebuggerDataOffset;
+            std::uint32_t DebuggerDataSize;
+        };
+        static_assert(sizeof(TriageDump64Prefix) == 0x78,
+            "TRIAGE_DUMP64 稳定前缀必须是 0x78 字节");
+
         // UnicodeString64：UNICODE_STRING64 布局（Buffer 为目标机虚拟地址）。
         struct UnicodeString64
         {
@@ -211,6 +246,17 @@ namespace ks::minidump
         static_assert(sizeof(TriageDataBlock) == 0x10,
             "TRIAGE_DATA_BLOCK 必须是 0x10 字节");
 
+        // DbgKdDataHeader64：KDDEBUGGER_DATA64 头的固定前缀。
+        struct DbgKdDataHeader64
+        {
+            std::uint64_t Flink;
+            std::uint64_t Blink;
+            std::uint32_t OwnerTag;
+            std::uint32_t Size;
+        };
+        static_assert(sizeof(DbgKdDataHeader64) == 0x18,
+            "DBGKD_DEBUG_DATA_HEADER64 必须是 0x18 字节");
+
         // PhysicalMemoryRun64：物理内存段（以页为单位）。
         struct PhysicalMemoryRun64
         {
@@ -218,6 +264,22 @@ namespace ks::minidump
             std::uint64_t PageCount; // PageCount：页数。
         };
 #pragma pack(pop)
+
+        constexpr std::uint32_t kKdDebuggerOwnerTag = 0x4742444Bu;
+        // KDDEBUGGER_DATA64 的字段偏移来自公开 wdbgexts.h 兼容布局。
+        // 读取前仍以转储内 Header.Size 和快照长度做边界检查。
+        constexpr std::uint32_t kKdOffsetKThreadKernelStack = 0x29C;
+        constexpr std::uint32_t kKdOffsetKThreadInitialStack = 0x29E;
+        constexpr std::uint32_t kKdOffsetKThreadApcProcess = 0x2A0;
+        constexpr std::uint32_t kKdOffsetKThreadState = 0x2A2;
+        constexpr std::uint32_t kKdSizeEProcess = 0x2A8;
+        constexpr std::uint32_t kKdOffsetEprocessPeb = 0x2AA;
+        constexpr std::uint32_t kKdOffsetEprocessParentCid = 0x2AC;
+        constexpr std::uint32_t kKdOffsetEprocessDirectoryTableBase = 0x2AE;
+        constexpr std::uint32_t kKdSizePrcb = 0x2B0;
+        constexpr std::uint32_t kKdOffsetPrcbCurrentThread = 0x2B4;
+        constexpr std::uint32_t kKdOffsetPrcbNumber = 0x2BE;
+        constexpr std::uint32_t kKdSizeEThread = 0x2C0;
 
         // Hex 作用：把无符号整数格式化成 0x 大写十六进制文本。
         QString Hex(const std::uint64_t value)
@@ -354,6 +416,206 @@ namespace ks::minidump
                 return false;
             }
             return view.contains(offset, bytes);
+        }
+
+        template <typename ValueType>
+        bool TriageSnapshotRead(
+            const DumpFileView& view,
+            const std::uint32_t snapshotOffset,
+            const std::uint32_t snapshotBytes,
+            const std::uint32_t fieldOffset,
+            ValueType* const valueOut)
+        {
+            if (valueOut == nullptr || fieldOffset > snapshotBytes ||
+                sizeof(ValueType) > snapshotBytes - fieldOffset)
+            {
+                return false;
+            }
+            return view.readStruct(
+                static_cast<std::uint64_t>(snapshotOffset) + fieldOffset,
+                valueOut);
+        }
+
+        QString KthreadStateText(const std::uint32_t rawState)
+        {
+            const std::uint8_t state = static_cast<std::uint8_t>(rawState & 0xFFu);
+            QString name;
+            switch (state)
+            {
+            case 0: name = QStringLiteral("Initialized"); break;
+            case 1: name = QStringLiteral("Ready"); break;
+            case 2: name = QStringLiteral("Running"); break;
+            case 3: name = QStringLiteral("Standby"); break;
+            case 4: name = QStringLiteral("Terminated"); break;
+            case 5: name = QStringLiteral("Waiting"); break;
+            case 6: name = QStringLiteral("Transition"); break;
+            case 7: name = QStringLiteral("DeferredReady"); break;
+            case 8: name = QStringLiteral("GateWaitObsolete"); break;
+            case 9: name = QStringLiteral("WaitingForProcessInSwap"); break;
+            default: name = QStringLiteral("未知状态"); break;
+            }
+            return rawState == state
+                ? name
+                : QStringLiteral("%1（原始值 %2）").arg(name, Hex(rawState));
+        }
+
+        // ParseTriageExecutionContext 作用：把 TRIAGE 保存的当前处理器、线程、
+        // 进程快照转成独立的“崩溃现场”事实页。字段偏移来自转储自己的
+        // KDDEBUGGER_DATA64 兼容块，避免依赖固定 Windows 版本的私有结构偏移。
+        void ParseTriageExecutionContext(
+            const DumpFileView& view,
+            const TriageDump64& triage,
+            DumpParseResult& result)
+        {
+            constexpr std::uint32_t kKdDebuggerDataMaximumBytes = 0x380;
+            if (!TriageRangeValid(view, triage.DebuggerDataOffset,
+                    std::min<std::uint32_t>(triage.DebuggerDataSize,
+                        kKdDebuggerDataMaximumBytes)) ||
+                triage.DebuggerDataSize < sizeof(DbgKdDataHeader64))
+            {
+                result.diagnostics.append(QStringLiteral(
+                    "TRIAGE 未提供完整 KD 调试数据块，无法解析崩溃现场对象。") );
+                return;
+            }
+
+            DbgKdDataHeader64 kdHeader{};
+            if (!view.readStruct(triage.DebuggerDataOffset, &kdHeader) ||
+                kdHeader.OwnerTag != kKdDebuggerOwnerTag ||
+                kdHeader.Size < kKdSizeEThread ||
+                kdHeader.Size > triage.DebuggerDataSize)
+            {
+                result.diagnostics.append(QStringLiteral(
+                    "TRIAGE KD 调试数据块校验失败，已跳过崩溃现场对象解析。"));
+                return;
+            }
+
+            const auto readKdU16 = [&view, &triage, kdBytes = kdHeader.Size] (
+                const std::uint32_t offset, std::uint16_t* const value) -> bool
+            {
+                return TriageSnapshotRead(view, triage.DebuggerDataOffset, kdBytes, offset, value);
+            };
+            std::uint16_t kdOffsetKThreadKernelStack = 0;
+            std::uint16_t kdOffsetKThreadInitialStack = 0;
+            std::uint16_t kdOffsetKThreadApcProcess = 0;
+            std::uint16_t kdOffsetKThreadState = 0;
+            std::uint16_t kdSizeEProcess = 0;
+            std::uint16_t kdOffsetEprocessPeb = 0;
+            std::uint16_t kdOffsetEprocessParentCid = 0;
+            std::uint16_t kdOffsetEprocessDirectoryTableBase = 0;
+            std::uint16_t kdSizePrcb = 0;
+            std::uint16_t kdOffsetPrcbCurrentThread = 0;
+            std::uint16_t kdOffsetPrcbNumber = 0;
+            std::uint16_t kdSizeEThread = 0;
+            if (!readKdU16(kKdOffsetKThreadKernelStack, &kdOffsetKThreadKernelStack) ||
+                !readKdU16(kKdOffsetKThreadInitialStack, &kdOffsetKThreadInitialStack) ||
+                !readKdU16(kKdOffsetKThreadApcProcess, &kdOffsetKThreadApcProcess) ||
+                !readKdU16(kKdOffsetKThreadState, &kdOffsetKThreadState) ||
+                !readKdU16(kKdSizeEProcess, &kdSizeEProcess) ||
+                !readKdU16(kKdOffsetEprocessPeb, &kdOffsetEprocessPeb) ||
+                !readKdU16(kKdOffsetEprocessParentCid, &kdOffsetEprocessParentCid) ||
+                !readKdU16(kKdOffsetEprocessDirectoryTableBase,
+                    &kdOffsetEprocessDirectoryTableBase) ||
+                !readKdU16(kKdSizePrcb, &kdSizePrcb) ||
+                !readKdU16(kKdOffsetPrcbCurrentThread, &kdOffsetPrcbCurrentThread) ||
+                !readKdU16(kKdOffsetPrcbNumber, &kdOffsetPrcbNumber) ||
+                !readKdU16(kKdSizeEThread, &kdSizeEThread) ||
+                kdSizePrcb == 0 || kdSizeEThread == 0 || kdSizeEProcess == 0)
+            {
+                result.diagnostics.append(QStringLiteral(
+                    "KD 调试数据块缺少对象偏移元数据，已跳过崩溃现场对象解析。"));
+                return;
+            }
+
+            std::uint16_t cpuNumber = 0;
+            std::uint64_t currentThread = 0;
+            std::uint64_t threadProcess = 0;
+            std::uint64_t kernelStack = 0;
+            std::uint64_t initialStack = 0;
+            std::uint32_t threadState = 0;
+            std::uint64_t processDirectoryTableBase = 0;
+            std::uint64_t parentProcessId = 0;
+            std::uint64_t processPeb = 0;
+            const bool haveCpu = TriageSnapshotRead(
+                view, triage.PrcbOffset, kdSizePrcb, kdOffsetPrcbNumber, &cpuNumber);
+            const bool haveCurrentThread = TriageSnapshotRead(
+                view, triage.PrcbOffset, kdSizePrcb, kdOffsetPrcbCurrentThread,
+                &currentThread);
+            const bool haveThreadProcess = TriageSnapshotRead(
+                view, triage.ThreadOffset, kdSizeEThread, kdOffsetKThreadApcProcess,
+                &threadProcess);
+            const bool haveKernelStack = TriageSnapshotRead(
+                view, triage.ThreadOffset, kdSizeEThread, kdOffsetKThreadKernelStack,
+                &kernelStack);
+            const bool haveInitialStack = TriageSnapshotRead(
+                view, triage.ThreadOffset, kdSizeEThread, kdOffsetKThreadInitialStack,
+                &initialStack);
+            const bool haveThreadState = TriageSnapshotRead(
+                view, triage.ThreadOffset, kdSizeEThread, kdOffsetKThreadState,
+                &threadState);
+            const bool haveDirectoryTableBase = TriageSnapshotRead(
+                view, triage.ProcessOffset, kdSizeEProcess,
+                kdOffsetEprocessDirectoryTableBase, &processDirectoryTableBase);
+            const bool haveParentProcessId = TriageSnapshotRead(
+                view, triage.ProcessOffset, kdSizeEProcess,
+                kdOffsetEprocessParentCid, &parentProcessId);
+            const bool havePeb = TriageSnapshotRead(
+                view, triage.ProcessOffset, kdSizeEProcess, kdOffsetEprocessPeb,
+                &processPeb);
+
+            result.executionContext.push_back({
+                QStringLiteral("KD 调试数据大小"), Hex(kdHeader.Size) });
+            result.executionContext.push_back({
+                QStringLiteral("KPRCB 快照偏移"), Hex(triage.PrcbOffset) });
+            result.executionContext.push_back({
+                QStringLiteral("KTHREAD 快照偏移"), Hex(triage.ThreadOffset) });
+            result.executionContext.push_back({
+                QStringLiteral("EPROCESS 快照偏移"), Hex(triage.ProcessOffset) });
+            if (haveCpu)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("崩溃处理器编号"), QString::number(cpuNumber) });
+            }
+            if (haveCurrentThread)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("当前 KTHREAD"), Hex(currentThread) });
+            }
+            if (haveThreadProcess)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("当前 EPROCESS"), Hex(threadProcess) });
+            }
+            if (haveKernelStack)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("当前内核栈"), Hex(kernelStack) });
+            }
+            if (haveInitialStack)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("内核初始栈"), Hex(initialStack) });
+            }
+            if (haveThreadState)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("KTHREAD 状态"), KthreadStateText(threadState) });
+            }
+            if (haveDirectoryTableBase)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("进程目录表基址 (CR3)"),
+                    Hex(processDirectoryTableBase) });
+            }
+            if (haveParentProcessId)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("父进程 ID"), Hex(parentProcessId) });
+            }
+            if (havePeb)
+            {
+                result.executionContext.push_back({
+                    QStringLiteral("进程 PEB"), Hex(processPeb) });
+            }
         }
 
         // PlausibleTimestamp 作用：判断一个 PE 时间戳是否落在合理的日期区间。
@@ -663,11 +925,20 @@ namespace ks::minidump
             DumpMemoryReader& memory,
             TriageDump64* const triageOut)
         {
-            TriageDump64 triage{};
-            if (!view.readStruct(kKernelHeader64Bytes, &triage))
+            TriageDump64Prefix triagePrefix{};
+            if (!view.readStruct(kKernelHeader64Bytes, &triagePrefix))
             {
                 result.diagnostics.append(QStringLiteral("TRIAGE 区读取失败，文件可能被截断。"));
                 return false;
+            }
+
+            // triage：后续路径继续使用完整结构。先复制已验证的稳定前缀；完整结构
+            // 不在文件范围时尾部保持零值，避免读取截断文件外的字节。
+            TriageDump64 triage{};
+            std::memcpy(&triage, &triagePrefix, sizeof(triagePrefix));
+            if (view.contains(kKernelHeader64Bytes, sizeof(triage)))
+            {
+                view.readStruct(kKernelHeader64Bytes, &triage);
             }
 
             // 布局偏移表：让用户直观看到 triage 区里每一段的位置与大小。
@@ -1034,6 +1305,10 @@ namespace ks::minidump
         if (dumpType == 4)
         {
             hasTriage = ParseTriageArea(view, result, memory, &triage);
+            if (hasTriage)
+            {
+                ParseTriageExecutionContext(view, triage, result);
+            }
         }
         else
         {
