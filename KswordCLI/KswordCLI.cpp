@@ -57,6 +57,7 @@
 #include "../shared/driver/KswordArkTrustIoctl.h"
 #include "../shared/driver/KswordArkWin32kIoctl.h"
 #include "../shared/driver/KswordArkWslSiloIoctl.h"
+#include "ArkDriverExtended.h"
 
 #pragma comment(lib, "Iphlpapi.lib")
 #pragma comment(lib, "Ws2_32.lib")
@@ -1133,6 +1134,7 @@ namespace
         { L"mutation", L"Prepare, commit, rollback, and audit bounded mutation transactions." },
         { L"capability", L"Unified driver feature capability query." },
         { L"wsl", L"WSL silo and Linux PID/TID diagnostics." },
+        { L"r0", L"Desktop-parity R0 forensic queries and bounded evidence reads." },
     };
 
     constexpr CommandHelp kCommandHelps[] = {
@@ -1224,6 +1226,30 @@ namespace
         { L"section", L"query-process", L"KswordCLI.exe section query-process --pid PID [--flags 0xN] [--max-mappings N] [--limit N]", L"Query section mappings for one process.", L"Required: --pid. Optional: --flags, --max-mappings, --limit.", L"" },
         { L"section", L"query-file-mappings", L"KswordCLI.exe section query-file-mappings --path PATH [--flags 0xN] [--max-mappings N] [--limit N]", L"Query section mappings for one file path.", L"Required: --path. Optional: --flags, --max-mappings, --limit.", L"" },
         { L"wsl", L"query-silo", L"KswordCLI.exe wsl query-silo [--pid PID] [--tid TID] [--flags 0xN]", L"Query WSL silo process/thread evidence.", L"Optional: --pid, --tid, --flags.", L"" },
+        { L"r0", L"workqueue", L"KswordCLI.exe r0 workqueue [--flags 0xN] [--max-entries N] [--limit N]", L"Enumerate kernel worker queues through the desktop R0 client.", L"Optional: --flags, --max-entries, --limit.", L"Backed by IOCTL_KSWORD_ARK_ENUM_WORK_QUEUE." },
+        { L"r0", L"directory", L"KswordCLI.exe r0 directory --path PATH [--max-entries N] [--limit N]", L"Enumerate a directory through R0 ZwQueryDirectoryFile.", L"Required: --path. Optional: --max-entries, --limit.", L"Win32 and UNC paths are normalized to the driver NT-path convention." },
+        { L"r0", L"directory-irp", L"KswordCLI.exe r0 directory-irp --path PATH [--layer N] [--max-entries N] [--limit N]", L"Enumerate a directory through a selected R0 file-system stack layer.", L"Required: --path. Optional: --layer, --max-entries, --limit.", L"Reports the resolved receiving layer and driver." },
+        { L"r0", L"image-signature", L"KswordCLI.exe r0 image-signature --path PATH [--module-base VA] [--flags 0xN]", L"Read Authenticode certificate-table and CI evidence through R0.", L"Required: --path. Optional: --module-base, --flags.", L"Backed by IOCTL_KSWORD_ARK_QUERY_IMAGE_SIGNATURE." },
+        { L"r0", L"debug-output", L"KswordCLI.exe r0 debug-output [--after-sequence N] [--max-records N] [--limit N]", L"Drain captured kernel debug-output records.", L"Optional: --after-sequence, --max-records, --limit.", L"Backed by IOCTL_KSWORD_ARK_DEBUG_OUTPUT_DRAIN; capture state remains driver-managed." },
+        { L"r0", L"hvm-status", L"KswordCLI.exe r0 hvm-status", L"Query HVM/VT-x lifecycle and capability state.", L"No options.", L"Backed by IOCTL_KSWORD_ARK_QUERY_HVM." },
+        { L"r0", L"hvm-events", L"KswordCLI.exe r0 hvm-events [--after-sequence N] [--max-rows N]", L"Read HVM event-ring evidence without clearing it.", L"Optional: --after-sequence, --max-rows.", L"Backed by IOCTL_KSWORD_ARK_HVM_EVENTS." },
+        { L"r0", L"ioctl-registry", L"KswordCLI.exe r0 ioctl-registry [--flags 0xN] [--max-entries N]", L"Query the driver's registered IOCTL dispatch inventory.", L"Optional: --flags, --max-entries.", L"Backed by IOCTL_KSWORD_ARK_QUERY_IOCTL_REGISTRY." },
+        { L"r0", L"timer-dpc", L"KswordCLI.exe r0 timer-dpc [--max-entries N] [--max-per-bucket N]", L"Enumerate kernel timer and DPC evidence.", L"Optional: --max-entries, --max-per-bucket.", L"Backed by IOCTL_KSWORD_ARK_ENUM_TIMER_DPC." },
+        { L"r0", L"unloaded", L"KswordCLI.exe r0 unloaded [--source mm|piddb|hash] [--max-rows N]", L"Query unloaded-driver, PiDDB, or hash-bucket evidence.", L"Optional: --source defaults to mm; --max-rows.", L"Backed by IOCTL_KSWORD_ARK_QUERY_UNLOADED_DRIVERS." },
+        { L"r0", L"wfp-events", L"KswordCLI.exe r0 wfp-events [--after-sequence N] [--max-rows N]", L"Read bounded WFP event-ring metadata.", L"Optional: --after-sequence, --max-rows.", L"Backed by IOCTL_KSWORD_ARK_NETWORK_QUERY_WFP_EVENTS." },
+        { L"r0", L"traffic", L"KswordCLI.exe r0 traffic [--after-sequence N] [--max-rows N]", L"Read bounded traffic-capture metadata from the driver's existing ring.", L"Optional: --after-sequence, --max-rows.", L"Backed by IOCTL_KSWORD_ARK_NETWORK_QUERY_TRAFFIC_PACKETS; this command does not enable capture." },
+        { L"r0", L"piddb", L"KswordCLI.exe r0 piddb [--max-rows N]", L"Enumerate PiDDBCacheTable evidence without deleting entries.", L"Optional: --max-rows.", L"Backed by IOCTL_KSWORD_ARK_QUERY_PIDDB." },
+        { L"r0", L"cpu-power", L"KswordCLI.exe r0 cpu-power", L"Query CPU power-management state and raw capability evidence.", L"No options.", L"Backed by IOCTL_KSWORD_ARK_QUERY_CPU_POWER." },
+        { L"r0", L"process-protect", L"KswordCLI.exe r0 process-protect", L"Query the driver process-protection configuration and counters.", L"No options.", L"Backed by IOCTL_KSWORD_ARK_QUERY_PROCESS_PROTECT_STATE." },
+        { L"r0", L"raw-disk-backend", L"KswordCLI.exe r0 raw-disk-backend [--disk N] [--backend N] [--flags 0xN]", L"Query the selected raw-disk read backend.", L"Optional: --disk defaults to 0, --backend defaults to Windows stack, --flags.", L"Backed by IOCTL_KSWORD_ARK_QUERY_RAW_DISK_BACKEND." },
+        { L"r0", L"raw-disk-read", L"KswordCLI.exe r0 raw-disk-read --length N [--disk N] [--backend N] [--offset N] [--flags 0xN] [--hexdump]", L"Read a bounded raw-disk range for forensic inspection.", L"Required: --length. Optional: --disk, --backend, --offset, --flags, --hexdump.", L"Backed by IOCTL_KSWORD_ARK_READ_RAW_DISK; default display is capped at 256 bytes." },
+        { L"r0", L"system-time", L"KswordCLI.exe r0 system-time", L"Query system-time virtualization and conflict state.", L"No options.", L"Backed by IOCTL_KSWORD_ARK_QUERY_SYSTEM_TIME." },
+        { L"r0", L"slat-iommu", L"KswordCLI.exe r0 slat-iommu [--include-mmio]", L"Query SLAT and IOMMU firmware/runtime evidence.", L"Optional: --include-mmio.", L"Backed by IOCTL_KSWORD_ARK_QUERY_SLAT_IOMMU_AUDIT." },
+        { L"r0", L"platform", L"KswordCLI.exe r0 platform [--scope 0xN] [--max-rows N]", L"Query HAL and WDF platform-audit evidence.", L"Optional: --scope defaults to all, --max-rows.", L"Backed by IOCTL_KSWORD_ARK_QUERY_PLATFORM_AUDIT." },
+        { L"r0", L"i8042", L"KswordCLI.exe r0 i8042 [--max-rows N]", L"Query i8042prt callback and stack evidence without reading input data.", L"Optional: --max-rows.", L"Backed by IOCTL_KSWORD_ARK_QUERY_I8042_AUDIT." },
+        { L"r0", L"object-types", L"KswordCLI.exe r0 object-types [--flags 0xN] [--max-entries N] [--start-index N]", L"Enumerate the kernel object-type table.", L"Optional: --flags, --max-entries, --start-index.", L"Backed by IOCTL_KSWORD_ARK_ENUM_OBJECT_TYPE_TABLE." },
+        { L"r0", L"win32k-timers", L"KswordCLI.exe r0 win32k-timers [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N]", L"Query PDB-backed win32k timer evidence.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_TIMERS." },
+        { L"r0", L"win32k-events", L"KswordCLI.exe r0 win32k-events [--flags 0xN] [--session-id N] [--pid PID] [--tid TID] [--max-entries N]", L"Query PDB-backed WinEvent-hook evidence.", L"Optional: --flags, --session-id, --pid, --tid, --max-entries.", L"Backed by IOCTL_KSWORD_ARK_QUERY_WIN32K_EVENT_HOOKS." },
         { L"trust", L"query-image", L"KswordCLI.exe trust query-image --path PATH [--flags 0xN]", L"Query image trust and signing evidence.", L"Required: --path. Optional: --flags.", L"" },
         { L"safety", L"query-policy", L"KswordCLI.exe safety query-policy [--flags 0xN]", L"Query safety policy state.", L"Optional: --flags.", L"" },
         { L"safety", L"set-policy", L"KswordCLI.exe safety set-policy [--set-flags 0xN] [--clear-flags 0xN] [--expected-generation N]", L"Update safety policy flags.", L"Optional: --set-flags, --clear-flags, --expected-generation.", L"" },
@@ -7298,6 +7324,7 @@ namespace
         if (family == L"mutation") return commandMutationFamily(argc, argv);
         if (family == L"capability") return commandCapabilityFamily(argc, argv);
         if (family == L"wsl") return commandWslFamily(argc, argv);
+        if (family == L"r0") return commandArkDriverExtended(argc, argv);
 
         std::wcerr << L"error: unknown family '" << family << L"'\n";
         printUsage();

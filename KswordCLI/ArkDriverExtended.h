@@ -1,5 +1,5 @@
 #pragma once
 
-// commandArkDriverExtended handles the extra R0 command family that reuses
-// the production ArkDriverClient protocol wrappers.
+// commandArkDriverExtended handles the r0 command family that reuses the
+// production ArkDriverClient protocol wrappers for desktop-only R0 evidence.
 int commandArkDriverExtended(int argc, wchar_t* argv[]);
