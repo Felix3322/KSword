@@ -17,6 +17,7 @@ Environment:
 --*/
 
 #include "driver_image_editor_internal.h"
+#include "../../platform/runtime_signature_scan.h"
 
 // 中文说明：仓库现有 fallback 已使用该 ntoskrnl 导出解析器；这里同样只解析精确数据导出名。
 NTSYSAPI
@@ -57,7 +58,7 @@ KswordARKDriverImageAddressInNtos(
     return TRUE;
 }
 
-// 中文说明：所有链和 KLDR 小字段读取都经过异常边界，损坏地址只返回状态。
+// 中文说明：所有链和 KLDR 小字段读取都经过 MmCopyMemory 安全读，损坏地址只返回状态。
 static BOOLEAN
 KswordARKDriverImageReadMemory(
     _In_ const VOID* Address,
@@ -65,19 +66,8 @@ KswordARKDriverImageReadMemory(
     _In_ SIZE_T Size
     )
 {
-    // 中文说明：拒绝空地址、空输出和零长度，避免掩盖调用方协议错误。
-    if (Address == NULL || Buffer == NULL || Size == 0U) {
-        return FALSE;
-    }
-    __try {
-        // 中文说明：事务仅复制固定宽度的常驻内核标量或 LIST_ENTRY。
-        RtlCopyMemory(Buffer, Address, Size);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        // 中文说明：页错误或无效映射转成可诊断失败，不继续解引用相邻节点。
-        return FALSE;
-    }
-    return TRUE;
+    // 中文说明：链节点可能已损坏或解除映射，统一使用 MmCopyMemory 将无效访问转换为读取失败。
+    return KswordARKRuntimeReadMemory(Address, Buffer, Size);
 }
 
 // 中文说明：运行时解析同时证明 DynData 布局、链头导出与资源锁导出属于同一 ntoskrnl。

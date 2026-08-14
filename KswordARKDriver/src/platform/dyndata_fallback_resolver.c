@@ -19,6 +19,7 @@ Environment:
 #include <ntifs.h>
 #include "dyndata_fallback_resolver.h"
 #include "kernel_cache_fallback.h"
+#include "runtime_signature_scan.h"
 #include "../features/kernel/ssdt_fallback.h"
 
 #define KSW_RUNTIME_KLDR_SCAN_BYTES 0x0100U
@@ -75,7 +76,8 @@ KswordARKDriverFallbackReadMemory(
 
 Routine Description:
 
-    Copy a small kernel-memory scalar or structure through an exception boundary.
+    Copy a small kernel-memory scalar or structure through the shared
+    MmCopyMemory-based safe reader.
 
 Arguments:
 
@@ -89,16 +91,8 @@ Return Value:
 
 --*/
 {
-    if (Address == NULL || Buffer == NULL || Size == 0U) {
-        return FALSE;
-    }
-    __try {
-        RtlCopyMemory(Buffer, Address, Size);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return FALSE;
-    }
-    return TRUE;
+    // 中文说明：候选链地址可能未映射，统一使用 MmCopyMemory，避免直接访问触发 bugcheck 0x50。
+    return KswordARKRuntimeReadMemory(Address, Buffer, Size);
 }
 
 static BOOLEAN
