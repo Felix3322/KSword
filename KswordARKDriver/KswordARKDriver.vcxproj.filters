@@ -200,6 +200,24 @@
     <ClInclude Include="src\features\bugcheck\bugcheck_font.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
+    <ClInclude Include="src\features\bugcheck\bugcheck_bgp.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\bugcheck\bugcheck_bgp_internal.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\bugcheck\bugcheck_panel.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\bugcheck\Generated\AsciiFont8x12.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\bugcheck\Generated\BgpSignatures.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
+    <ClInclude Include="src\features\bugcheck\Generated\MainLogoBitmap.h">
+      <Filter>Header Files\Ark</Filter>
+    </ClInclude>
     <ClInclude Include="include\ark\ark_process.h">
       <Filter>Header Files\Ark</Filter>
     </ClInclude>
@@ -714,6 +732,15 @@
       <Filter>Source Files\Features\DebugOutput</Filter>
     </ClCompile>
     <ClCompile Include="src\features\bugcheck\bugcheck_runtime.c">
+      <Filter>Source Files\Features\Bugcheck</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\bugcheck\bugcheck_bgp.c">
+      <Filter>Source Files\Features\Bugcheck</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\bugcheck\bugcheck_bgp_lifecycle.c">
+      <Filter>Source Files\Features\Bugcheck</Filter>
+    </ClCompile>
+    <ClCompile Include="src\features\bugcheck\bugcheck_panel.c">
       <Filter>Source Files\Features\Bugcheck</Filter>
     </ClCompile>
     <ClCompile Include="src\features\bugcheck\bugcheck_svga.c">

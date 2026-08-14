@@ -66,9 +66,9 @@ KswordARKBugcheckIoctlSetBitmap(
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    // A valid packet is an intentional no-op outside a fully initialized
-    // VMware SVGA environment. This keeps branding optional and silent.
-    if (InterlockedCompareExchange(&g_KswordArkBugcheckState.Active, 1, 1) == 0) {
+    // The legacy VMware uploader remains protocol-compatible while that
+    // backend is screened from the active physical-machine drawing path.
+    if (!g_KswordArkBugcheckState.Svga.Mapped) {
         return STATUS_SUCCESS;
     }
     if (InterlockedCompareExchange(

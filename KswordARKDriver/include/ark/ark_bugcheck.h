@@ -7,15 +7,16 @@
 
 EXTERN_C_START
 
-// Probe VMware SVGA-II, prepare the nonpaged diagnostic cache, and register
-// bugcheck callbacks only when the supported virtual display is usable.
+// Resolve the physical-machine BGP backend, prepare every crash-time rectangle
+// at PASSIVE_LEVEL, and register dump-preserving bugcheck callbacks. Missing
+// private features leave the renderer fail-closed without blocking diagnostics.
 NTSTATUS
 KswordARKBugcheckInitialize(
     _In_ PDRIVER_OBJECT DriverObject,
     _In_ WDFDEVICE ControlDevice
     );
 
-// Deregister callbacks before releasing the mapped VMware framebuffer/FIFO.
+// Deregister callbacks before destroying the prebuilt BGP rectangles.
 VOID
 KswordARKBugcheckUninitialize(
     VOID

@@ -139,6 +139,9 @@
     <ClCompile Include="src\features\debug_output\debug_output_capture.c" />
     <ClCompile Include="src\features\debug_output\debug_output_ioctl.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_runtime.c" />
+    <ClCompile Include="src\features\bugcheck\bugcheck_bgp.c" />
+    <ClCompile Include="src\features\bugcheck\bugcheck_bgp_lifecycle.c" />
+    <ClCompile Include="src\features\bugcheck\bugcheck_panel.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_svga.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_ioctl.c" />
     <ClCompile Include="src\features\bugcheck\bugcheck_guard.c" />
@@ -295,6 +298,12 @@
     <ClInclude Include="..\shared\driver\KswordArkBugcheckIoctl.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_internal.h" />
     <ClInclude Include="src\features\bugcheck\bugcheck_font.h" />
+    <ClInclude Include="src\features\bugcheck\bugcheck_bgp.h" />
+    <ClInclude Include="src\features\bugcheck\bugcheck_bgp_internal.h" />
+    <ClInclude Include="src\features\bugcheck\bugcheck_panel.h" />
+    <ClInclude Include="src\features\bugcheck\Generated\AsciiFont8x12.h" />
+    <ClInclude Include="src\features\bugcheck\Generated\BgpSignatures.h" />
+    <ClInclude Include="src\features\bugcheck\Generated\MainLogoBitmap.h" />
     <ClInclude Include="include\ark\ark_process.h" />
     <ClInclude Include="include\ark\ark_queue.h" />
     <ClInclude Include="include\ark\ark_callback.h" />

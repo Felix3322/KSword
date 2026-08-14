@@ -6,11 +6,14 @@ Module Name:
 
 Abstract:
 
-    VMware-gated bugcheck callback registration and nonpaged diagnostic state.
+    Bugcheck callback registration and nonpaged diagnostic state for the
+    fail-closed physical BGP panel.
 
 --*/
 
 #include "bugcheck_internal.h"
+#include "bugcheck_bgp.h"
+#include "bugcheck_panel.h"
 #include "../../platform/pool_compat.h"
 
 #include <aux_klib.h>
@@ -26,7 +29,13 @@ typedef struct _KSWORD_ARK_BUGCHECK_SECONDARY_DATA
     ULONG Size;
     ULONG Reserved;
     KSWORD_ARK_BUGCHECK_DIAGNOSTICS Diagnostics;
+    KSWORD_ARK_BGP_DUMP_STATE BgpState;
 } KSWORD_ARK_BUGCHECK_SECONDARY_DATA;
+
+#define KSWORD_ARK_BUGCHECK_CALLBACK_CLASSIC   0x00000001UL
+#define KSWORD_ARK_BUGCHECK_CALLBACK_SECONDARY 0x00000002UL
+#define KSWORD_ARK_BUGCHECK_CALLBACK_DUMP_IO   0x00000004UL
+#define KSWORD_ARK_BUGCHECK_CALLBACK_TRIAGE    0x00000008UL
 
 KSWORD_ARK_BUGCHECK_STATE g_KswordArkBugcheckState;
 UCHAR g_KswordArkBugcheckBitmapPixels[KSWORD_ARK_BUGCHECK_BITMAP_MAX_BYTES];
@@ -35,6 +44,47 @@ static UCHAR g_KswordArkBugcheckComponent[] = "KswordARK";
 static KSWORD_ARK_BUGCHECK_SECONDARY_DATA g_KswordArkBugcheckSecondaryData;
 static const GUID g_KswordArkBugcheckSecondaryGuid =
 { 0x956d0947, 0x326a, 0x4ba7, { 0x92, 0xf1, 0x4c, 0x8b, 0x5a, 0x5c, 0x71, 0x2d } };
+
+static ULONG
+KswordARKBugcheckCallbackMask(
+    VOID
+    )
+{
+    ULONG callbackMask;
+
+    callbackMask = 0;
+    if (g_KswordArkBugcheckState.ClassicRegistered) {
+        callbackMask |= KSWORD_ARK_BUGCHECK_CALLBACK_CLASSIC;
+    }
+    if (g_KswordArkBugcheckState.SecondaryRegistered) {
+        callbackMask |= KSWORD_ARK_BUGCHECK_CALLBACK_SECONDARY;
+    }
+    if (g_KswordArkBugcheckState.DumpIoRegistered) {
+        callbackMask |= KSWORD_ARK_BUGCHECK_CALLBACK_DUMP_IO;
+    }
+    if (g_KswordArkBugcheckState.TriageRegistered) {
+        callbackMask |= KSWORD_ARK_BUGCHECK_CALLBACK_TRIAGE;
+    }
+    return callbackMask;
+}
+
+static VOID
+KswordARKBugcheckUpdateSecondaryData(
+    VOID
+    )
+{
+    g_KswordArkBugcheckSecondaryData.Signature =
+        KSWORD_ARK_BUGCHECK_SECONDARY_SIGNATURE;
+    g_KswordArkBugcheckSecondaryData.Version = 2UL;
+    g_KswordArkBugcheckSecondaryData.Size =
+        sizeof(g_KswordArkBugcheckSecondaryData);
+    RtlCopyMemory(
+        &g_KswordArkBugcheckSecondaryData.Diagnostics,
+        &g_KswordArkBugcheckState.Diagnostics,
+        sizeof(g_KswordArkBugcheckSecondaryData.Diagnostics));
+    KswordARKBugcheckBgpSnapshot(
+        &g_KswordArkBugcheckSecondaryData.BgpState);
+}
 
 static CHAR
 KswordARKBugcheckLowerA(
@@ -555,58 +605,7 @@ KswordARKBugcheckCaptureData(
     KswordARKBugcheckResolveCandidate(diagnostics);
     InterlockedExchange(&diagnostics->Captured, 1);
 
-    g_KswordArkBugcheckSecondaryData.Signature =
-        KSWORD_ARK_BUGCHECK_SECONDARY_SIGNATURE;
-    g_KswordArkBugcheckSecondaryData.Version = 1;
-    g_KswordArkBugcheckSecondaryData.Size =
-        sizeof(g_KswordArkBugcheckSecondaryData);
-    RtlCopyMemory(
-        &g_KswordArkBugcheckSecondaryData.Diagnostics,
-        diagnostics,
-        sizeof(*diagnostics));
-}
-
-static VOID
-KswordARKBugcheckDrawLoop(
-    VOID
-    )
-{
-    LARGE_INTEGER frequency;
-    LARGE_INTEGER startCounter;
-    LARGE_INTEGER currentCounter;
-    ULONGLONG elapsedMilliseconds;
-    ULONG fallbackPass;
-
-    if (InterlockedCompareExchange(&g_KswordArkBugcheckState.Active, 1, 1) == 0) {
-        return;
-    }
-
-    if (InterlockedCompareExchange(&g_KswordArkBugcheckState.ModeSetDone, 1, 0) == 0) {
-        KswordARKBugcheckSvgaModeSetNoLog(&g_KswordArkBugcheckState.Svga);
-        KeStallExecutionProcessor(2000);
-    }
-
-    frequency.QuadPart = 0;
-    startCounter = KeQueryPerformanceCounter(&frequency);
-    if (frequency.QuadPart <= 0) {
-        for (fallbackPass = 0; fallbackPass < 10000UL; ++fallbackPass) {
-            KswordARKBugcheckSvgaDrawPanelNoLog(&g_KswordArkBugcheckState);
-            KeStallExecutionProcessor(1000);
-        }
-        return;
-    }
-
-    for (;;) {
-        KswordARKBugcheckSvgaDrawPanelNoLog(&g_KswordArkBugcheckState);
-        KeStallExecutionProcessor(1000);
-        currentCounter = KeQueryPerformanceCounter(NULL);
-        elapsedMilliseconds =
-            ((ULONGLONG)(currentCounter.QuadPart - startCounter.QuadPart) * 1000ULL) /
-            (ULONGLONG)frequency.QuadPart;
-        if (elapsedMilliseconds >= KSWORD_ARK_BUGCHECK_DRAW_MILLISECONDS) {
-            break;
-        }
-    }
+    KswordARKBugcheckUpdateSecondaryData();
 }
 
 static VOID
@@ -650,6 +649,7 @@ KswordARKBugcheckReasonCallback(
         if (ReasonSpecificDataLength < sizeof(KBUGCHECK_SECONDARY_DUMP_DATA)) {
             return;
         }
+        KswordARKBugcheckUpdateSecondaryData();
         secondaryData = (PKBUGCHECK_SECONDARY_DUMP_DATA)ReasonSpecificData;
         dumpLength = sizeof(g_KswordArkBugcheckSecondaryData);
         if (dumpLength > secondaryData->MaximumAllowed) {
@@ -693,7 +693,10 @@ KswordARKBugcheckReasonCallback(
                 &g_KswordArkBugcheckState.DumpDisplayStarted,
                 1,
                 0) == 0) {
-            KswordARKBugcheckDrawLoop();
+            (VOID)KswordARKBugcheckPanelDraw(
+                &g_KswordArkBugcheckState.Diagnostics,
+                KswordARKBugcheckCallbackMask(),
+                g_KswordArkBugcheckState.ModuleCount);
         }
     }
 }
@@ -704,7 +707,7 @@ KswordARKBugcheckInitialize(
     _In_ WDFDEVICE ControlDevice
     )
 {
-    NTSTATUS status;
+    NTSTATUS bgpStatus;
 
     if (DriverObject == NULL || ControlDevice == WDF_NO_HANDLE) {
         return STATUS_INVALID_PARAMETER;
@@ -719,10 +722,9 @@ KswordARKBugcheckInitialize(
         WdfDeviceWdmGetDeviceObject(ControlDevice);
     g_KswordArkBugcheckState.Bitmap.BrandColorRgb = 0x0078D4UL;
 
-    status = KswordARKBugcheckSvgaInitialize(&g_KswordArkBugcheckState.Svga);
-    if (!NT_SUCCESS(status)) {
-        KswordARKBugcheckSvgaShutdown(&g_KswordArkBugcheckState.Svga);
-        return status;
+    bgpStatus = KswordARKBugcheckBgpInitialize();
+    if (NT_SUCCESS(bgpStatus)) {
+        (VOID)KswordARKBugcheckPanelInitialize();
     }
 
     KswordARKBugcheckRefreshModuleCache();
@@ -801,5 +803,6 @@ KswordARKBugcheckUninitialize(
         g_KswordArkBugcheckState.ClassicRegistered = FALSE;
     }
 
-    KswordARKBugcheckSvgaShutdown(&g_KswordArkBugcheckState.Svga);
+    KswordARKBugcheckPanelShutdown();
+    KswordARKBugcheckBgpShutdown();
 }
