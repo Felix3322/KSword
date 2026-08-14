@@ -13,10 +13,40 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="源文件\ArkDriverClient">
+      <UniqueIdentifier>{AAAC28A5-0BFE-4F8B-9CB1-48F4793B36CB}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="KswordCLI.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ArkDriverExtended.cpp"><Filter>源文件</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverClient.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverAudit.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverBlind.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverBugcheck.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverDebugOutput.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverError.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverFile.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverFileIrp.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverHvm.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverIoctlRegistry.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverKernel.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverKernelBaseline.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverKeyboard.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverNetworkTraffic.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverPiDdb.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverPower.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverProcessProtect.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverStorageForensics.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverSystemTime.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverVirtualization.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkDriverWorkQueue.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ArkDriverClient\ArkStorageControllerClient.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+    <ClCompile Include="..\Ksword5.1\Ksword5.1\ksword\string\string.cpp"><Filter>源文件\ArkDriverClient</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ArkDriverExtended.h"><Filter>头文件</Filter></ClInclude>
   </ItemGroup>
 </Project>
