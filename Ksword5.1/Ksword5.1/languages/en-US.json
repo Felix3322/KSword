@@ -861,6 +861,7 @@
     "minidump.raw.block": "Block",
     "minidump.raw.source": "Source",
     "minidump.raw.address": "Virtual address",
+    "minidump.raw.not_applicable": "Not applicable",
     "minidump.raw.file_offset": "File offset",
     "minidump.raw.captured_size": "Captured size",
     "minidump.raw.preview_size": "Preview size",

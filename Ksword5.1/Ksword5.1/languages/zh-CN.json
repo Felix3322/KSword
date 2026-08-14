@@ -861,6 +861,7 @@
     "minidump.raw.block": "数据块",
     "minidump.raw.source": "来源",
     "minidump.raw.address": "虚拟地址",
+    "minidump.raw.not_applicable": "不适用",
     "minidump.raw.file_offset": "文件偏移",
     "minidump.raw.captured_size": "完整捕获大小",
     "minidump.raw.preview_size": "预览大小",

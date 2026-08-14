@@ -19,7 +19,7 @@
 namespace ks::minidump
 {
     // FormatDumpBytes 作用：把原始字节渲染为每行 16 字节的十六进制视图。
-    // 参数 baseAddress：第一字节的目标机虚拟地址。
+    // 参数 baseAddress：第一字节的目标机虚拟地址或文件偏移，由调用方的元数据说明。
     // 参数 bytes/byteCount：已验证的原始字节范围。
     // 参数 omittedBytes：未放入预览的剩余字节数，用于尾部提示。
     // 返回：可直接放入只读文本控件的原始文本。

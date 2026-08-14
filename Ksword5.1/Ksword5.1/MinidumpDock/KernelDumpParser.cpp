@@ -557,6 +557,37 @@ namespace ks::minidump
             return std::memcmp(&left, &right, sizeof(BlackboxGuid)) == 0;
         }
 
+        // AppendSecondaryDumpPreview 作用：保留已验证 Secondary Dump Data 的原始载荷预览。
+        // 这些记录没有目标机虚拟地址，必须按文件偏移标记，不能混入虚拟内存读取索引。
+        void AppendSecondaryDumpPreview(
+            const DumpFileView& view,
+            const std::uint64_t recordOffset,
+            const SecondaryDumpDataRecordHeader& header,
+            const QString& source,
+            DumpParseResult& result)
+        {
+            constexpr std::uint64_t kPreviewBytes = 512;
+            const std::uint64_t recordBytes = sizeof(SecondaryDumpDataRecordHeader) +
+                static_cast<std::uint64_t>(header.recordBytes);
+            if (!view.contains(recordOffset, recordBytes))
+            {
+                return;
+            }
+            const std::uint64_t previewBytes = std::min(recordBytes, kPreviewBytes);
+            const unsigned char* const data = view.at(recordOffset, previewBytes);
+            if (data == nullptr)
+            {
+                return;
+            }
+            DumpByteBlock block{};
+            block.fileOffset = recordOffset;
+            block.capturedBytes = recordBytes;
+            block.source = source;
+            block.hasVirtualAddress = false;
+            block.previewBytes.assign(data, data + previewBytes);
+            result.byteBlocks.push_back(std::move(block));
+        }
+
         // SecondaryDumpDataSearchEnd 作用：返回辅助黑盒允许搜索到的文件尾后位置。
         // 小型转储全量扫描，完整转储限制为固定窗口，保证后台解析不会因文件规模失控。
         std::uint64_t SecondaryDumpDataSearchEnd(const DumpFileView& view)
@@ -665,6 +696,8 @@ namespace ks::minidump
                     QStringLiteral("已捕获（版本 %1，记录偏移 %2）")
                         .arg(evidence.version)
                         .arg(Hex(offset)) });
+                AppendSecondaryDumpPreview(view, offset, recordHeader,
+                    QStringLiteral("PnP 黑盒"), result);
                 result.exceptionInfo.push_back({ QStringLiteral("PnP 黑盒设备 ID"), deviceId });
                 result.exceptionInfo.push_back({ QStringLiteral("PnP 黑盒设备问题"),
                     PnpProblemCodeText(evidence.problemCode) });
@@ -729,6 +762,8 @@ namespace ks::minidump
                         .arg(Hex(evidence.version))
                         .arg(ProductTypeText(evidence.productType))
                         .arg(Hex(offset)) });
+                AppendSecondaryDumpPreview(view, offset, recordHeader,
+                    QStringLiteral("BSD 启动状态黑盒"), result);
                 const QString referenceTime = FileTimeToText(evidence.lastReferenceTime);
                 if (!referenceTime.isEmpty())
                 {
@@ -773,6 +808,8 @@ namespace ks::minidump
                     QStringLiteral("已捕获（载荷 %1 字节，记录偏移 %2）")
                         .arg(recordHeader.recordBytes)
                         .arg(Hex(offset)) });
+                AppendSecondaryDumpPreview(view, offset, recordHeader,
+                    QStringLiteral("NTFS 黑盒"), result);
                 return;
             }
         }
@@ -814,6 +851,7 @@ namespace ks::minidump
                     QStringLiteral("已捕获（载荷 %1 字节，记录偏移 %2，详细字段待版本验证）")
                         .arg(recordHeader.recordBytes)
                         .arg(Hex(offset)) });
+                AppendSecondaryDumpPreview(view, offset, recordHeader, name, result);
                 return;
             }
         }

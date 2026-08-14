@@ -1003,8 +1003,9 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
     }
 
     // ===================== 原始内存预览页 =====================
-    // TRIAGE 数据块是小型内核转储直接随文件保存的零散内存。这里展示解析器
-    // 已完成边界校验后复制的有限预览，绝不让 UI 回读文件，也不暗示这是完整内存。
+    // TRIAGE 数据块与 Secondary Dump Data 都是随小型内核转储保存的原始字节。
+    // 这里展示解析器已完成边界校验后复制的有限预览，绝不让 UI 回读文件，也不把
+    // 没有虚拟地址的辅助数据误称为完整内存。
     if (!result.byteBlocks.empty())
     {
         QString rawText;
@@ -1026,7 +1027,9 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
                 .arg(translated("minidump.raw.source", "来源"))
                 .arg(block.source)
                 .arg(translated("minidump.raw.address", "虚拟地址"))
-                .arg(hexText(block.address))
+                .arg(block.hasVirtualAddress
+                    ? hexText(block.address)
+                    : translated("minidump.raw.not_applicable", "不适用"))
                 .arg(translated("minidump.raw.file_offset", "文件偏移"))
                 .arg(hexText(block.fileOffset))
                 .arg(translated("minidump.raw.captured_size", "完整捕获大小"))
@@ -1036,7 +1039,7 @@ void MinidumpDock::renderResult(const ks::minidump::DumpParseResult& result)
                 .arg(previewBytes)
                 .arg(translated("minidump.raw.bytes", "字节"));
             rawText += ks::minidump::FormatDumpBytes(
-                block.address,
+                block.hasVirtualAddress ? block.address : block.fileOffset,
                 block.previewBytes.empty() ? nullptr : block.previewBytes.data(),
                 previewBytes,
                 omittedBytes);

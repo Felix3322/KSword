@@ -232,6 +232,7 @@ namespace ks::minidump
         std::uint64_t fileOffset = 0;   // fileOffset：该字节在转储文件中的偏移。
         std::uint64_t capturedBytes = 0; // capturedBytes：该捕获块完整字节数。
         QString source;                 // source：捕获来源，例如 TRIAGE 数据块。
+        bool hasVirtualAddress = true; // hasVirtualAddress：false 表示文件内辅助数据，不是虚拟内存。
         std::vector<unsigned char> previewBytes; // previewBytes：受限原始预览字节。
     };
 
