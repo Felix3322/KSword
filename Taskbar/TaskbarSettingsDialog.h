@@ -5,6 +5,7 @@
 class QCheckBox;
 class QLabel;
 class QPushButton;
+class QSpinBox;
 class QTimer;
 class TaskbarNotificationService;
 
@@ -28,6 +29,9 @@ private slots:
     // applyEarthquakeSetting：把复选框状态同步至全局通知服务。
     void applyEarthquakeSetting(bool enabled);
 
+    // applyNotificationDuration：把消息滞留秒数同步至全局通知服务。
+    void applyNotificationDuration(int seconds);
+
     // refreshFromService：读取全局设置，避免从其它显示器打开的窗口状态陈旧。
     void refreshFromService();
 
@@ -42,6 +46,8 @@ private:
     QCheckBox* m_clipboardCheckBox;
     QCheckBox* m_deviceCheckBox;
     QCheckBox* m_earthquakeCheckBox;
+    // m_notificationDurationSpinBox 设置每条普通消息正文的完整滞留时间。
+    QSpinBox* m_notificationDurationSpinBox;
 
     // m_sourceStatusLabel 展示 WebSocket 源连接情况，便于排查网络或服务端不可用问题。
     QLabel* m_sourceStatusLabel;

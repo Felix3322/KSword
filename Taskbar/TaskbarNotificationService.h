@@ -57,6 +57,9 @@ public:
     // earthquakeNotificationsEnabled：无输入；返回地震预警开关。
     bool earthquakeNotificationsEnabled() const;
 
+    // notificationDurationSeconds：无输入；返回普通消息完整滞留秒数。
+    int notificationDurationSeconds() const;
+
     // setClipboardNotificationsEnabled：设置剪贴板文字变化通知开关并持久化。
     void setClipboardNotificationsEnabled(bool enabled);
 
@@ -65,6 +68,9 @@ public:
 
     // setEarthquakeNotificationsEnabled：设置地震预警开关并持久化。
     void setEarthquakeNotificationsEnabled(bool enabled);
+
+    // setNotificationDurationSeconds：设置普通消息完整滞留秒数并持久化，范围为 1 到 60 秒。
+    void setNotificationDurationSeconds(int seconds);
 
     // injectTestEarthquake：无输入；请求地震客户端插播一个本地测试预警。
     void injectTestEarthquake();
@@ -86,7 +92,7 @@ signals:
     void sourceStatusesChanged();
 
 private slots:
-    // advancePresentation：由短周期时钟驱动，负责普通队列的 2 秒轮播和地震状态刷新。
+    // advancePresentation：由短周期时钟驱动，负责普通队列轮播和地震状态刷新。
     void advancePresentation();
 
     // refreshEarthquakePresentation：地震活动状态变化时立即接管或释放普通通知队列。
@@ -108,6 +114,9 @@ private:
     // updateCurrentNormalNotification：切换至下一条普通通知；不会影响地震优先级。
     void updateCurrentNormalNotification();
 
+    // normalNotificationDurationMilliseconds：把设置的滞留秒数转换为包含淡入淡出预算的计时长度。
+    qint64 normalNotificationDurationMilliseconds() const;
+
     // loadSettings：从 Taskbar 专属 QSettings 读取三类通知开关。
     void loadSettings();
 
@@ -125,7 +134,8 @@ private:
     TaskbarNotificationView m_currentNotification; // 所有屏幕共享的当前展示内容。
     QList<TaskbarNotificationView> m_queue;       // 等待展示的剪贴板和设备变化消息。
     qint64 m_currentNormalStartedMs = 0;          // 当前普通通知的单调时钟开始值。
-    qint64 m_currentNormalDurationMs = 5000;      // 单条为 5 秒，积压队列时每条缩短为 2 秒。
+    qint64 m_currentNormalDurationMs = 6000;      // 当前消息时长，包含 1 秒的中央区域过渡预算。
+    int m_notificationDurationSeconds = 5;        // 普通消息正文完整滞留秒数，设置页可调整。
     bool m_earthquakeActive = false;              // 地震优先模式，true 时普通队列计时暂停。
     bool m_clipboardNotificationsEnabled = true;  // 剪贴板文字通知开关。
     bool m_deviceNotificationsEnabled = true;     // 设备热插拔通知开关。

@@ -961,6 +961,9 @@
     <ClCompile Include="句柄\HandleDock.Native.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="句柄\HandleFilterConfig.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="句柄\HandleObjectTypeWorker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1427,6 +1430,9 @@
     <QtMoc Include="句柄\HandleDock.h">
       <Filter>Header Files</Filter>
     </QtMoc>
+    <ClInclude Include="句柄\HandleFilterConfig.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="句柄\HandleObjectTypeWorker.h">
       <Filter>Header Files</Filter>
     </ClInclude>

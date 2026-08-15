@@ -17,9 +17,11 @@
 
 namespace
 {
-    // 包含进入动画预算：频谱淡出 500ms 加通知淡入 500ms 后，正文仍完整显示 5 秒或 2 秒。
-    constexpr qint64 kInitialNotificationDurationMs = 6000;
-    constexpr qint64 kQueuedNotificationDurationMs = 3000;
+    // 普通消息计时包含中央区域淡出和淡入各 500ms 的动画预算，正文仍按设置完整滞留。
+    constexpr qint64 kNotificationTransitionBudgetMs = 1000;
+    constexpr int kDefaultNotificationDurationSeconds = 5;
+    constexpr int kMinimumNotificationDurationSeconds = 1;
+    constexpr int kMaximumNotificationDurationSeconds = 60;
     constexpr qint64 kDeviceDeduplicationMs = 500;
     constexpr int kMaximumQueuedNotifications = 32;
 
@@ -185,6 +187,12 @@ bool TaskbarNotificationService::earthquakeNotificationsEnabled() const
     return m_earthquakeNotificationsEnabled;
 }
 
+int TaskbarNotificationService::notificationDurationSeconds() const
+{
+    // 返回值是设置页使用的普通消息正文滞留秒数，不包含中央区域过渡动画。
+    return m_notificationDurationSeconds;
+}
+
 void TaskbarNotificationService::setClipboardNotificationsEnabled(bool enabled)
 {
     // 仅状态真正变化时写盘和发信号，避免设置窗口刷新导致无意义循环。
@@ -221,6 +229,22 @@ void TaskbarNotificationService::setEarthquakeNotificationsEnabled(bool enabled)
     }
     saveSettings();
     refreshEarthquakePresentation();
+    emit settingsChanged();
+}
+
+void TaskbarNotificationService::setNotificationDurationSeconds(int seconds)
+{
+    // 输入秒数先限制在设置页约定范围内，避免异常配置让消息永久占据任务栏。
+    const int boundedSeconds = qBound(kMinimumNotificationDurationSeconds,
+        seconds, kMaximumNotificationDurationSeconds);
+    if (m_notificationDurationSeconds == boundedSeconds)
+    {
+        return;
+    }
+
+    m_notificationDurationSeconds = boundedSeconds;
+    m_currentNormalDurationMs = normalNotificationDurationMilliseconds();
+    saveSettings();
     emit settingsChanged();
 }
 
@@ -356,8 +380,8 @@ void TaskbarNotificationService::enqueueNotification(const TaskbarNotificationVi
     m_queue.push_back(notification);
     if (!m_earthquakeActive && !m_currentNotification.title.isEmpty())
     {
-        // 一旦产生积压，正在显示的普通通知也缩短到两秒，保证每条积压消息遵守统一轮播节奏。
-        m_currentNormalDurationMs = kQueuedNotificationDurationMs;
+        // 新消息进入队列时，当前消息继续使用用户设置的完整滞留时间。
+        m_currentNormalDurationMs = normalNotificationDurationMilliseconds();
     }
     if (!m_earthquakeActive && m_currentNotification.title.isEmpty())
     {
@@ -367,7 +391,7 @@ void TaskbarNotificationService::enqueueNotification(const TaskbarNotificationVi
 
 void TaskbarNotificationService::updateCurrentNormalNotification()
 {
-    // 取 FIFO 首项并设置含动画预算的时长：正文完全淡入后分别展示 5 秒或 2 秒。
+    // 取 FIFO 首项并设置含动画预算的时长，正文完整滞留秒数由设置页统一控制。
     if (m_queue.isEmpty())
     {
         const bool changed = !m_currentNotification.title.isEmpty();
@@ -382,8 +406,14 @@ void TaskbarNotificationService::updateCurrentNormalNotification()
 
     m_currentNotification = m_queue.takeFirst();
     m_currentNormalStartedMs = monotonicMilliseconds();
-    m_currentNormalDurationMs = m_queue.isEmpty() ? kInitialNotificationDurationMs : kQueuedNotificationDurationMs;
+    m_currentNormalDurationMs = normalNotificationDurationMilliseconds();
     emit presentationChanged();
+}
+
+qint64 TaskbarNotificationService::normalNotificationDurationMilliseconds() const
+{
+    // 返回值把正文滞留秒数和两段中央区域动画预算相加，保持设置含义稳定。
+    return static_cast<qint64>(m_notificationDurationSeconds) * 1000 + kNotificationTransitionBudgetMs;
 }
 
 void TaskbarNotificationService::advancePresentation()
@@ -452,8 +482,7 @@ void TaskbarNotificationService::refreshEarthquakePresentation()
         {
             m_currentNotification = m_queue.takeFirst();
             m_currentNormalStartedMs = monotonicMilliseconds();
-            m_currentNormalDurationMs = m_queue.isEmpty()
-                ? kInitialNotificationDurationMs : kQueuedNotificationDurationMs;
+            m_currentNormalDurationMs = normalNotificationDurationMilliseconds();
         }
         emit presentationChanged();
     }
@@ -467,16 +496,21 @@ void TaskbarNotificationService::loadSettings()
     m_clipboardNotificationsEnabled = settings.value(QStringLiteral("notifications/clipboardEnabled"), true).toBool();
     m_deviceNotificationsEnabled = settings.value(QStringLiteral("notifications/deviceEnabled"), true).toBool();
     m_earthquakeNotificationsEnabled = settings.value(QStringLiteral("notifications/earthquakeEnabled"), true).toBool();
+    m_notificationDurationSeconds = qBound(kMinimumNotificationDurationSeconds,
+        settings.value(QStringLiteral("notifications/durationSeconds"), kDefaultNotificationDurationSeconds).toInt(),
+        kMaximumNotificationDurationSeconds);
+    m_currentNormalDurationMs = normalNotificationDurationMilliseconds();
 }
 
 void TaskbarNotificationService::saveSettings() const
 {
-    // 仅写 TaskbarNotifications.ini 的三个持久化开关，不碰 WindowsMarker 或主程序配置文件。
+    // 仅写 TaskbarNotifications.ini 的三个开关和一个时长设置，不碰 WindowsMarker 或主程序配置文件。
     QSettings settings(QCoreApplication::applicationDirPath() + QStringLiteral("/TaskbarNotifications.ini"),
         QSettings::IniFormat);
     settings.setValue(QStringLiteral("notifications/clipboardEnabled"), m_clipboardNotificationsEnabled);
     settings.setValue(QStringLiteral("notifications/deviceEnabled"), m_deviceNotificationsEnabled);
     settings.setValue(QStringLiteral("notifications/earthquakeEnabled"), m_earthquakeNotificationsEnabled);
+    settings.setValue(QStringLiteral("notifications/durationSeconds"), m_notificationDurationSeconds);
     settings.sync();
 }
 

@@ -17,6 +17,7 @@
 #include <qtimer.h>
 #include <QDateTime>
 #include <QCoreApplication>
+#include <QAbstractAnimation>
 #include <QGraphicsColorizeEffect>
 #include <QGraphicsOpacityEffect>
 #include <QEasingCurve>
@@ -24,7 +25,9 @@
 #include <QSizePolicy>
 #include <QStackedLayout>
 #include <QProcessEnvironment>
+#include <QResizeEvent>
 #include <Qscreen.h>
+#include <QVariantAnimation>
 
 #pragma comment(lib, "shell32.lib")
 
@@ -261,8 +264,11 @@ Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState,
     , notificationBodyLabel(nullptr)
     , notificationVisible(false)
     , earthquakePresentation(false)
-    , alertFlashTimer(nullptr)
+    , alertFlashAnimation(nullptr)
     , alertFlashBright(false)
+    , notificationFlashWidget(nullptr)
+    , notificationFlashOpacity(nullptr)
+    , notificationFlashAnimation(nullptr)
     , rightBtnContainer(nullptr)
     , rightBtnLayout(nullptr)
     , exitBtn(nullptr)
@@ -432,6 +438,41 @@ Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState,
 
     vLayout->addLayout(hLayout);
     setCentralWidget(centralWidget);
+
+    // 新消息提亮层覆盖完整 Taskbar，但设置为鼠标穿透，避免遮挡右侧按钮交互。
+    notificationFlashWidget = new QWidget(centralWidget);
+    notificationFlashWidget->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    notificationFlashWidget->setStyleSheet(QStringLiteral("background-color: rgba(255, 255, 255, 32);"));
+    notificationFlashWidget->setGeometry(centralWidget->rect());
+    notificationFlashWidget->raise();
+    notificationFlashOpacity = new QGraphicsOpacityEffect(notificationFlashWidget);
+    notificationFlashOpacity->setOpacity(0.0);
+    notificationFlashWidget->setGraphicsEffect(notificationFlashOpacity);
+    notificationFlashAnimation = new QPropertyAnimation(notificationFlashOpacity, "opacity", this);
+    notificationFlashAnimation->setDuration(500);
+    notificationFlashAnimation->setEasingCurve(QEasingCurve::Linear);
+
+    // 地震警报使用颜色值动画，亮红到暗红渐变，暗红回亮红只在动画周期边界瞬时切换。
+    alertFlashAnimation = new QVariantAnimation(this);
+    alertFlashAnimation->setDuration(500);
+    alertFlashAnimation->setEasingCurve(QEasingCurve::Linear);
+    connect(alertFlashAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+        if (earthquakePresentation)
+        {
+            applyTaskbarTheme(true, value.value<QColor>());
+        }
+    });
+    connect(alertFlashAnimation, &QVariantAnimation::finished, this, [this]() {
+        if (!earthquakePresentation)
+        {
+            return;
+        }
+        alertFlashBright = false;
+        applyTaskbarTheme(true, QColor(QStringLiteral("#480000")));
+        alertFlashBright = true;
+        applyTaskbarTheme(true, QColor(QStringLiteral("#D90000")));
+        startAlertFlashCycle();
+    });
     applyTaskbarTheme(false, QColor(QStringLiteral("#0A0F16")));
 
     // 保持现有的频谱、时间、CPU 和网络刷新节奏；通知服务只增加自己的轻量 UI 状态信号。
@@ -455,9 +496,6 @@ Taskbar::Taskbar(QScreen* targetScreen, TaskbarSharedState* sharedState,
     networkUiTimer->start();
     updateNetworkSpeedLabels();
 
-    alertFlashTimer = new QTimer(this);
-    alertFlashTimer->setInterval(280);
-    connect(alertFlashTimer, &QTimer::timeout, this, &Taskbar::updateAlertFlash);
     if (m_notificationService != nullptr) {
         connect(m_notificationService, &TaskbarNotificationService::presentationChanged, this,
             &Taskbar::onNotificationPresentationChanged);
@@ -759,14 +797,19 @@ void Taskbar::transitionToNotification(const TaskbarNotificationView& notificati
         return;
     }
 
+    if (!earthquakePresentation)
+    {
+        // 普通消息刚产生时整条 Taskbar 立即提亮，随后由独立动画在 500ms 内淡回常态。
+        flashNotificationBackground();
+    }
     stopCentralAnimations();
     if (earthquakePresentation)
     {
         // 地震结束后先让当前警报正文半秒淡出，再淡入排队的普通通知；不让频谱短暂插入。
         earthquakePresentation = false;
-        if (alertFlashTimer != nullptr)
+        if (alertFlashAnimation != nullptr)
         {
-            alertFlashTimer->stop();
+            alertFlashAnimation->stop();
         }
         animateOpacity(notificationCenterOpacity, notificationCenterOpacity->opacity(), 0.0, [this, notification]() {
             updateNotificationText(notification);
@@ -807,9 +850,9 @@ void Taskbar::transitionToNormalCenter()
     if (earthquakePresentation)
     {
         earthquakePresentation = false;
-        if (alertFlashTimer != nullptr)
+        if (alertFlashAnimation != nullptr)
         {
-            alertFlashTimer->stop();
+            alertFlashAnimation->stop();
         }
     }
     animateOpacity(notificationCenterOpacity, notificationCenterOpacity->opacity(), 0.0, [this]() {
@@ -822,7 +865,7 @@ void Taskbar::transitionToNormalCenter()
 
 void Taskbar::showEarthquakePresentation(const TaskbarNotificationView& notification)
 {
-    // 新地震到达时立即抛弃当前过渡和普通通知可见状态，不执行淡入效果。
+    // 新地震到达时立即抛弃当前过渡和普通通知可见状态，不执行中央正文淡入效果。
     const bool sameWarning = earthquakePresentation && displayedNotification.title == notification.title &&
         displayedNotification.body == notification.body;
     stopCentralAnimations();
@@ -831,11 +874,17 @@ void Taskbar::showEarthquakePresentation(const TaskbarNotificationView& notifica
     notificationCenterOpacity->setOpacity(1.0);
     notificationVisible = true;
     earthquakePresentation = true;
-    if (!sameWarning || !alertFlashTimer->isActive())
+    if (!sameWarning || alertFlashAnimation == nullptr ||
+        alertFlashAnimation->state() != QAbstractAnimation::Running)
     {
         alertFlashBright = true;
         applyTaskbarTheme(true, QColor(QStringLiteral("#D90000")));
-        alertFlashTimer->start();
+        startAlertFlashCycle();
+    }
+    if (!sameWarning)
+    {
+        // 地震消息本身也触发整条 Taskbar 的瞬时提亮和 500ms 淡暗。
+        flashNotificationBackground();
     }
 }
 
@@ -882,61 +931,6 @@ void Taskbar::stopCentralAnimations()
             animation->deleteLater();
         }
     }
-}
-
-void Taskbar::applyTaskbarTheme(bool earthquakeAlert, const QColor& backgroundColor)
-{
-    // 警报态整条 Taskbar 使用黑色前景；普通态还原原有深色底和青色信息色。
-    const QColor foreground = earthquakeAlert ? QColor(Qt::black) : QColor(QStringLiteral("#00FFFF"));
-    const QString foregroundName = foreground.name();
-    centralWidget->setStyleSheet(QStringLiteral("background-color: %1;").arg(backgroundColor.name()));
-    contentLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; padding: 5px 0; color: %1; font-size: 12px;")
-        .arg(foregroundName));
-    timeLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; color: %1; font-size: 12px;")
-        .arg(foregroundName));
-    notificationSourceLabel->setStyleSheet(QStringLiteral("background: transparent; color: %1; font-size: 10px;")
-        .arg(foregroundName));
-    notificationTitleLabel->setStyleSheet(QStringLiteral("background: transparent; color: %1; font-size: 12px; font-weight: 600;")
-        .arg(foregroundName));
-    notificationBodyLabel->setStyleSheet(QStringLiteral("background: transparent; color: %1; font-size: 11px;")
-        .arg(foregroundName));
-    uploadSpeedLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; color: %1; font-size: 10px;")
-        .arg(foregroundName));
-    downloadSpeedLabel->setStyleSheet(QStringLiteral("border: none; background: transparent; color: %1; font-size: 10px;")
-        .arg(foregroundName));
-    for (QLabel* bar : cpuBars)
-    {
-        if (bar != nullptr)
-        {
-            bar->setStyleSheet(QStringLiteral("background-color: %1;").arg(foregroundName));
-        }
-    }
-    m_leftSpectrum->setBarColor(foreground);
-    m_rightSpectrum->setBarColor(foreground);
-    logoColorEffect->setStrength(earthquakeAlert ? 1.0 : 0.0);
-    for (GlowIconButton* button : { lockBtn, toolBtn, settingsBtn, userBtn })
-    {
-        if (button != nullptr)
-        {
-            button->setTintColor(foreground);
-        }
-    }
-    if (exitBtn != nullptr)
-    {
-        static_cast<GlowIconButton*>(exitBtn)->setTintColor(foreground);
-    }
-}
-
-void Taskbar::updateAlertFlash()
-{
-    // 红色和略微红黑的背景每 280ms 切换一次，文字、表格和图标始终保持黑色。
-    if (!earthquakePresentation)
-    {
-        return;
-    }
-    alertFlashBright = !alertFlashBright;
-    applyTaskbarTheme(true, alertFlashBright ? QColor(QStringLiteral("#D90000"))
-        : QColor(QStringLiteral("#480000")));
 }
 
 void Taskbar::showSettingsDialog()

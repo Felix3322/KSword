@@ -25,6 +25,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRunnable>
+#include <QSet>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -436,9 +437,12 @@ namespace
 HandleDock::HandleDock(QWidget* parent)
     : QWidget(parent)
 {
-    // 构造阶段按“UI -> 连接”顺序初始化。
+    // 配置先于连接加载，避免恢复控件值时触发一次额外枚举。
     initializeUi();
+    loadFilterConfiguration();
+    applyFilterGlobalSettingsToControls();
     initializeConnections();
+    applyLocalHandleFilters(true);
 }
 
 void HandleDock::focusProcessId(const std::uint32_t processId, const bool triggerRefresh)
@@ -452,23 +456,44 @@ void HandleDock::focusProcessIds(const QVector<quint32>& processIds, const bool 
     {
         m_tabWidget->setCurrentWidget(m_handleListPage);
     }
-    if (m_pidFilterEdit != nullptr)
+    QVector<std::uint32_t> normalizedIds;
+    QSet<quint32> seenPidSet;
+    for (const quint32 processId : processIds)
     {
-        QStringList pidTextList;
-        QSet<quint32> seenPidSet;
-        for (const quint32 processId : processIds)
+        if (processId != 0U && !seenPidSet.contains(processId))
         {
-            if (processId != 0U && !seenPidSet.contains(processId))
-            {
-                seenPidSet.insert(processId);
-                pidTextList.push_back(QString::number(processId));
-            }
+            seenPidSet.insert(processId);
+            normalizedIds.push_back(processId);
         }
-        m_pidFilterEdit->setText(pidTextList.join(QStringLiteral(",")));
     }
-    if (triggerRefresh)
+
+    if (normalizedIds.isEmpty())
+    {
+        returnToSavedFilters();
+        return;
+    }
+
+    m_temporaryFilterRule = ks::handle::HandleFilterRule{};
+    m_temporaryFilterRule.id = QStringLiteral("temporary-") + ks::handle::CreateHandleFilterRuleId();
+    m_temporaryFilterRule.name =
+        ks::i18n::sourceText(QStringLiteral("临时 PID 筛选"));
+    m_temporaryFilterRule.enabled = true;
+    m_temporaryFilterRule.processIds = normalizedIds;
+    m_temporaryFilterActive = true;
+    if (m_returnSavedFilterButton != nullptr)
+    {
+        m_returnSavedFilterButton->setVisible(true);
+    }
+    const bool cachedSnapshotCannotServeTemporaryRule =
+        m_snapshotScopedToTemporarySinglePid
+        && (normalizedIds.size() != 1 || normalizedIds.front() != m_snapshotScopedProcessId);
+    if (triggerRefresh || cachedSnapshotCannotServeTemporaryRule)
     {
         requestAsyncRefresh(true);
+    }
+    else
+    {
+        applyLocalHandleFilters(true);
     }
 }
 
@@ -519,46 +544,40 @@ void HandleDock::initializeHandleListTab()
     m_refreshButton->setToolTip(QStringLiteral("刷新句柄列表"));
     m_refreshButton->setStyleSheet(buildBlueButtonStyle(true));
 
-    m_pidFilterEdit = new QLineEdit(m_handleListPage);
-    m_pidFilterEdit->setPlaceholderText(QStringLiteral("PID 过滤（多个 PID 用逗号分隔，留空=全部）"));
-    m_pidFilterEdit->setClearButtonEnabled(true);
-    m_pidFilterEdit->setToolTip(QStringLiteral("输入一个或多个目标 PID，仅展示这些进程的句柄。"));
-    m_pidFilterEdit->setStyleSheet(buildLineEditStyle());
+    m_manageFilterButton = new QPushButton(QStringLiteral("管理规则"), m_handleListPage);
+    m_manageFilterButton->setToolTip(QStringLiteral("新建、编辑、复制、启停和排序句柄筛选规则。"));
+    m_manageFilterButton->setStyleSheet(buildBlueButtonStyle(false));
 
-    m_keywordFilterEdit = new QLineEdit(m_handleListPage);
-    m_keywordFilterEdit->setPlaceholderText(QStringLiteral("关键字（进程/类型/名称/句柄）"));
-    m_keywordFilterEdit->setClearButtonEnabled(true);
-    m_keywordFilterEdit->setToolTip(QStringLiteral("按进程名、对象类型、对象名、句柄值等关键字过滤。"));
-    m_keywordFilterEdit->setStyleSheet(buildLineEditStyle());
+    m_importFilterButton = new QPushButton(QStringLiteral("导入配置"), m_handleListPage);
+    m_importFilterButton->setToolTip(QStringLiteral("从 JSON 文件导入句柄筛选规则。"));
+    m_importFilterButton->setStyleSheet(buildBlueButtonStyle(false));
 
-    m_typeFilterCombo = new QComboBox(m_handleListPage);
-    m_typeFilterCombo->setToolTip(QStringLiteral("按对象类型过滤（如 File/Key/Event）。"));
-    m_typeFilterCombo->setStyleSheet(buildComboAndSpinStyle());
-    m_typeFilterCombo->setMinimumWidth(260);
-    m_typeFilterCombo->addItem(QStringLiteral("全部类型"));
+    m_exportFilterButton = new QPushButton(QStringLiteral("导出配置"), m_handleListPage);
+    m_exportFilterButton->setToolTip(QStringLiteral("将当前已保存筛选规则导出为 JSON 文件。"));
+    m_exportFilterButton->setStyleSheet(buildBlueButtonStyle(false));
+
+    m_exportResultsButton = new QPushButton(QStringLiteral("导出结果"), m_handleListPage);
+    m_exportResultsButton->setToolTip(QStringLiteral("导出全部启用规则的完整命中结果，不受树中加载数量限制。"));
+    m_exportResultsButton->setStyleSheet(buildBlueButtonStyle(false));
+
+    m_returnSavedFilterButton = new QPushButton(QStringLiteral("返回已保存筛选器"), m_handleListPage);
+    m_returnSavedFilterButton->setToolTip(QStringLiteral("退出临时 PID 筛选并恢复已保存规则。"));
+    m_returnSavedFilterButton->setStyleSheet(buildBlueButtonStyle(false));
+    m_returnSavedFilterButton->setVisible(false);
 
     m_enumModeCombo = new QComboBox(m_handleListPage);
     m_enumModeCombo->setToolTip(QStringLiteral("选择句柄枚举来源：用户态快照、DuplicateHandle 增强解析或 R0 HandleTable。"));
     m_enumModeCombo->setStyleSheet(buildComboAndSpinStyle());
     m_enumModeCombo->setMinimumWidth(180);
-    m_enumModeCombo->addItem(QStringLiteral("User Snapshot"));
-    m_enumModeCombo->addItem(QStringLiteral("DuplicateHandle"));
-    m_enumModeCombo->addItem(QStringLiteral("Kernel HandleTable"));
-    m_enumModeCombo->setCurrentText(QStringLiteral("DuplicateHandle"));
-
-    m_diffFilterCombo = new QComboBox(m_handleListPage);
-    m_diffFilterCombo->setToolTip(QStringLiteral("按 R0/R3 差异状态过滤；Kernel HandleTable 模式会自动生成对比。"));
-    m_diffFilterCombo->setStyleSheet(buildComboAndSpinStyle());
-    m_diffFilterCombo->setMinimumWidth(150);
-    m_diffFilterCombo->addItem(QStringLiteral("全部差异"));
-    m_diffFilterCombo->addItem(QStringLiteral("仅用户态可见"));
-    m_diffFilterCombo->addItem(QStringLiteral("仅内核可见"));
-    m_diffFilterCombo->addItem(QStringLiteral("两者均可见"));
-
-    m_onlyNamedCheckBox = new QCheckBox(QStringLiteral("仅命名对象"), m_handleListPage);
-    m_onlyNamedCheckBox->setToolTip(QStringLiteral("只显示对象名非空的句柄。"));
-    m_onlyNamedCheckBox->setStyleSheet(
-        QStringLiteral("QCheckBox{color:%1;font-weight:600;}").arg(KswordTheme::TextPrimaryHex()));
+    m_enumModeCombo->addItem(
+        QStringLiteral("User Snapshot"),
+        static_cast<int>(ks::handle::FilterEnumMode::UserSnapshot));
+    m_enumModeCombo->addItem(
+        QStringLiteral("DuplicateHandle"),
+        static_cast<int>(ks::handle::FilterEnumMode::DuplicateHandle));
+    m_enumModeCombo->addItem(
+        QStringLiteral("Kernel HandleTable"),
+        static_cast<int>(ks::handle::FilterEnumMode::KernelHandleTable));
 
     m_resolveNameCheckBox = new QCheckBox(QStringLiteral("解析对象名"), m_handleListPage);
     m_resolveNameCheckBox->setChecked(true);
@@ -575,13 +594,16 @@ void HandleDock::initializeHandleListTab()
     m_nameBudgetSpinBox->setStyleSheet(buildComboAndSpinStyle());
 
     m_toolbarLayout->addWidget(m_refreshButton);
-    m_toolbarLayout->addWidget(m_pidFilterEdit, 0);
-    m_toolbarLayout->addWidget(m_keywordFilterEdit, 1);
-    m_toolbarLayout->addWidget(m_typeFilterCombo);
+    m_toolbarLayout->addWidget(m_manageFilterButton);
+    m_toolbarLayout->addWidget(m_importFilterButton);
+    m_toolbarLayout->addWidget(m_exportFilterButton);
+    m_toolbarLayout->addWidget(m_exportResultsButton);
+    m_toolbarLayout->addWidget(m_returnSavedFilterButton);
+    m_toolbarLayout->addStretch(1);
+    m_toolbarLayout->addWidget(new QLabel(QStringLiteral("枚举来源"), m_handleListPage));
     m_toolbarLayout->addWidget(m_enumModeCombo);
-    m_toolbarLayout->addWidget(m_diffFilterCombo);
-    m_toolbarLayout->addWidget(m_onlyNamedCheckBox);
     m_toolbarLayout->addWidget(m_resolveNameCheckBox);
+    m_toolbarLayout->addWidget(new QLabel(QStringLiteral("名称预算"), m_handleListPage));
     m_toolbarLayout->addWidget(m_nameBudgetSpinBox);
 
     m_statusLabel = new QLabel(QStringLiteral("● 等待首次刷新"), m_handleListPage);
@@ -698,13 +720,14 @@ void HandleDock::initializeHandleTable()
 
     m_tableWidget->setColumnCount(static_cast<int>(HandleTableColumn::Count));
     m_tableWidget->setHeaderLabels(headers);
-    m_tableWidget->setRootIsDecorated(false);
-    m_tableWidget->setItemsExpandable(false);
+    m_tableWidget->setRootIsDecorated(true);
+    m_tableWidget->setItemsExpandable(true);
     m_tableWidget->setAlternatingRowColors(true);
     m_tableWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_tableWidget->setSelectionMode(QAbstractItemView::SingleSelection);
     m_tableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_tableWidget->setSortingEnabled(true);
+    // 规则摘要必须保持配置顺序，明细排序由 sortLoadedRuleRows 仅作用于规则子节点。
+    m_tableWidget->setSortingEnabled(false);
     m_tableWidget->setContextMenuPolicy(Qt::CustomContextMenu);
 
     QHeaderView* headerView = m_tableWidget->header();
@@ -714,6 +737,8 @@ void HandleDock::initializeHandleTable()
         headerView->setSectionResizeMode(QHeaderView::Interactive);
         headerView->setStretchLastSection(false);
         headerView->setContextMenuPolicy(Qt::CustomContextMenu);
+        headerView->setSectionsClickable(true);
+        headerView->setSortIndicatorShown(false);
     }
     m_tableWidget->setColumnWidth(static_cast<int>(HandleTableColumn::ProcessId), 80);
     m_tableWidget->setColumnWidth(static_cast<int>(HandleTableColumn::ProcessName), 170);
@@ -783,44 +808,50 @@ void HandleDock::initializeConnections()
             requestAsyncRefresh(true);
         });
 
-    connect(m_pidFilterEdit, &QLineEdit::returnPressed, this, [this]()
+    connect(m_manageFilterButton, &QPushButton::clicked, this, [this]()
         {
-            applyLocalHandleFilters();
+            showRuleManagerDialog();
         });
 
-    connect(m_keywordFilterEdit, &QLineEdit::returnPressed, this, [this]()
+    connect(m_importFilterButton, &QPushButton::clicked, this, [this]()
         {
-            applyLocalHandleFilters();
+            importFilterConfiguration();
         });
 
-    connect(m_typeFilterCombo, &QComboBox::currentTextChanged, this, [this](const QString&)
+    connect(m_exportFilterButton, &QPushButton::clicked, this, [this]()
         {
-            applyLocalHandleFilters();
+            exportFilterConfiguration();
+        });
+
+    connect(m_exportResultsButton, &QPushButton::clicked, this, [this]()
+        {
+            exportRuleResults();
+        });
+
+    connect(m_returnSavedFilterButton, &QPushButton::clicked, this, [this]()
+        {
+            returnToSavedFilters();
         });
 
     connect(m_enumModeCombo, &QComboBox::currentTextChanged, this, [this](const QString&)
         {
+            collectFilterGlobalSettingsFromControls();
+            saveFilterConfiguration();
             requestAsyncRefresh(true);
-        });
-
-    connect(m_diffFilterCombo, &QComboBox::currentTextChanged, this, [this](const QString&)
-        {
-            applyLocalHandleFilters();
-        });
-
-    connect(m_onlyNamedCheckBox, &QCheckBox::toggled, this, [this](const bool)
-        {
-            applyLocalHandleFilters();
         });
 
     connect(m_resolveNameCheckBox, &QCheckBox::toggled, this, [this](const bool)
         {
-            requestAsyncRefresh(false);
+            collectFilterGlobalSettingsFromControls();
+            saveFilterConfiguration();
+            requestAsyncRefresh(true);
         });
 
     connect(m_nameBudgetSpinBox, &QSpinBox::valueChanged, this, [this](const int)
         {
-            requestAsyncRefresh(false);
+            collectFilterGlobalSettingsFromControls();
+            saveFilterConfiguration();
+            requestAsyncRefresh(true);
         });
 
     connect(m_tableWidget, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& localPoint)
@@ -828,8 +859,48 @@ void HandleDock::initializeConnections()
             showHandleTableContextMenu(localPoint);
         });
 
+    connect(m_tableWidget, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem* item)
+        {
+            if (item != nullptr &&
+                item->data(0, ks::handle::HandleTreeItemKindRole).toInt() ==
+                    static_cast<int>(ks::handle::HandleTreeItemKind::RuleSummary))
+            {
+                appendNextRuleResultBatch(
+                    item->data(0, ks::handle::HandleTreeRuleIdRole).toString());
+            }
+        });
+
+    const auto activateLoadMore = [this](QTreeWidgetItem* item)
+        {
+            if (item != nullptr &&
+                item->data(0, ks::handle::HandleTreeItemKindRole).toInt() ==
+                    static_cast<int>(ks::handle::HandleTreeItemKind::LoadMore))
+            {
+                appendNextRuleResultBatch(
+                    item->data(0, ks::handle::HandleTreeRuleIdRole).toString());
+            }
+        };
+    connect(m_tableWidget, &QTreeWidget::itemClicked, this,
+        [activateLoadMore](QTreeWidgetItem* item, int)
+        {
+            activateLoadMore(item);
+        });
+    connect(m_tableWidget, &QTreeWidget::itemActivated, this,
+        [activateLoadMore](QTreeWidgetItem* item, int)
+        {
+            activateLoadMore(item);
+        });
+
     connect(m_tableWidget, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem*, QTreeWidgetItem*)
         {
+            if (selectedHandleRow() == nullptr)
+            {
+                ++m_handleDetailRefreshTicket;
+                m_handleDetailRefreshInProgress = false;
+                m_handleDetailRefreshPending = false;
+                showHandleDetailPlaceholder(QStringLiteral("请选择一个句柄查看详情。"));
+                return;
+            }
             requestHandleDetailRefresh(false);
         });
 
@@ -838,6 +909,23 @@ void HandleDock::initializeConnections()
         connect(m_tableWidget->header(), &QHeaderView::customContextMenuRequested, this, [this](const QPoint& localPoint)
             {
                 showHandleHeaderContextMenu(localPoint);
+            });
+        connect(m_tableWidget->header(), &QHeaderView::sectionClicked, this, [this](const int column)
+            {
+                if (m_handleSortColumn == column)
+                {
+                    m_handleSortOrder = m_handleSortOrder == Qt::AscendingOrder
+                        ? Qt::DescendingOrder
+                        : Qt::AscendingOrder;
+                }
+                else
+                {
+                    m_handleSortColumn = column;
+                    m_handleSortOrder = Qt::AscendingOrder;
+                }
+                m_tableWidget->header()->setSortIndicatorShown(true);
+                m_tableWidget->header()->setSortIndicator(m_handleSortColumn, m_handleSortOrder);
+                sortLoadedRuleRows(m_handleSortColumn, m_handleSortOrder);
             });
     }
 
@@ -913,7 +1001,7 @@ void HandleDock::requestAsyncRefreshWithoutTypePrecondition(const bool forceRefr
         << "[HandleDock] requestAsyncRefresh: ticket="
         << currentTicket
         << ", pidFilter="
-        << m_pidFilterEdit->text().toStdString()
+        << (options.hasPidFilter ? std::to_string(options.pidFilter) : std::string("all"))
         << ", keyword="
         << options.keywordText.toStdString()
         << ", typeFilter="
@@ -1010,6 +1098,23 @@ void HandleDock::applyHandleRefreshResult(
         return;
     }
 
+    const bool scopedResultStillMatchesTemporaryRule =
+        m_temporaryFilterActive
+        && m_temporaryFilterRule.processIds.size() == 1
+        && m_temporaryFilterRule.processIds.front() == refreshResult.scopedProcessId;
+    if (refreshResult.snapshotScopedToPid && !scopedResultStillMatchesTemporaryRule)
+    {
+        // 临时 PID 刷新在途时用户可能已经返回持久规则、导入配置或切换到另一 PID。
+        // 该结果不能作为完整快照使用，直接丢弃并按当前状态重新采集。
+        m_refreshInProgress = false;
+        m_refreshPending = false;
+        QMetaObject::invokeMethod(this, [this]()
+            {
+                requestAsyncRefresh(true);
+            }, Qt::QueuedConnection);
+        return;
+    }
+
     if (ks::ui::IsItemViewUiCommitBlockedByContextMenu({ m_tableWidget }))
     {
         const auto refreshSnapshot = std::make_shared<HandleRefreshResult>(refreshResult);
@@ -1031,6 +1136,14 @@ void HandleDock::applyHandleRefreshResult(
     }
 
     m_allRows = refreshResult.rows;
+    m_snapshotScopedToTemporarySinglePid = refreshResult.snapshotScopedToPid;
+    m_snapshotScopedProcessId = refreshResult.scopedProcessId;
+    m_lastEnumeratedHandleCount = refreshResult.totalHandleCount;
+    m_lastResolvedNameCount = refreshResult.resolvedNameCount;
+    m_lastObjectTypeMappedCount = refreshResult.objectTypeMappedCount;
+    m_lastKernelHandleCount = refreshResult.kernelHandleCount;
+    m_lastRefreshElapsedMs = refreshResult.elapsedMs;
+    m_lastRefreshDiagnosticText = refreshResult.diagnosticText;
     m_typeNameCacheByIndex = refreshResult.updatedTypeNameCacheByIndex;
     const bool canRenderAfterTypeMapping = !m_typeNameMapByIndexFromObjectTab.empty();
     const bool canRenderWithoutTypeMapping =
@@ -1068,7 +1181,7 @@ void HandleDock::applyHandleRefreshResult(
         "● 完成 %1 ms | 总:%2 | 显示:%3 | 名称:%4 | 类型:%5 | R0:%6")
         .arg(refreshResult.elapsedMs)
         .arg(refreshResult.totalHandleCount)
-        .arg(m_rows.size())
+        .arg(m_totalRuleMatchCount)
         .arg(refreshResult.resolvedNameCount)
         .arg(refreshResult.objectTypeMappedCount)
         .arg(refreshResult.kernelHandleCount);
@@ -1092,7 +1205,7 @@ void HandleDock::applyHandleRefreshResult(
             "双来源确认:%10\n"
             "诊断:%11")
             .arg(refreshResult.totalHandleCount)
-            .arg(m_rows.size())
+            .arg(m_totalRuleMatchCount)
             .arg(refreshResult.basicInfoResolvedCount)
             .arg(refreshResult.resolvedNameCount)
             .arg(refreshResult.fallbackNameCount)
@@ -1105,6 +1218,7 @@ void HandleDock::applyHandleRefreshResult(
                 ? QStringLiteral("无")
                 : refreshResult.diagnosticText));
     }
+    updateHandleSummaryStatus();
 
     m_refreshInProgress = false;
     kPro.set(m_refreshProgressPid, "句柄刷新完成", 0, 100.0f);
@@ -1230,6 +1344,9 @@ void HandleDock::applyObjectTypeRefreshResult(
 
 void HandleDock::rebuildHandleTable()
 {
+    rebuildRuleSummaryTree();
+    return;
+
     m_tableWidget->clear();
     // clear() 已经销毁全部旧表项：立刻递增代次淘汰在途的图标回投，并重建“行下标 -> 表项”映射。
     ++m_processIconResolveGeneration;
@@ -1540,6 +1657,235 @@ void HandleDock::rebuildHandleTable()
     QThreadPool::globalInstance()->start(iconResolveTask);
 }
 
+QTreeWidgetItem* HandleDock::createHandleTreeRow(const std::size_t sourceRowIndex)
+{
+    if (sourceRowIndex >= m_allRows.size())
+    {
+        return nullptr;
+    }
+
+    const HandleRow& row = m_allRows[sourceRowIndex];
+    auto* item = new ks::ui::NumericTreeItem();
+    item->setData(0, ks::handle::HandleTreeItemKindRole,
+        static_cast<int>(ks::handle::HandleTreeItemKind::HandleRow));
+    item->setData(0, ks::handle::HandleTreeSourceRowIndexRole,
+        static_cast<qulonglong>(sourceRowIndex));
+    item->setNumericCell(
+        static_cast<int>(HandleTableColumn::ProcessId),
+        QString::number(row.processId),
+        static_cast<qulonglong>(row.processId));
+    item->setText(static_cast<int>(HandleTableColumn::ProcessName), row.processName);
+
+    const QString processIdentityKey =
+        buildHandleProcessIdentityKey(row.processId, row.processCreationTime);
+    const auto cachedIconIt = m_processIconCacheByIdentity.constFind(processIdentityKey);
+    item->setIcon(
+        static_cast<int>(HandleTableColumn::ProcessName),
+        cachedIconIt == m_processIconCacheByIdentity.constEnd()
+            ? handleProcessPlaceholderIcon()
+            : cachedIconIt.value());
+
+    item->setNumericCell(
+        static_cast<int>(HandleTableColumn::HandleValue),
+        formatHex(row.handleValue, 0),
+        static_cast<qulonglong>(row.handleValue));
+    item->setNumericCell(
+        static_cast<int>(HandleTableColumn::TypeIndex),
+        formatTypeIndexDisplayText(row.typeIndex, row.typeName),
+        static_cast<qulonglong>(row.typeIndex));
+    item->setText(
+        static_cast<int>(HandleTableColumn::ObjectName),
+        formatObjectNameDisplayText(row));
+    item->setNumericCell(
+        static_cast<int>(HandleTableColumn::ObjectAddress),
+        formatHex(row.objectAddress, 0),
+        static_cast<qulonglong>(row.objectAddress));
+    item->setNumericCell(
+        static_cast<int>(HandleTableColumn::GrantedAccess),
+        formatHex(row.grantedAccess, 8),
+        static_cast<qulonglong>(row.grantedAccess));
+    item->setText(
+        static_cast<int>(HandleTableColumn::Attributes),
+        formatHandleAttributes(row.attributes));
+    item->setNumericCell(
+        static_cast<int>(HandleTableColumn::HandleCount),
+        formatOptionalObjectCount(row.handleCount, row.basicInfoAvailable),
+        static_cast<qulonglong>(row.basicInfoAvailable ? row.handleCount : 0));
+    item->setNumericCell(
+        static_cast<int>(HandleTableColumn::PointerCount),
+        formatOptionalObjectCount(row.pointerCount, row.basicInfoAvailable),
+        static_cast<qulonglong>(row.basicInfoAvailable ? row.pointerCount : 0));
+    item->setText(static_cast<int>(HandleTableColumn::Source), formatHandleSourceText(row.sourceMode));
+    item->setText(static_cast<int>(HandleTableColumn::DecodeStatus), formatHandleDecodeStatusText(row.decodeStatus));
+    item->setText(static_cast<int>(HandleTableColumn::DiffStatus), formatHandleDiffStatusText(row.diffStatus));
+    item->setToolTip(
+        static_cast<int>(HandleTableColumn::GrantedAccess),
+        decodeGrantedAccessText(row.typeName, row.grantedAccess));
+    item->setToolTip(
+        static_cast<int>(HandleTableColumn::Source),
+        QStringLiteral("Object 地址仅用于展示和差异检测，不可作为后续操作凭据。"));
+    item->setToolTip(
+        static_cast<int>(HandleTableColumn::DecodeStatus),
+        QStringLiteral("EP.ObjectTable=0x%1, HtContention=0x%2, ObDecodeShift=%3, ObAttributesShift=%4, OtName=0x%5, OtIndex=0x%6")
+        .arg(static_cast<qulonglong>(row.epObjectTableOffset), 0, 16)
+        .arg(static_cast<qulonglong>(row.htHandleContentionEventOffset), 0, 16)
+        .arg(row.obDecodeShift)
+        .arg(row.obAttributesShift)
+        .arg(static_cast<qulonglong>(row.otNameOffset), 0, 16)
+        .arg(static_cast<qulonglong>(row.otIndexOffset), 0, 16));
+
+    if (!row.objectNameAvailable || row.objectName.trimmed().isEmpty())
+    {
+        item->setForeground(
+            static_cast<int>(HandleTableColumn::ObjectName),
+            KswordTheme::TextSecondaryColor());
+    }
+    if (!row.basicInfoAvailable)
+    {
+        item->setForeground(
+            static_cast<int>(HandleTableColumn::HandleCount),
+            KswordTheme::TextSecondaryColor());
+        item->setForeground(
+            static_cast<int>(HandleTableColumn::PointerCount),
+            KswordTheme::TextSecondaryColor());
+        item->setToolTip(
+            static_cast<int>(HandleTableColumn::HandleCount),
+            QStringLiteral("ObjectBasicInformation 未查到。"));
+        item->setToolTip(
+            static_cast<int>(HandleTableColumn::PointerCount),
+            QStringLiteral("ObjectBasicInformation 未查到。"));
+    }
+    if (row.objectNameAvailable)
+    {
+        if (row.objectName.trimmed().isEmpty())
+        {
+            item->setToolTip(
+                static_cast<int>(HandleTableColumn::ObjectName),
+                QStringLiteral("对象已查询，但该对象没有名称。"));
+        }
+    }
+    else if (row.objectNameFailed)
+    {
+        item->setToolTip(
+            static_cast<int>(HandleTableColumn::ObjectName),
+            QStringLiteral("对象名查询失败。"));
+    }
+    else
+    {
+        item->setToolTip(
+            static_cast<int>(HandleTableColumn::ObjectName),
+            QStringLiteral("对象名未查询，可能受预算、类型白名单或开关限制。"));
+    }
+    return item;
+}
+
+void HandleDock::scheduleProcessIconResolution(
+    const QVector<qulonglong>& sourceRowIndices,
+    const QVector<QTreeWidgetItem*>& itemList)
+{
+    if (sourceRowIndices.size() != itemList.size() || sourceRowIndices.isEmpty())
+    {
+        return;
+    }
+
+    QVector<HandleProcessIconRequest> requests;
+    QHash<QString, QVector<QTreeWidgetItem*>> itemsByIdentity;
+    for (qsizetype itemIndex = 0; itemIndex < sourceRowIndices.size(); ++itemIndex)
+    {
+        const std::size_t sourceRowIndex =
+            static_cast<std::size_t>(sourceRowIndices.at(itemIndex));
+        if (sourceRowIndex >= m_allRows.size() || itemList.at(itemIndex) == nullptr)
+        {
+            continue;
+        }
+        const HandleRow& row = m_allRows[sourceRowIndex];
+        const QString identityKey =
+            buildHandleProcessIdentityKey(row.processId, row.processCreationTime);
+        if (identityKey.isEmpty() || m_processIconCacheByIdentity.contains(identityKey))
+        {
+            continue;
+        }
+        QVector<QTreeWidgetItem*>& targetItems = itemsByIdentity[identityKey];
+        if (targetItems.isEmpty())
+        {
+            requests.push_back(HandleProcessIconRequest{
+                identityKey,
+                row.processId,
+                row.processCreationTime });
+        }
+        targetItems.push_back(itemList.at(itemIndex));
+    }
+    if (requests.isEmpty())
+    {
+        return;
+    }
+
+    const std::uint64_t generation = m_processIconResolveGeneration;
+    const std::shared_ptr<std::atomic_bool> cancelFlag = m_processIconResolveCancelFlag;
+    const QPointer<HandleDock> guardedSelf(this);
+    auto* task = QRunnable::create(
+        [guardedSelf, generation, cancelFlag, requests, itemsByIdentity]()
+        {
+            const HandleProcessIconComScope iconWorkerComScope;
+            QVector<HandleProcessIconResult> results;
+            results.reserve(requests.size());
+            for (const HandleProcessIconRequest& request : requests)
+            {
+                if (guardedSelf == nullptr ||
+                    (cancelFlag != nullptr && cancelFlag->load(std::memory_order_relaxed)))
+                {
+                    return;
+                }
+                const QString imagePath = queryHandleProcessImagePathInWorker(
+                    request.processId,
+                    request.processCreationTime);
+                results.push_back(HandleProcessIconResult{
+                    request.identityKey,
+                    extractHandleProcessIconImage(imagePath) });
+            }
+            QMetaObject::invokeMethod(
+                QCoreApplication::instance(),
+                [guardedSelf, generation, results, itemsByIdentity]()
+                {
+                    if (guardedSelf == nullptr ||
+                        guardedSelf->m_processIconResolveGeneration != generation)
+                    {
+                        return;
+                    }
+                    for (const HandleProcessIconResult& result : results)
+                    {
+                        const QIcon icon = result.iconImage.isNull()
+                            ? handleProcessPlaceholderIcon()
+                            : QIcon(QPixmap::fromImage(result.iconImage));
+                        if (guardedSelf->m_processIconCacheByIdentity.size() >=
+                            kHandleProcessIconCacheLimit)
+                        {
+                            guardedSelf->m_processIconCacheByIdentity.erase(
+                                guardedSelf->m_processIconCacheByIdentity.begin());
+                        }
+                        guardedSelf->m_processIconCacheByIdentity.insert(result.identityKey, icon);
+                        const auto itemIt = itemsByIdentity.constFind(result.identityKey);
+                        if (itemIt == itemsByIdentity.constEnd())
+                        {
+                            continue;
+                        }
+                        for (QTreeWidgetItem* item : itemIt.value())
+                        {
+                            if (item != nullptr && item->treeWidget() == guardedSelf->m_tableWidget)
+                            {
+                                item->setIcon(
+                                    static_cast<int>(HandleTableColumn::ProcessName),
+                                    icon);
+                            }
+                        }
+                    }
+                },
+                Qt::QueuedConnection);
+        });
+    task->setAutoDelete(true);
+    QThreadPool::globalInstance()->start(task);
+}
+
 
 void HandleDock::rebuildObjectTypeTable(const QString& filterKeyword)
 {
@@ -1592,13 +1938,21 @@ void HandleDock::rebuildObjectTypeTable(const QString& filterKeyword)
 HandleDock::HandleRefreshOptions HandleDock::collectHandleRefreshOptions() const
 {
     HandleRefreshOptions options{};
-    options.keywordText = m_keywordFilterEdit->text().trimmed().toLower();
-    options.typeFilterText = m_typeFilterCombo->currentText().trimmed();
-    options.onlyNamed = m_onlyNamedCheckBox->isChecked();
-    options.resolveObjectName = m_resolveNameCheckBox->isChecked();
-    options.nameResolveBudget = m_nameBudgetSpinBox->value();
-    options.enumMode = resolveHandleEnumModeFromText(m_enumModeCombo != nullptr ? m_enumModeCombo->currentText() : QString());
-    options.diffFilter = resolveHandleDiffFilterFromText(m_diffFilterCombo != nullptr ? m_diffFilterCombo->currentText() : QString());
+    options.resolveObjectName = m_filterDocument.globalSettings.resolveObjectName;
+    options.nameResolveBudget = m_filterDocument.globalSettings.nameResolveBudget;
+    switch (m_filterDocument.globalSettings.enumMode)
+    {
+    case ks::handle::FilterEnumMode::UserSnapshot:
+        options.enumMode = HandleEnumMode::UserSnapshot;
+        break;
+    case ks::handle::FilterEnumMode::KernelHandleTable:
+        options.enumMode = HandleEnumMode::KernelHandleTable;
+        break;
+    case ks::handle::FilterEnumMode::DuplicateHandle:
+    default:
+        options.enumMode = HandleEnumMode::DuplicateHandle;
+        break;
+    }
     if (options.enumMode == HandleEnumMode::UserSnapshot)
     {
         options.resolveObjectName = false;
@@ -1607,26 +1961,12 @@ HandleDock::HandleRefreshOptions HandleDock::collectHandleRefreshOptions() const
     options.typeNameCacheByIndex = m_typeNameCacheByIndex;
     options.typeNameMapFromObjectTab = m_typeNameMapByIndexFromObjectTab;
 
-    if (options.onlyNamed)
+    // 仅临时单 PID 筛选下收窄后台枚举范围。持久规则始终共享完整快照，
+    // 规则内容变化只重新匹配内存数据，不触发系统枚举。
+    if (m_temporaryFilterActive && m_temporaryFilterRule.processIds.size() == 1)
     {
-        options.resolveObjectName = true;
-    }
-
-    QString normalizedPidText = m_pidFilterEdit->text().trimmed();
-    normalizedPidText.replace(',', ' ');
-    normalizedPidText.replace(';', ' ');
-    normalizedPidText.replace('\n', ' ');
-    normalizedPidText.replace('\t', ' ');
-    const QStringList pidTokenList = normalizedPidText.split(' ', Qt::SkipEmptyParts);
-    if (pidTokenList.size() == 1)
-    {
-        bool parseOk = false;
-        const std::uint32_t parsedPid = pidTokenList.front().toUInt(&parseOk, 10);
-        if (parseOk && parsedPid > 0U)
-        {
-            options.hasPidFilter = true;
-            options.pidFilter = parsedPid;
-        }
+        options.hasPidFilter = true;
+        options.pidFilter = m_temporaryFilterRule.processIds.front();
     }
 
     return options;
