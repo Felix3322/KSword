@@ -1037,6 +1037,7 @@ private:
     int m_friendlySortColumn = static_cast<int>(TableColumn::Name); // 友好视图内部排序列，默认按进程名 A-Z。
     Qt::SortOrder m_friendlySortOrder = Qt::AscendingOrder; // 友好视图内部排序方向，点击表头切换。
     bool m_friendlySortActive = false; // 是否已经点击表头排序；首次点击任意列固定使用升序。
+    bool m_flatListForcedByHeaderSort = false; // 树状视图点表头后进入普通扁平枚举，不改变友好视图复选框。
     mutable std::vector<ks::process::ProcessRecord> m_friendlySyntheticRecords; // 友好视图合成标题/聚合行记录缓存。
 
     // ======== 线程页控件 ========

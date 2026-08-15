@@ -5200,11 +5200,9 @@ void ProcessDock::initializeConnections()
     connect(m_friendlyViewCheck, &QCheckBox::toggled, this, [this](const bool checked) {
         m_activityTableSnapshotIndex = -1;
         m_activityTableSnapshotRecords.clear();
-        if (!checked)
-        {
-            // 重新进入树状视图后结束上一轮友好视图排序会话；下次点表头从升序开始。
-            m_friendlySortActive = false;
-        }
+        // 用户手动切换复选框后退出表头触发的普通扁平模式，并重置友好视图排序会话。
+        m_flatListForcedByHeaderSort = false;
+        m_friendlySortActive = false;
         kLogEvent logEvent;
         info << logEvent
             << "[ProcessDock] 进程友好视图开关变更, friendlyView="
@@ -5420,7 +5418,7 @@ void ProcessDock::initializeConnections()
     });
 
     // 友好视图需要保留“应用/后台/系统”分组结构，不能让 QSortFilterProxyModel 直接打散源顺序。
-    // 表头首次点击固定升序、同列再次点击降序；树状视图会先自动切回友好视图再排序。
+    // 树状视图点表头后保持友好视图未勾选，解绑父子关系并切到普通扁平枚举排序。
     connect(m_processTable->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](const int logicalIndex) {
         if (isProcessActivityTableSnapshotActive() ||
             !currentProcessSearchText().isEmpty())
@@ -5432,12 +5430,26 @@ void ProcessDock::initializeConnections()
             return;
         }
 
-        // 树状行的父子顺序不能直接交给普通列排序。记录本次升序后切回友好视图，
-        // QCheckBox::toggled 会使用同一组排序状态重建一次表格，无需重复刷新。
+        // 树状行的父子顺序不能直接交给普通列排序。首次点击固定升序，
+        // 保持复选框未勾选，仅切换内部投影为没有父子关系的普通进程枚举。
         const bool treeModeWasEnabled = isTreeModeEnabled();
         if (treeModeWasEnabled)
         {
-            m_friendlySortActive = false;
+            m_flatListForcedByHeaderSort = true;
+            if (QHeaderView* const headerView = m_processTable->horizontalHeader())
+            {
+                headerView->setSortIndicator(logicalIndex, Qt::AscendingOrder);
+                headerView->setSortIndicatorShown(true);
+            }
+            rebuildTable();
+            return;
+        }
+
+        // 已由表头切换为普通扁平枚举时，排序代理会按 Qt 默认行为在升序/降序间切换。
+        // 此处不再写入友好视图专用排序状态。
+        if (m_flatListForcedByHeaderSort)
+        {
+            return;
         }
 
         if (m_friendlySortActive && m_friendlySortColumn == logicalIndex)
@@ -5452,12 +5464,6 @@ void ProcessDock::initializeConnections()
             m_friendlySortOrder = Qt::AscendingOrder;
         }
         m_friendlySortActive = true;
-
-        if (treeModeWasEnabled && m_friendlyViewCheck != nullptr)
-        {
-            m_friendlyViewCheck->setChecked(true);
-            return;
-        }
 
         if (!isFriendlyViewEnabled())
         {
@@ -13087,8 +13093,10 @@ void ProcessDock::executeCreateProcessRequest()
 
 bool ProcessDock::isTreeModeEnabled() const
 {
-    // 单复选框定义互斥状态：未勾选友好视图时即为树状视图。
-    return m_friendlyViewCheck != nullptr && !m_friendlyViewCheck->isChecked();
+    // 未勾选友好视图通常表示树状视图；点表头后内部可临时切为普通扁平枚举。
+    return m_friendlyViewCheck != nullptr &&
+        !m_friendlyViewCheck->isChecked() &&
+        !m_flatListForcedByHeaderSort;
 }
 
 bool ProcessDock::isFriendlyViewEnabled() const
